@@ -1,11 +1,29 @@
 package bridge
 
 import (
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
 	"time"
 )
+
+func TestSurfaceBootstrapJSONOmitsInternalOwnerScope(t *testing.T) {
+	bootstrap := SurfaceBootstrap{
+		PluginID: "com.example.plugin", PluginInstanceID: "plugini_1", PluginVersion: "1.0.0",
+		SurfaceID: "main", SurfaceInstanceID: "surface_1", ActiveFingerprint: "sha256:active",
+		OwnerSessionHash: "session_secret", OwnerUserHash: "user_secret", OwnerEnvHash: "env_secret", SessionChannelIDHash: "channel_secret",
+	}
+	encoded, err := json.Marshal(bootstrap)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, internal := range []string{"owner_session_hash", "owner_user_hash", "owner_env_hash", "session_channel_id_hash", "session_secret", "user_secret", "env_secret", "channel_secret"} {
+		if strings.Contains(string(encoded), internal) {
+			t.Fatalf("SurfaceBootstrap JSON exposed %q: %s", internal, encoded)
+		}
+	}
+}
 
 func TestSurfaceBootstrapExchangeAndGatewayToken(t *testing.T) {
 	manager := NewTokenManager()
@@ -87,6 +105,7 @@ func TestSurfaceGatewayRenewalRotatesLeaseCredentialsAndExtendsSession(t *testin
 		AssetSessionID:       prepared.AssetSessionID,
 		OwnerSessionHash:     bootstrap.OwnerSessionHash,
 		OwnerUserHash:        bootstrap.OwnerUserHash,
+		OwnerEnvHash:         bootstrap.OwnerEnvHash,
 		SessionChannelIDHash: bootstrap.SessionChannelIDHash,
 		Now:                  now.Add(3 * time.Second),
 	}); !errors.Is(err, ErrTokenRevoked) {
@@ -111,6 +130,7 @@ func TestSurfaceGatewayRenewalRotatesLeaseCredentialsAndExtendsSession(t *testin
 		AssetSessionID:       first.AssetSessionID,
 		OwnerSessionHash:     bootstrap.OwnerSessionHash,
 		OwnerUserHash:        bootstrap.OwnerUserHash,
+		OwnerEnvHash:         bootstrap.OwnerEnvHash,
 		SessionChannelIDHash: bootstrap.SessionChannelIDHash,
 		Now:                  now.Add(51 * time.Second),
 	}); !errors.Is(err, ErrTokenRevoked) {
@@ -122,6 +142,7 @@ func TestSurfaceGatewayRenewalRotatesLeaseCredentialsAndExtendsSession(t *testin
 		SurfaceInstanceID:    bootstrap.SurfaceInstanceID,
 		OwnerSessionHash:     bootstrap.OwnerSessionHash,
 		OwnerUserHash:        bootstrap.OwnerUserHash,
+		OwnerEnvHash:         bootstrap.OwnerEnvHash,
 		SessionChannelIDHash: bootstrap.SessionChannelIDHash,
 		BridgeChannelID:      "bridge_1",
 		Revision:             testRevision(4),
@@ -236,6 +257,7 @@ func TestValidateAssetSessionReturnsSurfaceSession(t *testing.T) {
 		AssetSessionID:       result.AssetSessionID,
 		OwnerSessionHash:     bootstrap.OwnerSessionHash,
 		OwnerUserHash:        bootstrap.OwnerUserHash,
+		OwnerEnvHash:         bootstrap.OwnerEnvHash,
 		SessionChannelIDHash: bootstrap.SessionChannelIDHash,
 		Now:                  now.Add(2 * time.Second),
 	})
@@ -251,6 +273,7 @@ func TestValidateAssetSessionReturnsSurfaceSession(t *testing.T) {
 		AssetSession:         result.AssetSession,
 		OwnerSessionHash:     bootstrap.OwnerSessionHash,
 		OwnerUserHash:        bootstrap.OwnerUserHash,
+		OwnerEnvHash:         bootstrap.OwnerEnvHash,
 		SessionChannelIDHash: bootstrap.SessionChannelIDHash,
 		Now:                  now.Add(2 * time.Second),
 	}); !errors.Is(err, ErrMissingTokenAudience) {
@@ -342,11 +365,11 @@ func TestHandshakeTranscriptSHA256StableVector(t *testing.T) {
 		ActiveFingerprint:  "sha256:abc",
 		BridgeNonce:        "nonce_1",
 		AssetSessionNonce:  "asset_nonce_1",
-		PluginStateVersion: 7,
+		ManagementRevision: 7,
 		RevokeEpoch:        3,
 		UIProtocolVersion:  "plugin-ui-v4",
 	}, "bridge_channel_1")
-	const want = "sha256:5a7542a24659bb02027cd993c02047cb882a642aa74cde8f44fa4188a7c4e9f8"
+	const want = "sha256:3a7dd7c0c2ec278633a061b8808c149ebe402ecaf8904d0e6f64aa94963777fa"
 	if got != want {
 		t.Fatalf("HandshakeTranscriptSHA256() = %q, want %q", got, want)
 	}
@@ -376,6 +399,7 @@ func TestBoundSurfaceDisposeRequiresGenerationBinding(t *testing.T) {
 		SurfaceInstanceID:    bootstrap.SurfaceInstanceID,
 		OwnerSessionHash:     bootstrap.OwnerSessionHash,
 		OwnerUserHash:        bootstrap.OwnerUserHash,
+		OwnerEnvHash:         bootstrap.OwnerEnvHash,
 		SessionChannelIDHash: bootstrap.SessionChannelIDHash,
 		Now:                  now.Add(4 * time.Second),
 	})
@@ -406,6 +430,7 @@ func TestStaleSurfaceGenerationCannotDisposeReplacement(t *testing.T) {
 			BridgeNonce:          bridgeNonce,
 			OwnerSessionHash:     request.OwnerSessionHash,
 			OwnerUserHash:        request.OwnerUserHash,
+			OwnerEnvHash:         request.OwnerEnvHash,
 			SessionChannelIDHash: request.SessionChannelIDHash,
 			Now:                  now.Add(2 * time.Second),
 		})
@@ -459,6 +484,8 @@ func TestSurfaceScopeRevocationMatchesOwnerAndChannel(t *testing.T) {
 
 	revoked, err := service.RevokeSurfaceScope(RevokeSurfaceScopeRequest{
 		OwnerSessionHash:     target.OwnerSessionHash,
+		OwnerUserHash:        target.OwnerUserHash,
+		OwnerEnvHash:         target.OwnerEnvHash,
 		SessionChannelIDHash: target.SessionChannelIDHash,
 		Now:                  now.Add(time.Second),
 	})
@@ -502,6 +529,7 @@ func TestConfirmationTokenBindsRequestHashAndConsumesOnce(t *testing.T) {
 		ConfirmationID:         audience.ConfirmationID,
 		OwnerSessionHash:       audience.OwnerSessionHash,
 		OwnerUserHash:          audience.OwnerUserHash,
+		OwnerEnvHash:           audience.OwnerEnvHash,
 		SessionChannelIDHash:   audience.SessionChannelIDHash,
 		BridgeChannelID:        audience.BridgeChannelID,
 		RuntimeGenerationID:    audience.RuntimeGenerationID,
@@ -581,6 +609,7 @@ func TestConfirmationTokenCanBeConsumedByServerHeldTokenID(t *testing.T) {
 		ConfirmationID:         audience.ConfirmationID,
 		OwnerSessionHash:       audience.OwnerSessionHash,
 		OwnerUserHash:          audience.OwnerUserHash,
+		OwnerEnvHash:           audience.OwnerEnvHash,
 		SessionChannelIDHash:   audience.SessionChannelIDHash,
 		BridgeChannelID:        audience.BridgeChannelID,
 		RuntimeGenerationID:    audience.RuntimeGenerationID,
@@ -635,6 +664,7 @@ func TestConfirmationTokenTTLIsClamped(t *testing.T) {
 		ConfirmationID:         audience.ConfirmationID,
 		OwnerSessionHash:       audience.OwnerSessionHash,
 		OwnerUserHash:          audience.OwnerUserHash,
+		OwnerEnvHash:           audience.OwnerEnvHash,
 		SessionChannelIDHash:   audience.SessionChannelIDHash,
 		BridgeChannelID:        audience.BridgeChannelID,
 		RuntimeGenerationID:    audience.RuntimeGenerationID,
@@ -675,6 +705,7 @@ func TestStreamTicketTTLIsClamped(t *testing.T) {
 		RouteRole:            audience.RouteRole,
 		OwnerSessionHash:     audience.OwnerSessionHash,
 		OwnerUserHash:        audience.OwnerUserHash,
+		OwnerEnvHash:         audience.OwnerEnvHash,
 		SessionChannelIDHash: audience.SessionChannelIDHash,
 		BridgeChannelID:      audience.BridgeChannelID,
 		RuntimeGenerationID:  audience.RuntimeGenerationID,
@@ -717,6 +748,7 @@ func TestConfirmationTokenRequiresBoundMethodAndRequestHash(t *testing.T) {
 		ConfirmationID:         audience.ConfirmationID,
 		OwnerSessionHash:       audience.OwnerSessionHash,
 		OwnerUserHash:          audience.OwnerUserHash,
+		OwnerEnvHash:           audience.OwnerEnvHash,
 		SessionChannelIDHash:   audience.SessionChannelIDHash,
 		BridgeChannelID:        audience.BridgeChannelID,
 		RuntimeGenerationID:    audience.RuntimeGenerationID,
@@ -773,6 +805,7 @@ func TestRuntimeExecutionLeaseBindsRuntimeGenerationAndMethod(t *testing.T) {
 		SurfaceInstanceID:    "surface_runtime",
 		OwnerSessionHash:     "session_hash",
 		OwnerUserHash:        "user_hash",
+		OwnerEnvHash:         "env_hash",
 		SessionChannelIDHash: "channel_hash",
 		BridgeChannelID:      "bridge_runtime",
 		RuntimeInstanceID:    "runtime_1",
@@ -795,7 +828,7 @@ func TestRuntimeExecutionLeaseBindsRuntimeGenerationAndMethod(t *testing.T) {
 	if err != nil {
 		t.Fatalf("MintRuntimeExecutionLease() error = %v", err)
 	}
-	if result.LeaseToken == "" || result.LeaseID == "" || result.LeaseNonce == "" || result.RuntimeGenerationID != "runtime_gen_1" {
+	if result.LeaseID == "" || result.LeaseNonce == "" || result.RuntimeGenerationID != "runtime_gen_1" {
 		t.Fatalf("runtime lease result mismatch: %#v", result)
 	}
 	if !strings.HasPrefix(result.LeaseID, "lease_") || !strings.HasPrefix(result.TokenID, "rel_") || result.TokenID == result.LeaseID {
@@ -807,6 +840,7 @@ func TestRuntimeExecutionLeaseBindsRuntimeGenerationAndMethod(t *testing.T) {
 		result.SurfaceInstanceID != "surface_runtime" ||
 		result.OwnerSessionHash != "session_hash" ||
 		result.OwnerUserHash != "user_hash" ||
+		result.OwnerEnvHash != "env_hash" ||
 		result.SessionChannelIDHash != "channel_hash" ||
 		result.BridgeChannelID != "bridge_runtime" ||
 		result.RuntimeInstanceID != "runtime_1" ||
@@ -828,64 +862,28 @@ func TestRuntimeExecutionLeaseBindsRuntimeGenerationAndMethod(t *testing.T) {
 		t.Fatalf("runtime lease metadata mismatch: %#v", result)
 	}
 
-	managerRecordAudience := Audience{
-		PluginID:             "com.example.worker",
-		PluginInstanceID:     "plugini_test",
-		PluginVersion:        "1.2.3",
-		ActiveFingerprint:    "sha256:package",
-		SurfaceInstanceID:    "surface_runtime",
-		OwnerSessionHash:     "session_hash",
-		OwnerUserHash:        "user_hash",
-		SessionChannelIDHash: "channel_hash",
-		BridgeChannelID:      "bridge_runtime",
-		RuntimeInstanceID:    "runtime_1",
-		RuntimeGenerationID:  "runtime_gen_1",
-		RuntimeShardID:       "runtime_shard_a",
-		IPCChannelID:         "ipc_1",
-		ConnectionNonce:      "connection_nonce_1234567890",
-		AuditCorrelationID:   "audit_worker_echo",
-		Method:               "worker.echo",
-	}
-	record, err := service.tokens.Validate(ValidateRequest{
-		Kind:     TokenKindRuntimeExecutionLease,
-		Token:    result.LeaseToken,
-		Audience: managerRecordAudience,
-		Revision: revision,
-		Now:      now.Add(time.Second),
-	})
-	if err != nil {
-		t.Fatalf("Validate(runtime lease) error = %v", err)
-	}
-	if record.Use != TokenUseReusable {
-		t.Fatalf("runtime lease use = %s, want %s", record.Use, TokenUseReusable)
-	}
-	if record.Nonce != result.LeaseNonce {
-		t.Fatalf("runtime lease nonce = %q, want minted nonce %q", result.LeaseNonce, record.Nonce)
-	}
-
-	wrongAudience := managerRecordAudience
-	wrongAudience.Method = "worker.other"
-	if _, err := service.tokens.Validate(ValidateRequest{
-		Kind:     TokenKindRuntimeExecutionLease,
-		Token:    result.LeaseToken,
-		Audience: wrongAudience,
-		Revision: revision,
-		Now:      now.Add(2 * time.Second),
-	}); !errors.Is(err, ErrTokenAudience) {
-		t.Fatalf("Validate(runtime lease wrong method) error = %v, want %v", err, ErrTokenAudience)
-	}
 }
 
 func TestRuntimeExecutionLeaseRequiresGenerationAndMethod(t *testing.T) {
 	service := NewSurfaceTokenService(nil, SurfaceTokenOptions{})
 	req := MintRuntimeExecutionLeaseRequest{
-		PluginInstanceID:   "plugini_test",
-		ActiveFingerprint:  "sha256:package",
-		Method:             "worker.echo",
-		Execution:          "sync",
-		AuditCorrelationID: "audit_runtime_required",
-		Revision:           testRevision(8),
-		Now:                testNow(),
+		PluginInstanceID:       "plugini_test",
+		PluginID:               "com.example.worker",
+		PluginVersion:          "1.2.3",
+		ActiveFingerprint:      "sha256:package",
+		OwnerSessionHash:       "session_hash",
+		OwnerUserHash:          "user_hash",
+		OwnerEnvHash:           "env_hash",
+		SessionChannelIDHash:   "channel_hash",
+		RuntimeShardID:         "runtime_shard_a",
+		Method:                 "worker.echo",
+		Effect:                 "read",
+		Execution:              "sync",
+		AuditCorrelationID:     "audit_runtime_required",
+		TargetDescriptorHashes: []string{"worker:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+		Limits:                 RuntimeExecutionLeaseLimits{MemoryBytes: 65536},
+		Revision:               testRevision(8),
+		Now:                    testNow(),
 	}
 	if _, err := service.MintRuntimeExecutionLease(req); !errors.Is(err, ErrMissingTokenAudience) {
 		t.Fatalf("MintRuntimeExecutionLease() missing generation error = %v, want %v", err, ErrMissingTokenAudience)
@@ -904,18 +902,28 @@ func TestRuntimeExecutionLeaseTTLIsClamped(t *testing.T) {
 	service := NewSurfaceTokenService(nil, SurfaceTokenOptions{})
 	now := testNow()
 	result, err := service.MintRuntimeExecutionLease(MintRuntimeExecutionLeaseRequest{
-		PluginInstanceID:    "plugini_test",
-		ActiveFingerprint:   "sha256:package",
-		RuntimeInstanceID:   "runtime_1",
-		RuntimeGenerationID: "runtime_gen_1",
-		IPCChannelID:        "ipc_1",
-		ConnectionNonce:     "connection_nonce_1234567890",
-		Method:              "worker.echo",
-		Execution:           "sync",
-		AuditCorrelationID:  "audit_runtime_ttl",
-		Revision:            testRevision(8),
-		Now:                 now,
-		ExpiresAt:           now.Add(time.Hour),
+		PluginInstanceID:       "plugini_test",
+		PluginID:               "com.example.worker",
+		PluginVersion:          "1.2.3",
+		ActiveFingerprint:      "sha256:package",
+		OwnerSessionHash:       "session_hash",
+		OwnerUserHash:          "user_hash",
+		OwnerEnvHash:           "env_hash",
+		SessionChannelIDHash:   "channel_hash",
+		RuntimeInstanceID:      "runtime_1",
+		RuntimeGenerationID:    "runtime_gen_1",
+		RuntimeShardID:         "runtime_shard_a",
+		IPCChannelID:           "ipc_1",
+		ConnectionNonce:        "connection_nonce_1234567890",
+		Method:                 "worker.echo",
+		Effect:                 "read",
+		Execution:              "sync",
+		AuditCorrelationID:     "audit_runtime_ttl",
+		TargetDescriptorHashes: []string{"worker:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+		Limits:                 RuntimeExecutionLeaseLimits{MemoryBytes: 65536},
+		Revision:               testRevision(8),
+		Now:                    now,
+		ExpiresAt:              now.Add(time.Hour),
 	})
 	if err != nil {
 		t.Fatalf("MintRuntimeExecutionLease() error = %v", err)
@@ -1071,7 +1079,7 @@ func TestHandleGrantRevisionMismatchAndTTLClamp(t *testing.T) {
 	}
 }
 
-func TestStreamTicketBindsStreamDirectionAndConsumesOnce(t *testing.T) {
+func TestStreamTicketBindsStreamDirectionAndRemainsReusable(t *testing.T) {
 	service := NewSurfaceTokenService(nil, SurfaceTokenOptions{})
 	now := testNow()
 	audience := testSurfaceAudience("bridge_1")
@@ -1092,6 +1100,7 @@ func TestStreamTicketBindsStreamDirectionAndConsumesOnce(t *testing.T) {
 		RouteRole:            audience.RouteRole,
 		OwnerSessionHash:     audience.OwnerSessionHash,
 		OwnerUserHash:        audience.OwnerUserHash,
+		OwnerEnvHash:         audience.OwnerEnvHash,
 		SessionChannelIDHash: audience.SessionChannelIDHash,
 		BridgeChannelID:      audience.BridgeChannelID,
 		RuntimeGenerationID:  audience.RuntimeGenerationID,
@@ -1132,8 +1141,8 @@ func TestStreamTicketBindsStreamDirectionAndConsumesOnce(t *testing.T) {
 		Audience:     audience,
 		Revision:     testRevision(11),
 		Now:          now.Add(3 * time.Second),
-	}); !errors.Is(err, ErrTokenReplay) {
-		t.Fatalf("ValidateStreamTicket() replay error = %v, want %v", err, ErrTokenReplay)
+	}); err != nil {
+		t.Fatalf("ValidateStreamTicket(reuse) error = %v", err)
 	}
 }
 
@@ -1159,6 +1168,7 @@ func TestStreamTicketRejectsExpiredAndAudienceMismatches(t *testing.T) {
 		RouteRole:            audience.RouteRole,
 		OwnerSessionHash:     audience.OwnerSessionHash,
 		OwnerUserHash:        audience.OwnerUserHash,
+		OwnerEnvHash:         audience.OwnerEnvHash,
 		SessionChannelIDHash: audience.SessionChannelIDHash,
 		BridgeChannelID:      audience.BridgeChannelID,
 		RuntimeGenerationID:  audience.RuntimeGenerationID,
@@ -1216,6 +1226,7 @@ func TestStreamTicketRejectsExpiredAndAudienceMismatches(t *testing.T) {
 				RouteRole:            audience.RouteRole,
 				OwnerSessionHash:     audience.OwnerSessionHash,
 				OwnerUserHash:        audience.OwnerUserHash,
+				OwnerEnvHash:         audience.OwnerEnvHash,
 				SessionChannelIDHash: audience.SessionChannelIDHash,
 				BridgeChannelID:      audience.BridgeChannelID,
 				RuntimeGenerationID:  audience.RuntimeGenerationID,
@@ -1252,6 +1263,7 @@ func TestStreamTicketRequiresStreamDirectionAndMethod(t *testing.T) {
 		EntryPath:            audience.EntryPath,
 		OwnerSessionHash:     audience.OwnerSessionHash,
 		OwnerUserHash:        audience.OwnerUserHash,
+		OwnerEnvHash:         audience.OwnerEnvHash,
 		SessionChannelIDHash: audience.SessionChannelIDHash,
 		BridgeChannelID:      audience.BridgeChannelID,
 		StreamID:             "stream_logs_1",
@@ -1314,6 +1326,7 @@ func markTestSurfacePrepared(t *testing.T, service *SurfaceTokenService, bootstr
 		BridgeNonce:          bootstrap.BridgeNonce,
 		OwnerSessionHash:     bootstrap.OwnerSessionHash,
 		OwnerUserHash:        bootstrap.OwnerUserHash,
+		OwnerEnvHash:         bootstrap.OwnerEnvHash,
 		SessionChannelIDHash: bootstrap.SessionChannelIDHash,
 		Now:                  now,
 	}); err != nil {
@@ -1335,6 +1348,7 @@ func testOpenSurfaceRequest(now time.Time) OpenSurfaceRequest {
 		RuntimeGenerationID:  "runtime_gen_1",
 		OwnerSessionHash:     "sess_hash",
 		OwnerUserHash:        "user_hash",
+		OwnerEnvHash:         "env_hash",
 		SessionChannelIDHash: "channel_hash",
 		Revision:             testRevision(4),
 		Now:                  now,
@@ -1349,7 +1363,7 @@ func handshakeFromBootstrap(bootstrap SurfaceBootstrap) Handshake {
 		ActiveFingerprint:  bootstrap.ActiveFingerprint,
 		BridgeNonce:        bootstrap.BridgeNonce,
 		AssetSessionNonce:  bootstrap.AssetSessionNonce,
-		PluginStateVersion: bootstrap.PluginStateVersion,
+		ManagementRevision: bootstrap.ManagementRevision,
 		RevokeEpoch:        bootstrap.RevokeEpoch,
 		UIProtocolVersion:  "plugin-ui-v4",
 	}
@@ -1361,6 +1375,7 @@ func exchangeAssetTicketRequest(bootstrap SurfaceBootstrap, now time.Time) Excha
 		AssetTicket:          bootstrap.AssetTicket,
 		OwnerSessionHash:     bootstrap.OwnerSessionHash,
 		OwnerUserHash:        bootstrap.OwnerUserHash,
+		OwnerEnvHash:         bootstrap.OwnerEnvHash,
 		SessionChannelIDHash: bootstrap.SessionChannelIDHash,
 		Now:                  now,
 	}
@@ -1386,6 +1401,7 @@ func surfaceAudienceFromBootstrap(bootstrap SurfaceBootstrap, bridgeChannelID st
 		RouteRole:            "trusted_parent",
 		OwnerSessionHash:     bootstrap.OwnerSessionHash,
 		OwnerUserHash:        bootstrap.OwnerUserHash,
+		OwnerEnvHash:         bootstrap.OwnerEnvHash,
 		SessionChannelIDHash: bootstrap.SessionChannelIDHash,
 		BridgeChannelID:      bridgeChannelID,
 		RuntimeGenerationID:  bootstrap.RuntimeGenerationID,

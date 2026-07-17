@@ -10,10 +10,13 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -22,25 +25,30 @@ import (
 	"github.com/floegence/redevplugin/pkg/bridge"
 	"github.com/floegence/redevplugin/pkg/capability"
 	"github.com/floegence/redevplugin/pkg/capabilitycontract"
+	"github.com/floegence/redevplugin/pkg/connectivity"
 	"github.com/floegence/redevplugin/pkg/host"
+	"github.com/floegence/redevplugin/pkg/installstage"
 	"github.com/floegence/redevplugin/pkg/manifest"
+	"github.com/floegence/redevplugin/pkg/mutation"
+	"github.com/floegence/redevplugin/pkg/observability"
 	"github.com/floegence/redevplugin/pkg/operation"
 	"github.com/floegence/redevplugin/pkg/permissions"
+	"github.com/floegence/redevplugin/pkg/plugindata"
 	"github.com/floegence/redevplugin/pkg/pluginpkg"
 	"github.com/floegence/redevplugin/pkg/registry"
-	"github.com/floegence/redevplugin/pkg/retaineddata"
 	"github.com/floegence/redevplugin/pkg/runtimeclient"
+	"github.com/floegence/redevplugin/pkg/secrets"
 	"github.com/floegence/redevplugin/pkg/security"
 	"github.com/floegence/redevplugin/pkg/sessionctx"
-	"github.com/floegence/redevplugin/pkg/storage"
+	"github.com/floegence/redevplugin/pkg/stream"
 	"github.com/floegence/redevplugin/pkg/websecurity"
 )
 
-func mustPluginStateVersion(t testing.TB, h *host.Host, pluginInstanceID string) uint64 {
+func mustManagementRevision(t testing.TB, h *host.Host, pluginInstanceID string) uint64 {
 	t.Helper()
-	records, err := h.ListPlugins(context.Background())
+	records, err := h.ListPlugins(httpTestContext())
 	if err != nil {
-		t.Fatalf("ListPlugins() for state version: %v", err)
+		t.Fatalf("ListPlugins() for management revision: %v", err)
 	}
 	for _, record := range records {
 		if record.PluginInstanceID == pluginInstanceID {
@@ -50,8 +58,219 @@ func mustPluginStateVersion(t testing.TB, h *host.Host, pluginInstanceID string)
 			return record.ManagementRevision
 		}
 	}
-	t.Fatalf("plugin %q not found while resolving state version", pluginInstanceID)
+	t.Fatalf("plugin %q not found while resolving management revision", pluginInstanceID)
 	return 0
+}
+
+func mustAuthorizationRevisions(t testing.TB, h *host.Host, pluginInstanceID string) registry.AuthorizationRevisions {
+	t.Helper()
+	records, err := h.ListPlugins(httpTestContext())
+	if err != nil {
+		t.Fatalf("ListPlugins() for authorization revisions: %v", err)
+	}
+	for _, record := range records {
+		if record.PluginInstanceID == pluginInstanceID {
+			return registry.AuthorizationRevisionsFromRecord(record)
+		}
+	}
+	t.Fatalf("plugin %q not found while resolving authorization revisions", pluginInstanceID)
+	return registry.AuthorizationRevisions{}
+}
+
+func TestErrorResponseEncodesEmptyDetailsObject(t *testing.T) {
+	payload, err := json.Marshal(errorResponse{
+		OK:      false,
+		Code:    security.ErrRuntimeUnavailable,
+		Message: "plugin runtime is unavailable",
+	})
+	if err != nil {
+		t.Fatalf("MarshalJSON() error = %v", err)
+	}
+
+	var envelope struct {
+		Error struct {
+			Details map[string]any `json:"details"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(payload, &envelope); err != nil {
+		t.Fatalf("Unmarshal() error = %v payload = %s", err, payload)
+	}
+	if envelope.Error.Details == nil || len(envelope.Error.Details) != 0 {
+		t.Fatalf("error.details = %#v, want empty object payload = %s", envelope.Error.Details, payload)
+	}
+}
+
+func TestWriteJSONRejectsHTTPStatusEnvelopeMismatch(t *testing.T) {
+	tests := []struct {
+		name    string
+		status  int
+		payload any
+	}{
+		{name: "success with error status", status: http.StatusInternalServerError, payload: successResponse{OK: true, Data: map[string]bool{"ready": true}}},
+		{name: "error with success status", status: http.StatusOK, payload: errorResponse{OK: false, Code: security.ErrRuntimeUnavailable, Message: "runtime unavailable"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			recorder := httptest.NewRecorder()
+			writeJSON(recorder, tt.status, tt.payload)
+			if recorder.Code != http.StatusInternalServerError {
+				t.Fatalf("status = %d body = %s", recorder.Code, recorder.Body.String())
+			}
+			var envelope struct {
+				OK    bool `json:"ok"`
+				Error struct {
+					Code string `json:"code"`
+				} `json:"error"`
+			}
+			if err := json.Unmarshal(recorder.Body.Bytes(), &envelope); err != nil {
+				t.Fatal(err)
+			}
+			if envelope.OK || envelope.Error.Code != string(security.ErrContractMismatch) {
+				t.Fatalf("envelope = %#v", envelope)
+			}
+		})
+	}
+}
+
+func TestErrorResponseRejectsMismatchedTypedDetails(t *testing.T) {
+	zeroValuesRevision := uint64(0)
+	tests := []errorResponse{
+		{
+			OK:      false,
+			Code:    security.ErrorCode("PLUGIN_UNKNOWN"),
+			Message: "unknown error",
+		},
+		{
+			OK:      false,
+			Code:    security.ErrManagementRevisionMismatch,
+			Message: "management revision changed",
+		},
+		{
+			OK:      false,
+			Code:    security.ErrCapabilityError,
+			Message: "capability failed",
+			Details: errorDetails{
+				PluginInstanceID:           "plugini_test",
+				ExpectedManagementRevision: 1,
+				ActualManagementRevision:   2,
+			},
+		},
+		{
+			OK:      false,
+			Code:    security.ErrBindingRevisionMismatch,
+			Message: "binding changed",
+		},
+		{
+			OK:      false,
+			Code:    security.ErrValuesRevisionMismatch,
+			Message: "settings changed",
+		},
+		{
+			OK:      false,
+			Code:    security.ErrValuesRevisionMismatch,
+			Message: "settings changed",
+			Details: errorDetails{PluginInstanceID: "plugini_test", ExpectedValuesRevision: &zeroValuesRevision, ActualValuesRevision: &zeroValuesRevision},
+		},
+		{
+			OK:      false,
+			Code:    security.ErrRuntimeUnavailable,
+			Message: "runtime unavailable",
+			Details: errorDetails{Reason: "json_depth"},
+		},
+		{
+			OK:      false,
+			Code:    security.ErrJSONLimitExceeded,
+			Message: "JSON limit exceeded",
+			Details: errorDetails{Reason: "manifest_field"},
+		},
+		{
+			OK:      true,
+			Code:    security.ErrRuntimeUnavailable,
+			Message: "runtime unavailable",
+		},
+		{
+			OK:      false,
+			Code:    security.ErrCapabilityError,
+			Message: "capability failed",
+			Details: errorDetails{CapabilityID: "capability", CapabilityVersion: "1.0.0", DetailSchemaSHA256: "not-a-hash", BusinessErrorCode: "lowercase"},
+		},
+		{
+			OK:      false,
+			Code:    security.ErrWorkerError,
+			Message: "worker failed",
+			Details: errorDetails{WorkerErrorCode: "lowercase", WorkerErrorMessage: strings.Repeat("x", 4097), WorkerErrorOrigin: runtimeclient.WorkerErrorOriginPlugin},
+		},
+	}
+	for _, response := range tests {
+		if _, err := json.Marshal(response); err == nil {
+			t.Fatalf("json.Marshal(%s) accepted mismatched details", response.Code)
+		}
+	}
+
+	if _, err := json.Marshal(errorResponse{
+		OK:      false,
+		Code:    security.ErrManagementRevisionMismatch,
+		Message: "management revision changed",
+		Details: errorDetails{
+			PluginInstanceID:           "plugini_test",
+			ExpectedManagementRevision: 1,
+			ActualManagementRevision:   2,
+		},
+	}); err != nil {
+		t.Fatalf("json.Marshal(valid management revision details) error = %v", err)
+	}
+
+	if _, err := json.Marshal(errorResponse{
+		OK:      false,
+		Code:    security.ErrBindingRevisionMismatch,
+		Message: "binding changed",
+		Details: errorDetails{PluginInstanceID: "plugini_test", ExpectedBindingRevision: 1, ActualBindingRevision: 2},
+	}); err != nil {
+		t.Fatalf("json.Marshal(valid binding revision details) error = %v", err)
+	}
+	expectedValuesRevision := uint64(1)
+	actualValuesRevision := uint64(2)
+	if _, err := json.Marshal(errorResponse{
+		OK:      false,
+		Code:    security.ErrValuesRevisionMismatch,
+		Message: "settings changed",
+		Details: errorDetails{PluginInstanceID: "plugini_test", ExpectedValuesRevision: &expectedValuesRevision, ActualValuesRevision: &actualValuesRevision},
+	}); err != nil {
+		t.Fatalf("json.Marshal(valid settings values revision details) error = %v", err)
+	}
+}
+
+func TestDataLifecycleErrorMappingKeepsConflictSemanticsDistinct(t *testing.T) {
+	revisionConflict := &plugindata.BindingRevisionConflictError{
+		PluginInstanceID: "plugini_test",
+		Expected:         3,
+		Actual:           4,
+	}
+	if got := errorCodeForDataLifecycleError(revisionConflict); got != security.ErrBindingRevisionMismatch {
+		t.Fatalf("revision conflict code = %q", got)
+	}
+	if got := httpStatusForDataLifecycleError(revisionConflict); got != http.StatusConflict {
+		t.Fatalf("revision conflict status = %d", got)
+	}
+	if got := bindingRevisionDetails(revisionConflict); got.PluginInstanceID != "plugini_test" || got.ExpectedBindingRevision != 3 || got.ActualBindingRevision != 4 {
+		t.Fatalf("revision conflict details = %#v", got)
+	}
+
+	shapeMismatch := fmt.Errorf("%w: import object shape differs", plugindata.ErrShapeMismatch)
+	if got := errorCodeForDataLifecycleError(shapeMismatch); got != security.ErrInvalidRequest {
+		t.Fatalf("shape mismatch code = %q", got)
+	}
+	if got := httpStatusForDataLifecycleError(shapeMismatch); got != http.StatusBadRequest {
+		t.Fatalf("shape mismatch status = %d", got)
+	}
+
+	internalConflict := fmt.Errorf("%w: destination already exists", plugindata.ErrBindingConflict)
+	if got := errorCodeForDataLifecycleError(internalConflict); got != security.ErrContractMismatch {
+		t.Fatalf("internal binding conflict code = %q", got)
+	}
+	if got := httpStatusForDataLifecycleError(internalConflict); got != http.StatusInternalServerError {
+		t.Fatalf("internal binding conflict status = %d", got)
+	}
 }
 
 func TestRouteSetHasManagementAndSandboxRoutes(t *testing.T) {
@@ -79,10 +298,14 @@ func TestRouteSetHasManagementAndSandboxRoutes(t *testing.T) {
 		"GET /_redevplugin/api/plugins/permissions":                                       false,
 		"POST /_redevplugin/api/plugins/permissions/grant":                                false,
 		"POST /_redevplugin/api/plugins/permissions/revoke":                               false,
-		"GET /_redevplugin/api/plugins/audit":                                             false,
+		"GET /_redevplugin/api/plugins/security-policies":                                 false,
+		"GET /_redevplugin/api/plugins/security-policies/{plugin_instance_id}":            false,
+		"PUT /_redevplugin/api/plugins/security-policies/{plugin_instance_id}":            false,
+		"DELETE /_redevplugin/api/plugins/security-policies/{plugin_instance_id}":         false,
 		"GET /_redevplugin/api/plugins/diagnostics":                                       false,
 		"GET /_redevplugin/api/plugins/runtime/health":                                    false,
 		"POST /_redevplugin/api/plugins/runtime/refresh-enabled":                          false,
+		"POST /_redevplugin/api/plugins/data/export/delete":                               false,
 		"POST /_redevplugin/api/plugins/runtime/start":                                    false,
 		"POST /_redevplugin/api/plugins/runtime/stop":                                     false,
 		"GET /_redevplugin/api/plugins/{plugin_instance_id}/settings":                     false,
@@ -102,21 +325,12 @@ func TestRouteSetHasManagementAndSandboxRoutes(t *testing.T) {
 	}
 }
 
-func TestRouteSetExcludesLocalImportRoutesByDefault(t *testing.T) {
-	for _, route := range RouteSet() {
-		if strings.Contains(route.Path, "/local-import/") {
-			t.Fatalf("default RouteSet() must not expose local-import route: %#v", route)
-		}
-	}
-}
-
-func TestRouteSetWithLocalImportRoutesRequiresExplicitOption(t *testing.T) {
-	routes := RouteSetWithOptions(RouteSetOptions{EnableLocalImportRoutes: true})
+func TestRouteSetIncludesLocalImportRoutes(t *testing.T) {
 	want := map[string]bool{
 		"POST /_redevplugin/api/plugins/local-import/install": false,
 		"POST /_redevplugin/api/plugins/local-import/update":  false,
 	}
-	for _, route := range routes {
+	for _, route := range RouteSet() {
 		key := route.Method + " " + route.Path
 		if _, ok := want[key]; ok {
 			want[key] = true
@@ -124,21 +338,24 @@ func TestRouteSetWithLocalImportRoutesRequiresExplicitOption(t *testing.T) {
 	}
 	for key, found := range want {
 		if !found {
-			t.Fatalf("RouteSetWithOptions(local import) missing %s", key)
+			t.Fatalf("RouteSet() missing %s", key)
 		}
 	}
 }
 
 func TestRouteSetRoutesAreHandled(t *testing.T) {
-	handler := Handler{Host: newHTTPTestHost(t), WebSecurity: allowHTTPTestGuard()}
+	handler := mustNewHandler(t, newHTTPTestHost(t), allowHTTPTestGuard())
 	for _, route := range RouteSet() {
 		t.Run(route.Method+" "+route.Path, func(t *testing.T) {
 			path := samplePathForRoute(route.Path)
 			body := ""
-			if route.Method == http.MethodPost {
+			if route.Method == http.MethodPost || route.Method == http.MethodPut || route.Method == http.MethodPatch || route.Method == http.MethodDelete {
 				body = `{}`
 			}
 			req := httptest.NewRequest(route.Method, path, bytes.NewBufferString(body))
+			if body != "" {
+				req.Header.Set("Content-Type", "application/json")
+			}
 			rec := httptest.NewRecorder()
 			handler.ServeHTTP(rec, req)
 			if rec.Code == http.StatusNotFound {
@@ -148,26 +365,28 @@ func TestRouteSetRoutesAreHandled(t *testing.T) {
 	}
 }
 
-func TestHandlerLocalImportRoutesAreDisabledByDefault(t *testing.T) {
-	for _, path := range []string{
-		"/_redevplugin/api/plugins/local-import/install",
-		"/_redevplugin/api/plugins/local-import/update",
-	} {
-		t.Run(path, func(t *testing.T) {
-			handler := Handler{Host: newHTTPTestHost(t), WebSecurity: allowHTTPTestGuard()}
-			req := httptest.NewRequest(http.MethodPost, path, bytes.NewBufferString(`{}`))
-			rec := httptest.NewRecorder()
-
-			handler.ServeHTTP(rec, req)
-
-			if rec.Code != http.StatusNotFound {
-				t.Fatalf("status = %d, want 404 body = %s", rec.Code, rec.Body.String())
+func TestRequestIsMutationClassifiesPutAndDelete(t *testing.T) {
+	tests := []struct {
+		method string
+		path   string
+		want   bool
+	}{
+		{method: http.MethodGet, path: "/_redevplugin/api/plugins/security-policies", want: false},
+		{method: http.MethodPut, path: "/_redevplugin/api/plugins/security-policies/plugini_test", want: true},
+		{method: http.MethodDelete, path: "/_redevplugin/api/plugins/security-policies/plugini_test", want: true},
+		{method: http.MethodPost, path: "/_redevplugin/api/plugins/surfaces/surface_test/streams/read", want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.method+" "+tt.path, func(t *testing.T) {
+			req := httptest.NewRequest(tt.method, tt.path, nil)
+			if got := requestIsMutation(req); got != tt.want {
+				t.Fatalf("requestIsMutation(%s %s) = %t, want %t", tt.method, tt.path, got, tt.want)
 			}
 		})
 	}
 }
 
-func TestHandlerLocalImportRoutesRequireExplicitEnable(t *testing.T) {
+func TestHandlerLocalImportRoutesAreAlwaysMounted(t *testing.T) {
 	tests := []struct {
 		name string
 		path string
@@ -186,21 +405,21 @@ func TestHandlerLocalImportRoutesRequireExplicitEnable(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			handler := Handler{Host: newHTTPTestHost(t), WebSecurity: allowHTTPTestGuard(), EnableLocalImportRoutes: true}
-			req := httptest.NewRequest(http.MethodPost, tt.path, bytes.NewBufferString(tt.body))
+			handler := mustNewHandler(t, newHTTPTestHost(t), allowHTTPTestGuard())
+			req := newJSONHTTPRequest(http.MethodPost, tt.path, bytes.NewBufferString(tt.body))
 			rec := httptest.NewRecorder()
 
 			handler.ServeHTTP(rec, req)
 
 			if rec.Code == http.StatusNotFound {
-				t.Fatalf("local-import route fell through to 404 when explicitly enabled: body = %s", rec.Body.String())
+				t.Fatalf("local-import route fell through to 404: body = %s", rec.Body.String())
 			}
 		})
 	}
 }
 
 func TestHandlerCompatibilityManifest(t *testing.T) {
-	handler := Handler{Host: newHTTPTestHost(t), WebSecurity: allowHTTPTestGuard()}
+	handler := mustNewHandler(t, newHTTPTestHost(t), allowHTTPTestGuard())
 	got := getJSON[struct {
 		SchemaVersion string `json:"schema_version"`
 		Matrix        struct {
@@ -240,7 +459,7 @@ func TestHandlerCompatibilityManifest(t *testing.T) {
 }
 
 func TestHandlerJSONLimitErrorsExposeReason(t *testing.T) {
-	handler := Handler{Host: newHTTPTestHost(t), WebSecurity: allowHTTPTestGuard()}
+	handler := mustNewHandler(t, newHTTPTestHost(t), allowHTTPTestGuard())
 	deepBody := strings.Repeat("[", defaultJSONMaxDepth) + "0" + strings.Repeat("]", defaultJSONMaxDepth)
 	tests := []struct {
 		name       string
@@ -275,7 +494,7 @@ func TestHandlerJSONLimitErrorsExposeReason(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			req := httptest.NewRequest(http.MethodPost, "/_redevplugin/api/plugins/enable", bytes.NewBufferString(tt.body))
+			req := newJSONHTTPRequest(http.MethodPost, "/_redevplugin/api/plugins/enable", bytes.NewBufferString(tt.body))
 			rec := httptest.NewRecorder()
 
 			handler.ServeHTTP(rec, req)
@@ -283,14 +502,14 @@ func TestHandlerJSONLimitErrorsExposeReason(t *testing.T) {
 			if rec.Code != tt.wantStatus {
 				t.Fatalf("status = %d body = %s", rec.Code, rec.Body.String())
 			}
-			var envelope Envelope
+			var envelope decodedErrorResponse
 			if err := json.Unmarshal(rec.Body.Bytes(), &envelope); err != nil {
 				t.Fatal(err)
 			}
-			if envelope.OK || envelope.ErrorCode != string(security.ErrJSONLimitExceeded) {
+			if envelope.OK || envelope.Code != string(security.ErrJSONLimitExceeded) {
 				t.Fatalf("envelope = %#v body = %s", envelope, rec.Body.String())
 			}
-			if got := envelope.ErrorDetails["reason"]; got != tt.wantReason {
+			if got := envelope.Details["reason"]; got != tt.wantReason {
 				t.Fatalf("error_details.reason = %#v, want %q body = %s", got, tt.wantReason, rec.Body.String())
 			}
 		})
@@ -298,8 +517,8 @@ func TestHandlerJSONLimitErrorsExposeReason(t *testing.T) {
 }
 
 func TestHandlerMalformedJSONRemainsInvalidRequest(t *testing.T) {
-	handler := Handler{Host: newHTTPTestHost(t), WebSecurity: allowHTTPTestGuard()}
-	req := httptest.NewRequest(http.MethodPost, "/_redevplugin/api/plugins/enable", bytes.NewBufferString(`{"plugin_instance_id":`))
+	handler := mustNewHandler(t, newHTTPTestHost(t), allowHTTPTestGuard())
+	req := newJSONHTTPRequest(http.MethodPost, "/_redevplugin/api/plugins/enable", bytes.NewBufferString(`{"plugin_instance_id":`))
 	rec := httptest.NewRecorder()
 
 	handler.ServeHTTP(rec, req)
@@ -307,18 +526,218 @@ func TestHandlerMalformedJSONRemainsInvalidRequest(t *testing.T) {
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d body = %s", rec.Code, rec.Body.String())
 	}
-	var envelope Envelope
+	var envelope decodedErrorResponse
 	if err := json.Unmarshal(rec.Body.Bytes(), &envelope); err != nil {
 		t.Fatal(err)
 	}
-	if envelope.OK || envelope.ErrorCode != string(security.ErrInvalidRequest) || len(envelope.ErrorDetails) != 0 {
+	if envelope.OK || envelope.Code != string(security.ErrInvalidRequest) || len(envelope.Details) != 0 {
 		t.Fatalf("envelope = %#v body = %s", envelope, rec.Body.String())
 	}
 }
 
+func TestHandlerRejectsAmbiguousJSONObjectKeys(t *testing.T) {
+	handler := mustNewHandler(t, newHTTPTestHost(t), allowHTTPTestGuard())
+	tests := []struct {
+		name string
+		path string
+		body string
+	}{
+		{
+			name: "duplicate top-level key",
+			path: "/_redevplugin/api/plugins/enable",
+			body: `{"plugin_instance_id":"plugini_a","plugin_instance_id":"plugini_b","expected_management_revision":1}`,
+		},
+		{
+			name: "case-folded struct field collision",
+			path: "/_redevplugin/api/plugins/enable",
+			body: `{"plugin_instance_id":"plugini_a","PLUGIN_INSTANCE_ID":"plugini_b","expected_management_revision":1}`,
+		},
+		{
+			name: "duplicate nested params key",
+			path: "/_redevplugin/api/plugins/confirmations/prepare",
+			body: `{"plugin_instance_id":"plugini_a","surface_instance_id":"surface_a","bridge_channel_id":"bridge_a","plugin_gateway_token":"token_a","method":"example.run","params":{"target":"one","target":"two"}}`,
+		},
+		{
+			name: "duplicate key in array object",
+			path: "/_redevplugin/api/plugins/confirmations/prepare",
+			body: `{"plugin_instance_id":"plugini_a","surface_instance_id":"surface_a","bridge_channel_id":"bridge_a","plugin_gateway_token":"token_a","method":"example.run","params":{"items":[{"target":"one","target":"two"}]}}`,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			req := newJSONHTTPRequest(http.MethodPost, test.path, strings.NewReader(test.body))
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d body = %s", rec.Code, rec.Body.String())
+			}
+			var envelope decodedErrorResponse
+			if err := json.Unmarshal(rec.Body.Bytes(), &envelope); err != nil {
+				t.Fatal(err)
+			}
+			if envelope.OK || envelope.Code != string(security.ErrInvalidRequest) {
+				t.Fatalf("envelope = %#v body = %s", envelope, rec.Body.String())
+			}
+		})
+	}
+}
+
+func TestDecodeJSONPreservesCaseSensitiveDynamicMapKeys(t *testing.T) {
+	req := newJSONHTTPRequest(http.MethodPost, "/", strings.NewReader(`{"method":"example.run","params":{"Name":"upper","name":"lower"}}`))
+	var decoded rpcRequest
+	if err := decodeJSON(req, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if decoded.Params["Name"] != "upper" || decoded.Params["name"] != "lower" {
+		t.Fatalf("params = %#v", decoded.Params)
+	}
+}
+
+func TestHandlerRequiresApplicationJSONForJSONBodies(t *testing.T) {
+	handler := mustNewHandler(t, newHTTPTestHost(t), allowHTTPTestGuard())
+	tests := []struct {
+		name         string
+		contentTypes []string
+		wantStatus   int
+	}{
+		{name: "application json", contentTypes: []string{"application/json"}, wantStatus: http.StatusOK},
+		{name: "utf-8 charset", contentTypes: []string{"application/json; charset=UTF-8"}, wantStatus: http.StatusOK},
+		{name: "missing", wantStatus: http.StatusBadRequest},
+		{name: "text plain", contentTypes: []string{"text/plain"}, wantStatus: http.StatusBadRequest},
+		{name: "form", contentTypes: []string{"application/x-www-form-urlencoded"}, wantStatus: http.StatusBadRequest},
+		{name: "unsupported charset", contentTypes: []string{"application/json; charset=iso-8859-1"}, wantStatus: http.StatusBadRequest},
+		{name: "unsupported parameter", contentTypes: []string{"application/json; profile=example"}, wantStatus: http.StatusBadRequest},
+		{name: "duplicate header", contentTypes: []string{"application/json", "text/plain"}, wantStatus: http.StatusBadRequest},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, "/_redevplugin/api/plugins/retained-data/cleanup-expired", strings.NewReader(`{}`))
+			for _, contentType := range test.contentTypes {
+				req.Header.Add("Content-Type", contentType)
+			}
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+			if rec.Code != test.wantStatus {
+				t.Fatalf("status = %d, want %d body = %s", rec.Code, test.wantStatus, rec.Body.String())
+			}
+			if test.wantStatus == http.StatusBadRequest {
+				var envelope decodedErrorResponse
+				if err := json.Unmarshal(rec.Body.Bytes(), &envelope); err != nil {
+					t.Fatal(err)
+				}
+				if envelope.OK || envelope.Code != string(security.ErrInvalidRequest) {
+					t.Fatalf("envelope = %#v body = %s", envelope, rec.Body.String())
+				}
+			}
+		})
+	}
+}
+
+func TestHandlerRuntimeEmptyRequestsRequireClosedJSON(t *testing.T) {
+	for _, path := range []string{
+		"/_redevplugin/api/plugins/runtime/stop",
+		"/_redevplugin/api/plugins/runtime/refresh-enabled",
+	} {
+		t.Run(path, func(t *testing.T) {
+			invalidRequests := []struct {
+				name        string
+				body        string
+				contentType string
+			}{
+				{name: "empty body", contentType: "application/json"},
+				{name: "null", body: `null`, contentType: "application/json"},
+				{name: "array", body: `[]`, contentType: "application/json"},
+				{name: "unknown field", body: `{"unexpected":true}`, contentType: "application/json"},
+				{name: "duplicate field", body: `{"value":1,"value":2}`, contentType: "application/json"},
+				{name: "trailing value", body: `{} {}`, contentType: "application/json"},
+				{name: "missing content type", body: `{}`},
+				{name: "wrong content type", body: `{}`, contentType: "text/plain"},
+			}
+			for _, test := range invalidRequests {
+				t.Run(test.name, func(t *testing.T) {
+					handler := mustNewHandler(t, newHTTPTestHost(t), allowHTTPTestGuard())
+					req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(test.body))
+					if test.contentType != "" {
+						req.Header.Set("Content-Type", test.contentType)
+					}
+					rec := httptest.NewRecorder()
+					handler.ServeHTTP(rec, req)
+					if rec.Code != http.StatusBadRequest {
+						t.Fatalf("status = %d, want %d response = %s", rec.Code, http.StatusBadRequest, rec.Body.String())
+					}
+					var envelope decodedErrorResponse
+					if err := json.Unmarshal(rec.Body.Bytes(), &envelope); err != nil {
+						t.Fatal(err)
+					}
+					if envelope.OK || envelope.Code != string(security.ErrInvalidRequest) || envelope.MutationOutcome != string(mutation.OutcomeNotCommitted) {
+						t.Fatalf("invalid empty request envelope = %#v body = %s", envelope, rec.Body.String())
+					}
+				})
+			}
+		})
+	}
+}
+
+func TestHandlerRejectsQueryParametersOutsideRouteContract(t *testing.T) {
+	handler := mustNewHandler(t, newHTTPTestHost(t), allowHTTPTestGuard())
+	for _, route := range routes {
+		route := route
+		t.Run(route.Method+" "+route.Path, func(t *testing.T) {
+			path := strings.NewReplacer(
+				"{surface_instance_id}", "surface_test",
+				"{operation_id}", "operation_test",
+				"{plugin_instance_id}", "plugin_test",
+			).Replace(route.Path)
+			req := httptest.NewRequest(route.Method, path+"?unknown=value", nil)
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want %d response = %s", rec.Code, http.StatusBadRequest, rec.Body.String())
+			}
+			var envelope decodedErrorResponse
+			if err := json.Unmarshal(rec.Body.Bytes(), &envelope); err != nil {
+				t.Fatal(err)
+			}
+			wantOutcome := ""
+			if requestIsMutation(req) {
+				wantOutcome = string(mutation.OutcomeNotCommitted)
+			}
+			if envelope.OK || envelope.Code != string(security.ErrInvalidRequest) || envelope.MutationOutcome != wantOutcome {
+				t.Fatalf("unknown query envelope = %#v, want mutation_outcome %q", envelope, wantOutcome)
+			}
+		})
+	}
+}
+
+func TestHandlerRejectsDuplicateQueryParameters(t *testing.T) {
+	handler := mustNewHandler(t, newHTTPTestHost(t), allowHTTPTestGuard())
+	for _, route := range routes {
+		if len(route.queryKeys) == 0 {
+			continue
+		}
+		route := route
+		t.Run(route.Method+" "+route.Path, func(t *testing.T) {
+			key := route.queryKeys[0]
+			req := httptest.NewRequest(route.Method, route.Path+"?"+key+"=first&"+key+"=second", nil)
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want %d response = %s", rec.Code, http.StatusBadRequest, rec.Body.String())
+			}
+			var envelope decodedErrorResponse
+			if err := json.Unmarshal(rec.Body.Bytes(), &envelope); err != nil {
+				t.Fatal(err)
+			}
+			if envelope.OK || envelope.Code != string(security.ErrInvalidRequest) || envelope.MutationOutcome != "" {
+				t.Fatalf("duplicate query envelope = %#v", envelope)
+			}
+		})
+	}
+}
+
 func TestHandlerWebSecurityRejectsDeniedOrigin(t *testing.T) {
-	guard := &httpTestWebSecurityGuard{decision: websecurity.OriginDeny}
-	handler := Handler{Host: newHTTPTestHost(t), WebSecurity: guard}
+	guard := &httpTestWebSecurityGuard{decision: "deny"}
+	handler := mustNewHandler(t, newHTTPTestHost(t), guard)
 	req := httptest.NewRequest(http.MethodGet, "/_redevplugin/api/plugins/catalog", nil)
 	rec := httptest.NewRecorder()
 
@@ -336,8 +755,8 @@ func TestHandlerWebSecurityRejectsDeniedOrigin(t *testing.T) {
 }
 
 func TestHandlerWebSecurityRejectsHostSpecificOriginDecision(t *testing.T) {
-	guard := &httpTestWebSecurityGuard{decision: websecurity.OriginDecision("plugin_sandbox")}
-	handler := Handler{Host: newHTTPTestHost(t), WebSecurity: guard, EnableLocalImportRoutes: true}
+	guard := &httpTestWebSecurityGuard{decision: "plugin_sandbox"}
+	handler := mustNewHandler(t, newHTTPTestHost(t), guard)
 	for _, path := range []string{
 		"/_redevplugin/api/plugins/install-release-ref",
 		"/_redevplugin/api/plugins/local-import/install",
@@ -345,7 +764,7 @@ func TestHandlerWebSecurityRejectsHostSpecificOriginDecision(t *testing.T) {
 		"/_redevplugin/api/plugins/surfaces/surface_test/prepare",
 	} {
 		t.Run(path, func(t *testing.T) {
-			req := httptest.NewRequest(http.MethodPost, path, bytes.NewBufferString(`{}`))
+			req := newJSONHTTPRequest(http.MethodPost, path, bytes.NewBufferString(`{}`))
 			req.Header.Set("Origin", "https://plugin.sandbox.example")
 			rec := httptest.NewRecorder()
 
@@ -362,20 +781,14 @@ func TestHandlerWebSecurityRejectsHostSpecificOriginDecision(t *testing.T) {
 }
 
 func TestHandlerWebSecurityFailsClosedWithoutGuard(t *testing.T) {
-	handler := Handler{Host: newHTTPTestHost(t)}
-	req := httptest.NewRequest(http.MethodGet, "/_redevplugin/api/plugins/catalog", nil)
-	rec := httptest.NewRecorder()
-
-	handler.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusServiceUnavailable {
-		t.Fatalf("status = %d, want 503 body = %s", rec.Code, rec.Body.String())
+	if _, err := NewHandler(Dependencies{Host: newHTTPTestHost(t)}); err == nil {
+		t.Fatal("NewHandler() expected missing guard error")
 	}
 }
 
 func TestHandlerWebSecurityRejectsIncompleteTrustedScope(t *testing.T) {
-	guard := &httpTestWebSecurityGuard{scope: websecurity.RequestScope{OwnerSessionHash: "session_hash"}}
-	handler := Handler{Host: newHTTPTestHost(t), WebSecurity: guard}
+	guard := &httpTestWebSecurityGuard{scope: sessionctx.Context{OwnerSessionHash: "session_hash"}}
+	handler := mustNewHandler(t, newHTTPTestHost(t), guard)
 	req := httptest.NewRequest(http.MethodGet, "/_redevplugin/api/plugins/catalog", nil)
 	rec := httptest.NewRecorder()
 
@@ -387,9 +800,9 @@ func TestHandlerWebSecurityRejectsIncompleteTrustedScope(t *testing.T) {
 }
 
 func TestHandlerWebSecurityRequiresCSRFForUnsafeProxyRoutes(t *testing.T) {
-	guard := &httpTestWebSecurityGuard{decision: websecurity.OriginTrustedParent, csrfErr: websecurity.ErrCSRFRequired}
-	handler := Handler{Host: newHTTPTestHost(t), WebSecurity: guard}
-	req := httptest.NewRequest(http.MethodPost, "/_redevplugin/api/plugins/enable", bytes.NewBufferString(`{}`))
+	guard := &httpTestWebSecurityGuard{decision: "trusted", csrfErr: websecurity.ErrCSRFRequired}
+	handler := mustNewHandler(t, newHTTPTestHost(t), guard)
+	req := newJSONHTTPRequest(http.MethodPost, "/_redevplugin/api/plugins/enable", bytes.NewBufferString(`{}`))
 	rec := httptest.NewRecorder()
 
 	handler.ServeHTTP(rec, req)
@@ -397,12 +810,12 @@ func TestHandlerWebSecurityRequiresCSRFForUnsafeProxyRoutes(t *testing.T) {
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("missing csrf status = %d body = %s", rec.Code, rec.Body.String())
 	}
-	var envelope Envelope
+	var envelope decodedErrorResponse
 	if err := json.Unmarshal(rec.Body.Bytes(), &envelope); err != nil {
 		t.Fatal(err)
 	}
-	if envelope.ErrorCode != string(security.ErrCSRFRequired) {
-		t.Fatalf("csrf error_code = %q, want %q", envelope.ErrorCode, security.ErrCSRFRequired)
+	if envelope.Code != string(security.ErrCSRFRequired) {
+		t.Fatalf("csrf error_code = %q, want %q", envelope.Code, security.ErrCSRFRequired)
 	}
 	if guard.evaluateCount != 1 || guard.csrfCount != 1 || guard.lastSessionHash != "session_hash" {
 		t.Fatalf("guard calls = evaluate:%d csrf:%d session:%q", guard.evaluateCount, guard.csrfCount, guard.lastSessionHash)
@@ -410,8 +823,8 @@ func TestHandlerWebSecurityRequiresCSRFForUnsafeProxyRoutes(t *testing.T) {
 }
 
 func TestHandlerWebSecurityAllowsSafeProxyRouteWithoutCSRF(t *testing.T) {
-	guard := &httpTestWebSecurityGuard{decision: websecurity.OriginTrustedParent, csrfErr: websecurity.ErrCSRFRequired}
-	handler := Handler{Host: newHTTPTestHost(t), WebSecurity: guard}
+	guard := &httpTestWebSecurityGuard{decision: "trusted", csrfErr: websecurity.ErrCSRFRequired}
+	handler := mustNewHandler(t, newHTTPTestHost(t), guard)
 	req := httptest.NewRequest(http.MethodGet, "/_redevplugin/api/plugins/catalog", nil)
 	rec := httptest.NewRecorder()
 
@@ -428,13 +841,16 @@ func TestHandlerWebSecurityAllowsSafeProxyRouteWithoutCSRF(t *testing.T) {
 func TestHandlerWebSecurityCSRFClassificationCoversRouteSet(t *testing.T) {
 	for _, route := range RouteSet() {
 		t.Run(route.Method+" "+route.Path, func(t *testing.T) {
-			guard := &httpTestWebSecurityGuard{decision: websecurity.OriginTrustedParent}
-			handler := Handler{Host: newHTTPTestHost(t), WebSecurity: guard}
+			guard := &httpTestWebSecurityGuard{decision: "trusted"}
+			handler := mustNewHandler(t, newHTTPTestHost(t), guard)
 			body := ""
 			if route.Method == http.MethodPost || route.Method == http.MethodPatch || route.Method == http.MethodPut {
 				body = `{}`
 			}
 			req := httptest.NewRequest(route.Method, samplePathForRoute(route.Path), bytes.NewBufferString(body))
+			if body != "" {
+				req.Header.Set("Content-Type", "application/json")
+			}
 			rec := httptest.NewRecorder()
 
 			handler.ServeHTTP(rec, req)
@@ -455,27 +871,83 @@ func TestHandlerWebSecurityCSRFClassificationCoversRouteSet(t *testing.T) {
 	}
 }
 
-func TestOpenAPIConfirmationResponseBelongsToConfirmRoute(t *testing.T) {
+func TestOpenAPIConfirmationPreparationResponseBelongsToPreparationRoute(t *testing.T) {
 	spec := readOpenAPIContract(t)
 	rpcBlock, ok := openAPIOperationBlock(spec, "/_redevplugin/api/plugins/rpc", http.MethodPost)
 	if !ok {
 		t.Fatal("OpenAPI missing rpc operation")
 	}
-	if strings.Contains(rpcBlock, `#/components/responses/ConfirmEnvelope`) {
-		t.Fatalf("rpc operation must not use ConfirmEnvelope; block:\n%s", rpcBlock)
+	if !strings.Contains(rpcBlock, `#/components/responses/RPCResponse`) {
+		t.Fatalf("rpc operation must use RPCResponse; block:\n%s", rpcBlock)
 	}
-	confirmBlock, ok := openAPIOperationBlock(spec, "/_redevplugin/api/plugins/confirm", http.MethodPost)
+	prepareBlock, ok := openAPIOperationBlock(spec, "/_redevplugin/api/plugins/confirmations/prepare", http.MethodPost)
 	if !ok {
-		t.Fatal("OpenAPI missing confirm operation")
+		t.Fatal("OpenAPI missing method confirmation preparation operation")
 	}
-	if !strings.Contains(confirmBlock, `#/components/responses/ConfirmEnvelope`) {
-		t.Fatalf("confirm operation must use ConfirmEnvelope; block:\n%s", confirmBlock)
+	if !strings.Contains(prepareBlock, `#/components/responses/PluginMethodConfirmationPreparationResponse`) {
+		t.Fatalf("method confirmation preparation operation has the wrong response; block:\n%s", prepareBlock)
+	}
+	if !strings.Contains(prepareBlock, `#/components/requestBodies/PrepareMethodConfirmationRequest`) ||
+		strings.Contains(prepareBlock, `#/components/requestBodies/RPCRequest`) {
+		t.Fatalf("method confirmation preparation operation must use its dedicated request schema; block:\n%s", prepareBlock)
+	}
+}
+
+func TestHandlerGenericErrorEnvelopesConformToOpenAPI(t *testing.T) {
+	handler := mustNewHandler(t, newHTTPTestHost(t), allowHTTPTestGuard())
+	tests := []struct {
+		name           string
+		method         string
+		path           string
+		body           string
+		responseSchema string
+		errorSchema    string
+	}{
+		{
+			name:           "read error",
+			method:         http.MethodGet,
+			path:           "/_redevplugin/api/plugins/intents?unknown=value",
+			responseSchema: "PlatformErrorResponse",
+			errorSchema:    "GenericPlatformError",
+		},
+		{
+			name:           "mutation error",
+			method:         http.MethodPost,
+			path:           "/_redevplugin/api/plugins/confirmations/prepare",
+			body:           "{",
+			responseSchema: "MutationPlatformErrorResponse",
+			errorSchema:    "MutationGenericPlatformError",
+		},
+	}
+	spec := readOpenAPIContract(t)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(tt.method, tt.path, strings.NewReader(tt.body))
+			if tt.body != "" {
+				req.Header.Set("Content-Type", "application/json")
+			}
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+			if rec.Code < http.StatusBadRequest {
+				t.Fatalf("status = %d, want non-success; body = %s", rec.Code, rec.Body.String())
+			}
+			var envelope map[string]any
+			if err := json.Unmarshal(rec.Body.Bytes(), &envelope); err != nil {
+				t.Fatal(err)
+			}
+			assertJSONFieldsMatchOpenAPISchema(t, spec, tt.responseSchema, envelope)
+			errorValue, ok := envelope["error"].(map[string]any)
+			if !ok {
+				t.Fatalf("error field = %#v, want object", envelope["error"])
+			}
+			assertJSONFieldsMatchOpenAPISchema(t, spec, tt.errorSchema, errorValue)
+		})
 	}
 }
 
 func TestHandlerWebSecurityIgnoresNonPluginPaths(t *testing.T) {
-	guard := &httpTestWebSecurityGuard{decision: websecurity.OriginDeny, csrfErr: websecurity.ErrCSRFRequired}
-	handler := Handler{Host: newHTTPTestHost(t), WebSecurity: guard}
+	guard := &httpTestWebSecurityGuard{decision: "deny", csrfErr: websecurity.ErrCSRFRequired}
+	handler := mustNewHandler(t, newHTTPTestHost(t), guard)
 	req := httptest.NewRequest(http.MethodPost, "/healthz", bytes.NewBufferString(`{}`))
 	rec := httptest.NewRecorder()
 
@@ -489,64 +961,21 @@ func TestHandlerWebSecurityIgnoresNonPluginPaths(t *testing.T) {
 	}
 }
 
-func TestHandlerInstallReleaseRefRequiresHostTrustVerifier(t *testing.T) {
-	packageBytes := buildHTTPSignedReleasePackageBytes(t, buildHTTPFixturePackage(t), "official")
-	pkg := readHTTPTestPackage(t, packageBytes)
-	ref := httpReleaseRefForPackage(t, "official", pkg)
-	resolver := &httpRecordingReleaseArtifactResolver{
-		artifact: httpResolvedArtifactForPackage(t, ref, pkg, packageBytes),
-	}
-	h, err := host.New(host.Adapters{
-		SessionResolver:         httpTestSessionResolver{},
-		Policy:                  httpTestPolicy{},
-		ReleaseSourcePolicy:     &httpRecordingReleaseSourcePolicyResolver{snapshot: httpSourcePolicyForRelease(ref)},
-		ReleaseArtifactResolver: resolver,
-		ReleaseMetadataVerifier: httpTestReleaseMetadataVerifier{},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	handler := Handler{Host: h, WebSecurity: allowHTTPTestGuard()}
-	raw, err := json.Marshal(map[string]any{
-		"release_ref":          ref,
-		"plugin_state_version": 0,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	req := httptest.NewRequest(http.MethodPost, "/_redevplugin/api/plugins/install-release-ref", bytes.NewReader(raw))
-	rec := httptest.NewRecorder()
-
-	handler.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusForbidden {
-		t.Fatalf("install status = %d body = %s", rec.Code, rec.Body.String())
-	}
-	var envelope Envelope
-	if err := json.Unmarshal(rec.Body.Bytes(), &envelope); err != nil {
-		t.Fatal(err)
-	}
-	if envelope.OK || envelope.ErrorCode != string(security.ErrTrustVerificationRequired) {
-		t.Fatalf("install envelope = %#v", envelope)
-	}
-}
-
 func TestHandlerManagementLifecycleFlow(t *testing.T) {
 	h := newHTTPTestHost(t)
-	handler := Handler{Host: h, WebSecurity: allowHTTPTestGuard(), EnableLocalImportRoutes: true}
+	handler := mustNewHandler(t, h, allowHTTPTestGuard())
 	packageBytes := buildHTTPFixturePackage(t)
 
 	installed := postJSON[registry.PluginRecord](t, handler, "/_redevplugin/api/plugins/local-import/install", map[string]any{
-		"package_base64":       base64.StdEncoding.EncodeToString(packageBytes),
-		"plugin_state_version": 0,
+		"package_base64": base64.StdEncoding.EncodeToString(packageBytes),
 	})
 	if installed.PluginInstanceID == "" || installed.EnableState != registry.EnableDisabled {
 		t.Fatalf("install response mismatch: %#v", installed)
 	}
 
 	enabled := postJSON[registry.PluginRecord](t, handler, "/_redevplugin/api/plugins/enable", map[string]any{
-		"plugin_instance_id":   installed.PluginInstanceID,
-		"plugin_state_version": installed.ManagementRevision,
+		"plugin_instance_id":           installed.PluginInstanceID,
+		"expected_management_revision": installed.ManagementRevision,
 	})
 	if enabled.EnableState != registry.EnableEnabled {
 		t.Fatalf("enable response mismatch: %#v", enabled)
@@ -560,20 +989,20 @@ func TestHandlerManagementLifecycleFlow(t *testing.T) {
 	}
 
 	disabled := postJSON[registry.PluginRecord](t, handler, "/_redevplugin/api/plugins/disable", map[string]any{
-		"plugin_instance_id":   installed.PluginInstanceID,
-		"plugin_state_version": enabled.ManagementRevision,
-		"reason":               "test",
+		"plugin_instance_id":           installed.PluginInstanceID,
+		"expected_management_revision": enabled.ManagementRevision,
+		"reason":                       "test",
 	})
 	if disabled.EnableState != registry.EnableDisabled || disabled.DisabledReason != "test" {
 		t.Fatalf("disable response mismatch: %#v", disabled)
 	}
 
 	uninstalled := postJSON[registry.PluginRecord](t, handler, "/_redevplugin/api/plugins/uninstall", map[string]any{
-		"plugin_instance_id":   installed.PluginInstanceID,
-		"plugin_state_version": disabled.ManagementRevision,
-		"delete_data":          true,
+		"plugin_instance_id":           installed.PluginInstanceID,
+		"expected_management_revision": disabled.ManagementRevision,
+		"delete_data":                  true,
 	})
-	if uninstalled.RetainedDataState != registry.RetainedDataDeleted {
+	if uninstalled.DeletedAt == nil {
 		t.Fatalf("uninstall response mismatch: %#v", uninstalled)
 	}
 
@@ -585,30 +1014,56 @@ func TestHandlerManagementLifecycleFlow(t *testing.T) {
 	}
 }
 
-func TestHandlerManagementStateVersionContractFailsClosed(t *testing.T) {
-	h := newHTTPTestHost(t)
-	handler := Handler{Host: h, WebSecurity: allowHTTPTestGuard(), EnableLocalImportRoutes: true}
+func TestHandlerReportsUnknownMutationOutcomeAfterCommit(t *testing.T) {
+	h := newHTTPTestHostWithOptions(t, httpTestHostOptions{surfaceCatalog: httpFailingSurfaceCatalogSink{}})
+	handler := mustNewHandler(t, h, allowHTTPTestGuard())
 	installed := postJSON[registry.PluginRecord](t, handler, "/_redevplugin/api/plugins/local-import/install", map[string]any{
-		"package_base64":       base64.StdEncoding.EncodeToString(buildHTTPFixturePackage(t)),
-		"plugin_state_version": 0,
+		"package_base64": base64.StdEncoding.EncodeToString(buildHTTPFixturePackage(t)),
 	})
 
-	for _, body := range []map[string]any{
-		{"plugin_instance_id": installed.PluginInstanceID},
-		{"plugin_instance_id": installed.PluginInstanceID, "plugin_state_version": 0},
+	envelope := postJSONError(t, handler, "/_redevplugin/api/plugins/enable", map[string]any{
+		"plugin_instance_id":           installed.PluginInstanceID,
+		"expected_management_revision": installed.ManagementRevision,
+	}, http.StatusForbidden)
+	if envelope.MutationOutcome != string(mutation.OutcomeUnknown) {
+		t.Fatalf("mutation_outcome = %q, want %q body = %#v", envelope.MutationOutcome, mutation.OutcomeUnknown, envelope)
+	}
+	records, err := h.ListPlugins(httpTestContext())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 1 || records[0].EnableState != registry.EnableEnabled {
+		t.Fatalf("committed plugin state = %#v", records)
+	}
+}
+
+func TestHandlerManagementRevisionContractFailsClosed(t *testing.T) {
+	h := newHTTPTestHost(t)
+	handler := mustNewHandler(t, h, allowHTTPTestGuard())
+	installed := postJSON[registry.PluginRecord](t, handler, "/_redevplugin/api/plugins/local-import/install", map[string]any{
+		"package_base64": base64.StdEncoding.EncodeToString(buildHTTPFixturePackage(t)),
+	})
+
+	for _, tc := range []struct {
+		body     map[string]any
+		wantCode security.ErrorCode
+	}{
+		{body: map[string]any{"plugin_instance_id": installed.PluginInstanceID}, wantCode: security.ErrInvalidRequest},
+		{body: map[string]any{"plugin_instance_id": installed.PluginInstanceID, "expected_management_revision": 0}, wantCode: security.ErrInvalidRequest},
+		{body: map[string]any{"plugin_instance_id": installed.PluginInstanceID, "expected_management_revision": uint64(maxJSONSafeInteger) + 1}, wantCode: security.ErrJSONLimitExceeded},
 	} {
-		envelope := postJSONError(t, handler, "/_redevplugin/api/plugins/enable", body, http.StatusBadRequest)
-		if envelope.ErrorCode != string(security.ErrInvalidRequest) {
-			t.Fatalf("missing/zero state version error_code = %q, want %q", envelope.ErrorCode, security.ErrInvalidRequest)
+		envelope := postJSONError(t, handler, "/_redevplugin/api/plugins/enable", tc.body, http.StatusBadRequest)
+		if envelope.Code != string(tc.wantCode) {
+			t.Fatalf("invalid management revision error_code = %q, want %q", envelope.Code, tc.wantCode)
 		}
 	}
 
 	envelope := postJSONError(t, handler, "/_redevplugin/api/plugins/enable", map[string]any{
-		"plugin_instance_id":   installed.PluginInstanceID,
-		"plugin_state_version": installed.ManagementRevision + 1,
+		"plugin_instance_id":           installed.PluginInstanceID,
+		"expected_management_revision": installed.ManagementRevision + 1,
 	}, http.StatusConflict)
-	if envelope.ErrorCode != string(security.ErrStateVersionMismatch) {
-		t.Fatalf("stale enable error_code = %q, want %q", envelope.ErrorCode, security.ErrStateVersionMismatch)
+	if envelope.Code != string(security.ErrManagementRevisionMismatch) {
+		t.Fatalf("stale enable error_code = %q, want %q", envelope.Code, security.ErrManagementRevisionMismatch)
 	}
 	catalog := getJSON[struct {
 		Plugins []registry.PluginRecord `json:"plugins"`
@@ -618,25 +1073,25 @@ func TestHandlerManagementStateVersionContractFailsClosed(t *testing.T) {
 	}
 
 	enabled := postJSON[registry.PluginRecord](t, handler, "/_redevplugin/api/plugins/enable", map[string]any{
-		"plugin_instance_id":   installed.PluginInstanceID,
-		"plugin_state_version": installed.ManagementRevision,
+		"plugin_instance_id":           installed.PluginInstanceID,
+		"expected_management_revision": installed.ManagementRevision,
 	})
 	staleOpen := postJSONError(t, handler, "/_redevplugin/api/plugins/surfaces/open", map[string]any{
-		"plugin_instance_id":   enabled.PluginInstanceID,
-		"plugin_state_version": installed.ManagementRevision,
-		"surface_id":           "http.view",
-		"surface_instance_id":  "surface_state_version",
+		"plugin_instance_id":           enabled.PluginInstanceID,
+		"expected_management_revision": installed.ManagementRevision,
+		"surface_id":                   "http.view",
+		"surface_instance_id":          "surface_revision_check",
 	}, http.StatusConflict)
-	if staleOpen.ErrorCode != string(security.ErrStateVersionMismatch) {
-		t.Fatalf("stale open error_code = %q, want %q", staleOpen.ErrorCode, security.ErrStateVersionMismatch)
+	if staleOpen.Code != string(security.ErrManagementRevisionMismatch) {
+		t.Fatalf("stale open error_code = %q, want %q", staleOpen.Code, security.ErrManagementRevisionMismatch)
 	}
 	opened := postJSON[bridge.SurfaceBootstrap](t, handler, "/_redevplugin/api/plugins/surfaces/open", map[string]any{
-		"plugin_instance_id":   enabled.PluginInstanceID,
-		"plugin_state_version": enabled.ManagementRevision,
-		"surface_id":           "http.view",
-		"surface_instance_id":  "surface_state_version",
+		"plugin_instance_id":           enabled.PluginInstanceID,
+		"expected_management_revision": enabled.ManagementRevision,
+		"surface_id":                   "http.view",
+		"surface_instance_id":          "surface_revision_check",
 	})
-	if opened.SurfaceInstanceID != "surface_state_version" {
+	if opened.SurfaceInstanceID != "surface_revision_check" {
 		t.Fatalf("open after stale request = %#v", opened)
 	}
 }
@@ -652,11 +1107,10 @@ func TestHandlerInstallReleaseRefUsesResolverWithoutPackageBase64(t *testing.T) 
 		releaseSourcePolicy:     &httpRecordingReleaseSourcePolicyResolver{snapshot: httpSourcePolicyForRelease(ref)},
 		releaseArtifactResolver: resolver,
 	})
-	handler := Handler{Host: h, WebSecurity: allowHTTPTestGuard()}
+	handler := mustNewHandler(t, h, allowHTTPTestGuard())
 
 	installed := postJSON[registry.PluginRecord](t, handler, "/_redevplugin/api/plugins/install-release-ref", map[string]any{
-		"release_ref":          ref,
-		"plugin_state_version": 0,
+		"release_ref": ref,
 	})
 
 	if installed.PackageHash != pkg.PackageHash || installed.TrustState != registry.TrustVerified {
@@ -701,48 +1155,46 @@ func TestHandlerInstallReleaseRefPolicyDeniedUsesReleaseRefErrorCode(t *testing.
 		releaseSourcePolicy:     &httpRecordingReleaseSourcePolicyResolver{snapshot: sourcePolicy},
 		releaseArtifactResolver: &httpRecordingReleaseArtifactResolver{artifact: httpResolvedArtifactForPackage(t, ref, pkg, packageBytes)},
 	})
-	handler := Handler{Host: h, WebSecurity: allowHTTPTestGuard()}
+	handler := mustNewHandler(t, h, allowHTTPTestGuard())
 
 	envelope := postJSONError(t, handler, "/_redevplugin/api/plugins/install-release-ref", map[string]any{
-		"release_ref":          ref,
-		"plugin_state_version": 0,
+		"release_ref": ref,
 	}, http.StatusForbidden)
-	if envelope.ErrorCode != string(security.ErrReleaseRefPolicyDenied) {
-		t.Fatalf("error_code = %q, want %q body = %#v", envelope.ErrorCode, security.ErrReleaseRefPolicyDenied, envelope)
+	if envelope.Code != string(security.ErrReleaseRefPolicyDenied) {
+		t.Fatalf("error_code = %q, want %q body = %#v", envelope.Code, security.ErrReleaseRefPolicyDenied, envelope)
 	}
 }
 
 func TestHandlerUpdateAndDowngradeFlow(t *testing.T) {
 	h := newHTTPTestHost(t)
-	handler := Handler{Host: h, WebSecurity: allowHTTPTestGuard(), EnableLocalImportRoutes: true}
+	handler := mustNewHandler(t, h, allowHTTPTestGuard())
 	v1 := buildHTTPVersionedFixturePackage(t, "1.0.0", "HTTP")
 	v2 := buildHTTPVersionedFixturePackage(t, "2.0.0", "HTTP v2")
 
 	installed := postJSON[registry.PluginRecord](t, handler, "/_redevplugin/api/plugins/local-import/install", map[string]any{
-		"package_base64":       base64.StdEncoding.EncodeToString(v1),
-		"plugin_state_version": 0,
+		"package_base64": base64.StdEncoding.EncodeToString(v1),
 	})
 	enabled := postJSON[registry.PluginRecord](t, handler, "/_redevplugin/api/plugins/enable", map[string]any{
-		"plugin_instance_id":   installed.PluginInstanceID,
-		"plugin_state_version": installed.ManagementRevision,
+		"plugin_instance_id":           installed.PluginInstanceID,
+		"expected_management_revision": installed.ManagementRevision,
 	})
 	if enabled.EnableState != registry.EnableEnabled {
 		t.Fatalf("enable response mismatch: %#v", enabled)
 	}
 
 	updated := postJSON[registry.PluginRecord](t, handler, "/_redevplugin/api/plugins/local-import/update", map[string]any{
-		"plugin_instance_id":   installed.PluginInstanceID,
-		"plugin_state_version": enabled.ManagementRevision,
-		"package_base64":       base64.StdEncoding.EncodeToString(v2),
+		"plugin_instance_id":           installed.PluginInstanceID,
+		"expected_management_revision": enabled.ManagementRevision,
+		"package_base64":               base64.StdEncoding.EncodeToString(v2),
 	})
 	if updated.Version != "2.0.0" || updated.EnableState != registry.EnableEnabled || len(updated.VersionHistory) != 1 || updated.VersionHistory[0].Version != "1.0.0" {
 		t.Fatalf("update response mismatch: %#v", updated)
 	}
 
 	downgraded := postJSON[registry.PluginRecord](t, handler, "/_redevplugin/api/plugins/downgrade", map[string]any{
-		"plugin_instance_id":   installed.PluginInstanceID,
-		"plugin_state_version": updated.ManagementRevision,
-		"version":              "1.0.0",
+		"plugin_instance_id":           installed.PluginInstanceID,
+		"expected_management_revision": updated.ManagementRevision,
+		"version":                      "1.0.0",
 	})
 	if downgraded.Version != "1.0.0" || downgraded.ActiveFingerprint != installed.ActiveFingerprint || len(downgraded.VersionHistory) != 1 || downgraded.VersionHistory[0].Version != "2.0.0" {
 		t.Fatalf("downgrade response mismatch: %#v", downgraded)
@@ -751,8 +1203,8 @@ func TestHandlerUpdateAndDowngradeFlow(t *testing.T) {
 
 func TestHandlerManagementRejectsInvalidInstallAndTrustStateInput(t *testing.T) {
 	h := newHTTPTestHost(t)
-	handler := Handler{Host: h, WebSecurity: allowHTTPTestGuard(), EnableLocalImportRoutes: true}
-	req := httptest.NewRequest(http.MethodPost, "/_redevplugin/api/plugins/local-import/install", bytes.NewBufferString(`{"package_base64":"not-base64","plugin_state_version":0}`))
+	handler := mustNewHandler(t, h, allowHTTPTestGuard())
+	req := newJSONHTTPRequest(http.MethodPost, "/_redevplugin/api/plugins/local-import/install", bytes.NewBufferString(`{"package_base64":"not-base64"}`))
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusBadRequest {
@@ -760,14 +1212,13 @@ func TestHandlerManagementRejectsInvalidInstallAndTrustStateInput(t *testing.T) 
 	}
 
 	raw, err := json.Marshal(map[string]any{
-		"package_base64":       base64.StdEncoding.EncodeToString(buildHTTPFixturePackage(t)),
-		"plugin_state_version": 0,
-		"trust_state":          "verified",
+		"package_base64": base64.StdEncoding.EncodeToString(buildHTTPFixturePackage(t)),
+		"trust_state":    "verified",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	req = httptest.NewRequest(http.MethodPost, "/_redevplugin/api/plugins/local-import/install", bytes.NewReader(raw))
+	req = newJSONHTTPRequest(http.MethodPost, "/_redevplugin/api/plugins/local-import/install", bytes.NewReader(raw))
 	rec = httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusBadRequest {
@@ -776,7 +1227,7 @@ func TestHandlerManagementRejectsInvalidInstallAndTrustStateInput(t *testing.T) 
 }
 
 func TestHandlerInstallMapsPackageValidationErrorDetails(t *testing.T) {
-	handler := Handler{Host: newHTTPTestHost(t), WebSecurity: allowHTTPTestGuard(), EnableLocalImportRoutes: true}
+	handler := mustNewHandler(t, newHTTPTestHost(t), allowHTTPTestGuard())
 	tests := []struct {
 		name        string
 		entries     map[string][]byte
@@ -812,13 +1263,12 @@ func TestHandlerInstallMapsPackageValidationErrorDetails(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			raw, err := json.Marshal(map[string]any{
-				"package_base64":       base64.StdEncoding.EncodeToString(buildHTTPRawPackage(t, tt.entries)),
-				"plugin_state_version": 0,
+				"package_base64": base64.StdEncoding.EncodeToString(buildHTTPRawPackage(t, tt.entries)),
 			})
 			if err != nil {
 				t.Fatal(err)
 			}
-			req := httptest.NewRequest(http.MethodPost, "/_redevplugin/api/plugins/local-import/install", bytes.NewReader(raw))
+			req := newJSONHTTPRequest(http.MethodPost, "/_redevplugin/api/plugins/local-import/install", bytes.NewReader(raw))
 			rec := httptest.NewRecorder()
 
 			handler.ServeHTTP(rec, req)
@@ -826,21 +1276,21 @@ func TestHandlerInstallMapsPackageValidationErrorDetails(t *testing.T) {
 			if rec.Code != tt.wantStatus {
 				t.Fatalf("install status = %d body = %s", rec.Code, rec.Body.String())
 			}
-			var envelope Envelope
+			var envelope decodedErrorResponse
 			if err := json.Unmarshal(rec.Body.Bytes(), &envelope); err != nil {
 				t.Fatal(err)
 			}
-			if envelope.OK || envelope.ErrorCode != string(tt.wantCode) {
+			if envelope.OK || envelope.Code != string(tt.wantCode) {
 				t.Fatalf("install envelope = %#v, want code %s", envelope, tt.wantCode)
 			}
-			if got := envelope.ErrorDetails["reason"]; got != tt.wantReason {
+			if got := envelope.Details["reason"]; got != tt.wantReason {
 				t.Fatalf("error_details.reason = %#v, want %q body = %s", got, tt.wantReason, rec.Body.String())
 			}
-			if got := envelope.ErrorDetails["path"]; got != tt.wantPath {
+			if got := envelope.Details["path"]; got != tt.wantPath {
 				t.Fatalf("error_details.path = %#v, want %q body = %s", got, tt.wantPath, rec.Body.String())
 			}
 			if tt.wantPointer != "" {
-				if got := envelope.ErrorDetails["pointer"]; got != tt.wantPointer {
+				if got := envelope.Details["pointer"]; got != tt.wantPointer {
 					t.Fatalf("error_details.pointer = %#v, want %q body = %s", got, tt.wantPointer, rec.Body.String())
 				}
 			}
@@ -849,48 +1299,47 @@ func TestHandlerInstallMapsPackageValidationErrorDetails(t *testing.T) {
 }
 
 func TestHandlerEnableMapsBlockedNetworkTarget(t *testing.T) {
-	h := newHTTPTestHostWithOptions(t, httpTestHostOptions{storageBroker: storage.NewMemoryBroker()})
-	handler := Handler{Host: h, WebSecurity: allowHTTPTestGuard(), EnableLocalImportRoutes: true}
+	h := newHTTPTestHost(t)
+	handler := mustNewHandler(t, h, allowHTTPTestGuard())
 	installed := postJSON[registry.PluginRecord](t, handler, "/_redevplugin/api/plugins/local-import/install", map[string]any{
-		"package_base64":       base64.StdEncoding.EncodeToString(buildHTTPBlockedNetworkFixturePackage(t)),
-		"plugin_state_version": 0,
+		"package_base64": base64.StdEncoding.EncodeToString(buildHTTPBlockedNetworkFixturePackage(t)),
 	})
-	raw, err := json.Marshal(map[string]any{"plugin_instance_id": installed.PluginInstanceID, "plugin_state_version": installed.ManagementRevision})
+	raw, err := json.Marshal(map[string]any{"plugin_instance_id": installed.PluginInstanceID, "expected_management_revision": installed.ManagementRevision})
 	if err != nil {
 		t.Fatal(err)
 	}
-	req := httptest.NewRequest(http.MethodPost, "/_redevplugin/api/plugins/enable", bytes.NewReader(raw))
+	req := newJSONHTTPRequest(http.MethodPost, "/_redevplugin/api/plugins/enable", bytes.NewReader(raw))
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("blocked network enable status = %d body = %s", rec.Code, rec.Body.String())
 	}
-	var envelope Envelope
+	var envelope decodedErrorResponse
 	if err := json.Unmarshal(rec.Body.Bytes(), &envelope); err != nil {
 		t.Fatal(err)
 	}
-	if envelope.ErrorCode != string(security.ErrNetworkTargetDenied) {
-		t.Fatalf("error_code = %q body = %s", envelope.ErrorCode, rec.Body.String())
+	if envelope.Code != string(security.ErrNetworkTargetDenied) {
+		t.Fatalf("error_code = %q body = %s", envelope.Code, rec.Body.String())
 	}
 }
 
 func TestHandlerSurfaceBridgeFlow(t *testing.T) {
 	h := newHTTPTestHost(t)
-	installed, err := host.ImportLocalPackageBytes(context.Background(), h, buildHTTPFixturePackage(t))
+	installed, err := host.ImportLocalPackageBytes(httpTestContext(), h, buildHTTPFixturePackage(t))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.EnablePlugin(context.Background(), host.EnableRequest{PluginInstanceID: installed.PluginInstanceID, PluginStateVersion: mustPluginStateVersion(t, h, installed.PluginInstanceID)}); err != nil {
+	if _, err := h.EnablePlugin(httpTestContext(), host.EnableRequest{PluginInstanceID: installed.PluginInstanceID, ExpectedManagementRevision: mustManagementRevision(t, h, installed.PluginInstanceID)}); err != nil {
 		t.Fatal(err)
 	}
 	grantHTTPDeclaredPermissions(t, h, installed)
-	handler := Handler{Host: h, WebSecurity: allowHTTPTestGuard()}
+	handler := mustNewHandler(t, h, allowHTTPTestGuard())
 
 	openResp := postJSON[bridge.SurfaceBootstrap](t, handler, "/_redevplugin/api/plugins/surfaces/open", map[string]any{
-		"plugin_instance_id":   installed.PluginInstanceID,
-		"surface_id":           "http.view",
-		"surface_instance_id":  "surface_http",
-		"plugin_state_version": 2,
+		"plugin_instance_id":           installed.PluginInstanceID,
+		"surface_id":                   "http.view",
+		"surface_instance_id":          "surface_http",
+		"expected_management_revision": 2,
 	})
 	if openResp.AssetTicket == "" || openResp.BridgeNonce == "" {
 		t.Fatalf("open response missing ticket/nonce: %#v", openResp)
@@ -913,26 +1362,26 @@ func TestHandlerSurfaceBridgeFlow(t *testing.T) {
 
 func TestHandlerRevokesAllSurfacesForCurrentSessionChannel(t *testing.T) {
 	h := newHTTPTestHost(t)
-	installed, err := host.ImportLocalPackageBytes(context.Background(), h, buildHTTPFixturePackage(t))
+	installed, err := host.ImportLocalPackageBytes(httpTestContext(), h, buildHTTPFixturePackage(t))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.EnablePlugin(context.Background(), host.EnableRequest{PluginInstanceID: installed.PluginInstanceID, PluginStateVersion: mustPluginStateVersion(t, h, installed.PluginInstanceID)}); err != nil {
+	if _, err := h.EnablePlugin(httpTestContext(), host.EnableRequest{PluginInstanceID: installed.PluginInstanceID, ExpectedManagementRevision: mustManagementRevision(t, h, installed.PluginInstanceID)}); err != nil {
 		t.Fatal(err)
 	}
 	grantHTTPDeclaredPermissions(t, h, installed)
-	handler := Handler{Host: h, WebSecurity: allowHTTPTestGuard()}
+	handler := mustNewHandler(t, h, allowHTTPTestGuard())
 	first := postJSON[bridge.SurfaceBootstrap](t, handler, "/_redevplugin/api/plugins/surfaces/open", map[string]any{
-		"plugin_instance_id":   installed.PluginInstanceID,
-		"surface_id":           "http.view",
-		"surface_instance_id":  "surface_scope_first",
-		"plugin_state_version": 2,
+		"plugin_instance_id":           installed.PluginInstanceID,
+		"surface_id":                   "http.view",
+		"surface_instance_id":          "surface_scope_first",
+		"expected_management_revision": 2,
 	})
 	postJSON[bridge.SurfaceBootstrap](t, handler, "/_redevplugin/api/plugins/surfaces/open", map[string]any{
-		"plugin_instance_id":   installed.PluginInstanceID,
-		"surface_id":           "http.view",
-		"surface_instance_id":  "surface_scope_second",
-		"plugin_state_version": 2,
+		"plugin_instance_id":           installed.PluginInstanceID,
+		"surface_id":                   "http.view",
+		"surface_instance_id":          "surface_scope_second",
+		"expected_management_revision": 2,
 	})
 	result := postJSON[struct {
 		RevokedSurfaceCount int `json:"revoked_surface_count"`
@@ -943,8 +1392,8 @@ func TestHandlerRevokesAllSurfacesForCurrentSessionChannel(t *testing.T) {
 	envelope := postJSONError(t, handler, "/_redevplugin/api/plugins/surfaces/surface_scope_first/prepare", map[string]any{
 		"asset_ticket": first.AssetTicket,
 	}, http.StatusForbidden)
-	if envelope.ErrorCode != string(security.ErrAssetSessionInvalid) {
-		t.Fatalf("prepare after scope revoke error_code = %q", envelope.ErrorCode)
+	if envelope.Code != string(security.ErrAssetSessionInvalid) {
+		t.Fatalf("prepare after scope revoke error_code = %q", envelope.Code)
 	}
 }
 
@@ -973,21 +1422,21 @@ func TestOpenSurfaceErrorsUseStableRecoverySemantics(t *testing.T) {
 
 func TestHandlerBridgeTokenRejectsInvalidHandshakeType(t *testing.T) {
 	h := newHTTPTestHost(t)
-	installed, err := host.ImportLocalPackageBytes(context.Background(), h, buildHTTPFixturePackage(t))
+	installed, err := host.ImportLocalPackageBytes(httpTestContext(), h, buildHTTPFixturePackage(t))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.EnablePlugin(context.Background(), host.EnableRequest{PluginInstanceID: installed.PluginInstanceID, PluginStateVersion: mustPluginStateVersion(t, h, installed.PluginInstanceID)}); err != nil {
+	if _, err := h.EnablePlugin(httpTestContext(), host.EnableRequest{PluginInstanceID: installed.PluginInstanceID, ExpectedManagementRevision: mustManagementRevision(t, h, installed.PluginInstanceID)}); err != nil {
 		t.Fatal(err)
 	}
 	grantHTTPDeclaredPermissions(t, h, installed)
-	handler := Handler{Host: h, WebSecurity: allowHTTPTestGuard()}
+	handler := mustNewHandler(t, h, allowHTTPTestGuard())
 
 	openResp := postJSON[bridge.SurfaceBootstrap](t, handler, "/_redevplugin/api/plugins/surfaces/open", map[string]any{
-		"plugin_instance_id":   installed.PluginInstanceID,
-		"surface_id":           "http.view",
-		"surface_instance_id":  "surface_http_bad_type",
-		"plugin_state_version": 2,
+		"plugin_instance_id":           installed.PluginInstanceID,
+		"surface_id":                   "http.view",
+		"surface_instance_id":          "surface_http_bad_type",
+		"expected_management_revision": 2,
 	})
 	postJSON[bridge.AssetSessionResult](t, handler, "/_redevplugin/api/plugins/surfaces/surface_http_bad_type/prepare", map[string]any{
 		"asset_ticket": openResp.AssetTicket,
@@ -1009,7 +1458,7 @@ func TestHandlerBridgeTokenRejectsInvalidHandshakeType(t *testing.T) {
 				handshake["type"] = *tc.typeValue
 			}
 			envelope := postJSONError(t, handler, "/_redevplugin/api/plugins/surfaces/surface_http_bad_type/bridge-token", body, http.StatusBadRequest)
-			if envelope.OK || envelope.ErrorCode != string(security.ErrInvalidRequest) {
+			if envelope.OK || envelope.Code != string(security.ErrInvalidRequest) {
 				t.Fatalf("bridge token envelope = %#v", envelope)
 			}
 		})
@@ -1018,20 +1467,20 @@ func TestHandlerBridgeTokenRejectsInvalidHandshakeType(t *testing.T) {
 
 func TestHandlerBridgeTokenRejectsTranscriptMismatch(t *testing.T) {
 	h := newHTTPTestHost(t)
-	installed, err := host.ImportLocalPackageBytes(context.Background(), h, buildHTTPFixturePackage(t))
+	installed, err := host.ImportLocalPackageBytes(httpTestContext(), h, buildHTTPFixturePackage(t))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.EnablePlugin(context.Background(), host.EnableRequest{PluginInstanceID: installed.PluginInstanceID, PluginStateVersion: mustPluginStateVersion(t, h, installed.PluginInstanceID)}); err != nil {
+	if _, err := h.EnablePlugin(httpTestContext(), host.EnableRequest{PluginInstanceID: installed.PluginInstanceID, ExpectedManagementRevision: mustManagementRevision(t, h, installed.PluginInstanceID)}); err != nil {
 		t.Fatal(err)
 	}
-	handler := Handler{Host: h, WebSecurity: allowHTTPTestGuard()}
+	handler := mustNewHandler(t, h, allowHTTPTestGuard())
 
 	openResp := postJSON[bridge.SurfaceBootstrap](t, handler, "/_redevplugin/api/plugins/surfaces/open", map[string]any{
-		"plugin_instance_id":   installed.PluginInstanceID,
-		"surface_id":           "http.view",
-		"surface_instance_id":  "surface_http_bad_transcript",
-		"plugin_state_version": 2,
+		"plugin_instance_id":           installed.PluginInstanceID,
+		"surface_id":                   "http.view",
+		"surface_instance_id":          "surface_http_bad_transcript",
+		"expected_management_revision": 2,
 	})
 	postJSON[bridge.AssetSessionResult](t, handler, "/_redevplugin/api/plugins/surfaces/surface_http_bad_transcript/prepare", map[string]any{
 		"asset_ticket": openResp.AssetTicket,
@@ -1040,27 +1489,27 @@ func TestHandlerBridgeTokenRejectsTranscriptMismatch(t *testing.T) {
 	body["handshake_transcript_sha256"] = bridge.HandshakeTranscriptSHA256(bridgeHandshakeFromBootstrap(openResp), "bridge_http_other")
 
 	envelope := postJSONError(t, handler, "/_redevplugin/api/plugins/surfaces/surface_http_bad_transcript/bridge-token", body, http.StatusForbidden)
-	if envelope.ErrorCode != string(security.ErrPermissionDenied) {
-		t.Fatalf("transcript mismatch error_code = %s body = %#v", envelope.ErrorCode, envelope)
+	if envelope.Code != string(security.ErrPermissionDenied) {
+		t.Fatalf("transcript mismatch error_code = %s body = %#v", envelope.Code, envelope)
 	}
 }
 
 func TestHandlerPrepareAndPrivateAssetFlow(t *testing.T) {
 	h := newHTTPTestHost(t)
-	installed, err := host.ImportLocalPackageBytes(context.Background(), h, buildHTTPFixturePackage(t))
+	installed, err := host.ImportLocalPackageBytes(httpTestContext(), h, buildHTTPFixturePackage(t))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.EnablePlugin(context.Background(), host.EnableRequest{PluginInstanceID: installed.PluginInstanceID, PluginStateVersion: mustPluginStateVersion(t, h, installed.PluginInstanceID)}); err != nil {
+	if _, err := h.EnablePlugin(httpTestContext(), host.EnableRequest{PluginInstanceID: installed.PluginInstanceID, ExpectedManagementRevision: mustManagementRevision(t, h, installed.PluginInstanceID)}); err != nil {
 		t.Fatal(err)
 	}
-	handler := Handler{Host: h, WebSecurity: allowHTTPTestGuard()}
+	handler := mustNewHandler(t, h, allowHTTPTestGuard())
 
 	openResp := postJSON[bridge.SurfaceBootstrap](t, handler, "/_redevplugin/api/plugins/surfaces/open", map[string]any{
-		"plugin_instance_id":   installed.PluginInstanceID,
-		"surface_id":           "http.view",
-		"surface_instance_id":  "surface_http_asset",
-		"plugin_state_version": 2,
+		"plugin_instance_id":           installed.PluginInstanceID,
+		"surface_id":                   "http.view",
+		"surface_instance_id":          "surface_http_asset",
+		"expected_management_revision": 2,
 	})
 	preparePath := "/_redevplugin/api/plugins/surfaces/surface_http_asset/prepare"
 	prepareResp := postJSON[host.PrepareSurfaceResult](t, handler, preparePath, map[string]any{
@@ -1075,8 +1524,8 @@ func TestHandlerPrepareAndPrivateAssetFlow(t *testing.T) {
 	preparedAsset := prepareResp.Document.Assets[0]
 
 	replay := postJSONError(t, handler, preparePath, map[string]any{"asset_ticket": openResp.AssetTicket}, http.StatusForbidden)
-	if replay.ErrorCode != string(security.ErrTokenReplay) {
-		t.Fatalf("asset ticket replay error_code = %s body = %#v", replay.ErrorCode, replay)
+	if replay.Code != string(security.ErrTokenReplay) {
+		t.Fatalf("asset ticket replay error_code = %s body = %#v", replay.Code, replay)
 	}
 
 	asset := postJSON[struct {
@@ -1105,8 +1554,8 @@ func TestHandlerPrepareAndPrivateAssetFlow(t *testing.T) {
 		"asset_session_id": prepareResp.AssetSessionID,
 		"asset_path":       "ui/app.js",
 	}, http.StatusBadRequest)
-	if rawPathBypass.ErrorCode != string(security.ErrInvalidRequest) {
-		t.Fatalf("raw asset path bypass error_code = %s body = %#v", rawPathBypass.ErrorCode, rawPathBypass)
+	if rawPathBypass.Code != string(security.ErrInvalidRequest) {
+		t.Fatalf("raw asset path bypass error_code = %s body = %#v", rawPathBypass.Code, rawPathBypass)
 	}
 
 	wrongSurface := postJSONError(t, handler, "/_redevplugin/api/plugins/surfaces/surface_other/assets/read", map[string]any{
@@ -1114,8 +1563,8 @@ func TestHandlerPrepareAndPrivateAssetFlow(t *testing.T) {
 		"asset_session_id": prepareResp.AssetSessionID,
 		"binding_id":       preparedAsset.BindingID,
 	}, http.StatusForbidden)
-	if wrongSurface.ErrorCode != string(security.ErrAssetSessionInvalid) {
-		t.Fatalf("cross-surface asset error_code = %s body = %#v", wrongSurface.ErrorCode, wrongSurface)
+	if wrongSurface.Code != string(security.ErrAssetSessionInvalid) {
+		t.Fatalf("cross-surface asset error_code = %s body = %#v", wrongSurface.Code, wrongSurface)
 	}
 }
 
@@ -1125,21 +1574,21 @@ func TestHandlerRPCFlow(t *testing.T) {
 		capabilityID:      "example.capability.echo",
 		capabilityAdapter: adapter,
 	})
-	installed, err := host.ImportLocalPackageBytes(context.Background(), h, buildHTTPRPCFixturePackage(t))
+	installed, err := host.ImportLocalPackageBytes(httpTestContext(), h, buildHTTPRPCFixturePackage(t))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.EnablePlugin(context.Background(), host.EnableRequest{PluginInstanceID: installed.PluginInstanceID, PluginStateVersion: mustPluginStateVersion(t, h, installed.PluginInstanceID)}); err != nil {
+	if _, err := h.EnablePlugin(httpTestContext(), host.EnableRequest{PluginInstanceID: installed.PluginInstanceID, ExpectedManagementRevision: mustManagementRevision(t, h, installed.PluginInstanceID)}); err != nil {
 		t.Fatal(err)
 	}
 	grantHTTPDeclaredPermissions(t, h, installed)
-	handler := Handler{Host: h, WebSecurity: allowHTTPTestGuard()}
+	handler := mustNewHandler(t, h, allowHTTPTestGuard())
 
 	openResp := postJSON[bridge.SurfaceBootstrap](t, handler, "/_redevplugin/api/plugins/surfaces/open", map[string]any{
-		"plugin_instance_id":   installed.PluginInstanceID,
-		"surface_id":           "http.rpc.view",
-		"surface_instance_id":  "surface_http_rpc",
-		"plugin_state_version": 2,
+		"plugin_instance_id":           installed.PluginInstanceID,
+		"surface_id":                   "http.rpc.view",
+		"surface_instance_id":          "surface_http_rpc",
+		"expected_management_revision": 2,
 	})
 	postJSON[bridge.AssetSessionResult](t, handler, "/_redevplugin/api/plugins/surfaces/surface_http_rpc/prepare", map[string]any{
 		"asset_ticket": openResp.AssetTicket,
@@ -1168,15 +1617,15 @@ func TestHandlerRPCSchemaErrorsUseStableCodes(t *testing.T) {
 		capabilityID:      "example.capability.echo",
 		capabilityAdapter: adapter,
 	})
-	installed, err := host.ImportLocalPackageBytes(context.Background(), h, buildHTTPRPCFixturePackage(t))
+	installed, err := host.ImportLocalPackageBytes(httpTestContext(), h, buildHTTPRPCFixturePackage(t))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.EnablePlugin(context.Background(), host.EnableRequest{PluginInstanceID: installed.PluginInstanceID, PluginStateVersion: mustPluginStateVersion(t, h, installed.PluginInstanceID)}); err != nil {
+	if _, err := h.EnablePlugin(httpTestContext(), host.EnableRequest{PluginInstanceID: installed.PluginInstanceID, ExpectedManagementRevision: mustManagementRevision(t, h, installed.PluginInstanceID)}); err != nil {
 		t.Fatal(err)
 	}
 	grantHTTPDeclaredPermissions(t, h, installed)
-	handler := Handler{Host: h, WebSecurity: allowHTTPTestGuard()}
+	handler := mustNewHandler(t, h, allowHTTPTestGuard())
 	bridgeResp := openHTTPBridge(t, handler, installed.PluginInstanceID, "http.rpc.view", "surface_http_schema", "bridge_http_schema")
 	baseBody := map[string]any{
 		"plugin_instance_id":   installed.PluginInstanceID,
@@ -1189,16 +1638,16 @@ func TestHandlerRPCSchemaErrorsUseStableCodes(t *testing.T) {
 	invalidRequest := cloneMap(baseBody)
 	invalidRequest["params"] = map[string]any{"unknown": true}
 	envelope := postJSONError(t, handler, "/_redevplugin/api/plugins/rpc", invalidRequest, http.StatusBadRequest)
-	if envelope.ErrorCode != string(security.ErrInvalidRequest) {
-		t.Fatalf("request schema error_code = %s body = %#v", envelope.ErrorCode, envelope)
+	if envelope.Code != string(security.ErrInvalidRequest) {
+		t.Fatalf("request schema error_code = %s body = %#v", envelope.Code, envelope)
 	}
 
 	adapter.result = capability.Result{Data: map[string]any{"unknown": true}}
 	invalidResponse := cloneMap(baseBody)
 	invalidResponse["params"] = map[string]any{"message": "hello"}
 	envelope = postJSONError(t, handler, "/_redevplugin/api/plugins/rpc", invalidResponse, http.StatusBadGateway)
-	if envelope.ErrorCode != string(security.ErrContractMismatch) {
-		t.Fatalf("response schema error_code = %s body = %#v", envelope.ErrorCode, envelope)
+	if envelope.Code != string(security.ErrContractMismatch) {
+		t.Fatalf("response schema error_code = %s body = %#v", envelope.Code, envelope)
 	}
 }
 
@@ -1208,15 +1657,15 @@ func TestHandlerRPCDoesNotExposeAdapterErrorDetails(t *testing.T) {
 		capabilityID:      "example.capability.echo",
 		capabilityAdapter: adapter,
 	})
-	installed, err := host.ImportLocalPackageBytes(context.Background(), h, buildHTTPRPCFixturePackage(t))
+	installed, err := host.ImportLocalPackageBytes(httpTestContext(), h, buildHTTPRPCFixturePackage(t))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.EnablePlugin(context.Background(), host.EnableRequest{PluginInstanceID: installed.PluginInstanceID, PluginStateVersion: mustPluginStateVersion(t, h, installed.PluginInstanceID)}); err != nil {
+	if _, err := h.EnablePlugin(httpTestContext(), host.EnableRequest{PluginInstanceID: installed.PluginInstanceID, ExpectedManagementRevision: mustManagementRevision(t, h, installed.PluginInstanceID)}); err != nil {
 		t.Fatal(err)
 	}
 	grantHTTPDeclaredPermissions(t, h, installed)
-	handler := Handler{Host: h, WebSecurity: allowHTTPTestGuard()}
+	handler := mustNewHandler(t, h, allowHTTPTestGuard())
 	bridgeResp := openHTTPBridge(t, handler, installed.PluginInstanceID, "http.rpc.view", "surface_http_redaction", "bridge_http_redaction")
 
 	envelope := postJSONError(t, handler, "/_redevplugin/api/plugins/rpc", map[string]any{
@@ -1227,29 +1676,29 @@ func TestHandlerRPCDoesNotExposeAdapterErrorDetails(t *testing.T) {
 		"method":               "echo.ping",
 		"params":               map[string]any{"message": "hello"},
 	}, http.StatusForbidden)
-	if envelope.ErrorCode != string(security.ErrPermissionDenied) {
-		t.Fatalf("adapter error_code = %s body = %#v", envelope.ErrorCode, envelope)
+	if envelope.Code != string(security.ErrPermissionDenied) {
+		t.Fatalf("adapter error_code = %s body = %#v", envelope.Code, envelope)
 	}
-	if strings.Contains(envelope.Error, "runtime.sock") || strings.Contains(envelope.Error, "super-secret") {
+	if strings.Contains(envelope.Message, "runtime.sock") || strings.Contains(envelope.Message, "super-secret") {
 		t.Fatalf("adapter details leaked to plugin: %#v", envelope)
 	}
 }
 
 func TestHandlerOpenSurfaceOmitsTrustedScopeHashes(t *testing.T) {
 	h := newHTTPTestHost(t)
-	installed, err := host.ImportLocalPackageBytes(context.Background(), h, buildHTTPFixturePackage(t))
+	installed, err := host.ImportLocalPackageBytes(httpTestContext(), h, buildHTTPFixturePackage(t))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.EnablePlugin(context.Background(), host.EnableRequest{PluginInstanceID: installed.PluginInstanceID, PluginStateVersion: mustPluginStateVersion(t, h, installed.PluginInstanceID)}); err != nil {
+	if _, err := h.EnablePlugin(httpTestContext(), host.EnableRequest{PluginInstanceID: installed.PluginInstanceID, ExpectedManagementRevision: mustManagementRevision(t, h, installed.PluginInstanceID)}); err != nil {
 		t.Fatal(err)
 	}
-	handler := Handler{Host: h, WebSecurity: allowHTTPTestGuard()}
+	handler := mustNewHandler(t, h, allowHTTPTestGuard())
 	bootstrap := postJSON[map[string]any](t, handler, "/_redevplugin/api/plugins/surfaces/open", map[string]any{
-		"plugin_instance_id":   installed.PluginInstanceID,
-		"surface_id":           "http.view",
-		"surface_instance_id":  "surface_http_public_bootstrap",
-		"plugin_state_version": mustPluginStateVersion(t, h, installed.PluginInstanceID),
+		"plugin_instance_id":           installed.PluginInstanceID,
+		"surface_id":                   "http.view",
+		"surface_instance_id":          "surface_http_public_bootstrap",
+		"expected_management_revision": mustManagementRevision(t, h, installed.PluginInstanceID),
 	})
 	for _, field := range []string{"owner_session_hash", "owner_user_hash", "session_channel_id_hash"} {
 		if _, present := bootstrap[field]; present {
@@ -1283,15 +1732,15 @@ func TestHandlerRPCFlowRedactsCapabilityResponseData(t *testing.T) {
 		capabilityID:      "example.capability.echo",
 		capabilityAdapter: adapter,
 	})
-	installed, err := host.ImportLocalPackageBytes(context.Background(), h, buildHTTPRPCFixturePackage(t))
+	installed, err := host.ImportLocalPackageBytes(httpTestContext(), h, buildHTTPRPCFixturePackage(t))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.EnablePlugin(context.Background(), host.EnableRequest{PluginInstanceID: installed.PluginInstanceID, PluginStateVersion: mustPluginStateVersion(t, h, installed.PluginInstanceID)}); err != nil {
+	if _, err := h.EnablePlugin(httpTestContext(), host.EnableRequest{PluginInstanceID: installed.PluginInstanceID, ExpectedManagementRevision: mustManagementRevision(t, h, installed.PluginInstanceID)}); err != nil {
 		t.Fatal(err)
 	}
 	grantHTTPDeclaredPermissions(t, h, installed)
-	handler := Handler{Host: h, WebSecurity: allowHTTPTestGuard()}
+	handler := mustNewHandler(t, h, allowHTTPTestGuard())
 	bridgeResp := openHTTPBridge(t, handler, installed.PluginInstanceID, "http.rpc.view", "surface_http_redaction", "bridge_http_redaction")
 
 	result := postJSON[host.CallMethodResult](t, handler, "/_redevplugin/api/plugins/rpc", map[string]any{
@@ -1324,15 +1773,15 @@ func TestHandlerRPCGatewayTokenErrorsUseStableCodes(t *testing.T) {
 		capabilityID:      "example.capability.echo",
 		capabilityAdapter: adapter,
 	})
-	installed, err := host.ImportLocalPackageBytes(context.Background(), h, buildHTTPRPCFixturePackage(t))
+	installed, err := host.ImportLocalPackageBytes(httpTestContext(), h, buildHTTPRPCFixturePackage(t))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.EnablePlugin(context.Background(), host.EnableRequest{PluginInstanceID: installed.PluginInstanceID, PluginStateVersion: mustPluginStateVersion(t, h, installed.PluginInstanceID)}); err != nil {
+	if _, err := h.EnablePlugin(httpTestContext(), host.EnableRequest{PluginInstanceID: installed.PluginInstanceID, ExpectedManagementRevision: mustManagementRevision(t, h, installed.PluginInstanceID)}); err != nil {
 		t.Fatal(err)
 	}
 	grantHTTPDeclaredPermissions(t, h, installed)
-	handler := Handler{Host: h, WebSecurity: allowHTTPTestGuard()}
+	handler := mustNewHandler(t, h, allowHTTPTestGuard())
 	bridgeResp := openHTTPBridge(t, handler, installed.PluginInstanceID, "http.rpc.view", "surface_http_gateway_errors", "bridge_http_gateway")
 	baseBody := map[string]any{
 		"plugin_instance_id":   installed.PluginInstanceID,
@@ -1345,33 +1794,33 @@ func TestHandlerRPCGatewayTokenErrorsUseStableCodes(t *testing.T) {
 	invalidBody := cloneMap(baseBody)
 	invalidBody["plugin_gateway_token"] = "plugin_gateway_token.invalid"
 	envelope := postJSONError(t, handler, "/_redevplugin/api/plugins/rpc", invalidBody, http.StatusForbidden)
-	if envelope.ErrorCode != string(security.ErrGatewayTokenInvalid) {
-		t.Fatalf("invalid gateway token error_code = %s body = %#v", envelope.ErrorCode, envelope)
+	if envelope.Code != string(security.ErrGatewayTokenInvalid) {
+		t.Fatalf("invalid gateway token error_code = %s body = %#v", envelope.Code, envelope)
 	}
 
 	wrongChannelBody := cloneMap(baseBody)
 	wrongChannelBody["bridge_channel_id"] = "bridge_http_other"
 	envelope = postJSONError(t, handler, "/_redevplugin/api/plugins/rpc", wrongChannelBody, http.StatusForbidden)
-	if envelope.ErrorCode != string(security.ErrGatewayTokenChannelMismatch) {
-		t.Fatalf("gateway token channel mismatch error_code = %s body = %#v", envelope.ErrorCode, envelope)
+	if envelope.Code != string(security.ErrGatewayTokenChannelMismatch) {
+		t.Fatalf("gateway token channel mismatch error_code = %s body = %#v", envelope.Code, envelope)
 	}
 }
 
 func TestHandlerBridgeTokenDuplicateChannelUsesGatewayMismatchCode(t *testing.T) {
 	h := newHTTPTestHost(t)
-	handler := Handler{Host: h, WebSecurity: allowHTTPTestGuard()}
-	installed, err := host.ImportLocalPackageBytes(context.Background(), h, buildHTTPFixturePackage(t))
+	handler := mustNewHandler(t, h, allowHTTPTestGuard())
+	installed, err := host.ImportLocalPackageBytes(httpTestContext(), h, buildHTTPFixturePackage(t))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.EnablePlugin(context.Background(), host.EnableRequest{PluginInstanceID: installed.PluginInstanceID, PluginStateVersion: mustPluginStateVersion(t, h, installed.PluginInstanceID)}); err != nil {
+	if _, err := h.EnablePlugin(httpTestContext(), host.EnableRequest{PluginInstanceID: installed.PluginInstanceID, ExpectedManagementRevision: mustManagementRevision(t, h, installed.PluginInstanceID)}); err != nil {
 		t.Fatal(err)
 	}
 	openResp := postJSON[bridge.SurfaceBootstrap](t, handler, "/_redevplugin/api/plugins/surfaces/open", map[string]any{
-		"plugin_instance_id":   installed.PluginInstanceID,
-		"surface_id":           "http.view",
-		"surface_instance_id":  "surface_http_duplicate_channel",
-		"plugin_state_version": 2,
+		"plugin_instance_id":           installed.PluginInstanceID,
+		"surface_id":                   "http.view",
+		"surface_instance_id":          "surface_http_duplicate_channel",
+		"expected_management_revision": 2,
 	})
 	postJSON[bridge.AssetSessionResult](t, handler, "/_redevplugin/api/plugins/surfaces/surface_http_duplicate_channel/prepare", map[string]any{
 		"asset_ticket": openResp.AssetTicket,
@@ -1379,8 +1828,8 @@ func TestHandlerBridgeTokenDuplicateChannelUsesGatewayMismatchCode(t *testing.T)
 	postJSON[bridge.GatewayTokenResult](t, handler, "/_redevplugin/api/plugins/surfaces/surface_http_duplicate_channel/bridge-token", bridgeTokenRequestBody(openResp, "bridge_http_a"))
 
 	envelope := postJSONError(t, handler, "/_redevplugin/api/plugins/surfaces/surface_http_duplicate_channel/bridge-token", bridgeTokenRequestBody(openResp, "bridge_http_b"), http.StatusForbidden)
-	if envelope.ErrorCode != string(security.ErrGatewayTokenChannelMismatch) {
-		t.Fatalf("duplicate bridge channel error_code = %s body = %#v", envelope.ErrorCode, envelope)
+	if envelope.Code != string(security.ErrGatewayTokenChannelMismatch) {
+		t.Fatalf("duplicate bridge channel error_code = %s body = %#v", envelope.Code, envelope)
 	}
 }
 
@@ -1405,14 +1854,13 @@ func TestRPCErrorMapsValidatedCapabilityBusinessError(t *testing.T) {
 		t.Fatalf("publicPluginErrorMessage() = %q", got)
 	}
 	details := errorDetailsForRPCError(err)
-	if details["business_error_code"] != "DOCUMENT_NOT_FOUND" {
+	if details.BusinessErrorCode != "DOCUMENT_NOT_FOUND" {
 		t.Fatalf("business error details = %#v", details)
 	}
-	if details["capability_id"] != "example.capability.documents" || details["capability_version"] != "1.0.0" || details["detail_schema_sha256"] != strings.Repeat("a", 64) {
+	if details.CapabilityID != "example.capability.documents" || details.CapabilityVersion != "1.0.0" || details.DetailSchemaSHA256 != strings.Repeat("a", 64) {
 		t.Fatalf("business error contract identity = %#v", details)
 	}
-	payload, ok := details["business_error_details"].(map[string]any)
-	if !ok || payload["document_id"] != "doc-1" {
+	if details.BusinessErrorDetails["document_id"] != "doc-1" {
 		t.Fatalf("business error payload = %#v", details)
 	}
 }
@@ -1441,14 +1889,14 @@ func TestHandlerPermissionGrantRevokeFlow(t *testing.T) {
 		capabilityID:      "example.capability.echo",
 		capabilityAdapter: adapter,
 	})
-	installed, err := host.ImportLocalPackageBytes(context.Background(), h, buildHTTPRPCFixturePackage(t))
+	installed, err := host.ImportLocalPackageBytes(httpTestContext(), h, buildHTTPRPCFixturePackage(t))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.EnablePlugin(context.Background(), host.EnableRequest{PluginInstanceID: installed.PluginInstanceID, PluginStateVersion: mustPluginStateVersion(t, h, installed.PluginInstanceID)}); err != nil {
+	if _, err := h.EnablePlugin(httpTestContext(), host.EnableRequest{PluginInstanceID: installed.PluginInstanceID, ExpectedManagementRevision: mustManagementRevision(t, h, installed.PluginInstanceID)}); err != nil {
 		t.Fatal(err)
 	}
-	handler := Handler{Host: h, WebSecurity: allowHTTPTestGuard()}
+	handler := mustNewHandler(t, h, allowHTTPTestGuard())
 	bridgeResp := openHTTPBridge(t, handler, installed.PluginInstanceID, "http.rpc.view", "surface_http_permissions", "bridge_http_permissions")
 	callBody := map[string]any{
 		"plugin_instance_id":   installed.PluginInstanceID,
@@ -1462,26 +1910,40 @@ func TestHandlerPermissionGrantRevokeFlow(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	req := httptest.NewRequest(http.MethodPost, "/_redevplugin/api/plugins/rpc", bytes.NewReader(raw))
+	req := newJSONHTTPRequest(http.MethodPost, "/_redevplugin/api/plugins/rpc", bytes.NewReader(raw))
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("rpc without grant status = %d body = %s", rec.Code, rec.Body.String())
 	}
-	var envelope Envelope
+	var envelope decodedErrorResponse
 	if err := json.Unmarshal(rec.Body.Bytes(), &envelope); err != nil {
 		t.Fatal(err)
 	}
-	if envelope.ErrorCode != string(security.ErrPermissionDenied) {
-		t.Fatalf("rpc without grant error_code = %s body = %s", envelope.ErrorCode, rec.Body.String())
+	if envelope.Code != string(security.ErrPermissionDenied) {
+		t.Fatalf("rpc without grant error_code = %s body = %s", envelope.Code, rec.Body.String())
 	}
 
-	grant := postJSON[permissions.Record](t, handler, "/_redevplugin/api/plugins/permissions/grant", map[string]any{
-		"plugin_instance_id": installed.PluginInstanceID,
-		"permission_id":      "read",
-		"granted_by":         "admin",
+	expected := mustAuthorizationRevisions(t, h, installed.PluginInstanceID)
+	spoofedGrant := postJSONError(t, handler, "/_redevplugin/api/plugins/permissions/grant", map[string]any{
+		"plugin_instance_id":           installed.PluginInstanceID,
+		"permission_id":                "read",
+		"expected_policy_revision":     expected.PolicyRevision,
+		"expected_management_revision": expected.ManagementRevision,
+		"expected_revoke_epoch":        expected.RevokeEpoch,
+		"actor":                        "spoofed_actor",
+	}, http.StatusBadRequest)
+	if spoofedGrant.Code != string(security.ErrInvalidRequest) {
+		t.Fatalf("spoofed permission grant error_code = %s", spoofedGrant.Code)
+	}
+	grant := postJSON[host.PermissionMutationResult](t, handler, "/_redevplugin/api/plugins/permissions/grant", map[string]any{
+		"plugin_instance_id":           installed.PluginInstanceID,
+		"permission_id":                "read",
+		"expected_policy_revision":     expected.PolicyRevision,
+		"expected_management_revision": expected.ManagementRevision,
+		"expected_revoke_epoch":        expected.RevokeEpoch,
 	})
-	if grant.PermissionID != "read" || grant.GrantedBy != "admin" || grant.RevokedAt != nil {
+	if grant.Permission.PermissionID != "read" || grant.Permission.GrantedBy != "user_hash" || grant.Permission.RevokedAt != nil || grant.Revisions.PolicyRevision != expected.PolicyRevision+1 {
 		t.Fatalf("grant response mismatch: %#v", grant)
 	}
 	listed := getJSON[struct {
@@ -1491,7 +1953,7 @@ func TestHandlerPermissionGrantRevokeFlow(t *testing.T) {
 		t.Fatalf("permissions list mismatch: %#v", listed)
 	}
 
-	req = httptest.NewRequest(http.MethodPost, "/_redevplugin/api/plugins/rpc", bytes.NewReader(raw))
+	req = newJSONHTTPRequest(http.MethodPost, "/_redevplugin/api/plugins/rpc", bytes.NewReader(raw))
 	rec = httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusForbidden {
@@ -1500,8 +1962,8 @@ func TestHandlerPermissionGrantRevokeFlow(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &envelope); err != nil {
 		t.Fatal(err)
 	}
-	if envelope.ErrorCode != string(security.ErrGatewayTokenInvalid) {
-		t.Fatalf("stale token error_code = %s body = %s", envelope.ErrorCode, rec.Body.String())
+	if envelope.Code != string(security.ErrGatewayTokenInvalid) {
+		t.Fatalf("stale token error_code = %s body = %s", envelope.Code, rec.Body.String())
 	}
 
 	bridgeResp = openHTTPBridge(t, handler, installed.PluginInstanceID, "http.rpc.view", "surface_http_permissions", "bridge_http_permissions")
@@ -1511,13 +1973,27 @@ func TestHandlerPermissionGrantRevokeFlow(t *testing.T) {
 		t.Fatalf("rpc after grant mismatch: result=%#v invocation=%#v", result, adapter.last)
 	}
 
-	revoked := postJSON[permissions.Record](t, handler, "/_redevplugin/api/plugins/permissions/revoke", map[string]any{
-		"plugin_instance_id": installed.PluginInstanceID,
-		"permission_id":      "read",
-		"revoked_by":         "admin",
-		"reason":             "test",
+	expected = mustAuthorizationRevisions(t, h, installed.PluginInstanceID)
+	spoofedRevoke := postJSONError(t, handler, "/_redevplugin/api/plugins/permissions/revoke", map[string]any{
+		"plugin_instance_id":           installed.PluginInstanceID,
+		"permission_id":                "read",
+		"expected_policy_revision":     expected.PolicyRevision,
+		"expected_management_revision": expected.ManagementRevision,
+		"expected_revoke_epoch":        expected.RevokeEpoch,
+		"actor":                        "spoofed_actor",
+	}, http.StatusBadRequest)
+	if spoofedRevoke.Code != string(security.ErrInvalidRequest) {
+		t.Fatalf("spoofed permission revoke error_code = %s", spoofedRevoke.Code)
+	}
+	revoked := postJSON[host.PermissionMutationResult](t, handler, "/_redevplugin/api/plugins/permissions/revoke", map[string]any{
+		"plugin_instance_id":           installed.PluginInstanceID,
+		"permission_id":                "read",
+		"expected_policy_revision":     expected.PolicyRevision,
+		"expected_management_revision": expected.ManagementRevision,
+		"expected_revoke_epoch":        expected.RevokeEpoch,
+		"reason":                       "test",
 	})
-	if revoked.RevokedAt == nil || revoked.RevokedBy != "admin" || revoked.RevokedReason != "test" {
+	if revoked.Permission.RevokedAt == nil || revoked.Permission.RevokedBy != "user_hash" || revoked.Permission.RevokedReason != "test" || revoked.Revisions.RevokeEpoch != expected.RevokeEpoch+1 {
 		t.Fatalf("revoke response mismatch: %#v", revoked)
 	}
 	active := getJSON[struct {
@@ -1532,7 +2008,7 @@ func TestHandlerPermissionGrantRevokeFlow(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	req = httptest.NewRequest(http.MethodPost, "/_redevplugin/api/plugins/rpc", bytes.NewReader(raw))
+	req = newJSONHTTPRequest(http.MethodPost, "/_redevplugin/api/plugins/rpc", bytes.NewReader(raw))
 	rec = httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusForbidden {
@@ -1541,8 +2017,123 @@ func TestHandlerPermissionGrantRevokeFlow(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &envelope); err != nil {
 		t.Fatal(err)
 	}
-	if envelope.ErrorCode != string(security.ErrPermissionDenied) {
-		t.Fatalf("rpc after revoke error_code = %s body = %s", envelope.ErrorCode, rec.Body.String())
+	if envelope.Code != string(security.ErrPermissionDenied) {
+		t.Fatalf("rpc after revoke error_code = %s body = %s", envelope.Code, rec.Body.String())
+	}
+}
+
+func TestHandlerSecurityPolicyCRUD(t *testing.T) {
+	h := newHTTPTestHostWithOptions(t, httpTestHostOptions{
+		capabilityID:      "example.capability.echo",
+		capabilityAdapter: &httpRecordingCapabilityAdapter{result: capability.Result{Data: map[string]any{"pong": true}}},
+	})
+	installed, err := host.ImportLocalPackageBytes(httpTestContext(), h, buildHTTPRPCFixturePackage(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := mustNewHandler(t, h, allowHTTPTestGuard())
+	policyPath := "/_redevplugin/api/plugins/security-policies/" + installed.PluginInstanceID
+
+	initialList := getJSON[struct {
+		SecurityPolicies []securityPolicyResponse `json:"security_policies"`
+	}](t, handler, "/_redevplugin/api/plugins/security-policies")
+	if len(initialList.SecurityPolicies) != 0 {
+		t.Fatalf("initial security policy list = %#v", initialList.SecurityPolicies)
+	}
+	missing := requestJSONError(t, handler, http.MethodGet, policyPath, nil, http.StatusNotFound)
+	if missing.Code != string(security.ErrInvalidRequest) {
+		t.Fatalf("missing security policy error_code = %s", missing.Code)
+	}
+
+	initial := mustAuthorizationRevisions(t, h, installed.PluginInstanceID)
+	putBody := map[string]any{
+		"expected_policy_revision":     initial.PolicyRevision,
+		"expected_management_revision": initial.ManagementRevision,
+		"expected_revoke_epoch":        initial.RevokeEpoch,
+		"allowed_permissions":          []string{"network.http", "read"},
+		"denied_methods":               []string{"echo.delete", "echo.reset"},
+	}
+	unknownPut := cloneMap(putBody)
+	unknownPut["plugin_instance_id"] = installed.PluginInstanceID
+	unknown := requestJSONError(t, handler, http.MethodPut, policyPath, unknownPut, http.StatusBadRequest)
+	if unknown.Code != string(security.ErrInvalidRequest) || unknown.MutationOutcome != string(mutation.OutcomeNotCommitted) {
+		t.Fatalf("unknown PUT field error = %#v", unknown)
+	}
+
+	created := requestJSON[securityPolicyResponse](t, handler, http.MethodPut, policyPath, putBody)
+	if created.PluginInstanceID != installed.PluginInstanceID ||
+		!reflect.DeepEqual(created.AllowedPermissions, []string{"network.http", "read"}) ||
+		!reflect.DeepEqual(created.DeniedMethods, []string{"echo.delete", "echo.reset"}) || created.UpdatedAt.IsZero() ||
+		created.PolicyRevision <= initial.PolicyRevision || created.ManagementRevision != initial.ManagementRevision || created.RevokeEpoch <= initial.RevokeEpoch {
+		t.Fatalf("created security policy = %#v", created)
+	}
+	got := getJSON[securityPolicyResponse](t, handler, policyPath)
+	if !reflect.DeepEqual(got, created) {
+		t.Fatalf("GET security policy = %#v, want %#v", got, created)
+	}
+	listed := getJSON[struct {
+		SecurityPolicies []securityPolicyResponse `json:"security_policies"`
+	}](t, handler, "/_redevplugin/api/plugins/security-policies")
+	if len(listed.SecurityPolicies) != 1 || !reflect.DeepEqual(listed.SecurityPolicies[0], created) {
+		t.Fatalf("security policy list = %#v", listed.SecurityPolicies)
+	}
+
+	afterPut := mustAuthorizationRevisions(t, h, installed.PluginInstanceID)
+	stalePut := requestJSONError(t, handler, http.MethodPut, policyPath, putBody, http.StatusConflict)
+	assertAuthorizationRevisionConflict(t, stalePut, installed.PluginInstanceID, initial, afterPut)
+
+	deleteBody := map[string]any{
+		"expected_policy_revision":     afterPut.PolicyRevision,
+		"expected_management_revision": afterPut.ManagementRevision,
+		"expected_revoke_epoch":        afterPut.RevokeEpoch,
+	}
+	unknownDelete := cloneMap(deleteBody)
+	unknownDelete["reason"] = "not part of the contract"
+	unknown = requestJSONError(t, handler, http.MethodDelete, policyPath, unknownDelete, http.StatusBadRequest)
+	if unknown.Code != string(security.ErrInvalidRequest) || unknown.MutationOutcome != string(mutation.OutcomeNotCommitted) {
+		t.Fatalf("unknown DELETE field error = %#v", unknown)
+	}
+	staleDelete := requestJSONError(t, handler, http.MethodDelete, policyPath, map[string]any{
+		"expected_policy_revision":     initial.PolicyRevision,
+		"expected_management_revision": initial.ManagementRevision,
+		"expected_revoke_epoch":        initial.RevokeEpoch,
+	}, http.StatusConflict)
+	assertAuthorizationRevisionConflict(t, staleDelete, installed.PluginInstanceID, initial, afterPut)
+
+	deleted := requestJSON[struct {
+		PluginInstanceID   string `json:"plugin_instance_id"`
+		Deleted            bool   `json:"deleted"`
+		PolicyRevision     uint64 `json:"policy_revision"`
+		ManagementRevision uint64 `json:"management_revision"`
+		RevokeEpoch        uint64 `json:"revoke_epoch"`
+	}](t, handler, http.MethodDelete, policyPath, deleteBody)
+	if !deleted.Deleted || deleted.PluginInstanceID != installed.PluginInstanceID || deleted.PolicyRevision <= afterPut.PolicyRevision || deleted.RevokeEpoch <= afterPut.RevokeEpoch {
+		t.Fatalf("security policy delete result = %#v", deleted)
+	}
+	finalList := getJSON[struct {
+		SecurityPolicies []securityPolicyResponse `json:"security_policies"`
+	}](t, handler, "/_redevplugin/api/plugins/security-policies")
+	if len(finalList.SecurityPolicies) != 0 {
+		t.Fatalf("security policies after delete = %#v", finalList.SecurityPolicies)
+	}
+}
+
+func assertAuthorizationRevisionConflict(t *testing.T, got decodedErrorResponse, pluginInstanceID string, expected, actual registry.AuthorizationRevisions) {
+	t.Helper()
+	if got.Code != string(security.ErrAuthorizationRevisionMismatch) || got.MutationOutcome != string(mutation.OutcomeNotCommitted) {
+		t.Fatalf("authorization conflict envelope = %#v", got)
+	}
+	wantDetails := map[string]any{
+		"plugin_instance_id":           pluginInstanceID,
+		"expected_policy_revision":     float64(expected.PolicyRevision),
+		"actual_policy_revision":       float64(actual.PolicyRevision),
+		"expected_management_revision": float64(expected.ManagementRevision),
+		"actual_management_revision":   float64(actual.ManagementRevision),
+		"expected_revoke_epoch":        float64(expected.RevokeEpoch),
+		"actual_revoke_epoch":          float64(actual.RevokeEpoch),
+	}
+	if !reflect.DeepEqual(got.Details, wantDetails) {
+		t.Fatalf("authorization conflict details = %#v, want %#v", got.Details, wantDetails)
 	}
 }
 
@@ -1552,20 +2143,20 @@ func TestHandlerRPCConfirmationFlow(t *testing.T) {
 		capabilityID:      "example.capability.echo",
 		capabilityAdapter: adapter,
 	})
-	installed, err := host.ImportLocalPackageBytes(context.Background(), h, buildHTTPDangerousRPCFixturePackage(t))
+	installed, err := host.ImportLocalPackageBytes(httpTestContext(), h, buildHTTPDangerousRPCFixturePackage(t))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.EnablePlugin(context.Background(), host.EnableRequest{PluginInstanceID: installed.PluginInstanceID, PluginStateVersion: mustPluginStateVersion(t, h, installed.PluginInstanceID)}); err != nil {
+	if _, err := h.EnablePlugin(httpTestContext(), host.EnableRequest{PluginInstanceID: installed.PluginInstanceID, ExpectedManagementRevision: mustManagementRevision(t, h, installed.PluginInstanceID)}); err != nil {
 		t.Fatal(err)
 	}
 	grantHTTPDeclaredPermissions(t, h, installed)
-	handler := Handler{Host: h, WebSecurity: allowHTTPTestGuard()}
+	handler := mustNewHandler(t, h, allowHTTPTestGuard())
 	openResp := postJSON[bridge.SurfaceBootstrap](t, handler, "/_redevplugin/api/plugins/surfaces/open", map[string]any{
-		"plugin_instance_id":   installed.PluginInstanceID,
-		"surface_id":           "http.danger.view",
-		"surface_instance_id":  "surface_http_danger",
-		"plugin_state_version": 2,
+		"plugin_instance_id":           installed.PluginInstanceID,
+		"surface_id":                   "http.danger.view",
+		"surface_instance_id":          "surface_http_danger",
+		"expected_management_revision": 2,
 	})
 	postJSON[bridge.AssetSessionResult](t, handler, "/_redevplugin/api/plugins/surfaces/surface_http_danger/prepare", map[string]any{
 		"asset_ticket": openResp.AssetTicket,
@@ -1579,29 +2170,35 @@ func TestHandlerRPCConfirmationFlow(t *testing.T) {
 		"method":               "danger.run",
 		"params":               map[string]any{"target": "db"},
 	}
+	invalidPrepareBody := cloneMap(body)
+	invalidPrepareBody["confirmation_id"] = "confirmation_must_not_be_accepted"
+	invalidPrepare := requestJSONError(t, handler, http.MethodPost, "/_redevplugin/api/plugins/confirmations/prepare", invalidPrepareBody, http.StatusBadRequest)
+	if invalidPrepare.Code != string(security.ErrInvalidRequest) || invalidPrepare.MutationOutcome != string(mutation.OutcomeNotCommitted) {
+		t.Fatalf("prepare confirmation invalid field error = %#v", invalidPrepare)
+	}
 
 	raw, err := json.Marshal(body)
 	if err != nil {
 		t.Fatal(err)
 	}
-	req := httptest.NewRequest(http.MethodPost, "/_redevplugin/api/plugins/rpc", bytes.NewReader(raw))
+	req := newJSONHTTPRequest(http.MethodPost, "/_redevplugin/api/plugins/rpc", bytes.NewReader(raw))
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusConflict {
 		t.Fatalf("danger rpc status = %d body = %s", rec.Code, rec.Body.String())
 	}
-	var conflict Envelope
+	var conflict decodedErrorResponse
 	if err := json.Unmarshal(rec.Body.Bytes(), &conflict); err != nil {
 		t.Fatal(err)
 	}
-	if conflict.ErrorCode != string(security.ErrConfirmationRequired) {
-		t.Fatalf("danger rpc error code = %s body = %s", conflict.ErrorCode, rec.Body.String())
+	if conflict.Code != string(security.ErrConfirmationRequired) {
+		t.Fatalf("danger rpc error code = %s body = %s", conflict.Code, rec.Body.String())
 	}
 	if adapter.last.Execution.Method != "" {
 		t.Fatalf("capability adapter should not be called before confirmation: %#v", adapter.last)
 	}
 
-	confirmation := postJSON[host.ConfirmMethodResult](t, handler, "/_redevplugin/api/plugins/confirm", body)
+	confirmation := postJSON[host.PrepareMethodConfirmationResult](t, handler, "/_redevplugin/api/plugins/confirmations/prepare", body)
 	if confirmation.ConfirmationID == "" || confirmation.RequestHash == "" {
 		t.Fatalf("confirmation response mismatch: %#v", confirmation)
 	}
@@ -1618,15 +2215,15 @@ func TestHandlerRPCConfirmationRejectionFlow(t *testing.T) {
 		capabilityID:      "example.capability.echo",
 		capabilityAdapter: adapter,
 	})
-	installed, err := host.ImportLocalPackageBytes(context.Background(), h, buildHTTPDangerousRPCFixturePackage(t))
+	installed, err := host.ImportLocalPackageBytes(httpTestContext(), h, buildHTTPDangerousRPCFixturePackage(t))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.EnablePlugin(context.Background(), host.EnableRequest{PluginInstanceID: installed.PluginInstanceID, PluginStateVersion: mustPluginStateVersion(t, h, installed.PluginInstanceID)}); err != nil {
+	if _, err := h.EnablePlugin(httpTestContext(), host.EnableRequest{PluginInstanceID: installed.PluginInstanceID, ExpectedManagementRevision: mustManagementRevision(t, h, installed.PluginInstanceID)}); err != nil {
 		t.Fatal(err)
 	}
 	grantHTTPDeclaredPermissions(t, h, installed)
-	handler := Handler{Host: h, WebSecurity: allowHTTPTestGuard()}
+	handler := mustNewHandler(t, h, allowHTTPTestGuard())
 	bridgeResp := openHTTPBridge(t, handler, installed.PluginInstanceID, "http.danger.view", "surface_http_danger", "bridge_http_danger")
 	body := map[string]any{
 		"plugin_instance_id":   installed.PluginInstanceID,
@@ -1636,7 +2233,7 @@ func TestHandlerRPCConfirmationRejectionFlow(t *testing.T) {
 		"method":               "danger.run",
 		"params":               map[string]any{"target": "db"},
 	}
-	confirmation := postJSON[host.ConfirmMethodResult](t, handler, "/_redevplugin/api/plugins/confirm", body)
+	confirmation := postJSON[host.PrepareMethodConfirmationResult](t, handler, "/_redevplugin/api/plugins/confirmations/prepare", body)
 
 	rejected := postJSON[host.RejectMethodConfirmationResult](t, handler, "/_redevplugin/api/plugins/surfaces/surface_http_danger/confirmations/reject", map[string]any{
 		"plugin_instance_id":   installed.PluginInstanceID,
@@ -1652,8 +2249,8 @@ func TestHandlerRPCConfirmationRejectionFlow(t *testing.T) {
 	}
 	body["confirmation_id"] = confirmation.ConfirmationID
 	envelope := postJSONError(t, handler, "/_redevplugin/api/plugins/rpc", body, http.StatusForbidden)
-	if envelope.ErrorCode != string(security.ErrConfirmationInvalid) {
-		t.Fatalf("rejected confirmation replay error_code = %s body = %#v", envelope.ErrorCode, envelope)
+	if envelope.Code != string(security.ErrConfirmationInvalid) {
+		t.Fatalf("rejected confirmation replay error_code = %s body = %#v", envelope.Code, envelope)
 	}
 }
 
@@ -1663,15 +2260,15 @@ func TestHandlerIntentListAndInvokeFlow(t *testing.T) {
 		capabilityID:      "example.capability.echo",
 		capabilityAdapter: adapter,
 	})
-	installed, err := host.ImportLocalPackageBytes(context.Background(), h, buildHTTPIntentFixturePackage(t, false))
+	installed, err := host.ImportLocalPackageBytes(httpTestContext(), h, buildHTTPIntentFixturePackage(t, false))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.EnablePlugin(context.Background(), host.EnableRequest{PluginInstanceID: installed.PluginInstanceID, PluginStateVersion: mustPluginStateVersion(t, h, installed.PluginInstanceID)}); err != nil {
+	if _, err := h.EnablePlugin(httpTestContext(), host.EnableRequest{PluginInstanceID: installed.PluginInstanceID, ExpectedManagementRevision: mustManagementRevision(t, h, installed.PluginInstanceID)}); err != nil {
 		t.Fatal(err)
 	}
 	grantHTTPDeclaredPermissions(t, h, installed)
-	handler := Handler{Host: h, WebSecurity: allowHTTPTestGuard()}
+	handler := mustNewHandler(t, h, allowHTTPTestGuard())
 
 	listed := getJSON[struct {
 		Intents []host.IntentRecord `json:"intents"`
@@ -1690,20 +2287,66 @@ func TestHandlerIntentListAndInvokeFlow(t *testing.T) {
 	}
 }
 
+func TestHandlerListQueriesRejectNonCanonicalParameters(t *testing.T) {
+	handler := mustNewHandler(t, newHTTPTestHost(t), allowHTTPTestGuard())
+	tests := []struct {
+		name string
+		path string
+	}{
+		{name: "intents unknown parameter", path: "/_redevplugin/api/plugins/intents?unknown=value"},
+		{name: "intents duplicate parameter", path: "/_redevplugin/api/plugins/intents?intent_id=one&intent_id=two"},
+		{name: "intents empty parameter", path: "/_redevplugin/api/plugins/intents?intent_id="},
+		{name: "intents padded parameter", path: "/_redevplugin/api/plugins/intents?intent_id=%20one%20"},
+		{name: "permissions unknown parameter", path: "/_redevplugin/api/plugins/permissions?unknown=value"},
+		{name: "permissions duplicate parameter", path: "/_redevplugin/api/plugins/permissions?active_only=true&active_only=false"},
+		{name: "permissions numeric boolean", path: "/_redevplugin/api/plugins/permissions?active_only=1"},
+		{name: "permissions noncanonical boolean", path: "/_redevplugin/api/plugins/permissions?active_only=yes"},
+		{name: "diagnostics unknown parameter", path: "/_redevplugin/api/plugins/diagnostics?unknown=value"},
+		{name: "diagnostics duplicate severity", path: "/_redevplugin/api/plugins/diagnostics?severity=info&severity=warning"},
+		{name: "diagnostics unsupported severity", path: "/_redevplugin/api/plugins/diagnostics?severity=critical"},
+		{name: "diagnostics limit below minimum", path: "/_redevplugin/api/plugins/diagnostics?limit=0"},
+		{name: "diagnostics limit above maximum", path: "/_redevplugin/api/plugins/diagnostics?limit=1001"},
+		{name: "operations unknown parameter", path: "/_redevplugin/api/plugins/operations?unknown=value"},
+		{name: "operations duplicate parameter", path: "/_redevplugin/api/plugins/operations?cursor=one&cursor=two"},
+		{name: "operations empty parameter", path: "/_redevplugin/api/plugins/operations?plugin_instance_id="},
+		{name: "operations padded parameter", path: "/_redevplugin/api/plugins/operations?cursor=%20next%20"},
+		{name: "operations limit below minimum", path: "/_redevplugin/api/plugins/operations?limit=0"},
+		{name: "operations limit above maximum", path: "/_redevplugin/api/plugins/operations?limit=501"},
+		{name: "operations noncanonical limit", path: "/_redevplugin/api/plugins/operations?limit=%2B1"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, tt.path, nil)
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want %d; body = %s", rec.Code, http.StatusBadRequest, rec.Body.String())
+			}
+			var envelope decodedErrorResponse
+			if err := json.Unmarshal(rec.Body.Bytes(), &envelope); err != nil {
+				t.Fatal(err)
+			}
+			if envelope.OK || envelope.Code != string(security.ErrInvalidRequest) || envelope.MutationOutcome != "" {
+				t.Fatalf("invalid read query envelope = %#v", envelope)
+			}
+		})
+	}
+}
+
 func TestHandlerIntentInvokeRequiresPermission(t *testing.T) {
 	adapter := &httpRecordingCapabilityAdapter{result: capability.Result{Data: map[string]any{"ok": true}}}
 	h := newHTTPTestHostWithOptions(t, httpTestHostOptions{
 		capabilityID:      "example.capability.echo",
 		capabilityAdapter: adapter,
 	})
-	installed, err := host.ImportLocalPackageBytes(context.Background(), h, buildHTTPIntentFixturePackage(t, false))
+	installed, err := host.ImportLocalPackageBytes(httpTestContext(), h, buildHTTPIntentFixturePackage(t, false))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.EnablePlugin(context.Background(), host.EnableRequest{PluginInstanceID: installed.PluginInstanceID, PluginStateVersion: mustPluginStateVersion(t, h, installed.PluginInstanceID)}); err != nil {
+	if _, err := h.EnablePlugin(httpTestContext(), host.EnableRequest{PluginInstanceID: installed.PluginInstanceID, ExpectedManagementRevision: mustManagementRevision(t, h, installed.PluginInstanceID)}); err != nil {
 		t.Fatal(err)
 	}
-	handler := Handler{Host: h, WebSecurity: allowHTTPTestGuard()}
+	handler := mustNewHandler(t, h, allowHTTPTestGuard())
 	raw, err := json.Marshal(map[string]any{
 		"plugin_instance_id": installed.PluginInstanceID,
 		"intent_id":          "example.echo",
@@ -1711,7 +2354,7 @@ func TestHandlerIntentInvokeRequiresPermission(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	req := httptest.NewRequest(http.MethodPost, "/_redevplugin/api/plugins/intents/invoke", bytes.NewReader(raw))
+	req := newJSONHTTPRequest(http.MethodPost, "/_redevplugin/api/plugins/intents/invoke", bytes.NewReader(raw))
 	rec := httptest.NewRecorder()
 
 	handler.ServeHTTP(rec, req)
@@ -1719,12 +2362,12 @@ func TestHandlerIntentInvokeRequiresPermission(t *testing.T) {
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("intent without grant status = %d body = %s", rec.Code, rec.Body.String())
 	}
-	var envelope Envelope
+	var envelope decodedErrorResponse
 	if err := json.Unmarshal(rec.Body.Bytes(), &envelope); err != nil {
 		t.Fatal(err)
 	}
-	if envelope.ErrorCode != string(security.ErrPermissionDenied) {
-		t.Fatalf("intent without grant error_code = %s body = %s", envelope.ErrorCode, rec.Body.String())
+	if envelope.Code != string(security.ErrPermissionDenied) {
+		t.Fatalf("intent without grant error_code = %s body = %s", envelope.Code, rec.Body.String())
 	}
 	if adapter.last.Execution.Method != "" {
 		t.Fatalf("capability adapter should not be called without grant: %#v", adapter.last)
@@ -1737,15 +2380,15 @@ func TestHandlerIntentInvokeDangerousFailsClosed(t *testing.T) {
 		capabilityID:      "example.capability.echo",
 		capabilityAdapter: adapter,
 	})
-	installed, err := host.ImportLocalPackageBytes(context.Background(), h, buildHTTPIntentFixturePackage(t, true))
+	installed, err := host.ImportLocalPackageBytes(httpTestContext(), h, buildHTTPIntentFixturePackage(t, true))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.EnablePlugin(context.Background(), host.EnableRequest{PluginInstanceID: installed.PluginInstanceID, PluginStateVersion: mustPluginStateVersion(t, h, installed.PluginInstanceID)}); err != nil {
+	if _, err := h.EnablePlugin(httpTestContext(), host.EnableRequest{PluginInstanceID: installed.PluginInstanceID, ExpectedManagementRevision: mustManagementRevision(t, h, installed.PluginInstanceID)}); err != nil {
 		t.Fatal(err)
 	}
 	grantHTTPDeclaredPermissions(t, h, installed)
-	handler := Handler{Host: h, WebSecurity: allowHTTPTestGuard()}
+	handler := mustNewHandler(t, h, allowHTTPTestGuard())
 	raw, err := json.Marshal(map[string]any{
 		"plugin_instance_id": installed.PluginInstanceID,
 		"intent_id":          "example.danger",
@@ -1754,7 +2397,7 @@ func TestHandlerIntentInvokeDangerousFailsClosed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	req := httptest.NewRequest(http.MethodPost, "/_redevplugin/api/plugins/intents/invoke", bytes.NewReader(raw))
+	req := newJSONHTTPRequest(http.MethodPost, "/_redevplugin/api/plugins/intents/invoke", bytes.NewReader(raw))
 	rec := httptest.NewRecorder()
 
 	handler.ServeHTTP(rec, req)
@@ -1762,12 +2405,12 @@ func TestHandlerIntentInvokeDangerousFailsClosed(t *testing.T) {
 	if rec.Code != http.StatusConflict {
 		t.Fatalf("danger intent status = %d body = %s", rec.Code, rec.Body.String())
 	}
-	var envelope Envelope
+	var envelope decodedErrorResponse
 	if err := json.Unmarshal(rec.Body.Bytes(), &envelope); err != nil {
 		t.Fatal(err)
 	}
-	if envelope.ErrorCode != string(security.ErrConfirmationRequired) {
-		t.Fatalf("danger intent error code = %s body = %s", envelope.ErrorCode, rec.Body.String())
+	if envelope.Code != string(security.ErrConfirmationRequired) {
+		t.Fatalf("danger intent error code = %s body = %s", envelope.Code, rec.Body.String())
 	}
 	if adapter.last.Execution.Method != "" {
 		t.Fatalf("capability adapter should not be called for dangerous intent: %#v", adapter.last)
@@ -1780,15 +2423,15 @@ func TestHandlerOperationManagementFlow(t *testing.T) {
 		capabilityID:      "example.capability.echo",
 		capabilityAdapter: adapter,
 	})
-	installed, err := host.ImportLocalPackageBytes(context.Background(), h, buildHTTPOperationRPCFixturePackage(t))
+	installed, err := host.ImportLocalPackageBytes(httpTestContext(), h, buildHTTPOperationRPCFixturePackage(t))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.EnablePlugin(context.Background(), host.EnableRequest{PluginInstanceID: installed.PluginInstanceID, PluginStateVersion: mustPluginStateVersion(t, h, installed.PluginInstanceID)}); err != nil {
+	if _, err := h.EnablePlugin(httpTestContext(), host.EnableRequest{PluginInstanceID: installed.PluginInstanceID, ExpectedManagementRevision: mustManagementRevision(t, h, installed.PluginInstanceID)}); err != nil {
 		t.Fatal(err)
 	}
 	grantHTTPDeclaredPermissions(t, h, installed)
-	handler := Handler{Host: h, WebSecurity: allowHTTPTestGuard()}
+	handler := mustNewHandler(t, h, allowHTTPTestGuard())
 	bridgeResp := openHTTPBridge(t, handler, installed.PluginInstanceID, "http.operation.view", "surface_http_operation", "bridge_http_operation")
 
 	result := postJSON[host.CallMethodResult](t, handler, "/_redevplugin/api/plugins/rpc", map[string]any{
@@ -1807,6 +2450,12 @@ func TestHandlerOperationManagementFlow(t *testing.T) {
 	}](t, handler, "/_redevplugin/api/plugins/operations?plugin_instance_id="+installed.PluginInstanceID)
 	if len(listed.Operations) != 1 || listed.Operations[0].OperationID != result.OperationID {
 		t.Fatalf("operation list mismatch: %#v", listed)
+	}
+	invalidListRequest := httptest.NewRequest(http.MethodGet, "/_redevplugin/api/plugins/operations?limit=0", nil)
+	invalidListResponse := httptest.NewRecorder()
+	handler.ServeHTTP(invalidListResponse, invalidListRequest)
+	if invalidListResponse.Code != http.StatusBadRequest {
+		t.Fatalf("invalid operation list status = %d body = %s", invalidListResponse.Code, invalidListResponse.Body.String())
 	}
 
 	detail := getJSON[operation.Record](t, handler, "/_redevplugin/api/plugins/operations/"+result.OperationID)
@@ -1830,21 +2479,115 @@ func TestHandlerOperationManagementFlow(t *testing.T) {
 	}
 }
 
+func TestHandlerOperationManagementRejectsCrossOwnerAccess(t *testing.T) {
+	adapter := &httpRecordingCapabilityAdapter{result: capability.Result{Data: map[string]any{}}}
+	h := newHTTPTestHostWithOptions(t, httpTestHostOptions{
+		capabilityID:      "example.capability.echo",
+		capabilityAdapter: adapter,
+	})
+	installed, err := host.ImportLocalPackageBytes(httpTestContext(), h, buildHTTPOperationRPCFixturePackage(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.EnablePlugin(httpTestContext(), host.EnableRequest{PluginInstanceID: installed.PluginInstanceID, ExpectedManagementRevision: mustManagementRevision(t, h, installed.PluginInstanceID)}); err != nil {
+		t.Fatal(err)
+	}
+	grantHTTPDeclaredPermissions(t, h, installed)
+	ownerHandler := mustNewHandler(t, h, allowHTTPTestGuard())
+	bridgeResp := openHTTPBridge(t, ownerHandler, installed.PluginInstanceID, "http.operation.view", "surface_http_operation", "bridge_http_operation")
+	result := postJSON[host.CallMethodResult](t, ownerHandler, "/_redevplugin/api/plugins/rpc", map[string]any{
+		"plugin_instance_id":   installed.PluginInstanceID,
+		"surface_instance_id":  "surface_http_operation",
+		"bridge_channel_id":    "bridge_http_operation",
+		"plugin_gateway_token": bridgeResp.GatewayToken,
+		"method":               "documents.archive",
+	})
+
+	otherHandler := mustNewHandler(t, h, &httpTestWebSecurityGuard{scope: sessionctx.Context{
+		OwnerSessionHash: "session_other", OwnerUserHash: "user_other", OwnerEnvHash: "env_other", SessionChannelIDHash: "channel_other",
+	}})
+	listed := getJSON[struct {
+		Operations []operation.Record `json:"operations"`
+	}](t, otherHandler, "/_redevplugin/api/plugins/operations?plugin_instance_id="+installed.PluginInstanceID)
+	if len(listed.Operations) != 0 {
+		t.Fatalf("cross-owner list exposed operations: %#v", listed.Operations)
+	}
+	for _, path := range []string{
+		"/_redevplugin/api/plugins/operations/" + result.OperationID,
+		"/_redevplugin/api/plugins/operations/" + result.OperationID + "/cancel",
+	} {
+		method := http.MethodGet
+		var body io.Reader
+		if strings.HasSuffix(path, "/cancel") {
+			method = http.MethodPost
+			body = bytes.NewBufferString(`{"reason":"cross-owner"}`)
+		}
+		req := newJSONHTTPRequest(method, path, body)
+		if method == http.MethodGet {
+			req = httptest.NewRequest(method, path, nil)
+		}
+		rec := httptest.NewRecorder()
+		otherHandler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("cross-owner %s %s status = %d body = %s", method, path, rec.Code, rec.Body.String())
+		}
+	}
+	if adapter.cancelCalls != 0 {
+		t.Fatalf("cross-owner cancel dispatched %d times", adapter.cancelCalls)
+	}
+	stored, err := h.GetOperation(httpTestContext(), result.OperationID)
+	if err != nil || stored.Status != operation.StatusRunning {
+		t.Fatalf("cross-owner operation changed: %#v, %v", stored, err)
+	}
+}
+
+func TestHandlerReportsUnknownOutcomeAfterMutatingRPCResponseFailure(t *testing.T) {
+	adapter := &httpRecordingCapabilityAdapter{result: capability.Result{Data: map[string]any{"unknown": true}}}
+	h := newHTTPTestHostWithOptions(t, httpTestHostOptions{
+		capabilityID:      "example.capability.echo",
+		capabilityAdapter: adapter,
+	})
+	installed, err := host.ImportLocalPackageBytes(httpTestContext(), h, buildHTTPOperationRPCFixturePackage(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.EnablePlugin(httpTestContext(), host.EnableRequest{PluginInstanceID: installed.PluginInstanceID, ExpectedManagementRevision: mustManagementRevision(t, h, installed.PluginInstanceID)}); err != nil {
+		t.Fatal(err)
+	}
+	grantHTTPDeclaredPermissions(t, h, installed)
+	handler := mustNewHandler(t, h, allowHTTPTestGuard())
+	bridgeResp := openHTTPBridge(t, handler, installed.PluginInstanceID, "http.operation.view", "surface_http_operation", "bridge_http_operation")
+
+	envelope := postJSONError(t, handler, "/_redevplugin/api/plugins/rpc", map[string]any{
+		"plugin_instance_id":   installed.PluginInstanceID,
+		"surface_instance_id":  "surface_http_operation",
+		"bridge_channel_id":    "bridge_http_operation",
+		"plugin_gateway_token": bridgeResp.GatewayToken,
+		"method":               "documents.archive",
+	}, http.StatusBadGateway)
+	if envelope.MutationOutcome != string(mutation.OutcomeUnknown) {
+		t.Fatalf("mutation_outcome = %q, want %q body = %#v", envelope.MutationOutcome, mutation.OutcomeUnknown, envelope)
+	}
+	if adapter.last.Execution.Method != "documents.archive" {
+		t.Fatalf("adapter invocation = %#v", adapter.last)
+	}
+}
+
 func TestHandlerOperationCancelDispatchFailure(t *testing.T) {
 	adapter := &httpRecordingCapabilityAdapter{result: capability.Result{Data: map[string]any{}}, cancellationError: errors.New("runtime is down")}
 	h := newHTTPTestHostWithOptions(t, httpTestHostOptions{
 		capabilityID:      "example.capability.echo",
 		capabilityAdapter: adapter,
 	})
-	installed, err := host.ImportLocalPackageBytes(context.Background(), h, buildHTTPOperationRPCFixturePackage(t))
+	installed, err := host.ImportLocalPackageBytes(httpTestContext(), h, buildHTTPOperationRPCFixturePackage(t))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.EnablePlugin(context.Background(), host.EnableRequest{PluginInstanceID: installed.PluginInstanceID, PluginStateVersion: mustPluginStateVersion(t, h, installed.PluginInstanceID)}); err != nil {
+	if _, err := h.EnablePlugin(httpTestContext(), host.EnableRequest{PluginInstanceID: installed.PluginInstanceID, ExpectedManagementRevision: mustManagementRevision(t, h, installed.PluginInstanceID)}); err != nil {
 		t.Fatal(err)
 	}
 	grantHTTPDeclaredPermissions(t, h, installed)
-	handler := Handler{Host: h, WebSecurity: allowHTTPTestGuard()}
+	handler := mustNewHandler(t, h, allowHTTPTestGuard())
 	bridgeResp := openHTTPBridge(t, handler, installed.PluginInstanceID, "http.operation.view", "surface_http_operation", "bridge_http_operation")
 
 	result := postJSON[host.CallMethodResult](t, handler, "/_redevplugin/api/plugins/rpc", map[string]any{
@@ -1861,18 +2604,37 @@ func TestHandlerOperationCancelDispatchFailure(t *testing.T) {
 	envelope := postJSONError(t, handler, "/_redevplugin/api/plugins/operations/"+result.OperationID+"/cancel", map[string]any{
 		"reason": "user",
 	}, http.StatusServiceUnavailable)
-	if envelope.ErrorCode != string(security.ErrRuntimeUnavailable) {
-		t.Fatalf("cancel dispatch error_code = %s body = %#v", envelope.ErrorCode, envelope)
+	if envelope.Code != string(security.ErrRuntimeUnavailable) {
+		t.Fatalf("cancel dispatch error_code = %s body = %#v", envelope.Code, envelope)
+	}
+	if envelope.MutationOutcome != string(mutation.OutcomeUnknown) {
+		t.Fatalf("cancel dispatch mutation_outcome = %q, want %q body = %#v", envelope.MutationOutcome, mutation.OutcomeUnknown, envelope)
 	}
 	if adapter.cancelCalls != 1 {
 		t.Fatalf("operation canceler calls = %d, want 1", adapter.cancelCalls)
 	}
-	stored, err := h.GetOperation(context.Background(), result.OperationID)
+	stored, err := h.GetOperation(httpTestContext(), result.OperationID)
 	if err != nil {
 		t.Fatalf("GetOperation() error = %v", err)
 	}
 	if stored.Status != operation.StatusCancelRequested || stored.Reason != "user" {
 		t.Fatalf("stored operation after failed dispatch mismatch: %#v", stored)
+	}
+
+	surfaceResult := postJSON[host.CallMethodResult](t, handler, "/_redevplugin/api/plugins/rpc", map[string]any{
+		"plugin_instance_id":   installed.PluginInstanceID,
+		"surface_instance_id":  "surface_http_operation",
+		"bridge_channel_id":    "bridge_http_operation",
+		"plugin_gateway_token": bridgeResp.GatewayToken,
+		"method":               "documents.archive",
+	})
+	surfaceEnvelope := postJSONError(t, handler, "/_redevplugin/api/plugins/surfaces/surface_http_operation/operations/cancel", map[string]any{
+		"operation_id":      surfaceResult.OperationID,
+		"bridge_channel_id": "bridge_http_operation",
+		"reason":            "user",
+	}, http.StatusServiceUnavailable)
+	if surfaceEnvelope.MutationOutcome != string(mutation.OutcomeUnknown) {
+		t.Fatalf("surface cancel mutation_outcome = %q, want %q body = %#v", surfaceEnvelope.MutationOutcome, mutation.OutcomeUnknown, surfaceEnvelope)
 	}
 }
 
@@ -1882,15 +2644,15 @@ func TestHandlerSurfaceOperationCancelRequiresMatchingBridgeScope(t *testing.T) 
 		capabilityID:      "example.capability.echo",
 		capabilityAdapter: adapter,
 	})
-	installed, err := host.ImportLocalPackageBytes(context.Background(), h, buildHTTPOperationRPCFixturePackage(t))
+	installed, err := host.ImportLocalPackageBytes(httpTestContext(), h, buildHTTPOperationRPCFixturePackage(t))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.EnablePlugin(context.Background(), host.EnableRequest{PluginInstanceID: installed.PluginInstanceID, PluginStateVersion: mustPluginStateVersion(t, h, installed.PluginInstanceID)}); err != nil {
+	if _, err := h.EnablePlugin(httpTestContext(), host.EnableRequest{PluginInstanceID: installed.PluginInstanceID, ExpectedManagementRevision: mustManagementRevision(t, h, installed.PluginInstanceID)}); err != nil {
 		t.Fatal(err)
 	}
 	grantHTTPDeclaredPermissions(t, h, installed)
-	handler := Handler{Host: h, WebSecurity: allowHTTPTestGuard()}
+	handler := mustNewHandler(t, h, allowHTTPTestGuard())
 	bridgeResp := openHTTPBridge(t, handler, installed.PluginInstanceID, "http.operation.view", "surface_http_operation", "bridge_http_operation")
 
 	result := postJSON[host.CallMethodResult](t, handler, "/_redevplugin/api/plugins/rpc", map[string]any{
@@ -1910,8 +2672,8 @@ func TestHandlerSurfaceOperationCancelRequiresMatchingBridgeScope(t *testing.T) 
 		"bridge_channel_id": "bridge_other",
 		"reason":            "user",
 	}, http.StatusForbidden)
-	if envelope.ErrorCode != string(security.ErrPermissionDenied) {
-		t.Fatalf("scope mismatch error_code = %s body = %#v", envelope.ErrorCode, envelope)
+	if envelope.Code != string(security.ErrPermissionDenied) {
+		t.Fatalf("scope mismatch error_code = %s body = %#v", envelope.Code, envelope)
 	}
 	if adapter.cancelCalls != 0 {
 		t.Fatalf("scope mismatch reached operation canceler %d times", adapter.cancelCalls)
@@ -1938,15 +2700,15 @@ func TestHandlerPrivateSurfaceStreamFlow(t *testing.T) {
 		capabilityID:      "example.capability.echo",
 		capabilityAdapter: adapter,
 	})
-	installed, err := host.ImportLocalPackageBytes(context.Background(), h, buildHTTPSubscriptionRPCFixturePackage(t))
+	installed, err := host.ImportLocalPackageBytes(httpTestContext(), h, buildHTTPSubscriptionRPCFixturePackage(t))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.EnablePlugin(context.Background(), host.EnableRequest{PluginInstanceID: installed.PluginInstanceID, PluginStateVersion: mustPluginStateVersion(t, h, installed.PluginInstanceID)}); err != nil {
+	if _, err := h.EnablePlugin(httpTestContext(), host.EnableRequest{PluginInstanceID: installed.PluginInstanceID, ExpectedManagementRevision: mustManagementRevision(t, h, installed.PluginInstanceID)}); err != nil {
 		t.Fatal(err)
 	}
 	grantHTTPDeclaredPermissions(t, h, installed)
-	handler := Handler{Host: h, WebSecurity: allowHTTPTestGuard()}
+	handler := mustNewHandler(t, h, allowHTTPTestGuard())
 	bridgeResp := openHTTPBridge(t, handler, installed.PluginInstanceID, "http.subscription.view", "surface_http_stream", "bridge_http_stream")
 
 	result := postJSON[host.CallMethodResult](t, handler, "/_redevplugin/api/plugins/rpc", map[string]any{
@@ -1959,13 +2721,15 @@ func TestHandlerPrivateSurfaceStreamFlow(t *testing.T) {
 	if result.StreamID == "" || adapter.last.Execution.Stream == nil || result.StreamID != adapter.last.Execution.Stream.ID() || result.StreamTicket == "" {
 		t.Fatalf("rpc stream result mismatch: %#v", result)
 	}
-	if err := adapter.last.Execution.Stream.Append(context.Background(), map[string]any{"line": "line 1"}); err != nil {
+	if err := adapter.last.Execution.Stream.Append(httpTestContext(), map[string]any{"line": "line 1"}); err != nil {
 		t.Fatal(err)
 	}
 
 	readPath := "/_redevplugin/api/plugins/surfaces/surface_http_stream/streams/read"
 	read := postJSON[struct {
-		Events []struct {
+		DeliveryID string `json:"delivery_id"`
+		ReadID     string `json:"read_id"`
+		Events     []struct {
 			StreamID string `json:"stream_id"`
 			Sequence uint64 `json:"sequence"`
 			Data     []byte `json:"data"`
@@ -1973,18 +2737,30 @@ func TestHandlerPrivateSurfaceStreamFlow(t *testing.T) {
 	}](t, handler, readPath, map[string]any{
 		"stream_id":     result.StreamID,
 		"stream_ticket": result.StreamTicket,
+		"read_id":       "read_http_test_1",
 	})
-	if len(read.Events) != 1 || read.Events[0].StreamID != result.StreamID || string(read.Events[0].Data) != `{"line":"line 1"}` {
+	if read.DeliveryID == "" || read.ReadID != "read_http_test_1" || len(read.Events) != 1 || read.Events[0].StreamID != result.StreamID || string(read.Events[0].Data) != `{"line":"line 1"}` {
 		t.Fatalf("stream response mismatch: %#v", read)
 	}
 
-	replay := postJSONError(t, handler, readPath, map[string]any{
+	replay := postJSON[struct {
+		DeliveryID string `json:"delivery_id"`
+		ReadID     string `json:"read_id"`
+	}](t, handler, readPath, map[string]any{
 		"stream_id":     result.StreamID,
 		"stream_ticket": result.StreamTicket,
-	}, http.StatusForbidden)
-	if replay.ErrorCode != string(security.ErrStreamTicketInvalid) {
-		t.Fatalf("stream replay error_code = %s body = %#v", replay.ErrorCode, replay)
+		"read_id":       "read_http_retry_1",
+	})
+	if replay.DeliveryID != read.DeliveryID || replay.ReadID != read.ReadID {
+		t.Fatalf("stream replay mismatch: first=%#v replay=%#v", read, replay)
 	}
+	postJSON[struct {
+		Acknowledged bool `json:"acknowledged"`
+	}](t, handler, "/_redevplugin/api/plugins/surfaces/surface_http_stream/streams/ack", map[string]any{
+		"stream_id":     result.StreamID,
+		"stream_ticket": result.StreamTicket,
+		"delivery_id":   read.DeliveryID,
+	})
 	if strings.Contains(readPath, "ticket") {
 		t.Fatalf("stream bearer leaked into URL: %s", readPath)
 	}
@@ -2018,14 +2794,14 @@ func TestStreamTokenValidationErrorsMapToInvalidCode(t *testing.T) {
 func TestHandlerCoreActionRPCFlow(t *testing.T) {
 	coreAdapter := &httpRecordingCoreActionAdapter{result: capability.Result{Data: map[string]any{"opened": true}}}
 	h := newHTTPTestHostWithOptions(t, httpTestHostOptions{coreActions: coreAdapter})
-	installed, err := host.ImportLocalPackageBytes(context.Background(), h, buildHTTPCoreActionFixturePackage(t))
+	installed, err := host.ImportLocalPackageBytes(httpTestContext(), h, buildHTTPCoreActionFixturePackage(t))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.EnablePlugin(context.Background(), host.EnableRequest{PluginInstanceID: installed.PluginInstanceID, PluginStateVersion: mustPluginStateVersion(t, h, installed.PluginInstanceID)}); err != nil {
+	if _, err := h.EnablePlugin(httpTestContext(), host.EnableRequest{PluginInstanceID: installed.PluginInstanceID, ExpectedManagementRevision: mustManagementRevision(t, h, installed.PluginInstanceID)}); err != nil {
 		t.Fatal(err)
 	}
-	handler := Handler{Host: h, WebSecurity: allowHTTPTestGuard()}
+	handler := mustNewHandler(t, h, allowHTTPTestGuard())
 	bridgeResp := openHTTPBridge(t, handler, installed.PluginInstanceID, "http.core.view", "surface_http_core", "bridge_http_core")
 
 	result := postJSON[host.CallMethodResult](t, handler, "/_redevplugin/api/plugins/rpc", map[string]any{
@@ -2045,19 +2821,19 @@ func TestHandlerCoreActionRPCFlow(t *testing.T) {
 }
 
 func TestHandlerWorkerRuntimeErrorMapsToRuntimeUnavailable(t *testing.T) {
-	runtime := &httpRecordingRuntimeSupervisor{
+	runtime := &httpRecordingRuntimeManager{
 		health: runtimeclient.Health{RuntimeInstanceID: "runtime_http", RuntimeGenerationID: "runtime_gen_http", IPCChannelID: "ipc_http", ConnectionNonce: "connection_nonce_http_1234567890", Ready: true},
 		err:    runtimeclient.ErrRuntimeRequestFailed,
 	}
-	h := newHTTPTestHostWithOptions(t, httpTestHostOptions{runtimeSupervisor: runtime})
-	installed, err := host.ImportLocalPackageBytes(context.Background(), h, buildHTTPWorkerFixturePackage(t))
+	h := newHTTPTestHostWithOptions(t, httpTestHostOptions{runtimeManager: runtime})
+	installed, err := host.ImportLocalPackageBytes(httpTestContext(), h, buildHTTPWorkerFixturePackage(t))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.EnablePlugin(context.Background(), host.EnableRequest{PluginInstanceID: installed.PluginInstanceID, PluginStateVersion: mustPluginStateVersion(t, h, installed.PluginInstanceID)}); err != nil {
+	if _, err := h.EnablePlugin(httpTestContext(), host.EnableRequest{PluginInstanceID: installed.PluginInstanceID, ExpectedManagementRevision: mustManagementRevision(t, h, installed.PluginInstanceID)}); err != nil {
 		t.Fatal(err)
 	}
-	handler := Handler{Host: h, WebSecurity: allowHTTPTestGuard()}
+	handler := mustNewHandler(t, h, allowHTTPTestGuard())
 	bridgeResp := openHTTPBridge(t, handler, installed.PluginInstanceID, "http.worker.view", "surface_http_worker", "bridge_http_worker")
 
 	raw, err := json.Marshal(map[string]any{
@@ -2071,35 +2847,35 @@ func TestHandlerWorkerRuntimeErrorMapsToRuntimeUnavailable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	req := httptest.NewRequest(http.MethodPost, "/_redevplugin/api/plugins/rpc", bytes.NewReader(raw))
+	req := newJSONHTTPRequest(http.MethodPost, "/_redevplugin/api/plugins/rpc", bytes.NewReader(raw))
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("worker runtime error status = %d body = %s", rec.Code, rec.Body.String())
 	}
-	var envelope Envelope
+	var envelope decodedErrorResponse
 	if err := json.Unmarshal(rec.Body.Bytes(), &envelope); err != nil {
 		t.Fatal(err)
 	}
-	if envelope.ErrorCode != string(security.ErrRuntimeUnavailable) {
-		t.Fatalf("worker runtime error code = %s body = %s", envelope.ErrorCode, rec.Body.String())
+	if envelope.Code != string(security.ErrRuntimeUnavailable) {
+		t.Fatalf("worker runtime error code = %s body = %s", envelope.Code, rec.Body.String())
 	}
 }
 
 func TestHandlerWorkerBusinessErrorPreservesWorkerCode(t *testing.T) {
-	runtime := &httpRecordingRuntimeSupervisor{
+	runtime := &httpRecordingRuntimeManager{
 		health: runtimeclient.Health{RuntimeInstanceID: "runtime_http", RuntimeGenerationID: "runtime_gen_http", IPCChannelID: "ipc_http", ConnectionNonce: "connection_nonce_http_1234567890", Ready: true},
 		err:    &runtimeclient.WorkerExecutionError{Code: "NOTE_NOT_FOUND", Message: "note was not found", Origin: runtimeclient.WorkerErrorOriginPlugin},
 	}
-	h := newHTTPTestHostWithOptions(t, httpTestHostOptions{runtimeSupervisor: runtime})
-	installed, err := host.ImportLocalPackageBytes(context.Background(), h, buildHTTPWorkerFixturePackage(t))
+	h := newHTTPTestHostWithOptions(t, httpTestHostOptions{runtimeManager: runtime})
+	installed, err := host.ImportLocalPackageBytes(httpTestContext(), h, buildHTTPWorkerFixturePackage(t))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.EnablePlugin(context.Background(), host.EnableRequest{PluginInstanceID: installed.PluginInstanceID, PluginStateVersion: mustPluginStateVersion(t, h, installed.PluginInstanceID)}); err != nil {
+	if _, err := h.EnablePlugin(httpTestContext(), host.EnableRequest{PluginInstanceID: installed.PluginInstanceID, ExpectedManagementRevision: mustManagementRevision(t, h, installed.PluginInstanceID)}); err != nil {
 		t.Fatal(err)
 	}
-	handler := Handler{Host: h, WebSecurity: allowHTTPTestGuard()}
+	handler := mustNewHandler(t, h, allowHTTPTestGuard())
 	bridgeResp := openHTTPBridge(t, handler, installed.PluginInstanceID, "http.worker.view", "surface_http_worker_error", "bridge_http_worker_error")
 
 	raw, err := json.Marshal(map[string]any{
@@ -2113,21 +2889,21 @@ func TestHandlerWorkerBusinessErrorPreservesWorkerCode(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	req := httptest.NewRequest(http.MethodPost, "/_redevplugin/api/plugins/rpc", bytes.NewReader(raw))
+	req := newJSONHTTPRequest(http.MethodPost, "/_redevplugin/api/plugins/rpc", bytes.NewReader(raw))
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusUnprocessableEntity {
 		t.Fatalf("worker business error status = %d body = %s", rec.Code, rec.Body.String())
 	}
-	var envelope Envelope
+	var envelope decodedErrorResponse
 	if err := json.Unmarshal(rec.Body.Bytes(), &envelope); err != nil {
 		t.Fatal(err)
 	}
-	if envelope.ErrorCode != string(security.ErrWorkerError) || envelope.Error != "plugin operation failed" {
+	if envelope.Code != string(security.ErrWorkerError) || envelope.Message != "plugin operation failed" {
 		t.Fatalf("worker business error envelope = %#v", envelope)
 	}
-	if envelope.ErrorDetails["worker_error_code"] != "NOTE_NOT_FOUND" || envelope.ErrorDetails["worker_error_message"] != "note was not found" || envelope.ErrorDetails["worker_error_origin"] != "plugin" {
-		t.Fatalf("worker business error details = %#v", envelope.ErrorDetails)
+	if envelope.Details["worker_error_code"] != "NOTE_NOT_FOUND" || envelope.Details["worker_error_message"] != "note was not found" || envelope.Details["worker_error_origin"] != "plugin" {
+		t.Fatalf("worker business error details = %#v", envelope.Details)
 	}
 }
 
@@ -2173,10 +2949,10 @@ func TestWorkerExecutionErrorsSeparatePlatformFailuresFromPluginDomainErrors(t *
 			}
 			details := errorDetailsForRPCError(err)
 			if tt.wantDetail {
-				if details["worker_error_code"] != tt.workerCode || details["worker_error_message"] != "worker supplied failure with details" || details["worker_error_origin"] != "plugin" {
+				if details.WorkerErrorCode != tt.workerCode || details.WorkerErrorMessage != "worker supplied failure with details" || details.WorkerErrorOrigin != runtimeclient.WorkerErrorOriginPlugin {
 					t.Fatalf("worker domain details = %#v", details)
 				}
-			} else if details != nil {
+			} else if !reflect.DeepEqual(details, errorDetails{}) {
 				t.Fatalf("platform infrastructure error exposed worker details: %#v", details)
 			}
 		})
@@ -2185,32 +2961,32 @@ func TestWorkerExecutionErrorsSeparatePlatformFailuresFromPluginDomainErrors(t *
 
 func TestHandlerSettingsFlow(t *testing.T) {
 	h := newHTTPTestHostWithOptions(t, httpTestHostOptions{secrets: &httpRecordingSecretStore{}})
-	handler := Handler{Host: h, WebSecurity: allowHTTPTestGuard()}
-	installed, err := host.ImportLocalPackageBytes(context.Background(), h, buildHTTPSettingsFixturePackage(t))
+	handler := mustNewHandler(t, h, allowHTTPTestGuard())
+	installed, err := host.ImportLocalPackageBytes(httpTestContext(), h, buildHTTPSettingsFixturePackage(t))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.EnablePlugin(context.Background(), host.EnableRequest{PluginInstanceID: installed.PluginInstanceID, PluginStateVersion: mustPluginStateVersion(t, h, installed.PluginInstanceID)}); err != nil {
+	if _, err := h.EnablePlugin(httpTestContext(), host.EnableRequest{PluginInstanceID: installed.PluginInstanceID, ExpectedManagementRevision: mustManagementRevision(t, h, installed.PluginInstanceID)}); err != nil {
 		t.Fatal(err)
 	}
 
 	schema := getJSON[host.SettingsSchemaResult](t, handler, "/_redevplugin/api/plugins/"+installed.PluginInstanceID+"/settings/schema")
-	if schema.SchemaVersion != 1 || len(schema.Fields) != 3 || schema.SettingsRevision == 0 {
+	if schema.SchemaVersion != 1 || len(schema.Fields) != 3 || schema.ValuesRevision == 0 {
 		t.Fatalf("settings schema mismatch: %#v", schema)
 	}
 	initial := getJSON[host.SettingsResult](t, handler, "/_redevplugin/api/plugins/"+installed.PluginInstanceID+"/settings")
 	if initial.Values["default_engine"] != "docker" {
 		t.Fatalf("settings defaults mismatch: %#v", initial)
 	}
-	secretRaw, ok := initial.Values["api_token"].(map[string]any)
-	if !ok || secretRaw["set"] != false {
-		t.Fatalf("secret setting should be redacted unset state: %#v", initial.Values["api_token"])
+	if _, exists := initial.Values["api_token"]; exists || len(initial.SecretMetadata) != 1 || initial.SecretMetadata[0].Bound {
+		t.Fatalf("secret metadata should be separate from settings values: %#v", initial)
 	}
 
 	patched := patchJSON[host.SettingsResult](t, handler, "/_redevplugin/api/plugins/"+installed.PluginInstanceID+"/settings", map[string]any{
-		"values": map[string]any{"default_engine": "podman"},
+		"expected_values_revision": initial.ValuesRevision,
+		"set":                      map[string]any{"default_engine": "podman"},
 	})
-	if patched.SettingsRevision <= initial.SettingsRevision || patched.Values["default_engine"] != "podman" {
+	if patched.ValuesRevision <= initial.ValuesRevision || patched.Values["default_engine"] != "podman" {
 		t.Fatalf("patched settings mismatch: before=%#v after=%#v", initial, patched)
 	}
 
@@ -2220,9 +2996,16 @@ func TestHandlerSettingsFlow(t *testing.T) {
 		"scope":              "user",
 	})
 	withSecret := getJSON[host.SettingsResult](t, handler, "/_redevplugin/api/plugins/"+installed.PluginInstanceID+"/settings")
-	secretRaw, ok = withSecret.Values["api_token"].(map[string]any)
-	if !ok || secretRaw["set"] != true {
-		t.Fatalf("secret setting should be redacted set state: %#v", withSecret.Values["api_token"])
+	if len(withSecret.SecretMetadata) != 1 || !withSecret.SecretMetadata[0].Bound || withSecret.SecretMetadata[0].SecretRef != "api_token" {
+		t.Fatalf("bound secret metadata mismatch: %#v", withSecret.SecretMetadata)
+	}
+
+	conflict := requestJSONError(t, handler, http.MethodPatch, "/_redevplugin/api/plugins/"+installed.PluginInstanceID+"/settings", map[string]any{
+		"expected_values_revision": initial.ValuesRevision,
+		"set":                      map[string]any{"default_engine": "docker"},
+	}, http.StatusConflict)
+	if conflict.Code != string(security.ErrValuesRevisionMismatch) || conflict.Details["actual_values_revision"] != float64(patched.ValuesRevision) {
+		t.Fatalf("settings values revision conflict mismatch: %#v", conflict)
 	}
 }
 
@@ -2232,15 +3015,15 @@ func TestHandlerUninstallDeleteDataBlockedByOperation(t *testing.T) {
 		capabilityID:      "example.capability.echo",
 		capabilityAdapter: adapter,
 	})
-	installed, err := host.ImportLocalPackageBytes(context.Background(), h, buildHTTPOperationRPCFixturePackage(t))
+	installed, err := host.ImportLocalPackageBytes(httpTestContext(), h, buildHTTPOperationRPCFixturePackage(t))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.EnablePlugin(context.Background(), host.EnableRequest{PluginInstanceID: installed.PluginInstanceID, PluginStateVersion: mustPluginStateVersion(t, h, installed.PluginInstanceID)}); err != nil {
+	if _, err := h.EnablePlugin(httpTestContext(), host.EnableRequest{PluginInstanceID: installed.PluginInstanceID, ExpectedManagementRevision: mustManagementRevision(t, h, installed.PluginInstanceID)}); err != nil {
 		t.Fatal(err)
 	}
 	grantHTTPDeclaredPermissions(t, h, installed)
-	handler := Handler{Host: h, WebSecurity: allowHTTPTestGuard()}
+	handler := mustNewHandler(t, h, allowHTTPTestGuard())
 	bridgeResp := openHTTPBridge(t, handler, installed.PluginInstanceID, "http.operation.view", "surface_http_block_delete", "bridge_http_block_delete")
 	postJSON[host.CallMethodResult](t, handler, "/_redevplugin/api/plugins/rpc", map[string]any{
 		"plugin_instance_id":   installed.PluginInstanceID,
@@ -2251,270 +3034,221 @@ func TestHandlerUninstallDeleteDataBlockedByOperation(t *testing.T) {
 	})
 
 	raw, err := json.Marshal(map[string]any{
-		"plugin_instance_id":   installed.PluginInstanceID,
-		"plugin_state_version": 2,
-		"delete_data":          true,
+		"plugin_instance_id":           installed.PluginInstanceID,
+		"expected_management_revision": 2,
+		"delete_data":                  true,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	req := httptest.NewRequest(http.MethodPost, "/_redevplugin/api/plugins/uninstall", bytes.NewReader(raw))
+	req := newJSONHTTPRequest(http.MethodPost, "/_redevplugin/api/plugins/uninstall", bytes.NewReader(raw))
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusConflict {
 		t.Fatalf("uninstall status = %d body = %s", rec.Code, rec.Body.String())
 	}
-	var envelope Envelope
+	var envelope decodedErrorResponse
 	if err := json.Unmarshal(rec.Body.Bytes(), &envelope); err != nil {
 		t.Fatal(err)
 	}
-	if envelope.ErrorCode != string(security.ErrOperationBlocked) {
-		t.Fatalf("error code = %s body = %s", envelope.ErrorCode, rec.Body.String())
+	if envelope.Code != string(security.ErrOperationBlocked) {
+		t.Fatalf("error code = %s body = %s", envelope.Code, rec.Body.String())
 	}
 }
 
 func TestHandlerRejectsTrailingJSON(t *testing.T) {
 	h := newHTTPTestHost(t)
-	req := httptest.NewRequest(http.MethodPost, "/_redevplugin/api/plugins/surfaces/open", bytes.NewBufferString(`{} {}`))
+	req := newJSONHTTPRequest(http.MethodPost, "/_redevplugin/api/plugins/surfaces/open", bytes.NewBufferString(`{} {}`))
 	rec := httptest.NewRecorder()
-	Handler{Host: h, WebSecurity: allowHTTPTestGuard()}.ServeHTTP(rec, req)
+	mustNewHandler(t, h, allowHTTPTestGuard()).ServeHTTP(rec, req)
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d body = %s", rec.Code, rec.Body.String())
 	}
 }
 
 func TestHandlerDataExportImportFlow(t *testing.T) {
-	storageBroker := storage.NewMemoryBroker()
-	h := newHTTPTestHostWithStorage(t, storageBroker)
-	installed, err := host.ImportLocalPackageBytes(context.Background(), h, buildHTTPStorageFixturePackage(t))
+	h := newHTTPTestHost(t)
+	installed, err := host.ImportLocalPackageBytes(httpTestContext(), h, buildHTTPStorageFixturePackage(t))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.EnablePlugin(context.Background(), host.EnableRequest{PluginInstanceID: installed.PluginInstanceID, PluginStateVersion: mustPluginStateVersion(t, h, installed.PluginInstanceID)}); err != nil {
+	enabled, err := h.EnablePlugin(httpTestContext(), host.EnableRequest{PluginInstanceID: installed.PluginInstanceID, ExpectedManagementRevision: installed.ManagementRevision})
+	if err != nil {
 		t.Fatal(err)
 	}
-	if err := storageBroker.SetUsage(context.Background(), installed.PluginInstanceID, "db", 1024); err != nil {
+	disabled, err := h.DisablePlugin(httpTestContext(), host.DisableRequest{PluginInstanceID: installed.PluginInstanceID, ExpectedManagementRevision: enabled.ManagementRevision})
+	if err != nil {
 		t.Fatal(err)
 	}
-	handler := Handler{Host: h, WebSecurity: allowHTTPTestGuard()}
+	handler := mustNewHandler(t, h, allowHTTPTestGuard())
 
-	exported := postJSON[host.ExportDataResult](t, handler, "/_redevplugin/api/plugins/data/export", map[string]any{
+	exported := postJSON[struct {
+		BundleRef string `json:"bundle_ref"`
+	}](t, handler, "/_redevplugin/api/plugins/data/export", map[string]any{
 		"plugin_instance_id": installed.PluginInstanceID,
 	})
-	if exported.ArchiveRef == "" {
-		t.Fatal("export response missing archive_ref")
+	if exported.BundleRef == "" {
+		t.Fatal("export response missing bundle_ref")
 	}
 
-	postJSON[map[string]bool](t, handler, "/_redevplugin/api/plugins/data/import", map[string]any{
-		"plugin_instance_id": installed.PluginInstanceID,
-		"archive_ref":        exported.ArchiveRef,
-		"delete_existing":    true,
+	imported := postJSON[registry.PluginRecord](t, handler, "/_redevplugin/api/plugins/data/import", map[string]any{
+		"plugin_instance_id":           installed.PluginInstanceID,
+		"bundle_ref":                   exported.BundleRef,
+		"expected_management_revision": disabled.ManagementRevision,
 	})
+	if imported.PluginInstanceID != installed.PluginInstanceID {
+		t.Fatalf("import response mismatch: %#v", imported)
+	}
+	deleted := postJSON[map[string]bool](t, handler, "/_redevplugin/api/plugins/data/export/delete", map[string]any{"bundle_ref": exported.BundleRef})
+	if !deleted["deleted"] {
+		t.Fatalf("export delete response mismatch: %#v", deleted)
+	}
 }
 
 func TestHandlerRetainedDataLifecycleFlow(t *testing.T) {
-	ctx := context.Background()
-	storageBroker := storage.NewMemoryBroker()
-	h := newHTTPTestHostWithStorage(t, storageBroker)
-	handler := Handler{Host: h, WebSecurity: allowHTTPTestGuard(), EnableLocalImportRoutes: true}
+	h := newHTTPTestHost(t)
+	handler := mustNewHandler(t, h, allowHTTPTestGuard())
 	installed := postJSON[registry.PluginRecord](t, handler, "/_redevplugin/api/plugins/local-import/install", map[string]any{
-		"package_base64":       base64.StdEncoding.EncodeToString(buildHTTPStorageFixturePackage(t)),
-		"plugin_state_version": 0,
+		"package_base64": base64.StdEncoding.EncodeToString(buildHTTPStorageFixturePackage(t)),
 	})
 	enabled := postJSON[registry.PluginRecord](t, handler, "/_redevplugin/api/plugins/enable", map[string]any{
-		"plugin_instance_id":   installed.PluginInstanceID,
-		"plugin_state_version": installed.ManagementRevision,
+		"plugin_instance_id":           installed.PluginInstanceID,
+		"expected_management_revision": installed.ManagementRevision,
 	})
-	if err := storageBroker.SetUsage(ctx, installed.PluginInstanceID, "db", 1024); err != nil {
-		t.Fatalf("SetUsage() error = %v", err)
-	}
 	postJSON[registry.PluginRecord](t, handler, "/_redevplugin/api/plugins/uninstall", map[string]any{
-		"plugin_instance_id":   installed.PluginInstanceID,
-		"plugin_state_version": enabled.ManagementRevision,
-		"delete_data":          false,
+		"plugin_instance_id":           installed.PluginInstanceID,
+		"expected_management_revision": enabled.ManagementRevision,
+		"delete_data":                  false,
 	})
 
 	listed := getJSON[struct {
-		RetainedData []retaineddata.Record `json:"retained_data"`
-	}](t, handler, "/_redevplugin/api/plugins/retained-data?source_plugin_instance_id="+installed.PluginInstanceID)
-	if len(listed.RetainedData) != 1 || listed.RetainedData[0].State != retaineddata.StateRetained {
+		RetainedData []plugindata.Binding `json:"retained_data"`
+	}](t, handler, "/_redevplugin/api/plugins/retained-data?plugin_instance_id="+installed.PluginInstanceID)
+	if len(listed.RetainedData) != 1 || listed.RetainedData[0].State != plugindata.BindingRetained {
 		t.Fatalf("retained-data list mismatch: %#v", listed.RetainedData)
 	}
-	deleted := postJSON[retaineddata.Record](t, handler, "/_redevplugin/api/plugins/retained-data/delete", map[string]any{
-		"retained_id": listed.RetainedData[0].RetainedID,
-	})
-	if deleted.State != retaineddata.StateDeleted {
-		t.Fatalf("retained-data delete mismatch: %#v", deleted)
+	conflict := postJSONError(t, handler, "/_redevplugin/api/plugins/retained-data/delete", map[string]any{
+		"plugin_instance_id":        installed.PluginInstanceID,
+		"expected_binding_revision": listed.RetainedData[0].Revision + 1,
+	}, http.StatusConflict)
+	if conflict.Code != string(security.ErrBindingRevisionMismatch) || conflict.Details["actual_binding_revision"] != float64(listed.RetainedData[0].Revision) {
+		t.Fatalf("binding revision conflict mismatch: %#v", conflict)
 	}
-	if namespaces, err := storageBroker.ListNamespaces(ctx, installed.PluginInstanceID); err != nil {
-		t.Fatal(err)
-	} else if len(namespaces) != 0 {
-		t.Fatalf("retained storage still present after HTTP delete: %#v", namespaces)
+	deleted := postJSON[plugindata.Binding](t, handler, "/_redevplugin/api/plugins/retained-data/delete", map[string]any{
+		"plugin_instance_id":        installed.PluginInstanceID,
+		"expected_binding_revision": listed.RetainedData[0].Revision,
+	})
+	if deleted.State != plugindata.BindingRetained {
+		t.Fatalf("retained-data delete mismatch: %#v", deleted)
 	}
 }
 
 func TestHandlerBindRetainedDataRestoresPayload(t *testing.T) {
-	ctx := context.Background()
-	storageBroker := storage.NewMemoryBroker()
-	h := newHTTPTestHostWithStorage(t, storageBroker)
-	handler := Handler{Host: h, WebSecurity: allowHTTPTestGuard(), EnableLocalImportRoutes: true}
+	h := newHTTPTestHost(t)
+	handler := mustNewHandler(t, h, allowHTTPTestGuard())
 	packageBase64 := base64.StdEncoding.EncodeToString(buildHTTPStorageFixturePackage(t))
 	installed := postJSON[registry.PluginRecord](t, handler, "/_redevplugin/api/plugins/local-import/install", map[string]any{
-		"package_base64":       packageBase64,
-		"plugin_state_version": 0,
+		"package_base64": packageBase64,
 	})
 	enabled := postJSON[registry.PluginRecord](t, handler, "/_redevplugin/api/plugins/enable", map[string]any{
-		"plugin_instance_id":   installed.PluginInstanceID,
-		"plugin_state_version": installed.ManagementRevision,
+		"plugin_instance_id":           installed.PluginInstanceID,
+		"expected_management_revision": installed.ManagementRevision,
 	})
-	if err := storageBroker.SetUsage(ctx, installed.PluginInstanceID, "db", 1024); err != nil {
-		t.Fatal(err)
-	}
 	postJSON[registry.PluginRecord](t, handler, "/_redevplugin/api/plugins/uninstall", map[string]any{
-		"plugin_instance_id":   installed.PluginInstanceID,
-		"plugin_state_version": enabled.ManagementRevision,
-		"delete_data":          false,
+		"plugin_instance_id":           installed.PluginInstanceID,
+		"expected_management_revision": enabled.ManagementRevision,
+		"delete_data":                  false,
 	})
 	listed := getJSON[struct {
-		RetainedData []retaineddata.Record `json:"retained_data"`
-	}](t, handler, "/_redevplugin/api/plugins/retained-data?source_plugin_instance_id="+installed.PluginInstanceID)
+		RetainedData []plugindata.Binding `json:"retained_data"`
+	}](t, handler, "/_redevplugin/api/plugins/retained-data?plugin_instance_id="+installed.PluginInstanceID)
 	target := postJSON[registry.PluginRecord](t, handler, "/_redevplugin/api/plugins/local-import/install", map[string]any{
-		"package_base64":       packageBase64,
-		"plugin_instance_id":   "plugini_http_storage_rebind_target",
-		"plugin_state_version": 0,
+		"package_base64":     packageBase64,
+		"plugin_instance_id": "plugini_http_storage_rebind_target",
 	})
 
-	bound := postJSON[retaineddata.Record](t, handler, "/_redevplugin/api/plugins/retained-data/bind", map[string]any{
-		"retained_id":               listed.RetainedData[0].RetainedID,
-		"target_plugin_instance_id": target.PluginInstanceID,
+	bound := postJSON[plugindata.Binding](t, handler, "/_redevplugin/api/plugins/retained-data/bind", map[string]any{
+		"source_plugin_instance_id":           installed.PluginInstanceID,
+		"expected_source_binding_revision":    listed.RetainedData[0].Revision,
+		"target_plugin_instance_id":           target.PluginInstanceID,
+		"target_expected_management_revision": target.ManagementRevision,
 	})
-	if bound.State != retaineddata.StateBound || bound.BoundPluginInstanceID != target.PluginInstanceID {
+	if bound.State != plugindata.BindingActive || bound.PluginInstanceID != target.PluginInstanceID {
 		t.Fatalf("bound retained-data response mismatch: %#v", bound)
 	}
-	usage, err := storageBroker.Usage(ctx, target.PluginInstanceID, "db")
-	if err != nil {
-		t.Fatalf("Usage(bound target) error = %v", err)
-	}
-	if usage.UsageBytes != 1024 {
-		t.Fatalf("bound target usage = %d, want 1024", usage.UsageBytes)
-	}
 }
 
-func TestHandlerRetainedDataDeleteFailureReturnsCleanupCodeAndRecord(t *testing.T) {
-	ctx := context.Background()
-	storageBroker := storage.NewMemoryBroker()
-	h := newHTTPTestHostWithStorage(t, storageBroker)
-	handler := Handler{Host: h, WebSecurity: allowHTTPTestGuard(), EnableLocalImportRoutes: true}
-	installed := postJSON[registry.PluginRecord](t, handler, "/_redevplugin/api/plugins/local-import/install", map[string]any{
-		"package_base64":       base64.StdEncoding.EncodeToString(buildHTTPStorageFixturePackage(t)),
-		"plugin_state_version": 0,
-	})
-	enabled := postJSON[registry.PluginRecord](t, handler, "/_redevplugin/api/plugins/enable", map[string]any{
-		"plugin_instance_id":   installed.PluginInstanceID,
-		"plugin_state_version": installed.ManagementRevision,
-	})
-	postJSON[registry.PluginRecord](t, handler, "/_redevplugin/api/plugins/uninstall", map[string]any{
-		"plugin_instance_id":   installed.PluginInstanceID,
-		"plugin_state_version": enabled.ManagementRevision,
-		"delete_data":          false,
-	})
-	listed := getJSON[struct {
-		RetainedData []retaineddata.Record `json:"retained_data"`
-	}](t, handler, "/_redevplugin/api/plugins/retained-data?source_plugin_instance_id="+installed.PluginInstanceID)
-	if len(listed.RetainedData) != 1 {
-		t.Fatalf("retained-data list mismatch: %#v", listed.RetainedData)
-	}
-	if err := storageBroker.EnsureNamespace(ctx, storage.Namespace{
-		PluginInstanceID: installed.PluginInstanceID,
-		StoreID:          "db",
-		Kind:             storage.StoreSQLite,
-		QuotaBytes:       1024 * 1024,
-		SchemaVersion:    1,
-	}); err != nil {
-		t.Fatalf("EnsureNamespace(reactivate) error = %v", err)
-	}
-
-	reqBody, err := json.Marshal(map[string]any{"retained_id": listed.RetainedData[0].RetainedID})
-	if err != nil {
-		t.Fatal(err)
-	}
-	req := httptest.NewRequest(http.MethodPost, "/_redevplugin/api/plugins/retained-data/delete", bytes.NewReader(reqBody))
-	rec := httptest.NewRecorder()
-	handler.ServeHTTP(rec, req)
-	if rec.Code != http.StatusConflict {
-		t.Fatalf("delete retained data status = %d body = %s", rec.Code, rec.Body.String())
-	}
-	var envelope struct {
-		OK        bool                `json:"ok"`
-		ErrorCode string              `json:"error_code"`
-		Data      retaineddata.Record `json:"data"`
-	}
-	if err := json.Unmarshal(rec.Body.Bytes(), &envelope); err != nil {
-		t.Fatal(err)
-	}
-	if envelope.OK || envelope.ErrorCode != string(security.ErrRetainedDataCleanupFailed) || envelope.Data.State != retaineddata.StateDeleteFailedRetryable {
-		t.Fatalf("cleanup failure envelope mismatch: %#v", envelope)
-	}
-}
-
-func TestHandlerCleanupExpiredRetainedDataRejectsInvalidMaxRecords(t *testing.T) {
-	handler := Handler{Host: newHTTPTestHost(t), WebSecurity: allowHTTPTestGuard()}
-	req := httptest.NewRequest(http.MethodPost, "/_redevplugin/api/plugins/retained-data/cleanup-expired", bytes.NewBufferString(`{"max_records":0}`))
+func TestHandlerCleanupExpiredRetainedDataRejectsUnknownFields(t *testing.T) {
+	handler := mustNewHandler(t, newHTTPTestHost(t), allowHTTPTestGuard())
+	req := newJSONHTTPRequest(http.MethodPost, "/_redevplugin/api/plugins/retained-data/cleanup-expired", bytes.NewBufferString(`{"unexpected_field":true}`))
 	rec := httptest.NewRecorder()
 
 	handler.ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("cleanup max_records status = %d body = %s", rec.Code, rec.Body.String())
+		t.Fatalf("cleanup unknown field status = %d body = %s", rec.Code, rec.Body.String())
 	}
-	var envelope Envelope
+	var envelope decodedErrorResponse
 	if err := json.Unmarshal(rec.Body.Bytes(), &envelope); err != nil {
 		t.Fatal(err)
 	}
-	if envelope.OK || envelope.ErrorCode != string(security.ErrInvalidRequest) {
-		t.Fatalf("cleanup max_records envelope mismatch: %#v", envelope)
+	if envelope.OK || envelope.Code != string(security.ErrInvalidRequest) {
+		t.Fatalf("cleanup unknown field envelope mismatch: %#v", envelope)
 	}
 }
 
-func TestHandlerDataExportImportSettingsArchive(t *testing.T) {
+func TestHandlerDataExportImportSettingsBundle(t *testing.T) {
 	h := newHTTPTestHost(t)
-	installed, err := host.ImportLocalPackageBytes(context.Background(), h, buildHTTPSettingsFixturePackage(t))
+	installed, err := host.ImportLocalPackageBytes(httpTestContext(), h, buildHTTPSettingsFixturePackage(t))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.EnablePlugin(context.Background(), host.EnableRequest{PluginInstanceID: installed.PluginInstanceID, PluginStateVersion: mustPluginStateVersion(t, h, installed.PluginInstanceID)}); err != nil {
+	if _, err := h.EnablePlugin(httpTestContext(), host.EnableRequest{PluginInstanceID: installed.PluginInstanceID, ExpectedManagementRevision: mustManagementRevision(t, h, installed.PluginInstanceID)}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.PatchPluginSettings(context.Background(), host.PatchSettingsRequest{
-		PluginInstanceID: installed.PluginInstanceID,
-		Values:           map[string]any{"default_engine": "podman"},
+	if _, err := h.PatchPluginSettings(httpTestContext(), host.PatchSettingsRequest{
+		PluginInstanceID:       installed.PluginInstanceID,
+		ExpectedValuesRevision: 1,
+		Set:                    map[string]any{"default_engine": "podman"},
 	}); err != nil {
 		t.Fatal(err)
 	}
-	handler := Handler{Host: h, WebSecurity: allowHTTPTestGuard()}
+	enabledRecord, err := h.ListPlugins(httpTestContext())
+	if err != nil || len(enabledRecord) != 1 {
+		t.Fatalf("ListPlugins() = %#v, %v", enabledRecord, err)
+	}
+	if _, err := h.DisablePlugin(httpTestContext(), host.DisableRequest{
+		PluginInstanceID:           installed.PluginInstanceID,
+		ExpectedManagementRevision: enabledRecord[0].ManagementRevision,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	handler := mustNewHandler(t, h, allowHTTPTestGuard())
 
-	exported := postJSON[host.ExportDataResult](t, handler, "/_redevplugin/api/plugins/data/export", map[string]any{
+	exported := postJSON[struct {
+		BundleRef string `json:"bundle_ref"`
+	}](t, handler, "/_redevplugin/api/plugins/data/export", map[string]any{
 		"plugin_instance_id": installed.PluginInstanceID,
 	})
-	if exported.SettingsArchiveRef == "" {
-		t.Fatal("export response missing settings_archive_ref")
+	if exported.BundleRef == "" {
+		t.Fatal("export response missing bundle_ref")
 	}
 
-	postJSON[map[string]bool](t, handler, "/_redevplugin/api/plugins/data/import", map[string]any{
-		"plugin_instance_id":   installed.PluginInstanceID,
-		"settings_archive_ref": exported.SettingsArchiveRef,
-		"delete_existing":      true,
+	postJSON[registry.PluginRecord](t, handler, "/_redevplugin/api/plugins/data/import", map[string]any{
+		"plugin_instance_id":           installed.PluginInstanceID,
+		"bundle_ref":                   exported.BundleRef,
+		"expected_management_revision": mustManagementRevision(t, h, installed.PluginInstanceID),
 	})
 }
 
 func TestHandlerSecretLifecycleFlow(t *testing.T) {
 	secrets := &httpRecordingSecretStore{}
 	h := newHTTPTestHostWithOptions(t, httpTestHostOptions{secrets: secrets})
-	installed, err := host.ImportLocalPackageBytes(context.Background(), h, buildHTTPSettingsFixturePackage(t))
+	installed, err := host.ImportLocalPackageBytes(httpTestContext(), h, buildHTTPSettingsFixturePackage(t))
 	if err != nil {
 		t.Fatal(err)
 	}
-	handler := Handler{Host: h, WebSecurity: allowHTTPTestGuard()}
+	handler := mustNewHandler(t, h, allowHTTPTestGuard())
 
 	postJSON[map[string]bool](t, handler, "/_redevplugin/api/plugins/secrets/bind", map[string]any{
 		"plugin_instance_id": installed.PluginInstanceID,
@@ -2537,45 +3271,352 @@ func TestHandlerSecretLifecycleFlow(t *testing.T) {
 	}
 }
 
-func TestHandlerListsAuditEvents(t *testing.T) {
-	h := newHTTPTestHost(t)
-	handler := Handler{Host: h, WebSecurity: allowHTTPTestGuard(), EnableLocalImportRoutes: true}
-	installed := postJSON[registry.PluginRecord](t, handler, "/_redevplugin/api/plugins/local-import/install", map[string]any{
-		"package_base64":       base64.StdEncoding.EncodeToString(buildHTTPFixturePackage(t)),
-		"plugin_state_version": 0,
-	})
-	postJSON[registry.PluginRecord](t, handler, "/_redevplugin/api/plugins/enable", map[string]any{
-		"plugin_instance_id":   installed.PluginInstanceID,
-		"plugin_state_version": installed.ManagementRevision,
-	})
-
-	listed := getJSON[struct {
-		AuditEvents []host.AuditEvent `json:"audit_events"`
-	}](t, handler, "/_redevplugin/api/plugins/audit?plugin_instance_id="+installed.PluginInstanceID+"&type=plugin.enabled&limit=5")
-	if len(listed.AuditEvents) != 1 {
-		t.Fatalf("audit events = %#v", listed.AuditEvents)
+func TestHandlerDeleteSecretErrorsUseMutationEnvelope(t *testing.T) {
+	secretStore := &httpRecordingSecretStore{}
+	h := newHTTPTestHostWithOptions(t, httpTestHostOptions{secrets: secretStore})
+	installed, err := host.ImportLocalPackageBytes(httpTestContext(), h, buildHTTPSettingsFixturePackage(t))
+	if err != nil {
+		t.Fatal(err)
 	}
-	event := listed.AuditEvents[0]
-	if event.Type != "plugin.enabled" || event.PluginID != installed.PluginID || event.PluginInstanceID != installed.PluginInstanceID || event.OccurredAt.IsZero() {
-		t.Fatalf("audit event mismatch: %#v", event)
+	handler := mustNewHandler(t, h, allowHTTPTestGuard())
+
+	malformed := httptest.NewRequest(http.MethodPost, "/_redevplugin/api/plugins/secrets/delete", bytes.NewBufferString(`{"plugin_instance_id":`))
+	malformed.Header.Set("Content-Type", "application/json")
+	malformedResponse := httptest.NewRecorder()
+	handler.ServeHTTP(malformedResponse, malformed)
+	if malformedResponse.Code != http.StatusBadRequest {
+		t.Fatalf("malformed delete status = %d, want %d body = %s", malformedResponse.Code, http.StatusBadRequest, malformedResponse.Body.String())
+	}
+	var malformedEnvelope decodedErrorResponse
+	if err := json.Unmarshal(malformedResponse.Body.Bytes(), &malformedEnvelope); err != nil {
+		t.Fatal(err)
+	}
+	if malformedEnvelope.OK || malformedEnvelope.Code != string(security.ErrInvalidRequest) || malformedEnvelope.MutationOutcome != string(mutation.OutcomeNotCommitted) {
+		t.Fatalf("malformed delete envelope mismatch: %#v", malformedEnvelope)
+	}
+
+	secretStore.deleteErr = errors.New("secret adapter delete failed")
+	adapterEnvelope := postJSONError(t, handler, "/_redevplugin/api/plugins/secrets/delete", map[string]any{
+		"plugin_instance_id": installed.PluginInstanceID,
+		"secret_ref":         "api_token",
+		"scope":              "user",
+	}, http.StatusForbidden)
+	if adapterEnvelope.Code != string(security.ErrPermissionDenied) || adapterEnvelope.MutationOutcome != string(mutation.OutcomeUnknown) {
+		t.Fatalf("adapter delete envelope mismatch: %#v", adapterEnvelope)
+	}
+
+	secretStore.deleteErr = &mutation.Error{Outcome: mutation.OutcomeNotCommitted, Err: errors.New("secret delete was rejected before commit")}
+	explicitEnvelope := postJSONError(t, handler, "/_redevplugin/api/plugins/secrets/delete", map[string]any{
+		"plugin_instance_id": installed.PluginInstanceID,
+		"secret_ref":         "api_token",
+		"scope":              "user",
+	}, http.StatusForbidden)
+	if explicitEnvelope.MutationOutcome != string(mutation.OutcomeNotCommitted) {
+		t.Fatalf("explicit delete mutation_outcome = %q, want %q", explicitEnvelope.MutationOutcome, mutation.OutcomeNotCommitted)
+	}
+}
+
+func TestHandlerSecretAdapterFailuresAfterDispatchAreUnknown(t *testing.T) {
+	tests := []struct {
+		name      string
+		path      string
+		operation string
+		setErr    func(*httpRecordingSecretStore, error)
+		prepare   func(*httpRecordingSecretStore)
+	}{
+		{
+			name:      "bind",
+			path:      "/_redevplugin/api/plugins/secrets/bind",
+			operation: "bind",
+			setErr:    func(store *httpRecordingSecretStore, err error) { store.bindErr = err },
+		},
+		{
+			name:      "test",
+			path:      "/_redevplugin/api/plugins/secrets/test",
+			operation: "test",
+			prepare:   func(store *httpRecordingSecretStore) { store.bound = true },
+			setErr:    func(store *httpRecordingSecretStore, err error) { store.testErr = err },
+		},
+		{
+			name:      "delete",
+			path:      "/_redevplugin/api/plugins/secrets/delete",
+			operation: "delete",
+			prepare:   func(store *httpRecordingSecretStore) { store.bound = true },
+			setErr:    func(store *httpRecordingSecretStore, err error) { store.deleteErr = err },
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			sensitive := fmt.Sprintf("vault token sk-live-%s at /Users/secret/path", test.operation)
+			secretStore := &httpRecordingSecretStore{}
+			if test.prepare != nil {
+				test.prepare(secretStore)
+			}
+			test.setErr(secretStore, errors.New(sensitive))
+			diagnostics := newHTTPRecordingDiagnostics()
+			h := newHTTPTestHostWithOptions(t, httpTestHostOptions{secrets: secretStore, diagnostics: diagnostics})
+			installed, err := host.ImportLocalPackageBytes(httpTestContext(), h, buildHTTPSettingsFixturePackage(t))
+			if err != nil {
+				t.Fatal(err)
+			}
+			handler := mustNewHandler(t, h, allowHTTPTestGuard())
+			rawRequest, err := json.Marshal(map[string]any{
+				"plugin_instance_id": installed.PluginInstanceID,
+				"secret_ref":         "api_token",
+				"scope":              "user",
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			request := httptest.NewRequest(http.MethodPost, test.path, bytes.NewReader(rawRequest))
+			request.Header.Set("Content-Type", "application/json")
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, request)
+			if response.Code != http.StatusForbidden {
+				t.Fatalf("status = %d, want %d body = %s", response.Code, http.StatusForbidden, response.Body.String())
+			}
+			var envelope decodedErrorResponse
+			if err := json.Unmarshal(response.Body.Bytes(), &envelope); err != nil {
+				t.Fatal(err)
+			}
+			if envelope.MutationOutcome != string(mutation.OutcomeUnknown) {
+				t.Fatalf("mutation_outcome = %q, want %q body = %#v", envelope.MutationOutcome, mutation.OutcomeUnknown, envelope)
+			}
+			if envelope.Message != "secret operation failed" {
+				t.Fatalf("public secret error message = %q, want fixed message", envelope.Message)
+			}
+			for _, secret := range []string{sensitive, "sk-live-" + test.operation, "/Users/secret/path"} {
+				if strings.Contains(response.Body.String(), secret) {
+					t.Fatalf("secret response leaked %q: %s", secret, response.Body.String())
+				}
+			}
+			events, err := diagnostics.ListPluginDiagnostics(context.Background(), observability.ListDiagnosticRequest{
+				Type:                 "plugin.secret.adapter_failed",
+				PluginInstanceID:     installed.PluginInstanceID,
+				OwnerSessionHash:     "session_hash",
+				OwnerUserHash:        "user_hash",
+				OwnerEnvHash:         "env_hash",
+				SessionChannelIDHash: "channel_hash",
+				Limit:                10,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(events) != 1 || events[0].Message != "secret adapter operation failed" || events[0].Details["operation"] != test.operation || events[0].InternalDetails != nil {
+				t.Fatalf("secret adapter diagnostic mismatch: %#v", events)
+			}
+			internalEvent, ok := diagnostics.last("plugin.secret.adapter_failed")
+			if !ok || internalEvent.InternalDetails["error"] != sensitive {
+				t.Fatalf("secret diagnostics sink lost internal cause: %#v", internalEvent)
+			}
+			listed := getJSON[struct {
+				DiagnosticEvents []host.DiagnosticEvent `json:"diagnostic_events"`
+			}](t, handler, "/_redevplugin/api/plugins/diagnostics?type=plugin.secret.adapter_failed&limit=10")
+			if len(listed.DiagnosticEvents) != 1 || listed.DiagnosticEvents[0].Message != "secret adapter operation failed" || listed.DiagnosticEvents[0].Details["operation"] != test.operation {
+				t.Fatalf("public secret diagnostics mismatch: %#v", listed.DiagnosticEvents)
+			}
+			publicDiagnostics, err := json.Marshal(listed)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, forbidden := range []string{sensitive, "sk-live-" + test.operation, "/Users/secret/path", "internal_details"} {
+				if strings.Contains(string(publicDiagnostics), forbidden) {
+					t.Fatalf("public secret diagnostics leaked %q: %s", forbidden, publicDiagnostics)
+				}
+			}
+			if test.name == "bind" {
+				secretStore.bindErr = nil
+				if _, err := h.EnablePlugin(httpTestContext(), host.EnableRequest{
+					PluginInstanceID:           installed.PluginInstanceID,
+					ExpectedManagementRevision: installed.ManagementRevision,
+				}); err != nil {
+					t.Fatal(err)
+				}
+				snapshot, err := h.GetPluginSettings(httpTestContext(), host.GetSettingsRequest{PluginInstanceID: installed.PluginInstanceID})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if len(snapshot.SecretMetadata) != 1 || !snapshot.SecretMetadata[0].Bound {
+					t.Fatalf("committed secret metadata mismatch: %#v", snapshot.SecretMetadata)
+				}
+			}
+		})
+	}
+}
+
+func TestHandlerDiagnosticsAreScopedToAuthenticatedOwner(t *testing.T) {
+	diagnostics := observability.NewMemoryStore()
+	h := newHTTPTestHostWithOptions(t, httpTestHostOptions{diagnostics: diagnostics})
+	if err := diagnostics.AppendPluginDiagnostic(context.Background(), observability.DiagnosticEvent{
+		Type: "plugin.runtime.hostcall.failed", Severity: "warning", Message: "background raw failure",
+		Details: map[string]any{"error": "vault token at /Users/secret/path"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := diagnostics.AppendPluginDiagnostic(context.Background(), observability.DiagnosticEvent{
+		Type: "plugin.owner.failure", Severity: "warning", Message: "current owner failure",
+		OwnerSessionHash: "session_hash", OwnerUserHash: "user_hash", OwnerEnvHash: "env_hash", SessionChannelIDHash: "channel_hash",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := diagnostics.AppendPluginDiagnostic(context.Background(), observability.DiagnosticEvent{
+		Type: "plugin.owner.failure", Severity: "warning", Message: "other owner failure",
+		OwnerSessionHash: "session_other", OwnerUserHash: "user_other", OwnerEnvHash: "env_other", SessionChannelIDHash: "channel_other",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	handler := mustNewHandler(t, h, allowHTTPTestGuard())
+	listed := getJSON[struct {
+		DiagnosticEvents []host.DiagnosticEvent `json:"diagnostic_events"`
+	}](t, handler, "/_redevplugin/api/plugins/diagnostics?severity=warning&limit=10")
+	if len(listed.DiagnosticEvents) != 1 || listed.DiagnosticEvents[0].Message != "current owner failure" {
+		t.Fatalf("owner-scoped diagnostics mismatch: %#v", listed.DiagnosticEvents)
+	}
+	raw, err := json.Marshal(listed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, forbidden := range []string{"background raw failure", "/Users/secret/path", "other owner failure", "owner_session_hash", "owner_user_hash", "owner_env_hash", "session_channel_id_hash"} {
+		if strings.Contains(string(raw), forbidden) {
+			t.Fatalf("diagnostics route leaked %q: %s", forbidden, raw)
+		}
+	}
+}
+
+func TestHandlerInternalErrorsUseStableMessagesAndOwnerScopedDiagnostics(t *testing.T) {
+	const sensitive = "launch /Users/secret/path/redevplugin-runtime with vault-token-super-secret"
+	diagnostics := newHTTPRecordingDiagnostics()
+	runtimeManager := &httpRecordingRuntimeManager{startErr: errors.New(sensitive)}
+	h := newHTTPTestHostWithOptions(t, httpTestHostOptions{diagnostics: diagnostics, runtimeManager: runtimeManager})
+	handler := mustNewHandler(t, h, allowHTTPTestGuard())
+	envelope := postJSONError(t, handler, "/_redevplugin/api/plugins/runtime/start", map[string]any{
+		"target": map[string]any{"os": "test-os", "arch": "test-arch"},
+	}, http.StatusServiceUnavailable)
+	if envelope.Code != string(security.ErrRuntimeUnavailable) || envelope.Message != "plugin runtime is unavailable" || envelope.MutationOutcome != string(mutation.OutcomeNotCommitted) {
+		t.Fatalf("runtime public error mismatch: %#v", envelope)
+	}
+	encoded, err := json.Marshal(envelope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), sensitive) || strings.Contains(string(encoded), "/Users/secret/path") || strings.Contains(string(encoded), "vault-token-super-secret") {
+		t.Fatalf("runtime response leaked internal error: %s", encoded)
+	}
+	events, err := diagnostics.ListPluginDiagnostics(context.Background(), observability.ListDiagnosticRequest{
+		Type: "plugin.http.operation_failed", OwnerSessionHash: "session_hash", OwnerUserHash: "user_hash", OwnerEnvHash: "env_hash", SessionChannelIDHash: "channel_hash", Limit: 10,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 1 || events[0].Message != "plugin HTTP operation failed" || events[0].Details["operation"] != "runtime.start" || events[0].InternalDetails != nil {
+		t.Fatalf("runtime failure diagnostic mismatch: %#v", events)
+	}
+	internalRuntimeEvent, ok := diagnostics.last("plugin.http.operation_failed")
+	if !ok || internalRuntimeEvent.InternalDetails["error"] != sensitive {
+		t.Fatalf("runtime diagnostics sink lost internal cause: %#v", internalRuntimeEvent)
+	}
+	rawEvent, err := json.Marshal(events[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(rawEvent), "owner_session_hash") || strings.Contains(string(rawEvent), "owner_user_hash") || strings.Contains(string(rawEvent), "owner_env_hash") || strings.Contains(string(rawEvent), "session_channel_id_hash") {
+		t.Fatalf("diagnostic owner scope was serialized: %s", rawEvent)
+	}
+	if strings.Contains(string(encoded), "plugin HTTP operation failed") {
+		t.Fatalf("public response exposed diagnostic-only message: %s", encoded)
+	}
+	listed := getJSON[struct {
+		DiagnosticEvents []host.DiagnosticEvent `json:"diagnostic_events"`
+	}](t, handler, "/_redevplugin/api/plugins/diagnostics?type=plugin.http.operation_failed&limit=10")
+	publicDiagnostics, err := json.Marshal(listed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(listed.DiagnosticEvents) != 1 || listed.DiagnosticEvents[0].Details["operation"] != "runtime.start" || listed.DiagnosticEvents[0].Details["code"] != string(security.ErrRuntimeUnavailable) {
+		t.Fatalf("public runtime diagnostics mismatch: %#v", listed.DiagnosticEvents)
+	}
+	for _, forbidden := range []string{sensitive, "/Users/secret/path", "vault-token-super-secret", "internal_details"} {
+		if strings.Contains(string(publicDiagnostics), forbidden) {
+			t.Fatalf("public runtime diagnostics leaked %q: %s", forbidden, publicDiagnostics)
+		}
+	}
+
+	stopSensitive := "stop /Users/secret/path/redevplugin-runtime with vault-token-stop-secret"
+	runtimeManager.stopErr = errors.New(stopSensitive)
+	stopEnvelope := postJSONError(t, handler, "/_redevplugin/api/plugins/runtime/stop", map[string]any{}, http.StatusServiceUnavailable)
+	if stopEnvelope.Code != string(security.ErrRuntimeUnavailable) || stopEnvelope.Message != "plugin runtime is unavailable" || stopEnvelope.MutationOutcome != string(mutation.OutcomeUnknown) {
+		t.Fatalf("runtime stop public error mismatch: %#v", stopEnvelope)
+	}
+	stopEvents, err := diagnostics.ListPluginDiagnostics(context.Background(), observability.ListDiagnosticRequest{
+		Type: "plugin.runtime.stop_failed", OwnerSessionHash: "session_hash", OwnerUserHash: "user_hash", OwnerEnvHash: "env_hash", SessionChannelIDHash: "channel_hash", Limit: 10,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(stopEvents) != 1 || stopEvents[0].InternalDetails != nil {
+		t.Fatalf("runtime stop internal diagnostic mismatch: %#v", stopEvents)
+	}
+	internalStopEvent, ok := diagnostics.last("plugin.runtime.stop_failed")
+	if !ok || internalStopEvent.InternalDetails["error"] != stopSensitive {
+		t.Fatalf("runtime stop diagnostics sink lost internal cause: %#v", internalStopEvent)
+	}
+	listedStop := getJSON[struct {
+		DiagnosticEvents []host.DiagnosticEvent `json:"diagnostic_events"`
+	}](t, handler, "/_redevplugin/api/plugins/diagnostics?type=plugin.runtime.stop_failed&limit=10")
+	publicStopDiagnostics, err := json.Marshal(listedStop)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(listedStop.DiagnosticEvents) != 1 || listedStop.DiagnosticEvents[0].Message != "plugin runtime stop failed" || strings.Contains(string(publicStopDiagnostics), stopSensitive) || strings.Contains(string(publicStopDiagnostics), "/Users/secret/path") {
+		t.Fatalf("public runtime stop diagnostics leaked internal cause: %s", publicStopDiagnostics)
+	}
+}
+
+func TestHandlerPatchSettingsReportsUnknownWhenMetadataReadFailsAfterCommit(t *testing.T) {
+	secretStore := &httpRecordingSecretStore{listErr: errors.New("secret metadata unavailable")}
+	h := newHTTPTestHostWithOptions(t, httpTestHostOptions{secrets: secretStore})
+	installed, err := host.ImportLocalPackageBytes(httpTestContext(), h, buildHTTPSettingsFixturePackage(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.EnablePlugin(httpTestContext(), host.EnableRequest{
+		PluginInstanceID:           installed.PluginInstanceID,
+		ExpectedManagementRevision: installed.ManagementRevision,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	handler := mustNewHandler(t, h, allowHTTPTestGuard())
+
+	envelope := requestJSONError(t, handler, http.MethodPatch, "/_redevplugin/api/plugins/"+installed.PluginInstanceID+"/settings", map[string]any{
+		"expected_values_revision": 1,
+		"set":                      map[string]any{"default_engine": "podman"},
+	}, http.StatusForbidden)
+	if envelope.MutationOutcome != string(mutation.OutcomeUnknown) {
+		t.Fatalf("settings mutation_outcome = %q, want %q body = %#v", envelope.MutationOutcome, mutation.OutcomeUnknown, envelope)
+	}
+
+	secretStore.listErr = nil
+	snapshot := getJSON[host.SettingsResult](t, handler, "/_redevplugin/api/plugins/"+installed.PluginInstanceID+"/settings")
+	if snapshot.ValuesRevision != 2 || snapshot.Values["default_engine"] != "podman" {
+		t.Fatalf("committed settings snapshot mismatch: %#v", snapshot)
 	}
 }
 
 func TestHandlerRuntimeLifecycleFlow(t *testing.T) {
-	supervisor := &httpRecordingRuntimeSupervisor{
+	supervisor := &httpRecordingRuntimeManager{
 		health: runtimeclient.Health{RuntimeInstanceID: "runtime_http", RuntimeGenerationID: "runtime_gen_http", IPCChannelID: "ipc_http", ConnectionNonce: "connection_nonce_http_1234567890", Ready: true},
 	}
-	h := newHTTPTestHostWithOptions(t, httpTestHostOptions{runtimeSupervisor: supervisor})
-	handler := Handler{Host: h, WebSecurity: allowHTTPTestGuard()}
+	h := newHTTPTestHostWithOptions(t, httpTestHostOptions{runtimeManager: supervisor})
+	handler := mustNewHandler(t, h, allowHTTPTestGuard())
 
-	health := postJSON[runtimeclient.Health](t, handler, "/_redevplugin/api/plugins/runtime/start", map[string]any{
+	health := postJSON[runtimeclient.ManagerHealth](t, handler, "/_redevplugin/api/plugins/runtime/start", map[string]any{
 		"target": map[string]any{"os": "test-os", "arch": "test-arch"},
 	})
-	if health.RuntimeInstanceID != "runtime_http" || supervisor.startedTarget.OS != "test-os" || supervisor.startedTarget.Arch != "test-arch" {
+	if !health.Ready || len(health.Shards) != 1 || health.Shards[0].RuntimeInstanceID != "runtime_http" || supervisor.startedTarget.OS != "test-os" || supervisor.startedTarget.Arch != "test-arch" {
 		t.Fatalf("runtime start mismatch: health=%#v supervisor=%#v", health, supervisor)
 	}
-	health = getJSON[runtimeclient.Health](t, handler, "/_redevplugin/api/plugins/runtime/health")
-	if !health.Ready || health.RuntimeGenerationID != "runtime_gen_http" {
+	health = getJSON[runtimeclient.ManagerHealth](t, handler, "/_redevplugin/api/plugins/runtime/health")
+	if !health.Ready || len(health.Shards) != 1 || health.Shards[0].RuntimeGenerationID != "runtime_gen_http" {
 		t.Fatalf("runtime health mismatch: %#v", health)
 	}
 	postJSON[map[string]bool](t, handler, "/_redevplugin/api/plugins/runtime/stop", map[string]any{})
@@ -2586,28 +3627,20 @@ func TestHandlerRuntimeLifecycleFlow(t *testing.T) {
 
 func TestHandlerRefreshEnabledRuntimeState(t *testing.T) {
 	h := newHTTPTestHost(t)
-	handler := Handler{Host: h, WebSecurity: allowHTTPTestGuard(), EnableLocalImportRoutes: true}
+	handler := mustNewHandler(t, h, allowHTTPTestGuard())
 	installed := postJSON[registry.PluginRecord](t, handler, "/_redevplugin/api/plugins/local-import/install", map[string]any{
-		"package_base64":       base64.StdEncoding.EncodeToString(buildHTTPFixturePackage(t)),
-		"plugin_state_version": 0,
+		"package_base64": base64.StdEncoding.EncodeToString(buildHTTPFixturePackage(t)),
 	})
 	enabled := postJSON[registry.PluginRecord](t, handler, "/_redevplugin/api/plugins/enable", map[string]any{
-		"plugin_instance_id":   installed.PluginInstanceID,
-		"plugin_state_version": installed.ManagementRevision,
+		"plugin_instance_id":           installed.PluginInstanceID,
+		"expected_management_revision": installed.ManagementRevision,
 	})
 
 	refreshed := postJSON[struct {
-		RefreshedPlugins []registry.PluginRecord `json:"refreshed_plugins"`
+		Results []host.RefreshEnabledPluginResult `json:"results"`
 	}](t, handler, "/_redevplugin/api/plugins/runtime/refresh-enabled", map[string]any{})
-	if len(refreshed.RefreshedPlugins) != 1 || refreshed.RefreshedPlugins[0].PluginInstanceID != enabled.PluginInstanceID {
-		t.Fatalf("refreshed plugins mismatch: %#v", refreshed.RefreshedPlugins)
-	}
-
-	audit := getJSON[struct {
-		AuditEvents []host.AuditEvent `json:"audit_events"`
-	}](t, handler, "/_redevplugin/api/plugins/audit?plugin_instance_id="+enabled.PluginInstanceID+"&type=plugin.runtime_state.refreshed&limit=5")
-	if len(audit.AuditEvents) != 1 {
-		t.Fatalf("runtime refresh audit events = %#v", audit.AuditEvents)
+	if len(refreshed.Results) != 1 || refreshed.Results[0].PluginInstanceID != enabled.PluginInstanceID || refreshed.Results[0].Status != host.RefreshEnabledPluginStatusRefreshed || refreshed.Results[0].Error != nil {
+		t.Fatalf("runtime refresh results mismatch: %#v", refreshed.Results)
 	}
 }
 
@@ -2617,8 +3650,7 @@ func postJSON[T any](t *testing.T, handler http.Handler, path string, body any) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	req := httptest.NewRequest(http.MethodPost, path, bytes.NewReader(raw))
-	req.Header.Set("Content-Type", "application/json")
+	req := newJSONHTTPRequest(http.MethodPost, path, bytes.NewReader(raw))
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
@@ -2641,25 +3673,118 @@ func postJSON[T any](t *testing.T, handler http.Handler, path string, body any) 
 	return data
 }
 
-func postJSONError(t *testing.T, handler http.Handler, path string, body any, wantStatus int) Envelope {
+func requestJSON[T any](t *testing.T, handler http.Handler, method, path string, body any) T {
+	t.Helper()
+	var reader io.Reader
+	if body != nil {
+		raw, err := json.Marshal(body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		reader = bytes.NewReader(raw)
+	}
+	req := httptest.NewRequest(method, path, reader)
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("%s %s status = %d body = %s", method, path, rec.Code, rec.Body.String())
+	}
+	var envelope struct {
+		OK   bool            `json:"ok"`
+		Data json.RawMessage `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &envelope); err != nil {
+		t.Fatal(err)
+	}
+	if !envelope.OK {
+		t.Fatalf("%s %s returned not ok: %s", method, path, rec.Body.String())
+	}
+	var data T
+	if err := json.Unmarshal(envelope.Data, &data); err != nil {
+		t.Fatal(err)
+	}
+	return data
+}
+
+type decodedErrorResponse struct {
+	OK              bool
+	Code            string
+	Message         string
+	Details         map[string]any
+	MutationOutcome string
+}
+
+func (r *decodedErrorResponse) UnmarshalJSON(data []byte) error {
+	var wire struct {
+		OK    bool `json:"ok"`
+		Error struct {
+			Code            string         `json:"code"`
+			Message         string         `json:"message"`
+			Details         map[string]any `json:"details"`
+			MutationOutcome string         `json:"mutation_outcome"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(data, &wire); err != nil {
+		return err
+	}
+	r.OK = wire.OK
+	r.Code = wire.Error.Code
+	r.Message = wire.Error.Message
+	r.Details = wire.Error.Details
+	r.MutationOutcome = wire.Error.MutationOutcome
+	return nil
+}
+
+func postJSONError(t *testing.T, handler http.Handler, path string, body any, wantStatus int) decodedErrorResponse {
 	t.Helper()
 	raw, err := json.Marshal(body)
 	if err != nil {
 		t.Fatal(err)
 	}
-	req := httptest.NewRequest(http.MethodPost, path, bytes.NewReader(raw))
-	req.Header.Set("Content-Type", "application/json")
+	req := newJSONHTTPRequest(http.MethodPost, path, bytes.NewReader(raw))
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 	if rec.Code != wantStatus {
 		t.Fatalf("POST %s status = %d, want %d body = %s", path, rec.Code, wantStatus, rec.Body.String())
 	}
-	var envelope Envelope
+	var envelope decodedErrorResponse
 	if err := json.Unmarshal(rec.Body.Bytes(), &envelope); err != nil {
 		t.Fatal(err)
 	}
 	if envelope.OK {
 		t.Fatalf("POST %s returned ok for expected error: %s", path, rec.Body.String())
+	}
+	return envelope
+}
+
+func requestJSONError(t *testing.T, handler http.Handler, method, path string, body any, wantStatus int) decodedErrorResponse {
+	t.Helper()
+	var reader io.Reader
+	if body != nil {
+		raw, err := json.Marshal(body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		reader = bytes.NewReader(raw)
+	}
+	req := httptest.NewRequest(method, path, reader)
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != wantStatus {
+		t.Fatalf("%s %s status = %d, want %d body = %s", method, path, rec.Code, wantStatus, rec.Body.String())
+	}
+	var envelope decodedErrorResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &envelope); err != nil {
+		t.Fatal(err)
+	}
+	if envelope.OK {
+		t.Fatalf("%s %s returned ok for expected error: %s", method, path, rec.Body.String())
 	}
 	return envelope
 }
@@ -2689,6 +3814,12 @@ func getJSON[T any](t *testing.T, handler http.Handler, path string) T {
 	return data
 }
 
+func newJSONHTTPRequest(method string, path string, body io.Reader) *http.Request {
+	req := httptest.NewRequest(method, path, body)
+	req.Header.Set("Content-Type", "application/json")
+	return req
+}
+
 func cloneMap(in map[string]any) map[string]any {
 	out := make(map[string]any, len(in))
 	for key, value := range in {
@@ -2713,6 +3844,8 @@ func samplePathForRoute(path string) string {
 		return "/_redevplugin/api/plugins/operations/op_test"
 	case "/_redevplugin/api/plugins/operations/{operation_id}/cancel":
 		return "/_redevplugin/api/plugins/operations/op_test/cancel"
+	case "/_redevplugin/api/plugins/security-policies/{plugin_instance_id}":
+		return "/_redevplugin/api/plugins/security-policies/plugini_test"
 	case "/_redevplugin/api/plugins/{plugin_instance_id}/settings/schema":
 		return "/_redevplugin/api/plugins/plugini_test/settings/schema"
 	case "/_redevplugin/api/plugins/{plugin_instance_id}/settings":
@@ -2738,6 +3871,62 @@ func readOpenAPIContract(t *testing.T) string {
 	}
 	t.Fatalf("read OpenAPI contract: %v", lastErr)
 	return ""
+}
+
+func assertJSONFieldsMatchOpenAPISchema(t *testing.T, spec, schemaName string, value map[string]any) {
+	t.Helper()
+	block, ok := openAPISchemaContractBlock(spec, schemaName)
+	if !ok {
+		t.Fatalf("OpenAPI schema %s is missing", schemaName)
+	}
+	if !strings.Contains(block, "additionalProperties: false") {
+		t.Fatalf("OpenAPI schema %s is not closed", schemaName)
+	}
+	requiredMarker := "required: ["
+	requiredStart := strings.Index(block, requiredMarker)
+	if requiredStart < 0 {
+		t.Fatalf("OpenAPI schema %s has no inline required fields", schemaName)
+	}
+	requiredStart += len(requiredMarker)
+	requiredEnd := strings.Index(block[requiredStart:], "]")
+	if requiredEnd < 0 {
+		t.Fatalf("OpenAPI schema %s has malformed required fields", schemaName)
+	}
+	required := strings.Split(block[requiredStart:requiredStart+requiredEnd], ",")
+	want := make(map[string]struct{}, len(required))
+	for _, field := range required {
+		want[strings.TrimSpace(field)] = struct{}{}
+	}
+	if len(value) != len(want) {
+		t.Fatalf("JSON fields for %s = %#v, want exactly %#v", schemaName, reflect.ValueOf(value).MapKeys(), required)
+	}
+	for field := range want {
+		if _, ok := value[field]; !ok {
+			t.Fatalf("JSON for %s is missing required field %q: %#v", schemaName, field, value)
+		}
+	}
+}
+
+func openAPISchemaContractBlock(spec, schemaName string) (string, bool) {
+	lines := strings.Split(spec, "\n")
+	marker := "    " + schemaName + ":"
+	start := -1
+	for i, line := range lines {
+		if line == marker {
+			start = i
+		}
+	}
+	if start < 0 {
+		return "", false
+	}
+	end := len(lines)
+	for i := start + 1; i < len(lines); i++ {
+		if leadingSpaces(lines[i]) == 4 && strings.HasSuffix(lines[i], ":") {
+			end = i
+			break
+		}
+	}
+	return strings.Join(lines[start:end], "\n"), true
 }
 
 func openAPIOperationBlock(spec, routePath, method string) (string, bool) {
@@ -2796,16 +3985,11 @@ func newHTTPTestHost(t *testing.T) *host.Host {
 	return newHTTPTestHostWithOptions(t, httpTestHostOptions{})
 }
 
-func newHTTPTestHostWithStorage(t *testing.T, storageBroker storage.Broker) *host.Host {
-	return newHTTPTestHostWithOptions(t, httpTestHostOptions{storageBroker: storageBroker})
-}
-
 type httpTestHostOptions struct {
-	storageBroker           storage.Broker
 	secrets                 host.SecretStoreAdapter
 	diagnostics             host.DiagnosticsSink
-	permissions             permissions.Store
-	runtimeSupervisor       runtimeclient.Supervisor
+	runtimeManager          runtimeclient.Manager
+	surfaceCatalog          host.SurfaceCatalogSink
 	releaseSourcePolicy     host.ReleaseSourcePolicyResolver
 	releaseArtifactResolver host.ReleaseArtifactResolver
 	releaseMetadataVerifier host.ReleaseMetadataVerifier
@@ -2820,26 +4004,83 @@ type httpTestHostOptions struct {
 func newHTTPTestHostWithOptions(t *testing.T, opts httpTestHostOptions) *host.Host {
 	t.Helper()
 	capabilities := capability.NewRegistry()
+	observabilityStore := observability.NewMemoryStore()
+	diagnostics := opts.diagnostics
+	if diagnostics == nil {
+		diagnostics = observabilityStore
+	}
 	if opts.capabilityID != "" && opts.capabilityAdapter != nil {
 		verified := httpVerifiedCapabilityContract(t)
 		if err := capabilities.Register(capability.Registration{Contract: verified, TargetProjector: opts.capabilityAdapter, Adapter: opts.capabilityAdapter}); err != nil {
 			t.Fatal(err)
 		}
 	}
-	h, err := host.New(host.Adapters{
-		SessionResolver:         httpTestSessionResolver{},
-		Policy:                  httpTestPolicy{},
-		PackageTrustVerifier:    httpTestPackageTrustVerifier{},
-		ReleaseSourcePolicy:     opts.releaseSourcePolicy,
-		ReleaseArtifactResolver: opts.releaseArtifactResolver,
-		ReleaseMetadataVerifier: firstNonNilReleaseMetadataVerifier(opts.releaseMetadataVerifier, httpTestReleaseMetadataVerifier{}),
-		Storage:                 opts.storageBroker,
-		Secrets:                 opts.secrets,
-		Diagnostics:             opts.diagnostics,
-		Permissions:             opts.permissions,
-		RuntimeSupervisor:       opts.runtimeSupervisor,
-		Capabilities:            capabilities,
-		CoreActions:             opts.coreActions,
+	secretStore := opts.secrets
+	if secretStore == nil {
+		secretStore = secrets.NewMemoryStore()
+	}
+	runtimeManager := opts.runtimeManager
+	if runtimeManager == nil {
+		runtimeManager = &httpRecordingRuntimeManager{}
+	}
+	releaseSourcePolicy := opts.releaseSourcePolicy
+	if releaseSourcePolicy == nil {
+		releaseSourcePolicy = &httpRecordingReleaseSourcePolicyResolver{}
+	}
+	releaseArtifactResolver := opts.releaseArtifactResolver
+	if releaseArtifactResolver == nil {
+		releaseArtifactResolver = &httpRecordingReleaseArtifactResolver{}
+	}
+	releaseMetadataVerifier := firstNonNilReleaseMetadataVerifier(opts.releaseMetadataVerifier, httpTestReleaseMetadataVerifier{})
+	revocationVerifier, ok := releaseMetadataVerifier.(host.SourceRevocationEvidenceVerifier)
+	if !ok {
+		revocationVerifier = httpTestReleaseMetadataVerifier{}
+	}
+	coreActions := opts.coreActions
+	if coreActions == nil {
+		coreActions = &httpRecordingCoreActionAdapter{}
+	}
+	surfaceCatalog := opts.surfaceCatalog
+	if surfaceCatalog == nil {
+		surfaceCatalog = httpSurfaceCatalogSink{}
+	}
+	registryStore := registry.NewMemoryStore()
+	pluginData, err := plugindata.Open(httpTestContext(), t.TempDir(), registryStore)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := pluginData.Close(); err != nil {
+			t.Errorf("PluginData.Close() error = %v", err)
+		}
+	})
+	h, err := host.Open(httpTestContext(), host.Adapters{
+		Policy:                      httpTestPolicy{},
+		PackageTrustVerifier:        httpTestPackageTrustVerifier{},
+		ReleaseMetadataVerifier:     releaseMetadataVerifier,
+		RevocationVerifier:          revocationVerifier,
+		ReleaseSourcePolicy:         releaseSourcePolicy,
+		ReleaseArtifactResolver:     releaseArtifactResolver,
+		HostRequirements:            httpHostRequirementPolicy{},
+		CapabilityContractArtifacts: httpCapabilityContractArtifactResolver{},
+		CapabilityContractKeys:      httpCapabilityContractKeyResolver{},
+		Secrets:                     secretStore,
+		Registry:                    registryStore,
+		Audit:                       observabilityStore,
+		Diagnostics:                 diagnostics,
+		SurfaceCatalog:              surfaceCatalog,
+		Assets:                      pluginpkg.NewMemoryAssetStore(),
+		InstallStages:               installstage.NewMemoryStore(),
+		SurfaceTokens:               bridge.NewSurfaceTokenService(nil, bridge.SurfaceTokenOptions{}),
+		Connectivity:                connectivity.NewMemoryBroker(),
+		NetworkExecutor:             connectivity.NewExecutor(connectivity.ExecutorOptions{}),
+		Operations:                  operation.NewMemoryStore(),
+		ConfirmationIntents:         security.NewMemoryConfirmationIntentStore(),
+		PluginData:                  pluginData,
+		Streams:                     stream.NewMemoryStore(),
+		RuntimeManager:              runtimeManager,
+		Capabilities:                capabilities,
+		CoreActions:                 coreActions,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -2968,7 +4209,7 @@ func buildHTTPFixturePackage(t *testing.T) []byte {
 	writeHTTPFile(t, filepath.Join(dir, "manifest.json"), httpFixtureManifestJSON())
 	writeHTTPFile(t, filepath.Join(dir, "ui", "index.html"), "<!doctype html><title>HTTP</title>")
 	var buf bytes.Buffer
-	if _, err := pluginpkg.BuildFromDir(context.Background(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
+	if _, err := pluginpkg.BuildFromDir(httpTestContext(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
 		t.Fatal(err)
 	}
 	return buf.Bytes()
@@ -2999,7 +4240,7 @@ func buildHTTPVersionedFixturePackage(t *testing.T, version string, title string
 	writeHTTPFile(t, filepath.Join(dir, "manifest.json"), httpVersionedFixtureManifestJSON(version, title))
 	writeHTTPFile(t, filepath.Join(dir, "ui", "index.html"), "<!doctype html><title>"+title+"</title>")
 	var buf bytes.Buffer
-	if _, err := pluginpkg.BuildFromDir(context.Background(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
+	if _, err := pluginpkg.BuildFromDir(httpTestContext(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
 		t.Fatal(err)
 	}
 	return buf.Bytes()
@@ -3011,7 +4252,7 @@ func buildHTTPStorageFixturePackage(t *testing.T) []byte {
 	writeHTTPFile(t, filepath.Join(dir, "manifest.json"), httpStorageFixtureManifestJSON())
 	writeHTTPFile(t, filepath.Join(dir, "ui", "index.html"), "<!doctype html><title>HTTP Storage</title>")
 	var buf bytes.Buffer
-	if _, err := pluginpkg.BuildFromDir(context.Background(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
+	if _, err := pluginpkg.BuildFromDir(httpTestContext(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
 		t.Fatal(err)
 	}
 	return buf.Bytes()
@@ -3023,7 +4264,7 @@ func buildHTTPRPCFixturePackage(t *testing.T) []byte {
 	writeHTTPFile(t, filepath.Join(dir, "manifest.json"), httpRPCFixtureManifestJSON())
 	writeHTTPFile(t, filepath.Join(dir, "ui", "index.html"), "<!doctype html><title>HTTP RPC</title>")
 	var buf bytes.Buffer
-	if _, err := pluginpkg.BuildFromDir(context.Background(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
+	if _, err := pluginpkg.BuildFromDir(httpTestContext(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
 		t.Fatal(err)
 	}
 	return buf.Bytes()
@@ -3035,7 +4276,7 @@ func buildHTTPDangerousRPCFixturePackage(t *testing.T) []byte {
 	writeHTTPFile(t, filepath.Join(dir, "manifest.json"), httpDangerousRPCFixtureManifestJSON())
 	writeHTTPFile(t, filepath.Join(dir, "ui", "index.html"), "<!doctype html><title>HTTP Danger</title>")
 	var buf bytes.Buffer
-	if _, err := pluginpkg.BuildFromDir(context.Background(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
+	if _, err := pluginpkg.BuildFromDir(httpTestContext(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
 		t.Fatal(err)
 	}
 	return buf.Bytes()
@@ -3051,7 +4292,7 @@ func buildHTTPIntentFixturePackage(t *testing.T, dangerous bool) []byte {
 	writeHTTPFile(t, filepath.Join(dir, "manifest.json"), addHTTPIntentToManifestJSON(t, manifestJSON, dangerous))
 	writeHTTPFile(t, filepath.Join(dir, "ui", "index.html"), "<!doctype html><title>HTTP Intent</title>")
 	var buf bytes.Buffer
-	if _, err := pluginpkg.BuildFromDir(context.Background(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
+	if _, err := pluginpkg.BuildFromDir(httpTestContext(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
 		t.Fatal(err)
 	}
 	return buf.Bytes()
@@ -3063,7 +4304,7 @@ func buildHTTPOperationRPCFixturePackage(t *testing.T) []byte {
 	writeHTTPFile(t, filepath.Join(dir, "manifest.json"), httpOperationRPCFixtureManifestJSON())
 	writeHTTPFile(t, filepath.Join(dir, "ui", "index.html"), "<!doctype html><title>HTTP Operation</title>")
 	var buf bytes.Buffer
-	if _, err := pluginpkg.BuildFromDir(context.Background(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
+	if _, err := pluginpkg.BuildFromDir(httpTestContext(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
 		t.Fatal(err)
 	}
 	return buf.Bytes()
@@ -3075,7 +4316,7 @@ func buildHTTPSubscriptionRPCFixturePackage(t *testing.T) []byte {
 	writeHTTPFile(t, filepath.Join(dir, "manifest.json"), httpSubscriptionRPCFixtureManifestJSON())
 	writeHTTPFile(t, filepath.Join(dir, "ui", "index.html"), "<!doctype html><title>HTTP Subscription</title>")
 	var buf bytes.Buffer
-	if _, err := pluginpkg.BuildFromDir(context.Background(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
+	if _, err := pluginpkg.BuildFromDir(httpTestContext(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
 		t.Fatal(err)
 	}
 	return buf.Bytes()
@@ -3087,7 +4328,7 @@ func buildHTTPCoreActionFixturePackage(t *testing.T) []byte {
 	writeHTTPFile(t, filepath.Join(dir, "manifest.json"), httpCoreActionFixtureManifestJSON())
 	writeHTTPFile(t, filepath.Join(dir, "ui", "index.html"), "<!doctype html><title>HTTP Core Action</title>")
 	var buf bytes.Buffer
-	if _, err := pluginpkg.BuildFromDir(context.Background(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
+	if _, err := pluginpkg.BuildFromDir(httpTestContext(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
 		t.Fatal(err)
 	}
 	return buf.Bytes()
@@ -3099,9 +4340,8 @@ func buildHTTPWorkerFixturePackage(t *testing.T) []byte {
 	writeHTTPFile(t, filepath.Join(dir, "manifest.json"), httpWorkerFixtureManifestJSON())
 	writeHTTPFile(t, filepath.Join(dir, "ui", "index.html"), "<!doctype html><title>HTTP Worker</title>")
 	writeHTTPBytes(t, filepath.Join(dir, "workers", "echo.wasm"), minimalHTTPWorkerWASMForTest("redevplugin_worker_invoke"))
-	writeHTTPFile(t, filepath.Join(dir, "workers", "abi.json"), httpWorkerFixtureABIJSON("redevplugin_worker_invoke"))
 	var buf bytes.Buffer
-	if _, err := pluginpkg.BuildFromDir(context.Background(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
+	if _, err := pluginpkg.BuildFromDir(httpTestContext(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
 		t.Fatal(err)
 	}
 	return buf.Bytes()
@@ -3113,7 +4353,7 @@ func buildHTTPSettingsFixturePackage(t *testing.T) []byte {
 	writeHTTPFile(t, filepath.Join(dir, "manifest.json"), httpSettingsFixtureManifestJSON())
 	writeHTTPFile(t, filepath.Join(dir, "ui", "index.html"), "<!doctype html><title>HTTP Settings</title>")
 	var buf bytes.Buffer
-	if _, err := pluginpkg.BuildFromDir(context.Background(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
+	if _, err := pluginpkg.BuildFromDir(httpTestContext(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
 		t.Fatal(err)
 	}
 	return buf.Bytes()
@@ -3125,7 +4365,7 @@ func buildHTTPBlockedNetworkFixturePackage(t *testing.T) []byte {
 	writeHTTPFile(t, filepath.Join(dir, "manifest.json"), httpBlockedNetworkFixtureManifestJSON())
 	writeHTTPFile(t, filepath.Join(dir, "ui", "index.html"), "<!doctype html><title>HTTP Network</title>")
 	var buf bytes.Buffer
-	if _, err := pluginpkg.BuildFromDir(context.Background(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
+	if _, err := pluginpkg.BuildFromDir(httpTestContext(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
 		t.Fatal(err)
 	}
 	return buf.Bytes()
@@ -3196,18 +4436,6 @@ func minimalHTTPWorkerWASMForTest(exportName string) []byte {
 	return module
 }
 
-func httpWorkerFixtureABIJSON(exports ...string) string {
-	rawExports, err := json.Marshal(exports)
-	if err != nil {
-		panic(err)
-	}
-	return "{\n" +
-		"  \"abi_version\": \"redevplugin-wasm-worker-v2\",\n" +
-		"  \"exports\": " + string(rawExports) + ",\n" +
-		"  \"imports\": []\n" +
-		"}\n"
-}
-
 func httpFixtureManifestJSON() string {
 	return httpVersionedFixtureManifestJSON("1.0.0", "HTTP")
 }
@@ -3255,17 +4483,7 @@ func httpStorageFixtureManifestJSON() string {
 					"kind": "sqlite",
 					"scope": "environment",
 					"quota_bytes": 4096,
-					"schema_version": 1,
-					"migration": {
-						"from_version": 1,
-						"to_version": 1,
-						"reversible": true,
-						"requires_worker": false,
-						"estimated_bytes": 0,
-						"max_duration_ms": 0,
-						"data_loss_risk": false,
-						"steps_hash": "sha256:test"
-					}
+					"schema_version": 1
 				}
 			]
 		}
@@ -3445,7 +4663,7 @@ func httpWorkerFixtureManifestJSON() string {
 					"properties": {"message": {"type": "string"}}
 				},
 				"response_schema": {"type": "object", "additionalProperties": false},
-				"route": {"kind": "worker", "worker_id": "echo_worker", "export": "redevplugin_worker_invoke"}
+				"route": {"kind": "worker", "worker_id": "echo_worker"}
 			}
 		]
 	}`
@@ -3468,16 +4686,6 @@ func httpSettingsFixtureManifestJSON() string {
 		],
 		"settings": {
 			"schema_version": 1,
-			"migration": {
-				"from_version": 1,
-				"to_version": 1,
-				"reversible": true,
-				"requires_worker": false,
-				"estimated_bytes": 0,
-				"max_duration_ms": 0,
-				"data_loss_risk": false,
-				"steps_hash": "sha256:test"
-			},
 			"fields": [
 				{"key": "default_engine", "type": "select", "scope": "user", "label": "Default engine", "default": "docker", "options": ["docker", "podman"]},
 				{"key": "show_stopped", "type": "boolean", "scope": "user", "label": "Show stopped", "default": true},
@@ -3509,17 +4717,7 @@ func httpBlockedNetworkFixtureManifestJSON() string {
 					"kind": "kv",
 					"scope": "user",
 					"quota_bytes": 4096,
-					"schema_version": 1,
-					"migration": {
-						"from_version": 1,
-						"to_version": 1,
-						"reversible": true,
-						"requires_worker": false,
-						"estimated_bytes": 0,
-						"max_duration_ms": 0,
-						"data_loss_risk": false,
-						"steps_hash": "sha256:test"
-					}
+					"schema_version": 1
 				}
 			]
 		},
@@ -3560,7 +4758,7 @@ func patchJSON[T any](t *testing.T, handler http.Handler, path string, body any)
 	if err != nil {
 		t.Fatal(err)
 	}
-	req := httptest.NewRequest(http.MethodPatch, path, bytes.NewReader(raw))
+	req := newJSONHTTPRequest(http.MethodPatch, path, bytes.NewReader(raw))
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 	if rec.Code < 200 || rec.Code >= 300 {
@@ -3581,12 +4779,6 @@ func patchJSON[T any](t *testing.T, handler http.Handler, path string, body any)
 		t.Fatal(err)
 	}
 	return data
-}
-
-type httpTestSessionResolver struct{}
-
-func (httpTestSessionResolver) ResolveSession(context.Context, string) (sessionctx.Context, error) {
-	return sessionctx.Context{}, nil
 }
 
 type httpTestPolicy struct{}
@@ -3632,11 +4824,41 @@ type httpRecordingReleaseSourcePolicyResolver struct {
 
 type httpTestReleaseMetadataVerifier struct{}
 
-func firstNonNilReleaseMetadataVerifier(primary host.ReleaseMetadataVerifier, fallback host.ReleaseMetadataVerifier) host.ReleaseMetadataVerifier {
+type httpHostRequirementPolicy struct{}
+
+func (httpHostRequirementPolicy) SelectHostRequirement(context.Context, host.HostRequirementSelectionRequest) (host.HostRequirementSelection, error) {
+	return host.HostRequirementSelection{HostID: "test-host"}, nil
+}
+
+type httpCapabilityContractArtifactResolver struct{}
+
+func (httpCapabilityContractArtifactResolver) ResolveCapabilityContract(context.Context, host.CapabilityContractResolveRequest) (host.ResolvedCapabilityContractArtifact, error) {
+	return host.ResolvedCapabilityContractArtifact{}, errors.New("capability contract artifact is not configured for this test")
+}
+
+type httpCapabilityContractKeyResolver struct{}
+
+func (httpCapabilityContractKeyResolver) ResolveCapabilityContractKey(context.Context, host.CapabilityContractKeyRequest) ([]byte, error) {
+	return nil, errors.New("capability contract key is not configured for this test")
+}
+
+type httpSurfaceCatalogSink struct{}
+
+func (httpSurfaceCatalogSink) PublishSurfaces(context.Context, host.SurfaceSnapshot) error {
+	return nil
+}
+
+type httpFailingSurfaceCatalogSink struct{}
+
+func (httpFailingSurfaceCatalogSink) PublishSurfaces(context.Context, host.SurfaceSnapshot) error {
+	return errors.New("surface catalog unavailable")
+}
+
+func firstNonNilReleaseMetadataVerifier(primary host.ReleaseMetadataVerifier, defaultVerifier host.ReleaseMetadataVerifier) host.ReleaseMetadataVerifier {
 	if primary != nil {
 		return primary
 	}
-	return fallback
+	return defaultVerifier
 }
 
 func (r *httpRecordingReleaseSourcePolicyResolver) ResolveReleaseSourcePolicy(_ context.Context, req host.ReleaseSourcePolicyRequest) (host.SourcePolicySnapshot, error) {
@@ -3680,7 +4902,7 @@ func httpResolvedArtifactForPackage(t *testing.T, ref host.PluginReleaseRef, pkg
 
 func readHTTPTestPackage(t *testing.T, data []byte) pluginpkg.Package {
 	t.Helper()
-	pkg, err := pluginpkg.Read(context.Background(), bytes.NewReader(data), int64(len(data)), pluginpkg.DefaultReadOptions())
+	pkg, err := pluginpkg.Read(httpTestContext(), bytes.NewReader(data), int64(len(data)), pluginpkg.DefaultReadOptions())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -3703,7 +4925,7 @@ func buildHTTPSignedReleasePackageBytes(t *testing.T, data []byte, keyID string)
 		SignedAt:      "2026-07-07T00:00:00Z",
 	}
 	var buf bytes.Buffer
-	if err := pluginpkg.WritePackage(context.Background(), &buf, pkg); err != nil {
+	if err := pluginpkg.WritePackage(httpTestContext(), &buf, pkg); err != nil {
 		t.Fatalf("WritePackage() error = %v", err)
 	}
 	return buf.Bytes()
@@ -3869,22 +5091,55 @@ type httpRecordingCoreActionAdapter struct {
 }
 
 type httpRecordingSecretStore struct {
-	bind   host.SecretBindRequest
-	test   host.SecretTestRequest
-	delete host.SecretDeleteRequest
+	bind      host.SecretBindRequest
+	test      host.SecretTestRequest
+	delete    host.SecretDeleteRequest
+	bound     bool
+	bindErr   error
+	testErr   error
+	deleteErr error
+	listErr   error
 }
 
-type httpRecordingRuntimeSupervisor struct {
+type httpRecordingRuntimeManager struct {
 	health        runtimeclient.Health
 	startedTarget runtimeclient.Target
 	stopCalls     int
+	startErr      error
+	stopErr       error
 	err           error
 }
 
+type httpRecordingDiagnostics struct {
+	store  *observability.MemoryStore
+	events []observability.DiagnosticEvent
+}
+
+func newHTTPRecordingDiagnostics() *httpRecordingDiagnostics {
+	return &httpRecordingDiagnostics{store: observability.NewMemoryStore()}
+}
+
+func (s *httpRecordingDiagnostics) AppendPluginDiagnostic(ctx context.Context, event observability.DiagnosticEvent) error {
+	s.events = append(s.events, event)
+	return s.store.AppendPluginDiagnostic(ctx, event)
+}
+
+func (s *httpRecordingDiagnostics) ListPluginDiagnostics(ctx context.Context, req observability.ListDiagnosticRequest) ([]observability.DiagnosticEvent, error) {
+	return s.store.ListPluginDiagnostics(ctx, req)
+}
+
+func (s *httpRecordingDiagnostics) last(eventType string) (observability.DiagnosticEvent, bool) {
+	for index := len(s.events) - 1; index >= 0; index-- {
+		if s.events[index].Type == eventType {
+			return s.events[index], true
+		}
+	}
+	return observability.DiagnosticEvent{}, false
+}
+
 type httpTestWebSecurityGuard struct {
-	decision        websecurity.OriginDecision
-	scope           websecurity.RequestScope
-	evaluateErr     error
+	decision        string
+	scope           sessionctx.Context
 	csrfErr         error
 	evaluateCount   int
 	csrfCount       int
@@ -3895,41 +5150,58 @@ func allowHTTPTestGuard() *httpTestWebSecurityGuard {
 	return &httpTestWebSecurityGuard{}
 }
 
-func (g *httpTestWebSecurityGuard) Evaluate(r *http.Request) (websecurity.RequestContext, websecurity.OriginDecision, error) {
+func httpTestContext() context.Context {
+	return sessionctx.WithContext(context.Background(), sessionctx.Context{
+		OwnerSessionHash:     "session_hash",
+		OwnerUserHash:        "user_hash",
+		OwnerEnvHash:         "env_hash",
+		SessionChannelIDHash: "channel_hash",
+	})
+}
+
+func mustNewHandler(t *testing.T, pluginHost *host.Host, guard websecurity.Guard) *Handler {
+	t.Helper()
+	handler, err := NewHandler(Dependencies{
+		Host:  pluginHost,
+		Guard: guard,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return handler
+}
+
+func (g *httpTestWebSecurityGuard) Authenticate(r *http.Request) (sessionctx.Context, error) {
 	g.evaluateCount++
-	decision := g.decision
-	if decision == "" {
-		decision = websecurity.OriginTrustedParent
+	if g.decision != "" && g.decision != "trusted" {
+		return sessionctx.Context{}, websecurity.ErrOriginDenied
 	}
 	scope := g.scope
-	if scope == (websecurity.RequestScope{}) {
-		scope = websecurity.RequestScope{
+	if scope == (sessionctx.Context{}) {
+		scope = sessionctx.Context{
 			OwnerSessionHash:     "session_hash",
 			OwnerUserHash:        "user_hash",
+			OwnerEnvHash:         "env_hash",
 			SessionChannelIDHash: "channel_hash",
 		}
 	}
-	return websecurity.RequestContext{
-		Origin: r.Header.Get("Origin"),
-		Route:  r.URL.Path,
-		Method: r.Method,
-		Scope:  scope,
-	}, decision, g.evaluateErr
-}
-
-func (g *httpTestWebSecurityGuard) ValidateCSRF(_ *http.Request, sessionHash string) error {
-	g.csrfCount++
-	g.lastSessionHash = sessionHash
-	return g.csrfErr
+	if r.Method != http.MethodGet && r.Method != http.MethodHead && r.Method != http.MethodOptions {
+		g.csrfCount++
+		g.lastSessionHash = scope.OwnerSessionHash
+		if g.csrfErr != nil {
+			return sessionctx.Context{}, g.csrfErr
+		}
+	}
+	return scope, nil
 }
 
 func openHTTPBridge(t *testing.T, handler http.Handler, pluginInstanceID string, surfaceID string, surfaceInstanceID string, bridgeChannelID string) bridge.GatewayTokenResult {
 	t.Helper()
 	openBody := map[string]any{
-		"plugin_instance_id":   pluginInstanceID,
-		"surface_id":           surfaceID,
-		"surface_instance_id":  surfaceInstanceID,
-		"plugin_state_version": 2,
+		"plugin_instance_id":           pluginInstanceID,
+		"surface_id":                   surfaceID,
+		"surface_instance_id":          surfaceInstanceID,
+		"expected_management_revision": 2,
 	}
 	openResp := postJSON[bridge.SurfaceBootstrap](t, handler, "/_redevplugin/api/plugins/surfaces/open", openBody)
 	postJSON[host.PrepareSurfaceResult](t, handler, "/_redevplugin/api/plugins/surfaces/"+surfaceInstanceID+"/prepare", map[string]any{
@@ -3955,7 +5227,7 @@ func bridgeHandshakeFromBootstrap(openResp bridge.SurfaceBootstrap) bridge.Hands
 		ActiveFingerprint:  openResp.ActiveFingerprint,
 		BridgeNonce:        openResp.BridgeNonce,
 		AssetSessionNonce:  openResp.AssetSessionNonce,
-		PluginStateVersion: openResp.PluginStateVersion,
+		ManagementRevision: openResp.ManagementRevision,
 		RevokeEpoch:        openResp.RevokeEpoch,
 		UIProtocolVersion:  "plugin-ui-v4",
 	}
@@ -3963,16 +5235,16 @@ func bridgeHandshakeFromBootstrap(openResp bridge.SurfaceBootstrap) bridge.Hands
 
 func bridgeHandshakeBody(handshake bridge.Handshake) map[string]any {
 	return map[string]any{
-		"type":                 "redevplugin.bridge.handshake",
-		"plugin_id":            handshake.PluginID,
-		"surface_id":           handshake.SurfaceID,
-		"surface_instance_id":  handshake.SurfaceInstanceID,
-		"active_fingerprint":   handshake.ActiveFingerprint,
-		"bridge_nonce":         handshake.BridgeNonce,
-		"asset_session_nonce":  handshake.AssetSessionNonce,
-		"plugin_state_version": handshake.PluginStateVersion,
-		"revoke_epoch":         handshake.RevokeEpoch,
-		"ui_protocol_version":  handshake.UIProtocolVersion,
+		"type":                "redevplugin.bridge.handshake",
+		"plugin_id":           handshake.PluginID,
+		"surface_id":          handshake.SurfaceID,
+		"surface_instance_id": handshake.SurfaceInstanceID,
+		"active_fingerprint":  handshake.ActiveFingerprint,
+		"bridge_nonce":        handshake.BridgeNonce,
+		"asset_session_nonce": handshake.AssetSessionNonce,
+		"management_revision": handshake.ManagementRevision,
+		"revoke_epoch":        handshake.RevokeEpoch,
+		"ui_protocol_version": handshake.UIProtocolVersion,
 	}
 }
 
@@ -3993,10 +5265,13 @@ func grantHTTPDeclaredPermissions(t *testing.T, h *host.Host, record registry.Pl
 					continue
 				}
 				seen[permissionID] = struct{}{}
-				if _, err := h.GrantPermission(context.Background(), host.GrantPermissionRequest{
-					PluginInstanceID: record.PluginInstanceID,
-					PermissionID:     permissionID,
-					GrantedBy:        "test",
+				expected := mustAuthorizationRevisions(t, h, record.PluginInstanceID)
+				if _, err := h.GrantPermission(httpTestContext(), host.GrantPermissionRequest{
+					PluginInstanceID:           record.PluginInstanceID,
+					PermissionID:               permissionID,
+					ExpectedPolicyRevision:     expected.PolicyRevision,
+					ExpectedManagementRevision: expected.ManagementRevision,
+					ExpectedRevokeEpoch:        expected.RevokeEpoch,
 				}); err != nil {
 					t.Fatalf("GrantPermission(%s) error = %v", permissionID, err)
 				}
@@ -4032,62 +5307,96 @@ func (a *httpRecordingCoreActionAdapter) ResolveCoreActionTarget(_ context.Conte
 
 func (s *httpRecordingSecretStore) BindSecretRef(_ context.Context, req host.SecretBindRequest) error {
 	s.bind = req
-	return nil
+	s.bound = true
+	return s.bindErr
 }
 
 func (s *httpRecordingSecretStore) TestSecretRef(_ context.Context, req host.SecretTestRequest) error {
 	s.test = req
-	return nil
+	return s.testErr
 }
 
 func (s *httpRecordingSecretStore) DeleteSecretRef(_ context.Context, req host.SecretDeleteRequest) error {
 	s.delete = req
+	if s.deleteErr != nil {
+		return s.deleteErr
+	}
+	s.bound = false
 	return nil
 }
 
-func (s *httpRecordingRuntimeSupervisor) Start(_ context.Context, target runtimeclient.Target) error {
+func (s *httpRecordingSecretStore) List(_ context.Context, req secrets.ListRequest) ([]secrets.Record, error) {
+	if s.listErr != nil {
+		return nil, s.listErr
+	}
+	if s.bind.PluginInstanceID == "" || (req.PluginInstanceID != "" && req.PluginInstanceID != s.bind.PluginInstanceID) || (req.BoundOnly && !s.bound) {
+		return nil, nil
+	}
+	now := time.Date(2026, 7, 17, 0, 0, 0, 0, time.UTC)
+	return []secrets.Record{{
+		PluginInstanceID: s.bind.PluginInstanceID,
+		SecretRef:        s.bind.SecretRef,
+		Scope:            s.bind.Scope,
+		Bound:            s.bound,
+		UpdatedAt:        now,
+	}}, nil
+}
+
+func (s *httpRecordingSecretStore) DeletePlugin(_ context.Context, pluginInstanceID string) error {
+	if s.bind.PluginInstanceID == pluginInstanceID {
+		s.bound = false
+	}
+	return nil
+}
+
+func (s *httpRecordingRuntimeManager) Start(_ context.Context, target runtimeclient.Target) (runtimeclient.ManagerHealth, error) {
 	s.startedTarget = target
+	if s.startErr != nil {
+		return runtimeclient.ManagerHealth{}, s.startErr
+	}
 	if s.health == (runtimeclient.Health{}) {
 		s.health = runtimeclient.Health{RuntimeInstanceID: "runtime_http", RuntimeGenerationID: "runtime_gen_http", IPCChannelID: "ipc_http", ConnectionNonce: "connection_nonce_http_1234567890", Ready: true}
 	}
-	return nil
+	return s.managerHealth(), nil
 }
 
-func (s *httpRecordingRuntimeSupervisor) Stop(context.Context) error {
+func (s *httpRecordingRuntimeManager) Stop(context.Context) error {
 	s.stopCalls++
 	s.health.Ready = false
-	return nil
+	return s.stopErr
 }
 
-func (s *httpRecordingRuntimeSupervisor) Health(context.Context) (runtimeclient.Health, error) {
-	return s.health, nil
+func (s *httpRecordingRuntimeManager) Health(context.Context) (runtimeclient.ManagerHealth, error) {
+	return s.managerHealth(), nil
 }
 
-func (s *httpRecordingRuntimeSupervisor) Heartbeat(context.Context) (runtimeclient.HeartbeatResult, error) {
-	if s.err != nil {
-		return runtimeclient.HeartbeatResult{}, s.err
-	}
-	return runtimeclient.HeartbeatResult{
-		RuntimeGenerationID:  s.health.RuntimeGenerationID,
-		RuntimeUnixNano:      time.Now().UnixNano(),
-		MaxStalenessMillis:   5000,
-		HostSentUnixNanoEcho: time.Now().UnixNano(),
+func (s *httpRecordingRuntimeManager) managerHealth() runtimeclient.ManagerHealth {
+	return runtimeclient.ManagerHealth{Ready: s.health.Ready, Shards: []runtimeclient.ShardHealth{{RuntimeShardID: "runtime_shard_00", Health: s.health}}}
+}
+
+func (s *httpRecordingRuntimeManager) BindPlugin(context.Context, string) (runtimeclient.RuntimeBinding, error) {
+	return runtimeclient.RuntimeBinding{
+		RuntimeShardID:      "runtime_shard_00",
+		RuntimeInstanceID:   s.health.RuntimeInstanceID,
+		RuntimeGenerationID: s.health.RuntimeGenerationID,
+		IPCChannelID:        s.health.IPCChannelID,
+		ConnectionNonce:     s.health.ConnectionNonce,
 	}, nil
 }
 
-func (s *httpRecordingRuntimeSupervisor) InvokeWorker(context.Context, runtimeclient.Lease, string, []byte) ([]byte, error) {
+func (s *httpRecordingRuntimeManager) InvokeWorker(context.Context, runtimeclient.RuntimeBinding, runtimeclient.Lease, string, []byte) ([]byte, error) {
 	if s.err != nil {
 		return nil, s.err
 	}
 	return nil, runtimeclient.ErrRuntimeIPCUnavailable
 }
 
-func (s *httpRecordingRuntimeSupervisor) Revoke(_ context.Context, pluginInstanceID string, revokeEpoch uint64) (runtimeclient.RevokeResult, error) {
+func (s *httpRecordingRuntimeManager) Revoke(_ context.Context, pluginInstanceID string, revokeEpoch uint64) (runtimeclient.RevokeResult, error) {
 	if s.err != nil {
 		return runtimeclient.RevokeResult{}, s.err
 	}
 	return runtimeclient.RevokeResult{
 		PluginInstanceID: pluginInstanceID,
 		RevokeEpoch:      revokeEpoch,
-	}, runtimeclient.ErrRuntimeIPCUnavailable
+	}, nil
 }

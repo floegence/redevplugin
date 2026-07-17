@@ -1,237 +1,210 @@
 [
   {
     "method": "GET",
-    "path": "/_redevplugin/api/plugins/{plugin_instance_id}/settings",
-    "route_set": "default"
+    "path": "/_redevplugin/api/plugins/{plugin_instance_id}/settings"
   },
   {
     "method": "PATCH",
-    "path": "/_redevplugin/api/plugins/{plugin_instance_id}/settings",
-    "route_set": "default"
+    "path": "/_redevplugin/api/plugins/{plugin_instance_id}/settings"
   },
   {
     "method": "GET",
-    "path": "/_redevplugin/api/plugins/{plugin_instance_id}/settings/schema",
-    "route_set": "default"
+    "path": "/_redevplugin/api/plugins/{plugin_instance_id}/settings/schema"
   },
   {
     "method": "GET",
-    "path": "/_redevplugin/api/plugins/audit",
-    "route_set": "default"
+    "path": "/_redevplugin/api/plugins/catalog"
+  },
+  {
+    "method": "POST",
+    "path": "/_redevplugin/api/plugins/confirmations/prepare"
+  },
+  {
+    "method": "POST",
+    "path": "/_redevplugin/api/plugins/data/export"
+  },
+  {
+    "method": "POST",
+    "path": "/_redevplugin/api/plugins/data/export/delete"
+  },
+  {
+    "method": "POST",
+    "path": "/_redevplugin/api/plugins/data/import"
   },
   {
     "method": "GET",
-    "path": "/_redevplugin/api/plugins/catalog",
-    "route_set": "default"
+    "path": "/_redevplugin/api/plugins/diagnostics"
   },
   {
     "method": "POST",
-    "path": "/_redevplugin/api/plugins/confirm",
-    "route_set": "default"
+    "path": "/_redevplugin/api/plugins/disable"
   },
   {
     "method": "POST",
-    "path": "/_redevplugin/api/plugins/data/export",
-    "route_set": "default"
+    "path": "/_redevplugin/api/plugins/downgrade"
   },
   {
     "method": "POST",
-    "path": "/_redevplugin/api/plugins/data/import",
-    "route_set": "default"
+    "path": "/_redevplugin/api/plugins/enable"
+  },
+  {
+    "method": "POST",
+    "path": "/_redevplugin/api/plugins/install-release-ref"
   },
   {
     "method": "GET",
-    "path": "/_redevplugin/api/plugins/diagnostics",
-    "route_set": "default"
+    "path": "/_redevplugin/api/plugins/intents"
   },
   {
     "method": "POST",
-    "path": "/_redevplugin/api/plugins/disable",
-    "route_set": "default"
+    "path": "/_redevplugin/api/plugins/intents/invoke"
   },
   {
     "method": "POST",
-    "path": "/_redevplugin/api/plugins/downgrade",
-    "route_set": "default"
+    "path": "/_redevplugin/api/plugins/local-import/install"
   },
   {
     "method": "POST",
-    "path": "/_redevplugin/api/plugins/enable",
-    "route_set": "default"
-  },
-  {
-    "method": "POST",
-    "path": "/_redevplugin/api/plugins/install-release-ref",
-    "route_set": "default"
+    "path": "/_redevplugin/api/plugins/local-import/update"
   },
   {
     "method": "GET",
-    "path": "/_redevplugin/api/plugins/intents",
-    "route_set": "default"
-  },
-  {
-    "method": "POST",
-    "path": "/_redevplugin/api/plugins/intents/invoke",
-    "route_set": "default"
-  },
-  {
-    "method": "POST",
-    "path": "/_redevplugin/api/plugins/local-import/install",
-    "route_set": "local_import"
-  },
-  {
-    "method": "POST",
-    "path": "/_redevplugin/api/plugins/local-import/update",
-    "route_set": "local_import"
+    "path": "/_redevplugin/api/plugins/operations"
   },
   {
     "method": "GET",
-    "path": "/_redevplugin/api/plugins/operations",
-    "route_set": "default"
+    "path": "/_redevplugin/api/plugins/operations/{operation_id}"
+  },
+  {
+    "method": "POST",
+    "path": "/_redevplugin/api/plugins/operations/{operation_id}/cancel"
   },
   {
     "method": "GET",
-    "path": "/_redevplugin/api/plugins/operations/{operation_id}",
-    "route_set": "default"
+    "path": "/_redevplugin/api/plugins/permissions"
   },
   {
     "method": "POST",
-    "path": "/_redevplugin/api/plugins/operations/{operation_id}/cancel",
-    "route_set": "default"
+    "path": "/_redevplugin/api/plugins/permissions/grant"
+  },
+  {
+    "method": "POST",
+    "path": "/_redevplugin/api/plugins/permissions/revoke"
   },
   {
     "method": "GET",
-    "path": "/_redevplugin/api/plugins/permissions",
-    "route_set": "default"
-  },
-  {
-    "method": "POST",
-    "path": "/_redevplugin/api/plugins/permissions/grant",
-    "route_set": "default"
-  },
-  {
-    "method": "POST",
-    "path": "/_redevplugin/api/plugins/permissions/revoke",
-    "route_set": "default"
+    "path": "/_redevplugin/api/plugins/platform/compatibility"
   },
   {
     "method": "GET",
-    "path": "/_redevplugin/api/plugins/platform/compatibility",
-    "route_set": "default"
+    "path": "/_redevplugin/api/plugins/retained-data"
+  },
+  {
+    "method": "POST",
+    "path": "/_redevplugin/api/plugins/retained-data/bind"
+  },
+  {
+    "method": "POST",
+    "path": "/_redevplugin/api/plugins/retained-data/cleanup-expired"
+  },
+  {
+    "method": "POST",
+    "path": "/_redevplugin/api/plugins/retained-data/delete"
+  },
+  {
+    "method": "POST",
+    "path": "/_redevplugin/api/plugins/rpc"
   },
   {
     "method": "GET",
-    "path": "/_redevplugin/api/plugins/retained-data",
-    "route_set": "default"
+    "path": "/_redevplugin/api/plugins/runtime/health"
   },
   {
     "method": "POST",
-    "path": "/_redevplugin/api/plugins/retained-data/bind",
-    "route_set": "default"
+    "path": "/_redevplugin/api/plugins/runtime/refresh-enabled"
   },
   {
     "method": "POST",
-    "path": "/_redevplugin/api/plugins/retained-data/cleanup-expired",
-    "route_set": "default"
+    "path": "/_redevplugin/api/plugins/runtime/start"
   },
   {
     "method": "POST",
-    "path": "/_redevplugin/api/plugins/retained-data/delete",
-    "route_set": "default"
+    "path": "/_redevplugin/api/plugins/runtime/stop"
   },
   {
     "method": "POST",
-    "path": "/_redevplugin/api/plugins/rpc",
-    "route_set": "default"
+    "path": "/_redevplugin/api/plugins/secrets/bind"
+  },
+  {
+    "method": "POST",
+    "path": "/_redevplugin/api/plugins/secrets/delete"
+  },
+  {
+    "method": "POST",
+    "path": "/_redevplugin/api/plugins/secrets/test"
   },
   {
     "method": "GET",
-    "path": "/_redevplugin/api/plugins/runtime/health",
-    "route_set": "default"
+    "path": "/_redevplugin/api/plugins/security-policies"
+  },
+  {
+    "method": "DELETE",
+    "path": "/_redevplugin/api/plugins/security-policies/{plugin_instance_id}"
+  },
+  {
+    "method": "GET",
+    "path": "/_redevplugin/api/plugins/security-policies/{plugin_instance_id}"
+  },
+  {
+    "method": "PUT",
+    "path": "/_redevplugin/api/plugins/security-policies/{plugin_instance_id}"
   },
   {
     "method": "POST",
-    "path": "/_redevplugin/api/plugins/runtime/refresh-enabled",
-    "route_set": "default"
+    "path": "/_redevplugin/api/plugins/surfaces/{surface_instance_id}/assets/read"
   },
   {
     "method": "POST",
-    "path": "/_redevplugin/api/plugins/runtime/start",
-    "route_set": "default"
+    "path": "/_redevplugin/api/plugins/surfaces/{surface_instance_id}/bridge-token"
   },
   {
     "method": "POST",
-    "path": "/_redevplugin/api/plugins/runtime/stop",
-    "route_set": "default"
+    "path": "/_redevplugin/api/plugins/surfaces/{surface_instance_id}/confirmations/reject"
   },
   {
     "method": "POST",
-    "path": "/_redevplugin/api/plugins/secrets/bind",
-    "route_set": "default"
+    "path": "/_redevplugin/api/plugins/surfaces/{surface_instance_id}/dispose"
   },
   {
     "method": "POST",
-    "path": "/_redevplugin/api/plugins/secrets/delete",
-    "route_set": "default"
+    "path": "/_redevplugin/api/plugins/surfaces/{surface_instance_id}/operations/cancel"
   },
   {
     "method": "POST",
-    "path": "/_redevplugin/api/plugins/secrets/test",
-    "route_set": "default"
+    "path": "/_redevplugin/api/plugins/surfaces/{surface_instance_id}/prepare"
   },
   {
     "method": "POST",
-    "path": "/_redevplugin/api/plugins/surfaces/{surface_instance_id}/assets/read",
-    "route_set": "default"
+    "path": "/_redevplugin/api/plugins/surfaces/{surface_instance_id}/streams/ack"
   },
   {
     "method": "POST",
-    "path": "/_redevplugin/api/plugins/surfaces/{surface_instance_id}/bridge-token",
-    "route_set": "default"
+    "path": "/_redevplugin/api/plugins/surfaces/{surface_instance_id}/streams/read"
   },
   {
     "method": "POST",
-    "path": "/_redevplugin/api/plugins/surfaces/{surface_instance_id}/confirmations/reject",
-    "route_set": "default"
+    "path": "/_redevplugin/api/plugins/surfaces/open"
   },
   {
     "method": "POST",
-    "path": "/_redevplugin/api/plugins/surfaces/{surface_instance_id}/dispose",
-    "route_set": "default"
+    "path": "/_redevplugin/api/plugins/surfaces/revoke-scope"
   },
   {
     "method": "POST",
-    "path": "/_redevplugin/api/plugins/surfaces/{surface_instance_id}/operations/cancel",
-    "route_set": "default"
+    "path": "/_redevplugin/api/plugins/uninstall"
   },
   {
     "method": "POST",
-    "path": "/_redevplugin/api/plugins/surfaces/{surface_instance_id}/prepare",
-    "route_set": "default"
-  },
-  {
-    "method": "POST",
-    "path": "/_redevplugin/api/plugins/surfaces/{surface_instance_id}/streams/read",
-    "route_set": "default"
-  },
-  {
-    "method": "POST",
-    "path": "/_redevplugin/api/plugins/surfaces/open",
-    "route_set": "default"
-  },
-  {
-    "method": "POST",
-    "path": "/_redevplugin/api/plugins/surfaces/revoke-scope",
-    "route_set": "default"
-  },
-  {
-    "method": "POST",
-    "path": "/_redevplugin/api/plugins/uninstall",
-    "route_set": "default"
-  },
-  {
-    "method": "POST",
-    "path": "/_redevplugin/api/plugins/update-release-ref",
-    "route_set": "default"
+    "path": "/_redevplugin/api/plugins/update-release-ref"
   }
 ]

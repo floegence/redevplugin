@@ -22,28 +22,29 @@ import (
 	"github.com/floegence/redevplugin/pkg/bridge"
 	"github.com/floegence/redevplugin/pkg/capability"
 	"github.com/floegence/redevplugin/pkg/capabilitycontract"
-	"github.com/floegence/redevplugin/pkg/cleanup"
 	"github.com/floegence/redevplugin/pkg/connectivity"
 	"github.com/floegence/redevplugin/pkg/installstage"
 	"github.com/floegence/redevplugin/pkg/manifest"
+	"github.com/floegence/redevplugin/pkg/mutation"
+	"github.com/floegence/redevplugin/pkg/observability"
 	"github.com/floegence/redevplugin/pkg/operation"
 	"github.com/floegence/redevplugin/pkg/permissions"
+	"github.com/floegence/redevplugin/pkg/plugindata"
 	"github.com/floegence/redevplugin/pkg/pluginpkg"
 	"github.com/floegence/redevplugin/pkg/registry"
-	"github.com/floegence/redevplugin/pkg/retaineddata"
 	"github.com/floegence/redevplugin/pkg/runtimeclient"
+	"github.com/floegence/redevplugin/pkg/secrets"
 	"github.com/floegence/redevplugin/pkg/security"
 	"github.com/floegence/redevplugin/pkg/sessionctx"
-	"github.com/floegence/redevplugin/pkg/settings"
 	"github.com/floegence/redevplugin/pkg/storage"
 	"github.com/floegence/redevplugin/pkg/stream"
 )
 
-func mustPluginStateVersion(t testing.TB, h *Host, pluginInstanceID string) uint64 {
+func mustManagementRevision(t testing.TB, h *Host, pluginInstanceID string) uint64 {
 	t.Helper()
-	records, err := h.ListPlugins(context.Background())
+	records, err := h.ListPlugins(hostTestContext())
 	if err != nil {
-		t.Fatalf("ListPlugins() for state version: %v", err)
+		t.Fatalf("ListPlugins() for management revision: %v", err)
 	}
 	for _, record := range records {
 		if record.PluginInstanceID == pluginInstanceID {
@@ -53,15 +54,122 @@ func mustPluginStateVersion(t testing.TB, h *Host, pluginInstanceID string) uint
 			return record.ManagementRevision
 		}
 	}
-	t.Fatalf("plugin %q not found while resolving state version", pluginInstanceID)
+	t.Fatalf("plugin %q not found while resolving management revision", pluginInstanceID)
 	return 0
+}
+
+func mustAuthorizationRevisions(t testing.TB, h *Host, pluginInstanceID string) registry.AuthorizationRevisions {
+	t.Helper()
+	record, err := h.adapters.Registry.GetPlugin(hostTestContext(), pluginInstanceID)
+	if err != nil {
+		t.Fatalf("GetPlugin() for authorization revisions: %v", err)
+	}
+	return registry.AuthorizationRevisionsFromRecord(record)
+}
+
+func prepareConfirmationRequest(call CallMethodRequest) PrepareMethodConfirmationRequest {
+	return PrepareMethodConfirmationRequest{
+		PluginInstanceID:  call.PluginInstanceID,
+		SurfaceInstanceID: call.SurfaceInstanceID,
+		BridgeChannelID:   call.BridgeChannelID,
+		GatewayToken:      call.GatewayToken,
+		Method:            call.Method,
+		Params:            call.Params,
+		Now:               call.Now,
+	}
+}
+
+func TestOpenRequiresCompletePlatformDependencies(t *testing.T) {
+	base := func() Adapters {
+		observabilityStore := observability.NewMemoryStore()
+		releaseVerifier := &recordingReleaseMetadataVerifier{}
+		registryStore := registry.NewMemoryStore()
+		pluginData, err := plugindata.Open(hostTestContext(), t.TempDir(), registryStore)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() {
+			if err := pluginData.Close(); err != nil {
+				t.Errorf("PluginData.Close() error = %v", err)
+			}
+		})
+		return Adapters{
+			Policy:                      policyAdapter{decision: PolicyAllow},
+			PackageTrustVerifier:        &recordingPackageTrustVerifier{},
+			ReleaseMetadataVerifier:     releaseVerifier,
+			RevocationVerifier:          releaseVerifier,
+			ReleaseSourcePolicy:         &recordingReleaseSourcePolicyResolver{},
+			ReleaseArtifactResolver:     &recordingReleaseArtifactResolver{},
+			HostRequirements:            &fixedHostRequirementPolicy{hostID: "test-host"},
+			CapabilityContractArtifacts: &recordingCapabilityContractArtifactResolver{},
+			CapabilityContractKeys:      &recordingCapabilityContractKeyResolver{},
+			Registry:                    registryStore,
+			Audit:                       observabilityStore,
+			Diagnostics:                 observabilityStore,
+			Secrets:                     secrets.NewMemoryStore(),
+			RuntimeManager:              &recordingRuntimeManager{},
+			SurfaceCatalog:              &surfaceSink{},
+			Assets:                      pluginpkg.NewMemoryAssetStore(),
+			InstallStages:               installstage.NewMemoryStore(),
+			Capabilities:                capability.NewRegistry(),
+			CoreActions:                 &recordingCoreActionAdapter{},
+			SurfaceTokens:               bridge.NewSurfaceTokenService(nil, bridge.SurfaceTokenOptions{}),
+			PluginData:                  pluginData,
+			Connectivity:                connectivity.NewMemoryBroker(),
+			NetworkExecutor:             connectivity.NewExecutor(connectivity.ExecutorOptions{}),
+			Operations:                  operation.NewMemoryStore(),
+			ConfirmationIntents:         security.NewMemoryConfirmationIntentStore(),
+			Streams:                     stream.NewMemoryStore(),
+		}
+	}
+
+	tests := []struct {
+		name  string
+		clear func(*Adapters)
+	}{
+		{name: "policy", clear: func(a *Adapters) { a.Policy = nil }},
+		{name: "package trust verifier", clear: func(a *Adapters) { a.PackageTrustVerifier = nil }},
+		{name: "release metadata verifier", clear: func(a *Adapters) { a.ReleaseMetadataVerifier = nil }},
+		{name: "revocation verifier", clear: func(a *Adapters) { a.RevocationVerifier = nil }},
+		{name: "release source policy", clear: func(a *Adapters) { a.ReleaseSourcePolicy = nil }},
+		{name: "release artifact resolver", clear: func(a *Adapters) { a.ReleaseArtifactResolver = nil }},
+		{name: "host requirements", clear: func(a *Adapters) { a.HostRequirements = nil }},
+		{name: "capability artifacts", clear: func(a *Adapters) { a.CapabilityContractArtifacts = nil }},
+		{name: "capability keys", clear: func(a *Adapters) { a.CapabilityContractKeys = nil }},
+		{name: "registry", clear: func(a *Adapters) { a.Registry = nil }},
+		{name: "audit", clear: func(a *Adapters) { a.Audit = nil }},
+		{name: "diagnostics", clear: func(a *Adapters) { a.Diagnostics = nil }},
+		{name: "secrets", clear: func(a *Adapters) { a.Secrets = nil }},
+		{name: "runtime manager", clear: func(a *Adapters) { a.RuntimeManager = nil }},
+		{name: "surface catalog", clear: func(a *Adapters) { a.SurfaceCatalog = nil }},
+		{name: "assets", clear: func(a *Adapters) { a.Assets = nil }},
+		{name: "install stages", clear: func(a *Adapters) { a.InstallStages = nil }},
+		{name: "capabilities", clear: func(a *Adapters) { a.Capabilities = nil }},
+		{name: "core actions", clear: func(a *Adapters) { a.CoreActions = nil }},
+		{name: "surface tokens", clear: func(a *Adapters) { a.SurfaceTokens = nil }},
+		{name: "plugin data", clear: func(a *Adapters) { a.PluginData = nil }},
+		{name: "connectivity", clear: func(a *Adapters) { a.Connectivity = nil }},
+		{name: "network executor", clear: func(a *Adapters) { a.NetworkExecutor = nil }},
+		{name: "operations", clear: func(a *Adapters) { a.Operations = nil }},
+		{name: "confirmation intents", clear: func(a *Adapters) { a.ConfirmationIntents = nil }},
+		{name: "streams", clear: func(a *Adapters) { a.Streams = nil }},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			adapters := base()
+			tt.clear(&adapters)
+			if _, err := Open(hostTestContext(), adapters); err == nil {
+				t.Fatal("Open() accepted incomplete platform dependencies")
+			}
+		})
+	}
 }
 
 func TestLifecycleInstallEnableDisableUninstall(t *testing.T) {
 	host, surfaces, audits := newTestHost(t, true, true)
 	packageBytes := buildFixturePackage(t)
 
-	installed, err := ImportLocalPackageBytes(context.Background(), host, packageBytes)
+	installed, err := ImportLocalPackageBytes(hostTestContext(), host, packageBytes)
 	if err != nil {
 		t.Fatalf("ImportLocalPackageBytes() error = %v", err)
 	}
@@ -77,7 +185,7 @@ func TestLifecycleInstallEnableDisableUninstall(t *testing.T) {
 		t.Fatalf("local import provenance mismatch: %#v", installed.LocalImportProvenance)
 	}
 
-	enabled, err := host.EnablePlugin(context.Background(), EnableRequest{PluginInstanceID: installed.PluginInstanceID, PluginStateVersion: mustPluginStateVersion(t, host, installed.PluginInstanceID)})
+	enabled, err := host.EnablePlugin(hostTestContext(), EnableRequest{PluginInstanceID: installed.PluginInstanceID, ExpectedManagementRevision: mustManagementRevision(t, host, installed.PluginInstanceID)})
 	if err != nil {
 		t.Fatalf("EnablePlugin() error = %v", err)
 	}
@@ -88,7 +196,7 @@ func TestLifecycleInstallEnableDisableUninstall(t *testing.T) {
 		t.Fatalf("surface publish mismatch: %#v", surfaces.snapshots)
 	}
 
-	disabled, err := host.DisablePlugin(context.Background(), DisableRequest{PluginInstanceID: installed.PluginInstanceID, Reason: "test", PluginStateVersion: mustPluginStateVersion(t, host, installed.PluginInstanceID)})
+	disabled, err := host.DisablePlugin(hostTestContext(), DisableRequest{PluginInstanceID: installed.PluginInstanceID, Reason: "test", ExpectedManagementRevision: mustManagementRevision(t, host, installed.PluginInstanceID)})
 	if err != nil {
 		t.Fatalf("DisablePlugin() error = %v", err)
 	}
@@ -99,151 +207,109 @@ func TestLifecycleInstallEnableDisableUninstall(t *testing.T) {
 		t.Fatalf("disable did not clear surfaces: %#v", surfaces.snapshots)
 	}
 
-	uninstalled, err := host.UninstallPlugin(context.Background(), UninstallRequest{PluginInstanceID: installed.PluginInstanceID, DeleteData: true, PluginStateVersion: mustPluginStateVersion(t, host, installed.PluginInstanceID)})
+	_, err = host.UninstallPlugin(hostTestContext(), UninstallRequest{PluginInstanceID: installed.PluginInstanceID, DeleteData: true, ExpectedManagementRevision: mustManagementRevision(t, host, installed.PluginInstanceID)})
 	if err != nil {
 		t.Fatalf("UninstallPlugin() error = %v", err)
 	}
-	if uninstalled.RetainedDataState != registry.RetainedDataDeleted {
-		t.Fatalf("RetainedDataState = %s", uninstalled.RetainedDataState)
-	}
-	if _, err := host.adapters.Registry.GetPlugin(context.Background(), installed.PluginInstanceID); err != registry.ErrNotFound {
+	if _, err := host.adapters.Registry.GetPlugin(hostTestContext(), installed.PluginInstanceID); err != registry.ErrNotFound {
 		t.Fatalf("GetPlugin after uninstall error = %v", err)
 	}
-	for _, eventType := range []string{"plugin.installed", "plugin.enabled", "plugin.disabled", "plugin.cleanup.executed", "plugin.uninstalled"} {
+	for _, eventType := range []string{"plugin.installed", "plugin.enabled", "plugin.disabled", "plugin.uninstalled"} {
 		if !audits.hasEvent(eventType) {
 			t.Fatalf("missing audit event %q: %#v", eventType, audits.events)
 		}
 	}
 }
 
-func TestHostStartupDisablesEnabledLegacyUIProtocols(t *testing.T) {
-	ctx := context.Background()
-	h, surfaces, audits := newTestHost(t, true, true)
-	installed, err := ImportLocalPackageBytes(ctx, h, buildFixturePackage(t))
-	if err != nil {
-		t.Fatal(err)
+func TestLocalPackageMutationsRequirePolicyBeforePackageRead(t *testing.T) {
+	ctx := hostTestContext()
+	packageBytes := buildVersionedLifecyclePackage(t, "1.0.0", "Lifecycle")
+
+	for _, tc := range []struct {
+		name           string
+		developerMode  bool
+		localGenerated bool
+	}{
+		{name: "developer mode disabled", developerMode: false, localGenerated: true},
+		{name: "local generated plugins disabled", developerMode: true, localGenerated: false},
+	} {
+		t.Run("install "+tc.name, func(t *testing.T) {
+			stages := installstage.NewMemoryStore()
+			h, surfaces, audits := newTestHostWithOptions(t, testHostOptions{
+				developerMode:  tc.developerMode,
+				localGenerated: tc.localGenerated,
+				installStages:  stages,
+			})
+			reader := &readAtProbe{reader: bytes.NewReader(packageBytes)}
+			if _, err := h.ImportLocalPackage(ctx, ImportLocalPackageRequest{
+				PackageReader: reader,
+				PackageSize:   int64(len(packageBytes)),
+			}); !errors.Is(err, security.ErrPolicyDenied) {
+				t.Fatalf("ImportLocalPackage() error = %v, want ErrPolicyDenied", err)
+			}
+			if reader.calls != 0 {
+				t.Fatalf("policy-denied import read package %d times", reader.calls)
+			}
+			records, err := h.ListPlugins(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			stageRecords, err := stages.List(ctx, installstage.ListRequest{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(records) != 0 || len(stageRecords) != 0 || len(surfaces.snapshots) != 0 || len(audits.events) != 0 {
+				t.Fatalf("policy-denied import produced side effects: records=%#v stages=%#v surfaces=%#v audits=%#v", records, stageRecords, surfaces.snapshots, audits.events)
+			}
+		})
 	}
-	enabled, err := h.EnablePlugin(ctx, EnableRequest{
-		PluginInstanceID:   installed.PluginInstanceID,
-		PluginStateVersion: installed.ManagementRevision,
+
+	stages := installstage.NewMemoryStore()
+	h, surfaces, audits := newTestHostWithOptions(t, testHostOptions{
+		developerMode:  true,
+		localGenerated: true,
+		installStages:  stages,
 	})
+	installed, err := ImportLocalPackageBytes(ctx, h, packageBytes)
 	if err != nil {
 		t.Fatal(err)
 	}
-	enabled.Manifest.SchemaVersion = "redevplugin.manifest.v3"
-	enabled.Manifest.Plugin.UIProtocolVersion = "plugin-ui-v3"
-	legacy, err := h.adapters.Registry.PutPlugin(ctx, enabled, registry.PutOptions{Now: time.Now().UTC()})
+	stageRecordsBefore, err := stages.List(ctx, installstage.ListRequest{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	diagnostics := &diagnosticSink{}
-	h.adapters.Diagnostics = diagnostics
-	restarted, err := New(h.adapters)
+	auditCountBefore := len(audits.events)
+	surfaceCountBefore := len(surfaces.snapshots)
+	h.adapters.Policy = policyAdapter{developerMode: false, localGenerated: true, decision: PolicyAllow}
+	nextBytes := buildVersionedLifecyclePackage(t, "2.0.0", "Lifecycle 2")
+	reader := &readAtProbe{reader: bytes.NewReader(nextBytes)}
+	if _, err := h.UpdateLocalPackage(ctx, UpdateLocalPackageRequest{
+		PluginInstanceID:           installed.PluginInstanceID,
+		ExpectedManagementRevision: installed.ManagementRevision,
+		PackageReader:              reader,
+		PackageSize:                int64(len(nextBytes)),
+	}); !errors.Is(err, security.ErrPolicyDenied) {
+		t.Fatalf("UpdateLocalPackage() error = %v, want ErrPolicyDenied", err)
+	}
+	if reader.calls != 0 {
+		t.Fatalf("policy-denied update read package %d times", reader.calls)
+	}
+	stored, err := h.adapters.Registry.GetPlugin(ctx, installed.PluginInstanceID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	record, err := restarted.adapters.Registry.GetPlugin(ctx, legacy.PluginInstanceID)
+	stageRecordsAfter, err := stages.List(ctx, installstage.ListRequest{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if record.EnableState != registry.EnableDisabledIncompatible {
-		t.Fatalf("EnableState = %q, want %q", record.EnableState, registry.EnableDisabledIncompatible)
-	}
-	if record.ManagementRevision != legacy.ManagementRevision+1 || record.RevokeEpoch != legacy.RevokeEpoch+1 {
-		t.Fatalf("legacy revisions were not revoked: before=%#v after=%#v", legacy, record)
-	}
-	if record.Manifest.Plugin.UIProtocolVersion != "plugin-ui-v3" || record.DeletedAt != nil {
-		t.Fatalf("legacy package data was mutated: %#v", record)
-	}
-	if !audits.hasEvent("plugin.disabled_incompatible") {
-		t.Fatalf("missing incompatibility audit: %#v", audits.events)
-	}
-	if len(diagnostics.events) != 1 || diagnostics.events[0].Type != "plugin.ui_protocol.incompatible" {
-		t.Fatalf("incompatibility diagnostics = %#v", diagnostics.events)
-	}
-	if len(surfaces.snapshots) == 0 || len(surfaces.snapshots[len(surfaces.snapshots)-1].Surfaces) != 0 {
-		t.Fatalf("legacy surfaces were not withdrawn: %#v", surfaces.snapshots)
-	}
-	_, err = restarted.EnablePlugin(ctx, EnableRequest{
-		PluginInstanceID:   record.PluginInstanceID,
-		PluginStateVersion: record.ManagementRevision,
-	})
-	if !errors.Is(err, ErrPluginUIProtocolUnsupported) {
-		t.Fatalf("EnablePlugin() error = %v, want %v", err, ErrPluginUIProtocolUnsupported)
-	}
-	_, err = restarted.OpenSurface(ctx, OpenSurfaceRequest{
-		PluginInstanceID:   record.PluginInstanceID,
-		PluginStateVersion: record.ManagementRevision,
-		SurfaceID:          record.Manifest.Surfaces[0].SurfaceID,
-	})
-	if !errors.Is(err, ErrPluginUIProtocolUnsupported) {
-		t.Fatalf("OpenSurface() error = %v, want %v", err, ErrPluginUIProtocolUnsupported)
+	if stored.Version != installed.Version || stored.PackageHash != installed.PackageHash || stored.ManagementRevision != installed.ManagementRevision ||
+		len(stageRecordsAfter) != len(stageRecordsBefore) || len(audits.events) != auditCountBefore || len(surfaces.snapshots) != surfaceCountBefore {
+		t.Fatalf("policy-denied update produced side effects: stored=%#v stages=%#v audits=%#v surfaces=%#v", stored, stageRecordsAfter, audits.events, surfaces.snapshots)
 	}
 }
 
-func TestHostStartupRetriesLegacyUIWithdrawalWithoutRepeatingStateTransition(t *testing.T) {
-	ctx := context.Background()
-	h, _, audits := newTestHost(t, true, true)
-	installed, err := ImportLocalPackageBytes(ctx, h, buildFixturePackage(t))
-	if err != nil {
-		t.Fatal(err)
-	}
-	enabled, err := h.EnablePlugin(ctx, EnableRequest{
-		PluginInstanceID:   installed.PluginInstanceID,
-		PluginStateVersion: installed.ManagementRevision,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	enabled.Manifest.SchemaVersion = "redevplugin.manifest.v3"
-	enabled.Manifest.Plugin.UIProtocolVersion = "plugin-ui-v3"
-	legacy, err := h.adapters.Registry.PutPlugin(ctx, enabled, registry.PutOptions{Now: time.Now().UTC()})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	surfaces := &failingSurfaceSink{err: errors.New("surface catalog unavailable")}
-	h.adapters.SurfaceCatalog = surfaces
-	if _, err := New(h.adapters); err == nil || !strings.Contains(err.Error(), "surface catalog unavailable") {
-		t.Fatalf("New() error = %v, want surface catalog failure", err)
-	}
-	disabled, err := h.adapters.Registry.GetPlugin(ctx, legacy.PluginInstanceID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if disabled.EnableState != registry.EnableDisabledIncompatible ||
-		disabled.ManagementRevision != legacy.ManagementRevision+1 ||
-		disabled.RevokeEpoch != legacy.RevokeEpoch+1 {
-		t.Fatalf("failed withdrawal state = %#v, legacy = %#v", disabled, legacy)
-	}
-
-	surfaces.err = nil
-	if _, err := New(h.adapters); err != nil {
-		t.Fatal(err)
-	}
-	reconciled, err := h.adapters.Registry.GetPlugin(ctx, legacy.PluginInstanceID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if reconciled.ManagementRevision != disabled.ManagementRevision || reconciled.RevokeEpoch != disabled.RevokeEpoch {
-		t.Fatalf("retry repeated the state transition: before=%#v after=%#v", disabled, reconciled)
-	}
-	if len(surfaces.snapshots) != 1 || len(surfaces.snapshots[0].Surfaces) != 0 {
-		t.Fatalf("legacy surfaces were not withdrawn on retry: %#v", surfaces.snapshots)
-	}
-	auditCount := 0
-	for _, event := range audits.events {
-		if event.Type == "plugin.disabled_incompatible" {
-			auditCount++
-		}
-	}
-	if auditCount != 1 {
-		t.Fatalf("incompatibility audit count = %d, want 1", auditCount)
-	}
-}
-
-func TestManagementStateVersionFailsClosedWithoutSideEffects(t *testing.T) {
-	ctx := context.Background()
+func TestManagementRevisionFailsClosedWithoutSideEffects(t *testing.T) {
+	ctx := hostTestContext()
 	h, surfaces, audits := newTestHost(t, true, true)
 	installed, err := ImportLocalPackageBytes(ctx, h, buildFixturePackage(t))
 	if err != nil {
@@ -251,12 +317,12 @@ func TestManagementStateVersionFailsClosedWithoutSideEffects(t *testing.T) {
 	}
 	initialAuditCount := len(audits.events)
 
-	for _, stateVersion := range []uint64{0, installed.ManagementRevision + 1} {
+	for _, managementRevision := range []uint64{0, installed.ManagementRevision + 1} {
 		if _, err := h.EnablePlugin(ctx, EnableRequest{
-			PluginInstanceID:   installed.PluginInstanceID,
-			PluginStateVersion: stateVersion,
-		}); !errors.Is(err, ErrPluginStateVersionMismatch) {
-			t.Fatalf("EnablePlugin(state version %d) error = %v, want ErrPluginStateVersionMismatch", stateVersion, err)
+			PluginInstanceID:           installed.PluginInstanceID,
+			ExpectedManagementRevision: managementRevision,
+		}); !errors.Is(err, ErrManagementRevisionMismatch) {
+			t.Fatalf("EnablePlugin(management revision %d) error = %v, want ErrManagementRevisionMismatch", managementRevision, err)
 		}
 	}
 	records, err := h.ListPlugins(ctx)
@@ -271,41 +337,35 @@ func TestManagementStateVersionFailsClosedWithoutSideEffects(t *testing.T) {
 	}
 
 	enabled, err := h.EnablePlugin(ctx, EnableRequest{
-		PluginInstanceID:   installed.PluginInstanceID,
-		PluginStateVersion: installed.ManagementRevision,
+		PluginInstanceID:           installed.PluginInstanceID,
+		ExpectedManagementRevision: installed.ManagementRevision,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err := h.OpenSurface(ctx, OpenSurfaceRequest{
-		PluginInstanceID:     enabled.PluginInstanceID,
-		PluginStateVersion:   installed.ManagementRevision,
-		SurfaceID:            "lifecycle.view",
-		SurfaceInstanceID:    "surface_state_version",
-		OwnerSessionHash:     "owner_session_hash",
-		OwnerUserHash:        "owner_user_hash",
-		SessionChannelIDHash: "session_channel_hash",
-	}); !errors.Is(err, ErrPluginStateVersionMismatch) {
-		t.Fatalf("OpenSurface(stale) error = %v, want ErrPluginStateVersionMismatch", err)
+		PluginInstanceID:           enabled.PluginInstanceID,
+		ExpectedManagementRevision: installed.ManagementRevision,
+		SurfaceID:                  "lifecycle.view",
+		SurfaceInstanceID:          "surface_management_revision",
+	}); !errors.Is(err, ErrManagementRevisionMismatch) {
+		t.Fatalf("OpenSurface(stale) error = %v, want ErrManagementRevisionMismatch", err)
 	}
 	if _, err := h.OpenSurface(ctx, OpenSurfaceRequest{
-		PluginInstanceID:     enabled.PluginInstanceID,
-		PluginStateVersion:   enabled.ManagementRevision,
-		SurfaceID:            "lifecycle.view",
-		SurfaceInstanceID:    "surface_state_version",
-		OwnerSessionHash:     "owner_session_hash",
-		OwnerUserHash:        "owner_user_hash",
-		SessionChannelIDHash: "session_channel_hash",
+		PluginInstanceID:           enabled.PluginInstanceID,
+		ExpectedManagementRevision: enabled.ManagementRevision,
+		SurfaceID:                  "lifecycle.view",
+		SurfaceInstanceID:          "surface_management_revision",
 	}); err != nil {
 		t.Fatalf("OpenSurface(current) after stale request error = %v", err)
 	}
 
 	if _, err := h.DisablePlugin(ctx, DisableRequest{
-		PluginInstanceID:   enabled.PluginInstanceID,
-		PluginStateVersion: installed.ManagementRevision,
-		Reason:             "stale request",
-	}); !errors.Is(err, ErrPluginStateVersionMismatch) {
-		t.Fatalf("DisablePlugin(stale) error = %v, want ErrPluginStateVersionMismatch", err)
+		PluginInstanceID:           enabled.PluginInstanceID,
+		ExpectedManagementRevision: installed.ManagementRevision,
+		Reason:                     "stale request",
+	}); !errors.Is(err, ErrManagementRevisionMismatch) {
+		t.Fatalf("DisablePlugin(stale) error = %v, want ErrManagementRevisionMismatch", err)
 	}
 	records, err = h.ListPlugins(ctx)
 	if err != nil {
@@ -316,8 +376,35 @@ func TestManagementStateVersionFailsClosedWithoutSideEffects(t *testing.T) {
 	}
 }
 
+func TestEnableReportsUnknownOutcomeAfterRegistryCommit(t *testing.T) {
+	h, _, _ := newTestHost(t, true, true)
+	installed, err := ImportLocalPackageBytes(hostTestContext(), h, buildFixturePackage(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.adapters.SurfaceCatalog = &failingSurfaceSink{err: errors.New("surface catalog unavailable")}
+
+	_, err = h.EnablePlugin(hostTestContext(), EnableRequest{
+		PluginInstanceID:           installed.PluginInstanceID,
+		ExpectedManagementRevision: installed.ManagementRevision,
+	})
+	if err == nil {
+		t.Fatal("EnablePlugin() expected surface catalog error")
+	}
+	if got := mutation.ForError(err); got != mutation.OutcomeUnknown {
+		t.Fatalf("mutation.ForError() = %q, want %q", got, mutation.OutcomeUnknown)
+	}
+	record, getErr := h.adapters.Registry.GetPlugin(hostTestContext(), installed.PluginInstanceID)
+	if getErr != nil {
+		t.Fatal(getErr)
+	}
+	if record.EnableState != registry.EnableEnabled {
+		t.Fatalf("committed enable state = %q, want %q", record.EnableState, registry.EnableEnabled)
+	}
+}
+
 func TestUpdateAndDowngradeRefreshEnabledPluginAndRevokeOldTokens(t *testing.T) {
-	ctx := context.Background()
+	ctx := hostTestContext()
 	h, surfaces, audits := newTestHostWithOptions(t, testHostOptions{
 		developerMode:     true,
 		localGenerated:    true,
@@ -332,17 +419,15 @@ func TestUpdateAndDowngradeRefreshEnabledPluginAndRevokeOldTokens(t *testing.T) 
 	if err != nil {
 		t.Fatalf("ImportLocalPackageBytes() error = %v", err)
 	}
-	if _, err := h.EnablePlugin(ctx, EnableRequest{PluginInstanceID: installed.PluginInstanceID, Now: now, PluginStateVersion: mustPluginStateVersion(t, h, installed.PluginInstanceID)}); err != nil {
+	if _, err := h.EnablePlugin(ctx, EnableRequest{PluginInstanceID: installed.PluginInstanceID, Now: now, ExpectedManagementRevision: mustManagementRevision(t, h, installed.PluginInstanceID)}); err != nil {
 		t.Fatalf("EnablePlugin() error = %v", err)
 	}
 	bootstrap, err := h.OpenSurface(ctx, OpenSurfaceRequest{
-		PluginInstanceID:     installed.PluginInstanceID,
-		SurfaceID:            "rpc.view",
-		SurfaceInstanceID:    "surface_update",
-		OwnerSessionHash:     "session_hash",
-		OwnerUserHash:        "user_hash",
-		SessionChannelIDHash: "channel_hash",
-		Now:                  now.Add(time.Second), PluginStateVersion: mustPluginStateVersion(t, h,
+		PluginInstanceID:  installed.PluginInstanceID,
+		SurfaceID:         "rpc.view",
+		SurfaceInstanceID: "surface_update",
+
+		Now: now.Add(time.Second), ExpectedManagementRevision: mustManagementRevision(t, h,
 			installed.PluginInstanceID),
 	})
 	if err != nil {
@@ -358,7 +443,7 @@ func TestUpdateAndDowngradeRefreshEnabledPluginAndRevokeOldTokens(t *testing.T) 
 		ActiveFingerprint:  bootstrap.ActiveFingerprint,
 		BridgeNonce:        bootstrap.BridgeNonce,
 		AssetSessionNonce:  bootstrap.AssetSessionNonce,
-		PluginStateVersion: bootstrap.PluginStateVersion,
+		ManagementRevision: bootstrap.ManagementRevision,
 		RevokeEpoch:        bootstrap.RevokeEpoch,
 		UIProtocolVersion:  "plugin-ui-v4",
 	}
@@ -366,10 +451,8 @@ func TestUpdateAndDowngradeRefreshEnabledPluginAndRevokeOldTokens(t *testing.T) 
 		Handshake:                 handshake,
 		BridgeChannelID:           "bridge_update",
 		HandshakeTranscriptSHA256: bridge.HandshakeTranscriptSHA256(handshake, "bridge_update"),
-		OwnerSessionHash:          bootstrap.OwnerSessionHash,
-		OwnerUserHash:             bootstrap.OwnerUserHash,
-		SessionChannelIDHash:      bootstrap.SessionChannelIDHash,
-		Now:                       now.Add(3 * time.Second),
+
+		Now: now.Add(3 * time.Second),
 	})
 	if err != nil {
 		t.Fatalf("MintBridgeToken() error = %v", err)
@@ -379,7 +462,7 @@ func TestUpdateAndDowngradeRefreshEnabledPluginAndRevokeOldTokens(t *testing.T) 
 		PluginInstanceID: installed.PluginInstanceID,
 		PackageReader:    bytes.NewReader(v2),
 		PackageSize:      int64(len(v2)),
-		Now:              now.Add(4 * time.Second), PluginStateVersion: mustPluginStateVersion(t, h,
+		Now:              now.Add(4 * time.Second), ExpectedManagementRevision: mustManagementRevision(t, h,
 			installed.PluginInstanceID),
 	})
 	if err != nil {
@@ -416,7 +499,7 @@ func TestUpdateAndDowngradeRefreshEnabledPluginAndRevokeOldTokens(t *testing.T) 
 	downgraded, err := h.DowngradePlugin(ctx, DowngradeRequest{
 		PluginInstanceID: updated.PluginInstanceID,
 		Version:          "1.0.0",
-		Now:              now.Add(6 * time.Second), PluginStateVersion: mustPluginStateVersion(t, h,
+		Now:              now.Add(6 * time.Second), ExpectedManagementRevision: mustManagementRevision(t, h,
 			updated.PluginInstanceID),
 	})
 	if err != nil {
@@ -431,7 +514,7 @@ func TestUpdateAndDowngradeRefreshEnabledPluginAndRevokeOldTokens(t *testing.T) 
 }
 
 func TestUpdateRejectsDifferentPluginIdentity(t *testing.T) {
-	ctx := context.Background()
+	ctx := hostTestContext()
 	h, _, _ := newTestHost(t, true, true)
 	installed, err := ImportLocalPackageBytes(ctx, h, buildVersionedLifecyclePackage(t, "1.0.0", "Lifecycle"))
 	if err != nil {
@@ -441,92 +524,25 @@ func TestUpdateRejectsDifferentPluginIdentity(t *testing.T) {
 	if _, err := h.UpdateLocalPackage(ctx, UpdateLocalPackageRequest{
 		PluginInstanceID: installed.PluginInstanceID,
 		PackageReader:    bytes.NewReader(other),
-		PackageSize:      int64(len(other)), PluginStateVersion: mustPluginStateVersion(t, h,
+		PackageSize:      int64(len(other)), ExpectedManagementRevision: mustManagementRevision(t, h,
 			installed.PluginInstanceID),
 	}); err == nil {
 		t.Fatal("UpdateLocalPackage() expected identity mismatch error")
 	}
 }
 
-func TestUpdateAndDowngradeValidateMigrationPreflight(t *testing.T) {
-	ctx := context.Background()
+func TestUpdateRejectsPluginDataContractChanges(t *testing.T) {
+	ctx := hostTestContext()
 	h, _, _ := newTestHost(t, true, true)
-	v1 := buildMigrationFixturePackage(t, migrationFixtureOptions{
-		Version:            "1.0.0",
-		SettingsSchema:     1,
-		SettingsFrom:       1,
-		SettingsTo:         1,
-		SettingsReversible: true,
-		StorageSchema:      1,
-		StorageFrom:        1,
-		StorageTo:          1,
-		StorageReversible:  true,
+	v1 := buildDataShapeFixturePackage(t, dataShapeFixtureOptions{
+		Version:        "1.0.0",
+		SettingsSchema: 1,
+		StorageSchema:  1,
 	})
-	v2 := buildMigrationFixturePackage(t, migrationFixtureOptions{
-		Version:            "2.0.0",
-		SettingsSchema:     2,
-		SettingsFrom:       1,
-		SettingsTo:         2,
-		SettingsReversible: true,
-		StorageSchema:      2,
-		StorageFrom:        1,
-		StorageTo:          2,
-		StorageReversible:  true,
-	})
-
-	installed, err := ImportLocalPackageBytes(ctx, h, v1)
-	if err != nil {
-		t.Fatal(err)
-	}
-	updated, err := h.UpdateLocalPackage(ctx, UpdateLocalPackageRequest{
-		PluginInstanceID: installed.PluginInstanceID,
-		PackageReader:    bytes.NewReader(v2),
-		PackageSize:      int64(len(v2)), PluginStateVersion: mustPluginStateVersion(t, h,
-			installed.PluginInstanceID),
-	})
-	if err != nil {
-		t.Fatalf("UpdateLocalPackage() migration preflight error = %v", err)
-	}
-	if updated.Manifest.Settings.SchemaVersion != 2 || updated.Manifest.Storage.Stores[0].SchemaVersion != 2 {
-		t.Fatalf("updated schemas mismatch: settings=%#v storage=%#v", updated.Manifest.Settings, updated.Manifest.Storage)
-	}
-	downgraded, err := h.DowngradePlugin(ctx, DowngradeRequest{
-		PluginInstanceID: updated.PluginInstanceID,
-		Version:          "1.0.0", PluginStateVersion: mustPluginStateVersion(t, h,
-			updated.PluginInstanceID),
-	})
-	if err != nil {
-		t.Fatalf("DowngradePlugin() reversible migration error = %v", err)
-	}
-	if downgraded.Version != "1.0.0" || downgraded.Manifest.Settings.SchemaVersion != 1 {
-		t.Fatalf("downgraded record mismatch: %#v", downgraded)
-	}
-}
-
-func TestUpdateRejectsMismatchedMigrationPreflight(t *testing.T) {
-	ctx := context.Background()
-	h, _, _ := newTestHost(t, true, true)
-	v1 := buildMigrationFixturePackage(t, migrationFixtureOptions{
-		Version:            "1.0.0",
-		SettingsSchema:     1,
-		SettingsFrom:       1,
-		SettingsTo:         1,
-		SettingsReversible: true,
-		StorageSchema:      1,
-		StorageFrom:        1,
-		StorageTo:          1,
-		StorageReversible:  true,
-	})
-	badV2 := buildMigrationFixturePackage(t, migrationFixtureOptions{
-		Version:            "2.0.0",
-		SettingsSchema:     2,
-		SettingsFrom:       0,
-		SettingsTo:         2,
-		SettingsReversible: true,
-		StorageSchema:      2,
-		StorageFrom:        1,
-		StorageTo:          2,
-		StorageReversible:  true,
+	v2 := buildDataShapeFixturePackage(t, dataShapeFixtureOptions{
+		Version:        "2.0.0",
+		SettingsSchema: 2,
+		StorageSchema:  2,
 	})
 
 	installed, err := ImportLocalPackageBytes(ctx, h, v1)
@@ -535,90 +551,37 @@ func TestUpdateRejectsMismatchedMigrationPreflight(t *testing.T) {
 	}
 	if _, err := h.UpdateLocalPackage(ctx, UpdateLocalPackageRequest{
 		PluginInstanceID: installed.PluginInstanceID,
-		PackageReader:    bytes.NewReader(badV2),
-		PackageSize:      int64(len(badV2)), PluginStateVersion: mustPluginStateVersion(t, h,
+		PackageReader:    bytes.NewReader(v2),
+		PackageSize:      int64(len(v2)), ExpectedManagementRevision: mustManagementRevision(t, h,
 			installed.PluginInstanceID),
-	}); !errors.Is(err, ErrPluginMigrationPreflight) {
-		t.Fatalf("UpdateLocalPackage() error = %v, want ErrPluginMigrationPreflight", err)
-	}
-}
-
-func TestDowngradeRejectsIrreversibleMigrationPreflight(t *testing.T) {
-	ctx := context.Background()
-	h, _, _ := newTestHost(t, true, true)
-	v1 := buildMigrationFixturePackage(t, migrationFixtureOptions{
-		Version:            "1.0.0",
-		SettingsSchema:     1,
-		SettingsFrom:       1,
-		SettingsTo:         1,
-		SettingsReversible: true,
-		StorageSchema:      1,
-		StorageFrom:        1,
-		StorageTo:          1,
-		StorageReversible:  true,
-	})
-	irreversibleV2 := buildMigrationFixturePackage(t, migrationFixtureOptions{
-		Version:            "2.0.0",
-		SettingsSchema:     2,
-		SettingsFrom:       1,
-		SettingsTo:         2,
-		SettingsReversible: false,
-		StorageSchema:      2,
-		StorageFrom:        1,
-		StorageTo:          2,
-		StorageReversible:  true,
-	})
-
-	installed, err := ImportLocalPackageBytes(ctx, h, v1)
-	if err != nil {
-		t.Fatal(err)
-	}
-	updated, err := h.UpdateLocalPackage(ctx, UpdateLocalPackageRequest{
-		PluginInstanceID: installed.PluginInstanceID,
-		PackageReader:    bytes.NewReader(irreversibleV2),
-		PackageSize:      int64(len(irreversibleV2)), PluginStateVersion: mustPluginStateVersion(t, h,
-			installed.PluginInstanceID),
-	})
-	if err != nil {
-		t.Fatalf("UpdateLocalPackage() irreversible forward migration error = %v", err)
-	}
-	if _, err := h.DowngradePlugin(ctx, DowngradeRequest{
-		PluginInstanceID: updated.PluginInstanceID,
-		Version:          "1.0.0", PluginStateVersion: mustPluginStateVersion(t, h,
-			updated.PluginInstanceID),
-	}); !errors.Is(err, ErrPluginMigrationPreflight) {
-		t.Fatalf("DowngradePlugin() error = %v, want ErrPluginMigrationPreflight", err)
+	}); !errors.Is(err, ErrPluginDataContractChanged) {
+		t.Fatalf("UpdateLocalPackage() error = %v, want ErrPluginDataContractChanged", err)
 	}
 }
 
 func TestEnableRejectsUntrusted(t *testing.T) {
 	host, _, _ := newTestHost(t, true, true)
 	pkg := readTestPackage(t, buildFixturePackage(t))
-	installed, err := host.adapters.Registry.PutPlugin(context.Background(), packageRecord(pkg, registry.TrustAssessment{TrustState: registry.TrustUntrusted}, "", nil, nil), registry.PutOptions{})
+	installed, err := host.adapters.Registry.PutPlugin(hostTestContext(), packageRecord(pkg, registry.TrustAssessment{TrustState: registry.TrustUntrusted}, "", nil, nil), registry.PutOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := host.EnablePlugin(context.Background(), EnableRequest{PluginInstanceID: installed.PluginInstanceID, PluginStateVersion: mustPluginStateVersion(t, host, installed.PluginInstanceID)}); err == nil {
+	if _, err := host.EnablePlugin(hostTestContext(), EnableRequest{PluginInstanceID: installed.PluginInstanceID, ExpectedManagementRevision: mustManagementRevision(t, host, installed.PluginInstanceID)}); err == nil {
 		t.Fatal("EnablePlugin() expected untrusted error")
 	}
 }
 
 func TestEnableUnsignedLocalRequiresPolicy(t *testing.T) {
-	host, err := New(Adapters{
-		SessionResolver: fakeSessionResolver{},
-		Policy:          policyAdapter{developerMode: false, localGenerated: true},
-	})
+	host, _, _ := newTestHostWithOptions(t, testHostOptions{developerMode: false, localGenerated: true})
+	pkg := readTestPackage(t, buildFixturePackage(t))
+	installed, err := host.adapters.Registry.PutPlugin(hostTestContext(), packageRecord(pkg, registry.TrustAssessment{TrustState: registry.TrustUnsignedLocal}, "", nil, nil), registry.PutOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	installed, err := ImportLocalPackageBytes(context.Background(), host, buildFixturePackage(t))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := host.EnablePlugin(context.Background(), EnableRequest{PluginInstanceID: installed.PluginInstanceID, PluginStateVersion: mustPluginStateVersion(t, host, installed.PluginInstanceID)}); err == nil {
+	if _, err := host.EnablePlugin(hostTestContext(), EnableRequest{PluginInstanceID: installed.PluginInstanceID, ExpectedManagementRevision: mustManagementRevision(t, host, installed.PluginInstanceID)}); err == nil {
 		t.Fatal("EnablePlugin() expected policy error")
 	}
-	record, err := host.adapters.Registry.GetPlugin(context.Background(), installed.PluginInstanceID)
+	record, err := host.adapters.Registry.GetPlugin(hostTestContext(), installed.PluginInstanceID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -627,30 +590,8 @@ func TestEnableUnsignedLocalRequiresPolicy(t *testing.T) {
 	}
 }
 
-func TestInstallReleaseRefRequiresPackageTrustVerifier(t *testing.T) {
-	packageBytes := buildSignedReleasePackageBytes(t, buildFixturePackage(t), "official")
-	pkg := readTestPackage(t, packageBytes)
-	ref := releaseRefForPackage(t, "official", pkg)
-	resolver := &recordingReleaseArtifactResolver{
-		artifact: resolvedArtifactForPackage(t, ref, pkg, packageBytes),
-	}
-	h, err := New(Adapters{
-		SessionResolver:         fakeSessionResolver{},
-		Policy:                  policyAdapter{developerMode: true, localGenerated: true},
-		ReleaseSourcePolicy:     &recordingReleaseSourcePolicyResolver{snapshot: sourcePolicyForRelease(ref)},
-		ReleaseArtifactResolver: resolver,
-		ReleaseMetadataVerifier: &recordingReleaseMetadataVerifier{},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := h.InstallReleaseRef(context.Background(), InstallReleaseRefRequest{ReleaseRef: ref}); !errors.Is(err, ErrPackageTrustVerifierRequired) {
-		t.Fatalf("InstallReleaseRef() error = %v, want ErrPackageTrustVerifierRequired", err)
-	}
-}
-
 func TestInstallReleaseRefRejectsNonVerifiedTrustAssessment(t *testing.T) {
-	ctx := context.Background()
+	ctx := hostTestContext()
 	packageBytes := buildSignedReleasePackageBytes(t, buildFixturePackage(t), "official")
 	pkg := readTestPackage(t, packageBytes)
 	ref := releaseRefForPackage(t, "official", pkg)
@@ -682,7 +623,7 @@ func TestInstallUsesVerifierTrustDecisionAndMetadata(t *testing.T) {
 		trustVerifier:  verifier,
 	})
 
-	installed, err := ImportLocalPackageBytes(context.Background(), h, buildFixturePackage(t))
+	installed, err := ImportLocalPackageBytes(hostTestContext(), h, buildFixturePackage(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -698,7 +639,7 @@ func TestInstallUsesVerifierTrustDecisionAndMetadata(t *testing.T) {
 }
 
 func TestInstallReleaseRefResolvesArtifactAndInstallsVerifiedPackage(t *testing.T) {
-	ctx := context.Background()
+	ctx := hostTestContext()
 	packageBytes := buildSignedReleasePackageBytes(t, buildVersionedLifecyclePackage(t, "1.0.0", "Lifecycle"), "official")
 	pkg := readTestPackage(t, packageBytes)
 	ref := releaseRefForPackage(t, "official", pkg)
@@ -779,7 +720,7 @@ func TestInstallReleaseRefResolvesArtifactAndInstallsVerifiedPackage(t *testing.
 }
 
 func TestInstallReleaseRefRejectsSourceSecurityFloorRollbackBeforeArtifactResolution(t *testing.T) {
-	ctx := context.Background()
+	ctx := hostTestContext()
 	v1Bytes := buildSignedReleasePackageBytes(t, buildVersionedLifecyclePackage(t, "1.0.0", "Lifecycle"), "official")
 	v1Pkg := readTestPackage(t, v1Bytes)
 	v1Ref := releaseRefForPackage(t, "official", v1Pkg)
@@ -835,7 +776,7 @@ func TestSourcePolicySnapshotHashExcludesAssessmentTimestamps(t *testing.T) {
 }
 
 func TestInstallReleaseRefRejectsSourceRevocationMetadataSubstitutionBeforeArtifactResolution(t *testing.T) {
-	ctx := context.Background()
+	ctx := hostTestContext()
 	v1Bytes := buildSignedReleasePackageBytes(t, buildVersionedLifecyclePackage(t, "1.0.0", "Lifecycle"), "official")
 	v1Pkg := readTestPackage(t, v1Bytes)
 	v1Ref := releaseRefForPackage(t, "official", v1Pkg)
@@ -868,7 +809,7 @@ func TestInstallReleaseRefRejectsSourceRevocationMetadataSubstitutionBeforeArtif
 }
 
 func TestOpenSurfaceRejectsCurrentSourceSecurityFloorRollback(t *testing.T) {
-	ctx := context.Background()
+	ctx := hostTestContext()
 	packageBytes := buildSignedReleasePackageBytes(t, buildVersionedLifecyclePackage(t, "1.0.0", "Lifecycle"), "official")
 	pkg := readTestPackage(t, packageBytes)
 	ref := releaseRefForPackage(t, "official", pkg)
@@ -889,7 +830,7 @@ func TestOpenSurfaceRejectsCurrentSourceSecurityFloorRollback(t *testing.T) {
 	if err != nil {
 		t.Fatalf("InstallReleaseRef() error = %v", err)
 	}
-	if _, err := h.EnablePlugin(ctx, EnableRequest{PluginInstanceID: installed.PluginInstanceID, PluginStateVersion: mustPluginStateVersion(t, h, installed.PluginInstanceID)}); err != nil {
+	if _, err := h.EnablePlugin(ctx, EnableRequest{PluginInstanceID: installed.PluginInstanceID, ExpectedManagementRevision: mustManagementRevision(t, h, installed.PluginInstanceID)}); err != nil {
 		t.Fatalf("EnablePlugin() error = %v", err)
 	}
 
@@ -897,7 +838,7 @@ func TestOpenSurfaceRejectsCurrentSourceSecurityFloorRollback(t *testing.T) {
 	if _, err := h.OpenSurface(ctx, OpenSurfaceRequest{
 		PluginInstanceID:  installed.PluginInstanceID,
 		SurfaceID:         "lifecycle.view",
-		SurfaceInstanceID: "surface_floor_rollback", PluginStateVersion: mustPluginStateVersion(t, h,
+		SurfaceInstanceID: "surface_floor_rollback", ExpectedManagementRevision: mustManagementRevision(t, h,
 			installed.PluginInstanceID),
 	}); !errors.Is(err, ErrReleaseRefPolicyDenied) {
 		t.Fatalf("OpenSurface() error = %v, want ErrReleaseRefPolicyDenied", err)
@@ -912,7 +853,7 @@ func TestOpenSurfaceRejectsCurrentSourceSecurityFloorRollback(t *testing.T) {
 }
 
 func TestInstallReleaseRefRejectsRevokedReleaseSignatureKey(t *testing.T) {
-	ctx := context.Background()
+	ctx := hostTestContext()
 	packageBytes := buildSignedReleasePackageBytes(t, buildVersionedLifecyclePackage(t, "1.0.0", "Lifecycle"), "official")
 	pkg := readTestPackage(t, packageBytes)
 	ref := releaseRefForPackage(t, "official", pkg)
@@ -943,7 +884,7 @@ func TestInstallReleaseRefRejectsRevokedReleaseSignatureKey(t *testing.T) {
 }
 
 func TestInstallReleaseRefRejectsDigestMismatchWithoutRegistryMutation(t *testing.T) {
-	ctx := context.Background()
+	ctx := hostTestContext()
 	packageBytes := buildVersionedLifecyclePackage(t, "1.0.0", "Lifecycle")
 	pkg := readTestPackage(t, packageBytes)
 	ref := releaseRefForPackage(t, "official", pkg)
@@ -972,7 +913,7 @@ func TestInstallReleaseRefRejectsDigestMismatchWithoutRegistryMutation(t *testin
 }
 
 func TestInstallReleaseRefRejectsReleaseMetadataHashMismatchWithoutRegistryMutation(t *testing.T) {
-	ctx := context.Background()
+	ctx := hostTestContext()
 	packageBytes := buildSignedReleasePackageBytes(t, buildVersionedLifecyclePackage(t, "1.0.0", "Lifecycle"), "official")
 	pkg := readTestPackage(t, packageBytes)
 	ref := releaseRefForPackage(t, "official", pkg)
@@ -1001,7 +942,7 @@ func TestInstallReleaseRefRejectsReleaseMetadataHashMismatchWithoutRegistryMutat
 }
 
 func TestInstallReleaseRefRejectsPackageChangedAfterMetadataResolvedWithoutRegistryMutation(t *testing.T) {
-	ctx := context.Background()
+	ctx := hostTestContext()
 	metadataBytes := buildSignedReleasePackageBytes(t, buildVersionedLifecyclePackage(t, "1.0.0", "Lifecycle"), "official")
 	metadataPkg := readTestPackage(t, metadataBytes)
 	ref := releaseRefForPackage(t, "official", metadataPkg)
@@ -1030,7 +971,7 @@ func TestInstallReleaseRefRejectsPackageChangedAfterMetadataResolvedWithoutRegis
 }
 
 func TestInstallReleaseRefRejectsUnavailableSourcePolicyBeforeArtifactResolution(t *testing.T) {
-	ctx := context.Background()
+	ctx := hostTestContext()
 	packageBytes := buildSignedReleasePackageBytes(t, buildVersionedLifecyclePackage(t, "1.0.0", "Lifecycle"), "official")
 	pkg := readTestPackage(t, packageBytes)
 	ref := releaseRefForPackage(t, "official", pkg)
@@ -1070,7 +1011,7 @@ func TestInstallReleaseRefRejectsUnsafeArtifactPath(t *testing.T) {
 		"plugins/%2e%2e/plugin.redevplugin",
 	} {
 		t.Run(artifactRef, func(t *testing.T) {
-			ctx := context.Background()
+			ctx := hostTestContext()
 			packageBytes := buildVersionedLifecyclePackage(t, "1.0.0", "Lifecycle")
 			pkg := readTestPackage(t, packageBytes)
 			ref := releaseRefForPackage(t, "official", pkg)
@@ -1096,7 +1037,7 @@ func TestInstallReleaseRefRejectsUnsafeArtifactPath(t *testing.T) {
 }
 
 func TestInstallReleaseRefRejectsOfficialSourceWithoutSignatureRequirement(t *testing.T) {
-	ctx := context.Background()
+	ctx := hostTestContext()
 	packageBytes := buildVersionedLifecyclePackage(t, "1.0.0", "Lifecycle")
 	pkg := readTestPackage(t, packageBytes)
 	ref := releaseRefForPackage(t, "official", pkg)
@@ -1118,7 +1059,7 @@ func TestInstallReleaseRefRejectsOfficialSourceWithoutSignatureRequirement(t *te
 }
 
 func TestInstallReleaseRefRejectsInvalidSourcePolicyTrustEvidence(t *testing.T) {
-	ctx := context.Background()
+	ctx := hostTestContext()
 	packageBytes := buildSignedReleasePackageBytes(t, buildVersionedLifecyclePackage(t, "1.0.0", "Lifecycle"), "official")
 	pkg := readTestPackage(t, packageBytes)
 	ref := releaseRefForPackage(t, "official", pkg)
@@ -1153,7 +1094,7 @@ func TestInstallReleaseRefRejectsInvalidSourcePolicyTrustEvidence(t *testing.T) 
 }
 
 func TestInstallReleaseRefRejectsCommunitySourceWithoutSignatureRequirement(t *testing.T) {
-	ctx := context.Background()
+	ctx := hostTestContext()
 	packageBytes := buildSignedReleasePackageBytes(t, buildVersionedLifecyclePackage(t, "1.0.0", "Lifecycle"), "official")
 	pkg := readTestPackage(t, packageBytes)
 	ref := releaseRefForPackage(t, "community", pkg)
@@ -1177,7 +1118,7 @@ func TestInstallReleaseRefRejectsCommunitySourceWithoutSignatureRequirement(t *t
 }
 
 func TestInstallReleaseRefRejectsPublisherOutsideSourcePolicy(t *testing.T) {
-	ctx := context.Background()
+	ctx := hostTestContext()
 	packageBytes := buildVersionedLifecyclePackage(t, "1.0.0", "Lifecycle")
 	pkg := readTestPackage(t, packageBytes)
 	ref := releaseRefForPackage(t, "official", pkg)
@@ -1198,27 +1139,8 @@ func TestInstallReleaseRefRejectsPublisherOutsideSourcePolicy(t *testing.T) {
 	}
 }
 
-func TestInstallReleaseRefRequiresSourcePolicyResolver(t *testing.T) {
-	ctx := context.Background()
-	packageBytes := buildSignedReleasePackageBytes(t, buildVersionedLifecyclePackage(t, "1.0.0", "Lifecycle"), "official")
-	pkg := readTestPackage(t, packageBytes)
-	ref := releaseRefForPackage(t, "official", pkg)
-	resolver := &recordingReleaseArtifactResolver{
-		artifact: resolvedArtifactForPackage(t, ref, pkg, packageBytes),
-	}
-	h, _, _ := newTestHostWithOptions(t, testHostOptions{
-		developerMode:           true,
-		localGenerated:          true,
-		releaseArtifactResolver: resolver,
-	})
-
-	if _, err := h.InstallReleaseRef(ctx, InstallReleaseRefRequest{ReleaseRef: ref}); !errors.Is(err, ErrReleaseSourcePolicyRequired) {
-		t.Fatalf("InstallReleaseRef() error = %v, want ErrReleaseSourcePolicyRequired", err)
-	}
-}
-
 func TestInstallReleaseRefRejectsLocalImportDistribution(t *testing.T) {
-	ctx := context.Background()
+	ctx := hostTestContext()
 	packageBytes := buildSignedReleasePackageBytes(t, buildVersionedLifecyclePackage(t, "1.0.0", "Lifecycle"), "official")
 	pkg := readTestPackage(t, packageBytes)
 	ref := releaseRefForPackage(t, "official", pkg)
@@ -1241,7 +1163,7 @@ func TestInstallReleaseRefRejectsLocalImportDistribution(t *testing.T) {
 }
 
 func TestInstallReleaseRefRejectsMissingReleaseDistribution(t *testing.T) {
-	ctx := context.Background()
+	ctx := hostTestContext()
 	packageBytes := buildSignedReleasePackageBytes(t, buildVersionedLifecyclePackage(t, "1.0.0", "Lifecycle"), "official")
 	pkg := readTestPackage(t, packageBytes)
 	ref := releaseRefForPackage(t, "official", pkg)
@@ -1265,7 +1187,7 @@ func TestInstallReleaseRefRejectsMissingReleaseDistribution(t *testing.T) {
 }
 
 func TestInstallReleaseRefRejectsReleaseDistributionImportID(t *testing.T) {
-	ctx := context.Background()
+	ctx := hostTestContext()
 	packageBytes := buildSignedReleasePackageBytes(t, buildVersionedLifecyclePackage(t, "1.0.0", "Lifecycle"), "official")
 	pkg := readTestPackage(t, packageBytes)
 	ref := releaseRefForPackage(t, "official", pkg)
@@ -1289,7 +1211,7 @@ func TestInstallReleaseRefRejectsReleaseDistributionImportID(t *testing.T) {
 }
 
 func TestInstallReleaseRefRequiresCompleteHostCapabilityContractPins(t *testing.T) {
-	ctx := context.Background()
+	ctx := hostTestContext()
 	packageBytes := buildSignedReleasePackageBytes(t, buildRPCFixturePackage(t), "official")
 	pkg := readTestPackage(t, packageBytes)
 	baseRef := releaseRefForPackage(t, "official", pkg)
@@ -1438,7 +1360,7 @@ func TestResolveAndVerifyExternalHostCapabilityContract(t *testing.T) {
 		CapabilityContractArtifacts: artifactResolver,
 		CapabilityContractKeys:      keyResolver,
 	}}
-	verified, err := h.resolveAndVerifyCapabilityContract(context.Background(), PluginPackageRelease{
+	verified, err := h.resolveAndVerifyCapabilityContract(hostTestContext(), PluginPackageRelease{
 		SourceID:    ref.SourceID,
 		PublisherID: ref.PublisherID,
 	}, policy, HostCapabilityRequirement{
@@ -1456,7 +1378,7 @@ func TestResolveAndVerifyExternalHostCapabilityContract(t *testing.T) {
 		{URL: "https://artifacts.example.com/releases/start", ResolvedIP: "93.184.216.34"},
 		{URL: "https://redirect.example.net/releases/final", ResolvedIP: "93.184.216.34"},
 	}
-	if _, err := h.resolveAndVerifyCapabilityContract(context.Background(), PluginPackageRelease{
+	if _, err := h.resolveAndVerifyCapabilityContract(hostTestContext(), PluginPackageRelease{
 		SourceID: ref.SourceID, PublisherID: ref.PublisherID,
 	}, policy, HostCapabilityRequirement{CapabilityID: contract.CapabilityID, CapabilityVersion: contract.CapabilityVersion, Contract: bundle.Pin}); !errors.Is(err, ErrReleaseRefVerificationFailed) {
 		t.Fatalf("unauthorized redirect error = %v, want ErrReleaseRefVerificationFailed", err)
@@ -1491,7 +1413,7 @@ func TestCapabilityContractArtifactFetchFailsClosed(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			if _, err := loadCapabilityContractBundle(context.Background(), bundle.Pin, policy, ResolvedCapabilityContractArtifact{Artifacts: tc.set}); !errors.Is(err, ErrReleaseRefVerificationFailed) {
+			if _, err := loadCapabilityContractBundle(hostTestContext(), bundle.Pin, policy, ResolvedCapabilityContractArtifact{Artifacts: tc.set}); !errors.Is(err, ErrReleaseRefVerificationFailed) {
 				t.Fatalf("loadCapabilityContractBundle() error = %v, want ErrReleaseRefVerificationFailed", err)
 			}
 		})
@@ -1553,16 +1475,16 @@ func TestEnsureReleaseCapabilityContractsRevalidatesCachedSigningKey(t *testing.
 			}},
 		}},
 	}
-	if _, err := h.ensureReleaseCapabilityContracts(context.Background(), release, policy); err != nil {
+	if _, err := h.ensureReleaseCapabilityContracts(hostTestContext(), release, policy); err != nil {
 		t.Fatalf("ensureReleaseCapabilityContracts() initial cache hit error = %v", err)
 	}
 	policy.TrustedKeys[len(policy.TrustedKeys)-1].PublicKeySHA256 = strings.Repeat("b", 64)
-	if _, err := h.ensureReleaseCapabilityContracts(context.Background(), release, policy); !errors.Is(err, ErrReleaseRefVerificationFailed) {
+	if _, err := h.ensureReleaseCapabilityContracts(hostTestContext(), release, policy); !errors.Is(err, ErrReleaseRefVerificationFailed) {
 		t.Fatalf("ensureReleaseCapabilityContracts() key mismatch error = %v, want ErrReleaseRefVerificationFailed", err)
 	}
 	policy.TrustedKeys[len(policy.TrustedKeys)-1].PublicKeySHA256 = verified.PublicKeySHA256()
 	setSourcePolicyRevokedKeys(&policy, []string{verified.Pin.SignatureKeyID})
-	if _, err := h.ensureReleaseCapabilityContracts(context.Background(), release, policy); !errors.Is(err, ErrReleaseRefVerificationFailed) {
+	if _, err := h.ensureReleaseCapabilityContracts(hostTestContext(), release, policy); !errors.Is(err, ErrReleaseRefVerificationFailed) {
 		t.Fatalf("ensureReleaseCapabilityContracts() error = %v, want ErrReleaseRefVerificationFailed", err)
 	}
 }
@@ -1575,7 +1497,7 @@ func TestReleaseHostRequirementsAreEvaluatedWithoutManifestBindings(t *testing.T
 		SourceID: "official", PublisherID: "example", PluginID: "com.example.no_capabilities", Version: "1.0.0",
 		HostRequirements: []HostRequirement{{HostID: "example-host", MinHostVersion: "2.0.0"}},
 	}
-	_, err := h.resolvePackageCapabilityPins(context.Background(), manifest.Manifest{}, packageTrustInput{
+	_, err := h.resolvePackageCapabilityPins(hostTestContext(), manifest.Manifest{}, packageTrustInput{
 		Release: &release, SourcePolicySnapshot: &SourcePolicySnapshot{},
 	})
 	if !errors.Is(err, ErrReleaseRefVerificationFailed) || !strings.Contains(err.Error(), policyErr.Error()) {
@@ -1629,7 +1551,7 @@ func completeHostCapabilityRef() HostCapabilityContractRef {
 }
 
 func TestInstallReleaseRefRejectsMissingPackageSignature(t *testing.T) {
-	ctx := context.Background()
+	ctx := hostTestContext()
 	packageBytes := buildVersionedLifecyclePackage(t, "1.0.0", "Lifecycle")
 	pkg := readTestPackage(t, packageBytes)
 	ref := releaseRefForPackage(t, "official", pkg)
@@ -1650,7 +1572,7 @@ func TestInstallReleaseRefRejectsMissingPackageSignature(t *testing.T) {
 }
 
 func TestInstallReleaseRefRejectsMissingReleaseMetadataSignature(t *testing.T) {
-	ctx := context.Background()
+	ctx := hostTestContext()
 	packageBytes := buildSignedReleasePackageBytes(t, buildVersionedLifecyclePackage(t, "1.0.0", "Lifecycle"), "official")
 	pkg := readTestPackage(t, packageBytes)
 	ref := releaseRefForPackage(t, "official", pkg)
@@ -1673,7 +1595,7 @@ func TestInstallReleaseRefRejectsMissingReleaseMetadataSignature(t *testing.T) {
 }
 
 func TestInstallReleaseRefRejectsMissingReleaseMetadataSourcePolicyEpoch(t *testing.T) {
-	ctx := context.Background()
+	ctx := hostTestContext()
 	packageBytes := buildSignedReleasePackageBytes(t, buildVersionedLifecyclePackage(t, "1.0.0", "Lifecycle"), "official")
 	pkg := readTestPackage(t, packageBytes)
 	ref := releaseRefForPackage(t, "official", pkg)
@@ -1697,7 +1619,7 @@ func TestInstallReleaseRefRejectsMissingReleaseMetadataSourcePolicyEpoch(t *test
 }
 
 func TestInstallReleaseRefRejectsMissingPackageSignatureMetadata(t *testing.T) {
-	ctx := context.Background()
+	ctx := hostTestContext()
 	packageBytes := buildSignedReleasePackageBytes(t, buildVersionedLifecyclePackage(t, "1.0.0", "Lifecycle"), "official")
 	pkg := readTestPackage(t, packageBytes)
 	ref := releaseRefForPackage(t, "official", pkg)
@@ -1720,7 +1642,7 @@ func TestInstallReleaseRefRejectsMissingPackageSignatureMetadata(t *testing.T) {
 }
 
 func TestInstallReleaseRefRejectsPackageSignatureRevocationEpochMismatch(t *testing.T) {
-	ctx := context.Background()
+	ctx := hostTestContext()
 	packageBytes := buildSignedReleasePackageBytes(t, buildVersionedLifecyclePackage(t, "1.0.0", "Lifecycle"), "official")
 	pkg := readTestPackage(t, packageBytes)
 	ref := releaseRefForPackage(t, "official", pkg)
@@ -1744,7 +1666,7 @@ func TestInstallReleaseRefRejectsPackageSignatureRevocationEpochMismatch(t *test
 }
 
 func TestInstallReleaseRefRejectsUntrustedReleaseMetadataSignatureKey(t *testing.T) {
-	ctx := context.Background()
+	ctx := hostTestContext()
 	packageBytes := buildSignedReleasePackageBytes(t, buildVersionedLifecyclePackage(t, "1.0.0", "Lifecycle"), "official")
 	pkg := readTestPackage(t, packageBytes)
 	ref := releaseRefForPackage(t, "official", pkg)
@@ -1767,7 +1689,7 @@ func TestInstallReleaseRefRejectsUntrustedReleaseMetadataSignatureKey(t *testing
 }
 
 func TestInstallReleaseRefRejectsUntrustedReleasePackageSignatureKey(t *testing.T) {
-	ctx := context.Background()
+	ctx := hostTestContext()
 	packageBytes := buildSignedReleasePackageBytes(t, buildVersionedLifecyclePackage(t, "1.0.0", "Lifecycle"), "official")
 	pkg := readTestPackage(t, packageBytes)
 	ref := releaseRefForPackage(t, "official", pkg)
@@ -1790,7 +1712,7 @@ func TestInstallReleaseRefRejectsUntrustedReleasePackageSignatureKey(t *testing.
 }
 
 func TestInstallReleaseRefRejectsSourcePolicyInstallReviewRequired(t *testing.T) {
-	ctx := context.Background()
+	ctx := hostTestContext()
 	packageBytes := buildSignedReleasePackageBytes(t, buildVersionedLifecyclePackage(t, "1.0.0", "Lifecycle"), "official")
 	pkg := readTestPackage(t, packageBytes)
 	ref := releaseRefForPackage(t, "official", pkg)
@@ -1813,7 +1735,7 @@ func TestInstallReleaseRefRejectsSourcePolicyInstallReviewRequired(t *testing.T)
 }
 
 func TestInstallReleaseRefRejectsCanonicalMetadataOverride(t *testing.T) {
-	ctx := context.Background()
+	ctx := hostTestContext()
 	packageBytes := buildSignedReleasePackageBytes(t, buildVersionedLifecyclePackage(t, "1.0.0", "Lifecycle"), "official")
 	pkg := readTestPackage(t, packageBytes)
 	ref := releaseRefForPackage(t, "official", pkg)
@@ -1836,7 +1758,7 @@ func TestInstallReleaseRefRejectsCanonicalMetadataOverride(t *testing.T) {
 }
 
 func TestInstallReleaseRefRejectsTrailingReleaseMetadataJSON(t *testing.T) {
-	ctx := context.Background()
+	ctx := hostTestContext()
 	packageBytes := buildSignedReleasePackageBytes(t, buildVersionedLifecyclePackage(t, "1.0.0", "Lifecycle"), "official")
 	pkg := readTestPackage(t, packageBytes)
 	ref := releaseRefForPackage(t, "official", pkg)
@@ -1857,7 +1779,7 @@ func TestInstallReleaseRefRejectsTrailingReleaseMetadataJSON(t *testing.T) {
 }
 
 func TestInstallReleaseRefRejectsMissingReleaseCompatibility(t *testing.T) {
-	ctx := context.Background()
+	ctx := hostTestContext()
 	packageBytes := buildSignedReleasePackageBytes(t, buildVersionedLifecyclePackage(t, "1.0.0", "Lifecycle"), "official")
 	pkg := readTestPackage(t, packageBytes)
 	ref := releaseRefForPackage(t, "official", pkg)
@@ -1880,7 +1802,7 @@ func TestInstallReleaseRefRejectsMissingReleaseCompatibility(t *testing.T) {
 }
 
 func TestInstallReleaseRefRejectsExpiredRevocationEvidence(t *testing.T) {
-	ctx := context.Background()
+	ctx := hostTestContext()
 	packageBytes := buildSignedReleasePackageBytes(t, buildVersionedLifecyclePackage(t, "1.0.0", "Lifecycle"), "official")
 	pkg := readTestPackage(t, packageBytes)
 	ref := releaseRefForPackage(t, "official", pkg)
@@ -1906,7 +1828,7 @@ func TestInstallReleaseRefRejectsExpiredRevocationEvidence(t *testing.T) {
 }
 
 func TestUpdateReleaseRefRejectsDowngradeWhenSourcePolicyBlocks(t *testing.T) {
-	ctx := context.Background()
+	ctx := hostTestContext()
 	h, _, _ := newTestHostWithOptions(t, testHostOptions{
 		developerMode:           true,
 		localGenerated:          true,
@@ -1926,14 +1848,14 @@ func TestUpdateReleaseRefRejectsDowngradeWhenSourcePolicyBlocks(t *testing.T) {
 	}
 	h.adapters.ReleaseSourcePolicy = &recordingReleaseSourcePolicyResolver{snapshot: sourcePolicy}
 
-	if _, err := h.UpdateReleaseRef(ctx, UpdateReleaseRefRequest{PluginInstanceID: current.PluginInstanceID, ReleaseRef: ref, PluginStateVersion: mustPluginStateVersion(t, h, current.PluginInstanceID)}); !errors.Is(err, ErrReleaseRefPolicyDenied) {
+	if _, err := h.UpdateReleaseRef(ctx, UpdateReleaseRefRequest{PluginInstanceID: current.PluginInstanceID, ReleaseRef: ref, ExpectedManagementRevision: mustManagementRevision(t, h, current.PluginInstanceID)}); !errors.Is(err, ErrReleaseRefPolicyDenied) {
 		t.Fatalf("UpdateReleaseRef() error = %v, want ErrReleaseRefPolicyDenied", err)
 	}
 }
 
 func TestUpdateReleaseRefSwitchesEnabledPluginAndRevokesOldSurfaceToken(t *testing.T) {
-	ctx := context.Background()
-	runtime := &recordingRuntimeSupervisor{
+	ctx := hostTestContext()
+	runtime := &recordingRuntimeManager{
 		health: runtimeclient.Health{RuntimeInstanceID: "runtime_1", RuntimeGenerationID: "runtime_gen_1", IPCChannelID: "ipc_1", ConnectionNonce: "connection_nonce_1234567890", Ready: true},
 	}
 	metadataVerifier := &recordingReleaseMetadataVerifier{}
@@ -1943,7 +1865,7 @@ func TestUpdateReleaseRefSwitchesEnabledPluginAndRevokesOldSurfaceToken(t *testi
 		localGenerated:          true,
 		trustVerifier:           verifier,
 		releaseMetadataVerifier: metadataVerifier,
-		runtimeSupervisor:       runtime,
+		runtimeManager:          runtime,
 	})
 	v1Bytes := buildSignedReleasePackageBytes(t, buildVersionedLifecyclePackage(t, "1.0.0", "Lifecycle"), "official")
 	v1Pkg := readTestPackage(t, v1Bytes)
@@ -1956,7 +1878,7 @@ func TestUpdateReleaseRefSwitchesEnabledPluginAndRevokesOldSurfaceToken(t *testi
 	}
 	installedPackageHash := installed.PackageHash
 	now := time.Date(2026, 7, 7, 0, 0, 0, 0, time.UTC)
-	if _, err := h.EnablePlugin(ctx, EnableRequest{PluginInstanceID: installed.PluginInstanceID, Now: now, PluginStateVersion: mustPluginStateVersion(t, h, installed.PluginInstanceID)}); err != nil {
+	if _, err := h.EnablePlugin(ctx, EnableRequest{PluginInstanceID: installed.PluginInstanceID, Now: now, ExpectedManagementRevision: mustManagementRevision(t, h, installed.PluginInstanceID)}); err != nil {
 		t.Fatalf("EnablePlugin() error = %v", err)
 	}
 	bootstrap, gateway := openSurfaceAndMintGateway(t, h, installed.PluginInstanceID, "lifecycle.view")
@@ -1970,7 +1892,7 @@ func TestUpdateReleaseRefSwitchesEnabledPluginAndRevokesOldSurfaceToken(t *testi
 	h.adapters.ReleaseSourcePolicy = sourceResolver
 	h.adapters.ReleaseArtifactResolver = artifactResolver
 
-	updated, err := h.UpdateReleaseRef(ctx, UpdateReleaseRefRequest{PluginInstanceID: installed.PluginInstanceID, ReleaseRef: v2Ref, PluginStateVersion: mustPluginStateVersion(t, h, installed.PluginInstanceID)})
+	updated, err := h.UpdateReleaseRef(ctx, UpdateReleaseRefRequest{PluginInstanceID: installed.PluginInstanceID, ReleaseRef: v2Ref, ExpectedManagementRevision: mustManagementRevision(t, h, installed.PluginInstanceID)})
 	if err != nil {
 		t.Fatalf("UpdateReleaseRef() error = %v", err)
 	}
@@ -2013,7 +1935,7 @@ func TestUpdateReleaseRefSwitchesEnabledPluginAndRevokesOldSurfaceToken(t *testi
 }
 
 func TestUpdateReleaseRefFailureRestoresCurrentRecord(t *testing.T) {
-	ctx := context.Background()
+	ctx := hostTestContext()
 	surfaces := &failingSurfaceSink{err: errors.New("surface catalog unavailable")}
 	verifier := &recordingPackageTrustVerifier{trustState: registry.TrustVerified, metadata: map[string]string{"trust.key_id": "official-v1"}}
 	h, _, _ := newTestHostWithOptions(t, testHostOptions{
@@ -2033,7 +1955,7 @@ func TestUpdateReleaseRefFailureRestoresCurrentRecord(t *testing.T) {
 		t.Fatalf("InstallReleaseRef(v1) error = %v", err)
 	}
 	surfaces.err = nil
-	enabled, err := h.EnablePlugin(ctx, EnableRequest{PluginInstanceID: installed.PluginInstanceID, PluginStateVersion: mustPluginStateVersion(t, h, installed.PluginInstanceID)})
+	enabled, err := h.EnablePlugin(ctx, EnableRequest{PluginInstanceID: installed.PluginInstanceID, ExpectedManagementRevision: mustManagementRevision(t, h, installed.PluginInstanceID)})
 	if err != nil {
 		t.Fatalf("EnablePlugin() error = %v", err)
 	}
@@ -2046,7 +1968,7 @@ func TestUpdateReleaseRefFailureRestoresCurrentRecord(t *testing.T) {
 	h.adapters.ReleaseArtifactResolver = &recordingReleaseArtifactResolver{artifact: resolvedArtifactForPackage(t, v2Ref, v2Pkg, v2Bytes)}
 	surfaces.err = errors.New("surface catalog unavailable")
 
-	if _, err := h.UpdateReleaseRef(ctx, UpdateReleaseRefRequest{PluginInstanceID: enabled.PluginInstanceID, ReleaseRef: v2Ref, PluginStateVersion: mustPluginStateVersion(t, h, enabled.PluginInstanceID)}); err == nil || !strings.Contains(err.Error(), "surface catalog unavailable") {
+	if _, err := h.UpdateReleaseRef(ctx, UpdateReleaseRefRequest{PluginInstanceID: enabled.PluginInstanceID, ReleaseRef: v2Ref, ExpectedManagementRevision: mustManagementRevision(t, h, enabled.PluginInstanceID)}); err == nil || !strings.Contains(err.Error(), "surface catalog unavailable") {
 		t.Fatalf("UpdateReleaseRef() error = %v, want surface catalog failure", err)
 	}
 	current, err := h.adapters.Registry.GetPlugin(ctx, enabled.PluginInstanceID)
@@ -2062,8 +1984,8 @@ func TestUpdateReleaseRefFailureRestoresCurrentRecord(t *testing.T) {
 }
 
 func TestUpdateReleaseRefRuntimeRevokeFailureRestoresCurrentRecord(t *testing.T) {
-	ctx := context.Background()
-	runtime := &recordingRuntimeSupervisor{
+	ctx := hostTestContext()
+	runtime := &recordingRuntimeManager{
 		health:    runtimeclient.Health{RuntimeInstanceID: "runtime_1", RuntimeGenerationID: "runtime_gen_1", IPCChannelID: "ipc_1", ConnectionNonce: "connection_nonce_1234567890", Ready: true},
 		revokeErr: errors.New("runtime revoke unavailable"),
 	}
@@ -2072,9 +1994,8 @@ func TestUpdateReleaseRefRuntimeRevokeFailureRestoresCurrentRecord(t *testing.T)
 		developerMode:      true,
 		localGenerated:     true,
 		trustVerifier:      verifier,
-		runtimeSupervisor:  runtime,
+		runtimeManager:     runtime,
 		connectivityBroker: connectivity.NewMemoryBroker(),
-		storageBroker:      storage.NewMemoryBroker(),
 	})
 	v1Bytes := buildSignedReleasePackageBytes(t, buildVersionedLifecyclePackage(t, "1.0.0", "Lifecycle"), "official")
 	v1Pkg := readTestPackage(t, v1Bytes)
@@ -2086,7 +2007,7 @@ func TestUpdateReleaseRefRuntimeRevokeFailureRestoresCurrentRecord(t *testing.T)
 	if err != nil {
 		t.Fatalf("InstallReleaseRef(v1) error = %v", err)
 	}
-	enabled, err := h.EnablePlugin(ctx, EnableRequest{PluginInstanceID: installed.PluginInstanceID, PluginStateVersion: mustPluginStateVersion(t, h, installed.PluginInstanceID)})
+	enabled, err := h.EnablePlugin(ctx, EnableRequest{PluginInstanceID: installed.PluginInstanceID, ExpectedManagementRevision: mustManagementRevision(t, h, installed.PluginInstanceID)})
 	if err != nil {
 		t.Fatalf("EnablePlugin() error = %v", err)
 	}
@@ -2098,7 +2019,7 @@ func TestUpdateReleaseRefRuntimeRevokeFailureRestoresCurrentRecord(t *testing.T)
 	h.adapters.ReleaseSourcePolicy = &recordingReleaseSourcePolicyResolver{snapshot: sourcePolicyForRelease(v2Ref)}
 	h.adapters.ReleaseArtifactResolver = &recordingReleaseArtifactResolver{artifact: resolvedArtifactForPackage(t, v2Ref, v2Pkg, v2Bytes)}
 
-	if _, err := h.UpdateReleaseRef(ctx, UpdateReleaseRefRequest{PluginInstanceID: enabled.PluginInstanceID, ReleaseRef: v2Ref, PluginStateVersion: mustPluginStateVersion(t, h, enabled.PluginInstanceID)}); err == nil || !strings.Contains(err.Error(), "runtime revoke unavailable") {
+	if _, err := h.UpdateReleaseRef(ctx, UpdateReleaseRefRequest{PluginInstanceID: enabled.PluginInstanceID, ReleaseRef: v2Ref, ExpectedManagementRevision: mustManagementRevision(t, h, enabled.PluginInstanceID)}); err == nil || !strings.Contains(err.Error(), "runtime revoke unavailable") {
 		t.Fatalf("UpdateReleaseRef() error = %v, want runtime revoke failure", err)
 	}
 	current, err := h.adapters.Registry.GetPlugin(ctx, enabled.PluginInstanceID)
@@ -2117,7 +2038,7 @@ func TestUpdateReleaseRefRuntimeRevokeFailureRestoresCurrentRecord(t *testing.T)
 }
 
 func TestUpdateUsesVerifierCurrentRecordAndMetadata(t *testing.T) {
-	ctx := context.Background()
+	ctx := hostTestContext()
 	verifier := &recordingPackageTrustVerifier{trustState: registry.TrustVerified, metadata: map[string]string{"trust.key_id": "old"}}
 	h, _, _ := newTestHostWithOptions(t, testHostOptions{
 		developerMode:  true,
@@ -2135,7 +2056,7 @@ func TestUpdateUsesVerifierCurrentRecordAndMetadata(t *testing.T) {
 	updated, err := h.UpdateLocalPackage(ctx, UpdateLocalPackageRequest{
 		PluginInstanceID: installed.PluginInstanceID,
 		PackageReader:    bytes.NewReader(nextBytes),
-		PackageSize:      int64(len(nextBytes)), PluginStateVersion: mustPluginStateVersion(t, h,
+		PackageSize:      int64(len(nextBytes)), ExpectedManagementRevision: mustManagementRevision(t, h,
 			installed.PluginInstanceID),
 	})
 	if err != nil {
@@ -2153,7 +2074,7 @@ func TestUpdateUsesVerifierCurrentRecordAndMetadata(t *testing.T) {
 }
 
 func TestInstallAndUpdateRecordLifecycleStages(t *testing.T) {
-	ctx := context.Background()
+	ctx := hostTestContext()
 	stages := installstage.NewMemoryStore()
 	h, _, _ := newTestHostWithOptions(t, testHostOptions{
 		developerMode:  true,
@@ -2188,7 +2109,7 @@ func TestInstallAndUpdateRecordLifecycleStages(t *testing.T) {
 		PluginInstanceID: installed.PluginInstanceID,
 		PackageReader:    bytes.NewReader(v2),
 		PackageSize:      int64(len(v2)),
-		Now:              now.Add(time.Minute), PluginStateVersion: mustPluginStateVersion(t, h,
+		Now:              now.Add(time.Minute), ExpectedManagementRevision: mustManagementRevision(t, h,
 			installed.PluginInstanceID),
 	})
 	if err != nil {
@@ -2271,15 +2192,10 @@ func TestLocalInstallUsesTheManifestExactCapabilityContractPin(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	h, err := New(Adapters{
-		SessionResolver: fakeSessionResolver{},
-		Policy:          policyAdapter{developerMode: true, localGenerated: true, decision: PolicyAllow},
-		Capabilities:    capabilities,
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{
+		developerMode: true, localGenerated: true, capabilities: capabilities,
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	installed, err := ImportLocalPackageBytes(context.Background(), h, buildRPCFixturePackage(t))
+	installed, err := ImportLocalPackageBytes(hostTestContext(), h, buildRPCFixturePackage(t))
 	if err != nil {
 		t.Fatalf("ImportLocalPackageBytes() error = %v", err)
 	}
@@ -2294,7 +2210,7 @@ func TestLocalInstallRejectsCapabilityMethodAliasesThatGeneratedClientsCannotCal
 	writeFile(t, filepath.Join(dir, "manifest.json"), manifestJSON)
 	writeSurfaceFixture(t, dir, "RPC")
 	var packageBytes bytes.Buffer
-	if _, err := pluginpkg.BuildFromDir(context.Background(), dir, &packageBytes, pluginpkg.DefaultReadOptions()); err == nil || !strings.Contains(err.Error(), "must match route.target_method") {
+	if _, err := pluginpkg.BuildFromDir(hostTestContext(), dir, &packageBytes, pluginpkg.DefaultReadOptions()); err == nil || !strings.Contains(err.Error(), "must match route.target_method") {
 		t.Fatalf("BuildFromDir() error = %v, want method alias rejection", err)
 	}
 }
@@ -2305,16 +2221,16 @@ func TestLocalInstallRejectsCapabilityPolicyDeclaredByPluginManifest(t *testing.
 	writeFile(t, filepath.Join(dir, "manifest.json"), manifestJSON)
 	writeSurfaceFixture(t, dir, "Danger")
 	var packageBytes bytes.Buffer
-	if _, err := pluginpkg.BuildFromDir(context.Background(), dir, &packageBytes, pluginpkg.DefaultReadOptions()); err == nil || !strings.Contains(err.Error(), "derive policy and schemas from the signed capability contract") {
+	if _, err := pluginpkg.BuildFromDir(hostTestContext(), dir, &packageBytes, pluginpkg.DefaultReadOptions()); err == nil || !strings.Contains(err.Error(), "derive policy and schemas from the signed capability contract") {
 		t.Fatalf("BuildFromDir() error = %v, want unsigned policy rejection", err)
 	}
 }
 
 func TestOpenSurfaceRejectsCurrentSourcePolicyEpochAdvance(t *testing.T) {
-	ctx := context.Background()
+	ctx := hostTestContext()
 	h, sourceResolver, installed, ref := installReleaseRefLifecyclePlugin(t, testHostOptions{})
 	now := stableRecentTestNow()
-	if _, err := h.EnablePlugin(ctx, EnableRequest{PluginInstanceID: installed.PluginInstanceID, Now: now, PluginStateVersion: mustPluginStateVersion(t, h, installed.PluginInstanceID)}); err != nil {
+	if _, err := h.EnablePlugin(ctx, EnableRequest{PluginInstanceID: installed.PluginInstanceID, Now: now, ExpectedManagementRevision: mustManagementRevision(t, h, installed.PluginInstanceID)}); err != nil {
 		t.Fatalf("EnablePlugin() error = %v", err)
 	}
 	nextPolicy := sourcePolicyForRelease(ref)
@@ -2325,9 +2241,8 @@ func TestOpenSurfaceRejectsCurrentSourcePolicyEpochAdvance(t *testing.T) {
 		PluginInstanceID:  installed.PluginInstanceID,
 		SurfaceID:         "lifecycle.view",
 		SurfaceInstanceID: "surface_source_policy_advance",
-		OwnerSessionHash:  "session_hash",
-		OwnerUserHash:     "user_hash",
-		Now:               now.Add(time.Second), PluginStateVersion: mustPluginStateVersion(t, h,
+
+		Now: now.Add(time.Second), ExpectedManagementRevision: mustManagementRevision(t, h,
 			installed.PluginInstanceID),
 	}); !errors.Is(err, ErrReleaseRefPolicyDenied) {
 		t.Fatalf("OpenSurface() error = %v, want ErrReleaseRefPolicyDenied", err)
@@ -2342,27 +2257,28 @@ func TestOpenSurfaceRejectsCurrentSourcePolicyEpochAdvance(t *testing.T) {
 }
 
 func TestGrantPermissionRejectsCurrentSourcePolicyEpochAdvanceWithoutGrant(t *testing.T) {
-	ctx := context.Background()
-	permissionStore := permissions.NewMemoryStore()
-	h, sourceResolver, installed, ref := installReleaseRefLifecyclePlugin(t, testHostOptions{permissions: permissionStore})
+	ctx := hostTestContext()
+	h, sourceResolver, installed, ref := installReleaseRefLifecyclePlugin(t, testHostOptions{})
 	nextPolicy := sourcePolicyForRelease(ref)
 	setSourcePolicyEpochs(&nextPolicy, "2")
 	sourceResolver.snapshot = nextPolicy
 
 	if _, err := h.GrantPermission(ctx, GrantPermissionRequest{
-		PluginInstanceID: installed.PluginInstanceID,
-		PermissionID:     "read",
-		GrantedBy:        "tester",
-		Now:              stableRecentTestNow(),
+		PluginInstanceID:           installed.PluginInstanceID,
+		PermissionID:               "read",
+		ExpectedPolicyRevision:     installed.PolicyRevision,
+		ExpectedManagementRevision: installed.ManagementRevision,
+		ExpectedRevokeEpoch:        installed.RevokeEpoch,
+		Now:                        stableRecentTestNow(),
 	}); !errors.Is(err, ErrReleaseRefPolicyDenied) {
 		t.Fatalf("GrantPermission() error = %v, want ErrReleaseRefPolicyDenied", err)
 	}
-	grants, err := permissionStore.List(ctx, permissions.ListRequest{PluginInstanceID: installed.PluginInstanceID})
+	authorization, err := h.adapters.Registry.GetAuthorization(ctx, installed.PluginInstanceID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(grants) != 0 {
-		t.Fatalf("permission grants after failed source policy replay = %#v, want none", grants)
+	if len(authorization.Grants) != 0 {
+		t.Fatalf("permission grants after failed source policy replay = %#v, want none", authorization.Grants)
 	}
 	current, err := h.adapters.Registry.GetPlugin(ctx, installed.PluginInstanceID)
 	if err != nil {
@@ -2377,20 +2293,18 @@ func TestGrantPermissionRejectsCurrentSourcePolicyEpochAdvanceWithoutGrant(t *te
 }
 
 func TestMintBridgeTokenRejectsCurrentSourcePolicyEpochAdvance(t *testing.T) {
-	ctx := context.Background()
+	ctx := hostTestContext()
 	h, sourceResolver, installed, ref := installReleaseRefLifecyclePlugin(t, testHostOptions{})
 	now := stableRecentTestNow()
-	if _, err := h.EnablePlugin(ctx, EnableRequest{PluginInstanceID: installed.PluginInstanceID, Now: now, PluginStateVersion: mustPluginStateVersion(t, h, installed.PluginInstanceID)}); err != nil {
+	if _, err := h.EnablePlugin(ctx, EnableRequest{PluginInstanceID: installed.PluginInstanceID, Now: now, ExpectedManagementRevision: mustManagementRevision(t, h, installed.PluginInstanceID)}); err != nil {
 		t.Fatalf("EnablePlugin() error = %v", err)
 	}
 	bootstrap, err := h.OpenSurface(ctx, OpenSurfaceRequest{
-		PluginInstanceID:     installed.PluginInstanceID,
-		SurfaceID:            "lifecycle.view",
-		SurfaceInstanceID:    "surface_source_policy_bridge",
-		OwnerSessionHash:     "session_hash",
-		OwnerUserHash:        "user_hash",
-		SessionChannelIDHash: "channel_hash",
-		Now:                  now.Add(time.Second), PluginStateVersion: mustPluginStateVersion(t, h,
+		PluginInstanceID:  installed.PluginInstanceID,
+		SurfaceID:         "lifecycle.view",
+		SurfaceInstanceID: "surface_source_policy_bridge",
+
+		Now: now.Add(time.Second), ExpectedManagementRevision: mustManagementRevision(t, h,
 			installed.PluginInstanceID),
 	})
 	if err != nil {
@@ -2409,7 +2323,7 @@ func TestMintBridgeTokenRejectsCurrentSourcePolicyEpochAdvance(t *testing.T) {
 		ActiveFingerprint:  bootstrap.ActiveFingerprint,
 		BridgeNonce:        bootstrap.BridgeNonce,
 		AssetSessionNonce:  bootstrap.AssetSessionNonce,
-		PluginStateVersion: bootstrap.PluginStateVersion,
+		ManagementRevision: bootstrap.ManagementRevision,
 		RevokeEpoch:        bootstrap.RevokeEpoch,
 		UIProtocolVersion:  "plugin-ui-v4",
 	}
@@ -2418,10 +2332,8 @@ func TestMintBridgeTokenRejectsCurrentSourcePolicyEpochAdvance(t *testing.T) {
 		Handshake:                 handshake,
 		BridgeChannelID:           "bridge_source_policy",
 		HandshakeTranscriptSHA256: bridge.HandshakeTranscriptSHA256(handshake, "bridge_source_policy"),
-		OwnerSessionHash:          bootstrap.OwnerSessionHash,
-		OwnerUserHash:             bootstrap.OwnerUserHash,
-		SessionChannelIDHash:      bootstrap.SessionChannelIDHash,
-		Now:                       now.Add(3 * time.Second),
+
+		Now: now.Add(3 * time.Second),
 	}); !errors.Is(err, ErrReleaseRefPolicyDenied) {
 		t.Fatalf("MintBridgeToken() error = %v, want ErrReleaseRefPolicyDenied", err)
 	}
@@ -2435,9 +2347,8 @@ func TestMintBridgeTokenRejectsCurrentSourcePolicyEpochAdvance(t *testing.T) {
 }
 
 func TestCurrentSourcePolicyFailureRevokesStorageHandleAndRuntime(t *testing.T) {
-	ctx := context.Background()
-	storageBroker := storage.NewMemoryBroker()
-	runtime := &recordingRuntimeSupervisor{
+	ctx := hostTestContext()
+	runtime := &recordingRuntimeManager{
 		health: runtimeclient.Health{RuntimeInstanceID: "runtime_1", RuntimeGenerationID: "runtime_gen_1", IPCChannelID: "ipc_1", ConnectionNonce: "connection_nonce_1234567890", Ready: true},
 		revokeResult: runtimeclient.RevokeResult{
 			ClosedStorageHandleCount: 1,
@@ -2455,8 +2366,7 @@ func TestCurrentSourcePolicyFailureRevokesStorageHandleAndRuntime(t *testing.T) 
 		releaseArtifactResolver: &recordingReleaseArtifactResolver{
 			artifact: resolvedArtifactForPackage(t, ref, pkg, packageBytes),
 		},
-		storageBroker:     storageBroker,
-		runtimeSupervisor: runtime,
+		runtimeManager: runtime,
 	})
 	installed, err := h.InstallReleaseRef(ctx, InstallReleaseRefRequest{
 		ReleaseRef:       ref,
@@ -2466,7 +2376,7 @@ func TestCurrentSourcePolicyFailureRevokesStorageHandleAndRuntime(t *testing.T) 
 	if err != nil {
 		t.Fatalf("InstallReleaseRef() error = %v", err)
 	}
-	enabled, err := h.EnablePlugin(ctx, EnableRequest{PluginInstanceID: installed.PluginInstanceID, Now: stableRecentTestNow(), PluginStateVersion: mustPluginStateVersion(t, h, installed.PluginInstanceID)})
+	enabled, err := h.EnablePlugin(ctx, EnableRequest{PluginInstanceID: installed.PluginInstanceID, Now: stableRecentTestNow(), ExpectedManagementRevision: mustManagementRevision(t, h, installed.PluginInstanceID)})
 	if err != nil {
 		t.Fatalf("EnablePlugin() error = %v", err)
 	}
@@ -2533,25 +2443,23 @@ func TestCurrentSourcePolicyFailureRevokesStorageHandleAndRuntime(t *testing.T) 
 }
 
 func TestUnsignedLocalPolicyFailureRevokesStorageHandleAndRuntime(t *testing.T) {
-	ctx := context.Background()
-	storageBroker := storage.NewMemoryBroker()
-	runtime := &recordingRuntimeSupervisor{
+	ctx := hostTestContext()
+	runtime := &recordingRuntimeManager{
 		health: runtimeclient.Health{RuntimeInstanceID: "runtime_1", RuntimeGenerationID: "runtime_gen_1", IPCChannelID: "ipc_1", ConnectionNonce: "connection_nonce_1234567890", Ready: true},
 		revokeResult: runtimeclient.RevokeResult{
 			ClosedStorageHandleCount: 1,
 		},
 	}
 	h, _, audits := newTestHostWithOptions(t, testHostOptions{
-		developerMode:     true,
-		localGenerated:    true,
-		storageBroker:     storageBroker,
-		runtimeSupervisor: runtime,
+		developerMode:  true,
+		localGenerated: true,
+		runtimeManager: runtime,
 	})
 	installed, err := ImportLocalPackageBytes(ctx, h, buildStorageFixturePackage(t))
 	if err != nil {
 		t.Fatalf("ImportLocalPackageBytes() error = %v", err)
 	}
-	enabled, err := h.EnablePlugin(ctx, EnableRequest{PluginInstanceID: installed.PluginInstanceID, Now: stableRecentTestNow(), PluginStateVersion: mustPluginStateVersion(t, h, installed.PluginInstanceID)})
+	enabled, err := h.EnablePlugin(ctx, EnableRequest{PluginInstanceID: installed.PluginInstanceID, Now: stableRecentTestNow(), ExpectedManagementRevision: mustManagementRevision(t, h, installed.PluginInstanceID)})
 	if err != nil {
 		t.Fatalf("EnablePlugin() error = %v", err)
 	}
@@ -2616,7 +2524,7 @@ func TestUnsignedLocalPolicyFailureRevokesStorageHandleAndRuntime(t *testing.T) 
 }
 
 func TestInstallTrustFailureMarksLifecycleStageFailed(t *testing.T) {
-	ctx := context.Background()
+	ctx := hostTestContext()
 	stages := installstage.NewMemoryStore()
 	h, _, _ := newTestHostWithOptions(t, testHostOptions{
 		developerMode:  true,
@@ -2646,22 +2554,20 @@ func TestInstallTrustFailureMarksLifecycleStageFailed(t *testing.T) {
 func TestSurfaceBridgeLifecycle(t *testing.T) {
 	host, _, _ := newTestHost(t, true, true)
 	now := time.Date(2026, 6, 29, 12, 0, 0, 0, time.UTC)
-	installed, err := ImportLocalPackageBytes(context.Background(), host, buildFixturePackage(t))
+	installed, err := ImportLocalPackageBytes(hostTestContext(), host, buildFixturePackage(t))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := host.EnablePlugin(context.Background(), EnableRequest{PluginInstanceID: installed.PluginInstanceID, Now: now, PluginStateVersion: mustPluginStateVersion(t, host, installed.PluginInstanceID)}); err != nil {
+	if _, err := host.EnablePlugin(hostTestContext(), EnableRequest{PluginInstanceID: installed.PluginInstanceID, Now: now, ExpectedManagementRevision: mustManagementRevision(t, host, installed.PluginInstanceID)}); err != nil {
 		t.Fatal(err)
 	}
 
-	bootstrap, err := host.OpenSurface(context.Background(), OpenSurfaceRequest{
-		PluginInstanceID:     installed.PluginInstanceID,
-		SurfaceID:            "lifecycle.view",
-		SurfaceInstanceID:    "surface_lifecycle",
-		OwnerSessionHash:     "owner_session_hash",
-		OwnerUserHash:        "owner_user_hash",
-		SessionChannelIDHash: "session_channel_hash",
-		Now:                  now.Add(time.Second), PluginStateVersion: mustPluginStateVersion(t, host,
+	bootstrap, err := host.OpenSurface(hostTestContext(), OpenSurfaceRequest{
+		PluginInstanceID:  installed.PluginInstanceID,
+		SurfaceID:         "lifecycle.view",
+		SurfaceInstanceID: "surface_lifecycle",
+
+		Now: now.Add(time.Second), ExpectedManagementRevision: mustManagementRevision(t, host,
 			installed.PluginInstanceID),
 	})
 	if err != nil {
@@ -2671,7 +2577,7 @@ func TestSurfaceBridgeLifecycle(t *testing.T) {
 		t.Fatalf("bootstrap missing ticket/nonce: %#v", bootstrap)
 	}
 
-	if _, err := host.PrepareSurface(context.Background(), exchangeAssetTicketRequestForBootstrap(bootstrap, now.Add(2*time.Second))); err != nil {
+	if _, err := host.PrepareSurface(hostTestContext(), exchangeAssetTicketRequestForBootstrap(bootstrap, now.Add(2*time.Second))); err != nil {
 		t.Fatalf("PrepareSurface() error = %v", err)
 	}
 
@@ -2682,18 +2588,16 @@ func TestSurfaceBridgeLifecycle(t *testing.T) {
 		ActiveFingerprint:  bootstrap.ActiveFingerprint,
 		BridgeNonce:        bootstrap.BridgeNonce,
 		AssetSessionNonce:  bootstrap.AssetSessionNonce,
-		PluginStateVersion: bootstrap.PluginStateVersion,
+		ManagementRevision: bootstrap.ManagementRevision,
 		RevokeEpoch:        bootstrap.RevokeEpoch,
 		UIProtocolVersion:  "plugin-ui-v4",
 	}
-	gateway, err := host.MintBridgeToken(context.Background(), MintBridgeTokenRequest{
+	gateway, err := host.MintBridgeToken(hostTestContext(), MintBridgeTokenRequest{
 		Handshake:                 handshake,
 		BridgeChannelID:           "bridge_channel",
 		HandshakeTranscriptSHA256: bridge.HandshakeTranscriptSHA256(handshake, "bridge_channel"),
-		OwnerSessionHash:          bootstrap.OwnerSessionHash,
-		OwnerUserHash:             bootstrap.OwnerUserHash,
-		SessionChannelIDHash:      bootstrap.SessionChannelIDHash,
-		Now:                       now.Add(3 * time.Second),
+
+		Now: now.Add(3 * time.Second),
 	})
 	if err != nil {
 		t.Fatalf("MintBridgeToken() error = %v", err)
@@ -2704,7 +2608,7 @@ func TestSurfaceBridgeLifecycle(t *testing.T) {
 }
 
 func TestOpenSurfaceBindsRuntimeGenerationFromSupervisor(t *testing.T) {
-	runtime := &recordingRuntimeSupervisor{health: runtimeclient.Health{
+	runtime := &recordingRuntimeManager{health: runtimeclient.Health{
 		RuntimeInstanceID:   "runtime_surface",
 		RuntimeGenerationID: "runtime_generation_surface",
 		IPCChannelID:        "ipc_surface",
@@ -2714,27 +2618,25 @@ func TestOpenSurfaceBindsRuntimeGenerationFromSupervisor(t *testing.T) {
 	h, _, audits := newTestHostWithOptions(t, testHostOptions{
 		developerMode:     true,
 		localGenerated:    true,
-		runtimeSupervisor: runtime,
+		runtimeManager:    runtime,
 		capabilityID:      "example.capability.echo",
 		capabilityAdapter: &recordingCapabilityAdapter{result: capability.Result{Data: map[string]any{"ok": true}}},
 	})
 	now := time.Date(2026, 6, 29, 12, 0, 0, 0, time.UTC)
-	installed, err := ImportLocalPackageBytes(context.Background(), h, buildFixturePackage(t))
+	installed, err := ImportLocalPackageBytes(hostTestContext(), h, buildFixturePackage(t))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.EnablePlugin(context.Background(), EnableRequest{PluginInstanceID: installed.PluginInstanceID, Now: now, PluginStateVersion: mustPluginStateVersion(t, h, installed.PluginInstanceID)}); err != nil {
+	if _, err := h.EnablePlugin(hostTestContext(), EnableRequest{PluginInstanceID: installed.PluginInstanceID, Now: now, ExpectedManagementRevision: mustManagementRevision(t, h, installed.PluginInstanceID)}); err != nil {
 		t.Fatal(err)
 	}
 
-	bootstrap, err := h.OpenSurface(context.Background(), OpenSurfaceRequest{
-		PluginInstanceID:     installed.PluginInstanceID,
-		SurfaceID:            "lifecycle.view",
-		SurfaceInstanceID:    "surface_runtime_generation",
-		OwnerSessionHash:     "owner_session_hash",
-		OwnerUserHash:        "owner_user_hash",
-		SessionChannelIDHash: "session_channel_hash",
-		Now:                  now.Add(time.Second), PluginStateVersion: mustPluginStateVersion(t, h,
+	bootstrap, err := h.OpenSurface(hostTestContext(), OpenSurfaceRequest{
+		PluginInstanceID:  installed.PluginInstanceID,
+		SurfaceID:         "lifecycle.view",
+		SurfaceInstanceID: "surface_runtime_generation",
+
+		Now: now.Add(time.Second), ExpectedManagementRevision: mustManagementRevision(t, h,
 			installed.PluginInstanceID),
 	})
 	if err != nil {
@@ -2749,7 +2651,7 @@ func TestOpenSurfaceBindsRuntimeGenerationFromSupervisor(t *testing.T) {
 }
 
 func TestMintBridgeTokenRejectsSurfaceAfterRuntimeGenerationChanges(t *testing.T) {
-	runtime := &recordingRuntimeSupervisor{health: runtimeclient.Health{
+	runtime := &recordingRuntimeManager{health: runtimeclient.Health{
 		RuntimeInstanceID:   "runtime_surface",
 		RuntimeGenerationID: "runtime_generation_1",
 		IPCChannelID:        "ipc_surface",
@@ -2757,26 +2659,24 @@ func TestMintBridgeTokenRejectsSurfaceAfterRuntimeGenerationChanges(t *testing.T
 		Ready:               true,
 	}}
 	h, _, _ := newTestHostWithOptions(t, testHostOptions{
-		developerMode:     true,
-		localGenerated:    true,
-		runtimeSupervisor: runtime,
+		developerMode:  true,
+		localGenerated: true,
+		runtimeManager: runtime,
 	})
 	now := stableRecentTestNow()
 	installed := installAndEnablePlugin(t, h, buildFixturePackage(t))
-	bootstrap, err := h.OpenSurface(context.Background(), OpenSurfaceRequest{
-		PluginInstanceID:     installed.PluginInstanceID,
-		SurfaceID:            "lifecycle.view",
-		SurfaceInstanceID:    "surface_runtime_restart_before_bridge",
-		OwnerSessionHash:     "session_hash",
-		OwnerUserHash:        "user_hash",
-		SessionChannelIDHash: "channel_hash",
-		PluginStateVersion:   mustPluginStateVersion(t, h, installed.PluginInstanceID),
-		Now:                  now.Add(time.Second),
+	bootstrap, err := h.OpenSurface(hostTestContext(), OpenSurfaceRequest{
+		PluginInstanceID:  installed.PluginInstanceID,
+		SurfaceID:         "lifecycle.view",
+		SurfaceInstanceID: "surface_runtime_restart_before_bridge",
+
+		ExpectedManagementRevision: mustManagementRevision(t, h, installed.PluginInstanceID),
+		Now:                        now.Add(time.Second),
 	})
 	if err != nil {
 		t.Fatalf("OpenSurface() error = %v", err)
 	}
-	if _, err := h.PrepareSurface(context.Background(), exchangeAssetTicketRequestForBootstrap(bootstrap, now.Add(2*time.Second))); err != nil {
+	if _, err := h.PrepareSurface(hostTestContext(), exchangeAssetTicketRequestForBootstrap(bootstrap, now.Add(2*time.Second))); err != nil {
 		t.Fatalf("PrepareSurface() error = %v", err)
 	}
 	runtime.health.RuntimeGenerationID = "runtime_generation_2"
@@ -2787,18 +2687,16 @@ func TestMintBridgeTokenRejectsSurfaceAfterRuntimeGenerationChanges(t *testing.T
 		ActiveFingerprint:  bootstrap.ActiveFingerprint,
 		BridgeNonce:        bootstrap.BridgeNonce,
 		AssetSessionNonce:  bootstrap.AssetSessionNonce,
-		PluginStateVersion: bootstrap.PluginStateVersion,
+		ManagementRevision: bootstrap.ManagementRevision,
 		RevokeEpoch:        bootstrap.RevokeEpoch,
 		UIProtocolVersion:  "plugin-ui-v4",
 	}
-	_, err = h.MintBridgeToken(context.Background(), MintBridgeTokenRequest{
+	_, err = h.MintBridgeToken(hostTestContext(), MintBridgeTokenRequest{
 		Handshake:                 handshake,
 		BridgeChannelID:           "bridge_runtime_restart",
 		HandshakeTranscriptSHA256: bridge.HandshakeTranscriptSHA256(handshake, "bridge_runtime_restart"),
-		OwnerSessionHash:          bootstrap.OwnerSessionHash,
-		OwnerUserHash:             bootstrap.OwnerUserHash,
-		SessionChannelIDHash:      bootstrap.SessionChannelIDHash,
-		Now:                       now.Add(3 * time.Second),
+
+		Now: now.Add(3 * time.Second),
 	})
 	if !errors.Is(err, bridge.ErrTokenRevoked) {
 		t.Fatalf("MintBridgeToken() after runtime restart error = %v, want %v", err, bridge.ErrTokenRevoked)
@@ -2808,38 +2706,34 @@ func TestMintBridgeTokenRejectsSurfaceAfterRuntimeGenerationChanges(t *testing.T
 func TestReadSurfaceAssetRequiresAssetSession(t *testing.T) {
 	h, _, _ := newTestHost(t, true, true)
 	now := time.Date(2026, 6, 29, 12, 0, 0, 0, time.UTC)
-	installed, err := ImportLocalPackageBytes(context.Background(), h, buildFixturePackage(t))
+	installed, err := ImportLocalPackageBytes(hostTestContext(), h, buildFixturePackage(t))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.EnablePlugin(context.Background(), EnableRequest{PluginInstanceID: installed.PluginInstanceID, Now: now, PluginStateVersion: mustPluginStateVersion(t, h, installed.PluginInstanceID)}); err != nil {
+	if _, err := h.EnablePlugin(hostTestContext(), EnableRequest{PluginInstanceID: installed.PluginInstanceID, Now: now, ExpectedManagementRevision: mustManagementRevision(t, h, installed.PluginInstanceID)}); err != nil {
 		t.Fatal(err)
 	}
-	bootstrap, err := h.OpenSurface(context.Background(), OpenSurfaceRequest{
-		PluginInstanceID:     installed.PluginInstanceID,
-		SurfaceID:            "lifecycle.view",
-		SurfaceInstanceID:    "surface_asset",
-		OwnerSessionHash:     "owner_session_hash",
-		OwnerUserHash:        "owner_user_hash",
-		SessionChannelIDHash: "session_channel_hash",
-		Now:                  now.Add(time.Second), PluginStateVersion: mustPluginStateVersion(t, h,
+	bootstrap, err := h.OpenSurface(hostTestContext(), OpenSurfaceRequest{
+		PluginInstanceID:  installed.PluginInstanceID,
+		SurfaceID:         "lifecycle.view",
+		SurfaceInstanceID: "surface_asset",
+
+		Now: now.Add(time.Second), ExpectedManagementRevision: mustManagementRevision(t, h,
 			installed.PluginInstanceID),
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.ReadSurfaceAsset(context.Background(), ReadSurfaceAssetRequest{
-		AssetSession:         "not-a-session",
-		AssetSessionID:       "as_invalid",
-		BindingID:            "asset_invalid",
-		OwnerSessionHash:     bootstrap.OwnerSessionHash,
-		OwnerUserHash:        bootstrap.OwnerUserHash,
-		SessionChannelIDHash: bootstrap.SessionChannelIDHash,
-		Now:                  now.Add(2 * time.Second),
+	if _, err := h.ReadSurfaceAsset(hostTestContext(), ReadSurfaceAssetRequest{
+		AssetSession:   "not-a-session",
+		AssetSessionID: "as_invalid",
+		BindingID:      "asset_invalid",
+
+		Now: now.Add(2 * time.Second),
 	}); !errors.Is(err, bridge.ErrTokenInvalid) {
 		t.Fatalf("ReadSurfaceAsset() error = %v, want ErrTokenInvalid", err)
 	}
-	prepared, err := h.PrepareSurface(context.Background(), exchangeAssetTicketRequestForBootstrap(bootstrap, now.Add(2*time.Second)))
+	prepared, err := h.PrepareSurface(hostTestContext(), exchangeAssetTicketRequestForBootstrap(bootstrap, now.Add(2*time.Second)))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2847,14 +2741,12 @@ func TestReadSurfaceAssetRequiresAssetSession(t *testing.T) {
 		t.Fatalf("prepared assets = %#v, want one lazy asset", prepared.Document.Assets)
 	}
 	preparedAsset := prepared.Document.Assets[0]
-	asset, err := h.ReadSurfaceAsset(context.Background(), ReadSurfaceAssetRequest{
-		AssetSession:         prepared.AssetSession,
-		AssetSessionID:       prepared.AssetSessionID,
-		BindingID:            preparedAsset.BindingID,
-		OwnerSessionHash:     bootstrap.OwnerSessionHash,
-		OwnerUserHash:        bootstrap.OwnerUserHash,
-		SessionChannelIDHash: bootstrap.SessionChannelIDHash,
-		Now:                  now.Add(3 * time.Second),
+	asset, err := h.ReadSurfaceAsset(hostTestContext(), ReadSurfaceAssetRequest{
+		AssetSession:   prepared.AssetSession,
+		AssetSessionID: prepared.AssetSessionID,
+		BindingID:      preparedAsset.BindingID,
+
+		Now: now.Add(3 * time.Second),
 	})
 	if err != nil {
 		t.Fatalf("ReadSurfaceAsset() error = %v", err)
@@ -2899,39 +2791,33 @@ func TestReadSurfaceAssetRequiresAssetSession(t *testing.T) {
 		t.Run("rejects adapter "+tt.name+" mismatch", func(t *testing.T) {
 			h.adapters.Assets = mutatingAssetStore{AssetStore: originalAssets, mutate: tt.mutate}
 			defer func() { h.adapters.Assets = originalAssets }()
-			_, err := h.ReadSurfaceAsset(context.Background(), ReadSurfaceAssetRequest{
-				AssetSession:         prepared.AssetSession,
-				AssetSessionID:       prepared.AssetSessionID,
-				BindingID:            preparedAsset.BindingID,
-				OwnerSessionHash:     bootstrap.OwnerSessionHash,
-				OwnerUserHash:        bootstrap.OwnerUserHash,
-				SessionChannelIDHash: bootstrap.SessionChannelIDHash,
-				Now:                  now.Add(3 * time.Second),
+			_, err := h.ReadSurfaceAsset(hostTestContext(), ReadSurfaceAssetRequest{
+				AssetSession:   prepared.AssetSession,
+				AssetSessionID: prepared.AssetSessionID,
+				BindingID:      preparedAsset.BindingID,
+
+				Now: now.Add(3 * time.Second),
 			})
 			if !errors.Is(err, bridge.ErrTokenAudience) {
 				t.Fatalf("ReadSurfaceAsset() adapter mismatch error = %v, want ErrTokenAudience", err)
 			}
 		})
 	}
-	if _, err := h.ReadSurfaceAsset(context.Background(), ReadSurfaceAssetRequest{
-		AssetSession:         prepared.AssetSession,
-		AssetSessionID:       prepared.AssetSessionID,
-		BindingID:            "asset_not_prepared",
-		OwnerSessionHash:     bootstrap.OwnerSessionHash,
-		OwnerUserHash:        bootstrap.OwnerUserHash,
-		SessionChannelIDHash: bootstrap.SessionChannelIDHash,
-		Now:                  now.Add(3 * time.Second),
+	if _, err := h.ReadSurfaceAsset(hostTestContext(), ReadSurfaceAssetRequest{
+		AssetSession:   prepared.AssetSession,
+		AssetSessionID: prepared.AssetSessionID,
+		BindingID:      "asset_not_prepared",
+
+		Now: now.Add(3 * time.Second),
 	}); !errors.Is(err, bridge.ErrTokenAudience) {
 		t.Fatalf("ReadSurfaceAsset(unprepared binding) error = %v, want ErrTokenAudience", err)
 	}
-	if _, err := h.ReadSurfaceAsset(context.Background(), ReadSurfaceAssetRequest{
-		AssetSession:         prepared.AssetSession,
-		AssetSessionID:       "asset_session_other",
-		BindingID:            preparedAsset.BindingID,
-		OwnerSessionHash:     bootstrap.OwnerSessionHash,
-		OwnerUserHash:        bootstrap.OwnerUserHash,
-		SessionChannelIDHash: bootstrap.SessionChannelIDHash,
-		Now:                  now.Add(3 * time.Second),
+	if _, err := h.ReadSurfaceAsset(hostTestContext(), ReadSurfaceAssetRequest{
+		AssetSession:   prepared.AssetSession,
+		AssetSessionID: "asset_session_other",
+		BindingID:      preparedAsset.BindingID,
+
+		Now: now.Add(3 * time.Second),
 	}); !errors.Is(err, bridge.ErrTokenAudience) {
 		t.Fatalf("ReadSurfaceAsset(wrong session id) error = %v, want ErrTokenAudience", err)
 	}
@@ -2952,13 +2838,13 @@ func (s mutatingAssetStore) ReadAsset(ctx context.Context, packageHash string, a
 
 func TestOpenSurfaceRequiresEnabledPlugin(t *testing.T) {
 	host, _, _ := newTestHost(t, true, true)
-	installed, err := ImportLocalPackageBytes(context.Background(), host, buildFixturePackage(t))
+	installed, err := ImportLocalPackageBytes(hostTestContext(), host, buildFixturePackage(t))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := host.OpenSurface(context.Background(), OpenSurfaceRequest{
+	if _, err := host.OpenSurface(hostTestContext(), OpenSurfaceRequest{
 		PluginInstanceID: installed.PluginInstanceID,
-		SurfaceID:        "lifecycle.view", PluginStateVersion: mustPluginStateVersion(t, host,
+		SurfaceID:        "lifecycle.view", ExpectedManagementRevision: mustManagementRevision(t, host,
 			installed.PluginInstanceID),
 	}); err == nil {
 		t.Fatal("OpenSurface() expected disabled plugin error")
@@ -2975,16 +2861,14 @@ func TestCallPluginMethodDispatchesCapability(t *testing.T) {
 	})
 	installed, gateway := installEnableAndMintGateway(t, h, buildRPCFixturePackage(t), "rpc.view")
 
-	result, err := h.CallPluginMethod(context.Background(), CallMethodRequest{
-		PluginInstanceID:     installed.PluginInstanceID,
-		SurfaceInstanceID:    "surface_rpc",
-		SessionChannelIDHash: "channel_hash",
-		OwnerSessionHash:     "session_hash",
-		OwnerUserHash:        "user_hash",
-		BridgeChannelID:      "bridge_rpc",
-		GatewayToken:         gateway.GatewayToken,
-		Method:               "echo.ping",
-		Params:               map[string]any{"message": "hello"},
+	result, err := h.CallPluginMethod(hostTestContext(), CallMethodRequest{
+		PluginInstanceID:  installed.PluginInstanceID,
+		SurfaceInstanceID: "surface_rpc",
+
+		BridgeChannelID: "bridge_rpc",
+		GatewayToken:    gateway.GatewayToken,
+		Method:          "echo.ping",
+		Params:          map[string]any{"message": "hello"},
 	})
 	if err != nil {
 		t.Fatalf("CallPluginMethod() error = %v", err)
@@ -3014,9 +2898,9 @@ func TestCapabilityRejectionFailsClosedWhenAuditPersistenceFails(t *testing.T) {
 	})
 	installed, gateway := installEnableAndMintGateway(t, h, buildRPCFixturePackage(t), "rpc.view")
 	h.adapters.Audit = failingAuditSink{err: errors.New("audit store unavailable")}
-	_, err := h.CallPluginMethod(context.Background(), CallMethodRequest{
-		PluginInstanceID: installed.PluginInstanceID, SurfaceInstanceID: "surface_rpc", SessionChannelIDHash: "channel_hash",
-		OwnerSessionHash: "session_hash", OwnerUserHash: "user_hash", BridgeChannelID: "bridge_rpc", GatewayToken: gateway.GatewayToken,
+	_, err := h.CallPluginMethod(hostTestContext(), CallMethodRequest{
+		PluginInstanceID: installed.PluginInstanceID, SurfaceInstanceID: "surface_rpc",
+		BridgeChannelID: "bridge_rpc", GatewayToken: gateway.GatewayToken,
 		Method: "echo.ping", Params: map[string]any{"message": "hello", "unexpected": true},
 	})
 	if !errors.Is(err, ErrMethodRequestContract) || !errors.Is(err, ErrSecurityEventPersistence) {
@@ -3047,9 +2931,9 @@ func TestCapabilityTargetProjectorMayAddHostDerivedFields(t *testing.T) {
 		t.Fatal(err)
 	}
 	installed, gateway := installEnableAndMintGateway(t, h, buildCapabilityPinnedFixturePackage(t, rpcFixtureManifestJSON("1.0.0", "RPC"), "RPC", "echo", verified.Pin), "rpc.view")
-	if _, err := h.CallPluginMethod(context.Background(), CallMethodRequest{
-		PluginInstanceID: installed.PluginInstanceID, SurfaceInstanceID: "surface_rpc", SessionChannelIDHash: "channel_hash",
-		OwnerSessionHash: "session_hash", OwnerUserHash: "user_hash", BridgeChannelID: "bridge_rpc", GatewayToken: gateway.GatewayToken,
+	if _, err := h.CallPluginMethod(hostTestContext(), CallMethodRequest{
+		PluginInstanceID: installed.PluginInstanceID, SurfaceInstanceID: "surface_rpc",
+		BridgeChannelID: "bridge_rpc", GatewayToken: gateway.GatewayToken,
 		Method: "echo.ping", Params: map[string]any{"message": "hello"},
 	}); err != nil {
 		t.Fatalf("CallPluginMethod() error = %v", err)
@@ -3060,7 +2944,7 @@ func TestCapabilityTargetProjectorMayAddHostDerivedFields(t *testing.T) {
 }
 
 func TestCallPluginMethodRejectsSurfaceAfterRuntimeGenerationChanges(t *testing.T) {
-	runtime := &recordingRuntimeSupervisor{health: runtimeclient.Health{
+	runtime := &recordingRuntimeManager{health: runtimeclient.Health{
 		RuntimeInstanceID:   "runtime_surface",
 		RuntimeGenerationID: "runtime_generation_1",
 		IPCChannelID:        "ipc_surface",
@@ -3073,21 +2957,19 @@ func TestCallPluginMethodRejectsSurfaceAfterRuntimeGenerationChanges(t *testing.
 		localGenerated:    true,
 		capabilityID:      "example.capability.echo",
 		capabilityAdapter: capabilityAdapter,
-		runtimeSupervisor: runtime,
+		runtimeManager:    runtime,
 	})
 	installed, gateway := installEnableAndMintGateway(t, h, buildRPCFixturePackage(t), "rpc.view")
 	runtime.health.RuntimeGenerationID = "runtime_generation_2"
 
-	_, err := h.CallPluginMethod(context.Background(), CallMethodRequest{
-		PluginInstanceID:     installed.PluginInstanceID,
-		SurfaceInstanceID:    "surface_rpc",
-		SessionChannelIDHash: "channel_hash",
-		OwnerSessionHash:     "session_hash",
-		OwnerUserHash:        "user_hash",
-		BridgeChannelID:      "bridge_rpc",
-		GatewayToken:         gateway.GatewayToken,
-		Method:               "echo.ping",
-		Params:               map[string]any{"message": "hello"},
+	_, err := h.CallPluginMethod(hostTestContext(), CallMethodRequest{
+		PluginInstanceID:  installed.PluginInstanceID,
+		SurfaceInstanceID: "surface_rpc",
+
+		BridgeChannelID: "bridge_rpc",
+		GatewayToken:    gateway.GatewayToken,
+		Method:          "echo.ping",
+		Params:          map[string]any{"message": "hello"},
 	})
 	if !errors.Is(err, bridge.ErrTokenRevoked) {
 		t.Fatalf("CallPluginMethod() after runtime restart error = %v, want %v", err, bridge.ErrTokenRevoked)
@@ -3107,16 +2989,14 @@ func TestCallPluginMethodRejectsRequestSchemaViolationBeforeDispatch(t *testing.
 	})
 	installed, gateway := installEnableAndMintGateway(t, h, buildRPCFixturePackage(t), "rpc.view")
 
-	_, err := h.CallPluginMethod(context.Background(), CallMethodRequest{
-		PluginInstanceID:     installed.PluginInstanceID,
-		SurfaceInstanceID:    "surface_rpc",
-		SessionChannelIDHash: "channel_hash",
-		OwnerSessionHash:     "session_hash",
-		OwnerUserHash:        "user_hash",
-		BridgeChannelID:      "bridge_rpc",
-		GatewayToken:         gateway.GatewayToken,
-		Method:               "echo.ping",
-		Params:               map[string]any{"unknown": true},
+	_, err := h.CallPluginMethod(hostTestContext(), CallMethodRequest{
+		PluginInstanceID:  installed.PluginInstanceID,
+		SurfaceInstanceID: "surface_rpc",
+
+		BridgeChannelID: "bridge_rpc",
+		GatewayToken:    gateway.GatewayToken,
+		Method:          "echo.ping",
+		Params:          map[string]any{"unknown": true},
 	})
 	if !errors.Is(err, ErrMethodRequestContract) {
 		t.Fatalf("CallPluginMethod() error = %v, want ErrMethodRequestContract", err)
@@ -3136,19 +3016,73 @@ func TestCallPluginMethodRejectsResponseSchemaViolation(t *testing.T) {
 	})
 	installed, gateway := installEnableAndMintGateway(t, h, buildRPCFixturePackage(t), "rpc.view")
 
-	_, err := h.CallPluginMethod(context.Background(), CallMethodRequest{
-		PluginInstanceID:     installed.PluginInstanceID,
-		SurfaceInstanceID:    "surface_rpc",
-		SessionChannelIDHash: "channel_hash",
-		OwnerSessionHash:     "session_hash",
-		OwnerUserHash:        "user_hash",
-		BridgeChannelID:      "bridge_rpc",
-		GatewayToken:         gateway.GatewayToken,
-		Method:               "echo.ping",
-		Params:               map[string]any{"message": "hello"},
+	_, err := h.CallPluginMethod(hostTestContext(), CallMethodRequest{
+		PluginInstanceID:  installed.PluginInstanceID,
+		SurfaceInstanceID: "surface_rpc",
+
+		BridgeChannelID: "bridge_rpc",
+		GatewayToken:    gateway.GatewayToken,
+		Method:          "echo.ping",
+		Params:          map[string]any{"message": "hello"},
 	})
 	if !errors.Is(err, ErrMethodResponseContract) {
 		t.Fatalf("CallPluginMethod() error = %v, want ErrMethodResponseContract", err)
+	}
+	if capabilityAdapter.calls != 1 {
+		t.Fatalf("capability adapter calls = %d, want 1", capabilityAdapter.calls)
+	}
+}
+
+func TestCallPluginMethodMarksMutatingResponseFailureOutcomeUnknown(t *testing.T) {
+	capabilityAdapter := &recordingCapabilityAdapter{result: capability.Result{Data: map[string]any{"unknown": true}}}
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{
+		developerMode:     true,
+		localGenerated:    true,
+		capabilityID:      "example.capability.echo",
+		capabilityAdapter: capabilityAdapter,
+	})
+	installed, gateway := installEnableAndMintGateway(t, h, buildOperationRPCFixturePackage(t), "operation.view")
+
+	_, err := h.CallPluginMethod(hostTestContext(), CallMethodRequest{
+		PluginInstanceID:  installed.PluginInstanceID,
+		SurfaceInstanceID: "surface_rpc",
+		BridgeChannelID:   "bridge_rpc",
+		GatewayToken:      gateway.GatewayToken,
+		Method:            "documents.archive",
+	})
+	if !errors.Is(err, ErrMethodResponseContract) {
+		t.Fatalf("CallPluginMethod() error = %v, want ErrMethodResponseContract", err)
+	}
+	if got := mutation.ForError(err); got != mutation.OutcomeUnknown {
+		t.Fatalf("mutation.ForError() = %q, want %q", got, mutation.OutcomeUnknown)
+	}
+	if capabilityAdapter.calls != 1 {
+		t.Fatalf("capability adapter calls = %d, want 1", capabilityAdapter.calls)
+	}
+}
+
+func TestCallPluginMethodMarksUnclassifiedMutatingAdapterFailureOutcomeUnknown(t *testing.T) {
+	capabilityAdapter := &recordingCapabilityAdapter{err: errors.New("adapter response was lost")}
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{
+		developerMode:     true,
+		localGenerated:    true,
+		capabilityID:      "example.capability.echo",
+		capabilityAdapter: capabilityAdapter,
+	})
+	installed, gateway := installEnableAndMintGateway(t, h, buildOperationRPCFixturePackage(t), "operation.view")
+
+	_, err := h.CallPluginMethod(hostTestContext(), CallMethodRequest{
+		PluginInstanceID:  installed.PluginInstanceID,
+		SurfaceInstanceID: "surface_rpc",
+		BridgeChannelID:   "bridge_rpc",
+		GatewayToken:      gateway.GatewayToken,
+		Method:            "documents.archive",
+	})
+	if err == nil {
+		t.Fatal("CallPluginMethod() expected adapter failure")
+	}
+	if got := mutation.ForError(err); got != mutation.OutcomeUnknown {
+		t.Fatalf("mutation.ForError() = %q, want %q", got, mutation.OutcomeUnknown)
 	}
 	if capabilityAdapter.calls != 1 {
 		t.Fatalf("capability adapter calls = %d, want 1", capabilityAdapter.calls)
@@ -3186,15 +3120,13 @@ func TestCallPluginMethodRedactsCapabilityResponseData(t *testing.T) {
 	})
 	installed, gateway := installEnableAndMintGateway(t, h, buildRPCFixturePackage(t), "rpc.view")
 
-	result, err := h.CallPluginMethod(context.Background(), CallMethodRequest{
-		PluginInstanceID:     installed.PluginInstanceID,
-		SurfaceInstanceID:    "surface_rpc",
-		SessionChannelIDHash: "channel_hash",
-		OwnerSessionHash:     "session_hash",
-		OwnerUserHash:        "user_hash",
-		BridgeChannelID:      "bridge_rpc",
-		GatewayToken:         gateway.GatewayToken,
-		Method:               "echo.ping",
+	result, err := h.CallPluginMethod(hostTestContext(), CallMethodRequest{
+		PluginInstanceID:  installed.PluginInstanceID,
+		SurfaceInstanceID: "surface_rpc",
+
+		BridgeChannelID: "bridge_rpc",
+		GatewayToken:    gateway.GatewayToken,
+		Method:          "echo.ping",
 	})
 	if err != nil {
 		t.Fatalf("CallPluginMethod() error = %v", err)
@@ -3228,16 +3160,14 @@ func TestCallPluginMethodRequiresGrantedBindingPermissions(t *testing.T) {
 	})
 	installed, gateway := installEnableAndMintGatewayWithoutPermissions(t, h, buildRPCFixturePackage(t), "rpc.view")
 	call := CallMethodRequest{
-		PluginInstanceID:     installed.PluginInstanceID,
-		SurfaceInstanceID:    "surface_rpc",
-		SessionChannelIDHash: "channel_hash",
-		OwnerSessionHash:     "session_hash",
-		OwnerUserHash:        "user_hash",
-		BridgeChannelID:      "bridge_rpc",
-		GatewayToken:         gateway.GatewayToken,
-		Method:               "echo.ping",
+		PluginInstanceID:  installed.PluginInstanceID,
+		SurfaceInstanceID: "surface_rpc",
+
+		BridgeChannelID: "bridge_rpc",
+		GatewayToken:    gateway.GatewayToken,
+		Method:          "echo.ping",
 	}
-	if _, err := h.CallPluginMethod(context.Background(), call); !errors.Is(err, permissions.ErrPermissionDenied) {
+	if _, err := h.CallPluginMethod(hostTestContext(), call); !errors.Is(err, permissions.ErrPermissionDenied) {
 		t.Fatalf("CallPluginMethod() without grant error = %v, want ErrPermissionDenied", err)
 	}
 	if capabilityAdapter.calls != 0 {
@@ -3250,61 +3180,65 @@ func TestCallPluginMethodRequiresGrantedBindingPermissions(t *testing.T) {
 		t.Fatalf("missing permission rejection diagnostic: %#v", diagnostics.events)
 	}
 
-	beforeGrant, err := h.adapters.Registry.GetPlugin(context.Background(), installed.PluginInstanceID)
+	beforeGrant, err := h.adapters.Registry.GetPlugin(hostTestContext(), installed.PluginInstanceID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.GrantPermission(context.Background(), GrantPermissionRequest{
-		PluginInstanceID: installed.PluginInstanceID,
-		PermissionID:     "read",
-		GrantedBy:        "tester",
+	if _, err := h.GrantPermission(hostTestContext(), GrantPermissionRequest{
+		PluginInstanceID:           installed.PluginInstanceID,
+		PermissionID:               "read",
+		ExpectedPolicyRevision:     beforeGrant.PolicyRevision,
+		ExpectedManagementRevision: beforeGrant.ManagementRevision,
+		ExpectedRevokeEpoch:        beforeGrant.RevokeEpoch,
 	}); err != nil {
 		t.Fatalf("GrantPermission() error = %v", err)
 	}
-	afterGrant, err := h.adapters.Registry.GetPlugin(context.Background(), installed.PluginInstanceID)
+	afterGrant, err := h.adapters.Registry.GetPlugin(hostTestContext(), installed.PluginInstanceID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if afterGrant.PolicyRevision <= beforeGrant.PolicyRevision || afterGrant.RevokeEpoch != beforeGrant.RevokeEpoch {
 		t.Fatalf("grant revision mismatch: before=%#v after=%#v", beforeGrant, afterGrant)
 	}
-	if _, err := h.CallPluginMethod(context.Background(), call); !errors.Is(err, bridge.ErrTokenRevoked) {
+	if _, err := h.CallPluginMethod(hostTestContext(), call); !errors.Is(err, bridge.ErrTokenRevoked) {
 		t.Fatalf("CallPluginMethod() with stale token error = %v, want ErrTokenRevoked", err)
 	}
 	_, freshGateway := openSurfaceAndMintGateway(t, h, installed.PluginInstanceID, "rpc.view")
 	call.GatewayToken = freshGateway.GatewayToken
-	if _, err := h.CallPluginMethod(context.Background(), call); err != nil {
+	if _, err := h.CallPluginMethod(hostTestContext(), call); err != nil {
 		t.Fatalf("CallPluginMethod() after grant error = %v", err)
 	}
 	if capabilityAdapter.calls != 1 {
 		t.Fatalf("capability adapter calls = %d, want 1", capabilityAdapter.calls)
 	}
 
-	beforeRevoke, err := h.adapters.Registry.GetPlugin(context.Background(), installed.PluginInstanceID)
+	beforeRevoke, err := h.adapters.Registry.GetPlugin(hostTestContext(), installed.PluginInstanceID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.RevokePermission(context.Background(), RevokePermissionRequest{
-		PluginInstanceID: installed.PluginInstanceID,
-		PermissionID:     "read",
-		RevokedBy:        "tester",
-		Reason:           "test revoke",
+	if _, err := h.RevokePermission(hostTestContext(), RevokePermissionRequest{
+		PluginInstanceID:           installed.PluginInstanceID,
+		PermissionID:               "read",
+		ExpectedPolicyRevision:     beforeRevoke.PolicyRevision,
+		ExpectedManagementRevision: beforeRevoke.ManagementRevision,
+		ExpectedRevokeEpoch:        beforeRevoke.RevokeEpoch,
+		Reason:                     "test revoke",
 	}); err != nil {
 		t.Fatalf("RevokePermission() error = %v", err)
 	}
-	afterRevoke, err := h.adapters.Registry.GetPlugin(context.Background(), installed.PluginInstanceID)
+	afterRevoke, err := h.adapters.Registry.GetPlugin(hostTestContext(), installed.PluginInstanceID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if afterRevoke.PolicyRevision <= beforeRevoke.PolicyRevision || afterRevoke.RevokeEpoch <= beforeRevoke.RevokeEpoch {
 		t.Fatalf("revoke revision mismatch: before=%#v after=%#v", beforeRevoke, afterRevoke)
 	}
-	if _, err := h.CallPluginMethod(context.Background(), call); !errors.Is(err, bridge.ErrTokenRevoked) {
+	if _, err := h.CallPluginMethod(hostTestContext(), call); !errors.Is(err, bridge.ErrTokenRevoked) {
 		t.Fatalf("CallPluginMethod() after revoke with stale token error = %v, want ErrTokenRevoked", err)
 	}
 	_, freshGateway = openSurfaceAndMintGateway(t, h, installed.PluginInstanceID, "rpc.view")
 	call.GatewayToken = freshGateway.GatewayToken
-	if _, err := h.CallPluginMethod(context.Background(), call); !errors.Is(err, permissions.ErrPermissionDenied) {
+	if _, err := h.CallPluginMethod(hostTestContext(), call); !errors.Is(err, permissions.ErrPermissionDenied) {
 		t.Fatalf("CallPluginMethod() after revoke error = %v, want ErrPermissionDenied", err)
 	}
 	if !audits.hasEvent("plugin.permission.granted") || !audits.hasEvent("plugin.permission.revoked") {
@@ -3313,7 +3247,7 @@ func TestCallPluginMethodRequiresGrantedBindingPermissions(t *testing.T) {
 }
 
 func TestRevokePermissionRevokesRuntimeCapabilities(t *testing.T) {
-	runtime := &recordingRuntimeSupervisor{
+	runtime := &recordingRuntimeManager{
 		health: runtimeclient.Health{RuntimeInstanceID: "runtime_1", RuntimeGenerationID: "runtime_gen_1", IPCChannelID: "ipc_1", ConnectionNonce: "connection_nonce_1234567890", Ready: true},
 		revokeResult: runtimeclient.RevokeResult{
 			ClosedSocketCount:        3,
@@ -3326,18 +3260,21 @@ func TestRevokePermissionRevokesRuntimeCapabilities(t *testing.T) {
 		localGenerated:    true,
 		capabilityID:      "example.capability.echo",
 		capabilityAdapter: &recordingCapabilityAdapter{result: capability.Result{Data: map[string]any{"ok": true}}},
-		runtimeSupervisor: runtime,
+		runtimeManager:    runtime,
 	})
 	installed, gateway := installEnableAndMintGateway(t, h, buildRPCFixturePackage(t), "rpc.view")
-	if _, err := h.RevokePermission(context.Background(), RevokePermissionRequest{
-		PluginInstanceID: installed.PluginInstanceID,
-		PermissionID:     "read",
-		RevokedBy:        "tester",
-		Reason:           "test revoke",
+	expected := mustAuthorizationRevisions(t, h, installed.PluginInstanceID)
+	if _, err := h.RevokePermission(hostTestContext(), RevokePermissionRequest{
+		PluginInstanceID:           installed.PluginInstanceID,
+		PermissionID:               "read",
+		ExpectedPolicyRevision:     expected.PolicyRevision,
+		ExpectedManagementRevision: expected.ManagementRevision,
+		ExpectedRevokeEpoch:        expected.RevokeEpoch,
+		Reason:                     "test revoke",
 	}); err != nil {
 		t.Fatalf("RevokePermission() error = %v", err)
 	}
-	updated, err := h.adapters.Registry.GetPlugin(context.Background(), installed.PluginInstanceID)
+	updated, err := h.adapters.Registry.GetPlugin(hostTestContext(), installed.PluginInstanceID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -3381,16 +3318,14 @@ func TestCallPluginMethodRegistersOperation(t *testing.T) {
 	})
 	installed, gateway := installEnableAndMintGateway(t, h, buildOperationRPCFixturePackage(t), "operation.view")
 
-	result, err := h.CallPluginMethod(context.Background(), CallMethodRequest{
-		PluginInstanceID:     installed.PluginInstanceID,
-		SurfaceInstanceID:    "surface_rpc",
-		SessionChannelIDHash: "channel_hash",
-		OwnerSessionHash:     "session_hash",
-		OwnerUserHash:        "user_hash",
-		BridgeChannelID:      "bridge_rpc",
-		GatewayToken:         gateway.GatewayToken,
-		Method:               "documents.archive",
-		Params:               map[string]any{"document_id": "doc-1"},
+	result, err := h.CallPluginMethod(hostTestContext(), CallMethodRequest{
+		PluginInstanceID:  installed.PluginInstanceID,
+		SurfaceInstanceID: "surface_rpc",
+
+		BridgeChannelID: "bridge_rpc",
+		GatewayToken:    gateway.GatewayToken,
+		Method:          "documents.archive",
+		Params:          map[string]any{"document_id": "doc-1"},
 	})
 	if err != nil {
 		t.Fatalf("CallPluginMethod() error = %v", err)
@@ -3398,7 +3333,7 @@ func TestCallPluginMethodRegistersOperation(t *testing.T) {
 	if result.OperationID == "" || capabilityAdapter.last.Execution.Operation == nil || result.OperationID != capabilityAdapter.last.Execution.Operation.ID() {
 		t.Fatalf("operation id mismatch: %#v", result)
 	}
-	registered, err := h.GetOperation(context.Background(), result.OperationID)
+	registered, err := h.GetOperation(hostTestContext(), result.OperationID)
 	if err != nil {
 		t.Fatalf("GetOperation() error = %v", err)
 	}
@@ -3428,10 +3363,10 @@ func TestCapabilityAdapterCannotMutateHostOwnedExecutionBinding(t *testing.T) {
 		developerMode: true, localGenerated: true, capabilityID: "example.capability.echo", capabilityAdapter: adapter,
 	})
 	installed, gateway := installEnableAndMintGateway(t, h, buildOperationRPCFixturePackage(t), "operation.view")
-	started, err := h.CallPluginMethod(context.Background(), CallMethodRequest{
-		PluginInstanceID: installed.PluginInstanceID, SurfaceInstanceID: "surface_rpc", SessionChannelIDHash: "channel_hash",
-		OwnerSessionHash: "session_hash", OwnerUserHash: "user_hash", BridgeChannelID: "bridge_rpc",
-		GatewayToken: gateway.GatewayToken, Method: "documents.archive", Params: map[string]any{"document_id": "doc-1"},
+	started, err := h.CallPluginMethod(hostTestContext(), CallMethodRequest{
+		PluginInstanceID: installed.PluginInstanceID, SurfaceInstanceID: "surface_rpc",
+		BridgeChannelID: "bridge_rpc",
+		GatewayToken:    gateway.GatewayToken, Method: "documents.archive", Params: map[string]any{"document_id": "doc-1"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -3439,14 +3374,14 @@ func TestCapabilityAdapterCannotMutateHostOwnedExecutionBinding(t *testing.T) {
 	if adapter.last.Execution.Permissions.Required[0] != "tampered.permission" || adapter.last.Execution.Target.Fields["document_id"] != "tampered-document" {
 		t.Fatalf("adapter mutation was not exercised: %#v", adapter.last.Execution.ExecutionBinding)
 	}
-	record, err := h.GetOperation(context.Background(), started.OperationID)
+	record, err := h.GetOperation(hostTestContext(), started.OperationID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if record.Permissions.Required[0] != "execute" || record.Target.Fields["document_id"] != "doc-1" {
 		t.Fatalf("durable execution binding was mutated by the adapter: %#v", record.ExecutionBinding)
 	}
-	if err := adapter.last.Execution.Operation.Complete(context.Background()); err != nil {
+	if err := adapter.last.Execution.Operation.Complete(hostTestContext()); err != nil {
 		t.Fatalf("Operation.Complete() error = %v", err)
 	}
 }
@@ -3461,15 +3396,13 @@ func TestCallPluginMethodRegistersStream(t *testing.T) {
 	})
 	installed, gateway := installEnableAndMintGateway(t, h, buildSubscriptionRPCFixturePackage(t), "subscription.view")
 
-	result, err := h.CallPluginMethod(context.Background(), CallMethodRequest{
-		PluginInstanceID:     installed.PluginInstanceID,
-		SurfaceInstanceID:    "surface_rpc",
-		SessionChannelIDHash: "channel_hash",
-		OwnerSessionHash:     "session_hash",
-		OwnerUserHash:        "user_hash",
-		BridgeChannelID:      "bridge_rpc",
-		GatewayToken:         gateway.GatewayToken,
-		Method:               "logs.tail",
+	result, err := h.CallPluginMethod(hostTestContext(), CallMethodRequest{
+		PluginInstanceID:  installed.PluginInstanceID,
+		SurfaceInstanceID: "surface_rpc",
+
+		BridgeChannelID: "bridge_rpc",
+		GatewayToken:    gateway.GatewayToken,
+		Method:          "logs.tail",
 	})
 	if err != nil {
 		t.Fatalf("CallPluginMethod() error = %v", err)
@@ -3480,47 +3413,57 @@ func TestCallPluginMethodRegistersStream(t *testing.T) {
 	if capabilityAdapter.last.Execution.StreamEventTypeName != "LogEvent" || len(capabilityAdapter.last.Execution.StreamEventSchemaSHA256) != 64 {
 		t.Fatalf("signed stream contract binding mismatch: %#v", capabilityAdapter.last.Execution.ExecutionBinding)
 	}
-	if err := capabilityAdapter.last.Execution.Stream.Append(context.Background(), map[string]any{"unexpected": true}); err == nil || !strings.Contains(err.Error(), "signed contract") {
+	if err := capabilityAdapter.last.Execution.Stream.Append(hostTestContext(), map[string]any{"unexpected": true}); err == nil || !strings.Contains(err.Error(), "signed contract") {
 		t.Fatalf("Stream.Append(invalid event) error = %v, want signed event schema rejection", err)
 	}
-	if err := capabilityAdapter.last.Execution.Stream.Append(context.Background(), map[string]any{"line": "line 1"}); err != nil {
+	if err := capabilityAdapter.last.Execution.Stream.Append(hostTestContext(), map[string]any{"line": "line 1"}); err != nil {
 		t.Fatalf("Stream.Append() error = %v", err)
 	}
-	if _, err := h.ReadStream(context.Background(), ReadStreamRequest{StreamID: result.StreamID}); !errors.Is(err, ErrStreamTicketRequired) {
+	if _, err := h.ReadStream(hostTestContext(), ReadStreamRequest{StreamID: result.StreamID}); !errors.Is(err, ErrStreamTicketRequired) {
 		t.Fatalf("ReadStream() without ticket error = %v, want %v", err, ErrStreamTicketRequired)
 	}
-	streamResult, err := h.ReadStream(context.Background(), scopedReadStreamRequest(result.StreamID, result.StreamTicket))
+	streamResult, err := h.ReadStream(hostTestContext(), scopedReadStreamRequest(result.StreamID, result.StreamTicket))
 	if err != nil {
 		t.Fatalf("ReadStream() error = %v", err)
 	}
 	if streamResult.Record.Method != "logs.tail" || len(streamResult.Events) != 1 || string(streamResult.Events[0].Data) != `{"line":"line 1"}` {
 		t.Fatalf("stream read mismatch: %#v", streamResult)
 	}
-	if streamResult.Done || streamResult.NextStreamTicket == "" || streamResult.NextStreamTicketID == "" || streamResult.NextStreamExpiresAt == nil {
-		t.Fatalf("open stream did not return a renewable read credential: %#v", streamResult)
+	if streamResult.Done || streamResult.DeliveryID == "" || streamResult.ReadID == "" {
+		t.Fatalf("open stream did not return an acknowledgeable delivery: %#v", streamResult)
 	}
-	if err := capabilityAdapter.last.Execution.Stream.Append(context.Background(), map[string]any{"line": "line 2"}); err != nil {
-		t.Fatalf("Stream.Append() after first read error = %v", err)
+	acknowledgeStreamResult(t, h, result.StreamID, result.StreamTicket, streamResult)
+	if _, err := h.adapters.Streams.Append(hostTestContext(), stream.AppendRequest{StreamID: result.StreamID, Data: []byte(`{"line":"line 2"}`)}); err != nil {
+		t.Fatalf("Stream.Append() after first acknowledgement error = %v", err)
 	}
-	second, err := h.ReadStream(context.Background(), scopedReadStreamRequest(result.StreamID, streamResult.NextStreamTicket))
+	secondRequest := scopedReadStreamRequest(result.StreamID, result.StreamTicket)
+	secondRequest.ReadID = "read_host_test_2"
+	second, err := h.ReadStream(hostTestContext(), secondRequest)
 	if err != nil {
 		t.Fatalf("ReadStream() renewed read error = %v", err)
 	}
-	if second.Done || len(second.Events) != 1 || string(second.Events[0].Data) != `{"line":"line 2"}` || second.NextStreamTicket == "" {
-		t.Fatalf("renewed stream read mismatch: %#v", second)
+	if second.Done || len(second.Events) != 1 || string(second.Events[0].Data) != `{"line":"line 2"}` || second.DeliveryID == "" {
+		t.Fatalf("second stream delivery mismatch: %#v", second)
 	}
-	if err := capabilityAdapter.last.Execution.Stream.Close(context.Background()); err != nil {
+	acknowledgeStreamResult(t, h, result.StreamID, result.StreamTicket, second)
+	if err := capabilityAdapter.last.Execution.Stream.Close(hostTestContext()); err != nil {
 		t.Fatalf("Stream.Close() error = %v", err)
 	}
-	final, err := h.ReadStream(context.Background(), scopedReadStreamRequest(result.StreamID, second.NextStreamTicket))
+	finalRequest := scopedReadStreamRequest(result.StreamID, result.StreamTicket)
+	finalRequest.ReadID = "read_host_test_3"
+	final, err := h.ReadStream(hostTestContext(), finalRequest)
 	if err != nil {
 		t.Fatalf("ReadStream() terminal read error = %v", err)
 	}
-	if !final.Done || final.TerminalStatus != stream.StatusClosed || final.NextStreamTicket != "" || final.NextStreamTicketID != "" || final.NextStreamExpiresAt != nil {
-		t.Fatalf("terminal stream read retained a renewable credential: %#v", final)
+	if !final.Done || final.TerminalStatus != stream.StatusClosed || final.DeliveryID == "" {
+		t.Fatalf("terminal stream delivery mismatch: %#v", final)
 	}
-	if _, err := h.ReadStream(context.Background(), scopedReadStreamRequest(result.StreamID, result.StreamTicket)); !errors.Is(err, bridge.ErrTokenReplay) {
-		t.Fatalf("ReadStream() replay error = %v, want %v", err, bridge.ErrTokenReplay)
+	acknowledgeStreamResult(t, h, result.StreamID, result.StreamTicket, final)
+	if _, err := h.AcknowledgeStream(hostTestContext(), AcknowledgeStreamRequest{
+		StreamID: result.StreamID, StreamTicket: result.StreamTicket,
+		DeliveryID: final.DeliveryID, SurfaceInstanceID: "surface_rpc",
+	}); err != nil {
+		t.Fatalf("AcknowledgeStream(retry) error = %v", err)
 	}
 	if !audits.hasEvent("plugin.stream.started") {
 		t.Fatalf("missing stream audit event: %#v", audits.events)
@@ -3532,51 +3475,51 @@ func TestCallPluginMethodRegistersStream(t *testing.T) {
 
 func TestReadStreamFailureKeepsCurrentTicketAndEvents(t *testing.T) {
 	readFailure := errors.New("injected stream read failure")
-	streams := &failFirstStreamReadStore{Store: stream.NewMemoryStore(), err: readFailure}
+	streams := &failFirstStreamDeliverStore{Store: stream.NewMemoryStore(), err: readFailure}
 	adapter := &recordingCapabilityAdapter{result: capability.Result{Data: map[string]any{}}}
 	h, _, _ := newTestHostWithOptions(t, testHostOptions{
 		developerMode: true, localGenerated: true, capabilityID: "example.capability.echo", capabilityAdapter: adapter, streams: streams,
 	})
 	installed, gateway := installEnableAndMintGateway(t, h, buildSubscriptionRPCFixturePackage(t), "subscription.view")
-	result, err := h.CallPluginMethod(context.Background(), CallMethodRequest{
-		PluginInstanceID: installed.PluginInstanceID, SurfaceInstanceID: "surface_rpc", SessionChannelIDHash: "channel_hash",
-		OwnerSessionHash: "session_hash", OwnerUserHash: "user_hash", BridgeChannelID: "bridge_rpc",
-		GatewayToken: gateway.GatewayToken, Method: "logs.tail",
+	result, err := h.CallPluginMethod(hostTestContext(), CallMethodRequest{
+		PluginInstanceID: installed.PluginInstanceID, SurfaceInstanceID: "surface_rpc",
+		BridgeChannelID: "bridge_rpc",
+		GatewayToken:    gateway.GatewayToken, Method: "logs.tail",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := adapter.last.Execution.Stream.Append(context.Background(), map[string]any{"line": "preserved"}); err != nil {
+	if err := adapter.last.Execution.Stream.Append(hostTestContext(), map[string]any{"line": "preserved"}); err != nil {
 		t.Fatal(err)
 	}
 	request := scopedReadStreamRequest(result.StreamID, result.StreamTicket)
-	if _, err := h.ReadStream(context.Background(), request); !errors.Is(err, readFailure) {
+	if _, err := h.ReadStream(hostTestContext(), request); !errors.Is(err, readFailure) {
 		t.Fatalf("ReadStream(first) error = %v, want %v", err, readFailure)
 	}
-	retried, err := h.ReadStream(context.Background(), request)
+	retried, err := h.ReadStream(hostTestContext(), request)
 	if err != nil {
 		t.Fatalf("ReadStream(retry) error = %v", err)
 	}
-	if len(retried.Events) != 1 || string(retried.Events[0].Data) != `{"line":"preserved"}` || retried.NextStreamTicket == "" {
-		t.Fatalf("retry did not preserve the event and rotate the ticket: %#v", retried)
+	if len(retried.Events) != 1 || string(retried.Events[0].Data) != `{"line":"preserved"}` || retried.DeliveryID == "" {
+		t.Fatalf("retry did not preserve the event delivery: %#v", retried)
 	}
 }
 
-func TestReadStreamSerializesConcurrentUseOfOneTicket(t *testing.T) {
+func TestReadStreamReplaysConcurrentDelivery(t *testing.T) {
 	adapter := &recordingCapabilityAdapter{result: capability.Result{Data: map[string]any{}}}
 	h, _, _ := newTestHostWithOptions(t, testHostOptions{
 		developerMode: true, localGenerated: true, capabilityID: "example.capability.echo", capabilityAdapter: adapter,
 	})
 	installed, gateway := installEnableAndMintGateway(t, h, buildSubscriptionRPCFixturePackage(t), "subscription.view")
-	result, err := h.CallPluginMethod(context.Background(), CallMethodRequest{
-		PluginInstanceID: installed.PluginInstanceID, SurfaceInstanceID: "surface_rpc", SessionChannelIDHash: "channel_hash",
-		OwnerSessionHash: "session_hash", OwnerUserHash: "user_hash", BridgeChannelID: "bridge_rpc",
-		GatewayToken: gateway.GatewayToken, Method: "logs.tail",
+	result, err := h.CallPluginMethod(hostTestContext(), CallMethodRequest{
+		PluginInstanceID: installed.PluginInstanceID, SurfaceInstanceID: "surface_rpc",
+		BridgeChannelID: "bridge_rpc",
+		GatewayToken:    gateway.GatewayToken, Method: "logs.tail",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := adapter.last.Execution.Stream.Append(context.Background(), map[string]any{"line": "once"}); err != nil {
+	if err := adapter.last.Execution.Stream.Append(hostTestContext(), map[string]any{"line": "once"}); err != nil {
 		t.Fatal(err)
 	}
 	type readOutcome struct {
@@ -3588,7 +3531,7 @@ func TestReadStreamSerializesConcurrentUseOfOneTicket(t *testing.T) {
 	for range 2 {
 		go func() {
 			<-start
-			read, readErr := h.ReadStream(context.Background(), scopedReadStreamRequest(result.StreamID, result.StreamTicket))
+			read, readErr := h.ReadStream(hostTestContext(), scopedReadStreamRequest(result.StreamID, result.StreamTicket))
 			outcomes <- readOutcome{result: read, err: readErr}
 		}()
 	}
@@ -3596,22 +3539,19 @@ func TestReadStreamSerializesConcurrentUseOfOneTicket(t *testing.T) {
 	first := <-outcomes
 	second := <-outcomes
 	results := []readOutcome{first, second}
-	successes := 0
-	replays := 0
-	events := 0
+	deliveryID := ""
 	for _, outcome := range results {
-		switch {
-		case outcome.err == nil:
-			successes++
-			events += len(outcome.result.Events)
-		case errors.Is(outcome.err, bridge.ErrTokenReplay):
-			replays++
-		default:
+		if outcome.err != nil {
 			t.Fatalf("concurrent ReadStream() error = %v", outcome.err)
 		}
-	}
-	if successes != 1 || replays != 1 || events != 1 {
-		t.Fatalf("concurrent read outcomes = %#v", results)
+		if len(outcome.result.Events) != 1 || outcome.result.DeliveryID == "" {
+			t.Fatalf("concurrent delivery = %#v", outcome.result)
+		}
+		if deliveryID == "" {
+			deliveryID = outcome.result.DeliveryID
+		} else if outcome.result.DeliveryID != deliveryID {
+			t.Fatalf("concurrent deliveries differ: %#v", results)
+		}
 	}
 }
 
@@ -3621,10 +3561,10 @@ func TestReadStreamLongPollRevalidatesPluginRevision(t *testing.T) {
 		developerMode: true, localGenerated: true, capabilityID: "example.capability.echo", capabilityAdapter: adapter,
 	})
 	installed, gateway := installEnableAndMintGateway(t, h, buildSubscriptionRPCFixturePackage(t), "subscription.view")
-	result, err := h.CallPluginMethod(context.Background(), CallMethodRequest{
-		PluginInstanceID: installed.PluginInstanceID, SurfaceInstanceID: "surface_rpc", SessionChannelIDHash: "channel_hash",
-		OwnerSessionHash: "session_hash", OwnerUserHash: "user_hash", BridgeChannelID: "bridge_rpc",
-		GatewayToken: gateway.GatewayToken, Method: "logs.tail",
+	result, err := h.CallPluginMethod(hostTestContext(), CallMethodRequest{
+		PluginInstanceID: installed.PluginInstanceID, SurfaceInstanceID: "surface_rpc",
+		BridgeChannelID: "bridge_rpc",
+		GatewayToken:    gateway.GatewayToken, Method: "logs.tail",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -3633,12 +3573,12 @@ func TestReadStreamLongPollRevalidatesPluginRevision(t *testing.T) {
 	go func() {
 		request := scopedReadStreamRequest(result.StreamID, result.StreamTicket)
 		request.WaitTimeout = time.Second
-		_, readErr := h.ReadStream(context.Background(), request)
+		_, readErr := h.ReadStream(hostTestContext(), request)
 		readDone <- readErr
 	}()
 	time.Sleep(50 * time.Millisecond)
-	if _, err := h.DisablePlugin(context.Background(), DisableRequest{
-		PluginInstanceID: installed.PluginInstanceID, PluginStateVersion: mustPluginStateVersion(t, h, installed.PluginInstanceID), Reason: "policy",
+	if _, err := h.DisablePlugin(hostTestContext(), DisableRequest{
+		PluginInstanceID: installed.PluginInstanceID, ExpectedManagementRevision: mustManagementRevision(t, h, installed.PluginInstanceID), Reason: "policy",
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -3658,15 +3598,15 @@ func TestRuntimeStreamCloseCannotCompleteCanceledOperation(t *testing.T) {
 		developerMode: true, localGenerated: true, capabilityID: "example.capability.echo", capabilityAdapter: adapter,
 	})
 	installed, gateway := installEnableAndMintGateway(t, h, buildSubscriptionRPCFixturePackage(t), "subscription.view")
-	result, err := h.CallPluginMethod(context.Background(), CallMethodRequest{
-		PluginInstanceID: installed.PluginInstanceID, SurfaceInstanceID: "surface_rpc", SessionChannelIDHash: "channel_hash",
-		OwnerSessionHash: "session_hash", OwnerUserHash: "user_hash", BridgeChannelID: "bridge_rpc",
-		GatewayToken: gateway.GatewayToken, Method: "logs.tail",
+	result, err := h.CallPluginMethod(hostTestContext(), CallMethodRequest{
+		PluginInstanceID: installed.PluginInstanceID, SurfaceInstanceID: "surface_rpc",
+		BridgeChannelID: "bridge_rpc",
+		GatewayToken:    gateway.GatewayToken, Method: "logs.tail",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.adapters.Operations.RequestCancel(context.Background(), operation.CancelRequest{OperationID: result.OperationID}); err != nil {
+	if _, err := h.adapters.Operations.RequestCancel(hostTestContext(), operation.CancelRequest{OperationID: result.OperationID}); err != nil {
 		t.Fatal(err)
 	}
 	sink, err := h.executions.streamSink(result.StreamID)
@@ -3674,22 +3614,22 @@ func TestRuntimeStreamCloseCannotCompleteCanceledOperation(t *testing.T) {
 		t.Fatal(err)
 	}
 	sink.lease.requestCancel(errors.New("operation cancellation requested"))
-	if err := (hostRuntimeStreamSink{executions: h.executions}).CloseRuntimeStream(context.Background(), result.StreamID); !errors.Is(err, capability.ErrExecutionRevoked) {
+	if err := (hostRuntimeStreamSink{executions: h.executions}).CloseRuntimeStream(hostTestContext(), result.StreamID); !errors.Is(err, capability.ErrExecutionRevoked) {
 		t.Fatalf("CloseRuntimeStream() error = %v, want %v", err, capability.ErrExecutionRevoked)
 	}
 	assertHostOperationStatus(t, h, result.OperationID, operation.StatusCancelRequested)
 }
 
 func TestWorkerOperationCompletesWhenSynchronousRuntimeInvocationReturns(t *testing.T) {
-	runtime := &recordingRuntimeSupervisor{
+	runtime := &recordingRuntimeManager{
 		health: runtimeclient.Health{RuntimeInstanceID: "runtime_1", RuntimeGenerationID: "runtime_gen_1", IPCChannelID: "ipc_1", ConnectionNonce: "connection_nonce_1234567890", Ready: true},
 		result: capability.Result{Data: map[string]any{"from_worker": true}},
 	}
-	h, _, _ := newTestHostWithOptions(t, testHostOptions{developerMode: true, localGenerated: true, runtimeSupervisor: runtime})
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{developerMode: true, localGenerated: true, runtimeManager: runtime})
 	installed, gateway := installEnableAndMintGateway(t, h, buildWorkerOperationFixturePackage(t), "worker.view")
-	result, err := h.CallPluginMethod(context.Background(), CallMethodRequest{
-		PluginInstanceID: installed.PluginInstanceID, SurfaceInstanceID: "surface_rpc", SessionChannelIDHash: "channel_hash",
-		OwnerSessionHash: "session_hash", OwnerUserHash: "user_hash", BridgeChannelID: "bridge_rpc", GatewayToken: gateway.GatewayToken,
+	result, err := h.CallPluginMethod(hostTestContext(), CallMethodRequest{
+		PluginInstanceID: installed.PluginInstanceID, SurfaceInstanceID: "surface_rpc",
+		BridgeChannelID: "bridge_rpc", GatewayToken: gateway.GatewayToken,
 		Method: "worker.echo", Params: map[string]any{"message": "hello"},
 	})
 	if err != nil {
@@ -3707,16 +3647,43 @@ func TestWorkerOperationCompletesWhenSynchronousRuntimeInvocationReturns(t *test
 	}
 }
 
+func TestMutatingWorkerMarksRuntimeDispatchFailureOutcomeUnknown(t *testing.T) {
+	runtime := &recordingRuntimeManager{
+		health: runtimeclient.Health{RuntimeInstanceID: "runtime_1", RuntimeGenerationID: "runtime_gen_1", IPCChannelID: "ipc_1", ConnectionNonce: "connection_nonce_1234567890", Ready: true},
+		err:    errors.New("runtime response was lost"),
+	}
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{developerMode: true, localGenerated: true, runtimeManager: runtime})
+	installed, gateway := installEnableAndMintGateway(t, h, buildMutatingWorkerFixturePackage(t), "worker.view")
+
+	_, err := h.CallPluginMethod(hostTestContext(), CallMethodRequest{
+		PluginInstanceID:  installed.PluginInstanceID,
+		SurfaceInstanceID: "surface_rpc",
+		BridgeChannelID:   "bridge_rpc",
+		GatewayToken:      gateway.GatewayToken,
+		Method:            "worker.echo",
+		Params:            map[string]any{"message": "hello"},
+	})
+	if err == nil {
+		t.Fatal("CallPluginMethod() expected runtime failure")
+	}
+	if got := mutation.ForError(err); got != mutation.OutcomeUnknown {
+		t.Fatalf("mutation.ForError() = %q, want %q", got, mutation.OutcomeUnknown)
+	}
+	if runtime.calls != 1 {
+		t.Fatalf("runtime calls = %d, want 1", runtime.calls)
+	}
+}
+
 func TestWorkerSubscriptionCompletesWhenSynchronousRuntimeInvocationReturns(t *testing.T) {
-	runtime := &recordingRuntimeSupervisor{
+	runtime := &recordingRuntimeManager{
 		health: runtimeclient.Health{RuntimeInstanceID: "runtime_1", RuntimeGenerationID: "runtime_gen_1", IPCChannelID: "ipc_1", ConnectionNonce: "connection_nonce_1234567890", Ready: true},
 		result: capability.Result{Data: map[string]any{"from_worker": true}},
 	}
-	h, _, _ := newTestHostWithOptions(t, testHostOptions{developerMode: true, localGenerated: true, runtimeSupervisor: runtime})
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{developerMode: true, localGenerated: true, runtimeManager: runtime})
 	installed, gateway := installEnableAndMintGateway(t, h, buildWorkerSubscriptionFixturePackage(t), "worker.view")
-	result, err := h.CallPluginMethod(context.Background(), CallMethodRequest{
-		PluginInstanceID: installed.PluginInstanceID, SurfaceInstanceID: "surface_rpc", SessionChannelIDHash: "channel_hash",
-		OwnerSessionHash: "session_hash", OwnerUserHash: "user_hash", BridgeChannelID: "bridge_rpc", GatewayToken: gateway.GatewayToken,
+	result, err := h.CallPluginMethod(hostTestContext(), CallMethodRequest{
+		PluginInstanceID: installed.PluginInstanceID, SurfaceInstanceID: "surface_rpc",
+		BridgeChannelID: "bridge_rpc", GatewayToken: gateway.GatewayToken,
 		Method: "worker.echo", Params: map[string]any{"message": "hello"},
 	})
 	if err != nil {
@@ -3727,11 +3694,11 @@ func TestWorkerSubscriptionCompletesWhenSynchronousRuntimeInvocationReturns(t *t
 	}
 	assertHostOperationStatus(t, h, result.OperationID, operation.StatusCompleted)
 	assertHostStreamStatus(t, h, result.StreamID, stream.StatusClosed)
-	terminal, err := h.ReadStream(context.Background(), scopedReadStreamRequest(result.StreamID, result.StreamTicket))
+	terminal, err := h.ReadStream(hostTestContext(), scopedReadStreamRequest(result.StreamID, result.StreamTicket))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !terminal.Done || terminal.TerminalStatus != stream.StatusClosed || len(terminal.Events) != 0 || terminal.NextStreamTicket != "" {
+	if !terminal.Done || terminal.TerminalStatus != stream.StatusClosed || len(terminal.Events) != 0 || terminal.DeliveryID == "" {
 		t.Fatalf("worker subscription terminal read = %#v", terminal)
 	}
 	h.executions.mu.Lock()
@@ -3743,23 +3710,68 @@ func TestWorkerSubscriptionCompletesWhenSynchronousRuntimeInvocationReturns(t *t
 }
 
 func TestReadStreamReportsFailedTerminalStatus(t *testing.T) {
+	const sensitiveCause = "runtime token secret at /Users/private/runtime.sock"
 	capabilityAdapter := &recordingCapabilityAdapter{result: capability.Result{Data: map[string]any{}}}
+	diagnostics := &diagnosticSink{}
 	h, _, _ := newTestHostWithOptions(t, testHostOptions{
-		developerMode: true, localGenerated: true, capabilityID: "example.capability.echo", capabilityAdapter: capabilityAdapter,
+		developerMode: true, localGenerated: true, capabilityID: "example.capability.echo", capabilityAdapter: capabilityAdapter, diagnostics: diagnostics,
 	})
 	installed, gateway := installEnableAndMintGateway(t, h, buildSubscriptionRPCFixturePackage(t), "subscription.view")
-	result, err := h.CallPluginMethod(context.Background(), CallMethodRequest{
-		PluginInstanceID: installed.PluginInstanceID, SurfaceInstanceID: "surface_rpc", SessionChannelIDHash: "channel_hash",
-		OwnerSessionHash: "session_hash", OwnerUserHash: "user_hash", BridgeChannelID: "bridge_rpc", GatewayToken: gateway.GatewayToken,
+	result, err := h.CallPluginMethod(hostTestContext(), CallMethodRequest{
+		PluginInstanceID: installed.PluginInstanceID, SurfaceInstanceID: "surface_rpc",
+		BridgeChannelID: "bridge_rpc", GatewayToken: gateway.GatewayToken,
 		Method: "logs.tail",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := capabilityAdapter.last.Execution.Stream.Fail(context.Background(), "runtime failed"); err != nil {
+	if err := capabilityAdapter.last.Execution.Stream.Fail(hostTestContext(), "internal", errors.New(sensitiveCause)); !errors.Is(err, capability.ErrInvalidExecutionFailure) {
+		t.Fatalf("Stream.Fail(unknown code) error = %v", err)
+	}
+	if err := capabilityAdapter.last.Execution.Stream.Fail(hostTestContext(), capability.ExecutionFailureRuntimeFailed, nil); !errors.Is(err, capability.ErrInvalidExecutionFailure) {
+		t.Fatalf("Stream.Fail(nil cause) error = %v", err)
+	}
+	if err := capabilityAdapter.last.Execution.Stream.Fail(hostTestContext(), capability.ExecutionFailureRuntimeFailed, errors.New(sensitiveCause)); err != nil {
 		t.Fatal(err)
 	}
-	terminal, err := h.ReadStream(context.Background(), scopedReadStreamRequest(result.StreamID, result.StreamTicket))
+	operationRecord, err := h.GetOperation(hostTestContext(), result.OperationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	streamRecord, err := h.adapters.Streams.Get(hostTestContext(), result.StreamID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, failure := range []struct {
+		name   string
+		code   capability.ExecutionFailureCode
+		reason string
+	}{
+		{name: "operation", code: operationRecord.FailureCode, reason: operationRecord.Reason},
+		{name: "stream", code: streamRecord.FailureCode, reason: streamRecord.Reason},
+	} {
+		if failure.code != capability.ExecutionFailureRuntimeFailed || failure.reason != capability.ExecutionFailureMessage {
+			t.Fatalf("%s failure = %q/%q", failure.name, failure.code, failure.reason)
+		}
+	}
+	encoded, err := json.Marshal(operationRecord)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), sensitiveCause) {
+		t.Fatalf("public operation leaked failure cause: %s", encoded)
+	}
+	var failureDiagnostic *observability.DiagnosticEvent
+	for index := range diagnostics.events {
+		if diagnostics.events[index].Type == "plugin.execution.failed" {
+			failureDiagnostic = &diagnostics.events[index]
+			break
+		}
+	}
+	if failureDiagnostic == nil || failureDiagnostic.Details["failure_code"] != capability.ExecutionFailureRuntimeFailed || failureDiagnostic.InternalDetails["error"] != sensitiveCause {
+		t.Fatalf("execution failure diagnostic = %#v", failureDiagnostic)
+	}
+	terminal, err := h.ReadStream(hostTestContext(), scopedReadStreamRequest(result.StreamID, result.StreamTicket))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -3783,23 +3795,23 @@ func TestReadTerminalStreamDoesNotRequireNextTicketCapacity(t *testing.T) {
 		surfaceTokens:     tokens,
 	})
 	installed, gateway := installEnableAndMintGateway(t, h, buildSubscriptionRPCFixturePackage(t), "subscription.view")
-	result, err := h.CallPluginMethod(context.Background(), CallMethodRequest{
-		PluginInstanceID: installed.PluginInstanceID, SurfaceInstanceID: "surface_rpc", SessionChannelIDHash: "channel_hash",
-		OwnerSessionHash: "session_hash", OwnerUserHash: "user_hash", BridgeChannelID: "bridge_rpc", GatewayToken: gateway.GatewayToken,
+	result, err := h.CallPluginMethod(hostTestContext(), CallMethodRequest{
+		PluginInstanceID: installed.PluginInstanceID, SurfaceInstanceID: "surface_rpc",
+		BridgeChannelID: "bridge_rpc", GatewayToken: gateway.GatewayToken,
 		Method: "logs.tail",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := capabilityAdapter.last.Execution.Stream.Close(context.Background()); err != nil {
+	if err := capabilityAdapter.last.Execution.Stream.Close(hostTestContext()); err != nil {
 		t.Fatal(err)
 	}
 
-	terminal, err := h.ReadStream(context.Background(), scopedReadStreamRequest(result.StreamID, result.StreamTicket))
+	terminal, err := h.ReadStream(hostTestContext(), scopedReadStreamRequest(result.StreamID, result.StreamTicket))
 	if err != nil {
 		t.Fatalf("ReadStream() terminal read error = %v", err)
 	}
-	if !terminal.Done || terminal.TerminalStatus != stream.StatusClosed || terminal.NextStreamTicket != "" {
+	if !terminal.Done || terminal.TerminalStatus != stream.StatusClosed || terminal.DeliveryID == "" {
 		t.Fatalf("terminal stream read = %#v", terminal)
 	}
 }
@@ -3810,38 +3822,39 @@ func TestReadTerminalStreamKeepsTicketUntilZeroPayloadEventsAreDrained(t *testin
 		developerMode: true, localGenerated: true, capabilityID: "example.capability.echo", capabilityAdapter: capabilityAdapter,
 	})
 	installed, gateway := installEnableAndMintGateway(t, h, buildSubscriptionRPCFixturePackage(t), "subscription.view")
-	result, err := h.CallPluginMethod(context.Background(), CallMethodRequest{
-		PluginInstanceID: installed.PluginInstanceID, SurfaceInstanceID: "surface_rpc", SessionChannelIDHash: "channel_hash",
-		OwnerSessionHash: "session_hash", OwnerUserHash: "user_hash", BridgeChannelID: "bridge_rpc", GatewayToken: gateway.GatewayToken,
+	result, err := h.CallPluginMethod(hostTestContext(), CallMethodRequest{
+		PluginInstanceID: installed.PluginInstanceID, SurfaceInstanceID: "surface_rpc",
+		BridgeChannelID: "bridge_rpc", GatewayToken: gateway.GatewayToken,
 		Method: "logs.tail",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, kind := range []string{"marker.first", "marker.second"} {
-		if _, err := h.adapters.Streams.Append(context.Background(), stream.AppendRequest{StreamID: result.StreamID, Kind: kind}); err != nil {
+		if _, err := h.adapters.Streams.Append(hostTestContext(), stream.AppendRequest{StreamID: result.StreamID, Kind: kind}); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if _, err := h.adapters.Streams.Close(context.Background(), stream.CloseRequest{StreamID: result.StreamID}); err != nil {
+	if _, err := h.adapters.Streams.Close(hostTestContext(), stream.CloseRequest{StreamID: result.StreamID}); err != nil {
 		t.Fatal(err)
 	}
 
 	request := scopedReadStreamRequest(result.StreamID, result.StreamTicket)
 	request.MaxEvents = 1
-	first, err := h.ReadStream(context.Background(), request)
+	first, err := h.ReadStream(hostTestContext(), request)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if first.Done || len(first.Events) != 1 || first.NextStreamTicket == "" {
+	if first.Done || len(first.Events) != 1 || first.DeliveryID == "" {
 		t.Fatalf("first terminal stream page = %#v", first)
 	}
-	request.StreamTicket = first.NextStreamTicket
-	second, err := h.ReadStream(context.Background(), request)
+	acknowledgeStreamResult(t, h, result.StreamID, result.StreamTicket, first)
+	request.ReadID = "read_host_test_2"
+	second, err := h.ReadStream(hostTestContext(), request)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !second.Done || len(second.Events) != 1 || second.NextStreamTicket != "" {
+	if !second.Done || len(second.Events) != 1 || second.DeliveryID == "" {
 		t.Fatalf("second terminal stream page = %#v", second)
 	}
 }
@@ -3882,25 +3895,24 @@ func TestCallPluginMethodClosesStreamWhenTicketMintFails(t *testing.T) {
 		t.Fatalf("Mint(filler) error = %v", err)
 	}
 
-	if _, err := h.CallPluginMethod(context.Background(), CallMethodRequest{
-		PluginInstanceID:     installed.PluginInstanceID,
-		SurfaceInstanceID:    "surface_rpc",
-		SessionChannelIDHash: "channel_hash",
-		OwnerSessionHash:     "session_hash",
-		OwnerUserHash:        "user_hash",
-		BridgeChannelID:      "bridge_rpc",
-		GatewayToken:         gateway.GatewayToken,
-		Method:               "logs.tail",
+	if _, err := h.CallPluginMethod(hostTestContext(), CallMethodRequest{
+		PluginInstanceID:  installed.PluginInstanceID,
+		SurfaceInstanceID: "surface_rpc",
+
+		BridgeChannelID: "bridge_rpc",
+		GatewayToken:    gateway.GatewayToken,
+		Method:          "logs.tail",
 	}); !errors.Is(err, bridge.ErrTokenCapacity) {
 		t.Fatalf("CallPluginMethod() error = %v, want ErrTokenCapacity", err)
 	}
 	if capabilityAdapter.calls != 0 {
 		t.Fatalf("capability adapter ran before the initial stream ticket was available: calls=%d", capabilityAdapter.calls)
 	}
-	operations, err := h.adapters.Operations.List(context.Background(), operation.ListRequest{PluginInstanceID: installed.PluginInstanceID})
+	page, err := h.adapters.Operations.List(hostTestContext(), operation.ListRequest{PluginInstanceID: installed.PluginInstanceID, AllOwners: true})
 	if err != nil {
 		t.Fatal(err)
 	}
+	operations := page.Records
 	if len(operations) != 1 || operations[0].Status != operation.StatusFailed || operations[0].StreamID == "" {
 		t.Fatalf("ticket failure did not persist the failed operation: %#v", operations)
 	}
@@ -3921,10 +3933,10 @@ func TestInitialStreamTicketFailurePersistsPartialCleanupForRestartReconciliatio
 	})
 	installed, gateway := installEnableAndMintGateway(t, h, buildSubscriptionRPCFixturePackage(t), "subscription.view")
 	mintHostTokenCapacityFiller(t, manager, installed)
-	_, err := h.CallPluginMethod(context.Background(), CallMethodRequest{
-		PluginInstanceID: installed.PluginInstanceID, SurfaceInstanceID: "surface_rpc", SessionChannelIDHash: "channel_hash",
-		OwnerSessionHash: "session_hash", OwnerUserHash: "user_hash", BridgeChannelID: "bridge_rpc",
-		GatewayToken: gateway.GatewayToken, Method: "logs.tail",
+	_, err := h.CallPluginMethod(hostTestContext(), CallMethodRequest{
+		PluginInstanceID: installed.PluginInstanceID, SurfaceInstanceID: "surface_rpc",
+		BridgeChannelID: "bridge_rpc",
+		GatewayToken:    gateway.GatewayToken, Method: "logs.tail",
 	})
 	if !errors.Is(err, ticketErr) || !errors.Is(err, finishErr) {
 		t.Fatalf("CallPluginMethod() error = %v, want ticket and cleanup failures", err)
@@ -3932,18 +3944,19 @@ func TestInitialStreamTicketFailurePersistsPartialCleanupForRestartReconciliatio
 	if adapter.calls != 0 {
 		t.Fatalf("adapter ran before ticket issuance: calls=%d", adapter.calls)
 	}
-	records, err := operationStore.List(context.Background(), operation.ListRequest{PluginInstanceID: installed.PluginInstanceID})
+	page, err := operationStore.List(hostTestContext(), operation.ListRequest{PluginInstanceID: installed.PluginInstanceID, AllOwners: true})
 	if err != nil {
 		t.Fatal(err)
 	}
+	records := page.Records
 	if len(records) != 1 || records[0].Status != operation.StatusRunning {
 		t.Fatalf("partial cleanup operation state = %#v", records)
 	}
-	streamRecord, err := streamStore.Get(context.Background(), records[0].StreamID)
+	streamRecord, err := streamStore.Get(hostTestContext(), records[0].StreamID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if streamRecord.Status != stream.StatusFailed || !strings.Contains(streamRecord.Reason, ticketErr.Error()) {
+	if streamRecord.Status != stream.StatusFailed || streamRecord.Reason != executionFailedReason {
 		t.Fatalf("partial cleanup stream state = %#v", streamRecord)
 	}
 	restarted, _, _ := newTestHostWithOptions(t, testHostOptions{
@@ -3961,15 +3974,13 @@ func TestDisableTransitionsOpenStreamsAndRevokesStreamTickets(t *testing.T) {
 		capabilityAdapter: capabilityAdapter,
 	})
 	installed, gateway := installEnableAndMintGateway(t, h, buildSubscriptionRPCFixturePackage(t), "subscription.view")
-	result, err := h.CallPluginMethod(context.Background(), CallMethodRequest{
-		PluginInstanceID:     installed.PluginInstanceID,
-		SurfaceInstanceID:    "surface_rpc",
-		SessionChannelIDHash: "channel_hash",
-		OwnerSessionHash:     "session_hash",
-		OwnerUserHash:        "user_hash",
-		BridgeChannelID:      "bridge_rpc",
-		GatewayToken:         gateway.GatewayToken,
-		Method:               "logs.tail",
+	result, err := h.CallPluginMethod(hostTestContext(), CallMethodRequest{
+		PluginInstanceID:  installed.PluginInstanceID,
+		SurfaceInstanceID: "surface_rpc",
+
+		BridgeChannelID: "bridge_rpc",
+		GatewayToken:    gateway.GatewayToken,
+		Method:          "logs.tail",
 	})
 	if err != nil {
 		t.Fatalf("CallPluginMethod() error = %v", err)
@@ -3978,19 +3989,19 @@ func TestDisableTransitionsOpenStreamsAndRevokesStreamTickets(t *testing.T) {
 	if streamSink == nil || streamSink.ID() != result.StreamID {
 		t.Fatalf("stream sink mismatch: result=%#v invocation=%#v", result, capabilityAdapter.last)
 	}
-	if err := streamSink.Append(context.Background(), map[string]any{"line": "line before disable"}); err != nil {
+	if err := streamSink.Append(hostTestContext(), map[string]any{"line": "line before disable"}); err != nil {
 		t.Fatalf("Stream.Append() before disable error = %v", err)
 	}
 
-	if _, err := h.DisablePlugin(context.Background(), DisableRequest{PluginInstanceID: installed.PluginInstanceID, Reason: "policy", PluginStateVersion: mustPluginStateVersion(t, h, installed.PluginInstanceID)}); err != nil {
+	if _, err := h.DisablePlugin(hostTestContext(), DisableRequest{PluginInstanceID: installed.PluginInstanceID, Reason: "policy", ExpectedManagementRevision: mustManagementRevision(t, h, installed.PluginInstanceID)}); err != nil {
 		t.Fatalf("DisablePlugin() error = %v", err)
 	}
 
 	assertHostStreamStatus(t, h, result.StreamID, stream.StatusOrphanedDisabled)
-	if err := streamSink.Append(context.Background(), map[string]any{"line": "line after disable"}); !errors.Is(err, capability.ErrExecutionRevoked) {
+	if err := streamSink.Append(hostTestContext(), map[string]any{"line": "line after disable"}); !errors.Is(err, capability.ErrExecutionRevoked) {
 		t.Fatalf("Stream.Append() after disable error = %v, want %v", err, capability.ErrExecutionRevoked)
 	}
-	if _, err := h.ReadStream(context.Background(), scopedReadStreamRequest(result.StreamID, result.StreamTicket)); !errors.Is(err, bridge.ErrTokenRevoked) {
+	if _, err := h.ReadStream(hostTestContext(), scopedReadStreamRequest(result.StreamID, result.StreamTicket)); !errors.Is(err, bridge.ErrTokenRevoked) {
 		t.Fatalf("ReadStream() after disable error = %v, want %v", err, bridge.ErrTokenRevoked)
 	}
 	if !audits.hasEvent("plugin.streams.disabled_transitioned") {
@@ -3999,28 +4010,26 @@ func TestDisableTransitionsOpenStreamsAndRevokesStreamTickets(t *testing.T) {
 }
 
 func TestCallPluginMethodDispatchesWorkerRoute(t *testing.T) {
-	runtime := &recordingRuntimeSupervisor{
+	runtime := &recordingRuntimeManager{
 		health: runtimeclient.Health{RuntimeInstanceID: "runtime_1", RuntimeGenerationID: "runtime_gen_1", IPCChannelID: "ipc_1", ConnectionNonce: "connection_nonce_1234567890", Ready: true},
 		result: capability.Result{Data: map[string]any{"from_worker": true}},
 	}
 	h, _, audits := newTestHostWithOptions(t, testHostOptions{
 		developerMode:      true,
 		localGenerated:     true,
-		runtimeSupervisor:  runtime,
+		runtimeManager:     runtime,
 		connectivityBroker: connectivity.NewMemoryBroker(),
 	})
 	installed, gateway := installEnableAndMintGateway(t, h, buildWorkerFixturePackage(t), "worker.view")
 
-	result, err := h.CallPluginMethod(context.Background(), CallMethodRequest{
-		PluginInstanceID:     installed.PluginInstanceID,
-		SurfaceInstanceID:    "surface_rpc",
-		SessionChannelIDHash: "channel_hash",
-		OwnerSessionHash:     "session_hash",
-		OwnerUserHash:        "user_hash",
-		BridgeChannelID:      "bridge_rpc",
-		GatewayToken:         gateway.GatewayToken,
-		Method:               "worker.echo",
-		Params:               map[string]any{"message": "hello"},
+	result, err := h.CallPluginMethod(hostTestContext(), CallMethodRequest{
+		PluginInstanceID:  installed.PluginInstanceID,
+		SurfaceInstanceID: "surface_rpc",
+
+		BridgeChannelID: "bridge_rpc",
+		GatewayToken:    gateway.GatewayToken,
+		Method:          "worker.echo",
+		Params:          map[string]any{"message": "hello"},
 	})
 	if err != nil {
 		t.Fatalf("CallPluginMethod() worker error = %v", err)
@@ -4028,11 +4037,10 @@ func TestCallPluginMethodDispatchesWorkerRoute(t *testing.T) {
 	if result.Data == nil || runtime.calls != 1 {
 		t.Fatalf("worker result/calls mismatch: result=%#v calls=%d", result, runtime.calls)
 	}
-	current, err := h.adapters.Registry.GetPlugin(context.Background(), installed.PluginInstanceID)
+	current, err := h.adapters.Registry.GetPlugin(hostTestContext(), installed.PluginInstanceID)
 	if err != nil {
 		t.Fatalf("GetPlugin() after worker call error = %v", err)
 	}
-	assertRuntimeLeaseField(t, "lease_token", runtime.lastLease.LeaseToken != "")
 	assertRuntimeLeaseField(t, "lease_id_prefix", strings.HasPrefix(runtime.lastLease.LeaseID, "lease_"))
 	assertRuntimeLeaseField(t, "token_id_prefix", strings.HasPrefix(runtime.lastLease.TokenID, "rel_"))
 	assertRuntimeLeaseField(t, "distinct_token_id", runtime.lastLease.TokenID != runtime.lastLease.LeaseID)
@@ -4043,6 +4051,7 @@ func TestCallPluginMethodDispatchesWorkerRoute(t *testing.T) {
 	assertRuntimeLeaseEqual(t, "surface_instance_id", runtime.lastLease.SurfaceInstanceID, "surface_rpc")
 	assertRuntimeLeaseEqual(t, "owner_session_hash", runtime.lastLease.OwnerSessionHash, "session_hash")
 	assertRuntimeLeaseEqual(t, "owner_user_hash", runtime.lastLease.OwnerUserHash, "user_hash")
+	assertRuntimeLeaseEqual(t, "owner_env_hash", runtime.lastLease.OwnerEnvHash, "env_hash")
 	assertRuntimeLeaseEqual(t, "session_channel_id_hash", runtime.lastLease.SessionChannelIDHash, "channel_hash")
 	assertRuntimeLeaseEqual(t, "bridge_channel_id", runtime.lastLease.BridgeChannelID, "bridge_rpc")
 	assertRuntimeLeaseEqual(t, "runtime_instance_id", runtime.lastLease.RuntimeInstanceID, "runtime_1")
@@ -4057,7 +4066,6 @@ func TestCallPluginMethodDispatchesWorkerRoute(t *testing.T) {
 	assertRuntimeLeaseEqual(t, "policy_revision", runtime.lastLease.PolicyRevision, current.PolicyRevision)
 	assertRuntimeLeaseEqual(t, "management_revision", runtime.lastLease.ManagementRevision, current.ManagementRevision)
 	assertRuntimeLeaseEqual(t, "revoke_epoch", runtime.lastLease.RevokeEpoch, current.RevokeEpoch)
-	assertRuntimeLeaseField(t, "issued_at", !runtime.lastLease.IssuedAt.IsZero())
 	assertRuntimeLeaseField(t, "issued_at_unix_ms", runtime.lastLease.IssuedAtUnixMillis != 0)
 	assertRuntimeLeaseEqual(t, "runtime method", runtime.lastMethod, "worker.echo")
 	var payload workerInvocationPayload
@@ -4065,7 +4073,6 @@ func TestCallPluginMethodDispatchesWorkerRoute(t *testing.T) {
 		t.Fatal(err)
 	}
 	if payload.WorkerID != "echo_worker" ||
-		payload.Export != "redevplugin_worker_invoke" ||
 		payload.Artifact != "workers/echo.wasm" ||
 		payload.PackageHash != installed.PackageHash ||
 		payload.ArtifactSHA256 == "" ||
@@ -4083,7 +4090,7 @@ func TestCallPluginMethodDispatchesWorkerRoute(t *testing.T) {
 	if !stringSliceContains(runtime.lastLease.TargetDescriptorHashes, invocationHash) {
 		t.Fatalf("runtime lease does not bind worker invocation %s: %#v", invocationHash, runtime.lastLease.TargetDescriptorHashes)
 	}
-	asset, err := h.adapters.Assets.ReadAsset(context.Background(), installed.PackageHash, "workers/echo.wasm")
+	asset, err := h.adapters.Assets.ReadAsset(hostTestContext(), installed.PackageHash, "workers/echo.wasm")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -4113,38 +4120,32 @@ func TestCallPluginMethodDispatchesWorkerRoute(t *testing.T) {
 	assertAuditDetail(t, leaseAudit, "policy_revision", current.PolicyRevision)
 	assertAuditDetail(t, leaseAudit, "management_revision", current.ManagementRevision)
 	assertAuditDetail(t, leaseAudit, "revoke_epoch", current.RevokeEpoch)
-	assertAuditDetail(t, leaseAudit, "expires_at_unix_ms", runtime.lastLease.ExpiresAt.UnixMilli())
+	assertAuditDetail(t, leaseAudit, "expires_at_unix_ms", runtime.lastLease.ExpiresAtUnixMillis)
 	if hashes, ok := leaseAudit.Details["target_descriptor_hashes"].([]string); !ok || len(hashes) < 4 {
 		t.Fatalf("runtime lease audit target_descriptor_hashes mismatch: %#v", leaseAudit.Details)
-	}
-	if _, leaked := leaseAudit.Details["lease_token"]; leaked {
-		t.Fatalf("runtime lease audit leaked cleartext token: %#v", leaseAudit.Details)
 	}
 }
 
 func TestCallPluginMethodWorkerPayloadIncludesEmptyParams(t *testing.T) {
-	runtime := &recordingRuntimeSupervisor{
+	runtime := &recordingRuntimeManager{
 		health: runtimeclient.Health{RuntimeInstanceID: "runtime_1", RuntimeGenerationID: "runtime_gen_1", IPCChannelID: "ipc_1", ConnectionNonce: "connection_nonce_1234567890", Ready: true},
 		result: capability.Result{Data: map[string]any{"from_worker": true}},
 	}
 	h, _, _ := newTestHostWithOptions(t, testHostOptions{
 		developerMode:      true,
 		localGenerated:     true,
-		runtimeSupervisor:  runtime,
-		storageBroker:      storage.NewMemoryBroker(),
+		runtimeManager:     runtime,
 		connectivityBroker: connectivity.NewMemoryBroker(),
 	})
 	installed, gateway := installEnableAndMintGateway(t, h, buildWorkerFixturePackage(t), "worker.view")
 
-	if _, err := h.CallPluginMethod(context.Background(), CallMethodRequest{
-		PluginInstanceID:     installed.PluginInstanceID,
-		SurfaceInstanceID:    "surface_rpc",
-		SessionChannelIDHash: "channel_hash",
-		OwnerSessionHash:     "session_hash",
-		OwnerUserHash:        "user_hash",
-		BridgeChannelID:      "bridge_rpc",
-		GatewayToken:         gateway.GatewayToken,
-		Method:               "worker.echo",
+	if _, err := h.CallPluginMethod(hostTestContext(), CallMethodRequest{
+		PluginInstanceID:  installed.PluginInstanceID,
+		SurfaceInstanceID: "surface_rpc",
+
+		BridgeChannelID: "bridge_rpc",
+		GatewayToken:    gateway.GatewayToken,
+		Method:          "worker.echo",
 	}); err != nil {
 		t.Fatalf("CallPluginMethod() worker error = %v", err)
 	}
@@ -4159,29 +4160,26 @@ func TestCallPluginMethodWorkerPayloadIncludesEmptyParams(t *testing.T) {
 }
 
 func TestCallPluginMethodWorkerPayloadCarriesHostOnlyStorageGrants(t *testing.T) {
-	runtime := &recordingRuntimeSupervisor{
+	runtime := &recordingRuntimeManager{
 		health: runtimeclient.Health{RuntimeInstanceID: "runtime_1", RuntimeGenerationID: "runtime_gen_1", IPCChannelID: "ipc_1", ConnectionNonce: "connection_nonce_1234567890", Ready: true},
 		result: capability.Result{Data: map[string]any{"from_worker": true}},
 	}
 	h, _, _ := newTestHostWithOptions(t, testHostOptions{
 		developerMode:      true,
 		localGenerated:     true,
-		runtimeSupervisor:  runtime,
-		storageBroker:      storage.NewMemoryBroker(),
+		runtimeManager:     runtime,
 		connectivityBroker: connectivity.NewMemoryBroker(),
 	})
 	installed, gateway := installEnableAndMintGateway(t, h, buildWorkerStorageFixturePackage(t), "worker.view")
 
-	if _, err := h.CallPluginMethod(context.Background(), CallMethodRequest{
-		PluginInstanceID:     installed.PluginInstanceID,
-		SurfaceInstanceID:    "surface_rpc",
-		SessionChannelIDHash: "channel_hash",
-		OwnerSessionHash:     "session_hash",
-		OwnerUserHash:        "user_hash",
-		BridgeChannelID:      "bridge_rpc",
-		GatewayToken:         gateway.GatewayToken,
-		Method:               "worker.echo",
-		Params:               map[string]any{"message": "store this"},
+	if _, err := h.CallPluginMethod(hostTestContext(), CallMethodRequest{
+		PluginInstanceID:  installed.PluginInstanceID,
+		SurfaceInstanceID: "surface_rpc",
+
+		BridgeChannelID: "bridge_rpc",
+		GatewayToken:    gateway.GatewayToken,
+		Method:          "worker.echo",
+		Params:          map[string]any{"message": "store this"},
 	}); err != nil {
 		t.Fatalf("CallPluginMethod() worker error = %v", err)
 	}
@@ -4208,54 +4206,50 @@ func TestCallPluginMethodWorkerPayloadCarriesHostOnlyStorageGrants(t *testing.T)
 		t.Fatalf("plugin params leaked storage grant: %#v", payload.Params)
 	}
 	if strings.Contains(string(runtime.lastPayload), `"storage_handle_grant_token"`) {
-		t.Fatalf("worker payload retained the legacy plugin-visible grant field: %s", runtime.lastPayload)
+		t.Fatalf("worker payload exposed plugin-visible grant field: %s", runtime.lastPayload)
 	}
 }
 
-func TestCallPluginMethodWorkerRouteRequiresRuntimeSupervisor(t *testing.T) {
+func TestCallPluginMethodWorkerRouteRequiresRuntimeManager(t *testing.T) {
 	h, _, _ := newTestHostWithOptions(t, testHostOptions{developerMode: true, localGenerated: true})
 	installed, gateway := installEnableAndMintGateway(t, h, buildWorkerFixturePackage(t), "worker.view")
 
-	if _, err := h.CallPluginMethod(context.Background(), CallMethodRequest{
-		PluginInstanceID:     installed.PluginInstanceID,
-		SurfaceInstanceID:    "surface_rpc",
-		SessionChannelIDHash: "channel_hash",
-		OwnerSessionHash:     "session_hash",
-		OwnerUserHash:        "user_hash",
-		BridgeChannelID:      "bridge_rpc",
-		GatewayToken:         gateway.GatewayToken,
-		Method:               "worker.echo",
+	if _, err := h.CallPluginMethod(hostTestContext(), CallMethodRequest{
+		PluginInstanceID:  installed.PluginInstanceID,
+		SurfaceInstanceID: "surface_rpc",
+
+		BridgeChannelID: "bridge_rpc",
+		GatewayToken:    gateway.GatewayToken,
+		Method:          "worker.echo",
 	}); err == nil {
-		t.Fatal("CallPluginMethod() expected runtime supervisor error")
+		t.Fatal("CallPluginMethod() expected runtime manager error")
 	}
 }
 
 func TestCallPluginMethodWorkerRouteFailsClosedAfterDisable(t *testing.T) {
-	runtime := &recordingRuntimeSupervisor{
+	runtime := &recordingRuntimeManager{
 		health: runtimeclient.Health{RuntimeInstanceID: "runtime_1", RuntimeGenerationID: "runtime_gen_1", IPCChannelID: "ipc_1", ConnectionNonce: "connection_nonce_1234567890", Ready: true},
 		result: capability.Result{Data: map[string]any{"from_worker": true}},
 	}
 	h, _, _ := newTestHostWithOptions(t, testHostOptions{
 		developerMode:      true,
 		localGenerated:     true,
-		runtimeSupervisor:  runtime,
+		runtimeManager:     runtime,
 		connectivityBroker: connectivity.NewMemoryBroker(),
 	})
 	installed, gateway := installEnableAndMintGateway(t, h, buildWorkerFixturePackage(t), "worker.view")
 
-	if _, err := h.DisablePlugin(context.Background(), DisableRequest{PluginInstanceID: installed.PluginInstanceID, Reason: "policy", PluginStateVersion: mustPluginStateVersion(t, h, installed.PluginInstanceID)}); err != nil {
+	if _, err := h.DisablePlugin(hostTestContext(), DisableRequest{PluginInstanceID: installed.PluginInstanceID, Reason: "policy", ExpectedManagementRevision: mustManagementRevision(t, h, installed.PluginInstanceID)}); err != nil {
 		t.Fatalf("DisablePlugin() error = %v", err)
 	}
-	if _, err := h.CallPluginMethod(context.Background(), CallMethodRequest{
-		PluginInstanceID:     installed.PluginInstanceID,
-		SurfaceInstanceID:    "surface_rpc",
-		SessionChannelIDHash: "channel_hash",
-		OwnerSessionHash:     "session_hash",
-		OwnerUserHash:        "user_hash",
-		BridgeChannelID:      "bridge_rpc",
-		GatewayToken:         gateway.GatewayToken,
-		Method:               "worker.echo",
-		Params:               map[string]any{"message": "after disable"},
+	if _, err := h.CallPluginMethod(hostTestContext(), CallMethodRequest{
+		PluginInstanceID:  installed.PluginInstanceID,
+		SurfaceInstanceID: "surface_rpc",
+
+		BridgeChannelID: "bridge_rpc",
+		GatewayToken:    gateway.GatewayToken,
+		Method:          "worker.echo",
+		Params:          map[string]any{"message": "after disable"},
 	}); err == nil {
 		t.Fatal("CallPluginMethod() after disable expected fail-closed error")
 	}
@@ -4265,31 +4259,29 @@ func TestCallPluginMethodWorkerRouteFailsClosedAfterDisable(t *testing.T) {
 }
 
 func TestCallPluginMethodWorkerRouteFailsClosedAfterUninstall(t *testing.T) {
-	runtime := &recordingRuntimeSupervisor{
+	runtime := &recordingRuntimeManager{
 		health: runtimeclient.Health{RuntimeInstanceID: "runtime_1", RuntimeGenerationID: "runtime_gen_1", IPCChannelID: "ipc_1", ConnectionNonce: "connection_nonce_1234567890", Ready: true},
 		result: capability.Result{Data: map[string]any{"from_worker": true}},
 	}
 	h, _, _ := newTestHostWithOptions(t, testHostOptions{
 		developerMode:      true,
 		localGenerated:     true,
-		runtimeSupervisor:  runtime,
+		runtimeManager:     runtime,
 		connectivityBroker: connectivity.NewMemoryBroker(),
 	})
 	installed, gateway := installEnableAndMintGateway(t, h, buildWorkerFixturePackage(t), "worker.view")
 
-	if _, err := h.UninstallPlugin(context.Background(), UninstallRequest{PluginInstanceID: installed.PluginInstanceID, DeleteData: true, PluginStateVersion: mustPluginStateVersion(t, h, installed.PluginInstanceID)}); err != nil {
+	if _, err := h.UninstallPlugin(hostTestContext(), UninstallRequest{PluginInstanceID: installed.PluginInstanceID, DeleteData: true, ExpectedManagementRevision: mustManagementRevision(t, h, installed.PluginInstanceID)}); err != nil {
 		t.Fatalf("UninstallPlugin() error = %v", err)
 	}
-	if _, err := h.CallPluginMethod(context.Background(), CallMethodRequest{
-		PluginInstanceID:     installed.PluginInstanceID,
-		SurfaceInstanceID:    "surface_rpc",
-		SessionChannelIDHash: "channel_hash",
-		OwnerSessionHash:     "session_hash",
-		OwnerUserHash:        "user_hash",
-		BridgeChannelID:      "bridge_rpc",
-		GatewayToken:         gateway.GatewayToken,
-		Method:               "worker.echo",
-		Params:               map[string]any{"message": "after uninstall"},
+	if _, err := h.CallPluginMethod(hostTestContext(), CallMethodRequest{
+		PluginInstanceID:  installed.PluginInstanceID,
+		SurfaceInstanceID: "surface_rpc",
+
+		BridgeChannelID: "bridge_rpc",
+		GatewayToken:    gateway.GatewayToken,
+		Method:          "worker.echo",
+		Params:          map[string]any{"message": "after uninstall"},
 	}); !errors.Is(err, registry.ErrNotFound) {
 		t.Fatalf("CallPluginMethod() after uninstall error = %v, want %v", err, registry.ErrNotFound)
 	}
@@ -4307,16 +4299,14 @@ func TestCallPluginMethodDispatchesCoreAction(t *testing.T) {
 	})
 	installed, gateway := installEnableAndMintGateway(t, h, buildCoreActionFixturePackage(t), "core.view")
 
-	result, err := h.CallPluginMethod(context.Background(), CallMethodRequest{
-		PluginInstanceID:     installed.PluginInstanceID,
-		SurfaceInstanceID:    "surface_rpc",
-		SessionChannelIDHash: "channel_hash",
-		OwnerSessionHash:     "session_hash",
-		OwnerUserHash:        "user_hash",
-		BridgeChannelID:      "bridge_rpc",
-		GatewayToken:         gateway.GatewayToken,
-		Method:               "core.open",
-		Params:               map[string]any{"target": "settings"},
+	result, err := h.CallPluginMethod(hostTestContext(), CallMethodRequest{
+		PluginInstanceID:  installed.PluginInstanceID,
+		SurfaceInstanceID: "surface_rpc",
+
+		BridgeChannelID: "bridge_rpc",
+		GatewayToken:    gateway.GatewayToken,
+		Method:          "core.open",
+		Params:          map[string]any{"target": "settings"},
 	})
 	if err != nil {
 		t.Fatalf("CallPluginMethod() error = %v", err)
@@ -4343,15 +4333,13 @@ func TestCallPluginMethodCoreActionRequiresAdapter(t *testing.T) {
 	h, _, _ := newTestHostWithOptions(t, testHostOptions{developerMode: true, localGenerated: true})
 	installed, gateway := installEnableAndMintGateway(t, h, buildCoreActionFixturePackage(t), "core.view")
 
-	if _, err := h.CallPluginMethod(context.Background(), CallMethodRequest{
-		PluginInstanceID:     installed.PluginInstanceID,
-		SurfaceInstanceID:    "surface_rpc",
-		SessionChannelIDHash: "channel_hash",
-		OwnerSessionHash:     "session_hash",
-		OwnerUserHash:        "user_hash",
-		BridgeChannelID:      "bridge_rpc",
-		GatewayToken:         gateway.GatewayToken,
-		Method:               "core.open",
+	if _, err := h.CallPluginMethod(hostTestContext(), CallMethodRequest{
+		PluginInstanceID:  installed.PluginInstanceID,
+		SurfaceInstanceID: "surface_rpc",
+
+		BridgeChannelID: "bridge_rpc",
+		GatewayToken:    gateway.GatewayToken,
+		Method:          "core.open",
 	}); err == nil {
 		t.Fatal("CallPluginMethod() expected missing core action adapter error")
 	}
@@ -4363,9 +4351,9 @@ func TestDangerousWorkerAndCoreActionRoutesRequireConfirmation(t *testing.T) {
 		h, _, _ := newTestHostWithOptions(t, testHostOptions{developerMode: true, localGenerated: true, coreActions: adapter})
 		installed, gateway := installEnableAndMintGateway(t, h, buildDangerousCoreActionFixturePackage(t), "core.view")
 		call := CallMethodRequest{
-			PluginInstanceID: installed.PluginInstanceID, SurfaceInstanceID: "surface_rpc", SessionChannelIDHash: "channel_hash",
-			OwnerSessionHash: "session_hash", OwnerUserHash: "user_hash", BridgeChannelID: "bridge_rpc",
-			GatewayToken: gateway.GatewayToken, Method: "core.open", Params: map[string]any{"target": "settings"},
+			PluginInstanceID: installed.PluginInstanceID, SurfaceInstanceID: "surface_rpc",
+			BridgeChannelID: "bridge_rpc",
+			GatewayToken:    gateway.GatewayToken, Method: "core.open", Params: map[string]any{"target": "settings"},
 		}
 		assertDangerousRouteConfirmation(t, h, &call)
 		if adapter.calls != 1 || !adapter.last.Execution.Confirmation.Confirmed {
@@ -4374,16 +4362,16 @@ func TestDangerousWorkerAndCoreActionRoutesRequireConfirmation(t *testing.T) {
 	})
 
 	t.Run("worker", func(t *testing.T) {
-		runtime := &recordingRuntimeSupervisor{
+		runtime := &recordingRuntimeManager{
 			health: runtimeclient.Health{RuntimeInstanceID: "runtime_1", RuntimeGenerationID: "runtime_gen_1", IPCChannelID: "ipc_1", ConnectionNonce: "connection_nonce_1234567890", Ready: true},
 			result: capability.Result{Data: map[string]any{"from_worker": true}},
 		}
-		h, _, _ := newTestHostWithOptions(t, testHostOptions{developerMode: true, localGenerated: true, runtimeSupervisor: runtime})
+		h, _, _ := newTestHostWithOptions(t, testHostOptions{developerMode: true, localGenerated: true, runtimeManager: runtime})
 		installed, gateway := installEnableAndMintGateway(t, h, buildDangerousWorkerFixturePackage(t), "worker.view")
 		call := CallMethodRequest{
-			PluginInstanceID: installed.PluginInstanceID, SurfaceInstanceID: "surface_rpc", SessionChannelIDHash: "channel_hash",
-			OwnerSessionHash: "session_hash", OwnerUserHash: "user_hash", BridgeChannelID: "bridge_rpc",
-			GatewayToken: gateway.GatewayToken, Method: "worker.echo", Params: map[string]any{"message": "hello"},
+			PluginInstanceID: installed.PluginInstanceID, SurfaceInstanceID: "surface_rpc",
+			BridgeChannelID: "bridge_rpc",
+			GatewayToken:    gateway.GatewayToken, Method: "worker.echo", Params: map[string]any{"message": "hello"},
 		}
 		assertDangerousRouteConfirmation(t, h, &call)
 		if runtime.calls != 1 {
@@ -4394,16 +4382,16 @@ func TestDangerousWorkerAndCoreActionRoutesRequireConfirmation(t *testing.T) {
 
 func assertDangerousRouteConfirmation(t *testing.T, h *Host, call *CallMethodRequest) {
 	t.Helper()
-	result, err := h.CallPluginMethod(context.Background(), *call)
+	result, err := h.CallPluginMethod(hostTestContext(), *call)
 	if !errors.Is(err, ErrConfirmationRequired) || !result.ConfirmationRequired {
 		t.Fatalf("CallPluginMethod() result=%#v error=%v, want confirmation", result, err)
 	}
-	confirmation, err := h.PrepareMethodConfirmation(context.Background(), ConfirmMethodRequest(*call))
+	confirmation, err := h.PrepareMethodConfirmation(hostTestContext(), prepareConfirmationRequest(*call))
 	if err != nil {
 		t.Fatalf("PrepareMethodConfirmation() error = %v", err)
 	}
 	call.ConfirmationID = confirmation.ConfirmationID
-	if _, err := h.CallPluginMethod(context.Background(), *call); err != nil {
+	if _, err := h.CallPluginMethod(hostTestContext(), *call); err != nil {
 		t.Fatalf("confirmed CallPluginMethod() error = %v", err)
 	}
 }
@@ -4445,15 +4433,13 @@ func TestCallPluginMethodOwnsExecutionHandles(t *testing.T) {
 				capabilityAdapter: capabilityAdapter,
 			})
 			installed, gateway := installEnableAndMintGateway(t, h, tc.packageBytes, surfaceIDForMethod(tc.method))
-			result, err := h.CallPluginMethod(context.Background(), CallMethodRequest{
-				PluginInstanceID:     installed.PluginInstanceID,
-				SurfaceInstanceID:    "surface_rpc",
-				SessionChannelIDHash: "channel_hash",
-				OwnerSessionHash:     "session_hash",
-				OwnerUserHash:        "user_hash",
-				BridgeChannelID:      "bridge_rpc",
-				GatewayToken:         gateway.GatewayToken,
-				Method:               tc.method,
+			result, err := h.CallPluginMethod(hostTestContext(), CallMethodRequest{
+				PluginInstanceID:  installed.PluginInstanceID,
+				SurfaceInstanceID: "surface_rpc",
+
+				BridgeChannelID: "bridge_rpc",
+				GatewayToken:    gateway.GatewayToken,
+				Method:          tc.method,
 			})
 			if err != nil {
 				t.Fatalf("CallPluginMethod() error = %v", err)
@@ -4477,10 +4463,10 @@ func TestSubscriptionStreamCompletionCompletesOperation(t *testing.T) {
 		developerMode: true, localGenerated: true, capabilityID: "example.capability.echo", capabilityAdapter: adapter,
 	})
 	installed, gateway := installEnableAndMintGateway(t, h, buildSubscriptionRPCFixturePackage(t), "subscription.view")
-	result, err := h.CallPluginMethod(context.Background(), CallMethodRequest{
-		PluginInstanceID: installed.PluginInstanceID, SurfaceInstanceID: "surface_rpc", SessionChannelIDHash: "channel_hash",
-		OwnerSessionHash: "session_hash", OwnerUserHash: "user_hash", BridgeChannelID: "bridge_rpc",
-		GatewayToken: gateway.GatewayToken, Method: "logs.tail",
+	result, err := h.CallPluginMethod(hostTestContext(), CallMethodRequest{
+		PluginInstanceID: installed.PluginInstanceID, SurfaceInstanceID: "surface_rpc",
+		BridgeChannelID: "bridge_rpc",
+		GatewayToken:    gateway.GatewayToken, Method: "logs.tail",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -4488,7 +4474,7 @@ func TestSubscriptionStreamCompletionCompletesOperation(t *testing.T) {
 	if result.OperationID == "" || result.StreamID == "" {
 		t.Fatalf("subscription handles = %#v", result)
 	}
-	if err := adapter.last.Execution.Stream.Close(context.Background()); err != nil {
+	if err := adapter.last.Execution.Stream.Close(hostTestContext()); err != nil {
 		t.Fatalf("Stream.Close() error = %v", err)
 	}
 	assertHostOperationStatus(t, h, result.OperationID, operation.StatusCompleted)
@@ -4507,17 +4493,18 @@ func TestSubscriptionStreamRegistrationFailureRollsBackOperationAndLease(t *test
 		operations: operations, streams: streams,
 	})
 	installed, gateway := installEnableAndMintGateway(t, h, buildSubscriptionRPCFixturePackage(t), "subscription.view")
-	if _, err := h.CallPluginMethod(context.Background(), CallMethodRequest{
-		PluginInstanceID: installed.PluginInstanceID, SurfaceInstanceID: "surface_rpc", SessionChannelIDHash: "channel_hash",
-		OwnerSessionHash: "session_hash", OwnerUserHash: "user_hash", BridgeChannelID: "bridge_rpc",
-		GatewayToken: gateway.GatewayToken, Method: "logs.tail",
+	if _, err := h.CallPluginMethod(hostTestContext(), CallMethodRequest{
+		PluginInstanceID: installed.PluginInstanceID, SurfaceInstanceID: "surface_rpc",
+		BridgeChannelID: "bridge_rpc",
+		GatewayToken:    gateway.GatewayToken, Method: "logs.tail",
 	}); err == nil {
 		t.Fatal("CallPluginMethod() succeeded after stream registration failed")
 	}
-	records, err := operations.List(context.Background(), operation.ListRequest{PluginInstanceID: installed.PluginInstanceID})
+	page, err := operations.List(hostTestContext(), operation.ListRequest{PluginInstanceID: installed.PluginInstanceID, AllOwners: true})
 	if err != nil {
 		t.Fatal(err)
 	}
+	records := page.Records
 	if len(records) != 1 || records[0].Status != operation.StatusFailed {
 		t.Fatalf("operation rollback mismatch: %#v", records)
 	}
@@ -4539,10 +4526,10 @@ func TestSubscriptionSetupRetainsLeaseUntilFailedOperationRollbackConverges(t *t
 		operations: operations, streams: streams,
 	})
 	installed, gateway := installEnableAndMintGateway(t, h, buildSubscriptionRPCFixturePackage(t), "subscription.view")
-	if _, err := h.CallPluginMethod(context.Background(), CallMethodRequest{
-		PluginInstanceID: installed.PluginInstanceID, SurfaceInstanceID: "surface_rpc", SessionChannelIDHash: "channel_hash",
-		OwnerSessionHash: "session_hash", OwnerUserHash: "user_hash", BridgeChannelID: "bridge_rpc",
-		GatewayToken: gateway.GatewayToken, Method: "logs.tail",
+	if _, err := h.CallPluginMethod(hostTestContext(), CallMethodRequest{
+		PluginInstanceID: installed.PluginInstanceID, SurfaceInstanceID: "surface_rpc",
+		BridgeChannelID: "bridge_rpc",
+		GatewayToken:    gateway.GatewayToken, Method: "logs.tail",
 	}); !errors.Is(err, rollbackErr) {
 		t.Fatalf("CallPluginMethod() error = %v, want rollback failure", err)
 	}
@@ -4552,13 +4539,14 @@ func TestSubscriptionSetupRetainsLeaseUntilFailedOperationRollbackConverges(t *t
 	if activeLeases != 1 {
 		t.Fatalf("active execution leases = %d, want 1 until rollback repair", activeLeases)
 	}
-	if err := h.reconcileFailedExecutionSetups(context.Background()); err != nil {
-		t.Fatalf("reconcileFailedExecutionSetups() error = %v", err)
+	if err := h.reconcilePendingExecutionSetups(hostTestContext(), installed.PluginInstanceID); err != nil {
+		t.Fatalf("reconcilePendingExecutionSetups() error = %v", err)
 	}
-	records, err := operations.List(context.Background(), operation.ListRequest{PluginInstanceID: installed.PluginInstanceID})
+	page, err := operations.List(hostTestContext(), operation.ListRequest{PluginInstanceID: installed.PluginInstanceID, AllOwners: true})
 	if err != nil {
 		t.Fatal(err)
 	}
+	records := page.Records
 	if len(records) != 1 || records[0].Status != operation.StatusFailed {
 		t.Fatalf("reconciled operation state = %#v", records)
 	}
@@ -4567,6 +4555,19 @@ func TestSubscriptionSetupRetainsLeaseUntilFailedOperationRollbackConverges(t *t
 	h.executions.mu.Unlock()
 	if activeLeases != 0 {
 		t.Fatalf("active execution leases after repair = %d, want 0", activeLeases)
+	}
+}
+
+func TestPendingExecutionSetupReconciliationDoesNotScanDurableHistory(t *testing.T) {
+	operations := &countingOperationListStore{Store: operation.NewMemoryStore()}
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{operations: operations})
+	operations.listCalls = 0
+
+	if err := h.reconcilePendingExecutionSetups(hostTestContext(), "plugini_no_pending_12345678"); err != nil {
+		t.Fatalf("reconcilePendingExecutionSetups() error = %v", err)
+	}
+	if operations.listCalls != 0 {
+		t.Fatalf("durable operation list calls = %d, want 0", operations.listCalls)
 	}
 }
 
@@ -4582,7 +4583,7 @@ func TestHostStartupReconcilesDurablePartialOperationAndStreamStates(t *testing.
 		{name: "stream terminal", operationStatus: operation.StatusRunning, streamStatus: stream.StatusFailed, wantOperation: operation.StatusFailed, wantStream: stream.StatusFailed},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			ctx := context.Background()
+			ctx := hostTestContext()
 			operationPath := filepath.Join(t.TempDir(), "operations.sqlite")
 			streamPath := filepath.Join(t.TempDir(), "streams.sqlite")
 			operations, err := operation.NewSQLiteStore(ctx, operationPath)
@@ -4598,6 +4599,7 @@ func TestHostStartupReconcilesDurablePartialOperationAndStreamStates(t *testing.
 				OperationID: "operation_reconcile", StreamID: "stream_reconcile",
 				PluginID: "com.example.reconcile", PluginInstanceID: "plugini_reconcile",
 				Method: "logs.tail", Execution: "subscription",
+				OwnerSessionHash: "session_hash", OwnerUserHash: "user_hash", OwnerEnvHash: "env_hash", SessionChannelIDHash: "channel_hash",
 			}
 			if _, err := operations.Register(ctx, operation.RegisterRequest{OperationID: binding.OperationID, ExecutionBinding: binding}); err != nil {
 				t.Fatal(err)
@@ -4606,12 +4608,16 @@ func TestHostStartupReconcilesDurablePartialOperationAndStreamStates(t *testing.
 				t.Fatal(err)
 			}
 			if tc.operationStatus != operation.StatusRunning {
-				if _, err := operations.Finish(ctx, operation.FinishRequest{OperationID: binding.OperationID, Status: tc.operationStatus, Reason: "setup failed"}); err != nil {
+				if _, err := operations.Finish(ctx, operation.FinishRequest{
+					OperationID: binding.OperationID, Status: tc.operationStatus, FailureCode: capability.ExecutionFailurePlatformFailed,
+				}); err != nil {
 					t.Fatal(err)
 				}
 			}
 			if tc.streamStatus != stream.StatusOpen {
-				if _, err := streams.Close(ctx, stream.CloseRequest{StreamID: binding.StreamID, Status: tc.streamStatus, Reason: "setup failed"}); err != nil {
+				if _, err := streams.Close(ctx, stream.CloseRequest{
+					StreamID: binding.StreamID, Status: tc.streamStatus, FailureCode: capability.ExecutionFailurePlatformFailed,
+				}); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -4643,8 +4649,8 @@ func TestHostStartupReconcilesDurablePartialOperationAndStreamStates(t *testing.
 			if err != nil {
 				t.Fatal(err)
 			}
-			if streamRecord.Reason != "setup failed" {
-				t.Fatalf("reconciled stream reason = %q", streamRecord.Reason)
+			if streamRecord.Reason != capability.ExecutionFailureMessage || streamRecord.FailureCode != capability.ExecutionFailurePlatformFailed {
+				t.Fatalf("reconciled stream failure = %q/%q", streamRecord.FailureCode, streamRecord.Reason)
 			}
 		})
 	}
@@ -4660,7 +4666,7 @@ func TestHostStartupTerminatesDurableOperationsWithoutLiveOwners(t *testing.T) {
 		{name: "cancel requested", requestCancel: true, want: operation.StatusCanceled},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			ctx := context.Background()
+			ctx := hostTestContext()
 			operationPath := filepath.Join(t.TempDir(), "operations.sqlite")
 			operations, err := operation.NewSQLiteStore(ctx, operationPath)
 			if err != nil {
@@ -4670,6 +4676,7 @@ func TestHostStartupTerminatesDurableOperationsWithoutLiveOwners(t *testing.T) {
 			binding := capability.ExecutionBinding{
 				InvocationID: "invoke_restart", AuditCorrelationID: "audit_restart", OperationID: "operation_restart",
 				PluginID: "com.example.restart", PluginInstanceID: "plugini_restart", Method: "documents.archive", Execution: "operation",
+				OwnerSessionHash: "session_hash", OwnerUserHash: "user_hash", OwnerEnvHash: "env_hash", SessionChannelIDHash: "channel_hash",
 			}
 			if _, err := operations.Register(ctx, operation.RegisterRequest{OperationID: binding.OperationID, ExecutionBinding: binding, Cancelable: &cancelable}); err != nil {
 				t.Fatal(err)
@@ -4693,25 +4700,311 @@ func TestHostStartupTerminatesDurableOperationsWithoutLiveOwners(t *testing.T) {
 	}
 }
 
+func TestHostStartupTriggersBoundedTerminalRetentionPrune(t *testing.T) {
+	operations := &countingOperationPruneStore{Store: operation.NewMemoryStore()}
+	streams := &countingStreamPruneStore{Store: stream.NewMemoryStore()}
+	startedAt := time.Now().UTC()
+	newTestHostWithOptions(t, testHostOptions{operations: operations, streams: streams})
+	operationCalls, operationLast := operations.snapshot()
+	streamCalls, streamLast := streams.snapshot()
+	if operationCalls != 1 || streamCalls != 1 {
+		t.Fatalf("startup prune calls = operations:%d streams:%d", operationCalls, streamCalls)
+	}
+	if operationLast.Limit != operation.DefaultPruneLimit || streamLast.Limit != stream.DefaultPruneLimit {
+		t.Fatalf("startup prune limits = operations:%d streams:%d", operationLast.Limit, streamLast.Limit)
+	}
+	if operationLast.MaxTerminalRecordsPerPlugin != operation.DefaultMaxTerminalRecordsPerPlugin ||
+		streamLast.MaxTerminalRecordsPerPlugin != stream.DefaultMaxTerminalRecordsPerPlugin {
+		t.Fatalf("startup terminal caps = operations:%d streams:%d", operationLast.MaxTerminalRecordsPerPlugin, streamLast.MaxTerminalRecordsPerPlugin)
+	}
+	operationCutoff := startedAt.Add(-operation.DefaultTerminalRetention)
+	streamCutoff := startedAt.Add(-stream.DefaultTerminalRetention)
+	if operationLast.Before.Before(operationCutoff) || streamLast.Before.Before(streamCutoff) {
+		t.Fatalf("startup prune cutoffs are older than the retention policy: operation=%s stream=%s", operationLast.Before, streamLast.Before)
+	}
+}
+
+func TestTerminalMaintenanceCoalescesConcurrentCompletionsAndRunsAfterInterval(t *testing.T) {
+	operations := &countingOperationPruneStore{Store: operation.NewMemoryStore()}
+	streams := &countingStreamPruneStore{Store: stream.NewMemoryStore()}
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{operations: operations, streams: streams})
+	operations.reset()
+	streams.reset()
+
+	now := time.Date(2026, 7, 17, 12, 0, 0, 0, time.UTC)
+	entered := make(chan struct{}, 1)
+	release := make(chan struct{})
+	operations.configure(nil, entered, release)
+	h.maintainTerminalExecutionRecords(hostTestContext(), now)
+	select {
+	case <-entered:
+	case <-time.After(time.Second):
+		t.Fatal("first terminal maintenance did not enter the operation store")
+	}
+
+	const concurrentCompletions = 64
+	var wg sync.WaitGroup
+	for range concurrentCompletions {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			h.maintainTerminalExecutionRecords(hostTestContext(), now.Add(2*terminalExecutionMaintenanceInterval))
+		}()
+	}
+	wg.Wait()
+	if calls, _ := operations.snapshot(); calls != 1 {
+		t.Fatalf("concurrent operation prune calls = %d, want 1", calls)
+	}
+	if calls, _ := streams.snapshot(); calls != 0 {
+		t.Fatalf("stream prune entered before the single operation prune completed: calls=%d", calls)
+	}
+	close(release)
+	h.lifecycleWG.Wait()
+	operations.configure(nil, nil, nil)
+
+	for range 100 {
+		h.maintainTerminalExecutionRecords(hostTestContext(), now.Add(terminalExecutionMaintenanceInterval-time.Nanosecond))
+	}
+	if calls, _ := operations.snapshot(); calls != 1 {
+		t.Fatalf("high-frequency operation prune calls within interval = %d, want 1", calls)
+	}
+	if calls, _ := streams.snapshot(); calls != 1 {
+		t.Fatalf("high-frequency stream prune calls within interval = %d, want 1", calls)
+	}
+
+	h.maintainTerminalExecutionRecords(hostTestContext(), now.Add(terminalExecutionMaintenanceInterval))
+	h.lifecycleWG.Wait()
+	if calls, _ := operations.snapshot(); calls != 2 {
+		t.Fatalf("operation prune calls after interval = %d, want 2", calls)
+	}
+	if calls, _ := streams.snapshot(); calls != 2 {
+		t.Fatalf("stream prune calls after interval = %d, want 2", calls)
+	}
+}
+
+func TestTerminalMaintenanceFailureStillRespectsInterval(t *testing.T) {
+	operations := &countingOperationPruneStore{Store: operation.NewMemoryStore()}
+	streams := &countingStreamPruneStore{Store: stream.NewMemoryStore()}
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{operations: operations, streams: streams})
+	operations.reset()
+	streams.reset()
+	now := time.Date(2026, 7, 17, 12, 0, 0, 0, time.UTC)
+	operations.configure(errors.New("operation prune unavailable"), nil, nil)
+
+	h.maintainTerminalExecutionRecords(hostTestContext(), now)
+	h.maintainTerminalExecutionRecords(hostTestContext(), now.Add(terminalExecutionMaintenanceInterval/2))
+	h.lifecycleWG.Wait()
+	if calls, _ := operations.snapshot(); calls != 1 {
+		t.Fatalf("failed operation prune calls within interval = %d, want 1", calls)
+	}
+	if calls, _ := streams.snapshot(); calls != 1 {
+		t.Fatalf("stream prune calls during failed maintenance interval = %d, want 1", calls)
+	}
+
+	operations.configure(nil, nil, nil)
+	h.maintainTerminalExecutionRecords(hostTestContext(), now.Add(terminalExecutionMaintenanceInterval))
+	h.lifecycleWG.Wait()
+	if calls, _ := operations.snapshot(); calls != 2 {
+		t.Fatalf("operation prune calls after failed interval = %d, want 2", calls)
+	}
+	if calls, _ := streams.snapshot(); calls != 2 {
+		t.Fatalf("stream prune calls after failed interval = %d, want 2", calls)
+	}
+}
+
+func TestTerminalMaintenanceDoesNotBlockCompletionAndCloseCancelsIt(t *testing.T) {
+	operations := &countingOperationPruneStore{Store: operation.NewMemoryStore()}
+	adapter := &recordingCapabilityAdapter{result: capability.Result{Data: map[string]any{}}}
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{
+		developerMode: true, localGenerated: true, capabilityID: "example.capability.echo", capabilityAdapter: adapter,
+		operations: operations,
+	})
+	installed, gateway := installEnableAndMintGateway(t, h, buildOperationRPCFixturePackage(t), "operation.view")
+	started, err := h.CallPluginMethod(hostTestContext(), CallMethodRequest{
+		PluginInstanceID: installed.PluginInstanceID, SurfaceInstanceID: "surface_rpc",
+		BridgeChannelID: "bridge_rpc", GatewayToken: gateway.GatewayToken,
+		Method: "documents.archive", Params: map[string]any{"document_id": "doc-1"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	operations.reset()
+	h.executions.mu.Lock()
+	h.executions.terminalMaintenanceNext = time.Time{}
+	h.executions.mu.Unlock()
+	entered := make(chan struct{}, 1)
+	operations.configure(nil, entered, make(chan struct{}))
+	completed := make(chan error, 1)
+	go func() { completed <- adapter.last.Execution.Operation.Complete(hostTestContext()) }()
+	select {
+	case err := <-completed:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("operation completion was blocked by terminal retention pruning")
+	}
+	select {
+	case <-entered:
+	case <-time.After(time.Second):
+		t.Fatal("terminal retention pruning did not start")
+	}
+
+	closed := make(chan error, 1)
+	go func() { closed <- h.Close() }()
+	select {
+	case err := <-closed:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Host.Close() did not cancel and wait for terminal retention pruning")
+	}
+	assertHostOperationStatus(t, h, started.OperationID, operation.StatusCompleted)
+}
+
+func TestHostCloseWaitsForDurableExecutionSetup(t *testing.T) {
+	tests := []struct {
+		name          string
+		packageBytes  func(*testing.T) []byte
+		surfaceID     string
+		method        string
+		params        map[string]any
+		blockStream   bool
+		wantOperation operation.Status
+		wantStream    stream.Status
+	}{
+		{
+			name: "operation register", packageBytes: buildOperationRPCFixturePackage,
+			surfaceID: "operation.view", method: "documents.archive", params: map[string]any{"document_id": "doc-1"},
+			wantOperation: operation.StatusFailed,
+		},
+		{
+			name: "stream register", packageBytes: buildSubscriptionRPCFixturePackage,
+			surfaceID: "subscription.view", method: "logs.tail", blockStream: true,
+			wantOperation: operation.StatusFailed, wantStream: stream.StatusFailed,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			operationStore := operation.NewMemoryStore()
+			streamStore := stream.NewMemoryStore()
+			registerEntered := make(chan struct{}, 1)
+			registerRelease := make(chan struct{})
+			var operations operation.Store = operationStore
+			var streams stream.Store = streamStore
+			if tc.blockStream {
+				streams = &blockingStreamRegisterStore{Store: streamStore, entered: registerEntered, release: registerRelease}
+			} else {
+				operations = &blockingOperationRegisterStore{Store: operationStore, entered: registerEntered, release: registerRelease}
+			}
+			invokeEntered := make(chan struct{}, 1)
+			invokeRelease := make(chan struct{})
+			adapter := &recordingCapabilityAdapter{
+				result: capability.Result{Data: map[string]any{}}, invokeEntered: invokeEntered, invokeRelease: invokeRelease,
+			}
+			h, _, _ := newTestHostWithOptions(t, testHostOptions{
+				developerMode: true, localGenerated: true, capabilityID: "example.capability.echo", capabilityAdapter: adapter,
+				operations: operations, streams: streams,
+			})
+			installed, gateway := installEnableAndMintGateway(t, h, tc.packageBytes(t), tc.surfaceID)
+			callResult := make(chan error, 1)
+			go func() {
+				_, err := h.CallPluginMethod(hostTestContext(), CallMethodRequest{
+					PluginInstanceID: installed.PluginInstanceID, SurfaceInstanceID: "surface_rpc",
+					BridgeChannelID: "bridge_rpc", GatewayToken: gateway.GatewayToken, Method: tc.method,
+					Params: tc.params,
+				})
+				callResult <- err
+			}()
+			select {
+			case <-registerEntered:
+			case <-time.After(time.Second):
+				t.Fatal("execution setup did not reach the blocked durable register")
+			}
+
+			closed := make(chan error, 1)
+			go func() { closed <- h.Close() }()
+			select {
+			case err := <-closed:
+				t.Fatalf("Host.Close() overtook durable execution setup: %v", err)
+			case <-time.After(50 * time.Millisecond):
+			}
+			close(registerRelease)
+			select {
+			case <-invokeEntered:
+			case <-time.After(time.Second):
+				t.Fatal("capability dispatch did not start after durable setup completed")
+			}
+			deadline := time.Now().Add(time.Second)
+			for {
+				h.lifecycleMu.RLock()
+				closedState := h.closed
+				h.lifecycleMu.RUnlock()
+				if closedState {
+					break
+				}
+				if time.Now().After(deadline) {
+					t.Fatal("Host.Close() did not publish the closed lifecycle state")
+				}
+				time.Sleep(time.Millisecond)
+			}
+			close(invokeRelease)
+			select {
+			case err := <-callResult:
+				if err == nil {
+					t.Fatal("execution succeeded after Host.Close() revoked its lease")
+				}
+			case <-time.After(time.Second):
+				t.Fatal("execution did not return after Host.Close()")
+			}
+			select {
+			case err := <-closed:
+				if err != nil {
+					t.Fatal(err)
+				}
+			case <-time.After(time.Second):
+				t.Fatal("Host.Close() did not finish")
+			}
+
+			page, err := operationStore.List(hostTestContext(), operation.ListRequest{PluginInstanceID: installed.PluginInstanceID, AllOwners: true})
+			if err != nil || len(page.Records) != 1 || page.Records[0].Status != tc.wantOperation {
+				t.Fatalf("durable operation state = %#v, %v", page.Records, err)
+			}
+			if tc.wantStream != "" {
+				records, err := streamStore.List(hostTestContext(), stream.ListRequest{PluginInstanceID: installed.PluginInstanceID})
+				if err != nil || len(records) != 1 || records[0].Status != tc.wantStream {
+					t.Fatalf("durable stream state = %#v, %v", records, err)
+				}
+			}
+			assertNoActiveExecutionState(t, h, "host close execution setup")
+		})
+	}
+}
+
 func TestDurableReconciliationRejectsConflictingTerminalPairs(t *testing.T) {
 	h, _, _ := newTestHostWithOptions(t, testHostOptions{developerMode: true, localGenerated: true})
 	binding := capability.ExecutionBinding{
 		InvocationID: "invoke_conflict", AuditCorrelationID: "audit_conflict", OperationID: "operation_conflict", StreamID: "stream_conflict",
 		PluginID: "com.example.conflict", PluginInstanceID: "plugini_conflict", Method: "logs.tail", Execution: "subscription",
+		OwnerSessionHash: "session_hash", OwnerUserHash: "user_hash", OwnerEnvHash: "env_hash", SessionChannelIDHash: "channel_hash",
 	}
-	if _, err := h.adapters.Operations.Register(context.Background(), operation.RegisterRequest{OperationID: binding.OperationID, ExecutionBinding: binding}); err != nil {
+	if _, err := h.adapters.Operations.Register(hostTestContext(), operation.RegisterRequest{OperationID: binding.OperationID, ExecutionBinding: binding}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.adapters.Streams.Register(context.Background(), stream.RegisterRequest{StreamID: binding.StreamID, ExecutionBinding: binding}); err != nil {
+	if _, err := h.adapters.Streams.Register(hostTestContext(), stream.RegisterRequest{StreamID: binding.StreamID, ExecutionBinding: binding}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.adapters.Operations.Finish(context.Background(), operation.FinishRequest{OperationID: binding.OperationID, Status: operation.StatusCompleted}); err != nil {
+	if _, err := h.adapters.Operations.Finish(hostTestContext(), operation.FinishRequest{OperationID: binding.OperationID, Status: operation.StatusCompleted}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.adapters.Streams.Close(context.Background(), stream.CloseRequest{StreamID: binding.StreamID, Status: stream.StatusFailed, Reason: "failed"}); err != nil {
+	if _, err := h.adapters.Streams.Close(hostTestContext(), stream.CloseRequest{
+		StreamID: binding.StreamID, Status: stream.StatusFailed, FailureCode: capability.ExecutionFailurePlatformFailed,
+	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := h.reconcileDurableExecutionStates(context.Background()); !errors.Is(err, errExecutionTerminalConflict) {
+	if err := h.reconcileDurableExecutionStates(hostTestContext()); !errors.Is(err, errExecutionTerminalConflict) {
 		t.Fatalf("reconcileDurableExecutionStates() error = %v, want terminal conflict", err)
 	}
 	assertHostOperationStatus(t, h, binding.OperationID, operation.StatusCompleted)
@@ -4727,15 +5020,15 @@ func TestSubscriptionTerminalWriteFailureRetainsLeaseUntilRetryConverges(t *test
 		operations: operations,
 	})
 	installed, gateway := installEnableAndMintGateway(t, h, buildSubscriptionRPCFixturePackage(t), "subscription.view")
-	result, err := h.CallPluginMethod(context.Background(), CallMethodRequest{
-		PluginInstanceID: installed.PluginInstanceID, SurfaceInstanceID: "surface_rpc", SessionChannelIDHash: "channel_hash",
-		OwnerSessionHash: "session_hash", OwnerUserHash: "user_hash", BridgeChannelID: "bridge_rpc",
-		GatewayToken: gateway.GatewayToken, Method: "logs.tail",
+	result, err := h.CallPluginMethod(hostTestContext(), CallMethodRequest{
+		PluginInstanceID: installed.PluginInstanceID, SurfaceInstanceID: "surface_rpc",
+		BridgeChannelID: "bridge_rpc",
+		GatewayToken:    gateway.GatewayToken, Method: "logs.tail",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := adapter.last.Execution.Stream.Close(context.Background()); !errors.Is(err, finishErr) {
+	if err := adapter.last.Execution.Stream.Close(hostTestContext()); !errors.Is(err, finishErr) {
 		t.Fatalf("Stream.Close() error = %v, want %v", err, finishErr)
 	}
 	assertHostStreamStatus(t, h, result.StreamID, stream.StatusClosed)
@@ -4746,7 +5039,7 @@ func TestSubscriptionTerminalWriteFailureRetainsLeaseUntilRetryConverges(t *test
 	if activeLeases != 1 {
 		t.Fatalf("active execution leases after partial terminal write = %d, want 1", activeLeases)
 	}
-	if err := adapter.last.Execution.Stream.Close(context.Background()); err != nil {
+	if err := adapter.last.Execution.Stream.Close(hostTestContext()); err != nil {
 		t.Fatalf("Stream.Close() retry error = %v", err)
 	}
 	assertHostOperationStatus(t, h, result.OperationID, operation.StatusCompleted)
@@ -4764,10 +5057,10 @@ func TestSubscriptionLatchesOneTerminalIntentAcrossConcurrentCallers(t *testing.
 		developerMode: true, localGenerated: true, capabilityID: "example.capability.echo", capabilityAdapter: adapter,
 	})
 	installed, gateway := installEnableAndMintGateway(t, h, buildSubscriptionRPCFixturePackage(t), "subscription.view")
-	result, err := h.CallPluginMethod(context.Background(), CallMethodRequest{
-		PluginInstanceID: installed.PluginInstanceID, SurfaceInstanceID: "surface_rpc", SessionChannelIDHash: "channel_hash",
-		OwnerSessionHash: "session_hash", OwnerUserHash: "user_hash", BridgeChannelID: "bridge_rpc",
-		GatewayToken: gateway.GatewayToken, Method: "logs.tail",
+	result, err := h.CallPluginMethod(hostTestContext(), CallMethodRequest{
+		PluginInstanceID: installed.PluginInstanceID, SurfaceInstanceID: "surface_rpc",
+		BridgeChannelID: "bridge_rpc",
+		GatewayToken:    gateway.GatewayToken, Method: "logs.tail",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -4776,11 +5069,11 @@ func TestSubscriptionLatchesOneTerminalIntentAcrossConcurrentCallers(t *testing.
 	errs := make(chan error, 2)
 	go func() {
 		<-start
-		errs <- adapter.last.Execution.Stream.Close(context.Background())
+		errs <- adapter.last.Execution.Stream.Close(hostTestContext())
 	}()
 	go func() {
 		<-start
-		errs <- adapter.last.Execution.Stream.Fail(context.Background(), "adapter failed")
+		errs <- adapter.last.Execution.Stream.Fail(hostTestContext(), capability.ExecutionFailureAdapterFailed, errors.New("adapter failed"))
 	}()
 	close(start)
 	firstErr, secondErr := <-errs, <-errs
@@ -4795,11 +5088,11 @@ func TestSubscriptionLatchesOneTerminalIntentAcrossConcurrentCallers(t *testing.
 	if conflicts != 1 {
 		t.Fatalf("terminal conflict count = %d, errors = [%v, %v]", conflicts, firstErr, secondErr)
 	}
-	operationRecord, err := h.adapters.Operations.Get(context.Background(), result.OperationID)
+	operationRecord, err := h.adapters.Operations.Get(hostTestContext(), result.OperationID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	streamRecord, err := h.adapters.Streams.Get(context.Background(), result.StreamID)
+	streamRecord, err := h.adapters.Streams.Get(hostTestContext(), result.StreamID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -4815,15 +5108,15 @@ func TestRuntimeStreamCompletionReleasesExecutionLease(t *testing.T) {
 		developerMode: true, localGenerated: true, capabilityID: "example.capability.echo", capabilityAdapter: adapter,
 	})
 	installed, gateway := installEnableAndMintGateway(t, h, buildSubscriptionRPCFixturePackage(t), "subscription.view")
-	result, err := h.CallPluginMethod(context.Background(), CallMethodRequest{
-		PluginInstanceID: installed.PluginInstanceID, SurfaceInstanceID: "surface_rpc", SessionChannelIDHash: "channel_hash",
-		OwnerSessionHash: "session_hash", OwnerUserHash: "user_hash", BridgeChannelID: "bridge_rpc",
-		GatewayToken: gateway.GatewayToken, Method: "logs.tail",
+	result, err := h.CallPluginMethod(hostTestContext(), CallMethodRequest{
+		PluginInstanceID: installed.PluginInstanceID, SurfaceInstanceID: "surface_rpc",
+		BridgeChannelID: "bridge_rpc",
+		GatewayToken:    gateway.GatewayToken, Method: "logs.tail",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := (hostRuntimeStreamSink{executions: h.executions}).CloseRuntimeStream(context.Background(), result.StreamID); err != nil {
+	if err := (hostRuntimeStreamSink{executions: h.executions}).CloseRuntimeStream(hostTestContext(), result.StreamID); err != nil {
 		t.Fatalf("CloseRuntimeStream() error = %v", err)
 	}
 	assertHostOperationStatus(t, h, result.OperationID, operation.StatusCompleted)
@@ -4844,19 +5137,19 @@ func TestStreamAppendFailureReleasesReservedQuota(t *testing.T) {
 		streams: streams,
 	})
 	installed, gateway := installEnableAndMintGateway(t, h, buildSubscriptionRPCFixturePackage(t), "subscription.view")
-	if _, err := h.CallPluginMethod(context.Background(), CallMethodRequest{
-		PluginInstanceID: installed.PluginInstanceID, SurfaceInstanceID: "surface_rpc", SessionChannelIDHash: "channel_hash",
-		OwnerSessionHash: "session_hash", OwnerUserHash: "user_hash", BridgeChannelID: "bridge_rpc",
-		GatewayToken: gateway.GatewayToken, Method: "logs.tail",
+	if _, err := h.CallPluginMethod(hostTestContext(), CallMethodRequest{
+		PluginInstanceID: installed.PluginInstanceID, SurfaceInstanceID: "surface_rpc",
+		BridgeChannelID: "bridge_rpc",
+		GatewayToken:    gateway.GatewayToken, Method: "logs.tail",
 	}); err != nil {
 		t.Fatal(err)
 	}
 	sink := adapter.last.Execution.Stream.(*hostStreamSink)
 	sink.maxBytes = 20
-	if err := sink.Append(context.Background(), map[string]any{"line": "a"}); !errors.Is(err, streams.err) {
+	if err := sink.Append(hostTestContext(), map[string]any{"line": "a"}); !errors.Is(err, streams.err) {
 		t.Fatalf("first Append() error = %v, want %v", err, streams.err)
 	}
-	if err := sink.Append(context.Background(), map[string]any{"line": "abc"}); err != nil {
+	if err := sink.Append(hostTestContext(), map[string]any{"line": "abc"}); err != nil {
 		t.Fatalf("second Append() error = %v", err)
 	}
 }
@@ -4870,22 +5163,20 @@ func TestCancelOperationRequestsCancel(t *testing.T) {
 		capabilityAdapter: capabilityAdapter,
 	})
 	installed, gateway := installEnableAndMintGateway(t, h, buildOperationRPCFixturePackage(t), "operation.view")
-	started, err := h.CallPluginMethod(context.Background(), CallMethodRequest{
-		PluginInstanceID:     installed.PluginInstanceID,
-		SurfaceInstanceID:    "surface_rpc",
-		SessionChannelIDHash: "channel_hash",
-		OwnerSessionHash:     "session_hash",
-		OwnerUserHash:        "user_hash",
-		BridgeChannelID:      "bridge_rpc",
-		GatewayToken:         gateway.GatewayToken,
-		Method:               "documents.archive",
+	started, err := h.CallPluginMethod(hostTestContext(), CallMethodRequest{
+		PluginInstanceID:  installed.PluginInstanceID,
+		SurfaceInstanceID: "surface_rpc",
+
+		BridgeChannelID: "bridge_rpc",
+		GatewayToken:    gateway.GatewayToken,
+		Method:          "documents.archive",
 	})
 	if err != nil {
 		t.Fatalf("CallPluginMethod() error = %v", err)
 	}
 
 	now := time.Date(2026, 7, 3, 12, 0, 0, 0, time.UTC)
-	canceled, err := h.CancelOperation(context.Background(), CancelOperationRequest{OperationID: started.OperationID, Reason: "user", Now: now})
+	canceled, err := h.CancelOperation(hostTestContext(), CancelOperationRequest{OperationID: started.OperationID, Reason: "user", Now: now})
 	if err != nil {
 		t.Fatalf("CancelOperation() error = %v", err)
 	}
@@ -4910,6 +5201,51 @@ func TestCancelOperationRequestsCancel(t *testing.T) {
 	}
 }
 
+func TestOperationManagementRequiresExactOwnerScope(t *testing.T) {
+	operations := operation.NewMemoryStore()
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{operations: operations})
+	owner := operationOwnerScope(sessionctx.Context{OwnerSessionHash: "session_hash", OwnerUserHash: "user_hash", OwnerEnvHash: "env_hash", SessionChannelIDHash: "channel_hash"})
+	other := operation.OwnerScope{OwnerSessionHash: "session_other", OwnerUserHash: "user_other", OwnerEnvHash: "env_other", SessionChannelIDHash: "channel_other"}
+	register := func(operationID string, scope operation.OwnerScope) {
+		t.Helper()
+		if _, err := operations.Register(context.Background(), operation.RegisterRequest{
+			OperationID: operationID,
+			ExecutionBinding: capability.ExecutionBinding{
+				InvocationID: "invoke_" + operationID, PluginID: "com.example.plugin", PluginInstanceID: "plugini_scope",
+				Method: "documents.archive", Execution: string(manifest.MethodExecutionOperation),
+				OwnerSessionHash: scope.OwnerSessionHash, OwnerUserHash: scope.OwnerUserHash,
+				OwnerEnvHash: scope.OwnerEnvHash, SessionChannelIDHash: scope.SessionChannelIDHash,
+			},
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	register("op_owned", owner)
+	register("op_other", other)
+
+	listed, err := h.ListOperations(hostTestContext(), ListOperationsRequest{PluginInstanceID: "plugini_scope"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(listed.Operations) != 1 || listed.Operations[0].OperationID != "op_owned" {
+		t.Fatalf("owner-scoped operations = %#v", listed.Operations)
+	}
+	if _, err := h.GetOperation(hostTestContext(), "op_other"); !errors.Is(err, operation.ErrNotFound) {
+		t.Fatalf("cross-owner GetOperation() error = %v, want ErrNotFound", err)
+	}
+	if _, err := h.CancelOperation(hostTestContext(), CancelOperationRequest{OperationID: "op_other", Reason: "cross-owner"}); !errors.Is(err, operation.ErrNotFound) {
+		t.Fatalf("cross-owner CancelOperation() error = %v, want ErrNotFound", err)
+	}
+	otherRecord, err := operations.Get(context.Background(), "op_other")
+	if err != nil || otherRecord.Status != operation.StatusRunning {
+		t.Fatalf("cross-owner operation changed: %#v, %v", otherRecord, err)
+	}
+	owned, err := h.CancelOperation(hostTestContext(), CancelOperationRequest{OperationID: "op_owned", Reason: "owner"})
+	if err != nil || owned.Status != operation.StatusCancelRequested {
+		t.Fatalf("owner CancelOperation() = %#v, %v", owned, err)
+	}
+}
+
 func TestCancelOperationCanBeAcknowledgedThroughHostOwnedSink(t *testing.T) {
 	capabilityAdapter := &recordingCapabilityAdapter{result: capability.Result{Data: map[string]any{}}}
 	h, _, _ := newTestHostWithOptions(t, testHostOptions{
@@ -4919,20 +5255,18 @@ func TestCancelOperationCanBeAcknowledgedThroughHostOwnedSink(t *testing.T) {
 		capabilityAdapter: capabilityAdapter,
 	})
 	installed, gateway := installEnableAndMintGateway(t, h, buildOperationRPCFixturePackage(t), "operation.view")
-	started, err := h.CallPluginMethod(context.Background(), CallMethodRequest{
-		PluginInstanceID:     installed.PluginInstanceID,
-		SurfaceInstanceID:    "surface_rpc",
-		SessionChannelIDHash: "channel_hash",
-		OwnerSessionHash:     "session_hash",
-		OwnerUserHash:        "user_hash",
-		BridgeChannelID:      "bridge_rpc",
-		GatewayToken:         gateway.GatewayToken,
-		Method:               "documents.archive",
+	started, err := h.CallPluginMethod(hostTestContext(), CallMethodRequest{
+		PluginInstanceID:  installed.PluginInstanceID,
+		SurfaceInstanceID: "surface_rpc",
+
+		BridgeChannelID: "bridge_rpc",
+		GatewayToken:    gateway.GatewayToken,
+		Method:          "documents.archive",
 	})
 	if err != nil {
 		t.Fatalf("CallPluginMethod() error = %v", err)
 	}
-	if _, err := h.CancelOperation(context.Background(), CancelOperationRequest{OperationID: started.OperationID, Reason: "user"}); err != nil {
+	if _, err := h.CancelOperation(hostTestContext(), CancelOperationRequest{OperationID: started.OperationID, Reason: "user"}); err != nil {
 		t.Fatalf("CancelOperation() error = %v", err)
 	}
 	select {
@@ -4945,11 +5279,11 @@ func TestCancelOperationCanBeAcknowledgedThroughHostOwnedSink(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("operation sink did not publish the cancel request")
 	}
-	if err := capabilityAdapter.last.Execution.Operation.Cancel(context.Background(), "adapter acknowledged cancellation"); err != nil {
+	if err := capabilityAdapter.last.Execution.Operation.Cancel(hostTestContext(), "adapter acknowledged cancellation"); err != nil {
 		t.Fatalf("Operation.Cancel() error = %v", err)
 	}
 	assertHostOperationStatus(t, h, started.OperationID, operation.StatusCanceled)
-	if err := capabilityAdapter.last.Execution.Operation.Cancel(context.Background(), "duplicate"); !errors.Is(err, capability.ErrExecutionRevoked) {
+	if err := capabilityAdapter.last.Execution.Operation.Cancel(hostTestContext(), "duplicate"); !errors.Is(err, capability.ErrExecutionRevoked) {
 		t.Fatalf("duplicate Operation.Cancel() error = %v, want %v", err, capability.ErrExecutionRevoked)
 	}
 }
@@ -4960,20 +5294,20 @@ func TestCancelOperationAckTimeoutForcesTerminalState(t *testing.T) {
 		developerMode: true, localGenerated: true, capabilityID: "example.capability.echo", capabilityAdapter: capabilityAdapter,
 	})
 	installed, gateway := installEnableAndMintGateway(t, h, buildOperationRPCFixturePackage(t), "operation.view")
-	started, err := h.CallPluginMethod(context.Background(), CallMethodRequest{
-		PluginInstanceID: installed.PluginInstanceID, SurfaceInstanceID: "surface_rpc", SessionChannelIDHash: "channel_hash",
-		OwnerSessionHash: "session_hash", OwnerUserHash: "user_hash", BridgeChannelID: "bridge_rpc",
-		GatewayToken: gateway.GatewayToken, Method: "documents.archive", Params: map[string]any{"document_id": "doc-1"},
+	started, err := h.CallPluginMethod(hostTestContext(), CallMethodRequest{
+		PluginInstanceID: installed.PluginInstanceID, SurfaceInstanceID: "surface_rpc",
+		BridgeChannelID: "bridge_rpc",
+		GatewayToken:    gateway.GatewayToken, Method: "documents.archive", Params: map[string]any{"document_id": "doc-1"},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.CancelOperation(context.Background(), CancelOperationRequest{OperationID: started.OperationID, Reason: "user"}); err != nil {
+	if _, err := h.CancelOperation(hostTestContext(), CancelOperationRequest{OperationID: started.OperationID, Reason: "user"}); err != nil {
 		t.Fatal(err)
 	}
 	deadline := time.Now().Add(time.Second)
 	for {
-		record, err := h.GetOperation(context.Background(), started.OperationID)
+		record, err := h.GetOperation(hostTestContext(), started.OperationID)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -4987,61 +5321,121 @@ func TestCancelOperationAckTimeoutForcesTerminalState(t *testing.T) {
 	}
 }
 
-func TestCancelOperationAckTimeoutRetriesTerminalStoreFailure(t *testing.T) {
+func TestCancelOperationAckTimeoutReleasesExecutionAfterPersistentStoreFailureAndAllowsRetry(t *testing.T) {
 	finishErr := errors.New("operation terminal store unavailable")
-	operations := &failFirstOperationFinishStore{Store: operation.NewMemoryStore(), err: finishErr}
+	operations := &controlledOperationFinishStore{Store: operation.NewMemoryStore(), err: finishErr, failing: true}
 	capabilityAdapter := &recordingCapabilityAdapter{result: capability.Result{Data: map[string]any{}}}
 	h, _, _ := newTestHostWithOptions(t, testHostOptions{
 		developerMode: true, localGenerated: true, capabilityID: "example.capability.echo", capabilityAdapter: capabilityAdapter,
 		operations: operations,
 	})
 	installed, gateway := installEnableAndMintGateway(t, h, buildOperationRPCFixturePackage(t), "operation.view")
-	started, err := h.CallPluginMethod(context.Background(), CallMethodRequest{
-		PluginInstanceID: installed.PluginInstanceID, SurfaceInstanceID: "surface_rpc", SessionChannelIDHash: "channel_hash",
-		OwnerSessionHash: "session_hash", OwnerUserHash: "user_hash", BridgeChannelID: "bridge_rpc",
-		GatewayToken: gateway.GatewayToken, Method: "documents.archive", Params: map[string]any{"document_id": "doc-1"},
+	started, err := h.CallPluginMethod(hostTestContext(), CallMethodRequest{
+		PluginInstanceID: installed.PluginInstanceID, SurfaceInstanceID: "surface_rpc",
+		BridgeChannelID: "bridge_rpc",
+		GatewayToken:    gateway.GatewayToken, Method: "documents.archive", Params: map[string]any{"document_id": "doc-1"},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.CancelOperation(context.Background(), CancelOperationRequest{OperationID: started.OperationID, Reason: "user"}); err != nil {
+	if _, err := h.CancelOperation(hostTestContext(), CancelOperationRequest{OperationID: started.OperationID, Reason: "user"}); err != nil {
+		t.Fatal(err)
+	}
+	waitForOperationFinishCalls(t, operations, 1)
+	h.lifecycleWG.Wait()
+	assertHostOperationStatus(t, h, started.OperationID, operation.StatusCancelRequested)
+	h.executions.mu.Lock()
+	activeLeases := len(h.executions.leases)
+	activePlugins := len(h.executions.leasesByPlugin)
+	activeOperations := len(h.executions.operations)
+	activeStreams := len(h.executions.streams)
+	activeQuotas := len(h.executions.activeByQuotaKey)
+	h.executions.mu.Unlock()
+	if activeLeases != 0 || activePlugins != 0 || activeOperations != 0 || activeStreams != 0 || activeQuotas != 0 {
+		t.Fatalf("ack timeout retained execution state: leases=%d plugins=%d operations=%d streams=%d quotas=%d", activeLeases, activePlugins, activeOperations, activeStreams, activeQuotas)
+	}
+
+	operations.setFailing(false)
+	if _, err := h.CancelOperation(hostTestContext(), CancelOperationRequest{OperationID: started.OperationID, Reason: "retry"}); err != nil {
 		t.Fatal(err)
 	}
 	waitForHostOperationStatus(t, h, started.OperationID, operation.StatusCanceled)
-	if !operations.failedOne {
-		t.Fatal("ack timeout did not exercise the terminal store failure")
-	}
-	h.executions.mu.Lock()
-	activeLeases := len(h.executions.leases)
-	h.executions.mu.Unlock()
-	if activeLeases != 0 {
-		t.Fatalf("ack timeout retained %d execution leases after terminal retry", activeLeases)
+	h.lifecycleWG.Wait()
+	if calls := operations.finishCalls(); calls != 2 {
+		t.Fatalf("operation terminal writes = %d, want 2", calls)
 	}
 }
 
-func TestDetachedCancelAckTimeoutRetriesTerminalStoreFailure(t *testing.T) {
+func TestDetachedCancelAckTimeoutStopsAfterFailureAndAllowsRetry(t *testing.T) {
 	finishErr := errors.New("operation terminal store unavailable")
-	operations := &failFirstOperationFinishStore{Store: operation.NewMemoryStore(), err: finishErr}
+	operations := &controlledOperationFinishStore{Store: operation.NewMemoryStore(), err: finishErr, failing: true}
 	h, _, _ := newTestHostWithOptions(t, testHostOptions{developerMode: true, localGenerated: true, operations: operations})
 	cancelable := true
 	operationID := "operation_detached_12345678"
-	_, err := operations.Register(context.Background(), operation.RegisterRequest{
+	_, err := operations.Register(hostTestContext(), operation.RegisterRequest{
 		OperationID: operationID,
 		ExecutionBinding: capability.ExecutionBinding{
 			InvocationID: "invoke_detached_12345678", OperationID: operationID,
 			PluginID: "com.example.detached", PluginInstanceID: "plugini_detached_12345678", Method: "tasks.run",
+			OwnerSessionHash: "session_hash", OwnerUserHash: "user_hash", OwnerEnvHash: "env_hash", SessionChannelIDHash: "channel_hash",
 		},
 		Cancelable: &cancelable, CancelAckTimeoutMS: 20,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.CancelOperation(context.Background(), CancelOperationRequest{OperationID: operationID, Reason: "user"}); err != nil {
+	if _, err := h.CancelOperation(hostTestContext(), CancelOperationRequest{OperationID: operationID, Reason: "user"}); err != nil {
+		t.Fatal(err)
+	}
+	waitForOperationFinishCalls(t, operations, 1)
+	h.lifecycleWG.Wait()
+	assertHostOperationStatus(t, h, operationID, operation.StatusCancelRequested)
+	if _, loaded := h.detachedCancelJobs.Load(operationID); loaded {
+		t.Fatal("detached cancellation job remained after terminal store failure")
+	}
+
+	operations.setFailing(false)
+	if _, err := h.CancelOperation(hostTestContext(), CancelOperationRequest{OperationID: operationID, Reason: "retry"}); err != nil {
 		t.Fatal(err)
 	}
 	waitForHostOperationStatus(t, h, operationID, operation.StatusCanceled)
-	if !operations.failedOne {
-		t.Fatal("detached ack timeout did not exercise the terminal store failure")
+	h.lifecycleWG.Wait()
+}
+
+func TestHostCloseStopsDetachedCancelAckTimeout(t *testing.T) {
+	operations := operation.NewMemoryStore()
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{developerMode: true, localGenerated: true, operations: operations})
+	cancelable := true
+	operationID := "operation_detached_close_12345678"
+	if _, err := operations.Register(hostTestContext(), operation.RegisterRequest{
+		OperationID: operationID,
+		ExecutionBinding: capability.ExecutionBinding{
+			InvocationID: "invoke_detached_close_12345678", OperationID: operationID,
+			PluginID: "com.example.detached", PluginInstanceID: "plugini_detached_close_12345678", Method: "tasks.run",
+			OwnerSessionHash: "session_hash", OwnerUserHash: "user_hash", OwnerEnvHash: "env_hash", SessionChannelIDHash: "channel_hash",
+		},
+		Cancelable: &cancelable, CancelAckTimeoutMS: 60_000,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.CancelOperation(hostTestContext(), CancelOperationRequest{OperationID: operationID, Reason: "user"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, loaded := h.detachedCancelJobs.Load(operationID); !loaded {
+		t.Fatal("detached cancellation job was not registered")
+	}
+	closed := make(chan error, 1)
+	go func() { closed <- h.Close() }()
+	select {
+	case err := <-closed:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Host.Close() did not stop the detached cancellation job")
+	}
+	if _, loaded := h.detachedCancelJobs.Load(operationID); loaded {
+		t.Fatal("Host.Close() retained the detached cancellation job")
 	}
 }
 
@@ -5067,22 +5461,22 @@ func TestCancelOperationRejectsNonCancelableMethod(t *testing.T) {
 		"echo",
 		verified.Pin,
 	), "operation.view")
-	started, err := h.CallPluginMethod(context.Background(), CallMethodRequest{
-		PluginInstanceID: installed.PluginInstanceID, SurfaceInstanceID: "surface_rpc", SessionChannelIDHash: "channel_hash",
-		OwnerSessionHash: "session_hash", OwnerUserHash: "user_hash", BridgeChannelID: "bridge_rpc",
-		GatewayToken: gateway.GatewayToken, Method: "documents.archive", Params: map[string]any{"document_id": "doc-1"},
+	started, err := h.CallPluginMethod(hostTestContext(), CallMethodRequest{
+		PluginInstanceID: installed.PluginInstanceID, SurfaceInstanceID: "surface_rpc",
+		BridgeChannelID: "bridge_rpc",
+		GatewayToken:    gateway.GatewayToken, Method: "documents.archive", Params: map[string]any{"document_id": "doc-1"},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.CancelOperation(context.Background(), CancelOperationRequest{OperationID: started.OperationID}); !errors.Is(err, operation.ErrNotCancelable) {
+	if _, err := h.CancelOperation(hostTestContext(), CancelOperationRequest{OperationID: started.OperationID}); !errors.Is(err, operation.ErrNotCancelable) {
 		t.Fatalf("CancelOperation() error = %v, want %v", err, operation.ErrNotCancelable)
 	}
 	if capabilityAdapter.cancelCalls != 0 {
 		t.Fatalf("non-cancelable adapter cancel calls = %d, want 0", capabilityAdapter.cancelCalls)
 	}
 	assertHostOperationStatus(t, h, started.OperationID, operation.StatusRunning)
-	if err := capabilityAdapter.last.Execution.Operation.Complete(context.Background()); err != nil {
+	if err := capabilityAdapter.last.Execution.Operation.Complete(hostTestContext()); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -5093,33 +5487,46 @@ func TestCancelSurfaceOperationRejectsScopeMismatch(t *testing.T) {
 		developerMode: true, localGenerated: true, capabilityID: "example.capability.echo", capabilityAdapter: capabilityAdapter,
 	})
 	installed, gateway := installEnableAndMintGateway(t, h, buildOperationRPCFixturePackage(t), "operation.view")
-	started, err := h.CallPluginMethod(context.Background(), CallMethodRequest{
-		PluginInstanceID: installed.PluginInstanceID, SurfaceInstanceID: "surface_rpc", SessionChannelIDHash: "channel_hash",
-		OwnerSessionHash: "session_hash", OwnerUserHash: "user_hash", BridgeChannelID: "bridge_rpc",
-		GatewayToken: gateway.GatewayToken, Method: "documents.archive", Params: map[string]any{"document_id": "doc-1"},
+	started, err := h.CallPluginMethod(hostTestContext(), CallMethodRequest{
+		PluginInstanceID: installed.PluginInstanceID, SurfaceInstanceID: "surface_rpc",
+		BridgeChannelID: "bridge_rpc",
+		GatewayToken:    gateway.GatewayToken, Method: "documents.archive", Params: map[string]any{"document_id": "doc-1"},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	base := CancelSurfaceOperationRequest{
-		OperationID: started.OperationID, SurfaceInstanceID: "surface_rpc", OwnerSessionHash: "session_hash",
-		OwnerUserHash: "user_hash", SessionChannelIDHash: "channel_hash", BridgeChannelID: "bridge_rpc", Reason: "user",
+		OperationID: started.OperationID, SurfaceInstanceID: "surface_rpc",
+		BridgeChannelID: "bridge_rpc", Reason: "user",
 	}
 	tests := []struct {
-		name   string
-		mutate func(*CancelSurfaceOperationRequest)
+		name    string
+		context func() context.Context
+		mutate  func(*CancelSurfaceOperationRequest)
 	}{
 		{name: "surface", mutate: func(req *CancelSurfaceOperationRequest) { req.SurfaceInstanceID = "surface_other" }},
-		{name: "owner session", mutate: func(req *CancelSurfaceOperationRequest) { req.OwnerSessionHash = "session_other" }},
-		{name: "owner user", mutate: func(req *CancelSurfaceOperationRequest) { req.OwnerUserHash = "user_other" }},
-		{name: "session channel", mutate: func(req *CancelSurfaceOperationRequest) { req.SessionChannelIDHash = "channel_other" }},
+		{name: "owner session", context: func() context.Context {
+			return hostTestContextWith("session_other", "user_hash", "env_hash", "channel_hash")
+		}},
+		{name: "owner user", context: func() context.Context {
+			return hostTestContextWith("session_hash", "user_other", "env_hash", "channel_hash")
+		}},
+		{name: "session channel", context: func() context.Context {
+			return hostTestContextWith("session_hash", "user_hash", "env_hash", "channel_other")
+		}},
 		{name: "bridge channel", mutate: func(req *CancelSurfaceOperationRequest) { req.BridgeChannelID = "bridge_other" }},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			req := base
-			tc.mutate(&req)
-			if _, err := h.CancelSurfaceOperation(context.Background(), req); !errors.Is(err, bridge.ErrTokenAudience) {
+			if tc.mutate != nil {
+				tc.mutate(&req)
+			}
+			ctx := hostTestContext()
+			if tc.context != nil {
+				ctx = tc.context()
+			}
+			if _, err := h.CancelSurfaceOperation(ctx, req); !errors.Is(err, bridge.ErrTokenAudience) {
 				t.Fatalf("CancelSurfaceOperation() error = %v, want %v", err, bridge.ErrTokenAudience)
 			}
 		})
@@ -5128,7 +5535,7 @@ func TestCancelSurfaceOperationRejectsScopeMismatch(t *testing.T) {
 		t.Fatalf("mismatched surface cancellation reached adapter %d times", capabilityAdapter.cancelCalls)
 	}
 	assertHostOperationStatus(t, h, started.OperationID, operation.StatusRunning)
-	if _, err := h.CancelSurfaceOperation(context.Background(), base); err != nil {
+	if _, err := h.CancelSurfaceOperation(hostTestContext(), base); err != nil {
 		t.Fatalf("CancelSurfaceOperation() valid scope error = %v", err)
 	}
 	if capabilityAdapter.cancelCalls != 1 {
@@ -5145,22 +5552,20 @@ func TestAsyncExecutionOutlivesSuccessfulRequestContext(t *testing.T) {
 		capabilityAdapter: capabilityAdapter,
 	})
 	installed, gateway := installEnableAndMintGateway(t, h, buildOperationRPCFixturePackage(t), "operation.view")
-	requestContext, cancelRequest := context.WithCancel(context.Background())
+	requestContext, cancelRequest := context.WithCancel(hostTestContext())
 	started, err := h.CallPluginMethod(requestContext, CallMethodRequest{
-		PluginInstanceID:     installed.PluginInstanceID,
-		SurfaceInstanceID:    "surface_rpc",
-		SessionChannelIDHash: "channel_hash",
-		OwnerSessionHash:     "session_hash",
-		OwnerUserHash:        "user_hash",
-		BridgeChannelID:      "bridge_rpc",
-		GatewayToken:         gateway.GatewayToken,
-		Method:               "documents.archive",
+		PluginInstanceID:  installed.PluginInstanceID,
+		SurfaceInstanceID: "surface_rpc",
+
+		BridgeChannelID: "bridge_rpc",
+		GatewayToken:    gateway.GatewayToken,
+		Method:          "documents.archive",
 	})
 	if err != nil {
 		t.Fatalf("CallPluginMethod() error = %v", err)
 	}
 	cancelRequest()
-	if err := capabilityAdapter.last.Execution.Operation.Complete(context.Background()); err != nil {
+	if err := capabilityAdapter.last.Execution.Operation.Complete(hostTestContext()); err != nil {
 		t.Fatalf("Operation.Complete() after request cancellation error = %v", err)
 	}
 	assertHostOperationStatus(t, h, started.OperationID, operation.StatusCompleted)
@@ -5175,28 +5580,26 @@ func TestDisableCancelsHostOwnedOperationWithoutRewritingItAsFailed(t *testing.T
 		capabilityAdapter: capabilityAdapter,
 	})
 	installed, gateway := installEnableAndMintGateway(t, h, buildOperationRPCFixturePackage(t), "operation.view")
-	started, err := h.CallPluginMethod(context.Background(), CallMethodRequest{
-		PluginInstanceID:     installed.PluginInstanceID,
-		SurfaceInstanceID:    "surface_rpc",
-		SessionChannelIDHash: "channel_hash",
-		OwnerSessionHash:     "session_hash",
-		OwnerUserHash:        "user_hash",
-		BridgeChannelID:      "bridge_rpc",
-		GatewayToken:         gateway.GatewayToken,
-		Method:               "documents.archive",
+	started, err := h.CallPluginMethod(hostTestContext(), CallMethodRequest{
+		PluginInstanceID:  installed.PluginInstanceID,
+		SurfaceInstanceID: "surface_rpc",
+
+		BridgeChannelID: "bridge_rpc",
+		GatewayToken:    gateway.GatewayToken,
+		Method:          "documents.archive",
 	})
 	if err != nil {
 		t.Fatalf("CallPluginMethod() error = %v", err)
 	}
-	if _, err := h.DisablePlugin(context.Background(), DisableRequest{
-		PluginInstanceID:   installed.PluginInstanceID,
-		PluginStateVersion: mustPluginStateVersion(t, h, installed.PluginInstanceID),
-		Reason:             "disabled by owner",
+	if _, err := h.DisablePlugin(hostTestContext(), DisableRequest{
+		PluginInstanceID:           installed.PluginInstanceID,
+		ExpectedManagementRevision: mustManagementRevision(t, h, installed.PluginInstanceID),
+		Reason:                     "disabled by owner",
 	}); err != nil {
 		t.Fatalf("DisablePlugin() error = %v", err)
 	}
 	assertHostOperationStatus(t, h, started.OperationID, operation.StatusCanceled)
-	if err := capabilityAdapter.last.Execution.Operation.Cancel(context.Background(), "late adapter acknowledgement"); !errors.Is(err, capability.ErrExecutionRevoked) {
+	if err := capabilityAdapter.last.Execution.Operation.Cancel(hostTestContext(), "late adapter acknowledgement"); !errors.Is(err, capability.ErrExecutionRevoked) {
 		t.Fatalf("Operation.Cancel() after revoke error = %v, want %v", err, capability.ErrExecutionRevoked)
 	}
 }
@@ -5206,55 +5609,55 @@ func TestCancelOperationUsesRouteLocalExecutionRegistration(t *testing.T) {
 		coreAdapter := &recordingCoreActionAdapter{result: capability.Result{Data: map[string]any{"opened": true}}}
 		h, _, _ := newTestHostWithOptions(t, testHostOptions{developerMode: true, localGenerated: true, coreActions: coreAdapter})
 		installed, gateway := installEnableAndMintGateway(t, h, buildCoreActionOperationFixturePackage(t), "core.view")
-		started, err := h.CallPluginMethod(context.Background(), CallMethodRequest{
-			PluginInstanceID: installed.PluginInstanceID, SurfaceInstanceID: "surface_rpc", SessionChannelIDHash: "channel_hash",
-			OwnerSessionHash: "session_hash", OwnerUserHash: "user_hash", BridgeChannelID: "bridge_rpc", GatewayToken: gateway.GatewayToken,
+		started, err := h.CallPluginMethod(hostTestContext(), CallMethodRequest{
+			PluginInstanceID: installed.PluginInstanceID, SurfaceInstanceID: "surface_rpc",
+			BridgeChannelID: "bridge_rpc", GatewayToken: gateway.GatewayToken,
 			Method: "core.open", Params: map[string]any{"target": "settings"},
 		})
 		if err != nil {
 			t.Fatalf("CallPluginMethod() error = %v", err)
 		}
-		coreRecord, err := h.GetOperation(context.Background(), started.OperationID)
+		coreRecord, err := h.GetOperation(hostTestContext(), started.OperationID)
 		if err != nil {
 			t.Fatal(err)
 		}
 		if coreRecord.RouteKind != capability.RouteCoreAction || coreRecord.Contract != nil || coreRecord.Permissions.Required == nil || coreRecord.Permissions.Granted == nil {
 			t.Fatalf("core action execution binding mismatch: %#v", coreRecord.ExecutionBinding)
 		}
-		if _, err := h.CancelOperation(context.Background(), CancelOperationRequest{OperationID: started.OperationID, Reason: "user"}); err != nil {
+		if _, err := h.CancelOperation(hostTestContext(), CancelOperationRequest{OperationID: started.OperationID, Reason: "user"}); err != nil {
 			t.Fatalf("CancelOperation() error = %v", err)
 		}
 		if coreAdapter.cancelCalls != 1 || coreAdapter.lastCancellation.OperationID != started.OperationID {
 			t.Fatalf("core action cancellation mismatch: calls=%d request=%#v", coreAdapter.cancelCalls, coreAdapter.lastCancellation)
 		}
-		if err := coreAdapter.last.Execution.Operation.Cancel(context.Background(), "acknowledged"); err != nil {
+		if err := coreAdapter.last.Execution.Operation.Cancel(hostTestContext(), "acknowledged"); err != nil {
 			t.Fatalf("Operation.Cancel() error = %v", err)
 		}
 	})
 
 	t.Run("worker", func(t *testing.T) {
-		runtime := &recordingRuntimeSupervisor{
+		runtime := &recordingRuntimeManager{
 			health: runtimeclient.Health{RuntimeInstanceID: "runtime_1", RuntimeGenerationID: "runtime_gen_1", IPCChannelID: "ipc_1", ConnectionNonce: "connection_nonce_1234567890", Ready: true},
 			result: capability.Result{Data: map[string]any{"from_worker": true}},
 		}
-		h, _, _ := newTestHostWithOptions(t, testHostOptions{developerMode: true, localGenerated: true, runtimeSupervisor: runtime})
+		h, _, _ := newTestHostWithOptions(t, testHostOptions{developerMode: true, localGenerated: true, runtimeManager: runtime})
 		installed, gateway := installEnableAndMintGateway(t, h, buildWorkerOperationFixturePackage(t), "worker.view")
-		started, err := h.CallPluginMethod(context.Background(), CallMethodRequest{
-			PluginInstanceID: installed.PluginInstanceID, SurfaceInstanceID: "surface_rpc", SessionChannelIDHash: "channel_hash",
-			OwnerSessionHash: "session_hash", OwnerUserHash: "user_hash", BridgeChannelID: "bridge_rpc", GatewayToken: gateway.GatewayToken,
+		started, err := h.CallPluginMethod(hostTestContext(), CallMethodRequest{
+			PluginInstanceID: installed.PluginInstanceID, SurfaceInstanceID: "surface_rpc",
+			BridgeChannelID: "bridge_rpc", GatewayToken: gateway.GatewayToken,
 			Method: "worker.echo", Params: map[string]any{"message": "hello"},
 		})
 		if err != nil {
 			t.Fatalf("CallPluginMethod() error = %v", err)
 		}
-		workerRecord, err := h.GetOperation(context.Background(), started.OperationID)
+		workerRecord, err := h.GetOperation(hostTestContext(), started.OperationID)
 		if err != nil {
 			t.Fatal(err)
 		}
 		if workerRecord.RouteKind != capability.RouteWorker || workerRecord.Contract != nil || workerRecord.Permissions.Required == nil || workerRecord.Permissions.Granted == nil {
 			t.Fatalf("worker execution binding mismatch: %#v", workerRecord.ExecutionBinding)
 		}
-		if _, err := h.CancelOperation(context.Background(), CancelOperationRequest{OperationID: started.OperationID, Reason: "user"}); err != nil {
+		if _, err := h.CancelOperation(hostTestContext(), CancelOperationRequest{OperationID: started.OperationID, Reason: "user"}); err != nil {
 			t.Fatalf("CancelOperation() error = %v", err)
 		}
 		select {
@@ -5266,23 +5669,26 @@ func TestCancelOperationUsesRouteLocalExecutionRegistration(t *testing.T) {
 }
 
 func TestOperationFailurePathsCloseHostOwnedHandle(t *testing.T) {
+	const sensitiveAdapterFailure = "adapter token secret at /Users/private/runtime.sock"
 	cases := []struct {
-		name    string
-		adapter *recordingCapabilityAdapter
+		name          string
+		adapter       *recordingCapabilityAdapter
+		internalCause string
 	}{
-		{name: "adapter error", adapter: &recordingCapabilityAdapter{err: errors.New("adapter failed")}},
+		{name: "adapter error", adapter: &recordingCapabilityAdapter{err: errors.New(sensitiveAdapterFailure)}, internalCause: sensitiveAdapterFailure},
 		{name: "response schema failure", adapter: &recordingCapabilityAdapter{result: capability.Result{Data: map[string]any{"unexpected": true}}}},
 		{name: "adapter panic", adapter: &recordingCapabilityAdapter{panicValue: "adapter panic"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			diagnostics := &diagnosticSink{}
 			h, _, _ := newTestHostWithOptions(t, testHostOptions{
-				developerMode: true, localGenerated: true, capabilityID: "example.capability.echo", capabilityAdapter: tc.adapter,
+				developerMode: true, localGenerated: true, capabilityID: "example.capability.echo", capabilityAdapter: tc.adapter, diagnostics: diagnostics,
 			})
 			installed, gateway := installEnableAndMintGateway(t, h, buildOperationRPCFixturePackage(t), "operation.view")
-			if _, err := h.CallPluginMethod(context.Background(), CallMethodRequest{
-				PluginInstanceID: installed.PluginInstanceID, SurfaceInstanceID: "surface_rpc", SessionChannelIDHash: "channel_hash",
-				OwnerSessionHash: "session_hash", OwnerUserHash: "user_hash", BridgeChannelID: "bridge_rpc", GatewayToken: gateway.GatewayToken,
+			if _, err := h.CallPluginMethod(hostTestContext(), CallMethodRequest{
+				PluginInstanceID: installed.PluginInstanceID, SurfaceInstanceID: "surface_rpc",
+				BridgeChannelID: "bridge_rpc", GatewayToken: gateway.GatewayToken,
 				Method: "documents.archive",
 			}); err == nil {
 				t.Fatal("CallPluginMethod() expected failure")
@@ -5290,8 +5696,36 @@ func TestOperationFailurePathsCloseHostOwnedHandle(t *testing.T) {
 			if tc.adapter.last.Execution.Operation == nil {
 				t.Fatal("adapter did not receive a Host-owned operation sink")
 			}
-			assertHostOperationStatus(t, h, tc.adapter.last.Execution.Operation.ID(), operation.StatusFailed)
-			if err := tc.adapter.last.Execution.Operation.Complete(context.Background()); !errors.Is(err, capability.ErrExecutionRevoked) {
+			operationID := tc.adapter.last.Execution.Operation.ID()
+			assertHostOperationStatus(t, h, operationID, operation.StatusFailed)
+			record, err := h.GetOperation(hostTestContext(), operationID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if record.Reason != executionFailedReason {
+				t.Fatalf("durable failure reason = %q, want %q", record.Reason, executionFailedReason)
+			}
+			encoded, err := json.Marshal(record)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.internalCause != "" && strings.Contains(string(encoded), tc.internalCause) {
+				t.Fatalf("durable operation leaked internal cause: %s", encoded)
+			}
+			var failureDiagnostic *observability.DiagnosticEvent
+			for index := range diagnostics.events {
+				if diagnostics.events[index].Type == "plugin.execution.failed" {
+					failureDiagnostic = &diagnostics.events[index]
+					break
+				}
+			}
+			if failureDiagnostic == nil || failureDiagnostic.Message != executionFailedReason {
+				t.Fatalf("execution failure diagnostic mismatch: %#v", diagnostics.events)
+			}
+			if tc.internalCause != "" && failureDiagnostic.InternalDetails["error"] != tc.internalCause {
+				t.Fatalf("execution failure internal cause mismatch: %#v", failureDiagnostic)
+			}
+			if err := tc.adapter.last.Execution.Operation.Complete(hostTestContext()); !errors.Is(err, capability.ErrExecutionRevoked) {
 				t.Fatalf("Operation.Complete() after failure error = %v, want %v", err, capability.ErrExecutionRevoked)
 			}
 		})
@@ -5315,9 +5749,9 @@ func TestCallPluginMethodRecordsNegativeAuditAndDiagnostic(t *testing.T) {
 				developerMode: true, localGenerated: true, capabilityID: "example.capability.echo", capabilityAdapter: tc.adapter, diagnostics: diagnostics,
 			})
 			installed, gateway := installEnableAndMintGateway(t, h, buildRPCFixturePackage(t), "rpc.view")
-			if _, err := h.CallPluginMethod(context.Background(), CallMethodRequest{
-				PluginInstanceID: installed.PluginInstanceID, SurfaceInstanceID: "surface_rpc", SessionChannelIDHash: "channel_hash",
-				OwnerSessionHash: "session_hash", OwnerUserHash: "user_hash", BridgeChannelID: "bridge_rpc", GatewayToken: gateway.GatewayToken,
+			if _, err := h.CallPluginMethod(hostTestContext(), CallMethodRequest{
+				PluginInstanceID: installed.PluginInstanceID, SurfaceInstanceID: "surface_rpc",
+				BridgeChannelID: "bridge_rpc", GatewayToken: gateway.GatewayToken,
 				Method: "echo.ping", Params: tc.params,
 			}); err == nil {
 				t.Fatal("CallPluginMethod() expected rejection")
@@ -5366,16 +5800,19 @@ func TestCallPluginMethodValidatesPublishedBusinessErrors(t *testing.T) {
 		return h, installed, gateway, audits
 	}
 	call := func(h *Host, installed registry.PluginRecord, gateway bridge.GatewayTokenResult) error {
-		_, err := h.CallPluginMethod(context.Background(), CallMethodRequest{
-			PluginInstanceID: installed.PluginInstanceID, SurfaceInstanceID: "surface_rpc", SessionChannelIDHash: "channel_hash",
-			OwnerSessionHash: "session_hash", OwnerUserHash: "user_hash", BridgeChannelID: "bridge_rpc", GatewayToken: gateway.GatewayToken,
+		_, err := h.CallPluginMethod(hostTestContext(), CallMethodRequest{
+			PluginInstanceID: installed.PluginInstanceID, SurfaceInstanceID: "surface_rpc",
+			BridgeChannelID: "bridge_rpc", GatewayToken: gateway.GatewayToken,
 			Method: "echo.ping",
 		})
 		return err
 	}
 
 	t.Run("declared error", func(t *testing.T) {
-		adapter := &recordingCapabilityAdapter{err: capability.NewBusinessError("DOCUMENT_NOT_FOUND", "adapter detail", map[string]any{"document_id": "doc-1"})}
+		adapter := &recordingCapabilityAdapter{err: &mutation.Error{
+			Outcome: mutation.OutcomeNotCommitted,
+			Err:     capability.NewBusinessError("DOCUMENT_NOT_FOUND", "adapter detail", map[string]any{"document_id": "doc-1"}),
+		}}
 		h, installed, gateway, audits := newHost(t, adapter)
 		err := call(h, installed, gateway)
 		var businessError *capability.BusinessError
@@ -5386,6 +5823,9 @@ func TestCallPluginMethodValidatesPublishedBusinessErrors(t *testing.T) {
 		}
 		if event, ok := audits.lastEvent("plugin.method.rejected"); !ok || event.Details["reason"] != "business_error" {
 			t.Fatalf("missing business error audit: %#v", audits.events)
+		}
+		if got := mutation.ForError(err); got != mutation.OutcomeNotCommitted {
+			t.Fatalf("mutation.ForError() = %q, want %q", got, mutation.OutcomeNotCommitted)
 		}
 	})
 
@@ -5418,23 +5858,24 @@ func TestCancelOperationReturnsDispatchFailureButKeepsCancelRequested(t *testing
 		capabilityAdapter: capabilityAdapter,
 	})
 	installed, gateway := installEnableAndMintGateway(t, h, buildOperationRPCFixturePackage(t), "operation.view")
-	started, err := h.CallPluginMethod(context.Background(), CallMethodRequest{
-		PluginInstanceID:     installed.PluginInstanceID,
-		SurfaceInstanceID:    "surface_rpc",
-		SessionChannelIDHash: "channel_hash",
-		OwnerSessionHash:     "session_hash",
-		OwnerUserHash:        "user_hash",
-		BridgeChannelID:      "bridge_rpc",
-		GatewayToken:         gateway.GatewayToken,
-		Method:               "documents.archive",
+	started, err := h.CallPluginMethod(hostTestContext(), CallMethodRequest{
+		PluginInstanceID:  installed.PluginInstanceID,
+		SurfaceInstanceID: "surface_rpc",
+
+		BridgeChannelID: "bridge_rpc",
+		GatewayToken:    gateway.GatewayToken,
+		Method:          "documents.archive",
 	})
 	if err != nil {
 		t.Fatalf("CallPluginMethod() error = %v", err)
 	}
 
-	canceled, err := h.CancelOperation(context.Background(), CancelOperationRequest{OperationID: started.OperationID, Reason: "user"})
+	canceled, err := h.CancelOperation(hostTestContext(), CancelOperationRequest{OperationID: started.OperationID, Reason: "user"})
 	if !errors.Is(err, ErrOperationCancelDispatchFailed) {
 		t.Fatalf("CancelOperation() error = %v, want %v", err, ErrOperationCancelDispatchFailed)
+	}
+	if got := mutation.ForError(err); got != mutation.OutcomeUnknown {
+		t.Fatalf("mutation.ForError() = %q, want %q", got, mutation.OutcomeUnknown)
 	}
 	if canceled.Status != operation.StatusCancelRequested {
 		t.Fatalf("returned operation status = %s, want %s: %#v", canceled.Status, operation.StatusCancelRequested, canceled)
@@ -5460,15 +5901,13 @@ func TestCallPluginMethodRejectsInvalidGatewayToken(t *testing.T) {
 	})
 	installed, _ := installEnableAndMintGateway(t, h, buildRPCFixturePackage(t), "rpc.view")
 
-	if _, err := h.CallPluginMethod(context.Background(), CallMethodRequest{
-		PluginInstanceID:     installed.PluginInstanceID,
-		SurfaceInstanceID:    "surface_rpc",
-		SessionChannelIDHash: "channel_hash",
-		OwnerSessionHash:     "session_hash",
-		OwnerUserHash:        "user_hash",
-		BridgeChannelID:      "bridge_rpc",
-		GatewayToken:         "plugin_gateway_token.invalid",
-		Method:               "echo.ping",
+	if _, err := h.CallPluginMethod(hostTestContext(), CallMethodRequest{
+		PluginInstanceID:  installed.PluginInstanceID,
+		SurfaceInstanceID: "surface_rpc",
+
+		BridgeChannelID: "bridge_rpc",
+		GatewayToken:    "plugin_gateway_token.invalid",
+		Method:          "echo.ping",
 	}); err == nil {
 		t.Fatal("CallPluginMethod() expected token error")
 	}
@@ -5491,10 +5930,10 @@ func TestCallPluginMethodAuditsRemoteSessionMismatch(t *testing.T) {
 		capabilityAdapter: capabilityAdapter, diagnostics: diagnostics,
 	})
 	installed, gateway := installEnableAndMintGateway(t, h, buildRPCFixturePackage(t), "rpc.view")
-	if _, err := h.CallPluginMethod(context.Background(), CallMethodRequest{
-		PluginInstanceID: installed.PluginInstanceID, SurfaceInstanceID: "surface_rpc", SessionChannelIDHash: "channel_other",
-		OwnerSessionHash: "session_hash", OwnerUserHash: "user_hash", BridgeChannelID: "bridge_rpc",
-		GatewayToken: gateway.GatewayToken, Method: "echo.ping",
+	if _, err := h.CallPluginMethod(hostTestContextWith("other_session", "user_hash", "env_hash", "channel_hash"), CallMethodRequest{
+		PluginInstanceID: installed.PluginInstanceID, SurfaceInstanceID: "surface_rpc",
+		BridgeChannelID: "bridge_rpc",
+		GatewayToken:    gateway.GatewayToken, Method: "echo.ping",
 	}); !errors.Is(err, bridge.ErrTokenAudience) {
 		t.Fatalf("CallPluginMethod() error = %v, want %v", err, bridge.ErrTokenAudience)
 	}
@@ -5517,19 +5956,19 @@ func TestCallPluginMethodAuditsTrustUnavailable(t *testing.T) {
 		capabilityAdapter: capabilityAdapter, diagnostics: diagnostics,
 	})
 	installed, gateway := installEnableAndMintGateway(t, h, buildRPCFixturePackage(t), "rpc.view")
-	record, err := h.adapters.Registry.GetPlugin(context.Background(), installed.PluginInstanceID)
+	record, err := h.adapters.Registry.GetPlugin(hostTestContext(), installed.PluginInstanceID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	record.TrustState = registry.TrustUnavailable
 	record.TrustAssessment.TrustState = registry.TrustUnavailable
-	if _, err := h.adapters.Registry.PutPlugin(context.Background(), record, registry.PutOptions{}); err != nil {
+	if _, err := h.adapters.Registry.PutPlugin(hostTestContext(), record, registry.PutOptions{}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.CallPluginMethod(context.Background(), CallMethodRequest{
-		PluginInstanceID: installed.PluginInstanceID, SurfaceInstanceID: "surface_rpc", SessionChannelIDHash: "channel_hash",
-		OwnerSessionHash: "session_hash", OwnerUserHash: "user_hash", BridgeChannelID: "bridge_rpc",
-		GatewayToken: gateway.GatewayToken, Method: "echo.ping",
+	if _, err := h.CallPluginMethod(hostTestContext(), CallMethodRequest{
+		PluginInstanceID: installed.PluginInstanceID, SurfaceInstanceID: "surface_rpc",
+		BridgeChannelID: "bridge_rpc",
+		GatewayToken:    gateway.GatewayToken, Method: "echo.ping",
 	}); err == nil {
 		t.Fatal("CallPluginMethod() accepted a trust-unavailable plugin")
 	}
@@ -5557,15 +5996,13 @@ func TestCallPluginMethodHonorsLocalPolicyDeny(t *testing.T) {
 	})
 	installed, gateway := installEnableAndMintGateway(t, h, buildRPCFixturePackage(t), "rpc.view")
 
-	if _, err := h.CallPluginMethod(context.Background(), CallMethodRequest{
-		PluginInstanceID:     installed.PluginInstanceID,
-		SurfaceInstanceID:    "surface_rpc",
-		SessionChannelIDHash: "channel_hash",
-		OwnerSessionHash:     "session_hash",
-		OwnerUserHash:        "user_hash",
-		BridgeChannelID:      "bridge_rpc",
-		GatewayToken:         gateway.GatewayToken,
-		Method:               "echo.ping",
+	if _, err := h.CallPluginMethod(hostTestContext(), CallMethodRequest{
+		PluginInstanceID:  installed.PluginInstanceID,
+		SurfaceInstanceID: "surface_rpc",
+
+		BridgeChannelID: "bridge_rpc",
+		GatewayToken:    gateway.GatewayToken,
+		Method:          "echo.ping",
 	}); !errors.Is(err, security.ErrPolicyDenied) {
 		t.Fatalf("CallPluginMethod() error = %v, want ErrPolicyDenied", err)
 	}
@@ -5589,22 +6026,25 @@ func TestCallPluginMethodHonorsSecurityPolicyDeny(t *testing.T) {
 		capabilityAdapter: capabilityAdapter,
 	})
 	installed, _ := installEnableAndMintGateway(t, h, buildRPCFixturePackage(t), "rpc.view")
-	beforePolicy, err := h.adapters.Registry.GetPlugin(context.Background(), installed.PluginInstanceID)
+	beforePolicy, err := h.adapters.Registry.GetPlugin(hostTestContext(), installed.PluginInstanceID)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	policy, err := h.PutSecurityPolicy(context.Background(), PutSecurityPolicyRequest{
-		PluginInstanceID: installed.PluginInstanceID,
-		DeniedMethods:    []string{"echo.ping"},
+	policy, err := h.PutSecurityPolicy(hostTestContext(), PutSecurityPolicyRequest{
+		PluginInstanceID:           installed.PluginInstanceID,
+		ExpectedPolicyRevision:     beforePolicy.PolicyRevision,
+		ExpectedManagementRevision: beforePolicy.ManagementRevision,
+		ExpectedRevokeEpoch:        beforePolicy.RevokeEpoch,
+		DeniedMethods:              []string{"echo.ping"},
 	})
 	if err != nil {
 		t.Fatalf("PutSecurityPolicy() error = %v", err)
 	}
-	if len(policy.DeniedMethods) != 1 || policy.DeniedMethods[0] != "echo.ping" {
+	if len(policy.Policy.DeniedMethods) != 1 || policy.Policy.DeniedMethods[0] != "echo.ping" {
 		t.Fatalf("policy mismatch: %#v", policy)
 	}
-	afterPolicy, err := h.adapters.Registry.GetPlugin(context.Background(), installed.PluginInstanceID)
+	afterPolicy, err := h.adapters.Registry.GetPlugin(hostTestContext(), installed.PluginInstanceID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -5612,15 +6052,13 @@ func TestCallPluginMethodHonorsSecurityPolicyDeny(t *testing.T) {
 		t.Fatalf("security policy update did not bump policy/revoke revisions: before=%#v after=%#v", beforePolicy, afterPolicy)
 	}
 	_, gateway := openSurfaceAndMintGateway(t, h, installed.PluginInstanceID, "rpc.view")
-	if _, err := h.CallPluginMethod(context.Background(), CallMethodRequest{
-		PluginInstanceID:     installed.PluginInstanceID,
-		SurfaceInstanceID:    "surface_rpc",
-		SessionChannelIDHash: "channel_hash",
-		OwnerSessionHash:     "session_hash",
-		OwnerUserHash:        "user_hash",
-		BridgeChannelID:      "bridge_rpc",
-		GatewayToken:         gateway.GatewayToken,
-		Method:               "echo.ping",
+	if _, err := h.CallPluginMethod(hostTestContext(), CallMethodRequest{
+		PluginInstanceID:  installed.PluginInstanceID,
+		SurfaceInstanceID: "surface_rpc",
+
+		BridgeChannelID: "bridge_rpc",
+		GatewayToken:    gateway.GatewayToken,
+		Method:          "echo.ping",
 	}); !errors.Is(err, security.ErrPolicyDenied) {
 		t.Fatalf("CallPluginMethod() error = %v, want ErrPolicyDenied", err)
 	}
@@ -5628,19 +6066,22 @@ func TestCallPluginMethodHonorsSecurityPolicyDeny(t *testing.T) {
 		t.Fatalf("capability adapter was called before security policy allowed it: %d", capabilityAdapter.calls)
 	}
 
-	if err := h.DeleteSecurityPolicy(context.Background(), DeleteSecurityPolicyRequest{PluginInstanceID: installed.PluginInstanceID}); err != nil {
+	if _, err := h.DeleteSecurityPolicy(hostTestContext(), DeleteSecurityPolicyRequest{
+		PluginInstanceID:           installed.PluginInstanceID,
+		ExpectedPolicyRevision:     afterPolicy.PolicyRevision,
+		ExpectedManagementRevision: afterPolicy.ManagementRevision,
+		ExpectedRevokeEpoch:        afterPolicy.RevokeEpoch,
+	}); err != nil {
 		t.Fatalf("DeleteSecurityPolicy() error = %v", err)
 	}
 	_, gateway = openSurfaceAndMintGateway(t, h, installed.PluginInstanceID, "rpc.view")
-	if _, err := h.CallPluginMethod(context.Background(), CallMethodRequest{
-		PluginInstanceID:     installed.PluginInstanceID,
-		SurfaceInstanceID:    "surface_rpc",
-		SessionChannelIDHash: "channel_hash",
-		OwnerSessionHash:     "session_hash",
-		OwnerUserHash:        "user_hash",
-		BridgeChannelID:      "bridge_rpc",
-		GatewayToken:         gateway.GatewayToken,
-		Method:               "echo.ping",
+	if _, err := h.CallPluginMethod(hostTestContext(), CallMethodRequest{
+		PluginInstanceID:  installed.PluginInstanceID,
+		SurfaceInstanceID: "surface_rpc",
+
+		BridgeChannelID: "bridge_rpc",
+		GatewayToken:    gateway.GatewayToken,
+		Method:          "echo.ping",
 	}); err != nil {
 		t.Fatalf("CallPluginMethod() after policy delete error = %v", err)
 	}
@@ -5664,18 +6105,16 @@ func TestCallPluginMethodRequiresConfirmationForDangerousMethod(t *testing.T) {
 	})
 	installed, gateway := installEnableAndMintGateway(t, h, buildDangerousRPCFixturePackage(t), "danger.view")
 	call := CallMethodRequest{
-		PluginInstanceID:     installed.PluginInstanceID,
-		SurfaceInstanceID:    "surface_rpc",
-		SessionChannelIDHash: "channel_hash",
-		OwnerSessionHash:     "session_hash",
-		OwnerUserHash:        "user_hash",
-		BridgeChannelID:      "bridge_rpc",
-		GatewayToken:         gateway.GatewayToken,
-		Method:               "danger.run",
-		Params:               map[string]any{"target": "db"},
+		PluginInstanceID:  installed.PluginInstanceID,
+		SurfaceInstanceID: "surface_rpc",
+
+		BridgeChannelID: "bridge_rpc",
+		GatewayToken:    gateway.GatewayToken,
+		Method:          "danger.run",
+		Params:          map[string]any{"target": "db"},
 	}
 
-	result, err := h.CallPluginMethod(context.Background(), call)
+	result, err := h.CallPluginMethod(hostTestContext(), call)
 	if !errors.Is(err, ErrConfirmationRequired) {
 		t.Fatalf("CallPluginMethod() error = %v, want ErrConfirmationRequired", err)
 	}
@@ -5692,7 +6131,7 @@ func TestCallPluginMethodRequiresConfirmationForDangerousMethod(t *testing.T) {
 		t.Fatalf("missing confirmation rejection diagnostic: %#v", diagnostics.events)
 	}
 
-	confirmation, err := h.PrepareMethodConfirmation(context.Background(), ConfirmMethodRequest(call))
+	confirmation, err := h.PrepareMethodConfirmation(hostTestContext(), prepareConfirmationRequest(call))
 	if err != nil {
 		t.Fatalf("PrepareMethodConfirmation() error = %v", err)
 	}
@@ -5704,7 +6143,7 @@ func TestCallPluginMethodRequiresConfirmationForDangerousMethod(t *testing.T) {
 	}
 
 	call.ConfirmationID = confirmation.ConfirmationID
-	confirmed, err := h.CallPluginMethod(context.Background(), call)
+	confirmed, err := h.CallPluginMethod(hostTestContext(), call)
 	if err != nil {
 		t.Fatalf("CallPluginMethod() with confirmation error = %v", err)
 	}
@@ -5730,41 +6169,37 @@ func TestRejectMethodConfirmationConsumesIntentWithoutDispatch(t *testing.T) {
 	})
 	installed, gateway := installEnableAndMintGateway(t, h, buildDangerousRPCFixturePackage(t), "danger.view")
 	call := CallMethodRequest{
-		PluginInstanceID:     installed.PluginInstanceID,
-		SurfaceInstanceID:    "surface_rpc",
-		SessionChannelIDHash: "channel_hash",
-		OwnerSessionHash:     "session_hash",
-		OwnerUserHash:        "user_hash",
-		BridgeChannelID:      "bridge_rpc",
-		GatewayToken:         gateway.GatewayToken,
-		Method:               "danger.run",
-		Params:               map[string]any{"target": "db"},
+		PluginInstanceID:  installed.PluginInstanceID,
+		SurfaceInstanceID: "surface_rpc",
+
+		BridgeChannelID: "bridge_rpc",
+		GatewayToken:    gateway.GatewayToken,
+		Method:          "danger.run",
+		Params:          map[string]any{"target": "db"},
 	}
-	confirmation, err := h.PrepareMethodConfirmation(context.Background(), ConfirmMethodRequest(call))
+	confirmation, err := h.PrepareMethodConfirmation(hostTestContext(), prepareConfirmationRequest(call))
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	reject := RejectMethodConfirmationRequest{
-		PluginInstanceID:     call.PluginInstanceID,
-		SurfaceInstanceID:    call.SurfaceInstanceID,
-		SessionChannelIDHash: call.SessionChannelIDHash,
-		OwnerSessionHash:     call.OwnerSessionHash,
-		OwnerUserHash:        call.OwnerUserHash,
-		BridgeChannelID:      call.BridgeChannelID,
-		GatewayToken:         call.GatewayToken,
-		ConfirmationID:       confirmation.ConfirmationID,
+		PluginInstanceID:  call.PluginInstanceID,
+		SurfaceInstanceID: call.SurfaceInstanceID,
+
+		BridgeChannelID: call.BridgeChannelID,
+		GatewayToken:    call.GatewayToken,
+		ConfirmationID:  confirmation.ConfirmationID,
 	}
 	mismatched := reject
 	mismatched.BridgeChannelID = "bridge_other"
-	if _, err := h.RejectMethodConfirmation(context.Background(), mismatched); !errors.Is(err, bridge.ErrTokenAudience) {
+	if _, err := h.RejectMethodConfirmation(hostTestContext(), mismatched); !errors.Is(err, bridge.ErrTokenAudience) {
 		t.Fatalf("RejectMethodConfirmation(scope mismatch) error = %v, want ErrTokenAudience", err)
 	}
-	if listed, err := confirmationIntents.ListConfirmationIntents(context.Background(), security.ListConfirmationIntentsRequest{PluginInstanceID: installed.PluginInstanceID}); err != nil || len(listed) != 1 {
+	if listed, err := confirmationIntents.ListConfirmationIntents(hostTestContext(), security.ListConfirmationIntentsRequest{PluginInstanceID: installed.PluginInstanceID}); err != nil || len(listed) != 1 {
 		t.Fatalf("scope mismatch consumed confirmation: listed=%#v err=%v", listed, err)
 	}
 
-	result, err := h.RejectMethodConfirmation(context.Background(), reject)
+	result, err := h.RejectMethodConfirmation(hostTestContext(), reject)
 	if err != nil {
 		t.Fatalf("RejectMethodConfirmation() error = %v", err)
 	}
@@ -5774,7 +6209,7 @@ func TestRejectMethodConfirmationConsumesIntentWithoutDispatch(t *testing.T) {
 	if capabilityAdapter.calls != 0 {
 		t.Fatalf("rejected confirmation dispatched adapter %d times", capabilityAdapter.calls)
 	}
-	if listed, err := confirmationIntents.ListConfirmationIntents(context.Background(), security.ListConfirmationIntentsRequest{PluginInstanceID: installed.PluginInstanceID}); err != nil || len(listed) != 0 {
+	if listed, err := confirmationIntents.ListConfirmationIntents(hostTestContext(), security.ListConfirmationIntentsRequest{PluginInstanceID: installed.PluginInstanceID}); err != nil || len(listed) != 0 {
 		t.Fatalf("rejected confirmation remained pending: listed=%#v err=%v", listed, err)
 	}
 	if event, ok := audits.lastEvent("plugin.method.rejected"); !ok || event.Details["reason"] != "confirmation_rejected" {
@@ -5785,7 +6220,7 @@ func TestRejectMethodConfirmationConsumesIntentWithoutDispatch(t *testing.T) {
 	}
 
 	call.ConfirmationID = confirmation.ConfirmationID
-	if _, err := h.CallPluginMethod(context.Background(), call); !errors.Is(err, ErrConfirmationInvalid) {
+	if _, err := h.CallPluginMethod(hostTestContext(), call); !errors.Is(err, ErrConfirmationInvalid) {
 		t.Fatalf("CallPluginMethod(rejected confirmation) error = %v, want ErrConfirmationInvalid", err)
 	}
 	if capabilityAdapter.calls != 0 {
@@ -5793,13 +6228,63 @@ func TestRejectMethodConfirmationConsumesIntentWithoutDispatch(t *testing.T) {
 	}
 }
 
+func TestRejectMethodConfirmationReportsUnknownAfterDurableReject(t *testing.T) {
+	reportErr := errors.New("audit unavailable")
+	capabilityAdapter := &recordingCapabilityAdapter{result: capability.Result{Data: map[string]any{"result": "done"}}}
+	confirmationIntents := security.NewMemoryConfirmationIntentStore()
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{
+		developerMode:       true,
+		localGenerated:      true,
+		capabilityID:        "example.capability.echo",
+		capabilityAdapter:   capabilityAdapter,
+		confirmationIntents: confirmationIntents,
+		audit:               failingAuditSink{err: reportErr},
+	})
+	installed, gateway := installEnableAndMintGateway(t, h, buildDangerousRPCFixturePackage(t), "danger.view")
+	call := CallMethodRequest{
+		PluginInstanceID:  installed.PluginInstanceID,
+		SurfaceInstanceID: "surface_rpc",
+		BridgeChannelID:   "bridge_rpc",
+		GatewayToken:      gateway.GatewayToken,
+		Method:            "danger.run",
+		Params:            map[string]any{"target": "db"},
+	}
+	confirmation, err := h.PrepareMethodConfirmation(hostTestContext(), prepareConfirmationRequest(call))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := h.RejectMethodConfirmation(hostTestContext(), RejectMethodConfirmationRequest{
+		PluginInstanceID:  call.PluginInstanceID,
+		SurfaceInstanceID: call.SurfaceInstanceID,
+		BridgeChannelID:   call.BridgeChannelID,
+		GatewayToken:      call.GatewayToken,
+		ConfirmationID:    confirmation.ConfirmationID,
+	})
+	if !result.Rejected || !errors.Is(err, ErrSecurityEventPersistence) {
+		t.Fatalf("RejectMethodConfirmation() result=%#v error=%v", result, err)
+	}
+	if outcome, ok := mutation.Explicit(err); !ok || outcome != mutation.OutcomeUnknown {
+		t.Fatalf("RejectMethodConfirmation() outcome=(%q, %v), want unknown", outcome, ok)
+	}
+	if listed, listErr := confirmationIntents.ListConfirmationIntents(hostTestContext(), security.ListConfirmationIntentsRequest{PluginInstanceID: installed.PluginInstanceID}); listErr != nil || len(listed) != 0 {
+		t.Fatalf("durably rejected confirmation remained pending: listed=%#v err=%v", listed, listErr)
+	}
+	if capabilityAdapter.calls != 0 {
+		t.Fatalf("durably rejected confirmation dispatched adapter %d times", capabilityAdapter.calls)
+	}
+}
+
 func TestPrepareMethodConfirmationRunsRiskPreflightAndBindsPlanHash(t *testing.T) {
 	capabilityAdapter := &recordingCapabilityAdapter{
 		result: capability.Result{Data: map[string]any{"started": true}},
 		resultsByTarget: map[string]capability.Result{
-			"tasks.start.preflight": {Data: map[string]any{
-				"summary":    "Start task",
-				"risk_flags": []any{"executes_task"},
+			"tasks.start.preflight": {Data: capability.RiskPlan{
+				SchemaVersion: capability.RiskPlanSchemaVersion,
+				Summary:       "Start task",
+				RiskFlags: []capability.RiskFlag{{
+					ID: "executes_task", Severity: capability.RiskSeverityLow, Summary: "Executes task",
+				}},
 			}},
 		},
 	}
@@ -5811,18 +6296,16 @@ func TestPrepareMethodConfirmationRunsRiskPreflightAndBindsPlanHash(t *testing.T
 	})
 	installed, gateway := installEnableAndMintGateway(t, h, buildMethodContractFixturePackage(t), "method_contract.view")
 	call := CallMethodRequest{
-		PluginInstanceID:     installed.PluginInstanceID,
-		SurfaceInstanceID:    "surface_rpc",
-		SessionChannelIDHash: "channel_hash",
-		OwnerSessionHash:     "session_hash",
-		OwnerUserHash:        "user_hash",
-		BridgeChannelID:      "bridge_rpc",
-		GatewayToken:         gateway.GatewayToken,
-		Method:               "tasks.start",
-		Params:               map[string]any{"task_id": "task_1"},
+		PluginInstanceID:  installed.PluginInstanceID,
+		SurfaceInstanceID: "surface_rpc",
+
+		BridgeChannelID: "bridge_rpc",
+		GatewayToken:    gateway.GatewayToken,
+		Method:          "tasks.start",
+		Params:          map[string]any{"task_id": "task_1"},
 	}
 
-	result, err := h.CallPluginMethod(context.Background(), call)
+	result, err := h.CallPluginMethod(hostTestContext(), call)
 	if !errors.Is(err, ErrConfirmationRequired) {
 		t.Fatalf("CallPluginMethod() error = %v, want ErrConfirmationRequired", err)
 	}
@@ -5833,15 +6316,15 @@ func TestPrepareMethodConfirmationRunsRiskPreflightAndBindsPlanHash(t *testing.T
 		t.Fatalf("capability adapter should not run before prepare confirmation, calls=%d", capabilityAdapter.calls)
 	}
 
-	confirmation, err := h.PrepareMethodConfirmation(context.Background(), ConfirmMethodRequest(call))
+	confirmation, err := h.PrepareMethodConfirmation(hostTestContext(), prepareConfirmationRequest(call))
 	if err != nil {
 		t.Fatalf("PrepareMethodConfirmation() error = %v", err)
 	}
 	if confirmation.PlanHash == "" || confirmation.RequestHash != result.RequestHash {
 		t.Fatalf("confirmation plan mismatch: %#v", confirmation)
 	}
-	plan, ok := confirmation.Plan.(map[string]any)
-	if !ok || plan["summary"] != "Start task" {
+	plan, ok := confirmation.Plan.(capability.RiskPlan)
+	if !ok || plan.SchemaVersion != capability.RiskPlanSchemaVersion || plan.Summary != "Start task" {
 		t.Fatalf("confirmation plan = %#v", confirmation.Plan)
 	}
 	if capabilityAdapter.calls != 1 || capabilityAdapter.last.Execution.TargetMethod != "tasks.start.preflight" || capabilityAdapter.last.Execution.Effect != capability.EffectRead {
@@ -5852,7 +6335,7 @@ func TestPrepareMethodConfirmationRunsRiskPreflightAndBindsPlanHash(t *testing.T
 	}
 
 	call.ConfirmationID = confirmation.ConfirmationID
-	confirmed, err := h.CallPluginMethod(context.Background(), call)
+	confirmed, err := h.CallPluginMethod(hostTestContext(), call)
 	if err != nil {
 		t.Fatalf("CallPluginMethod() with confirmation error = %v", err)
 	}
@@ -5868,7 +6351,10 @@ func TestConfirmedCapabilityRerunsPreflightAndRejectsAStalePlan(t *testing.T) {
 	capabilityAdapter := &recordingCapabilityAdapter{
 		result: capability.Result{Data: map[string]any{"started": true}},
 		resultsByTarget: map[string]capability.Result{
-			"tasks.start.preflight": {Data: map[string]any{"summary": "Start task", "risk_flags": []any{"executes_task"}}},
+			"tasks.start.preflight": {Data: capability.RiskPlan{
+				SchemaVersion: capability.RiskPlanSchemaVersion, Summary: "Start task",
+				RiskFlags: []capability.RiskFlag{{ID: "executes_task", Severity: capability.RiskSeverityLow, Summary: "Executes task"}},
+			}},
 		},
 	}
 	diagnostics := &diagnosticSink{}
@@ -5878,19 +6364,23 @@ func TestConfirmedCapabilityRerunsPreflightAndRejectsAStalePlan(t *testing.T) {
 	})
 	installed, gateway := installEnableAndMintGateway(t, h, buildMethodContractFixturePackage(t), "method_contract.view")
 	call := CallMethodRequest{
-		PluginInstanceID: installed.PluginInstanceID, SurfaceInstanceID: "surface_rpc", SessionChannelIDHash: "channel_hash",
-		OwnerSessionHash: "session_hash", OwnerUserHash: "user_hash", BridgeChannelID: "bridge_rpc", GatewayToken: gateway.GatewayToken,
+		PluginInstanceID: installed.PluginInstanceID, SurfaceInstanceID: "surface_rpc",
+		BridgeChannelID: "bridge_rpc", GatewayToken: gateway.GatewayToken,
 		Method: "tasks.start", Params: map[string]any{"task_id": "task_1"},
 	}
-	confirmation, err := h.PrepareMethodConfirmation(context.Background(), ConfirmMethodRequest(call))
+	confirmation, err := h.PrepareMethodConfirmation(hostTestContext(), prepareConfirmationRequest(call))
 	if err != nil {
 		t.Fatal(err)
 	}
-	capabilityAdapter.resultsByTarget["tasks.start.preflight"] = capability.Result{Data: map[string]any{
-		"summary": "Start task after policy change", "risk_flags": []any{"executes_task", "elevated_scope"},
+	capabilityAdapter.resultsByTarget["tasks.start.preflight"] = capability.Result{Data: capability.RiskPlan{
+		SchemaVersion: capability.RiskPlanSchemaVersion, Summary: "Start task after policy change",
+		RiskFlags: []capability.RiskFlag{
+			{ID: "executes_task", Severity: capability.RiskSeverityLow, Summary: "Executes task"},
+			{ID: "elevated_scope", Severity: capability.RiskSeverityHigh, Summary: "Uses elevated scope"},
+		},
 	}}
 	call.ConfirmationID = confirmation.ConfirmationID
-	if _, err := h.CallPluginMethod(context.Background(), call); !errors.Is(err, ErrConfirmationInvalid) {
+	if _, err := h.CallPluginMethod(hostTestContext(), call); !errors.Is(err, ErrConfirmationInvalid) {
 		t.Fatalf("CallPluginMethod() error = %v, want ErrConfirmationInvalid", err)
 	}
 	if capabilityAdapter.last.Execution.TargetMethod != "tasks.start.preflight" {
@@ -5910,11 +6400,12 @@ func TestPrepareMethodConfirmationNormalizesTypedRiskPlanAndRedactsDetails(t *te
 		result: capability.Result{Data: map[string]any{"started": true}},
 		resultsByTarget: map[string]capability.Result{
 			"tasks.start.preflight": {Data: capability.RiskPlan{
-				Summary:     "Start high-risk container",
-				Effect:      capability.EffectExecute,
-				ResourceRef: "container_hash_1",
+				SchemaVersion: capability.RiskPlanSchemaVersion,
+				Summary:       "Start high-risk container",
+				Effect:        capability.EffectExecute,
+				ResourceRef:   "container_hash_1",
 				RiskFlags: []capability.RiskFlag{
-					{ID: "container.host_network", Severity: "HIGH", Summary: "Uses host networking", RequiresAdmin: true},
+					{ID: "container.host_network", Severity: capability.RiskSeverityHigh, Summary: "Uses host networking", RequiresAdmin: true},
 				},
 				Details: map[string]any{
 					"env": []any{
@@ -5937,18 +6428,16 @@ func TestPrepareMethodConfirmationNormalizesTypedRiskPlanAndRedactsDetails(t *te
 	})
 	installed, gateway := installEnableAndMintGateway(t, h, buildMethodContractFixturePackage(t), "method_contract.view")
 	call := CallMethodRequest{
-		PluginInstanceID:     installed.PluginInstanceID,
-		SurfaceInstanceID:    "surface_rpc",
-		SessionChannelIDHash: "channel_hash",
-		OwnerSessionHash:     "session_hash",
-		OwnerUserHash:        "user_hash",
-		BridgeChannelID:      "bridge_rpc",
-		GatewayToken:         gateway.GatewayToken,
-		Method:               "tasks.start",
-		Params:               map[string]any{"task_id": "task_1"},
+		PluginInstanceID:  installed.PluginInstanceID,
+		SurfaceInstanceID: "surface_rpc",
+
+		BridgeChannelID: "bridge_rpc",
+		GatewayToken:    gateway.GatewayToken,
+		Method:          "tasks.start",
+		Params:          map[string]any{"task_id": "task_1"},
 	}
 
-	confirmation, err := h.PrepareMethodConfirmation(context.Background(), ConfirmMethodRequest(call))
+	confirmation, err := h.PrepareMethodConfirmation(hostTestContext(), prepareConfirmationRequest(call))
 	if err != nil {
 		t.Fatalf("PrepareMethodConfirmation() error = %v", err)
 	}
@@ -5989,23 +6478,21 @@ func TestConfirmationIntentRejectsTamperedPlanHash(t *testing.T) {
 	})
 	installed, gateway := installEnableAndMintGateway(t, h, buildDangerousRPCFixturePackage(t), "danger.view")
 	call := CallMethodRequest{
-		PluginInstanceID:     installed.PluginInstanceID,
-		SurfaceInstanceID:    "surface_rpc",
-		SessionChannelIDHash: "channel_hash",
-		OwnerSessionHash:     "session_hash",
-		OwnerUserHash:        "user_hash",
-		BridgeChannelID:      "bridge_rpc",
-		GatewayToken:         gateway.GatewayToken,
-		Method:               "danger.run",
-		Params:               map[string]any{"target": "db"},
+		PluginInstanceID:  installed.PluginInstanceID,
+		SurfaceInstanceID: "surface_rpc",
+
+		BridgeChannelID: "bridge_rpc",
+		GatewayToken:    gateway.GatewayToken,
+		Method:          "danger.run",
+		Params:          map[string]any{"target": "db"},
 	}
-	confirmation, err := h.PrepareMethodConfirmation(context.Background(), ConfirmMethodRequest(call))
+	confirmation, err := h.PrepareMethodConfirmation(hostTestContext(), prepareConfirmationRequest(call))
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	call.ConfirmationID = confirmation.ConfirmationID
-	if _, err := h.CallPluginMethod(context.Background(), call); err == nil {
+	if _, err := h.CallPluginMethod(hostTestContext(), call); err == nil {
 		t.Fatal("CallPluginMethod() expected tampered plan hash to fail token audience validation")
 	}
 	if capabilityAdapter.calls != 0 {
@@ -6026,27 +6513,25 @@ func TestConfirmationIntentRejectsChangedResolvedTargetAndCannotReplay(t *testin
 	})
 	installed, gateway := installEnableAndMintGateway(t, h, buildDangerousRPCFixturePackage(t), "danger.view")
 	call := CallMethodRequest{
-		PluginInstanceID:     installed.PluginInstanceID,
-		SurfaceInstanceID:    "surface_rpc",
-		SessionChannelIDHash: "channel_hash",
-		OwnerSessionHash:     "session_hash",
-		OwnerUserHash:        "user_hash",
-		BridgeChannelID:      "bridge_rpc",
-		GatewayToken:         gateway.GatewayToken,
-		Method:               "danger.run",
-		Params:               map[string]any{"target": "db"},
+		PluginInstanceID:  installed.PluginInstanceID,
+		SurfaceInstanceID: "surface_rpc",
+
+		BridgeChannelID: "bridge_rpc",
+		GatewayToken:    gateway.GatewayToken,
+		Method:          "danger.run",
+		Params:          map[string]any{"target": "db"},
 	}
-	confirmation, err := h.PrepareMethodConfirmation(context.Background(), ConfirmMethodRequest(call))
+	confirmation, err := h.PrepareMethodConfirmation(hostTestContext(), prepareConfirmationRequest(call))
 	if err != nil {
 		t.Fatal(err)
 	}
 	call.ConfirmationID = confirmation.ConfirmationID
 	capabilityAdapter.targetFields = map[string]any{"target": "other"}
-	if _, err := h.CallPluginMethod(context.Background(), call); !errors.Is(err, ErrConfirmationInvalid) {
+	if _, err := h.CallPluginMethod(hostTestContext(), call); !errors.Is(err, ErrConfirmationInvalid) {
 		t.Fatalf("CallPluginMethod() error = %v, want ErrConfirmationInvalid", err)
 	}
 	capabilityAdapter.targetFields = map[string]any{"target": "db"}
-	if _, err := h.CallPluginMethod(context.Background(), call); err == nil {
+	if _, err := h.CallPluginMethod(hostTestContext(), call); err == nil {
 		t.Fatal("CallPluginMethod() accepted a consumed confirmation after target restoration")
 	}
 	if capabilityAdapter.calls != 0 {
@@ -6063,7 +6548,7 @@ func TestCapabilityExecutionEnforcesConcurrentAndDurationQuota(t *testing.T) {
 	contract := fixtureVerifiedCapabilityContract(t, "example.capability.echo").Contract
 	for index := range contract.Methods {
 		if contract.Methods[index].Name == "documents.archive" {
-			contract.Methods[index].Quota = capabilitycontract.Quota{MaxConcurrent: 1, MaxDurationMS: 20}
+			contract.Methods[index].Quota = capabilitycontract.Quota{MaxConcurrent: 1, MaxDurationMS: 500}
 		}
 	}
 	verified := verifyFixtureCapabilityContract(t, contract)
@@ -6078,15 +6563,15 @@ func TestCapabilityExecutionEnforcesConcurrentAndDurationQuota(t *testing.T) {
 		verified.Pin,
 	), "operation.view")
 	call := CallMethodRequest{
-		PluginInstanceID: installed.PluginInstanceID, SurfaceInstanceID: "surface_rpc", SessionChannelIDHash: "channel_hash",
-		OwnerSessionHash: "session_hash", OwnerUserHash: "user_hash", BridgeChannelID: "bridge_rpc", GatewayToken: gateway.GatewayToken,
+		PluginInstanceID: installed.PluginInstanceID, SurfaceInstanceID: "surface_rpc",
+		BridgeChannelID: "bridge_rpc", GatewayToken: gateway.GatewayToken,
 		Method: "documents.archive", Params: map[string]any{"document_id": "doc-1"},
 	}
-	first, err := h.CallPluginMethod(context.Background(), call)
+	first, err := h.CallPluginMethod(hostTestContext(), call)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.CallPluginMethod(context.Background(), call); !errors.Is(err, capability.ErrQuotaExceeded) {
+	if _, err := h.CallPluginMethod(hostTestContext(), call); !errors.Is(err, capability.ErrQuotaExceeded) {
 		t.Fatalf("second CallPluginMethod() error = %v, want ErrQuotaExceeded", err)
 	}
 	if capabilityAdapter.calls != 1 {
@@ -6095,9 +6580,9 @@ func TestCapabilityExecutionEnforcesConcurrentAndDurationQuota(t *testing.T) {
 	if event, ok := audits.lastEvent("plugin.method.rejected"); !ok || event.Details["reason"] != "quota_exceeded" {
 		t.Fatalf("missing quota rejection audit: %#v", audits.events)
 	}
-	time.Sleep(40 * time.Millisecond)
+	time.Sleep(750 * time.Millisecond)
 	assertHostOperationStatus(t, h, first.OperationID, operation.StatusFailed)
-	if err := capabilityAdapter.last.Execution.Operation.Complete(context.Background()); !errors.Is(err, capability.ErrExecutionRevoked) {
+	if err := capabilityAdapter.last.Execution.Operation.Complete(hostTestContext()); !errors.Is(err, capability.ErrExecutionRevoked) {
 		t.Fatalf("Operation.Complete() after quota expiry error = %v, want %v", err, capability.ErrExecutionRevoked)
 	}
 }
@@ -6119,9 +6604,9 @@ func TestCapabilityExecutionRejectsSuccessReturnedAfterDurationQuota(t *testing.
 		t.Fatal(err)
 	}
 	installed, gateway := installEnableAndMintGateway(t, h, buildCapabilityPinnedFixturePackage(t, rpcFixtureManifestJSON("1.0.0", "RPC"), "RPC", "echo", verified.Pin), "rpc.view")
-	_, err := h.CallPluginMethod(context.Background(), CallMethodRequest{
-		PluginInstanceID: installed.PluginInstanceID, SurfaceInstanceID: "surface_rpc", SessionChannelIDHash: "channel_hash",
-		OwnerSessionHash: "session_hash", OwnerUserHash: "user_hash", BridgeChannelID: "bridge_rpc", GatewayToken: gateway.GatewayToken,
+	_, err := h.CallPluginMethod(hostTestContext(), CallMethodRequest{
+		PluginInstanceID: installed.PluginInstanceID, SurfaceInstanceID: "surface_rpc",
+		BridgeChannelID: "bridge_rpc", GatewayToken: gateway.GatewayToken,
 		Method: "echo.ping", Params: map[string]any{"message": "hello"},
 	})
 	if !errors.Is(err, capability.ErrQuotaExceeded) {
@@ -6129,8 +6614,206 @@ func TestCapabilityExecutionRejectsSuccessReturnedAfterDurationQuota(t *testing.
 	}
 }
 
+func TestDurationQuotaTerminalFailureReleasesOperationExecutionAndAllowsRetry(t *testing.T) {
+	finishErr := errors.New("operation terminal store unavailable")
+	operations := &controlledOperationFinishStore{Store: operation.NewMemoryStore(), err: finishErr, failing: true}
+	capabilityAdapter := &recordingCapabilityAdapter{result: capability.Result{Data: map[string]any{"started": true}}}
+	verified := fixtureVerifiedCapabilityContractWithQuotas(t, "example.capability.echo", map[string]capabilitycontract.Quota{
+		"documents.archive": {MaxConcurrent: 1, MaxDurationMS: 50},
+	})
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{
+		developerMode: true, localGenerated: true, operations: operations,
+		capabilityContract: &verified, capabilityAdapter: capabilityAdapter,
+	})
+	installed, gateway := installEnableAndMintGateway(t, h, buildCapabilityPinnedFixturePackage(
+		t, operationRPCFixtureManifestJSON(), "Operation", "echo", verified.Pin,
+	), "operation.view")
+	call := CallMethodRequest{
+		PluginInstanceID: installed.PluginInstanceID, SurfaceInstanceID: "surface_rpc",
+		BridgeChannelID: "bridge_rpc", GatewayToken: gateway.GatewayToken,
+		Method: "documents.archive", Params: map[string]any{"document_id": "doc-1"},
+	}
+	first, err := h.CallPluginMethod(hostTestContext(), call)
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitForOperationFinishCalls(t, operations, 1)
+	h.lifecycleWG.Wait()
+	assertHostOperationStatus(t, h, first.OperationID, operation.StatusRunning)
+	assertNoActiveExecutionState(t, h, "duration terminal failure")
+
+	operations.setFailing(false)
+	second, err := h.CallPluginMethod(hostTestContext(), call)
+	if err != nil {
+		t.Fatalf("CallPluginMethod() after quota release error = %v", err)
+	}
+	if err := capabilityAdapter.last.Execution.Operation.Complete(hostTestContext()); err != nil {
+		t.Fatalf("second Operation.Complete() error = %v", err)
+	}
+	assertHostOperationStatus(t, h, second.OperationID, operation.StatusCompleted)
+	if _, err := h.CancelOperation(hostTestContext(), CancelOperationRequest{OperationID: first.OperationID, Reason: "retry terminal write"}); err != nil {
+		t.Fatal(err)
+	}
+	waitForHostOperationStatus(t, h, first.OperationID, operation.StatusCanceled)
+}
+
+func TestDurationQuotaSubscriptionOperationFailureReleasesExecutionAndReconciles(t *testing.T) {
+	finishErr := errors.New("operation terminal store unavailable")
+	operations := &controlledOperationFinishStore{Store: operation.NewMemoryStore(), err: finishErr, failing: true}
+	streams := stream.NewMemoryStore()
+	capabilityAdapter := &recordingCapabilityAdapter{result: capability.Result{Data: map[string]any{"started": true}}}
+	verified := fixtureVerifiedCapabilityContractWithQuotas(t, "example.capability.echo", map[string]capabilitycontract.Quota{
+		"logs.tail": {MaxConcurrent: 1, MaxDurationMS: 25},
+	})
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{
+		developerMode: true, localGenerated: true, operations: operations, streams: streams,
+		capabilityContract: &verified, capabilityAdapter: capabilityAdapter,
+	})
+	installed, gateway := installEnableAndMintGateway(t, h, buildCapabilityPinnedFixturePackage(
+		t, subscriptionRPCFixtureManifestJSON(), "Subscription", "echo", verified.Pin,
+	), "subscription.view")
+	result, err := h.CallPluginMethod(hostTestContext(), CallMethodRequest{
+		PluginInstanceID: installed.PluginInstanceID, SurfaceInstanceID: "surface_rpc",
+		BridgeChannelID: "bridge_rpc", GatewayToken: gateway.GatewayToken, Method: "logs.tail",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitForOperationFinishCalls(t, operations, 1)
+	h.lifecycleWG.Wait()
+	assertHostOperationStatus(t, h, result.OperationID, operation.StatusRunning)
+	assertHostStreamStatus(t, h, result.StreamID, stream.StatusFailed)
+	assertNoActiveExecutionState(t, h, "subscription operation terminal failure")
+
+	if err := h.Close(); err != nil {
+		t.Fatal(err)
+	}
+	operations.setFailing(false)
+	restarted, _, _ := newTestHostWithOptions(t, testHostOptions{operations: operations, streams: streams})
+	assertHostOperationStatus(t, restarted, result.OperationID, operation.StatusFailed)
+	assertHostStreamStatus(t, restarted, result.StreamID, stream.StatusFailed)
+}
+
+func TestDurationQuotaSubscriptionStreamFailureReleasesExecutionAndReconciles(t *testing.T) {
+	closeErr := errors.New("stream terminal store unavailable")
+	operations := operation.NewMemoryStore()
+	streams := &controlledStreamCloseStore{Store: stream.NewMemoryStore(), err: closeErr, failing: true}
+	capabilityAdapter := &recordingCapabilityAdapter{result: capability.Result{Data: map[string]any{"started": true}}}
+	verified := fixtureVerifiedCapabilityContractWithQuotas(t, "example.capability.echo", map[string]capabilitycontract.Quota{
+		"logs.tail": {MaxConcurrent: 1, MaxDurationMS: 25},
+	})
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{
+		developerMode: true, localGenerated: true, operations: operations, streams: streams,
+		capabilityContract: &verified, capabilityAdapter: capabilityAdapter,
+	})
+	installed, gateway := installEnableAndMintGateway(t, h, buildCapabilityPinnedFixturePackage(
+		t, subscriptionRPCFixtureManifestJSON(), "Subscription", "echo", verified.Pin,
+	), "subscription.view")
+	result, err := h.CallPluginMethod(hostTestContext(), CallMethodRequest{
+		PluginInstanceID: installed.PluginInstanceID, SurfaceInstanceID: "surface_rpc",
+		BridgeChannelID: "bridge_rpc", GatewayToken: gateway.GatewayToken, Method: "logs.tail",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitForStreamCloseCalls(t, streams, 1)
+	h.lifecycleWG.Wait()
+	assertHostOperationStatus(t, h, result.OperationID, operation.StatusFailed)
+	assertHostStreamStatus(t, h, result.StreamID, stream.StatusOpen)
+	assertNoActiveExecutionState(t, h, "subscription stream terminal failure")
+
+	if err := h.Close(); err != nil {
+		t.Fatal(err)
+	}
+	streams.setFailing(false)
+	restarted, _, _ := newTestHostWithOptions(t, testHostOptions{operations: operations, streams: streams})
+	assertHostOperationStatus(t, restarted, result.OperationID, operation.StatusFailed)
+	assertHostStreamStatus(t, restarted, result.StreamID, stream.StatusFailed)
+}
+
+func TestDurationQuotaRejectsLateSubscriptionSuccessWithoutDuplicateTerminalWrite(t *testing.T) {
+	operations := &controlledOperationFinishStore{Store: operation.NewMemoryStore()}
+	streams := stream.NewMemoryStore()
+	capabilityAdapter := &recordingCapabilityAdapter{
+		result: capability.Result{Data: map[string]any{"started": true}}, invokeDelay: 80 * time.Millisecond,
+	}
+	verified := fixtureVerifiedCapabilityContractWithQuotas(t, "example.capability.echo", map[string]capabilitycontract.Quota{
+		"logs.tail": {MaxConcurrent: 1, MaxDurationMS: 20},
+	})
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{
+		developerMode: true, localGenerated: true, operations: operations, streams: streams,
+		capabilityContract: &verified, capabilityAdapter: capabilityAdapter,
+	})
+	installed, gateway := installEnableAndMintGateway(t, h, buildCapabilityPinnedFixturePackage(
+		t, subscriptionRPCFixtureManifestJSON(), "Subscription", "echo", verified.Pin,
+	), "subscription.view")
+	_, err := h.CallPluginMethod(hostTestContext(), CallMethodRequest{
+		PluginInstanceID: installed.PluginInstanceID, SurfaceInstanceID: "surface_rpc",
+		BridgeChannelID: "bridge_rpc", GatewayToken: gateway.GatewayToken, Method: "logs.tail",
+	})
+	if !errors.Is(err, capability.ErrQuotaExceeded) {
+		t.Fatalf("CallPluginMethod() error = %v, want %v", err, capability.ErrQuotaExceeded)
+	}
+	h.lifecycleWG.Wait()
+	if calls := operations.finishCalls(); calls != 1 {
+		t.Fatalf("operation terminal writes = %d, want 1", calls)
+	}
+	assertNoActiveExecutionState(t, h, "late subscription result")
+}
+
+func TestHostCloseCancelsDurationQuotaJobsBeforeExpiry(t *testing.T) {
+	operations := &controlledOperationFinishStore{Store: operation.NewMemoryStore()}
+	streams := &controlledStreamCloseStore{Store: stream.NewMemoryStore()}
+	capabilityAdapter := &recordingCapabilityAdapter{result: capability.Result{Data: map[string]any{"started": true}}}
+	verified := fixtureVerifiedCapabilityContractWithQuotas(t, "example.capability.echo", map[string]capabilitycontract.Quota{
+		"documents.archive": {MaxConcurrent: 1, MaxDurationMS: 500},
+		"logs.tail":         {MaxConcurrent: 1, MaxDurationMS: 500},
+	})
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{
+		developerMode: true, localGenerated: true, operations: operations, streams: streams,
+		capabilityContract: &verified, capabilityAdapter: capabilityAdapter,
+	})
+	operationPlugin, operationGateway := installEnableAndMintGatewayForAudience(t, h, buildCapabilityPinnedFixturePackage(
+		t, operationRPCFixtureManifestJSON(), "Operation", "echo", verified.Pin,
+	), "operation.view", "surface_operation", "bridge_operation")
+	if _, err := h.CallPluginMethod(hostTestContext(), CallMethodRequest{
+		PluginInstanceID: operationPlugin.PluginInstanceID, SurfaceInstanceID: "surface_operation",
+		BridgeChannelID: "bridge_operation", GatewayToken: operationGateway.GatewayToken,
+		Method: "documents.archive", Params: map[string]any{"document_id": "doc-1"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	subscriptionPlugin, subscriptionGateway := installEnableAndMintGatewayForAudience(t, h, buildCapabilityPinnedFixturePackage(
+		t, subscriptionRPCFixtureManifestJSON(), "Subscription", "echo", verified.Pin,
+	), "subscription.view", "surface_subscription", "bridge_subscription")
+	if _, err := h.CallPluginMethod(hostTestContext(), CallMethodRequest{
+		PluginInstanceID: subscriptionPlugin.PluginInstanceID, SurfaceInstanceID: "surface_subscription",
+		BridgeChannelID: "bridge_subscription", GatewayToken: subscriptionGateway.GatewayToken, Method: "logs.tail",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	closed := make(chan error, 1)
+	go func() { closed <- h.Close() }()
+	select {
+	case err := <-closed:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Host.Close() did not stop duration quota lifecycle jobs")
+	}
+	assertNoActiveExecutionState(t, h, "host close")
+	operationCalls := operations.finishCalls()
+	streamCalls := streams.closeCalls()
+	time.Sleep(650 * time.Millisecond)
+	if operations.finishCalls() != operationCalls || streams.closeCalls() != streamCalls {
+		t.Fatal("duration quota terminal writes continued after Host.Close()")
+	}
+}
+
 func TestDisableRevokesSurfaceTokensConfirmationIntentsAndRuntime(t *testing.T) {
-	runtime := &recordingRuntimeSupervisor{
+	runtime := &recordingRuntimeManager{
 		health: runtimeclient.Health{RuntimeInstanceID: "runtime_1", RuntimeGenerationID: "runtime_gen_1", IPCChannelID: "ipc_1", ConnectionNonce: "connection_nonce_1234567890", Ready: true},
 	}
 	capabilityAdapter := &recordingCapabilityAdapter{result: capability.Result{Data: map[string]any{"result": "done"}}}
@@ -6140,32 +6823,30 @@ func TestDisableRevokesSurfaceTokensConfirmationIntentsAndRuntime(t *testing.T) 
 		localGenerated:      true,
 		capabilityID:        "example.capability.echo",
 		capabilityAdapter:   capabilityAdapter,
-		runtimeSupervisor:   runtime,
+		runtimeManager:      runtime,
 		connectivityBroker:  connectivity.NewMemoryBroker(),
 		confirmationIntents: confirmationIntents,
 	})
 	installed, gateway := installEnableAndMintGateway(t, h, buildDangerousRPCFixturePackage(t), "danger.view")
 	call := CallMethodRequest{
-		PluginInstanceID:     installed.PluginInstanceID,
-		SurfaceInstanceID:    "surface_rpc",
-		SessionChannelIDHash: "channel_hash",
-		OwnerSessionHash:     "session_hash",
-		OwnerUserHash:        "user_hash",
-		BridgeChannelID:      "bridge_rpc",
-		GatewayToken:         gateway.GatewayToken,
-		Method:               "danger.run",
-		Params:               map[string]any{"target": "db"},
+		PluginInstanceID:  installed.PluginInstanceID,
+		SurfaceInstanceID: "surface_rpc",
+
+		BridgeChannelID: "bridge_rpc",
+		GatewayToken:    gateway.GatewayToken,
+		Method:          "danger.run",
+		Params:          map[string]any{"target": "db"},
 	}
-	confirmation, err := h.PrepareMethodConfirmation(context.Background(), ConfirmMethodRequest(call))
+	confirmation, err := h.PrepareMethodConfirmation(hostTestContext(), prepareConfirmationRequest(call))
 	if err != nil {
 		t.Fatalf("PrepareMethodConfirmation() error = %v", err)
 	}
-	if listed, err := confirmationIntents.ListConfirmationIntents(context.Background(), security.ListConfirmationIntentsRequest{PluginInstanceID: installed.PluginInstanceID}); err != nil || len(listed) != 1 {
+	if listed, err := confirmationIntents.ListConfirmationIntents(hostTestContext(), security.ListConfirmationIntentsRequest{PluginInstanceID: installed.PluginInstanceID}); err != nil || len(listed) != 1 {
 		t.Fatalf("stored confirmation intents before disable = %#v, err=%v", listed, err)
 	}
 	call.ConfirmationID = confirmation.ConfirmationID
 
-	disabled, err := h.DisablePlugin(context.Background(), DisableRequest{PluginInstanceID: installed.PluginInstanceID, Reason: "policy", PluginStateVersion: mustPluginStateVersion(t, h, installed.PluginInstanceID)})
+	disabled, err := h.DisablePlugin(hostTestContext(), DisableRequest{PluginInstanceID: installed.PluginInstanceID, Reason: "policy", ExpectedManagementRevision: mustManagementRevision(t, h, installed.PluginInstanceID)})
 	if err != nil {
 		t.Fatalf("DisablePlugin() error = %v", err)
 	}
@@ -6187,13 +6868,13 @@ func TestDisableRevokesSurfaceTokensConfirmationIntentsAndRuntime(t *testing.T) 
 	}, time.Now().UTC()); !errors.Is(err, bridge.ErrTokenRevoked) {
 		t.Fatalf("ValidateGatewayToken() after disable error = %v, want %v", err, bridge.ErrTokenRevoked)
 	}
-	if _, err := h.CallPluginMethod(context.Background(), call); err == nil {
+	if _, err := h.CallPluginMethod(hostTestContext(), call); err == nil {
 		t.Fatal("CallPluginMethod() after disable expected fail-closed error")
 	}
 	if capabilityAdapter.calls != 0 {
 		t.Fatalf("capability adapter called after disabled confirmation: %d", capabilityAdapter.calls)
 	}
-	if listed, err := confirmationIntents.ListConfirmationIntents(context.Background(), security.ListConfirmationIntentsRequest{PluginInstanceID: installed.PluginInstanceID}); err != nil || len(listed) != 0 {
+	if listed, err := confirmationIntents.ListConfirmationIntents(hostTestContext(), security.ListConfirmationIntentsRequest{PluginInstanceID: installed.PluginInstanceID}); err != nil || len(listed) != 0 {
 		t.Fatalf("stored confirmation intents after disable = %#v, err=%v", listed, err)
 	}
 	if !audits.hasEvent("plugin.runtime_capabilities.revoked") {
@@ -6201,9 +6882,9 @@ func TestDisableRevokesSurfaceTokensConfirmationIntentsAndRuntime(t *testing.T) 
 	}
 }
 
-func TestDisableContinuesCleanupWhenRuntimeRevokeFails(t *testing.T) {
-	ctx := context.Background()
-	runtime := &recordingRuntimeSupervisor{
+func TestDisableFailsClosedWhenRuntimeRevokeFails(t *testing.T) {
+	ctx := hostTestContext()
+	runtime := &recordingRuntimeManager{
 		health:    runtimeclient.Health{RuntimeInstanceID: "runtime_1", RuntimeGenerationID: "runtime_gen_1", IPCChannelID: "ipc_1", ConnectionNonce: "connection_nonce_1234567890", Ready: true},
 		revokeErr: errors.New("runtime pipe closed"),
 	}
@@ -6212,16 +6893,15 @@ func TestDisableContinuesCleanupWhenRuntimeRevokeFails(t *testing.T) {
 	h, surfaces, _ := newTestHostWithOptions(t, testHostOptions{
 		developerMode:      true,
 		localGenerated:     true,
-		runtimeSupervisor:  runtime,
+		runtimeManager:     runtime,
 		connectivityBroker: connectivityBroker,
-		storageBroker:      storage.NewMemoryBroker(),
 		diagnostics:        diagnostics,
 	})
 	installed, err := ImportLocalPackageBytes(ctx, h, buildNetworkFixturePackage(t))
 	if err != nil {
 		t.Fatal(err)
 	}
-	enabled, err := h.EnablePlugin(ctx, EnableRequest{PluginInstanceID: installed.PluginInstanceID, PluginStateVersion: mustPluginStateVersion(t, h, installed.PluginInstanceID)})
+	enabled, err := h.EnablePlugin(ctx, EnableRequest{PluginInstanceID: installed.PluginInstanceID, ExpectedManagementRevision: mustManagementRevision(t, h, installed.PluginInstanceID)})
 	if err != nil {
 		t.Fatalf("EnablePlugin() error = %v", err)
 	}
@@ -6238,9 +6918,16 @@ func TestDisableContinuesCleanupWhenRuntimeRevokeFails(t *testing.T) {
 		t.Fatalf("MintConnectionGrant(before disable) error = %v", err)
 	}
 
-	disabled, err := h.DisablePlugin(ctx, DisableRequest{PluginInstanceID: enabled.PluginInstanceID, Reason: "policy", PluginStateVersion: mustPluginStateVersion(t, h, enabled.PluginInstanceID)})
-	if err != nil {
-		t.Fatalf("DisablePlugin() error = %v", err)
+	_, err = h.DisablePlugin(ctx, DisableRequest{PluginInstanceID: enabled.PluginInstanceID, Reason: "policy", ExpectedManagementRevision: mustManagementRevision(t, h, enabled.PluginInstanceID)})
+	if !errors.Is(err, runtime.revokeErr) {
+		t.Fatalf("DisablePlugin() error = %v, want %v", err, runtime.revokeErr)
+	}
+	if got := mutation.ForError(err); got != mutation.OutcomeUnknown {
+		t.Fatalf("mutation.ForError() = %q, want %q", got, mutation.OutcomeUnknown)
+	}
+	disabled, getErr := h.adapters.Registry.GetPlugin(ctx, enabled.PluginInstanceID)
+	if getErr != nil {
+		t.Fatal(getErr)
 	}
 	if runtime.revokeCalls != 1 || runtime.lastRevokeEpoch != disabled.RevokeEpoch {
 		t.Fatalf("runtime revoke call mismatch: calls=%d epoch=%d disabled=%#v", runtime.revokeCalls, runtime.lastRevokeEpoch, disabled)
@@ -6273,16 +6960,16 @@ func TestListAndInvokeIntentDispatchesCapability(t *testing.T) {
 		capabilityID:      "example.capability.echo",
 		capabilityAdapter: capabilityAdapter,
 	})
-	installed, err := ImportLocalPackageBytes(context.Background(), h, buildIntentFixturePackage(t, false))
+	installed, err := ImportLocalPackageBytes(hostTestContext(), h, buildIntentFixturePackage(t, false))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.EnablePlugin(context.Background(), EnableRequest{PluginInstanceID: installed.PluginInstanceID, PluginStateVersion: mustPluginStateVersion(t, h, installed.PluginInstanceID)}); err != nil {
+	if _, err := h.EnablePlugin(hostTestContext(), EnableRequest{PluginInstanceID: installed.PluginInstanceID, ExpectedManagementRevision: mustManagementRevision(t, h, installed.PluginInstanceID)}); err != nil {
 		t.Fatal(err)
 	}
 	grantDeclaredPermissions(t, h, installed)
 
-	intents, err := h.ListIntents(context.Background(), ListIntentsRequest{IntentID: "example.echo"})
+	intents, err := h.ListIntents(hostTestContext(), ListIntentsRequest{IntentID: "example.echo"})
 	if err != nil {
 		t.Fatalf("ListIntents() error = %v", err)
 	}
@@ -6290,12 +6977,9 @@ func TestListAndInvokeIntentDispatchesCapability(t *testing.T) {
 		t.Fatalf("intent records mismatch: %#v", intents)
 	}
 
-	result, err := h.InvokeIntent(context.Background(), InvokeIntentRequest{
-		IntentID:             "example.echo",
-		Params:               map[string]any{"message": "from intent"},
-		OwnerSessionHash:     "session_hash",
-		OwnerUserHash:        "user_hash",
-		SessionChannelIDHash: "channel_hash",
+	result, err := h.InvokeIntent(hostTestContext(), InvokeIntentRequest{
+		IntentID: "example.echo",
+		Params:   map[string]any{"message": "from intent"},
 	})
 	if err != nil {
 		t.Fatalf("InvokeIntent() error = %v", err)
@@ -6316,15 +7000,15 @@ func TestInvokeIntentRequiresPermissions(t *testing.T) {
 		capabilityID:      "example.capability.echo",
 		capabilityAdapter: capabilityAdapter,
 	})
-	installed, err := ImportLocalPackageBytes(context.Background(), h, buildIntentFixturePackage(t, false))
+	installed, err := ImportLocalPackageBytes(hostTestContext(), h, buildIntentFixturePackage(t, false))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.EnablePlugin(context.Background(), EnableRequest{PluginInstanceID: installed.PluginInstanceID, PluginStateVersion: mustPluginStateVersion(t, h, installed.PluginInstanceID)}); err != nil {
+	if _, err := h.EnablePlugin(hostTestContext(), EnableRequest{PluginInstanceID: installed.PluginInstanceID, ExpectedManagementRevision: mustManagementRevision(t, h, installed.PluginInstanceID)}); err != nil {
 		t.Fatal(err)
 	}
 
-	if _, err := h.InvokeIntent(context.Background(), InvokeIntentRequest{
+	if _, err := h.InvokeIntent(hostTestContext(), InvokeIntentRequest{
 		PluginInstanceID: installed.PluginInstanceID,
 		IntentID:         "example.echo",
 	}); !errors.Is(err, permissions.ErrPermissionDenied) {
@@ -6343,12 +7027,12 @@ func TestInvokeIntentRequiresPluginInstanceWhenAmbiguous(t *testing.T) {
 		capabilityID:      "example.capability.echo",
 		capabilityAdapter: capabilityAdapter,
 	})
-	first, err := ImportLocalPackageBytes(context.Background(), h, buildIntentFixturePackage(t, false))
+	first, err := ImportLocalPackageBytes(hostTestContext(), h, buildIntentFixturePackage(t, false))
 	if err != nil {
 		t.Fatal(err)
 	}
 	secondBytes := buildIntentFixturePackage(t, false)
-	second, err := h.ImportLocalPackage(context.Background(), ImportLocalPackageRequest{
+	second, err := h.ImportLocalPackage(hostTestContext(), ImportLocalPackageRequest{
 		PackageReader:    bytes.NewReader(secondBytes),
 		PackageSize:      int64(len(secondBytes)),
 		PluginInstanceID: "plugini_second_intent",
@@ -6356,16 +7040,16 @@ func TestInvokeIntentRequiresPluginInstanceWhenAmbiguous(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.EnablePlugin(context.Background(), EnableRequest{PluginInstanceID: first.PluginInstanceID, PluginStateVersion: mustPluginStateVersion(t, h, first.PluginInstanceID)}); err != nil {
+	if _, err := h.EnablePlugin(hostTestContext(), EnableRequest{PluginInstanceID: first.PluginInstanceID, ExpectedManagementRevision: mustManagementRevision(t, h, first.PluginInstanceID)}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.EnablePlugin(context.Background(), EnableRequest{PluginInstanceID: second.PluginInstanceID, PluginStateVersion: mustPluginStateVersion(t, h, second.PluginInstanceID)}); err != nil {
+	if _, err := h.EnablePlugin(hostTestContext(), EnableRequest{PluginInstanceID: second.PluginInstanceID, ExpectedManagementRevision: mustManagementRevision(t, h, second.PluginInstanceID)}); err != nil {
 		t.Fatal(err)
 	}
 	grantDeclaredPermissions(t, h, first)
 	grantDeclaredPermissions(t, h, second)
 
-	if _, err := h.InvokeIntent(context.Background(), InvokeIntentRequest{IntentID: "example.echo"}); err == nil || !strings.Contains(err.Error(), "ambiguous") {
+	if _, err := h.InvokeIntent(hostTestContext(), InvokeIntentRequest{IntentID: "example.echo"}); err == nil || !strings.Contains(err.Error(), "ambiguous") {
 		t.Fatalf("InvokeIntent() ambiguity error = %v", err)
 	}
 }
@@ -6378,16 +7062,16 @@ func TestInvokeIntentFailsClosedForDangerousMethod(t *testing.T) {
 		capabilityID:      "example.capability.echo",
 		capabilityAdapter: capabilityAdapter,
 	})
-	installed, err := ImportLocalPackageBytes(context.Background(), h, buildIntentFixturePackage(t, true))
+	installed, err := ImportLocalPackageBytes(hostTestContext(), h, buildIntentFixturePackage(t, true))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.EnablePlugin(context.Background(), EnableRequest{PluginInstanceID: installed.PluginInstanceID, PluginStateVersion: mustPluginStateVersion(t, h, installed.PluginInstanceID)}); err != nil {
+	if _, err := h.EnablePlugin(hostTestContext(), EnableRequest{PluginInstanceID: installed.PluginInstanceID, ExpectedManagementRevision: mustManagementRevision(t, h, installed.PluginInstanceID)}); err != nil {
 		t.Fatal(err)
 	}
 	grantDeclaredPermissions(t, h, installed)
 
-	result, err := h.InvokeIntent(context.Background(), InvokeIntentRequest{
+	result, err := h.InvokeIntent(hostTestContext(), InvokeIntentRequest{
 		PluginInstanceID: installed.PluginInstanceID,
 		IntentID:         "example.danger",
 		Params:           map[string]any{"target": "db"},
@@ -6413,27 +7097,25 @@ func TestConfirmationIntentCannotBeReusedForDifferentParams(t *testing.T) {
 	})
 	installed, gateway := installEnableAndMintGateway(t, h, buildDangerousRPCFixturePackage(t), "danger.view")
 	call := CallMethodRequest{
-		PluginInstanceID:     installed.PluginInstanceID,
-		SurfaceInstanceID:    "surface_rpc",
-		SessionChannelIDHash: "channel_hash",
-		OwnerSessionHash:     "session_hash",
-		OwnerUserHash:        "user_hash",
-		BridgeChannelID:      "bridge_rpc",
-		GatewayToken:         gateway.GatewayToken,
-		Method:               "danger.run",
-		Params:               map[string]any{"target": "db"},
+		PluginInstanceID:  installed.PluginInstanceID,
+		SurfaceInstanceID: "surface_rpc",
+
+		BridgeChannelID: "bridge_rpc",
+		GatewayToken:    gateway.GatewayToken,
+		Method:          "danger.run",
+		Params:          map[string]any{"target": "db"},
 	}
-	confirmation, err := h.PrepareMethodConfirmation(context.Background(), ConfirmMethodRequest(call))
+	confirmation, err := h.PrepareMethodConfirmation(hostTestContext(), prepareConfirmationRequest(call))
 	if err != nil {
 		t.Fatal(err)
 	}
 	call.Params = map[string]any{"target": "other"}
 	call.ConfirmationID = confirmation.ConfirmationID
-	if _, err := h.CallPluginMethod(context.Background(), call); err == nil {
+	if _, err := h.CallPluginMethod(hostTestContext(), call); err == nil {
 		t.Fatal("CallPluginMethod() expected confirmation audience error")
 	}
 	call.Params = map[string]any{"target": "db"}
-	if _, err := h.CallPluginMethod(context.Background(), call); err == nil {
+	if _, err := h.CallPluginMethod(hostTestContext(), call); err == nil {
 		t.Fatal("CallPluginMethod() expected consumed confirmation intent to reject retry")
 	}
 	if capabilityAdapter.calls != 0 {
@@ -6451,25 +7133,23 @@ func TestConfirmationIntentConsumesOnceAfterSuccess(t *testing.T) {
 	})
 	installed, gateway := installEnableAndMintGateway(t, h, buildDangerousRPCFixturePackage(t), "danger.view")
 	call := CallMethodRequest{
-		PluginInstanceID:     installed.PluginInstanceID,
-		SurfaceInstanceID:    "surface_rpc",
-		SessionChannelIDHash: "channel_hash",
-		OwnerSessionHash:     "session_hash",
-		OwnerUserHash:        "user_hash",
-		BridgeChannelID:      "bridge_rpc",
-		GatewayToken:         gateway.GatewayToken,
-		Method:               "danger.run",
-		Params:               map[string]any{"target": "db"},
+		PluginInstanceID:  installed.PluginInstanceID,
+		SurfaceInstanceID: "surface_rpc",
+
+		BridgeChannelID: "bridge_rpc",
+		GatewayToken:    gateway.GatewayToken,
+		Method:          "danger.run",
+		Params:          map[string]any{"target": "db"},
 	}
-	confirmation, err := h.PrepareMethodConfirmation(context.Background(), ConfirmMethodRequest(call))
+	confirmation, err := h.PrepareMethodConfirmation(hostTestContext(), prepareConfirmationRequest(call))
 	if err != nil {
 		t.Fatal(err)
 	}
 	call.ConfirmationID = confirmation.ConfirmationID
-	if _, err := h.CallPluginMethod(context.Background(), call); err != nil {
+	if _, err := h.CallPluginMethod(hostTestContext(), call); err != nil {
 		t.Fatalf("CallPluginMethod() with confirmation error = %v", err)
 	}
-	if _, err := h.CallPluginMethod(context.Background(), call); err == nil {
+	if _, err := h.CallPluginMethod(hostTestContext(), call); err == nil {
 		t.Fatal("CallPluginMethod() expected confirmation intent replay rejection")
 	}
 	if capabilityAdapter.calls != 1 {
@@ -6487,73 +7167,25 @@ func TestConfirmationIntentBindsFullParamsBeyondManifestHashFieldHints(t *testin
 	})
 	installed, gateway := installEnableAndMintGateway(t, h, buildDangerousRPCFixturePackage(t), "danger.view")
 	call := CallMethodRequest{
-		PluginInstanceID:     installed.PluginInstanceID,
-		SurfaceInstanceID:    "surface_rpc",
-		SessionChannelIDHash: "channel_hash",
-		OwnerSessionHash:     "session_hash",
-		OwnerUserHash:        "user_hash",
-		BridgeChannelID:      "bridge_rpc",
-		GatewayToken:         gateway.GatewayToken,
-		Method:               "danger.run",
-		Params:               map[string]any{"target": "db", "ui_note": "original"},
+		PluginInstanceID:  installed.PluginInstanceID,
+		SurfaceInstanceID: "surface_rpc",
+
+		BridgeChannelID: "bridge_rpc",
+		GatewayToken:    gateway.GatewayToken,
+		Method:          "danger.run",
+		Params:          map[string]any{"target": "db", "ui_note": "original"},
 	}
-	confirmation, err := h.PrepareMethodConfirmation(context.Background(), ConfirmMethodRequest(call))
+	confirmation, err := h.PrepareMethodConfirmation(hostTestContext(), prepareConfirmationRequest(call))
 	if err != nil {
 		t.Fatal(err)
 	}
 	call.Params = map[string]any{"target": "db", "ui_note": "changed"}
 	call.ConfirmationID = confirmation.ConfirmationID
-	if _, err := h.CallPluginMethod(context.Background(), call); err == nil {
+	if _, err := h.CallPluginMethod(hostTestContext(), call); err == nil {
 		t.Fatal("CallPluginMethod() expected confirmation intent to bind full params")
 	}
 	if capabilityAdapter.calls != 0 {
 		t.Fatalf("capability adapter was called %d times", capabilityAdapter.calls)
-	}
-}
-
-func TestEnableEnsuresManifestStorageNamespaces(t *testing.T) {
-	storageBroker := storage.NewMemoryBroker()
-	host, _, _ := newTestHostWithStorage(t, true, true, storageBroker)
-	installed, err := ImportLocalPackageBytes(context.Background(), host, buildStorageFixturePackage(t))
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	if _, err := host.EnablePlugin(context.Background(), EnableRequest{PluginInstanceID: installed.PluginInstanceID, PluginStateVersion: mustPluginStateVersion(t, host, installed.PluginInstanceID)}); err != nil {
-		t.Fatalf("EnablePlugin() error = %v", err)
-	}
-	namespaces, err := storageBroker.ListNamespaces(context.Background(), installed.PluginInstanceID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(namespaces) != 2 {
-		t.Fatalf("namespace count = %d, want 2: %#v", len(namespaces), namespaces)
-	}
-	if namespaces[0].StoreID != "cache" || namespaces[0].Kind != storage.StoreKV || namespaces[0].Scope != "user" || namespaces[0].QuotaFiles != 16 {
-		t.Fatalf("first namespace mismatch: %#v", namespaces[0])
-	}
-	if namespaces[1].StoreID != "db" || namespaces[1].Kind != storage.StoreSQLite || namespaces[1].Scope != "environment" || namespaces[1].QuotaFiles != 32 {
-		t.Fatalf("second namespace mismatch: %#v", namespaces[1])
-	}
-
-	if _, err := storageBroker.PutKV(context.Background(), storage.KVPutRequest{
-		PluginInstanceID: installed.PluginInstanceID,
-		StoreID:          "cache",
-		Key:              "schedule/current_location",
-		Value:            []byte("Shanghai"),
-	}); err != nil {
-		t.Fatalf("PutKV() after enable error = %v", err)
-	}
-	read, err := storageBroker.GetKV(context.Background(), storage.KVGetRequest{
-		PluginInstanceID: installed.PluginInstanceID,
-		StoreID:          "cache",
-		Key:              "schedule/current_location",
-	})
-	if err != nil {
-		t.Fatalf("GetKV() after enable error = %v", err)
-	}
-	if string(read.Value) != "Shanghai" {
-		t.Fatalf("GetKV() value = %q", string(read.Value))
 	}
 }
 
@@ -6564,19 +7196,18 @@ func TestStorageQuotaFilesFromManifestUsesBoundedDefault(t *testing.T) {
 }
 
 func TestMintStorageHandleGrantBindsStoreAndQuota(t *testing.T) {
-	storageBroker := storage.NewMemoryBroker()
-	host, _, audits := newTestHostWithStorage(t, true, true, storageBroker)
-	installed, err := ImportLocalPackageBytes(context.Background(), host, buildStorageFixturePackage(t))
+	host, _, audits := newTestHost(t, true, true)
+	installed, err := ImportLocalPackageBytes(hostTestContext(), host, buildStorageFixturePackage(t))
 	if err != nil {
 		t.Fatal(err)
 	}
-	enabled, err := host.EnablePlugin(context.Background(), EnableRequest{PluginInstanceID: installed.PluginInstanceID, PluginStateVersion: mustPluginStateVersion(t, host, installed.PluginInstanceID)})
+	enabled, err := host.EnablePlugin(hostTestContext(), EnableRequest{PluginInstanceID: installed.PluginInstanceID, ExpectedManagementRevision: mustManagementRevision(t, host, installed.PluginInstanceID)})
 	if err != nil {
 		t.Fatalf("EnablePlugin() error = %v", err)
 	}
 
 	now := time.Date(2026, 6, 30, 14, 0, 0, 0, time.UTC)
-	result, err := host.MintStorageHandleGrant(context.Background(), MintStorageHandleGrantRequest{
+	result, err := host.MintStorageHandleGrant(hostTestContext(), MintStorageHandleGrantRequest{
 		PluginInstanceID:    installed.PluginInstanceID,
 		StoreID:             "db",
 		RuntimeInstanceID:   "runtime_1",
@@ -6619,13 +7250,13 @@ func TestMintStorageHandleGrantBindsStoreAndQuota(t *testing.T) {
 		t.Fatalf("missing storage handle grant audit event: %#v", audits.events)
 	}
 
-	if _, err := host.MintStorageHandleGrant(context.Background(), MintStorageHandleGrantRequest{
+	if _, err := host.MintStorageHandleGrant(hostTestContext(), MintStorageHandleGrantRequest{
 		PluginInstanceID: installed.PluginInstanceID,
 		StoreID:          "db",
 	}); !errors.Is(err, bridge.ErrMissingTokenAudience) {
 		t.Fatalf("MintStorageHandleGrant(missing runtime generation) error = %v, want %v", err, bridge.ErrMissingTokenAudience)
 	}
-	if _, err := host.MintStorageHandleGrant(context.Background(), MintStorageHandleGrantRequest{
+	if _, err := host.MintStorageHandleGrant(hostTestContext(), MintStorageHandleGrantRequest{
 		PluginInstanceID:    installed.PluginInstanceID,
 		StoreID:             "missing",
 		RuntimeGenerationID: "runtime_gen_1",
@@ -6639,21 +7270,20 @@ func TestEnableInstallsConnectivityPolicyAndMintsGrant(t *testing.T) {
 	h, _, audits := newTestHostWithOptions(t, testHostOptions{
 		developerMode:      true,
 		localGenerated:     true,
-		storageBroker:      storage.NewMemoryBroker(),
 		connectivityBroker: connectivityBroker,
 	})
-	installed, err := ImportLocalPackageBytes(context.Background(), h, buildNetworkFixturePackage(t))
+	installed, err := ImportLocalPackageBytes(hostTestContext(), h, buildNetworkFixturePackage(t))
 	if err != nil {
 		t.Fatal(err)
 	}
-	enabled, err := h.EnablePlugin(context.Background(), EnableRequest{PluginInstanceID: installed.PluginInstanceID, PluginStateVersion: mustPluginStateVersion(t, h, installed.PluginInstanceID)})
+	enabled, err := h.EnablePlugin(hostTestContext(), EnableRequest{PluginInstanceID: installed.PluginInstanceID, ExpectedManagementRevision: mustManagementRevision(t, h, installed.PluginInstanceID)})
 	if err != nil {
 		t.Fatalf("EnablePlugin() error = %v", err)
 	}
 	if !audits.hasEvent("plugin.connectivity.policy_installed") {
 		t.Fatalf("missing connectivity policy audit event: %#v", audits.events)
 	}
-	grant, err := h.MintConnectionGrant(context.Background(), MintConnectionGrantRequest{
+	grant, err := h.MintConnectionGrant(hostTestContext(), MintConnectionGrantRequest{
 		PluginInstanceID:    installed.PluginInstanceID,
 		ConnectorID:         "mysql",
 		Transport:           connectivity.TransportTCP,
@@ -6672,7 +7302,7 @@ func TestEnableInstallsConnectivityPolicyAndMintsGrant(t *testing.T) {
 	}
 
 	now := time.Date(2026, 6, 30, 13, 0, 0, 0, time.UTC)
-	handle, err := h.MintNetworkHandleGrant(context.Background(), MintConnectionGrantRequest{
+	handle, err := h.MintNetworkHandleGrant(hostTestContext(), MintConnectionGrantRequest{
 		PluginInstanceID:    installed.PluginInstanceID,
 		ConnectorID:         "mysql",
 		Transport:           connectivity.TransportTCP,
@@ -6716,18 +7346,21 @@ func TestEnableInstallsConnectivityPolicyAndMintsGrant(t *testing.T) {
 	if !audits.hasEvent("plugin.connectivity.handle_grant_minted") {
 		t.Fatalf("missing connectivity handle grant audit event: %#v", audits.events)
 	}
-	if _, err := h.GrantPermission(context.Background(), GrantPermissionRequest{
-		PluginInstanceID: installed.PluginInstanceID,
-		PermissionID:     "network.audit",
-		GrantedBy:        "test",
+	expected := mustAuthorizationRevisions(t, h, installed.PluginInstanceID)
+	if _, err := h.GrantPermission(hostTestContext(), GrantPermissionRequest{
+		PluginInstanceID:           installed.PluginInstanceID,
+		PermissionID:               "network.audit",
+		ExpectedPolicyRevision:     expected.PolicyRevision,
+		ExpectedManagementRevision: expected.ManagementRevision,
+		ExpectedRevokeEpoch:        expected.RevokeEpoch,
 	}); err != nil {
 		t.Fatalf("GrantPermission(network.audit) error = %v", err)
 	}
-	afterGrant, err := h.adapters.Registry.GetPlugin(context.Background(), installed.PluginInstanceID)
+	afterGrant, err := h.adapters.Registry.GetPlugin(hostTestContext(), installed.PluginInstanceID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := connectivityBroker.MintConnectionGrant(context.Background(), connectivity.GrantRequest{
+	if _, err := connectivityBroker.MintConnectionGrant(hostTestContext(), connectivity.GrantRequest{
 		PluginInstanceID:   enabled.PluginInstanceID,
 		ActiveFingerprint:  enabled.ActiveFingerprint,
 		PolicyRevision:     enabled.PolicyRevision,
@@ -6739,7 +7372,7 @@ func TestEnableInstallsConnectivityPolicyAndMintsGrant(t *testing.T) {
 	}); !errors.Is(err, connectivity.ErrConnectorDenied) {
 		t.Fatalf("MintConnectionGrant(stale after grant) error = %v, want %v", err, connectivity.ErrConnectorDenied)
 	}
-	if _, err := connectivityBroker.MintConnectionGrant(context.Background(), connectivity.GrantRequest{
+	if _, err := connectivityBroker.MintConnectionGrant(hostTestContext(), connectivity.GrantRequest{
 		PluginInstanceID:   afterGrant.PluginInstanceID,
 		ActiveFingerprint:  afterGrant.ActiveFingerprint,
 		PolicyRevision:     afterGrant.PolicyRevision,
@@ -6751,19 +7384,22 @@ func TestEnableInstallsConnectivityPolicyAndMintsGrant(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("MintConnectionGrant(fresh after grant) error = %v", err)
 	}
-	if _, err := h.RevokePermission(context.Background(), RevokePermissionRequest{
-		PluginInstanceID: installed.PluginInstanceID,
-		PermissionID:     "network.audit",
-		RevokedBy:        "test",
-		Reason:           "test",
+	expected = mustAuthorizationRevisions(t, h, installed.PluginInstanceID)
+	if _, err := h.RevokePermission(hostTestContext(), RevokePermissionRequest{
+		PluginInstanceID:           installed.PluginInstanceID,
+		PermissionID:               "network.audit",
+		ExpectedPolicyRevision:     expected.PolicyRevision,
+		ExpectedManagementRevision: expected.ManagementRevision,
+		ExpectedRevokeEpoch:        expected.RevokeEpoch,
+		Reason:                     "test",
 	}); err != nil {
 		t.Fatalf("RevokePermission(network.audit) error = %v", err)
 	}
-	afterRevoke, err := h.adapters.Registry.GetPlugin(context.Background(), installed.PluginInstanceID)
+	afterRevoke, err := h.adapters.Registry.GetPlugin(hostTestContext(), installed.PluginInstanceID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := connectivityBroker.MintConnectionGrant(context.Background(), connectivity.GrantRequest{
+	if _, err := connectivityBroker.MintConnectionGrant(hostTestContext(), connectivity.GrantRequest{
 		PluginInstanceID:   afterGrant.PluginInstanceID,
 		ActiveFingerprint:  afterGrant.ActiveFingerprint,
 		PolicyRevision:     afterGrant.PolicyRevision,
@@ -6775,7 +7411,7 @@ func TestEnableInstallsConnectivityPolicyAndMintsGrant(t *testing.T) {
 	}); !errors.Is(err, connectivity.ErrConnectorDenied) {
 		t.Fatalf("MintConnectionGrant(stale after revoke) error = %v, want %v", err, connectivity.ErrConnectorDenied)
 	}
-	if _, err := connectivityBroker.MintConnectionGrant(context.Background(), connectivity.GrantRequest{
+	if _, err := connectivityBroker.MintConnectionGrant(hostTestContext(), connectivity.GrantRequest{
 		PluginInstanceID:   afterRevoke.PluginInstanceID,
 		ActiveFingerprint:  afterRevoke.ActiveFingerprint,
 		PolicyRevision:     afterRevoke.PolicyRevision,
@@ -6787,7 +7423,7 @@ func TestEnableInstallsConnectivityPolicyAndMintsGrant(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("MintConnectionGrant(fresh after revoke) error = %v", err)
 	}
-	if _, err := h.MintNetworkHandleGrant(context.Background(), MintConnectionGrantRequest{
+	if _, err := h.MintNetworkHandleGrant(hostTestContext(), MintConnectionGrantRequest{
 		PluginInstanceID: installed.PluginInstanceID,
 		ConnectorID:      "mysql",
 		Transport:        connectivity.TransportTCP,
@@ -6796,10 +7432,10 @@ func TestEnableInstallsConnectivityPolicyAndMintsGrant(t *testing.T) {
 		t.Fatalf("MintNetworkHandleGrant(missing runtime generation) error = %v, want %v", err, bridge.ErrMissingTokenAudience)
 	}
 
-	if _, err := h.DisablePlugin(context.Background(), DisableRequest{PluginInstanceID: installed.PluginInstanceID, Reason: "test", PluginStateVersion: mustPluginStateVersion(t, h, installed.PluginInstanceID)}); err != nil {
+	if _, err := h.DisablePlugin(hostTestContext(), DisableRequest{PluginInstanceID: installed.PluginInstanceID, Reason: "test", ExpectedManagementRevision: mustManagementRevision(t, h, installed.PluginInstanceID)}); err != nil {
 		t.Fatalf("DisablePlugin() error = %v", err)
 	}
-	if _, err := connectivityBroker.MintConnectionGrant(context.Background(), connectivity.GrantRequest{
+	if _, err := connectivityBroker.MintConnectionGrant(hostTestContext(), connectivity.GrantRequest{
 		PluginInstanceID:   installed.PluginInstanceID,
 		ActiveFingerprint:  installed.ActiveFingerprint,
 		PolicyRevision:     installed.PolicyRevision,
@@ -6813,19 +7449,39 @@ func TestEnableInstallsConnectivityPolicyAndMintsGrant(t *testing.T) {
 	}
 }
 
+func TestRefreshEnabledPluginResultIsClosed(t *testing.T) {
+	for _, result := range []RefreshEnabledPluginResult{
+		refreshedPluginResult("plugini_refreshed"),
+		failedPluginRefreshResult("plugini_failed"),
+	} {
+		if _, err := json.Marshal(result); err != nil {
+			t.Fatalf("json.Marshal(%#v) error = %v", result, err)
+		}
+	}
+	for _, result := range []RefreshEnabledPluginResult{
+		{},
+		{PluginInstanceID: "plugini_invalid", Status: RefreshEnabledPluginStatusRefreshed, Error: &RefreshEnabledPluginPublicError{Code: security.ErrRuntimeUnavailable, Message: refreshEnabledPluginFailureMessage}},
+		{PluginInstanceID: "plugini_invalid", Status: RefreshEnabledPluginStatusFailed},
+		{PluginInstanceID: "plugini_invalid", Status: "unknown"},
+	} {
+		if _, err := json.Marshal(result); err == nil {
+			t.Fatalf("json.Marshal(%#v) succeeded, want closed-union validation error", result)
+		}
+	}
+}
+
 func TestRefreshEnabledPluginsRestoresRuntimeState(t *testing.T) {
-	ctx := context.Background()
+	ctx := hostTestContext()
 	h, surfaces, _ := newTestHostWithOptions(t, testHostOptions{
 		developerMode:      true,
 		localGenerated:     true,
-		storageBroker:      storage.NewMemoryBroker(),
 		connectivityBroker: connectivity.NewMemoryBroker(),
 	})
 	installed, err := ImportLocalPackageBytes(ctx, h, buildNetworkFixturePackage(t))
 	if err != nil {
 		t.Fatal(err)
 	}
-	enabled, err := h.EnablePlugin(ctx, EnableRequest{PluginInstanceID: installed.PluginInstanceID, PluginStateVersion: mustPluginStateVersion(t, h, installed.PluginInstanceID)})
+	enabled, err := h.EnablePlugin(ctx, EnableRequest{PluginInstanceID: installed.PluginInstanceID, ExpectedManagementRevision: mustManagementRevision(t, h, installed.PluginInstanceID)})
 	if err != nil {
 		t.Fatalf("EnablePlugin() error = %v", err)
 	}
@@ -6837,27 +7493,46 @@ func TestRefreshEnabledPluginsRestoresRuntimeState(t *testing.T) {
 	restartedSurfaces := &surfaceSink{}
 	restartedAudits := &auditSink{}
 	restartedDiagnostics := &diagnosticSink{}
-	restarted, err := New(Adapters{
-		SessionResolver: fakeSessionResolver{},
+	restarted, err := Open(hostTestContext(), Adapters{
 		Policy: policyAdapter{
 			developerMode:  true,
 			localGenerated: true,
 			decision:       PolicyAllow,
 		},
-		PackageTrustVerifier: &recordingPackageTrustVerifier{},
-		Registry:             h.adapters.Registry,
-		Audit:                restartedAudits,
-		Diagnostics:          restartedDiagnostics,
-		SurfaceCatalog:       restartedSurfaces,
-		Storage:              storage.NewMemoryBroker(),
-		Connectivity:         restartedBroker,
-		Settings:             settings.NewMemoryStore(),
-		Assets:               h.adapters.Assets,
-		InstallStages:        h.adapters.InstallStages,
+		PackageTrustVerifier:        h.adapters.PackageTrustVerifier,
+		ReleaseMetadataVerifier:     h.adapters.ReleaseMetadataVerifier,
+		RevocationVerifier:          h.adapters.RevocationVerifier,
+		ReleaseSourcePolicy:         h.adapters.ReleaseSourcePolicy,
+		ReleaseArtifactResolver:     h.adapters.ReleaseArtifactResolver,
+		HostRequirements:            h.adapters.HostRequirements,
+		CapabilityContractArtifacts: h.adapters.CapabilityContractArtifacts,
+		CapabilityContractKeys:      h.adapters.CapabilityContractKeys,
+		Registry:                    h.adapters.Registry,
+		Audit:                       restartedAudits,
+		Diagnostics:                 restartedDiagnostics,
+		SurfaceCatalog:              restartedSurfaces,
+		PluginData:                  h.adapters.PluginData,
+		Connectivity:                restartedBroker,
+		NetworkExecutor:             connectivity.NewExecutor(connectivity.ExecutorOptions{}),
+		Assets:                      h.adapters.Assets,
+		InstallStages:               h.adapters.InstallStages,
+		Capabilities:                capability.NewRegistry(),
+		SurfaceTokens:               bridge.NewSurfaceTokenService(nil, bridge.SurfaceTokenOptions{}),
+		Operations:                  operation.NewMemoryStore(),
+		ConfirmationIntents:         security.NewMemoryConfirmationIntentStore(),
+		Streams:                     stream.NewMemoryStore(),
+		Secrets:                     secrets.NewMemoryStore(),
+		RuntimeManager:              &recordingRuntimeManager{},
+		CoreActions:                 &recordingCoreActionAdapter{},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() {
+		if err := restarted.Close(); err != nil {
+			t.Errorf("restarted.Close() error = %v", err)
+		}
+	})
 
 	if _, err := restarted.MintConnectionGrant(ctx, MintConnectionGrantRequest{
 		PluginInstanceID:    enabled.PluginInstanceID,
@@ -6874,7 +7549,7 @@ func TestRefreshEnabledPluginsRestoresRuntimeState(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RefreshEnabledPlugins() error = %v", err)
 	}
-	if len(refreshed) != 1 || refreshed[0].PluginInstanceID != enabled.PluginInstanceID {
+	if len(refreshed) != 1 || refreshed[0].PluginInstanceID != enabled.PluginInstanceID || refreshed[0].Status != RefreshEnabledPluginStatusRefreshed || refreshed[0].Error != nil {
 		t.Fatalf("refreshed plugins mismatch: %#v", refreshed)
 	}
 	if len(restartedSurfaces.snapshots) != 1 || restartedSurfaces.snapshots[0].PluginInstanceID != enabled.PluginInstanceID || len(restartedSurfaces.snapshots[0].Surfaces) == 0 {
@@ -6900,757 +7575,8 @@ func TestRefreshEnabledPluginsRestoresRuntimeState(t *testing.T) {
 	}
 }
 
-func TestEnableRejectsBlockedNetworkTargetBeforeStorageSideEffects(t *testing.T) {
-	ctx := context.Background()
-	storageBroker := storage.NewMemoryBroker()
-	h, _, _ := newTestHostWithOptions(t, testHostOptions{
-		developerMode:      true,
-		localGenerated:     true,
-		storageBroker:      storageBroker,
-		connectivityBroker: connectivity.NewMemoryBroker(),
-	})
-	installed, err := ImportLocalPackageBytes(ctx, h, buildBlockedNetworkFixturePackage(t))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := h.EnablePlugin(ctx, EnableRequest{PluginInstanceID: installed.PluginInstanceID, PluginStateVersion: mustPluginStateVersion(t, h, installed.PluginInstanceID)}); !errors.Is(err, connectivity.ErrTargetDenied) {
-		t.Fatalf("EnablePlugin() error = %v, want ErrTargetDenied", err)
-	}
-	namespaces, err := storageBroker.ListNamespaces(ctx, installed.PluginInstanceID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(namespaces) != 0 {
-		t.Fatalf("storage namespaces created despite blocked network target: %#v", namespaces)
-	}
-}
-
-func TestUninstallRetainsOrDeletesStorageNamespaces(t *testing.T) {
-	ctx := context.Background()
-	retainBroker := storage.NewMemoryBroker()
-	retainCleanup := cleanup.NewMemoryOrchestrator()
-	retainedRegistry := retaineddata.NewMemoryStore()
-	retainHost, _, retainAudits := newTestHostWithOptions(t, testHostOptions{
-		developerMode:  true,
-		localGenerated: true,
-		storageBroker:  retainBroker,
-		cleanup:        retainCleanup,
-		retainedData:   retainedRegistry,
-	})
-	retainedPlugin, err := ImportLocalPackageBytes(ctx, retainHost, buildStorageFixturePackage(t))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := retainHost.EnablePlugin(ctx, EnableRequest{PluginInstanceID: retainedPlugin.PluginInstanceID, PluginStateVersion: mustPluginStateVersion(t, retainHost, retainedPlugin.PluginInstanceID)}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := retainBroker.PutKV(ctx, storage.KVPutRequest{
-		PluginInstanceID: retainedPlugin.PluginInstanceID,
-		StoreID:          "cache",
-		Key:              "planner/filter",
-		Value:            []byte("qa"),
-	}); err != nil {
-		t.Fatalf("PutKV(retain setup) error = %v", err)
-	}
-	if _, err := retainHost.UninstallPlugin(ctx, UninstallRequest{PluginInstanceID: retainedPlugin.PluginInstanceID, DeleteData: false, PluginStateVersion: mustPluginStateVersion(t, retainHost, retainedPlugin.PluginInstanceID)}); err != nil {
-		t.Fatalf("UninstallPlugin(retain) error = %v", err)
-	}
-	retained, err := retainBroker.ListNamespaces(ctx, retainedPlugin.PluginInstanceID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(retained) != 2 || retained[0].State != storage.NamespaceRetained || retained[1].State != storage.NamespaceRetained {
-		t.Fatalf("retained namespaces mismatch: %#v", retained)
-	}
-	retainedRecords, err := retainedRegistry.List(ctx, retaineddata.ListRequest{SourcePluginInstanceID: retainedPlugin.PluginInstanceID})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(retainedRecords) != 1 ||
-		retainedRecords[0].State != retaineddata.StateRetained ||
-		!retainedRecords[0].StorageRetained ||
-		retainedRecords[0].SettingsRetained ||
-		retainedRecords[0].UsageBytes == 0 {
-		t.Fatalf("retained data registry mismatch: %#v", retainedRecords)
-	}
-	if !retainAudits.hasEvent("plugin.retained_data.recorded") {
-		t.Fatalf("missing retained data audit event: %#v", retainAudits.events)
-	}
-	if _, err := retainBroker.GetKV(ctx, storage.KVGetRequest{
-		PluginInstanceID: retainedPlugin.PluginInstanceID,
-		StoreID:          "cache",
-		Key:              "planner/filter",
-	}); !errors.Is(err, storage.ErrNamespaceNotFound) {
-		t.Fatalf("GetKV(retained inactive namespace) error = %v, want ErrNamespaceNotFound", err)
-	}
-	archiveRef, err := retainBroker.ExportData(ctx, storage.ExportRequest{PluginInstanceID: retainedPlugin.PluginInstanceID})
-	if err != nil {
-		t.Fatalf("ExportData(retained data) error = %v", err)
-	}
-	if err := retainBroker.ImportData(ctx, storage.ImportRequest{
-		PluginInstanceID: "plugini_retained_restore",
-		ArchiveRef:       archiveRef,
-		DeleteExisting:   true,
-	}); err != nil {
-		t.Fatalf("ImportData(retained data) error = %v", err)
-	}
-	restoredValue, err := retainBroker.GetKV(ctx, storage.KVGetRequest{
-		PluginInstanceID: "plugini_retained_restore",
-		StoreID:          "cache",
-		Key:              "planner/filter",
-	})
-	if err != nil {
-		t.Fatalf("GetKV(restored retained data) error = %v", err)
-	}
-	if string(restoredValue.Value) != "qa" {
-		t.Fatalf("restored retained KV value = %q", string(restoredValue.Value))
-	}
-	retainExecutions, err := retainCleanup.ListExecutions(ctx, retainedPlugin.PluginInstanceID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if cleanupPhases(retainExecutions).contains(cleanup.PhaseDeleteData) {
-		t.Fatalf("retain cleanup unexpectedly deleted data: %#v", retainExecutions)
-	}
-	if !retainAudits.hasEvent("plugin.cleanup.executed") {
-		t.Fatalf("missing cleanup audit event: %#v", retainAudits.events)
-	}
-
-	deleteBroker := storage.NewMemoryBroker()
-	deleteCleanup := cleanup.NewMemoryOrchestrator()
-	deleteHost, _, deleteAudits := newTestHostWithOptions(t, testHostOptions{
-		developerMode:  true,
-		localGenerated: true,
-		storageBroker:  deleteBroker,
-		cleanup:        deleteCleanup,
-	})
-	deletedPlugin, err := ImportLocalPackageBytes(ctx, deleteHost, buildStorageFixturePackage(t))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := deleteHost.EnablePlugin(ctx, EnableRequest{PluginInstanceID: deletedPlugin.PluginInstanceID, PluginStateVersion: mustPluginStateVersion(t, deleteHost, deletedPlugin.PluginInstanceID)}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := deleteBroker.PutKV(ctx, storage.KVPutRequest{
-		PluginInstanceID: deletedPlugin.PluginInstanceID,
-		StoreID:          "cache",
-		Key:              "planner/filter",
-		Value:            []byte("qa"),
-	}); err != nil {
-		t.Fatalf("PutKV(delete setup) error = %v", err)
-	}
-	if _, err := deleteHost.UninstallPlugin(ctx, UninstallRequest{PluginInstanceID: deletedPlugin.PluginInstanceID, DeleteData: true, PluginStateVersion: mustPluginStateVersion(t, deleteHost, deletedPlugin.PluginInstanceID)}); err != nil {
-		t.Fatalf("UninstallPlugin(delete) error = %v", err)
-	}
-	deleted, err := deleteBroker.ListNamespaces(ctx, deletedPlugin.PluginInstanceID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(deleted) != 0 {
-		t.Fatalf("deleted namespaces still present: %#v", deleted)
-	}
-	if _, err := deleteBroker.GetKV(ctx, storage.KVGetRequest{
-		PluginInstanceID: deletedPlugin.PluginInstanceID,
-		StoreID:          "cache",
-		Key:              "planner/filter",
-	}); !errors.Is(err, storage.ErrNamespaceNotFound) {
-		t.Fatalf("GetKV(deleted namespace) error = %v, want ErrNamespaceNotFound", err)
-	}
-	deleteExecutions, err := deleteCleanup.ListExecutions(ctx, deletedPlugin.PluginInstanceID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	deletePhases := cleanupPhases(deleteExecutions)
-	if !deletePhases.contains(cleanup.PhaseTombstone) ||
-		!deletePhases.contains(cleanup.PhaseRevoke) ||
-		!deletePhases.contains(cleanup.PhaseDeleteData) ||
-		!deletePhases.contains(cleanup.PhaseDeletePackage) ||
-		!deletePhases.contains(cleanup.PhaseComplete) {
-		t.Fatalf("delete cleanup phases mismatch: %#v", deleteExecutions)
-	}
-	if !deleteAudits.hasEvent("plugin.cleanup.executed") {
-		t.Fatalf("missing delete cleanup audit event: %#v", deleteAudits.events)
-	}
-}
-
-func TestDeleteRetainedDataRemovesRetainedStoragePayload(t *testing.T) {
-	ctx := context.Background()
-	broker := storage.NewMemoryBroker()
-	retainedRegistry := retaineddata.NewMemoryStore()
-	h, _, audits := newTestHostWithOptions(t, testHostOptions{
-		developerMode:  true,
-		localGenerated: true,
-		storageBroker:  broker,
-		retainedData:   retainedRegistry,
-	})
-	installed, err := ImportLocalPackageBytes(ctx, h, buildStorageFixturePackage(t))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := h.EnablePlugin(ctx, EnableRequest{PluginInstanceID: installed.PluginInstanceID, PluginStateVersion: mustPluginStateVersion(t, h, installed.PluginInstanceID)}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := broker.PutKV(ctx, storage.KVPutRequest{
-		PluginInstanceID: installed.PluginInstanceID,
-		StoreID:          "cache",
-		Key:              "planner/filter",
-		Value:            []byte("qa"),
-	}); err != nil {
-		t.Fatalf("PutKV() error = %v", err)
-	}
-	if _, err := h.UninstallPlugin(ctx, UninstallRequest{PluginInstanceID: installed.PluginInstanceID, DeleteData: false, PluginStateVersion: mustPluginStateVersion(t, h, installed.PluginInstanceID)}); err != nil {
-		t.Fatalf("UninstallPlugin(retain) error = %v", err)
-	}
-	retainedRecords, err := h.ListRetainedData(ctx, ListRetainedDataRequest{SourcePluginInstanceID: installed.PluginInstanceID})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(retainedRecords) != 1 || retainedRecords[0].State != retaineddata.StateRetained {
-		t.Fatalf("retained records mismatch: %#v", retainedRecords)
-	}
-
-	deleted, err := h.DeleteRetainedData(ctx, DeleteRetainedDataRequest{RetainedID: retainedRecords[0].RetainedID})
-	if err != nil {
-		t.Fatalf("DeleteRetainedData() error = %v", err)
-	}
-	if deleted.State != retaineddata.StateDeleted || deleted.DeletedAt == nil {
-		t.Fatalf("deleted retained data mismatch: %#v", deleted)
-	}
-	namespaces, err := broker.ListNamespaces(ctx, installed.PluginInstanceID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(namespaces) != 0 {
-		t.Fatalf("retained storage payload still present: %#v", namespaces)
-	}
-	if _, err := broker.GetKV(ctx, storage.KVGetRequest{
-		PluginInstanceID: installed.PluginInstanceID,
-		StoreID:          "cache",
-		Key:              "planner/filter",
-	}); !errors.Is(err, storage.ErrNamespaceNotFound) {
-		t.Fatalf("GetKV() after retained delete error = %v, want ErrNamespaceNotFound", err)
-	}
-	if !audits.hasEvent("plugin.retained_data.deleted") {
-		t.Fatalf("missing retained data delete audit event: %#v", audits.events)
-	}
-}
-
-func TestBindRetainedDataRestoresStoragePayload(t *testing.T) {
-	ctx := context.Background()
-	broker := storage.NewMemoryBroker()
-	retainedRegistry := retaineddata.NewMemoryStore()
-	h, _, audits := newTestHostWithOptions(t, testHostOptions{
-		developerMode:  true,
-		localGenerated: true,
-		storageBroker:  broker,
-		retainedData:   retainedRegistry,
-	})
-	packageBytes := buildStorageFixturePackage(t)
-	source, err := ImportLocalPackageBytes(ctx, h, packageBytes)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := h.EnablePlugin(ctx, EnableRequest{PluginInstanceID: source.PluginInstanceID, PluginStateVersion: mustPluginStateVersion(t, h, source.PluginInstanceID)}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := broker.PutKV(ctx, storage.KVPutRequest{
-		PluginInstanceID: source.PluginInstanceID,
-		StoreID:          "cache",
-		Key:              "planner/filter",
-		Value:            []byte("qa"),
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := h.UninstallPlugin(ctx, UninstallRequest{PluginInstanceID: source.PluginInstanceID, DeleteData: false, PluginStateVersion: mustPluginStateVersion(t, h, source.PluginInstanceID)}); err != nil {
-		t.Fatal(err)
-	}
-	retainedRecords, err := h.ListRetainedData(ctx, ListRetainedDataRequest{SourcePluginInstanceID: source.PluginInstanceID})
-	if err != nil {
-		t.Fatal(err)
-	}
-	target, err := h.ImportLocalPackage(ctx, ImportLocalPackageRequest{
-		PackageReader:    bytes.NewReader(packageBytes),
-		PackageSize:      int64(len(packageBytes)),
-		PluginInstanceID: "plugini_storage_rebind_target",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	bound, err := h.BindRetainedData(ctx, BindRetainedDataRequest{
-		RetainedID:             retainedRecords[0].RetainedID,
-		TargetPluginInstanceID: target.PluginInstanceID,
-	})
-	if err != nil {
-		t.Fatalf("BindRetainedData() error = %v", err)
-	}
-	if bound.State != retaineddata.StateBound || bound.BoundPluginInstanceID != target.PluginInstanceID {
-		t.Fatalf("bound retained record mismatch: %#v", bound)
-	}
-	if namespaces, err := broker.ListNamespaces(ctx, source.PluginInstanceID); err != nil {
-		t.Fatal(err)
-	} else if len(namespaces) != 0 {
-		t.Fatalf("source retained storage still present: %#v", namespaces)
-	}
-	value, err := broker.GetKV(ctx, storage.KVGetRequest{
-		PluginInstanceID: target.PluginInstanceID,
-		StoreID:          "cache",
-		Key:              "planner/filter",
-	})
-	if err != nil {
-		t.Fatalf("GetKV(bound target) error = %v", err)
-	}
-	if string(value.Value) != "qa" {
-		t.Fatalf("bound KV value = %q", string(value.Value))
-	}
-	if !audits.hasEvent("plugin.retained_data.bound") {
-		t.Fatalf("missing retained data bound audit event: %#v", audits.events)
-	}
-}
-
-func TestBindRetainedDataRestoresStoragePayloadInPlace(t *testing.T) {
-	ctx := context.Background()
-	broker := storage.NewMemoryBroker()
-	retainedRegistry := retaineddata.NewMemoryStore()
-	h, _, _ := newTestHostWithOptions(t, testHostOptions{
-		developerMode:  true,
-		localGenerated: true,
-		storageBroker:  broker,
-		retainedData:   retainedRegistry,
-	})
-	packageBytes := buildStorageFixturePackage(t)
-	source, err := ImportLocalPackageBytes(ctx, h, packageBytes)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := h.EnablePlugin(ctx, EnableRequest{PluginInstanceID: source.PluginInstanceID, PluginStateVersion: mustPluginStateVersion(t, h, source.PluginInstanceID)}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := broker.PutKV(ctx, storage.KVPutRequest{
-		PluginInstanceID: source.PluginInstanceID,
-		StoreID:          "cache",
-		Key:              "planner/filter",
-		Value:            []byte("qa"),
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := h.UninstallPlugin(ctx, UninstallRequest{PluginInstanceID: source.PluginInstanceID, DeleteData: false, PluginStateVersion: mustPluginStateVersion(t, h, source.PluginInstanceID)}); err != nil {
-		t.Fatal(err)
-	}
-	retainedRecords, err := h.ListRetainedData(ctx, ListRetainedDataRequest{SourcePluginInstanceID: source.PluginInstanceID})
-	if err != nil {
-		t.Fatal(err)
-	}
-	target, err := ImportLocalPackageBytes(ctx, h, packageBytes)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if target.PluginInstanceID != source.PluginInstanceID {
-		t.Fatalf("same package reinstall should reuse default instance id: got %s want %s", target.PluginInstanceID, source.PluginInstanceID)
-	}
-
-	bound, err := h.BindRetainedData(ctx, BindRetainedDataRequest{
-		RetainedID:             retainedRecords[0].RetainedID,
-		TargetPluginInstanceID: target.PluginInstanceID,
-	})
-	if err != nil {
-		t.Fatalf("BindRetainedData(in-place) error = %v", err)
-	}
-	if bound.State != retaineddata.StateBound || bound.BoundPluginInstanceID != target.PluginInstanceID {
-		t.Fatalf("in-place bound retained record mismatch: %#v", bound)
-	}
-	value, err := broker.GetKV(ctx, storage.KVGetRequest{
-		PluginInstanceID: target.PluginInstanceID,
-		StoreID:          "cache",
-		Key:              "planner/filter",
-	})
-	if err != nil {
-		t.Fatalf("GetKV(in-place bound target) error = %v", err)
-	}
-	if string(value.Value) != "qa" {
-		t.Fatalf("in-place bound KV value = %q", string(value.Value))
-	}
-}
-
-func TestBindRetainedDataRestoresSettingsWithoutSecretState(t *testing.T) {
-	ctx := context.Background()
-	retainedRegistry := retaineddata.NewMemoryStore()
-	h, _, _ := newTestHostWithOptions(t, testHostOptions{
-		developerMode:  true,
-		localGenerated: true,
-		storageBroker:  storage.NewMemoryBroker(),
-		retainedData:   retainedRegistry,
-		secrets:        &recordingSecretStore{},
-	})
-	packageBytes := buildSettingsFixturePackage(t)
-	source, err := ImportLocalPackageBytes(ctx, h, packageBytes)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := h.EnablePlugin(ctx, EnableRequest{PluginInstanceID: source.PluginInstanceID, PluginStateVersion: mustPluginStateVersion(t, h, source.PluginInstanceID)}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := h.PatchPluginSettings(ctx, PatchSettingsRequest{
-		PluginInstanceID: source.PluginInstanceID,
-		Values:           map[string]any{"default_engine": "podman", "show_stopped": false},
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if err := h.BindSecretRef(ctx, SecretBindRequest{
-		PluginInstanceID: source.PluginInstanceID,
-		SecretRef:        "api_token",
-		Scope:            "user",
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := h.UninstallPlugin(ctx, UninstallRequest{PluginInstanceID: source.PluginInstanceID, DeleteData: false, PluginStateVersion: mustPluginStateVersion(t, h, source.PluginInstanceID)}); err != nil {
-		t.Fatal(err)
-	}
-	retainedRecords, err := h.ListRetainedData(ctx, ListRetainedDataRequest{SourcePluginInstanceID: source.PluginInstanceID})
-	if err != nil {
-		t.Fatal(err)
-	}
-	target, err := h.ImportLocalPackage(ctx, ImportLocalPackageRequest{
-		PackageReader:    bytes.NewReader(packageBytes),
-		PackageSize:      int64(len(packageBytes)),
-		PluginInstanceID: "plugini_settings_rebind_target",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	if _, err := h.BindRetainedData(ctx, BindRetainedDataRequest{
-		RetainedID:             retainedRecords[0].RetainedID,
-		TargetPluginInstanceID: target.PluginInstanceID,
-	}); err != nil {
-		t.Fatalf("BindRetainedData(settings) error = %v", err)
-	}
-	snapshot, err := h.GetPluginSettings(ctx, GetSettingsRequest{PluginInstanceID: target.PluginInstanceID})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if snapshot.Values["default_engine"] != "podman" || snapshot.Values["show_stopped"] != false {
-		t.Fatalf("bound settings mismatch: %#v", snapshot.Values)
-	}
-	secret, ok := snapshot.Values["api_token"].(settings.SecretValue)
-	if !ok {
-		t.Fatalf("bound secret should be redacted state: %#v", snapshot.Values["api_token"])
-	}
-	if secret.Set {
-		t.Fatalf("retained settings bind must not restore secret binding state: %#v", secret)
-	}
-}
-
-func TestBindRetainedDataRejectsUnsafeTrustClass(t *testing.T) {
-	ctx := context.Background()
-	retainedRegistry := retaineddata.NewMemoryStore()
-	h, _, _ := newTestHostWithOptions(t, testHostOptions{
-		developerMode:  true,
-		localGenerated: true,
-		storageBroker:  storage.NewMemoryBroker(),
-		retainedData:   retainedRegistry,
-		trustVerifier:  &recordingPackageTrustVerifier{trustState: registry.TrustVerified},
-	})
-	packageBytes := buildStorageFixturePackage(t)
-	source, err := ImportLocalPackageBytes(ctx, h, packageBytes)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := h.EnablePlugin(ctx, EnableRequest{PluginInstanceID: source.PluginInstanceID, PluginStateVersion: mustPluginStateVersion(t, h, source.PluginInstanceID)}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := h.UninstallPlugin(ctx, UninstallRequest{PluginInstanceID: source.PluginInstanceID, DeleteData: false, PluginStateVersion: mustPluginStateVersion(t, h, source.PluginInstanceID)}); err != nil {
-		t.Fatal(err)
-	}
-	retainedRecords, err := h.ListRetainedData(ctx, ListRetainedDataRequest{SourcePluginInstanceID: source.PluginInstanceID})
-	if err != nil {
-		t.Fatal(err)
-	}
-	h.adapters.PackageTrustVerifier = nil
-	target, err := h.ImportLocalPackage(ctx, ImportLocalPackageRequest{
-		PackageReader:    bytes.NewReader(packageBytes),
-		PackageSize:      int64(len(packageBytes)),
-		PluginInstanceID: "plugini_storage_unsigned_target",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	if _, err := h.BindRetainedData(ctx, BindRetainedDataRequest{
-		RetainedID:             retainedRecords[0].RetainedID,
-		TargetPluginInstanceID: target.PluginInstanceID,
-	}); err == nil {
-		t.Fatal("BindRetainedData() expected trust class error")
-	}
-	stored, err := retainedRegistry.Get(ctx, retainedRecords[0].RetainedID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if stored.State != retaineddata.StateRetained {
-		t.Fatalf("retained record state changed after rejected bind: %#v", stored)
-	}
-}
-
-func TestBindRetainedDataRejectsTargetActiveStorage(t *testing.T) {
-	ctx := context.Background()
-	broker := storage.NewMemoryBroker()
-	retainedRegistry := retaineddata.NewMemoryStore()
-	h, _, _ := newTestHostWithOptions(t, testHostOptions{
-		developerMode:  true,
-		localGenerated: true,
-		storageBroker:  broker,
-		retainedData:   retainedRegistry,
-	})
-	packageBytes := buildStorageFixturePackage(t)
-	source, err := ImportLocalPackageBytes(ctx, h, packageBytes)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := h.EnablePlugin(ctx, EnableRequest{PluginInstanceID: source.PluginInstanceID, PluginStateVersion: mustPluginStateVersion(t, h, source.PluginInstanceID)}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := h.UninstallPlugin(ctx, UninstallRequest{PluginInstanceID: source.PluginInstanceID, DeleteData: false, PluginStateVersion: mustPluginStateVersion(t, h, source.PluginInstanceID)}); err != nil {
-		t.Fatal(err)
-	}
-	retainedRecords, err := h.ListRetainedData(ctx, ListRetainedDataRequest{SourcePluginInstanceID: source.PluginInstanceID})
-	if err != nil {
-		t.Fatal(err)
-	}
-	target, err := h.ImportLocalPackage(ctx, ImportLocalPackageRequest{
-		PackageReader:    bytes.NewReader(packageBytes),
-		PackageSize:      int64(len(packageBytes)),
-		PluginInstanceID: "plugini_storage_active_target",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := h.EnablePlugin(ctx, EnableRequest{PluginInstanceID: target.PluginInstanceID, PluginStateVersion: mustPluginStateVersion(t, h, target.PluginInstanceID)}); err != nil {
-		t.Fatal(err)
-	}
-
-	if _, err := h.BindRetainedData(ctx, BindRetainedDataRequest{
-		RetainedID:             retainedRecords[0].RetainedID,
-		TargetPluginInstanceID: target.PluginInstanceID,
-	}); !errors.Is(err, ErrRetainedDataBindFailed) {
-		t.Fatalf("BindRetainedData() error = %v, want ErrRetainedDataBindFailed", err)
-	}
-	stored, err := retainedRegistry.Get(ctx, retainedRecords[0].RetainedID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if stored.State != retaineddata.StateRetained {
-		t.Fatalf("retained record state changed after rejected bind: %#v", stored)
-	}
-}
-
-func TestCleanupExpiredRetainedDataDeletesPayload(t *testing.T) {
-	ctx := context.Background()
-	now := time.Date(2026, 7, 2, 10, 0, 0, 0, time.UTC)
-	broker := storage.NewMemoryBroker()
-	retainedRegistry := retaineddata.NewMemoryStore()
-	h, _, audits := newTestHostWithOptions(t, testHostOptions{
-		developerMode:  true,
-		localGenerated: true,
-		storageBroker:  broker,
-		retainedData:   retainedRegistry,
-	})
-
-	successPluginID := "plugini_retained_expired_success"
-	if err := broker.EnsureNamespace(ctx, storage.Namespace{
-		PluginInstanceID: successPluginID,
-		StoreID:          "cache",
-		Kind:             storage.StoreKV,
-		QuotaBytes:       1024,
-		SchemaVersion:    1,
-	}); err != nil {
-		t.Fatalf("EnsureNamespace(success) error = %v", err)
-	}
-	if _, err := broker.PutKV(ctx, storage.KVPutRequest{
-		PluginInstanceID: successPluginID,
-		StoreID:          "cache",
-		Key:              "retained/key",
-		Value:            []byte("value"),
-	}); err != nil {
-		t.Fatalf("PutKV(success) error = %v", err)
-	}
-	if err := broker.DeleteNamespace(ctx, successPluginID, false); err != nil {
-		t.Fatalf("DeleteNamespace(retain success) error = %v", err)
-	}
-	deleteAfter := now.Add(-time.Minute)
-	successRecord, err := retainedRegistry.Retain(ctx, retaineddata.RetainRequest{
-		RetainedID:             "retained_expired_success",
-		SourcePluginInstanceID: successPluginID,
-		PublisherID:            "example",
-		PluginID:               "com.example.storage",
-		Version:                "1.0.0",
-		PackageHash:            "sha256:package-success",
-		ManifestHash:           "sha256:manifest-success",
-		StorageRetained:        true,
-		DeleteAfter:            &deleteAfter,
-		Now:                    now.Add(-2 * time.Hour),
-	})
-	if err != nil {
-		t.Fatalf("Retain(success) error = %v", err)
-	}
-
-	result, err := h.CleanupExpiredRetainedData(ctx, CleanupExpiredRetainedDataRequest{Now: now})
-	if err != nil {
-		t.Fatalf("CleanupExpiredRetainedData() error = %v", err)
-	}
-	if len(result.Deleted) != 1 || result.Deleted[0].RetainedID != successRecord.RetainedID || result.Deleted[0].State != retaineddata.StateDeleted {
-		t.Fatalf("deleted cleanup result mismatch: %#v", result.Deleted)
-	}
-	if len(result.Failed) != 0 {
-		t.Fatalf("unexpected failed cleanup result: %#v", result.Failed)
-	}
-	if namespaces, err := broker.ListNamespaces(ctx, successPluginID); err != nil {
-		t.Fatal(err)
-	} else if len(namespaces) != 0 {
-		t.Fatalf("expired retained storage still present: %#v", namespaces)
-	}
-	if !audits.hasEvent("plugin.retained_data.deleted") {
-		t.Fatalf("missing retained cleanup audit events: %#v", audits.events)
-	}
-}
-
-func TestCleanupExpiredRetainedDataMaxRecordsKeepsExpiredQueue(t *testing.T) {
-	ctx := context.Background()
-	now := time.Date(2026, 7, 2, 11, 0, 0, 0, time.UTC)
-	broker := storage.NewMemoryBroker()
-	retainedRegistry := retaineddata.NewMemoryStore()
-	h, _, _ := newTestHostWithOptions(t, testHostOptions{
-		developerMode:  true,
-		localGenerated: true,
-		storageBroker:  broker,
-		retainedData:   retainedRegistry,
-	})
-	deleteAfter := now.Add(-time.Minute)
-	for index, pluginInstanceID := range []string{"plugini_retained_queue_1", "plugini_retained_queue_2"} {
-		if err := broker.EnsureNamespace(ctx, storage.Namespace{
-			PluginInstanceID: pluginInstanceID,
-			StoreID:          "cache",
-			Kind:             storage.StoreKV,
-			QuotaBytes:       1024,
-			SchemaVersion:    1,
-		}); err != nil {
-			t.Fatalf("EnsureNamespace(%s) error = %v", pluginInstanceID, err)
-		}
-		if err := broker.DeleteNamespace(ctx, pluginInstanceID, false); err != nil {
-			t.Fatalf("DeleteNamespace(retain %s) error = %v", pluginInstanceID, err)
-		}
-		if _, err := retainedRegistry.Retain(ctx, retaineddata.RetainRequest{
-			RetainedID:             fmt.Sprintf("retained_queue_%d", index+1),
-			SourcePluginInstanceID: pluginInstanceID,
-			PublisherID:            "example",
-			PluginID:               "com.example.queue",
-			Version:                "1.0.0",
-			PackageHash:            fmt.Sprintf("sha256:package-queue-%d", index+1),
-			ManifestHash:           fmt.Sprintf("sha256:manifest-queue-%d", index+1),
-			StorageRetained:        true,
-			DeleteAfter:            &deleteAfter,
-			Now:                    now.Add(time.Duration(index-2) * time.Hour),
-		}); err != nil {
-			t.Fatalf("Retain(%s) error = %v", pluginInstanceID, err)
-		}
-	}
-
-	first, err := h.CleanupExpiredRetainedData(ctx, CleanupExpiredRetainedDataRequest{Now: now, MaxRecords: 1})
-	if err != nil {
-		t.Fatalf("CleanupExpiredRetainedData(first) error = %v", err)
-	}
-	if len(first.Deleted) != 1 || first.Deleted[0].RetainedID != "retained_queue_1" {
-		t.Fatalf("first cleanup result mismatch: %#v", first)
-	}
-	queued, err := retainedRegistry.Get(ctx, "retained_queue_2")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if queued.State != retaineddata.StateExpired {
-		t.Fatalf("unprocessed retained record state = %s, want expired", queued.State)
-	}
-
-	second, err := h.CleanupExpiredRetainedData(ctx, CleanupExpiredRetainedDataRequest{Now: now.Add(time.Minute), MaxRecords: 1})
-	if err != nil {
-		t.Fatalf("CleanupExpiredRetainedData(second) error = %v", err)
-	}
-	if len(second.Deleted) != 1 || second.Deleted[0].RetainedID != "retained_queue_2" {
-		t.Fatalf("second cleanup result mismatch: %#v", second)
-	}
-}
-
-func TestDeleteRetainedDataRefusesActiveStoragePayload(t *testing.T) {
-	ctx := context.Background()
-	now := time.Date(2026, 7, 2, 12, 0, 0, 0, time.UTC)
-	broker := storage.NewMemoryBroker()
-	retainedRegistry := retaineddata.NewMemoryStore()
-	h, _, _ := newTestHostWithOptions(t, testHostOptions{
-		developerMode:  true,
-		localGenerated: true,
-		storageBroker:  broker,
-		retainedData:   retainedRegistry,
-	})
-	pluginInstanceID := "plugini_retained_reactivated"
-	namespace := storage.Namespace{
-		PluginInstanceID: pluginInstanceID,
-		StoreID:          "cache",
-		Kind:             storage.StoreKV,
-		QuotaBytes:       1024,
-		SchemaVersion:    1,
-	}
-	if err := broker.EnsureNamespace(ctx, namespace); err != nil {
-		t.Fatalf("EnsureNamespace(initial) error = %v", err)
-	}
-	if _, err := broker.PutKV(ctx, storage.KVPutRequest{
-		PluginInstanceID: pluginInstanceID,
-		StoreID:          "cache",
-		Key:              "active/key",
-		Value:            []byte("still-active"),
-	}); err != nil {
-		t.Fatalf("PutKV(initial) error = %v", err)
-	}
-	if err := broker.DeleteNamespace(ctx, pluginInstanceID, false); err != nil {
-		t.Fatalf("DeleteNamespace(retain) error = %v", err)
-	}
-	record, err := retainedRegistry.Retain(ctx, retaineddata.RetainRequest{
-		RetainedID:             "retained_reactivated",
-		SourcePluginInstanceID: pluginInstanceID,
-		PublisherID:            "example",
-		PluginID:               "com.example.reactivated",
-		Version:                "1.0.0",
-		PackageHash:            "sha256:package-reactivated",
-		ManifestHash:           "sha256:manifest-reactivated",
-		StorageRetained:        true,
-		Now:                    now.Add(-time.Hour),
-	})
-	if err != nil {
-		t.Fatalf("Retain() error = %v", err)
-	}
-	if err := broker.EnsureNamespace(ctx, namespace); err != nil {
-		t.Fatalf("EnsureNamespace(reactivate) error = %v", err)
-	}
-
-	failed, err := h.DeleteRetainedData(ctx, DeleteRetainedDataRequest{RetainedID: record.RetainedID, Now: now})
-	if !errors.Is(err, ErrRetainedDataCleanupFailed) {
-		t.Fatalf("DeleteRetainedData() error = %v, want ErrRetainedDataCleanupFailed", err)
-	}
-	if failed.State != retaineddata.StateDeleteFailedRetryable || failed.DeleteError == "" {
-		t.Fatalf("failed retained record mismatch: %#v", failed)
-	}
-	value, err := broker.GetKV(ctx, storage.KVGetRequest{
-		PluginInstanceID: pluginInstanceID,
-		StoreID:          "cache",
-		Key:              "active/key",
-	})
-	if err != nil {
-		t.Fatalf("GetKV(active) error = %v", err)
-	}
-	if string(value.Value) != "still-active" {
-		t.Fatalf("active value changed: %q", string(value.Value))
-	}
-}
-
 func TestUninstallRevokesSurfaceTokensAndRuntime(t *testing.T) {
-	runtime := &recordingRuntimeSupervisor{
+	runtime := &recordingRuntimeManager{
 		health: runtimeclient.Health{RuntimeInstanceID: "runtime_1", RuntimeGenerationID: "runtime_gen_1", IPCChannelID: "ipc_1", ConnectionNonce: "connection_nonce_1234567890", Ready: true},
 		revokeResult: runtimeclient.RevokeResult{
 			ClosedSocketCount:        8,
@@ -7661,16 +7587,16 @@ func TestUninstallRevokesSurfaceTokensAndRuntime(t *testing.T) {
 	h, _, audits := newTestHostWithOptions(t, testHostOptions{
 		developerMode:     true,
 		localGenerated:    true,
-		runtimeSupervisor: runtime,
+		runtimeManager:    runtime,
 		capabilityID:      "example.capability.echo",
 		capabilityAdapter: &recordingCapabilityAdapter{result: capability.Result{Data: map[string]any{"ok": true}}},
 	})
 	installed, gateway := installEnableAndMintGateway(t, h, buildRPCFixturePackage(t), "rpc.view")
-	uninstalled, err := h.UninstallPlugin(context.Background(), UninstallRequest{PluginInstanceID: installed.PluginInstanceID, DeleteData: true, PluginStateVersion: mustPluginStateVersion(t, h, installed.PluginInstanceID)})
+	uninstalled, err := h.UninstallPlugin(hostTestContext(), UninstallRequest{PluginInstanceID: installed.PluginInstanceID, DeleteData: true, ExpectedManagementRevision: mustManagementRevision(t, h, installed.PluginInstanceID)})
 	if err != nil {
 		t.Fatalf("UninstallPlugin() error = %v", err)
 	}
-	if runtime.revokeCalls != 2 || runtime.lastRevokedPlugin != installed.PluginInstanceID || runtime.lastRevokeEpoch != uninstalled.RevokeEpoch {
+	if runtime.revokeCalls != 1 || runtime.lastRevokedPlugin != installed.PluginInstanceID || runtime.lastRevokeEpoch != uninstalled.RevokeEpoch {
 		t.Fatalf("runtime revoke mismatch: calls=%d plugin=%q epoch=%d uninstalled=%#v", runtime.revokeCalls, runtime.lastRevokedPlugin, runtime.lastRevokeEpoch, uninstalled)
 	}
 	if _, err := h.surfaceTokens.ValidateGatewayToken(gateway.GatewayToken, bridge.Audience{
@@ -7701,19 +7627,18 @@ func TestUninstallRevokesSurfaceTokensAndRuntime(t *testing.T) {
 }
 
 func TestUninstallEnabledPluginClearsSurfacesStreamsAndNetworkPolicy(t *testing.T) {
-	ctx := context.Background()
+	ctx := hostTestContext()
 	connectivityBroker := connectivity.NewMemoryBroker()
 	h, surfaces, audits := newTestHostWithOptions(t, testHostOptions{
 		developerMode:      true,
 		localGenerated:     true,
 		connectivityBroker: connectivityBroker,
-		storageBroker:      storage.NewMemoryBroker(),
 	})
 	installed, err := ImportLocalPackageBytes(ctx, h, buildNetworkFixturePackage(t))
 	if err != nil {
 		t.Fatal(err)
 	}
-	enabled, err := h.EnablePlugin(ctx, EnableRequest{PluginInstanceID: installed.PluginInstanceID, PluginStateVersion: mustPluginStateVersion(t, h, installed.PluginInstanceID)})
+	enabled, err := h.EnablePlugin(ctx, EnableRequest{PluginInstanceID: installed.PluginInstanceID, ExpectedManagementRevision: mustManagementRevision(t, h, installed.PluginInstanceID)})
 	if err != nil {
 		t.Fatalf("EnablePlugin() error = %v", err)
 	}
@@ -7749,7 +7674,7 @@ func TestUninstallEnabledPluginClearsSurfacesStreamsAndNetworkPolicy(t *testing.
 		t.Fatalf("Streams.Register() error = %v", err)
 	}
 
-	if _, err := h.UninstallPlugin(ctx, UninstallRequest{PluginInstanceID: enabled.PluginInstanceID, DeleteData: true, PluginStateVersion: mustPluginStateVersion(t, h, enabled.PluginInstanceID)}); err != nil {
+	if _, err := h.UninstallPlugin(ctx, UninstallRequest{PluginInstanceID: enabled.PluginInstanceID, DeleteData: true, ExpectedManagementRevision: mustManagementRevision(t, h, enabled.PluginInstanceID)}); err != nil {
 		t.Fatalf("UninstallPlugin() error = %v", err)
 	}
 
@@ -7780,106 +7705,20 @@ func TestUninstallEnabledPluginClearsSurfacesStreamsAndNetworkPolicy(t *testing.
 	}
 }
 
-func TestUninstallDeletesFileStorageNamespaces(t *testing.T) {
-	ctx := context.Background()
-	broker, err := storage.NewFileBroker(t.TempDir())
-	if err != nil {
-		t.Fatalf("NewFileBroker() error = %v", err)
-	}
-	h, _, _ := newTestHostWithStorage(t, true, true, broker)
-	installed, err := ImportLocalPackageBytes(ctx, h, buildStorageFixturePackage(t))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := h.EnablePlugin(ctx, EnableRequest{PluginInstanceID: installed.PluginInstanceID, PluginStateVersion: mustPluginStateVersion(t, h, installed.PluginInstanceID)}); err != nil {
-		t.Fatal(err)
-	}
-	dataPath, err := broker.NamespacePath(ctx, installed.PluginInstanceID, "cache")
-	if err != nil {
-		t.Fatal(err)
-	}
-	dataFile := filepath.Join(dataPath, "preferences.json")
-	if err := os.WriteFile(dataFile, []byte(`{"theme":"dark"}`), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := h.UninstallPlugin(ctx, UninstallRequest{PluginInstanceID: installed.PluginInstanceID, DeleteData: true, PluginStateVersion: mustPluginStateVersion(t, h, installed.PluginInstanceID)}); err != nil {
-		t.Fatalf("UninstallPlugin(delete data) error = %v", err)
-	}
-	if _, err := os.Stat(dataFile); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("deleted storage file stat error = %v, want not exist", err)
-	}
-	namespaces, err := broker.ListNamespaces(ctx, installed.PluginInstanceID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(namespaces) != 0 {
-		t.Fatalf("deleted storage namespaces still listed: %#v", namespaces)
-	}
-}
-
-func TestEnableEnsuresSQLiteNamespaceWithoutExecutingPluginDDL(t *testing.T) {
-	ctx := context.Background()
-	broker, err := storage.NewFileBroker(t.TempDir())
-	if err != nil {
-		t.Fatalf("NewFileBroker() error = %v", err)
-	}
-	h, _, _ := newTestHostWithStorage(t, true, true, broker)
-	installed, err := ImportLocalPackageBytes(ctx, h, buildSQLiteNamespaceFixturePackage(t))
-	if err != nil {
-		t.Fatal(err)
-	}
-	enabled, err := h.EnablePlugin(ctx, EnableRequest{
-		PluginInstanceID:   installed.PluginInstanceID,
-		PluginStateVersion: mustPluginStateVersion(t, h, installed.PluginInstanceID),
-	})
-	if err != nil {
-		t.Fatalf("EnablePlugin() error = %v", err)
-	}
-	namespaces, err := broker.ListNamespaces(ctx, enabled.PluginInstanceID)
-	if err != nil {
-		t.Fatalf("ListNamespaces() error = %v", err)
-	}
-	if len(namespaces) != 1 || namespaces[0].StoreID != "notes" || namespaces[0].Kind != storage.StoreSQLite {
-		t.Fatalf("enabled SQLite namespaces = %#v", namespaces)
-	}
-	_, err = broker.QuerySQLite(ctx, storage.SQLiteQueryRequest{
-		PluginInstanceID: enabled.PluginInstanceID,
-		StoreID:          "notes",
-		Database:         "notes.sqlite",
-		SQL:              "SELECT count(*) FROM notes",
-		MaxRows:          1,
-	})
-	if !errors.Is(err, storage.ErrFileNotFound) {
-		t.Fatalf("QuerySQLite() after enable error = %v, want absent plugin-owned database", err)
-	}
-	if _, err := h.DisablePlugin(ctx, DisableRequest{
-		PluginInstanceID:   enabled.PluginInstanceID,
-		PluginStateVersion: mustPluginStateVersion(t, h, enabled.PluginInstanceID),
-	}); err != nil {
-		t.Fatalf("DisablePlugin() error = %v", err)
-	}
-	if _, err := h.EnablePlugin(ctx, EnableRequest{
-		PluginInstanceID:   enabled.PluginInstanceID,
-		PluginStateVersion: mustPluginStateVersion(t, h, enabled.PluginInstanceID),
-	}); err != nil {
-		t.Fatalf("EnablePlugin() second call error = %v", err)
-	}
-}
-
 func TestDisableTransitionsOperations(t *testing.T) {
 	h, _, _ := newTestHost(t, true, true)
-	installed, err := ImportLocalPackageBytes(context.Background(), h, buildFixturePackage(t))
+	installed, err := ImportLocalPackageBytes(hostTestContext(), h, buildFixturePackage(t))
 	if err != nil {
 		t.Fatal(err)
 	}
-	cancelOp, err := h.adapters.Operations.Register(context.Background(), operation.RegisterRequest{
+	cancelOp, err := h.adapters.Operations.Register(hostTestContext(), operation.RegisterRequest{
 		OperationID:      "op_disable_cancel",
 		ExecutionBinding: testExecutionBinding(installed, "documents.archive", manifest.MethodExecutionOperation),
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	waitOp, err := h.adapters.Operations.Register(context.Background(), operation.RegisterRequest{
+	waitOp, err := h.adapters.Operations.Register(hostTestContext(), operation.RegisterRequest{
 		OperationID:      "op_disable_wait",
 		ExecutionBinding: testExecutionBinding(installed, "sync.wait", manifest.MethodExecutionOperation),
 		DisableBehavior:  operation.DisableBehaviorWait,
@@ -7888,7 +7727,7 @@ func TestDisableTransitionsOperations(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := h.DisablePlugin(context.Background(), DisableRequest{PluginInstanceID: installed.PluginInstanceID, Reason: "policy", PluginStateVersion: mustPluginStateVersion(t, h, installed.PluginInstanceID)}); err != nil {
+	if _, err := h.DisablePlugin(hostTestContext(), DisableRequest{PluginInstanceID: installed.PluginInstanceID, Reason: "policy", ExpectedManagementRevision: mustManagementRevision(t, h, installed.PluginInstanceID)}); err != nil {
 		t.Fatalf("DisablePlugin() error = %v", err)
 	}
 	assertHostOperationStatus(t, h, cancelOp.OperationID, operation.StatusCancelRequested)
@@ -7896,20 +7735,16 @@ func TestDisableTransitionsOperations(t *testing.T) {
 }
 
 func TestUninstallDeleteDataBlockedByRunningOperation(t *testing.T) {
-	ctx := context.Background()
-	broker := storage.NewMemoryBroker()
-	cleanupOrchestrator := cleanup.NewMemoryOrchestrator()
+	ctx := hostTestContext()
 	h, _, audits := newTestHostWithOptions(t, testHostOptions{
 		developerMode:  true,
 		localGenerated: true,
-		storageBroker:  broker,
-		cleanup:        cleanupOrchestrator,
 	})
 	installed, err := ImportLocalPackageBytes(ctx, h, buildStorageFixturePackage(t))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.EnablePlugin(ctx, EnableRequest{PluginInstanceID: installed.PluginInstanceID, PluginStateVersion: mustPluginStateVersion(t, h, installed.PluginInstanceID)}); err != nil {
+	if _, err := h.EnablePlugin(ctx, EnableRequest{PluginInstanceID: installed.PluginInstanceID, ExpectedManagementRevision: mustManagementRevision(t, h, installed.PluginInstanceID)}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := h.adapters.Operations.Register(ctx, operation.RegisterRequest{
@@ -7919,11 +7754,11 @@ func TestUninstallDeleteDataBlockedByRunningOperation(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := h.UninstallPlugin(ctx, UninstallRequest{PluginInstanceID: installed.PluginInstanceID, DeleteData: true, PluginStateVersion: mustPluginStateVersion(t, h, installed.PluginInstanceID)}); !errors.Is(err, operation.ErrDeleteBlocked) {
+	if _, err := h.UninstallPlugin(ctx, UninstallRequest{PluginInstanceID: installed.PluginInstanceID, DeleteData: true, ExpectedManagementRevision: mustManagementRevision(t, h, installed.PluginInstanceID)}); !errors.Is(err, operation.ErrDeleteBlocked) {
 		t.Fatalf("UninstallPlugin() error = %v, want ErrDeleteBlocked", err)
 	}
 	assertHostOperationStatus(t, h, "op_blocks_delete", operation.StatusCancelRequested)
-	namespaces, err := broker.ListNamespaces(ctx, installed.PluginInstanceID)
+	namespaces, err := h.adapters.PluginData.ListNamespaces(ctx, installed.PluginInstanceID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -7933,13 +7768,6 @@ func TestUninstallDeleteDataBlockedByRunningOperation(t *testing.T) {
 	if !audits.hasEvent("plugin.operations.delete_blocked") {
 		t.Fatalf("missing blocked audit event: %#v", audits.events)
 	}
-	executions, err := cleanupOrchestrator.ListExecutions(ctx, installed.PluginInstanceID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(executions) != 0 {
-		t.Fatalf("cleanup executed despite blocked operation: %#v", executions)
-	}
 }
 
 func TestUninstallDeleteDataDispatchesCancellationToLiveAdapterBeforeBlocking(t *testing.T) {
@@ -7948,16 +7776,16 @@ func TestUninstallDeleteDataDispatchesCancellationToLiveAdapterBeforeBlocking(t 
 		developerMode: true, localGenerated: true, capabilityID: "example.capability.echo", capabilityAdapter: capabilityAdapter,
 	})
 	installed, gateway := installEnableAndMintGateway(t, h, buildOperationRPCFixturePackage(t), "operation.view")
-	started, err := h.CallPluginMethod(context.Background(), CallMethodRequest{
-		PluginInstanceID: installed.PluginInstanceID, SurfaceInstanceID: "surface_rpc", SessionChannelIDHash: "channel_hash",
-		OwnerSessionHash: "session_hash", OwnerUserHash: "user_hash", BridgeChannelID: "bridge_rpc", GatewayToken: gateway.GatewayToken,
+	started, err := h.CallPluginMethod(hostTestContext(), CallMethodRequest{
+		PluginInstanceID: installed.PluginInstanceID, SurfaceInstanceID: "surface_rpc",
+		BridgeChannelID: "bridge_rpc", GatewayToken: gateway.GatewayToken,
 		Method: "documents.archive", Params: map[string]any{"document_id": "doc-1"},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.UninstallPlugin(context.Background(), UninstallRequest{
-		PluginInstanceID: installed.PluginInstanceID, DeleteData: true, PluginStateVersion: mustPluginStateVersion(t, h, installed.PluginInstanceID),
+	if _, err := h.UninstallPlugin(hostTestContext(), UninstallRequest{
+		PluginInstanceID: installed.PluginInstanceID, DeleteData: true, ExpectedManagementRevision: mustManagementRevision(t, h, installed.PluginInstanceID),
 	}); !errors.Is(err, operation.ErrDeleteBlocked) {
 		t.Fatalf("UninstallPlugin() error = %v, want ErrDeleteBlocked", err)
 	}
@@ -7967,14 +7795,13 @@ func TestUninstallDeleteDataDispatchesCancellationToLiveAdapterBeforeBlocking(t 
 }
 
 func TestUninstallDeleteDataSucceedsAfterOperationCancelAck(t *testing.T) {
-	ctx := context.Background()
-	broker := storage.NewMemoryBroker()
-	h, _, _ := newTestHostWithStorage(t, true, true, broker)
+	ctx := hostTestContext()
+	h, _, _ := newTestHost(t, true, true)
 	installed, err := ImportLocalPackageBytes(ctx, h, buildStorageFixturePackage(t))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.EnablePlugin(ctx, EnableRequest{PluginInstanceID: installed.PluginInstanceID, PluginStateVersion: mustPluginStateVersion(t, h, installed.PluginInstanceID)}); err != nil {
+	if _, err := h.EnablePlugin(ctx, EnableRequest{PluginInstanceID: installed.PluginInstanceID, ExpectedManagementRevision: mustManagementRevision(t, h, installed.PluginInstanceID)}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := h.adapters.Operations.Register(ctx, operation.RegisterRequest{
@@ -7984,7 +7811,7 @@ func TestUninstallDeleteDataSucceedsAfterOperationCancelAck(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := h.UninstallPlugin(ctx, UninstallRequest{PluginInstanceID: installed.PluginInstanceID, DeleteData: true, PluginStateVersion: mustPluginStateVersion(t, h, installed.PluginInstanceID)}); !errors.Is(err, operation.ErrDeleteBlocked) {
+	if _, err := h.UninstallPlugin(ctx, UninstallRequest{PluginInstanceID: installed.PluginInstanceID, DeleteData: true, ExpectedManagementRevision: mustManagementRevision(t, h, installed.PluginInstanceID)}); !errors.Is(err, operation.ErrDeleteBlocked) {
 		t.Fatalf("UninstallPlugin() first error = %v, want ErrDeleteBlocked", err)
 	}
 	if _, err := h.adapters.Operations.Finish(ctx, operation.FinishRequest{
@@ -7994,10 +7821,10 @@ func TestUninstallDeleteDataSucceedsAfterOperationCancelAck(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Operations.Finish() error = %v", err)
 	}
-	if _, err := h.UninstallPlugin(ctx, UninstallRequest{PluginInstanceID: installed.PluginInstanceID, DeleteData: true, PluginStateVersion: mustPluginStateVersion(t, h, installed.PluginInstanceID)}); err != nil {
+	if _, err := h.UninstallPlugin(ctx, UninstallRequest{PluginInstanceID: installed.PluginInstanceID, DeleteData: true, ExpectedManagementRevision: mustManagementRevision(t, h, installed.PluginInstanceID)}); err != nil {
 		t.Fatalf("UninstallPlugin() retry error = %v", err)
 	}
-	namespaces, err := broker.ListNamespaces(ctx, installed.PluginInstanceID)
+	namespaces, err := h.adapters.PluginData.ListNamespaces(ctx, installed.PluginInstanceID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -8007,14 +7834,13 @@ func TestUninstallDeleteDataSucceedsAfterOperationCancelAck(t *testing.T) {
 }
 
 func TestUninstallForceCleanupOperationAllowsDeleteData(t *testing.T) {
-	ctx := context.Background()
-	broker := storage.NewMemoryBroker()
-	h, _, _ := newTestHostWithStorage(t, true, true, broker)
+	ctx := hostTestContext()
+	h, _, _ := newTestHost(t, true, true)
 	installed, err := ImportLocalPackageBytes(ctx, h, buildStorageFixturePackage(t))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.EnablePlugin(ctx, EnableRequest{PluginInstanceID: installed.PluginInstanceID, PluginStateVersion: mustPluginStateVersion(t, h, installed.PluginInstanceID)}); err != nil {
+	if _, err := h.EnablePlugin(ctx, EnableRequest{PluginInstanceID: installed.PluginInstanceID, ExpectedManagementRevision: mustManagementRevision(t, h, installed.PluginInstanceID)}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := h.adapters.Operations.Register(ctx, operation.RegisterRequest{
@@ -8025,164 +7851,16 @@ func TestUninstallForceCleanupOperationAllowsDeleteData(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := h.UninstallPlugin(ctx, UninstallRequest{PluginInstanceID: installed.PluginInstanceID, DeleteData: true, PluginStateVersion: mustPluginStateVersion(t, h, installed.PluginInstanceID)}); err != nil {
+	if _, err := h.UninstallPlugin(ctx, UninstallRequest{PluginInstanceID: installed.PluginInstanceID, DeleteData: true, ExpectedManagementRevision: mustManagementRevision(t, h, installed.PluginInstanceID)}); err != nil {
 		t.Fatalf("UninstallPlugin() error = %v", err)
 	}
 	assertHostOperationStatus(t, h, "op_force_cleanup", operation.StatusOrphanedAfterUninstall)
-	namespaces, err := broker.ListNamespaces(ctx, installed.PluginInstanceID)
+	namespaces, err := h.adapters.PluginData.ListNamespaces(ctx, installed.PluginInstanceID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(namespaces) != 0 {
 		t.Fatalf("storage namespaces still present: %#v", namespaces)
-	}
-}
-
-func TestExportImportPluginData(t *testing.T) {
-	ctx := context.Background()
-	broker := storage.NewMemoryBroker()
-	h, _, audits := newTestHostWithStorage(t, true, true, broker)
-	source, err := ImportLocalPackageBytes(ctx, h, buildStorageFixturePackage(t))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := h.EnablePlugin(ctx, EnableRequest{PluginInstanceID: source.PluginInstanceID, PluginStateVersion: mustPluginStateVersion(t, h, source.PluginInstanceID)}); err != nil {
-		t.Fatal(err)
-	}
-	if err := broker.SetUsage(ctx, source.PluginInstanceID, "db", 2048); err != nil {
-		t.Fatal(err)
-	}
-
-	exported, err := h.ExportPluginData(ctx, ExportDataRequest{PluginInstanceID: source.PluginInstanceID})
-	if err != nil {
-		t.Fatalf("ExportPluginData() error = %v", err)
-	}
-	if err := broker.SetUsage(ctx, source.PluginInstanceID, "db", 0); err != nil {
-		t.Fatal(err)
-	}
-	if err := h.ImportPluginData(ctx, ImportDataRequest{
-		PluginInstanceID: source.PluginInstanceID,
-		ArchiveRef:       exported.ArchiveRef,
-		DeleteExisting:   true,
-	}); err != nil {
-		t.Fatalf("ImportPluginData() error = %v", err)
-	}
-	usage, err := broker.Usage(ctx, source.PluginInstanceID, "db")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if usage.UsageBytes != 2048 {
-		t.Fatalf("imported usage = %d, want 2048", usage.UsageBytes)
-	}
-	if !audits.hasEvent("plugin.data.exported") || !audits.hasEvent("plugin.data.imported") {
-		t.Fatalf("missing data audit events: %#v", audits.events)
-	}
-}
-
-func TestExportImportPluginSettingsData(t *testing.T) {
-	ctx := context.Background()
-	h, _, audits := newTestHostWithOptions(t, testHostOptions{
-		developerMode:  true,
-		localGenerated: true,
-		storageBroker:  storage.NewMemoryBroker(),
-		secrets:        &recordingSecretStore{},
-	})
-	source, err := ImportLocalPackageBytes(ctx, h, buildSettingsFixturePackage(t))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := h.EnablePlugin(ctx, EnableRequest{PluginInstanceID: source.PluginInstanceID, PluginStateVersion: mustPluginStateVersion(t, h, source.PluginInstanceID)}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := h.PatchPluginSettings(ctx, PatchSettingsRequest{
-		PluginInstanceID: source.PluginInstanceID,
-		Values:           map[string]any{"default_engine": "podman", "show_stopped": false},
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if err := h.BindSecretRef(ctx, SecretBindRequest{
-		PluginInstanceID: source.PluginInstanceID,
-		SecretRef:        "api_token",
-		Scope:            "user",
-	}); err != nil {
-		t.Fatal(err)
-	}
-
-	exported, err := h.ExportPluginData(ctx, ExportDataRequest{PluginInstanceID: source.PluginInstanceID, IncludeSecrets: true})
-	if err != nil {
-		t.Fatalf("ExportPluginData(settings) error = %v", err)
-	}
-	if exported.ArchiveRef != "" {
-		t.Fatalf("settings-only export should not create storage archive: %#v", exported)
-	}
-	if exported.SettingsArchiveRef == "" {
-		t.Fatal("settings export response missing settings_archive_ref")
-	}
-	if _, err := h.PatchPluginSettings(ctx, PatchSettingsRequest{
-		PluginInstanceID: source.PluginInstanceID,
-		Values:           map[string]any{"default_engine": "docker", "show_stopped": true},
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if err := h.DeleteSecretRef(ctx, SecretDeleteRequest{
-		PluginInstanceID: source.PluginInstanceID,
-		SecretRef:        "api_token",
-		Scope:            "user",
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if err := h.ImportPluginData(ctx, ImportDataRequest{
-		PluginInstanceID:   source.PluginInstanceID,
-		SettingsArchiveRef: exported.SettingsArchiveRef,
-		DeleteExisting:     true,
-	}); err != nil {
-		t.Fatalf("ImportPluginData(settings) error = %v", err)
-	}
-	imported, err := h.GetPluginSettings(ctx, GetSettingsRequest{PluginInstanceID: source.PluginInstanceID})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if imported.Values["default_engine"] != "podman" || imported.Values["show_stopped"] != false {
-		t.Fatalf("imported settings mismatch: %#v", imported.Values)
-	}
-	secret, ok := imported.Values["api_token"].(settings.SecretValue)
-	if !ok {
-		t.Fatalf("imported secret should be redacted state: %#v", imported.Values["api_token"])
-	}
-	if secret.Set {
-		t.Fatalf("settings import must not restore secret binding state: %#v", secret)
-	}
-	if !audits.hasEvent("plugin.data.exported") || !audits.hasEvent("plugin.data.imported") {
-		t.Fatalf("missing data audit events: %#v", audits.events)
-	}
-}
-
-func TestImportPluginDataRequiresStorageDeclaration(t *testing.T) {
-	ctx := context.Background()
-	broker := storage.NewMemoryBroker()
-	h, _, _ := newTestHostWithStorage(t, true, true, broker)
-	source, err := ImportLocalPackageBytes(ctx, h, buildStorageFixturePackage(t))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := h.EnablePlugin(ctx, EnableRequest{PluginInstanceID: source.PluginInstanceID, PluginStateVersion: mustPluginStateVersion(t, h, source.PluginInstanceID)}); err != nil {
-		t.Fatal(err)
-	}
-	exported, err := h.ExportPluginData(ctx, ExportDataRequest{PluginInstanceID: source.PluginInstanceID})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	target, err := ImportLocalPackageBytes(ctx, h, buildFixturePackage(t))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := h.ImportPluginData(ctx, ImportDataRequest{
-		PluginInstanceID: target.PluginInstanceID,
-		ArchiveRef:       exported.ArchiveRef,
-		DeleteExisting:   true,
-	}); err == nil {
-		t.Fatal("ImportPluginData() expected storage declaration error")
 	}
 }
 
@@ -8193,7 +7871,7 @@ func TestSecretLifecycleUsesAdapter(t *testing.T) {
 		localGenerated: true,
 		secrets:        secrets,
 	})
-	installed, err := ImportLocalPackageBytes(context.Background(), h, buildSettingsFixturePackage(t))
+	installed, err := ImportLocalPackageBytes(hostTestContext(), h, buildSettingsFixturePackage(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -8202,13 +7880,13 @@ func TestSecretLifecycleUsesAdapter(t *testing.T) {
 		SecretRef:        " api_token ",
 		Scope:            "user",
 	}
-	if err := h.BindSecretRef(context.Background(), req); err != nil {
+	if err := h.BindSecretRef(hostTestContext(), req); err != nil {
 		t.Fatalf("BindSecretRef() error = %v", err)
 	}
-	if err := h.TestSecretRef(context.Background(), SecretTestRequest(req)); err != nil {
+	if err := h.TestSecretRef(hostTestContext(), SecretTestRequest(req)); err != nil {
 		t.Fatalf("TestSecretRef() error = %v", err)
 	}
-	if err := h.DeleteSecretRef(context.Background(), SecretDeleteRequest(req)); err != nil {
+	if err := h.DeleteSecretRef(hostTestContext(), SecretDeleteRequest(req)); err != nil {
 		t.Fatalf("DeleteSecretRef() error = %v", err)
 	}
 	if secrets.bind.PluginInstanceID != installed.PluginInstanceID || secrets.bind.SecretRef != "api_token" || secrets.bind.Scope != "user" {
@@ -8222,90 +7900,63 @@ func TestSecretLifecycleUsesAdapter(t *testing.T) {
 	}
 }
 
-func TestSettingsLifecycleDefaultsPatchSecretsAndDelete(t *testing.T) {
-	secrets := &recordingSecretStore{}
-	h, _, audits := newTestHostWithOptions(t, testHostOptions{
-		developerMode:  true,
-		localGenerated: true,
-		secrets:        secrets,
+func TestSecretStoreIsTheOnlySettingsSecretAuthorityAndExportDoesNotReadIt(t *testing.T) {
+	secretStore := secrets.NewMemoryStore()
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{
+		developerMode: true, localGenerated: true, secrets: secretStore,
 	})
-	ctx := context.Background()
-	installed, err := ImportLocalPackageBytes(ctx, h, buildSettingsFixturePackage(t))
+	installed, err := ImportLocalPackageBytes(hostTestContext(), h, buildSettingsFixturePackage(t))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.EnablePlugin(ctx, EnableRequest{PluginInstanceID: installed.PluginInstanceID, PluginStateVersion: mustPluginStateVersion(t, h, installed.PluginInstanceID)}); err != nil {
-		t.Fatalf("EnablePlugin() error = %v", err)
-	}
-	schema, err := h.GetSettingsSchema(ctx, GetSettingsRequest{PluginInstanceID: installed.PluginInstanceID})
-	if err != nil {
-		t.Fatalf("GetSettingsSchema() error = %v", err)
-	}
-	if schema.SchemaVersion != 1 || len(schema.Fields) != 3 || schema.SettingsRevision == 0 {
-		t.Fatalf("settings schema mismatch: %#v", schema)
+	if _, err := h.EnablePlugin(hostTestContext(), EnableRequest{
+		PluginInstanceID: installed.PluginInstanceID, ExpectedManagementRevision: mustManagementRevision(t, h, installed.PluginInstanceID),
+	}); err != nil {
+		t.Fatal(err)
 	}
 
-	initial, err := h.GetPluginSettings(ctx, GetSettingsRequest{PluginInstanceID: installed.PluginInstanceID})
-	if err != nil {
-		t.Fatalf("GetPluginSettings() error = %v", err)
-	}
-	if initial.Values["default_engine"] != "docker" {
-		t.Fatalf("default settings mismatch: %#v", initial)
-	}
-	secret, ok := initial.Values["api_token"].(settings.SecretValue)
-	if !ok || secret.Set {
-		t.Fatalf("secret setting should be redacted unset state: %#v", initial.Values["api_token"])
-	}
-
-	patched, err := h.PatchPluginSettings(ctx, PatchSettingsRequest{
-		PluginInstanceID: installed.PluginInstanceID,
-		Values:           map[string]any{"default_engine": "podman"},
-	})
-	if err != nil {
-		t.Fatalf("PatchPluginSettings() error = %v", err)
-	}
-	if patched.SettingsRevision <= initial.SettingsRevision || patched.Values["default_engine"] != "podman" {
-		t.Fatalf("patched settings mismatch: before=%#v after=%#v", initial, patched)
-	}
-	if _, err := h.PatchPluginSettings(ctx, PatchSettingsRequest{
-		PluginInstanceID: installed.PluginInstanceID,
-		Values:           map[string]any{"api_token": "plaintext"},
-	}); !errors.Is(err, settings.ErrInvalidSetting) {
-		t.Fatalf("PatchPluginSettings(secret) error = %v, want ErrInvalidSetting", err)
-	}
-
-	if err := h.BindSecretRef(ctx, SecretBindRequest{PluginInstanceID: installed.PluginInstanceID, SecretRef: "api_token", Scope: "user"}); err != nil {
-		t.Fatalf("BindSecretRef() error = %v", err)
-	}
-	if err := h.TestSecretRef(ctx, SecretTestRequest{PluginInstanceID: installed.PluginInstanceID, SecretRef: "api_token", Scope: "user"}); err != nil {
-		t.Fatalf("TestSecretRef() error = %v", err)
-	}
-	withSecret, err := h.GetPluginSettings(ctx, GetSettingsRequest{PluginInstanceID: installed.PluginInstanceID})
+	settingsBefore, err := h.GetPluginSettings(hostTestContext(), GetSettingsRequest{PluginInstanceID: installed.PluginInstanceID})
 	if err != nil {
 		t.Fatal(err)
 	}
-	secret, ok = withSecret.Values["api_token"].(settings.SecretValue)
-	if !ok || !secret.Set || secret.LastTestStatus != "passed" {
-		t.Fatalf("secret setting state mismatch: %#v", withSecret.Values["api_token"])
+	if len(settingsBefore.SecretMetadata) != 1 || settingsBefore.SecretMetadata[0].Bound {
+		t.Fatalf("initial secret metadata = %#v", settingsBefore.SecretMetadata)
+	}
+	secretRequest := SecretBindRequest{PluginInstanceID: installed.PluginInstanceID, SecretRef: "api_token", Scope: "user"}
+	if err := h.BindSecretRef(hostTestContext(), secretRequest); err != nil {
+		t.Fatal(err)
+	}
+	settingsAfterBind, err := h.GetPluginSettings(hostTestContext(), GetSettingsRequest{PluginInstanceID: installed.PluginInstanceID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(settingsAfterBind.SecretMetadata) != 1 || !settingsAfterBind.SecretMetadata[0].Bound {
+		t.Fatalf("bound secret metadata = %#v", settingsAfterBind.SecretMetadata)
+	}
+	if _, exists := settingsAfterBind.Values["api_token"]; exists {
+		t.Fatalf("settings values contain secret state: %#v", settingsAfterBind.Values)
 	}
 
-	if _, err := h.UninstallPlugin(ctx, UninstallRequest{PluginInstanceID: installed.PluginInstanceID, DeleteData: true, PluginStateVersion: mustPluginStateVersion(t, h, installed.PluginInstanceID)}); err != nil {
-		t.Fatalf("UninstallPlugin(delete data) error = %v", err)
+	h.adapters.Secrets = &failingSecretListStore{SecretStoreAdapter: secretStore, err: errors.New("vault metadata unavailable at /Users/secret/path")}
+	if _, err := h.ExportPluginData(hostTestContext(), ExportDataRequest{PluginInstanceID: installed.PluginInstanceID}); err != nil {
+		t.Fatalf("ExportPluginData() read the secret authority: %v", err)
 	}
-	if secrets.deletePluginID != installed.PluginInstanceID {
-		t.Fatalf("secret bindings were not deleted on uninstall delete data: %#v", secrets)
+	h.adapters.Secrets = secretStore
+	if err := h.DeleteSecretRef(hostTestContext(), SecretDeleteRequest(secretRequest)); err != nil {
+		t.Fatal(err)
 	}
-	if _, err := h.adapters.Settings.Get(ctx, settings.GetRequest{PluginInstanceID: installed.PluginInstanceID}); !errors.Is(err, settings.ErrNotDeclared) {
-		t.Fatalf("settings should be deleted after uninstall delete data: %v", err)
+	settingsAfterDelete, err := h.GetPluginSettings(hostTestContext(), GetSettingsRequest{PluginInstanceID: installed.PluginInstanceID})
+	if err != nil {
+		t.Fatal(err)
 	}
-	if !audits.hasEvent("plugin.settings.updated") || !audits.hasEvent("plugin.settings.deleted") || !audits.hasEvent("plugin.secrets.deleted") {
-		t.Fatalf("missing settings audit events: %#v", audits.events)
+	if len(settingsAfterDelete.SecretMetadata) != 1 || settingsAfterDelete.SecretMetadata[0].Bound {
+		t.Fatalf("deleted secret metadata = %#v", settingsAfterDelete.SecretMetadata)
 	}
 }
 
 func TestSecretLifecycleValidatesRequestAndAdapter(t *testing.T) {
 	h, _, _ := newTestHost(t, true, true)
-	installed, err := ImportLocalPackageBytes(context.Background(), h, buildFixturePackage(t))
+	installed, err := ImportLocalPackageBytes(hostTestContext(), h, buildFixturePackage(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -8314,7 +7965,7 @@ func TestSecretLifecycleValidatesRequestAndAdapter(t *testing.T) {
 		localGenerated: true,
 		secrets:        &recordingSecretStore{},
 	})
-	if err := withSecrets.BindSecretRef(context.Background(), SecretBindRequest{
+	if err := withSecrets.BindSecretRef(hostTestContext(), SecretBindRequest{
 		PluginInstanceID: installed.PluginInstanceID,
 		SecretRef:        "token",
 		Scope:            "global",
@@ -8322,18 +7973,11 @@ func TestSecretLifecycleValidatesRequestAndAdapter(t *testing.T) {
 		t.Fatalf("BindSecretRef() error = %v, want ErrInvalidSecretRef", err)
 	}
 
-	if err := h.BindSecretRef(context.Background(), SecretBindRequest{
-		PluginInstanceID: installed.PluginInstanceID,
-		SecretRef:        "token",
-		Scope:            "user",
-	}); !errors.Is(err, ErrSecretStoreRequired) {
-		t.Fatalf("BindSecretRef() error = %v, want ErrSecretStoreRequired", err)
-	}
-	withSecretsInstalled, err := ImportLocalPackageBytes(context.Background(), withSecrets, buildFixturePackage(t))
+	withSecretsInstalled, err := ImportLocalPackageBytes(hostTestContext(), withSecrets, buildFixturePackage(t))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := withSecrets.BindSecretRef(context.Background(), SecretBindRequest{
+	if err := withSecrets.BindSecretRef(hostTestContext(), SecretBindRequest{
 		PluginInstanceID: withSecretsInstalled.PluginInstanceID,
 		SecretRef:        "token",
 		Scope:            "user",
@@ -8342,70 +7986,40 @@ func TestSecretLifecycleValidatesRequestAndAdapter(t *testing.T) {
 	}
 }
 
-func TestUninstallDeleteDataRequiresSecretPluginCleanup(t *testing.T) {
+func TestExplicitObservabilitySinksReceiveAuditAndScopedDiagnostics(t *testing.T) {
+	audits := &auditSink{}
+	diagnostics := observability.NewMemoryStore()
 	h, _, _ := newTestHostWithOptions(t, testHostOptions{
-		developerMode:  true,
-		localGenerated: true,
-		secrets:        &secretStoreWithoutPluginCleanup{},
+		developerMode: true, localGenerated: true, audit: audits, diagnostics: diagnostics,
 	})
-	installed, err := ImportLocalPackageBytes(context.Background(), h, buildSettingsFixturePackage(t))
+	installed, err := ImportLocalPackageBytes(hostTestContext(), h, buildFixturePackage(t))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := h.BindSecretRef(context.Background(), SecretBindRequest{
-		PluginInstanceID: installed.PluginInstanceID,
-		SecretRef:        "api_token",
-		Scope:            "user",
-	}); err != nil {
-		t.Fatalf("BindSecretRef() error = %v", err)
-	}
-	if _, err := h.UninstallPlugin(context.Background(), UninstallRequest{PluginInstanceID: installed.PluginInstanceID, DeleteData: true, PluginStateVersion: mustPluginStateVersion(t, h, installed.PluginInstanceID)}); err == nil || !strings.Contains(err.Error(), "secret store does not support plugin cleanup") {
-		t.Fatalf("UninstallPlugin(delete data) error = %v, want secret cleanup support error", err)
-	}
-	if _, err := h.adapters.Settings.Get(context.Background(), settings.GetRequest{PluginInstanceID: installed.PluginInstanceID}); err != nil {
-		t.Fatalf("settings should not be deleted when secret cleanup preflight fails: %v", err)
-	}
-}
-
-func TestDefaultObservabilityStoreListsAuditAndDiagnostics(t *testing.T) {
-	h, err := New(Adapters{
-		SessionResolver:      fakeSessionResolver{},
-		Policy:               policyAdapter{developerMode: true, localGenerated: true, decision: PolicyAllow},
-		PackageTrustVerifier: &recordingPackageTrustVerifier{},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	installed, err := ImportLocalPackageBytes(context.Background(), h, buildFixturePackage(t))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := h.EnablePlugin(context.Background(), EnableRequest{PluginInstanceID: installed.PluginInstanceID, PluginStateVersion: mustPluginStateVersion(t, h, installed.PluginInstanceID)}); err != nil {
+	if _, err := h.EnablePlugin(hostTestContext(), EnableRequest{PluginInstanceID: installed.PluginInstanceID, ExpectedManagementRevision: mustManagementRevision(t, h, installed.PluginInstanceID)}); err != nil {
 		t.Fatal(err)
 	}
 
-	auditEvents, err := h.ListAuditEvents(context.Background(), ListAuditEventsRequest{
-		PluginInstanceID: installed.PluginInstanceID,
-		Type:             "plugin.enabled",
-	})
-	if err != nil {
-		t.Fatalf("ListAuditEvents() error = %v", err)
-	}
-	if len(auditEvents) != 1 || auditEvents[0].PluginID != installed.PluginID || auditEvents[0].OccurredAt.IsZero() {
-		t.Fatalf("audit events mismatch: %#v", auditEvents)
+	auditEvent, ok := audits.lastEvent("plugin.enabled")
+	if !ok || auditEvent.PluginID != installed.PluginID || auditEvent.PluginInstanceID != installed.PluginInstanceID {
+		t.Fatalf("audit sink event mismatch: %#v", auditEvent)
 	}
 
-	if err := h.adapters.Diagnostics.AppendPluginDiagnostic(context.Background(), DiagnosticEvent{
+	h.diagnostic(hostTestContext(), observability.DiagnosticEvent{
 		Type:              "plugin.surface.renderer_error",
 		Severity:          "warning",
 		Message:           "renderer rejected plugin output",
 		PluginID:          installed.PluginID,
 		PluginInstanceID:  installed.PluginInstanceID,
 		SurfaceInstanceID: "surface_default_observability",
+	})
+	if err := diagnostics.AppendPluginDiagnostic(context.Background(), observability.DiagnosticEvent{
+		Type: "plugin.runtime.hostcall.failed", Severity: "warning", Message: "background failure",
+		PluginID: installed.PluginID, PluginInstanceID: installed.PluginInstanceID,
 	}); err != nil {
 		t.Fatal(err)
 	}
-	diagnosticEvents, err := h.ListDiagnosticEvents(context.Background(), ListDiagnosticEventsRequest{
+	diagnosticEvents, err := h.ListDiagnosticEvents(hostTestContext(), ListDiagnosticEventsRequest{
 		PluginInstanceID:  installed.PluginInstanceID,
 		SurfaceInstanceID: "surface_default_observability",
 		Severity:          "warning",
@@ -8416,14 +8030,95 @@ func TestDefaultObservabilityStoreListsAuditAndDiagnostics(t *testing.T) {
 	if len(diagnosticEvents) != 1 || diagnosticEvents[0].Type != "plugin.surface.renderer_error" || diagnosticEvents[0].Message != "renderer rejected plugin output" {
 		t.Fatalf("diagnostic events mismatch: %#v", diagnosticEvents)
 	}
+	background, err := h.ListDiagnosticEvents(hostTestContext(), ListDiagnosticEventsRequest{Type: "plugin.runtime.hostcall.failed"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(background) != 0 {
+		t.Fatalf("background diagnostics leaked into user scope: %#v", background)
+	}
+}
+
+func TestUserTriggeredDiagnosticHelpersAttachScopeAndHideInternalCause(t *testing.T) {
+	const sensitive = "vault-token-super-secret at /Users/secret/path"
+	diagnostics := &listingDiagnosticSink{}
+	h := &Host{adapters: Adapters{Diagnostics: diagnostics}}
+	record := registry.PluginRecord{
+		PluginID: "com.example.plugin", PluginInstanceID: "plugini_1", ActiveFingerprint: "sha256:active",
+	}
+
+	h.reportLifecycleDiagnostic(hostTestContext(), record, "plugin.runtime_state.refresh_failed", errors.New(sensitive), map[string]any{"stage": "refresh"})
+	if err := h.reportMethodRejection(hostTestContext(), record, "example.read", "surface_1", fmt.Errorf("%w: %s", permissions.ErrPermissionDenied, sensitive)); err != nil {
+		t.Fatal(err)
+	}
+	if len(diagnostics.events) != 2 {
+		t.Fatalf("diagnostic count = %d, want 2: %#v", len(diagnostics.events), diagnostics.events)
+	}
+	for _, event := range diagnostics.events {
+		if event.OwnerSessionHash != "session_hash" || event.OwnerUserHash != "user_hash" || event.OwnerEnvHash != "env_hash" || event.SessionChannelIDHash != "channel_hash" {
+			t.Fatalf("diagnostic owner scope mismatch: %#v", event)
+		}
+		if event.InternalDetails["error"] == nil || !strings.Contains(fmt.Sprint(event.InternalDetails["error"]), sensitive) {
+			t.Fatalf("diagnostic internal cause mismatch: %#v", event)
+		}
+		encoded, err := json.Marshal(event)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(encoded), sensitive) || strings.Contains(string(encoded), "internal_details") {
+			t.Fatalf("diagnostic internal cause was serialized: %s", encoded)
+		}
+	}
+	if diagnostics.events[0].Message != "plugin lifecycle operation failed" || diagnostics.events[1].Message != "plugin method was rejected" {
+		t.Fatalf("diagnostic public messages are unstable: %#v", diagnostics.events)
+	}
+	diagnostics.events = append(diagnostics.events, observability.DiagnosticEvent{
+		Type: "plugin.other_owner.failure", Severity: "warning", Message: "other owner failure",
+		OwnerSessionHash: "session_other", OwnerUserHash: "user_other", OwnerEnvHash: "env_other", SessionChannelIDHash: "channel_other",
+		InternalDetails: map[string]any{"error": sensitive},
+	})
+	listed, err := h.ListDiagnosticEvents(hostTestContext(), ListDiagnosticEventsRequest{Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(listed) != 2 {
+		t.Fatalf("host diagnostic list did not filter other owner: %#v", listed)
+	}
+	for _, event := range listed {
+		encoded, err := json.Marshal(event)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(encoded), sensitive) || strings.Contains(string(encoded), "owner_session_hash") || strings.Contains(string(encoded), "internal_details") {
+			t.Fatalf("host diagnostic list exposed internal fields: %s", encoded)
+		}
+	}
+	diagnostics.events = append(diagnostics.events,
+		observability.DiagnosticEvent{
+			EventID: "diagnostic_wrong_plugin", Type: "plugin.method.rejected", Severity: "warning", Message: "wrong plugin",
+			PluginID: "com.example.other", PluginInstanceID: "plugini_other", SurfaceInstanceID: "surface_1",
+			OwnerSessionHash: "session_hash", OwnerUserHash: "user_hash", OwnerEnvHash: "env_hash", SessionChannelIDHash: "channel_hash",
+		},
+		observability.DiagnosticEvent{
+			EventID: "diagnostic_wrong_type", Type: "plugin.other", Severity: "info", Message: "wrong type",
+			PluginID: record.PluginID, PluginInstanceID: record.PluginInstanceID, SurfaceInstanceID: "surface_other",
+			OwnerSessionHash: "session_hash", OwnerUserHash: "user_hash", OwnerEnvHash: "env_hash", SessionChannelIDHash: "channel_hash",
+		},
+	)
+	scoped, err := h.ListDiagnosticEvents(hostTestContext(), ListDiagnosticEventsRequest{
+		PluginID: record.PluginID, PluginInstanceID: record.PluginInstanceID, SurfaceInstanceID: "surface_1",
+		Type: "plugin.method.rejected", Severity: observability.DiagnosticSeverityWarning, Limit: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(scoped) != 1 || scoped[0].Type != "plugin.method.rejected" || scoped[0].PluginInstanceID != record.PluginInstanceID {
+		t.Fatalf("host diagnostic list did not enforce the complete public filter: %#v", scoped)
+	}
 }
 
 func newTestHost(t *testing.T, developerMode bool, localGenerated bool) (*Host, *surfaceSink, *auditSink) {
 	return newTestHostWithOptions(t, testHostOptions{developerMode: developerMode, localGenerated: localGenerated})
-}
-
-func newTestHostWithStorage(t *testing.T, developerMode bool, localGenerated bool, storageBroker storage.Broker) (*Host, *surfaceSink, *auditSink) {
-	return newTestHostWithOptions(t, testHostOptions{developerMode: developerMode, localGenerated: localGenerated, storageBroker: storageBroker})
 }
 
 type testHostOptions struct {
@@ -8434,20 +8129,18 @@ type testHostOptions struct {
 	releaseMetadataVerifier ReleaseMetadataVerifier
 	releaseSourcePolicy     ReleaseSourcePolicyResolver
 	releaseArtifactResolver ReleaseArtifactResolver
-	storageBroker           storage.Broker
+	registry                registry.Store
+	pluginData              PluginData
+	pluginDataRoot          string
 	connectivityBroker      connectivity.Broker
 	networkExecutor         connectivity.NetworkExecutor
-	cleanup                 cleanup.Orchestrator
-	retainedData            retaineddata.Store
 	installStages           installstage.Store
-	permissions             permissions.Store
-	securityPolicy          security.PolicyStore
 	confirmationIntents     security.ConfirmationIntentStore
 	operations              operation.Store
 	streams                 stream.Store
-	runtimeSupervisor       runtimeclient.Supervisor
-	runtimeArtifactResolver RuntimeArtifactResolver
+	runtimeManager          runtimeclient.Manager
 	secrets                 SecretStoreAdapter
+	audit                   AuditSink
 	diagnostics             DiagnosticsSink
 	hostRequirements        HostRequirementPolicy
 	capabilities            *capability.Registry
@@ -8506,42 +8199,130 @@ func newTestHostWithOptions(t *testing.T, opts testHostOptions) (*Host, *surface
 	if trustVerifier == nil {
 		trustVerifier = &recordingPackageTrustVerifier{}
 	}
-	host, err := New(Adapters{
-		SessionResolver: fakeSessionResolver{},
+	releaseMetadataVerifier := opts.releaseMetadataVerifier
+	if releaseMetadataVerifier == nil {
+		releaseMetadataVerifier = &recordingReleaseMetadataVerifier{}
+	}
+	revocationVerifier, ok := releaseMetadataVerifier.(SourceRevocationEvidenceVerifier)
+	if !ok {
+		revocationVerifier = &recordingReleaseMetadataVerifier{}
+	}
+	releaseSourcePolicy := opts.releaseSourcePolicy
+	if releaseSourcePolicy == nil {
+		releaseSourcePolicy = &recordingReleaseSourcePolicyResolver{}
+	}
+	releaseArtifactResolver := opts.releaseArtifactResolver
+	if releaseArtifactResolver == nil {
+		releaseArtifactResolver = &recordingReleaseArtifactResolver{}
+	}
+	hostRequirements := opts.hostRequirements
+	if hostRequirements == nil {
+		hostRequirements = &fixedHostRequirementPolicy{hostID: "test-host"}
+	}
+	diagnostics := opts.diagnostics
+	if diagnostics == nil {
+		diagnostics = observability.NewMemoryStore()
+	}
+	audit := opts.audit
+	if audit == nil {
+		audit = audits
+	}
+	connectivityBroker := opts.connectivityBroker
+	if connectivityBroker == nil {
+		connectivityBroker = connectivity.NewMemoryBroker()
+	}
+	networkExecutor := opts.networkExecutor
+	if networkExecutor == nil {
+		networkExecutor = connectivity.NewExecutor(connectivity.ExecutorOptions{})
+	}
+	installStageStore := opts.installStages
+	if installStageStore == nil {
+		installStageStore = installstage.NewMemoryStore()
+	}
+	confirmationIntentStore := opts.confirmationIntents
+	if confirmationIntentStore == nil {
+		confirmationIntentStore = security.NewMemoryConfirmationIntentStore()
+	}
+	operationStore := opts.operations
+	if operationStore == nil {
+		operationStore = operation.NewMemoryStore()
+	}
+	streamStore := opts.streams
+	if streamStore == nil {
+		streamStore = stream.NewMemoryStore()
+	}
+	registryStore := opts.registry
+	if registryStore == nil {
+		registryStore = registry.NewMemoryStore()
+	}
+	pluginData := opts.pluginData
+	if pluginData == nil {
+		root := opts.pluginDataRoot
+		if root == "" {
+			root = t.TempDir()
+		}
+		var err error
+		pluginData, err = plugindata.Open(hostTestContext(), root, registryStore)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	runtimeManager := opts.runtimeManager
+	if runtimeManager == nil {
+		runtimeManager = &recordingRuntimeManager{}
+	}
+	secretStore := opts.secrets
+	if secretStore == nil {
+		secretStore = secrets.NewMemoryStore()
+	}
+	coreActions := opts.coreActions
+	if coreActions == nil {
+		coreActions = &recordingCoreActionAdapter{}
+	}
+	surfaceTokens := opts.surfaceTokens
+	if surfaceTokens == nil {
+		surfaceTokens = bridge.NewSurfaceTokenService(nil, bridge.SurfaceTokenOptions{})
+	}
+	host, err := Open(hostTestContext(), Adapters{
 		Policy: policyAdapter{
 			developerMode:  opts.developerMode,
 			localGenerated: opts.localGenerated,
 			decision:       decision,
 		},
-		PackageTrustVerifier:    trustVerifier,
-		ReleaseMetadataVerifier: opts.releaseMetadataVerifier,
-		ReleaseSourcePolicy:     opts.releaseSourcePolicy,
-		ReleaseArtifactResolver: opts.releaseArtifactResolver,
-		HostRequirements:        opts.hostRequirements,
-		SurfaceCatalog:          surfaces,
-		Audit:                   audits,
-		Diagnostics:             opts.diagnostics,
-		Storage:                 opts.storageBroker,
-		Connectivity:            opts.connectivityBroker,
-		NetworkExecutor:         opts.networkExecutor,
-		Cleanup:                 opts.cleanup,
-		RetainedData:            opts.retainedData,
-		InstallStages:           opts.installStages,
-		Permissions:             opts.permissions,
-		SecurityPolicy:          opts.securityPolicy,
-		ConfirmationIntents:     opts.confirmationIntents,
-		Operations:              opts.operations,
-		Streams:                 opts.streams,
-		RuntimeSupervisor:       opts.runtimeSupervisor,
-		RuntimeArtifactResolver: opts.runtimeArtifactResolver,
-		Secrets:                 opts.secrets,
-		Capabilities:            capabilities,
-		CoreActions:             opts.coreActions,
-		SurfaceTokens:           opts.surfaceTokens,
+		PackageTrustVerifier:        trustVerifier,
+		ReleaseMetadataVerifier:     releaseMetadataVerifier,
+		RevocationVerifier:          revocationVerifier,
+		ReleaseSourcePolicy:         releaseSourcePolicy,
+		ReleaseArtifactResolver:     releaseArtifactResolver,
+		HostRequirements:            hostRequirements,
+		CapabilityContractArtifacts: &recordingCapabilityContractArtifactResolver{},
+		CapabilityContractKeys:      &recordingCapabilityContractKeyResolver{},
+		Registry:                    registryStore,
+		SurfaceCatalog:              surfaces,
+		Audit:                       audit,
+		Diagnostics:                 diagnostics,
+		Assets:                      pluginpkg.NewMemoryAssetStore(),
+		PluginData:                  pluginData,
+		Connectivity:                connectivityBroker,
+		NetworkExecutor:             networkExecutor,
+		InstallStages:               installStageStore,
+		ConfirmationIntents:         confirmationIntentStore,
+		Operations:                  operationStore,
+		Streams:                     streamStore,
+		RuntimeManager:              runtimeManager,
+		Secrets:                     secretStore,
+		Capabilities:                capabilities,
+		CoreActions:                 coreActions,
+		SurfaceTokens:               surfaceTokens,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() {
+		if err := host.Close(); err != nil {
+			t.Errorf("Host.Close() error = %v", err)
+		}
+	})
 	return host, surfaces, audits
 }
 
@@ -8550,6 +8331,30 @@ func fixtureVerifiedCapabilityContract(t *testing.T, capabilityID string) capabi
 	contract, err := fixtureCapabilityContract(capabilityID)
 	if err != nil {
 		t.Fatal(err)
+	}
+	return verifyFixtureCapabilityContract(t, contract)
+}
+
+func fixtureVerifiedCapabilityContractWithQuotas(t *testing.T, capabilityID string, quotas map[string]capabilitycontract.Quota) capabilitycontract.VerifiedContract {
+	t.Helper()
+	contract, err := fixtureCapabilityContract(capabilityID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	remaining := make(map[string]capabilitycontract.Quota, len(quotas))
+	for method, quota := range quotas {
+		remaining[method] = quota
+	}
+	for index := range contract.Methods {
+		quota, ok := remaining[contract.Methods[index].Name]
+		if !ok {
+			continue
+		}
+		contract.Methods[index].Quota = quota
+		delete(remaining, contract.Methods[index].Name)
+	}
+	if len(remaining) != 0 {
+		t.Fatalf("fixture capability contract %q is missing quota methods %#v", capabilityID, remaining)
 	}
 	return verifyFixtureCapabilityContract(t, contract)
 }
@@ -8776,7 +8581,7 @@ func buildFixturePackage(t *testing.T) []byte {
 	writeFile(t, filepath.Join(dir, "manifest.json"), fixtureManifestJSON())
 	writeSurfaceFixture(t, dir, "Plugin")
 	var buf bytes.Buffer
-	if _, err := pluginpkg.BuildFromDir(context.Background(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
+	if _, err := pluginpkg.BuildFromDir(hostTestContext(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
 		t.Fatal(err)
 	}
 	return buf.Bytes()
@@ -8788,7 +8593,7 @@ func buildVersionedLifecyclePackage(t *testing.T, version string, title string) 
 	writeFile(t, filepath.Join(dir, "manifest.json"), lifecycleManifestJSON(version, title))
 	writeSurfaceFixture(t, dir, title)
 	var buf bytes.Buffer
-	if _, err := pluginpkg.BuildFromDir(context.Background(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
+	if _, err := pluginpkg.BuildFromDir(hostTestContext(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
 		t.Fatal(err)
 	}
 	return buf.Bytes()
@@ -8800,19 +8605,7 @@ func buildStorageFixturePackage(t *testing.T) []byte {
 	writeFile(t, filepath.Join(dir, "manifest.json"), storageFixtureManifestJSON())
 	writeSurfaceFixture(t, dir, "Storage")
 	var buf bytes.Buffer
-	if _, err := pluginpkg.BuildFromDir(context.Background(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
-		t.Fatal(err)
-	}
-	return buf.Bytes()
-}
-
-func buildSQLiteNamespaceFixturePackage(t *testing.T) []byte {
-	t.Helper()
-	dir := t.TempDir()
-	writeFile(t, filepath.Join(dir, "manifest.json"), sqliteNamespaceFixtureManifestJSON())
-	writeSurfaceFixture(t, dir, "SQLite Namespace")
-	var buf bytes.Buffer
-	if _, err := pluginpkg.BuildFromDir(context.Background(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
+	if _, err := pluginpkg.BuildFromDir(hostTestContext(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
 		t.Fatal(err)
 	}
 	return buf.Bytes()
@@ -8824,31 +8617,25 @@ func buildSettingsFixturePackage(t *testing.T) []byte {
 	writeFile(t, filepath.Join(dir, "manifest.json"), settingsFixtureManifestJSON())
 	writeSurfaceFixture(t, dir, "Settings")
 	var buf bytes.Buffer
-	if _, err := pluginpkg.BuildFromDir(context.Background(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
+	if _, err := pluginpkg.BuildFromDir(hostTestContext(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
 		t.Fatal(err)
 	}
 	return buf.Bytes()
 }
 
-type migrationFixtureOptions struct {
-	Version            string
-	SettingsSchema     int
-	SettingsFrom       int
-	SettingsTo         int
-	SettingsReversible bool
-	StorageSchema      int
-	StorageFrom        int
-	StorageTo          int
-	StorageReversible  bool
+type dataShapeFixtureOptions struct {
+	Version        string
+	SettingsSchema int
+	StorageSchema  int
 }
 
-func buildMigrationFixturePackage(t *testing.T, opts migrationFixtureOptions) []byte {
+func buildDataShapeFixturePackage(t *testing.T, opts dataShapeFixtureOptions) []byte {
 	t.Helper()
 	dir := t.TempDir()
-	writeFile(t, filepath.Join(dir, "manifest.json"), migrationFixtureManifestJSON(opts))
-	writeSurfaceFixture(t, dir, "Migration")
+	writeFile(t, filepath.Join(dir, "manifest.json"), dataShapeFixtureManifestJSON(opts))
+	writeSurfaceFixture(t, dir, "Data Shape")
 	var buf bytes.Buffer
-	if _, err := pluginpkg.BuildFromDir(context.Background(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
+	if _, err := pluginpkg.BuildFromDir(hostTestContext(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
 		t.Fatal(err)
 	}
 	return buf.Bytes()
@@ -8865,7 +8652,7 @@ func buildVersionedRPCPackage(t *testing.T, version string, title string) []byte
 	writeFile(t, filepath.Join(dir, "manifest.json"), rpcFixtureManifestJSON(version, title))
 	writeSurfaceFixture(t, dir, title)
 	var buf bytes.Buffer
-	if _, err := pluginpkg.BuildFromDir(context.Background(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
+	if _, err := pluginpkg.BuildFromDir(hostTestContext(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
 		t.Fatal(err)
 	}
 	return buf.Bytes()
@@ -8877,7 +8664,7 @@ func buildDangerousRPCFixturePackage(t *testing.T) []byte {
 	writeFile(t, filepath.Join(dir, "manifest.json"), dangerousRPCFixtureManifestJSON())
 	writeSurfaceFixture(t, dir, "Danger")
 	var buf bytes.Buffer
-	if _, err := pluginpkg.BuildFromDir(context.Background(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
+	if _, err := pluginpkg.BuildFromDir(hostTestContext(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
 		t.Fatal(err)
 	}
 	return buf.Bytes()
@@ -8896,7 +8683,7 @@ func buildMethodContractFixturePackage(t *testing.T) []byte {
 		writeFile(t, filepath.Join(dir, filepath.FromSlash(relative)), string(content))
 	}
 	var buf bytes.Buffer
-	if _, err := pluginpkg.BuildFromDir(context.Background(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
+	if _, err := pluginpkg.BuildFromDir(hostTestContext(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
 		t.Fatal(err)
 	}
 	return buf.Bytes()
@@ -8944,7 +8731,7 @@ func buildIntentFixturePackage(t *testing.T, dangerous bool) []byte {
 	writeFile(t, filepath.Join(dir, "manifest.json"), addIntentToManifestJSON(t, manifestJSON, dangerous))
 	writeSurfaceFixture(t, dir, "Intent")
 	var buf bytes.Buffer
-	if _, err := pluginpkg.BuildFromDir(context.Background(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
+	if _, err := pluginpkg.BuildFromDir(hostTestContext(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
 		t.Fatal(err)
 	}
 	return buf.Bytes()
@@ -8987,7 +8774,7 @@ func buildCapabilityPinnedFixturePackage(
 	writeFile(t, filepath.Join(dir, "manifest.json"), string(encoded)+"\n")
 	writeSurfaceFixture(t, dir, title)
 	var buf bytes.Buffer
-	if _, err := pluginpkg.BuildFromDir(context.Background(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
+	if _, err := pluginpkg.BuildFromDir(hostTestContext(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
 		t.Fatal(err)
 	}
 	return buf.Bytes()
@@ -8999,7 +8786,7 @@ func buildOperationRPCFixturePackage(t *testing.T) []byte {
 	writeFile(t, filepath.Join(dir, "manifest.json"), operationRPCFixtureManifestJSON())
 	writeSurfaceFixture(t, dir, "Operation")
 	var buf bytes.Buffer
-	if _, err := pluginpkg.BuildFromDir(context.Background(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
+	if _, err := pluginpkg.BuildFromDir(hostTestContext(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
 		t.Fatal(err)
 	}
 	return buf.Bytes()
@@ -9011,7 +8798,7 @@ func buildSubscriptionRPCFixturePackage(t *testing.T) []byte {
 	writeFile(t, filepath.Join(dir, "manifest.json"), subscriptionRPCFixtureManifestJSON())
 	writeSurfaceFixture(t, dir, "Subscription")
 	var buf bytes.Buffer
-	if _, err := pluginpkg.BuildFromDir(context.Background(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
+	if _, err := pluginpkg.BuildFromDir(hostTestContext(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
 		t.Fatal(err)
 	}
 	return buf.Bytes()
@@ -9023,7 +8810,7 @@ func buildCoreActionFixturePackage(t *testing.T) []byte {
 	writeFile(t, filepath.Join(dir, "manifest.json"), coreActionFixtureManifestJSON())
 	writeSurfaceFixture(t, dir, "Core Action")
 	var buf bytes.Buffer
-	if _, err := pluginpkg.BuildFromDir(context.Background(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
+	if _, err := pluginpkg.BuildFromDir(hostTestContext(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
 		t.Fatal(err)
 	}
 	return buf.Bytes()
@@ -9036,7 +8823,7 @@ func buildDangerousCoreActionFixturePackage(t *testing.T) []byte {
 	writeFile(t, filepath.Join(dir, "manifest.json"), manifestJSON)
 	writeSurfaceFixture(t, dir, "Core Action")
 	var buf bytes.Buffer
-	if _, err := pluginpkg.BuildFromDir(context.Background(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
+	if _, err := pluginpkg.BuildFromDir(hostTestContext(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
 		t.Fatal(err)
 	}
 	return buf.Bytes()
@@ -9050,7 +8837,7 @@ func buildCoreActionOperationFixturePackage(t *testing.T) []byte {
 	writeFile(t, filepath.Join(dir, "manifest.json"), manifestJSON)
 	writeSurfaceFixture(t, dir, "Core Action")
 	var buf bytes.Buffer
-	if _, err := pluginpkg.BuildFromDir(context.Background(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
+	if _, err := pluginpkg.BuildFromDir(hostTestContext(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
 		t.Fatal(err)
 	}
 	return buf.Bytes()
@@ -9062,9 +8849,8 @@ func buildWorkerFixturePackage(t *testing.T) []byte {
 	writeFile(t, filepath.Join(dir, "manifest.json"), workerFixtureManifestJSON())
 	writeSurfaceFixture(t, dir, "Worker")
 	writeBytes(t, filepath.Join(dir, "workers", "echo.wasm"), minimalWorkerWASMForTest("redevplugin_worker_invoke"))
-	writeFile(t, filepath.Join(dir, "workers", "abi.json"), workerFixtureABIJSON("redevplugin_worker_invoke"))
 	var buf bytes.Buffer
-	if _, err := pluginpkg.BuildFromDir(context.Background(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
+	if _, err := pluginpkg.BuildFromDir(hostTestContext(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
 		t.Fatal(err)
 	}
 	return buf.Bytes()
@@ -9077,9 +8863,8 @@ func buildDangerousWorkerFixturePackage(t *testing.T) []byte {
 	writeFile(t, filepath.Join(dir, "manifest.json"), manifestJSON)
 	writeSurfaceFixture(t, dir, "Worker")
 	writeBytes(t, filepath.Join(dir, "workers", "echo.wasm"), minimalWorkerWASMForTest("redevplugin_worker_invoke"))
-	writeFile(t, filepath.Join(dir, "workers", "abi.json"), workerFixtureABIJSON("redevplugin_worker_invoke"))
 	var buf bytes.Buffer
-	if _, err := pluginpkg.BuildFromDir(context.Background(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
+	if _, err := pluginpkg.BuildFromDir(hostTestContext(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
 		t.Fatal(err)
 	}
 	return buf.Bytes()
@@ -9093,9 +8878,22 @@ func buildWorkerOperationFixturePackage(t *testing.T) []byte {
 	writeFile(t, filepath.Join(dir, "manifest.json"), manifestJSON)
 	writeSurfaceFixture(t, dir, "Worker")
 	writeBytes(t, filepath.Join(dir, "workers", "echo.wasm"), minimalWorkerWASMForTest("redevplugin_worker_invoke"))
-	writeFile(t, filepath.Join(dir, "workers", "abi.json"), workerFixtureABIJSON("redevplugin_worker_invoke"))
 	var buf bytes.Buffer
-	if _, err := pluginpkg.BuildFromDir(context.Background(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
+	if _, err := pluginpkg.BuildFromDir(hostTestContext(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
+func buildMutatingWorkerFixturePackage(t *testing.T) []byte {
+	t.Helper()
+	dir := t.TempDir()
+	manifestJSON := strings.Replace(workerFixtureManifestJSON(), `"effect": "read"`, `"effect": "write"`, 1)
+	writeFile(t, filepath.Join(dir, "manifest.json"), manifestJSON)
+	writeSurfaceFixture(t, dir, "Worker")
+	writeBytes(t, filepath.Join(dir, "workers", "echo.wasm"), minimalWorkerWASMForTest("redevplugin_worker_invoke"))
+	var buf bytes.Buffer
+	if _, err := pluginpkg.BuildFromDir(hostTestContext(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
 		t.Fatal(err)
 	}
 	return buf.Bytes()
@@ -9109,9 +8907,8 @@ func buildWorkerSubscriptionFixturePackage(t *testing.T) []byte {
 	writeFile(t, filepath.Join(dir, "manifest.json"), manifestJSON)
 	writeSurfaceFixture(t, dir, "Worker")
 	writeBytes(t, filepath.Join(dir, "workers", "echo.wasm"), minimalWorkerWASMForTest("redevplugin_worker_invoke"))
-	writeFile(t, filepath.Join(dir, "workers", "abi.json"), workerFixtureABIJSON("redevplugin_worker_invoke"))
 	var buf bytes.Buffer
-	if _, err := pluginpkg.BuildFromDir(context.Background(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
+	if _, err := pluginpkg.BuildFromDir(hostTestContext(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
 		t.Fatal(err)
 	}
 	return buf.Bytes()
@@ -9123,9 +8920,8 @@ func buildWorkerNetworkFixturePackage(t *testing.T) []byte {
 	writeFile(t, filepath.Join(dir, "manifest.json"), workerNetworkFixtureManifestJSON())
 	writeSurfaceFixture(t, dir, "Worker Network")
 	writeBytes(t, filepath.Join(dir, "workers", "echo.wasm"), minimalWorkerWASMForTest("redevplugin_worker_invoke"))
-	writeFile(t, filepath.Join(dir, "workers", "abi.json"), workerFixtureABIJSON("redevplugin_worker_invoke"))
 	var buf bytes.Buffer
-	if _, err := pluginpkg.BuildFromDir(context.Background(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
+	if _, err := pluginpkg.BuildFromDir(hostTestContext(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
 		t.Fatal(err)
 	}
 	return buf.Bytes()
@@ -9139,9 +8935,8 @@ func buildWorkerNetworkSubscriptionFixturePackage(t *testing.T) []byte {
 	writeFile(t, filepath.Join(dir, "manifest.json"), manifestJSON)
 	writeSurfaceFixture(t, dir, "Worker Network Stream")
 	writeBytes(t, filepath.Join(dir, "workers", "echo.wasm"), minimalWorkerWASMForTest("redevplugin_worker_invoke"))
-	writeFile(t, filepath.Join(dir, "workers", "abi.json"), workerFixtureABIJSON("redevplugin_worker_invoke"))
 	var buf bytes.Buffer
-	if _, err := pluginpkg.BuildFromDir(context.Background(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
+	if _, err := pluginpkg.BuildFromDir(hostTestContext(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
 		t.Fatal(err)
 	}
 	return buf.Bytes()
@@ -9156,9 +8951,8 @@ func buildWorkerNetworkSubscriptionMemoryHostcallFixturePackage(t *testing.T) []
 	writeSurfaceFixture(t, dir, "Worker Network Stream Memory Hostcall")
 	request := []byte(`{"connector_id":"api","transport":"http","destination":"https://api.example.com","operation":"http_stream","method":"POST","path":"/v1/worker","headers":{"Content-Type":["text/plain"]},"body_base64":"aGVsbG8gZnJvbSBtZW1vcnkgaG9zdGNhbGw=","max_request_bytes":1024,"max_response_bytes":4096,"max_chunk_bytes":4,"max_buffered_bytes":65536,"timeout_ms":1000,"content_type":"text/plain"}`)
 	writeBytes(t, filepath.Join(dir, "workers", "echo.wasm"), importedMemoryHostcallWorkerWASMForTest("redevplugin.network", "execute", "network_execute", "redevplugin_worker_invoke", request))
-	writeFile(t, filepath.Join(dir, "workers", "abi.json"), workerFixtureABIJSONWithImports([]string{"redevplugin.network"}, "redevplugin_worker_invoke"))
 	var buf bytes.Buffer
-	if _, err := pluginpkg.BuildFromDir(context.Background(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
+	if _, err := pluginpkg.BuildFromDir(hostTestContext(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
 		t.Fatal(err)
 	}
 	return buf.Bytes()
@@ -9170,9 +8964,8 @@ func buildWorkerNetworkMemoryHostcallFixturePackage(t *testing.T) []byte {
 	writeFile(t, filepath.Join(dir, "manifest.json"), workerNetworkFixtureManifestJSON())
 	writeSurfaceFixture(t, dir, "Worker Network Memory Hostcall")
 	writeBytes(t, filepath.Join(dir, "workers", "echo.wasm"), networkMemoryHostcallWorkerWASMForTest("redevplugin_worker_invoke"))
-	writeFile(t, filepath.Join(dir, "workers", "abi.json"), workerFixtureABIJSONWithImports([]string{"redevplugin.network"}, "redevplugin_worker_invoke"))
 	var buf bytes.Buffer
-	if _, err := pluginpkg.BuildFromDir(context.Background(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
+	if _, err := pluginpkg.BuildFromDir(hostTestContext(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
 		t.Fatal(err)
 	}
 	return buf.Bytes()
@@ -9184,9 +8977,8 @@ func buildWorkerNetworkTransportMemoryHostcallFixturePackage(t *testing.T, trans
 	writeFile(t, filepath.Join(dir, "manifest.json"), workerNetworkTransportFixtureManifestJSON(transport))
 	writeSurfaceFixture(t, dir, "Worker Network Transport Memory Hostcall")
 	writeBytes(t, filepath.Join(dir, "workers", "echo.wasm"), networkTransportMemoryHostcallWorkerWASMForTest("redevplugin_worker_invoke", transport))
-	writeFile(t, filepath.Join(dir, "workers", "abi.json"), workerFixtureABIJSONWithImports([]string{"redevplugin.network"}, "redevplugin_worker_invoke"))
 	var buf bytes.Buffer
-	if _, err := pluginpkg.BuildFromDir(context.Background(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
+	if _, err := pluginpkg.BuildFromDir(hostTestContext(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
 		t.Fatal(err)
 	}
 	return buf.Bytes()
@@ -9198,9 +8990,8 @@ func buildWorkerStorageFixturePackage(t *testing.T) []byte {
 	writeFile(t, filepath.Join(dir, "manifest.json"), workerStorageFixtureManifestJSON())
 	writeSurfaceFixture(t, dir, "Worker Storage")
 	writeBytes(t, filepath.Join(dir, "workers", "echo.wasm"), storageMemoryHostcallWorkerWASMForTest("redevplugin_worker_invoke"))
-	writeFile(t, filepath.Join(dir, "workers", "abi.json"), workerFixtureABIJSONWithImports([]string{"redevplugin.storage"}, "redevplugin_worker_invoke"))
 	var buf bytes.Buffer
-	if _, err := pluginpkg.BuildFromDir(context.Background(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
+	if _, err := pluginpkg.BuildFromDir(hostTestContext(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
 		t.Fatal(err)
 	}
 	return buf.Bytes()
@@ -9212,9 +9003,8 @@ func buildWorkerStorageMemoryHostcallFixturePackage(t *testing.T) []byte {
 	writeFile(t, filepath.Join(dir, "manifest.json"), workerStorageFixtureManifestJSON())
 	writeSurfaceFixture(t, dir, "Worker Storage Memory Hostcall")
 	writeBytes(t, filepath.Join(dir, "workers", "echo.wasm"), storageMemoryHostcallWorkerWASMForTest("redevplugin_worker_invoke"))
-	writeFile(t, filepath.Join(dir, "workers", "abi.json"), workerFixtureABIJSONWithImports([]string{"redevplugin.storage"}, "redevplugin_worker_invoke"))
 	var buf bytes.Buffer
-	if _, err := pluginpkg.BuildFromDir(context.Background(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
+	if _, err := pluginpkg.BuildFromDir(hostTestContext(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
 		t.Fatal(err)
 	}
 	return buf.Bytes()
@@ -9226,9 +9016,8 @@ func buildWorkerStorageKVMemoryHostcallFixturePackage(t *testing.T) []byte {
 	writeFile(t, filepath.Join(dir, "manifest.json"), workerStorageKVFixtureManifestJSON())
 	writeSurfaceFixture(t, dir, "Worker Storage KV Memory Hostcall")
 	writeBytes(t, filepath.Join(dir, "workers", "echo.wasm"), storageKVMemoryHostcallWorkerWASMForTest("redevplugin_worker_invoke"))
-	writeFile(t, filepath.Join(dir, "workers", "abi.json"), workerFixtureABIJSONWithImports([]string{"redevplugin.storage"}, "redevplugin_worker_invoke"))
 	var buf bytes.Buffer
-	if _, err := pluginpkg.BuildFromDir(context.Background(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
+	if _, err := pluginpkg.BuildFromDir(hostTestContext(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
 		t.Fatal(err)
 	}
 	return buf.Bytes()
@@ -9240,9 +9029,8 @@ func buildWorkerStorageSQLiteMemoryHostcallFixturePackage(t *testing.T) []byte {
 	writeFile(t, filepath.Join(dir, "manifest.json"), workerStorageSQLiteFixtureManifestJSON())
 	writeSurfaceFixture(t, dir, "Worker Storage SQLite Memory Hostcall")
 	writeBytes(t, filepath.Join(dir, "workers", "echo.wasm"), storageSQLiteMemoryHostcallWorkerWASMForTest("redevplugin_worker_invoke"))
-	writeFile(t, filepath.Join(dir, "workers", "abi.json"), workerFixtureABIJSONWithImports([]string{"redevplugin.storage"}, "redevplugin_worker_invoke"))
 	var buf bytes.Buffer
-	if _, err := pluginpkg.BuildFromDir(context.Background(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
+	if _, err := pluginpkg.BuildFromDir(hostTestContext(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
 		t.Fatal(err)
 	}
 	return buf.Bytes()
@@ -9254,19 +9042,7 @@ func buildNetworkFixturePackage(t *testing.T) []byte {
 	writeFile(t, filepath.Join(dir, "manifest.json"), networkFixtureManifestJSON(false))
 	writeSurfaceFixture(t, dir, "Network")
 	var buf bytes.Buffer
-	if _, err := pluginpkg.BuildFromDir(context.Background(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
-		t.Fatal(err)
-	}
-	return buf.Bytes()
-}
-
-func buildBlockedNetworkFixturePackage(t *testing.T) []byte {
-	t.Helper()
-	dir := t.TempDir()
-	writeFile(t, filepath.Join(dir, "manifest.json"), networkFixtureManifestJSON(true))
-	writeSurfaceFixture(t, dir, "Network")
-	var buf bytes.Buffer
-	if _, err := pluginpkg.BuildFromDir(context.Background(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
+	if _, err := pluginpkg.BuildFromDir(hostTestContext(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
 		t.Fatal(err)
 	}
 	return buf.Bytes()
@@ -9555,26 +9331,6 @@ func appendLEBInt32(out []byte, value int32) []byte {
 	}
 }
 
-func workerFixtureABIJSON(exports ...string) string {
-	return workerFixtureABIJSONWithImports(nil, exports...)
-}
-
-func workerFixtureABIJSONWithImports(imports []string, exports ...string) string {
-	rawExports, err := json.Marshal(exports)
-	if err != nil {
-		panic(err)
-	}
-	rawImports, err := json.Marshal(imports)
-	if err != nil {
-		panic(err)
-	}
-	return "{\n" +
-		"  \"abi_version\": \"redevplugin-wasm-worker-v2\",\n" +
-		"  \"exports\": " + string(rawExports) + ",\n" +
-		"  \"imports\": " + string(rawImports) + "\n" +
-		"}\n"
-}
-
 func fixtureManifestJSON() string {
 	return lifecycleManifestJSON("1.0.0", "Lifecycle")
 }
@@ -9623,17 +9379,7 @@ func storageFixtureManifestJSON() string {
 					"scope": "user",
 					"quota_bytes": 4096,
 					"quota_files": 16,
-					"schema_version": 1,
-					"migration": {
-						"from_version": 1,
-						"to_version": 1,
-						"reversible": true,
-						"requires_worker": false,
-						"estimated_bytes": 0,
-						"max_duration_ms": 0,
-						"data_loss_risk": false,
-						"steps_hash": "sha256:test"
-					}
+					"schema_version": 1
 				},
 				{
 					"store_id": "db",
@@ -9641,57 +9387,9 @@ func storageFixtureManifestJSON() string {
 					"scope": "environment",
 					"quota_bytes": 8192,
 					"quota_files": 32,
-					"schema_version": 2,
-					"migration": {
-						"from_version": 1,
-						"to_version": 2,
-						"reversible": true,
-						"requires_worker": false,
-						"estimated_bytes": 0,
-						"max_duration_ms": 0,
-						"data_loss_risk": false,
-						"steps_hash": "sha256:test"
-					}
+					"schema_version": 2
 				}
 			]
-		}
-	}`
-}
-
-func sqliteNamespaceFixtureManifestJSON() string {
-	return `{
-		"schema_version": "redevplugin.manifest.v4",
-		"publisher": {"publisher_id": "example", "display_name": "Example"},
-		"plugin": {
-			"plugin_id": "com.example.sqlite-namespace",
-			"display_name": "SQLite Namespace",
-			"version": "1.0.0",
-			"api_version": "plugin-v1",
-			"min_runtime_version": "0.1.0",
-			"ui_protocol_version": "plugin-ui-v4"
-		},
-		"surfaces": [
-			{"surface_id": "sqlite.view", "kind": "view", "label": "SQLite Namespace", "entry": "ui/index.html"}
-		],
-		"storage": {
-			"stores": [{
-				"store_id": "notes",
-				"kind": "sqlite",
-				"scope": "user",
-				"quota_bytes": 65536,
-				"quota_files": 4,
-				"schema_version": 1,
-				"migration": {
-					"from_version": 0,
-					"to_version": 1,
-					"reversible": true,
-					"requires_worker": true,
-					"estimated_bytes": 0,
-					"max_duration_ms": 1000,
-					"data_loss_risk": false,
-					"steps_hash": "sha256:sqlite-worker-migration-test"
-				}
-			}]
 		}
 	}`
 }
@@ -9713,16 +9411,6 @@ func settingsFixtureManifestJSON() string {
 		],
 		"settings": {
 			"schema_version": 1,
-			"migration": {
-				"from_version": 1,
-				"to_version": 1,
-				"reversible": true,
-				"requires_worker": false,
-				"estimated_bytes": 0,
-				"max_duration_ms": 0,
-				"data_loss_risk": false,
-				"steps_hash": "sha256:test"
-			},
 			"fields": [
 				{"key": "default_engine", "type": "select", "scope": "user", "label": "Default engine", "default": "docker", "options": ["docker", "podman"]},
 				{"key": "show_stopped", "type": "boolean", "scope": "user", "label": "Show stopped", "default": true},
@@ -9732,7 +9420,7 @@ func settingsFixtureManifestJSON() string {
 	}`
 }
 
-func migrationFixtureManifestJSON(opts migrationFixtureOptions) string {
+func dataShapeFixtureManifestJSON(opts dataShapeFixtureOptions) string {
 	version := opts.Version
 	if version == "" {
 		version = "1.0.0"
@@ -9741,15 +9429,15 @@ func migrationFixtureManifestJSON(opts migrationFixtureOptions) string {
 		"schema_version": "redevplugin.manifest.v4",
 		"publisher": {"publisher_id": "example", "display_name": "Example"},
 		"plugin": {
-			"plugin_id": "com.example.migration",
-			"display_name": "Migration",
+			"plugin_id": "com.example.data-shape",
+			"display_name": "Data Shape",
 			"version": ` + strconv.Quote(version) + `,
 			"api_version": "plugin-v1",
 			"min_runtime_version": "0.1.0",
 			"ui_protocol_version": "plugin-ui-v4"
 		},
 		"surfaces": [
-			{"surface_id": "migration.view", "kind": "view", "label": "Migration", "entry": "ui/index.html"}
+			{"surface_id": "data-shape.view", "kind": "view", "label": "Data Shape", "entry": "ui/index.html"}
 		],
 		"storage": {
 			"stores": [
@@ -9758,32 +9446,12 @@ func migrationFixtureManifestJSON(opts migrationFixtureOptions) string {
 					"kind": "files",
 					"scope": "user",
 					"quota_bytes": 4096,
-					"schema_version": ` + strconv.Itoa(opts.StorageSchema) + `,
-					"migration": {
-						"from_version": ` + strconv.Itoa(opts.StorageFrom) + `,
-						"to_version": ` + strconv.Itoa(opts.StorageTo) + `,
-						"reversible": ` + strconv.FormatBool(opts.StorageReversible) + `,
-						"requires_worker": false,
-						"estimated_bytes": 0,
-						"max_duration_ms": 0,
-						"data_loss_risk": false,
-						"steps_hash": "sha256:storage-migration"
-					}
+					"schema_version": ` + strconv.Itoa(opts.StorageSchema) + `
 				}
 			]
 		},
 		"settings": {
 			"schema_version": ` + strconv.Itoa(opts.SettingsSchema) + `,
-			"migration": {
-				"from_version": ` + strconv.Itoa(opts.SettingsFrom) + `,
-				"to_version": ` + strconv.Itoa(opts.SettingsTo) + `,
-				"reversible": ` + strconv.FormatBool(opts.SettingsReversible) + `,
-				"requires_worker": false,
-				"estimated_bytes": 0,
-				"max_duration_ms": 0,
-				"data_loss_risk": false,
-				"steps_hash": "sha256:settings-migration"
-			},
 			"fields": [
 				{"key": "mode", "type": "select", "scope": "user", "label": "Mode", "default": "stable", "options": ["stable", "preview"]}
 			]
@@ -10049,7 +9717,7 @@ func workerFixtureManifestJSON() string {
 				"effect": "read",
 				"execution": "sync",
 				` + workerMethodSchemasJSON() + `
-				"route": {"kind": "worker", "worker_id": "echo_worker", "export": "redevplugin_worker_invoke"}
+				"route": {"kind": "worker", "worker_id": "echo_worker"}
 			}
 		]
 	}`
@@ -10088,7 +9756,7 @@ func workerNetworkFixtureManifestJSON() string {
 				"execution": "sync",
 				` + workerMethodSchemasJSON() + `
 				` + workerNetworkBrokerAccessJSON(connectivity.TransportHTTP) + `
-				"route": {"kind": "worker", "worker_id": "echo_worker", "export": "redevplugin_worker_invoke"}
+				"route": {"kind": "worker", "worker_id": "echo_worker"}
 			}
 		],
 		"network_access": {
@@ -10154,7 +9822,7 @@ func workerNetworkTransportFixtureManifestJSON(transport connectivity.Transport)
 				"execution": "sync",
 				` + workerMethodSchemasJSON() + `
 				` + workerNetworkBrokerAccessJSON(transport) + `
-				"route": {"kind": "worker", "worker_id": "echo_worker", "export": "redevplugin_worker_invoke"}
+				"route": {"kind": "worker", "worker_id": "echo_worker"}
 			}
 		],
 		"network_access": {
@@ -10196,7 +9864,7 @@ func workerStorageFixtureManifestJSON() string {
 				"execution": "sync",
 				` + workerMethodSchemasJSON() + `
 				"broker_access": {"storage": [{"store_id": "workspace", "operations": ["read", "write", "delete", "list"]}]},
-				"route": {"kind": "worker", "worker_id": "echo_worker", "export": "redevplugin_worker_invoke"}
+				"route": {"kind": "worker", "worker_id": "echo_worker"}
 			}
 		],
 		"storage": {
@@ -10206,17 +9874,7 @@ func workerStorageFixtureManifestJSON() string {
 					"kind": "files",
 					"scope": "user",
 					"quota_bytes": 4096,
-					"schema_version": 1,
-					"migration": {
-						"from_version": 1,
-						"to_version": 1,
-						"reversible": true,
-						"requires_worker": false,
-						"estimated_bytes": 0,
-						"max_duration_ms": 0,
-						"data_loss_risk": false,
-						"steps_hash": "sha256:test"
-					}
+					"schema_version": 1
 				}
 			]
 		}
@@ -10256,7 +9914,7 @@ func workerStorageKVFixtureManifestJSON() string {
 				"execution": "sync",
 				` + workerMethodSchemasJSON() + `
 				"broker_access": {"storage": [{"store_id": "cache", "operations": ["get", "put", "delete", "list"]}]},
-				"route": {"kind": "worker", "worker_id": "echo_worker", "export": "redevplugin_worker_invoke"}
+				"route": {"kind": "worker", "worker_id": "echo_worker"}
 			}
 		],
 		"storage": {
@@ -10266,17 +9924,7 @@ func workerStorageKVFixtureManifestJSON() string {
 					"kind": "kv",
 					"scope": "user",
 					"quota_bytes": 4096,
-					"schema_version": 1,
-					"migration": {
-						"from_version": 1,
-						"to_version": 1,
-						"reversible": true,
-						"requires_worker": false,
-						"estimated_bytes": 0,
-						"max_duration_ms": 0,
-						"data_loss_risk": false,
-						"steps_hash": "sha256:test"
-					}
+					"schema_version": 1
 				}
 			]
 		}
@@ -10316,7 +9964,7 @@ func workerStorageSQLiteFixtureManifestJSON() string {
 				"execution": "sync",
 				` + workerMethodSchemasJSON() + `
 				"broker_access": {"storage": [{"store_id": "db", "operations": ["exec", "query"]}]},
-				"route": {"kind": "worker", "worker_id": "echo_worker", "export": "redevplugin_worker_invoke"}
+				"route": {"kind": "worker", "worker_id": "echo_worker"}
 			}
 		],
 		"storage": {
@@ -10326,17 +9974,7 @@ func workerStorageSQLiteFixtureManifestJSON() string {
 					"kind": "sqlite",
 					"scope": "user",
 					"quota_bytes": 65536,
-					"schema_version": 1,
-					"migration": {
-						"from_version": 1,
-						"to_version": 1,
-						"reversible": true,
-						"requires_worker": false,
-						"estimated_bytes": 0,
-						"max_duration_ms": 0,
-						"data_loss_risk": false,
-						"steps_hash": "sha256:test"
-					}
+					"schema_version": 1
 				}
 			]
 		}
@@ -10369,17 +10007,7 @@ func networkFixtureManifestJSON(blocked bool) string {
 					"kind": "kv",
 					"scope": "user",
 					"quota_bytes": 4096,
-					"schema_version": 1,
-					"migration": {
-						"from_version": 1,
-						"to_version": 1,
-						"reversible": true,
-						"requires_worker": false,
-						"estimated_bytes": 0,
-						"max_duration_ms": 0,
-						"data_loss_risk": false,
-						"steps_hash": "sha256:test"
-					}
+					"schema_version": 1
 				}
 			]
 		},
@@ -10396,9 +10024,14 @@ func networkFixtureManifestJSON(blocked bool) string {
 
 func installEnableAndMintGateway(t *testing.T, h *Host, packageBytes []byte, surfaceID string) (registry.PluginRecord, bridge.GatewayTokenResult) {
 	t.Helper()
+	return installEnableAndMintGatewayForAudience(t, h, packageBytes, surfaceID, "surface_rpc", "bridge_rpc")
+}
+
+func installEnableAndMintGatewayForAudience(t *testing.T, h *Host, packageBytes []byte, surfaceID, surfaceInstanceID, bridgeChannelID string) (registry.PluginRecord, bridge.GatewayTokenResult) {
+	t.Helper()
 	installed := installAndEnablePlugin(t, h, packageBytes)
 	grantDeclaredPermissions(t, h, installed)
-	_, gateway := openSurfaceAndMintGateway(t, h, installed.PluginInstanceID, surfaceID)
+	_, gateway := openSurfaceAndMintGatewayForAudience(t, h, installed.PluginInstanceID, surfaceID, surfaceInstanceID, bridgeChannelID)
 	return installed, gateway
 }
 
@@ -10411,13 +10044,13 @@ func installEnableAndMintGatewayWithoutPermissions(t *testing.T, h *Host, packag
 
 func installAndEnablePlugin(t *testing.T, h *Host, packageBytes []byte) registry.PluginRecord {
 	t.Helper()
-	ctx := context.Background()
+	ctx := hostTestContext()
 	now := stableRecentTestNow()
 	installed, err := ImportLocalPackageBytes(ctx, h, packageBytes)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.EnablePlugin(ctx, EnableRequest{PluginInstanceID: installed.PluginInstanceID, Now: now, PluginStateVersion: mustPluginStateVersion(t, h, installed.PluginInstanceID)}); err != nil {
+	if _, err := h.EnablePlugin(ctx, EnableRequest{PluginInstanceID: installed.PluginInstanceID, Now: now, ExpectedManagementRevision: mustManagementRevision(t, h, installed.PluginInstanceID)}); err != nil {
 		t.Fatal(err)
 	}
 	return installed
@@ -10425,20 +10058,23 @@ func installAndEnablePlugin(t *testing.T, h *Host, packageBytes []byte) registry
 
 func openSurfaceAndMintGateway(t *testing.T, h *Host, pluginInstanceID string, surfaceID string) (bridge.SurfaceBootstrap, bridge.GatewayTokenResult) {
 	t.Helper()
-	ctx := context.Background()
+	return openSurfaceAndMintGatewayForAudience(t, h, pluginInstanceID, surfaceID, "surface_rpc", "bridge_rpc")
+}
+
+func openSurfaceAndMintGatewayForAudience(t *testing.T, h *Host, pluginInstanceID, surfaceID, surfaceInstanceID, bridgeChannelID string) (bridge.SurfaceBootstrap, bridge.GatewayTokenResult) {
+	t.Helper()
+	ctx := hostTestContext()
 	now := stableRecentTestNow()
 	record, err := h.adapters.Registry.GetPlugin(ctx, pluginInstanceID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	bootstrap, err := h.OpenSurface(ctx, OpenSurfaceRequest{
-		PluginInstanceID:     record.PluginInstanceID,
-		SurfaceID:            surfaceID,
-		SurfaceInstanceID:    "surface_rpc",
-		OwnerSessionHash:     "session_hash",
-		OwnerUserHash:        "user_hash",
-		SessionChannelIDHash: "channel_hash",
-		Now:                  now.Add(time.Second), PluginStateVersion: mustPluginStateVersion(t, h,
+		PluginInstanceID:  record.PluginInstanceID,
+		SurfaceID:         surfaceID,
+		SurfaceInstanceID: surfaceInstanceID,
+
+		Now: now.Add(time.Second), ExpectedManagementRevision: mustManagementRevision(t, h,
 			record.PluginInstanceID),
 	})
 	if err != nil {
@@ -10457,18 +10093,16 @@ func openSurfaceAndMintGateway(t *testing.T, h *Host, pluginInstanceID string, s
 		ActiveFingerprint:  bootstrap.ActiveFingerprint,
 		BridgeNonce:        bootstrap.BridgeNonce,
 		AssetSessionNonce:  bootstrap.AssetSessionNonce,
-		PluginStateVersion: bootstrap.PluginStateVersion,
+		ManagementRevision: bootstrap.ManagementRevision,
 		RevokeEpoch:        bootstrap.RevokeEpoch,
 		UIProtocolVersion:  "plugin-ui-v4",
 	}
 	gateway, err := h.MintBridgeToken(ctx, MintBridgeTokenRequest{
 		Handshake:                 handshake,
-		BridgeChannelID:           "bridge_rpc",
-		HandshakeTranscriptSHA256: bridge.HandshakeTranscriptSHA256(handshake, "bridge_rpc"),
-		OwnerSessionHash:          bootstrap.OwnerSessionHash,
-		OwnerUserHash:             bootstrap.OwnerUserHash,
-		SessionChannelIDHash:      bootstrap.SessionChannelIDHash,
-		Now:                       now.Add(3 * time.Second),
+		BridgeChannelID:           bridgeChannelID,
+		HandshakeTranscriptSHA256: bridge.HandshakeTranscriptSHA256(handshake, bridgeChannelID),
+
+		Now: now.Add(3 * time.Second),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -10482,23 +10116,29 @@ func stableRecentTestNow() time.Time {
 
 func exchangeAssetTicketRequestForBootstrap(bootstrap bridge.SurfaceBootstrap, now time.Time) ExchangeAssetTicketRequest {
 	return ExchangeAssetTicketRequest{
-		SurfaceInstanceID:    bootstrap.SurfaceInstanceID,
-		AssetTicket:          bootstrap.AssetTicket,
-		OwnerSessionHash:     bootstrap.OwnerSessionHash,
-		OwnerUserHash:        bootstrap.OwnerUserHash,
-		SessionChannelIDHash: bootstrap.SessionChannelIDHash,
-		Now:                  now,
+		SurfaceInstanceID: bootstrap.SurfaceInstanceID,
+		AssetTicket:       bootstrap.AssetTicket,
+
+		Now: now,
 	}
 }
 
 func scopedReadStreamRequest(streamID string, streamTicket string) ReadStreamRequest {
 	return ReadStreamRequest{
-		StreamID:             streamID,
-		StreamTicket:         streamTicket,
-		SurfaceInstanceID:    "surface_rpc",
-		OwnerSessionHash:     "session_hash",
-		OwnerUserHash:        "user_hash",
-		SessionChannelIDHash: "channel_hash",
+		StreamID:          streamID,
+		StreamTicket:      streamTicket,
+		ReadID:            "read_host_test_1",
+		SurfaceInstanceID: "surface_rpc",
+	}
+}
+
+func acknowledgeStreamResult(t *testing.T, h *Host, streamID string, streamTicket string, result ReadStreamResult) {
+	t.Helper()
+	if _, err := h.AcknowledgeStream(hostTestContext(), AcknowledgeStreamRequest{
+		StreamID: streamID, StreamTicket: streamTicket,
+		DeliveryID: result.DeliveryID, SurfaceInstanceID: "surface_rpc",
+	}); err != nil {
+		t.Fatalf("AcknowledgeStream() error = %v", err)
 	}
 }
 
@@ -10537,20 +10177,38 @@ func grantDeclaredPermissions(t *testing.T, h *Host, record registry.PluginRecor
 		}
 	}
 	for permissionID := range permissionsToGrant {
-		if _, err := h.GrantPermission(context.Background(), GrantPermissionRequest{
-			PluginInstanceID: record.PluginInstanceID,
-			PermissionID:     permissionID,
-			GrantedBy:        "test",
+		expected := mustAuthorizationRevisions(t, h, record.PluginInstanceID)
+		if _, err := h.GrantPermission(hostTestContext(), GrantPermissionRequest{
+			PluginInstanceID:           record.PluginInstanceID,
+			PermissionID:               permissionID,
+			ExpectedPolicyRevision:     expected.PolicyRevision,
+			ExpectedManagementRevision: expected.ManagementRevision,
+			ExpectedRevokeEpoch:        expected.RevokeEpoch,
 		}); err != nil {
 			t.Fatalf("GrantPermission(%s) error = %v", permissionID, err)
 		}
 	}
 }
 
-type fakeSessionResolver struct{}
+func hostTestContext() context.Context {
+	return hostTestContextWith("session_hash", "user_hash", "env_hash", "channel_hash")
+}
 
-func (fakeSessionResolver) ResolveSession(context.Context, string) (sessionctx.Context, error) {
-	return sessionctx.Context{}, nil
+func hostTestContextWith(sessionHash, userHash, envHash, channelHash string) context.Context {
+	return sessionctx.WithContext(context.Background(), sessionctx.Context{
+		OwnerSessionHash: sessionHash, OwnerUserHash: userHash,
+		OwnerEnvHash: envHash, SessionChannelIDHash: channelHash,
+	})
+}
+
+type readAtProbe struct {
+	reader *bytes.Reader
+	calls  int
+}
+
+func (r *readAtProbe) ReadAt(p []byte, off int64) (int, error) {
+	r.calls++
+	return r.reader.ReadAt(p, off)
 }
 
 type policyAdapter struct {
@@ -10746,7 +10404,7 @@ func resolvedArtifactForPackage(t *testing.T, ref PluginReleaseRef, pkg pluginpk
 
 func readTestPackage(t *testing.T, data []byte) pluginpkg.Package {
 	t.Helper()
-	pkg, err := pluginpkg.Read(context.Background(), bytes.NewReader(data), int64(len(data)), pluginpkg.DefaultReadOptions())
+	pkg, err := pluginpkg.Read(hostTestContext(), bytes.NewReader(data), int64(len(data)), pluginpkg.DefaultReadOptions())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -10769,7 +10427,7 @@ func buildSignedReleasePackageBytes(t *testing.T, data []byte, keyID string) []b
 		SignedAt:      "2026-07-07T00:00:00Z",
 	}
 	var buf bytes.Buffer
-	if err := pluginpkg.WritePackage(context.Background(), &buf, pkg); err != nil {
+	if err := pluginpkg.WritePackage(hostTestContext(), &buf, pkg); err != nil {
 		t.Fatalf("WritePackage() error = %v", err)
 	}
 	return buf.Bytes()
@@ -10843,7 +10501,7 @@ func resolvedArtifactForRelease(t *testing.T, ref PluginReleaseRef, release Plug
 
 func installReleaseRefLifecyclePlugin(t *testing.T, opts testHostOptions) (*Host, *recordingReleaseSourcePolicyResolver, registry.PluginRecord, PluginReleaseRef) {
 	t.Helper()
-	ctx := context.Background()
+	ctx := hostTestContext()
 	packageBytes := buildSignedReleasePackageBytes(t, buildVersionedLifecyclePackage(t, "1.0.0", "Lifecycle"), "official")
 	pkg := readTestPackage(t, packageBytes)
 	ref := releaseRefForPackage(t, "official", pkg)
@@ -11080,23 +10738,12 @@ func assertRuntimeLeaseEqual[T comparable](t *testing.T, name string, got T, wan
 	}
 }
 
-type cleanupPhaseSet map[cleanup.Phase]struct{}
-
-func cleanupPhases(records []cleanup.ExecutionRecord) cleanupPhaseSet {
-	phases := cleanupPhaseSet{}
-	for _, record := range records {
-		phases[record.Phase] = struct{}{}
-	}
-	return phases
-}
-
-func (s cleanupPhaseSet) contains(phase cleanup.Phase) bool {
-	_, ok := s[phase]
-	return ok
-}
-
 type diagnosticSink struct {
-	events []DiagnosticEvent
+	events []observability.DiagnosticEvent
+}
+
+type listingDiagnosticSink struct {
+	diagnosticSink
 }
 
 type failingAuditSink struct {
@@ -11107,9 +10754,13 @@ func (s failingAuditSink) AppendPluginAudit(context.Context, AuditEvent) error {
 	return s.err
 }
 
-func (s *diagnosticSink) AppendPluginDiagnostic(_ context.Context, event DiagnosticEvent) error {
+func (s *diagnosticSink) AppendPluginDiagnostic(_ context.Context, event observability.DiagnosticEvent) error {
 	s.events = append(s.events, event)
 	return nil
+}
+
+func (s *listingDiagnosticSink) ListPluginDiagnostics(context.Context, observability.ListDiagnosticRequest) ([]observability.DiagnosticEvent, error) {
+	return append([]observability.DiagnosticEvent(nil), s.events...), nil
 }
 
 type recordingCapabilityAdapter struct {
@@ -11125,8 +10776,48 @@ type recordingCapabilityAdapter struct {
 	invokeContext     context.Context
 	panicValue        any
 	invokeDelay       time.Duration
+	invokeEntered     chan<- struct{}
+	invokeRelease     <-chan struct{}
 	targetFields      map[string]any
 	mutateExecution   func(*capability.ExecutionBinding)
+}
+
+type blockingOperationRegisterStore struct {
+	operation.Store
+	entered chan<- struct{}
+	release <-chan struct{}
+}
+
+func (s *blockingOperationRegisterStore) Register(ctx context.Context, req operation.RegisterRequest) (operation.Record, error) {
+	select {
+	case s.entered <- struct{}{}:
+	default:
+	}
+	select {
+	case <-ctx.Done():
+		return operation.Record{}, ctx.Err()
+	case <-s.release:
+	}
+	return s.Store.Register(ctx, req)
+}
+
+type blockingStreamRegisterStore struct {
+	stream.Store
+	entered chan<- struct{}
+	release <-chan struct{}
+}
+
+func (s *blockingStreamRegisterStore) Register(ctx context.Context, req stream.RegisterRequest) (stream.Record, error) {
+	select {
+	case s.entered <- struct{}{}:
+	default:
+	}
+	select {
+	case <-ctx.Done():
+		return stream.Record{}, ctx.Err()
+	case <-s.release:
+	}
+	return s.Store.Register(ctx, req)
 }
 
 type failingStreamRegisterStore struct {
@@ -11144,6 +10835,118 @@ type failFirstOperationFinishStore struct {
 	failedOne bool
 }
 
+type controlledOperationFinishStore struct {
+	operation.Store
+	mu      sync.Mutex
+	err     error
+	failing bool
+	calls   int
+}
+
+type controlledStreamCloseStore struct {
+	stream.Store
+	mu      sync.Mutex
+	err     error
+	failing bool
+	calls   int
+}
+
+type countingOperationListStore struct {
+	operation.Store
+	listCalls int
+}
+
+type countingOperationPruneStore struct {
+	operation.Store
+	mu         sync.Mutex
+	pruneCalls int
+	last       operation.PruneRequest
+	err        error
+	entered    chan<- struct{}
+	release    <-chan struct{}
+}
+
+func (s *countingOperationPruneStore) Prune(ctx context.Context, req operation.PruneRequest) (operation.PruneResult, error) {
+	s.mu.Lock()
+	s.pruneCalls++
+	s.last = req
+	err := s.err
+	entered := s.entered
+	release := s.release
+	s.mu.Unlock()
+	if entered != nil {
+		select {
+		case entered <- struct{}{}:
+		default:
+		}
+	}
+	if release != nil {
+		select {
+		case <-ctx.Done():
+			return operation.PruneResult{}, ctx.Err()
+		case <-release:
+		}
+	}
+	if err != nil {
+		return operation.PruneResult{}, err
+	}
+	return s.Store.Prune(ctx, req)
+}
+
+func (s *countingOperationPruneStore) snapshot() (int, operation.PruneRequest) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.pruneCalls, s.last
+}
+
+func (s *countingOperationPruneStore) reset() {
+	s.mu.Lock()
+	s.pruneCalls = 0
+	s.last = operation.PruneRequest{}
+	s.mu.Unlock()
+}
+
+func (s *countingOperationPruneStore) configure(err error, entered chan<- struct{}, release <-chan struct{}) {
+	s.mu.Lock()
+	s.err = err
+	s.entered = entered
+	s.release = release
+	s.mu.Unlock()
+}
+
+type countingStreamPruneStore struct {
+	stream.Store
+	mu         sync.Mutex
+	pruneCalls int
+	last       stream.PruneRequest
+}
+
+func (s *countingStreamPruneStore) Prune(ctx context.Context, req stream.PruneRequest) (stream.PruneResult, error) {
+	s.mu.Lock()
+	s.pruneCalls++
+	s.last = req
+	s.mu.Unlock()
+	return s.Store.Prune(ctx, req)
+}
+
+func (s *countingStreamPruneStore) snapshot() (int, stream.PruneRequest) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.pruneCalls, s.last
+}
+
+func (s *countingStreamPruneStore) reset() {
+	s.mu.Lock()
+	s.pruneCalls = 0
+	s.last = stream.PruneRequest{}
+	s.mu.Unlock()
+}
+
+func (s *countingOperationListStore) List(ctx context.Context, req operation.ListRequest) (operation.Page, error) {
+	s.listCalls++
+	return s.Store.List(ctx, req)
+}
+
 func (s *failFirstOperationFinishStore) Finish(ctx context.Context, req operation.FinishRequest) (operation.Record, error) {
 	if !s.failedOne {
 		s.failedOne = true
@@ -11152,24 +10955,72 @@ func (s *failFirstOperationFinishStore) Finish(ctx context.Context, req operatio
 	return s.Store.Finish(ctx, req)
 }
 
+func (s *controlledOperationFinishStore) Finish(ctx context.Context, req operation.FinishRequest) (operation.Record, error) {
+	s.mu.Lock()
+	s.calls++
+	failing := s.failing
+	err := s.err
+	s.mu.Unlock()
+	if failing {
+		return operation.Record{}, err
+	}
+	return s.Store.Finish(ctx, req)
+}
+
+func (s *controlledOperationFinishStore) setFailing(failing bool) {
+	s.mu.Lock()
+	s.failing = failing
+	s.mu.Unlock()
+}
+
+func (s *controlledOperationFinishStore) finishCalls() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.calls
+}
+
+func (s *controlledStreamCloseStore) Close(ctx context.Context, req stream.CloseRequest) (stream.Record, error) {
+	s.mu.Lock()
+	s.calls++
+	failing := s.failing
+	err := s.err
+	s.mu.Unlock()
+	if failing {
+		return stream.Record{}, err
+	}
+	return s.Store.Close(ctx, req)
+}
+
+func (s *controlledStreamCloseStore) setFailing(failing bool) {
+	s.mu.Lock()
+	s.failing = failing
+	s.mu.Unlock()
+}
+
+func (s *controlledStreamCloseStore) closeCalls() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.calls
+}
+
 type failFirstStreamAppendStore struct {
 	stream.Store
 	err       error
 	failedOne bool
 }
 
-type failFirstStreamReadStore struct {
+type failFirstStreamDeliverStore struct {
 	stream.Store
 	err       error
 	failedOne bool
 }
 
-func (s *failFirstStreamReadStore) Read(ctx context.Context, req stream.ReadRequest) (stream.Record, []stream.Event, error) {
+func (s *failFirstStreamDeliverStore) Deliver(ctx context.Context, req stream.DeliverRequest) (stream.Record, stream.Delivery, error) {
 	if !s.failedOne {
 		s.failedOne = true
-		return stream.Record{}, nil, s.err
+		return stream.Record{}, stream.Delivery{}, s.err
 	}
-	return s.Store.Read(ctx, req)
+	return s.Store.Deliver(ctx, req)
 }
 
 func (s *failFirstStreamAppendStore) Append(ctx context.Context, req stream.AppendRequest) (stream.Event, error) {
@@ -11209,9 +11060,19 @@ type recordingSecretStore struct {
 	test           SecretTestRequest
 	delete         SecretDeleteRequest
 	deletePluginID string
+	records        []secrets.Record
 }
 
-type recordingRuntimeSupervisor struct {
+type failingSecretListStore struct {
+	SecretStoreAdapter
+	err error
+}
+
+func (s *failingSecretListStore) List(context.Context, secrets.ListRequest) ([]secrets.Record, error) {
+	return nil, s.err
+}
+
+type recordingRuntimeManager struct {
 	calls             int
 	startCalls        int
 	stopCalls         int
@@ -11220,6 +11081,8 @@ type recordingRuntimeSupervisor struct {
 	health            runtimeclient.Health
 	result            capability.Result
 	err               error
+	startErr          error
+	stopErr           error
 	revokeErr         error
 	revokeResult      runtimeclient.RevokeResult
 	lastLease         runtimeclient.Lease
@@ -11228,13 +11091,6 @@ type recordingRuntimeSupervisor struct {
 	lastRevokedPlugin string
 	lastRevokeEpoch   uint64
 	invokeContext     context.Context
-}
-
-type recordingRuntimeArtifactResolver struct {
-	calls  int
-	target RuntimeTarget
-	path   string
-	err    error
 }
 
 func surfaceIDForMethod(method string) string {
@@ -11249,7 +11105,7 @@ func surfaceIDForMethod(method string) string {
 
 func assertHostOperationStatus(t *testing.T, h *Host, operationID string, want operation.Status) {
 	t.Helper()
-	record, err := h.GetOperation(context.Background(), operationID)
+	record, err := h.GetOperation(hostTestContext(), operationID)
 	if err != nil {
 		t.Fatalf("GetOperation(%s) error = %v", operationID, err)
 	}
@@ -11262,7 +11118,7 @@ func waitForHostOperationStatus(t *testing.T, h *Host, operationID string, want 
 	t.Helper()
 	deadline := time.Now().Add(time.Second)
 	for {
-		record, err := h.GetOperation(context.Background(), operationID)
+		record, err := h.GetOperation(hostTestContext(), operationID)
 		if err != nil {
 			t.Fatalf("GetOperation(%s) error = %v", operationID, err)
 		}
@@ -11276,20 +11132,62 @@ func waitForHostOperationStatus(t *testing.T, h *Host, operationID string, want 
 	}
 }
 
+func waitForOperationFinishCalls(t *testing.T, store *controlledOperationFinishStore, want int) {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for {
+		if store.finishCalls() >= want {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("operation terminal writes = %d, want at least %d", store.finishCalls(), want)
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+func waitForStreamCloseCalls(t *testing.T, store *controlledStreamCloseStore, want int) {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for {
+		if store.closeCalls() >= want {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("stream terminal writes = %d, want at least %d", store.closeCalls(), want)
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+func assertNoActiveExecutionState(t *testing.T, h *Host, label string) {
+	t.Helper()
+	h.executions.mu.Lock()
+	defer h.executions.mu.Unlock()
+	if len(h.executions.leases) != 0 || len(h.executions.leasesByPlugin) != 0 || len(h.executions.operations) != 0 ||
+		len(h.executions.streams) != 0 || len(h.executions.activeByQuotaKey) != 0 || len(h.executions.setupRollbacks) != 0 {
+		t.Fatalf("%s retained execution state: %#v", label, h.executions)
+	}
+}
+
 func testExecutionBinding(record registry.PluginRecord, method string, execution manifest.MethodExecutionMode) capability.ExecutionBinding {
 	return capability.ExecutionBinding{
-		PluginID:          record.PluginID,
-		PluginInstanceID:  record.PluginInstanceID,
-		PluginVersion:     record.Version,
-		ActiveFingerprint: record.ActiveFingerprint,
-		Method:            method,
-		Execution:         string(execution),
+		PluginID:             record.PluginID,
+		PluginInstanceID:     record.PluginInstanceID,
+		PluginVersion:        record.Version,
+		ActiveFingerprint:    record.ActiveFingerprint,
+		Method:               method,
+		Execution:            string(execution),
+		OwnerSessionHash:     "session_hash",
+		OwnerUserHash:        "user_hash",
+		OwnerEnvHash:         "env_hash",
+		SessionChannelIDHash: "channel_hash",
 	}
 }
 
 func assertHostStreamStatus(t *testing.T, h *Host, streamID string, want stream.Status) {
 	t.Helper()
-	record, err := h.adapters.Streams.Get(context.Background(), streamID)
+	record, err := h.adapters.Streams.Get(hostTestContext(), streamID)
 	if err != nil {
 		t.Fatalf("Streams.Get(%s) error = %v", streamID, err)
 	}
@@ -11313,6 +11211,15 @@ func (a *recordingCapabilityAdapter) Invoke(ctx context.Context, req capability.
 	}
 	a.last = req
 	a.invokeContext = ctx
+	if a.invokeEntered != nil {
+		select {
+		case a.invokeEntered <- struct{}{}:
+		default:
+		}
+	}
+	if a.invokeRelease != nil {
+		<-a.invokeRelease
+	}
 	if a.panicValue != nil {
 		panic(a.panicValue)
 	}
@@ -11375,58 +11282,63 @@ func (s *recordingSecretStore) DeletePlugin(_ context.Context, pluginInstanceID 
 	return nil
 }
 
-type secretStoreWithoutPluginCleanup struct{}
-
-func (s *secretStoreWithoutPluginCleanup) BindSecretRef(context.Context, SecretBindRequest) error {
-	return nil
+func (s *recordingSecretStore) List(_ context.Context, req secrets.ListRequest) ([]secrets.Record, error) {
+	result := make([]secrets.Record, 0, len(s.records))
+	for _, record := range s.records {
+		if req.PluginInstanceID != "" && record.PluginInstanceID != req.PluginInstanceID {
+			continue
+		}
+		if req.Scope != "" && record.Scope != req.Scope {
+			continue
+		}
+		if req.BoundOnly && !record.Bound {
+			continue
+		}
+		result = append(result, record)
+	}
+	return result, nil
 }
 
-func (s *secretStoreWithoutPluginCleanup) TestSecretRef(context.Context, SecretTestRequest) error {
-	return nil
-}
-
-func (s *secretStoreWithoutPluginCleanup) DeleteSecretRef(context.Context, SecretDeleteRequest) error {
-	return nil
-}
-
-func (r *recordingRuntimeSupervisor) Start(_ context.Context, target runtimeclient.Target) error {
+func (r *recordingRuntimeManager) Start(_ context.Context, target runtimeclient.Target) (runtimeclient.ManagerHealth, error) {
 	r.startCalls++
 	r.startedTarget = target
 	if r.health == (runtimeclient.Health{}) {
 		r.health = runtimeclient.Health{RuntimeInstanceID: "runtime_test", RuntimeGenerationID: "runtime_gen_test", IPCChannelID: "ipc_test", ConnectionNonce: "connection_nonce_test_1234567890", Ready: true}
 	}
-	return nil
+	return r.managerHealth(), r.startErr
 }
 
-func (r *recordingRuntimeSupervisor) Stop(context.Context) error {
+func (r *recordingRuntimeManager) Stop(context.Context) error {
 	r.stopCalls++
 	r.health.Ready = false
-	return nil
+	return r.stopErr
 }
 
-func (r *recordingRuntimeSupervisor) Health(context.Context) (runtimeclient.Health, error) {
+func (r *recordingRuntimeManager) Health(context.Context) (runtimeclient.ManagerHealth, error) {
 	if r.health == (runtimeclient.Health{}) {
 		r.health = runtimeclient.Health{RuntimeInstanceID: "runtime_test", RuntimeGenerationID: "runtime_gen_test", IPCChannelID: "ipc_test", ConnectionNonce: "connection_nonce_test_1234567890", Ready: true}
 	}
-	return r.health, nil
+	return r.managerHealth(), nil
 }
 
-func (r *recordingRuntimeSupervisor) Heartbeat(context.Context) (runtimeclient.HeartbeatResult, error) {
-	if r.err != nil {
-		return runtimeclient.HeartbeatResult{}, r.err
-	}
+func (r *recordingRuntimeManager) managerHealth() runtimeclient.ManagerHealth {
+	return runtimeclient.ManagerHealth{Ready: r.health.Ready, Shards: []runtimeclient.ShardHealth{{RuntimeShardID: "runtime_shard_00", Health: r.health}}}
+}
+
+func (r *recordingRuntimeManager) BindPlugin(context.Context, string) (runtimeclient.RuntimeBinding, error) {
 	if r.health == (runtimeclient.Health{}) {
 		r.health = runtimeclient.Health{RuntimeInstanceID: "runtime_test", RuntimeGenerationID: "runtime_gen_test", IPCChannelID: "ipc_test", ConnectionNonce: "connection_nonce_test_1234567890", Ready: true}
 	}
-	return runtimeclient.HeartbeatResult{
-		RuntimeGenerationID:  r.health.RuntimeGenerationID,
-		RuntimeUnixNano:      time.Now().UnixNano(),
-		MaxStalenessMillis:   5000,
-		HostSentUnixNanoEcho: time.Now().UnixNano(),
+	return runtimeclient.RuntimeBinding{
+		RuntimeShardID:      "runtime_shard_00",
+		RuntimeInstanceID:   r.health.RuntimeInstanceID,
+		RuntimeGenerationID: r.health.RuntimeGenerationID,
+		IPCChannelID:        r.health.IPCChannelID,
+		ConnectionNonce:     r.health.ConnectionNonce,
 	}, nil
 }
 
-func (r *recordingRuntimeSupervisor) InvokeWorker(ctx context.Context, lease runtimeclient.Lease, method string, payload []byte) ([]byte, error) {
+func (r *recordingRuntimeManager) InvokeWorker(ctx context.Context, _ runtimeclient.RuntimeBinding, lease runtimeclient.Lease, method string, payload []byte) ([]byte, error) {
 	r.calls++
 	r.invokeContext = ctx
 	r.lastLease = lease
@@ -11438,7 +11350,7 @@ func (r *recordingRuntimeSupervisor) InvokeWorker(ctx context.Context, lease run
 	return json.Marshal(r.result)
 }
 
-func (r *recordingRuntimeSupervisor) Revoke(_ context.Context, pluginInstanceID string, revokeEpoch uint64) (runtimeclient.RevokeResult, error) {
+func (r *recordingRuntimeManager) Revoke(_ context.Context, pluginInstanceID string, revokeEpoch uint64) (runtimeclient.RevokeResult, error) {
 	r.revokeCalls++
 	r.lastRevokedPlugin = pluginInstanceID
 	r.lastRevokeEpoch = revokeEpoch
@@ -11450,13 +11362,4 @@ func (r *recordingRuntimeSupervisor) Revoke(_ context.Context, pluginInstanceID 
 		result.RevokeEpoch = revokeEpoch
 	}
 	return result, r.revokeErr
-}
-
-func (r *recordingRuntimeArtifactResolver) RuntimePath(_ context.Context, target RuntimeTarget) (string, error) {
-	r.calls++
-	r.target = target
-	if r.err != nil {
-		return "", r.err
-	}
-	return r.path, nil
 }

@@ -59,7 +59,7 @@
         "bridge_schema_version": { "const": "bridge-v4" },
         "opaque_surface_document_schema_version": { "const": "opaque-surface-document-v2" },
         "opaque_surface_transport_schema_version": { "const": "opaque-surface-transport-v3" },
-        "target_classifier_version": { "const": "target-classifier-v1" },
+        "target_classifier_version": { "const": "target-classifier-v2" },
         "network_grant_schema_version": { "const": "network-grant-v1" },
         "plugin_platform_openapi_version": { "const": "plugin-platform-v4" },
         "compatibility_schema_version": { "const": "compatibility-manifest-v4" },

@@ -3,45 +3,32 @@ package main
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/floegence/redevplugin/pkg/capability"
 	"github.com/floegence/redevplugin/pkg/host"
 	"github.com/floegence/redevplugin/pkg/permissions"
+	"github.com/floegence/redevplugin/pkg/plugindata"
 	"github.com/floegence/redevplugin/pkg/pluginpkg"
 	"github.com/floegence/redevplugin/pkg/registry"
 	"github.com/floegence/redevplugin/pkg/secrets"
-	"github.com/floegence/redevplugin/pkg/settings"
-	"github.com/floegence/redevplugin/pkg/storage"
 )
 
 const (
-	devStateSchemaVersion = "redevplugin.dev_state.v3"
-	devStateFile          = "redevplugin-dev-state.json"
-	devPackageFile        = "installed.redevplugin"
-	devStorageDir         = "storage"
+	devPackageFile       = "installed.redevplugin"
+	devRegistryFile      = "registry.sqlite"
+	devPluginDataDir     = "plugin-data"
+	devSecretsFile       = "secrets.sqlite"
+	devCapabilitiesDir   = "capability-artifacts"
+	devCapabilityKeyFile = "host-capability.public.json"
 )
 
 var errDevStateNotInstalled = errors.New("dev plugin is not installed")
-
-type devLifecycleState struct {
-	SchemaVersion string                  `json:"schema_version"`
-	PackageFile   string                  `json:"package_file,omitempty"`
-	Record        registry.PluginRecord   `json:"record"`
-	Settings      settings.MemoryState    `json:"settings,omitempty"`
-	Secrets       secrets.MemoryState     `json:"secrets,omitempty"`
-	Permissions   permissions.MemoryState `json:"permissions,omitempty"`
-	Capabilities  []devCapabilityState    `json:"capabilities,omitempty"`
-	UpdatedAt     time.Time               `json:"updated_at"`
-}
 
 type devCapabilitySpec struct {
 	ArtifactRoot  string
@@ -49,17 +36,10 @@ type devCapabilitySpec struct {
 	PublicKeyFile string
 }
 
-type devCapabilityState struct {
-	ArtifactRoot  string `json:"artifact_root"`
-	PinFile       string `json:"pin_file"`
-	PublicKeyFile string `json:"public_key_file"`
-}
-
 type devLifecycleSummary struct {
 	lifecycleSummary
-	StateRoot       string `json:"state_root"`
-	StorageRoot     string `json:"storage_root"`
-	PackageRetained bool   `json:"package_retained"`
+	StateRoot      string `json:"state_root"`
+	PluginDataRoot string `json:"plugin_data_root"`
 }
 
 type devOpenSurfaceSummary struct {
@@ -104,17 +84,17 @@ type devPermissionSummary struct {
 }
 
 type devDataSummary struct {
-	OK                 bool      `json:"ok"`
-	Action             string    `json:"action"`
-	StateRoot          string    `json:"state_root"`
-	PluginInstanceID   string    `json:"plugin_instance_id"`
-	PluginID           string    `json:"plugin_id"`
-	ArchiveRef         string    `json:"archive_ref,omitempty"`
-	SettingsArchiveRef string    `json:"settings_archive_ref,omitempty"`
-	IncludeSecrets     bool      `json:"include_secrets,omitempty"`
-	DeleteExisting     bool      `json:"delete_existing,omitempty"`
-	Imported           bool      `json:"imported,omitempty"`
-	UpdatedAt          time.Time `json:"updated_at"`
+	OK               bool      `json:"ok"`
+	Action           string    `json:"action"`
+	StateRoot        string    `json:"state_root"`
+	PluginInstanceID string    `json:"plugin_instance_id"`
+	PluginID         string    `json:"plugin_id"`
+	BundleRef        string    `json:"bundle_ref"`
+	ContentHash      string    `json:"content_hash,omitempty"`
+	SizeBytes        int64     `json:"size_bytes,omitempty"`
+	Imported         bool      `json:"imported,omitempty"`
+	Deleted          bool      `json:"deleted,omitempty"`
+	UpdatedAt        time.Time `json:"updated_at"`
 }
 
 func parseDevCapabilityArgs(args []string) ([]devCapabilitySpec, error) {
@@ -188,11 +168,17 @@ func devInstall(ctx context.Context, stateRoot string, packageFile string, capab
 			_ = os.RemoveAll(stagingRoot)
 		}
 	}()
-	h, err := newDevInstallHost(stagingRoot, loadedCapabilities)
+	harness, err := newDevHarness(ctx, stagingRoot, loadedCapabilities, pluginpkg.NewMemoryAssetStore())
 	if err != nil {
 		return err
 	}
-	record, err := h.ImportLocalPackage(ctx, host.ImportLocalPackageRequest{
+	closed := false
+	defer func() {
+		if !closed {
+			_ = harness.Close()
+		}
+	}()
+	record, err := harness.host.ImportLocalPackage(ctx, host.ImportLocalPackageRequest{
 		PackageReader: bytes.NewReader(data),
 		PackageSize:   int64(len(data)),
 	})
@@ -206,20 +192,13 @@ func devInstall(ctx context.Context, stateRoot string, packageFile string, capab
 	if err := writeBytesFile(packagePath, data, 0o600); err != nil {
 		return err
 	}
-	capabilityState, err := persistDevCapabilities(stagingRoot, loadedCapabilities)
-	if err != nil {
+	if err := persistDevCapabilities(stagingRoot, loadedCapabilities); err != nil {
 		return err
 	}
-	state := devLifecycleState{
-		SchemaVersion: devStateSchemaVersion,
-		PackageFile:   devPackageFile,
-		Record:        record,
-		Capabilities:  capabilityState,
-		UpdatedAt:     time.Now().UTC(),
-	}
-	if err := saveDevState(stagingRoot, state); err != nil {
+	if err := harness.Close(); err != nil {
 		return err
 	}
+	closed = true
 	if precreatedEmptyRoot {
 		entries, err := os.ReadDir(stateRoot)
 		if err != nil {
@@ -239,38 +218,32 @@ func devInstall(ctx context.Context, stateRoot string, packageFile string, capab
 		return err
 	}
 	promoted = true
-	return writeDevLifecycle("dev-install", stateRoot, state)
+	return writeDevLifecycle("dev-install", stateRoot, record)
 }
 
 func devEnable(ctx context.Context, stateRoot string) error {
-	harness, state, err := loadDevHarness(ctx, stateRoot)
+	harness, record, err := loadDevHarness(ctx, stateRoot)
 	if err != nil {
 		return err
 	}
-	record, err := harness.host.EnablePlugin(ctx, host.EnableRequest{
-		PluginInstanceID:   state.Record.PluginInstanceID,
-		PluginStateVersion: state.Record.ManagementRevision,
+	defer harness.Close()
+	record, err = harness.host.EnablePlugin(ctx, host.EnableRequest{
+		PluginInstanceID:           record.PluginInstanceID,
+		ExpectedManagementRevision: record.ManagementRevision,
 	})
 	if err != nil {
 		return err
 	}
-	state.Record = record
-	state.UpdatedAt = time.Now().UTC()
-	state.Settings = harness.settingsStore.State()
-	state.Secrets = harness.secretStore.State()
-	state.Permissions = harness.permissionStore.State()
-	if err := saveDevState(harness.stateRoot, state); err != nil {
-		return err
-	}
-	return writeDevLifecycle("dev-enable", harness.stateRoot, state)
+	return writeDevLifecycle("dev-enable", harness.stateRoot, record)
 }
 
 func devOpen(ctx context.Context, stateRoot string, surfaceID string) error {
-	harness, state, err := loadDevHarness(ctx, stateRoot)
+	harness, record, err := loadDevHarness(ctx, stateRoot)
 	if err != nil {
 		return err
 	}
-	if state.Record.EnableState != registry.EnableEnabled {
+	defer harness.Close()
+	if record.EnableState != registry.EnableEnabled {
 		return errors.New("dev plugin must be enabled before opening a surface")
 	}
 	surfaceID = strings.TrimSpace(surfaceID)
@@ -278,30 +251,20 @@ func devOpen(ctx context.Context, stateRoot string, surfaceID string) error {
 		return errors.New("surface_id is required")
 	}
 	bootstrap, err := harness.host.OpenSurface(ctx, host.OpenSurfaceRequest{
-		PluginInstanceID:     state.Record.PluginInstanceID,
-		PluginStateVersion:   state.Record.ManagementRevision,
-		SurfaceID:            surfaceID,
-		OwnerSessionHash:     "dev_owner_session",
-		OwnerUserHash:        "dev_owner_user",
-		SessionChannelIDHash: "dev_session_channel",
+		PluginInstanceID:           record.PluginInstanceID,
+		ExpectedManagementRevision: record.ManagementRevision,
+		SurfaceID:                  surfaceID,
 	})
 	if err != nil {
-		return err
-	}
-	state.Settings = harness.settingsStore.State()
-	state.Secrets = harness.secretStore.State()
-	state.Permissions = harness.permissionStore.State()
-	state.UpdatedAt = time.Now().UTC()
-	if err := saveDevState(harness.stateRoot, state); err != nil {
 		return err
 	}
 	return writeJSON(devOpenSurfaceSummary{
 		OK:                true,
 		Action:            "dev-open",
 		StateRoot:         harness.stateRoot,
-		PluginInstanceID:  state.Record.PluginInstanceID,
-		PluginID:          state.Record.PluginID,
-		Version:           state.Record.Version,
+		PluginInstanceID:  record.PluginInstanceID,
+		PluginID:          record.PluginID,
+		Version:           record.Version,
 		SurfaceID:         bootstrap.SurfaceID,
 		SurfaceInstanceID: bootstrap.SurfaceInstanceID,
 		ActiveFingerprint: bootstrap.ActiveFingerprint,
@@ -313,317 +276,293 @@ func devOpen(ctx context.Context, stateRoot string, surfaceID string) error {
 }
 
 func devDisable(ctx context.Context, stateRoot string) error {
-	harness, state, err := loadDevHarness(ctx, stateRoot)
+	harness, record, err := loadDevHarness(ctx, stateRoot)
 	if err != nil {
 		return err
 	}
-	record, err := harness.host.DisablePlugin(ctx, host.DisableRequest{
-		PluginInstanceID:   state.Record.PluginInstanceID,
-		PluginStateVersion: state.Record.ManagementRevision,
-		Reason:             "dev-cli",
+	defer harness.Close()
+	record, err = harness.host.DisablePlugin(ctx, host.DisableRequest{
+		PluginInstanceID:           record.PluginInstanceID,
+		ExpectedManagementRevision: record.ManagementRevision,
+		Reason:                     "dev-cli",
 	})
 	if err != nil {
 		return err
 	}
-	state.Record = record
-	state.Settings = harness.settingsStore.State()
-	state.Secrets = harness.secretStore.State()
-	state.Permissions = harness.permissionStore.State()
-	state.UpdatedAt = time.Now().UTC()
-	if err := saveDevState(harness.stateRoot, state); err != nil {
-		return err
-	}
-	return writeDevLifecycle("dev-disable", harness.stateRoot, state)
+	return writeDevLifecycle("dev-disable", harness.stateRoot, record)
 }
 
-func devUninstall(ctx context.Context, stateRoot string, deleteData bool) error {
-	harness, state, err := loadDevHarness(ctx, stateRoot)
+func devUninstall(ctx context.Context, stateRoot string) error {
+	harness, record, err := loadDevHarness(ctx, stateRoot)
 	if err != nil {
 		return err
 	}
-	pluginInstanceID := state.Record.PluginInstanceID
-	record, err := harness.host.UninstallPlugin(ctx, host.UninstallRequest{
-		PluginInstanceID:   pluginInstanceID,
-		PluginStateVersion: state.Record.ManagementRevision,
-		DeleteData:         deleteData,
+	defer harness.Close()
+	record, err = harness.host.UninstallPlugin(ctx, host.UninstallRequest{
+		PluginInstanceID:           record.PluginInstanceID,
+		ExpectedManagementRevision: record.ManagementRevision,
+		DeleteData:                 true,
 	})
 	if err != nil {
 		return err
 	}
-	state.Record = record
-	state.Settings = harness.settingsStore.State()
-	state.Secrets = harness.secretStore.State()
-	state.Permissions = harness.permissionStore.State()
-	state.PackageFile = ""
-	state.UpdatedAt = time.Now().UTC()
 	if err := os.Remove(filepath.Join(harness.stateRoot, devPackageFile)); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
-	if err := saveDevState(harness.stateRoot, state); err != nil {
-		return err
-	}
-	return writeDevLifecycle("dev-uninstall", harness.stateRoot, state)
+	return writeDevLifecycle("dev-uninstall", harness.stateRoot, record)
 }
 
 func devSecretBind(ctx context.Context, stateRoot string, secretRef string, scope string) error {
-	harness, state, err := loadDevHarness(ctx, stateRoot)
+	harness, record, err := loadDevHarness(ctx, stateRoot)
 	if err != nil {
 		return err
 	}
+	defer harness.Close()
 	req := host.SecretBindRequest{
-		PluginInstanceID: state.Record.PluginInstanceID,
+		PluginInstanceID: record.PluginInstanceID,
 		SecretRef:        secretRef,
 		Scope:            scope,
 	}
 	if err := harness.host.BindSecretRef(ctx, req); err != nil {
 		return err
 	}
-	return saveAndWriteDevSecret(harness, state, "dev-secret-bind", req)
+	return writeCurrentDevSecret(ctx, harness, record, "dev-secret-bind", req)
 }
 
 func devSecretTest(ctx context.Context, stateRoot string, secretRef string, scope string) error {
-	harness, state, err := loadDevHarness(ctx, stateRoot)
+	harness, record, err := loadDevHarness(ctx, stateRoot)
 	if err != nil {
 		return err
 	}
+	defer harness.Close()
 	req := host.SecretBindRequest{
-		PluginInstanceID: state.Record.PluginInstanceID,
+		PluginInstanceID: record.PluginInstanceID,
 		SecretRef:        secretRef,
 		Scope:            scope,
 	}
 	if err := harness.host.TestSecretRef(ctx, host.SecretTestRequest(req)); err != nil {
 		return err
 	}
-	return saveAndWriteDevSecret(harness, state, "dev-secret-test", req)
+	return writeCurrentDevSecret(ctx, harness, record, "dev-secret-test", req)
 }
 
 func devSecretDelete(ctx context.Context, stateRoot string, secretRef string, scope string) error {
-	harness, state, err := loadDevHarness(ctx, stateRoot)
+	harness, record, err := loadDevHarness(ctx, stateRoot)
 	if err != nil {
 		return err
 	}
+	defer harness.Close()
 	req := host.SecretBindRequest{
-		PluginInstanceID: state.Record.PluginInstanceID,
+		PluginInstanceID: record.PluginInstanceID,
 		SecretRef:        secretRef,
 		Scope:            scope,
 	}
 	if err := harness.host.DeleteSecretRef(ctx, host.SecretDeleteRequest(req)); err != nil {
 		return err
 	}
-	return saveAndWriteDevSecret(harness, state, "dev-secret-delete", req)
+	return writeCurrentDevSecret(ctx, harness, record, "dev-secret-delete", req)
 }
 
-func devPermissionGrant(ctx context.Context, stateRoot string, permissionID string, grantedBy string) error {
-	harness, state, err := loadDevHarness(ctx, stateRoot)
+func devPermissionGrant(ctx context.Context, stateRoot string, permissionID string) error {
+	harness, plugin, err := loadDevHarness(ctx, stateRoot)
 	if err != nil {
 		return err
 	}
-	if strings.TrimSpace(grantedBy) == "" {
-		grantedBy = "dev-cli"
-	}
+	defer harness.Close()
 	record, err := harness.host.GrantPermission(ctx, host.GrantPermissionRequest{
-		PluginInstanceID: state.Record.PluginInstanceID,
-		PermissionID:     permissionID,
-		GrantedBy:        grantedBy,
+		PluginInstanceID:           plugin.PluginInstanceID,
+		PermissionID:               permissionID,
+		ExpectedPolicyRevision:     plugin.PolicyRevision,
+		ExpectedManagementRevision: plugin.ManagementRevision,
+		ExpectedRevokeEpoch:        plugin.RevokeEpoch,
 	})
 	if err != nil {
 		return err
 	}
-	state.Record = harness.registryStore.record()
-	return saveAndWriteDevPermission(harness, state, "dev-permission-grant", record)
-}
-
-func devPermissionRevoke(ctx context.Context, stateRoot string, permissionID string, reason string) error {
-	harness, state, err := loadDevHarness(ctx, stateRoot)
+	plugin, err = harness.registryStore.GetPlugin(ctx, plugin.PluginInstanceID)
 	if err != nil {
 		return err
 	}
+	return writeDevPermission(harness, plugin, "dev-permission-grant", record.Permission)
+}
+
+func devPermissionRevoke(ctx context.Context, stateRoot string, permissionID string, reason string) error {
+	harness, plugin, err := loadDevHarness(ctx, stateRoot)
+	if err != nil {
+		return err
+	}
+	defer harness.Close()
 	if strings.TrimSpace(reason) == "" {
 		reason = "dev-cli"
 	}
 	record, err := harness.host.RevokePermission(ctx, host.RevokePermissionRequest{
-		PluginInstanceID: state.Record.PluginInstanceID,
-		PermissionID:     permissionID,
-		RevokedBy:        "dev-cli",
-		Reason:           reason,
+		PluginInstanceID:           plugin.PluginInstanceID,
+		PermissionID:               permissionID,
+		ExpectedPolicyRevision:     plugin.PolicyRevision,
+		ExpectedManagementRevision: plugin.ManagementRevision,
+		ExpectedRevokeEpoch:        plugin.RevokeEpoch,
+		Reason:                     reason,
 	})
 	if err != nil {
 		return err
 	}
-	state.Record = harness.registryStore.record()
-	return saveAndWriteDevPermission(harness, state, "dev-permission-revoke", record)
+	plugin, err = harness.registryStore.GetPlugin(ctx, plugin.PluginInstanceID)
+	if err != nil {
+		return err
+	}
+	return writeDevPermission(harness, plugin, "dev-permission-revoke", record.Permission)
 }
 
 func devPermissionList(ctx context.Context, stateRoot string, activeOnly bool) error {
-	harness, state, err := loadDevHarness(ctx, stateRoot)
+	harness, plugin, err := loadDevHarness(ctx, stateRoot)
 	if err != nil {
 		return err
 	}
+	defer harness.Close()
 	records, err := harness.host.ListPermissionGrants(ctx, host.ListPermissionGrantsRequest{
-		PluginInstanceID: state.Record.PluginInstanceID,
+		PluginInstanceID: plugin.PluginInstanceID,
 		ActiveOnly:       activeOnly,
 	})
 	if err != nil {
-		return err
-	}
-	state.Settings = harness.settingsStore.State()
-	state.Secrets = harness.secretStore.State()
-	state.Permissions = harness.permissionStore.State()
-	state.UpdatedAt = time.Now().UTC()
-	if err := saveDevState(harness.stateRoot, state); err != nil {
 		return err
 	}
 	return writeJSON(devPermissionSummary{
 		OK:               true,
 		Action:           "dev-permission-list",
 		StateRoot:        harness.stateRoot,
-		PluginInstanceID: state.Record.PluginInstanceID,
-		PluginID:         state.Record.PluginID,
+		PluginInstanceID: plugin.PluginInstanceID,
+		PluginID:         plugin.PluginID,
 		Permissions:      records,
 		ActiveOnly:       activeOnly,
-		UpdatedAt:        state.UpdatedAt,
+		UpdatedAt:        time.Now().UTC(),
 	})
 }
 
-func devExportData(ctx context.Context, stateRoot string, includeSecrets bool) error {
-	harness, state, err := loadDevHarness(ctx, stateRoot)
+func devExportData(ctx context.Context, stateRoot string) error {
+	harness, plugin, err := loadDevHarness(ctx, stateRoot)
 	if err != nil {
 		return err
 	}
+	defer harness.Close()
 	result, err := harness.host.ExportPluginData(ctx, host.ExportDataRequest{
-		PluginInstanceID: state.Record.PluginInstanceID,
-		IncludeSecrets:   includeSecrets,
+		PluginInstanceID: plugin.PluginInstanceID,
 	})
 	if err != nil {
-		return err
-	}
-	state.Settings = harness.settingsStore.State()
-	state.Secrets = harness.secretStore.State()
-	state.Permissions = harness.permissionStore.State()
-	state.UpdatedAt = time.Now().UTC()
-	if err := saveDevState(harness.stateRoot, state); err != nil {
 		return err
 	}
 	return writeJSON(devDataSummary{
-		OK:                 true,
-		Action:             "dev-export-data",
-		StateRoot:          harness.stateRoot,
-		PluginInstanceID:   state.Record.PluginInstanceID,
-		PluginID:           state.Record.PluginID,
-		ArchiveRef:         result.ArchiveRef,
-		SettingsArchiveRef: result.SettingsArchiveRef,
-		IncludeSecrets:     includeSecrets,
-		UpdatedAt:          state.UpdatedAt,
+		OK:               true,
+		Action:           "dev-export-data",
+		StateRoot:        harness.stateRoot,
+		PluginInstanceID: plugin.PluginInstanceID,
+		PluginID:         plugin.PluginID,
+		BundleRef:        result.BundleRef,
+		ContentHash:      result.ContentHash,
+		SizeBytes:        result.SizeBytes,
+		UpdatedAt:        time.Now().UTC(),
 	})
 }
 
-func devImportData(ctx context.Context, stateRoot string, archiveRef string, settingsArchiveRef string, deleteExisting bool) error {
-	harness, state, err := loadDevHarness(ctx, stateRoot)
+func devImportData(ctx context.Context, stateRoot string, bundleRef string) error {
+	harness, plugin, err := loadDevHarness(ctx, stateRoot)
 	if err != nil {
 		return err
 	}
-	archiveRef = strings.TrimSpace(archiveRef)
-	settingsArchiveRef = strings.TrimSpace(settingsArchiveRef)
-	if err := harness.host.ImportPluginData(ctx, host.ImportDataRequest{
-		PluginInstanceID:   state.Record.PluginInstanceID,
-		ArchiveRef:         archiveRef,
-		SettingsArchiveRef: settingsArchiveRef,
-		DeleteExisting:     deleteExisting,
+	defer harness.Close()
+	bundleRef = strings.TrimSpace(bundleRef)
+	if bundleRef == "" {
+		return plugindata.ErrInvalidArgument
+	}
+	if _, err := harness.host.ImportPluginData(ctx, host.ImportDataRequest{
+		PluginInstanceID:           plugin.PluginInstanceID,
+		BundleRef:                  bundleRef,
+		ExpectedManagementRevision: plugin.ManagementRevision,
 	}); err != nil {
 		return err
 	}
-	state.Settings = harness.settingsStore.State()
-	state.Secrets = harness.secretStore.State()
-	state.Permissions = harness.permissionStore.State()
-	state.UpdatedAt = time.Now().UTC()
-	if err := saveDevState(harness.stateRoot, state); err != nil {
-		return err
-	}
 	return writeJSON(devDataSummary{
-		OK:                 true,
-		Action:             "dev-import-data",
-		StateRoot:          harness.stateRoot,
-		PluginInstanceID:   state.Record.PluginInstanceID,
-		PluginID:           state.Record.PluginID,
-		ArchiveRef:         archiveRef,
-		SettingsArchiveRef: settingsArchiveRef,
-		DeleteExisting:     deleteExisting,
-		Imported:           true,
-		UpdatedAt:          state.UpdatedAt,
+		OK:               true,
+		Action:           "dev-import-data",
+		StateRoot:        harness.stateRoot,
+		PluginInstanceID: plugin.PluginInstanceID,
+		PluginID:         plugin.PluginID,
+		BundleRef:        bundleRef,
+		Imported:         true,
+		UpdatedAt:        time.Now().UTC(),
 	})
 }
 
+func devDeleteExport(ctx context.Context, stateRoot string, bundleRef string) error {
+	harness, plugin, err := loadDevHarness(ctx, stateRoot)
+	if err != nil {
+		return err
+	}
+	defer harness.Close()
+	bundleRef = strings.TrimSpace(bundleRef)
+	if bundleRef == "" {
+		return plugindata.ErrInvalidArgument
+	}
+	if err := harness.host.DeleteExportedPluginData(ctx, host.DeleteExportDataRequest{BundleRef: bundleRef}); err != nil {
+		return err
+	}
+	return writeJSON(devDataSummary{OK: true, Action: "dev-delete-export", StateRoot: harness.stateRoot, PluginInstanceID: plugin.PluginInstanceID, PluginID: plugin.PluginID, BundleRef: bundleRef, Deleted: true, UpdatedAt: time.Now().UTC()})
+}
+
 func devStatus(stateRoot string) error {
-	stateRoot, err := normalizeDevStateRoot(stateRoot)
+	harness, record, err := loadDevHarness(context.Background(), stateRoot)
 	if err != nil {
 		return err
 	}
-	state, err := loadDevState(stateRoot)
+	defer harness.Close()
+	return writeDevLifecycle("dev-status", harness.stateRoot, record)
+}
+
+func writeCurrentDevSecret(ctx context.Context, harness devHarness, plugin registry.PluginRecord, action string, req host.SecretBindRequest) error {
+	record, err := devSecretRecordFor(ctx, harness.secretStore, req)
 	if err != nil {
 		return err
 	}
-	return writeDevLifecycle("dev-status", stateRoot, state)
+	return writeDevSecret(action, harness.stateRoot, plugin, record)
 }
 
-func saveAndWriteDevSecret(harness devHarness, state devLifecycleState, action string, req host.SecretBindRequest) error {
-	state.Settings = harness.settingsStore.State()
-	state.Secrets = harness.secretStore.State()
-	state.Permissions = harness.permissionStore.State()
-	state.UpdatedAt = time.Now().UTC()
-	if err := saveDevState(harness.stateRoot, state); err != nil {
-		return err
-	}
-	return writeDevSecret(action, harness.stateRoot, state, devSecretRecordFor(harness.secretStore, req, state.UpdatedAt))
-}
-
-func saveAndWriteDevPermission(harness devHarness, state devLifecycleState, action string, record permissions.Record) error {
-	state.Settings = harness.settingsStore.State()
-	state.Secrets = harness.secretStore.State()
-	state.Permissions = harness.permissionStore.State()
-	state.UpdatedAt = time.Now().UTC()
-	if err := saveDevState(harness.stateRoot, state); err != nil {
-		return err
-	}
+func writeDevPermission(harness devHarness, plugin registry.PluginRecord, action string, record permissions.Record) error {
 	return writeJSON(devPermissionSummary{
 		OK:               true,
 		Action:           action,
 		StateRoot:        harness.stateRoot,
-		PluginInstanceID: state.Record.PluginInstanceID,
-		PluginID:         state.Record.PluginID,
+		PluginInstanceID: plugin.PluginInstanceID,
+		PluginID:         plugin.PluginID,
 		Permission:       record,
-		UpdatedAt:        state.UpdatedAt,
+		UpdatedAt:        plugin.UpdatedAt,
 	})
 }
 
-func writeDevLifecycle(action string, stateRoot string, state devLifecycleState) error {
-	_, packageErr := os.Stat(filepath.Join(stateRoot, devPackageFile))
+func writeDevLifecycle(action string, stateRoot string, record registry.PluginRecord) error {
 	return writeJSON(devLifecycleSummary{
 		lifecycleSummary: lifecycleSummary{
 			OK:                 true,
 			Action:             action,
-			PluginInstanceID:   state.Record.PluginInstanceID,
-			PluginID:           state.Record.PluginID,
-			Version:            state.Record.Version,
-			TrustState:         state.Record.TrustState,
-			EnableState:        state.Record.EnableState,
-			RetainedDataState:  state.Record.RetainedDataState,
-			PolicyRevision:     state.Record.PolicyRevision,
-			ManagementRevision: state.Record.ManagementRevision,
-			RevokeEpoch:        state.Record.RevokeEpoch,
+			PluginInstanceID:   record.PluginInstanceID,
+			PluginID:           record.PluginID,
+			Version:            record.Version,
+			TrustState:         record.TrustState,
+			EnableState:        record.EnableState,
+			PolicyRevision:     record.PolicyRevision,
+			ManagementRevision: record.ManagementRevision,
+			RevokeEpoch:        record.RevokeEpoch,
 		},
-		StateRoot:       stateRoot,
-		StorageRoot:     filepath.Join(stateRoot, devStorageDir),
-		PackageRetained: packageErr == nil,
+		StateRoot:      stateRoot,
+		PluginDataRoot: filepath.Join(stateRoot, devPluginDataDir),
 	})
 }
 
-func writeDevSecret(action string, stateRoot string, state devLifecycleState, secret secrets.Record) error {
+func writeDevSecret(action string, stateRoot string, plugin registry.PluginRecord, secret secrets.Record) error {
 	return writeJSON(devSecretSummary{
 		OK:               true,
 		Action:           action,
 		StateRoot:        stateRoot,
-		PluginInstanceID: state.Record.PluginInstanceID,
-		PluginID:         state.Record.PluginID,
+		PluginInstanceID: plugin.PluginInstanceID,
+		PluginID:         plugin.PluginID,
 		SecretRef:        secret.SecretRef,
 		Scope:            secret.Scope,
 		Bound:            secret.Bound,
@@ -633,100 +572,99 @@ func writeDevSecret(action string, stateRoot string, state devLifecycleState, se
 }
 
 type devHarness struct {
-	stateRoot       string
-	host            *host.Host
-	registryStore   *devRegistryStore
-	settingsStore   *settings.MemoryStore
-	secretStore     *secrets.MemoryStore
-	permissionStore *permissions.MemoryStore
+	stateRoot     string
+	host          *host.Host
+	registryStore *registry.SQLiteStore
+	pluginData    *plugindata.FileStore
+	secretStore   *secrets.SQLiteStore
 }
 
-func loadDevHarness(ctx context.Context, stateRoot string) (devHarness, devLifecycleState, error) {
+func (h devHarness) Close() error {
+	if h.host == nil {
+		return nil
+	}
+	return errors.Join(h.host.Close(), h.secretStore.Close(), h.registryStore.Close())
+}
+
+func loadDevHarness(ctx context.Context, stateRoot string) (devHarness, registry.PluginRecord, error) {
 	stateRoot, err := normalizeDevStateRoot(stateRoot)
 	if err != nil {
-		return devHarness{}, devLifecycleState{}, err
+		return devHarness{}, registry.PluginRecord{}, err
 	}
-	state, err := loadDevState(stateRoot)
-	if err != nil {
-		return devHarness{}, devLifecycleState{}, err
-	}
-	if state.Record.PluginInstanceID == "" || state.Record.DeletedAt != nil {
-		return devHarness{}, devLifecycleState{}, errDevStateNotInstalled
-	}
-	if state.PackageFile == "" {
-		return devHarness{}, devLifecycleState{}, errors.New("dev package copy is not available")
-	}
-	packagePath := filepath.Join(stateRoot, state.PackageFile)
+	packagePath := filepath.Join(stateRoot, devPackageFile)
 	pkg, err := pluginpkg.ReadFile(ctx, packagePath, pluginpkg.DefaultReadOptions())
 	if err != nil {
-		return devHarness{}, devLifecycleState{}, err
+		if errors.Is(err, os.ErrNotExist) {
+			return devHarness{}, registry.PluginRecord{}, errDevStateNotInstalled
+		}
+		return devHarness{}, registry.PluginRecord{}, err
 	}
 	assets := pluginpkg.NewMemoryAssetStore()
 	if err := assets.PutPackage(ctx, pkg); err != nil {
-		return devHarness{}, devLifecycleState{}, err
+		return devHarness{}, registry.PluginRecord{}, err
 	}
-	storageBroker, err := storage.NewFileBroker(filepath.Join(stateRoot, devStorageDir))
+	loadedCapabilities, err := loadPersistedDevCapabilities(stateRoot)
 	if err != nil {
-		return devHarness{}, devLifecycleState{}, err
+		return devHarness{}, registry.PluginRecord{}, err
 	}
-	settingsStore := settings.NewMemoryStoreFromState(state.Settings)
-	secretStore := secrets.NewMemoryStoreFromState(state.Secrets)
-	permissionStore := permissions.NewMemoryStoreFromState(state.Permissions)
-	registryStore := newDevRegistryStore(state.Record)
-	loadedCapabilities, err := loadPersistedDevCapabilities(stateRoot, state.Capabilities)
+	harness, err := newDevHarness(ctx, stateRoot, loadedCapabilities, assets)
 	if err != nil {
-		return devHarness{}, devLifecycleState{}, err
+		return devHarness{}, registry.PluginRecord{}, err
 	}
-	capabilities, err := devCapabilityRegistry(loadedCapabilities)
+	records, err := harness.registryStore.ListPlugins(ctx)
 	if err != nil {
-		return devHarness{}, devLifecycleState{}, err
+		_ = harness.Close()
+		return devHarness{}, registry.PluginRecord{}, err
 	}
-	h, err := host.New(host.Adapters{
-		SessionResolver: staticSessionResolver{},
-		Policy:          staticPolicyAdapter{},
-		Registry:        registryStore,
-		Assets:          assets,
-		Storage:         storageBroker,
-		Settings:        settingsStore,
-		Secrets:         secretStore,
-		Permissions:     permissionStore,
-		Capabilities:    capabilities,
-	})
-	if err != nil {
-		return devHarness{}, devLifecycleState{}, err
+	if len(records) != 1 || records[0].PluginID != pkg.Manifest.PluginID() {
+		_ = harness.Close()
+		return devHarness{}, registry.PluginRecord{}, errDevStateNotInstalled
 	}
-	return devHarness{
-		stateRoot:       stateRoot,
-		host:            h,
-		registryStore:   registryStore,
-		settingsStore:   settingsStore,
-		secretStore:     secretStore,
-		permissionStore: permissionStore,
-	}, state, nil
+	return harness, records[0], nil
 }
 
-func newDevInstallHost(stateRoot string, loadedCapabilities []loadedHostCapabilityArtifact) (*host.Host, error) {
-	storageBroker, err := storage.NewFileBroker(filepath.Join(stateRoot, devStorageDir))
+func newDevHarness(ctx context.Context, stateRoot string, loadedCapabilities []loadedHostCapabilityArtifact, assets pluginpkg.AssetStore) (devHarness, error) {
+	registryStore, err := registry.NewSQLiteStore(ctx, filepath.Join(stateRoot, devRegistryFile))
 	if err != nil {
-		return nil, err
+		return devHarness{}, err
+	}
+	pluginData, err := plugindata.Open(ctx, filepath.Join(stateRoot, devPluginDataDir), registryStore)
+	if err != nil {
+		_ = registryStore.Close()
+		return devHarness{}, err
+	}
+	secretStore, err := secrets.NewSQLiteStore(ctx, filepath.Join(stateRoot, devSecretsFile))
+	if err != nil {
+		_ = pluginData.Close()
+		_ = registryStore.Close()
+		return devHarness{}, err
 	}
 	capabilities, err := devCapabilityRegistry(loadedCapabilities)
 	if err != nil {
-		return nil, err
+		_ = secretStore.Close()
+		_ = pluginData.Close()
+		_ = registryStore.Close()
+		return devHarness{}, err
 	}
-	h, err := host.New(host.Adapters{
-		SessionResolver: staticSessionResolver{},
-		Policy:          staticPolicyAdapter{},
-		Storage:         storageBroker,
-		Settings:        settings.NewMemoryStore(),
-		Secrets:         secrets.NewMemoryStore(),
-		Permissions:     permissions.NewMemoryStore(),
-		Capabilities:    capabilities,
-	})
+	adapters := newEphemeralCLIAdapters(registryStore, pluginData)
+	adapters.Registry = registryStore
+	adapters.Assets = assets
+	adapters.Secrets = secretStore
+	adapters.Capabilities = capabilities
+	h, err := host.Open(cliContext(ctx), adapters)
 	if err != nil {
-		return nil, err
+		_ = secretStore.Close()
+		_ = pluginData.Close()
+		_ = registryStore.Close()
+		return devHarness{}, err
 	}
-	return h, nil
+	return devHarness{
+		stateRoot:     stateRoot,
+		host:          h,
+		registryStore: registryStore,
+		pluginData:    pluginData,
+		secretStore:   secretStore,
+	}, nil
 }
 
 type devCapabilityAdapter struct{}
@@ -762,64 +700,76 @@ func devCapabilityRegistry(loaded []loadedHostCapabilityArtifact) (*capability.R
 	return capabilities, nil
 }
 
-func persistDevCapabilities(stateRoot string, loaded []loadedHostCapabilityArtifact) ([]devCapabilityState, error) {
-	states := make([]devCapabilityState, 0, len(loaded))
+func persistDevCapabilities(stateRoot string, loaded []loadedHostCapabilityArtifact) error {
 	for _, artifact := range loaded {
 		contract := artifact.Verified.Contract
-		rootRel := filepath.ToSlash(filepath.Join("capability-artifacts", contract.ContractID, contract.ContractVersion))
+		rootRel := filepath.ToSlash(filepath.Join(devCapabilitiesDir, contract.ContractID, contract.ContractVersion))
 		root, err := resolveDevCapabilityStatePath(stateRoot, rootRel)
 		if err != nil {
-			return nil, err
+			return err
 		}
 		if err := createEmptyDirectory(root); err != nil {
-			return nil, err
+			return err
 		}
 		for ref, content := range artifact.Bundle.Files {
 			if err := writeArtifactFile(root, ref, content); err != nil {
-				return nil, err
+				return err
 			}
 		}
 		pinRel := filepath.ToSlash(filepath.Join(rootRel, hostCapabilityPinFile))
 		pinFile, err := resolveDevCapabilityStatePath(stateRoot, pinRel)
 		if err != nil {
-			return nil, err
+			return err
 		}
 		if err := writeJSONFile(pinFile, artifact.Bundle.Pin, 0o600); err != nil {
-			return nil, err
+			return err
 		}
-		publicRel := filepath.ToSlash(filepath.Join(rootRel, "host-capability.public.json"))
+		publicRel := filepath.ToSlash(filepath.Join(rootRel, devCapabilityKeyFile))
 		publicFile, err := resolveDevCapabilityStatePath(stateRoot, publicRel)
 		if err != nil {
-			return nil, err
+			return err
 		}
 		if err := writeJSONFile(publicFile, artifact.PublicDoc, 0o600); err != nil {
-			return nil, err
+			return err
 		}
-		states = append(states, devCapabilityState{ArtifactRoot: rootRel, PinFile: pinRel, PublicKeyFile: publicRel})
 	}
-	return states, nil
+	return nil
 }
 
-func loadPersistedDevCapabilities(stateRoot string, states []devCapabilityState) ([]loadedHostCapabilityArtifact, error) {
-	loaded := make([]loadedHostCapabilityArtifact, 0, len(states))
-	for _, state := range states {
-		root, err := resolveDevCapabilityStatePath(stateRoot, state.ArtifactRoot)
+func loadPersistedDevCapabilities(stateRoot string) ([]loadedHostCapabilityArtifact, error) {
+	capabilitiesRoot := filepath.Join(stateRoot, devCapabilitiesDir)
+	contracts, err := os.ReadDir(capabilitiesRoot)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	loaded := []loadedHostCapabilityArtifact{}
+	for _, contract := range contracts {
+		if !contract.IsDir() {
+			return nil, fmt.Errorf("unexpected capability artifact entry %q", contract.Name())
+		}
+		versionsRoot := filepath.Join(capabilitiesRoot, contract.Name())
+		versions, err := os.ReadDir(versionsRoot)
 		if err != nil {
 			return nil, err
 		}
-		pinFile, err := resolveDevCapabilityStatePath(stateRoot, state.PinFile)
-		if err != nil {
-			return nil, err
+		for _, versionEntry := range versions {
+			if !versionEntry.IsDir() {
+				return nil, fmt.Errorf("unexpected capability version entry %q", versionEntry.Name())
+			}
+			artifactRoot := filepath.Join(versionsRoot, versionEntry.Name())
+			artifact, err := loadVerifiedHostCapability(
+				artifactRoot,
+				filepath.Join(artifactRoot, hostCapabilityPinFile),
+				filepath.Join(artifactRoot, devCapabilityKeyFile),
+			)
+			if err != nil {
+				return nil, err
+			}
+			loaded = append(loaded, artifact)
 		}
-		publicFile, err := resolveDevCapabilityStatePath(stateRoot, state.PublicKeyFile)
-		if err != nil {
-			return nil, err
-		}
-		artifact, err := loadVerifiedHostCapability(root, pinFile, publicFile)
-		if err != nil {
-			return nil, err
-		}
-		loaded = append(loaded, artifact)
 	}
 	return loaded, nil
 }
@@ -852,221 +802,24 @@ func normalizeDevStateRoot(stateRoot string) (string, error) {
 	return abs, nil
 }
 
-func loadDevState(stateRoot string) (devLifecycleState, error) {
-	raw, err := os.ReadFile(filepath.Join(stateRoot, devStateFile))
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return devLifecycleState{}, errDevStateNotInstalled
-		}
-		return devLifecycleState{}, err
-	}
-	decoder := json.NewDecoder(bytes.NewReader(raw))
-	decoder.DisallowUnknownFields()
-	var state devLifecycleState
-	if err := decoder.Decode(&state); err != nil {
-		return devLifecycleState{}, err
-	}
-	if state.SchemaVersion != devStateSchemaVersion {
-		return devLifecycleState{}, fmt.Errorf("unsupported dev state schema_version %q", state.SchemaVersion)
-	}
-	return state, nil
-}
-
-func saveDevState(stateRoot string, state devLifecycleState) error {
-	state.SchemaVersion = devStateSchemaVersion
-	return writeJSONFile(filepath.Join(stateRoot, devStateFile), state, 0o600)
-}
-
-type devRegistryStore struct {
-	mu           sync.Mutex
-	records      map[string]registry.PluginRecord
-	sourceFloors *registry.MemoryStore
-}
-
-func newDevRegistryStore(record registry.PluginRecord) *devRegistryStore {
-	records := map[string]registry.PluginRecord{}
-	if record.PluginInstanceID != "" {
-		records[record.PluginInstanceID] = record
-	}
-	return &devRegistryStore{records: records, sourceFloors: registry.NewMemoryStore()}
-}
-
-func (s *devRegistryStore) PutPlugin(_ context.Context, record registry.PluginRecord, opts registry.PutOptions) (registry.PluginRecord, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	now := opts.Now
-	if now.IsZero() {
-		now = time.Now().UTC()
-	}
-	if record.PluginInstanceID == "" {
-		return registry.PluginRecord{}, errors.New("plugin_instance_id is required")
-	}
-	existing, exists := s.records[record.PluginInstanceID]
-	if exists {
-		record.InstalledAt = existing.InstalledAt
-		record.PolicyRevision = existing.PolicyRevision
-		record.ManagementRevision = existing.ManagementRevision + 1
-		record.RevokeEpoch = existing.RevokeEpoch + 1
-	} else {
-		record.InstalledAt = now
-		if record.PolicyRevision == 0 {
-			record.PolicyRevision = 1
-		}
-		if record.ManagementRevision == 0 {
-			record.ManagementRevision = 1
-		}
-	}
-	if record.RetainedDataState == "" {
-		record.RetainedDataState = registry.RetainedDataNone
-	}
-	record.UpdatedAt = now
-	s.records[record.PluginInstanceID] = record
-	return record, nil
-}
-
-func (s *devRegistryStore) GetPlugin(_ context.Context, pluginInstanceID string) (registry.PluginRecord, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	record, ok := s.records[pluginInstanceID]
-	if !ok || record.DeletedAt != nil {
-		return registry.PluginRecord{}, registry.ErrNotFound
-	}
-	return record, nil
-}
-
-func (s *devRegistryStore) ListPlugins(_ context.Context) ([]registry.PluginRecord, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	records := make([]registry.PluginRecord, 0, len(s.records))
-	for _, record := range s.records {
-		if record.DeletedAt == nil {
-			records = append(records, record)
-		}
-	}
-	sort.Slice(records, func(i, j int) bool {
-		if records[i].PluginID == records[j].PluginID {
-			return records[i].PluginInstanceID < records[j].PluginInstanceID
-		}
-		return records[i].PluginID < records[j].PluginID
-	})
-	return records, nil
-}
-
-func (s *devRegistryStore) SetEnableState(_ context.Context, pluginInstanceID string, state registry.EnableState, reason string, now time.Time) (registry.PluginRecord, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	record, ok := s.records[pluginInstanceID]
-	if !ok || record.DeletedAt != nil {
-		return registry.PluginRecord{}, registry.ErrNotFound
-	}
-	if now.IsZero() {
-		now = time.Now().UTC()
-	}
-	record.EnableState = state
-	record.DisabledReason = reason
-	record.ManagementRevision++
-	record.RevokeEpoch++
-	record.UpdatedAt = now
-	if state == registry.EnableEnabled {
-		record.EnabledAt = &now
-	} else {
-		record.EnabledAt = nil
-	}
-	s.records[pluginInstanceID] = record
-	return record, nil
-}
-
-func (s *devRegistryStore) BumpPolicyRevision(_ context.Context, pluginInstanceID string, revoke bool, now time.Time) (registry.PluginRecord, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	record, ok := s.records[pluginInstanceID]
-	if !ok || record.DeletedAt != nil {
-		return registry.PluginRecord{}, registry.ErrNotFound
-	}
-	if now.IsZero() {
-		now = time.Now().UTC()
-	}
-	record.PolicyRevision++
-	if revoke {
-		record.RevokeEpoch++
-	}
-	record.UpdatedAt = now
-	s.records[pluginInstanceID] = record
-	return record, nil
-}
-
-func (s *devRegistryStore) MarkUninstalled(_ context.Context, pluginInstanceID string, retained registry.RetainedDataState, now time.Time) (registry.PluginRecord, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	record, ok := s.records[pluginInstanceID]
-	if !ok || record.DeletedAt != nil {
-		return registry.PluginRecord{}, registry.ErrNotFound
-	}
-	if now.IsZero() {
-		now = time.Now().UTC()
-	}
-	record.EnableState = registry.EnableDisabled
-	record.DisabledReason = "uninstalled"
-	record.RetainedDataState = retained
-	record.ManagementRevision++
-	record.RevokeEpoch++
-	record.UpdatedAt = now
-	record.DeletedAt = &now
-	record.EnabledAt = nil
-	s.records[pluginInstanceID] = record
-	return record, nil
-}
-
-func (s *devRegistryStore) DeletePlugin(_ context.Context, pluginInstanceID string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if _, ok := s.records[pluginInstanceID]; !ok {
-		return registry.ErrNotFound
-	}
-	delete(s.records, pluginInstanceID)
-	return nil
-}
-
-func (s *devRegistryStore) PutSourceSecurityFloor(ctx context.Context, floor registry.SourceSecurityFloor, opts registry.PutOptions) (registry.SourceSecurityFloor, error) {
-	return s.sourceFloors.PutSourceSecurityFloor(ctx, floor, opts)
-}
-
-func (s *devRegistryStore) GetSourceSecurityFloor(ctx context.Context, sourceID string) (registry.SourceSecurityFloor, error) {
-	return s.sourceFloors.GetSourceSecurityFloor(ctx, sourceID)
-}
-
-func (s *devRegistryStore) record() registry.PluginRecord {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	for _, record := range s.records {
-		return record
-	}
-	return registry.PluginRecord{}
-}
-
-func devSecretRecordFor(store *secrets.MemoryStore, req host.SecretBindRequest, fallback time.Time) secrets.Record {
+func devSecretRecordFor(ctx context.Context, store secrets.Lister, req host.SecretBindRequest) (secrets.Record, error) {
 	normalized, err := normalizeDevSecretRequest(req)
 	if err != nil {
-		return secrets.Record{UpdatedAt: fallback}
+		return secrets.Record{}, err
 	}
-	records, err := store.List(context.Background(), secrets.ListRequest{
+	records, err := store.List(ctx, secrets.ListRequest{
 		PluginInstanceID: normalized.PluginInstanceID,
 		Scope:            normalized.Scope,
 	})
 	if err != nil {
-		return secrets.Record{UpdatedAt: fallback}
+		return secrets.Record{}, err
 	}
 	for _, record := range records {
 		if record.SecretRef == normalized.SecretRef {
-			return record
+			return record, nil
 		}
 	}
-	return secrets.Record{
-		PluginInstanceID: normalized.PluginInstanceID,
-		SecretRef:        normalized.SecretRef,
-		Scope:            normalized.Scope,
-		UpdatedAt:        fallback,
-	}
+	return secrets.Record{}, errors.New("secret adapter did not return committed metadata")
 }
 
 func normalizeDevSecretRequest(req host.SecretBindRequest) (host.SecretBindRequest, error) {
@@ -1079,5 +832,4 @@ func normalizeDevSecretRequest(req host.SecretBindRequest) (host.SecretBindReque
 	return req, nil
 }
 
-var _ registry.Store = (*devRegistryStore)(nil)
-var _ host.SecretStoreAdapter = (*secrets.MemoryStore)(nil)
+var _ host.SecretStoreAdapter = (*secrets.SQLiteStore)(nil)

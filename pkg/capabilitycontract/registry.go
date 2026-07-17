@@ -60,57 +60,6 @@ func (r *Registry) Require(pin Pin) (VerifiedContract, error) {
 	return cloneVerifiedContract(record), nil
 }
 
-func (r *Registry) ResolveCapability(capabilityID, minimumVersion string) (VerifiedContract, error) {
-	if r == nil {
-		return VerifiedContract{}, fmt.Errorf("%w: registry is nil", ErrInvalidBundle)
-	}
-	capabilityID = strings.TrimSpace(capabilityID)
-	minimumSemver, err := normalizedCapabilitySemver(minimumVersion)
-	if capabilityID == "" || err != nil {
-		return VerifiedContract{}, fmt.Errorf("%w: capability identity or minimum version is invalid", ErrPinMismatch)
-	}
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	var matched *VerifiedContract
-	for _, record := range r.records {
-		if record.Contract.CapabilityID != capabilityID {
-			continue
-		}
-		candidateSemver, candidateErr := normalizedCapabilitySemver(record.Contract.CapabilityVersion)
-		if candidateErr != nil || semver.Compare(candidateSemver, minimumSemver) < 0 {
-			continue
-		}
-		if matched != nil {
-			matchedSemver, _ := normalizedCapabilitySemver(matched.Contract.CapabilityVersion)
-			comparison := semver.Compare(candidateSemver, matchedSemver)
-			if comparison == 0 && record.Pin != matched.Pin {
-				return VerifiedContract{}, fmt.Errorf("%w: capability resolves to multiple contracts with equal semver precedence", ErrPinMismatch)
-			}
-			if comparison <= 0 {
-				continue
-			}
-		}
-		copy := cloneVerifiedContract(record)
-		matched = &copy
-	}
-	if matched == nil {
-		return VerifiedContract{}, fmt.Errorf("%w: verified capability contract is not registered", ErrPinMismatch)
-	}
-	return *matched, nil
-}
-
-func CompareCapabilityVersions(left, right string) (int, error) {
-	leftSemver, err := normalizedCapabilitySemver(left)
-	if err != nil {
-		return 0, err
-	}
-	rightSemver, err := normalizedCapabilitySemver(right)
-	if err != nil {
-		return 0, err
-	}
-	return semver.Compare(leftSemver, rightSemver), nil
-}
-
 func normalizedCapabilitySemver(value string) (string, error) {
 	normalized, ok := normalizeSemver(value)
 	if !ok {

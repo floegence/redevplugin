@@ -1,85 +1,29 @@
 import type { OpaqueSurfaceAllowedTag } from "./opaque-surface-policy.gen.js";
+import {
+  PluginUIReconcileError,
+  validatePluginUITree,
+  type PluginUIAttributeValue,
+  type PluginUIElementVNode,
+  type PluginUIPatchOperation,
+  type PluginUIVNode,
+} from "./ui-patch-validator.js";
 
-export type PluginUIAttributeValue = string | number | boolean;
-
-export type PluginUITextVNode = string;
-
-export type PluginUIElementVNode = {
-  type: "element";
-  key: string;
-  tag: OpaqueSurfaceAllowedTag;
-  attributes?: Record<string, PluginUIAttributeValue>;
-  children?: PluginUIVNode[];
-};
-
-export type PluginUIVNode = PluginUITextVNode | PluginUIElementVNode;
-
-export type PluginUISetTextOperation = {
-  type: "set_text";
-  parent_key: string;
-  child_index: number;
-  text: string;
-};
-
-export type PluginUIPatchAttributesOperation = {
-  type: "patch_attributes";
-  target_key: string;
-  set: Record<string, PluginUIAttributeValue>;
-  remove: string[];
-};
-
-export type PluginUIPatchControlOperation = {
-  type: "patch_control";
-  target_key: string;
-  edit_revision: number;
-  value?: string | null;
-  checked?: boolean | null;
-};
-
-export type PluginUIInsertChildOperation = {
-  type: "insert_child";
-  parent_key: string;
-  child_index: number;
-  node: PluginUIVNode;
-};
-
-export type PluginUIRemoveChildOperation = {
-  type: "remove_child";
-  parent_key: string;
-  child_index: number;
-  child_key?: string;
-};
-
-export type PluginUIMoveChildOperation = {
-  type: "move_child";
-  parent_key: string;
-  child_key: string;
-  from_index: number;
-  to_index: number;
-};
-
-export type PluginUIPatchOperation =
-  | PluginUISetTextOperation
-  | PluginUIPatchAttributesOperation
-  | PluginUIPatchControlOperation
-  | PluginUIInsertChildOperation
-  | PluginUIRemoveChildOperation
-  | PluginUIMoveChildOperation;
-
-export type PluginUIMountMessage = {
-  type: "redevplugin.ui.mount";
-  id: string;
-  revision: 1;
-  tree: PluginUIElementVNode;
-};
-
-export type PluginUIPatchMessage = {
-  type: "redevplugin.ui.patch";
-  id: string;
-  base_revision: number;
-  revision: number;
-  operations: PluginUIPatchOperation[];
-};
+export { PluginUIReconcileError, validatePluginUITree } from "./ui-patch-validator.js";
+export type {
+  PluginUIAttributeValue,
+  PluginUIElementVNode,
+  PluginUIInsertChildOperation,
+  PluginUIMountMessage,
+  PluginUIMoveChildOperation,
+  PluginUIPatchAttributesOperation,
+  PluginUIPatchControlOperation,
+  PluginUIPatchMessage,
+  PluginUIPatchOperation,
+  PluginUIRemoveChildOperation,
+  PluginUISetTextOperation,
+  PluginUITextVNode,
+  PluginUIVNode,
+} from "./ui-patch-validator.js";
 
 export type PluginUIReconcileOptions = {
   controlEditRevisions?: ReadonlyMap<string, number>;
@@ -87,67 +31,8 @@ export type PluginUIReconcileOptions = {
   maxOperations?: number;
 };
 
-const keyPattern = new RegExp("^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$");
 const editableValueTags = new Set<OpaqueSurfaceAllowedTag>(["input", "textarea", "select", "option"]);
-
-export class PluginUIReconcileError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = "PluginUIReconcileError";
-  }
-}
-
-export function validatePluginUITree(tree: PluginUIVNode): PluginUIElementVNode {
-  if (!isElement(tree)) {
-    throw new PluginUIReconcileError("Plugin UI root must be one keyed element");
-  }
-  const keys = new Set<string>();
-  const seen = new Set<object>();
-  let nodes = 0;
-
-  const visit = (node: PluginUIVNode, depth: number): void => {
-    nodes += 1;
-    if (nodes > 4096 || depth > 32) {
-      throw new PluginUIReconcileError("Plugin UI tree exceeds structural limits");
-    }
-    if (typeof node === "string") {
-      if (node.length > 65_536) throw new PluginUIReconcileError("Plugin UI text exceeds limits");
-      return;
-    }
-    if (!isElement(node) || seen.has(node)) {
-      throw new PluginUIReconcileError("Plugin UI tree must contain plain acyclic VNodes");
-    }
-    seen.add(node);
-    try {
-      if (!keyPattern.test(node.key) || keys.has(node.key)) {
-        throw new PluginUIReconcileError(`Plugin UI key is invalid or duplicated: ${String(node.key)}`);
-      }
-      keys.add(node.key);
-      if (node.attributes !== undefined) {
-        if (!isPlainRecord(node.attributes) || Object.keys(node.attributes).length > 64) {
-          throw new PluginUIReconcileError(`Plugin UI attributes are invalid for ${node.key}`);
-        }
-        for (const value of Object.values(node.attributes)) {
-          if (typeof value !== "string" && typeof value !== "number" && typeof value !== "boolean") {
-            throw new PluginUIReconcileError(`Plugin UI attribute is invalid for ${node.key}`);
-          }
-          if (typeof value === "number" && !Number.isFinite(value)) {
-            throw new PluginUIReconcileError(`Plugin UI attribute must be finite for ${node.key}`);
-          }
-        }
-      }
-      if (node.children !== undefined) {
-        if (!Array.isArray(node.children)) throw new PluginUIReconcileError(`Plugin UI children are invalid for ${node.key}`);
-        for (const child of node.children) visit(child, depth + 1);
-      }
-    } finally {
-      seen.delete(node);
-    }
-  };
-
-  visit(tree, 1);
-  return tree;
-}
+const maxPluginUIPatchOperations = 1024;
 
 export function reconcilePluginUITrees(
   current: PluginUIElementVNode,
@@ -162,7 +47,10 @@ export function reconcilePluginUITrees(
 
   const operations: PluginUIPatchOperation[] = [];
   const transferredCanvasKeys = options.transferredCanvasKeys ?? new Set<string>();
-  const maxOperations = options.maxOperations ?? 4096;
+  const maxOperations = options.maxOperations ?? maxPluginUIPatchOperations;
+  if (!Number.isSafeInteger(maxOperations) || maxOperations < 1 || maxOperations > maxPluginUIPatchOperations) {
+    throw new PluginUIReconcileError(`Plugin UI maxOperations must be an integer between 1 and ${maxPluginUIPatchOperations}`);
+  }
   const append = (operation: PluginUIPatchOperation): void => {
     if (operations.length >= maxOperations) {
       throw new PluginUIReconcileError("Plugin UI patch exceeds the operation limit");
@@ -186,13 +74,47 @@ export function reconcilePluginUITrees(
 
     const working = [...(left.children ?? [])];
     const desired = right.children ?? [];
+    if (operations.length + estimateKeyedStructuralOperations(working, desired) > maxOperations) {
+      throw new PluginUIReconcileError("Plugin UI patch exceeds the operation limit");
+    }
+    const desiredIndexByKey = keyedChildIndexes(desired);
+    for (let index = working.length - 1; index >= 0; index -= 1) {
+      const child = working[index];
+      if (typeof child === "string") continue;
+      const desiredIndex = desiredIndexByKey.get(child.key);
+      const desiredChild = desiredIndex === undefined ? undefined : desired[desiredIndex];
+      if (typeof desiredChild !== "string" && desiredChild?.tag === child.tag) continue;
+      ensureCanvasStable(child, desiredIndex === undefined ? "removed" : "replaced");
+      append({ type: "remove_child", parent_key: left.key, child_index: index, child_key: child.key });
+      working.splice(index, 1);
+    }
+    const workingIndexByKey = keyedChildIndexes(working);
+    const refreshWorkingIndexes = (start: number, end = working.length - 1): void => {
+      for (let index = Math.max(0, start); index <= Math.min(end, working.length - 1); index += 1) {
+        const child = working[index];
+        if (typeof child !== "string") workingIndexByKey.set(child.key, index);
+      }
+    };
     for (let index = 0; index < working.length; index += 1) {
       const child = working[index];
       if (typeof child !== "string" && transferredCanvasKeys.has(child.key)) {
-        const nextIndex = desired.findIndex((candidate) => typeof candidate !== "string" && candidate.key === child.key);
+        const nextIndex = desiredIndexByKey.get(child.key) ?? -1;
         if (nextIndex === -1) throw new PluginUIReconcileError(`Transferred canvas ${child.key} cannot be removed`);
         if (nextIndex !== index) throw new PluginUIReconcileError(`Transferred canvas ${child.key} cannot be moved`);
       }
+    }
+    if (fullyKeyed(working) && fullyKeyed(desired)) {
+      reconcileKeyedChildren(left.key, working, desired, ensureCanvasStable, append);
+      for (let index = 0; index < desired.length; index += 1) {
+        const present = working[index];
+        const wanted = desired[index];
+        if (present === undefined || present.key !== wanted.key || present.tag !== wanted.tag) {
+          throw new PluginUIReconcileError("Plugin UI keyed reconciliation became inconsistent");
+        }
+        reconcileElement(present, wanted);
+        working[index] = wanted;
+      }
+      return;
     }
     for (let index = 0; index < desired.length; index += 1) {
       const wanted = desired[index];
@@ -204,16 +126,18 @@ export function reconcilePluginUITrees(
         } else {
           append({ type: "insert_child", parent_key: left.key, child_index: index, node: wanted });
           working.splice(index, 0, wanted);
+          refreshWorkingIndexes(index);
         }
         continue;
       }
 
       const foundIndex = typeof present !== "string" && present?.key === wanted.key
         ? index
-        : working.findIndex((candidate) => typeof candidate !== "string" && candidate.key === wanted.key);
+        : workingIndexByKey.get(wanted.key) ?? -1;
       if (foundIndex === -1) {
         append({ type: "insert_child", parent_key: left.key, child_index: index, node: wanted });
         working.splice(index, 0, wanted);
+        refreshWorkingIndexes(index);
         continue;
       }
       const found = working[foundIndex];
@@ -222,8 +146,11 @@ export function reconcilePluginUITrees(
         ensureCanvasStable(found, "replaced");
         append({ type: "remove_child", parent_key: left.key, child_index: foundIndex, child_key: found.key });
         working.splice(foundIndex, 1);
+        workingIndexByKey.delete(found.key);
+        refreshWorkingIndexes(foundIndex);
         append({ type: "insert_child", parent_key: left.key, child_index: index, node: wanted });
         working.splice(index, 0, wanted);
+        refreshWorkingIndexes(index);
         continue;
       }
       if (foundIndex !== index) {
@@ -231,6 +158,7 @@ export function reconcilePluginUITrees(
         append({ type: "move_child", parent_key: left.key, child_key: found.key, from_index: foundIndex, to_index: index });
         working.splice(foundIndex, 1);
         working.splice(index, 0, found);
+        refreshWorkingIndexes(Math.min(foundIndex, index), Math.max(foundIndex, index));
       }
       reconcileElement(found, wanted);
       working[index] = wanted;
@@ -246,11 +174,143 @@ export function reconcilePluginUITrees(
         ...(typeof removed === "string" ? {} : { child_key: removed.key }),
       });
       working.splice(index, 1);
+      if (typeof removed !== "string") workingIndexByKey.delete(removed.key);
     }
   };
 
   reconcileElement(current, next);
   return operations;
+}
+
+function keyedChildIndexes(children: readonly PluginUIVNode[]): Map<string, number> {
+  const indexes = new Map<string, number>();
+  for (let index = 0; index < children.length; index += 1) {
+    const child = children[index];
+    if (typeof child !== "string") indexes.set(child.key, index);
+  }
+  return indexes;
+}
+
+function fullyKeyed(children: PluginUIVNode[]): children is PluginUIElementVNode[];
+function fullyKeyed(children: readonly PluginUIVNode[]): children is readonly PluginUIElementVNode[];
+function fullyKeyed(children: readonly PluginUIVNode[]): children is readonly PluginUIElementVNode[] {
+  return children.every((child) => typeof child !== "string");
+}
+
+function reconcileKeyedChildren(
+  parentKey: string,
+  working: PluginUIElementVNode[],
+  desired: readonly PluginUIElementVNode[],
+  ensureCanvasStable: (node: PluginUIVNode, action: string) => void,
+  append: (operation: PluginUIPatchOperation) => void,
+): void {
+  const workingIndexByKey = keyedChildIndexes(working);
+  const retainedDesiredIndexes: number[] = [];
+  const retainedWorkingIndexes: number[] = [];
+  for (let desiredIndex = 0; desiredIndex < desired.length; desiredIndex += 1) {
+    const currentIndex = workingIndexByKey.get(desired[desiredIndex].key);
+    if (currentIndex !== undefined) {
+      retainedDesiredIndexes.push(desiredIndex);
+      retainedWorkingIndexes.push(currentIndex);
+    }
+  }
+  const stableDesiredIndexes = new Set(
+    longestIncreasingSubsequenceIndexes(retainedWorkingIndexes).map((retainedIndex) => retainedDesiredIndexes[retainedIndex]),
+  );
+  const refreshWorkingIndexes = (start: number): void => {
+    for (let index = Math.max(0, start); index < working.length; index += 1) {
+      workingIndexByKey.set(working[index].key, index);
+    }
+  };
+
+  for (let desiredIndex = desired.length - 1; desiredIndex >= 0; desiredIndex -= 1) {
+    const wanted = desired[desiredIndex];
+    const foundIndex = workingIndexByKey.get(wanted.key);
+    const anchor = desired[desiredIndex + 1];
+    const anchorIndex = anchor === undefined ? working.length : workingIndexByKey.get(anchor.key);
+    if (anchorIndex === undefined) {
+      throw new PluginUIReconcileError("Plugin UI keyed anchor became inconsistent");
+    }
+    if (foundIndex === undefined) {
+      append({ type: "insert_child", parent_key: parentKey, child_index: anchorIndex, node: wanted });
+      working.splice(anchorIndex, 0, wanted);
+      refreshWorkingIndexes(anchorIndex);
+      continue;
+    }
+    if (stableDesiredIndexes.has(desiredIndex)) continue;
+
+    const toIndex = foundIndex < anchorIndex ? anchorIndex - 1 : anchorIndex;
+    if (foundIndex === toIndex) continue;
+    const found = working[foundIndex];
+    ensureCanvasStable(found, "moved");
+    append({
+      type: "move_child",
+      parent_key: parentKey,
+      child_key: found.key,
+      from_index: foundIndex,
+      to_index: toIndex,
+    });
+    working.splice(foundIndex, 1);
+    working.splice(toIndex, 0, found);
+    refreshWorkingIndexes(Math.min(foundIndex, toIndex));
+  }
+}
+
+function estimateKeyedStructuralOperations(
+  current: readonly PluginUIVNode[],
+  next: readonly PluginUIVNode[],
+): number {
+  const currentIndexes = keyedChildIndexes(current);
+  const currentByKey = keyedChildren(current);
+  const nextByKey = keyedChildren(next);
+  const retainedIndexes: number[] = [];
+  let inserted = 0;
+  for (const child of next) {
+    if (typeof child === "string") continue;
+    const currentIndex = currentIndexes.get(child.key);
+    const currentChild = currentByKey.get(child.key);
+    if (currentIndex === undefined || currentChild?.tag !== child.tag) inserted += 1;
+    else retainedIndexes.push(currentIndex);
+  }
+  let removed = 0;
+  for (const [key, child] of currentByKey) {
+    const nextChild = nextByKey.get(key);
+    if (!nextChild || nextChild.tag !== child.tag) removed += 1;
+  }
+  return inserted + removed + retainedIndexes.length - longestIncreasingSubsequenceIndexes(retainedIndexes).length;
+}
+
+function keyedChildren(children: readonly PluginUIVNode[]): Map<string, PluginUIElementVNode> {
+  const keyed = new Map<string, PluginUIElementVNode>();
+  for (const child of children) {
+    if (typeof child !== "string") keyed.set(child.key, child);
+  }
+  return keyed;
+}
+
+function longestIncreasingSubsequenceIndexes(values: readonly number[]): number[] {
+  const predecessors = new Array<number>(values.length).fill(-1);
+  const tailIndexes: number[] = [];
+  for (let index = 0; index < values.length; index += 1) {
+    const value = values[index];
+    let low = 0;
+    let high = tailIndexes.length;
+    while (low < high) {
+      const middle = (low + high) >>> 1;
+      if ((values[tailIndexes[middle]] ?? Infinity) < value) low = middle + 1;
+      else high = middle;
+    }
+    if (low > 0) predecessors[index] = tailIndexes[low - 1] ?? -1;
+    tailIndexes[low] = index;
+  }
+
+  const indexes = new Array<number>(tailIndexes.length);
+  let cursor = tailIndexes[tailIndexes.length - 1] ?? -1;
+  for (let index = indexes.length - 1; index >= 0; index -= 1) {
+    indexes[index] = cursor;
+    cursor = predecessors[cursor] ?? -1;
+  }
+  return indexes;
 }
 
 function reconcileAttributes(
@@ -291,17 +351,4 @@ function isEditableControlAttribute(tag: OpaqueSurfaceAllowedTag, name: string):
   const normalized = name.toLowerCase();
   return (normalized === "value" && editableValueTags.has(tag)) ||
     (normalized === "checked" && tag === "input");
-}
-
-function isElement(value: unknown): value is PluginUIElementVNode {
-  if (!isPlainRecord(value)) return false;
-  const keys = Object.keys(value);
-  return keys.every((key) => ["type", "key", "tag", "attributes", "children"].includes(key)) &&
-    value.type === "element" && typeof value.key === "string" && typeof value.tag === "string";
-}
-
-function isPlainRecord(value: unknown): value is Record<string, unknown> {
-  if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
-  const prototype = Object.getPrototypeOf(value);
-  return prototype === Object.prototype || prototype === null;
 }

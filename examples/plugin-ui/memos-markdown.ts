@@ -37,7 +37,7 @@ export function renderMarkdown(
     return { nodes: renderBlocks(tokens, context, "b"), truncated: context.truncated };
   } catch {
     return {
-      nodes: [{ type: "element", key: `${keyPrefix}-fallback`, tag: "p", attributes: { class: "markdown-paragraph" }, children: [content] }],
+      nodes: [{ type: "element", key: `${keyPrefix}-plain-text`, tag: "p", attributes: { class: "markdown-paragraph" }, children: [content] }],
       truncated: false,
     };
   }

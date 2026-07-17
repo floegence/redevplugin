@@ -1,4 +1,10 @@
-import { PluginBridgeError, pluginBridgeErrorCodes } from "./errors.js";
+import {
+  PluginBridgeError,
+  PluginPlatformRequestError,
+  PluginTransportError,
+  pluginBridgeErrorCodes,
+  type PluginMutationOutcome,
+} from "./errors.js";
 import { pluginUIProtocolVersion } from "./contracts.gen.js";
 import {
   opaqueSurfaceAllowedTags,
@@ -12,7 +18,8 @@ import {
   hasAllowedKeys,
   hasExactKeys,
   isRecord,
-  readHostEnvelope,
+  readMutationPlatformResponse,
+  readPlatformResponse,
   type FetchLike,
 } from "./http.js";
 import {
@@ -55,7 +62,7 @@ export type TrustedParentBridgeHandshake = {
   active_fingerprint: string;
   bridge_nonce: string;
   asset_session_nonce: string;
-  plugin_state_version: number;
+  management_revision: number;
   revoke_epoch: number;
   ui_protocol_version: typeof pluginUIProtocolVersion;
 };
@@ -75,7 +82,15 @@ export type PluginBridgeRequest = {
 
 export type PluginBridgeResponse =
   | { type: "redevplugin.bridge.response"; id: string; ok: true; data?: unknown }
-  | { type: "redevplugin.bridge.response"; id: string; ok: false; error_code: string; error: string; error_details?: PluginJSONObject };
+  | {
+      type: "redevplugin.bridge.response";
+      id: string;
+      ok: false;
+      error_code: string;
+      error: string;
+      error_details?: PluginJSONObject;
+      mutation_outcome?: PluginMutationOutcome;
+    };
 
 export type PluginBridgeCancelMessage = {
   type: "redevplugin.bridge.cancel";
@@ -184,6 +199,8 @@ export type PluginStreamReadResult =
   | { events: PluginStreamEvent[]; done: false; retry_after_ms: number }
   | { events: PluginStreamEvent[]; done: true; terminal_status: PluginStreamTerminalStatus; retry_after_ms: 0 };
 
+type PrivatePluginStreamReadResult = PluginStreamReadResult & { delivery_id?: string };
+
 export type PluginRiskSeverity = "info" | "low" | "medium" | "high" | "critical";
 export type PluginRiskEffect = "read" | "write" | "execute" | "delete" | "admin";
 
@@ -281,6 +298,12 @@ type PendingCall = {
   identifier?: string;
 };
 
+type PendingCallOptions = {
+  kind?: PendingCall["kind"];
+  identifier?: string;
+  mutationOutcomeOnTimeout?: PluginMutationOutcome;
+};
+
 type PendingRender = {
   tree: PluginUIElementVNode;
   waiters: Array<{ resolve: () => void; reject: (reason: unknown) => void }>;
@@ -294,7 +317,7 @@ type WorkerBridgeGlobal = {
   claim(): WorkerBridgeClaim | undefined;
 };
 
-const opaquePluginBridgeGlobalKey = "__redevpluginWorkerBridgeV2";
+const opaquePluginBridgeGlobalKey = "__redevpluginWorkerBridge";
 const maxPendingPluginBridgeRequests = 256;
 const maxPluginBridgeMessageBytes = 256 * 1024;
 const maxRetainedPluginStreamHandles = 128;
@@ -310,7 +333,7 @@ const streamCredentialInvalidatingErrorCodes = new Set([
   "PLUGIN_GRANT_INVALID",
   "PLUGIN_LEASE_INVALID",
   "PLUGIN_LEASE_REPLAYED",
-  "PLUGIN_STATE_VERSION_MISMATCH",
+  "PLUGIN_MANAGEMENT_REVISION_MISMATCH",
   "PLUGIN_STREAM_CANCELLED",
   "PLUGIN_STREAM_TICKET_INVALID",
   "PLUGIN_TOKEN_EXPIRED",
@@ -346,6 +369,7 @@ export class PluginBridgeClient {
   #pendingRender?: PendingRender;
   #renderLoop?: Promise<void>;
   #controlEditRevisions = new Map<string, number>();
+  #pendingStreamDeliveries = new Map<string, { deliveryID: string; result: PluginStreamReadResult }>();
   #onMessage = (event: MessageEventLike): void => {
     void this.#handleMessage(event);
   };
@@ -389,7 +413,7 @@ export class PluginBridgeClient {
     return this.#request<T>(id, {
       type: "redevplugin.bridge.call",
       request,
-    });
+    }, { mutationOutcomeOnTimeout: "unknown" });
   }
 
   readStream(streamHandle: string): Promise<PluginStreamReadResult> {
@@ -397,12 +421,38 @@ export class PluginBridgeClient {
     if (!validOpaqueHandle(streamHandle, "stream")) {
       throw new PluginBridgeError("PLUGIN_INVALID_REQUEST", "Plugin stream handle is invalid");
     }
+    return this.#readStream(streamHandle);
+  }
+
+  async #readStream(streamHandle: string): Promise<PluginStreamReadResult> {
+    const pending = this.#pendingStreamDeliveries.get(streamHandle);
+    if (pending) {
+      await this.#acknowledgeStream(streamHandle, pending.deliveryID);
+      this.#pendingStreamDeliveries.delete(streamHandle);
+      return pending.result;
+    }
     const id = this.#requestID("stream");
-    return this.#request<PluginStreamReadResult>(id, {
+    const privateResult = await this.#request<PrivatePluginStreamReadResult>(id, {
       type: "redevplugin.bridge.stream.read",
       id,
       stream_handle: streamHandle,
     });
+    const { delivery_id: deliveryID, ...result } = privateResult;
+    if (!deliveryID) return result;
+    this.#pendingStreamDeliveries.set(streamHandle, { deliveryID, result });
+    await this.#acknowledgeStream(streamHandle, deliveryID);
+    this.#pendingStreamDeliveries.delete(streamHandle);
+    return result;
+  }
+
+  async #acknowledgeStream(streamHandle: string, deliveryID: string): Promise<void> {
+    const id = this.#requestID("stream_ack");
+    await this.#request<void>(id, {
+      type: "redevplugin.bridge.stream.ack",
+      id,
+      stream_handle: streamHandle,
+      delivery_id: deliveryID,
+    }, { mutationOutcomeOnTimeout: "unknown" });
   }
 
   cancelOperation(operationID: string, reason?: string): Promise<void> {
@@ -416,7 +466,7 @@ export class PluginBridgeClient {
       id,
       operation_id: operationID,
       reason,
-    }));
+    }), { mutationOutcomeOnTimeout: "unknown" });
   }
 
   render(tree: PluginUIVNode): Promise<void> {
@@ -448,7 +498,7 @@ export class PluginBridgeClient {
       type: "redevplugin.ui.canvas.open",
       id,
       canvas_id: canvasId,
-    }, "canvas", canvasId);
+    }, { kind: "canvas", identifier: canvasId });
   }
 
   updateCanvasAccessibility(canvasId: string, state: PluginCanvasAccessibilityState): Promise<void> {
@@ -476,7 +526,7 @@ export class PluginBridgeClient {
       type: "redevplugin.ui.asset.image.open",
       id,
       asset_id: assetId,
-    }, "asset", assetId);
+    }, { kind: "asset", identifier: assetId });
   }
 
   onAction(action: string, handler: (event: PluginUIActionEvent) => void): () => void {
@@ -526,6 +576,7 @@ export class PluginBridgeClient {
       pending.reject(new PluginBridgeError("PLUGIN_BRIDGE_DISPOSED", `Plugin bridge request ${id} was disposed`));
     }
     this.#pending.clear();
+    this.#pendingStreamDeliveries.clear();
     this.#actionHandlers.clear();
     this.#canvasInputHandlers.clear();
     this.#lifecycleHandlers.clear();
@@ -595,7 +646,7 @@ export class PluginBridgeClient {
       });
   }
 
-  #request<T>(id: string, message: unknown, kind: PendingCall["kind"] = "json", identifier?: string): Promise<T> {
+  #request<T>(id: string, message: unknown, options: PendingCallOptions = {}): Promise<T> {
     let normalizedMessage: PluginJSONObject;
     try {
       normalizedMessage = normalizePluginJSONObject(message);
@@ -616,14 +667,20 @@ export class PluginBridgeClient {
         } catch {
           // The request is already locally cancelled when the port closes concurrently.
         }
-        reject(new PluginBridgeError("PLUGIN_BRIDGE_TIMEOUT", `Plugin bridge request ${id} timed out`));
+        reject(new PluginBridgeError(
+          "PLUGIN_BRIDGE_TIMEOUT",
+          `Plugin bridge request ${id} timed out`,
+          undefined,
+          undefined,
+          options.mutationOutcomeOnTimeout,
+        ));
       }, this.timeoutMs);
       this.#pending.set(id, {
         resolve: (value: unknown) => resolve(value as T),
         reject,
         timer,
-        kind,
-        identifier,
+        kind: options.kind ?? "json",
+        identifier: options.identifier,
       });
     });
     try {
@@ -685,7 +742,7 @@ export class PluginBridgeClient {
       if (data.ok && pending.kind !== "json") {
         pending.reject(new PluginBridgeError("PLUGIN_CONTRACT_MISMATCH", `Plugin transfer response ${data.id} is invalid`));
       } else if (data.ok) pending.resolve(data.data);
-      else pending.reject(new PluginBridgeError(data.error_code, data.error, undefined, data.error_details));
+      else pending.reject(new PluginBridgeError(data.error_code, data.error, undefined, data.error_details, data.mutation_outcome));
       return;
     }
     if (isLifecycleMessage(data)) {
@@ -853,14 +910,14 @@ export async function trustedParentBridgeHandshakeTranscriptSHA256(
   }
   const encoder = new TextEncoder();
   const fields = [
-    "redevplugin.bridge.handshake.v2",
+    "redevplugin.bridge.handshake.v3",
     handshake.plugin_id,
     handshake.surface_id,
     handshake.surface_instance_id,
     handshake.active_fingerprint,
     handshake.bridge_nonce,
     handshake.asset_session_nonce,
-    String(handshake.plugin_state_version),
+    String(handshake.management_revision),
     String(handshake.revoke_epoch),
     handshake.ui_protocol_version,
     bridgeChannelID,
@@ -926,7 +983,7 @@ export type PluginSurfacePreparationResult = {
   asset_session_nonce: string;
   entry_path: string;
   entry_sha256: string;
-  plugin_state_version: number;
+  management_revision: number;
   revoke_epoch: number;
   issued_at: string;
   expires_at: string;
@@ -945,7 +1002,7 @@ export type PluginSurfaceHostBootstrap = {
   entrySHA256: string;
   assetTicket: string;
   assetSessionNonce: string;
-  pluginStateVersion: number;
+  managementRevision: number;
   revokeEpoch: number;
   runtimeGenerationId: string;
 };
@@ -1011,7 +1068,7 @@ type PluginGatewayTokenResult = {
   expires_at: string;
 };
 
-type PluginConfirmationResult = {
+type PluginMethodConfirmationPreparation = {
   confirmation_id: string;
   confirmation_token_id: string;
   request_hash: string;
@@ -1032,12 +1089,20 @@ type PluginSurfaceAssetReadResult = {
 };
 
 type PluginSurfaceStreamReadResult = {
+  delivery_id?: string;
+  read_id: string;
   events: Array<PluginStreamEvent & { stream_id: string }>;
   done: boolean;
   terminal_status?: PluginStreamTerminalStatus;
-  next_stream_ticket?: string;
-  next_stream_ticket_id?: string;
-  next_stream_expires_at?: string;
+};
+
+type PluginSurfaceStreamAcknowledgementResult = { acknowledged: true };
+
+type PendingStreamDelivery = {
+  deliveryID: string;
+  lastSequence: number;
+  done: boolean;
+  response: PrivatePluginStreamReadResult;
 };
 
 type StreamCredential = {
@@ -1046,7 +1111,12 @@ type StreamCredential = {
   streamTicket: string;
   expiresAtMs: number;
   lastSequence: number;
+  readID: string;
   reading: boolean;
+  acknowledging: boolean;
+  completed: boolean;
+  pending?: PendingStreamDelivery;
+  lastAcknowledgedDeliveryID?: string;
 };
 
 type OpenSignals = {
@@ -1171,6 +1241,7 @@ export function createOpaquePluginBootstrapHTML(options: OpaquePluginBootstrapHT
   const validIdentifier = (value) => typeof value === "string" && /^[A-Za-z0-9._:-]{1,128}$/.test(value);
   const validResourceIdentifier = (value) => typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(value);
   const validOpaqueHandle = (value, prefix) => typeof value === "string" && value.startsWith(prefix + "_") && /^[A-Za-z0-9_-]{8,160}$/.test(value);
+  const validDeliveryID = (value) => typeof value === "string" && /^delivery_[A-Za-z0-9_-]{8,128}$/.test(value);
   const validDigest = (value) => typeof value === "string" && /^sha256:[a-f0-9]{64}$/.test(value);
   const validPath = (value) => typeof value === "string" && value.length > 0 && value.length <= 512 && !value.startsWith("/") && !value.includes("\\\\") && !value.split("/").some((part) => !part || part === "." || part === "..");
   const validAttribute = (tag, name, value) => {
@@ -1225,7 +1296,7 @@ export function createOpaquePluginBootstrapHTML(options: OpaquePluginBootstrapHT
   let workerHeartbeatTimeout;
   let pendingQuiesceID;
   const pendingWorkerRequests = new Set();
-  const requestSequence = { rpc: 0, stream: 0, render: 0, operation: 0, canvas: 0, asset: 0 };
+  const requestSequence = { rpc: 0, stream: 0, stream_ack: 0, render: 0, operation: 0, canvas: 0, asset: 0 };
   let renderWindowStartedAt = 0;
   let renderCount = 0;
   let uiRevision = 0;
@@ -1489,11 +1560,12 @@ export function createOpaquePluginBootstrapHTML(options: OpaquePluginBootstrapHT
         for (const [name, value] of Object.entries(node.attributes)) if (!validAttribute(node.tag, name, value)) throw new Error("plugin render attribute is not allowed");
       }
       if (node.children !== undefined && !Array.isArray(node.children)) throw new Error("plugin render children are invalid");
-      elements.set(node.key, { node, parent });
+      elements.set(node.key, { node, parent, depth });
       for (const child of node.children || []) visit(child, node, depth + 1, state);
     };
-    visit(root, undefined, 1, { nodes: 0 });
-    return elements;
+    const state = { nodes: 0 };
+    visit(root, undefined, 1, state);
+    return { elements, nodeCount: state.nodes };
   };
   const transferredCanvasKey = (key) => {
     const element = uiElements.get(key);
@@ -1514,7 +1586,9 @@ export function createOpaquePluginBootstrapHTML(options: OpaquePluginBootstrapHT
   const validatePatch = (operations) => {
     if (!Array.isArray(operations) || operations.length > maxRenderNodes) throw new Error("plugin UI patch exceeds limits");
     const nextTree = cloneVNode(uiTree);
-    let model = indexModel(nextTree);
+    const initialIndex = indexModel(nextTree);
+    const model = initialIndex.elements;
+    let nodeCount = initialIndex.nodeCount;
     for (const operation of operations) {
       if (!isRecord(operation) || typeof operation.type !== "string") throw new Error("plugin UI patch operation is invalid");
       if (operation.type === "set_text") {
@@ -1550,10 +1624,24 @@ export function createOpaquePluginBootstrapHTML(options: OpaquePluginBootstrapHT
       } else if (operation.type === "insert_child") {
         if (!exactKeys(operation, ["type", "parent_key", "child_index", "node"]) || !validResourceIdentifier(operation.parent_key) ||
             !Number.isSafeInteger(operation.child_index) || operation.child_index < 0) throw new Error("plugin UI insertion is invalid");
-        const parent = model.get(operation.parent_key)?.node;
+        const parentEntry = model.get(operation.parent_key);
+        const parent = parentEntry?.node;
         if (!parent || operation.child_index > (parent.children || []).length) throw new Error("plugin UI insertion target is invalid");
+        const inserted = indexModel(operation.node);
+        if (nodeCount + inserted.nodeCount > maxRenderNodes) throw new Error("plugin UI insertion exceeds node limits");
+        for (const [key, entry] of inserted.elements) {
+          if (model.has(key) || entry.depth + parentEntry.depth > maxRenderDepth) throw new Error("plugin UI insertion subtree is invalid");
+        }
         parent.children ||= [];
         parent.children.splice(operation.child_index, 0, operation.node);
+        nodeCount += inserted.nodeCount;
+        for (const [key, entry] of inserted.elements) {
+          model.set(key, {
+            node: entry.node,
+            parent: entry.parent ?? parent,
+            depth: entry.depth + parentEntry.depth,
+          });
+        }
       } else if (operation.type === "remove_child") {
         if (!Object.keys(operation).every((key) => ["type", "parent_key", "child_index", "child_key"].includes(key)) ||
             !validResourceIdentifier(operation.parent_key) || !Number.isSafeInteger(operation.child_index) || operation.child_index < 0 ||
@@ -1562,7 +1650,10 @@ export function createOpaquePluginBootstrapHTML(options: OpaquePluginBootstrapHT
         const child = parent && (parent.children || [])[operation.child_index];
         if (!parent || child === undefined || (operation.child_key === undefined) !== (typeof child === "string") ||
             (typeof child !== "string" && operation.child_key !== child.key) || subtreeHasTransferredCanvas(child)) throw new Error("plugin UI removal target is invalid");
+        const removed = indexModel(child);
         parent.children.splice(operation.child_index, 1);
+        nodeCount -= removed.nodeCount;
+        for (const key of removed.elements.keys()) model.delete(key);
       } else if (operation.type === "move_child") {
         if (!exactKeys(operation, ["type", "parent_key", "child_key", "from_index", "to_index"]) || !validResourceIdentifier(operation.parent_key) ||
             !validResourceIdentifier(operation.child_key) || !Number.isSafeInteger(operation.from_index) || !Number.isSafeInteger(operation.to_index) ||
@@ -1575,7 +1666,6 @@ export function createOpaquePluginBootstrapHTML(options: OpaquePluginBootstrapHT
       } else {
         throw new Error("plugin UI patch operation type is unsupported");
       }
-      model = indexModel(nextTree);
     }
     return nextTree;
   };
@@ -2087,7 +2177,7 @@ export function createOpaquePluginBootstrapHTML(options: OpaquePluginBootstrapHT
   const validCall = (value) => exactKeys(value, ["type", "request"]) && value.type === "redevplugin.bridge.call" && isRecord(value.request) && Object.keys(value.request).every((key) => ["id", "method", "params"].includes(key)) && typeof value.request.id === "string" && value.request.id.length <= 128 && typeof value.request.method === "string" && /^[A-Za-z0-9._:-]{1,256}$/.test(value.request.method) && (value.request.params === undefined || isRecord(value.request.params));
   const requestID = (value, expectedKind) => {
     if (typeof value !== "string") return undefined;
-    const match = /^(rpc|stream|render|operation|canvas|asset)_([1-9][0-9]{0,15})$/.exec(value);
+    const match = /^(rpc|stream|stream_ack|render|operation|canvas|asset)_([1-9][0-9]{0,15})$/.exec(value);
     if (!match || match[1] !== expectedKind) return undefined;
     const sequence = Number(match[2]);
     return Number.isSafeInteger(sequence) ? { kind: match[1], sequence } : undefined;
@@ -2315,6 +2405,12 @@ export function createOpaquePluginBootstrapHTML(options: OpaquePluginBootstrapHT
     }
     if (exactKeys(message, ["type", "id", "stream_handle"]) && message.type === "redevplugin.bridge.stream.read" && typeof message.id === "string" && validOpaqueHandle(message.stream_handle, "stream")) {
       if (!acceptWorkerRequest(message.id, "stream")) return rejectWorkerRequest(message.id, "duplicate, replayed, or excessive plugin request");
+      sendParent(message);
+      return;
+    }
+    if (exactKeys(message, ["type", "id", "stream_handle", "delivery_id"]) && message.type === "redevplugin.bridge.stream.ack" &&
+        requestID(message.id, "stream_ack") && validOpaqueHandle(message.stream_handle, "stream") && validDeliveryID(message.delivery_id)) {
+      if (!acceptWorkerRequest(message.id, "stream_ack")) return rejectWorkerRequest(message.id, "duplicate, replayed, or excessive plugin request");
       sendParent(message);
       return;
     }
@@ -2777,6 +2873,10 @@ export class PluginSurfaceHost {
         await this.#handleStreamRead(data.id, data.stream_handle);
         return;
       }
+      if (isStreamAcknowledgeMessage(data)) {
+        await this.#handleStreamAcknowledge(data.id, data.stream_handle, data.delivery_id);
+        return;
+      }
       if (isOperationCancelMessage(data)) {
         await this.#handleOperationCancel(data);
         return;
@@ -2805,7 +2905,7 @@ export class PluginSurfaceHost {
         await this.#handleConfirmationRequired(request, bridgeError, controller.signal);
         return;
       }
-      this.#postError(request.id, bridgeError.errorCode, bridgeError.message, bridgeError.details);
+      this.#postError(request.id, bridgeError.errorCode, bridgeError.message, bridgeError.details, bridgeError.mutationOutcome);
     } finally {
       this.#pendingRequestControllers.delete(request.id);
     }
@@ -2813,11 +2913,11 @@ export class PluginSurfaceHost {
 
   async #handleConfirmationRequired(request: PluginBridgeRequest, originalError: PluginBridgeError, signal: AbortSignal): Promise<void> {
     if (!this.#confirm) {
-      this.#postError(request.id, originalError.errorCode, originalError.message, originalError.details);
+      this.#postError(request.id, originalError.errorCode, originalError.message, originalError.details, originalError.mutationOutcome);
       return;
     }
     try {
-      const confirmation = await this.#prepareConfirmation(request, signal);
+      const confirmation = await this.#preparePluginMethodConfirmation(request, signal);
       const decision = await abortableConfirmationDecision(this.#confirm({
         requestId: request.id,
         method: request.method,
@@ -2840,56 +2940,110 @@ export class PluginSurfaceHost {
     } catch (error) {
       if (signal.aborted || this.#disposed) return;
       const bridgeError = toBridgeError(error, "PLUGIN_PERMISSION_DENIED");
-      this.#postError(request.id, bridgeError.errorCode, bridgeError.message, bridgeError.details);
+      this.#postError(request.id, bridgeError.errorCode, bridgeError.message, bridgeError.details, bridgeError.mutationOutcome);
     }
   }
 
   async #handleStreamRead(id: string, streamHandle: string): Promise<void> {
     const credential = this.#streamCredentials.get(streamHandle);
-    if (!credential || credential.reading) {
-      this.#postError(id, "PLUGIN_STREAM_TICKET_INVALID", "Plugin stream handle is invalid or already consumed");
+    if (!credential || credential.completed || credential.reading || credential.acknowledging) {
+      this.#postError(id, "PLUGIN_STREAM_TICKET_INVALID", "Plugin stream handle is invalid, completed, or busy");
       return;
     }
     if (credential.expiresAtMs <= Date.now()) {
       this.#postError(id, "PLUGIN_STREAM_TICKET_INVALID", "Plugin stream handle is expired");
       return;
     }
+    if (credential.pending) {
+      this.#postResponse(id, credential.pending.response);
+      return;
+    }
     credential.reading = true;
     const controller = this.#registerPendingRequest(id);
     try {
-      const result = await this.#postJSON<PluginSurfaceStreamReadResult>(
-        `/_redevplugin/api/plugins/surfaces/${encodeURIComponent(this.bootstrap.surfaceInstanceId)}/streams/read`,
-        () => ({ stream_id: credential.streamID, stream_ticket: credential.streamTicket }),
-        controller.signal,
-      );
-      if (!isStreamReadResult(result, credential.streamID, credential.lastSequence)) {
+      const readPath = `/_redevplugin/api/plugins/surfaces/${encodeURIComponent(this.bootstrap.surfaceInstanceId)}/streams/read`;
+      const readBody = (): unknown => ({ stream_id: credential.streamID, stream_ticket: credential.streamTicket, read_id: credential.readID });
+      let result: PluginSurfaceStreamReadResult;
+      try {
+        result = await this.#postJSON<PluginSurfaceStreamReadResult>(readPath, readBody, controller.signal);
+      } catch (error) {
+        if (!retryableStreamReadTransportFailure(error) || controller.signal.aborted || this.#disposed) throw error;
+        result = await this.#postJSON<PluginSurfaceStreamReadResult>(readPath, readBody, controller.signal);
+      }
+      if (!isStreamReadResult(result, credential.streamID, credential.readID, credential.lastSequence)) {
         throw new PluginBridgeError("PLUGIN_CONTRACT_MISMATCH", "Plugin stream endpoint returned an invalid response");
       }
       const lastSequence = result.events.length > 0 ? result.events[result.events.length - 1].sequence : credential.lastSequence;
-      if (result.done) {
-        this.#streamCredentials.delete(streamHandle);
-      } else {
-        const expiresAtMs = Date.parse(result.next_stream_expires_at!);
-        credential.streamTicket = result.next_stream_ticket!;
-        credential.expiresAtMs = expiresAtMs;
-        credential.lastSequence = lastSequence;
-        credential.reading = false;
+      const events = result.events.map(publicPluginStreamEvent);
+      const response: PrivatePluginStreamReadResult = result.done
+        ? { delivery_id: result.delivery_id, events, done: true, terminal_status: result.terminal_status!, retry_after_ms: 0 }
+        : { delivery_id: result.delivery_id, events, done: false, retry_after_ms: events.length === 0 ? 25 : 0 };
+      if (result.delivery_id) {
+        credential.pending = {
+          deliveryID: result.delivery_id,
+          lastSequence,
+          done: result.done,
+          response,
+        };
       }
-      if (!controller.signal.aborted && !this.#disposed) this.#postResponse(id, {
-        events: result.events.map(publicPluginStreamEvent),
-        done: result.done,
-        ...(result.done ? { terminal_status: result.terminal_status! } : {}),
-        retry_after_ms: result.events.length === 0 && !result.done ? 25 : 0,
-      });
+      credential.reading = false;
+      if (!controller.signal.aborted && !this.#disposed) this.#postResponse(id, response);
     } catch (error) {
-      if (streamReadFailureInvalidatesCredential(error)) {
+      const bridgeError = toBridgeError(error, "PLUGIN_RUNTIME_UNAVAILABLE");
+      if (streamReadFailureInvalidatesCredential(bridgeError)) {
         this.#streamCredentials.delete(streamHandle);
       } else {
         credential.reading = false;
       }
       if (controller.signal.aborted || this.#disposed) return;
-      const bridgeError = toBridgeError(error, "PLUGIN_RUNTIME_UNAVAILABLE");
       this.#postError(id, bridgeError.errorCode, bridgeError.message);
+    } finally {
+      this.#pendingRequestControllers.delete(id);
+    }
+  }
+
+  async #handleStreamAcknowledge(id: string, streamHandle: string, deliveryID: string): Promise<void> {
+    const credential = this.#streamCredentials.get(streamHandle);
+    if (!credential || credential.reading || credential.acknowledging) {
+      this.#postError(id, "PLUGIN_STREAM_DELIVERY_INVALID", "Plugin stream delivery is invalid or busy", undefined, "not_committed");
+      return;
+    }
+    if (credential.lastAcknowledgedDeliveryID === deliveryID) {
+      this.#postResponse(id, undefined);
+      return;
+    }
+    if (!credential.pending || credential.pending.deliveryID !== deliveryID) {
+      this.#postError(id, "PLUGIN_STREAM_DELIVERY_INVALID", "Plugin stream delivery does not match the pending batch", undefined, "not_committed");
+      return;
+    }
+    credential.acknowledging = true;
+    const controller = this.#registerPendingRequest(id);
+    try {
+      const result = await this.#postMutationJSON<PluginSurfaceStreamAcknowledgementResult>(
+        `/_redevplugin/api/plugins/surfaces/${encodeURIComponent(this.bootstrap.surfaceInstanceId)}/streams/ack`,
+        () => ({
+          stream_id: credential.streamID,
+          stream_ticket: credential.streamTicket,
+          delivery_id: deliveryID,
+        }),
+        controller.signal,
+      );
+      if (!hasExactKeys(result, ["acknowledged"]) || result.acknowledged !== true) {
+        throw new PluginBridgeError("PLUGIN_CONTRACT_MISMATCH", "Plugin stream acknowledgement endpoint returned an invalid response", undefined, undefined, "unknown");
+      }
+      const pending = credential.pending;
+      credential.lastAcknowledgedDeliveryID = deliveryID;
+      credential.lastSequence = pending.lastSequence;
+      credential.pending = undefined;
+      credential.readID = randomOpaqueHandle("read");
+      credential.completed = pending.done;
+      credential.acknowledging = false;
+      if (!controller.signal.aborted && !this.#disposed) this.#postResponse(id, undefined);
+    } catch (error) {
+      credential.acknowledging = false;
+      if (controller.signal.aborted || this.#disposed) return;
+      const bridgeError = toBridgeError(error, "PLUGIN_STREAM_DELIVERY_INVALID");
+      this.#postError(id, bridgeError.errorCode, bridgeError.message, bridgeError.details, bridgeError.mutationOutcome);
     } finally {
       this.#pendingRequestControllers.delete(id);
     }
@@ -2898,18 +3052,18 @@ export class PluginSurfaceHost {
   async #handleOperationCancel(message: { id: string; operation_id: string; reason?: string }): Promise<void> {
     const controller = this.#registerPendingRequest(message.id);
     try {
-      await this.#postJSON(
+      await this.#postMutationJSON(
         `/_redevplugin/api/plugins/surfaces/${encodeURIComponent(this.bootstrap.surfaceInstanceId)}/operations/cancel`,
         { operation_id: message.operation_id, bridge_channel_id: this.bridgeChannelId, reason: message.reason },
         controller.signal,
       );
       this.#releaseOperationStreams(message.operation_id);
       if (!controller.signal.aborted && !this.#disposed) this.#postResponse(message.id, undefined);
-    } catch (error) {
-      if (controller.signal.aborted || this.#disposed) return;
-      const bridgeError = toBridgeError(error, "PLUGIN_OPERATION_BLOCKED");
-      this.#postError(message.id, bridgeError.errorCode, bridgeError.message);
-    } finally {
+	    } catch (error) {
+	      if (controller.signal.aborted || this.#disposed) return;
+	      const bridgeError = toBridgeError(error, "PLUGIN_OPERATION_BLOCKED");
+	      this.#postError(message.id, bridgeError.errorCode, bridgeError.message, bridgeError.details, bridgeError.mutationOutcome);
+	    } finally {
       this.#pendingRequestControllers.delete(message.id);
     }
   }
@@ -2986,7 +3140,10 @@ export class PluginSurfaceHost {
         streamTicket: result.stream_ticket,
         expiresAtMs,
         lastSequence: 0,
+        readID: randomOpaqueHandle("read"),
         reading: false,
+        acknowledging: false,
+        completed: false,
       });
       publicResult.stream_handle = handle;
     }
@@ -3006,15 +3163,15 @@ export class PluginSurfaceHost {
   }
 
   #callRPC(request: PluginBridgeRequest, confirmationID?: string, signal?: AbortSignal): Promise<PluginTrustedMethodResult> {
-    return this.#postJSON<PluginTrustedMethodResult>("/_redevplugin/api/plugins/rpc", () => this.#rpcBody(request, confirmationID), signal);
+    return this.#postMutationJSON<PluginTrustedMethodResult>("/_redevplugin/api/plugins/rpc", () => this.#rpcBody(request, confirmationID), signal);
   }
 
-  #prepareConfirmation(request: PluginBridgeRequest, signal: AbortSignal): Promise<PluginConfirmationResult> {
-    return this.#postJSON<PluginConfirmationResult>("/_redevplugin/api/plugins/confirm", () => this.#rpcBody(request), signal);
+  #preparePluginMethodConfirmation(request: PluginBridgeRequest, signal: AbortSignal): Promise<PluginMethodConfirmationPreparation> {
+    return this.#postMutationJSON<PluginMethodConfirmationPreparation>("/_redevplugin/api/plugins/confirmations/prepare", () => this.#rpcBody(request), signal);
   }
 
   async #rejectConfirmation(confirmationID: string, signal: AbortSignal): Promise<void> {
-    const result = await this.#postJSON<PluginConfirmationRejectionResult>(
+    const result = await this.#postMutationJSON<PluginConfirmationRejectionResult>(
       `/_redevplugin/api/plugins/surfaces/${encodeURIComponent(this.bootstrap.surfaceInstanceId)}/confirmations/reject`,
       () => ({
         plugin_instance_id: this.bootstrap.pluginInstanceId,
@@ -3043,7 +3200,7 @@ export class PluginSurfaceHost {
   }
 
   #prepareSurface(): Promise<PluginSurfacePreparationResult> {
-    return this.#postJSON<PluginSurfacePreparationResult>(
+    return this.#postMutationJSON<PluginSurfacePreparationResult>(
       `/_redevplugin/api/plugins/surfaces/${encodeURIComponent(this.bootstrap.surfaceInstanceId)}/prepare`,
       { asset_ticket: this.bootstrap.assetTicket },
     );
@@ -3059,7 +3216,7 @@ export class PluginSurfaceHost {
       handshake_transcript_sha256: transcript,
       ...(previousGatewayToken ? { previous_plugin_gateway_token: previousGatewayToken } : {}),
     } satisfies TrustedParentBridgeTokenRequest;
-    return direct ? this.#fetchJSON<PluginGatewayTokenResult>(path, body) : this.#postJSON<PluginGatewayTokenResult>(path, body);
+    return direct ? this.#fetchMutationJSON<PluginGatewayTokenResult>(path, body) : this.#postMutationJSON<PluginGatewayTokenResult>(path, body);
   }
 
   #handshake(): TrustedParentBridgeHandshake {
@@ -3071,13 +3228,21 @@ export class PluginSurfaceHost {
       active_fingerprint: this.bootstrap.activeFingerprint,
       bridge_nonce: this.bootstrap.bridgeNonce,
       asset_session_nonce: this.bootstrap.assetSessionNonce,
-      plugin_state_version: this.bootstrap.pluginStateVersion,
+      management_revision: this.bootstrap.managementRevision,
       revoke_epoch: this.bootstrap.revokeEpoch,
       ui_protocol_version: pluginUIProtocolVersion,
     };
   }
 
   async #postJSON<T>(path: string, body: unknown | (() => unknown), signal?: AbortSignal): Promise<T> {
+    return this.#requestJSON<T>(path, body, false, signal);
+  }
+
+  async #postMutationJSON<T>(path: string, body: unknown | (() => unknown), signal?: AbortSignal): Promise<T> {
+    return this.#requestJSON<T>(path, body, true, signal);
+  }
+
+  async #requestJSON<T>(path: string, body: unknown | (() => unknown), mutation: boolean, signal?: AbortSignal): Promise<T> {
     if (this.#bridgeReady) {
       if (Date.now() >= this.#leaseRenewAtMs) await this.#startLeaseRenewal();
       else if (this.#leaseRenewalPromise) await this.#leaseRenewalPromise;
@@ -3085,7 +3250,9 @@ export class PluginSurfaceHost {
     const requestBody = typeof body === "function" ? body() : body;
     this.#activeTransportRequests += 1;
     try {
-      return await this.#fetchJSON<T>(path, requestBody, signal);
+      return mutation
+        ? await this.#fetchMutationJSON<T>(path, requestBody, signal)
+        : await this.#fetchJSON<T>(path, requestBody, signal);
     } finally {
       this.#activeTransportRequests -= 1;
       if (this.#activeTransportRequests === 0) {
@@ -3100,10 +3267,14 @@ export class PluginSurfaceHost {
     return this.#fetchJSONRequest<T>(path, body, { signal });
   }
 
+  async #fetchMutationJSON<T>(path: string, body: unknown, signal?: AbortSignal): Promise<T> {
+    return this.#fetchJSONRequest<T>(path, body, { signal, mutation: true });
+  }
+
   async #fetchJSONRequest<T>(
     path: string,
     body: unknown,
-    options: { signal?: AbortSignal; keepalive?: boolean; independentLifecycle?: boolean } = {},
+    options: { signal?: AbortSignal; keepalive?: boolean; independentLifecycle?: boolean; mutation?: boolean } = {},
   ): Promise<T> {
     const controller = new AbortController();
     let timedOut = false;
@@ -3118,7 +3289,13 @@ export class PluginSurfaceHost {
       timer = setTimeout(() => {
         timedOut = true;
         controller.abort();
-        reject(new PluginBridgeError("PLUGIN_BRIDGE_TIMEOUT", `Plugin surface request timed out: ${path}`));
+        reject(new PluginBridgeError(
+          "PLUGIN_BRIDGE_TIMEOUT",
+          `Plugin surface request timed out: ${path}`,
+          undefined,
+          undefined,
+          options.mutation ? "unknown" : undefined,
+        ));
       }, this.#requestTimeoutMs);
     });
     try {
@@ -3133,10 +3310,21 @@ export class PluginSurfaceHost {
         }),
         timeout,
       ]);
-      return await readHostEnvelope<T>(response, "PLUGIN_PERMISSION_DENIED");
+      return options.mutation ? await readMutationPlatformResponse<T>(response) : await readPlatformResponse<T>(response);
     } catch (error) {
-      if (timedOut) throw new PluginBridgeError("PLUGIN_BRIDGE_TIMEOUT", `Plugin surface request timed out: ${path}`);
-      throw error;
+      if (timedOut) {
+        throw new PluginBridgeError(
+          "PLUGIN_BRIDGE_TIMEOUT",
+          `Plugin surface request timed out: ${path}`,
+          undefined,
+          undefined,
+          options.mutation ? "unknown" : undefined,
+        );
+      }
+      if (error instanceof PluginBridgeError || error instanceof PluginPlatformRequestError || error instanceof PluginTransportError) {
+        throw error;
+      }
+      throw new PluginTransportError(`Plugin surface request failed for POST ${path}`, error, options.mutation ? "unknown" : undefined);
     } finally {
       if (timer) clearTimeout(timer);
       if (!options.independentLifecycle) this.#abortController.signal.removeEventListener("abort", abort);
@@ -3209,7 +3397,7 @@ export class PluginSurfaceHost {
       await this.#fetchJSONRequest<Record<string, unknown>>(
         `/_redevplugin/api/plugins/surfaces/${encodeURIComponent(this.bootstrap.surfaceInstanceId)}/dispose`,
         { bridge_nonce: this.bootstrap.bridgeNonce },
-        { keepalive, independentLifecycle: true },
+        { keepalive, independentLifecycle: true, mutation: true },
       );
     })();
     return this.#revokePromise;
@@ -3277,7 +3465,13 @@ export class PluginSurfaceHost {
     this.#postToRenderer(response);
   }
 
-  #postError(id: string, errorCode: string, error: string, details?: unknown): void {
+  #postError(
+    id: string,
+    errorCode: string,
+    error: string,
+    details?: unknown,
+    mutationOutcome?: PluginMutationOutcome,
+  ): void {
     const errorDetails = details === undefined ? undefined : normalizePluginJSONObject(details);
     this.#postToRenderer(removeUndefined({
       type: "redevplugin.bridge.response",
@@ -3286,6 +3480,7 @@ export class PluginSurfaceHost {
       error_code: errorCode,
       error,
       error_details: errorDetails,
+      mutation_outcome: mutationOutcome,
     }));
   }
 
@@ -3575,7 +3770,7 @@ function validateHostBootstrap(bootstrap: PluginSurfaceHostBootstrap): void {
       throw new PluginBridgeError("PLUGIN_CONTRACT_MISMATCH", "Plugin surface bootstrap is incomplete");
     }
   }
-  if (!Number.isSafeInteger(bootstrap.pluginStateVersion) || bootstrap.pluginStateVersion < 1 ||
+  if (!Number.isSafeInteger(bootstrap.managementRevision) || bootstrap.managementRevision < 1 ||
       !Number.isSafeInteger(bootstrap.revokeEpoch) || bootstrap.revokeEpoch < 1) {
     throw new PluginBridgeError("PLUGIN_CONTRACT_MISMATCH", "Plugin surface revision is invalid");
   }
@@ -3585,7 +3780,7 @@ function validateSurfacePreparation(bootstrap: PluginSurfaceHostBootstrap, prepa
   if (!isSurfacePreparationResult(preparation)) {
     throw new PluginBridgeError("PLUGIN_CONTRACT_MISMATCH", "Plugin surface prepare returned an invalid opaque document");
   }
-  if (preparation.plugin_state_version !== bootstrap.pluginStateVersion || preparation.revoke_epoch !== bootstrap.revokeEpoch) {
+  if (preparation.management_revision !== bootstrap.managementRevision || preparation.revoke_epoch !== bootstrap.revokeEpoch) {
     throw new PluginBridgeError("PLUGIN_GATEWAY_TOKEN_INVALID", "Plugin surface state changed during prepare");
   }
   if (preparation.asset_session_nonce !== bootstrap.assetSessionNonce) {
@@ -3604,7 +3799,7 @@ function isSurfacePreparationResult(value: unknown): value is PluginSurfacePrepa
     "asset_session_nonce",
     "entry_path",
     "entry_sha256",
-    "plugin_state_version",
+    "management_revision",
     "revoke_epoch",
     "issued_at",
     "expires_at",
@@ -3617,7 +3812,7 @@ function isSurfacePreparationResult(value: unknown): value is PluginSurfacePrepa
     typeof value.asset_session_nonce === "string" && value.asset_session_nonce.length > 0 &&
     validPackagePath(value.entry_path) &&
     validSHA256(value.entry_sha256) &&
-    Number.isSafeInteger(value.plugin_state_version) && Number(value.plugin_state_version) >= 1 &&
+    Number.isSafeInteger(value.management_revision) && Number(value.management_revision) >= 1 &&
     Number.isSafeInteger(value.revoke_epoch) && Number(value.revoke_epoch) >= 1 &&
     Number.isFinite(issuedAt) && Number.isFinite(expiresAt) && expiresAt > issuedAt &&
     isOpaqueSurfaceDocument(value.document);
@@ -3683,6 +3878,14 @@ function isStreamReadMessage(value: unknown): value is { type: "redevplugin.brid
     validOpaqueHandle(value.stream_handle, "stream");
 }
 
+function isStreamAcknowledgeMessage(value: unknown): value is { type: "redevplugin.bridge.stream.ack"; id: string; stream_handle: string; delivery_id: string } {
+  return hasExactKeys(value, ["type", "id", "stream_handle", "delivery_id"]) &&
+    value.type === "redevplugin.bridge.stream.ack" &&
+    validBridgeRequestID(value.id, "stream_ack") &&
+    validOpaqueHandle(value.stream_handle, "stream") &&
+    validDeliveryID(value.delivery_id);
+}
+
 function isOperationCancelMessage(value: unknown): value is { type: "redevplugin.bridge.operation.cancel"; id: string; operation_id: string; reason?: string } {
   return hasAllowedKeys(value, ["type", "id", "operation_id", "reason"]) &&
     value.type === "redevplugin.bridge.operation.cancel" &&
@@ -3715,7 +3918,8 @@ function isBridgeResponse(value: unknown): value is PluginBridgeResponse {
   if (value.ok === true) return Object.keys(value).every((key) => ["type", "id", "ok", "data"].includes(key));
   if (value.ok !== false || typeof value.error_code !== "string" || !pluginBridgeErrorCodeSet.has(value.error_code) ||
       typeof value.error !== "string" || value.error.length > 4096 ||
-      !Object.keys(value).every((key) => ["type", "id", "ok", "error_code", "error", "error_details"].includes(key))) {
+      !Object.keys(value).every((key) => ["type", "id", "ok", "error_code", "error", "error_details", "mutation_outcome"].includes(key)) ||
+      (value.mutation_outcome !== undefined && value.mutation_outcome !== "not_committed" && value.mutation_outcome !== "unknown")) {
     return false;
   }
   if (value.error_code === "PLUGIN_CAPABILITY_ERROR") return isCapabilityBusinessErrorDetails(value.error_details);
@@ -3958,19 +4162,18 @@ function isGatewayTokenResult(value: unknown): value is PluginGatewayTokenResult
     typeof value.issued_at === "string" && typeof value.expires_at === "string";
 }
 
-function isStreamReadResult(value: unknown, expectedStreamID: string, previousSequence: number): value is PluginSurfaceStreamReadResult {
+function isStreamReadResult(value: unknown, expectedStreamID: string, expectedReadID: string, previousSequence: number): value is PluginSurfaceStreamReadResult {
   if (!isRecord(value) || typeof value.done !== "boolean" || !Array.isArray(value.events)) return false;
+  const hasDelivery = value.events.length > 0 || value.done;
   const expectedKeys = value.done
-    ? ["done", "events", "terminal_status"]
-    : ["done", "events", "next_stream_expires_at", "next_stream_ticket", "next_stream_ticket_id"];
+    ? ["delivery_id", "done", "events", "read_id", "terminal_status"]
+    : hasDelivery
+      ? ["delivery_id", "done", "events", "read_id"]
+      : ["done", "events", "read_id"];
   if (!hasExactKeys(value, expectedKeys)) return false;
+  if (value.read_id !== expectedReadID || (hasDelivery && !validDeliveryID(value.delivery_id))) return false;
   if (value.done) {
     if (!validPluginStreamTerminalStatus(value.terminal_status)) return false;
-  } else {
-    const expiresAt = Date.parse(String(value.next_stream_expires_at));
-    if (typeof value.next_stream_ticket !== "string" || value.next_stream_ticket.length === 0 ||
-        typeof value.next_stream_ticket_id !== "string" || value.next_stream_ticket_id.length === 0 ||
-        !Number.isFinite(expiresAt) || expiresAt <= Date.now()) return false;
   }
   let terminal = false;
   for (const event of value.events) {
@@ -4014,9 +4217,9 @@ const pluginMethodPattern = new RegExp("^[-A-Za-z0-9._:]{1,256}$");
 const pluginActionPattern = new RegExp("^[-A-Za-z0-9._:]{1,128}$");
 const pluginUIIdentifierPattern = new RegExp("^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$");
 const opaqueHandlePattern = new RegExp("^[-A-Za-z0-9_]{8,160}$");
-const bridgeRequestIDPattern = /^(rpc|stream|render|operation|canvas|asset)_([1-9][0-9]{0,15})$/;
+const bridgeRequestIDPattern = /^(rpc|stream|stream_ack|render|operation|canvas|asset)_([1-9][0-9]{0,15})$/;
 
-function validBridgeRequestID(value: unknown, expectedKind?: "rpc" | "stream" | "render" | "operation" | "canvas" | "asset"): value is string {
+function validBridgeRequestID(value: unknown, expectedKind?: "rpc" | "stream" | "stream_ack" | "render" | "operation" | "canvas" | "asset"): value is string {
   if (typeof value !== "string") return false;
   const match = bridgeRequestIDPattern.exec(value);
   if (!match || (expectedKind && match[1] !== expectedKind)) return false;
@@ -4037,6 +4240,10 @@ function validUIIdentifier(value: unknown): value is string {
 
 function validOpaqueHandle(value: unknown, prefix: string): value is string {
   return typeof value === "string" && value.startsWith(`${prefix}_`) && opaqueHandlePattern.test(value);
+}
+
+function validDeliveryID(value: unknown): value is string {
+  return typeof value === "string" && /^delivery_[A-Za-z0-9_-]{8,128}$/.test(value);
 }
 
 function validSHA256(value: unknown): value is string {
@@ -4261,13 +4468,24 @@ function removeUndefined<T extends Record<string, unknown>>(value: T): T {
   return value;
 }
 
-function toBridgeError(error: unknown, fallbackCode: string): PluginBridgeError {
+function toBridgeError(error: unknown, defaultCode: string): PluginBridgeError {
   if (error instanceof PluginBridgeError) return error;
-  if (error instanceof Error) return new PluginBridgeError(fallbackCode, error.message);
-  return new PluginBridgeError(fallbackCode, String(error));
+  if (error instanceof PluginPlatformRequestError) {
+    return new PluginBridgeError(error.errorCode, error.message, undefined, error.details, error.mutationOutcome);
+  }
+  if (error instanceof PluginTransportError) {
+    return new PluginBridgeError(defaultCode, error.message, undefined, undefined, error.mutationOutcome);
+  }
+  if (error instanceof Error) return new PluginBridgeError(defaultCode, error.message);
+  return new PluginBridgeError(defaultCode, String(error));
 }
 
 function streamReadFailureInvalidatesCredential(error: unknown): boolean {
   if (!(error instanceof PluginBridgeError)) return true;
   return streamCredentialInvalidatingErrorCodes.has(error.errorCode);
+}
+
+function retryableStreamReadTransportFailure(error: unknown): boolean {
+  return error instanceof PluginTransportError ||
+    (error instanceof PluginBridgeError && error.errorCode === "PLUGIN_BRIDGE_TIMEOUT");
 }

@@ -37,7 +37,7 @@ func TestBridgeSchemaDefinesIframeMessages(t *testing.T) {
 		t.Fatalf("call params type = %#v, want object", params["type"])
 	}
 	requestID := requireDef(t, defs, "request_id")
-	if got := requestID["pattern"]; got != "^(rpc|stream|render|operation|canvas|asset)_[1-9][0-9]{0,15}$" {
+	if got := requestID["pattern"]; got != "^(rpc|stream|stream_ack|render|operation|canvas|asset)_[1-9][0-9]{0,15}$" {
 		t.Fatalf("request id pattern = %#v", got)
 	}
 	cancel := requireDef(t, defs, "cancel")
@@ -51,6 +51,18 @@ func TestBridgeSchemaDefinesIframeMessages(t *testing.T) {
 	}
 	canvasAccessibility := requireDef(t, defs, "canvas_accessibility")
 	assertStringSet(t, requireStringSlice(t, canvasAccessibility["required"], "canvas accessibility required"), []string{"type", "id", "canvas_id", "label", "description"}, "canvas accessibility required")
+
+	response := requireDef(t, defs, "response")
+	responseVariants, ok := response["oneOf"].([]any)
+	if !ok || len(responseVariants) != 2 {
+		t.Fatalf("bridge response variants = %#v, want success and error", response["oneOf"])
+	}
+	errorResponse, ok := responseVariants[1].(map[string]any)
+	if !ok || errorResponse["additionalProperties"] != false {
+		t.Fatalf("bridge error response must be closed: %#v", responseVariants[1])
+	}
+	mutationOutcome := requireNestedObject(t, errorResponse, "properties", "mutation_outcome")
+	assertStringSet(t, requireStringSlice(t, mutationOutcome["enum"], "bridge mutation outcome enum"), []string{"not_committed", "unknown"}, "bridge mutation outcome enum")
 
 	lifecycle := requireDef(t, defs, "lifecycle")
 	event := requireNestedObject(t, lifecycle, "properties", "event")
@@ -165,7 +177,7 @@ func TestBridgeSchemaKeepsParentOnlyTokensOutOfIframeMessages(t *testing.T) {
 		"active_fingerprint",
 		"bridge_nonce",
 		"asset_session_nonce",
-		"plugin_state_version",
+		"management_revision",
 		"revoke_epoch",
 	} {
 		if strings.Contains(string(bridgeRaw), forbidden) {

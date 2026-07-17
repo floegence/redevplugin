@@ -1,22 +1,21 @@
 use crate::{MAX_HOSTCALL_RESPONSE_BYTES, WorkerError};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
-use serde_json::Value;
 use std::collections::BTreeMap;
 
 type Hostcall = unsafe extern "C" fn(i32, i32, i32, i32) -> i32;
 
 #[derive(Debug, Deserialize)]
+struct HostcallResponseDiscriminator {
+    ok: bool,
+}
+
+#[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct HostcallFailure {
     ok: bool,
-    #[serde(default)]
-    error_code: String,
-    #[serde(default)]
     code: String,
-    #[serde(default)]
     message: String,
-    #[serde(default)]
     error_origin: String,
 }
 
@@ -59,39 +58,39 @@ fn decode_hostcall_response<Response>(response: &[u8]) -> Result<Response, Worke
 where
     Response: DeserializeOwned,
 {
-    let value: Value = serde_json::from_slice(response)
-        .map_err(|err| WorkerError::hostcall(format!("decode hostcall response: {err}")))?;
-    match value.get("ok").and_then(Value::as_bool) {
-        Some(true) => serde_json::from_value(value)
-            .map_err(|err| WorkerError::hostcall(format!("decode typed hostcall response: {err}"))),
-        Some(false) => {
-            let failure: HostcallFailure = serde_json::from_value(value)
-                .map_err(|err| WorkerError::hostcall(format!("decode hostcall failure: {err}")))?;
-            let _ = failure.ok;
-            let _ = failure.error_origin;
-            let code = if failure.error_code.trim().is_empty() {
-                failure.code.trim()
-            } else {
-                failure.error_code.trim()
-            };
-            let message = failure.message.trim();
-            Err(WorkerError::new(
-                if code.is_empty() {
-                    "HOSTCALL_FAILED"
-                } else {
-                    code
-                },
-                if message.is_empty() {
-                    "hostcall failed"
-                } else {
-                    message
-                },
-            ))
-        }
-        None => Err(WorkerError::hostcall(
-            "hostcall response omitted the ok discriminator",
-        )),
+    let discriminator: HostcallResponseDiscriminator =
+        serde_json::from_slice(response).map_err(|err| {
+            WorkerError::hostcall(format!("decode hostcall response discriminator: {err}"))
+        })?;
+    if discriminator.ok {
+        return serde_json::from_slice(response).map_err(|err| {
+            WorkerError::hostcall(format!("decode typed hostcall response: {err}"))
+        });
     }
+    let failure: HostcallFailure = serde_json::from_slice(response)
+        .map_err(|err| WorkerError::hostcall(format!("decode hostcall failure: {err}")))?;
+    let code = failure.code.trim();
+    let message = failure.message.trim();
+    if failure.ok
+        || failure.error_origin != "hostcall"
+        || !stable_error_code(code)
+        || message.is_empty()
+        || message.chars().count() > 4096
+    {
+        return Err(WorkerError::hostcall(
+            "hostcall failure response violates the closed contract",
+        ));
+    }
+    Err(WorkerError::new(code, message))
+}
+
+fn stable_error_code(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 128
+        && value.bytes().enumerate().all(|(index, byte)| {
+            byte.is_ascii_uppercase() || byte.is_ascii_digit() || (index > 0 && byte == b'_')
+        })
+        && value.as_bytes().first().is_some_and(u8::is_ascii_uppercase)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -757,6 +756,7 @@ mod tests {
             "surface_instance_id",
             "owner_session_hash",
             "owner_user_hash",
+            "owner_env_hash",
             "session_channel_id_hash",
             "bridge_channel_id",
         ] {
@@ -782,5 +782,134 @@ mod tests {
             "handle_grant_token": "secret"
         });
         assert!(serde_json::from_value::<storage::sqlite::QueryResponse>(response).is_err());
+    }
+
+    #[test]
+    fn operation_specific_storage_responses_reject_cross_operation_fields() {
+        let usage = json!({
+            "plugin_instance_id": "plugini_1",
+            "store_id": "workspace",
+            "usage_bytes": 10,
+            "quota_bytes": 100,
+            "usage_files": 1,
+            "quota_files": 4
+        });
+        let cases = [
+            serde_json::to_vec(&json!({
+                "ok": true,
+                "path": "notes/a.txt",
+                "data_base64": "YQ==",
+                "size_bytes": 1,
+                "entries": [],
+                "usage": usage.clone()
+            }))
+            .unwrap(),
+            serde_json::to_vec(&json!({
+                "ok": true,
+                "path": "notes/a.txt",
+                "size_bytes": 1,
+                "data_base64": "YQ==",
+                "usage": usage.clone()
+            }))
+            .unwrap(),
+            serde_json::to_vec(&json!({
+                "ok": true,
+                "path": "notes/a.txt",
+                "usage": usage.clone()
+            }))
+            .unwrap(),
+            serde_json::to_vec(&json!({
+                "ok": true,
+                "path": "notes",
+                "entries": [],
+                "data_base64": "YQ==",
+                "usage": usage.clone()
+            }))
+            .unwrap(),
+        ];
+        assert!(decode_hostcall_response::<storage::files::ReadResponse>(&cases[0]).is_err());
+        assert!(decode_hostcall_response::<storage::files::WriteResponse>(&cases[1]).is_err());
+        assert!(decode_hostcall_response::<storage::files::DeleteResponse>(&cases[2]).is_err());
+        assert!(decode_hostcall_response::<storage::files::ListResponse>(&cases[3]).is_err());
+
+        let kv_get = serde_json::to_vec(&json!({
+            "ok": true,
+            "key": "theme",
+            "value_base64": "ZGFyaw==",
+            "size_bytes": 4,
+            "entries": [],
+            "usage": usage.clone()
+        }))
+        .unwrap();
+        let kv_put = serde_json::to_vec(&json!({
+            "ok": true,
+            "key": "theme",
+            "size_bytes": 4,
+            "value_base64": "ZGFyaw==",
+            "usage": usage.clone()
+        }))
+        .unwrap();
+        let kv_delete = serde_json::to_vec(&json!({
+            "ok": true,
+            "key": "theme",
+            "usage": usage.clone()
+        }))
+        .unwrap();
+        let kv_list = serde_json::to_vec(&json!({
+            "ok": true,
+            "prefix": "settings/",
+            "entries": [],
+            "value_base64": "ZGFyaw==",
+            "usage": usage.clone()
+        }))
+        .unwrap();
+        assert!(decode_hostcall_response::<storage::kv::GetResponse>(&kv_get).is_err());
+        assert!(decode_hostcall_response::<storage::kv::PutResponse>(&kv_put).is_err());
+        assert!(decode_hostcall_response::<storage::kv::DeleteResponse>(&kv_delete).is_err());
+        assert!(decode_hostcall_response::<storage::kv::ListResponse>(&kv_list).is_err());
+
+        let sqlite_exec = serde_json::to_vec(&json!({
+            "ok": true,
+            "database": "notes.sqlite",
+            "rows_affected": 1,
+            "columns": [],
+            "rows": [],
+            "usage": usage.clone()
+        }))
+        .unwrap();
+        let sqlite_query = serde_json::to_vec(&json!({
+            "ok": true,
+            "database": "notes.sqlite",
+            "columns": [],
+            "rows": [],
+            "rows_affected": 1,
+            "usage": usage
+        }))
+        .unwrap();
+        assert!(decode_hostcall_response::<storage::sqlite::ExecResponse>(&sqlite_exec).is_err());
+        assert!(decode_hostcall_response::<storage::sqlite::QueryResponse>(&sqlite_query).is_err());
+    }
+
+    #[test]
+    fn hostcall_failures_require_the_closed_failure_contract() {
+        let failure = br#"{"ok":false,"code":"NETWORK_TARGET_DENIED","message":"blocked","error_origin":"hostcall"}"#;
+        let error = decode_hostcall_response::<network::ExecuteResponse>(failure)
+            .expect_err("closed hostcall failure");
+        assert_eq!(error.code, "NETWORK_TARGET_DENIED");
+        assert_eq!(error.message, "blocked");
+
+        for invalid in [
+            br#"{"ok":false,"message":"blocked","error_origin":"hostcall"}"#.as_slice(),
+            br#"{"ok":false,"code":"NETWORK_TARGET_DENIED","message":"blocked","error_origin":"runtime"}"#.as_slice(),
+            br#"{"ok":false,"code":"NETWORK_TARGET_DENIED","message":"blocked","error_origin":"hostcall","future":true}"#.as_slice(),
+            br#"{"ok":false,"code":"NETWORK_TARGET_DENIED","code":"NETWORK_CONNECTOR_DENIED","message":"blocked","error_origin":"hostcall"}"#.as_slice(),
+            br#"{"ok":false,"code":"NETWORK_TARGET_DENIED","message":"blocked","error_origin":"hostcall"} {}"#.as_slice(),
+        ] {
+            assert!(
+                decode_hostcall_response::<network::ExecuteResponse>(invalid).is_err(),
+                "accepted invalid hostcall failure: {}",
+                String::from_utf8_lossy(invalid)
+            );
+        }
     }
 }

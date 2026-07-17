@@ -5,33 +5,57 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
-	"fmt"
+	"net/url"
 	"sort"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/floegence/redevplugin/pkg/mutation"
 	_ "modernc.org/sqlite"
 )
 
-const sqliteSchemaVersion = 3
+const maxSQLiteReadEvents = 1000
 
 type SQLiteStore struct {
-	db *sql.DB
-	mu sync.Mutex
+	db          *sql.DB
+	notifyMu    sync.Mutex
+	notify      map[string]*streamNotification
+	lockTableMu sync.Mutex
+	locks       map[string]*sqliteStreamLock
+	writeGate   chan struct{}
+}
+
+type sqliteStreamLock struct {
+	token chan struct{}
+	refs  int
+}
+
+type sqliteDeliveryState struct {
+	Pending              Delivery
+	LastAcknowledgedID   string
+	TerminalAcknowledged bool
 }
 
 func NewSQLiteStore(ctx context.Context, path string) (*SQLiteStore, error) {
 	if path == "" {
 		return nil, errors.New("sqlite stream store path is required")
 	}
-	db, err := sql.Open("sqlite", path)
+	dsn := (&url.URL{
+		Scheme:   "file",
+		Path:     path,
+		RawQuery: "_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)",
+	}).String()
+	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, err
 	}
-	db.SetMaxOpenConns(1)
-	store := &SQLiteStore{db: db}
-	if err := store.migrate(ctx); err != nil {
+	db.SetMaxOpenConns(16)
+	db.SetMaxIdleConns(16)
+	writeGate := make(chan struct{}, 1)
+	writeGate <- struct{}{}
+	store := &SQLiteStore{db: db, notify: map[string]*streamNotification{}, locks: map[string]*sqliteStreamLock{}, writeGate: writeGate}
+	if err := store.initializeSchema(ctx); err != nil {
 		_ = db.Close()
 		return nil, err
 	}
@@ -71,8 +95,16 @@ func (s *SQLiteStore) Register(ctx context.Context, req RegisterRequest) (Record
 		maxBuffered = DefaultMaxBufferedBytes
 	}
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	release, err := s.lockStream(ctx, streamID)
+	if err != nil {
+		return Record{}, err
+	}
+	defer release()
+	releaseWrite, err := s.lockWrite(ctx)
+	if err != nil {
+		return Record{}, err
+	}
+	defer releaseWrite()
 
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -97,11 +129,11 @@ func (s *SQLiteStore) Register(ctx context.Context, req RegisterRequest) (Record
 		CreatedAt:        now,
 		UpdatedAt:        now,
 	}
-	if err := upsertSQLiteStream(ctx, tx, record); err != nil {
+	if err := insertSQLiteStream(ctx, tx, record); err != nil {
 		return Record{}, err
 	}
 	if err := tx.Commit(); err != nil {
-		return Record{}, err
+		return Record{}, mutation.Unknown(err)
 	}
 	return record, nil
 }
@@ -110,8 +142,11 @@ func (s *SQLiteStore) Get(ctx context.Context, streamID string) (Record, error) 
 	if s == nil {
 		return Record{}, errors.New("stream store is nil")
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	release, err := s.lockStream(ctx, strings.TrimSpace(streamID))
+	if err != nil {
+		return Record{}, err
+	}
+	defer release()
 
 	record, exists, err := getSQLiteStream(ctx, s.db, strings.TrimSpace(streamID))
 	if err != nil {
@@ -127,8 +162,6 @@ func (s *SQLiteStore) List(ctx context.Context, req ListRequest) ([]Record, erro
 	if s == nil {
 		return nil, errors.New("stream store is nil")
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
 	query := streamSelectColumns + ` FROM plugin_streams`
 	args := []any{}
 	if pluginInstanceID := strings.TrimSpace(req.PluginInstanceID); pluginInstanceID != "" {
@@ -172,8 +205,16 @@ func (s *SQLiteStore) Append(ctx context.Context, req AppendRequest) (Event, err
 		now = time.Now().UTC()
 	}
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	release, err := s.lockStream(ctx, streamID)
+	if err != nil {
+		return Event{}, err
+	}
+	defer release()
+	releaseWrite, err := s.lockWrite(ctx)
+	if err != nil {
+		return Event{}, err
+	}
+	defer releaseWrite()
 
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -191,10 +232,6 @@ func (s *SQLiteStore) Append(ctx context.Context, req AppendRequest) (Event, err
 	if record.Status != StatusOpen {
 		return Event{}, ErrStreamClosed
 	}
-	nextBuffered := record.BufferedBytes + int64(len(req.Data))
-	if record.MaxBufferedBytes > 0 && nextBuffered > record.MaxBufferedBytes {
-		return Event{}, ErrBackpressure
-	}
 	sequence, err := nextSQLiteStreamSequence(ctx, tx, streamID)
 	if err != nil {
 		return Event{}, err
@@ -207,103 +244,261 @@ func (s *SQLiteStore) Append(ctx context.Context, req AppendRequest) (Event, err
 		Error:    req.Error,
 		At:       now,
 	}
+	nextBuffered := record.BufferedBytes + streamEventCost(event)
+	if record.MaxBufferedBytes > 0 && nextBuffered > record.MaxBufferedBytes {
+		return Event{}, ErrBackpressure
+	}
 	if err := insertSQLiteStreamEvent(ctx, tx, event); err != nil {
 		return Event{}, err
 	}
 	record.BufferedBytes = nextBuffered
 	record.UpdatedAt = now
-	if err := upsertSQLiteStream(ctx, tx, record); err != nil {
+	if err := updateSQLiteStreamState(ctx, tx, record); err != nil {
+		return Event{}, err
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE plugin_streams SET next_sequence = ? WHERE stream_id = ?`, sequence+1, streamID); err != nil {
 		return Event{}, err
 	}
 	if err := tx.Commit(); err != nil {
 		return Event{}, err
 	}
+	s.notifyStream(streamID)
 	return event, nil
 }
 
-func (s *SQLiteStore) Read(ctx context.Context, req ReadRequest) (Record, []Event, error) {
+func (s *SQLiteStore) Wait(ctx context.Context, streamID string) error {
 	if s == nil {
-		return Record{}, nil, errors.New("stream store is nil")
+		return errors.New("stream store is nil")
+	}
+	streamID = strings.TrimSpace(streamID)
+	if streamID == "" {
+		return ErrInvalidStream
+	}
+	release, err := s.lockStream(ctx, streamID)
+	if err != nil {
+		return err
+	}
+	releaseWrite, err := s.lockWrite(ctx)
+	if err != nil {
+		release()
+		return err
+	}
+	releaseLocks := func() {
+		releaseWrite()
+		release()
+	}
+	record, exists, err := getSQLiteStream(ctx, s.db, streamID)
+	if err != nil {
+		releaseLocks()
+		return err
+	}
+	if !exists {
+		releaseLocks()
+		return ErrNotFound
+	}
+	deliveryState, err := getSQLiteDeliveryState(ctx, s.db, streamID)
+	if err != nil {
+		releaseLocks()
+		return err
+	}
+	var eventExists bool
+	if err := s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM plugin_stream_events WHERE stream_id = ? LIMIT 1)`, streamID).Scan(&eventExists); err != nil {
+		releaseLocks()
+		return err
+	}
+	if deliveryState.Pending.DeliveryID != "" || eventExists || terminalStatus(record.Status) {
+		releaseLocks()
+		return nil
+	}
+	notification := s.notification(streamID)
+	releaseLocks()
+	defer s.releaseNotification(streamID, notification)
+
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-notification.ready:
+		return nil
+	}
+}
+
+func (s *SQLiteStore) Deliver(ctx context.Context, req DeliverRequest) (Record, Delivery, error) {
+	if s == nil {
+		return Record{}, Delivery{}, errors.New("stream store is nil")
 	}
 	streamID := strings.TrimSpace(req.StreamID)
-	if streamID == "" {
-		return Record{}, nil, ErrInvalidStream
+	readID := strings.TrimSpace(req.ReadID)
+	if streamID == "" || !readIDPattern.MatchString(readID) {
+		return Record{}, Delivery{}, ErrInvalidStream
 	}
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	release, err := s.lockStream(ctx, streamID)
+	if err != nil {
+		return Record{}, Delivery{}, err
+	}
+	defer release()
+	releaseWrite, err := s.lockWrite(ctx)
+	if err != nil {
+		return Record{}, Delivery{}, err
+	}
+	defer releaseWrite()
 
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return Record{}, nil, err
+		return Record{}, Delivery{}, err
 	}
 	defer rollbackUnlessCommitted(tx)
 
 	record, exists, err := getSQLiteStream(ctx, tx, streamID)
 	if err != nil {
-		return Record{}, nil, err
+		return Record{}, Delivery{}, err
 	}
 	if !exists {
-		return Record{}, nil, ErrNotFound
+		return Record{}, Delivery{}, ErrNotFound
 	}
-	events, err := listSQLiteStreamEvents(ctx, tx, streamID)
+	deliveryState, err := getSQLiteDeliveryState(ctx, tx, streamID)
 	if err != nil {
-		return Record{}, nil, err
+		return Record{}, Delivery{}, err
+	}
+	if deliveryState.Pending.DeliveryID != "" {
+		if deliveryState.Pending.ThroughSequence > 0 {
+			deliveryState.Pending.Events, err = listSQLiteStreamEventsThrough(ctx, tx, streamID, deliveryState.Pending.ThroughSequence)
+			if err != nil {
+				return Record{}, Delivery{}, err
+			}
+		}
+		if err := tx.Commit(); err != nil {
+			return Record{}, Delivery{}, err
+		}
+		return record, cloneDelivery(deliveryState.Pending), nil
+	}
+	events, err := listSQLiteStreamEvents(ctx, tx, streamID, req.MaxEvents, req.MaxBytes)
+	if err != nil {
+		return Record{}, Delivery{}, err
 	}
 	if len(events) == 0 {
-		if err := tx.Commit(); err != nil {
-			return Record{}, nil, err
+		if terminalStatus(record.Status) && !deliveryState.TerminalAcknowledged {
+			deliveryID, idErr := newDeliveryID()
+			if idErr != nil {
+				return Record{}, Delivery{}, idErr
+			}
+			deliveryState.Pending = Delivery{DeliveryID: deliveryID, ReadID: readID, StreamID: streamID, Done: true, TerminalStatus: record.Status}
+			if err := updateSQLiteDeliveryState(ctx, tx, streamID, deliveryState); err != nil {
+				return Record{}, Delivery{}, err
+			}
 		}
-		return record, nil, nil
-	}
-	limit := streamReadLimit(events, req.MaxEvents, req.MaxBytes)
-	if limit <= 0 {
 		if err := tx.Commit(); err != nil {
-			return Record{}, nil, err
+			return Record{}, Delivery{}, err
 		}
-		return record, nil, nil
+		delivery := deliveryState.Pending
+		if delivery.DeliveryID == "" {
+			delivery = Delivery{ReadID: readID, StreamID: streamID}
+		}
+		return record, cloneDelivery(delivery), nil
 	}
-	out := cloneEvents(events[:limit])
-	if err := deleteSQLiteStreamEvents(ctx, tx, streamID, out); err != nil {
-		return Record{}, nil, err
+	deliveryID, err := newDeliveryID()
+	if err != nil {
+		return Record{}, Delivery{}, err
 	}
-	record.BufferedBytes -= eventsBytes(out)
-	if record.BufferedBytes < 0 {
-		record.BufferedBytes = 0
+	throughSequence := events[len(events)-1].Sequence
+	var remaining bool
+	if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM plugin_stream_events WHERE stream_id = ? AND sequence > ? LIMIT 1)`, streamID, throughSequence).Scan(&remaining); err != nil {
+		return Record{}, Delivery{}, err
 	}
-	record.UpdatedAt = time.Now().UTC()
-	if err := upsertSQLiteStream(ctx, tx, record); err != nil {
-		return Record{}, nil, err
+	deliveryState.Pending = Delivery{
+		DeliveryID:      deliveryID,
+		ReadID:          readID,
+		StreamID:        streamID,
+		ThroughSequence: throughSequence,
+		Events:          cloneEvents(events),
+		Done:            terminalStatus(record.Status) && !remaining,
+	}
+	if deliveryState.Pending.Done {
+		deliveryState.Pending.TerminalStatus = record.Status
+	}
+	if err := updateSQLiteDeliveryState(ctx, tx, streamID, deliveryState); err != nil {
+		return Record{}, Delivery{}, err
 	}
 	if err := tx.Commit(); err != nil {
-		return Record{}, nil, err
+		return Record{}, Delivery{}, err
 	}
-	return record, out, nil
+	return record, cloneDelivery(deliveryState.Pending), nil
 }
 
-func (s *SQLiteStore) Peek(ctx context.Context, req ReadRequest) (Record, []Event, error) {
+func (s *SQLiteStore) Acknowledge(ctx context.Context, req AcknowledgeRequest) (Record, error) {
 	if s == nil {
-		return Record{}, nil, errors.New("stream store is nil")
+		return Record{}, errors.New("stream store is nil")
 	}
 	streamID := strings.TrimSpace(req.StreamID)
-	if streamID == "" {
-		return Record{}, nil, ErrInvalidStream
+	deliveryID := strings.TrimSpace(req.DeliveryID)
+	if streamID == "" || deliveryID == "" {
+		return Record{}, ErrInvalidStream
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	record, exists, err := getSQLiteStream(ctx, s.db, streamID)
+	release, err := s.lockStream(ctx, streamID)
 	if err != nil {
-		return Record{}, nil, err
+		return Record{}, err
+	}
+	defer release()
+	releaseWrite, err := s.lockWrite(ctx)
+	if err != nil {
+		return Record{}, err
+	}
+	defer releaseWrite()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Record{}, err
+	}
+	defer rollbackUnlessCommitted(tx)
+	record, exists, err := getSQLiteStream(ctx, tx, streamID)
+	if err != nil {
+		return Record{}, err
 	}
 	if !exists {
-		return Record{}, nil, ErrNotFound
+		return Record{}, ErrNotFound
 	}
-	events, err := listSQLiteStreamEvents(ctx, s.db, streamID)
+	deliveryState, err := getSQLiteDeliveryState(ctx, tx, streamID)
 	if err != nil {
-		return Record{}, nil, err
+		return Record{}, err
 	}
-	limit := streamReadLimit(events, req.MaxEvents, req.MaxBytes)
-	return record, cloneEvents(events[:limit]), nil
+	if deliveryState.Pending.DeliveryID != deliveryID {
+		if deliveryState.LastAcknowledgedID == deliveryID {
+			if err := tx.Commit(); err != nil {
+				return Record{}, err
+			}
+			return record, nil
+		}
+		return Record{}, ErrDeliveryInvalid
+	}
+	if deliveryState.Pending.ThroughSequence > 0 {
+		acknowledgedBytes, costErr := sqliteStreamEventsCostThrough(ctx, tx, streamID, deliveryState.Pending.ThroughSequence)
+		if costErr != nil {
+			return Record{}, costErr
+		}
+		if err := deleteSQLiteStreamEvents(ctx, tx, streamID, deliveryState.Pending.ThroughSequence); err != nil {
+			return Record{}, err
+		}
+		record.BufferedBytes -= acknowledgedBytes
+		if record.BufferedBytes < 0 {
+			record.BufferedBytes = 0
+		}
+		record.UpdatedAt = time.Now().UTC()
+		if err := updateSQLiteStreamState(ctx, tx, record); err != nil {
+			return Record{}, err
+		}
+	}
+	deliveryState.LastAcknowledgedID = deliveryID
+	if deliveryState.Pending.Done {
+		deliveryState.TerminalAcknowledged = true
+	}
+	deliveryState.Pending = Delivery{}
+	if err := updateSQLiteDeliveryState(ctx, tx, streamID, deliveryState); err != nil {
+		return Record{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return Record{}, mutation.Unknown(err)
+	}
+	s.notifyStream(streamID)
+	return record, nil
 }
 
 func (s *SQLiteStore) Close(ctx context.Context, req CloseRequest) (Record, error) {
@@ -321,12 +516,17 @@ func (s *SQLiteStore) Close(ctx context.Context, req CloseRequest) (Record, erro
 	if !terminalStatus(status) {
 		return Record{}, ErrInvalidStream
 	}
+	failureCode, reason, err := normalizeTerminalOutcome(status, req.FailureCode, req.Reason)
+	if err != nil {
+		return Record{}, err
+	}
 	return s.update(ctx, strings.TrimSpace(req.StreamID), now, func(record Record) Record {
 		if record.Status != StatusOpen {
 			return record
 		}
 		record.Status = status
-		record.Reason = req.Reason
+		record.FailureCode = failureCode
+		record.Reason = reason
 		record.UpdatedAt = now
 		record.ClosedAt = &now
 		return record
@@ -340,6 +540,10 @@ func (s *SQLiteStore) MarkPluginTransition(ctx context.Context, req PluginTransi
 	if !terminalStatus(req.Status) {
 		return nil, ErrInvalidStream
 	}
+	failureCode, reason, err := normalizeTerminalOutcome(req.Status, req.FailureCode, req.Reason)
+	if err != nil {
+		return nil, err
+	}
 	pluginInstanceID := strings.TrimSpace(req.PluginInstanceID)
 	if pluginInstanceID == "" {
 		return nil, ErrInvalidStream
@@ -348,9 +552,11 @@ func (s *SQLiteStore) MarkPluginTransition(ctx context.Context, req PluginTransi
 	if now.IsZero() {
 		now = time.Now().UTC()
 	}
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	releaseWrite, err := s.lockWrite(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer releaseWrite()
 
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -368,10 +574,11 @@ func (s *SQLiteStore) MarkPluginTransition(ctx context.Context, req PluginTransi
 			continue
 		}
 		record.Status = req.Status
-		record.Reason = req.Reason
+		record.FailureCode = failureCode
+		record.Reason = reason
 		record.UpdatedAt = now
 		record.ClosedAt = &now
-		if err := upsertSQLiteStream(ctx, tx, record); err != nil {
+		if err := updateSQLiteStreamState(ctx, tx, record); err != nil {
 			return nil, err
 		}
 		changed = append(changed, record)
@@ -379,13 +586,108 @@ func (s *SQLiteStore) MarkPluginTransition(ctx context.Context, req PluginTransi
 	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
+	for _, record := range changed {
+		s.notifyStream(record.StreamID)
+	}
 	sortStreams(changed)
 	return changed, nil
 }
 
+func (s *SQLiteStore) Prune(ctx context.Context, req PruneRequest) (PruneResult, error) {
+	if s == nil {
+		return PruneResult{}, errors.New("stream store is nil")
+	}
+	before, limit, maxRecordsPerPlugin, err := normalizePruneRequest(req)
+	if err != nil {
+		return PruneResult{}, err
+	}
+	releaseWrite, err := s.lockWrite(ctx)
+	if err != nil {
+		return PruneResult{}, err
+	}
+	defer releaseWrite()
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return PruneResult{}, err
+	}
+	defer rollbackUnlessCommitted(tx)
+	rows, err := tx.QueryContext(ctx, `
+WITH ranked_terminal AS (
+	SELECT
+		stream_id,
+		closed_at,
+		ROW_NUMBER() OVER (
+			PARTITION BY plugin_instance_id
+			ORDER BY closed_at DESC, stream_id DESC
+		) AS terminal_rank
+	FROM plugin_streams
+	WHERE status IN (?, ?, ?, ?, ?)
+		AND closed_at IS NOT NULL
+		AND terminal_acknowledged = 1
+		AND pending_delivery_id = ''
+		AND buffered_bytes = 0
+		AND NOT EXISTS (
+			SELECT 1 FROM plugin_stream_events WHERE plugin_stream_events.stream_id = plugin_streams.stream_id
+		)
+)
+SELECT stream_id
+FROM ranked_terminal
+WHERE closed_at < ? OR terminal_rank > ?
+ORDER BY closed_at ASC, stream_id ASC
+LIMIT ?`,
+		string(StatusClosed),
+		string(StatusCanceled),
+		string(StatusFailed),
+		string(StatusOrphanedDisabled),
+		string(StatusOrphanedRemoved),
+		before.UnixNano(),
+		maxRecordsPerPlugin,
+		limit,
+	)
+	if err != nil {
+		return PruneResult{}, err
+	}
+	streamIDs := make([]string, 0)
+	for rows.Next() {
+		var streamID string
+		if err := rows.Scan(&streamID); err != nil {
+			_ = rows.Close()
+			return PruneResult{}, err
+		}
+		streamIDs = append(streamIDs, streamID)
+	}
+	if err := rows.Close(); err != nil {
+		return PruneResult{}, err
+	}
+	if err := rows.Err(); err != nil {
+		return PruneResult{}, err
+	}
+	for _, streamID := range streamIDs {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM plugin_streams WHERE stream_id = ?`, streamID); err != nil {
+			return PruneResult{}, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return PruneResult{}, mutation.Unknown(err)
+	}
+	for _, streamID := range streamIDs {
+		s.removeNotification(streamID)
+	}
+	return PruneResult{Deleted: len(streamIDs)}, nil
+}
+
 func (s *SQLiteStore) update(ctx context.Context, streamID string, now time.Time, mutate func(Record) Record) (Record, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	release, err := s.lockStream(ctx, streamID)
+	if err != nil {
+		return Record{}, err
+	}
+	defer release()
+	releaseWrite, err := s.lockWrite(ctx)
+	if err != nil {
+		return Record{}, err
+	}
+	defer releaseWrite()
 
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -400,27 +702,35 @@ func (s *SQLiteStore) update(ctx context.Context, streamID string, now time.Time
 	if !exists {
 		return Record{}, ErrNotFound
 	}
+	previousStatus := record.Status
 	record = mutate(record)
 	record.UpdatedAt = now
-	if err := upsertSQLiteStream(ctx, tx, record); err != nil {
+	if err := updateSQLiteStreamState(ctx, tx, record); err != nil {
 		return Record{}, err
 	}
 	if err := tx.Commit(); err != nil {
 		return Record{}, err
 	}
+	if previousStatus != record.Status {
+		s.notifyStream(record.StreamID)
+	}
 	return record, nil
 }
 
-func (s *SQLiteStore) migrate(ctx context.Context) error {
+func (s *SQLiteStore) initializeSchema(ctx context.Context) error {
 	if _, err := s.db.ExecContext(ctx, `PRAGMA busy_timeout = 5000`); err != nil {
 		return err
 	}
 	if _, err := s.db.ExecContext(ctx, `PRAGMA foreign_keys = ON`); err != nil {
 		return err
 	}
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	var journalMode string
+	if err := s.db.QueryRowContext(ctx, `PRAGMA journal_mode = WAL`).Scan(&journalMode); err != nil {
+		return err
+	}
+	if !strings.EqualFold(journalMode, "wal") {
+		return errors.New("sqlite stream store requires WAL journal mode")
+	}
 
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -428,20 +738,6 @@ func (s *SQLiteStore) migrate(ctx context.Context) error {
 	}
 	defer rollbackUnlessCommitted(tx)
 
-	if _, err := tx.ExecContext(ctx, `
-CREATE TABLE IF NOT EXISTS plugin_stream_schema_migrations (
-	version INTEGER PRIMARY KEY,
-	applied_at INTEGER NOT NULL
-)`); err != nil {
-		return err
-	}
-	maxVersion := 0
-	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(version), 0) FROM plugin_stream_schema_migrations`).Scan(&maxVersion); err != nil {
-		return err
-	}
-	if maxVersion > sqliteSchemaVersion {
-		return fmt.Errorf("sqlite stream schema version %d is newer than supported version %d", maxVersion, sqliteSchemaVersion)
-	}
 	if _, err := tx.ExecContext(ctx, `
 CREATE TABLE IF NOT EXISTS plugin_streams (
 	stream_id TEXT PRIMARY KEY,
@@ -453,36 +749,30 @@ CREATE TABLE IF NOT EXISTS plugin_streams (
 	surface_instance_id TEXT NOT NULL,
 	owner_session_hash TEXT NOT NULL,
 	owner_user_hash TEXT NOT NULL,
+	owner_env_hash TEXT NOT NULL,
 	session_channel_id_hash TEXT NOT NULL,
 	bridge_channel_id TEXT NOT NULL,
 	execution_binding_json TEXT NOT NULL DEFAULT '{}',
 	direction TEXT NOT NULL,
-	status TEXT NOT NULL,
-	reason TEXT NOT NULL DEFAULT '',
+		status TEXT NOT NULL,
+		failure_code TEXT NOT NULL,
+		reason TEXT NOT NULL DEFAULT '',
 	content_type TEXT NOT NULL,
-	max_buffered_bytes INTEGER NOT NULL,
-	buffered_bytes INTEGER NOT NULL,
-	created_at INTEGER NOT NULL,
+		max_buffered_bytes INTEGER NOT NULL,
+		buffered_bytes INTEGER NOT NULL,
+		next_sequence INTEGER NOT NULL,
+		pending_delivery_id TEXT NOT NULL,
+		pending_read_id TEXT NOT NULL,
+		pending_through_sequence INTEGER NOT NULL,
+		pending_done INTEGER NOT NULL,
+		pending_terminal_status TEXT NOT NULL,
+		last_acknowledged_delivery_id TEXT NOT NULL,
+		terminal_acknowledged INTEGER NOT NULL,
+		created_at INTEGER NOT NULL,
 	updated_at INTEGER NOT NULL,
 	closed_at INTEGER
 )`); err != nil {
 		return err
-	}
-	if maxVersion < 2 {
-		if _, err := tx.ExecContext(ctx, `ALTER TABLE plugin_streams ADD COLUMN execution_binding_json TEXT NOT NULL DEFAULT '{}'`); err != nil && !strings.Contains(err.Error(), "duplicate column name") {
-			return err
-		}
-		if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO plugin_stream_schema_migrations(version, applied_at) VALUES(?, ?)`, 2, time.Now().UTC().UnixNano()); err != nil {
-			return err
-		}
-	}
-	if maxVersion < 3 {
-		if _, err := tx.ExecContext(ctx, `ALTER TABLE plugin_streams ADD COLUMN reason TEXT NOT NULL DEFAULT ''`); err != nil && !strings.Contains(err.Error(), "duplicate column name") {
-			return err
-		}
-		if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO plugin_stream_schema_migrations(version, applied_at) VALUES(?, ?)`, 3, time.Now().UTC().UnixNano()); err != nil {
-			return err
-		}
 	}
 	if _, err := tx.ExecContext(ctx, `
 CREATE TABLE IF NOT EXISTS plugin_stream_events (
@@ -500,16 +790,8 @@ CREATE TABLE IF NOT EXISTS plugin_stream_events (
 	if _, err := tx.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_plugin_streams_plugin_instance ON plugin_streams(plugin_instance_id, created_at, stream_id)`); err != nil {
 		return err
 	}
-	if _, err := tx.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_plugin_streams_status ON plugin_streams(status)`); err != nil {
+	if _, err := tx.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_plugin_streams_terminal_retention ON plugin_streams(plugin_instance_id, closed_at DESC, stream_id DESC) WHERE terminal_acknowledged = 1`); err != nil {
 		return err
-	}
-	if _, err := tx.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_plugin_stream_events_stream_sequence ON plugin_stream_events(stream_id, sequence)`); err != nil {
-		return err
-	}
-	if maxVersion < sqliteSchemaVersion {
-		if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO plugin_stream_schema_migrations(version, applied_at) VALUES(?, ?)`, sqliteSchemaVersion, time.Now().UTC().UnixNano()); err != nil {
-			return err
-		}
 	}
 	return tx.Commit()
 }
@@ -517,8 +799,8 @@ CREATE TABLE IF NOT EXISTS plugin_stream_events (
 const streamSelectColumns = `
 SELECT
 	stream_id, plugin_id, plugin_instance_id, method, effect, execution,
-	surface_instance_id, owner_session_hash, owner_user_hash,
-	session_channel_id_hash, bridge_channel_id, execution_binding_json, direction, status, reason, content_type,
+	surface_instance_id, owner_session_hash, owner_user_hash, owner_env_hash,
+	session_channel_id_hash, bridge_channel_id, execution_binding_json, direction, status, failure_code, reason, content_type,
 	max_buffered_bytes, buffered_bytes, created_at, updated_at, closed_at`
 
 func getSQLiteStream(ctx context.Context, q sqliteQuerier, streamID string) (Record, bool, error) {
@@ -554,7 +836,7 @@ func listSQLiteStreamsByPluginInstance(ctx context.Context, q sqliteQuerier, plu
 	return records, nil
 }
 
-func upsertSQLiteStream(ctx context.Context, tx *sql.Tx, record Record) error {
+func insertSQLiteStream(ctx context.Context, tx *sql.Tx, record Record) error {
 	bindingJSON, err := json.Marshal(record.ExecutionBinding)
 	if err != nil {
 		return err
@@ -562,31 +844,13 @@ func upsertSQLiteStream(ctx context.Context, tx *sql.Tx, record Record) error {
 	_, err = tx.ExecContext(ctx, `
 INSERT INTO plugin_streams (
 	stream_id, plugin_id, plugin_instance_id, method, effect, execution,
-	surface_instance_id, owner_session_hash, owner_user_hash,
-	session_channel_id_hash, bridge_channel_id, execution_binding_json, direction, status, reason, content_type,
-	max_buffered_bytes, buffered_bytes, created_at, updated_at, closed_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-ON CONFLICT(stream_id) DO UPDATE SET
-	plugin_id = excluded.plugin_id,
-	plugin_instance_id = excluded.plugin_instance_id,
-	method = excluded.method,
-	effect = excluded.effect,
-	execution = excluded.execution,
-	surface_instance_id = excluded.surface_instance_id,
-	owner_session_hash = excluded.owner_session_hash,
-	owner_user_hash = excluded.owner_user_hash,
-	session_channel_id_hash = excluded.session_channel_id_hash,
-	bridge_channel_id = excluded.bridge_channel_id,
-	execution_binding_json = excluded.execution_binding_json,
-	direction = excluded.direction,
-	status = excluded.status,
-	reason = excluded.reason,
-	content_type = excluded.content_type,
-	max_buffered_bytes = excluded.max_buffered_bytes,
-	buffered_bytes = excluded.buffered_bytes,
-	created_at = excluded.created_at,
-	updated_at = excluded.updated_at,
-	closed_at = excluded.closed_at`,
+	surface_instance_id, owner_session_hash, owner_user_hash, owner_env_hash,
+			session_channel_id_hash, bridge_channel_id, execution_binding_json, direction, status, failure_code, reason, content_type,
+		max_buffered_bytes, buffered_bytes, next_sequence,
+		pending_delivery_id, pending_read_id, pending_through_sequence, pending_done, pending_terminal_status,
+		last_acknowledged_delivery_id, terminal_acknowledged,
+		created_at, updated_at, closed_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		record.StreamID,
 		record.PluginID,
 		record.PluginInstanceID,
@@ -596,15 +860,25 @@ ON CONFLICT(stream_id) DO UPDATE SET
 		record.SurfaceInstanceID,
 		record.OwnerSessionHash,
 		record.OwnerUserHash,
+		record.OwnerEnvHash,
 		record.SessionChannelIDHash,
 		record.BridgeChannelID,
 		string(bindingJSON),
 		string(record.Direction),
 		string(record.Status),
+		string(record.FailureCode),
 		record.Reason,
 		record.ContentType,
 		record.MaxBufferedBytes,
 		record.BufferedBytes,
+		1,
+		"",
+		"",
+		0,
+		false,
+		"",
+		"",
+		false,
 		record.CreatedAt.UTC().UnixNano(),
 		record.UpdatedAt.UTC().UnixNano(),
 		timePtrToNullableUnix(record.ClosedAt),
@@ -612,12 +886,66 @@ ON CONFLICT(stream_id) DO UPDATE SET
 	return err
 }
 
+func updateSQLiteStreamState(ctx context.Context, tx *sql.Tx, record Record) error {
+	_, err := tx.ExecContext(ctx, `
+UPDATE plugin_streams
+SET status = ?, failure_code = ?, reason = ?, buffered_bytes = ?, updated_at = ?, closed_at = ?
+WHERE stream_id = ?`,
+		string(record.Status),
+		string(record.FailureCode),
+		record.Reason,
+		record.BufferedBytes,
+		record.UpdatedAt.UTC().UnixNano(),
+		timePtrToNullableUnix(record.ClosedAt),
+		record.StreamID,
+	)
+	return err
+}
+
 func nextSQLiteStreamSequence(ctx context.Context, q sqliteQuerier, streamID string) (uint64, error) {
 	var sequence uint64
-	if err := q.QueryRowContext(ctx, `SELECT COALESCE(MAX(sequence), 0) + 1 FROM plugin_stream_events WHERE stream_id = ?`, streamID).Scan(&sequence); err != nil {
+	if err := q.QueryRowContext(ctx, `SELECT next_sequence FROM plugin_streams WHERE stream_id = ?`, streamID).Scan(&sequence); err != nil {
 		return 0, err
 	}
 	return sequence, nil
+}
+
+func getSQLiteDeliveryState(ctx context.Context, q sqliteQuerier, streamID string) (sqliteDeliveryState, error) {
+	var state sqliteDeliveryState
+	if err := q.QueryRowContext(ctx, `
+SELECT pending_delivery_id, pending_read_id, pending_through_sequence, pending_done,
+	pending_terminal_status, last_acknowledged_delivery_id, terminal_acknowledged
+FROM plugin_streams WHERE stream_id = ?`, streamID).Scan(
+		&state.Pending.DeliveryID,
+		&state.Pending.ReadID,
+		&state.Pending.ThroughSequence,
+		&state.Pending.Done,
+		&state.Pending.TerminalStatus,
+		&state.LastAcknowledgedID,
+		&state.TerminalAcknowledged,
+	); err != nil {
+		return sqliteDeliveryState{}, err
+	}
+	state.Pending.StreamID = streamID
+	return state, nil
+}
+
+func updateSQLiteDeliveryState(ctx context.Context, tx *sql.Tx, streamID string, state sqliteDeliveryState) error {
+	_, err := tx.ExecContext(ctx, `
+UPDATE plugin_streams
+SET pending_delivery_id = ?, pending_read_id = ?, pending_through_sequence = ?, pending_done = ?,
+	pending_terminal_status = ?, last_acknowledged_delivery_id = ?, terminal_acknowledged = ?
+WHERE stream_id = ?`,
+		state.Pending.DeliveryID,
+		state.Pending.ReadID,
+		state.Pending.ThroughSequence,
+		state.Pending.Done,
+		string(state.Pending.TerminalStatus),
+		state.LastAcknowledgedID,
+		state.TerminalAcknowledged,
+		streamID,
+	)
+	return err
 }
 
 func insertSQLiteStreamEvent(ctx context.Context, tx *sql.Tx, event Event) error {
@@ -634,8 +962,38 @@ VALUES(?, ?, ?, ?, ?, ?)`,
 	return err
 }
 
-func listSQLiteStreamEvents(ctx context.Context, q sqliteQuerier, streamID string) ([]Event, error) {
-	rows, err := q.QueryContext(ctx, `SELECT stream_id, sequence, kind, data, error, at FROM plugin_stream_events WHERE stream_id = ? ORDER BY sequence ASC`, streamID)
+func listSQLiteStreamEvents(ctx context.Context, q sqliteQuerier, streamID string, maxEvents int, maxBytes int64) ([]Event, error) {
+	limit := maxEvents
+	if limit <= 0 || limit > maxSQLiteReadEvents {
+		limit = maxSQLiteReadEvents
+	}
+	rows, err := q.QueryContext(ctx, `SELECT stream_id, sequence, kind, data, error, at FROM plugin_stream_events WHERE stream_id = ? ORDER BY sequence ASC LIMIT ?`, streamID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	events := []Event{}
+	var totalBytes int64
+	for rows.Next() {
+		event, err := scanSQLiteStreamEvent(rows)
+		if err != nil {
+			return nil, err
+		}
+		eventBytes := streamEventCost(event)
+		if maxBytes > 0 && len(events) > 0 && totalBytes+eventBytes > maxBytes {
+			break
+		}
+		events = append(events, event)
+		totalBytes += eventBytes
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return events, nil
+}
+
+func listSQLiteStreamEventsThrough(ctx context.Context, q sqliteQuerier, streamID string, throughSequence uint64) ([]Event, error) {
+	rows, err := q.QueryContext(ctx, `SELECT stream_id, sequence, kind, data, error, at FROM plugin_stream_events WHERE stream_id = ? AND sequence <= ? ORDER BY sequence ASC`, streamID, throughSequence)
 	if err != nil {
 		return nil, err
 	}
@@ -654,13 +1012,111 @@ func listSQLiteStreamEvents(ctx context.Context, q sqliteQuerier, streamID strin
 	return events, nil
 }
 
-func deleteSQLiteStreamEvents(ctx context.Context, tx *sql.Tx, streamID string, events []Event) error {
-	for _, event := range events {
-		if _, err := tx.ExecContext(ctx, `DELETE FROM plugin_stream_events WHERE stream_id = ? AND sequence = ?`, streamID, event.Sequence); err != nil {
-			return err
-		}
+func sqliteStreamEventsCostThrough(ctx context.Context, q sqliteQuerier, streamID string, throughSequence uint64) (int64, error) {
+	var total int64
+	if err := q.QueryRowContext(ctx, `
+SELECT COALESCE(SUM(
+	? + LENGTH(CAST(kind AS BLOB)) + COALESCE(LENGTH(data), 0) + LENGTH(CAST(error AS BLOB))
+), 0)
+FROM plugin_stream_events
+WHERE stream_id = ? AND sequence <= ?`, streamEventOverheadBytes, streamID, throughSequence).Scan(&total); err != nil {
+		return 0, err
 	}
-	return nil
+	return total, nil
+}
+
+func deleteSQLiteStreamEvents(ctx context.Context, tx *sql.Tx, streamID string, throughSequence uint64) error {
+	_, err := tx.ExecContext(ctx, `DELETE FROM plugin_stream_events WHERE stream_id = ? AND sequence <= ?`, streamID, throughSequence)
+	return err
+}
+
+func (s *SQLiteStore) notification(streamID string) *streamNotification {
+	s.notifyMu.Lock()
+	defer s.notifyMu.Unlock()
+	notification := s.notify[streamID]
+	if notification == nil {
+		notification = &streamNotification{ready: make(chan struct{})}
+		s.notify[streamID] = notification
+	}
+	notification.waiters++
+	return notification
+}
+
+func (s *SQLiteStore) releaseNotification(streamID string, notification *streamNotification) {
+	s.notifyMu.Lock()
+	defer s.notifyMu.Unlock()
+	if notification.waiters > 0 {
+		notification.waiters--
+	}
+	if notification.waiters == 0 && s.notify[streamID] == notification {
+		delete(s.notify, streamID)
+	}
+}
+
+func (s *SQLiteStore) notifyStream(streamID string) {
+	s.notifyMu.Lock()
+	defer s.notifyMu.Unlock()
+	notification := s.notify[streamID]
+	if notification == nil {
+		return
+	}
+	delete(s.notify, streamID)
+	close(notification.ready)
+}
+
+func (s *SQLiteStore) removeNotification(streamID string) {
+	s.notifyMu.Lock()
+	notification := s.notify[streamID]
+	delete(s.notify, streamID)
+	if notification != nil {
+		close(notification.ready)
+	}
+	s.notifyMu.Unlock()
+}
+
+func (s *SQLiteStore) lockStream(ctx context.Context, streamID string) (func(), error) {
+	streamID = strings.TrimSpace(streamID)
+	if streamID == "" {
+		return nil, ErrInvalidStream
+	}
+	s.lockTableMu.Lock()
+	lock := s.locks[streamID]
+	if lock == nil {
+		lock = &sqliteStreamLock{token: make(chan struct{}, 1)}
+		lock.token <- struct{}{}
+		s.locks[streamID] = lock
+	}
+	lock.refs++
+	s.lockTableMu.Unlock()
+
+	select {
+	case <-ctx.Done():
+		s.releaseStreamLockRef(streamID, lock)
+		return nil, ctx.Err()
+	case <-lock.token:
+		return func() {
+			lock.token <- struct{}{}
+			s.releaseStreamLockRef(streamID, lock)
+		}, nil
+	}
+}
+
+func (s *SQLiteStore) releaseStreamLockRef(streamID string, lock *sqliteStreamLock) {
+	s.lockTableMu.Lock()
+	defer s.lockTableMu.Unlock()
+	lock.refs--
+	if lock.refs == 0 && s.locks[streamID] == lock {
+		delete(s.locks, streamID)
+	}
+}
+
+func (s *SQLiteStore) lockWrite(ctx context.Context) (func(), error) {
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-s.writeGate:
+		return func() { s.writeGate <- struct{}{} }, nil
+	}
 }
 
 type sqliteQuerier interface {
@@ -690,11 +1146,13 @@ func scanSQLiteStream(scanner sqliteStreamScanner) (Record, error) {
 		&record.SurfaceInstanceID,
 		&record.OwnerSessionHash,
 		&record.OwnerUserHash,
+		&record.OwnerEnvHash,
 		&record.SessionChannelIDHash,
 		&record.BridgeChannelID,
 		&bindingJSON,
 		&direction,
 		&status,
+		&record.FailureCode,
 		&record.Reason,
 		&record.ContentType,
 		&record.MaxBufferedBytes,

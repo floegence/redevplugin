@@ -5,15 +5,12 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"strings"
 	"sync"
 	"time"
 
 	_ "modernc.org/sqlite"
 )
-
-const sqliteSchemaVersion = 1
 
 const installStageSelectColumns = `
 SELECT stage_id, action, status, plugin_instance_id, publisher_id, plugin_id, version,
@@ -36,7 +33,7 @@ func NewSQLiteStore(ctx context.Context, path string) (*SQLiteStore, error) {
 	}
 	db.SetMaxOpenConns(1)
 	store := &SQLiteStore{db: db}
-	if err := store.migrate(ctx); err != nil {
+	if err := store.initializeSchema(ctx); err != nil {
 		_ = db.Close()
 		return nil, err
 	}
@@ -319,7 +316,7 @@ func (s *SQLiteStore) update(ctx context.Context, stageID string, now time.Time,
 	return updated, nil
 }
 
-func (s *SQLiteStore) migrate(ctx context.Context) error {
+func (s *SQLiteStore) initializeSchema(ctx context.Context) error {
 	if _, err := s.db.ExecContext(ctx, `PRAGMA busy_timeout = 5000`); err != nil {
 		return err
 	}
@@ -335,20 +332,6 @@ func (s *SQLiteStore) migrate(ctx context.Context) error {
 		return err
 	}
 	defer rollbackUnlessCommitted(tx)
-	if _, err := tx.ExecContext(ctx, `
-CREATE TABLE IF NOT EXISTS plugin_install_stage_schema_migrations (
-	version INTEGER PRIMARY KEY,
-	applied_at INTEGER NOT NULL
-)`); err != nil {
-		return err
-	}
-	maxVersion := 0
-	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(version), 0) FROM plugin_install_stage_schema_migrations`).Scan(&maxVersion); err != nil {
-		return err
-	}
-	if maxVersion > sqliteSchemaVersion {
-		return fmt.Errorf("sqlite install stage schema version %d is newer than supported version %d", maxVersion, sqliteSchemaVersion)
-	}
 	if _, err := tx.ExecContext(ctx, `
 CREATE TABLE IF NOT EXISTS plugin_install_stages (
 	stage_id TEXT PRIMARY KEY,
@@ -378,11 +361,6 @@ CREATE TABLE IF NOT EXISTS plugin_install_stages (
 	}
 	if _, err := tx.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_plugin_install_stages_status_expiry ON plugin_install_stages(status, expires_at)`); err != nil {
 		return err
-	}
-	if maxVersion < sqliteSchemaVersion {
-		if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO plugin_install_stage_schema_migrations(version, applied_at) VALUES(?, ?)`, sqliteSchemaVersion, time.Now().UTC().UnixNano()); err != nil {
-			return err
-		}
 	}
 	return tx.Commit()
 }

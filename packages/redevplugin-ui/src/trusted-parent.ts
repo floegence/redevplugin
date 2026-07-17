@@ -51,4 +51,4 @@ export type {
   TrustedParentBridgeTokenRequest,
   WindowLike,
 } from "./surface.js";
-export type { FetchInitLike, FetchLike, FetchResponseLike, HostEnvelope } from "./http.js";
+export type { FetchInitLike, FetchLike, FetchResponseLike, PlatformResponse } from "./http.js";

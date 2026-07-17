@@ -11,8 +11,6 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-const sqliteRuntimeLeaseReplaySchemaVersion = 1
-
 type SQLiteRuntimeLeaseReplayStore struct {
 	db *sql.DB
 	mu sync.Mutex
@@ -28,7 +26,7 @@ func NewSQLiteRuntimeLeaseReplayStore(ctx context.Context, path string) (*SQLite
 	}
 	db.SetMaxOpenConns(1)
 	store := &SQLiteRuntimeLeaseReplayStore{db: db}
-	if err := store.migrate(ctx); err != nil {
+	if err := store.initializeSchema(ctx); err != nil {
 		_ = db.Close()
 		return nil, err
 	}
@@ -118,7 +116,7 @@ func (s *SQLiteRuntimeLeaseReplayStore) ListRuntimeLeaseReplays(ctx context.Cont
 	return records, nil
 }
 
-func (s *SQLiteRuntimeLeaseReplayStore) migrate(ctx context.Context) error {
+func (s *SQLiteRuntimeLeaseReplayStore) initializeSchema(ctx context.Context) error {
 	if _, err := s.db.ExecContext(ctx, `PRAGMA busy_timeout = 5000`); err != nil {
 		return err
 	}
@@ -135,20 +133,6 @@ func (s *SQLiteRuntimeLeaseReplayStore) migrate(ctx context.Context) error {
 	}
 	defer rollbackUnlessCommitted(tx)
 	if _, err := tx.ExecContext(ctx, `
-CREATE TABLE IF NOT EXISTS plugin_runtime_lease_replay_schema_migrations (
-	version INTEGER PRIMARY KEY,
-	applied_at INTEGER NOT NULL
-)`); err != nil {
-		return err
-	}
-	var maxVersion int
-	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(version), 0) FROM plugin_runtime_lease_replay_schema_migrations`).Scan(&maxVersion); err != nil {
-		return err
-	}
-	if maxVersion > sqliteRuntimeLeaseReplaySchemaVersion {
-		return errors.New("sqlite runtime lease replay store schema is newer than this binary")
-	}
-	if _, err := tx.ExecContext(ctx, `
 CREATE TABLE IF NOT EXISTS plugin_runtime_lease_replays (
 	lease_nonce_hash TEXT PRIMARY KEY,
 	lease_id TEXT NOT NULL,
@@ -164,9 +148,6 @@ CREATE TABLE IF NOT EXISTS plugin_runtime_lease_replays (
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_runtime_lease_replays_plugin ON plugin_runtime_lease_replays(plugin_instance_id, consumed_at)`); err != nil {
-		return err
-	}
-	if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO plugin_runtime_lease_replay_schema_migrations(version, applied_at) VALUES (?, ?)`, sqliteRuntimeLeaseReplaySchemaVersion, time.Now().UTC().UnixNano()); err != nil {
 		return err
 	}
 	return tx.Commit()

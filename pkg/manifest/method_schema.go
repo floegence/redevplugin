@@ -18,7 +18,7 @@ const (
 )
 
 var allowedMethodSchemaKeywords = map[string]struct{}{
-	"$comment": {}, "title": {}, "description": {}, "deprecated": {}, "readOnly": {}, "writeOnly": {},
+	"$comment": {}, "title": {}, "description": {}, "readOnly": {}, "writeOnly": {},
 	"$ref": {}, "$defs": {}, "type": {}, "properties": {}, "patternProperties": {}, "required": {}, "additionalProperties": {},
 	"items": {}, "allOf": {}, "anyOf": {}, "oneOf": {}, "enum": {}, "const": {},
 	"default": {}, "examples": {}, "minimum": {}, "maximum": {}, "exclusiveMinimum": {},

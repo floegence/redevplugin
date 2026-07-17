@@ -2,8 +2,9 @@ use redevplugin_worker_sdk::storage::sqlite::{
     self, ExecRequest, ExecResponse, QueryRequest, QueryResponse, Value as SQLiteValue,
 };
 use redevplugin_worker_sdk::{WorkerError, WorkerRequest, WorkerResult, export_worker};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 use std::collections::HashSet;
 
 const STORE_ID: &str = "memos";
@@ -13,8 +14,10 @@ const MAX_CONTENT_CHARS: usize = 20_000;
 const MAX_QUERY_CHARS: usize = 200;
 const MAX_TAGS: usize = 32;
 const MAX_TAG_LENGTH: usize = 40;
-const TAG_BACKFILL_BATCH: usize = 20;
-const MAX_SQLITE_RESPONSE_BYTES: u64 = 393_216;
+const CURSOR_PREFIX: &str = "memos_cursor_v1_";
+const MAX_CURSOR_CHARS: usize = 1024;
+const MEMO_CURSOR_CLAUSE: &str =
+    "(pinned < ? OR (pinned = ? AND created_at < ?) OR (pinned = ? AND created_at = ? AND id < ?))";
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -36,10 +39,28 @@ struct ListParams {
     date: String,
     #[serde(default)]
     utc_offset_minutes: i32,
-    #[serde(default)]
-    offset: usize,
+    cursor: Option<String>,
     #[serde(default = "default_page_size")]
     limit: usize,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct MemoCursorPayload {
+    version: u8,
+    filter_sha256: String,
+    pinned: bool,
+    created_at: String,
+    id: String,
+}
+
+#[derive(Serialize)]
+struct MemoFilterFingerprint<'a> {
+    query: &'a str,
+    view: &'a str,
+    tag: &'a str,
+    date: &'a str,
+    utc_offset_minutes: i32,
 }
 
 #[derive(Deserialize)]
@@ -106,7 +127,7 @@ fn bootstrap(params: BootstrapParams) -> WorkerResult {
         tag: String::new(),
         date: String::new(),
         utc_offset_minutes: params.utc_offset_minutes,
-        offset: 0,
+        cursor: None,
         limit: default_page_size(),
     })?;
     let facet_data = facets(FacetsParams {
@@ -115,9 +136,7 @@ fn bootstrap(params: BootstrapParams) -> WorkerResult {
     })?;
     Ok(json!({
         "memos": page.get("memos").cloned().unwrap_or_else(|| json!([])),
-        "total": page.get("total").cloned().unwrap_or_else(|| json!(0)),
-        "offset": 0,
-        "has_more": page.get("has_more").cloned().unwrap_or(json!(false)),
+        "next_cursor": page.get("next_cursor").cloned().unwrap_or(Value::Null),
         "draft": draft_value()?,
         "facets": facet_data
     }))
@@ -125,39 +144,17 @@ fn bootstrap(params: BootstrapParams) -> WorkerResult {
 
 fn initialize() -> WorkerResult {
     exec(
-        "CREATE TABLE IF NOT EXISTS notes (id TEXT PRIMARY KEY, title TEXT NOT NULL, body TEXT NOT NULL, pinned INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, content TEXT NOT NULL DEFAULT '', archived INTEGER NOT NULL DEFAULT 0, tags TEXT NOT NULL DEFAULT '', tag_version INTEGER NOT NULL DEFAULT 1)",
+        "CREATE TABLE IF NOT EXISTS notes (id TEXT PRIMARY KEY, title TEXT NOT NULL, body TEXT NOT NULL, pinned INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, content TEXT NOT NULL, archived INTEGER NOT NULL DEFAULT 0, tags TEXT NOT NULL DEFAULT '')",
         vec![],
-    )?;
-    let columns = note_columns()?;
-    ensure_column(
-        &columns,
-        "content",
-        "ALTER TABLE notes ADD COLUMN content TEXT NOT NULL DEFAULT ''",
-    )?;
-    ensure_column(
-        &columns,
-        "archived",
-        "ALTER TABLE notes ADD COLUMN archived INTEGER NOT NULL DEFAULT 0",
-    )?;
-    ensure_column(
-        &columns,
-        "tags",
-        "ALTER TABLE notes ADD COLUMN tags TEXT NOT NULL DEFAULT ''",
-    )?;
-    ensure_column(
-        &columns,
-        "tag_version",
-        "ALTER TABLE notes ADD COLUMN tag_version INTEGER NOT NULL DEFAULT 0",
     )?;
     exec(
         "CREATE TABLE IF NOT EXISTS drafts (id TEXT PRIMARY KEY, content TEXT NOT NULL, updated_at TEXT NOT NULL)",
         vec![],
     )?;
     exec(
-        "UPDATE notes SET content = CASE WHEN trim(body) = '' THEN title ELSE title || char(10) || char(10) || body END WHERE content = ''",
+        "CREATE TABLE IF NOT EXISTS memo_sequence (sequence INTEGER PRIMARY KEY AUTOINCREMENT)",
         vec![],
     )?;
-    backfill_tags()?;
     exec(
         "CREATE INDEX IF NOT EXISTS idx_notes_feed ON notes (archived, pinned DESC, created_at DESC, id DESC)",
         vec![],
@@ -170,147 +167,100 @@ fn initialize() -> WorkerResult {
         "CREATE TRIGGER IF NOT EXISTS clear_memos_draft_after_publish AFTER INSERT ON notes BEGIN DELETE FROM drafts WHERE id = 'composer'; END",
         vec![],
     )?;
-    Ok(json!({"ready": true, "schema_version": 2}))
-}
-
-fn note_columns() -> Result<HashSet<String>, WorkerError> {
-    let response = query("PRAGMA table_info(notes)", vec![], 32, 32_768)?;
-    rows(&response)
-        .iter()
-        .map(|row| {
-            row.get(1)
-                .ok_or_else(|| WorkerError::hostcall("notes column metadata is incomplete"))
-                .and_then(cell_text)
-                .map(str::to_string)
-        })
-        .collect()
-}
-
-fn ensure_column(
-    columns: &HashSet<String>,
-    name: &str,
-    statement: &str,
-) -> Result<(), WorkerError> {
-    if !columns.contains(name) {
-        exec(statement, vec![])?;
-    }
-    Ok(())
-}
-
-fn backfill_tags() -> Result<(), WorkerError> {
-    loop {
-        let response = query(
-            "SELECT id, content FROM notes WHERE tag_version = 0 ORDER BY rowid LIMIT 20",
-            vec![],
-            TAG_BACKFILL_BATCH,
-            MAX_SQLITE_RESPONSE_BYTES,
-        )?;
-        if rows(&response).is_empty() {
-            return Ok(());
-        }
-        let mut statement = String::from("UPDATE notes SET tags = CASE id");
-        let mut args = Vec::with_capacity(rows(&response).len() * 3);
-        let mut ids = Vec::with_capacity(rows(&response).len());
-        for row in rows(&response) {
-            if row.len() != 2 {
-                return Err(WorkerError::hostcall(
-                    "memos tag backfill row has an unexpected column count",
-                ));
-            }
-            let id = cell_text(&row[0])?.to_string();
-            let tags = encode_tags(&extract_tags(cell_text(&row[1])?));
-            statement.push_str(" WHEN ? THEN ?");
-            args.push(SQLiteValue::Text(id.clone()));
-            args.push(SQLiteValue::Text(tags));
-            ids.push(id);
-        }
-        statement.push_str(" END, tag_version = 1 WHERE id IN (");
-        for index in 0..ids.len() {
-            if index > 0 {
-                statement.push_str(", ");
-            }
-            statement.push('?');
-        }
-        statement.push(')');
-        args.extend(ids.into_iter().map(SQLiteValue::Text));
-        exec(&statement, args)?;
-    }
+    Ok(json!({"ready": true, "schema_version": 1}))
 }
 
 fn list_memos(params: ListParams) -> WorkerResult {
     validate_query(&params.query)?;
     validate_utc_offset(params.utc_offset_minutes)?;
-    let limit = params.limit.clamp(1, 10);
-    let offset = params.offset.min(100_000);
+    let query_limit = params.limit.clamp(1, 10).saturating_add(1);
+    let limit = query_limit - 1;
     let mut clauses = Vec::new();
     let mut args = Vec::new();
-    match params.view.as_str() {
+    let view = match params.view.as_str() {
         "" | "all" => {
             clauses.push("archived = ?".to_string());
             args.push(SQLiteValue::Integer(0));
+            "all"
         }
         "pinned" => {
             clauses.push("archived = ?".to_string());
             clauses.push("pinned = ?".to_string());
             args.push(SQLiteValue::Integer(0));
             args.push(SQLiteValue::Integer(1));
+            "pinned"
         }
         "archived" => {
             clauses.push("archived = ?".to_string());
             args.push(SQLiteValue::Integer(1));
+            "archived"
         }
         _ => return Err(WorkerError::invalid_request("memo view is invalid")),
-    }
-    let search_query = params.query.trim();
+    };
+    let search_query = params.query.trim().to_ascii_lowercase();
     if !search_query.is_empty() {
         clauses.push("instr(lower(content), lower(?)) > 0".to_string());
-        args.push(SQLiteValue::Text(search_query.to_string()));
+        args.push(SQLiteValue::Text(search_query.clone()));
     }
     let tag = params.tag.trim().to_ascii_lowercase();
     if !tag.is_empty() {
         validate_tag(&tag)?;
         clauses
             .push("instr(char(10) || tags || char(10), char(10) || ? || char(10)) > 0".to_string());
-        args.push(SQLiteValue::Text(tag));
+        args.push(SQLiteValue::Text(tag.clone()));
     }
-    let date = params.date.trim();
+    let date = params.date.trim().to_string();
     if !date.is_empty() {
-        validate_date(date)?;
+        validate_date(&date)?;
         clauses.push("date(created_at, ?) = ?".to_string());
         args.push(SQLiteValue::Text(timezone_modifier(
             params.utc_offset_minutes,
         )?));
-        args.push(SQLiteValue::Text(date.to_string()));
+        args.push(SQLiteValue::Text(date.clone()));
+    }
+    let filter_sha256 =
+        filter_fingerprint(&search_query, view, &tag, &date, params.utc_offset_minutes)?;
+    if let Some(encoded) = params.cursor.as_deref() {
+        let cursor = decode_cursor(encoded, &filter_sha256)?;
+        clauses.push(MEMO_CURSOR_CLAUSE.to_string());
+        let pinned = bool_int(cursor.pinned);
+        args.extend([
+            SQLiteValue::Integer(pinned),
+            SQLiteValue::Integer(pinned),
+            SQLiteValue::Text(cursor.created_at.clone()),
+            SQLiteValue::Integer(pinned),
+            SQLiteValue::Text(cursor.created_at),
+            SQLiteValue::Text(cursor.id),
+        ]);
     }
     let where_sql = clauses.join(" AND ");
-    let mut page_args = args.clone();
-    page_args.push(SQLiteValue::Integer(limit as i64));
-    page_args.push(SQLiteValue::Integer(offset as i64));
+    args.push(SQLiteValue::Integer(query_limit as i64));
     let response = query(
         &format!(
-            "SELECT id, content, pinned, archived, tags, created_at, updated_at FROM notes WHERE {where_sql} ORDER BY pinned DESC, created_at DESC, id DESC LIMIT ? OFFSET ?"
+            "SELECT id, content, pinned, archived, tags, created_at, updated_at FROM notes WHERE {where_sql} ORDER BY pinned DESC, created_at DESC, id DESC LIMIT ?"
         ),
-        page_args,
-        limit,
-        240_000,
+        args,
+        query_limit,
+        280_000,
     )?;
-    let memos = rows(&response)
+    let page_rows = rows(&response);
+    let has_more = page_rows.len() > limit;
+    let visible_rows = &page_rows[..page_rows.len().min(limit)];
+    let memos = visible_rows
         .iter()
         .map(|row| memo_from_row(row))
         .collect::<Result<Vec<_>, _>>()?;
-    let count_response = query(
-        &format!("SELECT count(*) FROM notes WHERE {where_sql}"),
-        args,
-        1,
-        4_096,
-    )?;
-    let total = first_count(&count_response)?;
-    let loaded = memos.len();
+    let next_cursor = if has_more {
+        visible_rows
+            .last()
+            .map(|row| encode_cursor(row, &filter_sha256))
+            .transpose()?
+    } else {
+        None
+    };
     Ok(json!({
         "memos": memos,
-        "total": total,
-        "offset": offset,
-        "has_more": page_has_more(offset, loaded, total)
+        "next_cursor": next_cursor
     }))
 }
 
@@ -388,17 +338,20 @@ fn save_draft(params: DraftParams) -> WorkerResult {
 fn publish(params: PublishParams) -> WorkerResult {
     let content = normalized_content(params.content)?;
     let tags = encode_tags(&extract_tags(&content));
-    let (title, body) = compatibility_parts(&content);
+    let (title, body) = content_parts(&content);
+    let sequence = exec_result("INSERT INTO memo_sequence DEFAULT VALUES", vec![])?.last_insert_id;
+    let id = memo_id_from_sequence(sequence)?;
     exec(
-        "INSERT INTO notes (id, title, body, pinned, created_at, updated_at, content, archived, tags, tag_version) VALUES ('memo_' || lower(hex(randomblob(12))), ?, ?, 0, strftime('%Y-%m-%dT%H:%M:%fZ','now'), strftime('%Y-%m-%dT%H:%M:%fZ','now'), ?, 0, ?, 1)",
+        "INSERT INTO notes (id, title, body, pinned, created_at, updated_at, content, archived, tags) VALUES (?, ?, ?, 0, strftime('%Y-%m-%dT%H:%M:%fZ','now'), strftime('%Y-%m-%dT%H:%M:%fZ','now'), ?, 0, ?)",
         vec![
+            SQLiteValue::Text(id.clone()),
             SQLiteValue::Text(title),
             SQLiteValue::Text(body),
             SQLiteValue::Text(content),
             SQLiteValue::Text(tags),
         ],
     )?;
-    latest_memo()
+    memo_by_id(&id)
 }
 
 fn update_memo(params: UpdateParams) -> WorkerResult {
@@ -406,9 +359,9 @@ fn update_memo(params: UpdateParams) -> WorkerResult {
     validate_id(id)?;
     let content = normalized_content(params.content)?;
     let tags = encode_tags(&extract_tags(&content));
-    let (title, body) = compatibility_parts(&content);
+    let (title, body) = content_parts(&content);
     let result = exec_result(
-        "UPDATE notes SET title = ?, body = ?, content = ?, tags = ?, tag_version = 1, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = ?",
+        "UPDATE notes SET title = ?, body = ?, content = ?, tags = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = ?",
         vec![
             SQLiteValue::Text(title),
             SQLiteValue::Text(body),
@@ -454,13 +407,6 @@ fn delete_memo(params: IDParams) -> WorkerResult {
     )?;
     ensure_changed(&result)?;
     Ok(json!({"deleted_id": id}))
-}
-
-fn latest_memo() -> WorkerResult {
-    query_one(
-        "SELECT id, content, pinned, archived, tags, created_at, updated_at FROM notes ORDER BY rowid DESC LIMIT 1",
-        vec![],
-    )
 }
 
 fn memo_by_id(id: &str) -> WorkerResult {
@@ -516,16 +462,6 @@ fn memo_from_row(values: &[SQLiteValue]) -> Result<Value, WorkerError> {
     }))
 }
 
-fn first_count(response: &QueryResponse) -> Result<usize, WorkerError> {
-    Ok(rows(response)
-        .first()
-        .and_then(|row| row.first())
-        .map(cell_int)
-        .transpose()?
-        .unwrap_or(0)
-        .max(0) as usize)
-}
-
 fn summary_counts(response: &QueryResponse) -> Result<(usize, usize, usize), WorkerError> {
     let Some(row) = rows(response).first() else {
         return Ok((0, 0, 0));
@@ -546,11 +482,134 @@ fn summary_counts_from_row(row: &[SQLiteValue]) -> Result<(usize, usize, usize),
     ))
 }
 
-fn page_has_more(offset: usize, loaded: usize, total: usize) -> bool {
-    offset.saturating_add(loaded) < total
+fn filter_fingerprint(
+    query: &str,
+    view: &str,
+    tag: &str,
+    date: &str,
+    utc_offset_minutes: i32,
+) -> Result<String, WorkerError> {
+    let canonical = serde_json::to_vec(&MemoFilterFingerprint {
+        query,
+        view,
+        tag,
+        date,
+        utc_offset_minutes,
+    })
+    .map_err(|err| WorkerError::hostcall(format!("encode memo filter fingerprint: {err}")))?;
+    Ok(hex_encode(&Sha256::digest(canonical)))
 }
 
-fn compatibility_parts(content: &str) -> (String, String) {
+fn encode_cursor(row: &[SQLiteValue], filter_sha256: &str) -> Result<String, WorkerError> {
+    if row.len() != 7 {
+        return Err(WorkerError::hostcall(
+            "memos cursor row has an unexpected column count",
+        ));
+    }
+    let payload = MemoCursorPayload {
+        version: 1,
+        filter_sha256: filter_sha256.to_string(),
+        pinned: cell_int(&row[2])? != 0,
+        created_at: cell_text(&row[5])?.to_string(),
+        id: cell_text(&row[0])?.to_string(),
+    };
+    validate_cursor_payload(&payload, filter_sha256)?;
+    let encoded = serde_json::to_vec(&payload)
+        .map_err(|err| WorkerError::hostcall(format!("encode memo cursor: {err}")))?;
+    Ok(format!("{CURSOR_PREFIX}{}", hex_encode(&encoded)))
+}
+
+fn decode_cursor(value: &str, filter_sha256: &str) -> Result<MemoCursorPayload, WorkerError> {
+    if value.len() > MAX_CURSOR_CHARS {
+        return Err(WorkerError::invalid_request("memo cursor is invalid"));
+    }
+    let encoded = value
+        .strip_prefix(CURSOR_PREFIX)
+        .ok_or_else(|| WorkerError::invalid_request("memo cursor is invalid"))?;
+    let decoded = hex_decode(encoded)?;
+    let payload: MemoCursorPayload = serde_json::from_slice(&decoded)
+        .map_err(|_| WorkerError::invalid_request("memo cursor is invalid"))?;
+    validate_cursor_payload(&payload, filter_sha256)?;
+    Ok(payload)
+}
+
+fn validate_cursor_payload(
+    cursor: &MemoCursorPayload,
+    filter_sha256: &str,
+) -> Result<(), WorkerError> {
+    if cursor.version != 1
+        || cursor.filter_sha256 != filter_sha256
+        || cursor.filter_sha256.len() != 64
+        || !cursor
+            .filter_sha256
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit())
+    {
+        return Err(WorkerError::invalid_request(
+            "memo cursor does not match the active filters",
+        ));
+    }
+    validate_id(&cursor.id)?;
+    validate_cursor_timestamp(&cursor.created_at)
+}
+
+fn validate_cursor_timestamp(value: &str) -> Result<(), WorkerError> {
+    let bytes = value.as_bytes();
+    let valid_shape = match bytes.len() {
+        20 => bytes[19] == b'Z',
+        24 => bytes[19] == b'.' && bytes[23] == b'Z',
+        _ => false,
+    };
+    let separators = [(4, b'-'), (7, b'-'), (10, b'T'), (13, b':'), (16, b':')];
+    if !valid_shape
+        || separators
+            .iter()
+            .any(|(index, expected)| bytes.get(*index) != Some(expected))
+        || bytes.iter().enumerate().any(|(index, byte)| {
+            !separators.iter().any(|(position, _)| *position == index)
+                && index != 19
+                && index != 23
+                && !byte.is_ascii_digit()
+        })
+    {
+        return Err(WorkerError::invalid_request("memo cursor is invalid"));
+    }
+    Ok(())
+}
+
+fn hex_encode(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut encoded = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        encoded.push(HEX[(byte >> 4) as usize] as char);
+        encoded.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    encoded
+}
+
+fn hex_decode(value: &str) -> Result<Vec<u8>, WorkerError> {
+    if value.is_empty() || value.len() % 2 != 0 {
+        return Err(WorkerError::invalid_request("memo cursor is invalid"));
+    }
+    let bytes = value.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len() / 2);
+    for pair in bytes.chunks_exact(2) {
+        let high = hex_value(pair[0])?;
+        let low = hex_value(pair[1])?;
+        decoded.push((high << 4) | low);
+    }
+    Ok(decoded)
+}
+
+fn hex_value(value: u8) -> Result<u8, WorkerError> {
+    match value {
+        b'0'..=b'9' => Ok(value - b'0'),
+        b'a'..=b'f' => Ok(value - b'a' + 10),
+        _ => Err(WorkerError::invalid_request("memo cursor is invalid")),
+    }
+}
+
+fn content_parts(content: &str) -> (String, String) {
     let mut title = "Untitled memo".to_string();
     let mut body_start = 0;
     for line in content.lines() {
@@ -681,6 +740,13 @@ fn validate_id(id: &str) -> Result<(), WorkerError> {
     Ok(())
 }
 
+fn memo_id_from_sequence(sequence: i64) -> Result<String, WorkerError> {
+    if sequence <= 0 {
+        return Err(WorkerError::hostcall("memo sequence is invalid"));
+    }
+    Ok(format!("memo_{sequence:024x}"))
+}
+
 fn validate_month(month: &str) -> Result<(), WorkerError> {
     let bytes = month.as_bytes();
     if bytes.len() != 7
@@ -807,11 +873,16 @@ mod tests {
     fn memo_ids_are_closed_and_stable() {
         assert!(validate_id("memo_0123456789abcdef").is_ok());
         assert!(validate_id("../memos").is_err());
+        assert_eq!(
+            memo_id_from_sequence(1).unwrap(),
+            "memo_000000000000000000000001"
+        );
+        assert!(memo_id_from_sequence(0).is_err());
     }
 
     #[test]
-    fn content_projects_to_legacy_title_and_body() {
-        let (title, body) = compatibility_parts("# A quick thought\n\nMore detail here.");
+    fn content_projects_to_title_and_body() {
+        let (title, body) = content_parts("# A quick thought\n\nMore detail here.");
         assert_eq!(title, "# A quick thought");
         assert_eq!(body, "More detail here.");
     }
@@ -836,10 +907,27 @@ mod tests {
     }
 
     #[test]
-    fn ten_item_pages_remain_bounded() {
-        assert!(page_has_more(0, 10, 21));
-        assert!(page_has_more(10, 10, 21));
-        assert!(!page_has_more(20, 1, 21));
+    fn cursors_are_opaque_and_bound_to_normalized_filters() {
+        let row = vec![
+            SQLiteValue::Text("memo_0123456789abcdef".to_string()),
+            SQLiteValue::Text("content".to_string()),
+            SQLiteValue::Integer(1),
+            SQLiteValue::Integer(0),
+            SQLiteValue::Text(String::new()),
+            SQLiteValue::Text("2026-07-14T00:00:00.000Z".to_string()),
+            SQLiteValue::Text("2026-07-14T00:00:00.000Z".to_string()),
+        ];
+        let filter = filter_fingerprint("query", "all", "tag", "2026-07-14", 480)
+            .expect("filter fingerprint");
+        let cursor = encode_cursor(&row, &filter).expect("cursor");
+        assert!(cursor.starts_with(CURSOR_PREFIX));
+        assert!(!cursor.contains("memo_0123456789abcdef"));
+        let decoded = decode_cursor(&cursor, &filter).expect("decode cursor");
+        assert!(decoded.pinned);
+        assert_eq!(decoded.id, "memo_0123456789abcdef");
+        let other_filter = filter_fingerprint("other", "all", "tag", "2026-07-14", 480)
+            .expect("other filter fingerprint");
+        assert!(decode_cursor(&cursor, &other_filter).is_err());
     }
 
     #[test]

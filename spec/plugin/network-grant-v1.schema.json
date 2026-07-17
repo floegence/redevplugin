@@ -28,7 +28,7 @@
     "transport": { "enum": ["http", "websocket", "tcp", "udp"] },
     "destination": { "$ref": "#/$defs/destination" },
     "runtime_generation_id": { "type": "string" },
-    "target_classifier_version": { "const": "target-classifier-v1" },
+    "target_classifier_version": { "const": "target-classifier-v2" },
     "expires_at": { "type": "string", "format": "date-time" }
   },
   "$defs": {

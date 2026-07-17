@@ -49,15 +49,14 @@
         "asset_session",
         "plugin_gateway_token",
         "confirmation_token",
-        "runtime_execution_lease",
         "handle_grant",
         "stream_ticket"
       ]
     },
     "token_id": {
       "type": "string",
-      "description": "Opaque token or ticket identifier. Prefixes are stable namespaces: at_ asset tickets, as_ asset sessions, pgt_ plugin gateway tokens, ct_ confirmation tokens, rel_ runtime execution leases, hg_ handle grants, and st_ stream tickets.",
-      "pattern": "^(at|as|pgt|ct|rel|hg|st)_[A-Za-z0-9_-]+$"
+      "description": "Opaque token or ticket identifier. Prefixes are stable namespaces: at_ asset tickets, as_ asset sessions, pgt_ plugin gateway tokens, ct_ confirmation tokens, hg_ handle grants, and st_ stream tickets.",
+      "pattern": "^(at|as|pgt|ct|hg|st)_[A-Za-z0-9_-]+$"
     },
     "audience": {
       "type": "object",
@@ -79,6 +78,7 @@
         "route_role": { "enum": ["trusted_parent", "trusted_intent"] },
         "owner_session_hash": { "type": "string" },
         "owner_user_hash": { "type": "string" },
+        "owner_env_hash": { "type": "string" },
         "session_channel_id_hash": { "type": "string" },
         "bridge_channel_id": { "type": "string" },
         "runtime_instance_id": { "type": "string" },
@@ -134,6 +134,8 @@
               "asset_session_nonce",
               "route_role",
               "owner_session_hash",
+              "owner_user_hash",
+              "owner_env_hash",
               "session_channel_id_hash",
               "runtime_generation_id"
             ]
@@ -161,6 +163,8 @@
               "asset_session_nonce",
               "route_role",
               "owner_session_hash",
+              "owner_user_hash",
+              "owner_env_hash",
               "session_channel_id_hash",
               "runtime_generation_id"
             ]
@@ -188,6 +192,8 @@
               "asset_session_nonce",
               "route_role",
               "owner_session_hash",
+              "owner_user_hash",
+              "owner_env_hash",
               "session_channel_id_hash",
               "bridge_channel_id",
               "runtime_generation_id"
@@ -216,6 +222,8 @@
               "asset_session_nonce",
               "route_role",
               "owner_session_hash",
+              "owner_user_hash",
+              "owner_env_hash",
               "session_channel_id_hash",
               "confirmation_id",
               "bridge_channel_id",
@@ -223,28 +231,6 @@
               "request_hash",
               "plan_hash",
               "runtime_generation_id"
-            ]
-          }
-        },
-        "required": ["token_kind", "audience", "revision", "use"]
-      }
-    },
-    {
-      "if": { "properties": { "token_kind": { "const": "runtime_execution_lease" } }, "required": ["token_kind"] },
-      "then": {
-        "properties": {
-          "token_id": { "pattern": "^rel_[A-Za-z0-9_-]+$" },
-          "use": { "const": "reusable" },
-          "audience": {
-            "required": [
-              "plugin_instance_id",
-              "active_fingerprint",
-              "runtime_instance_id",
-              "runtime_generation_id",
-              "ipc_channel_id",
-              "connection_nonce",
-              "method",
-              "audit_correlation_id"
             ]
           }
         },
@@ -284,6 +270,8 @@
               "active_fingerprint",
               "route_role",
               "owner_session_hash",
+              "owner_user_hash",
+              "owner_env_hash",
               "session_channel_id_hash",
               "stream_id",
               "operation_id",

@@ -16,7 +16,22 @@ const (
 	defaultMaxEvents = 4096
 )
 
-var ErrInvalidEvent = errors.New("plugin observability event is invalid")
+var (
+	ErrInvalidEvent              = errors.New("plugin observability event is invalid")
+	ErrInvalidDiagnosticSeverity = errors.New("plugin diagnostic severity is invalid")
+	ErrDiagnosticScopeRequired   = errors.New("complete diagnostic owner scope is required")
+)
+
+type DiagnosticSeverity string
+
+const (
+	DiagnosticSeverityInfo    DiagnosticSeverity = "info"
+	DiagnosticSeverityWarning DiagnosticSeverity = "warning"
+)
+
+func (severity DiagnosticSeverity) Valid() bool {
+	return severity == DiagnosticSeverityInfo || severity == DiagnosticSeverityWarning
+}
 
 type AuditSink interface {
 	AppendPluginAudit(ctx context.Context, event AuditEvent) error
@@ -24,10 +39,6 @@ type AuditSink interface {
 
 type DiagnosticsSink interface {
 	AppendPluginDiagnostic(ctx context.Context, event DiagnosticEvent) error
-}
-
-type AuditLister interface {
-	ListPluginAudit(ctx context.Context, req ListAuditRequest) ([]AuditEvent, error)
 }
 
 type DiagnosticLister interface {
@@ -48,34 +59,36 @@ type AuditEvent struct {
 }
 
 type DiagnosticEvent struct {
-	EventID           string         `json:"event_id,omitempty"`
-	Type              string         `json:"type"`
-	Severity          string         `json:"severity"`
-	Message           string         `json:"message"`
-	PluginID          string         `json:"plugin_id,omitempty"`
-	PluginInstanceID  string         `json:"plugin_instance_id,omitempty"`
-	SurfaceID         string         `json:"surface_id,omitempty"`
-	SurfaceInstanceID string         `json:"surface_instance_id,omitempty"`
-	ActiveFingerprint string         `json:"active_fingerprint,omitempty"`
-	RequestID         string         `json:"request_id,omitempty"`
-	OccurredAt        time.Time      `json:"occurred_at,omitempty"`
-	Details           map[string]any `json:"details,omitempty"`
-}
-
-type ListAuditRequest struct {
-	PluginID         string `json:"plugin_id,omitempty"`
-	PluginInstanceID string `json:"plugin_instance_id,omitempty"`
-	Type             string `json:"type,omitempty"`
-	Limit            int    `json:"limit,omitempty"`
+	EventID              string             `json:"event_id,omitempty"`
+	Type                 string             `json:"type"`
+	Severity             DiagnosticSeverity `json:"severity"`
+	Message              string             `json:"message"`
+	PluginID             string             `json:"plugin_id,omitempty"`
+	PluginInstanceID     string             `json:"plugin_instance_id,omitempty"`
+	SurfaceID            string             `json:"surface_id,omitempty"`
+	SurfaceInstanceID    string             `json:"surface_instance_id,omitempty"`
+	ActiveFingerprint    string             `json:"active_fingerprint,omitempty"`
+	RequestID            string             `json:"request_id,omitempty"`
+	OwnerSessionHash     string             `json:"-"`
+	OwnerUserHash        string             `json:"-"`
+	OwnerEnvHash         string             `json:"-"`
+	SessionChannelIDHash string             `json:"-"`
+	OccurredAt           time.Time          `json:"occurred_at,omitempty"`
+	Details              map[string]any     `json:"details,omitempty"`
+	InternalDetails      map[string]any     `json:"-"`
 }
 
 type ListDiagnosticRequest struct {
-	PluginID          string `json:"plugin_id,omitempty"`
-	PluginInstanceID  string `json:"plugin_instance_id,omitempty"`
-	SurfaceInstanceID string `json:"surface_instance_id,omitempty"`
-	Type              string `json:"type,omitempty"`
-	Severity          string `json:"severity,omitempty"`
-	Limit             int    `json:"limit,omitempty"`
+	PluginID             string             `json:"plugin_id,omitempty"`
+	PluginInstanceID     string             `json:"plugin_instance_id,omitempty"`
+	SurfaceInstanceID    string             `json:"surface_instance_id,omitempty"`
+	OwnerSessionHash     string             `json:"-"`
+	OwnerUserHash        string             `json:"-"`
+	OwnerEnvHash         string             `json:"-"`
+	SessionChannelIDHash string             `json:"-"`
+	Type                 string             `json:"type,omitempty"`
+	Severity             DiagnosticSeverity `json:"severity,omitempty"`
+	Limit                int                `json:"limit,omitempty"`
 }
 
 type MemoryStoreOptions struct {
@@ -157,10 +170,11 @@ func (s *MemoryStore) AppendPluginDiagnostic(_ context.Context, event Diagnostic
 	if event.Type == "" {
 		return ErrInvalidEvent
 	}
-	event.Severity = strings.TrimSpace(event.Severity)
-	if event.Severity == "" {
-		event.Severity = "info"
+	severity, err := normalizeDiagnosticSeverity(event.Severity)
+	if err != nil {
+		return err
 	}
+	event.Severity = severity
 	event.Message = strings.TrimSpace(event.Message)
 	if event.Message == "" {
 		event.Message = event.Type
@@ -174,7 +188,12 @@ func (s *MemoryStore) AppendPluginDiagnostic(_ context.Context, event Diagnostic
 	event.SurfaceInstanceID = strings.TrimSpace(event.SurfaceInstanceID)
 	event.ActiveFingerprint = strings.TrimSpace(event.ActiveFingerprint)
 	event.RequestID = strings.TrimSpace(event.RequestID)
+	event.OwnerSessionHash = strings.TrimSpace(event.OwnerSessionHash)
+	event.OwnerUserHash = strings.TrimSpace(event.OwnerUserHash)
+	event.OwnerEnvHash = strings.TrimSpace(event.OwnerEnvHash)
+	event.SessionChannelIDHash = strings.TrimSpace(event.SessionChannelIDHash)
 	event.Details = cloneMap(event.Details)
+	event.InternalDetails = cloneMap(event.InternalDetails)
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -187,37 +206,6 @@ func (s *MemoryStore) AppendPluginDiagnostic(_ context.Context, event Diagnostic
 	return nil
 }
 
-func (s *MemoryStore) ListPluginAudit(_ context.Context, req ListAuditRequest) ([]AuditEvent, error) {
-	if s == nil {
-		return nil, errors.New("observability store is nil")
-	}
-	limit := normalizeLimit(req.Limit)
-	pluginID := strings.TrimSpace(req.PluginID)
-	pluginInstanceID := strings.TrimSpace(req.PluginInstanceID)
-	eventType := strings.TrimSpace(req.Type)
-
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	events := make([]AuditEvent, 0, minInt(limit, len(s.auditEvents)))
-	for _, event := range s.auditEvents {
-		if pluginID != "" && event.PluginID != pluginID {
-			continue
-		}
-		if pluginInstanceID != "" && event.PluginInstanceID != pluginInstanceID {
-			continue
-		}
-		if eventType != "" && event.Type != eventType {
-			continue
-		}
-		events = append(events, cloneAuditEvent(event))
-	}
-	sortAuditEventsNewestFirst(events)
-	if len(events) > limit {
-		events = events[:limit]
-	}
-	return events, nil
-}
-
 func (s *MemoryStore) ListPluginDiagnostics(_ context.Context, req ListDiagnosticRequest) ([]DiagnosticEvent, error) {
 	if s == nil {
 		return nil, errors.New("observability store is nil")
@@ -226,8 +214,15 @@ func (s *MemoryStore) ListPluginDiagnostics(_ context.Context, req ListDiagnosti
 	pluginID := strings.TrimSpace(req.PluginID)
 	pluginInstanceID := strings.TrimSpace(req.PluginInstanceID)
 	surfaceInstanceID := strings.TrimSpace(req.SurfaceInstanceID)
+	ownerSessionHash, ownerUserHash, ownerEnvHash, sessionChannelIDHash, err := diagnosticOwnerScope(req)
+	if err != nil {
+		return nil, err
+	}
 	eventType := strings.TrimSpace(req.Type)
-	severity := strings.TrimSpace(req.Severity)
+	severity, err := normalizeOptionalDiagnosticSeverity(req.Severity)
+	if err != nil {
+		return nil, err
+	}
 
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -242,13 +237,25 @@ func (s *MemoryStore) ListPluginDiagnostics(_ context.Context, req ListDiagnosti
 		if surfaceInstanceID != "" && event.SurfaceInstanceID != surfaceInstanceID {
 			continue
 		}
+		if event.OwnerSessionHash != ownerSessionHash {
+			continue
+		}
+		if event.OwnerUserHash != ownerUserHash {
+			continue
+		}
+		if event.OwnerEnvHash != ownerEnvHash {
+			continue
+		}
+		if event.SessionChannelIDHash != sessionChannelIDHash {
+			continue
+		}
 		if eventType != "" && event.Type != eventType {
 			continue
 		}
 		if severity != "" && event.Severity != severity {
 			continue
 		}
-		events = append(events, cloneDiagnosticEvent(event))
+		events = append(events, publicDiagnosticEvent(event))
 	}
 	sortDiagnosticEventsNewestFirst(events)
 	if len(events) > limit {
@@ -279,6 +286,21 @@ func normalizeLimit(limit int) int {
 	return limit
 }
 
+func normalizeDiagnosticSeverity(severity DiagnosticSeverity) (DiagnosticSeverity, error) {
+	normalized := DiagnosticSeverity(strings.TrimSpace(string(severity)))
+	if normalized.Valid() {
+		return normalized, nil
+	}
+	return "", ErrInvalidDiagnosticSeverity
+}
+
+func normalizeOptionalDiagnosticSeverity(severity DiagnosticSeverity) (DiagnosticSeverity, error) {
+	if strings.TrimSpace(string(severity)) == "" {
+		return "", nil
+	}
+	return normalizeDiagnosticSeverity(severity)
+}
+
 func trimOldest[T any](records []T, max int) []T {
 	if max < 0 || len(records) <= max {
 		return records
@@ -287,15 +309,6 @@ func trimOldest[T any](records []T, max int) []T {
 		return nil
 	}
 	return append([]T(nil), records[len(records)-max:]...)
-}
-
-func sortAuditEventsNewestFirst(events []AuditEvent) {
-	sort.Slice(events, func(i, j int) bool {
-		if events[i].OccurredAt.Equal(events[j].OccurredAt) {
-			return events[i].EventID > events[j].EventID
-		}
-		return events[i].OccurredAt.After(events[j].OccurredAt)
-	})
 }
 
 func sortDiagnosticEventsNewestFirst(events []DiagnosticEvent) {
@@ -307,14 +320,27 @@ func sortDiagnosticEventsNewestFirst(events []DiagnosticEvent) {
 	})
 }
 
-func cloneAuditEvent(event AuditEvent) AuditEvent {
+func cloneDiagnosticEvent(event DiagnosticEvent) DiagnosticEvent {
 	event.Details = cloneMap(event.Details)
+	event.InternalDetails = cloneMap(event.InternalDetails)
 	return event
 }
 
-func cloneDiagnosticEvent(event DiagnosticEvent) DiagnosticEvent {
-	event.Details = cloneMap(event.Details)
+func publicDiagnosticEvent(event DiagnosticEvent) DiagnosticEvent {
+	event = cloneDiagnosticEvent(event)
+	event.InternalDetails = nil
 	return event
+}
+
+func diagnosticOwnerScope(req ListDiagnosticRequest) (string, string, string, string, error) {
+	ownerSessionHash := strings.TrimSpace(req.OwnerSessionHash)
+	ownerUserHash := strings.TrimSpace(req.OwnerUserHash)
+	ownerEnvHash := strings.TrimSpace(req.OwnerEnvHash)
+	sessionChannelIDHash := strings.TrimSpace(req.SessionChannelIDHash)
+	if ownerSessionHash == "" || ownerUserHash == "" || ownerEnvHash == "" || sessionChannelIDHash == "" {
+		return "", "", "", "", ErrDiagnosticScopeRequired
+	}
+	return ownerSessionHash, ownerUserHash, ownerEnvHash, sessionChannelIDHash, nil
 }
 
 func cloneMap(values map[string]any) map[string]any {

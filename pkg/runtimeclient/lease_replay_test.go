@@ -36,7 +36,7 @@ func TestMemoryRuntimeLeaseReplayStoreRejectsDuplicateUntilExpiry(t *testing.T) 
 	expired.Now = now.Add(2 * time.Minute)
 	expired.Lease.LeaseID = "rel_expired"
 	expired.Lease.LeaseNonce = "nonce_expired"
-	expired.Lease.ExpiresAt = now.Add(time.Minute)
+	expired.Lease.ExpiresAtUnixMillis = now.Add(time.Minute).UnixMilli()
 	if _, err := store.ConsumeRuntimeLease(context.Background(), expired); !errors.Is(err, ErrRuntimeLeaseInvalid) {
 		t.Fatalf("ConsumeRuntimeLease() expired error = %v, want %v", err, ErrRuntimeLeaseInvalid)
 	}
@@ -95,25 +95,6 @@ func TestSQLiteRuntimeLeaseReplayStorePersistsAcrossReopen(t *testing.T) {
 	}
 }
 
-func TestSQLiteRuntimeLeaseReplayStoreFailsClosedOnNewerSchema(t *testing.T) {
-	ctx := context.Background()
-	path := filepath.Join(t.TempDir(), "runtime-lease-replays.sqlite")
-	store, err := NewSQLiteRuntimeLeaseReplayStore(ctx, path)
-	if err != nil {
-		t.Fatalf("NewSQLiteRuntimeLeaseReplayStore() error = %v", err)
-	}
-	if _, err := store.db.ExecContext(ctx, `INSERT INTO plugin_runtime_lease_replay_schema_migrations(version, applied_at) VALUES (?, ?)`, sqliteRuntimeLeaseReplaySchemaVersion+1, runtimeLeaseReplayTestNow().UnixNano()); err != nil {
-		t.Fatalf("insert newer schema marker: %v", err)
-	}
-	if err := store.Close(); err != nil {
-		t.Fatalf("Close() error = %v", err)
-	}
-
-	if _, err := NewSQLiteRuntimeLeaseReplayStore(ctx, path); err == nil || !strings.Contains(err.Error(), "newer") {
-		t.Fatalf("NewSQLiteRuntimeLeaseReplayStore(newer schema) error = %v", err)
-	}
-}
-
 func runtimeLeaseReplayTestNow() time.Time {
 	return time.Now().UTC().Truncate(time.Second)
 }
@@ -121,7 +102,6 @@ func runtimeLeaseReplayTestNow() time.Time {
 func runtimeLeaseReplayTestLease(now time.Time) Lease {
 	return Lease{
 		LeaseID:             "rel_1",
-		LeaseToken:          "runtime_execution_lease.rel_1.secret",
 		LeaseNonce:          "nonce_1",
 		RuntimeGenerationID: "runtime_gen_1",
 		PluginInstanceID:    "plugini_1",
@@ -129,6 +109,6 @@ func runtimeLeaseReplayTestLease(now time.Time) Lease {
 		PolicyRevision:      11,
 		ManagementRevision:  12,
 		RevokeEpoch:         13,
-		ExpiresAt:           now.Add(time.Minute),
+		ExpiresAtUnixMillis: now.Add(time.Minute).UnixMilli(),
 	}
 }

@@ -54,6 +54,7 @@ type ConfirmationScope struct {
 	ActiveFingerprint      string `json:"active_fingerprint"`
 	OwnerSessionHash       string `json:"owner_session_hash"`
 	OwnerUserHash          string `json:"owner_user_hash"`
+	OwnerEnvHash           string `json:"owner_env_hash"`
 	SessionChannelIDHash   string `json:"session_channel_id_hash"`
 	PolicyRevision         uint64 `json:"policy_revision"`
 	ManagementRevision     uint64 `json:"management_revision"`
@@ -74,6 +75,7 @@ type RejectConfirmationIntentRequest struct {
 	ActiveFingerprint    string    `json:"active_fingerprint"`
 	OwnerSessionHash     string    `json:"owner_session_hash"`
 	OwnerUserHash        string    `json:"owner_user_hash"`
+	OwnerEnvHash         string    `json:"owner_env_hash"`
 	SessionChannelIDHash string    `json:"session_channel_id_hash"`
 	PolicyRevision       uint64    `json:"policy_revision"`
 	ManagementRevision   uint64    `json:"management_revision"`
@@ -275,6 +277,7 @@ func confirmationIntentFromPut(req PutConfirmationIntentRequest, now time.Time) 
 		strings.TrimSpace(record.Scope.ActiveFingerprint) == "" ||
 		strings.TrimSpace(record.Scope.OwnerSessionHash) == "" ||
 		strings.TrimSpace(record.Scope.OwnerUserHash) == "" ||
+		strings.TrimSpace(record.Scope.OwnerEnvHash) == "" ||
 		strings.TrimSpace(record.Scope.SessionChannelIDHash) == "" ||
 		record.Scope.PolicyRevision == 0 || record.Scope.ManagementRevision == 0 ||
 		strings.TrimSpace(record.Scope.TargetDescriptorSHA256) == "" ||
@@ -293,10 +296,11 @@ func normalizeRejectConfirmationIntentRequest(req RejectConfirmationIntentReques
 	req.ActiveFingerprint = strings.TrimSpace(req.ActiveFingerprint)
 	req.OwnerSessionHash = strings.TrimSpace(req.OwnerSessionHash)
 	req.OwnerUserHash = strings.TrimSpace(req.OwnerUserHash)
+	req.OwnerEnvHash = strings.TrimSpace(req.OwnerEnvHash)
 	req.SessionChannelIDHash = strings.TrimSpace(req.SessionChannelIDHash)
 	if req.ConfirmationID == "" || req.PluginInstanceID == "" || req.SurfaceInstanceID == "" ||
 		req.BridgeChannelID == "" || req.ActiveFingerprint == "" || req.OwnerSessionHash == "" ||
-		req.OwnerUserHash == "" || req.SessionChannelIDHash == "" || req.PolicyRevision == 0 || req.ManagementRevision == 0 {
+		req.OwnerUserHash == "" || req.OwnerEnvHash == "" || req.SessionChannelIDHash == "" || req.PolicyRevision == 0 || req.ManagementRevision == 0 {
 		return RejectConfirmationIntentRequest{}, ErrInvalidConfirmationIntent
 	}
 	return req, nil
@@ -309,6 +313,7 @@ func confirmationIntentMatchesRejection(record ConfirmationIntentRecord, req Rej
 		record.Scope.ActiveFingerprint == req.ActiveFingerprint &&
 		record.Scope.OwnerSessionHash == req.OwnerSessionHash &&
 		record.Scope.OwnerUserHash == req.OwnerUserHash &&
+		record.Scope.OwnerEnvHash == req.OwnerEnvHash &&
 		record.Scope.SessionChannelIDHash == req.SessionChannelIDHash &&
 		record.Scope.PolicyRevision == req.PolicyRevision &&
 		record.Scope.ManagementRevision == req.ManagementRevision &&

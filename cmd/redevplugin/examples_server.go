@@ -16,13 +16,23 @@ import (
 	"strings"
 	"time"
 
+	"github.com/floegence/redevplugin/pkg/bridge"
+	"github.com/floegence/redevplugin/pkg/capability"
 	"github.com/floegence/redevplugin/pkg/connectivity"
 	"github.com/floegence/redevplugin/pkg/host"
 	"github.com/floegence/redevplugin/pkg/httpadapter"
+	"github.com/floegence/redevplugin/pkg/installstage"
+	"github.com/floegence/redevplugin/pkg/observability"
+	"github.com/floegence/redevplugin/pkg/operation"
+	"github.com/floegence/redevplugin/pkg/plugindata"
 	"github.com/floegence/redevplugin/pkg/pluginpkg"
 	"github.com/floegence/redevplugin/pkg/registry"
 	"github.com/floegence/redevplugin/pkg/runtimeclient"
-	"github.com/floegence/redevplugin/pkg/storage"
+	"github.com/floegence/redevplugin/pkg/secrets"
+	"github.com/floegence/redevplugin/pkg/security"
+	"github.com/floegence/redevplugin/pkg/sessionctx"
+	"github.com/floegence/redevplugin/pkg/stream"
+	"github.com/floegence/redevplugin/pkg/trust"
 	"github.com/floegence/redevplugin/pkg/websecurity"
 )
 
@@ -31,6 +41,7 @@ const (
 	examplesPublicDNSServer = "1.1.1.1:53"
 	examplesOwnerHash       = "examples_owner_session"
 	examplesUserHash        = "examples_owner_user"
+	examplesEnvHash         = "examples_owner_environment"
 	examplesChannelHash     = "examples_session_channel"
 )
 
@@ -87,32 +98,29 @@ var examplePluginSpecs = []examplePluginSpec{
 	},
 }
 
-type examplesRuntimeResolver struct{ path string }
-
-func (resolver examplesRuntimeResolver) RuntimePath(context.Context, host.RuntimeTarget) (string, error) {
-	return resolver.path, nil
-}
-
 type examplesWebSecurityGuard struct{ origin string }
 
-func (guard examplesWebSecurityGuard) Evaluate(r *http.Request) (websecurity.RequestContext, websecurity.OriginDecision, error) {
+func (guard examplesWebSecurityGuard) Authenticate(r *http.Request) (sessionctx.Context, error) {
 	origin := strings.TrimSpace(r.Header.Get("Origin"))
-	if origin != "" && origin != guard.origin {
-		return websecurity.RequestContext{}, websecurity.OriginDeny, nil
+	unsafeMethod := r.Method != http.MethodGet && r.Method != http.MethodHead && r.Method != http.MethodOptions
+	if origin != guard.origin && (origin != "" || unsafeMethod) {
+		return sessionctx.Context{}, websecurity.ErrOriginDenied
 	}
-	return websecurity.RequestContext{
-		Origin: origin,
-		Route:  r.URL.Path,
-		Method: r.Method,
-		Scope: websecurity.RequestScope{
-			OwnerSessionHash:     examplesOwnerHash,
-			OwnerUserHash:        examplesUserHash,
-			SessionChannelIDHash: examplesChannelHash,
-		},
-	}, websecurity.OriginTrustedParent, nil
+	return examplesSession(), nil
 }
 
-func (examplesWebSecurityGuard) ValidateCSRF(*http.Request, string) error { return nil }
+func examplesSession() sessionctx.Context {
+	return sessionctx.Context{
+		OwnerSessionHash:     examplesOwnerHash,
+		OwnerUserHash:        examplesUserHash,
+		OwnerEnvHash:         examplesEnvHash,
+		SessionChannelIDHash: examplesChannelHash,
+	}
+}
+
+func examplesContext(ctx context.Context) context.Context {
+	return sessionctx.WithContext(ctx, examplesSession())
+}
 
 type exampleInstalledPlugin struct {
 	Spec   examplePluginSpec
@@ -123,7 +131,7 @@ type exampleCatalogItem struct {
 	Slug               string   `json:"slug"`
 	PluginID           string   `json:"plugin_id"`
 	PluginInstanceID   string   `json:"plugin_instance_id"`
-	PluginStateVersion uint64   `json:"plugin_state_version"`
+	ManagementRevision uint64   `json:"management_revision"`
 	SurfaceID          string   `json:"surface_id"`
 	Name               string   `json:"name"`
 	Version            string   `json:"version"`
@@ -137,16 +145,40 @@ type exampleOpenRequest struct {
 	Slug string `json:"slug"`
 }
 
+type exampleSuccessResponse struct {
+	OK   bool `json:"ok"`
+	Data any  `json:"data"`
+}
+
+type exampleErrorResponse struct {
+	OK    bool                 `json:"ok"`
+	Error examplePlatformError `json:"error"`
+}
+
+type examplePlatformError struct {
+	Code    string         `json:"code"`
+	Message string         `json:"message"`
+	Details map[string]any `json:"details"`
+}
+
 type examplesRuntimeHealthReader interface {
-	RuntimeHealth(ctx context.Context) (runtimeclient.Health, error)
+	RuntimeHealth(ctx context.Context) (runtimeclient.ManagerHealth, error)
+}
+
+type examplesEventStore interface {
+	observability.AuditSink
+	observability.DiagnosticsSink
+	observability.DiagnosticLister
 }
 
 type examplesServerOptions struct {
-	Listener        net.Listener
-	NetworkExecutor connectivity.NetworkExecutor
-	Output          io.Writer
-	RepositoryRoot  string
-	OnReady         func(*host.Host)
+	Listener          net.Listener
+	NetworkExecutor   connectivity.NetworkExecutor
+	Events            examplesEventStore
+	Output            io.Writer
+	RepositoryRoot    string
+	RuntimeShardCount int
+	OnReady           func(*host.Host)
 }
 
 func examplesServer(ctx context.Context, stateRoot string, runtimePath string) error {
@@ -154,6 +186,7 @@ func examplesServer(ctx context.Context, stateRoot string, runtimePath string) e
 }
 
 func examplesServerWithOptions(ctx context.Context, stateRoot string, runtimePath string, options examplesServerOptions) error {
+	ctx = examplesContext(ctx)
 	stateRoot = strings.TrimSpace(stateRoot)
 	runtimePath = strings.TrimSpace(runtimePath)
 	if stateRoot == "" {
@@ -182,32 +215,89 @@ func examplesServerWithOptions(ctx context.Context, stateRoot string, runtimePat
 	if err != nil {
 		return err
 	}
-	defer registryStore.Close()
 	assetStore, err := pluginpkg.NewFileAssetStore(filepath.Join(stateRoot, "assets"))
 	if err != nil {
+		_ = registryStore.Close()
 		return err
 	}
-	storageBroker, err := storage.NewFileBroker(filepath.Join(stateRoot, "storage"))
+	pluginData, err := plugindata.Open(ctx, filepath.Join(stateRoot, "plugin-data"), registryStore)
 	if err != nil {
+		_ = registryStore.Close()
+		return err
+	}
+	secretStore, err := secrets.NewSQLiteStore(ctx, filepath.Join(stateRoot, "secrets.sqlite"))
+	if err != nil {
+		_ = pluginData.Close()
+		_ = registryStore.Close()
 		return err
 	}
 	networkExecutor := options.NetworkExecutor
 	if networkExecutor == nil {
 		networkExecutor = newExamplesNetworkExecutor(examplesPublicDNSServer)
 	}
-	pluginHost, err := host.New(host.Adapters{
-		SessionResolver:         staticSessionResolver{},
-		Policy:                  staticPolicyAdapter{},
-		RuntimeArtifactResolver: examplesRuntimeResolver{path: runtimePath},
-		Registry:                registryStore,
-		Assets:                  assetStore,
-		Storage:                 storageBroker,
-		Connectivity:            connectivity.NewMemoryBroker(),
-		NetworkExecutor:         networkExecutor,
+	events := options.Events
+	if events == nil {
+		events = observability.NewMemoryStore()
+	}
+	surfaceTokens := bridge.NewSurfaceTokenService(nil, bridge.SurfaceTokenOptions{})
+	connectivityBroker := connectivity.NewMemoryBroker()
+	operationStore := operation.NewMemoryStore()
+	confirmationIntentStore := security.NewMemoryConfirmationIntentStore()
+	streamStore := stream.NewMemoryStore()
+	runtimeManager, err := newCommandRuntimeManager(commandRuntimeDependencies{
+		Path:             runtimePath,
+		Diagnostics:      events,
+		Assets:           assetStore,
+		SurfaceTokens:    surfaceTokens,
+		PluginData:       pluginData,
+		Connectivity:     connectivityBroker,
+		NetworkExecutor:  networkExecutor,
+		ShardCount:       options.RuntimeShardCount,
+		HandshakeTimeout: 15 * time.Second,
 	})
 	if err != nil {
 		return err
 	}
+	trustVerifier := trust.Ed25519Verifier{Keyring: trust.StaticKeyring{}}
+	pluginHost, err := host.Open(ctx, host.Adapters{
+		Policy:                      staticPolicyAdapter{},
+		PackageTrustVerifier:        trustVerifier,
+		ReleaseMetadataVerifier:     trustVerifier,
+		RevocationVerifier:          trustVerifier,
+		ReleaseSourcePolicy:         commandReleaseSourceAdapter{},
+		ReleaseArtifactResolver:     commandReleaseSourceAdapter{},
+		HostRequirements:            commandHostRequirementPolicy{},
+		CapabilityContractArtifacts: commandReleaseSourceAdapter{},
+		CapabilityContractKeys:      commandReleaseSourceAdapter{},
+		Registry:                    registryStore,
+		Audit:                       events,
+		Diagnostics:                 events,
+		Secrets:                     secretStore,
+		RuntimeManager:              runtimeManager,
+		SurfaceCatalog:              commandSurfaceCatalogSink{},
+		Assets:                      assetStore,
+		InstallStages:               installstage.NewMemoryStore(),
+		Capabilities:                capability.NewRegistry(),
+		CoreActions:                 commandCoreActionAdapter{},
+		SurfaceTokens:               surfaceTokens,
+		PluginData:                  pluginData,
+		Connectivity:                connectivityBroker,
+		NetworkExecutor:             networkExecutor,
+		Operations:                  operationStore,
+		ConfirmationIntents:         confirmationIntentStore,
+		Streams:                     streamStore,
+	})
+	if err != nil {
+		_ = secretStore.Close()
+		_ = pluginData.Close()
+		_ = registryStore.Close()
+		return err
+	}
+	defer func() {
+		_ = pluginHost.Close()
+		_ = secretStore.Close()
+		_ = registryStore.Close()
+	}()
 	health, err := pluginHost.StartRuntime(ctx, host.StartRuntimeRequest{Target: host.RuntimeTarget{OS: runtime.GOOS, Arch: runtime.GOARCH}})
 	if err != nil {
 		return err
@@ -226,17 +316,13 @@ func examplesServerWithOptions(ctx context.Context, stateRoot string, runtimePat
 		}
 		installed[spec.Slug] = exampleInstalledPlugin{Spec: spec, Record: record}
 	}
-	refreshed, err := pluginHost.RefreshEnabledPlugins(ctx)
+	refreshResults, err := pluginHost.RefreshEnabledPlugins(ctx)
 	if err != nil {
 		return fmt.Errorf("restore enabled example plugin runtime state: %w", err)
 	}
-	for _, record := range refreshed {
-		for slug, plugin := range installed {
-			if plugin.Record.PluginInstanceID == record.PluginInstanceID {
-				plugin.Record = record
-				installed[slug] = plugin
-				break
-			}
+	for _, result := range refreshResults {
+		if result.Status == host.RefreshEnabledPluginStatusFailed {
+			return fmt.Errorf("restore enabled example plugin %s runtime state: %s: %s", result.PluginInstanceID, result.Error.Code, result.Error.Message)
 		}
 	}
 	if options.OnReady != nil {
@@ -256,7 +342,13 @@ func examplesServerWithOptions(ctx context.Context, stateRoot string, runtimePat
 	}
 	defer listener.Close()
 	origin := "http://" + listener.Addr().String()
-	platformHandler := httpadapter.Handler{Host: pluginHost, WebSecurity: examplesWebSecurityGuard{origin: origin}}
+	platformHandler, err := httpadapter.NewHandler(httpadapter.Dependencies{
+		Host:  pluginHost,
+		Guard: examplesWebSecurityGuard{origin: origin},
+	})
+	if err != nil {
+		return err
+	}
 	mux := http.NewServeMux()
 	mux.Handle("/_redevplugin/api/plugins/", platformHandler)
 	mux.HandleFunc("/api/catalog", func(w http.ResponseWriter, r *http.Request) {
@@ -297,14 +389,11 @@ func examplesServerWithOptions(ctx context.Context, stateRoot string, runtimePat
 			writeExampleError(w, http.StatusNotFound, "EXAMPLE_PLUGIN_NOT_FOUND", "example plugin is unavailable")
 			return
 		}
-		bootstrap, err := pluginHost.OpenSurface(r.Context(), host.OpenSurfaceRequest{
-			PluginInstanceID:     plugin.Record.PluginInstanceID,
-			PluginStateVersion:   plugin.Record.ManagementRevision,
-			SurfaceID:            plugin.Spec.SurfaceID,
-			SurfaceInstanceID:    fmt.Sprintf("surface_examples_%s_%d", strings.ReplaceAll(plugin.Spec.Slug, "-", "_"), time.Now().UnixNano()),
-			OwnerSessionHash:     examplesOwnerHash,
-			OwnerUserHash:        examplesUserHash,
-			SessionChannelIDHash: examplesChannelHash,
+		bootstrap, err := pluginHost.OpenSurface(examplesContext(r.Context()), host.OpenSurfaceRequest{
+			PluginInstanceID:           plugin.Record.PluginInstanceID,
+			ExpectedManagementRevision: plugin.Record.ManagementRevision,
+			SurfaceID:                  plugin.Spec.SurfaceID,
+			SurfaceInstanceID:          fmt.Sprintf("surface_examples_%s_%d", strings.ReplaceAll(plugin.Spec.Slug, "-", "_"), time.Now().UnixNano()),
 		})
 		if err != nil {
 			writeExampleError(w, http.StatusInternalServerError, "EXAMPLE_SURFACE_OPEN_FAILED", err.Error())
@@ -323,7 +412,7 @@ func examplesServerWithOptions(ctx context.Context, stateRoot string, runtimePat
 		output = os.Stdout
 	}
 	fmt.Fprintf(output, "ReDevPlugin examples: %s\n", origin)
-	fmt.Fprintf(output, "Runtime generation: %s\n", health.RuntimeGenerationID)
+	fmt.Fprintf(output, "Runtime shards: %d\n", len(health.Shards))
 	select {
 	case <-ctx.Done():
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
@@ -361,9 +450,9 @@ func examplesHealthHandler(runtimeHealth examplesRuntimeHealthReader, pluginCoun
 			return
 		}
 		writeExampleEnvelope(w, http.StatusOK, map[string]any{
-			"ready":                 health.Ready,
-			"runtime_generation_id": health.RuntimeGenerationID,
-			"plugins":               pluginCount,
+			"ready":          health.Ready,
+			"runtime_shards": health.Shards,
+			"plugins":        pluginCount,
 		})
 	}
 }
@@ -414,10 +503,10 @@ func ensureExamplePlugin(ctx context.Context, pluginHost *host.Host, repositoryR
 		})
 	} else if record.PackageHash != pkg.PackageHash {
 		record, err = pluginHost.UpdateLocalPackage(ctx, host.UpdateLocalPackageRequest{
-			PluginInstanceID:   record.PluginInstanceID,
-			PluginStateVersion: record.ManagementRevision,
-			PackageReader:      bytes.NewReader(archive.Bytes()),
-			PackageSize:        int64(archive.Len()),
+			PluginInstanceID:           record.PluginInstanceID,
+			ExpectedManagementRevision: record.ManagementRevision,
+			PackageReader:              bytes.NewReader(archive.Bytes()),
+			PackageSize:                int64(archive.Len()),
 		})
 	}
 	if err != nil {
@@ -425,8 +514,8 @@ func ensureExamplePlugin(ctx context.Context, pluginHost *host.Host, repositoryR
 	}
 	if record.EnableState != registry.EnableEnabled {
 		record, err = pluginHost.EnablePlugin(ctx, host.EnableRequest{
-			PluginInstanceID:   record.PluginInstanceID,
-			PluginStateVersion: record.ManagementRevision,
+			PluginInstanceID:           record.PluginInstanceID,
+			ExpectedManagementRevision: record.ManagementRevision,
 		})
 	}
 	return record, err
@@ -437,7 +526,7 @@ func catalogItem(plugin exampleInstalledPlugin) exampleCatalogItem {
 		Slug:               plugin.Spec.Slug,
 		PluginID:           plugin.Record.PluginID,
 		PluginInstanceID:   plugin.Record.PluginInstanceID,
-		PluginStateVersion: plugin.Record.ManagementRevision,
+		ManagementRevision: plugin.Record.ManagementRevision,
 		SurfaceID:          plugin.Spec.SurfaceID,
 		Name:               plugin.Spec.Name,
 		Version:            plugin.Record.Version,
@@ -461,15 +550,17 @@ func writeExampleEnvelope(w http.ResponseWriter, status int, data any) {
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(map[string]any{"success": true, "data": data})
+	_ = json.NewEncoder(w).Encode(exampleSuccessResponse{OK: true, Data: data})
 }
 
 func writeExampleError(w http.ResponseWriter, status int, code string, message string) {
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(map[string]any{"success": false, "error": map[string]string{"code": code, "message": message}})
+	_ = json.NewEncoder(w).Encode(exampleErrorResponse{
+		OK:    false,
+		Error: examplePlatformError{Code: code, Message: message, Details: map[string]any{}},
+	})
 }
 
-var _ host.RuntimeArtifactResolver = examplesRuntimeResolver{}
 var _ websecurity.Guard = examplesWebSecurityGuard{}

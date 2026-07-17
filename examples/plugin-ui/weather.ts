@@ -178,7 +178,7 @@ async function refreshStaleForecast(location: Location): Promise<void> {
   await render();
 }
 
-async function run(action: () => Promise<void>, fallback: string): Promise<void> {
+async function run(action: () => Promise<void>, defaultStatus: string): Promise<void> {
   if (state.busy) return;
   state.busy = true;
   state.error = false;
@@ -187,7 +187,7 @@ async function run(action: () => Promise<void>, fallback: string): Promise<void>
   try {
     await action();
   } catch (error) {
-    state.status = fallback;
+    state.status = defaultStatus;
     state.error = true;
     state.errorMessage = friendlyWeatherError(error);
   } finally {

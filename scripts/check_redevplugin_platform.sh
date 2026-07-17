@@ -37,8 +37,8 @@ export GOWORK=off
 
 (
   cd "$ROOT_DIR"
-  go list ./...
-  go test ./...
+  go list ./cmd/... ./examples/... ./pkg/...
+  go test ./cmd/... ./examples/... ./pkg/...
   tmp_compatibility_manifest=$(mktemp "${TMPDIR:-/tmp}/redevplugin-compatibility.XXXXXX.json")
   tmp_scaffold_dir=$(mktemp -d "${TMPDIR:-/tmp}/redevplugin-scaffold.XXXXXX")
   tmp_package=$(mktemp "${TMPDIR:-/tmp}/redevplugin-minimal.XXXXXX.redevplugin")
@@ -48,9 +48,8 @@ export GOWORK=off
   tmp_malicious_log=$(mktemp "${TMPDIR:-/tmp}/redevplugin-malicious.XXXXXX.log")
   tmp_private_key=$(mktemp "${TMPDIR:-/tmp}/redevplugin-private.XXXXXX.json")
   tmp_public_key=$(mktemp "${TMPDIR:-/tmp}/redevplugin-public.XXXXXX.json")
-  tmp_storage_root=$(mktemp -d "${TMPDIR:-/tmp}/redevplugin-storage.XXXXXX")
-  tmp_dev_state_root=$(mktemp -d "${TMPDIR:-/tmp}/redevplugin-dev-state.XXXXXX")
-  trap 'rm -rf "$tmp_scaffold_dir" "$tmp_storage_root" "$tmp_dev_state_root"; rm -f "$tmp_compatibility_manifest" "$tmp_package" "$tmp_fixture_package" "$tmp_signed_package" "$tmp_malicious_package" "$tmp_malicious_log" "$tmp_private_key" "$tmp_public_key"' EXIT
+  tmp_dev_state_root=$(mktemp -d "${TMPDIR:-/tmp}/redevplugin-dev-root.XXXXXX")
+  trap 'rm -rf "$tmp_scaffold_dir" "$tmp_dev_state_root"; rm -f "$tmp_compatibility_manifest" "$tmp_package" "$tmp_fixture_package" "$tmp_signed_package" "$tmp_malicious_package" "$tmp_malicious_log" "$tmp_private_key" "$tmp_public_key"' EXIT
   go run ./cmd/redevplugin version >"$tmp_compatibility_manifest"
   go run ./cmd/redevplugin verify-compatibility "$tmp_compatibility_manifest" . | grep -q '"ok": true'
   for generated_fixture in testdata/generated_plugins/minimal testdata/generated_plugins/networked testdata/generated_plugins/storage testdata/generated_plugins/method-contract; do
@@ -82,19 +81,26 @@ export GOWORK=off
   go run ./cmd/redevplugin sign "$tmp_package" "$tmp_private_key" "$tmp_signed_package" >/dev/null
   go run ./cmd/redevplugin validate "$tmp_signed_package" | grep -q '"signed": true'
   go run ./cmd/redevplugin install-verified "$tmp_signed_package" "$tmp_public_key" | grep -q '"trust_state": "verified"'
-  go run ./cmd/redevplugin inspect-storage "$tmp_storage_root" | grep -q '"namespace_count": 0'
   go run ./cmd/redevplugin install-local "$tmp_package" >/dev/null
   go run ./cmd/redevplugin enable "$tmp_package" >/dev/null
   go run ./cmd/redevplugin disable "$tmp_package" >/dev/null
   go run ./cmd/redevplugin uninstall "$tmp_package" >/dev/null
   go run ./cmd/redevplugin dev-install "$tmp_dev_state_root" "$tmp_package" | grep -q '"enable_state": "disabled"'
+  test -f "$tmp_dev_state_root/registry.sqlite"
+  test -d "$tmp_dev_state_root/plugin-data"
+  test -f "$tmp_dev_state_root/secrets.sqlite"
+  if find "$tmp_dev_state_root" -maxdepth 1 -type f -name '*.json' | grep -q .; then
+    echo "dev state root contains a JSON authority mirror" >&2
+    exit 1
+  fi
   go run ./cmd/redevplugin dev-enable "$tmp_dev_state_root" | grep -q '"enable_state": "enabled"'
+  go run ./cmd/redevplugin inspect-data "$tmp_dev_state_root" | grep -q '"binding_count": 1'
   dev_open_output=$(go run ./cmd/redevplugin dev-open "$tmp_dev_state_root" "com.example.smoke.view")
   grep -q '"surface_instance_id":' <<<"$dev_open_output"
   grep -q '"bridge_nonce":' <<<"$dev_open_output"
   grep -q '"asset_ticket_id":' <<<"$dev_open_output"
   go run ./cmd/redevplugin dev-disable "$tmp_dev_state_root" | grep -q '"enable_state": "disabled"'
-  go run ./cmd/redevplugin dev-uninstall "$tmp_dev_state_root" --delete-data | grep -q '"retained_data_state": "deleted"'
+  go run ./cmd/redevplugin dev-uninstall "$tmp_dev_state_root" | grep -q '"enable_state": "disabled"'
   ./scripts/check_redevplugin_ui_bridge.sh
 )
 

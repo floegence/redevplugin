@@ -89,7 +89,6 @@ type MethodRouteSpec struct {
 	BindingID    string          `json:"binding_id,omitempty"`
 	TargetMethod string          `json:"target_method,omitempty"`
 	WorkerID     string          `json:"worker_id,omitempty"`
-	Export       string          `json:"export,omitempty"`
 	ActionID     string          `json:"action_id,omitempty"`
 }
 
@@ -207,29 +206,17 @@ type WorkerSpec struct {
 	IdleTimeoutMS    int        `json:"idle_timeout_ms,omitempty"`
 }
 
-type MigrationSpec struct {
-	FromVersion    int    `json:"from_version"`
-	ToVersion      int    `json:"to_version"`
-	Reversible     bool   `json:"reversible"`
-	RequiresWorker bool   `json:"requires_worker"`
-	EstimatedBytes int64  `json:"estimated_bytes"`
-	MaxDurationMS  int    `json:"max_duration_ms"`
-	DataLossRisk   bool   `json:"data_loss_risk"`
-	StepsHash      string `json:"steps_hash"`
-}
-
 type StorageSpec struct {
 	Stores []StoreSpec `json:"stores,omitempty"`
 }
 
 type StoreSpec struct {
-	StoreID       string        `json:"store_id"`
-	Kind          string        `json:"kind"`
-	Scope         string        `json:"scope"`
-	QuotaBytes    int64         `json:"quota_bytes"`
-	QuotaFiles    *int64        `json:"quota_files,omitempty"`
-	SchemaVersion int           `json:"schema_version"`
-	Migration     MigrationSpec `json:"migration"`
+	StoreID       string `json:"store_id"`
+	Kind          string `json:"kind"`
+	Scope         string `json:"scope"`
+	QuotaBytes    int64  `json:"quota_bytes"`
+	QuotaFiles    *int64 `json:"quota_files,omitempty"`
+	SchemaVersion int    `json:"schema_version"`
 }
 
 type NetworkAccessSpec struct {
@@ -247,7 +234,6 @@ type NetworkConnectorSpec struct {
 
 type SettingsSpec struct {
 	SchemaVersion int                `json:"schema_version"`
-	Migration     MigrationSpec      `json:"migration"`
 	Fields        []SettingFieldSpec `json:"fields,omitempty"`
 }
 
@@ -483,9 +469,6 @@ func Validate(m Manifest) error {
 		if m.Settings.SchemaVersion <= 0 {
 			return ValidationError{Field: "settings.schema_version", Message: "must be positive"}
 		}
-		if err := validateMigrationSpec("settings.migration", m.Settings.SchemaVersion, m.Settings.Migration); err != nil {
-			return err
-		}
 		settingsFields := map[string]struct{}{}
 		for i, field := range m.Settings.Fields {
 			if strings.TrimSpace(field.Key) == "" {
@@ -549,9 +532,6 @@ func Validate(m Manifest) error {
 			}
 			if store.SchemaVersion <= 0 {
 				return ValidationError{Field: field + ".schema_version", Message: "must be positive"}
-			}
-			if err := validateMigrationSpec(field+".migration", store.SchemaVersion, store.Migration); err != nil {
-				return err
 			}
 		}
 	}
@@ -785,34 +765,6 @@ func validateSurfaceIcon(icon string) error {
 	}
 }
 
-func validateMigrationSpec(field string, schemaVersion int, migration MigrationSpec) error {
-	if migration.ToVersion == 0 && migration.FromVersion == 0 && strings.TrimSpace(migration.StepsHash) == "" {
-		return ValidationError{Field: field, Message: "is required"}
-	}
-	if migration.FromVersion < 0 {
-		return ValidationError{Field: field + ".from_version", Message: "must be zero or positive"}
-	}
-	if migration.ToVersion <= 0 {
-		return ValidationError{Field: field + ".to_version", Message: "must be positive"}
-	}
-	if migration.FromVersion > migration.ToVersion {
-		return ValidationError{Field: field + ".from_version", Message: "must be less than or equal to to_version"}
-	}
-	if migration.ToVersion != schemaVersion {
-		return ValidationError{Field: field + ".to_version", Message: "must match schema_version"}
-	}
-	if migration.EstimatedBytes < 0 {
-		return ValidationError{Field: field + ".estimated_bytes", Message: "must be zero or positive"}
-	}
-	if migration.MaxDurationMS < 0 {
-		return ValidationError{Field: field + ".max_duration_ms", Message: "must be zero or positive"}
-	}
-	if strings.TrimSpace(migration.StepsHash) == "" {
-		return ValidationError{Field: field + ".steps_hash", Message: "is required"}
-	}
-	return nil
-}
-
 func DescriptorHashInput(m Manifest) ([]byte, error) {
 	methods := append([]MethodSpec(nil), m.Methods...)
 	sort.Slice(methods, func(i, j int) bool { return methods[i].Method < methods[j].Method })
@@ -877,18 +829,12 @@ func validateMethodRoute(field string, route MethodRouteSpec, bindings map[strin
 		if strings.TrimSpace(route.WorkerID) != "" {
 			return ValidationError{Field: field + ".worker_id", Message: "is only allowed for worker routes"}
 		}
-		if strings.TrimSpace(route.Export) != "" {
-			return ValidationError{Field: field + ".export", Message: "is only allowed for worker routes"}
-		}
 		if strings.TrimSpace(route.ActionID) != "" {
 			return ValidationError{Field: field + ".action_id", Message: "is only allowed for core_action routes"}
 		}
 	case MethodRouteWorker:
 		if _, ok := workers[route.WorkerID]; !ok {
 			return ValidationError{Field: field + ".worker_id", Message: "must reference a declared worker"}
-		}
-		if strings.TrimSpace(route.Export) == "" {
-			return ValidationError{Field: field + ".export", Message: "is required for worker routes"}
 		}
 		if strings.TrimSpace(route.BindingID) != "" {
 			return ValidationError{Field: field + ".binding_id", Message: "is only allowed for capability routes"}
@@ -911,9 +857,6 @@ func validateMethodRoute(field string, route MethodRouteSpec, bindings map[strin
 		}
 		if strings.TrimSpace(route.WorkerID) != "" {
 			return ValidationError{Field: field + ".worker_id", Message: "is only allowed for worker routes"}
-		}
-		if strings.TrimSpace(route.Export) != "" {
-			return ValidationError{Field: field + ".export", Message: "is only allowed for worker routes"}
 		}
 	default:
 		return ValidationError{Field: field + ".kind", Message: "must be capability, worker, or core_action"}

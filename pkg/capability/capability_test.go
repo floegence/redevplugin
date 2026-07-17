@@ -69,6 +69,25 @@ func TestRegistryRequiresExplicitTargetProjector(t *testing.T) {
 	}
 }
 
+func TestExecutionFailureCodesAreClosed(t *testing.T) {
+	for _, code := range []ExecutionFailureCode{
+		ExecutionFailureAdapterFailed,
+		ExecutionFailureContractInvalid,
+		ExecutionFailurePlatformFailed,
+		ExecutionFailureQuotaExceeded,
+		ExecutionFailureRuntimeFailed,
+	} {
+		if !code.Valid() {
+			t.Fatalf("failure code %q is not valid", code)
+		}
+	}
+	for _, code := range []ExecutionFailureCode{"", "adapter_error", "internal"} {
+		if code.Valid() {
+			t.Fatalf("unknown failure code %q is valid", code)
+		}
+	}
+}
+
 type testAdapter struct{}
 
 func (*testAdapter) ProjectTarget(_ context.Context, req TargetResolutionRequest) (TargetDescriptor, error) {

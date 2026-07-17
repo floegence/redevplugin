@@ -1,15 +1,15 @@
 package settings
 
 import (
-	"context"
+	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"math"
-	"reflect"
 	"sort"
 	"strings"
-	"sync"
-	"time"
+	"unicode/utf8"
 
 	"github.com/floegence/redevplugin/pkg/manifest"
 )
@@ -22,770 +22,483 @@ const (
 	FieldEnum    = "enum"
 	FieldSelect  = "select"
 	FieldSecret  = "secret"
+
+	maxJSONSafeInteger = int64(1<<53 - 1)
 )
 
-type State string
+var ErrInvalidSetting = errors.New("plugin setting is invalid")
 
-const (
-	StateActive   State = "active"
-	StateRetained State = "retained"
-)
-
-var (
-	ErrNotDeclared     = errors.New("plugin settings are not declared")
-	ErrInvalidSetting  = errors.New("plugin setting is invalid")
-	ErrArchiveNotFound = errors.New("plugin settings archive not found")
-	ErrNotRetained     = errors.New("plugin settings are not retained")
-	ErrAlreadyExists   = errors.New("plugin settings already exist")
-)
-
-type EnsureRequest struct {
-	PluginInstanceID string
-	Spec             *manifest.SettingsSpec
-	Now              time.Time
+type Schema struct {
+	SchemaVersion int     `json:"schema_version"`
+	Fields        []Field `json:"fields,omitempty"`
 }
 
-type GetRequest struct {
-	PluginInstanceID string
+type Field struct {
+	Key        string          `json:"key"`
+	Type       string          `json:"type"`
+	Scope      string          `json:"scope"`
+	Options    []string        `json:"options,omitempty"`
+	Default    json.RawMessage `json:"default,omitempty"`
+	Validation *Validation     `json:"validation,omitempty"`
 }
 
-type PatchRequest struct {
-	PluginInstanceID string
-	Values           map[string]any
-	Now              time.Time
+type Validation struct {
+	Minimum   *float64 `json:"minimum,omitempty"`
+	Maximum   *float64 `json:"maximum,omitempty"`
+	MinLength *uint64  `json:"min_length,omitempty"`
+	MaxLength *uint64  `json:"max_length,omitempty"`
 }
 
-type MarkSecretRequest struct {
-	PluginInstanceID string
-	SecretRef        string
-	Set              bool
-	LastTestStatus   string
-	Now              time.Time
-}
-
-type DeleteRequest struct {
-	PluginInstanceID string
-	DeleteData       bool
-	RequireRetained  bool
-	Now              time.Time
-}
-
-type ExportRequest struct {
-	PluginInstanceID string
-	IncludeSecrets   bool
-	Now              time.Time
-}
-
-type ImportRequest struct {
-	PluginInstanceID string
-	ArchiveRef       string
-	DeleteExisting   bool
-	Spec             *manifest.SettingsSpec
-	Now              time.Time
-}
-
-type BindRetainedRequest struct {
-	SourcePluginInstanceID string
-	TargetPluginInstanceID string
-	Spec                   *manifest.SettingsSpec
-	DryRun                 bool
-	Now                    time.Time
-}
-
-type SecretValue struct {
-	Set            bool       `json:"set"`
-	UpdatedAt      *time.Time `json:"updated_at,omitempty"`
-	LastTestStatus string     `json:"last_test_status,omitempty"`
-}
-
-type SecretState struct {
-	SecretRef      string     `json:"secret_ref"`
-	Set            bool       `json:"set"`
-	UpdatedAt      *time.Time `json:"updated_at,omitempty"`
-	LastTestStatus string     `json:"last_test_status,omitempty"`
-}
-
-type Snapshot struct {
-	PluginInstanceID string         `json:"plugin_instance_id"`
-	SchemaVersion    int            `json:"schema_version"`
-	SettingsRevision uint64         `json:"settings_revision"`
-	Values           map[string]any `json:"values"`
-	UpdatedAt        time.Time      `json:"updated_at"`
-}
-
-type Record struct {
-	PluginInstanceID string                      `json:"plugin_instance_id"`
-	SchemaVersion    int                         `json:"schema_version"`
-	SettingsRevision uint64                      `json:"settings_revision"`
-	State            State                       `json:"state"`
-	Fields           []manifest.SettingFieldSpec `json:"fields"`
-	Values           map[string]any              `json:"values"`
-	Secrets          map[string]SecretState      `json:"secrets"`
-	UpdatedAt        time.Time                   `json:"updated_at"`
-	RetainedAt       *time.Time                  `json:"retained_at,omitempty"`
-}
-
-type ArchiveRecord struct {
-	ArchiveRef             string                      `json:"archive_ref"`
-	SourcePluginInstanceID string                      `json:"source_plugin_instance_id"`
-	IncludeSecrets         bool                        `json:"include_secrets"`
-	SchemaVersion          int                         `json:"schema_version"`
-	Fields                 []manifest.SettingFieldSpec `json:"fields"`
-	Values                 map[string]any              `json:"values"`
-	Secrets                map[string]SecretState      `json:"secrets"`
-	SettingsRevision       uint64                      `json:"settings_revision"`
-	UpdatedAt              time.Time                   `json:"updated_at"`
-	CreatedAt              time.Time                   `json:"created_at"`
-}
-
-type MemoryState struct {
-	NextExport int                      `json:"next_export,omitempty"`
-	Records    map[string]Record        `json:"records,omitempty"`
-	Archives   map[string]ArchiveRecord `json:"archives,omitempty"`
-}
-
-type Store interface {
-	Ensure(ctx context.Context, req EnsureRequest) (Snapshot, error)
-	Get(ctx context.Context, req GetRequest) (Snapshot, error)
-	Patch(ctx context.Context, req PatchRequest) (Snapshot, error)
-	MarkSecret(ctx context.Context, req MarkSecretRequest) (Snapshot, error)
-	Export(ctx context.Context, req ExportRequest) (string, error)
-	Import(ctx context.Context, req ImportRequest) (Snapshot, error)
-	Delete(ctx context.Context, req DeleteRequest) error
-	BindRetained(ctx context.Context, req BindRetainedRequest) (Snapshot, error)
-}
-
-type MemoryStore struct {
-	mu         sync.Mutex
-	now        func() time.Time
-	nextExport int
-	records    map[string]Record
-	archives   map[string]ArchiveRecord
-}
-
-func NewMemoryStore() *MemoryStore {
-	return &MemoryStore{
-		now:      func() time.Time { return time.Now().UTC() },
-		records:  map[string]Record{},
-		archives: map[string]ArchiveRecord{},
+func CanonicalSchema(spec *manifest.SettingsSpec) (Schema, error) {
+	if spec == nil {
+		return Schema{}, nil
 	}
-}
-
-func NewMemoryStoreFromState(state MemoryState) *MemoryStore {
-	store := NewMemoryStore()
-	store.nextExport = state.NextExport
-	store.records = cloneRecords(state.Records)
-	store.archives = cloneArchives(state.Archives)
-	return store
-}
-
-func (s *MemoryStore) State() MemoryState {
-	if s == nil {
-		return MemoryState{}
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return MemoryState{
-		NextExport: s.nextExport,
-		Records:    cloneRecords(s.records),
-		Archives:   cloneArchives(s.archives),
-	}
-}
-
-func (s *MemoryStore) Ensure(_ context.Context, req EnsureRequest) (Snapshot, error) {
-	if s == nil {
-		return Snapshot{}, errors.New("settings store is nil")
-	}
-	pluginInstanceID := strings.TrimSpace(req.PluginInstanceID)
-	if pluginInstanceID == "" {
-		return Snapshot{}, fmt.Errorf("%w: plugin_instance_id is required", ErrInvalidSetting)
-	}
-	if req.Spec == nil {
-		return Snapshot{}, ErrNotDeclared
-	}
-	if err := validateSpec(*req.Spec); err != nil {
-		return Snapshot{}, err
-	}
-	now := req.Now
-	if now.IsZero() {
-		now = s.now()
-	}
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	existing, exists := s.records[pluginInstanceID]
-	fields := cloneFields(req.Spec.Fields)
-	record := Record{
-		PluginInstanceID: pluginInstanceID,
-		SchemaVersion:    req.Spec.SchemaVersion,
-		SettingsRevision: 1,
-		State:            StateActive,
-		Fields:           fields,
-		Values:           map[string]any{},
-		Secrets:          map[string]SecretState{},
-		UpdatedAt:        now,
-	}
-	if exists {
-		record.SettingsRevision = existing.SettingsRevision
-		record.Values = existing.Values
-		record.Secrets = existing.Secrets
-		record.UpdatedAt = existing.UpdatedAt
-		if existing.SchemaVersion != req.Spec.SchemaVersion || !reflect.DeepEqual(existing.Fields, fields) || existing.State != StateActive {
-			record.SettingsRevision++
-			record.UpdatedAt = now
-		}
-	}
-	record.Values = normalizedValuesForFields(req.Spec.Fields, record.Values)
-	record.Secrets = normalizedSecretsForFields(req.Spec.Fields, record.Secrets)
-	record.RetainedAt = nil
-	s.records[pluginInstanceID] = record
-	return snapshot(record), nil
-}
-
-func (s *MemoryStore) Get(_ context.Context, req GetRequest) (Snapshot, error) {
-	if s == nil {
-		return Snapshot{}, errors.New("settings store is nil")
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	record, ok := s.records[strings.TrimSpace(req.PluginInstanceID)]
-	if !ok || record.State != StateActive {
-		return Snapshot{}, ErrNotDeclared
-	}
-	return snapshot(record), nil
-}
-
-func (s *MemoryStore) Patch(_ context.Context, req PatchRequest) (Snapshot, error) {
-	if s == nil {
-		return Snapshot{}, errors.New("settings store is nil")
-	}
-	pluginInstanceID := strings.TrimSpace(req.PluginInstanceID)
-	if pluginInstanceID == "" {
-		return Snapshot{}, fmt.Errorf("%w: plugin_instance_id is required", ErrInvalidSetting)
-	}
-	now := req.Now
-	if now.IsZero() {
-		now = s.now()
-	}
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	record, ok := s.records[pluginInstanceID]
-	if !ok || record.State != StateActive {
-		return Snapshot{}, ErrNotDeclared
-	}
-	fields := fieldsByKey(record.Fields)
-	for key, value := range req.Values {
-		field, ok := fields[key]
-		if !ok {
-			return Snapshot{}, fmt.Errorf("%w: unknown setting %q", ErrInvalidSetting, key)
-		}
-		if field.Type == FieldSecret {
-			return Snapshot{}, fmt.Errorf("%w: secret setting %q must be updated through the secret lifecycle", ErrInvalidSetting, key)
-		}
-		normalized, err := normalizeValue(field, value)
-		if err != nil {
-			return Snapshot{}, err
-		}
-		record.Values[key] = normalized
-	}
-	if len(req.Values) > 0 {
-		record.SettingsRevision++
-		record.UpdatedAt = now
-		s.records[pluginInstanceID] = record
-	}
-	return snapshot(record), nil
-}
-
-func (s *MemoryStore) MarkSecret(_ context.Context, req MarkSecretRequest) (Snapshot, error) {
-	if s == nil {
-		return Snapshot{}, errors.New("settings store is nil")
-	}
-	pluginInstanceID := strings.TrimSpace(req.PluginInstanceID)
-	secretRef := strings.TrimSpace(req.SecretRef)
-	if pluginInstanceID == "" || secretRef == "" {
-		return Snapshot{}, fmt.Errorf("%w: plugin_instance_id and secret_ref are required", ErrInvalidSetting)
-	}
-	now := req.Now
-	if now.IsZero() {
-		now = s.now()
-	}
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	record, ok := s.records[pluginInstanceID]
-	if !ok || record.State != StateActive {
-		return Snapshot{}, ErrNotDeclared
-	}
-	if !secretRefDeclared(record.Fields, secretRef) {
-		return Snapshot{}, fmt.Errorf("%w: secret_ref %q is not declared by settings", ErrInvalidSetting, secretRef)
-	}
-	updatedAt := now
-	record.Secrets[secretRef] = SecretState{
-		SecretRef:      secretRef,
-		Set:            req.Set,
-		UpdatedAt:      &updatedAt,
-		LastTestStatus: strings.TrimSpace(req.LastTestStatus),
-	}
-	record.SettingsRevision++
-	record.UpdatedAt = now
-	s.records[pluginInstanceID] = record
-	return snapshot(record), nil
-}
-
-func (s *MemoryStore) Delete(_ context.Context, req DeleteRequest) error {
-	if s == nil {
-		return errors.New("settings store is nil")
-	}
-	pluginInstanceID := strings.TrimSpace(req.PluginInstanceID)
-	if pluginInstanceID == "" {
-		return fmt.Errorf("%w: plugin_instance_id is required", ErrInvalidSetting)
-	}
-	now := req.Now
-	if now.IsZero() {
-		now = s.now()
-	}
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	record, ok := s.records[pluginInstanceID]
-	if !ok {
-		return nil
-	}
-	if req.DeleteData {
-		if req.RequireRetained && record.State != StateRetained {
-			return fmt.Errorf("%w: settings state is %s", ErrNotRetained, record.State)
-		}
-		delete(s.records, pluginInstanceID)
-		return nil
-	}
-	record.State = StateRetained
-	record.SettingsRevision++
-	record.UpdatedAt = now
-	record.RetainedAt = &now
-	s.records[pluginInstanceID] = record
-	return nil
-}
-
-func (s *MemoryStore) Export(_ context.Context, req ExportRequest) (string, error) {
-	if s == nil {
-		return "", errors.New("settings store is nil")
-	}
-	pluginInstanceID := strings.TrimSpace(req.PluginInstanceID)
-	if pluginInstanceID == "" {
-		return "", fmt.Errorf("%w: plugin_instance_id is required", ErrInvalidSetting)
-	}
-	now := req.Now
-	if now.IsZero() {
-		now = s.now()
-	}
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	record, ok := s.records[pluginInstanceID]
-	if !ok || record.State != StateActive {
-		return "", ErrNotDeclared
-	}
-	secrets := map[string]SecretState(nil)
-	if req.IncludeSecrets {
-		secrets = cloneSecrets(record.Secrets)
-	}
-	s.nextExport++
-	ref := fmt.Sprintf("settings_archive_%06d", s.nextExport)
-	s.archives[ref] = ArchiveRecord{
-		ArchiveRef:             ref,
-		SourcePluginInstanceID: pluginInstanceID,
-		IncludeSecrets:         req.IncludeSecrets,
-		SchemaVersion:          record.SchemaVersion,
-		Fields:                 cloneFields(record.Fields),
-		Values:                 cloneMap(record.Values),
-		Secrets:                secrets,
-		SettingsRevision:       record.SettingsRevision,
-		UpdatedAt:              record.UpdatedAt,
-		CreatedAt:              now,
-	}
-	return ref, nil
-}
-
-func (s *MemoryStore) Import(_ context.Context, req ImportRequest) (Snapshot, error) {
-	if s == nil {
-		return Snapshot{}, errors.New("settings store is nil")
-	}
-	pluginInstanceID := strings.TrimSpace(req.PluginInstanceID)
-	if pluginInstanceID == "" {
-		return Snapshot{}, fmt.Errorf("%w: plugin_instance_id is required", ErrInvalidSetting)
-	}
-	archiveRef := strings.TrimSpace(req.ArchiveRef)
-	if archiveRef == "" {
-		return Snapshot{}, ErrArchiveNotFound
-	}
-	if req.Spec == nil {
-		return Snapshot{}, ErrNotDeclared
-	}
-	if err := validateSpec(*req.Spec); err != nil {
-		return Snapshot{}, err
-	}
-	now := req.Now
-	if now.IsZero() {
-		now = s.now()
-	}
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	archive, ok := s.archives[archiveRef]
-	if !ok {
-		return Snapshot{}, ErrArchiveNotFound
-	}
-	if archive.SchemaVersion != req.Spec.SchemaVersion {
-		return Snapshot{}, fmt.Errorf("%w: archive schema_version %d does not match target schema_version %d", ErrInvalidSetting, archive.SchemaVersion, req.Spec.SchemaVersion)
-	}
-	fields := cloneFields(req.Spec.Fields)
-	values := normalizedValuesForFields(fields, nil)
-	secrets := normalizedSecretsForFields(fields, nil)
-	revision := uint64(1)
-	if existing, exists := s.records[pluginInstanceID]; exists && existing.State == StateActive {
-		revision = existing.SettingsRevision + 1
-		if !req.DeleteExisting {
-			values = normalizedValuesForFields(fields, existing.Values)
-			secrets = normalizedSecretsForFields(fields, existing.Secrets)
-		}
-	}
-	imported, err := importedValuesForFields(fields, archive.Values, values)
+	fields, err := NonSecretFields(spec)
 	if err != nil {
-		return Snapshot{}, err
+		return Schema{}, err
 	}
-	record := Record{
-		PluginInstanceID: pluginInstanceID,
-		SchemaVersion:    req.Spec.SchemaVersion,
-		SettingsRevision: revision,
-		State:            StateActive,
-		Fields:           fields,
-		Values:           imported,
-		Secrets:          secrets,
-		UpdatedAt:        now,
-	}
-	s.records[pluginInstanceID] = record
-	return snapshot(record), nil
+	return Schema{SchemaVersion: spec.SchemaVersion, Fields: fields}, nil
 }
 
-func (s *MemoryStore) BindRetained(_ context.Context, req BindRetainedRequest) (Snapshot, error) {
-	if s == nil {
-		return Snapshot{}, errors.New("settings store is nil")
+func CanonicalizeSchema(schema Schema) (Schema, error) {
+	if schema.SchemaVersion < 0 || schema.SchemaVersion == 0 && len(schema.Fields) != 0 {
+		return Schema{}, fmt.Errorf("%w: schema_version must be positive when fields are declared", ErrInvalidSetting)
 	}
-	sourcePluginInstanceID := strings.TrimSpace(req.SourcePluginInstanceID)
-	targetPluginInstanceID := strings.TrimSpace(req.TargetPluginInstanceID)
-	if sourcePluginInstanceID == "" || targetPluginInstanceID == "" {
-		return Snapshot{}, fmt.Errorf("%w: source_plugin_instance_id and target_plugin_instance_id are required", ErrInvalidSetting)
-	}
-	if req.Spec == nil {
-		return Snapshot{}, ErrNotDeclared
-	}
-	if err := validateSpec(*req.Spec); err != nil {
-		return Snapshot{}, err
-	}
-	now := req.Now
-	if now.IsZero() {
-		now = s.now()
-	}
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	source, ok := s.records[sourcePluginInstanceID]
-	if !ok {
-		return Snapshot{}, ErrNotDeclared
-	}
-	if source.State != StateRetained {
-		return Snapshot{}, fmt.Errorf("%w: settings state is %s", ErrNotRetained, source.State)
-	}
-	if target, exists := s.records[targetPluginInstanceID]; exists && targetPluginInstanceID != sourcePluginInstanceID {
-		return Snapshot{}, fmt.Errorf("%w: %s is %s", ErrAlreadyExists, target.PluginInstanceID, target.State)
-	}
-
-	fields := cloneFields(req.Spec.Fields)
-	values := normalizedValuesForFields(fields, nil)
-	imported, err := importedValuesForFields(fields, source.Values, values)
+	fields, err := normalizeFields(schema.Fields)
 	if err != nil {
-		return Snapshot{}, err
+		return Schema{}, err
 	}
-	revision := source.SettingsRevision + 1
-	if revision == 0 {
-		revision = 1
-	}
-	record := Record{
-		PluginInstanceID: targetPluginInstanceID,
-		SchemaVersion:    req.Spec.SchemaVersion,
-		SettingsRevision: revision,
-		State:            StateActive,
-		Fields:           fields,
-		Values:           imported,
-		Secrets:          normalizedSecretsForFields(fields, nil),
-		UpdatedAt:        now,
-	}
-	if req.DryRun {
-		return snapshot(record), nil
-	}
-	if targetPluginInstanceID != sourcePluginInstanceID {
-		delete(s.records, sourcePluginInstanceID)
-	}
-	s.records[targetPluginInstanceID] = record
-	return snapshot(record), nil
+	return Schema{SchemaVersion: schema.SchemaVersion, Fields: fields}, nil
 }
 
-func validateSpec(spec manifest.SettingsSpec) error {
+func CanonicalSchemaJSON(spec *manifest.SettingsSpec) ([]byte, error) {
+	schema, err := CanonicalSchema(spec)
+	if err != nil {
+		return nil, err
+	}
+	return json.Marshal(schema)
+}
+
+func NonSecretFields(spec *manifest.SettingsSpec) ([]Field, error) {
+	if spec == nil {
+		return nil, nil
+	}
 	if spec.SchemaVersion <= 0 {
-		return fmt.Errorf("%w: schema_version must be positive", ErrInvalidSetting)
+		return nil, fmt.Errorf("%w: schema_version must be positive", ErrInvalidSetting)
 	}
-	seen := map[string]struct{}{}
-	for i, field := range spec.Fields {
-		key := strings.TrimSpace(field.Key)
+	fields := make([]Field, 0, len(spec.Fields))
+	seen := make(map[string]struct{}, len(spec.Fields))
+	for i, source := range spec.Fields {
+		key := strings.TrimSpace(source.Key)
+		fieldType := strings.TrimSpace(source.Type)
+		scope := strings.TrimSpace(source.Scope)
 		if key == "" {
-			return fmt.Errorf("%w: fields[%d].key is required", ErrInvalidSetting, i)
+			return nil, fmt.Errorf("%w: fields[%d].key is required", ErrInvalidSetting, i)
 		}
-		if _, ok := seen[key]; ok {
-			return fmt.Errorf("%w: fields[%d].key must be unique", ErrInvalidSetting, i)
+		if _, exists := seen[key]; exists {
+			return nil, fmt.Errorf("%w: fields[%d].key must be unique", ErrInvalidSetting, i)
 		}
 		seen[key] = struct{}{}
-		if field.Scope != "user" && field.Scope != "environment" {
-			return fmt.Errorf("%w: fields[%d].scope must be user or environment", ErrInvalidSetting, i)
+		if scope != "user" && scope != "environment" {
+			return nil, fmt.Errorf("%w: fields[%d].scope must be user or environment", ErrInvalidSetting, i)
 		}
-		if !supportedType(field.Type) {
-			return fmt.Errorf("%w: fields[%d].type is unsupported", ErrInvalidSetting, i)
+		if !supportedType(fieldType) {
+			return nil, fmt.Errorf("%w: fields[%d].type is unsupported", ErrInvalidSetting, i)
 		}
-		if field.Type == FieldSecret && strings.TrimSpace(field.SecretRef) == "" {
-			return fmt.Errorf("%w: fields[%d].secret_ref is required for secret settings", ErrInvalidSetting, i)
-		}
-		if field.Type != FieldSecret && strings.TrimSpace(field.SecretRef) != "" {
-			return fmt.Errorf("%w: fields[%d].secret_ref is only allowed for secret settings", ErrInvalidSetting, i)
-		}
-		if (field.Type == FieldEnum || field.Type == FieldSelect) && len(field.Options) == 0 {
-			return fmt.Errorf("%w: fields[%d].options is required for option settings", ErrInvalidSetting, i)
-		}
-		if field.Default != nil {
-			if _, err := normalizeValue(field, field.Default); err != nil {
-				return fmt.Errorf("fields[%d].default: %w", i, err)
+		if fieldType == FieldSecret {
+			if strings.TrimSpace(source.SecretRef) == "" {
+				return nil, fmt.Errorf("%w: fields[%d].secret_ref is required", ErrInvalidSetting, i)
 			}
-		}
-	}
-	return nil
-}
-
-func normalizedValuesForFields(fields []manifest.SettingFieldSpec, existing map[string]any) map[string]any {
-	values := map[string]any{}
-	for _, field := range fields {
-		if field.Type == FieldSecret {
-			continue
-		}
-		if value, ok := existing[field.Key]; ok {
-			if normalized, err := normalizeValue(field, value); err == nil {
-				values[field.Key] = normalized
-				continue
+			if source.Default != nil || len(source.Options) != 0 || len(source.Validation) != 0 {
+				return nil, fmt.Errorf("%w: fields[%d] secret settings cannot declare data defaults, options, or validation", ErrInvalidSetting, i)
 			}
+			continue
 		}
-		if field.Default != nil {
-			if normalized, err := normalizeValue(field, field.Default); err == nil {
-				values[field.Key] = normalized
-			}
+		if strings.TrimSpace(source.SecretRef) != "" {
+			return nil, fmt.Errorf("%w: fields[%d].secret_ref is only allowed for secrets", ErrInvalidSetting, i)
 		}
-	}
-	return values
-}
 
-func normalizedSecretsForFields(fields []manifest.SettingFieldSpec, existing map[string]SecretState) map[string]SecretState {
-	secrets := map[string]SecretState{}
-	for _, field := range fields {
-		if field.Type != FieldSecret {
-			continue
-		}
-		secretRef := strings.TrimSpace(field.SecretRef)
-		if secretRef == "" {
-			continue
-		}
-		if state, ok := existing[secretRef]; ok {
-			state.SecretRef = secretRef
-			secrets[secretRef] = state
-		}
-	}
-	return secrets
-}
-
-func importedValuesForFields(fields []manifest.SettingFieldSpec, archived map[string]any, base map[string]any) (map[string]any, error) {
-	values := cloneMap(base)
-	byKey := fieldsByKey(fields)
-	for key, value := range archived {
-		field, ok := byKey[key]
-		if !ok {
-			continue
-		}
-		if field.Type == FieldSecret {
-			continue
-		}
-		normalized, err := normalizeValue(field, value)
+		field := Field{Key: key, Type: fieldType, Scope: scope}
+		options, err := normalizeOptions(source, i)
 		if err != nil {
 			return nil, err
 		}
-		values[key] = normalized
+		field.Options = options
+		validation, err := normalizeValidation(source, i)
+		if err != nil {
+			return nil, err
+		}
+		field.Validation = validation
+		if source.Default != nil {
+			normalized, err := normalizeValue(field, source.Default)
+			if err != nil {
+				return nil, fmt.Errorf("fields[%d].default: %w", i, err)
+			}
+			field.Default, err = json.Marshal(normalized)
+			if err != nil {
+				return nil, fmt.Errorf("fields[%d].default: %w", i, err)
+			}
+		}
+		fields = append(fields, field)
+	}
+	sort.Slice(fields, func(i, j int) bool { return fields[i].Key < fields[j].Key })
+	return fields, nil
+}
+
+func DefaultValues(fields []Field) (map[string]json.RawMessage, error) {
+	fields, err := normalizeFields(fields)
+	if err != nil {
+		return nil, err
+	}
+	values := make(map[string]json.RawMessage)
+	for _, field := range fields {
+		if field.Default != nil {
+			values[field.Key] = cloneRaw(field.Default)
+		}
 	}
 	return values, nil
 }
 
-func snapshot(record Record) Snapshot {
-	values := map[string]any{}
-	for _, field := range record.Fields {
-		if field.Type == FieldSecret {
-			state := record.Secrets[strings.TrimSpace(field.SecretRef)]
-			values[field.Key] = SecretValue{
-				Set:            state.Set,
-				UpdatedAt:      cloneTimePtr(state.UpdatedAt),
-				LastTestStatus: state.LastTestStatus,
-			}
-			continue
-		}
-		if value, ok := record.Values[field.Key]; ok {
-			values[field.Key] = cloneValue(value)
-		}
+func NormalizeRawValues(fields []Field, values map[string]json.RawMessage) (map[string]json.RawMessage, error) {
+	fields, err := normalizeFields(fields)
+	if err != nil {
+		return nil, err
 	}
-	return Snapshot{
-		PluginInstanceID: record.PluginInstanceID,
-		SchemaVersion:    record.SchemaVersion,
-		SettingsRevision: record.SettingsRevision,
-		Values:           values,
-		UpdatedAt:        record.UpdatedAt,
+	byKey := make(map[string]Field, len(fields))
+	for _, field := range fields {
+		byKey[field.Key] = field
 	}
+	normalized := make(map[string]json.RawMessage, len(values))
+	for key, raw := range values {
+		field, ok := byKey[key]
+		if !ok {
+			return nil, fmt.Errorf("%w: setting %q is not declared", ErrInvalidSetting, key)
+		}
+		value, err := decodeJSONValue(raw)
+		if err != nil {
+			return nil, fmt.Errorf("%w: setting %q: %v", ErrInvalidSetting, key, err)
+		}
+		value, err = normalizeValue(field, value)
+		if err != nil {
+			return nil, err
+		}
+		encoded, err := json.Marshal(value)
+		if err != nil {
+			return nil, fmt.Errorf("%w: setting %q: %v", ErrInvalidSetting, key, err)
+		}
+		normalized[key] = encoded
+	}
+	return normalized, nil
 }
 
-func normalizeValue(field manifest.SettingFieldSpec, value any) (any, error) {
+func DecodeValues(values map[string]json.RawMessage) (map[string]any, error) {
+	decoded := make(map[string]any, len(values))
+	for key, raw := range values {
+		value, err := decodeJSONValue(raw)
+		if err != nil {
+			return nil, fmt.Errorf("decode setting %q: %w", key, err)
+		}
+		decoded[key] = value
+	}
+	return decoded, nil
+}
+
+func normalizeFields(fields []Field) ([]Field, error) {
+	normalized := make([]Field, len(fields))
+	seen := make(map[string]struct{}, len(fields))
+	for i, field := range fields {
+		field.Key = strings.TrimSpace(field.Key)
+		field.Type = strings.TrimSpace(field.Type)
+		field.Scope = strings.TrimSpace(field.Scope)
+		if field.Key == "" {
+			return nil, fmt.Errorf("%w: fields[%d].key is required", ErrInvalidSetting, i)
+		}
+		if _, exists := seen[field.Key]; exists {
+			return nil, fmt.Errorf("%w: fields[%d].key must be unique", ErrInvalidSetting, i)
+		}
+		seen[field.Key] = struct{}{}
+		if field.Scope != "user" && field.Scope != "environment" {
+			return nil, fmt.Errorf("%w: fields[%d].scope must be user or environment", ErrInvalidSetting, i)
+		}
+		if field.Type == FieldSecret || !supportedType(field.Type) {
+			return nil, fmt.Errorf("%w: fields[%d].type is not a non-secret settings type", ErrInvalidSetting, i)
+		}
+		options, err := normalizeFieldOptions(field, i)
+		if err != nil {
+			return nil, err
+		}
+		field.Options = options
+		field.Validation = cloneValidation(field.Validation)
+		if validationEmpty(field.Validation) {
+			field.Validation = nil
+		}
+		if err := validateCanonicalValidation(field, i); err != nil {
+			return nil, err
+		}
+		if field.Default != nil {
+			value, err := decodeJSONValue(field.Default)
+			if err != nil {
+				return nil, fmt.Errorf("fields[%d].default: %w", i, err)
+			}
+			normalizedValue, err := normalizeValue(field, value)
+			if err != nil {
+				return nil, fmt.Errorf("fields[%d].default: %w", i, err)
+			}
+			field.Default, err = json.Marshal(normalizedValue)
+			if err != nil {
+				return nil, fmt.Errorf("fields[%d].default: %w", i, err)
+			}
+		}
+		normalized[i] = field
+	}
+	sort.Slice(normalized, func(i, j int) bool { return normalized[i].Key < normalized[j].Key })
+	return normalized, nil
+}
+
+func normalizeOptions(source manifest.SettingFieldSpec, fieldIndex int) ([]string, error) {
+	field := Field{Type: strings.TrimSpace(source.Type), Options: source.Options}
+	return normalizeFieldOptions(field, fieldIndex)
+}
+
+func normalizeFieldOptions(field Field, fieldIndex int) ([]string, error) {
+	if field.Type != FieldEnum && field.Type != FieldSelect {
+		if len(field.Options) != 0 {
+			return nil, fmt.Errorf("%w: fields[%d].options is only allowed for enum or select settings", ErrInvalidSetting, fieldIndex)
+		}
+		return nil, nil
+	}
+	if len(field.Options) == 0 {
+		return nil, fmt.Errorf("%w: fields[%d].options is required", ErrInvalidSetting, fieldIndex)
+	}
+	options := make([]string, len(field.Options))
+	seen := make(map[string]struct{}, len(field.Options))
+	for i, option := range field.Options {
+		option = strings.TrimSpace(option)
+		if option == "" {
+			return nil, fmt.Errorf("%w: fields[%d].options[%d] must not be empty", ErrInvalidSetting, fieldIndex, i)
+		}
+		if _, exists := seen[option]; exists {
+			return nil, fmt.Errorf("%w: fields[%d].options must be unique", ErrInvalidSetting, fieldIndex)
+		}
+		seen[option] = struct{}{}
+		options[i] = option
+	}
+	sort.Strings(options)
+	return options, nil
+}
+
+func normalizeValidation(source manifest.SettingFieldSpec, fieldIndex int) (*Validation, error) {
+	if len(source.Validation) == 0 {
+		return nil, nil
+	}
+	allowed := map[string]bool{}
+	switch strings.TrimSpace(source.Type) {
+	case FieldString:
+		allowed["min_length"] = true
+		allowed["max_length"] = true
+	case FieldNumber, FieldInteger:
+		allowed["minimum"] = true
+		allowed["maximum"] = true
+	}
+	for key := range source.Validation {
+		if !allowed[key] {
+			return nil, fmt.Errorf("%w: fields[%d].validation.%s is unsupported for type %s", ErrInvalidSetting, fieldIndex, key, source.Type)
+		}
+	}
+	validation := &Validation{}
+	var err error
+	if raw, ok := source.Validation["minimum"]; ok {
+		validation.Minimum, err = finiteFloatPointer(raw)
+		if err != nil {
+			return nil, fmt.Errorf("%w: fields[%d].validation.minimum %v", ErrInvalidSetting, fieldIndex, err)
+		}
+	}
+	if raw, ok := source.Validation["maximum"]; ok {
+		validation.Maximum, err = finiteFloatPointer(raw)
+		if err != nil {
+			return nil, fmt.Errorf("%w: fields[%d].validation.maximum %v", ErrInvalidSetting, fieldIndex, err)
+		}
+	}
+	if raw, ok := source.Validation["min_length"]; ok {
+		validation.MinLength, err = nonNegativeIntegerPointer(raw)
+		if err != nil {
+			return nil, fmt.Errorf("%w: fields[%d].validation.min_length %v", ErrInvalidSetting, fieldIndex, err)
+		}
+	}
+	if raw, ok := source.Validation["max_length"]; ok {
+		validation.MaxLength, err = nonNegativeIntegerPointer(raw)
+		if err != nil {
+			return nil, fmt.Errorf("%w: fields[%d].validation.max_length %v", ErrInvalidSetting, fieldIndex, err)
+		}
+	}
+	field := Field{Type: strings.TrimSpace(source.Type), Validation: validation}
+	if err := validateCanonicalValidation(field, fieldIndex); err != nil {
+		return nil, err
+	}
+	return validation, nil
+}
+
+func validateCanonicalValidation(field Field, fieldIndex int) error {
+	validation := field.Validation
+	if validation == nil {
+		return nil
+	}
+	switch field.Type {
+	case FieldString:
+		if validation.Minimum != nil || validation.Maximum != nil {
+			return fmt.Errorf("%w: fields[%d].validation has numeric constraints for a string", ErrInvalidSetting, fieldIndex)
+		}
+		if validation.MinLength != nil && validation.MaxLength != nil && *validation.MinLength > *validation.MaxLength {
+			return fmt.Errorf("%w: fields[%d].validation.min_length exceeds max_length", ErrInvalidSetting, fieldIndex)
+		}
+	case FieldNumber, FieldInteger:
+		if validation.MinLength != nil || validation.MaxLength != nil {
+			return fmt.Errorf("%w: fields[%d].validation has length constraints for a number", ErrInvalidSetting, fieldIndex)
+		}
+		for name, value := range map[string]*float64{"minimum": validation.Minimum, "maximum": validation.Maximum} {
+			if value != nil && (math.IsNaN(*value) || math.IsInf(*value, 0)) {
+				return fmt.Errorf("%w: fields[%d].validation.%s must be finite", ErrInvalidSetting, fieldIndex, name)
+			}
+		}
+		if validation.Minimum != nil && validation.Maximum != nil && *validation.Minimum > *validation.Maximum {
+			return fmt.Errorf("%w: fields[%d].validation.minimum exceeds maximum", ErrInvalidSetting, fieldIndex)
+		}
+	default:
+		return fmt.Errorf("%w: fields[%d].validation is unsupported for type %s", ErrInvalidSetting, fieldIndex, field.Type)
+	}
+	return nil
+}
+
+func decodeJSONValue(raw json.RawMessage) (any, error) {
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
+	var value any
+	if err := decoder.Decode(&value); err != nil {
+		return nil, err
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		if err == nil {
+			return nil, errors.New("trailing JSON value")
+		}
+		return nil, err
+	}
+	return value, nil
+}
+
+func normalizeValue(field Field, value any) (any, error) {
 	switch field.Type {
 	case FieldString:
 		text, ok := value.(string)
 		if !ok {
 			return nil, fmt.Errorf("%w: setting %q must be a string", ErrInvalidSetting, field.Key)
 		}
-		if err := validateString(field, text); err != nil {
-			return nil, err
+		length := uint64(utf8.RuneCountInString(text))
+		if field.Validation != nil && field.Validation.MinLength != nil && length < *field.Validation.MinLength {
+			return nil, fmt.Errorf("%w: setting %q is shorter than min_length", ErrInvalidSetting, field.Key)
+		}
+		if field.Validation != nil && field.Validation.MaxLength != nil && length > *field.Validation.MaxLength {
+			return nil, fmt.Errorf("%w: setting %q exceeds max_length", ErrInvalidSetting, field.Key)
 		}
 		return text, nil
 	case FieldBoolean:
-		boolValue, ok := value.(bool)
+		boolean, ok := value.(bool)
 		if !ok {
 			return nil, fmt.Errorf("%w: setting %q must be a boolean", ErrInvalidSetting, field.Key)
 		}
-		return boolValue, nil
-	case FieldNumber:
+		return boolean, nil
+	case FieldNumber, FieldInteger:
 		number, ok := numberValue(value)
 		if !ok {
-			return nil, fmt.Errorf("%w: setting %q must be a number", ErrInvalidSetting, field.Key)
+			return nil, fmt.Errorf("%w: setting %q must be a finite %s", ErrInvalidSetting, field.Key, field.Type)
 		}
-		if err := validateNumber(field, number); err != nil {
-			return nil, err
+		if field.Type == FieldInteger {
+			if math.Trunc(number) != number || number < -float64(maxJSONSafeInteger) || number > float64(maxJSONSafeInteger) {
+				return nil, fmt.Errorf("%w: setting %q must be a JSON-safe integer", ErrInvalidSetting, field.Key)
+			}
+		}
+		if field.Validation != nil && field.Validation.Minimum != nil && number < *field.Validation.Minimum {
+			return nil, fmt.Errorf("%w: setting %q is below minimum", ErrInvalidSetting, field.Key)
+		}
+		if field.Validation != nil && field.Validation.Maximum != nil && number > *field.Validation.Maximum {
+			return nil, fmt.Errorf("%w: setting %q exceeds maximum", ErrInvalidSetting, field.Key)
+		}
+		if field.Type == FieldInteger {
+			return int64(number), nil
+		}
+		if number == 0 {
+			return float64(0), nil
 		}
 		return number, nil
-	case FieldInteger:
-		number, ok := numberValue(value)
-		if !ok || math.Trunc(number) != number {
-			return nil, fmt.Errorf("%w: setting %q must be an integer", ErrInvalidSetting, field.Key)
-		}
-		if err := validateNumber(field, number); err != nil {
-			return nil, err
-		}
-		return int64(number), nil
 	case FieldEnum, FieldSelect:
 		text, ok := value.(string)
 		if !ok {
 			return nil, fmt.Errorf("%w: setting %q must be an option string", ErrInvalidSetting, field.Key)
 		}
-		for _, option := range field.Options {
-			if text == option {
-				return text, nil
-			}
+		index := sort.SearchStrings(field.Options, text)
+		if index >= len(field.Options) || field.Options[index] != text {
+			return nil, fmt.Errorf("%w: setting %q must match a declared option", ErrInvalidSetting, field.Key)
 		}
-		return nil, fmt.Errorf("%w: setting %q must match a declared option", ErrInvalidSetting, field.Key)
-	case FieldSecret:
-		return nil, fmt.Errorf("%w: secret setting %q cannot store plaintext", ErrInvalidSetting, field.Key)
+		return text, nil
 	default:
 		return nil, fmt.Errorf("%w: setting %q has unsupported type %q", ErrInvalidSetting, field.Key, field.Type)
 	}
 }
 
-func validateString(field manifest.SettingFieldSpec, value string) error {
-	if min, ok := validationNumber(field.Validation, "min_length"); ok && len(value) < int(min) {
-		return fmt.Errorf("%w: setting %q is shorter than min_length", ErrInvalidSetting, field.Key)
+func finiteFloatPointer(value any) (*float64, error) {
+	number, ok := numberValue(value)
+	if !ok {
+		return nil, errors.New("must be a finite number")
 	}
-	if max, ok := validationNumber(field.Validation, "max_length"); ok && len(value) > int(max) {
-		return fmt.Errorf("%w: setting %q exceeds max_length", ErrInvalidSetting, field.Key)
-	}
-	return nil
+	return &number, nil
 }
 
-func validateNumber(field manifest.SettingFieldSpec, value float64) error {
-	if min, ok := validationNumber(field.Validation, "minimum"); ok && value < min {
-		return fmt.Errorf("%w: setting %q is below minimum", ErrInvalidSetting, field.Key)
+func nonNegativeIntegerPointer(value any) (*uint64, error) {
+	number, ok := numberValue(value)
+	if !ok || math.Trunc(number) != number || number < 0 || number > float64(maxJSONSafeInteger) {
+		return nil, errors.New("must be a non-negative JSON-safe integer")
 	}
-	if max, ok := validationNumber(field.Validation, "maximum"); ok && value > max {
-		return fmt.Errorf("%w: setting %q exceeds maximum", ErrInvalidSetting, field.Key)
-	}
-	return nil
-}
-
-func validationNumber(values map[string]any, key string) (float64, bool) {
-	if len(values) == 0 {
-		return 0, false
-	}
-	return numberValue(values[key])
+	integer := uint64(number)
+	return &integer, nil
 }
 
 func numberValue(value any) (float64, bool) {
-	switch v := value.(type) {
+	var number float64
+	switch value := value.(type) {
+	case json.Number:
+		var err error
+		number, err = value.Float64()
+		if err != nil {
+			return 0, false
+		}
 	case float64:
-		return v, true
+		number = value
 	case float32:
-		return float64(v), true
+		number = float64(value)
 	case int:
-		return float64(v), true
+		number = float64(value)
 	case int8:
-		return float64(v), true
+		number = float64(value)
 	case int16:
-		return float64(v), true
+		number = float64(value)
 	case int32:
-		return float64(v), true
+		number = float64(value)
 	case int64:
-		return float64(v), true
+		number = float64(value)
 	case uint:
-		return float64(v), true
+		number = float64(value)
 	case uint8:
-		return float64(v), true
+		number = float64(value)
 	case uint16:
-		return float64(v), true
+		number = float64(value)
 	case uint32:
-		return float64(v), true
+		number = float64(value)
 	case uint64:
-		return float64(v), true
+		number = float64(value)
 	default:
 		return 0, false
 	}
-}
-
-func fieldsByKey(fields []manifest.SettingFieldSpec) map[string]manifest.SettingFieldSpec {
-	byKey := make(map[string]manifest.SettingFieldSpec, len(fields))
-	for _, field := range fields {
-		byKey[field.Key] = field
-	}
-	return byKey
-}
-
-func secretRefDeclared(fields []manifest.SettingFieldSpec, secretRef string) bool {
-	for _, field := range fields {
-		if field.Type == FieldSecret && strings.TrimSpace(field.SecretRef) == secretRef {
-			return true
-		}
-	}
-	return false
+	return number, !math.IsNaN(number) && !math.IsInf(number, 0)
 }
 
 func supportedType(fieldType string) bool {
@@ -797,76 +510,34 @@ func supportedType(fieldType string) bool {
 	}
 }
 
-func cloneFields(fields []manifest.SettingFieldSpec) []manifest.SettingFieldSpec {
-	cloned := make([]manifest.SettingFieldSpec, len(fields))
-	copy(cloned, fields)
-	sort.SliceStable(cloned, func(i, j int) bool { return cloned[i].Key < cloned[j].Key })
-	return cloned
+func cloneRaw(value json.RawMessage) json.RawMessage {
+	return append(json.RawMessage(nil), value...)
 }
 
-func cloneMap(values map[string]any) map[string]any {
-	cloned := make(map[string]any, len(values))
-	for key, value := range values {
-		cloned[key] = cloneValue(value)
-	}
-	return cloned
-}
-
-func cloneSecrets(values map[string]SecretState) map[string]SecretState {
-	cloned := make(map[string]SecretState, len(values))
-	for key, value := range values {
-		value.UpdatedAt = cloneTimePtr(value.UpdatedAt)
-		cloned[key] = value
-	}
-	return cloned
-}
-
-func cloneRecords(values map[string]Record) map[string]Record {
-	cloned := make(map[string]Record, len(values))
-	for key, value := range values {
-		value.Fields = cloneFields(value.Fields)
-		value.Values = cloneMap(value.Values)
-		value.Secrets = cloneSecrets(value.Secrets)
-		value.RetainedAt = cloneTimePtr(value.RetainedAt)
-		cloned[key] = value
-	}
-	return cloned
-}
-
-func cloneArchives(values map[string]ArchiveRecord) map[string]ArchiveRecord {
-	cloned := make(map[string]ArchiveRecord, len(values))
-	for key, value := range values {
-		value.Fields = cloneFields(value.Fields)
-		value.Values = cloneMap(value.Values)
-		value.Secrets = cloneSecrets(value.Secrets)
-		cloned[key] = value
-	}
-	return cloned
-}
-
-func cloneValue(value any) any {
-	switch v := value.(type) {
-	case map[string]any:
-		cloned := make(map[string]any, len(v))
-		for key, item := range v {
-			cloned[key] = cloneValue(item)
-		}
-		return cloned
-	case []any:
-		cloned := make([]any, len(v))
-		for i, item := range v {
-			cloned[i] = cloneValue(item)
-		}
-		return cloned
-	default:
-		return v
-	}
-}
-
-func cloneTimePtr(value *time.Time) *time.Time {
+func cloneValidation(value *Validation) *Validation {
 	if value == nil {
 		return nil
 	}
 	cloned := *value
+	if value.Minimum != nil {
+		item := *value.Minimum
+		cloned.Minimum = &item
+	}
+	if value.Maximum != nil {
+		item := *value.Maximum
+		cloned.Maximum = &item
+	}
+	if value.MinLength != nil {
+		item := *value.MinLength
+		cloned.MinLength = &item
+	}
+	if value.MaxLength != nil {
+		item := *value.MaxLength
+		cloned.MaxLength = &item
+	}
 	return &cloned
+}
+
+func validationEmpty(value *Validation) bool {
+	return value != nil && value.Minimum == nil && value.Maximum == nil && value.MinLength == nil && value.MaxLength == nil
 }

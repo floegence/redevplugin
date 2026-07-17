@@ -1,23 +1,42 @@
 package sessionctx
 
-import "context"
+import (
+	"context"
+	"errors"
+	"strings"
+)
 
-type PermissionSet struct {
-	Read    bool `json:"read"`
-	Write   bool `json:"write"`
-	Execute bool `json:"execute"`
-	Admin   bool `json:"admin"`
-}
+var ErrSessionRequired = errors.New("authenticated session is required")
 
 type Context struct {
-	SessionChannelIDHash string        `json:"session_channel_id_hash"`
-	OwnerUserHash        string        `json:"owner_user_hash"`
-	OwnerEnvHash         string        `json:"owner_env_hash"`
-	Origin               string        `json:"origin"`
-	CSRFGeneration       string        `json:"csrf_generation"`
-	Permissions          PermissionSet `json:"permissions"`
+	OwnerSessionHash     string `json:"owner_session_hash"`
+	OwnerUserHash        string `json:"owner_user_hash"`
+	OwnerEnvHash         string `json:"owner_env_hash"`
+	SessionChannelIDHash string `json:"session_channel_id_hash"`
 }
 
-type Resolver interface {
-	ResolveSession(ctx context.Context, channelID string) (Context, error)
+func (s Context) Valid() bool {
+	return strings.TrimSpace(s.OwnerSessionHash) != "" &&
+		strings.TrimSpace(s.OwnerUserHash) != "" &&
+		strings.TrimSpace(s.OwnerEnvHash) != "" &&
+		strings.TrimSpace(s.SessionChannelIDHash) != ""
+}
+
+type contextKey struct{}
+
+func WithContext(ctx context.Context, session Context) context.Context {
+	return context.WithValue(ctx, contextKey{}, session)
+}
+
+func FromContext(ctx context.Context) (Context, bool) {
+	session, ok := ctx.Value(contextKey{}).(Context)
+	return session, ok && session.Valid()
+}
+
+func Require(ctx context.Context) (Context, error) {
+	session, ok := FromContext(ctx)
+	if !ok {
+		return Context{}, ErrSessionRequired
+	}
+	return session, nil
 }

@@ -1,4 +1,6 @@
-import { defaultFetch, readHostEnvelope, trimTrailingSlash, type FetchLike } from "./http.js";
+import { defaultFetch, readMutationPlatformResponse, readPlatformResponse, trimTrailingSlash, type FetchLike } from "./http.js";
+import { PluginPlatformRequestError, PluginTransportError } from "./errors.js";
+import type { components, operations } from "./openapi.gen.js";
 import type { PluginSurfaceHostBootstrap, PluginTrustedMethodResult } from "./surface.js";
 import {
   defaultPluginSurfaceScope,
@@ -10,198 +12,37 @@ export type PluginPlatformClientOptions = {
   fetch?: FetchLike;
   apiBaseURL?: string;
   surfaceScope?: PluginSurfaceScope;
+  onMutationOutcomeUnknown?: (pluginInstanceId?: string) => void;
 };
 
-export type PluginCatalogRecord = Record<string, unknown>;
+type PlatformSchemas = components["schemas"];
 
-export type PluginCatalogResult = {
-  plugins?: PluginCatalogRecord[];
-  [key: string]: unknown;
-};
+export type PluginCatalogResult = PlatformSchemas["PluginCatalogResult"];
+export type PluginCatalogRecord = PluginCatalogResult["plugins"][number];
+export type PluginCompatibilityManifest = PlatformSchemas["PluginCompatibilityManifest"];
+export type PluginCompatibilityMatrix = PluginCompatibilityManifest["matrix"];
+export type PluginContractArtifact = PluginCompatibilityManifest["contracts"][number];
+export type PluginTrustState = PlatformSchemas["TrustState"];
+export type PluginTrustHashSet = PlatformSchemas["TrustHashSet"];
+export type PluginVerifiedSignature = PlatformSchemas["VerifiedSignature"];
+export type PluginTrustAssessment = PlatformSchemas["TrustAssessment"];
+export type PluginLocalImportProvenance = PlatformSchemas["LocalImportProvenance"];
+export type PluginVersionRecord = PlatformSchemas["PluginVersion"];
+export type PluginRecord = PlatformSchemas["PluginRecord"];
+export type PluginEnableState = PluginRecord["enable_state"];
+export type PluginPackageHashSet = PlatformSchemas["PackageHashSet"];
+export type PluginReleaseRef = PlatformSchemas["PluginReleaseRef"];
+export type PluginInstallReleaseRefRequest = PlatformSchemas["InstallReleaseRefRequest"];
+export type PluginUpdateReleaseRefRequest = PlatformSchemas["UpdateReleaseRefRequest"];
+export type PluginDowngradeRequest = PlatformSchemas["DowngradeRequest"];
+export type PluginEnableRequest = PlatformSchemas["EnableRequest"];
+export type PluginDisableRequest = PlatformSchemas["DisableRequest"];
+export type PluginUninstallRequest = PlatformSchemas["UninstallRequest"];
+export type PluginOpenSurfaceRequest = PlatformSchemas["OpenSurfaceRequest"];
 
-export type PluginCompatibilityMatrix = {
-  redevplugin_go_version: string;
-  redevplugin_ui_version: string;
-  redevplugin_runtime_version: string;
-  plugin_ui_protocol_version: string;
-  plugin_host_protocol_version: string;
-  rust_ipc_version: string;
-  wasm_abi_version: string;
-  manifest_schema_version: string;
-  package_signature_schema_version: string;
-  release_metadata_schema_version: string;
-  source_policy_schema_version: string;
-  source_revocations_schema_version: string;
-  token_ticket_schema_version: string;
-  bridge_schema_version: string;
-  opaque_surface_document_schema_version: string;
-  opaque_surface_transport_schema_version: string;
-  target_classifier_version: string;
-  network_grant_schema_version: string;
-  plugin_platform_openapi_version: string;
-  compatibility_schema_version: string;
-  release_manifest_schema_version: string;
-  worker_invocation_schema_version: string;
-  host_capability_contract_schema_version: string;
-  host_capability_pin_schema_version: string;
-  host_capability_manifest_schema_version: string;
-  host_capability_compatibility_schema_version: string;
-  host_capability_signature_schema_version: string;
-  host_capability_notices_schema_version: string;
-  error_codes_schema_version: string;
-  contract_registry_version: string;
-  [key: string]: unknown;
-};
+export type PluginSurfaceScopeRevokeResult = PlatformSchemas["SurfaceScopeRevokeResult"];
 
-export type PluginContractArtifact = {
-  id: string;
-  path: string;
-  version: string;
-  sha256: string;
-  [key: string]: unknown;
-};
-
-export type PluginCompatibilityManifest = {
-  schema_version: string;
-  matrix: PluginCompatibilityMatrix;
-  contracts: PluginContractArtifact[];
-  [key: string]: unknown;
-};
-
-export type PluginTrustState = "verified" | "unsigned_local" | "untrusted" | "needs_review" | "trust_unavailable" | "blocked_security";
-export type PluginEnableState = "disabled" | "enabled" | "disabled_by_policy";
-export type PluginRetainedDataRecordState = "retained" | "expired" | "bound" | "deleted" | "delete_failed_retryable";
-export type PluginRetainedDataState = "none" | PluginRetainedDataRecordState;
-
-export type PluginTrustHashSet = {
-  package_sha256: string;
-  manifest_sha256: string;
-  entries_sha256: string;
-};
-
-export type PluginVerifiedSignature = {
-  algorithm: string;
-  key_id: string;
-};
-
-export type PluginTrustAssessment = {
-  trust_state: PluginTrustState | string;
-  reason_codes?: string[];
-  verified_hashes: PluginTrustHashSet;
-  verified_signature?: PluginVerifiedSignature;
-  trust_assessment_epoch?: string;
-  policy_epoch?: string;
-  revocation_epoch?: string;
-  metadata?: Record<string, string>;
-};
-
-export type PluginLocalImportProvenance = {
-  import_id: string;
-  distribution: "local_import" | string;
-  policy_epoch: string;
-  unsigned_policy: "dev_only" | "review_required" | "block" | string;
-  assessed_at: string;
-};
-
-export type PluginVersionRecord = {
-  version: string;
-  active_fingerprint: string;
-  package_hash: string;
-  manifest_hash: string;
-  entries_hash: string;
-  trust_state: PluginTrustState | string;
-  trust_assessment: PluginTrustAssessment;
-  source_policy_snapshot_hash?: string;
-  source_policy_snapshot?: Record<string, unknown>;
-  local_import_provenance?: PluginLocalImportProvenance;
-  metadata?: Record<string, string>;
-  [key: string]: unknown;
-};
-
-export type PluginRecord = {
-  plugin_instance_id: string;
-  publisher_id?: string;
-  plugin_id: string;
-  version: string;
-  active_fingerprint: string;
-  package_hash?: string;
-  manifest_hash?: string;
-  entries_hash?: string;
-  trust_state: PluginTrustState | string;
-  trust_assessment: PluginTrustAssessment;
-  source_policy_snapshot_hash?: string;
-  source_policy_snapshot?: Record<string, unknown>;
-  local_import_provenance?: PluginLocalImportProvenance;
-  enable_state: PluginEnableState | string;
-  disabled_reason?: string;
-  retained_data_state?: PluginRetainedDataState | string;
-  policy_revision?: number;
-  management_revision?: number;
-  revoke_epoch?: number;
-  manifest?: Record<string, unknown>;
-  package_entries?: Array<Record<string, unknown>>;
-  version_history?: PluginVersionRecord[];
-  installed_at?: string;
-  enabled_at?: string;
-  updated_at?: string;
-  deleted_at?: string;
-  metadata?: Record<string, string>;
-  [key: string]: unknown;
-};
-
-export type PluginPackageHashSet = {
-  package_sha256: string;
-  manifest_sha256: string;
-  entries_sha256: string;
-};
-
-export type PluginReleaseRef = {
-  source_id: string;
-  release_metadata_ref: string;
-  release_metadata_sha256: string;
-  publisher_id: string;
-  plugin_id: string;
-  version: string;
-  expected_hashes: PluginPackageHashSet;
-};
-
-export type PluginInstallReleaseRefRequest = { release_ref: PluginReleaseRef; plugin_instance_id?: string; plugin_state_version: 0 };
-export type PluginUpdateReleaseRefRequest = { plugin_instance_id: string; release_ref: PluginReleaseRef; plugin_state_version: number };
-export type PluginDowngradeRequest = { plugin_instance_id: string; version?: string; package_hash?: string; plugin_state_version: number };
-export type PluginEnableRequest = { plugin_instance_id: string; plugin_state_version: number };
-export type PluginDisableRequest = { plugin_instance_id: string; plugin_state_version: number; reason?: string };
-export type PluginUninstallRequest = { plugin_instance_id: string; plugin_state_version: number; delete_data: boolean };
-
-export type PluginOpenSurfaceRequest = {
-  plugin_instance_id: string;
-  surface_id: string;
-  surface_instance_id?: string;
-  plugin_state_version: number;
-};
-
-export type PluginSurfaceScopeRevokeResult = {
-  revoked_surface_count: number;
-};
-
-export type PluginSurfaceBootstrapResult = {
-  plugin_id: string;
-  plugin_instance_id: string;
-  plugin_version: string;
-  surface_id: string;
-  surface_instance_id: string;
-  active_fingerprint: string;
-  entry_path: string;
-  entry_sha256: string;
-  asset_session_nonce: string;
-  plugin_state_version: number;
-  revoke_epoch: number;
-  runtime_generation_id: string;
-  asset_ticket: string;
-  asset_ticket_id: string;
-  bridge_nonce: string;
-  issued_at: string;
-  expires_at: string;
-};
+export type PluginSurfaceBootstrapResult = PlatformSchemas["SurfaceBootstrap"];
 
 export function toPluginSurfaceHostBootstrap(value: PluginSurfaceBootstrapResult): PluginSurfaceHostBootstrap {
   return {
@@ -216,345 +57,248 @@ export function toPluginSurfaceHostBootstrap(value: PluginSurfaceBootstrapResult
     entrySHA256: value.entry_sha256,
     assetTicket: value.asset_ticket,
     assetSessionNonce: value.asset_session_nonce,
-    pluginStateVersion: value.plugin_state_version,
+    managementRevision: value.management_revision,
     revokeEpoch: value.revoke_epoch,
     runtimeGenerationId: value.runtime_generation_id,
   };
 }
 
-export type PluginRuntimeTarget = { os?: string; arch?: string };
-export type PluginRuntimeStartRequest = { target?: PluginRuntimeTarget };
-export type PluginRuntimeHealth = {
-  runtime_instance_id: string;
-  runtime_generation_id: string;
-  runtime_version?: string;
-  rust_ipc_version?: string;
-  wasm_abi_version?: string;
-  ready: boolean;
-};
-export type PluginRuntimeStopResult = { stopped: boolean };
-export type PluginRuntimeRefreshResult = { refreshed_plugins: PluginRecord[] };
+export type PluginRuntimeStartRequest = PlatformSchemas["StartRuntimeRequest"];
+export type PluginRuntimeTarget = NonNullable<PluginRuntimeStartRequest["target"]>;
+export type PluginRuntimeHealth = PlatformSchemas["PluginRuntimeHealth"];
+export type PluginRuntimeShardHealth = PlatformSchemas["PluginRuntimeShardHealth"];
+export type PluginRuntimeStopResult = PlatformSchemas["PluginRuntimeStopResult"];
+export type PluginRuntimeRefreshResult = PlatformSchemas["PluginRuntimeRefreshResult"];
 
-export type PluginSettingsField = {
-  key: string;
-  type: string;
-  label: string;
-  scope: string;
-  default?: unknown;
-  secret_ref?: string;
-  options?: string[];
-  validation?: Record<string, unknown>;
-};
+export type PluginSettingsField = PlatformSchemas["PluginSettingsField"];
+export type PluginSettingsSchema = PlatformSchemas["PluginSettingsSchema"];
+export type PluginSettingsSnapshot = PlatformSchemas["PluginSettingsSnapshot"];
+export type PluginSettingsPatchRequest = PlatformSchemas["PatchSettingsRequest"];
 
-export type PluginSettingsSchema = {
-  plugin_instance_id: string;
-  schema_version: number;
-  migration?: Record<string, unknown>;
-  fields: PluginSettingsField[];
-  settings_revision: number;
-};
+export type PluginCapabilityContractPin = PlatformSchemas["host-capability-pin-v1.schema"];
+export type PluginExecutionBinding = PlatformSchemas["ExecutionBinding"];
+export type PluginOperationRecord = PlatformSchemas["OperationRecord"];
+export type PluginOperationList = PlatformSchemas["PluginOperationList"];
+export type PluginOperationListOptions = NonNullable<operations["listPluginOperations"]["parameters"]["query"]>;
 
-export type PluginSettingsSnapshot = {
-  plugin_instance_id: string;
-  schema_version: number;
-  settings_revision: number;
-  values: Record<string, unknown>;
-  updated_at: string;
-};
+export type PluginIntentRecord = PlatformSchemas["PluginIntentRecord"];
+export type PluginIntentList = PlatformSchemas["PluginIntentList"];
+export type PluginIntentListOptions = NonNullable<operations["listPluginIntents"]["parameters"]["query"]>;
+export type PluginIntentInvokeRequest = PlatformSchemas["InvokeIntentRequest"];
 
-export type PluginCapabilityContractPin = {
-  publisher_id: string;
-  contract_id: string;
-  contract_version: string;
-  artifact_ref: string;
-  artifact_sha256: string;
-  manifest_ref: string;
-  manifest_sha256: string;
-  signature_ref: string;
-  signature_sha256: string;
-  signature_key_id: string;
-  signature_policy_epoch: string;
-  signature_revocation_epoch: string;
-  compatibility_ref: string;
-  compatibility_sha256: string;
-  generated_client_ref: string;
-  generated_client_sha256: string;
-  notices_ref: string;
-  notices_sha256: string;
-};
+export type PluginPermissionGrant = PlatformSchemas["PluginPermissionGrant"];
+export type PluginPermissionMutationResult = PlatformSchemas["PluginPermissionMutationResult"];
+export type PluginPermissionList = PlatformSchemas["PluginPermissionList"];
+export type PluginPermissionListOptions = NonNullable<operations["listPluginPermissionGrants"]["parameters"]["query"]>;
+export type PluginPermissionGrantRequest = PlatformSchemas["GrantPermissionRequest"];
+export type PluginPermissionRevokeRequest = PlatformSchemas["RevokePermissionRequest"];
+export type PluginSecurityPolicy = PlatformSchemas["PluginSecurityPolicy"];
+export type PluginSecurityPolicyList = PlatformSchemas["PluginSecurityPolicyList"];
+export type PluginSecurityPolicyPutRequest = PlatformSchemas["PutSecurityPolicyRequest"];
+export type PluginSecurityPolicyDeleteRequest = PlatformSchemas["DeleteSecurityPolicyRequest"];
+export type PluginSecurityPolicyDeleteResult = PlatformSchemas["PluginSecurityPolicyDeleteResult"];
 
-export type PluginExecutionBinding = {
-  invocation_id: string;
-  audit_correlation_id: string;
-  operation_id: string;
-  stream_id?: string;
-  publisher_id: string;
-  plugin_id: string;
-  plugin_instance_id: string;
-  plugin_version: string;
-  active_fingerprint: string;
-  surface_instance_id?: string;
-  owner_session_hash?: string;
-  owner_user_hash?: string;
-  session_channel_id_hash?: string;
-  bridge_channel_id?: string;
-  capability_id: string;
-  capability_version: string;
-  binding_id: string;
-  contract: PluginCapabilityContractPin;
-  method: string;
-  target_method: string;
-  effect: "read" | "write" | "execute" | "delete" | "admin";
-  execution: "operation" | "subscription";
-  permissions: { required: string[]; granted: string[] };
-  confirmation: {
-    required: boolean;
-    confirmed: boolean;
-    confirmation_id?: string;
-    request_sha256?: string;
-    plan_sha256?: string;
-    target_sha256?: string;
-  };
-  revision: { policy_revision: number; management_revision: number; revoke_epoch: number };
-  quota: { max_concurrent?: number; max_duration_ms?: number; max_stream_bytes?: number; expires_at?: string };
-  target: { kind: string; fields: Record<string, unknown> };
-  target_descriptor_sha256: string;
-  stream_event_type_name?: string;
-  stream_event_schema_sha256?: string;
-};
+export type PluginDataExportRequest = PlatformSchemas["ExportDataRequest"];
+export type PluginDataExportResult = PlatformSchemas["PluginDataExportResult"];
+export type PluginDataExportDeleteRequest = PlatformSchemas["DeleteDataExportRequest"];
+export type PluginDataExportDeleteResult = PlatformSchemas["PluginDataExportDeleteResult"];
+export type PluginDataImportRequest = PlatformSchemas["ImportDataRequest"];
+export type PluginDataBinding = PlatformSchemas["PluginDataBinding"];
+export type PluginRetainedDataListOptions = NonNullable<operations["listPluginRetainedData"]["parameters"]["query"]>;
+export type PluginRetainedDataList = PlatformSchemas["RetainedDataList"];
+export type PluginRetainedDataDeleteRequest = PlatformSchemas["DeleteRetainedDataRequest"];
+export type PluginRetainedDataBindRequest = PlatformSchemas["BindRetainedDataRequest"];
+export type PluginRetainedDataCleanupRequest = PlatformSchemas["CleanupExpiredRetainedDataRequest"];
+export type PluginRetainedDataCleanupResult = PlatformSchemas["RetainedDataCleanupResult"];
 
-export type PluginOperationRecord = PluginExecutionBinding & {
-  status: "running" | "cancel_requested" | "canceled" | "completed" | "failed" | "orphaned_after_disable" | "orphaned_after_uninstall";
-  cancelable: boolean;
-  cancel_ack_timeout_ms?: number;
-  disable_behavior?: "cancel" | "orphan" | "wait";
-  uninstall_behavior?: "cancel_then_block_delete" | "force_cleanup_allowed";
-  reason?: string;
-  created_at: string;
-  updated_at: string;
-  cancel_requested_at?: string;
-  orphaned_at?: string;
-};
+export type PluginSecretRefRequest = PlatformSchemas["SecretRefRequest"];
+export type PluginSecretBindResult = PlatformSchemas["PluginSecretBindResult"];
+export type PluginSecretTestResult = PlatformSchemas["PluginSecretTestResult"];
+export type PluginSecretDeleteResult = PlatformSchemas["PluginSecretDeleteResult"];
 
-export type PluginOperationList = { operations?: PluginOperationRecord[]; [key: string]: unknown };
-
-export type PluginIntentRecord = {
-  plugin_id: string;
-  plugin_instance_id: string;
-  publisher_id: string;
-  display_name: string;
-  version: string;
-  active_fingerprint: string;
-  intent_id: string;
-  method: string;
-  effect: string;
-  execution: string;
-  payload_schema?: Record<string, unknown>;
-};
-
-export type PluginIntentList = { intents?: PluginIntentRecord[]; [key: string]: unknown };
-export type PluginIntentListOptions = { intent_id?: string; plugin_instance_id?: string };
-export type PluginIntentInvokeRequest = { plugin_instance_id?: string; intent_id: string; params?: Record<string, unknown> };
-
-export type PluginPermissionGrant = {
-  plugin_instance_id: string;
-  permission_id: string;
-  granted_by?: string;
-  granted_at?: string;
-  revoked_by?: string;
-  revoked_at?: string;
-  reason?: string;
-  expires_at?: string;
-  [key: string]: unknown;
-};
-
-export type PluginPermissionList = { permissions?: PluginPermissionGrant[]; [key: string]: unknown };
-export type PluginPermissionGrantRequest = { plugin_instance_id: string; permission_id: string; granted_by?: string; expires_at?: string };
-export type PluginPermissionRevokeRequest = { plugin_instance_id: string; permission_id: string; revoked_by?: string; reason?: string };
-
-export type PluginDataExportRequest = { plugin_instance_id: string; include_secrets?: boolean };
-export type PluginDataExportResult = { archive_ref?: string; settings_archive_ref?: string };
-export type PluginDataImportRequest = { plugin_instance_id: string; archive_ref?: string; settings_archive_ref?: string; delete_existing?: boolean };
-
-export type PluginRetainedDataRecord = {
-  retained_id: string;
-  source_plugin_instance_id: string;
-  bound_plugin_instance_id?: string;
-  publisher_id: string;
-  plugin_id: string;
-  version: string;
-  package_hash: string;
-  manifest_hash: string;
-  state: PluginRetainedDataRecordState | string;
-  storage_retained?: boolean;
-  settings_retained?: boolean;
-  usage_bytes?: number;
-  delete_after?: string;
-  delete_error?: string;
-  metadata?: Record<string, string>;
-  retained_at?: string;
-  updated_at?: string;
-  bound_at?: string;
-  deleted_at?: string;
-  last_accessed_at?: string;
-  [key: string]: unknown;
-};
-
-export type PluginRetainedDataListOptions = {
-  publisher_id?: string;
-  plugin_id?: string;
-  source_plugin_instance_id?: string;
-  state?: PluginRetainedDataRecordState | string;
-};
-export type PluginRetainedDataList = { retained_data?: PluginRetainedDataRecord[]; [key: string]: unknown };
-export type PluginRetainedDataBindRequest = { retained_id: string; target_plugin_instance_id: string };
-export type PluginRetainedDataCleanupRequest = { retry_failed?: boolean; max_records?: number };
-export type PluginRetainedDataCleanupResult = { deleted?: PluginRetainedDataRecord[]; failed?: PluginRetainedDataRecord[]; [key: string]: unknown };
-
-export type PluginSecretRefRequest = { plugin_instance_id: string; secret_ref: string; scope: string };
-
-export type PluginAuditEvent = {
-  type: string;
-  plugin_id?: string;
-  plugin_instance_id?: string;
-  occurred_at?: string;
-  details?: Record<string, unknown>;
-  [key: string]: unknown;
-};
-export type PluginAuditEventList = { audit_events?: PluginAuditEvent[]; [key: string]: unknown };
-export type PluginAuditListOptions = { plugin_id?: string; plugin_instance_id?: string; type?: string; limit?: number };
-
-export type PluginDiagnosticEvent = {
-  type: string;
-  severity?: string;
-  plugin_id?: string;
-  plugin_instance_id?: string;
-  surface_instance_id?: string;
-  occurred_at?: string;
-  details?: Record<string, unknown>;
-  [key: string]: unknown;
-};
-export type PluginDiagnosticEventList = { diagnostic_events?: PluginDiagnosticEvent[]; [key: string]: unknown };
-export type PluginDiagnosticListOptions = { plugin_id?: string; plugin_instance_id?: string; surface_instance_id?: string; type?: string; severity?: string; limit?: number };
+export type PluginDiagnosticEvent = PlatformSchemas["PluginDiagnosticEvent"];
+export type PluginDiagnosticEventList = PlatformSchemas["PluginDiagnosticEventList"];
+export type PluginDiagnosticListOptions = NonNullable<operations["listPluginDiagnosticEvents"]["parameters"]["query"]>;
+export type PluginDiagnosticSeverity = NonNullable<PluginDiagnosticListOptions["severity"]>;
 
 export class PluginPlatformClient {
   #fetch: FetchLike;
   #apiBaseURL: string;
   #surfaceScope: PluginSurfaceScope;
+  #onMutationOutcomeUnknown?: (pluginInstanceId?: string) => void;
 
   constructor(options: PluginPlatformClientOptions = {}) {
     this.#fetch = options.fetch ?? defaultFetch();
     this.#apiBaseURL = trimTrailingSlash(options.apiBaseURL ?? "");
     this.#surfaceScope = options.surfaceScope ?? defaultPluginSurfaceScope;
+    this.#onMutationOutcomeUnknown = options.onMutationOutcomeUnknown;
   }
 
   catalog(): Promise<PluginCatalogResult> { return this.#getJSON("/_redevplugin/api/plugins/catalog"); }
   getCompatibility(): Promise<PluginCompatibilityManifest> { return this.#getJSON("/_redevplugin/api/plugins/platform/compatibility"); }
-  installReleaseRef(request: PluginInstallReleaseRefRequest): Promise<PluginRecord> { return this.#postJSON("/_redevplugin/api/plugins/install-release-ref", request); }
+  installReleaseRef(request: PluginInstallReleaseRefRequest): Promise<PluginRecord> { return this.#requestMutation("POST", "/_redevplugin/api/plugins/install-release-ref", request); }
   updateReleaseRef(request: PluginUpdateReleaseRefRequest): Promise<PluginRecord> { return this.#mutatePlugin("/_redevplugin/api/plugins/update-release-ref", request); }
   downgradePlugin(request: PluginDowngradeRequest): Promise<PluginRecord> { return this.#mutatePlugin("/_redevplugin/api/plugins/downgrade", request); }
-  enablePlugin(request: PluginEnableRequest): Promise<PluginRecord> { return this.#postJSON("/_redevplugin/api/plugins/enable", request); }
+  enablePlugin(request: PluginEnableRequest): Promise<PluginRecord> { return this.#requestMutation("POST", "/_redevplugin/api/plugins/enable", request); }
   disablePlugin(request: PluginDisableRequest): Promise<PluginRecord> { return this.#mutatePlugin("/_redevplugin/api/plugins/disable", request); }
   uninstallPlugin(request: PluginUninstallRequest): Promise<PluginRecord> { return this.#mutatePlugin("/_redevplugin/api/plugins/uninstall", request); }
-  openSurface(request: PluginOpenSurfaceRequest): Promise<PluginSurfaceBootstrapResult> { return this.#postJSON("/_redevplugin/api/plugins/surfaces/open", request); }
+  openSurface(request: PluginOpenSurfaceRequest): Promise<PluginSurfaceBootstrapResult> { return this.#requestMutation("POST", "/_redevplugin/api/plugins/surfaces/open", request); }
   async revokeSurfaceScope(): Promise<PluginSurfaceScopeRevokeResult> {
     try {
-      return await this.#postJSON("/_redevplugin/api/plugins/surfaces/revoke-scope", {});
-    } finally {
+      const result = await this.#requestMutation<PluginSurfaceScopeRevokeResult>("POST", "/_redevplugin/api/plugins/surfaces/revoke-scope", {});
       disposePluginSurfaceScope(this.#surfaceScope);
+      return result;
+    } catch (error) {
+      this.#handleMutationFailure(error);
+      throw error;
     }
   }
-  startRuntime(request: PluginRuntimeStartRequest = {}): Promise<PluginRuntimeHealth> { return this.#postJSON("/_redevplugin/api/plugins/runtime/start", request); }
+  startRuntime(request: PluginRuntimeStartRequest = {}): Promise<PluginRuntimeHealth> { return this.#requestMutation("POST", "/_redevplugin/api/plugins/runtime/start", request); }
   async stopRuntime(): Promise<PluginRuntimeStopResult> {
     try {
-      return await this.#postJSON("/_redevplugin/api/plugins/runtime/stop", {});
-    } finally {
+      const result = await this.#requestMutation<PluginRuntimeStopResult>("POST", "/_redevplugin/api/plugins/runtime/stop", {});
       disposePluginSurfaceScope(this.#surfaceScope);
+      return result;
+    } catch (error) {
+      this.#handleMutationFailure(error);
+      throw error;
     }
   }
-  refreshEnabledRuntimeState(): Promise<PluginRuntimeRefreshResult> { return this.#postJSON("/_redevplugin/api/plugins/runtime/refresh-enabled", {}); }
+  refreshEnabledRuntimeState(): Promise<PluginRuntimeRefreshResult> { return this.#requestMutation("POST", "/_redevplugin/api/plugins/runtime/refresh-enabled", {}); }
   runtimeHealth(): Promise<PluginRuntimeHealth> { return this.#getJSON("/_redevplugin/api/plugins/runtime/health"); }
   getSettingsSchema(pluginInstanceId: string): Promise<PluginSettingsSchema> { return this.#getJSON(`/_redevplugin/api/plugins/${encodeURIComponent(pluginInstanceId)}/settings/schema`); }
   getSettings(pluginInstanceId: string): Promise<PluginSettingsSnapshot> { return this.#getJSON(`/_redevplugin/api/plugins/${encodeURIComponent(pluginInstanceId)}/settings`); }
-  patchSettings(pluginInstanceId: string, values: Record<string, unknown>): Promise<PluginSettingsSnapshot> { return this.#patchJSON(`/_redevplugin/api/plugins/${encodeURIComponent(pluginInstanceId)}/settings`, { values }); }
-  listOperations(pluginInstanceId?: string): Promise<PluginOperationList> { return this.#getJSON(`/_redevplugin/api/plugins/operations${pluginInstanceId ? `?plugin_instance_id=${encodeURIComponent(pluginInstanceId)}` : ""}`); }
+  patchSettings(pluginInstanceId: string, request: PluginSettingsPatchRequest): Promise<PluginSettingsSnapshot> {
+    return this.#mutatePluginAt("PATCH", `/_redevplugin/api/plugins/${encodeURIComponent(pluginInstanceId)}/settings`, pluginInstanceId, request);
+  }
+  listOperations(options: PluginOperationListOptions = {}): Promise<PluginOperationList> {
+    const params = new URLSearchParams();
+    if (options.plugin_instance_id) params.set("plugin_instance_id", options.plugin_instance_id);
+    if (options.cursor) params.set("cursor", options.cursor);
+    if (options.limit !== undefined) params.set("limit", String(options.limit));
+    const query = params.toString();
+    return this.#getJSON(`/_redevplugin/api/plugins/operations${query ? `?${query}` : ""}`);
+  }
   getOperation(operationId: string): Promise<PluginOperationRecord> { return this.#getJSON(`/_redevplugin/api/plugins/operations/${encodeURIComponent(operationId)}`); }
-  cancelOperation(operationId: string, reason?: string): Promise<PluginOperationRecord> { return this.#postJSON(`/_redevplugin/api/plugins/operations/${encodeURIComponent(operationId)}/cancel`, reason ? { reason } : {}); }
+  cancelOperation(operationId: string, reason?: string): Promise<PluginOperationRecord> { return this.#requestMutation("POST", `/_redevplugin/api/plugins/operations/${encodeURIComponent(operationId)}/cancel`, reason ? { reason } : {}); }
 
   listIntents(options: PluginIntentListOptions = {}): Promise<PluginIntentList> {
     const params = new URLSearchParams();
-    if (options.intent_id) params.set("intent_id", options.intent_id);
-    if (options.plugin_instance_id) params.set("plugin_instance_id", options.plugin_instance_id);
+    if (options.intent_id !== undefined) params.set("intent_id", options.intent_id);
+    if (options.plugin_instance_id !== undefined) params.set("plugin_instance_id", options.plugin_instance_id);
     const query = params.toString();
     return this.#getJSON(`/_redevplugin/api/plugins/intents${query ? `?${query}` : ""}`);
   }
 
   invokeIntent<T = unknown>(request: PluginIntentInvokeRequest): Promise<PluginTrustedMethodResult<T>> {
-    return this.#postJSON("/_redevplugin/api/plugins/intents/invoke", request);
+    return this.#requestMutation("POST", "/_redevplugin/api/plugins/intents/invoke", request);
   }
 
-  exportData(request: PluginDataExportRequest): Promise<PluginDataExportResult> { return this.#postJSON("/_redevplugin/api/plugins/data/export", request); }
-  importData(request: PluginDataImportRequest): Promise<Record<string, unknown>> { return this.#postJSON("/_redevplugin/api/plugins/data/import", request); }
+  exportData(request: PluginDataExportRequest): Promise<PluginDataExportResult> { return this.#requestMutation("POST", "/_redevplugin/api/plugins/data/export", request); }
+  deleteDataExport(request: PluginDataExportDeleteRequest): Promise<PluginDataExportDeleteResult> { return this.#requestMutation("POST", "/_redevplugin/api/plugins/data/export/delete", request); }
+  importData(request: PluginDataImportRequest): Promise<PluginRecord> {
+    return this.#mutatePluginAt("POST", "/_redevplugin/api/plugins/data/import", request.plugin_instance_id, request);
+  }
 
   listRetainedData(options: PluginRetainedDataListOptions = {}): Promise<PluginRetainedDataList> {
     const params = new URLSearchParams();
-    if (options.publisher_id) params.set("publisher_id", options.publisher_id);
-    if (options.plugin_id) params.set("plugin_id", options.plugin_id);
-    if (options.source_plugin_instance_id) params.set("source_plugin_instance_id", options.source_plugin_instance_id);
-    if (options.state) params.set("state", options.state);
+    if (options.plugin_instance_id) params.set("plugin_instance_id", options.plugin_instance_id);
     const query = params.toString();
     return this.#getJSON(`/_redevplugin/api/plugins/retained-data${query ? `?${query}` : ""}`);
   }
 
-  deleteRetainedData(retainedId: string): Promise<PluginRetainedDataRecord> { return this.#postJSON("/_redevplugin/api/plugins/retained-data/delete", { retained_id: retainedId }); }
-  bindRetainedData(request: PluginRetainedDataBindRequest): Promise<PluginRetainedDataRecord> { return this.#postJSON("/_redevplugin/api/plugins/retained-data/bind", request); }
-  cleanupExpiredRetainedData(request: PluginRetainedDataCleanupRequest = {}): Promise<PluginRetainedDataCleanupResult> { return this.#postJSON("/_redevplugin/api/plugins/retained-data/cleanup-expired", request); }
+  deleteRetainedData(request: PluginRetainedDataDeleteRequest): Promise<PluginDataBinding> { return this.#requestMutation("POST", "/_redevplugin/api/plugins/retained-data/delete", request); }
+  bindRetainedData(request: PluginRetainedDataBindRequest): Promise<PluginDataBinding> {
+    return this.#mutatePluginAt("POST", "/_redevplugin/api/plugins/retained-data/bind", request.target_plugin_instance_id, request);
+  }
+  cleanupExpiredRetainedData(request: PluginRetainedDataCleanupRequest = {}): Promise<PluginRetainedDataCleanupResult> { return this.#requestMutation("POST", "/_redevplugin/api/plugins/retained-data/cleanup-expired", request); }
 
-  listPermissions(pluginInstanceId?: string, activeOnly?: boolean): Promise<PluginPermissionList> {
+  listPermissions(options: PluginPermissionListOptions = {}): Promise<PluginPermissionList> {
     const params = new URLSearchParams();
-    if (pluginInstanceId) params.set("plugin_instance_id", pluginInstanceId);
-    if (activeOnly != null) params.set("active_only", activeOnly ? "true" : "false");
+    if (options.plugin_instance_id !== undefined) params.set("plugin_instance_id", options.plugin_instance_id);
+    if (options.active_only !== undefined) params.set("active_only", options.active_only ? "true" : "false");
     const query = params.toString();
     return this.#getJSON(`/_redevplugin/api/plugins/permissions${query ? `?${query}` : ""}`);
   }
 
-  grantPermission(request: PluginPermissionGrantRequest): Promise<PluginPermissionGrant> { return this.#postJSON("/_redevplugin/api/plugins/permissions/grant", request); }
-  revokePermission(request: PluginPermissionRevokeRequest): Promise<PluginPermissionGrant> { return this.#postJSON("/_redevplugin/api/plugins/permissions/revoke", request); }
-  bindSecret(request: PluginSecretRefRequest): Promise<Record<string, unknown>> { return this.#postJSON("/_redevplugin/api/plugins/secrets/bind", request); }
-  testSecret(request: PluginSecretRefRequest): Promise<Record<string, unknown>> { return this.#postJSON("/_redevplugin/api/plugins/secrets/test", request); }
-  deleteSecret(request: PluginSecretRefRequest): Promise<Record<string, unknown>> { return this.#postJSON("/_redevplugin/api/plugins/secrets/delete", request); }
-  listAuditEvents(options: PluginAuditListOptions = {}): Promise<PluginAuditEventList> { return this.#getJSON(`/_redevplugin/api/plugins/audit${queryString(options)}`); }
+  grantPermission(request: PluginPermissionGrantRequest): Promise<PluginPermissionMutationResult> { return this.#mutatePlugin("/_redevplugin/api/plugins/permissions/grant", request); }
+  revokePermission(request: PluginPermissionRevokeRequest): Promise<PluginPermissionMutationResult> { return this.#mutatePlugin("/_redevplugin/api/plugins/permissions/revoke", request); }
+  listSecurityPolicies(): Promise<PluginSecurityPolicyList> { return this.#getJSON("/_redevplugin/api/plugins/security-policies"); }
+  getSecurityPolicy(pluginInstanceId: string): Promise<PluginSecurityPolicy> { return this.#getJSON(`/_redevplugin/api/plugins/security-policies/${encodeURIComponent(pluginInstanceId)}`); }
+  putSecurityPolicy(pluginInstanceId: string, request: PluginSecurityPolicyPutRequest): Promise<PluginSecurityPolicy> {
+    return this.#mutatePluginAt("PUT", `/_redevplugin/api/plugins/security-policies/${encodeURIComponent(pluginInstanceId)}`, pluginInstanceId, request);
+  }
+  deleteSecurityPolicy(pluginInstanceId: string, request: PluginSecurityPolicyDeleteRequest): Promise<PluginSecurityPolicyDeleteResult> {
+    return this.#mutatePluginAt("DELETE", `/_redevplugin/api/plugins/security-policies/${encodeURIComponent(pluginInstanceId)}`, pluginInstanceId, request);
+  }
+  bindSecret(request: PluginSecretRefRequest): Promise<PluginSecretBindResult> { return this.#requestMutation("POST", "/_redevplugin/api/plugins/secrets/bind", request); }
+  testSecret(request: PluginSecretRefRequest): Promise<PluginSecretTestResult> { return this.#requestMutation("POST", "/_redevplugin/api/plugins/secrets/test", request); }
+  deleteSecret(request: PluginSecretRefRequest): Promise<PluginSecretDeleteResult> { return this.#requestMutation("POST", "/_redevplugin/api/plugins/secrets/delete", request); }
   listDiagnosticEvents(options: PluginDiagnosticListOptions = {}): Promise<PluginDiagnosticEventList> { return this.#getJSON(`/_redevplugin/api/plugins/diagnostics${queryString(options)}`); }
 
   #getJSON<T>(path: string): Promise<T> { return this.#requestJSON<T>("GET", path); }
-  #postJSON<T>(path: string, body: unknown): Promise<T> { return this.#requestJSON<T>("POST", path, body); }
-  #patchJSON<T>(path: string, body: unknown): Promise<T> { return this.#requestJSON<T>("PATCH", path, body); }
+  #mutatePlugin<Result>(path: string, request: { plugin_instance_id: string } & Record<string, unknown>): Promise<Result> {
+    return this.#mutatePluginAt("POST", path, request.plugin_instance_id, request);
+  }
 
-  async #mutatePlugin<T extends { plugin_instance_id: string }>(path: string, request: T): Promise<PluginRecord> {
+  async #mutatePluginAt<Result>(method: "POST" | "PUT" | "PATCH" | "DELETE", path: string, pluginInstanceId: string, request: unknown): Promise<Result> {
     try {
-      return await this.#postJSON<PluginRecord>(path, request);
-    } finally {
-      disposePluginSurfaceScope(this.#surfaceScope, request.plugin_instance_id);
+      const result = await this.#requestMutation<Result>(method, path, request);
+      disposePluginSurfaceScope(this.#surfaceScope, pluginInstanceId);
+      return result;
+    } catch (error) {
+      this.#handleMutationFailure(error, pluginInstanceId);
+      throw error;
     }
+  }
+
+  #handleMutationFailure(error: unknown, pluginInstanceId?: string): void {
+    if (error instanceof PluginPlatformRequestError && error.mutationOutcome === "not_committed") return;
+    disposePluginSurfaceScope(this.#surfaceScope, pluginInstanceId);
+    this.#onMutationOutcomeUnknown?.(pluginInstanceId);
   }
 
   async #requestJSON<T>(method: string, path: string, body?: unknown): Promise<T> {
     const headers: Record<string, string> = { "Accept": "application/json" };
     if (body !== undefined) headers["Content-Type"] = "application/json";
-    const response = await this.#fetch(this.#apiBaseURL + path, {
-      method,
-      headers,
-      body: body === undefined ? undefined : JSON.stringify(body),
-      credentials: "same-origin",
-    });
-    return readHostEnvelope<T>(response, "PLUGIN_PLATFORM_REQUEST_FAILED");
+    let response;
+    try {
+      response = await this.#fetch(this.#apiBaseURL + path, {
+        method,
+        headers,
+        body: body === undefined ? undefined : JSON.stringify(body),
+        credentials: "same-origin",
+      });
+    } catch (cause) {
+      throw new PluginTransportError(`Plugin platform request failed for ${method} ${path}`, cause);
+    }
+    return readPlatformResponse<T>(response);
+  }
+
+  async #requestMutation<T>(method: "POST" | "PUT" | "PATCH" | "DELETE", path: string, body: unknown): Promise<T> {
+    const headers: Record<string, string> = {
+      "Accept": "application/json",
+      "Content-Type": "application/json",
+    };
+    let response;
+    try {
+      response = await this.#fetch(this.#apiBaseURL + path, {
+        method,
+        headers,
+        body: JSON.stringify(body),
+        credentials: "same-origin",
+      });
+    } catch (cause) {
+      throw new PluginTransportError(`Plugin platform request failed for ${method} ${path}`, cause, "unknown");
+    }
+    return readMutationPlatformResponse<T>(response);
   }
 }
 
 function queryString(values: Record<string, string | number | boolean | undefined>): string {
   const params = new URLSearchParams();
   for (const [key, value] of Object.entries(values)) {
-    if (value != null && value !== "") params.set(key, String(value));
+    if (value !== undefined) params.set(key, String(value));
   }
   const query = params.toString();
   return query ? `?${query}` : "";

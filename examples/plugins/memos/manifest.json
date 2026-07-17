@@ -1,6 +1,9 @@
 {
   "schema_version": "redevplugin.manifest.v4",
-  "publisher": { "publisher_id": "dev.redevplugin.examples", "display_name": "ReDevPlugin Examples" },
+  "publisher": {
+    "publisher_id": "dev.redevplugin.examples",
+    "display_name": "ReDevPlugin Examples"
+  },
   "plugin": {
     "plugin_id": "dev.redevplugin.examples.memos",
     "display_name": "Memos",
@@ -9,327 +12,1023 @@
     "min_runtime_version": "0.5.0",
     "ui_protocol_version": "plugin-ui-v4"
   },
-  "surfaces": [{
-    "surface_id": "memos.view",
-    "kind": "view",
-    "intent": "primary",
-    "label": "Memos",
-    "entry": "ui/index.html",
-    "default_size": { "width": 1040, "height": 720 }
-  }],
-  "workers": [{
-    "worker_id": "memos_backend",
-    "artifact": "workers/memos.wasm",
-    "abi": "redevplugin-wasm-worker-v2",
-    "mode": "job",
-    "scope": "user",
-    "memory_limit_bytes": 33554432
-  }],
+  "surfaces": [
+    {
+      "surface_id": "memos.view",
+      "kind": "view",
+      "intent": "primary",
+      "label": "Memos",
+      "entry": "ui/index.html",
+      "default_size": {
+        "width": 1040,
+        "height": 720
+      }
+    }
+  ],
+  "workers": [
+    {
+      "worker_id": "memos_backend",
+      "artifact": "workers/memos.wasm",
+      "abi": "redevplugin-wasm-worker-v2",
+      "mode": "job",
+      "scope": "user",
+      "memory_limit_bytes": 33554432
+    }
+  ],
   "methods": [
     {
       "method": "memos.bootstrap",
       "effect": "write",
       "execution": "sync",
-      "route": { "kind": "worker", "worker_id": "memos_backend", "export": "redevplugin_worker_invoke" },
-      "request_schema": {
-        "type": "object", "additionalProperties": false,
-        "required": ["month", "utc_offset_minutes"],
-        "properties": {
-          "month": { "type": "string", "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])$" },
-          "utc_offset_minutes": { "type": "integer", "minimum": -840, "maximum": 840 }
-        }
+      "route": {
+        "kind": "worker",
+        "worker_id": "memos_backend"
       },
-      "response_schema": {
-        "type": "object", "additionalProperties": false,
-        "required": ["memos", "total", "offset", "has_more", "draft", "facets"],
+      "request_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "month",
+          "utc_offset_minutes"
+        ],
         "properties": {
-          "memos": { "type": "array", "maxItems": 10, "items": { "$ref": "#/$defs/memo" } },
-          "total": { "type": "integer", "minimum": 0 },
-          "offset": { "type": "integer", "const": 0 },
-          "has_more": { "type": "boolean" },
-          "draft": { "oneOf": [{ "$ref": "#/$defs/draft" }, { "type": "null" }] },
-          "facets": { "$ref": "#/$defs/facets" }
-        },
-        "$defs": {
-          "memo": {
-            "type": "object", "additionalProperties": false,
-            "required": ["id", "content", "pinned", "archived", "tags", "created_at", "updated_at"],
-            "properties": {
-              "id": { "type": "string" },
-              "content": { "type": "string", "maxLength": 20000 },
-              "pinned": { "type": "boolean" },
-              "archived": { "type": "boolean" },
-              "tags": { "type": "array", "maxItems": 32, "uniqueItems": true, "items": { "type": "string", "maxLength": 40 } },
-              "created_at": { "type": "string" },
-              "updated_at": { "type": "string" }
-            }
+          "month": {
+            "type": "string",
+            "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])$"
           },
-          "draft": {
-            "type": "object", "additionalProperties": false,
-            "required": ["content", "updated_at"],
-            "properties": {
-              "content": { "type": "string", "maxLength": 20000 },
-              "updated_at": { "type": "string" }
-            }
-          },
-          "facets": {
-            "type": "object", "additionalProperties": false,
-            "required": ["month", "tags", "days", "all_total", "pinned_total", "archived_total"],
-            "properties": {
-              "month": { "type": "string" },
-              "tags": { "type": "array", "maxItems": 64, "items": { "$ref": "#/$defs/tag_facet" } },
-              "days": { "type": "array", "maxItems": 31, "items": { "$ref": "#/$defs/day_facet" } },
-              "all_total": { "type": "integer", "minimum": 0 },
-              "pinned_total": { "type": "integer", "minimum": 0 },
-              "archived_total": { "type": "integer", "minimum": 0 }
-            }
-          },
-          "tag_facet": {
-            "type": "object", "additionalProperties": false, "required": ["tag", "count"],
-            "properties": { "tag": { "type": "string", "maxLength": 40 }, "count": { "type": "integer", "minimum": 1 } }
-          },
-          "day_facet": {
-            "type": "object", "additionalProperties": false, "required": ["date", "count"],
-            "properties": { "date": { "type": "string" }, "count": { "type": "integer", "minimum": 1 } }
+          "utc_offset_minutes": {
+            "type": "integer",
+            "minimum": -840,
+            "maximum": 840
           }
         }
       },
-      "broker_access": { "storage": [{ "store_id": "memos", "operations": ["exec", "query"] }] }
+      "response_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "memos",
+          "next_cursor",
+          "draft",
+          "facets"
+        ],
+        "properties": {
+          "memos": {
+            "type": "array",
+            "maxItems": 10,
+            "items": {
+              "$ref": "#/$defs/memo"
+            }
+          },
+          "next_cursor": {
+            "oneOf": [
+              {
+                "type": "string",
+                "maxLength": 1024,
+                "pattern": "^memos_cursor_v1_[0-9a-f]+$"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "draft": {
+            "oneOf": [
+              {
+                "$ref": "#/$defs/draft"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "facets": {
+            "$ref": "#/$defs/facets"
+          }
+        },
+        "$defs": {
+          "memo": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "id",
+              "content",
+              "pinned",
+              "archived",
+              "tags",
+              "created_at",
+              "updated_at"
+            ],
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "content": {
+                "type": "string",
+                "maxLength": 20000
+              },
+              "pinned": {
+                "type": "boolean"
+              },
+              "archived": {
+                "type": "boolean"
+              },
+              "tags": {
+                "type": "array",
+                "maxItems": 32,
+                "uniqueItems": true,
+                "items": {
+                  "type": "string",
+                  "maxLength": 40
+                }
+              },
+              "created_at": {
+                "type": "string"
+              },
+              "updated_at": {
+                "type": "string"
+              }
+            }
+          },
+          "draft": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "content",
+              "updated_at"
+            ],
+            "properties": {
+              "content": {
+                "type": "string",
+                "maxLength": 20000
+              },
+              "updated_at": {
+                "type": "string"
+              }
+            }
+          },
+          "facets": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "month",
+              "tags",
+              "days",
+              "all_total",
+              "pinned_total",
+              "archived_total"
+            ],
+            "properties": {
+              "month": {
+                "type": "string"
+              },
+              "tags": {
+                "type": "array",
+                "maxItems": 64,
+                "items": {
+                  "$ref": "#/$defs/tag_facet"
+                }
+              },
+              "days": {
+                "type": "array",
+                "maxItems": 31,
+                "items": {
+                  "$ref": "#/$defs/day_facet"
+                }
+              },
+              "all_total": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "pinned_total": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "archived_total": {
+                "type": "integer",
+                "minimum": 0
+              }
+            }
+          },
+          "tag_facet": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "tag",
+              "count"
+            ],
+            "properties": {
+              "tag": {
+                "type": "string",
+                "maxLength": 40
+              },
+              "count": {
+                "type": "integer",
+                "minimum": 1
+              }
+            }
+          },
+          "day_facet": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "date",
+              "count"
+            ],
+            "properties": {
+              "date": {
+                "type": "string"
+              },
+              "count": {
+                "type": "integer",
+                "minimum": 1
+              }
+            }
+          }
+        }
+      },
+      "broker_access": {
+        "storage": [
+          {
+            "store_id": "memos",
+            "operations": [
+              "exec",
+              "query"
+            ]
+          }
+        ]
+      }
     },
     {
       "method": "memos.list",
       "effect": "read",
       "execution": "sync",
-      "route": { "kind": "worker", "worker_id": "memos_backend", "export": "redevplugin_worker_invoke" },
+      "route": {
+        "kind": "worker",
+        "worker_id": "memos_backend"
+      },
       "request_schema": {
-        "type": "object", "additionalProperties": false,
-        "required": ["query", "view", "tag", "date", "utc_offset_minutes", "offset", "limit"],
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "query",
+          "view",
+          "tag",
+          "date",
+          "utc_offset_minutes",
+          "cursor",
+          "limit"
+        ],
         "properties": {
-          "query": { "type": "string", "maxLength": 200 },
-          "view": { "type": "string", "enum": ["all", "pinned", "archived"] },
-          "tag": { "type": "string", "maxLength": 40, "pattern": "^$|^[a-z0-9_/-]+$" },
-          "date": { "type": "string", "pattern": "^$|^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])$" },
-          "utc_offset_minutes": { "type": "integer", "minimum": -840, "maximum": 840 },
-          "offset": { "type": "integer", "minimum": 0, "maximum": 100000 },
-          "limit": { "type": "integer", "minimum": 1, "maximum": 10 }
+          "query": {
+            "type": "string",
+            "maxLength": 200
+          },
+          "view": {
+            "type": "string",
+            "enum": [
+              "all",
+              "pinned",
+              "archived"
+            ]
+          },
+          "tag": {
+            "type": "string",
+            "maxLength": 40,
+            "pattern": "^$|^[a-z0-9_/-]+$"
+          },
+          "date": {
+            "type": "string",
+            "pattern": "^$|^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])$"
+          },
+          "utc_offset_minutes": {
+            "type": "integer",
+            "minimum": -840,
+            "maximum": 840
+          },
+          "cursor": {
+            "oneOf": [
+              {
+                "type": "string",
+                "maxLength": 1024,
+                "pattern": "^memos_cursor_v1_[0-9a-f]+$"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 10
+          }
         }
       },
       "response_schema": {
-        "type": "object", "additionalProperties": false, "required": ["memos", "total", "offset", "has_more"],
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "memos",
+          "next_cursor"
+        ],
         "properties": {
-          "memos": { "type": "array", "maxItems": 10, "items": { "$ref": "#/$defs/memo" } },
-          "total": { "type": "integer", "minimum": 0 },
-          "offset": { "type": "integer", "minimum": 0 },
-          "has_more": { "type": "boolean" }
+          "memos": {
+            "type": "array",
+            "maxItems": 10,
+            "items": {
+              "$ref": "#/$defs/memo"
+            }
+          },
+          "next_cursor": {
+            "oneOf": [
+              {
+                "type": "string",
+                "maxLength": 1024,
+                "pattern": "^memos_cursor_v1_[0-9a-f]+$"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
         },
         "$defs": {
           "memo": {
-            "type": "object", "additionalProperties": false,
-            "required": ["id", "content", "pinned", "archived", "tags", "created_at", "updated_at"],
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "id",
+              "content",
+              "pinned",
+              "archived",
+              "tags",
+              "created_at",
+              "updated_at"
+            ],
             "properties": {
-              "id": { "type": "string" },
-              "content": { "type": "string", "maxLength": 20000 },
-              "pinned": { "type": "boolean" },
-              "archived": { "type": "boolean" },
-              "tags": { "type": "array", "maxItems": 32, "uniqueItems": true, "items": { "type": "string", "maxLength": 40 } },
-              "created_at": { "type": "string" },
-              "updated_at": { "type": "string" }
+              "id": {
+                "type": "string"
+              },
+              "content": {
+                "type": "string",
+                "maxLength": 20000
+              },
+              "pinned": {
+                "type": "boolean"
+              },
+              "archived": {
+                "type": "boolean"
+              },
+              "tags": {
+                "type": "array",
+                "maxItems": 32,
+                "uniqueItems": true,
+                "items": {
+                  "type": "string",
+                  "maxLength": 40
+                }
+              },
+              "created_at": {
+                "type": "string"
+              },
+              "updated_at": {
+                "type": "string"
+              }
             }
           }
         }
       },
-      "broker_access": { "storage": [{ "store_id": "memos", "operations": ["query"] }] }
+      "broker_access": {
+        "storage": [
+          {
+            "store_id": "memos",
+            "operations": [
+              "query"
+            ]
+          }
+        ]
+      }
     },
     {
       "method": "memos.facets",
       "effect": "read",
       "execution": "sync",
-      "route": { "kind": "worker", "worker_id": "memos_backend", "export": "redevplugin_worker_invoke" },
-      "request_schema": {
-        "type": "object", "additionalProperties": false, "required": ["month", "utc_offset_minutes"],
-        "properties": {
-          "month": { "type": "string", "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])$" },
-          "utc_offset_minutes": { "type": "integer", "minimum": -840, "maximum": 840 }
-        }
+      "route": {
+        "kind": "worker",
+        "worker_id": "memos_backend"
       },
-      "response_schema": {
-        "type": "object", "additionalProperties": false, "required": ["month", "tags", "days", "all_total", "pinned_total", "archived_total"],
+      "request_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "month",
+          "utc_offset_minutes"
+        ],
         "properties": {
-          "month": { "type": "string" },
-          "tags": { "type": "array", "maxItems": 64, "items": { "$ref": "#/$defs/tag_facet" } },
-          "days": { "type": "array", "maxItems": 31, "items": { "$ref": "#/$defs/day_facet" } },
-          "all_total": { "type": "integer", "minimum": 0 },
-          "pinned_total": { "type": "integer", "minimum": 0 },
-          "archived_total": { "type": "integer", "minimum": 0 }
-        },
-        "$defs": {
-          "tag_facet": {
-            "type": "object", "additionalProperties": false, "required": ["tag", "count"],
-            "properties": { "tag": { "type": "string", "maxLength": 40 }, "count": { "type": "integer", "minimum": 1 } }
+          "month": {
+            "type": "string",
+            "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])$"
           },
-          "day_facet": {
-            "type": "object", "additionalProperties": false, "required": ["date", "count"],
-            "properties": { "date": { "type": "string" }, "count": { "type": "integer", "minimum": 1 } }
+          "utc_offset_minutes": {
+            "type": "integer",
+            "minimum": -840,
+            "maximum": 840
           }
         }
       },
-      "broker_access": { "storage": [{ "store_id": "memos", "operations": ["query"] }] }
+      "response_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "month",
+          "tags",
+          "days",
+          "all_total",
+          "pinned_total",
+          "archived_total"
+        ],
+        "properties": {
+          "month": {
+            "type": "string"
+          },
+          "tags": {
+            "type": "array",
+            "maxItems": 64,
+            "items": {
+              "$ref": "#/$defs/tag_facet"
+            }
+          },
+          "days": {
+            "type": "array",
+            "maxItems": 31,
+            "items": {
+              "$ref": "#/$defs/day_facet"
+            }
+          },
+          "all_total": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "pinned_total": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "archived_total": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "$defs": {
+          "tag_facet": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "tag",
+              "count"
+            ],
+            "properties": {
+              "tag": {
+                "type": "string",
+                "maxLength": 40
+              },
+              "count": {
+                "type": "integer",
+                "minimum": 1
+              }
+            }
+          },
+          "day_facet": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "date",
+              "count"
+            ],
+            "properties": {
+              "date": {
+                "type": "string"
+              },
+              "count": {
+                "type": "integer",
+                "minimum": 1
+              }
+            }
+          }
+        }
+      },
+      "broker_access": {
+        "storage": [
+          {
+            "store_id": "memos",
+            "operations": [
+              "query"
+            ]
+          }
+        ]
+      }
     },
     {
       "method": "memos.draft.save",
       "effect": "write",
       "execution": "sync",
-      "route": { "kind": "worker", "worker_id": "memos_backend", "export": "redevplugin_worker_invoke" },
-      "request_schema": {
-        "type": "object", "additionalProperties": false, "required": ["content"],
-        "properties": { "content": { "type": "string", "maxLength": 20000 } }
+      "route": {
+        "kind": "worker",
+        "worker_id": "memos_backend"
       },
-      "response_schema": {
-        "type": "object", "additionalProperties": false, "required": ["draft"],
-        "properties": { "draft": { "oneOf": [{ "$ref": "#/$defs/draft" }, { "type": "null" }] } },
-        "$defs": {
-          "draft": {
-            "type": "object", "additionalProperties": false, "required": ["content", "updated_at"],
-            "properties": { "content": { "type": "string", "maxLength": 20000 }, "updated_at": { "type": "string" } }
+      "request_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "content"
+        ],
+        "properties": {
+          "content": {
+            "type": "string",
+            "maxLength": 20000
           }
         }
       },
-      "broker_access": { "storage": [{ "store_id": "memos", "operations": ["exec", "query"] }] }
+      "response_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "draft"
+        ],
+        "properties": {
+          "draft": {
+            "oneOf": [
+              {
+                "$ref": "#/$defs/draft"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "$defs": {
+          "draft": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "content",
+              "updated_at"
+            ],
+            "properties": {
+              "content": {
+                "type": "string",
+                "maxLength": 20000
+              },
+              "updated_at": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      },
+      "broker_access": {
+        "storage": [
+          {
+            "store_id": "memos",
+            "operations": [
+              "exec",
+              "query"
+            ]
+          }
+        ]
+      }
     },
     {
       "method": "memos.publish",
       "effect": "write",
       "execution": "sync",
-      "route": { "kind": "worker", "worker_id": "memos_backend", "export": "redevplugin_worker_invoke" },
+      "route": {
+        "kind": "worker",
+        "worker_id": "memos_backend"
+      },
       "request_schema": {
-        "type": "object", "additionalProperties": false, "required": ["content"],
-        "properties": { "content": { "type": "string", "minLength": 1, "maxLength": 20000 } }
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "content"
+        ],
+        "properties": {
+          "content": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 20000
+          }
+        }
       },
       "response_schema": {
-        "type": "object", "additionalProperties": false, "required": ["memo"],
-        "properties": { "memo": { "$ref": "#/$defs/memo" } },
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "memo"
+        ],
+        "properties": {
+          "memo": {
+            "$ref": "#/$defs/memo"
+          }
+        },
         "$defs": {
           "memo": {
-            "type": "object", "additionalProperties": false,
-            "required": ["id", "content", "pinned", "archived", "tags", "created_at", "updated_at"],
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "id",
+              "content",
+              "pinned",
+              "archived",
+              "tags",
+              "created_at",
+              "updated_at"
+            ],
             "properties": {
-              "id": { "type": "string" }, "content": { "type": "string", "maxLength": 20000 },
-              "pinned": { "type": "boolean" }, "archived": { "type": "boolean" },
-              "tags": { "type": "array", "maxItems": 32, "uniqueItems": true, "items": { "type": "string", "maxLength": 40 } },
-              "created_at": { "type": "string" }, "updated_at": { "type": "string" }
+              "id": {
+                "type": "string"
+              },
+              "content": {
+                "type": "string",
+                "maxLength": 20000
+              },
+              "pinned": {
+                "type": "boolean"
+              },
+              "archived": {
+                "type": "boolean"
+              },
+              "tags": {
+                "type": "array",
+                "maxItems": 32,
+                "uniqueItems": true,
+                "items": {
+                  "type": "string",
+                  "maxLength": 40
+                }
+              },
+              "created_at": {
+                "type": "string"
+              },
+              "updated_at": {
+                "type": "string"
+              }
             }
           }
         }
       },
-      "broker_access": { "storage": [{ "store_id": "memos", "operations": ["exec", "query"] }] }
+      "broker_access": {
+        "storage": [
+          {
+            "store_id": "memos",
+            "operations": [
+              "exec",
+              "query"
+            ]
+          }
+        ]
+      }
     },
     {
       "method": "memos.update",
       "effect": "write",
       "execution": "sync",
-      "route": { "kind": "worker", "worker_id": "memos_backend", "export": "redevplugin_worker_invoke" },
+      "route": {
+        "kind": "worker",
+        "worker_id": "memos_backend"
+      },
       "request_schema": {
-        "type": "object", "additionalProperties": false, "required": ["id", "content"],
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "content"
+        ],
         "properties": {
-          "id": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{5,79}$" },
-          "content": { "type": "string", "minLength": 1, "maxLength": 20000 }
+          "id": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{5,79}$"
+          },
+          "content": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 20000
+          }
         }
       },
       "response_schema": {
-        "type": "object", "additionalProperties": false, "required": ["memo"],
-        "properties": { "memo": { "$ref": "#/$defs/memo" } },
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "memo"
+        ],
+        "properties": {
+          "memo": {
+            "$ref": "#/$defs/memo"
+          }
+        },
         "$defs": {
           "memo": {
-            "type": "object", "additionalProperties": false,
-            "required": ["id", "content", "pinned", "archived", "tags", "created_at", "updated_at"],
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "id",
+              "content",
+              "pinned",
+              "archived",
+              "tags",
+              "created_at",
+              "updated_at"
+            ],
             "properties": {
-              "id": { "type": "string" }, "content": { "type": "string", "maxLength": 20000 },
-              "pinned": { "type": "boolean" }, "archived": { "type": "boolean" },
-              "tags": { "type": "array", "maxItems": 32, "uniqueItems": true, "items": { "type": "string", "maxLength": 40 } },
-              "created_at": { "type": "string" }, "updated_at": { "type": "string" }
+              "id": {
+                "type": "string"
+              },
+              "content": {
+                "type": "string",
+                "maxLength": 20000
+              },
+              "pinned": {
+                "type": "boolean"
+              },
+              "archived": {
+                "type": "boolean"
+              },
+              "tags": {
+                "type": "array",
+                "maxItems": 32,
+                "uniqueItems": true,
+                "items": {
+                  "type": "string",
+                  "maxLength": 40
+                }
+              },
+              "created_at": {
+                "type": "string"
+              },
+              "updated_at": {
+                "type": "string"
+              }
             }
           }
         }
       },
-      "broker_access": { "storage": [{ "store_id": "memos", "operations": ["exec", "query"] }] }
+      "broker_access": {
+        "storage": [
+          {
+            "store_id": "memos",
+            "operations": [
+              "exec",
+              "query"
+            ]
+          }
+        ]
+      }
     },
     {
       "method": "memos.setPinned",
       "effect": "write",
       "execution": "sync",
-      "route": { "kind": "worker", "worker_id": "memos_backend", "export": "redevplugin_worker_invoke" },
+      "route": {
+        "kind": "worker",
+        "worker_id": "memos_backend"
+      },
       "request_schema": {
-        "type": "object", "additionalProperties": false, "required": ["id", "value"],
-        "properties": { "id": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{5,79}$" }, "value": { "type": "boolean" } }
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "value"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{5,79}$"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        }
       },
       "response_schema": {
-        "type": "object", "additionalProperties": false, "required": ["memo"],
-        "properties": { "memo": { "$ref": "#/$defs/memo" } },
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "memo"
+        ],
+        "properties": {
+          "memo": {
+            "$ref": "#/$defs/memo"
+          }
+        },
         "$defs": {
           "memo": {
-            "type": "object", "additionalProperties": false,
-            "required": ["id", "content", "pinned", "archived", "tags", "created_at", "updated_at"],
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "id",
+              "content",
+              "pinned",
+              "archived",
+              "tags",
+              "created_at",
+              "updated_at"
+            ],
             "properties": {
-              "id": { "type": "string" }, "content": { "type": "string", "maxLength": 20000 },
-              "pinned": { "type": "boolean" }, "archived": { "type": "boolean" },
-              "tags": { "type": "array", "maxItems": 32, "uniqueItems": true, "items": { "type": "string", "maxLength": 40 } },
-              "created_at": { "type": "string" }, "updated_at": { "type": "string" }
+              "id": {
+                "type": "string"
+              },
+              "content": {
+                "type": "string",
+                "maxLength": 20000
+              },
+              "pinned": {
+                "type": "boolean"
+              },
+              "archived": {
+                "type": "boolean"
+              },
+              "tags": {
+                "type": "array",
+                "maxItems": 32,
+                "uniqueItems": true,
+                "items": {
+                  "type": "string",
+                  "maxLength": 40
+                }
+              },
+              "created_at": {
+                "type": "string"
+              },
+              "updated_at": {
+                "type": "string"
+              }
             }
           }
         }
       },
-      "broker_access": { "storage": [{ "store_id": "memos", "operations": ["exec", "query"] }] }
+      "broker_access": {
+        "storage": [
+          {
+            "store_id": "memos",
+            "operations": [
+              "exec",
+              "query"
+            ]
+          }
+        ]
+      }
     },
     {
       "method": "memos.setArchived",
       "effect": "write",
       "execution": "sync",
-      "route": { "kind": "worker", "worker_id": "memos_backend", "export": "redevplugin_worker_invoke" },
+      "route": {
+        "kind": "worker",
+        "worker_id": "memos_backend"
+      },
       "request_schema": {
-        "type": "object", "additionalProperties": false, "required": ["id", "value"],
-        "properties": { "id": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{5,79}$" }, "value": { "type": "boolean" } }
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "value"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{5,79}$"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        }
       },
       "response_schema": {
-        "type": "object", "additionalProperties": false, "required": ["memo"],
-        "properties": { "memo": { "$ref": "#/$defs/memo" } },
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "memo"
+        ],
+        "properties": {
+          "memo": {
+            "$ref": "#/$defs/memo"
+          }
+        },
         "$defs": {
           "memo": {
-            "type": "object", "additionalProperties": false,
-            "required": ["id", "content", "pinned", "archived", "tags", "created_at", "updated_at"],
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "id",
+              "content",
+              "pinned",
+              "archived",
+              "tags",
+              "created_at",
+              "updated_at"
+            ],
             "properties": {
-              "id": { "type": "string" }, "content": { "type": "string", "maxLength": 20000 },
-              "pinned": { "type": "boolean" }, "archived": { "type": "boolean" },
-              "tags": { "type": "array", "maxItems": 32, "uniqueItems": true, "items": { "type": "string", "maxLength": 40 } },
-              "created_at": { "type": "string" }, "updated_at": { "type": "string" }
+              "id": {
+                "type": "string"
+              },
+              "content": {
+                "type": "string",
+                "maxLength": 20000
+              },
+              "pinned": {
+                "type": "boolean"
+              },
+              "archived": {
+                "type": "boolean"
+              },
+              "tags": {
+                "type": "array",
+                "maxItems": 32,
+                "uniqueItems": true,
+                "items": {
+                  "type": "string",
+                  "maxLength": 40
+                }
+              },
+              "created_at": {
+                "type": "string"
+              },
+              "updated_at": {
+                "type": "string"
+              }
             }
           }
         }
       },
-      "broker_access": { "storage": [{ "store_id": "memos", "operations": ["exec", "query"] }] }
+      "broker_access": {
+        "storage": [
+          {
+            "store_id": "memos",
+            "operations": [
+              "exec",
+              "query"
+            ]
+          }
+        ]
+      }
     },
     {
       "method": "memos.delete",
       "effect": "delete",
       "execution": "sync",
-      "route": { "kind": "worker", "worker_id": "memos_backend", "export": "redevplugin_worker_invoke" },
+      "route": {
+        "kind": "worker",
+        "worker_id": "memos_backend"
+      },
       "request_schema": {
-        "type": "object", "additionalProperties": false, "required": ["id"],
-        "properties": { "id": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{5,79}$" } }
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{5,79}$"
+          }
+        }
       },
       "response_schema": {
-        "type": "object", "additionalProperties": false, "required": ["deleted_id"],
-        "properties": { "deleted_id": { "type": "string" } }
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "deleted_id"
+        ],
+        "properties": {
+          "deleted_id": {
+            "type": "string"
+          }
+        }
       },
-      "broker_access": { "storage": [{ "store_id": "memos", "operations": ["exec"] }] }
+      "broker_access": {
+        "storage": [
+          {
+            "store_id": "memos",
+            "operations": [
+              "exec"
+            ]
+          }
+        ]
+      }
     }
   ],
-  "storage": { "stores": [{
-    "store_id": "memos", "kind": "sqlite", "scope": "user", "quota_bytes": 8388608, "quota_files": 8,
-    "schema_version": 2,
-    "migration": {
-      "from_version": 1, "to_version": 2, "reversible": true, "requires_worker": true,
-      "estimated_bytes": 8388608, "max_duration_ms": 5000, "data_loss_risk": false,
-      "steps_hash": "sha256:redevplugin-example-memos-worker-migration-v2"
-    }
-  }] }
+  "storage": {
+    "stores": [
+      {
+        "store_id": "memos",
+        "kind": "sqlite",
+        "scope": "user",
+        "quota_bytes": 8388608,
+        "quota_files": 8,
+        "schema_version": 1
+      }
+    ]
+  }
 }

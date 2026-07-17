@@ -1,6 +1,7 @@
 package capability
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -68,39 +69,38 @@ func NewRiskPlan(inv Invocation, summary string) RiskPlan {
 func NormalizeRiskPlanData(data any) (any, error) {
 	switch v := data.(type) {
 	case nil:
-		return nil, nil
+		return nil, fmt.Errorf("%w: risk plan is required", ErrInvalidRiskPlan)
 	case RiskPlan:
 		return NormalizeRiskPlan(v)
 	case *RiskPlan:
 		if v == nil {
-			return nil, nil
+			return nil, fmt.Errorf("%w: risk plan is required", ErrInvalidRiskPlan)
 		}
 		return NormalizeRiskPlan(*v)
 	case map[string]any:
-		if _, ok := v["schema_version"]; !ok {
-			return data, nil
-		}
-		if err := rejectUnknownRiskPlanMapKeys(v); err != nil {
-			return nil, err
-		}
 		raw, err := json.Marshal(v)
 		if err != nil {
 			return nil, fmt.Errorf("%w: marshal map: %w", ErrInvalidRiskPlan, err)
 		}
 		var plan RiskPlan
-		if err := json.Unmarshal(raw, &plan); err != nil {
+		decoder := json.NewDecoder(bytes.NewReader(raw))
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&plan); err != nil {
 			return nil, fmt.Errorf("%w: decode map: %w", ErrInvalidRiskPlan, err)
+		}
+		if strings.TrimSpace(plan.SchemaVersion) == "" {
+			return nil, fmt.Errorf("%w: schema_version is required", ErrInvalidRiskPlan)
 		}
 		return NormalizeRiskPlan(plan)
 	default:
-		return data, nil
+		return nil, fmt.Errorf("%w: expected RiskPlan or closed risk-plan object", ErrInvalidRiskPlan)
 	}
 }
 
 func NormalizeRiskPlan(plan RiskPlan) (RiskPlan, error) {
 	plan.SchemaVersion = strings.TrimSpace(plan.SchemaVersion)
 	if plan.SchemaVersion == "" {
-		plan.SchemaVersion = RiskPlanSchemaVersion
+		return RiskPlan{}, fmt.Errorf("%w: schema_version is required", ErrInvalidRiskPlan)
 	}
 	if plan.SchemaVersion != RiskPlanSchemaVersion {
 		return RiskPlan{}, fmt.Errorf("%w: unsupported schema_version %q", ErrInvalidRiskPlan, plan.SchemaVersion)
@@ -192,63 +192,4 @@ func validRiskEffect(effect Effect) bool {
 	default:
 		return false
 	}
-}
-
-func rejectUnknownRiskPlanMapKeys(plan map[string]any) error {
-	for key := range plan {
-		if !allowedRiskPlanMapKeys[key] {
-			return fmt.Errorf("%w: unknown field %q", ErrInvalidRiskPlan, key)
-		}
-	}
-	rawFlags, ok := plan["risk_flags"]
-	if !ok || rawFlags == nil {
-		return nil
-	}
-	flags, ok := rawFlags.([]any)
-	if !ok {
-		return nil
-	}
-	for i, rawFlag := range flags {
-		flag, ok := rawFlag.(map[string]any)
-		if !ok {
-			continue
-		}
-		for key := range flag {
-			if !allowedRiskFlagMapKeys[key] {
-				return fmt.Errorf("%w: risk_flags[%d] unknown field %q", ErrInvalidRiskPlan, i, key)
-			}
-		}
-	}
-	return nil
-}
-
-var allowedRiskPlanMapKeys = map[string]bool{
-	"schema_version":        true,
-	"capability_id":         true,
-	"binding_id":            true,
-	"method":                true,
-	"target_method":         true,
-	"action":                true,
-	"effect":                true,
-	"resource_ref":          true,
-	"resource_display_name": true,
-	"summary":               true,
-	"risk_flags":            true,
-	"requires_confirmation": true,
-	"requires_admin":        true,
-	"data_loss_risk":        true,
-	"destructive":           true,
-	"deny_reason":           true,
-	"details":               true,
-}
-
-var allowedRiskFlagMapKeys = map[string]bool{
-	"id":                    true,
-	"severity":              true,
-	"summary":               true,
-	"description":           true,
-	"requires_confirmation": true,
-	"requires_admin":        true,
-	"data_loss_risk":        true,
-	"destructive":           true,
 }

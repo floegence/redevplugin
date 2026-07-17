@@ -17,10 +17,12 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"reflect"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/floegence/redevplugin/pkg/capability"
 	"github.com/floegence/redevplugin/pkg/connectivity"
 	"github.com/floegence/redevplugin/pkg/observability"
 	"github.com/floegence/redevplugin/pkg/storage"
@@ -35,46 +37,45 @@ type Target struct {
 
 type Lease struct {
 	LeaseID                string      `json:"lease_id"`
-	TokenID                string      `json:"token_id,omitempty"`
-	LeaseToken             string      `json:"lease_token"`
+	TokenID                string      `json:"token_id"`
 	LeaseNonce             string      `json:"lease_nonce"`
-	PluginID               string      `json:"plugin_id,omitempty"`
-	PluginVersion          string      `json:"plugin_version,omitempty"`
-	ActiveFingerprint      string      `json:"active_fingerprint,omitempty"`
+	PluginID               string      `json:"plugin_id"`
+	PluginVersion          string      `json:"plugin_version"`
+	ActiveFingerprint      string      `json:"active_fingerprint"`
 	SurfaceInstanceID      string      `json:"surface_instance_id,omitempty"`
 	OwnerSessionHash       string      `json:"owner_session_hash,omitempty"`
 	OwnerUserHash          string      `json:"owner_user_hash,omitempty"`
+	OwnerEnvHash           string      `json:"owner_env_hash,omitempty"`
 	SessionChannelIDHash   string      `json:"session_channel_id_hash,omitempty"`
 	BridgeChannelID        string      `json:"bridge_channel_id,omitempty"`
 	RuntimeGenerationID    string      `json:"runtime_generation_id"`
 	PluginInstanceID       string      `json:"plugin_instance_id"`
-	Method                 string      `json:"method,omitempty"`
-	Effect                 string      `json:"effect,omitempty"`
-	Execution              string      `json:"execution,omitempty"`
+	Method                 string      `json:"method"`
+	Effect                 string      `json:"effect"`
+	Execution              string      `json:"execution"`
 	OperationID            string      `json:"operation_id,omitempty"`
 	StreamID               string      `json:"stream_id,omitempty"`
-	AuditCorrelationID     string      `json:"audit_correlation_id,omitempty"`
-	TargetDescriptorHashes []string    `json:"target_descriptor_hashes,omitempty"`
-	Limits                 LeaseLimits `json:"limits,omitempty"`
+	AuditCorrelationID     string      `json:"audit_correlation_id"`
+	TargetDescriptorHashes []string    `json:"target_descriptor_hashes"`
+	Limits                 LeaseLimits `json:"limits"`
 	PolicyRevision         uint64      `json:"policy_revision"`
 	ManagementRevision     uint64      `json:"management_revision"`
 	RevokeEpoch            uint64      `json:"revoke_epoch"`
-	RuntimeShardID         string      `json:"runtime_shard_id,omitempty"`
-	RuntimeInstanceID      string      `json:"runtime_instance_id,omitempty"`
-	IPCChannelID           string      `json:"ipc_channel_id,omitempty"`
-	ConnectionNonce        string      `json:"connection_nonce,omitempty"`
-	KeyID                  string      `json:"key_id,omitempty"`
-	Signature              string      `json:"signature,omitempty"`
-	IssuedAt               time.Time   `json:"issued_at,omitempty"`
-	IssuedAtUnixMillis     int64       `json:"issued_at_unix_ms,omitempty"`
-	ExpiresAt              time.Time   `json:"expires_at"`
+	RuntimeShardID         string      `json:"runtime_shard_id"`
+	RuntimeInstanceID      string      `json:"runtime_instance_id"`
+	IPCChannelID           string      `json:"ipc_channel_id"`
+	ConnectionNonce        string      `json:"connection_nonce"`
+	KeyID                  string      `json:"key_id"`
+	Signature              string      `json:"signature"`
+	IssuedAtUnixMillis     int64       `json:"issued_at_unix_ms"`
+	ExpiresAtUnixMillis    int64       `json:"expires_at_unix_ms"`
 }
 
 type LeaseLimits struct {
-	TimeoutMillis           int64 `json:"timeout_ms,omitempty"`
-	MemoryBytes             int64 `json:"memory_bytes,omitempty"`
-	MaxPayloadBytes         int64 `json:"max_payload_bytes,omitempty"`
-	MaxStreamBytesPerSecond int64 `json:"max_stream_bytes_per_sec,omitempty"`
+	TimeoutMillis           int64 `json:"timeout_ms"`
+	MemoryBytes             int64 `json:"memory_bytes"`
+	MaxPayloadBytes         int64 `json:"max_payload_bytes"`
+	MaxStreamBytesPerSecond int64 `json:"max_stream_bytes_per_sec"`
 }
 
 type Health struct {
@@ -94,6 +95,7 @@ type RevokeResult struct {
 	ClosedSocketCount        int    `json:"closed_socket_count"`
 	ClosedStreamCount        int    `json:"closed_stream_count"`
 	ClosedStorageHandleCount int    `json:"closed_storage_handle_count"`
+	RuntimeStopped           bool   `json:"runtime_stopped,omitempty"`
 }
 
 type HeartbeatResult struct {
@@ -101,15 +103,6 @@ type HeartbeatResult struct {
 	RuntimeUnixNano      int64  `json:"runtime_unix_nano"`
 	MaxStalenessMillis   int64  `json:"max_staleness_ms"`
 	HostSentUnixNanoEcho int64  `json:"host_sent_unix_nano"`
-}
-
-type Supervisor interface {
-	Start(ctx context.Context, target Target) error
-	Stop(ctx context.Context) error
-	Health(ctx context.Context) (Health, error)
-	Heartbeat(ctx context.Context) (HeartbeatResult, error)
-	InvokeWorker(ctx context.Context, lease Lease, method string, payload []byte) ([]byte, error)
-	Revoke(ctx context.Context, pluginInstanceID string, revokeEpoch uint64) (RevokeResult, error)
 }
 
 type ArtifactProvider interface {
@@ -134,6 +127,23 @@ type ArtifactResult struct {
 type workerInvocationContext struct {
 	Artifact     ArtifactRequest
 	BrokerAccess workerBrokerAccess
+	identity     workerInvocationIdentity
+}
+
+type workerInvocationIdentity struct {
+	PluginID             string
+	PluginInstanceID     string
+	ActiveFingerprint    string
+	PolicyRevision       uint64
+	ManagementRevision   uint64
+	RevokeEpoch          uint64
+	RuntimeShardID       string
+	RuntimeInstanceID    string
+	RuntimeGenerationID  string
+	OwnerSessionHash     string
+	OwnerUserHash        string
+	OwnerEnvHash         string
+	SessionChannelIDHash string
 }
 
 type workerBrokerAccess struct {
@@ -177,12 +187,29 @@ type HandleGrantValidationResult struct {
 }
 
 var (
-	ErrRuntimePathRequired   = errors.New("runtime path is required")
-	ErrRuntimeNotReady       = errors.New("runtime is not ready")
-	ErrRuntimeIPCUnavailable = errors.New("runtime ipc transport is unavailable")
-	ErrRuntimeHandshake      = errors.New("runtime ipc handshake failed")
-	ErrRuntimeRequestFailed  = errors.New("runtime ipc request failed")
+	ErrRuntimePathRequired           = errors.New("runtime path is required")
+	ErrRuntimeNotReady               = errors.New("runtime is not ready")
+	ErrRuntimeIPCUnavailable         = errors.New("runtime ipc transport is unavailable")
+	ErrRuntimeHandshake              = errors.New("runtime ipc handshake failed")
+	ErrRuntimeRequestFailed          = errors.New("runtime ipc request failed")
+	ErrRuntimeShardBusy              = fmt.Errorf("%w: runtime shard invocation admission is full", ErrRuntimeRequestFailed)
+	ErrRuntimePendingInvocationLimit = errors.New("runtime max pending invocations must be zero or between 1 and 64")
 )
+
+type RuntimeShardBusyError struct {
+	MaxPendingInvocations int
+}
+
+func (e *RuntimeShardBusyError) Error() string {
+	if e == nil {
+		return ErrRuntimeShardBusy.Error()
+	}
+	return fmt.Sprintf("%s: max_pending_invocations=%d", ErrRuntimeShardBusy, e.MaxPendingInvocations)
+}
+
+func (e *RuntimeShardBusyError) Unwrap() error {
+	return ErrRuntimeShardBusy
+}
 
 type WorkerExecutionError struct {
 	Code    string
@@ -235,19 +262,22 @@ type ProcessSupervisorOptions struct {
 	HandshakeTimeout      time.Duration
 	HeartbeatInterval     time.Duration
 	MaxHeartbeatStaleness time.Duration
+	MaxPendingInvocations int
 }
 
 type RuntimeStreamSink interface {
 	AppendRuntimeStream(ctx context.Context, streamID, kind string, data []byte) error
 	CloseRuntimeStream(ctx context.Context, streamID string) error
-	FailRuntimeStream(ctx context.Context, streamID, reason string) error
+	FailRuntimeStream(ctx context.Context, streamID string, code capability.ExecutionFailureCode, cause error) error
 }
 
 type ProcessSupervisor struct {
 	startMu                sync.Mutex
-	ipcMu                  sync.Mutex
 	controlMu              sync.Mutex
 	mu                     sync.Mutex
+	ipcGate                chan struct{}
+	invocationAdmission    chan struct{}
+	maxPendingInvocations  int
 	path                   string
 	args                   []string
 	env                    []string
@@ -275,7 +305,7 @@ type ProcessSupervisor struct {
 
 	cmd              *exec.Cmd
 	cancel           context.CancelFunc
-	done             chan error
+	exit             *processExit
 	ipcIn            io.WriteCloser
 	ipcOut           *bufio.Reader
 	controlIn        io.WriteCloser
@@ -283,6 +313,12 @@ type ProcessSupervisor struct {
 	controlOutCloser io.Closer
 	health           Health
 	exitError        error
+}
+
+type processExit struct {
+	done      chan struct{}
+	err       error
+	stopEvent sync.Once
 }
 
 func NewProcessSupervisor(options ProcessSupervisorOptions) (*ProcessSupervisor, error) {
@@ -309,6 +345,13 @@ func NewProcessSupervisor(options ProcessSupervisorOptions) (*ProcessSupervisor,
 	if maxHeartbeatStaleness < heartbeatInterval {
 		maxHeartbeatStaleness = heartbeatInterval
 	}
+	maxPendingInvocations := options.MaxPendingInvocations
+	if maxPendingInvocations == 0 {
+		maxPendingInvocations = DefaultRuntimePendingInvocationLimit
+	}
+	if maxPendingInvocations < 1 || maxPendingInvocations > MaxRuntimePendingInvocationLimit {
+		return nil, ErrRuntimePendingInvocationLimit
+	}
 	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		return nil, err
@@ -320,7 +363,12 @@ func NewProcessSupervisor(options ProcessSupervisorOptions) (*ProcessSupervisor,
 		return nil, err
 	}
 	keyring := StaticRuntimeLeaseSigningKeyring{Keys: []RuntimeLeaseSigningKey{{KeyID: keyID, PublicKey: publicKey}}}
+	ipcGate := make(chan struct{}, 1)
+	ipcGate <- struct{}{}
 	return &ProcessSupervisor{
+		ipcGate:                ipcGate,
+		invocationAdmission:    make(chan struct{}, maxPendingInvocations+1),
+		maxPendingInvocations:  maxPendingInvocations,
 		path:                   path,
 		args:                   append([]string(nil), options.Args...),
 		env:                    append([]string(nil), options.Env...),
@@ -436,10 +484,10 @@ func (s *ProcessSupervisor) Start(ctx context.Context, target Target) error {
 		RuntimeGenerationID: generationID,
 		IPCChannelID:        fmt.Sprintf("ipc_%d_%d", cmd.Process.Pid, s.seq),
 	}
-	done := make(chan error, 1)
+	exit := &processExit{done: make(chan struct{})}
 	s.cmd = cmd
 	s.cancel = cancel
-	s.done = done
+	s.exit = exit
 	s.ipcIn = stdin
 	s.ipcOut = stdoutReader
 	s.controlIn = controlHostWrite
@@ -456,7 +504,7 @@ func (s *ProcessSupervisor) Start(ctx context.Context, target Target) error {
 		"arch":                  target.Arch,
 	})
 	go s.scanPipe(stderr, "stderr")
-	go s.wait(cmd, done, cancel, health)
+	go s.wait(cmd, exit, cancel, health)
 
 	ack, err := s.performHandshake(ctx, stdin, stdoutReader, health, target)
 	if err != nil {
@@ -467,7 +515,7 @@ func (s *ProcessSupervisor) Start(ctx context.Context, target Target) error {
 		}
 		s.mu.Unlock()
 		select {
-		case <-done:
+		case <-exit.done:
 		case <-time.After(3 * time.Second):
 			s.emit("plugin.runtime.process.cleanup_timeout", "warning", "runtime process did not exit after failed handshake", map[string]any{
 				"runtime_instance_id":   health.RuntimeInstanceID,
@@ -477,7 +525,7 @@ func (s *ProcessSupervisor) Start(ctx context.Context, target Target) error {
 		return err
 	}
 	s.mu.Lock()
-	if s.cmd == cmd {
+	if s.cmd == cmd && runtimeCtx.Err() == nil {
 		health.RuntimeVersion = ack.RuntimeVersion
 		health.RustIPCVersion = ack.RustIPCVersion
 		health.WASMABIVersion = ack.WASMABIVersion
@@ -506,29 +554,29 @@ func (s *ProcessSupervisor) Stop(ctx context.Context) error {
 	}
 	s.mu.Lock()
 	cancel := s.cancel
-	done := s.done
+	exit := s.exit
 	health := s.health
-	if cancel == nil || done == nil || !s.health.Ready {
+	if cancel == nil || exit == nil {
 		s.mu.Unlock()
 		return nil
 	}
+	s.health.Ready = false
 	cancel()
 	s.mu.Unlock()
 
 	select {
-	case err := <-done:
-		if err != nil && ctx.Err() == nil {
-			s.emit("plugin.runtime.process.stopped", "info", "runtime process stopped", map[string]any{
+	case <-exit.done:
+		exit.stopEvent.Do(func() {
+			details := map[string]any{
 				"runtime_instance_id":   health.RuntimeInstanceID,
 				"runtime_generation_id": health.RuntimeGenerationID,
-				"exit_error":            err.Error(),
-			})
-		} else {
-			s.emit("plugin.runtime.process.stopped", "info", "runtime process stopped", map[string]any{
-				"runtime_instance_id":   health.RuntimeInstanceID,
-				"runtime_generation_id": health.RuntimeGenerationID,
-			})
-		}
+			}
+			var internalDetails map[string]any
+			if exit.err != nil && ctx.Err() == nil {
+				internalDetails = map[string]any{"error": exit.err.Error()}
+			}
+			s.emitInternal("plugin.runtime.process.stopped", observability.DiagnosticSeverityInfo, "runtime process stopped", details, internalDetails)
+		})
 		return nil
 	case <-ctx.Done():
 		return ctx.Err()
@@ -589,9 +637,7 @@ func decodeHeartbeatResponse(frame ipcFrame) (HeartbeatResult, error) {
 
 func decodeHeartbeatResult(raw json.RawMessage, runtimeGenerationID string) (HeartbeatResult, error) {
 	var payload heartbeatResultPayload
-	decoder := json.NewDecoder(bytes.NewReader(raw))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&payload); err != nil {
+	if err := decodeStrictJSON(raw, &payload); err != nil {
 		return HeartbeatResult{}, err
 	}
 	if payload.RuntimeGenerationID == "" ||
@@ -621,14 +667,28 @@ func (s *ProcessSupervisor) InvokeWorker(ctx context.Context, lease Lease, metho
 	if s == nil || !s.isReady() {
 		return nil, ErrRuntimeNotReady
 	}
-	lease = normalizeRuntimeLeaseForIPC(lease)
-	health := s.healthSnapshot()
-	lease, err := bindRuntimeLeaseAudience(lease, health)
+	releaseAdmission, err := s.acquireInvocationAdmission(ctx)
 	if err != nil {
 		return nil, err
 	}
+	defer releaseAdmission()
+	health := s.healthSnapshot()
+	if err := validateRuntimeLeaseAudience(lease, health); err != nil {
+		return nil, err
+	}
+	lease.KeyID = ""
+	lease.Signature = ""
 	lease, err = SignRuntimeLease(lease, method, s.runtimeLeaseSigningKey, s.runtimeLeasePrivateKey)
 	if err != nil {
+		s.emit("plugin.runtime.lease.signature_rejected", observability.DiagnosticSeverityWarning, "runtime execution lease could not be signed", map[string]any{
+			"lease_id":              lease.LeaseID,
+			"plugin_instance_id":    lease.PluginInstanceID,
+			"runtime_generation_id": lease.RuntimeGenerationID,
+			"runtime_instance_id":   lease.RuntimeInstanceID,
+			"ipc_channel_id":        lease.IPCChannelID,
+			"method":                method,
+			"revoke_epoch":          lease.RevokeEpoch,
+		})
 		return nil, err
 	}
 	if err := s.verifyRuntimeLease(ctx, lease, method); err != nil {
@@ -638,7 +698,7 @@ func (s *ProcessSupervisor) InvokeWorker(ctx context.Context, lease Lease, metho
 	if len(invocation) == 0 {
 		invocation = json.RawMessage("null")
 	}
-	allowedInvocation, err := workerInvocationContextFromInvocation(invocation)
+	allowedInvocation, err := workerInvocationContextFromInvocation(lease, invocation)
 	if err != nil {
 		return nil, err
 	}
@@ -664,56 +724,15 @@ func (s *ProcessSupervisor) InvokeWorker(ctx context.Context, lease Lease, metho
 	if !response.OK {
 		return nil, response.workerExecutionError()
 	}
-	if len(response.Result) == 0 {
-		return []byte("{}"), nil
-	}
 	return append([]byte(nil), response.Result...), nil
 }
 
-func bindRuntimeLeaseAudience(lease Lease, health Health) (Lease, error) {
-	if !health.Ready {
-		return Lease{}, ErrRuntimeNotReady
-	}
-	bindings := []struct {
-		current *string
-		value   string
-	}{
-		{current: &lease.RuntimeInstanceID, value: health.RuntimeInstanceID},
-		{current: &lease.RuntimeGenerationID, value: health.RuntimeGenerationID},
-		{current: &lease.IPCChannelID, value: health.IPCChannelID},
-		{current: &lease.ConnectionNonce, value: health.ConnectionNonce},
-	}
-	for _, binding := range bindings {
-		if strings.TrimSpace(*binding.current) != "" && strings.TrimSpace(*binding.current) != binding.value {
-			return Lease{}, ErrRuntimeLeaseInvalid
-		}
-		*binding.current = binding.value
-	}
-	lease.KeyID = ""
-	lease.Signature = ""
-	return lease, nil
-}
-
-func normalizeRuntimeLeaseForIPC(lease Lease) Lease {
-	if lease.TokenID == "" {
-		lease.TokenID = runtimeLeaseTokenID(lease)
-	}
-	if lease.IssuedAtUnixMillis == 0 {
-		lease.IssuedAtUnixMillis = unixMillis(lease.IssuedAt)
-	}
-	return lease
-}
-
 func (s *ProcessSupervisor) Revoke(ctx context.Context, pluginInstanceID string, revokeEpoch uint64) (RevokeResult, error) {
-	fallback := RevokeResult{
-		PluginInstanceID: pluginInstanceID,
-		RevokeEpoch:      revokeEpoch,
-	}
 	if err := ctx.Err(); err != nil {
 		return RevokeResult{}, err
 	}
 	if s == nil || !s.isReady() {
-		return fallback, nil
+		return RevokeResult{}, ErrRuntimeNotReady
 	}
 	rawPayload, err := json.Marshal(revokeEpochRequestPayload{
 		PluginInstanceID: pluginInstanceID,
@@ -752,7 +771,7 @@ func (s *ProcessSupervisor) consumeRuntimeLease(ctx context.Context, lease Lease
 		return nil
 	}
 	if errors.Is(err, ErrRuntimeLeaseReplay) {
-		s.emit("plugin.runtime.lease.replayed", "error", "runtime execution lease was already consumed", map[string]any{
+		s.emit("plugin.runtime.lease.replayed", observability.DiagnosticSeverityWarning, "runtime execution lease was already consumed", map[string]any{
 			"lease_id":              lease.LeaseID,
 			"plugin_instance_id":    lease.PluginInstanceID,
 			"runtime_generation_id": lease.RuntimeGenerationID,
@@ -767,19 +786,6 @@ func (s *ProcessSupervisor) verifyRuntimeLease(ctx context.Context, lease Lease,
 	if s == nil || s.runtimeLeaseVerifier == nil {
 		return ErrRuntimeLeaseSignatureKeyringRequired
 	}
-	if err := validateRuntimeLeaseAudience(lease, s.healthSnapshot()); err != nil {
-		s.emit("plugin.runtime.lease.signature_rejected", "error", "runtime execution lease audience was rejected", map[string]any{
-			"lease_id":              lease.LeaseID,
-			"plugin_instance_id":    lease.PluginInstanceID,
-			"runtime_generation_id": lease.RuntimeGenerationID,
-			"runtime_instance_id":   lease.RuntimeInstanceID,
-			"ipc_channel_id":        lease.IPCChannelID,
-			"key_id":                lease.KeyID,
-			"method":                method,
-			"revoke_epoch":          lease.RevokeEpoch,
-		})
-		return err
-	}
 	err := s.runtimeLeaseVerifier.VerifyRuntimeLease(ctx, RuntimeLeaseVerificationRequest{
 		Lease:  lease,
 		Method: method,
@@ -788,7 +794,7 @@ func (s *ProcessSupervisor) verifyRuntimeLease(ctx context.Context, lease Lease,
 	if err == nil {
 		return nil
 	}
-	s.emit("plugin.runtime.lease.signature_rejected", "error", "runtime execution lease signature was rejected", map[string]any{
+	s.emit("plugin.runtime.lease.signature_rejected", observability.DiagnosticSeverityWarning, "runtime execution lease signature was rejected", map[string]any{
 		"lease_id":              lease.LeaseID,
 		"plugin_instance_id":    lease.PluginInstanceID,
 		"runtime_generation_id": lease.RuntimeGenerationID,
@@ -839,9 +845,7 @@ type revokeResultPayload struct {
 
 func decodeRevokeResult(raw json.RawMessage, pluginInstanceID string, revokeEpoch uint64) (RevokeResult, error) {
 	var payload revokeResultPayload
-	decoder := json.NewDecoder(bytes.NewReader(raw))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&payload); err != nil {
+	if err := decodeStrictJSON(raw, &payload); err != nil {
 		return RevokeResult{}, err
 	}
 	if payload.PluginInstanceID == "" ||
@@ -887,7 +891,7 @@ func (s *ProcessSupervisor) readyLocked() bool {
 	return s.cmd != nil && s.health.Ready
 }
 
-func (s *ProcessSupervisor) wait(cmd *exec.Cmd, done chan<- error, cancel context.CancelFunc, health Health) {
+func (s *ProcessSupervisor) wait(cmd *exec.Cmd, exit *processExit, cancel context.CancelFunc, health Health) {
 	err := cmd.Wait()
 	cancel()
 	var controlIn io.WriteCloser
@@ -897,7 +901,7 @@ func (s *ProcessSupervisor) wait(cmd *exec.Cmd, done chan<- error, cancel contex
 		s.health.Ready = false
 		s.exitError = err
 		s.cancel = nil
-		s.done = nil
+		s.exit = nil
 		s.cmd = nil
 		s.ipcIn = nil
 		s.ipcOut = nil
@@ -914,19 +918,21 @@ func (s *ProcessSupervisor) wait(cmd *exec.Cmd, done chan<- error, cancel contex
 	if controlOut != nil {
 		_ = controlOut.Close()
 	}
-	severity := "info"
+	severity := observability.DiagnosticSeverityInfo
 	message := "runtime process exited"
 	details := map[string]any{
 		"runtime_instance_id":   health.RuntimeInstanceID,
 		"runtime_generation_id": health.RuntimeGenerationID,
 	}
+	var internalDetails map[string]any
 	if err != nil {
-		severity = "warning"
+		severity = observability.DiagnosticSeverityWarning
 		message = "runtime process exited with error"
-		details["exit_error"] = err.Error()
+		internalDetails = map[string]any{"error": err.Error()}
 	}
-	s.emit("plugin.runtime.process.exited", severity, message, details)
-	done <- err
+	s.emitInternal("plugin.runtime.process.exited", severity, message, details, internalDetails)
+	exit.err = err
+	close(exit.done)
 }
 
 func (s *ProcessSupervisor) heartbeatLoop(ctx context.Context, health Health) {
@@ -972,27 +978,67 @@ func (s *ProcessSupervisor) scanPipe(reader io.Reader, streamName string) {
 		if line == "" {
 			continue
 		}
-		severity := "info"
+		severity := observability.DiagnosticSeverityInfo
 		if streamName == "stderr" {
-			severity = "warning"
+			severity = observability.DiagnosticSeverityWarning
 		}
-		s.emit("plugin.runtime.process."+streamName, severity, line, map[string]any{"stream": streamName})
+		s.emitInternal(
+			"plugin.runtime.process."+streamName,
+			severity,
+			"runtime process wrote to "+streamName,
+			map[string]any{"stream": streamName},
+			map[string]any{"line": line},
+		)
 	}
 	if err := scanner.Err(); err != nil {
-		s.emit("plugin.runtime.process."+streamName+".error", "warning", err.Error(), map[string]any{"stream": streamName})
+		s.emitInternal(
+			"plugin.runtime.process."+streamName+".error",
+			observability.DiagnosticSeverityWarning,
+			"runtime process output could not be read",
+			map[string]any{"stream": streamName},
+			map[string]any{"error": err.Error()},
+		)
 	}
 }
 
-func (s *ProcessSupervisor) emit(eventType string, severity string, message string, details map[string]any) {
+func (s *ProcessSupervisor) emit(eventType string, severity observability.DiagnosticSeverity, message string, details map[string]any) {
+	s.emitInternal(eventType, severity, message, details, nil)
+}
+
+func (s *ProcessSupervisor) emitInternal(eventType string, severity observability.DiagnosticSeverity, message string, details, internalDetails map[string]any) {
 	if s == nil || s.diagnostics == nil {
 		return
 	}
 	_ = s.diagnostics.AppendPluginDiagnostic(context.Background(), observability.DiagnosticEvent{
-		Type:       eventType,
-		Severity:   severity,
-		Message:    message,
-		OccurredAt: s.now(),
-		Details:    details,
+		Type:            eventType,
+		Severity:        severity,
+		Message:         message,
+		OccurredAt:      s.now(),
+		Details:         details,
+		InternalDetails: internalDetails,
+	})
+}
+
+func (s *ProcessSupervisor) emitHostcallFailure(runtimeGenerationID, hostcall, code string, err error, details map[string]any) {
+	if err == nil {
+		return
+	}
+	if details == nil {
+		details = map[string]any{}
+	}
+	details["runtime_generation_id"] = runtimeGenerationID
+	details["hostcall"] = hostcall
+	details["code"] = code
+	if s == nil || s.diagnostics == nil {
+		return
+	}
+	_ = s.diagnostics.AppendPluginDiagnostic(context.Background(), observability.DiagnosticEvent{
+		Type:            "plugin.runtime.hostcall.failed",
+		Severity:        "warning",
+		Message:         "runtime hostcall failed",
+		OccurredAt:      s.now(),
+		Details:         details,
+		InternalDetails: map[string]any{"error": err.Error()},
 	})
 }
 
@@ -1022,6 +1068,11 @@ const (
 	maxIPCFrameBytes                    = 64 << 20
 	maxWASMHostcallResponseBytes        = 512 << 10
 	maxSynchronousBrokerPayloadBytes    = 384 << 10
+)
+
+const (
+	DefaultRuntimePendingInvocationLimit = 16
+	MaxRuntimePendingInvocationLimit     = 64
 )
 
 type ipcFrame struct {
@@ -1075,10 +1126,16 @@ type revokeEpochRequestPayload struct {
 type runtimeResponsePayload struct {
 	OK          bool              `json:"ok"`
 	Result      json.RawMessage   `json:"result,omitempty"`
-	Error       string            `json:"error,omitempty"`
 	Code        string            `json:"code,omitempty"`
 	Message     string            `json:"message,omitempty"`
 	ErrorOrigin WorkerErrorOrigin `json:"error_origin,omitempty"`
+}
+
+type hostcallFailurePayload struct {
+	OK          bool              `json:"ok"`
+	Code        string            `json:"code"`
+	Message     string            `json:"message"`
+	ErrorOrigin WorkerErrorOrigin `json:"error_origin"`
 }
 
 type artifactHandleRequestPayload struct {
@@ -1089,10 +1146,10 @@ type artifactHandleRequestPayload struct {
 
 type artifactHandleResultPayload struct {
 	OK            bool              `json:"ok"`
-	PackageHash   string            `json:"package_hash,omitempty"`
-	Artifact      string            `json:"artifact,omitempty"`
-	SHA256        string            `json:"sha256,omitempty"`
-	ContentBase64 string            `json:"content_base64,omitempty"`
+	PackageHash   string            `json:"package_hash"`
+	Artifact      string            `json:"artifact"`
+	SHA256        string            `json:"sha256"`
+	ContentBase64 string            `json:"content_base64"`
 	Code          string            `json:"code,omitempty"`
 	Message       string            `json:"message,omitempty"`
 	ErrorOrigin   WorkerErrorOrigin `json:"error_origin,omitempty"`
@@ -1100,10 +1157,10 @@ type artifactHandleResultPayload struct {
 
 type handleGrantValidationResultPayload struct {
 	OK                  bool              `json:"ok"`
-	HandleGrantID       string            `json:"handle_grant_id,omitempty"`
-	HandleID            string            `json:"handle_id,omitempty"`
-	Method              string            `json:"method,omitempty"`
-	RuntimeGenerationID string            `json:"runtime_generation_id,omitempty"`
+	HandleGrantID       string            `json:"handle_grant_id"`
+	HandleID            string            `json:"handle_id"`
+	Method              string            `json:"method"`
+	RuntimeGenerationID string            `json:"runtime_generation_id"`
 	MaxBytesPerSecond   int64             `json:"max_bytes_per_second,omitempty"`
 	MaxTotalBytes       int64             `json:"max_total_bytes,omitempty"`
 	Code                string            `json:"code,omitempty"`
@@ -1133,15 +1190,44 @@ type storageFileRequestPayload struct {
 }
 
 type storageFileResponsePayload struct {
-	OK          bool                `json:"ok"`
-	Path        string              `json:"path,omitempty"`
-	DataBase64  string              `json:"data_base64,omitempty"`
-	SizeBytes   int64               `json:"size_bytes,omitempty"`
-	Entries     []storage.FileEntry `json:"entries,omitempty"`
-	Usage       *storage.Usage      `json:"usage,omitempty"`
-	Code        string              `json:"code,omitempty"`
-	Message     string              `json:"message,omitempty"`
-	ErrorOrigin WorkerErrorOrigin   `json:"error_origin,omitempty"`
+	Operation     string              `json:"-"`
+	OK            bool                `json:"ok"`
+	Path          string              `json:"path"`
+	DataBase64    string              `json:"data_base64,omitempty"`
+	SizeBytes     int64               `json:"size_bytes,omitempty"`
+	Entries       []storage.FileEntry `json:"entries,omitempty"`
+	Usage         *storage.Usage      `json:"usage,omitempty"`
+	Code          string              `json:"code,omitempty"`
+	Message       string              `json:"message,omitempty"`
+	ErrorOrigin   WorkerErrorOrigin   `json:"error_origin,omitempty"`
+	InternalError error               `json:"-"`
+}
+
+type storageFileReadSuccessPayload struct {
+	OK         bool          `json:"ok"`
+	Path       string        `json:"path"`
+	DataBase64 string        `json:"data_base64"`
+	SizeBytes  int64         `json:"size_bytes"`
+	Usage      storage.Usage `json:"usage"`
+}
+
+type storageFileWriteSuccessPayload struct {
+	OK        bool          `json:"ok"`
+	Path      string        `json:"path"`
+	SizeBytes int64         `json:"size_bytes"`
+	Usage     storage.Usage `json:"usage"`
+}
+
+type storageFileDeleteSuccessPayload struct {
+	OK   bool   `json:"ok"`
+	Path string `json:"path"`
+}
+
+type storageFileListSuccessPayload struct {
+	OK      bool                `json:"ok"`
+	Path    string              `json:"path"`
+	Entries []storage.FileEntry `json:"entries"`
+	Usage   storage.Usage       `json:"usage"`
 }
 
 type storageKVRequestPayload struct {
@@ -1166,16 +1252,45 @@ type storageKVRequestPayload struct {
 }
 
 type storageKVResponsePayload struct {
-	OK          bool              `json:"ok"`
-	Key         string            `json:"key,omitempty"`
-	ValueBase64 string            `json:"value_base64,omitempty"`
-	SizeBytes   int64             `json:"size_bytes,omitempty"`
-	Prefix      string            `json:"prefix,omitempty"`
-	Entries     []storage.KVEntry `json:"entries,omitempty"`
-	Usage       *storage.Usage    `json:"usage,omitempty"`
-	Code        string            `json:"code,omitempty"`
-	Message     string            `json:"message,omitempty"`
-	ErrorOrigin WorkerErrorOrigin `json:"error_origin,omitempty"`
+	Operation     string            `json:"-"`
+	OK            bool              `json:"ok"`
+	Key           string            `json:"key,omitempty"`
+	ValueBase64   string            `json:"value_base64,omitempty"`
+	SizeBytes     int64             `json:"size_bytes,omitempty"`
+	Prefix        string            `json:"prefix,omitempty"`
+	Entries       []storage.KVEntry `json:"entries,omitempty"`
+	Usage         *storage.Usage    `json:"usage,omitempty"`
+	Code          string            `json:"code,omitempty"`
+	Message       string            `json:"message,omitempty"`
+	ErrorOrigin   WorkerErrorOrigin `json:"error_origin,omitempty"`
+	InternalError error             `json:"-"`
+}
+
+type storageKVGetSuccessPayload struct {
+	OK          bool          `json:"ok"`
+	Key         string        `json:"key"`
+	ValueBase64 string        `json:"value_base64"`
+	SizeBytes   int64         `json:"size_bytes"`
+	Usage       storage.Usage `json:"usage"`
+}
+
+type storageKVPutSuccessPayload struct {
+	OK        bool          `json:"ok"`
+	Key       string        `json:"key"`
+	SizeBytes int64         `json:"size_bytes"`
+	Usage     storage.Usage `json:"usage"`
+}
+
+type storageKVDeleteSuccessPayload struct {
+	OK  bool   `json:"ok"`
+	Key string `json:"key"`
+}
+
+type storageKVListSuccessPayload struct {
+	OK      bool              `json:"ok"`
+	Prefix  string            `json:"prefix,omitempty"`
+	Entries []storage.KVEntry `json:"entries"`
+	Usage   storage.Usage     `json:"usage"`
 }
 
 type storageSQLiteRequestPayload struct {
@@ -1201,24 +1316,42 @@ type storageSQLiteRequestPayload struct {
 }
 
 type storageSQLiteResponsePayload struct {
-	OK           bool                       `json:"ok"`
-	Database     string                     `json:"database,omitempty"`
-	RowsAffected *int64                     `json:"rows_affected,omitempty"`
-	LastInsertID int64                      `json:"last_insert_id,omitempty"`
-	Columns      *[]string                  `json:"columns,omitempty"`
-	Rows         *[][]storageSQLiteValueIPC `json:"rows,omitempty"`
-	Usage        *storage.Usage             `json:"usage,omitempty"`
-	Code         string                     `json:"code,omitempty"`
-	Message      string                     `json:"message,omitempty"`
-	ErrorOrigin  WorkerErrorOrigin          `json:"error_origin,omitempty"`
+	Operation     string                     `json:"-"`
+	OK            bool                       `json:"ok"`
+	Database      string                     `json:"database"`
+	RowsAffected  *int64                     `json:"rows_affected,omitempty"`
+	LastInsertID  int64                      `json:"last_insert_id,omitempty"`
+	Columns       *[]string                  `json:"columns,omitempty"`
+	Rows          *[][]storageSQLiteValueIPC `json:"rows,omitempty"`
+	Usage         *storage.Usage             `json:"usage,omitempty"`
+	Code          string                     `json:"code,omitempty"`
+	Message       string                     `json:"message,omitempty"`
+	ErrorOrigin   WorkerErrorOrigin          `json:"error_origin,omitempty"`
+	InternalError error                      `json:"-"`
+}
+
+type storageSQLiteExecSuccessPayload struct {
+	OK           bool          `json:"ok"`
+	Database     string        `json:"database"`
+	RowsAffected int64         `json:"rows_affected"`
+	LastInsertID int64         `json:"last_insert_id,omitempty"`
+	Usage        storage.Usage `json:"usage"`
+}
+
+type storageSQLiteQuerySuccessPayload struct {
+	OK       bool                      `json:"ok"`
+	Database string                    `json:"database"`
+	Columns  []string                  `json:"columns"`
+	Rows     [][]storageSQLiteValueIPC `json:"rows"`
+	Usage    storage.Usage             `json:"usage"`
 }
 
 type storageSQLiteValueIPC struct {
-	Null       bool     `json:"null,omitempty"`
+	Null       *bool    `json:"null,omitempty"`
 	Int        *int64   `json:"int,omitempty"`
 	Float      *float64 `json:"float,omitempty"`
 	Text       *string  `json:"text,omitempty"`
-	BlobBase64 string   `json:"blob_base64,omitempty"`
+	BlobBase64 *string  `json:"blob_base64,omitempty"`
 }
 
 type networkGrantRequestPayload struct {
@@ -1238,21 +1371,22 @@ type networkGrantRequestPayload struct {
 
 type networkGrantResponsePayload struct {
 	OK                      bool                     `json:"ok"`
-	GrantID                 string                   `json:"grant_id,omitempty"`
-	PluginInstanceID        string                   `json:"plugin_instance_id,omitempty"`
-	ActiveFingerprint       string                   `json:"active_fingerprint,omitempty"`
-	PolicyRevision          uint64                   `json:"policy_revision,omitempty"`
-	ManagementRevision      uint64                   `json:"management_revision,omitempty"`
-	RevokeEpoch             uint64                   `json:"revoke_epoch,omitempty"`
-	ConnectorID             string                   `json:"connector_id,omitempty"`
-	Transport               connectivity.Transport   `json:"transport,omitempty"`
-	Destination             connectivity.Destination `json:"destination,omitempty"`
-	RuntimeGenerationID     string                   `json:"runtime_generation_id,omitempty"`
-	TargetClassifierVersion string                   `json:"target_classifier_version,omitempty"`
-	ExpiresAt               time.Time                `json:"expires_at,omitempty"`
+	GrantID                 string                   `json:"grant_id"`
+	PluginInstanceID        string                   `json:"plugin_instance_id"`
+	ActiveFingerprint       string                   `json:"active_fingerprint"`
+	PolicyRevision          uint64                   `json:"policy_revision"`
+	ManagementRevision      uint64                   `json:"management_revision"`
+	RevokeEpoch             uint64                   `json:"revoke_epoch"`
+	ConnectorID             string                   `json:"connector_id"`
+	Transport               connectivity.Transport   `json:"transport"`
+	Destination             connectivity.Destination `json:"destination"`
+	RuntimeGenerationID     string                   `json:"runtime_generation_id"`
+	TargetClassifierVersion string                   `json:"target_classifier_version"`
+	ExpiresAt               time.Time                `json:"expires_at"`
 	Code                    string                   `json:"code,omitempty"`
 	Message                 string                   `json:"message,omitempty"`
 	ErrorOrigin             WorkerErrorOrigin        `json:"error_origin,omitempty"`
+	InternalError           error                    `json:"-"`
 }
 
 type networkExecuteRequestPayload struct {
@@ -1289,6 +1423,7 @@ type networkExecuteRequestPayload struct {
 	SurfaceInstanceID    string                 `json:"surface_instance_id,omitempty"`
 	OwnerSessionHash     string                 `json:"owner_session_hash,omitempty"`
 	OwnerUserHash        string                 `json:"owner_user_hash,omitempty"`
+	OwnerEnvHash         string                 `json:"owner_env_hash,omitempty"`
 	SessionChannelIDHash string                 `json:"session_channel_id_hash,omitempty"`
 	BridgeChannelID      string                 `json:"bridge_channel_id,omitempty"`
 	ContentType          string                 `json:"content_type,omitempty"`
@@ -1296,8 +1431,8 @@ type networkExecuteRequestPayload struct {
 
 type networkExecuteResponsePayload struct {
 	OK                bool                     `json:"ok"`
-	Transport         connectivity.Transport   `json:"transport,omitempty"`
-	Destination       connectivity.Destination `json:"destination,omitempty"`
+	Transport         connectivity.Transport   `json:"transport"`
+	Destination       connectivity.Destination `json:"destination"`
 	StatusCode        int                      `json:"status_code,omitempty"`
 	Headers           http.Header              `json:"headers,omitempty"`
 	MessageType       string                   `json:"message_type,omitempty"`
@@ -1306,42 +1441,28 @@ type networkExecuteResponsePayload struct {
 	StreamID          string                   `json:"stream_id,omitempty"`
 	BytesRead         int64                    `json:"bytes_read,omitempty"`
 	ChunkCount        int                      `json:"chunk_count,omitempty"`
-	GrantID           string                   `json:"grant_id,omitempty"`
-	ConnectorID       string                   `json:"connector_id,omitempty"`
-	RuntimeGeneration string                   `json:"runtime_generation_id,omitempty"`
+	GrantID           string                   `json:"grant_id"`
+	ConnectorID       string                   `json:"connector_id"`
+	RuntimeGeneration string                   `json:"runtime_generation_id"`
 	Code              string                   `json:"code,omitempty"`
 	Message           string                   `json:"message,omitempty"`
 	ErrorOrigin       WorkerErrorOrigin        `json:"error_origin,omitempty"`
+	InternalError     error                    `json:"-"`
 }
 
 func (p runtimeResponsePayload) err() error {
 	message := strings.TrimSpace(p.Message)
-	if message == "" {
-		message = strings.TrimSpace(p.Error)
-	}
-	if message == "" {
-		message = "runtime request failed"
-	}
 	code := strings.TrimSpace(p.Code)
-	if code == "" {
-		return fmt.Errorf("%w: %s", ErrRuntimeRequestFailed, message)
+	if p.OK || code == "" || message == "" || !p.ErrorOrigin.valid() {
+		return fmt.Errorf("%w: invalid runtime error response", ErrRuntimeIPCUnavailable)
 	}
 	return fmt.Errorf("%w: %s: %s", ErrRuntimeRequestFailed, code, message)
 }
 
 func (p runtimeResponsePayload) workerExecutionError() error {
 	message := strings.TrimSpace(p.Message)
-	if message == "" {
-		message = strings.TrimSpace(p.Error)
-	}
-	if message == "" {
-		message = "worker execution failed"
-	}
 	code := strings.TrimSpace(p.Code)
-	if code == "" {
-		return fmt.Errorf("%w: %s", ErrRuntimeRequestFailed, message)
-	}
-	if !p.ErrorOrigin.valid() {
+	if p.OK || code == "" || message == "" || !p.ErrorOrigin.valid() {
 		return fmt.Errorf("%w: worker response error_origin is missing or invalid", ErrRuntimeIPCUnavailable)
 	}
 	return &WorkerExecutionError{Code: code, Message: message, Origin: p.ErrorOrigin}
@@ -1418,10 +1539,11 @@ func (s *ProcessSupervisor) callIPC(ctx context.Context, frameType string, respo
 		return ipcFrame{}, ErrRuntimeNotReady
 	}
 	s.mu.Unlock()
-	if err := s.lockIPC(ctx); err != nil {
+	releaseIPC, err := s.lockIPC(ctx)
+	if err != nil {
 		return ipcFrame{}, err
 	}
-	defer s.ipcMu.Unlock()
+	defer releaseIPC()
 	return s.callIPCLocked(ctx, frameType, responseFrameType, payload, allowedInvocation)
 }
 
@@ -1611,20 +1733,30 @@ func (s *ProcessSupervisor) callIPCLocked(ctx context.Context, frameType string,
 	}
 }
 
-func (s *ProcessSupervisor) lockIPC(ctx context.Context) error {
-	for {
-		if s.ipcMu.TryLock() {
-			return nil
+func (s *ProcessSupervisor) lockIPC(ctx context.Context) (func(), error) {
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-s.ipcGate:
+		return func() { s.ipcGate <- struct{}{} }, nil
+	}
+}
+
+func (s *ProcessSupervisor) acquireInvocationAdmission(ctx context.Context) (func(), error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case s.invocationAdmission <- struct{}{}:
+		if err := ctx.Err(); err != nil {
+			<-s.invocationAdmission
+			return nil, err
 		}
-		timer := time.NewTimer(5 * time.Millisecond)
-		select {
-		case <-ctx.Done():
-			if !timer.Stop() {
-				<-timer.C
-			}
-			return ctx.Err()
-		case <-timer.C:
-		}
+		return func() { <-s.invocationAdmission }, nil
+	default:
+		return nil, &RuntimeShardBusyError{MaxPendingInvocations: s.maxPendingInvocations}
 	}
 }
 
@@ -1651,10 +1783,11 @@ func (s *ProcessSupervisor) invalidateRuntimeAfterIPCFailure(health Health, mess
 		"runtime_instance_id":   health.RuntimeInstanceID,
 		"runtime_generation_id": health.RuntimeGenerationID,
 	}
+	var internalDetails map[string]any
 	if err != nil {
-		details["error"] = err.Error()
+		internalDetails = map[string]any{"error": err.Error()}
 	}
-	s.emit("plugin.runtime.ipc.invalidated", "warning", message, details)
+	s.emitInternal("plugin.runtime.ipc.invalidated", observability.DiagnosticSeverityWarning, message, details, internalDetails)
 }
 
 func (s *ProcessSupervisor) respondToOpenHandle(ctx context.Context, stdin io.Writer, runtimeGenerationID string, frame ipcFrame, allowedArtifact *ArtifactRequest) error {
@@ -1666,11 +1799,11 @@ func (s *ProcessSupervisor) respondToOpenHandle(ctx context.Context, stdin io.Wr
 			Message: "missing artifact request payload",
 		})
 	}
-	if err := json.Unmarshal(frame.Payload, &req); err != nil {
+	if err := decodeStrictJSON(frame.Payload, &req); err != nil {
 		return s.writeOpenHandleResponse(stdin, runtimeGenerationID, frame.RequestID, artifactHandleResultPayload{
 			OK:      false,
 			Code:    "ARTIFACT_REQUEST_INVALID",
-			Message: "decode artifact request payload: " + err.Error(),
+			Message: "artifact request is invalid",
 		})
 	}
 	if allowedArtifact == nil || !artifactRequestMatches(ArtifactRequest(req), *allowedArtifact) {
@@ -1691,10 +1824,14 @@ func (s *ProcessSupervisor) respondToOpenHandle(ctx context.Context, stdin io.Wr
 	defer cancel()
 	artifact, err := s.artifacts.ReadArtifact(hostcallCtx, ArtifactRequest(req))
 	if err != nil {
+		s.emitHostcallFailure(runtimeGenerationID, "artifact", "ARTIFACT_READ_FAILED", err, map[string]any{
+			"package_hash": req.PackageHash,
+			"artifact":     req.Artifact,
+		})
 		return s.writeOpenHandleResponse(stdin, runtimeGenerationID, frame.RequestID, artifactHandleResultPayload{
 			OK:      false,
 			Code:    "ARTIFACT_READ_FAILED",
-			Message: err.Error(),
+			Message: "artifact could not be read",
 		})
 	}
 	sum := sha256.Sum256(artifact.Content)
@@ -1723,10 +1860,7 @@ func (s *ProcessSupervisor) respondToOpenHandle(ctx context.Context, stdin io.Wr
 }
 
 func (s *ProcessSupervisor) writeOpenHandleResponse(stdin io.Writer, runtimeGenerationID string, requestID string, payload artifactHandleResultPayload) error {
-	if !payload.OK {
-		payload.ErrorOrigin = WorkerErrorOriginHostcall
-	}
-	raw, err := json.Marshal(payload)
+	raw, err := marshalHostcallPayload(payload.OK, payload, payload.Code, payload.Message)
 	if err != nil {
 		return err
 	}
@@ -1758,11 +1892,11 @@ func (s *ProcessSupervisor) respondToValidateHandleGrant(ctx context.Context, st
 			Message: "missing handle grant validation payload",
 		})
 	}
-	if err := json.Unmarshal(frame.Payload, &req); err != nil {
+	if err := decodeStrictJSON(frame.Payload, &req); err != nil {
 		return s.writeHandleGrantValidationResponse(stdin, runtimeGenerationID, frame.RequestID, handleGrantValidationResultPayload{
 			OK:      false,
 			Code:    "HANDLE_GRANT_REQUEST_INVALID",
-			Message: "decode handle grant validation payload: " + err.Error(),
+			Message: "handle grant validation request is invalid",
 		})
 	}
 	if strings.TrimSpace(req.RuntimeGenerationID) != runtimeGenerationID {
@@ -1794,10 +1928,15 @@ func (s *ProcessSupervisor) respondToValidateHandleGrant(ctx context.Context, st
 	defer cancel()
 	result, err := s.handleGrants.ValidateHandleGrant(hostcallCtx, req)
 	if err != nil {
+		s.emitHostcallFailure(runtimeGenerationID, "handle_grant", "HANDLE_GRANT_VALIDATION_FAILED", err, map[string]any{
+			"plugin_instance_id": req.PluginInstanceID,
+			"handle_id":          req.HandleID,
+			"method":             req.Method,
+		})
 		return s.writeHandleGrantValidationResponse(stdin, runtimeGenerationID, frame.RequestID, handleGrantValidationResultPayload{
 			OK:      false,
 			Code:    "HANDLE_GRANT_VALIDATION_FAILED",
-			Message: err.Error(),
+			Message: "handle grant validation failed",
 		})
 	}
 	return s.writeHandleGrantValidationResponse(stdin, runtimeGenerationID, frame.RequestID, handleGrantValidationResultPayload{
@@ -1812,10 +1951,7 @@ func (s *ProcessSupervisor) respondToValidateHandleGrant(ctx context.Context, st
 }
 
 func (s *ProcessSupervisor) writeHandleGrantValidationResponse(stdin io.Writer, runtimeGenerationID string, requestID string, payload handleGrantValidationResultPayload) error {
-	if !payload.OK {
-		payload.ErrorOrigin = WorkerErrorOriginHostcall
-	}
-	raw, err := json.Marshal(payload)
+	raw, err := marshalHostcallPayload(payload.OK, payload, payload.Code, payload.Message)
 	if err != nil {
 		return err
 	}
@@ -1847,18 +1983,34 @@ func (s *ProcessSupervisor) respondToStorageFile(ctx context.Context, stdin io.W
 			Message: "missing storage file payload",
 		})
 	}
-	if err := json.Unmarshal(frame.Payload, &req); err != nil {
+	if err := decodeStrictJSON(frame.Payload, &req); err != nil {
 		return s.writeStorageFileResponse(stdin, health.RuntimeGenerationID, frame.RequestID, storageFileResponsePayload{
 			OK:      false,
 			Code:    "STORAGE_FILE_REQUEST_INVALID",
-			Message: "decode storage file payload: " + err.Error(),
+			Message: "storage file request is invalid",
 		})
 	}
 	if err := validateStorageFileRequest(req, health.RuntimeGenerationID); err != nil {
 		return s.writeStorageFileResponse(stdin, health.RuntimeGenerationID, frame.RequestID, storageFileResponsePayload{
 			OK:      false,
 			Code:    "STORAGE_FILE_REQUEST_INVALID",
-			Message: err.Error(),
+			Message: "storage file request is invalid",
+		})
+	}
+	if !allowedInvocation.identity.matchesRuntimeHostcall(
+		req.PluginInstanceID,
+		req.ActiveFingerprint,
+		req.RuntimeInstanceID,
+		req.RuntimeGenerationID,
+		req.RuntimeShardID,
+		req.PolicyRevision,
+		req.ManagementRevision,
+		req.RevokeEpoch,
+	) {
+		return s.writeStorageFileResponse(stdin, health.RuntimeGenerationID, frame.RequestID, storageFileResponsePayload{
+			OK:      false,
+			Code:    "STORAGE_FILE_REQUEST_DENIED",
+			Message: "storage file request identity is not bound to the active worker invocation",
 		})
 	}
 	if !allowedInvocation.BrokerAccess.allowsStorage(req.StoreID, req.Operation) {
@@ -1896,10 +2048,15 @@ func (s *ProcessSupervisor) respondToStorageFile(ctx context.Context, stdin io.W
 		RevokeEpoch:         req.RevokeEpoch,
 	})
 	if err != nil {
+		s.emitHostcallFailure(health.RuntimeGenerationID, "storage_file", "HANDLE_GRANT_VALIDATION_FAILED", err, map[string]any{
+			"plugin_instance_id": req.PluginInstanceID,
+			"store_id":           req.StoreID,
+			"operation":          req.Operation,
+		})
 		return s.writeStorageFileResponse(stdin, health.RuntimeGenerationID, frame.RequestID, storageFileResponsePayload{
 			OK:      false,
 			Code:    "HANDLE_GRANT_VALIDATION_FAILED",
-			Message: err.Error(),
+			Message: "handle grant validation failed",
 		})
 	}
 	if grant.HandleID != req.HandleID || grant.Method != req.Method || grant.RuntimeGenerationID != health.RuntimeGenerationID {
@@ -1910,16 +2067,22 @@ func (s *ProcessSupervisor) respondToStorageFile(ctx context.Context, stdin io.W
 		})
 	}
 	payload := dispatchStorageFileRequest(hostcallCtx, s.storageFiles, req)
+	payload.Operation = req.Operation
+	if payload.InternalError != nil {
+		s.emitHostcallFailure(health.RuntimeGenerationID, "storage_file", payload.Code, payload.InternalError, map[string]any{
+			"plugin_instance_id": req.PluginInstanceID,
+			"store_id":           req.StoreID,
+			"operation":          req.Operation,
+		})
+	}
 	return s.writeStorageFileResponse(stdin, health.RuntimeGenerationID, frame.RequestID, payload)
 }
 
 func (s *ProcessSupervisor) writeStorageFileResponse(stdin io.Writer, runtimeGenerationID string, requestID string, payload storageFileResponsePayload) error {
-	if !payload.OK {
-		payload.ErrorOrigin = WorkerErrorOriginHostcall
+	raw, err := marshalStorageFileHostcallPayload(payload)
+	if err == nil {
+		raw, err = boundHostcallPayload(raw, "STORAGE_FILE_TOO_LARGE", "storage file response exceeds the WASM hostcall limit")
 	}
-	raw, err := marshalBoundedBrokerPayload(payload, storageFileResponsePayload{
-		OK: false, Code: "STORAGE_FILE_TOO_LARGE", Message: "storage file response exceeds the WASM hostcall limit", ErrorOrigin: WorkerErrorOriginHostcall,
-	})
 	if err != nil {
 		return err
 	}
@@ -1964,7 +2127,7 @@ func dispatchStorageFileRequest(ctx context.Context, broker storage.FilesBroker,
 	case "read":
 		maxBytes, err := boundedSynchronousBrokerPayloadBytes(req.MaxBytes)
 		if err != nil {
-			return storageFileResponsePayload{OK: false, Code: "STORAGE_FILE_REQUEST_INVALID", Message: err.Error()}
+			return storageFileResponsePayload{OK: false, Code: "STORAGE_FILE_REQUEST_INVALID", Message: "storage file request is invalid"}
 		}
 		result, err := broker.ReadFile(ctx, storage.FileReadRequest{
 			PluginInstanceID: req.PluginInstanceID,
@@ -1986,7 +2149,7 @@ func dispatchStorageFileRequest(ctx context.Context, broker storage.FilesBroker,
 	case "write":
 		data, err := base64.StdEncoding.DecodeString(req.DataBase64)
 		if err != nil {
-			return storageFileResponsePayload{OK: false, Code: "STORAGE_FILE_REQUEST_INVALID", Message: "decode data_base64: " + err.Error()}
+			return storageFileResponsePayload{OK: false, Code: "STORAGE_FILE_REQUEST_INVALID", Message: "storage file request is invalid"}
 		}
 		result, err := broker.WriteFile(ctx, storage.FileWriteRequest{
 			PluginInstanceID: req.PluginInstanceID,
@@ -2029,15 +2192,15 @@ func dispatchStorageFileRequest(ctx context.Context, broker storage.FilesBroker,
 func storageFileErrorResponse(err error) storageFileResponsePayload {
 	switch {
 	case errors.Is(err, storage.ErrFileNotFound), errors.Is(err, storage.ErrNamespaceNotFound):
-		return storageFileResponsePayload{OK: false, Code: "STORAGE_FILE_NOT_FOUND", Message: err.Error()}
+		return storageFileResponsePayload{OK: false, Code: "STORAGE_FILE_NOT_FOUND", Message: "storage file was not found", InternalError: err}
 	case errors.Is(err, storage.ErrInvalidFilePath), errors.Is(err, storage.ErrInvalidNamespace):
-		return storageFileResponsePayload{OK: false, Code: "STORAGE_FILE_INVALID_PATH", Message: err.Error()}
+		return storageFileResponsePayload{OK: false, Code: "STORAGE_FILE_INVALID_PATH", Message: "storage file path is invalid", InternalError: err}
 	case errors.Is(err, storage.ErrQuotaExceeded):
-		return storageFileResponsePayload{OK: false, Code: "STORAGE_FILE_QUOTA_EXCEEDED", Message: err.Error()}
+		return storageFileResponsePayload{OK: false, Code: "STORAGE_FILE_QUOTA_EXCEEDED", Message: "storage file quota was exceeded", InternalError: err}
 	case errors.Is(err, storage.ErrFileTooLarge):
-		return storageFileResponsePayload{OK: false, Code: "STORAGE_FILE_TOO_LARGE", Message: err.Error()}
+		return storageFileResponsePayload{OK: false, Code: "STORAGE_FILE_TOO_LARGE", Message: "storage file is too large", InternalError: err}
 	default:
-		return storageFileResponsePayload{OK: false, Code: "STORAGE_FILE_FAILED", Message: err.Error()}
+		return storageFileResponsePayload{OK: false, Code: "STORAGE_FILE_FAILED", Message: "storage file operation failed", InternalError: err}
 	}
 }
 
@@ -2057,18 +2220,34 @@ func (s *ProcessSupervisor) respondToStorageKV(ctx context.Context, stdin io.Wri
 			Message: "missing storage kv payload",
 		})
 	}
-	if err := json.Unmarshal(frame.Payload, &req); err != nil {
+	if err := decodeStrictJSON(frame.Payload, &req); err != nil {
 		return s.writeStorageKVResponse(stdin, health.RuntimeGenerationID, frame.RequestID, storageKVResponsePayload{
 			OK:      false,
 			Code:    "STORAGE_KV_REQUEST_INVALID",
-			Message: "decode storage kv payload: " + err.Error(),
+			Message: "storage kv request is invalid",
 		})
 	}
 	if err := validateStorageKVRequest(req, health.RuntimeGenerationID); err != nil {
 		return s.writeStorageKVResponse(stdin, health.RuntimeGenerationID, frame.RequestID, storageKVResponsePayload{
 			OK:      false,
 			Code:    "STORAGE_KV_REQUEST_INVALID",
-			Message: err.Error(),
+			Message: "storage kv request is invalid",
+		})
+	}
+	if !allowedInvocation.identity.matchesRuntimeHostcall(
+		req.PluginInstanceID,
+		req.ActiveFingerprint,
+		req.RuntimeInstanceID,
+		req.RuntimeGenerationID,
+		req.RuntimeShardID,
+		req.PolicyRevision,
+		req.ManagementRevision,
+		req.RevokeEpoch,
+	) {
+		return s.writeStorageKVResponse(stdin, health.RuntimeGenerationID, frame.RequestID, storageKVResponsePayload{
+			OK:      false,
+			Code:    "STORAGE_KV_REQUEST_DENIED",
+			Message: "storage kv request identity is not bound to the active worker invocation",
 		})
 	}
 	if !allowedInvocation.BrokerAccess.allowsStorage(req.StoreID, req.Operation) {
@@ -2106,10 +2285,15 @@ func (s *ProcessSupervisor) respondToStorageKV(ctx context.Context, stdin io.Wri
 		RevokeEpoch:         req.RevokeEpoch,
 	})
 	if err != nil {
+		s.emitHostcallFailure(health.RuntimeGenerationID, "storage_kv", "HANDLE_GRANT_VALIDATION_FAILED", err, map[string]any{
+			"plugin_instance_id": req.PluginInstanceID,
+			"store_id":           req.StoreID,
+			"operation":          req.Operation,
+		})
 		return s.writeStorageKVResponse(stdin, health.RuntimeGenerationID, frame.RequestID, storageKVResponsePayload{
 			OK:      false,
 			Code:    "HANDLE_GRANT_VALIDATION_FAILED",
-			Message: err.Error(),
+			Message: "handle grant validation failed",
 		})
 	}
 	if grant.HandleID != req.HandleID || grant.Method != req.Method || grant.RuntimeGenerationID != health.RuntimeGenerationID {
@@ -2120,16 +2304,22 @@ func (s *ProcessSupervisor) respondToStorageKV(ctx context.Context, stdin io.Wri
 		})
 	}
 	payload := dispatchStorageKVRequest(hostcallCtx, s.storageKV, req)
+	payload.Operation = req.Operation
+	if payload.InternalError != nil {
+		s.emitHostcallFailure(health.RuntimeGenerationID, "storage_kv", payload.Code, payload.InternalError, map[string]any{
+			"plugin_instance_id": req.PluginInstanceID,
+			"store_id":           req.StoreID,
+			"operation":          req.Operation,
+		})
+	}
 	return s.writeStorageKVResponse(stdin, health.RuntimeGenerationID, frame.RequestID, payload)
 }
 
 func (s *ProcessSupervisor) writeStorageKVResponse(stdin io.Writer, runtimeGenerationID string, requestID string, payload storageKVResponsePayload) error {
-	if !payload.OK {
-		payload.ErrorOrigin = WorkerErrorOriginHostcall
+	raw, err := marshalStorageKVHostcallPayload(payload)
+	if err == nil {
+		raw, err = boundHostcallPayload(raw, "STORAGE_KV_VALUE_TOO_LARGE", "storage KV response exceeds the WASM hostcall limit")
 	}
-	raw, err := marshalBoundedBrokerPayload(payload, storageKVResponsePayload{
-		OK: false, Code: "STORAGE_KV_VALUE_TOO_LARGE", Message: "storage KV response exceeds the WASM hostcall limit", ErrorOrigin: WorkerErrorOriginHostcall,
-	})
 	if err != nil {
 		return err
 	}
@@ -2182,7 +2372,7 @@ func dispatchStorageKVRequest(ctx context.Context, broker storage.KVBroker, req 
 	case "get":
 		maxBytes, err := boundedSynchronousBrokerPayloadBytes(req.MaxBytes)
 		if err != nil {
-			return storageKVResponsePayload{OK: false, Code: "STORAGE_KV_REQUEST_INVALID", Message: err.Error()}
+			return storageKVResponsePayload{OK: false, Code: "STORAGE_KV_REQUEST_INVALID", Message: "storage kv request is invalid"}
 		}
 		result, err := broker.GetKV(ctx, storage.KVGetRequest{
 			PluginInstanceID: req.PluginInstanceID,
@@ -2204,7 +2394,7 @@ func dispatchStorageKVRequest(ctx context.Context, broker storage.KVBroker, req 
 	case "put":
 		value, err := base64.StdEncoding.DecodeString(req.ValueBase64)
 		if err != nil {
-			return storageKVResponsePayload{OK: false, Code: "STORAGE_KV_REQUEST_INVALID", Message: "decode value_base64: " + err.Error()}
+			return storageKVResponsePayload{OK: false, Code: "STORAGE_KV_REQUEST_INVALID", Message: "storage kv request is invalid"}
 		}
 		result, err := broker.PutKV(ctx, storage.KVPutRequest{
 			PluginInstanceID: req.PluginInstanceID,
@@ -2246,15 +2436,15 @@ func dispatchStorageKVRequest(ctx context.Context, broker storage.KVBroker, req 
 func storageKVErrorResponse(err error) storageKVResponsePayload {
 	switch {
 	case errors.Is(err, storage.ErrKVKeyNotFound), errors.Is(err, storage.ErrNamespaceNotFound):
-		return storageKVResponsePayload{OK: false, Code: "STORAGE_KV_NOT_FOUND", Message: err.Error()}
+		return storageKVResponsePayload{OK: false, Code: "STORAGE_KV_NOT_FOUND", Message: "storage kv key was not found", InternalError: err}
 	case errors.Is(err, storage.ErrInvalidKVKey), errors.Is(err, storage.ErrInvalidNamespace):
-		return storageKVResponsePayload{OK: false, Code: "STORAGE_KV_INVALID_KEY", Message: err.Error()}
+		return storageKVResponsePayload{OK: false, Code: "STORAGE_KV_INVALID_KEY", Message: "storage kv key is invalid", InternalError: err}
 	case errors.Is(err, storage.ErrQuotaExceeded):
-		return storageKVResponsePayload{OK: false, Code: "STORAGE_KV_QUOTA_EXCEEDED", Message: err.Error()}
+		return storageKVResponsePayload{OK: false, Code: "STORAGE_KV_QUOTA_EXCEEDED", Message: "storage kv quota was exceeded", InternalError: err}
 	case errors.Is(err, storage.ErrKVValueTooLarge):
-		return storageKVResponsePayload{OK: false, Code: "STORAGE_KV_VALUE_TOO_LARGE", Message: err.Error()}
+		return storageKVResponsePayload{OK: false, Code: "STORAGE_KV_VALUE_TOO_LARGE", Message: "storage kv value is too large", InternalError: err}
 	default:
-		return storageKVResponsePayload{OK: false, Code: "STORAGE_KV_FAILED", Message: err.Error()}
+		return storageKVResponsePayload{OK: false, Code: "STORAGE_KV_FAILED", Message: "storage kv operation failed", InternalError: err}
 	}
 }
 
@@ -2274,18 +2464,34 @@ func (s *ProcessSupervisor) respondToStorageSQLite(ctx context.Context, stdin io
 			Message: "missing storage sqlite payload",
 		})
 	}
-	if err := json.Unmarshal(frame.Payload, &req); err != nil {
+	if err := decodeStrictJSON(frame.Payload, &req); err != nil {
 		return s.writeStorageSQLiteResponse(stdin, health.RuntimeGenerationID, frame.RequestID, storageSQLiteResponsePayload{
 			OK:      false,
 			Code:    "STORAGE_SQLITE_REQUEST_INVALID",
-			Message: "decode storage sqlite payload: " + err.Error(),
+			Message: "storage sqlite request is invalid",
 		})
 	}
 	if err := validateStorageSQLiteRequest(req, health.RuntimeGenerationID); err != nil {
 		return s.writeStorageSQLiteResponse(stdin, health.RuntimeGenerationID, frame.RequestID, storageSQLiteResponsePayload{
 			OK:      false,
 			Code:    "STORAGE_SQLITE_REQUEST_INVALID",
-			Message: err.Error(),
+			Message: "storage sqlite request is invalid",
+		})
+	}
+	if !allowedInvocation.identity.matchesRuntimeHostcall(
+		req.PluginInstanceID,
+		req.ActiveFingerprint,
+		req.RuntimeInstanceID,
+		req.RuntimeGenerationID,
+		req.RuntimeShardID,
+		req.PolicyRevision,
+		req.ManagementRevision,
+		req.RevokeEpoch,
+	) {
+		return s.writeStorageSQLiteResponse(stdin, health.RuntimeGenerationID, frame.RequestID, storageSQLiteResponsePayload{
+			OK:      false,
+			Code:    "STORAGE_SQLITE_REQUEST_DENIED",
+			Message: "storage sqlite request identity is not bound to the active worker invocation",
 		})
 	}
 	if !allowedInvocation.BrokerAccess.allowsStorage(req.StoreID, req.Operation) {
@@ -2323,10 +2529,15 @@ func (s *ProcessSupervisor) respondToStorageSQLite(ctx context.Context, stdin io
 		RevokeEpoch:         req.RevokeEpoch,
 	})
 	if err != nil {
+		s.emitHostcallFailure(health.RuntimeGenerationID, "storage_sqlite", "HANDLE_GRANT_VALIDATION_FAILED", err, map[string]any{
+			"plugin_instance_id": req.PluginInstanceID,
+			"store_id":           req.StoreID,
+			"operation":          req.Operation,
+		})
 		return s.writeStorageSQLiteResponse(stdin, health.RuntimeGenerationID, frame.RequestID, storageSQLiteResponsePayload{
 			OK:      false,
 			Code:    "HANDLE_GRANT_VALIDATION_FAILED",
-			Message: err.Error(),
+			Message: "handle grant validation failed",
 		})
 	}
 	if grant.HandleID != req.HandleID || grant.Method != req.Method || grant.RuntimeGenerationID != health.RuntimeGenerationID {
@@ -2337,16 +2548,22 @@ func (s *ProcessSupervisor) respondToStorageSQLite(ctx context.Context, stdin io
 		})
 	}
 	payload := dispatchStorageSQLiteRequest(hostcallCtx, s.storageSQLite, req)
+	payload.Operation = req.Operation
+	if payload.InternalError != nil {
+		s.emitHostcallFailure(health.RuntimeGenerationID, "storage_sqlite", payload.Code, payload.InternalError, map[string]any{
+			"plugin_instance_id": req.PluginInstanceID,
+			"store_id":           req.StoreID,
+			"operation":          req.Operation,
+		})
+	}
 	return s.writeStorageSQLiteResponse(stdin, health.RuntimeGenerationID, frame.RequestID, payload)
 }
 
 func (s *ProcessSupervisor) writeStorageSQLiteResponse(stdin io.Writer, runtimeGenerationID string, requestID string, payload storageSQLiteResponsePayload) error {
-	if !payload.OK {
-		payload.ErrorOrigin = WorkerErrorOriginHostcall
+	raw, err := marshalStorageSQLiteHostcallPayload(payload)
+	if err == nil {
+		raw, err = boundHostcallPayload(raw, "STORAGE_SQLITE_RESULT_TOO_LARGE", "storage SQLite response exceeds the WASM hostcall limit")
 	}
-	raw, err := marshalBoundedBrokerPayload(payload, storageSQLiteResponsePayload{
-		OK: false, Code: "STORAGE_SQLITE_RESULT_TOO_LARGE", Message: "storage SQLite response exceeds the WASM hostcall limit", ErrorOrigin: WorkerErrorOriginHostcall,
-	})
 	if err != nil {
 		return err
 	}
@@ -2393,7 +2610,7 @@ func validateStorageSQLiteRequest(req storageSQLiteRequestPayload, runtimeGenera
 func dispatchStorageSQLiteRequest(ctx context.Context, broker storage.SQLiteBroker, req storageSQLiteRequestPayload) storageSQLiteResponsePayload {
 	args, err := storageSQLiteArgsFromIPC(req.Args)
 	if err != nil {
-		return storageSQLiteResponsePayload{OK: false, Code: "STORAGE_SQLITE_REQUEST_INVALID", Message: err.Error()}
+		return storageSQLiteResponsePayload{OK: false, Code: "STORAGE_SQLITE_REQUEST_INVALID", Message: "storage sqlite request is invalid"}
 	}
 	timeout := time.Duration(req.TimeoutMillis) * time.Millisecond
 	switch req.Operation {
@@ -2421,7 +2638,7 @@ func dispatchStorageSQLiteRequest(ctx context.Context, broker storage.SQLiteBrok
 	case "query":
 		maxResponseBytes, err := boundedSynchronousBrokerPayloadBytes(req.MaxResponseBytes)
 		if err != nil {
-			return storageSQLiteResponsePayload{OK: false, Code: "STORAGE_SQLITE_REQUEST_INVALID", Message: err.Error()}
+			return storageSQLiteResponsePayload{OK: false, Code: "STORAGE_SQLITE_REQUEST_INVALID", Message: "storage sqlite request is invalid"}
 		}
 		result, err := broker.QuerySQLite(ctx, storage.SQLiteQueryRequest{
 			PluginInstanceID: req.PluginInstanceID,
@@ -2485,15 +2702,21 @@ func storageSQLiteRowsToIPC(rows [][]storage.SQLiteValue) [][]storageSQLiteValue
 }
 
 func storageSQLiteValueFromIPC(value storageSQLiteValueIPC) (storage.SQLiteValue, error) {
-	if value.BlobBase64 != "" {
-		data, err := base64.StdEncoding.DecodeString(value.BlobBase64)
+	if !validStorageSQLiteValueIPC(value) {
+		return storage.SQLiteValue{}, errors.New("storage sqlite value must contain exactly one typed field")
+	}
+	if value.BlobBase64 != nil {
+		data, err := base64.StdEncoding.DecodeString(*value.BlobBase64)
 		if err != nil {
 			return storage.SQLiteValue{}, fmt.Errorf("decode sqlite blob_base64: %v", err)
+		}
+		if data == nil {
+			data = []byte{}
 		}
 		return storage.SQLiteValue{Blob: data}, nil
 	}
 	return storage.SQLiteValue{
-		Null:  value.Null,
+		Null:  value.Null != nil && *value.Null,
 		Int:   value.Int,
 		Float: value.Float,
 		Text:  value.Text,
@@ -2501,29 +2724,56 @@ func storageSQLiteValueFromIPC(value storageSQLiteValueIPC) (storage.SQLiteValue
 }
 
 func storageSQLiteValueToIPC(value storage.SQLiteValue) storageSQLiteValueIPC {
-	if len(value.Blob) > 0 {
-		return storageSQLiteValueIPC{BlobBase64: base64.StdEncoding.EncodeToString(value.Blob)}
+	if value.Blob != nil {
+		encoded := base64.StdEncoding.EncodeToString(value.Blob)
+		return storageSQLiteValueIPC{BlobBase64: &encoded}
+	}
+	if value.Null {
+		null := true
+		return storageSQLiteValueIPC{Null: &null}
 	}
 	return storageSQLiteValueIPC{
-		Null:  value.Null,
 		Int:   value.Int,
 		Float: value.Float,
 		Text:  value.Text,
 	}
 }
 
+func validStorageSQLiteValueIPC(value storageSQLiteValueIPC) bool {
+	variants := 0
+	if value.Null != nil {
+		if !*value.Null {
+			return false
+		}
+		variants++
+	}
+	if value.Int != nil {
+		variants++
+	}
+	if value.Float != nil {
+		variants++
+	}
+	if value.Text != nil {
+		variants++
+	}
+	if value.BlobBase64 != nil {
+		variants++
+	}
+	return variants == 1
+}
+
 func storageSQLiteErrorResponse(err error) storageSQLiteResponsePayload {
 	switch {
 	case errors.Is(err, storage.ErrNamespaceNotFound):
-		return storageSQLiteResponsePayload{OK: false, Code: "STORAGE_SQLITE_NOT_FOUND", Message: err.Error()}
+		return storageSQLiteResponsePayload{OK: false, Code: "STORAGE_SQLITE_NOT_FOUND", Message: "storage sqlite database was not found", InternalError: err}
 	case errors.Is(err, storage.ErrInvalidSQLite), errors.Is(err, storage.ErrInvalidNamespace), errors.Is(err, storage.ErrInvalidFilePath):
-		return storageSQLiteResponsePayload{OK: false, Code: "STORAGE_SQLITE_INVALID_REQUEST", Message: err.Error()}
+		return storageSQLiteResponsePayload{OK: false, Code: "STORAGE_SQLITE_INVALID_REQUEST", Message: "storage sqlite request is invalid", InternalError: err}
 	case errors.Is(err, storage.ErrQuotaExceeded):
-		return storageSQLiteResponsePayload{OK: false, Code: "STORAGE_SQLITE_QUOTA_EXCEEDED", Message: err.Error()}
+		return storageSQLiteResponsePayload{OK: false, Code: "STORAGE_SQLITE_QUOTA_EXCEEDED", Message: "storage sqlite quota was exceeded", InternalError: err}
 	case errors.Is(err, storage.ErrSQLiteResultTooLarge):
-		return storageSQLiteResponsePayload{OK: false, Code: "STORAGE_SQLITE_RESULT_TOO_LARGE", Message: err.Error()}
+		return storageSQLiteResponsePayload{OK: false, Code: "STORAGE_SQLITE_RESULT_TOO_LARGE", Message: "storage sqlite result is too large", InternalError: err}
 	default:
-		return storageSQLiteResponsePayload{OK: false, Code: "STORAGE_SQLITE_FAILED", Message: err.Error()}
+		return storageSQLiteResponsePayload{OK: false, Code: "STORAGE_SQLITE_FAILED", Message: "storage sqlite operation failed", InternalError: err}
 	}
 }
 
@@ -2543,18 +2793,34 @@ func (s *ProcessSupervisor) respondToNetworkGrant(ctx context.Context, stdin io.
 			Message: "missing network grant payload",
 		})
 	}
-	if err := json.Unmarshal(frame.Payload, &req); err != nil {
+	if err := decodeStrictJSON(frame.Payload, &req); err != nil {
 		return s.writeNetworkGrantResponse(stdin, health.RuntimeGenerationID, frame.RequestID, networkGrantResponsePayload{
 			OK:      false,
 			Code:    "NETWORK_GRANT_REQUEST_INVALID",
-			Message: "decode network grant payload: " + err.Error(),
+			Message: "network grant request is invalid",
 		})
 	}
 	if err := validateNetworkGrantRequest(req, health.RuntimeGenerationID); err != nil {
 		return s.writeNetworkGrantResponse(stdin, health.RuntimeGenerationID, frame.RequestID, networkGrantResponsePayload{
 			OK:      false,
 			Code:    "NETWORK_GRANT_REQUEST_INVALID",
-			Message: err.Error(),
+			Message: "network grant request is invalid",
+		})
+	}
+	if !allowedInvocation.identity.matchesRuntimeHostcall(
+		req.PluginInstanceID,
+		req.ActiveFingerprint,
+		req.RuntimeInstanceID,
+		req.RuntimeGenerationID,
+		req.RuntimeShardID,
+		req.PolicyRevision,
+		req.ManagementRevision,
+		req.RevokeEpoch,
+	) {
+		return s.writeNetworkGrantResponse(stdin, health.RuntimeGenerationID, frame.RequestID, networkGrantResponsePayload{
+			OK:      false,
+			Code:    "NETWORK_GRANT_REQUEST_DENIED",
+			Message: "network grant request identity is not bound to the active worker invocation",
 		})
 	}
 	if !allowedInvocation.BrokerAccess.allowsNetworkConnector(req.ConnectorID, string(req.Transport)) {
@@ -2586,13 +2852,24 @@ func (s *ProcessSupervisor) respondToNetworkGrant(ctx context.Context, stdin io.
 		TTL:                 ttl,
 	})
 	if err != nil {
-		return s.writeNetworkGrantResponse(stdin, health.RuntimeGenerationID, frame.RequestID, networkGrantErrorResponse(err))
+		payload := networkGrantErrorResponse(err)
+		s.emitHostcallFailure(health.RuntimeGenerationID, "network_grant", payload.Code, err, map[string]any{
+			"plugin_instance_id": req.PluginInstanceID,
+			"connector_id":       req.ConnectorID,
+			"transport":          req.Transport,
+		})
+		return s.writeNetworkGrantResponse(stdin, health.RuntimeGenerationID, frame.RequestID, payload)
 	}
 	if err := validateNetworkGrantResult(req, grant, health.RuntimeGenerationID); err != nil {
+		s.emitHostcallFailure(health.RuntimeGenerationID, "network_grant", "NETWORK_GRANT_VALIDATION_FAILED", err, map[string]any{
+			"plugin_instance_id": req.PluginInstanceID,
+			"connector_id":       req.ConnectorID,
+			"transport":          req.Transport,
+		})
 		return s.writeNetworkGrantResponse(stdin, health.RuntimeGenerationID, frame.RequestID, networkGrantResponsePayload{
 			OK:      false,
 			Code:    "NETWORK_GRANT_VALIDATION_FAILED",
-			Message: err.Error(),
+			Message: "network grant validation failed",
 		})
 	}
 	return s.writeNetworkGrantResponse(stdin, health.RuntimeGenerationID, frame.RequestID, networkGrantResponsePayload{
@@ -2613,10 +2890,7 @@ func (s *ProcessSupervisor) respondToNetworkGrant(ctx context.Context, stdin io.
 }
 
 func (s *ProcessSupervisor) writeNetworkGrantResponse(stdin io.Writer, runtimeGenerationID string, requestID string, payload networkGrantResponsePayload) error {
-	if !payload.OK {
-		payload.ErrorOrigin = WorkerErrorOriginHostcall
-	}
-	raw, err := json.Marshal(payload)
+	raw, err := marshalHostcallPayload(payload.OK, payload, payload.Code, payload.Message)
 	if err != nil {
 		return err
 	}
@@ -2648,18 +2922,25 @@ func (s *ProcessSupervisor) respondToNetworkExecute(ctx context.Context, stdin i
 			Message: "missing network execute payload",
 		})
 	}
-	if err := json.Unmarshal(frame.Payload, &req); err != nil {
+	if err := decodeStrictJSON(frame.Payload, &req); err != nil {
 		return s.writeNetworkExecuteResponse(stdin, health.RuntimeGenerationID, frame.RequestID, networkExecuteResponsePayload{
 			OK:      false,
 			Code:    "NETWORK_EXECUTE_REQUEST_INVALID",
-			Message: "decode network execute payload: " + err.Error(),
+			Message: "network execute request is invalid",
 		})
 	}
 	if err := validateNetworkExecuteRequest(req, health.RuntimeGenerationID); err != nil {
 		return s.writeNetworkExecuteResponse(stdin, health.RuntimeGenerationID, frame.RequestID, networkExecuteResponsePayload{
 			OK:      false,
 			Code:    "NETWORK_EXECUTE_REQUEST_INVALID",
-			Message: err.Error(),
+			Message: "network execute request is invalid",
+		})
+	}
+	if !allowedInvocation.identity.matchesNetworkExecute(req) {
+		return s.writeNetworkExecuteResponse(stdin, health.RuntimeGenerationID, frame.RequestID, networkExecuteResponsePayload{
+			OK:      false,
+			Code:    "NETWORK_EXECUTE_REQUEST_DENIED",
+			Message: "network execute request identity is not bound to the active worker invocation",
 		})
 	}
 	if !allowedInvocation.BrokerAccess.allowsNetwork(req.ConnectorID, string(req.Transport), req.Operation, req.Method) {
@@ -2685,7 +2966,14 @@ func (s *ProcessSupervisor) respondToNetworkExecute(ctx context.Context, stdin i
 	defer cancel()
 	grant, err := s.mintGrantForNetworkExecute(hostcallCtx, req)
 	if err != nil {
-		return s.writeNetworkExecuteResponse(stdin, health.RuntimeGenerationID, frame.RequestID, networkExecuteErrorResponse(err))
+		payload := networkExecuteErrorResponse(err)
+		s.emitHostcallFailure(health.RuntimeGenerationID, "network_execute", payload.Code, err, map[string]any{
+			"plugin_instance_id": req.PluginInstanceID,
+			"connector_id":       req.ConnectorID,
+			"transport":          req.Transport,
+			"operation":          req.Operation,
+		})
+		return s.writeNetworkExecuteResponse(stdin, health.RuntimeGenerationID, frame.RequestID, payload)
 	}
 	if err := validateNetworkGrantResult(networkGrantRequestPayload{
 		PluginInstanceID:    req.PluginInstanceID,
@@ -2699,13 +2987,27 @@ func (s *ProcessSupervisor) respondToNetworkExecute(ctx context.Context, stdin i
 		Destination:         req.Destination,
 		TTLMillis:           req.TTLMillis,
 	}, grant, health.RuntimeGenerationID); err != nil {
+		s.emitHostcallFailure(health.RuntimeGenerationID, "network_execute", "NETWORK_GRANT_VALIDATION_FAILED", err, map[string]any{
+			"plugin_instance_id": req.PluginInstanceID,
+			"connector_id":       req.ConnectorID,
+			"transport":          req.Transport,
+			"operation":          req.Operation,
+		})
 		return s.writeNetworkExecuteResponse(stdin, health.RuntimeGenerationID, frame.RequestID, networkExecuteResponsePayload{
 			OK:      false,
 			Code:    "NETWORK_GRANT_VALIDATION_FAILED",
-			Message: err.Error(),
+			Message: "network grant validation failed",
 		})
 	}
 	payload := dispatchNetworkExecute(hostcallCtx, s.networkExecutor, s.streamSink, grant, req, s.now())
+	if payload.InternalError != nil {
+		s.emitHostcallFailure(health.RuntimeGenerationID, "network_execute", payload.Code, payload.InternalError, map[string]any{
+			"plugin_instance_id": req.PluginInstanceID,
+			"connector_id":       req.ConnectorID,
+			"transport":          req.Transport,
+			"operation":          req.Operation,
+		})
+	}
 	if payload.OK {
 		payload.GrantID = grant.GrantID
 		payload.ConnectorID = grant.ConnectorID
@@ -2734,12 +3036,7 @@ func (s *ProcessSupervisor) mintGrantForNetworkExecute(ctx context.Context, req 
 }
 
 func (s *ProcessSupervisor) writeNetworkExecuteResponse(stdin io.Writer, runtimeGenerationID string, requestID string, payload networkExecuteResponsePayload) error {
-	if !payload.OK {
-		payload.ErrorOrigin = WorkerErrorOriginHostcall
-	}
-	raw, err := marshalBoundedBrokerPayload(payload, networkExecuteResponsePayload{
-		OK: false, Code: "NETWORK_RESPONSE_TOO_LARGE", Message: "network response exceeds the WASM hostcall limit", ErrorOrigin: WorkerErrorOriginHostcall,
-	})
+	raw, err := marshalBoundedHostcallPayload(payload.OK, payload, payload.Code, payload.Message, "NETWORK_RESPONSE_TOO_LARGE", "network response exceeds the WASM hostcall limit")
 	if err != nil {
 		return err
 	}
@@ -2831,6 +3128,7 @@ func validateNetworkExecuteRequest(req networkExecuteRequestPayload, runtimeGene
 				strings.TrimSpace(req.SurfaceInstanceID) == "" ||
 				strings.TrimSpace(req.OwnerSessionHash) == "" ||
 				strings.TrimSpace(req.OwnerUserHash) == "" ||
+				strings.TrimSpace(req.OwnerEnvHash) == "" ||
 				strings.TrimSpace(req.SessionChannelIDHash) == "" ||
 				strings.TrimSpace(req.BridgeChannelID) == "" {
 				return errors.New("http_stream network execution requires plugin and stream audience fields")
@@ -2863,7 +3161,7 @@ func dispatchNetworkExecute(ctx context.Context, executor connectivity.NetworkEx
 	case connectivity.TransportHTTP:
 		body, err := decodeOptionalBase64(req.BodyBase64)
 		if err != nil {
-			return networkExecuteResponsePayload{OK: false, Code: "NETWORK_EXECUTE_REQUEST_INVALID", Message: err.Error()}
+			return networkExecuteResponsePayload{OK: false, Code: "NETWORK_EXECUTE_REQUEST_INVALID", Message: "network execute request is invalid"}
 		}
 		if strings.TrimSpace(req.Operation) == "http_stream" {
 			if streamSink == nil {
@@ -2873,7 +3171,7 @@ func dispatchNetworkExecute(ctx context.Context, executor connectivity.NetworkEx
 		}
 		maxResponseBytes, err := boundedSynchronousBrokerPayloadBytes(req.MaxResponseBytes)
 		if err != nil {
-			return networkExecuteResponsePayload{OK: false, Code: "NETWORK_EXECUTE_REQUEST_INVALID", Message: err.Error()}
+			return networkExecuteResponsePayload{OK: false, Code: "NETWORK_EXECUTE_REQUEST_INVALID", Message: "network execute request is invalid"}
 		}
 		result, err := executor.DoHTTP(ctx, connectivity.HTTPRequest{
 			Grant:            grant,
@@ -2894,11 +3192,11 @@ func dispatchNetworkExecute(ctx context.Context, executor connectivity.NetworkEx
 	case connectivity.TransportWebSocket:
 		payload, err := decodeOptionalBase64(req.PayloadBase64)
 		if err != nil {
-			return networkExecuteResponsePayload{OK: false, Code: "NETWORK_EXECUTE_REQUEST_INVALID", Message: err.Error()}
+			return networkExecuteResponsePayload{OK: false, Code: "NETWORK_EXECUTE_REQUEST_INVALID", Message: "network execute request is invalid"}
 		}
 		maxResponseBytes, err := boundedSynchronousBrokerPayloadBytes(req.MaxResponseBytes)
 		if err != nil {
-			return networkExecuteResponsePayload{OK: false, Code: "NETWORK_EXECUTE_REQUEST_INVALID", Message: err.Error()}
+			return networkExecuteResponsePayload{OK: false, Code: "NETWORK_EXECUTE_REQUEST_INVALID", Message: "network execute request is invalid"}
 		}
 		result, err := executor.WebSocketRoundTrip(ctx, connectivity.WebSocketRoundTripRequest{
 			Grant:            grant,
@@ -2918,11 +3216,11 @@ func dispatchNetworkExecute(ctx context.Context, executor connectivity.NetworkEx
 	case connectivity.TransportTCP:
 		payload, err := decodeOptionalBase64(req.PayloadBase64)
 		if err != nil {
-			return networkExecuteResponsePayload{OK: false, Code: "NETWORK_EXECUTE_REQUEST_INVALID", Message: err.Error()}
+			return networkExecuteResponsePayload{OK: false, Code: "NETWORK_EXECUTE_REQUEST_INVALID", Message: "network execute request is invalid"}
 		}
 		maxResponseBytes, err := boundedSynchronousBrokerPayloadBytes(req.MaxResponseBytes)
 		if err != nil {
-			return networkExecuteResponsePayload{OK: false, Code: "NETWORK_EXECUTE_REQUEST_INVALID", Message: err.Error()}
+			return networkExecuteResponsePayload{OK: false, Code: "NETWORK_EXECUTE_REQUEST_INVALID", Message: "network execute request is invalid"}
 		}
 		result, err := executor.TCPRoundTrip(ctx, connectivity.TCPRoundTripRequest{
 			Grant:           grant,
@@ -2939,11 +3237,11 @@ func dispatchNetworkExecute(ctx context.Context, executor connectivity.NetworkEx
 	case connectivity.TransportUDP:
 		payload, err := decodeOptionalBase64(req.PayloadBase64)
 		if err != nil {
-			return networkExecuteResponsePayload{OK: false, Code: "NETWORK_EXECUTE_REQUEST_INVALID", Message: err.Error()}
+			return networkExecuteResponsePayload{OK: false, Code: "NETWORK_EXECUTE_REQUEST_INVALID", Message: "network execute request is invalid"}
 		}
 		maxResponseBytes, err := boundedSynchronousBrokerPayloadBytes(req.MaxResponseBytes)
 		if err != nil {
-			return networkExecuteResponsePayload{OK: false, Code: "NETWORK_EXECUTE_REQUEST_INVALID", Message: err.Error()}
+			return networkExecuteResponsePayload{OK: false, Code: "NETWORK_EXECUTE_REQUEST_INVALID", Message: "network execute request is invalid"}
 		}
 		result, err := executor.UDPRoundTrip(ctx, connectivity.UDPRoundTripRequest{
 			Grant:        grant,
@@ -2982,8 +3280,9 @@ func dispatchHTTPStreamExecute(ctx context.Context, executor connectivity.Networ
 		return streamSink.AppendRuntimeStream(ctx, streamID, "data", chunk.Data)
 	})
 	if err != nil {
-		_ = streamSink.FailRuntimeStream(ctx, streamID, err.Error())
-		return networkExecuteErrorResponse(err)
+		response := networkExecuteErrorResponse(err)
+		_ = streamSink.FailRuntimeStream(ctx, streamID, capability.ExecutionFailurePlatformFailed, err)
+		return response
 	}
 	if err := streamSink.CloseRuntimeStream(ctx, streamID); err != nil {
 		return networkExecuteErrorResponse(err)
@@ -3036,46 +3335,46 @@ func decodeOptionalBase64(value string) ([]byte, error) {
 func networkGrantErrorResponse(err error) networkGrantResponsePayload {
 	switch {
 	case errors.Is(err, connectivity.ErrInvalidConnector):
-		return networkGrantResponsePayload{OK: false, Code: "NETWORK_GRANT_REQUEST_INVALID", Message: err.Error()}
+		return networkGrantResponsePayload{OK: false, Code: "NETWORK_GRANT_REQUEST_INVALID", Message: "network grant request is invalid", InternalError: err}
 	case errors.Is(err, connectivity.ErrTargetDenied):
-		return networkGrantResponsePayload{OK: false, Code: "NETWORK_TARGET_DENIED", Message: err.Error()}
+		return networkGrantResponsePayload{OK: false, Code: "NETWORK_TARGET_DENIED", Message: "network target was denied", InternalError: err}
 	case errors.Is(err, connectivity.ErrConnectorDenied):
-		return networkGrantResponsePayload{OK: false, Code: "NETWORK_CONNECTOR_DENIED", Message: err.Error()}
+		return networkGrantResponsePayload{OK: false, Code: "NETWORK_CONNECTOR_DENIED", Message: "network connector was denied", InternalError: err}
 	default:
-		return networkGrantResponsePayload{OK: false, Code: "NETWORK_GRANT_FAILED", Message: err.Error()}
+		return networkGrantResponsePayload{OK: false, Code: "NETWORK_GRANT_FAILED", Message: "network grant operation failed", InternalError: err}
 	}
 }
 
 func networkExecuteErrorResponse(err error) networkExecuteResponsePayload {
 	switch {
 	case errors.Is(err, connectivity.ErrInvalidConnector):
-		return networkExecuteResponsePayload{OK: false, Code: "NETWORK_EXECUTE_REQUEST_INVALID", Message: err.Error()}
+		return networkExecuteResponsePayload{OK: false, Code: "NETWORK_EXECUTE_REQUEST_INVALID", Message: "network execute request is invalid", InternalError: err}
 	case errors.Is(err, connectivity.ErrTargetDenied):
-		return networkExecuteResponsePayload{OK: false, Code: "NETWORK_TARGET_DENIED", Message: err.Error()}
+		return networkExecuteResponsePayload{OK: false, Code: "NETWORK_TARGET_DENIED", Message: "network target was denied", InternalError: err}
 	case errors.Is(err, connectivity.ErrConnectorDenied):
-		return networkExecuteResponsePayload{OK: false, Code: "NETWORK_CONNECTOR_DENIED", Message: err.Error()}
+		return networkExecuteResponsePayload{OK: false, Code: "NETWORK_CONNECTOR_DENIED", Message: "network connector was denied", InternalError: err}
 	case errors.Is(err, connectivity.ErrGrantExpired):
-		return networkExecuteResponsePayload{OK: false, Code: "NETWORK_GRANT_EXPIRED", Message: err.Error()}
+		return networkExecuteResponsePayload{OK: false, Code: "NETWORK_GRANT_EXPIRED", Message: "network grant has expired", InternalError: err}
 	case errors.Is(err, connectivity.ErrRequestTooLarge):
-		return networkExecuteResponsePayload{OK: false, Code: "NETWORK_REQUEST_TOO_LARGE", Message: err.Error()}
+		return networkExecuteResponsePayload{OK: false, Code: "NETWORK_REQUEST_TOO_LARGE", Message: "network request is too large", InternalError: err}
 	case errors.Is(err, connectivity.ErrResponseTooLarge):
-		return networkExecuteResponsePayload{OK: false, Code: "NETWORK_RESPONSE_TOO_LARGE", Message: err.Error()}
+		return networkExecuteResponsePayload{OK: false, Code: "NETWORK_RESPONSE_TOO_LARGE", Message: "network response is too large", InternalError: err}
 	case errors.Is(err, connectivity.ErrRateLimited):
-		return networkExecuteResponsePayload{OK: false, Code: "NETWORK_RATE_LIMITED", Message: err.Error()}
+		return networkExecuteResponsePayload{OK: false, Code: "NETWORK_RATE_LIMITED", Message: "network request was rate limited", InternalError: err}
 	case errors.Is(err, connectivity.ErrConnectionClosed):
-		return networkExecuteResponsePayload{OK: false, Code: "NETWORK_CONNECTION_CLOSED", Message: err.Error()}
+		return networkExecuteResponsePayload{OK: false, Code: "NETWORK_CONNECTION_CLOSED", Message: "network connection was closed", InternalError: err}
 	case errors.Is(err, connectivity.ErrWebSocketFailed):
-		return networkExecuteResponsePayload{OK: false, Code: "NETWORK_WEBSOCKET_FAILED", Message: err.Error()}
+		return networkExecuteResponsePayload{OK: false, Code: "NETWORK_WEBSOCKET_FAILED", Message: "network websocket operation failed", InternalError: err}
 	case errors.Is(err, stream.ErrBackpressure):
-		return networkExecuteResponsePayload{OK: false, Code: "NETWORK_STREAM_BACKPRESSURE", Message: err.Error()}
+		return networkExecuteResponsePayload{OK: false, Code: "NETWORK_STREAM_BACKPRESSURE", Message: "network stream is backpressured", InternalError: err}
 	case errors.Is(err, stream.ErrInvalidStream):
-		return networkExecuteResponsePayload{OK: false, Code: "NETWORK_STREAM_INVALID", Message: err.Error()}
+		return networkExecuteResponsePayload{OK: false, Code: "NETWORK_STREAM_INVALID", Message: "network stream is invalid", InternalError: err}
 	case errors.Is(err, stream.ErrNotFound):
-		return networkExecuteResponsePayload{OK: false, Code: "NETWORK_STREAM_NOT_FOUND", Message: err.Error()}
+		return networkExecuteResponsePayload{OK: false, Code: "NETWORK_STREAM_NOT_FOUND", Message: "network stream was not found", InternalError: err}
 	case errors.Is(err, stream.ErrStreamClosed):
-		return networkExecuteResponsePayload{OK: false, Code: "NETWORK_STREAM_CLOSED", Message: err.Error()}
+		return networkExecuteResponsePayload{OK: false, Code: "NETWORK_STREAM_CLOSED", Message: "network stream is closed", InternalError: err}
 	default:
-		return networkExecuteResponsePayload{OK: false, Code: "NETWORK_EXECUTE_FAILED", Message: err.Error()}
+		return networkExecuteResponsePayload{OK: false, Code: "NETWORK_EXECUTE_FAILED", Message: "network execute operation failed", InternalError: err}
 	}
 }
 
@@ -3086,30 +3385,121 @@ func allowedArtifactRequest(invocation *workerInvocationContext) *ArtifactReques
 	return &invocation.Artifact
 }
 
-func workerInvocationContextFromInvocation(invocation json.RawMessage) (workerInvocationContext, error) {
-	artifact, err := artifactRequestFromInvocation(invocation)
-	if err != nil {
-		return workerInvocationContext{}, err
-	}
+func (identity workerInvocationIdentity) matchesRuntimeHostcall(
+	pluginInstanceID string,
+	activeFingerprint string,
+	runtimeInstanceID string,
+	runtimeGenerationID string,
+	runtimeShardID string,
+	policyRevision uint64,
+	managementRevision uint64,
+	revokeEpoch uint64,
+) bool {
+	return pluginInstanceID == identity.PluginInstanceID &&
+		activeFingerprint == identity.ActiveFingerprint &&
+		runtimeInstanceID == identity.RuntimeInstanceID &&
+		runtimeGenerationID == identity.RuntimeGenerationID &&
+		runtimeShardID == identity.RuntimeShardID &&
+		policyRevision == identity.PolicyRevision &&
+		managementRevision == identity.ManagementRevision &&
+		revokeEpoch == identity.RevokeEpoch
+}
+
+func (identity workerInvocationIdentity) matchesNetworkExecute(req networkExecuteRequestPayload) bool {
+	return identity.matchesRuntimeHostcall(
+		req.PluginInstanceID,
+		req.ActiveFingerprint,
+		req.RuntimeInstanceID,
+		req.RuntimeGenerationID,
+		req.RuntimeShardID,
+		req.PolicyRevision,
+		req.ManagementRevision,
+		req.RevokeEpoch,
+	) &&
+		req.PluginID == identity.PluginID &&
+		req.OwnerSessionHash == identity.OwnerSessionHash &&
+		req.OwnerUserHash == identity.OwnerUserHash &&
+		req.OwnerEnvHash == identity.OwnerEnvHash &&
+		req.SessionChannelIDHash == identity.SessionChannelIDHash
+}
+
+func workerInvocationContextFromInvocation(lease Lease, invocation json.RawMessage) (workerInvocationContext, error) {
 	var envelope struct {
-		BrokerAccess       json.RawMessage `json:"broker_access"`
-		BrokerAccessSHA256 string          `json:"broker_access_sha256"`
+		PluginID             string          `json:"plugin_id"`
+		PluginInstanceID     string          `json:"plugin_instance_id"`
+		ActiveFingerprint    string          `json:"active_fingerprint"`
+		RuntimeInstanceID    string          `json:"runtime_instance_id"`
+		RuntimeGenerationID  string          `json:"runtime_generation_id"`
+		PackageHash          string          `json:"package_hash"`
+		Artifact             string          `json:"artifact"`
+		ArtifactSHA256       string          `json:"artifact_sha256"`
+		Method               string          `json:"method"`
+		Effect               string          `json:"effect"`
+		Execution            string          `json:"execution"`
+		SurfaceInstanceID    string          `json:"surface_instance_id"`
+		OwnerSessionHash     string          `json:"owner_session_hash"`
+		OwnerUserHash        string          `json:"owner_user_hash"`
+		OwnerEnvHash         string          `json:"owner_env_hash"`
+		SessionChannelIDHash string          `json:"session_channel_id_hash"`
+		BridgeChannelID      string          `json:"bridge_channel_id"`
+		OperationID          string          `json:"operation_id"`
+		StreamID             string          `json:"stream_id"`
+		AuditCorrelationID   string          `json:"audit_correlation_id"`
+		BrokerAccess         json.RawMessage `json:"broker_access"`
+		BrokerAccessSHA256   string          `json:"broker_access_sha256"`
 	}
 	if err := json.Unmarshal(invocation, &envelope); err != nil {
-		return workerInvocationContext{}, fmt.Errorf("%w: decode worker broker access: %v", ErrRuntimeRequestFailed, err)
+		return workerInvocationContext{}, fmt.Errorf("%w: decode worker invocation context: %v", ErrRuntimeRequestFailed, err)
+	}
+	bindings := []struct {
+		name       string
+		lease      string
+		invocation string
+	}{
+		{name: "plugin_id", lease: lease.PluginID, invocation: envelope.PluginID},
+		{name: "plugin_instance_id", lease: lease.PluginInstanceID, invocation: envelope.PluginInstanceID},
+		{name: "active_fingerprint", lease: lease.ActiveFingerprint, invocation: envelope.ActiveFingerprint},
+		{name: "runtime_instance_id", lease: lease.RuntimeInstanceID, invocation: envelope.RuntimeInstanceID},
+		{name: "runtime_generation_id", lease: lease.RuntimeGenerationID, invocation: envelope.RuntimeGenerationID},
+		{name: "method", lease: lease.Method, invocation: envelope.Method},
+		{name: "effect", lease: lease.Effect, invocation: envelope.Effect},
+		{name: "execution", lease: lease.Execution, invocation: envelope.Execution},
+		{name: "surface_instance_id", lease: lease.SurfaceInstanceID, invocation: envelope.SurfaceInstanceID},
+		{name: "owner_session_hash", lease: lease.OwnerSessionHash, invocation: envelope.OwnerSessionHash},
+		{name: "owner_user_hash", lease: lease.OwnerUserHash, invocation: envelope.OwnerUserHash},
+		{name: "owner_env_hash", lease: lease.OwnerEnvHash, invocation: envelope.OwnerEnvHash},
+		{name: "session_channel_id_hash", lease: lease.SessionChannelIDHash, invocation: envelope.SessionChannelIDHash},
+		{name: "bridge_channel_id", lease: lease.BridgeChannelID, invocation: envelope.BridgeChannelID},
+		{name: "operation_id", lease: lease.OperationID, invocation: envelope.OperationID},
+		{name: "stream_id", lease: lease.StreamID, invocation: envelope.StreamID},
+		{name: "audit_correlation_id", lease: lease.AuditCorrelationID, invocation: envelope.AuditCorrelationID},
+	}
+	for _, binding := range bindings {
+		expected := strings.TrimSpace(binding.lease)
+		if binding.invocation != expected || binding.invocation != strings.TrimSpace(binding.invocation) {
+			return workerInvocationContext{}, fmt.Errorf("%w: worker invocation %s does not match signed lease", ErrRuntimeRequestFailed, binding.name)
+		}
+	}
+	artifact := ArtifactRequest{
+		PackageHash:    strings.TrimSpace(envelope.PackageHash),
+		Artifact:       strings.TrimSpace(envelope.Artifact),
+		ArtifactSHA256: strings.TrimSpace(envelope.ArtifactSHA256),
+	}
+	if artifact.PackageHash == "" || artifact.Artifact == "" || artifact.ArtifactSHA256 == "" {
+		return workerInvocationContext{}, fmt.Errorf("%w: worker invocation must include package_hash, artifact, and artifact_sha256", ErrRuntimeRequestFailed)
+	}
+	if !isSHA256Ref(artifact.PackageHash) || !isSHA256Ref(artifact.ArtifactSHA256) {
+		return workerInvocationContext{}, fmt.Errorf("%w: worker invocation artifact hashes must use sha256:<hex>", ErrRuntimeRequestFailed)
+	}
+	if !isWorkerArtifactPath(artifact.Artifact) {
+		return workerInvocationContext{}, fmt.Errorf("%w: worker invocation artifact path is invalid", ErrRuntimeRequestFailed)
 	}
 	if len(envelope.BrokerAccess) == 0 || !isSHA256Ref(envelope.BrokerAccessSHA256) {
 		return workerInvocationContext{}, fmt.Errorf("%w: worker invocation must include broker_access and broker_access_sha256", ErrRuntimeRequestFailed)
 	}
 	var access workerBrokerAccess
-	decoder := json.NewDecoder(bytes.NewReader(envelope.BrokerAccess))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&access); err != nil {
+	if err := decodeStrictJSON(envelope.BrokerAccess, &access); err != nil {
 		return workerInvocationContext{}, fmt.Errorf("%w: decode worker broker access contract: %v", ErrRuntimeRequestFailed, err)
-	}
-	var trailing any
-	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
-		return workerInvocationContext{}, fmt.Errorf("%w: worker broker access contains trailing JSON", ErrRuntimeRequestFailed)
 	}
 	canonical, err := json.Marshal(access)
 	if err != nil {
@@ -3120,7 +3510,25 @@ func workerInvocationContextFromInvocation(invocation json.RawMessage) (workerIn
 	if envelope.BrokerAccessSHA256 != wantHash {
 		return workerInvocationContext{}, fmt.Errorf("%w: worker broker access hash mismatch", ErrRuntimeRequestFailed)
 	}
-	return workerInvocationContext{Artifact: artifact, BrokerAccess: access}, nil
+	return workerInvocationContext{
+		Artifact:     artifact,
+		BrokerAccess: access,
+		identity: workerInvocationIdentity{
+			PluginID:             strings.TrimSpace(lease.PluginID),
+			PluginInstanceID:     strings.TrimSpace(lease.PluginInstanceID),
+			ActiveFingerprint:    strings.TrimSpace(lease.ActiveFingerprint),
+			PolicyRevision:       lease.PolicyRevision,
+			ManagementRevision:   lease.ManagementRevision,
+			RevokeEpoch:          lease.RevokeEpoch,
+			RuntimeShardID:       strings.TrimSpace(lease.RuntimeShardID),
+			RuntimeInstanceID:    strings.TrimSpace(lease.RuntimeInstanceID),
+			RuntimeGenerationID:  strings.TrimSpace(lease.RuntimeGenerationID),
+			OwnerSessionHash:     strings.TrimSpace(lease.OwnerSessionHash),
+			OwnerUserHash:        strings.TrimSpace(lease.OwnerUserHash),
+			OwnerEnvHash:         strings.TrimSpace(lease.OwnerEnvHash),
+			SessionChannelIDHash: strings.TrimSpace(lease.SessionChannelIDHash),
+		},
+	}, nil
 }
 
 func (access workerBrokerAccess) allowsStorage(storeID string, operation string) bool {
@@ -3163,35 +3571,6 @@ func stringSliceContains(values []string, value string) bool {
 	return false
 }
 
-func artifactRequestFromInvocation(invocation json.RawMessage) (ArtifactRequest, error) {
-	var payload struct {
-		PackageHash    string `json:"package_hash"`
-		Artifact       string `json:"artifact"`
-		ArtifactSHA256 string `json:"artifact_sha256"`
-	}
-	if len(invocation) == 0 {
-		return ArtifactRequest{}, fmt.Errorf("%w: worker invocation payload is required", ErrRuntimeRequestFailed)
-	}
-	if err := json.Unmarshal(invocation, &payload); err != nil {
-		return ArtifactRequest{}, fmt.Errorf("%w: decode worker invocation identity: %v", ErrRuntimeRequestFailed, err)
-	}
-	req := ArtifactRequest{
-		PackageHash:    strings.TrimSpace(payload.PackageHash),
-		Artifact:       strings.TrimSpace(payload.Artifact),
-		ArtifactSHA256: strings.TrimSpace(payload.ArtifactSHA256),
-	}
-	if req.PackageHash == "" || req.Artifact == "" || req.ArtifactSHA256 == "" {
-		return ArtifactRequest{}, fmt.Errorf("%w: worker invocation must include package_hash, artifact, and artifact_sha256", ErrRuntimeRequestFailed)
-	}
-	if !isSHA256Ref(req.PackageHash) || !isSHA256Ref(req.ArtifactSHA256) {
-		return ArtifactRequest{}, fmt.Errorf("%w: worker invocation artifact hashes must use sha256:<hex>", ErrRuntimeRequestFailed)
-	}
-	if !isWorkerArtifactPath(req.Artifact) {
-		return ArtifactRequest{}, fmt.Errorf("%w: worker invocation artifact path is invalid", ErrRuntimeRequestFailed)
-	}
-	return req, nil
-}
-
 func artifactRequestMatches(got ArtifactRequest, want ArtifactRequest) bool {
 	return strings.TrimSpace(got.PackageHash) == strings.TrimSpace(want.PackageHash) &&
 		strings.TrimSpace(got.Artifact) == strings.TrimSpace(want.Artifact) &&
@@ -3232,7 +3611,7 @@ func readIPCFrame(reader *bufio.Reader) (ipcFrame, error) {
 		return ipcFrame{}, err
 	}
 	var frame ipcFrame
-	if err := json.Unmarshal(line, &frame); err != nil {
+	if err := decodeStrictJSON(line, &frame); err != nil {
 		return ipcFrame{}, err
 	}
 	return frame, nil
@@ -3260,15 +3639,168 @@ func readBoundedIPCLine(reader *bufio.Reader, maxBytes int) ([]byte, error) {
 	}
 }
 
-func marshalBoundedBrokerPayload(payload any, oversizedPayload any) ([]byte, error) {
-	raw, err := json.Marshal(payload)
+func marshalHostcallPayload(ok bool, successPayload any, code string, message string) ([]byte, error) {
+	if ok {
+		return json.Marshal(successPayload)
+	}
+	return json.Marshal(hostcallFailurePayload{
+		OK:          false,
+		Code:        code,
+		Message:     message,
+		ErrorOrigin: WorkerErrorOriginHostcall,
+	})
+}
+
+func marshalStorageFileHostcallPayload(payload storageFileResponsePayload) ([]byte, error) {
+	if !payload.OK {
+		return marshalHostcallPayload(false, nil, payload.Code, payload.Message)
+	}
+	if payload.Usage != nil && !validStorageUsage(*payload.Usage) {
+		return nil, errors.New("storage file success response has invalid usage")
+	}
+	switch payload.Operation {
+	case "read":
+		if payload.Usage == nil || payload.SizeBytes < 0 || payload.Entries != nil {
+			return nil, errors.New("storage file read success response violates its closed contract")
+		}
+		return json.Marshal(storageFileReadSuccessPayload{
+			OK: true, Path: payload.Path, DataBase64: payload.DataBase64,
+			SizeBytes: payload.SizeBytes, Usage: *payload.Usage,
+		})
+	case "write":
+		if payload.Usage == nil || payload.SizeBytes < 0 || payload.DataBase64 != "" || payload.Entries != nil {
+			return nil, errors.New("storage file write success response violates its closed contract")
+		}
+		return json.Marshal(storageFileWriteSuccessPayload{
+			OK: true, Path: payload.Path, SizeBytes: payload.SizeBytes, Usage: *payload.Usage,
+		})
+	case "delete":
+		if payload.DataBase64 != "" || payload.SizeBytes != 0 || payload.Entries != nil || payload.Usage != nil {
+			return nil, errors.New("storage file delete success response violates its closed contract")
+		}
+		return json.Marshal(storageFileDeleteSuccessPayload{OK: true, Path: payload.Path})
+	case "list":
+		if payload.Usage == nil || payload.DataBase64 != "" || payload.SizeBytes != 0 {
+			return nil, errors.New("storage file list success response violates its closed contract")
+		}
+		entries := payload.Entries
+		if entries == nil {
+			entries = []storage.FileEntry{}
+		}
+		return json.Marshal(storageFileListSuccessPayload{
+			OK: true, Path: payload.Path, Entries: entries, Usage: *payload.Usage,
+		})
+	default:
+		return nil, errors.New("storage file success response operation is invalid")
+	}
+}
+
+func marshalStorageKVHostcallPayload(payload storageKVResponsePayload) ([]byte, error) {
+	if !payload.OK {
+		return marshalHostcallPayload(false, nil, payload.Code, payload.Message)
+	}
+	if payload.Usage != nil && !validStorageUsage(*payload.Usage) {
+		return nil, errors.New("storage KV success response has invalid usage")
+	}
+	switch payload.Operation {
+	case "get":
+		if payload.Usage == nil || payload.SizeBytes < 0 || payload.Prefix != "" || payload.Entries != nil {
+			return nil, errors.New("storage KV get success response violates its closed contract")
+		}
+		return json.Marshal(storageKVGetSuccessPayload{
+			OK: true, Key: payload.Key, ValueBase64: payload.ValueBase64,
+			SizeBytes: payload.SizeBytes, Usage: *payload.Usage,
+		})
+	case "put":
+		if payload.Usage == nil || payload.SizeBytes < 0 || payload.ValueBase64 != "" || payload.Prefix != "" || payload.Entries != nil {
+			return nil, errors.New("storage KV put success response violates its closed contract")
+		}
+		return json.Marshal(storageKVPutSuccessPayload{
+			OK: true, Key: payload.Key, SizeBytes: payload.SizeBytes, Usage: *payload.Usage,
+		})
+	case "delete":
+		if payload.ValueBase64 != "" || payload.SizeBytes != 0 || payload.Prefix != "" || payload.Entries != nil || payload.Usage != nil {
+			return nil, errors.New("storage KV delete success response violates its closed contract")
+		}
+		return json.Marshal(storageKVDeleteSuccessPayload{OK: true, Key: payload.Key})
+	case "list":
+		if payload.Usage == nil || payload.Key != "" || payload.ValueBase64 != "" || payload.SizeBytes != 0 {
+			return nil, errors.New("storage KV list success response violates its closed contract")
+		}
+		entries := payload.Entries
+		if entries == nil {
+			entries = []storage.KVEntry{}
+		}
+		return json.Marshal(storageKVListSuccessPayload{
+			OK: true, Prefix: payload.Prefix, Entries: entries, Usage: *payload.Usage,
+		})
+	default:
+		return nil, errors.New("storage KV success response operation is invalid")
+	}
+}
+
+func marshalStorageSQLiteHostcallPayload(payload storageSQLiteResponsePayload) ([]byte, error) {
+	if !payload.OK {
+		return marshalHostcallPayload(false, nil, payload.Code, payload.Message)
+	}
+	if payload.Usage == nil || !validStorageUsage(*payload.Usage) {
+		return nil, errors.New("storage SQLite success response has invalid usage")
+	}
+	switch payload.Operation {
+	case "exec":
+		if payload.RowsAffected == nil || *payload.RowsAffected < 0 || payload.LastInsertID < 0 || payload.Columns != nil || payload.Rows != nil {
+			return nil, errors.New("storage SQLite exec success response violates its closed contract")
+		}
+		return json.Marshal(storageSQLiteExecSuccessPayload{
+			OK: true, Database: payload.Database, RowsAffected: *payload.RowsAffected,
+			LastInsertID: payload.LastInsertID, Usage: *payload.Usage,
+		})
+	case "query":
+		if payload.RowsAffected != nil || payload.LastInsertID != 0 || payload.Columns == nil || payload.Rows == nil {
+			return nil, errors.New("storage SQLite query success response violates its closed contract")
+		}
+		columns := *payload.Columns
+		if columns == nil {
+			columns = []string{}
+		}
+		rows := *payload.Rows
+		if rows == nil {
+			rows = [][]storageSQLiteValueIPC{}
+		}
+		for _, row := range rows {
+			for _, value := range row {
+				if !validStorageSQLiteValueIPC(value) {
+					return nil, errors.New("storage SQLite query success response contains an invalid typed value")
+				}
+			}
+		}
+		return json.Marshal(storageSQLiteQuerySuccessPayload{
+			OK: true, Database: payload.Database, Columns: columns, Rows: rows, Usage: *payload.Usage,
+		})
+	default:
+		return nil, errors.New("storage SQLite success response operation is invalid")
+	}
+}
+
+func validStorageUsage(usage storage.Usage) bool {
+	return strings.TrimSpace(usage.PluginInstanceID) != "" &&
+		strings.TrimSpace(usage.StoreID) != "" &&
+		usage.UsageBytes >= 0 && usage.QuotaBytes >= 0 && usage.UsageFiles >= 0 && usage.QuotaFiles >= 0
+}
+
+func marshalBoundedHostcallPayload(ok bool, successPayload any, code string, message string, oversizedCode string, oversizedMessage string) ([]byte, error) {
+	raw, err := marshalHostcallPayload(ok, successPayload, code, message)
 	if err != nil {
 		return nil, err
 	}
+	return boundHostcallPayload(raw, oversizedCode, oversizedMessage)
+}
+
+func boundHostcallPayload(raw []byte, oversizedCode string, oversizedMessage string) ([]byte, error) {
 	if len(raw) <= maxWASMHostcallResponseBytes {
 		return raw, nil
 	}
-	raw, err = json.Marshal(oversizedPayload)
+	raw, err := marshalHostcallPayload(false, nil, oversizedCode, oversizedMessage)
 	if err != nil {
 		return nil, err
 	}
@@ -3305,14 +3837,238 @@ func validateIPCResponse(requestID string, runtimeGenerationID string, responseF
 }
 
 func decodeRuntimeResponse(frame ipcFrame) (runtimeResponsePayload, error) {
-	var payload runtimeResponsePayload
 	if len(frame.Payload) == 0 {
 		return runtimeResponsePayload{}, fmt.Errorf("%w: missing response payload", ErrRuntimeIPCUnavailable)
 	}
-	if err := json.Unmarshal(frame.Payload, &payload); err != nil {
+	var wire struct {
+		OK          *bool              `json:"ok"`
+		Result      json.RawMessage    `json:"result"`
+		Code        *string            `json:"code"`
+		Message     *string            `json:"message"`
+		ErrorOrigin *WorkerErrorOrigin `json:"error_origin"`
+	}
+	if err := decodeStrictJSON(frame.Payload, &wire); err != nil {
 		return runtimeResponsePayload{}, fmt.Errorf("%w: decode response payload: %v", ErrRuntimeIPCUnavailable, err)
 	}
-	return payload, nil
+	if wire.OK == nil {
+		return runtimeResponsePayload{}, fmt.Errorf("%w: response payload is missing ok", ErrRuntimeIPCUnavailable)
+	}
+	if *wire.OK {
+		if len(wire.Result) == 0 || wire.Code != nil || wire.Message != nil || wire.ErrorOrigin != nil {
+			return runtimeResponsePayload{}, fmt.Errorf("%w: success response payload must contain only ok and result", ErrRuntimeIPCUnavailable)
+		}
+		return runtimeResponsePayload{OK: true, Result: append(json.RawMessage(nil), wire.Result...)}, nil
+	}
+	if len(wire.Result) != 0 || wire.Code == nil || wire.Message == nil || wire.ErrorOrigin == nil ||
+		strings.TrimSpace(*wire.Code) == "" || strings.TrimSpace(*wire.Message) == "" || !wire.ErrorOrigin.valid() {
+		return runtimeResponsePayload{}, fmt.Errorf("%w: failure response payload must contain only ok, code, message, and valid error_origin", ErrRuntimeIPCUnavailable)
+	}
+	return runtimeResponsePayload{
+		Code:        strings.TrimSpace(*wire.Code),
+		Message:     strings.TrimSpace(*wire.Message),
+		ErrorOrigin: *wire.ErrorOrigin,
+	}, nil
+}
+
+func decodeStrictJSON(raw []byte, target any) error {
+	if target == nil {
+		return errors.New("strict JSON target is required")
+	}
+	if err := validateJSONKeys(raw); err != nil {
+		return err
+	}
+	if err := validateStructKeyBindings(raw, reflect.TypeOf(target)); err != nil {
+		return err
+	}
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(target); err != nil {
+		return err
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		if err == nil {
+			return errors.New("JSON contains a trailing value")
+		}
+		return err
+	}
+	return nil
+}
+
+func validateJSONKeys(raw []byte) error {
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
+	var walkValue func() error
+	walkValue = func() error {
+		token, err := decoder.Token()
+		if err != nil {
+			return err
+		}
+		delim, ok := token.(json.Delim)
+		if !ok {
+			return nil
+		}
+		switch delim {
+		case '{':
+			seen := make(map[string]struct{})
+			for decoder.More() {
+				keyToken, err := decoder.Token()
+				if err != nil {
+					return err
+				}
+				key, ok := keyToken.(string)
+				if !ok {
+					return errors.New("JSON object key is not a string")
+				}
+				if _, exists := seen[key]; exists {
+					return fmt.Errorf("duplicate JSON object key %q", key)
+				}
+				seen[key] = struct{}{}
+				if err := walkValue(); err != nil {
+					return err
+				}
+			}
+			closing, err := decoder.Token()
+			if err != nil {
+				return err
+			}
+			if closing != json.Delim('}') {
+				return errors.New("JSON object is not closed")
+			}
+		case '[':
+			for decoder.More() {
+				if err := walkValue(); err != nil {
+					return err
+				}
+			}
+			closing, err := decoder.Token()
+			if err != nil {
+				return err
+			}
+			if closing != json.Delim(']') {
+				return errors.New("JSON array is not closed")
+			}
+		default:
+			return fmt.Errorf("unexpected JSON delimiter %q", delim)
+		}
+		return nil
+	}
+	if err := walkValue(); err != nil {
+		return err
+	}
+	if _, err := decoder.Token(); !errors.Is(err, io.EOF) {
+		if err == nil {
+			return errors.New("JSON contains a trailing value")
+		}
+		return err
+	}
+	return nil
+}
+
+type strictJSONField struct {
+	name  string
+	type_ reflect.Type
+}
+
+func validateStructKeyBindings(raw []byte, targetType reflect.Type) error {
+	targetType = dereferenceJSONType(targetType)
+	if targetType == nil || targetType == reflect.TypeOf(json.RawMessage{}) {
+		return nil
+	}
+	switch targetType.Kind() {
+	case reflect.Struct:
+		var object map[string]json.RawMessage
+		if err := json.Unmarshal(raw, &object); err != nil {
+			return nil
+		}
+		fields := strictJSONStructFields(targetType)
+		seen := make(map[string]string)
+		for key, value := range object {
+			field, ok := strictJSONFieldForKey(fields, key)
+			if !ok {
+				continue
+			}
+			if field.name != key {
+				return fmt.Errorf("JSON object key %q must exactly match field %q", key, field.name)
+			}
+			if previous, exists := seen[field.name]; exists && previous != key {
+				return fmt.Errorf("JSON keys %q and %q both bind to struct field %q", previous, key, field.name)
+			}
+			seen[field.name] = key
+			if err := validateStructKeyBindings(value, field.type_); err != nil {
+				return err
+			}
+		}
+	case reflect.Map:
+		var object map[string]json.RawMessage
+		if err := json.Unmarshal(raw, &object); err != nil {
+			return nil
+		}
+		for _, value := range object {
+			if err := validateStructKeyBindings(value, targetType.Elem()); err != nil {
+				return err
+			}
+		}
+	case reflect.Slice, reflect.Array:
+		if targetType.Elem().Kind() == reflect.Uint8 {
+			return nil
+		}
+		var values []json.RawMessage
+		if err := json.Unmarshal(raw, &values); err != nil {
+			return nil
+		}
+		for _, value := range values {
+			if err := validateStructKeyBindings(value, targetType.Elem()); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func strictJSONStructFields(targetType reflect.Type) []strictJSONField {
+	fields := make([]strictJSONField, 0, targetType.NumField())
+	for index := 0; index < targetType.NumField(); index++ {
+		field := targetType.Field(index)
+		if field.PkgPath != "" {
+			continue
+		}
+		tag := field.Tag.Get("json")
+		name := strings.Split(tag, ",")[0]
+		if name == "-" {
+			continue
+		}
+		if field.Anonymous && name == "" {
+			fields = append(fields, strictJSONStructFields(dereferenceJSONType(field.Type))...)
+			continue
+		}
+		if name == "" {
+			name = field.Name
+		}
+		fields = append(fields, strictJSONField{name: name, type_: field.Type})
+	}
+	return fields
+}
+
+func strictJSONFieldForKey(fields []strictJSONField, key string) (strictJSONField, bool) {
+	for _, field := range fields {
+		if field.name == key {
+			return field, true
+		}
+	}
+	for _, field := range fields {
+		if strings.EqualFold(field.name, key) {
+			return field, true
+		}
+	}
+	return strictJSONField{}, false
+}
+
+func dereferenceJSONType(targetType reflect.Type) reflect.Type {
+	for targetType != nil && targetType.Kind() == reflect.Pointer {
+		targetType = targetType.Elem()
+	}
+	return targetType
 }
 
 func validateHelloAck(requestID string, runtimeGenerationID string, channelNonce string, frame ipcFrame) (helloAckPayload, error) {
@@ -3329,7 +4085,7 @@ func validateHelloAck(requestID string, runtimeGenerationID string, channelNonce
 		return helloAckPayload{}, fmt.Errorf("%w: runtime_generation_id %q", ErrRuntimeHandshake, frame.RuntimeGenerationID)
 	}
 	var ack helloAckPayload
-	if err := json.Unmarshal(frame.Payload, &ack); err != nil {
+	if err := decodeStrictJSON(frame.Payload, &ack); err != nil {
 		return helloAckPayload{}, fmt.Errorf("%w: decode payload: %v", ErrRuntimeHandshake, err)
 	}
 	if ack.RuntimeVersion == "" || ack.RustIPCVersion != version.RustIPCVersion || ack.WASMABIVersion != version.WASMABIVersion {

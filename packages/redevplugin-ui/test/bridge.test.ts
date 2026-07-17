@@ -6,14 +6,15 @@ import {
   pluginBridgeErrorCodes,
   pluginClientErrorCodes,
   pluginPlatformErrorCodes,
-  PluginBridgeError,
   PluginPlatformClient,
+  PluginPlatformRequestError,
   PluginSurfaceReloadLimiter,
   redevPluginContractArtifacts,
   toPluginSurfaceHostBootstrap,
   type FetchInitLike,
   type FetchResponseLike,
 } from "../src/trusted-parent.js";
+import { PluginTransportError } from "../src/errors.js";
 import { PluginLocalImportClient } from "../src/local-import.js";
 
 type FetchCall = {
@@ -23,25 +24,27 @@ type FetchCall = {
 
 class FakeFetch {
   readonly calls: FetchCall[] = [];
-  #responses: unknown[] = [];
+  #responses: Array<{ body: unknown; status: number }> = [];
 
-  push(response: unknown): void {
-    this.#responses.push(response);
+  push(response: unknown, status?: number): void {
+    const inferredStatus = typeof response === "object" && response !== null && "ok" in response && response.ok === false ? 400 : 200;
+    this.#responses.push({ body: response, status: status ?? inferredStatus });
   }
 
   fetch = async (input: string, init: FetchInitLike): Promise<FetchResponseLike> => {
     this.calls.push({ input, init });
-    const body = this.#responses.shift();
+    const response = this.#responses.shift() ?? { body: undefined, status: 500 };
     return {
-      ok: true,
-      status: 200,
-      json: async () => body,
+      ok: response.status >= 200 && response.status < 300,
+      status: response.status,
+      json: async () => response.body,
     };
   };
 }
 
 test("stable error-code exports separate platform, bridge, and client-only codes", () => {
   assert.equal(pluginPlatformErrorCodes.includes("PLUGIN_JSON_LIMIT_EXCEEDED"), true);
+  assert.equal(pluginPlatformErrorCodes.includes("PLUGIN_AUTHORIZATION_REVISION_MISMATCH"), true);
   assert.equal(pluginBridgeErrorCodes.includes("PLUGIN_BRIDGE_HANDSHAKE_REQUIRED"), true);
   assert.equal(pluginClientErrorCodes.includes("PLUGIN_PLATFORM_REQUEST_FAILED"), true);
   assert.equal((pluginPlatformErrorCodes as readonly string[]).includes("PLUGIN_PLATFORM_REQUEST_FAILED"), false);
@@ -194,7 +197,7 @@ test("platform client reads compatibility manifest through host API", async () =
         bridge_schema_version: "bridge-v4",
         opaque_surface_document_schema_version: "opaque-surface-document-v2",
         opaque_surface_transport_schema_version: "opaque-surface-transport-v3",
-        target_classifier_version: "target-classifier-v1",
+        target_classifier_version: "target-classifier-v2",
         network_grant_schema_version: "network-grant-v1",
         plugin_platform_openapi_version: "plugin-platform-v4",
         compatibility_schema_version: "compatibility-manifest-v4",
@@ -262,7 +265,7 @@ test("platform client reads and patches plugin settings through host API", async
       plugin_instance_id: "plugin_instance_1",
       schema_version: 1,
       fields: [{ key: "default_engine", type: "select", label: "Default engine", scope: "user", options: ["docker", "podman"] }],
-      settings_revision: 7,
+      values_revision: 7,
     },
   });
   fetch.push({
@@ -270,9 +273,9 @@ test("platform client reads and patches plugin settings through host API", async
     data: {
       plugin_instance_id: "plugin_instance_1",
       schema_version: 1,
-      settings_revision: 8,
+      values_revision: 8,
       values: { default_engine: "podman" },
-      updated_at: "2026-06-30T00:00:00Z",
+      secret_metadata: [{ secret_ref: "registry_token", scope: "user", bound: true, updated_at: "2026-06-30T00:00:00Z" }],
     },
   });
   const client = new PluginPlatformClient({
@@ -281,7 +284,11 @@ test("platform client reads and patches plugin settings through host API", async
   });
 
   const schema = await client.getSettingsSchema("plugin instance/1");
-  const patched = await client.patchSettings("plugin instance/1", { default_engine: "podman" });
+  const patched = await client.patchSettings("plugin instance/1", {
+    expected_values_revision: 7,
+    set: { default_engine: "podman" },
+    remove: ["unused_setting"],
+  });
 
   assert.equal(schema.fields[0]?.key, "default_engine");
   assert.equal(patched.values.default_engine, "podman");
@@ -293,7 +300,11 @@ test("platform client reads and patches plugin settings through host API", async
   assert.equal(fetch.calls[1]?.input, "https://host.example/_redevplugin/api/plugins/plugin%20instance%2F1/settings");
   assert.equal(fetch.calls[1]?.init.method, "PATCH");
   assert.equal(fetch.calls[1]?.init.headers["Content-Type"], "application/json");
-  assert.deepEqual(JSON.parse(fetch.calls[1]?.init.body ?? ""), { values: { default_engine: "podman" } });
+  assert.deepEqual(JSON.parse(fetch.calls[1]?.init.body ?? ""), {
+    expected_values_revision: 7,
+    set: { default_engine: "podman" },
+    remove: ["unused_setting"],
+  });
 });
 
 test("platform client manages plugin lifecycle and surface opening routes", async () => {
@@ -315,7 +326,7 @@ test("platform client manages plugin lifecycle and surface opening routes", asyn
       entry_path: "ui/index.html",
       entry_sha256: "sha256:b",
       asset_session_nonce: "asset_session_nonce_1",
-      plugin_state_version: 1,
+      management_revision: 1,
       revoke_epoch: 1,
       runtime_generation_id: "runtime_gen_1",
       asset_ticket: "asset_ticket_1",
@@ -325,25 +336,25 @@ test("platform client manages plugin lifecycle and surface opening routes", asyn
       expires_at: "2026-06-30T00:05:00Z",
     },
   });
-  fetch.push({ ok: true, data: { plugin_instance_id: "plugin_instance_1", plugin_id: "com.example.plugin", version: "1.0.0", active_fingerprint: "sha256:a", trust_state: "verified", enable_state: "disabled", retained_data_state: "deleted" } });
+  fetch.push({ ok: true, data: { plugin_instance_id: "plugin_instance_1", plugin_id: "com.example.plugin", version: "1.0.0", active_fingerprint: "sha256:a", trust_state: "verified", enable_state: "disabled" } });
   const client = new PluginPlatformClient({ fetch: fetch.fetch });
   const localImportClient = new PluginLocalImportClient({ fetch: fetch.fetch });
 
   assert.equal("importLocalPackage" in client, false);
   assert.equal("updateLocalPackage" in client, false);
 
-  const installed = await localImportClient.importLocalPackage({ package_base64: "cGtn", plugin_instance_id: "plugin_instance_1", plugin_state_version: 0 });
-  const updated = await localImportClient.updateLocalPackage({ plugin_instance_id: "plugin_instance_1", package_base64: "cGtnMg", plugin_state_version: 1 });
-  const downgraded = await client.downgradePlugin({ plugin_instance_id: "plugin_instance_1", version: "1.0.0", plugin_state_version: 2 });
-  const enabled = await client.enablePlugin({ plugin_instance_id: "plugin_instance_1", plugin_state_version: 3 });
-  const disabled = await client.disablePlugin({ plugin_instance_id: "plugin_instance_1", plugin_state_version: 4, reason: "admin" });
+  const installed = await localImportClient.importLocalPackage({ package_base64: "cGtn", plugin_instance_id: "plugin_instance_1" });
+  const updated = await localImportClient.updateLocalPackage({ plugin_instance_id: "plugin_instance_1", package_base64: "cGtnMg", expected_management_revision: 1 });
+  const downgraded = await client.downgradePlugin({ plugin_instance_id: "plugin_instance_1", version: "1.0.0", expected_management_revision: 2 });
+  const enabled = await client.enablePlugin({ plugin_instance_id: "plugin_instance_1", expected_management_revision: 3 });
+  const disabled = await client.disablePlugin({ plugin_instance_id: "plugin_instance_1", expected_management_revision: 4, reason: "admin" });
   const surface = await client.openSurface({
     plugin_instance_id: "plugin_instance_1",
     surface_id: "example.view",
     surface_instance_id: "surface_1",
-    plugin_state_version: 5,
+    expected_management_revision: 5,
   });
-  const uninstalled = await client.uninstallPlugin({ plugin_instance_id: "plugin_instance_1", plugin_state_version: 5, delete_data: true });
+  const uninstalled = await client.uninstallPlugin({ plugin_instance_id: "plugin_instance_1", expected_management_revision: 5, delete_data: true });
 
   assert.equal(installed.enable_state, "disabled");
   assert.equal(updated.version, "1.1.0");
@@ -352,26 +363,26 @@ test("platform client manages plugin lifecycle and surface opening routes", asyn
   assert.equal(disabled.disabled_reason, "admin");
   assert.equal(surface.asset_ticket, "asset_ticket_1");
   assert.equal(toPluginSurfaceHostBootstrap(surface).runtimeGenerationId, "runtime_gen_1");
-  assert.equal(uninstalled.retained_data_state, "deleted");
+  assert.equal(uninstalled.enable_state, "disabled");
   assert.equal(fetch.calls[0]?.input, "/_redevplugin/api/plugins/local-import/install");
-  assert.deepEqual(JSON.parse(fetch.calls[0]?.init.body ?? ""), { package_base64: "cGtn", plugin_instance_id: "plugin_instance_1", plugin_state_version: 0 });
+  assert.deepEqual(JSON.parse(fetch.calls[0]?.init.body ?? ""), { package_base64: "cGtn", plugin_instance_id: "plugin_instance_1" });
   assert.equal(fetch.calls[1]?.input, "/_redevplugin/api/plugins/local-import/update");
-  assert.deepEqual(JSON.parse(fetch.calls[1]?.init.body ?? ""), { plugin_instance_id: "plugin_instance_1", package_base64: "cGtnMg", plugin_state_version: 1 });
+  assert.deepEqual(JSON.parse(fetch.calls[1]?.init.body ?? ""), { plugin_instance_id: "plugin_instance_1", package_base64: "cGtnMg", expected_management_revision: 1 });
   assert.equal(fetch.calls[2]?.input, "/_redevplugin/api/plugins/downgrade");
-  assert.deepEqual(JSON.parse(fetch.calls[2]?.init.body ?? ""), { plugin_instance_id: "plugin_instance_1", version: "1.0.0", plugin_state_version: 2 });
+  assert.deepEqual(JSON.parse(fetch.calls[2]?.init.body ?? ""), { plugin_instance_id: "plugin_instance_1", version: "1.0.0", expected_management_revision: 2 });
   assert.equal(fetch.calls[3]?.input, "/_redevplugin/api/plugins/enable");
-  assert.deepEqual(JSON.parse(fetch.calls[3]?.init.body ?? ""), { plugin_instance_id: "plugin_instance_1", plugin_state_version: 3 });
+  assert.deepEqual(JSON.parse(fetch.calls[3]?.init.body ?? ""), { plugin_instance_id: "plugin_instance_1", expected_management_revision: 3 });
   assert.equal(fetch.calls[4]?.input, "/_redevplugin/api/plugins/disable");
-  assert.deepEqual(JSON.parse(fetch.calls[4]?.init.body ?? ""), { plugin_instance_id: "plugin_instance_1", plugin_state_version: 4, reason: "admin" });
+  assert.deepEqual(JSON.parse(fetch.calls[4]?.init.body ?? ""), { plugin_instance_id: "plugin_instance_1", expected_management_revision: 4, reason: "admin" });
   assert.equal(fetch.calls[5]?.input, "/_redevplugin/api/plugins/surfaces/open");
   assert.deepEqual(JSON.parse(fetch.calls[5]?.init.body ?? ""), {
     plugin_instance_id: "plugin_instance_1",
     surface_id: "example.view",
     surface_instance_id: "surface_1",
-    plugin_state_version: 5,
+    expected_management_revision: 5,
   });
   assert.equal(fetch.calls[6]?.input, "/_redevplugin/api/plugins/uninstall");
-  assert.deepEqual(JSON.parse(fetch.calls[6]?.init.body ?? ""), { plugin_instance_id: "plugin_instance_1", plugin_state_version: 5, delete_data: true });
+  assert.deepEqual(JSON.parse(fetch.calls[6]?.init.body ?? ""), { plugin_instance_id: "plugin_instance_1", expected_management_revision: 5, delete_data: true });
 });
 
 test("platform client installs and updates plugin release refs without package bytes", async () => {
@@ -393,20 +404,23 @@ test("platform client installs and updates plugin release refs without package b
     },
   };
 
-  await client.installReleaseRef({ release_ref: releaseRef, plugin_state_version: 0 });
-  await client.updateReleaseRef({ plugin_instance_id: "plugin_instance_1", release_ref: { ...releaseRef, version: "1.1.0" }, plugin_state_version: 1 });
+  await client.installReleaseRef({ release_ref: releaseRef });
+  await client.updateReleaseRef({ plugin_instance_id: "plugin_instance_1", release_ref: { ...releaseRef, version: "1.1.0" }, expected_management_revision: 1 });
 
   assert.equal(fetch.calls[0]?.input, "/_redevplugin/api/plugins/install-release-ref");
-  assert.deepEqual(JSON.parse(fetch.calls[0]?.init.body ?? ""), { release_ref: releaseRef, plugin_state_version: 0 });
+  assert.deepEqual(JSON.parse(fetch.calls[0]?.init.body ?? ""), { release_ref: releaseRef });
   assert.equal(fetch.calls[1]?.input, "/_redevplugin/api/plugins/update-release-ref");
-  assert.deepEqual(JSON.parse(fetch.calls[1]?.init.body ?? ""), { plugin_instance_id: "plugin_instance_1", release_ref: { ...releaseRef, version: "1.1.0" }, plugin_state_version: 1 });
+  assert.deepEqual(JSON.parse(fetch.calls[1]?.init.body ?? ""), { plugin_instance_id: "plugin_instance_1", release_ref: { ...releaseRef, version: "1.1.0" }, expected_management_revision: 1 });
 });
 
 test("platform client manages runtime lifecycle routes", async () => {
   const fetch = new FakeFetch();
-  fetch.push({ ok: true, data: { runtime_instance_id: "runtime_1", runtime_generation_id: "gen_1", runtime_version: "0.0.0-dev", rust_ipc_version: "rust-ipc-v2", wasm_abi_version: "redevplugin-wasm-worker-v2", ready: true } });
-  fetch.push({ ok: true, data: { runtime_instance_id: "runtime_1", runtime_generation_id: "gen_1", ready: true } });
-  fetch.push({ ok: true, data: { refreshed_plugins: [{ plugin_instance_id: "plugin_instance_1", plugin_id: "com.example.plugin", version: "1.0.0", active_fingerprint: "sha256:a", trust_state: "verified", enable_state: "enabled" }] } });
+  fetch.push({ ok: true, data: { ready: true, shards: [{ runtime_shard_id: "runtime_shard_00", runtime_instance_id: "runtime_1", runtime_generation_id: "gen_1", runtime_version: "0.0.0-dev", rust_ipc_version: "rust-ipc-v2", wasm_abi_version: "redevplugin-wasm-worker-v2", ready: true }] } });
+  fetch.push({ ok: true, data: { ready: true, shards: [{ runtime_shard_id: "runtime_shard_00", runtime_instance_id: "runtime_1", runtime_generation_id: "gen_1", ready: true }] } });
+  fetch.push({ ok: true, data: { results: [
+    { plugin_instance_id: "plugin_instance_1", status: "refreshed" },
+    { plugin_instance_id: "plugin_instance_2", status: "failed", error: { code: "PLUGIN_RUNTIME_UNAVAILABLE", message: "Plugin runtime state could not be refreshed" } },
+  ] } });
   fetch.push({ ok: true, data: { stopped: true } });
   const client = new PluginPlatformClient({ fetch: fetch.fetch });
 
@@ -416,8 +430,13 @@ test("platform client manages runtime lifecycle routes", async () => {
   const stopped = await client.stopRuntime();
 
   assert.equal(started.ready, true);
-  assert.equal(health.runtime_generation_id, "gen_1");
-  assert.equal(refreshed.refreshed_plugins[0]?.plugin_instance_id, "plugin_instance_1");
+  assert.equal(health.shards[0]?.runtime_generation_id, "gen_1");
+  assert.equal(refreshed.results[0]?.plugin_instance_id, "plugin_instance_1");
+  assert.equal(refreshed.results[0]?.status, "refreshed");
+  const failedRefresh = refreshed.results[1];
+  assert.equal(failedRefresh?.status, "failed");
+  if (failedRefresh?.status !== "failed") throw new Error("expected failed runtime refresh result");
+  assert.deepEqual(failedRefresh.error, { code: "PLUGIN_RUNTIME_UNAVAILABLE", message: "Plugin runtime state could not be refreshed" });
   assert.equal(stopped.stopped, true);
   assert.equal(fetch.calls[0]?.input, "/_redevplugin/api/plugins/runtime/start");
   assert.deepEqual(JSON.parse(fetch.calls[0]?.init.body ?? ""), { target: { os: "darwin", arch: "arm64" } });
@@ -447,6 +466,7 @@ test("platform client covers operation and data lifecycle routes", async () => {
         created_at: "2026-06-30T00:00:00Z",
         updated_at: "2026-06-30T00:00:00Z",
       }],
+      next_cursor: "cursor_2",
     },
   });
   fetch.push({
@@ -465,58 +485,71 @@ test("platform client covers operation and data lifecycle routes", async () => {
       updated_at: "2026-06-30T00:00:02Z",
     },
   });
-  fetch.push({ ok: true, data: { archive_ref: "archive/plugin_instance_1.zip", settings_archive_ref: "archive/plugin_instance_1.settings.json" } });
-  fetch.push({ ok: true, data: { imported: true } });
-  fetch.push({ ok: true, data: { retained_data: [{ retained_id: "retained_1", source_plugin_instance_id: "plugin_instance_1", publisher_id: "example", plugin_id: "com.example.plugin", version: "1.0.0", package_hash: "sha256:p", manifest_hash: "sha256:m", state: "retained" }] } });
-  fetch.push({ ok: true, data: { retained_id: "retained_1", source_plugin_instance_id: "plugin_instance_1", publisher_id: "example", plugin_id: "com.example.plugin", version: "1.0.0", package_hash: "sha256:p", manifest_hash: "sha256:m", state: "deleted" } });
-  fetch.push({ ok: true, data: { retained_id: "retained_3", source_plugin_instance_id: "plugin_instance_1", bound_plugin_instance_id: "plugin_instance_2", publisher_id: "example", plugin_id: "com.example.plugin", version: "1.0.0", package_hash: "sha256:p", manifest_hash: "sha256:m", state: "bound" } });
-  fetch.push({ ok: true, data: { deleted: [{ retained_id: "retained_2", source_plugin_instance_id: "plugin_instance_1", publisher_id: "example", plugin_id: "com.example.plugin", version: "1.0.0", package_hash: "sha256:p", manifest_hash: "sha256:m", state: "deleted" }], failed: [] } });
+  fetch.push({ ok: true, data: { bundle_ref: "bundle_ref_1" } });
+  fetch.push({ ok: true, data: { deleted: true } });
+  fetch.push({ ok: true, data: { plugin_instance_id: "plugin_instance_1", plugin_id: "com.example.plugin", version: "1.0.0", active_fingerprint: "sha256:a", trust_state: "verified", enable_state: "disabled" } });
+  fetch.push({ ok: true, data: { retained_data: [{ plugin_instance_id: "plugin_instance_1", generation_id: "generation_1", state: "retained", revision: 3, shape_hash: "a".repeat(64) }] } });
+  fetch.push({ ok: true, data: { plugin_instance_id: "plugin_instance_1", generation_id: "generation_1", state: "retained", revision: 3, shape_hash: "a".repeat(64) } });
+  fetch.push({ ok: true, data: { plugin_instance_id: "plugin_instance_2", generation_id: "generation_1", state: "active", revision: 1, shape_hash: "a".repeat(64) } });
+  fetch.push({ ok: true, data: { deleted: [{ plugin_instance_id: "plugin_instance_3", generation_id: "generation_3", state: "retained", revision: 4, shape_hash: "b".repeat(64) }] } });
   const client = new PluginPlatformClient({ fetch: fetch.fetch });
 
-  const operations = await client.listOperations("plugin_instance_1");
+  const operations = await client.listOperations({ plugin_instance_id: "plugin_instance_1", cursor: "cursor_1", limit: 25 });
   const canceled = await client.cancelOperation("op 1", "user canceled");
   const exported = await client.exportData({ plugin_instance_id: "plugin_instance_1" });
+  const exportDeletion = await client.deleteDataExport({ bundle_ref: exported.bundle_ref });
   const imported = await client.importData({
     plugin_instance_id: "plugin_instance_1",
-    archive_ref: exported.archive_ref,
-    settings_archive_ref: exported.settings_archive_ref,
-    delete_existing: true,
+    bundle_ref: exported.bundle_ref,
+    expected_management_revision: 7,
   });
-  const retained = await client.listRetainedData({ source_plugin_instance_id: "plugin_instance_1", state: "retained" });
-  const deleted = await client.deleteRetainedData("retained_1");
-  const bound = await client.bindRetainedData({ retained_id: "retained_3", target_plugin_instance_id: "plugin_instance_2" });
-  const cleanup = await client.cleanupExpiredRetainedData({ retry_failed: true, max_records: 10 });
+  const retained = await client.listRetainedData({ plugin_instance_id: "plugin_instance_1" });
+  const deleted = await client.deleteRetainedData({ plugin_instance_id: "plugin_instance_1", expected_binding_revision: 3 });
+  const bound = await client.bindRetainedData({
+    source_plugin_instance_id: "plugin_instance_1",
+    expected_source_binding_revision: 3,
+    target_plugin_instance_id: "plugin_instance_2",
+    target_expected_management_revision: 5,
+  });
+  const cleanup = await client.cleanupExpiredRetainedData({});
 
   assert.equal(operations.operations?.[0]?.status, "running");
   assert.equal(operations.operations?.[0]?.audit_correlation_id, "audit_1");
   assert.equal(operations.operations?.[0]?.cancel_ack_timeout_ms, 5000);
+  assert.equal(operations.next_cursor, "cursor_2");
   assert.equal(canceled.status, "cancel_requested");
-  assert.equal(exported.archive_ref, "archive/plugin_instance_1.zip");
-  assert.equal(exported.settings_archive_ref, "archive/plugin_instance_1.settings.json");
-  assert.equal(imported.imported, true);
-  assert.equal(retained.retained_data?.[0]?.retained_id, "retained_1");
-  assert.equal(deleted.state, "deleted");
-  assert.equal(bound.bound_plugin_instance_id, "plugin_instance_2");
-  assert.equal(cleanup.deleted?.[0]?.retained_id, "retained_2");
-  assert.equal(fetch.calls[0]?.input, "/_redevplugin/api/plugins/operations?plugin_instance_id=plugin_instance_1");
+  assert.equal(exported.bundle_ref, "bundle_ref_1");
+  assert.equal(exportDeletion.deleted, true);
+  assert.equal(imported.plugin_instance_id, "plugin_instance_1");
+  assert.equal(retained.retained_data[0]?.generation_id, "generation_1");
+  assert.equal(deleted.revision, 3);
+  assert.equal(bound.plugin_instance_id, "plugin_instance_2");
+  assert.equal(cleanup.deleted[0]?.generation_id, "generation_3");
+  assert.equal(fetch.calls[0]?.input, "/_redevplugin/api/plugins/operations?plugin_instance_id=plugin_instance_1&cursor=cursor_1&limit=25");
   assert.equal(fetch.calls[1]?.input, "/_redevplugin/api/plugins/operations/op%201/cancel");
   assert.deepEqual(JSON.parse(fetch.calls[1]?.init.body ?? ""), { reason: "user canceled" });
   assert.equal(fetch.calls[2]?.input, "/_redevplugin/api/plugins/data/export");
   assert.deepEqual(JSON.parse(fetch.calls[2]?.init.body ?? ""), { plugin_instance_id: "plugin_instance_1" });
-  assert.equal(fetch.calls[3]?.input, "/_redevplugin/api/plugins/data/import");
-  assert.deepEqual(JSON.parse(fetch.calls[3]?.init.body ?? ""), {
+  assert.equal(fetch.calls[3]?.input, "/_redevplugin/api/plugins/data/export/delete");
+  assert.deepEqual(JSON.parse(fetch.calls[3]?.init.body ?? ""), { bundle_ref: "bundle_ref_1" });
+  assert.equal(fetch.calls[4]?.input, "/_redevplugin/api/plugins/data/import");
+  assert.deepEqual(JSON.parse(fetch.calls[4]?.init.body ?? ""), {
     plugin_instance_id: "plugin_instance_1",
-    archive_ref: "archive/plugin_instance_1.zip",
-    settings_archive_ref: "archive/plugin_instance_1.settings.json",
-    delete_existing: true,
+    bundle_ref: "bundle_ref_1",
+    expected_management_revision: 7,
   });
-  assert.equal(fetch.calls[4]?.input, "/_redevplugin/api/plugins/retained-data?source_plugin_instance_id=plugin_instance_1&state=retained");
-  assert.equal(fetch.calls[5]?.input, "/_redevplugin/api/plugins/retained-data/delete");
-  assert.deepEqual(JSON.parse(fetch.calls[5]?.init.body ?? ""), { retained_id: "retained_1" });
-  assert.equal(fetch.calls[6]?.input, "/_redevplugin/api/plugins/retained-data/bind");
-  assert.deepEqual(JSON.parse(fetch.calls[6]?.init.body ?? ""), { retained_id: "retained_3", target_plugin_instance_id: "plugin_instance_2" });
-  assert.equal(fetch.calls[7]?.input, "/_redevplugin/api/plugins/retained-data/cleanup-expired");
-  assert.deepEqual(JSON.parse(fetch.calls[7]?.init.body ?? ""), { retry_failed: true, max_records: 10 });
+  assert.equal(fetch.calls[5]?.input, "/_redevplugin/api/plugins/retained-data?plugin_instance_id=plugin_instance_1");
+  assert.equal(fetch.calls[6]?.input, "/_redevplugin/api/plugins/retained-data/delete");
+  assert.deepEqual(JSON.parse(fetch.calls[6]?.init.body ?? ""), { plugin_instance_id: "plugin_instance_1", expected_binding_revision: 3 });
+  assert.equal(fetch.calls[7]?.input, "/_redevplugin/api/plugins/retained-data/bind");
+  assert.deepEqual(JSON.parse(fetch.calls[7]?.init.body ?? ""), {
+    source_plugin_instance_id: "plugin_instance_1",
+    expected_source_binding_revision: 3,
+    target_plugin_instance_id: "plugin_instance_2",
+    target_expected_management_revision: 5,
+  });
+  assert.equal(fetch.calls[8]?.input, "/_redevplugin/api/plugins/retained-data/cleanup-expired");
+  assert.deepEqual(JSON.parse(fetch.calls[8]?.init.body ?? ""), {});
 });
 
 test("platform client lists and invokes host-mediated intents", async () => {
@@ -565,33 +598,57 @@ test("platform client lists and invokes host-mediated intents", async () => {
 
 test("platform client maps dangerous intent confirmation requirement", async () => {
   const fetch = new FakeFetch();
-  fetch.push({ ok: false, error_code: "PLUGIN_CONFIRMATION_REQUIRED", error: "plugin method confirmation required" });
+  fetch.push({ ok: false, error: { code: "PLUGIN_CONFIRMATION_REQUIRED", message: "plugin method confirmation required", details: {}, mutation_outcome: "not_committed" } });
   const client = new PluginPlatformClient({ fetch: fetch.fetch });
 
   await assert.rejects(
     client.invokeIntent({ plugin_instance_id: "plugin_instance_1", intent_id: "example.danger", params: { target: "db" } }),
-    (err) => err instanceof PluginBridgeError && err.errorCode === "PLUGIN_CONFIRMATION_REQUIRED" && err.message === "plugin method confirmation required",
+    (err) => err instanceof PluginPlatformRequestError && err.errorCode === "PLUGIN_CONFIRMATION_REQUIRED" && err.message === "plugin method confirmation required",
   );
 });
 
-test("platform client exposes retained cleanup partial result on failure", async () => {
-  const fetch = new FakeFetch();
-  fetch.push({
+test("platform client exposes closed plugin data revision conflicts", async () => {
+  const binding = new FakeFetch();
+  binding.push({
     ok: false,
-    error_code: "PLUGIN_RETAINED_DATA_CLEANUP_FAILED",
-    error: "retained data cleanup failed",
-    data: {
-      deleted: [{ retained_id: "retained_deleted", source_plugin_instance_id: "plugin_instance_1", publisher_id: "example", plugin_id: "com.example.plugin", version: "1.0.0", package_hash: "sha256:p", manifest_hash: "sha256:m", state: "deleted" }],
-      failed: [{ retained_id: "retained_failed", source_plugin_instance_id: "plugin_instance_2", publisher_id: "example", plugin_id: "com.example.plugin", version: "1.0.0", package_hash: "sha256:p", manifest_hash: "sha256:m", state: "delete_failed_retryable" }],
+    error: {
+      code: "PLUGIN_BINDING_REVISION_MISMATCH",
+      message: "plugin data binding revision changed",
+      details: {
+        plugin_instance_id: "plugin_instance_1",
+        expected_binding_revision: 3,
+        actual_binding_revision: 4,
+      },
+      mutation_outcome: "not_committed",
     },
-  });
-  const client = new PluginPlatformClient({ fetch: fetch.fetch });
+  }, 409);
 
   await assert.rejects(
-    client.cleanupExpiredRetainedData({ retry_failed: true }),
-    (err) => err instanceof PluginBridgeError &&
-      err.errorCode === "PLUGIN_RETAINED_DATA_CLEANUP_FAILED" &&
-      (err.data as { failed?: Array<{ retained_id?: string }> }).failed?.[0]?.retained_id === "retained_failed",
+    new PluginPlatformClient({ fetch: binding.fetch }).deleteRetainedData({ plugin_instance_id: "plugin_instance_1", expected_binding_revision: 3 }),
+    (err) => err instanceof PluginPlatformRequestError &&
+      err.errorCode === "PLUGIN_BINDING_REVISION_MISMATCH" &&
+      err.details.actual_binding_revision === 4,
+  );
+
+  const settings = new FakeFetch();
+  settings.push({
+    ok: false,
+    error: {
+      code: "PLUGIN_VALUES_REVISION_MISMATCH",
+      message: "plugin settings values revision changed",
+      details: {
+        plugin_instance_id: "plugin_instance_1",
+        expected_values_revision: 7,
+        actual_values_revision: 8,
+      },
+      mutation_outcome: "not_committed",
+    },
+  }, 409);
+  await assert.rejects(
+    new PluginPlatformClient({ fetch: settings.fetch }).patchSettings("plugin_instance_1", { expected_values_revision: 7, set: { engine: "podman" } }),
+    (err) => err instanceof PluginPlatformRequestError &&
+      err.errorCode === "PLUGIN_VALUES_REVISION_MISMATCH" &&
+      err.details.actual_values_revision === 8,
   );
 });
 
@@ -599,66 +656,271 @@ test("platform client exposes host error details separately from data", async ()
   const fetch = new FakeFetch();
   fetch.push({
     ok: false,
-    error_code: "PLUGIN_JSON_LIMIT_EXCEEDED",
-    error: "JSON payload exceeds the maximum allowed depth",
-    error_details: { reason: "json_depth" },
+    error: {
+      code: "PLUGIN_JSON_LIMIT_EXCEEDED",
+      message: "JSON payload exceeds the maximum allowed depth",
+      details: { reason: "json_depth" },
+      mutation_outcome: "not_committed",
+    },
   });
   const client = new PluginPlatformClient({ fetch: fetch.fetch });
 
   await assert.rejects(
-    client.enablePlugin({ plugin_instance_id: "plugin_instance_1", plugin_state_version: 1 }),
-    (err) => err instanceof PluginBridgeError &&
+    client.enablePlugin({ plugin_instance_id: "plugin_instance_1", expected_management_revision: 1 }),
+    (err) => err instanceof PluginPlatformRequestError &&
       err.errorCode === "PLUGIN_JSON_LIMIT_EXCEEDED" &&
-      err.data === undefined &&
       (err.details as { reason?: string }).reason === "json_depth",
+  );
+});
+
+test("platform client rejects unknown error codes and mismatched closed details", async () => {
+  const unknownCode = new FakeFetch();
+  unknownCode.push({ ok: false, error: { code: "PLUGIN_UNKNOWN", message: "unknown", details: {} } });
+  await assert.rejects(
+    new PluginPlatformClient({ fetch: unknownCode.fetch }).catalog(),
+    (err) => err instanceof PluginTransportError,
+  );
+
+  const mismatchedDetails = new FakeFetch();
+  mismatchedDetails.push({
+    ok: false,
+    error: {
+      code: "PLUGIN_MANAGEMENT_REVISION_MISMATCH",
+      message: "revision changed",
+      details: {
+        plugin_instance_id: "plugin_instance_1",
+        expected_management_revision: 1,
+        actual_management_revision: 2,
+        unexpected: true,
+      },
+    },
+  });
+  await assert.rejects(
+    new PluginPlatformClient({ fetch: mismatchedDetails.fetch }).catalog(),
+    (err) => err instanceof PluginTransportError,
+  );
+
+  const genericWithTypedDetails = new FakeFetch();
+  genericWithTypedDetails.push({
+    ok: false,
+    error: {
+      code: "PLUGIN_RUNTIME_UNAVAILABLE",
+      message: "runtime unavailable",
+      details: { plugin_instance_id: "plugin_instance_1" },
+    },
+  });
+  await assert.rejects(
+    new PluginPlatformClient({ fetch: genericWithTypedDetails.fetch }).catalog(),
+    (err) => err instanceof PluginTransportError,
+  );
+
+  const malformedRevisionDetails = new FakeFetch();
+  malformedRevisionDetails.push({
+    ok: false,
+    error: {
+      code: "PLUGIN_VALUES_REVISION_MISMATCH",
+      message: "settings changed",
+      details: {
+        plugin_instance_id: "plugin_instance_1",
+        expected_values_revision: 1,
+      },
+    },
+  });
+  await assert.rejects(
+    new PluginPlatformClient({ fetch: malformedRevisionDetails.fetch }).catalog(),
+    (err) => err instanceof PluginTransportError,
+  );
+
+  const successWithErrorStatus = new FakeFetch();
+  successWithErrorStatus.push({ ok: true, data: { plugins: [] } }, 500);
+  await assert.rejects(
+    new PluginPlatformClient({ fetch: successWithErrorStatus.fetch }).catalog(),
+    (err) => err instanceof PluginTransportError,
+  );
+
+  const errorWithSuccessStatus = new FakeFetch();
+  errorWithSuccessStatus.push({ ok: false, error: { code: "PLUGIN_RUNTIME_UNAVAILABLE", message: "unavailable", details: {} } }, 200);
+  await assert.rejects(
+    new PluginPlatformClient({ fetch: errorWithSuccessStatus.fetch }).catalog(),
+    (err) => err instanceof PluginTransportError,
   );
 });
 
 test("platform client manages permissions and secret refs without exposing local contracts", async () => {
   const fetch = new FakeFetch();
-  fetch.push({ ok: true, data: { permissions: [{ plugin_instance_id: "plugin_instance_1", permission_id: "network.http" }] } });
-  fetch.push({ ok: true, data: { plugin_instance_id: "plugin_instance_1", permission_id: "network.http", granted_by: "admin" } });
-  fetch.push({ ok: true, data: { plugin_instance_id: "plugin_instance_1", permission_id: "network.http", revoked_by: "admin" } });
+  fetch.push({ ok: true, data: { permissions: [{ plugin_instance_id: "plugin_instance_1", permission_id: "network.http", effect: "grant", granted_at: "2026-07-17T00:00:00Z" }] } });
+  fetch.push({ ok: true, data: { permission: { plugin_instance_id: "plugin_instance_1", permission_id: "network.http", effect: "grant", granted_by: "user_hash", granted_at: "2026-07-17T00:00:00Z" }, revisions: { policy_revision: 2, management_revision: 2, revoke_epoch: 0 } } });
+  fetch.push({ ok: true, data: { permission: { plugin_instance_id: "plugin_instance_1", permission_id: "network.http", effect: "deny", granted_at: "2026-07-17T00:00:00Z", revoked_by: "user_hash" }, revisions: { policy_revision: 3, management_revision: 2, revoke_epoch: 1 } } });
   fetch.push({ ok: true, data: { bound: true } });
-  fetch.push({ ok: true, data: { passed: true } });
+  fetch.push({ ok: true, data: { tested: true } });
   fetch.push({ ok: true, data: { deleted: true } });
   const client = new PluginPlatformClient({ fetch: fetch.fetch });
 
-  const grants = await client.listPermissions("plugin_instance_1", true);
-  const grant = await client.grantPermission({ plugin_instance_id: "plugin_instance_1", permission_id: "network.http", granted_by: "admin" });
-  const revoke = await client.revokePermission({ plugin_instance_id: "plugin_instance_1", permission_id: "network.http", revoked_by: "admin", reason: "rotation" });
+  const grants = await client.listPermissions({ plugin_instance_id: "plugin_instance_1", active_only: true });
+  const grant = await client.grantPermission({
+    plugin_instance_id: "plugin_instance_1",
+    permission_id: "network.http",
+    expected_policy_revision: 1,
+    expected_management_revision: 2,
+    expected_revoke_epoch: 0,
+  });
+  const revoke = await client.revokePermission({
+    plugin_instance_id: "plugin_instance_1",
+    permission_id: "network.http",
+    expected_policy_revision: 2,
+    expected_management_revision: 2,
+    expected_revoke_epoch: 1,
+    reason: "rotation",
+  });
   const bound = await client.bindSecret({ plugin_instance_id: "plugin_instance_1", secret_ref: "api_token", scope: "user" });
   const tested = await client.testSecret({ plugin_instance_id: "plugin_instance_1", secret_ref: "api_token", scope: "user" });
   const deleted = await client.deleteSecret({ plugin_instance_id: "plugin_instance_1", secret_ref: "api_token", scope: "user" });
 
-  assert.equal(grants.permissions?.[0]?.permission_id, "network.http");
-  assert.equal(grant.granted_by, "admin");
-  assert.equal(revoke.revoked_by, "admin");
+  assert.equal(grants.permissions[0]?.permission_id, "network.http");
+  assert.equal(grant.permission.granted_by, "user_hash");
+  assert.equal(grant.revisions.policy_revision, 2);
+  assert.equal(revoke.permission.revoked_by, "user_hash");
+  assert.equal(revoke.revisions.revoke_epoch, 1);
   assert.equal(bound.bound, true);
-  assert.equal(tested.passed, true);
+  assert.equal(tested.tested, true);
   assert.equal(deleted.deleted, true);
   assert.equal(fetch.calls[0]?.input, "/_redevplugin/api/plugins/permissions?plugin_instance_id=plugin_instance_1&active_only=true");
   assert.equal(fetch.calls[1]?.input, "/_redevplugin/api/plugins/permissions/grant");
+  assert.deepEqual(JSON.parse(fetch.calls[1]?.init.body ?? ""), {
+    plugin_instance_id: "plugin_instance_1",
+    permission_id: "network.http",
+    expected_policy_revision: 1,
+    expected_management_revision: 2,
+    expected_revoke_epoch: 0,
+  });
   assert.equal(fetch.calls[2]?.input, "/_redevplugin/api/plugins/permissions/revoke");
+  assert.deepEqual(JSON.parse(fetch.calls[2]?.init.body ?? ""), {
+    plugin_instance_id: "plugin_instance_1",
+    permission_id: "network.http",
+    expected_policy_revision: 2,
+    expected_management_revision: 2,
+    expected_revoke_epoch: 1,
+    reason: "rotation",
+  });
   assert.equal(fetch.calls[3]?.input, "/_redevplugin/api/plugins/secrets/bind");
   assert.equal(fetch.calls[4]?.input, "/_redevplugin/api/plugins/secrets/test");
   assert.equal(fetch.calls[5]?.input, "/_redevplugin/api/plugins/secrets/delete");
 });
 
-test("platform client reads host audit and diagnostic events", async () => {
+test("platform client preserves the secret test mutation outcome", async () => {
   const fetch = new FakeFetch();
   fetch.push({
-    ok: true,
-    data: {
-      audit_events: [{
-        type: "plugin.intent.invoked",
-        plugin_id: "com.example.intent",
-        plugin_instance_id: "plugin_instance_1",
-        occurred_at: "2026-06-30T00:00:00Z",
-        details: { intent_id: "example.echo" },
-      }],
+    ok: false,
+    error: {
+      code: "PLUGIN_PERMISSION_DENIED",
+      message: "secret operation failed",
+      details: {},
+      mutation_outcome: "unknown",
     },
-  });
+  }, 403);
+  const client = new PluginPlatformClient({ fetch: fetch.fetch });
+
+  await assert.rejects(
+    client.testSecret({ plugin_instance_id: "plugin_instance_1", secret_ref: "api_token", scope: "user" }),
+    (err) => err instanceof PluginPlatformRequestError &&
+      err.errorCode === "PLUGIN_PERMISSION_DENIED" &&
+      err.mutationOutcome === "unknown",
+  );
+  assert.equal(fetch.calls[0]?.input, "/_redevplugin/api/plugins/secrets/test");
+  assert.equal(fetch.calls[0]?.init.method, "POST");
+  assert.equal(fetch.calls[0]?.init.headers["Content-Type"], "application/json");
+});
+
+test("platform client manages security policies through the current REST contract", async () => {
+  const policy = {
+    plugin_instance_id: "plugin_instance_1",
+    allowed_permissions: ["network.http"],
+    denied_methods: ["container.delete"],
+    policy_revision: 3,
+    management_revision: 5,
+    revoke_epoch: 2,
+    updated_at: "2026-07-17T00:00:00Z",
+  };
+  const updatedPolicy = { ...policy, policy_revision: 4, revoke_epoch: 3, updated_at: "2026-07-17T00:01:00Z" };
+  const fetch = new FakeFetch();
+  fetch.push({ ok: true, data: { security_policies: [policy] } });
+  fetch.push({ ok: true, data: policy });
+  fetch.push({ ok: true, data: updatedPolicy });
+  fetch.push({ ok: true, data: { plugin_instance_id: "plugin_instance_1", deleted: true, policy_revision: 5, management_revision: 5, revoke_epoch: 4 } });
+  const client = new PluginPlatformClient({ fetch: fetch.fetch });
+  const putRequest = {
+    expected_policy_revision: 3,
+    expected_management_revision: 5,
+    expected_revoke_epoch: 2,
+    allowed_permissions: ["network.http"],
+    denied_methods: ["container.delete"],
+  };
+  const deleteRequest = {
+    expected_policy_revision: 4,
+    expected_management_revision: 5,
+    expected_revoke_epoch: 3,
+  };
+
+  const listed = await client.listSecurityPolicies();
+  const read = await client.getSecurityPolicy("plugin_instance_1");
+  const updated = await client.putSecurityPolicy("plugin_instance_1", putRequest);
+  const deleted = await client.deleteSecurityPolicy("plugin_instance_1", deleteRequest);
+
+  assert.equal(listed.security_policies[0]?.plugin_instance_id, "plugin_instance_1");
+  assert.equal(read.denied_methods?.[0], "container.delete");
+  assert.equal(updated.allowed_permissions?.[0], "network.http");
+  assert.equal(updated.policy_revision, 4);
+  assert.equal(deleted.deleted, true);
+  assert.equal(deleted.revoke_epoch, 4);
+  assert.equal(fetch.calls[0]?.input, "/_redevplugin/api/plugins/security-policies");
+  assert.equal(fetch.calls[0]?.init.method, "GET");
+  assert.equal(fetch.calls[1]?.input, "/_redevplugin/api/plugins/security-policies/plugin_instance_1");
+  assert.equal(fetch.calls[1]?.init.method, "GET");
+  assert.equal(fetch.calls[2]?.input, "/_redevplugin/api/plugins/security-policies/plugin_instance_1");
+  assert.equal(fetch.calls[2]?.init.method, "PUT");
+  assert.deepEqual(JSON.parse(fetch.calls[2]?.init.body ?? ""), putRequest);
+  assert.equal(fetch.calls[3]?.input, "/_redevplugin/api/plugins/security-policies/plugin_instance_1");
+  assert.equal(fetch.calls[3]?.init.method, "DELETE");
+  assert.deepEqual(JSON.parse(fetch.calls[3]?.init.body ?? ""), deleteRequest);
+});
+
+test("platform client exposes closed authorization revision conflict details", async () => {
+  const fetch = new FakeFetch();
+  fetch.push({
+    ok: false,
+    error: {
+      code: "PLUGIN_AUTHORIZATION_REVISION_MISMATCH",
+      message: "authorization revisions changed",
+      details: {
+        plugin_instance_id: "plugin_instance_1",
+        expected_policy_revision: 3,
+        actual_policy_revision: 4,
+        expected_management_revision: 5,
+        actual_management_revision: 5,
+        expected_revoke_epoch: 2,
+        actual_revoke_epoch: 3,
+      },
+      mutation_outcome: "not_committed",
+    },
+  }, 409);
+  const client = new PluginPlatformClient({ fetch: fetch.fetch });
+
+  await assert.rejects(
+    client.deleteSecurityPolicy("plugin_instance_1", {
+      expected_policy_revision: 3,
+      expected_management_revision: 5,
+      expected_revoke_epoch: 2,
+    }),
+    (err) => err instanceof PluginPlatformRequestError &&
+      err.errorCode === "PLUGIN_AUTHORIZATION_REVISION_MISMATCH" &&
+      err.mutationOutcome === "not_committed" &&
+      err.details.actual_policy_revision === 4 &&
+      err.details.actual_revoke_epoch === 3,
+  );
+});
+
+test("platform client reads owner-scoped diagnostic events", async () => {
+  const fetch = new FakeFetch();
   fetch.push({
     ok: true,
     data: {
@@ -675,22 +937,19 @@ test("platform client reads host audit and diagnostic events", async () => {
   });
   const client = new PluginPlatformClient({ fetch: fetch.fetch });
 
-  const audit = await client.listAuditEvents({ plugin_instance_id: "plugin_instance_1", type: "plugin.intent.invoked", limit: 5 });
   const diagnostics = await client.listDiagnosticEvents({ plugin_id: "com.example.intent", severity: "warning", limit: 10 });
 
-  assert.equal(audit.audit_events?.[0]?.details?.intent_id, "example.echo");
   assert.equal(diagnostics.diagnostic_events?.[0]?.details?.effective_directive, "script-src");
-  assert.equal(fetch.calls[0]?.input, "/_redevplugin/api/plugins/audit?plugin_instance_id=plugin_instance_1&type=plugin.intent.invoked&limit=5");
-  assert.equal(fetch.calls[1]?.input, "/_redevplugin/api/plugins/diagnostics?plugin_id=com.example.intent&severity=warning&limit=10");
+  assert.equal(fetch.calls[0]?.input, "/_redevplugin/api/plugins/diagnostics?plugin_id=com.example.intent&severity=warning&limit=10");
 });
 
 test("platform client maps management envelope errors", async () => {
   const fetch = new FakeFetch();
-  fetch.push({ ok: false, error_code: "PLUGIN_INVALID_REQUEST", error: "plugin settings are not declared" });
+  fetch.push({ ok: false, error: { code: "PLUGIN_INVALID_REQUEST", message: "plugin settings are not declared", details: {} } });
   const client = new PluginPlatformClient({ fetch: fetch.fetch });
 
   await assert.rejects(
     client.getSettings("plugin_instance_missing"),
-    (err) => err instanceof PluginBridgeError && err.errorCode === "PLUGIN_INVALID_REQUEST" && err.message === "plugin settings are not declared",
+    (err) => err instanceof PluginPlatformRequestError && err.errorCode === "PLUGIN_INVALID_REQUEST" && err.message === "plugin settings are not declared",
   );
 });

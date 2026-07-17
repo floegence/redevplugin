@@ -29,7 +29,7 @@ func TestTokenTicketSchemaBindsEveryTokenKind(t *testing.T) {
 		t.Fatalf("token-ticket schema token_id ref = %q, want #/$defs/token_id", tokenIDRef)
 	}
 	tokenIDPattern, ok := requireNestedObject(t, defs, "token_id")["pattern"].(string)
-	if !ok || tokenIDPattern != "^(at|as|pgt|ct|rel|hg|st)_[A-Za-z0-9_-]+$" {
+	if !ok || tokenIDPattern != "^(at|as|pgt|ct|hg|st)_[A-Za-z0-9_-]+$" {
 		t.Fatalf("token-ticket schema token_id pattern = %q", tokenIDPattern)
 	}
 	tokenKinds := requireStringSlice(t, requireNestedObject(t, defs, "token_kind")["enum"], "token_kind enum")
@@ -55,6 +55,8 @@ func TestTokenTicketSchemaBindsEveryTokenKind(t *testing.T) {
 		"asset_session_nonce",
 		"route_role",
 		"owner_session_hash",
+		"owner_user_hash",
+		"owner_env_hash",
 		"session_channel_id_hash",
 		"runtime_generation_id",
 	}, "^at_[A-Za-z0-9_-]+$")
@@ -70,6 +72,8 @@ func TestTokenTicketSchemaBindsEveryTokenKind(t *testing.T) {
 		"asset_session_nonce",
 		"route_role",
 		"owner_session_hash",
+		"owner_user_hash",
+		"owner_env_hash",
 		"session_channel_id_hash",
 		"runtime_generation_id",
 	}, "^as_[A-Za-z0-9_-]+$")
@@ -85,6 +89,8 @@ func TestTokenTicketSchemaBindsEveryTokenKind(t *testing.T) {
 		"asset_session_nonce",
 		"route_role",
 		"owner_session_hash",
+		"owner_user_hash",
+		"owner_env_hash",
 		"session_channel_id_hash",
 		"bridge_channel_id",
 		"runtime_generation_id",
@@ -101,6 +107,8 @@ func TestTokenTicketSchemaBindsEveryTokenKind(t *testing.T) {
 		"asset_session_nonce",
 		"route_role",
 		"owner_session_hash",
+		"owner_user_hash",
+		"owner_env_hash",
 		"session_channel_id_hash",
 		"confirmation_id",
 		"bridge_channel_id",
@@ -109,16 +117,6 @@ func TestTokenTicketSchemaBindsEveryTokenKind(t *testing.T) {
 		"plan_hash",
 		"runtime_generation_id",
 	}, "^ct_[A-Za-z0-9_-]+$")
-	assertTokenTicketCondition(t, conditions, "runtime_execution_lease", "reusable", []string{
-		"plugin_instance_id",
-		"active_fingerprint",
-		"runtime_instance_id",
-		"runtime_generation_id",
-		"ipc_channel_id",
-		"connection_nonce",
-		"method",
-		"audit_correlation_id",
-	}, "^rel_[A-Za-z0-9_-]+$")
 	assertTokenTicketCondition(t, conditions, "handle_grant", "reusable", []string{
 		"plugin_instance_id",
 		"active_fingerprint",
@@ -133,6 +131,8 @@ func TestTokenTicketSchemaBindsEveryTokenKind(t *testing.T) {
 		"active_fingerprint",
 		"route_role",
 		"owner_session_hash",
+		"owner_user_hash",
+		"owner_env_hash",
 		"session_channel_id_hash",
 		"stream_id",
 		"operation_id",
@@ -189,7 +189,7 @@ func TestAssetTicketGoldenFixtureBindsRuntimeGeneration(t *testing.T) {
 	if audience["runtime_generation_id"] != "runtime_gen_fixture_1" {
 		t.Fatalf("asset ticket runtime generation = %#v", audience["runtime_generation_id"])
 	}
-	for _, key := range []string{"plugin_id", "plugin_instance_id", "plugin_version", "surface_id", "surface_instance_id", "entry_path", "entry_sha256", "asset_session_nonce", "route_role", "owner_session_hash", "session_channel_id_hash"} {
+	for _, key := range []string{"plugin_id", "plugin_instance_id", "plugin_version", "surface_id", "surface_instance_id", "entry_path", "entry_sha256", "asset_session_nonce", "route_role", "owner_session_hash", "owner_user_hash", "owner_env_hash", "session_channel_id_hash"} {
 		if audience[key] == nil || audience[key] == "" {
 			t.Fatalf("asset ticket fixture missing audience field %q: %#v", key, audience)
 		}

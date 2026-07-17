@@ -4,6 +4,10 @@
   "license": "MIT",
   "type": "module",
   "scripts": {
+    "openapi:generate": "node scripts/generate_openapi_types.mjs",
+    "openapi:check": "node scripts/generate_openapi_types.mjs --check",
+    "error-codes:generate": "node scripts/generate_error_codes.mjs",
+    "error-codes:check": "node scripts/generate_error_codes.mjs --check",
     "contracts:generate": "node scripts/generate_contract_registry.mjs",
     "contracts:check": "node scripts/generate_contract_registry.mjs --check",
     "release-metadata:check": "node scripts/check_redevplugin_release_metadata.mjs --source && node scripts/test_redevplugin_release_metadata.mjs",
@@ -26,12 +30,13 @@
     "test:browser-harness": "npm run browser-harness:check && node --test internal/browserharness/*.test.mjs",
     "test:browser-harness:smoke": "npm run build && node internal/browserharness/opaque-surface-smoke.mjs && REDEVPLUGIN_RUN_BROWSER_SMOKE=1 GOWORK=off go test ./cmd/redevplugin -run '^TestExamplesServerBrowserSmoke$' -count=1",
     "examples": "npm run examples:check && npm run build && cargo build -p redevplugin-runtime && GOWORK=off go run ./cmd/redevplugin examples-server dist/examples-state target/debug/redevplugin-runtime",
-    "check": "npm run contracts:check && npm run release-metadata:check && npm run lint && npm run typecheck && npm run browser-harness:typecheck && npm run scaffold:typecheck && npm run examples:typecheck && npm run canonical-wasm:test && npm run examples:check && npm run browser-harness:check && npm run scaffold:check && npm run build && npm run test:ui && npm run test:browser-harness && npm run test:browser-harness:smoke"
+    "check": "npm run error-codes:check && npm run openapi:check && npm run contracts:check && npm run release-metadata:check && npm run lint && npm run typecheck && npm run browser-harness:typecheck && npm run scaffold:typecheck && npm run examples:typecheck && npm run canonical-wasm:test && npm run examples:check && npm run browser-harness:check && npm run scaffold:check && npm run build && npm run test:ui && npm run test:browser-harness && npm run test:browser-harness:smoke"
   },
   "devDependencies": {
     "esbuild": "^0.25.5",
     "eslint": "10.7.0",
     "marked": "18.0.6",
+    "openapi-typescript": "7.13.0",
     "playwright": "^1.61.1",
     "typescript": "^5.9.3",
     "typescript-eslint": "8.63.0",

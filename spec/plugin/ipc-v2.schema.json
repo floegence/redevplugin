@@ -104,50 +104,44 @@
             "properties": {
               "lease": {
                 "type": "object",
-                "additionalProperties": true,
+                "additionalProperties": false,
                 "required": [
                   "lease_id",
                   "token_id",
-                  "lease_token",
                   "lease_nonce",
                   "runtime_generation_id",
                   "plugin_instance_id",
                   "plugin_id",
                   "plugin_version",
                   "active_fingerprint",
-                  "issued_at",
+                  "owner_env_hash",
                   "issued_at_unix_ms",
                   "method",
                   "effect",
                   "execution",
                   "audit_correlation_id",
-                  "surface_instance_id",
-                  "owner_session_hash",
-                  "owner_user_hash",
-                  "session_channel_id_hash",
-                  "bridge_channel_id",
                   "target_descriptor_hashes",
+                  "limits",
                   "policy_revision",
                   "management_revision",
                   "revoke_epoch",
+                  "runtime_shard_id",
                   "runtime_instance_id",
                   "ipc_channel_id",
                   "connection_nonce",
                   "key_id",
                   "signature",
-                  "expires_at"
+                  "expires_at_unix_ms"
                 ],
                 "properties": {
                   "lease_id": { "type": "string", "minLength": 1 },
                   "token_id": { "type": "string", "minLength": 1 },
-                  "lease_token": { "type": "string", "minLength": 1 },
                   "lease_nonce": { "type": "string", "minLength": 16 },
                   "runtime_generation_id": { "type": "string", "minLength": 1 },
                   "plugin_instance_id": { "type": "string", "minLength": 1 },
                   "plugin_id": { "type": "string", "minLength": 1 },
                   "plugin_version": { "type": "string", "minLength": 1 },
                   "active_fingerprint": { "type": "string", "minLength": 1 },
-                  "issued_at": { "type": "string", "format": "date-time" },
                   "issued_at_unix_ms": { "type": "integer", "minimum": 1 },
                   "method": { "type": "string", "minLength": 1 },
                   "effect": { "enum": ["read", "write", "execute", "delete", "admin"] },
@@ -158,16 +152,19 @@
                   "surface_instance_id": { "type": "string", "minLength": 1 },
                   "owner_session_hash": { "type": "string", "minLength": 1 },
                   "owner_user_hash": { "type": "string", "minLength": 1 },
+                  "owner_env_hash": { "type": "string", "minLength": 1 },
                   "session_channel_id_hash": { "type": "string", "minLength": 1 },
                   "bridge_channel_id": { "type": "string", "minLength": 1 },
                   "target_descriptor_hashes": {
                     "type": "array",
+                    "minItems": 1,
                     "items": { "type": "string", "minLength": 1 },
                     "uniqueItems": true
                   },
                   "limits": {
                     "type": "object",
                     "additionalProperties": false,
+                    "required": ["timeout_ms", "memory_bytes", "max_payload_bytes", "max_stream_bytes_per_sec"],
                     "properties": {
                       "timeout_ms": { "type": "integer", "minimum": 0 },
                       "memory_bytes": { "type": "integer", "minimum": 1, "maximum": 268435456 },
@@ -184,7 +181,7 @@
                   "connection_nonce": { "type": "string", "minLength": 16 },
                   "key_id": { "type": "string", "minLength": 1 },
                   "signature": { "type": "string", "pattern": "^ed25519:.+" },
-                  "expires_at": { "type": "string", "format": "date-time" }
+                  "expires_at_unix_ms": { "type": "integer", "minimum": 1 }
                 },
                 "allOf": [
                   {
@@ -362,31 +359,26 @@
       }
     },
     "heartbeat_response_payload": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["ok"],
-      "properties": {
-        "ok": { "type": "boolean" },
-        "result": { "$ref": "#/$defs/heartbeat_ack_result" },
-        "error": { "type": "string" },
-        "code": { "type": "string" },
-        "message": { "type": "string" },
-        "error_origin": { "enum": ["runtime", "hostcall", "plugin"] }
-      },
-      "allOf": [
+      "oneOf": [
         {
-          "if": {
-            "properties": { "ok": { "const": true } },
-            "required": ["ok"]
-          },
-          "then": { "required": ["result"] }
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["ok", "result"],
+          "properties": {
+            "ok": { "const": true },
+            "result": { "$ref": "#/$defs/heartbeat_ack_result" }
+          }
         },
         {
-          "if": {
-            "properties": { "ok": { "const": false } },
-            "required": ["ok"]
-          },
-          "then": { "required": ["code", "message", "error_origin"] }
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["ok", "code", "message", "error_origin"],
+          "properties": {
+            "ok": { "const": false },
+            "code": { "type": "string", "minLength": 1 },
+            "message": { "type": "string", "minLength": 1 },
+            "error_origin": { "enum": ["runtime", "hostcall", "plugin"] }
+          }
         }
       ]
     },
@@ -406,6 +398,17 @@
         "host_sent_unix_nano": { "type": "integer", "minimum": 1 }
       }
     },
+    "hostcall_failure_response_payload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ok", "code", "message", "error_origin"],
+      "properties": {
+        "ok": { "const": false },
+        "code": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[A-Z][A-Z0-9_]{0,127}$" },
+        "message": { "type": "string", "minLength": 1, "maxLength": 4096 },
+        "error_origin": { "const": "hostcall" }
+      }
+    },
     "open_handle_request_payload": {
       "type": "object",
       "additionalProperties": false,
@@ -417,23 +420,21 @@
       }
     },
     "open_handle_response_payload": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["ok"],
-      "properties": {
-        "ok": { "type": "boolean" },
-        "package_hash": { "$ref": "#/$defs/sha256" },
-        "artifact": { "$ref": "#/$defs/worker_artifact_path" },
-        "sha256": { "$ref": "#/$defs/sha256" },
-        "content_base64": { "type": "string", "contentEncoding": "base64" },
-        "code": { "type": "string" },
-        "message": { "type": "string" },
-        "error_origin": { "const": "hostcall" }
-      },
-      "allOf": [{
-        "if": { "properties": { "ok": { "const": false } }, "required": ["ok"] },
-        "then": { "required": ["code", "message", "error_origin"] }
-      }]
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["ok", "package_hash", "artifact", "sha256", "content_base64"],
+          "properties": {
+            "ok": { "const": true },
+            "package_hash": { "$ref": "#/$defs/sha256" },
+            "artifact": { "$ref": "#/$defs/worker_artifact_path" },
+            "sha256": { "$ref": "#/$defs/sha256" },
+            "content_base64": { "type": "string", "contentEncoding": "base64" }
+          }
+        },
+        { "$ref": "#/$defs/hostcall_failure_response_payload" }
+      ]
     },
     "validate_handle_grant_request_payload": {
       "type": "object",
@@ -442,7 +443,9 @@
         "handle_grant_token",
         "plugin_instance_id",
         "active_fingerprint",
+        "runtime_instance_id",
         "runtime_generation_id",
+        "runtime_shard_id",
         "handle_id",
         "method",
         "policy_revision",
@@ -453,9 +456,9 @@
         "handle_grant_token": { "type": "string", "minLength": 1 },
         "plugin_instance_id": { "type": "string", "minLength": 1 },
         "active_fingerprint": { "type": "string", "minLength": 1 },
-        "runtime_instance_id": { "type": "string" },
+        "runtime_instance_id": { "type": "string", "minLength": 1 },
         "runtime_generation_id": { "type": "string", "minLength": 1 },
-        "runtime_shard_id": { "type": "string" },
+        "runtime_shard_id": { "type": "string", "minLength": 1 },
         "handle_id": { "type": "string", "minLength": 1 },
         "method": { "type": "string", "minLength": 1 },
         "policy_revision": { "type": "integer", "minimum": 0 },
@@ -464,25 +467,23 @@
       }
     },
     "validate_handle_grant_response_payload": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["ok"],
-      "properties": {
-        "ok": { "type": "boolean" },
-        "handle_grant_id": { "type": "string" },
-        "handle_id": { "type": "string" },
-        "method": { "type": "string" },
-        "runtime_generation_id": { "type": "string" },
-        "max_bytes_per_second": { "type": "integer", "minimum": 0 },
-        "max_total_bytes": { "type": "integer", "minimum": 0 },
-        "code": { "type": "string" },
-        "message": { "type": "string" },
-        "error_origin": { "const": "hostcall" }
-      },
-      "allOf": [{
-        "if": { "properties": { "ok": { "const": false } }, "required": ["ok"] },
-        "then": { "required": ["code", "message", "error_origin"] }
-      }]
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["ok", "handle_grant_id", "handle_id", "method", "runtime_generation_id"],
+          "properties": {
+            "ok": { "const": true },
+            "handle_grant_id": { "type": "string", "minLength": 1 },
+            "handle_id": { "type": "string", "minLength": 1 },
+            "method": { "type": "string", "minLength": 1 },
+            "runtime_generation_id": { "type": "string", "minLength": 1 },
+            "max_bytes_per_second": { "type": "integer", "minimum": 0 },
+            "max_total_bytes": { "type": "integer", "minimum": 0 }
+          }
+        },
+        { "$ref": "#/$defs/hostcall_failure_response_payload" }
+      ]
     },
     "storage_file_request_payload": {
       "type": "object",
@@ -491,7 +492,9 @@
         "handle_grant_token",
         "plugin_instance_id",
         "active_fingerprint",
+        "runtime_instance_id",
         "runtime_generation_id",
+        "runtime_shard_id",
         "handle_id",
         "method",
         "policy_revision",
@@ -504,9 +507,9 @@
         "handle_grant_token": { "type": "string", "minLength": 1 },
         "plugin_instance_id": { "type": "string", "minLength": 1 },
         "active_fingerprint": { "type": "string", "minLength": 1 },
-        "runtime_instance_id": { "type": "string" },
+        "runtime_instance_id": { "type": "string", "minLength": 1 },
         "runtime_generation_id": { "type": "string", "minLength": 1 },
-        "runtime_shard_id": { "type": "string" },
+        "runtime_shard_id": { "type": "string", "minLength": 1 },
         "handle_id": { "type": "string", "pattern": "^storage:[A-Za-z0-9_.-]+$" },
         "method": { "const": "storage.files" },
         "policy_revision": { "type": "integer", "minimum": 0 },
@@ -522,27 +525,59 @@
       }
     },
     "storage_file_response_payload": {
+      "oneOf": [
+        { "$ref": "#/$defs/storage_file_read_success_response_payload" },
+        { "$ref": "#/$defs/storage_file_write_success_response_payload" },
+        { "$ref": "#/$defs/storage_file_delete_success_response_payload" },
+        { "$ref": "#/$defs/storage_file_list_success_response_payload" },
+        { "$ref": "#/$defs/hostcall_failure_response_payload" }
+      ]
+    },
+    "storage_file_read_success_response_payload": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["ok"],
+      "required": ["ok", "path", "data_base64", "size_bytes", "usage"],
       "properties": {
-        "ok": { "type": "boolean" },
+        "ok": { "const": true },
         "path": { "type": "string" },
         "data_base64": { "type": "string", "contentEncoding": "base64" },
         "size_bytes": { "type": "integer", "minimum": 0 },
+        "usage": { "$ref": "#/$defs/storage_usage" }
+      }
+    },
+    "storage_file_write_success_response_payload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ok", "path", "size_bytes", "usage"],
+      "properties": {
+        "ok": { "const": true },
+        "path": { "type": "string" },
+        "size_bytes": { "type": "integer", "minimum": 0 },
+        "usage": { "$ref": "#/$defs/storage_usage" }
+      }
+    },
+    "storage_file_delete_success_response_payload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ok", "path"],
+      "properties": {
+        "ok": { "const": true },
+        "path": { "type": "string" }
+      }
+    },
+    "storage_file_list_success_response_payload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ok", "path", "entries", "usage"],
+      "properties": {
+        "ok": { "const": true },
+        "path": { "type": "string" },
         "entries": {
           "type": "array",
           "items": { "$ref": "#/$defs/storage_file_entry" }
         },
-        "usage": { "$ref": "#/$defs/storage_usage" },
-        "code": { "type": "string" },
-        "message": { "type": "string" },
-        "error_origin": { "const": "hostcall" }
-      },
-      "allOf": [{
-        "if": { "properties": { "ok": { "const": false } }, "required": ["ok"] },
-        "then": { "required": ["code", "message", "error_origin"] }
-      }]
+        "usage": { "$ref": "#/$defs/storage_usage" }
+      }
     },
     "storage_file_entry": {
       "type": "object",
@@ -562,7 +597,9 @@
         "handle_grant_token",
         "plugin_instance_id",
         "active_fingerprint",
+        "runtime_instance_id",
         "runtime_generation_id",
+        "runtime_shard_id",
         "handle_id",
         "method",
         "policy_revision",
@@ -575,9 +612,9 @@
         "handle_grant_token": { "type": "string", "minLength": 1 },
         "plugin_instance_id": { "type": "string", "minLength": 1 },
         "active_fingerprint": { "type": "string", "minLength": 1 },
-        "runtime_instance_id": { "type": "string" },
+        "runtime_instance_id": { "type": "string", "minLength": 1 },
         "runtime_generation_id": { "type": "string", "minLength": 1 },
-        "runtime_shard_id": { "type": "string" },
+        "runtime_shard_id": { "type": "string", "minLength": 1 },
         "handle_id": { "type": "string", "pattern": "^storage:[A-Za-z0-9_.-]+$" },
         "method": { "const": "storage.kv" },
         "policy_revision": { "type": "integer", "minimum": 0 },
@@ -593,28 +630,59 @@
       }
     },
     "storage_kv_response_payload": {
+      "oneOf": [
+        { "$ref": "#/$defs/storage_kv_get_success_response_payload" },
+        { "$ref": "#/$defs/storage_kv_put_success_response_payload" },
+        { "$ref": "#/$defs/storage_kv_delete_success_response_payload" },
+        { "$ref": "#/$defs/storage_kv_list_success_response_payload" },
+        { "$ref": "#/$defs/hostcall_failure_response_payload" }
+      ]
+    },
+    "storage_kv_get_success_response_payload": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["ok"],
+      "required": ["ok", "key", "value_base64", "size_bytes", "usage"],
       "properties": {
-        "ok": { "type": "boolean" },
+        "ok": { "const": true },
         "key": { "type": "string" },
         "value_base64": { "type": "string", "contentEncoding": "base64" },
         "size_bytes": { "type": "integer", "minimum": 0 },
+        "usage": { "$ref": "#/$defs/storage_usage" }
+      }
+    },
+    "storage_kv_put_success_response_payload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ok", "key", "size_bytes", "usage"],
+      "properties": {
+        "ok": { "const": true },
+        "key": { "type": "string" },
+        "size_bytes": { "type": "integer", "minimum": 0 },
+        "usage": { "$ref": "#/$defs/storage_usage" }
+      }
+    },
+    "storage_kv_delete_success_response_payload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ok", "key"],
+      "properties": {
+        "ok": { "const": true },
+        "key": { "type": "string" }
+      }
+    },
+    "storage_kv_list_success_response_payload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ok", "entries", "usage"],
+      "properties": {
+        "ok": { "const": true },
         "prefix": { "type": "string" },
         "entries": {
           "type": "array",
           "items": { "$ref": "#/$defs/storage_kv_entry" }
         },
-        "usage": { "$ref": "#/$defs/storage_usage" },
-        "code": { "type": "string" },
-        "message": { "type": "string" },
-        "error_origin": { "const": "hostcall" }
-      },
-      "allOf": [{
-        "if": { "properties": { "ok": { "const": false } }, "required": ["ok"] },
-        "then": { "required": ["code", "message", "error_origin"] }
-      }]
+        "usage": { "$ref": "#/$defs/storage_usage" }
+      }
     },
     "storage_kv_entry": {
       "type": "object",
@@ -633,7 +701,9 @@
         "handle_grant_token",
         "plugin_instance_id",
         "active_fingerprint",
+        "runtime_instance_id",
         "runtime_generation_id",
+        "runtime_shard_id",
         "handle_id",
         "method",
         "policy_revision",
@@ -647,9 +717,9 @@
         "handle_grant_token": { "type": "string", "minLength": 1 },
         "plugin_instance_id": { "type": "string", "minLength": 1 },
         "active_fingerprint": { "type": "string", "minLength": 1 },
-        "runtime_instance_id": { "type": "string" },
+        "runtime_instance_id": { "type": "string", "minLength": 1 },
         "runtime_generation_id": { "type": "string", "minLength": 1 },
-        "runtime_shard_id": { "type": "string" },
+        "runtime_shard_id": { "type": "string", "minLength": 1 },
         "handle_id": { "type": "string", "pattern": "^storage:[A-Za-z0-9_.-]+$" },
         "method": { "const": "storage.sqlite" },
         "policy_revision": { "type": "integer", "minimum": 0 },
@@ -669,14 +739,31 @@
       }
     },
     "storage_sqlite_response_payload": {
+      "oneOf": [
+        { "$ref": "#/$defs/storage_sqlite_exec_success_response_payload" },
+        { "$ref": "#/$defs/storage_sqlite_query_success_response_payload" },
+        { "$ref": "#/$defs/hostcall_failure_response_payload" }
+      ]
+    },
+    "storage_sqlite_exec_success_response_payload": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["ok"],
+      "required": ["ok", "database", "rows_affected", "usage"],
       "properties": {
-        "ok": { "type": "boolean" },
+        "ok": { "const": true },
         "database": { "type": "string" },
         "rows_affected": { "type": "integer", "minimum": 0 },
         "last_insert_id": { "type": "integer", "minimum": 0 },
+        "usage": { "$ref": "#/$defs/storage_usage" }
+      }
+    },
+    "storage_sqlite_query_success_response_payload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ok", "database", "columns", "rows", "usage"],
+      "properties": {
+        "ok": { "const": true },
+        "database": { "type": "string" },
         "columns": {
           "type": "array",
           "items": { "type": "string" }
@@ -688,19 +775,19 @@
             "items": { "$ref": "#/$defs/storage_sqlite_value" }
           }
         },
-        "usage": { "$ref": "#/$defs/storage_usage" },
-        "code": { "type": "string" },
-        "message": { "type": "string" },
-        "error_origin": { "const": "hostcall" }
-      },
-      "allOf": [{
-        "if": { "properties": { "ok": { "const": false } }, "required": ["ok"] },
-        "then": { "required": ["code", "message", "error_origin"] }
-      }]
+        "usage": { "$ref": "#/$defs/storage_usage" }
+      }
     },
     "storage_sqlite_value": {
       "type": "object",
       "additionalProperties": false,
+      "oneOf": [
+        { "required": ["null"], "properties": { "null": { "const": true } } },
+        { "required": ["int"] },
+        { "required": ["float"] },
+        { "required": ["text"] },
+        { "required": ["blob_base64"] }
+      ],
       "properties": {
         "null": { "type": "boolean" },
         "int": { "type": "integer" },
@@ -712,7 +799,7 @@
     "storage_usage": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["plugin_instance_id", "store_id", "usage_bytes", "quota_bytes"],
+      "required": ["plugin_instance_id", "store_id", "usage_bytes", "quota_bytes", "usage_files", "quota_files"],
       "properties": {
         "plugin_instance_id": { "type": "string", "minLength": 1 },
         "store_id": { "type": "string", "minLength": 1 },
@@ -728,7 +815,9 @@
       "required": [
         "plugin_instance_id",
         "active_fingerprint",
+        "runtime_instance_id",
         "runtime_generation_id",
+        "runtime_shard_id",
         "policy_revision",
         "management_revision",
         "revoke_epoch",
@@ -739,9 +828,9 @@
       "properties": {
         "plugin_instance_id": { "type": "string", "minLength": 1 },
         "active_fingerprint": { "type": "string", "minLength": 1 },
-        "runtime_instance_id": { "type": "string" },
+        "runtime_instance_id": { "type": "string", "minLength": 1 },
         "runtime_generation_id": { "type": "string", "minLength": 1 },
-        "runtime_shard_id": { "type": "string" },
+        "runtime_shard_id": { "type": "string", "minLength": 1 },
         "policy_revision": { "type": "integer", "minimum": 0 },
         "management_revision": { "type": "integer", "minimum": 0 },
         "revoke_epoch": { "type": "integer", "minimum": 0 },
@@ -752,53 +841,63 @@
       }
     },
     "network_grant_response_payload": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["ok"],
-      "properties": {
-        "ok": { "type": "boolean" },
-        "grant_id": { "type": "string", "pattern": "^netgrant_[0-9a-f]{32}$" },
-        "plugin_instance_id": { "type": "string", "minLength": 1 },
-        "active_fingerprint": { "type": "string", "minLength": 1 },
-        "policy_revision": { "type": "integer", "minimum": 0 },
-        "management_revision": { "type": "integer", "minimum": 0 },
-        "revoke_epoch": { "type": "integer", "minimum": 0 },
-        "connector_id": { "type": "string", "minLength": 1 },
-        "transport": { "enum": ["http", "websocket", "tcp", "udp"] },
-        "destination": { "$ref": "#/$defs/network_destination" },
-        "runtime_generation_id": { "type": "string" },
-        "target_classifier_version": { "const": "target-classifier-v1" },
-        "expires_at": { "type": "string", "format": "date-time" },
-        "code": { "type": "string" },
-        "message": { "type": "string" },
-        "error_origin": { "const": "hostcall" }
-      },
-      "allOf": [{
-        "if": { "properties": { "ok": { "const": false } }, "required": ["ok"] },
-        "then": { "required": ["code", "message", "error_origin"] }
-      }]
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "ok", "grant_id", "plugin_instance_id", "active_fingerprint",
+            "policy_revision", "management_revision", "revoke_epoch", "connector_id",
+            "transport", "destination", "runtime_generation_id",
+            "target_classifier_version", "expires_at"
+          ],
+          "properties": {
+            "ok": { "const": true },
+            "grant_id": { "type": "string", "pattern": "^netgrant_[0-9a-f]{32}$" },
+            "plugin_instance_id": { "type": "string", "minLength": 1 },
+            "active_fingerprint": { "type": "string", "minLength": 1 },
+            "policy_revision": { "type": "integer", "minimum": 0 },
+            "management_revision": { "type": "integer", "minimum": 0 },
+            "revoke_epoch": { "type": "integer", "minimum": 0 },
+            "connector_id": { "type": "string", "minLength": 1 },
+            "transport": { "enum": ["http", "websocket", "tcp", "udp"] },
+            "destination": { "$ref": "#/$defs/network_destination" },
+            "runtime_generation_id": { "type": "string", "minLength": 1 },
+            "target_classifier_version": { "const": "target-classifier-v2" },
+            "expires_at": { "type": "string", "format": "date-time" }
+          }
+        },
+        { "$ref": "#/$defs/hostcall_failure_response_payload" }
+      ]
     },
     "network_execute_request_payload": {
       "type": "object",
       "additionalProperties": false,
       "required": [
+        "plugin_id",
         "plugin_instance_id",
         "active_fingerprint",
+        "runtime_instance_id",
         "runtime_generation_id",
+        "runtime_shard_id",
         "policy_revision",
         "management_revision",
         "revoke_epoch",
         "connector_id",
         "transport",
-        "destination"
+        "destination",
+        "owner_session_hash",
+        "owner_user_hash",
+        "owner_env_hash",
+        "session_channel_id_hash"
       ],
       "properties": {
-        "plugin_id": { "type": "string" },
+        "plugin_id": { "type": "string", "minLength": 1 },
         "plugin_instance_id": { "type": "string", "minLength": 1 },
         "active_fingerprint": { "type": "string", "minLength": 1 },
-        "runtime_instance_id": { "type": "string" },
+        "runtime_instance_id": { "type": "string", "minLength": 1 },
         "runtime_generation_id": { "type": "string", "minLength": 1 },
-        "runtime_shard_id": { "type": "string" },
+        "runtime_shard_id": { "type": "string", "minLength": 1 },
         "policy_revision": { "type": "integer", "minimum": 0 },
         "management_revision": { "type": "integer", "minimum": 0 },
         "revoke_epoch": { "type": "integer", "minimum": 0 },
@@ -838,44 +937,43 @@
         "surface_instance_id": { "type": "string" },
         "owner_session_hash": { "type": "string" },
         "owner_user_hash": { "type": "string" },
+        "owner_env_hash": { "type": "string", "minLength": 1 },
         "session_channel_id_hash": { "type": "string" },
         "bridge_channel_id": { "type": "string" },
         "content_type": { "type": "string" }
       }
     },
     "network_execute_response_payload": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["ok"],
-      "properties": {
-        "ok": { "type": "boolean" },
-        "transport": { "enum": ["http", "websocket", "tcp", "udp"] },
-        "destination": { "$ref": "#/$defs/network_destination" },
-        "status_code": { "type": "integer", "minimum": 100, "maximum": 599 },
-        "headers": {
+      "oneOf": [
+        {
           "type": "object",
-          "additionalProperties": {
-            "type": "array",
-            "items": { "type": "string" }
+          "additionalProperties": false,
+          "required": ["ok", "transport", "destination", "grant_id", "connector_id", "runtime_generation_id"],
+          "properties": {
+            "ok": { "const": true },
+            "transport": { "enum": ["http", "websocket", "tcp", "udp"] },
+            "destination": { "$ref": "#/$defs/network_destination" },
+            "status_code": { "type": "integer", "minimum": 100, "maximum": 599 },
+            "headers": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "array",
+                "items": { "type": "string" }
+              }
+            },
+            "message_type": { "enum": ["text", "binary"] },
+            "body_base64": { "type": "string", "contentEncoding": "base64" },
+            "payload_base64": { "type": "string", "contentEncoding": "base64" },
+            "stream_id": { "type": "string", "minLength": 1 },
+            "bytes_read": { "type": "integer", "minimum": 0 },
+            "chunk_count": { "type": "integer", "minimum": 0 },
+            "grant_id": { "type": "string", "pattern": "^netgrant_[0-9a-f]{32}$" },
+            "connector_id": { "type": "string", "minLength": 1 },
+            "runtime_generation_id": { "type": "string", "minLength": 1 }
           }
         },
-        "message_type": { "enum": ["text", "binary"] },
-        "body_base64": { "type": "string", "contentEncoding": "base64" },
-        "payload_base64": { "type": "string", "contentEncoding": "base64" },
-        "stream_id": { "type": "string", "minLength": 1 },
-        "bytes_read": { "type": "integer", "minimum": 0 },
-        "chunk_count": { "type": "integer", "minimum": 0 },
-        "grant_id": { "type": "string", "pattern": "^netgrant_[0-9a-f]{32}$" },
-        "connector_id": { "type": "string", "minLength": 1 },
-        "runtime_generation_id": { "type": "string" },
-        "code": { "type": "string" },
-        "message": { "type": "string" },
-        "error_origin": { "const": "hostcall" }
-      },
-      "allOf": [{
-        "if": { "properties": { "ok": { "const": false } }, "required": ["ok"] },
-        "then": { "required": ["code", "message", "error_origin"] }
-      }]
+        { "$ref": "#/$defs/hostcall_failure_response_payload" }
+      ]
     },
     "network_destination": {
       "type": "object",
@@ -889,31 +987,26 @@
       }
     },
     "revoke_epoch_ack_response_payload": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["ok"],
-      "properties": {
-        "ok": { "type": "boolean" },
-        "result": { "$ref": "#/$defs/revoke_epoch_ack_result" },
-        "error": { "type": "string" },
-        "code": { "type": "string" },
-        "message": { "type": "string" },
-        "error_origin": { "enum": ["runtime", "hostcall", "plugin"] }
-      },
-      "allOf": [
+      "oneOf": [
         {
-          "if": {
-            "properties": { "ok": { "const": true } },
-            "required": ["ok"]
-          },
-          "then": { "required": ["result"] }
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["ok", "result"],
+          "properties": {
+            "ok": { "const": true },
+            "result": { "$ref": "#/$defs/revoke_epoch_ack_result" }
+          }
         },
         {
-          "if": {
-            "properties": { "ok": { "const": false } },
-            "required": ["ok"]
-          },
-          "then": { "required": ["code", "message", "error_origin"] }
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["ok", "code", "message", "error_origin"],
+          "properties": {
+            "ok": { "const": false },
+            "code": { "type": "string", "minLength": 1 },
+            "message": { "type": "string", "minLength": 1 },
+            "error_origin": { "enum": ["runtime", "hostcall", "plugin"] }
+          }
         }
       ]
     },
@@ -939,21 +1032,28 @@
       "required": ["runtime_generation_id", "payload"],
       "properties": {
         "payload": {
-          "type": "object",
-          "additionalProperties": false,
-          "required": ["ok"],
-          "properties": {
-            "ok": { "type": "boolean" },
-            "result": true,
-            "error": { "type": "string" },
-            "code": { "type": "string" },
-            "message": { "type": "string" },
-            "error_origin": { "enum": ["runtime", "hostcall", "plugin"] }
-          },
-          "allOf": [{
-            "if": { "properties": { "ok": { "const": false } }, "required": ["ok"] },
-            "then": { "required": ["code", "message", "error_origin"] }
-          }]
+          "oneOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["ok", "result"],
+              "properties": {
+                "ok": { "const": true },
+                "result": true
+              }
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["ok", "code", "message", "error_origin"],
+              "properties": {
+                "ok": { "const": false },
+                "code": { "type": "string", "minLength": 1 },
+                "message": { "type": "string", "minLength": 1 },
+                "error_origin": { "enum": ["runtime", "hostcall", "plugin"] }
+              }
+            }
+          ]
         }
       }
     }

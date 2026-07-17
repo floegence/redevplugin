@@ -1,115 +1,375 @@
+use std::collections::HashMap;
+use std::fmt;
+use wasmparser::{Encoding, ExternalKind, FuncType, Parser, Payload, RefType, TypeRef, ValType};
+
 pub const WASM_WORKER_ABI_VERSION: &str = "redevplugin-wasm-worker-v2";
+pub const EXPORT_MEMORY: &str = "memory";
+pub const EXPORT_WORKER_ALLOC: &str = "redevplugin_worker_alloc";
+pub const EXPORT_WORKER_DEALLOC: &str = "redevplugin_worker_dealloc";
 pub const EXPORT_WORKER_INVOKE: &str = "redevplugin_worker_invoke";
-pub const REQUIRED_EXPORT_INVOKE: &str = "redevplugin_worker_invoke";
+pub const REQUIRED_EXPORT_INVOKE: &str = EXPORT_WORKER_INVOKE;
 pub const IMPORT_STORAGE: &str = "redevplugin.storage";
 pub const IMPORT_NETWORK: &str = "redevplugin.network";
+pub const MAX_TABLE_ELEMENTS: u64 = 65_536;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ValueType {
+    I32,
+    I64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FunctionContract {
+    pub export_name: String,
+    pub params: Vec<ValueType>,
+    pub results: Vec<ValueType>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MemoryContract {
+    pub initial_pages: u64,
+    pub maximum_pages: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HostcallImport {
+    pub module: String,
+    pub name: String,
+    pub params: Vec<ValueType>,
+    pub results: Vec<ValueType>,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ValidatedWorkerModule {
     pub byte_len: usize,
-    pub export_name: String,
+    pub memory: MemoryContract,
+    pub alloc_export: FunctionContract,
+    pub dealloc_export: FunctionContract,
+    pub invoke_export: FunctionContract,
+    pub imports: Vec<HostcallImport>,
 }
 
-pub fn validate_worker_module(
-    bytes: &[u8],
-    required_export: &str,
-) -> Result<ValidatedWorkerModule, String> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ValidationErrorCategory {
+    InvalidModule,
+    UnsupportedImport,
+    InvalidMemory,
+    InvalidTable,
+    MissingExport,
+    InvalidSignature,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ValidationError {
+    category: ValidationErrorCategory,
+    message: String,
+}
+
+impl ValidationError {
+    pub fn category(&self) -> ValidationErrorCategory {
+        self.category
+    }
+
+    fn new(category: ValidationErrorCategory, message: impl Into<String>) -> Self {
+        Self {
+            category,
+            message: message.into(),
+        }
+    }
+}
+
+impl fmt::Display for ValidationError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for ValidationError {}
+
+pub fn validate_worker_module(bytes: &[u8]) -> Result<ValidatedWorkerModule, ValidationError> {
     wasmparser::Validator::new()
         .validate_all(bytes)
-        .map_err(|err| format!("wasm validation failed: {err}"))?;
-    if bytes.len() < 8 {
-        return Err("wasm module is too small".to_string());
-    }
-    if &bytes[0..4] != b"\0asm" {
-        return Err("wasm magic header is invalid".to_string());
-    }
-    if bytes[4..8] != [0x01, 0x00, 0x00, 0x00] {
-        return Err("wasm version must be 1".to_string());
-    }
-    let required_export = required_export.trim();
-    if required_export.is_empty() {
-        return Err("required export is empty".to_string());
-    }
-    let mut cursor = 8;
-    let mut found_export = false;
-    while cursor < bytes.len() {
-        let section_id = bytes[cursor];
-        cursor += 1;
-        let section_len = read_u32_leb(bytes, &mut cursor)? as usize;
-        let section_end = cursor
-            .checked_add(section_len)
-            .ok_or_else(|| "wasm section length overflows".to_string())?;
-        if section_end > bytes.len() {
-            return Err("wasm section length exceeds module size".to_string());
+        .map_err(|err| invalid_module(format!("wasm validation failed: {err}")))?;
+
+    let mut types = Vec::new();
+    let mut function_type_indices = Vec::new();
+    let mut imported_function_type_indices = Vec::new();
+    let mut imports = Vec::new();
+    let mut memories = Vec::new();
+    let mut table_count = 0_u32;
+    let mut exports = HashMap::new();
+
+    for payload in Parser::new(0).parse_all(bytes) {
+        match payload.map_err(|err| invalid_module(format!("parse wasm module: {err}")))? {
+            Payload::Version { encoding, .. } if encoding != Encoding::Module => {
+                return Err(invalid_module(
+                    "worker artifact must be a core WebAssembly module",
+                ));
+            }
+            Payload::TypeSection(reader) => {
+                for function_type in reader.into_iter_err_on_gc_types() {
+                    types.push(function_type.map_err(|err| {
+                        invalid_module(format!("parse wasm function type: {err}"))
+                    })?);
+                }
+            }
+            Payload::ImportSection(reader) => {
+                for imported in reader {
+                    let imported = imported
+                        .map_err(|err| invalid_module(format!("parse wasm import: {err}")))?;
+                    let TypeRef::Func(type_index) = imported.ty else {
+                        return Err(ValidationError::new(
+                            ValidationErrorCategory::UnsupportedImport,
+                            format!(
+                                "worker import {}/{} must be a function",
+                                imported.module, imported.name
+                            ),
+                        ));
+                    };
+                    let function_type = types.get(type_index as usize).ok_or_else(|| {
+                        invalid_module(format!(
+                            "worker import {}/{} references missing type {type_index}",
+                            imported.module, imported.name
+                        ))
+                    })?;
+                    require_hostcall(imported.module, imported.name, function_type)?;
+                    let (params, results) = function_contract_types(function_type)?;
+                    imports.push(HostcallImport {
+                        module: imported.module.to_string(),
+                        name: imported.name.to_string(),
+                        params,
+                        results,
+                    });
+                    imported_function_type_indices.push(type_index);
+                }
+            }
+            Payload::FunctionSection(reader) => {
+                for type_index in reader {
+                    function_type_indices
+                        .push(type_index.map_err(|err| {
+                            invalid_module(format!("parse wasm function: {err}"))
+                        })?);
+                }
+            }
+            Payload::TableSection(reader) => {
+                for table in reader {
+                    let table =
+                        table.map_err(|err| invalid_module(format!("parse wasm table: {err}")))?;
+                    table_count += 1;
+                    if table_count > 1 {
+                        return Err(ValidationError::new(
+                            ValidationErrorCategory::InvalidTable,
+                            "worker must define at most one table",
+                        ));
+                    }
+                    if table.ty.table64
+                        || table.ty.shared
+                        || !matches!(table.ty.element_type, RefType::FUNCREF | RefType::EXTERNREF)
+                        || table.ty.initial > MAX_TABLE_ELEMENTS
+                        || table
+                            .ty
+                            .maximum
+                            .is_some_and(|maximum| maximum > MAX_TABLE_ELEMENTS)
+                    {
+                        return Err(ValidationError::new(
+                            ValidationErrorCategory::InvalidTable,
+                            "worker table contract is unsupported",
+                        ));
+                    }
+                }
+            }
+            Payload::MemorySection(reader) => {
+                for memory in reader {
+                    let memory = memory
+                        .map_err(|err| invalid_module(format!("parse wasm memory: {err}")))?;
+                    memories.push(memory);
+                }
+            }
+            Payload::ExportSection(reader) => {
+                for exported in reader {
+                    let exported = exported
+                        .map_err(|err| invalid_module(format!("parse wasm export: {err}")))?;
+                    if exports
+                        .insert(exported.name.to_string(), (exported.kind, exported.index))
+                        .is_some()
+                    {
+                        return Err(invalid_module(format!(
+                            "worker export {:?} is duplicated",
+                            exported.name
+                        )));
+                    }
+                }
+            }
+            _ => {}
         }
-        if section_id == 7 {
-            found_export = parse_export_section(&bytes[cursor..section_end], required_export)?;
-        }
-        cursor = section_end;
     }
-    if !found_export {
-        return Err(format!(
-            "required function export {required_export:?} is missing"
+
+    if memories.len() != 1 {
+        return Err(ValidationError::new(
+            ValidationErrorCategory::InvalidMemory,
+            format!(
+                "worker must define exactly one linear memory, found {}",
+                memories.len()
+            ),
         ));
     }
+    let memory = memories[0];
+    if memory.memory64 || memory.shared || memory.page_size_log2.is_some() {
+        return Err(ValidationError::new(
+            ValidationErrorCategory::InvalidMemory,
+            "worker memory must be an unshared 32-bit memory with standard pages",
+        ));
+    }
+    match exports.get(EXPORT_MEMORY) {
+        Some((ExternalKind::Memory, 0)) => {}
+        _ => {
+            return Err(ValidationError::new(
+                ValidationErrorCategory::MissingExport,
+                "worker must export its only linear memory as \"memory\"",
+            ));
+        }
+    }
+
+    let alloc_export = require_function_export(
+        EXPORT_WORKER_ALLOC,
+        &[ValueType::I32],
+        &[ValueType::I32],
+        &exports,
+        &types,
+        &imported_function_type_indices,
+        &function_type_indices,
+    )?;
+    let dealloc_export = require_function_export(
+        EXPORT_WORKER_DEALLOC,
+        &[ValueType::I32, ValueType::I32],
+        &[],
+        &exports,
+        &types,
+        &imported_function_type_indices,
+        &function_type_indices,
+    )?;
+    let invoke_export = require_function_export(
+        EXPORT_WORKER_INVOKE,
+        &[ValueType::I32, ValueType::I32],
+        &[ValueType::I64],
+        &exports,
+        &types,
+        &imported_function_type_indices,
+        &function_type_indices,
+    )?;
+
     Ok(ValidatedWorkerModule {
         byte_len: bytes.len(),
-        export_name: required_export.to_string(),
+        memory: MemoryContract {
+            initial_pages: memory.initial,
+            maximum_pages: memory.maximum,
+        },
+        alloc_export,
+        dealloc_export,
+        invoke_export,
+        imports,
     })
 }
 
-fn parse_export_section(section: &[u8], required_export: &str) -> Result<bool, String> {
-    let mut cursor = 0;
-    let count = read_u32_leb(section, &mut cursor)? as usize;
-    let mut found = false;
-    for _ in 0..count {
-        let name_len = read_u32_leb(section, &mut cursor)? as usize;
-        let name_end = cursor
-            .checked_add(name_len)
-            .ok_or_else(|| "wasm export name length overflows".to_string())?;
-        if name_end > section.len() {
-            return Err("wasm export name exceeds section size".to_string());
-        }
-        let name = std::str::from_utf8(&section[cursor..name_end])
-            .map_err(|_| "wasm export name is not utf-8".to_string())?;
-        cursor = name_end;
-        if cursor >= section.len() {
-            return Err("wasm export entry is missing kind".to_string());
-        }
-        let kind = section[cursor];
-        cursor += 1;
-        let _index = read_u32_leb(section, &mut cursor)?;
-        if name == required_export {
-            if kind != 0 {
-                return Err(format!(
-                    "required export {required_export:?} must be a function"
-                ));
-            }
-            found = true;
-        }
+fn require_hostcall(
+    module: &str,
+    name: &str,
+    function_type: &FuncType,
+) -> Result<(), ValidationError> {
+    let allowed = matches!(
+        (module, name),
+        (IMPORT_STORAGE, "files" | "kv" | "sqlite") | (IMPORT_NETWORK, "execute")
+    );
+    if !allowed {
+        return Err(ValidationError::new(
+            ValidationErrorCategory::UnsupportedImport,
+            format!("worker import {module}/{name} is unsupported"),
+        ));
     }
-    if cursor != section.len() {
-        return Err("wasm export section has trailing bytes".to_string());
+    let (params, results) = function_contract_types(function_type)?;
+    if params != [ValueType::I32; 4] || results != [ValueType::I32] {
+        return Err(ValidationError::new(
+            ValidationErrorCategory::InvalidSignature,
+            format!("worker import {module}/{name} has an invalid function signature"),
+        ));
     }
-    Ok(found)
+    Ok(())
 }
 
-fn read_u32_leb(bytes: &[u8], cursor: &mut usize) -> Result<u32, String> {
-    let mut result: u32 = 0;
-    let mut shift = 0;
-    for _ in 0..5 {
-        if *cursor >= bytes.len() {
-            return Err("unexpected end of wasm leb128 value".to_string());
-        }
-        let byte = bytes[*cursor];
-        *cursor += 1;
-        result |= ((byte & 0x7f) as u32) << shift;
-        if byte & 0x80 == 0 {
-            return Ok(result);
-        }
-        shift += 7;
+fn require_function_export(
+    name: &str,
+    expected_params: &[ValueType],
+    expected_results: &[ValueType],
+    exports: &HashMap<String, (ExternalKind, u32)>,
+    types: &[FuncType],
+    imported_function_type_indices: &[u32],
+    function_type_indices: &[u32],
+) -> Result<FunctionContract, ValidationError> {
+    let Some((ExternalKind::Func, function_index)) = exports.get(name).copied() else {
+        return Err(ValidationError::new(
+            ValidationErrorCategory::MissingExport,
+            format!("required function export {name:?} is missing"),
+        ));
+    };
+    let type_index =
+        if let Some(type_index) = imported_function_type_indices.get(function_index as usize) {
+            *type_index
+        } else {
+            let defined_index = function_index as usize - imported_function_type_indices.len();
+            *function_type_indices.get(defined_index).ok_or_else(|| {
+                invalid_module(format!(
+                    "function export {name:?} references missing function {function_index}"
+                ))
+            })?
+        };
+    let function_type = types.get(type_index as usize).ok_or_else(|| {
+        invalid_module(format!(
+            "function export {name:?} references missing type {type_index}"
+        ))
+    })?;
+    let (params, results) = function_contract_types(function_type)?;
+    if params != expected_params || results != expected_results {
+        return Err(ValidationError::new(
+            ValidationErrorCategory::InvalidSignature,
+            format!("worker export {name:?} has an invalid function signature"),
+        ));
     }
-    Err("wasm leb128 value is too large".to_string())
+    Ok(FunctionContract {
+        export_name: name.to_string(),
+        params,
+        results,
+    })
+}
+
+fn function_contract_types(
+    function_type: &FuncType,
+) -> Result<(Vec<ValueType>, Vec<ValueType>), ValidationError> {
+    let params = function_type
+        .params()
+        .iter()
+        .map(value_type)
+        .collect::<Result<Vec<_>, _>>()?;
+    let results = function_type
+        .results()
+        .iter()
+        .map(value_type)
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok((params, results))
+}
+
+fn value_type(value: &ValType) -> Result<ValueType, ValidationError> {
+    match value {
+        ValType::I32 => Ok(ValueType::I32),
+        ValType::I64 => Ok(ValueType::I64),
+        _ => Err(ValidationError::new(
+            ValidationErrorCategory::InvalidSignature,
+            format!("worker ABI function uses unsupported value type {value}"),
+        )),
+    }
+}
+
+fn invalid_module(message: impl Into<String>) -> ValidationError {
+    ValidationError::new(ValidationErrorCategory::InvalidModule, message)
 }
 
 #[cfg(test)]
@@ -117,27 +377,97 @@ mod tests {
     use super::*;
 
     #[test]
-    fn validates_minimal_worker_module() {
-        let module = minimal_worker_wasm(REQUIRED_EXPORT_INVOKE);
-        let validated =
-            validate_worker_module(&module, REQUIRED_EXPORT_INVOKE).expect("valid worker module");
+    fn validates_complete_worker_contract() {
+        let module = wat::parse_str(valid_worker_wat()).expect("compile valid worker");
+        let validated = validate_worker_module(&module).expect("validate worker module");
         assert_eq!(validated.byte_len, module.len());
-        assert_eq!(validated.export_name, REQUIRED_EXPORT_INVOKE);
+        assert_eq!(validated.memory.initial_pages, 1);
+        assert_eq!(validated.alloc_export.export_name, EXPORT_WORKER_ALLOC);
+        assert_eq!(validated.dealloc_export.export_name, EXPORT_WORKER_DEALLOC);
+        assert_eq!(validated.invoke_export.export_name, EXPORT_WORKER_INVOKE);
+        assert_eq!(validated.imports.len(), 2);
     }
 
     #[test]
-    fn rejects_missing_required_export() {
-        let module = minimal_worker_wasm("other_export");
-        let err = validate_worker_module(&module, REQUIRED_EXPORT_INVOKE)
-            .expect_err("missing required export");
-        assert!(err.contains("required function export"));
+    fn rejects_missing_memory_export() {
+        let module = wat::parse_str(valid_worker_wat().replace("(export \"memory\")", ""))
+            .expect("compile worker");
+        let error = validate_worker_module(&module).expect_err("missing memory export");
+        assert_eq!(error.category(), ValidationErrorCategory::MissingExport);
     }
 
     #[test]
-    fn rejects_non_wasm_bytes() {
-        let err =
-            validate_worker_module(b"not wasm", REQUIRED_EXPORT_INVOKE).expect_err("invalid magic");
-        assert!(err.contains("magic"));
+    fn rejects_invalid_required_export_signatures() {
+        for (name, replacement) in [
+            (
+                "alloc",
+                "(func (export \"redevplugin_worker_alloc\") (param i64) (result i32) i32.const 0)",
+            ),
+            (
+                "dealloc",
+                "(func (export \"redevplugin_worker_dealloc\") (param i32))",
+            ),
+            (
+                "invoke",
+                "(func (export \"redevplugin_worker_invoke\") (param i32 i32) (result i32) i32.const 0)",
+            ),
+        ] {
+            let source = valid_worker_wat();
+            let invalid = match name {
+                "alloc" => source.replace(
+                    "(func (export \"redevplugin_worker_alloc\") (param i32) (result i32) i32.const 0)",
+                    replacement,
+                ),
+                "dealloc" => source.replace(
+                    "(func (export \"redevplugin_worker_dealloc\") (param i32 i32))",
+                    replacement,
+                ),
+                _ => source.replace(
+                    "(func (export \"redevplugin_worker_invoke\") (param i32 i32) (result i64) i64.const 0)",
+                    replacement,
+                ),
+            };
+            let module = wat::parse_str(invalid).expect("compile invalid-signature worker");
+            let error = validate_worker_module(&module).expect_err(name);
+            assert_eq!(error.category(), ValidationErrorCategory::InvalidSignature);
+        }
+    }
+
+    #[test]
+    fn rejects_unsupported_or_mistyped_imports() {
+        for import in [
+            "(import \"wasi_snapshot_preview1\" \"fd_write\" (func (param i32 i32 i32 i32) (result i32)))",
+            "(import \"redevplugin.storage\" \"files\" (func (param i32) (result i32)))",
+            "(import \"redevplugin.storage\" \"memory\" (memory 1))",
+        ] {
+            let source = valid_worker_wat().replace(
+                "(import \"redevplugin.storage\" \"files\" (func (param i32 i32 i32 i32) (result i32)))",
+                import,
+            );
+            let module = wat::parse_str(source).expect("compile worker with invalid import");
+            assert!(
+                validate_worker_module(&module).is_err(),
+                "accepted {import}"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_invalid_memory_and_table_contracts() {
+        for replacement in [
+            "(memory (export \"memory\") i64 1)",
+            "(memory (export \"memory\") 1 2 shared)",
+            "(memory (export \"memory\") 1) (memory 1)",
+            "(memory (export \"memory\") 1) (table 65537 funcref)",
+            "(memory (export \"memory\") 1) (table 1 funcref) (table 1 funcref)",
+        ] {
+            let source = valid_worker_wat().replace("(memory (export \"memory\") 1)", replacement);
+            let module = wat::parse_str(source).expect("compile worker with invalid resources");
+            assert!(
+                validate_worker_module(&module).is_err(),
+                "accepted {replacement}"
+            );
+        }
     }
 
     #[test]
@@ -145,9 +475,28 @@ mod tests {
         let module = decode_hex(include_str!(
             "../../../testdata/contracts/wasm/invalid-final-opcode.hex"
         ));
-        let err = validate_worker_module(&module, REQUIRED_EXPORT_INVOKE)
-            .expect_err("invalid function opcode must fail validation");
-        assert!(err.contains("validation"), "{err}");
+        let error = validate_worker_module(&module).expect_err("invalid opcode");
+        assert_eq!(error.category(), ValidationErrorCategory::InvalidModule);
+    }
+
+    #[test]
+    fn rejects_shared_table_maximum_fixture() {
+        let module = decode_hex(include_str!(
+            "../../../testdata/contracts/wasm/table-maximum-exceeds-limit.hex"
+        ));
+        let error = validate_worker_module(&module).expect_err("table maximum above limit");
+        assert_eq!(error.category(), ValidationErrorCategory::InvalidTable);
+    }
+
+    fn valid_worker_wat() -> &'static str {
+        r#"(module
+            (import "redevplugin.storage" "files" (func (param i32 i32 i32 i32) (result i32)))
+            (import "redevplugin.network" "execute" (func (param i32 i32 i32 i32) (result i32)))
+            (memory (export "memory") 1)
+            (func (export "redevplugin_worker_alloc") (param i32) (result i32) i32.const 0)
+            (func (export "redevplugin_worker_dealloc") (param i32 i32))
+            (func (export "redevplugin_worker_invoke") (param i32 i32) (result i64) i64.const 0)
+        )"#
     }
 
     fn decode_hex(input: &str) -> Vec<u8> {
@@ -160,20 +509,5 @@ mod tests {
                 u8::from_str_radix(text, 16).expect("hex fixture byte")
             })
             .collect()
-    }
-
-    fn minimal_worker_wasm(export_name: &str) -> Vec<u8> {
-        let export_name_bytes = export_name.as_bytes();
-        let mut module = vec![
-            0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, 0x01, 0x04, 0x01, 0x60, 0x00, 0x00,
-            0x03, 0x02, 0x01, 0x00, 0x07,
-        ];
-        let mut export_payload = vec![0x01, export_name_bytes.len() as u8];
-        export_payload.extend_from_slice(export_name_bytes);
-        export_payload.extend_from_slice(&[0x00, 0x00]);
-        module.push(export_payload.len() as u8);
-        module.extend_from_slice(&export_payload);
-        module.extend_from_slice(&[0x0a, 0x04, 0x01, 0x02, 0x00, 0x0b]);
-        module
     }
 }

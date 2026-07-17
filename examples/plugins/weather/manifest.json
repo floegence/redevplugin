@@ -1,80 +1,592 @@
 {
   "schema_version": "redevplugin.manifest.v4",
-  "publisher": { "publisher_id": "dev.redevplugin.examples", "display_name": "ReDevPlugin Examples" },
-  "plugin": {
-    "plugin_id": "dev.redevplugin.examples.weather", "display_name": "Weather", "version": "1.0.0",
-    "api_version": "plugin-v1", "min_runtime_version": "0.5.0", "ui_protocol_version": "plugin-ui-v4"
+  "publisher": {
+    "publisher_id": "dev.redevplugin.examples",
+    "display_name": "ReDevPlugin Examples"
   },
-  "surfaces": [{
-    "surface_id": "weather.view", "kind": "view", "intent": "primary", "label": "Weather",
-    "entry": "ui/index.html", "default_size": { "width": 1120, "height": 760 }
-  }],
-  "workers": [{
-    "worker_id": "weather_backend", "artifact": "workers/weather.wasm", "abi": "redevplugin-wasm-worker-v2",
-    "mode": "job", "scope": "user", "memory_limit_bytes": 33554432
-  }],
+  "plugin": {
+    "plugin_id": "dev.redevplugin.examples.weather",
+    "display_name": "Weather",
+    "version": "1.0.0",
+    "api_version": "plugin-v1",
+    "min_runtime_version": "0.5.0",
+    "ui_protocol_version": "plugin-ui-v4"
+  },
+  "surfaces": [
+    {
+      "surface_id": "weather.view",
+      "kind": "view",
+      "intent": "primary",
+      "label": "Weather",
+      "entry": "ui/index.html",
+      "default_size": {
+        "width": 1120,
+        "height": 760
+      }
+    }
+  ],
+  "workers": [
+    {
+      "worker_id": "weather_backend",
+      "artifact": "workers/weather.wasm",
+      "abi": "redevplugin-wasm-worker-v2",
+      "mode": "job",
+      "scope": "user",
+      "memory_limit_bytes": 33554432
+    }
+  ],
   "methods": [
     {
-      "method": "weather.initialize", "effect": "write", "execution": "sync",
-      "route": { "kind": "worker", "worker_id": "weather_backend", "export": "redevplugin_worker_invoke" },
-      "broker_access": { "storage": [{ "store_id": "weather", "operations": ["exec"] }] },
-      "request_schema": { "type": "object", "additionalProperties": false, "properties": {} },
-      "response_schema": { "type": "object", "additionalProperties": false, "required": ["ready"], "properties": { "ready": { "type": "boolean", "const": true } } }
-    },
-    {
-      "method": "weather.locations.search", "effect": "read", "execution": "sync",
-      "route": { "kind": "worker", "worker_id": "weather_backend", "export": "redevplugin_worker_invoke" },
-      "broker_access": { "network": [{ "connector_id": "geocoding", "transport": "http", "operations": ["http"], "http_methods": ["GET"] }] },
-      "request_schema": { "type": "object", "additionalProperties": false, "required": ["query"], "properties": { "query": { "type": "string", "minLength": 2, "maxLength": 120 } } },
-      "response_schema": { "type": "object", "additionalProperties": false, "required": ["locations"], "properties": { "locations": { "type": "array", "items": { "$ref": "#/$defs/location" } } }, "$defs": { "location": { "$ref": "#/$defs/locationShape" }, "locationShape": { "type": "object", "additionalProperties": false, "required": ["id","name","admin1","country","latitude","longitude","timezone"], "properties": { "id":{"type":"string"},"name":{"type":"string"},"admin1":{"type":"string"},"country":{"type":"string"},"latitude":{"type":"number"},"longitude":{"type":"number"},"timezone":{"type":"string"} } } } }
-    },
-    {
-      "method": "weather.locations.list", "effect": "read", "execution": "sync",
-      "route": { "kind": "worker", "worker_id": "weather_backend", "export": "redevplugin_worker_invoke" },
-      "broker_access": { "storage": [{ "store_id": "weather", "operations": ["query"] }] },
-      "request_schema": { "type": "object", "additionalProperties": false, "properties": {} },
-      "response_schema": { "type": "object", "additionalProperties": false, "required": ["locations"], "properties": { "locations": { "type": "array", "items": { "$ref": "#/$defs/location" } } }, "$defs": { "location": { "type": "object", "additionalProperties": false, "required": ["id","name","admin1","country","latitude","longitude","timezone"], "properties": { "id":{"type":"string"},"name":{"type":"string"},"admin1":{"type":"string"},"country":{"type":"string"},"latitude":{"type":"number"},"longitude":{"type":"number"},"timezone":{"type":"string"} } } } }
-    },
-    {
-      "method": "weather.locations.save", "effect": "write", "execution": "sync",
-      "route": { "kind": "worker", "worker_id": "weather_backend", "export": "redevplugin_worker_invoke" },
-      "broker_access": { "storage": [{ "store_id": "weather", "operations": ["exec"] }] },
-      "request_schema": { "type": "object", "additionalProperties": false, "required": ["id","name","admin1","country","latitude","longitude","timezone"], "properties": { "id":{"type":"string"},"name":{"type":"string"},"admin1":{"type":"string"},"country":{"type":"string"},"latitude":{"type":"number","minimum":-90,"maximum":90},"longitude":{"type":"number","minimum":-180,"maximum":180},"timezone":{"type":"string"} } },
-      "response_schema": { "type": "object", "additionalProperties": false, "required": ["location"], "properties": { "location": { "type": "object", "additionalProperties": false, "required": ["id","name","admin1","country","latitude","longitude","timezone"], "properties": { "id":{"type":"string"},"name":{"type":"string"},"admin1":{"type":"string"},"country":{"type":"string"},"latitude":{"type":"number"},"longitude":{"type":"number"},"timezone":{"type":"string"} } } } }
-    },
-    {
-      "method": "weather.locations.remove", "effect": "delete", "execution": "sync",
-      "route": { "kind": "worker", "worker_id": "weather_backend", "export": "redevplugin_worker_invoke" },
-      "broker_access": { "storage": [{ "store_id": "weather", "operations": ["exec"] }] },
-      "request_schema": { "type": "object", "additionalProperties": false, "required": ["id"], "properties": { "id": { "type": "string" } } },
-      "response_schema": { "type": "object", "additionalProperties": false, "required": ["removed_id"], "properties": { "removed_id": { "type": "string" } } }
-    },
-    {
-      "method": "weather.forecast", "effect": "write", "execution": "sync",
-      "route": { "kind": "worker", "worker_id": "weather_backend", "export": "redevplugin_worker_invoke" },
-      "broker_access": {
-        "storage": [{ "store_id": "weather", "operations": ["query", "exec"] }],
-        "network": [{ "connector_id": "forecast", "transport": "http", "operations": ["http"], "http_methods": ["GET"] }]
+      "method": "weather.initialize",
+      "effect": "write",
+      "execution": "sync",
+      "route": {
+        "kind": "worker",
+        "worker_id": "weather_backend"
       },
-      "request_schema": { "type": "object", "additionalProperties": false, "required": ["latitude","longitude","timezone"], "properties": { "latitude":{"type":"number","minimum":-90,"maximum":90},"longitude":{"type":"number","minimum":-180,"maximum":180},"timezone":{"type":"string"},"force_refresh":{"type":"boolean"} } },
+      "broker_access": {
+        "storage": [
+          {
+            "store_id": "weather",
+            "operations": [
+              "exec"
+            ]
+          }
+        ]
+      },
+      "request_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {}
+      },
       "response_schema": {
-        "type": "object", "additionalProperties": false, "required": ["timezone","timezone_abbreviation","current","days","cache_state","age_seconds"],
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "ready"
+        ],
         "properties": {
-          "timezone":{"type":"string"}, "timezone_abbreviation":{"type":"string"},
-          "cache_state":{"enum":["fresh","stale","network"]}, "age_seconds":{"type":"integer","minimum":0,"maximum":86400},
-          "current": { "type":"object","additionalProperties":false,"required":["time","temperature","apparent_temperature","humidity","weather_code","wind_speed","is_day"],"properties":{"time":{"type":"string"},"temperature":{"type":"number"},"apparent_temperature":{"type":"number"},"humidity":{"type":"number"},"weather_code":{"type":"integer"},"wind_speed":{"type":"number"},"is_day":{"type":"boolean"}} },
-          "days": { "type":"array","items": { "type":"object","additionalProperties":false,"required":["date","weather_code","temperature_max","temperature_min","precipitation_probability","sunrise","sunset"],"properties":{"date":{"type":"string"},"weather_code":{"type":"integer"},"temperature_max":{"type":"number"},"temperature_min":{"type":"number"},"precipitation_probability":{"type":"number"},"sunrise":{"type":"string"},"sunset":{"type":"string"}} } }
+          "ready": {
+            "type": "boolean",
+            "const": true
+          }
+        }
+      }
+    },
+    {
+      "method": "weather.locations.search",
+      "effect": "read",
+      "execution": "sync",
+      "route": {
+        "kind": "worker",
+        "worker_id": "weather_backend"
+      },
+      "broker_access": {
+        "network": [
+          {
+            "connector_id": "geocoding",
+            "transport": "http",
+            "operations": [
+              "http"
+            ],
+            "http_methods": [
+              "GET"
+            ]
+          }
+        ]
+      },
+      "request_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "query"
+        ],
+        "properties": {
+          "query": {
+            "type": "string",
+            "minLength": 2,
+            "maxLength": 120
+          }
+        }
+      },
+      "response_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "locations"
+        ],
+        "properties": {
+          "locations": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/location"
+            }
+          }
+        },
+        "$defs": {
+          "location": {
+            "$ref": "#/$defs/locationShape"
+          },
+          "locationShape": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "id",
+              "name",
+              "admin1",
+              "country",
+              "latitude",
+              "longitude",
+              "timezone"
+            ],
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              },
+              "admin1": {
+                "type": "string"
+              },
+              "country": {
+                "type": "string"
+              },
+              "latitude": {
+                "type": "number"
+              },
+              "longitude": {
+                "type": "number"
+              },
+              "timezone": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "method": "weather.locations.list",
+      "effect": "read",
+      "execution": "sync",
+      "route": {
+        "kind": "worker",
+        "worker_id": "weather_backend"
+      },
+      "broker_access": {
+        "storage": [
+          {
+            "store_id": "weather",
+            "operations": [
+              "query"
+            ]
+          }
+        ]
+      },
+      "request_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {}
+      },
+      "response_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "locations"
+        ],
+        "properties": {
+          "locations": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/location"
+            }
+          }
+        },
+        "$defs": {
+          "location": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "id",
+              "name",
+              "admin1",
+              "country",
+              "latitude",
+              "longitude",
+              "timezone"
+            ],
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              },
+              "admin1": {
+                "type": "string"
+              },
+              "country": {
+                "type": "string"
+              },
+              "latitude": {
+                "type": "number"
+              },
+              "longitude": {
+                "type": "number"
+              },
+              "timezone": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "method": "weather.locations.save",
+      "effect": "write",
+      "execution": "sync",
+      "route": {
+        "kind": "worker",
+        "worker_id": "weather_backend"
+      },
+      "broker_access": {
+        "storage": [
+          {
+            "store_id": "weather",
+            "operations": [
+              "exec"
+            ]
+          }
+        ]
+      },
+      "request_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "name",
+          "admin1",
+          "country",
+          "latitude",
+          "longitude",
+          "timezone"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "admin1": {
+            "type": "string"
+          },
+          "country": {
+            "type": "string"
+          },
+          "latitude": {
+            "type": "number",
+            "minimum": -90,
+            "maximum": 90
+          },
+          "longitude": {
+            "type": "number",
+            "minimum": -180,
+            "maximum": 180
+          },
+          "timezone": {
+            "type": "string"
+          }
+        }
+      },
+      "response_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "location"
+        ],
+        "properties": {
+          "location": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "id",
+              "name",
+              "admin1",
+              "country",
+              "latitude",
+              "longitude",
+              "timezone"
+            ],
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              },
+              "admin1": {
+                "type": "string"
+              },
+              "country": {
+                "type": "string"
+              },
+              "latitude": {
+                "type": "number"
+              },
+              "longitude": {
+                "type": "number"
+              },
+              "timezone": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "method": "weather.locations.remove",
+      "effect": "delete",
+      "execution": "sync",
+      "route": {
+        "kind": "worker",
+        "worker_id": "weather_backend"
+      },
+      "broker_access": {
+        "storage": [
+          {
+            "store_id": "weather",
+            "operations": [
+              "exec"
+            ]
+          }
+        ]
+      },
+      "request_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          }
+        }
+      },
+      "response_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "removed_id"
+        ],
+        "properties": {
+          "removed_id": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    {
+      "method": "weather.forecast",
+      "effect": "write",
+      "execution": "sync",
+      "route": {
+        "kind": "worker",
+        "worker_id": "weather_backend"
+      },
+      "broker_access": {
+        "storage": [
+          {
+            "store_id": "weather",
+            "operations": [
+              "query",
+              "exec"
+            ]
+          }
+        ],
+        "network": [
+          {
+            "connector_id": "forecast",
+            "transport": "http",
+            "operations": [
+              "http"
+            ],
+            "http_methods": [
+              "GET"
+            ]
+          }
+        ]
+      },
+      "request_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "latitude",
+          "longitude",
+          "timezone"
+        ],
+        "properties": {
+          "latitude": {
+            "type": "number",
+            "minimum": -90,
+            "maximum": 90
+          },
+          "longitude": {
+            "type": "number",
+            "minimum": -180,
+            "maximum": 180
+          },
+          "timezone": {
+            "type": "string"
+          },
+          "force_refresh": {
+            "type": "boolean"
+          }
+        }
+      },
+      "response_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "timezone",
+          "timezone_abbreviation",
+          "current",
+          "days",
+          "cache_state",
+          "age_seconds"
+        ],
+        "properties": {
+          "timezone": {
+            "type": "string"
+          },
+          "timezone_abbreviation": {
+            "type": "string"
+          },
+          "cache_state": {
+            "enum": [
+              "fresh",
+              "stale",
+              "network"
+            ]
+          },
+          "age_seconds": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 86400
+          },
+          "current": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "time",
+              "temperature",
+              "apparent_temperature",
+              "humidity",
+              "weather_code",
+              "wind_speed",
+              "is_day"
+            ],
+            "properties": {
+              "time": {
+                "type": "string"
+              },
+              "temperature": {
+                "type": "number"
+              },
+              "apparent_temperature": {
+                "type": "number"
+              },
+              "humidity": {
+                "type": "number"
+              },
+              "weather_code": {
+                "type": "integer"
+              },
+              "wind_speed": {
+                "type": "number"
+              },
+              "is_day": {
+                "type": "boolean"
+              }
+            }
+          },
+          "days": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "date",
+                "weather_code",
+                "temperature_max",
+                "temperature_min",
+                "precipitation_probability",
+                "sunrise",
+                "sunset"
+              ],
+              "properties": {
+                "date": {
+                  "type": "string"
+                },
+                "weather_code": {
+                  "type": "integer"
+                },
+                "temperature_max": {
+                  "type": "number"
+                },
+                "temperature_min": {
+                  "type": "number"
+                },
+                "precipitation_probability": {
+                  "type": "number"
+                },
+                "sunrise": {
+                  "type": "string"
+                },
+                "sunset": {
+                  "type": "string"
+                }
+              }
+            }
+          }
         }
       }
     }
   ],
-  "storage": { "stores": [{
-    "store_id": "weather", "kind": "sqlite", "scope": "user", "quota_bytes": 2097152, "quota_files": 4,
-    "schema_version": 2,
-    "migration": { "from_version":1,"to_version":2,"reversible":true,"requires_worker":true,"estimated_bytes":393216,"max_duration_ms":1500,"data_loss_risk":false,"steps_hash":"sha256:redevplugin-example-weather-worker-migration-v2" }
-  }] },
-  "network_access": { "connectors": [
-    { "connector_id": "geocoding", "transport": "http", "scope": "user", "destinations": ["https://geocoding-api.open-meteo.com"] },
-    { "connector_id": "forecast", "transport": "http", "scope": "user", "destinations": ["https://api.open-meteo.com"] }
-  ] }
+  "storage": {
+    "stores": [
+      {
+        "store_id": "weather",
+        "kind": "sqlite",
+        "scope": "user",
+        "quota_bytes": 2097152,
+        "quota_files": 4,
+        "schema_version": 1
+      }
+    ]
+  },
+  "network_access": {
+    "connectors": [
+      {
+        "connector_id": "geocoding",
+        "transport": "http",
+        "scope": "user",
+        "destinations": [
+          "https://geocoding-api.open-meteo.com"
+        ]
+      },
+      {
+        "connector_id": "forecast",
+        "transport": "http",
+        "scope": "user",
+        "destinations": [
+          "https://api.open-meteo.com"
+        ]
+      }
+    ]
+  }
 }

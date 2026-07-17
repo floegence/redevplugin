@@ -1,4 +1,4 @@
-import { PluginBridgeClient, type PluginMethodResult, type PluginUIActionEvent, type PluginUIVNode } from "../../packages/redevplugin-ui/src/plugin.js";
+import { PluginBridgeClient, PluginBridgeError, type PluginMethodResult, type PluginUIActionEvent, type PluginUIVNode } from "../../packages/redevplugin-ui/src/plugin.js";
 import { renderMarkdown, toggleTaskMarker } from "./memos-markdown.js";
 
 type Memo = {
@@ -21,17 +21,23 @@ type FacetResult = {
   pinned_total: number;
   archived_total: number;
 };
-type ListResult = { memos: Memo[]; total: number; offset: number; has_more: boolean };
+type ListResult = { memos: Memo[]; next_cursor: string | null };
 type BootstrapResult = ListResult & { draft: Draft | null; facets: FacetResult };
+type DeleteResult = { deleted_id: string };
 type SaveState = "idle" | "unsaved" | "saving" | "saved" | "error";
 type FeedView = "all" | "pinned" | "archived";
 type FocusTarget = "none" | "composer" | "menu-item" | "menu-button";
+type SyncState = "ready" | "syncing" | "error";
+type UnknownMutationReconciliation =
+  | { kind: "delete" }
+  | { kind: "publish"; content: string };
 
 type MemosState = {
   feed: {
     memos: Memo[];
-    total: number;
     hasMore: boolean;
+    nextCursor: string | null;
+    windowed: boolean;
     query: string;
     view: FeedView;
     tag: string;
@@ -73,6 +79,9 @@ type MemosState = {
     drawerOpen: boolean;
     menuId: string;
     deleteId: string;
+    deleteError: string;
+    syncState: SyncState;
+    syncError: string;
     focusTarget: FocusTarget;
     focusId: string;
     toast: string;
@@ -82,6 +91,7 @@ type MemosState = {
 };
 
 const PAGE_SIZE = 10;
+const MAX_VISIBLE_MEMOS = PAGE_SIZE;
 const DRAFT_DELAY_MS = 500;
 const EDIT_DELAY_MS = 700;
 const SEARCH_DELAY_MS = 250;
@@ -89,11 +99,11 @@ const MAX_CONTENT_CHARS = 20_000;
 const bridge = new PluginBridgeClient({ timeoutMs: 20_000 });
 const utcOffsetMinutes = -new Date().getTimezoneOffset();
 const state: MemosState = {
-  feed: { memos: [], total: 0, hasMore: false, query: "", view: "all", tag: "", date: "", loading: false, errorMessage: "" },
+  feed: { memos: [], hasMore: false, nextCursor: null, windowed: false, query: "", view: "all", tag: "", date: "", loading: false, errorMessage: "" },
   composer: { content: "", dirty: false, revision: 0, saveState: "idle", errorMessage: "", updatedAt: "", expanded: false },
   facets: { month: currentMonth(), tags: [], days: [], allTotal: 0, pinnedTotal: 0, archivedTotal: 0, loading: false, errorMessage: "" },
   editing: { id: "", content: "", originalContent: "", dirty: false, revision: 0, saveState: "idle", errorMessage: "" },
-  ui: { ready: false, busy: false, drawerOpen: false, menuId: "", deleteId: "", focusTarget: "none", focusId: "", toast: "", expandedIds: new Set(), pendingIds: new Set() },
+  ui: { ready: false, busy: false, drawerOpen: false, menuId: "", deleteId: "", deleteError: "", syncState: "ready", syncError: "", focusTarget: "none", focusId: "", toast: "", expandedIds: new Set(), pendingIds: new Set() },
 };
 
 let draftTimer: ReturnType<typeof setTimeout> | undefined;
@@ -104,6 +114,7 @@ let draftSaveInFlight: Promise<boolean> | undefined;
 let editSaveInFlight: Promise<boolean> | undefined;
 let feedSequence = 0;
 let facetsSequence = 0;
+let unknownMutationReconciliation: UnknownMutationReconciliation | undefined;
 
 bridge.onAction("toggle-explorer", () => void toggleExplorer());
 bridge.onAction("close-explorer", () => void closeExplorer());
@@ -116,7 +127,8 @@ bridge.onAction("filter-date", (event) => void setDate(event.value));
 bridge.onAction("clear-filters", () => void clearFilters());
 bridge.onAction("previous-month", () => void moveMonth(-1));
 bridge.onAction("next-month", () => void moveMonth(1));
-bridge.onAction("load-more-memos", () => void loadMore());
+bridge.onAction("load-older-memos", () => void loadOlder());
+bridge.onAction("newest-memos", () => void showNewest());
 bridge.onAction("composer-content", (event) => updateComposer(event));
 bridge.onAction("expand-composer", () => void expandComposer());
 bridge.onAction("retry-draft", () => void flushComposer());
@@ -132,6 +144,7 @@ bridge.onAction("set-archived", (event) => void setArchived(event.value));
 bridge.onAction("request-delete", (event) => void requestDelete(event.value));
 bridge.onAction("cancel-delete", () => void cancelDelete());
 bridge.onAction("confirm-delete", () => void confirmDelete());
+bridge.onAction("retry-sync", () => void reconcileUnknownMutationOutcome());
 bridge.onAction("toggle-task", (event) => void toggleTask(event));
 bridge.onAction("toggle-expanded", (event) => void toggleExpanded(event.value));
 bridge.onLifecycle(async (event) => {
@@ -171,8 +184,7 @@ async function initialize(): Promise<void> {
   }
 }
 
-async function refreshFeed(append: boolean, sequence = ++feedSequence): Promise<boolean> {
-  const offset = append ? state.feed.memos.length : 0;
+async function refreshFeed(advance: boolean, sequence = ++feedSequence): Promise<boolean> {
   let response: PluginMethodResult<ListResult>;
   try {
     response = await bridge.call<PluginMethodResult<ListResult>>("memos.list", {
@@ -181,7 +193,7 @@ async function refreshFeed(append: boolean, sequence = ++feedSequence): Promise<
       tag: state.feed.tag,
       date: state.feed.date,
       utc_offset_minutes: utcOffsetMinutes,
-      offset,
+      cursor: advance ? state.feed.nextCursor : null,
       limit: PAGE_SIZE,
     });
   } catch (error) {
@@ -189,9 +201,11 @@ async function refreshFeed(append: boolean, sequence = ++feedSequence): Promise<
     throw error;
   }
   if (sequence !== feedSequence) return false;
-  state.feed.memos = append ? dedupeMemos([...state.feed.memos, ...response.data.memos]) : response.data.memos;
-  state.feed.total = response.data.total;
-  state.feed.hasMore = response.data.has_more;
+  state.feed.memos = response.data.memos.slice(0, MAX_VISIBLE_MEMOS);
+  state.feed.nextCursor = response.data.next_cursor;
+  state.feed.hasMore = response.data.next_cursor !== null;
+  state.feed.windowed = advance;
+  retainVisibleMemoState();
   state.feed.loading = false;
   state.feed.errorMessage = "";
   return true;
@@ -213,7 +227,7 @@ async function refreshFacets(sequence = ++facetsSequence): Promise<boolean> {
   return true;
 }
 
-async function reloadFeed(fallback: string): Promise<void> {
+async function reloadFeed(defaultMessage: string): Promise<void> {
   const sequence = ++feedSequence;
   state.feed.loading = true;
   state.feed.errorMessage = "";
@@ -222,13 +236,13 @@ async function reloadFeed(fallback: string): Promise<void> {
     await refreshFeed(false, sequence);
   } catch (error) {
     state.feed.loading = false;
-    state.feed.errorMessage = readableError(error, fallback);
+    state.feed.errorMessage = readableError(error, defaultMessage);
   }
   await render();
 }
 
 function updateSearch(event: PluginUIActionEvent): void {
-  if (event.event !== "input" && event.event !== "change") return;
+  if (interactionBlocked() || event.event !== "input" && event.event !== "change") return;
   state.feed.query = (event.value ?? "").slice(0, 200);
   state.feed.loading = true;
   state.feed.errorMessage = "";
@@ -242,6 +256,7 @@ function updateSearch(event: PluginUIActionEvent): void {
 }
 
 function submitSearch(event: PluginUIActionEvent): void {
+  if (interactionBlocked()) return;
   state.feed.query = String(event.form_data?.query ?? state.feed.query).slice(0, 200);
   const sequence = ++feedSequence;
   clearSearchTimer();
@@ -249,6 +264,7 @@ function submitSearch(event: PluginUIActionEvent): void {
 }
 
 function clearSearch(): void {
+  if (interactionBlocked()) return;
   state.feed.query = "";
   const sequence = ++feedSequence;
   clearSearchTimer();
@@ -271,6 +287,7 @@ async function performSearch(sequence: number): Promise<void> {
 }
 
 async function setView(value?: string): Promise<void> {
+  if (interactionBlocked()) return;
   const next: FeedView = value === "pinned" ? "pinned" : value === "archived" ? "archived" : "all";
   if (next === state.feed.view) return;
   if (!(await canLeaveEdit())) return;
@@ -280,6 +297,7 @@ async function setView(value?: string): Promise<void> {
 }
 
 async function setTag(value?: string): Promise<void> {
+  if (interactionBlocked()) return;
   const next = (value ?? "").toLowerCase().slice(0, 40);
   if (next === state.feed.tag) return;
   if (!(await canLeaveEdit())) return;
@@ -289,6 +307,7 @@ async function setTag(value?: string): Promise<void> {
 }
 
 async function setDate(value?: string): Promise<void> {
+  if (interactionBlocked()) return;
   const next = value ?? "";
   if (next === state.feed.date) return;
   if (!(await canLeaveEdit())) return;
@@ -298,6 +317,7 @@ async function setDate(value?: string): Promise<void> {
 }
 
 async function clearFilters(): Promise<void> {
+  if (interactionBlocked()) return;
   if (!(await canLeaveEdit())) return;
   state.feed.query = "";
   state.feed.tag = "";
@@ -308,6 +328,7 @@ async function clearFilters(): Promise<void> {
 }
 
 async function moveMonth(direction: -1 | 1): Promise<void> {
+  if (interactionBlocked()) return;
   const [year, month] = state.facets.month.split("-").map(Number);
   const next = new Date(Date.UTC(year, month - 1 + direction, 1));
   state.facets.month = `${next.getUTCFullYear()}-${pad(next.getUTCMonth() + 1)}`;
@@ -322,8 +343,9 @@ async function moveMonth(direction: -1 | 1): Promise<void> {
   await render();
 }
 
-async function loadMore(): Promise<void> {
-  if (state.feed.loading || !state.feed.hasMore) return;
+async function loadOlder(): Promise<void> {
+  if (interactionBlocked() || state.feed.loading || !state.feed.hasMore) return;
+  if (state.ui.deleteId || !(await canLeaveEdit())) return;
   const sequence = ++feedSequence;
   state.feed.loading = true;
   await render();
@@ -331,12 +353,19 @@ async function loadMore(): Promise<void> {
     await refreshFeed(true, sequence);
   } catch (error) {
     state.feed.loading = false;
-    state.feed.errorMessage = readableError(error, "More memos could not be loaded");
+    state.feed.errorMessage = readableError(error, "Older memos could not be loaded");
   }
   await render();
 }
 
+async function showNewest(): Promise<void> {
+  if (interactionBlocked() || state.feed.loading || !state.feed.windowed) return;
+  if (state.ui.deleteId || !(await canLeaveEdit())) return;
+  await reloadFeed("The newest memos could not be loaded");
+}
+
 function updateComposer(event: PluginUIActionEvent): void {
+  if (interactionBlocked()) return;
   if (event.event === "click") {
     state.composer.expanded = true;
     void render();
@@ -357,6 +386,7 @@ function updateComposer(event: PluginUIActionEvent): void {
 }
 
 async function expandComposer(): Promise<void> {
+  if (interactionBlocked()) return;
   state.composer.expanded = true;
   await renderWithFocus("composer");
 }
@@ -370,6 +400,7 @@ function scheduleDraftSave(): void {
 }
 
 async function flushComposer(): Promise<boolean> {
+  if (state.ui.syncState !== "ready") return false;
   clearDraftTimer();
   if (draftSaveInFlight) {
     const saved = await draftSaveInFlight;
@@ -409,29 +440,39 @@ async function flushComposer(): Promise<boolean> {
 }
 
 async function publishMemo(): Promise<void> {
-  if (state.ui.busy || !state.composer.content.trim()) return;
+  if (interactionBlocked() || !state.composer.content.trim()) return;
   if (!(await flushComposer())) return;
+  const content = state.composer.content;
   state.ui.busy = true;
   state.ui.toast = "";
   await render();
+  let outcomeUnknown = false;
   try {
-    const hadUnloadedRows = state.feed.hasMore;
-    const response = await bridge.call<PluginMethodResult<{ memo: Memo }>>("memos.publish", { content: state.composer.content });
+    const response = await bridge.call<PluginMethodResult<{ memo: Memo }>>("memos.publish", { content });
     const reconcileFacets = applyMemoTransition(undefined, response.data.memo);
     state.composer = { content: "", dirty: false, revision: state.composer.revision + 1, saveState: "idle", errorMessage: "", updatedAt: "", expanded: false };
     showToast("Memo published");
-    scheduleReconciliation(hadUnloadedRows, reconcileFacets);
+    scheduleReconciliation(true, reconcileFacets);
   } catch (error) {
-    state.composer.saveState = "error";
-    state.composer.errorMessage = readableError(error, "Memos could not publish this memo");
+    if (error instanceof PluginBridgeError && error.mutationOutcome === "unknown") {
+      state.composer.saveState = "saving";
+      state.composer.errorMessage = "";
+      state.ui.syncState = "syncing";
+      unknownMutationReconciliation = { kind: "publish", content };
+      outcomeUnknown = true;
+    } else {
+      state.composer.saveState = "error";
+      state.composer.errorMessage = readableError(error, "Memos could not publish this memo");
+    }
   } finally {
     state.ui.busy = false;
     await render();
   }
+  if (outcomeUnknown) await reconcileUnknownMutationOutcome();
 }
 
 async function beginEdit(id?: string): Promise<void> {
-  if (!id || state.ui.pendingIds.has(id)) return;
+  if (interactionBlocked() || !id || state.ui.pendingIds.has(id)) return;
   if (state.editing.id === id) {
     await renderWithFocus("none");
     return;
@@ -445,7 +486,7 @@ async function beginEdit(id?: string): Promise<void> {
 }
 
 function updateEdit(event: PluginUIActionEvent): void {
-  if (event.event !== "input" && event.event !== "change" || !state.editing.id) return;
+  if (interactionBlocked() || event.event !== "input" && event.event !== "change" || !state.editing.id) return;
   const content = limitCharacters(event.value ?? "", MAX_CONTENT_CHARS);
   if (content === state.editing.content) return;
   state.editing.content = content;
@@ -466,6 +507,7 @@ function scheduleEditSave(): void {
 }
 
 async function flushEdit(): Promise<boolean> {
+  if (state.ui.syncState !== "ready") return false;
   clearEditTimer();
   if (editSaveInFlight) {
     const saved = await editSaveInFlight;
@@ -483,7 +525,6 @@ async function flushEdit(): Promise<boolean> {
   const content = state.editing.content;
   const revision = state.editing.revision;
   const previousMemo = memoById(id);
-  const hadUnloadedRows = state.feed.hasMore;
   state.editing.dirty = false;
   state.editing.saveState = "saving";
   state.editing.errorMessage = "";
@@ -500,7 +541,7 @@ async function flushEdit(): Promise<boolean> {
         state.editing.dirty = true;
         scheduleEditSave();
       }
-      scheduleReconciliation(hadUnloadedRows, reconcileFacets);
+      scheduleReconciliation(true, reconcileFacets);
       return true;
     } catch (error) {
       if (state.editing.id === id) {
@@ -531,6 +572,7 @@ async function canLeaveEdit(): Promise<boolean> {
 }
 
 async function setPinned(id?: string): Promise<void> {
+  if (interactionBlocked()) return;
   const memo = id ? memoById(id) : undefined;
   if (!memo || state.ui.pendingIds.has(memo.id)) return;
   if (state.editing.id === memo.id && !(await flushEdit())) return;
@@ -538,6 +580,7 @@ async function setPinned(id?: string): Promise<void> {
 }
 
 async function setArchived(id?: string): Promise<void> {
+  if (interactionBlocked()) return;
   const memo = id ? memoById(id) : undefined;
   if (!memo || state.ui.pendingIds.has(memo.id)) return;
   if (state.editing.id === memo.id && !(await flushEdit())) return;
@@ -545,19 +588,19 @@ async function setArchived(id?: string): Promise<void> {
   await mutateMemo(memo.id, "memos.setArchived", { id: memo.id, value: !memo.archived }, "Memos could not change this archive");
 }
 
-async function mutateMemo(id: string, method: string, params: Record<string, string | boolean>, fallback: string): Promise<void> {
+async function mutateMemo(id: string, method: string, params: Record<string, string | boolean>, defaultMessage: string): Promise<void> {
+  if (interactionBlocked()) return;
   const previousMemo = memoById(id);
   if (!previousMemo) return;
-  const hadUnloadedRows = state.feed.hasMore;
   state.ui.pendingIds.add(id);
   state.ui.toast = "";
   await render();
   try {
     const response = await bridge.call<PluginMethodResult<{ memo: Memo }>>(method, params);
     const reconcileFacets = applyMemoTransition(previousMemo, response.data.memo);
-    scheduleReconciliation(hadUnloadedRows, reconcileFacets);
+    scheduleReconciliation(true, reconcileFacets);
   } catch (error) {
-    showToast(readableError(error, fallback));
+    showToast(readableError(error, defaultMessage));
   } finally {
     state.ui.pendingIds.delete(id);
     await render();
@@ -565,7 +608,7 @@ async function mutateMemo(id: string, method: string, params: Record<string, str
 }
 
 async function toggleMemoMenu(id?: string): Promise<void> {
-  if (!id) return;
+  if (interactionBlocked() || !id) return;
   if (state.ui.menuId === id) {
     await closeMemoMenu();
     return;
@@ -584,16 +627,19 @@ async function closeMemoMenu(): Promise<void> {
 }
 
 async function requestDelete(id?: string): Promise<void> {
-  if (!id) return;
+  if (interactionBlocked() || !id) return;
   if (state.editing.id === id && !(await flushEdit())) return;
   state.ui.menuId = "";
   state.ui.deleteId = id;
+  state.ui.deleteError = "";
   state.ui.focusId = id;
   await render();
 }
 
 async function cancelDelete(): Promise<void> {
+  if (state.ui.busy) return;
   state.ui.deleteId = "";
+  state.ui.deleteError = "";
   await renderWithFocus("menu-button");
 }
 
@@ -602,19 +648,101 @@ async function confirmDelete(): Promise<void> {
   if (!id || state.ui.busy) return;
   const previousMemo = memoById(id);
   if (!previousMemo) return;
-  const hadUnloadedRows = state.feed.hasMore;
-  state.ui.deleteId = "";
+  state.ui.deleteError = "";
   state.ui.busy = true;
   await render();
+  let outcomeUnknown = false;
   try {
-    await bridge.call("memos.delete", { id });
+    const response = await bridge.call<PluginMethodResult<DeleteResult>>("memos.delete", { id });
+    if (response.data.deleted_id !== id) {
+      throw new PluginBridgeError(
+        "PLUGIN_CONTRACT_MISMATCH",
+        "Memos delete returned a mismatched memo identifier",
+        undefined,
+        undefined,
+        "unknown",
+      );
+    }
     if (state.editing.id === id) resetEditing();
     state.ui.expandedIds.delete(id);
     const reconcileFacets = applyMemoTransition(previousMemo, undefined);
+    state.ui.deleteId = "";
     showToast("Memo deleted");
-    scheduleReconciliation(hadUnloadedRows, reconcileFacets);
+    scheduleReconciliation(true, reconcileFacets);
   } catch (error) {
-    showToast(readableError(error, "Memos could not delete this memo"));
+    if (error instanceof PluginBridgeError && error.mutationOutcome === "unknown") {
+      state.ui.deleteId = "";
+      state.ui.deleteError = "";
+      state.ui.syncState = "syncing";
+      unknownMutationReconciliation = { kind: "delete" };
+      outcomeUnknown = true;
+    } else {
+      state.ui.deleteError = readableError(error, "Memos could not delete this memo");
+    }
+  } finally {
+    state.ui.busy = false;
+    await render();
+  }
+  if (outcomeUnknown) await reconcileUnknownMutationOutcome();
+}
+
+async function reconcileUnknownMutationOutcome(): Promise<void> {
+  const reconciliation = unknownMutationReconciliation;
+  if (!reconciliation || state.ui.syncState === "ready" || state.ui.busy) return;
+  const feedRequest = ++feedSequence;
+  const facetsRequest = ++facetsSequence;
+  state.ui.syncState = "syncing";
+  state.ui.syncError = "";
+  state.ui.busy = true;
+  state.feed.loading = true;
+  state.facets.loading = true;
+  await render();
+  try {
+    if (reconciliation.kind === "publish") {
+      const [bootstrap, feedApplied] = await Promise.all([
+        bridge.call<PluginMethodResult<BootstrapResult>>("memos.bootstrap", {
+          month: state.facets.month,
+          utc_offset_minutes: utcOffsetMinutes,
+        }),
+        refreshFeed(false, feedRequest),
+      ]);
+      if (!feedApplied || facetsRequest !== facetsSequence) {
+        throw new PluginBridgeError("PLUGIN_CONTRACT_MISMATCH", "Memos publish reconciliation was superseded");
+      }
+      applyFacets(bootstrap.data.facets);
+      if (bootstrap.data.draft === null) {
+        state.composer = { content: "", dirty: false, revision: state.composer.revision + 1, saveState: "idle", errorMessage: "", updatedAt: "", expanded: false };
+        showToast("Memo published");
+      } else if (bootstrap.data.draft.content === reconciliation.content) {
+        state.composer.content = bootstrap.data.draft.content;
+        state.composer.dirty = false;
+        state.composer.saveState = "saved";
+        state.composer.errorMessage = "";
+        state.composer.updatedAt = bootstrap.data.draft.updated_at;
+        state.composer.expanded = true;
+        showToast("Memo was not published");
+      } else {
+        throw new PluginBridgeError("PLUGIN_CONTRACT_MISMATCH", "Memos publish reconciliation returned an unexpected draft");
+      }
+    } else {
+      const [feedApplied, facetsApplied] = await Promise.all([
+        refreshFeed(false, feedRequest),
+        refreshFacets(facetsRequest),
+      ]);
+      if (!feedApplied || !facetsApplied) {
+        throw new PluginBridgeError("PLUGIN_CONTRACT_MISMATCH", "Memos delete reconciliation was superseded");
+      }
+      showToast("Memos refreshed");
+    }
+    unknownMutationReconciliation = undefined;
+    state.ui.syncState = "ready";
+  } catch (error) {
+    state.feed.loading = false;
+    state.facets.loading = false;
+    state.ui.syncState = "error";
+    state.ui.syncError = readableError(error, reconciliation.kind === "publish"
+      ? "Memos could not confirm the publish result"
+      : "Memos could not confirm the delete result");
   } finally {
     state.ui.busy = false;
     await render();
@@ -622,20 +750,19 @@ async function confirmDelete(): Promise<void> {
 }
 
 async function toggleTask(event: PluginUIActionEvent): Promise<void> {
-  if (event.event !== "change" && event.event !== "click") return;
+  if (interactionBlocked() || event.event !== "change" && event.event !== "click") return;
   const [id, rawIndex] = (event.value ?? "").split(":");
   const memo = memoById(id);
   const index = Number(rawIndex);
   if (!memo || !Number.isInteger(index) || index < 0 || state.ui.pendingIds.has(id)) return;
   const content = toggleTaskMarker(memo.content, index, event.checked === true);
   if (content === memo.content) return;
-  const hadUnloadedRows = state.feed.hasMore;
   state.ui.pendingIds.add(id);
   await render();
   try {
     const response = await bridge.call<PluginMethodResult<{ memo: Memo }>>("memos.update", { id, content });
     const reconcileFacets = applyMemoTransition(memo, response.data.memo);
-    scheduleReconciliation(hadUnloadedRows, reconcileFacets);
+    scheduleReconciliation(true, reconcileFacets);
   } catch (error) {
     showToast(readableError(error, "Memos could not update this task"));
   } finally {
@@ -671,6 +798,10 @@ function render(): Promise<void> {
   });
 }
 
+function interactionBlocked(): boolean {
+  return state.ui.busy || state.ui.syncState !== "ready";
+}
+
 function explorerScrim(): PluginUIVNode | string {
   return state.ui.drawerOpen ? { type: "element", key: "explorer-scrim", tag: "button", attributes: { class: "explorer-scrim", type: "button", tabindex: -1, "aria-label": "Dismiss explorer", "data-redevplugin-action": "close-explorer" }, children: [] } : "";
 }
@@ -702,13 +833,13 @@ function brand(prefix: string): PluginUIVNode {
 function searchForm(): PluginUIVNode {
   return { type: "element", key: "search-form", tag: "form", attributes: { class: "search-form", "data-redevplugin-action": "search-memos" }, children: [
     { type: "element", key: "search-symbol", tag: "span", attributes: { class: "icon icon-search", "aria-hidden": true }, children: [] },
-    { type: "element", key: "search-input", tag: "input", attributes: { type: "search", name: "query", value: state.feed.query, placeholder: "Search memos", autocomplete: "off", "aria-label": "Search memos", disabled: state.ui.busy, "data-redevplugin-action": "search-query" }, children: [] },
-    state.feed.query ? { type: "element", key: "search-clear", tag: "button", attributes: { class: "search-clear", type: "button", title: "Clear search", "aria-label": "Clear search", "data-redevplugin-action": "clear-search" }, children: [{ type: "element", key: "search-clear-icon", tag: "span", attributes: { class: "icon icon-close", "aria-hidden": true }, children: [] }] } : "",
+    { type: "element", key: "search-input", tag: "input", attributes: { type: "search", name: "query", value: state.feed.query, placeholder: "Search memos", autocomplete: "off", "aria-label": "Search memos", disabled: interactionBlocked(), "data-redevplugin-action": "search-query" }, children: [] },
+    state.feed.query ? { type: "element", key: "search-clear", tag: "button", attributes: { class: "search-clear", type: "button", title: "Clear search", "aria-label": "Clear search", disabled: interactionBlocked(), "data-redevplugin-action": "clear-search" }, children: [{ type: "element", key: "search-clear-icon", tag: "span", attributes: { class: "icon icon-close", "aria-hidden": true }, children: [] }] } : "",
   ] };
 }
 
 function viewButton(value: FeedView, label: string, icon: string, count?: number): PluginUIVNode {
-  return { type: "element", key: `view-${value}`, tag: "button", attributes: { type: "button", value, "aria-pressed": state.feed.view === value, disabled: state.ui.busy, "data-redevplugin-action": "filter-view" }, children: [
+  return { type: "element", key: `view-${value}`, tag: "button", attributes: { type: "button", value, "aria-pressed": state.feed.view === value, disabled: interactionBlocked(), "data-redevplugin-action": "filter-view" }, children: [
     { type: "element", key: `view-${value}-icon`, tag: "span", attributes: { class: `icon ${icon}`, "aria-hidden": true }, children: [] },
     { type: "element", key: `view-${value}-label`, tag: "span", children: [label] },
     count !== undefined ? { type: "element", key: `view-${value}-count`, tag: "small", children: [String(count)] } : "",
@@ -729,25 +860,25 @@ function calendar(): PluginUIVNode {
     { type: "element", key: "calendar-grid", tag: "div", attributes: { class: "calendar-grid" }, children: calendarCells(state.facets.month).map<PluginUIVNode>((cell, index) => {
       if (!cell) return { type: "element", key: `calendar-blank-${index}`, tag: "span", attributes: { class: "calendar-blank", "aria-hidden": true }, children: [] } as PluginUIVNode;
       const count = dayCounts.get(cell.date) ?? 0;
-      return { type: "element", key: `calendar-${cell.date}`, tag: "button", attributes: { class: `${count ? "has-memos " : ""}${cell.today ? "today" : ""}`.trim(), type: "button", value: cell.date, title: count ? `${count} ${count === 1 ? "memo" : "memos"}` : "No memos", "aria-label": `${formatCalendarDate(cell.date)}, ${count} ${count === 1 ? "memo" : "memos"}`, "aria-pressed": state.feed.date === cell.date, disabled: state.ui.busy, "data-redevplugin-action": "filter-date" }, children: [String(cell.day)] } as PluginUIVNode;
+      return { type: "element", key: `calendar-${cell.date}`, tag: "button", attributes: { class: `${count ? "has-memos " : ""}${cell.today ? "today" : ""}`.trim(), type: "button", value: cell.date, title: count ? `${count} ${count === 1 ? "memo" : "memos"}` : "No memos", "aria-label": `${formatCalendarDate(cell.date)}, ${count} ${count === 1 ? "memo" : "memos"}`, "aria-pressed": state.feed.date === cell.date, disabled: interactionBlocked(), "data-redevplugin-action": "filter-date" }, children: [String(cell.day)] } as PluginUIVNode;
     }) },
-    state.feed.date ? { type: "element", key: "calendar-clear", tag: "button", attributes: { class: "facet-clear", type: "button", value: "", "data-redevplugin-action": "filter-date" }, children: ["Clear date"] } : "",
+    state.feed.date ? { type: "element", key: "calendar-clear", tag: "button", attributes: { class: "facet-clear", type: "button", value: "", disabled: interactionBlocked(), "data-redevplugin-action": "filter-date" }, children: ["Clear date"] } : "",
     state.facets.errorMessage ? { type: "element", key: "calendar-error", tag: "p", attributes: { class: "facet-error", role: "status" }, children: [state.facets.errorMessage] } : "",
   ] };
 }
 
 function calendarMoveButton(action: string, label: string, icon: string): PluginUIVNode {
-  return { type: "element", key: action, tag: "button", attributes: { class: "calendar-button", type: "button", title: label, "aria-label": label, disabled: state.facets.loading, "data-redevplugin-action": action }, children: [{ type: "element", key: `${action}-icon`, tag: "span", attributes: { class: `icon ${icon}`, "aria-hidden": true }, children: [] }] };
+  return { type: "element", key: action, tag: "button", attributes: { class: "calendar-button", type: "button", title: label, "aria-label": label, disabled: state.facets.loading || interactionBlocked(), "data-redevplugin-action": action }, children: [{ type: "element", key: `${action}-icon`, tag: "span", attributes: { class: `icon ${icon}`, "aria-hidden": true }, children: [] }] };
 }
 
 function tagsPanel(): PluginUIVNode {
   return { type: "element", key: "tags-panel", tag: "section", attributes: { class: "tags-panel", "aria-label": "Tags" }, children: [
     { type: "element", key: "tags-heading", tag: "header", children: [
       { type: "element", key: "tags-title", tag: "h2", children: ["Tags"] },
-      state.feed.tag ? { type: "element", key: "tags-clear", tag: "button", attributes: { class: "facet-clear", type: "button", value: "", "data-redevplugin-action": "filter-tag" }, children: ["Clear"] } : "",
+      state.feed.tag ? { type: "element", key: "tags-clear", tag: "button", attributes: { class: "facet-clear", type: "button", value: "", disabled: interactionBlocked(), "data-redevplugin-action": "filter-tag" }, children: ["Clear"] } : "",
     ] },
     state.facets.tags.length ? { type: "element", key: "tag-list", tag: "ul", attributes: { class: "tag-list" }, children: state.facets.tags.map((facet) => ({ type: "element", key: `tag-${facet.tag}`, tag: "li", children: [
-      { type: "element", key: `tag-${facet.tag}-button`, tag: "button", attributes: { type: "button", value: facet.tag, "aria-pressed": state.feed.tag === facet.tag, disabled: state.ui.busy, "data-redevplugin-action": "filter-tag" }, children: [
+      { type: "element", key: `tag-${facet.tag}-button`, tag: "button", attributes: { type: "button", value: facet.tag, "aria-pressed": state.feed.tag === facet.tag, disabled: interactionBlocked(), "data-redevplugin-action": "filter-tag" }, children: [
         { type: "element", key: `tag-${facet.tag}-hash`, tag: "span", attributes: { class: "tag-hash", "aria-hidden": true }, children: ["#"] },
         { type: "element", key: `tag-${facet.tag}-label`, tag: "span", children: [facet.tag] },
         { type: "element", key: `tag-${facet.tag}-count`, tag: "small", children: [String(facet.count)] },
@@ -763,7 +894,20 @@ function workspace(): PluginUIVNode {
       brand("mobile"),
       { type: "element", key: "mobile-spacer", tag: "span", attributes: { class: "mobile-spacer", "aria-hidden": true }, children: [] },
     ] },
+    syncNotice(),
     { type: "element", key: "feed-shell", tag: "div", attributes: { class: "feed-shell" }, children: [composer(), feedHeader(), feedContent()] },
+  ] };
+}
+
+function syncNotice(): PluginUIVNode | string {
+  if (state.ui.syncState === "ready") return "";
+  const syncing = state.ui.syncState === "syncing";
+  return { type: "element", key: "sync-notice", tag: "section", attributes: { class: `sync-notice ${state.ui.syncState}`, role: "status" }, children: [
+    { type: "element", key: "sync-notice-copy", tag: "div", children: [
+      { type: "element", key: "sync-notice-title", tag: "strong", children: [syncing ? "Refreshing timeline" : "Timeline refresh required"] },
+      { type: "element", key: "sync-notice-message", tag: "p", children: [syncing ? "Confirming the latest saved state..." : state.ui.syncError] },
+    ] },
+    !syncing ? { type: "element", key: "sync-notice-retry", tag: "button", attributes: { class: "quiet-button", type: "button", "data-redevplugin-action": "retry-sync" }, children: ["Retry"] } : "",
   ] };
 }
 
@@ -773,8 +917,8 @@ function composer(): PluginUIVNode {
     { type: "element", key: "composer-main", tag: "div", attributes: { class: "composer-main" }, children: [
       { type: "element", key: "composer-avatar", tag: "span", attributes: { class: "composer-avatar", "aria-hidden": true }, children: ["M"] },
       { type: "element", key: "composer-copy", tag: "div", attributes: { class: "composer-copy" }, children: [
-        { type: "element", key: "composer-input", tag: "textarea", attributes: { name: "content", value: state.composer.content, maxlength: MAX_CONTENT_CHARS, rows: expanded ? 7 : 2, placeholder: "What's on your mind?", "aria-label": "Memo content", autofocus: state.ui.focusTarget === "composer", disabled: state.ui.busy, "data-redevplugin-action": "composer-content" }, children: [] },
-        !expanded ? { type: "element", key: "composer-expand", tag: "button", attributes: { class: "composer-expand", type: "button", "data-redevplugin-action": "expand-composer" }, children: ["Create a memo"] } : "",
+        { type: "element", key: "composer-input", tag: "textarea", attributes: { name: "content", value: state.composer.content, maxlength: MAX_CONTENT_CHARS, rows: expanded ? 7 : 2, placeholder: "What's on your mind?", "aria-label": "Memo content", autofocus: state.ui.focusTarget === "composer", disabled: interactionBlocked(), "data-redevplugin-action": "composer-content" }, children: [] },
+        !expanded ? { type: "element", key: "composer-expand", tag: "button", attributes: { class: "composer-expand", type: "button", disabled: interactionBlocked(), "data-redevplugin-action": "expand-composer" }, children: ["Create a memo"] } : "",
       ] },
     ] },
     expanded ? { type: "element", key: "composer-footer", tag: "footer", attributes: { class: "composer-footer" }, children: [
@@ -783,7 +927,7 @@ function composer(): PluginUIVNode {
         { type: "element", key: "composer-count", tag: "span", children: [`${characterCount(state.composer.content)} / ${MAX_CONTENT_CHARS}`] },
         draftStatus(),
       ] },
-      { type: "element", key: "publish", tag: "button", attributes: { class: "primary-button", type: "button", disabled: state.ui.busy || !state.composer.content.trim() || state.composer.saveState === "saving", "data-redevplugin-action": "publish-memo" }, children: [state.ui.busy ? "Saving..." : "Save"] },
+      { type: "element", key: "publish", tag: "button", attributes: { class: "primary-button", type: "button", disabled: interactionBlocked() || !state.composer.content.trim() || state.composer.saveState === "saving", "data-redevplugin-action": "publish-memo" }, children: [state.ui.busy ? "Saving..." : "Save"] },
     ] } : "",
   ] };
 }
@@ -801,12 +945,19 @@ function draftStatus(): PluginUIVNode | string {
 function feedHeader(): PluginUIVNode {
   const label = activeFeedLabel();
   const filtered = state.feed.view !== "all" || Boolean(state.feed.query || state.feed.tag || state.feed.date);
+  const actions: PluginUIVNode[] = [];
+  if (state.feed.windowed) {
+    actions.push({ type: "element", key: "newest-memos", tag: "button", attributes: { class: "quiet-button", type: "button", disabled: interactionBlocked(), "data-redevplugin-action": "newest-memos" }, children: ["Back to newest"] });
+  }
+  if (filtered) {
+    actions.push({ type: "element", key: "clear-filters", tag: "button", attributes: { class: "quiet-button", type: "button", disabled: interactionBlocked(), "data-redevplugin-action": "clear-filters" }, children: ["Clear filters"] });
+  }
   return { type: "element", key: "feed-header", tag: "header", attributes: { class: "feed-header" }, children: [
     { type: "element", key: "feed-heading-copy", tag: "div", children: [
       { type: "element", key: "feed-title", tag: "h1", children: [label] },
-      { type: "element", key: "feed-count", tag: "p", children: [state.feed.loading && !state.feed.memos.length ? "Updating timeline..." : `${state.feed.total} ${state.feed.total === 1 ? "memo" : "memos"}`] },
+      { type: "element", key: "feed-count", tag: "p", children: [state.feed.loading && !state.feed.memos.length ? "Updating timeline..." : state.feed.windowed ? `${state.feed.memos.length} older memos` : `${state.feed.memos.length} recent memos`] },
     ] },
-    filtered ? { type: "element", key: "clear-filters", tag: "button", attributes: { class: "quiet-button", type: "button", "data-redevplugin-action": "clear-filters" }, children: ["Clear filters"] } : "",
+    actions.length ? { type: "element", key: "feed-header-actions", tag: "div", attributes: { class: "feed-header-actions" }, children: actions } : "",
   ] };
 }
 
@@ -816,7 +967,7 @@ function feedContent(): PluginUIVNode {
     !state.feed.errorMessage && !state.feed.memos.length && state.feed.loading ? feedLoading() : "",
     !state.feed.errorMessage && !state.feed.memos.length && !state.feed.loading ? feedEmpty() : "",
     ...state.feed.memos.map(memoCard),
-    state.feed.hasMore ? { type: "element", key: "load-more", tag: "button", attributes: { class: "load-more", type: "button", disabled: state.feed.loading || state.ui.busy, "data-redevplugin-action": "load-more-memos" }, children: [state.feed.loading ? "Loading..." : "Load more"] } : "",
+    state.feed.hasMore ? { type: "element", key: "load-older", tag: "button", attributes: { class: "feed-pagination", type: "button", disabled: state.feed.loading || interactionBlocked(), "data-redevplugin-action": "load-older-memos" }, children: [state.feed.loading ? "Loading older..." : "Show older memos"] } : "",
   ] };
 }
 
@@ -824,7 +975,7 @@ function memoCard(memo: Memo): PluginUIVNode {
   const editing = state.editing.id === memo.id;
   const pending = state.ui.pendingIds.has(memo.id);
   const expanded = state.ui.expandedIds.has(memo.id);
-  const markdown = renderMarkdown(memo.content, `md-${memo.id}`, { expanded, taskMemoId: memo.id, interactiveTasks: !editing && !pending && !memo.archived });
+  const markdown = renderMarkdown(memo.content, `md-${memo.id}`, { expanded, taskMemoId: memo.id, interactiveTasks: !editing && !pending && !memo.archived && !interactionBlocked() });
   return { type: "element", key: `memo-${memo.id}`, tag: "article", attributes: { class: `memo-card${memo.pinned ? " pinned" : ""}${memo.archived ? " archived" : ""}${editing ? " editing" : ""}`, "aria-label": `Memo from ${formatDocumentDate(memo.created_at)}` }, children: [
     { type: "element", key: `memo-${memo.id}-header`, tag: "header", attributes: { class: "memo-card-header" }, children: [
       { type: "element", key: `memo-${memo.id}-identity`, tag: "div", attributes: { class: "memo-identity" }, children: [
@@ -835,20 +986,20 @@ function memoCard(memo: Memo): PluginUIVNode {
         ] },
       ] },
       { type: "element", key: `memo-${memo.id}-actions`, tag: "div", attributes: { class: "memo-card-actions" }, children: [
-        { type: "element", key: `memo-${memo.id}-pin`, tag: "button", attributes: { class: `icon-button pin-button${memo.pinned ? " active" : ""}`, type: "button", value: memo.id, title: memo.pinned ? "Unpin memo" : "Pin memo", "aria-label": memo.pinned ? "Unpin memo" : "Pin memo", "aria-pressed": memo.pinned, disabled: pending || state.ui.busy, "data-redevplugin-action": "set-pinned" }, children: [{ type: "element", key: `memo-${memo.id}-pin-icon`, tag: "span", attributes: { class: "icon icon-pin", "aria-hidden": true }, children: [] }] },
-        { type: "element", key: `memo-${memo.id}-more`, tag: "button", attributes: { class: "icon-button memo-more", type: "button", value: memo.id, title: "More memo actions", "aria-label": "More memo actions", "aria-expanded": state.ui.menuId === memo.id, autofocus: state.ui.focusTarget === "menu-button" && state.ui.focusId === memo.id && !state.ui.deleteId, disabled: pending || state.ui.busy, "data-redevplugin-action": "toggle-memo-menu" }, children: [{ type: "element", key: `memo-${memo.id}-more-icon`, tag: "span", attributes: { class: "icon icon-more", "aria-hidden": true }, children: [] }] },
+        { type: "element", key: `memo-${memo.id}-pin`, tag: "button", attributes: { class: `icon-button pin-button${memo.pinned ? " active" : ""}`, type: "button", value: memo.id, title: memo.pinned ? "Unpin memo" : "Pin memo", "aria-label": memo.pinned ? "Unpin memo" : "Pin memo", "aria-pressed": memo.pinned, disabled: pending || interactionBlocked(), "data-redevplugin-action": "set-pinned" }, children: [{ type: "element", key: `memo-${memo.id}-pin-icon`, tag: "span", attributes: { class: "icon icon-pin", "aria-hidden": true }, children: [] }] },
+        { type: "element", key: `memo-${memo.id}-more`, tag: "button", attributes: { class: "icon-button memo-more", type: "button", value: memo.id, title: "More memo actions", "aria-label": "More memo actions", "aria-expanded": state.ui.menuId === memo.id, autofocus: state.ui.focusTarget === "menu-button" && state.ui.focusId === memo.id && !state.ui.deleteId, disabled: pending || interactionBlocked(), "data-redevplugin-action": "toggle-memo-menu" }, children: [{ type: "element", key: `memo-${memo.id}-more-icon`, tag: "span", attributes: { class: "icon icon-more", "aria-hidden": true }, children: [] }] },
         state.ui.menuId === memo.id ? memoMenu(memo) : "",
       ] },
     ] },
     editing ? editMemo(memo) : { type: "element", key: `memo-${memo.id}-body`, tag: "div", attributes: { class: "markdown-body" }, children: markdown.nodes },
     !editing && markdown.truncated ? { type: "element", key: `memo-${memo.id}-expand`, tag: "button", attributes: { class: "expand-content", type: "button", value: memo.id, "data-redevplugin-action": "toggle-expanded" }, children: [expanded ? "Show less" : "Show more"] } : "",
-    memo.tags.length ? { type: "element", key: `memo-${memo.id}-tags`, tag: "footer", attributes: { class: "memo-tags" }, children: memo.tags.map((tag) => ({ type: "element", key: `memo-${memo.id}-tag-${tag}`, tag: "button", attributes: { type: "button", value: tag, "data-redevplugin-action": "filter-tag" }, children: [`#${tag}`] })) } : "",
+    memo.tags.length ? { type: "element", key: `memo-${memo.id}-tags`, tag: "footer", attributes: { class: "memo-tags" }, children: memo.tags.map((tag) => ({ type: "element", key: `memo-${memo.id}-tag-${tag}`, tag: "button", attributes: { type: "button", value: tag, disabled: interactionBlocked(), "data-redevplugin-action": "filter-tag" }, children: [`#${tag}`] })) } : "",
   ] };
 }
 
 function editMemo(memo: Memo): PluginUIVNode {
   return { type: "element", key: `memo-${memo.id}-editor`, tag: "div", attributes: { class: "inline-editor" }, children: [
-    { type: "element", key: `memo-${memo.id}-textarea`, tag: "textarea", attributes: { name: "content", value: state.editing.content, maxlength: MAX_CONTENT_CHARS, rows: 8, "aria-label": "Edit memo content", disabled: state.ui.busy, "data-redevplugin-action": "edit-content" }, children: [] },
+    { type: "element", key: `memo-${memo.id}-textarea`, tag: "textarea", attributes: { name: "content", value: state.editing.content, maxlength: MAX_CONTENT_CHARS, rows: 8, "aria-label": "Edit memo content", disabled: interactionBlocked(), "data-redevplugin-action": "edit-content" }, children: [] },
     { type: "element", key: `memo-${memo.id}-edit-footer`, tag: "footer", children: [
       editStatus(),
       { type: "element", key: `memo-${memo.id}-edit-count`, tag: "span", children: [`${characterCount(state.editing.content)} / ${MAX_CONTENT_CHARS}`] },
@@ -883,6 +1034,7 @@ function menuButton(id: string, action: string, label: string, icon: string, aut
 
 function deleteDialog(): PluginUIVNode | string {
   if (!state.ui.deleteId) return "";
+  const deleting = state.ui.busy;
   return { type: "element", key: "delete-layer", tag: "div", attributes: { class: "dialog-layer" }, children: [
     { type: "element", key: "delete-scrim", tag: "button", attributes: { class: "dialog-scrim", type: "button", tabindex: -1, "aria-label": "Cancel delete", "data-redevplugin-action": "cancel-delete" }, children: [] },
     { type: "element", key: "delete-dialog", tag: "section", attributes: { class: "delete-dialog", role: "dialog", "aria-modal": true, "aria-label": "Delete memo", "data-redevplugin-escape-action": "cancel-delete" }, children: [
@@ -890,10 +1042,11 @@ function deleteDialog(): PluginUIVNode | string {
       { type: "element", key: "delete-copy", tag: "div", children: [
         { type: "element", key: "delete-title", tag: "h2", children: ["Delete this memo?"] },
         { type: "element", key: "delete-message", tag: "p", children: ["This action cannot be undone."] },
+        state.ui.deleteError ? { type: "element", key: "delete-error", tag: "p", attributes: { class: "delete-error", role: "status" }, children: [state.ui.deleteError] } : "",
       ] },
       { type: "element", key: "delete-actions", tag: "div", attributes: { class: "delete-actions" }, children: [
-        { type: "element", key: "delete-cancel", tag: "button", attributes: { class: "quiet-button", type: "button", autofocus: true, "data-redevplugin-action": "cancel-delete" }, children: ["Keep memo"] },
-        { type: "element", key: "delete-confirm", tag: "button", attributes: { class: "danger-button", type: "button", "data-redevplugin-action": "confirm-delete" }, children: ["Delete memo"] },
+        { type: "element", key: "delete-cancel", tag: "button", attributes: { class: "quiet-button", type: "button", autofocus: !deleting, disabled: deleting, "data-redevplugin-action": "cancel-delete" }, children: ["Keep memo"] },
+        { type: "element", key: "delete-confirm", tag: "button", attributes: { class: "danger-button", type: "button", disabled: deleting, "data-redevplugin-action": "confirm-delete" }, children: [deleting ? "Deleting..." : "Delete memo"] },
       ] },
     ] },
   ] };
@@ -927,9 +1080,11 @@ function toast(): PluginUIVNode | string {
 }
 
 function applyList(result: ListResult): void {
-  state.feed.memos = result.memos;
-  state.feed.total = result.total;
-  state.feed.hasMore = result.has_more;
+  state.feed.memos = result.memos.slice(0, MAX_VISIBLE_MEMOS);
+  state.feed.nextCursor = result.next_cursor;
+  state.feed.hasMore = result.next_cursor !== null;
+  state.feed.windowed = false;
+  retainVisibleMemoState();
   state.feed.loading = false;
   state.feed.errorMessage = "";
 }
@@ -966,16 +1121,14 @@ function applyMemoTransition(previous: Memo | undefined, next: Memo | undefined)
 function applyFeedTransition(previous: Memo | undefined, next: Memo | undefined): void {
   const previousMatches = Boolean(previous && memoMatchesCurrentFeed(previous));
   const nextMatches = Boolean(next && memoMatchesCurrentFeed(next));
-  state.feed.total = adjustedCount(state.feed.total, previousMatches, nextMatches);
-
   const previousIndex = previous ? state.feed.memos.findIndex((memo) => memo.id === previous.id) : -1;
-  const capacity = Math.max(PAGE_SIZE, state.feed.memos.length);
   const transitionIds = new Set([previous?.id, next?.id].filter((id): id is string => Boolean(id)));
   const memos = state.feed.memos.filter((memo) => !transitionIds.has(memo.id));
   if (next && nextMatches && (previousIndex >= 0 || !previous || !previousMatches)) memos.push(next);
   memos.sort(compareMemos);
-  state.feed.memos = memos.slice(0, capacity);
-  state.feed.hasMore = state.feed.memos.length < state.feed.total;
+  state.feed.memos = memos.slice(0, MAX_VISIBLE_MEMOS);
+  state.feed.nextCursor = null;
+  state.feed.hasMore = false;
 }
 
 function memoMatchesCurrentFeed(memo: Memo): boolean {
@@ -1069,9 +1222,10 @@ function resetEditing(): void {
   state.editing = { id: "", content: "", originalContent: "", dirty: false, revision: state.editing.revision, saveState: "idle", errorMessage: "" };
 }
 
-function dedupeMemos(memos: Memo[]): Memo[] {
-  const seen = new Set<string>();
-  return memos.filter((memo) => !seen.has(memo.id) && Boolean(seen.add(memo.id)));
+function retainVisibleMemoState(): void {
+  const visible = new Set(state.feed.memos.map((memo) => memo.id));
+  state.ui.expandedIds = new Set([...state.ui.expandedIds].filter((id) => visible.has(id)));
+  if (!visible.has(state.ui.menuId)) state.ui.menuId = "";
 }
 
 async function renderWithFocus(target: FocusTarget): Promise<void> {
@@ -1185,8 +1339,8 @@ function clearSearchTimer(): void {
   searchTimer = undefined;
 }
 
-function readableError(error: unknown, fallback: string): string {
+function readableError(error: unknown, defaultMessage: string): string {
+  if (error instanceof PluginBridgeError) return defaultMessage;
   const message = error instanceof Error ? error.message.trim() : "";
-  if (!message || /PLUGIN_|runtime|broker|permission|rpc|worker|wasm/i.test(message)) return fallback;
-  return message;
+  return message || defaultMessage;
 }

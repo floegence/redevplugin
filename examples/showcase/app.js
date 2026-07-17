@@ -4,7 +4,7 @@
   // packages/redevplugin-ui/src/contracts.gen.ts
   var pluginUIProtocolVersion = "plugin-ui-v4";
 
-  // packages/redevplugin-ui/src/errors.ts
+  // packages/redevplugin-ui/src/error-codes.gen.ts
   var pluginPlatformErrorCodes = [
     "PLUGIN_INVALID_REQUEST",
     "PLUGIN_MANIFEST_INVALID",
@@ -30,6 +30,7 @@
     "PLUGIN_ASSET_TICKET_INVALID",
     "PLUGIN_ASSET_SESSION_INVALID",
     "PLUGIN_STREAM_TICKET_INVALID",
+    "PLUGIN_STREAM_DELIVERY_INVALID",
     "PLUGIN_STREAM_CANCELLED",
     "PLUGIN_LEASE_INVALID",
     "PLUGIN_LEASE_REPLAYED",
@@ -49,34 +50,104 @@
     "PLUGIN_CAPABILITY_ERROR",
     "PLUGIN_WORKER_ERROR",
     "PLUGIN_CONTRACT_MISMATCH",
-    "PLUGIN_STATE_VERSION_MISMATCH",
-    "PLUGIN_CSRF_REQUIRED",
-    "PLUGIN_RETAINED_DATA_CLEANUP_FAILED",
-    "PLUGIN_RETAINED_DATA_BIND_FAILED"
+    "PLUGIN_MANAGEMENT_REVISION_MISMATCH",
+    "PLUGIN_AUTHORIZATION_REVISION_MISMATCH",
+    "PLUGIN_BINDING_REVISION_MISMATCH",
+    "PLUGIN_VALUES_REVISION_MISMATCH",
+    "PLUGIN_CSRF_REQUIRED"
   ];
   var pluginBridgeErrorCodes = [
-    ...pluginPlatformErrorCodes,
+    "PLUGIN_INVALID_REQUEST",
+    "PLUGIN_MANIFEST_INVALID",
+    "PLUGIN_PACKAGE_INVALID",
+    "PLUGIN_PACKAGE_TOO_LARGE",
+    "PLUGIN_PACKAGE_PATH_FORBIDDEN",
+    "PLUGIN_SIGNATURE_INVALID",
+    "PLUGIN_TRUST_STATE_DENIED",
+    "PLUGIN_TRUST_VERIFICATION_REQUIRED",
+    "PLUGIN_TRUST_VERIFICATION_INVALID",
+    "PLUGIN_RELEASE_REF_VERIFICATION_FAILED",
+    "PLUGIN_RELEASE_REF_POLICY_DENIED",
+    "PLUGIN_DISABLED",
+    "PLUGIN_DISABLED_BY_POLICY",
+    "PLUGIN_PERMISSION_DENIED",
+    "PLUGIN_CONFIRMATION_REQUIRED",
+    "PLUGIN_CONFIRMATION_INVALID",
+    "PLUGIN_TOKEN_EXPIRED",
+    "PLUGIN_TOKEN_REPLAY",
+    "PLUGIN_GATEWAY_TOKEN_INVALID",
+    "PLUGIN_GATEWAY_TOKEN_REPLAYED",
+    "PLUGIN_GATEWAY_TOKEN_CHANNEL_MISMATCH",
+    "PLUGIN_ASSET_TICKET_INVALID",
+    "PLUGIN_ASSET_SESSION_INVALID",
+    "PLUGIN_STREAM_TICKET_INVALID",
+    "PLUGIN_STREAM_DELIVERY_INVALID",
+    "PLUGIN_STREAM_CANCELLED",
+    "PLUGIN_LEASE_INVALID",
+    "PLUGIN_LEASE_REPLAYED",
+    "PLUGIN_GRANT_INVALID",
+    "PLUGIN_STORAGE_QUOTA_EXCEEDED",
+    "PLUGIN_OPERATION_BLOCKED",
+    "PLUGIN_OPERATION_NOT_FOUND",
+    "PLUGIN_OPERATION_NOT_CANCELABLE",
+    "PLUGIN_NETWORK_TARGET_DENIED",
+    "PLUGIN_NETWORK_RATE_LIMITED",
+    "PLUGIN_RUNTIME_UNAVAILABLE",
+    "PLUGIN_RUNTIME_VERSION_MISMATCH",
+    "PLUGIN_UI_PROTOCOL_UNSUPPORTED",
+    "PLUGIN_UI_PROTOCOL_VIOLATION",
+    "PLUGIN_SURFACE_QUIESCE_TIMEOUT",
+    "PLUGIN_JSON_LIMIT_EXCEEDED",
+    "PLUGIN_CAPABILITY_ERROR",
+    "PLUGIN_WORKER_ERROR",
+    "PLUGIN_CONTRACT_MISMATCH",
+    "PLUGIN_MANAGEMENT_REVISION_MISMATCH",
+    "PLUGIN_AUTHORIZATION_REVISION_MISMATCH",
+    "PLUGIN_BINDING_REVISION_MISMATCH",
+    "PLUGIN_VALUES_REVISION_MISMATCH",
+    "PLUGIN_CSRF_REQUIRED",
     "PLUGIN_CONFIRMATION_REJECTED",
     "PLUGIN_BRIDGE_TIMEOUT",
     "PLUGIN_BRIDGE_DISPOSED",
     "PLUGIN_BRIDGE_HANDSHAKE_FAILED",
     "PLUGIN_BRIDGE_HANDSHAKE_REQUIRED"
   ];
-  var pluginClientErrorCodes = [
-    ...pluginBridgeErrorCodes,
-    "PLUGIN_PLATFORM_REQUEST_FAILED",
-    "PLUGIN_STREAM_FAILED"
-  ];
+
+  // packages/redevplugin-ui/src/errors.ts
+  var PluginPlatformRequestError = class extends Error {
+    errorCode;
+    details;
+    mutationOutcome;
+    constructor(errorCode, message, details = {}, mutationOutcome) {
+      super(message);
+      this.name = "PluginPlatformRequestError";
+      this.errorCode = errorCode;
+      this.details = details;
+      this.mutationOutcome = mutationOutcome;
+    }
+  };
+  var PluginTransportError = class extends Error {
+    mutationOutcome;
+    cause;
+    constructor(message, cause, mutationOutcome) {
+      super(message, { cause });
+      this.name = "PluginTransportError";
+      this.cause = cause;
+      this.mutationOutcome = mutationOutcome;
+    }
+  };
   var PluginBridgeError = class extends Error {
     errorCode;
     data;
     details;
-    constructor(errorCode, message, data, details) {
+    mutationOutcome;
+    constructor(errorCode, message, data, details, mutationOutcome) {
       super(message);
       this.name = "PluginBridgeError";
       this.errorCode = errorCode;
       this.data = data;
       this.details = details ?? data;
+      this.mutationOutcome = mutationOutcome;
     }
   };
 
@@ -88,23 +159,55 @@
     }
     return fetchLike.bind(globalThis);
   }
-  async function readHostEnvelope(response, fallbackCode) {
-    const raw = await response.json();
-    if (!isHostEnvelope(raw)) {
-      throw new PluginBridgeError(
-        "PLUGIN_CONTRACT_MISMATCH",
-        `Plugin platform endpoint returned an invalid envelope with HTTP ${response.status}`
+  async function readPlatformResponse(response) {
+    return readResponse(response, false);
+  }
+  async function readMutationPlatformResponse(response) {
+    return readResponse(response, true);
+  }
+  async function readResponse(response, mutation) {
+    let raw;
+    try {
+      raw = await response.json();
+    } catch (cause) {
+      throw new PluginTransportError(
+        `Plugin platform endpoint returned invalid JSON with HTTP ${response.status}`,
+        cause,
+        mutation ? "unknown" : void 0
       );
     }
-    if (!raw.ok) {
-      throw new PluginBridgeError(
-        raw.error_code ?? fallbackCode,
-        raw.error ?? `Plugin platform endpoint failed with HTTP ${response.status}`,
-        raw.data,
-        raw.error_details ?? raw.data
+    if (!isPlatformResponse(raw, mutation)) {
+      throw new PluginTransportError(
+        `Plugin platform endpoint returned an invalid envelope with HTTP ${response.status}`,
+        new PluginPlatformRequestError("PLUGIN_CONTRACT_MISMATCH", "Invalid platform response envelope"),
+        mutation ? "unknown" : void 0
       );
     }
-    return raw.data;
+    if (raw.ok) {
+      if (!response.ok || response.status !== 200) {
+        throw new PluginTransportError(
+          `Plugin platform endpoint returned a success envelope with HTTP ${response.status}`,
+          new PluginPlatformRequestError("PLUGIN_CONTRACT_MISMATCH", "HTTP status does not match the platform response envelope"),
+          mutation ? "unknown" : void 0
+        );
+      }
+      return raw.data;
+    }
+    if (response.ok || response.status === 200) {
+      throw new PluginTransportError(
+        `Plugin platform endpoint returned an error envelope with HTTP ${response.status}`,
+        new PluginPlatformRequestError("PLUGIN_CONTRACT_MISMATCH", "HTTP status does not match the platform response envelope"),
+        mutation ? "unknown" : void 0
+      );
+    }
+    {
+      throw new PluginPlatformRequestError(
+        raw.error.code,
+        raw.error.message || `Plugin platform endpoint failed with HTTP ${response.status}`,
+        raw.error.details,
+        "mutation_outcome" in raw.error ? raw.error.mutation_outcome : void 0
+      );
+    }
   }
   function isRecord(value) {
     return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -118,14 +221,103 @@
   function hasAllowedKeys(value, keys) {
     return isRecord(value) && Object.keys(value).every((key) => keys.includes(key));
   }
-  function isHostEnvelope(value) {
-    if (!isRecord(value) || typeof value.ok !== "boolean") {
-      return false;
-    }
+  function isPlatformResponse(value, mutation) {
+    if (!isRecord(value) || typeof value.ok !== "boolean") return false;
     if (value.ok) {
-      return true;
+      return hasExactKeys(value, ["ok", "data"]);
     }
-    return (value.error == null || typeof value.error === "string") && (value.error_code == null || typeof value.error_code === "string") && (value.error_details == null || isRecord(value.error_details));
+    if (!hasExactKeys(value, ["ok", "error"]) || !isRecord(value.error)) return false;
+    const errorKeys = mutation ? ["code", "message", "details", "mutation_outcome"] : ["code", "message", "details"];
+    if (!hasExactKeys(value.error, errorKeys) || !isPluginPlatformErrorCode(value.error.code) || typeof value.error.message !== "string" || value.error.message.trim().length === 0 || Array.from(value.error.message).length > 4096 || !isPlatformErrorDetails(value.error.code, value.error.details)) return false;
+    return !mutation || value.error.mutation_outcome === "not_committed" || value.error.mutation_outcome === "unknown";
+  }
+  var packageValidationErrorCodes = [
+    "PLUGIN_MANIFEST_INVALID",
+    "PLUGIN_PACKAGE_INVALID",
+    "PLUGIN_PACKAGE_TOO_LARGE",
+    "PLUGIN_PACKAGE_PATH_FORBIDDEN"
+  ];
+  var jsonLimitReasons = ["payload_bytes", "json_depth", "prototype_key", "number_precision"];
+  var packageValidationReasons = [
+    "manifest_missing",
+    "manifest_field",
+    "manifest_decode",
+    "zip_invalid",
+    "file_count",
+    "duplicate_entry",
+    "ambiguous_entry",
+    "non_regular_entry",
+    "invalid_utf8_path",
+    "non_nfc_path",
+    "symlink_entry",
+    "directory_entry",
+    "entry_bytes",
+    "path_length",
+    "compression_ratio",
+    "total_uncompressed_bytes",
+    "entry_open_failed",
+    "entry_read_failed",
+    "entry_close_failed",
+    "entry_size_mismatch",
+    "unsupported_signature_entry",
+    "manifest_artifact",
+    "package_asset_security",
+    "package_artifact_boundary",
+    "entry_path",
+    "manifest_canonical_json",
+    "canonical_hash",
+    "package_signature",
+    "empty_path",
+    "slash_separator",
+    "non_canonical_path",
+    "path_traversal",
+    "hidden_path",
+    "external_icon_path",
+    "unsupported_icon_format",
+    "missing_icon_asset",
+    "icon_magic_mismatch",
+    "query_or_fragment"
+  ];
+  function isPluginPlatformErrorCode(value) {
+    return typeof value === "string" && pluginPlatformErrorCodes.includes(value);
+  }
+  function isPlatformErrorDetails(code, value) {
+    if (code === "PLUGIN_MANAGEMENT_REVISION_MISMATCH") {
+      return hasExactKeys(value, ["plugin_instance_id", "expected_management_revision", "actual_management_revision"]) && typeof value.plugin_instance_id === "string" && value.plugin_instance_id.length > 0 && Number.isSafeInteger(value.expected_management_revision) && Number(value.expected_management_revision) >= 1 && Number.isSafeInteger(value.actual_management_revision) && Number(value.actual_management_revision) >= 1;
+    }
+    if (code === "PLUGIN_AUTHORIZATION_REVISION_MISMATCH") {
+      return hasExactKeys(value, [
+        "plugin_instance_id",
+        "expected_policy_revision",
+        "actual_policy_revision",
+        "expected_management_revision",
+        "actual_management_revision",
+        "expected_revoke_epoch",
+        "actual_revoke_epoch"
+      ]) && typeof value.plugin_instance_id === "string" && value.plugin_instance_id.length > 0 && Number.isSafeInteger(value.expected_policy_revision) && Number(value.expected_policy_revision) >= 1 && Number.isSafeInteger(value.actual_policy_revision) && Number(value.actual_policy_revision) >= 1 && Number.isSafeInteger(value.expected_management_revision) && Number(value.expected_management_revision) >= 1 && Number.isSafeInteger(value.actual_management_revision) && Number(value.actual_management_revision) >= 1 && Number.isSafeInteger(value.expected_revoke_epoch) && Number(value.expected_revoke_epoch) >= 0 && Number.isSafeInteger(value.actual_revoke_epoch) && Number(value.actual_revoke_epoch) >= 0;
+    }
+    if (code === "PLUGIN_BINDING_REVISION_MISMATCH") {
+      return hasExactKeys(value, ["plugin_instance_id", "expected_binding_revision", "actual_binding_revision"]) && typeof value.plugin_instance_id === "string" && value.plugin_instance_id.length > 0 && Number.isSafeInteger(value.expected_binding_revision) && Number(value.expected_binding_revision) >= 1 && Number.isSafeInteger(value.actual_binding_revision) && Number(value.actual_binding_revision) >= 1;
+    }
+    if (code === "PLUGIN_VALUES_REVISION_MISMATCH") {
+      return hasExactKeys(value, ["plugin_instance_id", "expected_values_revision", "actual_values_revision"]) && typeof value.plugin_instance_id === "string" && value.plugin_instance_id.length > 0 && Number.isSafeInteger(value.expected_values_revision) && Number(value.expected_values_revision) >= 1 && Number.isSafeInteger(value.actual_values_revision) && Number(value.actual_values_revision) >= 1;
+    }
+    if (code === "PLUGIN_CAPABILITY_ERROR") {
+      return hasAllowedKeys(value, ["capability_id", "capability_version", "detail_schema_sha256", "business_error_code", "business_error_details"]) && hasRequiredKeys(value, ["capability_id", "capability_version", "detail_schema_sha256", "business_error_code"]) && typeof value.capability_id === "string" && value.capability_id.length > 0 && typeof value.capability_version === "string" && value.capability_version.length > 0 && typeof value.detail_schema_sha256 === "string" && /^[0-9a-f]{64}$/.test(value.detail_schema_sha256) && typeof value.business_error_code === "string" && /^[A-Z][A-Z0-9_]*$/.test(value.business_error_code) && (value.business_error_details === void 0 || isRecord(value.business_error_details));
+    }
+    if (code === "PLUGIN_WORKER_ERROR") {
+      return hasExactKeys(value, ["worker_error_code", "worker_error_message", "worker_error_origin"]) && typeof value.worker_error_code === "string" && /^[A-Z][A-Z0-9_]*$/.test(value.worker_error_code) && typeof value.worker_error_message === "string" && value.worker_error_message.length > 0 && Array.from(value.worker_error_message).length <= 4096 && ["runtime", "hostcall", "plugin"].includes(String(value.worker_error_origin));
+    }
+    if (code === "PLUGIN_JSON_LIMIT_EXCEEDED") {
+      return hasExactKeys(value, ["reason"]) && typeof value.reason === "string" && jsonLimitReasons.includes(value.reason);
+    }
+    if (packageValidationErrorCodes.includes(code)) {
+      return hasAllowedKeys(value, ["reason", "path", "pointer"]) && hasRequiredKeys(value, ["reason"]) && typeof value.reason === "string" && packageValidationReasons.includes(value.reason) && (value.path === void 0 || typeof value.path === "string") && (value.pointer === void 0 || typeof value.pointer === "string");
+    }
+    return hasExactKeys(value, []);
+  }
+  function hasRequiredKeys(value, keys) {
+    return keys.every((key) => Object.hasOwn(value, key));
   }
 
   // packages/redevplugin-ui/src/surface-scope.ts
@@ -164,7 +356,7 @@
       entrySHA256: value.entry_sha256,
       assetTicket: value.asset_ticket,
       assetSessionNonce: value.asset_session_nonce,
-      pluginStateVersion: value.plugin_state_version,
+      managementRevision: value.management_revision,
       revokeEpoch: value.revoke_epoch,
       runtimeGenerationId: value.runtime_generation_id
     };
@@ -396,12 +588,20 @@
     "worker_heartbeat_timeout_ms": 5e3
   };
 
-  // packages/redevplugin-ui/src/ui-reconciler.ts
+  // packages/redevplugin-ui/src/ui-patch-validator.ts
   var keyPattern = new RegExp("^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$");
+  var identifierPattern = new RegExp("^[A-Za-z0-9._:-]{1,128}$");
+  var opaqueHandlePattern = new RegExp("^[A-Za-z0-9_-]{8,160}$");
+  var allowedTags = new Set(opaqueSurfaceAllowedTags);
+  var globalAttributes = new Set(opaqueSurfaceGlobalAttributes);
+  var safeInputTypes = new Set(opaqueSurfaceSafeInputTypes);
+  var tagAttributes = new Map(
+    Object.entries(opaqueSurfaceTagAttributes).map(([tag, attributes]) => [tag, new Set(attributes)])
+  );
 
   // packages/redevplugin-ui/src/surface.ts
   var opaqueSurfaceDocumentSchemaVersion = "redevplugin.opaque_surface_document.v2";
-  var opaquePluginBridgeGlobalKey = "__redevpluginWorkerBridgeV2";
+  var opaquePluginBridgeGlobalKey = "__redevpluginWorkerBridge";
   var maxPendingPluginBridgeRequests = 256;
   var maxPluginBridgeMessageBytes = 256 * 1024;
   var maxRetainedPluginStreamHandles = 128;
@@ -417,7 +617,7 @@
     "PLUGIN_GRANT_INVALID",
     "PLUGIN_LEASE_INVALID",
     "PLUGIN_LEASE_REPLAYED",
-    "PLUGIN_STATE_VERSION_MISMATCH",
+    "PLUGIN_MANAGEMENT_REVISION_MISMATCH",
     "PLUGIN_STREAM_CANCELLED",
     "PLUGIN_STREAM_TICKET_INVALID",
     "PLUGIN_TOKEN_EXPIRED",
@@ -492,14 +692,14 @@
     }
     const encoder = new TextEncoder();
     const fields = [
-      "redevplugin.bridge.handshake.v2",
+      "redevplugin.bridge.handshake.v3",
       handshake.plugin_id,
       handshake.surface_id,
       handshake.surface_instance_id,
       handshake.active_fingerprint,
       handshake.bridge_nonce,
       handshake.asset_session_nonce,
-      String(handshake.plugin_state_version),
+      String(handshake.management_revision),
       String(handshake.revoke_epoch),
       handshake.ui_protocol_version,
       bridgeChannelID
@@ -624,6 +824,7 @@
   const validIdentifier = (value) => typeof value === "string" && /^[A-Za-z0-9._:-]{1,128}$/.test(value);
   const validResourceIdentifier = (value) => typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(value);
   const validOpaqueHandle = (value, prefix) => typeof value === "string" && value.startsWith(prefix + "_") && /^[A-Za-z0-9_-]{8,160}$/.test(value);
+  const validDeliveryID = (value) => typeof value === "string" && /^delivery_[A-Za-z0-9_-]{8,128}$/.test(value);
   const validDigest = (value) => typeof value === "string" && /^sha256:[a-f0-9]{64}$/.test(value);
   const validPath = (value) => typeof value === "string" && value.length > 0 && value.length <= 512 && !value.startsWith("/") && !value.includes("\\\\") && !value.split("/").some((part) => !part || part === "." || part === "..");
   const validAttribute = (tag, name, value) => {
@@ -678,7 +879,7 @@
   let workerHeartbeatTimeout;
   let pendingQuiesceID;
   const pendingWorkerRequests = new Set();
-  const requestSequence = { rpc: 0, stream: 0, render: 0, operation: 0, canvas: 0, asset: 0 };
+  const requestSequence = { rpc: 0, stream: 0, stream_ack: 0, render: 0, operation: 0, canvas: 0, asset: 0 };
   let renderWindowStartedAt = 0;
   let renderCount = 0;
   let uiRevision = 0;
@@ -942,11 +1143,12 @@
         for (const [name, value] of Object.entries(node.attributes)) if (!validAttribute(node.tag, name, value)) throw new Error("plugin render attribute is not allowed");
       }
       if (node.children !== undefined && !Array.isArray(node.children)) throw new Error("plugin render children are invalid");
-      elements.set(node.key, { node, parent });
+      elements.set(node.key, { node, parent, depth });
       for (const child of node.children || []) visit(child, node, depth + 1, state);
     };
-    visit(root, undefined, 1, { nodes: 0 });
-    return elements;
+    const state = { nodes: 0 };
+    visit(root, undefined, 1, state);
+    return { elements, nodeCount: state.nodes };
   };
   const transferredCanvasKey = (key) => {
     const element = uiElements.get(key);
@@ -967,7 +1169,9 @@
   const validatePatch = (operations) => {
     if (!Array.isArray(operations) || operations.length > maxRenderNodes) throw new Error("plugin UI patch exceeds limits");
     const nextTree = cloneVNode(uiTree);
-    let model = indexModel(nextTree);
+    const initialIndex = indexModel(nextTree);
+    const model = initialIndex.elements;
+    let nodeCount = initialIndex.nodeCount;
     for (const operation of operations) {
       if (!isRecord(operation) || typeof operation.type !== "string") throw new Error("plugin UI patch operation is invalid");
       if (operation.type === "set_text") {
@@ -1003,10 +1207,24 @@
       } else if (operation.type === "insert_child") {
         if (!exactKeys(operation, ["type", "parent_key", "child_index", "node"]) || !validResourceIdentifier(operation.parent_key) ||
             !Number.isSafeInteger(operation.child_index) || operation.child_index < 0) throw new Error("plugin UI insertion is invalid");
-        const parent = model.get(operation.parent_key)?.node;
+        const parentEntry = model.get(operation.parent_key);
+        const parent = parentEntry?.node;
         if (!parent || operation.child_index > (parent.children || []).length) throw new Error("plugin UI insertion target is invalid");
+        const inserted = indexModel(operation.node);
+        if (nodeCount + inserted.nodeCount > maxRenderNodes) throw new Error("plugin UI insertion exceeds node limits");
+        for (const [key, entry] of inserted.elements) {
+          if (model.has(key) || entry.depth + parentEntry.depth > maxRenderDepth) throw new Error("plugin UI insertion subtree is invalid");
+        }
         parent.children ||= [];
         parent.children.splice(operation.child_index, 0, operation.node);
+        nodeCount += inserted.nodeCount;
+        for (const [key, entry] of inserted.elements) {
+          model.set(key, {
+            node: entry.node,
+            parent: entry.parent ?? parent,
+            depth: entry.depth + parentEntry.depth,
+          });
+        }
       } else if (operation.type === "remove_child") {
         if (!Object.keys(operation).every((key) => ["type", "parent_key", "child_index", "child_key"].includes(key)) ||
             !validResourceIdentifier(operation.parent_key) || !Number.isSafeInteger(operation.child_index) || operation.child_index < 0 ||
@@ -1015,7 +1233,10 @@
         const child = parent && (parent.children || [])[operation.child_index];
         if (!parent || child === undefined || (operation.child_key === undefined) !== (typeof child === "string") ||
             (typeof child !== "string" && operation.child_key !== child.key) || subtreeHasTransferredCanvas(child)) throw new Error("plugin UI removal target is invalid");
+        const removed = indexModel(child);
         parent.children.splice(operation.child_index, 1);
+        nodeCount -= removed.nodeCount;
+        for (const key of removed.elements.keys()) model.delete(key);
       } else if (operation.type === "move_child") {
         if (!exactKeys(operation, ["type", "parent_key", "child_key", "from_index", "to_index"]) || !validResourceIdentifier(operation.parent_key) ||
             !validResourceIdentifier(operation.child_key) || !Number.isSafeInteger(operation.from_index) || !Number.isSafeInteger(operation.to_index) ||
@@ -1028,7 +1249,6 @@
       } else {
         throw new Error("plugin UI patch operation type is unsupported");
       }
-      model = indexModel(nextTree);
     }
     return nextTree;
   };
@@ -1540,7 +1760,7 @@
   const validCall = (value) => exactKeys(value, ["type", "request"]) && value.type === "redevplugin.bridge.call" && isRecord(value.request) && Object.keys(value.request).every((key) => ["id", "method", "params"].includes(key)) && typeof value.request.id === "string" && value.request.id.length <= 128 && typeof value.request.method === "string" && /^[A-Za-z0-9._:-]{1,256}$/.test(value.request.method) && (value.request.params === undefined || isRecord(value.request.params));
   const requestID = (value, expectedKind) => {
     if (typeof value !== "string") return undefined;
-    const match = /^(rpc|stream|render|operation|canvas|asset)_([1-9][0-9]{0,15})$/.exec(value);
+    const match = /^(rpc|stream|stream_ack|render|operation|canvas|asset)_([1-9][0-9]{0,15})$/.exec(value);
     if (!match || match[1] !== expectedKind) return undefined;
     const sequence = Number(match[2]);
     return Number.isSafeInteger(sequence) ? { kind: match[1], sequence } : undefined;
@@ -1768,6 +1988,12 @@
     }
     if (exactKeys(message, ["type", "id", "stream_handle"]) && message.type === "redevplugin.bridge.stream.read" && typeof message.id === "string" && validOpaqueHandle(message.stream_handle, "stream")) {
       if (!acceptWorkerRequest(message.id, "stream")) return rejectWorkerRequest(message.id, "duplicate, replayed, or excessive plugin request");
+      sendParent(message);
+      return;
+    }
+    if (exactKeys(message, ["type", "id", "stream_handle", "delivery_id"]) && message.type === "redevplugin.bridge.stream.ack" &&
+        requestID(message.id, "stream_ack") && validOpaqueHandle(message.stream_handle, "stream") && validDeliveryID(message.delivery_id)) {
+      if (!acceptWorkerRequest(message.id, "stream_ack")) return rejectWorkerRequest(message.id, "duplicate, replayed, or excessive plugin request");
       sendParent(message);
       return;
     }
@@ -2205,6 +2431,10 @@
           await this.#handleStreamRead(data.id, data.stream_handle);
           return;
         }
+        if (isStreamAcknowledgeMessage(data)) {
+          await this.#handleStreamAcknowledge(data.id, data.stream_handle, data.delivery_id);
+          return;
+        }
         if (isOperationCancelMessage(data)) {
           await this.#handleOperationCancel(data);
           return;
@@ -2232,18 +2462,18 @@
           await this.#handleConfirmationRequired(request2, bridgeError, controller.signal);
           return;
         }
-        this.#postError(request2.id, bridgeError.errorCode, bridgeError.message, bridgeError.details);
+        this.#postError(request2.id, bridgeError.errorCode, bridgeError.message, bridgeError.details, bridgeError.mutationOutcome);
       } finally {
         this.#pendingRequestControllers.delete(request2.id);
       }
     }
     async #handleConfirmationRequired(request2, originalError, signal) {
       if (!this.#confirm) {
-        this.#postError(request2.id, originalError.errorCode, originalError.message, originalError.details);
+        this.#postError(request2.id, originalError.errorCode, originalError.message, originalError.details, originalError.mutationOutcome);
         return;
       }
       try {
-        const confirmation = await this.#prepareConfirmation(request2, signal);
+        const confirmation = await this.#preparePluginMethodConfirmation(request2, signal);
         const decision = await abortableConfirmationDecision(this.#confirm({
           requestId: request2.id,
           method: request2.method,
@@ -2266,55 +2496,106 @@
       } catch (error) {
         if (signal.aborted || this.#disposed) return;
         const bridgeError = toBridgeError(error, "PLUGIN_PERMISSION_DENIED");
-        this.#postError(request2.id, bridgeError.errorCode, bridgeError.message, bridgeError.details);
+        this.#postError(request2.id, bridgeError.errorCode, bridgeError.message, bridgeError.details, bridgeError.mutationOutcome);
       }
     }
     async #handleStreamRead(id, streamHandle) {
       const credential = this.#streamCredentials.get(streamHandle);
-      if (!credential || credential.reading) {
-        this.#postError(id, "PLUGIN_STREAM_TICKET_INVALID", "Plugin stream handle is invalid or already consumed");
+      if (!credential || credential.completed || credential.reading || credential.acknowledging) {
+        this.#postError(id, "PLUGIN_STREAM_TICKET_INVALID", "Plugin stream handle is invalid, completed, or busy");
         return;
       }
       if (credential.expiresAtMs <= Date.now()) {
         this.#postError(id, "PLUGIN_STREAM_TICKET_INVALID", "Plugin stream handle is expired");
         return;
       }
+      if (credential.pending) {
+        this.#postResponse(id, credential.pending.response);
+        return;
+      }
       credential.reading = true;
       const controller = this.#registerPendingRequest(id);
       try {
-        const result = await this.#postJSON(
-          `/_redevplugin/api/plugins/surfaces/${encodeURIComponent(this.bootstrap.surfaceInstanceId)}/streams/read`,
-          () => ({ stream_id: credential.streamID, stream_ticket: credential.streamTicket }),
-          controller.signal
-        );
-        if (!isStreamReadResult(result, credential.streamID, credential.lastSequence)) {
+        const readPath = `/_redevplugin/api/plugins/surfaces/${encodeURIComponent(this.bootstrap.surfaceInstanceId)}/streams/read`;
+        const readBody = () => ({ stream_id: credential.streamID, stream_ticket: credential.streamTicket, read_id: credential.readID });
+        let result;
+        try {
+          result = await this.#postJSON(readPath, readBody, controller.signal);
+        } catch (error) {
+          if (!retryableStreamReadTransportFailure(error) || controller.signal.aborted || this.#disposed) throw error;
+          result = await this.#postJSON(readPath, readBody, controller.signal);
+        }
+        if (!isStreamReadResult(result, credential.streamID, credential.readID, credential.lastSequence)) {
           throw new PluginBridgeError("PLUGIN_CONTRACT_MISMATCH", "Plugin stream endpoint returned an invalid response");
         }
         const lastSequence = result.events.length > 0 ? result.events[result.events.length - 1].sequence : credential.lastSequence;
-        if (result.done) {
-          this.#streamCredentials.delete(streamHandle);
-        } else {
-          const expiresAtMs = Date.parse(result.next_stream_expires_at);
-          credential.streamTicket = result.next_stream_ticket;
-          credential.expiresAtMs = expiresAtMs;
-          credential.lastSequence = lastSequence;
-          credential.reading = false;
+        const events = result.events.map(publicPluginStreamEvent);
+        const response = result.done ? { delivery_id: result.delivery_id, events, done: true, terminal_status: result.terminal_status, retry_after_ms: 0 } : { delivery_id: result.delivery_id, events, done: false, retry_after_ms: events.length === 0 ? 25 : 0 };
+        if (result.delivery_id) {
+          credential.pending = {
+            deliveryID: result.delivery_id,
+            lastSequence,
+            done: result.done,
+            response
+          };
         }
-        if (!controller.signal.aborted && !this.#disposed) this.#postResponse(id, {
-          events: result.events.map(publicPluginStreamEvent),
-          done: result.done,
-          ...result.done ? { terminal_status: result.terminal_status } : {},
-          retry_after_ms: result.events.length === 0 && !result.done ? 25 : 0
-        });
+        credential.reading = false;
+        if (!controller.signal.aborted && !this.#disposed) this.#postResponse(id, response);
       } catch (error) {
-        if (streamReadFailureInvalidatesCredential(error)) {
+        const bridgeError = toBridgeError(error, "PLUGIN_RUNTIME_UNAVAILABLE");
+        if (streamReadFailureInvalidatesCredential(bridgeError)) {
           this.#streamCredentials.delete(streamHandle);
         } else {
           credential.reading = false;
         }
         if (controller.signal.aborted || this.#disposed) return;
-        const bridgeError = toBridgeError(error, "PLUGIN_RUNTIME_UNAVAILABLE");
         this.#postError(id, bridgeError.errorCode, bridgeError.message);
+      } finally {
+        this.#pendingRequestControllers.delete(id);
+      }
+    }
+    async #handleStreamAcknowledge(id, streamHandle, deliveryID) {
+      const credential = this.#streamCredentials.get(streamHandle);
+      if (!credential || credential.reading || credential.acknowledging) {
+        this.#postError(id, "PLUGIN_STREAM_DELIVERY_INVALID", "Plugin stream delivery is invalid or busy", void 0, "not_committed");
+        return;
+      }
+      if (credential.lastAcknowledgedDeliveryID === deliveryID) {
+        this.#postResponse(id, void 0);
+        return;
+      }
+      if (!credential.pending || credential.pending.deliveryID !== deliveryID) {
+        this.#postError(id, "PLUGIN_STREAM_DELIVERY_INVALID", "Plugin stream delivery does not match the pending batch", void 0, "not_committed");
+        return;
+      }
+      credential.acknowledging = true;
+      const controller = this.#registerPendingRequest(id);
+      try {
+        const result = await this.#postMutationJSON(
+          `/_redevplugin/api/plugins/surfaces/${encodeURIComponent(this.bootstrap.surfaceInstanceId)}/streams/ack`,
+          () => ({
+            stream_id: credential.streamID,
+            stream_ticket: credential.streamTicket,
+            delivery_id: deliveryID
+          }),
+          controller.signal
+        );
+        if (!hasExactKeys(result, ["acknowledged"]) || result.acknowledged !== true) {
+          throw new PluginBridgeError("PLUGIN_CONTRACT_MISMATCH", "Plugin stream acknowledgement endpoint returned an invalid response", void 0, void 0, "unknown");
+        }
+        const pending = credential.pending;
+        credential.lastAcknowledgedDeliveryID = deliveryID;
+        credential.lastSequence = pending.lastSequence;
+        credential.pending = void 0;
+        credential.readID = randomOpaqueHandle("read");
+        credential.completed = pending.done;
+        credential.acknowledging = false;
+        if (!controller.signal.aborted && !this.#disposed) this.#postResponse(id, void 0);
+      } catch (error) {
+        credential.acknowledging = false;
+        if (controller.signal.aborted || this.#disposed) return;
+        const bridgeError = toBridgeError(error, "PLUGIN_STREAM_DELIVERY_INVALID");
+        this.#postError(id, bridgeError.errorCode, bridgeError.message, bridgeError.details, bridgeError.mutationOutcome);
       } finally {
         this.#pendingRequestControllers.delete(id);
       }
@@ -2322,7 +2603,7 @@
     async #handleOperationCancel(message) {
       const controller = this.#registerPendingRequest(message.id);
       try {
-        await this.#postJSON(
+        await this.#postMutationJSON(
           `/_redevplugin/api/plugins/surfaces/${encodeURIComponent(this.bootstrap.surfaceInstanceId)}/operations/cancel`,
           { operation_id: message.operation_id, bridge_channel_id: this.bridgeChannelId, reason: message.reason },
           controller.signal
@@ -2332,7 +2613,7 @@
       } catch (error) {
         if (controller.signal.aborted || this.#disposed) return;
         const bridgeError = toBridgeError(error, "PLUGIN_OPERATION_BLOCKED");
-        this.#postError(message.id, bridgeError.errorCode, bridgeError.message);
+        this.#postError(message.id, bridgeError.errorCode, bridgeError.message, bridgeError.details, bridgeError.mutationOutcome);
       } finally {
         this.#pendingRequestControllers.delete(message.id);
       }
@@ -2407,7 +2688,10 @@
           streamTicket: result.stream_ticket,
           expiresAtMs,
           lastSequence: 0,
-          reading: false
+          readID: randomOpaqueHandle("read"),
+          reading: false,
+          acknowledging: false,
+          completed: false
         });
         publicResult.stream_handle = handle;
       }
@@ -2424,13 +2708,13 @@
       }
     }
     #callRPC(request2, confirmationID, signal) {
-      return this.#postJSON("/_redevplugin/api/plugins/rpc", () => this.#rpcBody(request2, confirmationID), signal);
+      return this.#postMutationJSON("/_redevplugin/api/plugins/rpc", () => this.#rpcBody(request2, confirmationID), signal);
     }
-    #prepareConfirmation(request2, signal) {
-      return this.#postJSON("/_redevplugin/api/plugins/confirm", () => this.#rpcBody(request2), signal);
+    #preparePluginMethodConfirmation(request2, signal) {
+      return this.#postMutationJSON("/_redevplugin/api/plugins/confirmations/prepare", () => this.#rpcBody(request2), signal);
     }
     async #rejectConfirmation(confirmationID, signal) {
-      const result = await this.#postJSON(
+      const result = await this.#postMutationJSON(
         `/_redevplugin/api/plugins/surfaces/${encodeURIComponent(this.bootstrap.surfaceInstanceId)}/confirmations/reject`,
         () => ({
           plugin_instance_id: this.bootstrap.pluginInstanceId,
@@ -2457,7 +2741,7 @@
       return body;
     }
     #prepareSurface() {
-      return this.#postJSON(
+      return this.#postMutationJSON(
         `/_redevplugin/api/plugins/surfaces/${encodeURIComponent(this.bootstrap.surfaceInstanceId)}/prepare`,
         { asset_ticket: this.bootstrap.assetTicket }
       );
@@ -2472,7 +2756,7 @@
         handshake_transcript_sha256: transcript,
         ...previousGatewayToken ? { previous_plugin_gateway_token: previousGatewayToken } : {}
       };
-      return direct ? this.#fetchJSON(path, body) : this.#postJSON(path, body);
+      return direct ? this.#fetchMutationJSON(path, body) : this.#postMutationJSON(path, body);
     }
     #handshake() {
       return {
@@ -2483,12 +2767,18 @@
         active_fingerprint: this.bootstrap.activeFingerprint,
         bridge_nonce: this.bootstrap.bridgeNonce,
         asset_session_nonce: this.bootstrap.assetSessionNonce,
-        plugin_state_version: this.bootstrap.pluginStateVersion,
+        management_revision: this.bootstrap.managementRevision,
         revoke_epoch: this.bootstrap.revokeEpoch,
         ui_protocol_version: pluginUIProtocolVersion
       };
     }
     async #postJSON(path, body, signal) {
+      return this.#requestJSON(path, body, false, signal);
+    }
+    async #postMutationJSON(path, body, signal) {
+      return this.#requestJSON(path, body, true, signal);
+    }
+    async #requestJSON(path, body, mutation, signal) {
       if (this.#bridgeReady) {
         if (Date.now() >= this.#leaseRenewAtMs) await this.#startLeaseRenewal();
         else if (this.#leaseRenewalPromise) await this.#leaseRenewalPromise;
@@ -2496,7 +2786,7 @@
       const requestBody = typeof body === "function" ? body() : body;
       this.#activeTransportRequests += 1;
       try {
-        return await this.#fetchJSON(path, requestBody, signal);
+        return mutation ? await this.#fetchMutationJSON(path, requestBody, signal) : await this.#fetchJSON(path, requestBody, signal);
       } finally {
         this.#activeTransportRequests -= 1;
         if (this.#activeTransportRequests === 0) {
@@ -2508,6 +2798,9 @@
     }
     async #fetchJSON(path, body, signal) {
       return this.#fetchJSONRequest(path, body, { signal });
+    }
+    async #fetchMutationJSON(path, body, signal) {
+      return this.#fetchJSONRequest(path, body, { signal, mutation: true });
     }
     async #fetchJSONRequest(path, body, options = {}) {
       const controller = new AbortController();
@@ -2523,7 +2816,13 @@
         timer = setTimeout(() => {
           timedOut = true;
           controller.abort();
-          reject(new PluginBridgeError("PLUGIN_BRIDGE_TIMEOUT", `Plugin surface request timed out: ${path}`));
+          reject(new PluginBridgeError(
+            "PLUGIN_BRIDGE_TIMEOUT",
+            `Plugin surface request timed out: ${path}`,
+            void 0,
+            void 0,
+            options.mutation ? "unknown" : void 0
+          ));
         }, this.#requestTimeoutMs);
       });
       try {
@@ -2538,10 +2837,21 @@
           }),
           timeout
         ]);
-        return await readHostEnvelope(response, "PLUGIN_PERMISSION_DENIED");
+        return options.mutation ? await readMutationPlatformResponse(response) : await readPlatformResponse(response);
       } catch (error) {
-        if (timedOut) throw new PluginBridgeError("PLUGIN_BRIDGE_TIMEOUT", `Plugin surface request timed out: ${path}`);
-        throw error;
+        if (timedOut) {
+          throw new PluginBridgeError(
+            "PLUGIN_BRIDGE_TIMEOUT",
+            `Plugin surface request timed out: ${path}`,
+            void 0,
+            void 0,
+            options.mutation ? "unknown" : void 0
+          );
+        }
+        if (error instanceof PluginBridgeError || error instanceof PluginPlatformRequestError || error instanceof PluginTransportError) {
+          throw error;
+        }
+        throw new PluginTransportError(`Plugin surface request failed for POST ${path}`, error, options.mutation ? "unknown" : void 0);
       } finally {
         if (timer) clearTimeout(timer);
         if (!options.independentLifecycle) this.#abortController.signal.removeEventListener("abort", abort);
@@ -2607,7 +2917,7 @@
         await this.#fetchJSONRequest(
           `/_redevplugin/api/plugins/surfaces/${encodeURIComponent(this.bootstrap.surfaceInstanceId)}/dispose`,
           { bridge_nonce: this.bootstrap.bridgeNonce },
-          { keepalive, independentLifecycle: true }
+          { keepalive, independentLifecycle: true, mutation: true }
         );
       })();
       return this.#revokePromise;
@@ -2669,7 +2979,7 @@
       }
       this.#postToRenderer(response);
     }
-    #postError(id, errorCode, error, details) {
+    #postError(id, errorCode, error, details, mutationOutcome) {
       const errorDetails = details === void 0 ? void 0 : normalizePluginJSONObject(details);
       this.#postToRenderer(removeUndefined({
         type: "redevplugin.bridge.response",
@@ -2677,7 +2987,8 @@
         ok: false,
         error_code: errorCode,
         error,
-        error_details: errorDetails
+        error_details: errorDetails,
+        mutation_outcome: mutationOutcome
       }));
     }
     #postToRenderer(message) {
@@ -2908,7 +3219,7 @@
         throw new PluginBridgeError("PLUGIN_CONTRACT_MISMATCH", "Plugin surface bootstrap is incomplete");
       }
     }
-    if (!Number.isSafeInteger(bootstrap.pluginStateVersion) || bootstrap.pluginStateVersion < 1 || !Number.isSafeInteger(bootstrap.revokeEpoch) || bootstrap.revokeEpoch < 1) {
+    if (!Number.isSafeInteger(bootstrap.managementRevision) || bootstrap.managementRevision < 1 || !Number.isSafeInteger(bootstrap.revokeEpoch) || bootstrap.revokeEpoch < 1) {
       throw new PluginBridgeError("PLUGIN_CONTRACT_MISMATCH", "Plugin surface revision is invalid");
     }
   }
@@ -2916,7 +3227,7 @@
     if (!isSurfacePreparationResult(preparation)) {
       throw new PluginBridgeError("PLUGIN_CONTRACT_MISMATCH", "Plugin surface prepare returned an invalid opaque document");
     }
-    if (preparation.plugin_state_version !== bootstrap.pluginStateVersion || preparation.revoke_epoch !== bootstrap.revokeEpoch) {
+    if (preparation.management_revision !== bootstrap.managementRevision || preparation.revoke_epoch !== bootstrap.revokeEpoch) {
       throw new PluginBridgeError("PLUGIN_GATEWAY_TOKEN_INVALID", "Plugin surface state changed during prepare");
     }
     if (preparation.asset_session_nonce !== bootstrap.assetSessionNonce) {
@@ -2933,7 +3244,7 @@
       "asset_session_nonce",
       "entry_path",
       "entry_sha256",
-      "plugin_state_version",
+      "management_revision",
       "revoke_epoch",
       "issued_at",
       "expires_at",
@@ -2941,7 +3252,7 @@
     ])) return false;
     const issuedAt = Date.parse(String(value.issued_at));
     const expiresAt = Date.parse(String(value.expires_at));
-    return typeof value.asset_session === "string" && value.asset_session.length > 0 && typeof value.asset_session_id === "string" && value.asset_session_id.length > 0 && typeof value.asset_session_nonce === "string" && value.asset_session_nonce.length > 0 && validPackagePath(value.entry_path) && validSHA256(value.entry_sha256) && Number.isSafeInteger(value.plugin_state_version) && Number(value.plugin_state_version) >= 1 && Number.isSafeInteger(value.revoke_epoch) && Number(value.revoke_epoch) >= 1 && Number.isFinite(issuedAt) && Number.isFinite(expiresAt) && expiresAt > issuedAt && isOpaqueSurfaceDocument(value.document);
+    return typeof value.asset_session === "string" && value.asset_session.length > 0 && typeof value.asset_session_id === "string" && value.asset_session_id.length > 0 && typeof value.asset_session_nonce === "string" && value.asset_session_nonce.length > 0 && validPackagePath(value.entry_path) && validSHA256(value.entry_sha256) && Number.isSafeInteger(value.management_revision) && Number(value.management_revision) >= 1 && Number.isSafeInteger(value.revoke_epoch) && Number(value.revoke_epoch) >= 1 && Number.isFinite(issuedAt) && Number.isFinite(expiresAt) && expiresAt > issuedAt && isOpaqueSurfaceDocument(value.document);
   }
   function isOpaqueSurfaceDocument(value) {
     if (!hasAllowedKeys(value, [
@@ -2976,6 +3287,9 @@
   function isStreamReadMessage(value) {
     return hasExactKeys(value, ["type", "id", "stream_handle"]) && value.type === "redevplugin.bridge.stream.read" && validBridgeRequestID(value.id, "stream") && validOpaqueHandle(value.stream_handle, "stream");
   }
+  function isStreamAcknowledgeMessage(value) {
+    return hasExactKeys(value, ["type", "id", "stream_handle", "delivery_id"]) && value.type === "redevplugin.bridge.stream.ack" && validBridgeRequestID(value.id, "stream_ack") && validOpaqueHandle(value.stream_handle, "stream") && validDeliveryID(value.delivery_id);
+  }
   function isOperationCancelMessage(value) {
     return hasAllowedKeys(value, ["type", "id", "operation_id", "reason"]) && value.type === "redevplugin.bridge.operation.cancel" && validBridgeRequestID(value.id, "operation") && validOpaqueHandle(value.operation_id, "operation") && (value.reason === void 0 || typeof value.reason === "string" && value.reason.length <= 256);
   }
@@ -2991,15 +3305,14 @@
   function isGatewayTokenResult(value) {
     return hasExactKeys(value, ["plugin_gateway_token", "plugin_gateway_token_id", "asset_session", "asset_session_id", "issued_at", "expires_at"]) && typeof value.plugin_gateway_token === "string" && value.plugin_gateway_token.length > 0 && typeof value.plugin_gateway_token_id === "string" && value.plugin_gateway_token_id.length > 0 && typeof value.asset_session === "string" && value.asset_session.length > 0 && typeof value.asset_session_id === "string" && value.asset_session_id.length > 0 && typeof value.issued_at === "string" && typeof value.expires_at === "string";
   }
-  function isStreamReadResult(value, expectedStreamID, previousSequence) {
+  function isStreamReadResult(value, expectedStreamID, expectedReadID, previousSequence) {
     if (!isRecord(value) || typeof value.done !== "boolean" || !Array.isArray(value.events)) return false;
-    const expectedKeys = value.done ? ["done", "events", "terminal_status"] : ["done", "events", "next_stream_expires_at", "next_stream_ticket", "next_stream_ticket_id"];
+    const hasDelivery = value.events.length > 0 || value.done;
+    const expectedKeys = value.done ? ["delivery_id", "done", "events", "read_id", "terminal_status"] : hasDelivery ? ["delivery_id", "done", "events", "read_id"] : ["done", "events", "read_id"];
     if (!hasExactKeys(value, expectedKeys)) return false;
+    if (value.read_id !== expectedReadID || hasDelivery && !validDeliveryID(value.delivery_id)) return false;
     if (value.done) {
       if (!validPluginStreamTerminalStatus(value.terminal_status)) return false;
-    } else {
-      const expiresAt = Date.parse(String(value.next_stream_expires_at));
-      if (typeof value.next_stream_ticket !== "string" || value.next_stream_ticket.length === 0 || typeof value.next_stream_ticket_id !== "string" || value.next_stream_ticket_id.length === 0 || !Number.isFinite(expiresAt) || expiresAt <= Date.now()) return false;
     }
     let terminal = false;
     for (const event of value.events) {
@@ -3030,8 +3343,8 @@
   var pluginMethodPattern = new RegExp("^[-A-Za-z0-9._:]{1,256}$");
   var pluginActionPattern = new RegExp("^[-A-Za-z0-9._:]{1,128}$");
   var pluginUIIdentifierPattern = new RegExp("^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$");
-  var opaqueHandlePattern = new RegExp("^[-A-Za-z0-9_]{8,160}$");
-  var bridgeRequestIDPattern = /^(rpc|stream|render|operation|canvas|asset)_([1-9][0-9]{0,15})$/;
+  var opaqueHandlePattern2 = new RegExp("^[-A-Za-z0-9_]{8,160}$");
+  var bridgeRequestIDPattern = /^(rpc|stream|stream_ack|render|operation|canvas|asset)_([1-9][0-9]{0,15})$/;
   function validBridgeRequestID(value, expectedKind) {
     if (typeof value !== "string") return false;
     const match = bridgeRequestIDPattern.exec(value);
@@ -3045,7 +3358,10 @@
     return typeof value === "string" && pluginUIIdentifierPattern.test(value);
   }
   function validOpaqueHandle(value, prefix) {
-    return typeof value === "string" && value.startsWith(`${prefix}_`) && opaqueHandlePattern.test(value);
+    return typeof value === "string" && value.startsWith(`${prefix}_`) && opaqueHandlePattern2.test(value);
+  }
+  function validDeliveryID(value) {
+    return typeof value === "string" && /^delivery_[A-Za-z0-9_-]{8,128}$/.test(value);
   }
   function validSHA256(value) {
     return typeof value === "string" && /^sha256:[a-f0-9]{64}$/.test(value);
@@ -3226,14 +3542,23 @@
     for (const key of Object.keys(value)) if (value[key] === void 0) delete value[key];
     return value;
   }
-  function toBridgeError(error, fallbackCode) {
+  function toBridgeError(error, defaultCode) {
     if (error instanceof PluginBridgeError) return error;
-    if (error instanceof Error) return new PluginBridgeError(fallbackCode, error.message);
-    return new PluginBridgeError(fallbackCode, String(error));
+    if (error instanceof PluginPlatformRequestError) {
+      return new PluginBridgeError(error.errorCode, error.message, void 0, error.details, error.mutationOutcome);
+    }
+    if (error instanceof PluginTransportError) {
+      return new PluginBridgeError(defaultCode, error.message, void 0, void 0, error.mutationOutcome);
+    }
+    if (error instanceof Error) return new PluginBridgeError(defaultCode, error.message);
+    return new PluginBridgeError(defaultCode, String(error));
   }
   function streamReadFailureInvalidatesCredential(error) {
     if (!(error instanceof PluginBridgeError)) return true;
     return streamCredentialInvalidatingErrorCodes.has(error.errorCode);
+  }
+  function retryableStreamReadTransportFailure(error) {
+    return error instanceof PluginTransportError || error instanceof PluginBridgeError && error.errorCode === "PLUGIN_BRIDGE_TIMEOUT";
   }
 
   // examples/showcase/app.ts
@@ -3500,8 +3825,24 @@
       body: JSON.stringify(body)
     });
     const envelope = await response.json();
-    if (!response.ok || envelope.success !== true) throw new Error(envelope.error?.message || `Request failed with HTTP ${response.status}`);
-    return envelope.data;
+    if (!isRecord2(envelope) || typeof envelope.ok !== "boolean") {
+      throw new Error(`Invalid response with HTTP ${response.status}`);
+    }
+    if (envelope.ok) {
+      if (!response.ok || !hasExactKeys2(envelope, ["ok", "data"])) throw new Error(`Invalid response with HTTP ${response.status}`);
+      return envelope.data;
+    }
+    if (response.ok || !hasExactKeys2(envelope, ["ok", "error"]) || !isRecord2(envelope.error) || !hasExactKeys2(envelope.error, ["code", "message", "details"]) || typeof envelope.error.code !== "string" || typeof envelope.error.message !== "string" || !isRecord2(envelope.error.details)) {
+      throw new Error(`Invalid response with HTTP ${response.status}`);
+    }
+    throw new Error(envelope.error.message || `Request failed with HTTP ${response.status}`);
+  }
+  function isRecord2(value) {
+    return typeof value === "object" && value !== null && !Array.isArray(value);
+  }
+  function hasExactKeys2(value, keys) {
+    const actual = Object.keys(value);
+    return actual.length === keys.length && actual.every((key) => keys.includes(key));
   }
   function required(selector) {
     const value = document.querySelector(selector);

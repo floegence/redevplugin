@@ -24,16 +24,16 @@ import (
 	"github.com/floegence/redevplugin/pkg/bridge"
 	"github.com/floegence/redevplugin/pkg/capability"
 	"github.com/floegence/redevplugin/pkg/capabilitycontract"
-	"github.com/floegence/redevplugin/pkg/cleanup"
 	"github.com/floegence/redevplugin/pkg/connectivity"
 	"github.com/floegence/redevplugin/pkg/installstage"
 	"github.com/floegence/redevplugin/pkg/manifest"
+	"github.com/floegence/redevplugin/pkg/mutation"
 	"github.com/floegence/redevplugin/pkg/observability"
 	"github.com/floegence/redevplugin/pkg/operation"
 	"github.com/floegence/redevplugin/pkg/permissions"
+	"github.com/floegence/redevplugin/pkg/plugindata"
 	"github.com/floegence/redevplugin/pkg/pluginpkg"
 	"github.com/floegence/redevplugin/pkg/registry"
-	"github.com/floegence/redevplugin/pkg/retaineddata"
 	"github.com/floegence/redevplugin/pkg/runtimeclient"
 	"github.com/floegence/redevplugin/pkg/secrets"
 	"github.com/floegence/redevplugin/pkg/security"
@@ -48,39 +48,53 @@ type AuditSink = observability.AuditSink
 
 type DiagnosticsSink = observability.DiagnosticsSink
 
-type AuditLister = observability.AuditLister
-
 type DiagnosticLister = observability.DiagnosticLister
 
 type AuditEvent = observability.AuditEvent
 
-type DiagnosticEvent = observability.DiagnosticEvent
+type DiagnosticEvent struct {
+	EventID           string                           `json:"event_id,omitempty"`
+	Type              string                           `json:"type"`
+	Severity          observability.DiagnosticSeverity `json:"severity"`
+	Message           string                           `json:"message"`
+	PluginID          string                           `json:"plugin_id,omitempty"`
+	PluginInstanceID  string                           `json:"plugin_instance_id,omitempty"`
+	SurfaceID         string                           `json:"surface_id,omitempty"`
+	SurfaceInstanceID string                           `json:"surface_instance_id,omitempty"`
+	ActiveFingerprint string                           `json:"active_fingerprint,omitempty"`
+	RequestID         string                           `json:"request_id,omitempty"`
+	OccurredAt        time.Time                        `json:"occurred_at,omitempty"`
+	Details           map[string]any                   `json:"details,omitempty"`
+}
 
-type ListAuditEventsRequest = observability.ListAuditRequest
-
-type ListDiagnosticEventsRequest = observability.ListDiagnosticRequest
+type ListDiagnosticEventsRequest struct {
+	PluginID          string                           `json:"plugin_id,omitempty"`
+	PluginInstanceID  string                           `json:"plugin_instance_id,omitempty"`
+	SurfaceInstanceID string                           `json:"surface_instance_id,omitempty"`
+	Type              string                           `json:"type,omitempty"`
+	Severity          observability.DiagnosticSeverity `json:"severity,omitempty"`
+	Limit             int                              `json:"limit,omitempty"`
+}
 
 var (
 	ErrStreamTicketRequired          = errors.New("stream ticket is required")
 	ErrPluginDataNotDeclared         = errors.New("plugin does not declare exportable data")
-	ErrPluginDataArchiveRequired     = errors.New("archive_ref or settings_archive_ref is required")
 	ErrPluginStorageNotDeclared      = errors.New("target plugin does not declare storage")
 	ErrPluginSettingsNotDeclared     = errors.New("target plugin does not declare settings")
-	ErrPluginMigrationPreflight      = errors.New("plugin migration preflight failed")
+	ErrPluginDataContractChanged     = errors.New("plugin data contract changed")
 	ErrOperationCancelDispatchFailed = errors.New("operation cancel dispatch failed")
-	ErrRetainedDataCleanupFailed     = errors.New("retained data cleanup failed")
-	ErrRetainedDataBindFailed        = errors.New("retained data bind failed")
-	ErrRetainedDataUnsafePayload     = errors.New("retained data payload is not safe to delete")
 	ErrMethodRequestContract         = errors.New("plugin method request contract validation failed")
 	ErrMethodResponseContract        = errors.New("plugin method response contract validation failed")
 	ErrMethodAdapterPanic            = errors.New("plugin method adapter panicked")
 	ErrConfirmationInvalid           = errors.New("plugin confirmation is invalid")
 	ErrConfirmationRejected          = errors.New("plugin confirmation was rejected")
-	ErrPluginStateVersionMismatch    = errors.New("plugin state version mismatch")
+	ErrManagementRevisionMismatch    = errors.New("management revision mismatch")
+	ErrPluginAlreadyInstalled        = errors.New("plugin instance is already installed")
 	ErrPluginTrustUnavailable        = errors.New("plugin trust is unavailable")
 	ErrPluginTrustDenied             = errors.New("plugin trust does not allow execution")
 	ErrPluginUIProtocolUnsupported   = errors.New("plugin UI protocol is unsupported")
 	ErrSecurityEventPersistence      = errors.New("plugin security event persistence failed")
+	ErrHostClosed                    = errors.New("plugin host is closed")
 )
 
 type PolicyAdapter interface {
@@ -156,15 +170,15 @@ const (
 	PolicyDeny  PolicyDecision = "deny"
 )
 
-type SecretStoreAdapter = secrets.Store
+type SecretStoreAdapter interface {
+	secrets.Store
+	secrets.Lister
+	secrets.PluginDeleter
+}
 
 type SecretBindRequest = secrets.BindRequest
 type SecretDeleteRequest = secrets.DeleteRequest
 type SecretTestRequest = secrets.TestRequest
-
-type RuntimeArtifactResolver interface {
-	RuntimePath(ctx context.Context, target RuntimeTarget) (string, error)
-}
 
 type ReleaseMetadataVerifier interface {
 	VerifyReleaseMetadata(ctx context.Context, req ReleaseMetadataVerificationRequest) (ReleaseMetadataVerificationResult, error)
@@ -494,7 +508,6 @@ type PluginRef struct {
 }
 
 type Adapters struct {
-	SessionResolver             sessionctx.Resolver
 	Policy                      PolicyAdapter
 	PackageTrustVerifier        PackageTrustVerifier
 	ReleaseMetadataVerifier     ReleaseMetadataVerifier
@@ -508,25 +521,28 @@ type Adapters struct {
 	Audit                       AuditSink
 	Diagnostics                 DiagnosticsSink
 	Secrets                     SecretStoreAdapter
-	RuntimeArtifactResolver     RuntimeArtifactResolver
-	RuntimeSupervisor           runtimeclient.Supervisor
+	RuntimeManager              runtimeclient.Manager
 	SurfaceCatalog              SurfaceCatalogSink
 	Assets                      pluginpkg.AssetStore
 	InstallStages               installstage.Store
 	Capabilities                *capability.Registry
 	CoreActions                 CoreActionAdapter
 	SurfaceTokens               *bridge.SurfaceTokenService
-	Storage                     storage.Broker
+	PluginData                  PluginData
 	Connectivity                connectivity.Broker
 	NetworkExecutor             connectivity.NetworkExecutor
 	Operations                  operation.Store
-	Permissions                 permissions.Store
-	SecurityPolicy              security.PolicyStore
 	ConfirmationIntents         security.ConfirmationIntentStore
-	Cleanup                     cleanup.Orchestrator
-	RetainedData                retaineddata.Store
-	Settings                    settings.Store
 	Streams                     stream.Store
+}
+
+type PluginData interface {
+	plugindata.Store
+	storage.FilesBroker
+	storage.KVBroker
+	storage.SQLiteBroker
+	storage.Inspector
+	Close() error
 }
 
 type Host struct {
@@ -535,41 +551,45 @@ type Host struct {
 	surfaceDocuments    *surfaceDocumentCache
 	methodSchemas       *methodSchemaCache
 	surfaceGenerationID string
-	runtimeMu           sync.Mutex
 	managementMu        sync.Mutex
 	executions          *executionLeaseRegistry
 	streamReads         *streamReadLockRegistry
 	detachedCancelJobs  sync.Map
+	lifecycleCtx        context.Context
+	lifecycleCancel     context.CancelFunc
+	lifecycleMu         sync.RWMutex
+	lifecycleWG         sync.WaitGroup
+	closed              bool
+	closeOnce           sync.Once
+	closeErr            error
 }
 
 type ImportLocalPackageRequest struct {
-	PackageReader      io.ReaderAt
-	PackageSize        int64
-	PluginInstanceID   string
-	PluginStateVersion uint64
-	Now                time.Time
+	PackageReader    io.ReaderAt
+	PackageSize      int64
+	PluginInstanceID string
+	Now              time.Time
 }
 
 type UpdateLocalPackageRequest struct {
-	PluginInstanceID   string
-	PluginStateVersion uint64
-	PackageReader      io.ReaderAt
-	PackageSize        int64
-	Now                time.Time
+	PluginInstanceID           string
+	ExpectedManagementRevision uint64
+	PackageReader              io.ReaderAt
+	PackageSize                int64
+	Now                        time.Time
 }
 
 type InstallReleaseRefRequest struct {
-	ReleaseRef         PluginReleaseRef
-	PluginInstanceID   string
-	PluginStateVersion uint64
-	Now                time.Time
+	ReleaseRef       PluginReleaseRef
+	PluginInstanceID string
+	Now              time.Time
 }
 
 type UpdateReleaseRefRequest struct {
-	PluginInstanceID   string
-	PluginStateVersion uint64
-	ReleaseRef         PluginReleaseRef
-	Now                time.Time
+	PluginInstanceID           string
+	ExpectedManagementRevision uint64
+	ReleaseRef                 PluginReleaseRef
+	Now                        time.Time
 }
 
 type packageTrustInput struct {
@@ -580,88 +600,97 @@ type packageTrustInput struct {
 }
 
 type DowngradeRequest struct {
-	PluginInstanceID   string
-	PluginStateVersion uint64
-	Version            string
-	PackageHash        string
-	Now                time.Time
+	PluginInstanceID           string
+	ExpectedManagementRevision uint64
+	Version                    string
+	PackageHash                string
+	Now                        time.Time
 }
 
 type EnableRequest struct {
-	PluginInstanceID   string
-	PluginStateVersion uint64
-	Now                time.Time
+	PluginInstanceID           string
+	ExpectedManagementRevision uint64
+	Now                        time.Time
 }
 
 type DisableRequest struct {
-	PluginInstanceID   string
-	PluginStateVersion uint64
-	Reason             string
-	Now                time.Time
+	PluginInstanceID           string
+	ExpectedManagementRevision uint64
+	Reason                     string
+	Now                        time.Time
 }
 
 type UninstallRequest struct {
-	PluginInstanceID   string
-	PluginStateVersion uint64
-	DeleteData         bool
-	Now                time.Time
+	PluginInstanceID           string
+	ExpectedManagementRevision uint64
+	DeleteData                 bool
+	Now                        time.Time
 }
 
-type ListRetainedDataRequest = retaineddata.ListRequest
+type ListRetainedDataRequest struct {
+	PluginInstanceID string `json:"plugin_instance_id,omitempty"`
+}
 
 type DeleteRetainedDataRequest struct {
-	RetainedID string    `json:"retained_id"`
-	Now        time.Time `json:"now,omitempty"`
+	PluginInstanceID        string `json:"plugin_instance_id"`
+	ExpectedBindingRevision uint64 `json:"expected_binding_revision"`
 }
 
 type BindRetainedDataRequest struct {
-	RetainedID             string    `json:"retained_id"`
-	TargetPluginInstanceID string    `json:"target_plugin_instance_id"`
-	Now                    time.Time `json:"now,omitempty"`
+	SourcePluginInstanceID           string    `json:"source_plugin_instance_id"`
+	ExpectedSourceBindingRevision    uint64    `json:"expected_source_binding_revision"`
+	TargetPluginInstanceID           string    `json:"target_plugin_instance_id"`
+	TargetExpectedManagementRevision uint64    `json:"target_expected_management_revision"`
+	Now                              time.Time `json:"now,omitempty"`
 }
 
 type CleanupExpiredRetainedDataRequest struct {
-	Now         time.Time `json:"now,omitempty"`
-	RetryFailed bool      `json:"retry_failed,omitempty"`
-	MaxRecords  int       `json:"max_records,omitempty"`
+	Now time.Time `json:"now,omitempty"`
 }
 
 type RetainedDataCleanupResult struct {
-	Deleted []retaineddata.Record `json:"deleted,omitempty"`
-	Failed  []retaineddata.Record `json:"failed,omitempty"`
+	Deleted []plugindata.Binding `json:"deleted,omitempty"`
 }
 
 type ExportDataRequest struct {
 	PluginInstanceID string
-	IncludeSecrets   bool
 }
 
 type ImportDataRequest struct {
-	PluginInstanceID   string
-	ArchiveRef         string
-	SettingsArchiveRef string
-	DeleteExisting     bool
+	PluginInstanceID           string
+	BundleRef                  string
+	ExpectedManagementRevision uint64
+	Now                        time.Time
 }
 
 type ExportDataResult struct {
-	ArchiveRef         string `json:"archive_ref,omitempty"`
-	SettingsArchiveRef string `json:"settings_archive_ref,omitempty"`
+	BundleRef   string `json:"bundle_ref"`
+	ContentHash string `json:"content_hash"`
+	SizeBytes   int64  `json:"size_bytes"`
+}
+
+type DeleteExportDataRequest struct {
+	BundleRef string `json:"bundle_ref"`
 }
 
 type GrantPermissionRequest struct {
-	PluginInstanceID string    `json:"plugin_instance_id"`
-	PermissionID     string    `json:"permission_id"`
-	GrantedBy        string    `json:"granted_by,omitempty"`
-	Now              time.Time `json:"now,omitempty"`
-	ExpiresAt        time.Time `json:"expires_at,omitempty"`
+	PluginInstanceID           string    `json:"plugin_instance_id"`
+	PermissionID               string    `json:"permission_id"`
+	ExpectedPolicyRevision     uint64    `json:"expected_policy_revision"`
+	ExpectedManagementRevision uint64    `json:"expected_management_revision"`
+	ExpectedRevokeEpoch        uint64    `json:"expected_revoke_epoch"`
+	Now                        time.Time `json:"now,omitempty"`
+	ExpiresAt                  time.Time `json:"expires_at,omitempty"`
 }
 
 type RevokePermissionRequest struct {
-	PluginInstanceID string    `json:"plugin_instance_id"`
-	PermissionID     string    `json:"permission_id"`
-	RevokedBy        string    `json:"revoked_by,omitempty"`
-	Reason           string    `json:"reason,omitempty"`
-	Now              time.Time `json:"now,omitempty"`
+	PluginInstanceID           string    `json:"plugin_instance_id"`
+	PermissionID               string    `json:"permission_id"`
+	ExpectedPolicyRevision     uint64    `json:"expected_policy_revision"`
+	ExpectedManagementRevision uint64    `json:"expected_management_revision"`
+	ExpectedRevokeEpoch        uint64    `json:"expected_revoke_epoch"`
+	Reason                     string    `json:"reason,omitempty"`
+	Now                        time.Time `json:"now,omitempty"`
 }
 
 type ListPermissionGrantsRequest struct {
@@ -670,10 +699,13 @@ type ListPermissionGrantsRequest struct {
 }
 
 type PutSecurityPolicyRequest struct {
-	PluginInstanceID   string    `json:"plugin_instance_id"`
-	AllowedPermissions []string  `json:"allowed_permissions,omitempty"`
-	DeniedMethods      []string  `json:"denied_methods,omitempty"`
-	Now                time.Time `json:"now,omitempty"`
+	PluginInstanceID           string    `json:"plugin_instance_id"`
+	ExpectedPolicyRevision     uint64    `json:"expected_policy_revision"`
+	ExpectedManagementRevision uint64    `json:"expected_management_revision"`
+	ExpectedRevokeEpoch        uint64    `json:"expected_revoke_epoch"`
+	AllowedPermissions         []string  `json:"allowed_permissions,omitempty"`
+	DeniedMethods              []string  `json:"denied_methods,omitempty"`
+	Now                        time.Time `json:"now,omitempty"`
 }
 
 type GetSecurityPolicyRequest struct {
@@ -681,8 +713,16 @@ type GetSecurityPolicyRequest struct {
 }
 
 type DeleteSecurityPolicyRequest struct {
-	PluginInstanceID string    `json:"plugin_instance_id"`
-	Now              time.Time `json:"now,omitempty"`
+	PluginInstanceID           string    `json:"plugin_instance_id"`
+	ExpectedPolicyRevision     uint64    `json:"expected_policy_revision"`
+	ExpectedManagementRevision uint64    `json:"expected_management_revision"`
+	ExpectedRevokeEpoch        uint64    `json:"expected_revoke_epoch"`
+	Now                        time.Time `json:"now,omitempty"`
+}
+
+type SecurityPolicyResult struct {
+	Policy    security.PolicyRecord           `json:"policy"`
+	Revisions registry.AuthorizationRevisions `json:"revisions"`
 }
 
 type GetSettingsRequest struct {
@@ -690,71 +730,72 @@ type GetSettingsRequest struct {
 }
 
 type PatchSettingsRequest struct {
-	PluginInstanceID string         `json:"plugin_instance_id"`
-	Values           map[string]any `json:"values"`
-	Now              time.Time      `json:"now,omitempty"`
+	PluginInstanceID       string         `json:"plugin_instance_id"`
+	ExpectedValuesRevision uint64         `json:"expected_values_revision"`
+	Set                    map[string]any `json:"set"`
+	Remove                 []string       `json:"remove,omitempty"`
 }
 
 type SettingsSchemaResult struct {
 	PluginInstanceID string                      `json:"plugin_instance_id"`
 	SchemaVersion    int                         `json:"schema_version"`
-	Migration        manifest.MigrationSpec      `json:"migration"`
 	Fields           []manifest.SettingFieldSpec `json:"fields"`
-	SettingsRevision uint64                      `json:"settings_revision"`
+	ValuesRevision   uint64                      `json:"values_revision"`
 }
 
 type SettingsResult struct {
-	PluginInstanceID string         `json:"plugin_instance_id"`
-	SchemaVersion    int            `json:"schema_version"`
-	SettingsRevision uint64         `json:"settings_revision"`
-	Values           map[string]any `json:"values"`
-	UpdatedAt        time.Time      `json:"updated_at"`
+	PluginInstanceID string                   `json:"plugin_instance_id"`
+	SchemaVersion    int                      `json:"schema_version"`
+	ValuesRevision   uint64                   `json:"values_revision"`
+	Values           map[string]any           `json:"values"`
+	SecretMetadata   []SettingsSecretMetadata `json:"secret_metadata"`
+}
+
+type SettingsSecretMetadata struct {
+	Key            string     `json:"key"`
+	SecretRef      string     `json:"secret_ref"`
+	Scope          string     `json:"scope"`
+	Bound          bool       `json:"bound"`
+	LastTestStatus string     `json:"last_test_status,omitempty"`
+	BoundAt        *time.Time `json:"bound_at,omitempty"`
+	TestedAt       *time.Time `json:"tested_at,omitempty"`
+	UpdatedAt      *time.Time `json:"updated_at,omitempty"`
+}
+
+type PermissionMutationResult struct {
+	Permission permissions.Record              `json:"permission"`
+	Revisions  registry.AuthorizationRevisions `json:"revisions"`
 }
 
 type OpenSurfaceRequest struct {
-	PluginInstanceID     string
-	PluginStateVersion   uint64
-	SurfaceID            string
-	SurfaceInstanceID    string
-	OwnerSessionHash     string
-	OwnerUserHash        string
-	SessionChannelIDHash string
-	Now                  time.Time
+	PluginInstanceID           string
+	ExpectedManagementRevision uint64
+	SurfaceID                  string
+	SurfaceInstanceID          string
+	Now                        time.Time
 }
 
 type ExchangeAssetTicketRequest struct {
-	SurfaceInstanceID    string
-	AssetTicket          string
-	OwnerSessionHash     string
-	OwnerUserHash        string
-	SessionChannelIDHash string
-	Now                  time.Time
+	SurfaceInstanceID string
+	AssetTicket       string
+	Now               time.Time
 }
 
 type ReadSurfaceAssetRequest struct {
-	AssetSession         string
-	AssetSessionID       string
-	BindingID            string
-	OwnerSessionHash     string
-	OwnerUserHash        string
-	SessionChannelIDHash string
-	Now                  time.Time
+	AssetSession   string
+	AssetSessionID string
+	BindingID      string
+	Now            time.Time
 }
 
 type DisposeSurfaceRequest struct {
-	SurfaceInstanceID    string
-	BridgeNonce          string
-	OwnerSessionHash     string
-	OwnerUserHash        string
-	SessionChannelIDHash string
-	Now                  time.Time
+	SurfaceInstanceID string
+	BridgeNonce       string
+	Now               time.Time
 }
 
 type RevokeSurfaceScopeRequest struct {
-	OwnerSessionHash     string
-	OwnerUserHash        string
-	SessionChannelIDHash string
-	Now                  time.Time
+	Now time.Time
 }
 
 type ReadSurfaceAssetResult struct {
@@ -773,24 +814,19 @@ type MintBridgeTokenRequest struct {
 	BridgeChannelID           string
 	HandshakeTranscriptSHA256 string
 	PreviousGatewayToken      string
-	OwnerSessionHash          string
-	OwnerUserHash             string
-	SessionChannelIDHash      string
 	Now                       time.Time
 }
 
 type CallMethodRequest struct {
 	PluginInstanceID       string         `json:"plugin_instance_id"`
 	SurfaceInstanceID      string         `json:"surface_instance_id"`
-	SessionChannelIDHash   string         `json:"session_channel_id_hash,omitempty"`
-	OwnerSessionHash       string         `json:"owner_session_hash,omitempty"`
-	OwnerUserHash          string         `json:"owner_user_hash,omitempty"`
 	BridgeChannelID        string         `json:"bridge_channel_id"`
 	GatewayToken           string         `json:"plugin_gateway_token"`
 	ConfirmationID         string         `json:"confirmation_id,omitempty"`
 	Method                 string         `json:"method"`
 	Params                 map[string]any `json:"params,omitempty"`
 	Now                    time.Time      `json:"now,omitempty"`
+	session                sessionctx.Context
 	executionAuthorization methodExecutionAuthorization
 	streamTicketMinter     methodStreamTicketMinter
 }
@@ -811,17 +847,17 @@ type CallMethodResult struct {
 }
 
 type IntentRecord struct {
-	PluginID          string         `json:"plugin_id"`
-	PluginInstanceID  string         `json:"plugin_instance_id"`
-	PublisherID       string         `json:"publisher_id"`
-	DisplayName       string         `json:"display_name"`
-	Version           string         `json:"version"`
-	ActiveFingerprint string         `json:"active_fingerprint"`
-	IntentID          string         `json:"intent_id"`
-	Method            string         `json:"method"`
-	Effect            string         `json:"effect"`
-	Execution         string         `json:"execution"`
-	PayloadSchema     map[string]any `json:"payload_schema,omitempty"`
+	PluginID          string                       `json:"plugin_id"`
+	PluginInstanceID  string                       `json:"plugin_instance_id"`
+	PublisherID       string                       `json:"publisher_id"`
+	DisplayName       string                       `json:"display_name"`
+	Version           string                       `json:"version"`
+	ActiveFingerprint string                       `json:"active_fingerprint"`
+	IntentID          string                       `json:"intent_id"`
+	Method            string                       `json:"method"`
+	Effect            manifest.MethodEffect        `json:"effect"`
+	Execution         manifest.MethodExecutionMode `json:"execution"`
+	PayloadSchema     map[string]any               `json:"payload_schema,omitempty"`
 }
 
 type ListIntentsRequest struct {
@@ -830,13 +866,11 @@ type ListIntentsRequest struct {
 }
 
 type InvokeIntentRequest struct {
-	PluginInstanceID     string         `json:"plugin_instance_id,omitempty"`
-	IntentID             string         `json:"intent_id"`
-	Params               map[string]any `json:"params,omitempty"`
-	OwnerSessionHash     string         `json:"owner_session_hash,omitempty"`
-	OwnerUserHash        string         `json:"owner_user_hash,omitempty"`
-	SessionChannelIDHash string         `json:"session_channel_id_hash,omitempty"`
-	Now                  time.Time      `json:"now,omitempty"`
+	PluginInstanceID string         `json:"plugin_instance_id,omitempty"`
+	IntentID         string         `json:"intent_id"`
+	Params           map[string]any `json:"params,omitempty"`
+	Now              time.Time      `json:"now,omitempty"`
+	session          sessionctx.Context
 }
 
 type workerInvocationPayload struct {
@@ -853,12 +887,12 @@ type workerInvocationPayload struct {
 	ArtifactSHA256       string                          `json:"artifact_sha256"`
 	ABI                  string                          `json:"abi"`
 	Method               string                          `json:"method"`
-	Export               string                          `json:"export"`
 	Effect               string                          `json:"effect"`
 	Execution            string                          `json:"execution"`
 	SurfaceInstanceID    string                          `json:"surface_instance_id,omitempty"`
 	OwnerSessionHash     string                          `json:"owner_session_hash,omitempty"`
 	OwnerUserHash        string                          `json:"owner_user_hash,omitempty"`
+	OwnerEnvHash         string                          `json:"owner_env_hash,omitempty"`
 	SessionChannelIDHash string                          `json:"session_channel_id_hash,omitempty"`
 	BridgeChannelID      string                          `json:"bridge_channel_id,omitempty"`
 	OperationID          string                          `json:"operation_id,omitempty"`
@@ -871,9 +905,17 @@ type workerInvocationPayload struct {
 	BrokerAccessSHA256   string                          `json:"broker_access_sha256"`
 }
 
-type ConfirmMethodRequest = CallMethodRequest
+type PrepareMethodConfirmationRequest struct {
+	PluginInstanceID  string         `json:"plugin_instance_id"`
+	SurfaceInstanceID string         `json:"surface_instance_id"`
+	BridgeChannelID   string         `json:"bridge_channel_id"`
+	GatewayToken      string         `json:"plugin_gateway_token"`
+	Method            string         `json:"method"`
+	Params            map[string]any `json:"params,omitempty"`
+	Now               time.Time      `json:"now,omitempty"`
+}
 
-type ConfirmMethodResult struct {
+type PrepareMethodConfirmationResult struct {
 	ConfirmationID      string    `json:"confirmation_id"`
 	ConfirmationTokenID string    `json:"confirmation_token_id"`
 	RequestHash         string    `json:"request_hash"`
@@ -883,15 +925,12 @@ type ConfirmMethodResult struct {
 }
 
 type RejectMethodConfirmationRequest struct {
-	PluginInstanceID     string
-	SurfaceInstanceID    string
-	OwnerSessionHash     string
-	OwnerUserHash        string
-	SessionChannelIDHash string
-	BridgeChannelID      string
-	GatewayToken         string
-	ConfirmationID       string
-	Now                  time.Time
+	PluginInstanceID  string
+	SurfaceInstanceID string
+	BridgeChannelID   string
+	GatewayToken      string
+	ConfirmationID    string
+	Now               time.Time
 }
 
 type RejectMethodConfirmationResult struct {
@@ -913,6 +952,13 @@ var (
 
 type ListOperationsRequest struct {
 	PluginInstanceID string `json:"plugin_instance_id,omitempty"`
+	Cursor           string `json:"cursor,omitempty"`
+	Limit            int    `json:"limit,omitempty"`
+}
+
+type ListOperationsResult struct {
+	Operations []operation.Record `json:"operations"`
+	NextCursor string             `json:"next_cursor,omitempty"`
 }
 
 type CancelOperationRequest struct {
@@ -922,37 +968,39 @@ type CancelOperationRequest struct {
 }
 
 type CancelSurfaceOperationRequest struct {
-	OperationID          string
-	SurfaceInstanceID    string
-	OwnerSessionHash     string
-	OwnerUserHash        string
-	SessionChannelIDHash string
-	BridgeChannelID      string
-	Reason               string
-	Now                  time.Time
+	OperationID       string
+	SurfaceInstanceID string
+	BridgeChannelID   string
+	Reason            string
+	Now               time.Time
 }
 
 type ReadStreamRequest struct {
-	StreamID             string        `json:"stream_id"`
-	StreamTicket         string        `json:"stream_ticket,omitempty"`
-	SurfaceInstanceID    string        `json:"surface_instance_id,omitempty"`
-	OwnerSessionHash     string        `json:"owner_session_hash,omitempty"`
-	OwnerUserHash        string        `json:"owner_user_hash,omitempty"`
-	SessionChannelIDHash string        `json:"session_channel_id_hash,omitempty"`
-	MaxEvents            int           `json:"max_events,omitempty"`
-	MaxBytes             int64         `json:"max_bytes,omitempty"`
-	WaitTimeout          time.Duration `json:"-"`
-	Now                  time.Time
+	StreamID          string        `json:"stream_id"`
+	StreamTicket      string        `json:"stream_ticket,omitempty"`
+	ReadID            string        `json:"read_id"`
+	SurfaceInstanceID string        `json:"surface_instance_id,omitempty"`
+	MaxEvents         int           `json:"max_events,omitempty"`
+	MaxBytes          int64         `json:"max_bytes,omitempty"`
+	WaitTimeout       time.Duration `json:"-"`
+	Now               time.Time
 }
 
 type ReadStreamResult struct {
-	Record              stream.Record  `json:"record"`
-	Events              []stream.Event `json:"events,omitempty"`
-	Done                bool           `json:"done"`
-	TerminalStatus      stream.Status  `json:"terminal_status,omitempty"`
-	NextStreamTicket    string         `json:"next_stream_ticket,omitempty"`
-	NextStreamTicketID  string         `json:"next_stream_ticket_id,omitempty"`
-	NextStreamExpiresAt *time.Time     `json:"next_stream_expires_at,omitempty"`
+	Record         stream.Record  `json:"record"`
+	DeliveryID     string         `json:"delivery_id,omitempty"`
+	ReadID         string         `json:"read_id"`
+	Events         []stream.Event `json:"events,omitempty"`
+	Done           bool           `json:"done"`
+	TerminalStatus stream.Status  `json:"terminal_status,omitempty"`
+}
+
+type AcknowledgeStreamRequest struct {
+	StreamID          string    `json:"stream_id"`
+	StreamTicket      string    `json:"stream_ticket"`
+	DeliveryID        string    `json:"delivery_id"`
+	SurfaceInstanceID string    `json:"surface_instance_id"`
+	Now               time.Time `json:"-"`
 }
 
 type MintConnectionGrantRequest struct {
@@ -987,71 +1035,113 @@ type StorageHandleGrantResult struct {
 	HandleGrant bridge.HandleGrantResult `json:"handle_grant"`
 }
 
-func New(adapters Adapters) (*Host, error) {
-	if adapters.SessionResolver == nil {
-		return nil, errors.New("session resolver is required")
+type ManagementRevisionMismatchError struct {
+	PluginInstanceID string `json:"plugin_instance_id"`
+	Expected         uint64 `json:"expected_management_revision"`
+	Actual           uint64 `json:"actual_management_revision"`
+}
+
+func (e *ManagementRevisionMismatchError) Error() string {
+	return fmt.Sprintf(
+		"%s: plugin %q is at management revision %d, request expected %d",
+		ErrManagementRevisionMismatch,
+		e.PluginInstanceID,
+		e.Actual,
+		e.Expected,
+	)
+}
+
+func (e *ManagementRevisionMismatchError) Unwrap() error {
+	return ErrManagementRevisionMismatch
+}
+
+func Open(ctx context.Context, adapters Adapters) (*Host, error) {
+	if ctx == nil {
+		return nil, errors.New("context is required")
 	}
 	if adapters.Policy == nil {
 		return nil, errors.New("policy adapter is required")
 	}
-	if adapters.Registry == nil {
-		adapters.Registry = registry.NewMemoryStore()
+	if adapters.PackageTrustVerifier == nil {
+		return nil, errors.New("package trust verifier is required")
 	}
-	if adapters.Audit == nil || adapters.Diagnostics == nil {
-		store := observability.NewMemoryStore()
-		if adapters.Audit == nil {
-			adapters.Audit = store
-		}
-		if adapters.Diagnostics == nil {
-			adapters.Diagnostics = store
-		}
+	if adapters.ReleaseMetadataVerifier == nil {
+		return nil, errors.New("release metadata verifier is required")
+	}
+	if adapters.RevocationVerifier == nil {
+		return nil, errors.New("source revocation verifier is required")
+	}
+	if adapters.ReleaseSourcePolicy == nil {
+		return nil, errors.New("release source policy resolver is required")
+	}
+	if adapters.ReleaseArtifactResolver == nil {
+		return nil, errors.New("release artifact resolver is required")
+	}
+	if adapters.HostRequirements == nil {
+		return nil, errors.New("host requirement policy is required")
+	}
+	if adapters.CapabilityContractArtifacts == nil {
+		return nil, errors.New("capability contract artifact resolver is required")
+	}
+	if adapters.CapabilityContractKeys == nil {
+		return nil, errors.New("capability contract key resolver is required")
+	}
+	if adapters.Registry == nil {
+		return nil, errors.New("registry store is required")
+	}
+	if adapters.Audit == nil {
+		return nil, errors.New("audit sink is required")
+	}
+	if adapters.Diagnostics == nil {
+		return nil, errors.New("diagnostics sink is required")
+	}
+	if adapters.Secrets == nil {
+		return nil, errors.New("secret store is required")
+	}
+	if adapters.RuntimeManager == nil {
+		return nil, errors.New("runtime manager is required")
+	}
+	if adapters.SurfaceCatalog == nil {
+		return nil, errors.New("surface catalog sink is required")
 	}
 	if adapters.Capabilities == nil {
-		adapters.Capabilities = capability.NewRegistry()
+		return nil, errors.New("capability registry is required")
 	}
 	if adapters.SurfaceTokens == nil {
-		adapters.SurfaceTokens = bridge.NewSurfaceTokenService(nil, bridge.SurfaceTokenOptions{})
+		return nil, errors.New("surface token service is required")
 	}
 	if adapters.Connectivity == nil {
-		adapters.Connectivity = connectivity.NewMemoryBroker()
+		return nil, errors.New("connectivity broker is required")
+	}
+	if adapters.PluginData == nil {
+		return nil, errors.New("plugin data store is required")
 	}
 	if adapters.NetworkExecutor == nil {
-		adapters.NetworkExecutor = connectivity.NewExecutor(connectivity.ExecutorOptions{})
+		return nil, errors.New("network executor is required")
 	}
 	if adapters.Operations == nil {
-		adapters.Operations = operation.NewMemoryStore()
-	}
-	if adapters.Permissions == nil {
-		adapters.Permissions = permissions.NewMemoryStore()
-	}
-	if adapters.SecurityPolicy == nil {
-		adapters.SecurityPolicy = security.NewMemoryPolicyStore()
+		return nil, errors.New("operation store is required")
 	}
 	if adapters.ConfirmationIntents == nil {
-		adapters.ConfirmationIntents = security.NewMemoryConfirmationIntentStore()
-	}
-	if adapters.Cleanup == nil {
-		adapters.Cleanup = cleanup.NewMemoryOrchestrator()
-	}
-	if adapters.RetainedData == nil {
-		adapters.RetainedData = retaineddata.NewMemoryStore()
-	}
-	if adapters.Settings == nil {
-		adapters.Settings = settings.NewMemoryStore()
+		return nil, errors.New("confirmation intent store is required")
 	}
 	if adapters.Streams == nil {
-		adapters.Streams = stream.NewMemoryStore()
+		return nil, errors.New("stream store is required")
 	}
 	if adapters.Assets == nil {
-		adapters.Assets = pluginpkg.NewMemoryAssetStore()
+		return nil, errors.New("asset store is required")
 	}
 	if adapters.InstallStages == nil {
-		adapters.InstallStages = installstage.NewMemoryStore()
+		return nil, errors.New("install stage store is required")
+	}
+	if adapters.CoreActions == nil {
+		return nil, errors.New("core action adapter is required")
 	}
 	surfaceGenerationID, err := newHostSurfaceGenerationID()
 	if err != nil {
 		return nil, err
 	}
+	lifecycleCtx, lifecycleCancel := context.WithCancel(context.Background())
 	host := &Host{
 		adapters:            adapters,
 		surfaceTokens:       adapters.SurfaceTokens,
@@ -1060,109 +1150,110 @@ func New(adapters Adapters) (*Host, error) {
 		surfaceGenerationID: surfaceGenerationID,
 		executions:          newExecutionLeaseRegistry(),
 		streamReads:         newStreamReadLockRegistry(),
+		lifecycleCtx:        lifecycleCtx,
+		lifecycleCancel:     lifecycleCancel,
 	}
-	reconcileCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	if err := host.reconcileDurableExecutionStates(reconcileCtx); err != nil {
+	if err := host.reconcileDurableExecutionStates(ctx); err != nil {
+		lifecycleCancel()
 		return nil, fmt.Errorf("reconcile durable operation and stream state: %w", err)
 	}
-	if err := host.reconcileUIProtocolCompatibility(reconcileCtx, time.Now().UTC()); err != nil {
-		return nil, fmt.Errorf("reconcile plugin UI protocol compatibility: %w", err)
+	maintenanceNow := time.Now().UTC()
+	if err := host.pruneTerminalExecutionRecords(ctx, maintenanceNow); err != nil {
+		lifecycleCancel()
+		return nil, fmt.Errorf("prune terminal operation and stream state: %w", err)
+	}
+	if host.executions.beginTerminalMaintenance(maintenanceNow) {
+		host.executions.finishTerminalMaintenance()
 	}
 	return host, nil
 }
 
-func (h *Host) reconcileUIProtocolCompatibility(ctx context.Context, now time.Time) error {
-	records, err := h.adapters.Registry.ListPlugins(ctx)
-	if err != nil {
-		return err
+func (h *Host) Close() error {
+	if h == nil {
+		return nil
 	}
-	for _, record := range records {
-		if record.Manifest.Plugin.UIProtocolVersion == version.PluginUIProtocolVersion {
-			continue
+	h.closeOnce.Do(func() {
+		h.lifecycleMu.Lock()
+		h.closed = true
+		if h.executions != nil {
+			h.executions.cancelAll(ErrHostClosed)
 		}
-		updated := record
-		transitioned := record.EnableState == registry.EnableEnabled
-		if transitioned {
-			updated, err = h.adapters.Registry.SetEnableState(
-				ctx,
-				record.PluginInstanceID,
-				registry.EnableDisabledIncompatible,
-				fmt.Sprintf("UI protocol %s is incompatible with %s", record.Manifest.Plugin.UIProtocolVersion, version.PluginUIProtocolVersion),
-				now,
-			)
-			if err != nil {
-				return err
-			}
-			details := map[string]any{
-				"installed_ui_protocol_version": record.Manifest.Plugin.UIProtocolVersion,
-				"required_ui_protocol_version":  version.PluginUIProtocolVersion,
-				"management_revision":           updated.ManagementRevision,
-				"revoke_epoch":                  updated.RevokeEpoch,
-			}
-			h.audit(ctx, AuditEvent{Type: "plugin.disabled_incompatible", PluginID: updated.PluginID, PluginInstanceID: updated.PluginInstanceID, Details: details})
-			h.diagnostic(ctx, DiagnosticEvent{
-				Type:              "plugin.ui_protocol.incompatible",
-				Severity:          "warning",
-				Message:           updated.DisabledReason,
-				PluginID:          updated.PluginID,
-				PluginInstanceID:  updated.PluginInstanceID,
-				ActiveFingerprint: updated.ActiveFingerprint,
-				Details:           details,
-			})
-		} else if record.EnableState != registry.EnableDisabledIncompatible {
-			continue
+		if h.lifecycleCancel != nil {
+			h.lifecycleCancel()
 		}
-		if h.adapters.SurfaceCatalog != nil {
-			if err := h.adapters.SurfaceCatalog.PublishSurfaces(ctx, SurfaceSnapshot{
-				PluginInstanceID:  updated.PluginInstanceID,
-				ActiveFingerprint: updated.ActiveFingerprint,
-				Surfaces:          []manifest.SurfaceSpec{},
-			}); err != nil {
-				return err
-			}
+		h.lifecycleMu.Unlock()
+		if h.executions != nil {
+			h.executions.finishAll()
 		}
-		if h.adapters.Connectivity != nil {
-			if err := h.adapters.Connectivity.RemovePolicy(ctx, updated.PluginInstanceID); err != nil {
-				return err
-			}
+		h.lifecycleWG.Wait()
+		if h.adapters.PluginData != nil {
+			h.closeErr = h.adapters.PluginData.Close()
 		}
+	})
+	return h.closeErr
+}
+
+func (h *Host) startLifecycleJob(run func(context.Context)) bool {
+	if h == nil || run == nil {
+		return false
 	}
-	return nil
+	h.lifecycleMu.RLock()
+	if h.closed {
+		h.lifecycleMu.RUnlock()
+		return false
+	}
+	h.lifecycleWG.Add(1)
+	ctx := h.lifecycleCtx
+	h.lifecycleMu.RUnlock()
+	go func() {
+		defer h.lifecycleWG.Done()
+		run(ctx)
+	}()
+	return true
 }
 
 func (h *Host) Capabilities() *capability.Registry {
 	return h.adapters.Capabilities
 }
 
-func requirePluginStateVersion(record registry.PluginRecord, expected uint64) error {
+func requireManagementRevision(record registry.PluginRecord, expected uint64) error {
 	if expected == 0 {
-		return fmt.Errorf(
-			"%w: plugin %q requires a positive expected version",
-			ErrPluginStateVersionMismatch,
-			record.PluginInstanceID,
-		)
+		return &ManagementRevisionMismatchError{PluginInstanceID: record.PluginInstanceID, Actual: record.ManagementRevision}
 	}
 	if record.ManagementRevision != expected {
-		return fmt.Errorf(
-			"%w: plugin %q is at version %d, request expected %d",
-			ErrPluginStateVersionMismatch,
-			record.PluginInstanceID,
-			record.ManagementRevision,
-			expected,
-		)
+		return &ManagementRevisionMismatchError{
+			PluginInstanceID: record.PluginInstanceID,
+			Expected:         expected,
+			Actual:           record.ManagementRevision,
+		}
 	}
 	return nil
 }
 
+func managementMutationError(record registry.PluginRecord, err error) error {
+	var conflict *registry.ManagementRevisionConflictError
+	if errors.As(err, &conflict) {
+		return &ManagementRevisionMismatchError{PluginInstanceID: conflict.PluginInstanceID, Expected: conflict.Expected, Actual: conflict.Actual}
+	}
+	return err
+}
+
+func requireUserSession(ctx context.Context) (sessionctx.Context, error) {
+	return sessionctx.Require(ctx)
+}
+
 func (h *Host) OpenSurface(ctx context.Context, req OpenSurfaceRequest) (bridge.SurfaceBootstrap, error) {
+	session, err := requireUserSession(ctx)
+	if err != nil {
+		return bridge.SurfaceBootstrap{}, err
+	}
 	h.managementMu.Lock()
 	defer h.managementMu.Unlock()
 	record, err := h.adapters.Registry.GetPlugin(ctx, req.PluginInstanceID)
 	if err != nil {
 		return bridge.SurfaceBootstrap{}, err
 	}
-	if err := requirePluginStateVersion(record, req.PluginStateVersion); err != nil {
+	if err := requireManagementRevision(record, req.ExpectedManagementRevision); err != nil {
 		return bridge.SurfaceBootstrap{}, err
 	}
 	if record.Manifest.Plugin.UIProtocolVersion != version.PluginUIProtocolVersion {
@@ -1188,7 +1279,7 @@ func (h *Host) OpenSurface(ctx context.Context, req OpenSurfaceRequest) (bridge.
 			return bridge.SurfaceBootstrap{}, err
 		}
 	}
-	runtimeGenerationID, err := h.currentRuntimeGeneration(ctx)
+	runtimeGenerationID, err := h.currentRuntimeGeneration(ctx, record.PluginInstanceID)
 	if err != nil {
 		return bridge.SurfaceBootstrap{}, err
 	}
@@ -1203,9 +1294,10 @@ func (h *Host) OpenSurface(ctx context.Context, req OpenSurfaceRequest) (bridge.
 		EntrySHA256:          entry.SHA256,
 		RouteRole:            bridge.RouteRoleTrustedParent,
 		RuntimeGenerationID:  runtimeGenerationID,
-		OwnerSessionHash:     req.OwnerSessionHash,
-		OwnerUserHash:        req.OwnerUserHash,
-		SessionChannelIDHash: req.SessionChannelIDHash,
+		OwnerSessionHash:     session.OwnerSessionHash,
+		OwnerUserHash:        session.OwnerUserHash,
+		OwnerEnvHash:         session.OwnerEnvHash,
+		SessionChannelIDHash: session.SessionChannelIDHash,
 		Revision: bridge.RevisionBinding{
 			PolicyRevision:     record.PolicyRevision,
 			ManagementRevision: record.ManagementRevision,
@@ -1221,12 +1313,17 @@ func (h *Host) OpenSurface(ctx context.Context, req OpenSurfaceRequest) (bridge.
 }
 
 func (h *Host) ExchangeAssetTicket(ctx context.Context, req ExchangeAssetTicketRequest) (bridge.AssetSessionResult, error) {
+	session, err := requireUserSession(ctx)
+	if err != nil {
+		return bridge.AssetSessionResult{}, err
+	}
 	result, err := h.surfaceTokens.ExchangeAssetTicket(bridge.ExchangeAssetTicketRequest{
 		SurfaceInstanceID:    req.SurfaceInstanceID,
 		AssetTicket:          req.AssetTicket,
-		OwnerSessionHash:     req.OwnerSessionHash,
-		OwnerUserHash:        req.OwnerUserHash,
-		SessionChannelIDHash: req.SessionChannelIDHash,
+		OwnerSessionHash:     session.OwnerSessionHash,
+		OwnerUserHash:        session.OwnerUserHash,
+		OwnerEnvHash:         session.OwnerEnvHash,
+		SessionChannelIDHash: session.SessionChannelIDHash,
 		Now:                  req.Now,
 	})
 	if err != nil {
@@ -1236,6 +1333,10 @@ func (h *Host) ExchangeAssetTicket(ctx context.Context, req ExchangeAssetTicketR
 }
 
 func (h *Host) PrepareSurface(ctx context.Context, req ExchangeAssetTicketRequest) (result PrepareSurfaceResult, err error) {
+	session, err := requireUserSession(ctx)
+	if err != nil {
+		return PrepareSurfaceResult{}, err
+	}
 	assetSession, err := h.ExchangeAssetTicket(ctx, req)
 	if err != nil {
 		return PrepareSurfaceResult{}, err
@@ -1245,20 +1346,18 @@ func (h *Host) PrepareSurface(ctx context.Context, req ExchangeAssetTicketReques
 			_ = h.surfaceTokens.DisposeAssetSession(bridge.ValidateAssetSessionRequest{
 				AssetSession:         assetSession.AssetSession,
 				AssetSessionID:       assetSession.AssetSessionID,
-				OwnerSessionHash:     req.OwnerSessionHash,
-				OwnerUserHash:        req.OwnerUserHash,
-				SessionChannelIDHash: req.SessionChannelIDHash,
+				OwnerSessionHash:     session.OwnerSessionHash,
+				OwnerUserHash:        session.OwnerUserHash,
+				OwnerEnvHash:         session.OwnerEnvHash,
+				SessionChannelIDHash: session.SessionChannelIDHash,
 				Now:                  req.Now,
 			})
 		}
 	}()
 	assetRequest := ReadSurfaceAssetRequest{
-		AssetSession:         assetSession.AssetSession,
-		AssetSessionID:       assetSession.AssetSessionID,
-		OwnerSessionHash:     req.OwnerSessionHash,
-		OwnerUserHash:        req.OwnerUserHash,
-		SessionChannelIDHash: req.SessionChannelIDHash,
-		Now:                  req.Now,
+		AssetSession:   assetSession.AssetSession,
+		AssetSessionID: assetSession.AssetSessionID,
+		Now:            req.Now,
 	}
 	validation, record, err := h.validateSurfaceAssetSession(ctx, assetRequest)
 	if err != nil {
@@ -1269,9 +1368,10 @@ func (h *Host) PrepareSurface(ctx context.Context, req ExchangeAssetTicketReques
 			SurfaceInstanceID:    validation.Session.SurfaceInstanceID,
 			AssetSessionID:       assetSession.AssetSessionID,
 			BridgeNonce:          validation.Session.BridgeNonce,
-			OwnerSessionHash:     req.OwnerSessionHash,
-			OwnerUserHash:        req.OwnerUserHash,
-			SessionChannelIDHash: req.SessionChannelIDHash,
+			OwnerSessionHash:     session.OwnerSessionHash,
+			OwnerUserHash:        session.OwnerUserHash,
+			OwnerEnvHash:         session.OwnerEnvHash,
+			SessionChannelIDHash: session.SessionChannelIDHash,
 			Now:                  req.Now,
 		})
 	}
@@ -1338,15 +1438,20 @@ func (h *Host) ReadSurfaceAsset(ctx context.Context, req ReadSurfaceAssetRequest
 }
 
 func (h *Host) validateSurfaceAssetSession(ctx context.Context, req ReadSurfaceAssetRequest) (bridge.AssetSessionValidation, registry.PluginRecord, error) {
+	session, err := requireUserSession(ctx)
+	if err != nil {
+		return bridge.AssetSessionValidation{}, registry.PluginRecord{}, err
+	}
 	if h.adapters.Assets == nil {
 		return bridge.AssetSessionValidation{}, registry.PluginRecord{}, errors.New("package asset store is required")
 	}
 	validation, err := h.surfaceTokens.ValidateAssetSession(bridge.ValidateAssetSessionRequest{
 		AssetSession:         req.AssetSession,
 		AssetSessionID:       req.AssetSessionID,
-		OwnerSessionHash:     req.OwnerSessionHash,
-		OwnerUserHash:        req.OwnerUserHash,
-		SessionChannelIDHash: req.SessionChannelIDHash,
+		OwnerSessionHash:     session.OwnerSessionHash,
+		OwnerUserHash:        session.OwnerUserHash,
+		OwnerEnvHash:         session.OwnerEnvHash,
+		SessionChannelIDHash: session.SessionChannelIDHash,
 		Now:                  req.Now,
 	})
 	if err != nil {
@@ -1396,22 +1501,32 @@ func (h *Host) readValidatedSurfaceAsset(ctx context.Context, validation bridge.
 	}, nil
 }
 
-func (h *Host) DisposeSurface(_ context.Context, req DisposeSurfaceRequest) error {
+func (h *Host) DisposeSurface(ctx context.Context, req DisposeSurfaceRequest) error {
+	session, err := requireUserSession(ctx)
+	if err != nil {
+		return err
+	}
 	return h.surfaceTokens.DisposeBoundSurface(bridge.DisposeSurfaceRequest{
 		SurfaceInstanceID:    req.SurfaceInstanceID,
 		BridgeNonce:          req.BridgeNonce,
-		OwnerSessionHash:     req.OwnerSessionHash,
-		OwnerUserHash:        req.OwnerUserHash,
-		SessionChannelIDHash: req.SessionChannelIDHash,
+		OwnerSessionHash:     session.OwnerSessionHash,
+		OwnerUserHash:        session.OwnerUserHash,
+		OwnerEnvHash:         session.OwnerEnvHash,
+		SessionChannelIDHash: session.SessionChannelIDHash,
 		Now:                  req.Now,
 	})
 }
 
 func (h *Host) RevokeSurfaceScope(ctx context.Context, req RevokeSurfaceScopeRequest) (int, error) {
+	session, err := requireUserSession(ctx)
+	if err != nil {
+		return 0, err
+	}
 	revoked, err := h.surfaceTokens.RevokeSurfaceScope(bridge.RevokeSurfaceScopeRequest{
-		OwnerSessionHash:     req.OwnerSessionHash,
-		OwnerUserHash:        req.OwnerUserHash,
-		SessionChannelIDHash: req.SessionChannelIDHash,
+		OwnerSessionHash:     session.OwnerSessionHash,
+		OwnerUserHash:        session.OwnerUserHash,
+		OwnerEnvHash:         session.OwnerEnvHash,
+		SessionChannelIDHash: session.SessionChannelIDHash,
 		Now:                  req.Now,
 	})
 	if err != nil {
@@ -1421,13 +1536,17 @@ func (h *Host) RevokeSurfaceScope(ctx context.Context, req RevokeSurfaceScopeReq
 		Type: "plugin.surface_scope.revoked",
 		Details: map[string]any{
 			"surface_count":  revoked,
-			"channel_scoped": req.SessionChannelIDHash != "",
+			"channel_scoped": session.SessionChannelIDHash != "",
 		},
 	})
 	return revoked, nil
 }
 
 func (h *Host) MintBridgeToken(ctx context.Context, req MintBridgeTokenRequest) (bridge.GatewayTokenResult, error) {
+	session, err := requireUserSession(ctx)
+	if err != nil {
+		return bridge.GatewayTokenResult{}, err
+	}
 	validation, err := h.surfaceTokens.ValidateBridgeHandshake(bridge.MintGatewayTokenRequest{
 		Handshake:                 req.Handshake,
 		BridgeChannelID:           req.BridgeChannelID,
@@ -1438,12 +1557,13 @@ func (h *Host) MintBridgeToken(ctx context.Context, req MintBridgeTokenRequest) 
 	if err != nil {
 		return bridge.GatewayTokenResult{}, err
 	}
-	if validation.Session.OwnerSessionHash != req.OwnerSessionHash ||
-		validation.Session.OwnerUserHash != req.OwnerUserHash ||
-		validation.Session.SessionChannelIDHash != req.SessionChannelIDHash {
+	if validation.Session.OwnerSessionHash != session.OwnerSessionHash ||
+		validation.Session.OwnerUserHash != session.OwnerUserHash ||
+		validation.Session.OwnerEnvHash != session.OwnerEnvHash ||
+		validation.Session.SessionChannelIDHash != session.SessionChannelIDHash {
 		return bridge.GatewayTokenResult{}, bridge.ErrTokenAudience
 	}
-	if err := h.requireSurfaceRuntimeGeneration(ctx, validation.Session.SurfaceInstanceID, validation.Session.RuntimeGenerationID, req.Now); err != nil {
+	if err := h.requireSurfaceRuntimeGeneration(ctx, validation.Session.PluginInstanceID, validation.Session.SurfaceInstanceID, validation.Session.RuntimeGenerationID, req.Now); err != nil {
 		return bridge.GatewayTokenResult{}, err
 	}
 	record, err := h.adapters.Registry.GetPlugin(ctx, validation.Session.PluginInstanceID)
@@ -1474,6 +1594,11 @@ func (h *Host) MintBridgeToken(ctx context.Context, req MintBridgeTokenRequest) 
 }
 
 func (h *Host) CallPluginMethod(ctx context.Context, req CallMethodRequest) (result CallMethodResult, resultErr error) {
+	session, err := requireUserSession(ctx)
+	if err != nil {
+		return CallMethodResult{}, err
+	}
+	req.session = session
 	frozenParams, err := deepCloneParams(req.Params)
 	if err != nil {
 		return CallMethodResult{}, err
@@ -1512,9 +1637,10 @@ func (h *Host) CallPluginMethod(ctx context.Context, req CallMethodRequest) (res
 			intent.Method != call.method.Method ||
 			intent.RequestHash != requestHash ||
 			intent.Scope.ActiveFingerprint != call.record.ActiveFingerprint ||
-			intent.Scope.OwnerSessionHash != req.OwnerSessionHash ||
-			intent.Scope.OwnerUserHash != req.OwnerUserHash ||
-			intent.Scope.SessionChannelIDHash != req.SessionChannelIDHash ||
+			intent.Scope.OwnerSessionHash != req.session.OwnerSessionHash ||
+			intent.Scope.OwnerUserHash != req.session.OwnerUserHash ||
+			intent.Scope.OwnerEnvHash != req.session.OwnerEnvHash ||
+			intent.Scope.SessionChannelIDHash != req.session.SessionChannelIDHash ||
 			intent.Scope.PolicyRevision != call.record.PolicyRevision ||
 			intent.Scope.ManagementRevision != call.record.ManagementRevision ||
 			intent.Scope.RevokeEpoch != call.record.RevokeEpoch {
@@ -1527,7 +1653,7 @@ func (h *Host) CallPluginMethod(ctx context.Context, req CallMethodRequest) (res
 		if targetHash != intent.Scope.TargetDescriptorSHA256 {
 			return CallMethodResult{}, ErrConfirmationInvalid
 		}
-		_, currentPlanHash, err := h.prepareConfirmationPlan(ctx, call, ConfirmMethodRequest(req), requestHash)
+		_, currentPlanHash, err := h.prepareConfirmationPlan(ctx, call, req, requestHash)
 		if err != nil {
 			return CallMethodResult{}, err
 		}
@@ -1571,48 +1697,51 @@ func (h *Host) CallPluginMethod(ctx context.Context, req CallMethodRequest) (res
 	return result, nil
 }
 
-func (h *Host) PrepareMethodConfirmation(ctx context.Context, req ConfirmMethodRequest) (ConfirmMethodResult, error) {
+func (h *Host) PrepareMethodConfirmation(ctx context.Context, req PrepareMethodConfirmationRequest) (PrepareMethodConfirmationResult, error) {
+	session, err := requireUserSession(ctx)
+	if err != nil {
+		return PrepareMethodConfirmationResult{}, err
+	}
 	frozenParams, err := deepCloneParams(req.Params)
 	if err != nil {
-		return ConfirmMethodResult{}, err
+		return PrepareMethodConfirmationResult{}, err
 	}
 	req.Params = frozenParams
-	call, err := h.resolveMethodCall(ctx, CallMethodRequest{
-		PluginInstanceID:     req.PluginInstanceID,
-		SurfaceInstanceID:    req.SurfaceInstanceID,
-		SessionChannelIDHash: req.SessionChannelIDHash,
-		OwnerSessionHash:     req.OwnerSessionHash,
-		OwnerUserHash:        req.OwnerUserHash,
-		BridgeChannelID:      req.BridgeChannelID,
-		GatewayToken:         req.GatewayToken,
-		Method:               req.Method,
-		Params:               req.Params,
-		Now:                  req.Now,
-	})
+	callRequest := CallMethodRequest{
+		PluginInstanceID:  req.PluginInstanceID,
+		SurfaceInstanceID: req.SurfaceInstanceID,
+		BridgeChannelID:   req.BridgeChannelID,
+		GatewayToken:      req.GatewayToken,
+		Method:            req.Method,
+		Params:            req.Params,
+		Now:               req.Now,
+		session:           session,
+	}
+	call, err := h.resolveMethodCall(ctx, callRequest)
 	if err != nil {
-		return ConfirmMethodResult{}, err
+		return PrepareMethodConfirmationResult{}, err
 	}
 	if !methodRequiresConfirmation(call.method) {
-		return ConfirmMethodResult{}, errors.New("method does not require confirmation")
+		return PrepareMethodConfirmationResult{}, errors.New("method does not require confirmation")
 	}
 	if err := h.validateMethodRequest(call.record, call.method, req.Params); err != nil {
-		return ConfirmMethodResult{}, err
+		return PrepareMethodConfirmationResult{}, err
 	}
 	requestHash, err := methodRequestHash(call.method, req.Params)
 	if err != nil {
-		return ConfirmMethodResult{}, err
+		return PrepareMethodConfirmationResult{}, err
 	}
-	_, targetHash, err := h.resolveMethodConfirmationTarget(ctx, call.record, call.method, req)
+	_, targetHash, err := h.resolveMethodConfirmationTarget(ctx, call.record, call.method, callRequest)
 	if err != nil {
-		return ConfirmMethodResult{}, err
+		return PrepareMethodConfirmationResult{}, err
 	}
-	plan, planHash, err := h.prepareConfirmationPlan(ctx, call, req, requestHash)
+	plan, planHash, err := h.prepareConfirmationPlan(ctx, call, callRequest, requestHash)
 	if err != nil {
-		return ConfirmMethodResult{}, err
+		return PrepareMethodConfirmationResult{}, err
 	}
 	confirmationID, err := newConfirmationID()
 	if err != nil {
-		return ConfirmMethodResult{}, err
+		return PrepareMethodConfirmationResult{}, err
 	}
 	result, err := h.surfaceTokens.MintConfirmationToken(bridge.MintConfirmationTokenRequest{
 		PluginID:               call.audience.PluginID,
@@ -1628,6 +1757,7 @@ func (h *Host) PrepareMethodConfirmation(ctx context.Context, req ConfirmMethodR
 		ConfirmationID:         confirmationID,
 		OwnerSessionHash:       call.audience.OwnerSessionHash,
 		OwnerUserHash:          call.audience.OwnerUserHash,
+		OwnerEnvHash:           call.audience.OwnerEnvHash,
 		SessionChannelIDHash:   call.audience.SessionChannelIDHash,
 		BridgeChannelID:        call.audience.BridgeChannelID,
 		RuntimeGenerationID:    call.audience.RuntimeGenerationID,
@@ -1639,7 +1769,7 @@ func (h *Host) PrepareMethodConfirmation(ctx context.Context, req ConfirmMethodR
 		Now:                    req.Now,
 	})
 	if err != nil {
-		return ConfirmMethodResult{}, err
+		return PrepareMethodConfirmationResult{}, err
 	}
 	if _, err := h.storeConfirmationIntent(ctx, security.PutConfirmationIntentRequest{
 		ConfirmationID:      confirmationID,
@@ -1653,9 +1783,10 @@ func (h *Host) PrepareMethodConfirmation(ctx context.Context, req ConfirmMethodR
 		PlanHash:            result.PlanHash,
 		Scope: security.ConfirmationScope{
 			ActiveFingerprint:      call.record.ActiveFingerprint,
-			OwnerSessionHash:       req.OwnerSessionHash,
-			OwnerUserHash:          req.OwnerUserHash,
-			SessionChannelIDHash:   req.SessionChannelIDHash,
+			OwnerSessionHash:       session.OwnerSessionHash,
+			OwnerUserHash:          session.OwnerUserHash,
+			OwnerEnvHash:           session.OwnerEnvHash,
+			SessionChannelIDHash:   session.SessionChannelIDHash,
 			PolicyRevision:         call.record.PolicyRevision,
 			ManagementRevision:     call.record.ManagementRevision,
 			RevokeEpoch:            call.record.RevokeEpoch,
@@ -1665,10 +1796,10 @@ func (h *Host) PrepareMethodConfirmation(ctx context.Context, req ConfirmMethodR
 		ExpiresAt: result.ExpiresAt,
 		Now:       req.Now,
 	}); err != nil {
-		return ConfirmMethodResult{}, err
+		return PrepareMethodConfirmationResult{}, err
 	}
 	h.audit(ctx, AuditEvent{Type: "plugin.confirmation.issued", PluginID: call.record.PluginID, PluginInstanceID: call.record.PluginInstanceID})
-	return ConfirmMethodResult{
+	return PrepareMethodConfirmationResult{
 		ConfirmationID:      confirmationID,
 		ConfirmationTokenID: result.ConfirmationTokenID,
 		RequestHash:         result.RequestHash,
@@ -1679,6 +1810,10 @@ func (h *Host) PrepareMethodConfirmation(ctx context.Context, req ConfirmMethodR
 }
 
 func (h *Host) RejectMethodConfirmation(ctx context.Context, req RejectMethodConfirmationRequest) (RejectMethodConfirmationResult, error) {
+	session, err := requireUserSession(ctx)
+	if err != nil {
+		return RejectMethodConfirmationResult{}, err
+	}
 	if strings.TrimSpace(req.PluginInstanceID) == "" || strings.TrimSpace(req.SurfaceInstanceID) == "" ||
 		strings.TrimSpace(req.BridgeChannelID) == "" || strings.TrimSpace(req.GatewayToken) == "" ||
 		strings.TrimSpace(req.ConfirmationID) == "" {
@@ -1697,9 +1832,10 @@ func (h *Host) RejectMethodConfirmation(ctx context.Context, req RejectMethodCon
 		GatewayToken:         req.GatewayToken,
 		PluginInstanceID:     record.PluginInstanceID,
 		SurfaceInstanceID:    req.SurfaceInstanceID,
-		OwnerSessionHash:     req.OwnerSessionHash,
-		OwnerUserHash:        req.OwnerUserHash,
-		SessionChannelIDHash: req.SessionChannelIDHash,
+		OwnerSessionHash:     session.OwnerSessionHash,
+		OwnerUserHash:        session.OwnerUserHash,
+		OwnerEnvHash:         session.OwnerEnvHash,
+		SessionChannelIDHash: session.SessionChannelIDHash,
 		BridgeChannelID:      req.BridgeChannelID,
 		Revision:             revision,
 		Now:                  req.Now,
@@ -1712,9 +1848,10 @@ func (h *Host) RejectMethodConfirmation(ctx context.Context, req RejectMethodCon
 		SurfaceInstanceID:    req.SurfaceInstanceID,
 		BridgeChannelID:      req.BridgeChannelID,
 		ActiveFingerprint:    record.ActiveFingerprint,
-		OwnerSessionHash:     req.OwnerSessionHash,
-		OwnerUserHash:        req.OwnerUserHash,
-		SessionChannelIDHash: req.SessionChannelIDHash,
+		OwnerSessionHash:     session.OwnerSessionHash,
+		OwnerUserHash:        session.OwnerUserHash,
+		OwnerEnvHash:         session.OwnerEnvHash,
+		SessionChannelIDHash: session.SessionChannelIDHash,
 		PolicyRevision:       record.PolicyRevision,
 		ManagementRevision:   record.ManagementRevision,
 		RevokeEpoch:          record.RevokeEpoch,
@@ -1730,12 +1867,15 @@ func (h *Host) RejectMethodConfirmation(ctx context.Context, req RejectMethodCon
 		return RejectMethodConfirmationResult{}, err
 	}
 	if reportErr := h.reportMethodRejection(ctx, record, intent.Method, req.SurfaceInstanceID, ErrConfirmationRejected); reportErr != nil {
-		return RejectMethodConfirmationResult{Rejected: true}, reportErr
+		return RejectMethodConfirmationResult{Rejected: true}, mutation.Unknown(reportErr)
 	}
 	return RejectMethodConfirmationResult{Rejected: true}, nil
 }
 
 func (h *Host) ListIntents(ctx context.Context, req ListIntentsRequest) ([]IntentRecord, error) {
+	if _, err := requireUserSession(ctx); err != nil {
+		return nil, err
+	}
 	records, err := h.adapters.Registry.ListPlugins(ctx)
 	if err != nil {
 		return nil, err
@@ -1772,8 +1912,8 @@ func (h *Host) ListIntents(ctx context.Context, req ListIntentsRequest) ([]Inten
 				ActiveFingerprint: record.ActiveFingerprint,
 				IntentID:          intent.IntentID,
 				Method:            intent.Method,
-				Effect:            string(method.Effect),
-				Execution:         string(method.Execution),
+				Effect:            method.Effect,
+				Execution:         method.Execution,
 				PayloadSchema:     cloneParams(intent.PayloadSchema),
 			})
 		}
@@ -1791,6 +1931,11 @@ func (h *Host) ListIntents(ctx context.Context, req ListIntentsRequest) ([]Inten
 }
 
 func (h *Host) InvokeIntent(ctx context.Context, req InvokeIntentRequest) (CallMethodResult, error) {
+	session, err := requireUserSession(ctx)
+	if err != nil {
+		return CallMethodResult{}, err
+	}
+	req.session = session
 	resolved, err := h.resolveIntent(ctx, req)
 	if err != nil {
 		return CallMethodResult{}, err
@@ -1809,13 +1954,11 @@ func (h *Host) InvokeIntent(ctx context.Context, req InvokeIntentRequest) (CallM
 		}, ErrConfirmationRequired
 	}
 	callReq := CallMethodRequest{
-		PluginInstanceID:     resolved.record.PluginInstanceID,
-		OwnerSessionHash:     req.OwnerSessionHash,
-		OwnerUserHash:        req.OwnerUserHash,
-		SessionChannelIDHash: req.SessionChannelIDHash,
-		Method:               resolved.method.Method,
-		Params:               cloneParams(req.Params),
-		Now:                  req.Now,
+		PluginInstanceID: resolved.record.PluginInstanceID,
+		Method:           resolved.method.Method,
+		Params:           cloneParams(req.Params),
+		Now:              req.Now,
+		session:          session,
 	}
 	callReq.streamTicketMinter = h.newMethodStreamTicketMinter(bridge.Audience{
 		PluginID:             resolved.record.PluginID,
@@ -1823,9 +1966,10 @@ func (h *Host) InvokeIntent(ctx context.Context, req InvokeIntentRequest) (CallM
 		PluginVersion:        resolved.record.Version,
 		ActiveFingerprint:    resolved.record.ActiveFingerprint,
 		RouteRole:            bridge.RouteRoleTrustedIntent,
-		OwnerSessionHash:     req.OwnerSessionHash,
-		OwnerUserHash:        req.OwnerUserHash,
-		SessionChannelIDHash: req.SessionChannelIDHash,
+		OwnerSessionHash:     session.OwnerSessionHash,
+		OwnerUserHash:        session.OwnerUserHash,
+		OwnerEnvHash:         session.OwnerEnvHash,
+		SessionChannelIDHash: session.SessionChannelIDHash,
 	}, resolved.revision, resolved.method.Method, req.Now)
 	result, err := h.dispatchMethod(ctx, resolved.record, resolved.method, callReq)
 	if err != nil {
@@ -1895,9 +2039,10 @@ func (h *Host) resolveMethodCall(ctx context.Context, req CallMethodRequest) (re
 		GatewayToken:         req.GatewayToken,
 		PluginInstanceID:     record.PluginInstanceID,
 		SurfaceInstanceID:    req.SurfaceInstanceID,
-		OwnerSessionHash:     req.OwnerSessionHash,
-		OwnerUserHash:        req.OwnerUserHash,
-		SessionChannelIDHash: req.SessionChannelIDHash,
+		OwnerSessionHash:     req.session.OwnerSessionHash,
+		OwnerUserHash:        req.session.OwnerUserHash,
+		OwnerEnvHash:         req.session.OwnerEnvHash,
+		SessionChannelIDHash: req.session.SessionChannelIDHash,
 		BridgeChannelID:      req.BridgeChannelID,
 		Revision:             revision,
 		Now:                  req.Now,
@@ -1906,14 +2051,10 @@ func (h *Host) resolveMethodCall(ctx context.Context, req CallMethodRequest) (re
 		return resolvedMethodCall{}, err
 	}
 	audience := token.Audience
-	if err := h.requireSurfaceRuntimeGeneration(ctx, audience.SurfaceInstanceID, audience.RuntimeGenerationID, req.Now); err != nil {
+	if err := h.requireSurfaceRuntimeGeneration(ctx, audience.PluginInstanceID, audience.SurfaceInstanceID, audience.RuntimeGenerationID, req.Now); err != nil {
 		return resolvedMethodCall{}, err
 	}
-	session := sessionctx.Context{
-		SessionChannelIDHash: req.SessionChannelIDHash,
-		OwnerUserHash:        req.OwnerUserHash,
-	}
-	decision, err := h.adapters.Policy.EvaluateLocalPolicy(ctx, session, pluginRefFromRecord(record), method)
+	decision, err := h.adapters.Policy.EvaluateLocalPolicy(ctx, req.session, pluginRefFromRecord(record), method)
 	if err != nil {
 		return resolvedMethodCall{}, err
 	}
@@ -1924,19 +2065,18 @@ func (h *Host) resolveMethodCall(ctx context.Context, req CallMethodRequest) (re
 	if err != nil {
 		return resolvedMethodCall{}, err
 	}
-	if err := h.enforceSecurityPolicy(ctx, record, method, requiredPermissions); err != nil {
-		return resolvedMethodCall{}, err
-	}
-	granted, missing, err := h.adapters.Permissions.IsGranted(ctx, permissions.CheckRequest{
+	authorization, err := h.adapters.Registry.Authorize(ctx, registry.AuthorizeRequest{
 		PluginInstanceID: record.PluginInstanceID,
+		Method:           method.Method,
 		PermissionIDs:    requiredPermissions,
 		Now:              req.Now,
+		Expected:         registry.AuthorizationRevisionsFromRecord(record),
 	})
 	if err != nil {
 		return resolvedMethodCall{}, err
 	}
-	if !granted {
-		return resolvedMethodCall{}, fmt.Errorf("%w: %s", permissions.ErrPermissionDenied, strings.Join(missing, ", "))
+	if err := authorizationDecisionError(authorization, method.Method); err != nil {
+		return resolvedMethodCall{}, err
 	}
 	return resolvedMethodCall{record: record, method: method, audience: audience, revision: revision}, nil
 }
@@ -2001,11 +2141,7 @@ func (h *Host) resolveIntent(ctx context.Context, req InvokeIntentRequest) (reso
 		return resolvedIntentCall{}, fmt.Errorf("intent %q is ambiguous; plugin_instance_id is required", intentID)
 	}
 	resolved := matches[0]
-	session := sessionctx.Context{
-		SessionChannelIDHash: req.SessionChannelIDHash,
-		OwnerUserHash:        req.OwnerUserHash,
-	}
-	decision, err := h.adapters.Policy.EvaluateLocalPolicy(ctx, session, pluginRefFromRecord(resolved.record), resolved.method)
+	decision, err := h.adapters.Policy.EvaluateLocalPolicy(ctx, req.session, pluginRefFromRecord(resolved.record), resolved.method)
 	if err != nil {
 		return resolvedIntentCall{}, err
 	}
@@ -2016,24 +2152,26 @@ func (h *Host) resolveIntent(ctx context.Context, req InvokeIntentRequest) (reso
 	if err != nil {
 		return resolvedIntentCall{}, err
 	}
-	if err := h.enforceSecurityPolicy(ctx, resolved.record, resolved.method, requiredPermissions); err != nil {
-		return resolvedIntentCall{}, err
-	}
-	granted, missing, err := h.adapters.Permissions.IsGranted(ctx, permissions.CheckRequest{
+	authorization, err := h.adapters.Registry.Authorize(ctx, registry.AuthorizeRequest{
 		PluginInstanceID: resolved.record.PluginInstanceID,
+		Method:           resolved.method.Method,
 		PermissionIDs:    requiredPermissions,
 		Now:              req.Now,
+		Expected:         registry.AuthorizationRevisionsFromRecord(resolved.record),
 	})
 	if err != nil {
 		return resolvedIntentCall{}, err
 	}
-	if !granted {
-		return resolvedIntentCall{}, fmt.Errorf("%w: %s", permissions.ErrPermissionDenied, strings.Join(missing, ", "))
+	if err := authorizationDecisionError(authorization, resolved.method.Method); err != nil {
+		return resolvedIntentCall{}, err
 	}
 	return resolved, nil
 }
 
 func (h *Host) ImportLocalPackage(ctx context.Context, req ImportLocalPackageRequest) (registry.PluginRecord, error) {
+	if err := h.enforceUnsignedLocalPluginPolicy(ctx); err != nil {
+		return registry.PluginRecord{}, err
+	}
 	h.managementMu.Lock()
 	defer h.managementMu.Unlock()
 	if req.PackageReader == nil {
@@ -2043,10 +2181,13 @@ func (h *Host) ImportLocalPackage(ctx context.Context, req ImportLocalPackageReq
 	if err != nil {
 		return registry.PluginRecord{}, err
 	}
-	return h.installResolvedPackage(ctx, pkg, req.PluginInstanceID, req.PluginStateVersion, packageTrustInput{LocalImport: true}, req.Now, localImportMetadata(req.Now))
+	return h.installResolvedPackage(ctx, pkg, req.PluginInstanceID, packageTrustInput{LocalImport: true}, req.Now, localImportMetadata(req.Now))
 }
 
 func (h *Host) InstallReleaseRef(ctx context.Context, req InstallReleaseRefRequest) (registry.PluginRecord, error) {
+	if _, err := requireUserSession(ctx); err != nil {
+		return registry.PluginRecord{}, err
+	}
 	h.managementMu.Lock()
 	defer h.managementMu.Unlock()
 	pkg, release, sourcePolicy, metadata, err := h.resolveReleasePackage(ctx, PackageTrustActionInstall, req.ReleaseRef, nil, req.PluginInstanceID, req.Now)
@@ -2054,22 +2195,19 @@ func (h *Host) InstallReleaseRef(ctx context.Context, req InstallReleaseRefReque
 		return registry.PluginRecord{}, err
 	}
 	releaseRef := req.ReleaseRef
-	return h.installResolvedPackage(ctx, pkg, req.PluginInstanceID, req.PluginStateVersion, packageTrustInput{
+	return h.installResolvedPackage(ctx, pkg, req.PluginInstanceID, packageTrustInput{
 		ReleaseRef:           &releaseRef,
 		Release:              &release,
 		SourcePolicySnapshot: &sourcePolicy,
 	}, req.Now, metadata)
 }
 
-func (h *Host) installResolvedPackage(ctx context.Context, pkg pluginpkg.Package, pluginInstanceID string, pluginStateVersion uint64, trustInput packageTrustInput, now time.Time, baseMetadata map[string]string) (registry.PluginRecord, error) {
+func (h *Host) installResolvedPackage(ctx context.Context, pkg pluginpkg.Package, pluginInstanceID string, trustInput packageTrustInput, now time.Time, baseMetadata map[string]string) (registry.PluginRecord, error) {
 	if strings.TrimSpace(pluginInstanceID) == "" {
 		pluginInstanceID = defaultPluginInstanceID(pkg)
 	}
-	if pluginStateVersion != 0 {
-		return registry.PluginRecord{}, fmt.Errorf("%w: install requires version 0, got %d", ErrPluginStateVersionMismatch, pluginStateVersion)
-	}
 	if existing, err := h.adapters.Registry.GetPlugin(ctx, pluginInstanceID); err == nil {
-		return registry.PluginRecord{}, fmt.Errorf("%w: plugin %q is already at version %d", ErrPluginStateVersionMismatch, pluginInstanceID, existing.ManagementRevision)
+		return registry.PluginRecord{}, fmt.Errorf("%w: plugin %q is at management revision %d", ErrPluginAlreadyInstalled, pluginInstanceID, existing.ManagementRevision)
 	} else if !errors.Is(err, registry.ErrNotFound) {
 		return registry.PluginRecord{}, err
 	}
@@ -2107,7 +2245,6 @@ func (h *Host) installResolvedPackage(ctx context.Context, pkg pluginpkg.Package
 		}
 	}
 	record.EnableState = registry.EnableDisabled
-	record.RetainedDataState = registry.RetainedDataNone
 	if err := h.adapters.Assets.PutPackage(ctx, pkg); err != nil {
 		return registry.PluginRecord{}, h.markInstallStageFailed(ctx, stage.StageID, "asset_store_failed", err, now)
 	}
@@ -2124,20 +2261,23 @@ func (h *Host) installResolvedPackage(ctx context.Context, pkg pluginpkg.Package
 	if _, err := h.adapters.InstallStages.MarkCommitted(ctx, installstage.MarkCommittedRequest{StageID: stage.StageID, Now: now}); err != nil {
 		_ = h.rollbackInstallRecord(ctx, previous, hadPrevious, stored.PluginInstanceID, pkg.PackageHash, now)
 		h.reportLifecycleDiagnostic(ctx, stored, "plugin.install_stage.commit_failed", err, map[string]any{"stage_id": stage.StageID})
-		return registry.PluginRecord{}, err
+		return registry.PluginRecord{}, mutation.Unknown(err)
 	}
 	h.audit(ctx, AuditEvent{Type: "plugin.installed", PluginID: stored.PluginID, PluginInstanceID: stored.PluginInstanceID})
 	return stored, nil
 }
 
 func (h *Host) UpdateLocalPackage(ctx context.Context, req UpdateLocalPackageRequest) (registry.PluginRecord, error) {
+	if err := h.enforceUnsignedLocalPluginPolicy(ctx); err != nil {
+		return registry.PluginRecord{}, err
+	}
 	h.managementMu.Lock()
 	defer h.managementMu.Unlock()
 	current, err := h.adapters.Registry.GetPlugin(ctx, req.PluginInstanceID)
 	if err != nil {
 		return registry.PluginRecord{}, err
 	}
-	if err := requirePluginStateVersion(current, req.PluginStateVersion); err != nil {
+	if err := requireManagementRevision(current, req.ExpectedManagementRevision); err != nil {
 		return registry.PluginRecord{}, err
 	}
 	if req.PackageReader == nil {
@@ -2151,13 +2291,16 @@ func (h *Host) UpdateLocalPackage(ctx context.Context, req UpdateLocalPackageReq
 }
 
 func (h *Host) UpdateReleaseRef(ctx context.Context, req UpdateReleaseRefRequest) (registry.PluginRecord, error) {
+	if _, err := requireUserSession(ctx); err != nil {
+		return registry.PluginRecord{}, err
+	}
 	h.managementMu.Lock()
 	defer h.managementMu.Unlock()
 	current, err := h.adapters.Registry.GetPlugin(ctx, req.PluginInstanceID)
 	if err != nil {
 		return registry.PluginRecord{}, err
 	}
-	if err := requirePluginStateVersion(current, req.PluginStateVersion); err != nil {
+	if err := requireManagementRevision(current, req.ExpectedManagementRevision); err != nil {
 		return registry.PluginRecord{}, err
 	}
 	pkg, release, sourcePolicy, metadata, err := h.resolveReleasePackage(ctx, PackageTrustActionUpdate, req.ReleaseRef, &current, current.PluginInstanceID, req.Now)
@@ -2199,8 +2342,8 @@ func (h *Host) updateResolvedPackage(ctx context.Context, current registry.Plugi
 	if err := validateSamePluginIdentity(current, next); err != nil {
 		return registry.PluginRecord{}, h.markInstallStageFailed(ctx, stage.StageID, "identity_mismatch", err, now)
 	}
-	if err := validateUpdateMigrationPreflight(current, next); err != nil {
-		return registry.PluginRecord{}, h.markInstallStageFailed(ctx, stage.StageID, "migration_preflight_failed", err, now)
+	if err := requireStablePluginDataShape(current.Manifest, next.Manifest); err != nil {
+		return registry.PluginRecord{}, h.markInstallStageFailed(ctx, stage.StageID, "data_contract_changed", err, now)
 	}
 	if _, err := h.adapters.InstallStages.MarkPrepared(ctx, installstage.MarkPreparedRequest{
 		StageID:       stage.StageID,
@@ -2233,17 +2376,17 @@ func (h *Host) updateResolvedPackage(ctx context.Context, current registry.Plugi
 	}
 	if err := h.publishEnabledSurfaces(ctx, stored); err != nil {
 		_ = h.rollbackVersionSwitch(ctx, current, pkg.PackageHash, now)
-		return registry.PluginRecord{}, h.markInstallStageFailed(ctx, stage.StageID, "runtime_refresh_failed", err, now)
+		return registry.PluginRecord{}, mutation.Unknown(h.markInstallStageFailed(ctx, stage.StageID, "runtime_refresh_failed", err, now))
 	}
-	if err := h.revokePluginRuntimeCapabilitiesStrict(ctx, stored, now); err != nil {
+	if err := h.revokePluginRuntimeCapabilities(ctx, stored, now); err != nil {
 		_ = h.rollbackVersionSwitch(ctx, current, pkg.PackageHash, now)
 		h.reportLifecycleDiagnostic(ctx, stored, "plugin.runtime_capabilities.revoke_failed", err, map[string]any{"stage_id": stage.StageID})
-		return registry.PluginRecord{}, h.markInstallStageFailed(ctx, stage.StageID, "runtime_revoke_failed", err, now)
+		return registry.PluginRecord{}, mutation.Unknown(h.markInstallStageFailed(ctx, stage.StageID, "runtime_revoke_failed", err, now))
 	}
 	if _, err := h.adapters.InstallStages.MarkCommitted(ctx, installstage.MarkCommittedRequest{StageID: stage.StageID, Now: now}); err != nil {
 		_ = h.rollbackVersionSwitch(ctx, current, pkg.PackageHash, now)
 		h.reportLifecycleDiagnostic(ctx, stored, "plugin.install_stage.commit_failed", err, map[string]any{"stage_id": stage.StageID})
-		return registry.PluginRecord{}, err
+		return registry.PluginRecord{}, mutation.Unknown(err)
 	}
 	h.audit(ctx, AuditEvent{Type: "plugin.updated", PluginID: stored.PluginID, PluginInstanceID: stored.PluginInstanceID})
 	return stored, nil
@@ -3474,133 +3617,40 @@ func (h *Host) markInstallStageFailed(ctx context.Context, stageID string, code 
 	return cause
 }
 
-func validateUpdateMigrationPreflight(current registry.PluginRecord, next registry.PluginRecord) error {
-	if err := validateSettingsUpdateMigration(current.Manifest.Settings, next.Manifest.Settings); err != nil {
+func requireStablePluginDataShape(current manifest.Manifest, next manifest.Manifest) error {
+	currentShape, err := plugindata.ShapeFromManifest(current)
+	if err != nil {
 		return err
 	}
-	return validateStorageUpdateMigration(current.Manifest.Storage, next.Manifest.Storage)
-}
-
-func validateDowngradeMigrationPreflight(current registry.PluginRecord, next registry.PluginRecord) error {
-	if err := validateSettingsDowngradeMigration(current.Manifest.Settings, next.Manifest.Settings); err != nil {
+	nextShape, err := plugindata.ShapeFromManifest(next)
+	if err != nil {
 		return err
 	}
-	return validateStorageDowngradeMigration(current.Manifest.Storage, next.Manifest.Storage)
-}
-
-func validateSettingsUpdateMigration(current *manifest.SettingsSpec, next *manifest.SettingsSpec) error {
-	if next == nil {
-		return nil
+	currentHash, err := plugindata.HashShape(currentShape)
+	if err != nil {
+		return err
 	}
-	fromVersion := 0
-	if current != nil {
-		fromVersion = current.SchemaVersion
+	nextHash, err := plugindata.HashShape(nextShape)
+	if err != nil {
+		return err
 	}
-	if fromVersion == next.SchemaVersion {
-		return nil
-	}
-	if fromVersion > next.SchemaVersion {
-		return fmt.Errorf("%w: settings schema_version cannot decrease during update from %d to %d; use downgrade", ErrPluginMigrationPreflight, fromVersion, next.SchemaVersion)
-	}
-	return requireMigrationRange("settings", next.Migration, fromVersion, next.SchemaVersion, false)
-}
-
-func validateSettingsDowngradeMigration(current *manifest.SettingsSpec, next *manifest.SettingsSpec) error {
-	if current == nil || next == nil || current.SchemaVersion == next.SchemaVersion {
-		return nil
-	}
-	if next.SchemaVersion > current.SchemaVersion {
-		return fmt.Errorf("%w: settings schema_version cannot increase during downgrade from %d to %d", ErrPluginMigrationPreflight, current.SchemaVersion, next.SchemaVersion)
-	}
-	return requireMigrationRange("settings", current.Migration, next.SchemaVersion, current.SchemaVersion, true)
-}
-
-func validateStorageUpdateMigration(current *manifest.StorageSpec, next *manifest.StorageSpec) error {
-	if next == nil {
-		return nil
-	}
-	currentStores := storageStoresByID(current)
-	for _, nextStore := range next.Stores {
-		label := fmt.Sprintf("storage store %q", nextStore.StoreID)
-		currentStore, existed := currentStores[nextStore.StoreID]
-		if !existed {
-			if err := requireMigrationRange(label, nextStore.Migration, 0, nextStore.SchemaVersion, false); err != nil {
-				return err
-			}
-			continue
-		}
-		if currentStore.Kind != nextStore.Kind {
-			return fmt.Errorf("%w: %s kind changed from %s to %s", ErrPluginMigrationPreflight, label, currentStore.Kind, nextStore.Kind)
-		}
-		if currentStore.SchemaVersion == nextStore.SchemaVersion {
-			continue
-		}
-		if currentStore.SchemaVersion > nextStore.SchemaVersion {
-			return fmt.Errorf("%w: %s schema_version cannot decrease during update from %d to %d; use downgrade", ErrPluginMigrationPreflight, label, currentStore.SchemaVersion, nextStore.SchemaVersion)
-		}
-		if err := requireMigrationRange(label, nextStore.Migration, currentStore.SchemaVersion, nextStore.SchemaVersion, false); err != nil {
-			return err
-		}
+	if currentHash != nextHash {
+		return fmt.Errorf("%w: use a new plugin identity for a different data shape", ErrPluginDataContractChanged)
 	}
 	return nil
-}
-
-func validateStorageDowngradeMigration(current *manifest.StorageSpec, next *manifest.StorageSpec) error {
-	if current == nil || next == nil {
-		return nil
-	}
-	nextStores := storageStoresByID(next)
-	for _, currentStore := range current.Stores {
-		nextStore, exists := nextStores[currentStore.StoreID]
-		if !exists {
-			continue
-		}
-		label := fmt.Sprintf("storage store %q", currentStore.StoreID)
-		if currentStore.Kind != nextStore.Kind {
-			return fmt.Errorf("%w: %s kind changed from %s to %s", ErrPluginMigrationPreflight, label, currentStore.Kind, nextStore.Kind)
-		}
-		if currentStore.SchemaVersion == nextStore.SchemaVersion {
-			continue
-		}
-		if nextStore.SchemaVersion > currentStore.SchemaVersion {
-			return fmt.Errorf("%w: %s schema_version cannot increase during downgrade from %d to %d", ErrPluginMigrationPreflight, label, currentStore.SchemaVersion, nextStore.SchemaVersion)
-		}
-		if err := requireMigrationRange(label, currentStore.Migration, nextStore.SchemaVersion, currentStore.SchemaVersion, true); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func requireMigrationRange(label string, migration manifest.MigrationSpec, fromVersion int, toVersion int, requireReversible bool) error {
-	if migration.FromVersion != fromVersion || migration.ToVersion != toVersion {
-		return fmt.Errorf("%w: %s migration must describe schema_version %d to %d, got %d to %d", ErrPluginMigrationPreflight, label, fromVersion, toVersion, migration.FromVersion, migration.ToVersion)
-	}
-	if requireReversible && !migration.Reversible {
-		return fmt.Errorf("%w: %s migration from %d to %d is not reversible", ErrPluginMigrationPreflight, label, fromVersion, toVersion)
-	}
-	return nil
-}
-
-func storageStoresByID(spec *manifest.StorageSpec) map[string]manifest.StoreSpec {
-	stores := map[string]manifest.StoreSpec{}
-	if spec == nil {
-		return stores
-	}
-	for _, store := range spec.Stores {
-		stores[store.StoreID] = store
-	}
-	return stores
 }
 
 func (h *Host) DowngradePlugin(ctx context.Context, req DowngradeRequest) (registry.PluginRecord, error) {
+	if _, err := requireUserSession(ctx); err != nil {
+		return registry.PluginRecord{}, err
+	}
 	h.managementMu.Lock()
 	defer h.managementMu.Unlock()
 	current, err := h.adapters.Registry.GetPlugin(ctx, req.PluginInstanceID)
 	if err != nil {
 		return registry.PluginRecord{}, err
 	}
-	if err := requirePluginStateVersion(current, req.PluginStateVersion); err != nil {
+	if err := requireManagementRevision(current, req.ExpectedManagementRevision); err != nil {
 		return registry.PluginRecord{}, err
 	}
 	snapshot, remaining, err := selectVersionSnapshot(current.VersionHistory, req.Version, req.PackageHash)
@@ -3608,7 +3658,7 @@ func (h *Host) DowngradePlugin(ctx context.Context, req DowngradeRequest) (regis
 		return registry.PluginRecord{}, err
 	}
 	next := recordFromVersionSnapshot(current, snapshot)
-	if err := validateDowngradeMigrationPreflight(current, next); err != nil {
+	if err := requireStablePluginDataShape(current.Manifest, next.Manifest); err != nil {
 		return registry.PluginRecord{}, err
 	}
 	next.VersionHistory = remaining
@@ -3623,10 +3673,10 @@ func (h *Host) DowngradePlugin(ctx context.Context, req DowngradeRequest) (regis
 		return registry.PluginRecord{}, err
 	}
 	if err := h.revokePluginRuntimeCapabilities(ctx, stored, req.Now); err != nil {
-		return registry.PluginRecord{}, err
+		return registry.PluginRecord{}, mutation.Unknown(err)
 	}
 	if err := h.refreshEnabledRuntimeState(ctx, stored); err != nil {
-		return registry.PluginRecord{}, err
+		return registry.PluginRecord{}, mutation.Unknown(err)
 	}
 	h.audit(ctx, AuditEvent{Type: "plugin.downgraded", PluginID: stored.PluginID, PluginInstanceID: stored.PluginInstanceID})
 	return stored, nil
@@ -3741,7 +3791,6 @@ func packageRecord(pkg pluginpkg.Package, trust registry.TrustAssessment, instan
 		Manifest:            pkg.Manifest,
 		PackageEntries:      pkg.Entries,
 		CapabilityContracts: append([]capabilitycontract.Pin(nil), capabilityPins...),
-		RetainedDataState:   registry.RetainedDataNone,
 		Metadata:            cloneStringMap(metadata),
 	}
 }
@@ -3807,7 +3856,6 @@ func prepareVersionSwitchRecord(current registry.PluginRecord, next registry.Plu
 	next.PluginInstanceID = current.PluginInstanceID
 	next.EnableState = current.EnableState
 	next.DisabledReason = current.DisabledReason
-	next.RetainedDataState = current.RetainedDataState
 	next.PolicyRevision = current.PolicyRevision
 	next.ManagementRevision = current.ManagementRevision
 	next.RevokeEpoch = current.RevokeEpoch
@@ -3916,12 +3964,6 @@ func (h *Host) validateEnabledRuntimeState(ctx context.Context, record registry.
 	if _, _, err := compileConnectivityPolicy(record); err != nil {
 		return err
 	}
-	if record.Manifest.Storage != nil && len(record.Manifest.Storage.Stores) > 0 && h.adapters.Storage == nil {
-		return errors.New("storage broker is required for plugins that declare storage")
-	}
-	if record.Manifest.Settings != nil && h.adapters.Settings == nil {
-		return errors.New("settings store is required for plugins that declare settings")
-	}
 	return nil
 }
 
@@ -3936,12 +3978,6 @@ func (h *Host) refreshEnabledRuntimeState(ctx context.Context, record registry.P
 }
 
 func (h *Host) prepareEnabledRuntimeState(ctx context.Context, record registry.PluginRecord) error {
-	if err := h.ensureStorageNamespaces(ctx, record); err != nil {
-		return err
-	}
-	if _, err := h.ensureSettings(ctx, record, time.Time{}, true); err != nil {
-		return err
-	}
 	connectivityPolicy, hasConnectivityPolicy, err := compileConnectivityPolicy(record)
 	if err != nil {
 		return err
@@ -3997,7 +4033,7 @@ func (h *Host) rollbackInstallRecord(ctx context.Context, previous registry.Plug
 		if _, err := h.adapters.Registry.PutPlugin(ctx, previous, registry.PutOptions{Now: now}); err != nil {
 			return err
 		}
-	} else if err := h.adapters.Registry.DeletePlugin(ctx, pluginInstanceID); err != nil && !errors.Is(err, registry.ErrNotFound) {
+	} else if err := h.adapters.Registry.AbortInstall(ctx, pluginInstanceID); err != nil && !errors.Is(err, registry.ErrNotFound) {
 		return err
 	}
 	if packageHash != "" && (!hadPrevious || packageHash != previous.PackageHash) {
@@ -4062,32 +4098,105 @@ func cloneEntries(entries []pluginpkg.Entry) []pluginpkg.Entry {
 }
 
 func (h *Host) ListPlugins(ctx context.Context) ([]registry.PluginRecord, error) {
+	if _, err := requireUserSession(ctx); err != nil {
+		return nil, err
+	}
 	return h.adapters.Registry.ListPlugins(ctx)
 }
 
-func (h *Host) RefreshEnabledPlugins(ctx context.Context) ([]registry.PluginRecord, error) {
+type RefreshEnabledPluginStatus string
+
+const (
+	RefreshEnabledPluginStatusRefreshed RefreshEnabledPluginStatus = "refreshed"
+	RefreshEnabledPluginStatusFailed    RefreshEnabledPluginStatus = "failed"
+	refreshEnabledPluginFailureMessage                             = "Plugin runtime state could not be refreshed"
+)
+
+type RefreshEnabledPluginResult struct {
+	PluginInstanceID string                           `json:"plugin_instance_id"`
+	Status           RefreshEnabledPluginStatus       `json:"status"`
+	Error            *RefreshEnabledPluginPublicError `json:"error,omitempty"`
+}
+
+type RefreshEnabledPluginPublicError struct {
+	Code    security.ErrorCode `json:"code"`
+	Message string             `json:"message"`
+}
+
+func refreshedPluginResult(pluginInstanceID string) RefreshEnabledPluginResult {
+	return RefreshEnabledPluginResult{
+		PluginInstanceID: strings.TrimSpace(pluginInstanceID),
+		Status:           RefreshEnabledPluginStatusRefreshed,
+	}
+}
+
+func failedPluginRefreshResult(pluginInstanceID string) RefreshEnabledPluginResult {
+	return RefreshEnabledPluginResult{
+		PluginInstanceID: strings.TrimSpace(pluginInstanceID),
+		Status:           RefreshEnabledPluginStatusFailed,
+		Error: &RefreshEnabledPluginPublicError{
+			Code:    security.ErrRuntimeUnavailable,
+			Message: refreshEnabledPluginFailureMessage,
+		},
+	}
+}
+
+func (result RefreshEnabledPluginResult) validate() error {
+	if strings.TrimSpace(result.PluginInstanceID) == "" {
+		return errors.New("runtime refresh result requires plugin_instance_id")
+	}
+	switch result.Status {
+	case RefreshEnabledPluginStatusRefreshed:
+		if result.Error != nil {
+			return errors.New("refreshed runtime result must not include an error")
+		}
+	case RefreshEnabledPluginStatusFailed:
+		if result.Error == nil || result.Error.Code != security.ErrRuntimeUnavailable || result.Error.Message != refreshEnabledPluginFailureMessage {
+			return errors.New("failed runtime refresh result requires the stable runtime error")
+		}
+	default:
+		return fmt.Errorf("unsupported runtime refresh status %q", result.Status)
+	}
+	return nil
+}
+
+func (result RefreshEnabledPluginResult) MarshalJSON() ([]byte, error) {
+	if err := result.validate(); err != nil {
+		return nil, err
+	}
+	type wireResult RefreshEnabledPluginResult
+	return json.Marshal(wireResult(result))
+}
+
+func (h *Host) RefreshEnabledPlugins(ctx context.Context) ([]RefreshEnabledPluginResult, error) {
 	records, err := h.adapters.Registry.ListPlugins(ctx)
 	if err != nil {
 		return nil, err
 	}
-	refreshed := make([]registry.PluginRecord, 0, len(records))
+	results := make([]RefreshEnabledPluginResult, 0, len(records))
 	for _, record := range records {
 		if record.EnableState != registry.EnableEnabled {
 			continue
 		}
 		if err := h.refreshEnabledRuntimeState(ctx, record); err != nil {
-			return nil, err
+			h.reportLifecycleDiagnostic(ctx, record, "plugin.runtime_state.refresh_failed", err, nil)
+			results = append(results, failedPluginRefreshResult(record.PluginInstanceID))
+			continue
 		}
-		refreshed = append(refreshed, record)
+		results = append(results, refreshedPluginResult(record.PluginInstanceID))
 		h.audit(ctx, AuditEvent{Type: "plugin.runtime_state.refreshed", PluginID: record.PluginID, PluginInstanceID: record.PluginInstanceID})
 	}
-	return refreshed, nil
+	return results, nil
 }
 
-func (h *Host) GrantPermission(ctx context.Context, req GrantPermissionRequest) (permissions.Record, error) {
+func (h *Host) GrantPermission(ctx context.Context, req GrantPermissionRequest) (PermissionMutationResult, error) {
+	session, err := requireUserSession(ctx)
+	if err != nil {
+		return PermissionMutationResult{}, err
+	}
 	record, err := h.adapters.Registry.GetPlugin(ctx, req.PluginInstanceID)
 	if err != nil {
-		return permissions.Record{}, err
+		return PermissionMutationResult{}, err
 	}
 	if record.SourcePolicySnapshotHash != "" {
 		now := req.Now
@@ -4096,181 +4205,329 @@ func (h *Host) GrantPermission(ctx context.Context, req GrantPermissionRequest) 
 		}
 		if err := h.verifyCurrentSourcePolicy(ctx, record, now); err != nil {
 			if cleanupErr := h.disablePluginForSourcePolicyFailure(ctx, record, now); cleanupErr != nil {
-				return permissions.Record{}, errors.Join(err, cleanupErr)
+				return PermissionMutationResult{}, errors.Join(err, cleanupErr)
 			}
-			return permissions.Record{}, err
+			return PermissionMutationResult{}, err
 		}
 	}
-	grant, err := h.adapters.Permissions.Grant(ctx, permissions.GrantRequest{
+	snapshot, err := h.adapters.Registry.GrantPermission(ctx, permissions.GrantRequest{
 		PluginInstanceID: record.PluginInstanceID,
 		PermissionID:     req.PermissionID,
-		GrantedBy:        req.GrantedBy,
+		GrantedBy:        session.OwnerUserHash,
 		Now:              req.Now,
 		ExpiresAt:        req.ExpiresAt,
-	})
+	}, authorizationRevisions(req.ExpectedPolicyRevision, req.ExpectedManagementRevision, req.ExpectedRevokeEpoch))
 	if err != nil {
-		return permissions.Record{}, err
+		return PermissionMutationResult{}, err
 	}
-	updated, err := h.adapters.Registry.BumpPolicyRevision(ctx, record.PluginInstanceID, false, req.Now)
-	if err != nil {
-		return permissions.Record{}, err
-	}
-	if err := h.refreshConnectivityPolicy(ctx, updated); err != nil {
-		return permissions.Record{}, err
+	if err := h.refreshConnectivityPolicy(ctx, snapshot.Plugin); err != nil {
+		return PermissionMutationResult{}, mutation.Unknown(err)
 	}
 	h.audit(ctx, AuditEvent{Type: "plugin.permission.granted", PluginID: record.PluginID, PluginInstanceID: record.PluginInstanceID})
-	return grant, nil
+	permission, err := permissionGrantFromSnapshot(snapshot, req.PermissionID)
+	if err != nil {
+		return PermissionMutationResult{}, err
+	}
+	return PermissionMutationResult{Permission: permission, Revisions: registry.AuthorizationRevisionsFromRecord(snapshot.Plugin)}, nil
 }
 
-func (h *Host) RevokePermission(ctx context.Context, req RevokePermissionRequest) (permissions.Record, error) {
+func (h *Host) RevokePermission(ctx context.Context, req RevokePermissionRequest) (PermissionMutationResult, error) {
+	session, err := requireUserSession(ctx)
+	if err != nil {
+		return PermissionMutationResult{}, err
+	}
 	record, err := h.adapters.Registry.GetPlugin(ctx, req.PluginInstanceID)
 	if err != nil {
-		return permissions.Record{}, err
+		return PermissionMutationResult{}, err
 	}
-	grant, err := h.adapters.Permissions.Revoke(ctx, permissions.RevokeRequest{
+	snapshot, err := h.adapters.Registry.RevokePermission(ctx, permissions.RevokeRequest{
 		PluginInstanceID: record.PluginInstanceID,
 		PermissionID:     req.PermissionID,
-		RevokedBy:        req.RevokedBy,
+		RevokedBy:        session.OwnerUserHash,
 		Reason:           req.Reason,
 		Now:              req.Now,
-	})
+	}, authorizationRevisions(req.ExpectedPolicyRevision, req.ExpectedManagementRevision, req.ExpectedRevokeEpoch))
 	if err != nil {
-		return permissions.Record{}, err
+		return PermissionMutationResult{}, err
 	}
-	updated, err := h.adapters.Registry.BumpPolicyRevision(ctx, record.PluginInstanceID, true, req.Now)
-	if err != nil {
-		return permissions.Record{}, err
-	}
-	if err := h.refreshConnectivityPolicy(ctx, updated); err != nil {
-		return permissions.Record{}, err
-	}
-	if err := h.revokePluginRuntimeCapabilities(ctx, updated, req.Now); err != nil {
-		return permissions.Record{}, err
+	if err := errors.Join(
+		h.refreshConnectivityPolicy(ctx, snapshot.Plugin),
+		h.revokePluginRuntimeCapabilities(ctx, snapshot.Plugin, req.Now),
+	); err != nil {
+		return PermissionMutationResult{}, mutation.Unknown(err)
 	}
 	h.audit(ctx, AuditEvent{Type: "plugin.permission.revoked", PluginID: record.PluginID, PluginInstanceID: record.PluginInstanceID})
-	return grant, nil
+	permission, err := permissionGrantFromSnapshot(snapshot, req.PermissionID)
+	if err != nil {
+		return PermissionMutationResult{}, err
+	}
+	return PermissionMutationResult{Permission: permission, Revisions: registry.AuthorizationRevisionsFromRecord(snapshot.Plugin)}, nil
 }
 
 func (h *Host) ListPermissionGrants(ctx context.Context, req ListPermissionGrantsRequest) ([]permissions.Record, error) {
-	if req.PluginInstanceID != "" {
-		if _, err := h.adapters.Registry.GetPlugin(ctx, req.PluginInstanceID); err != nil {
+	if _, err := requireUserSession(ctx); err != nil {
+		return nil, err
+	}
+	var snapshots []registry.AuthorizationSnapshot
+	if strings.TrimSpace(req.PluginInstanceID) != "" {
+		snapshot, err := h.adapters.Registry.GetAuthorization(ctx, req.PluginInstanceID)
+		if err != nil {
+			return nil, err
+		}
+		snapshots = []registry.AuthorizationSnapshot{snapshot}
+	} else {
+		var err error
+		snapshots, err = h.adapters.Registry.ListAuthorization(ctx)
+		if err != nil {
 			return nil, err
 		}
 	}
-	return h.adapters.Permissions.List(ctx, permissions.ListRequest{
-		PluginInstanceID: req.PluginInstanceID,
-		ActiveOnly:       req.ActiveOnly,
-	})
+	now := time.Now().UTC()
+	records := make([]permissions.Record, 0)
+	for _, snapshot := range snapshots {
+		for _, record := range snapshot.Grants {
+			if !req.ActiveOnly || activePermissionGrant(record, now) {
+				records = append(records, record)
+			}
+		}
+	}
+	return records, nil
 }
 
-func (h *Host) PutSecurityPolicy(ctx context.Context, req PutSecurityPolicyRequest) (security.PolicyRecord, error) {
+func (h *Host) PutSecurityPolicy(ctx context.Context, req PutSecurityPolicyRequest) (SecurityPolicyResult, error) {
+	if _, err := requireUserSession(ctx); err != nil {
+		return SecurityPolicyResult{}, err
+	}
 	record, err := h.adapters.Registry.GetPlugin(ctx, req.PluginInstanceID)
 	if err != nil {
-		return security.PolicyRecord{}, err
+		return SecurityPolicyResult{}, err
 	}
-	policy, err := h.adapters.SecurityPolicy.PutPolicy(ctx, security.PutPolicyRequest{
+	snapshot, err := h.adapters.Registry.PutSecurityPolicy(ctx, security.PutPolicyRequest{
 		PluginInstanceID:   record.PluginInstanceID,
 		AllowedPermissions: req.AllowedPermissions,
 		DeniedMethods:      req.DeniedMethods,
 		Now:                req.Now,
-	})
+	}, authorizationRevisions(req.ExpectedPolicyRevision, req.ExpectedManagementRevision, req.ExpectedRevokeEpoch))
 	if err != nil {
-		return security.PolicyRecord{}, err
+		return SecurityPolicyResult{}, err
 	}
-	updated, err := h.adapters.Registry.BumpPolicyRevision(ctx, record.PluginInstanceID, true, req.Now)
-	if err != nil {
-		return security.PolicyRecord{}, err
-	}
-	if err := h.refreshConnectivityPolicy(ctx, updated); err != nil {
-		return security.PolicyRecord{}, err
-	}
-	if err := h.revokePluginRuntimeCapabilities(ctx, updated, req.Now); err != nil {
-		return security.PolicyRecord{}, err
+	if err := errors.Join(
+		h.refreshConnectivityPolicy(ctx, snapshot.Plugin),
+		h.revokePluginRuntimeCapabilities(ctx, snapshot.Plugin, req.Now),
+	); err != nil {
+		return SecurityPolicyResult{}, mutation.Unknown(err)
 	}
 	h.audit(ctx, AuditEvent{Type: "plugin.security_policy.updated", PluginID: record.PluginID, PluginInstanceID: record.PluginInstanceID})
-	return policy, nil
-}
-
-func (h *Host) GetSecurityPolicy(ctx context.Context, req GetSecurityPolicyRequest) (security.PolicyRecord, error) {
-	if _, err := h.adapters.Registry.GetPlugin(ctx, req.PluginInstanceID); err != nil {
-		return security.PolicyRecord{}, err
+	if snapshot.Policy == nil {
+		return SecurityPolicyResult{}, mutation.Unknown(errors.New("committed security policy is missing from authorization snapshot"))
 	}
-	return h.adapters.SecurityPolicy.GetPolicy(ctx, req.PluginInstanceID)
+	return securityPolicyResult(snapshot), nil
 }
 
-func (h *Host) ListSecurityPolicies(ctx context.Context) ([]security.PolicyRecord, error) {
-	return h.adapters.SecurityPolicy.ListPolicies(ctx)
+func (h *Host) GetSecurityPolicy(ctx context.Context, req GetSecurityPolicyRequest) (SecurityPolicyResult, error) {
+	if _, err := requireUserSession(ctx); err != nil {
+		return SecurityPolicyResult{}, err
+	}
+	snapshot, err := h.adapters.Registry.GetAuthorization(ctx, req.PluginInstanceID)
+	if err != nil {
+		return SecurityPolicyResult{}, err
+	}
+	if snapshot.Policy == nil {
+		return SecurityPolicyResult{}, security.ErrPolicyNotFound
+	}
+	return securityPolicyResult(snapshot), nil
 }
 
-func (h *Host) DeleteSecurityPolicy(ctx context.Context, req DeleteSecurityPolicyRequest) error {
+func (h *Host) ListSecurityPolicies(ctx context.Context) ([]SecurityPolicyResult, error) {
+	if _, err := requireUserSession(ctx); err != nil {
+		return nil, err
+	}
+	snapshots, err := h.adapters.Registry.ListAuthorization(ctx)
+	if err != nil {
+		return nil, err
+	}
+	policies := make([]SecurityPolicyResult, 0, len(snapshots))
+	for _, snapshot := range snapshots {
+		if snapshot.Policy != nil {
+			policies = append(policies, securityPolicyResult(snapshot))
+		}
+	}
+	return policies, nil
+}
+
+func securityPolicyResult(snapshot registry.AuthorizationSnapshot) SecurityPolicyResult {
+	return SecurityPolicyResult{
+		Policy:    *snapshot.Policy,
+		Revisions: registry.AuthorizationRevisionsFromRecord(snapshot.Plugin),
+	}
+}
+
+func (h *Host) DeleteSecurityPolicy(ctx context.Context, req DeleteSecurityPolicyRequest) (registry.AuthorizationRevisions, error) {
+	if _, err := requireUserSession(ctx); err != nil {
+		return registry.AuthorizationRevisions{}, err
+	}
 	record, err := h.adapters.Registry.GetPlugin(ctx, req.PluginInstanceID)
 	if err != nil {
-		return err
+		return registry.AuthorizationRevisions{}, err
 	}
-	if err := h.adapters.SecurityPolicy.DeletePolicy(ctx, record.PluginInstanceID); err != nil {
-		return err
-	}
-	updated, err := h.adapters.Registry.BumpPolicyRevision(ctx, record.PluginInstanceID, true, req.Now)
+	snapshot, err := h.adapters.Registry.DeleteSecurityPolicy(
+		ctx,
+		record.PluginInstanceID,
+		req.Now,
+		authorizationRevisions(req.ExpectedPolicyRevision, req.ExpectedManagementRevision, req.ExpectedRevokeEpoch),
+	)
 	if err != nil {
-		return err
+		return registry.AuthorizationRevisions{}, err
 	}
-	if err := h.refreshConnectivityPolicy(ctx, updated); err != nil {
-		return err
-	}
-	if err := h.revokePluginRuntimeCapabilities(ctx, updated, req.Now); err != nil {
-		return err
+	if err := errors.Join(
+		h.refreshConnectivityPolicy(ctx, snapshot.Plugin),
+		h.revokePluginRuntimeCapabilities(ctx, snapshot.Plugin, req.Now),
+	); err != nil {
+		return registry.AuthorizationRevisions{}, mutation.Unknown(err)
 	}
 	h.audit(ctx, AuditEvent{Type: "plugin.security_policy.deleted", PluginID: record.PluginID, PluginInstanceID: record.PluginInstanceID})
-	return nil
+	return registry.AuthorizationRevisionsFromRecord(snapshot.Plugin), nil
 }
 
-func (h *Host) ListAuditEvents(ctx context.Context, req ListAuditEventsRequest) ([]AuditEvent, error) {
-	lister, ok := h.adapters.Audit.(AuditLister)
-	if !ok {
-		return nil, errors.New("audit event lister is unavailable")
+func authorizationRevisions(policyRevision, managementRevision, revokeEpoch uint64) registry.AuthorizationRevisions {
+	return registry.AuthorizationRevisions{
+		PolicyRevision:     policyRevision,
+		ManagementRevision: managementRevision,
+		RevokeEpoch:        revokeEpoch,
 	}
-	return lister.ListPluginAudit(ctx, observability.ListAuditRequest(req))
+}
+
+func permissionGrantFromSnapshot(snapshot registry.AuthorizationSnapshot, permissionID string) (permissions.Record, error) {
+	permissionID = strings.TrimSpace(permissionID)
+	for _, grant := range snapshot.Grants {
+		if grant.PermissionID == permissionID {
+			return grant, nil
+		}
+	}
+	return permissions.Record{}, mutation.Unknown(errors.New("committed permission grant is missing from authorization snapshot"))
+}
+
+func activePermissionGrant(record permissions.Record, now time.Time) bool {
+	return record.Effect == permissions.EffectGrant && record.RevokedAt == nil &&
+		(record.ExpiresAt == nil || record.ExpiresAt.After(now))
 }
 
 func (h *Host) ListDiagnosticEvents(ctx context.Context, req ListDiagnosticEventsRequest) ([]DiagnosticEvent, error) {
+	session, err := requireUserSession(ctx)
+	if err != nil {
+		return nil, err
+	}
 	lister, ok := h.adapters.Diagnostics.(DiagnosticLister)
 	if !ok {
 		return nil, errors.New("diagnostic event lister is unavailable")
 	}
-	return lister.ListPluginDiagnostics(ctx, observability.ListDiagnosticRequest(req))
+	if req.Severity != "" && !req.Severity.Valid() {
+		return nil, observability.ErrInvalidDiagnosticSeverity
+	}
+	events, err := lister.ListPluginDiagnostics(ctx, observability.ListDiagnosticRequest{
+		PluginID:             req.PluginID,
+		PluginInstanceID:     req.PluginInstanceID,
+		SurfaceInstanceID:    req.SurfaceInstanceID,
+		OwnerSessionHash:     session.OwnerSessionHash,
+		OwnerUserHash:        session.OwnerUserHash,
+		OwnerEnvHash:         session.OwnerEnvHash,
+		SessionChannelIDHash: session.SessionChannelIDHash,
+		Type:                 req.Type,
+		Severity:             req.Severity,
+		Limit:                req.Limit,
+	})
+	if err != nil {
+		return nil, err
+	}
+	pluginID := strings.TrimSpace(req.PluginID)
+	pluginInstanceID := strings.TrimSpace(req.PluginInstanceID)
+	surfaceInstanceID := strings.TrimSpace(req.SurfaceInstanceID)
+	eventType := strings.TrimSpace(req.Type)
+	limit := req.Limit
+	if limit <= 0 {
+		limit = 100
+	} else if limit > 1000 {
+		limit = 1000
+	}
+	filtered := make([]DiagnosticEvent, 0, len(events))
+	for _, event := range events {
+		if event.OwnerSessionHash != session.OwnerSessionHash ||
+			event.OwnerUserHash != session.OwnerUserHash ||
+			event.OwnerEnvHash != session.OwnerEnvHash ||
+			event.SessionChannelIDHash != session.SessionChannelIDHash {
+			continue
+		}
+		if pluginID != "" && event.PluginID != pluginID ||
+			pluginInstanceID != "" && event.PluginInstanceID != pluginInstanceID ||
+			surfaceInstanceID != "" && event.SurfaceInstanceID != surfaceInstanceID ||
+			eventType != "" && event.Type != eventType ||
+			req.Severity != "" && event.Severity != req.Severity ||
+			!event.Severity.Valid() {
+			continue
+		}
+		filtered = append(filtered, DiagnosticEvent{
+			EventID:           event.EventID,
+			Type:              event.Type,
+			Severity:          event.Severity,
+			Message:           event.Message,
+			PluginID:          event.PluginID,
+			PluginInstanceID:  event.PluginInstanceID,
+			SurfaceID:         event.SurfaceID,
+			SurfaceInstanceID: event.SurfaceInstanceID,
+			ActiveFingerprint: event.ActiveFingerprint,
+			RequestID:         event.RequestID,
+			OccurredAt:        event.OccurredAt,
+			Details:           cloneAnyMap(event.Details),
+		})
+	}
+	sort.Slice(filtered, func(i, j int) bool {
+		if filtered[i].OccurredAt.Equal(filtered[j].OccurredAt) {
+			return filtered[i].EventID > filtered[j].EventID
+		}
+		return filtered[i].OccurredAt.After(filtered[j].OccurredAt)
+	})
+	if len(filtered) > limit {
+		filtered = filtered[:limit]
+	}
+	return filtered, nil
 }
 
-func (h *Host) ListOperations(ctx context.Context, req ListOperationsRequest) ([]operation.Record, error) {
-	return h.adapters.Operations.List(ctx, operation.ListRequest{PluginInstanceID: req.PluginInstanceID})
+func (h *Host) ListOperations(ctx context.Context, req ListOperationsRequest) (ListOperationsResult, error) {
+	session, err := requireUserSession(ctx)
+	if err != nil {
+		return ListOperationsResult{}, err
+	}
+	cursor, err := operation.DecodeCursor(req.Cursor)
+	if err != nil {
+		return ListOperationsResult{}, err
+	}
+	page, err := h.adapters.Operations.List(ctx, operation.ListRequest{
+		PluginInstanceID: req.PluginInstanceID,
+		Cursor:           cursor,
+		Limit:            req.Limit,
+		Owner:            operationOwnerScope(session),
+	})
+	if err != nil {
+		return ListOperationsResult{}, err
+	}
+	nextCursor, err := operation.EncodeCursor(page.NextCursor)
+	if err != nil {
+		return ListOperationsResult{}, err
+	}
+	return ListOperationsResult{Operations: page.Records, NextCursor: nextCursor}, nil
 }
 
-func (h *Host) StartRuntime(ctx context.Context, req StartRuntimeRequest) (runtimeclient.Health, error) {
-	if h.adapters.RuntimeSupervisor == nil {
-		h.runtimeMu.Lock()
-		defer h.runtimeMu.Unlock()
-		if h.adapters.RuntimeSupervisor == nil && h.adapters.RuntimeArtifactResolver == nil {
-			return runtimeclient.Health{}, errors.New("runtime artifact resolver is required")
-		}
-		if h.adapters.RuntimeSupervisor == nil {
-			target := normalizeRuntimeTarget(req.Target)
-			runtimePath, err := h.adapters.RuntimeArtifactResolver.RuntimePath(ctx, target)
-			if err != nil {
-				return runtimeclient.Health{}, err
-			}
-			supervisor, err := runtimeclient.NewProcessSupervisor(h.processSupervisorOptions(runtimePath))
-			if err != nil {
-				return runtimeclient.Health{}, err
-			}
-			h.adapters.RuntimeSupervisor = supervisor
-		}
+func (h *Host) StartRuntime(ctx context.Context, req StartRuntimeRequest) (runtimeclient.ManagerHealth, error) {
+	if h.adapters.RuntimeManager == nil {
+		return runtimeclient.ManagerHealth{}, errors.New("runtime manager is required")
 	}
 	target := normalizeRuntimeTarget(req.Target)
-	if err := h.adapters.RuntimeSupervisor.Start(ctx, runtimeclient.Target{OS: target.OS, Arch: target.Arch}); err != nil {
-		return runtimeclient.Health{}, err
-	}
-	health, err := h.adapters.RuntimeSupervisor.Health(ctx)
+	health, err := h.adapters.RuntimeManager.Start(ctx, runtimeclient.Target{OS: target.OS, Arch: target.Arch})
 	if err != nil {
-		return runtimeclient.Health{}, err
+		if errors.Is(err, runtimeclient.ErrManagerLifecycleOutcomeUnknown) {
+			return runtimeclient.ManagerHealth{}, mutation.Unknown(err)
+		}
+		return runtimeclient.ManagerHealth{}, err
 	}
 	h.audit(ctx, AuditEvent{Type: "plugin.runtime.started"})
 	return health, nil
@@ -4282,9 +4539,9 @@ func (h *Host) processSupervisorOptions(runtimePath string) runtimeclient.Proces
 		Diagnostics:     h.adapters.Diagnostics,
 		Artifacts:       runtimeArtifactProvider{assets: h.adapters.Assets},
 		HandleGrants:    runtimeHandleGrantValidator{tokens: h.surfaceTokens},
-		StorageFiles:    storageFilesBroker(h.adapters.Storage),
-		StorageKV:       storageKVBroker(h.adapters.Storage),
-		StorageSQLite:   storageSQLiteBroker(h.adapters.Storage),
+		StorageFiles:    h.adapters.PluginData,
+		StorageKV:       h.adapters.PluginData,
+		StorageSQLite:   h.adapters.PluginData,
 		Connectivity:    h.adapters.Connectivity,
 		NetworkExecutor: h.adapters.NetworkExecutor,
 		StreamSink:      hostRuntimeStreamSink{executions: h.executions},
@@ -4292,42 +4549,57 @@ func (h *Host) processSupervisorOptions(runtimePath string) runtimeclient.Proces
 }
 
 func (h *Host) StopRuntime(ctx context.Context) error {
-	if h.adapters.RuntimeSupervisor != nil {
-		if err := h.adapters.RuntimeSupervisor.Stop(ctx); err != nil {
-			return err
-		}
+	var stopErr error
+	if h.adapters.RuntimeManager != nil {
+		stopErr = h.adapters.RuntimeManager.Stop(ctx)
 	}
 	revokedSurfaces := h.surfaceTokens.RevokeAllSurfaces(time.Time{})
-	h.audit(ctx, AuditEvent{Type: "plugin.runtime.stopped", Details: map[string]any{"revoked_surface_count": revokedSurfaces}})
+	details := map[string]any{"revoked_surface_count": revokedSurfaces}
+	if stopErr != nil {
+		h.diagnostic(ctx, observability.DiagnosticEvent{
+			Type:            "plugin.runtime.stop_failed",
+			Severity:        "warning",
+			Message:         "plugin runtime stop failed",
+			InternalDetails: map[string]any{"error": stopErr.Error()},
+		})
+	}
+	h.audit(ctx, AuditEvent{Type: "plugin.runtime.stopped", Details: details})
+	if stopErr != nil {
+		return mutation.Unknown(stopErr)
+	}
 	return nil
 }
 
-func (h *Host) RuntimeHealth(ctx context.Context) (runtimeclient.Health, error) {
-	if h.adapters.RuntimeSupervisor == nil {
-		return runtimeclient.Health{}, nil
+func (h *Host) RuntimeHealth(ctx context.Context) (runtimeclient.ManagerHealth, error) {
+	if h.adapters.RuntimeManager == nil {
+		return runtimeclient.ManagerHealth{}, nil
 	}
-	return h.adapters.RuntimeSupervisor.Health(ctx)
+	return h.adapters.RuntimeManager.Health(ctx)
 }
 
-func (h *Host) currentRuntimeGeneration(ctx context.Context) (string, error) {
-	if h.adapters.RuntimeSupervisor == nil {
+func (h *Host) currentRuntimeGeneration(ctx context.Context, pluginInstanceID string) (string, error) {
+	if h.adapters.RuntimeManager == nil {
 		return h.surfaceGenerationID, nil
 	}
-	health, err := h.adapters.RuntimeSupervisor.Health(ctx)
+	health, err := h.adapters.RuntimeManager.Health(ctx)
 	if err != nil {
 		return "", err
 	}
 	if !health.Ready {
 		return h.surfaceGenerationID, nil
 	}
-	if strings.TrimSpace(health.RuntimeGenerationID) == "" {
+	binding, err := h.adapters.RuntimeManager.BindPlugin(ctx, pluginInstanceID)
+	if err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(binding.RuntimeGenerationID) == "" {
 		return "", errors.New("ready runtime is missing runtime_generation_id")
 	}
-	return health.RuntimeGenerationID, nil
+	return binding.RuntimeGenerationID, nil
 }
 
-func (h *Host) requireSurfaceRuntimeGeneration(ctx context.Context, surfaceInstanceID string, boundGenerationID string, now time.Time) error {
-	currentGenerationID, err := h.currentRuntimeGeneration(ctx)
+func (h *Host) requireSurfaceRuntimeGeneration(ctx context.Context, pluginInstanceID, surfaceInstanceID, boundGenerationID string, now time.Time) error {
+	currentGenerationID, err := h.currentRuntimeGeneration(ctx, pluginInstanceID)
 	if err != nil {
 		return err
 	}
@@ -4339,13 +4611,31 @@ func (h *Host) requireSurfaceRuntimeGeneration(ctx context.Context, surfaceInsta
 }
 
 func (h *Host) GetOperation(ctx context.Context, operationID string) (operation.Record, error) {
-	return h.adapters.Operations.Get(ctx, operationID)
+	session, err := requireUserSession(ctx)
+	if err != nil {
+		return operation.Record{}, err
+	}
+	record, err := h.adapters.Operations.Get(ctx, operationID)
+	if err != nil {
+		return operation.Record{}, err
+	}
+	if !operationOwnedBySession(record, session) {
+		return operation.Record{}, operation.ErrNotFound
+	}
+	return record, nil
 }
 
 func (h *Host) CancelOperation(ctx context.Context, req CancelOperationRequest) (operation.Record, error) {
+	session, err := requireUserSession(ctx)
+	if err != nil {
+		return operation.Record{}, err
+	}
 	current, err := h.adapters.Operations.Get(ctx, req.OperationID)
 	if err != nil {
 		return operation.Record{}, err
+	}
+	if !operationOwnedBySession(current, session) {
+		return operation.Record{}, operation.ErrNotFound
 	}
 	if operationTerminal(current.Status) {
 		return current, nil
@@ -4363,9 +4653,27 @@ func (h *Host) CancelOperation(ctx context.Context, req CancelOperationRequest) 
 	}
 	h.audit(ctx, AuditEvent{Type: "plugin.operation.cancel_requested", PluginID: record.PluginID, PluginInstanceID: record.PluginInstanceID})
 	if err := h.dispatchOperationCancellation(ctx, record, req.Reason, req.Now, errors.New("operation cancellation requested")); err != nil {
-		return record, err
+		return record, mutation.Unknown(err)
 	}
 	return record, nil
+}
+
+func operationOwnerScope(session sessionctx.Context) operation.OwnerScope {
+	return operation.OwnerScope{
+		OwnerSessionHash:     strings.TrimSpace(session.OwnerSessionHash),
+		OwnerUserHash:        strings.TrimSpace(session.OwnerUserHash),
+		OwnerEnvHash:         strings.TrimSpace(session.OwnerEnvHash),
+		SessionChannelIDHash: strings.TrimSpace(session.SessionChannelIDHash),
+	}
+}
+
+func operationOwnedBySession(record operation.Record, session sessionctx.Context) bool {
+	return operationOwnerScope(session) == (operation.OwnerScope{
+		OwnerSessionHash:     record.OwnerSessionHash,
+		OwnerUserHash:        record.OwnerUserHash,
+		OwnerEnvHash:         record.OwnerEnvHash,
+		SessionChannelIDHash: record.SessionChannelIDHash,
+	})
 }
 
 func (h *Host) dispatchOperationCancellation(ctx context.Context, record operation.Record, reason string, now time.Time, cause error) error {
@@ -4385,14 +4693,19 @@ func (h *Host) dispatchOperationCancellation(ctx context.Context, record operati
 }
 
 func (h *Host) CancelSurfaceOperation(ctx context.Context, req CancelSurfaceOperationRequest) (operation.Record, error) {
+	session, err := requireUserSession(ctx)
+	if err != nil {
+		return operation.Record{}, err
+	}
 	record, err := h.adapters.Operations.Get(ctx, req.OperationID)
 	if err != nil {
 		return operation.Record{}, err
 	}
 	if record.SurfaceInstanceID != req.SurfaceInstanceID ||
-		record.OwnerSessionHash != req.OwnerSessionHash ||
-		record.OwnerUserHash != req.OwnerUserHash ||
-		record.SessionChannelIDHash != req.SessionChannelIDHash ||
+		record.OwnerSessionHash != session.OwnerSessionHash ||
+		record.OwnerUserHash != session.OwnerUserHash ||
+		record.OwnerEnvHash != session.OwnerEnvHash ||
+		record.SessionChannelIDHash != session.SessionChannelIDHash ||
 		record.BridgeChannelID != req.BridgeChannelID {
 		return operation.Record{}, bridge.ErrTokenAudience
 	}
@@ -4407,46 +4720,57 @@ func (h *Host) armDetachedOperationCancelAckTimeout(record operation.Record) {
 		return
 	}
 	timeout := time.Duration(record.CancelAckTimeoutMS) * time.Millisecond
-	go func() {
+	started := h.startLifecycleJob(func(ctx context.Context) {
 		defer h.detachedCancelJobs.Delete(record.OperationID)
-		if !waitForCancellationReconcile(timeout, nil) {
+		if !waitForCancellationReconcile(ctx, timeout) {
 			return
 		}
-		for {
-			ctx := context.Background()
-			current, err := h.adapters.Operations.Get(ctx, record.OperationID)
-			if errors.Is(err, operation.ErrNotFound) || (err == nil && current.Status != operation.StatusCancelRequested) {
-				return
-			}
-			if err == nil {
-				if current.StreamID != "" {
-					if _, err = h.adapters.Streams.Close(ctx, stream.CloseRequest{
-						StreamID: current.StreamID, Status: stream.StatusCanceled, Reason: "cancellation acknowledgement timed out",
-					}); err != nil {
-						if !waitForCancellationReconcile(cancellationReconcileRetryDelay(timeout), nil) {
-							return
-						}
-						continue
-					}
-				}
-				finished, finishErr := h.adapters.Operations.Finish(ctx, operation.FinishRequest{
-					OperationID: current.OperationID, Status: operation.StatusCanceled, Reason: "cancellation acknowledgement timed out",
-				})
-				if finishErr == nil {
-					h.audit(ctx, AuditEvent{Type: "plugin.operation.finished", PluginID: finished.PluginID, PluginInstanceID: finished.PluginInstanceID, Details: map[string]any{"operation_id": finished.OperationID, "status": finished.Status}})
-					return
-				}
-			}
-			if !waitForCancellationReconcile(cancellationReconcileRetryDelay(timeout), nil) {
-				return
-			}
+		current, err := h.adapters.Operations.Get(ctx, record.OperationID)
+		if errors.Is(err, operation.ErrNotFound) || (err == nil && current.Status != operation.StatusCancelRequested) {
+			return
 		}
-	}()
+		if err != nil {
+			return
+		}
+		if current.StreamID != "" {
+			closed, closeErr := h.adapters.Streams.Close(ctx, stream.CloseRequest{
+				StreamID: current.StreamID, Status: stream.StatusCanceled, Reason: "cancellation acknowledgement timed out",
+			})
+			if closeErr != nil {
+				return
+			}
+			status, ok := operationStatusForStreamStatus(closed.Status)
+			if !ok {
+				return
+			}
+			current.Status = status
+			current.Reason = closed.Reason
+		} else {
+			current.Status = operation.StatusCanceled
+			current.Reason = "cancellation acknowledgement timed out"
+		}
+		finished, err := h.adapters.Operations.Finish(ctx, operation.FinishRequest{
+			OperationID: current.OperationID, Status: current.Status, Reason: current.Reason,
+		})
+		if err == nil {
+			h.audit(ctx, AuditEvent{Type: "plugin.operation.finished", PluginID: finished.PluginID, PluginInstanceID: finished.PluginInstanceID, Details: map[string]any{"operation_id": finished.OperationID, "status": finished.Status}})
+		}
+	})
+	if !started {
+		h.detachedCancelJobs.Delete(record.OperationID)
+	}
 }
 
 func (h *Host) ReadStream(ctx context.Context, req ReadStreamRequest) (ReadStreamResult, error) {
+	session, err := requireUserSession(ctx)
+	if err != nil {
+		return ReadStreamResult{}, err
+	}
 	if strings.TrimSpace(req.StreamTicket) == "" {
 		return ReadStreamResult{}, ErrStreamTicketRequired
+	}
+	if strings.TrimSpace(req.ReadID) == "" {
+		return ReadStreamResult{}, stream.ErrInvalidStream
 	}
 	release, err := h.streamReads.acquire(ctx, req.StreamID)
 	if err != nil {
@@ -4455,110 +4779,102 @@ func (h *Host) ReadStream(ctx context.Context, req ReadStreamRequest) (ReadStrea
 	defer release()
 
 	now := lifecycleNow(req.Now)
-	record, _, validation, err := h.resolveStreamReadAuthorization(ctx, req, now)
+	record, _, validation, err := h.resolveStreamReadAuthorization(ctx, req, session, now)
 	if err != nil {
 		return ReadStreamResult{}, err
 	}
 	if _, err := h.surfaceTokens.InspectBoundStreamTicket(validation); err != nil {
 		return ReadStreamResult{}, err
 	}
-	deadline := time.Time{}
-	if req.WaitTimeout > 0 {
-		deadline = time.Now().Add(req.WaitTimeout)
-	}
-	for {
-		var pending []stream.Event
-		record, pending, err = h.adapters.Streams.Peek(ctx, stream.ReadRequest{
-			StreamID: req.StreamID, MaxEvents: req.MaxEvents, MaxBytes: req.MaxBytes,
+	if record.Status == stream.StatusOpen && req.WaitTimeout > 0 {
+		_, delivery, deliverErr := h.adapters.Streams.Deliver(ctx, stream.DeliverRequest{
+			StreamID: req.StreamID, ReadID: req.ReadID, MaxEvents: req.MaxEvents, MaxBytes: req.MaxBytes,
 		})
-		if err != nil {
-			return ReadStreamResult{}, err
+		if deliverErr != nil {
+			return ReadStreamResult{}, deliverErr
 		}
-		if len(pending) > 0 || record.Status != stream.StatusOpen || deadline.IsZero() || !time.Now().Before(deadline) {
-			break
-		}
-		timer := time.NewTimer(25 * time.Millisecond)
-		select {
-		case <-ctx.Done():
-			timer.Stop()
-			return ReadStreamResult{}, ctx.Err()
-		case <-timer.C:
+		if delivery.DeliveryID == "" {
+			waitCtx, cancel := context.WithTimeout(ctx, req.WaitTimeout)
+			err = h.adapters.Streams.Wait(waitCtx, req.StreamID)
+			cancel()
+			if err != nil && !errors.Is(err, context.DeadlineExceeded) {
+				return ReadStreamResult{}, err
+			}
 		}
 	}
 
 	h.managementMu.Lock()
 	defer h.managementMu.Unlock()
 	now = lifecycleNow(req.Now)
-	record, _, validation, err = h.resolveStreamReadAuthorization(ctx, req, now)
+	record, _, validation, err = h.resolveStreamReadAuthorization(ctx, req, session, now)
 	if err != nil {
 		return ReadStreamResult{}, err
 	}
-	record, pending, err := h.adapters.Streams.Peek(ctx, stream.ReadRequest{
-		StreamID: req.StreamID, MaxEvents: req.MaxEvents, MaxBytes: req.MaxBytes,
+	if _, err := h.surfaceTokens.InspectBoundStreamTicket(validation); err != nil {
+		return ReadStreamResult{}, err
+	}
+	record, delivery, err := h.adapters.Streams.Deliver(ctx, stream.DeliverRequest{
+		StreamID: req.StreamID, ReadID: req.ReadID, MaxEvents: req.MaxEvents, MaxBytes: req.MaxBytes,
 	})
 	if err != nil {
 		return ReadStreamResult{}, err
 	}
-	allPending := pending
-	if record.Status != stream.StatusOpen {
-		_, allPending, err = h.adapters.Streams.Peek(ctx, stream.ReadRequest{StreamID: req.StreamID})
-		if err != nil {
-			return ReadStreamResult{}, err
-		}
-	}
-	var events []stream.Event
-	read := func() error {
-		var readErr error
-		record, events, readErr = h.adapters.Streams.Read(ctx, stream.ReadRequest{
-			StreamID: req.StreamID, MaxEvents: req.MaxEvents, MaxBytes: req.MaxBytes,
-		})
-		if readErr != nil {
-			return readErr
-		}
-		return nil
-	}
-	if terminalStreamReadWillFinish(record, pending, allPending) {
-		if _, err := h.surfaceTokens.CommitBoundStreamTicket(validation, read); err != nil {
-			return ReadStreamResult{}, err
-		}
-		return ReadStreamResult{Record: record, Events: events, Done: true, TerminalStatus: record.Status}, nil
-	}
-	rotation, err := h.surfaceTokens.RotateBoundStreamTicket(validation, func() (bool, error) {
-		if err := read(); err != nil {
-			return false, err
-		}
-		return true, nil
-	})
-	if err != nil {
-		return ReadStreamResult{}, err
-	}
-	if rotation.Next == nil {
-		return ReadStreamResult{}, errors.New("stream ticket rotation did not issue the next ticket")
-	}
-	expiresAt := rotation.Next.ExpiresAt
+	return readStreamResult(record, delivery), nil
+}
+
+func readStreamResult(record stream.Record, delivery stream.Delivery) ReadStreamResult {
 	return ReadStreamResult{
-		Record: record, Events: events,
-		NextStreamTicket: rotation.Next.StreamTicket, NextStreamTicketID: rotation.Next.StreamTicketID,
-		NextStreamExpiresAt: &expiresAt,
-	}, nil
-}
-
-func terminalStreamReadWillFinish(record stream.Record, pending []stream.Event, allPending []stream.Event) bool {
-	if record.Status == stream.StatusOpen {
-		return false
+		Record: record, DeliveryID: delivery.DeliveryID, ReadID: delivery.ReadID,
+		Events: delivery.Events, Done: delivery.Done, TerminalStatus: delivery.TerminalStatus,
 	}
-	return len(pending) == len(allPending)
 }
 
-func (h *Host) resolveStreamReadAuthorization(ctx context.Context, req ReadStreamRequest, now time.Time) (stream.Record, registry.PluginRecord, bridge.ValidateBoundStreamTicketRequest, error) {
+func (h *Host) AcknowledgeStream(ctx context.Context, req AcknowledgeStreamRequest) (stream.Record, error) {
+	session, err := requireUserSession(ctx)
+	if err != nil {
+		return stream.Record{}, err
+	}
+	if strings.TrimSpace(req.StreamTicket) == "" {
+		return stream.Record{}, ErrStreamTicketRequired
+	}
+	if strings.TrimSpace(req.DeliveryID) == "" {
+		return stream.Record{}, stream.ErrDeliveryInvalid
+	}
+	release, err := h.streamReads.acquire(ctx, req.StreamID)
+	if err != nil {
+		return stream.Record{}, err
+	}
+	defer release()
+	h.managementMu.Lock()
+	defer h.managementMu.Unlock()
+	readReq := ReadStreamRequest{
+		StreamID: req.StreamID, StreamTicket: req.StreamTicket,
+		SurfaceInstanceID: req.SurfaceInstanceID, Now: req.Now,
+	}
+	_, _, validation, err := h.resolveStreamReadAuthorization(ctx, readReq, session, lifecycleNow(req.Now))
+	if err != nil {
+		return stream.Record{}, err
+	}
+	if _, err := h.surfaceTokens.InspectBoundStreamTicket(validation); err != nil {
+		return stream.Record{}, err
+	}
+	record, err := h.adapters.Streams.Acknowledge(ctx, stream.AcknowledgeRequest{StreamID: req.StreamID, DeliveryID: req.DeliveryID})
+	if err == nil && record.Status != stream.StatusOpen {
+		h.maintainTerminalExecutionRecords(ctx, time.Now().UTC())
+	}
+	return record, err
+}
+
+func (h *Host) resolveStreamReadAuthorization(ctx context.Context, req ReadStreamRequest, session sessionctx.Context, now time.Time) (stream.Record, registry.PluginRecord, bridge.ValidateBoundStreamTicketRequest, error) {
 	record, err := h.adapters.Streams.Get(ctx, req.StreamID)
 	if err != nil {
 		return stream.Record{}, registry.PluginRecord{}, bridge.ValidateBoundStreamTicketRequest{}, err
 	}
 	if record.SurfaceInstanceID != req.SurfaceInstanceID ||
-		record.OwnerSessionHash != req.OwnerSessionHash ||
-		record.OwnerUserHash != req.OwnerUserHash ||
-		record.SessionChannelIDHash != req.SessionChannelIDHash {
+		record.OwnerSessionHash != session.OwnerSessionHash ||
+		record.OwnerUserHash != session.OwnerUserHash ||
+		record.OwnerEnvHash != session.OwnerEnvHash ||
+		record.SessionChannelIDHash != session.SessionChannelIDHash {
 		return stream.Record{}, registry.PluginRecord{}, bridge.ValidateBoundStreamTicketRequest{}, bridge.ErrTokenAudience
 	}
 	plugin, err := h.adapters.Registry.GetPlugin(ctx, record.PluginInstanceID)
@@ -4574,6 +4890,7 @@ func (h *Host) resolveStreamReadAuthorization(ctx context.Context, req ReadStrea
 		SurfaceInstanceID:    record.SurfaceInstanceID,
 		OwnerSessionHash:     record.OwnerSessionHash,
 		OwnerUserHash:        record.OwnerUserHash,
+		OwnerEnvHash:         record.OwnerEnvHash,
 		SessionChannelIDHash: record.SessionChannelIDHash,
 		BridgeChannelID:      record.BridgeChannelID,
 		StreamID:             record.StreamID,
@@ -4590,6 +4907,9 @@ func (h *Host) resolveStreamReadAuthorization(ctx context.Context, req ReadStrea
 }
 
 func (h *Host) MintConnectionGrant(ctx context.Context, req MintConnectionGrantRequest) (connectivity.ConnectionGrant, error) {
+	if _, err := requireUserSession(ctx); err != nil {
+		return connectivity.ConnectionGrant{}, err
+	}
 	_, grant, err := h.mintConnectionGrant(ctx, req)
 	if err != nil {
 		return connectivity.ConnectionGrant{}, err
@@ -4629,6 +4949,9 @@ func (h *Host) mintConnectionGrant(ctx context.Context, req MintConnectionGrantR
 }
 
 func (h *Host) MintNetworkHandleGrant(ctx context.Context, req MintConnectionGrantRequest) (NetworkHandleGrantResult, error) {
+	if _, err := requireUserSession(ctx); err != nil {
+		return NetworkHandleGrantResult{}, err
+	}
 	if strings.TrimSpace(req.RuntimeGenerationID) == "" {
 		return NetworkHandleGrantResult{}, bridge.ErrMissingTokenAudience
 	}
@@ -4673,6 +4996,9 @@ func (h *Host) MintNetworkHandleGrant(ctx context.Context, req MintConnectionGra
 }
 
 func (h *Host) MintStorageHandleGrant(ctx context.Context, req MintStorageHandleGrantRequest) (StorageHandleGrantResult, error) {
+	if _, err := requireUserSession(ctx); err != nil {
+		return StorageHandleGrantResult{}, err
+	}
 	if strings.TrimSpace(req.RuntimeGenerationID) == "" || strings.TrimSpace(req.StoreID) == "" {
 		return StorageHandleGrantResult{}, bridge.ErrMissingTokenAudience
 	}
@@ -4726,13 +5052,16 @@ func (h *Host) MintStorageHandleGrant(ctx context.Context, req MintStorageHandle
 }
 
 func (h *Host) EnablePlugin(ctx context.Context, req EnableRequest) (registry.PluginRecord, error) {
+	if _, err := requireUserSession(ctx); err != nil {
+		return registry.PluginRecord{}, err
+	}
 	h.managementMu.Lock()
 	defer h.managementMu.Unlock()
 	record, err := h.adapters.Registry.GetPlugin(ctx, req.PluginInstanceID)
 	if err != nil {
 		return registry.PluginRecord{}, err
 	}
-	if err := requirePluginStateVersion(record, req.PluginStateVersion); err != nil {
+	if err := requireManagementRevision(record, req.ExpectedManagementRevision); err != nil {
 		return registry.PluginRecord{}, err
 	}
 	if record.Manifest.Plugin.UIProtocolVersion != version.PluginUIProtocolVersion {
@@ -4744,27 +5073,33 @@ func (h *Host) EnablePlugin(ctx context.Context, req EnableRequest) (registry.Pl
 	if _, _, err := compileConnectivityPolicy(record); err != nil {
 		return registry.PluginRecord{}, err
 	}
-	if err := h.ensureStorageNamespaces(ctx, record); err != nil {
-		return registry.PluginRecord{}, err
-	}
-	if _, err := h.ensureSettings(ctx, record, req.Now, true); err != nil {
-		return registry.PluginRecord{}, err
-	}
-	enabled, err := h.adapters.Registry.SetEnableState(ctx, req.PluginInstanceID, registry.EnableEnabled, "", req.Now)
+	shape, err := plugindata.ShapeFromManifest(record.Manifest)
 	if err != nil {
 		return registry.PluginRecord{}, err
+	}
+	initialSettings, err := settings.DefaultValues(shape.Settings.Fields)
+	if err != nil {
+		return registry.PluginRecord{}, err
+	}
+	if _, err := h.adapters.PluginData.CommitEnable(ctx, plugindata.CommitEnableRequest{
+		PluginInstanceID:           record.PluginInstanceID,
+		Shape:                      shape,
+		InitialSettings:            initialSettings,
+		ExpectedManagementRevision: record.ManagementRevision,
+		Now:                        req.Now,
+	}); err != nil {
+		return registry.PluginRecord{}, managementMutationError(record, err)
+	}
+	enabled, err := h.adapters.Registry.GetPlugin(ctx, record.PluginInstanceID)
+	if err != nil {
+		return registry.PluginRecord{}, mutation.Unknown(err)
 	}
 	connectivityPolicy, hasConnectivityPolicy, err := compileConnectivityPolicy(enabled)
 	if err != nil {
-		_, _ = h.adapters.Registry.SetEnableState(ctx, req.PluginInstanceID, registry.EnableDisabledByPolicy, "connectivity policy compilation failed", req.Now)
-		return registry.PluginRecord{}, err
+		return registry.PluginRecord{}, mutation.Unknown(err)
 	}
 	if err := h.installConnectivityPolicy(ctx, enabled, connectivityPolicy, hasConnectivityPolicy); err != nil {
-		_, _ = h.adapters.Registry.SetEnableState(ctx, req.PluginInstanceID, registry.EnableDisabledByPolicy, "connectivity policy installation failed", req.Now)
-		if h.adapters.Connectivity != nil {
-			_ = h.adapters.Connectivity.RemovePolicy(ctx, enabled.PluginInstanceID)
-		}
-		return registry.PluginRecord{}, err
+		return registry.PluginRecord{}, mutation.Unknown(err)
 	}
 	if h.adapters.SurfaceCatalog != nil {
 		if err := h.adapters.SurfaceCatalog.PublishSurfaces(ctx, SurfaceSnapshot{
@@ -4772,7 +5107,7 @@ func (h *Host) EnablePlugin(ctx context.Context, req EnableRequest) (registry.Pl
 			ActiveFingerprint: enabled.ActiveFingerprint,
 			Surfaces:          enabled.Manifest.Surfaces,
 		}); err != nil {
-			return registry.PluginRecord{}, err
+			return registry.PluginRecord{}, mutation.Unknown(err)
 		}
 	}
 	h.audit(ctx, AuditEvent{Type: "plugin.enabled", PluginID: enabled.PluginID, PluginInstanceID: enabled.PluginInstanceID})
@@ -4780,13 +5115,16 @@ func (h *Host) EnablePlugin(ctx context.Context, req EnableRequest) (registry.Pl
 }
 
 func (h *Host) DisablePlugin(ctx context.Context, req DisableRequest) (registry.PluginRecord, error) {
+	if _, err := requireUserSession(ctx); err != nil {
+		return registry.PluginRecord{}, err
+	}
 	h.managementMu.Lock()
 	defer h.managementMu.Unlock()
 	record, err := h.adapters.Registry.GetPlugin(ctx, req.PluginInstanceID)
 	if err != nil {
 		return registry.PluginRecord{}, err
 	}
-	if err := requirePluginStateVersion(record, req.PluginStateVersion); err != nil {
+	if err := requireManagementRevision(record, req.ExpectedManagementRevision); err != nil {
 		return registry.PluginRecord{}, err
 	}
 	reason := req.Reason
@@ -4803,7 +5141,7 @@ func (h *Host) DisablePlugin(ctx context.Context, req DisableRequest) (registry.
 		Now:              req.Now,
 	})
 	if err != nil {
-		return registry.PluginRecord{}, err
+		return registry.PluginRecord{}, mutation.Unknown(err)
 	}
 	if h.adapters.SurfaceCatalog != nil {
 		if err := h.adapters.SurfaceCatalog.PublishSurfaces(ctx, SurfaceSnapshot{
@@ -4811,7 +5149,7 @@ func (h *Host) DisablePlugin(ctx context.Context, req DisableRequest) (registry.
 			ActiveFingerprint: disabled.ActiveFingerprint,
 			Surfaces:          nil,
 		}); err != nil {
-			return registry.PluginRecord{}, err
+			return registry.PluginRecord{}, mutation.Unknown(err)
 		}
 	}
 	h.audit(ctx, AuditEvent{Type: "plugin.disabled", PluginID: disabled.PluginID, PluginInstanceID: disabled.PluginInstanceID})
@@ -4825,28 +5163,35 @@ func (h *Host) DisablePlugin(ctx context.Context, req DisableRequest) (registry.
 		Now:              req.Now,
 	})
 	if err != nil {
-		return registry.PluginRecord{}, err
+		return registry.PluginRecord{}, mutation.Unknown(err)
 	}
 	if len(streams) > 0 {
 		h.audit(ctx, AuditEvent{Type: "plugin.streams.disabled_transitioned", PluginID: disabled.PluginID, PluginInstanceID: disabled.PluginInstanceID})
 	}
+	var revokeErr error
 	if err := h.revokePluginRuntimeCapabilities(ctx, disabled, req.Now); err != nil {
-		return registry.PluginRecord{}, err
+		revokeErr = err
 	}
 	if h.adapters.Connectivity != nil {
-		_ = h.adapters.Connectivity.RemovePolicy(ctx, disabled.PluginInstanceID)
+		revokeErr = errors.Join(revokeErr, h.adapters.Connectivity.RemovePolicy(ctx, disabled.PluginInstanceID))
+	}
+	if revokeErr != nil {
+		return registry.PluginRecord{}, mutation.Unknown(revokeErr)
 	}
 	return disabled, nil
 }
 
 func (h *Host) UninstallPlugin(ctx context.Context, req UninstallRequest) (registry.PluginRecord, error) {
+	if _, err := requireUserSession(ctx); err != nil {
+		return registry.PluginRecord{}, err
+	}
 	h.managementMu.Lock()
 	defer h.managementMu.Unlock()
 	record, err := h.adapters.Registry.GetPlugin(ctx, req.PluginInstanceID)
 	if err != nil {
 		return registry.PluginRecord{}, err
 	}
-	if err := requirePluginStateVersion(record, req.PluginStateVersion); err != nil {
+	if err := requireManagementRevision(record, req.ExpectedManagementRevision); err != nil {
 		return registry.PluginRecord{}, err
 	}
 	operations, err := h.adapters.Operations.MarkPluginUninstalled(ctx, operation.PluginTransitionRequest{
@@ -4858,37 +5203,39 @@ func (h *Host) UninstallPlugin(ctx context.Context, req UninstallRequest) (regis
 		return registry.PluginRecord{}, err
 	}
 	for _, operationRecord := range operations {
-		if operationRecord.Status != operation.StatusCancelRequested {
-			continue
-		}
-		h.audit(ctx, AuditEvent{Type: "plugin.operation.cancel_requested", PluginID: operationRecord.PluginID, PluginInstanceID: operationRecord.PluginInstanceID})
-		if err := h.dispatchOperationCancellation(ctx, operationRecord, operationRecord.Reason, req.Now, errors.New("plugin uninstall cancellation requested")); err != nil {
-			return registry.PluginRecord{}, err
+		if operationRecord.Status == operation.StatusCancelRequested {
+			if err := h.dispatchOperationCancellation(ctx, operationRecord, operationRecord.Reason, req.Now, errors.New("plugin uninstall cancellation requested")); err != nil {
+				return registry.PluginRecord{}, mutation.Unknown(err)
+			}
 		}
 	}
 	if req.DeleteData && operationsBlockDelete(operations) {
 		h.audit(ctx, AuditEvent{Type: "plugin.operations.delete_blocked", PluginID: record.PluginID, PluginInstanceID: record.PluginInstanceID})
-		return registry.PluginRecord{}, operation.ErrDeleteBlocked
+		return registry.PluginRecord{}, mutation.Unknown(operation.ErrDeleteBlocked)
 	}
-	surfacesCleared := false
-	if record.EnableState == registry.EnableEnabled {
-		record, err = h.adapters.Registry.SetEnableState(ctx, req.PluginInstanceID, registry.EnableDisabled, "uninstalling", req.Now)
-		if err != nil {
-			return registry.PluginRecord{}, err
-		}
+	commit, err := h.adapters.PluginData.CommitUninstall(ctx, plugindata.CommitUninstallRequest{
+		PluginInstanceID:           record.PluginInstanceID,
+		DeleteData:                 req.DeleteData,
+		ExpectedManagementRevision: record.ManagementRevision,
+		Now:                        req.Now,
+	})
+	if err != nil {
+		return registry.PluginRecord{}, managementMutationError(record, err)
 	}
-	if h.adapters.Connectivity != nil {
-		_ = h.adapters.Connectivity.RemovePolicy(ctx, record.PluginInstanceID)
+	record.EnableState = registry.EnableDisabled
+	record.DisabledReason = "uninstalled"
+	record.ManagementRevision = commit.ManagementRevision
+	record.RevokeEpoch = commit.RevokeEpoch
+	record.EnabledAt = nil
+	record.UpdatedAt = commit.DeletedAt
+	record.DeletedAt = &commit.DeletedAt
+
+	var derivedErr error
+	if err := h.adapters.Connectivity.RemovePolicy(ctx, record.PluginInstanceID); err != nil {
+		derivedErr = errors.Join(derivedErr, err)
 	}
-	if h.adapters.SurfaceCatalog != nil {
-		if err := h.adapters.SurfaceCatalog.PublishSurfaces(ctx, SurfaceSnapshot{
-			PluginInstanceID:  record.PluginInstanceID,
-			ActiveFingerprint: record.ActiveFingerprint,
-			Surfaces:          nil,
-		}); err != nil {
-			return registry.PluginRecord{}, err
-		}
-		surfacesCleared = true
+	if err := h.adapters.SurfaceCatalog.PublishSurfaces(ctx, SurfaceSnapshot{PluginInstanceID: record.PluginInstanceID, ActiveFingerprint: record.ActiveFingerprint}); err != nil {
+		derivedErr = errors.Join(derivedErr, err)
 	}
 	streams, err := h.adapters.Streams.MarkPluginTransition(ctx, stream.PluginTransitionRequest{
 		PluginInstanceID: record.PluginInstanceID,
@@ -4897,429 +5244,307 @@ func (h *Host) UninstallPlugin(ctx context.Context, req UninstallRequest) (regis
 		Now:              req.Now,
 	})
 	if err != nil {
-		return registry.PluginRecord{}, err
+		derivedErr = errors.Join(derivedErr, err)
 	}
 	if err := h.revokePluginRuntimeCapabilities(ctx, record, req.Now); err != nil {
-		return registry.PluginRecord{}, err
+		derivedErr = errors.Join(derivedErr, err)
 	}
-	if err := h.ensureSecretCleanupSupported(req.DeleteData); err != nil {
-		return registry.PluginRecord{}, err
-	}
-	cleanupPlan, err := h.adapters.Cleanup.PlanUninstall(ctx, record.PluginInstanceID, req.DeleteData)
-	if err != nil {
-		return registry.PluginRecord{}, err
-	}
-	if err := h.adapters.Cleanup.Execute(ctx, cleanupPlan); err != nil {
-		return registry.PluginRecord{}, err
-	}
-	h.audit(ctx, AuditEvent{Type: "plugin.cleanup.executed", PluginID: record.PluginID, PluginInstanceID: record.PluginInstanceID})
-	retainedSummary := retainedDataSummary{}
 	if err := h.deleteSecretBindingsIfNeeded(ctx, record, req.DeleteData); err != nil {
-		return registry.PluginRecord{}, err
+		derivedErr = errors.Join(derivedErr, err)
 	}
-	storageRetained, storageUsage, err := h.deleteOrRetainStorage(ctx, record, req.DeleteData)
-	if err != nil {
-		return registry.PluginRecord{}, err
-	}
-	retainedSummary.StorageRetained = storageRetained
-	retainedSummary.UsageBytes += storageUsage
-	settingsRetained, err := h.deleteOrRetainSettings(ctx, record, req.DeleteData, req.Now)
-	if err != nil {
-		return registry.PluginRecord{}, err
-	}
-	retainedSummary.SettingsRetained = settingsRetained
-	retainedRecord, err := h.recordRetainedDataIfNeeded(ctx, record, req.DeleteData, retainedSummary, req.Now)
-	if err != nil {
-		return registry.PluginRecord{}, err
-	}
-	if err := h.adapters.Permissions.DeletePluginGrants(ctx, record.PluginInstanceID); err != nil {
-		return registry.PluginRecord{}, err
-	}
-	retained := registry.RetainedDataRetained
-	if req.DeleteData {
-		retained = registry.RetainedDataDeleted
-	}
-	record, err = h.adapters.Registry.MarkUninstalled(ctx, req.PluginInstanceID, retained, req.Now)
-	if err != nil {
-		return registry.PluginRecord{}, err
-	}
-	if retainedRecord.RetainedID != "" {
-		h.audit(ctx, AuditEvent{
-			Type:             "plugin.retained_data.recorded",
-			PluginID:         record.PluginID,
-			PluginInstanceID: record.PluginInstanceID,
-			Details: map[string]any{
-				"retained_id":       retainedRecord.RetainedID,
-				"storage_retained":  retainedRecord.StorageRetained,
-				"settings_retained": retainedRecord.SettingsRetained,
-				"usage_bytes":       retainedRecord.UsageBytes,
-			},
-		})
-	}
-	if err := h.revokePluginRuntimeCapabilities(ctx, record, req.Now); err != nil {
-		return registry.PluginRecord{}, err
-	}
-	if h.adapters.SurfaceCatalog != nil && !surfacesCleared {
-		if err := h.adapters.SurfaceCatalog.PublishSurfaces(ctx, SurfaceSnapshot{
-			PluginInstanceID:  record.PluginInstanceID,
-			ActiveFingerprint: record.ActiveFingerprint,
-			Surfaces:          nil,
-		}); err != nil {
-			return registry.PluginRecord{}, err
-		}
-	}
-	h.audit(ctx, AuditEvent{Type: "plugin.uninstalled", PluginID: record.PluginID, PluginInstanceID: record.PluginInstanceID})
+	h.audit(ctx, AuditEvent{Type: "plugin.uninstalled", PluginID: record.PluginID, PluginInstanceID: record.PluginInstanceID, Details: map[string]any{"delete_data": req.DeleteData}})
 	if len(operations) > 0 {
 		h.audit(ctx, AuditEvent{Type: "plugin.operations.uninstalled_transitioned", PluginID: record.PluginID, PluginInstanceID: record.PluginInstanceID})
 	}
 	if len(streams) > 0 {
 		h.audit(ctx, AuditEvent{Type: "plugin.streams.uninstalled_transitioned", PluginID: record.PluginID, PluginInstanceID: record.PluginInstanceID})
 	}
+	if derivedErr != nil {
+		return registry.PluginRecord{}, mutation.Unknown(derivedErr)
+	}
 	return record, nil
 }
 
-func (h *Host) ListRetainedData(ctx context.Context, req ListRetainedDataRequest) ([]retaineddata.Record, error) {
-	if h.adapters.RetainedData == nil {
-		return nil, errors.New("retained data store is required")
+func (h *Host) ListRetainedData(ctx context.Context, req ListRetainedDataRequest) ([]plugindata.Binding, error) {
+	if _, err := requireUserSession(ctx); err != nil {
+		return nil, err
 	}
-	return h.adapters.RetainedData.List(ctx, retaineddata.ListRequest(req))
+	return h.adapters.PluginData.ListRetained(ctx, plugindata.RetainedFilter{PluginInstanceID: req.PluginInstanceID})
 }
 
-func (h *Host) DeleteRetainedData(ctx context.Context, req DeleteRetainedDataRequest) (retaineddata.Record, error) {
-	if h.adapters.RetainedData == nil {
-		return retaineddata.Record{}, errors.New("retained data store is required")
+func (h *Host) DeleteRetainedData(ctx context.Context, req DeleteRetainedDataRequest) (plugindata.Binding, error) {
+	if _, err := requireUserSession(ctx); err != nil {
+		return plugindata.Binding{}, err
 	}
-	record, err := h.adapters.RetainedData.Get(ctx, req.RetainedID)
+	records, err := h.adapters.PluginData.ListRetained(ctx, plugindata.RetainedFilter{PluginInstanceID: req.PluginInstanceID})
 	if err != nil {
-		return retaineddata.Record{}, err
+		return plugindata.Binding{}, err
 	}
-	return h.cleanupRetainedDataRecord(ctx, record, req.Now)
+	if len(records) != 1 {
+		return plugindata.Binding{}, plugindata.ErrBindingNotFound
+	}
+	if err := h.adapters.PluginData.DeleteRetained(ctx, plugindata.DeleteRetainedRequest{PluginInstanceID: req.PluginInstanceID, ExpectedBindingRevision: req.ExpectedBindingRevision}); err != nil {
+		return plugindata.Binding{}, err
+	}
+	h.audit(ctx, AuditEvent{Type: "plugin.retained_data.deleted", PluginInstanceID: req.PluginInstanceID})
+	return records[0], nil
 }
 
-func (h *Host) BindRetainedData(ctx context.Context, req BindRetainedDataRequest) (retaineddata.Record, error) {
-	if h.adapters.RetainedData == nil {
-		return retaineddata.Record{}, errors.New("retained data store is required")
+func (h *Host) BindRetainedData(ctx context.Context, req BindRetainedDataRequest) (plugindata.Binding, error) {
+	if _, err := requireUserSession(ctx); err != nil {
+		return plugindata.Binding{}, err
 	}
-	retainedID := strings.TrimSpace(req.RetainedID)
+	h.managementMu.Lock()
+	defer h.managementMu.Unlock()
 	targetPluginInstanceID := strings.TrimSpace(req.TargetPluginInstanceID)
-	if retainedID == "" || targetPluginInstanceID == "" {
-		return retaineddata.Record{}, retaineddata.ErrInvalidRecord
-	}
-	record, err := h.adapters.RetainedData.Get(ctx, retainedID)
-	if err != nil {
-		return retaineddata.Record{}, err
-	}
-	if record.State != retaineddata.StateRetained {
-		return retaineddata.Record{}, fmt.Errorf("%w: retained data state is %s", retaineddata.ErrInvalidRecord, record.State)
+	if strings.TrimSpace(req.SourcePluginInstanceID) == "" || targetPluginInstanceID == "" || req.ExpectedSourceBindingRevision == 0 || req.TargetExpectedManagementRevision == 0 {
+		return plugindata.Binding{}, plugindata.ErrInvalidArgument
 	}
 	target, err := h.adapters.Registry.GetPlugin(ctx, targetPluginInstanceID)
 	if err != nil {
-		return retaineddata.Record{}, err
+		return plugindata.Binding{}, err
 	}
-	if err := validateRetainedDataBindTarget(record, target); err != nil {
-		return retaineddata.Record{}, err
+	if err := requireManagementRevision(target, req.TargetExpectedManagementRevision); err != nil {
+		return plugindata.Binding{}, err
 	}
 	if err := h.canRun(ctx, target); err != nil {
-		return retaineddata.Record{}, err
+		return plugindata.Binding{}, err
 	}
-
-	now := lifecycleNow(req.Now)
-	if err := h.bindRetainedDataPayload(ctx, record, target, true, now); err != nil {
-		h.reportRetainedDataBindFailure(ctx, record, target, err)
-		return retaineddata.Record{}, fmt.Errorf("%w: %w", ErrRetainedDataBindFailed, err)
+	shape, err := plugindata.ShapeFromManifest(target.Manifest)
+	if err != nil {
+		return plugindata.Binding{}, err
 	}
-	if err := h.bindRetainedDataPayload(ctx, record, target, false, now); err != nil {
-		h.reportRetainedDataBindFailure(ctx, record, target, err)
-		return retaineddata.Record{}, fmt.Errorf("%w: %w", ErrRetainedDataBindFailed, err)
-	}
-	bound, err := h.adapters.RetainedData.MarkBound(ctx, retaineddata.BindRequest{
-		RetainedID:            record.RetainedID,
-		BoundPluginInstanceID: target.PluginInstanceID,
-		Now:                   now,
+	result, err := h.adapters.PluginData.BindRetained(ctx, plugindata.BindRetainedRequest{
+		SourcePluginInstanceID:           req.SourcePluginInstanceID,
+		ExpectedSourceBindingRevision:    req.ExpectedSourceBindingRevision,
+		TargetPluginInstanceID:           target.PluginInstanceID,
+		TargetExpectedManagementRevision: target.ManagementRevision,
+		ExpectedShape:                    shape,
+		Now:                              req.Now,
 	})
 	if err != nil {
-		h.reportRetainedDataBindFailure(ctx, record, target, err)
-		return retaineddata.Record{}, fmt.Errorf("%w: mark retained data bound: %w", ErrRetainedDataBindFailed, err)
+		return plugindata.Binding{}, managementMutationError(target, err)
 	}
-	h.audit(ctx, AuditEvent{
-		Type:             "plugin.retained_data.bound",
-		PluginID:         target.PluginID,
-		PluginInstanceID: target.PluginInstanceID,
-		Details: map[string]any{
-			"retained_id":               bound.RetainedID,
-			"source_plugin_instance_id": bound.SourcePluginInstanceID,
-			"target_plugin_instance_id": target.PluginInstanceID,
-			"storage_retained":          bound.StorageRetained,
-			"settings_retained":         bound.SettingsRetained,
-		},
-	})
-	return bound, nil
+	h.audit(ctx, AuditEvent{Type: "plugin.retained_data.bound", PluginID: target.PluginID, PluginInstanceID: target.PluginInstanceID, Details: map[string]any{"source_plugin_instance_id": req.SourcePluginInstanceID}})
+	return result.Binding, nil
 }
 
 func (h *Host) CleanupExpiredRetainedData(ctx context.Context, req CleanupExpiredRetainedDataRequest) (RetainedDataCleanupResult, error) {
-	if h.adapters.RetainedData == nil {
-		return RetainedDataCleanupResult{}, errors.New("retained data store is required")
+	if _, err := requireUserSession(ctx); err != nil {
+		return RetainedDataCleanupResult{}, err
 	}
-	now := lifecycleNow(req.Now)
-	expired, err := h.adapters.RetainedData.ExpireBefore(ctx, now)
+	result, err := h.adapters.PluginData.CleanupExpired(ctx, lifecycleNow(req.Now))
 	if err != nil {
 		return RetainedDataCleanupResult{}, err
 	}
-	targets := make([]retaineddata.Record, 0, len(expired))
-	seen := map[string]struct{}{}
-	for _, record := range expired {
-		targets = append(targets, record)
-		seen[record.RetainedID] = struct{}{}
-	}
-	previouslyExpired, err := h.adapters.RetainedData.List(ctx, retaineddata.ListRequest{State: retaineddata.StateExpired})
-	if err != nil {
-		return RetainedDataCleanupResult{}, err
-	}
-	for _, record := range previouslyExpired {
-		if _, ok := seen[record.RetainedID]; ok {
-			continue
-		}
-		targets = append(targets, record)
-		seen[record.RetainedID] = struct{}{}
-	}
-	if req.RetryFailed {
-		failed, err := h.adapters.RetainedData.List(ctx, retaineddata.ListRequest{State: retaineddata.StateDeleteFailedRetryable})
-		if err != nil {
-			return RetainedDataCleanupResult{}, err
-		}
-		for _, record := range failed {
-			if _, ok := seen[record.RetainedID]; ok {
-				continue
-			}
-			targets = append(targets, record)
-			seen[record.RetainedID] = struct{}{}
-		}
-	}
-	sort.Slice(targets, func(i, j int) bool {
-		if targets[i].RetainedAt.Equal(targets[j].RetainedAt) {
-			return targets[i].RetainedID < targets[j].RetainedID
-		}
-		return targets[i].RetainedAt.Before(targets[j].RetainedAt)
-	})
-	if req.MaxRecords > 0 && len(targets) > req.MaxRecords {
-		targets = targets[:req.MaxRecords]
-	}
-	result := RetainedDataCleanupResult{}
-	var cleanupErr error
-	for _, record := range targets {
-		finalRecord, err := h.cleanupRetainedDataRecord(ctx, record, now)
-		if err != nil {
-			result.Failed = append(result.Failed, finalRecord)
-			cleanupErr = errors.Join(cleanupErr, err)
-			continue
-		}
-		result.Deleted = append(result.Deleted, finalRecord)
-	}
-	if cleanupErr != nil {
-		return result, cleanupErr
-	}
-	return result, nil
+	return RetainedDataCleanupResult{Deleted: result.Deleted}, nil
 }
 
 func (h *Host) ExportPluginData(ctx context.Context, req ExportDataRequest) (ExportDataResult, error) {
+	if _, err := requireUserSession(ctx); err != nil {
+		return ExportDataResult{}, err
+	}
 	record, err := h.adapters.Registry.GetPlugin(ctx, req.PluginInstanceID)
 	if err != nil {
 		return ExportDataResult{}, err
 	}
-	result := ExportDataResult{}
-	if record.Manifest.Storage != nil && len(record.Manifest.Storage.Stores) > 0 {
-		if h.adapters.Storage == nil {
-			return ExportDataResult{}, errors.New("storage broker is required")
-		}
-		archiveRef, err := h.adapters.Storage.ExportData(ctx, storage.ExportRequest{
-			PluginInstanceID: record.PluginInstanceID,
-			IncludeSecrets:   req.IncludeSecrets,
-		})
-		if err != nil {
-			return ExportDataResult{}, err
-		}
-		result.ArchiveRef = archiveRef
-	}
-	if record.Manifest.Settings != nil {
-		if h.adapters.Settings == nil {
-			return ExportDataResult{}, errors.New("settings store is required")
-		}
-		if _, err := h.ensureSettings(ctx, record, time.Time{}, false); err != nil {
-			return ExportDataResult{}, err
-		}
-		settingsArchiveRef, err := h.adapters.Settings.Export(ctx, settings.ExportRequest{
-			PluginInstanceID: record.PluginInstanceID,
-			IncludeSecrets:   req.IncludeSecrets,
-		})
-		if err != nil {
-			return ExportDataResult{}, err
-		}
-		result.SettingsArchiveRef = settingsArchiveRef
-	}
-	if result.ArchiveRef == "" && result.SettingsArchiveRef == "" {
+	if record.Manifest.Settings == nil && (record.Manifest.Storage == nil || len(record.Manifest.Storage.Stores) == 0) {
 		return ExportDataResult{}, ErrPluginDataNotDeclared
 	}
+	exported, err := h.adapters.PluginData.Export(ctx, plugindata.ExportRequest{PluginInstanceID: record.PluginInstanceID})
+	if err != nil {
+		return ExportDataResult{}, err
+	}
 	h.audit(ctx, AuditEvent{Type: "plugin.data.exported", PluginID: record.PluginID, PluginInstanceID: record.PluginInstanceID})
-	return result, nil
+	return ExportDataResult{BundleRef: exported.ObjectID, ContentHash: exported.ContentHash, SizeBytes: exported.SizeBytes}, nil
+}
+
+func (h *Host) DeleteExportedPluginData(ctx context.Context, req DeleteExportDataRequest) error {
+	if _, err := requireUserSession(ctx); err != nil {
+		return err
+	}
+	return h.adapters.PluginData.DeleteExport(ctx, strings.TrimSpace(req.BundleRef))
 }
 
 func (h *Host) GetSettingsSchema(ctx context.Context, req GetSettingsRequest) (SettingsSchemaResult, error) {
+	if _, err := requireUserSession(ctx); err != nil {
+		return SettingsSchemaResult{}, err
+	}
 	record, err := h.adapters.Registry.GetPlugin(ctx, req.PluginInstanceID)
 	if err != nil {
 		return SettingsSchemaResult{}, err
 	}
 	if record.Manifest.Settings == nil {
-		return SettingsSchemaResult{}, settings.ErrNotDeclared
+		return SettingsSchemaResult{}, ErrPluginSettingsNotDeclared
 	}
-	snapshot, err := h.ensureSettings(ctx, record, time.Time{}, false)
+	snapshot, err := h.adapters.PluginData.GetSettings(ctx, record.PluginInstanceID)
 	if err != nil {
 		return SettingsSchemaResult{}, err
 	}
 	return SettingsSchemaResult{
 		PluginInstanceID: record.PluginInstanceID,
 		SchemaVersion:    record.Manifest.Settings.SchemaVersion,
-		Migration:        record.Manifest.Settings.Migration,
 		Fields:           cloneSettingFields(record.Manifest.Settings.Fields),
-		SettingsRevision: snapshot.SettingsRevision,
+		ValuesRevision:   snapshot.Revision,
 	}, nil
 }
 
 func (h *Host) GetPluginSettings(ctx context.Context, req GetSettingsRequest) (SettingsResult, error) {
+	if _, err := requireUserSession(ctx); err != nil {
+		return SettingsResult{}, err
+	}
 	record, err := h.adapters.Registry.GetPlugin(ctx, req.PluginInstanceID)
 	if err != nil {
 		return SettingsResult{}, err
 	}
 	if record.Manifest.Settings == nil {
-		return SettingsResult{}, settings.ErrNotDeclared
+		return SettingsResult{}, ErrPluginSettingsNotDeclared
 	}
-	snapshot, err := h.ensureSettings(ctx, record, time.Time{}, false)
+	snapshot, err := h.adapters.PluginData.GetSettings(ctx, record.PluginInstanceID)
 	if err != nil {
 		return SettingsResult{}, err
 	}
-	return settingsResult(snapshot), nil
+	secretMetadata, err := h.settingsSecretMetadata(ctx, record)
+	if err != nil {
+		return SettingsResult{}, err
+	}
+	return pluginSettingsResult(record, snapshot, secretMetadata)
 }
 
 func (h *Host) PatchPluginSettings(ctx context.Context, req PatchSettingsRequest) (SettingsResult, error) {
+	if _, err := requireUserSession(ctx); err != nil {
+		return SettingsResult{}, err
+	}
 	record, err := h.adapters.Registry.GetPlugin(ctx, req.PluginInstanceID)
 	if err != nil {
 		return SettingsResult{}, err
 	}
 	if record.Manifest.Settings == nil {
-		return SettingsResult{}, settings.ErrNotDeclared
+		return SettingsResult{}, ErrPluginSettingsNotDeclared
 	}
-	if _, err := h.ensureSettings(ctx, record, req.Now, false); err != nil {
-		return SettingsResult{}, err
+	set := make(map[string]json.RawMessage, len(req.Set))
+	for key, value := range req.Set {
+		raw, err := json.Marshal(value)
+		if err != nil {
+			return SettingsResult{}, fmt.Errorf("encode setting %q: %w", key, err)
+		}
+		set[key] = raw
 	}
-	snapshot, err := h.adapters.Settings.Patch(ctx, settings.PatchRequest{
-		PluginInstanceID: record.PluginInstanceID,
-		Values:           cloneParams(req.Values),
-		Now:              req.Now,
+	snapshot, err := h.adapters.PluginData.PatchSettings(ctx, plugindata.PatchSettingsRequest{
+		PluginInstanceID:       record.PluginInstanceID,
+		ExpectedValuesRevision: req.ExpectedValuesRevision,
+		Set:                    set,
+		Remove:                 append([]string(nil), req.Remove...),
 	})
 	if err != nil {
 		return SettingsResult{}, err
 	}
 	h.audit(ctx, AuditEvent{Type: "plugin.settings.updated", PluginID: record.PluginID, PluginInstanceID: record.PluginInstanceID})
-	return settingsResult(snapshot), nil
+	secretMetadata, err := h.settingsSecretMetadata(ctx, record)
+	if err != nil {
+		return SettingsResult{}, mutation.Unknown(err)
+	}
+	return pluginSettingsResult(record, snapshot, secretMetadata)
 }
 
-func (h *Host) ImportPluginData(ctx context.Context, req ImportDataRequest) error {
+func (h *Host) ImportPluginData(ctx context.Context, req ImportDataRequest) (registry.PluginRecord, error) {
+	if _, err := requireUserSession(ctx); err != nil {
+		return registry.PluginRecord{}, err
+	}
+	h.managementMu.Lock()
+	defer h.managementMu.Unlock()
 	record, err := h.adapters.Registry.GetPlugin(ctx, req.PluginInstanceID)
 	if err != nil {
-		return err
+		return registry.PluginRecord{}, err
 	}
-	archiveRef := strings.TrimSpace(req.ArchiveRef)
-	settingsArchiveRef := strings.TrimSpace(req.SettingsArchiveRef)
-	if archiveRef == "" && settingsArchiveRef == "" {
-		return ErrPluginDataArchiveRequired
+	if err := requireManagementRevision(record, req.ExpectedManagementRevision); err != nil {
+		return registry.PluginRecord{}, err
 	}
-	if archiveRef != "" {
-		if h.adapters.Storage == nil {
-			return errors.New("storage broker is required")
-		}
-		namespaces, err := storageNamespacesFromManifest(record)
-		if err != nil {
-			return err
-		}
-		if len(namespaces) == 0 {
-			return ErrPluginStorageNotDeclared
-		}
-		for _, ns := range namespaces {
-			if err := h.adapters.Storage.EnsureNamespace(ctx, ns); err != nil {
-				return fmt.Errorf("ensure storage namespace %q: %w", ns.StoreID, err)
-			}
-		}
-		if err := h.adapters.Storage.ImportData(ctx, storage.ImportRequest{
-			PluginInstanceID: record.PluginInstanceID,
-			ArchiveRef:       archiveRef,
-			DeleteExisting:   req.DeleteExisting,
-			TargetNamespaces: namespaces,
-		}); err != nil {
-			return err
-		}
+	shape, err := plugindata.ShapeFromManifest(record.Manifest)
+	if err != nil {
+		return registry.PluginRecord{}, err
 	}
-	if settingsArchiveRef != "" {
-		if record.Manifest.Settings == nil {
-			return ErrPluginSettingsNotDeclared
-		}
-		if h.adapters.Settings == nil {
-			return errors.New("settings store is required")
-		}
-		if _, err := h.adapters.Settings.Import(ctx, settings.ImportRequest{
-			PluginInstanceID: record.PluginInstanceID,
-			ArchiveRef:       settingsArchiveRef,
-			DeleteExisting:   req.DeleteExisting,
-			Spec:             record.Manifest.Settings,
-		}); err != nil {
-			return err
-		}
+	if _, err := h.adapters.PluginData.Import(ctx, plugindata.ImportRequest{
+		PluginInstanceID:           record.PluginInstanceID,
+		ObjectID:                   strings.TrimSpace(req.BundleRef),
+		ExpectedShape:              shape,
+		ExpectedManagementRevision: record.ManagementRevision,
+		Now:                        req.Now,
+	}); err != nil {
+		return registry.PluginRecord{}, managementMutationError(record, err)
+	}
+	updated, err := h.adapters.Registry.GetPlugin(ctx, record.PluginInstanceID)
+	if err != nil {
+		return registry.PluginRecord{}, mutation.Unknown(err)
 	}
 	h.audit(ctx, AuditEvent{Type: "plugin.data.imported", PluginID: record.PluginID, PluginInstanceID: record.PluginInstanceID})
-	return nil
+	return updated, nil
 }
 
 func (h *Host) BindSecretRef(ctx context.Context, req SecretBindRequest) error {
+	if _, err := requireUserSession(ctx); err != nil {
+		return err
+	}
 	record, normalized, err := h.resolveSecretRequest(ctx, req)
 	if err != nil {
 		return err
 	}
 	if err := h.adapters.Secrets.BindSecretRef(ctx, normalized); err != nil {
-		return err
-	}
-	if err := h.markSettingsSecret(ctx, record, normalized.SecretRef, true, "", time.Time{}); err != nil {
-		return err
+		h.reportSecretAdapterFailure(ctx, record, "bind", err)
+		return mutation.Unknown(err)
 	}
 	h.audit(ctx, AuditEvent{Type: "plugin.secret.bound", PluginID: record.PluginID, PluginInstanceID: record.PluginInstanceID})
 	return nil
 }
 
 func (h *Host) TestSecretRef(ctx context.Context, req SecretTestRequest) error {
+	if _, err := requireUserSession(ctx); err != nil {
+		return err
+	}
 	record, normalized, err := h.resolveSecretRequest(ctx, SecretBindRequest(req))
 	if err != nil {
 		return err
 	}
 	if err := h.adapters.Secrets.TestSecretRef(ctx, SecretTestRequest(normalized)); err != nil {
-		return err
-	}
-	if err := h.markSettingsSecret(ctx, record, normalized.SecretRef, true, "passed", time.Time{}); err != nil {
-		return err
+		h.reportSecretAdapterFailure(ctx, record, "test", err)
+		return mutation.Unknown(err)
 	}
 	h.audit(ctx, AuditEvent{Type: "plugin.secret.tested", PluginID: record.PluginID, PluginInstanceID: record.PluginInstanceID})
 	return nil
 }
 
 func (h *Host) DeleteSecretRef(ctx context.Context, req SecretDeleteRequest) error {
+	if _, err := requireUserSession(ctx); err != nil {
+		return err
+	}
 	record, normalized, err := h.resolveSecretRequest(ctx, SecretBindRequest(req))
 	if err != nil {
 		return err
 	}
 	if err := h.adapters.Secrets.DeleteSecretRef(ctx, SecretDeleteRequest(normalized)); err != nil {
-		return err
-	}
-	if err := h.markSettingsSecret(ctx, record, normalized.SecretRef, false, "", time.Time{}); err != nil {
-		return err
+		h.reportSecretAdapterFailure(ctx, record, "delete", err)
+		return mutation.Unknown(err)
 	}
 	h.audit(ctx, AuditEvent{Type: "plugin.secret.deleted", PluginID: record.PluginID, PluginInstanceID: record.PluginInstanceID})
 	return nil
+}
+
+func (h *Host) reportSecretAdapterFailure(ctx context.Context, record registry.PluginRecord, operation string, err error) {
+	if err == nil {
+		return
+	}
+	h.diagnostic(ctx, observability.DiagnosticEvent{
+		Type:              "plugin.secret.adapter_failed",
+		Severity:          "warning",
+		Message:           "secret adapter operation failed",
+		PluginID:          record.PluginID,
+		PluginInstanceID:  record.PluginInstanceID,
+		ActiveFingerprint: record.ActiveFingerprint,
+		Details: map[string]any{
+			"operation": operation,
+		},
+		InternalDetails: map[string]any{"error": err.Error()},
+	})
 }
 
 type runtimeArtifactProvider struct {
@@ -5345,30 +5570,6 @@ func (p runtimeArtifactProvider) ReadArtifact(ctx context.Context, req runtimecl
 
 type runtimeHandleGrantValidator struct {
 	tokens *bridge.SurfaceTokenService
-}
-
-func storageFilesBroker(broker storage.Broker) storage.FilesBroker {
-	files, ok := broker.(storage.FilesBroker)
-	if !ok {
-		return nil
-	}
-	return files
-}
-
-func storageKVBroker(broker storage.Broker) storage.KVBroker {
-	kv, ok := broker.(storage.KVBroker)
-	if !ok {
-		return nil
-	}
-	return kv
-}
-
-func storageSQLiteBroker(broker storage.Broker) storage.SQLiteBroker {
-	sqlite, ok := broker.(storage.SQLiteBroker)
-	if !ok {
-		return nil
-	}
-	return sqlite
 }
 
 func (v runtimeHandleGrantValidator) ValidateHandleGrant(_ context.Context, req runtimeclient.HandleGrantValidationRequest) (runtimeclient.HandleGrantValidationResult, error) {
@@ -5420,6 +5621,7 @@ func (h *Host) newMethodStreamTicketMinter(audience bridge.Audience, revision br
 			RouteRole:            audience.RouteRole,
 			OwnerSessionHash:     audience.OwnerSessionHash,
 			OwnerUserHash:        audience.OwnerUserHash,
+			OwnerEnvHash:         audience.OwnerEnvHash,
 			SessionChannelIDHash: audience.SessionChannelIDHash,
 			BridgeChannelID:      audience.BridgeChannelID,
 			RuntimeGenerationID:  audience.RuntimeGenerationID,
@@ -5465,6 +5667,7 @@ func (h *Host) dispatchMethod(ctx context.Context, record registry.PluginRecord,
 		streamID     string
 		streamTicket *bridge.StreamTicketResult
 		finish       executionFinish
+		dispatched   bool
 		err          error
 	)
 	defer func() {
@@ -5473,6 +5676,9 @@ func (h *Host) dispatchMethod(ctx context.Context, record registry.PluginRecord,
 			h.revokeMethodStreamTicket(streamTicket)
 			if finish != nil {
 				panicErr = errors.Join(panicErr, finish(false, panicErr))
+			}
+			if dispatched {
+				panicErr = methodErrorAfterDispatch(method, panicErr)
 			}
 			response = CallMethodResult{}
 			responseErr = panicErr
@@ -5499,12 +5705,20 @@ func (h *Host) dispatchMethod(ctx context.Context, record registry.PluginRecord,
 		if err != nil {
 			break
 		}
+		dispatched = true
 		result, err = resolved.registration.Adapter.Invoke(executionCtx, invocation)
 		if err != nil {
 			err = normalizeCapabilityBusinessError(resolved.contract.Contract, err)
 		}
 	case manifest.MethodRouteWorker:
-		result, operationID, streamID, streamTicket, finish, err = h.invokeWorker(ctx, record, method, req)
+		workerDispatch, workerErr := h.invokeWorker(ctx, record, method, req)
+		result = workerDispatch.result
+		operationID = workerDispatch.operationID
+		streamID = workerDispatch.streamID
+		streamTicket = workerDispatch.streamTicket
+		finish = workerDispatch.finish
+		dispatched = workerDispatch.dispatched
+		err = workerErr
 	case manifest.MethodRouteCoreAction:
 		var invocation capability.Invocation
 		var executionCtx context.Context
@@ -5518,6 +5732,7 @@ func (h *Host) dispatchMethod(ctx context.Context, record registry.PluginRecord,
 			}
 			streamTicket, err = h.mintMethodStreamTicket(req, operationID, streamID)
 			if err == nil {
+				dispatched = true
 				result, err = h.adapters.CoreActions.InvokeCoreAction(executionCtx, invocation)
 			}
 		}
@@ -5529,6 +5744,9 @@ func (h *Host) dispatchMethod(ctx context.Context, record registry.PluginRecord,
 		if finish != nil {
 			err = errors.Join(err, finish(false, err))
 		}
+		if dispatched {
+			err = methodErrorAfterDispatch(method, err)
+		}
 		return CallMethodResult{}, err
 	}
 	visibleData := capability.RedactResponseData(result.Data)
@@ -5538,19 +5756,19 @@ func (h *Host) dispatchMethod(ctx context.Context, record registry.PluginRecord,
 		if finish != nil {
 			err = errors.Join(err, finish(false, err))
 		}
-		return CallMethodResult{}, fmt.Errorf("%w: method %q: %v", ErrMethodResponseContract, method.Method, err)
+		return CallMethodResult{}, methodErrorAfterDispatch(method, fmt.Errorf("%w: method %q: %v", ErrMethodResponseContract, method.Method, err))
 	}
 	if err := h.validateMethodResponse(record, method, visibleData); err != nil {
 		h.revokeMethodStreamTicket(streamTicket)
 		if finish != nil {
 			err = errors.Join(err, finish(false, err))
 		}
-		return CallMethodResult{}, err
+		return CallMethodResult{}, methodErrorAfterDispatch(method, err)
 	}
 	if finish != nil {
 		if err := finish(true, nil); err != nil {
 			h.revokeMethodStreamTicket(streamTicket)
-			return CallMethodResult{}, err
+			return CallMethodResult{}, methodErrorAfterDispatch(method, err)
 		}
 	}
 	response = CallMethodResult{Data: visibleData, OperationID: operationID, StreamID: streamID}
@@ -5561,6 +5779,16 @@ func (h *Host) dispatchMethod(ctx context.Context, record registry.PluginRecord,
 		response.StreamExpiresAt = &expiresAt
 	}
 	return response, nil
+}
+
+func methodErrorAfterDispatch(method manifest.MethodSpec, err error) error {
+	if err == nil || method.Effect == manifest.MethodEffectRead {
+		return err
+	}
+	if _, explicit := mutation.Explicit(err); explicit {
+		return err
+	}
+	return mutation.Unknown(err)
 }
 
 func normalizeMethodResponseData(data any) (any, error) {
@@ -5575,7 +5803,17 @@ func normalizeMethodResponseData(data any) (any, error) {
 	return normalized, nil
 }
 
-func normalizeCapabilityBusinessError(contract capabilitycontract.Contract, err error) error {
+func normalizeCapabilityBusinessError(contract capabilitycontract.Contract, err error) (normalizedErr error) {
+	if outcome, explicit := mutation.Explicit(err); explicit {
+		defer func() {
+			if normalizedErr != nil {
+				if _, preserved := mutation.Explicit(normalizedErr); preserved {
+					return
+				}
+				normalizedErr = &mutation.Error{Outcome: outcome, Err: normalizedErr}
+			}
+		}()
+	}
 	var businessError *capability.BusinessError
 	if !errors.As(err, &businessError) {
 		return err
@@ -5665,9 +5903,10 @@ func (h *Host) prepareCoreActionExecution(ctx context.Context, record registry.P
 		},
 		Surface: capability.SurfaceScope{
 			SurfaceInstanceID:    req.SurfaceInstanceID,
-			OwnerSessionHash:     req.OwnerSessionHash,
-			OwnerUserHash:        req.OwnerUserHash,
-			SessionChannelIDHash: req.SessionChannelIDHash,
+			OwnerSessionHash:     req.session.OwnerSessionHash,
+			OwnerUserHash:        req.session.OwnerUserHash,
+			OwnerEnvHash:         req.session.OwnerEnvHash,
+			SessionChannelIDHash: req.session.SessionChannelIDHash,
 			BridgeChannelID:      req.BridgeChannelID,
 		},
 		CapabilityID: "core_action",
@@ -5705,9 +5944,10 @@ func (h *Host) prepareCoreActionExecution(ctx context.Context, record registry.P
 		PluginVersion:          record.Version,
 		ActiveFingerprint:      record.ActiveFingerprint,
 		SurfaceInstanceID:      req.SurfaceInstanceID,
-		OwnerSessionHash:       req.OwnerSessionHash,
-		OwnerUserHash:          req.OwnerUserHash,
-		SessionChannelIDHash:   req.SessionChannelIDHash,
+		OwnerSessionHash:       req.session.OwnerSessionHash,
+		OwnerUserHash:          req.session.OwnerUserHash,
+		OwnerEnvHash:           req.session.OwnerEnvHash,
+		SessionChannelIDHash:   req.session.SessionChannelIDHash,
 		BridgeChannelID:        req.BridgeChannelID,
 		RouteKind:              capability.RouteCoreAction,
 		CapabilityID:           "redevplugin.core_action",
@@ -5726,20 +5966,38 @@ func (h *Host) prepareCoreActionExecution(ctx context.Context, record registry.P
 	return h.startMethodExecution(ctx, record, method, binding, arguments, lifecycleNow(req.Now), nil, operationCancelDispatchFor(h.adapters.CoreActions), false)
 }
 
-func (h *Host) invokeWorker(ctx context.Context, record registry.PluginRecord, method manifest.MethodSpec, req CallMethodRequest) (capability.Result, string, string, *bridge.StreamTicketResult, executionFinish, error) {
-	if h.adapters.RuntimeSupervisor == nil {
-		return capability.Result{}, "", "", nil, nil, errors.New("runtime supervisor is required for worker methods")
+type workerMethodDispatch struct {
+	result       capability.Result
+	operationID  string
+	streamID     string
+	streamTicket *bridge.StreamTicketResult
+	finish       executionFinish
+	dispatched   bool
+}
+
+func (h *Host) invokeWorker(ctx context.Context, record registry.PluginRecord, method manifest.MethodSpec, req CallMethodRequest) (dispatch workerMethodDispatch, responseErr error) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			responseErr = fmt.Errorf("%w: %v", ErrMethodAdapterPanic, recovered)
+		}
+	}()
+	if h.adapters.RuntimeManager == nil {
+		return workerMethodDispatch{}, errors.New("runtime manager is required for worker methods")
 	}
 	worker, ok := manifestWorker(record.Manifest, method.Route.WorkerID)
 	if !ok {
-		return capability.Result{}, "", "", nil, nil, fmt.Errorf("worker %q is not declared", method.Route.WorkerID)
+		return workerMethodDispatch{}, fmt.Errorf("worker %q is not declared", method.Route.WorkerID)
 	}
-	health, err := h.adapters.RuntimeSupervisor.Health(ctx)
+	health, err := h.adapters.RuntimeManager.Health(ctx)
 	if err != nil {
-		return capability.Result{}, "", "", nil, nil, err
+		return workerMethodDispatch{}, err
 	}
 	if !health.Ready {
-		return capability.Result{}, "", "", nil, nil, errors.New("runtime supervisor is not ready")
+		return workerMethodDispatch{}, errors.New("runtime manager is not ready")
+	}
+	runtimeBinding, err := h.adapters.RuntimeManager.BindPlugin(ctx, record.PluginInstanceID)
+	if err != nil {
+		return workerMethodDispatch{}, err
 	}
 	now := req.Now
 	if now.IsZero() {
@@ -5751,49 +6009,48 @@ func (h *Host) invokeWorker(ctx context.Context, record registry.PluginRecord, m
 		RevokeEpoch:        record.RevokeEpoch,
 	}
 	if h.adapters.Assets == nil {
-		return capability.Result{}, "", "", nil, nil, errors.New("package asset store is required for worker methods")
+		return workerMethodDispatch{}, errors.New("package asset store is required for worker methods")
 	}
 	workerAsset, err := h.adapters.Assets.ReadAsset(ctx, record.PackageHash, worker.Artifact)
 	if err != nil {
-		return capability.Result{}, "", "", nil, nil, fmt.Errorf("read worker artifact %q: %w", worker.Artifact, err)
+		return workerMethodDispatch{}, fmt.Errorf("read worker artifact %q: %w", worker.Artifact, err)
 	}
 	if strings.TrimSpace(workerAsset.Entry.SHA256) == "" {
-		return capability.Result{}, "", "", nil, nil, fmt.Errorf("worker artifact %q is missing sha256", worker.Artifact)
+		return workerMethodDispatch{}, fmt.Errorf("worker artifact %q is missing sha256", worker.Artifact)
 	}
 	targetDescriptorHashes, err := runtimeLeaseTargetDescriptorHashes(record, method, worker, workerAsset.Entry.SHA256)
 	if err != nil {
-		return capability.Result{}, "", "", nil, nil, err
+		return workerMethodDispatch{}, err
 	}
 	params, err := deepCloneParams(req.Params)
 	if err != nil {
-		return capability.Result{}, "", "", nil, nil, err
+		return workerMethodDispatch{}, err
 	}
 	target := capability.TargetDescriptor{
 		Kind: "worker",
 		Fields: map[string]any{
 			"worker_id":             worker.WorkerID,
-			"export":                method.Route.Export,
 			"artifact_sha256":       workerAsset.Entry.SHA256,
-			"runtime_generation_id": health.RuntimeGenerationID,
+			"runtime_generation_id": runtimeBinding.RuntimeGenerationID,
 			"arguments":             params,
 		},
 	}
 	targetHash, err := canonicalDescriptorHash(target)
 	if err != nil {
-		return capability.Result{}, "", "", nil, nil, err
+		return workerMethodDispatch{}, err
 	}
 	if req.executionAuthorization.targetHash != "" && targetHash != req.executionAuthorization.targetHash {
-		return capability.Result{}, "", "", nil, nil, bridge.ErrTokenAudience
+		return workerMethodDispatch{}, bridge.ErrTokenAudience
 	}
 	targetDescriptorHashes = append(targetDescriptorHashes, targetHash)
 	sort.Strings(targetDescriptorHashes)
 	invocationID, err := newCapabilityID("invoke")
 	if err != nil {
-		return capability.Result{}, "", "", nil, nil, err
+		return workerMethodDispatch{}, err
 	}
 	auditID, err := newCapabilityID("audit")
 	if err != nil {
-		return capability.Result{}, "", "", nil, nil, err
+		return workerMethodDispatch{}, err
 	}
 	binding := capability.ExecutionBinding{
 		InvocationID:           invocationID,
@@ -5804,16 +6061,17 @@ func (h *Host) invokeWorker(ctx context.Context, record registry.PluginRecord, m
 		PluginVersion:          record.Version,
 		ActiveFingerprint:      record.ActiveFingerprint,
 		SurfaceInstanceID:      req.SurfaceInstanceID,
-		OwnerSessionHash:       req.OwnerSessionHash,
-		OwnerUserHash:          req.OwnerUserHash,
-		SessionChannelIDHash:   req.SessionChannelIDHash,
+		OwnerSessionHash:       req.session.OwnerSessionHash,
+		OwnerUserHash:          req.session.OwnerUserHash,
+		OwnerEnvHash:           req.session.OwnerEnvHash,
+		SessionChannelIDHash:   req.session.SessionChannelIDHash,
 		BridgeChannelID:        req.BridgeChannelID,
 		RouteKind:              capability.RouteWorker,
 		CapabilityID:           "redevplugin.worker",
 		CapabilityVersion:      "1",
 		BindingID:              worker.WorkerID,
 		Method:                 method.Method,
-		TargetMethod:           method.Route.Export,
+		TargetMethod:           method.Method,
 		Effect:                 capability.Effect(method.Effect),
 		Execution:              string(method.Execution),
 		Permissions:            capability.PermissionEvidence{Required: []string{}, Granted: []string{}},
@@ -5822,28 +6080,27 @@ func (h *Host) invokeWorker(ctx context.Context, record registry.PluginRecord, m
 		Target:                 target,
 		TargetDescriptorSHA256: targetHash,
 	}
-	invocation, executionCtx, finish, err := h.startMethodExecution(ctx, record, method, binding, params, now, nil, operationCancelDispatchFor(h.adapters.RuntimeSupervisor), true)
+	invocation, executionCtx, finish, err := h.startMethodExecution(ctx, record, method, binding, params, now, nil, operationCancelDispatchFor(h.adapters.RuntimeManager), true)
 	if err != nil {
-		return capability.Result{}, "", "", nil, nil, err
+		return workerMethodDispatch{}, err
 	}
-	operationID := ""
+	dispatch = workerMethodDispatch{finish: finish}
 	if invocation.Execution.Operation != nil {
-		operationID = invocation.Execution.Operation.ID()
+		dispatch.operationID = invocation.Execution.Operation.ID()
 	}
-	streamID := ""
 	if invocation.Execution.Stream != nil {
-		streamID = invocation.Execution.Stream.ID()
+		dispatch.streamID = invocation.Execution.Stream.ID()
 	}
-	streamTicket, err := h.mintMethodStreamTicket(req, operationID, streamID)
+	dispatch.streamTicket, err = h.mintMethodStreamTicket(req, dispatch.operationID, dispatch.streamID)
 	if err != nil {
-		return capability.Result{}, operationID, streamID, nil, finish, err
+		return dispatch, err
 	}
 	payload := workerInvocationPayload{
 		PluginID:             record.PluginID,
 		PluginInstanceID:     record.PluginInstanceID,
 		ActiveFingerprint:    record.ActiveFingerprint,
-		RuntimeInstanceID:    health.RuntimeInstanceID,
-		RuntimeGenerationID:  health.RuntimeGenerationID,
+		RuntimeInstanceID:    runtimeBinding.RuntimeInstanceID,
+		RuntimeGenerationID:  runtimeBinding.RuntimeGenerationID,
 		PackageHash:          record.PackageHash,
 		WorkerID:             worker.WorkerID,
 		WorkerMode:           string(worker.Mode),
@@ -5852,37 +6109,37 @@ func (h *Host) invokeWorker(ctx context.Context, record registry.PluginRecord, m
 		ArtifactSHA256:       workerAsset.Entry.SHA256,
 		ABI:                  worker.ABI,
 		Method:               method.Method,
-		Export:               method.Route.Export,
 		Effect:               string(method.Effect),
 		Execution:            string(method.Execution),
 		SurfaceInstanceID:    req.SurfaceInstanceID,
-		OwnerSessionHash:     req.OwnerSessionHash,
-		OwnerUserHash:        req.OwnerUserHash,
-		SessionChannelIDHash: req.SessionChannelIDHash,
+		OwnerSessionHash:     req.session.OwnerSessionHash,
+		OwnerUserHash:        req.session.OwnerUserHash,
+		OwnerEnvHash:         req.session.OwnerEnvHash,
+		SessionChannelIDHash: req.session.SessionChannelIDHash,
 		BridgeChannelID:      req.BridgeChannelID,
-		OperationID:          operationID,
-		StreamID:             streamID,
+		OperationID:          dispatch.operationID,
+		StreamID:             dispatch.streamID,
 		AuditCorrelationID:   binding.AuditCorrelationID,
 		Params:               params,
 		BrokerAccess:         normalizedWorkerBrokerAccess(method.BrokerAccess),
 	}
 	payload.BrokerAccessSHA256, err = workerBrokerAccessHash(payload.BrokerAccess)
 	if err != nil {
-		return capability.Result{}, operationID, streamID, streamTicket, finish, err
+		return dispatch, err
 	}
-	payload.StorageHandleGrants, err = h.mintWorkerStorageHandleGrants(ctx, record, method, health, now)
+	payload.StorageHandleGrants, err = h.mintWorkerStorageHandleGrants(ctx, record, method, runtimeBinding, now)
 	if err != nil {
-		return capability.Result{}, operationID, streamID, streamTicket, finish, err
+		return dispatch, err
 	}
 	paramsBytes, err := json.Marshal(payload.Params)
 	if err != nil {
-		return capability.Result{}, operationID, streamID, streamTicket, finish, err
+		return dispatch, err
 	}
 	paramsSum := sha256.Sum256(paramsBytes)
 	payload.ParamsSHA256 = "sha256:" + hex.EncodeToString(paramsSum[:])
 	invocationTargetHash, err := workerInvocationTargetHash(payload)
 	if err != nil {
-		return capability.Result{}, operationID, streamID, streamTicket, finish, err
+		return dispatch, err
 	}
 	targetDescriptorHashes = append(targetDescriptorHashes, invocationTargetHash)
 	sort.Strings(targetDescriptorHashes)
@@ -5892,19 +6149,21 @@ func (h *Host) invokeWorker(ctx context.Context, record registry.PluginRecord, m
 		PluginVersion:          record.Version,
 		ActiveFingerprint:      record.ActiveFingerprint,
 		SurfaceInstanceID:      req.SurfaceInstanceID,
-		OwnerSessionHash:       req.OwnerSessionHash,
-		OwnerUserHash:          req.OwnerUserHash,
-		SessionChannelIDHash:   req.SessionChannelIDHash,
+		OwnerSessionHash:       req.session.OwnerSessionHash,
+		OwnerUserHash:          req.session.OwnerUserHash,
+		OwnerEnvHash:           req.session.OwnerEnvHash,
+		SessionChannelIDHash:   req.session.SessionChannelIDHash,
 		BridgeChannelID:        req.BridgeChannelID,
-		RuntimeInstanceID:      health.RuntimeInstanceID,
-		RuntimeGenerationID:    health.RuntimeGenerationID,
-		IPCChannelID:           health.IPCChannelID,
-		ConnectionNonce:        health.ConnectionNonce,
+		RuntimeInstanceID:      runtimeBinding.RuntimeInstanceID,
+		RuntimeGenerationID:    runtimeBinding.RuntimeGenerationID,
+		RuntimeShardID:         runtimeBinding.RuntimeShardID,
+		IPCChannelID:           runtimeBinding.IPCChannelID,
+		ConnectionNonce:        runtimeBinding.ConnectionNonce,
 		Method:                 method.Method,
 		Effect:                 string(method.Effect),
 		Execution:              string(method.Execution),
-		OperationID:            operationID,
-		StreamID:               streamID,
+		OperationID:            dispatch.operationID,
+		StreamID:               dispatch.streamID,
 		AuditCorrelationID:     binding.AuditCorrelationID,
 		TargetDescriptorHashes: targetDescriptorHashes,
 		Limits: bridge.RuntimeExecutionLeaseLimits{
@@ -5914,7 +6173,7 @@ func (h *Host) invokeWorker(ctx context.Context, record registry.PluginRecord, m
 		Now:      now,
 	})
 	if err != nil {
-		return capability.Result{}, operationID, streamID, streamTicket, finish, err
+		return dispatch, err
 	}
 	h.audit(ctx, AuditEvent{
 		Type:              "plugin.runtime.lease.issued",
@@ -5940,12 +6199,12 @@ func (h *Host) invokeWorker(ctx context.Context, record registry.PluginRecord, m
 	})
 	rawPayload, err := json.Marshal(payload)
 	if err != nil {
-		return capability.Result{}, operationID, streamID, streamTicket, finish, err
+		return dispatch, err
 	}
-	rawResult, err := h.adapters.RuntimeSupervisor.InvokeWorker(executionCtx, runtimeclient.Lease{
+	dispatch.dispatched = true
+	rawResult, err := h.adapters.RuntimeManager.InvokeWorker(executionCtx, runtimeBinding, runtimeclient.Lease{
 		LeaseID:                lease.LeaseID,
 		TokenID:                lease.TokenID,
-		LeaseToken:             lease.LeaseToken,
 		LeaseNonce:             lease.LeaseNonce,
 		PluginID:               lease.PluginID,
 		PluginVersion:          lease.PluginVersion,
@@ -5953,6 +6212,7 @@ func (h *Host) invokeWorker(ctx context.Context, record registry.PluginRecord, m
 		SurfaceInstanceID:      lease.SurfaceInstanceID,
 		OwnerSessionHash:       lease.OwnerSessionHash,
 		OwnerUserHash:          lease.OwnerUserHash,
+		OwnerEnvHash:           lease.OwnerEnvHash,
 		SessionChannelIDHash:   lease.SessionChannelIDHash,
 		BridgeChannelID:        lease.BridgeChannelID,
 		RuntimeGenerationID:    lease.RuntimeGenerationID,
@@ -5970,30 +6230,28 @@ func (h *Host) invokeWorker(ctx context.Context, record registry.PluginRecord, m
 			MaxPayloadBytes:         lease.Limits.MaxPayloadBytes,
 			MaxStreamBytesPerSecond: lease.Limits.MaxStreamBytesPerSecond,
 		},
-		PolicyRevision:     lease.PolicyRevision,
-		ManagementRevision: lease.ManagementRevision,
-		RevokeEpoch:        lease.RevokeEpoch,
-		RuntimeShardID:     lease.RuntimeShardID,
-		RuntimeInstanceID:  lease.RuntimeInstanceID,
-		IPCChannelID:       lease.IPCChannelID,
-		ConnectionNonce:    lease.ConnectionNonce,
-		IssuedAt:           lease.IssuedAt,
-		IssuedAtUnixMillis: lease.IssuedAtUnixMillis,
-		ExpiresAt:          lease.ExpiresAt,
+		PolicyRevision:      lease.PolicyRevision,
+		ManagementRevision:  lease.ManagementRevision,
+		RevokeEpoch:         lease.RevokeEpoch,
+		RuntimeShardID:      lease.RuntimeShardID,
+		RuntimeInstanceID:   lease.RuntimeInstanceID,
+		IPCChannelID:        lease.IPCChannelID,
+		ConnectionNonce:     lease.ConnectionNonce,
+		IssuedAtUnixMillis:  lease.IssuedAtUnixMillis,
+		ExpiresAtUnixMillis: lease.ExpiresAtUnixMillis,
 	}, method.Method, rawPayload)
 	if err != nil {
-		return capability.Result{}, operationID, streamID, streamTicket, finish, err
+		return dispatch, err
 	}
-	var result capability.Result
 	if len(rawResult) > 0 {
-		if err := json.Unmarshal(rawResult, &result); err != nil {
-			return capability.Result{}, operationID, streamID, streamTicket, finish, fmt.Errorf("decode worker result: %w", err)
+		if err := json.Unmarshal(rawResult, &dispatch.result); err != nil {
+			return dispatch, fmt.Errorf("decode worker result: %w", err)
 		}
 	}
-	return result, operationID, streamID, streamTicket, finish, nil
+	return dispatch, nil
 }
 
-func (h *Host) mintWorkerStorageHandleGrants(ctx context.Context, record registry.PluginRecord, method manifest.MethodSpec, health runtimeclient.Health, now time.Time) (map[string]string, error) {
+func (h *Host) mintWorkerStorageHandleGrants(ctx context.Context, record registry.PluginRecord, method manifest.MethodSpec, binding runtimeclient.RuntimeBinding, now time.Time) (map[string]string, error) {
 	if method.BrokerAccess == nil || len(method.BrokerAccess.Storage) == 0 {
 		return nil, nil
 	}
@@ -6002,8 +6260,9 @@ func (h *Host) mintWorkerStorageHandleGrants(ctx context.Context, record registr
 		result, err := h.MintStorageHandleGrant(ctx, MintStorageHandleGrantRequest{
 			PluginInstanceID:    record.PluginInstanceID,
 			StoreID:             access.StoreID,
-			RuntimeInstanceID:   health.RuntimeInstanceID,
-			RuntimeGenerationID: health.RuntimeGenerationID,
+			RuntimeInstanceID:   binding.RuntimeInstanceID,
+			RuntimeGenerationID: binding.RuntimeGenerationID,
+			RuntimeShardID:      binding.RuntimeShardID,
 			Now:                 now,
 		})
 		if err != nil {
@@ -6069,12 +6328,12 @@ func workerInvocationTargetHash(payload workerInvocationPayload) (string, error)
 		payload.ArtifactSHA256,
 		payload.ABI,
 		payload.Method,
-		payload.Export,
 		payload.Effect,
 		payload.Execution,
 		payload.SurfaceInstanceID,
 		payload.OwnerSessionHash,
 		payload.OwnerUserHash,
+		payload.OwnerEnvHash,
 		payload.SessionChannelIDHash,
 		payload.BridgeChannelID,
 		payload.OperationID,
@@ -6186,29 +6445,21 @@ func (h *Host) requiredPermissionsForMethod(record registry.PluginRecord, method
 	return normalizeStringSet(resolved.method.RequiredPermissions), nil
 }
 
-func (h *Host) enforceSecurityPolicy(ctx context.Context, record registry.PluginRecord, method manifest.MethodSpec, requiredPermissions []string) error {
-	if h.adapters.SecurityPolicy == nil {
-		return errors.New("security policy store is required")
+func authorizationDecisionError(decision registry.AuthorizationDecision, method string) error {
+	if !decision.PolicyEvaluation.Allowed {
+		switch decision.PolicyEvaluation.Reason {
+		case security.PolicyDenyReasonMethodDenied:
+			return fmt.Errorf("%w: method %q is denied", security.ErrPolicyDenied, decision.PolicyEvaluation.DeniedMethod)
+		case security.PolicyDenyReasonPermissionNotAllowed:
+			return fmt.Errorf("%w: permissions not allowed: %s", security.ErrPolicyDenied, strings.Join(decision.PolicyEvaluation.MissingPermissions, ", "))
+		default:
+			return fmt.Errorf("%w: method %q", security.ErrPolicyDenied, method)
+		}
 	}
-	evaluation, err := h.adapters.SecurityPolicy.EvaluatePolicy(ctx, security.EvaluatePolicyRequest{
-		PluginInstanceID:    record.PluginInstanceID,
-		Method:              method.Method,
-		RequiredPermissions: requiredPermissions,
-	})
-	if err != nil {
-		return err
+	if len(decision.MissingPermissions) > 0 {
+		return fmt.Errorf("%w: %s", permissions.ErrPermissionDenied, strings.Join(decision.MissingPermissions, ", "))
 	}
-	if evaluation.Allowed {
-		return nil
-	}
-	switch evaluation.Reason {
-	case security.PolicyDenyReasonMethodDenied:
-		return fmt.Errorf("%w: method %q is denied", security.ErrPolicyDenied, evaluation.DeniedMethod)
-	case security.PolicyDenyReasonPermissionNotAllowed:
-		return fmt.Errorf("%w: permissions not allowed: %s", security.ErrPolicyDenied, strings.Join(evaluation.MissingPermissions, ", "))
-	default:
-		return fmt.Errorf("%w: method %q", security.ErrPolicyDenied, method.Method)
-	}
+	return nil
 }
 
 func manifestWorker(m manifest.Manifest, workerID string) (manifest.WorkerSpec, bool) {
@@ -6335,8 +6586,8 @@ func (h *Host) resolveMethodConfirmationTarget(ctx context.Context, record regis
 				PluginVersion: record.Version, ActiveFingerprint: record.ActiveFingerprint,
 			},
 			Surface: capability.SurfaceScope{
-				SurfaceInstanceID: req.SurfaceInstanceID, OwnerSessionHash: req.OwnerSessionHash, OwnerUserHash: req.OwnerUserHash,
-				SessionChannelIDHash: req.SessionChannelIDHash, BridgeChannelID: req.BridgeChannelID,
+				SurfaceInstanceID: req.SurfaceInstanceID, OwnerSessionHash: req.session.OwnerSessionHash, OwnerUserHash: req.session.OwnerUserHash, OwnerEnvHash: req.session.OwnerEnvHash,
+				SessionChannelIDHash: req.session.SessionChannelIDHash, BridgeChannelID: req.BridgeChannelID,
 			},
 			CapabilityID: "redevplugin.core_action", BindingID: method.Route.ActionID,
 			Method: method.Method, TargetMethod: method.Route.ActionID, TargetInput: arguments,
@@ -6350,19 +6601,23 @@ func (h *Host) resolveMethodConfirmationTarget(ctx context.Context, record regis
 		hash, err := canonicalDescriptorHash(target)
 		return target, hash, err
 	case manifest.MethodRouteWorker:
-		if h.adapters.RuntimeSupervisor == nil {
-			return capability.TargetDescriptor{}, "", errors.New("runtime supervisor is required for worker methods")
+		if h.adapters.RuntimeManager == nil {
+			return capability.TargetDescriptor{}, "", errors.New("runtime manager is required for worker methods")
 		}
 		worker, ok := manifestWorker(record.Manifest, method.Route.WorkerID)
 		if !ok {
 			return capability.TargetDescriptor{}, "", fmt.Errorf("worker %q is not declared", method.Route.WorkerID)
 		}
-		health, err := h.adapters.RuntimeSupervisor.Health(ctx)
+		health, err := h.adapters.RuntimeManager.Health(ctx)
 		if err != nil {
 			return capability.TargetDescriptor{}, "", err
 		}
 		if !health.Ready {
-			return capability.TargetDescriptor{}, "", errors.New("runtime supervisor is not ready")
+			return capability.TargetDescriptor{}, "", errors.New("runtime manager is not ready")
+		}
+		runtimeBinding, err := h.adapters.RuntimeManager.BindPlugin(ctx, record.PluginInstanceID)
+		if err != nil {
+			return capability.TargetDescriptor{}, "", err
 		}
 		workerAsset, err := h.adapters.Assets.ReadAsset(ctx, record.PackageHash, worker.Artifact)
 		if err != nil {
@@ -6373,8 +6628,8 @@ func (h *Host) resolveMethodConfirmationTarget(ctx context.Context, record regis
 			return capability.TargetDescriptor{}, "", err
 		}
 		target := capability.TargetDescriptor{Kind: "worker", Fields: map[string]any{
-			"worker_id": worker.WorkerID, "export": method.Route.Export, "artifact_sha256": workerAsset.Entry.SHA256,
-			"runtime_generation_id": health.RuntimeGenerationID, "arguments": arguments,
+			"worker_id": worker.WorkerID, "artifact_sha256": workerAsset.Entry.SHA256,
+			"runtime_generation_id": runtimeBinding.RuntimeGenerationID, "arguments": arguments,
 		}}
 		hash, err := canonicalDescriptorHash(target)
 		return target, hash, err
@@ -6399,7 +6654,7 @@ func methodRequestHash(method manifest.MethodSpec, params map[string]any) (strin
 	return "sha256:" + hex.EncodeToString(sum[:]), nil
 }
 
-func (h *Host) prepareConfirmationPlan(ctx context.Context, call resolvedMethodCall, req ConfirmMethodRequest, requestHash string) (any, string, error) {
+func (h *Host) prepareConfirmationPlan(ctx context.Context, call resolvedMethodCall, req CallMethodRequest, requestHash string) (any, string, error) {
 	var plan any
 	preflightMethodName := confirmationPreflightMethod(call.method)
 	if preflightMethodName != "" {
@@ -6553,49 +6808,43 @@ func (h *Host) consumeConfirmationIntent(ctx context.Context, confirmationID str
 }
 
 func (h *Host) revokePluginRuntimeCapabilities(ctx context.Context, record registry.PluginRecord, now time.Time) error {
-	return h.revokePluginRuntimeCapabilitiesWithMode(ctx, record, now, false)
-}
-
-func (h *Host) revokePluginRuntimeCapabilitiesStrict(ctx context.Context, record registry.PluginRecord, now time.Time) error {
-	return h.revokePluginRuntimeCapabilitiesWithMode(ctx, record, now, true)
-}
-
-func (h *Host) revokePluginRuntimeCapabilitiesWithMode(ctx context.Context, record registry.PluginRecord, now time.Time, failOnRuntimeError bool) error {
 	revokedExecutionLeases := h.executions.cancelPlugin(record.PluginInstanceID, capability.ErrExecutionRevoked)
+	var resultErr error
 	revokedTokens := 0
 	if h.surfaceTokens != nil {
 		var err error
 		revokedTokens, err = h.surfaceTokens.RevokePlugin(record.PluginInstanceID, record.RevokeEpoch, now)
 		if err != nil {
-			return err
+			resultErr = errors.Join(resultErr, err)
 		}
 	}
 	revokedConfirmations, err := h.deleteConfirmationIntentsForPlugin(ctx, record.PluginInstanceID, now)
 	if err != nil {
-		return err
+		resultErr = errors.Join(resultErr, err)
 	}
 	runtimeRevoked := false
 	var runtimeRevokeResult runtimeclient.RevokeResult
 	var runtimeErr error
-	if h.adapters.RuntimeSupervisor != nil {
+	if h.adapters.RuntimeManager != nil {
 		revokeCtx := ctx
 		cancel := func() {}
 		if _, ok := ctx.Deadline(); !ok {
 			revokeCtx, cancel = context.WithTimeout(ctx, runtimeCapabilityRevokeTimeout)
 		}
 		defer cancel()
-		result, err := h.adapters.RuntimeSupervisor.Revoke(revokeCtx, record.PluginInstanceID, record.RevokeEpoch)
+		result, err := h.adapters.RuntimeManager.Revoke(revokeCtx, record.PluginInstanceID, record.RevokeEpoch)
 		if err != nil {
-			h.diagnostic(ctx, DiagnosticEvent{
+			h.diagnostic(ctx, observability.DiagnosticEvent{
 				Type:              "plugin.runtime_capabilities.revoke_failed",
 				Severity:          "warning",
-				Message:           err.Error(),
+				Message:           "plugin runtime capability revocation failed",
 				PluginID:          record.PluginID,
 				PluginInstanceID:  record.PluginInstanceID,
 				ActiveFingerprint: record.ActiveFingerprint,
 				Details: map[string]any{
 					"revoke_epoch": record.RevokeEpoch,
 				},
+				InternalDetails: map[string]any{"error": err.Error()},
 			})
 		} else {
 			runtimeRevokeResult = result
@@ -6623,6 +6872,7 @@ func (h *Host) revokePluginRuntimeCapabilitiesWithMode(ctx context.Context, reco
 			details["closed_socket_count"] = runtimeRevokeResult.ClosedSocketCount
 			details["closed_stream_count"] = runtimeRevokeResult.ClosedStreamCount
 			details["closed_storage_handle_count"] = runtimeRevokeResult.ClosedStorageHandleCount
+			details["runtime_stopped"] = runtimeRevokeResult.RuntimeStopped
 		}
 		h.audit(ctx, AuditEvent{
 			Type:             "plugin.runtime_capabilities.revoked",
@@ -6631,16 +6881,40 @@ func (h *Host) revokePluginRuntimeCapabilitiesWithMode(ctx context.Context, reco
 			Details:          details,
 		})
 	}
-	if failOnRuntimeError && runtimeErr != nil {
-		return runtimeErr
-	}
-	return nil
+	return errors.Join(resultErr, runtimeErr)
 }
 
-func (h *Host) diagnostic(ctx context.Context, event DiagnosticEvent) {
-	if h.adapters.Diagnostics != nil {
-		_ = h.adapters.Diagnostics.AppendPluginDiagnostic(ctx, event)
+func (h *Host) diagnostic(ctx context.Context, event observability.DiagnosticEvent) {
+	_ = h.appendDiagnostic(ctx, event)
+}
+
+func (h *Host) appendDiagnostic(ctx context.Context, event observability.DiagnosticEvent) error {
+	if h.adapters.Diagnostics == nil {
+		return nil
 	}
+	if session, ok := sessionctx.FromContext(ctx); ok {
+		event.OwnerSessionHash = session.OwnerSessionHash
+		event.OwnerUserHash = session.OwnerUserHash
+		event.OwnerEnvHash = session.OwnerEnvHash
+		event.SessionChannelIDHash = session.SessionChannelIDHash
+	}
+	return h.adapters.Diagnostics.AppendPluginDiagnostic(ctx, event)
+}
+
+func (h *Host) ReportHTTPAdapterFailure(ctx context.Context, operation string, code security.ErrorCode, err error) {
+	if err == nil {
+		return
+	}
+	h.diagnostic(ctx, observability.DiagnosticEvent{
+		Type:     "plugin.http.operation_failed",
+		Severity: "warning",
+		Message:  "plugin HTTP operation failed",
+		Details: map[string]any{
+			"operation": strings.TrimSpace(operation),
+			"code":      string(code),
+		},
+		InternalDetails: map[string]any{"error": err.Error()},
+	})
 }
 
 func (h *Host) canRun(ctx context.Context, record registry.PluginRecord) error {
@@ -6660,22 +6934,32 @@ func (h *Host) canRun(ctx context.Context, record registry.PluginRecord) error {
 		}
 	}
 	if record.TrustState == registry.TrustUnsignedLocal {
-		developerMode, err := h.adapters.Policy.DeveloperModeEnabled(ctx, sessionctx.Context{})
-		if err != nil {
-			return err
-		}
-		localGenerated, err := h.adapters.Policy.LocalGeneratedPluginsEnabled(ctx, sessionctx.Context{})
-		if err != nil {
-			return err
-		}
-		if !developerMode || !localGenerated {
+		if err := h.enforceUnsignedLocalPluginPolicy(ctx); err != nil {
 			now := time.Now().UTC()
-			policyErr := errors.New("unsigned local plugins require developer mode and local generated plugins")
 			if cleanupErr := h.disablePluginForPolicyFailure(ctx, record, "developer mode or local generated plugins disabled", now); cleanupErr != nil {
-				return errors.Join(policyErr, cleanupErr)
+				return errors.Join(err, cleanupErr)
 			}
-			return policyErr
+			return err
 		}
+	}
+	return nil
+}
+
+func (h *Host) enforceUnsignedLocalPluginPolicy(ctx context.Context) error {
+	session, err := requireUserSession(ctx)
+	if err != nil {
+		return err
+	}
+	developerMode, err := h.adapters.Policy.DeveloperModeEnabled(ctx, session)
+	if err != nil {
+		return err
+	}
+	localGenerated, err := h.adapters.Policy.LocalGeneratedPluginsEnabled(ctx, session)
+	if err != nil {
+		return err
+	}
+	if !developerMode || !localGenerated {
+		return fmt.Errorf("%w: unsigned local plugins require developer mode and local generated plugins", security.ErrPolicyDenied)
 	}
 	return nil
 }
@@ -6787,64 +7071,6 @@ func releaseRefFromRecord(record registry.PluginRecord) (PluginReleaseRef, error
 	}, nil
 }
 
-func (h *Host) ensureStorageNamespaces(ctx context.Context, record registry.PluginRecord) error {
-	if record.Manifest.Storage == nil || len(record.Manifest.Storage.Stores) == 0 {
-		return nil
-	}
-	if h.adapters.Storage == nil {
-		return errors.New("storage broker is required for plugins that declare storage")
-	}
-	namespaces, err := storageNamespacesFromManifest(record)
-	if err != nil {
-		return err
-	}
-	for _, ns := range namespaces {
-		if err := h.adapters.Storage.EnsureNamespace(ctx, ns); err != nil {
-			return fmt.Errorf("ensure storage namespace %q: %w", ns.StoreID, err)
-		}
-	}
-	h.audit(ctx, AuditEvent{Type: "plugin.storage.ensured", PluginID: record.PluginID, PluginInstanceID: record.PluginInstanceID})
-	return nil
-}
-
-func (h *Host) ensureSettings(ctx context.Context, record registry.PluginRecord, now time.Time, audit bool) (settings.Snapshot, error) {
-	if record.Manifest.Settings == nil {
-		return settings.Snapshot{}, nil
-	}
-	if h.adapters.Settings == nil {
-		return settings.Snapshot{}, errors.New("settings store is required for plugins that declare settings")
-	}
-	snapshot, err := h.adapters.Settings.Ensure(ctx, settings.EnsureRequest{
-		PluginInstanceID: record.PluginInstanceID,
-		Spec:             record.Manifest.Settings,
-		Now:              now,
-	})
-	if err != nil {
-		return settings.Snapshot{}, err
-	}
-	if audit {
-		h.audit(ctx, AuditEvent{Type: "plugin.settings.ensured", PluginID: record.PluginID, PluginInstanceID: record.PluginInstanceID})
-	}
-	return snapshot, nil
-}
-
-func (h *Host) markSettingsSecret(ctx context.Context, record registry.PluginRecord, secretRef string, set bool, lastTestStatus string, now time.Time) error {
-	if record.Manifest.Settings == nil || h.adapters.Settings == nil || !settingsSecretRefDeclared(record.Manifest.Settings.Fields, secretRef) {
-		return nil
-	}
-	if _, err := h.ensureSettings(ctx, record, now, false); err != nil {
-		return err
-	}
-	_, err := h.adapters.Settings.MarkSecret(ctx, settings.MarkSecretRequest{
-		PluginInstanceID: record.PluginInstanceID,
-		SecretRef:        secretRef,
-		Set:              set,
-		LastTestStatus:   lastTestStatus,
-		Now:              now,
-	})
-	return err
-}
-
 func compileConnectivityPolicy(record registry.PluginRecord) (connectivity.PolicySet, bool, error) {
 	if record.Manifest.NetworkAccess == nil || len(record.Manifest.NetworkAccess.Connectors) == 0 {
 		return connectivity.PolicySet{}, false, nil
@@ -6899,317 +7125,33 @@ func (h *Host) refreshConnectivityPolicy(ctx context.Context, record registry.Pl
 	return nil
 }
 
-type retainedDataSummary struct {
-	StorageRetained  bool
-	SettingsRetained bool
-	UsageBytes       int64
-}
-
-func (h *Host) deleteOrRetainStorage(ctx context.Context, record registry.PluginRecord, deleteData bool) (bool, int64, error) {
-	if record.Manifest.Storage == nil || len(record.Manifest.Storage.Stores) == 0 {
-		return false, 0, nil
-	}
-	if h.adapters.Storage == nil {
-		return false, 0, errors.New("storage broker is required for plugins that declare storage")
-	}
-	if err := h.adapters.Storage.DeleteNamespace(ctx, record.PluginInstanceID, deleteData); err != nil {
-		return false, 0, err
-	}
-	eventType := "plugin.storage.retained"
-	if deleteData {
-		eventType = "plugin.storage.deleted"
-	}
-	h.audit(ctx, AuditEvent{Type: eventType, PluginID: record.PluginID, PluginInstanceID: record.PluginInstanceID})
-	if deleteData {
-		return false, 0, nil
-	}
-	usageBytes := int64(0)
-	if inspector, ok := h.adapters.Storage.(storage.Inspector); ok {
-		namespaces, err := inspector.ListNamespaces(ctx, record.PluginInstanceID)
-		if err != nil {
-			return false, 0, err
-		}
-		for _, namespace := range namespaces {
-			if namespace.State == storage.NamespaceRetained {
-				usageBytes += namespace.UsageBytes
-			}
-		}
-	}
-	return true, usageBytes, nil
-}
-
-func (h *Host) deleteOrRetainSettings(ctx context.Context, record registry.PluginRecord, deleteData bool, now time.Time) (bool, error) {
-	if record.Manifest.Settings == nil {
-		return false, nil
-	}
-	if h.adapters.Settings == nil {
-		return false, errors.New("settings store is required for plugins that declare settings")
-	}
-	if err := h.adapters.Settings.Delete(ctx, settings.DeleteRequest{
-		PluginInstanceID: record.PluginInstanceID,
-		DeleteData:       deleteData,
-		Now:              now,
-	}); err != nil {
-		return false, err
-	}
-	eventType := "plugin.settings.retained"
-	if deleteData {
-		eventType = "plugin.settings.deleted"
-	}
-	h.audit(ctx, AuditEvent{Type: eventType, PluginID: record.PluginID, PluginInstanceID: record.PluginInstanceID})
-	return !deleteData, nil
-}
-
-func (h *Host) ensureSecretCleanupSupported(deleteData bool) error {
-	if !deleteData || h.adapters.Secrets == nil {
-		return nil
-	}
-	if _, ok := h.adapters.Secrets.(secrets.PluginDeleter); !ok {
-		return errors.New("secret store does not support plugin cleanup")
-	}
-	return nil
-}
-
 func (h *Host) deleteSecretBindingsIfNeeded(ctx context.Context, record registry.PluginRecord, deleteData bool) error {
-	if !deleteData || h.adapters.Secrets == nil {
+	if !deleteData {
 		return nil
 	}
-	deleter, ok := h.adapters.Secrets.(secrets.PluginDeleter)
-	if !ok {
-		return errors.New("secret store does not support plugin cleanup")
-	}
-	if err := deleter.DeletePlugin(ctx, record.PluginInstanceID); err != nil {
+	if err := h.adapters.Secrets.DeletePlugin(ctx, record.PluginInstanceID); err != nil {
 		return err
 	}
 	h.audit(ctx, AuditEvent{Type: "plugin.secrets.deleted", PluginID: record.PluginID, PluginInstanceID: record.PluginInstanceID})
 	return nil
 }
 
-func (h *Host) cleanupRetainedDataRecord(ctx context.Context, record retaineddata.Record, now time.Time) (retaineddata.Record, error) {
-	now = lifecycleNow(now)
-	if record.State == retaineddata.StateDeleted || record.State == retaineddata.StateBound {
-		return record, nil
-	}
-	if err := h.deleteRetainedDataPayload(ctx, record, now); err != nil {
-		failed, markErr := h.adapters.RetainedData.MarkDeleteFailed(ctx, retaineddata.DeleteFailedRequest{
-			RetainedID:  record.RetainedID,
-			DeleteError: err.Error(),
-			Now:         now,
-		})
-		if markErr != nil {
-			err = fmt.Errorf("%w; failed to mark retained data delete failure: %v", err, markErr)
-			failed = record
-		}
-		h.reportRetainedDataCleanupFailure(ctx, record, err)
-		h.audit(ctx, AuditEvent{
-			Type:             "plugin.retained_data.delete_failed",
-			PluginID:         record.PluginID,
-			PluginInstanceID: record.SourcePluginInstanceID,
-			Details: map[string]any{
-				"retained_id":  record.RetainedID,
-				"delete_error": err.Error(),
-			},
-		})
-		return failed, fmt.Errorf("%w: %w", ErrRetainedDataCleanupFailed, err)
-	}
-	deleted, err := h.adapters.RetainedData.MarkDeleted(ctx, retaineddata.DeleteRequest{
-		RetainedID: record.RetainedID,
-		Now:        now,
-	})
-	if err != nil {
-		return retaineddata.Record{}, fmt.Errorf("%w: mark retained data deleted: %w", ErrRetainedDataCleanupFailed, err)
-	}
-	h.audit(ctx, AuditEvent{
-		Type:             "plugin.retained_data.deleted",
-		PluginID:         record.PluginID,
-		PluginInstanceID: record.SourcePluginInstanceID,
-		Details: map[string]any{
-			"retained_id":       deleted.RetainedID,
-			"storage_retained":  deleted.StorageRetained,
-			"settings_retained": deleted.SettingsRetained,
-		},
-	})
-	return deleted, nil
-}
-
-func (h *Host) deleteRetainedDataPayload(ctx context.Context, record retaineddata.Record, now time.Time) error {
-	var cleanupErr error
-	if record.StorageRetained {
-		if h.adapters.Storage == nil {
-			cleanupErr = errors.Join(cleanupErr, errors.New("storage broker is required for retained storage cleanup"))
-		} else if retainedDeleter, ok := h.adapters.Storage.(storage.RetainedDeleter); !ok {
-			cleanupErr = errors.Join(cleanupErr, fmt.Errorf("%w: storage broker does not support retained-only deletion", ErrRetainedDataUnsafePayload))
-		} else if err := retainedDeleter.DeleteRetainedNamespace(ctx, record.SourcePluginInstanceID); err != nil {
-			cleanupErr = errors.Join(cleanupErr, fmt.Errorf("delete retained storage: %w", err))
-		}
-	}
-	if record.SettingsRetained {
-		if h.adapters.Settings == nil {
-			cleanupErr = errors.Join(cleanupErr, errors.New("settings store is required for retained settings cleanup"))
-		} else if err := h.adapters.Settings.Delete(ctx, settings.DeleteRequest{
-			PluginInstanceID: record.SourcePluginInstanceID,
-			DeleteData:       true,
-			RequireRetained:  true,
-			Now:              now,
-		}); err != nil {
-			cleanupErr = errors.Join(cleanupErr, fmt.Errorf("delete retained settings: %w", err))
-		}
-	}
-	return cleanupErr
-}
-
-func (h *Host) bindRetainedDataPayload(ctx context.Context, record retaineddata.Record, target registry.PluginRecord, dryRun bool, now time.Time) error {
-	var bindErr error
-	if record.StorageRetained {
-		if h.adapters.Storage == nil {
-			bindErr = errors.Join(bindErr, errors.New("storage broker is required for retained storage bind"))
-		} else if binder, ok := h.adapters.Storage.(storage.RetainedBinder); !ok {
-			bindErr = errors.Join(bindErr, fmt.Errorf("%w: storage broker does not support retained bind", ErrRetainedDataBindFailed))
-		} else {
-			namespaces, err := storageNamespacesFromManifest(target)
-			if err != nil {
-				bindErr = errors.Join(bindErr, err)
-			} else if len(namespaces) == 0 {
-				bindErr = errors.Join(bindErr, ErrPluginStorageNotDeclared)
-			} else if err := binder.BindRetainedNamespace(ctx, storage.BindRetainedRequest{
-				SourcePluginInstanceID: record.SourcePluginInstanceID,
-				TargetPluginInstanceID: target.PluginInstanceID,
-				TargetNamespaces:       namespaces,
-				DryRun:                 dryRun,
-				Now:                    now,
-			}); err != nil {
-				bindErr = errors.Join(bindErr, fmt.Errorf("bind retained storage: %w", err))
-			}
-		}
-	}
-	if record.SettingsRetained {
-		if target.Manifest.Settings == nil {
-			bindErr = errors.Join(bindErr, ErrPluginSettingsNotDeclared)
-		} else if h.adapters.Settings == nil {
-			bindErr = errors.Join(bindErr, errors.New("settings store is required for retained settings bind"))
-		} else if _, err := h.adapters.Settings.BindRetained(ctx, settings.BindRetainedRequest{
-			SourcePluginInstanceID: record.SourcePluginInstanceID,
-			TargetPluginInstanceID: target.PluginInstanceID,
-			Spec:                   target.Manifest.Settings,
-			DryRun:                 dryRun,
-			Now:                    now,
-		}); err != nil {
-			bindErr = errors.Join(bindErr, fmt.Errorf("bind retained settings: %w", err))
-		}
-	}
-	return bindErr
-}
-
-func validateRetainedDataBindTarget(record retaineddata.Record, target registry.PluginRecord) error {
-	if record.PublisherID != target.PublisherID || record.PluginID != target.PluginID {
-		return fmt.Errorf("retained data identity mismatch: got %s/%s, want %s/%s", target.PublisherID, target.PluginID, record.PublisherID, record.PluginID)
-	}
-	sourceTrust := registry.TrustState(strings.TrimSpace(record.Metadata["source_trust_state"]))
-	if sourceTrust == "" {
-		if target.TrustState == registry.TrustUnsignedLocal {
-			return errors.New("legacy retained data without source trust metadata cannot bind to unsigned_local plugins")
-		}
-		return nil
-	}
-	if !retainedTrustClassCompatible(sourceTrust, target.TrustState) {
-		return fmt.Errorf("retained data source trust %q is not compatible with target trust %q", sourceTrust, target.TrustState)
-	}
-	return nil
-}
-
-func retainedTrustClassCompatible(source registry.TrustState, target registry.TrustState) bool {
-	switch source {
-	case registry.TrustVerified:
-		return target == registry.TrustVerified
-	case registry.TrustUnsignedLocal:
-		return target == registry.TrustUnsignedLocal
-	default:
-		return false
-	}
-}
-
-func (h *Host) reportRetainedDataBindFailure(ctx context.Context, record retaineddata.Record, target registry.PluginRecord, err error) {
-	if h.adapters.Diagnostics == nil || err == nil {
-		return
-	}
-	_ = h.adapters.Diagnostics.AppendPluginDiagnostic(ctx, DiagnosticEvent{
-		Type:             "plugin.retained_data.bind_failed",
-		Severity:         "warning",
-		Message:          err.Error(),
-		PluginID:         target.PluginID,
-		PluginInstanceID: target.PluginInstanceID,
-		Details: map[string]any{
-			"retained_id":               record.RetainedID,
-			"source_plugin_instance_id": record.SourcePluginInstanceID,
-			"storage_retained":          record.StorageRetained,
-			"settings_retained":         record.SettingsRetained,
-		},
-	})
-}
-
-func (h *Host) reportRetainedDataCleanupFailure(ctx context.Context, record retaineddata.Record, err error) {
-	if h.adapters.Diagnostics == nil || err == nil {
-		return
-	}
-	_ = h.adapters.Diagnostics.AppendPluginDiagnostic(ctx, DiagnosticEvent{
-		Type:             "plugin.retained_data.delete_failed",
-		Severity:         "warning",
-		Message:          err.Error(),
-		PluginID:         record.PluginID,
-		PluginInstanceID: record.SourcePluginInstanceID,
-		Details: map[string]any{
-			"retained_id":       record.RetainedID,
-			"storage_retained":  record.StorageRetained,
-			"settings_retained": record.SettingsRetained,
-		},
-	})
-}
-
-func (h *Host) recordRetainedDataIfNeeded(ctx context.Context, record registry.PluginRecord, deleteData bool, summary retainedDataSummary, now time.Time) (retaineddata.Record, error) {
-	if deleteData || (!summary.StorageRetained && !summary.SettingsRetained) {
-		return retaineddata.Record{}, nil
-	}
-	if h.adapters.RetainedData == nil {
-		return retaineddata.Record{}, errors.New("retained data store is required")
-	}
-	retainedID, err := retaineddata.NewRetainedID()
-	if err != nil {
-		return retaineddata.Record{}, err
-	}
-	return h.adapters.RetainedData.Retain(ctx, retaineddata.RetainRequest{
-		RetainedID:             retainedID,
-		SourcePluginInstanceID: record.PluginInstanceID,
-		PublisherID:            record.PublisherID,
-		PluginID:               record.PluginID,
-		Version:                record.Version,
-		PackageHash:            record.PackageHash,
-		ManifestHash:           record.ManifestHash,
-		StorageRetained:        summary.StorageRetained,
-		SettingsRetained:       summary.SettingsRetained,
-		UsageBytes:             summary.UsageBytes,
-		Metadata: map[string]string{
-			"reason":             "uninstall_keep_data",
-			"source_trust_state": string(record.TrustState),
-		},
-		Now: lifecycleNow(now),
-	})
-}
-
 func (h *Host) reportLifecycleDiagnostic(ctx context.Context, record registry.PluginRecord, eventType string, err error, details map[string]any) {
-	if h.adapters.Diagnostics == nil || err == nil {
+	if err == nil {
 		return
 	}
 	if details == nil {
 		details = map[string]any{}
 	}
-	_ = h.adapters.Diagnostics.AppendPluginDiagnostic(ctx, DiagnosticEvent{
+	h.diagnostic(ctx, observability.DiagnosticEvent{
 		Type:              eventType,
 		Severity:          "warning",
-		Message:           err.Error(),
+		Message:           "plugin lifecycle operation failed",
 		PluginID:          record.PluginID,
 		PluginInstanceID:  record.PluginInstanceID,
 		ActiveFingerprint: record.ActiveFingerprint,
 		Details:           details,
+		InternalDetails:   map[string]any{"error": err.Error()},
 	})
 }
 
@@ -7234,18 +7176,20 @@ func (h *Host) reportMethodRejection(ctx context.Context, record registry.Plugin
 		}
 	}
 	if h.adapters.Diagnostics != nil {
-		if diagnosticErr := h.adapters.Diagnostics.AppendPluginDiagnostic(ctx, DiagnosticEvent{
+		if diagnosticErr := h.appendDiagnostic(ctx, observability.DiagnosticEvent{
 			Type:              "plugin.method.rejected",
 			Severity:          "warning",
-			Message:           err.Error(),
+			Message:           "plugin method was rejected",
 			PluginID:          record.PluginID,
 			PluginInstanceID:  record.PluginInstanceID,
+			SurfaceInstanceID: surfaceInstanceID,
 			ActiveFingerprint: record.ActiveFingerprint,
 			Details: map[string]any{
 				"method":              method,
 				"reason":              reason,
 				"surface_instance_id": surfaceInstanceID,
 			},
+			InternalDetails: map[string]any{"error": err.Error()},
 		}); diagnosticErr != nil {
 			persistenceErr = errors.Join(persistenceErr, fmt.Errorf("%w: diagnostic: %v", ErrSecurityEventPersistence, diagnosticErr))
 		}
@@ -7337,14 +7281,49 @@ func storageNamespaceByStoreID(record registry.PluginRecord, storeID string) (st
 	return storage.Namespace{}, false, nil
 }
 
-func settingsResult(snapshot settings.Snapshot) SettingsResult {
-	return SettingsResult{
-		PluginInstanceID: snapshot.PluginInstanceID,
-		SchemaVersion:    snapshot.SchemaVersion,
-		SettingsRevision: snapshot.SettingsRevision,
-		Values:           cloneParams(snapshot.Values),
-		UpdatedAt:        snapshot.UpdatedAt,
+func (h *Host) settingsSecretMetadata(ctx context.Context, record registry.PluginRecord) ([]SettingsSecretMetadata, error) {
+	records, err := h.adapters.Secrets.List(ctx, secrets.ListRequest{PluginInstanceID: record.PluginInstanceID})
+	if err != nil {
+		return nil, err
 	}
+	recordByRef := make(map[string]secrets.Record, len(records))
+	for _, item := range records {
+		recordByRef[item.Scope+"\x00"+item.SecretRef] = item
+	}
+	metadata := make([]SettingsSecretMetadata, 0)
+	for _, field := range record.Manifest.Settings.Fields {
+		if field.Type != settings.FieldSecret {
+			continue
+		}
+		secretRef := strings.TrimSpace(field.SecretRef)
+		scope := strings.TrimSpace(field.Scope)
+		lookupKey := scope + "\x00" + secretRef
+		item := SettingsSecretMetadata{Key: field.Key, SecretRef: secretRef, Scope: scope}
+		if stored, exists := recordByRef[lookupKey]; exists {
+			item.Bound = stored.Bound
+			item.LastTestStatus = stored.LastTestStatus
+			item.BoundAt = stored.BoundAt
+			item.TestedAt = stored.TestedAt
+			updatedAt := stored.UpdatedAt
+			item.UpdatedAt = &updatedAt
+		}
+		metadata = append(metadata, item)
+	}
+	return metadata, nil
+}
+
+func pluginSettingsResult(record registry.PluginRecord, snapshot plugindata.Settings, secretMetadata []SettingsSecretMetadata) (SettingsResult, error) {
+	values, err := settings.DecodeValues(snapshot.Values)
+	if err != nil {
+		return SettingsResult{}, err
+	}
+	return SettingsResult{
+		PluginInstanceID: record.PluginInstanceID,
+		SchemaVersion:    record.Manifest.Settings.SchemaVersion,
+		ValuesRevision:   snapshot.Revision,
+		Values:           values,
+		SecretMetadata:   secretMetadata,
+	}, nil
 }
 
 func normalizeRuntimeTarget(target RuntimeTarget) RuntimeTarget {

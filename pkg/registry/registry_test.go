@@ -2,7 +2,6 @@ package registry
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"path/filepath"
 	"strings"
@@ -11,6 +10,8 @@ import (
 
 	"github.com/floegence/redevplugin/pkg/capabilitycontract"
 	"github.com/floegence/redevplugin/pkg/manifest"
+	"github.com/floegence/redevplugin/pkg/permissions"
+	"github.com/floegence/redevplugin/pkg/plugindata"
 )
 
 func TestStoreRevisionsAndList(t *testing.T) {
@@ -44,28 +45,38 @@ func TestStoreRevisionsAndList(t *testing.T) {
 				t.Fatalf("enable revisions = %#v", enabled)
 			}
 
-			granted, err := store.BumpPolicyRevision(context.Background(), stored.PluginInstanceID, false, now.Add(2*time.Second))
+			granted, err := store.GrantPermission(context.Background(), permissions.GrantRequest{
+				PluginInstanceID: stored.PluginInstanceID,
+				PermissionID:     "documents.read",
+				Now:              now.Add(2 * time.Second),
+			}, AuthorizationRevisionsFromRecord(enabled))
 			if err != nil {
 				t.Fatal(err)
 			}
-			if granted.PolicyRevision != 2 || granted.ManagementRevision != 2 || granted.RevokeEpoch != 1 {
+			if granted.Plugin.PolicyRevision != 2 || granted.Plugin.ManagementRevision != 2 || granted.Plugin.RevokeEpoch != 1 {
 				t.Fatalf("grant policy revisions = %#v", granted)
 			}
 
-			revoked, err := store.BumpPolicyRevision(context.Background(), stored.PluginInstanceID, true, now.Add(3*time.Second))
+			revoked, err := store.RevokePermission(context.Background(), permissions.RevokeRequest{
+				PluginInstanceID: stored.PluginInstanceID,
+				PermissionID:     "documents.read",
+				Now:              now.Add(3 * time.Second),
+			}, AuthorizationRevisionsFromRecord(granted.Plugin))
 			if err != nil {
 				t.Fatal(err)
 			}
-			if revoked.PolicyRevision != 3 || revoked.ManagementRevision != 2 || revoked.RevokeEpoch != 2 {
+			if revoked.Plugin.PolicyRevision != 3 || revoked.Plugin.ManagementRevision != 2 || revoked.Plugin.RevokeEpoch != 2 {
 				t.Fatalf("revoke policy revisions = %#v", revoked)
 			}
 
-			uninstalled, err := store.MarkUninstalled(context.Background(), stored.PluginInstanceID, RetainedDataDeleted, now.Add(4*time.Second))
+			_, err = store.CommitUninstall(context.Background(), plugindata.CommitUninstallRequest{
+				PluginInstanceID:           revoked.Plugin.PluginInstanceID,
+				DeleteData:                 true,
+				ExpectedManagementRevision: revoked.Plugin.ManagementRevision,
+				Now:                        now.Add(4 * time.Second),
+			})
 			if err != nil {
 				t.Fatal(err)
-			}
-			if uninstalled.ManagementRevision != 3 || uninstalled.PolicyRevision != 3 || uninstalled.RevokeEpoch != 3 || uninstalled.DeletedAt == nil {
-				t.Fatalf("uninstall revisions = %#v", uninstalled)
 			}
 			list, err := store.ListPlugins(context.Background())
 			if err != nil {
@@ -212,7 +223,7 @@ func TestStoreDeepClonesNestedPluginRecords(t *testing.T) {
 	}
 }
 
-func TestStoreDeletePlugin(t *testing.T) {
+func TestStoreAbortInstall(t *testing.T) {
 	for _, tc := range registryStoreCases() {
 		t.Run(tc.name, func(t *testing.T) {
 			store := tc.open(t)
@@ -229,14 +240,14 @@ func TestStoreDeletePlugin(t *testing.T) {
 			if _, err := store.PutPlugin(context.Background(), record, PutOptions{}); err != nil {
 				t.Fatal(err)
 			}
-			if err := store.DeletePlugin(context.Background(), record.PluginInstanceID); err != nil {
+			if err := store.AbortInstall(context.Background(), record.PluginInstanceID); err != nil {
 				t.Fatal(err)
 			}
 			if _, err := store.GetPlugin(context.Background(), record.PluginInstanceID); !errors.Is(err, ErrNotFound) {
 				t.Fatalf("GetPlugin() after delete error = %v, want %v", err, ErrNotFound)
 			}
-			if err := store.DeletePlugin(context.Background(), record.PluginInstanceID); !errors.Is(err, ErrNotFound) {
-				t.Fatalf("DeletePlugin() after delete error = %v, want %v", err, ErrNotFound)
+			if err := store.AbortInstall(context.Background(), record.PluginInstanceID); !errors.Is(err, ErrNotFound) {
+				t.Fatalf("AbortInstall() after delete error = %v, want %v", err, ErrNotFound)
 			}
 		})
 	}
@@ -398,108 +409,6 @@ func TestSQLiteStorePersistsRecordsAcrossOpen(t *testing.T) {
 	}
 	if len(listed) != 1 || listed[0].TrustAssessment.VerifiedSignature == nil || listed[0].TrustAssessment.VerifiedSignature.KeyID != "official" {
 		t.Fatalf("ListPlugins() trust assessment mismatch: %#v", listed)
-	}
-}
-
-func TestSQLiteStoreMigratesV1TrustAssessmentAndUpdatesUserVersion(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "registry.sqlite")
-	db, err := sql.Open("sqlite", path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.ExecContext(context.Background(), `
-CREATE TABLE plugin_registry_schema_migrations (
-	version INTEGER PRIMARY KEY,
-	applied_at INTEGER NOT NULL
-);
-CREATE TABLE plugin_records (
-	plugin_instance_id TEXT PRIMARY KEY,
-	publisher_id TEXT NOT NULL,
-	plugin_id TEXT NOT NULL,
-	version TEXT NOT NULL,
-	active_fingerprint TEXT NOT NULL,
-	package_hash TEXT NOT NULL,
-	manifest_hash TEXT NOT NULL,
-	entries_hash TEXT NOT NULL,
-	trust_state TEXT NOT NULL,
-	enable_state TEXT NOT NULL,
-	disabled_reason TEXT NOT NULL,
-	retained_data_state TEXT NOT NULL,
-	policy_revision INTEGER NOT NULL,
-	management_revision INTEGER NOT NULL,
-	revoke_epoch INTEGER NOT NULL,
-	manifest_json TEXT NOT NULL,
-	package_entries_json TEXT NOT NULL,
-	version_history_json TEXT NOT NULL,
-	installed_at INTEGER NOT NULL,
-	enabled_at INTEGER,
-	updated_at INTEGER NOT NULL,
-	deleted_at INTEGER,
-	metadata_json TEXT NOT NULL
-);
-PRAGMA user_version = 1;
-INSERT INTO plugin_registry_schema_migrations(version, applied_at) VALUES(1, 1);
-`); err != nil {
-		_ = db.Close()
-		t.Fatal(err)
-	}
-	if err := db.Close(); err != nil {
-		t.Fatal(err)
-	}
-
-	store, err := NewSQLiteStore(context.Background(), path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer store.Close()
-	var userVersion int
-	if err := store.db.QueryRowContext(context.Background(), `PRAGMA user_version`).Scan(&userVersion); err != nil {
-		t.Fatal(err)
-	}
-	if userVersion != sqliteSchemaVersion {
-		t.Fatalf("user_version = %d, want %d", userVersion, sqliteSchemaVersion)
-	}
-	if _, err := store.PutPlugin(context.Background(), PluginRecord{
-		PluginInstanceID:  "plugini_migrated",
-		PublisherID:       "example",
-		PluginID:          "com.example.migrated",
-		Version:           "1.0.0",
-		ActiveFingerprint: "sha256:migrated",
-		PackageHash:       "sha256:pkg",
-		ManifestHash:      "sha256:manifest",
-		EntriesHash:       "sha256:entries",
-		TrustState:        TrustVerified,
-		EnableState:       EnableDisabled,
-		Manifest:          manifest.Manifest{Plugin: manifest.Plugin{PluginID: "com.example.migrated", Version: "1.0.0"}},
-	}, PutOptions{}); err != nil {
-		t.Fatalf("PutPlugin() after v1 migration error = %v", err)
-	}
-	if _, err := store.PutSourceSecurityFloor(context.Background(), SourceSecurityFloor{
-		SourceID:                 "official",
-		PolicyEpoch:              "1",
-		KeyRotationEpoch:         "1",
-		RevocationEpoch:          "1",
-		SourcePolicySnapshotHash: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-		RevocationMetadataSHA256: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-	}, PutOptions{}); err != nil {
-		t.Fatalf("PutSourceSecurityFloor() after v1 migration error = %v", err)
-	}
-}
-
-func TestSQLiteStoreRejectsNewerSchema(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "registry.sqlite")
-	store, err := NewSQLiteStore(context.Background(), path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := store.db.ExecContext(context.Background(), `PRAGMA user_version = 999`); err != nil {
-		t.Fatal(err)
-	}
-	if err := store.Close(); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := NewSQLiteStore(context.Background(), path); err == nil {
-		t.Fatal("NewSQLiteStore() accepted newer schema version")
 	}
 }
 

@@ -130,7 +130,7 @@ async function showFatalError(_error: unknown): Promise<void> {
     await bridge.ready();
     await bridge.render(gameSurface(true));
   } catch {
-    // The host owns the final fallback when the plugin bridge itself is unavailable.
+    // The host renders the unavailable state when the plugin bridge cannot start.
   }
 }
 

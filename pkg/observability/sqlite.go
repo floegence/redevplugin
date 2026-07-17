@@ -13,8 +13,6 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-const sqliteSchemaVersion = 1
-
 type SQLiteStore struct {
 	db                  *sql.DB
 	mu                  sync.Mutex
@@ -55,7 +53,7 @@ func NewSQLiteStore(ctx context.Context, path string, opts ...MemoryStoreOptions
 		maxAuditEvents:      maxAuditEvents,
 		maxDiagnosticEvents: maxDiagnosticEvents,
 	}
-	if err := store.migrate(ctx); err != nil {
+	if err := store.initializeSchema(ctx); err != nil {
 		_ = db.Close()
 		return nil, err
 	}
@@ -141,10 +139,11 @@ func (s *SQLiteStore) AppendPluginDiagnostic(ctx context.Context, event Diagnost
 	if event.Type == "" {
 		return ErrInvalidEvent
 	}
-	event.Severity = strings.TrimSpace(event.Severity)
-	if event.Severity == "" {
-		event.Severity = "info"
+	severity, err := normalizeDiagnosticSeverity(event.Severity)
+	if err != nil {
+		return err
 	}
+	event.Severity = severity
 	event.Message = strings.TrimSpace(event.Message)
 	if event.Message == "" {
 		event.Message = event.Type
@@ -158,6 +157,10 @@ func (s *SQLiteStore) AppendPluginDiagnostic(ctx context.Context, event Diagnost
 	event.SurfaceInstanceID = strings.TrimSpace(event.SurfaceInstanceID)
 	event.ActiveFingerprint = strings.TrimSpace(event.ActiveFingerprint)
 	event.RequestID = strings.TrimSpace(event.RequestID)
+	event.OwnerSessionHash = strings.TrimSpace(event.OwnerSessionHash)
+	event.OwnerUserHash = strings.TrimSpace(event.OwnerUserHash)
+	event.OwnerEnvHash = strings.TrimSpace(event.OwnerEnvHash)
+	event.SessionChannelIDHash = strings.TrimSpace(event.SessionChannelIDHash)
 	event.Details = cloneMap(event.Details)
 	rawDetails, err := marshalDetails(event.Details)
 	if err != nil {
@@ -183,8 +186,8 @@ func (s *SQLiteStore) AppendPluginDiagnostic(ctx context.Context, event Diagnost
 		event.EventID = strings.TrimSpace(event.EventID)
 	}
 	if _, err := tx.ExecContext(ctx, `
-INSERT INTO plugin_diagnostic_events(seq, event_id, type, severity, message, plugin_id, plugin_instance_id, surface_id, surface_instance_id, active_fingerprint, request_id, occurred_at, details_json)
-VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+INSERT INTO plugin_diagnostic_events(seq, event_id, type, severity, message, plugin_id, plugin_instance_id, surface_id, surface_instance_id, active_fingerprint, request_id, owner_session_hash, owner_user_hash, owner_env_hash, session_channel_id_hash, occurred_at, details_json)
+VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		seq,
 		event.EventID,
 		event.Type,
@@ -196,6 +199,10 @@ VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		event.SurfaceInstanceID,
 		event.ActiveFingerprint,
 		event.RequestID,
+		event.OwnerSessionHash,
+		event.OwnerUserHash,
+		event.OwnerEnvHash,
+		event.SessionChannelIDHash,
 		event.OccurredAt.UTC().UnixNano(),
 		rawDetails,
 	); err != nil {
@@ -207,61 +214,6 @@ VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 	return tx.Commit()
 }
 
-func (s *SQLiteStore) ListPluginAudit(ctx context.Context, req ListAuditRequest) ([]AuditEvent, error) {
-	if s == nil {
-		return nil, errors.New("observability store is nil")
-	}
-	limit := normalizeLimit(req.Limit)
-	pluginID := strings.TrimSpace(req.PluginID)
-	pluginInstanceID := strings.TrimSpace(req.PluginInstanceID)
-	eventType := strings.TrimSpace(req.Type)
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	query := `
-SELECT event_id, type, plugin_id, plugin_instance_id, surface_id, surface_instance_id, request_id, actor, occurred_at, details_json
-FROM plugin_audit_events`
-	args := []any{}
-	conditions := []string{}
-	if pluginID != "" {
-		conditions = append(conditions, `plugin_id = ?`)
-		args = append(args, pluginID)
-	}
-	if pluginInstanceID != "" {
-		conditions = append(conditions, `plugin_instance_id = ?`)
-		args = append(args, pluginInstanceID)
-	}
-	if eventType != "" {
-		conditions = append(conditions, `type = ?`)
-		args = append(args, eventType)
-	}
-	if len(conditions) > 0 {
-		query += ` WHERE ` + strings.Join(conditions, ` AND `)
-	}
-	query += ` ORDER BY occurred_at DESC, event_id DESC LIMIT ?`
-	args = append(args, limit)
-
-	rows, err := s.db.QueryContext(ctx, query, args...)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	events := []AuditEvent{}
-	for rows.Next() {
-		event, err := scanSQLiteAuditEvent(rows)
-		if err != nil {
-			return nil, err
-		}
-		events = append(events, event)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return events, nil
-}
-
 func (s *SQLiteStore) ListPluginDiagnostics(ctx context.Context, req ListDiagnosticRequest) ([]DiagnosticEvent, error) {
 	if s == nil {
 		return nil, errors.New("observability store is nil")
@@ -270,14 +222,21 @@ func (s *SQLiteStore) ListPluginDiagnostics(ctx context.Context, req ListDiagnos
 	pluginID := strings.TrimSpace(req.PluginID)
 	pluginInstanceID := strings.TrimSpace(req.PluginInstanceID)
 	surfaceInstanceID := strings.TrimSpace(req.SurfaceInstanceID)
+	ownerSessionHash, ownerUserHash, ownerEnvHash, sessionChannelIDHash, err := diagnosticOwnerScope(req)
+	if err != nil {
+		return nil, err
+	}
 	eventType := strings.TrimSpace(req.Type)
-	severity := strings.TrimSpace(req.Severity)
+	severity, err := normalizeOptionalDiagnosticSeverity(req.Severity)
+	if err != nil {
+		return nil, err
+	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	query := `
-SELECT event_id, type, severity, message, plugin_id, plugin_instance_id, surface_id, surface_instance_id, active_fingerprint, request_id, occurred_at, details_json
+SELECT event_id, type, severity, message, plugin_id, plugin_instance_id, surface_id, surface_instance_id, active_fingerprint, request_id, owner_session_hash, owner_user_hash, owner_env_hash, session_channel_id_hash, occurred_at, details_json
 FROM plugin_diagnostic_events`
 	args := []any{}
 	conditions := []string{}
@@ -293,6 +252,13 @@ FROM plugin_diagnostic_events`
 		conditions = append(conditions, `surface_instance_id = ?`)
 		args = append(args, surfaceInstanceID)
 	}
+	conditions = append(conditions,
+		`owner_session_hash = ?`,
+		`owner_user_hash = ?`,
+		`owner_env_hash = ?`,
+		`session_channel_id_hash = ?`,
+	)
+	args = append(args, ownerSessionHash, ownerUserHash, ownerEnvHash, sessionChannelIDHash)
 	if eventType != "" {
 		conditions = append(conditions, `type = ?`)
 		args = append(args, eventType)
@@ -327,7 +293,7 @@ FROM plugin_diagnostic_events`
 	return events, nil
 }
 
-func (s *SQLiteStore) migrate(ctx context.Context) error {
+func (s *SQLiteStore) initializeSchema(ctx context.Context) error {
 	if _, err := s.db.ExecContext(ctx, `PRAGMA busy_timeout = 5000`); err != nil {
 		return err
 	}
@@ -344,20 +310,6 @@ func (s *SQLiteStore) migrate(ctx context.Context) error {
 	}
 	defer rollbackUnlessCommitted(tx)
 
-	if _, err := tx.ExecContext(ctx, `
-CREATE TABLE IF NOT EXISTS plugin_observability_schema_migrations (
-	version INTEGER PRIMARY KEY,
-	applied_at INTEGER NOT NULL
-)`); err != nil {
-		return err
-	}
-	maxVersion := 0
-	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(version), 0) FROM plugin_observability_schema_migrations`).Scan(&maxVersion); err != nil {
-		return err
-	}
-	if maxVersion > sqliteSchemaVersion {
-		return fmt.Errorf("sqlite observability schema version %d is newer than supported version %d", maxVersion, sqliteSchemaVersion)
-	}
 	if _, err := tx.ExecContext(ctx, `
 CREATE TABLE IF NOT EXISTS plugin_observability_meta (
 	id INTEGER PRIMARY KEY CHECK(id = 1),
@@ -398,23 +350,21 @@ CREATE TABLE IF NOT EXISTS plugin_diagnostic_events (
 	surface_instance_id TEXT NOT NULL,
 	active_fingerprint TEXT NOT NULL,
 	request_id TEXT NOT NULL,
+	owner_session_hash TEXT NOT NULL,
+	owner_user_hash TEXT NOT NULL,
+	owner_env_hash TEXT NOT NULL,
+	session_channel_id_hash TEXT NOT NULL,
 	occurred_at INTEGER NOT NULL,
 	details_json BLOB NOT NULL
 )`); err != nil {
 		return err
 	}
 	for _, statement := range []string{
-		`CREATE INDEX IF NOT EXISTS idx_plugin_audit_plugin_instance ON plugin_audit_events(plugin_instance_id, type, occurred_at)`,
-		`CREATE INDEX IF NOT EXISTS idx_plugin_audit_plugin ON plugin_audit_events(plugin_id, type, occurred_at)`,
 		`CREATE INDEX IF NOT EXISTS idx_plugin_diagnostics_plugin_instance ON plugin_diagnostic_events(plugin_instance_id, type, severity, occurred_at)`,
 		`CREATE INDEX IF NOT EXISTS idx_plugin_diagnostics_surface ON plugin_diagnostic_events(surface_instance_id, severity, occurred_at)`,
+		`CREATE INDEX IF NOT EXISTS idx_plugin_diagnostics_owner ON plugin_diagnostic_events(owner_session_hash, owner_user_hash, owner_env_hash, session_channel_id_hash, occurred_at)`,
 	} {
 		if _, err := tx.ExecContext(ctx, statement); err != nil {
-			return err
-		}
-	}
-	if maxVersion < sqliteSchemaVersion {
-		if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO plugin_observability_schema_migrations(version, applied_at) VALUES(?, ?)`, sqliteSchemaVersion, time.Now().UTC().UnixNano()); err != nil {
 			return err
 		}
 	}
@@ -453,41 +403,15 @@ func trimSQLiteEvents(ctx context.Context, tx *sql.Tx, table string, max int) er
 	return err
 }
 
-func scanSQLiteAuditEvent(rows *sql.Rows) (AuditEvent, error) {
-	var event AuditEvent
-	var occurredAt int64
-	var rawDetails []byte
-	if err := rows.Scan(
-		&event.EventID,
-		&event.Type,
-		&event.PluginID,
-		&event.PluginInstanceID,
-		&event.SurfaceID,
-		&event.SurfaceInstanceID,
-		&event.RequestID,
-		&event.Actor,
-		&occurredAt,
-		&rawDetails,
-	); err != nil {
-		return AuditEvent{}, err
-	}
-	details, err := unmarshalDetails(rawDetails)
-	if err != nil {
-		return AuditEvent{}, err
-	}
-	event.OccurredAt = time.Unix(0, occurredAt).UTC()
-	event.Details = details
-	return cloneAuditEvent(event), nil
-}
-
 func scanSQLiteDiagnosticEvent(rows *sql.Rows) (DiagnosticEvent, error) {
 	var event DiagnosticEvent
+	var severity string
 	var occurredAt int64
 	var rawDetails []byte
 	if err := rows.Scan(
 		&event.EventID,
 		&event.Type,
-		&event.Severity,
+		&severity,
 		&event.Message,
 		&event.PluginID,
 		&event.PluginInstanceID,
@@ -495,6 +419,10 @@ func scanSQLiteDiagnosticEvent(rows *sql.Rows) (DiagnosticEvent, error) {
 		&event.SurfaceInstanceID,
 		&event.ActiveFingerprint,
 		&event.RequestID,
+		&event.OwnerSessionHash,
+		&event.OwnerUserHash,
+		&event.OwnerEnvHash,
+		&event.SessionChannelIDHash,
 		&occurredAt,
 		&rawDetails,
 	); err != nil {
@@ -504,9 +432,13 @@ func scanSQLiteDiagnosticEvent(rows *sql.Rows) (DiagnosticEvent, error) {
 	if err != nil {
 		return DiagnosticEvent{}, err
 	}
+	event.Severity, err = normalizeDiagnosticSeverity(DiagnosticSeverity(severity))
+	if err != nil {
+		return DiagnosticEvent{}, err
+	}
 	event.OccurredAt = time.Unix(0, occurredAt).UTC()
 	event.Details = details
-	return cloneDiagnosticEvent(event), nil
+	return publicDiagnosticEvent(event), nil
 }
 
 func marshalDetails(details map[string]any) ([]byte, error) {
@@ -534,5 +466,4 @@ func rollbackUnlessCommitted(tx *sql.Tx) {
 
 var _ AuditSink = (*SQLiteStore)(nil)
 var _ DiagnosticsSink = (*SQLiteStore)(nil)
-var _ AuditLister = (*SQLiteStore)(nil)
 var _ DiagnosticLister = (*SQLiteStore)(nil)

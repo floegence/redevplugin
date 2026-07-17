@@ -127,8 +127,8 @@ func runtimeLeaseReplayRecordFromConsume(req RuntimeLeaseReplayConsumeRequest) (
 	if leaseID == "" || leaseNonce == "" || pluginInstanceID == "" || runtimeGenerationID == "" || method == "" {
 		return RuntimeLeaseReplayRecord{}, ErrRuntimeLeaseInvalid
 	}
-	expiresAt := req.Lease.ExpiresAt.UTC()
-	if expiresAt.IsZero() || !expiresAt.After(now) {
+	expiresAt := time.UnixMilli(req.Lease.ExpiresAtUnixMillis).UTC()
+	if req.Lease.ExpiresAtUnixMillis <= 0 || !expiresAt.After(now) {
 		return RuntimeLeaseReplayRecord{}, ErrRuntimeLeaseInvalid
 	}
 	return RuntimeLeaseReplayRecord{

@@ -1,5 +1,6 @@
 use serde::Deserialize;
-use std::collections::{BTreeMap, HashMap};
+use std::cmp::Reverse;
+use std::collections::{BTreeMap, BinaryHeap, HashMap, VecDeque};
 use std::fs::File;
 use std::io::{self, BufRead, Read, Write};
 use std::os::fd::{FromRawFd, RawFd};
@@ -19,6 +20,9 @@ const MAX_CONTROL_FRAME_BYTES: usize = 1024 * 1024;
 const MAX_BROKER_RESPONSE_FRAME_BYTES: usize = 1024 * 1024;
 const DEFAULT_CONTROL_MAX_STALENESS: Duration = Duration::from_millis(5_000);
 const DEFAULT_RUNTIME_LEASE_REPLAY_CAPACITY: usize = 16_384;
+const DEFAULT_MODULE_CACHE_MAX_ENTRIES: usize = 64;
+const DEFAULT_MODULE_CACHE_MAX_SOURCE_BYTES: usize = 64 * 1024 * 1024;
+const WASM_PAGE_BYTES: u64 = 64 * 1024;
 const RUNTIME_CONTROL_STALE_MESSAGE_PREFIX: &str = "runtime control channel is stale";
 
 fn main() {
@@ -58,6 +62,7 @@ fn run() -> Result<(), String> {
     let shared = Arc::new(RuntimeSharedState::default());
     start_control_channel(Arc::clone(&shared), runtime_generation_id.clone())?;
     let mut lease_replays = RuntimeLeaseReplayCache::default();
+    let mut worker_runtime = WorkerModuleRuntime::default();
     let clock = current_unix_millis;
     loop {
         line = read_bounded_line(&mut reader, MAX_IPC_FRAME_BYTES, "ipc frame")?;
@@ -77,20 +82,21 @@ fn run() -> Result<(), String> {
                     shared: &shared,
                     lease_replays: &mut lease_replays,
                     runtime_lease_public_keys: &runtime_lease_public_keys,
+                    worker_runtime: &mut worker_runtime,
                     clock: &clock,
                 },
                 &request_id,
                 &runtime_generation_id,
                 &line,
             )?,
-            _ => redevplugin_ipc::response_frame(
+            _ => redevplugin_ipc::error_response_frame(
                 "diagnostic",
                 &request_id,
                 &runtime_generation_id,
-                false,
-                None,
-                Some(redevplugin_ipc::ERR_UNSUPPORTED_FRAME),
-                Some("runtime frame type is not supported"),
+                redevplugin_ipc::ResponseError::runtime(
+                    redevplugin_ipc::ERR_UNSUPPORTED_FRAME,
+                    "runtime frame type is not supported",
+                ),
             ),
         };
         stdout
@@ -180,14 +186,14 @@ fn run_control_channel(
             redevplugin_ipc::FRAME_TYPE_REVOKE_EPOCH => {
                 handle_revoke_epoch(shared, &request_id, runtime_generation_id, &line)
             }
-            _ => redevplugin_ipc::response_frame(
+            _ => redevplugin_ipc::error_response_frame(
                 "diagnostic",
                 &request_id,
                 runtime_generation_id,
-                false,
-                None,
-                Some(redevplugin_ipc::ERR_UNSUPPORTED_FRAME),
-                Some("runtime control frame type is not supported"),
+                redevplugin_ipc::ResponseError::runtime(
+                    redevplugin_ipc::ERR_UNSUPPORTED_FRAME,
+                    "runtime control frame type is not supported",
+                ),
             ),
         };
         write_file
@@ -207,28 +213,28 @@ fn handle_heartbeat(
     let request = match redevplugin_ipc::parse_heartbeat_request(line) {
         Ok(value) => value,
         Err(err) => {
-            return redevplugin_ipc::response_frame(
+            return redevplugin_ipc::error_response_frame(
                 redevplugin_ipc::FRAME_TYPE_HEARTBEAT,
                 request_id,
                 runtime_generation_id,
-                false,
-                None,
-                None,
-                Some(err.as_str()),
+                redevplugin_ipc::ResponseError::runtime(
+                    redevplugin_ipc::ERR_WORKER_INVOCATION_INVALID,
+                    err.as_str(),
+                ),
             );
         }
     };
     let max_staleness_ms = match request.max_staleness_ms {
         value if value > 0 => value,
         _ => {
-            return redevplugin_ipc::response_frame(
+            return redevplugin_ipc::error_response_frame(
                 redevplugin_ipc::FRAME_TYPE_HEARTBEAT,
                 request_id,
                 runtime_generation_id,
-                false,
-                None,
-                None,
-                Some("max_staleness_ms must be positive"),
+                redevplugin_ipc::ResponseError::runtime(
+                    redevplugin_ipc::ERR_WORKER_INVOCATION_INVALID,
+                    "max_staleness_ms must be positive",
+                ),
             );
         }
     };
@@ -243,14 +249,11 @@ fn handle_heartbeat(
         max_staleness_ms,
         request.sent_unix_nano,
     );
-    redevplugin_ipc::response_frame(
+    redevplugin_ipc::success_response_frame(
         redevplugin_ipc::FRAME_TYPE_HEARTBEAT,
         request_id,
         runtime_generation_id,
-        true,
-        Some(&result_json),
-        None,
-        None,
+        &result_json,
     )
 }
 
@@ -390,6 +393,7 @@ struct WorkerInvocationState<'a> {
     shared: &'a RuntimeSharedState,
     lease_replays: &'a mut RuntimeLeaseReplayCache,
     runtime_lease_public_keys: &'a [redevplugin_ipc::RuntimeLeasePublicKey],
+    worker_runtime: &'a mut WorkerModuleRuntime,
     clock: &'a dyn Fn() -> Result<i64, String>,
 }
 
@@ -410,80 +414,74 @@ fn handle_worker_invocation<R: BufRead, W: Write>(
     if let Err(err) = state.shared.control.validate_fresh() {
         let code = err.code();
         let message = err.to_string();
-        return Ok(redevplugin_ipc::response_frame(
+        return Ok(redevplugin_ipc::error_response_frame(
             redevplugin_ipc::FRAME_TYPE_INVOKE_WORKER_RESULT,
             request_id,
             runtime_generation_id,
-            false,
-            None,
-            Some(code),
-            Some(message.as_str()),
+            redevplugin_ipc::ResponseError::runtime(code, message.as_str()),
         ));
     }
     let identity = match redevplugin_ipc::parse_worker_invocation_identity(line) {
         Ok(identity) => identity,
         Err(err) => {
-            return Ok(redevplugin_ipc::response_frame(
+            return Ok(redevplugin_ipc::error_response_frame(
                 redevplugin_ipc::FRAME_TYPE_INVOKE_WORKER_RESULT,
                 request_id,
                 runtime_generation_id,
-                false,
-                None,
-                Some(redevplugin_ipc::ERR_WORKER_INVOCATION_INVALID),
-                Some(err),
+                redevplugin_ipc::ResponseError::runtime(
+                    redevplugin_ipc::ERR_WORKER_INVOCATION_INVALID,
+                    err,
+                ),
             ));
         }
     };
     if let Err(err) = state.shared.validate_invocation_frame(line) {
         let code = err.code();
         let message = err.to_string();
-        return Ok(redevplugin_ipc::response_frame(
+        return Ok(redevplugin_ipc::error_response_frame(
             redevplugin_ipc::FRAME_TYPE_INVOKE_WORKER_RESULT,
             request_id,
             runtime_generation_id,
-            false,
-            None,
-            Some(code),
-            Some(message.as_str()),
+            redevplugin_ipc::ResponseError::runtime(code, message.as_str()),
         ));
     }
     if let Err(err) = redevplugin_ipc::verify_worker_runtime_lease_signature(
         line,
         state.runtime_lease_public_keys,
     ) {
-        return Ok(redevplugin_ipc::response_frame(
+        return Ok(redevplugin_ipc::error_response_frame(
             redevplugin_ipc::FRAME_TYPE_INVOKE_WORKER_RESULT,
             request_id,
             runtime_generation_id,
-            false,
-            None,
-            Some(redevplugin_ipc::ERR_RUNTIME_LEASE_SIGNATURE_INVALID),
-            Some(err.as_str()),
+            redevplugin_ipc::ResponseError::runtime(
+                redevplugin_ipc::ERR_RUNTIME_LEASE_SIGNATURE_INVALID,
+                err.as_str(),
+            ),
         ));
     }
     let invocation_now_unix_ms = match state.now_unix_ms() {
         Ok(value) => value,
         Err(err) => {
-            return Ok(redevplugin_ipc::response_frame(
+            return Ok(redevplugin_ipc::error_response_frame(
                 redevplugin_ipc::FRAME_TYPE_INVOKE_WORKER_RESULT,
                 request_id,
                 runtime_generation_id,
-                false,
-                None,
-                Some(redevplugin_ipc::ERR_RUNTIME_LEASE_INVALID),
-                Some(err.as_str()),
+                redevplugin_ipc::ResponseError::runtime(
+                    redevplugin_ipc::ERR_RUNTIME_LEASE_INVALID,
+                    err.as_str(),
+                ),
             ));
         }
     };
     if let Err(err) = redevplugin_ipc::validate_worker_runtime_lease(line, invocation_now_unix_ms) {
-        return Ok(redevplugin_ipc::response_frame(
+        return Ok(redevplugin_ipc::error_response_frame(
             redevplugin_ipc::FRAME_TYPE_INVOKE_WORKER_RESULT,
             request_id,
             runtime_generation_id,
-            false,
-            None,
-            Some(redevplugin_ipc::ERR_RUNTIME_LEASE_INVALID),
-            Some(err.as_str()),
+            redevplugin_ipc::ResponseError::runtime(
+                redevplugin_ipc::ERR_RUNTIME_LEASE_INVALID,
+                err.as_str(),
+            ),
         ));
     }
     if let Err(err) = state
@@ -492,156 +490,156 @@ fn handle_worker_invocation<R: BufRead, W: Write>(
     {
         let code = err.code();
         let message = err.to_string();
-        return Ok(redevplugin_ipc::response_frame(
+        return Ok(redevplugin_ipc::error_response_frame(
             redevplugin_ipc::FRAME_TYPE_INVOKE_WORKER_RESULT,
             request_id,
             runtime_generation_id,
-            false,
-            None,
-            Some(code),
-            Some(message.as_str()),
+            redevplugin_ipc::ResponseError::runtime(code, message.as_str()),
         ));
     }
     if let Err(err) = state.shared.control.validate_fresh() {
         let code = err.code();
         let message = err.to_string();
-        return Ok(redevplugin_ipc::response_frame(
+        return Ok(redevplugin_ipc::error_response_frame(
             redevplugin_ipc::FRAME_TYPE_INVOKE_WORKER_RESULT,
             request_id,
             runtime_generation_id,
-            false,
-            None,
-            Some(code),
-            Some(message.as_str()),
+            redevplugin_ipc::ResponseError::runtime(code, message.as_str()),
         ));
     }
-    let artifact_request_id = format!("{request_id}:artifact");
-    let open_handle =
-        redevplugin_ipc::open_handle_frame(&artifact_request_id, runtime_generation_id, &identity);
-    stdout
-        .write_all(open_handle.as_bytes())
-        .and_then(|_| stdout.write_all(b"\n"))
-        .and_then(|_| stdout.flush())
-        .map_err(|err| format!("write open_handle request: {err}"))?;
+    let wasm_bytes = if state.worker_runtime.contains(&identity.artifact_sha256) {
+        None
+    } else {
+        let artifact_request_id = format!("{request_id}:artifact");
+        let open_handle = redevplugin_ipc::open_handle_frame(
+            &artifact_request_id,
+            runtime_generation_id,
+            &identity,
+        );
+        stdout
+            .write_all(open_handle.as_bytes())
+            .and_then(|_| stdout.write_all(b"\n"))
+            .and_then(|_| stdout.flush())
+            .map_err(|err| format!("write open_handle request: {err}"))?;
 
-    let artifact_response = read_bounded_line(reader, MAX_IPC_FRAME_BYTES, "open_handle response")?;
-    if artifact_response.is_empty() {
-        return Ok(redevplugin_ipc::response_frame(
-            redevplugin_ipc::FRAME_TYPE_INVOKE_WORKER_RESULT,
-            request_id,
-            runtime_generation_id,
-            false,
-            None,
-            Some(redevplugin_ipc::ERR_ARTIFACT_HANDLE_FAILED),
-            Some("runtime artifact handle response is empty"),
-        ));
-    }
-    let content_base64 = match redevplugin_ipc::open_handle_content_base64(
-        &artifact_response,
-        &artifact_request_id,
-        runtime_generation_id,
-        &identity,
-    ) {
-        Ok(content_base64) => content_base64,
-        Err(err) => {
-            return Ok(redevplugin_ipc::response_frame(
+        let artifact_response =
+            read_bounded_line(reader, MAX_IPC_FRAME_BYTES, "open_handle response")?;
+        if artifact_response.is_empty() {
+            return Ok(redevplugin_ipc::error_response_frame(
                 redevplugin_ipc::FRAME_TYPE_INVOKE_WORKER_RESULT,
                 request_id,
                 runtime_generation_id,
-                false,
-                None,
-                Some(redevplugin_ipc::ERR_ARTIFACT_HANDLE_FAILED),
-                Some(err.as_str()),
+                redevplugin_ipc::ResponseError::runtime(
+                    redevplugin_ipc::ERR_ARTIFACT_HANDLE_FAILED,
+                    "runtime artifact handle response is empty",
+                ),
             ));
+        }
+        let content_base64 = match redevplugin_ipc::open_handle_content_base64(
+            &artifact_response,
+            &artifact_request_id,
+            runtime_generation_id,
+            &identity,
+        ) {
+            Ok(content_base64) => content_base64,
+            Err(err) => {
+                return Ok(redevplugin_ipc::error_response_frame(
+                    redevplugin_ipc::FRAME_TYPE_INVOKE_WORKER_RESULT,
+                    request_id,
+                    runtime_generation_id,
+                    redevplugin_ipc::ResponseError::runtime(
+                        redevplugin_ipc::ERR_ARTIFACT_HANDLE_FAILED,
+                        err.as_str(),
+                    ),
+                ));
+            }
+        };
+        match decode_base64(&content_base64) {
+            Ok(wasm_bytes) => Some(wasm_bytes),
+            Err(err) => {
+                return Ok(redevplugin_ipc::error_response_frame(
+                    redevplugin_ipc::FRAME_TYPE_INVOKE_WORKER_RESULT,
+                    request_id,
+                    runtime_generation_id,
+                    redevplugin_ipc::ResponseError::runtime(
+                        redevplugin_ipc::ERR_WASM_WORKER_INVALID,
+                        err.as_str(),
+                    ),
+                ));
+            }
         }
     };
     let post_artifact_now_unix_ms = match state.now_unix_ms() {
         Ok(value) => value,
         Err(err) => {
-            return Ok(redevplugin_ipc::response_frame(
+            return Ok(redevplugin_ipc::error_response_frame(
                 redevplugin_ipc::FRAME_TYPE_INVOKE_WORKER_RESULT,
                 request_id,
                 runtime_generation_id,
-                false,
-                None,
-                Some(redevplugin_ipc::ERR_RUNTIME_LEASE_INVALID),
-                Some(err.as_str()),
+                redevplugin_ipc::ResponseError::runtime(
+                    redevplugin_ipc::ERR_RUNTIME_LEASE_INVALID,
+                    err.as_str(),
+                ),
             ));
         }
     };
     if let Err(err) =
         redevplugin_ipc::validate_worker_runtime_lease(line, post_artifact_now_unix_ms)
     {
-        return Ok(redevplugin_ipc::response_frame(
+        return Ok(redevplugin_ipc::error_response_frame(
             redevplugin_ipc::FRAME_TYPE_INVOKE_WORKER_RESULT,
             request_id,
             runtime_generation_id,
-            false,
-            None,
-            Some(redevplugin_ipc::ERR_RUNTIME_LEASE_INVALID),
-            Some(err.as_str()),
+            redevplugin_ipc::ResponseError::runtime(
+                redevplugin_ipc::ERR_RUNTIME_LEASE_INVALID,
+                err.as_str(),
+            ),
         ));
     }
     if let Err(err) = state.shared.control.validate_fresh() {
         let code = err.code();
         let message = err.to_string();
-        return Ok(redevplugin_ipc::response_frame(
+        return Ok(redevplugin_ipc::error_response_frame(
             redevplugin_ipc::FRAME_TYPE_INVOKE_WORKER_RESULT,
             request_id,
             runtime_generation_id,
-            false,
-            None,
-            Some(code),
-            Some(message.as_str()),
+            redevplugin_ipc::ResponseError::runtime(code, message.as_str()),
         ));
     }
-    let wasm_bytes = match decode_base64(&content_base64) {
-        Ok(wasm_bytes) => wasm_bytes,
-        Err(err) => {
-            return Ok(redevplugin_ipc::response_frame(
-                redevplugin_ipc::FRAME_TYPE_INVOKE_WORKER_RESULT,
-                request_id,
-                runtime_generation_id,
-                false,
-                None,
-                Some(redevplugin_ipc::ERR_WASM_WORKER_INVALID),
-                Some(err.as_str()),
-            ));
-        }
-    };
     let worker_request = match redevplugin_ipc::worker_request_json_v2(line) {
         Ok(request) => request,
         Err(err) => {
-            return Ok(redevplugin_ipc::response_frame(
+            return Ok(redevplugin_ipc::error_response_frame(
                 redevplugin_ipc::FRAME_TYPE_INVOKE_WORKER_RESULT,
                 request_id,
                 runtime_generation_id,
-                false,
-                None,
-                Some(redevplugin_ipc::ERR_WORKER_INVOCATION_INVALID),
-                Some(err.as_str()),
+                redevplugin_ipc::ResponseError::runtime(
+                    redevplugin_ipc::ERR_WORKER_INVOCATION_INVALID,
+                    err.as_str(),
+                ),
             ));
         }
     };
     let memory_limit_bytes = match redevplugin_ipc::runtime_lease_memory_limit_bytes(line) {
         Ok(value) => value,
         Err(err) => {
-            return Ok(redevplugin_ipc::response_frame(
+            return Ok(redevplugin_ipc::error_response_frame(
                 redevplugin_ipc::FRAME_TYPE_INVOKE_WORKER_RESULT,
                 request_id,
                 runtime_generation_id,
-                false,
-                None,
-                Some(redevplugin_ipc::ERR_RUNTIME_LEASE_INVALID),
-                Some(err.as_str()),
+                redevplugin_ipc::ResponseError::runtime(
+                    redevplugin_ipc::ERR_RUNTIME_LEASE_INVALID,
+                    err.as_str(),
+                ),
             ));
         }
     };
     let shared = state.shared;
     let clock = state.clock;
     let execution = match execute_worker_module_v2(
-        &wasm_bytes,
-        &identity.export,
+        state.worker_runtime,
+        &identity.artifact_sha256,
+        wasm_bytes.as_deref(),
         worker_request.as_bytes(),
         memory_limit_bytes,
         |request| match request {
@@ -693,102 +691,93 @@ fn handle_worker_invocation<R: BufRead, W: Write>(
     ) {
         Ok(execution) => execution,
         Err(err) => {
-            return Ok(redevplugin_ipc::response_frame(
+            return Ok(redevplugin_ipc::error_response_frame(
                 redevplugin_ipc::FRAME_TYPE_INVOKE_WORKER_RESULT,
                 request_id,
                 runtime_generation_id,
-                false,
-                None,
-                Some(redevplugin_ipc::ERR_WASM_WORKER_INVALID),
-                Some(err.as_str()),
+                redevplugin_ipc::ResponseError::runtime(
+                    redevplugin_ipc::ERR_WASM_WORKER_INVALID,
+                    err.as_str(),
+                ),
             ));
         }
     };
     let completion_now_unix_ms = match state.now_unix_ms() {
         Ok(value) => value,
         Err(err) => {
-            return Ok(redevplugin_ipc::response_frame(
+            return Ok(redevplugin_ipc::error_response_frame(
                 redevplugin_ipc::FRAME_TYPE_INVOKE_WORKER_RESULT,
                 request_id,
                 runtime_generation_id,
-                false,
-                None,
-                Some(redevplugin_ipc::ERR_RUNTIME_LEASE_INVALID),
-                Some(err.as_str()),
+                redevplugin_ipc::ResponseError::runtime(
+                    redevplugin_ipc::ERR_RUNTIME_LEASE_INVALID,
+                    err.as_str(),
+                ),
             ));
         }
     };
     if let Err(err) = redevplugin_ipc::validate_worker_runtime_lease(line, completion_now_unix_ms) {
-        return Ok(redevplugin_ipc::response_frame(
+        return Ok(redevplugin_ipc::error_response_frame(
             redevplugin_ipc::FRAME_TYPE_INVOKE_WORKER_RESULT,
             request_id,
             runtime_generation_id,
-            false,
-            None,
-            Some(redevplugin_ipc::ERR_RUNTIME_LEASE_INVALID),
-            Some(err.as_str()),
+            redevplugin_ipc::ResponseError::runtime(
+                redevplugin_ipc::ERR_RUNTIME_LEASE_INVALID,
+                err.as_str(),
+            ),
         ));
     }
     if let Err(err) = state.shared.control.validate_fresh() {
         let code = err.code();
         let message = err.to_string();
-        return Ok(redevplugin_ipc::response_frame(
+        return Ok(redevplugin_ipc::error_response_frame(
             redevplugin_ipc::FRAME_TYPE_INVOKE_WORKER_RESULT,
             request_id,
             runtime_generation_id,
-            false,
-            None,
-            Some(code),
-            Some(message.as_str()),
+            redevplugin_ipc::ResponseError::runtime(code, message.as_str()),
         ));
     }
     if let Err(err) = state.shared.validate_invocation_frame(line) {
         let code = err.code();
         let message = err.to_string();
-        return Ok(redevplugin_ipc::response_frame(
+        return Ok(redevplugin_ipc::error_response_frame(
             redevplugin_ipc::FRAME_TYPE_INVOKE_WORKER_RESULT,
             request_id,
             runtime_generation_id,
-            false,
-            None,
-            Some(code),
-            Some(message.as_str()),
+            redevplugin_ipc::ResponseError::runtime(code, message.as_str()),
         ));
     }
     match redevplugin_ipc::parse_worker_response_v2(&execution.response_json) {
         Ok(redevplugin_ipc::WorkerResponseV2::Success(data)) => {
             let result = format!("{{\"data\":{data}}}");
-            Ok(redevplugin_ipc::response_frame(
+            Ok(redevplugin_ipc::success_response_frame(
                 redevplugin_ipc::FRAME_TYPE_INVOKE_WORKER_RESULT,
                 request_id,
                 runtime_generation_id,
-                true,
-                Some(result.as_str()),
-                None,
-                None,
+                result.as_str(),
             ))
         }
         Ok(redevplugin_ipc::WorkerResponseV2::Failure { code, message }) => {
-            let error_origin = trusted_worker_error_origin(&execution, &code, &message);
-            Ok(redevplugin_ipc::response_error_frame(
+            let error = if worker_error_is_hostcall(&execution, &code, &message) {
+                redevplugin_ipc::ResponseError::hostcall(code.as_str(), message.as_str())
+            } else {
+                redevplugin_ipc::ResponseError::plugin(code.as_str(), message.as_str())
+            };
+            Ok(redevplugin_ipc::error_response_frame(
                 redevplugin_ipc::FRAME_TYPE_INVOKE_WORKER_RESULT,
                 request_id,
                 runtime_generation_id,
-                redevplugin_ipc::ResponseError {
-                    code: code.as_str(),
-                    message: message.as_str(),
-                    origin: error_origin,
-                },
+                error,
             ))
         }
-        Err(err) => Ok(redevplugin_ipc::response_frame(
+        Err(err) => Ok(redevplugin_ipc::error_response_frame(
             redevplugin_ipc::FRAME_TYPE_INVOKE_WORKER_RESULT,
             request_id,
             runtime_generation_id,
-            false,
-            None,
-            Some(redevplugin_ipc::ERR_WASM_WORKER_INVALID),
-            Some(err.as_str()),
+            redevplugin_ipc::ResponseError::runtime(
+                redevplugin_ipc::ERR_WASM_WORKER_INVALID,
+                err.as_str(),
+            ),
         )),
     }
 }
@@ -824,8 +813,15 @@ impl RuntimeRevocations {
     }
 }
 
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+struct RuntimeLeaseReplayIdentity {
+    lease_id: String,
+    lease_nonce: String,
+}
+
 struct RuntimeLeaseReplayCache {
-    consumed_leases: HashMap<String, i64>,
+    consumed_leases: HashMap<RuntimeLeaseReplayIdentity, i64>,
+    expiry_index: BinaryHeap<Reverse<(i64, RuntimeLeaseReplayIdentity)>>,
     max_entries: usize,
 }
 
@@ -833,6 +829,7 @@ impl Default for RuntimeLeaseReplayCache {
     fn default() -> Self {
         Self {
             consumed_leases: HashMap::new(),
+            expiry_index: BinaryHeap::new(),
             max_entries: DEFAULT_RUNTIME_LEASE_REPLAY_CAPACITY,
         }
     }
@@ -843,7 +840,22 @@ impl RuntimeLeaseReplayCache {
     fn with_capacity(max_entries: usize) -> Self {
         Self {
             consumed_leases: HashMap::new(),
+            expiry_index: BinaryHeap::new(),
             max_entries,
+        }
+    }
+
+    fn prune_expired(&mut self, now_unix_ms: i64) {
+        while let Some(Reverse((expires_at_unix_ms, _))) = self.expiry_index.peek() {
+            if *expires_at_unix_ms > now_unix_ms {
+                break;
+            }
+            let Some(Reverse((expires_at_unix_ms, identity))) = self.expiry_index.pop() else {
+                break;
+            };
+            if self.consumed_leases.get(&identity) == Some(&expires_at_unix_ms) {
+                self.consumed_leases.remove(&identity);
+            }
         }
     }
 
@@ -854,10 +866,12 @@ impl RuntimeLeaseReplayCache {
     ) -> Result<(), RuntimeLeaseReplayError> {
         let key = redevplugin_ipc::parse_worker_lease_replay_key(frame)
             .map_err(|_| RuntimeLeaseReplayError::InvalidInvocation)?;
-        self.consumed_leases
-            .retain(|_, expires_at_unix_ms| *expires_at_unix_ms > now_unix_ms);
-        let cache_key = format!("{}:{}", key.lease_id, key.lease_nonce);
-        if self.consumed_leases.contains_key(&cache_key) {
+        self.prune_expired(now_unix_ms);
+        let identity = RuntimeLeaseReplayIdentity {
+            lease_id: key.lease_id.clone(),
+            lease_nonce: key.lease_nonce,
+        };
+        if self.consumed_leases.contains_key(&identity) {
             return Err(RuntimeLeaseReplayError::Replayed {
                 lease_id: key.lease_id,
             });
@@ -866,7 +880,9 @@ impl RuntimeLeaseReplayCache {
             return Err(RuntimeLeaseReplayError::CapacityExceeded);
         }
         self.consumed_leases
-            .insert(cache_key, key.expires_at_unix_ms);
+            .insert(identity.clone(), key.expires_at_unix_ms);
+        self.expiry_index
+            .push(Reverse((key.expires_at_unix_ms, identity)));
         Ok(())
     }
 }
@@ -960,14 +976,14 @@ fn handle_revoke_epoch(
     let request = match redevplugin_ipc::parse_revoke_epoch_request(line) {
         Ok(value) => value,
         Err(err) => {
-            return redevplugin_ipc::response_frame(
+            return redevplugin_ipc::error_response_frame(
                 redevplugin_ipc::FRAME_TYPE_REVOKE_EPOCH_ACK,
                 request_id,
                 runtime_generation_id,
-                false,
-                None,
-                Some(redevplugin_ipc::ERR_WORKER_INVOCATION_INVALID),
-                Some(err.as_str()),
+                redevplugin_ipc::ResponseError::runtime(
+                    redevplugin_ipc::ERR_WORKER_INVOCATION_INVALID,
+                    err.as_str(),
+                ),
             );
         }
     };
@@ -984,14 +1000,11 @@ fn handle_revoke_epoch(
         0,
         0,
     );
-    redevplugin_ipc::response_frame(
+    redevplugin_ipc::success_response_frame(
         redevplugin_ipc::FRAME_TYPE_REVOKE_EPOCH_ACK,
         request_id,
         runtime_generation_id,
-        true,
-        Some(&result_json),
-        None,
-        None,
+        &result_json,
     )
 }
 
@@ -1001,10 +1014,144 @@ struct WorkerExecutionV2 {
     hostcall_failures: Vec<TrustedWorkerFailure>,
 }
 
+#[derive(Clone)]
+struct CachedModule {
+    module: wasmi::Module,
+    contract: redevplugin_wasm_abi::ValidatedWorkerModule,
+    source_bytes: usize,
+}
+
+struct ModuleCache {
+    entries: HashMap<String, CachedModule>,
+    lru: VecDeque<String>,
+    source_bytes: usize,
+    max_entries: usize,
+    max_source_bytes: usize,
+}
+
+impl ModuleCache {
+    fn new(max_entries: usize, max_source_bytes: usize) -> Self {
+        Self {
+            entries: HashMap::new(),
+            lru: VecDeque::new(),
+            source_bytes: 0,
+            max_entries,
+            max_source_bytes,
+        }
+    }
+
+    fn contains(&self, artifact_sha256: &str) -> bool {
+        self.entries.contains_key(artifact_sha256)
+    }
+
+    fn get(&mut self, artifact_sha256: &str) -> Option<CachedModule> {
+        let module = self.entries.get(artifact_sha256)?.clone();
+        self.touch(artifact_sha256);
+        Some(module)
+    }
+
+    fn insert(&mut self, artifact_sha256: String, module: CachedModule) {
+        if self.max_entries == 0 || module.source_bytes > self.max_source_bytes {
+            return;
+        }
+        if let Some(previous) = self.entries.remove(&artifact_sha256) {
+            self.source_bytes = self.source_bytes.saturating_sub(previous.source_bytes);
+            self.remove_lru(&artifact_sha256);
+        }
+        self.source_bytes = self.source_bytes.saturating_add(module.source_bytes);
+        self.lru.push_back(artifact_sha256.clone());
+        self.entries.insert(artifact_sha256, module);
+        while self.entries.len() > self.max_entries || self.source_bytes > self.max_source_bytes {
+            let Some(oldest) = self.lru.pop_front() else {
+                break;
+            };
+            if let Some(removed) = self.entries.remove(&oldest) {
+                self.source_bytes = self.source_bytes.saturating_sub(removed.source_bytes);
+            }
+        }
+    }
+
+    fn touch(&mut self, artifact_sha256: &str) {
+        self.remove_lru(artifact_sha256);
+        self.lru.push_back(artifact_sha256.to_string());
+    }
+
+    fn remove_lru(&mut self, artifact_sha256: &str) {
+        if let Some(index) = self.lru.iter().position(|key| key == artifact_sha256) {
+            self.lru.remove(index);
+        }
+    }
+}
+
+struct WorkerModuleRuntime {
+    engine: wasmi::Engine,
+    modules: ModuleCache,
+    compile_count: u64,
+}
+
+impl Default for WorkerModuleRuntime {
+    fn default() -> Self {
+        Self::new(
+            DEFAULT_MODULE_CACHE_MAX_ENTRIES,
+            DEFAULT_MODULE_CACHE_MAX_SOURCE_BYTES,
+        )
+    }
+}
+
+impl WorkerModuleRuntime {
+    fn new(max_entries: usize, max_source_bytes: usize) -> Self {
+        let mut config = Config::default();
+        config.consume_fuel(true);
+        Self {
+            engine: wasmi::Engine::new(&config),
+            modules: ModuleCache::new(max_entries, max_source_bytes),
+            compile_count: 0,
+        }
+    }
+
+    fn contains(&self, artifact_sha256: &str) -> bool {
+        self.modules.contains(artifact_sha256)
+    }
+
+    fn load(
+        &mut self,
+        artifact_sha256: &str,
+        wasm_bytes: Option<&[u8]>,
+    ) -> Result<CachedModule, String> {
+        if let Some(module) = self.modules.get(artifact_sha256) {
+            return Ok(module);
+        }
+        let wasm_bytes = wasm_bytes
+            .ok_or_else(|| format!("WASM module cache miss for artifact {artifact_sha256}"))?;
+        let contract = redevplugin_wasm_abi::validate_worker_module(wasm_bytes)
+            .map_err(|err| format!("validate wasm worker module: {err}"))?;
+        let module = wasmi::Module::new(&self.engine, wasm_bytes)
+            .map_err(|err| format!("compile wasm worker module: {err}"))?;
+        self.compile_count = self.compile_count.saturating_add(1);
+        let cached = CachedModule {
+            module,
+            contract,
+            source_bytes: wasm_bytes.len(),
+        };
+        self.modules
+            .insert(artifact_sha256.to_string(), cached.clone());
+        Ok(cached)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct TrustedWorkerFailure {
     code: String,
     message: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct HostcallFailureResponse {
+    ok: bool,
+    code: String,
+    message: String,
+    error_origin: String,
 }
 
 enum WorkerHostcallRequest {
@@ -1043,8 +1190,9 @@ impl<'a> WorkerHostState<'a> {
 }
 
 fn execute_worker_module_v2<'a>(
-    wasm_bytes: &[u8],
-    export_name: &str,
+    worker_runtime: &mut WorkerModuleRuntime,
+    artifact_sha256: &str,
+    wasm_bytes: Option<&[u8]>,
     request_json: &[u8],
     memory_limit_bytes: usize,
     broker_hostcall: impl FnMut(WorkerHostcallRequest) -> Result<String, String> + 'a,
@@ -1055,16 +1203,22 @@ fn execute_worker_module_v2<'a>(
     if memory_limit_bytes == 0 {
         return Err("worker memory limit must be positive".to_string());
     }
-    redevplugin_wasm_abi::validate_worker_module(wasm_bytes, export_name)?;
-    let mut config = Config::default();
-    config.consume_fuel(true);
-    let engine = wasmi::Engine::new(&config);
-    let module = wasmi::Module::new(&engine, wasm_bytes)
-        .map_err(|err| format!("compile wasm worker module: {err}"))?;
-    let mut linker = <wasmi::Linker<WorkerHostState<'a>>>::new(&engine);
+    let cached = worker_runtime.load(artifact_sha256, wasm_bytes)?;
+    let initial_memory_bytes = cached
+        .contract
+        .memory
+        .initial_pages
+        .checked_mul(WASM_PAGE_BYTES)
+        .ok_or_else(|| "worker initial memory size overflows".to_string())?;
+    if initial_memory_bytes > memory_limit_bytes as u64 {
+        return Err(format!(
+            "worker initial memory {initial_memory_bytes} exceeds lease limit {memory_limit_bytes}"
+        ));
+    }
+    let mut linker = <wasmi::Linker<WorkerHostState<'a>>>::new(&worker_runtime.engine);
     define_v2_worker_hostcalls(&mut linker)?;
     let mut store = wasmi::Store::new(
-        &engine,
+        &worker_runtime.engine,
         WorkerHostState::new(broker_hostcall, memory_limit_bytes),
     );
     store.limiter(|state| &mut state.limits);
@@ -1072,7 +1226,7 @@ fn execute_worker_module_v2<'a>(
         .set_fuel(DEFAULT_WASM_WORKER_FUEL)
         .map_err(|err| format!("configure wasm worker fuel: {err}"))?;
     let instance = linker
-        .instantiate_and_start(&mut store, &module)
+        .instantiate_and_start(&mut store, &cached.module)
         .map_err(|err| format!("instantiate wasm worker module: {err}"))?;
     let memory = instance
         .get_memory(&store, "memory")
@@ -1084,8 +1238,8 @@ fn execute_worker_module_v2<'a>(
         .get_typed_func::<(i32, i32), ()>(&store, "redevplugin_worker_dealloc")
         .map_err(|err| format!("resolve ABI v2 worker deallocator: {err}"))?;
     let invoke = instance
-        .get_typed_func::<(i32, i32), i64>(&store, export_name)
-        .map_err(|err| format!("resolve ABI v2 worker export {export_name:?}: {err}"))?;
+        .get_typed_func::<(i32, i32), i64>(&store, redevplugin_wasm_abi::EXPORT_WORKER_INVOKE)
+        .map_err(|err| format!("resolve ABI v2 worker invoke export: {err}"))?;
 
     let request_len = i32::try_from(request_json.len())
         .map_err(|_| "worker request length exceeds i32".to_string())?;
@@ -1102,9 +1256,7 @@ fn execute_worker_module_v2<'a>(
         Ok(value) => value as u64,
         Err(err) => {
             let _ = dealloc.call(&mut store, (request_ptr, request_len));
-            return Err(format!(
-                "execute ABI v2 worker export {export_name:?}: {err}"
-            ));
+            return Err(format!("execute ABI v2 worker invoke export: {err}"));
         }
     };
     let _ = dealloc.call(&mut store, (request_ptr, request_len));
@@ -1138,20 +1290,11 @@ fn execute_worker_module_v2<'a>(
     })
 }
 
-fn trusted_worker_error_origin(
-    execution: &WorkerExecutionV2,
-    code: &str,
-    message: &str,
-) -> &'static str {
-    if execution
+fn worker_error_is_hostcall(execution: &WorkerExecutionV2, code: &str, message: &str) -> bool {
+    execution
         .hostcall_failures
         .iter()
         .any(|failure| failure.code == code && failure.message == message)
-    {
-        redevplugin_ipc::ERROR_ORIGIN_HOSTCALL
-    } else {
-        redevplugin_ipc::ERROR_ORIGIN_PLUGIN
-    }
 }
 
 fn define_v2_worker_hostcalls<'a>(
@@ -1252,36 +1395,33 @@ fn worker_hostcall_error_json(error: &str) -> String {
         "HOSTCALL_FAILED"
     };
     let message = if message.is_empty() {
-        "hostcall failed"
+        "hostcall failed".to_string()
     } else {
-        message
+        message.chars().take(4096).collect()
     };
     serde_json::json!({
         "ok": false,
-        "error_code": code,
+        "code": code,
         "message": message,
+        "error_origin": "hostcall",
     })
     .to_string()
 }
 
 fn record_hostcall_response(caller: &mut wasmi::Caller<'_, WorkerHostState<'_>>, response: &str) {
-    let Ok(value) = serde_json::from_str::<serde_json::Value>(response) else {
+    let Ok(failure) = serde_json::from_str::<HostcallFailureResponse>(response) else {
         return;
     };
-    if value.get("ok").and_then(serde_json::Value::as_bool) != Some(false) {
+    if failure.ok
+        || failure.error_origin != "hostcall"
+        || !stable_worker_error_code(&failure.code)
+        || failure.message.trim().is_empty()
+        || failure.message.chars().count() > 4096
+    {
         return;
     }
-    let code = value
-        .get("error_code")
-        .or_else(|| value.get("code"))
-        .and_then(serde_json::Value::as_str)
-        .filter(|value| stable_worker_error_code(value))
-        .unwrap_or("HOSTCALL_FAILED");
-    let message = value
-        .get("message")
-        .and_then(serde_json::Value::as_str)
-        .filter(|value| !value.trim().is_empty())
-        .unwrap_or("hostcall failed");
+    let code = failure.code.trim();
+    let message = failure.message.trim();
     let failures = &mut caller.data_mut().hostcall_failures;
     if failures.len() < 64
         && !failures
@@ -1708,8 +1848,9 @@ fn dispatch_storage_file_request<R: BufRead, W: Write>(
         &response,
         &storage_request_id,
         runtime_generation_id,
+        &req.operation,
     )?;
-    redevplugin_ipc::storage_file_payload_json(&response)
+    redevplugin_ipc::storage_file_payload_json(&response, &req.operation)
 }
 
 fn dispatch_storage_kv_request<R: BufRead, W: Write>(
@@ -1738,8 +1879,9 @@ fn dispatch_storage_kv_request<R: BufRead, W: Write>(
         &response,
         &storage_request_id,
         runtime_generation_id,
+        &req.operation,
     )?;
-    redevplugin_ipc::storage_kv_payload_json(&response)
+    redevplugin_ipc::storage_kv_payload_json(&response, &req.operation)
 }
 
 fn dispatch_storage_sqlite_request<R: BufRead, W: Write>(
@@ -1769,8 +1911,9 @@ fn dispatch_storage_sqlite_request<R: BufRead, W: Write>(
         &response,
         &storage_request_id,
         runtime_generation_id,
+        &req.operation,
     )?;
-    redevplugin_ipc::storage_sqlite_payload_json(&response)
+    redevplugin_ipc::storage_sqlite_payload_json(&response, &req.operation)
 }
 
 #[derive(Deserialize)]
@@ -1851,6 +1994,7 @@ struct NetworkExecuteHostcallRequest {
     surface_instance_id: Option<String>,
     owner_session_hash: Option<String>,
     owner_user_hash: Option<String>,
+    owner_env_hash: Option<String>,
     session_channel_id_hash: Option<String>,
     bridge_channel_id: Option<String>,
     #[serde(default)]
@@ -1894,7 +2038,7 @@ fn storage_file_request(
         active_fingerprint: invocation.active_fingerprint,
         runtime_instance_id: invocation.runtime_instance_id,
         runtime_generation_id: runtime_generation_id.to_string(),
-        runtime_shard_id: String::new(),
+        runtime_shard_id: invocation.runtime_shard_id,
         handle_id: format!("storage:{store_id}"),
         method: "storage.files".to_string(),
         policy_revision: invocation.policy_revision,
@@ -1932,7 +2076,7 @@ fn storage_kv_request(
         active_fingerprint: invocation.active_fingerprint,
         runtime_instance_id: invocation.runtime_instance_id,
         runtime_generation_id: runtime_generation_id.to_string(),
-        runtime_shard_id: String::new(),
+        runtime_shard_id: invocation.runtime_shard_id,
         handle_id: format!("storage:{store_id}"),
         method: "storage.kv".to_string(),
         policy_revision: invocation.policy_revision,
@@ -1968,7 +2112,7 @@ fn storage_sqlite_request(
         active_fingerprint: invocation.active_fingerprint,
         runtime_instance_id: invocation.runtime_instance_id,
         runtime_generation_id: runtime_generation_id.to_string(),
-        runtime_shard_id: String::new(),
+        runtime_shard_id: invocation.runtime_shard_id,
         handle_id: format!("storage:{store_id}"),
         method: "storage.sqlite".to_string(),
         policy_revision: invocation.policy_revision,
@@ -2046,6 +2190,7 @@ fn network_execute_request(
         ("surface_instance_id", request.surface_instance_id.as_ref()),
         ("owner_session_hash", request.owner_session_hash.as_ref()),
         ("owner_user_hash", request.owner_user_hash.as_ref()),
+        ("owner_env_hash", request.owner_env_hash.as_ref()),
         (
             "session_channel_id_hash",
             request.session_channel_id_hash.as_ref(),
@@ -2080,7 +2225,7 @@ fn network_execute_request(
         active_fingerprint: invocation.active_fingerprint,
         runtime_instance_id: invocation.runtime_instance_id,
         runtime_generation_id: runtime_generation_id.to_string(),
-        runtime_shard_id: String::new(),
+        runtime_shard_id: invocation.runtime_shard_id,
         policy_revision: invocation.policy_revision,
         management_revision: invocation.management_revision,
         revoke_epoch: invocation.revoke_epoch,
@@ -2116,6 +2261,7 @@ fn network_execute_request(
         surface_instance_id: invocation.surface_instance_id,
         owner_session_hash: invocation.owner_session_hash,
         owner_user_hash: invocation.owner_user_hash,
+        owner_env_hash: invocation.owner_env_hash,
         session_channel_id_hash: invocation.session_channel_id_hash,
         bridge_channel_id: invocation.bridge_channel_id,
         content_type: request.content_type,
@@ -2189,13 +2335,32 @@ mod tests {
     fn worker_invocation_state<'a>(
         shared: &'a RuntimeSharedState,
         lease_replays: &'a mut RuntimeLeaseReplayCache,
+        worker_runtime: &'a mut WorkerModuleRuntime,
     ) -> WorkerInvocationState<'a> {
         WorkerInvocationState {
             shared,
             lease_replays,
             runtime_lease_public_keys: runtime_lease_fixture_public_keys(),
+            worker_runtime,
             clock: &fixed_runtime_lease_clock,
         }
+    }
+
+    fn execute_worker_module_for_test<'a>(
+        wasm_bytes: &[u8],
+        request_json: &[u8],
+        memory_limit_bytes: usize,
+        broker_hostcall: impl FnMut(WorkerHostcallRequest) -> Result<String, String> + 'a,
+    ) -> Result<WorkerExecutionV2, String> {
+        let mut worker_runtime = WorkerModuleRuntime::default();
+        execute_worker_module_v2(
+            &mut worker_runtime,
+            "sha256:test-artifact",
+            Some(wasm_bytes),
+            request_json,
+            memory_limit_bytes,
+            broker_hostcall,
+        )
     }
 
     fn fixed_runtime_lease_clock() -> Result<i64, String> {
@@ -2352,6 +2517,45 @@ mod tests {
     }
 
     #[test]
+    fn runtime_lease_replay_cache_stays_bounded_near_capacity() {
+        const CAPACITY: usize = 256;
+        let mut cache = RuntimeLeaseReplayCache::with_capacity(CAPACITY);
+        for index in 0..CAPACITY {
+            cache
+                .consume_invocation_frame(
+                    &worker_invocation_frame_with_lease_expiry(
+                        "plugini_1",
+                        1,
+                        &format!("lease_initial_{index}"),
+                        &format!("nonce_initial_{index}"),
+                        2_000 + index as i64,
+                    ),
+                    1_000,
+                )
+                .expect("fill replay cache");
+        }
+        assert_eq!(cache.consumed_leases.len(), CAPACITY);
+        assert_eq!(cache.expiry_index.len(), CAPACITY);
+
+        for index in 0..CAPACITY {
+            cache
+                .consume_invocation_frame(
+                    &worker_invocation_frame_with_lease_expiry(
+                        "plugini_1",
+                        1,
+                        &format!("lease_replacement_{index}"),
+                        &format!("nonce_replacement_{index}"),
+                        100_000 + index as i64,
+                    ),
+                    2_000 + index as i64,
+                )
+                .expect("replace exactly one expired replay entry");
+            assert_eq!(cache.consumed_leases.len(), CAPACITY);
+            assert_eq!(cache.expiry_index.len(), CAPACITY);
+        }
+    }
+
+    #[test]
     fn control_channel_state_fails_closed_when_stale_and_recovers_on_refresh() {
         let control = ControlChannelState::new();
         control.refresh(Duration::from_millis(1));
@@ -2437,7 +2641,7 @@ mod tests {
     #[test]
     fn successful_storage_request_round_trips_without_runtime_resource_tracking() {
         let mut input = std::io::Cursor::new(
-            br#"{"ipc_version":"rust-ipc-v2","frame_type":"storage_file","request_id":"r1:storage_file","runtime_generation_id":"g1","payload":{"ok":true,"path":"notes/from-memory.txt","size_bytes":34}}"#
+            br#"{"ipc_version":"rust-ipc-v2","frame_type":"storage_file","request_id":"r1:storage_file","runtime_generation_id":"g1","payload":{"ok":true,"path":"notes/from-memory.txt","size_bytes":34,"usage":{"plugin_instance_id":"plugini_1","store_id":"workspace","usage_bytes":34,"quota_bytes":4096,"usage_files":1,"quota_files":64}}}"#
                 .iter()
                 .copied()
                 .chain(std::iter::once(b'\n'))
@@ -2487,7 +2691,7 @@ mod tests {
     #[test]
     fn successful_network_stream_request_round_trips_without_runtime_resource_tracking() {
         let mut input = std::io::Cursor::new(
-            br#"{"ipc_version":"rust-ipc-v2","frame_type":"network_execute","request_id":"r1:network_execute","runtime_generation_id":"g1","payload":{"ok":true,"connector_id":"api","transport":"http","status_code":200,"stream_id":"stream_1"}}"#
+            br#"{"ipc_version":"rust-ipc-v2","frame_type":"network_execute","request_id":"r1:network_execute","runtime_generation_id":"g1","payload":{"ok":true,"transport":"http","destination":{"transport":"http","scheme":"https","host":"api.example.com","port":443},"status_code":200,"stream_id":"stream_1","grant_id":"netgrant_00112233445566778899aabbccddeeff","connector_id":"api","runtime_generation_id":"g1"}}"#
                 .iter()
                 .copied()
                 .chain(std::iter::once(b'\n'))
@@ -2595,13 +2799,14 @@ mod tests {
             .expect("runtime revocation mutex")
             .revoke_plugin("plugini_1", 5);
         let mut lease_replays = RuntimeLeaseReplayCache::default();
+        let mut worker_runtime = WorkerModuleRuntime::default();
         let mut input = std::io::Cursor::new(Vec::<u8>::new());
         let mut output = Vec::<u8>::new();
 
         let response = handle_worker_invocation(
             &mut input,
             &mut output,
-            &mut worker_invocation_state(&shared, &mut lease_replays),
+            &mut worker_invocation_state(&shared, &mut lease_replays, &mut worker_runtime),
             "r1",
             "g1",
             &worker_invocation_frame("plugini_1", 4),
@@ -2621,6 +2826,7 @@ mod tests {
     fn worker_invocation_rejects_stale_control_before_opening_artifact() {
         let shared = RuntimeSharedState::default();
         let mut lease_replays = RuntimeLeaseReplayCache::default();
+        let mut worker_runtime = WorkerModuleRuntime::default();
         shared.control.force_stale_for_test();
         let mut input = std::io::Cursor::new(Vec::<u8>::new());
         let mut output = Vec::<u8>::new();
@@ -2628,7 +2834,7 @@ mod tests {
         let response = handle_worker_invocation(
             &mut input,
             &mut output,
-            &mut worker_invocation_state(&shared, &mut lease_replays),
+            &mut worker_invocation_state(&shared, &mut lease_replays, &mut worker_runtime),
             "r1",
             "g1",
             signed_worker_invocation_fixture(),
@@ -2648,6 +2854,7 @@ mod tests {
     fn worker_invocation_rejects_unsigned_lease_before_opening_artifact_when_keys_configured() {
         let shared = RuntimeSharedState::default();
         let mut lease_replays = RuntimeLeaseReplayCache::default();
+        let mut worker_runtime = WorkerModuleRuntime::default();
         let runtime_lease_public_keys = vec![redevplugin_ipc::RuntimeLeasePublicKey {
             key_id: "host_ephemeral_key_1".to_string(),
             public_key: [7u8; 32],
@@ -2662,6 +2869,7 @@ mod tests {
                 shared: &shared,
                 lease_replays: &mut lease_replays,
                 runtime_lease_public_keys: &runtime_lease_public_keys,
+                worker_runtime: &mut worker_runtime,
                 clock: &fixed_runtime_lease_clock,
             },
             "r1",
@@ -2683,12 +2891,14 @@ mod tests {
     fn worker_invocation_rejects_expired_lease_before_opening_artifact() {
         let shared = RuntimeSharedState::default();
         let mut lease_replays = RuntimeLeaseReplayCache::default();
+        let mut worker_runtime = WorkerModuleRuntime::default();
         let mut input = std::io::Cursor::new(Vec::<u8>::new());
         let mut output = Vec::<u8>::new();
         let mut state = WorkerInvocationState {
             shared: &shared,
             lease_replays: &mut lease_replays,
             runtime_lease_public_keys: runtime_lease_fixture_public_keys(),
+            worker_runtime: &mut worker_runtime,
             clock: &expired_runtime_lease_clock,
         };
 
@@ -2713,6 +2923,7 @@ mod tests {
     fn worker_invocation_revalidates_lease_before_returning_success() {
         let shared = RuntimeSharedState::default();
         let mut lease_replays = RuntimeLeaseReplayCache::default();
+        let mut worker_runtime = WorkerModuleRuntime::default();
         let clock_calls = Cell::new(0_u32);
         let clock = || {
             let call = clock_calls.get();
@@ -2748,6 +2959,7 @@ mod tests {
                 shared: &shared,
                 lease_replays: &mut lease_replays,
                 runtime_lease_public_keys: runtime_lease_fixture_public_keys(),
+                worker_runtime: &mut worker_runtime,
                 clock: &clock,
             },
             "r1",
@@ -2765,6 +2977,7 @@ mod tests {
     fn worker_invocation_revalidates_revocation_before_returning_success() {
         let shared = RuntimeSharedState::default();
         let mut lease_replays = RuntimeLeaseReplayCache::default();
+        let mut worker_runtime = WorkerModuleRuntime::default();
         let clock_calls = Cell::new(0_u32);
         let clock = || {
             let call = clock_calls.get();
@@ -2789,6 +3002,7 @@ mod tests {
                 shared: &shared,
                 lease_replays: &mut lease_replays,
                 runtime_lease_public_keys: runtime_lease_fixture_public_keys(),
+                worker_runtime: &mut worker_runtime,
                 clock: &clock,
             },
             "r1",
@@ -2806,6 +3020,7 @@ mod tests {
     fn worker_invocation_revalidates_control_freshness_before_returning_success() {
         let shared = RuntimeSharedState::default();
         let mut lease_replays = RuntimeLeaseReplayCache::default();
+        let mut worker_runtime = WorkerModuleRuntime::default();
         let clock_calls = Cell::new(0_u32);
         let clock = || {
             let call = clock_calls.get();
@@ -2826,6 +3041,7 @@ mod tests {
                 shared: &shared,
                 lease_replays: &mut lease_replays,
                 runtime_lease_public_keys: runtime_lease_fixture_public_keys(),
+                worker_runtime: &mut worker_runtime,
                 clock: &clock,
             },
             "r1",
@@ -2843,6 +3059,7 @@ mod tests {
     fn worker_invocation_rejects_execution_binding_mismatch_before_opening_artifact() {
         let shared = RuntimeSharedState::default();
         let mut lease_replays = RuntimeLeaseReplayCache::default();
+        let mut worker_runtime = WorkerModuleRuntime::default();
         let mut input = std::io::Cursor::new(Vec::<u8>::new());
         let mut output = Vec::<u8>::new();
         let (prefix, invocation) = signed_worker_invocation_fixture()
@@ -2858,7 +3075,7 @@ mod tests {
         let response = handle_worker_invocation(
             &mut input,
             &mut output,
-            &mut worker_invocation_state(&shared, &mut lease_replays),
+            &mut worker_invocation_state(&shared, &mut lease_replays, &mut worker_runtime),
             "r1",
             "g1",
             &frame,
@@ -2881,13 +3098,14 @@ mod tests {
             .expect("runtime revocation mutex")
             .revoke_plugin("plugini_fixture_v1", 5);
         let mut lease_replays = RuntimeLeaseReplayCache::default();
+        let mut worker_runtime = WorkerModuleRuntime::default();
         let mut input = std::io::Cursor::new(Vec::<u8>::new());
         let mut output = Vec::<u8>::new();
 
         let response = handle_worker_invocation(
             &mut input,
             &mut output,
-            &mut worker_invocation_state(&shared, &mut lease_replays),
+            &mut worker_invocation_state(&shared, &mut lease_replays, &mut worker_runtime),
             "r1",
             "g1",
             signed_worker_invocation_fixture(),
@@ -2906,6 +3124,7 @@ mod tests {
     fn worker_invocation_rejects_replayed_lease_before_opening_artifact() {
         let shared = RuntimeSharedState::default();
         let mut lease_replays = RuntimeLeaseReplayCache::default();
+        let mut worker_runtime = WorkerModuleRuntime::default();
         let mut input = std::io::Cursor::new(Vec::<u8>::new());
         let mut output = Vec::<u8>::new();
         let frame = signed_worker_invocation_fixture().to_string();
@@ -2913,7 +3132,7 @@ mod tests {
         let first = handle_worker_invocation(
             &mut input,
             &mut output,
-            &mut worker_invocation_state(&shared, &mut lease_replays),
+            &mut worker_invocation_state(&shared, &mut lease_replays, &mut worker_runtime),
             "r1",
             "g1",
             &frame,
@@ -2930,7 +3149,7 @@ mod tests {
         let replay = handle_worker_invocation(
             &mut replay_input,
             &mut replay_output,
-            &mut worker_invocation_state(&shared, &mut lease_replays),
+            &mut worker_invocation_state(&shared, &mut lease_replays, &mut worker_runtime),
             "r2",
             "g1",
             &frame,
@@ -2971,9 +3190,8 @@ mod tests {
         ))
         .expect("compile v2 worker fixture");
 
-        let execution = execute_worker_module_v2(
+        let execution = execute_worker_module_for_test(
             &module,
-            "redevplugin_worker_invoke",
             request,
             TEST_WORKER_MEMORY_LIMIT_BYTES,
             unexpected_hostcall,
@@ -2984,12 +3202,78 @@ mod tests {
     }
 
     #[test]
+    fn worker_module_runtime_compiles_once_for_warm_invocations() {
+        let request = br#"{"schema_version":"redevplugin.worker_request.v2","method":"notes.list","params":{}}"#;
+        let response = r#"{"ok":true,"data":{"cached":true}}"#;
+        let module = response_worker_wasm(response);
+        let mut worker_runtime = WorkerModuleRuntime::default();
+
+        let cold = execute_worker_module_v2(
+            &mut worker_runtime,
+            "sha256:artifact-a",
+            Some(&module),
+            request,
+            TEST_WORKER_MEMORY_LIMIT_BYTES,
+            unexpected_hostcall,
+        )
+        .expect("cold invocation");
+        let warm = execute_worker_module_v2(
+            &mut worker_runtime,
+            "sha256:artifact-a",
+            None,
+            request,
+            TEST_WORKER_MEMORY_LIMIT_BYTES,
+            unexpected_hostcall,
+        )
+        .expect("warm invocation");
+
+        assert_eq!(cold.response_json, response);
+        assert_eq!(warm.response_json, response);
+        assert_eq!(worker_runtime.compile_count, 1);
+    }
+
+    #[test]
+    fn worker_module_cache_enforces_entry_and_source_byte_limits() {
+        let module = response_worker_wasm(r#"{"ok":true,"data":{}}"#);
+        let mut entry_limited = WorkerModuleRuntime::new(1, module.len() * 4);
+        entry_limited
+            .load("sha256:first", Some(&module))
+            .expect("compile first module");
+        entry_limited
+            .load("sha256:second", Some(&module))
+            .expect("compile second module");
+        assert!(!entry_limited.contains("sha256:first"));
+        assert!(entry_limited.contains("sha256:second"));
+
+        let mut byte_limited = WorkerModuleRuntime::new(4, module.len());
+        byte_limited
+            .load("sha256:first", Some(&module))
+            .expect("compile first byte-limited module");
+        byte_limited
+            .load("sha256:second", Some(&module))
+            .expect("compile second byte-limited module");
+        assert!(!byte_limited.contains("sha256:first"));
+        assert!(byte_limited.contains("sha256:second"));
+    }
+
+    #[test]
+    fn oversized_worker_module_executes_without_being_cached() {
+        let module = response_worker_wasm(r#"{"ok":true,"data":{}}"#);
+        let mut worker_runtime = WorkerModuleRuntime::new(4, module.len() - 1);
+        worker_runtime
+            .load("sha256:oversized", Some(&module))
+            .expect("compile oversized module for current invocation");
+        assert_eq!(worker_runtime.compile_count, 1);
+        assert!(!worker_runtime.contains("sha256:oversized"));
+        assert!(worker_runtime.load("sha256:oversized", None).is_err());
+    }
+
+    #[test]
     fn executes_compiled_example_worker_with_portable_dispatch() {
         let module = include_bytes!("../../../examples/plugins/memos/workers/memos.wasm");
-        let execution = execute_worker_module_v2(
+        let execution = execute_worker_module_for_test(
             module,
-            "redevplugin_worker_invoke",
-            br#"{"schema_version":"redevplugin.worker_request.v2","method":"memos.list","params":{"query":"","view":"all","tag":"","date":"","utc_offset_minutes":0,"offset":0,"limit":10}}"#,
+            br#"{"schema_version":"redevplugin.worker_request.v2","method":"memos.list","params":{"query":"","view":"all","tag":"","date":"","utc_offset_minutes":0,"limit":10}}"#,
             TEST_WORKER_MEMORY_LIMIT_BYTES,
             |request| match request {
                 WorkerHostcallRequest::StorageSQLite(request_json) => {
@@ -3005,7 +3289,7 @@ mod tests {
         .expect("compiled example worker executes with portable dispatch");
         assert_eq!(
             execution.response_json,
-            r#"{"ok":true,"data":{"has_more":false,"memos":[],"offset":0,"total":0}}"#
+            r#"{"ok":true,"data":{"memos":[],"next_cursor":null}}"#
         );
     }
 
@@ -3013,9 +3297,8 @@ mod tests {
     fn compiled_memos_worker_returns_distinct_navigation_totals() {
         let module = include_bytes!("../../../examples/plugins/memos/workers/memos.wasm");
         let mut hostcall_count = 0;
-        let execution = execute_worker_module_v2(
+        let execution = execute_worker_module_for_test(
             module,
-            "redevplugin_worker_invoke",
             br#"{"schema_version":"redevplugin.worker_request.v2","method":"memos.facets","params":{"month":"2026-07","utc_offset_minutes":0}}"#,
             TEST_WORKER_MEMORY_LIMIT_BYTES,
             |hostcall| {
@@ -3064,16 +3347,17 @@ mod tests {
     fn executes_compiled_example_worker_publish_with_portable_dispatch() {
         let module = include_bytes!("../../../examples/plugins/memos/workers/memos.wasm");
         let mut hostcall_count = 0;
-        let execution = execute_worker_module_v2(
+        let execution = execute_worker_module_for_test(
             module,
-            "redevplugin_worker_invoke",
             br##"{"schema_version":"redevplugin.worker_request.v2","method":"memos.publish","params":{"content":"# Smoke memo\n\nStored through SQLite #work"}}"##,
             TEST_WORKER_MEMORY_LIMIT_BYTES,
             |request| match request {
                 WorkerHostcallRequest::StorageSQLite(request_json) => {
                     hostcall_count += 1;
                     if request_json.contains(r#""operation":"query""#) {
-                        Ok(r##"{"ok":true,"database":"memos.sqlite","columns":["id","content","pinned","archived","tags","created_at","updated_at"],"rows":[[{"text":"memo_0123456789abcdef"},{"text":"# Smoke memo\n\nStored through SQLite #work"},{"int":0},{"int":0},{"text":"work"},{"text":"2026-07-14T00:00:00Z"},{"text":"2026-07-14T00:00:00Z"}]],"usage":{"plugin_instance_id":"plugini_test","store_id":"memos","usage_bytes":256,"quota_bytes":1048576,"usage_files":1,"quota_files":1000}}"##.to_string())
+                        Ok(r##"{"ok":true,"database":"memos.sqlite","columns":["id","content","pinned","archived","tags","created_at","updated_at"],"rows":[[{"text":"memo_000000000000000000000001"},{"text":"# Smoke memo\n\nStored through SQLite #work"},{"int":0},{"int":0},{"text":"work"},{"text":"2026-07-14T00:00:00Z"},{"text":"2026-07-14T00:00:00Z"}]],"usage":{"plugin_instance_id":"plugini_test","store_id":"memos","usage_bytes":256,"quota_bytes":1048576,"usage_files":1,"quota_files":1000}}"##.to_string())
+                    } else if request_json.contains("INSERT INTO memo_sequence") {
+                        Ok(r#"{"ok":true,"database":"memos.sqlite","rows_affected":1,"last_insert_id":1,"usage":{"plugin_instance_id":"plugini_test","store_id":"memos","usage_bytes":256,"quota_bytes":1048576,"usage_files":1,"quota_files":1000}}"#.to_string())
                     } else {
                         Ok(r#"{"ok":true,"database":"memos.sqlite","rows_affected":1,"usage":{"plugin_instance_id":"plugini_test","store_id":"memos","usage_bytes":256,"quota_bytes":1048576,"usage_files":1,"quota_files":1000}}"#.to_string())
                     }
@@ -3083,28 +3367,45 @@ mod tests {
         )
         .expect("compiled example worker publish executes with portable dispatch");
 
-        assert_eq!(hostcall_count, 2);
+        assert_eq!(hostcall_count, 3);
         let redevplugin_ipc::WorkerResponseV2::Success(data) =
             redevplugin_ipc::parse_worker_response_v2(&execution.response_json)
                 .expect("valid worker response")
         else {
             panic!("publish must return a successful worker response");
         };
-        assert!(data.contains(r#""id":"memo_0123456789abcdef""#), "{data}");
+        assert!(
+            data.contains(r#""id":"memo_000000000000000000000001""#),
+            "{data}"
+        );
         assert!(data.contains(r#""tags":["work"]"#), "{data}");
         assert!(data.contains(r#""archived":false"#), "{data}");
     }
 
     #[test]
-    fn compiled_memos_worker_pages_across_sixty_one_pinned_notes() {
+    fn compiled_memos_worker_pages_with_an_opaque_keyset_cursor() {
         let module = include_bytes!("../../../examples/plugins/memos/workers/memos.wasm");
-        let execute_page = |offset: usize| {
-            let request = format!(
-                r#"{{"schema_version":"redevplugin.worker_request.v2","method":"memos.list","params":{{"query":"","view":"pinned","tag":"","date":"","utc_offset_minutes":0,"offset":{offset},"limit":10}}}}"#
-            );
-            execute_worker_module_v2(
+        let execute_page = |cursor: Option<&str>| {
+            let mut params = serde_json::json!({
+                "query": "",
+                "view": "pinned",
+                "tag": "",
+                "date": "",
+                "utc_offset_minutes": 0,
+                "limit": 10
+            });
+            if let Some(cursor) = cursor {
+                params["cursor"] = serde_json::Value::String(cursor.to_string());
+            }
+            let request = serde_json::json!({
+                "schema_version": "redevplugin.worker_request.v2",
+                "method": "memos.list",
+                "params": params
+            })
+            .to_string();
+            let expects_keyset = cursor.is_some();
+            execute_worker_module_for_test(
                 module,
-                "redevplugin_worker_invoke",
                 request.as_bytes(),
                 TEST_WORKER_MEMORY_LIMIT_BYTES,
                 |hostcall| {
@@ -3116,34 +3417,25 @@ mod tests {
                     let sql = request["sql"]
                         .as_str()
                         .ok_or_else(|| "memos SQLite request omitted sql".to_string())?;
-                    if sql.starts_with("SELECT count(*)") {
-                        return Ok(serde_json::json!({
-                            "ok": true,
-                            "database": "memos.sqlite",
-                            "columns": ["count(*)"],
-                            "rows": [[{"int": 61}]],
-                            "usage": sqlite_usage_fixture()
-                        })
-                        .to_string());
+                    if sql.contains("count(*)") || sql.contains("OFFSET") {
+                        return Err(format!("invalid memos pagination query: {sql}"));
                     }
+                    let uses_keyset = sql.contains(
+                        "pinned < ? OR (pinned = ? AND created_at < ?) OR (pinned = ? AND created_at = ? AND id < ?)",
+                    );
                     if !sql.contains("archived = ? AND pinned = ?")
-                        || !sql.contains("LIMIT ? OFFSET ?")
+                        || !sql.contains("ORDER BY pinned DESC, created_at DESC, id DESC LIMIT ?")
+                        || uses_keyset != expects_keyset
                     {
                         return Err(format!("unexpected memos page query: {sql}"));
                     }
-                    let request_offset = request["args"]
-                        .as_array()
-                        .and_then(|args| args.last())
-                        .and_then(|value| value["int"].as_u64())
-                        .ok_or_else(|| "memos page query omitted offset".to_string())?
-                        as usize;
-                    let page_len = if request_offset < 60 { 10 } else { 1 };
+                    let (page_start, page_len) = if expects_keyset { (0, 1) } else { (1, 11) };
                     let rows = (0..page_len)
                         .map(|index| {
-                            let absolute = request_offset + index;
+                            let absolute = page_start + page_len - index;
                             serde_json::json!([
                                 {"text": format!("memo_{absolute:04}")},
-                                {"text": format!("Pinned memo {} #work", absolute + 1)},
+                                {"text": format!("Pinned memo {absolute} #work")},
                                 {"int": 1},
                                 {"int": 0},
                                 {"text": "work"},
@@ -3165,23 +3457,19 @@ mod tests {
             .expect("compiled memos page executes")
         };
 
-        let first: serde_json::Value =
-            serde_json::from_str(&execute_page(0).response_json).expect("decode first memos page");
+        let first: serde_json::Value = serde_json::from_str(&execute_page(None).response_json)
+            .expect("decode first memos page");
         assert_eq!(first["data"]["memos"].as_array().map(Vec::len), Some(10));
-        assert_eq!(first["data"]["has_more"], true);
-        assert_eq!(first["data"]["total"], 61);
+        let next_cursor = first["data"]["next_cursor"]
+            .as_str()
+            .expect("first page has an opaque next cursor");
+        assert!(next_cursor.starts_with("memos_cursor_v1_"));
 
-        let second: serde_json::Value = serde_json::from_str(&execute_page(10).response_json)
-            .expect("decode second memos page");
-        assert_eq!(second["data"]["memos"].as_array().map(Vec::len), Some(10));
-        assert_eq!(second["data"]["has_more"], true);
-        assert_eq!(second["data"]["offset"], 10);
-
-        let third: serde_json::Value =
-            serde_json::from_str(&execute_page(60).response_json).expect("decode final memos page");
-        assert_eq!(third["data"]["memos"].as_array().map(Vec::len), Some(1));
-        assert_eq!(third["data"]["has_more"], false);
-        assert_eq!(third["data"]["offset"], 60);
+        let second: serde_json::Value =
+            serde_json::from_str(&execute_page(Some(next_cursor)).response_json)
+                .expect("decode second memos page");
+        assert_eq!(second["data"]["memos"].as_array().map(Vec::len), Some(1));
+        assert!(second["data"]["next_cursor"].is_null());
     }
 
     #[test]
@@ -3198,9 +3486,8 @@ mod tests {
         )
         .expect("compile invalid v2 worker fixture");
 
-        let error = execute_worker_module_v2(
+        let error = execute_worker_module_for_test(
             &module,
-            "redevplugin_worker_invoke",
             br#"{"schema_version":"redevplugin.worker_request.v2","method":"notes.list","params":{}}"#,
             TEST_WORKER_MEMORY_LIMIT_BYTES,
             unexpected_hostcall,
@@ -3227,9 +3514,8 @@ mod tests {
         ))
         .expect("compile memory-limited worker fixture");
 
-        let error = execute_worker_module_v2(
+        let error = execute_worker_module_for_test(
             &module,
-            "redevplugin_worker_invoke",
             br#"{"schema_version":"redevplugin.worker_request.v2","method":"notes.list","params":{}}"#,
             64 * 1024,
             unexpected_hostcall,
@@ -3262,9 +3548,8 @@ mod tests {
         ))
         .expect("compile memory-grow worker fixture");
 
-        let error = execute_worker_module_v2(
+        let error = execute_worker_module_for_test(
             &module,
-            "redevplugin_worker_invoke",
             br#"{"schema_version":"redevplugin.worker_request.v2","method":"notes.list","params":{}}"#,
             64 * 1024,
             unexpected_hostcall,
@@ -3295,9 +3580,8 @@ mod tests {
         ))
         .expect("compile table-limited worker fixture");
 
-        let error = execute_worker_module_v2(
+        let error = execute_worker_module_for_test(
             &module,
-            "redevplugin_worker_invoke",
             br#"{"schema_version":"redevplugin.worker_request.v2","method":"notes.list","params":{}}"#,
             TEST_WORKER_MEMORY_LIMIT_BYTES,
             unexpected_hostcall,
@@ -3314,11 +3598,11 @@ mod tests {
     fn broker_failures_are_encoded_for_worker_error_handling() {
         assert_eq!(
             worker_hostcall_error_json("NETWORK_TARGET_DENIED: destination is private"),
-            r#"{"error_code":"NETWORK_TARGET_DENIED","message":"destination is private","ok":false}"#
+            r#"{"code":"NETWORK_TARGET_DENIED","error_origin":"hostcall","message":"destination is private","ok":false}"#
         );
         assert_eq!(
             worker_hostcall_error_json("transport closed"),
-            r#"{"error_code":"HOSTCALL_FAILED","message":"transport closed","ok":false}"#
+            r#"{"code":"HOSTCALL_FAILED","error_origin":"hostcall","message":"transport closed","ok":false}"#
         );
     }
 
@@ -3328,14 +3612,11 @@ mod tests {
             response_json: String::new(),
             hostcall_failures: Vec::new(),
         };
-        assert_eq!(
-            trusted_worker_error_origin(
-                &plugin_execution,
-                "RUNTIME_CAPABILITY_REVOKED",
-                "runtime capability was revoked",
-            ),
-            redevplugin_ipc::ERROR_ORIGIN_PLUGIN,
-        );
+        assert!(!worker_error_is_hostcall(
+            &plugin_execution,
+            "RUNTIME_CAPABILITY_REVOKED",
+            "runtime capability was revoked",
+        ));
         let hostcall_execution = WorkerExecutionV2 {
             response_json: String::new(),
             hostcall_failures: vec![TrustedWorkerFailure {
@@ -3343,14 +3624,11 @@ mod tests {
                 message: "destination is private".to_string(),
             }],
         };
-        assert_eq!(
-            trusted_worker_error_origin(
-                &hostcall_execution,
-                "NETWORK_TARGET_DENIED",
-                "destination is private",
-            ),
-            redevplugin_ipc::ERROR_ORIGIN_HOSTCALL,
-        );
+        assert!(worker_error_is_hostcall(
+            &hostcall_execution,
+            "NETWORK_TARGET_DENIED",
+            "destination is private",
+        ));
     }
 
     #[test]
@@ -3381,9 +3659,8 @@ mod tests {
         .expect("compile storage worker fixture");
         let mut called = false;
 
-        let execution = execute_worker_module_v2(
+        let execution = execute_worker_module_for_test(
             &module,
-            "redevplugin_worker_invoke",
             br#"{"schema_version":"redevplugin.worker_request.v2","method":"notes.list","params":{}}"#,
             TEST_WORKER_MEMORY_LIMIT_BYTES,
             |request| {
@@ -3403,12 +3680,13 @@ mod tests {
 
     #[test]
     fn network_execute_request_inherits_stream_audience_from_invocation() {
-        let invocation = r#"{"ipc_version":"rust-ipc-v2","frame_type":"invoke_worker","request_id":"r1","runtime_generation_id":"g1","payload":{"lease":{"plugin_instance_id":"plugini_1","stream_id":"stream_host_1"},"method":"worker.echo","invocation":{"plugin_id":"com.example.worker","plugin_instance_id":"plugini_1","active_fingerprint":"sha256:active","runtime_instance_id":"runtime_1","runtime_generation_id":"g1","policy_revision":1,"management_revision":2,"revoke_epoch":3,"method":"worker.echo","effect":"read","execution":"subscription","stream_id":"stream_host_1","surface_instance_id":"surface_1","owner_session_hash":"session_hash","owner_user_hash":"user_hash","session_channel_id_hash":"channel_hash","bridge_channel_id":"bridge_1"}}}"#;
+        let invocation = r#"{"ipc_version":"rust-ipc-v2","frame_type":"invoke_worker","request_id":"r1","runtime_generation_id":"g1","payload":{"lease":{"plugin_instance_id":"plugini_1","runtime_shard_id":"runtime_shard_signed","stream_id":"stream_host_1"},"method":"worker.echo","invocation":{"plugin_id":"com.example.worker","plugin_instance_id":"plugini_1","active_fingerprint":"sha256:active","runtime_instance_id":"runtime_1","runtime_generation_id":"g1","policy_revision":1,"management_revision":2,"revoke_epoch":3,"method":"worker.echo","effect":"read","execution":"subscription","stream_id":"stream_host_1","surface_instance_id":"surface_1","owner_session_hash":"session_hash","owner_user_hash":"user_hash","owner_env_hash":"env_hash","session_channel_id_hash":"channel_hash","bridge_channel_id":"bridge_1"}}}"#;
         let request = r#"{"connector_id":"api","transport":"http","destination":"https://api.example.com","operation":"http_stream","method":"POST","path":"/v1/stream","query":{"format":["json"],"timezone":["auto"]},"max_chunk_bytes":4,"max_buffered_bytes":65536,"content_type":"text/plain"}"#;
         let got = network_execute_request(invocation, "g1", request)
             .expect("stream network execute request");
 
         assert_eq!(got.plugin_id, "com.example.worker");
+        assert_eq!(got.runtime_shard_id, "runtime_shard_signed");
         assert_eq!(got.operation, "http_stream");
         assert_eq!(got.stream_id, "stream_host_1");
         assert_eq!(got.stream_method, "worker.echo");
@@ -3417,6 +3695,7 @@ mod tests {
         assert_eq!(got.surface_instance_id, "surface_1");
         assert_eq!(got.owner_session_hash, "session_hash");
         assert_eq!(got.owner_user_hash, "user_hash");
+        assert_eq!(got.owner_env_hash, "env_hash");
         assert_eq!(got.session_channel_id_hash, "channel_hash");
         assert_eq!(got.bridge_channel_id, "bridge_1");
         assert_eq!(got.max_chunk_bytes, 4);
@@ -3427,19 +3706,20 @@ mod tests {
 
     #[test]
     fn storage_request_uses_host_only_grant_map() {
-        let invocation = r#"{"ipc_version":"rust-ipc-v2","frame_type":"invoke_worker","request_id":"r1","runtime_generation_id":"g1","payload":{"lease":{"plugin_instance_id":"plugini_1"},"method":"notes.list","invocation":{"plugin_id":"com.example.notes","plugin_instance_id":"plugini_1","active_fingerprint":"sha256:active","runtime_instance_id":"runtime_1","runtime_generation_id":"g1","policy_revision":1,"management_revision":2,"revoke_epoch":3,"storage_handle_grants":{"notes":"handle_grant.host-only-secret"},"method":"notes.list","effect":"read","execution":"sync"}}}"#;
+        let invocation = r#"{"ipc_version":"rust-ipc-v2","frame_type":"invoke_worker","request_id":"r1","runtime_generation_id":"g1","payload":{"lease":{"plugin_instance_id":"plugini_1","runtime_shard_id":"runtime_shard_signed"},"method":"notes.list","invocation":{"plugin_id":"com.example.notes","plugin_instance_id":"plugini_1","active_fingerprint":"sha256:active","runtime_instance_id":"runtime_1","runtime_generation_id":"g1","policy_revision":1,"management_revision":2,"revoke_epoch":3,"storage_handle_grants":{"notes":"handle_grant.host-only-secret"},"method":"notes.list","effect":"read","execution":"sync"}}}"#;
         let request = r#"{"store_id":"notes","operation":"query","database":"notes.sqlite","sql":"SELECT id FROM notes","args":[]}"#;
 
         let got = storage_sqlite_request(invocation, "g1", request)
             .expect("storage request with host-only grant map");
 
         assert_eq!(got.handle_grant_token, "handle_grant.host-only-secret");
+        assert_eq!(got.runtime_shard_id, "runtime_shard_signed");
         assert_eq!(got.store_id, "notes");
     }
 
     #[test]
     fn network_execute_request_rejects_plugin_owned_audience_overrides() {
-        let invocation = r#"{"ipc_version":"rust-ipc-v2","frame_type":"invoke_worker","request_id":"r1","runtime_generation_id":"g1","payload":{"lease":{"plugin_instance_id":"plugini_1","stream_id":"stream_host_1"},"method":"worker.echo","invocation":{"plugin_id":"com.example.worker","plugin_instance_id":"plugini_1","active_fingerprint":"sha256:active","runtime_instance_id":"runtime_1","runtime_generation_id":"g1","policy_revision":1,"management_revision":2,"revoke_epoch":3,"method":"worker.echo","effect":"read","execution":"subscription","stream_id":"stream_host_1","surface_instance_id":"surface_1","owner_session_hash":"session_hash","owner_user_hash":"user_hash","session_channel_id_hash":"channel_hash","bridge_channel_id":"bridge_1"}}}"#;
+        let invocation = r#"{"ipc_version":"rust-ipc-v2","frame_type":"invoke_worker","request_id":"r1","runtime_generation_id":"g1","payload":{"lease":{"plugin_instance_id":"plugini_1","runtime_shard_id":"runtime_shard_signed","stream_id":"stream_host_1"},"method":"worker.echo","invocation":{"plugin_id":"com.example.worker","plugin_instance_id":"plugini_1","active_fingerprint":"sha256:active","runtime_instance_id":"runtime_1","runtime_generation_id":"g1","policy_revision":1,"management_revision":2,"revoke_epoch":3,"method":"worker.echo","effect":"read","execution":"subscription","stream_id":"stream_host_1","surface_instance_id":"surface_1","owner_session_hash":"session_hash","owner_user_hash":"user_hash","owner_env_hash":"env_hash","session_channel_id_hash":"channel_hash","bridge_channel_id":"bridge_1"}}}"#;
         for field in [
             "stream_method",
             "stream_effect",
@@ -3447,6 +3727,7 @@ mod tests {
             "surface_instance_id",
             "owner_session_hash",
             "owner_user_hash",
+            "owner_env_hash",
             "session_channel_id_hash",
             "bridge_channel_id",
         ] {
@@ -3464,7 +3745,7 @@ mod tests {
 
     #[test]
     fn network_execute_request_rejects_plugin_selected_stream_id() {
-        let invocation = r#"{"ipc_version":"rust-ipc-v2","frame_type":"invoke_worker","request_id":"r1","runtime_generation_id":"g1","payload":{"lease":{"plugin_instance_id":"plugini_1","stream_id":"stream_host_1"},"method":"worker.echo","invocation":{"plugin_id":"com.example.worker","plugin_instance_id":"plugini_1","active_fingerprint":"sha256:active","runtime_instance_id":"runtime_1","runtime_generation_id":"g1","policy_revision":1,"management_revision":2,"revoke_epoch":3,"method":"worker.echo","effect":"read","execution":"subscription","stream_id":"stream_host_1","surface_instance_id":"surface_1","owner_session_hash":"session_hash","owner_user_hash":"user_hash","session_channel_id_hash":"channel_hash","bridge_channel_id":"bridge_1"}}}"#;
+        let invocation = r#"{"ipc_version":"rust-ipc-v2","frame_type":"invoke_worker","request_id":"r1","runtime_generation_id":"g1","payload":{"lease":{"plugin_instance_id":"plugini_1","runtime_shard_id":"runtime_shard_signed","stream_id":"stream_host_1"},"method":"worker.echo","invocation":{"plugin_id":"com.example.worker","plugin_instance_id":"plugini_1","active_fingerprint":"sha256:active","runtime_instance_id":"runtime_1","runtime_generation_id":"g1","policy_revision":1,"management_revision":2,"revoke_epoch":3,"method":"worker.echo","effect":"read","execution":"subscription","stream_id":"stream_host_1","surface_instance_id":"surface_1","owner_session_hash":"session_hash","owner_user_hash":"user_hash","owner_env_hash":"env_hash","session_channel_id_hash":"channel_hash","bridge_channel_id":"bridge_1"}}}"#;
         let request = r#"{"connector_id":"api","transport":"http","destination":"https://api.example.com","operation":"http_stream","stream_id":"stream_plugin_selected"}"#;
 
         let err = network_execute_request(invocation, "g1", request)
@@ -3496,7 +3777,7 @@ mod tests {
 
     #[test]
     fn network_execute_request_rejects_missing_host_owned_stream_id() {
-        let invocation = r#"{"ipc_version":"rust-ipc-v2","frame_type":"invoke_worker","request_id":"r1","runtime_generation_id":"g1","payload":{"lease":{"plugin_instance_id":"plugini_1"},"method":"worker.echo","invocation":{"plugin_id":"com.example.worker","plugin_instance_id":"plugini_1","active_fingerprint":"sha256:active","runtime_instance_id":"runtime_1","runtime_generation_id":"g1","policy_revision":1,"management_revision":2,"revoke_epoch":3,"method":"worker.echo","effect":"read","execution":"subscription","surface_instance_id":"surface_1","owner_session_hash":"session_hash","owner_user_hash":"user_hash","session_channel_id_hash":"channel_hash","bridge_channel_id":"bridge_1"}}}"#;
+        let invocation = r#"{"ipc_version":"rust-ipc-v2","frame_type":"invoke_worker","request_id":"r1","runtime_generation_id":"g1","payload":{"lease":{"plugin_instance_id":"plugini_1","runtime_shard_id":"runtime_shard_signed"},"method":"worker.echo","invocation":{"plugin_id":"com.example.worker","plugin_instance_id":"plugini_1","active_fingerprint":"sha256:active","runtime_instance_id":"runtime_1","runtime_generation_id":"g1","policy_revision":1,"management_revision":2,"revoke_epoch":3,"method":"worker.echo","effect":"read","execution":"subscription","surface_instance_id":"surface_1","owner_session_hash":"session_hash","owner_user_hash":"user_hash","owner_env_hash":"env_hash","session_channel_id_hash":"channel_hash","bridge_channel_id":"bridge_1"}}}"#;
         let request = r#"{"connector_id":"api","transport":"http","destination":"https://api.example.com","operation":"http_stream"}"#;
 
         let err = network_execute_request(invocation, "g1", request)
@@ -3508,9 +3789,8 @@ mod tests {
     #[test]
     fn rejects_wasm_worker_with_missing_export() {
         let module = minimal_worker_wasm("other_export");
-        let err = execute_worker_module_v2(
+        let err = execute_worker_module_for_test(
             &module,
-            "redevplugin_worker_invoke",
             br#"{"schema_version":"redevplugin.worker_request.v2","method":"notes.list","params":{}}"#,
             TEST_WORKER_MEMORY_LIMIT_BYTES,
             unexpected_hostcall,
@@ -3528,6 +3808,20 @@ mod tests {
             }
             WorkerHostcallRequest::NetworkExecute(_) => Err("unexpected network call".to_string()),
         }
+    }
+
+    fn response_worker_wasm(response: &str) -> Vec<u8> {
+        wat::parse_str(format!(
+            r#"(module
+                (memory (export "memory") 1)
+                (data (i32.const 2048) {response:?})
+                (func (export "redevplugin_worker_alloc") (param i32) (result i32) i32.const 1024)
+                (func (export "redevplugin_worker_dealloc") (param i32 i32))
+                (func (export "redevplugin_worker_invoke") (param i32 i32) (result i64)
+                    i64.const {}))"#,
+            ((2048_u64) << 32) | response.len() as u64,
+        ))
+        .expect("compile response worker")
     }
 
     fn encode_base64_for_test(input: &[u8]) -> String {
@@ -3560,7 +3854,7 @@ mod tests {
 
     fn broker_invocation_frame(plugin_instance_id: &str) -> String {
         format!(
-            r#"{{"ipc_version":"rust-ipc-v2","frame_type":"invoke_worker","request_id":"r1","runtime_generation_id":"g1","payload":{{"lease":{{}},"method":"worker.echo","invocation":{{"plugin_id":"com.example.worker","plugin_instance_id":"{plugin_instance_id}","active_fingerprint":"sha256:active","runtime_instance_id":"runtime_1","runtime_generation_id":"g1","policy_revision":1,"management_revision":1,"revoke_epoch":1,"storage_handle_grants":{{"workspace":"handle_grant.secret"}},"broker_access":{{"storage":[{{"store_id":"workspace","operations":["read","write","delete","list"]}},{{"store_id":"notes","operations":["query","exec"]}}],"network":[{{"connector_id":"api","transport":"http","operations":["http","http_stream"],"http_methods":["GET","POST"]}}]}},"method":"worker.echo","effect":"write","execution":"subscription","stream_id":"stream_1","surface_instance_id":"surface_1","owner_session_hash":"session_hash","owner_user_hash":"user_hash","session_channel_id_hash":"channel_hash","bridge_channel_id":"bridge_1"}}}}}}"#
+            r#"{{"ipc_version":"rust-ipc-v2","frame_type":"invoke_worker","request_id":"r1","runtime_generation_id":"g1","payload":{{"lease":{{"runtime_shard_id":"runtime_shard_signed"}},"method":"worker.echo","invocation":{{"plugin_id":"com.example.worker","plugin_instance_id":"{plugin_instance_id}","active_fingerprint":"sha256:active","runtime_instance_id":"runtime_1","runtime_generation_id":"g1","policy_revision":1,"management_revision":1,"revoke_epoch":1,"storage_handle_grants":{{"workspace":"handle_grant.secret"}},"broker_access":{{"storage":[{{"store_id":"workspace","operations":["read","write","delete","list"]}},{{"store_id":"notes","operations":["query","exec"]}}],"network":[{{"connector_id":"api","transport":"http","operations":["http","http_stream"],"http_methods":["GET","POST"]}}]}},"method":"worker.echo","effect":"write","execution":"subscription","stream_id":"stream_1","surface_instance_id":"surface_1","owner_session_hash":"session_hash","owner_user_hash":"user_hash","owner_env_hash":"env_hash","session_channel_id_hash":"channel_hash","bridge_channel_id":"bridge_1"}}}}}}"#
         )
     }
 
@@ -3606,7 +3900,7 @@ mod tests {
         expires_at_unix_ms: i64,
     ) -> String {
         format!(
-            r#"{{"ipc_version":"rust-ipc-v2","frame_type":"invoke_worker","request_id":"r1","runtime_generation_id":"g1","payload":{{"lease":{{"lease_id":"{lease_id}","lease_token":"token_1","lease_nonce":"{lease_nonce}","runtime_generation_id":"g1","plugin_instance_id":"{plugin_instance_id}","revoke_epoch":{revoke_epoch},"expires_at_unix_ms":{expires_at_unix_ms}}},"method":"worker.echo","invocation":{{"plugin_id":"com.example.worker","plugin_instance_id":"{plugin_instance_id}","active_fingerprint":"sha256:active","runtime_instance_id":"runtime_1","runtime_generation_id":"g1","policy_revision":1,"management_revision":1,"revoke_epoch":{revoke_epoch},"package_hash":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","worker_id":"backend","worker_mode":"job","worker_scope":"user","artifact":"workers/backend.wasm","artifact_sha256":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","abi":"redevplugin-wasm-worker-v2","method":"worker.echo","export":"redevplugin_worker_invoke","effect":"read","execution":"sync","audit_correlation_id":"audit_1","params_sha256":"sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a","params":{{}},"broker_access":{{}},"broker_access_sha256":"sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"}}}}}}"#
+            r#"{{"ipc_version":"rust-ipc-v2","frame_type":"invoke_worker","request_id":"r1","runtime_generation_id":"g1","payload":{{"lease":{{"lease_id":"{lease_id}","lease_nonce":"{lease_nonce}","runtime_generation_id":"g1","runtime_shard_id":"runtime_shard_signed","plugin_instance_id":"{plugin_instance_id}","revoke_epoch":{revoke_epoch},"expires_at_unix_ms":{expires_at_unix_ms}}},"method":"worker.echo","invocation":{{"plugin_id":"com.example.worker","plugin_instance_id":"{plugin_instance_id}","active_fingerprint":"sha256:active","runtime_instance_id":"runtime_1","runtime_generation_id":"g1","policy_revision":1,"management_revision":1,"revoke_epoch":{revoke_epoch},"package_hash":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","worker_id":"backend","worker_mode":"job","worker_scope":"user","artifact":"workers/backend.wasm","artifact_sha256":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","abi":"redevplugin-wasm-worker-v2","method":"worker.echo","effect":"read","execution":"sync","audit_correlation_id":"audit_1","params_sha256":"sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a","params":{{}},"broker_access":{{}},"broker_access_sha256":"sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"}}}}}}"#
         )
     }
 

@@ -16,7 +16,7 @@ const (
 	BridgeSchemaVersion                      = "bridge-v4"
 	OpaqueSurfaceDocumentSchemaVersion       = "opaque-surface-document-v2"
 	OpaqueSurfaceTransportSchemaVersion      = "opaque-surface-transport-v3"
-	TargetClassifierVersion                  = "target-classifier-v1"
+	TargetClassifierVersion                  = "target-classifier-v2"
 	NetworkGrantSchemaVersion                = "network-grant-v1"
 	PluginPlatformOpenAPIVersion             = "plugin-platform-v4"
 	CompatibilityManifestVersion             = "redevplugin.compatibility.v4"
@@ -38,13 +38,13 @@ var generatedContractArtifacts = []ContractArtifact{
 		ID:      "plugin-platform-openapi",
 		Path:    "spec/openapi/plugin-platform-v4.yaml",
 		Version: "plugin-platform-v4",
-		SHA256:  "a7373077e0268c7b3b861fef24734763eeb339ebd92c7d6d13ae514759b0f3b5",
+		SHA256:  "b2bdb3b5a4ad6ffacb9dde3102e9ffa17aab961ed638be6454a80bacc8ed5d63",
 	},
 	{
 		ID:      "manifest-schema",
 		Path:    "spec/plugin/manifest-v4.schema.json",
 		Version: "manifest-v4",
-		SHA256:  "5bbe47381fbdab1d5622389df5db922ff24db32891305e89a9b70e4dfae25596",
+		SHA256:  "e3c1b3d1787da1d9ed44583cb4e0b24ad2e8f4a20375391e1f5e898cbeae5b55",
 	},
 	{
 		ID:      "package-signature-schema",
@@ -74,13 +74,13 @@ var generatedContractArtifacts = []ContractArtifact{
 		ID:      "token-ticket-schema",
 		Path:    "spec/plugin/token-ticket-v2.schema.json",
 		Version: "token-ticket-v2",
-		SHA256:  "f0342614f28b81045ac47d76d71753c8ee177f8143c14a711a0b1f5632e7835e",
+		SHA256:  "47fb014e8ffc899174f63259771ae7315e810e542948fcfef21b33443e0795a9",
 	},
 	{
 		ID:      "iframe-bridge-schema",
 		Path:    "spec/plugin/bridge-v4.schema.json",
 		Version: "bridge-v4",
-		SHA256:  "1ccc10db182ee8e5b4351e4fc3138382cb07ff14f953e62b280538dbe656fe81",
+		SHA256:  "7c7dbfb4c603f7deb60f9836401e4a6378cc0e5272dfca62f5a61d81f87f5bf5",
 	},
 	{
 		ID:      "opaque-surface-document-schema",
@@ -98,7 +98,7 @@ var generatedContractArtifacts = []ContractArtifact{
 		ID:      "compatibility-manifest-schema",
 		Path:    "spec/plugin/compatibility-manifest-v4.schema.json",
 		Version: "compatibility-manifest-v4",
-		SHA256:  "d0804bf5a6069c8727ae0fc00c822fd1a36997a36231da01d8217a716f35d670",
+		SHA256:  "cbe0f43720fb9eb23c5e48478f998ea2b5f3701cb9e01848d2659ddfba3cb42c",
 	},
 	{
 		ID:      "release-manifest-schema",
@@ -110,7 +110,7 @@ var generatedContractArtifacts = []ContractArtifact{
 		ID:      "worker-invocation-schema",
 		Path:    "spec/plugin/worker-invocation-v2.schema.json",
 		Version: "worker-invocation-v2",
-		SHA256:  "9a8843d19db04334525fd308a6b54fe26b12e3b4a0da46b417687e76629bd7d0",
+		SHA256:  "3532967b57c8309c5012a4554dd82157a591481ce177141a3088622c855c3e22",
 	},
 	{
 		ID:      "host-capability-contract-schema",
@@ -152,36 +152,36 @@ var generatedContractArtifacts = []ContractArtifact{
 		ID:      "error-codes-schema",
 		Path:    "spec/plugin/error-codes-v2.schema.json",
 		Version: "error-codes-v2",
-		SHA256:  "d7eae5515043df64558763d391cf6b8e7970def6661d7f4eb5b648bd3bc7acd7",
+		SHA256:  "51cd3f881ebc6e39c9063fc55cfbcd340df9981adf022ac211b8b8a2a8676dc5",
 	},
 	{
 		ID:      "rust-ipc-schema",
 		Path:    "spec/plugin/ipc-v2.schema.json",
 		Version: "rust-ipc-v2",
-		SHA256:  "8c9dc1fe60da2399647efaad58b871860c278810ba4a6c357d904e2414a29aed",
+		SHA256:  "8e3903bd9ec8ee735ee7cf441f0a478a651ff121ab870c6da5114d50ff01e72d",
 	},
 	{
 		ID:      "wasm-worker-schema",
 		Path:    "spec/plugin/wasm-worker-v2.schema.json",
 		Version: "redevplugin-wasm-worker-v2",
-		SHA256:  "d2ef05ffed74706cf0683a57665068c5bdf2b191a6c20cb876ec1049798afeaf",
+		SHA256:  "00bf123f3a9ed932de4b71c180e2a5c34af0f82050defb271fedec42cf217902",
 	},
 	{
 		ID:      "network-grant-schema",
 		Path:    "spec/plugin/network-grant-v1.schema.json",
 		Version: "network-grant-v1",
-		SHA256:  "e3ba8e7aa42267596b5570c1de60994a0912b125ea78427776db8092c2b3ea7b",
+		SHA256:  "e993893160fc7a302fc6ccffdd6deec060d6fa386d90f8f2b88a9beb235480a3",
 	},
 	{
 		ID:      "target-classifier-fixture",
-		Path:    "spec/plugin/target-classifier-v1.json",
-		Version: "target-classifier-v1",
-		SHA256:  "7e9367d624c22d575ae5c118063c1cb0f0de6b5b0081eabcfc51c0357e4d14d7",
+		Path:    "spec/plugin/target-classifier-v2.json",
+		Version: "target-classifier-v2",
+		SHA256:  "ae7336cce77a2e820f96f1cc309b93f8442c932dcebec25e3890d31cd098e2d1",
 	},
 	{
 		ID:      "contract-registry",
 		Path:    "spec/plugin/contract-registry-v1.json",
 		Version: "contract-registry-v1",
-		SHA256:  "5800d692798ccac8407f3e444dc49cdf1fcde6abc74a3c3f72198ab1a4633c7a",
+		SHA256:  "44960e4420ac65f36a46e3f3d828b9ddb53d4ef487e4f425f3241ac26a9323a9",
 	},
 }

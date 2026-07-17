@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -23,11 +22,37 @@ const (
 )
 
 var (
-	ErrInvalidRegistration = errors.New("capability registration is invalid")
-	ErrRegistrationMissing = errors.New("capability registration is missing")
-	ErrExecutionRevoked    = errors.New("capability execution is revoked")
-	ErrQuotaExceeded       = errors.New("capability execution quota exceeded")
+	ErrInvalidRegistration     = errors.New("capability registration is invalid")
+	ErrRegistrationMissing     = errors.New("capability registration is missing")
+	ErrExecutionRevoked        = errors.New("capability execution is revoked")
+	ErrInvalidExecutionFailure = errors.New("capability execution failure is invalid")
+	ErrQuotaExceeded           = errors.New("capability execution quota exceeded")
 )
+
+type ExecutionFailureCode string
+
+const (
+	ExecutionFailureAdapterFailed   ExecutionFailureCode = "adapter_failed"
+	ExecutionFailureContractInvalid ExecutionFailureCode = "contract_invalid"
+	ExecutionFailurePlatformFailed  ExecutionFailureCode = "platform_failed"
+	ExecutionFailureQuotaExceeded   ExecutionFailureCode = "quota_exceeded"
+	ExecutionFailureRuntimeFailed   ExecutionFailureCode = "runtime_failed"
+
+	ExecutionFailureMessage = "execution failed"
+)
+
+func (c ExecutionFailureCode) Valid() bool {
+	switch c {
+	case ExecutionFailureAdapterFailed,
+		ExecutionFailureContractInvalid,
+		ExecutionFailurePlatformFailed,
+		ExecutionFailureQuotaExceeded,
+		ExecutionFailureRuntimeFailed:
+		return true
+	default:
+		return false
+	}
+}
 
 type BusinessError struct {
 	CapabilityID       string         `json:"capability_id,omitempty"`
@@ -61,6 +86,7 @@ type SurfaceScope struct {
 	SurfaceInstanceID    string `json:"surface_instance_id,omitempty"`
 	OwnerSessionHash     string `json:"owner_session_hash,omitempty"`
 	OwnerUserHash        string `json:"owner_user_hash,omitempty"`
+	OwnerEnvHash         string `json:"owner_env_hash,omitempty"`
 	SessionChannelIDHash string `json:"session_channel_id_hash,omitempty"`
 	BridgeChannelID      string `json:"bridge_channel_id,omitempty"`
 }
@@ -118,6 +144,7 @@ type ExecutionBinding struct {
 	SurfaceInstanceID       string                  `json:"surface_instance_id,omitempty"`
 	OwnerSessionHash        string                  `json:"owner_session_hash,omitempty"`
 	OwnerUserHash           string                  `json:"owner_user_hash,omitempty"`
+	OwnerEnvHash            string                  `json:"owner_env_hash,omitempty"`
 	SessionChannelIDHash    string                  `json:"session_channel_id_hash,omitempty"`
 	BridgeChannelID         string                  `json:"bridge_channel_id,omitempty"`
 	RouteKind               RouteKind               `json:"route_kind"`
@@ -154,6 +181,7 @@ func (b ExecutionBinding) Surface() SurfaceScope {
 		SurfaceInstanceID:    b.SurfaceInstanceID,
 		OwnerSessionHash:     b.OwnerSessionHash,
 		OwnerUserHash:        b.OwnerUserHash,
+		OwnerEnvHash:         b.OwnerEnvHash,
 		SessionChannelIDHash: b.SessionChannelIDHash,
 		BridgeChannelID:      b.BridgeChannelID,
 	}
@@ -178,7 +206,7 @@ type OperationSink interface {
 	ID() string
 	Complete(ctx context.Context) error
 	Cancel(ctx context.Context, reason string) error
-	Fail(ctx context.Context, reason string) error
+	Fail(ctx context.Context, code ExecutionFailureCode, cause error) error
 	CancelRequested() <-chan struct{}
 }
 
@@ -186,7 +214,7 @@ type StreamSink interface {
 	ID() string
 	Append(ctx context.Context, event any) error
 	Close(ctx context.Context) error
-	Fail(ctx context.Context, reason string) error
+	Fail(ctx context.Context, code ExecutionFailureCode, cause error) error
 }
 
 type StreamContract struct {
@@ -316,27 +344,6 @@ func (r *Registry) Resolve(pin capabilitycontract.Pin) (Registration, error) {
 	}
 	registration.Contract = contract
 	return registration, nil
-}
-
-func (r *Registry) Versions(capabilityID string) []string {
-	if r == nil {
-		return nil
-	}
-	capabilityID = strings.TrimSpace(capabilityID)
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	versionSet := map[string]struct{}{}
-	for _, registration := range r.registrations {
-		if registration.Contract.Contract.CapabilityID == capabilityID {
-			versionSet[registration.Contract.Contract.CapabilityVersion] = struct{}{}
-		}
-	}
-	versions := make([]string, 0, len(versionSet))
-	for version := range versionSet {
-		versions = append(versions, version)
-	}
-	sort.Strings(versions)
-	return versions
 }
 
 func cloneMap(value map[string]any) map[string]any {

@@ -97,13 +97,13 @@ func TestManifestSchemaMatchesGoManifestContract(t *testing.T) {
 	routeConditions := requireObjectArray(t, route["allOf"], "method route allOf")
 	capabilityRoute := requireConstCondition(t, routeConditions, "kind", string(manifest.MethodRouteCapability), "capability route")
 	assertStringSet(t, requireStringSlice(t, requireNestedObject(t, capabilityRoute, "then")["required"], "capability route required"), []string{"binding_id", "target_method"}, "capability route required")
-	assertForbiddenRequiredFields(t, requireNestedObject(t, capabilityRoute, "then"), []string{"worker_id", "export", "action_id"}, "capability route forbidden fields")
+	assertForbiddenRequiredFields(t, requireNestedObject(t, capabilityRoute, "then"), []string{"worker_id", "action_id"}, "capability route forbidden fields")
 	workerRoute := requireConstCondition(t, routeConditions, "kind", string(manifest.MethodRouteWorker), "worker route")
-	assertStringSet(t, requireStringSlice(t, requireNestedObject(t, workerRoute, "then")["required"], "worker route required"), []string{"worker_id", "export"}, "worker route required")
+	assertStringSet(t, requireStringSlice(t, requireNestedObject(t, workerRoute, "then")["required"], "worker route required"), []string{"worker_id"}, "worker route required")
 	assertForbiddenRequiredFields(t, requireNestedObject(t, workerRoute, "then"), []string{"binding_id", "target_method", "action_id"}, "worker route forbidden fields")
 	coreActionRoute := requireConstCondition(t, routeConditions, "kind", string(manifest.MethodRouteCoreAction), "core action route")
 	assertStringSet(t, requireStringSlice(t, requireNestedObject(t, coreActionRoute, "then")["required"], "core action route required"), []string{"action_id"}, "core action route required")
-	assertForbiddenRequiredFields(t, requireNestedObject(t, coreActionRoute, "then"), []string{"binding_id", "target_method", "worker_id", "export"}, "core action route forbidden fields")
+	assertForbiddenRequiredFields(t, requireNestedObject(t, coreActionRoute, "then"), []string{"binding_id", "target_method", "worker_id"}, "core action route forbidden fields")
 
 	methodConditions := requireObjectArray(t, requireNestedObject(t, props, "methods", "items")["allOf"], "method allOf")
 	dangerousMethod := requireConstCondition(t, methodConditions, "dangerous", true, "dangerous method")
@@ -152,21 +152,8 @@ func TestManifestSchemaMatchesGoManifestContract(t *testing.T) {
 		t.Fatal("storage store schema missing quota_files")
 	}
 	if _, ok := storageProps["sqlite_bootstrap"]; ok {
-		t.Fatal("manifest v3 must not expose Host-owned sqlite_bootstrap")
+		t.Fatal("manifest schema must not expose Host-owned sqlite_bootstrap")
 	}
-	migration := requireNestedObject(t, schema, "$defs", "migration")
-	if migration["additionalProperties"] != false {
-		t.Fatalf("migration additionalProperties = %#v, want false", migration["additionalProperties"])
-	}
-	migrationRequired := requireStringSlice(t, migration["required"], "migration required")
-	assertStringSet(t, migrationRequired, []string{"from_version", "to_version", "reversible", "requires_worker", "estimated_bytes", "max_duration_ms", "data_loss_risk", "steps_hash"}, "migration required")
-	if got := requireNestedObject(t, migration, "properties", "from_version")["minimum"]; got != float64(0) {
-		t.Fatalf("migration.from_version minimum = %#v, want 0", got)
-	}
-	if got := requireNestedObject(t, migration, "properties", "to_version")["minimum"]; got != float64(1) {
-		t.Fatalf("migration.to_version minimum = %#v, want 1", got)
-	}
-
 	networkProps := requireNestedObject(t, props, "network_access", "properties", "connectors", "items", "properties")
 	assertStringEnum(t, requireNestedObject(t, networkProps, "transport")["enum"], "network connector transport", []string{
 		string(connectivity.TransportHTTP),

@@ -15,8 +15,10 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -177,6 +179,39 @@ func TestClassifierEvaluatesResolvedAddress(t *testing.T) {
 	}
 }
 
+func TestHostHeaderBracketsPublicIPv6Authorities(t *testing.T) {
+	const publicIPv6 = "2606:4700:4700::1111"
+	for _, tc := range []struct {
+		name        string
+		destination Destination
+		want        string
+	}{
+		{name: "https default", destination: Destination{Scheme: "https", Host: publicIPv6, Port: 443}, want: "[2606:4700:4700::1111]"},
+		{name: "wss default", destination: Destination{Scheme: "wss", Host: publicIPv6, Port: 443}, want: "[2606:4700:4700::1111]"},
+		{name: "https custom", destination: Destination{Scheme: "https", Host: publicIPv6, Port: 8443}, want: "[2606:4700:4700::1111]:8443"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := hostHeader(tc.destination); got != tc.want {
+				t.Fatalf("hostHeader() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestClassifierDenialDoesNotExposeResolvedAddressDetails(t *testing.T) {
+	destination := Destination{Transport: TransportTCP, Host: "sensitive.internal.example", Port: 443}
+	err := DefaultClassifier().EvaluateResolvedAddress(destination, netip.MustParseAddr("100.64.1.2"))
+	if !errors.Is(err, ErrTargetDenied) {
+		t.Fatalf("EvaluateResolvedAddress() error = %v, want ErrTargetDenied", err)
+	}
+	message := err.Error()
+	for _, secret := range []string{destination.Host, "100.64.1.2", "100.64.0.0/10"} {
+		if strings.Contains(message, secret) {
+			t.Fatalf("target denial %q exposed %q", message, secret)
+		}
+	}
+}
+
 type targetClassifierContract struct {
 	Version         string                    `json:"version"`
 	BlockedIPRanges []string                  `json:"blocked_ip_ranges"`
@@ -194,7 +229,7 @@ type targetClassifierFixture struct {
 
 func readTargetClassifierContract(t *testing.T) targetClassifierContract {
 	t.Helper()
-	raw, err := os.ReadFile(filepath.Join("..", "..", "spec", "plugin", "target-classifier-v1.json"))
+	raw, err := os.ReadFile(filepath.Join("..", "..", "spec", "plugin", "target-classifier-v2.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -291,6 +326,36 @@ func TestMemoryBrokerMintsBoundedConnectionGrant(t *testing.T) {
 	}
 }
 
+func TestExecutorPublicOptionsExposeOnlyGuardedNetworkConfiguration(t *testing.T) {
+	optionsType := reflect.TypeOf(ExecutorOptions{})
+	gotFields := make([]string, optionsType.NumField())
+	for i := range gotFields {
+		gotFields[i] = optionsType.Field(i).Name
+	}
+	wantFields := []string{"Dialer", "LookupIPAddr", "UDPRateLimiter", "MaxRequestBytes", "MaxResponseBytes", "DefaultTimeout", "Now"}
+	if !reflect.DeepEqual(gotFields, wantFields) {
+		t.Fatalf("ExecutorOptions fields = %#v, want %#v", gotFields, wantFields)
+	}
+	executor := NewExecutor(ExecutorOptions{})
+	transport, ok := executor.httpClient.Transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("executor transport = %T, want *http.Transport", executor.httpClient.Transport)
+	}
+	if transport.Proxy != nil || transport.DialContext == nil || !transport.DisableKeepAlives {
+		t.Fatalf("executor transport safety settings are incomplete")
+	}
+	if executor.httpClient.CheckRedirect == nil {
+		t.Fatal("executor redirect policy is unset")
+	}
+	request, err := http.NewRequest(http.MethodGet, "https://other.example.com/", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := executor.httpClient.CheckRedirect(request, nil); !errors.Is(err, http.ErrUseLastResponse) {
+		t.Fatalf("redirect policy error = %v, want http.ErrUseLastResponse", err)
+	}
+}
+
 func TestExecutorPerformsBoundedHTTPWithGrant(t *testing.T) {
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -313,7 +378,7 @@ func TestExecutorPerformsBoundedHTTPWithGrant(t *testing.T) {
 	}()
 	defer server.Close()
 	grant := testGrant(t, TransportHTTP, "http://api.example.com", time.Minute)
-	executor := NewExecutor(ExecutorOptions{MaxResponseBytes: 128, DialContext: mapDialer(listener.Addr().String())})
+	executor := newTestExecutor(ExecutorOptions{MaxResponseBytes: 128}, mapDialer(listener.Addr().String()))
 	response, err := executor.DoHTTP(context.Background(), HTTPRequest{
 		Grant:  grant,
 		Method: http.MethodPost,
@@ -345,7 +410,7 @@ func TestExecutorCanonicalizesStructuredHTTPQuery(t *testing.T) {
 	defer server.Close()
 
 	grant := testGrant(t, TransportHTTP, "http://api.example.com", time.Minute)
-	response, err := NewExecutor(ExecutorOptions{DialContext: mapDialer(listener.Addr().String())}).DoHTTP(context.Background(), HTTPRequest{
+	response, err := newTestExecutor(ExecutorOptions{}, mapDialer(listener.Addr().String())).DoHTTP(context.Background(), HTTPRequest{
 		Grant: grant,
 		Path:  "/v1/forecast",
 		Query: url.Values{
@@ -368,10 +433,10 @@ func TestExecutorRejectsHTTPPathWithEmbeddedQueryOrFragmentBeforeDial(t *testing
 	for _, path := range []string{"/v1/forecast?latitude=52.52", "/v1/forecast#current"} {
 		t.Run(path, func(t *testing.T) {
 			dialed := false
-			_, err := NewExecutor(ExecutorOptions{DialContext: func(context.Context, string, string) (net.Conn, error) {
+			_, err := newTestExecutor(ExecutorOptions{}, func(context.Context, string, string) (net.Conn, error) {
 				dialed = true
 				return nil, errors.New("dial should not be called for an invalid path")
-			}}).DoHTTP(context.Background(), HTTPRequest{Grant: grant, Path: path})
+			}).DoHTTP(context.Background(), HTTPRequest{Grant: grant, Path: path})
 			if !errors.Is(err, ErrInvalidConnector) {
 				t.Fatalf("DoHTTP(%q) error = %v, want ErrInvalidConnector", path, err)
 			}
@@ -398,7 +463,7 @@ func TestExecutorHTTPHostHeaderIncludesNonDefaultPort(t *testing.T) {
 	}()
 	defer server.Close()
 	grant := testGrant(t, TransportHTTP, "http://api.example.com:8080", time.Minute)
-	response, err := NewExecutor(ExecutorOptions{DialContext: mapDialer(listener.Addr().String())}).DoHTTP(context.Background(), HTTPRequest{Grant: grant})
+	response, err := newTestExecutor(ExecutorOptions{}, mapDialer(listener.Addr().String())).DoHTTP(context.Background(), HTTPRequest{Grant: grant})
 	if err != nil {
 		t.Fatalf("DoHTTP() error = %v", err)
 	}
@@ -437,9 +502,7 @@ func TestExecutorHTTPStreamResponseChunks(t *testing.T) {
 	defer server.Close()
 	grant := testGrant(t, TransportHTTP, "http://api.example.com", time.Minute)
 	var chunks []HTTPResponseChunk
-	response, err := NewExecutor(ExecutorOptions{
-		DialContext: mapDialer(listener.Addr().String()),
-	}).StreamHTTP(context.Background(), HTTPRequest{
+	response, err := newTestExecutor(ExecutorOptions{}, mapDialer(listener.Addr().String())).StreamHTTP(context.Background(), HTTPRequest{
 		Grant:            grant,
 		Method:           http.MethodPost,
 		Path:             "/v1/stream",
@@ -464,10 +527,10 @@ func TestExecutorHTTPStreamResponseChunks(t *testing.T) {
 func TestExecutorHTTPStreamRejectsOversizedRequestBeforeDial(t *testing.T) {
 	dialed := false
 	grant := testGrant(t, TransportHTTP, "http://api.example.com", time.Minute)
-	_, err := NewExecutor(ExecutorOptions{DialContext: func(context.Context, string, string) (net.Conn, error) {
+	_, err := newTestExecutor(ExecutorOptions{}, func(context.Context, string, string) (net.Conn, error) {
 		dialed = true
 		return nil, errors.New("dial should not be called for oversized http stream request")
-	}}).StreamHTTP(context.Background(), HTTPRequest{
+	}).StreamHTTP(context.Background(), HTTPRequest{
 		Grant:           grant,
 		Body:            []byte("too-large"),
 		MaxRequestBytes: 4,
@@ -496,9 +559,7 @@ func TestExecutorHTTPStreamRejectsOversizedResponse(t *testing.T) {
 	defer server.Close()
 	grant := testGrant(t, TransportHTTP, "http://api.example.com", time.Minute)
 	var delivered bytes.Buffer
-	_, err = NewExecutor(ExecutorOptions{
-		DialContext: mapDialer(listener.Addr().String()),
-	}).StreamHTTP(context.Background(), HTTPRequest{
+	_, err = newTestExecutor(ExecutorOptions{}, mapDialer(listener.Addr().String())).StreamHTTP(context.Background(), HTTPRequest{
 		Grant:            grant,
 		MaxResponseBytes: 4,
 		MaxChunkBytes:    4,
@@ -546,9 +607,7 @@ func TestExecutorHTTPStreamStopsWhenContextIsCanceled(t *testing.T) {
 	cancelCtx, cancel := context.WithCancel(context.Background())
 	errCh := make(chan error, 1)
 	go func() {
-		_, err := NewExecutor(ExecutorOptions{
-			DialContext: mapDialer(listener.Addr().String()),
-		}).StreamHTTP(cancelCtx, HTTPRequest{
+		_, err := newTestExecutor(ExecutorOptions{}, mapDialer(listener.Addr().String())).StreamHTTP(cancelCtx, HTTPRequest{
 			Grant:            grant,
 			MaxResponseBytes: 32,
 			Timeout:          5 * time.Second,
@@ -574,7 +633,7 @@ func TestExecutorHTTPStreamStopsWhenContextIsCanceled(t *testing.T) {
 	}
 }
 
-func TestExecutorHTTPDisablesProxyConnectAndHopHeaders(t *testing.T) {
+func TestExecutorHTTPDisablesProxyAndConnect(t *testing.T) {
 	t.Setenv("HTTP_PROXY", "http://127.0.0.1:1")
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -583,9 +642,6 @@ func TestExecutorHTTPDisablesProxyConnectAndHopHeaders(t *testing.T) {
 	server := http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.RequestURI != "/proxy-check" || r.URL.IsAbs() {
 			t.Errorf("request URI = %q absolute=%v; environment proxy may have been used", r.RequestURI, r.URL.IsAbs())
-		}
-		if r.Header.Get("Alt-Svc") != "" || r.Header.Get("Proxy-Authorization") != "" || r.Header.Get("Proxy-Authenticate") != "" {
-			t.Errorf("proxy/alt-svc headers leaked: %#v", r.Header)
 		}
 		if r.Header.Get("X-Test") != "ok" {
 			t.Errorf("X-Test header = %q, want forwarded safe header", r.Header.Get("X-Test"))
@@ -597,15 +653,11 @@ func TestExecutorHTTPDisablesProxyConnectAndHopHeaders(t *testing.T) {
 	}()
 	defer server.Close()
 	grant := testGrant(t, TransportHTTP, "http://api.example.com", time.Minute)
-	response, err := NewExecutor(ExecutorOptions{DialContext: mapDialer(listener.Addr().String())}).DoHTTP(context.Background(), HTTPRequest{
+	response, err := newTestExecutor(ExecutorOptions{}, mapDialer(listener.Addr().String())).DoHTTP(context.Background(), HTTPRequest{
 		Grant: grant,
 		Path:  "/proxy-check",
 		Headers: http.Header{
-			"Alt-Svc":             []string{`h3=":443"`},
-			"Connection":          []string{"keep-alive"},
-			"Proxy-Authorization": []string{"Bearer secret"},
-			"Proxy-Authenticate":  []string{"Basic realm=test"},
-			"X-Test":              []string{"ok"},
+			"X-Test": []string{"ok"},
 		},
 	})
 	if err != nil {
@@ -616,15 +668,110 @@ func TestExecutorHTTPDisablesProxyConnectAndHopHeaders(t *testing.T) {
 	}
 
 	dialed := false
-	_, err = NewExecutor(ExecutorOptions{DialContext: func(context.Context, string, string) (net.Conn, error) {
+	_, err = newTestExecutor(ExecutorOptions{}, func(context.Context, string, string) (net.Conn, error) {
 		dialed = true
 		return nil, errors.New("dial should not be called for CONNECT")
-	}}).DoHTTP(context.Background(), HTTPRequest{Grant: grant, Method: http.MethodConnect})
+	}).DoHTTP(context.Background(), HTTPRequest{Grant: grant, Method: http.MethodConnect})
 	if !errors.Is(err, ErrInvalidConnector) {
 		t.Fatalf("DoHTTP(CONNECT) error = %v, want ErrInvalidConnector", err)
 	}
 	if dialed {
 		t.Fatal("DoHTTP(CONNECT) dialed before rejecting method")
+	}
+}
+
+func TestValidateForwardHeadersRejectsInvalidAndReservedHeaders(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		headers http.Header
+	}{
+		{name: "newline in name", headers: http.Header{"X-Test\r\nHost": []string{"evil.example"}}},
+		{name: "colon in name", headers: http.Header{"X-Test:Other": []string{"value"}}},
+		{name: "space in name", headers: http.Header{"X Test": []string{"value"}}},
+		{name: "control in name", headers: http.Header{"X-Test\x7f": []string{"value"}}},
+		{name: "newline in value", headers: http.Header{"X-Test": []string{"value\r\nHost: evil.example"}}},
+		{name: "host", headers: http.Header{"Host": []string{"evil.example"}}},
+		{name: "connection", headers: http.Header{"Connection": []string{"keep-alive"}}},
+		{name: "upgrade", headers: http.Header{"Upgrade": []string{"websocket"}}},
+		{name: "transfer encoding", headers: http.Header{"Transfer-Encoding": []string{"chunked"}}},
+		{name: "content length", headers: http.Header{"Content-Length": []string{"10"}}},
+		{name: "te", headers: http.Header{"TE": []string{"trailers"}}},
+		{name: "trailer", headers: http.Header{"Trailer": []string{"X-Checksum"}}},
+		{name: "keep alive", headers: http.Header{"Keep-Alive": []string{"timeout=5"}}},
+		{name: "proxy connection", headers: http.Header{"Proxy-Connection": []string{"keep-alive"}}},
+		{name: "proxy authorization", headers: http.Header{"Proxy-Authorization": []string{"Bearer secret"}}},
+		{name: "proxy authenticate", headers: http.Header{"Proxy-Authenticate": []string{"Basic"}}},
+		{name: "alt svc", headers: http.Header{"Alt-Svc": []string{`h3=":443"`}}},
+		{name: "http2 settings", headers: http.Header{"HTTP2-Settings": []string{"settings"}}},
+		{name: "websocket protocol", headers: http.Header{"Sec-WebSocket-Protocol": []string{"chat"}}},
+		{name: "websocket extension", headers: http.Header{"sEc-WeBsOcKeT-Extensions": []string{"permessage-deflate"}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := validateForwardHeaders(tc.headers); !errors.Is(err, ErrInvalidConnector) {
+				t.Fatalf("validateForwardHeaders() error = %v, want ErrInvalidConnector", err)
+			}
+		})
+	}
+
+	validated, err := validateForwardHeaders(http.Header{"x-request-id": []string{"request-1", "request-2"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := validated.Values("X-Request-Id"); !reflect.DeepEqual(got, []string{"request-1", "request-2"}) {
+		t.Fatalf("validated header values = %#v", got)
+	}
+}
+
+func TestExecutorRejectsUnsafeForwardHeadersBeforeDial(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		transport   Transport
+		destination string
+		execute     func(*Executor, ConnectionGrant) error
+	}{
+		{
+			name:        "http framing header",
+			transport:   TransportHTTP,
+			destination: "https://api.example.com",
+			execute: func(executor *Executor, grant ConnectionGrant) error {
+				_, err := executor.DoHTTP(context.Background(), HTTPRequest{
+					Grant: grant,
+					Headers: http.Header{
+						"Content-Length": []string{"128"},
+					},
+				})
+				return err
+			},
+		},
+		{
+			name:        "websocket injected header name",
+			transport:   TransportWebSocket,
+			destination: "wss://stream.example.com",
+			execute: func(executor *Executor, grant ConnectionGrant) error {
+				_, err := executor.WebSocketRoundTrip(context.Background(), WebSocketRoundTripRequest{
+					Grant: grant,
+					Headers: http.Header{
+						"X-Test\r\nHost": []string{"evil.example"},
+					},
+				})
+				return err
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dialed := false
+			executor := newTestExecutor(ExecutorOptions{}, func(context.Context, string, string) (net.Conn, error) {
+				dialed = true
+				return nil, errors.New("unexpected dial")
+			})
+			grant := testGrant(t, tc.transport, tc.destination, time.Minute)
+			if err := tc.execute(executor, grant); !errors.Is(err, ErrInvalidConnector) {
+				t.Fatalf("execute() error = %v, want ErrInvalidConnector", err)
+			}
+			if dialed {
+				t.Fatal("unsafe headers reached the dialer")
+			}
+		})
 	}
 }
 
@@ -643,7 +790,7 @@ func TestExecutorRejectsHTTPRedirectAndOversizedResponse(t *testing.T) {
 	}()
 	defer redirectServer.Close()
 	grant := testGrant(t, TransportHTTP, "http://api.example.com", time.Minute)
-	response, err := NewExecutor(ExecutorOptions{DialContext: mapDialer(redirectListener.Addr().String())}).DoHTTP(context.Background(), HTTPRequest{Grant: grant})
+	response, err := newTestExecutor(ExecutorOptions{}, mapDialer(redirectListener.Addr().String())).DoHTTP(context.Background(), HTTPRequest{Grant: grant})
 	if err != nil {
 		t.Fatalf("DoHTTP(redirect) error = %v", err)
 	}
@@ -666,7 +813,7 @@ func TestExecutorRejectsHTTPRedirectAndOversizedResponse(t *testing.T) {
 	}()
 	defer largeServer.Close()
 	largeGrant := testGrant(t, TransportHTTP, "http://api.example.com", time.Minute)
-	if _, err := NewExecutor(ExecutorOptions{MaxResponseBytes: 4, DialContext: mapDialer(largeListener.Addr().String())}).DoHTTP(context.Background(), HTTPRequest{Grant: largeGrant}); !errors.Is(err, ErrResponseTooLarge) {
+	if _, err := newTestExecutor(ExecutorOptions{MaxResponseBytes: 4}, mapDialer(largeListener.Addr().String())).DoHTTP(context.Background(), HTTPRequest{Grant: largeGrant}); !errors.Is(err, ErrResponseTooLarge) {
 		t.Fatalf("DoHTTP(large) error = %v, want ErrResponseTooLarge", err)
 	}
 }
@@ -677,7 +824,7 @@ func TestExecutorRejectsDNSRebindingResolvedAddresses(t *testing.T) {
 		Dialer: &net.Dialer{Timeout: time.Millisecond},
 		LookupIPAddr: func(context.Context, string) ([]net.IPAddr, error) {
 			return []net.IPAddr{
-				{IP: net.ParseIP("203.0.113.10")},
+				{IP: net.ParseIP("93.184.216.34")},
 				{IP: net.ParseIP("10.0.0.10")},
 			}, nil
 		},
@@ -711,9 +858,6 @@ func TestExecutorWebSocketRoundTripUsesGrantEndpoint(t *testing.T) {
 		if req.Host != "stream.example.com" || req.URL.Path != "/events" || req.Header.Get("X-Test") != "ok" {
 			t.Errorf("websocket request mismatch: host=%q path=%q x-test=%q", req.Host, req.URL.Path, req.Header.Get("X-Test"))
 		}
-		if req.Header.Get("Sec-WebSocket-Protocol") != "" {
-			t.Errorf("Sec-WebSocket-Protocol should not be forwarded")
-		}
 		if err := writeTestWebSocketHandshake(conn, req.Header.Get("Sec-WebSocket-Key")); err != nil {
 			t.Errorf("write handshake error = %v", err)
 			return
@@ -732,10 +876,10 @@ func TestExecutorWebSocketRoundTripUsesGrantEndpoint(t *testing.T) {
 		}
 	}()
 	grant := testGrant(t, TransportWebSocket, "ws://stream.example.com", time.Minute)
-	response, err := NewExecutor(ExecutorOptions{DialContext: mapDialer(listener.Addr().String())}).WebSocketRoundTrip(context.Background(), WebSocketRoundTripRequest{
+	response, err := newTestExecutor(ExecutorOptions{}, mapDialer(listener.Addr().String())).WebSocketRoundTrip(context.Background(), WebSocketRoundTripRequest{
 		Grant:            grant,
 		Path:             "/events",
-		Headers:          http.Header{"X-Test": []string{"ok"}, "Sec-WebSocket-Protocol": []string{"blocked"}},
+		Headers:          http.Header{"X-Test": []string{"ok"}},
 		MessageType:      WebSocketMessageText,
 		Payload:          []byte("hello"),
 		MaxResponseBytes: 32,
@@ -776,7 +920,7 @@ func TestExecutorWebSocketRoundTripRejectsOversizedResponse(t *testing.T) {
 		_ = writeTestWebSocketFrame(conn, 0x2, []byte("too-large"))
 	}()
 	grant := testGrant(t, TransportWebSocket, "ws://stream.example.com", time.Minute)
-	_, err = NewExecutor(ExecutorOptions{DialContext: mapDialer(listener.Addr().String())}).WebSocketRoundTrip(context.Background(), WebSocketRoundTripRequest{
+	_, err = newTestExecutor(ExecutorOptions{}, mapDialer(listener.Addr().String())).WebSocketRoundTrip(context.Background(), WebSocketRoundTripRequest{
 		Grant:            grant,
 		MessageType:      WebSocketMessageBinary,
 		Payload:          []byte("ping"),
@@ -791,11 +935,9 @@ func TestExecutorWebSocketRoundTripRejectsOversizedResponse(t *testing.T) {
 func TestExecutorWebSocketRoundTripRejectsOversizedRequestBeforeDial(t *testing.T) {
 	var dialed bool
 	grant := testGrant(t, TransportWebSocket, "ws://stream.example.com", time.Minute)
-	_, err := NewExecutor(ExecutorOptions{
-		DialContext: func(context.Context, string, string) (net.Conn, error) {
-			dialed = true
-			return nil, errors.New("dial should not be called")
-		},
+	_, err := newTestExecutor(ExecutorOptions{}, func(context.Context, string, string) (net.Conn, error) {
+		dialed = true
+		return nil, errors.New("dial should not be called")
 	}).WebSocketRoundTrip(context.Background(), WebSocketRoundTripRequest{
 		Grant:           grant,
 		Payload:         []byte("too-large"),
@@ -856,7 +998,7 @@ func TestExecutorWebSocketRoundTripStopsWhenContextIsCanceled(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	errCh := make(chan error, 1)
 	go func() {
-		_, err := NewExecutor(ExecutorOptions{DialContext: mapDialer(listener.Addr().String())}).WebSocketRoundTrip(ctx, WebSocketRoundTripRequest{
+		_, err := newTestExecutor(ExecutorOptions{}, mapDialer(listener.Addr().String())).WebSocketRoundTrip(ctx, WebSocketRoundTripRequest{
 			Grant:            grant,
 			Payload:          []byte("hello"),
 			MaxResponseBytes: 32,
@@ -903,7 +1045,7 @@ func TestExecutorTCPRoundTripUsesGrantEndpoint(t *testing.T) {
 		_, _ = conn.Write([]byte("tcp:" + string(buf[:n])))
 	}()
 	grant := testGrant(t, TransportTCP, "tcp://db.example.com:5432", time.Minute)
-	response, err := NewExecutor(ExecutorOptions{DialContext: mapDialer(listener.Addr().String())}).TCPRoundTrip(context.Background(), TCPRoundTripRequest{
+	response, err := newTestExecutor(ExecutorOptions{}, mapDialer(listener.Addr().String())).TCPRoundTrip(context.Background(), TCPRoundTripRequest{
 		Grant:        grant,
 		Payload:      []byte("hello"),
 		MaxReadBytes: 32,
@@ -921,11 +1063,9 @@ func TestExecutorTCPRoundTripUsesGrantEndpoint(t *testing.T) {
 func TestExecutorTCPRoundTripRejectsOversizedRequestBeforeDial(t *testing.T) {
 	var dialed bool
 	grant := testGrant(t, TransportTCP, "tcp://db.example.com:5432", time.Minute)
-	_, err := NewExecutor(ExecutorOptions{
-		DialContext: func(context.Context, string, string) (net.Conn, error) {
-			dialed = true
-			return nil, errors.New("dial should not be called")
-		},
+	_, err := newTestExecutor(ExecutorOptions{}, func(context.Context, string, string) (net.Conn, error) {
+		dialed = true
+		return nil, errors.New("dial should not be called")
 	}).TCPRoundTrip(context.Background(), TCPRoundTripRequest{
 		Grant:           grant,
 		Payload:         []byte("SELECT too_large"),
@@ -959,7 +1099,7 @@ func TestExecutorTCPRoundTripRejectsOversizedResponse(t *testing.T) {
 		_, _ = conn.Write([]byte("too-large"))
 	}()
 	grant := testGrant(t, TransportTCP, "tcp://db.example.com:5432", time.Minute)
-	_, err = NewExecutor(ExecutorOptions{DialContext: mapDialer(listener.Addr().String())}).TCPRoundTrip(context.Background(), TCPRoundTripRequest{
+	_, err = newTestExecutor(ExecutorOptions{}, mapDialer(listener.Addr().String())).TCPRoundTrip(context.Background(), TCPRoundTripRequest{
 		Grant:        grant,
 		Payload:      []byte("query"),
 		MaxReadBytes: 4,
@@ -1007,7 +1147,7 @@ func TestExecutorTCPRoundTripStopsWhenContextIsCanceled(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	errCh := make(chan error, 1)
 	go func() {
-		_, err := NewExecutor(ExecutorOptions{DialContext: mapDialer(listener.Addr().String())}).TCPRoundTrip(ctx, TCPRoundTripRequest{
+		_, err := newTestExecutor(ExecutorOptions{}, mapDialer(listener.Addr().String())).TCPRoundTrip(ctx, TCPRoundTripRequest{
 			Grant:        grant,
 			Payload:      []byte("query"),
 			MaxReadBytes: 32,
@@ -1052,7 +1192,7 @@ func TestExecutorUDPRoundTripUsesConnectedDestination(t *testing.T) {
 		_, _ = conn.WriteTo([]byte("udp:"+string(buf[:n])), addr)
 	}()
 	grant := testGrant(t, TransportUDP, "udp://metrics.example.com:8125", time.Minute)
-	response, err := NewExecutor(ExecutorOptions{DialContext: mapDialer(conn.LocalAddr().String())}).UDPRoundTrip(context.Background(), UDPRoundTripRequest{
+	response, err := newTestExecutor(ExecutorOptions{}, mapDialer(conn.LocalAddr().String())).UDPRoundTrip(context.Background(), UDPRoundTripRequest{
 		Grant:        grant,
 		Payload:      []byte("hello"),
 		MaxReadBytes: 32,
@@ -1104,7 +1244,7 @@ func TestExecutorUDPRoundTripIgnoresMismatchedSource(t *testing.T) {
 		done <- nil
 	}()
 	grant := testGrant(t, TransportUDP, "udp://metrics.example.com:8125", time.Minute)
-	response, err := NewExecutor(ExecutorOptions{DialContext: mapDialer(conn.LocalAddr().String())}).UDPRoundTrip(context.Background(), UDPRoundTripRequest{
+	response, err := newTestExecutor(ExecutorOptions{}, mapDialer(conn.LocalAddr().String())).UDPRoundTrip(context.Background(), UDPRoundTripRequest{
 		Grant:        grant,
 		Payload:      []byte("hello"),
 		MaxReadBytes: 32,
@@ -1144,13 +1284,12 @@ func TestExecutorUDPRoundTripRateLimitsEndpointBeforeDial(t *testing.T) {
 	}()
 	now := time.Now().UTC()
 	dials := 0
-	executor := NewExecutor(ExecutorOptions{
-		DialContext: func(ctx context.Context, network string, address string) (net.Conn, error) {
-			dials++
-			return mapDialer(conn.LocalAddr().String())(ctx, network, address)
-		},
+	executor := newTestExecutor(ExecutorOptions{
 		UDPRateLimiter: NewMemoryUDPRateLimiter(UDPRateLimit{MaxRoundTrips: 1, Window: time.Minute}),
 		Now:            func() time.Time { return now },
+	}, func(ctx context.Context, network string, address string) (net.Conn, error) {
+		dials++
+		return mapDialer(conn.LocalAddr().String())(ctx, network, address)
 	})
 	grant := testGrant(t, TransportUDP, "udp://metrics.example.com:8125", time.Minute)
 	response, err := executor.UDPRoundTrip(context.Background(), UDPRoundTripRequest{
@@ -1255,11 +1394,11 @@ func TestExecutorRejectsGrantClassifierVersionMismatchBeforeDial(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			dialed := false
 			grant := testGrant(t, tc.transport, tc.raw, time.Minute)
-			grant.TargetClassifierVersion = "target-classifier-v0"
-			executor := NewExecutor(ExecutorOptions{DialContext: func(context.Context, string, string) (net.Conn, error) {
+			grant.TargetClassifierVersion = "target-classifier-invalid"
+			executor := newTestExecutor(ExecutorOptions{}, func(context.Context, string, string) (net.Conn, error) {
 				dialed = true
 				return nil, errors.New("dial should not run for classifier mismatch")
-			}})
+			})
 			if err := tc.execute(executor, grant); !errors.Is(err, ErrConnectorDenied) {
 				t.Fatalf("execute() error = %v, want ErrConnectorDenied", err)
 			}
@@ -1288,7 +1427,7 @@ func TestExecutorDefaultDialerAllowsPublicResolvedAddress(t *testing.T) {
 	executor := NewExecutor(ExecutorOptions{
 		Dialer: &net.Dialer{Timeout: time.Millisecond},
 		LookupIPAddr: func(context.Context, string) ([]net.IPAddr, error) {
-			return []net.IPAddr{{IP: net.ParseIP("203.0.113.10")}}, nil
+			return []net.IPAddr{{IP: net.ParseIP("93.184.216.34")}}, nil
 		},
 	})
 	ctx, cancel := context.WithTimeout(context.Background(), time.Millisecond)
@@ -1312,7 +1451,7 @@ func TestGuardedDialerPinsValidatedAddressWithoutSecondDNSLookup(t *testing.T) {
 		},
 	}
 	dial := guardedDialContext(dialer, func(context.Context, string) ([]net.IPAddr, error) {
-		return []net.IPAddr{{IP: net.ParseIP("203.0.113.10")}}, nil
+		return []net.IPAddr{{IP: net.ParseIP("93.184.216.34")}}, nil
 	})
 	ctx, cancel := context.WithTimeout(context.Background(), time.Millisecond)
 	defer cancel()
@@ -1359,6 +1498,10 @@ func mapDialer(target string) func(context.Context, string, string) (net.Conn, e
 	return func(ctx context.Context, network string, _ string) (net.Conn, error) {
 		return dialer.DialContext(ctx, network, target)
 	}
+}
+
+func newTestExecutor(options ExecutorOptions, dialContext func(context.Context, string, string) (net.Conn, error)) *Executor {
+	return newExecutor(options, executorNetworkOptions{dialContext: dialContext})
 }
 
 func writeTestWebSocketHandshake(writer io.Writer, key string) error {

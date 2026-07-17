@@ -58,10 +58,6 @@ type Record struct {
 	UpdatedAt        time.Time  `json:"updated_at"`
 }
 
-type MemoryState struct {
-	Records map[string]Record `json:"records,omitempty"`
-}
-
 type MemoryStoreOptions struct {
 	Now func() time.Time
 }
@@ -85,15 +81,6 @@ func NewMemoryStore(opts ...MemoryStoreOptions) *MemoryStore {
 		now:     now,
 		records: map[string]Record{},
 	}
-}
-
-func NewMemoryStoreFromState(state MemoryState, opts ...MemoryStoreOptions) *MemoryStore {
-	store := NewMemoryStore(opts...)
-	store.records = cloneRecords(state.Records)
-	if store.records == nil {
-		store.records = map[string]Record{}
-	}
-	return store
 }
 
 func (s *MemoryStore) BindSecretRef(_ context.Context, req BindRequest) error {
@@ -219,15 +206,6 @@ func (s *MemoryStore) DeletePlugin(_ context.Context, pluginInstanceID string) e
 	return nil
 }
 
-func (s *MemoryStore) State() MemoryState {
-	if s == nil {
-		return MemoryState{}
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return MemoryState{Records: cloneRecords(s.records)}
-}
-
 func normalizeRequest(req BindRequest) (BindRequest, error) {
 	req.PluginInstanceID = strings.TrimSpace(req.PluginInstanceID)
 	req.SecretRef = strings.TrimSpace(req.SecretRef)
@@ -255,17 +233,6 @@ func sortRecords(records []Record) {
 		}
 		return records[i].SecretRef < records[j].SecretRef
 	})
-}
-
-func cloneRecords(records map[string]Record) map[string]Record {
-	if len(records) == 0 {
-		return nil
-	}
-	cloned := make(map[string]Record, len(records))
-	for key, record := range records {
-		cloned[key] = cloneRecord(record)
-	}
-	return cloned
 }
 
 func cloneRecord(record Record) Record {

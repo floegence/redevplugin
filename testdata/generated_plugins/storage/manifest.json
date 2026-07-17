@@ -28,17 +28,7 @@
         "scope": "user",
         "quota_bytes": 1048576,
         "quota_files": 64,
-        "schema_version": 1,
-        "migration": {
-          "from_version": 0,
-          "to_version": 1,
-          "reversible": true,
-          "requires_worker": false,
-          "estimated_bytes": 0,
-          "max_duration_ms": 1000,
-          "data_loss_risk": false,
-          "steps_hash": "sha256:generated-storage-workspace-v1"
-        }
+        "schema_version": 1
       },
       {
         "store_id": "preferences",
@@ -46,17 +36,7 @@
         "scope": "user",
         "quota_bytes": 262144,
         "quota_files": 32,
-        "schema_version": 1,
-        "migration": {
-          "from_version": 0,
-          "to_version": 1,
-          "reversible": true,
-          "requires_worker": false,
-          "estimated_bytes": 0,
-          "max_duration_ms": 1000,
-          "data_loss_risk": false,
-          "steps_hash": "sha256:generated-storage-preferences-v1"
-        }
+        "schema_version": 1
       },
       {
         "store_id": "local_db",
@@ -64,32 +44,12 @@
         "scope": "environment",
         "quota_bytes": 1048576,
         "quota_files": 32,
-        "schema_version": 1,
-        "migration": {
-          "from_version": 0,
-          "to_version": 1,
-          "reversible": true,
-          "requires_worker": false,
-          "estimated_bytes": 0,
-          "max_duration_ms": 1000,
-          "data_loss_risk": false,
-          "steps_hash": "sha256:generated-storage-sqlite-v1"
-        }
+        "schema_version": 1
       }
     ]
   },
   "settings": {
     "schema_version": 1,
-    "migration": {
-      "from_version": 0,
-      "to_version": 1,
-      "reversible": true,
-      "requires_worker": false,
-      "estimated_bytes": 0,
-      "max_duration_ms": 1000,
-      "data_loss_risk": false,
-      "steps_hash": "sha256:generated-storage-settings-v1"
-    },
     "fields": [
       {
         "key": "retention_days",

@@ -58,7 +58,7 @@ func finishArchive(operation capability.OperationSink) {
 
 func publishDocumentEvents(stream capability.StreamSink) {
 	if err := stream.Append(context.Background(), map[string]any{"document_id": "doc-1", "change": "updated"}); err != nil {
-		_ = stream.Fail(context.Background(), err.Error())
+		_ = stream.Fail(context.Background(), capability.ExecutionFailurePlatformFailed, err)
 		return
 	}
 	_ = stream.Close(context.Background())

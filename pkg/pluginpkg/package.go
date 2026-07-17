@@ -65,7 +65,6 @@ type ReadOptions struct {
 const PackageSignaturePath = "signatures/package.sig"
 const PackageSignatureSchemaVersion = "redevplugin.package_signature.v1"
 const PackageSignatureAlgorithmEd25519 = "ed25519"
-const workerABIPath = "workers/abi.json"
 const maxWASMTableElements uint32 = 65_536
 
 var serviceWorkerDependencyPatterns = []*regexp.Regexp{
@@ -132,12 +131,6 @@ type PackageSignature struct {
 	EntriesHash   string `json:"entries_hash"`
 	Signature     string `json:"signature"`
 	SignedAt      string `json:"signed_at,omitempty"`
-}
-
-type workerABIDescriptor struct {
-	ABIVersion string   `json:"abi_version"`
-	Exports    []string `json:"exports"`
-	Imports    []string `json:"imports"`
 }
 
 type Reader interface {
@@ -585,12 +578,6 @@ func jsonPointerFromManifestField(field string) string {
 }
 
 func validateManifestArtifacts(m manifest.Manifest, files map[string][]byte) error {
-	workerABI, err := validateWorkerABIDescriptor(m, files)
-	if err != nil {
-		return err
-	}
-	workerExports := map[string]map[string]struct{}{}
-	actualImports := map[string]struct{}{}
 	for i, worker := range m.Workers {
 		artifact, err := validateEntryPath(worker.Artifact)
 		if err != nil {
@@ -606,31 +593,6 @@ func validateManifestArtifacts(m manifest.Manifest, files map[string][]byte) err
 		}
 		if err := validateWASMWorkerContract(contract, worker.MemoryLimitBytes); err != nil {
 			return fmt.Errorf("workers[%d].artifact %q: %w", i, artifact, err)
-		}
-		for module := range contract.ImportModules {
-			if _, ok := workerABI.Imports[module]; !ok {
-				return fmt.Errorf("workers[%d].artifact %q imports undeclared module %q", i, artifact, module)
-			}
-			actualImports[module] = struct{}{}
-		}
-		workerExports[worker.WorkerID] = contract.FunctionExports()
-	}
-	if !sameStringSet(actualImports, workerABI.Imports) {
-		return fmt.Errorf("%s imports do not match packaged worker modules", workerABIPath)
-	}
-	for i, method := range m.Methods {
-		if method.Route.Kind != manifest.MethodRouteWorker {
-			continue
-		}
-		exports, ok := workerExports[method.Route.WorkerID]
-		if !ok {
-			return fmt.Errorf("methods[%d].route.worker_id %q does not reference a packaged worker", i, method.Route.WorkerID)
-		}
-		if _, ok := workerABI.Exports[method.Route.Export]; !ok {
-			return fmt.Errorf("methods[%d].route.export %q is not declared by %s", i, method.Route.Export, workerABIPath)
-		}
-		if _, ok := exports[method.Route.Export]; !ok {
-			return fmt.Errorf("methods[%d].route.export %q is not exported by worker %q", i, method.Route.Export, method.Route.WorkerID)
 		}
 	}
 	return nil
@@ -963,71 +925,6 @@ func hasRasterIconMagic(ext string, content []byte) bool {
 	}
 }
 
-type validatedWorkerABI struct {
-	Exports map[string]struct{}
-	Imports map[string]struct{}
-}
-
-func validateWorkerABIDescriptor(m manifest.Manifest, files map[string][]byte) (validatedWorkerABI, error) {
-	if len(m.Workers) == 0 {
-		return validatedWorkerABI{Exports: map[string]struct{}{}, Imports: map[string]struct{}{}}, nil
-	}
-	raw, ok := files[workerABIPath]
-	if !ok {
-		return validatedWorkerABI{}, fmt.Errorf("%s is required for packages with workers", workerABIPath)
-	}
-	var descriptor workerABIDescriptor
-	if err := json.Unmarshal(raw, &descriptor); err != nil {
-		return validatedWorkerABI{}, fmt.Errorf("%s: %w", workerABIPath, err)
-	}
-	if descriptor.ABIVersion != "redevplugin-wasm-worker-v2" {
-		return validatedWorkerABI{}, fmt.Errorf("%s: abi_version must be redevplugin-wasm-worker-v2", workerABIPath)
-	}
-	exports, err := validateWorkerABISet(workerABIPath, "exports", descriptor.Exports, allowedWorkerABIExports())
-	if err != nil {
-		return validatedWorkerABI{}, err
-	}
-	if len(exports) == 0 {
-		return validatedWorkerABI{}, fmt.Errorf("%s: exports must not be empty", workerABIPath)
-	}
-	imports, err := validateWorkerABISet(workerABIPath, "imports", descriptor.Imports, allowedWorkerABIImports())
-	if err != nil {
-		return validatedWorkerABI{}, err
-	}
-	return validatedWorkerABI{Exports: exports, Imports: imports}, nil
-}
-
-func validateWorkerABISet(abiPath string, field string, values []string, allowed map[string]struct{}) (map[string]struct{}, error) {
-	out := map[string]struct{}{}
-	for i, value := range values {
-		value = strings.TrimSpace(value)
-		if value == "" {
-			return nil, fmt.Errorf("%s: %s[%d] is empty", abiPath, field, i)
-		}
-		if _, ok := allowed[value]; !ok {
-			return nil, fmt.Errorf("%s: %s[%d] %q is not supported", abiPath, field, i, value)
-		}
-		if _, exists := out[value]; exists {
-			return nil, fmt.Errorf("%s: %s[%d] %q is duplicated", abiPath, field, i, value)
-		}
-		out[value] = struct{}{}
-	}
-	return out, nil
-}
-
-func allowedWorkerABIExports() map[string]struct{} {
-	return map[string]struct{}{
-		"redevplugin_worker_invoke": {},
-	}
-}
-
-func allowedWorkerABIImports() map[string]struct{} {
-	return map[string]struct{}{
-		"redevplugin.storage": {},
-		"redevplugin.network": {},
-	}
-}
-
 const wasmPageBytes = 64 * 1024
 
 type wasmFunctionType struct {
@@ -1046,24 +943,18 @@ type wasmExportDefinition struct {
 	Index uint32
 }
 
+type wasmTableLimits struct {
+	Initial uint32
+	Maximum *uint32
+}
+
 type wasmModuleContract struct {
 	Types             []wasmFunctionType
 	FunctionTypeIndex []uint32
 	Imports           []wasmImportFunction
-	ImportModules     map[string]struct{}
 	Exports           map[string]wasmExportDefinition
-	TableInitialSize  []uint32
+	TableLimits       []wasmTableLimits
 	MemoryInitialPage []uint32
-}
-
-func (contract wasmModuleContract) FunctionExports() map[string]struct{} {
-	exports := map[string]struct{}{}
-	for name, definition := range contract.Exports {
-		if definition.Kind == 0x00 {
-			exports[name] = struct{}{}
-		}
-	}
-	return exports
 }
 
 func inspectWASMModule(module []byte) (wasmModuleContract, error) {
@@ -1084,7 +975,7 @@ func inspectWASMModule(module []byte) (wasmModuleContract, error) {
 	if !bytes.Equal(module[4:8], []byte{0x01, 0x00, 0x00, 0x00}) {
 		return wasmModuleContract{}, errors.New("wasm version must be 1")
 	}
-	contract := wasmModuleContract{ImportModules: map[string]struct{}{}, Exports: map[string]wasmExportDefinition{}}
+	contract := wasmModuleContract{Exports: map[string]wasmExportDefinition{}}
 	offset := 8
 	seenSections := map[byte]struct{}{}
 	for offset < len(module) {
@@ -1109,11 +1000,11 @@ func inspectWASMModule(module []byte) (wasmModuleContract, error) {
 		case 1:
 			contract.Types, err = readWASMTypeSection(payload)
 		case 2:
-			contract.Imports, contract.ImportModules, err = readWASMImportSection(payload)
+			contract.Imports, err = readWASMImportSection(payload)
 		case 3:
 			contract.FunctionTypeIndex, err = readWASMFunctionSection(payload)
 		case 4:
-			contract.TableInitialSize, err = readWASMTableSection(payload)
+			contract.TableLimits, err = readWASMTableSection(payload)
 		case 5:
 			contract.MemoryInitialPage, err = readWASMMemorySection(payload)
 		case 7:
@@ -1141,12 +1032,15 @@ func inspectWASMModule(module []byte) (wasmModuleContract, error) {
 }
 
 func validateWASMWorkerContract(contract wasmModuleContract, memoryLimitBytes int64) error {
-	if len(contract.TableInitialSize) > 1 {
-		return fmt.Errorf("worker must define at most one table, found %d", len(contract.TableInitialSize))
+	if len(contract.TableLimits) > 1 {
+		return fmt.Errorf("worker must define at most one table, found %d", len(contract.TableLimits))
 	}
-	for i, initialElements := range contract.TableInitialSize {
-		if initialElements > maxWASMTableElements {
-			return fmt.Errorf("worker table[%d] initial size %d exceeds limit %d", i, initialElements, maxWASMTableElements)
+	for i, limits := range contract.TableLimits {
+		if limits.Initial > maxWASMTableElements {
+			return fmt.Errorf("worker table[%d] initial size %d exceeds limit %d", i, limits.Initial, maxWASMTableElements)
+		}
+		if limits.Maximum != nil && *limits.Maximum > maxWASMTableElements {
+			return fmt.Errorf("worker table[%d] maximum size %d exceeds limit %d", i, *limits.Maximum, maxWASMTableElements)
 		}
 	}
 	if len(contract.MemoryInitialPage) != 1 {
@@ -1214,18 +1108,6 @@ func sameWASMFunctionType(left wasmFunctionType, right wasmFunctionType) bool {
 	return bytes.Equal(left.Params, right.Params) && bytes.Equal(left.Results, right.Results)
 }
 
-func sameStringSet(left map[string]struct{}, right map[string]struct{}) bool {
-	if len(left) != len(right) {
-		return false
-	}
-	for value := range left {
-		if _, ok := right[value]; !ok {
-			return false
-		}
-	}
-	return true
-}
-
 func readWASMTypeSection(section []byte) ([]wasmFunctionType, error) {
 	offset := 0
 	count, err := readWASMVarUint32(section, &offset)
@@ -1274,38 +1156,36 @@ func readWASMValueTypes(section []byte, offset *int) ([]byte, error) {
 	return values, nil
 }
 
-func readWASMImportSection(section []byte) ([]wasmImportFunction, map[string]struct{}, error) {
+func readWASMImportSection(section []byte) ([]wasmImportFunction, error) {
 	offset := 0
 	count, err := readWASMVarUint32(section, &offset)
 	if err != nil {
-		return nil, nil, fmt.Errorf("import count: %w", err)
+		return nil, fmt.Errorf("import count: %w", err)
 	}
 	imports := make([]wasmImportFunction, 0, count)
-	modules := map[string]struct{}{}
 	for i := uint32(0); i < count; i++ {
 		module, err := readWASMName(section, &offset)
 		if err != nil {
-			return nil, nil, fmt.Errorf("import[%d].module: %w", i, err)
+			return nil, fmt.Errorf("import[%d].module: %w", i, err)
 		}
 		name, err := readWASMName(section, &offset)
 		if err != nil {
-			return nil, nil, fmt.Errorf("import[%d].name: %w", i, err)
+			return nil, fmt.Errorf("import[%d].name: %w", i, err)
 		}
 		if offset >= len(section) || section[offset] != 0x00 {
-			return nil, nil, fmt.Errorf("import[%d] must be a function", i)
+			return nil, fmt.Errorf("import[%d] must be a function", i)
 		}
 		offset++
 		typeIndex, err := readWASMVarUint32(section, &offset)
 		if err != nil {
-			return nil, nil, fmt.Errorf("import[%d].type: %w", i, err)
+			return nil, fmt.Errorf("import[%d].type: %w", i, err)
 		}
 		imports = append(imports, wasmImportFunction{Module: module, Name: name, TypeIndex: typeIndex})
-		modules[module] = struct{}{}
 	}
 	if offset != len(section) {
-		return nil, nil, errors.New("import section has trailing bytes")
+		return nil, errors.New("import section has trailing bytes")
 	}
-	return imports, modules, nil
+	return imports, nil
 }
 
 func readWASMFunctionSection(section []byte) ([]uint32, error) {
@@ -1328,13 +1208,13 @@ func readWASMFunctionSection(section []byte) ([]uint32, error) {
 	return types, nil
 }
 
-func readWASMTableSection(section []byte) ([]uint32, error) {
+func readWASMTableSection(section []byte) ([]wasmTableLimits, error) {
 	offset := 0
 	count, err := readWASMVarUint32(section, &offset)
 	if err != nil {
 		return nil, fmt.Errorf("table count: %w", err)
 	}
-	initialSizes := make([]uint32, 0, count)
+	limits := make([]wasmTableLimits, 0, count)
 	for i := uint32(0); i < count; i++ {
 		if offset >= len(section) || (section[offset] != 0x70 && section[offset] != 0x6f) {
 			return nil, fmt.Errorf("table[%d] reference type is unsupported", i)
@@ -1348,18 +1228,20 @@ func readWASMTableSection(section []byte) ([]uint32, error) {
 		if err != nil {
 			return nil, fmt.Errorf("table[%d].minimum: %w", i, err)
 		}
+		var maximum *uint32
 		if flags == 1 {
-			maximum, err := readWASMVarUint32(section, &offset)
-			if err != nil || maximum < minimum {
+			rawMaximum, err := readWASMVarUint32(section, &offset)
+			if err != nil || rawMaximum < minimum {
 				return nil, fmt.Errorf("table[%d].maximum is invalid", i)
 			}
+			maximum = &rawMaximum
 		}
-		initialSizes = append(initialSizes, minimum)
+		limits = append(limits, wasmTableLimits{Initial: minimum, Maximum: maximum})
 	}
 	if offset != len(section) {
 		return nil, errors.New("table section has trailing bytes")
 	}
-	return initialSizes, nil
+	return limits, nil
 }
 
 func readWASMMemorySection(section []byte) ([]uint32, error) {

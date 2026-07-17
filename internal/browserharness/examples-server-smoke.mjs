@@ -13,13 +13,9 @@ await mkdir(evidenceDir, { recursive: true });
 
 const browser = await chromium.launch({ headless: true });
 const desktop = await browser.newPage({ viewport: { width: 1280, height: 800 }, deviceScaleFactor: 1 });
-const consoleLines = [];
-const pageErrors = [];
-const apiFailureReads = [];
+const desktopFailures = observePageFailures(desktop, baseURL);
 const methodCalls = [];
 const methodResults = [];
-desktop.on("console", (message) => consoleLines.push(`${message.type()}: ${message.text()}`));
-desktop.on("pageerror", (error) => pageErrors.push(error.message));
 desktop.on("request", (request) => {
   if (!request.url().includes("/_redevplugin/api/plugins/rpc")) return;
   methodCalls.push(request.postData() || "");
@@ -28,9 +24,6 @@ desktop.on("response", (response) => {
   if (response.url().includes("/_redevplugin/api/plugins/rpc")) {
     const method = response.request().postDataJSON()?.method;
     methodResults.push(response.json().then((body) => ({ method, body })).catch(() => ({ method, body: undefined })));
-  }
-  if (response.url().startsWith(baseURL) && response.status() >= 500) {
-    apiFailureReads.push(response.text().then((body) => `${response.status()} ${response.url()} ${body}`).catch(() => `${response.status()} ${response.url()}`));
   }
 });
 
@@ -80,8 +73,26 @@ try {
   memos = await pluginFrame(desktop, "Memos");
   await memos.getByText("Draft protected", { exact: true }).waitFor({ timeout: 10_000 });
   assert.equal(await memos.getByPlaceholder("What's on your mind?").inputValue(), "# Smoke timeline memo\n\n- [ ] verify task writeback\n\n#smoke", "safe draft must survive a full reload");
+  let committedPublishWithLostResponse = 0;
+  const publishLostResponseRoute = async (route) => {
+    const requestBody = route.request().postDataJSON();
+    if (committedPublishWithLostResponse === 0 && requestBody?.method === "memos.publish") {
+      const backendResponse = await route.fetch();
+      assert.equal(backendResponse.status(), 200, "the lost-response publish must commit successfully at the backend");
+      const backendBody = await backendResponse.json();
+      assert.equal(backendBody?.ok, true, `lost-response backend publish failed: ${JSON.stringify(backendBody)}`);
+      assert.equal(backendBody?.data?.data?.memo?.content.includes("Smoke timeline memo"), true, "the backend must commit the memo before its response is lost");
+      committedPublishWithLostResponse += 1;
+      await desktopFailures.abortRPCResponse(route, "memos-publish-response-lost", "memos.publish");
+      return;
+    }
+    await route.continue();
+  };
+  await desktop.route("**/_redevplugin/api/plugins/rpc", publishLostResponseRoute);
   await memos.getByRole("button", { name: "Save", exact: true }).click();
   await memos.getByText("Memo published", { exact: true }).waitFor();
+  await desktop.unroute("**/_redevplugin/api/plugins/rpc", publishLostResponseRoute);
+  assert.equal(committedPublishWithLostResponse, 1, "an unknown publish outcome must reconcile without issuing a duplicate publish");
   assert.equal(await memos.getByPlaceholder("What's on your mind?").inputValue(), "", "publish trigger must clear the composer draft");
   const smokeCard = () => memos.locator(".memo-card").filter({ hasText: "Smoke timeline memo" });
   await smokeCard().waitFor();
@@ -125,11 +136,7 @@ try {
     if (requestBody?.method === "memos.list" && requestBody?.params?.query === "Stale request") {
       staleSearchIntercepted = true;
       await staleSearchGate;
-      await route.fulfill({
-        status: 200,
-        contentType: "application/json",
-        body: JSON.stringify({ ok: false, error_code: "PLUGIN_RUNTIME_UNAVAILABLE", error: "PLUGIN_RUNTIME_UNAVAILABLE" }),
-      });
+      await desktopFailures.fulfillRPCFault(route, "memos-stale-search", "plugin runtime is unavailable", "not_committed");
       return;
     }
     await route.continue();
@@ -185,7 +192,10 @@ try {
   await memos.getByRole("button", { name: "Pinned 1", exact: true }).waitFor();
   await memos.getByRole("button", { name: "Archived 0", exact: true }).waitFor();
 
-  await lifecycleCard().getByRole("button", { name: "More memo actions" }).click();
+  const lifecycleMenuButton = lifecycleCard().getByRole("button", { name: "More memo actions" });
+  const lifecycleMemoID = await lifecycleMenuButton.getAttribute("value");
+  assert.match(lifecycleMemoID || "", /^memo_[0-9a-f]{24}$/);
+  await lifecycleMenuButton.click();
   const firstMenuItem = lifecycleCard().getByRole("menuitem", { name: "Edit" });
   await firstMenuItem.waitFor();
   assert.equal(await firstMenuItem.evaluate((element) => document.activeElement === element), true, "the memo menu must focus its first action");
@@ -207,33 +217,108 @@ try {
   assert.equal(await memos.getByRole("button", { name: "Keep memo" }).evaluate((element) => document.activeElement === element), true, "delete dialog must keep forward tab focus inside the modal");
   await memos.getByRole("button", { name: "Keep memo" }).press("Escape");
   await waitFor(async () => lifecycleCard().getByRole("button", { name: "More memo actions" }).evaluate((element) => document.activeElement === element), 2_000, "delete dialog focus restoration");
-  let rejectMemoDelete = true;
+  let rejectedMemoDeletes = 0;
+  let memoDeleteIntercepted = false;
+  let releaseMemoDeleteFault;
+  const memoDeleteFaultGate = new Promise((resolveGate) => { releaseMemoDeleteFault = resolveGate; });
   await desktop.route("**/_redevplugin/api/plugins/rpc", async (route) => {
     const requestBody = route.request().postDataJSON();
-    if (rejectMemoDelete && requestBody?.method === "memos.delete") {
-      rejectMemoDelete = false;
-      await route.fulfill({
-        status: 200,
-        contentType: "application/json",
-        body: JSON.stringify({ ok: false, error_code: "PLUGIN_RUNTIME_UNAVAILABLE", error: "PLUGIN_RUNTIME_UNAVAILABLE" }),
-      });
+    if (rejectedMemoDeletes === 0 && requestBody?.method === "memos.delete" && requestBody?.params?.id === lifecycleMemoID) {
+      memoDeleteIntercepted = true;
+      await memoDeleteFaultGate;
+      rejectedMemoDeletes += 1;
+      await desktopFailures.fulfillRPCFault(route, "memos-delete", "plugin runtime is unavailable", "not_committed");
       return;
     }
     await route.continue();
   });
   await lifecycleCard().getByRole("button", { name: "More memo actions" }).click();
   await lifecycleCard().getByRole("menuitem", { name: "Delete" }).click();
-  await memos.getByRole("dialog", { name: "Delete memo" }).getByRole("button", { name: "Delete memo" }).click();
-  await memos.getByText("Memos could not delete this memo", { exact: true }).waitFor();
+  const failedDeleteDialog = memos.getByRole("dialog", { name: "Delete memo" });
+  await failedDeleteDialog.getByRole("button", { name: "Delete memo" }).click();
+  await waitFor(() => memoDeleteIntercepted, 5_000, "targeted Memos delete request");
+  const deletingButton = failedDeleteDialog.getByRole("button", { name: "Deleting..." });
+  await deletingButton.waitFor();
+  assert.equal(await deletingButton.isDisabled(), true, "the in-flight delete action must be disabled");
+  assert.equal(await failedDeleteDialog.getByRole("button", { name: "Keep memo" }).isDisabled(), true, "the in-flight delete cancel action must be disabled");
+  await failedDeleteDialog.press("Escape");
+  await failedDeleteDialog.waitFor();
+  releaseMemoDeleteFault();
+  await failedDeleteDialog.getByText("Memos could not delete this memo", { exact: true }).waitFor();
+  assert.equal(rejectedMemoDeletes, 1, "the delete fault must target exactly one request for the selected memo");
   await lifecycleCard().waitFor();
   await desktop.unroute("**/_redevplugin/api/plugins/rpc");
-  await lifecycleCard().getByRole("button", { name: "More memo actions" }).click();
-  await lifecycleCard().getByRole("menuitem", { name: "Delete" }).click();
-  await memos.getByRole("dialog", { name: "Delete memo" }).getByRole("button", { name: "Delete memo" }).click();
-  await memos.getByText("Memo deleted", { exact: true }).waitFor();
+  let committedDeleteWithLostResponse = 0;
+  await desktop.route("**/_redevplugin/api/plugins/rpc", async (route) => {
+    const requestBody = route.request().postDataJSON();
+    if (committedDeleteWithLostResponse === 0 && requestBody?.method === "memos.delete" && requestBody?.params?.id === lifecycleMemoID) {
+      const backendResponse = await route.fetch();
+      assert.equal(backendResponse.status(), 200, "the lost-response delete must commit successfully at the backend");
+      const backendBody = await backendResponse.json();
+      assert.equal(backendBody?.ok, true, `lost-response backend delete failed: ${JSON.stringify(backendBody)}`);
+      assert.equal(backendBody?.data?.data?.deleted_id, lifecycleMemoID, "the backend must commit the selected memo delete before its response is lost");
+      committedDeleteWithLostResponse += 1;
+      await desktopFailures.abortRPCResponse(route, "memos-delete-response-lost", "memos.delete");
+      return;
+    }
+    await route.continue();
+  });
+  await failedDeleteDialog.getByRole("button", { name: "Delete memo" }).click();
+  await memos.getByText("Memos refreshed", { exact: true }).waitFor();
+  assert.equal(committedDeleteWithLostResponse, 1, "the destructive request must not be retried after its committed response is lost");
+  assert.equal(await memos.getByRole("dialog", { name: "Delete memo" }).count(), 0, "an unknown delete outcome must close the destructive retry path");
+  await lifecycleCard().waitFor({ state: "detached" });
   await memos.getByRole("button", { name: "All memos 1", exact: true }).waitFor();
   await memos.getByRole("button", { name: "Pinned 1", exact: true }).waitFor();
   await memos.getByRole("button", { name: "Archived 0", exact: true }).waitFor();
+  await desktop.unroute("**/_redevplugin/api/plugins/rpc");
+  await memos.locator(".memos-toast").waitFor({ state: "detached", timeout: 5_000 });
+  await desktop.reload({ waitUntil: "domcontentloaded" });
+  memos = await pluginFrame(desktop, "Memos");
+  await editedCard().waitFor();
+  assert.equal(await lifecycleCard().count(), 0, "the deleted memo must remain absent after a full reload");
+  await memos.getByRole("button", { name: "All memos 1", exact: true }).waitFor();
+
+  const editedMenuButton = editedCard().getByRole("button", { name: "More memo actions" });
+  const editedMemoID = await editedMenuButton.getAttribute("value");
+  assert.match(editedMemoID || "", /^memo_[0-9a-f]{24}$/);
+  const reconcileListCallsBefore = methodCalls.filter((body) => body.includes('"method":"memos.list"')).length;
+  const reconcileFacetCallsBefore = methodCalls.filter((body) => body.includes('"method":"memos.facets"')).length;
+  let mismatchedDeleteResponses = 0;
+  let rejectDeleteReconcileList = true;
+  await desktop.route("**/_redevplugin/api/plugins/rpc", async (route) => {
+    const requestBody = route.request().postDataJSON();
+    if (mismatchedDeleteResponses === 0 && requestBody?.method === "memos.delete" && requestBody?.params?.id === editedMemoID) {
+      mismatchedDeleteResponses += 1;
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ ok: true, data: { data: { deleted_id: "memo_ffffffffffffffffffffffff" } } }),
+      });
+      return;
+    }
+    if (mismatchedDeleteResponses === 1 && rejectDeleteReconcileList && requestBody?.method === "memos.list") {
+      rejectDeleteReconcileList = false;
+      await desktopFailures.fulfillRPCFault(route, "memos-delete-reconcile-list", "plugin runtime is unavailable", "not_committed");
+      return;
+    }
+    await route.continue();
+  });
+  await editedMenuButton.click();
+  await editedCard().getByRole("menuitem", { name: "Delete" }).click();
+  await memos.getByRole("dialog", { name: "Delete memo" }).getByRole("button", { name: "Delete memo" }).click();
+  await memos.getByText("Memos could not confirm the delete result", { exact: true }).waitFor();
+  assert.equal(mismatchedDeleteResponses, 1, "the mismatched delete response must be injected exactly once");
+  assert.equal(await memos.getByRole("dialog", { name: "Delete memo" }).count(), 0, "an unknown delete outcome must close the destructive retry path");
+  assert.equal(await editedCard().getByRole("button", { name: "More memo actions" }).isDisabled(), true, "memo mutations must remain blocked until authoritative reconciliation succeeds");
+  assert.equal(await memos.getByPlaceholder("What's on your mind?").isDisabled(), true, "new writes must remain blocked until authoritative reconciliation succeeds");
+  await memos.getByRole("button", { name: "Retry", exact: true }).click();
+  await memos.getByText("Memos refreshed", { exact: true }).waitFor();
+  await editedCard().waitFor();
+  assert.equal(await editedCard().getByRole("button", { name: "More memo actions" }).isEnabled(), true, "memo mutations must resume after authoritative reconciliation");
+  assert.equal(methodCalls.filter((body) => body.includes('"method":"memos.list"')).length >= reconcileListCallsBefore + 2, true, "unknown delete recovery must retry the authoritative feed read");
+  assert.equal(methodCalls.filter((body) => body.includes('"method":"memos.facets"')).length >= reconcileFacetCallsBefore + 2, true, "unknown delete recovery must retry the authoritative facets read");
+  await desktop.unroute("**/_redevplugin/api/plugins/rpc");
   await memos.locator(".memos-toast").waitFor({ state: "detached", timeout: 5_000 });
   await desktop.screenshot({ path: resolve(evidenceDir, "examples-memos-desktop.png"), fullPage: false });
 
@@ -263,11 +348,7 @@ try {
     const requestBody = route.request().postDataJSON();
     if (rejectedForecasts > 0 && requestBody?.method === "weather.forecast") {
       rejectedForecasts -= 1;
-      await route.fulfill({
-        status: 200,
-        contentType: "application/json",
-        body: JSON.stringify({ ok: false, error_code: "PLUGIN_RUNTIME_UNAVAILABLE", error: "forecast unavailable" }),
-      });
+      await desktopFailures.fulfillRPCFault(route, "weather-forecast", "forecast unavailable", "not_committed");
       return;
     }
     await route.continue();
@@ -365,8 +446,7 @@ try {
   await desktop.screenshot({ path: resolve(evidenceDir, "examples-sky-strike-desktop.png"), fullPage: false });
 
   const mobile = await browser.newPage({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 1 });
-  const mobileErrors = [];
-  mobile.on("pageerror", (error) => mobileErrors.push(error.message));
+  const mobileFailures = observePageFailures(mobile, baseURL);
   await mobile.goto(baseURL, { waitUntil: "domcontentloaded" });
   const mobileMemos = await pluginFrame(mobile, "Memos");
   await assertNoHorizontalOverflow(mobile);
@@ -411,12 +491,11 @@ try {
   await assertNoHorizontalOverflow(mobile);
   await assertNoHorizontalOverflow(mobile.frameLocator('iframe[title="Sky Strike plugin"]'));
   await mobile.screenshot({ path: resolve(evidenceDir, "examples-sky-strike-mobile.png"), fullPage: false });
-  assert.deepEqual(mobileErrors, []);
+  await mobileFailures.assertClean();
   await mobile.close();
 
   const compact = await browser.newPage({ viewport: { width: 360, height: 720 }, deviceScaleFactor: 1 });
-  const compactErrors = [];
-  compact.on("pageerror", (error) => compactErrors.push(error.message));
+  const compactFailures = observePageFailures(compact, baseURL);
   await compact.goto(`${baseURL}?plugin=memos`, { waitUntil: "domcontentloaded" });
   const compactMemos = await pluginFrame(compact, "Memos");
   await assertNoHorizontalOverflow(compact);
@@ -425,12 +504,9 @@ try {
   await compact.route("**/_redevplugin/api/plugins/rpc", async (route) => {
     const requestBody = route.request().postDataJSON();
     if (rejectedMemoUpdates > 0 && requestBody?.method === "memos.update") {
+      const faultNumber = 3 - rejectedMemoUpdates;
       rejectedMemoUpdates -= 1;
-      await route.fulfill({
-        status: 200,
-        contentType: "application/json",
-        body: JSON.stringify({ ok: false, error_code: "PLUGIN_RUNTIME_UNAVAILABLE", error: "PLUGIN_RUNTIME_UNAVAILABLE" }),
-      });
+      await compactFailures.fulfillRPCFault(route, `memos-update-${faultNumber}`, "plugin runtime is unavailable", "not_committed");
       return;
     }
     await route.continue();
@@ -472,20 +548,18 @@ try {
   await assertNoHorizontalOverflow(compact);
   await assertNoHorizontalOverflow(compact.frameLocator('iframe[title="Sky Strike plugin"]'));
   await compact.screenshot({ path: resolve(evidenceDir, "examples-compact-mobile.png"), fullPage: false });
-  assert.deepEqual(compactErrors, []);
+  assert.equal(rejectedMemoUpdates, 0, "the compact edit flow must observe both injected persistence failures");
+  await compactFailures.assertClean();
   await compact.close();
 
-  const unexpectedConsole = consoleLines.filter((line) => !isExpectedSandboxConsoleLine(line));
-  const apiFailures = await Promise.all(apiFailureReads);
-  assert.deepEqual(pageErrors, []);
-  assert.deepEqual(apiFailures, []);
-  assert.deepEqual(unexpectedConsole, []);
+  const desktopFailureSummary = await desktopFailures.assertClean();
   await writeFile(resolve(evidenceDir, "examples-acceptance.json"), JSON.stringify({
     schema_version: "redevplugin.examples_acceptance.v1",
     page_title: await desktop.title(),
     plugins: ["memos", "weather", "sky-strike"],
     memos_persisted: true,
     memos_autosave_verified: true,
+    memos_publish_response_loss_reconciled: true,
     memos_quiesce_save_verified: true,
     memos_delete_confirmation_verified: true,
     weather_location_persisted: true,
@@ -503,18 +577,18 @@ try {
     premium_webp_artwork_loaded: true,
     distinct_consumer_visual_systems_verified: true,
     responsive_viewports: ["1280x800", "390x844", "360x720"],
-    console_errors: unexpectedConsole,
-    page_errors: pageErrors,
-    api_failures: apiFailures,
+    console_errors: desktopFailureSummary.unexpectedConsole,
+    page_errors: desktopFailureSummary.pageErrors,
+    api_failures: desktopFailureSummary.apiFailures,
   }, null, 2) + "\n");
 } catch (error) {
   const diagnostics = {
+    cause_message: error instanceof Error ? error.message : String(error),
+    cause_stack: error instanceof Error ? error.stack : undefined,
     outer_status: await desktop.locator("#surface-placeholder p").textContent().catch(() => ""),
     detail_error: await desktop.locator("#detail-error").textContent().catch(() => ""),
     plugin_text: await desktop.frameLocator('iframe[title="Memos plugin"]').locator("body").innerText().catch(() => ""),
-    console_lines: consoleLines,
-    page_errors: pageErrors,
-    api_failures: await Promise.all(apiFailureReads),
+    failure_summary: await desktopFailures.read(),
     method_calls: methodCalls,
     method_results: await Promise.all(methodResults),
   };
@@ -522,6 +596,110 @@ try {
 } finally {
   await desktop.close();
   await browser.close();
+}
+
+function observePageFailures(page, applicationBaseURL) {
+  const consoleLines = [];
+  const pageErrors = [];
+  const apiFailureReads = [];
+  const expectedRPCFaultLabels = [];
+  const observedRPCFaultLabels = [];
+  const expectedRPCTransportFaults = [];
+  const observedRPCTransportFaultLabels = [];
+  const unexpectedRequestFailures = [];
+  page.on("console", (message) => consoleLines.push(`${message.type()}: ${message.text()}`));
+  page.on("pageerror", (error) => pageErrors.push(error.message));
+  page.on("response", (response) => {
+    if (!response.url().startsWith(applicationBaseURL) || response.status() < 500) return;
+    apiFailureReads.push(Promise.all([
+      response.headerValue("x-redevplugin-smoke-fault"),
+      response.text().catch(() => ""),
+    ]).then(([faultLabel, body]) => {
+      if (faultLabel) {
+        observedRPCFaultLabels.push(faultLabel);
+        return "";
+      }
+      return `${response.status()} ${response.url()}${body ? ` ${body}` : ""}`;
+    }));
+  });
+  page.on("requestfailed", (request) => {
+    if (!request.url().startsWith(applicationBaseURL) || !request.url().includes("/_redevplugin/api/plugins/rpc")) return;
+    const method = request.postDataJSON()?.method;
+    const expected = expectedRPCTransportFaults.find((fault) => fault.method === method && !observedRPCTransportFaultLabels.includes(fault.label));
+    if (expected) {
+      observedRPCTransportFaultLabels.push(expected.label);
+      return;
+    }
+    const errorText = request.failure()?.errorText || "request failed";
+    if (errorText === "net::ERR_ABORTED") return;
+    unexpectedRequestFailures.push(`${method || "unknown"}: ${errorText}`);
+  });
+
+  return {
+    consoleLines,
+    pageErrors,
+    async fulfillRPCFault(route, label, message, mutationOutcome) {
+      assert.equal(expectedRPCFaultLabels.includes(label), false, `duplicate expected RPC fault label ${label}`);
+      assert.equal(
+        mutationOutcome === "not_committed" || mutationOutcome === "unknown",
+        true,
+        `RPC fault ${label} must declare a mutation outcome`,
+      );
+      expectedRPCFaultLabels.push(label);
+      await route.fulfill({
+        status: 503,
+        contentType: "application/json",
+        headers: { "x-redevplugin-smoke-fault": label },
+        body: JSON.stringify({
+          ok: false,
+          error: {
+            code: "PLUGIN_RUNTIME_UNAVAILABLE",
+            message,
+            details: {},
+            mutation_outcome: mutationOutcome,
+          },
+        }),
+      });
+    },
+    async abortRPCResponse(route, label, method) {
+      assert.equal(expectedRPCTransportFaults.some((fault) => fault.label === label), false, `duplicate expected RPC transport fault label ${label}`);
+      expectedRPCTransportFaults.push({ label, method });
+      await route.abort("connectionfailed");
+    },
+    async read() {
+      const expectedFailureConsoleLine = "error: Failed to load resource: the server responded with a status of 503 (Service Unavailable)";
+      const transportFailureConsoleLines = consoleLines.filter((line) => line.startsWith("error: Failed to load resource: net::ERR_"));
+      return {
+        consoleLines: [...consoleLines],
+        pageErrors: [...pageErrors],
+        apiFailures: (await Promise.all(apiFailureReads)).filter(Boolean),
+        expectedRPCFaultLabels: [...expectedRPCFaultLabels].sort(),
+        observedRPCFaultLabels: [...observedRPCFaultLabels].sort(),
+        expectedRPCTransportFaultLabels: expectedRPCTransportFaults.map((fault) => fault.label).sort(),
+        observedRPCTransportFaultLabels: [...observedRPCTransportFaultLabels].sort(),
+        unexpectedRequestFailures: [...unexpectedRequestFailures],
+        expectedFailureConsoleCount: consoleLines.filter((line) => line === expectedFailureConsoleLine).length,
+        transportFailureConsoleLines,
+        unexpectedConsole: consoleLines.filter((line) =>
+          line !== expectedFailureConsoleLine &&
+          !transportFailureConsoleLines.includes(line) &&
+          !isExpectedSandboxConsoleLine(line)
+        ),
+      };
+    },
+    async assertClean() {
+      const summary = await this.read();
+      assert.deepEqual(summary.pageErrors, []);
+      assert.deepEqual(summary.observedRPCFaultLabels, summary.expectedRPCFaultLabels, "every expected RPC fault must produce exactly one labeled response");
+      assert.deepEqual(summary.observedRPCTransportFaultLabels, summary.expectedRPCTransportFaultLabels, "every expected RPC transport fault must abort exactly one request");
+      assert.deepEqual(summary.unexpectedRequestFailures, []);
+      assert.equal(summary.expectedFailureConsoleCount, summary.expectedRPCFaultLabels.length, "every expected RPC fault must produce exactly one browser network error");
+      assert.equal(summary.transportFailureConsoleLines.length <= summary.expectedRPCTransportFaultLabels.length, true, "transport failure console noise must remain bounded");
+      assert.deepEqual(summary.apiFailures, []);
+      assert.deepEqual(summary.unexpectedConsole, []);
+      return summary;
+    },
+  };
 }
 
 async function pluginFrame(page, name) {

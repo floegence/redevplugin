@@ -9,92 +9,102 @@ import (
 	"time"
 )
 
-func TestPolicyStorePutListEvaluateAndDelete(t *testing.T) {
-	for _, tc := range policyStoreCases() {
-		t.Run(tc.name, func(t *testing.T) {
-			ctx := context.Background()
-			store := tc.open(t)
-			now := time.Date(2026, 7, 2, 10, 0, 0, 0, time.UTC)
-			record, err := store.PutPolicy(ctx, PutPolicyRequest{
-				PluginInstanceID:   "plugini_policy",
-				AllowedPermissions: []string{"write", "read", "read", ""},
-				DeniedMethods:      []string{"cache.delete", "cache.delete", ""},
-				Now:                now,
-			})
-			if err != nil {
-				t.Fatalf("PutPolicy() error = %v", err)
-			}
-			if !reflect.DeepEqual(record.AllowedPermissions, []string{"read", "write"}) ||
-				!reflect.DeepEqual(record.DeniedMethods, []string{"cache.delete"}) ||
-				!record.UpdatedAt.Equal(now) {
-				t.Fatalf("policy record mismatch: %#v", record)
-			}
+func TestNewPolicyNormalizesRecord(t *testing.T) {
+	now := time.Date(2026, 7, 2, 10, 0, 0, 0, time.FixedZone("test", 3600))
+	record, err := NewPolicy(PutPolicyRequest{
+		PluginInstanceID:   " plugini_policy ",
+		AllowedPermissions: []string{"write", "read", "read", ""},
+		DeniedMethods:      []string{"cache.delete", "cache.delete", ""},
+		Now:                now,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if record.PluginInstanceID != "plugini_policy" ||
+		!reflect.DeepEqual(record.AllowedPermissions, []string{"read", "write"}) ||
+		!reflect.DeepEqual(record.DeniedMethods, []string{"cache.delete"}) ||
+		!record.UpdatedAt.Equal(now) || record.UpdatedAt.Location() != time.UTC {
+		t.Fatalf("NewPolicy() = %#v", record)
+	}
+}
 
-			allowed, err := store.EvaluatePolicy(ctx, EvaluatePolicyRequest{
-				PluginInstanceID:    "plugini_policy",
-				Method:              "cache.list",
-				RequiredPermissions: []string{"read"},
-			})
-			if err != nil {
-				t.Fatalf("EvaluatePolicy(allowed) error = %v", err)
-			}
-			if !allowed.Allowed {
-				t.Fatalf("EvaluatePolicy(allowed) denied: %#v", allowed)
-			}
+func TestEvaluatePolicy(t *testing.T) {
+	now := time.Date(2026, 7, 2, 10, 0, 0, 0, time.UTC)
+	policy, err := NewPolicy(PutPolicyRequest{
+		PluginInstanceID:   "plugini_policy",
+		AllowedPermissions: []string{"read", "write"},
+		DeniedMethods:      []string{"cache.delete"},
+		Now:                now,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	allowed, err := Evaluate(&policy, EvaluatePolicyRequest{
+		PluginInstanceID:    "plugini_policy",
+		Method:              "cache.list",
+		RequiredPermissions: []string{"read"},
+	})
+	if err != nil || !allowed.Allowed {
+		t.Fatalf("Evaluate(allowed) = %#v, %v", allowed, err)
+	}
+	deniedMethod, err := Evaluate(&policy, EvaluatePolicyRequest{
+		PluginInstanceID:    "plugini_policy",
+		Method:              " cache.delete ",
+		RequiredPermissions: []string{"write"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if deniedMethod.Allowed || deniedMethod.Reason != PolicyDenyReasonMethodDenied || deniedMethod.DeniedMethod != "cache.delete" {
+		t.Fatalf("Evaluate(denied method) = %#v", deniedMethod)
+	}
+	deniedPermission, err := Evaluate(&policy, EvaluatePolicyRequest{
+		PluginInstanceID:    "plugini_policy",
+		Method:              "cache.remove",
+		RequiredPermissions: []string{"write", "delete", "delete"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if deniedPermission.Allowed || deniedPermission.Reason != PolicyDenyReasonPermissionNotAllowed || !reflect.DeepEqual(deniedPermission.MissingPermissions, []string{"delete"}) {
+		t.Fatalf("Evaluate(denied permission) = %#v", deniedPermission)
+	}
+}
 
-			deniedMethod, err := store.EvaluatePolicy(ctx, EvaluatePolicyRequest{
-				PluginInstanceID:    "plugini_policy",
-				Method:              "cache.delete",
-				RequiredPermissions: []string{"write"},
-			})
-			if err != nil {
-				t.Fatalf("EvaluatePolicy(denied method) error = %v", err)
-			}
-			if deniedMethod.Allowed ||
-				deniedMethod.Reason != PolicyDenyReasonMethodDenied ||
-				deniedMethod.DeniedMethod != "cache.delete" {
-				t.Fatalf("denied method result mismatch: %#v", deniedMethod)
-			}
+func TestEvaluateMissingPolicyAllows(t *testing.T) {
+	evaluation, err := Evaluate(nil, EvaluatePolicyRequest{PluginInstanceID: "plugini_missing", Method: "anything.run", RequiredPermissions: []string{"admin"}})
+	if err != nil || !evaluation.Allowed {
+		t.Fatalf("Evaluate(nil) = %#v, %v", evaluation, err)
+	}
+}
 
-			deniedPermission, err := store.EvaluatePolicy(ctx, EvaluatePolicyRequest{
-				PluginInstanceID:    "plugini_policy",
-				Method:              "cache.remove",
-				RequiredPermissions: []string{"delete", "write"},
-			})
-			if err != nil {
-				t.Fatalf("EvaluatePolicy(denied permission) error = %v", err)
-			}
-			if deniedPermission.Allowed ||
-				deniedPermission.Reason != PolicyDenyReasonPermissionNotAllowed ||
-				!reflect.DeepEqual(deniedPermission.MissingPermissions, []string{"delete"}) {
-				t.Fatalf("denied permission result mismatch: %#v", deniedPermission)
-			}
+func TestPolicyFunctionsRejectInvalidInput(t *testing.T) {
+	now := time.Date(2026, 7, 2, 10, 0, 0, 0, time.UTC)
+	if _, err := NewPolicy(PutPolicyRequest{Now: now}); !errors.Is(err, ErrInvalidPolicy) {
+		t.Fatalf("NewPolicy() error = %v", err)
+	}
+	if err := ValidatePolicy(PolicyRecord{PluginInstanceID: "plugini"}); !errors.Is(err, ErrInvalidPolicy) {
+		t.Fatalf("ValidatePolicy() error = %v", err)
+	}
+	if _, err := Evaluate(nil, EvaluatePolicyRequest{PluginInstanceID: "plugini"}); !errors.Is(err, ErrInvalidPolicy) {
+		t.Fatalf("Evaluate() error = %v", err)
+	}
+	other, err := NewPolicy(PutPolicyRequest{PluginInstanceID: "other", Now: now})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Evaluate(&other, EvaluatePolicyRequest{PluginInstanceID: "plugini", Method: "read"}); !errors.Is(err, ErrInvalidPolicy) {
+		t.Fatalf("Evaluate(mismatched plugin) error = %v", err)
+	}
+}
 
-			listed, err := store.ListPolicies(ctx)
-			if err != nil {
-				t.Fatalf("ListPolicies() error = %v", err)
-			}
-			if len(listed) != 1 || listed[0].PluginInstanceID != "plugini_policy" {
-				t.Fatalf("ListPolicies() mismatch: %#v", listed)
-			}
-			if err := store.DeletePolicy(ctx, "plugini_policy"); err != nil {
-				t.Fatalf("DeletePolicy() error = %v", err)
-			}
-			afterDelete, err := store.EvaluatePolicy(ctx, EvaluatePolicyRequest{
-				PluginInstanceID:    "plugini_policy",
-				Method:              "cache.delete",
-				RequiredPermissions: []string{"delete"},
-			})
-			if err != nil {
-				t.Fatalf("EvaluatePolicy(after delete) error = %v", err)
-			}
-			if !afterDelete.Allowed {
-				t.Fatalf("deleted policy still denied: %#v", afterDelete)
-			}
-			if _, err := store.GetPolicy(ctx, "plugini_policy"); !errors.Is(err, ErrPolicyNotFound) {
-				t.Fatalf("GetPolicy(after delete) error = %v, want ErrPolicyNotFound", err)
-			}
-		})
+func TestClonePolicyDoesNotShareSlices(t *testing.T) {
+	record := PolicyRecord{AllowedPermissions: []string{"read"}, DeniedMethods: []string{"delete"}}
+	cloned := ClonePolicy(record)
+	cloned.AllowedPermissions[0] = "write"
+	cloned.DeniedMethods[0] = "update"
+	if !reflect.DeepEqual(record.AllowedPermissions, []string{"read"}) || !reflect.DeepEqual(record.DeniedMethods, []string{"delete"}) {
+		t.Fatalf("ClonePolicy() shared slices: original=%#v clone=%#v", record, cloned)
 	}
 }
 
@@ -211,6 +221,7 @@ func TestConfirmationIntentStoreRejectsOnlyMatchingScope(t *testing.T) {
 				ActiveFingerprint:    record.Scope.ActiveFingerprint,
 				OwnerSessionHash:     record.Scope.OwnerSessionHash,
 				OwnerUserHash:        record.Scope.OwnerUserHash,
+				OwnerEnvHash:         record.Scope.OwnerEnvHash,
 				SessionChannelIDHash: record.Scope.SessionChannelIDHash,
 				PolicyRevision:       record.Scope.PolicyRevision,
 				ManagementRevision:   record.Scope.ManagementRevision,
@@ -218,7 +229,7 @@ func TestConfirmationIntentStoreRejectsOnlyMatchingScope(t *testing.T) {
 				Now:                  now.Add(30 * time.Second),
 			}
 			mismatched := reject
-			mismatched.BridgeChannelID = "bridge_other"
+			mismatched.OwnerEnvHash = "environment_other"
 			if _, err := store.RejectConfirmationIntent(ctx, mismatched); !errors.Is(err, ErrConfirmationIntentScopeMismatch) {
 				t.Fatalf("RejectConfirmationIntent(scope mismatch) error = %v, want ErrConfirmationIntentScopeMismatch", err)
 			}
@@ -300,149 +311,6 @@ func TestSQLiteConfirmationIntentStorePersistsAcrossOpen(t *testing.T) {
 	}
 }
 
-func TestSQLiteConfirmationIntentStoreRejectsNewerSchema(t *testing.T) {
-	ctx := context.Background()
-	path := filepath.Join(t.TempDir(), "confirmation-intents.sqlite")
-	store, err := NewSQLiteConfirmationIntentStore(ctx, path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := store.db.ExecContext(ctx, `INSERT OR REPLACE INTO plugin_confirmation_intent_schema_migrations(version, applied_at) VALUES(999, 0)`); err != nil {
-		t.Fatal(err)
-	}
-	if err := store.Close(); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := NewSQLiteConfirmationIntentStore(ctx, path); err == nil {
-		t.Fatal("NewSQLiteConfirmationIntentStore() accepted newer schema version")
-	}
-}
-
-func TestPolicyStoreNoPolicyAllowsByDefault(t *testing.T) {
-	for _, tc := range policyStoreCases() {
-		t.Run(tc.name, func(t *testing.T) {
-			allowed, err := tc.open(t).EvaluatePolicy(context.Background(), EvaluatePolicyRequest{
-				PluginInstanceID:    "plugini_missing",
-				Method:              "anything.run",
-				RequiredPermissions: []string{"admin"},
-			})
-			if err != nil {
-				t.Fatalf("EvaluatePolicy() error = %v", err)
-			}
-			if !allowed.Allowed {
-				t.Fatalf("missing policy denied: %#v", allowed)
-			}
-		})
-	}
-}
-
-func TestPolicyStoreRejectsInvalidRequests(t *testing.T) {
-	for _, tc := range policyStoreCases() {
-		t.Run(tc.name, func(t *testing.T) {
-			store := tc.open(t)
-			if _, err := store.PutPolicy(context.Background(), PutPolicyRequest{}); !errors.Is(err, ErrInvalidPolicy) {
-				t.Fatalf("PutPolicy() error = %v, want ErrInvalidPolicy", err)
-			}
-			if _, err := store.GetPolicy(context.Background(), " "); !errors.Is(err, ErrInvalidPolicy) {
-				t.Fatalf("GetPolicy() error = %v, want ErrInvalidPolicy", err)
-			}
-			if _, err := store.EvaluatePolicy(context.Background(), EvaluatePolicyRequest{PluginInstanceID: "plugini"}); !errors.Is(err, ErrInvalidPolicy) {
-				t.Fatalf("EvaluatePolicy() error = %v, want ErrInvalidPolicy", err)
-			}
-			if err := store.DeletePolicy(context.Background(), " "); !errors.Is(err, ErrInvalidPolicy) {
-				t.Fatalf("DeletePolicy() error = %v, want ErrInvalidPolicy", err)
-			}
-		})
-	}
-}
-
-func TestSQLitePolicyStorePersistsAcrossOpen(t *testing.T) {
-	ctx := context.Background()
-	path := filepath.Join(t.TempDir(), "security-policy.sqlite")
-	store, err := NewSQLitePolicyStore(ctx, path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	now := time.Date(2026, 7, 2, 11, 0, 0, 0, time.UTC)
-	if _, err := store.PutPolicy(ctx, PutPolicyRequest{
-		PluginInstanceID:   "plugini_persist",
-		AllowedPermissions: []string{"read"},
-		DeniedMethods:      []string{"cache.delete"},
-		Now:                now,
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if err := store.Close(); err != nil {
-		t.Fatal(err)
-	}
-
-	reopened, err := NewSQLitePolicyStore(ctx, path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		_ = reopened.Close()
-	})
-	record, err := reopened.GetPolicy(ctx, "plugini_persist")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !reflect.DeepEqual(record.AllowedPermissions, []string{"read"}) ||
-		!reflect.DeepEqual(record.DeniedMethods, []string{"cache.delete"}) ||
-		!record.UpdatedAt.Equal(now) {
-		t.Fatalf("persisted policy mismatch: %#v", record)
-	}
-}
-
-func TestSQLitePolicyStoreRejectsNewerSchema(t *testing.T) {
-	ctx := context.Background()
-	path := filepath.Join(t.TempDir(), "security-policy.sqlite")
-	store, err := NewSQLitePolicyStore(ctx, path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := store.db.ExecContext(ctx, `INSERT OR REPLACE INTO plugin_security_policy_schema_migrations(version, applied_at) VALUES(999, 0)`); err != nil {
-		t.Fatal(err)
-	}
-	if err := store.Close(); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := NewSQLitePolicyStore(ctx, path); err == nil {
-		t.Fatal("NewSQLitePolicyStore() accepted newer schema version")
-	}
-}
-
-type policyStoreCase struct {
-	name string
-	open func(t *testing.T) PolicyStore
-}
-
-func policyStoreCases() []policyStoreCase {
-	return []policyStoreCase{
-		{
-			name: "memory",
-			open: func(t *testing.T) PolicyStore {
-				t.Helper()
-				return NewMemoryPolicyStore()
-			},
-		},
-		{
-			name: "sqlite",
-			open: func(t *testing.T) PolicyStore {
-				t.Helper()
-				store, err := NewSQLitePolicyStore(context.Background(), filepath.Join(t.TempDir(), "security-policy.sqlite"))
-				if err != nil {
-					t.Fatal(err)
-				}
-				t.Cleanup(func() {
-					_ = store.Close()
-				})
-				return store
-			},
-		},
-	}
-}
-
 func testPutConfirmationIntentRequest(confirmationID string, pluginInstanceID string, now time.Time) PutConfirmationIntentRequest {
 	return PutConfirmationIntentRequest{
 		ConfirmationID:      confirmationID,
@@ -458,6 +326,7 @@ func testPutConfirmationIntentRequest(confirmationID string, pluginInstanceID st
 			ActiveFingerprint:      "sha256:active",
 			OwnerSessionHash:       "sha256:session",
 			OwnerUserHash:          "sha256:user",
+			OwnerEnvHash:           "sha256:environment",
 			SessionChannelIDHash:   "sha256:channel",
 			PolicyRevision:         1,
 			ManagementRevision:     1,

@@ -40,7 +40,7 @@ func TestCompatibilityManifestSchemaDefinesReleasedMatrix(t *testing.T) {
 		"bridge_schema_version":                   "bridge-v4",
 		"opaque_surface_document_schema_version":  "opaque-surface-document-v2",
 		"opaque_surface_transport_schema_version": "opaque-surface-transport-v3",
-		"target_classifier_version":               "target-classifier-v1",
+		"target_classifier_version":               "target-classifier-v2",
 		"network_grant_schema_version":            "network-grant-v1",
 		"plugin_platform_openapi_version":         "plugin-platform-v4",
 		"compatibility_schema_version":            "compatibility-manifest-v4",

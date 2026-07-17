@@ -155,7 +155,13 @@ async function verifyScenario(credentiallessScenario) {
   assert.equal((await frame.locator("#plugin-result").textContent()).includes("gateway_token"), false);
 
   await frame.getByRole("button", { name: "Read stream" }).click();
-  await frame.waitForFunction(() => document.querySelector("#plugin-result")?.textContent?.includes("opaque log line 2"));
+  try {
+    await frame.waitForFunction(() => document.querySelector("#plugin-result")?.textContent?.includes("opaque log line 2"));
+  } catch (error) {
+    const diagnostics = await (await fetch(`${baseURL}/__browser_harness/diagnostics`)).json();
+    const pluginResult = await frame.locator("#plugin-result").textContent();
+    throw new Error(`stream response recovery failed: ${JSON.stringify({ diagnostics, pluginResult })}`, { cause: error });
+  }
   const streamResult = await frame.locator("#plugin-result").textContent();
   const realStreamRedeemed = streamResult.includes("opaque log line 1") && streamResult.includes("opaque log line 2");
   assert.equal(streamResult.includes("stream_ticket"), false);
@@ -163,7 +169,13 @@ async function verifyScenario(credentiallessScenario) {
   assert.equal(streamResult.includes('"parent_stream_credential_visible": false'), true);
 
   await frame.getByRole("button", { name: "Dangerous action" }).click();
-  await page.locator("#confirmation-panel").waitFor({ state: "visible" });
+  try {
+    await page.locator("#confirmation-panel").waitFor({ state: "visible" });
+  } catch (error) {
+    const diagnostics = await (await fetch(`${baseURL}/__browser_harness/diagnostics`)).json();
+    const pluginResult = await frame.locator("#plugin-result").textContent();
+    throw new Error(`confirmation preparation failed: ${JSON.stringify({ diagnostics, pluginResult })}`, { cause: error });
+  }
   await page.locator("#approve-confirmation").click();
   await frame.waitForFunction(() => document.querySelector("#plugin-result")?.textContent?.includes('"confirmed": true'));
 
@@ -241,7 +253,8 @@ async function verifyScenario(credentiallessScenario) {
     service_worker_absent: page.context().serviceWorkers().length === 0 && isolation.service_worker_blocked === true,
     opening_progress: snapshot.progressEvents.length >= 1 && snapshot.progressEvents[0] >= 300,
     first_paint_before_lazy_asset: snapshot.openedAt > 0 && snapshot.openedAt < diagnostics.asset_completed_at,
-    real_stream_redeemed: realStreamRedeemed && finalDiagnostics.requests.filter((request) => request.includes(`/surfaces/${currentSurfaceID}/streams/read`)).length === 2,
+    stream_response_loss_recovered: finalDiagnostics.stream_response_loss_recovered === true,
+    real_stream_redeemed: realStreamRedeemed && finalDiagnostics.requests.filter((request) => request.includes(`/surfaces/${currentSurfaceID}/streams/read`)).length === 3,
     confirmation_disposal_aborted: eventLog.includes("confirmation-aborted"),
     server_disposed: finalDiagnostics.dispose_completed_at > 0,
     disposed: disposed.iframeSrcdocEmpty === true,
@@ -258,17 +271,19 @@ function requestAllowed(request, credentiallessScenario) {
     ["/testdata/browser-harness/opaque-surface/host.mjs", "GET"],
     ["/packages/redevplugin-ui/dist/trusted-parent.js", "GET"],
     ["/packages/redevplugin-ui/dist/contracts.gen.js", "GET"],
+    ["/packages/redevplugin-ui/dist/error-codes.gen.js", "GET"],
     ["/packages/redevplugin-ui/dist/errors.js", "GET"],
     ["/packages/redevplugin-ui/dist/platform.js", "GET"],
     ["/packages/redevplugin-ui/dist/surface-scope.js", "GET"],
     ["/packages/redevplugin-ui/dist/surface.js", "GET"],
+    ["/packages/redevplugin-ui/dist/ui-patch-validator.js", "GET"],
     ["/packages/redevplugin-ui/dist/ui-reconciler.js", "GET"],
     ["/packages/redevplugin-ui/dist/http.js", "GET"],
     ["/packages/redevplugin-ui/dist/opaque-surface-policy.gen.js", "GET"],
     ["/__browser_harness/diagnostics", "GET"],
     ["/_redevplugin/api/plugins/surfaces/open", "POST"],
     ["/_redevplugin/api/plugins/rpc", "POST"],
-    ["/_redevplugin/api/plugins/confirm", "POST"],
+    ["/_redevplugin/api/plugins/confirmations/prepare", "POST"],
   ]);
   const expectedMethod = staticRequests.get(url.pathname);
   if (expectedMethod) {
@@ -276,7 +291,7 @@ function requestAllowed(request, credentiallessScenario) {
     return request.method === expectedMethod && url.search === expectedSearch;
   }
   return request.method === "POST" && url.search === "" &&
-    /^\/_redevplugin\/api\/plugins\/surfaces\/surface_browser_[0-9]{4}\/(prepare|bridge-token|assets\/read|streams\/read|dispose)$/.test(url.pathname);
+    /^\/_redevplugin\/api\/plugins\/surfaces\/surface_browser_[0-9]{4}\/(prepare|bridge-token|assets\/read|streams\/read|streams\/ack|dispose)$/.test(url.pathname);
 }
 
 function normalizeCSP(srcdoc) {

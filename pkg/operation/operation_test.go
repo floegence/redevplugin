@@ -4,7 +4,10 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"path/filepath"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -24,7 +27,7 @@ func TestStoreRegisterListAndGet(t *testing.T) {
 				ExecutionBinding: operationTestBinding("com.example.plugin", "plugin_1", "documents.archive", func(binding *capability.ExecutionBinding) {
 					binding.Effect = capability.EffectExecute
 					binding.SurfaceInstanceID = "surface_1"
-					binding.SessionChannelIDHash = "session_hash"
+					binding.SessionChannelIDHash = "channel_hash"
 					binding.BridgeChannelID = "bridge_1"
 				}),
 				Now: now,
@@ -51,16 +54,326 @@ func TestStoreRegisterListAndGet(t *testing.T) {
 				t.Fatalf("Get() mismatch: %#v", got)
 			}
 
-			listed, err := store.List(ctx, ListRequest{PluginInstanceID: "plugin_1"})
+			page, err := store.List(ctx, ListRequest{PluginInstanceID: "plugin_1", Owner: operationTestOwnerScope()})
 			if err != nil {
 				t.Fatalf("List() error = %v", err)
 			}
-			if len(listed) != 1 || listed[0].OperationID != "op_1" {
-				t.Fatalf("List() mismatch: %#v", listed)
+			if len(page.Records) != 1 || page.Records[0].OperationID != "op_1" {
+				t.Fatalf("List() mismatch: %#v", page)
 			}
 
 			if _, err := store.Register(ctx, RegisterRequest{ExecutionBinding: operationTestBinding("com.example.plugin", "plugin_1", "documents.invalid", nil)}); !errors.Is(err, ErrInvalidOperation) {
 				t.Fatalf("Register() invalid error = %v, want ErrInvalidOperation", err)
+			}
+		})
+	}
+}
+
+func TestStoreRegisterRequiresExactOwnerScope(t *testing.T) {
+	ownerFields := []struct {
+		name  string
+		clear func(*capability.ExecutionBinding)
+	}{
+		{name: "session", clear: func(binding *capability.ExecutionBinding) { binding.OwnerSessionHash = "" }},
+		{name: "user", clear: func(binding *capability.ExecutionBinding) { binding.OwnerUserHash = "" }},
+		{name: "environment", clear: func(binding *capability.ExecutionBinding) { binding.OwnerEnvHash = "" }},
+		{name: "channel", clear: func(binding *capability.ExecutionBinding) { binding.SessionChannelIDHash = "" }},
+	}
+	for _, tc := range operationStoreCases() {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, field := range ownerFields {
+				t.Run(field.name, func(t *testing.T) {
+					store := tc.open(t)
+					_, err := store.Register(context.Background(), RegisterRequest{
+						OperationID: "op_missing_" + field.name,
+						ExecutionBinding: operationTestBinding("com.example.plugin", "plugin_1", "documents.archive", func(binding *capability.ExecutionBinding) {
+							field.clear(binding)
+						}),
+					})
+					if !errors.Is(err, ErrInvalidOperation) {
+						t.Fatalf("Register() error = %v, want ErrInvalidOperation", err)
+					}
+				})
+			}
+		})
+	}
+}
+
+func TestStoresRequireClosedFailureCodes(t *testing.T) {
+	for _, tc := range operationStoreCases() {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			store := tc.open(t)
+			for _, operationID := range []string{"op_reason", "op_unknown", "op_completed", "op_valid"} {
+				mustRegisterOperation(t, store, RegisterRequest{
+					OperationID:      operationID,
+					ExecutionBinding: operationTestBinding("com.example.plugin", "plugin_failure", "documents.archive", nil),
+				})
+			}
+
+			if _, err := store.Finish(ctx, FinishRequest{OperationID: "op_reason", Status: StatusFailed, Reason: "private adapter detail"}); !errors.Is(err, ErrInvalidOperation) {
+				t.Fatalf("failed reason error = %v, want ErrInvalidOperation", err)
+			}
+			if _, err := store.Finish(ctx, FinishRequest{OperationID: "op_unknown", Status: StatusFailed, FailureCode: "internal"}); !errors.Is(err, ErrInvalidOperation) {
+				t.Fatalf("unknown failure code error = %v, want ErrInvalidOperation", err)
+			}
+			if _, err := store.Finish(ctx, FinishRequest{OperationID: "op_completed", Status: StatusCompleted, FailureCode: capability.ExecutionFailurePlatformFailed}); !errors.Is(err, ErrInvalidOperation) {
+				t.Fatalf("non-failed failure code error = %v, want ErrInvalidOperation", err)
+			}
+			failed, err := store.Finish(ctx, FinishRequest{OperationID: "op_valid", Status: StatusFailed, FailureCode: capability.ExecutionFailureAdapterFailed})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if failed.FailureCode != capability.ExecutionFailureAdapterFailed || failed.Reason != capability.ExecutionFailureMessage {
+				t.Fatalf("closed failure = %#v", failed)
+			}
+		})
+	}
+}
+
+func TestStoreListsOperationsWithOpaqueCursorPagination(t *testing.T) {
+	for _, tc := range operationStoreCases() {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			store := tc.open(t)
+			now := time.Date(2026, 6, 30, 12, 0, 0, 0, time.UTC)
+			for index, operationID := range []string{"op_1", "op_2", "op_3"} {
+				mustRegisterOperation(t, store, RegisterRequest{
+					OperationID:      operationID,
+					ExecutionBinding: operationTestBinding("com.example.plugin", "plugin_1", "documents.archive", nil),
+					Now:              now.Add(time.Duration(min(index, 1)) * time.Second),
+				})
+			}
+
+			first, err := store.List(ctx, ListRequest{PluginInstanceID: "plugin_1", Owner: operationTestOwnerScope(), Limit: 2})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(first.Records) != 2 || first.Records[0].OperationID != "op_3" || first.Records[1].OperationID != "op_2" || first.NextCursor == nil {
+				t.Fatalf("first page mismatch: %#v", first)
+			}
+			encoded, err := EncodeCursor(first.NextCursor)
+			if err != nil {
+				t.Fatal(err)
+			}
+			decoded, err := DecodeCursor(encoded)
+			if err != nil {
+				t.Fatal(err)
+			}
+			second, err := store.List(ctx, ListRequest{PluginInstanceID: "plugin_1", Owner: operationTestOwnerScope(), Cursor: decoded, Limit: 2})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(second.Records) != 1 || second.Records[0].OperationID != "op_1" || second.NextCursor != nil {
+				t.Fatalf("second page mismatch: %#v", second)
+			}
+			if _, err := store.List(ctx, ListRequest{AllOwners: true, Limit: MaxListLimit + 1}); !errors.Is(err, ErrInvalidOperation) {
+				t.Fatalf("oversized page error = %v, want ErrInvalidOperation", err)
+			}
+			if _, err := DecodeCursor("not-a-cursor"); !errors.Is(err, ErrInvalidOperation) {
+				t.Fatalf("invalid cursor error = %v, want ErrInvalidOperation", err)
+			}
+		})
+	}
+}
+
+func TestStoreListRequiresExactOwnerScope(t *testing.T) {
+	for _, tc := range operationStoreCases() {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			store := tc.open(t)
+			ownerA := operationTestOwnerScope()
+			ownerB := OwnerScope{OwnerSessionHash: "session_other", OwnerUserHash: "user_other", OwnerEnvHash: "env_other", SessionChannelIDHash: "channel_other"}
+			for _, fixture := range []struct {
+				operationID string
+				owner       OwnerScope
+			}{
+				{operationID: "op_owner_a", owner: ownerA},
+				{operationID: "op_owner_b", owner: ownerB},
+			} {
+				mustRegisterOperation(t, store, RegisterRequest{
+					OperationID: fixture.operationID,
+					ExecutionBinding: operationTestBinding("com.example.plugin", "plugin_1", "documents.archive", func(binding *capability.ExecutionBinding) {
+						binding.OwnerSessionHash = fixture.owner.OwnerSessionHash
+						binding.OwnerUserHash = fixture.owner.OwnerUserHash
+						binding.OwnerEnvHash = fixture.owner.OwnerEnvHash
+						binding.SessionChannelIDHash = fixture.owner.SessionChannelIDHash
+					}),
+				})
+			}
+
+			page, err := store.List(ctx, ListRequest{PluginInstanceID: "plugin_1", Owner: ownerA})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(page.Records) != 1 || page.Records[0].OperationID != "op_owner_a" {
+				t.Fatalf("owner-scoped operations = %#v", page.Records)
+			}
+			if _, err := store.List(ctx, ListRequest{PluginInstanceID: "plugin_1"}); !errors.Is(err, ErrInvalidOperation) {
+				t.Fatalf("unscoped List() error = %v, want ErrInvalidOperation", err)
+			}
+			all, err := store.List(ctx, ListRequest{PluginInstanceID: "plugin_1", AllOwners: true})
+			if err != nil || len(all.Records) != 2 {
+				t.Fatalf("internal all-owner List() = %#v, %v", all, err)
+			}
+		})
+	}
+}
+
+func TestStoresPruneOnlyExpiredTerminalOperations(t *testing.T) {
+	for _, tc := range operationStoreCases() {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			store := tc.open(t)
+			now := time.Date(2026, 7, 17, 12, 0, 0, 0, time.UTC)
+			old := now.Add(-DefaultTerminalRetention - time.Hour)
+			for _, operationID := range []string{"old-terminal-a", "old-terminal-b", "recent-terminal", "old-running", "old-cancel-requested"} {
+				registeredAt := old
+				if operationID == "recent-terminal" {
+					registeredAt = now.Add(-time.Hour)
+				}
+				mustRegisterOperation(t, store, RegisterRequest{
+					OperationID:      operationID,
+					ExecutionBinding: operationTestBinding("com.example.plugin", "plugin_prune", "documents.archive", nil),
+					Now:              registeredAt,
+				})
+			}
+			for index, operationID := range []string{"old-terminal-a", "old-terminal-b", "recent-terminal"} {
+				finishedAt := old.Add(time.Duration(index) * time.Minute)
+				if operationID == "recent-terminal" {
+					finishedAt = now.Add(-time.Hour)
+				}
+				if _, err := store.Finish(ctx, FinishRequest{OperationID: operationID, Status: StatusCompleted, Now: finishedAt}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if _, err := store.RequestCancel(ctx, CancelRequest{OperationID: "old-cancel-requested", Now: old}); err != nil {
+				t.Fatal(err)
+			}
+
+			first, err := store.Prune(ctx, PruneRequest{Before: now.Add(-DefaultTerminalRetention), Limit: 1})
+			if err != nil || first.Deleted != 1 {
+				t.Fatalf("Prune(first) = %#v, %v", first, err)
+			}
+			if _, err := store.Get(ctx, "old-terminal-a"); !errors.Is(err, ErrNotFound) {
+				t.Fatalf("oldest terminal Get() error = %v, want ErrNotFound", err)
+			}
+			for _, operationID := range []string{"old-terminal-b", "recent-terminal", "old-running", "old-cancel-requested"} {
+				if _, err := store.Get(ctx, operationID); err != nil {
+					t.Fatalf("Get(%s) after first prune error = %v", operationID, err)
+				}
+			}
+
+			second, err := store.Prune(ctx, PruneRequest{Before: now.Add(-DefaultTerminalRetention)})
+			if err != nil || second.Deleted != 1 {
+				t.Fatalf("Prune(second) = %#v, %v", second, err)
+			}
+			page, err := store.List(ctx, ListRequest{PluginInstanceID: "plugin_prune", Owner: operationTestOwnerScope()})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(page.Records) != 3 {
+				t.Fatalf("retained operations = %#v", page.Records)
+			}
+		})
+	}
+}
+
+func TestStoresBoundRecentTerminalOperationsPerPlugin(t *testing.T) {
+	for _, tc := range operationStoreCases() {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			store := tc.open(t)
+			now := time.Date(2026, 7, 17, 12, 0, 0, 0, time.UTC)
+			for index := 0; index < 5; index++ {
+				operationID := fmt.Sprintf("op_cap_a_%d", index)
+				mustRegisterOperation(t, store, operationTestRegister(operationID, "plugin_cap_a", "documents.archive"))
+				record, err := store.Finish(ctx, FinishRequest{OperationID: operationID, Status: StatusCompleted, Now: now})
+				if err != nil || record.TerminalAt == nil || !record.TerminalAt.Equal(now) {
+					t.Fatalf("Finish(%s) terminal_at = %v, %v", operationID, record.TerminalAt, err)
+				}
+			}
+			for index := 0; index < 2; index++ {
+				operationID := fmt.Sprintf("op_cap_b_%d", index)
+				mustRegisterOperation(t, store, operationTestRegister(operationID, "plugin_cap_b", "documents.archive"))
+				if _, err := store.Finish(ctx, FinishRequest{OperationID: operationID, Status: StatusCompleted, Now: now}); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			result, err := store.Prune(ctx, PruneRequest{
+				Before:                      now.Add(-DefaultTerminalRetention),
+				Limit:                       MaxPruneLimit,
+				MaxTerminalRecordsPerPlugin: 2,
+			})
+			if err != nil || result.Deleted != 3 {
+				t.Fatalf("Prune(cap) = %#v, %v", result, err)
+			}
+			for index := 0; index < 3; index++ {
+				if _, err := store.Get(ctx, fmt.Sprintf("op_cap_a_%d", index)); !errors.Is(err, ErrNotFound) {
+					t.Fatalf("capped operation %d error = %v, want ErrNotFound", index, err)
+				}
+			}
+			for _, operationID := range []string{"op_cap_a_3", "op_cap_a_4", "op_cap_b_0", "op_cap_b_1"} {
+				if _, err := store.Get(ctx, operationID); err != nil {
+					t.Fatalf("retained operation %s error = %v", operationID, err)
+				}
+			}
+		})
+	}
+}
+
+func TestSQLiteStoreListQueriesUseCursorIndexes(t *testing.T) {
+	store, err := NewSQLiteStore(context.Background(), filepath.Join(t.TempDir(), "operations.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := store.Close(); err != nil {
+			t.Errorf("Close() error = %v", err)
+		}
+	})
+
+	for _, tc := range []struct {
+		name      string
+		query     string
+		args      []any
+		wantIndex string
+	}{
+		{
+			name:      "global",
+			query:     `EXPLAIN QUERY PLAN SELECT operation_id FROM plugin_operations ORDER BY created_at DESC, operation_id DESC LIMIT ?`,
+			args:      []any{DefaultListLimit + 1},
+			wantIndex: "idx_plugin_operations_created",
+		},
+		{
+			name:      "plugin",
+			query:     `EXPLAIN QUERY PLAN SELECT operation_id FROM plugin_operations WHERE plugin_instance_id = ? ORDER BY created_at DESC, operation_id DESC LIMIT ?`,
+			args:      []any{"plugin_1", DefaultListLimit + 1},
+			wantIndex: "idx_plugin_operations_plugin_instance",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rows, err := store.db.QueryContext(context.Background(), tc.query, tc.args...)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer rows.Close()
+			var plan strings.Builder
+			for rows.Next() {
+				var id, parent, unused int
+				var detail string
+				if err := rows.Scan(&id, &parent, &unused, &detail); err != nil {
+					t.Fatal(err)
+				}
+				plan.WriteString(detail)
+				plan.WriteByte('\n')
+			}
+			if err := rows.Err(); err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(plan.String(), tc.wantIndex) || strings.Contains(plan.String(), "USE TEMP B-TREE") {
+				t.Fatalf("query plan does not use %s without temp sorting:\n%s", tc.wantIndex, plan.String())
 			}
 		})
 	}
@@ -182,7 +495,7 @@ func TestStoreFinishOperation(t *testing.T) {
 			unchanged, err := store.Finish(ctx, FinishRequest{
 				OperationID: "op_finish",
 				Status:      StatusFailed,
-				Reason:      "too late",
+				FailureCode: capability.ExecutionFailureAdapterFailed,
 				Now:         now.Add(time.Minute),
 			})
 			if err != nil {
@@ -298,7 +611,7 @@ func TestSQLiteStorePersistsRecordsAcrossOpen(t *testing.T) {
 		ExecutionBinding: operationTestBinding("com.example.plugin", "plugin_1", "documents.archive", func(binding *capability.ExecutionBinding) {
 			binding.Effect = capability.EffectExecute
 			binding.SurfaceInstanceID = "surface_1"
-			binding.SessionChannelIDHash = "session_hash"
+			binding.SessionChannelIDHash = "channel_hash"
 			binding.BridgeChannelID = "bridge_1"
 		}),
 		Now: now,
@@ -326,89 +639,13 @@ func TestSQLiteStorePersistsRecordsAcrossOpen(t *testing.T) {
 		got.Reason != "pause" ||
 		got.CancelRequestedAt == nil ||
 		!got.CancelRequestedAt.Equal(now.Add(time.Minute)) ||
-		got.SessionChannelIDHash != "session_hash" ||
+		got.SessionChannelIDHash != "channel_hash" ||
 		!got.CreatedAt.Equal(now) {
 		t.Fatalf("persisted operation mismatch: %#v", got)
 	}
 }
 
-func TestSQLiteStoreRejectsNewerSchema(t *testing.T) {
-	ctx := context.Background()
-	path := filepath.Join(t.TempDir(), "operations.sqlite")
-	store, err := NewSQLiteStore(ctx, path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := store.db.ExecContext(ctx, `INSERT OR REPLACE INTO plugin_operation_schema_migrations(version, applied_at) VALUES(999, 0)`); err != nil {
-		t.Fatal(err)
-	}
-	if err := store.Close(); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := NewSQLiteStore(ctx, path); err == nil {
-		t.Fatal("NewSQLiteStore() accepted newer schema version")
-	}
-}
-
-func TestSQLiteStoreMigratesV1DataAndIndexesIdempotently(t *testing.T) {
-	ctx := context.Background()
-	path := filepath.Join(t.TempDir(), "operations-v1.sqlite")
-	db, err := sql.Open("sqlite", path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	statements := []string{
-		`CREATE TABLE plugin_operation_schema_migrations(version INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL)`,
-		`INSERT INTO plugin_operation_schema_migrations(version, applied_at) VALUES(1, 1)`,
-		`CREATE TABLE plugin_operations (
-			operation_id TEXT PRIMARY KEY, plugin_id TEXT NOT NULL, plugin_instance_id TEXT NOT NULL,
-			method TEXT NOT NULL, effect TEXT NOT NULL, execution TEXT NOT NULL, surface_instance_id TEXT NOT NULL,
-			session_channel_id_hash TEXT NOT NULL, bridge_channel_id TEXT NOT NULL, status TEXT NOT NULL,
-			disable_behavior TEXT NOT NULL, uninstall_behavior TEXT NOT NULL, reason TEXT NOT NULL,
-			created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, cancel_requested_at INTEGER, orphaned_at INTEGER
-		)`,
-		`INSERT INTO plugin_operations VALUES(
-			'op_v1', 'com.example.v1', 'plugini_v1', 'documents.archive', 'execute', 'operation', 'surface_v1',
-			'channel_v1', 'bridge_v1', 'running', 'cancel', 'cancel_then_block_delete', '', 100, 200, NULL, NULL
-		)`,
-	}
-	for _, statement := range statements {
-		if _, err := db.Exec(statement); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if err := db.Close(); err != nil {
-		t.Fatal(err)
-	}
-
-	for attempt := 0; attempt < 2; attempt++ {
-		store, err := NewSQLiteStore(ctx, path)
-		if err != nil {
-			t.Fatalf("NewSQLiteStore() migration attempt %d error = %v", attempt+1, err)
-		}
-		record, err := store.Get(ctx, "op_v1")
-		if err != nil {
-			t.Fatal(err)
-		}
-		if record.PluginInstanceID != "plugini_v1" || record.Method != "documents.archive" || !record.Cancelable || record.CancelAckTimeoutMS != 0 {
-			t.Fatalf("migrated operation mismatch: %#v", record)
-		}
-		for _, indexName := range []string{"idx_plugin_operations_plugin_instance", "idx_plugin_operations_status"} {
-			var count int
-			if err := store.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND tbl_name = 'plugin_operations' AND name = ?`, indexName).Scan(&count); err != nil {
-				t.Fatal(err)
-			}
-			if count != 1 {
-				t.Fatalf("index %s count = %d, want 1", indexName, count)
-			}
-		}
-		if err := store.Close(); err != nil {
-			t.Fatal(err)
-		}
-	}
-}
-
-func mustRegisterOperation(t *testing.T, store Store, req RegisterRequest) Record {
+func mustRegisterOperation(t testing.TB, store Store, req RegisterRequest) Record {
 	t.Helper()
 	record, err := store.Register(context.Background(), req)
 	if err != nil {
@@ -442,11 +679,19 @@ func operationTestBinding(pluginID, pluginInstanceID, method string, mutate func
 		Execution:              "operation",
 		Target:                 capability.TargetDescriptor{Kind: "document", Fields: map[string]any{"document_id": "doc-1"}},
 		TargetDescriptorSHA256: "sha256:target",
+		OwnerSessionHash:       "session_hash",
+		OwnerUserHash:          "user_hash",
+		OwnerEnvHash:           "env_hash",
+		SessionChannelIDHash:   "channel_hash",
 	}
 	if mutate != nil {
 		mutate(&binding)
 	}
 	return binding
+}
+
+func operationTestOwnerScope() OwnerScope {
+	return OwnerScope{OwnerSessionHash: "session_hash", OwnerUserHash: "user_hash", OwnerEnvHash: "env_hash", SessionChannelIDHash: "channel_hash"}
 }
 
 func assertOperationStatus(t *testing.T, store Store, operationID string, want Status) {
@@ -458,6 +703,102 @@ func assertOperationStatus(t *testing.T, store Store, operationID string, want S
 	if record.Status != want {
 		t.Fatalf("operation %s status = %s, want %s: %#v", operationID, record.Status, want, record)
 	}
+}
+
+func TestSQLiteStoreOwnerScopedReadsProceedDuringWriteTransaction(t *testing.T) {
+	ctx := context.Background()
+	store, err := NewSQLiteStore(ctx, filepath.Join(t.TempDir(), "operations.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	mustRegisterOperation(t, store, RegisterRequest{
+		OperationID:      "op_concurrent_read",
+		ExecutionBinding: operationTestBinding("com.example.plugin", "plugin_concurrent_read", "documents.read", nil),
+	})
+
+	tx, err := store.db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if rollbackErr := tx.Rollback(); rollbackErr != nil && !errors.Is(rollbackErr, sql.ErrTxDone) {
+			t.Errorf("Rollback() error = %v", rollbackErr)
+		}
+	}()
+	if _, err := tx.ExecContext(ctx, `UPDATE plugin_operations SET reason = ? WHERE operation_id = ?`, "uncommitted", "op_concurrent_read"); err != nil {
+		t.Fatal(err)
+	}
+
+	readCtx, cancel := context.WithTimeout(ctx, time.Second)
+	defer cancel()
+	results := make(chan error, 2)
+	go func() {
+		page, err := store.List(readCtx, ListRequest{
+			PluginInstanceID: "plugin_concurrent_read",
+			Owner:            operationTestOwnerScope(),
+			Limit:            10,
+		})
+		if err == nil && (len(page.Records) != 1 || page.Records[0].OperationID != "op_concurrent_read" || page.Records[0].Reason != "") {
+			err = fmt.Errorf("owner-scoped list observed invalid snapshot: %#v", page)
+		}
+		results <- err
+	}()
+	go func() {
+		record, err := store.Get(readCtx, "op_concurrent_read")
+		if err == nil && (record.OperationID != "op_concurrent_read" || record.Reason != "") {
+			err = fmt.Errorf("get observed invalid snapshot: %#v", record)
+		}
+		results <- err
+	}()
+	for range 2 {
+		if err := <-results; err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkSQLiteStoreOwnerScopedParallelReadWrite(b *testing.B) {
+	ctx := context.Background()
+	store, err := NewSQLiteStore(ctx, filepath.Join(b.TempDir(), "operations.sqlite"))
+	if err != nil {
+		b.Fatal(err)
+	}
+	b.Cleanup(func() { _ = store.Close() })
+	const recordCount = 64
+	for index := 0; index < recordCount; index++ {
+		mustRegisterOperation(b, store, RegisterRequest{
+			OperationID:      fmt.Sprintf("op_parallel_%03d", index),
+			ExecutionBinding: operationTestBinding("com.example.plugin", "plugin_parallel", "documents.read", nil),
+		})
+	}
+
+	var sequence atomic.Uint64
+	b.ReportAllocs()
+	b.ResetTimer()
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			index := sequence.Add(1)
+			if index%8 == 0 {
+				_, err := store.RequestCancel(ctx, CancelRequest{
+					OperationID: fmt.Sprintf("op_parallel_%03d", index%recordCount),
+					Reason:      "benchmark",
+				})
+				if err != nil {
+					b.Error(err)
+				}
+				continue
+			}
+			page, err := store.List(ctx, ListRequest{
+				PluginInstanceID: "plugin_parallel",
+				Owner:            operationTestOwnerScope(),
+				Limit:            20,
+			})
+			if err != nil || len(page.Records) != 20 {
+				b.Errorf("List() records=%d err=%v", len(page.Records), err)
+			}
+		}
+	})
 }
 
 type operationStoreCase struct {

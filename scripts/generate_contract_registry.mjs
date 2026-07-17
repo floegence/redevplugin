@@ -272,13 +272,12 @@ async function renderRoutes(registry) {
   const routes = [];
   for (const [path, pathItem] of Object.entries(openAPI.paths)) {
     if (!isRecord(pathItem)) continue;
-    for (const method of ["get", "patch", "post"]) {
+    for (const method of ["delete", "get", "patch", "post", "put"]) {
       const operation = pathItem[method];
       if (!isRecord(operation)) continue;
       routes.push({
         method: method.toUpperCase(),
         path,
-        route_set: operation["x-redevplugin-route-set"] ?? "default",
       });
     }
   }

@@ -82,7 +82,7 @@ async function openSurface() {
     const opened = await platformClient.openSurface({
       plugin_instance_id: "plugin_browser_harness_1",
       surface_id: "dev.redevplugin.opaque-browser.view",
-      plugin_state_version: 1,
+      expected_management_revision: 1,
     });
     const surfaceHost = PluginSurfaceHost.create({
       bootstrap: toPluginSurfaceHostBootstrap(opened),

@@ -86,7 +86,7 @@ func TestOpenAPICapabilityErrorsAndSubscriptionResultsMatchBridgeContract(t *tes
 	if !strings.Contains(rpcResult, "required: [operation_id, stream_id, stream_ticket, stream_ticket_id, stream_expires_at]") {
 		t.Fatalf("RPCResult subscription variant must bind operation and stream handles:\n%s", rpcResult)
 	}
-	if !strings.Contains(text, `"200": { $ref: "#/components/responses/RPCEnvelope" }`) {
-		t.Fatal("plugin RPC route does not use the typed RPCEnvelope")
+	if !strings.Contains(text, `"200": { $ref: "#/components/responses/RPCResponse" }`) {
+		t.Fatal("plugin RPC route does not use the typed RPCResponse")
 	}
 }

@@ -5,37 +5,57 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
-	"fmt"
+	"net/url"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/floegence/redevplugin/pkg/mutation"
+	"github.com/floegence/redevplugin/pkg/plugindata"
 	_ "modernc.org/sqlite"
 )
 
-const sqliteSchemaVersion = 6
+const maxRegistrySQLiteConnections = 8
 
 type SQLiteStore struct {
-	db *sql.DB
-	mu sync.Mutex
+	db       *sql.DB
+	mu       sync.Mutex
+	commitTx func(*sql.Tx) error
 }
 
 func NewSQLiteStore(ctx context.Context, path string) (*SQLiteStore, error) {
 	if path == "" {
 		return nil, errors.New("sqlite registry path is required")
 	}
-	db, err := sql.Open("sqlite", path)
+	dsn, err := registrySQLiteDSN(path)
 	if err != nil {
 		return nil, err
 	}
-	db.SetMaxOpenConns(1)
-	store := &SQLiteStore{db: db}
-	if err := store.migrate(ctx); err != nil {
+	db, err := sql.Open("sqlite", dsn)
+	if err != nil {
+		return nil, err
+	}
+	db.SetMaxOpenConns(maxRegistrySQLiteConnections)
+	db.SetMaxIdleConns(maxRegistrySQLiteConnections)
+	store := &SQLiteStore{db: db, commitTx: func(tx *sql.Tx) error { return tx.Commit() }}
+	if err := store.initializeSchema(ctx); err != nil {
 		_ = db.Close()
 		return nil, err
 	}
 	return store, nil
+}
+
+func registrySQLiteDSN(path string) (string, error) {
+	absPath, err := filepath.Abs(path)
+	if err != nil {
+		return "", err
+	}
+	query := url.Values{}
+	query.Add("_pragma", "busy_timeout(5000)")
+	query.Add("_pragma", "foreign_keys(ON)")
+	return (&url.URL{Scheme: "file", Path: filepath.ToSlash(absPath), RawQuery: query.Encode()}).String(), nil
 }
 
 func (s *SQLiteStore) Close() error {
@@ -81,9 +101,6 @@ func (s *SQLiteStore) PutPlugin(ctx context.Context, record PluginRecord, opts P
 		}
 	}
 	record.UpdatedAt = now
-	if record.RetainedDataState == "" {
-		record.RetainedDataState = RetainedDataNone
-	}
 	if err := upsertSQLitePlugin(ctx, tx, record); err != nil {
 		return PluginRecord{}, err
 	}
@@ -116,7 +133,7 @@ func (s *SQLiteStore) ListPlugins(ctx context.Context) ([]PluginRecord, error) {
 		plugin_instance_id, publisher_id, plugin_id, version, active_fingerprint,
 		package_hash, manifest_hash, entries_hash, trust_state, trust_assessment_json,
 		source_policy_snapshot_hash, source_policy_snapshot_json, local_import_provenance_json, capability_contracts_json, enable_state,
-		disabled_reason, retained_data_state, policy_revision, management_revision,
+		disabled_reason, policy_revision, management_revision,
 		revoke_epoch, manifest_json, package_entries_json, version_history_json,
 	installed_at, enabled_at, updated_at, deleted_at, metadata_json
 FROM plugin_records
@@ -163,36 +180,73 @@ func (s *SQLiteStore) SetEnableState(ctx context.Context, pluginInstanceID strin
 	})
 }
 
-func (s *SQLiteStore) BumpPolicyRevision(ctx context.Context, pluginInstanceID string, revoke bool, now time.Time) (PluginRecord, error) {
-	return s.updatePlugin(ctx, pluginInstanceID, now, func(record PluginRecord, now time.Time) PluginRecord {
-		record.PolicyRevision++
-		if revoke {
-			record.RevokeEpoch++
-		}
-		record.UpdatedAt = now
-		return record
-	})
-}
-
-func (s *SQLiteStore) MarkUninstalled(ctx context.Context, pluginInstanceID string, retained RetainedDataState, now time.Time) (PluginRecord, error) {
-	return s.updatePlugin(ctx, pluginInstanceID, now, func(record PluginRecord, now time.Time) PluginRecord {
-		record.EnableState = EnableDisabled
-		record.DisabledReason = "uninstalled"
-		record.RetainedDataState = retained
-		record.ManagementRevision++
-		record.RevokeEpoch++
-		record.UpdatedAt = now
-		record.DeletedAt = &now
-		record.EnabledAt = nil
-		return record
-	})
-}
-
-func (s *SQLiteStore) DeletePlugin(ctx context.Context, pluginInstanceID string) error {
+func (s *SQLiteStore) CommitUninstall(ctx context.Context, req plugindata.CommitUninstallRequest) (plugindata.CommitUninstallResult, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	result, err := s.db.ExecContext(ctx, `DELETE FROM plugin_records WHERE plugin_instance_id = ?`, pluginInstanceID)
+	now := req.Now
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return plugindata.CommitUninstallResult{}, err
+	}
+	defer rollbackUnlessCommitted(tx)
+	record, exists, err := getSQLitePlugin(ctx, tx, req.PluginInstanceID, false)
+	if err != nil {
+		return plugindata.CommitUninstallResult{}, err
+	}
+	if !exists {
+		return plugindata.CommitUninstallResult{}, ErrNotFound
+	}
+	if req.ExpectedManagementRevision == 0 || record.ManagementRevision != req.ExpectedManagementRevision {
+		return plugindata.CommitUninstallResult{}, &ManagementRevisionConflictError{PluginInstanceID: req.PluginInstanceID, Expected: req.ExpectedManagementRevision, Actual: record.ManagementRevision}
+	}
+	record.EnableState = EnableDisabled
+	record.DisabledReason = "uninstalled"
+	record.ManagementRevision++
+	record.RevokeEpoch++
+	record.UpdatedAt = now
+	record.DeletedAt = &now
+	record.EnabledAt = nil
+	if err := upsertSQLitePlugin(ctx, tx, record); err != nil {
+		return plugindata.CommitUninstallResult{}, err
+	}
+	if err := deleteSQLiteAuthorization(ctx, tx, req.PluginInstanceID); err != nil {
+		return plugindata.CommitUninstallResult{}, err
+	}
+	if req.DeleteData {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM plugin_data_bindings WHERE plugin_instance_id = ?`, req.PluginInstanceID); err != nil {
+			return plugindata.CommitUninstallResult{}, err
+		}
+	} else if _, err := tx.ExecContext(ctx, `
+UPDATE plugin_data_bindings
+SET state = ?, revision = revision + 1, retained_at = ?, expires_at = ?
+WHERE plugin_instance_id = ?`,
+		string(plugindata.BindingRetained), now.UnixNano(), timePtrToNullableUnix(req.RetainUntil), req.PluginInstanceID,
+	); err != nil {
+		return plugindata.CommitUninstallResult{}, err
+	}
+	if err := s.commitTx(tx); err != nil {
+		return plugindata.CommitUninstallResult{}, mutation.Unknown(err)
+	}
+	return plugindata.CommitUninstallResult{ManagementRevision: record.ManagementRevision, RevokeEpoch: record.RevokeEpoch, DeletedAt: now}, nil
+}
+
+func (s *SQLiteStore) AbortInstall(ctx context.Context, pluginInstanceID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer rollbackUnlessCommitted(tx)
+	if _, err := tx.ExecContext(ctx, `DELETE FROM plugin_data_bindings WHERE plugin_instance_id = ?`, pluginInstanceID); err != nil {
+		return err
+	}
+	result, err := tx.ExecContext(ctx, `DELETE FROM plugin_records WHERE plugin_instance_id = ?`, pluginInstanceID)
 	if err != nil {
 		return err
 	}
@@ -202,6 +256,9 @@ func (s *SQLiteStore) DeletePlugin(ctx context.Context, pluginInstanceID string)
 	}
 	if affected == 0 {
 		return ErrNotFound
+	}
+	if err := tx.Commit(); err != nil {
+		return mutation.Unknown(err)
 	}
 	return nil
 }
@@ -286,15 +343,16 @@ func (s *SQLiteStore) updatePlugin(ctx context.Context, pluginInstanceID string,
 	return record, nil
 }
 
-func (s *SQLiteStore) migrate(ctx context.Context) error {
+func (s *SQLiteStore) initializeSchema(ctx context.Context) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if _, err := s.db.ExecContext(ctx, `PRAGMA busy_timeout = 5000`); err != nil {
+	var journalMode string
+	if err := s.db.QueryRowContext(ctx, `PRAGMA journal_mode = WAL`).Scan(&journalMode); err != nil {
 		return err
 	}
-	if _, err := s.db.ExecContext(ctx, `PRAGMA foreign_keys = ON`); err != nil {
-		return err
+	if !strings.EqualFold(journalMode, "wal") {
+		return errors.New("sqlite registry requires WAL journal mode")
 	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -302,20 +360,6 @@ func (s *SQLiteStore) migrate(ctx context.Context) error {
 	}
 	defer rollbackUnlessCommitted(tx)
 
-	var userVersion int
-	if err := tx.QueryRowContext(ctx, `PRAGMA user_version`).Scan(&userVersion); err != nil {
-		return err
-	}
-	if userVersion > sqliteSchemaVersion {
-		return fmt.Errorf("sqlite registry schema version %d is newer than supported version %d", userVersion, sqliteSchemaVersion)
-	}
-	if _, err := tx.ExecContext(ctx, `
-CREATE TABLE IF NOT EXISTS plugin_registry_schema_migrations (
-	version INTEGER PRIMARY KEY,
-	applied_at INTEGER NOT NULL
-)`); err != nil {
-		return err
-	}
 	if _, err := tx.ExecContext(ctx, `
 CREATE TABLE IF NOT EXISTS plugin_records (
 	plugin_instance_id TEXT PRIMARY KEY,
@@ -334,7 +378,6 @@ CREATE TABLE IF NOT EXISTS plugin_records (
 		capability_contracts_json TEXT NOT NULL DEFAULT '[]',
 		enable_state TEXT NOT NULL,
 	disabled_reason TEXT NOT NULL,
-	retained_data_state TEXT NOT NULL,
 	policy_revision INTEGER NOT NULL,
 	management_revision INTEGER NOT NULL,
 	revoke_epoch INTEGER NOT NULL,
@@ -356,6 +399,57 @@ CREATE TABLE IF NOT EXISTS plugin_records (
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, `
+CREATE TABLE IF NOT EXISTS plugin_permission_grants (
+	plugin_instance_id TEXT NOT NULL,
+	permission_id TEXT NOT NULL,
+	effect TEXT NOT NULL,
+	granted_by TEXT NOT NULL,
+	granted_at INTEGER NOT NULL,
+	expires_at INTEGER,
+	revoked_at INTEGER,
+	revoked_by TEXT NOT NULL,
+	revoked_reason TEXT NOT NULL,
+	PRIMARY KEY(plugin_instance_id, permission_id),
+	FOREIGN KEY(plugin_instance_id) REFERENCES plugin_records(plugin_instance_id) ON DELETE CASCADE
+)`); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_registry_permission_grants_plugin ON plugin_permission_grants(plugin_instance_id, permission_id)`); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `
+CREATE TABLE IF NOT EXISTS plugin_security_policies (
+	plugin_instance_id TEXT PRIMARY KEY,
+	allowed_permissions_json TEXT NOT NULL,
+	denied_methods_json TEXT NOT NULL,
+	updated_at INTEGER NOT NULL,
+	FOREIGN KEY(plugin_instance_id) REFERENCES plugin_records(plugin_instance_id) ON DELETE CASCADE
+)`); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `
+CREATE TABLE IF NOT EXISTS plugin_data_bindings (
+	plugin_instance_id TEXT PRIMARY KEY,
+	generation_id TEXT NOT NULL,
+	state TEXT NOT NULL,
+	revision INTEGER NOT NULL,
+	shape_hash TEXT NOT NULL,
+	retained_at INTEGER,
+	expires_at INTEGER
+)`); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `
+CREATE TABLE IF NOT EXISTS plugin_data_objects (
+	object_id TEXT PRIMARY KEY,
+	content_hash TEXT NOT NULL,
+	shape_hash TEXT NOT NULL,
+	size_bytes INTEGER NOT NULL,
+	created_at INTEGER NOT NULL
+)`); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `
 CREATE TABLE IF NOT EXISTS plugin_source_security_floors (
 	source_id TEXT PRIMARY KEY,
 	policy_epoch TEXT NOT NULL,
@@ -367,56 +461,6 @@ CREATE TABLE IF NOT EXISTS plugin_source_security_floors (
 )`); err != nil {
 		return err
 	}
-	if userVersion < 2 {
-		if _, err := tx.ExecContext(ctx, `ALTER TABLE plugin_records ADD COLUMN trust_assessment_json TEXT NOT NULL DEFAULT '{}'`); err != nil && !strings.Contains(err.Error(), "duplicate column name") {
-			return err
-		}
-		if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO plugin_registry_schema_migrations(version, applied_at) VALUES(?, ?)`, 2, time.Now().UTC().UnixNano()); err != nil {
-			return err
-		}
-	}
-	if userVersion < 3 {
-		if _, err := tx.ExecContext(ctx, `ALTER TABLE plugin_records ADD COLUMN source_policy_snapshot_hash TEXT NOT NULL DEFAULT ''`); err != nil && !strings.Contains(err.Error(), "duplicate column name") {
-			return err
-		}
-		if _, err := tx.ExecContext(ctx, `ALTER TABLE plugin_records ADD COLUMN source_policy_snapshot_json TEXT NOT NULL DEFAULT '{}'`); err != nil && !strings.Contains(err.Error(), "duplicate column name") {
-			return err
-		}
-		if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO plugin_registry_schema_migrations(version, applied_at) VALUES(?, ?)`, 3, time.Now().UTC().UnixNano()); err != nil {
-			return err
-		}
-	}
-	if userVersion < 4 {
-		if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO plugin_registry_schema_migrations(version, applied_at) VALUES(?, ?)`, 4, time.Now().UTC().UnixNano()); err != nil {
-			return err
-		}
-	}
-	if userVersion < 5 {
-		if _, err := tx.ExecContext(ctx, `ALTER TABLE plugin_records ADD COLUMN local_import_provenance_json TEXT NOT NULL DEFAULT '{}'`); err != nil && !strings.Contains(err.Error(), "duplicate column name") {
-			return err
-		}
-		if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO plugin_registry_schema_migrations(version, applied_at) VALUES(?, ?)`, 5, time.Now().UTC().UnixNano()); err != nil {
-			return err
-		}
-	}
-	if userVersion < 6 {
-		if _, err := tx.ExecContext(ctx, `ALTER TABLE plugin_records ADD COLUMN capability_contracts_json TEXT NOT NULL DEFAULT '[]'`); err != nil && !strings.Contains(err.Error(), "duplicate column name") {
-			return err
-		}
-		if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO plugin_registry_schema_migrations(version, applied_at) VALUES(?, ?)`, 6, time.Now().UTC().UnixNano()); err != nil {
-			return err
-		}
-	}
-	if userVersion < 1 {
-		if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO plugin_registry_schema_migrations(version, applied_at) VALUES(?, ?)`, 1, time.Now().UTC().UnixNano()); err != nil {
-			return err
-		}
-	}
-	if userVersion < sqliteSchemaVersion {
-		if _, err := tx.ExecContext(ctx, fmt.Sprintf(`PRAGMA user_version = %d`, sqliteSchemaVersion)); err != nil {
-			return err
-		}
-	}
 	return tx.Commit()
 }
 
@@ -426,7 +470,7 @@ SELECT
 		plugin_instance_id, publisher_id, plugin_id, version, active_fingerprint,
 		package_hash, manifest_hash, entries_hash, trust_state, trust_assessment_json,
 		source_policy_snapshot_hash, source_policy_snapshot_json, local_import_provenance_json, capability_contracts_json, enable_state,
-		disabled_reason, retained_data_state, policy_revision, management_revision,
+		disabled_reason, policy_revision, management_revision,
 		revoke_epoch, manifest_json, package_entries_json, version_history_json,
 	installed_at, enabled_at, updated_at, deleted_at, metadata_json
 FROM plugin_records
@@ -484,10 +528,10 @@ func upsertSQLitePlugin(ctx context.Context, tx *sql.Tx, record PluginRecord) er
 		plugin_instance_id, publisher_id, plugin_id, version, active_fingerprint,
 		package_hash, manifest_hash, entries_hash, trust_state, trust_assessment_json,
 		source_policy_snapshot_hash, source_policy_snapshot_json, local_import_provenance_json, capability_contracts_json, enable_state,
-		disabled_reason, retained_data_state, policy_revision, management_revision,
+		disabled_reason, policy_revision, management_revision,
 		revoke_epoch, manifest_json, package_entries_json, version_history_json,
 		installed_at, enabled_at, updated_at, deleted_at, metadata_json
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	ON CONFLICT(plugin_instance_id) DO UPDATE SET
 	publisher_id = excluded.publisher_id,
 	plugin_id = excluded.plugin_id,
@@ -504,7 +548,6 @@ func upsertSQLitePlugin(ctx context.Context, tx *sql.Tx, record PluginRecord) er
 		capability_contracts_json = excluded.capability_contracts_json,
 		enable_state = excluded.enable_state,
 	disabled_reason = excluded.disabled_reason,
-	retained_data_state = excluded.retained_data_state,
 	policy_revision = excluded.policy_revision,
 	management_revision = excluded.management_revision,
 	revoke_epoch = excluded.revoke_epoch,
@@ -532,7 +575,6 @@ func upsertSQLitePlugin(ctx context.Context, tx *sql.Tx, record PluginRecord) er
 		capabilityContractsJSON,
 		string(record.EnableState),
 		record.DisabledReason,
-		string(record.RetainedDataState),
 		record.PolicyRevision,
 		record.ManagementRevision,
 		record.RevokeEpoch,
@@ -564,7 +606,6 @@ func scanSQLitePlugin(scanner sqlitePluginScanner) (PluginRecord, error) {
 	var localImportProvenanceJSON string
 	var capabilityContractsJSON string
 	var enableState string
-	var retainedDataState string
 	var manifestJSON string
 	var packageEntriesJSON string
 	var versionHistoryJSON string
@@ -590,7 +631,6 @@ func scanSQLitePlugin(scanner sqlitePluginScanner) (PluginRecord, error) {
 		&capabilityContractsJSON,
 		&enableState,
 		&record.DisabledReason,
-		&retainedDataState,
 		&record.PolicyRevision,
 		&record.ManagementRevision,
 		&record.RevokeEpoch,
@@ -607,7 +647,6 @@ func scanSQLitePlugin(scanner sqlitePluginScanner) (PluginRecord, error) {
 	}
 	record.TrustState = TrustState(trustState)
 	record.EnableState = EnableState(enableState)
-	record.RetainedDataState = RetainedDataState(retainedDataState)
 	if err := decodeRegistryJSON(manifestJSON, &record.Manifest); err != nil {
 		return PluginRecord{}, err
 	}

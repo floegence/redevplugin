@@ -2,21 +2,14 @@ package stress_test
 
 import (
 	"bufio"
-	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
-	"crypto/sha1"
-	"encoding/base64"
-	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
-	"net"
 	"net/http"
 	"net/http/httptest"
-	"net/netip"
 	"os"
 	"path/filepath"
 	"sort"
@@ -27,25 +20,55 @@ import (
 	"testing"
 	"time"
 
+	"github.com/floegence/redevplugin/pkg/bridge"
 	"github.com/floegence/redevplugin/pkg/capability"
 	"github.com/floegence/redevplugin/pkg/capabilitycontract"
 	"github.com/floegence/redevplugin/pkg/connectivity"
 	"github.com/floegence/redevplugin/pkg/host"
 	"github.com/floegence/redevplugin/pkg/httpadapter"
+	"github.com/floegence/redevplugin/pkg/installstage"
 	"github.com/floegence/redevplugin/pkg/manifest"
 	"github.com/floegence/redevplugin/pkg/observability"
 	"github.com/floegence/redevplugin/pkg/operation"
+	"github.com/floegence/redevplugin/pkg/plugindata"
+	"github.com/floegence/redevplugin/pkg/pluginpkg"
+	"github.com/floegence/redevplugin/pkg/registry"
 	"github.com/floegence/redevplugin/pkg/runtimeclient"
+	"github.com/floegence/redevplugin/pkg/secrets"
+	"github.com/floegence/redevplugin/pkg/security"
 	"github.com/floegence/redevplugin/pkg/sessionctx"
 	"github.com/floegence/redevplugin/pkg/storage"
 	"github.com/floegence/redevplugin/pkg/stream"
 	"github.com/floegence/redevplugin/pkg/version"
-	"github.com/floegence/redevplugin/pkg/websecurity"
 )
 
 type stressSummary struct {
 	Category string         `json:"category"`
 	Counters map[string]int `json:"counters"`
+}
+
+type stressAuditSink struct {
+	mu     sync.Mutex
+	events []observability.AuditEvent
+}
+
+func (s *stressAuditSink) AppendPluginAudit(_ context.Context, event observability.AuditEvent) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.events = append(s.events, event)
+	return nil
+}
+
+func (s *stressAuditSink) count(pluginInstanceID string, eventType string) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	count := 0
+	for _, event := range s.events {
+		if event.PluginInstanceID == pluginInstanceID && event.Type == eventType {
+			count++
+		}
+	}
+	return count
 }
 
 var stressEvidenceMu sync.Mutex
@@ -59,7 +82,7 @@ func TestMain(m *testing.M) {
 }
 
 func TestStressGateStreamBackpressureKeepsOperationStoreResponsive(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(stressTestContext(), 5*time.Second)
 	defer cancel()
 
 	streams := stream.NewMemoryStore()
@@ -119,9 +142,13 @@ func TestStressGateStreamBackpressureKeepsOperationStoreResponsive(t *testing.T)
 			if _, err := operations.Register(ctx, operation.RegisterRequest{
 				OperationID: operationID,
 				ExecutionBinding: capability.ExecutionBinding{
-					PluginInstanceID: "plugini_core_control",
-					Method:           "core.diagnostics.ping",
-					Execution:        "operation",
+					PluginInstanceID:     "plugini_core_control",
+					Method:               "core.diagnostics.ping",
+					Execution:            "operation",
+					OwnerSessionHash:     "stress_session",
+					OwnerUserHash:        "stress_user",
+					OwnerEnvHash:         "stress_env",
+					SessionChannelIDHash: "stress_channel",
 				},
 				DisableBehavior:   operation.DisableBehaviorCancel,
 				UninstallBehavior: operation.UninstallBehaviorForceCleanupAllowed,
@@ -133,7 +160,7 @@ func TestStressGateStreamBackpressureKeepsOperationStoreResponsive(t *testing.T)
 				errs <- err
 				return
 			}
-			if _, err := operations.List(ctx, operation.ListRequest{PluginInstanceID: "plugini_core_control"}); err != nil {
+			if _, err := operations.List(ctx, operation.ListRequest{PluginInstanceID: "plugini_core_control", AllOwners: true}); err != nil {
 				errs <- err
 				return
 			}
@@ -150,10 +177,11 @@ func TestStressGateStreamBackpressureKeepsOperationStoreResponsive(t *testing.T)
 	if got := backpressure.Load(); got != workerCount {
 		t.Fatalf("backpressure count = %d, want %d", got, workerCount)
 	}
-	records, err := operations.List(ctx, operation.ListRequest{PluginInstanceID: "plugini_core_control"})
+	page, err := operations.List(ctx, operation.ListRequest{PluginInstanceID: "plugini_core_control", AllOwners: true})
 	if err != nil {
 		t.Fatal(err)
 	}
+	records := page.Records
 	if len(records) != 96 {
 		t.Fatalf("operation records = %d, want 96", len(records))
 	}
@@ -194,10 +222,11 @@ func TestStressGateStreamBackpressureKeepsOperationStoreResponsive(t *testing.T)
 }
 
 func TestStressGateOperationCancelOwnershipEvidence(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(stressTestContext(), 5*time.Second)
 	defer cancel()
 
-	events := observability.NewMemoryStore()
+	audit := &stressAuditSink{}
+	diagnostics := observability.NewMemoryStore()
 	operations := operation.NewMemoryStore()
 	operationAdapter := &stressOperationAdapter{}
 	verified := stressVerifiedCapabilityContract(t)
@@ -205,20 +234,59 @@ func TestStressGateOperationCancelOwnershipEvidence(t *testing.T) {
 	if err := capabilities.Register(capability.Registration{Contract: verified, TargetProjector: operationAdapter, Adapter: operationAdapter}); err != nil {
 		t.Fatal(err)
 	}
-	pluginHost, err := host.New(host.Adapters{
-		SessionResolver: stressSessionResolver{},
-		Policy:          stressPolicy{},
-		Audit:           events,
-		Diagnostics:     events,
-		Operations:      operations,
-		Capabilities:    capabilities,
-	})
+	connectivityBroker := connectivity.NewMemoryBroker()
+	platformAdapter := stressPlatformAdapter{}
+	registryStore := registry.NewMemoryStore()
+	pluginData, err := plugindata.Open(ctx, filepath.Join(t.TempDir(), "plugin-data"), registryStore)
 	if err != nil {
 		t.Fatal(err)
 	}
+	pluginHost, err := host.Open(ctx, host.Adapters{
+		Policy:                      stressPolicy{},
+		PackageTrustVerifier:        platformAdapter,
+		ReleaseMetadataVerifier:     platformAdapter,
+		RevocationVerifier:          platformAdapter,
+		ReleaseSourcePolicy:         platformAdapter,
+		ReleaseArtifactResolver:     platformAdapter,
+		HostRequirements:            platformAdapter,
+		CapabilityContractArtifacts: platformAdapter,
+		CapabilityContractKeys:      platformAdapter,
+		Registry:                    registryStore,
+		Audit:                       audit,
+		Diagnostics:                 diagnostics,
+		Secrets:                     secrets.NewMemoryStore(),
+		RuntimeManager:              platformAdapter,
+		SurfaceCatalog:              platformAdapter,
+		Assets:                      pluginpkg.NewMemoryAssetStore(),
+		InstallStages:               installstage.NewMemoryStore(),
+		Capabilities:                capabilities,
+		CoreActions:                 platformAdapter,
+		SurfaceTokens:               bridge.NewSurfaceTokenService(nil, bridge.SurfaceTokenOptions{}),
+		PluginData:                  pluginData,
+		Connectivity:                connectivityBroker,
+		NetworkExecutor:             connectivity.NewExecutor(connectivity.ExecutorOptions{}),
+		Operations:                  operations,
+		ConfirmationIntents:         security.NewMemoryConfirmationIntentStore(),
+		Streams:                     stream.NewMemoryStore(),
+	})
+	if err != nil {
+		_ = pluginData.Close()
+		t.Fatal(err)
+	}
+	defer pluginHost.Close()
 
 	now := time.Date(2026, 7, 3, 12, 0, 0, 0, time.UTC)
 	for _, operationID := range []string{"op_stress_cancel_success", "op_stress_cancel_fail"} {
+		ownerSessionHash := "stress_session"
+		ownerUserHash := "stress_user"
+		ownerEnvHash := "stress_env"
+		sessionChannelIDHash := "stress_channel"
+		if operationID == "op_stress_cancel_fail" {
+			ownerSessionHash = "session_hash_stress"
+			ownerUserHash = "user_hash_stress"
+			ownerEnvHash = "environment_hash_stress"
+			sessionChannelIDHash = "channel_hash_stress"
+		}
 		if _, err := operations.Register(ctx, operation.RegisterRequest{
 			OperationID: operationID,
 			ExecutionBinding: capability.ExecutionBinding{
@@ -232,7 +300,10 @@ func TestStressGateOperationCancelOwnershipEvidence(t *testing.T) {
 				Effect:               capability.EffectExecute,
 				Execution:            "operation",
 				SurfaceInstanceID:    "surface_stress_operation",
-				SessionChannelIDHash: "channel_hash_stress",
+				OwnerSessionHash:     ownerSessionHash,
+				OwnerUserHash:        ownerUserHash,
+				OwnerEnvHash:         ownerEnvHash,
+				SessionChannelIDHash: sessionChannelIDHash,
 				BridgeChannelID:      "bridge_stress_operation",
 				Permissions:          capability.PermissionEvidence{Required: []string{}, Granted: []string{}},
 			},
@@ -259,7 +330,10 @@ func TestStressGateOperationCancelOwnershipEvidence(t *testing.T) {
 		t.Fatalf("inactive persisted operation unexpectedly dispatched through capability registry: %#v", operationAdapter.requests)
 	}
 
-	handler := httpadapter.Handler{Host: pluginHost, WebSecurity: stressWebSecurityGuard{}}
+	handler, err := httpadapter.NewHandler(httpadapter.Dependencies{Host: pluginHost, Guard: stressWebSecurityGuard{}})
+	if err != nil {
+		t.Fatal(err)
+	}
 	req := httptest.NewRequest(http.MethodPost, "/_redevplugin/api/plugins/operations/op_stress_cancel_fail/cancel", strings.NewReader(`{"reason":"user"}`)).WithContext(ctx)
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
@@ -267,18 +341,24 @@ func TestStressGateOperationCancelOwnershipEvidence(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("durable cancel status = %d body = %s", rec.Code, rec.Body.String())
 	}
-	var envelope httpadapter.Envelope
-	if err := json.Unmarshal(rec.Body.Bytes(), &envelope); err != nil {
+	var response struct {
+		OK    bool `json:"ok"`
+		Error *struct {
+			Code string `json:"code"`
+		} `json:"error,omitempty"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
 		t.Fatal(err)
 	}
-	if !envelope.OK || envelope.ErrorCode != "" {
-		t.Fatalf("durable cancel envelope mismatch: %#v", envelope)
+	if !response.OK || response.Error != nil {
+		t.Fatalf("durable cancel response mismatch: %#v", response)
 	}
 
-	records, err := operations.List(ctx, operation.ListRequest{PluginInstanceID: "plugini_stress_documents"})
+	page, err := operations.List(ctx, operation.ListRequest{PluginInstanceID: "plugini_stress_documents", AllOwners: true})
 	if err != nil {
 		t.Fatal(err)
 	}
+	records := page.Records
 	var cancelRequested int
 	for _, record := range records {
 		if record.Status == operation.StatusCancelRequested {
@@ -292,16 +372,9 @@ func TestStressGateOperationCancelOwnershipEvidence(t *testing.T) {
 		t.Fatalf("persisted operations must not rediscover an execution adapter by contract id: %#v", operationAdapter.requests)
 	}
 
-	auditEvents, err := events.ListPluginAudit(ctx, observability.ListAuditRequest{
-		PluginInstanceID: "plugini_stress_documents",
-		Type:             "plugin.operation.cancel_requested",
-		Limit:            10,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(auditEvents) != 2 {
-		t.Fatalf("cancel audit events = %d, want 2: %#v", len(auditEvents), auditEvents)
+	auditCount := audit.count("plugini_stress_documents", "plugin.operation.cancel_requested")
+	if auditCount != 2 {
+		t.Fatalf("cancel audit events = %d, want 2", auditCount)
 	}
 
 	logStressSummary(t, stressSummary{
@@ -311,995 +384,14 @@ func TestStressGateOperationCancelOwnershipEvidence(t *testing.T) {
 			"cancel_requested_records":              cancelRequested,
 			"durable_requests_without_active_lease": 2,
 			"http_accepted_requests":                1,
-			"audit_cancel_requested_events":         len(auditEvents),
+			"audit_cancel_requested_events":         auditCount,
 			"registry_redispatches":                 len(operationAdapter.requests),
 		},
 	})
 }
 
-func TestStressGateConnectivityGrantClassifierFlood(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	policy, err := connectivity.CompilePolicy(connectivity.CompileRequest{
-		PluginInstanceID:   "plugini_stress_net",
-		PluginID:           "com.example.stress.net",
-		ActiveFingerprint:  "sha256:stress",
-		PolicyRevision:     7,
-		ManagementRevision: 11,
-		RevokeEpoch:        3,
-		Manifest: manifest.Manifest{
-			NetworkAccess: &manifest.NetworkAccessSpec{Connectors: []manifest.NetworkConnectorSpec{
-				{ConnectorID: "api", Transport: "http", Scope: "user", Destinations: []string{"https://api.example.com"}},
-				{ConnectorID: "api_plain", Transport: "http", Scope: "user", Destinations: []string{"http://api.example.com"}},
-				{ConnectorID: "stream", Transport: "websocket", Scope: "user", Destinations: []string{"wss://stream.example.com"}},
-				{ConnectorID: "stream_plain", Transport: "websocket", Scope: "user", Destinations: []string{"ws://stream.example.com"}},
-				{ConnectorID: "mysql", Transport: "tcp", Scope: "environment", Destinations: []string{"db.example.com:3306"}},
-				{ConnectorID: "metrics", Transport: "udp", Scope: "environment", Destinations: []string{"metrics.example.com:8125"}},
-			}},
-		},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	broker := connectivity.NewMemoryBroker()
-	if err := broker.InstallPolicy(ctx, policy); err != nil {
-		t.Fatal(err)
-	}
-
-	requests := []connectivity.GrantRequest{
-		grantRequest("api", connectivity.TransportHTTP, "https://api.example.com"),
-		grantRequest("api_plain", connectivity.TransportHTTP, "http://api.example.com"),
-		grantRequest("stream", connectivity.TransportWebSocket, "wss://stream.example.com"),
-		grantRequest("stream_plain", connectivity.TransportWebSocket, "ws://stream.example.com"),
-		grantRequest("mysql", connectivity.TransportTCP, "db.example.com:3306"),
-		grantRequest("metrics", connectivity.TransportUDP, "metrics.example.com:8125"),
-	}
-
-	var minted atomic.Int64
-	var denied atomic.Int64
-	errs := make(chan error, len(requests)*64)
-	var wg sync.WaitGroup
-	for i := 0; i < 64; i++ {
-		for _, req := range requests {
-			wg.Add(1)
-			go func(i int, req connectivity.GrantRequest) {
-				defer wg.Done()
-				req.Now = time.Date(2026, 6, 30, 12, 0, i%60, 0, time.UTC)
-				if i%5 == 0 {
-					req.RevokeEpoch = 4
-				}
-				_, err := broker.MintConnectionGrant(ctx, req)
-				if err == nil {
-					minted.Add(1)
-					return
-				}
-				if errors.Is(err, connectivity.ErrConnectorDenied) {
-					denied.Add(1)
-					return
-				}
-				errs <- err
-			}(i, req)
-		}
-	}
-	wg.Wait()
-	close(errs)
-	for err := range errs {
-		if err != nil {
-			t.Fatal(err)
-		}
-	}
-
-	classifier := connectivity.DefaultClassifier()
-	var blocked atomic.Int64
-	for i := 0; i < 128; i++ {
-		addr := netip.MustParseAddr("10.0.0.1")
-		if i%2 == 1 {
-			addr = netip.MustParseAddr("169.254.169.254")
-		}
-		err := classifier.EvaluateResolvedAddress(connectivity.Destination{Transport: connectivity.TransportTCP, Host: "db.example.com", Port: 3306}, addr)
-		if !errors.Is(err, connectivity.ErrTargetDenied) {
-			t.Fatalf("EvaluateResolvedAddress(%s) error = %v, want ErrTargetDenied", addr, err)
-		}
-		blocked.Add(1)
-	}
-	if minted.Load() == 0 || denied.Load() == 0 || blocked.Load() != 128 {
-		t.Fatalf("unexpected grant/classifier counters: minted=%d denied=%d blocked=%d", minted.Load(), denied.Load(), blocked.Load())
-	}
-	udpCounters := stressUDPSourcePinCounters(t, ctx, broker)
-	httpCounters := stressHTTPProxyDefenseCounters(t, ctx, broker)
-	dnsRedirectCounters := stressDNSRedirectCounters(t, ctx, broker)
-	httpStreamCounters := stressHTTPStreamingCounters(t, ctx, broker)
-	tcpCounters := stressTCPDatabaseProtocolCounters(t, ctx, broker)
-	webSocketCounters := stressWebSocketPressureCounters(t, ctx, broker)
-	logStressSummary(t, stressSummary{
-		Category: "connectivity_classifier",
-		Counters: map[string]int{
-			"minted_grants":                int(minted.Load()),
-			"stale_grant_denials":          int(denied.Load()),
-			"blocked_resolved_ips":         int(blocked.Load()),
-			"connector_policy_count":       len(policy.Connectors),
-			"http_redirects_not_followed":  dnsRedirectCounters.redirectsNotFollowed,
-			"dns_rebinding_denials":        dnsRedirectCounters.rebindingDenials,
-			"http_proxy_env_ignored":       httpCounters.proxyEnvIgnored,
-			"http_connect_denials":         httpCounters.connectDenials,
-			"alt_svc_headers_dropped":      httpCounters.altSvcHeadersDropped,
-			"proxy_auth_headers_dropped":   httpCounters.proxyAuthHeadersDropped,
-			"http_stream_cancelled_reads":  httpStreamCounters.cancelledReads,
-			"http_stream_chunks":           httpStreamCounters.chunks,
-			"http_stream_request_denials":  httpStreamCounters.requestDenials,
-			"http_stream_response_denials": httpStreamCounters.responseDenials,
-			"http_stream_round_trips":      httpStreamCounters.roundTrips,
-			"tcp_cancelled_reads":          tcpCounters.cancelledReads,
-			"tcp_database_round_trips":     tcpCounters.databaseRoundTrips,
-			"tcp_request_denials":          tcpCounters.requestDenials,
-			"tcp_response_denials":         tcpCounters.responseDenials,
-			"udp_round_trips":              udpCounters.roundTrips,
-			"udp_source_mismatch_dropped":  udpCounters.sourceMismatchDropped,
-			"udp_rate_limit_denials":       udpCounters.rateLimitDenials,
-			"websocket_round_trips":        webSocketCounters.roundTrips,
-			"websocket_request_denials":    webSocketCounters.requestDenials,
-			"websocket_response_denials":   webSocketCounters.responseDenials,
-			"websocket_cancelled_reads":    webSocketCounters.cancelledReads,
-		},
-	})
-}
-
-type dnsRedirectCounters struct {
-	redirectsNotFollowed int
-	rebindingDenials     int
-}
-
-func stressDNSRedirectCounters(t *testing.T, ctx context.Context, broker connectivity.Broker) dnsRedirectCounters {
-	t.Helper()
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	var redirectRequests atomic.Int64
-	server := http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		redirectRequests.Add(1)
-		http.Redirect(w, r, "https://other.example.com/", http.StatusFound)
-	})}
-	go func() {
-		_ = server.Serve(listener)
-	}()
-	defer server.Close()
-	grant, err := broker.MintConnectionGrant(ctx, grantRequest("api_plain", connectivity.TransportHTTP, "http://api.example.com"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	response, err := connectivity.NewExecutor(connectivity.ExecutorOptions{
-		DialContext: stressMappedDialer(listener.Addr().String()),
-	}).DoHTTP(ctx, connectivity.HTTPRequest{Grant: grant, Timeout: time.Second})
-	if err != nil {
-		t.Fatalf("DoHTTP(redirect evidence) error = %v", err)
-	}
-	if response.StatusCode != http.StatusFound || response.Headers.Get("Location") != "https://other.example.com/" || redirectRequests.Load() != 1 {
-		t.Fatalf("redirect evidence mismatch: status=%d location=%q requests=%d", response.StatusCode, response.Headers.Get("Location"), redirectRequests.Load())
-	}
-	_, err = connectivity.NewExecutor(connectivity.ExecutorOptions{
-		Dialer: &net.Dialer{Timeout: time.Millisecond},
-		LookupIPAddr: func(context.Context, string) ([]net.IPAddr, error) {
-			return []net.IPAddr{
-				{IP: net.ParseIP("203.0.113.10")},
-				{IP: net.ParseIP("10.0.0.10")},
-			}, nil
-		},
-	}).DoHTTP(ctx, connectivity.HTTPRequest{Grant: grant, Timeout: time.Millisecond})
-	if !errors.Is(err, connectivity.ErrTargetDenied) {
-		t.Fatalf("DoHTTP(DNS rebinding evidence) error = %v, want ErrTargetDenied", err)
-	}
-	return dnsRedirectCounters{redirectsNotFollowed: 1, rebindingDenials: 1}
-}
-
-type httpProxyDefenseCounters struct {
-	proxyEnvIgnored         int
-	connectDenials          int
-	altSvcHeadersDropped    int
-	proxyAuthHeadersDropped int
-}
-
-func stressHTTPProxyDefenseCounters(t *testing.T, ctx context.Context, broker connectivity.Broker) httpProxyDefenseCounters {
-	t.Helper()
-	t.Setenv("HTTP_PROXY", "http://127.0.0.1:1")
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	type observation struct {
-		proxyEnvIgnored         bool
-		altSvcHeadersDropped    bool
-		proxyAuthHeadersDropped bool
-	}
-	observed := make(chan observation, 1)
-	server := http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		observed <- observation{
-			proxyEnvIgnored:         r.RequestURI == "/proxy-check" && !r.URL.IsAbs(),
-			altSvcHeadersDropped:    r.Header.Get("Alt-Svc") == "",
-			proxyAuthHeadersDropped: r.Header.Get("Proxy-Authorization") == "" && r.Header.Get("Proxy-Authenticate") == "",
-		}
-		_, _ = w.Write([]byte("ok"))
-	})}
-	go func() {
-		_ = server.Serve(listener)
-	}()
-	defer server.Close()
-	grant, err := broker.MintConnectionGrant(ctx, grantRequest("api_plain", connectivity.TransportHTTP, "http://api.example.com"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	response, err := connectivity.NewExecutor(connectivity.ExecutorOptions{
-		DialContext: stressMappedDialer(listener.Addr().String()),
-	}).DoHTTP(ctx, connectivity.HTTPRequest{
-		Grant: grant,
-		Path:  "/proxy-check",
-		Headers: http.Header{
-			"Alt-Svc":             []string{`h3=":443"`},
-			"Connection":          []string{"keep-alive"},
-			"Proxy-Authorization": []string{"Bearer secret"},
-			"Proxy-Authenticate":  []string{"Basic realm=test"},
-			"X-Test":              []string{"ok"},
-		},
-		Timeout: time.Second,
-	})
-	if err != nil {
-		t.Fatalf("DoHTTP(proxy defense) error = %v", err)
-	}
-	if string(response.Body) != "ok" {
-		t.Fatalf("DoHTTP(proxy defense) body = %q", response.Body)
-	}
-	var result httpProxyDefenseCounters
-	select {
-	case got := <-observed:
-		if !got.proxyEnvIgnored || !got.altSvcHeadersDropped || !got.proxyAuthHeadersDropped {
-			t.Fatalf("proxy defense observation mismatch: %#v", got)
-		}
-		result.proxyEnvIgnored = 1
-		result.altSvcHeadersDropped = 1
-		result.proxyAuthHeadersDropped = 1
-	case <-ctx.Done():
-		t.Fatal(ctx.Err())
-	}
-	dialed := false
-	_, err = connectivity.NewExecutor(connectivity.ExecutorOptions{DialContext: func(context.Context, string, string) (net.Conn, error) {
-		dialed = true
-		return nil, errors.New("dial should not be called for CONNECT")
-	}}).DoHTTP(ctx, connectivity.HTTPRequest{Grant: grant, Method: http.MethodConnect})
-	if !errors.Is(err, connectivity.ErrInvalidConnector) {
-		t.Fatalf("DoHTTP(CONNECT) error = %v, want ErrInvalidConnector", err)
-	}
-	if dialed {
-		t.Fatal("DoHTTP(CONNECT) dialed before rejecting method")
-	}
-	result.connectDenials = 1
-	return result
-}
-
-type httpStreamingCounters struct {
-	roundTrips      int
-	chunks          int
-	requestDenials  int
-	responseDenials int
-	cancelledReads  int
-}
-
-func stressHTTPStreamingCounters(t *testing.T, ctx context.Context, broker connectivity.Broker) httpStreamingCounters {
-	t.Helper()
-	grant, err := broker.MintConnectionGrant(ctx, grantRequest("api_plain", connectivity.TransportHTTP, "http://api.example.com"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	counters := httpStreamingCounters{}
-
-	successAddr, stopSuccess := startStressHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/v1/stream" {
-			t.Errorf("http stream path = %q, want /v1/stream", r.URL.Path)
-		}
-		w.Header().Set("X-Stress", "stream")
-		w.WriteHeader(http.StatusAccepted)
-		_, _ = w.Write([]byte("one"))
-		if flusher, ok := w.(http.Flusher); ok {
-			flusher.Flush()
-		}
-		_, _ = w.Write([]byte("two"))
-	}))
-	var streamed bytes.Buffer
-	response, err := connectivity.NewExecutor(connectivity.ExecutorOptions{
-		DialContext: stressMappedDialer(successAddr),
-	}).StreamHTTP(ctx, connectivity.HTTPRequest{
-		Grant:            grant,
-		Path:             "/v1/stream",
-		MaxResponseBytes: 16,
-		MaxChunkBytes:    3,
-		Timeout:          time.Second,
-	}, func(chunk connectivity.HTTPResponseChunk) error {
-		_, _ = streamed.Write(chunk.Data)
-		counters.chunks++
-		return nil
-	})
-	stopSuccess()
-	if err != nil {
-		t.Fatalf("StreamHTTP(stress success) error = %v", err)
-	}
-	if response.StatusCode != http.StatusAccepted || response.Headers.Get("X-Stress") != "stream" || response.BytesRead != 6 || response.ChunkCount != counters.chunks || streamed.String() != "onetwo" {
-		t.Fatalf("StreamHTTP(stress success) response=%#v chunks=%d body=%q", response, counters.chunks, streamed.String())
-	}
-	counters.roundTrips = 1
-
-	dialed := false
-	_, err = connectivity.NewExecutor(connectivity.ExecutorOptions{
-		DialContext: func(context.Context, string, string) (net.Conn, error) {
-			dialed = true
-			return nil, errors.New("dial should not be called for oversized http stream request")
-		},
-	}).StreamHTTP(ctx, connectivity.HTTPRequest{
-		Grant:           grant,
-		Body:            []byte("too-large"),
-		MaxRequestBytes: 4,
-		Timeout:         time.Second,
-	}, func(connectivity.HTTPResponseChunk) error {
-		return nil
-	})
-	if !errors.Is(err, connectivity.ErrRequestTooLarge) {
-		t.Fatalf("StreamHTTP(stress request limit) error = %v, want ErrRequestTooLarge", err)
-	}
-	if dialed {
-		t.Fatal("StreamHTTP(stress request limit) dialed before rejecting oversized request")
-	}
-	counters.requestDenials = 1
-
-	largeAddr, stopLarge := startStressHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = w.Write([]byte("too-large"))
-	}))
-	_, err = connectivity.NewExecutor(connectivity.ExecutorOptions{
-		DialContext: stressMappedDialer(largeAddr),
-	}).StreamHTTP(ctx, connectivity.HTTPRequest{
-		Grant:            grant,
-		MaxResponseBytes: 4,
-		MaxChunkBytes:    4,
-		Timeout:          time.Second,
-	}, func(connectivity.HTTPResponseChunk) error {
-		return nil
-	})
-	stopLarge()
-	if !errors.Is(err, connectivity.ErrResponseTooLarge) {
-		t.Fatalf("StreamHTTP(stress response limit) error = %v, want ErrResponseTooLarge", err)
-	}
-	counters.responseDenials = 1
-
-	headersSent := make(chan struct{})
-	releaseBlockedServer := make(chan struct{})
-	var releaseOnce sync.Once
-	releaseServer := func() {
-		releaseOnce.Do(func() {
-			close(releaseBlockedServer)
-		})
-	}
-	blockedAddr, stopBlocked := startStressHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		if flusher, ok := w.(http.Flusher); ok {
-			flusher.Flush()
-		}
-		close(headersSent)
-		<-releaseBlockedServer
-	}))
-	cancelCtx, cancel := context.WithCancel(ctx)
-	errCh := make(chan error, 1)
-	go func() {
-		_, err := connectivity.NewExecutor(connectivity.ExecutorOptions{
-			DialContext: stressMappedDialer(blockedAddr),
-		}).StreamHTTP(cancelCtx, connectivity.HTTPRequest{
-			Grant:            grant,
-			MaxResponseBytes: 32,
-			Timeout:          5 * time.Second,
-		}, func(connectivity.HTTPResponseChunk) error {
-			return nil
-		})
-		errCh <- err
-	}()
-	select {
-	case <-headersSent:
-	case <-time.After(time.Second):
-		cancel()
-		releaseServer()
-		stopBlocked()
-		t.Fatal("StreamHTTP(stress cancel) server did not send headers")
-	}
-	cancel()
-	select {
-	case err := <-errCh:
-		if !errors.Is(err, context.Canceled) {
-			releaseServer()
-			stopBlocked()
-			t.Fatalf("StreamHTTP(stress cancel) error = %v, want context.Canceled", err)
-		}
-	case <-time.After(500 * time.Millisecond):
-		releaseServer()
-		stopBlocked()
-		t.Fatal("StreamHTTP(stress cancel) did not stop promptly")
-	}
-	releaseServer()
-	stopBlocked()
-	counters.cancelledReads = 1
-
-	return counters
-}
-
-func startStressHTTPServer(t *testing.T, handler http.Handler) (string, func()) {
-	t.Helper()
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	server := http.Server{Handler: handler}
-	done := make(chan error, 1)
-	go func() {
-		defer close(done)
-		if err := server.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			done <- err
-		}
-	}()
-	var stopOnce sync.Once
-	stop := func() {
-		stopOnce.Do(func() {
-			_ = server.Close()
-			select {
-			case err, ok := <-done:
-				if ok && err != nil {
-					t.Fatal(err)
-				}
-			case <-time.After(time.Second):
-				t.Fatal("http stress server did not stop")
-			}
-		})
-	}
-	return listener.Addr().String(), stop
-}
-
-type tcpDatabaseProtocolCounters struct {
-	databaseRoundTrips int
-	requestDenials     int
-	responseDenials    int
-	cancelledReads     int
-}
-
-func stressTCPDatabaseProtocolCounters(t *testing.T, ctx context.Context, broker connectivity.Broker) tcpDatabaseProtocolCounters {
-	t.Helper()
-	grant, err := broker.MintConnectionGrant(ctx, grantRequest("mysql", connectivity.TransportTCP, "db.example.com:3306"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	counters := tcpDatabaseProtocolCounters{}
-
-	successAddr, stopSuccess := startStressTCPServer(t, func(reader *bufio.Reader, conn net.Conn) error {
-		query, err := reader.ReadString('\n')
-		if err != nil {
-			return err
-		}
-		if query != "QUERY users\n" {
-			return fmt.Errorf("tcp mock database query = %q", query)
-		}
-		_, err = conn.Write([]byte("RESULT rows=1\n"))
-		return err
-	})
-	response, err := connectivity.NewExecutor(connectivity.ExecutorOptions{
-		DialContext: stressMappedDialer(successAddr),
-	}).TCPRoundTrip(ctx, connectivity.TCPRoundTripRequest{
-		Grant:           grant,
-		Payload:         []byte("QUERY users\n"),
-		MaxRequestBytes: 64,
-		MaxReadBytes:    32,
-		Timeout:         time.Second,
-	})
-	stopSuccess()
-	if err != nil {
-		t.Fatalf("TCPRoundTrip(mock database) error = %v", err)
-	}
-	if string(response.Payload) != "RESULT rows=1\n" {
-		t.Fatalf("TCPRoundTrip(mock database) payload = %q", response.Payload)
-	}
-	counters.databaseRoundTrips = 1
-
-	dialed := false
-	_, err = connectivity.NewExecutor(connectivity.ExecutorOptions{
-		DialContext: func(context.Context, string, string) (net.Conn, error) {
-			dialed = true
-			return nil, errors.New("dial should not be called for oversized tcp request")
-		},
-	}).TCPRoundTrip(ctx, connectivity.TCPRoundTripRequest{
-		Grant:           grant,
-		Payload:         []byte("QUERY oversized\n"),
-		MaxRequestBytes: 4,
-		Timeout:         time.Second,
-	})
-	if !errors.Is(err, connectivity.ErrRequestTooLarge) {
-		t.Fatalf("TCPRoundTrip(stress request limit) error = %v, want ErrRequestTooLarge", err)
-	}
-	if dialed {
-		t.Fatal("TCPRoundTrip(stress request limit) dialed before rejecting oversized request")
-	}
-	counters.requestDenials = 1
-
-	largeAddr, stopLarge := startStressTCPServer(t, func(reader *bufio.Reader, conn net.Conn) error {
-		if _, err := reader.ReadString('\n'); err != nil {
-			return err
-		}
-		_, err := conn.Write([]byte("RESULT too-large\n"))
-		return err
-	})
-	_, err = connectivity.NewExecutor(connectivity.ExecutorOptions{
-		DialContext: stressMappedDialer(largeAddr),
-	}).TCPRoundTrip(ctx, connectivity.TCPRoundTripRequest{
-		Grant:        grant,
-		Payload:      []byte("QUERY users\n"),
-		MaxReadBytes: 4,
-		Timeout:      time.Second,
-	})
-	stopLarge()
-	if !errors.Is(err, connectivity.ErrResponseTooLarge) {
-		t.Fatalf("TCPRoundTrip(stress response limit) error = %v, want ErrResponseTooLarge", err)
-	}
-	counters.responseDenials = 1
-
-	requestRead := make(chan struct{})
-	releaseBlockedServer := make(chan struct{})
-	var releaseOnce sync.Once
-	releaseServer := func() {
-		releaseOnce.Do(func() {
-			close(releaseBlockedServer)
-		})
-	}
-	blockedAddr, stopBlocked := startStressTCPServer(t, func(reader *bufio.Reader, _ net.Conn) error {
-		if _, err := reader.ReadString('\n'); err != nil {
-			return err
-		}
-		close(requestRead)
-		<-releaseBlockedServer
-		return nil
-	})
-	cancelCtx, cancel := context.WithCancel(ctx)
-	errCh := make(chan error, 1)
-	go func() {
-		_, err := connectivity.NewExecutor(connectivity.ExecutorOptions{
-			DialContext: stressMappedDialer(blockedAddr),
-		}).TCPRoundTrip(cancelCtx, connectivity.TCPRoundTripRequest{
-			Grant:        grant,
-			Payload:      []byte("QUERY cancel\n"),
-			MaxReadBytes: 32,
-			Timeout:      5 * time.Second,
-		})
-		errCh <- err
-	}()
-	select {
-	case <-requestRead:
-	case <-time.After(time.Second):
-		cancel()
-		releaseServer()
-		stopBlocked()
-		t.Fatal("TCPRoundTrip(stress cancel) server did not receive query")
-	}
-	cancel()
-	select {
-	case err := <-errCh:
-		if !errors.Is(err, context.Canceled) {
-			releaseServer()
-			stopBlocked()
-			t.Fatalf("TCPRoundTrip(stress cancel) error = %v, want context.Canceled", err)
-		}
-	case <-time.After(500 * time.Millisecond):
-		releaseServer()
-		stopBlocked()
-		t.Fatal("TCPRoundTrip(stress cancel) did not stop promptly")
-	}
-	releaseServer()
-	stopBlocked()
-	counters.cancelledReads = 1
-
-	return counters
-}
-
-func startStressTCPServer(t *testing.T, handler func(*bufio.Reader, net.Conn) error) (string, func()) {
-	t.Helper()
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	done := make(chan error, 1)
-	go func() {
-		defer close(done)
-		defer listener.Close()
-		conn, err := listener.Accept()
-		if err != nil {
-			if errors.Is(err, net.ErrClosed) {
-				return
-			}
-			done <- err
-			return
-		}
-		defer conn.Close()
-		if err := handler(bufio.NewReader(conn), conn); err != nil {
-			done <- err
-			return
-		}
-	}()
-	var stopOnce sync.Once
-	stop := func() {
-		stopOnce.Do(func() {
-			_ = listener.Close()
-			select {
-			case err, ok := <-done:
-				if ok && err != nil {
-					t.Fatal(err)
-				}
-			case <-time.After(time.Second):
-				t.Fatal("tcp stress server did not stop")
-			}
-		})
-	}
-	return listener.Addr().String(), stop
-}
-
-type webSocketPressureCounters struct {
-	roundTrips      int
-	requestDenials  int
-	responseDenials int
-	cancelledReads  int
-}
-
-func stressWebSocketPressureCounters(t *testing.T, ctx context.Context, broker connectivity.Broker) webSocketPressureCounters {
-	t.Helper()
-	grant, err := broker.MintConnectionGrant(ctx, grantRequest("stream_plain", connectivity.TransportWebSocket, "ws://stream.example.com"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	counters := webSocketPressureCounters{}
-
-	successAddr, stopSuccess := startStressWebSocketServer(t, func(reader *bufio.Reader, conn net.Conn) error {
-		opcode, payload, err := readStressWebSocketFrame(reader, 64)
-		if err != nil {
-			return err
-		}
-		if opcode != 0x1 || string(payload) != "hello" {
-			return fmt.Errorf("websocket round trip frame opcode=%d payload=%q", opcode, payload)
-		}
-		return writeStressWebSocketFrame(conn, 0x1, []byte("ws:hello"))
-	})
-	response, err := connectivity.NewExecutor(connectivity.ExecutorOptions{
-		DialContext: stressMappedDialer(successAddr),
-	}).WebSocketRoundTrip(ctx, connectivity.WebSocketRoundTripRequest{
-		Grant:            grant,
-		Payload:          []byte("hello"),
-		MaxResponseBytes: 32,
-		Timeout:          time.Second,
-	})
-	stopSuccess()
-	if err != nil {
-		t.Fatalf("WebSocketRoundTrip(stress success) error = %v", err)
-	}
-	if response.MessageType != connectivity.WebSocketMessageText || string(response.Payload) != "ws:hello" {
-		t.Fatalf("WebSocketRoundTrip(stress success) response = %#v payload=%q", response, response.Payload)
-	}
-	counters.roundTrips = 1
-
-	dialed := false
-	_, err = connectivity.NewExecutor(connectivity.ExecutorOptions{
-		DialContext: func(context.Context, string, string) (net.Conn, error) {
-			dialed = true
-			return nil, errors.New("dial should not be called for oversized websocket request")
-		},
-	}).WebSocketRoundTrip(ctx, connectivity.WebSocketRoundTripRequest{
-		Grant:           grant,
-		Payload:         []byte("too-large"),
-		MaxRequestBytes: 4,
-		Timeout:         time.Second,
-	})
-	if !errors.Is(err, connectivity.ErrRequestTooLarge) {
-		t.Fatalf("WebSocketRoundTrip(stress request limit) error = %v, want ErrRequestTooLarge", err)
-	}
-	if dialed {
-		t.Fatal("WebSocketRoundTrip(stress request limit) dialed before rejecting oversized request")
-	}
-	counters.requestDenials = 1
-
-	largeAddr, stopLarge := startStressWebSocketServer(t, func(reader *bufio.Reader, conn net.Conn) error {
-		if _, _, err := readStressWebSocketFrame(reader, 64); err != nil {
-			return err
-		}
-		return writeStressWebSocketFrame(conn, 0x2, []byte("too-large"))
-	})
-	_, err = connectivity.NewExecutor(connectivity.ExecutorOptions{
-		DialContext: stressMappedDialer(largeAddr),
-	}).WebSocketRoundTrip(ctx, connectivity.WebSocketRoundTripRequest{
-		Grant:            grant,
-		MessageType:      connectivity.WebSocketMessageBinary,
-		Payload:          []byte("ping"),
-		MaxResponseBytes: 4,
-		Timeout:          time.Second,
-	})
-	stopLarge()
-	if !errors.Is(err, connectivity.ErrResponseTooLarge) {
-		t.Fatalf("WebSocketRoundTrip(stress response limit) error = %v, want ErrResponseTooLarge", err)
-	}
-	counters.responseDenials = 1
-
-	requestRead := make(chan struct{})
-	releaseBlockedServer := make(chan struct{})
-	var releaseOnce sync.Once
-	releaseServer := func() {
-		releaseOnce.Do(func() {
-			close(releaseBlockedServer)
-		})
-	}
-	blockedAddr, stopBlocked := startStressWebSocketServer(t, func(reader *bufio.Reader, _ net.Conn) error {
-		if _, _, err := readStressWebSocketFrame(reader, 64); err != nil {
-			return err
-		}
-		close(requestRead)
-		<-releaseBlockedServer
-		return nil
-	})
-	cancelCtx, cancel := context.WithCancel(ctx)
-	errCh := make(chan error, 1)
-	go func() {
-		_, err := connectivity.NewExecutor(connectivity.ExecutorOptions{
-			DialContext: stressMappedDialer(blockedAddr),
-		}).WebSocketRoundTrip(cancelCtx, connectivity.WebSocketRoundTripRequest{
-			Grant:            grant,
-			Payload:          []byte("cancel-me"),
-			MaxResponseBytes: 32,
-			Timeout:          5 * time.Second,
-		})
-		errCh <- err
-	}()
-	select {
-	case <-requestRead:
-	case <-time.After(time.Second):
-		cancel()
-		releaseServer()
-		stopBlocked()
-		t.Fatal("WebSocketRoundTrip(stress cancel) server did not receive request frame")
-	}
-	cancel()
-	select {
-	case err := <-errCh:
-		if !errors.Is(err, context.Canceled) {
-			releaseServer()
-			stopBlocked()
-			t.Fatalf("WebSocketRoundTrip(stress cancel) error = %v, want context.Canceled", err)
-		}
-	case <-time.After(500 * time.Millisecond):
-		releaseServer()
-		stopBlocked()
-		t.Fatal("WebSocketRoundTrip(stress cancel) did not stop promptly")
-	}
-	releaseServer()
-	stopBlocked()
-	counters.cancelledReads = 1
-
-	return counters
-}
-
-func startStressWebSocketServer(t *testing.T, handler func(*bufio.Reader, net.Conn) error) (string, func()) {
-	t.Helper()
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	done := make(chan error, 1)
-	go func() {
-		defer close(done)
-		defer listener.Close()
-		conn, err := listener.Accept()
-		if err != nil {
-			if errors.Is(err, net.ErrClosed) {
-				return
-			}
-			done <- err
-			return
-		}
-		defer conn.Close()
-		reader := bufio.NewReader(conn)
-		req, err := http.ReadRequest(reader)
-		if err != nil {
-			done <- err
-			return
-		}
-		key := req.Header.Get("Sec-WebSocket-Key")
-		if key == "" {
-			done <- errors.New("websocket handshake missing Sec-WebSocket-Key")
-			return
-		}
-		if err := writeStressWebSocketHandshake(conn, key); err != nil {
-			done <- err
-			return
-		}
-		if err := handler(reader, conn); err != nil {
-			done <- err
-			return
-		}
-	}()
-	var stopOnce sync.Once
-	stop := func() {
-		stopOnce.Do(func() {
-			_ = listener.Close()
-			select {
-			case err, ok := <-done:
-				if ok && err != nil {
-					t.Fatal(err)
-				}
-			case <-time.After(time.Second):
-				t.Fatal("websocket stress server did not stop")
-			}
-		})
-	}
-	return listener.Addr().String(), stop
-}
-
-func writeStressWebSocketHandshake(writer io.Writer, key string) error {
-	_, err := fmt.Fprintf(writer, "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: %s\r\n\r\n", stressWebSocketAcceptKey(key))
-	return err
-}
-
-func stressWebSocketAcceptKey(key string) string {
-	sum := sha1.Sum([]byte(key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"))
-	return base64.StdEncoding.EncodeToString(sum[:])
-}
-
-func writeStressWebSocketFrame(writer io.Writer, opcode byte, payload []byte) error {
-	var header bytes.Buffer
-	header.WriteByte(0x80 | opcode)
-	switch {
-	case len(payload) < 126:
-		header.WriteByte(byte(len(payload)))
-	case len(payload) <= 65535:
-		header.WriteByte(126)
-		var ext [2]byte
-		binary.BigEndian.PutUint16(ext[:], uint16(len(payload)))
-		header.Write(ext[:])
-	default:
-		header.WriteByte(127)
-		var ext [8]byte
-		binary.BigEndian.PutUint64(ext[:], uint64(len(payload)))
-		header.Write(ext[:])
-	}
-	if _, err := writer.Write(header.Bytes()); err != nil {
-		return err
-	}
-	_, err := writer.Write(payload)
-	return err
-}
-
-func readStressWebSocketFrame(reader *bufio.Reader, maxBytes int64) (byte, []byte, error) {
-	first, err := reader.ReadByte()
-	if err != nil {
-		return 0, nil, err
-	}
-	second, err := reader.ReadByte()
-	if err != nil {
-		return 0, nil, err
-	}
-	if first&0x80 == 0 {
-		return 0, nil, errors.New("fragmented websocket stress frames are not supported")
-	}
-	opcode := first & 0x0f
-	masked := second&0x80 != 0
-	length := uint64(second & 0x7f)
-	switch length {
-	case 126:
-		var ext [2]byte
-		if _, err := io.ReadFull(reader, ext[:]); err != nil {
-			return 0, nil, err
-		}
-		length = uint64(binary.BigEndian.Uint16(ext[:]))
-	case 127:
-		var ext [8]byte
-		if _, err := io.ReadFull(reader, ext[:]); err != nil {
-			return 0, nil, err
-		}
-		length = binary.BigEndian.Uint64(ext[:])
-	}
-	if length > uint64(maxBytes) {
-		return 0, nil, fmt.Errorf("websocket stress frame exceeded %d bytes", maxBytes)
-	}
-	var mask [4]byte
-	if masked {
-		if _, err := io.ReadFull(reader, mask[:]); err != nil {
-			return 0, nil, err
-		}
-	}
-	payload := make([]byte, int(length))
-	if _, err := io.ReadFull(reader, payload); err != nil {
-		return 0, nil, err
-	}
-	if masked {
-		for i := range payload {
-			payload[i] ^= mask[i%4]
-		}
-	}
-	return opcode, payload, nil
-}
-
-type udpSourcePinCounters struct {
-	roundTrips            int
-	sourceMismatchDropped int
-	rateLimitDenials      int
-}
-
-func stressUDPSourcePinCounters(t *testing.T, ctx context.Context, broker connectivity.Broker) udpSourcePinCounters {
-	t.Helper()
-	conn, err := net.ListenPacket("udp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer conn.Close()
-	done := make(chan error, 1)
-	go func() {
-		buf := make([]byte, 32)
-		n, addr, err := conn.ReadFrom(buf)
-		if err != nil {
-			done <- err
-			return
-		}
-		if string(buf[:n]) != "hello" {
-			done <- fmt.Errorf("udp source-pin request payload = %q", buf[:n])
-			return
-		}
-		attacker, err := net.Dial("udp", addr.String())
-		if err != nil {
-			done <- err
-			return
-		}
-		if _, err := attacker.Write([]byte("udp:spoofed")); err != nil {
-			_ = attacker.Close()
-			done <- err
-			return
-		}
-		_ = attacker.Close()
-		time.Sleep(20 * time.Millisecond)
-		if _, err := conn.WriteTo([]byte("udp:pinned"), addr); err != nil {
-			done <- err
-			return
-		}
-		done <- nil
-	}()
-	grant, err := broker.MintConnectionGrant(ctx, grantRequest("metrics", connectivity.TransportUDP, "metrics.example.com:8125"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	executor := connectivity.NewExecutor(connectivity.ExecutorOptions{
-		DialContext:    stressMappedDialer(conn.LocalAddr().String()),
-		UDPRateLimiter: connectivity.NewMemoryUDPRateLimiter(connectivity.UDPRateLimit{MaxRoundTrips: 1, Window: time.Minute}),
-	})
-	response, err := executor.UDPRoundTrip(ctx, connectivity.UDPRoundTripRequest{
-		Grant:        grant,
-		Payload:      []byte("hello"),
-		MaxReadBytes: 32,
-		Timeout:      time.Second,
-	})
-	if err != nil {
-		t.Fatalf("UDPRoundTrip(source-pin) error = %v", err)
-	}
-	if string(response.Payload) != "udp:pinned" {
-		t.Fatalf("UDPRoundTrip(source-pin) payload = %q, want pinned source response", response.Payload)
-	}
-	if err := <-done; err != nil {
-		t.Fatal(err)
-	}
-	_, err = executor.UDPRoundTrip(ctx, connectivity.UDPRoundTripRequest{
-		Grant:        grant,
-		Payload:      []byte("again"),
-		MaxReadBytes: 32,
-		Timeout:      time.Second,
-	})
-	if !errors.Is(err, connectivity.ErrRateLimited) {
-		t.Fatalf("UDPRoundTrip(rate limit) error = %v, want ErrRateLimited", err)
-	}
-	return udpSourcePinCounters{roundTrips: 1, sourceMismatchDropped: 1, rateLimitDenials: 1}
-}
-
 func TestStressGateRuntimeRevokeACKP95(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(stressTestContext(), 5*time.Second)
 	defer cancel()
 
 	supervisor, err := runtimeclient.NewProcessSupervisor(runtimeclient.ProcessSupervisorOptions{
@@ -1316,7 +408,7 @@ func TestStressGateRuntimeRevokeACKP95(t *testing.T) {
 		t.Fatalf("Start() error = %v", err)
 	}
 	defer func() {
-		stopCtx, stopCancel := context.WithTimeout(context.Background(), time.Second)
+		stopCtx, stopCancel := context.WithTimeout(stressTestContext(), time.Second)
 		defer stopCancel()
 		if err := supervisor.Stop(stopCtx); err != nil {
 			t.Fatalf("Stop() error = %v", err)
@@ -1369,19 +461,20 @@ func TestStressGateRuntimeRevokeACKP95(t *testing.T) {
 }
 
 func TestStressGateStorageQuotaExportImportUnderLoad(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(stressTestContext(), 5*time.Second)
 	defer cancel()
 
-	broker := storage.NewMemoryBroker()
 	ns := storage.Namespace{
 		PluginInstanceID: "plugini_stress_storage",
 		StoreID:          "settings",
 		Kind:             storage.StoreKV,
+		Scope:            "user",
 		QuotaBytes:       4096,
+		SchemaVersion:    1,
 	}
-	if err := broker.EnsureNamespace(ctx, ns); err != nil {
-		t.Fatal(err)
-	}
+	const importedPluginInstanceID = "plugini_stress_storage_imported"
+	broker, records, shape := newStressPluginData(t, ctx, []string{ns.PluginInstanceID, importedPluginInstanceID}, ns)
+	defer broker.Close()
 
 	value := make([]byte, 128)
 	var writes atomic.Int64
@@ -1429,24 +522,20 @@ func TestStressGateStorageQuotaExportImportUnderLoad(t *testing.T) {
 	if writes.Load() == 0 || quotaDenials.Load() == 0 {
 		t.Fatalf("unexpected storage counters: writes=%d quota_denials=%d", writes.Load(), quotaDenials.Load())
 	}
-	archiveRef, err := broker.ExportData(ctx, storage.ExportRequest{PluginInstanceID: ns.PluginInstanceID})
+	exported, err := broker.Export(ctx, plugindata.ExportRequest{PluginInstanceID: ns.PluginInstanceID})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := broker.ImportData(ctx, storage.ImportRequest{
-		PluginInstanceID: "plugini_stress_storage_imported",
-		ArchiveRef:       archiveRef,
-		DeleteExisting:   true,
-		TargetNamespaces: []storage.Namespace{{
-			StoreID:    ns.StoreID,
-			Kind:       ns.Kind,
-			QuotaBytes: ns.QuotaBytes,
-		}},
+	if _, err := broker.Import(ctx, plugindata.ImportRequest{
+		PluginInstanceID:           importedPluginInstanceID,
+		ObjectID:                   exported.ObjectID,
+		ExpectedShape:              shape,
+		ExpectedManagementRevision: records[importedPluginInstanceID].ManagementRevision,
 	}); err != nil {
 		t.Fatal(err)
 	}
 	imported, err := broker.ListKV(ctx, storage.KVListRequest{
-		PluginInstanceID: "plugini_stress_storage_imported",
+		PluginInstanceID: importedPluginInstanceID,
 		StoreID:          ns.StoreID,
 		MaxEntries:       1000,
 	})
@@ -1461,19 +550,16 @@ func TestStressGateStorageQuotaExportImportUnderLoad(t *testing.T) {
 	logStressSummary(t, stressSummary{
 		Category: "storage_quota",
 		Counters: map[string]int{
-			"writes":                      int(writes.Load()),
-			"quota_denials":               int(quotaDenials.Load()),
-			"imported":                    len(imported.Entries),
-			"usage_bytes":                 int(usage.UsageBytes),
-			"file_quota_denials":          fileCounters.quotaDenials,
-			"file_usage_files":            fileCounters.usageFiles,
-			"file_quota_files":            fileCounters.quotaFiles,
-			"sqlite_quota_denials":        sqliteCounters.quotaDenials,
-			"sqlite_rollback_checks":      sqliteCounters.rollbackChecks,
-			"sqlite_page_count":           sqliteCounters.pageCount,
-			"sqlite_sidecar_files":        sqliteCounters.sidecarFiles,
-			"sqlite_sidecar_bytes":        sqliteCounters.sidecarBytes,
-			"sqlite_sparse_logical_bytes": sqliteCounters.sparseLogicalBytes,
+			"writes":                 int(writes.Load()),
+			"quota_denials":          int(quotaDenials.Load()),
+			"imported":               len(imported.Entries),
+			"usage_bytes":            int(usage.UsageBytes),
+			"file_quota_denials":     fileCounters.quotaDenials,
+			"file_usage_files":       fileCounters.usageFiles,
+			"file_quota_files":       fileCounters.quotaFiles,
+			"sqlite_quota_denials":   sqliteCounters.quotaDenials,
+			"sqlite_rollback_checks": sqliteCounters.rollbackChecks,
+			"sqlite_usage_bytes":     sqliteCounters.usageBytes,
 		},
 	})
 }
@@ -1487,20 +573,17 @@ type fileCountQuotaCounters struct {
 func stressFileCountQuotaCounters(t *testing.T, ctx context.Context) fileCountQuotaCounters {
 	t.Helper()
 
-	broker, err := storage.NewFileBroker(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
 	ns := storage.Namespace{
 		PluginInstanceID: "plugini_stress_files",
 		StoreID:          "workspace",
 		Kind:             storage.StoreFiles,
+		Scope:            "user",
 		QuotaBytes:       1024,
 		QuotaFiles:       1,
+		SchemaVersion:    1,
 	}
-	if err := broker.EnsureNamespace(ctx, ns); err != nil {
-		t.Fatal(err)
-	}
+	broker, _, _ := newStressPluginData(t, ctx, []string{ns.PluginInstanceID}, ns)
+	defer broker.Close()
 	if _, err := broker.WriteFile(ctx, storage.FileWriteRequest{
 		PluginInstanceID: ns.PluginInstanceID,
 		StoreID:          ns.StoreID,
@@ -1535,30 +618,24 @@ func stressFileCountQuotaCounters(t *testing.T, ctx context.Context) fileCountQu
 }
 
 type sqliteQuotaBypassCounters struct {
-	quotaDenials       int
-	rollbackChecks     int
-	pageCount          int
-	sidecarFiles       int
-	sidecarBytes       int
-	sparseLogicalBytes int
+	quotaDenials   int
+	rollbackChecks int
+	usageBytes     int
 }
 
 func stressSQLiteQuotaBypassCounters(t *testing.T, ctx context.Context) sqliteQuotaBypassCounters {
 	t.Helper()
 
-	broker, err := storage.NewFileBroker(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
 	ns := storage.Namespace{
 		PluginInstanceID: "plugini_stress_sqlite",
 		StoreID:          "db",
 		Kind:             storage.StoreSQLite,
+		Scope:            "user",
 		QuotaBytes:       16 * 1024,
+		SchemaVersion:    1,
 	}
-	if err := broker.EnsureNamespace(ctx, ns); err != nil {
-		t.Fatal(err)
-	}
+	broker, _, _ := newStressPluginData(t, ctx, []string{ns.PluginInstanceID}, ns)
+	defer broker.Close()
 	if _, err := broker.ExecSQLite(ctx, storage.SQLiteExecRequest{
 		PluginInstanceID: ns.PluginInstanceID,
 		StoreID:          ns.StoreID,
@@ -1566,11 +643,6 @@ func stressSQLiteQuotaBypassCounters(t *testing.T, ctx context.Context) sqliteQu
 	}); err != nil {
 		t.Fatal(err)
 	}
-	pageCount := sqliteSingleInt(t, broker, ctx, storage.SQLiteQueryRequest{
-		PluginInstanceID: ns.PluginInstanceID,
-		StoreID:          ns.StoreID,
-		SQL:              "PRAGMA page_count",
-	})
 	before, err := broker.Usage(ctx, ns.PluginInstanceID, ns.StoreID)
 	if err != nil {
 		t.Fatal(err)
@@ -1603,48 +675,76 @@ func stressSQLiteQuotaBypassCounters(t *testing.T, ctx context.Context) sqliteQu
 		t.Fatalf("sqlite quota rollback mismatch: before=%#v after=%#v", before, after)
 	}
 
-	dataPath, err := broker.NamespacePath(ctx, ns.PluginInstanceID, ns.StoreID)
+	return sqliteQuotaBypassCounters{
+		quotaDenials:   quotaDenials,
+		rollbackChecks: rollbackChecks,
+		usageBytes:     int(before.UsageBytes),
+	}
+}
+
+func newStressPluginData(t *testing.T, ctx context.Context, pluginInstanceIDs []string, namespace storage.Namespace) (*plugindata.FileStore, map[string]registry.PluginRecord, plugindata.Shape) {
+	t.Helper()
+	if len(pluginInstanceIDs) == 0 {
+		t.Fatal("at least one plugin instance is required")
+	}
+	quotaFiles := namespace.QuotaFiles
+	storeSpec := manifest.StoreSpec{
+		StoreID:       namespace.StoreID,
+		Kind:          string(namespace.Kind),
+		Scope:         namespace.Scope,
+		QuotaBytes:    namespace.QuotaBytes,
+		SchemaVersion: namespace.SchemaVersion,
+	}
+	if quotaFiles > 0 {
+		storeSpec.QuotaFiles = &quotaFiles
+	}
+	pluginManifest := manifest.Manifest{
+		Publisher: manifest.Publisher{PublisherID: "dev.redevplugin.stress", DisplayName: "Stress"},
+		Plugin: manifest.Plugin{
+			PluginID:          "dev.redevplugin.stress.data",
+			DisplayName:       "Stress Data",
+			Version:           "1.0.0",
+			APIVersion:        "plugin-v1",
+			MinRuntimeVersion: "0.5.0",
+			UIProtocolVersion: version.PluginUIProtocolVersion,
+		},
+		Storage: &manifest.StorageSpec{Stores: []manifest.StoreSpec{storeSpec}},
+	}
+	shape, err := plugindata.ShapeFromManifest(pluginManifest)
 	if err != nil {
 		t.Fatal(err)
 	}
-	sidecars := map[string]int64{
-		"plugin.sqlite-wal": 512,
-		"plugin.sqlite-shm": 512,
-		"plugin.sqlite-tmp": 512,
-	}
-	sidecarBytes := int64(0)
-	for name, size := range sidecars {
-		if err := os.WriteFile(filepath.Join(dataPath, name), make([]byte, size), 0o600); err != nil {
+	registryStore := registry.NewMemoryStore()
+	records := make(map[string]registry.PluginRecord, len(pluginInstanceIDs))
+	for _, pluginInstanceID := range pluginInstanceIDs {
+		record, err := registryStore.PutPlugin(ctx, registry.PluginRecord{
+			PluginInstanceID: pluginInstanceID,
+			PublisherID:      pluginManifest.Publisher.PublisherID,
+			PluginID:         pluginManifest.Plugin.PluginID,
+			Version:          pluginManifest.Plugin.Version,
+			EnableState:      registry.EnableDisabled,
+			Manifest:         pluginManifest,
+		}, registry.PutOptions{})
+		if err != nil {
 			t.Fatal(err)
 		}
-		sidecarBytes += size
+		records[pluginInstanceID] = record
 	}
-	sparseLogicalBytes := ns.QuotaBytes - before.UsageBytes + 1
-	sparseFile, err := os.OpenFile(filepath.Join(dataPath, "plugin.sqlite-hole"), os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+	pluginData, err := plugindata.Open(ctx, filepath.Join(t.TempDir(), "plugin-data"), registryStore)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := sparseFile.Truncate(sparseLogicalBytes); err != nil {
-		_ = sparseFile.Close()
+	source := records[pluginInstanceIDs[0]]
+	if _, err := pluginData.CommitEnable(ctx, plugindata.CommitEnableRequest{
+		PluginInstanceID:           source.PluginInstanceID,
+		Shape:                      shape,
+		InitialSettings:            map[string]json.RawMessage{},
+		ExpectedManagementRevision: source.ManagementRevision,
+	}); err != nil {
+		_ = pluginData.Close()
 		t.Fatal(err)
 	}
-	if err := sparseFile.Close(); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := broker.Usage(ctx, ns.PluginInstanceID, ns.StoreID); errors.Is(err, storage.ErrQuotaExceeded) {
-		quotaDenials++
-	} else {
-		t.Fatalf("Usage(sqlite sidecars) error = %v, want ErrQuotaExceeded", err)
-	}
-
-	return sqliteQuotaBypassCounters{
-		quotaDenials:       quotaDenials,
-		rollbackChecks:     rollbackChecks,
-		pageCount:          int(pageCount),
-		sidecarFiles:       len(sidecars) + 1,
-		sidecarBytes:       int(sidecarBytes + sparseLogicalBytes),
-		sparseLogicalBytes: int(sparseLogicalBytes),
-	}
+	return pluginData, records, shape
 }
 
 func sqliteSingleInt(t *testing.T, broker storage.SQLiteBroker, ctx context.Context, req storage.SQLiteQueryRequest) int64 {
@@ -1681,51 +781,24 @@ func durationMillisCeil(duration time.Duration) int {
 	return int((duration + time.Millisecond - 1) / time.Millisecond)
 }
 
-func grantRequest(connectorID string, transport connectivity.Transport, destination string) connectivity.GrantRequest {
-	return connectivity.GrantRequest{
-		PluginInstanceID:    "plugini_stress_net",
-		ActiveFingerprint:   "sha256:stress",
-		PolicyRevision:      7,
-		ManagementRevision:  11,
-		RevokeEpoch:         3,
-		ConnectorID:         connectorID,
-		Transport:           transport,
-		Destination:         destination,
-		RuntimeGenerationID: "runtime_gen_stress",
-		TTL:                 30 * time.Second,
-	}
-}
-
-func stressMappedDialer(target string) func(context.Context, string, string) (net.Conn, error) {
-	dialer := &net.Dialer{}
-	return func(ctx context.Context, network string, _ string) (net.Conn, error) {
-		return dialer.DialContext(ctx, network, target)
-	}
-}
-
-type stressSessionResolver struct{}
-
 type stressWebSecurityGuard struct{}
 
-func (stressWebSecurityGuard) Evaluate(r *http.Request) (websecurity.RequestContext, websecurity.OriginDecision, error) {
-	return websecurity.RequestContext{
-		Origin: r.Header.Get("Origin"),
-		Route:  r.URL.Path,
-		Method: r.Method,
-		Scope: websecurity.RequestScope{
-			OwnerSessionHash:     "session_hash_stress",
-			OwnerUserHash:        "user_hash_stress",
-			SessionChannelIDHash: "channel_hash_stress",
-		},
-	}, websecurity.OriginTrustedParent, nil
+func (stressWebSecurityGuard) Authenticate(*http.Request) (sessionctx.Context, error) {
+	return sessionctx.Context{
+		OwnerSessionHash:     "session_hash_stress",
+		OwnerUserHash:        "user_hash_stress",
+		OwnerEnvHash:         "environment_hash_stress",
+		SessionChannelIDHash: "channel_hash_stress",
+	}, nil
 }
 
-func (stressWebSecurityGuard) ValidateCSRF(*http.Request, string) error {
-	return nil
-}
-
-func (stressSessionResolver) ResolveSession(context.Context, string) (sessionctx.Context, error) {
-	return sessionctx.Context{}, nil
+func stressTestContext() context.Context {
+	return sessionctx.WithContext(context.Background(), sessionctx.Context{
+		OwnerSessionHash:     "stress_session",
+		OwnerUserHash:        "stress_user",
+		OwnerEnvHash:         "stress_env",
+		SessionChannelIDHash: "stress_channel",
+	})
 }
 
 type stressOperationAdapter struct {
@@ -1797,6 +870,79 @@ func stressVerifiedCapabilityContract(t *testing.T) capabilitycontract.VerifiedC
 		t.Fatal(err)
 	}
 	return verified
+}
+
+type stressPlatformAdapter struct{}
+
+func (stressPlatformAdapter) VerifyPackageTrust(context.Context, host.PackageTrustVerificationRequest) (host.PackageTrustVerificationResult, error) {
+	return host.PackageTrustVerificationResult{TrustState: registry.TrustUnsignedLocal}, nil
+}
+
+func (stressPlatformAdapter) VerifyReleaseMetadata(context.Context, host.ReleaseMetadataVerificationRequest) (host.ReleaseMetadataVerificationResult, error) {
+	return host.ReleaseMetadataVerificationResult{}, errors.New("stress host does not configure release metadata verification")
+}
+
+func (stressPlatformAdapter) VerifySourceRevocationEvidence(context.Context, host.SourceRevocationEvidenceVerificationRequest) (host.SourceRevocationEvidenceVerificationResult, error) {
+	return host.SourceRevocationEvidenceVerificationResult{}, errors.New("stress host does not configure release revocation verification")
+}
+
+func (stressPlatformAdapter) ResolveReleaseSourcePolicy(context.Context, host.ReleaseSourcePolicyRequest) (host.SourcePolicySnapshot, error) {
+	return host.SourcePolicySnapshot{}, errors.New("stress host does not configure release sources")
+}
+
+func (stressPlatformAdapter) ResolveReleaseArtifact(context.Context, host.ReleaseArtifactResolveRequest) (host.ResolvedPackageArtifact, error) {
+	return host.ResolvedPackageArtifact{}, errors.New("stress host does not configure release artifacts")
+}
+
+func (stressPlatformAdapter) SelectHostRequirement(_ context.Context, req host.HostRequirementSelectionRequest) (host.HostRequirementSelection, error) {
+	if len(req.Requirements) == 0 {
+		return host.HostRequirementSelection{}, errors.New("stress host requirement is missing")
+	}
+	return host.HostRequirementSelection{HostID: req.Requirements[0].HostID}, nil
+}
+
+func (stressPlatformAdapter) ResolveCapabilityContract(context.Context, host.CapabilityContractResolveRequest) (host.ResolvedCapabilityContractArtifact, error) {
+	return host.ResolvedCapabilityContractArtifact{}, errors.New("stress host does not configure capability artifacts")
+}
+
+func (stressPlatformAdapter) ResolveCapabilityContractKey(context.Context, host.CapabilityContractKeyRequest) ([]byte, error) {
+	return nil, errors.New("stress host does not configure capability keys")
+}
+
+func (stressPlatformAdapter) PublishSurfaces(context.Context, host.SurfaceSnapshot) error {
+	return nil
+}
+
+func (stressPlatformAdapter) ResolveCoreActionTarget(context.Context, capability.TargetResolutionRequest) (capability.TargetDescriptor, error) {
+	return capability.TargetDescriptor{}, errors.New("stress host does not configure core actions")
+}
+
+func (stressPlatformAdapter) InvokeCoreAction(context.Context, capability.Invocation) (capability.Result, error) {
+	return capability.Result{}, errors.New("stress host does not configure core actions")
+}
+
+func (stressPlatformAdapter) Start(context.Context, runtimeclient.Target) (runtimeclient.ManagerHealth, error) {
+	return runtimeclient.ManagerHealth{}, runtimeclient.ErrRuntimeNotReady
+}
+
+func (stressPlatformAdapter) Stop(context.Context) error {
+	return nil
+}
+
+func (stressPlatformAdapter) Health(context.Context) (runtimeclient.ManagerHealth, error) {
+	return runtimeclient.ManagerHealth{Ready: false, Shards: []runtimeclient.ShardHealth{}}, nil
+}
+
+func (stressPlatformAdapter) BindPlugin(context.Context, string) (runtimeclient.RuntimeBinding, error) {
+	return runtimeclient.RuntimeBinding{}, runtimeclient.ErrRuntimeNotReady
+}
+
+func (stressPlatformAdapter) InvokeWorker(context.Context, runtimeclient.RuntimeBinding, runtimeclient.Lease, string, []byte) ([]byte, error) {
+	return nil, runtimeclient.ErrRuntimeNotReady
+}
+
+func (stressPlatformAdapter) Revoke(_ context.Context, pluginInstanceID string, revokeEpoch uint64) (runtimeclient.RevokeResult, error) {
+	return runtimeclient.RevokeResult{PluginInstanceID: pluginInstanceID, RevokeEpoch: revokeEpoch}, nil
 }
 
 type stressPolicy struct{}

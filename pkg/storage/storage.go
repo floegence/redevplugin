@@ -3,10 +3,6 @@ package storage
 import (
 	"context"
 	"errors"
-	"fmt"
-	"sort"
-	"strings"
-	"sync"
 	"time"
 )
 
@@ -18,35 +14,25 @@ const (
 	StoreSQLite StoreKind = "sqlite"
 )
 
-type NamespaceState string
-
-const (
-	NamespaceActive   NamespaceState = "active"
-	NamespaceRetained NamespaceState = "retained"
-)
-
 var (
-	ErrInvalidNamespace       = errors.New("storage namespace is invalid")
-	ErrNamespaceAlreadyExists = errors.New("storage namespace already exists")
-	ErrInvalidFilePath        = errors.New("storage file path is invalid")
-	ErrInvalidKVKey           = errors.New("storage kv key is invalid")
-	ErrInvalidSQLite          = errors.New("storage sqlite request is invalid")
-	ErrNamespaceNotFound      = errors.New("storage namespace not found")
-	ErrNamespaceNotRetained   = errors.New("storage namespace is not retained")
-	ErrQuotaExceeded          = errors.New("storage quota exceeded")
-	ErrArchiveNotFound        = errors.New("storage archive not found")
-	ErrFileNotFound           = errors.New("storage file not found")
-	ErrFileTooLarge           = errors.New("storage file too large")
-	ErrKVKeyNotFound          = errors.New("storage kv key not found")
-	ErrKVValueTooLarge        = errors.New("storage kv value too large")
-	ErrSQLiteResultTooLarge   = errors.New("storage sqlite result too large")
+	ErrInvalidNamespace     = errors.New("storage namespace is invalid")
+	ErrInvalidFilePath      = errors.New("storage file path is invalid")
+	ErrInvalidKVKey         = errors.New("storage kv key is invalid")
+	ErrInvalidSQLite        = errors.New("storage sqlite request is invalid")
+	ErrNamespaceNotFound    = errors.New("storage namespace not found")
+	ErrQuotaExceeded        = errors.New("storage quota exceeded")
+	ErrFileNotFound         = errors.New("storage file not found")
+	ErrFileTooLarge         = errors.New("storage file too large")
+	ErrKVKeyNotFound        = errors.New("storage kv key not found")
+	ErrKVValueTooLarge      = errors.New("storage kv value too large")
+	ErrSQLiteResultTooLarge = errors.New("storage sqlite result too large")
 )
 
 type Namespace struct {
 	PluginInstanceID string    `json:"plugin_instance_id"`
 	StoreID          string    `json:"store_id"`
 	Kind             StoreKind `json:"kind"`
-	Scope            string    `json:"scope,omitempty"`
+	Scope            string    `json:"scope"`
 	QuotaBytes       int64     `json:"quota_bytes"`
 	QuotaFiles       int64     `json:"quota_files,omitempty"`
 	SchemaVersion    int       `json:"schema_version,omitempty"`
@@ -54,12 +40,9 @@ type Namespace struct {
 
 type NamespaceRecord struct {
 	Namespace
-	State      NamespaceState `json:"state"`
-	UsageBytes int64          `json:"usage_bytes"`
-	UsageFiles int64          `json:"usage_files,omitempty"`
-	CreatedAt  time.Time      `json:"created_at"`
-	UpdatedAt  time.Time      `json:"updated_at"`
-	RetainedAt *time.Time     `json:"retained_at,omitempty"`
+	GenerationID string `json:"generation_id"`
+	UsageBytes   int64  `json:"usage_bytes"`
+	UsageFiles   int64  `json:"usage_files,omitempty"`
 }
 
 type Usage struct {
@@ -69,41 +52,6 @@ type Usage struct {
 	QuotaBytes       int64  `json:"quota_bytes"`
 	UsageFiles       int64  `json:"usage_files"`
 	QuotaFiles       int64  `json:"quota_files"`
-}
-
-type ExportRequest struct {
-	PluginInstanceID string `json:"plugin_instance_id"`
-	IncludeSecrets   bool   `json:"include_secrets"`
-}
-
-type ImportRequest struct {
-	PluginInstanceID string      `json:"plugin_instance_id"`
-	ArchiveRef       string      `json:"archive_ref"`
-	DeleteExisting   bool        `json:"delete_existing"`
-	TargetNamespaces []Namespace `json:"target_namespaces,omitempty"`
-}
-
-type BindRetainedRequest struct {
-	SourcePluginInstanceID string      `json:"source_plugin_instance_id"`
-	TargetPluginInstanceID string      `json:"target_plugin_instance_id"`
-	TargetNamespaces       []Namespace `json:"target_namespaces,omitempty"`
-	DryRun                 bool        `json:"dry_run,omitempty"`
-	Now                    time.Time   `json:"now,omitempty"`
-}
-
-type ArchiveRecord struct {
-	ArchiveRef             string            `json:"archive_ref"`
-	SourcePluginInstanceID string            `json:"source_plugin_instance_id"`
-	IncludeSecrets         bool              `json:"include_secrets"`
-	Namespaces             []NamespaceRecord `json:"namespaces"`
-	CreatedAt              time.Time         `json:"created_at"`
-}
-
-type Broker interface {
-	EnsureNamespace(ctx context.Context, ns Namespace) error
-	DeleteNamespace(ctx context.Context, pluginInstanceID string, deleteData bool) error
-	ExportData(ctx context.Context, req ExportRequest) (string, error)
-	ImportData(ctx context.Context, req ImportRequest) error
 }
 
 type FilesBroker interface {
@@ -128,14 +76,6 @@ type SQLiteBroker interface {
 type Inspector interface {
 	ListNamespaces(ctx context.Context, pluginInstanceID string) ([]NamespaceRecord, error)
 	Usage(ctx context.Context, pluginInstanceID string, storeID string) (Usage, error)
-}
-
-type RetainedDeleter interface {
-	DeleteRetainedNamespace(ctx context.Context, pluginInstanceID string) error
-}
-
-type RetainedBinder interface {
-	BindRetainedNamespace(ctx context.Context, req BindRetainedRequest) error
 }
 
 type FileReadRequest struct {
@@ -177,12 +117,14 @@ type FileListRequest struct {
 	StoreID          string `json:"store_id"`
 	Path             string `json:"path,omitempty"`
 	MaxEntries       int    `json:"max_entries,omitempty"`
+	Cursor           string `json:"cursor,omitempty"`
 }
 
 type FileListResult struct {
-	Path    string      `json:"path"`
-	Entries []FileEntry `json:"entries"`
-	Usage   Usage       `json:"usage"`
+	Path       string      `json:"path"`
+	Entries    []FileEntry `json:"entries"`
+	Usage      Usage       `json:"usage"`
+	NextCursor string      `json:"next_cursor,omitempty"`
 }
 
 type FileEntry struct {
@@ -230,12 +172,14 @@ type KVListRequest struct {
 	StoreID          string `json:"store_id"`
 	Prefix           string `json:"prefix,omitempty"`
 	MaxEntries       int    `json:"max_entries,omitempty"`
+	Cursor           string `json:"cursor,omitempty"`
 }
 
 type KVListResult struct {
-	Prefix  string    `json:"prefix,omitempty"`
-	Entries []KVEntry `json:"entries"`
-	Usage   Usage     `json:"usage"`
+	Prefix     string    `json:"prefix,omitempty"`
+	Entries    []KVEntry `json:"entries"`
+	Usage      Usage     `json:"usage"`
+	NextCursor string    `json:"next_cursor,omitempty"`
 }
 
 type KVEntry struct {
@@ -287,652 +231,3 @@ type SQLiteQueryResult struct {
 }
 
 const MaxKVKeyBytes = 128
-
-type MemoryBroker struct {
-	mu         sync.Mutex
-	now        func() time.Time
-	nextExport int
-	namespaces map[namespaceKey]NamespaceRecord
-	archives   map[string]ArchiveRecord
-	kv         map[namespaceKey]map[string][]byte
-	kvArchives map[string]map[namespaceKey]map[string][]byte
-}
-
-type namespaceKey struct {
-	pluginInstanceID string
-	storeID          string
-}
-
-func NewMemoryBroker() *MemoryBroker {
-	return &MemoryBroker{
-		now:        func() time.Time { return time.Now().UTC() },
-		namespaces: map[namespaceKey]NamespaceRecord{},
-		archives:   map[string]ArchiveRecord{},
-		kv:         map[namespaceKey]map[string][]byte{},
-		kvArchives: map[string]map[namespaceKey]map[string][]byte{},
-	}
-}
-
-func (b *MemoryBroker) EnsureNamespace(_ context.Context, ns Namespace) error {
-	if b == nil {
-		return errors.New("storage broker is nil")
-	}
-	normalized, err := normalizeNamespace(ns)
-	if err != nil {
-		return err
-	}
-	key := makeKey(normalized.PluginInstanceID, normalized.StoreID)
-
-	b.mu.Lock()
-	defer b.mu.Unlock()
-
-	now := b.now()
-	if existing, ok := b.namespaces[key]; ok {
-		if existing.UsageBytes > normalized.QuotaBytes {
-			return fmt.Errorf("%w: current usage %d exceeds quota %d", ErrQuotaExceeded, existing.UsageBytes, normalized.QuotaBytes)
-		}
-		if normalized.QuotaFiles > 0 && existing.UsageFiles > normalized.QuotaFiles {
-			return fmt.Errorf("%w: current file usage %d exceeds quota %d", ErrQuotaExceeded, existing.UsageFiles, normalized.QuotaFiles)
-		}
-		existing.Namespace = normalized
-		existing.State = NamespaceActive
-		existing.UpdatedAt = now
-		existing.RetainedAt = nil
-		b.namespaces[key] = existing
-		return nil
-	}
-
-	b.namespaces[key] = NamespaceRecord{
-		Namespace: normalized,
-		State:     NamespaceActive,
-		CreatedAt: now,
-		UpdatedAt: now,
-	}
-	return nil
-}
-
-func (b *MemoryBroker) DeleteNamespace(_ context.Context, pluginInstanceID string, deleteData bool) error {
-	if b == nil {
-		return errors.New("storage broker is nil")
-	}
-	pluginInstanceID = strings.TrimSpace(pluginInstanceID)
-	if pluginInstanceID == "" {
-		return fmt.Errorf("%w: plugin_instance_id is required", ErrInvalidNamespace)
-	}
-
-	b.mu.Lock()
-	defer b.mu.Unlock()
-
-	now := b.now()
-	for key, record := range b.namespaces {
-		if key.pluginInstanceID != pluginInstanceID {
-			continue
-		}
-		if deleteData {
-			delete(b.namespaces, key)
-			delete(b.kv, key)
-			continue
-		}
-		record.State = NamespaceRetained
-		record.UpdatedAt = now
-		record.RetainedAt = &now
-		b.namespaces[key] = record
-	}
-	return nil
-}
-
-func (b *MemoryBroker) DeleteRetainedNamespace(_ context.Context, pluginInstanceID string) error {
-	if b == nil {
-		return errors.New("storage broker is nil")
-	}
-	pluginInstanceID = strings.TrimSpace(pluginInstanceID)
-	if pluginInstanceID == "" {
-		return fmt.Errorf("%w: plugin_instance_id is required", ErrInvalidNamespace)
-	}
-
-	b.mu.Lock()
-	defer b.mu.Unlock()
-
-	for key, record := range b.namespaces {
-		if key.pluginInstanceID == pluginInstanceID && record.State != NamespaceRetained {
-			return fmt.Errorf("%w: %s/%s is %s", ErrNamespaceNotRetained, record.PluginInstanceID, record.StoreID, record.State)
-		}
-	}
-	for key := range b.namespaces {
-		if key.pluginInstanceID != pluginInstanceID {
-			continue
-		}
-		delete(b.namespaces, key)
-		delete(b.kv, key)
-	}
-	return nil
-}
-
-func (b *MemoryBroker) BindRetainedNamespace(_ context.Context, req BindRetainedRequest) error {
-	if b == nil {
-		return errors.New("storage broker is nil")
-	}
-	sourcePluginInstanceID := strings.TrimSpace(req.SourcePluginInstanceID)
-	targetPluginInstanceID := strings.TrimSpace(req.TargetPluginInstanceID)
-	if sourcePluginInstanceID == "" || targetPluginInstanceID == "" {
-		return fmt.Errorf("%w: source_plugin_instance_id and target_plugin_instance_id are required", ErrInvalidNamespace)
-	}
-	targets, err := normalizeTargetNamespaces(req.TargetNamespaces, targetPluginInstanceID)
-	if err != nil {
-		return err
-	}
-	if len(targets) == 0 {
-		return fmt.Errorf("%w: target namespaces are required", ErrInvalidNamespace)
-	}
-	now := req.Now
-	if now.IsZero() {
-		now = b.now()
-	}
-
-	b.mu.Lock()
-	defer b.mu.Unlock()
-
-	plans, err := b.bindRetainedPlansLocked(sourcePluginInstanceID, targetPluginInstanceID, targets, now)
-	if err != nil {
-		return err
-	}
-	if req.DryRun {
-		return nil
-	}
-	for _, plan := range plans {
-		delete(b.namespaces, plan.sourceKey)
-		record := plan.record
-		record.State = NamespaceActive
-		record.RetainedAt = nil
-		b.namespaces[plan.targetKey] = record
-		if record.Kind == StoreKV {
-			if plan.targetKey != plan.sourceKey {
-				b.kv[plan.targetKey] = cloneKVMap(b.kv[plan.sourceKey])
-				delete(b.kv, plan.sourceKey)
-			}
-		}
-	}
-	return nil
-}
-
-func (b *MemoryBroker) ExportData(_ context.Context, req ExportRequest) (string, error) {
-	if b == nil {
-		return "", errors.New("storage broker is nil")
-	}
-	pluginInstanceID := strings.TrimSpace(req.PluginInstanceID)
-	if pluginInstanceID == "" {
-		return "", fmt.Errorf("%w: plugin_instance_id is required", ErrInvalidNamespace)
-	}
-
-	b.mu.Lock()
-	defer b.mu.Unlock()
-
-	namespaces := b.listNamespacesLocked(pluginInstanceID)
-	if len(namespaces) == 0 {
-		return "", ErrNamespaceNotFound
-	}
-	b.nextExport++
-	ref := fmt.Sprintf("archive_%06d", b.nextExport)
-	kvArchive := map[namespaceKey]map[string][]byte{}
-	for _, record := range namespaces {
-		key := makeKey(record.PluginInstanceID, record.StoreID)
-		if record.Kind == StoreKV {
-			kvArchive[key] = cloneKVMap(b.kv[key])
-		}
-	}
-	b.archives[ref] = ArchiveRecord{
-		ArchiveRef:             ref,
-		SourcePluginInstanceID: pluginInstanceID,
-		IncludeSecrets:         req.IncludeSecrets,
-		Namespaces:             cloneNamespaceRecords(namespaces),
-		CreatedAt:              b.now(),
-	}
-	b.kvArchives[ref] = kvArchive
-	return ref, nil
-}
-
-type bindRetainedPlan struct {
-	sourceKey namespaceKey
-	targetKey namespaceKey
-	record    NamespaceRecord
-}
-
-func (b *MemoryBroker) bindRetainedPlansLocked(sourcePluginInstanceID string, targetPluginInstanceID string, targets map[string]Namespace, now time.Time) ([]bindRetainedPlan, error) {
-	plans := []bindRetainedPlan{}
-	for key, record := range b.namespaces {
-		if key.pluginInstanceID != sourcePluginInstanceID {
-			continue
-		}
-		if record.State != NamespaceRetained {
-			return nil, fmt.Errorf("%w: %s/%s is %s", ErrNamespaceNotRetained, record.PluginInstanceID, record.StoreID, record.State)
-		}
-		target, ok := targets[record.StoreID]
-		if !ok {
-			return nil, fmt.Errorf("%w: retained store %q is not declared by target manifest", ErrInvalidNamespace, record.StoreID)
-		}
-		if record.Kind != target.Kind {
-			return nil, fmt.Errorf("%w: retained store %q kind %q does not match target kind %q", ErrInvalidNamespace, record.StoreID, record.Kind, target.Kind)
-		}
-		if record.SchemaVersion != target.SchemaVersion {
-			return nil, fmt.Errorf("%w: retained store %q schema_version %d does not match target schema_version %d", ErrInvalidNamespace, record.StoreID, record.SchemaVersion, target.SchemaVersion)
-		}
-		if record.UsageBytes > target.QuotaBytes {
-			return nil, fmt.Errorf("%w: retained store %q usage %d exceeds target quota %d", ErrQuotaExceeded, record.StoreID, record.UsageBytes, target.QuotaBytes)
-		}
-		if target.QuotaFiles > 0 && record.UsageFiles > target.QuotaFiles {
-			return nil, fmt.Errorf("%w: retained store %q file usage %d exceeds target quota %d", ErrQuotaExceeded, record.StoreID, record.UsageFiles, target.QuotaFiles)
-		}
-		targetKey := makeKey(targetPluginInstanceID, record.StoreID)
-		if existing, exists := b.namespaces[targetKey]; exists && targetKey != key {
-			return nil, fmt.Errorf("%w: %s/%s is %s", ErrNamespaceAlreadyExists, existing.PluginInstanceID, existing.StoreID, existing.State)
-		}
-		record.Namespace = target
-		record.State = NamespaceActive
-		record.UpdatedAt = now
-		record.RetainedAt = nil
-		plans = append(plans, bindRetainedPlan{sourceKey: key, targetKey: targetKey, record: record})
-	}
-	if len(plans) == 0 {
-		return nil, ErrNamespaceNotFound
-	}
-	sort.Slice(plans, func(i, j int) bool { return plans[i].record.StoreID < plans[j].record.StoreID })
-	return plans, nil
-}
-
-func (b *MemoryBroker) ImportData(_ context.Context, req ImportRequest) error {
-	if b == nil {
-		return errors.New("storage broker is nil")
-	}
-	pluginInstanceID := strings.TrimSpace(req.PluginInstanceID)
-	if pluginInstanceID == "" {
-		return fmt.Errorf("%w: plugin_instance_id is required", ErrInvalidNamespace)
-	}
-	archiveRef := strings.TrimSpace(req.ArchiveRef)
-	if archiveRef == "" {
-		return ErrArchiveNotFound
-	}
-
-	b.mu.Lock()
-	defer b.mu.Unlock()
-
-	archive, ok := b.archives[archiveRef]
-	if !ok {
-		return ErrArchiveNotFound
-	}
-	if req.DeleteExisting {
-		for key := range b.namespaces {
-			if key.pluginInstanceID == pluginInstanceID {
-				delete(b.namespaces, key)
-				delete(b.kv, key)
-			}
-		}
-	}
-
-	now := b.now()
-	targets, err := normalizeTargetNamespaces(req.TargetNamespaces, pluginInstanceID)
-	if err != nil {
-		return err
-	}
-	for _, archived := range archive.Namespaces {
-		record := archived
-		if len(targets) > 0 {
-			target, ok := targets[archived.StoreID]
-			if !ok {
-				return fmt.Errorf("%w: archive store %q is not declared by target manifest", ErrInvalidNamespace, archived.StoreID)
-			}
-			if err := validateArchivedNamespaceTarget(archived, target); err != nil {
-				return err
-			}
-			record.Namespace = target
-			if record.UsageBytes > target.QuotaBytes {
-				return fmt.Errorf("%w: archive store %q usage %d exceeds target quota %d", ErrQuotaExceeded, archived.StoreID, record.UsageBytes, target.QuotaBytes)
-			}
-			if target.QuotaFiles > 0 && record.UsageFiles > target.QuotaFiles {
-				return fmt.Errorf("%w: archive store %q file usage %d exceeds target quota %d", ErrQuotaExceeded, archived.StoreID, record.UsageFiles, target.QuotaFiles)
-			}
-		} else {
-			record.PluginInstanceID = pluginInstanceID
-		}
-		record.State = NamespaceActive
-		record.CreatedAt = now
-		record.UpdatedAt = now
-		record.RetainedAt = nil
-		key := makeKey(pluginInstanceID, record.StoreID)
-		b.namespaces[key] = record
-		sourceKey := makeKey(archive.SourcePluginInstanceID, archived.StoreID)
-		if record.Kind == StoreKV {
-			b.kv[key] = cloneKVMap(b.kvArchives[archiveRef][sourceKey])
-		}
-	}
-	return nil
-}
-
-func (b *MemoryBroker) ListNamespaces(_ context.Context, pluginInstanceID string) ([]NamespaceRecord, error) {
-	if b == nil {
-		return nil, errors.New("storage broker is nil")
-	}
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return cloneNamespaceRecords(b.listNamespacesLocked(pluginInstanceID)), nil
-}
-
-func (b *MemoryBroker) Usage(_ context.Context, pluginInstanceID string, storeID string) (Usage, error) {
-	if b == nil {
-		return Usage{}, errors.New("storage broker is nil")
-	}
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	record, ok := b.namespaces[makeKey(pluginInstanceID, storeID)]
-	if !ok {
-		return Usage{}, ErrNamespaceNotFound
-	}
-	return Usage{
-		PluginInstanceID: record.PluginInstanceID,
-		StoreID:          record.StoreID,
-		UsageBytes:       record.UsageBytes,
-		QuotaBytes:       record.QuotaBytes,
-		UsageFiles:       record.UsageFiles,
-		QuotaFiles:       record.QuotaFiles,
-	}, nil
-}
-
-func (b *MemoryBroker) SetUsage(_ context.Context, pluginInstanceID string, storeID string, usageBytes int64) error {
-	if b == nil {
-		return errors.New("storage broker is nil")
-	}
-	if usageBytes < 0 {
-		return fmt.Errorf("%w: usage_bytes must be non-negative", ErrInvalidNamespace)
-	}
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	key := makeKey(pluginInstanceID, storeID)
-	record, ok := b.namespaces[key]
-	if !ok {
-		return ErrNamespaceNotFound
-	}
-	if usageBytes > record.QuotaBytes {
-		return fmt.Errorf("%w: usage %d exceeds quota %d", ErrQuotaExceeded, usageBytes, record.QuotaBytes)
-	}
-	record.UsageBytes = usageBytes
-	record.UpdatedAt = b.now()
-	b.namespaces[key] = record
-	return nil
-}
-
-func (b *MemoryBroker) GetKV(_ context.Context, req KVGetRequest) (KVGetResult, error) {
-	if b == nil {
-		return KVGetResult{}, errors.New("storage broker is nil")
-	}
-	key, err := normalizeKVKey(req.Key)
-	if err != nil {
-		return KVGetResult{}, err
-	}
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	record, nsKey, err := b.activeKVNamespaceLocked(req.PluginInstanceID, req.StoreID)
-	if err != nil {
-		return KVGetResult{}, err
-	}
-	value, ok := b.kv[nsKey][key]
-	if !ok {
-		return KVGetResult{}, ErrKVKeyNotFound
-	}
-	if req.MaxBytes > 0 && int64(len(value)) > req.MaxBytes {
-		return KVGetResult{}, fmt.Errorf("%w: %d > %d", ErrKVValueTooLarge, len(value), req.MaxBytes)
-	}
-	return KVGetResult{
-		Key:       key,
-		Value:     append([]byte(nil), value...),
-		SizeBytes: int64(len(value)),
-		Usage:     usageFromRecord(record),
-	}, nil
-}
-
-func (b *MemoryBroker) PutKV(_ context.Context, req KVPutRequest) (KVPutResult, error) {
-	if b == nil {
-		return KVPutResult{}, errors.New("storage broker is nil")
-	}
-	key, err := normalizeKVKey(req.Key)
-	if err != nil {
-		return KVPutResult{}, err
-	}
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	record, nsKey, err := b.activeKVNamespaceLocked(req.PluginInstanceID, req.StoreID)
-	if err != nil {
-		return KVPutResult{}, err
-	}
-	oldSize := int64(0)
-	oldExists := false
-	if old, ok := b.kv[nsKey][key]; ok {
-		oldSize = int64(len(old))
-		oldExists = true
-	}
-	projected := record.UsageBytes - oldSize + int64(len(req.Value))
-	if projected > record.QuotaBytes {
-		return KVPutResult{}, fmt.Errorf("%w: projected usage %d exceeds quota %d", ErrQuotaExceeded, projected, record.QuotaBytes)
-	}
-	projectedFiles := record.UsageFiles
-	if !oldExists {
-		projectedFiles++
-	}
-	if record.QuotaFiles > 0 && projectedFiles > record.QuotaFiles {
-		return KVPutResult{}, fmt.Errorf("%w: projected file usage %d exceeds quota %d", ErrQuotaExceeded, projectedFiles, record.QuotaFiles)
-	}
-	if b.kv[nsKey] == nil {
-		b.kv[nsKey] = map[string][]byte{}
-	}
-	b.kv[nsKey][key] = append([]byte(nil), req.Value...)
-	record.UsageBytes = projected
-	record.UsageFiles = projectedFiles
-	record.UpdatedAt = b.now()
-	b.namespaces[nsKey] = record
-	return KVPutResult{
-		Key:       key,
-		SizeBytes: int64(len(req.Value)),
-		Usage:     usageFromRecord(record),
-	}, nil
-}
-
-func (b *MemoryBroker) DeleteKV(_ context.Context, req KVDeleteRequest) error {
-	if b == nil {
-		return errors.New("storage broker is nil")
-	}
-	key, err := normalizeKVKey(req.Key)
-	if err != nil {
-		return err
-	}
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	record, nsKey, err := b.activeKVNamespaceLocked(req.PluginInstanceID, req.StoreID)
-	if err != nil {
-		return err
-	}
-	if old, ok := b.kv[nsKey][key]; ok {
-		delete(b.kv[nsKey], key)
-		record.UsageBytes -= int64(len(old))
-		if record.UsageBytes < 0 {
-			record.UsageBytes = 0
-		}
-		record.UsageFiles--
-		if record.UsageFiles < 0 {
-			record.UsageFiles = 0
-		}
-		record.UpdatedAt = b.now()
-		b.namespaces[nsKey] = record
-	}
-	return nil
-}
-
-func (b *MemoryBroker) ListKV(_ context.Context, req KVListRequest) (KVListResult, error) {
-	if b == nil {
-		return KVListResult{}, errors.New("storage broker is nil")
-	}
-	prefix := strings.TrimSpace(req.Prefix)
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	record, nsKey, err := b.activeKVNamespaceLocked(req.PluginInstanceID, req.StoreID)
-	if err != nil {
-		return KVListResult{}, err
-	}
-	limit := req.MaxEntries
-	if limit <= 0 || limit > 1000 {
-		limit = 1000
-	}
-	entries := make([]KVEntry, 0, len(b.kv[nsKey]))
-	now := record.UpdatedAt
-	for key, value := range b.kv[nsKey] {
-		if prefix != "" && !strings.HasPrefix(key, prefix) {
-			continue
-		}
-		entries = append(entries, KVEntry{Key: key, SizeBytes: int64(len(value)), UpdatedAt: now})
-	}
-	sort.Slice(entries, func(i, j int) bool { return entries[i].Key < entries[j].Key })
-	if len(entries) > limit {
-		entries = entries[:limit]
-	}
-	return KVListResult{Prefix: prefix, Entries: entries, Usage: usageFromRecord(record)}, nil
-}
-
-func (b *MemoryBroker) Archive(ref string) (ArchiveRecord, bool) {
-	if b == nil {
-		return ArchiveRecord{}, false
-	}
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	archive, ok := b.archives[ref]
-	if !ok {
-		return ArchiveRecord{}, false
-	}
-	archive.Namespaces = cloneNamespaceRecords(archive.Namespaces)
-	return archive, true
-}
-
-func (b *MemoryBroker) activeKVNamespaceLocked(pluginInstanceID string, storeID string) (NamespaceRecord, namespaceKey, error) {
-	key := makeKey(pluginInstanceID, storeID)
-	record, ok := b.namespaces[key]
-	if !ok || record.State != NamespaceActive {
-		return NamespaceRecord{}, namespaceKey{}, ErrNamespaceNotFound
-	}
-	if record.Kind != StoreKV {
-		return NamespaceRecord{}, namespaceKey{}, fmt.Errorf("%w: store %q is %s, not kv", ErrInvalidNamespace, record.StoreID, record.Kind)
-	}
-	return record, key, nil
-}
-
-func (b *MemoryBroker) listNamespacesLocked(pluginInstanceID string) []NamespaceRecord {
-	pluginInstanceID = strings.TrimSpace(pluginInstanceID)
-	records := make([]NamespaceRecord, 0)
-	for key, record := range b.namespaces {
-		if pluginInstanceID != "" && key.pluginInstanceID != pluginInstanceID {
-			continue
-		}
-		records = append(records, record)
-	}
-	sort.Slice(records, func(i, j int) bool {
-		if records[i].PluginInstanceID == records[j].PluginInstanceID {
-			return records[i].StoreID < records[j].StoreID
-		}
-		return records[i].PluginInstanceID < records[j].PluginInstanceID
-	})
-	return records
-}
-
-func normalizeNamespace(ns Namespace) (Namespace, error) {
-	ns.PluginInstanceID = strings.TrimSpace(ns.PluginInstanceID)
-	ns.StoreID = strings.TrimSpace(ns.StoreID)
-	ns.Scope = strings.TrimSpace(ns.Scope)
-	if ns.PluginInstanceID == "" {
-		return Namespace{}, fmt.Errorf("%w: plugin_instance_id is required", ErrInvalidNamespace)
-	}
-	if ns.StoreID == "" {
-		return Namespace{}, fmt.Errorf("%w: store_id is required", ErrInvalidNamespace)
-	}
-	switch ns.Kind {
-	case StoreKV, StoreFiles, StoreSQLite:
-	default:
-		return Namespace{}, fmt.Errorf("%w: unsupported store kind %q", ErrInvalidNamespace, ns.Kind)
-	}
-	if ns.QuotaBytes <= 0 {
-		return Namespace{}, fmt.Errorf("%w: quota_bytes must be positive", ErrInvalidNamespace)
-	}
-	if ns.QuotaFiles < 0 {
-		return Namespace{}, fmt.Errorf("%w: quota_files must be non-negative", ErrInvalidNamespace)
-	}
-	if ns.SchemaVersion <= 0 {
-		ns.SchemaVersion = 1
-	}
-	return ns, nil
-}
-
-func normalizeTargetNamespaces(namespaces []Namespace, pluginInstanceID string) (map[string]Namespace, error) {
-	if len(namespaces) == 0 {
-		return nil, nil
-	}
-	targets := make(map[string]Namespace, len(namespaces))
-	for _, ns := range namespaces {
-		ns.PluginInstanceID = pluginInstanceID
-		normalized, err := normalizeNamespace(ns)
-		if err != nil {
-			return nil, err
-		}
-		if _, ok := targets[normalized.StoreID]; ok {
-			return nil, fmt.Errorf("%w: duplicate target store %q", ErrInvalidNamespace, normalized.StoreID)
-		}
-		targets[normalized.StoreID] = normalized
-	}
-	return targets, nil
-}
-
-func validateArchivedNamespaceTarget(archived NamespaceRecord, target Namespace) error {
-	if archived.Kind != target.Kind {
-		return fmt.Errorf("%w: archive store %q kind %q does not match target kind %q", ErrInvalidNamespace, archived.StoreID, archived.Kind, target.Kind)
-	}
-	if archived.SchemaVersion != target.SchemaVersion {
-		return fmt.Errorf("%w: archive store %q schema_version %d does not match target schema_version %d", ErrInvalidNamespace, archived.StoreID, archived.SchemaVersion, target.SchemaVersion)
-	}
-	return nil
-}
-
-func makeKey(pluginInstanceID string, storeID string) namespaceKey {
-	return namespaceKey{
-		pluginInstanceID: strings.TrimSpace(pluginInstanceID),
-		storeID:          strings.TrimSpace(storeID),
-	}
-}
-
-func cloneNamespaceRecords(records []NamespaceRecord) []NamespaceRecord {
-	cloned := make([]NamespaceRecord, len(records))
-	copy(cloned, records)
-	return cloned
-}
-
-func normalizeKVKey(raw string) (string, error) {
-	key := strings.TrimSpace(raw)
-	if key == "" {
-		return "", fmt.Errorf("%w: key is required", ErrInvalidKVKey)
-	}
-	if len([]byte(key)) > MaxKVKeyBytes {
-		return "", fmt.Errorf("%w: key exceeds %d bytes", ErrInvalidKVKey, MaxKVKeyBytes)
-	}
-	return key, nil
-}
-
-func cloneKVMap(values map[string][]byte) map[string][]byte {
-	cloned := map[string][]byte{}
-	for key, value := range values {
-		cloned[key] = append([]byte(nil), value...)
-	}
-	return cloned
-}
-
-func usageFromRecord(record NamespaceRecord) Usage {
-	return Usage{
-		PluginInstanceID: record.PluginInstanceID,
-		StoreID:          record.StoreID,
-		UsageBytes:       record.UsageBytes,
-		QuotaBytes:       record.QuotaBytes,
-		UsageFiles:       record.UsageFiles,
-		QuotaFiles:       record.QuotaFiles,
-	}
-}

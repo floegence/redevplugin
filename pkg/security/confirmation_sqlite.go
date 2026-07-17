@@ -5,15 +5,12 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"strings"
 	"sync"
 	"time"
 
 	_ "modernc.org/sqlite"
 )
-
-const sqliteConfirmationIntentSchemaVersion = 2
 
 type SQLiteConfirmationIntentStore struct {
 	db *sql.DB
@@ -30,7 +27,7 @@ func NewSQLiteConfirmationIntentStore(ctx context.Context, path string) (*SQLite
 	}
 	db.SetMaxOpenConns(1)
 	store := &SQLiteConfirmationIntentStore{db: db}
-	if err := store.migrate(ctx); err != nil {
+	if err := store.initializeSchema(ctx); err != nil {
 		_ = db.Close()
 		return nil, err
 	}
@@ -246,7 +243,7 @@ func (s *SQLiteConfirmationIntentStore) RevokePluginConfirmationIntents(ctx cont
 	return int(count), nil
 }
 
-func (s *SQLiteConfirmationIntentStore) migrate(ctx context.Context) error {
+func (s *SQLiteConfirmationIntentStore) initializeSchema(ctx context.Context) error {
 	if _, err := s.db.ExecContext(ctx, `PRAGMA busy_timeout = 5000`); err != nil {
 		return err
 	}
@@ -262,20 +259,6 @@ func (s *SQLiteConfirmationIntentStore) migrate(ctx context.Context) error {
 		return err
 	}
 	defer rollbackUnlessCommitted(tx)
-	if _, err := tx.ExecContext(ctx, `
-CREATE TABLE IF NOT EXISTS plugin_confirmation_intent_schema_migrations (
-	version INTEGER PRIMARY KEY,
-	applied_at INTEGER NOT NULL
-)`); err != nil {
-		return err
-	}
-	maxVersion := 0
-	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(version), 0) FROM plugin_confirmation_intent_schema_migrations`).Scan(&maxVersion); err != nil {
-		return err
-	}
-	if maxVersion > sqliteConfirmationIntentSchemaVersion {
-		return fmt.Errorf("sqlite confirmation intent schema version %d is newer than supported version %d", maxVersion, sqliteConfirmationIntentSchemaVersion)
-	}
 	if _, err := tx.ExecContext(ctx, `
 CREATE TABLE IF NOT EXISTS plugin_confirmation_intents (
 	confirmation_id TEXT PRIMARY KEY,
@@ -293,24 +276,11 @@ CREATE TABLE IF NOT EXISTS plugin_confirmation_intents (
 )`); err != nil {
 		return err
 	}
-	if maxVersion < 2 {
-		if _, err := tx.ExecContext(ctx, `ALTER TABLE plugin_confirmation_intents ADD COLUMN scope_json TEXT NOT NULL DEFAULT '{}'`); err != nil && !strings.Contains(err.Error(), "duplicate column name") {
-			return err
-		}
-		if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO plugin_confirmation_intent_schema_migrations(version, applied_at) VALUES(?, ?)`, 2, time.Now().UTC().UnixNano()); err != nil {
-			return err
-		}
-	}
 	if _, err := tx.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_plugin_confirmation_intents_plugin_instance ON plugin_confirmation_intents(plugin_instance_id, issued_at, confirmation_id)`); err != nil {
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_plugin_confirmation_intents_expires_at ON plugin_confirmation_intents(expires_at)`); err != nil {
 		return err
-	}
-	if maxVersion < sqliteConfirmationIntentSchemaVersion {
-		if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO plugin_confirmation_intent_schema_migrations(version, applied_at) VALUES(?, ?)`, sqliteConfirmationIntentSchemaVersion, time.Now().UTC().UnixNano()); err != nil {
-			return err
-		}
 	}
 	return tx.Commit()
 }
@@ -410,6 +380,10 @@ type sqliteConfirmationIntentQuerier interface {
 
 type sqliteConfirmationIntentScanner interface {
 	Scan(...any) error
+}
+
+func rollbackUnlessCommitted(tx *sql.Tx) {
+	_ = tx.Rollback()
 }
 
 func scanSQLiteConfirmationIntent(scanner sqliteConfirmationIntentScanner) (ConfirmationIntentRecord, error) {

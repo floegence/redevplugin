@@ -393,9 +393,6 @@ func TestSQLiteExamplesDeclareMinimalBrokerAccessAndOwnSchemaInitialization(t *t
 			if len(doc.Storage.Stores) != 1 || doc.Storage.Stores[0].Kind != "sqlite" {
 				t.Fatal("example must declare exactly one SQLite store")
 			}
-			if !doc.Storage.Stores[0].Migration.RequiresWorker {
-				t.Fatal("SQLite migration must be owned by the worker")
-			}
 			workerSource, err := os.ReadFile(filepath.Join(root, "examples", "workers", tc.plugin, "src", "lib.rs"))
 			if err != nil {
 				t.Fatal(err)

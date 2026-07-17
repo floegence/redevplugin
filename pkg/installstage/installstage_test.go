@@ -215,24 +215,6 @@ func TestSQLiteStorePersistsAcrossOpen(t *testing.T) {
 	}
 }
 
-func TestSQLiteStoreRejectsNewerSchema(t *testing.T) {
-	ctx := context.Background()
-	path := filepath.Join(t.TempDir(), "install-stage.sqlite")
-	store, err := NewSQLiteStore(ctx, path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := store.db.ExecContext(ctx, `INSERT OR REPLACE INTO plugin_install_stage_schema_migrations(version, applied_at) VALUES(999, 0)`); err != nil {
-		t.Fatal(err)
-	}
-	if err := store.Close(); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := NewSQLiteStore(ctx, path); err == nil {
-		t.Fatal("NewSQLiteStore() accepted newer schema version")
-	}
-}
-
 type storeCase struct {
 	name string
 	open func(t *testing.T) Store

@@ -13,7 +13,10 @@ import (
 
 	"github.com/floegence/redevplugin/pkg/capabilitycontract"
 	"github.com/floegence/redevplugin/pkg/manifest"
+	"github.com/floegence/redevplugin/pkg/permissions"
+	"github.com/floegence/redevplugin/pkg/plugindata"
 	"github.com/floegence/redevplugin/pkg/pluginpkg"
+	"github.com/floegence/redevplugin/pkg/security"
 )
 
 type TrustState string
@@ -34,15 +37,6 @@ const (
 	EnableEnabled              EnableState = "enabled"
 	EnableDisabledByPolicy     EnableState = "disabled_by_policy"
 	EnableDisabledIncompatible EnableState = "disabled_incompatible"
-)
-
-type RetainedDataState string
-
-const (
-	RetainedDataNone              RetainedDataState = "none"
-	RetainedDataRetained          RetainedDataState = "retained"
-	RetainedDataDeleted           RetainedDataState = "deleted"
-	RetainedDataDeleteFailedRetry RetainedDataState = "delete_failed_retryable"
 )
 
 type TrustHashSet struct {
@@ -84,7 +78,6 @@ type PluginRecord struct {
 	CapabilityContracts      []capabilitycontract.Pin `json:"capability_contracts,omitempty"`
 	EnableState              EnableState              `json:"enable_state"`
 	DisabledReason           string                   `json:"disabled_reason,omitempty"`
-	RetainedDataState        RetainedDataState        `json:"retained_data_state"`
 	PolicyRevision           uint64                   `json:"policy_revision"`
 	ManagementRevision       uint64                   `json:"management_revision"`
 	RevokeEpoch              uint64                   `json:"revoke_epoch"`
@@ -138,14 +131,25 @@ type PutOptions struct {
 	Now time.Time
 }
 
+type AuthorizationStore interface {
+	GrantPermission(ctx context.Context, req permissions.GrantRequest, expected AuthorizationRevisions) (AuthorizationSnapshot, error)
+	RevokePermission(ctx context.Context, req permissions.RevokeRequest, expected AuthorizationRevisions) (AuthorizationSnapshot, error)
+	PutSecurityPolicy(ctx context.Context, req security.PutPolicyRequest, expected AuthorizationRevisions) (AuthorizationSnapshot, error)
+	DeleteSecurityPolicy(ctx context.Context, pluginInstanceID string, now time.Time, expected AuthorizationRevisions) (AuthorizationSnapshot, error)
+	GetAuthorization(ctx context.Context, pluginInstanceID string) (AuthorizationSnapshot, error)
+	ListAuthorization(ctx context.Context) ([]AuthorizationSnapshot, error)
+	Authorize(ctx context.Context, req AuthorizeRequest) (AuthorizationDecision, error)
+}
+
 type Store interface {
+	AuthorizationStore
+	plugindata.Catalog
 	PutPlugin(ctx context.Context, record PluginRecord, opts PutOptions) (PluginRecord, error)
 	GetPlugin(ctx context.Context, pluginInstanceID string) (PluginRecord, error)
 	ListPlugins(ctx context.Context) ([]PluginRecord, error)
 	SetEnableState(ctx context.Context, pluginInstanceID string, state EnableState, reason string, now time.Time) (PluginRecord, error)
-	BumpPolicyRevision(ctx context.Context, pluginInstanceID string, revoke bool, now time.Time) (PluginRecord, error)
-	MarkUninstalled(ctx context.Context, pluginInstanceID string, retained RetainedDataState, now time.Time) (PluginRecord, error)
-	DeletePlugin(ctx context.Context, pluginInstanceID string) error
+	CommitUninstall(ctx context.Context, req plugindata.CommitUninstallRequest) (plugindata.CommitUninstallResult, error)
+	AbortInstall(ctx context.Context, pluginInstanceID string) error
 	PutSourceSecurityFloor(ctx context.Context, floor SourceSecurityFloor, opts PutOptions) (SourceSecurityFloor, error)
 	GetSourceSecurityFloor(ctx context.Context, sourceID string) (SourceSecurityFloor, error)
 }
@@ -154,15 +158,23 @@ var ErrNotFound = errors.New("plugin record not found")
 var ErrSourceSecurityFloorRollback = errors.New("source security floor rollback")
 
 type MemoryStore struct {
-	mu           sync.RWMutex
-	records      map[string]PluginRecord
-	sourceFloors map[string]SourceSecurityFloor
+	mu               sync.RWMutex
+	records          map[string]PluginRecord
+	sourceFloors     map[string]SourceSecurityFloor
+	permissionGrants map[string]map[string]permissions.Record
+	securityPolicies map[string]security.PolicyRecord
+	dataBindings     map[string]plugindata.Binding
+	dataObjects      map[string]plugindata.Object
 }
 
 func NewMemoryStore() *MemoryStore {
 	return &MemoryStore{
-		records:      map[string]PluginRecord{},
-		sourceFloors: map[string]SourceSecurityFloor{},
+		records:          map[string]PluginRecord{},
+		sourceFloors:     map[string]SourceSecurityFloor{},
+		permissionGrants: map[string]map[string]permissions.Record{},
+		securityPolicies: map[string]security.PolicyRecord{},
+		dataBindings:     map[string]plugindata.Binding{},
+		dataObjects:      map[string]plugindata.Object{},
 	}
 }
 
@@ -198,9 +210,6 @@ func (s *MemoryStore) PutPlugin(_ context.Context, record PluginRecord, opts Put
 		}
 	}
 	record.UpdatedAt = now
-	if record.RetainedDataState == "" {
-		record.RetainedDataState = RetainedDataNone
-	}
 	record = normalizeTrustAssessment(record)
 	s.records[record.PluginInstanceID] = record
 	return clonePluginRecord(record)
@@ -265,50 +274,47 @@ func (s *MemoryStore) SetEnableState(_ context.Context, pluginInstanceID string,
 	return clonePluginRecord(record)
 }
 
-func (s *MemoryStore) BumpPolicyRevision(_ context.Context, pluginInstanceID string, revoke bool, now time.Time) (PluginRecord, error) {
+func (s *MemoryStore) CommitUninstall(_ context.Context, req plugindata.CommitUninstallRequest) (plugindata.CommitUninstallResult, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	record, ok := s.records[pluginInstanceID]
+	record, ok := s.records[req.PluginInstanceID]
 	if !ok || record.DeletedAt != nil {
-		return PluginRecord{}, ErrNotFound
+		return plugindata.CommitUninstallResult{}, ErrNotFound
 	}
+	if req.ExpectedManagementRevision == 0 || record.ManagementRevision != req.ExpectedManagementRevision {
+		return plugindata.CommitUninstallResult{}, &ManagementRevisionConflictError{PluginInstanceID: req.PluginInstanceID, Expected: req.ExpectedManagementRevision, Actual: record.ManagementRevision}
+	}
+	now := req.Now
 	if now.IsZero() {
 		now = time.Now().UTC()
 	}
-	record.PolicyRevision++
-	if revoke {
-		record.RevokeEpoch++
-	}
-	record.UpdatedAt = now
-	s.records[pluginInstanceID] = record
-	return clonePluginRecord(record)
-}
-
-func (s *MemoryStore) MarkUninstalled(_ context.Context, pluginInstanceID string, retained RetainedDataState, now time.Time) (PluginRecord, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	record, ok := s.records[pluginInstanceID]
-	if !ok || record.DeletedAt != nil {
-		return PluginRecord{}, ErrNotFound
-	}
-	if now.IsZero() {
-		now = time.Now().UTC()
-	}
+	binding, hasBinding := s.dataBindings[req.PluginInstanceID]
 	record.EnableState = EnableDisabled
 	record.DisabledReason = "uninstalled"
-	record.RetainedDataState = retained
 	record.ManagementRevision++
 	record.RevokeEpoch++
 	record.UpdatedAt = now
 	record.DeletedAt = &now
 	record.EnabledAt = nil
-	s.records[pluginInstanceID] = record
-	return clonePluginRecord(record)
+	s.records[req.PluginInstanceID] = record
+	delete(s.permissionGrants, req.PluginInstanceID)
+	delete(s.securityPolicies, req.PluginInstanceID)
+	if hasBinding {
+		if req.DeleteData {
+			delete(s.dataBindings, req.PluginInstanceID)
+		} else {
+			binding.State = plugindata.BindingRetained
+			binding.Revision++
+			binding.RetainedAt = &now
+			binding.ExpiresAt = cloneRegistryTime(req.RetainUntil)
+			s.dataBindings[req.PluginInstanceID] = binding
+		}
+	}
+	return plugindata.CommitUninstallResult{ManagementRevision: record.ManagementRevision, RevokeEpoch: record.RevokeEpoch, DeletedAt: now}, nil
 }
 
-func (s *MemoryStore) DeletePlugin(_ context.Context, pluginInstanceID string) error {
+func (s *MemoryStore) AbortInstall(_ context.Context, pluginInstanceID string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -316,6 +322,9 @@ func (s *MemoryStore) DeletePlugin(_ context.Context, pluginInstanceID string) e
 		return ErrNotFound
 	}
 	delete(s.records, pluginInstanceID)
+	delete(s.permissionGrants, pluginInstanceID)
+	delete(s.securityPolicies, pluginInstanceID)
+	delete(s.dataBindings, pluginInstanceID)
 	return nil
 }
 

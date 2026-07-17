@@ -40,9 +40,9 @@ export GOWORK=off
   go test ./pkg/protocol ./pkg/httpadapter ./pkg/connectivity ./pkg/runtimeclient
   cargo test -p redevplugin-target-classifier
   npm run contracts:check
-  grep -q '"target_classifier_version": { "const": "target-classifier-v1" }' spec/plugin/network-grant-v1.schema.json
-  grep -q '"fixtures":' spec/plugin/target-classifier-v1.json
-  grep -q '"ipv4-mapped-private-resolved"' spec/plugin/target-classifier-v1.json
+  grep -q '"target_classifier_version": { "const": "target-classifier-v2" }' spec/plugin/network-grant-v1.schema.json
+  grep -q '"fixtures":' spec/plugin/target-classifier-v2.json
+  grep -q '"ipv4-mapped-shared-resolved"' spec/plugin/target-classifier-v2.json
   grep -q '"transport": { "enum": \["http", "websocket", "tcp", "udp"\] }' spec/plugin/network-grant-v1.schema.json
   grep -q 'package-signature-v1.schema.json' spec/plugin/package-signature-v1.schema.json
   grep -q '"schema_version": { "const": "redevplugin.package_signature.v1" }' spec/plugin/package-signature-v1.schema.json
@@ -53,8 +53,10 @@ export GOWORK=off
   grep -q '"unsigned_policy": { "enum": \["dev_only", "review_required", "block"\] }' spec/plugin/source-policy-v1.schema.json
   grep -q '"schema_version": { "const": "redevplugin.source_revocations.v1" }' spec/plugin/source-revocations-v1.schema.json
   grep -q '"revoked_key_ids"' spec/plugin/source-revocations-v1.schema.json
-  grep -q '"runtime_execution_lease"' spec/plugin/token-ticket-v2.schema.json
+  ! grep -q '"runtime_execution_lease"' spec/plugin/token-ticket-v2.schema.json
   grep -q '"handle_grant"' spec/plugin/token-ticket-v2.schema.json
+  grep -q '"schema_version": "redevplugin.runtime_execution_lease.signature_fixture.v1"' testdata/contracts/runtime-lease-signature-v1.json
+  grep -q '\\"token_kind\\":\\"runtime_execution_lease\\"' testdata/contracts/runtime-lease-signature-v1.json
   ! grep -q '"type": { "const": "redevplugin.bridge.handshake" }' spec/plugin/bridge-v4.schema.json
   grep -q '"type": { "const": "redevplugin.bridge.call" }' spec/plugin/bridge-v4.schema.json
   grep -q '"type": { "const": "redevplugin.bridge.cancel" }' spec/plugin/bridge-v4.schema.json
@@ -73,7 +75,7 @@ export GOWORK=off
   grep -q '"release_metadata_schema_version": { "const": "release-metadata-v4" }' spec/plugin/compatibility-manifest-v4.schema.json
   grep -q '"opaque_surface_document_schema_version"' spec/plugin/compatibility-manifest-v4.schema.json
   grep -q '"opaque_surface_transport_schema_version"' spec/plugin/compatibility-manifest-v4.schema.json
-  grep -q '"title": "ReDevPlugin stable error codes v1"' spec/plugin/error-codes-v2.schema.json
+  grep -q '"title": "ReDevPlugin stable error codes v2"' spec/plugin/error-codes-v2.schema.json
   grep -q '"PLUGIN_JSON_LIMIT_EXCEEDED"' spec/plugin/error-codes-v2.schema.json
   grep -q '"PLUGIN_PLATFORM_REQUEST_FAILED"' spec/plugin/error-codes-v2.schema.json
   grep -q '"RUNTIME_LEASE_SIGNATURE_INVALID"' spec/plugin/error-codes-v2.schema.json
@@ -91,18 +93,11 @@ export GOWORK=off
   grep -q '"required": \["method", "route"\]' spec/plugin/manifest-v4.schema.json
   grep -q '"required": \["effect", "execution", "request_schema", "response_schema"\]' spec/plugin/manifest-v4.schema.json
   grep -q '{ "required": \["cancel_policy"\] }' spec/plugin/manifest-v4.schema.json
-  test ! -e spec/openapi/plugin-platform-v1.yaml
-  test ! -e spec/plugin/bridge-v1.schema.json
-  test ! -e spec/plugin/compatibility-manifest-v1.schema.json
-  test ! -e spec/plugin/manifest-v1.schema.json
-  test ! -e spec/plugin/release-manifest-v1.schema.json
-  test ! -e spec/plugin/release-metadata-v1.schema.json
-  test ! -e spec/plugin/token-ticket-v1.schema.json
   grep -q '^  quality-release:$' .github/workflows/release.yml
   grep -q 'name: Complete Release Quality Gate' .github/workflows/release.yml
-  grep -q 'GOWORK=off go test ./...' .github/workflows/release.yml
-  grep -q 'GOWORK=off go list ./...' .github/workflows/release.yml
-  grep -q 'GOWORK=off golangci-lint run ./...' .github/workflows/release.yml
+	grep -q 'GOWORK=off go test ./cmd/... ./examples/... ./pkg/...' .github/workflows/release.yml
+	grep -q 'GOWORK=off go list ./cmd/... ./examples/... ./pkg/...' .github/workflows/release.yml
+	grep -q 'GOWORK=off golangci-lint run ./cmd/... ./examples/... ./pkg/...' .github/workflows/release.yml
   grep -q 'TypeScript, Examples, and browser-harness checks' .github/workflows/release.yml
   grep -q 'Canonical WASM native and Docker parity' .github/workflows/release.yml
   grep -q 'npm run examples:check:canonical && npm run scaffold:check:canonical' .github/workflows/release.yml
@@ -115,11 +110,15 @@ export GOWORK=off
   grep -q 'audit-release:' .github/workflows/release.yml
   grep -q './scripts/check_redevplugin_release_audit.sh' .github/workflows/release.yml
   grep -q 'REDEVPLUGIN_INSTALL_AUDIT_TOOLS: "1"' .github/workflows/release.yml
+  ! grep -q 'govulncheck@v1.6.0 ./...' scripts/check_redevplugin_release_audit.sh
+  grep -q './cmd/...' scripts/check_redevplugin_release_audit.sh
+  grep -q './examples/...' scripts/check_redevplugin_release_audit.sh
+	grep -q './pkg/...' scripts/check_redevplugin_release_audit.sh
   grep -q 'release-audit:' .github/workflows/ci.yml
   grep -q '^permissions:$' .github/workflows/ci.yml
-  grep -q 'GOWORK=off golangci-lint run ./...' .github/workflows/ci.yml
-  grep -q 'GOWORK=off go list ./...' .github/workflows/ci.yml
-  grep -q 'go list ./...' scripts/check_redevplugin_platform.sh
+	grep -q 'GOWORK=off golangci-lint run ./cmd/... ./examples/... ./pkg/...' .github/workflows/ci.yml
+	grep -q 'GOWORK=off go list ./cmd/... ./examples/... ./pkg/...' .github/workflows/ci.yml
+	grep -q 'go list ./cmd/... ./examples/... ./pkg/...' scripts/check_redevplugin_platform.sh
   grep -q 'npm run check' .github/workflows/ci.yml
   grep -q 'Canonical WASM native and Docker parity' .github/workflows/ci.yml
   grep -q 'npm run examples:check:canonical && npm run scaffold:check:canonical' .github/workflows/ci.yml
@@ -239,6 +238,7 @@ JSON
       "service_worker_absent": true,
       "opening_progress": true,
       "first_paint_before_lazy_asset": true,
+      "stream_response_loss_recovered": true,
       "real_stream_redeemed": true,
       "confirmation_disposal_aborted": true,
       "server_disposed": true,
@@ -264,6 +264,7 @@ JSON
       "service_worker_absent": true,
       "opening_progress": true,
       "first_paint_before_lazy_asset": true,
+      "stream_response_loss_recovered": true,
       "real_stream_redeemed": true,
       "confirmation_disposal_aborted": true,
       "server_disposed": true,
@@ -379,12 +380,8 @@ NODE
   go run ./cmd/redevplugin version | grep -q '"id": "host-capability-compatibility-schema"'
   go run ./cmd/redevplugin version | grep -q '"id": "host-capability-signature-schema"'
   go run ./cmd/redevplugin version | grep -q '"id": "host-capability-notices-schema"'
-  test -f testdata/contracts/ipc/current_hello_ack.json
-  test -f testdata/contracts/ipc/invoke_worker_result_ok.json
-  test -f testdata/contracts/ipc/host_new_rust_old.json
-  test -f testdata/contracts/ipc/host_old_rust_new.json
-  test -f testdata/contracts/ipc/wasm_abi_old.json
-  test -f testdata/contracts/ipc/wasm_abi_new.json
+  test -f testdata/contracts/ipc/valid_hello_ack.json
+  test -f testdata/contracts/ipc/valid_invoke_worker_result.json
   test -f testdata/contracts/ipc/unknown_enum.json
   test -f testdata/contracts/ipc/missing_required.json
   test -f testdata/contracts/ipc/replay_frame.json
@@ -458,7 +455,8 @@ NODE
   grep -q 'validate_worker_runtime_lease' crates/redevplugin-ipc/src/lib.rs
   grep -q 'worker_invocation_rejects_expired_lease_before_opening_artifact' crates/redevplugin-runtime/src/main.rs
   grep -q 'worker_invocation_rejects_execution_binding_mismatch_before_opening_artifact' crates/redevplugin-runtime/src/main.rs
-  grep -q 'runtime_lease_optional_unix_ms' crates/redevplugin-ipc/src/lib.rs
+  ! grep -q 'runtime_lease_optional_unix_ms' crates/redevplugin-ipc/src/lib.rs
+  grep -q 'runtime_lease_expires_at_unix_ms' crates/redevplugin-ipc/src/lib.rs
   grep -q 'append_runtime_lease_limits_field' crates/redevplugin-ipc/src/lib.rs
   grep -q 'RuntimeRevocations' crates/redevplugin-runtime/src/main.rs
   grep -q 'handle_revoke_epoch' crates/redevplugin-runtime/src/main.rs

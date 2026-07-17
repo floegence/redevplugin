@@ -869,7 +869,6 @@ func TestBuildRejectsMalformedWorkerWASM(t *testing.T) {
 	dir := writeFixturePackageDir(t)
 	mustWrite(t, filepath.Join(dir, "manifest.json"), workerManifestJSON())
 	mustWrite(t, filepath.Join(dir, "workers", "echo.wasm"), "wasm-placeholder")
-	mustWrite(t, filepath.Join(dir, "workers", "abi.json"), workerABIJSON("redevplugin_worker_invoke"))
 
 	var buf bytes.Buffer
 	if _, err := BuildFromDir(context.Background(), dir, &buf, DefaultReadOptions()); err == nil {
@@ -878,20 +877,25 @@ func TestBuildRejectsMalformedWorkerWASM(t *testing.T) {
 }
 
 func TestWASMInspectionRejectsSharedInvalidOpcodeFixture(t *testing.T) {
-	raw, err := os.ReadFile(filepath.Join("..", "..", "testdata", "contracts", "wasm", "invalid-final-opcode.hex"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	module, err := hex.DecodeString(strings.TrimSpace(string(raw)))
-	if err != nil {
-		t.Fatal(err)
-	}
+	module := decodeSharedWASMFixture(t, "invalid-final-opcode.hex")
 	if _, err := inspectWASMModule(module); err == nil {
 		t.Fatal("inspectWASMModule() accepted a module with an invalid function opcode")
 	}
 }
 
-func TestReadRejectsWorkerRouteMissingExport(t *testing.T) {
+func TestWASMValidationRejectsSharedTableMaximumFixture(t *testing.T) {
+	module := decodeSharedWASMFixture(t, "table-maximum-exceeds-limit.hex")
+	contract, err := inspectWASMModule(module)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = validateWASMWorkerContract(contract, wasmPageBytes)
+	if err == nil || !strings.Contains(err.Error(), "maximum size") {
+		t.Fatalf("validateWASMWorkerContract() error = %v, want table maximum limit", err)
+	}
+}
+
+func TestReadRejectsWorkerMissingRequiredInvokeExport(t *testing.T) {
 	var buf bytes.Buffer
 	zw := zip.NewWriter(&buf)
 	entries := map[string][]byte{
@@ -899,7 +903,6 @@ func TestReadRejectsWorkerRouteMissingExport(t *testing.T) {
 		"ui/index.html":       []byte("<!doctype html><title>Plugin</title>"),
 		"workers/echo.wasm":   minimalWorkerWASMForTest("other_export"),
 		"ui/assets/app.js":    []byte("console.log('plugin');"),
-		"workers/abi.json":    []byte(workerABIJSON("redevplugin_worker_invoke")),
 		"workers/echo.wat":    []byte("(module)"),
 		"ui/assets/style.css": []byte("body{}"),
 	}
@@ -921,11 +924,10 @@ func TestReadRejectsWorkerRouteMissingExport(t *testing.T) {
 	}
 }
 
-func TestBuildRejectsWorkerRouteExportedAsMemory(t *testing.T) {
+func TestBuildRejectsRequiredInvokeExportedAsMemory(t *testing.T) {
 	dir := writeFixturePackageDir(t)
 	mustWrite(t, filepath.Join(dir, "manifest.json"), workerManifestJSON())
 	mustWriteBytes(t, filepath.Join(dir, "workers", "echo.wasm"), minimalMemoryExportWASMForTest("redevplugin_worker_invoke"))
-	mustWrite(t, filepath.Join(dir, "workers", "abi.json"), workerABIJSON("redevplugin_worker_invoke"))
 
 	var buf bytes.Buffer
 	if _, err := BuildFromDir(context.Background(), dir, &buf, DefaultReadOptions()); err == nil {
@@ -937,7 +939,6 @@ func TestBuildAcceptsWorkerWASMExport(t *testing.T) {
 	dir := writeFixturePackageDir(t)
 	mustWrite(t, filepath.Join(dir, "manifest.json"), workerManifestJSON())
 	mustWriteBytes(t, filepath.Join(dir, "workers", "echo.wasm"), minimalWorkerWASMForTest("redevplugin_worker_invoke"))
-	mustWrite(t, filepath.Join(dir, "workers", "abi.json"), workerABIJSON("redevplugin_worker_invoke"))
 
 	var buf bytes.Buffer
 	pkg, err := BuildFromDir(context.Background(), dir, &buf, DefaultReadOptions())
@@ -953,7 +954,6 @@ func TestBuildRejectsWorkerTableAboveLimit(t *testing.T) {
 	dir := writeFixturePackageDir(t)
 	mustWrite(t, filepath.Join(dir, "manifest.json"), workerManifestJSON())
 	mustWriteBytes(t, filepath.Join(dir, "workers", "echo.wasm"), workerWASMWithTableForTest(maxWASMTableElements+1))
-	mustWrite(t, filepath.Join(dir, "workers", "abi.json"), workerABIJSON("redevplugin_worker_invoke"))
 
 	var buf bytes.Buffer
 	_, err := BuildFromDir(context.Background(), dir, &buf, DefaultReadOptions())
@@ -962,42 +962,25 @@ func TestBuildRejectsWorkerTableAboveLimit(t *testing.T) {
 	}
 }
 
-func TestBuildRejectsWorkerWithoutABIDescriptor(t *testing.T) {
+func TestBuildRejectsUnsupportedWorkerImport(t *testing.T) {
 	dir := writeFixturePackageDir(t)
 	mustWrite(t, filepath.Join(dir, "manifest.json"), workerManifestJSON())
-	mustWriteBytes(t, filepath.Join(dir, "workers", "echo.wasm"), minimalWorkerWASMForTest("redevplugin_worker_invoke"))
+	mustWriteBytes(t, filepath.Join(dir, "workers", "echo.wasm"), workerWASMWithHostcallForTest("redeven.shell", "execute"))
 
 	var buf bytes.Buffer
 	if _, err := BuildFromDir(context.Background(), dir, &buf, DefaultReadOptions()); err == nil {
-		t.Fatal("BuildFromDir() expected missing worker ABI descriptor error")
+		t.Fatal("BuildFromDir() expected unsupported worker import error")
 	}
 }
 
-func TestBuildRejectsWorkerRouteMissingABIDescriptorExport(t *testing.T) {
+func TestBuildAcceptsSupportedWorkerImport(t *testing.T) {
 	dir := writeFixturePackageDir(t)
 	mustWrite(t, filepath.Join(dir, "manifest.json"), workerManifestJSON())
-	mustWriteBytes(t, filepath.Join(dir, "workers", "echo.wasm"), minimalWorkerWASMForTest("redevplugin_worker_invoke"))
-	mustWrite(t, filepath.Join(dir, "workers", "abi.json"), workerABIJSON("unsupported_export"))
+	mustWriteBytes(t, filepath.Join(dir, "workers", "echo.wasm"), workerWASMWithHostcallForTest("redevplugin.network", "execute"))
 
 	var buf bytes.Buffer
-	if _, err := BuildFromDir(context.Background(), dir, &buf, DefaultReadOptions()); err == nil {
-		t.Fatal("BuildFromDir() expected missing worker ABI export error")
-	}
-}
-
-func TestBuildRejectsUnknownWorkerABIImport(t *testing.T) {
-	dir := writeFixturePackageDir(t)
-	mustWrite(t, filepath.Join(dir, "manifest.json"), workerManifestJSON())
-	mustWriteBytes(t, filepath.Join(dir, "workers", "echo.wasm"), minimalWorkerWASMForTest("redevplugin_worker_invoke"))
-	mustWrite(t, filepath.Join(dir, "workers", "abi.json"), "{\n"+
-		"  \"abi_version\": \"redevplugin-wasm-worker-v2\",\n"+
-		"  \"exports\": [\"redevplugin_worker_invoke\"],\n"+
-		"  \"imports\": [\"redeven.shell\"]\n"+
-		"}\n")
-
-	var buf bytes.Buffer
-	if _, err := BuildFromDir(context.Background(), dir, &buf, DefaultReadOptions()); err == nil {
-		t.Fatal("BuildFromDir() expected unsupported worker ABI import error")
+	if _, err := BuildFromDir(context.Background(), dir, &buf, DefaultReadOptions()); err != nil {
+		t.Fatalf("BuildFromDir() worker import error = %v", err)
 	}
 }
 
@@ -1006,7 +989,6 @@ func TestBuildRejectsUnsupportedActorWorkerMode(t *testing.T) {
 	manifestJSON := strings.Replace(workerManifestJSON(), `"mode": "job"`, `"mode": "actor"`, 1)
 	mustWrite(t, filepath.Join(dir, "manifest.json"), manifestJSON)
 	mustWriteBytes(t, filepath.Join(dir, "workers", "echo.wasm"), minimalWorkerWASMForTest("redevplugin_worker_invoke"))
-	mustWrite(t, filepath.Join(dir, "workers", "abi.json"), workerABIJSON("redevplugin_worker_invoke"))
 
 	var buf bytes.Buffer
 	if _, err := BuildFromDir(context.Background(), dir, &buf, DefaultReadOptions()); err == nil {
@@ -1208,6 +1190,19 @@ func requireValidationError(t *testing.T, err error, code ValidationErrorCode, r
 	}
 }
 
+func decodeSharedWASMFixture(t *testing.T, name string) []byte {
+	t.Helper()
+	raw, err := os.ReadFile(filepath.Join("..", "..", "testdata", "contracts", "wasm", name))
+	if err != nil {
+		t.Fatal(err)
+	}
+	module, err := hex.DecodeString(strings.TrimSpace(string(raw)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return module
+}
+
 func minimalPNGForTest() []byte {
 	raw, err := hex.DecodeString("89504e470d0a1a0a0000000d4948445200000001000000010804000000b51c0c020000000b4944415478da6364f80f00010501012718e3660000000049454e44ae426082")
 	if err != nil {
@@ -1237,6 +1232,54 @@ func minimalWorkerWASMForTest(exportName string) []byte {
 		{name: "redevplugin_worker_alloc", kind: 0x00, index: 0x00},
 		{name: "redevplugin_worker_dealloc", kind: 0x00, index: 0x01},
 		{name: exportName, kind: 0x00, index: 0x02},
+	} {
+		exportPayload = append(exportPayload, byte(len(export.name)))
+		exportPayload = append(exportPayload, export.name...)
+		exportPayload = append(exportPayload, export.kind, export.index)
+	}
+	module = append(module, 0x07, byte(len(exportPayload)))
+	module = append(module, exportPayload...)
+	module = append(module,
+		0x0a, 0x0f, 0x03,
+		0x05, 0x00, 0x41, 0x80, 0x08, 0x0b,
+		0x02, 0x00, 0x0b,
+		0x04, 0x00, 0x42, 0x00, 0x0b,
+	)
+	return module
+}
+
+func workerWASMWithHostcallForTest(moduleName string, functionName string) []byte {
+	module := []byte{
+		0x00, 0x61, 0x73, 0x6d,
+		0x01, 0x00, 0x00, 0x00,
+		0x01, 0x19, 0x04,
+		0x60, 0x01, 0x7f, 0x01, 0x7f,
+		0x60, 0x02, 0x7f, 0x7f, 0x00,
+		0x60, 0x02, 0x7f, 0x7f, 0x01, 0x7e,
+		0x60, 0x04, 0x7f, 0x7f, 0x7f, 0x7f, 0x01, 0x7f,
+	}
+	importPayload := []byte{0x01, byte(len(moduleName))}
+	importPayload = append(importPayload, moduleName...)
+	importPayload = append(importPayload, byte(len(functionName)))
+	importPayload = append(importPayload, functionName...)
+	importPayload = append(importPayload, 0x00, 0x03)
+	module = append(module, 0x02)
+	module = append(module, encodeWASMVarUint32ForTest(uint32(len(importPayload)))...)
+	module = append(module, importPayload...)
+	module = append(module,
+		0x03, 0x04, 0x03, 0x00, 0x01, 0x02,
+		0x05, 0x03, 0x01, 0x00, 0x01,
+	)
+	exportPayload := []byte{0x04}
+	for _, export := range []struct {
+		name  string
+		kind  byte
+		index byte
+	}{
+		{name: "memory", kind: 0x02, index: 0x00},
+		{name: "redevplugin_worker_alloc", kind: 0x00, index: 0x01},
+		{name: "redevplugin_worker_dealloc", kind: 0x00, index: 0x02},
+		{name: "redevplugin_worker_invoke", kind: 0x00, index: 0x03},
 	} {
 		exportPayload = append(exportPayload, byte(len(export.name)))
 		exportPayload = append(exportPayload, export.name...)
@@ -1301,18 +1344,6 @@ func minimalMemoryExportWASMForTest(exportName string) []byte {
 	module = append(module, byte(len(exportPayload)))
 	module = append(module, exportPayload...)
 	return module
-}
-
-func workerABIJSON(exports ...string) string {
-	rawExports, err := json.Marshal(exports)
-	if err != nil {
-		panic(err)
-	}
-	return "{\n" +
-		"  \"abi_version\": \"redevplugin-wasm-worker-v2\",\n" +
-		"  \"exports\": " + string(rawExports) + ",\n" +
-		"  \"imports\": []\n" +
-		"}\n"
 }
 
 func packageSignatureJSON(t *testing.T, pkg Package, signature string) []byte {
@@ -1389,7 +1420,7 @@ func workerManifestJSON() string {
 					"properties": {"message": {"type": "string"}}
 				},
 				"response_schema": {"type": "object", "additionalProperties": false},
-				"route": {"kind": "worker", "worker_id": "echo_worker", "export": "redevplugin_worker_invoke"}
+				"route": {"kind": "worker", "worker_id": "echo_worker"}
 			}
 		]
 		}`

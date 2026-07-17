@@ -2,8 +2,11 @@ package stream
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -32,25 +35,31 @@ const (
 )
 
 var (
-	ErrNotFound      = errors.New("plugin stream not found")
-	ErrInvalidStream = errors.New("plugin stream is invalid")
-	ErrAlreadyExists = errors.New("plugin stream already exists")
-	ErrStreamClosed  = errors.New("plugin stream is closed")
-	ErrBackpressure  = errors.New("plugin stream backpressure limit exceeded")
+	ErrNotFound        = errors.New("plugin stream not found")
+	ErrInvalidStream   = errors.New("plugin stream is invalid")
+	ErrAlreadyExists   = errors.New("plugin stream already exists")
+	ErrStreamClosed    = errors.New("plugin stream is closed")
+	ErrBackpressure    = errors.New("plugin stream backpressure limit exceeded")
+	ErrDeliveryInvalid = errors.New("plugin stream delivery is invalid")
 )
+
+const streamEventOverheadBytes int64 = 32
+
+var readIDPattern = regexp.MustCompile(`^read_[A-Za-z0-9_-]{8,128}$`)
 
 type Record struct {
 	StreamID string `json:"stream_id"`
 	capability.ExecutionBinding
-	Direction        Direction  `json:"direction"`
-	Status           Status     `json:"status"`
-	Reason           string     `json:"reason,omitempty"`
-	ContentType      string     `json:"content_type,omitempty"`
-	MaxBufferedBytes int64      `json:"max_buffered_bytes,omitempty"`
-	BufferedBytes    int64      `json:"buffered_bytes,omitempty"`
-	CreatedAt        time.Time  `json:"created_at"`
-	UpdatedAt        time.Time  `json:"updated_at"`
-	ClosedAt         *time.Time `json:"closed_at,omitempty"`
+	Direction        Direction                       `json:"direction"`
+	Status           Status                          `json:"status"`
+	FailureCode      capability.ExecutionFailureCode `json:"failure_code,omitempty"`
+	Reason           string                          `json:"reason,omitempty"`
+	ContentType      string                          `json:"content_type,omitempty"`
+	MaxBufferedBytes int64                           `json:"max_buffered_bytes,omitempty"`
+	BufferedBytes    int64                           `json:"buffered_bytes,omitempty"`
+	CreatedAt        time.Time                       `json:"created_at"`
+	UpdatedAt        time.Time                       `json:"updated_at"`
+	ClosedAt         *time.Time                      `json:"closed_at,omitempty"`
 }
 
 type Event struct {
@@ -79,24 +88,52 @@ type AppendRequest struct {
 	Now      time.Time `json:"now,omitempty"`
 }
 
-type ReadRequest struct {
+type DeliverRequest struct {
 	StreamID  string `json:"stream_id"`
+	ReadID    string `json:"read_id"`
 	MaxEvents int    `json:"max_events,omitempty"`
 	MaxBytes  int64  `json:"max_bytes,omitempty"`
 }
 
+type Delivery struct {
+	DeliveryID      string  `json:"delivery_id,omitempty"`
+	ReadID          string  `json:"read_id"`
+	StreamID        string  `json:"stream_id"`
+	ThroughSequence uint64  `json:"through_sequence,omitempty"`
+	Events          []Event `json:"events,omitempty"`
+	Done            bool    `json:"done"`
+	TerminalStatus  Status  `json:"terminal_status,omitempty"`
+}
+
+type AcknowledgeRequest struct {
+	StreamID   string `json:"stream_id"`
+	DeliveryID string `json:"delivery_id"`
+}
+
 type CloseRequest struct {
-	StreamID string    `json:"stream_id"`
-	Status   Status    `json:"status,omitempty"`
-	Reason   string    `json:"reason,omitempty"`
-	Now      time.Time `json:"now,omitempty"`
+	StreamID    string                          `json:"stream_id"`
+	Status      Status                          `json:"status,omitempty"`
+	FailureCode capability.ExecutionFailureCode `json:"failure_code,omitempty"`
+	Reason      string                          `json:"reason,omitempty"`
+	Now         time.Time                       `json:"now,omitempty"`
 }
 
 type PluginTransitionRequest struct {
-	PluginInstanceID string    `json:"plugin_instance_id"`
-	Status           Status    `json:"status"`
-	Reason           string    `json:"reason,omitempty"`
-	Now              time.Time `json:"now,omitempty"`
+	PluginInstanceID string                          `json:"plugin_instance_id"`
+	Status           Status                          `json:"status"`
+	FailureCode      capability.ExecutionFailureCode `json:"failure_code,omitempty"`
+	Reason           string                          `json:"reason,omitempty"`
+	Now              time.Time                       `json:"now,omitempty"`
+}
+
+type PruneRequest struct {
+	Before                      time.Time `json:"before"`
+	Limit                       int       `json:"limit,omitempty"`
+	MaxTerminalRecordsPerPlugin int       `json:"max_terminal_records_per_plugin,omitempty"`
+}
+
+type PruneResult struct {
+	Deleted int `json:"deleted"`
 }
 
 type ListRequest struct {
@@ -108,26 +145,41 @@ type Store interface {
 	List(ctx context.Context, req ListRequest) ([]Record, error)
 	Get(ctx context.Context, streamID string) (Record, error)
 	Append(ctx context.Context, req AppendRequest) (Event, error)
-	Peek(ctx context.Context, req ReadRequest) (Record, []Event, error)
-	Read(ctx context.Context, req ReadRequest) (Record, []Event, error)
+	Wait(ctx context.Context, streamID string) error
+	Deliver(ctx context.Context, req DeliverRequest) (Record, Delivery, error)
+	Acknowledge(ctx context.Context, req AcknowledgeRequest) (Record, error)
 	Close(ctx context.Context, req CloseRequest) (Record, error)
 	MarkPluginTransition(ctx context.Context, req PluginTransitionRequest) ([]Record, error)
+	Prune(ctx context.Context, req PruneRequest) (PruneResult, error)
 }
 
 type MemoryStore struct {
-	mu      sync.Mutex
-	now     func() time.Time
-	records map[string]Record
-	events  map[string][]Event
-	nextSeq map[string]uint64
+	mu                   sync.Mutex
+	now                  func() time.Time
+	records              map[string]Record
+	events               map[string][]Event
+	nextSeq              map[string]uint64
+	notify               map[string]*streamNotification
+	pending              map[string]Delivery
+	lastAck              map[string]string
+	terminalAcknowledged map[string]bool
+}
+
+type streamNotification struct {
+	ready   chan struct{}
+	waiters int
 }
 
 func NewMemoryStore() *MemoryStore {
 	return &MemoryStore{
-		now:     func() time.Time { return time.Now().UTC() },
-		records: map[string]Record{},
-		events:  map[string][]Event{},
-		nextSeq: map[string]uint64{},
+		now:                  func() time.Time { return time.Now().UTC() },
+		records:              map[string]Record{},
+		events:               map[string][]Event{},
+		nextSeq:              map[string]uint64{},
+		notify:               map[string]*streamNotification{},
+		pending:              map[string]Delivery{},
+		lastAck:              map[string]string{},
+		terminalAcknowledged: map[string]bool{},
 	}
 }
 
@@ -241,79 +293,167 @@ func (s *MemoryStore) Append(_ context.Context, req AppendRequest) (Event, error
 	if record.Status != StatusOpen {
 		return Event{}, ErrStreamClosed
 	}
-	nextBuffered := record.BufferedBytes + int64(len(req.Data))
-	if record.MaxBufferedBytes > 0 && nextBuffered > record.MaxBufferedBytes {
-		return Event{}, ErrBackpressure
-	}
-	seq := s.nextSeq[streamID] + 1
-	s.nextSeq[streamID] = seq
 	event := Event{
 		StreamID: streamID,
-		Sequence: seq,
+		Sequence: s.nextSeq[streamID] + 1,
 		Kind:     kind,
 		Data:     append([]byte(nil), req.Data...),
 		Error:    req.Error,
 		At:       now,
 	}
+	nextBuffered := record.BufferedBytes + streamEventCost(event)
+	if record.MaxBufferedBytes > 0 && nextBuffered > record.MaxBufferedBytes {
+		return Event{}, ErrBackpressure
+	}
+	s.nextSeq[streamID] = event.Sequence
 	s.events[streamID] = append(s.events[streamID], event)
 	record.BufferedBytes = nextBuffered
 	record.UpdatedAt = now
 	s.records[streamID] = record
+	s.notifyLocked(streamID)
 	return cloneEvent(event), nil
 }
 
-func (s *MemoryStore) Read(_ context.Context, req ReadRequest) (Record, []Event, error) {
+func (s *MemoryStore) Wait(ctx context.Context, streamID string) error {
 	if s == nil {
-		return Record{}, nil, errors.New("stream store is nil")
+		return errors.New("stream store is nil")
+	}
+	streamID = strings.TrimSpace(streamID)
+	if streamID == "" {
+		return ErrInvalidStream
+	}
+	s.mu.Lock()
+	record, ok := s.records[streamID]
+	if !ok {
+		s.mu.Unlock()
+		return ErrNotFound
+	}
+	if _, pending := s.pending[streamID]; pending || len(s.events[streamID]) > 0 || terminalStatus(record.Status) {
+		s.mu.Unlock()
+		return nil
+	}
+	notification := s.notify[streamID]
+	if notification == nil {
+		notification = &streamNotification{ready: make(chan struct{})}
+		s.notify[streamID] = notification
+	}
+	notification.waiters++
+	s.mu.Unlock()
+	defer s.releaseNotification(streamID, notification)
+
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-notification.ready:
+		return nil
+	}
+}
+
+func (s *MemoryStore) Deliver(_ context.Context, req DeliverRequest) (Record, Delivery, error) {
+	if s == nil {
+		return Record{}, Delivery{}, errors.New("stream store is nil")
 	}
 	streamID := strings.TrimSpace(req.StreamID)
-	if streamID == "" {
-		return Record{}, nil, ErrInvalidStream
+	readID := strings.TrimSpace(req.ReadID)
+	if streamID == "" || !readIDPattern.MatchString(readID) {
+		return Record{}, Delivery{}, ErrInvalidStream
 	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	record, ok := s.records[streamID]
 	if !ok {
-		return Record{}, nil, ErrNotFound
+		return Record{}, Delivery{}, ErrNotFound
+	}
+	if pending, ok := s.pending[streamID]; ok {
+		return cloneRecord(record), cloneDelivery(pending), nil
 	}
 	events := s.events[streamID]
 	if len(events) == 0 {
-		return cloneRecord(record), nil, nil
+		if terminalStatus(record.Status) && !s.terminalAcknowledged[streamID] {
+			deliveryID, err := newDeliveryID()
+			if err != nil {
+				return Record{}, Delivery{}, err
+			}
+			delivery := Delivery{DeliveryID: deliveryID, ReadID: readID, StreamID: streamID, Done: true, TerminalStatus: record.Status}
+			s.pending[streamID] = delivery
+			return cloneRecord(record), cloneDelivery(delivery), nil
+		}
+		return cloneRecord(record), Delivery{ReadID: readID, StreamID: streamID}, nil
 	}
 	limit := streamReadLimit(events, req.MaxEvents, req.MaxBytes)
 	if limit <= 0 {
-		return cloneRecord(record), nil, nil
+		return cloneRecord(record), Delivery{ReadID: readID, StreamID: streamID}, nil
 	}
-	out := cloneEvents(events[:limit])
-	remaining := append([]Event(nil), events[limit:]...)
-	s.events[streamID] = remaining
-	record.BufferedBytes -= eventsBytes(out)
-	if record.BufferedBytes < 0 {
-		record.BufferedBytes = 0
+	deliveryID, err := newDeliveryID()
+	if err != nil {
+		return Record{}, Delivery{}, err
 	}
-	record.UpdatedAt = s.now()
-	s.records[streamID] = record
-	return cloneRecord(record), out, nil
+	delivery := Delivery{
+		DeliveryID:      deliveryID,
+		ReadID:          readID,
+		StreamID:        streamID,
+		ThroughSequence: events[limit-1].Sequence,
+		Events:          cloneEvents(events[:limit]),
+		Done:            terminalStatus(record.Status) && limit == len(events),
+	}
+	if delivery.Done {
+		delivery.TerminalStatus = record.Status
+	}
+	s.pending[streamID] = delivery
+	return cloneRecord(record), cloneDelivery(delivery), nil
 }
 
-func (s *MemoryStore) Peek(_ context.Context, req ReadRequest) (Record, []Event, error) {
+func (s *MemoryStore) Acknowledge(_ context.Context, req AcknowledgeRequest) (Record, error) {
 	if s == nil {
-		return Record{}, nil, errors.New("stream store is nil")
+		return Record{}, errors.New("stream store is nil")
 	}
 	streamID := strings.TrimSpace(req.StreamID)
-	if streamID == "" {
-		return Record{}, nil, ErrInvalidStream
+	deliveryID := strings.TrimSpace(req.DeliveryID)
+	if streamID == "" || deliveryID == "" {
+		return Record{}, ErrInvalidStream
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	record, ok := s.records[streamID]
 	if !ok {
-		return Record{}, nil, ErrNotFound
+		return Record{}, ErrNotFound
 	}
-	events := s.events[streamID]
-	limit := streamReadLimit(events, req.MaxEvents, req.MaxBytes)
-	return cloneRecord(record), cloneEvents(events[:limit]), nil
+	pending, hasPending := s.pending[streamID]
+	if !hasPending {
+		if s.lastAck[streamID] == deliveryID {
+			return cloneRecord(record), nil
+		}
+		return Record{}, ErrDeliveryInvalid
+	}
+	if pending.DeliveryID != deliveryID {
+		if s.lastAck[streamID] == deliveryID {
+			return cloneRecord(record), nil
+		}
+		return Record{}, ErrDeliveryInvalid
+	}
+	if pending.ThroughSequence > 0 {
+		events := s.events[streamID]
+		limit := 0
+		for limit < len(events) && events[limit].Sequence <= pending.ThroughSequence {
+			limit++
+		}
+		acknowledged := events[:limit]
+		s.events[streamID] = append([]Event(nil), events[limit:]...)
+		record.BufferedBytes -= eventsCost(acknowledged)
+		if record.BufferedBytes < 0 {
+			record.BufferedBytes = 0
+		}
+	}
+	record.UpdatedAt = s.now()
+	s.records[streamID] = record
+	delete(s.pending, streamID)
+	s.lastAck[streamID] = deliveryID
+	if pending.Done {
+		s.terminalAcknowledged[streamID] = true
+	}
+	s.notifyLocked(streamID)
+	return cloneRecord(record), nil
 }
 
 func (s *MemoryStore) Close(_ context.Context, req CloseRequest) (Record, error) {
@@ -331,6 +471,10 @@ func (s *MemoryStore) Close(_ context.Context, req CloseRequest) (Record, error)
 	if !terminalStatus(status) {
 		return Record{}, ErrInvalidStream
 	}
+	failureCode, reason, err := normalizeTerminalOutcome(status, req.FailureCode, req.Reason)
+	if err != nil {
+		return Record{}, err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	record, ok := s.records[strings.TrimSpace(req.StreamID)]
@@ -341,10 +485,12 @@ func (s *MemoryStore) Close(_ context.Context, req CloseRequest) (Record, error)
 		return cloneRecord(record), nil
 	}
 	record.Status = status
-	record.Reason = req.Reason
+	record.FailureCode = failureCode
+	record.Reason = reason
 	record.UpdatedAt = now
 	record.ClosedAt = &now
 	s.records[record.StreamID] = record
+	s.notifyLocked(record.StreamID)
 	return cloneRecord(record), nil
 }
 
@@ -354,6 +500,10 @@ func (s *MemoryStore) MarkPluginTransition(_ context.Context, req PluginTransiti
 	}
 	if !terminalStatus(req.Status) {
 		return nil, ErrInvalidStream
+	}
+	failureCode, reason, err := normalizeTerminalOutcome(req.Status, req.FailureCode, req.Reason)
+	if err != nil {
+		return nil, err
 	}
 	now := req.Now
 	if now.IsZero() {
@@ -367,10 +517,12 @@ func (s *MemoryStore) MarkPluginTransition(_ context.Context, req PluginTransiti
 			continue
 		}
 		record.Status = req.Status
-		record.Reason = req.Reason
+		record.FailureCode = failureCode
+		record.Reason = reason
 		record.UpdatedAt = now
 		record.ClosedAt = &now
 		s.records[id] = record
+		s.notifyLocked(id)
 		changed = append(changed, cloneRecord(record))
 	}
 	sort.Slice(changed, func(i, j int) bool {
@@ -379,7 +531,126 @@ func (s *MemoryStore) MarkPluginTransition(_ context.Context, req PluginTransiti
 	return changed, nil
 }
 
-const DefaultMaxBufferedBytes int64 = 1 << 20
+func normalizeTerminalOutcome(status Status, failureCode capability.ExecutionFailureCode, reason string) (capability.ExecutionFailureCode, string, error) {
+	if status == StatusFailed {
+		if !failureCode.Valid() || strings.TrimSpace(reason) != "" {
+			return "", "", ErrInvalidStream
+		}
+		return failureCode, capability.ExecutionFailureMessage, nil
+	}
+	if failureCode != "" {
+		return "", "", ErrInvalidStream
+	}
+	return "", reason, nil
+}
+
+func (s *MemoryStore) Prune(_ context.Context, req PruneRequest) (PruneResult, error) {
+	if s == nil {
+		return PruneResult{}, errors.New("stream store is nil")
+	}
+	before, limit, maxRecordsPerPlugin, err := normalizePruneRequest(req)
+	if err != nil {
+		return PruneResult{}, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	terminalByPlugin := make(map[string][]Record)
+	for streamID, record := range s.records {
+		if !terminalStatus(record.Status) || record.ClosedAt == nil ||
+			!s.terminalAcknowledged[streamID] || len(s.events[streamID]) != 0 || s.pending[streamID].DeliveryID != "" || record.BufferedBytes != 0 {
+			continue
+		}
+		terminalByPlugin[record.PluginInstanceID] = append(terminalByPlugin[record.PluginInstanceID], record)
+	}
+	candidates := make([]Record, 0)
+	for _, records := range terminalByPlugin {
+		sort.Slice(records, func(i, j int) bool {
+			if records[i].ClosedAt.Equal(*records[j].ClosedAt) {
+				return records[i].StreamID > records[j].StreamID
+			}
+			return records[i].ClosedAt.After(*records[j].ClosedAt)
+		})
+		for index, record := range records {
+			if record.ClosedAt.Before(before) || index >= maxRecordsPerPlugin {
+				candidates = append(candidates, record)
+			}
+		}
+	}
+	sort.Slice(candidates, func(i, j int) bool {
+		if candidates[i].ClosedAt.Equal(*candidates[j].ClosedAt) {
+			return candidates[i].StreamID < candidates[j].StreamID
+		}
+		return candidates[i].ClosedAt.Before(*candidates[j].ClosedAt)
+	})
+	if len(candidates) > limit {
+		candidates = candidates[:limit]
+	}
+	for _, record := range candidates {
+		streamID := record.StreamID
+		delete(s.records, streamID)
+		delete(s.events, streamID)
+		delete(s.nextSeq, streamID)
+		delete(s.pending, streamID)
+		delete(s.lastAck, streamID)
+		delete(s.terminalAcknowledged, streamID)
+		if notification := s.notify[streamID]; notification != nil {
+			delete(s.notify, streamID)
+			close(notification.ready)
+		}
+	}
+	return PruneResult{Deleted: len(candidates)}, nil
+}
+
+func (s *MemoryStore) notifyLocked(streamID string) {
+	notification := s.notify[streamID]
+	if notification == nil {
+		return
+	}
+	delete(s.notify, streamID)
+	close(notification.ready)
+}
+
+func (s *MemoryStore) releaseNotification(streamID string, notification *streamNotification) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if notification.waiters > 0 {
+		notification.waiters--
+	}
+	if notification.waiters == 0 && s.notify[streamID] == notification {
+		delete(s.notify, streamID)
+	}
+}
+
+const (
+	DefaultMaxBufferedBytes            int64 = 1 << 20
+	DefaultPruneLimit                        = 500
+	MaxPruneLimit                            = 5000
+	DefaultMaxTerminalRecordsPerPlugin       = 1000
+	MaxTerminalRecordsPerPlugin              = 100_000
+	DefaultTerminalRetention                 = 7 * 24 * time.Hour
+)
+
+func normalizePruneRequest(req PruneRequest) (time.Time, int, int, error) {
+	if req.Before.IsZero() {
+		return time.Time{}, 0, 0, ErrInvalidStream
+	}
+	limit := req.Limit
+	if limit == 0 {
+		limit = DefaultPruneLimit
+	}
+	if limit < 1 || limit > MaxPruneLimit {
+		return time.Time{}, 0, 0, ErrInvalidStream
+	}
+	maxRecordsPerPlugin := req.MaxTerminalRecordsPerPlugin
+	if maxRecordsPerPlugin == 0 {
+		maxRecordsPerPlugin = DefaultMaxTerminalRecordsPerPlugin
+	}
+	if maxRecordsPerPlugin < 1 || maxRecordsPerPlugin > MaxTerminalRecordsPerPlugin {
+		return time.Time{}, 0, 0, ErrInvalidStream
+	}
+	return req.Before.UTC(), limit, maxRecordsPerPlugin, nil
+}
 
 func validDirection(direction Direction) bool {
 	switch direction {
@@ -405,6 +676,19 @@ func cloneEvents(events []Event) []Event {
 		out[i] = cloneEvent(event)
 	}
 	return out
+}
+
+func cloneDelivery(delivery Delivery) Delivery {
+	delivery.Events = cloneEvents(delivery.Events)
+	return delivery
+}
+
+func newDeliveryID() (string, error) {
+	raw := make([]byte, 18)
+	if _, err := rand.Read(raw); err != nil {
+		return "", err
+	}
+	return "delivery_" + base64.RawURLEncoding.EncodeToString(raw), nil
 }
 
 func cloneEvent(event Event) Event {
@@ -436,12 +720,16 @@ func cloneRecord(record Record) Record {
 	return record
 }
 
-func eventsBytes(events []Event) int64 {
+func eventsCost(events []Event) int64 {
 	var total int64
 	for _, event := range events {
-		total += int64(len(event.Data))
+		total += streamEventCost(event)
 	}
 	return total
+}
+
+func streamEventCost(event Event) int64 {
+	return streamEventOverheadBytes + int64(len(event.Kind)) + int64(len(event.Data)) + int64(len(event.Error))
 }
 
 func streamReadLimit(events []Event, maxEvents int, maxBytes int64) int {
@@ -454,7 +742,7 @@ func streamReadLimit(events []Event, maxEvents int, maxBytes int64) int {
 	}
 	var total int64
 	for index := 0; index < limit; index++ {
-		size := int64(len(events[index].Data))
+		size := streamEventCost(events[index])
 		if index > 0 && total+size > maxBytes {
 			return index
 		}

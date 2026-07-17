@@ -15,12 +15,22 @@ import (
 	"strings"
 	"time"
 
+	"github.com/floegence/redevplugin/pkg/bridge"
+	"github.com/floegence/redevplugin/pkg/capability"
+	"github.com/floegence/redevplugin/pkg/connectivity"
 	"github.com/floegence/redevplugin/pkg/host"
+	"github.com/floegence/redevplugin/pkg/installstage"
 	"github.com/floegence/redevplugin/pkg/manifest"
+	"github.com/floegence/redevplugin/pkg/observability"
+	"github.com/floegence/redevplugin/pkg/operation"
+	"github.com/floegence/redevplugin/pkg/plugindata"
 	"github.com/floegence/redevplugin/pkg/pluginpkg"
 	"github.com/floegence/redevplugin/pkg/registry"
+	"github.com/floegence/redevplugin/pkg/secrets"
+	"github.com/floegence/redevplugin/pkg/security"
 	"github.com/floegence/redevplugin/pkg/sessionctx"
 	"github.com/floegence/redevplugin/pkg/storage"
+	"github.com/floegence/redevplugin/pkg/stream"
 	"github.com/floegence/redevplugin/pkg/trust"
 	"github.com/floegence/redevplugin/pkg/version"
 )
@@ -40,17 +50,16 @@ type validateSummary struct {
 }
 
 type lifecycleSummary struct {
-	OK                 bool                       `json:"ok"`
-	Action             string                     `json:"action"`
-	PluginInstanceID   string                     `json:"plugin_instance_id"`
-	PluginID           string                     `json:"plugin_id"`
-	Version            string                     `json:"version"`
-	TrustState         registry.TrustState        `json:"trust_state"`
-	EnableState        registry.EnableState       `json:"enable_state"`
-	RetainedDataState  registry.RetainedDataState `json:"retained_data_state"`
-	PolicyRevision     uint64                     `json:"policy_revision"`
-	ManagementRevision uint64                     `json:"management_revision"`
-	RevokeEpoch        uint64                     `json:"revoke_epoch"`
+	OK                 bool                 `json:"ok"`
+	Action             string               `json:"action"`
+	PluginInstanceID   string               `json:"plugin_instance_id"`
+	PluginID           string               `json:"plugin_id"`
+	Version            string               `json:"version"`
+	TrustState         registry.TrustState  `json:"trust_state"`
+	EnableState        registry.EnableState `json:"enable_state"`
+	PolicyRevision     uint64               `json:"policy_revision"`
+	ManagementRevision uint64               `json:"management_revision"`
+	RevokeEpoch        uint64               `json:"revoke_epoch"`
 }
 
 type keygenSummary struct {
@@ -90,21 +99,20 @@ type compatibilityVerifySummary struct {
 	Contracts     int    `json:"contracts"`
 }
 
-type storageInspectSummary struct {
+type dataInspectSummary struct {
 	OK               bool                      `json:"ok"`
-	StorageRoot      string                    `json:"storage_root"`
+	StateRoot        string                    `json:"state_root"`
+	PluginDataRoot   string                    `json:"plugin_data_root"`
 	PluginInstanceID string                    `json:"plugin_instance_id,omitempty"`
+	BindingCount     int                       `json:"binding_count"`
+	ObjectCount      int                       `json:"object_count"`
 	NamespaceCount   int                       `json:"namespace_count"`
 	TotalUsageBytes  int64                     `json:"total_usage_bytes"`
 	TotalUsageFiles  int64                     `json:"total_usage_files"`
+	Bindings         []plugindata.Binding      `json:"bindings"`
+	Objects          []plugindata.Object       `json:"objects"`
 	Namespaces       []storage.NamespaceRecord `json:"namespaces"`
 	VersionMatrix    version.Matrix            `json:"version_matrix"`
-}
-
-type devImportDataOptions struct {
-	ArchiveRef         string
-	SettingsArchiveRef string
-	DeleteExisting     bool
 }
 
 type signingPrivateKeyFile struct {
@@ -136,6 +144,7 @@ func main() {
 }
 
 func run(ctx context.Context, args []string) error {
+	ctx = cliContext(ctx)
 	if len(args) == 0 {
 		return usage()
 	}
@@ -174,7 +183,7 @@ func run(ctx context.Context, args []string) error {
 		return verifyCompatibility(args[1], args[2])
 	case "host-capability":
 		return runHostCapability(ctx, args[1:])
-	case "inspect-storage":
+	case "inspect-data":
 		if len(args) != 2 && len(args) != 3 {
 			return usage()
 		}
@@ -182,7 +191,7 @@ func run(ctx context.Context, args []string) error {
 		if len(args) == 3 {
 			pluginInstanceID = args[2]
 		}
-		return inspectStorage(ctx, args[1], pluginInstanceID)
+		return inspectData(ctx, args[1], pluginInstanceID)
 	case "install-local":
 		if len(args) != 2 {
 			return usage()
@@ -228,14 +237,10 @@ func run(ctx context.Context, args []string) error {
 		}
 		return devSecretDelete(ctx, args[1], args[2], optionalSecretScope(args))
 	case "dev-permission-grant":
-		if len(args) != 3 && len(args) != 4 {
+		if len(args) != 3 {
 			return usage()
 		}
-		grantedBy := "dev-cli"
-		if len(args) == 4 {
-			grantedBy = args[3]
-		}
-		return devPermissionGrant(ctx, args[1], args[2], grantedBy)
+		return devPermissionGrant(ctx, args[1], args[2])
 	case "dev-permission-revoke":
 		if len(args) != 3 && len(args) != 4 {
 			return usage()
@@ -258,47 +263,30 @@ func run(ctx context.Context, args []string) error {
 		}
 		return devPermissionList(ctx, args[1], activeOnly)
 	case "dev-export-data":
-		if len(args) != 2 && len(args) != 3 {
+		if len(args) != 2 {
 			return usage()
 		}
-		includeSecrets := false
-		if len(args) == 3 {
-			if args[2] != "--include-secrets" {
-				return usage()
-			}
-			includeSecrets = true
-		}
-		return devExportData(ctx, args[1], includeSecrets)
+		return devExportData(ctx, args[1])
 	case "dev-import-data":
-		if len(args) < 3 {
+		if len(args) != 3 {
 			return usage()
 		}
-		options, err := parseDevImportDataOptions(args[2:])
-		if err != nil {
-			return err
+		return devImportData(ctx, args[1], args[2])
+	case "dev-delete-export":
+		if len(args) != 3 {
+			return usage()
 		}
-		return devImportData(ctx, args[1], options.ArchiveRef, options.SettingsArchiveRef, options.DeleteExisting)
+		return devDeleteExport(ctx, args[1], args[2])
 	case "dev-disable":
 		if len(args) != 2 {
 			return usage()
 		}
 		return devDisable(ctx, args[1])
 	case "dev-uninstall":
-		if len(args) != 2 && len(args) != 3 {
+		if len(args) != 2 {
 			return usage()
 		}
-		deleteData := true
-		if len(args) == 3 {
-			switch args[2] {
-			case "--delete-data":
-				deleteData = true
-			case "--keep-data":
-				deleteData = false
-			default:
-				return usage()
-			}
-		}
-		return devUninstall(ctx, args[1], deleteData)
+		return devUninstall(ctx, args[1])
 	case "dev-status":
 		if len(args) != 2 {
 			return usage()
@@ -348,24 +336,78 @@ func verifyCompatibility(manifestFile string, artifactRoot string) error {
 	})
 }
 
-func inspectStorage(ctx context.Context, root string, pluginInstanceID string) error {
-	root = strings.TrimSpace(root)
+func inspectData(ctx context.Context, root string, pluginInstanceID string) error {
+	root, err := normalizeDevStateRoot(root)
+	if err != nil {
+		return err
+	}
 	pluginInstanceID = strings.TrimSpace(pluginInstanceID)
-	if root == "" {
-		return fmt.Errorf("storage root is required")
-	}
-	broker, err := storage.NewFileBroker(root)
+	registryStore, err := registry.NewSQLiteStore(ctx, filepath.Join(root, devRegistryFile))
 	if err != nil {
 		return err
 	}
-	records, err := broker.ListNamespaces(ctx, pluginInstanceID)
+	pluginDataRoot := filepath.Join(root, devPluginDataDir)
+	pluginData, err := plugindata.Open(ctx, pluginDataRoot, registryStore)
 	if err != nil {
+		_ = registryStore.Close()
 		return err
+	}
+	defer func() {
+		_ = pluginData.Close()
+		_ = registryStore.Close()
+	}()
+	bindings := []plugindata.Binding{}
+	for cursor := ""; ; {
+		page, next, err := registryStore.ListBindings(ctx, cursor, 256)
+		if err != nil {
+			return err
+		}
+		bindings = append(bindings, page...)
+		if next == "" {
+			break
+		}
+		cursor = next
+	}
+	if pluginInstanceID != "" {
+		filtered := bindings[:0]
+		for _, binding := range bindings {
+			if binding.PluginInstanceID == pluginInstanceID {
+				filtered = append(filtered, binding)
+			}
+		}
+		bindings = filtered
+	}
+	objects := []plugindata.Object{}
+	for cursor := ""; ; {
+		page, next, err := registryStore.ListObjects(ctx, cursor, 256)
+		if err != nil {
+			return err
+		}
+		objects = append(objects, page...)
+		if next == "" {
+			break
+		}
+		cursor = next
+	}
+	records := []storage.NamespaceRecord{}
+	if pluginInstanceID != "" {
+		records, err = pluginData.ListNamespaces(ctx, pluginInstanceID)
+		if err != nil {
+			return err
+		}
+	} else {
+		for _, binding := range bindings {
+			pluginRecords, err := pluginData.ListNamespaces(ctx, binding.PluginInstanceID)
+			if err != nil {
+				return err
+			}
+			records = append(records, pluginRecords...)
+		}
 	}
 	totalUsage := int64(0)
 	totalUsageFiles := int64(0)
 	for i := range records {
-		usage, err := broker.Usage(ctx, records[i].PluginInstanceID, records[i].StoreID)
+		usage, err := pluginData.Usage(ctx, records[i].PluginInstanceID, records[i].StoreID)
 		if err != nil {
 			return err
 		}
@@ -376,13 +418,18 @@ func inspectStorage(ctx context.Context, root string, pluginInstanceID string) e
 		totalUsage += usage.UsageBytes
 		totalUsageFiles += usage.UsageFiles
 	}
-	return writeJSON(storageInspectSummary{
+	return writeJSON(dataInspectSummary{
 		OK:               true,
-		StorageRoot:      broker.Root(),
+		StateRoot:        root,
+		PluginDataRoot:   pluginDataRoot,
 		PluginInstanceID: pluginInstanceID,
+		BindingCount:     len(bindings),
+		ObjectCount:      len(objects),
 		NamespaceCount:   len(records),
 		TotalUsageBytes:  totalUsage,
 		TotalUsageFiles:  totalUsageFiles,
+		Bindings:         bindings,
+		Objects:          objects,
 		Namespaces:       records,
 		VersionMatrix:    version.CurrentMatrix(),
 	})
@@ -510,7 +557,7 @@ func createPluginScaffold(pluginID string, displayName string, outDir string) (s
 			Method:    "worker.echo",
 			Effect:    manifest.MethodEffectRead,
 			Execution: manifest.MethodExecutionSync,
-			Route:     manifest.MethodRouteSpec{Kind: manifest.MethodRouteWorker, WorkerID: "backend", Export: "redevplugin_worker_invoke"},
+			Route:     manifest.MethodRouteSpec{Kind: manifest.MethodRouteWorker, WorkerID: "backend"},
 			RequestSchema: closedRequiredMethodObjectSchema(map[string]any{
 				"message": map[string]any{"type": "string"},
 			}, []string{"message"}),
@@ -532,14 +579,12 @@ func createPluginScaffold(pluginID string, displayName string, outDir string) (s
 		"ui/styles.css":             []byte(scaffoldStylesCSS()),
 		"ui/src/app.ts":             scaffoldSource(scaffoldPluginWorkerTS, displayName),
 		"worker/Cargo.toml":         []byte(scaffoldCargoTOML(platformVersion)),
-		"worker/abi.json":           []byte(scaffoldWorkerABIJSON()),
 		"worker/src/lib.rs":         append([]byte(nil), scaffoldWorkerRust...),
 		"dist/manifest.json":        append([]byte(nil), manifestBytes...),
 		"dist/ui/index.html":        []byte(scaffoldIndexHTML(pluginID, displayName)),
 		"dist/ui/assets/app.js":     scaffoldSource(scaffoldPluginWorkerJS, displayName),
 		"dist/ui/assets/styles.css": []byte(scaffoldStylesCSS()),
 		"dist/workers/backend.wasm": append([]byte(nil), scaffoldWorkerWASM...),
-		"dist/workers/abi.json":     []byte(scaffoldWorkerABIJSON()),
 	}
 	if _, err := os.Stat(outDir); err == nil {
 		entries, err := os.ReadDir(outDir)
@@ -666,7 +711,6 @@ await mkdir(resolve(root, "dist/workers"), { recursive: true });
 await copyFile(resolve(root, "manifest.json"), resolve(root, "dist/manifest.json"));
 await copyFile(resolve(root, "ui/index.html"), resolve(root, "dist/ui/index.html"));
 await copyFile(resolve(root, "ui/styles.css"), resolve(root, "dist/ui/assets/styles.css"));
-await copyFile(resolve(root, "worker/abi.json"), resolve(root, "dist/workers/abi.json"));
 await copyFile(
   resolve(root, "worker/target/wasm32-unknown-unknown/release/redevplugin_generated_worker.wasm"),
   resolve(root, "dist/workers/backend.wasm"),
@@ -843,36 +887,6 @@ func optionalSecretScope(args []string) string {
 	return "user"
 }
 
-func parseDevImportDataOptions(args []string) (devImportDataOptions, error) {
-	options := devImportDataOptions{}
-	for i := 0; i < len(args); i++ {
-		switch args[i] {
-		case "--archive-ref":
-			i++
-			if i >= len(args) || strings.TrimSpace(args[i]) == "" {
-				return devImportDataOptions{}, usage()
-			}
-			options.ArchiveRef = args[i]
-		case "--settings-archive-ref":
-			i++
-			if i >= len(args) || strings.TrimSpace(args[i]) == "" {
-				return devImportDataOptions{}, usage()
-			}
-			options.SettingsArchiveRef = args[i]
-		case "--delete-existing":
-			options.DeleteExisting = true
-		case "--merge":
-			options.DeleteExisting = false
-		default:
-			return devImportDataOptions{}, usage()
-		}
-	}
-	if strings.TrimSpace(options.ArchiveRef) == "" && strings.TrimSpace(options.SettingsArchiveRef) == "" {
-		return devImportDataOptions{}, usage()
-	}
-	return options, nil
-}
-
 func writeJSON(v any) error {
 	encoder := json.NewEncoder(os.Stdout)
 	encoder.SetIndent("", "  ")
@@ -902,7 +916,7 @@ func writeBytesFile(filename string, data []byte, perm os.FileMode) error {
 }
 
 func usage() error {
-	return fmt.Errorf("usage: redevplugin validate <manifest.json|package.redevplugin> | redevplugin scaffold <plugin-id> <display-name> <out-dir> | redevplugin package <dir> <out.redevplugin> | redevplugin keygen <key-id> <private.json> <public.json> | redevplugin sign <package.redevplugin> <private.json> <out.redevplugin> | redevplugin host-capability build <config.json> <out-dir> | redevplugin host-capability verify <artifact-root> <pin.json> <public.json> | redevplugin host-capability generate-client <artifact-root> <pin.json> <public.json> <out.ts> [--check] | redevplugin inspect-storage <storage-root> [plugin-instance-id] | redevplugin install-local <package> | redevplugin install-verified <signed-package> <public.json> | redevplugin dev-install <state-root> <package> [--capability <artifact-root> <pin.json> <public.json>]... | redevplugin dev-enable <state-root> | redevplugin dev-open <state-root> <surface-id> | redevplugin dev-secret-bind <state-root> <secret-ref> [user|environment] | redevplugin dev-secret-test <state-root> <secret-ref> [user|environment] | redevplugin dev-secret-delete <state-root> <secret-ref> [user|environment] | redevplugin dev-permission-grant <state-root> <permission-id> [granted-by] | redevplugin dev-permission-revoke <state-root> <permission-id> [reason] | redevplugin dev-permission-list <state-root> [--active-only] | redevplugin dev-export-data <state-root> [--include-secrets] | redevplugin dev-import-data <state-root> [--archive-ref <ref>] [--settings-archive-ref <ref>] [--delete-existing|--merge] | redevplugin dev-disable <state-root> | redevplugin dev-uninstall <state-root> [--delete-data|--keep-data] | redevplugin dev-status <state-root> | redevplugin examples-server <state-root> <runtime-path> | redevplugin enable <package> | redevplugin disable <package> | redevplugin uninstall <package> | redevplugin version | redevplugin verify-compatibility <compatibility.json> <artifact-root>")
+	return fmt.Errorf("usage: redevplugin validate <manifest.json|package.redevplugin> | redevplugin scaffold <plugin-id> <display-name> <out-dir> | redevplugin package <dir> <out.redevplugin> | redevplugin keygen <key-id> <private.json> <public.json> | redevplugin sign <package.redevplugin> <private.json> <out.redevplugin> | redevplugin host-capability build <config.json> <out-dir> | redevplugin host-capability verify <artifact-root> <pin.json> <public.json> | redevplugin host-capability generate-client <artifact-root> <pin.json> <public.json> <out.ts> [--check] | redevplugin inspect-data <state-root> [plugin-instance-id] | redevplugin install-local <package> | redevplugin install-verified <signed-package> <public.json> | redevplugin dev-install <state-root> <package> [--capability <artifact-root> <pin.json> <public.json>]... | redevplugin dev-enable <state-root> | redevplugin dev-open <state-root> <surface-id> | redevplugin dev-secret-bind <state-root> <secret-ref> [user|environment] | redevplugin dev-secret-test <state-root> <secret-ref> [user|environment] | redevplugin dev-secret-delete <state-root> <secret-ref> [user|environment] | redevplugin dev-permission-grant <state-root> <permission-id> | redevplugin dev-permission-revoke <state-root> <permission-id> [reason] | redevplugin dev-permission-list <state-root> [--active-only] | redevplugin dev-export-data <state-root> | redevplugin dev-import-data <state-root> <bundle-ref> | redevplugin dev-delete-export <state-root> <bundle-ref> | redevplugin dev-disable <state-root> | redevplugin dev-uninstall <state-root> | redevplugin dev-status <state-root> | redevplugin examples-server <state-root> <runtime-path> | redevplugin enable <package> | redevplugin disable <package> | redevplugin uninstall <package> | redevplugin version | redevplugin verify-compatibility <compatibility.json> <artifact-root>")
 }
 
 func lifecycleHarness(ctx context.Context, action string, packageFile string) error {
@@ -910,23 +924,22 @@ func lifecycleHarness(ctx context.Context, action string, packageFile string) er
 	if err != nil {
 		return err
 	}
-	storageRoot, err := os.MkdirTemp("", "redevplugin-lifecycle-storage-")
+	root, err := os.MkdirTemp("", "redevplugin-lifecycle-")
 	if err != nil {
 		return err
 	}
-	defer os.RemoveAll(storageRoot)
-	storageBroker, err := storage.NewFileBroker(storageRoot)
+	defer os.RemoveAll(root)
+	registryStore := registry.NewMemoryStore()
+	pluginData, err := plugindata.Open(ctx, filepath.Join(root, "plugin-data"), registryStore)
 	if err != nil {
 		return err
 	}
-	h, err := host.New(host.Adapters{
-		SessionResolver: staticSessionResolver{},
-		Policy:          staticPolicyAdapter{},
-		Storage:         storageBroker,
-	})
+	h, err := host.Open(ctx, newEphemeralCLIAdapters(registryStore, pluginData))
 	if err != nil {
+		_ = pluginData.Close()
 		return err
 	}
+	defer h.Close()
 	record, err := host.ImportLocalPackageBytes(ctx, h, data)
 	if err != nil {
 		return err
@@ -935,14 +948,14 @@ func lifecycleHarness(ctx context.Context, action string, packageFile string) er
 	case "install-local":
 		return writeLifecycle(action, record)
 	case "enable":
-		record, err = h.EnablePlugin(ctx, host.EnableRequest{PluginInstanceID: record.PluginInstanceID, PluginStateVersion: record.ManagementRevision})
+		record, err = h.EnablePlugin(ctx, host.EnableRequest{PluginInstanceID: record.PluginInstanceID, ExpectedManagementRevision: record.ManagementRevision})
 	case "disable":
-		record, err = h.EnablePlugin(ctx, host.EnableRequest{PluginInstanceID: record.PluginInstanceID, PluginStateVersion: record.ManagementRevision})
+		record, err = h.EnablePlugin(ctx, host.EnableRequest{PluginInstanceID: record.PluginInstanceID, ExpectedManagementRevision: record.ManagementRevision})
 		if err == nil {
-			record, err = h.DisablePlugin(ctx, host.DisableRequest{PluginInstanceID: record.PluginInstanceID, PluginStateVersion: record.ManagementRevision, Reason: "cli"})
+			record, err = h.DisablePlugin(ctx, host.DisableRequest{PluginInstanceID: record.PluginInstanceID, ExpectedManagementRevision: record.ManagementRevision, Reason: "cli"})
 		}
 	case "uninstall":
-		record, err = h.UninstallPlugin(ctx, host.UninstallRequest{PluginInstanceID: record.PluginInstanceID, PluginStateVersion: record.ManagementRevision, DeleteData: true})
+		record, err = h.UninstallPlugin(ctx, host.UninstallRequest{PluginInstanceID: record.PluginInstanceID, ExpectedManagementRevision: record.ManagementRevision, DeleteData: true})
 	}
 	if err != nil {
 		return err
@@ -959,22 +972,32 @@ func installVerifiedHarness(ctx context.Context, packageFile string, publicKeyFi
 	if err != nil {
 		return err
 	}
-	h, err := host.New(host.Adapters{
-		SessionResolver: staticSessionResolver{},
-		Policy:          staticPolicyAdapter{},
-		PackageTrustVerifier: trust.Ed25519Verifier{
-			Keyring: trust.StaticKeyring{Keys: []trust.SigningKey{{
-				Algorithm:   publicDoc.Algorithm,
-				KeyID:       publicDoc.KeyID,
-				PublisherID: publicDoc.PublisherID,
-				PluginID:    publicDoc.PluginID,
-				PublicKey:   publicKey,
-			}}},
-		},
-	})
+	root, err := os.MkdirTemp("", "redevplugin-verified-install-")
 	if err != nil {
 		return err
 	}
+	defer os.RemoveAll(root)
+	registryStore := registry.NewMemoryStore()
+	pluginData, err := plugindata.Open(ctx, filepath.Join(root, "plugin-data"), registryStore)
+	if err != nil {
+		return err
+	}
+	adapters := newEphemeralCLIAdapters(registryStore, pluginData)
+	adapters.PackageTrustVerifier = trust.Ed25519Verifier{
+		Keyring: trust.StaticKeyring{Keys: []trust.SigningKey{{
+			Algorithm:   publicDoc.Algorithm,
+			KeyID:       publicDoc.KeyID,
+			PublisherID: publicDoc.PublisherID,
+			PluginID:    publicDoc.PluginID,
+			PublicKey:   publicKey,
+		}}},
+	}
+	h, err := host.Open(ctx, adapters)
+	if err != nil {
+		_ = pluginData.Close()
+		return err
+	}
+	defer h.Close()
 	record, err := host.ImportLocalPackageBytes(ctx, h, data)
 	if err != nil {
 		return err
@@ -991,7 +1014,6 @@ func writeLifecycle(action string, record registry.PluginRecord) error {
 		Version:            record.Version,
 		TrustState:         record.TrustState,
 		EnableState:        record.EnableState,
-		RetainedDataState:  record.RetainedDataState,
 		PolicyRevision:     record.PolicyRevision,
 		ManagementRevision: record.ManagementRevision,
 		RevokeEpoch:        record.RevokeEpoch,
@@ -1147,14 +1169,6 @@ func scaffoldStylesCSS() string {
 		"}\n"
 }
 
-func scaffoldWorkerABIJSON() string {
-	return "{\n" +
-		"  \"abi_version\": \"redevplugin-wasm-worker-v2\",\n" +
-		"  \"exports\": [\"redevplugin_worker_invoke\"],\n" +
-		"  \"imports\": []\n" +
-		"}\n"
-}
-
 func htmlEscape(value string) string {
 	replacer := strings.NewReplacer(
 		"&", "&amp;",
@@ -1170,10 +1184,47 @@ func sortStrings(values []string) {
 	sort.Strings(values)
 }
 
-type staticSessionResolver struct{}
+func cliContext(ctx context.Context) context.Context {
+	return sessionctx.WithContext(ctx, sessionctx.Context{
+		OwnerSessionHash:     "cli_owner_session",
+		OwnerUserHash:        "cli_owner_user",
+		OwnerEnvHash:         "cli_owner_environment",
+		SessionChannelIDHash: "cli_session_channel",
+	})
+}
 
-func (staticSessionResolver) ResolveSession(context.Context, string) (sessionctx.Context, error) {
-	return sessionctx.Context{}, nil
+func newEphemeralCLIAdapters(registryStore registry.Store, pluginData host.PluginData) host.Adapters {
+	events := observability.NewMemoryStore()
+	connectivityBroker := connectivity.NewMemoryBroker()
+	trustVerifier := trust.Ed25519Verifier{Keyring: trust.StaticKeyring{}}
+	return host.Adapters{
+		Policy:                      staticPolicyAdapter{},
+		PackageTrustVerifier:        trustVerifier,
+		ReleaseMetadataVerifier:     trustVerifier,
+		RevocationVerifier:          trustVerifier,
+		ReleaseSourcePolicy:         commandReleaseSourceAdapter{},
+		ReleaseArtifactResolver:     commandReleaseSourceAdapter{},
+		HostRequirements:            commandHostRequirementPolicy{},
+		CapabilityContractArtifacts: commandReleaseSourceAdapter{},
+		CapabilityContractKeys:      commandReleaseSourceAdapter{},
+		Registry:                    registryStore,
+		Audit:                       events,
+		Diagnostics:                 events,
+		Secrets:                     secrets.NewMemoryStore(),
+		RuntimeManager:              commandInactiveRuntimeManager{},
+		SurfaceCatalog:              commandSurfaceCatalogSink{},
+		Assets:                      pluginpkg.NewMemoryAssetStore(),
+		InstallStages:               installstage.NewMemoryStore(),
+		Capabilities:                capability.NewRegistry(),
+		CoreActions:                 commandCoreActionAdapter{},
+		SurfaceTokens:               bridge.NewSurfaceTokenService(nil, bridge.SurfaceTokenOptions{}),
+		PluginData:                  pluginData,
+		Connectivity:                connectivityBroker,
+		NetworkExecutor:             connectivity.NewExecutor(connectivity.ExecutorOptions{}),
+		Operations:                  operation.NewMemoryStore(),
+		ConfirmationIntents:         security.NewMemoryConfirmationIntentStore(),
+		Streams:                     stream.NewMemoryStore(),
+	}
 }
 
 type staticPolicyAdapter struct{}

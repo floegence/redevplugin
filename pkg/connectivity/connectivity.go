@@ -25,6 +25,7 @@ import (
 
 	"github.com/floegence/redevplugin/pkg/manifest"
 	"github.com/floegence/redevplugin/pkg/version"
+	"golang.org/x/net/http/httpguts"
 )
 
 type Transport string
@@ -163,34 +164,66 @@ type Classifier struct {
 	specialHosts  map[string]struct{}
 }
 
+var defaultBlockedIPRanges = []string{
+	"0.0.0.0/8",
+	"10.0.0.0/8",
+	"100.64.0.0/10",
+	"127.0.0.0/8",
+	"169.254.0.0/16",
+	"172.16.0.0/12",
+	"192.0.0.0/24",
+	"192.0.2.0/24",
+	"192.31.196.0/24",
+	"192.52.193.0/24",
+	"192.88.99.0/24",
+	"192.168.0.0/16",
+	"192.175.48.0/24",
+	"198.18.0.0/15",
+	"198.51.100.0/24",
+	"203.0.113.0/24",
+	"224.0.0.0/4",
+	"240.0.0.0/4",
+	"::/96",
+	"::1/128",
+	"64:ff9b::/96",
+	"64:ff9b:1::/48",
+	"100::/64",
+	"2001::/23",
+	"2001:db8::/32",
+	"2002::/16",
+	"3fff::/20",
+	"5f00::/16",
+	"2620:4f:8000::/48",
+	"fc00::/7",
+	"fe80::/10",
+	"fec0::/10",
+	"ff00::/8",
+}
+
+var defaultSpecialHosts = []string{
+	"localhost",
+	"metadata.google.internal",
+	"metadata.goog",
+	"instance-data",
+	"instance-data.ec2.internal",
+	"metadata.azure.internal",
+	"169.254.169.254",
+}
+
 func DefaultClassifier() Classifier {
-	cidrs := []string{
-		"0.0.0.0/8",
-		"10.0.0.0/8",
-		"127.0.0.0/8",
-		"169.254.0.0/16",
-		"172.16.0.0/12",
-		"192.168.0.0/16",
-		"::1/128",
-		"fc00::/7",
-		"fe80::/10",
-	}
-	ranges := make([]netip.Prefix, 0, len(cidrs))
-	for _, cidr := range cidrs {
+	ranges := make([]netip.Prefix, 0, len(defaultBlockedIPRanges))
+	for _, cidr := range defaultBlockedIPRanges {
 		prefix, err := netip.ParsePrefix(cidr)
 		if err != nil {
 			panic(err)
 		}
 		ranges = append(ranges, prefix)
 	}
-	return Classifier{
-		blockedRanges: ranges,
-		specialHosts: map[string]struct{}{
-			"localhost":                {},
-			"metadata.google.internal": {},
-			"169.254.169.254":          {},
-		},
+	specialHosts := make(map[string]struct{}, len(defaultSpecialHosts))
+	for _, host := range defaultSpecialHosts {
+		specialHosts[host] = struct{}{}
 	}
+	return Classifier{blockedRanges: ranges, specialHosts: specialHosts}
 }
 
 func CompilePolicy(req CompileRequest) (PolicySet, error) {
@@ -418,7 +451,7 @@ func defaultPortForScheme(scheme string) int {
 func (c Classifier) Evaluate(destination Destination) error {
 	host := strings.ToLower(destination.Host)
 	if _, ok := c.specialHosts[host]; ok {
-		return fmt.Errorf("%w: special host %q is blocked", ErrTargetDenied, destination.Host)
+		return fmt.Errorf("%w: destination is blocked", ErrTargetDenied)
 	}
 	if addr, err := netip.ParseAddr(strings.Trim(host, "[]")); err == nil {
 		return c.EvaluateResolvedAddress(destination, addr)
@@ -433,7 +466,7 @@ func (c Classifier) EvaluateResolvedAddress(destination Destination, addr netip.
 	addr = addr.Unmap()
 	for _, prefix := range c.blockedRanges {
 		if prefix.Contains(addr) {
-			return fmt.Errorf("%w: host %q resolved to blocked address %s in range %s", ErrTargetDenied, destination.Host, addr, prefix)
+			return fmt.Errorf("%w: resolved destination is blocked", ErrTargetDenied)
 		}
 	}
 	return nil
@@ -558,9 +591,7 @@ type NetworkExecutor interface {
 }
 
 type ExecutorOptions struct {
-	HTTPClient       *http.Client
 	Dialer           *net.Dialer
-	DialContext      func(ctx context.Context, network string, address string) (net.Conn, error)
 	LookupIPAddr     func(ctx context.Context, host string) ([]net.IPAddr, error)
 	UDPRateLimiter   UDPRateLimiter
 	MaxRequestBytes  int64
@@ -577,6 +608,10 @@ type Executor struct {
 	maxResponseBytes int64
 	defaultTimeout   time.Duration
 	now              func() time.Time
+}
+
+type executorNetworkOptions struct {
+	dialContext func(ctx context.Context, network string, address string) (net.Conn, error)
 }
 
 const (
@@ -687,26 +722,28 @@ func (key UDPRateLimitKey) udpRateBucketKey() string {
 }
 
 func NewExecutor(options ExecutorOptions) *Executor {
+	return newExecutor(options, executorNetworkOptions{})
+}
+
+func newExecutor(options ExecutorOptions, networkOptions executorNetworkOptions) *Executor {
 	dialer := options.Dialer
 	if dialer == nil {
 		dialer = &net.Dialer{}
 	}
-	dialContext := options.DialContext
+	dialContext := networkOptions.dialContext
 	if dialContext == nil {
 		dialContext = guardedDialContext(dialer, options.LookupIPAddr)
 	}
-	httpClient := options.HTTPClient
-	if httpClient == nil {
-		httpClient = &http.Client{
-			Transport: &http.Transport{
-				Proxy:             nil,
-				DialContext:       dialContext,
-				DisableKeepAlives: true,
-			},
-			CheckRedirect: func(*http.Request, []*http.Request) error {
-				return http.ErrUseLastResponse
-			},
-		}
+	httpClient := &http.Client{
+		Transport: &http.Transport{
+			Proxy:             nil,
+			DialContext:       dialContext,
+			DisableKeepAlives: true,
+			TLSClientConfig:   &tls.Config{MinVersion: tls.VersionTLS12},
+		},
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
 	}
 	maxRequestBytes := options.MaxRequestBytes
 	if maxRequestBytes <= 0 {
@@ -867,6 +904,10 @@ func (e *Executor) openHTTP(ctx context.Context, req HTTPRequest) (*http.Respons
 	if err != nil {
 		return nil, nil, err
 	}
+	headers, err := validateForwardHeaders(req.Headers)
+	if err != nil {
+		return nil, nil, err
+	}
 	target := url.URL{
 		Scheme:   req.Grant.Destination.Scheme,
 		Host:     net.JoinHostPort(req.Grant.Destination.Host, strconv.Itoa(req.Grant.Destination.Port)),
@@ -880,10 +921,7 @@ func (e *Executor) openHTTP(ctx context.Context, req HTTPRequest) (*http.Respons
 		return nil, nil, err
 	}
 	httpReq.Host = hostHeader(req.Grant.Destination)
-	for key, values := range req.Headers {
-		if !safeForwardHeader(key) {
-			continue
-		}
+	for key, values := range headers {
 		for _, value := range values {
 			httpReq.Header.Add(key, value)
 		}
@@ -918,6 +956,10 @@ func (e *Executor) WebSocketRoundTrip(ctx context.Context, req WebSocketRoundTri
 	if err != nil {
 		return WebSocketRoundTripResponse{}, err
 	}
+	headers, err := validateForwardHeaders(req.Headers)
+	if err != nil {
+		return WebSocketRoundTripResponse{}, err
+	}
 	ctx, cancel := context.WithTimeout(ctx, timeoutOrDefault(req.Timeout, e.defaultTimeout))
 	defer cancel()
 	conn, err := e.dialWebSocket(ctx, req.Grant)
@@ -936,7 +978,7 @@ func (e *Executor) WebSocketRoundTrip(ctx context.Context, req WebSocketRoundTri
 	if err != nil {
 		return WebSocketRoundTripResponse{}, err
 	}
-	if err := writeWebSocketHandshake(conn, req.Grant, path, key, req.Headers); err != nil {
+	if err := writeWebSocketHandshake(conn, req.Grant, path, key, headers); err != nil {
 		return WebSocketRoundTripResponse{}, contextOrNetworkError(ctx, err)
 	}
 	if err := readWebSocketHandshake(reader, key); err != nil {
@@ -1086,13 +1128,45 @@ func cleanHTTPPath(path string) (string, error) {
 	return path, nil
 }
 
-func safeForwardHeader(key string) bool {
-	key = http.CanonicalHeaderKey(strings.TrimSpace(key))
-	switch key {
-	case "", "Host", "Connection", "Proxy-Authorization", "Proxy-Authenticate", "Upgrade", "Alt-Svc":
-		return false
-	default:
+func validateForwardHeaders(headers http.Header) (http.Header, error) {
+	validated := make(http.Header, len(headers))
+	for name, values := range headers {
+		if !httpguts.ValidHeaderFieldName(name) {
+			return nil, fmt.Errorf("%w: HTTP header name is invalid", ErrInvalidConnector)
+		}
+		lowerName := strings.ToLower(name)
+		if forbiddenForwardHeader(lowerName) || strings.HasPrefix(lowerName, "sec-websocket-") {
+			return nil, fmt.Errorf("%w: HTTP header is not allowed", ErrInvalidConnector)
+		}
+		canonicalName := http.CanonicalHeaderKey(name)
+		for _, value := range values {
+			if !httpguts.ValidHeaderFieldValue(value) {
+				return nil, fmt.Errorf("%w: HTTP header value is invalid", ErrInvalidConnector)
+			}
+			validated[canonicalName] = append(validated[canonicalName], value)
+		}
+	}
+	return validated, nil
+}
+
+func forbiddenForwardHeader(lowerName string) bool {
+	switch lowerName {
+	case "host",
+		"connection",
+		"upgrade",
+		"transfer-encoding",
+		"content-length",
+		"te",
+		"trailer",
+		"keep-alive",
+		"proxy-connection",
+		"proxy-authorization",
+		"proxy-authenticate",
+		"alt-svc",
+		"http2-settings":
 		return true
+	default:
+		return false
 	}
 }
 
@@ -1114,11 +1188,11 @@ func responseLimit(overrideLimit int64, defaultLimit int64) int64 {
 	return defaultLimit
 }
 
-func timeoutOrDefault(timeout time.Duration, fallback time.Duration) time.Duration {
+func timeoutOrDefault(timeout time.Duration, defaultTimeout time.Duration) time.Duration {
 	if timeout > 0 {
 		return timeout
 	}
-	return fallback
+	return defaultTimeout
 }
 
 func grantEndpoint(grant ConnectionGrant) string {
@@ -1173,7 +1247,7 @@ func guardedDialContext(dialer *net.Dialer, lookupIPAddr func(context.Context, s
 			return nil, err
 		}
 		if len(addresses) == 0 {
-			return nil, fmt.Errorf("%w: host %q resolved to no addresses", ErrTargetDenied, host)
+			return nil, fmt.Errorf("%w: destination resolved to no addresses", ErrTargetDenied)
 		}
 		resolvedAddresses := make([]netip.Addr, 0, len(addresses))
 		for _, resolved := range addresses {
@@ -1205,29 +1279,16 @@ func guardedDialContext(dialer *net.Dialer, lookupIPAddr func(context.Context, s
 func (e *Executor) dialWebSocket(ctx context.Context, grant ConnectionGrant) (net.Conn, error) {
 	address := grantEndpoint(grant)
 	if grant.Destination.Scheme == "wss" {
-		dialer := tls.Dialer{
-			NetDialer: &net.Dialer{
-				Resolver: nil,
-			},
-			Config: &tls.Config{ServerName: grant.Destination.Host, MinVersion: tls.VersionTLS12},
+		rawConn, err := e.dialContext(ctx, "tcp", address)
+		if err != nil {
+			return nil, err
 		}
-		if e.dialContext != nil {
-			netDialer := tls.Dialer{
-				NetDialer: &net.Dialer{},
-				Config:    &tls.Config{ServerName: grant.Destination.Host, MinVersion: tls.VersionTLS12},
-			}
-			rawConn, err := e.dialContext(ctx, "tcp", address)
-			if err != nil {
-				return nil, err
-			}
-			tlsConn := tls.Client(rawConn, netDialer.Config)
-			if err := tlsConn.HandshakeContext(ctx); err != nil {
-				_ = rawConn.Close()
-				return nil, err
-			}
-			return tlsConn, nil
+		tlsConn := tls.Client(rawConn, &tls.Config{ServerName: grant.Destination.Host, MinVersion: tls.VersionTLS12})
+		if err := tlsConn.HandshakeContext(ctx); err != nil {
+			_ = rawConn.Close()
+			return nil, err
 		}
-		return dialer.DialContext(ctx, "tcp", address)
+		return tlsConn, nil
 	}
 	return e.dialContext(ctx, "tcp", address)
 }
@@ -1250,15 +1311,8 @@ func writeWebSocketHandshake(conn net.Conn, grant ConnectionGrant, path string, 
 	fmt.Fprintf(&request, "Sec-WebSocket-Key: %s\r\n", key)
 	request.WriteString("Sec-WebSocket-Version: 13\r\n")
 	for name, values := range headers {
-		if !safeForwardHeader(name) || !safeWebSocketHeader(name) {
-			continue
-		}
-		canonical := http.CanonicalHeaderKey(name)
 		for _, value := range values {
-			if strings.ContainsAny(value, "\r\n") {
-				return fmt.Errorf("%w: websocket header value is invalid", ErrInvalidConnector)
-			}
-			fmt.Fprintf(&request, "%s: %s\r\n", canonical, value)
+			fmt.Fprintf(&request, "%s: %s\r\n", name, value)
 		}
 	}
 	request.WriteString("\r\n")
@@ -1440,24 +1494,19 @@ func websocketMessageTypeForOpcode(opcode byte) (WebSocketMessageType, error) {
 	}
 }
 
-func safeWebSocketHeader(key string) bool {
-	key = http.CanonicalHeaderKey(strings.TrimSpace(key))
-	switch key {
-	case "Sec-Websocket-Key", "Sec-Websocket-Version", "Sec-Websocket-Accept", "Sec-Websocket-Extensions", "Sec-Websocket-Protocol":
-		return false
-	default:
-		return true
-	}
-}
-
 func hostHeader(destination Destination) string {
+	host := strings.Trim(destination.Host, "[]")
+	defaultAuthority := host
+	if strings.Contains(host, ":") {
+		defaultAuthority = "[" + host + "]"
+	}
 	if destination.Scheme == "ws" && destination.Port == 80 || destination.Scheme == "wss" && destination.Port == 443 {
-		return destination.Host
+		return defaultAuthority
 	}
 	if destination.Scheme == "http" && destination.Port == 80 || destination.Scheme == "https" && destination.Port == 443 {
-		return destination.Host
+		return defaultAuthority
 	}
-	return net.JoinHostPort(destination.Host, strconv.Itoa(destination.Port))
+	return net.JoinHostPort(host, strconv.Itoa(destination.Port))
 }
 
 func websocketHostHeader(destination Destination) string {

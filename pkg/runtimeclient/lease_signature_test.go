@@ -1,6 +1,7 @@
 package runtimeclient
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"encoding/base64"
@@ -10,14 +11,11 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/floegence/redevplugin/pkg/observability"
 )
 
-func TestCanonicalRuntimeLeaseSignaturePayloadExcludesSecrets(t *testing.T) {
+func TestCanonicalRuntimeLeaseSignaturePayloadExcludesSignature(t *testing.T) {
 	now := time.Date(2026, 7, 4, 10, 30, 0, 123000000, time.UTC)
 	lease := runtimeLeaseSignatureTestLease(now)
-	lease.LeaseToken = "runtime_execution_lease.rel_1.secret"
 	lease.Signature = "ed25519:secret-signature-bytes"
 
 	payload, err := CanonicalRuntimeLeaseSignaturePayload(lease, "worker.echo")
@@ -25,7 +23,7 @@ func TestCanonicalRuntimeLeaseSignaturePayloadExcludesSecrets(t *testing.T) {
 		t.Fatalf("CanonicalRuntimeLeaseSignaturePayload() error = %v", err)
 	}
 	encoded := string(payload)
-	for _, secret := range []string{"runtime_execution_lease.rel_1.secret", "secret-signature-bytes"} {
+	for _, secret := range []string{"secret-signature-bytes"} {
 		if strings.Contains(encoded, secret) {
 			t.Fatalf("canonical payload leaked secret %q: %s", secret, encoded)
 		}
@@ -34,13 +32,13 @@ func TestCanonicalRuntimeLeaseSignaturePayloadExcludesSecrets(t *testing.T) {
 	if err := json.Unmarshal(payload, &decoded); err != nil {
 		t.Fatalf("decode canonical payload: %v", err)
 	}
-	for _, omitted := range []string{"lease_token", "signature"} {
+	for _, omitted := range []string{"signature"} {
 		if _, ok := decoded[omitted]; ok {
 			t.Fatalf("canonical payload includes %s: %#v", omitted, decoded)
 		}
 	}
 	if decoded["schema_version"] != RuntimeLeaseSignatureSchemaVersion ||
-		decoded["token_kind"] != RuntimeLeaseTokenKind ||
+		decoded["token_kind"] != RuntimeLeaseKind ||
 		decoded["lease_id"] != lease.LeaseID ||
 		decoded["token_id"] != lease.TokenID ||
 		decoded["plugin_id"] != lease.PluginID ||
@@ -55,9 +53,10 @@ func TestCanonicalRuntimeLeaseSignaturePayloadExcludesSecrets(t *testing.T) {
 		decoded["surface_instance_id"] != lease.SurfaceInstanceID ||
 		decoded["owner_session_hash"] != lease.OwnerSessionHash ||
 		decoded["owner_user_hash"] != lease.OwnerUserHash ||
+		decoded["owner_env_hash"] != lease.OwnerEnvHash ||
 		decoded["session_channel_id_hash"] != lease.SessionChannelIDHash ||
 		decoded["bridge_channel_id"] != lease.BridgeChannelID ||
-		decoded["expires_at_unix_ms"] != float64(unixMillis(lease.ExpiresAt)) {
+		decoded["expires_at_unix_ms"] != float64(lease.ExpiresAtUnixMillis) {
 		t.Fatalf("canonical payload mismatch: %#v", decoded)
 	}
 	limits, ok := decoded["limits"].(map[string]any)
@@ -67,6 +66,59 @@ func TestCanonicalRuntimeLeaseSignaturePayloadExcludesSecrets(t *testing.T) {
 		limits["max_payload_bytes"] != float64(4096) ||
 		limits["max_stream_bytes_per_sec"] != float64(1024) {
 		t.Fatalf("canonical payload limits mismatch: %#v", decoded["limits"])
+	}
+}
+
+func TestRuntimeLeaseSignerRequiresClosedLeaseContract(t *testing.T) {
+	now := time.Date(2026, 7, 4, 10, 30, 0, 0, time.UTC)
+	privateKey := runtimeLeaseSignatureTestPrivateKey(7)
+	base := runtimeLeaseSignatureTestLease(now)
+	base.Limits.TimeoutMillis = 0
+	base.Limits.MaxPayloadBytes = 0
+	base.Limits.MaxStreamBytesPerSecond = 0
+
+	signed, err := SignRuntimeLease(base, base.Method, base.KeyID, privateKey)
+	if err != nil {
+		t.Fatalf("SignRuntimeLease(valid closed contract) error = %v", err)
+	}
+	raw, err := json.Marshal(signed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, required := range []string{
+		`"timeout_ms":0`, `"max_payload_bytes":0`, `"max_stream_bytes_per_sec":0`,
+	} {
+		if !bytes.Contains(raw, []byte(required)) {
+			t.Fatalf("signed lease JSON omitted required zero value %s: %s", required, raw)
+		}
+	}
+
+	tests := []struct {
+		name   string
+		mutate func(*Lease)
+	}{
+		{name: "plugin id", mutate: func(lease *Lease) { lease.PluginID = "" }},
+		{name: "plugin version", mutate: func(lease *Lease) { lease.PluginVersion = "" }},
+		{name: "active fingerprint", mutate: func(lease *Lease) { lease.ActiveFingerprint = "" }},
+		{name: "owner environment", mutate: func(lease *Lease) { lease.OwnerEnvHash = "" }},
+		{name: "target descriptors", mutate: func(lease *Lease) { lease.TargetDescriptorHashes = nil }},
+		{name: "duplicate target descriptor", mutate: func(lease *Lease) { lease.TargetDescriptorHashes = []string{"same", "same"} }},
+		{name: "memory limit", mutate: func(lease *Lease) { lease.Limits.MemoryBytes = 0 }},
+		{name: "runtime shard", mutate: func(lease *Lease) { lease.RuntimeShardID = "" }},
+		{name: "runtime instance", mutate: func(lease *Lease) { lease.RuntimeInstanceID = "" }},
+		{name: "ipc channel", mutate: func(lease *Lease) { lease.IPCChannelID = "" }},
+		{name: "connection nonce", mutate: func(lease *Lease) { lease.ConnectionNonce = "short" }},
+		{name: "issued at", mutate: func(lease *Lease) { lease.IssuedAtUnixMillis = 0 }},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			lease := base
+			lease.TargetDescriptorHashes = append([]string(nil), base.TargetDescriptorHashes...)
+			test.mutate(&lease)
+			if _, err := SignRuntimeLease(lease, lease.Method, lease.KeyID, privateKey); !errors.Is(err, ErrRuntimeLeaseInvalid) {
+				t.Fatalf("SignRuntimeLease() error = %v, want %v", err, ErrRuntimeLeaseInvalid)
+			}
+		})
 	}
 }
 
@@ -100,7 +152,7 @@ func TestRuntimeLeaseSignatureSharedFixture(t *testing.T) {
 		KeyID: fixture.Lease.KeyID, PublicKey: ed25519.PublicKey(publicKey),
 	}}}}
 	if err := verifier.VerifyRuntimeLease(context.Background(), RuntimeLeaseVerificationRequest{
-		Lease: fixture.Lease, Method: fixture.Method, Now: fixture.Lease.IssuedAt.Add(time.Second),
+		Lease: fixture.Lease, Method: fixture.Method, Now: time.UnixMilli(fixture.Lease.IssuedAtUnixMillis).Add(time.Second),
 	}); err != nil {
 		t.Fatalf("shared fixture signature verification failed: %v", err)
 	}
@@ -163,7 +215,7 @@ func TestEd25519RuntimeLeaseVerifierChecksSignatureAndAudience(t *testing.T) {
 	}
 
 	expired := signed
-	expired.ExpiresAt = now.Add(-time.Second)
+	expired.ExpiresAtUnixMillis = now.Add(-time.Second).UnixMilli()
 	if err := verifier.VerifyRuntimeLease(context.Background(), RuntimeLeaseVerificationRequest{Lease: expired, Method: "worker.echo", Now: now}); !errors.Is(err, ErrRuntimeLeaseInvalid) {
 		t.Fatalf("VerifyRuntimeLease(expired) error = %v, want %v", err, ErrRuntimeLeaseInvalid)
 	}
@@ -171,7 +223,7 @@ func TestEd25519RuntimeLeaseVerifierChecksSignatureAndAudience(t *testing.T) {
 
 func TestProcessSupervisorRejectsInvalidLeaseBeforeIPC(t *testing.T) {
 	now := time.Date(2026, 7, 4, 11, 0, 0, 0, time.UTC)
-	diagnostics := observability.NewMemoryStore()
+	diagnostics := &runtimeDiagnosticSink{}
 	supervisor, err := NewProcessSupervisor(ProcessSupervisorOptions{
 		RuntimePath: os.Args[0],
 		Args:        []string{"-test.run=TestMain"},
@@ -234,7 +286,6 @@ func runtimeLeaseSignatureTestLease(now time.Time) Lease {
 	return Lease{
 		LeaseID:              "rel_lease_signature",
 		TokenID:              "rel_token_signature",
-		LeaseToken:           "runtime_execution_lease.rel_lease_signature.secret",
 		LeaseNonce:           "nonce_1234567890",
 		PluginID:             "com.example.worker",
 		PluginVersion:        "1.2.3",
@@ -242,6 +293,7 @@ func runtimeLeaseSignatureTestLease(now time.Time) Lease {
 		SurfaceInstanceID:    "surface_runtime",
 		OwnerSessionHash:     "session_hash",
 		OwnerUserHash:        "user_hash",
+		OwnerEnvHash:         "env_hash",
 		SessionChannelIDHash: "channel_hash",
 		BridgeChannelID:      "bridge_runtime",
 		RuntimeGenerationID:  "rtgen_1",
@@ -254,18 +306,17 @@ func runtimeLeaseSignatureTestLease(now time.Time) Lease {
 			"method:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
 			"worker:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
 		},
-		Limits:             LeaseLimits{TimeoutMillis: 2000, MemoryBytes: 65536, MaxPayloadBytes: 4096, MaxStreamBytesPerSecond: 1024},
-		PolicyRevision:     11,
-		ManagementRevision: 12,
-		RevokeEpoch:        13,
-		RuntimeShardID:     "rtshard_1",
-		RuntimeInstanceID:  "rtinst_1",
-		IPCChannelID:       "ipc_1",
-		ConnectionNonce:    "connection_nonce_1234567890",
-		KeyID:              "host_ephemeral_key_1",
-		IssuedAt:           now,
-		IssuedAtUnixMillis: unixMillis(now),
-		ExpiresAt:          now.Add(30 * time.Second),
+		Limits:              LeaseLimits{TimeoutMillis: 2000, MemoryBytes: 65536, MaxPayloadBytes: 4096, MaxStreamBytesPerSecond: 1024},
+		PolicyRevision:      11,
+		ManagementRevision:  12,
+		RevokeEpoch:         13,
+		RuntimeShardID:      "rtshard_1",
+		RuntimeInstanceID:   "rtinst_1",
+		IPCChannelID:        "ipc_1",
+		ConnectionNonce:     "connection_nonce_1234567890",
+		KeyID:               "host_ephemeral_key_1",
+		IssuedAtUnixMillis:  now.UnixMilli(),
+		ExpiresAtUnixMillis: now.Add(30 * time.Second).UnixMilli(),
 	}
 }
 

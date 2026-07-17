@@ -99,7 +99,6 @@ function verifyRequiredArtifacts(bundleDir) {
   const requiredFiles = [
     "AGENTS.md",
     "CHANGELOG.md",
-    "docs/release/a2-tdd-evidence.md",
     "docs/release/a3-tdd-evidence.md",
     "LICENSE",
     "README.md",
@@ -148,13 +147,11 @@ function verifyRequiredArtifacts(bundleDir) {
     "examples/plugins/memos/ui/index.html",
     "examples/plugins/memos/ui/assets/app.js",
     "examples/plugins/memos/ui/assets/styles.css",
-    "examples/plugins/memos/workers/abi.json",
     "examples/plugins/memos/workers/memos.wasm",
     "examples/plugins/weather/manifest.json",
     "examples/plugins/weather/ui/index.html",
     "examples/plugins/weather/ui/assets/app.js",
     "examples/plugins/weather/ui/assets/styles.css",
-    "examples/plugins/weather/workers/abi.json",
     "examples/plugins/weather/workers/weather.wasm",
     "examples/plugins/sky-strike/THIRD_PARTY_NOTICES.md",
     "examples/plugins/sky-strike/manifest.json",
@@ -165,7 +162,6 @@ function verifyRequiredArtifacts(bundleDir) {
     "examples/plugins/sky-strike/ui/assets/enemy.png",
     "examples/plugins/sky-strike/ui/assets/laser.png",
     "examples/plugins/sky-strike/ui/assets/meteor.png",
-    "examples/plugins/sky-strike/workers/abi.json",
     "examples/plugins/sky-strike/workers/sky-strike.wasm",
     "notices/Cargo.lock",
     "notices/THIRD_PARTY_LICENSES.json",
@@ -706,9 +702,21 @@ async function verifyExamplesServer(bundleDir, skipExecution) {
   child.stderr.on("data", (chunk) => { output += chunk; });
   try {
     const origin = await waitForExamplesOrigin(child, () => output);
-    const health = await waitForExamplesJSON(`${origin}/api/health`, (value) => value?.success === true && value?.data?.ready === true);
+    const health = await waitForExamplesJSON(`${origin}/api/health`, (value) => value?.ok === true && value?.data?.ready === true);
     if (health.data.plugins !== 3) throw new Error(`health plugin count = ${health.data.plugins}`);
-    const catalog = await waitForExamplesJSON(`${origin}/api/catalog`, (value) => value?.success === true && Array.isArray(value?.data));
+    if (!Array.isArray(health.data.runtime_shards) || health.data.runtime_shards.length === 0) {
+      throw new Error(`health runtime shards = ${JSON.stringify(health.data.runtime_shards)}`);
+    }
+    for (const shard of health.data.runtime_shards) {
+      if (shard?.ready !== true ||
+          typeof shard.runtime_shard_id !== "string" || !shard.runtime_shard_id ||
+          typeof shard.runtime_generation_id !== "string" || !shard.runtime_generation_id ||
+          typeof shard.ipc_channel_id !== "string" || !shard.ipc_channel_id ||
+          typeof shard.connection_nonce !== "string" || !shard.connection_nonce) {
+        throw new Error(`health runtime shard is incomplete: ${JSON.stringify(shard)}`);
+      }
+    }
+    const catalog = await waitForExamplesJSON(`${origin}/api/catalog`, (value) => value?.ok === true && Array.isArray(value?.data));
     const slugs = catalog.data.map((item) => item.slug).sort();
     if (JSON.stringify(slugs) !== JSON.stringify(["memos", "sky-strike", "weather"])) {
       throw new Error(`catalog slugs = ${JSON.stringify(slugs)}`);
@@ -722,7 +730,7 @@ async function verifyExamplesServer(bundleDir, skipExecution) {
       headers: { "Content-Type": "application/json", Origin: origin },
       body: JSON.stringify({ slug: "weather" }),
     }).then((response) => response.json());
-    if (opened?.success !== true || opened?.data?.surface_id !== "weather.view") {
+    if (opened?.ok !== true || opened?.data?.surface_id !== "weather.view") {
       throw new Error(`weather surface open failed: ${JSON.stringify(opened)}`);
     }
   } catch (error) {

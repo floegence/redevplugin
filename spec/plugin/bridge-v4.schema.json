@@ -62,6 +62,7 @@
   "oneOf": [
     { "$ref": "#/$defs/call" },
     { "$ref": "#/$defs/stream_read" },
+    { "$ref": "#/$defs/stream_ack" },
     { "$ref": "#/$defs/operation_cancel" },
     { "$ref": "#/$defs/mount" },
     { "$ref": "#/$defs/patch" },
@@ -124,7 +125,7 @@
     },
     "request_id": {
       "type": "string",
-      "pattern": "^(rpc|stream|render|operation|canvas|asset)_[1-9][0-9]{0,15}$"
+      "pattern": "^(rpc|stream|stream_ack|render|operation|canvas|asset)_[1-9][0-9]{0,15}$"
     },
     "call": {
       "type": "object",
@@ -160,6 +161,17 @@
         "type": { "const": "redevplugin.bridge.stream.read" },
         "id": { "$ref": "#/$defs/request_id" },
         "stream_handle": { "$ref": "#/$defs/opaque_handle" }
+      }
+    },
+    "stream_ack": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "id", "stream_handle", "delivery_id"],
+      "properties": {
+        "type": { "const": "redevplugin.bridge.stream.ack" },
+        "id": { "$ref": "#/$defs/request_id" },
+        "stream_handle": { "$ref": "#/$defs/opaque_handle" },
+        "delivery_id": { "type": "string", "pattern": "^delivery_[A-Za-z0-9_-]{8,128}$" }
       }
     },
     "operation_cancel": {
@@ -522,6 +534,7 @@
                 "PLUGIN_ASSET_TICKET_INVALID",
                 "PLUGIN_ASSET_SESSION_INVALID",
                 "PLUGIN_STREAM_TICKET_INVALID",
+                "PLUGIN_STREAM_DELIVERY_INVALID",
                 "PLUGIN_STREAM_CANCELLED",
                 "PLUGIN_LEASE_INVALID",
                 "PLUGIN_LEASE_REPLAYED",
@@ -541,10 +554,11 @@
                 "PLUGIN_CAPABILITY_ERROR",
                 "PLUGIN_WORKER_ERROR",
                 "PLUGIN_CONTRACT_MISMATCH",
-                "PLUGIN_STATE_VERSION_MISMATCH",
+                "PLUGIN_MANAGEMENT_REVISION_MISMATCH",
+                "PLUGIN_AUTHORIZATION_REVISION_MISMATCH",
+                "PLUGIN_BINDING_REVISION_MISMATCH",
+                "PLUGIN_VALUES_REVISION_MISMATCH",
                 "PLUGIN_CSRF_REQUIRED",
-                "PLUGIN_RETAINED_DATA_CLEANUP_FAILED",
-                "PLUGIN_RETAINED_DATA_BIND_FAILED",
                 "PLUGIN_CONFIRMATION_REJECTED",
                 "PLUGIN_BRIDGE_TIMEOUT",
                 "PLUGIN_BRIDGE_DISPOSED",
@@ -557,7 +571,8 @@
               "type": "object",
               "maxProperties": 8,
               "additionalProperties": true
-            }
+            },
+            "mutation_outcome": { "type": "string", "enum": ["not_committed", "unknown"] }
           },
           "allOf": [
             {

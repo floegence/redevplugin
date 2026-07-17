@@ -11,3 +11,4 @@ allow = [
 
 [advisories]
 ignore = []
+yanked = "deny"

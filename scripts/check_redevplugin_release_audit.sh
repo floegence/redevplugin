@@ -13,7 +13,10 @@ echo "==> npm_audit"
 npm audit --audit-level=moderate
 
 echo "==> go_vulncheck"
-GOWORK=off go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./...
+GOWORK=off go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 \
+	./cmd/... \
+	./examples/... \
+	./pkg/...
 
 echo "==> cargo_deny"
 if ! command -v cargo-deny >/dev/null 2>&1; then

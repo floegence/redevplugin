@@ -147,7 +147,6 @@
               "binding_id": { "type": "string", "minLength": 1 },
               "target_method": { "type": "string", "minLength": 1 },
               "worker_id": { "type": "string", "minLength": 1 },
-              "export": { "type": "string", "minLength": 1 },
               "action_id": { "type": "string", "minLength": 1 }
             },
             "allOf": [
@@ -158,7 +157,6 @@
                   "not": {
                     "anyOf": [
                       { "required": ["worker_id"] },
-                      { "required": ["export"] },
                       { "required": ["action_id"] }
                     ]
                   }
@@ -167,7 +165,7 @@
               {
                 "if": { "properties": { "kind": { "const": "worker" } }, "required": ["kind"] },
                 "then": {
-                  "required": ["worker_id", "export"],
+                  "required": ["worker_id"],
                   "not": {
                     "anyOf": [
                       { "required": ["binding_id"] },
@@ -185,8 +183,7 @@
                     "anyOf": [
                       { "required": ["binding_id"] },
                       { "required": ["target_method"] },
-                      { "required": ["worker_id"] },
-                      { "required": ["export"] }
+                      { "required": ["worker_id"] }
                     ]
                   }
                 }
@@ -344,15 +341,14 @@
           "items": {
             "type": "object",
             "additionalProperties": false,
-            "required": ["store_id", "kind", "scope", "quota_bytes", "schema_version", "migration"],
+            "required": ["store_id", "kind", "scope", "quota_bytes", "schema_version"],
             "properties": {
               "store_id": { "type": "string", "minLength": 1 },
               "kind": { "enum": ["kv", "files", "sqlite"] },
               "scope": { "enum": ["user", "environment"] },
               "quota_bytes": { "type": "integer", "minimum": 1, "maximum": 1073741824 },
               "quota_files": { "type": "integer", "minimum": 1, "maximum": 100000 },
-              "schema_version": { "type": "integer", "minimum": 1 },
-              "migration": { "$ref": "#/$defs/migration" }
+              "schema_version": { "type": "integer", "minimum": 1 }
             }
           }
         }
@@ -383,10 +379,9 @@
     "settings": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["schema_version", "migration"],
+      "required": ["schema_version"],
       "properties": {
         "schema_version": { "type": "integer", "minimum": 1 },
-        "migration": { "$ref": "#/$defs/migration" },
         "fields": {
           "type": "array",
           "items": {
@@ -422,21 +417,6 @@
     }
   },
   "$defs": {
-    "migration": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["from_version", "to_version", "reversible", "requires_worker", "estimated_bytes", "max_duration_ms", "data_loss_risk", "steps_hash"],
-      "properties": {
-        "from_version": { "type": "integer", "minimum": 0 },
-        "to_version": { "type": "integer", "minimum": 1 },
-        "reversible": { "type": "boolean" },
-        "requires_worker": { "type": "boolean" },
-        "estimated_bytes": { "type": "integer", "minimum": 0 },
-        "max_duration_ms": { "type": "integer", "minimum": 0 },
-        "data_loss_risk": { "type": "boolean" },
-        "steps_hash": { "type": "string", "minLength": 1 }
-      }
-    },
     "method_schema": {
       "oneOf": [
         { "const": false },
@@ -447,7 +427,6 @@
             "$comment": { "type": "string" },
             "title": { "type": "string" },
             "description": { "type": "string" },
-            "deprecated": { "type": "boolean" },
             "readOnly": { "type": "boolean" },
             "writeOnly": { "type": "boolean" },
             "$ref": { "type": "string", "pattern": "^#/\\$defs/[A-Za-z0-9._-]+$" },

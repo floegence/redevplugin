@@ -2,27 +2,38 @@ package httpadapter
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"math/big"
+	"mime"
 	"net/http"
+	"net/url"
+	"reflect"
+	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/floegence/redevplugin/pkg/bridge"
 	"github.com/floegence/redevplugin/pkg/capability"
 	"github.com/floegence/redevplugin/pkg/connectivity"
 	"github.com/floegence/redevplugin/pkg/host"
+	"github.com/floegence/redevplugin/pkg/mutation"
+	"github.com/floegence/redevplugin/pkg/observability"
 	"github.com/floegence/redevplugin/pkg/operation"
 	"github.com/floegence/redevplugin/pkg/permissions"
+	"github.com/floegence/redevplugin/pkg/plugindata"
 	"github.com/floegence/redevplugin/pkg/pluginpkg"
 	"github.com/floegence/redevplugin/pkg/registry"
-	"github.com/floegence/redevplugin/pkg/retaineddata"
 	"github.com/floegence/redevplugin/pkg/runtimeclient"
 	"github.com/floegence/redevplugin/pkg/security"
+	"github.com/floegence/redevplugin/pkg/sessionctx"
 	"github.com/floegence/redevplugin/pkg/settings"
 	"github.com/floegence/redevplugin/pkg/storage"
 	"github.com/floegence/redevplugin/pkg/stream"
@@ -30,12 +41,294 @@ import (
 	"github.com/floegence/redevplugin/pkg/websecurity"
 )
 
-type Envelope struct {
-	OK           bool           `json:"ok"`
-	Data         any            `json:"data,omitempty"`
-	Error        string         `json:"error,omitempty"`
-	ErrorCode    string         `json:"error_code,omitempty"`
-	ErrorDetails map[string]any `json:"error_details,omitempty"`
+type successResponse struct {
+	OK   bool `json:"ok"`
+	Data any  `json:"data"`
+}
+
+type mutationSuccessResponse struct {
+	OK   bool `json:"ok"`
+	Data any  `json:"data"`
+}
+
+func (r successResponse) MarshalJSON() ([]byte, error) {
+	if !r.OK {
+		return nil, errors.New("success response must set ok=true")
+	}
+	type successAlias successResponse
+	return json.Marshal(successAlias(r))
+}
+
+func (r mutationSuccessResponse) MarshalJSON() ([]byte, error) {
+	if !r.OK {
+		return nil, errors.New("mutation success response must set ok=true")
+	}
+	type successAlias mutationSuccessResponse
+	return json.Marshal(successAlias(r))
+}
+
+type errorResponse struct {
+	OK      bool               `json:"ok"`
+	Message string             `json:"-"`
+	Code    security.ErrorCode `json:"-"`
+	Details errorDetails       `json:"-"`
+}
+
+type errorBody struct {
+	Code    security.ErrorCode `json:"code"`
+	Message string             `json:"message"`
+	Details errorDetails       `json:"details"`
+}
+
+type mutationErrorResponse struct {
+	OK              bool               `json:"ok"`
+	Message         string             `json:"-"`
+	Code            security.ErrorCode `json:"-"`
+	Details         errorDetails       `json:"-"`
+	MutationOutcome mutation.Outcome   `json:"-"`
+}
+
+type mutationErrorBody struct {
+	Code            security.ErrorCode `json:"code"`
+	Message         string             `json:"message"`
+	Details         errorDetails       `json:"details"`
+	MutationOutcome mutation.Outcome   `json:"mutation_outcome"`
+}
+
+type errorDetails struct {
+	Reason                     string                          `json:"reason,omitempty"`
+	Path                       string                          `json:"path,omitempty"`
+	Pointer                    string                          `json:"pointer,omitempty"`
+	CapabilityID               string                          `json:"capability_id,omitempty"`
+	CapabilityVersion          string                          `json:"capability_version,omitempty"`
+	DetailSchemaSHA256         string                          `json:"detail_schema_sha256,omitempty"`
+	BusinessErrorCode          string                          `json:"business_error_code,omitempty"`
+	BusinessErrorDetails       map[string]any                  `json:"business_error_details,omitempty"`
+	WorkerErrorCode            string                          `json:"worker_error_code,omitempty"`
+	WorkerErrorMessage         string                          `json:"worker_error_message,omitempty"`
+	WorkerErrorOrigin          runtimeclient.WorkerErrorOrigin `json:"worker_error_origin,omitempty"`
+	PluginInstanceID           string                          `json:"plugin_instance_id,omitempty"`
+	ExpectedPolicyRevision     uint64                          `json:"expected_policy_revision,omitempty"`
+	ActualPolicyRevision       uint64                          `json:"actual_policy_revision,omitempty"`
+	ExpectedManagementRevision uint64                          `json:"expected_management_revision,omitempty"`
+	ActualManagementRevision   uint64                          `json:"actual_management_revision,omitempty"`
+	ExpectedRevokeEpoch        *uint64                         `json:"expected_revoke_epoch,omitempty"`
+	ActualRevokeEpoch          *uint64                         `json:"actual_revoke_epoch,omitempty"`
+	ExpectedBindingRevision    uint64                          `json:"expected_binding_revision,omitempty"`
+	ActualBindingRevision      uint64                          `json:"actual_binding_revision,omitempty"`
+	ExpectedValuesRevision     *uint64                         `json:"expected_values_revision,omitempty"`
+	ActualValuesRevision       *uint64                         `json:"actual_values_revision,omitempty"`
+}
+
+var platformErrorCodeSet = func() map[security.ErrorCode]struct{} {
+	codes := security.PlatformErrorCodes()
+	result := make(map[security.ErrorCode]struct{}, len(codes))
+	for _, code := range codes {
+		result[code] = struct{}{}
+	}
+	return result
+}()
+
+var platformDetailCodePattern = regexp.MustCompile(`^[A-Z][A-Z0-9_]*$`)
+var platformSHA256Pattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
+
+var packageValidationReasonSet = func() map[string]struct{} {
+	result := map[string]struct{}{}
+	for _, reason := range strings.Fields("manifest_missing manifest_field manifest_decode zip_invalid file_count duplicate_entry ambiguous_entry non_regular_entry invalid_utf8_path non_nfc_path symlink_entry directory_entry entry_bytes path_length compression_ratio total_uncompressed_bytes entry_open_failed entry_read_failed entry_close_failed entry_size_mismatch unsupported_signature_entry manifest_artifact package_asset_security package_artifact_boundary entry_path manifest_canonical_json canonical_hash package_signature empty_path slash_separator non_canonical_path path_traversal hidden_path external_icon_path unsupported_icon_format missing_icon_asset icon_magic_mismatch query_or_fragment") {
+		result[reason] = struct{}{}
+	}
+	return result
+}()
+
+func (r errorResponse) MarshalJSON() ([]byte, error) {
+	if r.OK {
+		return nil, errors.New("error response must set ok=false")
+	}
+	if _, ok := platformErrorCodeSet[r.Code]; !ok {
+		return nil, fmt.Errorf("unknown platform error code %q", r.Code)
+	}
+	if strings.TrimSpace(r.Message) == "" || utf8.RuneCountInString(r.Message) > 4096 {
+		return nil, errors.New("platform error message is required")
+	}
+	if err := r.Details.validateForCode(r.Code); err != nil {
+		return nil, err
+	}
+	return json.Marshal(struct {
+		OK    bool      `json:"ok"`
+		Error errorBody `json:"error"`
+	}{
+		OK: r.OK,
+		Error: errorBody{
+			Code:    r.Code,
+			Message: r.Message,
+			Details: r.Details,
+		},
+	})
+}
+
+func (r mutationErrorResponse) MarshalJSON() ([]byte, error) {
+	if r.OK {
+		return nil, errors.New("mutation error response must set ok=false")
+	}
+	if _, ok := platformErrorCodeSet[r.Code]; !ok {
+		return nil, fmt.Errorf("unknown platform error code %q", r.Code)
+	}
+	if strings.TrimSpace(r.Message) == "" || utf8.RuneCountInString(r.Message) > 4096 {
+		return nil, errors.New("platform error message is required")
+	}
+	if r.MutationOutcome != mutation.OutcomeNotCommitted && r.MutationOutcome != mutation.OutcomeUnknown {
+		return nil, fmt.Errorf("unsupported mutation outcome %q", r.MutationOutcome)
+	}
+	if err := r.Details.validateForCode(r.Code); err != nil {
+		return nil, err
+	}
+	return json.Marshal(struct {
+		OK    bool              `json:"ok"`
+		Error mutationErrorBody `json:"error"`
+	}{
+		OK: r.OK,
+		Error: mutationErrorBody{
+			Code:            r.Code,
+			Message:         r.Message,
+			Details:         r.Details,
+			MutationOutcome: r.MutationOutcome,
+		},
+	})
+}
+
+func (d errorDetails) validateForCode(code security.ErrorCode) error {
+	switch code {
+	case security.ErrManagementRevisionMismatch:
+		if d.PluginInstanceID == "" || d.ExpectedManagementRevision == 0 || d.ActualManagementRevision == 0 ||
+			d.ExpectedManagementRevision > uint64(maxJSONSafeInteger) || d.ActualManagementRevision > uint64(maxJSONSafeInteger) ||
+			d.hasAuthorizationRevisionDetails() || d.hasBindingRevisionDetails() || d.hasValuesRevisionDetails() || d.hasNonRevisionDetails() {
+			return errors.New("management revision mismatch details are incomplete")
+		}
+	case security.ErrAuthorizationRevisionMismatch:
+		if d.PluginInstanceID == "" || d.ExpectedPolicyRevision == 0 || d.ActualPolicyRevision == 0 ||
+			d.ExpectedManagementRevision == 0 || d.ActualManagementRevision == 0 ||
+			d.ExpectedRevokeEpoch == nil || d.ActualRevokeEpoch == nil ||
+			d.ExpectedPolicyRevision > uint64(maxJSONSafeInteger) || d.ActualPolicyRevision > uint64(maxJSONSafeInteger) ||
+			d.ExpectedManagementRevision > uint64(maxJSONSafeInteger) || d.ActualManagementRevision > uint64(maxJSONSafeInteger) ||
+			*d.ExpectedRevokeEpoch > uint64(maxJSONSafeInteger) || *d.ActualRevokeEpoch > uint64(maxJSONSafeInteger) ||
+			d.hasBindingRevisionDetails() || d.hasValuesRevisionDetails() || d.hasNonRevisionDetails() {
+			return errors.New("authorization revision mismatch details are incomplete")
+		}
+	case security.ErrBindingRevisionMismatch:
+		if d.PluginInstanceID == "" || d.ExpectedBindingRevision == 0 || d.ActualBindingRevision == 0 ||
+			d.ExpectedBindingRevision > uint64(maxJSONSafeInteger) || d.ActualBindingRevision > uint64(maxJSONSafeInteger) ||
+			d.hasAuthorizationRevisionDetails() || d.hasManagementRevisionDetails() || d.hasValuesRevisionDetails() || d.hasNonRevisionDetails() {
+			return errors.New("binding revision mismatch details are incomplete")
+		}
+	case security.ErrValuesRevisionMismatch:
+		if d.PluginInstanceID == "" || d.ExpectedValuesRevision == nil || d.ActualValuesRevision == nil ||
+			*d.ExpectedValuesRevision == 0 || *d.ActualValuesRevision == 0 ||
+			*d.ExpectedValuesRevision > uint64(maxJSONSafeInteger) || *d.ActualValuesRevision > uint64(maxJSONSafeInteger) ||
+			d.hasAuthorizationRevisionDetails() || d.hasManagementRevisionDetails() || d.hasBindingRevisionDetails() || d.hasNonRevisionDetails() {
+			return errors.New("values revision mismatch details are incomplete")
+		}
+	case security.ErrCapabilityError:
+		if d.CapabilityID == "" || d.CapabilityVersion == "" || !platformSHA256Pattern.MatchString(d.DetailSchemaSHA256) ||
+			!platformDetailCodePattern.MatchString(d.BusinessErrorCode) || d.hasNonCapabilityDetails() {
+			return errors.New("capability error details are incomplete")
+		}
+	case security.ErrWorkerError:
+		if !platformDetailCodePattern.MatchString(d.WorkerErrorCode) || d.WorkerErrorMessage == "" || utf8.RuneCountInString(d.WorkerErrorMessage) > 4096 ||
+			(d.WorkerErrorOrigin != runtimeclient.WorkerErrorOriginRuntime &&
+				d.WorkerErrorOrigin != runtimeclient.WorkerErrorOriginHostcall &&
+				d.WorkerErrorOrigin != runtimeclient.WorkerErrorOriginPlugin) || d.hasNonWorkerDetails() {
+			return errors.New("worker error details are incomplete")
+		}
+	case security.ErrJSONLimitExceeded:
+		if !validJSONLimitReason(d.Reason) || d.hasNonReasonDetails() {
+			return errors.New("JSON limit error details are incomplete")
+		}
+	case security.ErrManifestInvalid, security.ErrPackageInvalid, security.ErrPackageTooLarge, security.ErrPackagePathForbidden:
+		if _, ok := packageValidationReasonSet[d.Reason]; !ok || d.hasNonPackageDetails() {
+			return errors.New("package validation details are incomplete")
+		}
+	default:
+		if !d.empty() {
+			return errors.New("platform error details do not match the error code")
+		}
+	}
+	return nil
+}
+
+func validJSONLimitReason(reason string) bool {
+	switch jsonLimitReason(reason) {
+	case jsonLimitReasonPayloadBytes, jsonLimitReasonDepth, jsonLimitReasonPrototypeKey, jsonLimitReasonNumberPrecision:
+		return true
+	default:
+		return false
+	}
+}
+
+func (d errorDetails) hasRevisionDetails() bool {
+	return d.PluginInstanceID != "" || d.ExpectedPolicyRevision != 0 || d.ActualPolicyRevision != 0 ||
+		d.ExpectedManagementRevision != 0 || d.ActualManagementRevision != 0 ||
+		d.ExpectedRevokeEpoch != nil || d.ActualRevokeEpoch != nil ||
+		d.ExpectedBindingRevision != 0 || d.ActualBindingRevision != 0 ||
+		d.ExpectedValuesRevision != nil || d.ActualValuesRevision != nil
+}
+
+func (d errorDetails) hasAuthorizationRevisionDetails() bool {
+	return d.ExpectedPolicyRevision != 0 || d.ActualPolicyRevision != 0 ||
+		d.ExpectedRevokeEpoch != nil || d.ActualRevokeEpoch != nil
+}
+
+func (d errorDetails) hasManagementRevisionDetails() bool {
+	return d.ExpectedManagementRevision != 0 || d.ActualManagementRevision != 0
+}
+
+func (d errorDetails) hasBindingRevisionDetails() bool {
+	return d.ExpectedBindingRevision != 0 || d.ActualBindingRevision != 0
+}
+
+func (d errorDetails) hasValuesRevisionDetails() bool {
+	return d.ExpectedValuesRevision != nil || d.ActualValuesRevision != nil
+}
+
+func (d errorDetails) hasCapabilityDetails() bool {
+	return d.CapabilityID != "" || d.CapabilityVersion != "" || d.DetailSchemaSHA256 != "" ||
+		d.BusinessErrorCode != "" || d.BusinessErrorDetails != nil
+}
+
+func (d errorDetails) hasWorkerDetails() bool {
+	return d.WorkerErrorCode != "" || d.WorkerErrorMessage != "" || d.WorkerErrorOrigin != ""
+}
+
+func (d errorDetails) hasPackageDetails() bool {
+	return d.Reason != "" || d.Path != "" || d.Pointer != ""
+}
+
+func (d errorDetails) hasNonRevisionDetails() bool {
+	return d.hasPackageDetails() || d.hasCapabilityDetails() || d.hasWorkerDetails()
+}
+
+func (d errorDetails) hasNonCapabilityDetails() bool {
+	return d.hasPackageDetails() || d.hasRevisionDetails() || d.hasWorkerDetails()
+}
+
+func (d errorDetails) hasNonWorkerDetails() bool {
+	return d.hasPackageDetails() || d.hasRevisionDetails() || d.hasCapabilityDetails()
+}
+
+func (d errorDetails) hasNonReasonDetails() bool {
+	return d.Path != "" || d.Pointer != "" || d.hasRevisionDetails() || d.hasCapabilityDetails() || d.hasWorkerDetails()
+}
+
+func (d errorDetails) hasNonPackageDetails() bool {
+	return d.hasRevisionDetails() || d.hasCapabilityDetails() || d.hasWorkerDetails()
+}
+
+func (d errorDetails) empty() bool {
+	return !d.hasPackageDetails() && !d.hasRevisionDetails() && !d.hasCapabilityDetails() && !d.hasWorkerDetails()
+}
+
+func (d errorDetails) MarshalJSON() ([]byte, error) {
+	type detailsAlias errorDetails
+	return json.Marshal(detailsAlias(d))
 }
 
 type Route struct {
@@ -43,83 +336,88 @@ type Route struct {
 	Path   string
 }
 
-type RouteSetOptions struct {
-	EnableLocalImportRoutes bool
+type Handler struct {
+	host  *host.Host
+	guard websecurity.Guard
+	mux   *http.ServeMux
 }
 
-type Handler struct {
-	Host                    *host.Host
-	WebSecurity             websecurity.Guard
-	EnableLocalImportRoutes bool
+type Dependencies struct {
+	Host  *host.Host
+	Guard websecurity.Guard
+}
+
+type routeSpec struct {
+	Route
+	bind      func(*Handler) http.HandlerFunc
+	queryKeys []string
 }
 
 type importLocalPackageRequest struct {
-	PackageBase64      string  `json:"package_base64"`
-	PluginInstanceID   string  `json:"plugin_instance_id,omitempty"`
-	PluginStateVersion *uint64 `json:"plugin_state_version"`
+	PackageBase64    string `json:"package_base64"`
+	PluginInstanceID string `json:"plugin_instance_id,omitempty"`
 }
 
 type installReleaseRefRequest struct {
-	ReleaseRef         host.PluginReleaseRef `json:"release_ref"`
-	PluginInstanceID   string                `json:"plugin_instance_id,omitempty"`
-	PluginStateVersion *uint64               `json:"plugin_state_version"`
+	ReleaseRef       host.PluginReleaseRef `json:"release_ref"`
+	PluginInstanceID string                `json:"plugin_instance_id,omitempty"`
 }
 
 type updateLocalPackageRequest struct {
-	PluginInstanceID   string  `json:"plugin_instance_id"`
-	PackageBase64      string  `json:"package_base64"`
-	PluginStateVersion *uint64 `json:"plugin_state_version"`
+	PluginInstanceID           string  `json:"plugin_instance_id"`
+	PackageBase64              string  `json:"package_base64"`
+	ExpectedManagementRevision *uint64 `json:"expected_management_revision"`
 }
 
 type updateReleaseRefRequest struct {
-	PluginInstanceID   string                `json:"plugin_instance_id"`
-	ReleaseRef         host.PluginReleaseRef `json:"release_ref"`
-	PluginStateVersion *uint64               `json:"plugin_state_version"`
+	PluginInstanceID           string                `json:"plugin_instance_id"`
+	ReleaseRef                 host.PluginReleaseRef `json:"release_ref"`
+	ExpectedManagementRevision *uint64               `json:"expected_management_revision"`
 }
 
 type downgradeRequest struct {
-	PluginInstanceID   string  `json:"plugin_instance_id"`
-	Version            string  `json:"version,omitempty"`
-	PackageHash        string  `json:"package_hash,omitempty"`
-	PluginStateVersion *uint64 `json:"plugin_state_version"`
+	PluginInstanceID           string  `json:"plugin_instance_id"`
+	Version                    string  `json:"version,omitempty"`
+	PackageHash                string  `json:"package_hash,omitempty"`
+	ExpectedManagementRevision *uint64 `json:"expected_management_revision"`
 }
 
 type enableRequest struct {
-	PluginInstanceID   string  `json:"plugin_instance_id"`
-	PluginStateVersion *uint64 `json:"plugin_state_version"`
+	PluginInstanceID           string  `json:"plugin_instance_id"`
+	ExpectedManagementRevision *uint64 `json:"expected_management_revision"`
 }
 
 type disableRequest struct {
-	PluginInstanceID   string  `json:"plugin_instance_id"`
-	Reason             string  `json:"reason,omitempty"`
-	PluginStateVersion *uint64 `json:"plugin_state_version"`
+	PluginInstanceID           string  `json:"plugin_instance_id"`
+	Reason                     string  `json:"reason,omitempty"`
+	ExpectedManagementRevision *uint64 `json:"expected_management_revision"`
 }
 
 type uninstallRequest struct {
-	PluginInstanceID   string  `json:"plugin_instance_id"`
-	DeleteData         bool    `json:"delete_data"`
-	PluginStateVersion *uint64 `json:"plugin_state_version"`
+	PluginInstanceID           string  `json:"plugin_instance_id"`
+	DeleteData                 bool    `json:"delete_data"`
+	ExpectedManagementRevision *uint64 `json:"expected_management_revision"`
 }
 
 type deleteRetainedDataRequest struct {
-	RetainedID string `json:"retained_id"`
+	PluginInstanceID        string  `json:"plugin_instance_id"`
+	ExpectedBindingRevision *uint64 `json:"expected_binding_revision"`
 }
 
 type bindRetainedDataRequest struct {
-	RetainedID             string `json:"retained_id"`
-	TargetPluginInstanceID string `json:"target_plugin_instance_id"`
+	SourcePluginInstanceID           string  `json:"source_plugin_instance_id"`
+	ExpectedSourceBindingRevision    *uint64 `json:"expected_source_binding_revision"`
+	TargetPluginInstanceID           string  `json:"target_plugin_instance_id"`
+	TargetExpectedManagementRevision *uint64 `json:"target_expected_management_revision"`
 }
 
-type cleanupExpiredRetainedDataRequest struct {
-	RetryFailed bool `json:"retry_failed,omitempty"`
-	MaxRecords  *int `json:"max_records,omitempty"`
-}
+type cleanupExpiredRetainedDataRequest struct{}
 
 type openSurfaceRequest struct {
-	PluginInstanceID   string  `json:"plugin_instance_id"`
-	SurfaceID          string  `json:"surface_id"`
-	SurfaceInstanceID  string  `json:"surface_instance_id,omitempty"`
-	PluginStateVersion *uint64 `json:"plugin_state_version"`
+	PluginInstanceID           string  `json:"plugin_instance_id"`
+	SurfaceID                  string  `json:"surface_id"`
+	SurfaceInstanceID          string  `json:"surface_instance_id,omitempty"`
+	ExpectedManagementRevision *uint64 `json:"expected_management_revision"`
 }
 
 type surfaceBootstrapResponse struct {
@@ -132,7 +430,7 @@ type surfaceBootstrapResponse struct {
 	EntryPath           string    `json:"entry_path"`
 	EntrySHA256         string    `json:"entry_sha256"`
 	AssetSessionNonce   string    `json:"asset_session_nonce"`
-	PluginStateVersion  uint64    `json:"plugin_state_version"`
+	ManagementRevision  uint64    `json:"management_revision"`
 	RevokeEpoch         uint64    `json:"revoke_epoch"`
 	RuntimeGenerationID string    `json:"runtime_generation_id"`
 	AssetTicket         string    `json:"asset_ticket"`
@@ -153,7 +451,7 @@ func publicSurfaceBootstrap(bootstrap bridge.SurfaceBootstrap) surfaceBootstrapR
 		EntryPath:           bootstrap.EntryPath,
 		EntrySHA256:         bootstrap.EntrySHA256,
 		AssetSessionNonce:   bootstrap.AssetSessionNonce,
-		PluginStateVersion:  bootstrap.PluginStateVersion,
+		ManagementRevision:  bootstrap.ManagementRevision,
 		RevokeEpoch:         bootstrap.RevokeEpoch,
 		RuntimeGenerationID: bootstrap.RuntimeGenerationID,
 		AssetTicket:         bootstrap.AssetTicket,
@@ -177,6 +475,13 @@ type readSurfaceAssetRequest struct {
 type readSurfaceStreamRequest struct {
 	StreamID     string `json:"stream_id"`
 	StreamTicket string `json:"stream_ticket"`
+	ReadID       string `json:"read_id"`
+}
+
+type acknowledgeSurfaceStreamRequest struct {
+	StreamID     string `json:"stream_id"`
+	StreamTicket string `json:"stream_ticket"`
+	DeliveryID   string `json:"delivery_id"`
 }
 
 type cancelSurfaceOperationRequest struct {
@@ -213,7 +518,7 @@ type pluginBridgeHandshake struct {
 	ActiveFingerprint  string `json:"active_fingerprint"`
 	BridgeNonce        string `json:"bridge_nonce"`
 	AssetSessionNonce  string `json:"asset_session_nonce"`
-	PluginStateVersion uint64 `json:"plugin_state_version"`
+	ManagementRevision uint64 `json:"management_revision"`
 	RevokeEpoch        uint64 `json:"revoke_epoch"`
 	UIProtocolVersion  string `json:"ui_protocol_version"`
 }
@@ -228,6 +533,15 @@ type rpcRequest struct {
 	Params            map[string]any `json:"params,omitempty"`
 }
 
+type prepareMethodConfirmationRequest struct {
+	PluginInstanceID  string         `json:"plugin_instance_id"`
+	SurfaceInstanceID string         `json:"surface_instance_id"`
+	BridgeChannelID   string         `json:"bridge_channel_id"`
+	GatewayToken      string         `json:"plugin_gateway_token"`
+	Method            string         `json:"method"`
+	Params            map[string]any `json:"params,omitempty"`
+}
+
 type invokeIntentRequest struct {
 	PluginInstanceID string         `json:"plugin_instance_id,omitempty"`
 	IntentID         string         `json:"intent_id"`
@@ -236,28 +550,58 @@ type invokeIntentRequest struct {
 
 type exportDataRequest struct {
 	PluginInstanceID string `json:"plugin_instance_id"`
-	IncludeSecrets   bool   `json:"include_secrets,omitempty"`
 }
 
 type importDataRequest struct {
-	PluginInstanceID   string `json:"plugin_instance_id"`
-	ArchiveRef         string `json:"archive_ref"`
-	SettingsArchiveRef string `json:"settings_archive_ref,omitempty"`
-	DeleteExisting     bool   `json:"delete_existing,omitempty"`
+	PluginInstanceID           string  `json:"plugin_instance_id"`
+	BundleRef                  string  `json:"bundle_ref"`
+	ExpectedManagementRevision *uint64 `json:"expected_management_revision"`
+}
+
+type deleteDataExportRequest struct {
+	BundleRef string `json:"bundle_ref"`
 }
 
 type grantPermissionRequest struct {
-	PluginInstanceID string    `json:"plugin_instance_id"`
-	PermissionID     string    `json:"permission_id"`
-	GrantedBy        string    `json:"granted_by,omitempty"`
-	ExpiresAt        time.Time `json:"expires_at,omitempty"`
+	PluginInstanceID           string    `json:"plugin_instance_id"`
+	PermissionID               string    `json:"permission_id"`
+	ExpectedPolicyRevision     uint64    `json:"expected_policy_revision"`
+	ExpectedManagementRevision uint64    `json:"expected_management_revision"`
+	ExpectedRevokeEpoch        uint64    `json:"expected_revoke_epoch"`
+	ExpiresAt                  time.Time `json:"expires_at,omitempty"`
 }
 
 type revokePermissionRequest struct {
-	PluginInstanceID string `json:"plugin_instance_id"`
-	PermissionID     string `json:"permission_id"`
-	RevokedBy        string `json:"revoked_by,omitempty"`
-	Reason           string `json:"reason,omitempty"`
+	PluginInstanceID           string `json:"plugin_instance_id"`
+	PermissionID               string `json:"permission_id"`
+	ExpectedPolicyRevision     uint64 `json:"expected_policy_revision"`
+	ExpectedManagementRevision uint64 `json:"expected_management_revision"`
+	ExpectedRevokeEpoch        uint64 `json:"expected_revoke_epoch"`
+	Reason                     string `json:"reason,omitempty"`
+}
+
+type putSecurityPolicyRequest struct {
+	ExpectedPolicyRevision     *uint64   `json:"expected_policy_revision"`
+	ExpectedManagementRevision *uint64   `json:"expected_management_revision"`
+	ExpectedRevokeEpoch        *uint64   `json:"expected_revoke_epoch"`
+	AllowedPermissions         *[]string `json:"allowed_permissions"`
+	DeniedMethods              *[]string `json:"denied_methods"`
+}
+
+type deleteSecurityPolicyRequest struct {
+	ExpectedPolicyRevision     *uint64 `json:"expected_policy_revision"`
+	ExpectedManagementRevision *uint64 `json:"expected_management_revision"`
+	ExpectedRevokeEpoch        *uint64 `json:"expected_revoke_epoch"`
+}
+
+type securityPolicyResponse struct {
+	PluginInstanceID   string    `json:"plugin_instance_id"`
+	AllowedPermissions []string  `json:"allowed_permissions"`
+	DeniedMethods      []string  `json:"denied_methods"`
+	PolicyRevision     uint64    `json:"policy_revision"`
+	ManagementRevision uint64    `json:"management_revision"`
+	RevokeEpoch        uint64    `json:"revoke_epoch"`
+	UpdatedAt          time.Time `json:"updated_at"`
 }
 
 type secretRefRequest struct {
@@ -267,7 +611,9 @@ type secretRefRequest struct {
 }
 
 type patchSettingsRequest struct {
-	Values map[string]any `json:"values"`
+	ExpectedValuesRevision *uint64        `json:"expected_values_revision"`
+	Set                    map[string]any `json:"set,omitempty"`
+	Remove                 []string       `json:"remove,omitempty"`
 }
 
 type cancelOperationRequest struct {
@@ -276,6 +622,19 @@ type cancelOperationRequest struct {
 
 type startRuntimeRequest struct {
 	Target host.RuntimeTarget `json:"target,omitempty"`
+}
+
+type emptyRequest struct{}
+
+func (*emptyRequest) UnmarshalJSON(raw []byte) error {
+	var object map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &object); err != nil {
+		return errors.New("request body must be an empty JSON object")
+	}
+	if object == nil || len(object) != 0 {
+		return errors.New("request body must be an empty JSON object")
+	}
+	return nil
 }
 
 const pluginBridgeHandshakeType = "redevplugin.bridge.handshake"
@@ -324,673 +683,596 @@ func (e *jsonLimitError) status() int {
 	return http.StatusBadRequest
 }
 
-func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	requestContext, ok := h.enforceWebSecurity(w, r)
-	if !ok {
-		return
+var routes = []routeSpec{
+	{Route: Route{Method: http.MethodPost, Path: "/_redevplugin/api/plugins/local-import/install"}, bind: func(h *Handler) http.HandlerFunc { return h.handleImportLocalPackage }},
+	{Route: Route{Method: http.MethodPost, Path: "/_redevplugin/api/plugins/install-release-ref"}, bind: func(h *Handler) http.HandlerFunc { return h.handleInstallReleaseRef }},
+	{Route: Route{Method: http.MethodPost, Path: "/_redevplugin/api/plugins/enable"}, bind: func(h *Handler) http.HandlerFunc { return h.handleEnable }},
+	{Route: Route{Method: http.MethodPost, Path: "/_redevplugin/api/plugins/disable"}, bind: func(h *Handler) http.HandlerFunc { return h.handleDisable }},
+	{Route: Route{Method: http.MethodPost, Path: "/_redevplugin/api/plugins/uninstall"}, bind: func(h *Handler) http.HandlerFunc { return h.handleUninstall }},
+	{Route: Route{Method: http.MethodPost, Path: "/_redevplugin/api/plugins/local-import/update"}, bind: func(h *Handler) http.HandlerFunc { return h.handleUpdateLocalPackage }},
+	{Route: Route{Method: http.MethodPost, Path: "/_redevplugin/api/plugins/update-release-ref"}, bind: func(h *Handler) http.HandlerFunc { return h.handleUpdateReleaseRef }},
+	{Route: Route{Method: http.MethodPost, Path: "/_redevplugin/api/plugins/downgrade"}, bind: func(h *Handler) http.HandlerFunc { return h.handleDowngrade }},
+	{Route: Route{Method: http.MethodGet, Path: "/_redevplugin/api/plugins/catalog"}, bind: func(h *Handler) http.HandlerFunc { return h.handleCatalog }},
+	{Route: Route{Method: http.MethodGet, Path: "/_redevplugin/api/plugins/platform/compatibility"}, bind: func(h *Handler) http.HandlerFunc { return h.handleCompatibility }},
+	{Route: Route{Method: http.MethodPost, Path: "/_redevplugin/api/plugins/surfaces/open"}, bind: func(h *Handler) http.HandlerFunc { return h.handleOpenSurface }},
+	{Route: Route{Method: http.MethodPost, Path: "/_redevplugin/api/plugins/surfaces/revoke-scope"}, bind: func(h *Handler) http.HandlerFunc { return h.handleRevokeSurfaceScope }},
+	{Route: Route{Method: http.MethodPost, Path: "/_redevplugin/api/plugins/surfaces/{surface_instance_id}/prepare"}, bind: func(h *Handler) http.HandlerFunc { return h.handlePrepareSurface }},
+	{Route: Route{Method: http.MethodPost, Path: "/_redevplugin/api/plugins/surfaces/{surface_instance_id}/bridge-token"}, bind: func(h *Handler) http.HandlerFunc { return h.handleBridgeToken }},
+	{Route: Route{Method: http.MethodPost, Path: "/_redevplugin/api/plugins/surfaces/{surface_instance_id}/assets/read"}, bind: func(h *Handler) http.HandlerFunc { return h.handleReadSurfaceAsset }},
+	{Route: Route{Method: http.MethodPost, Path: "/_redevplugin/api/plugins/surfaces/{surface_instance_id}/streams/read"}, bind: func(h *Handler) http.HandlerFunc { return h.handleReadSurfaceStream }},
+	{Route: Route{Method: http.MethodPost, Path: "/_redevplugin/api/plugins/surfaces/{surface_instance_id}/streams/ack"}, bind: func(h *Handler) http.HandlerFunc { return h.handleAcknowledgeSurfaceStream }},
+	{Route: Route{Method: http.MethodPost, Path: "/_redevplugin/api/plugins/surfaces/{surface_instance_id}/operations/cancel"}, bind: func(h *Handler) http.HandlerFunc { return h.handleCancelSurfaceOperation }},
+	{Route: Route{Method: http.MethodPost, Path: "/_redevplugin/api/plugins/surfaces/{surface_instance_id}/confirmations/reject"}, bind: func(h *Handler) http.HandlerFunc { return h.handleRejectSurfaceConfirmation }},
+	{Route: Route{Method: http.MethodPost, Path: "/_redevplugin/api/plugins/surfaces/{surface_instance_id}/dispose"}, bind: func(h *Handler) http.HandlerFunc { return h.handleDisposeSurface }},
+	{Route: Route{Method: http.MethodPost, Path: "/_redevplugin/api/plugins/rpc"}, bind: func(h *Handler) http.HandlerFunc { return h.handleRPC }},
+	{Route: Route{Method: http.MethodPost, Path: "/_redevplugin/api/plugins/confirmations/prepare"}, bind: func(h *Handler) http.HandlerFunc { return h.handlePrepareMethodConfirmation }},
+	{Route: Route{Method: http.MethodGet, Path: "/_redevplugin/api/plugins/intents"}, bind: func(h *Handler) http.HandlerFunc { return h.handleListIntents }, queryKeys: []string{"intent_id", "plugin_instance_id"}},
+	{Route: Route{Method: http.MethodPost, Path: "/_redevplugin/api/plugins/intents/invoke"}, bind: func(h *Handler) http.HandlerFunc { return h.handleInvokeIntent }},
+	{Route: Route{Method: http.MethodGet, Path: "/_redevplugin/api/plugins/operations"}, bind: func(h *Handler) http.HandlerFunc { return h.handleListOperations }, queryKeys: []string{"plugin_instance_id", "cursor", "limit"}},
+	{Route: Route{Method: http.MethodGet, Path: "/_redevplugin/api/plugins/operations/{operation_id}"}, bind: func(h *Handler) http.HandlerFunc { return h.handleGetOperation }},
+	{Route: Route{Method: http.MethodPost, Path: "/_redevplugin/api/plugins/operations/{operation_id}/cancel"}, bind: func(h *Handler) http.HandlerFunc { return h.handleCancelOperation }},
+	{Route: Route{Method: http.MethodPost, Path: "/_redevplugin/api/plugins/runtime/start"}, bind: func(h *Handler) http.HandlerFunc { return h.handleStartRuntime }},
+	{Route: Route{Method: http.MethodPost, Path: "/_redevplugin/api/plugins/runtime/stop"}, bind: func(h *Handler) http.HandlerFunc { return h.handleStopRuntime }},
+	{Route: Route{Method: http.MethodPost, Path: "/_redevplugin/api/plugins/runtime/refresh-enabled"}, bind: func(h *Handler) http.HandlerFunc { return h.handleRefreshEnabledRuntimeState }},
+	{Route: Route{Method: http.MethodGet, Path: "/_redevplugin/api/plugins/runtime/health"}, bind: func(h *Handler) http.HandlerFunc { return h.handleRuntimeHealth }},
+	{Route: Route{Method: http.MethodPost, Path: "/_redevplugin/api/plugins/data/export"}, bind: func(h *Handler) http.HandlerFunc { return h.handleExportData }},
+	{Route: Route{Method: http.MethodPost, Path: "/_redevplugin/api/plugins/data/export/delete"}, bind: func(h *Handler) http.HandlerFunc { return h.handleDeleteDataExport }},
+	{Route: Route{Method: http.MethodPost, Path: "/_redevplugin/api/plugins/data/import"}, bind: func(h *Handler) http.HandlerFunc { return h.handleImportData }},
+	{Route: Route{Method: http.MethodGet, Path: "/_redevplugin/api/plugins/retained-data"}, bind: func(h *Handler) http.HandlerFunc { return h.handleListRetainedData }, queryKeys: []string{"plugin_instance_id"}},
+	{Route: Route{Method: http.MethodPost, Path: "/_redevplugin/api/plugins/retained-data/delete"}, bind: func(h *Handler) http.HandlerFunc { return h.handleDeleteRetainedData }},
+	{Route: Route{Method: http.MethodPost, Path: "/_redevplugin/api/plugins/retained-data/bind"}, bind: func(h *Handler) http.HandlerFunc { return h.handleBindRetainedData }},
+	{Route: Route{Method: http.MethodPost, Path: "/_redevplugin/api/plugins/retained-data/cleanup-expired"}, bind: func(h *Handler) http.HandlerFunc { return h.handleCleanupExpiredRetainedData }},
+	{Route: Route{Method: http.MethodGet, Path: "/_redevplugin/api/plugins/permissions"}, bind: func(h *Handler) http.HandlerFunc { return h.handleListPermissions }, queryKeys: []string{"plugin_instance_id", "active_only"}},
+	{Route: Route{Method: http.MethodPost, Path: "/_redevplugin/api/plugins/permissions/grant"}, bind: func(h *Handler) http.HandlerFunc { return h.handleGrantPermission }},
+	{Route: Route{Method: http.MethodPost, Path: "/_redevplugin/api/plugins/permissions/revoke"}, bind: func(h *Handler) http.HandlerFunc { return h.handleRevokePermission }},
+	{Route: Route{Method: http.MethodGet, Path: "/_redevplugin/api/plugins/security-policies"}, bind: func(h *Handler) http.HandlerFunc { return h.handleListSecurityPolicies }},
+	{Route: Route{Method: http.MethodGet, Path: "/_redevplugin/api/plugins/security-policies/{plugin_instance_id}"}, bind: func(h *Handler) http.HandlerFunc { return h.handleGetSecurityPolicy }},
+	{Route: Route{Method: http.MethodPut, Path: "/_redevplugin/api/plugins/security-policies/{plugin_instance_id}"}, bind: func(h *Handler) http.HandlerFunc { return h.handlePutSecurityPolicy }},
+	{Route: Route{Method: http.MethodDelete, Path: "/_redevplugin/api/plugins/security-policies/{plugin_instance_id}"}, bind: func(h *Handler) http.HandlerFunc { return h.handleDeleteSecurityPolicy }},
+	{Route: Route{Method: http.MethodGet, Path: "/_redevplugin/api/plugins/diagnostics"}, bind: func(h *Handler) http.HandlerFunc { return h.handleListDiagnostics }, queryKeys: []string{"plugin_id", "plugin_instance_id", "surface_instance_id", "type", "severity", "limit"}},
+	{Route: Route{Method: http.MethodPost, Path: "/_redevplugin/api/plugins/secrets/bind"}, bind: func(h *Handler) http.HandlerFunc { return h.handleBindSecret }},
+	{Route: Route{Method: http.MethodPost, Path: "/_redevplugin/api/plugins/secrets/test"}, bind: func(h *Handler) http.HandlerFunc { return h.handleTestSecret }},
+	{Route: Route{Method: http.MethodPost, Path: "/_redevplugin/api/plugins/secrets/delete"}, bind: func(h *Handler) http.HandlerFunc { return h.handleDeleteSecret }},
+	{Route: Route{Method: http.MethodGet, Path: "/_redevplugin/api/plugins/{plugin_instance_id}/settings/schema"}, bind: func(h *Handler) http.HandlerFunc { return h.handleGetSettingsSchema }},
+	{Route: Route{Method: http.MethodGet, Path: "/_redevplugin/api/plugins/{plugin_instance_id}/settings"}, bind: func(h *Handler) http.HandlerFunc { return h.handleGetSettings }},
+	{Route: Route{Method: http.MethodPatch, Path: "/_redevplugin/api/plugins/{plugin_instance_id}/settings"}, bind: func(h *Handler) http.HandlerFunc { return h.handlePatchSettings }},
+}
+
+func NewHandler(deps Dependencies) (*Handler, error) {
+	if deps.Host == nil {
+		return nil, errors.New("host is required")
 	}
-	if isPluginHTTPPath(r.URL.Path) {
-		r = r.WithContext(websecurity.WithRequestContext(r.Context(), requestContext))
+	if deps.Guard == nil {
+		return nil, errors.New("web security guard is required")
 	}
-	switch {
-	case h.EnableLocalImportRoutes && r.Method == http.MethodPost && r.URL.Path == "/_redevplugin/api/plugins/local-import/install":
-		h.handleImportLocalPackage(w, r)
-	case r.Method == http.MethodPost && r.URL.Path == "/_redevplugin/api/plugins/install-release-ref":
-		h.handleInstallReleaseRef(w, r)
-	case r.Method == http.MethodPost && r.URL.Path == "/_redevplugin/api/plugins/enable":
-		h.handleEnable(w, r)
-	case r.Method == http.MethodPost && r.URL.Path == "/_redevplugin/api/plugins/disable":
-		h.handleDisable(w, r)
-	case r.Method == http.MethodPost && r.URL.Path == "/_redevplugin/api/plugins/uninstall":
-		h.handleUninstall(w, r)
-	case h.EnableLocalImportRoutes && r.Method == http.MethodPost && r.URL.Path == "/_redevplugin/api/plugins/local-import/update":
-		h.handleUpdateLocalPackage(w, r)
-	case r.Method == http.MethodPost && r.URL.Path == "/_redevplugin/api/plugins/update-release-ref":
-		h.handleUpdateReleaseRef(w, r)
-	case r.Method == http.MethodPost && r.URL.Path == "/_redevplugin/api/plugins/downgrade":
-		h.handleDowngrade(w, r)
-	case r.Method == http.MethodGet && r.URL.Path == "/_redevplugin/api/plugins/catalog":
-		h.handleCatalog(w, r)
-	case r.Method == http.MethodGet && r.URL.Path == "/_redevplugin/api/plugins/platform/compatibility":
-		h.handleCompatibility(w, r)
-	case r.Method == http.MethodPost && r.URL.Path == "/_redevplugin/api/plugins/surfaces/open":
-		h.handleOpenSurface(w, r)
-	case r.Method == http.MethodPost && r.URL.Path == "/_redevplugin/api/plugins/surfaces/revoke-scope":
-		h.handleRevokeSurfaceScope(w, r)
-	case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/_redevplugin/api/plugins/surfaces/") && strings.HasSuffix(r.URL.Path, "/prepare"):
-		h.handlePrepareSurface(w, r)
-	case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/_redevplugin/api/plugins/surfaces/") && strings.HasSuffix(r.URL.Path, "/bridge-token"):
-		h.handleBridgeToken(w, r)
-	case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/_redevplugin/api/plugins/surfaces/") && strings.HasSuffix(r.URL.Path, "/assets/read"):
-		h.handleReadSurfaceAsset(w, r)
-	case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/_redevplugin/api/plugins/surfaces/") && strings.HasSuffix(r.URL.Path, "/streams/read"):
-		h.handleReadSurfaceStream(w, r)
-	case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/_redevplugin/api/plugins/surfaces/") && strings.HasSuffix(r.URL.Path, "/operations/cancel"):
-		h.handleCancelSurfaceOperation(w, r)
-	case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/_redevplugin/api/plugins/surfaces/") && strings.HasSuffix(r.URL.Path, "/confirmations/reject"):
-		h.handleRejectSurfaceConfirmation(w, r)
-	case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/_redevplugin/api/plugins/surfaces/") && strings.HasSuffix(r.URL.Path, "/dispose"):
-		h.handleDisposeSurface(w, r)
-	case r.Method == http.MethodPost && r.URL.Path == "/_redevplugin/api/plugins/rpc":
-		h.handleRPC(w, r)
-	case r.Method == http.MethodPost && r.URL.Path == "/_redevplugin/api/plugins/confirm":
-		h.handleConfirm(w, r)
-	case r.Method == http.MethodGet && r.URL.Path == "/_redevplugin/api/plugins/intents":
-		h.handleListIntents(w, r)
-	case r.Method == http.MethodPost && r.URL.Path == "/_redevplugin/api/plugins/intents/invoke":
-		h.handleInvokeIntent(w, r)
-	case r.Method == http.MethodGet && r.URL.Path == "/_redevplugin/api/plugins/operations":
-		h.handleListOperations(w, r)
-	case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/_redevplugin/api/plugins/operations/"):
-		h.handleGetOperation(w, r)
-	case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/_redevplugin/api/plugins/operations/") && strings.HasSuffix(r.URL.Path, "/cancel"):
-		h.handleCancelOperation(w, r)
-	case r.Method == http.MethodPost && r.URL.Path == "/_redevplugin/api/plugins/runtime/start":
-		h.handleStartRuntime(w, r)
-	case r.Method == http.MethodPost && r.URL.Path == "/_redevplugin/api/plugins/runtime/stop":
-		h.handleStopRuntime(w, r)
-	case r.Method == http.MethodPost && r.URL.Path == "/_redevplugin/api/plugins/runtime/refresh-enabled":
-		h.handleRefreshEnabledRuntimeState(w, r)
-	case r.Method == http.MethodGet && r.URL.Path == "/_redevplugin/api/plugins/runtime/health":
-		h.handleRuntimeHealth(w, r)
-	case r.Method == http.MethodPost && r.URL.Path == "/_redevplugin/api/plugins/data/export":
-		h.handleExportData(w, r)
-	case r.Method == http.MethodPost && r.URL.Path == "/_redevplugin/api/plugins/data/import":
-		h.handleImportData(w, r)
-	case r.Method == http.MethodGet && r.URL.Path == "/_redevplugin/api/plugins/retained-data":
-		h.handleListRetainedData(w, r)
-	case r.Method == http.MethodPost && r.URL.Path == "/_redevplugin/api/plugins/retained-data/delete":
-		h.handleDeleteRetainedData(w, r)
-	case r.Method == http.MethodPost && r.URL.Path == "/_redevplugin/api/plugins/retained-data/bind":
-		h.handleBindRetainedData(w, r)
-	case r.Method == http.MethodPost && r.URL.Path == "/_redevplugin/api/plugins/retained-data/cleanup-expired":
-		h.handleCleanupExpiredRetainedData(w, r)
-	case r.Method == http.MethodGet && r.URL.Path == "/_redevplugin/api/plugins/permissions":
-		h.handleListPermissions(w, r)
-	case r.Method == http.MethodPost && r.URL.Path == "/_redevplugin/api/plugins/permissions/grant":
-		h.handleGrantPermission(w, r)
-	case r.Method == http.MethodPost && r.URL.Path == "/_redevplugin/api/plugins/permissions/revoke":
-		h.handleRevokePermission(w, r)
-	case r.Method == http.MethodGet && r.URL.Path == "/_redevplugin/api/plugins/audit":
-		h.handleListAudit(w, r)
-	case r.Method == http.MethodGet && r.URL.Path == "/_redevplugin/api/plugins/diagnostics":
-		h.handleListDiagnostics(w, r)
-	case r.Method == http.MethodPost && r.URL.Path == "/_redevplugin/api/plugins/secrets/bind":
-		h.handleBindSecret(w, r)
-	case r.Method == http.MethodPost && r.URL.Path == "/_redevplugin/api/plugins/secrets/test":
-		h.handleTestSecret(w, r)
-	case r.Method == http.MethodPost && r.URL.Path == "/_redevplugin/api/plugins/secrets/delete":
-		h.handleDeleteSecret(w, r)
-	case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/_redevplugin/api/plugins/") && strings.HasSuffix(r.URL.Path, "/settings/schema"):
-		h.handleGetSettingsSchema(w, r)
-	case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/_redevplugin/api/plugins/") && strings.HasSuffix(r.URL.Path, "/settings"):
-		h.handleGetSettings(w, r)
-	case r.Method == http.MethodPatch && strings.HasPrefix(r.URL.Path, "/_redevplugin/api/plugins/") && strings.HasSuffix(r.URL.Path, "/settings"):
-		h.handlePatchSettings(w, r)
-	default:
-		WriteJSON(w, http.StatusNotFound, Envelope{OK: false, Error: "route not found", ErrorCode: string(security.ErrInvalidRequest)})
+	h := &Handler{host: deps.Host, guard: deps.Guard, mux: http.NewServeMux()}
+	for _, route := range routes {
+		if !strings.Contains(route.Path, "{") {
+			h.mux.HandleFunc(route.Method+" "+route.Path, h.bindRoute(route))
+		}
+	}
+	for _, method := range []string{http.MethodGet, http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete} {
+		method := method
+		h.mux.HandleFunc(method+" /_redevplugin/api/plugins/", func(w http.ResponseWriter, r *http.Request) {
+			for _, route := range routes {
+				if route.Method == method && strings.Contains(route.Path, "{") && routePathMatches(route.Path, r.URL.Path) {
+					h.bindRoute(route)(w, r)
+					return
+				}
+			}
+			writeError(w, http.StatusNotFound, security.ErrInvalidRequest, "route not found", errorDetails{})
+		})
+	}
+	h.mux.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) {
+		writeError(w, http.StatusNotFound, security.ErrInvalidRequest, "route not found", errorDetails{})
+	})
+	return h, nil
+}
+
+func (h *Handler) bindRoute(route routeSpec) http.HandlerFunc {
+	handler := route.bind(h)
+	return func(w http.ResponseWriter, r *http.Request) {
+		if _, err := parseQueryParameters(r, route.queryKeys...); err != nil {
+			if requestIsMutation(r) {
+				writeMutationInvalidRequestError(w, err)
+			} else {
+				writeInvalidRequestError(w, err)
+			}
+			return
+		}
+		handler(w, r)
 	}
 }
 
-func (h Handler) handleCancelSurfaceOperation(w http.ResponseWriter, r *http.Request) {
-	if h.Host == nil {
-		WriteJSON(w, http.StatusServiceUnavailable, Envelope{OK: false, Error: "host is unavailable", ErrorCode: string(security.ErrRuntimeUnavailable)})
+func routePathMatches(pattern, requestPath string) bool {
+	patternParts := strings.Split(strings.Trim(pattern, "/"), "/")
+	requestParts := strings.Split(strings.Trim(requestPath, "/"), "/")
+	if len(patternParts) != len(requestParts) {
+		return false
+	}
+	for index := range patternParts {
+		part := patternParts[index]
+		if strings.HasPrefix(part, "{") && strings.HasSuffix(part, "}") {
+			if requestParts[index] == "" {
+				return false
+			}
+			continue
+		}
+		if part != requestParts[index] {
+			return false
+		}
+	}
+	return true
+}
+
+func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if !strings.HasPrefix(r.URL.Path, "/_redevplugin/") {
+		writeError(w, http.StatusNotFound, security.ErrInvalidRequest, "route not found", errorDetails{})
 		return
 	}
+	session, err := h.guard.Authenticate(r)
+	if err != nil {
+		code := security.ErrPermissionDenied
+		if errors.Is(err, websecurity.ErrCSRFRequired) || errors.Is(err, websecurity.ErrCSRFInvalid) {
+			code = security.ErrCSRFRequired
+		}
+		h.host.ReportHTTPAdapterFailure(r.Context(), "authenticate", code, err)
+		writeRequestError(w, r, http.StatusForbidden, code, publicPluginErrorMessage(code), errorDetails{})
+		return
+	}
+	if !session.Valid() {
+		writeRequestError(w, r, http.StatusForbidden, security.ErrPermissionDenied, sessionctx.ErrSessionRequired.Error(), errorDetails{})
+		return
+	}
+	h.mux.ServeHTTP(w, r.WithContext(sessionctx.WithContext(r.Context(), session)))
+}
+
+func writeRequestError(w http.ResponseWriter, r *http.Request, status int, code security.ErrorCode, message string, details errorDetails) {
+	if requestIsMutation(r) {
+		writeMutationError(w, status, code, message, details, mutation.OutcomeNotCommitted)
+		return
+	}
+	writeError(w, status, code, message, details)
+}
+
+func requestIsMutation(r *http.Request) bool {
+	if r == nil || r.Method == http.MethodGet {
+		return false
+	}
+	for _, readPathSuffix := range []string{"/assets/read", "/streams/read"} {
+		if strings.HasSuffix(r.URL.Path, readPathSuffix) {
+			return false
+		}
+	}
+	return r.Method == http.MethodPost || r.Method == http.MethodPut || r.Method == http.MethodPatch || r.Method == http.MethodDelete
+}
+
+func (h Handler) handleCancelSurfaceOperation(w http.ResponseWriter, r *http.Request) {
 	surfaceInstanceID, ok := surfaceInstanceIDFromPath(r.URL.Path, "/operations/cancel")
 	if !ok {
-		WriteJSON(w, http.StatusNotFound, Envelope{OK: false, Error: "route not found", ErrorCode: string(security.ErrInvalidRequest)})
+		writeMutationError(w, http.StatusNotFound, security.ErrInvalidRequest, "route not found", errorDetails{}, mutation.OutcomeNotCommitted)
 		return
 	}
 	var req cancelSurfaceOperationRequest
 	if err := decodeJSON(r, &req); err != nil {
-		writeInvalidRequestError(w, err)
+		writeMutationInvalidRequestError(w, err)
 		return
 	}
-	scope := trustedRequestScope(r)
-	record, err := h.Host.CancelSurfaceOperation(r.Context(), host.CancelSurfaceOperationRequest{
+	record, err := h.host.CancelSurfaceOperation(r.Context(), host.CancelSurfaceOperationRequest{
 		OperationID: req.OperationID, SurfaceInstanceID: surfaceInstanceID,
-		OwnerSessionHash: scope.OwnerSessionHash, OwnerUserHash: scope.OwnerUserHash,
-		SessionChannelIDHash: scope.SessionChannelIDHash, BridgeChannelID: req.BridgeChannelID,
-		Reason: req.Reason,
+		BridgeChannelID: req.BridgeChannelID, Reason: req.Reason,
 	})
 	if err != nil {
-		WriteJSON(w, httpStatusForOperationError(err), Envelope{OK: false, Error: publicPluginErrorMessage(errorCodeForOperationError(err)), ErrorCode: string(errorCodeForOperationError(err))})
+		writeMutationError(w, httpStatusForOperationError(err), errorCodeForOperationError(err), publicPluginErrorMessage(errorCodeForOperationError(err)), errorDetails{}, mutation.ForError(err))
 		return
 	}
-	WriteJSON(w, http.StatusOK, Envelope{OK: true, Data: record})
+	writeMutationSuccess(w, record)
 }
 
 func (h Handler) handleRejectSurfaceConfirmation(w http.ResponseWriter, r *http.Request) {
-	if h.Host == nil {
-		WriteJSON(w, http.StatusServiceUnavailable, Envelope{OK: false, Error: "host is unavailable", ErrorCode: string(security.ErrRuntimeUnavailable)})
-		return
-	}
 	surfaceInstanceID, ok := surfaceInstanceIDFromPath(r.URL.Path, "/confirmations/reject")
 	if !ok {
-		WriteJSON(w, http.StatusNotFound, Envelope{OK: false, Error: "route not found", ErrorCode: string(security.ErrInvalidRequest)})
+		writeMutationError(w, http.StatusNotFound, security.ErrInvalidRequest, "route not found", errorDetails{}, mutation.OutcomeNotCommitted)
 		return
 	}
 	var req rejectSurfaceConfirmationRequest
 	if err := decodeJSON(r, &req); err != nil {
-		writeInvalidRequestError(w, err)
+		writeMutationInvalidRequestError(w, err)
 		return
 	}
-	scope := trustedRequestScope(r)
-	result, err := h.Host.RejectMethodConfirmation(r.Context(), host.RejectMethodConfirmationRequest{
-		PluginInstanceID:     req.PluginInstanceID,
-		SurfaceInstanceID:    surfaceInstanceID,
-		OwnerSessionHash:     scope.OwnerSessionHash,
-		OwnerUserHash:        scope.OwnerUserHash,
-		SessionChannelIDHash: scope.SessionChannelIDHash,
-		BridgeChannelID:      req.BridgeChannelID,
-		GatewayToken:         req.GatewayToken,
-		ConfirmationID:       req.ConfirmationID,
+	result, err := h.host.RejectMethodConfirmation(r.Context(), host.RejectMethodConfirmationRequest{
+		PluginInstanceID:  req.PluginInstanceID,
+		SurfaceInstanceID: surfaceInstanceID,
+		BridgeChannelID:   req.BridgeChannelID,
+		GatewayToken:      req.GatewayToken,
+		ConfirmationID:    req.ConfirmationID,
 	})
 	if err != nil {
 		code := errorCodeForRPCError(err)
-		WriteJSON(w, httpStatusForRPCError(err), Envelope{OK: false, Error: publicPluginErrorMessage(code), ErrorCode: string(code)})
+		writeMutationError(w, httpStatusForRPCError(err), code, publicPluginErrorMessage(code), errorDetailsForRPCError(err), mutation.ForError(err))
 		return
 	}
-	WriteJSON(w, http.StatusOK, Envelope{OK: true, Data: result})
-}
-
-func (h Handler) enforceWebSecurity(w http.ResponseWriter, r *http.Request) (websecurity.RequestContext, bool) {
-	if !isPluginHTTPPath(r.URL.Path) {
-		return websecurity.RequestContext{}, true
-	}
-	if h.WebSecurity == nil {
-		WriteJSON(w, http.StatusServiceUnavailable, Envelope{OK: false, Error: "web security guard is required", ErrorCode: string(security.ErrRuntimeUnavailable)})
-		return websecurity.RequestContext{}, false
-	}
-	requestContext, decision, err := h.WebSecurity.Evaluate(r)
-	if err != nil {
-		WriteJSON(w, http.StatusForbidden, Envelope{OK: false, Error: err.Error(), ErrorCode: string(security.ErrPermissionDenied)})
-		return websecurity.RequestContext{}, false
-	}
-	if decision != websecurity.OriginTrustedParent {
-		WriteJSON(w, http.StatusForbidden, Envelope{OK: false, Error: "request origin is not allowed", ErrorCode: string(security.ErrPermissionDenied)})
-		return websecurity.RequestContext{}, false
-	}
-	if !requestContext.Scope.Valid() {
-		WriteJSON(w, http.StatusForbidden, Envelope{OK: false, Error: websecurity.ErrScopeRequired.Error(), ErrorCode: string(security.ErrPermissionDenied)})
-		return websecurity.RequestContext{}, false
-	}
-	if requiresCSRF(r) {
-		if err := h.WebSecurity.ValidateCSRF(r, requestContext.Scope.OwnerSessionHash); err != nil {
-			errorCode := security.ErrPermissionDenied
-			if errors.Is(err, websecurity.ErrCSRFRequired) || errors.Is(err, websecurity.ErrCSRFInvalid) {
-				errorCode = security.ErrCSRFRequired
-			}
-			WriteJSON(w, http.StatusForbidden, Envelope{OK: false, Error: err.Error(), ErrorCode: string(errorCode)})
-			return websecurity.RequestContext{}, false
-		}
-	}
-	return requestContext, true
-}
-
-func isPluginHTTPPath(requestPath string) bool {
-	return requestPath == "/_redevplugin/api/plugins" ||
-		strings.HasPrefix(requestPath, "/_redevplugin/api/plugins/") ||
-		strings.HasPrefix(requestPath, "/_redevplugin/")
-}
-
-func requiresCSRF(r *http.Request) bool {
-	if r.Method == http.MethodGet || r.Method == http.MethodHead || r.Method == http.MethodOptions {
-		return false
-	}
-	return isPluginHTTPPath(r.URL.Path)
-}
-
-func trustedRequestScope(r *http.Request) websecurity.RequestScope {
-	requestContext, ok := websecurity.RequestContextFromContext(r.Context())
-	if !ok {
-		return websecurity.RequestScope{}
-	}
-	return requestContext.Scope
+	writeMutationSuccess(w, result)
 }
 
 func RouteSet() []Route {
-	return RouteSetWithOptions(RouteSetOptions{})
-}
-
-func RouteSetWithOptions(options RouteSetOptions) []Route {
-	routes := []Route{
-		{Method: http.MethodPost, Path: "/_redevplugin/api/plugins/install-release-ref"},
-		{Method: http.MethodPost, Path: "/_redevplugin/api/plugins/enable"},
-		{Method: http.MethodPost, Path: "/_redevplugin/api/plugins/disable"},
-		{Method: http.MethodPost, Path: "/_redevplugin/api/plugins/uninstall"},
-		{Method: http.MethodPost, Path: "/_redevplugin/api/plugins/update-release-ref"},
-		{Method: http.MethodPost, Path: "/_redevplugin/api/plugins/downgrade"},
-		{Method: http.MethodGet, Path: "/_redevplugin/api/plugins/catalog"},
-		{Method: http.MethodGet, Path: "/_redevplugin/api/plugins/platform/compatibility"},
-		{Method: http.MethodPost, Path: "/_redevplugin/api/plugins/surfaces/open"},
-		{Method: http.MethodPost, Path: "/_redevplugin/api/plugins/surfaces/revoke-scope"},
-		{Method: http.MethodPost, Path: "/_redevplugin/api/plugins/surfaces/{surface_instance_id}/prepare"},
-		{Method: http.MethodPost, Path: "/_redevplugin/api/plugins/surfaces/{surface_instance_id}/bridge-token"},
-		{Method: http.MethodPost, Path: "/_redevplugin/api/plugins/surfaces/{surface_instance_id}/assets/read"},
-		{Method: http.MethodPost, Path: "/_redevplugin/api/plugins/surfaces/{surface_instance_id}/streams/read"},
-		{Method: http.MethodPost, Path: "/_redevplugin/api/plugins/surfaces/{surface_instance_id}/operations/cancel"},
-		{Method: http.MethodPost, Path: "/_redevplugin/api/plugins/surfaces/{surface_instance_id}/confirmations/reject"},
-		{Method: http.MethodPost, Path: "/_redevplugin/api/plugins/surfaces/{surface_instance_id}/dispose"},
-		{Method: http.MethodPost, Path: "/_redevplugin/api/plugins/rpc"},
-		{Method: http.MethodPost, Path: "/_redevplugin/api/plugins/confirm"},
-		{Method: http.MethodGet, Path: "/_redevplugin/api/plugins/intents"},
-		{Method: http.MethodPost, Path: "/_redevplugin/api/plugins/intents/invoke"},
-		{Method: http.MethodGet, Path: "/_redevplugin/api/plugins/operations"},
-		{Method: http.MethodGet, Path: "/_redevplugin/api/plugins/operations/{operation_id}"},
-		{Method: http.MethodPost, Path: "/_redevplugin/api/plugins/operations/{operation_id}/cancel"},
-		{Method: http.MethodGet, Path: "/_redevplugin/api/plugins/runtime/health"},
-		{Method: http.MethodPost, Path: "/_redevplugin/api/plugins/runtime/refresh-enabled"},
-		{Method: http.MethodPost, Path: "/_redevplugin/api/plugins/runtime/start"},
-		{Method: http.MethodPost, Path: "/_redevplugin/api/plugins/runtime/stop"},
-		{Method: http.MethodPost, Path: "/_redevplugin/api/plugins/data/export"},
-		{Method: http.MethodPost, Path: "/_redevplugin/api/plugins/data/import"},
-		{Method: http.MethodGet, Path: "/_redevplugin/api/plugins/retained-data"},
-		{Method: http.MethodPost, Path: "/_redevplugin/api/plugins/retained-data/delete"},
-		{Method: http.MethodPost, Path: "/_redevplugin/api/plugins/retained-data/bind"},
-		{Method: http.MethodPost, Path: "/_redevplugin/api/plugins/retained-data/cleanup-expired"},
-		{Method: http.MethodGet, Path: "/_redevplugin/api/plugins/permissions"},
-		{Method: http.MethodPost, Path: "/_redevplugin/api/plugins/permissions/grant"},
-		{Method: http.MethodPost, Path: "/_redevplugin/api/plugins/permissions/revoke"},
-		{Method: http.MethodGet, Path: "/_redevplugin/api/plugins/audit"},
-		{Method: http.MethodGet, Path: "/_redevplugin/api/plugins/diagnostics"},
-		{Method: http.MethodPost, Path: "/_redevplugin/api/plugins/secrets/bind"},
-		{Method: http.MethodPost, Path: "/_redevplugin/api/plugins/secrets/test"},
-		{Method: http.MethodPost, Path: "/_redevplugin/api/plugins/secrets/delete"},
-		{Method: http.MethodGet, Path: "/_redevplugin/api/plugins/{plugin_instance_id}/settings/schema"},
-		{Method: http.MethodGet, Path: "/_redevplugin/api/plugins/{plugin_instance_id}/settings"},
-		{Method: http.MethodPatch, Path: "/_redevplugin/api/plugins/{plugin_instance_id}/settings"},
+	result := make([]Route, 0, len(routes))
+	for _, route := range routes {
+		result = append(result, route.Route)
 	}
-	if options.EnableLocalImportRoutes {
-		routes = append(routes,
-			Route{Method: http.MethodPost, Path: "/_redevplugin/api/plugins/local-import/install"},
-			Route{Method: http.MethodPost, Path: "/_redevplugin/api/plugins/local-import/update"},
-		)
-	}
-	sort.Slice(routes, func(i, j int) bool {
-		if routes[i].Path == routes[j].Path {
-			return routes[i].Method < routes[j].Method
+	sort.Slice(result, func(i, j int) bool {
+		if result[i].Path == result[j].Path {
+			return result[i].Method < result[j].Method
 		}
-		return routes[i].Path < routes[j].Path
+		return result[i].Path < result[j].Path
 	})
-	return routes
+	return result
 }
 
-func WriteJSON(w http.ResponseWriter, status int, envelope Envelope) {
+func writeJSON(w http.ResponseWriter, status int, payload any) {
+	var encoded []byte
+	var err error
+	if responseStatusMatchesPayload(status, payload) {
+		encoded, err = json.Marshal(payload)
+	} else {
+		err = errors.New("HTTP status does not match platform response envelope")
+	}
+	if err != nil {
+		status = http.StatusInternalServerError
+		switch payload.(type) {
+		case mutationSuccessResponse, mutationErrorResponse:
+			encoded = []byte(`{"ok":false,"error":{"code":"PLUGIN_CONTRACT_MISMATCH","message":"plugin platform response encoding failed","details":{},"mutation_outcome":"unknown"}}`)
+		default:
+			encoded = []byte(`{"ok":false,"error":{"code":"PLUGIN_CONTRACT_MISMATCH","message":"plugin platform response encoding failed","details":{}}}`)
+		}
+	}
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Pragma", "no-cache")
 	w.Header().Set("Referrer-Policy", "no-referrer")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(envelope)
+	_, _ = w.Write(append(encoded, '\n'))
+}
+
+func responseStatusMatchesPayload(status int, payload any) bool {
+	switch payload.(type) {
+	case successResponse, mutationSuccessResponse:
+		return status == http.StatusOK
+	case errorResponse, mutationErrorResponse:
+		return status >= http.StatusBadRequest && status <= 599
+	default:
+		return false
+	}
+}
+
+func writeError(w http.ResponseWriter, status int, code security.ErrorCode, message string, details errorDetails) {
+	writeJSON(w, status, errorResponse{
+		OK:      false,
+		Code:    code,
+		Message: message,
+		Details: details,
+	})
+}
+
+func writeMutationError(w http.ResponseWriter, status int, code security.ErrorCode, message string, details errorDetails, outcome mutation.Outcome) {
+	writeJSON(w, status, mutationErrorResponse{
+		OK:              false,
+		Code:            code,
+		Message:         message,
+		Details:         details,
+		MutationOutcome: outcome,
+	})
+}
+
+func writeMutationSuccess(w http.ResponseWriter, data any) {
+	writeJSON(w, http.StatusOK, mutationSuccessResponse{OK: true, Data: data})
 }
 
 func writeInvalidRequestError(w http.ResponseWriter, err error) {
 	var limitErr *jsonLimitError
 	if errors.As(err, &limitErr) {
-		WriteJSON(w, limitErr.status(), Envelope{
-			OK:           false,
-			Error:        limitErr.Error(),
-			ErrorCode:    string(security.ErrJSONLimitExceeded),
-			ErrorDetails: map[string]any{"reason": string(limitErr.reason)},
+		writeJSON(w, limitErr.status(), errorResponse{
+			OK:      false,
+			Message: publicPluginErrorMessage(security.ErrJSONLimitExceeded),
+			Code:    security.ErrJSONLimitExceeded,
+			Details: errorDetails{Reason: string(limitErr.reason)},
 		})
 		return
 	}
-	WriteJSON(w, http.StatusBadRequest, Envelope{OK: false, Error: err.Error(), ErrorCode: string(security.ErrInvalidRequest)})
+	writeJSON(w, http.StatusBadRequest, errorResponse{OK: false, Message: publicPluginErrorMessage(security.ErrInvalidRequest), Code: security.ErrInvalidRequest})
 }
 
-func writeManagementError(w http.ResponseWriter, err error) {
-	WriteJSON(w, httpStatusForManagementError(err), Envelope{
-		OK:           false,
-		Error:        err.Error(),
-		ErrorCode:    string(errorCodeForManagementError(err)),
-		ErrorDetails: errorDetailsForManagementError(err),
-	})
+func writeMutationInvalidRequestError(w http.ResponseWriter, err error) {
+	var limitErr *jsonLimitError
+	if errors.As(err, &limitErr) {
+		writeMutationError(w, limitErr.status(), security.ErrJSONLimitExceeded, publicPluginErrorMessage(security.ErrJSONLimitExceeded), errorDetails{Reason: string(limitErr.reason)}, mutation.OutcomeNotCommitted)
+		return
+	}
+	writeMutationError(w, http.StatusBadRequest, security.ErrInvalidRequest, publicPluginErrorMessage(security.ErrInvalidRequest), errorDetails{}, mutation.OutcomeNotCommitted)
 }
 
-func requirePluginStateVersion(w http.ResponseWriter, value *uint64, install bool) (uint64, bool) {
-	if value == nil || (install && *value != 0) || (!install && *value == 0) {
-		expected := "a positive integer"
-		if install {
-			expected = "0"
-		}
-		WriteJSON(w, http.StatusBadRequest, Envelope{
-			OK:        false,
-			Error:     "plugin_state_version must be " + expected,
-			ErrorCode: string(security.ErrInvalidRequest),
-		})
+func requireExpectedManagementRevision(w http.ResponseWriter, value *uint64) (uint64, bool) {
+	if value == nil || *value == 0 || *value > uint64(maxJSONSafeInteger) {
+		writeMutationError(w, http.StatusBadRequest, security.ErrInvalidRequest, "expected_management_revision must be a positive safe integer", errorDetails{}, mutation.OutcomeNotCommitted)
 		return 0, false
 	}
 	return *value, true
 }
 
-func (h Handler) handleImportLocalPackage(w http.ResponseWriter, r *http.Request) {
-	if h.Host == nil {
-		WriteJSON(w, http.StatusServiceUnavailable, Envelope{OK: false, Error: "host is unavailable", ErrorCode: string(security.ErrRuntimeUnavailable)})
-		return
+func requiredRevision(value *uint64, field string) (uint64, error) {
+	if value == nil || *value == 0 || *value > uint64(maxJSONSafeInteger) {
+		return 0, fmt.Errorf("%s must be a positive safe integer", field)
 	}
+	return *value, nil
+}
+
+func (h Handler) handleImportLocalPackage(w http.ResponseWriter, r *http.Request) {
 	var req importLocalPackageRequest
 	if err := decodeJSON(r, &req); err != nil {
-		writeInvalidRequestError(w, err)
-		return
-	}
-	pluginStateVersion, ok := requirePluginStateVersion(w, req.PluginStateVersion, true)
-	if !ok {
+		writeMutationInvalidRequestError(w, err)
 		return
 	}
 	packageBytes, err := base64.StdEncoding.DecodeString(req.PackageBase64)
 	if err != nil || len(packageBytes) == 0 {
-		WriteJSON(w, http.StatusBadRequest, Envelope{OK: false, Error: "package_base64 is invalid", ErrorCode: string(security.ErrInvalidRequest)})
+		writeMutationError(w, http.StatusBadRequest, security.ErrInvalidRequest, "package_base64 is invalid", errorDetails{}, mutation.OutcomeNotCommitted)
 		return
 	}
-	record, err := h.Host.ImportLocalPackage(r.Context(), host.ImportLocalPackageRequest{
-		PackageReader:      bytes.NewReader(packageBytes),
-		PackageSize:        int64(len(packageBytes)),
-		PluginInstanceID:   req.PluginInstanceID,
-		PluginStateVersion: pluginStateVersion,
+	record, err := h.host.ImportLocalPackage(r.Context(), host.ImportLocalPackageRequest{
+		PackageReader:    bytes.NewReader(packageBytes),
+		PackageSize:      int64(len(packageBytes)),
+		PluginInstanceID: req.PluginInstanceID,
 	})
 	if err != nil {
-		writeManagementError(w, err)
+		code := errorCodeForManagementError(err)
+		writeMutationError(w, httpStatusForManagementError(err), code, h.publicFailureMessage(r.Context(), "local-import.install", code, err), errorDetailsForManagementError(err), mutation.ForError(err))
 		return
 	}
-	WriteJSON(w, http.StatusOK, Envelope{OK: true, Data: record})
+	writeMutationSuccess(w, record)
 }
 
 func (h Handler) handleInstallReleaseRef(w http.ResponseWriter, r *http.Request) {
-	if h.Host == nil {
-		WriteJSON(w, http.StatusServiceUnavailable, Envelope{OK: false, Error: "host is unavailable", ErrorCode: string(security.ErrRuntimeUnavailable)})
-		return
-	}
 	var req installReleaseRefRequest
 	if err := decodeJSON(r, &req); err != nil {
-		writeInvalidRequestError(w, err)
+		writeMutationInvalidRequestError(w, err)
 		return
 	}
-	pluginStateVersion, ok := requirePluginStateVersion(w, req.PluginStateVersion, true)
-	if !ok {
-		return
-	}
-	record, err := h.Host.InstallReleaseRef(r.Context(), host.InstallReleaseRefRequest{
-		ReleaseRef:         req.ReleaseRef,
-		PluginInstanceID:   req.PluginInstanceID,
-		PluginStateVersion: pluginStateVersion,
+	record, err := h.host.InstallReleaseRef(r.Context(), host.InstallReleaseRefRequest{
+		ReleaseRef:       req.ReleaseRef,
+		PluginInstanceID: req.PluginInstanceID,
 	})
 	if err != nil {
-		writeManagementError(w, err)
+		code := errorCodeForManagementError(err)
+		writeMutationError(w, httpStatusForManagementError(err), code, h.publicFailureMessage(r.Context(), "release.install", code, err), errorDetailsForManagementError(err), mutation.ForError(err))
 		return
 	}
-	WriteJSON(w, http.StatusOK, Envelope{OK: true, Data: record})
+	writeMutationSuccess(w, record)
 }
 
 func (h Handler) handleEnable(w http.ResponseWriter, r *http.Request) {
-	if h.Host == nil {
-		WriteJSON(w, http.StatusServiceUnavailable, Envelope{OK: false, Error: "host is unavailable", ErrorCode: string(security.ErrRuntimeUnavailable)})
-		return
-	}
 	var req enableRequest
 	if err := decodeJSON(r, &req); err != nil {
-		writeInvalidRequestError(w, err)
+		writeMutationInvalidRequestError(w, err)
 		return
 	}
-	pluginStateVersion, ok := requirePluginStateVersion(w, req.PluginStateVersion, false)
+	expectedManagementRevision, ok := requireExpectedManagementRevision(w, req.ExpectedManagementRevision)
 	if !ok {
 		return
 	}
-	record, err := h.Host.EnablePlugin(r.Context(), host.EnableRequest{PluginInstanceID: req.PluginInstanceID, PluginStateVersion: pluginStateVersion})
+	record, err := h.host.EnablePlugin(r.Context(), host.EnableRequest{PluginInstanceID: req.PluginInstanceID, ExpectedManagementRevision: expectedManagementRevision})
 	if err != nil {
-		writeManagementError(w, err)
+		code := errorCodeForManagementError(err)
+		writeMutationError(w, httpStatusForManagementError(err), code, h.publicFailureMessage(r.Context(), "plugin.enable", code, err), errorDetailsForManagementError(err), mutation.ForError(err))
 		return
 	}
-	WriteJSON(w, http.StatusOK, Envelope{OK: true, Data: record})
+	writeMutationSuccess(w, record)
 }
 
 func (h Handler) handleDisable(w http.ResponseWriter, r *http.Request) {
-	if h.Host == nil {
-		WriteJSON(w, http.StatusServiceUnavailable, Envelope{OK: false, Error: "host is unavailable", ErrorCode: string(security.ErrRuntimeUnavailable)})
-		return
-	}
 	var req disableRequest
 	if err := decodeJSON(r, &req); err != nil {
-		writeInvalidRequestError(w, err)
+		writeMutationInvalidRequestError(w, err)
 		return
 	}
-	pluginStateVersion, ok := requirePluginStateVersion(w, req.PluginStateVersion, false)
+	expectedManagementRevision, ok := requireExpectedManagementRevision(w, req.ExpectedManagementRevision)
 	if !ok {
 		return
 	}
-	record, err := h.Host.DisablePlugin(r.Context(), host.DisableRequest{PluginInstanceID: req.PluginInstanceID, PluginStateVersion: pluginStateVersion, Reason: req.Reason})
+	record, err := h.host.DisablePlugin(r.Context(), host.DisableRequest{PluginInstanceID: req.PluginInstanceID, ExpectedManagementRevision: expectedManagementRevision, Reason: req.Reason})
 	if err != nil {
-		writeManagementError(w, err)
+		code := errorCodeForManagementError(err)
+		writeMutationError(w, httpStatusForManagementError(err), code, h.publicFailureMessage(r.Context(), "plugin.disable", code, err), errorDetailsForManagementError(err), mutation.ForError(err))
 		return
 	}
-	WriteJSON(w, http.StatusOK, Envelope{OK: true, Data: record})
+	writeMutationSuccess(w, record)
 }
 
 func (h Handler) handleUninstall(w http.ResponseWriter, r *http.Request) {
-	if h.Host == nil {
-		WriteJSON(w, http.StatusServiceUnavailable, Envelope{OK: false, Error: "host is unavailable", ErrorCode: string(security.ErrRuntimeUnavailable)})
-		return
-	}
 	var req uninstallRequest
 	if err := decodeJSON(r, &req); err != nil {
-		writeInvalidRequestError(w, err)
+		writeMutationInvalidRequestError(w, err)
 		return
 	}
-	pluginStateVersion, ok := requirePluginStateVersion(w, req.PluginStateVersion, false)
+	expectedManagementRevision, ok := requireExpectedManagementRevision(w, req.ExpectedManagementRevision)
 	if !ok {
 		return
 	}
-	record, err := h.Host.UninstallPlugin(r.Context(), host.UninstallRequest{PluginInstanceID: req.PluginInstanceID, PluginStateVersion: pluginStateVersion, DeleteData: req.DeleteData})
+	record, err := h.host.UninstallPlugin(r.Context(), host.UninstallRequest{PluginInstanceID: req.PluginInstanceID, ExpectedManagementRevision: expectedManagementRevision, DeleteData: req.DeleteData})
 	if err != nil {
-		writeManagementError(w, err)
+		code := errorCodeForManagementError(err)
+		writeMutationError(w, httpStatusForManagementError(err), code, h.publicFailureMessage(r.Context(), "plugin.uninstall", code, err), errorDetailsForManagementError(err), mutation.ForError(err))
 		return
 	}
-	WriteJSON(w, http.StatusOK, Envelope{OK: true, Data: record})
+	writeMutationSuccess(w, record)
 }
 
 func (h Handler) handleUpdateLocalPackage(w http.ResponseWriter, r *http.Request) {
-	if h.Host == nil {
-		WriteJSON(w, http.StatusServiceUnavailable, Envelope{OK: false, Error: "host is unavailable", ErrorCode: string(security.ErrRuntimeUnavailable)})
-		return
-	}
 	var req updateLocalPackageRequest
 	if err := decodeJSON(r, &req); err != nil {
-		writeInvalidRequestError(w, err)
+		writeMutationInvalidRequestError(w, err)
 		return
 	}
-	pluginStateVersion, ok := requirePluginStateVersion(w, req.PluginStateVersion, false)
+	expectedManagementRevision, ok := requireExpectedManagementRevision(w, req.ExpectedManagementRevision)
 	if !ok {
 		return
 	}
 	packageBytes, err := base64.StdEncoding.DecodeString(req.PackageBase64)
 	if err != nil || len(packageBytes) == 0 {
-		WriteJSON(w, http.StatusBadRequest, Envelope{OK: false, Error: "package_base64 is invalid", ErrorCode: string(security.ErrInvalidRequest)})
+		writeMutationError(w, http.StatusBadRequest, security.ErrInvalidRequest, "package_base64 is invalid", errorDetails{}, mutation.OutcomeNotCommitted)
 		return
 	}
-	record, err := h.Host.UpdateLocalPackage(r.Context(), host.UpdateLocalPackageRequest{
-		PluginInstanceID:   req.PluginInstanceID,
-		PluginStateVersion: pluginStateVersion,
-		PackageReader:      bytes.NewReader(packageBytes),
-		PackageSize:        int64(len(packageBytes)),
+	record, err := h.host.UpdateLocalPackage(r.Context(), host.UpdateLocalPackageRequest{
+		PluginInstanceID:           req.PluginInstanceID,
+		ExpectedManagementRevision: expectedManagementRevision,
+		PackageReader:              bytes.NewReader(packageBytes),
+		PackageSize:                int64(len(packageBytes)),
 	})
 	if err != nil {
-		writeManagementError(w, err)
+		code := errorCodeForManagementError(err)
+		writeMutationError(w, httpStatusForManagementError(err), code, h.publicFailureMessage(r.Context(), "local-import.update", code, err), errorDetailsForManagementError(err), mutation.ForError(err))
 		return
 	}
-	WriteJSON(w, http.StatusOK, Envelope{OK: true, Data: record})
+	writeMutationSuccess(w, record)
 }
 
 func (h Handler) handleUpdateReleaseRef(w http.ResponseWriter, r *http.Request) {
-	if h.Host == nil {
-		WriteJSON(w, http.StatusServiceUnavailable, Envelope{OK: false, Error: "host is unavailable", ErrorCode: string(security.ErrRuntimeUnavailable)})
-		return
-	}
 	var req updateReleaseRefRequest
 	if err := decodeJSON(r, &req); err != nil {
-		writeInvalidRequestError(w, err)
+		writeMutationInvalidRequestError(w, err)
 		return
 	}
-	pluginStateVersion, ok := requirePluginStateVersion(w, req.PluginStateVersion, false)
+	expectedManagementRevision, ok := requireExpectedManagementRevision(w, req.ExpectedManagementRevision)
 	if !ok {
 		return
 	}
-	record, err := h.Host.UpdateReleaseRef(r.Context(), host.UpdateReleaseRefRequest{
-		PluginInstanceID:   req.PluginInstanceID,
-		PluginStateVersion: pluginStateVersion,
-		ReleaseRef:         req.ReleaseRef,
+	record, err := h.host.UpdateReleaseRef(r.Context(), host.UpdateReleaseRefRequest{
+		PluginInstanceID:           req.PluginInstanceID,
+		ExpectedManagementRevision: expectedManagementRevision,
+		ReleaseRef:                 req.ReleaseRef,
 	})
 	if err != nil {
-		writeManagementError(w, err)
+		code := errorCodeForManagementError(err)
+		writeMutationError(w, httpStatusForManagementError(err), code, h.publicFailureMessage(r.Context(), "release.update", code, err), errorDetailsForManagementError(err), mutation.ForError(err))
 		return
 	}
-	WriteJSON(w, http.StatusOK, Envelope{OK: true, Data: record})
+	writeMutationSuccess(w, record)
 }
 
 func (h Handler) handleDowngrade(w http.ResponseWriter, r *http.Request) {
-	if h.Host == nil {
-		WriteJSON(w, http.StatusServiceUnavailable, Envelope{OK: false, Error: "host is unavailable", ErrorCode: string(security.ErrRuntimeUnavailable)})
-		return
-	}
 	var req downgradeRequest
 	if err := decodeJSON(r, &req); err != nil {
-		writeInvalidRequestError(w, err)
+		writeMutationInvalidRequestError(w, err)
 		return
 	}
-	pluginStateVersion, ok := requirePluginStateVersion(w, req.PluginStateVersion, false)
+	expectedManagementRevision, ok := requireExpectedManagementRevision(w, req.ExpectedManagementRevision)
 	if !ok {
 		return
 	}
-	record, err := h.Host.DowngradePlugin(r.Context(), host.DowngradeRequest{
-		PluginInstanceID:   req.PluginInstanceID,
-		PluginStateVersion: pluginStateVersion,
-		Version:            req.Version,
-		PackageHash:        req.PackageHash,
+	record, err := h.host.DowngradePlugin(r.Context(), host.DowngradeRequest{
+		PluginInstanceID:           req.PluginInstanceID,
+		ExpectedManagementRevision: expectedManagementRevision,
+		Version:                    req.Version,
+		PackageHash:                req.PackageHash,
 	})
 	if err != nil {
-		writeManagementError(w, err)
+		code := errorCodeForManagementError(err)
+		writeMutationError(w, httpStatusForManagementError(err), code, h.publicFailureMessage(r.Context(), "plugin.downgrade", code, err), errorDetailsForManagementError(err), mutation.ForError(err))
 		return
 	}
-	WriteJSON(w, http.StatusOK, Envelope{OK: true, Data: record})
+	writeMutationSuccess(w, record)
 }
 
 func (h Handler) handleCatalog(w http.ResponseWriter, r *http.Request) {
-	if h.Host == nil {
-		WriteJSON(w, http.StatusServiceUnavailable, Envelope{OK: false, Error: "host is unavailable", ErrorCode: string(security.ErrRuntimeUnavailable)})
-		return
-	}
-	records, err := h.Host.ListPlugins(r.Context())
+	records, err := h.host.ListPlugins(r.Context())
 	if err != nil {
-		WriteJSON(w, http.StatusForbidden, Envelope{OK: false, Error: err.Error(), ErrorCode: string(security.ErrPermissionDenied)})
+		writeJSON(w, http.StatusForbidden, errorResponse{OK: false, Message: h.publicFailureMessage(r.Context(), "plugin.catalog", security.ErrPermissionDenied, err), Code: security.ErrPermissionDenied})
 		return
 	}
-	WriteJSON(w, http.StatusOK, Envelope{OK: true, Data: map[string]any{"plugins": records}})
+	writeJSON(w, http.StatusOK, successResponse{OK: true, Data: map[string]any{"plugins": records}})
 }
 
 func (h Handler) handleCompatibility(w http.ResponseWriter, _ *http.Request) {
-	WriteJSON(w, http.StatusOK, Envelope{OK: true, Data: version.CurrentCompatibilityManifest()})
+	writeJSON(w, http.StatusOK, successResponse{OK: true, Data: version.CurrentCompatibilityManifest()})
 }
 
 func (h Handler) handleOpenSurface(w http.ResponseWriter, r *http.Request) {
-	if h.Host == nil {
-		WriteJSON(w, http.StatusServiceUnavailable, Envelope{OK: false, Error: "host is unavailable", ErrorCode: string(security.ErrRuntimeUnavailable)})
-		return
-	}
 	var req openSurfaceRequest
 	if err := decodeJSON(r, &req); err != nil {
-		writeInvalidRequestError(w, err)
+		writeMutationInvalidRequestError(w, err)
 		return
 	}
-	pluginStateVersion, ok := requirePluginStateVersion(w, req.PluginStateVersion, false)
+	expectedManagementRevision, ok := requireExpectedManagementRevision(w, req.ExpectedManagementRevision)
 	if !ok {
 		return
 	}
-	scope := trustedRequestScope(r)
-	bootstrap, err := h.Host.OpenSurface(r.Context(), host.OpenSurfaceRequest{
-		PluginInstanceID:     req.PluginInstanceID,
-		PluginStateVersion:   pluginStateVersion,
-		SurfaceID:            req.SurfaceID,
-		SurfaceInstanceID:    req.SurfaceInstanceID,
-		OwnerSessionHash:     scope.OwnerSessionHash,
-		OwnerUserHash:        scope.OwnerUserHash,
-		SessionChannelIDHash: scope.SessionChannelIDHash,
+	bootstrap, err := h.host.OpenSurface(r.Context(), host.OpenSurfaceRequest{
+		PluginInstanceID:           req.PluginInstanceID,
+		ExpectedManagementRevision: expectedManagementRevision,
+		SurfaceID:                  req.SurfaceID,
+		SurfaceInstanceID:          req.SurfaceInstanceID,
 	})
 	if err != nil {
-		WriteJSON(w, httpStatusForOpenSurfaceError(err), Envelope{OK: false, Error: err.Error(), ErrorCode: string(errorCodeForOpenSurfaceError(err))})
+		code := errorCodeForOpenSurfaceError(err)
+		writeMutationError(w, httpStatusForOpenSurfaceError(err), code, h.publicFailureMessage(r.Context(), "surface.open", code, err), errorDetailsForManagementError(err), mutation.ForError(err))
 		return
 	}
-	WriteJSON(w, http.StatusOK, Envelope{OK: true, Data: publicSurfaceBootstrap(bootstrap)})
+	writeMutationSuccess(w, publicSurfaceBootstrap(bootstrap))
 }
 
 func (h Handler) handlePrepareSurface(w http.ResponseWriter, r *http.Request) {
-	if h.Host == nil {
-		WriteJSON(w, http.StatusServiceUnavailable, Envelope{OK: false, Error: "host is unavailable", ErrorCode: string(security.ErrRuntimeUnavailable)})
-		return
-	}
 	surfaceInstanceID, ok := surfaceInstanceIDFromPath(r.URL.Path, "/prepare")
 	if !ok {
-		WriteJSON(w, http.StatusNotFound, Envelope{OK: false, Error: "route not found", ErrorCode: string(security.ErrInvalidRequest)})
+		writeMutationError(w, http.StatusNotFound, security.ErrInvalidRequest, "route not found", errorDetails{}, mutation.OutcomeNotCommitted)
 		return
 	}
 	var req prepareSurfaceRequest
 	if err := decodeJSON(r, &req); err != nil {
-		writeInvalidRequestError(w, err)
+		writeMutationInvalidRequestError(w, err)
 		return
 	}
-	scope := trustedRequestScope(r)
-	result, err := h.Host.PrepareSurface(r.Context(), host.ExchangeAssetTicketRequest{
-		SurfaceInstanceID:    surfaceInstanceID,
-		AssetTicket:          req.AssetTicket,
-		OwnerSessionHash:     scope.OwnerSessionHash,
-		OwnerUserHash:        scope.OwnerUserHash,
-		SessionChannelIDHash: scope.SessionChannelIDHash,
+	result, err := h.host.PrepareSurface(r.Context(), host.ExchangeAssetTicketRequest{
+		SurfaceInstanceID: surfaceInstanceID,
+		AssetTicket:       req.AssetTicket,
 	})
 	if err != nil {
-		WriteJSON(w, httpStatusForAssetError(err), Envelope{OK: false, Error: err.Error(), ErrorCode: string(errorCodeForAssetError(err))})
+		code := errorCodeForAssetError(err)
+		writeMutationError(w, httpStatusForAssetError(err), code, h.publicFailureMessage(r.Context(), "surface.prepare", code, err), errorDetails{}, mutation.ForError(err))
 		return
 	}
-	WriteJSON(w, http.StatusOK, Envelope{OK: true, Data: result})
+	writeMutationSuccess(w, result)
 }
 
 func (h Handler) handleBridgeToken(w http.ResponseWriter, r *http.Request) {
-	if h.Host == nil {
-		WriteJSON(w, http.StatusServiceUnavailable, Envelope{OK: false, Error: "host is unavailable", ErrorCode: string(security.ErrRuntimeUnavailable)})
-		return
-	}
 	surfaceInstanceID, ok := surfaceInstanceIDFromPath(r.URL.Path, "/bridge-token")
 	if !ok {
-		WriteJSON(w, http.StatusNotFound, Envelope{OK: false, Error: "route not found", ErrorCode: string(security.ErrInvalidRequest)})
+		writeMutationError(w, http.StatusNotFound, security.ErrInvalidRequest, "route not found", errorDetails{}, mutation.OutcomeNotCommitted)
 		return
 	}
 	var req bridgeTokenRequest
 	if err := decodeJSON(r, &req); err != nil {
-		writeInvalidRequestError(w, err)
+		writeMutationInvalidRequestError(w, err)
 		return
 	}
 	if req.Handshake.Type != pluginBridgeHandshakeType {
-		WriteJSON(w, http.StatusBadRequest, Envelope{OK: false, Error: "handshake type is invalid", ErrorCode: string(security.ErrInvalidRequest)})
+		writeMutationError(w, http.StatusBadRequest, security.ErrInvalidRequest, "handshake type is invalid", errorDetails{}, mutation.OutcomeNotCommitted)
 		return
 	}
 	if req.Handshake.SurfaceInstanceID != surfaceInstanceID {
-		WriteJSON(w, http.StatusBadRequest, Envelope{OK: false, Error: "surface_instance_id mismatch", ErrorCode: string(security.ErrInvalidRequest)})
+		writeMutationError(w, http.StatusBadRequest, security.ErrInvalidRequest, "surface_instance_id mismatch", errorDetails{}, mutation.OutcomeNotCommitted)
 		return
 	}
-	scope := trustedRequestScope(r)
-	result, err := h.Host.MintBridgeToken(r.Context(), host.MintBridgeTokenRequest{
+	result, err := h.host.MintBridgeToken(r.Context(), host.MintBridgeTokenRequest{
 		Handshake:                 bridgeHandshake(req.Handshake),
 		BridgeChannelID:           req.BridgeChannelID,
 		HandshakeTranscriptSHA256: req.HandshakeTranscriptSHA256,
 		PreviousGatewayToken:      req.PreviousGatewayToken,
-		OwnerSessionHash:          scope.OwnerSessionHash,
-		OwnerUserHash:             scope.OwnerUserHash,
-		SessionChannelIDHash:      scope.SessionChannelIDHash,
 	})
 	if err != nil {
-		WriteJSON(w, http.StatusForbidden, Envelope{OK: false, Error: err.Error(), ErrorCode: string(errorCodeForBridgeTokenError(err, req.PreviousGatewayToken != ""))})
+		code := errorCodeForBridgeTokenError(err, req.PreviousGatewayToken != "")
+		writeMutationError(w, http.StatusForbidden, code, h.publicFailureMessage(r.Context(), "surface.bridge-token", code, err), errorDetails{}, mutation.ForError(err))
 		return
 	}
-	WriteJSON(w, http.StatusOK, Envelope{OK: true, Data: result})
+	writeMutationSuccess(w, result)
 }
 
 func bridgeHandshake(handshake pluginBridgeHandshake) bridge.Handshake {
@@ -1001,20 +1283,16 @@ func bridgeHandshake(handshake pluginBridgeHandshake) bridge.Handshake {
 		ActiveFingerprint:  handshake.ActiveFingerprint,
 		BridgeNonce:        handshake.BridgeNonce,
 		AssetSessionNonce:  handshake.AssetSessionNonce,
-		PluginStateVersion: handshake.PluginStateVersion,
+		ManagementRevision: handshake.ManagementRevision,
 		RevokeEpoch:        handshake.RevokeEpoch,
 		UIProtocolVersion:  handshake.UIProtocolVersion,
 	}
 }
 
 func (h Handler) handleReadSurfaceAsset(w http.ResponseWriter, r *http.Request) {
-	if h.Host == nil {
-		WriteJSON(w, http.StatusServiceUnavailable, Envelope{OK: false, Error: "host is unavailable", ErrorCode: string(security.ErrRuntimeUnavailable)})
-		return
-	}
 	surfaceInstanceID, ok := surfaceInstanceIDFromPath(r.URL.Path, "/assets/read")
 	if !ok {
-		WriteJSON(w, http.StatusNotFound, Envelope{OK: false, Error: "route not found", ErrorCode: string(security.ErrInvalidRequest)})
+		writeJSON(w, http.StatusNotFound, errorResponse{OK: false, Message: "route not found", Code: security.ErrInvalidRequest})
 		return
 	}
 	var req readSurfaceAssetRequest
@@ -1022,28 +1300,26 @@ func (h Handler) handleReadSurfaceAsset(w http.ResponseWriter, r *http.Request) 
 		writeInvalidRequestError(w, err)
 		return
 	}
-	scope := trustedRequestScope(r)
-	result, err := h.Host.ReadSurfaceAsset(r.Context(), host.ReadSurfaceAssetRequest{
-		AssetSession:         req.AssetSession,
-		AssetSessionID:       req.AssetSessionID,
-		BindingID:            req.BindingID,
-		OwnerSessionHash:     scope.OwnerSessionHash,
-		OwnerUserHash:        scope.OwnerUserHash,
-		SessionChannelIDHash: scope.SessionChannelIDHash,
+	result, err := h.host.ReadSurfaceAsset(r.Context(), host.ReadSurfaceAssetRequest{
+		AssetSession:   req.AssetSession,
+		AssetSessionID: req.AssetSessionID,
+		BindingID:      req.BindingID,
 	})
 	if err != nil {
-		WriteJSON(w, httpStatusForAssetError(err), Envelope{OK: false, Error: err.Error(), ErrorCode: string(errorCodeForAssetError(err))})
+		code := errorCodeForAssetError(err)
+		writeJSON(w, httpStatusForAssetError(err), errorResponse{OK: false, Message: h.publicFailureMessage(r.Context(), "surface.asset.read", code, err), Code: code})
 		return
 	}
 	if result.Session.SurfaceInstanceID != surfaceInstanceID {
-		WriteJSON(w, http.StatusForbidden, Envelope{OK: false, Error: bridge.ErrTokenAudience.Error(), ErrorCode: string(errorCodeForAssetError(bridge.ErrTokenAudience))})
+		code := errorCodeForAssetError(bridge.ErrTokenAudience)
+		writeJSON(w, http.StatusForbidden, errorResponse{OK: false, Message: publicPluginErrorMessage(code), Code: code})
 		return
 	}
 	contentType := result.Entry.ContentType
 	if contentType == "" {
 		contentType = "application/octet-stream"
 	}
-	WriteJSON(w, http.StatusOK, Envelope{OK: true, Data: map[string]any{
+	writeJSON(w, http.StatusOK, successResponse{OK: true, Data: map[string]any{
 		"path":           result.Entry.Path,
 		"sha256":         result.Entry.SHA256,
 		"content_type":   contentType,
@@ -1052,13 +1328,9 @@ func (h Handler) handleReadSurfaceAsset(w http.ResponseWriter, r *http.Request) 
 }
 
 func (h Handler) handleReadSurfaceStream(w http.ResponseWriter, r *http.Request) {
-	if h.Host == nil {
-		WriteJSON(w, http.StatusServiceUnavailable, Envelope{OK: false, Error: "host is unavailable", ErrorCode: string(security.ErrRuntimeUnavailable)})
-		return
-	}
 	surfaceInstanceID, ok := surfaceInstanceIDFromPath(r.URL.Path, "/streams/read")
 	if !ok {
-		WriteJSON(w, http.StatusNotFound, Envelope{OK: false, Error: "route not found", ErrorCode: string(security.ErrInvalidRequest)})
+		writeJSON(w, http.StatusNotFound, errorResponse{OK: false, Message: "route not found", Code: security.ErrInvalidRequest})
 		return
 	}
 	var req readSurfaceStreamRequest
@@ -1066,672 +1338,777 @@ func (h Handler) handleReadSurfaceStream(w http.ResponseWriter, r *http.Request)
 		writeInvalidRequestError(w, err)
 		return
 	}
-	scope := trustedRequestScope(r)
-	result, err := h.Host.ReadStream(r.Context(), host.ReadStreamRequest{
-		StreamID:             req.StreamID,
-		StreamTicket:         req.StreamTicket,
-		SurfaceInstanceID:    surfaceInstanceID,
-		OwnerSessionHash:     scope.OwnerSessionHash,
-		OwnerUserHash:        scope.OwnerUserHash,
-		SessionChannelIDHash: scope.SessionChannelIDHash,
-		MaxEvents:            defaultStreamReadMaxEvents,
-		MaxBytes:             defaultStreamReadMaxBytes,
-		WaitTimeout:          defaultStreamReadWaitTimeout,
+	result, err := h.host.ReadStream(r.Context(), host.ReadStreamRequest{
+		StreamID:          req.StreamID,
+		StreamTicket:      req.StreamTicket,
+		ReadID:            req.ReadID,
+		SurfaceInstanceID: surfaceInstanceID,
+		MaxEvents:         defaultStreamReadMaxEvents,
+		MaxBytes:          defaultStreamReadMaxBytes,
+		WaitTimeout:       defaultStreamReadWaitTimeout,
 	})
 	if err != nil {
 		code := errorCodeForStreamError(err)
-		WriteJSON(w, httpStatusForStreamError(err), Envelope{OK: false, Error: publicPluginErrorMessage(code), ErrorCode: string(code)})
+		writeJSON(w, httpStatusForStreamError(err), errorResponse{OK: false, Message: publicPluginErrorMessage(code), Code: code})
 		return
 	}
 	data := map[string]any{
-		"events": result.Events,
-		"done":   result.Done,
+		"read_id": result.ReadID,
+		"events":  result.Events,
+		"done":    result.Done,
+	}
+	if result.DeliveryID != "" {
+		data["delivery_id"] = result.DeliveryID
 	}
 	if result.Done {
 		data["terminal_status"] = result.TerminalStatus
-	} else {
-		data["next_stream_ticket"] = result.NextStreamTicket
-		data["next_stream_ticket_id"] = result.NextStreamTicketID
-		data["next_stream_expires_at"] = result.NextStreamExpiresAt
 	}
-	WriteJSON(w, http.StatusOK, Envelope{OK: true, Data: data})
+	writeJSON(w, http.StatusOK, successResponse{OK: true, Data: data})
+}
+
+func (h Handler) handleAcknowledgeSurfaceStream(w http.ResponseWriter, r *http.Request) {
+	surfaceInstanceID, ok := surfaceInstanceIDFromPath(r.URL.Path, "/streams/ack")
+	if !ok {
+		writeMutationError(w, http.StatusNotFound, security.ErrInvalidRequest, "route not found", errorDetails{}, mutation.OutcomeNotCommitted)
+		return
+	}
+	var req acknowledgeSurfaceStreamRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeMutationInvalidRequestError(w, err)
+		return
+	}
+	if _, err := h.host.AcknowledgeStream(r.Context(), host.AcknowledgeStreamRequest{
+		StreamID: req.StreamID, StreamTicket: req.StreamTicket,
+		DeliveryID: req.DeliveryID, SurfaceInstanceID: surfaceInstanceID,
+	}); err != nil {
+		code := errorCodeForStreamError(err)
+		writeMutationError(w, httpStatusForStreamError(err), code, publicPluginErrorMessage(code), errorDetails{}, mutation.ForError(err))
+		return
+	}
+	writeMutationSuccess(w, map[string]bool{"acknowledged": true})
 }
 
 func (h Handler) handleDisposeSurface(w http.ResponseWriter, r *http.Request) {
-	if h.Host == nil {
-		WriteJSON(w, http.StatusServiceUnavailable, Envelope{OK: false, Error: "host is unavailable", ErrorCode: string(security.ErrRuntimeUnavailable)})
-		return
-	}
 	surfaceInstanceID, ok := surfaceInstanceIDFromPath(r.URL.Path, "/dispose")
 	if !ok {
-		WriteJSON(w, http.StatusNotFound, Envelope{OK: false, Error: "route not found", ErrorCode: string(security.ErrInvalidRequest)})
+		writeMutationError(w, http.StatusNotFound, security.ErrInvalidRequest, "route not found", errorDetails{}, mutation.OutcomeNotCommitted)
 		return
 	}
 	var req disposeSurfaceRequest
 	if err := decodeJSON(r, &req); err != nil {
-		writeInvalidRequestError(w, err)
+		writeMutationInvalidRequestError(w, err)
 		return
 	}
-	scope := trustedRequestScope(r)
-	if err := h.Host.DisposeSurface(r.Context(), host.DisposeSurfaceRequest{
-		SurfaceInstanceID:    surfaceInstanceID,
-		BridgeNonce:          req.BridgeNonce,
-		OwnerSessionHash:     scope.OwnerSessionHash,
-		OwnerUserHash:        scope.OwnerUserHash,
-		SessionChannelIDHash: scope.SessionChannelIDHash,
+	if err := h.host.DisposeSurface(r.Context(), host.DisposeSurfaceRequest{
+		SurfaceInstanceID: surfaceInstanceID,
+		BridgeNonce:       req.BridgeNonce,
 	}); err != nil {
-		WriteJSON(w, httpStatusForBridgeError(err), Envelope{OK: false, Error: err.Error(), ErrorCode: string(errorCodeForBridgeError(err))})
+		code := errorCodeForBridgeError(err)
+		writeMutationError(w, httpStatusForBridgeError(err), code, h.publicFailureMessage(r.Context(), "surface.dispose", code, err), errorDetails{}, mutation.ForError(err))
 		return
 	}
-	WriteJSON(w, http.StatusOK, Envelope{OK: true, Data: map[string]bool{"disposed": true}})
+	writeMutationSuccess(w, map[string]bool{"disposed": true})
 }
 
 func (h Handler) handleRevokeSurfaceScope(w http.ResponseWriter, r *http.Request) {
-	if h.Host == nil {
-		WriteJSON(w, http.StatusServiceUnavailable, Envelope{OK: false, Error: "host is unavailable", ErrorCode: string(security.ErrRuntimeUnavailable)})
-		return
-	}
 	var req revokeSurfaceScopeRequest
 	if err := decodeJSON(r, &req); err != nil {
-		writeInvalidRequestError(w, err)
+		writeMutationInvalidRequestError(w, err)
 		return
 	}
-	scope := trustedRequestScope(r)
-	revoked, err := h.Host.RevokeSurfaceScope(r.Context(), host.RevokeSurfaceScopeRequest{
-		OwnerSessionHash:     scope.OwnerSessionHash,
-		OwnerUserHash:        scope.OwnerUserHash,
-		SessionChannelIDHash: scope.SessionChannelIDHash,
-	})
+	revoked, err := h.host.RevokeSurfaceScope(r.Context(), host.RevokeSurfaceScopeRequest{})
 	if err != nil {
-		WriteJSON(w, httpStatusForBridgeError(err), Envelope{OK: false, Error: err.Error(), ErrorCode: string(errorCodeForBridgeError(err))})
+		code := errorCodeForBridgeError(err)
+		writeMutationError(w, httpStatusForBridgeError(err), code, h.publicFailureMessage(r.Context(), "surface.revoke-scope", code, err), errorDetails{}, mutation.ForError(err))
 		return
 	}
-	WriteJSON(w, http.StatusOK, Envelope{OK: true, Data: map[string]int{"revoked_surface_count": revoked}})
+	writeMutationSuccess(w, map[string]int{"revoked_surface_count": revoked})
 }
 
 func (h Handler) handleRPC(w http.ResponseWriter, r *http.Request) {
-	if h.Host == nil {
-		WriteJSON(w, http.StatusServiceUnavailable, Envelope{OK: false, Error: "host is unavailable", ErrorCode: string(security.ErrRuntimeUnavailable)})
-		return
-	}
 	var req rpcRequest
 	if err := decodeJSON(r, &req); err != nil {
-		writeInvalidRequestError(w, err)
+		writeMutationInvalidRequestError(w, err)
 		return
 	}
-	scope := trustedRequestScope(r)
-	result, err := h.Host.CallPluginMethod(r.Context(), host.CallMethodRequest{
-		PluginInstanceID:     req.PluginInstanceID,
-		SurfaceInstanceID:    req.SurfaceInstanceID,
-		SessionChannelIDHash: scope.SessionChannelIDHash,
-		OwnerSessionHash:     scope.OwnerSessionHash,
-		OwnerUserHash:        scope.OwnerUserHash,
-		BridgeChannelID:      req.BridgeChannelID,
-		GatewayToken:         req.GatewayToken,
-		ConfirmationID:       req.ConfirmationID,
-		Method:               req.Method,
-		Params:               req.Params,
+	result, err := h.host.CallPluginMethod(r.Context(), host.CallMethodRequest{
+		PluginInstanceID:  req.PluginInstanceID,
+		SurfaceInstanceID: req.SurfaceInstanceID,
+		BridgeChannelID:   req.BridgeChannelID,
+		GatewayToken:      req.GatewayToken,
+		ConfirmationID:    req.ConfirmationID,
+		Method:            req.Method,
+		Params:            req.Params,
 	})
 	if err != nil {
 		code := errorCodeForRPCError(err)
-		WriteJSON(w, httpStatusForRPCError(err), Envelope{OK: false, Error: publicPluginErrorMessage(code), ErrorCode: string(code), ErrorDetails: errorDetailsForRPCError(err)})
+		writeMutationError(w, httpStatusForRPCError(err), code, publicPluginErrorMessage(code), errorDetailsForRPCError(err), mutation.ForError(err))
 		return
 	}
-	WriteJSON(w, http.StatusOK, Envelope{OK: true, Data: result})
+	writeMutationSuccess(w, result)
 }
 
-func (h Handler) handleConfirm(w http.ResponseWriter, r *http.Request) {
-	if h.Host == nil {
-		WriteJSON(w, http.StatusServiceUnavailable, Envelope{OK: false, Error: "host is unavailable", ErrorCode: string(security.ErrRuntimeUnavailable)})
-		return
-	}
-	var req rpcRequest
+func (h Handler) handlePrepareMethodConfirmation(w http.ResponseWriter, r *http.Request) {
+	var req prepareMethodConfirmationRequest
 	if err := decodeJSON(r, &req); err != nil {
-		writeInvalidRequestError(w, err)
+		writeMutationInvalidRequestError(w, err)
 		return
 	}
-	scope := trustedRequestScope(r)
-	result, err := h.Host.PrepareMethodConfirmation(r.Context(), host.ConfirmMethodRequest{
-		PluginInstanceID:     req.PluginInstanceID,
-		SurfaceInstanceID:    req.SurfaceInstanceID,
-		SessionChannelIDHash: scope.SessionChannelIDHash,
-		OwnerSessionHash:     scope.OwnerSessionHash,
-		OwnerUserHash:        scope.OwnerUserHash,
-		BridgeChannelID:      req.BridgeChannelID,
-		GatewayToken:         req.GatewayToken,
-		Method:               req.Method,
-		Params:               req.Params,
+	result, err := h.host.PrepareMethodConfirmation(r.Context(), host.PrepareMethodConfirmationRequest{
+		PluginInstanceID:  req.PluginInstanceID,
+		SurfaceInstanceID: req.SurfaceInstanceID,
+		BridgeChannelID:   req.BridgeChannelID,
+		GatewayToken:      req.GatewayToken,
+		Method:            req.Method,
+		Params:            req.Params,
 	})
 	if err != nil {
 		code := errorCodeForRPCError(err)
-		WriteJSON(w, httpStatusForRPCError(err), Envelope{OK: false, Error: publicPluginErrorMessage(code), ErrorCode: string(code)})
+		writeMutationError(w, httpStatusForRPCError(err), code, publicPluginErrorMessage(code), errorDetailsForRPCError(err), mutation.ForError(err))
 		return
 	}
-	WriteJSON(w, http.StatusOK, Envelope{OK: true, Data: result})
+	writeMutationSuccess(w, result)
 }
 
 func (h Handler) handleListIntents(w http.ResponseWriter, r *http.Request) {
-	if h.Host == nil {
-		WriteJSON(w, http.StatusServiceUnavailable, Envelope{OK: false, Error: "host is unavailable", ErrorCode: string(security.ErrRuntimeUnavailable)})
-		return
-	}
-	records, err := h.Host.ListIntents(r.Context(), host.ListIntentsRequest{
-		IntentID:         r.URL.Query().Get("intent_id"),
-		PluginInstanceID: r.URL.Query().Get("plugin_instance_id"),
-	})
+	query, err := parseQueryParameters(r, "intent_id", "plugin_instance_id")
 	if err != nil {
-		code := errorCodeForIntentError(err)
-		WriteJSON(w, httpStatusForIntentError(err), Envelope{OK: false, Error: publicPluginErrorMessage(code), ErrorCode: string(code)})
-		return
-	}
-	WriteJSON(w, http.StatusOK, Envelope{OK: true, Data: map[string]any{"intents": records}})
-}
-
-func (h Handler) handleInvokeIntent(w http.ResponseWriter, r *http.Request) {
-	if h.Host == nil {
-		WriteJSON(w, http.StatusServiceUnavailable, Envelope{OK: false, Error: "host is unavailable", ErrorCode: string(security.ErrRuntimeUnavailable)})
-		return
-	}
-	var req invokeIntentRequest
-	if err := decodeJSON(r, &req); err != nil {
 		writeInvalidRequestError(w, err)
 		return
 	}
-	scope := trustedRequestScope(r)
-	result, err := h.Host.InvokeIntent(r.Context(), host.InvokeIntentRequest{
-		PluginInstanceID:     req.PluginInstanceID,
-		IntentID:             req.IntentID,
-		Params:               req.Params,
-		OwnerSessionHash:     scope.OwnerSessionHash,
-		OwnerUserHash:        scope.OwnerUserHash,
-		SessionChannelIDHash: scope.SessionChannelIDHash,
+	records, err := h.host.ListIntents(r.Context(), host.ListIntentsRequest{
+		IntentID:         query["intent_id"],
+		PluginInstanceID: query["plugin_instance_id"],
 	})
 	if err != nil {
 		code := errorCodeForIntentError(err)
-		WriteJSON(w, httpStatusForIntentError(err), Envelope{OK: false, Error: publicPluginErrorMessage(code), ErrorCode: string(code), ErrorDetails: errorDetailsForRPCError(err)})
+		writeJSON(w, httpStatusForIntentError(err), errorResponse{OK: false, Message: publicPluginErrorMessage(code), Code: code})
 		return
 	}
-	WriteJSON(w, http.StatusOK, Envelope{OK: true, Data: result})
+	writeJSON(w, http.StatusOK, successResponse{OK: true, Data: map[string]any{"intents": records}})
+}
+
+func (h Handler) handleInvokeIntent(w http.ResponseWriter, r *http.Request) {
+	var req invokeIntentRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeMutationInvalidRequestError(w, err)
+		return
+	}
+	result, err := h.host.InvokeIntent(r.Context(), host.InvokeIntentRequest{
+		PluginInstanceID: req.PluginInstanceID,
+		IntentID:         req.IntentID,
+		Params:           req.Params,
+	})
+	if err != nil {
+		code := errorCodeForIntentError(err)
+		writeMutationError(w, httpStatusForIntentError(err), code, publicPluginErrorMessage(code), errorDetailsForRPCError(err), mutation.ForError(err))
+		return
+	}
+	writeMutationSuccess(w, result)
 }
 
 func (h Handler) handleListOperations(w http.ResponseWriter, r *http.Request) {
-	if h.Host == nil {
-		WriteJSON(w, http.StatusServiceUnavailable, Envelope{OK: false, Error: "host is unavailable", ErrorCode: string(security.ErrRuntimeUnavailable)})
+	query, err := parseQueryParameters(r, "plugin_instance_id", "cursor", "limit")
+	if err != nil {
+		writeInvalidRequestError(w, err)
 		return
 	}
-	records, err := h.Host.ListOperations(r.Context(), host.ListOperationsRequest{
-		PluginInstanceID: r.URL.Query().Get("plugin_instance_id"),
+	limit, err := optionalIntegerQueryParameter(query, "limit", 1, operation.MaxListLimit)
+	if err != nil {
+		writeInvalidRequestError(w, err)
+		return
+	}
+	result, err := h.host.ListOperations(r.Context(), host.ListOperationsRequest{
+		PluginInstanceID: query["plugin_instance_id"],
+		Cursor:           query["cursor"],
+		Limit:            limit,
 	})
 	if err != nil {
-		WriteJSON(w, httpStatusForOperationError(err), Envelope{OK: false, Error: err.Error(), ErrorCode: string(errorCodeForOperationError(err))})
+		code := errorCodeForOperationError(err)
+		writeJSON(w, httpStatusForOperationError(err), errorResponse{OK: false, Message: h.publicFailureMessage(r.Context(), "operation.list", code, err), Code: code})
 		return
 	}
-	WriteJSON(w, http.StatusOK, Envelope{OK: true, Data: map[string]any{"operations": records}})
+	writeJSON(w, http.StatusOK, successResponse{OK: true, Data: result})
 }
 
 func (h Handler) handleGetOperation(w http.ResponseWriter, r *http.Request) {
-	if h.Host == nil {
-		WriteJSON(w, http.StatusServiceUnavailable, Envelope{OK: false, Error: "host is unavailable", ErrorCode: string(security.ErrRuntimeUnavailable)})
-		return
-	}
 	operationID, ok := operationIDFromPath(r.URL.Path, "")
 	if !ok {
-		WriteJSON(w, http.StatusNotFound, Envelope{OK: false, Error: "route not found", ErrorCode: string(security.ErrInvalidRequest)})
+		writeJSON(w, http.StatusNotFound, errorResponse{OK: false, Message: "route not found", Code: security.ErrInvalidRequest})
 		return
 	}
-	record, err := h.Host.GetOperation(r.Context(), operationID)
+	record, err := h.host.GetOperation(r.Context(), operationID)
 	if err != nil {
-		WriteJSON(w, httpStatusForOperationError(err), Envelope{OK: false, Error: err.Error(), ErrorCode: string(errorCodeForOperationError(err))})
+		code := errorCodeForOperationError(err)
+		writeJSON(w, httpStatusForOperationError(err), errorResponse{OK: false, Message: h.publicFailureMessage(r.Context(), "operation.get", code, err), Code: code})
 		return
 	}
-	WriteJSON(w, http.StatusOK, Envelope{OK: true, Data: record})
+	writeJSON(w, http.StatusOK, successResponse{OK: true, Data: record})
 }
 
 func (h Handler) handleCancelOperation(w http.ResponseWriter, r *http.Request) {
-	if h.Host == nil {
-		WriteJSON(w, http.StatusServiceUnavailable, Envelope{OK: false, Error: "host is unavailable", ErrorCode: string(security.ErrRuntimeUnavailable)})
-		return
-	}
 	operationID, ok := operationIDFromPath(r.URL.Path, "/cancel")
 	if !ok {
-		WriteJSON(w, http.StatusNotFound, Envelope{OK: false, Error: "route not found", ErrorCode: string(security.ErrInvalidRequest)})
+		writeMutationError(w, http.StatusNotFound, security.ErrInvalidRequest, "route not found", errorDetails{}, mutation.OutcomeNotCommitted)
 		return
 	}
 	var req cancelOperationRequest
 	if err := decodeJSON(r, &req); err != nil {
-		writeInvalidRequestError(w, err)
+		writeMutationInvalidRequestError(w, err)
 		return
 	}
-	record, err := h.Host.CancelOperation(r.Context(), host.CancelOperationRequest{
+	record, err := h.host.CancelOperation(r.Context(), host.CancelOperationRequest{
 		OperationID: operationID,
 		Reason:      req.Reason,
 	})
 	if err != nil {
-		WriteJSON(w, httpStatusForOperationError(err), Envelope{OK: false, Error: err.Error(), ErrorCode: string(errorCodeForOperationError(err))})
+		code := errorCodeForOperationError(err)
+		writeMutationError(w, httpStatusForOperationError(err), code, h.publicFailureMessage(r.Context(), "operation.cancel", code, err), errorDetails{}, mutation.ForError(err))
 		return
 	}
-	WriteJSON(w, http.StatusOK, Envelope{OK: true, Data: record})
+	writeMutationSuccess(w, record)
 }
 
 func (h Handler) handleStartRuntime(w http.ResponseWriter, r *http.Request) {
-	if h.Host == nil {
-		WriteJSON(w, http.StatusServiceUnavailable, Envelope{OK: false, Error: "host is unavailable", ErrorCode: string(security.ErrRuntimeUnavailable)})
-		return
-	}
 	var req startRuntimeRequest
 	if err := decodeJSON(r, &req); err != nil {
-		writeInvalidRequestError(w, err)
+		writeMutationInvalidRequestError(w, err)
 		return
 	}
-	health, err := h.Host.StartRuntime(r.Context(), host.StartRuntimeRequest{Target: req.Target})
+	health, err := h.host.StartRuntime(r.Context(), host.StartRuntimeRequest{Target: req.Target})
 	if err != nil {
-		WriteJSON(w, http.StatusServiceUnavailable, Envelope{OK: false, Error: err.Error(), ErrorCode: string(security.ErrRuntimeUnavailable)})
+		writeMutationError(w, http.StatusServiceUnavailable, security.ErrRuntimeUnavailable, h.publicFailureMessage(r.Context(), "runtime.start", security.ErrRuntimeUnavailable, err), errorDetails{}, mutation.ForError(err))
 		return
 	}
-	WriteJSON(w, http.StatusOK, Envelope{OK: true, Data: health})
+	writeMutationSuccess(w, health)
 }
 
 func (h Handler) handleStopRuntime(w http.ResponseWriter, r *http.Request) {
-	if h.Host == nil {
-		WriteJSON(w, http.StatusServiceUnavailable, Envelope{OK: false, Error: "host is unavailable", ErrorCode: string(security.ErrRuntimeUnavailable)})
+	var req emptyRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeMutationInvalidRequestError(w, err)
 		return
 	}
-	if err := h.Host.StopRuntime(r.Context()); err != nil {
-		WriteJSON(w, http.StatusServiceUnavailable, Envelope{OK: false, Error: err.Error(), ErrorCode: string(security.ErrRuntimeUnavailable)})
+	if err := h.host.StopRuntime(r.Context()); err != nil {
+		writeMutationError(w, http.StatusServiceUnavailable, security.ErrRuntimeUnavailable, h.publicFailureMessage(r.Context(), "runtime.stop", security.ErrRuntimeUnavailable, err), errorDetails{}, mutation.ForError(err))
 		return
 	}
-	WriteJSON(w, http.StatusOK, Envelope{OK: true, Data: map[string]bool{"stopped": true}})
+	writeMutationSuccess(w, map[string]bool{"stopped": true})
 }
 
 func (h Handler) handleRuntimeHealth(w http.ResponseWriter, r *http.Request) {
-	if h.Host == nil {
-		WriteJSON(w, http.StatusServiceUnavailable, Envelope{OK: false, Error: "host is unavailable", ErrorCode: string(security.ErrRuntimeUnavailable)})
-		return
-	}
-	health, err := h.Host.RuntimeHealth(r.Context())
+	health, err := h.host.RuntimeHealth(r.Context())
 	if err != nil {
-		WriteJSON(w, http.StatusServiceUnavailable, Envelope{OK: false, Error: err.Error(), ErrorCode: string(security.ErrRuntimeUnavailable)})
+		writeJSON(w, http.StatusServiceUnavailable, errorResponse{OK: false, Message: h.publicFailureMessage(r.Context(), "runtime.health", security.ErrRuntimeUnavailable, err), Code: security.ErrRuntimeUnavailable})
 		return
 	}
-	WriteJSON(w, http.StatusOK, Envelope{OK: true, Data: health})
+	writeJSON(w, http.StatusOK, successResponse{OK: true, Data: health})
 }
 
 func (h Handler) handleRefreshEnabledRuntimeState(w http.ResponseWriter, r *http.Request) {
-	if h.Host == nil {
-		WriteJSON(w, http.StatusServiceUnavailable, Envelope{OK: false, Error: "host is unavailable", ErrorCode: string(security.ErrRuntimeUnavailable)})
+	var req emptyRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeMutationInvalidRequestError(w, err)
 		return
 	}
-	records, err := h.Host.RefreshEnabledPlugins(r.Context())
+	records, err := h.host.RefreshEnabledPlugins(r.Context())
 	if err != nil {
-		WriteJSON(w, http.StatusServiceUnavailable, Envelope{OK: false, Error: err.Error(), ErrorCode: string(security.ErrRuntimeUnavailable)})
+		writeMutationError(w, http.StatusServiceUnavailable, security.ErrRuntimeUnavailable, "Plugin runtime state could not be refreshed", errorDetails{}, mutation.ForError(err))
 		return
 	}
-	WriteJSON(w, http.StatusOK, Envelope{OK: true, Data: map[string]any{"refreshed_plugins": records}})
+	writeMutationSuccess(w, map[string]any{"results": records})
 }
 
 func (h Handler) handleExportData(w http.ResponseWriter, r *http.Request) {
-	if h.Host == nil {
-		WriteJSON(w, http.StatusServiceUnavailable, Envelope{OK: false, Error: "host is unavailable", ErrorCode: string(security.ErrRuntimeUnavailable)})
-		return
-	}
 	var req exportDataRequest
 	if err := decodeJSON(r, &req); err != nil {
-		writeInvalidRequestError(w, err)
+		writeMutationInvalidRequestError(w, err)
 		return
 	}
-	result, err := h.Host.ExportPluginData(r.Context(), host.ExportDataRequest{
+	result, err := h.host.ExportPluginData(r.Context(), host.ExportDataRequest{
 		PluginInstanceID: req.PluginInstanceID,
-		IncludeSecrets:   req.IncludeSecrets,
 	})
 	if err != nil {
-		WriteJSON(w, httpStatusForDataLifecycleError(err), Envelope{OK: false, Error: err.Error(), ErrorCode: string(errorCodeForDataLifecycleError(err))})
+		code := errorCodeForDataLifecycleError(err)
+		writeMutationError(w, httpStatusForDataLifecycleError(err), code, h.publicFailureMessage(r.Context(), "data.export", code, err), errorDetails{}, mutation.ForError(err))
 		return
 	}
-	WriteJSON(w, http.StatusOK, Envelope{OK: true, Data: result})
+	writeMutationSuccess(w, map[string]string{"bundle_ref": result.BundleRef})
+}
+
+func (h Handler) handleDeleteDataExport(w http.ResponseWriter, r *http.Request) {
+	var req deleteDataExportRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeMutationInvalidRequestError(w, err)
+		return
+	}
+	if err := h.host.DeleteExportedPluginData(r.Context(), host.DeleteExportDataRequest{BundleRef: req.BundleRef}); err != nil {
+		code := errorCodeForDataLifecycleError(err)
+		writeMutationError(w, httpStatusForDataLifecycleError(err), code, h.publicFailureMessage(r.Context(), "data.export.delete", code, err), errorDetails{}, mutation.ForError(err))
+		return
+	}
+	writeMutationSuccess(w, map[string]bool{"deleted": true})
 }
 
 func (h Handler) handleImportData(w http.ResponseWriter, r *http.Request) {
-	if h.Host == nil {
-		WriteJSON(w, http.StatusServiceUnavailable, Envelope{OK: false, Error: "host is unavailable", ErrorCode: string(security.ErrRuntimeUnavailable)})
-		return
-	}
 	var req importDataRequest
 	if err := decodeJSON(r, &req); err != nil {
-		writeInvalidRequestError(w, err)
+		writeMutationInvalidRequestError(w, err)
 		return
 	}
-	if err := h.Host.ImportPluginData(r.Context(), host.ImportDataRequest{
-		PluginInstanceID:   req.PluginInstanceID,
-		ArchiveRef:         req.ArchiveRef,
-		SettingsArchiveRef: req.SettingsArchiveRef,
-		DeleteExisting:     req.DeleteExisting,
-	}); err != nil {
-		WriteJSON(w, httpStatusForDataLifecycleError(err), Envelope{OK: false, Error: err.Error(), ErrorCode: string(errorCodeForDataLifecycleError(err))})
+	expectedManagementRevision, err := requiredRevision(req.ExpectedManagementRevision, "expected_management_revision")
+	if err != nil {
+		writeMutationInvalidRequestError(w, err)
 		return
 	}
-	WriteJSON(w, http.StatusOK, Envelope{OK: true, Data: map[string]bool{"imported": true}})
+	record, err := h.host.ImportPluginData(r.Context(), host.ImportDataRequest{
+		PluginInstanceID:           req.PluginInstanceID,
+		BundleRef:                  req.BundleRef,
+		ExpectedManagementRevision: expectedManagementRevision,
+	})
+	if err != nil {
+		code := errorCodeForDataLifecycleError(err)
+		writeMutationError(w, httpStatusForDataLifecycleError(err), code, h.publicFailureMessage(r.Context(), "data.import", code, err), errorDetails{}, mutation.ForError(err))
+		return
+	}
+	writeMutationSuccess(w, record)
 }
 
 func (h Handler) handleListRetainedData(w http.ResponseWriter, r *http.Request) {
-	if h.Host == nil {
-		WriteJSON(w, http.StatusServiceUnavailable, Envelope{OK: false, Error: "host is unavailable", ErrorCode: string(security.ErrRuntimeUnavailable)})
+	query, err := parseQueryParameters(r, "plugin_instance_id")
+	if err != nil {
+		writeInvalidRequestError(w, err)
 		return
 	}
-	records, err := h.Host.ListRetainedData(r.Context(), host.ListRetainedDataRequest{
-		PublisherID:            strings.TrimSpace(r.URL.Query().Get("publisher_id")),
-		PluginID:               strings.TrimSpace(r.URL.Query().Get("plugin_id")),
-		SourcePluginInstanceID: strings.TrimSpace(r.URL.Query().Get("source_plugin_instance_id")),
-		State:                  retaineddata.State(strings.TrimSpace(r.URL.Query().Get("state"))),
+	records, err := h.host.ListRetainedData(r.Context(), host.ListRetainedDataRequest{
+		PluginInstanceID: query["plugin_instance_id"],
 	})
 	if err != nil {
-		WriteJSON(w, httpStatusForDataLifecycleError(err), Envelope{OK: false, Error: err.Error(), ErrorCode: string(errorCodeForDataLifecycleError(err))})
+		code := errorCodeForDataLifecycleError(err)
+		writeJSON(w, httpStatusForDataLifecycleError(err), errorResponse{OK: false, Message: h.publicFailureMessage(r.Context(), "retained-data.list", code, err), Code: code})
 		return
 	}
-	WriteJSON(w, http.StatusOK, Envelope{OK: true, Data: map[string]any{"retained_data": records}})
+	writeJSON(w, http.StatusOK, successResponse{OK: true, Data: map[string]any{"retained_data": records}})
 }
 
 func (h Handler) handleDeleteRetainedData(w http.ResponseWriter, r *http.Request) {
-	if h.Host == nil {
-		WriteJSON(w, http.StatusServiceUnavailable, Envelope{OK: false, Error: "host is unavailable", ErrorCode: string(security.ErrRuntimeUnavailable)})
-		return
-	}
 	var req deleteRetainedDataRequest
 	if err := decodeJSON(r, &req); err != nil {
-		writeInvalidRequestError(w, err)
+		writeMutationInvalidRequestError(w, err)
 		return
 	}
-	record, err := h.Host.DeleteRetainedData(r.Context(), host.DeleteRetainedDataRequest{RetainedID: req.RetainedID})
+	expectedBindingRevision, err := requiredRevision(req.ExpectedBindingRevision, "expected_binding_revision")
 	if err != nil {
-		envelope := Envelope{OK: false, Error: err.Error(), ErrorCode: string(errorCodeForDataLifecycleError(err))}
-		if record.RetainedID != "" {
-			envelope.Data = record
-		}
-		WriteJSON(w, httpStatusForDataLifecycleError(err), envelope)
+		writeMutationInvalidRequestError(w, err)
 		return
 	}
-	WriteJSON(w, http.StatusOK, Envelope{OK: true, Data: record})
+	record, err := h.host.DeleteRetainedData(r.Context(), host.DeleteRetainedDataRequest{
+		PluginInstanceID:        req.PluginInstanceID,
+		ExpectedBindingRevision: expectedBindingRevision,
+	})
+	if err != nil {
+		details := bindingRevisionDetails(err)
+		code := errorCodeForDataLifecycleError(err)
+		writeMutationError(w, httpStatusForDataLifecycleError(err), code, h.publicFailureMessage(r.Context(), "retained-data.delete", code, err), details, mutation.ForError(err))
+		return
+	}
+	writeMutationSuccess(w, record)
 }
 
 func (h Handler) handleBindRetainedData(w http.ResponseWriter, r *http.Request) {
-	if h.Host == nil {
-		WriteJSON(w, http.StatusServiceUnavailable, Envelope{OK: false, Error: "host is unavailable", ErrorCode: string(security.ErrRuntimeUnavailable)})
-		return
-	}
 	var req bindRetainedDataRequest
 	if err := decodeJSON(r, &req); err != nil {
-		writeInvalidRequestError(w, err)
+		writeMutationInvalidRequestError(w, err)
 		return
 	}
-	record, err := h.Host.BindRetainedData(r.Context(), host.BindRetainedDataRequest{
-		RetainedID:             req.RetainedID,
-		TargetPluginInstanceID: req.TargetPluginInstanceID,
+	expectedSourceBindingRevision, err := requiredRevision(req.ExpectedSourceBindingRevision, "expected_source_binding_revision")
+	if err != nil {
+		writeMutationInvalidRequestError(w, err)
+		return
+	}
+	targetExpectedManagementRevision, err := requiredRevision(req.TargetExpectedManagementRevision, "target_expected_management_revision")
+	if err != nil {
+		writeMutationInvalidRequestError(w, err)
+		return
+	}
+	record, err := h.host.BindRetainedData(r.Context(), host.BindRetainedDataRequest{
+		SourcePluginInstanceID:           req.SourcePluginInstanceID,
+		ExpectedSourceBindingRevision:    expectedSourceBindingRevision,
+		TargetPluginInstanceID:           req.TargetPluginInstanceID,
+		TargetExpectedManagementRevision: targetExpectedManagementRevision,
 	})
 	if err != nil {
-		envelope := Envelope{OK: false, Error: err.Error(), ErrorCode: string(errorCodeForDataLifecycleError(err))}
-		if record.RetainedID != "" {
-			envelope.Data = record
-		}
-		WriteJSON(w, httpStatusForDataLifecycleError(err), envelope)
+		details := bindingRevisionDetails(err)
+		code := errorCodeForDataLifecycleError(err)
+		writeMutationError(w, httpStatusForDataLifecycleError(err), code, h.publicFailureMessage(r.Context(), "retained-data.bind", code, err), details, mutation.ForError(err))
 		return
 	}
-	WriteJSON(w, http.StatusOK, Envelope{OK: true, Data: record})
+	writeMutationSuccess(w, record)
 }
 
 func (h Handler) handleCleanupExpiredRetainedData(w http.ResponseWriter, r *http.Request) {
-	if h.Host == nil {
-		WriteJSON(w, http.StatusServiceUnavailable, Envelope{OK: false, Error: "host is unavailable", ErrorCode: string(security.ErrRuntimeUnavailable)})
-		return
-	}
 	var req cleanupExpiredRetainedDataRequest
 	if err := decodeJSON(r, &req); err != nil {
-		writeInvalidRequestError(w, err)
+		writeMutationInvalidRequestError(w, err)
 		return
 	}
-	maxRecords := 0
-	if req.MaxRecords != nil {
-		if *req.MaxRecords < 1 {
-			WriteJSON(w, http.StatusBadRequest, Envelope{OK: false, Error: "max_records must be at least 1 when provided", ErrorCode: string(security.ErrInvalidRequest)})
-			return
-		}
-		maxRecords = *req.MaxRecords
-	}
-	result, err := h.Host.CleanupExpiredRetainedData(r.Context(), host.CleanupExpiredRetainedDataRequest{
-		RetryFailed: req.RetryFailed,
-		MaxRecords:  maxRecords,
-	})
+	result, err := h.host.CleanupExpiredRetainedData(r.Context(), host.CleanupExpiredRetainedDataRequest{})
 	if err != nil {
-		WriteJSON(w, httpStatusForDataLifecycleError(err), Envelope{OK: false, Data: result, Error: err.Error(), ErrorCode: string(errorCodeForDataLifecycleError(err))})
+		code := errorCodeForDataLifecycleError(err)
+		writeMutationError(w, httpStatusForDataLifecycleError(err), code, h.publicFailureMessage(r.Context(), "retained-data.cleanup-expired", code, err), errorDetails{}, mutation.ForError(err))
 		return
 	}
-	WriteJSON(w, http.StatusOK, Envelope{OK: true, Data: result})
+	writeMutationSuccess(w, result)
 }
 
 func (h Handler) handleListPermissions(w http.ResponseWriter, r *http.Request) {
-	if h.Host == nil {
-		WriteJSON(w, http.StatusServiceUnavailable, Envelope{OK: false, Error: "host is unavailable", ErrorCode: string(security.ErrRuntimeUnavailable)})
+	query, err := parseQueryParameters(r, "plugin_instance_id", "active_only")
+	if err != nil {
+		writeInvalidRequestError(w, err)
 		return
 	}
-	records, err := h.Host.ListPermissionGrants(r.Context(), host.ListPermissionGrantsRequest{
-		PluginInstanceID: r.URL.Query().Get("plugin_instance_id"),
-		ActiveOnly:       boolQuery(r, "active_only"),
+	activeOnly, err := optionalBooleanQueryParameter(query, "active_only")
+	if err != nil {
+		writeInvalidRequestError(w, err)
+		return
+	}
+	records, err := h.host.ListPermissionGrants(r.Context(), host.ListPermissionGrantsRequest{
+		PluginInstanceID: query["plugin_instance_id"],
+		ActiveOnly:       activeOnly,
 	})
 	if err != nil {
-		WriteJSON(w, httpStatusForPermissionError(err), Envelope{OK: false, Error: err.Error(), ErrorCode: string(errorCodeForPermissionError(err))})
+		code := errorCodeForPermissionError(err)
+		writeJSON(w, httpStatusForPermissionError(err), errorResponse{OK: false, Message: h.publicFailureMessage(r.Context(), "permission.list", code, err), Code: code})
 		return
 	}
-	WriteJSON(w, http.StatusOK, Envelope{OK: true, Data: map[string]any{"permissions": records}})
+	writeJSON(w, http.StatusOK, successResponse{OK: true, Data: map[string]any{"permissions": records}})
 }
 
 func (h Handler) handleGrantPermission(w http.ResponseWriter, r *http.Request) {
-	if h.Host == nil {
-		WriteJSON(w, http.StatusServiceUnavailable, Envelope{OK: false, Error: "host is unavailable", ErrorCode: string(security.ErrRuntimeUnavailable)})
-		return
-	}
 	var req grantPermissionRequest
 	if err := decodeJSON(r, &req); err != nil {
-		writeInvalidRequestError(w, err)
+		writeMutationInvalidRequestError(w, err)
 		return
 	}
-	record, err := h.Host.GrantPermission(r.Context(), host.GrantPermissionRequest{
-		PluginInstanceID: req.PluginInstanceID,
-		PermissionID:     req.PermissionID,
-		GrantedBy:        req.GrantedBy,
-		ExpiresAt:        req.ExpiresAt,
+	record, err := h.host.GrantPermission(r.Context(), host.GrantPermissionRequest{
+		PluginInstanceID:           req.PluginInstanceID,
+		PermissionID:               req.PermissionID,
+		ExpectedPolicyRevision:     req.ExpectedPolicyRevision,
+		ExpectedManagementRevision: req.ExpectedManagementRevision,
+		ExpectedRevokeEpoch:        req.ExpectedRevokeEpoch,
+		ExpiresAt:                  req.ExpiresAt,
 	})
 	if err != nil {
-		WriteJSON(w, httpStatusForPermissionError(err), Envelope{OK: false, Error: err.Error(), ErrorCode: string(errorCodeForPermissionError(err))})
+		code := errorCodeForPermissionError(err)
+		writeMutationError(w, httpStatusForPermissionError(err), code, h.publicFailureMessage(r.Context(), "permission.grant", code, err), errorDetails{}, mutation.ForError(err))
 		return
 	}
-	WriteJSON(w, http.StatusOK, Envelope{OK: true, Data: record})
+	writeMutationSuccess(w, record)
 }
 
 func (h Handler) handleRevokePermission(w http.ResponseWriter, r *http.Request) {
-	if h.Host == nil {
-		WriteJSON(w, http.StatusServiceUnavailable, Envelope{OK: false, Error: "host is unavailable", ErrorCode: string(security.ErrRuntimeUnavailable)})
-		return
-	}
 	var req revokePermissionRequest
 	if err := decodeJSON(r, &req); err != nil {
-		writeInvalidRequestError(w, err)
+		writeMutationInvalidRequestError(w, err)
 		return
 	}
-	record, err := h.Host.RevokePermission(r.Context(), host.RevokePermissionRequest{
-		PluginInstanceID: req.PluginInstanceID,
-		PermissionID:     req.PermissionID,
-		RevokedBy:        req.RevokedBy,
-		Reason:           req.Reason,
+	record, err := h.host.RevokePermission(r.Context(), host.RevokePermissionRequest{
+		PluginInstanceID:           req.PluginInstanceID,
+		PermissionID:               req.PermissionID,
+		ExpectedPolicyRevision:     req.ExpectedPolicyRevision,
+		ExpectedManagementRevision: req.ExpectedManagementRevision,
+		ExpectedRevokeEpoch:        req.ExpectedRevokeEpoch,
+		Reason:                     req.Reason,
 	})
 	if err != nil {
-		WriteJSON(w, httpStatusForPermissionError(err), Envelope{OK: false, Error: err.Error(), ErrorCode: string(errorCodeForPermissionError(err))})
+		code := errorCodeForPermissionError(err)
+		writeMutationError(w, httpStatusForPermissionError(err), code, h.publicFailureMessage(r.Context(), "permission.revoke", code, err), errorDetails{}, mutation.ForError(err))
 		return
 	}
-	WriteJSON(w, http.StatusOK, Envelope{OK: true, Data: record})
+	writeMutationSuccess(w, record)
 }
 
-func (h Handler) handleListAudit(w http.ResponseWriter, r *http.Request) {
-	if h.Host == nil {
-		WriteJSON(w, http.StatusServiceUnavailable, Envelope{OK: false, Error: "host is unavailable", ErrorCode: string(security.ErrRuntimeUnavailable)})
+func (h Handler) handleListSecurityPolicies(w http.ResponseWriter, r *http.Request) {
+	records, err := h.host.ListSecurityPolicies(r.Context())
+	if err != nil {
+		code := errorCodeForSecurityPolicyError(err)
+		writeError(w, httpStatusForSecurityPolicyError(err), code, h.publicFailureMessage(r.Context(), "security-policy.list", code, err), errorDetailsForSecurityPolicyError(err))
 		return
 	}
-	events, err := h.Host.ListAuditEvents(r.Context(), host.ListAuditEventsRequest{
-		PluginID:         r.URL.Query().Get("plugin_id"),
-		PluginInstanceID: r.URL.Query().Get("plugin_instance_id"),
-		Type:             r.URL.Query().Get("type"),
-		Limit:            intQuery(r, "limit"),
+	responses := make([]securityPolicyResponse, 0, len(records))
+	for _, record := range records {
+		responses = append(responses, securityPolicyResponseFromRecord(record))
+	}
+	writeJSON(w, http.StatusOK, successResponse{OK: true, Data: map[string]any{"security_policies": responses}})
+}
+
+func (h Handler) handleGetSecurityPolicy(w http.ResponseWriter, r *http.Request) {
+	pluginInstanceID, ok := pluginInstanceIDFromSecurityPolicyPath(r.URL.Path)
+	if !ok {
+		writeError(w, http.StatusNotFound, security.ErrInvalidRequest, "route not found", errorDetails{})
+		return
+	}
+	record, err := h.host.GetSecurityPolicy(r.Context(), host.GetSecurityPolicyRequest{PluginInstanceID: pluginInstanceID})
+	if err != nil {
+		code := errorCodeForSecurityPolicyError(err)
+		writeError(w, httpStatusForSecurityPolicyError(err), code, h.publicFailureMessage(r.Context(), "security-policy.get", code, err), errorDetailsForSecurityPolicyError(err))
+		return
+	}
+	writeJSON(w, http.StatusOK, successResponse{OK: true, Data: securityPolicyResponseFromRecord(record)})
+}
+
+func (h Handler) handlePutSecurityPolicy(w http.ResponseWriter, r *http.Request) {
+	pluginInstanceID, ok := pluginInstanceIDFromSecurityPolicyPath(r.URL.Path)
+	if !ok {
+		writeMutationError(w, http.StatusNotFound, security.ErrInvalidRequest, "route not found", errorDetails{}, mutation.OutcomeNotCommitted)
+		return
+	}
+	var req putSecurityPolicyRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeMutationInvalidRequestError(w, err)
+		return
+	}
+	policyRevision, managementRevision, revokeEpoch, err := securityPolicyRevisions(
+		req.ExpectedPolicyRevision,
+		req.ExpectedManagementRevision,
+		req.ExpectedRevokeEpoch,
+	)
+	if err != nil || req.AllowedPermissions == nil || req.DeniedMethods == nil {
+		if err == nil {
+			err = errors.New("allowed_permissions and denied_methods are required")
+		}
+		writeMutationInvalidRequestError(w, err)
+		return
+	}
+	record, err := h.host.PutSecurityPolicy(r.Context(), host.PutSecurityPolicyRequest{
+		PluginInstanceID:           pluginInstanceID,
+		ExpectedPolicyRevision:     policyRevision,
+		ExpectedManagementRevision: managementRevision,
+		ExpectedRevokeEpoch:        revokeEpoch,
+		AllowedPermissions:         *req.AllowedPermissions,
+		DeniedMethods:              *req.DeniedMethods,
 	})
 	if err != nil {
-		writeInvalidRequestError(w, err)
+		code := errorCodeForSecurityPolicyError(err)
+		writeMutationError(w, httpStatusForSecurityPolicyError(err), code, h.publicFailureMessage(r.Context(), "security-policy.put", code, err), errorDetailsForSecurityPolicyError(err), mutation.ForError(err))
 		return
 	}
-	WriteJSON(w, http.StatusOK, Envelope{OK: true, Data: map[string]any{"audit_events": events}})
+	writeMutationSuccess(w, securityPolicyResponseFromRecord(record))
+}
+
+func (h Handler) handleDeleteSecurityPolicy(w http.ResponseWriter, r *http.Request) {
+	pluginInstanceID, ok := pluginInstanceIDFromSecurityPolicyPath(r.URL.Path)
+	if !ok {
+		writeMutationError(w, http.StatusNotFound, security.ErrInvalidRequest, "route not found", errorDetails{}, mutation.OutcomeNotCommitted)
+		return
+	}
+	var req deleteSecurityPolicyRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeMutationInvalidRequestError(w, err)
+		return
+	}
+	policyRevision, managementRevision, revokeEpoch, err := securityPolicyRevisions(
+		req.ExpectedPolicyRevision,
+		req.ExpectedManagementRevision,
+		req.ExpectedRevokeEpoch,
+	)
+	if err != nil {
+		writeMutationInvalidRequestError(w, err)
+		return
+	}
+	revisions, err := h.host.DeleteSecurityPolicy(r.Context(), host.DeleteSecurityPolicyRequest{
+		PluginInstanceID:           pluginInstanceID,
+		ExpectedPolicyRevision:     policyRevision,
+		ExpectedManagementRevision: managementRevision,
+		ExpectedRevokeEpoch:        revokeEpoch,
+	})
+	if err != nil {
+		code := errorCodeForSecurityPolicyError(err)
+		writeMutationError(w, httpStatusForSecurityPolicyError(err), code, h.publicFailureMessage(r.Context(), "security-policy.delete", code, err), errorDetailsForSecurityPolicyError(err), mutation.ForError(err))
+		return
+	}
+	writeMutationSuccess(w, map[string]any{
+		"plugin_instance_id":  pluginInstanceID,
+		"deleted":             true,
+		"policy_revision":     revisions.PolicyRevision,
+		"management_revision": revisions.ManagementRevision,
+		"revoke_epoch":        revisions.RevokeEpoch,
+	})
+}
+
+func securityPolicyRevisions(policyRevision, managementRevision, revokeEpoch *uint64) (uint64, uint64, uint64, error) {
+	if policyRevision == nil || managementRevision == nil || revokeEpoch == nil {
+		return 0, 0, 0, errors.New("expected_policy_revision, expected_management_revision, and expected_revoke_epoch are required")
+	}
+	if *policyRevision == 0 || *managementRevision == 0 {
+		return 0, 0, 0, errors.New("expected_policy_revision and expected_management_revision must be greater than zero")
+	}
+	return *policyRevision, *managementRevision, *revokeEpoch, nil
+}
+
+func securityPolicyResponseFromRecord(result host.SecurityPolicyResult) securityPolicyResponse {
+	record := result.Policy
+	return securityPolicyResponse{
+		PluginInstanceID:   record.PluginInstanceID,
+		AllowedPermissions: append([]string{}, record.AllowedPermissions...),
+		DeniedMethods:      append([]string{}, record.DeniedMethods...),
+		PolicyRevision:     result.Revisions.PolicyRevision,
+		ManagementRevision: result.Revisions.ManagementRevision,
+		RevokeEpoch:        result.Revisions.RevokeEpoch,
+		UpdatedAt:          record.UpdatedAt,
+	}
 }
 
 func (h Handler) handleListDiagnostics(w http.ResponseWriter, r *http.Request) {
-	if h.Host == nil {
-		WriteJSON(w, http.StatusServiceUnavailable, Envelope{OK: false, Error: "host is unavailable", ErrorCode: string(security.ErrRuntimeUnavailable)})
+	query, err := parseQueryParameters(r, "plugin_id", "plugin_instance_id", "surface_instance_id", "type", "severity", "limit")
+	if err != nil {
+		writeInvalidRequestError(w, err)
 		return
 	}
-	events, err := h.Host.ListDiagnosticEvents(r.Context(), host.ListDiagnosticEventsRequest{
-		PluginID:          r.URL.Query().Get("plugin_id"),
-		PluginInstanceID:  r.URL.Query().Get("plugin_instance_id"),
-		SurfaceInstanceID: r.URL.Query().Get("surface_instance_id"),
-		Type:              r.URL.Query().Get("type"),
-		Severity:          r.URL.Query().Get("severity"),
-		Limit:             intQuery(r, "limit"),
+	limit, err := optionalIntegerQueryParameter(query, "limit", 1, 1000)
+	if err != nil {
+		writeInvalidRequestError(w, err)
+		return
+	}
+	if err := validateOptionalEnumQueryParameter(query, "severity", string(observability.DiagnosticSeverityInfo), string(observability.DiagnosticSeverityWarning)); err != nil {
+		writeInvalidRequestError(w, err)
+		return
+	}
+	events, err := h.host.ListDiagnosticEvents(r.Context(), host.ListDiagnosticEventsRequest{
+		PluginID:          query["plugin_id"],
+		PluginInstanceID:  query["plugin_instance_id"],
+		SurfaceInstanceID: query["surface_instance_id"],
+		Type:              query["type"],
+		Severity:          observability.DiagnosticSeverity(query["severity"]),
+		Limit:             limit,
 	})
 	if err != nil {
 		writeInvalidRequestError(w, err)
 		return
 	}
-	WriteJSON(w, http.StatusOK, Envelope{OK: true, Data: map[string]any{"diagnostic_events": events}})
+	writeJSON(w, http.StatusOK, successResponse{OK: true, Data: map[string]any{"diagnostic_events": events}})
 }
 
 func (h Handler) handleBindSecret(w http.ResponseWriter, r *http.Request) {
-	if h.Host == nil {
-		WriteJSON(w, http.StatusServiceUnavailable, Envelope{OK: false, Error: "host is unavailable", ErrorCode: string(security.ErrRuntimeUnavailable)})
-		return
-	}
 	var req secretRefRequest
 	if err := decodeJSON(r, &req); err != nil {
-		writeInvalidRequestError(w, err)
+		writeMutationInvalidRequestError(w, err)
 		return
 	}
-	if err := h.Host.BindSecretRef(r.Context(), host.SecretBindRequest(req)); err != nil {
-		WriteJSON(w, httpStatusForSecretError(err), Envelope{OK: false, Error: err.Error(), ErrorCode: string(errorCodeForSecretError(err))})
+	if err := h.host.BindSecretRef(r.Context(), host.SecretBindRequest(req)); err != nil {
+		writeMutationError(w, httpStatusForSecretError(err), errorCodeForSecretError(err), publicSecretErrorMessage(err), errorDetails{}, mutation.ForError(err))
 		return
 	}
-	WriteJSON(w, http.StatusOK, Envelope{OK: true, Data: map[string]bool{"bound": true}})
+	writeMutationSuccess(w, map[string]bool{"bound": true})
 }
 
 func (h Handler) handleTestSecret(w http.ResponseWriter, r *http.Request) {
-	if h.Host == nil {
-		WriteJSON(w, http.StatusServiceUnavailable, Envelope{OK: false, Error: "host is unavailable", ErrorCode: string(security.ErrRuntimeUnavailable)})
-		return
-	}
 	var req secretRefRequest
 	if err := decodeJSON(r, &req); err != nil {
-		writeInvalidRequestError(w, err)
+		writeMutationInvalidRequestError(w, err)
 		return
 	}
-	if err := h.Host.TestSecretRef(r.Context(), host.SecretTestRequest(req)); err != nil {
-		WriteJSON(w, httpStatusForSecretError(err), Envelope{OK: false, Error: err.Error(), ErrorCode: string(errorCodeForSecretError(err))})
+	if err := h.host.TestSecretRef(r.Context(), host.SecretTestRequest(req)); err != nil {
+		writeMutationError(w, httpStatusForSecretError(err), errorCodeForSecretError(err), publicSecretErrorMessage(err), errorDetails{}, mutation.ForError(err))
 		return
 	}
-	WriteJSON(w, http.StatusOK, Envelope{OK: true, Data: map[string]bool{"tested": true}})
+	writeMutationSuccess(w, map[string]bool{"tested": true})
 }
 
 func (h Handler) handleDeleteSecret(w http.ResponseWriter, r *http.Request) {
-	if h.Host == nil {
-		WriteJSON(w, http.StatusServiceUnavailable, Envelope{OK: false, Error: "host is unavailable", ErrorCode: string(security.ErrRuntimeUnavailable)})
-		return
-	}
 	var req secretRefRequest
 	if err := decodeJSON(r, &req); err != nil {
-		writeInvalidRequestError(w, err)
+		writeMutationInvalidRequestError(w, err)
 		return
 	}
-	if err := h.Host.DeleteSecretRef(r.Context(), host.SecretDeleteRequest(req)); err != nil {
-		WriteJSON(w, httpStatusForSecretError(err), Envelope{OK: false, Error: err.Error(), ErrorCode: string(errorCodeForSecretError(err))})
+	if err := h.host.DeleteSecretRef(r.Context(), host.SecretDeleteRequest(req)); err != nil {
+		writeMutationError(w, httpStatusForSecretError(err), errorCodeForSecretError(err), publicSecretErrorMessage(err), errorDetails{}, mutation.ForError(err))
 		return
 	}
-	WriteJSON(w, http.StatusOK, Envelope{OK: true, Data: map[string]bool{"deleted": true}})
+	writeMutationSuccess(w, map[string]bool{"deleted": true})
 }
 
 func (h Handler) handleGetSettingsSchema(w http.ResponseWriter, r *http.Request) {
-	if h.Host == nil {
-		WriteJSON(w, http.StatusServiceUnavailable, Envelope{OK: false, Error: "host is unavailable", ErrorCode: string(security.ErrRuntimeUnavailable)})
-		return
-	}
 	pluginInstanceID, ok := pluginInstanceIDFromSettingsPath(r.URL.Path, "/settings/schema")
 	if !ok {
-		WriteJSON(w, http.StatusNotFound, Envelope{OK: false, Error: "route not found", ErrorCode: string(security.ErrInvalidRequest)})
+		writeJSON(w, http.StatusNotFound, errorResponse{OK: false, Message: "route not found", Code: security.ErrInvalidRequest})
 		return
 	}
-	result, err := h.Host.GetSettingsSchema(r.Context(), host.GetSettingsRequest{PluginInstanceID: pluginInstanceID})
+	result, err := h.host.GetSettingsSchema(r.Context(), host.GetSettingsRequest{PluginInstanceID: pluginInstanceID})
 	if err != nil {
-		WriteJSON(w, httpStatusForSettingsError(err), Envelope{OK: false, Error: err.Error(), ErrorCode: string(errorCodeForSettingsError(err))})
+		code := errorCodeForSettingsError(err)
+		writeJSON(w, httpStatusForSettingsError(err), errorResponse{OK: false, Message: h.publicFailureMessage(r.Context(), "settings.schema", code, err), Code: code})
 		return
 	}
-	WriteJSON(w, http.StatusOK, Envelope{OK: true, Data: result})
+	writeJSON(w, http.StatusOK, successResponse{OK: true, Data: result})
 }
 
 func (h Handler) handleGetSettings(w http.ResponseWriter, r *http.Request) {
-	if h.Host == nil {
-		WriteJSON(w, http.StatusServiceUnavailable, Envelope{OK: false, Error: "host is unavailable", ErrorCode: string(security.ErrRuntimeUnavailable)})
-		return
-	}
 	pluginInstanceID, ok := pluginInstanceIDFromSettingsPath(r.URL.Path, "/settings")
 	if !ok {
-		WriteJSON(w, http.StatusNotFound, Envelope{OK: false, Error: "route not found", ErrorCode: string(security.ErrInvalidRequest)})
+		writeJSON(w, http.StatusNotFound, errorResponse{OK: false, Message: "route not found", Code: security.ErrInvalidRequest})
 		return
 	}
-	result, err := h.Host.GetPluginSettings(r.Context(), host.GetSettingsRequest{PluginInstanceID: pluginInstanceID})
+	result, err := h.host.GetPluginSettings(r.Context(), host.GetSettingsRequest{PluginInstanceID: pluginInstanceID})
 	if err != nil {
-		WriteJSON(w, httpStatusForSettingsError(err), Envelope{OK: false, Error: err.Error(), ErrorCode: string(errorCodeForSettingsError(err))})
+		code := errorCodeForSettingsError(err)
+		writeJSON(w, httpStatusForSettingsError(err), errorResponse{OK: false, Message: h.publicFailureMessage(r.Context(), "settings.get", code, err), Code: code})
 		return
 	}
-	WriteJSON(w, http.StatusOK, Envelope{OK: true, Data: result})
+	writeJSON(w, http.StatusOK, successResponse{OK: true, Data: result})
 }
 
 func (h Handler) handlePatchSettings(w http.ResponseWriter, r *http.Request) {
-	if h.Host == nil {
-		WriteJSON(w, http.StatusServiceUnavailable, Envelope{OK: false, Error: "host is unavailable", ErrorCode: string(security.ErrRuntimeUnavailable)})
-		return
-	}
 	pluginInstanceID, ok := pluginInstanceIDFromSettingsPath(r.URL.Path, "/settings")
 	if !ok {
-		WriteJSON(w, http.StatusNotFound, Envelope{OK: false, Error: "route not found", ErrorCode: string(security.ErrInvalidRequest)})
+		writeMutationError(w, http.StatusNotFound, security.ErrInvalidRequest, "route not found", errorDetails{}, mutation.OutcomeNotCommitted)
 		return
 	}
 	var req patchSettingsRequest
 	if err := decodeJSON(r, &req); err != nil {
-		writeInvalidRequestError(w, err)
+		writeMutationInvalidRequestError(w, err)
 		return
 	}
-	result, err := h.Host.PatchPluginSettings(r.Context(), host.PatchSettingsRequest{
-		PluginInstanceID: pluginInstanceID,
-		Values:           req.Values,
+	expectedValuesRevision, err := requiredRevision(req.ExpectedValuesRevision, "expected_values_revision")
+	if err != nil {
+		writeMutationInvalidRequestError(w, err)
+		return
+	}
+	if req.Set == nil && req.Remove == nil {
+		writeMutationInvalidRequestError(w, errors.New("set or remove is required"))
+		return
+	}
+	result, err := h.host.PatchPluginSettings(r.Context(), host.PatchSettingsRequest{
+		PluginInstanceID:       pluginInstanceID,
+		ExpectedValuesRevision: expectedValuesRevision,
+		Set:                    req.Set,
+		Remove:                 req.Remove,
 	})
 	if err != nil {
-		WriteJSON(w, httpStatusForSettingsError(err), Envelope{OK: false, Error: err.Error(), ErrorCode: string(errorCodeForSettingsError(err))})
+		details := h.valuesRevisionDetails(r.Context(), pluginInstanceID, expectedValuesRevision, err)
+		code := errorCodeForSettingsError(err)
+		writeMutationError(w, httpStatusForSettingsError(err), code, h.publicFailureMessage(r.Context(), "settings.patch", code, err), details, mutation.ForError(err))
 		return
 	}
-	WriteJSON(w, http.StatusOK, Envelope{OK: true, Data: result})
+	writeMutationSuccess(w, result)
 }
 
 func decodeJSON(r *http.Request, dst any) error {
+	defer r.Body.Close()
+	if err := validateJSONContentType(r.Header.Values("Content-Type")); err != nil {
+		return err
+	}
 	raw, err := readLimitedJSONBody(r, defaultJSONRequestMaxBytes)
 	if err != nil {
 		return err
 	}
-	if err := validateJSONLimits(raw, defaultJSONMaxDepth); err != nil {
+	if err := validateJSONLimits(raw, defaultJSONMaxDepth, reflect.TypeOf(dst)); err != nil {
 		return err
 	}
 	return decodeStrictJSON(raw, dst)
 }
 
 func readLimitedJSONBody(r *http.Request, maxBytes int64) ([]byte, error) {
-	defer r.Body.Close()
 	raw, err := io.ReadAll(io.LimitReader(r.Body, maxBytes+1))
 	if err != nil {
 		return nil, err
@@ -1742,14 +2119,35 @@ func readLimitedJSONBody(r *http.Request, maxBytes int64) ([]byte, error) {
 	return raw, nil
 }
 
-func validateJSONLimits(raw []byte, maxDepth int) error {
+func validateJSONContentType(values []string) error {
+	if len(values) != 1 || strings.TrimSpace(values[0]) == "" {
+		return errors.New("Content-Type application/json is required")
+	}
+	mediaType, params, err := mime.ParseMediaType(values[0])
+	if err != nil || !strings.EqualFold(mediaType, "application/json") {
+		return errors.New("Content-Type must be application/json")
+	}
+	for name, value := range params {
+		if !strings.EqualFold(name, "charset") || !strings.EqualFold(strings.TrimSpace(value), "utf-8") {
+			return errors.New("Content-Type contains unsupported parameters")
+		}
+	}
+	return nil
+}
+
+func validateJSONLimits(raw []byte, maxDepth int, target reflect.Type) error {
 	decoder := json.NewDecoder(bytes.NewReader(raw))
 	decoder.UseNumber()
-	var payload any
-	if err := decodeSingleJSONValue(decoder, &payload); err != nil {
+	if err := validateJSONTokenValue(decoder, 1, maxDepth, target); err != nil {
 		return err
 	}
-	return validateJSONValueLimits(payload, 1, maxDepth)
+	if _, err := decoder.Token(); !errors.Is(err, io.EOF) {
+		if err != nil {
+			return err
+		}
+		return errors.New("request body contains trailing JSON values")
+	}
+	return nil
 }
 
 func decodeStrictJSON(raw []byte, dst any) error {
@@ -1772,25 +2170,73 @@ func decodeSingleJSONValue(decoder *json.Decoder, dst any) error {
 	return nil
 }
 
-func validateJSONValueLimits(value any, depth int, maxDepth int) error {
+func validateJSONTokenValue(decoder *json.Decoder, depth int, maxDepth int, target reflect.Type) error {
 	if depth > maxDepth {
 		return &jsonLimitError{reason: jsonLimitReasonDepth}
 	}
-	switch typed := value.(type) {
-	case map[string]any:
-		for key, child := range typed {
-			if isForbiddenJSONKey(key) {
-				return &jsonLimitError{reason: jsonLimitReasonPrototypeKey}
+	target = indirectJSONType(target)
+	token, err := decoder.Token()
+	if err != nil {
+		return err
+	}
+	switch typed := token.(type) {
+	case json.Delim:
+		switch typed {
+		case '{':
+			seenKeys := map[string]struct{}{}
+			seenFields := map[int]string{}
+			for decoder.More() {
+				keyToken, err := decoder.Token()
+				if err != nil {
+					return err
+				}
+				key, ok := keyToken.(string)
+				if !ok {
+					return errors.New("JSON object key is not a string")
+				}
+				if isForbiddenJSONKey(key) {
+					return &jsonLimitError{reason: jsonLimitReasonPrototypeKey}
+				}
+				if _, exists := seenKeys[key]; exists {
+					return fmt.Errorf("JSON object contains duplicate key %q", key)
+				}
+				seenKeys[key] = struct{}{}
+
+				childTarget := mapJSONValueType(target)
+				if field, fieldIndex, ok := matchingJSONStructField(target, key); ok {
+					if previous, exists := seenFields[fieldIndex]; exists {
+						return fmt.Errorf("JSON object contains ambiguous keys %q and %q", previous, key)
+					}
+					seenFields[fieldIndex] = key
+					childTarget = field.Type
+				}
+				if err := validateJSONTokenValue(decoder, depth+1, maxDepth, childTarget); err != nil {
+					return err
+				}
 			}
-			if err := validateJSONValueLimits(child, depth+1, maxDepth); err != nil {
+			end, err := decoder.Token()
+			if err != nil {
 				return err
 			}
-		}
-	case []any:
-		for _, child := range typed {
-			if err := validateJSONValueLimits(child, depth+1, maxDepth); err != nil {
+			if end != json.Delim('}') {
+				return errors.New("JSON object is not terminated")
+			}
+		case '[':
+			childTarget := sliceJSONValueType(target)
+			for decoder.More() {
+				if err := validateJSONTokenValue(decoder, depth+1, maxDepth, childTarget); err != nil {
+					return err
+				}
+			}
+			end, err := decoder.Token()
+			if err != nil {
 				return err
 			}
+			if end != json.Delim(']') {
+				return errors.New("JSON array is not terminated")
+			}
+		default:
+			return errors.New("unexpected JSON delimiter")
 		}
 	case json.Number:
 		if jsonNumberExceedsSafePrecision(typed) {
@@ -1798,6 +2244,57 @@ func validateJSONValueLimits(value any, depth int, maxDepth int) error {
 		}
 	}
 	return nil
+}
+
+func indirectJSONType(target reflect.Type) reflect.Type {
+	for target != nil && target.Kind() == reflect.Pointer {
+		target = target.Elem()
+	}
+	return target
+}
+
+func mapJSONValueType(target reflect.Type) reflect.Type {
+	if target != nil && target.Kind() == reflect.Map && target.Key().Kind() == reflect.String {
+		return target.Elem()
+	}
+	return nil
+}
+
+func sliceJSONValueType(target reflect.Type) reflect.Type {
+	if target != nil && (target.Kind() == reflect.Array || target.Kind() == reflect.Slice) {
+		return target.Elem()
+	}
+	return nil
+}
+
+func matchingJSONStructField(target reflect.Type, key string) (reflect.StructField, int, bool) {
+	if target == nil || target.Kind() != reflect.Struct {
+		return reflect.StructField{}, 0, false
+	}
+	foldedIndex := -1
+	for index := 0; index < target.NumField(); index++ {
+		field := target.Field(index)
+		if !field.IsExported() || field.Anonymous {
+			continue
+		}
+		name := strings.Split(field.Tag.Get("json"), ",")[0]
+		if name == "-" {
+			continue
+		}
+		if name == "" {
+			name = field.Name
+		}
+		if name == key {
+			return field, index, true
+		}
+		if foldedIndex < 0 && strings.EqualFold(name, key) {
+			foldedIndex = index
+		}
+	}
+	if foldedIndex >= 0 {
+		return target.Field(foldedIndex), foldedIndex, true
+	}
+	return reflect.StructField{}, 0, false
 }
 
 func isForbiddenJSONKey(key string) bool {
@@ -1858,24 +2355,90 @@ func pluginInstanceIDFromSettingsPath(requestPath string, suffix string) (string
 	return pluginInstanceID, true
 }
 
-func boolQuery(r *http.Request, key string) bool {
-	value := strings.ToLower(strings.TrimSpace(r.URL.Query().Get(key)))
-	return value == "1" || value == "true" || value == "yes"
+func pluginInstanceIDFromSecurityPolicyPath(requestPath string) (string, bool) {
+	const prefix = "/_redevplugin/api/plugins/security-policies/"
+	if !strings.HasPrefix(requestPath, prefix) {
+		return "", false
+	}
+	pluginInstanceID := strings.Trim(strings.TrimPrefix(requestPath, prefix), "/")
+	if pluginInstanceID == "" || strings.Contains(pluginInstanceID, "/") || strings.HasPrefix(pluginInstanceID, ".") {
+		return "", false
+	}
+	return pluginInstanceID, true
 }
 
-func intQuery(r *http.Request, key string) int {
-	value := strings.TrimSpace(r.URL.Query().Get(key))
-	if value == "" {
-		return 0
+func parseQueryParameters(r *http.Request, allowedKeys ...string) (map[string]string, error) {
+	values, err := url.ParseQuery(r.URL.RawQuery)
+	if err != nil {
+		return nil, errors.New("query string is invalid")
 	}
-	var parsed int
-	for _, ch := range value {
-		if ch < '0' || ch > '9' {
-			return 0
+	allowed := make(map[string]struct{}, len(allowedKeys))
+	for _, key := range allowedKeys {
+		allowed[key] = struct{}{}
+	}
+	result := make(map[string]string, len(values))
+	for key, entries := range values {
+		if _, ok := allowed[key]; !ok {
+			return nil, fmt.Errorf("unknown query parameter %q", key)
 		}
-		parsed = parsed*10 + int(ch-'0')
+		if len(entries) != 1 {
+			return nil, fmt.Errorf("query parameter %q must be provided exactly once", key)
+		}
+		value := entries[0]
+		if value == "" {
+			return nil, fmt.Errorf("query parameter %q must not be empty", key)
+		}
+		if strings.TrimSpace(value) != value {
+			return nil, fmt.Errorf("query parameter %q must not contain surrounding whitespace", key)
+		}
+		result[key] = value
 	}
-	return parsed
+	return result, nil
+}
+
+func optionalBooleanQueryParameter(query map[string]string, key string) (bool, error) {
+	value, ok := query[key]
+	if !ok {
+		return false, nil
+	}
+	switch value {
+	case "true":
+		return true, nil
+	case "false":
+		return false, nil
+	default:
+		return false, fmt.Errorf("query parameter %q must be true or false", key)
+	}
+}
+
+func optionalIntegerQueryParameter(query map[string]string, key string, minimum, maximum int) (int, error) {
+	value, ok := query[key]
+	if !ok {
+		return 0, nil
+	}
+	for _, digit := range value {
+		if digit < '0' || digit > '9' {
+			return 0, fmt.Errorf("query parameter %q must be an integer between %d and %d", key, minimum, maximum)
+		}
+	}
+	parsed, err := strconv.Atoi(value)
+	if err != nil || parsed < minimum || parsed > maximum {
+		return 0, fmt.Errorf("query parameter %q must be an integer between %d and %d", key, minimum, maximum)
+	}
+	return parsed, nil
+}
+
+func validateOptionalEnumQueryParameter(query map[string]string, key string, allowedValues ...string) error {
+	value, ok := query[key]
+	if !ok {
+		return nil
+	}
+	for _, allowed := range allowedValues {
+		if value == allowed {
+			return nil
+		}
+	}
+	return fmt.Errorf("query parameter %q must be one of %s", key, strings.Join(allowedValues, ", "))
 }
 
 func errorCodeForBridgeError(err error) security.ErrorCode {
@@ -1902,8 +2465,8 @@ func errorCodeForBridgeTokenError(err error, renewal bool) security.ErrorCode {
 
 func errorCodeForOpenSurfaceError(err error) security.ErrorCode {
 	switch {
-	case errors.Is(err, host.ErrPluginStateVersionMismatch):
-		return security.ErrStateVersionMismatch
+	case errors.Is(err, host.ErrManagementRevisionMismatch):
+		return security.ErrManagementRevisionMismatch
 	case errors.Is(err, host.ErrPluginUIProtocolUnsupported):
 		return security.ErrUIProtocolUnsupported
 	case errors.Is(err, bridge.ErrSurfaceSessionLimitReached):
@@ -1917,7 +2480,7 @@ func errorCodeForOpenSurfaceError(err error) security.ErrorCode {
 
 func httpStatusForOpenSurfaceError(err error) int {
 	switch {
-	case errors.Is(err, host.ErrPluginStateVersionMismatch):
+	case errors.Is(err, host.ErrManagementRevisionMismatch):
 		return http.StatusConflict
 	case errors.Is(err, host.ErrPluginUIProtocolUnsupported):
 		return http.StatusConflict
@@ -1972,6 +2535,26 @@ func publicPluginErrorMessage(code security.ErrorCode) string {
 	switch code {
 	case security.ErrInvalidRequest:
 		return "plugin request is invalid"
+	case security.ErrManifestInvalid:
+		return "plugin manifest is invalid"
+	case security.ErrPackageInvalid:
+		return "plugin package is invalid"
+	case security.ErrPackageTooLarge:
+		return "plugin package exceeds platform limits"
+	case security.ErrPackagePathForbidden:
+		return "plugin package contains a forbidden path"
+	case security.ErrSignatureInvalid, security.ErrTrustVerificationInvalid:
+		return "plugin trust verification failed"
+	case security.ErrTrustStateDenied, security.ErrReleaseRefPolicyDenied:
+		return "plugin release policy denied the request"
+	case security.ErrTrustVerificationRequired:
+		return "plugin trust verification is unavailable"
+	case security.ErrReleaseRefVerificationFailed:
+		return "plugin release reference verification failed"
+	case security.ErrDisabled:
+		return "plugin is disabled"
+	case security.ErrDisabledByPolicy:
+		return "plugin is disabled by policy"
 	case security.ErrPermissionDenied:
 		return "plugin permission was denied"
 	case security.ErrConfirmationRequired:
@@ -1982,29 +2565,74 @@ func publicPluginErrorMessage(code security.ErrorCode) string {
 		return "plugin confirmation was rejected"
 	case security.ErrTokenExpired:
 		return "plugin credential has expired"
+	case security.ErrTokenReplay:
+		return "plugin credential was already used"
 	case security.ErrGatewayTokenInvalid, security.ErrGatewayTokenReplayed, security.ErrGatewayTokenChannelMismatch:
 		return "plugin gateway credential is invalid"
+	case security.ErrAssetTicketInvalid:
+		return "plugin asset ticket is invalid"
+	case security.ErrAssetSessionInvalid:
+		return "plugin asset session is invalid"
 	case security.ErrStreamTicketInvalid:
 		return "plugin stream credential is invalid"
+	case security.ErrStreamDeliveryInvalid:
+		return "plugin stream delivery is invalid"
 	case security.ErrStreamCancelled:
 		return "plugin stream was cancelled"
 	case security.ErrLeaseInvalid:
 		return "plugin execution lease is invalid"
+	case security.ErrLeaseReplayed:
+		return "plugin execution lease was already used"
 	case security.ErrGrantInvalid:
 		return "plugin capability grant is invalid"
+	case security.ErrStorageQuotaExceeded:
+		return "plugin storage quota was exceeded"
+	case security.ErrOperationBlocked:
+		return "plugin operation is blocked"
+	case security.ErrOperationNotFound:
+		return "plugin operation was not found"
+	case security.ErrOperationNotCancelable:
+		return "plugin operation cannot be cancelled"
+	case security.ErrNetworkTargetDenied:
+		return "plugin network target was denied"
+	case security.ErrNetworkRateLimited:
+		return "plugin network request was rate limited"
 	case security.ErrRuntimeUnavailable:
 		return "plugin runtime is unavailable"
 	case security.ErrRuntimeVersionMismatch:
 		return "plugin runtime version is incompatible"
+	case security.ErrUIProtocolUnsupported:
+		return "plugin UI protocol is unsupported"
+	case security.ErrUIProtocolViolation:
+		return "plugin UI violated the platform protocol"
+	case security.ErrSurfaceQuiesceTimeout:
+		return "plugin surface did not stop in time"
+	case security.ErrJSONLimitExceeded:
+		return "plugin request exceeds JSON limits"
 	case security.ErrCapabilityError:
 		return "host capability request failed"
 	case security.ErrWorkerError:
 		return "plugin operation failed"
 	case security.ErrContractMismatch:
 		return "plugin contract validation failed"
+	case security.ErrManagementRevisionMismatch:
+		return "plugin management revision changed"
+	case security.ErrAuthorizationRevisionMismatch:
+		return "plugin authorization revision changed"
+	case security.ErrBindingRevisionMismatch:
+		return "plugin data binding revision changed"
+	case security.ErrValuesRevisionMismatch:
+		return "plugin settings values revision changed"
+	case security.ErrCSRFRequired:
+		return "csrf validation failed"
 	default:
 		return "plugin request failed"
 	}
+}
+
+func (h Handler) publicFailureMessage(ctx context.Context, operation string, code security.ErrorCode, err error) string {
+	h.host.ReportHTTPAdapterFailure(ctx, operation, code, err)
+	return publicPluginErrorMessage(code)
 }
 
 func errorCodeForGatewayTokenError(err error) security.ErrorCode {
@@ -2045,11 +2673,11 @@ func errorCodeForManagementError(err error) security.ErrorCode {
 		}
 	}
 	switch {
-	case errors.Is(err, host.ErrPluginStateVersionMismatch):
-		return security.ErrStateVersionMismatch
+	case errors.Is(err, host.ErrManagementRevisionMismatch):
+		return security.ErrManagementRevisionMismatch
 	case errors.Is(err, host.ErrPluginUIProtocolUnsupported):
 		return security.ErrUIProtocolUnsupported
-	case errors.Is(err, registry.ErrNotFound), errors.Is(err, storage.ErrInvalidNamespace), errors.Is(err, storage.ErrArchiveNotFound), errors.Is(err, storage.ErrNamespaceNotFound):
+	case errors.Is(err, registry.ErrNotFound), errors.Is(err, storage.ErrInvalidNamespace), errors.Is(err, storage.ErrNamespaceNotFound):
 		return security.ErrInvalidRequest
 	case errors.Is(err, host.ErrPackageTrustVerificationInvalid):
 		return security.ErrTrustVerificationInvalid
@@ -2078,12 +2706,24 @@ func errorCodeForManagementError(err error) security.ErrorCode {
 	}
 }
 
-func errorDetailsForManagementError(err error) map[string]any {
+func errorDetailsForManagementError(err error) errorDetails {
+	var revisionErr *host.ManagementRevisionMismatchError
+	if errors.As(err, &revisionErr) {
+		return errorDetails{
+			PluginInstanceID:           revisionErr.PluginInstanceID,
+			ExpectedManagementRevision: revisionErr.Expected,
+			ActualManagementRevision:   revisionErr.Actual,
+		}
+	}
 	var packageValidationErr *pluginpkg.ValidationError
 	if errors.As(err, &packageValidationErr) {
-		return packageValidationErr.Details()
+		return errorDetails{
+			Reason:  packageValidationErr.Reason,
+			Path:    packageValidationErr.Path,
+			Pointer: packageValidationErr.Pointer,
+		}
 	}
-	return nil
+	return errorDetails{}
 }
 
 func httpStatusForManagementError(err error) int {
@@ -2095,11 +2735,11 @@ func httpStatusForManagementError(err error) int {
 		return http.StatusBadRequest
 	}
 	switch {
-	case errors.Is(err, host.ErrPluginStateVersionMismatch):
+	case errors.Is(err, host.ErrManagementRevisionMismatch):
 		return http.StatusConflict
 	case errors.Is(err, host.ErrPluginUIProtocolUnsupported):
 		return http.StatusConflict
-	case errors.Is(err, registry.ErrNotFound), errors.Is(err, storage.ErrInvalidNamespace), errors.Is(err, storage.ErrArchiveNotFound), errors.Is(err, storage.ErrNamespaceNotFound):
+	case errors.Is(err, registry.ErrNotFound), errors.Is(err, storage.ErrInvalidNamespace), errors.Is(err, storage.ErrNamespaceNotFound):
 		return http.StatusBadRequest
 	case errors.Is(err, host.ErrPackageTrustVerificationInvalid):
 		return http.StatusBadRequest
@@ -2158,6 +2798,8 @@ func errorCodeForStreamError(err error) security.ErrorCode {
 	switch {
 	case errors.Is(err, stream.ErrNotFound), errors.Is(err, stream.ErrInvalidStream):
 		return security.ErrInvalidRequest
+	case errors.Is(err, stream.ErrDeliveryInvalid):
+		return security.ErrStreamDeliveryInvalid
 	case errors.Is(err, stream.ErrBackpressure):
 		return security.ErrOperationBlocked
 	case errors.Is(err, host.ErrStreamTicketRequired), isSandboxTokenValidationError(err):
@@ -2171,6 +2813,8 @@ func httpStatusForStreamError(err error) int {
 	switch {
 	case errors.Is(err, stream.ErrNotFound), errors.Is(err, stream.ErrInvalidStream):
 		return http.StatusBadRequest
+	case errors.Is(err, stream.ErrDeliveryInvalid):
+		return http.StatusConflict
 	case errors.Is(err, stream.ErrBackpressure):
 		return http.StatusTooManyRequests
 	default:
@@ -2228,32 +2872,29 @@ func errorCodeForIntentError(err error) security.ErrorCode {
 	}
 }
 
-func errorDetailsForRPCError(err error) map[string]any {
+func errorDetailsForRPCError(err error) errorDetails {
 	var businessError *capability.BusinessError
 	if errors.As(err, &businessError) {
-		details := map[string]any{
-			"capability_id":        businessError.CapabilityID,
-			"capability_version":   businessError.CapabilityVersion,
-			"detail_schema_sha256": businessError.DetailSchemaSHA256,
-			"business_error_code":  businessError.Code,
+		return errorDetails{
+			CapabilityID:         businessError.CapabilityID,
+			CapabilityVersion:    businessError.CapabilityVersion,
+			DetailSchemaSHA256:   businessError.DetailSchemaSHA256,
+			BusinessErrorCode:    businessError.Code,
+			BusinessErrorDetails: businessError.Details,
 		}
-		if businessError.Details != nil {
-			details["business_error_details"] = businessError.Details
-		}
-		return details
 	}
 	var workerError *runtimeclient.WorkerExecutionError
 	if errors.As(err, &workerError) {
 		if errorCodeForWorkerExecutionError(err) != security.ErrWorkerError {
-			return nil
+			return errorDetails{}
 		}
-		return map[string]any{
-			"worker_error_code":    workerError.Code,
-			"worker_error_message": publicWorkerErrorMessage(workerError.Message),
-			"worker_error_origin":  string(workerError.Origin),
+		return errorDetails{
+			WorkerErrorCode:    workerError.Code,
+			WorkerErrorMessage: publicWorkerErrorMessage(workerError.Message),
+			WorkerErrorOrigin:  workerError.Origin,
 		}
 	}
-	return nil
+	return errorDetails{}
 }
 
 func isCapabilityBusinessError(err error) bool {
@@ -2359,14 +3000,51 @@ func errorCodeForDataLifecycleError(err error) security.ErrorCode {
 	switch {
 	case errors.Is(err, storage.ErrQuotaExceeded):
 		return security.ErrStorageQuotaExceeded
-	case errors.Is(err, host.ErrRetainedDataBindFailed):
-		return security.ErrRetainedDataBindFailed
-	case errors.Is(err, host.ErrRetainedDataCleanupFailed):
-		return security.ErrRetainedDataCleanupFailed
-	case errors.Is(err, retaineddata.ErrNotFound), errors.Is(err, retaineddata.ErrInvalidRecord), errors.Is(err, registry.ErrNotFound), errors.Is(err, host.ErrPluginDataArchiveRequired), errors.Is(err, host.ErrPluginDataNotDeclared), errors.Is(err, host.ErrPluginSettingsNotDeclared), errors.Is(err, host.ErrPluginStorageNotDeclared), errors.Is(err, storage.ErrInvalidNamespace), errors.Is(err, storage.ErrArchiveNotFound), errors.Is(err, storage.ErrNamespaceNotFound), errors.Is(err, settings.ErrArchiveNotFound), errors.Is(err, settings.ErrNotDeclared), errors.Is(err, settings.ErrInvalidSetting):
+	case errors.Is(err, plugindata.ErrBindingRevisionConflict):
+		return security.ErrBindingRevisionMismatch
+	case errors.Is(err, plugindata.ErrRevisionConflict):
+		return security.ErrValuesRevisionMismatch
+	case errors.Is(err, plugindata.ErrInvalidArgument), errors.Is(err, plugindata.ErrBindingNotFound),
+		errors.Is(err, plugindata.ErrNotActive), errors.Is(err, plugindata.ErrNotRetained),
+		errors.Is(err, plugindata.ErrExportNotFound), errors.Is(err, plugindata.ErrUnknownSetting),
+		errors.Is(err, plugindata.ErrShapeMismatch),
+		errors.Is(err, registry.ErrNotFound), errors.Is(err, host.ErrPluginDataNotDeclared),
+		errors.Is(err, host.ErrPluginSettingsNotDeclared), errors.Is(err, host.ErrPluginStorageNotDeclared),
+		errors.Is(err, storage.ErrInvalidNamespace), errors.Is(err, storage.ErrNamespaceNotFound),
+		errors.Is(err, settings.ErrInvalidSetting):
 		return security.ErrInvalidRequest
+	case errors.Is(err, plugindata.ErrBindingConflict), errors.Is(err, plugindata.ErrDatasetCorrupt), errors.Is(err, plugindata.ErrUnsafeFilesystem):
+		return security.ErrContractMismatch
 	default:
 		return security.ErrPermissionDenied
+	}
+}
+
+func bindingRevisionDetails(err error) errorDetails {
+	var conflict *plugindata.BindingRevisionConflictError
+	if !errors.As(err, &conflict) {
+		return errorDetails{}
+	}
+	return errorDetails{
+		PluginInstanceID:        conflict.PluginInstanceID,
+		ExpectedBindingRevision: conflict.Expected,
+		ActualBindingRevision:   conflict.Actual,
+	}
+}
+
+func (h Handler) valuesRevisionDetails(ctx context.Context, pluginInstanceID string, expected uint64, err error) errorDetails {
+	if !errors.Is(err, plugindata.ErrRevisionConflict) {
+		return errorDetails{}
+	}
+	snapshot, getErr := h.host.GetPluginSettings(ctx, host.GetSettingsRequest{PluginInstanceID: pluginInstanceID})
+	if getErr != nil {
+		return errorDetails{}
+	}
+	actual := snapshot.ValuesRevision
+	return errorDetails{
+		PluginInstanceID:       pluginInstanceID,
+		ExpectedValuesRevision: &expected,
+		ActualValuesRevision:   &actual,
 	}
 }
 
@@ -2381,9 +3059,24 @@ func errorCodeForSecretError(err error) security.ErrorCode {
 	}
 }
 
+func publicSecretErrorMessage(err error) string {
+	switch {
+	case errors.Is(err, host.ErrInvalidSecretRef):
+		return "secret reference request is invalid"
+	case errors.Is(err, registry.ErrNotFound):
+		return "plugin secret reference was not found"
+	case errors.Is(err, host.ErrSecretStoreRequired):
+		return "secret store is unavailable"
+	default:
+		return "secret operation failed"
+	}
+}
+
 func errorCodeForSettingsError(err error) security.ErrorCode {
 	switch {
-	case errors.Is(err, registry.ErrNotFound), errors.Is(err, settings.ErrNotDeclared), errors.Is(err, settings.ErrInvalidSetting):
+	case errors.Is(err, plugindata.ErrRevisionConflict):
+		return security.ErrValuesRevisionMismatch
+	case errors.Is(err, registry.ErrNotFound), errors.Is(err, host.ErrPluginSettingsNotDeclared), errors.Is(err, plugindata.ErrUnknownSetting), errors.Is(err, settings.ErrInvalidSetting):
 		return security.ErrInvalidRequest
 	default:
 		return security.ErrPermissionDenied
@@ -2392,7 +3085,9 @@ func errorCodeForSettingsError(err error) security.ErrorCode {
 
 func httpStatusForSettingsError(err error) int {
 	switch {
-	case errors.Is(err, registry.ErrNotFound), errors.Is(err, settings.ErrNotDeclared), errors.Is(err, settings.ErrInvalidSetting):
+	case errors.Is(err, plugindata.ErrRevisionConflict):
+		return http.StatusConflict
+	case errors.Is(err, registry.ErrNotFound), errors.Is(err, host.ErrPluginSettingsNotDeclared), errors.Is(err, plugindata.ErrUnknownSetting), errors.Is(err, settings.ErrInvalidSetting):
 		return http.StatusBadRequest
 	default:
 		return http.StatusForbidden
@@ -2467,16 +3162,68 @@ func httpStatusForPermissionError(err error) int {
 	}
 }
 
+func errorCodeForSecurityPolicyError(err error) security.ErrorCode {
+	switch {
+	case errors.Is(err, registry.ErrAuthorizationRevisionConflict):
+		return security.ErrAuthorizationRevisionMismatch
+	case errors.Is(err, registry.ErrNotFound),
+		errors.Is(err, registry.ErrInvalidAuthorizationRevisions),
+		errors.Is(err, security.ErrInvalidPolicy),
+		errors.Is(err, security.ErrPolicyNotFound):
+		return security.ErrInvalidRequest
+	default:
+		return security.ErrRuntimeUnavailable
+	}
+}
+
+func errorDetailsForSecurityPolicyError(err error) errorDetails {
+	var conflict *registry.AuthorizationRevisionConflictError
+	if !errors.As(err, &conflict) {
+		return errorDetails{}
+	}
+	expectedRevokeEpoch := conflict.Expected.RevokeEpoch
+	actualRevokeEpoch := conflict.Actual.RevokeEpoch
+	return errorDetails{
+		PluginInstanceID:           conflict.PluginInstanceID,
+		ExpectedPolicyRevision:     conflict.Expected.PolicyRevision,
+		ActualPolicyRevision:       conflict.Actual.PolicyRevision,
+		ExpectedManagementRevision: conflict.Expected.ManagementRevision,
+		ActualManagementRevision:   conflict.Actual.ManagementRevision,
+		ExpectedRevokeEpoch:        &expectedRevokeEpoch,
+		ActualRevokeEpoch:          &actualRevokeEpoch,
+	}
+}
+
+func httpStatusForSecurityPolicyError(err error) int {
+	switch {
+	case errors.Is(err, registry.ErrAuthorizationRevisionConflict):
+		return http.StatusConflict
+	case errors.Is(err, security.ErrPolicyNotFound):
+		return http.StatusNotFound
+	case errors.Is(err, registry.ErrNotFound), errors.Is(err, registry.ErrInvalidAuthorizationRevisions), errors.Is(err, security.ErrInvalidPolicy):
+		return http.StatusBadRequest
+	default:
+		return http.StatusServiceUnavailable
+	}
+}
+
 func httpStatusForDataLifecycleError(err error) int {
 	switch {
 	case errors.Is(err, storage.ErrQuotaExceeded):
 		return http.StatusRequestEntityTooLarge
-	case errors.Is(err, host.ErrRetainedDataBindFailed):
+	case errors.Is(err, plugindata.ErrBindingRevisionConflict), errors.Is(err, plugindata.ErrRevisionConflict):
 		return http.StatusConflict
-	case errors.Is(err, host.ErrRetainedDataCleanupFailed):
-		return http.StatusConflict
-	case errors.Is(err, retaineddata.ErrNotFound), errors.Is(err, retaineddata.ErrInvalidRecord), errors.Is(err, registry.ErrNotFound), errors.Is(err, host.ErrPluginDataArchiveRequired), errors.Is(err, host.ErrPluginDataNotDeclared), errors.Is(err, host.ErrPluginSettingsNotDeclared), errors.Is(err, host.ErrPluginStorageNotDeclared), errors.Is(err, storage.ErrInvalidNamespace), errors.Is(err, storage.ErrArchiveNotFound), errors.Is(err, storage.ErrNamespaceNotFound), errors.Is(err, settings.ErrArchiveNotFound), errors.Is(err, settings.ErrNotDeclared), errors.Is(err, settings.ErrInvalidSetting):
+	case errors.Is(err, plugindata.ErrInvalidArgument), errors.Is(err, plugindata.ErrBindingNotFound),
+		errors.Is(err, plugindata.ErrNotActive), errors.Is(err, plugindata.ErrNotRetained),
+		errors.Is(err, plugindata.ErrExportNotFound), errors.Is(err, plugindata.ErrUnknownSetting),
+		errors.Is(err, plugindata.ErrShapeMismatch),
+		errors.Is(err, registry.ErrNotFound), errors.Is(err, host.ErrPluginDataNotDeclared),
+		errors.Is(err, host.ErrPluginSettingsNotDeclared), errors.Is(err, host.ErrPluginStorageNotDeclared),
+		errors.Is(err, storage.ErrInvalidNamespace), errors.Is(err, storage.ErrNamespaceNotFound),
+		errors.Is(err, settings.ErrInvalidSetting):
 		return http.StatusBadRequest
+	case errors.Is(err, plugindata.ErrBindingConflict), errors.Is(err, plugindata.ErrDatasetCorrupt), errors.Is(err, plugindata.ErrUnsafeFilesystem):
+		return http.StatusInternalServerError
 	default:
 		return http.StatusForbidden
 	}

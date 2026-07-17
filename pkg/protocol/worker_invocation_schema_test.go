@@ -34,10 +34,6 @@ func TestWorkerInvocationSchemaDefinesHostRuntimePayload(t *testing.T) {
 	if got := requireNestedObject(t, properties, "worker_mode")["const"]; got != "job" {
 		t.Fatalf("worker_mode const = %#v, want job", got)
 	}
-	if got := requireNestedObject(t, properties, "export")["const"]; got != "redevplugin_worker_invoke" {
-		t.Fatalf("export const = %#v, want redevplugin_worker_invoke", got)
-	}
-
 	required := map[string]bool{}
 	for _, item := range requireStringSlice(t, schema["required"], "worker invocation required") {
 		required[item] = true
@@ -47,7 +43,7 @@ func TestWorkerInvocationSchemaDefinesHostRuntimePayload(t *testing.T) {
 			t.Fatalf("worker invocation schema missing required field %q", name)
 		}
 	}
-	for _, name := range []string{"surface_instance_id", "owner_session_hash", "owner_user_hash", "session_channel_id_hash", "bridge_channel_id", "storage_handle_grants"} {
+	for _, name := range []string{"surface_instance_id", "owner_session_hash", "owner_user_hash", "owner_env_hash", "session_channel_id_hash", "bridge_channel_id", "storage_handle_grants"} {
 		if _, ok := properties[name].(map[string]any); !ok {
 			t.Fatalf("worker invocation schema missing optional audience field %q", name)
 		}

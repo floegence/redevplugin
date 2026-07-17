@@ -15,13 +15,12 @@ import (
 type TokenKind string
 
 const (
-	TokenKindAssetTicket           TokenKind = "asset_ticket"
-	TokenKindAssetSession          TokenKind = "asset_session"
-	TokenKindPluginGatewayToken    TokenKind = "plugin_gateway_token"
-	TokenKindConfirmationToken     TokenKind = "confirmation_token"
-	TokenKindRuntimeExecutionLease TokenKind = "runtime_execution_lease"
-	TokenKindHandleGrant           TokenKind = "handle_grant"
-	TokenKindStreamTicket          TokenKind = "stream_ticket"
+	TokenKindAssetTicket        TokenKind = "asset_ticket"
+	TokenKindAssetSession       TokenKind = "asset_session"
+	TokenKindPluginGatewayToken TokenKind = "plugin_gateway_token"
+	TokenKindConfirmationToken  TokenKind = "confirmation_token"
+	TokenKindHandleGrant        TokenKind = "handle_grant"
+	TokenKindStreamTicket       TokenKind = "stream_ticket"
 )
 
 type TokenUse string
@@ -67,6 +66,7 @@ type SurfaceSession struct {
 	RuntimeGenerationID  string    `json:"runtime_generation_id,omitempty"`
 	OwnerSessionHash     string    `json:"owner_session_hash,omitempty"`
 	OwnerUserHash        string    `json:"owner_user_hash,omitempty"`
+	OwnerEnvHash         string    `json:"owner_env_hash,omitempty"`
 	SessionChannelIDHash string    `json:"session_channel_id_hash,omitempty"`
 	BridgeNonce          string    `json:"bridge_nonce"`
 	PolicyRevision       uint64    `json:"policy_revision"`
@@ -82,6 +82,7 @@ type AssetTicket struct {
 	SurfaceInstanceID  string    `json:"surface_instance_id"`
 	ActiveFingerprint  string    `json:"active_fingerprint"`
 	OwnerSessionHash   string    `json:"owner_session_hash,omitempty"`
+	OwnerEnvHash       string    `json:"owner_env_hash,omitempty"`
 	PolicyRevision     uint64    `json:"policy_revision"`
 	ManagementRevision uint64    `json:"management_revision"`
 	RevokeEpoch        uint64    `json:"revoke_epoch"`
@@ -95,6 +96,7 @@ type GatewayToken struct {
 	BridgeChannelID    string    `json:"bridge_channel_id"`
 	ActiveFingerprint  string    `json:"active_fingerprint"`
 	OwnerSessionHash   string    `json:"owner_session_hash,omitempty"`
+	OwnerEnvHash       string    `json:"owner_env_hash,omitempty"`
 	PolicyRevision     uint64    `json:"policy_revision"`
 	ManagementRevision uint64    `json:"management_revision"`
 	RevokeEpoch        uint64    `json:"revoke_epoch"`
@@ -108,7 +110,7 @@ type Handshake struct {
 	ActiveFingerprint  string `json:"active_fingerprint"`
 	BridgeNonce        string `json:"bridge_nonce"`
 	AssetSessionNonce  string `json:"asset_session_nonce"`
-	PluginStateVersion uint64 `json:"plugin_state_version"`
+	ManagementRevision uint64 `json:"management_revision"`
 	RevokeEpoch        uint64 `json:"revoke_epoch"`
 	UIProtocolVersion  string `json:"ui_protocol_version"`
 }
@@ -132,6 +134,7 @@ type Audience struct {
 	RouteRole              string `json:"route_role,omitempty"`
 	OwnerSessionHash       string `json:"owner_session_hash,omitempty"`
 	OwnerUserHash          string `json:"owner_user_hash,omitempty"`
+	OwnerEnvHash           string `json:"owner_env_hash,omitempty"`
 	SessionChannelIDHash   string `json:"session_channel_id_hash,omitempty"`
 	BridgeChannelID        string `json:"bridge_channel_id,omitempty"`
 	RuntimeInstanceID      string `json:"runtime_instance_id,omitempty"`
@@ -208,26 +211,6 @@ type InspectRequest struct {
 	Kind  TokenKind `json:"kind"`
 	Token string    `json:"token"`
 	Now   time.Time `json:"now,omitempty"`
-}
-
-type RotateSingleUseRequest struct {
-	Kind          TokenKind
-	Token         string
-	Now           time.Time
-	NextExpiresAt time.Time
-	Validate      func(TokenRecord) error
-}
-
-type CommitSingleUseRequest struct {
-	Kind     TokenKind
-	Token    string
-	Now      time.Time
-	Validate func(TokenRecord) error
-}
-
-type RotateSingleUseResult struct {
-	Current TokenRecord
-	Next    *MintedToken
 }
 
 type ChannelBinding struct {
@@ -394,142 +377,6 @@ func mintedToken(record TokenRecord, cleartext string) MintedToken {
 		Use:       record.Use,
 		Limits:    record.Limits,
 	}
-}
-
-// RotateSingleUse keeps the current token usable unless commit succeeds. The
-// callback must only perform the short, final mutation guarded by the token.
-func (m *TokenManager) RotateSingleUse(req RotateSingleUseRequest, commit func() (bool, error)) (RotateSingleUseResult, error) {
-	if m == nil {
-		return RotateSingleUseResult{}, errors.New("token manager is nil")
-	}
-	if commit == nil {
-		return RotateSingleUseResult{}, errors.New("single-use token rotation commit is required")
-	}
-	now := req.Now
-	if now.IsZero() {
-		now = time.Now().UTC()
-	}
-	if req.NextExpiresAt.IsZero() || !req.NextExpiresAt.After(now) {
-		return RotateSingleUseResult{}, ErrTokenExpired
-	}
-	if req.NextExpiresAt.Sub(now) > m.options.MaxTTL {
-		return RotateSingleUseResult{}, ErrTokenTTLExceeded
-	}
-	nextTokenID, err := prefixedID(req.Kind)
-	if err != nil {
-		return RotateSingleUseResult{}, err
-	}
-	nextNonce, err := randomString(24)
-	if err != nil {
-		return RotateSingleUseResult{}, err
-	}
-	nextSecret, err := randomString(32)
-	if err != nil {
-		return RotateSingleUseResult{}, err
-	}
-	nextCleartext := string(req.Kind) + "." + nextTokenID + "." + nextSecret
-	currentHash := hashToken(req.Token)
-
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	current, err := m.loadValidSingleUseLocked(req.Kind, req.Token, currentHash, now, req.Validate)
-	if err != nil {
-		return RotateSingleUseResult{}, err
-	}
-	if len(m.records) >= m.options.MaxRecords {
-		return RotateSingleUseResult{}, ErrTokenCapacity
-	}
-	if len(m.pluginIndex[current.Audience.PluginInstanceID]) >= m.options.MaxRecordsPerPlugin {
-		return RotateSingleUseResult{}, ErrTokenPluginCapacity
-	}
-	next := TokenRecord{
-		Kind:      current.Kind,
-		TokenID:   nextTokenID,
-		TokenHash: hashToken(nextCleartext),
-		Audience:  current.Audience,
-		Revision:  current.Revision,
-		IssuedAt:  now,
-		ExpiresAt: req.NextExpiresAt.UTC(),
-		Nonce:     nextNonce,
-		Use:       current.Use,
-		Limits:    current.Limits,
-	}
-	if _, exists := m.records[next.TokenHash]; exists {
-		return RotateSingleUseResult{}, errors.New("generated token hash collision")
-	}
-	if _, exists := m.idIndex[tokenIDIndexKey(next.Kind, next.TokenID)]; exists {
-		return RotateSingleUseResult{}, errors.New("generated token ID collision")
-	}
-	issueNext, err := commit()
-	if err != nil {
-		return RotateSingleUseResult{}, err
-	}
-	current = m.consumeSingleUseLocked(currentHash, current, now)
-	result := RotateSingleUseResult{Current: current}
-	if issueNext {
-		m.addRecordLocked(next)
-		minted := mintedToken(next, nextCleartext)
-		result.Next = &minted
-	}
-	return result, nil
-}
-
-// CommitSingleUse consumes a single-use token only after the guarded mutation
-// succeeds. It is the terminal counterpart to RotateSingleUse and never
-// reserves capacity for a replacement token.
-func (m *TokenManager) CommitSingleUse(req CommitSingleUseRequest, commit func() error) (TokenRecord, error) {
-	if m == nil {
-		return TokenRecord{}, errors.New("token manager is nil")
-	}
-	if commit == nil {
-		return TokenRecord{}, errors.New("single-use token commit is required")
-	}
-	now := req.Now
-	if now.IsZero() {
-		now = time.Now().UTC()
-	}
-	currentHash := hashToken(req.Token)
-
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	current, err := m.loadValidSingleUseLocked(req.Kind, req.Token, currentHash, now, req.Validate)
-	if err != nil {
-		return TokenRecord{}, err
-	}
-	if err := commit(); err != nil {
-		return TokenRecord{}, err
-	}
-	return m.consumeSingleUseLocked(currentHash, current, now), nil
-}
-
-func (m *TokenManager) loadValidSingleUseLocked(kind TokenKind, token string, tokenHash string, now time.Time, validate func(TokenRecord) error) (TokenRecord, error) {
-	m.pruneExpiredRecordsLocked(now)
-	current, err := m.loadTokenRecordLocked(InspectRequest{Kind: kind, Token: token, Now: now}, tokenHash)
-	if err != nil {
-		return TokenRecord{}, err
-	}
-	if current.Use != TokenUseSingleUse {
-		return TokenRecord{}, fmt.Errorf("token kind %s is not single-use", current.Kind)
-	}
-	if validate != nil {
-		if err := validate(current); err != nil {
-			return TokenRecord{}, err
-		}
-	}
-	if m.revokeFloorsSaturated {
-		if _, tracked := m.pluginRevokeFloors[current.Audience.PluginInstanceID]; !tracked {
-			return TokenRecord{}, ErrTokenRevokeFloorCapacity
-		}
-	}
-	return current, nil
-}
-
-func (m *TokenManager) consumeSingleUseLocked(tokenHash string, current TokenRecord, now time.Time) TokenRecord {
-	current.Consumed = true
-	consumedAt := now
-	current.ConsumedAt = &consumedAt
-	m.records[tokenHash] = current
-	return current
 }
 
 func (m *TokenManager) pruneExpiredRecordsLocked(now time.Time) {
@@ -875,6 +722,8 @@ func validateTokenAudience(kind TokenKind, audience Audience) error {
 			audience.AssetSessionNonce,
 			audience.RouteRole,
 			audience.OwnerSessionHash,
+			audience.OwnerUserHash,
+			audience.OwnerEnvHash,
 			audience.SessionChannelIDHash,
 			audience.RuntimeGenerationID,
 		)
@@ -889,6 +738,8 @@ func validateTokenAudience(kind TokenKind, audience Audience) error {
 			audience.AssetSessionNonce,
 			audience.RouteRole,
 			audience.OwnerSessionHash,
+			audience.OwnerUserHash,
+			audience.OwnerEnvHash,
 			audience.SessionChannelIDHash,
 			audience.BridgeChannelID,
 			audience.RuntimeGenerationID,
@@ -904,6 +755,8 @@ func validateTokenAudience(kind TokenKind, audience Audience) error {
 			audience.AssetSessionNonce,
 			audience.RouteRole,
 			audience.OwnerSessionHash,
+			audience.OwnerUserHash,
+			audience.OwnerEnvHash,
 			audience.SessionChannelIDHash,
 			audience.BridgeChannelID,
 			audience.ConfirmationID,
@@ -913,15 +766,6 @@ func validateTokenAudience(kind TokenKind, audience Audience) error {
 			audience.TargetDescriptorSHA256,
 			audience.RuntimeGenerationID,
 		)
-	case TokenKindRuntimeExecutionLease:
-		return require(
-			audience.RuntimeInstanceID,
-			audience.RuntimeGenerationID,
-			audience.IPCChannelID,
-			audience.ConnectionNonce,
-			audience.AuditCorrelationID,
-			audience.Method,
-		)
 	case TokenKindHandleGrant:
 		return require(audience.RuntimeGenerationID, audience.HandleID, audience.Method)
 	case TokenKindStreamTicket:
@@ -930,6 +774,8 @@ func validateTokenAudience(kind TokenKind, audience Audience) error {
 			audience.PluginVersion,
 			audience.RouteRole,
 			audience.OwnerSessionHash,
+			audience.OwnerUserHash,
+			audience.OwnerEnvHash,
 			audience.SessionChannelIDHash,
 			audience.StreamID,
 			audience.StreamDirection,
@@ -960,7 +806,7 @@ func validateTokenAudience(kind TokenKind, audience Audience) error {
 
 func defaultTokenUse(kind TokenKind) TokenUse {
 	switch kind {
-	case TokenKindAssetTicket, TokenKindConfirmationToken, TokenKindStreamTicket:
+	case TokenKindAssetTicket, TokenKindConfirmationToken:
 		return TokenUseSingleUse
 	default:
 		return TokenUseReusable
@@ -969,7 +815,7 @@ func defaultTokenUse(kind TokenKind) TokenUse {
 
 func validTokenKind(kind TokenKind) bool {
 	switch kind {
-	case TokenKindAssetTicket, TokenKindAssetSession, TokenKindPluginGatewayToken, TokenKindConfirmationToken, TokenKindRuntimeExecutionLease, TokenKindHandleGrant, TokenKindStreamTicket:
+	case TokenKindAssetTicket, TokenKindAssetSession, TokenKindPluginGatewayToken, TokenKindConfirmationToken, TokenKindHandleGrant, TokenKindStreamTicket:
 		return true
 	default:
 		return false
@@ -989,6 +835,7 @@ func audienceMatches(expected Audience, got Audience) bool {
 		expected.RouteRole == got.RouteRole &&
 		expected.OwnerSessionHash == got.OwnerSessionHash &&
 		expected.OwnerUserHash == got.OwnerUserHash &&
+		expected.OwnerEnvHash == got.OwnerEnvHash &&
 		expected.SessionChannelIDHash == got.SessionChannelIDHash &&
 		expected.BridgeChannelID == got.BridgeChannelID &&
 		expected.RuntimeInstanceID == got.RuntimeInstanceID &&
@@ -1022,8 +869,6 @@ func prefixedID(kind TokenKind) (string, error) {
 		return "pgt_" + suffix, nil
 	case TokenKindConfirmationToken:
 		return "ct_" + suffix, nil
-	case TokenKindRuntimeExecutionLease:
-		return "rel_" + suffix, nil
 	case TokenKindHandleGrant:
 		return "hg_" + suffix, nil
 	case TokenKindStreamTicket:

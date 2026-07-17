@@ -11,7 +11,7 @@ type CatalogPlugin = {
   slug: string;
   plugin_id: string;
   plugin_instance_id: string;
-  plugin_state_version: number;
+  management_revision: number;
   surface_id: string;
   name: string;
   version: string;
@@ -313,9 +313,33 @@ async function request<T>(url: string, body?: Record<string, unknown>): Promise<
     headers: { Accept: "application/json", "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
-  const envelope = await response.json() as { success?: boolean; data?: T; error?: { message?: string } };
-  if (!response.ok || envelope.success !== true) throw new Error(envelope.error?.message || `Request failed with HTTP ${response.status}`);
-  return envelope.data as T;
+  const envelope: unknown = await response.json();
+  if (!isRecord(envelope) || typeof envelope.ok !== "boolean") {
+    throw new Error(`Invalid response with HTTP ${response.status}`);
+  }
+  if (envelope.ok) {
+    if (!response.ok || !hasExactKeys(envelope, ["ok", "data"])) throw new Error(`Invalid response with HTTP ${response.status}`);
+    return envelope.data as T;
+  }
+  if (response.ok ||
+      !hasExactKeys(envelope, ["ok", "error"]) ||
+      !isRecord(envelope.error) ||
+      !hasExactKeys(envelope.error, ["code", "message", "details"]) ||
+      typeof envelope.error.code !== "string" ||
+      typeof envelope.error.message !== "string" ||
+      !isRecord(envelope.error.details)) {
+    throw new Error(`Invalid response with HTTP ${response.status}`);
+  }
+  throw new Error(envelope.error.message || `Request failed with HTTP ${response.status}`);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function hasExactKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
+  const actual = Object.keys(value);
+  return actual.length === keys.length && actual.every((key) => keys.includes(key));
 }
 
 function required<T extends Element>(selector: string): T {

@@ -191,13 +191,18 @@ run_step go_race_core env GOWORK=off go test -race ./pkg/bridge ./pkg/connectivi
   exit "$STATUS"
 }
 
+run_step connectivity_stress_evidence env GOWORK=off REDEVPLUGIN_STRESS_EVIDENCE_PATH="$STRESS_EVIDENCE_FILE" go test -count=1 -run '^TestStressGateConnectivityClassifierEvidence$' ./pkg/connectivity || {
+	write_summary
+	exit "$STATUS"
+}
+
 run_step stress_evidence env GOWORK=off REDEVPLUGIN_STRESS_EVIDENCE_PATH="$STRESS_EVIDENCE_FILE" go test -count=1 ./pkg/stress || {
   write_summary
   exit "$STATUS"
 }
 
 if [[ "$MODE" != "fast" ]]; then
-  run_step go_all env GOWORK=off go test ./... || {
+	run_step go_all env GOWORK=off go test ./cmd/... ./examples/... ./pkg/... || {
     write_summary
     exit "$STATUS"
   }

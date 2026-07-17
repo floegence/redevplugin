@@ -23,10 +23,9 @@ import (
 	"github.com/floegence/redevplugin/pkg/capability"
 	"github.com/floegence/redevplugin/pkg/capabilitycontract"
 	"github.com/floegence/redevplugin/pkg/manifest"
+	"github.com/floegence/redevplugin/pkg/observability"
 	"github.com/floegence/redevplugin/pkg/operation"
-	"github.com/floegence/redevplugin/pkg/permissions"
 	"github.com/floegence/redevplugin/pkg/registry"
-	"github.com/floegence/redevplugin/pkg/security"
 	"github.com/floegence/redevplugin/pkg/stream"
 	"github.com/floegence/redevplugin/pkg/version"
 )
@@ -517,9 +516,10 @@ func (h *Host) resolveCapabilityTarget(ctx context.Context, record registry.Plug
 		},
 		Surface: capability.SurfaceScope{
 			SurfaceInstanceID:    req.SurfaceInstanceID,
-			OwnerSessionHash:     req.OwnerSessionHash,
-			OwnerUserHash:        req.OwnerUserHash,
-			SessionChannelIDHash: req.SessionChannelIDHash,
+			OwnerSessionHash:     req.session.OwnerSessionHash,
+			OwnerUserHash:        req.session.OwnerUserHash,
+			OwnerEnvHash:         req.session.OwnerEnvHash,
+			SessionChannelIDHash: req.session.SessionChannelIDHash,
 			BridgeChannelID:      req.BridgeChannelID,
 		},
 		CapabilityID:      resolved.contract.Contract.CapabilityID,
@@ -620,9 +620,10 @@ func (h *Host) prepareCapabilityExecution(ctx context.Context, record registry.P
 		PluginVersion:        record.Version,
 		ActiveFingerprint:    record.ActiveFingerprint,
 		SurfaceInstanceID:    req.SurfaceInstanceID,
-		OwnerSessionHash:     req.OwnerSessionHash,
-		OwnerUserHash:        req.OwnerUserHash,
-		SessionChannelIDHash: req.SessionChannelIDHash,
+		OwnerSessionHash:     req.session.OwnerSessionHash,
+		OwnerUserHash:        req.session.OwnerUserHash,
+		OwnerEnvHash:         req.session.OwnerEnvHash,
+		SessionChannelIDHash: req.session.SessionChannelIDHash,
 		BridgeChannelID:      req.BridgeChannelID,
 		RouteKind:            capability.RouteCapability,
 		CapabilityID:         resolved.contract.Contract.CapabilityID,
@@ -683,7 +684,7 @@ func (h *Host) startMethodExecution(ctx context.Context, record registry.PluginR
 	if err := validateExecutionBindingShape(binding); err != nil {
 		return capability.Invocation{}, nil, nil, err
 	}
-	if err := h.reconcileFailedExecutionSetups(ctx); err != nil {
+	if err := h.reconcilePendingExecutionSetups(ctx, record.PluginInstanceID); err != nil {
 		return capability.Invocation{}, nil, nil, fmt.Errorf("reconcile failed execution setup: %w", err)
 	}
 	if method.Execution == manifest.MethodExecutionOperation || method.Execution == manifest.MethodExecutionSubscription {
@@ -702,6 +703,17 @@ func (h *Host) startMethodExecution(ctx context.Context, record registry.PluginR
 	}
 	leaseBinding := capability.CloneExecutionBinding(binding)
 	validationBinding := capability.CloneExecutionBinding(binding)
+	h.lifecycleMu.RLock()
+	if h.closed {
+		h.lifecycleMu.RUnlock()
+		return capability.Invocation{}, nil, nil, ErrHostClosed
+	}
+	lifecycleLocked := true
+	defer func() {
+		if lifecycleLocked {
+			h.lifecycleMu.RUnlock()
+		}
+	}()
 	lease, err := h.executions.start(ctx, leaseBinding, func(validateCtx context.Context) error {
 		return h.validateExecutionBinding(validateCtx, validationBinding)
 	})
@@ -760,20 +772,24 @@ func (h *Host) startMethodExecution(ctx context.Context, record registry.PluginR
 			Details:          executionStartedAuditDetails(binding, "stream_id", binding.StreamID),
 		})
 	}
-	lease.armTimeout()
+	h.lifecycleMu.RUnlock()
+	lifecycleLocked = false
+	lease.armTimeout(h)
 	finish := func(success bool, cause error) error {
+		terminalCause := cause
+		if terminalCause == nil {
+			terminalCause = context.Cause(lease.ctx)
+		}
 		switch method.Execution {
 		case manifest.MethodExecutionSync:
-			if success {
-				if leaseCause := context.Cause(lease.ctx); leaseCause != nil {
-					lease.finish()
-					return leaseCause
-				}
+			if success && terminalCause != nil {
+				lease.finish()
+				return terminalCause
 			}
 			lease.finish()
 			return nil
 		case manifest.MethodExecutionOperation:
-			if success && context.Cause(lease.ctx) == nil {
+			if success && terminalCause == nil {
 				if completeOnReturn {
 					operationSink, _, _ := lease.snapshotExecution()
 					if operationSink != nil {
@@ -784,33 +800,45 @@ func (h *Host) startMethodExecution(ctx context.Context, record registry.PluginR
 				return nil
 			}
 			if operationSink, _, _ := lease.snapshotExecution(); operationSink != nil {
-				if err := operationSink.terminateUnchecked(context.Background(), cause); err != nil {
+				if err := operationSink.terminateUnchecked(context.Background(), executionFailureCode(binding, terminalCause), terminalCause); err != nil {
+					if success {
+						return errors.Join(terminalCause, err)
+					}
 					return err
 				}
 			}
 			lease.finish()
+			if success {
+				return terminalCause
+			}
 			return nil
 		case manifest.MethodExecutionSubscription:
 			lease.markDispatchComplete()
-			if success && context.Cause(lease.ctx) == nil {
+			if success && terminalCause == nil {
 				if _, streamSink, _ := lease.snapshotExecution(); streamSink != nil {
 					if streamSink.isTerminal() {
 						lease.finish()
 						return nil
 					}
 					if completeOnReturn {
-						return streamSink.closeWithStatus(context.Background(), stream.StatusClosed, operation.StatusCompleted, "")
+						return streamSink.closeWithStatus(context.Background(), stream.StatusClosed, operation.StatusCompleted, "", "")
 					}
 				}
 				lease.detachParent()
 				return nil
 			}
 			if _, streamSink, _ := lease.snapshotExecution(); streamSink != nil {
-				if err := streamSink.failUnchecked(context.Background(), errorText(cause)); err != nil {
+				if err := streamSink.failCauseUnchecked(context.Background(), executionFailureCode(binding, terminalCause), terminalCause); err != nil {
+					if success {
+						return errors.Join(terminalCause, err)
+					}
 					return err
 				}
 			}
 			lease.finish()
+			if success {
+				return terminalCause
+			}
 			return nil
 		}
 		return nil
@@ -860,7 +888,7 @@ func (h *Host) rollbackMethodExecutionSetup(ctx context.Context, lease *executio
 		lease.finish()
 		return cause
 	}
-	cleanupErr := operationSink.failUnchecked(context.WithoutCancel(ctx), errorText(cause))
+	cleanupErr := operationSink.failCauseUnchecked(context.WithoutCancel(ctx), capability.ExecutionFailurePlatformFailed, cause)
 	if cleanupErr != nil {
 		lease.markSetupRollbackPending(cause)
 		h.audit(context.WithoutCancel(ctx), AuditEvent{
@@ -876,8 +904,8 @@ func (h *Host) rollbackMethodExecutionSetup(ctx context.Context, lease *executio
 	return errors.Join(cause, cleanupErr)
 }
 
-func (h *Host) reconcileFailedExecutionSetups(ctx context.Context) error {
-	leases := h.executions.pendingSetupRollbacks()
+func (h *Host) reconcilePendingExecutionSetups(ctx context.Context, pluginInstanceID string) error {
+	leases := h.executions.pendingSetupRollbacks(pluginInstanceID)
 	var result error
 	for _, lease := range leases {
 		operationSink, streamSink, _ := lease.snapshotExecution()
@@ -887,22 +915,79 @@ func (h *Host) reconcileFailedExecutionSetups(ctx context.Context) error {
 		}
 		var err error
 		if streamSink != nil {
-			err = streamSink.failUnchecked(ctx, errorText(lease.setupRollbackCause()))
+			err = streamSink.failCauseUnchecked(ctx, capability.ExecutionFailurePlatformFailed, lease.setupRollbackCause())
 		} else {
-			err = operationSink.failUnchecked(ctx, errorText(lease.setupRollbackCause()))
+			err = operationSink.failCauseUnchecked(ctx, capability.ExecutionFailurePlatformFailed, lease.setupRollbackCause())
 		}
 		if err != nil {
 			result = errors.Join(result, err)
 		}
 	}
-	return errors.Join(result, h.reconcileDurableExecutionStates(ctx))
+	return result
 }
 
 func (h *Host) reconcileDurableExecutionStates(ctx context.Context) error {
-	records, err := h.adapters.Operations.List(ctx, operation.ListRequest{})
-	if err != nil {
-		return err
+	var cursor *operation.Cursor
+	var result error
+	for {
+		page, err := h.adapters.Operations.List(ctx, operation.ListRequest{Cursor: cursor, Limit: operation.MaxListLimit, AllOwners: true})
+		if err != nil {
+			return errors.Join(result, err)
+		}
+		result = errors.Join(result, h.reconcileDurableExecutionPage(ctx, page.Records))
+		if page.NextCursor == nil {
+			return result
+		}
+		cursor = page.NextCursor
 	}
+}
+
+func (h *Host) pruneTerminalExecutionRecords(ctx context.Context, now time.Time) error {
+	operationResult, operationErr := h.adapters.Operations.Prune(ctx, operation.PruneRequest{
+		Before:                      now.Add(-operation.DefaultTerminalRetention),
+		Limit:                       operation.DefaultPruneLimit,
+		MaxTerminalRecordsPerPlugin: operation.DefaultMaxTerminalRecordsPerPlugin,
+	})
+	streamResult, streamErr := h.adapters.Streams.Prune(ctx, stream.PruneRequest{
+		Before:                      now.Add(-stream.DefaultTerminalRetention),
+		Limit:                       stream.DefaultPruneLimit,
+		MaxTerminalRecordsPerPlugin: stream.DefaultMaxTerminalRecordsPerPlugin,
+	})
+	if operationResult.Deleted > 0 || streamResult.Deleted > 0 {
+		h.diagnostic(ctx, observability.DiagnosticEvent{
+			Type:     "plugin.execution.retention_pruned",
+			Severity: "info",
+			Message:  "terminal operation and stream retention was pruned",
+			Details: map[string]any{
+				"operations_deleted": operationResult.Deleted,
+				"streams_deleted":    streamResult.Deleted,
+			},
+		})
+	}
+	return errors.Join(operationErr, streamErr)
+}
+
+func (h *Host) maintainTerminalExecutionRecords(_ context.Context, now time.Time) {
+	if !h.executions.beginTerminalMaintenance(now) {
+		return
+	}
+	started := h.startLifecycleJob(func(lifecycleCtx context.Context) {
+		defer h.executions.finishTerminalMaintenance()
+		if err := h.pruneTerminalExecutionRecords(lifecycleCtx, now); err != nil && lifecycleCtx.Err() == nil {
+			h.diagnostic(lifecycleCtx, observability.DiagnosticEvent{
+				Type:            "plugin.execution.retention_prune_failed",
+				Severity:        observability.DiagnosticSeverityWarning,
+				Message:         "terminal execution retention pruning failed",
+				InternalDetails: map[string]any{"error": err.Error()},
+			})
+		}
+	})
+	if !started {
+		h.executions.finishTerminalMaintenance()
+	}
+}
+
+func (h *Host) reconcileDurableExecutionPage(ctx context.Context, records []operation.Record) error {
 	var result error
 	for _, operationRecord := range records {
 		hasLiveOwner := h.executions.hasOperation(operationRecord.OperationID)
@@ -918,14 +1003,17 @@ func (h *Host) reconcileDurableExecutionStates(ctx context.Context) error {
 				}
 				status := operation.StatusFailed
 				reason := "execution owner is unavailable after host restart"
+				failureCode := capability.ExecutionFailurePlatformFailed
 				if operationRecord.Status == operation.StatusCancelRequested {
 					status = operation.StatusCanceled
 					reason = "canceled operation owner is unavailable after host restart"
+					failureCode = ""
 				}
 				finished, finishErr := h.adapters.Operations.Finish(ctx, operation.FinishRequest{
 					OperationID: operationRecord.OperationID,
 					Status:      status,
-					Reason:      reason,
+					FailureCode: failureCode,
+					Reason:      reasonForTerminalStatus(status, reason),
 				})
 				if finishErr != nil {
 					result = errors.Join(result, finishErr)
@@ -947,29 +1035,47 @@ func (h *Host) reconcileDurableExecutionStates(ctx context.Context) error {
 			continue
 		}
 		if !operationDone && !hasLiveOwner {
-			operationStatus := operation.StatusFailed
+			var operationStatus operation.Status
 			streamStatus := stream.StatusFailed
 			reason := "execution owner is unavailable after host restart"
-			if operationRecord.Status == operation.StatusCancelRequested {
-				operationStatus = operation.StatusCanceled
-				streamStatus = stream.StatusCanceled
-				reason = "canceled operation owner is unavailable after host restart"
-			}
+			failureCode := capability.ExecutionFailurePlatformFailed
 			if streamDone {
-				expectedOperation, ok := operationStatusForStreamStatus(streamRecord.Status)
-				if !ok || expectedOperation != operationStatus {
-					result = errors.Join(result, fmt.Errorf("%w: orphan operation %s cannot converge with stream %s", errExecutionTerminalConflict, operationRecord.OperationID, streamRecord.StreamID))
+				var ok bool
+				operationStatus, ok = operationStatusForStreamStatus(streamRecord.Status)
+				if !ok {
+					result = errors.Join(result, fmt.Errorf("%w: orphan operation %s cannot derive a terminal state from stream %s", errExecutionTerminalConflict, operationRecord.OperationID, streamRecord.StreamID))
 					continue
 				}
+				reason = streamRecord.Reason
+				failureCode = streamRecord.FailureCode
 			} else {
-				closed, closeErr := h.adapters.Streams.Close(ctx, stream.CloseRequest{StreamID: streamRecord.StreamID, Status: streamStatus, Reason: reason})
+				if operationRecord.Status == operation.StatusCancelRequested {
+					streamStatus = stream.StatusCanceled
+					reason = "canceled operation owner is unavailable after host restart"
+					failureCode = ""
+				}
+				closed, closeErr := h.adapters.Streams.Close(ctx, stream.CloseRequest{
+					StreamID: streamRecord.StreamID, Status: streamStatus, FailureCode: failureCode,
+					Reason: reasonForStreamTerminalStatus(streamStatus, reason),
+				})
 				if closeErr != nil {
 					result = errors.Join(result, closeErr)
 					continue
 				}
+				var ok bool
+				operationStatus, ok = operationStatusForStreamStatus(closed.Status)
+				if !ok {
+					result = errors.Join(result, fmt.Errorf("%w: closed stream %s has unsupported terminal state %s", errExecutionTerminalConflict, closed.StreamID, closed.Status))
+					continue
+				}
+				reason = closed.Reason
+				failureCode = closed.FailureCode
 				h.audit(ctx, AuditEvent{Type: "plugin.stream.reconciled", PluginID: closed.PluginID, PluginInstanceID: closed.PluginInstanceID, Details: map[string]any{"stream_id": closed.StreamID, "status": closed.Status}})
 			}
-			finished, finishErr := h.adapters.Operations.Finish(ctx, operation.FinishRequest{OperationID: operationRecord.OperationID, Status: operationStatus, Reason: reason})
+			finished, finishErr := h.adapters.Operations.Finish(ctx, operation.FinishRequest{
+				OperationID: operationRecord.OperationID, Status: operationStatus, FailureCode: failureCode,
+				Reason: reasonForTerminalStatus(operationStatus, reason),
+			})
 			if finishErr != nil {
 				result = errors.Join(result, finishErr)
 				continue
@@ -984,7 +1090,8 @@ func (h *Host) reconcileDurableExecutionStates(ctx context.Context) error {
 				continue
 			}
 			closed, closeErr := h.adapters.Streams.Close(ctx, stream.CloseRequest{
-				StreamID: streamRecord.StreamID, Status: status, Reason: operationRecord.Reason,
+				StreamID: streamRecord.StreamID, Status: status, FailureCode: operationRecord.FailureCode,
+				Reason: reasonForStreamTerminalStatus(status, operationRecord.Reason),
 			})
 			if closeErr != nil {
 				result = errors.Join(result, closeErr)
@@ -997,7 +1104,8 @@ func (h *Host) reconcileDurableExecutionStates(ctx context.Context) error {
 				continue
 			}
 			finished, finishErr := h.adapters.Operations.Finish(ctx, operation.FinishRequest{
-				OperationID: operationRecord.OperationID, Status: status, Reason: streamRecord.Reason,
+				OperationID: operationRecord.OperationID, Status: status, FailureCode: streamRecord.FailureCode,
+				Reason: reasonForTerminalStatus(status, streamRecord.Reason),
 			})
 			if finishErr != nil {
 				result = errors.Join(result, finishErr)
@@ -1026,6 +1134,20 @@ func operationStatusForStreamStatus(status stream.Status) (operation.Status, boo
 	}
 }
 
+func reasonForTerminalStatus(status operation.Status, reason string) string {
+	if status == operation.StatusFailed {
+		return ""
+	}
+	return reason
+}
+
+func reasonForStreamTerminalStatus(status stream.Status, reason string) string {
+	if status == stream.StatusFailed {
+		return ""
+	}
+	return reason
+}
+
 func streamStatusForOperationStatus(status operation.Status) (stream.Status, bool) {
 	switch status {
 	case operation.StatusCompleted:
@@ -1044,36 +1166,28 @@ func streamStatusForOperationStatus(status operation.Status) (stream.Status, boo
 }
 
 func (h *Host) validateExecutionBinding(ctx context.Context, binding capability.ExecutionBinding) error {
-	record, err := h.adapters.Registry.GetPlugin(ctx, binding.PluginInstanceID)
-	if err != nil {
-		return capability.ErrExecutionRevoked
-	}
-	if record.EnableState != registry.EnableEnabled || !registry.RunnableTrustState(record.TrustState) ||
-		record.ActiveFingerprint != binding.ActiveFingerprint || record.Version != binding.PluginVersion ||
-		record.PolicyRevision != binding.Revision.PolicyRevision || record.ManagementRevision != binding.Revision.ManagementRevision ||
-		record.RevokeEpoch != binding.Revision.RevokeEpoch {
-		return capability.ErrExecutionRevoked
-	}
-	evaluation, err := h.adapters.SecurityPolicy.EvaluatePolicy(ctx, security.EvaluatePolicyRequest{
-		PluginInstanceID:    binding.PluginInstanceID,
-		Method:              binding.Method,
-		RequiredPermissions: binding.Permissions.Required,
-	})
-	if err != nil {
-		return err
-	}
-	if !evaluation.Allowed {
-		return security.ErrPolicyDenied
-	}
-	granted, _, err := h.adapters.Permissions.IsGranted(ctx, permissions.CheckRequest{
+	authorization, err := h.adapters.Registry.Authorize(ctx, registry.AuthorizeRequest{
 		PluginInstanceID: binding.PluginInstanceID,
+		Method:           binding.Method,
 		PermissionIDs:    binding.Permissions.Required,
+		Expected: registry.AuthorizationRevisions{
+			PolicyRevision:     binding.Revision.PolicyRevision,
+			ManagementRevision: binding.Revision.ManagementRevision,
+			RevokeEpoch:        binding.Revision.RevokeEpoch,
+		},
 	})
 	if err != nil {
-		return err
+		return capability.ErrExecutionRevoked
 	}
-	if !granted {
-		return permissions.ErrPermissionDenied
+	state := authorization.State
+	if state.EnableState != registry.EnableEnabled || !registry.RunnableTrustState(state.TrustState) ||
+		state.ActiveFingerprint != binding.ActiveFingerprint || state.PluginVersion != binding.PluginVersion ||
+		state.Revisions.PolicyRevision != binding.Revision.PolicyRevision || state.Revisions.ManagementRevision != binding.Revision.ManagementRevision ||
+		state.Revisions.RevokeEpoch != binding.Revision.RevokeEpoch {
+		return capability.ErrExecutionRevoked
+	}
+	if err := authorizationDecisionError(authorization, binding.Method); err != nil {
+		return err
 	}
 	if !binding.Quota.ExpiresAt.IsZero() && !time.Now().UTC().Before(binding.Quota.ExpiresAt) {
 		return capability.ErrExecutionRevoked
@@ -1141,16 +1255,67 @@ func manifestBinding(plugin manifest.Manifest, bindingID string) (manifest.Capab
 	return manifest.CapabilityBinding{}, false
 }
 
-func errorText(err error) string {
-	if err == nil {
-		return "execution failed"
+const (
+	executionFailedReason   = capability.ExecutionFailureMessage
+	executionCanceledReason = "operation canceled"
+)
+
+func (h *Host) reportExecutionFailure(ctx context.Context, binding capability.ExecutionBinding, code capability.ExecutionFailureCode, cause error) {
+	if h == nil || !code.Valid() || cause == nil {
+		return
 	}
-	return err.Error()
+	details := map[string]any{
+		"invocation_id": binding.InvocationID,
+		"method":        binding.Method,
+		"failure_code":  code,
+	}
+	if binding.OperationID != "" {
+		details["operation_id"] = binding.OperationID
+	}
+	if binding.StreamID != "" {
+		details["stream_id"] = binding.StreamID
+	}
+	h.diagnostic(ctx, observability.DiagnosticEvent{
+		Type:                 "plugin.execution.failed",
+		Severity:             observability.DiagnosticSeverityWarning,
+		Message:              executionFailedReason,
+		PluginID:             binding.PluginID,
+		PluginInstanceID:     binding.PluginInstanceID,
+		SurfaceInstanceID:    binding.SurfaceInstanceID,
+		ActiveFingerprint:    binding.ActiveFingerprint,
+		OwnerSessionHash:     binding.OwnerSessionHash,
+		OwnerUserHash:        binding.OwnerUserHash,
+		OwnerEnvHash:         binding.OwnerEnvHash,
+		SessionChannelIDHash: binding.SessionChannelIDHash,
+		Details:              details,
+		InternalDetails:      map[string]any{"error": cause.Error()},
+	})
 }
 
 type executionLeaseRegistry struct {
-	mu     sync.Mutex
-	leases map[string]*executionLease
+	mu                         sync.Mutex
+	leases                     map[string]*executionLease
+	leasesByPlugin             map[string]map[string]*executionLease
+	operations                 map[string]*executionLease
+	streams                    map[string]*hostStreamSink
+	activeByQuotaKey           map[executionQuotaKey]int
+	setupRollbacks             map[string]*executionLease
+	pluginGates                map[string]*executionPluginGate
+	terminalMaintenanceRunning bool
+	terminalMaintenanceNext    time.Time
+}
+
+const terminalExecutionMaintenanceInterval = time.Minute
+
+type executionQuotaKey struct {
+	pluginInstanceID string
+	capabilityID     string
+	method           string
+}
+
+type executionPluginGate struct {
+	mu   sync.RWMutex
+	refs int
 }
 
 type executionLease struct {
@@ -1178,23 +1343,56 @@ type executionLease struct {
 type operationCancelDispatch func(context.Context, capability.OperationCancellation) error
 
 func newExecutionLeaseRegistry() *executionLeaseRegistry {
-	return &executionLeaseRegistry{leases: map[string]*executionLease{}}
+	return &executionLeaseRegistry{
+		leases:           map[string]*executionLease{},
+		leasesByPlugin:   map[string]map[string]*executionLease{},
+		operations:       map[string]*executionLease{},
+		streams:          map[string]*hostStreamSink{},
+		activeByQuotaKey: map[executionQuotaKey]int{},
+		setupRollbacks:   map[string]*executionLease{},
+		pluginGates:      map[string]*executionPluginGate{},
+	}
+}
+
+func (r *executionLeaseRegistry) beginTerminalMaintenance(now time.Time) bool {
+	if r == nil {
+		return false
+	}
+	if now.IsZero() {
+		now = time.Now().UTC()
+	} else {
+		now = now.UTC()
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.terminalMaintenanceRunning || (!r.terminalMaintenanceNext.IsZero() && now.Before(r.terminalMaintenanceNext)) {
+		return false
+	}
+	r.terminalMaintenanceRunning = true
+	r.terminalMaintenanceNext = now.Add(terminalExecutionMaintenanceInterval)
+	return true
+}
+
+func (r *executionLeaseRegistry) finishTerminalMaintenance() {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	r.terminalMaintenanceRunning = false
+	r.mu.Unlock()
 }
 
 func (r *executionLeaseRegistry) start(parent context.Context, binding capability.ExecutionBinding, validate func(context.Context) error) (*executionLease, error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
+	releasePlugin := r.lockPlugin(binding.PluginInstanceID, false)
+	defer releasePlugin()
 	if err := validate(parent); err != nil {
 		return nil, err
 	}
+	quotaKey := executionQuotaKeyFor(binding)
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	if binding.Quota.MaxConcurrent > 0 {
-		active := 0
-		for _, lease := range r.leases {
-			if lease.binding.PluginInstanceID == binding.PluginInstanceID && lease.binding.CapabilityID == binding.CapabilityID && lease.binding.Method == binding.Method {
-				active++
-			}
-		}
-		if active >= binding.Quota.MaxConcurrent {
+		if r.activeByQuotaKey[quotaKey] >= binding.Quota.MaxConcurrent {
 			return nil, capability.ErrQuotaExceeded
 		}
 	}
@@ -1220,16 +1418,24 @@ func (r *executionLeaseRegistry) start(parent context.Context, binding capabilit
 		lease.setParentStop(stop)
 	}
 	r.leases[binding.InvocationID] = lease
+	pluginLeases := r.leasesByPlugin[binding.PluginInstanceID]
+	if pluginLeases == nil {
+		pluginLeases = map[string]*executionLease{}
+		r.leasesByPlugin[binding.PluginInstanceID] = pluginLeases
+	}
+	pluginLeases[binding.InvocationID] = lease
+	r.activeByQuotaKey[quotaKey]++
 	return lease, nil
 }
 
 func (r *executionLeaseRegistry) cancelPlugin(pluginInstanceID string, cause error) []*executionLease {
+	releasePlugin := r.lockPlugin(pluginInstanceID, true)
+	defer releasePlugin()
 	r.mu.Lock()
-	leasing := make([]*executionLease, 0)
-	for _, lease := range r.leases {
-		if lease.binding.PluginInstanceID == pluginInstanceID {
-			leasing = append(leasing, lease)
-		}
+	pluginLeases := r.leasesByPlugin[pluginInstanceID]
+	leasing := make([]*executionLease, 0, len(pluginLeases))
+	for _, lease := range pluginLeases {
+		leasing = append(leasing, lease)
 	}
 	r.mu.Unlock()
 	for _, lease := range leasing {
@@ -1238,14 +1444,45 @@ func (r *executionLeaseRegistry) cancelPlugin(pluginInstanceID string, cause err
 	return leasing
 }
 
+func (r *executionLeaseRegistry) cancelAll(cause error) []*executionLease {
+	if r == nil {
+		return nil
+	}
+	r.mu.Lock()
+	leasing := make([]*executionLease, 0, len(r.leases))
+	for _, lease := range r.leases {
+		leasing = append(leasing, lease)
+	}
+	r.mu.Unlock()
+	for _, lease := range leasing {
+		lease.requestCancel(cause)
+	}
+	return leasing
+}
+
+func (r *executionLeaseRegistry) finishAll() {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	leases := make([]*executionLease, 0, len(r.leases))
+	for _, lease := range r.leases {
+		leases = append(leases, lease)
+	}
+	r.mu.Unlock()
+	for _, lease := range leases {
+		lease.finish()
+	}
+}
+
 func reconcileRevokedExecutions(ctx context.Context, leases []*executionLease, cause error) {
 	for _, lease := range leases {
 		operationSink, streamSink, _ := lease.snapshotExecution()
 		var err error
 		if streamSink != nil {
-			err = streamSink.failUnchecked(ctx, errorText(cause))
+			err = streamSink.failCauseUnchecked(ctx, capability.ExecutionFailurePlatformFailed, cause)
 		} else if operationSink != nil {
-			err = operationSink.terminateUnchecked(ctx, cause)
+			err = operationSink.terminateUnchecked(ctx, capability.ExecutionFailurePlatformFailed, cause)
 		}
 		if err != nil {
 			lease.markSetupRollbackPending(cause)
@@ -1255,14 +1492,7 @@ func reconcileRevokedExecutions(ctx context.Context, leases []*executionLease, c
 
 func (r *executionLeaseRegistry) cancelOperation(ctx context.Context, req capability.OperationCancellation, cause error) (bool, error) {
 	r.mu.Lock()
-	var matched *executionLease
-	for _, lease := range r.leases {
-		operationSink, _, _ := lease.snapshotExecution()
-		if operationSink != nil && operationSink.operationID == req.OperationID {
-			matched = lease
-			break
-		}
-	}
+	matched := r.operations[strings.TrimSpace(req.OperationID)]
 	r.mu.Unlock()
 	if matched == nil {
 		return false, nil
@@ -1270,7 +1500,7 @@ func (r *executionLeaseRegistry) cancelOperation(ctx context.Context, req capabi
 	matched.requestCancel(cause)
 	operationSink, _, dispatch := matched.snapshotExecution()
 	if operationSink != nil {
-		matched.armCancelAckTimeout(operationSink.ackTimeout)
+		matched.armCancelAckTimeout(operationSink.host, operationSink.ackTimeout)
 	}
 	if dispatch != nil {
 		return true, dispatch(ctx, req)
@@ -1283,16 +1513,10 @@ func (r *executionLeaseRegistry) streamSink(streamID string) (*hostStreamSink, e
 		return nil, stream.ErrNotFound
 	}
 	r.mu.Lock()
-	leasing := make([]*executionLease, 0, len(r.leases))
-	for _, lease := range r.leases {
-		leasing = append(leasing, lease)
-	}
+	streamSink := r.streams[strings.TrimSpace(streamID)]
 	r.mu.Unlock()
-	for _, lease := range leasing {
-		_, streamSink, _ := lease.snapshotExecution()
-		if streamSink != nil && streamSink.streamID == streamID {
-			return streamSink, nil
-		}
+	if streamSink != nil {
+		return streamSink, nil
 	}
 	return nil, stream.ErrNotFound
 }
@@ -1302,18 +1526,69 @@ func (r *executionLeaseRegistry) hasOperation(operationID string) bool {
 		return false
 	}
 	r.mu.Lock()
-	leasing := make([]*executionLease, 0, len(r.leases))
-	for _, lease := range r.leases {
-		leasing = append(leasing, lease)
+	_, ok := r.operations[strings.TrimSpace(operationID)]
+	r.mu.Unlock()
+	return ok
+}
+
+func executionQuotaKeyFor(binding capability.ExecutionBinding) executionQuotaKey {
+	return executionQuotaKey{
+		pluginInstanceID: binding.PluginInstanceID,
+		capabilityID:     binding.CapabilityID,
+		method:           binding.Method,
+	}
+}
+
+func (r *executionLeaseRegistry) lockPlugin(pluginInstanceID string, write bool) func() {
+	pluginInstanceID = strings.TrimSpace(pluginInstanceID)
+	r.mu.Lock()
+	gate := r.pluginGates[pluginInstanceID]
+	if gate == nil {
+		gate = &executionPluginGate{}
+		r.pluginGates[pluginInstanceID] = gate
+	}
+	gate.refs++
+	r.mu.Unlock()
+	if write {
+		gate.mu.Lock()
+	} else {
+		gate.mu.RLock()
+	}
+	return func() {
+		if write {
+			gate.mu.Unlock()
+		} else {
+			gate.mu.RUnlock()
+		}
+		r.mu.Lock()
+		gate.refs--
+		if gate.refs == 0 && r.pluginGates[pluginInstanceID] == gate {
+			delete(r.pluginGates, pluginInstanceID)
+		}
+		r.mu.Unlock()
+	}
+}
+
+func (r *executionLeaseRegistry) indexOperation(lease *executionLease, operationSink *hostOperationSink) {
+	if r == nil || lease == nil || operationSink == nil {
+		return
+	}
+	r.mu.Lock()
+	if r.leases[lease.binding.InvocationID] == lease {
+		r.operations[operationSink.operationID] = lease
 	}
 	r.mu.Unlock()
-	for _, lease := range leasing {
-		operationSink, _, _ := lease.snapshotExecution()
-		if operationSink != nil && operationSink.operationID == operationID {
-			return true
-		}
+}
+
+func (r *executionLeaseRegistry) indexStream(lease *executionLease, streamSink *hostStreamSink) {
+	if r == nil || lease == nil || streamSink == nil {
+		return
 	}
-	return false
+	r.mu.Lock()
+	if r.leases[lease.binding.InvocationID] == lease {
+		r.streams[streamSink.streamID] = streamSink
+	}
+	r.mu.Unlock()
 }
 
 func (l *executionLease) validate(ctx context.Context) error {
@@ -1349,6 +1624,8 @@ func (l *executionLease) finish() bool {
 		l.cancelAckTimer = nil
 		parentStop := l.parentStop
 		l.parentStop = nil
+		operationSink := l.operation
+		streamSink := l.stream
 		l.mu.Unlock()
 		if timer != nil {
 			timer.Stop()
@@ -1362,7 +1639,27 @@ func (l *executionLease) finish() bool {
 		l.cancel(nil)
 		close(l.done)
 		l.registry.mu.Lock()
-		delete(l.registry.leases, l.binding.InvocationID)
+		if l.registry.leases[l.binding.InvocationID] == l {
+			delete(l.registry.leases, l.binding.InvocationID)
+			pluginLeases := l.registry.leasesByPlugin[l.binding.PluginInstanceID]
+			delete(pluginLeases, l.binding.InvocationID)
+			if len(pluginLeases) == 0 {
+				delete(l.registry.leasesByPlugin, l.binding.PluginInstanceID)
+			}
+			quotaKey := executionQuotaKeyFor(l.binding)
+			if active := l.registry.activeByQuotaKey[quotaKey]; active <= 1 {
+				delete(l.registry.activeByQuotaKey, quotaKey)
+			} else {
+				l.registry.activeByQuotaKey[quotaKey] = active - 1
+			}
+			if operationSink != nil && l.registry.operations[operationSink.operationID] == l {
+				delete(l.registry.operations, operationSink.operationID)
+			}
+			if streamSink != nil && l.registry.streams[streamSink.streamID] == streamSink {
+				delete(l.registry.streams, streamSink.streamID)
+			}
+			delete(l.registry.setupRollbacks, l.binding.InvocationID)
+		}
 		l.registry.mu.Unlock()
 	})
 	return finished
@@ -1387,6 +1684,11 @@ func (l *executionLease) markDispatchComplete() {
 func (l *executionLease) markSetupRollbackPending(cause error) {
 	l.mu.Lock()
 	l.setupRollback = cause
+	l.registry.mu.Lock()
+	if l.registry.leases[l.binding.InvocationID] == l {
+		l.registry.setupRollbacks[l.binding.InvocationID] = l
+	}
+	l.registry.mu.Unlock()
 	l.mu.Unlock()
 }
 
@@ -1402,8 +1704,8 @@ func (l *executionLease) dispatchCompleted() bool {
 	return l.dispatchComplete
 }
 
-func (l *executionLease) armTimeout() {
-	if l.binding.Quota.ExpiresAt.IsZero() {
+func (l *executionLease) armTimeout(host *Host) {
+	if host == nil || l.binding.Quota.ExpiresAt.IsZero() {
 		return
 	}
 	delay := time.Until(l.binding.Quota.ExpiresAt)
@@ -1421,24 +1723,44 @@ func (l *executionLease) armTimeout() {
 		l.timer = timer
 	}
 	l.mu.Unlock()
-	go func() {
+	started := host.startLifecycleJob(func(ctx context.Context) {
 		select {
 		case <-timer.C:
 			l.requestCancel(capability.ErrQuotaExceeded)
 			operationSink, streamSink, _ := l.snapshotExecution()
-			if operationSink != nil {
-				_ = operationSink.terminateUnchecked(context.Background(), capability.ErrQuotaExceeded)
-			}
+			var err error
 			if streamSink != nil {
-				_ = streamSink.failUnchecked(context.Background(), capability.ErrQuotaExceeded.Error())
+				err = streamSink.failCauseUnchecked(ctx, capability.ExecutionFailureQuotaExceeded, capability.ErrQuotaExceeded)
+			} else if operationSink != nil {
+				err = operationSink.terminateUnchecked(ctx, capability.ExecutionFailureQuotaExceeded, capability.ErrQuotaExceeded)
 			}
+			if err != nil {
+				host.diagnostic(ctx, observability.DiagnosticEvent{
+					Type:                 "plugin.execution.duration_terminal_failed",
+					Severity:             observability.DiagnosticSeverityWarning,
+					Message:              "duration quota terminal state could not be persisted",
+					PluginID:             l.binding.PluginID,
+					PluginInstanceID:     l.binding.PluginInstanceID,
+					SurfaceInstanceID:    l.binding.SurfaceInstanceID,
+					OwnerSessionHash:     l.binding.OwnerSessionHash,
+					OwnerUserHash:        l.binding.OwnerUserHash,
+					OwnerEnvHash:         l.binding.OwnerEnvHash,
+					SessionChannelIDHash: l.binding.SessionChannelIDHash,
+					InternalDetails:      map[string]any{"error": err.Error()},
+				})
+			}
+			l.finish()
 		case <-l.done:
+		case <-ctx.Done():
 		}
-	}()
+	})
+	if !started {
+		timer.Stop()
+	}
 }
 
-func (l *executionLease) armCancelAckTimeout(timeout time.Duration) {
-	if timeout <= 0 {
+func (l *executionLease) armCancelAckTimeout(host *Host, timeout time.Duration) {
+	if host == nil || timeout <= 0 {
 		return
 	}
 	l.cancelAckOnce.Do(func() {
@@ -1453,49 +1775,36 @@ func (l *executionLease) armCancelAckTimeout(timeout time.Duration) {
 			l.cancelAckTimer = timer
 		}
 		l.mu.Unlock()
-		go func() {
+		started := host.startLifecycleJob(func(ctx context.Context) {
 			select {
 			case <-timer.C:
-				for {
-					operationSink, streamSink, _ := l.snapshotExecution()
-					var err error
-					if streamSink != nil {
-						err = streamSink.closeWithStatus(context.Background(), stream.StatusCanceled, operation.StatusCanceled, "cancellation acknowledgement timed out")
-					} else if operationSink != nil {
-						err = operationSink.terminateUnchecked(context.Background(), errors.New("cancellation acknowledgement timed out"))
-					}
-					if err == nil || !waitForCancellationReconcile(cancellationReconcileRetryDelay(timeout), l.done) {
-						return
-					}
+				operationSink, streamSink, _ := l.snapshotExecution()
+				var err error
+				if streamSink != nil {
+					err = streamSink.closeWithStatus(ctx, stream.StatusCanceled, operation.StatusCanceled, "cancellation acknowledgement timed out", "")
+				} else if operationSink != nil {
+					err = operationSink.terminateUnchecked(ctx, capability.ExecutionFailurePlatformFailed, errors.New("cancellation acknowledgement timed out"))
+				}
+				if err != nil {
+					l.finish()
 				}
 			case <-l.done:
+			case <-ctx.Done():
 			}
-		}()
+		})
+		if !started {
+			timer.Stop()
+		}
 	})
 }
 
-func cancellationReconcileRetryDelay(timeout time.Duration) time.Duration {
-	delay := timeout / 4
-	if delay < 10*time.Millisecond {
-		return 10 * time.Millisecond
-	}
-	if delay > time.Second {
-		return time.Second
-	}
-	return delay
-}
-
-func waitForCancellationReconcile(delay time.Duration, done <-chan struct{}) bool {
+func waitForCancellationReconcile(ctx context.Context, delay time.Duration) bool {
 	timer := time.NewTimer(delay)
 	defer timer.Stop()
-	if done == nil {
-		<-timer.C
-		return true
-	}
 	select {
 	case <-timer.C:
 		return true
-	case <-done:
+	case <-ctx.Done():
 		return false
 	}
 }
@@ -1505,12 +1814,14 @@ func (l *executionLease) setOperation(operationSink *hostOperationSink, dispatch
 	l.operation = operationSink
 	l.cancelDispatch = dispatch
 	l.mu.Unlock()
+	l.registry.indexOperation(l, operationSink)
 }
 
 func (l *executionLease) setStream(streamSink *hostStreamSink) {
 	l.mu.Lock()
 	l.stream = streamSink
 	l.mu.Unlock()
+	l.registry.indexStream(l, streamSink)
 }
 
 func (l *executionLease) setParentStop(stop func() bool) {
@@ -1532,19 +1843,15 @@ func (l *executionLease) snapshotExecution() (*hostOperationSink, *hostStreamSin
 	return l.operation, l.stream, l.cancelDispatch
 }
 
-func (r *executionLeaseRegistry) pendingSetupRollbacks() []*executionLease {
+func (r *executionLeaseRegistry) pendingSetupRollbacks(pluginInstanceID string) []*executionLease {
 	r.mu.Lock()
-	candidates := make([]*executionLease, 0, len(r.leases))
-	for _, lease := range r.leases {
-		candidates = append(candidates, lease)
-	}
-	r.mu.Unlock()
-	leases := make([]*executionLease, 0, len(candidates))
-	for _, lease := range candidates {
-		if lease.setupRollbackCause() != nil {
+	leases := make([]*executionLease, 0, len(r.setupRollbacks))
+	for _, lease := range r.setupRollbacks {
+		if lease.binding.PluginInstanceID == pluginInstanceID {
 			leases = append(leases, lease)
 		}
 	}
+	r.mu.Unlock()
 	return leases
 }
 
@@ -1562,11 +1869,12 @@ func (s *hostOperationSink) Complete(ctx context.Context) error {
 		return err
 	}
 	if _, streamSink, _ := s.lease.snapshotExecution(); streamSink != nil {
-		return streamSink.closeWithStatus(ctx, stream.StatusClosed, operation.StatusCompleted, "")
+		return streamSink.closeWithStatus(ctx, stream.StatusClosed, operation.StatusCompleted, "", "")
 	}
 	record, err := s.host.adapters.Operations.Finish(ctx, operation.FinishRequest{OperationID: s.operationID, Status: operation.StatusCompleted})
 	if err == nil && s.lease.finish() {
 		s.host.audit(ctx, AuditEvent{Type: "plugin.operation.finished", PluginID: record.PluginID, PluginInstanceID: record.PluginInstanceID, Details: map[string]any{"operation_id": record.OperationID, "status": record.Status}})
+		s.host.maintainTerminalExecutionRecords(ctx, time.Now().UTC())
 	}
 	return err
 }
@@ -1585,55 +1893,89 @@ func (s *hostOperationSink) Cancel(ctx context.Context, reason string) error {
 		return operation.ErrInvalidOperation
 	}
 	if _, streamSink, _ := s.lease.snapshotExecution(); streamSink != nil {
-		return streamSink.closeWithStatus(ctx, stream.StatusCanceled, operation.StatusCanceled, reason)
+		return streamSink.closeWithStatus(ctx, stream.StatusCanceled, operation.StatusCanceled, reason, "")
 	}
 	record, err := s.host.adapters.Operations.Finish(ctx, operation.FinishRequest{OperationID: s.operationID, Status: operation.StatusCanceled, Reason: reason})
 	if err == nil && s.lease.finish() {
 		s.host.audit(ctx, AuditEvent{Type: "plugin.operation.finished", PluginID: record.PluginID, PluginInstanceID: record.PluginInstanceID, Details: map[string]any{"operation_id": record.OperationID, "status": record.Status}})
+		s.host.maintainTerminalExecutionRecords(ctx, time.Now().UTC())
 	}
 	return err
 }
 
-func (s *hostOperationSink) Fail(ctx context.Context, reason string) error {
+func (s *hostOperationSink) Fail(ctx context.Context, code capability.ExecutionFailureCode, cause error) error {
+	if err := validateExecutionFailure(code, cause); err != nil {
+		return err
+	}
 	if err := s.lease.validate(ctx); err != nil {
 		return err
 	}
 	if _, streamSink, _ := s.lease.snapshotExecution(); streamSink != nil {
-		return streamSink.closeWithStatus(ctx, stream.StatusFailed, operation.StatusFailed, reason)
+		return streamSink.failCauseUnchecked(ctx, code, cause)
 	}
-	return s.failUnchecked(ctx, reason)
+	return s.failCauseUnchecked(ctx, code, cause)
 }
 
-func (s *hostOperationSink) failUnchecked(ctx context.Context, reason string) error {
-	record, err := s.host.adapters.Operations.Finish(ctx, operation.FinishRequest{OperationID: s.operationID, Status: operation.StatusFailed, Reason: reason})
+func (s *hostOperationSink) failUnchecked(ctx context.Context, code capability.ExecutionFailureCode) error {
+	record, err := s.host.adapters.Operations.Finish(ctx, operation.FinishRequest{OperationID: s.operationID, Status: operation.StatusFailed, FailureCode: code})
 	if err == nil && s.lease.finish() {
 		s.host.audit(ctx, AuditEvent{Type: "plugin.operation.finished", PluginID: record.PluginID, PluginInstanceID: record.PluginInstanceID, Details: map[string]any{"operation_id": record.OperationID, "status": record.Status}})
+		s.host.maintainTerminalExecutionRecords(ctx, time.Now().UTC())
 	}
 	return err
 }
 
-func (s *hostOperationSink) terminateUnchecked(ctx context.Context, cause error) error {
+func (s *hostOperationSink) failCauseUnchecked(ctx context.Context, code capability.ExecutionFailureCode, cause error) error {
+	if err := validateExecutionFailure(code, cause); err != nil {
+		return err
+	}
+	s.reportFailureCause(ctx, code, cause)
+	return s.failUnchecked(ctx, code)
+}
+
+func (s *hostOperationSink) terminateUnchecked(ctx context.Context, code capability.ExecutionFailureCode, cause error) error {
+	if err := validateExecutionFailure(code, cause); err != nil {
+		return err
+	}
 	current, err := s.host.adapters.Operations.Get(ctx, s.operationID)
 	if err != nil {
 		return err
 	}
 	if operationTerminal(current.Status) {
-		s.lease.finish()
+		if s.lease.finish() {
+			s.host.maintainTerminalExecutionRecords(ctx, time.Now().UTC())
+		}
 		return nil
 	}
 	status := operation.StatusFailed
+	reason := executionFailedReason
 	if current.Status == operation.StatusCancelRequested {
 		status = operation.StatusCanceled
+		reason = executionCanceledReason
 	}
-	record, err := s.host.adapters.Operations.Finish(ctx, operation.FinishRequest{
+	request := operation.FinishRequest{
 		OperationID: s.operationID,
 		Status:      status,
-		Reason:      errorText(cause),
-	})
+		Reason:      reason,
+	}
+	if status == operation.StatusFailed {
+		s.reportFailureCause(ctx, code, cause)
+		request.FailureCode = code
+		request.Reason = ""
+	}
+	record, err := s.host.adapters.Operations.Finish(ctx, request)
 	if err == nil && s.lease.finish() {
 		s.host.audit(ctx, AuditEvent{Type: "plugin.operation.finished", PluginID: record.PluginID, PluginInstanceID: record.PluginInstanceID, Details: map[string]any{"operation_id": record.OperationID, "status": record.Status}})
+		s.host.maintainTerminalExecutionRecords(ctx, time.Now().UTC())
 	}
 	return err
+}
+
+func (s *hostOperationSink) reportFailureCause(ctx context.Context, code capability.ExecutionFailureCode, cause error) {
+	if s == nil || s.host == nil || s.lease == nil || cause == nil {
+		return
+	}
+	s.host.reportExecutionFailure(ctx, s.lease.binding, code, cause)
 }
 
 func (s *hostOperationSink) CancelRequested() <-chan struct{} { return s.lease.cancelled }
@@ -1656,6 +1998,7 @@ var errExecutionTerminalConflict = errors.New("execution terminal state conflict
 type streamTerminalIntent struct {
 	streamStatus    stream.Status
 	operationStatus operation.Status
+	failureCode     capability.ExecutionFailureCode
 	reason          string
 }
 
@@ -1712,31 +2055,34 @@ func (s *hostStreamSink) appendEncoded(ctx context.Context, kind string, data []
 
 func (s *hostStreamSink) Close(ctx context.Context) error {
 	if err := s.lease.validate(ctx); err != nil {
-		if terminalErr, handled := s.terminalResult(stream.StatusClosed, operation.StatusCompleted, ""); handled {
+		if terminalErr, handled := s.terminalResult(stream.StatusClosed, operation.StatusCompleted, "", ""); handled {
 			return terminalErr
 		}
 		return err
 	}
-	return s.closeWithStatus(ctx, stream.StatusClosed, operation.StatusCompleted, "")
+	return s.closeWithStatus(ctx, stream.StatusClosed, operation.StatusCompleted, "", "")
 }
 
-func (s *hostStreamSink) Fail(ctx context.Context, reason string) error {
+func (s *hostStreamSink) Fail(ctx context.Context, code capability.ExecutionFailureCode, cause error) error {
+	if err := validateExecutionFailure(code, cause); err != nil {
+		return err
+	}
 	if err := s.lease.validate(ctx); err != nil {
-		if terminalErr, handled := s.terminalResult(stream.StatusFailed, operation.StatusFailed, reason); handled {
+		if terminalErr, handled := s.terminalResult(stream.StatusFailed, operation.StatusFailed, "", code); handled {
 			return terminalErr
 		}
 		return err
 	}
-	return s.failUnchecked(ctx, reason)
+	return s.failCauseUnchecked(ctx, code, cause)
 }
 
-func (s *hostStreamSink) terminalResult(streamStatus stream.Status, operationStatus operation.Status, reason string) (error, bool) {
+func (s *hostStreamSink) terminalResult(streamStatus stream.Status, operationStatus operation.Status, reason string, failureCode capability.ExecutionFailureCode) (error, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.terminalIntent == nil {
 		return nil, false
 	}
-	requested := streamTerminalIntent{streamStatus: streamStatus, operationStatus: operationStatus, reason: reason}
+	requested := streamTerminalIntent{streamStatus: streamStatus, operationStatus: operationStatus, failureCode: failureCode, reason: reason}
 	if *s.terminalIntent != requested {
 		return fmt.Errorf("%w: stream %s already selected %s/%s", errExecutionTerminalConflict, s.streamID, s.terminalIntent.streamStatus, s.terminalIntent.operationStatus), true
 	}
@@ -1746,14 +2092,24 @@ func (s *hostStreamSink) terminalResult(streamStatus stream.Status, operationSta
 	return nil, false
 }
 
-func (s *hostStreamSink) failUnchecked(ctx context.Context, reason string) error {
-	return s.closeWithStatus(ctx, stream.StatusFailed, operation.StatusFailed, reason)
+func (s *hostStreamSink) failUnchecked(ctx context.Context, code capability.ExecutionFailureCode) error {
+	return s.closeWithStatus(ctx, stream.StatusFailed, operation.StatusFailed, "", code)
 }
 
-func (s *hostStreamSink) closeWithStatus(ctx context.Context, streamStatus stream.Status, operationStatus operation.Status, reason string) error {
+func (s *hostStreamSink) failCauseUnchecked(ctx context.Context, code capability.ExecutionFailureCode, cause error) error {
+	if err := validateExecutionFailure(code, cause); err != nil {
+		return err
+	}
+	if s != nil && s.host != nil && s.lease != nil {
+		s.host.reportExecutionFailure(ctx, s.lease.binding, code, cause)
+	}
+	return s.failUnchecked(ctx, code)
+}
+
+func (s *hostStreamSink) closeWithStatus(ctx context.Context, streamStatus stream.Status, operationStatus operation.Status, reason string, failureCode capability.ExecutionFailureCode) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	requested := streamTerminalIntent{streamStatus: streamStatus, operationStatus: operationStatus, reason: reason}
+	requested := streamTerminalIntent{streamStatus: streamStatus, operationStatus: operationStatus, failureCode: failureCode, reason: reason}
 	if s.terminalIntent != nil && *s.terminalIntent != requested {
 		return fmt.Errorf("%w: stream %s already selected %s/%s", errExecutionTerminalConflict, s.streamID, s.terminalIntent.streamStatus, s.terminalIntent.operationStatus)
 	}
@@ -1763,7 +2119,7 @@ func (s *hostStreamSink) closeWithStatus(ctx context.Context, streamStatus strea
 	if s.terminalCommitted {
 		return nil
 	}
-	streamRecord, streamErr := s.host.adapters.Streams.Close(ctx, stream.CloseRequest{StreamID: s.streamID, Status: streamStatus, Reason: reason})
+	streamRecord, streamErr := s.host.adapters.Streams.Close(ctx, stream.CloseRequest{StreamID: s.streamID, Status: streamStatus, FailureCode: failureCode, Reason: reason})
 	operationSink, _, _ := s.lease.snapshotExecution()
 	var operationRecord operation.Record
 	var operationErr error
@@ -1771,6 +2127,7 @@ func (s *hostStreamSink) closeWithStatus(ctx context.Context, streamStatus strea
 		operationRecord, operationErr = s.host.adapters.Operations.Finish(ctx, operation.FinishRequest{
 			OperationID: operationSink.operationID,
 			Status:      operationStatus,
+			FailureCode: failureCode,
 			Reason:      reason,
 		})
 	}
@@ -1791,7 +2148,30 @@ func (s *hostStreamSink) closeWithStatus(ctx context.Context, streamStatus strea
 	if operationSink != nil {
 		s.host.audit(ctx, AuditEvent{Type: "plugin.operation.finished", PluginID: operationRecord.PluginID, PluginInstanceID: operationRecord.PluginInstanceID, Details: map[string]any{"operation_id": operationRecord.OperationID, "status": operationRecord.Status}})
 	}
+	s.host.maintainTerminalExecutionRecords(ctx, time.Now().UTC())
 	return nil
+}
+
+func validateExecutionFailure(code capability.ExecutionFailureCode, cause error) error {
+	if !code.Valid() || cause == nil {
+		return capability.ErrInvalidExecutionFailure
+	}
+	return nil
+}
+
+func executionFailureCode(binding capability.ExecutionBinding, cause error) capability.ExecutionFailureCode {
+	switch {
+	case errors.Is(cause, capability.ErrQuotaExceeded):
+		return capability.ExecutionFailureQuotaExceeded
+	case errors.Is(cause, ErrMethodResponseContract), errors.Is(cause, ErrMethodRequestContract):
+		return capability.ExecutionFailureContractInvalid
+	case binding.RouteKind == capability.RouteWorker:
+		return capability.ExecutionFailureRuntimeFailed
+	case binding.RouteKind == capability.RouteCapability, binding.RouteKind == capability.RouteCoreAction:
+		return capability.ExecutionFailureAdapterFailed
+	default:
+		return capability.ExecutionFailurePlatformFailed
+	}
 }
 
 func (s *hostStreamSink) isTerminal() bool {
@@ -1846,12 +2226,12 @@ func (s hostRuntimeStreamSink) CloseRuntimeStream(ctx context.Context, streamID 
 	return sink.Close(ctx)
 }
 
-func (s hostRuntimeStreamSink) FailRuntimeStream(ctx context.Context, streamID, reason string) error {
+func (s hostRuntimeStreamSink) FailRuntimeStream(ctx context.Context, streamID string, code capability.ExecutionFailureCode, cause error) error {
 	sink, err := s.executions.streamSink(streamID)
 	if err != nil {
 		return err
 	}
-	return sink.Fail(ctx, reason)
+	return sink.Fail(ctx, code, cause)
 }
 
 func operationTerminal(status operation.Status) bool {

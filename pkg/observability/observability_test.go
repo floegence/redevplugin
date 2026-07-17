@@ -2,58 +2,40 @@ package observability
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
 
-func TestMemoryStoreAuditListFiltersAndLimit(t *testing.T) {
+func TestMemoryStoreAppendsAudit(t *testing.T) {
 	now := time.Date(2026, 6, 30, 12, 0, 0, 0, time.UTC)
 	store := NewMemoryStore(MemoryStoreOptions{Now: func() time.Time { return now }})
 	ctx := context.Background()
+	details := map[string]any{"phase": "install"}
 
 	if err := store.AppendPluginAudit(ctx, AuditEvent{
-		Type:             "plugin.installed",
-		PluginID:         "com.example.a",
-		PluginInstanceID: "plugin_a",
-		Details:          map[string]any{"phase": "install"},
+		Type:             " plugin.installed ",
+		PluginID:         " com.example.a ",
+		PluginInstanceID: " plugin_a ",
+		Details:          details,
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.AppendPluginAudit(ctx, AuditEvent{Type: "plugin.enabled", PluginID: "com.example.a", PluginInstanceID: "plugin_a", OccurredAt: now.Add(time.Second)}); err != nil {
-		t.Fatal(err)
+	details["phase"] = "mutated"
+	store.mu.RLock()
+	defer store.mu.RUnlock()
+	if len(store.auditEvents) != 1 {
+		t.Fatalf("stored audit count = %d, want 1", len(store.auditEvents))
 	}
-	if err := store.AppendPluginAudit(ctx, AuditEvent{Type: "plugin.installed", PluginID: "com.example.b", PluginInstanceID: "plugin_b", OccurredAt: now.Add(2 * time.Second)}); err != nil {
-		t.Fatal(err)
+	event := store.auditEvents[0]
+	if event.EventID == "" || event.Type != "plugin.installed" || event.PluginID != "com.example.a" || event.PluginInstanceID != "plugin_a" || event.OccurredAt != now {
+		t.Fatalf("stored audit event mismatch: %#v", event)
 	}
-
-	events, err := store.ListPluginAudit(ctx, ListAuditRequest{PluginInstanceID: "plugin_a", Limit: 1})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(events) != 1 || events[0].Type != "plugin.enabled" || events[0].EventID == "" {
-		t.Fatalf("ListPluginAudit() = %#v", events)
-	}
-
-	events, err = store.ListPluginAudit(ctx, ListAuditRequest{PluginID: "com.example.a", Type: "plugin.installed"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(events) != 1 || events[0].PluginInstanceID != "plugin_a" {
-		t.Fatalf("filtered audit events mismatch: %#v", events)
-	}
-
-	events[0].Details = map[string]any{"mutated": true}
-	again, err := store.ListPluginAudit(ctx, ListAuditRequest{PluginInstanceID: "plugin_a", Type: "plugin.installed"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if again[0].Details["phase"] != "install" {
-		t.Fatalf("ListPluginAudit lost original event details: %#v", again[0].Details)
-	}
-	if _, ok := again[0].Details["mutated"]; ok {
-		t.Fatalf("ListPluginAudit returned mutable event details: %#v", again[0].Details)
+	if event.Details["phase"] != "install" {
+		t.Fatalf("stored audit details were mutated by caller: %#v", event.Details)
 	}
 }
 
@@ -63,30 +45,44 @@ func TestMemoryStoreDiagnosticsListFiltersAndDefaults(t *testing.T) {
 	ctx := context.Background()
 
 	if err := store.AppendPluginDiagnostic(ctx, DiagnosticEvent{
-		Type:              "plugin.csp.violation",
-		PluginID:          "com.example.plugin",
-		PluginInstanceID:  "plugin_a",
-		SurfaceInstanceID: "surface_a",
-		Details:           map[string]any{"blocked_uri": "inline"},
+		Type:                 "plugin.csp.violation",
+		Severity:             DiagnosticSeverityInfo,
+		PluginID:             "com.example.plugin",
+		PluginInstanceID:     "plugin_a",
+		SurfaceInstanceID:    "surface_a",
+		OwnerSessionHash:     "session_a",
+		OwnerUserHash:        "user_a",
+		OwnerEnvHash:         "env_a",
+		SessionChannelIDHash: "channel_a",
+		Details:              map[string]any{"blocked_uri": "inline"},
+		InternalDetails:      map[string]any{"error": "internal-memory-cause"},
 	}); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.AppendPluginDiagnostic(ctx, DiagnosticEvent{
-		Type:              "plugin.runtime.warning",
-		Severity:          "warning",
-		Message:           "runtime slowed",
-		PluginID:          "com.example.plugin",
-		PluginInstanceID:  "plugin_a",
-		SurfaceInstanceID: "surface_b",
-		OccurredAt:        now.Add(time.Second),
+		Type:                 "plugin.runtime.warning",
+		Severity:             "warning",
+		Message:              "runtime slowed",
+		PluginID:             "com.example.plugin",
+		PluginInstanceID:     "plugin_a",
+		SurfaceInstanceID:    "surface_b",
+		OwnerSessionHash:     "session_b",
+		OwnerUserHash:        "user_b",
+		OwnerEnvHash:         "env_b",
+		SessionChannelIDHash: "channel_b",
+		OccurredAt:           now.Add(time.Second),
 	}); err != nil {
 		t.Fatal(err)
 	}
 
 	events, err := store.ListPluginDiagnostics(ctx, ListDiagnosticRequest{
-		PluginInstanceID:  "plugin_a",
-		SurfaceInstanceID: "surface_a",
-		Severity:          "info",
+		PluginInstanceID:     "plugin_a",
+		SurfaceInstanceID:    "surface_a",
+		OwnerSessionHash:     "session_a",
+		OwnerUserHash:        "user_a",
+		OwnerEnvHash:         "env_a",
+		SessionChannelIDHash: "channel_a",
+		Severity:             "info",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -94,8 +90,32 @@ func TestMemoryStoreDiagnosticsListFiltersAndDefaults(t *testing.T) {
 	if len(events) != 1 || events[0].Message != "plugin.csp.violation" || events[0].Details["blocked_uri"] != "inline" {
 		t.Fatalf("ListPluginDiagnostics() = %#v", events)
 	}
+	if events[0].OwnerSessionHash != "session_a" || events[0].OwnerUserHash != "user_a" || events[0].OwnerEnvHash != "env_a" || events[0].SessionChannelIDHash != "channel_a" {
+		t.Fatalf("diagnostic owner scope mismatch: %#v", events[0])
+	}
+	if events[0].InternalDetails != nil {
+		t.Fatalf("memory diagnostic list exposed internal details: %#v", events[0])
+	}
+	store.mu.RLock()
+	storedInternalCause := store.diagnosticEvents[0].InternalDetails["error"]
+	store.mu.RUnlock()
+	if storedInternalCause != "internal-memory-cause" {
+		t.Fatalf("memory diagnostic sink lost internal cause: %#v", storedInternalCause)
+	}
+	otherOwner, err := store.ListPluginDiagnostics(ctx, ListDiagnosticRequest{
+		OwnerSessionHash: "session_b", OwnerUserHash: "user_b", OwnerEnvHash: "env_b", SessionChannelIDHash: "channel_b", Severity: "info",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(otherOwner) != 0 {
+		t.Fatalf("owner-scoped diagnostics leaked events: %#v", otherOwner)
+	}
 
-	events, err = store.ListPluginDiagnostics(ctx, ListDiagnosticRequest{PluginID: "com.example.plugin", Severity: "warning"})
+	events, err = store.ListPluginDiagnostics(ctx, ListDiagnosticRequest{
+		PluginID: "com.example.plugin", Severity: "warning",
+		OwnerSessionHash: "session_b", OwnerUserHash: "user_b", OwnerEnvHash: "env_b", SessionChannelIDHash: "channel_b",
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -112,6 +132,14 @@ func TestMemoryStoreRejectsInvalidEvent(t *testing.T) {
 	if err := store.AppendPluginDiagnostic(context.Background(), DiagnosticEvent{}); !errors.Is(err, ErrInvalidEvent) {
 		t.Fatalf("AppendPluginDiagnostic() error = %v, want ErrInvalidEvent", err)
 	}
+	if err := store.AppendPluginDiagnostic(context.Background(), DiagnosticEvent{Type: "plugin.invalid.severity", Severity: "critical"}); !errors.Is(err, ErrInvalidDiagnosticSeverity) {
+		t.Fatalf("AppendPluginDiagnostic(invalid severity) error = %v, want ErrInvalidDiagnosticSeverity", err)
+	}
+	request := scopedDiagnosticRequest(10)
+	request.Severity = "critical"
+	if _, err := store.ListPluginDiagnostics(context.Background(), request); !errors.Is(err, ErrInvalidDiagnosticSeverity) {
+		t.Fatalf("ListPluginDiagnostics(invalid severity) error = %v, want ErrInvalidDiagnosticSeverity", err)
+	}
 }
 
 func TestMemoryStoreTrimsOldestEvents(t *testing.T) {
@@ -122,20 +150,19 @@ func TestMemoryStoreTrimsOldestEvents(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	audits, err := store.ListPluginAudit(ctx, ListAuditRequest{Limit: 10})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(audits) != 2 || audits[0].Type != "c" || audits[1].Type != "b" {
+	store.mu.RLock()
+	audits := append([]AuditEvent(nil), store.auditEvents...)
+	store.mu.RUnlock()
+	if len(audits) != 2 || audits[0].Type != "b" || audits[1].Type != "c" {
 		t.Fatalf("trimmed audits mismatch: %#v", audits)
 	}
 
 	for _, eventType := range []string{"d1", "d2"} {
-		if err := store.AppendPluginDiagnostic(ctx, DiagnosticEvent{Type: eventType}); err != nil {
+		if err := store.AppendPluginDiagnostic(ctx, scopedDiagnosticEvent(eventType)); err != nil {
 			t.Fatal(err)
 		}
 	}
-	diagnostics, err := store.ListPluginDiagnostics(ctx, ListDiagnosticRequest{Limit: 10})
+	diagnostics, err := store.ListPluginDiagnostics(ctx, scopedDiagnosticRequest(10))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -164,12 +191,18 @@ func TestSQLiteStorePersistsAuditAndDiagnosticsAcrossOpen(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := store.AppendPluginDiagnostic(ctx, DiagnosticEvent{
-		Type:              "plugin.csp.violation",
-		PluginID:          "com.example.plugin",
-		PluginInstanceID:  "plugin_1",
-		SurfaceInstanceID: "surface_1",
-		ActiveFingerprint: "sha256:demo",
-		Details:           map[string]any{"blocked_uri": "inline"},
+		Type:                 "plugin.csp.violation",
+		Severity:             DiagnosticSeverityInfo,
+		PluginID:             "com.example.plugin",
+		PluginInstanceID:     "plugin_1",
+		SurfaceInstanceID:    "surface_1",
+		ActiveFingerprint:    "sha256:demo",
+		OwnerSessionHash:     "session_1",
+		OwnerUserHash:        "user_1",
+		OwnerEnvHash:         "env_1",
+		SessionChannelIDHash: "channel_1",
+		Details:              map[string]any{"blocked_uri": "inline"},
+		InternalDetails:      map[string]any{"error": "private sqlite path /Users/secret/plugin.sqlite"},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -187,39 +220,57 @@ func TestSQLiteStorePersistsAuditAndDiagnosticsAcrossOpen(t *testing.T) {
 		}
 	}()
 
-	audits, err := reopened.ListPluginAudit(ctx, ListAuditRequest{PluginInstanceID: "plugin_1", Type: "plugin.installed"})
+	var auditEventID string
+	var auditPluginID string
+	var auditOccurredAt int64
+	var auditDetailsRaw []byte
+	if err := reopened.db.QueryRowContext(ctx, `
+SELECT event_id, plugin_id, occurred_at, details_json
+FROM plugin_audit_events
+WHERE plugin_instance_id = ? AND type = ?`, "plugin_1", "plugin.installed").Scan(&auditEventID, &auditPluginID, &auditOccurredAt, &auditDetailsRaw); err != nil {
+		t.Fatal(err)
+	}
+	auditDetails, err := unmarshalDetails(auditDetailsRaw)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(audits) != 1 || audits[0].EventID != "audit_000000000001" || audits[0].PluginID != "com.example.plugin" || audits[0].OccurredAt != now || audits[0].Details["phase"] != "install" {
-		t.Fatalf("persisted audit events mismatch: %#v", audits)
-	}
-	audits[0].Details["phase"] = "mutated"
-	again, err := reopened.ListPluginAudit(ctx, ListAuditRequest{PluginInstanceID: "plugin_1", Type: "plugin.installed"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if again[0].Details["phase"] != "install" {
-		t.Fatalf("persisted audit details were mutable: %#v", again[0].Details)
+	if auditEventID != "audit_000000000001" || auditPluginID != "com.example.plugin" || auditOccurredAt != now.UnixNano() || auditDetails["phase"] != "install" {
+		t.Fatalf("persisted audit event mismatch: id=%q plugin=%q occurred_at=%d details=%#v", auditEventID, auditPluginID, auditOccurredAt, auditDetails)
 	}
 
-	diagnostics, err := reopened.ListPluginDiagnostics(ctx, ListDiagnosticRequest{PluginInstanceID: "plugin_1", SurfaceInstanceID: "surface_1", Severity: "info"})
+	diagnostics, err := reopened.ListPluginDiagnostics(ctx, ListDiagnosticRequest{
+		PluginInstanceID: "plugin_1", SurfaceInstanceID: "surface_1", Severity: "info",
+		OwnerSessionHash: "session_1", OwnerUserHash: "user_1", OwnerEnvHash: "env_1", SessionChannelIDHash: "channel_1",
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(diagnostics) != 1 || diagnostics[0].EventID != "diagnostic_000000000001" || diagnostics[0].Message != "plugin.csp.violation" || diagnostics[0].Details["blocked_uri"] != "inline" {
 		t.Fatalf("persisted diagnostic events mismatch: %#v", diagnostics)
 	}
+	if diagnostics[0].OwnerSessionHash != "session_1" || diagnostics[0].SessionChannelIDHash != "channel_1" {
+		t.Fatalf("persisted diagnostic owner scope mismatch: %#v", diagnostics[0])
+	}
+	if diagnostics[0].InternalDetails != nil {
+		t.Fatalf("sqlite diagnostic list exposed internal details: %#v", diagnostics[0])
+	}
+	encodedDiagnostic, err := json.Marshal(diagnostics[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encodedDiagnostic), "private sqlite path") || strings.Contains(string(encodedDiagnostic), "internal_details") {
+		t.Fatalf("internal diagnostic details were serialized: %s", encodedDiagnostic)
+	}
 
 	if err := reopened.AppendPluginAudit(ctx, AuditEvent{Type: "plugin.enabled"}); err != nil {
 		t.Fatal(err)
 	}
-	audits, err = reopened.ListPluginAudit(ctx, ListAuditRequest{Type: "plugin.enabled"})
-	if err != nil {
+	var nextAuditEventID string
+	if err := reopened.db.QueryRowContext(ctx, `SELECT event_id FROM plugin_audit_events WHERE type = ?`, "plugin.enabled").Scan(&nextAuditEventID); err != nil {
 		t.Fatal(err)
 	}
-	if len(audits) != 1 || audits[0].EventID != "audit_000000000002" {
-		t.Fatalf("persisted audit sequence mismatch: %#v", audits)
+	if nextAuditEventID != "audit_000000000002" {
+		t.Fatalf("persisted audit sequence = %q, want audit_000000000002", nextAuditEventID)
 	}
 }
 
@@ -244,25 +295,92 @@ func TestSQLiteStoreTrimsOldestEvents(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	audits, err := store.ListPluginAudit(ctx, ListAuditRequest{Limit: 10})
+	rows, err := store.db.QueryContext(ctx, `SELECT type FROM plugin_audit_events ORDER BY seq DESC`)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(audits) != 2 || audits[0].Type != "c" || audits[1].Type != "b" {
-		t.Fatalf("trimmed sqlite audits mismatch: %#v", audits)
+	var auditTypes []string
+	for rows.Next() {
+		var eventType string
+		if err := rows.Scan(&eventType); err != nil {
+			rows.Close()
+			t.Fatal(err)
+		}
+		auditTypes = append(auditTypes, eventType)
+	}
+	if err := rows.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if len(auditTypes) != 2 || auditTypes[0] != "c" || auditTypes[1] != "b" {
+		t.Fatalf("trimmed sqlite audit types mismatch: %#v", auditTypes)
 	}
 
 	for index, eventType := range []string{"d1", "d2"} {
-		if err := store.AppendPluginDiagnostic(ctx, DiagnosticEvent{Type: eventType, OccurredAt: base.Add(time.Duration(index) * time.Second)}); err != nil {
+		event := scopedDiagnosticEvent(eventType)
+		event.OccurredAt = base.Add(time.Duration(index) * time.Second)
+		if err := store.AppendPluginDiagnostic(ctx, event); err != nil {
 			t.Fatal(err)
 		}
 	}
-	diagnostics, err := store.ListPluginDiagnostics(ctx, ListDiagnosticRequest{Limit: 10})
+	diagnostics, err := store.ListPluginDiagnostics(ctx, scopedDiagnosticRequest(10))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(diagnostics) != 1 || diagnostics[0].Type != "d2" {
 		t.Fatalf("trimmed sqlite diagnostics mismatch: %#v", diagnostics)
+	}
+}
+
+func TestDiagnosticStoresRejectIncompleteOwnerScope(t *testing.T) {
+	tests := []struct {
+		name string
+		open func(*testing.T) DiagnosticLister
+	}{
+		{name: "memory", open: func(*testing.T) DiagnosticLister { return NewMemoryStore() }},
+		{name: "sqlite", open: func(t *testing.T) DiagnosticLister {
+			store, err := NewSQLiteStore(context.Background(), filepath.Join(t.TempDir(), "observability.sqlite"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() {
+				if err := store.Close(); err != nil {
+					t.Error(err)
+				}
+			})
+			return store
+		}},
+	}
+	requests := []ListDiagnosticRequest{
+		{},
+		{OwnerSessionHash: "session_1"},
+		{OwnerSessionHash: "session_1", OwnerUserHash: "user_1", OwnerEnvHash: "env_1"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			store := test.open(t)
+			for _, req := range requests {
+				if _, err := store.ListPluginDiagnostics(context.Background(), req); !errors.Is(err, ErrDiagnosticScopeRequired) {
+					t.Fatalf("ListPluginDiagnostics(%#v) error = %v, want %v", req, err, ErrDiagnosticScopeRequired)
+				}
+			}
+		})
+	}
+}
+
+func scopedDiagnosticEvent(eventType string) DiagnosticEvent {
+	return DiagnosticEvent{
+		Type: eventType, Severity: DiagnosticSeverityInfo, OwnerSessionHash: "session_1", OwnerUserHash: "user_1",
+		OwnerEnvHash: "env_1", SessionChannelIDHash: "channel_1",
+	}
+}
+
+func scopedDiagnosticRequest(limit int) ListDiagnosticRequest {
+	return ListDiagnosticRequest{
+		OwnerSessionHash: "session_1", OwnerUserHash: "user_1", OwnerEnvHash: "env_1",
+		SessionChannelIDHash: "channel_1", Limit: limit,
 	}
 }
 
@@ -283,25 +401,12 @@ func TestSQLiteStoreRejectsInvalidEvent(t *testing.T) {
 	if err := store.AppendPluginDiagnostic(ctx, DiagnosticEvent{}); !errors.Is(err, ErrInvalidEvent) {
 		t.Fatalf("AppendPluginDiagnostic() error = %v, want ErrInvalidEvent", err)
 	}
-}
-
-func TestSQLiteStoreRejectsNewerSchema(t *testing.T) {
-	ctx := context.Background()
-	path := filepath.Join(t.TempDir(), "observability.sqlite")
-	store, err := NewSQLiteStore(ctx, path)
-	if err != nil {
-		t.Fatal(err)
+	if err := store.AppendPluginDiagnostic(ctx, DiagnosticEvent{Type: "plugin.invalid.severity", Severity: "critical"}); !errors.Is(err, ErrInvalidDiagnosticSeverity) {
+		t.Fatalf("AppendPluginDiagnostic(invalid severity) error = %v, want ErrInvalidDiagnosticSeverity", err)
 	}
-	if _, err := store.db.ExecContext(ctx, `INSERT OR IGNORE INTO plugin_observability_schema_migrations(version, applied_at) VALUES(?, ?)`, sqliteSchemaVersion+1, time.Now().UTC().UnixNano()); err != nil {
-		t.Fatal(err)
-	}
-	if err := store.Close(); err != nil {
-		t.Fatal(err)
-	}
-
-	reopened, err := NewSQLiteStore(ctx, path)
-	if err == nil {
-		_ = reopened.Close()
-		t.Fatal("NewSQLiteStore() accepted newer schema version")
+	request := scopedDiagnosticRequest(10)
+	request.Severity = "critical"
+	if _, err := store.ListPluginDiagnostics(ctx, request); !errors.Is(err, ErrInvalidDiagnosticSeverity) {
+		t.Fatalf("ListPluginDiagnostics(invalid severity) error = %v, want ErrInvalidDiagnosticSeverity", err)
 	}
 }

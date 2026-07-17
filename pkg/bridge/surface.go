@@ -72,6 +72,7 @@ type OpenSurfaceRequest struct {
 	RuntimeGenerationID  string          `json:"runtime_generation_id,omitempty"`
 	OwnerSessionHash     string          `json:"owner_session_hash,omitempty"`
 	OwnerUserHash        string          `json:"owner_user_hash,omitempty"`
+	OwnerEnvHash         string          `json:"owner_env_hash,omitempty"`
 	SessionChannelIDHash string          `json:"session_channel_id_hash,omitempty"`
 	Revision             RevisionBinding `json:"revision"`
 	Now                  time.Time       `json:"now,omitempty"`
@@ -87,12 +88,13 @@ type SurfaceBootstrap struct {
 	EntryPath            string    `json:"entry_path"`
 	EntrySHA256          string    `json:"entry_sha256"`
 	AssetSessionNonce    string    `json:"asset_session_nonce"`
-	PluginStateVersion   uint64    `json:"plugin_state_version"`
+	ManagementRevision   uint64    `json:"management_revision"`
 	RevokeEpoch          uint64    `json:"revoke_epoch"`
 	RuntimeGenerationID  string    `json:"runtime_generation_id,omitempty"`
-	OwnerSessionHash     string    `json:"owner_session_hash,omitempty"`
-	OwnerUserHash        string    `json:"owner_user_hash,omitempty"`
-	SessionChannelIDHash string    `json:"session_channel_id_hash,omitempty"`
+	OwnerSessionHash     string    `json:"-"`
+	OwnerUserHash        string    `json:"-"`
+	OwnerEnvHash         string    `json:"-"`
+	SessionChannelIDHash string    `json:"-"`
 	AssetTicket          string    `json:"asset_ticket"`
 	AssetTicketID        string    `json:"asset_ticket_id"`
 	BridgeNonce          string    `json:"bridge_nonce"`
@@ -105,6 +107,7 @@ type ExchangeAssetTicketRequest struct {
 	AssetTicket          string    `json:"asset_ticket"`
 	OwnerSessionHash     string    `json:"owner_session_hash,omitempty"`
 	OwnerUserHash        string    `json:"owner_user_hash,omitempty"`
+	OwnerEnvHash         string    `json:"owner_env_hash,omitempty"`
 	SessionChannelIDHash string    `json:"session_channel_id_hash,omitempty"`
 	Now                  time.Time `json:"now,omitempty"`
 }
@@ -115,7 +118,7 @@ type AssetSessionResult struct {
 	AssetSessionNonce  string    `json:"asset_session_nonce"`
 	EntryPath          string    `json:"entry_path"`
 	EntrySHA256        string    `json:"entry_sha256"`
-	PluginStateVersion uint64    `json:"plugin_state_version"`
+	ManagementRevision uint64    `json:"management_revision"`
 	RevokeEpoch        uint64    `json:"revoke_epoch"`
 	IssuedAt           time.Time `json:"issued_at"`
 	ExpiresAt          time.Time `json:"expires_at"`
@@ -126,6 +129,7 @@ type ValidateAssetSessionRequest struct {
 	AssetSessionID       string    `json:"asset_session_id,omitempty"`
 	OwnerSessionHash     string    `json:"owner_session_hash,omitempty"`
 	OwnerUserHash        string    `json:"owner_user_hash,omitempty"`
+	OwnerEnvHash         string    `json:"owner_env_hash,omitempty"`
 	SessionChannelIDHash string    `json:"session_channel_id_hash,omitempty"`
 	Now                  time.Time `json:"now,omitempty"`
 }
@@ -136,6 +140,7 @@ type MarkSurfacePreparedRequest struct {
 	BridgeNonce          string    `json:"bridge_nonce"`
 	OwnerSessionHash     string    `json:"owner_session_hash"`
 	OwnerUserHash        string    `json:"owner_user_hash,omitempty"`
+	OwnerEnvHash         string    `json:"owner_env_hash"`
 	SessionChannelIDHash string    `json:"session_channel_id_hash"`
 	Now                  time.Time `json:"now,omitempty"`
 }
@@ -145,6 +150,7 @@ type DisposeSurfaceRequest struct {
 	BridgeNonce          string    `json:"bridge_nonce"`
 	OwnerSessionHash     string    `json:"owner_session_hash"`
 	OwnerUserHash        string    `json:"owner_user_hash,omitempty"`
+	OwnerEnvHash         string    `json:"owner_env_hash"`
 	SessionChannelIDHash string    `json:"session_channel_id_hash"`
 	Now                  time.Time `json:"now,omitempty"`
 }
@@ -152,6 +158,7 @@ type DisposeSurfaceRequest struct {
 type RevokeSurfaceScopeRequest struct {
 	OwnerSessionHash     string    `json:"owner_session_hash"`
 	OwnerUserHash        string    `json:"owner_user_hash,omitempty"`
+	OwnerEnvHash         string    `json:"owner_env_hash"`
 	SessionChannelIDHash string    `json:"session_channel_id_hash,omitempty"`
 	Now                  time.Time `json:"now,omitempty"`
 }
@@ -196,6 +203,7 @@ type MintConfirmationTokenRequest struct {
 	ConfirmationID         string          `json:"confirmation_id"`
 	OwnerSessionHash       string          `json:"owner_session_hash,omitempty"`
 	OwnerUserHash          string          `json:"owner_user_hash,omitempty"`
+	OwnerEnvHash           string          `json:"owner_env_hash,omitempty"`
 	SessionChannelIDHash   string          `json:"session_channel_id_hash,omitempty"`
 	BridgeChannelID        string          `json:"bridge_channel_id"`
 	RuntimeGenerationID    string          `json:"runtime_generation_id,omitempty"`
@@ -237,6 +245,7 @@ type ValidateSurfaceGatewayTokenRequest struct {
 	SurfaceInstanceID    string          `json:"surface_instance_id"`
 	OwnerSessionHash     string          `json:"owner_session_hash,omitempty"`
 	OwnerUserHash        string          `json:"owner_user_hash,omitempty"`
+	OwnerEnvHash         string          `json:"owner_env_hash,omitempty"`
 	SessionChannelIDHash string          `json:"session_channel_id_hash,omitempty"`
 	BridgeChannelID      string          `json:"bridge_channel_id"`
 	Revision             RevisionBinding `json:"revision"`
@@ -251,6 +260,7 @@ type MintRuntimeExecutionLeaseRequest struct {
 	SurfaceInstanceID      string                      `json:"surface_instance_id,omitempty"`
 	OwnerSessionHash       string                      `json:"owner_session_hash,omitempty"`
 	OwnerUserHash          string                      `json:"owner_user_hash,omitempty"`
+	OwnerEnvHash           string                      `json:"owner_env_hash,omitempty"`
 	SessionChannelIDHash   string                      `json:"session_channel_id_hash,omitempty"`
 	BridgeChannelID        string                      `json:"bridge_channel_id,omitempty"`
 	RuntimeInstanceID      string                      `json:"runtime_instance_id,omitempty"`
@@ -279,9 +289,7 @@ type RuntimeExecutionLeaseLimits struct {
 }
 
 type RuntimeExecutionLeaseResult struct {
-	TokenKind              TokenKind                   `json:"token_kind"`
 	TokenID                string                      `json:"token_id"`
-	LeaseToken             string                      `json:"lease_token"`
 	LeaseID                string                      `json:"lease_id"`
 	LeaseNonce             string                      `json:"lease_nonce"`
 	PluginInstanceID       string                      `json:"plugin_instance_id"`
@@ -291,6 +299,7 @@ type RuntimeExecutionLeaseResult struct {
 	SurfaceInstanceID      string                      `json:"surface_instance_id,omitempty"`
 	OwnerSessionHash       string                      `json:"owner_session_hash,omitempty"`
 	OwnerUserHash          string                      `json:"owner_user_hash,omitempty"`
+	OwnerEnvHash           string                      `json:"owner_env_hash,omitempty"`
 	SessionChannelIDHash   string                      `json:"session_channel_id_hash,omitempty"`
 	BridgeChannelID        string                      `json:"bridge_channel_id,omitempty"`
 	RuntimeInstanceID      string                      `json:"runtime_instance_id,omitempty"`
@@ -359,6 +368,7 @@ type MintStreamTicketRequest struct {
 	RouteRole            string          `json:"route_role,omitempty"`
 	OwnerSessionHash     string          `json:"owner_session_hash,omitempty"`
 	OwnerUserHash        string          `json:"owner_user_hash,omitempty"`
+	OwnerEnvHash         string          `json:"owner_env_hash,omitempty"`
 	SessionChannelIDHash string          `json:"session_channel_id_hash,omitempty"`
 	BridgeChannelID      string          `json:"bridge_channel_id"`
 	RuntimeGenerationID  string          `json:"runtime_generation_id,omitempty"`
@@ -399,6 +409,7 @@ type ValidateBoundStreamTicketRequest struct {
 	EntryPath            string          `json:"entry_path,omitempty"`
 	OwnerSessionHash     string          `json:"owner_session_hash,omitempty"`
 	OwnerUserHash        string          `json:"owner_user_hash,omitempty"`
+	OwnerEnvHash         string          `json:"owner_env_hash,omitempty"`
 	SessionChannelIDHash string          `json:"session_channel_id_hash,omitempty"`
 	BridgeChannelID      string          `json:"bridge_channel_id,omitempty"`
 	StreamID             string          `json:"stream_id"`
@@ -407,11 +418,6 @@ type ValidateBoundStreamTicketRequest struct {
 	Method               string          `json:"method"`
 	Revision             RevisionBinding `json:"revision"`
 	Now                  time.Time       `json:"now,omitempty"`
-}
-
-type RotateBoundStreamTicketResult struct {
-	Current TokenRecord
-	Next    *StreamTicketResult
 }
 
 type surfaceState struct {
@@ -476,6 +482,8 @@ func (s *SurfaceTokenService) OpenSurface(req OpenSurfaceRequest) (SurfaceBootst
 		strings.TrimSpace(req.RouteRole) == "" ||
 		strings.TrimSpace(req.RuntimeGenerationID) == "" ||
 		strings.TrimSpace(req.OwnerSessionHash) == "" ||
+		strings.TrimSpace(req.OwnerUserHash) == "" ||
+		strings.TrimSpace(req.OwnerEnvHash) == "" ||
 		strings.TrimSpace(req.SessionChannelIDHash) == "" {
 		return SurfaceBootstrap{}, ErrMissingTokenAudience
 	}
@@ -505,6 +513,7 @@ func (s *SurfaceTokenService) OpenSurface(req OpenSurfaceRequest) (SurfaceBootst
 		RuntimeGenerationID:  req.RuntimeGenerationID,
 		OwnerSessionHash:     req.OwnerSessionHash,
 		OwnerUserHash:        req.OwnerUserHash,
+		OwnerEnvHash:         req.OwnerEnvHash,
 		SessionChannelIDHash: req.SessionChannelIDHash,
 		BridgeNonce:          bridgeNonce,
 		PolicyRevision:       req.Revision.PolicyRevision,
@@ -526,6 +535,7 @@ func (s *SurfaceTokenService) OpenSurface(req OpenSurfaceRequest) (SurfaceBootst
 		RouteRole:            req.RouteRole,
 		OwnerSessionHash:     req.OwnerSessionHash,
 		OwnerUserHash:        req.OwnerUserHash,
+		OwnerEnvHash:         req.OwnerEnvHash,
 		SessionChannelIDHash: req.SessionChannelIDHash,
 		RuntimeGenerationID:  req.RuntimeGenerationID,
 	}
@@ -554,11 +564,12 @@ func (s *SurfaceTokenService) OpenSurface(req OpenSurfaceRequest) (SurfaceBootst
 		EntryPath:            req.EntryPath,
 		EntrySHA256:          req.EntrySHA256,
 		AssetSessionNonce:    assetSessionNonce,
-		PluginStateVersion:   req.Revision.ManagementRevision,
+		ManagementRevision:   req.Revision.ManagementRevision,
 		RevokeEpoch:          req.Revision.RevokeEpoch,
 		RuntimeGenerationID:  req.RuntimeGenerationID,
 		OwnerSessionHash:     req.OwnerSessionHash,
 		OwnerUserHash:        req.OwnerUserHash,
+		OwnerEnvHash:         req.OwnerEnvHash,
 		SessionChannelIDHash: req.SessionChannelIDHash,
 		AssetTicket:          minted.Token,
 		AssetTicketID:        minted.TokenID,
@@ -615,6 +626,7 @@ func surfaceSessionCanReplaceStaleBinding(current SurfaceSession, next SurfaceSe
 		current.SurfaceID != next.SurfaceID ||
 		current.OwnerSessionHash != next.OwnerSessionHash ||
 		current.OwnerUserHash != next.OwnerUserHash ||
+		current.OwnerEnvHash != next.OwnerEnvHash ||
 		current.SessionChannelIDHash != next.SessionChannelIDHash {
 		return false
 	}
@@ -646,7 +658,7 @@ func (s *SurfaceTokenService) ExchangeAssetTicket(req ExchangeAssetTicketRequest
 	if err != nil {
 		return AssetSessionResult{}, err
 	}
-	if !state.session.matchesScope(req.OwnerSessionHash, req.OwnerUserHash, req.SessionChannelIDHash) {
+	if !state.session.matchesScope(req.OwnerSessionHash, req.OwnerUserHash, req.OwnerEnvHash, req.SessionChannelIDHash) {
 		return AssetSessionResult{}, ErrTokenAudience
 	}
 	audience := state.session.audience("")
@@ -690,7 +702,7 @@ func (s *SurfaceTokenService) ExchangeAssetTicket(req ExchangeAssetTicketRequest
 		AssetSessionNonce:  state.session.AssetSessionNonce,
 		EntryPath:          state.session.EntryPath,
 		EntrySHA256:        state.session.EntrySHA256,
-		PluginStateVersion: state.session.ManagementRevision,
+		ManagementRevision: state.session.ManagementRevision,
 		RevokeEpoch:        state.session.RevokeEpoch,
 		IssuedAt:           assetSession.IssuedAt,
 		ExpiresAt:          assetSession.ExpiresAt,
@@ -732,7 +744,7 @@ func (s *SurfaceTokenService) ValidateAssetSession(req ValidateAssetSessionReque
 	if state.session.audience("") != record.Audience {
 		return AssetSessionValidation{}, ErrTokenAudience
 	}
-	if !state.session.matchesScope(req.OwnerSessionHash, req.OwnerUserHash, req.SessionChannelIDHash) {
+	if !state.session.matchesScope(req.OwnerSessionHash, req.OwnerUserHash, req.OwnerEnvHash, req.SessionChannelIDHash) {
 		return AssetSessionValidation{}, ErrTokenAudience
 	}
 	if state.session.revision() != record.Revision {
@@ -747,6 +759,7 @@ func (s *SurfaceTokenService) MarkSurfacePrepared(req MarkSurfacePreparedRequest
 	}
 	if strings.TrimSpace(req.SurfaceInstanceID) == "" || strings.TrimSpace(req.AssetSessionID) == "" ||
 		strings.TrimSpace(req.BridgeNonce) == "" || strings.TrimSpace(req.OwnerSessionHash) == "" ||
+		strings.TrimSpace(req.OwnerUserHash) == "" || strings.TrimSpace(req.OwnerEnvHash) == "" ||
 		strings.TrimSpace(req.SessionChannelIDHash) == "" {
 		return ErrMissingTokenAudience
 	}
@@ -771,7 +784,7 @@ func (s *SurfaceTokenService) MarkSurfacePrepared(req MarkSurfacePreparedRequest
 		return ErrAssetSessionRequired
 	}
 	if state.session.BridgeNonce != req.BridgeNonce ||
-		!state.session.matchesScope(req.OwnerSessionHash, req.OwnerUserHash, req.SessionChannelIDHash) {
+		!state.session.matchesScope(req.OwnerSessionHash, req.OwnerUserHash, req.OwnerEnvHash, req.SessionChannelIDHash) {
 		s.mu.Unlock()
 		return ErrTokenAudience
 	}
@@ -901,14 +914,14 @@ func (s *SurfaceTokenService) validateBridgeHandshake(req MintGatewayTokenReques
 func HandshakeTranscriptSHA256(handshake Handshake, bridgeChannelID string) string {
 	hash := sha256.New()
 	for _, field := range []string{
-		"redevplugin.bridge.handshake.v2",
+		"redevplugin.bridge.handshake.v3",
 		handshake.PluginID,
 		handshake.SurfaceID,
 		handshake.SurfaceInstanceID,
 		handshake.ActiveFingerprint,
 		handshake.BridgeNonce,
 		handshake.AssetSessionNonce,
-		strconv.FormatUint(handshake.PluginStateVersion, 10),
+		strconv.FormatUint(handshake.ManagementRevision, 10),
 		strconv.FormatUint(handshake.RevokeEpoch, 10),
 		handshake.UIProtocolVersion,
 		bridgeChannelID,
@@ -963,6 +976,7 @@ func (s *SurfaceTokenService) ValidateSurfaceGatewayToken(req ValidateSurfaceGat
 		record.Audience.SurfaceInstanceID != req.SurfaceInstanceID ||
 		record.Audience.OwnerSessionHash != req.OwnerSessionHash ||
 		record.Audience.OwnerUserHash != req.OwnerUserHash ||
+		record.Audience.OwnerEnvHash != req.OwnerEnvHash ||
 		record.Audience.SessionChannelIDHash != req.SessionChannelIDHash ||
 		record.Audience.BridgeChannelID != req.BridgeChannelID {
 		return TokenRecord{}, ErrTokenAudience
@@ -983,6 +997,7 @@ func (s *SurfaceTokenService) ValidateSurfaceGatewayToken(req ValidateSurfaceGat
 	if state.session.PluginInstanceID != req.PluginInstanceID ||
 		state.session.OwnerSessionHash != req.OwnerSessionHash ||
 		state.session.OwnerUserHash != req.OwnerUserHash ||
+		state.session.OwnerEnvHash != req.OwnerEnvHash ||
 		state.session.SessionChannelIDHash != req.SessionChannelIDHash {
 		return TokenRecord{}, ErrTokenAudience
 	}
@@ -1027,6 +1042,7 @@ func (s *SurfaceTokenService) MintConfirmationToken(req MintConfirmationTokenReq
 		ConfirmationID:         req.ConfirmationID,
 		OwnerSessionHash:       req.OwnerSessionHash,
 		OwnerUserHash:          req.OwnerUserHash,
+		OwnerEnvHash:           req.OwnerEnvHash,
 		SessionChannelIDHash:   req.SessionChannelIDHash,
 		BridgeChannelID:        req.BridgeChannelID,
 		RuntimeGenerationID:    req.RuntimeGenerationID,
@@ -1088,13 +1104,24 @@ func (s *SurfaceTokenService) MintRuntimeExecutionLease(req MintRuntimeExecution
 		return RuntimeExecutionLeaseResult{}, errors.New("surface token service is nil")
 	}
 	if strings.TrimSpace(req.PluginInstanceID) == "" ||
+		strings.TrimSpace(req.PluginID) == "" ||
+		strings.TrimSpace(req.PluginVersion) == "" ||
 		strings.TrimSpace(req.ActiveFingerprint) == "" ||
+		strings.TrimSpace(req.OwnerSessionHash) == "" ||
+		strings.TrimSpace(req.OwnerUserHash) == "" ||
+		strings.TrimSpace(req.OwnerEnvHash) == "" ||
+		strings.TrimSpace(req.SessionChannelIDHash) == "" ||
 		strings.TrimSpace(req.RuntimeInstanceID) == "" ||
 		strings.TrimSpace(req.RuntimeGenerationID) == "" ||
+		strings.TrimSpace(req.RuntimeShardID) == "" ||
 		strings.TrimSpace(req.IPCChannelID) == "" ||
 		strings.TrimSpace(req.ConnectionNonce) == "" ||
 		strings.TrimSpace(req.AuditCorrelationID) == "" ||
-		strings.TrimSpace(req.Method) == "" {
+		strings.TrimSpace(req.Method) == "" ||
+		strings.TrimSpace(req.Effect) == "" ||
+		len(normalizeStringSlice(req.TargetDescriptorHashes)) == 0 ||
+		req.Limits.MemoryBytes <= 0 ||
+		req.Revision.PolicyRevision == 0 || req.Revision.ManagementRevision == 0 {
 		return RuntimeExecutionLeaseResult{}, ErrMissingTokenAudience
 	}
 	switch strings.TrimSpace(req.Execution) {
@@ -1128,41 +1155,18 @@ func (s *SurfaceTokenService) MintRuntimeExecutionLease(req MintRuntimeExecution
 	if err != nil {
 		return RuntimeExecutionLeaseResult{}, err
 	}
-	minted, err := s.tokens.Mint(MintRequest{
-		Kind: TokenKindRuntimeExecutionLease,
-		Audience: Audience{
-			PluginID:             req.PluginID,
-			PluginInstanceID:     req.PluginInstanceID,
-			PluginVersion:        req.PluginVersion,
-			ActiveFingerprint:    req.ActiveFingerprint,
-			SurfaceInstanceID:    req.SurfaceInstanceID,
-			OwnerSessionHash:     req.OwnerSessionHash,
-			OwnerUserHash:        req.OwnerUserHash,
-			SessionChannelIDHash: req.SessionChannelIDHash,
-			BridgeChannelID:      req.BridgeChannelID,
-			RuntimeInstanceID:    req.RuntimeInstanceID,
-			RuntimeGenerationID:  req.RuntimeGenerationID,
-			RuntimeShardID:       req.RuntimeShardID,
-			IPCChannelID:         req.IPCChannelID,
-			ConnectionNonce:      req.ConnectionNonce,
-			OperationID:          req.OperationID,
-			StreamID:             req.StreamID,
-			AuditCorrelationID:   req.AuditCorrelationID,
-			Method:               req.Method,
-		},
-		Revision:  req.Revision,
-		ExpiresAt: expiresAt,
-		Now:       now,
-	})
+	tokenID, err := runtimeExecutionTokenID()
+	if err != nil {
+		return RuntimeExecutionLeaseResult{}, err
+	}
+	leaseNonce, err := randomString(24)
 	if err != nil {
 		return RuntimeExecutionLeaseResult{}, err
 	}
 	return RuntimeExecutionLeaseResult{
-		TokenKind:              minted.Kind,
-		TokenID:                minted.TokenID,
-		LeaseToken:             minted.Token,
+		TokenID:                tokenID,
 		LeaseID:                leaseID,
-		LeaseNonce:             minted.Nonce,
+		LeaseNonce:             leaseNonce,
 		PluginInstanceID:       strings.TrimSpace(req.PluginInstanceID),
 		PluginID:               strings.TrimSpace(req.PluginID),
 		PluginVersion:          strings.TrimSpace(req.PluginVersion),
@@ -1170,6 +1174,7 @@ func (s *SurfaceTokenService) MintRuntimeExecutionLease(req MintRuntimeExecution
 		SurfaceInstanceID:      strings.TrimSpace(req.SurfaceInstanceID),
 		OwnerSessionHash:       strings.TrimSpace(req.OwnerSessionHash),
 		OwnerUserHash:          strings.TrimSpace(req.OwnerUserHash),
+		OwnerEnvHash:           strings.TrimSpace(req.OwnerEnvHash),
 		SessionChannelIDHash:   strings.TrimSpace(req.SessionChannelIDHash),
 		BridgeChannelID:        strings.TrimSpace(req.BridgeChannelID),
 		RuntimeInstanceID:      strings.TrimSpace(req.RuntimeInstanceID),
@@ -1185,13 +1190,13 @@ func (s *SurfaceTokenService) MintRuntimeExecutionLease(req MintRuntimeExecution
 		AuditCorrelationID:     strings.TrimSpace(req.AuditCorrelationID),
 		TargetDescriptorHashes: normalizeStringSlice(req.TargetDescriptorHashes),
 		Limits:                 req.Limits,
-		PolicyRevision:         minted.Revision.PolicyRevision,
-		ManagementRevision:     minted.Revision.ManagementRevision,
-		RevokeEpoch:            minted.Revision.RevokeEpoch,
-		IssuedAt:               minted.IssuedAt,
-		IssuedAtUnixMillis:     unixMillis(minted.IssuedAt),
-		ExpiresAt:              minted.ExpiresAt,
-		ExpiresAtUnixMillis:    unixMillis(minted.ExpiresAt),
+		PolicyRevision:         req.Revision.PolicyRevision,
+		ManagementRevision:     req.Revision.ManagementRevision,
+		RevokeEpoch:            req.Revision.RevokeEpoch,
+		IssuedAt:               now,
+		IssuedAtUnixMillis:     unixMillis(now),
+		ExpiresAt:              expiresAt,
+		ExpiresAtUnixMillis:    unixMillis(expiresAt),
 	}, nil
 }
 
@@ -1275,6 +1280,14 @@ func runtimeExecutionLeaseID() (string, error) {
 	return "lease_" + suffix, nil
 }
 
+func runtimeExecutionTokenID() (string, error) {
+	suffix, err := randomString(18)
+	if err != nil {
+		return "", err
+	}
+	return "rel_" + suffix, nil
+}
+
 func normalizeStringSlice(values []string) []string {
 	if len(values) == 0 {
 		return nil
@@ -1313,6 +1326,8 @@ func (s *SurfaceTokenService) MintStreamTicket(req MintStreamTicketRequest) (Str
 		strings.TrimSpace(req.PluginVersion) == "" ||
 		strings.TrimSpace(req.RouteRole) == "" ||
 		strings.TrimSpace(req.OwnerSessionHash) == "" ||
+		strings.TrimSpace(req.OwnerUserHash) == "" ||
+		strings.TrimSpace(req.OwnerEnvHash) == "" ||
 		strings.TrimSpace(req.SessionChannelIDHash) == "" ||
 		strings.TrimSpace(req.StreamID) == "" ||
 		strings.TrimSpace(req.OperationID) == "" ||
@@ -1355,6 +1370,7 @@ func (s *SurfaceTokenService) MintStreamTicket(req MintStreamTicketRequest) (Str
 			RouteRole:            req.RouteRole,
 			OwnerSessionHash:     req.OwnerSessionHash,
 			OwnerUserHash:        req.OwnerUserHash,
+			OwnerEnvHash:         req.OwnerEnvHash,
 			SessionChannelIDHash: req.SessionChannelIDHash,
 			BridgeChannelID:      req.BridgeChannelID,
 			RuntimeGenerationID:  req.RuntimeGenerationID,
@@ -1401,7 +1417,7 @@ func (s *SurfaceTokenService) ValidateStreamTicket(req ValidateStreamTicketReque
 		Audience: req.Audience,
 		Revision: req.Revision,
 		Now:      req.Now,
-		Consume:  true,
+		Consume:  false,
 	})
 }
 
@@ -1427,7 +1443,7 @@ func (s *SurfaceTokenService) ValidateBoundStreamTicket(req ValidateBoundStreamT
 		Audience: record.Audience,
 		Revision: req.Revision,
 		Now:      now,
-		Consume:  true,
+		Consume:  false,
 	})
 }
 
@@ -1466,114 +1482,6 @@ func (s *SurfaceTokenService) InspectBoundStreamTicket(req ValidateBoundStreamTi
 	return record, nil
 }
 
-// RotateBoundStreamTicket serializes the final stream mutation with ticket
-// consumption. A failed commit leaves the current ticket reusable.
-func (s *SurfaceTokenService) RotateBoundStreamTicket(req ValidateBoundStreamTicketRequest, commit func() (bool, error)) (RotateBoundStreamTicketResult, error) {
-	if s == nil {
-		return RotateBoundStreamTicketResult{}, errors.New("surface token service is nil")
-	}
-	if err := validateBoundStreamTicketRequest(req); err != nil {
-		return RotateBoundStreamTicketResult{}, err
-	}
-	now := req.Now
-	if now.IsZero() {
-		now = time.Now().UTC()
-	}
-	expiresAt := now.Add(DefaultConfirmationTTL)
-	if expiresAt.After(now.Add(MaxStreamTicketTTL)) {
-		expiresAt = now.Add(MaxStreamTicketTTL)
-	}
-	state, hasState, unlock, err := s.lockBoundStreamTicketState(req, now)
-	if err != nil {
-		return RotateBoundStreamTicketResult{}, err
-	}
-	defer unlock()
-	rotated, err := s.tokens.RotateSingleUse(RotateSingleUseRequest{
-		Kind:          TokenKindStreamTicket,
-		Token:         req.StreamTicket,
-		Now:           now,
-		NextExpiresAt: expiresAt,
-		Validate: func(record TokenRecord) error {
-			if err := validateBoundStreamTicketRecord(req, record); err != nil {
-				return err
-			}
-			if hasState && !streamTicketSurfaceStateMatches(state, record, req) {
-				return ErrTokenRevoked
-			}
-			return nil
-		},
-	}, commit)
-	if err != nil {
-		return RotateBoundStreamTicketResult{}, err
-	}
-	result := RotateBoundStreamTicketResult{Current: rotated.Current}
-	if rotated.Next != nil {
-		result.Next = &StreamTicketResult{
-			StreamTicket:   rotated.Next.Token,
-			StreamTicketID: rotated.Next.TokenID,
-			StreamID:       rotated.Next.Audience.StreamID,
-			OperationID:    rotated.Next.Audience.OperationID,
-			Direction:      rotated.Next.Audience.StreamDirection,
-			IssuedAt:       rotated.Next.IssuedAt,
-			ExpiresAt:      rotated.Next.ExpiresAt,
-		}
-	}
-	return result, nil
-}
-
-// CommitBoundStreamTicket serializes a terminal stream mutation with ticket
-// consumption without reserving a replacement credential.
-func (s *SurfaceTokenService) CommitBoundStreamTicket(req ValidateBoundStreamTicketRequest, commit func() error) (TokenRecord, error) {
-	if s == nil {
-		return TokenRecord{}, errors.New("surface token service is nil")
-	}
-	if err := validateBoundStreamTicketRequest(req); err != nil {
-		return TokenRecord{}, err
-	}
-	now := req.Now
-	if now.IsZero() {
-		now = time.Now().UTC()
-	}
-	state, hasState, unlock, err := s.lockBoundStreamTicketState(req, now)
-	if err != nil {
-		return TokenRecord{}, err
-	}
-	defer unlock()
-	return s.tokens.CommitSingleUse(CommitSingleUseRequest{
-		Kind:  TokenKindStreamTicket,
-		Token: req.StreamTicket,
-		Now:   now,
-		Validate: func(record TokenRecord) error {
-			if err := validateBoundStreamTicketRecord(req, record); err != nil {
-				return err
-			}
-			if hasState && !streamTicketSurfaceStateMatches(state, record, req) {
-				return ErrTokenRevoked
-			}
-			return nil
-		},
-	}, commit)
-}
-
-func (s *SurfaceTokenService) lockBoundStreamTicketState(req ValidateBoundStreamTicketRequest, now time.Time) (surfaceState, bool, func(), error) {
-	if req.SurfaceInstanceID == "" {
-		return surfaceState{}, false, func() {}, nil
-	}
-	s.mu.Lock()
-	current, ok := s.sessions[req.SurfaceInstanceID]
-	if !ok {
-		s.mu.Unlock()
-		return surfaceState{}, false, func() {}, ErrTokenRevoked
-	}
-	if !now.Before(current.session.ExpiresAt) {
-		delete(s.sessions, req.SurfaceInstanceID)
-		s.tokens.RevokeSurface(req.SurfaceInstanceID, now)
-		s.mu.Unlock()
-		return surfaceState{}, false, func() {}, ErrTokenRevoked
-	}
-	return current, true, s.mu.Unlock, nil
-}
-
 func validateBoundStreamTicketRequest(req ValidateBoundStreamTicketRequest) error {
 	if strings.TrimSpace(req.StreamTicket) == "" ||
 		strings.TrimSpace(req.PluginID) == "" ||
@@ -1600,6 +1508,7 @@ func validateBoundStreamTicketRecord(req ValidateBoundStreamTicketRequest, recor
 		record.Audience.SurfaceInstanceID != req.SurfaceInstanceID ||
 		record.Audience.OwnerSessionHash != req.OwnerSessionHash ||
 		record.Audience.OwnerUserHash != req.OwnerUserHash ||
+		record.Audience.OwnerEnvHash != req.OwnerEnvHash ||
 		record.Audience.SessionChannelIDHash != req.SessionChannelIDHash ||
 		record.Audience.BridgeChannelID != req.BridgeChannelID ||
 		record.Audience.StreamID != req.StreamID ||
@@ -1657,6 +1566,8 @@ func (s *SurfaceTokenService) DisposeBoundSurface(req DisposeSurfaceRequest) err
 	if strings.TrimSpace(req.SurfaceInstanceID) == "" ||
 		strings.TrimSpace(req.BridgeNonce) == "" ||
 		strings.TrimSpace(req.OwnerSessionHash) == "" ||
+		strings.TrimSpace(req.OwnerUserHash) == "" ||
+		strings.TrimSpace(req.OwnerEnvHash) == "" ||
 		strings.TrimSpace(req.SessionChannelIDHash) == "" {
 		return ErrMissingTokenAudience
 	}
@@ -1677,7 +1588,7 @@ func (s *SurfaceTokenService) DisposeBoundSurface(req DisposeSurfaceRequest) err
 		return ErrSurfaceSessionExpired
 	}
 	if state.session.BridgeNonce != req.BridgeNonce ||
-		!state.session.matchesScope(req.OwnerSessionHash, req.OwnerUserHash, req.SessionChannelIDHash) {
+		!state.session.matchesScope(req.OwnerSessionHash, req.OwnerUserHash, req.OwnerEnvHash, req.SessionChannelIDHash) {
 		s.mu.Unlock()
 		return ErrTokenAudience
 	}
@@ -1712,7 +1623,8 @@ func (s *SurfaceTokenService) RevokeSurfaceScope(req RevokeSurfaceScopeRequest) 
 	if s == nil {
 		return 0, errors.New("surface token service is nil")
 	}
-	if strings.TrimSpace(req.OwnerSessionHash) == "" {
+	if strings.TrimSpace(req.OwnerSessionHash) == "" || strings.TrimSpace(req.OwnerUserHash) == "" ||
+		strings.TrimSpace(req.OwnerEnvHash) == "" || strings.TrimSpace(req.SessionChannelIDHash) == "" {
 		return 0, ErrMissingTokenAudience
 	}
 	now := req.Now
@@ -1723,8 +1635,9 @@ func (s *SurfaceTokenService) RevokeSurfaceScope(req RevokeSurfaceScopeRequest) 
 	s.mu.Lock()
 	for surfaceInstanceID, state := range s.sessions {
 		if state.session.OwnerSessionHash != req.OwnerSessionHash ||
-			(req.OwnerUserHash != "" && state.session.OwnerUserHash != req.OwnerUserHash) ||
-			(req.SessionChannelIDHash != "" && state.session.SessionChannelIDHash != req.SessionChannelIDHash) {
+			state.session.OwnerUserHash != req.OwnerUserHash ||
+			state.session.OwnerEnvHash != req.OwnerEnvHash ||
+			state.session.SessionChannelIDHash != req.SessionChannelIDHash {
 			continue
 		}
 		delete(s.sessions, surfaceInstanceID)
@@ -1805,6 +1718,7 @@ func (s SurfaceSession) audience(bridgeChannelID string) Audience {
 		RouteRole:            s.RouteRole,
 		OwnerSessionHash:     s.OwnerSessionHash,
 		OwnerUserHash:        s.OwnerUserHash,
+		OwnerEnvHash:         s.OwnerEnvHash,
 		SessionChannelIDHash: s.SessionChannelIDHash,
 		BridgeChannelID:      bridgeChannelID,
 		RuntimeGenerationID:  s.RuntimeGenerationID,
@@ -1819,9 +1733,10 @@ func (s SurfaceSession) revision() RevisionBinding {
 	}
 }
 
-func (s SurfaceSession) matchesScope(ownerSessionHash string, ownerUserHash string, sessionChannelIDHash string) bool {
+func (s SurfaceSession) matchesScope(ownerSessionHash string, ownerUserHash string, ownerEnvHash string, sessionChannelIDHash string) bool {
 	return s.OwnerSessionHash == ownerSessionHash &&
 		s.OwnerUserHash == ownerUserHash &&
+		s.OwnerEnvHash == ownerEnvHash &&
 		s.SessionChannelIDHash == sessionChannelIDHash
 }
 
@@ -1832,7 +1747,7 @@ func (s SurfaceSession) validateHandshake(handshake Handshake) error {
 		handshake.ActiveFingerprint != s.ActiveFingerprint ||
 		handshake.BridgeNonce != s.BridgeNonce ||
 		handshake.AssetSessionNonce != s.AssetSessionNonce ||
-		handshake.PluginStateVersion != s.ManagementRevision ||
+		handshake.ManagementRevision != s.ManagementRevision ||
 		handshake.RevokeEpoch != s.RevokeEpoch ||
 		handshake.UIProtocolVersion != version.PluginUIProtocolVersion {
 		return ErrHandshakeMismatch

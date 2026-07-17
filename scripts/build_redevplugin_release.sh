@@ -139,7 +139,6 @@ ldflags="-X ${go_version_pkg}.GoModuleVersion=${VERSION} -X ${go_version_pkg}.UI
   cp "$ROOT_DIR/LICENSE" "$OUT_DIR/LICENSE"
   cp "$ROOT_DIR/CHANGELOG.md" "$OUT_DIR/CHANGELOG.md"
   cp "$ROOT_DIR/AGENTS.md" "$OUT_DIR/AGENTS.md"
-  cp "$ROOT_DIR/docs/release/a2-tdd-evidence.md" "$OUT_DIR/docs/release/a2-tdd-evidence.md"
   cp "$ROOT_DIR/docs/release/a3-tdd-evidence.md" "$OUT_DIR/docs/release/a3-tdd-evidence.md"
   cp -R "$ROOT_DIR/examples/showcase" "$OUT_DIR/examples/showcase"
   cp -R "$ROOT_DIR/examples/plugins" "$OUT_DIR/examples/plugins"

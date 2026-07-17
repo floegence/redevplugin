@@ -2,34 +2,32 @@ package websecurity
 
 import (
 	"context"
+	"errors"
 	"testing"
+
+	"github.com/floegence/redevplugin/pkg/sessionctx"
 )
 
-func TestRequestScopeValidRequiresSessionAndChannel(t *testing.T) {
-	if (RequestScope{}).Valid() {
-		t.Fatal("empty request scope must be invalid")
+func TestSessionContextRequiresCompleteAuthenticatedPrincipal(t *testing.T) {
+	valid := sessionctx.Context{
+		OwnerSessionHash:     "session_hash",
+		OwnerUserHash:        "user_hash",
+		OwnerEnvHash:         "env_hash",
+		SessionChannelIDHash: "channel_hash",
 	}
-	if (RequestScope{OwnerSessionHash: "session_hash"}).Valid() {
-		t.Fatal("request scope without channel must be invalid")
+	if !valid.Valid() {
+		t.Fatal("complete session must be valid")
 	}
-	if !(RequestScope{OwnerSessionHash: "session_hash", SessionChannelIDHash: "channel_hash"}).Valid() {
-		t.Fatal("request scope with session and channel must be valid")
+	if got, err := sessionctx.Require(sessionctx.WithContext(context.Background(), valid)); err != nil || got != valid {
+		t.Fatalf("session round trip = %#v, %v", got, err)
 	}
-}
 
-func TestRequestContextRoundTrip(t *testing.T) {
-	want := RequestContext{
-		Origin: "https://env.example",
-		Route:  "/_redevplugin/api/plugins/catalog",
-		Method: "GET",
-		Scope: RequestScope{
-			OwnerSessionHash:     "session_hash",
-			OwnerUserHash:        "user_hash",
-			SessionChannelIDHash: "channel_hash",
-		},
+	invalid := valid
+	invalid.OwnerEnvHash = ""
+	if invalid.Valid() {
+		t.Fatal("session without environment hash must be invalid")
 	}
-	got, ok := RequestContextFromContext(WithRequestContext(context.Background(), want))
-	if !ok || got != want {
-		t.Fatalf("request context = %#v, %v, want %#v, true", got, ok, want)
+	if _, err := sessionctx.Require(sessionctx.WithContext(context.Background(), invalid)); !errors.Is(err, sessionctx.ErrSessionRequired) {
+		t.Fatalf("Require invalid session error = %v", err)
 	}
 }

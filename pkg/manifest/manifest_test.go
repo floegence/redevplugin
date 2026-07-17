@@ -41,7 +41,7 @@ func TestDecodeRejectsTrailingJSONValue(t *testing.T) {
 	}
 }
 
-func TestValidateMatchesManifestV3RequiredFields(t *testing.T) {
+func TestValidateMatchesCurrentManifestRequiredFields(t *testing.T) {
 	tests := []struct {
 		name   string
 		field  string
@@ -655,7 +655,6 @@ func TestValidateStorageQuotaFiles(t *testing.T) {
 		Scope:         "user",
 		QuotaBytes:    1024,
 		SchemaVersion: 1,
-		Migration:     noopMigration(),
 	}}}
 	if err := Validate(m); err != nil {
 		t.Fatalf("Validate() without quota_files error = %v", err)
@@ -686,7 +685,6 @@ func TestValidateStorageResourceLimits(t *testing.T) {
 				Scope:         "user",
 				QuotaBytes:    1024,
 				SchemaVersion: 1,
-				Migration:     noopMigration(),
 			}
 		}
 		expectValidationField(t, m, "storage.stores")
@@ -700,7 +698,6 @@ func TestValidateStorageResourceLimits(t *testing.T) {
 			Scope:         "user",
 			QuotaBytes:    MaxStoreQuotaBytes + 1,
 			SchemaVersion: 1,
-			Migration:     noopMigration(),
 		}}}
 		expectValidationField(t, m, "storage.stores[0].quota_bytes")
 	})
@@ -716,7 +713,6 @@ func TestValidateReadMethodRejectsMutatingStorageBrokerOperations(t *testing.T) 
 				Scope:         "user",
 				QuotaBytes:    1024,
 				SchemaVersion: 1,
-				Migration:     noopMigration(),
 			}}}
 			m.Methods[1].Effect = MethodEffectRead
 			m.Methods[1].BrokerAccess = &MethodBrokerAccessSpec{Storage: []StorageBrokerAccessSpec{{
@@ -740,125 +736,6 @@ func storageKindForOperation(operation string) string {
 	}
 }
 
-func TestValidateMigrationSpecBinding(t *testing.T) {
-	t.Run("allows bootstrap from empty data", func(t *testing.T) {
-		m := validManifest()
-		m.Settings.Migration = MigrationSpec{
-			FromVersion:    0,
-			ToVersion:      1,
-			Reversible:     true,
-			RequiresWorker: false,
-			StepsHash:      "sha256:initial-settings",
-		}
-		m.Storage = &StorageSpec{Stores: []StoreSpec{{
-			StoreID:       "cache",
-			Kind:          "kv",
-			Scope:         "user",
-			QuotaBytes:    1024,
-			SchemaVersion: 1,
-			Migration: MigrationSpec{
-				FromVersion:    0,
-				ToVersion:      1,
-				Reversible:     true,
-				RequiresWorker: false,
-				StepsHash:      "sha256:initial-storage",
-			},
-		}}}
-
-		if err := Validate(m); err != nil {
-			t.Fatalf("Validate() bootstrap migration error = %v", err)
-		}
-	})
-
-	cases := []struct {
-		name   string
-		mutate func(*Manifest)
-		field  string
-	}{
-		{
-			name: "settings migration is required",
-			mutate: func(m *Manifest) {
-				m.Settings.Migration = MigrationSpec{}
-			},
-			field: "settings.migration",
-		},
-		{
-			name: "settings migration target matches schema",
-			mutate: func(m *Manifest) {
-				m.Settings.Migration.ToVersion = 2
-			},
-			field: "settings.migration.to_version",
-		},
-		{
-			name: "settings migration source cannot exceed target",
-			mutate: func(m *Manifest) {
-				m.Settings.Migration.FromVersion = 2
-			},
-			field: "settings.migration.from_version",
-		},
-		{
-			name: "settings migration requires steps hash",
-			mutate: func(m *Manifest) {
-				m.Settings.Migration.StepsHash = " "
-			},
-			field: "settings.migration.steps_hash",
-		},
-		{
-			name: "settings migration rejects negative estimate",
-			mutate: func(m *Manifest) {
-				m.Settings.Migration.EstimatedBytes = -1
-			},
-			field: "settings.migration.estimated_bytes",
-		},
-		{
-			name: "storage migration target matches schema",
-			mutate: func(m *Manifest) {
-				m.Storage = &StorageSpec{Stores: []StoreSpec{{
-					StoreID:       "cache",
-					Kind:          "kv",
-					Scope:         "user",
-					QuotaBytes:    1024,
-					SchemaVersion: 2,
-					Migration:     noopMigration(),
-				}}}
-			},
-			field: "storage.stores[0].migration.to_version",
-		},
-		{
-			name: "storage migration rejects negative duration",
-			mutate: func(m *Manifest) {
-				m.Storage = &StorageSpec{Stores: []StoreSpec{{
-					StoreID:       "cache",
-					Kind:          "kv",
-					Scope:         "user",
-					QuotaBytes:    1024,
-					SchemaVersion: 1,
-					Migration: MigrationSpec{
-						FromVersion:   1,
-						ToVersion:     1,
-						StepsHash:     "sha256:storage",
-						MaxDurationMS: -1,
-					},
-				}}}
-			},
-			field: "storage.stores[0].migration.max_duration_ms",
-		},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			candidate := validManifest()
-			tc.mutate(&candidate)
-			err := Validate(candidate)
-			if err == nil {
-				t.Fatal("Validate() expected migration validation error")
-			}
-			if validationErr, ok := err.(ValidationError); !ok || validationErr.Field != tc.field {
-				t.Fatalf("Validate() error = %v, want field %s", err, tc.field)
-			}
-		})
-	}
-}
-
 func TestValidateWorkers(t *testing.T) {
 	m := validManifest()
 	m.Workers = []WorkerSpec{{
@@ -873,7 +750,7 @@ func TestValidateWorkers(t *testing.T) {
 		Method:         "worker.echo",
 		Effect:         MethodEffectRead,
 		Execution:      MethodExecutionSync,
-		Route:          MethodRouteSpec{Kind: MethodRouteWorker, WorkerID: "echo_worker", Export: "redevplugin_worker_invoke"},
+		Route:          MethodRouteSpec{Kind: MethodRouteWorker, WorkerID: "echo_worker"},
 		RequestSchema:  closedObjectSchema(),
 		ResponseSchema: closedObjectSchema(),
 	})
@@ -942,13 +819,6 @@ func TestValidateWorkers(t *testing.T) {
 			},
 			field: "methods[1].route.worker_id",
 		},
-		{
-			name: "worker route requires export",
-			mutate: func(m *Manifest) {
-				m.Methods[1].Route.Export = ""
-			},
-			field: "methods[1].route.export",
-		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1012,7 +882,7 @@ func validManifestWithWorkerMethod() Manifest {
 		Method:         "worker.echo",
 		Effect:         MethodEffectRead,
 		Execution:      MethodExecutionSync,
-		Route:          MethodRouteSpec{Kind: MethodRouteWorker, WorkerID: "echo_worker", Export: "redevplugin_worker_invoke"},
+		Route:          MethodRouteSpec{Kind: MethodRouteWorker, WorkerID: "echo_worker"},
 		RequestSchema:  closedObjectSchema(),
 		ResponseSchema: closedObjectSchema(),
 	})
@@ -1106,10 +976,6 @@ func validManifestWithBrokerAccess() Manifest {
 		Scope:         "user",
 		QuotaBytes:    1 << 20,
 		SchemaVersion: 1,
-		Migration: MigrationSpec{
-			FromVersion: 0, ToVersion: 1, Reversible: true, RequiresWorker: true,
-			MaxDurationMS: 1000, StepsHash: "sha256:notes-v1",
-		},
 	}}}
 	m.NetworkAccess = &NetworkAccessSpec{Connectors: []NetworkConnectorSpec{{
 		ConnectorID: "forecast", Transport: "http", Scope: "user", Destinations: []string{"https://api.example.com"},
@@ -1196,7 +1062,6 @@ func validManifest() Manifest {
 		},
 		Settings: &SettingsSpec{
 			SchemaVersion: 1,
-			Migration:     noopMigration(),
 			Fields: []SettingFieldSpec{
 				{Key: "default_source", Type: "select", Scope: "user", Label: "Default source", Default: "primary", Options: []string{"primary", "secondary"}},
 			},
@@ -1212,16 +1077,6 @@ func validCapabilityManifest() Manifest {
 		Route:  MethodRouteSpec{Kind: MethodRouteCapability, BindingID: "resource_provider", TargetMethod: "resources.list"},
 	}
 	return m
-}
-
-func noopMigration() MigrationSpec {
-	return MigrationSpec{
-		FromVersion:    1,
-		ToVersion:      1,
-		Reversible:     true,
-		RequiresWorker: false,
-		StepsHash:      "sha256:empty",
-	}
 }
 
 func validManifestJSON() string {
@@ -1254,16 +1109,6 @@ func validManifestJSON() string {
 		],
 		"settings": {
 			"schema_version": 1,
-			"migration": {
-				"from_version": 1,
-				"to_version": 1,
-				"reversible": true,
-				"requires_worker": false,
-				"estimated_bytes": 0,
-				"max_duration_ms": 1000,
-				"data_loss_risk": false,
-				"steps_hash": "sha256:empty"
-			},
 			"fields": [
 				{"key": "default_source", "type": "select", "scope": "user", "label": "Default source", "default": "primary", "options": ["primary", "secondary"]}
 			]

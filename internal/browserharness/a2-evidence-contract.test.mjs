@@ -79,6 +79,7 @@ function validScenario(name) {
     service_worker_absent: true,
     opening_progress: true,
     first_paint_before_lazy_asset: true,
+    stream_response_loss_recovered: true,
     real_stream_redeemed: true,
     confirmation_disposal_aborted: true,
     server_disposed: true,

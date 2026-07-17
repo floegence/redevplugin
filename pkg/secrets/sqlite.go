@@ -12,8 +12,6 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-const sqliteSchemaVersion = 1
-
 const secretBindingSelectColumns = `
 SELECT plugin_instance_id, secret_ref, scope, bound, last_test_status,
        bound_at, tested_at, deleted_at, updated_at`
@@ -42,7 +40,7 @@ func NewSQLiteStore(ctx context.Context, path string, opts ...MemoryStoreOptions
 	}
 	db.SetMaxOpenConns(1)
 	store := &SQLiteStore{db: db, now: now}
-	if err := store.migrate(ctx); err != nil {
+	if err := store.initializeSchema(ctx); err != nil {
 		_ = db.Close()
 		return nil, err
 	}
@@ -212,21 +210,6 @@ func (s *SQLiteStore) DeletePlugin(ctx context.Context, pluginInstanceID string)
 	return err
 }
 
-func (s *SQLiteStore) State(ctx context.Context) (MemoryState, error) {
-	if s == nil {
-		return MemoryState{}, errors.New("secret store is nil")
-	}
-	records, err := s.List(ctx, ListRequest{})
-	if err != nil {
-		return MemoryState{}, err
-	}
-	state := MemoryState{Records: map[string]Record{}}
-	for _, record := range records {
-		state.Records[recordKey(BindRequest{PluginInstanceID: record.PluginInstanceID, SecretRef: record.SecretRef, Scope: record.Scope})] = record
-	}
-	return state, nil
-}
-
 func (s *SQLiteStore) upsert(ctx context.Context, record Record) error {
 	_, err := s.db.ExecContext(ctx, `
 INSERT INTO plugin_secret_bindings(plugin_instance_id, secret_ref, scope, bound, last_test_status, bound_at, tested_at, deleted_at, updated_at)
@@ -251,7 +234,7 @@ ON CONFLICT(plugin_instance_id, scope, secret_ref) DO UPDATE SET
 	return err
 }
 
-func (s *SQLiteStore) migrate(ctx context.Context) error {
+func (s *SQLiteStore) initializeSchema(ctx context.Context) error {
 	if _, err := s.db.ExecContext(ctx, `PRAGMA busy_timeout = 5000`); err != nil {
 		return err
 	}
@@ -269,20 +252,6 @@ func (s *SQLiteStore) migrate(ctx context.Context) error {
 	defer rollbackUnlessCommitted(tx)
 
 	if _, err := tx.ExecContext(ctx, `
-CREATE TABLE IF NOT EXISTS plugin_secret_schema_migrations (
-	version INTEGER PRIMARY KEY,
-	applied_at INTEGER NOT NULL
-)`); err != nil {
-		return err
-	}
-	maxVersion := 0
-	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(version), 0) FROM plugin_secret_schema_migrations`).Scan(&maxVersion); err != nil {
-		return err
-	}
-	if maxVersion > sqliteSchemaVersion {
-		return fmt.Errorf("sqlite secret schema version %d is newer than supported version %d", maxVersion, sqliteSchemaVersion)
-	}
-	if _, err := tx.ExecContext(ctx, `
 CREATE TABLE IF NOT EXISTS plugin_secret_bindings (
 	plugin_instance_id TEXT NOT NULL,
 	secret_ref TEXT NOT NULL,
@@ -299,11 +268,6 @@ CREATE TABLE IF NOT EXISTS plugin_secret_bindings (
 	}
 	if _, err := tx.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_plugin_secret_bindings_plugin ON plugin_secret_bindings(plugin_instance_id, bound, updated_at)`); err != nil {
 		return err
-	}
-	if maxVersion < sqliteSchemaVersion {
-		if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO plugin_secret_schema_migrations(version, applied_at) VALUES(?, ?)`, sqliteSchemaVersion, time.Now().UTC().UnixNano()); err != nil {
-			return err
-		}
 	}
 	return tx.Commit()
 }

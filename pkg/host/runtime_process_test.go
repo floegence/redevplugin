@@ -21,7 +21,45 @@ import (
 	"github.com/floegence/redevplugin/pkg/version"
 )
 
-const hostRuntimeProcessHelperEnv = "REDEVPLUGIN_HOST_RUNTIME_PROCESS_HELPER"
+const (
+	hostRuntimeProcessHelperEnv        = "REDEVPLUGIN_HOST_RUNTIME_PROCESS_HELPER"
+	hostRuntimeProcessHandshakeTimeout = 15 * time.Second
+)
+
+type testProcessManager struct {
+	*runtimeclient.ProcessSupervisor
+}
+
+func (m testProcessManager) Start(ctx context.Context, target runtimeclient.Target) (runtimeclient.ManagerHealth, error) {
+	if err := m.ProcessSupervisor.Start(ctx, target); err != nil {
+		return runtimeclient.ManagerHealth{}, err
+	}
+	return m.Health(ctx)
+}
+
+func (m testProcessManager) Health(ctx context.Context) (runtimeclient.ManagerHealth, error) {
+	health, err := m.ProcessSupervisor.Health(ctx)
+	if err != nil {
+		return runtimeclient.ManagerHealth{}, err
+	}
+	return runtimeclient.ManagerHealth{Ready: health.Ready, Shards: []runtimeclient.ShardHealth{{RuntimeShardID: "runtime_shard_00", Health: health}}}, nil
+}
+
+func (m testProcessManager) BindPlugin(ctx context.Context, _ string) (runtimeclient.RuntimeBinding, error) {
+	health, err := m.ProcessSupervisor.Health(ctx)
+	if err != nil {
+		return runtimeclient.RuntimeBinding{}, err
+	}
+	return runtimeclient.RuntimeBinding{
+		RuntimeShardID: "runtime_shard_00", RuntimeInstanceID: health.RuntimeInstanceID,
+		RuntimeGenerationID: health.RuntimeGenerationID, IPCChannelID: health.IPCChannelID,
+		ConnectionNonce: health.ConnectionNonce,
+	}, nil
+}
+
+func (m testProcessManager) InvokeWorker(ctx context.Context, _ runtimeclient.RuntimeBinding, lease runtimeclient.Lease, method string, payload []byte) ([]byte, error) {
+	return m.ProcessSupervisor.InvokeWorker(ctx, lease, method, payload)
+}
 
 func TestMain(m *testing.M) {
 	if os.Getenv(hostRuntimeProcessHelperEnv) == "1" {
@@ -32,7 +70,7 @@ func TestMain(m *testing.M) {
 }
 
 func TestCallPluginMethodWorkerNetworkExecuteThroughRuntimeProcess(t *testing.T) {
-	ctx := context.Background()
+	ctx := hostTestContext()
 	broker := connectivity.NewMemoryBroker()
 	executor := &recordingHostNetworkExecutor{
 		httpStatus: http.StatusCreated,
@@ -41,7 +79,6 @@ func TestCallPluginMethodWorkerNetworkExecuteThroughRuntimeProcess(t *testing.T)
 	h, _, _ := newTestHostWithOptions(t, testHostOptions{
 		developerMode:      true,
 		localGenerated:     true,
-		storageBroker:      storage.NewMemoryBroker(),
 		connectivityBroker: broker,
 		networkExecutor:    executor,
 	})
@@ -52,17 +89,17 @@ func TestCallPluginMethodWorkerNetworkExecuteThroughRuntimeProcess(t *testing.T)
 		Diagnostics:     h.adapters.Diagnostics,
 		Artifacts:       runtimeArtifactProvider{assets: h.adapters.Assets},
 		HandleGrants:    runtimeHandleGrantValidator{tokens: h.surfaceTokens},
-		StorageFiles:    storageFilesBroker(h.adapters.Storage),
-		StorageKV:       storageKVBroker(h.adapters.Storage),
+		StorageFiles:    h.adapters.PluginData,
+		StorageKV:       h.adapters.PluginData,
 		Connectivity:    broker,
 		NetworkExecutor: executor,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	h.adapters.RuntimeSupervisor = supervisor
+	h.adapters.RuntimeManager = testProcessManager{ProcessSupervisor: supervisor}
 	t.Cleanup(func() {
-		stopCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		stopCtx, cancel := context.WithTimeout(hostTestContext(), 3*time.Second)
 		defer cancel()
 		if err := supervisor.Stop(stopCtx); err != nil {
 			t.Errorf("Stop() error = %v", err)
@@ -74,15 +111,13 @@ func TestCallPluginMethodWorkerNetworkExecuteThroughRuntimeProcess(t *testing.T)
 	installed, gateway := installEnableAndMintGateway(t, h, buildWorkerNetworkFixturePackage(t), "worker.view")
 
 	result, err := h.CallPluginMethod(ctx, CallMethodRequest{
-		PluginInstanceID:     installed.PluginInstanceID,
-		SurfaceInstanceID:    "surface_rpc",
-		SessionChannelIDHash: "channel_hash",
-		OwnerSessionHash:     "session_hash",
-		OwnerUserHash:        "user_hash",
-		BridgeChannelID:      "bridge_rpc",
-		GatewayToken:         gateway.GatewayToken,
-		Method:               "worker.echo",
-		Params:               map[string]any{"message": "hello from host"},
+		PluginInstanceID:  installed.PluginInstanceID,
+		SurfaceInstanceID: "surface_rpc",
+
+		BridgeChannelID: "bridge_rpc",
+		GatewayToken:    gateway.GatewayToken,
+		Method:          "worker.echo",
+		Params:          map[string]any{"message": "hello from host"},
 	})
 	if err != nil {
 		t.Fatalf("CallPluginMethod() error = %v", err)
@@ -122,7 +157,7 @@ func TestCallPluginMethodWorkerNetworkExecuteThroughRuntimeProcess(t *testing.T)
 }
 
 func TestCallPluginMethodWorkerHTTPStreamThroughRuntimeProcess(t *testing.T) {
-	ctx := context.Background()
+	ctx := hostTestContext()
 	broker := connectivity.NewMemoryBroker()
 	executor := &recordingHostNetworkExecutor{
 		httpStatus:   http.StatusAccepted,
@@ -131,7 +166,6 @@ func TestCallPluginMethodWorkerHTTPStreamThroughRuntimeProcess(t *testing.T) {
 	h, _, _ := newTestHostWithOptions(t, testHostOptions{
 		developerMode:      true,
 		localGenerated:     true,
-		storageBroker:      storage.NewMemoryBroker(),
 		connectivityBroker: broker,
 		networkExecutor:    executor,
 	})
@@ -142,8 +176,8 @@ func TestCallPluginMethodWorkerHTTPStreamThroughRuntimeProcess(t *testing.T) {
 		Diagnostics:     h.adapters.Diagnostics,
 		Artifacts:       runtimeArtifactProvider{assets: h.adapters.Assets},
 		HandleGrants:    runtimeHandleGrantValidator{tokens: h.surfaceTokens},
-		StorageFiles:    storageFilesBroker(h.adapters.Storage),
-		StorageKV:       storageKVBroker(h.adapters.Storage),
+		StorageFiles:    h.adapters.PluginData,
+		StorageKV:       h.adapters.PluginData,
 		Connectivity:    broker,
 		NetworkExecutor: executor,
 		StreamSink:      hostRuntimeStreamSink{executions: h.executions},
@@ -151,9 +185,9 @@ func TestCallPluginMethodWorkerHTTPStreamThroughRuntimeProcess(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	h.adapters.RuntimeSupervisor = supervisor
+	h.adapters.RuntimeManager = testProcessManager{ProcessSupervisor: supervisor}
 	t.Cleanup(func() {
-		stopCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		stopCtx, cancel := context.WithTimeout(hostTestContext(), 3*time.Second)
 		defer cancel()
 		if err := supervisor.Stop(stopCtx); err != nil {
 			t.Errorf("Stop() error = %v", err)
@@ -165,15 +199,13 @@ func TestCallPluginMethodWorkerHTTPStreamThroughRuntimeProcess(t *testing.T) {
 	installed, gateway := installEnableAndMintGateway(t, h, buildWorkerNetworkSubscriptionFixturePackage(t), "worker.view")
 
 	result, err := h.CallPluginMethod(ctx, CallMethodRequest{
-		PluginInstanceID:     installed.PluginInstanceID,
-		SurfaceInstanceID:    "surface_rpc",
-		SessionChannelIDHash: "channel_hash",
-		OwnerSessionHash:     "session_hash",
-		OwnerUserHash:        "user_hash",
-		BridgeChannelID:      "bridge_rpc",
-		GatewayToken:         gateway.GatewayToken,
-		Method:               "worker.echo",
-		Params:               map[string]any{"message": "stream from host"},
+		PluginInstanceID:  installed.PluginInstanceID,
+		SurfaceInstanceID: "surface_rpc",
+
+		BridgeChannelID: "bridge_rpc",
+		GatewayToken:    gateway.GatewayToken,
+		Method:          "worker.echo",
+		Params:          map[string]any{"message": "stream from host"},
 	})
 	if err != nil {
 		t.Fatalf("CallPluginMethod() error = %v", err)
@@ -204,6 +236,7 @@ func TestCallPluginMethodWorkerHTTPStreamThroughRuntimeProcess(t *testing.T) {
 		streamResult.Record.SurfaceInstanceID != "surface_rpc" ||
 		streamResult.Record.OwnerSessionHash != "session_hash" ||
 		streamResult.Record.OwnerUserHash != "user_hash" ||
+		streamResult.Record.OwnerEnvHash != "env_hash" ||
 		streamResult.Record.SessionChannelIDHash != "channel_hash" ||
 		streamResult.Record.BridgeChannelID != "bridge_rpc" {
 		t.Fatalf("stream record mismatch: %#v", streamResult.Record)
@@ -237,7 +270,7 @@ func TestCallPluginMethodWorkerHTTPStreamMemoryHostcallThroughBuiltRustRuntime(t
 		runtimePath += ".exe"
 	}
 
-	ctx := context.Background()
+	ctx := hostTestContext()
 	broker := connectivity.NewMemoryBroker()
 	executor := &recordingHostNetworkExecutor{
 		httpStatus:   http.StatusAccepted,
@@ -246,7 +279,6 @@ func TestCallPluginMethodWorkerHTTPStreamMemoryHostcallThroughBuiltRustRuntime(t
 	h, _, _ := newTestHostWithOptions(t, testHostOptions{
 		developerMode:      true,
 		localGenerated:     true,
-		storageBroker:      storage.NewMemoryBroker(),
 		connectivityBroker: broker,
 		networkExecutor:    executor,
 	})
@@ -255,19 +287,19 @@ func TestCallPluginMethodWorkerHTTPStreamMemoryHostcallThroughBuiltRustRuntime(t
 		Diagnostics:      h.adapters.Diagnostics,
 		Artifacts:        runtimeArtifactProvider{assets: h.adapters.Assets},
 		HandleGrants:     runtimeHandleGrantValidator{tokens: h.surfaceTokens},
-		StorageFiles:     storageFilesBroker(h.adapters.Storage),
-		StorageKV:        storageKVBroker(h.adapters.Storage),
+		StorageFiles:     h.adapters.PluginData,
+		StorageKV:        h.adapters.PluginData,
 		Connectivity:     broker,
 		NetworkExecutor:  executor,
 		StreamSink:       hostRuntimeStreamSink{executions: h.executions},
-		HandshakeTimeout: 5 * time.Second,
+		HandshakeTimeout: hostRuntimeProcessHandshakeTimeout,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	h.adapters.RuntimeSupervisor = supervisor
+	h.adapters.RuntimeManager = testProcessManager{ProcessSupervisor: supervisor}
 	t.Cleanup(func() {
-		stopCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		stopCtx, cancel := context.WithTimeout(hostTestContext(), 3*time.Second)
 		defer cancel()
 		if err := supervisor.Stop(stopCtx); err != nil {
 			t.Errorf("Stop() error = %v", err)
@@ -279,15 +311,13 @@ func TestCallPluginMethodWorkerHTTPStreamMemoryHostcallThroughBuiltRustRuntime(t
 	installed, gateway := installEnableAndMintGateway(t, h, buildWorkerNetworkSubscriptionMemoryHostcallFixturePackage(t), "worker.view")
 
 	result, err := h.CallPluginMethod(ctx, CallMethodRequest{
-		PluginInstanceID:     installed.PluginInstanceID,
-		SurfaceInstanceID:    "surface_rpc",
-		SessionChannelIDHash: "channel_hash",
-		OwnerSessionHash:     "session_hash",
-		OwnerUserHash:        "user_hash",
-		BridgeChannelID:      "bridge_rpc",
-		GatewayToken:         gateway.GatewayToken,
-		Method:               "worker.echo",
-		Params:               map[string]any{},
+		PluginInstanceID:  installed.PluginInstanceID,
+		SurfaceInstanceID: "surface_rpc",
+
+		BridgeChannelID: "bridge_rpc",
+		GatewayToken:    gateway.GatewayToken,
+		Method:          "worker.echo",
+		Params:          map[string]any{},
 	})
 	if err != nil {
 		t.Fatalf("CallPluginMethod() with stream memory hostcall error = %v", err)
@@ -328,27 +358,26 @@ func TestCallPluginMethodWorkerThroughBuiltRustRuntime(t *testing.T) {
 		runtimePath += ".exe"
 	}
 
-	ctx := context.Background()
+	ctx := hostTestContext()
 	h, _, _ := newTestHostWithOptions(t, testHostOptions{
 		developerMode:  true,
 		localGenerated: true,
-		storageBroker:  storage.NewMemoryBroker(),
 	})
 	supervisor, err := runtimeclient.NewProcessSupervisor(runtimeclient.ProcessSupervisorOptions{
 		RuntimePath:  runtimePath,
 		Diagnostics:  h.adapters.Diagnostics,
 		Artifacts:    runtimeArtifactProvider{assets: h.adapters.Assets},
 		HandleGrants: runtimeHandleGrantValidator{tokens: h.surfaceTokens},
-		StorageFiles: storageFilesBroker(h.adapters.Storage),
-		StorageKV:    storageKVBroker(h.adapters.Storage),
+		StorageFiles: h.adapters.PluginData,
+		StorageKV:    h.adapters.PluginData,
 		Connectivity: h.adapters.Connectivity,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	h.adapters.RuntimeSupervisor = supervisor
+	h.adapters.RuntimeManager = testProcessManager{ProcessSupervisor: supervisor}
 	t.Cleanup(func() {
-		stopCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		stopCtx, cancel := context.WithTimeout(hostTestContext(), 3*time.Second)
 		defer cancel()
 		if err := supervisor.Stop(stopCtx); err != nil {
 			t.Errorf("Stop() error = %v", err)
@@ -360,15 +389,13 @@ func TestCallPluginMethodWorkerThroughBuiltRustRuntime(t *testing.T) {
 	installed, gateway := installEnableAndMintGateway(t, h, buildWorkerFixturePackage(t), "worker.view")
 
 	result, err := h.CallPluginMethod(ctx, CallMethodRequest{
-		PluginInstanceID:     installed.PluginInstanceID,
-		SurfaceInstanceID:    "surface_rpc",
-		SessionChannelIDHash: "channel_hash",
-		OwnerSessionHash:     "session_hash",
-		OwnerUserHash:        "user_hash",
-		BridgeChannelID:      "bridge_rpc",
-		GatewayToken:         gateway.GatewayToken,
-		Method:               "worker.echo",
-		Params:               map[string]any{"message": "hello from rust runtime"},
+		PluginInstanceID:  installed.PluginInstanceID,
+		SurfaceInstanceID: "surface_rpc",
+
+		BridgeChannelID: "bridge_rpc",
+		GatewayToken:    gateway.GatewayToken,
+		Method:          "worker.echo",
+		Params:          map[string]any{"message": "hello from rust runtime"},
 	})
 	if err != nil {
 		t.Fatalf("CallPluginMethod() with built Rust runtime error = %v", err)
@@ -401,7 +428,7 @@ func TestCallPluginMethodWorkerNetworkMemoryHostcallThroughBuiltRustRuntime(t *t
 		runtimePath += ".exe"
 	}
 
-	ctx := context.Background()
+	ctx := hostTestContext()
 	broker := connectivity.NewMemoryBroker()
 	executor := &recordingHostNetworkExecutor{
 		httpStatus: http.StatusAccepted,
@@ -410,7 +437,6 @@ func TestCallPluginMethodWorkerNetworkMemoryHostcallThroughBuiltRustRuntime(t *t
 	h, _, _ := newTestHostWithOptions(t, testHostOptions{
 		developerMode:      true,
 		localGenerated:     true,
-		storageBroker:      storage.NewMemoryBroker(),
 		connectivityBroker: broker,
 		networkExecutor:    executor,
 	})
@@ -419,18 +445,18 @@ func TestCallPluginMethodWorkerNetworkMemoryHostcallThroughBuiltRustRuntime(t *t
 		Diagnostics:      h.adapters.Diagnostics,
 		Artifacts:        runtimeArtifactProvider{assets: h.adapters.Assets},
 		HandleGrants:     runtimeHandleGrantValidator{tokens: h.surfaceTokens},
-		StorageFiles:     storageFilesBroker(h.adapters.Storage),
-		StorageKV:        storageKVBroker(h.adapters.Storage),
+		StorageFiles:     h.adapters.PluginData,
+		StorageKV:        h.adapters.PluginData,
 		Connectivity:     broker,
 		NetworkExecutor:  executor,
-		HandshakeTimeout: 5 * time.Second,
+		HandshakeTimeout: hostRuntimeProcessHandshakeTimeout,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	h.adapters.RuntimeSupervisor = supervisor
+	h.adapters.RuntimeManager = testProcessManager{ProcessSupervisor: supervisor}
 	t.Cleanup(func() {
-		stopCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		stopCtx, cancel := context.WithTimeout(hostTestContext(), 3*time.Second)
 		defer cancel()
 		if err := supervisor.Stop(stopCtx); err != nil {
 			t.Errorf("Stop() error = %v", err)
@@ -442,15 +468,13 @@ func TestCallPluginMethodWorkerNetworkMemoryHostcallThroughBuiltRustRuntime(t *t
 	installed, gateway := installEnableAndMintGateway(t, h, buildWorkerNetworkMemoryHostcallFixturePackage(t), "worker.view")
 
 	result, err := h.CallPluginMethod(ctx, CallMethodRequest{
-		PluginInstanceID:     installed.PluginInstanceID,
-		SurfaceInstanceID:    "surface_rpc",
-		SessionChannelIDHash: "channel_hash",
-		OwnerSessionHash:     "session_hash",
-		OwnerUserHash:        "user_hash",
-		BridgeChannelID:      "bridge_rpc",
-		GatewayToken:         gateway.GatewayToken,
-		Method:               "worker.echo",
-		Params:               map[string]any{},
+		PluginInstanceID:  installed.PluginInstanceID,
+		SurfaceInstanceID: "surface_rpc",
+
+		BridgeChannelID: "bridge_rpc",
+		GatewayToken:    gateway.GatewayToken,
+		Method:          "worker.echo",
+		Params:          map[string]any{},
 	})
 	if err != nil {
 		t.Fatalf("CallPluginMethod() with network memory hostcall error = %v", err)
@@ -602,14 +626,13 @@ func TestCallPluginMethodWorkerNetworkSocketMemoryHostcallsThroughBuiltRustRunti
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			ctx := context.Background()
+			ctx := hostTestContext()
 			broker := connectivity.NewMemoryBroker()
 			executor := &recordingHostNetworkExecutor{}
 			tc.response(executor)
 			h, _, _ := newTestHostWithOptions(t, testHostOptions{
 				developerMode:      true,
 				localGenerated:     true,
-				storageBroker:      storage.NewMemoryBroker(),
 				connectivityBroker: broker,
 				networkExecutor:    executor,
 			})
@@ -618,18 +641,18 @@ func TestCallPluginMethodWorkerNetworkSocketMemoryHostcallsThroughBuiltRustRunti
 				Diagnostics:      h.adapters.Diagnostics,
 				Artifacts:        runtimeArtifactProvider{assets: h.adapters.Assets},
 				HandleGrants:     runtimeHandleGrantValidator{tokens: h.surfaceTokens},
-				StorageFiles:     storageFilesBroker(h.adapters.Storage),
-				StorageKV:        storageKVBroker(h.adapters.Storage),
+				StorageFiles:     h.adapters.PluginData,
+				StorageKV:        h.adapters.PluginData,
 				Connectivity:     broker,
 				NetworkExecutor:  executor,
-				HandshakeTimeout: 5 * time.Second,
+				HandshakeTimeout: hostRuntimeProcessHandshakeTimeout,
 			})
 			if err != nil {
 				t.Fatal(err)
 			}
-			h.adapters.RuntimeSupervisor = supervisor
+			h.adapters.RuntimeManager = testProcessManager{ProcessSupervisor: supervisor}
 			t.Cleanup(func() {
-				stopCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+				stopCtx, cancel := context.WithTimeout(hostTestContext(), 3*time.Second)
 				defer cancel()
 				if err := supervisor.Stop(stopCtx); err != nil {
 					t.Errorf("Stop() error = %v", err)
@@ -641,15 +664,13 @@ func TestCallPluginMethodWorkerNetworkSocketMemoryHostcallsThroughBuiltRustRunti
 			installed, gateway := installEnableAndMintGateway(t, h, buildWorkerNetworkTransportMemoryHostcallFixturePackage(t, tc.transport), "worker.view")
 
 			result, err := h.CallPluginMethod(ctx, CallMethodRequest{
-				PluginInstanceID:     installed.PluginInstanceID,
-				SurfaceInstanceID:    "surface_rpc",
-				SessionChannelIDHash: "channel_hash",
-				OwnerSessionHash:     "session_hash",
-				OwnerUserHash:        "user_hash",
-				BridgeChannelID:      "bridge_rpc",
-				GatewayToken:         gateway.GatewayToken,
-				Method:               "worker.echo",
-				Params:               map[string]any{},
+				PluginInstanceID:  installed.PluginInstanceID,
+				SurfaceInstanceID: "surface_rpc",
+
+				BridgeChannelID: "bridge_rpc",
+				GatewayToken:    gateway.GatewayToken,
+				Method:          "worker.echo",
+				Params:          map[string]any{},
 			})
 			if err != nil {
 				t.Fatalf("CallPluginMethod() with %s network memory hostcall error = %v", tc.name, err)
@@ -684,32 +705,27 @@ func TestCallPluginMethodWorkerStorageMemoryHostcallThroughBuiltRustRuntime(t *t
 		runtimePath += ".exe"
 	}
 
-	ctx := context.Background()
-	storageBroker, err := storage.NewFileBroker(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
+	ctx := hostTestContext()
 	h, _, _ := newTestHostWithOptions(t, testHostOptions{
 		developerMode:  true,
 		localGenerated: true,
-		storageBroker:  storageBroker,
 	})
 	supervisor, err := runtimeclient.NewProcessSupervisor(runtimeclient.ProcessSupervisorOptions{
 		RuntimePath:      runtimePath,
 		Diagnostics:      h.adapters.Diagnostics,
 		Artifacts:        runtimeArtifactProvider{assets: h.adapters.Assets},
 		HandleGrants:     runtimeHandleGrantValidator{tokens: h.surfaceTokens},
-		StorageFiles:     storageFilesBroker(h.adapters.Storage),
-		StorageKV:        storageKVBroker(h.adapters.Storage),
+		StorageFiles:     h.adapters.PluginData,
+		StorageKV:        h.adapters.PluginData,
 		Connectivity:     h.adapters.Connectivity,
-		HandshakeTimeout: 5 * time.Second,
+		HandshakeTimeout: hostRuntimeProcessHandshakeTimeout,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	h.adapters.RuntimeSupervisor = supervisor
+	h.adapters.RuntimeManager = testProcessManager{ProcessSupervisor: supervisor}
 	t.Cleanup(func() {
-		stopCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		stopCtx, cancel := context.WithTimeout(hostTestContext(), 3*time.Second)
 		defer cancel()
 		if err := supervisor.Stop(stopCtx); err != nil {
 			t.Errorf("Stop() error = %v", err)
@@ -722,15 +738,13 @@ func TestCallPluginMethodWorkerStorageMemoryHostcallThroughBuiltRustRuntime(t *t
 	body := []byte("hello from memory storage hostcall")
 
 	result, err := h.CallPluginMethod(ctx, CallMethodRequest{
-		PluginInstanceID:     installed.PluginInstanceID,
-		SurfaceInstanceID:    "surface_rpc",
-		SessionChannelIDHash: "channel_hash",
-		OwnerSessionHash:     "session_hash",
-		OwnerUserHash:        "user_hash",
-		BridgeChannelID:      "bridge_rpc",
-		GatewayToken:         gateway.GatewayToken,
-		Method:               "worker.echo",
-		Params:               map[string]any{},
+		PluginInstanceID:  installed.PluginInstanceID,
+		SurfaceInstanceID: "surface_rpc",
+
+		BridgeChannelID: "bridge_rpc",
+		GatewayToken:    gateway.GatewayToken,
+		Method:          "worker.echo",
+		Params:          map[string]any{},
 	})
 	if err != nil {
 		t.Fatalf("CallPluginMethod() with storage memory hostcall error = %v", err)
@@ -746,7 +760,7 @@ func TestCallPluginMethodWorkerStorageMemoryHostcallThroughBuiltRustRuntime(t *t
 	if storageFile["ok"] != true || storageFile["path"] != "notes/from-memory.txt" || storageFile["size_bytes"] != float64(len(body)) {
 		t.Fatalf("storage_file result mismatch: %#v", storageFile)
 	}
-	read, err := storageBroker.ReadFile(ctx, storage.FileReadRequest{
+	read, err := h.adapters.PluginData.ReadFile(ctx, storage.FileReadRequest{
 		PluginInstanceID: installed.PluginInstanceID,
 		StoreID:          "workspace",
 		Path:             "notes/from-memory.txt",
@@ -775,32 +789,27 @@ func TestCallPluginMethodWorkerStorageKVMemoryHostcallThroughBuiltRustRuntime(t 
 		runtimePath += ".exe"
 	}
 
-	ctx := context.Background()
-	storageBroker, err := storage.NewFileBroker(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
+	ctx := hostTestContext()
 	h, _, _ := newTestHostWithOptions(t, testHostOptions{
 		developerMode:  true,
 		localGenerated: true,
-		storageBroker:  storageBroker,
 	})
 	supervisor, err := runtimeclient.NewProcessSupervisor(runtimeclient.ProcessSupervisorOptions{
 		RuntimePath:      runtimePath,
 		Diagnostics:      h.adapters.Diagnostics,
 		Artifacts:        runtimeArtifactProvider{assets: h.adapters.Assets},
 		HandleGrants:     runtimeHandleGrantValidator{tokens: h.surfaceTokens},
-		StorageFiles:     storageFilesBroker(h.adapters.Storage),
-		StorageKV:        storageKVBroker(h.adapters.Storage),
+		StorageFiles:     h.adapters.PluginData,
+		StorageKV:        h.adapters.PluginData,
 		Connectivity:     h.adapters.Connectivity,
-		HandshakeTimeout: 5 * time.Second,
+		HandshakeTimeout: hostRuntimeProcessHandshakeTimeout,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	h.adapters.RuntimeSupervisor = supervisor
+	h.adapters.RuntimeManager = testProcessManager{ProcessSupervisor: supervisor}
 	t.Cleanup(func() {
-		stopCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		stopCtx, cancel := context.WithTimeout(hostTestContext(), 3*time.Second)
 		defer cancel()
 		if err := supervisor.Stop(stopCtx); err != nil {
 			t.Errorf("Stop() error = %v", err)
@@ -813,15 +822,13 @@ func TestCallPluginMethodWorkerStorageKVMemoryHostcallThroughBuiltRustRuntime(t 
 	body := []byte("hello from memory kv hostcall")
 
 	result, err := h.CallPluginMethod(ctx, CallMethodRequest{
-		PluginInstanceID:     installed.PluginInstanceID,
-		SurfaceInstanceID:    "surface_rpc",
-		SessionChannelIDHash: "channel_hash",
-		OwnerSessionHash:     "session_hash",
-		OwnerUserHash:        "user_hash",
-		BridgeChannelID:      "bridge_rpc",
-		GatewayToken:         gateway.GatewayToken,
-		Method:               "worker.echo",
-		Params:               map[string]any{},
+		PluginInstanceID:  installed.PluginInstanceID,
+		SurfaceInstanceID: "surface_rpc",
+
+		BridgeChannelID: "bridge_rpc",
+		GatewayToken:    gateway.GatewayToken,
+		Method:          "worker.echo",
+		Params:          map[string]any{},
 	})
 	if err != nil {
 		t.Fatalf("CallPluginMethod() with storage kv memory hostcall error = %v", err)
@@ -837,7 +844,7 @@ func TestCallPluginMethodWorkerStorageKVMemoryHostcallThroughBuiltRustRuntime(t 
 	if storageKV["ok"] != true || storageKV["key"] != "runs/latest" || storageKV["size_bytes"] != float64(len(body)) {
 		t.Fatalf("storage_kv result mismatch: %#v", storageKV)
 	}
-	read, err := storageBroker.GetKV(ctx, storage.KVGetRequest{
+	read, err := h.adapters.PluginData.GetKV(ctx, storage.KVGetRequest{
 		PluginInstanceID: installed.PluginInstanceID,
 		StoreID:          "cache",
 		Key:              "runs/latest",
@@ -866,33 +873,28 @@ func TestCallPluginMethodWorkerStorageSQLiteMemoryHostcallThroughBuiltRustRuntim
 		runtimePath += ".exe"
 	}
 
-	ctx := context.Background()
-	storageBroker, err := storage.NewFileBroker(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
+	ctx := hostTestContext()
 	h, _, _ := newTestHostWithOptions(t, testHostOptions{
 		developerMode:  true,
 		localGenerated: true,
-		storageBroker:  storageBroker,
 	})
 	supervisor, err := runtimeclient.NewProcessSupervisor(runtimeclient.ProcessSupervisorOptions{
 		RuntimePath:      runtimePath,
 		Diagnostics:      h.adapters.Diagnostics,
 		Artifacts:        runtimeArtifactProvider{assets: h.adapters.Assets},
 		HandleGrants:     runtimeHandleGrantValidator{tokens: h.surfaceTokens},
-		StorageFiles:     storageFilesBroker(h.adapters.Storage),
-		StorageKV:        storageKVBroker(h.adapters.Storage),
-		StorageSQLite:    storageSQLiteBroker(h.adapters.Storage),
+		StorageFiles:     h.adapters.PluginData,
+		StorageKV:        h.adapters.PluginData,
+		StorageSQLite:    h.adapters.PluginData,
 		Connectivity:     h.adapters.Connectivity,
-		HandshakeTimeout: 5 * time.Second,
+		HandshakeTimeout: hostRuntimeProcessHandshakeTimeout,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	h.adapters.RuntimeSupervisor = supervisor
+	h.adapters.RuntimeManager = testProcessManager{ProcessSupervisor: supervisor}
 	t.Cleanup(func() {
-		stopCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		stopCtx, cancel := context.WithTimeout(hostTestContext(), 3*time.Second)
 		defer cancel()
 		if err := supervisor.Stop(stopCtx); err != nil {
 			t.Errorf("Stop() error = %v", err)
@@ -904,15 +906,13 @@ func TestCallPluginMethodWorkerStorageSQLiteMemoryHostcallThroughBuiltRustRuntim
 	installed, gateway := installEnableAndMintGateway(t, h, buildWorkerStorageSQLiteMemoryHostcallFixturePackage(t), "worker.view")
 
 	result, err := h.CallPluginMethod(ctx, CallMethodRequest{
-		PluginInstanceID:     installed.PluginInstanceID,
-		SurfaceInstanceID:    "surface_rpc",
-		SessionChannelIDHash: "channel_hash",
-		OwnerSessionHash:     "session_hash",
-		OwnerUserHash:        "user_hash",
-		BridgeChannelID:      "bridge_rpc",
-		GatewayToken:         gateway.GatewayToken,
-		Method:               "worker.echo",
-		Params:               map[string]any{},
+		PluginInstanceID:  installed.PluginInstanceID,
+		SurfaceInstanceID: "surface_rpc",
+
+		BridgeChannelID: "bridge_rpc",
+		GatewayToken:    gateway.GatewayToken,
+		Method:          "worker.echo",
+		Params:          map[string]any{},
 	})
 	if err != nil {
 		t.Fatalf("CallPluginMethod() with storage sqlite memory hostcall error = %v", err)
@@ -932,7 +932,7 @@ func TestCallPluginMethodWorkerStorageSQLiteMemoryHostcallThroughBuiltRustRuntim
 		t.Fatalf("storage_sqlite rows_affected = %#v, want 0", storageSQLite["rows_affected"])
 	}
 	tableName := "worker_runs"
-	query, err := storageBroker.QuerySQLite(ctx, storage.SQLiteQueryRequest{
+	query, err := h.adapters.PluginData.QuerySQLite(ctx, storage.SQLiteQueryRequest{
 		PluginInstanceID: installed.PluginInstanceID,
 		StoreID:          "db",
 		Database:         "plugin.sqlite",
@@ -956,7 +956,7 @@ type runtimeRevoker interface {
 
 func assertRuntimeRevokeCounts(t *testing.T, supervisor runtimeRevoker, pluginInstanceID string, revokeEpoch uint64, socket, stream, storageHandle int) {
 	t.Helper()
-	revokeCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	revokeCtx, cancel := context.WithTimeout(hostTestContext(), 3*time.Second)
 	defer cancel()
 	result, err := supervisor.Revoke(revokeCtx, pluginInstanceID, revokeEpoch)
 	if err != nil {
@@ -991,10 +991,11 @@ type hostRuntimeHelloPayload struct {
 }
 
 type hostRuntimeResponsePayload struct {
-	OK      bool            `json:"ok"`
-	Result  json.RawMessage `json:"result,omitempty"`
-	Code    string          `json:"code,omitempty"`
-	Message string          `json:"message,omitempty"`
+	OK          bool            `json:"ok"`
+	Result      json.RawMessage `json:"result,omitempty"`
+	Code        string          `json:"code,omitempty"`
+	Message     string          `json:"message,omitempty"`
+	ErrorOrigin string          `json:"error_origin,omitempty"`
 }
 
 type hostRuntimeRevokePayload struct {
@@ -1044,17 +1045,19 @@ type hostRuntimeNetworkExecuteRequest struct {
 	SurfaceInstanceID    string                 `json:"surface_instance_id,omitempty"`
 	OwnerSessionHash     string                 `json:"owner_session_hash,omitempty"`
 	OwnerUserHash        string                 `json:"owner_user_hash,omitempty"`
+	OwnerEnvHash         string                 `json:"owner_env_hash,omitempty"`
 	SessionChannelIDHash string                 `json:"session_channel_id_hash,omitempty"`
 	BridgeChannelID      string                 `json:"bridge_channel_id,omitempty"`
 	ContentType          string                 `json:"content_type,omitempty"`
 }
 
 type hostRuntimeNetworkExecuteResponse struct {
-	OK         bool   `json:"ok"`
-	Code       string `json:"code,omitempty"`
-	Message    string `json:"message,omitempty"`
-	StatusCode int    `json:"status_code,omitempty"`
-	StreamID   string `json:"stream_id,omitempty"`
+	OK          bool   `json:"ok"`
+	Code        string `json:"code,omitempty"`
+	Message     string `json:"message,omitempty"`
+	ErrorOrigin string `json:"error_origin,omitempty"`
+	StatusCode  int    `json:"status_code,omitempty"`
+	StreamID    string `json:"stream_id,omitempty"`
 }
 
 func runHostRuntimeProcessHelper() {
@@ -1165,25 +1168,31 @@ func hostRuntimeProcessNetworkExecute(reader *bufio.Reader, encoder *json.Encode
 		operation = "http_stream"
 	}
 	request := hostRuntimeNetworkExecuteRequest{
-		PluginID:            invoke.Invocation.PluginID,
-		PluginInstanceID:    invoke.Lease.PluginInstanceID,
-		ActiveFingerprint:   invoke.Invocation.ActiveFingerprint,
-		RuntimeGenerationID: invoke.Lease.RuntimeGenerationID,
-		PolicyRevision:      invoke.Lease.PolicyRevision,
-		ManagementRevision:  invoke.Lease.ManagementRevision,
-		RevokeEpoch:         invoke.Lease.RevokeEpoch,
-		ConnectorID:         "api",
-		Transport:           connectivity.TransportHTTP,
-		Destination:         "https://api.example.com",
-		TTLMillis:           int64(time.Minute / time.Millisecond),
-		Operation:           operation,
-		Method:              http.MethodPost,
-		Path:                "/v1/worker",
-		Headers:             http.Header{"Content-Type": []string{"text/plain"}},
-		BodyBase64:          body,
-		MaxRequestBytes:     1024,
-		MaxResponseBytes:    4096,
-		TimeoutMillis:       1000,
+		PluginID:             invoke.Invocation.PluginID,
+		PluginInstanceID:     invoke.Lease.PluginInstanceID,
+		ActiveFingerprint:    invoke.Invocation.ActiveFingerprint,
+		RuntimeInstanceID:    invoke.Lease.RuntimeInstanceID,
+		RuntimeGenerationID:  invoke.Lease.RuntimeGenerationID,
+		RuntimeShardID:       invoke.Lease.RuntimeShardID,
+		PolicyRevision:       invoke.Lease.PolicyRevision,
+		ManagementRevision:   invoke.Lease.ManagementRevision,
+		RevokeEpoch:          invoke.Lease.RevokeEpoch,
+		OwnerSessionHash:     invoke.Lease.OwnerSessionHash,
+		OwnerUserHash:        invoke.Lease.OwnerUserHash,
+		OwnerEnvHash:         invoke.Lease.OwnerEnvHash,
+		SessionChannelIDHash: invoke.Lease.SessionChannelIDHash,
+		ConnectorID:          "api",
+		Transport:            connectivity.TransportHTTP,
+		Destination:          "https://api.example.com",
+		TTLMillis:            int64(time.Minute / time.Millisecond),
+		Operation:            operation,
+		Method:               http.MethodPost,
+		Path:                 "/v1/worker",
+		Headers:              http.Header{"Content-Type": []string{"text/plain"}},
+		BodyBase64:           body,
+		MaxRequestBytes:      1024,
+		MaxResponseBytes:     4096,
+		TimeoutMillis:        1000,
 	}
 	if operation == "http_stream" {
 		request.StreamID = invoke.Invocation.StreamID
@@ -1195,6 +1204,7 @@ func hostRuntimeProcessNetworkExecute(reader *bufio.Reader, encoder *json.Encode
 		request.SurfaceInstanceID = invoke.Invocation.SurfaceInstanceID
 		request.OwnerSessionHash = invoke.Invocation.OwnerSessionHash
 		request.OwnerUserHash = invoke.Invocation.OwnerUserHash
+		request.OwnerEnvHash = invoke.Invocation.OwnerEnvHash
 		request.SessionChannelIDHash = invoke.Invocation.SessionChannelIDHash
 		request.BridgeChannelID = invoke.Invocation.BridgeChannelID
 		request.ContentType = "text/plain"
@@ -1224,7 +1234,9 @@ func hostRuntimeProcessNetworkExecute(reader *bufio.Reader, encoder *json.Encode
 		os.Exit(26)
 	}
 	if !networkResponse.OK {
-		raw, _ := json.Marshal(hostRuntimeResponsePayload{OK: false, Code: networkResponse.Code, Message: networkResponse.Message})
+		raw, _ := json.Marshal(hostRuntimeResponsePayload{
+			OK: false, Code: networkResponse.Code, Message: networkResponse.Message, ErrorOrigin: networkResponse.ErrorOrigin,
+		})
 		_ = encoder.Encode(hostRuntimeIPCFrame{
 			IPCVersion:          version.RustIPCVersion,
 			FrameType:           "invoke_worker_result",

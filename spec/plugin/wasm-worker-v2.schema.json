@@ -1,21 +1,105 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://schemas.redevplugin.dev/plugin/wasm-worker-v2.schema.json",
-  "title": "ReDevPlugin WASM worker ABI v2",
+  "title": "ReDevPlugin WASM worker executable contract v2",
   "type": "object",
   "additionalProperties": false,
-  "required": ["abi_version", "exports", "imports"],
+  "required": ["abi_version", "memory", "table", "exports", "imports"],
   "properties": {
     "abi_version": { "const": "redevplugin-wasm-worker-v2" },
+    "memory": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["count", "export", "memory64", "shared", "page_size_bytes"],
+      "properties": {
+        "count": { "const": 1 },
+        "export": { "const": "memory" },
+        "memory64": { "const": false },
+        "shared": { "const": false },
+        "page_size_bytes": { "const": 65536 }
+      }
+    },
+    "table": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["max_count", "max_elements", "table64", "shared"],
+      "properties": {
+        "max_count": { "const": 1 },
+        "max_elements": { "const": 65536 },
+        "table64": { "const": false },
+        "shared": { "const": false }
+      }
+    },
     "exports": {
-      "type": "array",
-      "items": { "const": "redevplugin_worker_invoke" },
-      "uniqueItems": true
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["alloc", "dealloc", "invoke"],
+      "properties": {
+        "alloc": {
+          "$ref": "#/$defs/alloc_function"
+        },
+        "dealloc": {
+          "$ref": "#/$defs/dealloc_function"
+        },
+        "invoke": {
+          "$ref": "#/$defs/invoke_function"
+        }
+      }
     },
     "imports": {
       "type": "array",
-      "items": { "enum": ["redevplugin.storage", "redevplugin.network"] },
-      "uniqueItems": true
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/hostcall_import" }
+    }
+  },
+  "$defs": {
+    "alloc_function": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "params", "results"],
+      "properties": {
+        "name": { "const": "redevplugin_worker_alloc" },
+        "params": { "const": ["i32"] },
+        "results": { "const": ["i32"] }
+      }
+    },
+    "dealloc_function": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "params", "results"],
+      "properties": {
+        "name": { "const": "redevplugin_worker_dealloc" },
+        "params": { "const": ["i32", "i32"] },
+        "results": { "const": [] }
+      }
+    },
+    "invoke_function": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "params", "results"],
+      "properties": {
+        "name": { "const": "redevplugin_worker_invoke" },
+        "params": { "const": ["i32", "i32"] },
+        "results": { "const": ["i64"] }
+      }
+    },
+    "hostcall_import": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["module", "name", "params", "results"],
+      "properties": {
+        "module": { "enum": ["redevplugin.storage", "redevplugin.network"] },
+        "name": { "enum": ["files", "kv", "sqlite", "execute"] },
+        "params": { "const": ["i32", "i32", "i32", "i32"] },
+        "results": { "const": ["i32"] }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "module": { "const": "redevplugin.storage" } }, "required": ["module"] },
+          "then": { "properties": { "name": { "enum": ["files", "kv", "sqlite"] } } },
+          "else": { "properties": { "name": { "const": "execute" } } }
+        }
+      ]
     }
   }
 }

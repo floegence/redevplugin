@@ -2,14 +2,14 @@ package capability
 
 import (
 	"errors"
-	"reflect"
 	"testing"
 )
 
-func TestNormalizeRiskPlanDataDefaultsTypedPlanAndPropagatesFlagRisk(t *testing.T) {
+func TestNormalizeRiskPlanDataNormalizesTypedPlanAndPropagatesFlagRisk(t *testing.T) {
 	got, err := NormalizeRiskPlanData(RiskPlan{
-		Summary: "Start container",
-		Effect:  EffectExecute,
+		SchemaVersion: RiskPlanSchemaVersion,
+		Summary:       "Start container",
+		Effect:        EffectExecute,
 		RiskFlags: []RiskFlag{
 			{
 				ID:            "container.host_namespace",
@@ -41,14 +41,20 @@ func TestNormalizeRiskPlanDataDefaultsTypedPlanAndPropagatesFlagRisk(t *testing.
 	}
 }
 
-func TestNormalizeRiskPlanDataLeavesLegacyGenericPlanUntouched(t *testing.T) {
-	legacy := map[string]any{"summary": "Legacy preflight", "anything": true}
-	got, err := NormalizeRiskPlanData(legacy)
+func TestNormalizeRiskPlanDataAcceptsClosedCurrentMap(t *testing.T) {
+	got, err := NormalizeRiskPlanData(map[string]any{
+		"schema_version": RiskPlanSchemaVersion,
+		"summary":        "Start container",
+		"risk_flags": []any{
+			map[string]any{"id": "container.write", "severity": "medium", "summary": "Writes container state"},
+		},
+	})
 	if err != nil {
-		t.Fatalf("NormalizeRiskPlanData() legacy error = %v", err)
+		t.Fatalf("NormalizeRiskPlanData() error = %v", err)
 	}
-	if !reflect.DeepEqual(got, legacy) {
-		t.Fatalf("legacy plan was changed: %#v", got)
+	plan, ok := got.(RiskPlan)
+	if !ok || plan.SchemaVersion != RiskPlanSchemaVersion || len(plan.RiskFlags) != 1 {
+		t.Fatalf("NormalizeRiskPlanData() = %#v, want current RiskPlan", got)
 	}
 }
 
@@ -58,6 +64,28 @@ func TestNormalizeRiskPlanDataRejectsInvalidRiskPlan(t *testing.T) {
 		plan any
 	}{
 		{
+			name: "missing plan",
+			plan: nil,
+		},
+		{
+			name: "nil typed plan",
+			plan: (*RiskPlan)(nil),
+		},
+		{
+			name: "missing schema version on typed plan",
+			plan: RiskPlan{Summary: "Start", RiskFlags: []RiskFlag{
+				{ID: "x", Severity: RiskSeverityLow, Summary: "x"},
+			}},
+		},
+		{
+			name: "missing schema version on generic object",
+			plan: map[string]any{"summary": "Start", "risk_flags": []any{}},
+		},
+		{
+			name: "generic scalar",
+			plan: "start",
+		},
+		{
 			name: "unsupported schema version",
 			plan: RiskPlan{SchemaVersion: "wrong", Summary: "Start", RiskFlags: []RiskFlag{
 				{ID: "x", Severity: RiskSeverityLow, Summary: "x"},
@@ -65,7 +93,7 @@ func TestNormalizeRiskPlanDataRejectsInvalidRiskPlan(t *testing.T) {
 		},
 		{
 			name: "missing summary",
-			plan: RiskPlan{RiskFlags: []RiskFlag{
+			plan: RiskPlan{SchemaVersion: RiskPlanSchemaVersion, RiskFlags: []RiskFlag{
 				{ID: "x", Severity: RiskSeverityLow, Summary: "x"},
 			}},
 		},
@@ -91,8 +119,18 @@ func TestNormalizeRiskPlanDataRejectsInvalidRiskPlan(t *testing.T) {
 			},
 		},
 		{
+			name: "unknown flag field",
+			plan: map[string]any{
+				"schema_version": RiskPlanSchemaVersion,
+				"summary":        "Start",
+				"risk_flags": []map[string]any{
+					{"id": "x", "severity": "low", "summary": "x", "raw": true},
+				},
+			},
+		},
+		{
 			name: "duplicate flag id",
-			plan: RiskPlan{Summary: "Start", RiskFlags: []RiskFlag{
+			plan: RiskPlan{SchemaVersion: RiskPlanSchemaVersion, Summary: "Start", RiskFlags: []RiskFlag{
 				{ID: "x", Severity: RiskSeverityLow, Summary: "x"},
 				{ID: "x", Severity: RiskSeverityHigh, Summary: "x again"},
 			}},

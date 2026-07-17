@@ -135,13 +135,6 @@ func TestSQLiteStorePersistsLifecycleAcrossOpen(t *testing.T) {
 	if len(all) != 2 || all[1].PluginInstanceID != "plugin_2" || all[1].Bound || all[1].DeletedAt == nil {
 		t.Fatalf("persisted deleted records mismatch: %#v", all)
 	}
-	state, err := reopened.State(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(state.Records) != 2 {
-		t.Fatalf("State() = %#v", state)
-	}
 }
 
 func TestSQLiteStoreDeletesPlugin(t *testing.T) {
@@ -174,7 +167,7 @@ func TestSQLiteStoreDeletesPlugin(t *testing.T) {
 	}
 }
 
-func TestSQLiteStoreRejectsInvalidAndNewerSchema(t *testing.T) {
+func TestSQLiteStoreRejectsInvalidRequests(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "secrets.sqlite")
 	store, err := NewSQLiteStore(ctx, path)
@@ -186,16 +179,5 @@ func TestSQLiteStoreRejectsInvalidAndNewerSchema(t *testing.T) {
 	}
 	if err := store.TestSecretRef(ctx, TestRequest{PluginInstanceID: "plugin_1", SecretRef: "token", Scope: ScopeUser}); !errors.Is(err, ErrInvalidSecretRef) {
 		t.Fatalf("TestSecretRef(unbound) error = %v, want ErrInvalidSecretRef", err)
-	}
-	if _, err := store.db.ExecContext(ctx, `INSERT OR IGNORE INTO plugin_secret_schema_migrations(version, applied_at) VALUES(?, ?)`, sqliteSchemaVersion+1, time.Now().UTC().UnixNano()); err != nil {
-		t.Fatal(err)
-	}
-	if err := store.Close(); err != nil {
-		t.Fatal(err)
-	}
-	reopened, err := NewSQLiteStore(ctx, path)
-	if err == nil {
-		_ = reopened.Close()
-		t.Fatal("NewSQLiteStore() accepted newer schema version")
 	}
 }

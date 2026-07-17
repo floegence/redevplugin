@@ -1,0 +1,347 @@
+{
+  "version": "target-classifier-v2",
+  "default_policy": "allow_public_unicast_only",
+  "normalization": {
+    "dns_names": "ASCII lowercase with one trailing dot stripped before special-host checks",
+    "ip_literals": "netip canonical form; IPv4-mapped IPv6 addresses are unmapped before blocked-range checks"
+  },
+  "blocked_ip_ranges": [
+    "0.0.0.0/8",
+    "10.0.0.0/8",
+    "100.64.0.0/10",
+    "127.0.0.0/8",
+    "169.254.0.0/16",
+    "172.16.0.0/12",
+    "192.0.0.0/24",
+    "192.0.2.0/24",
+    "192.31.196.0/24",
+    "192.52.193.0/24",
+    "192.88.99.0/24",
+    "192.168.0.0/16",
+    "192.175.48.0/24",
+    "198.18.0.0/15",
+    "198.51.100.0/24",
+    "203.0.113.0/24",
+    "224.0.0.0/4",
+    "240.0.0.0/4",
+    "::/96",
+    "::1/128",
+    "64:ff9b::/96",
+    "64:ff9b:1::/48",
+    "100::/64",
+    "2001::/23",
+    "2001:db8::/32",
+    "2002::/16",
+    "3fff::/20",
+    "5f00::/16",
+    "2620:4f:8000::/48",
+    "fc00::/7",
+    "fe80::/10",
+    "fec0::/10",
+    "ff00::/8"
+  ],
+  "special_hosts": [
+    "localhost",
+    "metadata.google.internal",
+    "metadata.goog",
+    "instance-data",
+    "instance-data.ec2.internal",
+    "metadata.azure.internal",
+    "169.254.169.254"
+  ],
+  "fixtures": [
+    {
+      "name": "public-http-origin",
+      "transport": "http",
+      "destination": "https://api.example.com",
+      "resolved_address": "93.184.216.34",
+      "decision": "allow"
+    },
+    {
+      "name": "public-ipv4-literal",
+      "transport": "tcp",
+      "destination": "1.1.1.1:443",
+      "decision": "allow"
+    },
+    {
+      "name": "public-ipv4-mapped-resolved",
+      "transport": "tcp",
+      "destination": "dns.example.com:853",
+      "resolved_address": "::ffff:8.8.8.8",
+      "decision": "allow"
+    },
+    {
+      "name": "public-ipv6-resolved",
+      "transport": "tcp",
+      "destination": "dns.example.com:853",
+      "resolved_address": "2606:4700:4700::1111",
+      "decision": "allow"
+    },
+    {
+      "name": "punycode-public-host",
+      "transport": "http",
+      "destination": "https://xn--bcher-kva.example",
+      "resolved_address": "1.0.0.1",
+      "decision": "allow"
+    },
+    {
+      "name": "localhost-special-host",
+      "transport": "http",
+      "destination": "http://localhost",
+      "decision": "deny"
+    },
+    {
+      "name": "metadata-special-host-trailing-dot",
+      "transport": "websocket",
+      "destination": "wss://metadata.google.internal.",
+      "decision": "deny"
+    },
+    {
+      "name": "instance-data-special-host",
+      "transport": "http",
+      "destination": "http://instance-data.ec2.internal",
+      "decision": "deny"
+    },
+    {
+      "name": "this-network-ipv4-literal",
+      "transport": "udp",
+      "destination": "0.1.2.3:53",
+      "decision": "deny"
+    },
+    {
+      "name": "private-ipv4-resolved",
+      "transport": "tcp",
+      "destination": "db.example.com:5432",
+      "resolved_address": "10.0.0.10",
+      "decision": "deny"
+    },
+    {
+      "name": "shared-address-space-resolved",
+      "transport": "tcp",
+      "destination": "db.example.com:5432",
+      "resolved_address": "100.64.0.1",
+      "decision": "deny"
+    },
+    {
+      "name": "loopback-ipv4-literal",
+      "transport": "tcp",
+      "destination": "127.0.0.1:443",
+      "decision": "deny"
+    },
+    {
+      "name": "link-local-ipv4-resolved",
+      "transport": "udp",
+      "destination": "dns.example.com:53",
+      "resolved_address": "169.254.169.254",
+      "decision": "deny"
+    },
+    {
+      "name": "private-172-resolved",
+      "transport": "tcp",
+      "destination": "db.example.com:5432",
+      "resolved_address": "172.31.255.255",
+      "decision": "deny"
+    },
+    {
+      "name": "ietf-protocol-assignments-resolved",
+      "transport": "tcp",
+      "destination": "service.example.com:443",
+      "resolved_address": "192.0.0.9",
+      "decision": "deny"
+    },
+    {
+      "name": "documentation-192-resolved",
+      "transport": "tcp",
+      "destination": "service.example.com:443",
+      "resolved_address": "192.0.2.1",
+      "decision": "deny"
+    },
+    {
+      "name": "as112-v4-resolved",
+      "transport": "udp",
+      "destination": "dns.example.com:53",
+      "resolved_address": "192.31.196.1",
+      "decision": "deny"
+    },
+    {
+      "name": "amt-v4-resolved",
+      "transport": "udp",
+      "destination": "service.example.com:2268",
+      "resolved_address": "192.52.193.1",
+      "decision": "deny"
+    },
+    {
+      "name": "6to4-relay-resolved",
+      "transport": "tcp",
+      "destination": "service.example.com:443",
+      "resolved_address": "192.88.99.1",
+      "decision": "deny"
+    },
+    {
+      "name": "private-192-resolved",
+      "transport": "tcp",
+      "destination": "db.example.com:5432",
+      "resolved_address": "192.168.1.1",
+      "decision": "deny"
+    },
+    {
+      "name": "direct-delegation-as112-resolved",
+      "transport": "udp",
+      "destination": "dns.example.com:53",
+      "resolved_address": "192.175.48.1",
+      "decision": "deny"
+    },
+    {
+      "name": "benchmark-ipv4-resolved",
+      "transport": "tcp",
+      "destination": "service.example.com:443",
+      "resolved_address": "198.18.0.1",
+      "decision": "deny"
+    },
+    {
+      "name": "documentation-198-resolved",
+      "transport": "tcp",
+      "destination": "service.example.com:443",
+      "resolved_address": "198.51.100.1",
+      "decision": "deny"
+    },
+    {
+      "name": "documentation-203-resolved",
+      "transport": "tcp",
+      "destination": "service.example.com:443",
+      "resolved_address": "203.0.113.1",
+      "decision": "deny"
+    },
+    {
+      "name": "multicast-ipv4-resolved",
+      "transport": "udp",
+      "destination": "service.example.com:5000",
+      "resolved_address": "239.1.2.3",
+      "decision": "deny"
+    },
+    {
+      "name": "reserved-ipv4-resolved",
+      "transport": "tcp",
+      "destination": "service.example.com:443",
+      "resolved_address": "240.0.0.1",
+      "decision": "deny"
+    },
+    {
+      "name": "ipv4-mapped-shared-resolved",
+      "transport": "tcp",
+      "destination": "service.example.com:443",
+      "resolved_address": "::ffff:100.64.0.1",
+      "decision": "deny"
+    },
+    {
+      "name": "ipv4-compatible-ipv6-resolved",
+      "transport": "tcp",
+      "destination": "service.example.com:443",
+      "resolved_address": "::192.0.2.1",
+      "decision": "deny"
+    },
+    {
+      "name": "unspecified-ipv6-literal",
+      "transport": "tcp",
+      "destination": "[::]:443",
+      "decision": "deny"
+    },
+    {
+      "name": "loopback-ipv6-literal",
+      "transport": "tcp",
+      "destination": "[::1]:443",
+      "decision": "deny"
+    },
+    {
+      "name": "nat64-well-known-resolved",
+      "transport": "tcp",
+      "destination": "service.example.com:443",
+      "resolved_address": "64:ff9b::c000:201",
+      "decision": "deny"
+    },
+    {
+      "name": "nat64-local-use-resolved",
+      "transport": "tcp",
+      "destination": "service.example.com:443",
+      "resolved_address": "64:ff9b:1::1",
+      "decision": "deny"
+    },
+    {
+      "name": "discard-only-ipv6-resolved",
+      "transport": "udp",
+      "destination": "service.example.com:5000",
+      "resolved_address": "100::1",
+      "decision": "deny"
+    },
+    {
+      "name": "ietf-special-ipv6-resolved",
+      "transport": "tcp",
+      "destination": "service.example.com:443",
+      "resolved_address": "2001::1",
+      "decision": "deny"
+    },
+    {
+      "name": "documentation-ipv6-resolved",
+      "transport": "tcp",
+      "destination": "service.example.com:443",
+      "resolved_address": "2001:db8::1",
+      "decision": "deny"
+    },
+    {
+      "name": "six-to-four-ipv6-resolved",
+      "transport": "tcp",
+      "destination": "service.example.com:443",
+      "resolved_address": "2002:c000:0201::1",
+      "decision": "deny"
+    },
+    {
+      "name": "documentation-3fff-resolved",
+      "transport": "tcp",
+      "destination": "service.example.com:443",
+      "resolved_address": "3fff::1",
+      "decision": "deny"
+    },
+    {
+      "name": "segment-routing-sid-resolved",
+      "transport": "tcp",
+      "destination": "service.example.com:443",
+      "resolved_address": "5f00::1",
+      "decision": "deny"
+    },
+    {
+      "name": "direct-delegation-as112-ipv6-resolved",
+      "transport": "udp",
+      "destination": "dns.example.com:53",
+      "resolved_address": "2620:4f:8000::1",
+      "decision": "deny"
+    },
+    {
+      "name": "ula-resolved",
+      "transport": "tcp",
+      "destination": "db.example.com:5432",
+      "resolved_address": "fd00::10",
+      "decision": "deny"
+    },
+    {
+      "name": "ipv6-link-local-resolved",
+      "transport": "tcp",
+      "destination": "db.example.com:5432",
+      "resolved_address": "fe80::1",
+      "decision": "deny"
+    },
+    {
+      "name": "site-local-resolved",
+      "transport": "tcp",
+      "destination": "db.example.com:5432",
+      "resolved_address": "fec0::1",
+      "decision": "deny"
+    },
+    {
+      "name": "multicast-ipv6-resolved",
+      "transport": "udp",
+      "destination": "service.example.com:5000",
+      "resolved_address": "ff02::1",
+      "decision": "deny"
+    }
+  ]
+}

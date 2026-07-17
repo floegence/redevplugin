@@ -1,4 +1,6 @@
-import { defaultFetch, readHostEnvelope, trimTrailingSlash, type FetchLike } from "./http.js";
+import { defaultFetch, readMutationPlatformResponse, trimTrailingSlash, type FetchLike } from "./http.js";
+import { PluginPlatformRequestError, PluginTransportError } from "./errors.js";
+import type { components } from "./openapi.gen.js";
 import type { PluginPlatformClientOptions, PluginRecord } from "./platform.js";
 import {
   defaultPluginSurfaceScope,
@@ -6,49 +8,55 @@ import {
   type PluginSurfaceScope,
 } from "./surface-scope.js";
 
-export type PluginImportLocalPackageRequest = {
-  package_base64: string;
-  plugin_instance_id?: string;
-  plugin_state_version: 0;
-};
-
-export type PluginUpdateLocalPackageRequest = {
-  plugin_instance_id: string;
-  package_base64: string;
-  plugin_state_version: number;
-};
+export type PluginImportLocalPackageRequest = components["schemas"]["ImportLocalPackageRequest"];
+export type PluginUpdateLocalPackageRequest = components["schemas"]["UpdateLocalPackageRequest"];
 
 export class PluginLocalImportClient {
   #fetch: FetchLike;
   #apiBaseURL: string;
   #surfaceScope: PluginSurfaceScope;
+  #onMutationOutcomeUnknown?: (pluginInstanceId?: string) => void;
 
   constructor(options: PluginPlatformClientOptions = {}) {
     this.#fetch = options.fetch ?? defaultFetch();
     this.#apiBaseURL = trimTrailingSlash(options.apiBaseURL ?? "");
     this.#surfaceScope = options.surfaceScope ?? defaultPluginSurfaceScope;
+    this.#onMutationOutcomeUnknown = options.onMutationOutcomeUnknown;
   }
 
   importLocalPackage(request: PluginImportLocalPackageRequest): Promise<PluginRecord> {
-    return this.#postJSON("/_redevplugin/api/plugins/local-import/install", request);
+    return this.#requestMutation("/_redevplugin/api/plugins/local-import/install", request);
   }
 
   async updateLocalPackage(request: PluginUpdateLocalPackageRequest): Promise<PluginRecord> {
-    const plugin = await this.#postJSON<PluginRecord>("/_redevplugin/api/plugins/local-import/update", request);
-    disposePluginSurfaceScope(this.#surfaceScope, request.plugin_instance_id);
-    return plugin;
+    try {
+      const plugin = await this.#requestMutation<PluginRecord>("/_redevplugin/api/plugins/local-import/update", request);
+      disposePluginSurfaceScope(this.#surfaceScope, request.plugin_instance_id);
+      return plugin;
+    } catch (error) {
+      if (!(error instanceof PluginPlatformRequestError && error.mutationOutcome === "not_committed")) {
+        disposePluginSurfaceScope(this.#surfaceScope, request.plugin_instance_id);
+        this.#onMutationOutcomeUnknown?.(request.plugin_instance_id);
+      }
+      throw error;
+    }
   }
 
-  async #postJSON<T>(path: string, body: unknown): Promise<T> {
-    const response = await this.#fetch(this.#apiBaseURL + path, {
-      method: "POST",
-      headers: {
-        "Accept": "application/json",
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify(body),
-      credentials: "same-origin",
-    });
-    return readHostEnvelope<T>(response, "PLUGIN_PLATFORM_REQUEST_FAILED");
+  async #requestMutation<T>(path: string, body: unknown): Promise<T> {
+    let response;
+    try {
+      response = await this.#fetch(this.#apiBaseURL + path, {
+        method: "POST",
+        headers: {
+          "Accept": "application/json",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(body),
+        credentials: "same-origin",
+      });
+    } catch (cause) {
+      throw new PluginTransportError(`Plugin platform request failed for POST ${path}`, cause, "unknown");
+    }
+    return readMutationPlatformResponse<T>(response);
   }
 }

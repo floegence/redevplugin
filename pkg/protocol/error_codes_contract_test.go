@@ -25,11 +25,29 @@ func TestStableErrorCodeCatalogsMatchContracts(t *testing.T) {
 	assertStringSlicesEqual(t, schemaEnum(t, defs, "bridge_error_code"), bridgeCodes, "error-codes schema bridge_error_code")
 	assertStringSlicesEqual(t, schemaEnum(t, defs, "typescript_client_error_code"), clientCodes, "error-codes schema typescript_client_error_code")
 
-	openAPICodes, err := readOpenAPIErrorCodes(filepath.Join(root, "spec", "openapi", "plugin-platform-v4.yaml"))
+	openAPIRaw, err := os.ReadFile(filepath.Join(root, "spec", "openapi", "plugin-platform-v4.yaml"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	assertStringSlicesEqual(t, openAPICodes, platformCodes, "OpenAPI ErrorCode enum")
+	if !strings.Contains(string(openAPIRaw), `ErrorCode:
+      $ref: "../plugin/error-codes-v2.schema.json#/$defs/platform_error_code"`) {
+		t.Fatal("OpenAPI ErrorCode must reference the canonical error-code schema")
+	}
+	typedCodes := []string{
+		string(security.ErrJSONLimitExceeded),
+		string(security.ErrManifestInvalid),
+		string(security.ErrPackageInvalid),
+		string(security.ErrPackageTooLarge),
+		string(security.ErrPackagePathForbidden),
+		string(security.ErrManagementRevisionMismatch),
+		string(security.ErrAuthorizationRevisionMismatch),
+		string(security.ErrBindingRevisionMismatch),
+		string(security.ErrValuesRevisionMismatch),
+		string(security.ErrCapabilityError),
+		string(security.ErrWorkerError),
+	}
+	genericCodes := readOpenAPIEnum(t, string(openAPIRaw), "GenericPlatformErrorCode")
+	assertStringSlicesEqual(t, genericCodes, diffStrings(platformCodes, typedCodes), "OpenAPI generic platform error code partition")
 
 	bridgeSchema := readBridgeSchema(t)
 	bridgeResponse := requireNestedObject(t, bridgeSchema, "$defs", "response")
@@ -44,13 +62,28 @@ func TestStableErrorCodeCatalogsMatchContracts(t *testing.T) {
 	bridgeCode := requireNestedObject(t, errorVariant, "properties", "error_code")
 	assertStringSlicesEqual(t, requireStringSlice(t, bridgeCode["enum"], "bridge error_code enum"), bridgeCodes, "bridge schema error_code enum")
 
-	tsSource, err := os.ReadFile(filepath.Join(root, "packages", "redevplugin-ui", "src", "errors.ts"))
+	tsSource, err := os.ReadFile(filepath.Join(root, "packages", "redevplugin-ui", "src", "error-codes.gen.ts"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	assertStringSlicesEqual(t, readTypeScriptLiteralArray(t, string(tsSource), "pluginPlatformErrorCodes"), platformCodes, "TypeScript pluginPlatformErrorCodes")
-	assertStringSlicesEqual(t, readTypeScriptSpreadArray(t, string(tsSource), "pluginBridgeErrorCodes", "pluginPlatformErrorCodes"), diffStrings(bridgeCodes, platformCodes), "TypeScript pluginBridgeErrorCodes extras")
-	assertStringSlicesEqual(t, readTypeScriptSpreadArray(t, string(tsSource), "pluginClientErrorCodes", "pluginBridgeErrorCodes"), diffStrings(clientCodes, bridgeCodes), "TypeScript pluginClientErrorCodes extras")
+	assertStringSlicesEqual(t, readTypeScriptLiteralArray(t, string(tsSource), "pluginBridgeErrorCodes"), bridgeCodes, "TypeScript pluginBridgeErrorCodes")
+	assertStringSlicesEqual(t, readTypeScriptLiteralArray(t, string(tsSource), "pluginClientErrorCodes"), clientCodes, "TypeScript pluginClientErrorCodes")
+}
+
+func readOpenAPIEnum(t *testing.T, source string, schemaName string) []string {
+	t.Helper()
+	pattern := regexp.MustCompile(`(?m)^    ` + regexp.QuoteMeta(schemaName) + `:\n(?:      [^\n]*\n)*?      enum:\n((?:        - [A-Z0-9_]+\n)+)`)
+	match := pattern.FindStringSubmatch(source)
+	if len(match) != 2 {
+		t.Fatalf("OpenAPI schema %s enum not found", schemaName)
+	}
+	lines := strings.Split(strings.TrimSpace(match[1]), "\n")
+	values := make([]string, 0, len(lines))
+	for _, line := range lines {
+		values = append(values, strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(line), "- ")))
+	}
+	return values
 }
 
 func TestRustIPCErrorCodesMatchSchemaAndSource(t *testing.T) {
@@ -92,47 +125,11 @@ func errorCodesToStrings(codes []security.ErrorCode) []string {
 	return out
 }
 
-func readOpenAPIErrorCodes(path string) ([]string, error) {
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		return nil, err
-	}
-	lines := strings.Split(string(raw), "\n")
-	inErrorCode := false
-	inEnum := false
-	var codes []string
-	for _, line := range lines {
-		switch {
-		case line == "    ErrorCode:":
-			inErrorCode = true
-			inEnum = false
-			continue
-		case inErrorCode && strings.HasPrefix(line, "    ") && !strings.HasPrefix(line, "      ") && line != "    ErrorCode:":
-			return codes, nil
-		case inErrorCode && strings.TrimSpace(line) == "enum:":
-			inEnum = true
-			continue
-		case inEnum && strings.HasPrefix(strings.TrimSpace(line), "- "):
-			codes = append(codes, strings.TrimPrefix(strings.TrimSpace(line), "- "))
-		}
-	}
-	return codes, nil
-}
-
 func readTypeScriptLiteralArray(t *testing.T, source string, name string) []string {
 	t.Helper()
 	body := readTypeScriptArrayBody(t, source, name)
 	if strings.Contains(body, "...") {
 		t.Fatalf("%s must be a literal array without spread", name)
-	}
-	return quotedStrings(body)
-}
-
-func readTypeScriptSpreadArray(t *testing.T, source string, name string, spreadName string) []string {
-	t.Helper()
-	body := readTypeScriptArrayBody(t, source, name)
-	if !strings.Contains(body, "..."+spreadName) {
-		t.Fatalf("%s must include ...%s", name, spreadName)
 	}
 	return quotedStrings(body)
 }

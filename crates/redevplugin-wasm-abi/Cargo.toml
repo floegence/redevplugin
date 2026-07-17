@@ -6,3 +6,6 @@ license = "MIT"
 
 [dependencies]
 wasmparser = "0.228"
+
+[dev-dependencies]
+wat = "1"

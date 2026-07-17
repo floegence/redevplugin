@@ -14,7 +14,7 @@
     "bridge_schema_version": "bridge-v4",
     "opaque_surface_document_schema_version": "opaque-surface-document-v2",
     "opaque_surface_transport_schema_version": "opaque-surface-transport-v3",
-    "target_classifier_version": "target-classifier-v1",
+    "target_classifier_version": "target-classifier-v2",
     "network_grant_schema_version": "network-grant-v1",
     "plugin_platform_openapi_version": "plugin-platform-v4",
     "compatibility_manifest_version": "redevplugin.compatibility.v4",
@@ -148,7 +148,7 @@
     },
     {
       "id": "target-classifier-fixture",
-      "path": "spec/plugin/target-classifier-v1.json",
+      "path": "spec/plugin/target-classifier-v2.json",
       "version_key": "target_classifier_version"
     },
     {

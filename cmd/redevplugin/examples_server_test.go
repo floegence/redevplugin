@@ -14,12 +14,14 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/floegence/redevplugin/pkg/bridge"
 	"github.com/floegence/redevplugin/pkg/connectivity"
 	"github.com/floegence/redevplugin/pkg/host"
+	"github.com/floegence/redevplugin/pkg/observability"
 	"github.com/floegence/redevplugin/pkg/runtimeclient"
 	"github.com/floegence/redevplugin/pkg/version"
 	"golang.org/x/net/dns/dnsmessage"
@@ -160,25 +162,21 @@ func TestExamplesWeatherPluginFetchesLiveForecast(t *testing.T) {
 	}
 	now := time.Now().UTC()
 	bootstrap, err := pluginHost.OpenSurface(context.Background(), host.OpenSurfaceRequest{
-		PluginInstanceID:     weatherRecord.instanceID,
-		PluginStateVersion:   weatherRecord.stateVersion,
-		SurfaceID:            "weather.view",
-		SurfaceInstanceID:    "surface_examples_weather_live_test",
-		OwnerSessionHash:     examplesOwnerHash,
-		OwnerUserHash:        examplesUserHash,
-		SessionChannelIDHash: examplesChannelHash,
-		Now:                  now,
+		PluginInstanceID:           weatherRecord.instanceID,
+		ExpectedManagementRevision: weatherRecord.stateVersion,
+		SurfaceID:                  "weather.view",
+		SurfaceInstanceID:          "surface_examples_weather_live_test",
+
+		Now: now,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err := pluginHost.PrepareSurface(context.Background(), host.ExchangeAssetTicketRequest{
-		SurfaceInstanceID:    bootstrap.SurfaceInstanceID,
-		AssetTicket:          bootstrap.AssetTicket,
-		OwnerSessionHash:     bootstrap.OwnerSessionHash,
-		OwnerUserHash:        bootstrap.OwnerUserHash,
-		SessionChannelIDHash: bootstrap.SessionChannelIDHash,
-		Now:                  now.Add(time.Second),
+		SurfaceInstanceID: bootstrap.SurfaceInstanceID,
+		AssetTicket:       bootstrap.AssetTicket,
+
+		Now: now.Add(time.Second),
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -189,7 +187,7 @@ func TestExamplesWeatherPluginFetchesLiveForecast(t *testing.T) {
 		ActiveFingerprint:  bootstrap.ActiveFingerprint,
 		BridgeNonce:        bootstrap.BridgeNonce,
 		AssetSessionNonce:  bootstrap.AssetSessionNonce,
-		PluginStateVersion: bootstrap.PluginStateVersion,
+		ManagementRevision: bootstrap.ManagementRevision,
 		RevokeEpoch:        bootstrap.RevokeEpoch,
 		UIProtocolVersion:  "plugin-ui-v4",
 	}
@@ -198,23 +196,19 @@ func TestExamplesWeatherPluginFetchesLiveForecast(t *testing.T) {
 		Handshake:                 handshake,
 		BridgeChannelID:           bridgeChannelID,
 		HandshakeTranscriptSHA256: bridge.HandshakeTranscriptSHA256(handshake, bridgeChannelID),
-		OwnerSessionHash:          bootstrap.OwnerSessionHash,
-		OwnerUserHash:             bootstrap.OwnerUserHash,
-		SessionChannelIDHash:      bootstrap.SessionChannelIDHash,
-		Now:                       now.Add(2 * time.Second),
+
+		Now: now.Add(2 * time.Second),
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	result, err := pluginHost.CallPluginMethod(context.Background(), host.CallMethodRequest{
-		PluginInstanceID:     weatherRecord.instanceID,
-		SurfaceInstanceID:    bootstrap.SurfaceInstanceID,
-		SessionChannelIDHash: bootstrap.SessionChannelIDHash,
-		OwnerSessionHash:     bootstrap.OwnerSessionHash,
-		OwnerUserHash:        bootstrap.OwnerUserHash,
-		BridgeChannelID:      bridgeChannelID,
-		GatewayToken:         gateway.GatewayToken,
-		Method:               "weather.forecast",
+		PluginInstanceID:  weatherRecord.instanceID,
+		SurfaceInstanceID: bootstrap.SurfaceInstanceID,
+
+		BridgeChannelID: bridgeChannelID,
+		GatewayToken:    gateway.GatewayToken,
+		Method:          "weather.forecast",
 		Params: map[string]any{
 			"latitude":  52.52,
 			"longitude": 13.41,
@@ -236,15 +230,21 @@ type hostPluginRecord struct {
 }
 
 func TestExamplesHealthHandlerReadsLiveRuntimeHealth(t *testing.T) {
-	runtimeHealth := &examplesRuntimeHealthStub{health: runtimeclient.Health{
-		Ready:               true,
-		RuntimeGenerationID: "runtime_generation_1",
+	runtimeHealth := &examplesRuntimeHealthStub{health: runtimeclient.ManagerHealth{
+		Ready: true,
+		Shards: []runtimeclient.ShardHealth{{
+			RuntimeShardID: "runtime_shard_00",
+			Health: runtimeclient.Health{
+				Ready:               true,
+				RuntimeGenerationID: "runtime_generation_1",
+			},
+		}},
 	}}
 	handler := examplesHealthHandler(runtimeHealth, 3)
 
 	first := httptest.NewRecorder()
 	handler(first, httptest.NewRequest(http.MethodGet, "/api/health", nil))
-	if first.Code != http.StatusOK || !strings.Contains(first.Body.String(), `"ready":true`) || !strings.Contains(first.Body.String(), `"runtime_generation_id":"runtime_generation_1"`) {
+	if first.Code != http.StatusOK || !strings.Contains(first.Body.String(), `"ready":true`) || !strings.Contains(first.Body.String(), `"runtime_shard_id":"runtime_shard_00"`) || !strings.Contains(first.Body.String(), `"runtime_generation_id":"runtime_generation_1"`) {
 		t.Fatalf("first health response = HTTP %d %s", first.Code, first.Body.String())
 	}
 
@@ -327,13 +327,16 @@ func TestExamplesServerBrowserSmoke(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	serverResult := make(chan error, 1)
 	hostReady := make(chan *host.Host, 1)
+	events := newExamplesRecordingEvents()
 	go func() {
 		serverResult <- examplesServerWithOptions(ctx, stateRoot, runtimePath, examplesServerOptions{
-			Listener:        listener,
-			NetworkExecutor: examplesFixtureNetworkExecutor{},
-			Output:          io.Discard,
-			RepositoryRoot:  repositoryRoot,
-			OnReady:         func(pluginHost *host.Host) { hostReady <- pluginHost },
+			Listener:          listener,
+			NetworkExecutor:   examplesFixtureNetworkExecutor{},
+			Events:            events,
+			Output:            io.Discard,
+			RepositoryRoot:    repositoryRoot,
+			RuntimeShardCount: 1,
+			OnReady:           func(pluginHost *host.Host) { hostReady <- pluginHost },
 		})
 	}()
 	t.Cleanup(func() {
@@ -368,8 +371,8 @@ func TestExamplesServerBrowserSmoke(t *testing.T) {
 	)
 	if output, err := command.CombinedOutput(); err != nil {
 		health, healthErr := pluginHost.RuntimeHealth(context.Background())
-		diagnostics, diagnosticErr := pluginHost.ListDiagnosticEvents(context.Background(), host.ListDiagnosticEventsRequest{Limit: 50})
-		t.Fatalf("examples browser smoke failed: %v\n%s\nruntime health: %#v (error=%v)\ndiagnostics: %#v (error=%v)", err, output, health, healthErr, diagnostics, diagnosticErr)
+		diagnostics, diagnosticErr := pluginHost.ListDiagnosticEvents(examplesContext(context.Background()), host.ListDiagnosticEventsRequest{Limit: 50})
+		t.Fatalf("examples browser smoke failed: %v\n%s\nruntime health: %#v (error=%v)\ndiagnostics: %#v (error=%v)\ninternal diagnostics: %#v", err, output, health, healthErr, diagnostics, diagnosticErr, events.snapshotDiagnostics())
 	}
 }
 
@@ -384,11 +387,12 @@ func primeExamplesPersistentState(t *testing.T, stateRoot string, runtimePath st
 	ready := make(chan struct{}, 1)
 	go func() {
 		result <- examplesServerWithOptions(ctx, stateRoot, runtimePath, examplesServerOptions{
-			Listener:        listener,
-			NetworkExecutor: examplesFixtureNetworkExecutor{},
-			Output:          io.Discard,
-			RepositoryRoot:  repositoryRoot,
-			OnReady:         func(*host.Host) { ready <- struct{}{} },
+			Listener:          listener,
+			NetworkExecutor:   examplesFixtureNetworkExecutor{},
+			Output:            io.Discard,
+			RepositoryRoot:    repositoryRoot,
+			RuntimeShardCount: 1,
+			OnReady:           func(*host.Host) { ready <- struct{}{} },
 		})
 	}()
 	select {
@@ -458,11 +462,11 @@ func waitForExamplesHealth(t *testing.T, origin string) {
 type examplesFixtureNetworkExecutor struct{}
 
 type examplesRuntimeHealthStub struct {
-	health runtimeclient.Health
+	health runtimeclient.ManagerHealth
 	err    error
 }
 
-func (s *examplesRuntimeHealthStub) RuntimeHealth(context.Context) (runtimeclient.Health, error) {
+func (s *examplesRuntimeHealthStub) RuntimeHealth(context.Context) (runtimeclient.ManagerHealth, error) {
 	return s.health, s.err
 }
 
@@ -514,6 +518,37 @@ func (examplesFixtureNetworkExecutor) TCPRoundTrip(context.Context, connectivity
 
 func (examplesFixtureNetworkExecutor) UDPRoundTrip(context.Context, connectivity.UDPRoundTripRequest) (connectivity.UDPRoundTripResponse, error) {
 	return connectivity.UDPRoundTripResponse{}, errors.New("fixture UDP is unsupported")
+}
+
+type examplesRecordingEvents struct {
+	store       *observability.MemoryStore
+	mu          sync.Mutex
+	diagnostics []observability.DiagnosticEvent
+}
+
+func newExamplesRecordingEvents() *examplesRecordingEvents {
+	return &examplesRecordingEvents{store: observability.NewMemoryStore()}
+}
+
+func (s *examplesRecordingEvents) AppendPluginAudit(ctx context.Context, event observability.AuditEvent) error {
+	return s.store.AppendPluginAudit(ctx, event)
+}
+
+func (s *examplesRecordingEvents) AppendPluginDiagnostic(ctx context.Context, event observability.DiagnosticEvent) error {
+	s.mu.Lock()
+	s.diagnostics = append(s.diagnostics, event)
+	s.mu.Unlock()
+	return s.store.AppendPluginDiagnostic(ctx, event)
+}
+
+func (s *examplesRecordingEvents) ListPluginDiagnostics(ctx context.Context, req observability.ListDiagnosticRequest) ([]observability.DiagnosticEvent, error) {
+	return s.store.ListPluginDiagnostics(ctx, req)
+}
+
+func (s *examplesRecordingEvents) snapshotDiagnostics() []observability.DiagnosticEvent {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]observability.DiagnosticEvent(nil), s.diagnostics...)
 }
 
 func startExamplesTestDNSServer(t *testing.T, answer [4]byte) (string, <-chan string) {

@@ -20,6 +20,7 @@ import (
 	"github.com/floegence/redevplugin/pkg/host"
 	"github.com/floegence/redevplugin/pkg/manifest"
 	"github.com/floegence/redevplugin/pkg/permissions"
+	"github.com/floegence/redevplugin/pkg/plugindata"
 	"github.com/floegence/redevplugin/pkg/pluginpkg"
 	"github.com/floegence/redevplugin/pkg/registry"
 	"github.com/floegence/redevplugin/pkg/secrets"
@@ -163,7 +164,7 @@ func TestCLIScaffoldProducesPackageablePlugin(t *testing.T) {
 	if err := json.Unmarshal(output, &summary); err != nil {
 		t.Fatalf("scaffold output decode error = %v: %s", err, output)
 	}
-	if summary.PluginID != "com.example.generated" || len(summary.Files) != 16 {
+	if summary.PluginID != "com.example.generated" || len(summary.Files) != 14 {
 		t.Fatalf("scaffold summary mismatch: %#v", summary)
 	}
 
@@ -298,23 +299,47 @@ func TestCLIScaffoldRunsGeneratedWorkerThroughBuiltRustRuntime(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ctx := context.Background()
-	h, err := host.New(host.Adapters{
-		SessionResolver:         staticSessionResolver{},
-		Policy:                  staticPolicyAdapter{},
-		RuntimeArtifactResolver: cliRuntimeResolver{path: runtimePath},
+	ctx := cliContext(context.Background())
+	registryStore := registry.NewMemoryStore()
+	pluginData, err := plugindata.Open(ctx, filepath.Join(dir, "plugin-data"), registryStore)
+	if err != nil {
+		t.Fatal(err)
+	}
+	adapters := newEphemeralCLIAdapters(registryStore, pluginData)
+	runtimeManager, err := newCommandRuntimeManager(commandRuntimeDependencies{
+		Path:             runtimePath,
+		Diagnostics:      adapters.Diagnostics,
+		Assets:           adapters.Assets,
+		SurfaceTokens:    adapters.SurfaceTokens,
+		PluginData:       pluginData,
+		Connectivity:     adapters.Connectivity,
+		NetworkExecutor:  adapters.NetworkExecutor,
+		ShardCount:       1,
+		HandshakeTimeout: 15 * time.Second,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
+	adapters.RuntimeManager = runtimeManager
+	h, err := host.Open(ctx, adapters)
+	if err != nil {
+		_ = pluginData.Close()
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = h.Close() })
 	health, err := h.StartRuntime(ctx, host.StartRuntimeRequest{
 		Target: host.RuntimeTarget{OS: goruntime.GOOS, Arch: goruntime.GOARCH},
 	})
 	if err != nil {
 		t.Fatalf("StartRuntime() error = %v", err)
 	}
-	if !health.Ready || health.RuntimeGenerationID == "" {
+	if !health.Ready || len(health.Shards) != 1 {
 		t.Fatalf("runtime health mismatch: %#v", health)
+	}
+	for _, shard := range health.Shards {
+		if !shard.Ready || shard.RuntimeGenerationID == "" {
+			t.Fatalf("runtime shard health mismatch: %#v", shard)
+		}
 	}
 	t.Cleanup(func() {
 		stopCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
@@ -330,33 +355,29 @@ func TestCLIScaffoldRunsGeneratedWorkerThroughBuiltRustRuntime(t *testing.T) {
 	}
 	now := time.Now().UTC()
 	enabled, err := h.EnablePlugin(ctx, host.EnableRequest{
-		PluginInstanceID:   installed.PluginInstanceID,
-		PluginStateVersion: installed.ManagementRevision,
-		Now:                now,
+		PluginInstanceID:           installed.PluginInstanceID,
+		ExpectedManagementRevision: installed.ManagementRevision,
+		Now:                        now,
 	})
 	if err != nil {
 		t.Fatalf("EnablePlugin() error = %v", err)
 	}
 	bootstrap, err := h.OpenSurface(ctx, host.OpenSurfaceRequest{
-		PluginInstanceID:     enabled.PluginInstanceID,
-		PluginStateVersion:   enabled.ManagementRevision,
-		SurfaceID:            "com.example.generated.runtime.view",
-		SurfaceInstanceID:    "surface_generated_runtime",
-		OwnerSessionHash:     "owner_session_hash",
-		OwnerUserHash:        "owner_user_hash",
-		SessionChannelIDHash: "session_channel_hash",
-		Now:                  now.Add(time.Second),
+		PluginInstanceID:           enabled.PluginInstanceID,
+		ExpectedManagementRevision: enabled.ManagementRevision,
+		SurfaceID:                  "com.example.generated.runtime.view",
+		SurfaceInstanceID:          "surface_generated_runtime",
+
+		Now: now.Add(time.Second),
 	})
 	if err != nil {
 		t.Fatalf("OpenSurface() error = %v", err)
 	}
 	prepared, err := h.PrepareSurface(ctx, host.ExchangeAssetTicketRequest{
-		SurfaceInstanceID:    bootstrap.SurfaceInstanceID,
-		AssetTicket:          bootstrap.AssetTicket,
-		OwnerSessionHash:     bootstrap.OwnerSessionHash,
-		OwnerUserHash:        bootstrap.OwnerUserHash,
-		SessionChannelIDHash: bootstrap.SessionChannelIDHash,
-		Now:                  now.Add(2 * time.Second),
+		SurfaceInstanceID: bootstrap.SurfaceInstanceID,
+		AssetTicket:       bootstrap.AssetTicket,
+
+		Now: now.Add(2 * time.Second),
 	})
 	if err != nil {
 		t.Fatalf("PrepareSurface() error = %v", err)
@@ -371,7 +392,7 @@ func TestCLIScaffoldRunsGeneratedWorkerThroughBuiltRustRuntime(t *testing.T) {
 		ActiveFingerprint:  bootstrap.ActiveFingerprint,
 		BridgeNonce:        bootstrap.BridgeNonce,
 		AssetSessionNonce:  bootstrap.AssetSessionNonce,
-		PluginStateVersion: bootstrap.PluginStateVersion,
+		ManagementRevision: bootstrap.ManagementRevision,
 		RevokeEpoch:        bootstrap.RevokeEpoch,
 		UIProtocolVersion:  "plugin-ui-v4",
 	}
@@ -379,26 +400,22 @@ func TestCLIScaffoldRunsGeneratedWorkerThroughBuiltRustRuntime(t *testing.T) {
 		Handshake:                 handshake,
 		BridgeChannelID:           "bridge_generated_runtime",
 		HandshakeTranscriptSHA256: bridge.HandshakeTranscriptSHA256(handshake, "bridge_generated_runtime"),
-		OwnerSessionHash:          bootstrap.OwnerSessionHash,
-		OwnerUserHash:             bootstrap.OwnerUserHash,
-		SessionChannelIDHash:      bootstrap.SessionChannelIDHash,
-		Now:                       now.Add(3 * time.Second),
+
+		Now: now.Add(3 * time.Second),
 	})
 	if err != nil {
 		t.Fatalf("MintBridgeToken() error = %v", err)
 	}
 
 	result, err := h.CallPluginMethod(ctx, host.CallMethodRequest{
-		PluginInstanceID:     installed.PluginInstanceID,
-		SurfaceInstanceID:    bootstrap.SurfaceInstanceID,
-		SessionChannelIDHash: "session_channel_hash",
-		OwnerSessionHash:     "owner_session_hash",
-		OwnerUserHash:        "owner_user_hash",
-		BridgeChannelID:      "bridge_generated_runtime",
-		GatewayToken:         gateway.GatewayToken,
-		Method:               "worker.echo",
-		Params:               map[string]any{"message": "hello from scaffold"},
-		Now:                  now.Add(4 * time.Second),
+		PluginInstanceID:  installed.PluginInstanceID,
+		SurfaceInstanceID: bootstrap.SurfaceInstanceID,
+
+		BridgeChannelID: "bridge_generated_runtime",
+		GatewayToken:    gateway.GatewayToken,
+		Method:          "worker.echo",
+		Params:          map[string]any{"message": "hello from scaffold"},
+		Now:             now.Add(4 * time.Second),
 	})
 	if err != nil {
 		t.Fatalf("CallPluginMethod() with generated scaffold error = %v", err)
@@ -421,22 +438,12 @@ func TestCLIDevLifecyclePersistsGeneratedPluginState(t *testing.T) {
 	scaffoldDir := filepath.Join(dir, "generated")
 	stateRoot := filepath.Join(dir, "state")
 	packageFile := filepath.Join(dir, "generated.redevplugin")
-	if err := os.Mkdir(stateRoot, 0o700); err != nil {
-		t.Fatal(err)
-	}
 	if _, err := captureCLIOutput(t, "scaffold", "com.example.generated.lifecycle", "Generated Lifecycle Plugin", scaffoldDir); err != nil {
 		t.Fatalf("scaffold command error = %v", err)
 	}
 	addLifecycleStorageToManifest(t, filepath.Join(scaffoldDir, "dist", "manifest.json"))
 	if _, err := captureCLIOutput(t, "package", filepath.Join(scaffoldDir, "dist"), packageFile); err != nil {
 		t.Fatalf("package command error = %v", err)
-	}
-
-	if _, err := captureCLIOutput(t, "dev-enable", stateRoot); !errors.Is(err, errDevStateNotInstalled) {
-		t.Fatalf("dev-enable before install error = %v, want %v", err, errDevStateNotInstalled)
-	}
-	if _, err := captureCLIOutput(t, "dev-open", stateRoot, "com.example.generated.lifecycle.view"); !errors.Is(err, errDevStateNotInstalled) {
-		t.Fatalf("dev-open before install error = %v, want %v", err, errDevStateNotInstalled)
 	}
 
 	installOutput, err := captureCLIOutput(t, "dev-install", stateRoot, packageFile)
@@ -447,15 +454,55 @@ func TestCLIDevLifecyclePersistsGeneratedPluginState(t *testing.T) {
 	if err := json.Unmarshal(installOutput, &installSummary); err != nil {
 		t.Fatalf("dev-install output decode error = %v: %s", err, installOutput)
 	}
-	if installSummary.EnableState != registry.EnableDisabled || !installSummary.PackageRetained || installSummary.StateRoot != stateRoot {
+	if installSummary.EnableState != registry.EnableDisabled || installSummary.StateRoot != stateRoot || installSummary.PluginDataRoot != filepath.Join(stateRoot, devPluginDataDir) {
 		t.Fatalf("dev-install summary mismatch: %#v", installSummary)
 	}
-	if _, err := os.Stat(filepath.Join(stateRoot, devPackageFile)); err != nil {
-		t.Fatalf("dev package copy missing: %v", err)
+	for _, filename := range []string{devPackageFile, devRegistryFile, devSecretsFile} {
+		if _, err := os.Stat(filepath.Join(stateRoot, filename)); err != nil {
+			t.Fatalf("dev state artifact %s missing: %v", filename, err)
+		}
+	}
+	rootEntries, err := os.ReadDir(stateRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range rootEntries {
+		if filepath.Ext(entry.Name()) == ".json" {
+			t.Fatalf("dev state root contains a JSON authority mirror: %s", entry.Name())
+		}
+	}
+	registryStore, err := registry.NewSQLiteStore(context.Background(), filepath.Join(stateRoot, devRegistryFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, err := registryStore.GetPlugin(context.Background(), installSummary.PluginInstanceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if record.EnableState != registry.EnableDisabled {
+		t.Fatalf("registry record after install = %#v", record)
+	}
+	if err := registryStore.Close(); err != nil {
+		t.Fatal(err)
 	}
 
-	if _, err := captureCLIOutput(t, "dev-open", stateRoot, "com.example.generated.lifecycle.view"); err == nil || !strings.Contains(err.Error(), "must be enabled") {
-		t.Fatalf("dev-open disabled error = %v, want must be enabled", err)
+	harness, _, err := loadDevHarness(context.Background(), stateRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondRegistry, err := registry.NewSQLiteStore(context.Background(), filepath.Join(stateRoot, devRegistryFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if secondStore, err := plugindata.Open(context.Background(), filepath.Join(stateRoot, devPluginDataDir), secondRegistry); err == nil {
+		_ = secondStore.Close()
+		t.Fatal("second plugin data store acquired an already locked root")
+	}
+	if err := secondRegistry.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := harness.Close(); err != nil {
+		t.Fatal(err)
 	}
 
 	enableOutput, err := captureCLIOutput(t, "dev-enable", stateRoot)
@@ -464,41 +511,10 @@ func TestCLIDevLifecyclePersistsGeneratedPluginState(t *testing.T) {
 	}
 	var enableSummary devLifecycleSummary
 	if err := json.Unmarshal(enableOutput, &enableSummary); err != nil {
-		t.Fatalf("dev-enable output decode error = %v: %s", err, enableOutput)
+		t.Fatal(err)
 	}
-	if enableSummary.PluginInstanceID != installSummary.PluginInstanceID || enableSummary.EnableState != registry.EnableEnabled {
-		t.Fatalf("dev-enable summary mismatch: %#v install=%#v", enableSummary, installSummary)
-	}
-
-	inspectOutput, err := captureCLIOutput(t, "inspect-storage", filepath.Join(stateRoot, devStorageDir), installSummary.PluginInstanceID)
-	if err != nil {
-		t.Fatalf("inspect-storage after enable error = %v", err)
-	}
-	var inspectSummary storageInspectSummary
-	if err := json.Unmarshal(inspectOutput, &inspectSummary); err != nil {
-		t.Fatalf("inspect-storage output decode error = %v: %s", err, inspectOutput)
-	}
-	if inspectSummary.NamespaceCount != 1 {
-		t.Fatalf("storage namespace mismatch after enable: %#v", inspectSummary)
-	}
-	namespacesByStoreID := map[string]storage.NamespaceRecord{}
-	for _, ns := range inspectSummary.Namespaces {
-		namespacesByStoreID[ns.StoreID] = ns
-	}
-	if namespacesByStoreID["workspace"].State != storage.NamespaceActive || namespacesByStoreID["workspace"].Kind != storage.StoreFiles {
-		t.Fatalf("workspace storage namespace mismatch after enable: %#v", inspectSummary)
-	}
-	storageBroker, err := storage.NewFileBroker(filepath.Join(stateRoot, devStorageDir))
-	if err != nil {
-		t.Fatalf("NewFileBroker() error = %v", err)
-	}
-	if _, err := storageBroker.WriteFile(context.Background(), storage.FileWriteRequest{
-		PluginInstanceID: installSummary.PluginInstanceID,
-		StoreID:          "workspace",
-		Path:             "notes/generated.txt",
-		Data:             []byte("generated plugin data"),
-	}); err != nil {
-		t.Fatalf("WriteFile() error = %v", err)
+	if enableSummary.EnableState != registry.EnableEnabled || enableSummary.ManagementRevision <= installSummary.ManagementRevision {
+		t.Fatalf("dev-enable summary mismatch: %#v", enableSummary)
 	}
 
 	openOutput, err := captureCLIOutput(t, "dev-open", stateRoot, "com.example.generated.lifecycle.view")
@@ -509,30 +525,25 @@ func TestCLIDevLifecyclePersistsGeneratedPluginState(t *testing.T) {
 	if err := json.Unmarshal(openOutput, &openSummary); err != nil {
 		t.Fatalf("dev-open output decode error = %v: %s", err, openOutput)
 	}
-	if !openSummary.OK ||
-		openSummary.PluginInstanceID != installSummary.PluginInstanceID ||
-		openSummary.SurfaceID != "com.example.generated.lifecycle.view" ||
-		openSummary.BridgeNonce == "" ||
-		openSummary.AssetTicketID == "" {
+	if !openSummary.OK || openSummary.PluginInstanceID != installSummary.PluginInstanceID || openSummary.BridgeNonce == "" || openSummary.AssetTicketID == "" {
 		t.Fatalf("dev-open summary mismatch: %#v", openSummary)
 	}
-
-	disableOutput, err := captureCLIOutput(t, "dev-disable", stateRoot)
+	inspectOutput, err := captureCLIOutput(t, "inspect-data", stateRoot, installSummary.PluginInstanceID)
 	if err != nil {
+		t.Fatalf("inspect-data error = %v", err)
+	}
+	var inspectSummary dataInspectSummary
+	if err := json.Unmarshal(inspectOutput, &inspectSummary); err != nil {
+		t.Fatal(err)
+	}
+	if inspectSummary.BindingCount != 1 || inspectSummary.NamespaceCount != 1 || inspectSummary.Namespaces[0].Kind != storage.StoreFiles {
+		t.Fatalf("inspect-data summary mismatch: %#v", inspectSummary)
+	}
+
+	if _, err := captureCLIOutput(t, "dev-disable", stateRoot); err != nil {
 		t.Fatalf("dev-disable error = %v", err)
 	}
-	var disableSummary devLifecycleSummary
-	if err := json.Unmarshal(disableOutput, &disableSummary); err != nil {
-		t.Fatalf("dev-disable output decode error = %v: %s", err, disableOutput)
-	}
-	if disableSummary.EnableState != registry.EnableDisabled {
-		t.Fatalf("dev-disable summary mismatch: %#v", disableSummary)
-	}
-	if _, err := captureCLIOutput(t, "dev-open", stateRoot, "com.example.generated.lifecycle.view"); err == nil || !strings.Contains(err.Error(), "must be enabled") {
-		t.Fatalf("dev-open after disable error = %v, want must be enabled", err)
-	}
-
-	uninstallOutput, err := captureCLIOutput(t, "dev-uninstall", stateRoot, "--delete-data")
+	uninstallOutput, err := captureCLIOutput(t, "dev-uninstall", stateRoot)
 	if err != nil {
 		t.Fatalf("dev-uninstall error = %v", err)
 	}
@@ -540,31 +551,14 @@ func TestCLIDevLifecyclePersistsGeneratedPluginState(t *testing.T) {
 	if err := json.Unmarshal(uninstallOutput, &uninstallSummary); err != nil {
 		t.Fatalf("dev-uninstall output decode error = %v: %s", err, uninstallOutput)
 	}
-	if uninstallSummary.RetainedDataState != registry.RetainedDataDeleted ||
-		uninstallSummary.PackageRetained {
+	if uninstallSummary.EnableState != registry.EnableDisabled {
 		t.Fatalf("dev-uninstall summary mismatch: %#v", uninstallSummary)
 	}
 	if _, err := os.Stat(filepath.Join(stateRoot, devPackageFile)); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("dev package copy still exists after uninstall: %v", err)
 	}
-	afterDelete, err := storageBroker.ListNamespaces(context.Background(), installSummary.PluginInstanceID)
-	if err != nil {
-		t.Fatalf("ListNamespaces() after delete error = %v", err)
-	}
-	if len(afterDelete) != 0 {
-		t.Fatalf("storage namespaces remained after delete: %#v", afterDelete)
-	}
-
-	statusOutput, err := captureCLIOutput(t, "dev-status", stateRoot)
-	if err != nil {
-		t.Fatalf("dev-status error = %v", err)
-	}
-	var statusSummary devLifecycleSummary
-	if err := json.Unmarshal(statusOutput, &statusSummary); err != nil {
-		t.Fatalf("dev-status output decode error = %v: %s", err, statusOutput)
-	}
-	if statusSummary.RetainedDataState != registry.RetainedDataDeleted || statusSummary.PackageRetained {
-		t.Fatalf("dev-status summary mismatch: %#v", statusSummary)
+	if _, err := captureCLIOutput(t, "dev-status", stateRoot); !errors.Is(err, errDevStateNotInstalled) {
+		t.Fatalf("dev-status after uninstall error = %v, want %v", err, errDevStateNotInstalled)
 	}
 	if _, err := captureCLIOutput(t, "dev-enable", stateRoot); !errors.Is(err, errDevStateNotInstalled) {
 		t.Fatalf("dev-enable after uninstall error = %v, want %v", err, errDevStateNotInstalled)
@@ -591,183 +585,82 @@ func TestCLIDevLifecyclePersistsPluginSettingsState(t *testing.T) {
 	if err := json.Unmarshal(installOutput, &installSummary); err != nil {
 		t.Fatalf("dev-install output decode error = %v: %s", err, installOutput)
 	}
-	if len(loadDevStateForTest(t, stateRoot).Settings.Records) != 0 {
-		t.Fatal("dev-install should not create settings before enable")
-	}
-
 	if _, err := captureCLIOutput(t, "dev-enable", stateRoot); err != nil {
 		t.Fatalf("dev-enable error = %v", err)
 	}
-	state := loadDevStateForTest(t, stateRoot)
-	record, ok := state.Settings.Records[installSummary.PluginInstanceID]
-	if !ok || record.State != settings.StateActive {
-		t.Fatalf("settings record missing after enable: %#v", state.Settings.Records)
+	ctx := cliContext(context.Background())
+	harness, plugin, err := loadDevHarness(ctx, stateRoot)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if record.SettingsRevision != 1 || record.Values["accent_mode"] != "teal" || record.Values["sync_enabled"] != true {
-		t.Fatalf("settings defaults mismatch after enable: %#v", record)
+	snapshot, err := harness.host.GetPluginSettings(ctx, host.GetSettingsRequest{PluginInstanceID: plugin.PluginInstanceID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.ValuesRevision != 1 || snapshot.Values["accent_mode"] != "teal" || snapshot.Values["sync_enabled"] != true {
+		t.Fatalf("settings defaults mismatch: %#v", snapshot)
+	}
+	patched, err := harness.host.PatchPluginSettings(ctx, host.PatchSettingsRequest{
+		PluginInstanceID:       plugin.PluginInstanceID,
+		ExpectedValuesRevision: snapshot.ValuesRevision,
+		Set:                    map[string]any{"accent_mode": "amber", "sync_enabled": false},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := harness.host.PatchPluginSettings(ctx, host.PatchSettingsRequest{
+		PluginInstanceID:       plugin.PluginInstanceID,
+		ExpectedValuesRevision: snapshot.ValuesRevision,
+		Set:                    map[string]any{"accent_mode": "indigo"},
+	}); !errors.Is(err, plugindata.ErrRevisionConflict) {
+		t.Fatalf("stale settings CAS error = %v, want %v", err, plugindata.ErrRevisionConflict)
+	}
+	if err := harness.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	reopened, plugin, err := loadDevHarness(ctx, stateRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	restored, err := reopened.host.GetPluginSettings(ctx, host.GetSettingsRequest{PluginInstanceID: plugin.PluginInstanceID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if restored.ValuesRevision != patched.ValuesRevision || restored.Values["accent_mode"] != "amber" || restored.Values["sync_enabled"] != false {
+		t.Fatalf("settings did not persist across restart: %#v", restored)
+	}
+	if err := reopened.Close(); err != nil {
+		t.Fatal(err)
 	}
 
 	bindOutput, err := captureCLIOutput(t, "dev-secret-bind", stateRoot, " api_token ")
 	if err != nil {
-		t.Fatalf("dev-secret-bind error = %v", err)
+		t.Fatal(err)
 	}
 	var bindSummary devSecretSummary
 	if err := json.Unmarshal(bindOutput, &bindSummary); err != nil {
-		t.Fatalf("dev-secret-bind output decode error = %v: %s", err, bindOutput)
-	}
-	if !bindSummary.OK ||
-		bindSummary.PluginInstanceID != installSummary.PluginInstanceID ||
-		bindSummary.SecretRef != "api_token" ||
-		bindSummary.Scope != "user" ||
-		!bindSummary.Bound {
-		t.Fatalf("dev-secret-bind summary mismatch: %#v", bindSummary)
-	}
-	boundState := loadDevStateForTest(t, stateRoot)
-	boundSecret := findDevSecretRecordForTest(t, boundState.Secrets, installSummary.PluginInstanceID, "api_token", "user")
-	if !boundSecret.Bound || boundSecret.BoundAt == nil || boundSecret.LastTestStatus != "" {
-		t.Fatalf("secret state not bound: %#v", boundSecret)
-	}
-	boundSettings := boundState.Settings.Records[installSummary.PluginInstanceID].Secrets["api_token"]
-	if !boundSettings.Set || boundSettings.LastTestStatus != "" {
-		t.Fatalf("settings secret state not marked bound: %#v", boundSettings)
-	}
-	if raw, err := os.ReadFile(filepath.Join(stateRoot, devStateFile)); err != nil {
 		t.Fatal(err)
-	} else if bytes.Contains(raw, []byte("plaintext")) || bytes.Contains(raw, []byte("token_value")) {
-		t.Fatalf("dev secret state leaked a secret value: %s", raw)
 	}
-
-	testOutput, err := captureCLIOutput(t, "dev-secret-test", stateRoot, "api_token")
+	if !bindSummary.Bound || bindSummary.SecretRef != "api_token" {
+		t.Fatalf("secret bind summary mismatch: %#v", bindSummary)
+	}
+	if _, err := captureCLIOutput(t, "dev-secret-test", stateRoot, "api_token"); err != nil {
+		t.Fatal(err)
+	}
+	secretStore, err := secrets.NewSQLiteStore(context.Background(), filepath.Join(stateRoot, devSecretsFile))
 	if err != nil {
-		t.Fatalf("dev-secret-test error = %v", err)
+		t.Fatal(err)
 	}
-	var testSummary devSecretSummary
-	if err := json.Unmarshal(testOutput, &testSummary); err != nil {
-		t.Fatalf("dev-secret-test output decode error = %v: %s", err, testOutput)
-	}
-	if !testSummary.Bound || testSummary.LastTestStatus != "passed" {
-		t.Fatalf("dev-secret-test summary mismatch: %#v", testSummary)
-	}
-	testedSettings := loadDevStateForTest(t, stateRoot).Settings.Records[installSummary.PluginInstanceID].Secrets["api_token"]
-	if !testedSettings.Set || testedSettings.LastTestStatus != "passed" {
-		t.Fatalf("settings secret state not marked tested: %#v", testedSettings)
-	}
-
-	deleteOutput, err := captureCLIOutput(t, "dev-secret-delete", stateRoot, "api_token")
+	secretRecords, err := secretStore.List(context.Background(), secrets.ListRequest{PluginInstanceID: installSummary.PluginInstanceID})
 	if err != nil {
-		t.Fatalf("dev-secret-delete error = %v", err)
+		t.Fatal(err)
 	}
-	var deleteSummary devSecretSummary
-	if err := json.Unmarshal(deleteOutput, &deleteSummary); err != nil {
-		t.Fatalf("dev-secret-delete output decode error = %v: %s", err, deleteOutput)
+	if err := secretStore.Close(); err != nil {
+		t.Fatal(err)
 	}
-	if deleteSummary.Bound || deleteSummary.LastTestStatus != "" {
-		t.Fatalf("dev-secret-delete summary mismatch: %#v", deleteSummary)
-	}
-	deletedState := loadDevStateForTest(t, stateRoot)
-	deletedSecret := findDevSecretRecordForTest(t, deletedState.Secrets, installSummary.PluginInstanceID, "api_token", "user")
-	if deletedSecret.Bound || deletedSecret.DeletedAt == nil {
-		t.Fatalf("secret state not deleted: %#v", deletedSecret)
-	}
-	deletedSettings := deletedState.Settings.Records[installSummary.PluginInstanceID].Secrets["api_token"]
-	if deletedSettings.Set || deletedSettings.LastTestStatus != "" {
-		t.Fatalf("settings secret state not cleared: %#v", deletedSettings)
-	}
-
-	if _, err := captureCLIOutput(t, "dev-secret-bind", stateRoot, "api_token", "environment"); err != nil {
-		t.Fatalf("dev-secret-bind environment error = %v", err)
-	}
-	if _, err := captureCLIOutput(t, "dev-secret-bind", stateRoot, "undeclared_token"); err == nil || !strings.Contains(err.Error(), "secret_ref") {
-		t.Fatalf("dev-secret-bind undeclared error = %v, want invalid secret_ref", err)
-	}
-
-	state = loadDevStateForTest(t, stateRoot)
-	restoredSettings := settings.NewMemoryStoreFromState(state.Settings)
-	patched, err := restoredSettings.Patch(context.Background(), settings.PatchRequest{
-		PluginInstanceID: installSummary.PluginInstanceID,
-		Values:           map[string]any{"accent_mode": "amber", "sync_enabled": false},
-	})
-	if err != nil {
-		t.Fatalf("Patch() restored settings error = %v", err)
-	}
-	state.Settings = restoredSettings.State()
-	saveDevStateForTest(t, stateRoot, state)
-
-	if _, err := captureCLIOutput(t, "dev-open", stateRoot, "com.example.generated.settings.view"); err != nil {
-		t.Fatalf("dev-open error = %v", err)
-	}
-	openedState := loadDevStateForTest(t, stateRoot)
-	openedSnapshot, err := settings.NewMemoryStoreFromState(openedState.Settings).Get(context.Background(), settings.GetRequest{PluginInstanceID: installSummary.PluginInstanceID})
-	if err != nil {
-		t.Fatalf("Get() after dev-open error = %v", err)
-	}
-	if openedSnapshot.SettingsRevision != patched.SettingsRevision ||
-		openedSnapshot.Values["accent_mode"] != "amber" ||
-		openedSnapshot.Values["sync_enabled"] != false {
-		t.Fatalf("settings did not persist across dev-open: %#v patched=%#v", openedSnapshot, patched)
-	}
-
-	if _, err := captureCLIOutput(t, "dev-disable", stateRoot); err != nil {
-		t.Fatalf("dev-disable error = %v", err)
-	}
-	disabledSnapshot, err := settings.NewMemoryStoreFromState(loadDevStateForTest(t, stateRoot).Settings).Get(context.Background(), settings.GetRequest{PluginInstanceID: installSummary.PluginInstanceID})
-	if err != nil {
-		t.Fatalf("Get() after dev-disable error = %v", err)
-	}
-	if disabledSnapshot.Values["accent_mode"] != "amber" {
-		t.Fatalf("settings were not retained across disable: %#v", disabledSnapshot)
-	}
-
-	if _, err := captureCLIOutput(t, "dev-enable", stateRoot); err != nil {
-		t.Fatalf("dev-enable after disable error = %v", err)
-	}
-	reenabledRecord := loadDevStateForTest(t, stateRoot).Settings.Records[installSummary.PluginInstanceID]
-	if reenabledRecord.State != settings.StateActive || reenabledRecord.Values["accent_mode"] != "amber" {
-		t.Fatalf("settings were not reactivated with existing values: %#v", reenabledRecord)
-	}
-
-	if _, err := captureCLIOutput(t, "dev-uninstall", stateRoot, "--keep-data"); err != nil {
-		t.Fatalf("dev-uninstall keep data error = %v", err)
-	}
-	retainedState := loadDevStateForTest(t, stateRoot)
-	retainedRecord := retainedState.Settings.Records[installSummary.PluginInstanceID]
-	if retainedRecord.State != settings.StateRetained || retainedRecord.Values["accent_mode"] != "amber" {
-		t.Fatalf("settings should be retained after keep-data uninstall: %#v", retainedRecord)
-	}
-	if len(retainedState.Secrets.Records) != 2 {
-		t.Fatalf("secret refs should be retained after keep-data uninstall: %#v", retainedState.Secrets.Records)
-	}
-
-	secondStateRoot := filepath.Join(dir, "state-delete")
-	secondInstallOutput, err := captureCLIOutput(t, "dev-install", secondStateRoot, packageFile)
-	if err != nil {
-		t.Fatalf("second dev-install error = %v", err)
-	}
-	var secondInstallSummary devLifecycleSummary
-	if err := json.Unmarshal(secondInstallOutput, &secondInstallSummary); err != nil {
-		t.Fatalf("second dev-install output decode error = %v: %s", err, secondInstallOutput)
-	}
-	if _, err := captureCLIOutput(t, "dev-enable", secondStateRoot); err != nil {
-		t.Fatalf("second dev-enable error = %v", err)
-	}
-	if _, err := captureCLIOutput(t, "dev-secret-test", secondStateRoot, "api_token"); err == nil || !strings.Contains(err.Error(), "must be bound") {
-		t.Fatalf("second dev-secret-test before bind error = %v, want must be bound", err)
-	}
-	if _, err := captureCLIOutput(t, "dev-secret-bind", secondStateRoot, "api_token"); err != nil {
-		t.Fatalf("second dev-secret-bind error = %v", err)
-	}
-	if len(loadDevStateForTest(t, secondStateRoot).Settings.Records) != 1 {
-		t.Fatal("second dev-enable should create settings")
-	}
-	if _, err := captureCLIOutput(t, "dev-uninstall", secondStateRoot, "--delete-data"); err != nil {
-		t.Fatalf("second dev-uninstall delete data error = %v", err)
-	}
-	secondDeletedState := loadDevStateForTest(t, secondStateRoot)
-	if _, ok := secondDeletedState.Settings.Records[secondInstallSummary.PluginInstanceID]; ok {
-		t.Fatalf("settings remained after delete-data uninstall: %#v", secondDeletedState.Settings.Records)
-	}
-	if len(secondDeletedState.Secrets.Records) != 0 {
-		t.Fatalf("secret refs remained after delete-data uninstall: %#v", secondDeletedState.Secrets.Records)
+	if len(secretRecords) != 1 || !secretRecords[0].Bound || secretRecords[0].LastTestStatus != "passed" {
+		t.Fatalf("SQLite secret record mismatch: %#v", secretRecords)
 	}
 }
 
@@ -795,12 +688,15 @@ func TestCLIDevLifecycleExportsAndImportsPluginData(t *testing.T) {
 	if _, err := captureCLIOutput(t, "dev-enable", stateRoot); err != nil {
 		t.Fatalf("dev-enable error = %v", err)
 	}
-
-	broker, err := storage.NewFileBroker(filepath.Join(stateRoot, devStorageDir))
-	if err != nil {
-		t.Fatalf("NewFileBroker() error = %v", err)
+	if _, err := captureCLIOutput(t, "dev-secret-bind", stateRoot, "api_token"); err != nil {
+		t.Fatal(err)
 	}
-	if _, err := broker.WriteFile(context.Background(), storage.FileWriteRequest{
+	ctx := cliContext(context.Background())
+	harness, plugin, err := loadDevHarness(ctx, stateRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := harness.pluginData.WriteFile(context.Background(), storage.FileWriteRequest{
 		PluginInstanceID: installSummary.PluginInstanceID,
 		StoreID:          "workspace",
 		Path:             "notes/exported.txt",
@@ -808,17 +704,21 @@ func TestCLIDevLifecycleExportsAndImportsPluginData(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("WriteFile(original) error = %v", err)
 	}
-	state := loadDevStateForTest(t, stateRoot)
-	store := settings.NewMemoryStoreFromState(state.Settings)
-	exportedSettings, err := store.Patch(context.Background(), settings.PatchRequest{
-		PluginInstanceID: installSummary.PluginInstanceID,
-		Values:           map[string]any{"accent_mode": "amber", "sync_enabled": false},
+	snapshot, err := harness.host.GetPluginSettings(ctx, host.GetSettingsRequest{PluginInstanceID: plugin.PluginInstanceID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	exportedSettings, err := harness.host.PatchPluginSettings(ctx, host.PatchSettingsRequest{
+		PluginInstanceID:       plugin.PluginInstanceID,
+		ExpectedValuesRevision: snapshot.ValuesRevision,
+		Set:                    map[string]any{"accent_mode": "amber", "sync_enabled": false},
 	})
 	if err != nil {
 		t.Fatalf("Patch(exported settings) error = %v", err)
 	}
-	state.Settings = store.State()
-	saveDevStateForTest(t, stateRoot, state)
+	if err := harness.Close(); err != nil {
+		t.Fatal(err)
+	}
 
 	exportOutput, err := captureCLIOutput(t, "dev-export-data", stateRoot)
 	if err != nil {
@@ -828,19 +728,16 @@ func TestCLIDevLifecycleExportsAndImportsPluginData(t *testing.T) {
 	if err := json.Unmarshal(exportOutput, &exportSummary); err != nil {
 		t.Fatalf("dev-export-data output decode error = %v: %s", err, exportOutput)
 	}
-	if !exportSummary.OK ||
-		exportSummary.PluginInstanceID != installSummary.PluginInstanceID ||
-		exportSummary.ArchiveRef == "" ||
-		exportSummary.SettingsArchiveRef == "" ||
-		exportSummary.IncludeSecrets {
+	if !exportSummary.OK || exportSummary.PluginInstanceID != installSummary.PluginInstanceID || exportSummary.BundleRef == "" || exportSummary.ContentHash == "" || exportSummary.SizeBytes <= 0 {
 		t.Fatalf("dev-export-data summary mismatch: %#v", exportSummary)
 	}
-	afterExport := loadDevStateForTest(t, stateRoot)
-	if _, ok := afterExport.Settings.Archives[exportSummary.SettingsArchiveRef]; !ok {
-		t.Fatalf("settings archive was not persisted in dev state: %#v", afterExport.Settings.Archives)
-	}
+	assertFileTreeDoesNotContain(t, filepath.Join(stateRoot, devPluginDataDir, "objects", exportSummary.BundleRef), []byte("api_token"))
 
-	if _, err := broker.WriteFile(context.Background(), storage.FileWriteRequest{
+	harness, plugin, err = loadDevHarness(ctx, stateRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := harness.pluginData.WriteFile(context.Background(), storage.FileWriteRequest{
 		PluginInstanceID: installSummary.PluginInstanceID,
 		StoreID:          "workspace",
 		Path:             "notes/exported.txt",
@@ -848,27 +745,24 @@ func TestCLIDevLifecycleExportsAndImportsPluginData(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("WriteFile(mutated) error = %v", err)
 	}
-	state = loadDevStateForTest(t, stateRoot)
-	store = settings.NewMemoryStoreFromState(state.Settings)
-	if _, err := store.Patch(context.Background(), settings.PatchRequest{
-		PluginInstanceID: installSummary.PluginInstanceID,
-		Values:           map[string]any{"accent_mode": "indigo", "sync_enabled": true},
+	mutatedSettings, err := harness.host.GetPluginSettings(ctx, host.GetSettingsRequest{PluginInstanceID: plugin.PluginInstanceID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := harness.host.PatchPluginSettings(ctx, host.PatchSettingsRequest{
+		PluginInstanceID:       plugin.PluginInstanceID,
+		ExpectedValuesRevision: mutatedSettings.ValuesRevision,
+		Set:                    map[string]any{"accent_mode": "indigo", "sync_enabled": true},
 	}); err != nil {
 		t.Fatalf("Patch(mutated settings) error = %v", err)
 	}
-	state.Settings = store.State()
-	saveDevStateForTest(t, stateRoot, state)
-
-	importOutput, err := captureCLIOutput(
-		t,
-		"dev-import-data",
-		stateRoot,
-		"--archive-ref",
-		exportSummary.ArchiveRef,
-		"--settings-archive-ref",
-		exportSummary.SettingsArchiveRef,
-		"--delete-existing",
-	)
+	if err := harness.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := captureCLIOutput(t, "dev-disable", stateRoot); err != nil {
+		t.Fatal(err)
+	}
+	importOutput, err := captureCLIOutput(t, "dev-import-data", stateRoot, exportSummary.BundleRef)
 	if err != nil {
 		t.Fatalf("dev-import-data error = %v", err)
 	}
@@ -876,13 +770,14 @@ func TestCLIDevLifecycleExportsAndImportsPluginData(t *testing.T) {
 	if err := json.Unmarshal(importOutput, &importSummary); err != nil {
 		t.Fatalf("dev-import-data output decode error = %v: %s", err, importOutput)
 	}
-	if !importSummary.Imported ||
-		!importSummary.DeleteExisting ||
-		importSummary.ArchiveRef != exportSummary.ArchiveRef ||
-		importSummary.SettingsArchiveRef != exportSummary.SettingsArchiveRef {
+	if !importSummary.Imported || importSummary.BundleRef != exportSummary.BundleRef {
 		t.Fatalf("dev-import-data summary mismatch: %#v export=%#v", importSummary, exportSummary)
 	}
-	read, err := broker.ReadFile(context.Background(), storage.FileReadRequest{
+	harness, plugin, err = loadDevHarness(ctx, stateRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	read, err := harness.pluginData.ReadFile(context.Background(), storage.FileReadRequest{
 		PluginInstanceID: installSummary.PluginInstanceID,
 		StoreID:          "workspace",
 		Path:             "notes/exported.txt",
@@ -894,9 +789,7 @@ func TestCLIDevLifecycleExportsAndImportsPluginData(t *testing.T) {
 	if string(read.Data) != "original data" {
 		t.Fatalf("import did not restore storage data: %q", read.Data)
 	}
-	importedSettings, err := settings.NewMemoryStoreFromState(loadDevStateForTest(t, stateRoot).Settings).Get(context.Background(), settings.GetRequest{
-		PluginInstanceID: installSummary.PluginInstanceID,
-	})
+	importedSettings, err := harness.host.GetPluginSettings(ctx, host.GetSettingsRequest{PluginInstanceID: plugin.PluginInstanceID})
 	if err != nil {
 		t.Fatalf("Get(imported settings) error = %v", err)
 	}
@@ -904,8 +797,41 @@ func TestCLIDevLifecycleExportsAndImportsPluginData(t *testing.T) {
 		importedSettings.Values["sync_enabled"] != exportedSettings.Values["sync_enabled"] {
 		t.Fatalf("import did not restore settings: %#v want %#v", importedSettings, exportedSettings)
 	}
+	secretRecords, err := harness.secretStore.List(context.Background(), secrets.ListRequest{PluginInstanceID: plugin.PluginInstanceID, BoundOnly: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(secretRecords) != 1 || secretRecords[0].SecretRef != "api_token" {
+		t.Fatalf("import changed external secret bindings: %#v", secretRecords)
+	}
+	if err := harness.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := captureCLIOutput(t, "dev-delete-export", stateRoot, exportSummary.BundleRef); err != nil {
+		t.Fatal(err)
+	}
+	registryStore, err := registry.NewSQLiteStore(context.Background(), filepath.Join(stateRoot, devRegistryFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	objects, next, err := registryStore.ListObjects(context.Background(), "", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if next != "" {
+		t.Fatalf("unexpected object page cursor %q", next)
+	}
+	if err := registryStore.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if len(objects) != 0 {
+		t.Fatalf("deleted export remains in catalog: %#v", objects)
+	}
 	if _, err := captureCLIOutput(t, "dev-import-data", stateRoot); err == nil {
-		t.Fatal("dev-import-data accepted missing archive refs")
+		t.Fatal("dev-import-data accepted a missing bundle ref")
+	}
+	if _, err := captureCLIOutput(t, "dev-export-data", stateRoot, "unexpected"); err == nil {
+		t.Fatal("dev-export-data accepted an unexpected argument")
 	}
 }
 
@@ -933,11 +859,11 @@ func TestCLIDevLifecyclePersistsPermissionGrants(t *testing.T) {
 	if _, err := captureCLIOutput(t, "dev-enable", stateRoot); err != nil {
 		t.Fatalf("dev-enable error = %v", err)
 	}
-	if len(loadDevStateForTest(t, stateRoot).Permissions.Records) != 0 {
-		t.Fatal("dev-enable should not auto-grant manifest permissions")
+	if _, err := captureCLIOutput(t, "dev-permission-grant", stateRoot, "demo.execute", "alice"); err == nil || !strings.Contains(err.Error(), "usage:") {
+		t.Fatalf("dev-permission-grant accepted caller-supplied actor: %v", err)
 	}
 
-	grantOutput, err := captureCLIOutput(t, "dev-permission-grant", stateRoot, "demo.execute", "alice")
+	grantOutput, err := captureCLIOutput(t, "dev-permission-grant", stateRoot, "demo.execute")
 	if err != nil {
 		t.Fatalf("dev-permission-grant error = %v", err)
 	}
@@ -948,15 +874,23 @@ func TestCLIDevLifecyclePersistsPermissionGrants(t *testing.T) {
 	if !grantSummary.OK ||
 		grantSummary.PluginInstanceID != installSummary.PluginInstanceID ||
 		grantSummary.Permission.PermissionID != "demo.execute" ||
-		grantSummary.Permission.GrantedBy != "alice" ||
+		grantSummary.Permission.GrantedBy != "cli_owner_user" ||
 		grantSummary.Permission.Effect != permissions.EffectGrant {
 		t.Fatalf("dev-permission-grant summary mismatch: %#v", grantSummary)
 	}
-	grantedState := loadDevStateForTest(t, stateRoot)
-	if len(grantedState.Permissions.Records) != 1 ||
-		grantedState.Permissions.Records[0].PermissionID != "demo.execute" ||
-		grantedState.Record.PolicyRevision <= installSummary.PolicyRevision {
-		t.Fatalf("permission state not persisted after grant: %#v install=%#v", grantedState.Permissions, installSummary)
+	registryStore, err := registry.NewSQLiteStore(context.Background(), filepath.Join(stateRoot, devRegistryFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	grantedState, err := registryStore.GetAuthorization(context.Background(), installSummary.PluginInstanceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := registryStore.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if len(grantedState.Grants) != 1 || grantedState.Grants[0].PermissionID != "demo.execute" || grantedState.Plugin.PolicyRevision <= installSummary.PolicyRevision {
+		t.Fatalf("authorization state not persisted after grant: %#v install=%#v", grantedState, installSummary)
 	}
 
 	listOutput, err := captureCLIOutput(t, "dev-permission-list", stateRoot, "--active-only")
@@ -971,22 +905,12 @@ func TestCLIDevLifecyclePersistsPermissionGrants(t *testing.T) {
 		t.Fatalf("dev-permission-list summary mismatch: %#v", listSummary)
 	}
 
-	if _, err := captureCLIOutput(t, "dev-open", stateRoot, "com.example.generated.permissions.view"); err != nil {
-		t.Fatalf("dev-open error = %v", err)
-	}
-	if len(loadDevStateForTest(t, stateRoot).Permissions.Records) != 1 {
-		t.Fatal("permission grant should persist across dev-open")
-	}
 	if _, err := captureCLIOutput(t, "dev-disable", stateRoot); err != nil {
 		t.Fatalf("dev-disable error = %v", err)
 	}
 	if _, err := captureCLIOutput(t, "dev-enable", stateRoot); err != nil {
 		t.Fatalf("dev-enable after disable error = %v", err)
 	}
-	if len(loadDevStateForTest(t, stateRoot).Permissions.Records) != 1 {
-		t.Fatal("permission grant should persist across disable and re-enable")
-	}
-
 	revokeOutput, err := captureCLIOutput(t, "dev-permission-revoke", stateRoot, "demo.execute", "reviewed")
 	if err != nil {
 		t.Fatalf("dev-permission-revoke error = %v", err)
@@ -995,14 +919,24 @@ func TestCLIDevLifecyclePersistsPermissionGrants(t *testing.T) {
 	if err := json.Unmarshal(revokeOutput, &revokeSummary); err != nil {
 		t.Fatalf("dev-permission-revoke output decode error = %v: %s", err, revokeOutput)
 	}
-	if revokeSummary.Permission.RevokedAt == nil || revokeSummary.Permission.RevokedReason != "reviewed" {
+	if revokeSummary.Permission.RevokedAt == nil ||
+		revokeSummary.Permission.RevokedBy != "cli_owner_user" ||
+		revokeSummary.Permission.RevokedReason != "reviewed" {
 		t.Fatalf("dev-permission-revoke summary mismatch: %#v", revokeSummary)
 	}
-	revokedState := loadDevStateForTest(t, stateRoot)
-	if len(revokedState.Permissions.Records) != 1 ||
-		revokedState.Permissions.Records[0].RevokedAt == nil ||
-		revokedState.Record.RevokeEpoch <= grantedState.Record.RevokeEpoch {
-		t.Fatalf("permission revoke state mismatch: %#v before=%#v", revokedState.Permissions, grantedState.Record)
+	registryStore, err = registry.NewSQLiteStore(context.Background(), filepath.Join(stateRoot, devRegistryFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	revokedState, err := registryStore.GetAuthorization(context.Background(), installSummary.PluginInstanceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := registryStore.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if len(revokedState.Grants) != 1 || revokedState.Grants[0].RevokedAt == nil || revokedState.Plugin.RevokeEpoch <= grantedState.Plugin.RevokeEpoch {
+		t.Fatalf("permission revoke state mismatch: %#v before=%#v", revokedState, grantedState.Plugin)
 	}
 
 	activeOutput, err := captureCLIOutput(t, "dev-permission-list", stateRoot, "--active-only")
@@ -1030,13 +964,6 @@ func TestCLIDevLifecyclePersistsPermissionGrants(t *testing.T) {
 
 	if _, err := captureCLIOutput(t, "dev-permission-revoke", stateRoot, "missing.permission"); !errors.Is(err, permissions.ErrGrantNotFound) {
 		t.Fatalf("dev-permission-revoke missing error = %v, want ErrGrantNotFound", err)
-	}
-	if _, err := captureCLIOutput(t, "dev-uninstall", stateRoot, "--keep-data"); err != nil {
-		t.Fatalf("dev-uninstall keep data error = %v", err)
-	}
-	uninstalledState := loadDevStateForTest(t, stateRoot)
-	if len(uninstalledState.Permissions.Records) != 0 {
-		t.Fatalf("permission grants remained after uninstall: %#v", uninstalledState.Permissions)
 	}
 }
 
@@ -1217,62 +1144,75 @@ func TestCLIVerifyCompatibilityManifest(t *testing.T) {
 	}
 }
 
-func TestCLIInspectStorageReportsNamespacesWithoutFileContents(t *testing.T) {
+func TestCLIInspectDataReportsCatalogWithoutFileContents(t *testing.T) {
 	dir := t.TempDir()
-	storageRoot := filepath.Join(dir, "storage")
-	broker, err := storage.NewFileBroker(storageRoot)
+	scaffoldDir := filepath.Join(dir, "generated")
+	stateRoot := filepath.Join(dir, "state")
+	packageFile := filepath.Join(dir, "generated.redevplugin")
+	if _, err := captureCLIOutput(t, "scaffold", "com.example.generated.inspect", "Generated Inspect Plugin", scaffoldDir); err != nil {
+		t.Fatal(err)
+	}
+	addLifecycleStorageToManifest(t, filepath.Join(scaffoldDir, "dist", "manifest.json"))
+	if _, err := captureCLIOutput(t, "package", filepath.Join(scaffoldDir, "dist"), packageFile); err != nil {
+		t.Fatal(err)
+	}
+	installOutput, err := captureCLIOutput(t, "dev-install", stateRoot, packageFile)
 	if err != nil {
-		t.Fatalf("NewFileBroker() error = %v", err)
+		t.Fatal(err)
 	}
-	if err := broker.EnsureNamespace(context.Background(), storage.Namespace{
-		PluginInstanceID: "plugini_cli",
-		StoreID:          "workspace",
-		Kind:             storage.StoreFiles,
-		QuotaBytes:       4096,
-		SchemaVersion:    1,
-	}); err != nil {
-		t.Fatalf("EnsureNamespace() error = %v", err)
+	var installed devLifecycleSummary
+	if err := json.Unmarshal(installOutput, &installed); err != nil {
+		t.Fatal(err)
 	}
-	if _, err := broker.WriteFile(context.Background(), storage.FileWriteRequest{
-		PluginInstanceID: "plugini_cli",
+	if _, err := captureCLIOutput(t, "dev-enable", stateRoot); err != nil {
+		t.Fatal(err)
+	}
+	harness, _, err := loadDevHarness(context.Background(), stateRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := harness.pluginData.WriteFile(context.Background(), storage.FileWriteRequest{
+		PluginInstanceID: installed.PluginInstanceID,
 		StoreID:          "workspace",
 		Path:             "notes/private.txt",
 		Data:             []byte("secret contents"),
 	}); err != nil {
-		t.Fatalf("WriteFile() error = %v", err)
+		t.Fatal(err)
+	}
+	if err := harness.Close(); err != nil {
+		t.Fatal(err)
 	}
 
-	output, err := captureCLIOutput(t, "inspect-storage", storageRoot, "plugini_cli")
+	output, err := captureCLIOutput(t, "inspect-data", stateRoot, installed.PluginInstanceID)
 	if err != nil {
-		t.Fatalf("inspect-storage command error = %v", err)
+		t.Fatalf("inspect-data command error = %v", err)
 	}
-	var summary storageInspectSummary
+	var summary dataInspectSummary
 	if err := json.Unmarshal(output, &summary); err != nil {
-		t.Fatalf("inspect-storage output decode error = %v: %s", err, output)
+		t.Fatalf("inspect-data output decode error = %v: %s", err, output)
 	}
-	if !summary.OK || summary.NamespaceCount != 1 || summary.TotalUsageBytes != int64(len("secret contents")) {
-		t.Fatalf("inspect-storage summary mismatch: %#v", summary)
+	if !summary.OK || summary.BindingCount != 1 || summary.NamespaceCount != 1 || summary.TotalUsageBytes != int64(len("secret contents")) {
+		t.Fatalf("inspect-data summary mismatch: %#v", summary)
 	}
-	if summary.Namespaces[0].PluginInstanceID != "plugini_cli" ||
+	if summary.Namespaces[0].PluginInstanceID != installed.PluginInstanceID ||
 		summary.Namespaces[0].StoreID != "workspace" ||
 		summary.Namespaces[0].Kind != storage.StoreFiles ||
 		summary.Namespaces[0].UsageBytes != int64(len("secret contents")) {
-		t.Fatalf("inspect-storage namespace mismatch: %#v", summary.Namespaces)
+		t.Fatalf("inspect-data namespace mismatch: %#v", summary.Namespaces)
 	}
 	if bytes.Contains(output, []byte("secret contents")) {
-		t.Fatalf("inspect-storage leaked file contents: %s", output)
+		t.Fatalf("inspect-data leaked file contents: %s", output)
 	}
-
-	allOutput, err := captureCLIOutput(t, "inspect-storage", storageRoot)
+	allOutput, err := captureCLIOutput(t, "inspect-data", stateRoot)
 	if err != nil {
-		t.Fatalf("inspect-storage all command error = %v", err)
+		t.Fatalf("inspect-data all command error = %v", err)
 	}
-	var allSummary storageInspectSummary
+	var allSummary dataInspectSummary
 	if err := json.Unmarshal(allOutput, &allSummary); err != nil {
-		t.Fatalf("inspect-storage all output decode error = %v: %s", err, allOutput)
+		t.Fatalf("inspect-data all output decode error = %v: %s", err, allOutput)
 	}
 	if allSummary.NamespaceCount != 1 || allSummary.PluginInstanceID != "" {
-		t.Fatalf("inspect-storage all summary mismatch: %#v", allSummary)
+		t.Fatalf("inspect-data all summary mismatch: %#v", allSummary)
 	}
 }
 
@@ -1317,14 +1257,6 @@ func readCLITestPublicKey(t *testing.T, filename string) ed25519.PublicKey {
 	return publicKey
 }
 
-type cliRuntimeResolver struct {
-	path string
-}
-
-func (r cliRuntimeResolver) RuntimePath(context.Context, host.RuntimeTarget) (string, error) {
-	return r.path, nil
-}
-
 func writeCLITestFile(t *testing.T, filename string, content string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(filename), 0o755); err != nil {
@@ -1355,16 +1287,6 @@ func addLifecycleStorageToManifest(t *testing.T, filename string) {
 			"scope":          "user",
 			"quota_bytes":    4096,
 			"schema_version": 1,
-			"migration": map[string]any{
-				"from_version":    0,
-				"to_version":      1,
-				"reversible":      true,
-				"requires_worker": false,
-				"estimated_bytes": 0,
-				"max_duration_ms": 1000,
-				"data_loss_risk":  false,
-				"steps_hash":      "sha256:dev-lifecycle",
-			},
 		}},
 	}
 	updated, err := json.MarshalIndent(doc, "", "  ")
@@ -1388,16 +1310,6 @@ func addLifecycleSettingsToManifest(t *testing.T, filename string) {
 	}
 	doc["settings"] = map[string]any{
 		"schema_version": 1,
-		"migration": map[string]any{
-			"from_version":    0,
-			"to_version":      1,
-			"reversible":      true,
-			"requires_worker": false,
-			"estimated_bytes": 0,
-			"max_duration_ms": 1000,
-			"data_loss_risk":  false,
-			"steps_hash":      "sha256:dev-settings",
-		},
 		"fields": []map[string]any{{
 			"key":     "accent_mode",
 			"type":    settings.FieldSelect,
@@ -1559,29 +1471,25 @@ func addLifecyclePermissionBindingToManifest(t *testing.T, filename string, pin 
 	}
 }
 
-func loadDevStateForTest(t *testing.T, stateRoot string) devLifecycleState {
+func assertFileTreeDoesNotContain(t *testing.T, root string, forbidden []byte) {
 	t.Helper()
-	state, err := loadDevState(stateRoot)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return state
-}
-
-func findDevSecretRecordForTest(t *testing.T, state secrets.MemoryState, pluginInstanceID string, secretRef string, scope string) secrets.Record {
-	t.Helper()
-	for _, record := range state.Records {
-		if record.PluginInstanceID == pluginInstanceID && record.SecretRef == secretRef && record.Scope == scope {
-			return record
+	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
+		if err != nil {
+			return err
 		}
-	}
-	t.Fatalf("secret record %s/%s/%s not found in %#v", pluginInstanceID, scope, secretRef, state.Records)
-	return secrets.Record{}
-}
-
-func saveDevStateForTest(t *testing.T, stateRoot string, state devLifecycleState) {
-	t.Helper()
-	if err := saveDevState(stateRoot, state); err != nil {
+		if entry.IsDir() {
+			return nil
+		}
+		content, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		if bytes.Contains(content, forbidden) {
+			t.Fatalf("%s contains forbidden bytes %q", path, forbidden)
+		}
+		return nil
+	})
+	if err != nil {
 		t.Fatal(err)
 	}
 }

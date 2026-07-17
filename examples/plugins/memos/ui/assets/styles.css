@@ -85,6 +85,10 @@ h1, h2, h3, h4, p { margin: 0; }
 .tags-empty { color: var(--memos-faint); font-size: 12px; line-height: 1.5; }
 
 .memos-workspace { min-width: 0; }
+.sync-notice { display: flex; min-width: 0; align-items: center; justify-content: space-between; gap: 16px; padding: 12px 24px; border-bottom: 1px solid var(--memos-border); background: var(--memos-amber-soft); color: var(--memos-amber); }
+.sync-notice > div { min-width: 0; }
+.sync-notice p { margin-top: 3px; color: var(--memos-muted); font-size: 12px; line-height: 1.45; }
+.sync-notice .quiet-button { flex: 0 0 auto; background: transparent; }
 .feed-shell { width: min(100%, 784px); margin: 0 auto; padding: 28px 32px 64px; }
 .memo-composer, .memo-card { border: 1px solid var(--memos-border); border-radius: 8px; background: var(--memos-surface); }
 .memo-composer { margin-bottom: 26px; box-shadow: 0 1px 2px rgba(30, 36, 46, 0.04); }
@@ -121,6 +125,7 @@ h1, h2, h3, h4, p { margin: 0; }
 .feed-header h1 { font-size: 20px; font-weight: 750; }
 .feed-header p { margin-top: 3px; color: var(--memos-faint); font-size: 12px; }
 .feed-header .quiet-button { min-height: 38px; padding: 0 12px; font-size: 12px; }
+.feed-header-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px; }
 .memo-feed { display: grid; gap: 12px; min-width: 0; }
 .memo-card { position: relative; min-width: 0; padding: 16px 18px; }
 .memo-card.pinned { border-left: 3px solid var(--memos-cobalt); }
@@ -186,7 +191,7 @@ h1, h2, h3, h4, p { margin: 0; }
 .feed-loading span:nth-child(2) { width: 84%; }
 .feed-loading span:nth-child(3) { width: 60%; }
 @keyframes pulse { to { opacity: 0.42; } }
-.load-more { width: 100%; border: 1px solid var(--memos-border); border-radius: 6px; background: var(--memos-surface); color: var(--memos-muted); font-weight: 700; }
+.feed-pagination { width: 100%; border: 1px solid var(--memos-border); border-radius: 6px; background: var(--memos-surface); color: var(--memos-muted); font-weight: 700; }
 
 .dialog-layer { position: fixed; inset: 0; z-index: 20; display: grid; place-items: center; padding: 18px; }
 .dialog-scrim, .explorer-scrim { position: absolute; inset: 0; width: 100%; height: 100%; min-height: 0; border-radius: 0; background: rgba(23, 27, 34, 0.54); cursor: default; }
@@ -194,6 +199,7 @@ h1, h2, h3, h4, p { margin: 0; }
 .delete-mark { display: grid; width: 42px; height: 42px; place-items: center; border-radius: 50%; background: var(--memos-amber-soft); color: var(--memos-amber); font-weight: 800; }
 .delete-dialog h2 { font-size: 18px; }
 .delete-dialog p { margin-top: 6px; color: var(--memos-muted); font-size: 13px; line-height: 1.5; }
+.delete-dialog .delete-error { color: var(--memos-danger); font-weight: 700; }
 .delete-actions { grid-column: 1 / -1; display: flex; justify-content: flex-end; gap: 8px; margin-top: 7px; }
 .memos-toast { position: fixed; right: 20px; bottom: 20px; z-index: 30; max-width: min(360px, calc(100vw - 40px)); padding: 12px 15px; border: 1px solid var(--memos-border); border-radius: 6px; background: var(--memos-text); color: var(--memos-surface); box-shadow: var(--memos-shadow); font-size: 13px; pointer-events: none; }
 
@@ -237,6 +243,7 @@ h1, h2, h3, h4, p { margin: 0; }
   .mobile-header .brand-lockup { justify-self: center; }
   .mobile-header .brand-mark { width: 28px; height: 28px; }
   .mobile-spacer { width: 44px; }
+  .sync-notice { align-items: flex-start; padding: 11px 12px; }
   .feed-shell { width: 100%; padding: 14px 12px 44px; }
   .memo-composer { margin-bottom: 22px; }
   .composer-main { grid-template-columns: 34px minmax(0, 1fr); gap: 9px; padding: 13px; }

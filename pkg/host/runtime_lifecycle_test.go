@@ -7,38 +7,39 @@ import (
 	"encoding/hex"
 	"errors"
 	"net/http"
-	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/floegence/redevplugin/pkg/bridge"
+	"github.com/floegence/redevplugin/pkg/capability"
 	"github.com/floegence/redevplugin/pkg/connectivity"
+	"github.com/floegence/redevplugin/pkg/mutation"
 	"github.com/floegence/redevplugin/pkg/pluginpkg"
 	"github.com/floegence/redevplugin/pkg/runtimeclient"
 )
 
 func TestRuntimeLifecycleUsesInjectedSupervisor(t *testing.T) {
-	supervisor := &recordingRuntimeSupervisor{
+	supervisor := &recordingRuntimeManager{
 		health: runtimeclient.Health{RuntimeInstanceID: "runtime_1", RuntimeGenerationID: "runtime_gen_1", IPCChannelID: "ipc_1", ConnectionNonce: "connection_nonce_1234567890", Ready: true},
 	}
 	h, _, audits := newTestHostWithOptions(t, testHostOptions{
-		developerMode:     true,
-		localGenerated:    true,
-		runtimeSupervisor: supervisor,
+		developerMode:  true,
+		localGenerated: true,
+		runtimeManager: supervisor,
 	})
 
-	health, err := h.StartRuntime(context.Background(), StartRuntimeRequest{Target: RuntimeTarget{OS: "test-os", Arch: "test-arch"}})
+	health, err := h.StartRuntime(hostTestContext(), StartRuntimeRequest{Target: RuntimeTarget{OS: "test-os", Arch: "test-arch"}})
 	if err != nil {
 		t.Fatalf("StartRuntime() error = %v", err)
 	}
-	if health.RuntimeInstanceID != "runtime_1" || supervisor.startedTarget.OS != "test-os" || supervisor.startedTarget.Arch != "test-arch" {
+	if len(health.Shards) != 1 || health.Shards[0].RuntimeInstanceID != "runtime_1" || supervisor.startedTarget.OS != "test-os" || supervisor.startedTarget.Arch != "test-arch" {
 		t.Fatalf("runtime start mismatch: health=%#v supervisor=%#v", health, supervisor)
 	}
 	if !audits.hasEvent("plugin.runtime.started") {
 		t.Fatalf("missing runtime started audit: %#v", audits.events)
 	}
 
-	if err := h.StopRuntime(context.Background()); err != nil {
+	if err := h.StopRuntime(hostTestContext()); err != nil {
 		t.Fatalf("StopRuntime() error = %v", err)
 	}
 	if supervisor.stopCalls != 1 || !audits.hasEvent("plugin.runtime.stopped") {
@@ -46,32 +47,46 @@ func TestRuntimeLifecycleUsesInjectedSupervisor(t *testing.T) {
 	}
 }
 
-func TestStartRuntimeRequiresResolverWhenSupervisorMissing(t *testing.T) {
-	h, _, _ := newTestHostWithOptions(t, testHostOptions{developerMode: true, localGenerated: true})
-	if _, err := h.StartRuntime(context.Background(), StartRuntimeRequest{}); err == nil {
-		t.Fatal("StartRuntime() expected resolver error")
+func TestStopRuntimeRevokesSurfacesWhenManagerStopFails(t *testing.T) {
+	stopFailure := errors.New("runtime stop failed at /Users/secret/runtime with vault-token-super-secret")
+	manager := &recordingRuntimeManager{
+		health:  runtimeclient.Health{RuntimeInstanceID: "runtime_1", RuntimeGenerationID: "runtime_gen_1", IPCChannelID: "ipc_1", ConnectionNonce: "connection_nonce_1234567890", Ready: true},
+		stopErr: stopFailure,
 	}
-}
-
-func TestStartRuntimeUsesArtifactResolver(t *testing.T) {
-	resolver := &recordingRuntimeArtifactResolver{path: filepath.Join(t.TempDir(), "missing-runtime")}
-	h, _, _ := newTestHostWithOptions(t, testHostOptions{
-		developerMode:           true,
-		localGenerated:          true,
-		runtimeArtifactResolver: resolver,
+	diagnostics := &diagnosticSink{}
+	h, _, audits := newTestHostWithOptions(t, testHostOptions{
+		developerMode: true, localGenerated: true, runtimeManager: manager,
+		capabilityID: "example.capability.echo", capabilityAdapter: &recordingCapabilityAdapter{result: capability.Result{Data: map[string]any{"echo": "hello"}}},
+		diagnostics: diagnostics,
 	})
-	health, err := h.RuntimeHealth(context.Background())
-	if err != nil {
-		t.Fatal(err)
+	installed, gateway := installEnableAndMintGateway(t, h, buildRPCFixturePackage(t), "rpc.view")
+	err := h.StopRuntime(hostTestContext())
+	if !errors.Is(err, stopFailure) || mutation.ForError(err) != mutation.OutcomeUnknown {
+		t.Fatalf("StopRuntime() error = %v", err)
 	}
-	if health.Ready {
-		t.Fatalf("RuntimeHealth() should be not ready before start: %#v", health)
+	stopAudit, ok := audits.lastEvent("plugin.runtime.stopped")
+	if !ok {
+		t.Fatalf("missing runtime stopped audit: %#v", audits.events)
 	}
-	if _, err := h.StartRuntime(context.Background(), StartRuntimeRequest{}); err == nil {
-		t.Fatal("StartRuntime() expected missing runtime binary error")
+	if len(stopAudit.Details) != 1 || stopAudit.Details["revoked_surface_count"] != 1 {
+		t.Fatalf("runtime stopped audit details mismatch: %#v", stopAudit)
 	}
-	if resolver.calls != 1 || resolver.target.OS == "" || resolver.target.Arch == "" {
-		t.Fatalf("resolver call mismatch: %#v", resolver)
+	if len(diagnostics.events) != 1 || diagnostics.events[0].Type != "plugin.runtime.stop_failed" || diagnostics.events[0].Message != "plugin runtime stop failed" || diagnostics.events[0].InternalDetails["error"] != stopFailure.Error() {
+		t.Fatalf("runtime stop diagnostic mismatch: %#v", diagnostics.events)
+	}
+	if diagnostics.events[0].OwnerSessionHash != "session_hash" || diagnostics.events[0].OwnerUserHash != "user_hash" || diagnostics.events[0].OwnerEnvHash != "env_hash" || diagnostics.events[0].SessionChannelIDHash != "channel_hash" {
+		t.Fatalf("runtime stop diagnostic owner scope mismatch: %#v", diagnostics.events[0])
+	}
+	_, callErr := h.CallPluginMethod(hostTestContext(), CallMethodRequest{
+		PluginInstanceID:  installed.PluginInstanceID,
+		SurfaceInstanceID: "surface_rpc",
+		BridgeChannelID:   "bridge_rpc",
+		GatewayToken:      gateway.GatewayToken,
+		Method:            "echo.ping",
+		Params:            map[string]any{"message": "hello"},
+	})
+	if !errors.Is(callErr, bridge.ErrTokenRevoked) {
+		t.Fatalf("CallPluginMethod() after failed stop error = %v, want %v", callErr, bridge.ErrTokenRevoked)
 	}
 }
 
@@ -110,15 +125,15 @@ func TestRuntimeArtifactProviderReadsBoundPackageAsset(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := h.adapters.Assets.PutPackage(context.Background(), pkg); err != nil {
+	if err := h.adapters.Assets.PutPackage(hostTestContext(), pkg); err != nil {
 		t.Fatal(err)
 	}
-	asset, err := h.adapters.Assets.ReadAsset(context.Background(), pkg.PackageHash, "workers/echo.wasm")
+	asset, err := h.adapters.Assets.ReadAsset(hostTestContext(), pkg.PackageHash, "workers/echo.wasm")
 	if err != nil {
 		t.Fatal(err)
 	}
 	provider := runtimeArtifactProvider{assets: h.adapters.Assets}
-	result, err := provider.ReadArtifact(context.Background(), runtimeclient.ArtifactRequest{
+	result, err := provider.ReadArtifact(hostTestContext(), runtimeclient.ArtifactRequest{
 		PackageHash:    pkg.PackageHash,
 		Artifact:       "workers/echo.wasm",
 		ArtifactSHA256: asset.Entry.SHA256,
@@ -130,7 +145,7 @@ func TestRuntimeArtifactProviderReadsBoundPackageAsset(t *testing.T) {
 	if result.SHA256 != "sha256:"+hex.EncodeToString(sum[:]) {
 		t.Fatalf("artifact sha mismatch: %#v", result)
 	}
-	if _, err := provider.ReadArtifact(context.Background(), runtimeclient.ArtifactRequest{
+	if _, err := provider.ReadArtifact(hostTestContext(), runtimeclient.ArtifactRequest{
 		PackageHash:    pkg.PackageHash,
 		Artifact:       "workers/echo.wasm",
 		ArtifactSHA256: "sha256:0000000000000000000000000000000000000000000000000000000000000000",
@@ -227,7 +242,7 @@ func TestRuntimeHandleGrantValidatorUsesSurfaceTokens(t *testing.T) {
 		t.Fatal(err)
 	}
 	validator := runtimeHandleGrantValidator{tokens: service}
-	result, err := validator.ValidateHandleGrant(context.Background(), runtimeclient.HandleGrantValidationRequest{
+	result, err := validator.ValidateHandleGrant(hostTestContext(), runtimeclient.HandleGrantValidationRequest{
 		HandleGrantToken:    minted.HandleGrantToken,
 		PluginInstanceID:    "plugini_1",
 		ActiveFingerprint:   "sha256:active",
@@ -246,7 +261,7 @@ func TestRuntimeHandleGrantValidatorUsesSurfaceTokens(t *testing.T) {
 	if result.HandleGrantID != minted.HandleGrantID || result.HandleID != "storage:db" || result.Method != "storage.sqlite" || result.MaxTotalBytes != 4096 {
 		t.Fatalf("handle grant result mismatch: %#v", result)
 	}
-	if _, err := validator.ValidateHandleGrant(context.Background(), runtimeclient.HandleGrantValidationRequest{
+	if _, err := validator.ValidateHandleGrant(hostTestContext(), runtimeclient.HandleGrantValidationRequest{
 		HandleGrantToken:    minted.HandleGrantToken,
 		PluginInstanceID:    "plugini_1",
 		ActiveFingerprint:   "sha256:active",
@@ -262,5 +277,5 @@ func TestRuntimeHandleGrantValidatorUsesSurfaceTokens(t *testing.T) {
 }
 
 func pluginPackageFromBytesForRuntimeTest(raw []byte) (pluginpkg.Package, error) {
-	return pluginpkg.Read(context.Background(), bytes.NewReader(raw), int64(len(raw)), pluginpkg.DefaultReadOptions())
+	return pluginpkg.Read(hostTestContext(), bytes.NewReader(raw), int64(len(raw)), pluginpkg.DefaultReadOptions())
 }
