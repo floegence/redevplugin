@@ -19,7 +19,7 @@ proptest! {
     fn special_host_matching_is_case_and_dot_insensitive(index in 0usize..SPECIAL_HOSTS.len()) {
         let host = SPECIAL_HOSTS[index];
         prop_assert!(is_special_host(&host.to_ascii_uppercase()));
-        let dotted = format!("{}.", host);
+        let dotted = format!("{host}.");
         let dotted_matches = is_special_host(&dotted);
         prop_assert!(dotted_matches);
     }
