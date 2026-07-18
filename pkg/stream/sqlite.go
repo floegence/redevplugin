@@ -352,7 +352,6 @@ func (s *SQLiteStore) Wait(ctx context.Context, streamID string) error {
 	releaseLocks()
 	releaseLocks = func() {}
 	finishObservation()
-	finishObservation = func() {}
 	return waitForStreamNotification(ctx, notification.ready, pluginNotification.ready)
 }
 
