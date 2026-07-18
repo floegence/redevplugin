@@ -100,12 +100,36 @@ var examplePluginSpecs = []examplePluginSpec{
 type examplesWebSecurityGuard struct{ origin string }
 
 func (guard examplesWebSecurityGuard) Authenticate(r *http.Request) (sessionctx.Context, error) {
+	return examplesSession(), nil
+}
+
+func (guard examplesWebSecurityGuard) ValidateOrigin(r *http.Request, _ sessionctx.Context, policy websecurity.OriginPolicy) error {
+	if policy != websecurity.OriginPolicyTrustedHost {
+		return websecurity.ErrOriginPolicyInvalid
+	}
 	origin := strings.TrimSpace(r.Header.Get("Origin"))
 	unsafeMethod := r.Method != http.MethodGet && r.Method != http.MethodHead && r.Method != http.MethodOptions
 	if origin != guard.origin && (origin != "" || unsafeMethod) {
-		return sessionctx.Context{}, websecurity.ErrOriginDenied
+		return websecurity.ErrOriginDenied
 	}
-	return examplesSession(), nil
+	return nil
+}
+
+func (guard examplesWebSecurityGuard) ValidateCSRF(r *http.Request, _ sessionctx.Context, policy websecurity.CSRFPolicy) error {
+	if !policy.Valid() {
+		return websecurity.ErrCSRFPolicyInvalid
+	}
+	if policy == websecurity.CSRFPolicyRequired && strings.TrimSpace(r.Header.Get("Origin")) != guard.origin {
+		return websecurity.ErrCSRFRequired
+	}
+	return nil
+}
+
+func (examplesWebSecurityGuard) AuthorizeRoute(_ *http.Request, _ sessionctx.Context, action websecurity.RouteAction) error {
+	if !action.Valid() {
+		return websecurity.ErrRouteActionInvalid
+	}
+	return nil
 }
 
 func examplesSession() sessionctx.Context {

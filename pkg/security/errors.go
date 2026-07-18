@@ -17,6 +17,8 @@ const (
 	ErrDisabled                      ErrorCode = "PLUGIN_DISABLED"
 	ErrDisabledByPolicy              ErrorCode = "PLUGIN_DISABLED_BY_POLICY"
 	ErrPermissionDenied              ErrorCode = "PLUGIN_PERMISSION_DENIED"
+	ErrOriginDenied                  ErrorCode = "PLUGIN_ORIGIN_DENIED"
+	ErrActionDenied                  ErrorCode = "PLUGIN_ACTION_DENIED"
 	ErrConfirmationRequired          ErrorCode = "PLUGIN_CONFIRMATION_REQUIRED"
 	ErrConfirmationInvalid           ErrorCode = "PLUGIN_CONFIRMATION_INVALID"
 	ErrConfirmationRejected          ErrorCode = "PLUGIN_CONFIRMATION_REJECTED"
@@ -53,6 +55,7 @@ const (
 	ErrBindingRevisionMismatch       ErrorCode = "PLUGIN_BINDING_REVISION_MISMATCH"
 	ErrValuesRevisionMismatch        ErrorCode = "PLUGIN_VALUES_REVISION_MISMATCH"
 	ErrCSRFRequired                  ErrorCode = "PLUGIN_CSRF_REQUIRED"
+	ErrCSRFInvalid                   ErrorCode = "PLUGIN_CSRF_INVALID"
 
 	ErrBridgeTimeout           ErrorCode = "PLUGIN_BRIDGE_TIMEOUT"
 	ErrBridgeDisposed          ErrorCode = "PLUGIN_BRIDGE_DISPOSED"
@@ -78,6 +81,8 @@ var platformErrorCodes = []ErrorCode{
 	ErrDisabled,
 	ErrDisabledByPolicy,
 	ErrPermissionDenied,
+	ErrOriginDenied,
+	ErrActionDenied,
 	ErrConfirmationRequired,
 	ErrConfirmationInvalid,
 	ErrTokenExpired,
@@ -113,6 +118,7 @@ var platformErrorCodes = []ErrorCode{
 	ErrBindingRevisionMismatch,
 	ErrValuesRevisionMismatch,
 	ErrCSRFRequired,
+	ErrCSRFInvalid,
 	ErrFeatureNotConfigured,
 }
 

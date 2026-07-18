@@ -44,6 +44,7 @@ import (
 	"github.com/floegence/redevplugin/pkg/storage"
 	"github.com/floegence/redevplugin/pkg/stream"
 	"github.com/floegence/redevplugin/pkg/version"
+	"github.com/floegence/redevplugin/pkg/websecurity"
 )
 
 type stressSummary struct {
@@ -817,6 +818,27 @@ func (stressWebSecurityGuard) Authenticate(*http.Request) (sessionctx.Context, e
 		OwnerEnvHash:         "environment_hash_stress",
 		SessionChannelIDHash: "channel_hash_stress",
 	}, nil
+}
+
+func (stressWebSecurityGuard) ValidateOrigin(_ *http.Request, _ sessionctx.Context, policy websecurity.OriginPolicy) error {
+	if !policy.Valid() {
+		return websecurity.ErrOriginPolicyInvalid
+	}
+	return nil
+}
+
+func (stressWebSecurityGuard) ValidateCSRF(_ *http.Request, _ sessionctx.Context, policy websecurity.CSRFPolicy) error {
+	if !policy.Valid() {
+		return websecurity.ErrCSRFPolicyInvalid
+	}
+	return nil
+}
+
+func (stressWebSecurityGuard) AuthorizeRoute(_ *http.Request, _ sessionctx.Context, action websecurity.RouteAction) error {
+	if !action.Valid() {
+		return websecurity.ErrRouteActionInvalid
+	}
+	return nil
 }
 
 func stressTestContext() context.Context {

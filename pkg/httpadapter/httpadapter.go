@@ -349,10 +349,50 @@ type Dependencies struct {
 	Guard websecurity.Guard
 }
 
+type HostConfigError = host.HostConfigError
+
 type routeSpec struct {
 	Route
-	bind      func(*Handler) http.HandlerFunc
-	queryKeys []string
+	action       websecurity.RouteAction
+	originPolicy websecurity.OriginPolicy
+	csrfPolicy   websecurity.CSRFPolicy
+	bind         func(*Handler) http.HandlerFunc
+	queryKeys    []string
+}
+
+func apiRoute(method, path string, action websecurity.RouteAction, bind func(*Handler) http.HandlerFunc, queryKeys ...string) routeSpec {
+	csrfPolicy := websecurity.CSRFPolicyRequired
+	if method == http.MethodGet || method == http.MethodHead || method == http.MethodOptions {
+		csrfPolicy = websecurity.CSRFPolicyNotRequired
+	}
+	return routeSpec{
+		Route:        Route{Method: method, Path: path},
+		action:       action,
+		originPolicy: websecurity.OriginPolicyTrustedHost,
+		csrfPolicy:   csrfPolicy,
+		bind:         bind,
+		queryKeys:    queryKeys,
+	}
+}
+
+func (route routeSpec) validate() error {
+	if !route.action.Valid() {
+		return fmt.Errorf("%w: %q", websecurity.ErrRouteActionInvalid, route.action)
+	}
+	if !route.originPolicy.Valid() {
+		return fmt.Errorf("%w: %q", websecurity.ErrOriginPolicyInvalid, route.originPolicy)
+	}
+	if !route.csrfPolicy.Valid() {
+		return fmt.Errorf("%w: %q", websecurity.ErrCSRFPolicyInvalid, route.csrfPolicy)
+	}
+	wantCSRF := websecurity.CSRFPolicyRequired
+	if route.Method == http.MethodGet || route.Method == http.MethodHead || route.Method == http.MethodOptions {
+		wantCSRF = websecurity.CSRFPolicyNotRequired
+	}
+	if route.csrfPolicy != wantCSRF {
+		return fmt.Errorf("route %s %s has csrf policy %q, want %q", route.Method, route.Path, route.csrfPolicy, wantCSRF)
+	}
+	return nil
 }
 
 type installReleaseRefRequest struct {
@@ -750,59 +790,59 @@ func (e *jsonLimitError) status() int {
 }
 
 var routes = []routeSpec{
-	{Route: Route{Method: http.MethodPost, Path: "/_redevplugin/api/plugins/local-imports"}, bind: func(h *Handler) http.HandlerFunc { return h.handleImportLocalPackageUpload }, queryKeys: []string{"plugin_instance_id"}},
-	{Route: Route{Method: http.MethodPost, Path: "/_redevplugin/api/plugins/install-release-ref"}, bind: func(h *Handler) http.HandlerFunc { return h.handleInstallReleaseRef }},
-	{Route: Route{Method: http.MethodPost, Path: "/_redevplugin/api/plugins/enable"}, bind: func(h *Handler) http.HandlerFunc { return h.handleEnable }},
-	{Route: Route{Method: http.MethodPost, Path: "/_redevplugin/api/plugins/disable"}, bind: func(h *Handler) http.HandlerFunc { return h.handleDisable }},
-	{Route: Route{Method: http.MethodPost, Path: "/_redevplugin/api/plugins/uninstall"}, bind: func(h *Handler) http.HandlerFunc { return h.handleUninstall }},
-	{Route: Route{Method: http.MethodPut, Path: "/_redevplugin/api/plugins/{plugin_instance_id}/local-import"}, bind: func(h *Handler) http.HandlerFunc { return h.handleUpdateLocalPackageUpload }, queryKeys: []string{"expected_management_revision"}},
-	{Route: Route{Method: http.MethodPost, Path: "/_redevplugin/api/plugins/update-release-ref"}, bind: func(h *Handler) http.HandlerFunc { return h.handleUpdateReleaseRef }},
-	{Route: Route{Method: http.MethodPost, Path: "/_redevplugin/api/plugins/downgrade"}, bind: func(h *Handler) http.HandlerFunc { return h.handleDowngrade }},
-	{Route: Route{Method: http.MethodGet, Path: "/_redevplugin/api/plugins/catalog"}, bind: func(h *Handler) http.HandlerFunc { return h.handleCatalog }},
-	{Route: Route{Method: http.MethodGet, Path: "/_redevplugin/api/plugins/features"}, bind: func(h *Handler) http.HandlerFunc { return h.handleFeatures }},
-	{Route: Route{Method: http.MethodGet, Path: "/_redevplugin/api/plugins/platform/compatibility"}, bind: func(h *Handler) http.HandlerFunc { return h.handleCompatibility }},
-	{Route: Route{Method: http.MethodPost, Path: "/_redevplugin/api/plugins/surfaces/open"}, bind: func(h *Handler) http.HandlerFunc { return h.handleOpenSurface }},
-	{Route: Route{Method: http.MethodPost, Path: "/_redevplugin/api/plugins/surfaces/revoke-scope"}, bind: func(h *Handler) http.HandlerFunc { return h.handleRevokeSurfaceScope }},
-	{Route: Route{Method: http.MethodPost, Path: "/_redevplugin/api/plugins/surfaces/{surface_instance_id}/prepare"}, bind: func(h *Handler) http.HandlerFunc { return h.handlePrepareSurface }},
-	{Route: Route{Method: http.MethodPost, Path: "/_redevplugin/api/plugins/surfaces/{surface_instance_id}/bridge-token"}, bind: func(h *Handler) http.HandlerFunc { return h.handleBridgeToken }},
-	{Route: Route{Method: http.MethodPost, Path: "/_redevplugin/api/plugins/surfaces/{surface_instance_id}/assets/read"}, bind: func(h *Handler) http.HandlerFunc { return h.handleReadSurfaceAsset }},
-	{Route: Route{Method: http.MethodPost, Path: "/_redevplugin/api/plugins/surfaces/{surface_instance_id}/streams/read"}, bind: func(h *Handler) http.HandlerFunc { return h.handleReadSurfaceStream }},
-	{Route: Route{Method: http.MethodPost, Path: "/_redevplugin/api/plugins/surfaces/{surface_instance_id}/streams/ack"}, bind: func(h *Handler) http.HandlerFunc { return h.handleAcknowledgeSurfaceStream }},
-	{Route: Route{Method: http.MethodPost, Path: "/_redevplugin/api/plugins/surfaces/{surface_instance_id}/operations/cancel"}, bind: func(h *Handler) http.HandlerFunc { return h.handleCancelSurfaceOperation }},
-	{Route: Route{Method: http.MethodPost, Path: "/_redevplugin/api/plugins/surfaces/{surface_instance_id}/confirmations/reject"}, bind: func(h *Handler) http.HandlerFunc { return h.handleRejectSurfaceConfirmation }},
-	{Route: Route{Method: http.MethodPost, Path: "/_redevplugin/api/plugins/surfaces/{surface_instance_id}/dispose"}, bind: func(h *Handler) http.HandlerFunc { return h.handleDisposeSurface }},
-	{Route: Route{Method: http.MethodPost, Path: "/_redevplugin/api/plugins/rpc"}, bind: func(h *Handler) http.HandlerFunc { return h.handleRPC }},
-	{Route: Route{Method: http.MethodPost, Path: "/_redevplugin/api/plugins/confirmations/prepare"}, bind: func(h *Handler) http.HandlerFunc { return h.handlePrepareMethodConfirmation }},
-	{Route: Route{Method: http.MethodGet, Path: "/_redevplugin/api/plugins/intents"}, bind: func(h *Handler) http.HandlerFunc { return h.handleListIntents }, queryKeys: []string{"intent_id", "plugin_instance_id"}},
-	{Route: Route{Method: http.MethodPost, Path: "/_redevplugin/api/plugins/intents/invoke"}, bind: func(h *Handler) http.HandlerFunc { return h.handleInvokeIntent }},
-	{Route: Route{Method: http.MethodGet, Path: "/_redevplugin/api/plugins/operations"}, bind: func(h *Handler) http.HandlerFunc { return h.handleListOperations }, queryKeys: []string{"plugin_instance_id", "cursor", "limit"}},
-	{Route: Route{Method: http.MethodGet, Path: "/_redevplugin/api/plugins/operations/{operation_id}"}, bind: func(h *Handler) http.HandlerFunc { return h.handleGetOperation }},
-	{Route: Route{Method: http.MethodPost, Path: "/_redevplugin/api/plugins/operations/{operation_id}/cancel"}, bind: func(h *Handler) http.HandlerFunc { return h.handleCancelOperation }},
-	{Route: Route{Method: http.MethodPost, Path: "/_redevplugin/api/plugins/runtime/start"}, bind: func(h *Handler) http.HandlerFunc { return h.handleStartRuntime }},
-	{Route: Route{Method: http.MethodPost, Path: "/_redevplugin/api/plugins/runtime/stop"}, bind: func(h *Handler) http.HandlerFunc { return h.handleStopRuntime }},
-	{Route: Route{Method: http.MethodPost, Path: "/_redevplugin/api/plugins/runtime/refresh-enabled"}, bind: func(h *Handler) http.HandlerFunc { return h.handleRefreshEnabledRuntimeState }},
-	{Route: Route{Method: http.MethodGet, Path: "/_redevplugin/api/plugins/runtime/health"}, bind: func(h *Handler) http.HandlerFunc { return h.handleRuntimeHealth }},
-	{Route: Route{Method: http.MethodPost, Path: "/_redevplugin/api/plugins/data/export"}, bind: func(h *Handler) http.HandlerFunc { return h.handleExportData }},
-	{Route: Route{Method: http.MethodPost, Path: "/_redevplugin/api/plugins/data/export/delete"}, bind: func(h *Handler) http.HandlerFunc { return h.handleDeleteDataExport }},
-	{Route: Route{Method: http.MethodPost, Path: "/_redevplugin/api/plugins/data/import"}, bind: func(h *Handler) http.HandlerFunc { return h.handleImportData }},
-	{Route: Route{Method: http.MethodGet, Path: "/_redevplugin/api/plugins/retained-data"}, bind: func(h *Handler) http.HandlerFunc { return h.handleListRetainedData }, queryKeys: []string{"plugin_instance_id"}},
-	{Route: Route{Method: http.MethodPost, Path: "/_redevplugin/api/plugins/retained-data/delete"}, bind: func(h *Handler) http.HandlerFunc { return h.handleDeleteRetainedData }},
-	{Route: Route{Method: http.MethodPost, Path: "/_redevplugin/api/plugins/retained-data/bind"}, bind: func(h *Handler) http.HandlerFunc { return h.handleBindRetainedData }},
-	{Route: Route{Method: http.MethodPost, Path: "/_redevplugin/api/plugins/retained-data/cleanup-expired"}, bind: func(h *Handler) http.HandlerFunc { return h.handleCleanupExpiredRetainedData }},
-	{Route: Route{Method: http.MethodGet, Path: "/_redevplugin/api/plugins/permissions"}, bind: func(h *Handler) http.HandlerFunc { return h.handleListPermissions }, queryKeys: []string{"plugin_instance_id", "active_only"}},
-	{Route: Route{Method: http.MethodPost, Path: "/_redevplugin/api/plugins/permissions/grant"}, bind: func(h *Handler) http.HandlerFunc { return h.handleGrantPermission }},
-	{Route: Route{Method: http.MethodPost, Path: "/_redevplugin/api/plugins/permissions/revoke"}, bind: func(h *Handler) http.HandlerFunc { return h.handleRevokePermission }},
-	{Route: Route{Method: http.MethodGet, Path: "/_redevplugin/api/plugins/security-policies"}, bind: func(h *Handler) http.HandlerFunc { return h.handleListSecurityPolicies }},
-	{Route: Route{Method: http.MethodGet, Path: "/_redevplugin/api/plugins/security-policies/{plugin_instance_id}"}, bind: func(h *Handler) http.HandlerFunc { return h.handleGetSecurityPolicy }},
-	{Route: Route{Method: http.MethodPut, Path: "/_redevplugin/api/plugins/security-policies/{plugin_instance_id}"}, bind: func(h *Handler) http.HandlerFunc { return h.handlePutSecurityPolicy }},
-	{Route: Route{Method: http.MethodDelete, Path: "/_redevplugin/api/plugins/security-policies/{plugin_instance_id}"}, bind: func(h *Handler) http.HandlerFunc { return h.handleDeleteSecurityPolicy }},
-	{Route: Route{Method: http.MethodGet, Path: "/_redevplugin/api/plugins/diagnostics"}, bind: func(h *Handler) http.HandlerFunc { return h.handleListDiagnostics }, queryKeys: []string{"plugin_id", "plugin_instance_id", "surface_instance_id", "type", "severity", "limit"}},
-	{Route: Route{Method: http.MethodPost, Path: "/_redevplugin/api/plugins/secrets/bind"}, bind: func(h *Handler) http.HandlerFunc { return h.handleBindSecret }},
-	{Route: Route{Method: http.MethodPost, Path: "/_redevplugin/api/plugins/secrets/test"}, bind: func(h *Handler) http.HandlerFunc { return h.handleTestSecret }},
-	{Route: Route{Method: http.MethodPost, Path: "/_redevplugin/api/plugins/secrets/delete"}, bind: func(h *Handler) http.HandlerFunc { return h.handleDeleteSecret }},
-	{Route: Route{Method: http.MethodGet, Path: "/_redevplugin/api/plugins/{plugin_instance_id}/settings/schema"}, bind: func(h *Handler) http.HandlerFunc { return h.handleGetSettingsSchema }},
-	{Route: Route{Method: http.MethodGet, Path: "/_redevplugin/api/plugins/{plugin_instance_id}/settings"}, bind: func(h *Handler) http.HandlerFunc { return h.handleGetSettings }},
-	{Route: Route{Method: http.MethodPatch, Path: "/_redevplugin/api/plugins/{plugin_instance_id}/settings"}, bind: func(h *Handler) http.HandlerFunc { return h.handlePatchSettings }},
+	apiRoute(http.MethodPost, "/_redevplugin/api/plugins/local-imports", websecurity.RouteActionImportLocalPackage, func(h *Handler) http.HandlerFunc { return h.handleImportLocalPackageUpload }, "plugin_instance_id"),
+	apiRoute(http.MethodPost, "/_redevplugin/api/plugins/install-release-ref", websecurity.RouteActionInstallReleaseRef, func(h *Handler) http.HandlerFunc { return h.handleInstallReleaseRef }),
+	apiRoute(http.MethodPost, "/_redevplugin/api/plugins/enable", websecurity.RouteActionEnablePlugin, func(h *Handler) http.HandlerFunc { return h.handleEnable }),
+	apiRoute(http.MethodPost, "/_redevplugin/api/plugins/disable", websecurity.RouteActionDisablePlugin, func(h *Handler) http.HandlerFunc { return h.handleDisable }),
+	apiRoute(http.MethodPost, "/_redevplugin/api/plugins/uninstall", websecurity.RouteActionUninstallPlugin, func(h *Handler) http.HandlerFunc { return h.handleUninstall }),
+	apiRoute(http.MethodPut, "/_redevplugin/api/plugins/{plugin_instance_id}/local-import", websecurity.RouteActionUpdateLocalPackage, func(h *Handler) http.HandlerFunc { return h.handleUpdateLocalPackageUpload }, "expected_management_revision"),
+	apiRoute(http.MethodPost, "/_redevplugin/api/plugins/update-release-ref", websecurity.RouteActionUpdateReleaseRef, func(h *Handler) http.HandlerFunc { return h.handleUpdateReleaseRef }),
+	apiRoute(http.MethodPost, "/_redevplugin/api/plugins/downgrade", websecurity.RouteActionDowngradePlugin, func(h *Handler) http.HandlerFunc { return h.handleDowngrade }),
+	apiRoute(http.MethodGet, "/_redevplugin/api/plugins/catalog", websecurity.RouteActionListPlugins, func(h *Handler) http.HandlerFunc { return h.handleCatalog }),
+	apiRoute(http.MethodGet, "/_redevplugin/api/plugins/features", websecurity.RouteActionListFeatures, func(h *Handler) http.HandlerFunc { return h.handleFeatures }),
+	apiRoute(http.MethodGet, "/_redevplugin/api/plugins/platform/compatibility", websecurity.RouteActionGetCompatibility, func(h *Handler) http.HandlerFunc { return h.handleCompatibility }),
+	apiRoute(http.MethodPost, "/_redevplugin/api/plugins/surfaces/open", websecurity.RouteActionOpenSurface, func(h *Handler) http.HandlerFunc { return h.handleOpenSurface }),
+	apiRoute(http.MethodPost, "/_redevplugin/api/plugins/surfaces/revoke-scope", websecurity.RouteActionRevokeSurfaceScope, func(h *Handler) http.HandlerFunc { return h.handleRevokeSurfaceScope }),
+	apiRoute(http.MethodPost, "/_redevplugin/api/plugins/surfaces/{surface_instance_id}/prepare", websecurity.RouteActionPrepareSurface, func(h *Handler) http.HandlerFunc { return h.handlePrepareSurface }),
+	apiRoute(http.MethodPost, "/_redevplugin/api/plugins/surfaces/{surface_instance_id}/bridge-token", websecurity.RouteActionMintBridgeToken, func(h *Handler) http.HandlerFunc { return h.handleBridgeToken }),
+	apiRoute(http.MethodPost, "/_redevplugin/api/plugins/surfaces/{surface_instance_id}/assets/read", websecurity.RouteActionReadSurfaceAsset, func(h *Handler) http.HandlerFunc { return h.handleReadSurfaceAsset }),
+	apiRoute(http.MethodPost, "/_redevplugin/api/plugins/surfaces/{surface_instance_id}/streams/read", websecurity.RouteActionReadSurfaceStream, func(h *Handler) http.HandlerFunc { return h.handleReadSurfaceStream }),
+	apiRoute(http.MethodPost, "/_redevplugin/api/plugins/surfaces/{surface_instance_id}/streams/ack", websecurity.RouteActionAcknowledgeSurfaceStream, func(h *Handler) http.HandlerFunc { return h.handleAcknowledgeSurfaceStream }),
+	apiRoute(http.MethodPost, "/_redevplugin/api/plugins/surfaces/{surface_instance_id}/operations/cancel", websecurity.RouteActionCancelSurfaceOperation, func(h *Handler) http.HandlerFunc { return h.handleCancelSurfaceOperation }),
+	apiRoute(http.MethodPost, "/_redevplugin/api/plugins/surfaces/{surface_instance_id}/confirmations/reject", websecurity.RouteActionRejectSurfaceConfirmation, func(h *Handler) http.HandlerFunc { return h.handleRejectSurfaceConfirmation }),
+	apiRoute(http.MethodPost, "/_redevplugin/api/plugins/surfaces/{surface_instance_id}/dispose", websecurity.RouteActionDisposeSurface, func(h *Handler) http.HandlerFunc { return h.handleDisposeSurface }),
+	apiRoute(http.MethodPost, "/_redevplugin/api/plugins/rpc", websecurity.RouteActionCallPluginMethod, func(h *Handler) http.HandlerFunc { return h.handleRPC }),
+	apiRoute(http.MethodPost, "/_redevplugin/api/plugins/confirmations/prepare", websecurity.RouteActionPrepareMethodConfirmation, func(h *Handler) http.HandlerFunc { return h.handlePrepareMethodConfirmation }),
+	apiRoute(http.MethodGet, "/_redevplugin/api/plugins/intents", websecurity.RouteActionListIntents, func(h *Handler) http.HandlerFunc { return h.handleListIntents }, "intent_id", "plugin_instance_id"),
+	apiRoute(http.MethodPost, "/_redevplugin/api/plugins/intents/invoke", websecurity.RouteActionInvokeIntent, func(h *Handler) http.HandlerFunc { return h.handleInvokeIntent }),
+	apiRoute(http.MethodGet, "/_redevplugin/api/plugins/operations", websecurity.RouteActionListOperations, func(h *Handler) http.HandlerFunc { return h.handleListOperations }, "plugin_instance_id", "cursor", "limit"),
+	apiRoute(http.MethodGet, "/_redevplugin/api/plugins/operations/{operation_id}", websecurity.RouteActionGetOperation, func(h *Handler) http.HandlerFunc { return h.handleGetOperation }),
+	apiRoute(http.MethodPost, "/_redevplugin/api/plugins/operations/{operation_id}/cancel", websecurity.RouteActionCancelOperation, func(h *Handler) http.HandlerFunc { return h.handleCancelOperation }),
+	apiRoute(http.MethodPost, "/_redevplugin/api/plugins/runtime/start", websecurity.RouteActionStartRuntime, func(h *Handler) http.HandlerFunc { return h.handleStartRuntime }),
+	apiRoute(http.MethodPost, "/_redevplugin/api/plugins/runtime/stop", websecurity.RouteActionStopRuntime, func(h *Handler) http.HandlerFunc { return h.handleStopRuntime }),
+	apiRoute(http.MethodPost, "/_redevplugin/api/plugins/runtime/refresh-enabled", websecurity.RouteActionRefreshEnabledRuntimeState, func(h *Handler) http.HandlerFunc { return h.handleRefreshEnabledRuntimeState }),
+	apiRoute(http.MethodGet, "/_redevplugin/api/plugins/runtime/health", websecurity.RouteActionGetRuntimeHealth, func(h *Handler) http.HandlerFunc { return h.handleRuntimeHealth }),
+	apiRoute(http.MethodPost, "/_redevplugin/api/plugins/data/export", websecurity.RouteActionExportData, func(h *Handler) http.HandlerFunc { return h.handleExportData }),
+	apiRoute(http.MethodPost, "/_redevplugin/api/plugins/data/export/delete", websecurity.RouteActionDeleteDataExport, func(h *Handler) http.HandlerFunc { return h.handleDeleteDataExport }),
+	apiRoute(http.MethodPost, "/_redevplugin/api/plugins/data/import", websecurity.RouteActionImportData, func(h *Handler) http.HandlerFunc { return h.handleImportData }),
+	apiRoute(http.MethodGet, "/_redevplugin/api/plugins/retained-data", websecurity.RouteActionListRetainedData, func(h *Handler) http.HandlerFunc { return h.handleListRetainedData }, "plugin_instance_id"),
+	apiRoute(http.MethodPost, "/_redevplugin/api/plugins/retained-data/delete", websecurity.RouteActionDeleteRetainedData, func(h *Handler) http.HandlerFunc { return h.handleDeleteRetainedData }),
+	apiRoute(http.MethodPost, "/_redevplugin/api/plugins/retained-data/bind", websecurity.RouteActionBindRetainedData, func(h *Handler) http.HandlerFunc { return h.handleBindRetainedData }),
+	apiRoute(http.MethodPost, "/_redevplugin/api/plugins/retained-data/cleanup-expired", websecurity.RouteActionCleanupExpiredRetainedData, func(h *Handler) http.HandlerFunc { return h.handleCleanupExpiredRetainedData }),
+	apiRoute(http.MethodGet, "/_redevplugin/api/plugins/permissions", websecurity.RouteActionListPermissions, func(h *Handler) http.HandlerFunc { return h.handleListPermissions }, "plugin_instance_id", "active_only"),
+	apiRoute(http.MethodPost, "/_redevplugin/api/plugins/permissions/grant", websecurity.RouteActionGrantPermission, func(h *Handler) http.HandlerFunc { return h.handleGrantPermission }),
+	apiRoute(http.MethodPost, "/_redevplugin/api/plugins/permissions/revoke", websecurity.RouteActionRevokePermission, func(h *Handler) http.HandlerFunc { return h.handleRevokePermission }),
+	apiRoute(http.MethodGet, "/_redevplugin/api/plugins/security-policies", websecurity.RouteActionListSecurityPolicies, func(h *Handler) http.HandlerFunc { return h.handleListSecurityPolicies }),
+	apiRoute(http.MethodGet, "/_redevplugin/api/plugins/security-policies/{plugin_instance_id}", websecurity.RouteActionGetSecurityPolicy, func(h *Handler) http.HandlerFunc { return h.handleGetSecurityPolicy }),
+	apiRoute(http.MethodPut, "/_redevplugin/api/plugins/security-policies/{plugin_instance_id}", websecurity.RouteActionPutSecurityPolicy, func(h *Handler) http.HandlerFunc { return h.handlePutSecurityPolicy }),
+	apiRoute(http.MethodDelete, "/_redevplugin/api/plugins/security-policies/{plugin_instance_id}", websecurity.RouteActionDeleteSecurityPolicy, func(h *Handler) http.HandlerFunc { return h.handleDeleteSecurityPolicy }),
+	apiRoute(http.MethodGet, "/_redevplugin/api/plugins/diagnostics", websecurity.RouteActionListDiagnostics, func(h *Handler) http.HandlerFunc { return h.handleListDiagnostics }, "plugin_id", "plugin_instance_id", "surface_instance_id", "type", "severity", "limit"),
+	apiRoute(http.MethodPost, "/_redevplugin/api/plugins/secrets/bind", websecurity.RouteActionBindSecret, func(h *Handler) http.HandlerFunc { return h.handleBindSecret }),
+	apiRoute(http.MethodPost, "/_redevplugin/api/plugins/secrets/test", websecurity.RouteActionTestSecret, func(h *Handler) http.HandlerFunc { return h.handleTestSecret }),
+	apiRoute(http.MethodPost, "/_redevplugin/api/plugins/secrets/delete", websecurity.RouteActionDeleteSecret, func(h *Handler) http.HandlerFunc { return h.handleDeleteSecret }),
+	apiRoute(http.MethodGet, "/_redevplugin/api/plugins/{plugin_instance_id}/settings/schema", websecurity.RouteActionGetSettingsSchema, func(h *Handler) http.HandlerFunc { return h.handleGetSettingsSchema }),
+	apiRoute(http.MethodGet, "/_redevplugin/api/plugins/{plugin_instance_id}/settings", websecurity.RouteActionGetSettings, func(h *Handler) http.HandlerFunc { return h.handleGetSettings }),
+	apiRoute(http.MethodPatch, "/_redevplugin/api/plugins/{plugin_instance_id}/settings", websecurity.RouteActionPatchSettings, func(h *Handler) http.HandlerFunc { return h.handlePatchSettings }),
 }
 
 func NewHandler(deps Dependencies) (*Handler, error) {
@@ -811,6 +851,11 @@ func NewHandler(deps Dependencies) (*Handler, error) {
 	}
 	if isNilInterfaceValue(deps.Guard) {
 		return nil, &host.HostConfigError{Module: "http", Adapter: "web security guard"}
+	}
+	for _, route := range routes {
+		if err := route.validate(); err != nil {
+			return nil, fmt.Errorf("invalid HTTP route security contract for %s %s: %w", route.Method, route.Path, err)
+		}
 	}
 	h := &Handler{host: deps.Host, guard: deps.Guard, mux: http.NewServeMux()}
 	for _, route := range routes {
@@ -852,6 +897,11 @@ func isNilInterfaceValue(value any) bool {
 func (h *Handler) bindRoute(route routeSpec) http.HandlerFunc {
 	handler := route.bind(h)
 	return func(w http.ResponseWriter, r *http.Request) {
+		session, ok := h.authorizeRouteRequest(w, r, route)
+		if !ok {
+			return
+		}
+		r = r.WithContext(sessionctx.WithContext(r.Context(), session))
 		if _, err := parseQueryParameters(r, route.queryKeys...); err != nil {
 			if requestIsMutation(r) {
 				writeMutationInvalidRequestError(w, err)
@@ -862,6 +912,40 @@ func (h *Handler) bindRoute(route routeSpec) http.HandlerFunc {
 		}
 		handler(w, r)
 	}
+}
+
+func (h *Handler) authorizeRouteRequest(w http.ResponseWriter, r *http.Request, route routeSpec) (sessionctx.Context, bool) {
+	session, err := h.guard.Authenticate(r)
+	if err != nil {
+		h.rejectGuardRequest(w, r, "authenticate", security.ErrPermissionDenied, err)
+		return sessionctx.Context{}, false
+	}
+	if !session.Valid() {
+		h.rejectGuardRequest(w, r, "authenticate", security.ErrPermissionDenied, sessionctx.ErrSessionRequired)
+		return sessionctx.Context{}, false
+	}
+	if err := h.guard.ValidateOrigin(r, session, route.originPolicy); err != nil {
+		h.rejectGuardRequest(w, r, "validate_origin", security.ErrOriginDenied, err)
+		return sessionctx.Context{}, false
+	}
+	if err := h.guard.ValidateCSRF(r, session, route.csrfPolicy); err != nil {
+		code := security.ErrCSRFRequired
+		if errors.Is(err, websecurity.ErrCSRFInvalid) {
+			code = security.ErrCSRFInvalid
+		}
+		h.rejectGuardRequest(w, r, "validate_csrf", code, err)
+		return sessionctx.Context{}, false
+	}
+	if err := h.guard.AuthorizeRoute(r, session, route.action); err != nil {
+		h.rejectGuardRequest(w, r, "authorize_route", security.ErrActionDenied, err)
+		return sessionctx.Context{}, false
+	}
+	return session, true
+}
+
+func (h *Handler) rejectGuardRequest(w http.ResponseWriter, r *http.Request, operation string, code security.ErrorCode, err error) {
+	h.host.ReportHTTPAdapterFailure(r.Context(), operation, code, err)
+	writeRequestError(w, r, http.StatusForbidden, code, publicPluginErrorMessage(code), errorDetails{})
 }
 
 func routePathMatches(pattern, requestPath string) bool {
@@ -890,21 +974,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, security.ErrInvalidRequest, "route not found", errorDetails{})
 		return
 	}
-	session, err := h.guard.Authenticate(r)
-	if err != nil {
-		code := security.ErrPermissionDenied
-		if errors.Is(err, websecurity.ErrCSRFRequired) || errors.Is(err, websecurity.ErrCSRFInvalid) {
-			code = security.ErrCSRFRequired
-		}
-		h.host.ReportHTTPAdapterFailure(r.Context(), "authenticate", code, err)
-		writeRequestError(w, r, http.StatusForbidden, code, publicPluginErrorMessage(code), errorDetails{})
-		return
-	}
-	if !session.Valid() {
-		writeRequestError(w, r, http.StatusForbidden, security.ErrPermissionDenied, sessionctx.ErrSessionRequired.Error(), errorDetails{})
-		return
-	}
-	h.mux.ServeHTTP(w, r.WithContext(sessionctx.WithContext(r.Context(), session)))
+	h.mux.ServeHTTP(w, r)
 }
 
 func writeRequestError(w http.ResponseWriter, r *http.Request, status int, code security.ErrorCode, message string, details errorDetails) {
@@ -2813,8 +2883,14 @@ func publicPluginErrorMessage(code security.ErrorCode) string {
 		return "plugin data binding revision changed"
 	case security.ErrValuesRevisionMismatch:
 		return "plugin settings values revision changed"
+	case security.ErrOriginDenied:
+		return "request origin was denied"
+	case security.ErrActionDenied:
+		return "plugin platform action was denied"
 	case security.ErrCSRFRequired:
-		return "csrf validation failed"
+		return "csrf token is required"
+	case security.ErrCSRFInvalid:
+		return "csrf token is invalid"
 	default:
 		return "plugin request failed"
 	}

@@ -757,11 +757,18 @@ func TestHandlerWebSecurityRejectsDeniedOrigin(t *testing.T) {
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("denied origin status = %d body = %s", rec.Code, rec.Body.String())
 	}
-	if guard.evaluateCount != 1 {
-		t.Fatalf("Evaluate count = %d, want 1", guard.evaluateCount)
+	var envelope decodedErrorResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &envelope); err != nil {
+		t.Fatal(err)
 	}
-	if guard.csrfCount != 0 {
-		t.Fatalf("CSRF count = %d, want 0 for safe method", guard.csrfCount)
+	if envelope.Code != string(security.ErrOriginDenied) {
+		t.Fatalf("origin error code = %q, want %q", envelope.Code, security.ErrOriginDenied)
+	}
+	if guard.authenticateCount != 1 || guard.originCount != 1 {
+		t.Fatalf("guard calls = authenticate:%d origin:%d", guard.authenticateCount, guard.originCount)
+	}
+	if guard.csrfCount != 0 || guard.authorizeCount != 0 {
+		t.Fatalf("later guard stages ran after denied origin: csrf=%d authorize=%d", guard.csrfCount, guard.authorizeCount)
 	}
 }
 
@@ -786,8 +793,8 @@ func TestHandlerWebSecurityRejectsHostSpecificOriginDecision(t *testing.T) {
 			}
 		})
 	}
-	if guard.csrfCount != 0 {
-		t.Fatalf("CSRF count = %d, want 0 for rejected sandbox routes", guard.csrfCount)
+	if guard.csrfCount != 0 || guard.authorizeCount != 0 {
+		t.Fatalf("later guard stages ran after rejected sandbox origin: csrf=%d authorize=%d", guard.csrfCount, guard.authorizeCount)
 	}
 }
 
@@ -828,25 +835,33 @@ func TestHandlerWebSecurityRejectsIncompleteTrustedScope(t *testing.T) {
 }
 
 func TestHandlerWebSecurityRequiresCSRFForUnsafeProxyRoutes(t *testing.T) {
-	guard := &httpTestWebSecurityGuard{decision: "trusted", csrfErr: websecurity.ErrCSRFRequired}
-	handler := mustNewHandler(t, newHTTPTestHost(t), guard)
-	req := newJSONHTTPRequest(http.MethodPost, "/_redevplugin/api/plugins/enable", bytes.NewBufferString(`{}`))
-	rec := httptest.NewRecorder()
+	for _, path := range []string{
+		"/_redevplugin/api/plugins/enable",
+		"/_redevplugin/api/plugins/surfaces/surface_test/assets/read",
+		"/_redevplugin/api/plugins/surfaces/surface_test/streams/read",
+	} {
+		t.Run(path, func(t *testing.T) {
+			guard := &httpTestWebSecurityGuard{decision: "trusted", csrfErr: websecurity.ErrCSRFRequired}
+			handler := mustNewHandler(t, newHTTPTestHost(t), guard)
+			req := newJSONHTTPRequest(http.MethodPost, path, bytes.NewBufferString(`{}`))
+			rec := httptest.NewRecorder()
 
-	handler.ServeHTTP(rec, req)
+			handler.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusForbidden {
-		t.Fatalf("missing csrf status = %d body = %s", rec.Code, rec.Body.String())
-	}
-	var envelope decodedErrorResponse
-	if err := json.Unmarshal(rec.Body.Bytes(), &envelope); err != nil {
-		t.Fatal(err)
-	}
-	if envelope.Code != string(security.ErrCSRFRequired) {
-		t.Fatalf("csrf error_code = %q, want %q", envelope.Code, security.ErrCSRFRequired)
-	}
-	if guard.evaluateCount != 1 || guard.csrfCount != 1 || guard.lastSessionHash != "session_hash" {
-		t.Fatalf("guard calls = evaluate:%d csrf:%d session:%q", guard.evaluateCount, guard.csrfCount, guard.lastSessionHash)
+			if rec.Code != http.StatusForbidden {
+				t.Fatalf("missing csrf status = %d body = %s", rec.Code, rec.Body.String())
+			}
+			var envelope decodedErrorResponse
+			if err := json.Unmarshal(rec.Body.Bytes(), &envelope); err != nil {
+				t.Fatal(err)
+			}
+			if envelope.Code != string(security.ErrCSRFRequired) {
+				t.Fatalf("csrf error_code = %q, want %q", envelope.Code, security.ErrCSRFRequired)
+			}
+			if guard.authenticateCount != 1 || guard.originCount != 1 || guard.csrfCount != 1 || guard.authorizeCount != 0 || guard.lastSessionHash != "session_hash" {
+				t.Fatalf("guard calls = authenticate:%d origin:%d csrf:%d authorize:%d session:%q", guard.authenticateCount, guard.originCount, guard.csrfCount, guard.authorizeCount, guard.lastSessionHash)
+			}
+		})
 	}
 }
 
@@ -861,13 +876,60 @@ func TestHandlerWebSecurityAllowsSafeProxyRouteWithoutCSRF(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("catalog status = %d body = %s", rec.Code, rec.Body.String())
 	}
-	if guard.evaluateCount != 1 || guard.csrfCount != 0 {
-		t.Fatalf("guard calls = evaluate:%d csrf:%d", guard.evaluateCount, guard.csrfCount)
+	if guard.authenticateCount != 1 || guard.originCount != 1 || guard.csrfCount != 1 || guard.authorizeCount != 1 {
+		t.Fatalf("guard calls = authenticate:%d origin:%d csrf:%d authorize:%d", guard.authenticateCount, guard.originCount, guard.csrfCount, guard.authorizeCount)
+	}
+	if guard.lastCSRFPolicy != websecurity.CSRFPolicyNotRequired || guard.lastAction != websecurity.RouteActionListPlugins {
+		t.Fatalf("safe route contract = csrf:%q action:%q", guard.lastCSRFPolicy, guard.lastAction)
+	}
+	if got := strings.Join(guard.callOrder, ","); got != "authenticate,origin,csrf,authorize" {
+		t.Fatalf("guard call order = %q", got)
+	}
+}
+
+func TestHandlerWebSecurityRejectsUnauthorizedRouteAction(t *testing.T) {
+	guard := &httpTestWebSecurityGuard{authorizeErr: errors.New("route denied")}
+	handler := mustNewHandler(t, newHTTPTestHost(t), guard)
+	req := httptest.NewRequest(http.MethodGet, "/_redevplugin/api/plugins/catalog", nil)
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403 body = %s", rec.Code, rec.Body.String())
+	}
+	var envelope decodedErrorResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &envelope); err != nil {
+		t.Fatal(err)
+	}
+	if envelope.Code != string(security.ErrActionDenied) {
+		t.Fatalf("error code = %q, want %q", envelope.Code, security.ErrActionDenied)
+	}
+	if guard.lastAction != websecurity.RouteActionListPlugins || guard.authorizeCount != 1 {
+		t.Fatalf("authorization action = %q count = %d", guard.lastAction, guard.authorizeCount)
+	}
+}
+
+func TestHandlerWebSecurityDistinguishesInvalidCSRF(t *testing.T) {
+	guard := &httpTestWebSecurityGuard{csrfErr: websecurity.ErrCSRFInvalid}
+	handler := mustNewHandler(t, newHTTPTestHost(t), guard)
+	req := newJSONHTTPRequest(http.MethodPost, "/_redevplugin/api/plugins/enable", bytes.NewBufferString(`{}`))
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	var envelope decodedErrorResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &envelope); err != nil {
+		t.Fatal(err)
+	}
+	if rec.Code != http.StatusForbidden || envelope.Code != string(security.ErrCSRFInvalid) {
+		t.Fatalf("invalid csrf response = status:%d envelope:%#v", rec.Code, envelope)
 	}
 }
 
 func TestHandlerWebSecurityCSRFClassificationCoversRouteSet(t *testing.T) {
-	for _, route := range RouteSet() {
+	actions := make(map[websecurity.RouteAction]Route, len(routes))
+	for _, route := range routes {
 		t.Run(route.Method+" "+route.Path, func(t *testing.T) {
 			guard := &httpTestWebSecurityGuard{decision: "trusted"}
 			handler := mustNewHandler(t, newHTTPTestHost(t), guard)
@@ -883,19 +945,30 @@ func TestHandlerWebSecurityCSRFClassificationCoversRouteSet(t *testing.T) {
 
 			handler.ServeHTTP(rec, req)
 
-			if guard.evaluateCount != 1 {
-				t.Fatalf("Evaluate count = %d, want 1", guard.evaluateCount)
+			if guard.authenticateCount != 1 || guard.originCount != 1 || guard.csrfCount != 1 || guard.authorizeCount != 1 {
+				t.Fatalf("guard calls = authenticate:%d origin:%d csrf:%d authorize:%d", guard.authenticateCount, guard.originCount, guard.csrfCount, guard.authorizeCount)
 			}
 			wantCSRF := route.Method != http.MethodGet &&
 				route.Method != http.MethodHead &&
 				route.Method != http.MethodOptions
-			if wantCSRF && guard.csrfCount != 1 {
-				t.Fatalf("CSRF count = %d, want 1 for %s", guard.csrfCount, route.Path)
+			wantPolicy := websecurity.CSRFPolicyNotRequired
+			if wantCSRF {
+				wantPolicy = websecurity.CSRFPolicyRequired
 			}
-			if !wantCSRF && guard.csrfCount != 0 {
-				t.Fatalf("CSRF count = %d, want 0 for %s", guard.csrfCount, route.Path)
+			if guard.lastCSRFPolicy != wantPolicy {
+				t.Fatalf("CSRF policy = %q, want %q for %s", guard.lastCSRFPolicy, wantPolicy, route.Path)
+			}
+			if guard.lastOriginPolicy != websecurity.OriginPolicyTrustedHost {
+				t.Fatalf("origin policy = %q, want trusted host", guard.lastOriginPolicy)
+			}
+			if guard.lastAction != route.action || !route.action.Valid() {
+				t.Fatalf("route action = %q, want %q", guard.lastAction, route.action)
 			}
 		})
+		if previous, exists := actions[route.action]; exists {
+			t.Fatalf("route action %q is shared by %s %s and %s %s", route.action, previous.Method, previous.Path, route.Method, route.Path)
+		}
+		actions[route.action] = route.Route
 	}
 }
 
@@ -1026,8 +1099,8 @@ func TestHandlerWebSecurityIgnoresNonPluginPaths(t *testing.T) {
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("non-plugin path status = %d body = %s", rec.Code, rec.Body.String())
 	}
-	if guard.evaluateCount != 0 || guard.csrfCount != 0 {
-		t.Fatalf("guard should not run for non-plugin path, evaluate=%d csrf=%d", guard.evaluateCount, guard.csrfCount)
+	if guard.authenticateCount != 0 || guard.originCount != 0 || guard.csrfCount != 0 || guard.authorizeCount != 0 {
+		t.Fatalf("guard should not run for non-plugin path: %#v", guard)
 	}
 }
 
@@ -5386,12 +5459,20 @@ func (s *httpRecordingDiagnostics) last(eventType string) (observability.Diagnos
 }
 
 type httpTestWebSecurityGuard struct {
-	decision        string
-	scope           sessionctx.Context
-	csrfErr         error
-	evaluateCount   int
-	csrfCount       int
-	lastSessionHash string
+	decision          string
+	scope             sessionctx.Context
+	authenticateErr   error
+	csrfErr           error
+	authorizeErr      error
+	authenticateCount int
+	originCount       int
+	csrfCount         int
+	authorizeCount    int
+	lastSessionHash   string
+	lastOriginPolicy  websecurity.OriginPolicy
+	lastCSRFPolicy    websecurity.CSRFPolicy
+	lastAction        websecurity.RouteAction
+	callOrder         []string
 }
 
 func allowHTTPTestGuard() *httpTestWebSecurityGuard {
@@ -5420,9 +5501,10 @@ func mustNewHandler(t *testing.T, pluginHost *host.Host, guard websecurity.Guard
 }
 
 func (g *httpTestWebSecurityGuard) Authenticate(r *http.Request) (sessionctx.Context, error) {
-	g.evaluateCount++
-	if g.decision != "" && g.decision != "trusted" {
-		return sessionctx.Context{}, websecurity.ErrOriginDenied
+	g.authenticateCount++
+	g.callOrder = append(g.callOrder, "authenticate")
+	if g.authenticateErr != nil {
+		return sessionctx.Context{}, g.authenticateErr
 	}
 	scope := g.scope
 	if scope == (sessionctx.Context{}) {
@@ -5433,14 +5515,46 @@ func (g *httpTestWebSecurityGuard) Authenticate(r *http.Request) (sessionctx.Con
 			SessionChannelIDHash: "channel_hash",
 		}
 	}
-	if r.Method != http.MethodGet && r.Method != http.MethodHead && r.Method != http.MethodOptions {
-		g.csrfCount++
-		g.lastSessionHash = scope.OwnerSessionHash
-		if g.csrfErr != nil {
-			return sessionctx.Context{}, g.csrfErr
-		}
-	}
 	return scope, nil
+}
+
+func (g *httpTestWebSecurityGuard) ValidateOrigin(_ *http.Request, session sessionctx.Context, policy websecurity.OriginPolicy) error {
+	g.originCount++
+	g.callOrder = append(g.callOrder, "origin")
+	g.lastOriginPolicy = policy
+	g.lastSessionHash = session.OwnerSessionHash
+	if !policy.Valid() {
+		return websecurity.ErrOriginPolicyInvalid
+	}
+	if g.decision != "" && g.decision != "trusted" {
+		return websecurity.ErrOriginDenied
+	}
+	return nil
+}
+
+func (g *httpTestWebSecurityGuard) ValidateCSRF(_ *http.Request, session sessionctx.Context, policy websecurity.CSRFPolicy) error {
+	g.csrfCount++
+	g.callOrder = append(g.callOrder, "csrf")
+	g.lastCSRFPolicy = policy
+	g.lastSessionHash = session.OwnerSessionHash
+	if !policy.Valid() {
+		return websecurity.ErrCSRFPolicyInvalid
+	}
+	if policy == websecurity.CSRFPolicyRequired && g.csrfErr != nil {
+		return g.csrfErr
+	}
+	return nil
+}
+
+func (g *httpTestWebSecurityGuard) AuthorizeRoute(_ *http.Request, session sessionctx.Context, action websecurity.RouteAction) error {
+	g.authorizeCount++
+	g.callOrder = append(g.callOrder, "authorize")
+	g.lastAction = action
+	g.lastSessionHash = session.OwnerSessionHash
+	if !action.Valid() {
+		return websecurity.ErrRouteActionInvalid
+	}
+	return g.authorizeErr
 }
 
 func openHTTPBridge(t *testing.T, handler http.Handler, pluginInstanceID string, surfaceID string, surfaceInstanceID string, bridgeChannelID string) bridge.GatewayTokenResult {

@@ -343,10 +343,12 @@ test("opaque bootstrap runs only the trusted renderer and creates a hardened wor
   assert.equal(html.includes("__rpControlPort"), true);
   assert.equal(html.includes('port_roles.join(",") !== "runtime_control,plugin_bridge"'), true);
   assert.equal(html.includes("indexedDB:undefined"), true);
+  assert.equal(html.includes("fetch:__rpBlocked"), true);
   assert.equal(html.includes("WebSocket:undefined"), true);
   assert.equal(html.includes("__rpSealChain"), true);
   assert.equal(html.includes("Object.getOwnPropertyDescriptor"), true);
   assert.equal(html.includes("sendBeacon:undefined"), true);
+  assert.equal(html.includes("/_redevplugin/api/"), false);
   assert.equal(html.includes("__rpControlPost"), true);
   assert.equal(html.includes("__rpSealMessagePortMethod"), true);
   assert.equal(html.includes("maxConcurrentAssetReads = 4"), true);

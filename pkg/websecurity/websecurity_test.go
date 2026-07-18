@@ -31,3 +31,15 @@ func TestSessionContextRequiresCompleteAuthenticatedPrincipal(t *testing.T) {
 		t.Fatalf("Require invalid session error = %v", err)
 	}
 }
+
+func TestSecurityPolicyTypesRejectUnknownValues(t *testing.T) {
+	if !RouteActionListPlugins.Valid() || RouteAction("plugin.unknown").Valid() {
+		t.Fatal("route action validity is not closed")
+	}
+	if !OriginPolicyTrustedHost.Valid() || OriginPolicy("allow_any").Valid() {
+		t.Fatal("origin policy validity is not closed")
+	}
+	if !CSRFPolicyNotRequired.Valid() || !CSRFPolicyRequired.Valid() || CSRFPolicy("optional").Valid() {
+		t.Fatal("csrf policy validity is not closed")
+	}
+}
