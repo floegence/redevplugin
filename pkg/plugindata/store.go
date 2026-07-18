@@ -342,6 +342,9 @@ func (s *FileStore) Export(ctx context.Context, req ExportRequest) (Export, erro
 	if err != nil {
 		return Export{}, err
 	}
+	if err := s.closeNamespaceDatabases(generationCachePrefix(environment.OwnerEnvHash, binding.GenerationID)); err != nil {
+		return Export{}, fmt.Errorf("prepare plugin data export snapshot: %w", err)
+	}
 	objectID, err := newID("obj")
 	if err != nil {
 		return Export{}, err
@@ -474,6 +477,9 @@ func (s *FileStore) Import(ctx context.Context, req ImportRequest) (Dataset, err
 	}
 	var currentWorkspace string
 	if found {
+		if err := s.closeNamespaceDatabases(generationCachePrefix(environment.OwnerEnvHash, current.GenerationID)); err != nil {
+			return Dataset{}, fmt.Errorf("prepare plugin data import snapshot: %w", err)
+		}
 		currentWorkspace = s.scopedWorkspacePath(environment, current.GenerationID)
 	}
 	if err := s.createImportedWorkspace(ctx, currentWorkspace, payloadRoot, stage, user); err != nil {
@@ -1482,40 +1488,59 @@ func initializeWorkspaceScopes(ctx context.Context, root string, shape Shape, en
 }
 
 func (s *FileStore) ensureWorkspaceScope(ctx context.Context, root string, shape Shape, scope sessionctx.ResourceScope, initialSettings map[string]json.RawMessage) error {
-	target := workspaceScopeRoot(root, scope)
-	if info, err := os.Lstat(target); err == nil {
-		if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
-			return fmt.Errorf("%w: invalid workspace scope root", ErrUnsafeFilesystem)
-		}
-		return validateWorkspaceScope(ctx, target, shape, scope)
-	} else if !errors.Is(err, fs.ErrNotExist) {
-		return err
-	}
-	parent := filepath.Dir(target)
-	if err := ensurePrivateDirectory(parent); err != nil {
-		return err
-	}
-	stage, err := os.MkdirTemp(parent, ".scope-")
+	target, err := s.ensureWorkspaceScopeRoot(ctx, root, shape, scope, initialSettings)
 	if err != nil {
 		return err
 	}
+	return validateWorkspaceScope(ctx, target, shape, scope)
+}
+
+func (s *FileStore) ensureWorkspaceScopeMetadata(ctx context.Context, root string, shape Shape, scope sessionctx.ResourceScope) error {
+	target, err := s.ensureWorkspaceScopeRoot(ctx, root, shape, scope, nil)
+	if err != nil {
+		return err
+	}
+	return validateWorkspaceScopeMetadata(target, shape, scope)
+}
+
+func (s *FileStore) ensureWorkspaceScopeRoot(ctx context.Context, root string, shape Shape, scope sessionctx.ResourceScope, initialSettings map[string]json.RawMessage) (string, error) {
+	if err := scope.Validate(); err != nil {
+		return "", err
+	}
+	target := workspaceScopeRoot(root, scope)
+	if info, err := os.Lstat(target); err == nil {
+		if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+			return "", fmt.Errorf("%w: invalid workspace scope root", ErrUnsafeFilesystem)
+		}
+		return target, nil
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		return "", err
+	}
+	parent := filepath.Dir(target)
+	if err := ensurePrivateDirectory(parent); err != nil {
+		return "", err
+	}
+	stage, err := os.MkdirTemp(parent, ".scope-")
+	if err != nil {
+		return "", err
+	}
 	defer os.RemoveAll(stage)
 	if err := os.Chmod(stage, 0o700); err != nil {
-		return err
+		return "", err
 	}
 	if err := initializeWorkspaceScope(ctx, stage, shape, scope, initialSettings); err != nil {
-		return err
+		return "", err
 	}
 	if err := syncTree(stage); err != nil {
-		return err
+		return "", err
 	}
 	if err := os.Rename(stage, target); err != nil {
-		return err
+		return "", err
 	}
 	if err := s.ops.syncDir(parent); err != nil {
-		return mutation.Unknown(err)
+		return "", mutation.Unknown(err)
 	}
-	return nil
+	return target, nil
 }
 
 func initializeWorkspaceScope(ctx context.Context, root string, shape Shape, scope sessionctx.ResourceScope, initialSettings map[string]json.RawMessage) error {
@@ -1600,6 +1625,32 @@ func validateWorkspaceContents(ctx context.Context, root string, manifest datase
 }
 
 func validateWorkspaceScope(ctx context.Context, root string, shape Shape, scope sessionctx.ResourceScope) error {
+	if err := validateWorkspaceScopeMetadata(root, shape, scope); err != nil {
+		return err
+	}
+	for _, namespace := range namespacesForScope(shape.Namespaces, scope.Kind) {
+		dataRoot := filepath.Join(root, namespacesDirName, namespace.ID, namespaceDataName)
+		var usage namespaceUsage
+		var err error
+		if namespace.Kind == NamespaceFiles || namespace.Kind == NamespaceKV {
+			usage, err = validateNamespaceDatabase(ctx, dataRoot, namespace.Kind)
+		} else {
+			usage, err = scanNamespaceUsage(dataRoot)
+		}
+		if err != nil {
+			return err
+		}
+		if usage.bytes > namespace.QuotaBytes || (namespace.QuotaFiles > 0 && usage.files > namespace.QuotaFiles) {
+			return fmt.Errorf("%w: namespace %s exceeds declared quota", ErrDatasetCorrupt, namespace.ID)
+		}
+	}
+	return nil
+}
+
+func validateWorkspaceScopeMetadata(root string, shape Shape, scope sessionctx.ResourceScope) error {
+	if err := scope.Validate(); err != nil {
+		return fmt.Errorf("%w: invalid workspace scope", ErrDatasetCorrupt)
+	}
 	document, err := readSettings(filepath.Join(root, settingsFileName))
 	if err != nil {
 		return err
@@ -1612,6 +1663,9 @@ func validateWorkspaceScope(ctx context.Context, root string, shape Shape, scope
 	}
 	namespaces := namespacesForScope(shape.Namespaces, scope.Kind)
 	namespaceRoot := filepath.Join(root, namespacesDirName)
+	if info, err := os.Lstat(namespaceRoot); err != nil || info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+		return fmt.Errorf("%w: invalid namespace root", ErrUnsafeFilesystem)
+	}
 	entries, err := os.ReadDir(namespaceRoot)
 	if err != nil {
 		return fmt.Errorf("read dataset namespaces: %w", err)
@@ -1621,6 +1675,16 @@ func validateWorkspaceScope(ctx context.Context, root string, shape Shape, scope
 	}
 	for _, namespace := range namespaces {
 		base := filepath.Join(namespaceRoot, namespace.ID)
+		if info, err := os.Lstat(base); err != nil || info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+			return fmt.Errorf("%w: invalid namespace directory %s", ErrUnsafeFilesystem, namespace.ID)
+		}
+		baseEntries, err := os.ReadDir(base)
+		if err != nil {
+			return err
+		}
+		if len(baseEntries) != 2 || baseEntries[0].Name() != namespaceDataName || baseEntries[1].Name() != namespaceMetaName {
+			return fmt.Errorf("%w: namespace layout mismatch for %s", ErrDatasetCorrupt, namespace.ID)
+		}
 		var stored namespaceDocument
 		if err := readJSON(filepath.Join(base, namespaceMetaName), &stored); err != nil {
 			return err
@@ -1631,19 +1695,6 @@ func validateWorkspaceScope(ctx context.Context, root string, shape Shape, scope
 		info, err := os.Lstat(filepath.Join(base, namespaceDataName))
 		if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
 			return fmt.Errorf("%w: namespace data directory %s", ErrDatasetCorrupt, namespace.ID)
-		}
-		dataRoot := filepath.Join(base, namespaceDataName)
-		var usage namespaceUsage
-		if namespace.Kind == NamespaceFiles || namespace.Kind == NamespaceKV {
-			usage, err = validateNamespaceDatabase(ctx, dataRoot, namespace.Kind)
-		} else {
-			usage, err = scanNamespaceUsage(dataRoot)
-		}
-		if err != nil {
-			return err
-		}
-		if usage.bytes > namespace.QuotaBytes || (namespace.QuotaFiles > 0 && usage.files > namespace.QuotaFiles) {
-			return fmt.Errorf("%w: namespace %s exceeds declared quota", ErrDatasetCorrupt, namespace.ID)
 		}
 	}
 	return nil

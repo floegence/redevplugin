@@ -91,7 +91,7 @@ func (s *FileStore) withNamespace(ctx context.Context, pluginInstanceID string, 
 	}
 	generationScopeKey := scopedGenerationCacheKey(owner, binding.GenerationID)
 	initUnlock := s.namespaceLocks.lock(generationScopeKey+"\x00scope", true)
-	if err := s.ensureWorkspaceScope(ctx, workspace.root, manifest.Shape, owner, nil); err != nil {
+	if err := s.ensureWorkspaceScopeMetadata(ctx, workspace.root, manifest.Shape, owner); err != nil {
 		initUnlock()
 		return err
 	}
@@ -115,6 +115,9 @@ func (s *FileStore) withNamespace(ctx context.Context, pluginInstanceID string, 
 	var db *sql.DB
 	var root *os.Root
 	if namespace.Kind == NamespaceFiles || namespace.Kind == NamespaceKV {
+		if err := validateNamespaceDatabaseFileLayout(absRoot, namespace.Kind); err != nil {
+			return err
+		}
 		dbKey := namespaceDatabaseCacheKey(generationScopeKey, namespace.ID, namespace.Kind)
 		var releaseDB func()
 		db, root, releaseDB, err = s.acquireNamespaceDatabase(ctx, dbKey, absRoot, info)
@@ -677,25 +680,32 @@ func (s *FileStore) ListNamespaces(ctx context.Context, pluginInstanceID string)
 	if err != nil {
 		return nil, err
 	}
+	owners := make([]sessionctx.ResourceScope, len(workspace.shape.Namespaces))
 	lockKeys := make([]string, 0, len(workspace.shape.Namespaces))
-	for _, namespace := range workspace.shape.Namespaces {
+	initializedScopes := make(map[sessionctx.ResourceScope]struct{}, 2)
+	for index, namespace := range workspace.shape.Namespaces {
 		owner, err := resourceScope(ctx, sessionctx.ScopeKind(namespace.Scope))
 		if err != nil {
 			return nil, err
 		}
-		if err := s.ensureWorkspaceScope(ctx, workspace.root, manifest.Shape, owner, nil); err != nil {
-			return nil, err
+		owners[index] = owner
+		if _, initialized := initializedScopes[owner]; !initialized {
+			generationScopeKey := scopedGenerationCacheKey(owner, binding.GenerationID)
+			initUnlock := s.namespaceLocks.lock(generationScopeKey+"\x00scope", true)
+			err = s.ensureWorkspaceScopeMetadata(ctx, workspace.root, manifest.Shape, owner)
+			initUnlock()
+			if err != nil {
+				return nil, err
+			}
+			initializedScopes[owner] = struct{}{}
 		}
 		lockKeys = append(lockKeys, scopedNamespaceCacheKey(owner, binding.GenerationID, namespace.ID))
 	}
 	namespaceUnlock := s.namespaceLocks.lockManyMode(false, lockKeys...)
 	defer namespaceUnlock()
 	records := make([]storage.NamespaceRecord, 0, len(workspace.shape.Namespaces))
-	for _, namespace := range workspace.shape.Namespaces {
-		owner, err := resourceScope(ctx, sessionctx.ScopeKind(namespace.Scope))
-		if err != nil {
-			return nil, err
-		}
+	for index, namespace := range workspace.shape.Namespaces {
+		owner := owners[index]
 		root := filepath.Join(workspaceNamespaceRoot(workspace.root, owner), namespace.ID, namespaceDataName)
 		namespaceRoot, err := filepath.Rel(s.root, root)
 		if err != nil || namespaceRoot == "." || strings.HasPrefix(namespaceRoot, ".."+string(filepath.Separator)) || filepath.IsAbs(namespaceRoot) {
@@ -711,6 +721,9 @@ func (s *FileStore) ListNamespaces(ctx context.Context, pluginInstanceID string)
 		var db *sql.DB
 		releaseDB := func() {}
 		if namespace.Kind == NamespaceFiles || namespace.Kind == NamespaceKV {
+			if err := validateNamespaceDatabaseFileLayout(root, namespace.Kind); err != nil {
+				return nil, err
+			}
 			dbKey := namespaceDatabaseCacheKey(scopedGenerationCacheKey(owner, binding.GenerationID), namespace.ID, namespace.Kind)
 			db, _, releaseDB, err = s.acquireNamespaceDatabase(ctx, dbKey, root, info)
 			if err != nil {

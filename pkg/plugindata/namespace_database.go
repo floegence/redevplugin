@@ -327,12 +327,8 @@ func (s *FileStore) closeNamespaceDatabases(generationPrefix string) error {
 }
 
 func validateNamespaceDatabase(ctx context.Context, root string, kind NamespaceKind) (namespaceUsage, error) {
-	entries, err := os.ReadDir(root)
-	if err != nil {
+	if err := validateNamespaceDatabaseFileLayout(root, kind); err != nil {
 		return namespaceUsage{}, err
-	}
-	if len(entries) != 1 || entries[0].Name() != namespaceDatabaseName {
-		return namespaceUsage{}, fmt.Errorf("%w: %s namespace has unexpected physical entries", ErrDatasetCorrupt, kind)
 	}
 	db, err := openNamespaceDatabase(ctx, root, true)
 	if err != nil {
@@ -366,6 +362,17 @@ func validateNamespaceDatabase(ctx context.Context, root string, kind NamespaceK
 		return validateFilesNamespaceDatabase(ctx, db)
 	}
 	return validateKVNamespaceDatabase(ctx, db)
+}
+
+func validateNamespaceDatabaseFileLayout(root string, kind NamespaceKind) error {
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return err
+	}
+	if len(entries) != 1 || entries[0].Name() != namespaceDatabaseName {
+		return fmt.Errorf("%w: %s namespace has unexpected physical entries", ErrDatasetCorrupt, kind)
+	}
+	return nil
 }
 
 func validateNamespaceDatabaseObjects(ctx context.Context, db *sql.DB, kind NamespaceKind) error {

@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -387,6 +388,125 @@ func TestNamespaceDatabaseCacheEvictsLeastRecentlyUsedIdleEntry(t *testing.T) {
 	}
 	if err := store.closeNamespaceDatabases(""); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestExportClosesWarmNamespaceDatabasesBeforeSnapshot(t *testing.T) {
+	store, catalog, shape := newInternalStore(t)
+	ctx := internalTestContext()
+	for index := range shape.Namespaces {
+		if shape.Namespaces[index].ID == "kv" {
+			shape.Namespaces[index].QuotaBytes = 4096
+		}
+	}
+	if _, err := store.CommitEnable(ctx, CommitEnableRequest{PluginInstanceID: "plugini_test", Shape: shape, ExpectedManagementRevision: 1}); err != nil {
+		t.Fatal(err)
+	}
+	errs := make(chan error, 16)
+	var wg sync.WaitGroup
+	for worker := 0; worker < 16; worker++ {
+		wg.Add(1)
+		go func(worker int) {
+			defer wg.Done()
+			for index := 0; index < 16; index++ {
+				_, err := store.PutKV(ctx, storage.KVPutRequest{
+					PluginInstanceID: "plugini_test",
+					StoreID:          "kv",
+					Key:              fmt.Sprintf("worker/%02d/%02d", worker, index),
+					Value:            make([]byte, 128),
+				})
+				if err != nil && !errors.Is(err, storage.ErrQuotaExceeded) {
+					errs <- err
+					return
+				}
+			}
+		}(worker)
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Fatal(err)
+	}
+	binding, _, err := catalog.GetBinding(ctx, "plugini_test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	prefix := generationCachePrefix(internalEnvironmentScope().OwnerEnvHash, binding.GenerationID)
+	store.namespaceDBMu.Lock()
+	warmEntries := 0
+	for key := range store.namespaceDB {
+		if strings.HasPrefix(key, prefix) {
+			warmEntries++
+		}
+	}
+	store.namespaceDBMu.Unlock()
+	if warmEntries == 0 {
+		t.Fatal("namespace database cache was not warmed before export")
+	}
+	exported, err := store.Export(ctx, ExportRequest{PluginInstanceID: "plugini_test"})
+	if err != nil {
+		workspaceRoot := store.scopedWorkspacePath(internalEnvironmentScope(), binding.GenerationID)
+		dataRoot := filepath.Join(workspaceNamespaceRoot(workspaceRoot, internalUserScope()), namespacesDirName, "kv", namespaceDataName)
+		entries, readErr := os.ReadDir(dataRoot)
+		if readErr != nil {
+			t.Fatalf("Export() error = %v; inspect source namespace: %v", err, readErr)
+		}
+		names := make([]string, 0, len(entries))
+		for _, entry := range entries {
+			names = append(names, entry.Name())
+		}
+		t.Fatalf("Export() error = %v; source namespace entries = %#v", err, names)
+	}
+	store.namespaceDBMu.Lock()
+	for key := range store.namespaceDB {
+		if strings.HasPrefix(key, prefix) {
+			store.namespaceDBMu.Unlock()
+			t.Fatalf("export retained namespace database cache entry %q", key)
+		}
+	}
+	store.namespaceDBMu.Unlock()
+	dataRoot := filepath.Join(
+		store.scopedObjectPath(internalUserScope(), exported.ObjectID),
+		exportPayloadName,
+		workspaceScopeRoot("", internalUserScope()),
+		namespacesDirName,
+		"kv",
+		namespaceDataName,
+	)
+	entries, err := os.ReadDir(dataRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Name() != namespaceDatabaseName {
+		t.Fatalf("exported namespace entries = %#v, want only %s", entries, namespaceDatabaseName)
+	}
+}
+
+func TestBrokerRejectsUnexpectedPhysicalNamespaceEntries(t *testing.T) {
+	store, catalog, shape := newInternalStore(t)
+	ctx := internalTestContext()
+	if _, err := store.CommitEnable(ctx, CommitEnableRequest{PluginInstanceID: "plugini_test", Shape: shape, ExpectedManagementRevision: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.PutKV(ctx, storage.KVPutRequest{PluginInstanceID: "plugini_test", StoreID: "kv", Key: "valid", Value: []byte("value")}); err != nil {
+		t.Fatal(err)
+	}
+	binding, _, err := catalog.GetBinding(ctx, "plugini_test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dataRoot := filepath.Join(
+		store.scopedWorkspacePath(internalEnvironmentScope(), binding.GenerationID),
+		workspaceScopeRoot("", internalUserScope()),
+		namespacesDirName,
+		"kv",
+		namespaceDataName,
+	)
+	if err := os.WriteFile(filepath.Join(dataRoot, "unexpected"), []byte("tampered"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.GetKV(ctx, storage.KVGetRequest{PluginInstanceID: "plugini_test", StoreID: "kv", Key: "valid"}); !errors.Is(err, ErrDatasetCorrupt) {
+		t.Fatalf("GetKV() error = %v, want ErrDatasetCorrupt", err)
 	}
 }
 

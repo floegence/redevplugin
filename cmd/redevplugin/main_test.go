@@ -26,6 +26,7 @@ import (
 	"github.com/floegence/redevplugin/pkg/registry"
 	"github.com/floegence/redevplugin/pkg/runtimeclient"
 	"github.com/floegence/redevplugin/pkg/secrets"
+	"github.com/floegence/redevplugin/pkg/sessionctx"
 	"github.com/floegence/redevplugin/pkg/settings"
 	"github.com/floegence/redevplugin/pkg/storage"
 	"github.com/floegence/redevplugin/pkg/trust"
@@ -719,7 +720,7 @@ func TestCLIDevLifecyclePersistsPluginSettingsState(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	snapshot, err := harness.host.GetPluginSettings(ctx, host.GetSettingsRequest{PluginInstanceID: plugin.PluginInstanceID})
+	snapshot, err := harness.host.GetPluginSettings(ctx, host.GetSettingsRequest{PluginInstanceID: plugin.PluginInstanceID, Scope: sessionctx.ScopeUser})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -728,6 +729,7 @@ func TestCLIDevLifecyclePersistsPluginSettingsState(t *testing.T) {
 	}
 	patched, err := harness.host.PatchPluginSettings(ctx, host.PatchSettingsRequest{
 		PluginInstanceID:       plugin.PluginInstanceID,
+		Scope:                  sessionctx.ScopeUser,
 		ExpectedValuesRevision: snapshot.ValuesRevision,
 		Set:                    map[string]any{"accent_mode": "amber", "sync_enabled": false},
 	})
@@ -736,6 +738,7 @@ func TestCLIDevLifecyclePersistsPluginSettingsState(t *testing.T) {
 	}
 	if _, err := harness.host.PatchPluginSettings(ctx, host.PatchSettingsRequest{
 		PluginInstanceID:       plugin.PluginInstanceID,
+		Scope:                  sessionctx.ScopeUser,
 		ExpectedValuesRevision: snapshot.ValuesRevision,
 		Set:                    map[string]any{"accent_mode": "indigo"},
 	}); !errors.Is(err, plugindata.ErrRevisionConflict) {
@@ -749,7 +752,7 @@ func TestCLIDevLifecyclePersistsPluginSettingsState(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	restored, err := reopened.host.GetPluginSettings(ctx, host.GetSettingsRequest{PluginInstanceID: plugin.PluginInstanceID})
+	restored, err := reopened.host.GetPluginSettings(ctx, host.GetSettingsRequest{PluginInstanceID: plugin.PluginInstanceID, Scope: sessionctx.ScopeUser})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -831,12 +834,13 @@ func TestCLIDevLifecycleExportsAndImportsPluginData(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("WriteFile(original) error = %v", err)
 	}
-	snapshot, err := harness.host.GetPluginSettings(ctx, host.GetSettingsRequest{PluginInstanceID: plugin.PluginInstanceID})
+	snapshot, err := harness.host.GetPluginSettings(ctx, host.GetSettingsRequest{PluginInstanceID: plugin.PluginInstanceID, Scope: sessionctx.ScopeUser})
 	if err != nil {
 		t.Fatal(err)
 	}
 	exportedSettings, err := harness.host.PatchPluginSettings(ctx, host.PatchSettingsRequest{
 		PluginInstanceID:       plugin.PluginInstanceID,
+		Scope:                  sessionctx.ScopeUser,
 		ExpectedValuesRevision: snapshot.ValuesRevision,
 		Set:                    map[string]any{"accent_mode": "amber", "sync_enabled": false},
 	})
@@ -858,7 +862,19 @@ func TestCLIDevLifecycleExportsAndImportsPluginData(t *testing.T) {
 	if !exportSummary.OK || exportSummary.PluginInstanceID != installSummary.PluginInstanceID || exportSummary.BundleRef == "" || exportSummary.ContentHash == "" || exportSummary.SizeBytes <= 0 {
 		t.Fatalf("dev-export-data summary mismatch: %#v", exportSummary)
 	}
-	assertFileTreeDoesNotContain(t, filepath.Join(stateRoot, devPluginDataDir, "objects", exportSummary.BundleRef), []byte("api_token"))
+	session, err := sessionctx.Require(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertFileTreeDoesNotContain(t, filepath.Join(
+		stateRoot,
+		devPluginDataDir,
+		"objects",
+		"user",
+		session.OwnerEnvHash,
+		session.OwnerUserHash,
+		exportSummary.BundleRef,
+	), []byte("api_token"))
 
 	harness, plugin, err = loadDevHarness(ctx, stateRoot)
 	if err != nil {
@@ -872,12 +888,13 @@ func TestCLIDevLifecycleExportsAndImportsPluginData(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("WriteFile(mutated) error = %v", err)
 	}
-	mutatedSettings, err := harness.host.GetPluginSettings(ctx, host.GetSettingsRequest{PluginInstanceID: plugin.PluginInstanceID})
+	mutatedSettings, err := harness.host.GetPluginSettings(ctx, host.GetSettingsRequest{PluginInstanceID: plugin.PluginInstanceID, Scope: sessionctx.ScopeUser})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err := harness.host.PatchPluginSettings(ctx, host.PatchSettingsRequest{
 		PluginInstanceID:       plugin.PluginInstanceID,
+		Scope:                  sessionctx.ScopeUser,
 		ExpectedValuesRevision: mutatedSettings.ValuesRevision,
 		Set:                    map[string]any{"accent_mode": "indigo", "sync_enabled": true},
 	}); err != nil {
@@ -916,7 +933,7 @@ func TestCLIDevLifecycleExportsAndImportsPluginData(t *testing.T) {
 	if string(read.Data) != "original data" {
 		t.Fatalf("import did not restore storage data: %q", read.Data)
 	}
-	importedSettings, err := harness.host.GetPluginSettings(ctx, host.GetSettingsRequest{PluginInstanceID: plugin.PluginInstanceID})
+	importedSettings, err := harness.host.GetPluginSettings(ctx, host.GetSettingsRequest{PluginInstanceID: plugin.PluginInstanceID, Scope: sessionctx.ScopeUser})
 	if err != nil {
 		t.Fatalf("Get(imported settings) error = %v", err)
 	}
