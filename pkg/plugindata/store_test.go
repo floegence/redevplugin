@@ -49,8 +49,8 @@ func pluginDataWorkspacePath(root, ownerEnvHash, generationID string) string {
 	return filepath.Join(root, "workspaces", "environment", ownerEnvHash, generationID)
 }
 
-func pluginDataObjectPath(root, ownerEnvHash, ownerUserHash, objectID string) string {
-	return filepath.Join(root, "objects", "user", ownerEnvHash, ownerUserHash, objectID)
+func pluginDataObjectPath(root, ownerEnvHash, ownerUserHash, pluginInstanceID, objectID string) string {
+	return filepath.Join(root, "objects", "user", ownerEnvHash, ownerUserHash, pluginInstanceID, objectID)
 }
 
 func pluginDataScopeRoot(workspaceRoot, ownerUserHash string, scope sessionctx.ScopeKind) string {
@@ -229,28 +229,37 @@ func TestFileStoreExportImportAndRetainedBinding(t *testing.T) {
 			}
 
 			target := putPlugin(t, catalog, "plugini_target", now.Add(2*time.Second))
-			if _, err := store.Import(ctx, plugindata.ImportRequest{PluginInstanceID: target.PluginInstanceID, ObjectID: exported.ObjectID, ExpectedShape: shape, ExpectedManagementRevision: target.ManagementRevision, Now: now.Add(3 * time.Second)}); err != nil {
+			if _, err := store.Import(ctx, plugindata.ImportRequest{PluginInstanceID: target.PluginInstanceID, ObjectID: exported.ObjectID, ExpectedShape: shape, ExpectedManagementRevision: target.ManagementRevision, Now: now.Add(3 * time.Second)}); !errors.Is(err, plugindata.ErrExportNotFound) {
+				t.Fatalf("cross-plugin import error = %v, want ErrExportNotFound", err)
+			}
+			if err := store.DeleteExport(ctx, plugindata.DeleteExportRequest{PluginInstanceID: target.PluginInstanceID, ObjectID: exported.ObjectID}); !errors.Is(err, plugindata.ErrExportNotFound) {
+				t.Fatalf("cross-plugin delete error = %v, want ErrExportNotFound", err)
+			}
+			disabled, err := catalog.SetEnableState(ctx, source.PluginInstanceID, registry.EnableDisabled, "import", now.Add(3*time.Second))
+			if err != nil {
 				t.Fatal(err)
 			}
-			imported, err := store.ReadFile(ctx, storage.FileReadRequest{PluginInstanceID: target.PluginInstanceID, ResourceScope: pluginDataResourceScope(t, ctx, sessionctx.ScopeUser), StoreID: "files", Path: "data.txt"})
+			if _, err := store.Import(ctx, plugindata.ImportRequest{PluginInstanceID: source.PluginInstanceID, ObjectID: exported.ObjectID, ExpectedShape: shape, ExpectedManagementRevision: disabled.ManagementRevision, Now: now.Add(4 * time.Second)}); err != nil {
+				t.Fatal(err)
+			}
+			imported, err := store.ReadFile(ctx, storage.FileReadRequest{PluginInstanceID: source.PluginInstanceID, ResourceScope: pluginDataResourceScope(t, ctx, sessionctx.ScopeUser), StoreID: "files", Path: "data.txt"})
 			if err != nil || string(imported.Data) != "portable" {
 				t.Fatalf("imported = %#v, err = %v", imported, err)
 			}
-			targetAfter, _ := catalog.GetPlugin(ctx, target.PluginInstanceID)
-			if targetAfter.ManagementRevision != target.ManagementRevision+1 {
-				t.Fatalf("target revision = %d", targetAfter.ManagementRevision)
+			sourceAfter, _ := catalog.GetPlugin(ctx, source.PluginInstanceID)
+			if sourceAfter.ManagementRevision != disabled.ManagementRevision+1 {
+				t.Fatalf("source revision = %d", sourceAfter.ManagementRevision)
 			}
 
-			sourceEnabled, _ := catalog.GetPlugin(ctx, source.PluginInstanceID)
-			if _, err := store.CommitUninstall(ctx, plugindata.CommitUninstallRequest{PluginInstanceID: source.PluginInstanceID, ExpectedManagementRevision: sourceEnabled.ManagementRevision, Now: now.Add(4 * time.Second)}); err != nil {
+			if _, err := store.CommitUninstall(ctx, plugindata.CommitUninstallRequest{PluginInstanceID: source.PluginInstanceID, ExpectedManagementRevision: sourceAfter.ManagementRevision, Now: now.Add(5 * time.Second)}); err != nil {
 				t.Fatal(err)
 			}
 			retained, err := store.ListRetained(ctx, plugindata.RetainedFilter{PluginInstanceID: source.PluginInstanceID})
 			if err != nil || len(retained) != 1 {
 				t.Fatalf("retained = %#v, err = %v", retained, err)
 			}
-			bindTarget := putPlugin(t, catalog, "plugini_bound", now.Add(5*time.Second))
-			if _, err := store.BindRetained(ctx, plugindata.BindRetainedRequest{SourcePluginInstanceID: source.PluginInstanceID, ExpectedSourceBindingRevision: retained[0].Revision, TargetPluginInstanceID: bindTarget.PluginInstanceID, TargetExpectedManagementRevision: bindTarget.ManagementRevision, ExpectedShape: shape, Now: now.Add(6 * time.Second)}); err != nil {
+			bindTarget := putPlugin(t, catalog, "plugini_bound", now.Add(6*time.Second))
+			if _, err := store.BindRetained(ctx, plugindata.BindRetainedRequest{SourcePluginInstanceID: source.PluginInstanceID, ExpectedSourceBindingRevision: retained[0].Revision, TargetPluginInstanceID: bindTarget.PluginInstanceID, TargetExpectedManagementRevision: bindTarget.ManagementRevision, ExpectedShape: shape, Now: now.Add(7 * time.Second)}); err != nil {
 				t.Fatal(err)
 			}
 			bound, err := store.ReadFile(ctx, storage.FileReadRequest{PluginInstanceID: bindTarget.PluginInstanceID, ResourceScope: pluginDataResourceScope(t, ctx, sessionctx.ScopeUser), StoreID: "files", Path: "data.txt"})
@@ -372,13 +381,16 @@ func TestFileStoreImportRejectsTamperedObject(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	objectRoot := pluginDataObjectPath(root, "owner_env_hash_test", "owner_user_hash_test", exported.ObjectID)
+	objectRoot := pluginDataObjectPath(root, "owner_env_hash_test", "owner_user_hash_test", source.PluginInstanceID, exported.ObjectID)
 	settingsPath := filepath.Join(pluginDataScopeRoot(filepath.Join(objectRoot, "payload"), "owner_user_hash_test", sessionctx.ScopeUser), "settings.json")
 	if err := os.WriteFile(settingsPath, []byte(`{"scope":{"kind":"user","owner_env_hash":"owner_env_hash_test","owner_user_hash":"owner_user_hash_test"},"revision":1,"values":{"theme":"tampered"}}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	target := putPlugin(t, catalog, "plugini_target", now)
-	if _, err := store.Import(ctx, plugindata.ImportRequest{PluginInstanceID: target.PluginInstanceID, ObjectID: exported.ObjectID, ExpectedShape: shape, ExpectedManagementRevision: target.ManagementRevision}); !errors.Is(err, plugindata.ErrDatasetCorrupt) {
+	disabled, err := catalog.SetEnableState(ctx, source.PluginInstanceID, registry.EnableDisabled, "import", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Import(ctx, plugindata.ImportRequest{PluginInstanceID: source.PluginInstanceID, ObjectID: exported.ObjectID, ExpectedShape: shape, ExpectedManagementRevision: disabled.ManagementRevision}); !errors.Is(err, plugindata.ErrDatasetCorrupt) {
 		t.Fatalf("tampered import error = %v", err)
 	}
 }
@@ -500,8 +512,8 @@ func TestFileStoreMaintenancePreservesOtherOwners(t *testing.T) {
 			for _, path := range []string{
 				pluginDataWorkspacePath(root, "owner_env_a", datasetA.Binding.GenerationID),
 				pluginDataWorkspacePath(root, "owner_env_b", datasetB.Binding.GenerationID),
-				pluginDataObjectPath(root, "owner_env_a", "owner_user_a", exportA.ObjectID),
-				pluginDataObjectPath(root, "owner_env_b", "owner_user_b", exportB.ObjectID),
+				pluginDataObjectPath(root, "owner_env_a", "owner_user_a", recordA.PluginInstanceID, exportA.ObjectID),
+				pluginDataObjectPath(root, "owner_env_b", "owner_user_b", recordB.PluginInstanceID, exportB.ObjectID),
 			} {
 				if info, err := os.Stat(path); err != nil || !info.IsDir() {
 					t.Fatalf("maintained directory %s: info=%v err=%v", path, info, err)
@@ -674,7 +686,7 @@ func TestFileStoreExportImportPreservesOtherUsersAndScopesObjects(t *testing.T) 
 			if _, err := store.Import(ctxB, plugindata.ImportRequest{PluginInstanceID: record.PluginInstanceID, ObjectID: exported.ObjectID, ExpectedShape: shape, ExpectedManagementRevision: currentRecord.ManagementRevision}); !errors.Is(err, plugindata.ErrExportNotFound) {
 				t.Fatalf("other user import error = %v, want ErrExportNotFound", err)
 			}
-			if err := store.DeleteExport(ctxB, exported.ObjectID); !errors.Is(err, plugindata.ErrExportNotFound) {
+			if err := store.DeleteExport(ctxB, plugindata.DeleteExportRequest{PluginInstanceID: record.PluginInstanceID, ObjectID: exported.ObjectID}); !errors.Is(err, plugindata.ErrExportNotFound) {
 				t.Fatalf("other user delete error = %v, want ErrExportNotFound", err)
 			}
 
@@ -723,19 +735,19 @@ func TestFileStoreExportImportPreservesOtherUsersAndScopesObjects(t *testing.T) 
 				}
 			}
 
-			object, found, err := catalog.GetObject(ctxA, exported.ObjectID)
+			object, found, err := catalog.GetObject(ctxA, sessionctx.ScopeUser, record.PluginInstanceID, exported.ObjectID)
 			if err != nil || !found {
 				t.Fatalf("export object found = %v, err = %v", found, err)
 			}
-			aPath := pluginDataObjectPath(root, "owner_env_shared", "owner_user_a", exported.ObjectID)
-			bPath := pluginDataObjectPath(root, "owner_env_shared", "owner_user_b", exported.ObjectID)
+			aPath := pluginDataObjectPath(root, "owner_env_shared", "owner_user_a", record.PluginInstanceID, exported.ObjectID)
+			bPath := pluginDataObjectPath(root, "owner_env_shared", "owner_user_b", record.PluginInstanceID, exported.ObjectID)
 			if err := os.CopyFS(bPath, os.DirFS(aPath)); err != nil {
 				t.Fatal(err)
 			}
-			if err := catalog.CreateObject(ctxB, object); err != nil {
+			if err := catalog.CreateObject(ctxB, sessionctx.ScopeUser, object); err != nil {
 				t.Fatal(err)
 			}
-			if err := store.DeleteExport(ctxB, exported.ObjectID); err != nil {
+			if err := store.DeleteExport(ctxB, plugindata.DeleteExportRequest{PluginInstanceID: record.PluginInstanceID, ObjectID: exported.ObjectID}); err != nil {
 				t.Fatal(err)
 			}
 			if _, err := os.Stat(aPath); err != nil {
@@ -759,6 +771,25 @@ func TestFileStoreRejectsNonemptyLegacyOwnerlessData(t *testing.T) {
 			t.Fatalf("Open() error = %v, want ErrOwnerScopeMigrationRequired", err)
 		}
 	})
+
+	for _, scope := range []struct {
+		name string
+		path []string
+	}{
+		{name: "pluginless user object", path: []string{"objects", "user", "owner_env_hash_test", "owner_user_hash_test", "obj_legacy"}},
+		{name: "pluginless environment object", path: []string{"objects", "environment", "owner_env_hash_test", "obj_legacy"}},
+	} {
+		t.Run(scope.name, func(t *testing.T) {
+			root := resolvedTempDir(t)
+			legacy := filepath.Join(append([]string{root}, scope.path...)...)
+			if err := os.MkdirAll(filepath.Join(legacy, "payload"), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := plugindata.Open(pluginDataTestContext(), root, registry.NewMemoryStore()); !errors.Is(err, plugindata.ErrOwnerScopeMigrationRequired) {
+				t.Fatalf("Open() error = %v, want ErrOwnerScopeMigrationRequired", err)
+			}
+		})
+	}
 
 	t.Run("empty", func(t *testing.T) {
 		root := resolvedTempDir(t)
@@ -784,6 +815,47 @@ func TestFileStoreRejectsNonemptyLegacyOwnerlessData(t *testing.T) {
 			}
 		}
 	})
+}
+
+func TestFileStoreRejectsExportManifestWithoutPluginOwner(t *testing.T) {
+	ctx := pluginDataTestContext()
+	catalog := registry.NewMemoryStore()
+	root := resolvedTempDir(t)
+	store, err := plugindata.Open(ctx, root, catalog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	record := putPlugin(t, catalog, "plugini_manifest_owner", time.Now())
+	if _, err := store.CommitEnable(ctx, enableRequest(record, testShape(), time.Now())); err != nil {
+		t.Fatal(err)
+	}
+	exported, err := store.Export(ctx, plugindata.ExportRequest{PluginInstanceID: record.PluginInstanceID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	manifestPath := filepath.Join(pluginDataObjectPath(root, "owner_env_hash_test", "owner_user_hash_test", record.PluginInstanceID, exported.ObjectID), "export.json")
+	var document map[string]json.RawMessage
+	raw, err := os.ReadFile(manifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(raw, &document); err != nil {
+		t.Fatal(err)
+	}
+	delete(document, "plugin_instance_id")
+	raw, err = json.Marshal(document)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(manifestPath, append(raw, '\n'), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := plugindata.Open(ctx, root, catalog); !errors.Is(err, plugindata.ErrOwnerScopeMigrationRequired) {
+		t.Fatalf("Open() error = %v, want ErrOwnerScopeMigrationRequired", err)
+	}
 }
 
 func putPlugin(t *testing.T, store registry.Store, instanceID string, now time.Time) registry.PluginRecord {

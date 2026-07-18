@@ -40,6 +40,11 @@
 
 ### Changed
 
+- Bind immutable plugin-data export objects to the authenticated resource scope
+  and `plugin_instance_id` across catalog keys, disk paths, manifests, Host APIs,
+  and HTTP/TypeScript requests. Cross-plugin access now returns not found, and
+  existing rows or layouts without reliable plugin ownership require explicit
+  owner-scope migration.
 - Replace unbounded package materialization and Base64 local imports with
   positive immutable read limits, bounded `ReaderAt` artifact descriptors,
   streaming package uploads, metadata-only worker hot paths, and symlink-safe

@@ -591,7 +591,8 @@ type importDataRequest struct {
 }
 
 type deleteDataExportRequest struct {
-	BundleRef string `json:"bundle_ref"`
+	PluginInstanceID string `json:"plugin_instance_id"`
+	BundleRef        string `json:"bundle_ref"`
 }
 
 type grantPermissionRequest struct {
@@ -1906,7 +1907,7 @@ func (h Handler) handleDeleteDataExport(w http.ResponseWriter, r *http.Request) 
 		writeMutationInvalidRequestError(w, err)
 		return
 	}
-	if err := h.host.DeleteExportedPluginData(r.Context(), host.DeleteExportDataRequest{BundleRef: req.BundleRef}); err != nil {
+	if err := h.host.DeleteExportedPluginData(r.Context(), host.DeleteExportDataRequest{PluginInstanceID: req.PluginInstanceID, BundleRef: req.BundleRef}); err != nil {
 		code := errorCodeForDataLifecycleError(err)
 		writeMutationError(w, httpStatusForDataLifecycleError(err), code, h.publicFailureMessage(r.Context(), "data.export.delete", code, err), errorDetails{}, mutation.ForError(err))
 		return

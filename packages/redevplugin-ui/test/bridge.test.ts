@@ -567,7 +567,7 @@ test("platform client covers operation and data lifecycle routes", async () => {
   const operations = await client.listOperations({ plugin_instance_id: "plugin_instance_1", cursor: "cursor_1", limit: 25 });
   const canceled = await client.cancelOperation("op 1", "user canceled");
   const exported = await client.exportData({ plugin_instance_id: "plugin_instance_1" });
-  const exportDeletion = await client.deleteDataExport({ bundle_ref: exported.bundle_ref });
+  const exportDeletion = await client.deleteDataExport({ plugin_instance_id: "plugin_instance_1", bundle_ref: exported.bundle_ref });
   const imported = await client.importData({
     plugin_instance_id: "plugin_instance_1",
     bundle_ref: exported.bundle_ref,
@@ -601,7 +601,10 @@ test("platform client covers operation and data lifecycle routes", async () => {
   assert.equal(fetch.calls[2]?.input, "/_redevplugin/api/plugins/data/export");
   assert.deepEqual(JSON.parse(fetch.calls[2]?.init.body ?? ""), { plugin_instance_id: "plugin_instance_1" });
   assert.equal(fetch.calls[3]?.input, "/_redevplugin/api/plugins/data/export/delete");
-  assert.deepEqual(JSON.parse(fetch.calls[3]?.init.body ?? ""), { bundle_ref: "bundle_ref_1" });
+  assert.deepEqual(JSON.parse(fetch.calls[3]?.init.body ?? ""), {
+    plugin_instance_id: "plugin_instance_1",
+    bundle_ref: "bundle_ref_1",
+  });
   assert.equal(fetch.calls[4]?.input, "/_redevplugin/api/plugins/data/import");
   assert.deepEqual(JSON.parse(fetch.calls[4]?.init.body ?? ""), {
     plugin_instance_id: "plugin_instance_1",

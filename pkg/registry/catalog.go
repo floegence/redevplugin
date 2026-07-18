@@ -283,26 +283,34 @@ func (s *MemoryStore) CleanupExpired(ctx context.Context, now time.Time, expecte
 	return deleted, nil
 }
 
-func (s *MemoryStore) GetObject(ctx context.Context, objectID string) (plugindata.Object, bool, error) {
-	owner, err := userOwner(ctx)
+func (s *MemoryStore) GetObject(ctx context.Context, scope sessionctx.ScopeKind, pluginInstanceID, objectID string) (plugindata.Object, bool, error) {
+	owner, err := resourceOwner(ctx, scope)
+	if err != nil {
+		return plugindata.Object{}, false, err
+	}
+	pluginInstanceID, objectID, err = validateDataObjectIdentity(pluginInstanceID, objectID)
 	if err != nil {
 		return plugindata.Object{}, false, err
 	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	object, ok := s.dataObjects[scopedObjectKey(owner, objectID)]
+	object, ok := s.dataObjects[scopedObjectKey(owner, pluginInstanceID, objectID)]
 	return object, ok, nil
 }
 
-func (s *MemoryStore) ListObjects(ctx context.Context, cursor string, limit int) ([]plugindata.Object, string, error) {
-	owner, err := userOwner(ctx)
+func (s *MemoryStore) ListObjects(ctx context.Context, scope sessionctx.ScopeKind, pluginInstanceID, cursor string, limit int) ([]plugindata.Object, string, error) {
+	owner, err := resourceOwner(ctx, scope)
 	if err != nil {
 		return nil, "", err
+	}
+	pluginInstanceID = strings.TrimSpace(pluginInstanceID)
+	if pluginInstanceID == "" {
+		return nil, "", plugindata.ErrInvalidArgument
 	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	objects := make([]plugindata.Object, 0, len(s.dataObjects))
-	prefix := scopedObjectKey(owner, "")
+	prefix := scopedObjectKey(owner, pluginInstanceID, "")
 	for key, object := range s.dataObjects {
 		if strings.HasPrefix(key, prefix) {
 			objects = append(objects, object)
@@ -343,15 +351,15 @@ func (s *MemoryStore) ListAllObjectsForMaintenance(_ context.Context, cursor str
 	objects := make([]plugindata.MaintenanceObject, 0, len(keys))
 	for _, key := range keys {
 		parts := strings.Split(key, "\x00")
-		if len(parts) != 4 || sessionctx.ScopeKind(parts[0]) != sessionctx.ScopeUser {
+		if len(parts) != 5 {
+			return nil, "", ErrOwnerScopeMismatch
+		}
+		scope := sessionctx.ResourceScope{Kind: sessionctx.ScopeKind(parts[0]), OwnerEnvHash: parts[1], OwnerUserHash: parts[2]}
+		if scope.Validate() != nil {
 			return nil, "", ErrOwnerScopeMismatch
 		}
 		objects = append(objects, plugindata.MaintenanceObject{
-			Scope: sessionctx.ResourceScope{
-				Kind:          sessionctx.ScopeUser,
-				OwnerEnvHash:  parts[1],
-				OwnerUserHash: parts[2],
-			},
+			Scope:  scope,
 			Object: s.dataObjects[key],
 		})
 	}
@@ -361,8 +369,8 @@ func (s *MemoryStore) ListAllObjectsForMaintenance(_ context.Context, cursor str
 	return objects, "", nil
 }
 
-func (s *MemoryStore) CreateObject(ctx context.Context, object plugindata.Object) error {
-	owner, err := userOwner(ctx)
+func (s *MemoryStore) CreateObject(ctx context.Context, scope sessionctx.ScopeKind, object plugindata.Object) error {
+	owner, err := resourceOwner(ctx, scope)
 	if err != nil {
 		return err
 	}
@@ -371,7 +379,7 @@ func (s *MemoryStore) CreateObject(ctx context.Context, object plugindata.Object
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	key := scopedObjectKey(owner, object.ObjectID)
+	key := scopedObjectKey(owner, object.PluginInstanceID, object.ObjectID)
 	if _, exists := s.dataObjects[key]; exists {
 		return plugindata.ErrBindingConflict
 	}
@@ -379,15 +387,19 @@ func (s *MemoryStore) CreateObject(ctx context.Context, object plugindata.Object
 	return nil
 }
 
-func (s *MemoryStore) DeleteObject(ctx context.Context, objectID string) error {
-	owner, err := userOwner(ctx)
+func (s *MemoryStore) DeleteObject(ctx context.Context, scope sessionctx.ScopeKind, pluginInstanceID, objectID string) error {
+	owner, err := resourceOwner(ctx, scope)
+	if err != nil {
+		return err
+	}
+	pluginInstanceID, objectID, err = validateDataObjectIdentity(pluginInstanceID, objectID)
 	if err != nil {
 		return err
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	objectID = strings.TrimSpace(objectID)
-	key := scopedObjectKey(owner, objectID)
+	key := scopedObjectKey(owner, pluginInstanceID, objectID)
 	if _, exists := s.dataObjects[key]; !exists {
 		return plugindata.ErrExportNotFound
 	}
@@ -698,18 +710,22 @@ func (s *SQLiteStore) CleanupExpired(ctx context.Context, now time.Time, expecte
 	return deleted, err
 }
 
-func (s *SQLiteStore) GetObject(ctx context.Context, objectID string) (plugindata.Object, bool, error) {
-	owner, err := userOwner(ctx)
+func (s *SQLiteStore) GetObject(ctx context.Context, scope sessionctx.ScopeKind, pluginInstanceID, objectID string) (plugindata.Object, bool, error) {
+	owner, err := resourceOwner(ctx, scope)
+	if err != nil {
+		return plugindata.Object{}, false, err
+	}
+	pluginInstanceID, objectID, err = validateDataObjectIdentity(pluginInstanceID, objectID)
 	if err != nil {
 		return plugindata.Object{}, false, err
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return getSQLiteDataObject(ctx, s.db, owner.OwnerEnvHash, owner.OwnerUserHash, strings.TrimSpace(objectID))
+	return getSQLiteDataObject(ctx, s.db, owner, pluginInstanceID, objectID)
 }
 
-func (s *SQLiteStore) ListObjects(ctx context.Context, cursor string, limit int) ([]plugindata.Object, string, error) {
-	owner, err := userOwner(ctx)
+func (s *SQLiteStore) ListObjects(ctx context.Context, scope sessionctx.ScopeKind, pluginInstanceID, cursor string, limit int) ([]plugindata.Object, string, error) {
+	owner, err := resourceOwner(ctx, scope)
 	if err != nil {
 		return nil, "", err
 	}
@@ -718,7 +734,11 @@ func (s *SQLiteStore) ListObjects(ctx context.Context, cursor string, limit int)
 	if limit <= 0 || limit > 1000 {
 		limit = 256
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT object_id, content_hash, shape_hash, size_bytes, created_at FROM plugin_data_objects WHERE owner_env_hash = ? AND owner_user_hash = ? AND object_id > ? ORDER BY object_id LIMIT ?`, owner.OwnerEnvHash, owner.OwnerUserHash, cursor, limit+1)
+	pluginInstanceID = strings.TrimSpace(pluginInstanceID)
+	if pluginInstanceID == "" {
+		return nil, "", plugindata.ErrInvalidArgument
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT plugin_instance_id, object_id, content_hash, shape_hash, size_bytes, created_at FROM plugin_data_objects WHERE scope_kind = ? AND owner_env_hash = ? AND owner_user_hash = ? AND plugin_instance_id = ? AND object_id > ? ORDER BY object_id LIMIT ?`, string(owner.Kind), owner.OwnerEnvHash, owner.OwnerUserHash, pluginInstanceID, cursor, limit+1)
 	if err != nil {
 		return nil, "", err
 	}
@@ -727,7 +747,7 @@ func (s *SQLiteStore) ListObjects(ctx context.Context, cursor string, limit int)
 	for rows.Next() {
 		var object plugindata.Object
 		var createdAt int64
-		if err := rows.Scan(&object.ObjectID, &object.ContentHash, &object.ShapeHash, &object.SizeBytes, &createdAt); err != nil {
+		if err := rows.Scan(&object.PluginInstanceID, &object.ObjectID, &object.ContentHash, &object.ShapeHash, &object.SizeBytes, &createdAt); err != nil {
 			return nil, "", err
 		}
 		object.CreatedAt = unixToTime(createdAt)
@@ -749,18 +769,19 @@ func (s *SQLiteStore) ListAllObjectsForMaintenance(ctx context.Context, cursor s
 	if limit <= 0 || limit > 1000 {
 		limit = 256
 	}
-	parts := parseMaintenanceCursor(cursor, 3)
+	parts := parseMaintenanceCursor(cursor, 5)
 	rows, err := s.db.QueryContext(ctx, `
-SELECT owner_env_hash, owner_user_hash, object_id, content_hash, shape_hash, size_bytes, created_at
+SELECT scope_kind, owner_env_hash, owner_user_hash, plugin_instance_id, object_id, content_hash, shape_hash, size_bytes, created_at
 FROM plugin_data_objects
-WHERE (owner_env_hash, owner_user_hash, object_id) > (?, ?, ?)
-ORDER BY owner_env_hash, owner_user_hash, object_id
-LIMIT ?`, parts[0], parts[1], parts[2], limit+1)
+WHERE (scope_kind, owner_env_hash, owner_user_hash, plugin_instance_id, object_id) > (?, ?, ?, ?, ?)
+ORDER BY scope_kind, owner_env_hash, owner_user_hash, plugin_instance_id, object_id
+LIMIT ?`, parts[0], parts[1], parts[2], parts[3], parts[4], limit+1)
 	if err != nil {
 		return nil, "", err
 	}
 	defer rows.Close()
 	type entry struct {
+		scopeKind     string
 		ownerEnvHash  string
 		ownerUserHash string
 		object        plugindata.Object
@@ -769,7 +790,7 @@ LIMIT ?`, parts[0], parts[1], parts[2], limit+1)
 	for rows.Next() {
 		var item entry
 		var createdAt int64
-		if err := rows.Scan(&item.ownerEnvHash, &item.ownerUserHash, &item.object.ObjectID, &item.object.ContentHash, &item.object.ShapeHash, &item.object.SizeBytes, &createdAt); err != nil {
+		if err := rows.Scan(&item.scopeKind, &item.ownerEnvHash, &item.ownerUserHash, &item.object.PluginInstanceID, &item.object.ObjectID, &item.object.ContentHash, &item.object.ShapeHash, &item.object.SizeBytes, &createdAt); err != nil {
 			return nil, "", err
 		}
 		item.object.CreatedAt = unixToTime(createdAt)
@@ -787,24 +808,24 @@ LIMIT ?`, parts[0], parts[1], parts[2], limit+1)
 	}
 	objects := make([]plugindata.MaintenanceObject, 0, len(entries))
 	for _, item := range entries {
+		scope := sessionctx.ResourceScope{Kind: sessionctx.ScopeKind(item.scopeKind), OwnerEnvHash: item.ownerEnvHash, OwnerUserHash: item.ownerUserHash}
+		if scope.Validate() != nil {
+			return nil, "", ErrOwnerScopeMismatch
+		}
 		objects = append(objects, plugindata.MaintenanceObject{
-			Scope: sessionctx.ResourceScope{
-				Kind:          sessionctx.ScopeUser,
-				OwnerEnvHash:  item.ownerEnvHash,
-				OwnerUserHash: item.ownerUserHash,
-			},
+			Scope:  scope,
 			Object: item.object,
 		})
 	}
 	if more {
 		last := entries[len(entries)-1]
-		return objects, maintenanceCursor(last.ownerEnvHash, last.ownerUserHash, last.object.ObjectID), nil
+		return objects, maintenanceCursor(last.scopeKind, last.ownerEnvHash, last.ownerUserHash, last.object.PluginInstanceID, last.object.ObjectID), nil
 	}
 	return objects, "", nil
 }
 
-func (s *SQLiteStore) CreateObject(ctx context.Context, object plugindata.Object) error {
-	owner, err := userOwner(ctx)
+func (s *SQLiteStore) CreateObject(ctx context.Context, scope sessionctx.ScopeKind, object plugindata.Object) error {
+	owner, err := resourceOwner(ctx, scope)
 	if err != nil {
 		return err
 	}
@@ -812,23 +833,27 @@ func (s *SQLiteStore) CreateObject(ctx context.Context, object plugindata.Object
 		return err
 	}
 	return s.sqliteCatalogMutation(ctx, func(tx *sql.Tx) error {
-		if _, exists, err := getSQLiteDataObject(ctx, tx, owner.OwnerEnvHash, owner.OwnerUserHash, object.ObjectID); err != nil {
+		if _, exists, err := getSQLiteDataObject(ctx, tx, owner, object.PluginInstanceID, object.ObjectID); err != nil {
 			return err
 		} else if exists {
 			return plugindata.ErrBindingConflict
 		}
-		_, err := tx.ExecContext(ctx, `INSERT INTO plugin_data_objects (owner_env_hash, owner_user_hash, object_id, content_hash, shape_hash, size_bytes, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`, owner.OwnerEnvHash, owner.OwnerUserHash, object.ObjectID, object.ContentHash, object.ShapeHash, object.SizeBytes, object.CreatedAt.UnixNano())
+		_, err := tx.ExecContext(ctx, `INSERT INTO plugin_data_objects (scope_kind, owner_env_hash, owner_user_hash, plugin_instance_id, object_id, content_hash, shape_hash, size_bytes, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`, string(owner.Kind), owner.OwnerEnvHash, owner.OwnerUserHash, object.PluginInstanceID, object.ObjectID, object.ContentHash, object.ShapeHash, object.SizeBytes, object.CreatedAt.UnixNano())
 		return err
 	})
 }
 
-func (s *SQLiteStore) DeleteObject(ctx context.Context, objectID string) error {
-	owner, err := userOwner(ctx)
+func (s *SQLiteStore) DeleteObject(ctx context.Context, scope sessionctx.ScopeKind, pluginInstanceID, objectID string) error {
+	owner, err := resourceOwner(ctx, scope)
+	if err != nil {
+		return err
+	}
+	pluginInstanceID, objectID, err = validateDataObjectIdentity(pluginInstanceID, objectID)
 	if err != nil {
 		return err
 	}
 	return s.sqliteCatalogMutation(ctx, func(tx *sql.Tx) error {
-		result, err := tx.ExecContext(ctx, `DELETE FROM plugin_data_objects WHERE owner_env_hash = ? AND owner_user_hash = ? AND object_id = ?`, owner.OwnerEnvHash, owner.OwnerUserHash, strings.TrimSpace(objectID))
+		result, err := tx.ExecContext(ctx, `DELETE FROM plugin_data_objects WHERE scope_kind = ? AND owner_env_hash = ? AND owner_user_hash = ? AND plugin_instance_id = ? AND object_id = ?`, string(owner.Kind), owner.OwnerEnvHash, owner.OwnerUserHash, pluginInstanceID, objectID)
 		if err != nil {
 			return err
 		}
@@ -923,10 +948,10 @@ func updateSQLiteDataBinding(ctx context.Context, tx *sql.Tx, ownerEnvHash strin
 	return err
 }
 
-func getSQLiteDataObject(ctx context.Context, q sqliteQuerier, ownerEnvHash, ownerUserHash, objectID string) (plugindata.Object, bool, error) {
+func getSQLiteDataObject(ctx context.Context, q sqliteQuerier, owner sessionctx.ResourceScope, pluginInstanceID, objectID string) (plugindata.Object, bool, error) {
 	var object plugindata.Object
 	var createdAt int64
-	err := q.QueryRowContext(ctx, `SELECT object_id, content_hash, shape_hash, size_bytes, created_at FROM plugin_data_objects WHERE owner_env_hash = ? AND owner_user_hash = ? AND object_id = ?`, ownerEnvHash, ownerUserHash, objectID).Scan(&object.ObjectID, &object.ContentHash, &object.ShapeHash, &object.SizeBytes, &createdAt)
+	err := q.QueryRowContext(ctx, `SELECT plugin_instance_id, object_id, content_hash, shape_hash, size_bytes, created_at FROM plugin_data_objects WHERE scope_kind = ? AND owner_env_hash = ? AND owner_user_hash = ? AND plugin_instance_id = ? AND object_id = ?`, string(owner.Kind), owner.OwnerEnvHash, owner.OwnerUserHash, pluginInstanceID, objectID).Scan(&object.PluginInstanceID, &object.ObjectID, &object.ContentHash, &object.ShapeHash, &object.SizeBytes, &createdAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return plugindata.Object{}, false, nil
 	}
@@ -957,10 +982,19 @@ func validateDataBinding(binding plugindata.Binding) error {
 }
 
 func validateDataObject(object plugindata.Object) error {
-	if strings.TrimSpace(object.ObjectID) == "" || !validDataHash(object.ContentHash) || !validDataHash(object.ShapeHash) || object.SizeBytes <= 0 || object.CreatedAt.IsZero() {
+	if strings.TrimSpace(object.PluginInstanceID) == "" || strings.TrimSpace(object.ObjectID) == "" || !validDataHash(object.ContentHash) || !validDataHash(object.ShapeHash) || object.SizeBytes <= 0 || object.CreatedAt.IsZero() {
 		return plugindata.ErrInvalidArgument
 	}
 	return nil
+}
+
+func validateDataObjectIdentity(pluginInstanceID, objectID string) (string, string, error) {
+	pluginInstanceID = strings.TrimSpace(pluginInstanceID)
+	objectID = strings.TrimSpace(objectID)
+	if pluginInstanceID == "" || objectID == "" {
+		return "", "", plugindata.ErrInvalidArgument
+	}
+	return pluginInstanceID, objectID, nil
 }
 
 func validDataHash(value string) bool {

@@ -130,7 +130,10 @@ func TestSQLiteStoreRequiresAuthenticatedOwner(t *testing.T) {
 		"plugins":       func() error { _, err := store.ListPlugins(context.Background()); return err },
 		"authorization": func() error { _, err := store.ListAuthorization(context.Background()); return err },
 		"bindings":      func() error { _, _, err := store.ListBindings(context.Background(), "", 10); return err },
-		"objects":       func() error { _, _, err := store.ListObjects(context.Background(), "", 10); return err },
+		"objects": func() error {
+			_, _, err := store.ListObjects(context.Background(), sessionctx.ScopeUser, "plugini_test", "", 10)
+			return err
+		},
 	} {
 		t.Run(name, func(t *testing.T) {
 			if err := call(); !errors.Is(err, sessionctx.ErrSessionRequired) {
@@ -162,7 +165,7 @@ func TestSQLiteStoreReopenPreservesEnvironmentOwners(t *testing.T) {
 		ctx         context.Context
 		contentHash string
 	}{{ctxA, strings.Repeat("a", 64)}, {ctxB, strings.Repeat("b", 64)}} {
-		if err := store.CreateObject(item.ctx, plugindata.Object{ObjectID: "object_shared", ContentHash: item.contentHash, ShapeHash: strings.Repeat("c", 64), SizeBytes: 1, CreatedAt: time.Now()}); err != nil {
+		if err := store.CreateObject(item.ctx, sessionctx.ScopeUser, plugindata.Object{PluginInstanceID: "plugini_shared", ObjectID: "object_shared", ContentHash: item.contentHash, ShapeHash: strings.Repeat("c", 64), SizeBytes: 1, CreatedAt: time.Now()}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -215,7 +218,7 @@ func TestSQLiteStoreReopenPreservesEnvironmentOwners(t *testing.T) {
 		if err != nil || len(authorization.Grants) != 1 || authorization.Grants[0].PermissionID != item.grant {
 			t.Fatalf("reopened authorization = %#v err=%v", authorization, err)
 		}
-		object, found, err := reopened.GetObject(item.ctx, "object_shared")
+		object, found, err := reopened.GetObject(item.ctx, sessionctx.ScopeUser, "plugini_shared", "object_shared")
 		if err != nil || !found || object.ContentHash != item.object {
 			t.Fatalf("reopened object = %#v found=%v err=%v", object, found, err)
 		}
@@ -328,24 +331,26 @@ func TestStoreIsolatesObjectsByUserAndEnvironment(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			store := tc.open(t)
 			owners := []struct {
-				ctx         context.Context
-				contentHash string
+				ctx              context.Context
+				pluginInstanceID string
+				contentHash      string
 			}{
-				{registryTestContextFor("owner_user_a", "owner_env_shared"), strings.Repeat("a", 64)},
-				{registryTestContextFor("owner_user_b", "owner_env_shared"), strings.Repeat("b", 64)},
-				{registryTestContextFor("owner_user_a", "owner_env_other"), strings.Repeat("c", 64)},
+				{registryTestContextFor("owner_user_a", "owner_env_shared"), "plugini_shared", strings.Repeat("a", 64)},
+				{registryTestContextFor("owner_user_b", "owner_env_shared"), "plugini_shared", strings.Repeat("b", 64)},
+				{registryTestContextFor("owner_user_a", "owner_env_other"), "plugini_shared", strings.Repeat("c", 64)},
+				{registryTestContextFor("owner_user_a", "owner_env_shared"), "plugini_other", strings.Repeat("e", 64)},
 			}
 			for _, owner := range owners {
-				if err := store.CreateObject(owner.ctx, plugindata.Object{ObjectID: "object_shared", ContentHash: owner.contentHash, ShapeHash: strings.Repeat("d", 64), SizeBytes: 1, CreatedAt: time.Now()}); err != nil {
+				if err := store.CreateObject(owner.ctx, sessionctx.ScopeUser, plugindata.Object{PluginInstanceID: owner.pluginInstanceID, ObjectID: "object_shared", ContentHash: owner.contentHash, ShapeHash: strings.Repeat("d", 64), SizeBytes: 1, CreatedAt: time.Now()}); err != nil {
 					t.Fatal(err)
 				}
 			}
 			for _, owner := range owners {
-				object, found, err := store.GetObject(owner.ctx, "object_shared")
+				object, found, err := store.GetObject(owner.ctx, sessionctx.ScopeUser, owner.pluginInstanceID, "object_shared")
 				if err != nil || !found || object.ContentHash != owner.contentHash {
 					t.Fatalf("scoped object = %#v, found=%v err=%v", object, found, err)
 				}
-				listed, next, err := store.ListObjects(owner.ctx, "", 10)
+				listed, next, err := store.ListObjects(owner.ctx, sessionctx.ScopeUser, owner.pluginInstanceID, "", 10)
 				if err != nil || next != "" || len(listed) != 1 || listed[0].ContentHash != owner.contentHash {
 					t.Fatalf("scoped object list = %#v next=%q err=%v", listed, next, err)
 				}
@@ -359,14 +364,44 @@ func TestStoreIsolatesObjectsByUserAndEnvironment(t *testing.T) {
 				if item.Scope.Kind != sessionctx.ScopeUser {
 					t.Fatalf("maintenance object scope = %#v", item.Scope)
 				}
-				contentByOwner[item.Scope.OwnerEnvHash+"/"+item.Scope.OwnerUserHash] = item.Object.ContentHash
+				contentByOwner[item.Scope.OwnerEnvHash+"/"+item.Scope.OwnerUserHash+"/"+item.Object.PluginInstanceID] = item.Object.ContentHash
 			}
 			if !reflect.DeepEqual(contentByOwner, map[string]string{
-				"owner_env_shared/owner_user_a": strings.Repeat("a", 64),
-				"owner_env_shared/owner_user_b": strings.Repeat("b", 64),
-				"owner_env_other/owner_user_a":  strings.Repeat("c", 64),
+				"owner_env_shared/owner_user_a/plugini_shared": strings.Repeat("a", 64),
+				"owner_env_shared/owner_user_b/plugini_shared": strings.Repeat("b", 64),
+				"owner_env_other/owner_user_a/plugini_shared":  strings.Repeat("c", 64),
+				"owner_env_shared/owner_user_a/plugini_other":  strings.Repeat("e", 64),
 			}) {
 				t.Fatalf("maintenance object owners = %#v", contentByOwner)
+			}
+		})
+	}
+}
+
+func TestStoreEnvironmentScopedObjectsShareOnlyWithinEnvironment(t *testing.T) {
+	for _, tc := range registryStoreCases() {
+		t.Run(tc.name, func(t *testing.T) {
+			store := tc.open(t)
+			ctxA := registryTestContextFor("owner_user_a", "owner_env_shared")
+			ctxB := registryTestContextFor("owner_user_b", "owner_env_shared")
+			ctxOther := registryTestContextFor("owner_user_a", "owner_env_other")
+			object := plugindata.Object{PluginInstanceID: "plugini_environment", ObjectID: "object_shared", ContentHash: strings.Repeat("a", 64), ShapeHash: strings.Repeat("b", 64), SizeBytes: 1, CreatedAt: time.Now()}
+			if err := store.CreateObject(ctxA, sessionctx.ScopeEnvironment, object); err != nil {
+				t.Fatal(err)
+			}
+			got, found, err := store.GetObject(ctxB, sessionctx.ScopeEnvironment, object.PluginInstanceID, object.ObjectID)
+			if err != nil || !found || got.ContentHash != object.ContentHash {
+				t.Fatalf("same environment object = %#v, found=%v err=%v", got, found, err)
+			}
+			if _, found, err := store.GetObject(ctxOther, sessionctx.ScopeEnvironment, object.PluginInstanceID, object.ObjectID); err != nil || found {
+				t.Fatalf("other environment found=%v err=%v", found, err)
+			}
+			if _, found, err := store.GetObject(ctxA, sessionctx.ScopeUser, object.PluginInstanceID, object.ObjectID); err != nil || found {
+				t.Fatalf("user scope found=%v err=%v", found, err)
+			}
+			maintained, next, err := store.ListAllObjectsForMaintenance(context.Background(), "", 10)
+			if err != nil || next != "" || len(maintained) != 1 || maintained[0].Scope.Kind != sessionctx.ScopeEnvironment {
+				t.Fatalf("maintenance objects = %#v next=%q err=%v", maintained, next, err)
 			}
 		})
 	}
@@ -385,6 +420,41 @@ func TestSQLiteOwnerScopeMigrationFailsClosedForLegacyData(t *testing.T) {
 				t.Fatalf("NewSQLiteStore() error = %v, want owner migration required", err)
 			}
 		})
+	}
+}
+
+func TestSQLiteObjectPluginScopeMigrationFailsClosedForExistingRows(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "registry.sqlite")
+	dsn, err := registrySQLiteDSN(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	db, err := sql.Open("sqlite", dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`CREATE TABLE plugin_data_objects (
+		owner_env_hash TEXT NOT NULL,
+		owner_user_hash TEXT NOT NULL,
+		object_id TEXT NOT NULL,
+		PRIMARY KEY(owner_env_hash, owner_user_hash, object_id)
+	)`); err != nil {
+		_ = db.Close()
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO plugin_data_objects VALUES ('owner_env', 'owner_user', 'object_legacy')`); err != nil {
+		_ = db.Close()
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	store, err := NewSQLiteStore(context.Background(), path)
+	if store != nil {
+		_ = store.Close()
+	}
+	if !errors.Is(err, ErrOwnerScopeMigrationRequired) {
+		t.Fatalf("NewSQLiteStore() error = %v, want owner migration required", err)
 	}
 }
 
@@ -446,7 +516,7 @@ func TestSQLiteOwnerScopeMigrationRebuildsEmptyLegacyTableBesideOwnedData(t *tes
 	if record.OwnerEnvHash != "owner_env_a" {
 		t.Fatalf("preserved owner = %q", record.OwnerEnvHash)
 	}
-	if err := reopened.CreateObject(ctx, plugindata.Object{ObjectID: "object_owned", ContentHash: strings.Repeat("a", 64), ShapeHash: strings.Repeat("b", 64), SizeBytes: 1, CreatedAt: time.Now()}); err != nil {
+	if err := reopened.CreateObject(ctx, sessionctx.ScopeUser, plugindata.Object{PluginInstanceID: "plugini_preserved", ObjectID: "object_owned", ContentHash: strings.Repeat("a", 64), ShapeHash: strings.Repeat("b", 64), SizeBytes: 1, CreatedAt: time.Now()}); err != nil {
 		t.Fatal(err)
 	}
 }

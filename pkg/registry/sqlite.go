@@ -493,14 +493,16 @@ func (s *SQLiteStore) initializeSchema(ctx context.Context) error {
 	}
 	if _, err := tx.ExecContext(ctx, `
 	CREATE TABLE IF NOT EXISTS plugin_data_objects (
+		scope_kind TEXT NOT NULL,
 		owner_env_hash TEXT NOT NULL,
 		owner_user_hash TEXT NOT NULL,
+		plugin_instance_id TEXT NOT NULL,
 		object_id TEXT NOT NULL,
 	content_hash TEXT NOT NULL,
 	shape_hash TEXT NOT NULL,
 	size_bytes INTEGER NOT NULL,
 		created_at INTEGER NOT NULL,
-		PRIMARY KEY(owner_env_hash, owner_user_hash, object_id)
+		PRIMARY KEY(scope_kind, owner_env_hash, owner_user_hash, plugin_instance_id, object_id)
 	)`); err != nil {
 		return err
 	}
@@ -533,7 +535,7 @@ var ownerScopedTableSpecs = []ownerScopedTableSpec{
 	{name: "plugin_permission_grants", primaryKey: map[string]int{"owner_env_hash": 1, "plugin_instance_id": 2, "permission_id": 3}, referencesPluginTable: true},
 	{name: "plugin_security_policies", primaryKey: map[string]int{"owner_env_hash": 1, "plugin_instance_id": 2}, referencesPluginTable: true},
 	{name: "plugin_data_bindings", primaryKey: map[string]int{"owner_env_hash": 1, "plugin_instance_id": 2}, referencesPluginTable: true},
-	{name: "plugin_data_objects", primaryKey: map[string]int{"owner_env_hash": 1, "owner_user_hash": 2, "object_id": 3}},
+	{name: "plugin_data_objects", primaryKey: map[string]int{"scope_kind": 1, "owner_env_hash": 2, "owner_user_hash": 3, "plugin_instance_id": 4, "object_id": 5}},
 }
 
 func prepareOwnerScopedTables(ctx context.Context, tx *sql.Tx) error {

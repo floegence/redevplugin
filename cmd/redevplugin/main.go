@@ -377,16 +377,32 @@ func inspectData(ctx context.Context, root string, pluginInstanceID string) erro
 		bindings = filtered
 	}
 	objects := []plugindata.Object{}
-	for cursor := ""; ; {
-		page, next, err := registryStore.ListObjects(ctx, cursor, 256)
-		if err != nil {
-			return err
+	if pluginInstanceID == "" {
+		for cursor := ""; ; {
+			page, next, err := registryStore.ListAllObjectsForMaintenance(ctx, cursor, 256)
+			if err != nil {
+				return err
+			}
+			for _, item := range page {
+				objects = append(objects, item.Object)
+			}
+			if next == "" {
+				break
+			}
+			cursor = next
 		}
-		objects = append(objects, page...)
-		if next == "" {
-			break
+	} else {
+		for cursor := ""; ; {
+			page, next, err := registryStore.ListObjects(ctx, sessionctx.ScopeUser, pluginInstanceID, cursor, 256)
+			if err != nil {
+				return err
+			}
+			objects = append(objects, page...)
+			if next == "" {
+				break
+			}
+			cursor = next
 		}
-		cursor = next
 	}
 	records := []storage.NamespaceRecord{}
 	if pluginInstanceID != "" {

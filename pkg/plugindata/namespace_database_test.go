@@ -472,7 +472,7 @@ func TestExportClosesWarmNamespaceDatabasesBeforeSnapshot(t *testing.T) {
 	}
 	store.namespaceDBMu.Unlock()
 	dataRoot := filepath.Join(
-		store.scopedObjectPath(internalUserScope(), exported.ObjectID),
+		store.scopedObjectPath(internalUserScope(), "plugini_test", exported.ObjectID),
 		exportPayloadName,
 		workspaceScopeRoot("", internalUserScope()),
 		namespacesDirName,

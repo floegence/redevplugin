@@ -817,7 +817,8 @@ type ExportDataResult struct {
 }
 
 type DeleteExportDataRequest struct {
-	BundleRef string `json:"bundle_ref"`
+	PluginInstanceID string `json:"plugin_instance_id"`
+	BundleRef        string `json:"bundle_ref"`
 }
 
 type GrantPermissionRequest struct {
@@ -6385,10 +6386,15 @@ func (h *Host) ExportPluginData(ctx context.Context, req ExportDataRequest) (res
 }
 
 func (h *Host) DeleteExportedPluginData(ctx context.Context, req DeleteExportDataRequest) error {
-	if _, err := h.authorizeManagement(ctx, ManagementActionDeleteExportedPluginData, req.BundleRef); err != nil {
+	pluginInstanceID := strings.TrimSpace(req.PluginInstanceID)
+	bundleRef := strings.TrimSpace(req.BundleRef)
+	if _, err := h.authorizeManagement(ctx, ManagementActionDeleteExportedPluginData, pluginInstanceID); err != nil {
 		return err
 	}
-	return h.adapters.PluginData.DeleteExport(ctx, strings.TrimSpace(req.BundleRef))
+	if pluginInstanceID == "" || bundleRef == "" {
+		return plugindata.ErrInvalidArgument
+	}
+	return h.adapters.PluginData.DeleteExport(ctx, plugindata.DeleteExportRequest{PluginInstanceID: pluginInstanceID, ObjectID: bundleRef})
 }
 
 func (h *Host) GetSettingsSchema(ctx context.Context, req GetSettingsRequest) (SettingsSchemaResult, error) {

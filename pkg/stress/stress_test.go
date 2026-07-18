@@ -514,7 +514,7 @@ func TestStressGateStorageQuotaExportImportUnderLoad(t *testing.T) {
 	}
 	resourceScope := stressResourceScope(t, ctx, sessionctx.ScopeKind(ns.Scope))
 	const importedPluginInstanceID = "plugini_stress_storage_imported"
-	broker, records, shape := newStressPluginData(t, ctx, []string{ns.PluginInstanceID, importedPluginInstanceID}, ns)
+	broker, registryStore, records, shape := newStressPluginData(t, ctx, []string{ns.PluginInstanceID, importedPluginInstanceID}, ns)
 	defer broker.Close()
 
 	value := make([]byte, 128)
@@ -573,11 +573,23 @@ func TestStressGateStorageQuotaExportImportUnderLoad(t *testing.T) {
 		ObjectID:                   exported.ObjectID,
 		ExpectedShape:              shape,
 		ExpectedManagementRevision: records[importedPluginInstanceID].ManagementRevision,
+	}); !errors.Is(err, plugindata.ErrExportNotFound) {
+		t.Fatalf("cross-plugin import error = %v, want ErrExportNotFound", err)
+	}
+	disabled, err := registryStore.SetEnableState(ctx, ns.PluginInstanceID, registry.EnableDisabled, "stress import", time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := broker.Import(ctx, plugindata.ImportRequest{
+		PluginInstanceID:           ns.PluginInstanceID,
+		ObjectID:                   exported.ObjectID,
+		ExpectedShape:              shape,
+		ExpectedManagementRevision: disabled.ManagementRevision,
 	}); err != nil {
 		t.Fatal(err)
 	}
 	imported, err := broker.ListKV(ctx, storage.KVListRequest{
-		PluginInstanceID: importedPluginInstanceID,
+		PluginInstanceID: ns.PluginInstanceID,
 		ResourceScope:    resourceScope,
 		StoreID:          ns.StoreID,
 		MaxEntries:       1000,
@@ -626,7 +638,7 @@ func stressFileCountQuotaCounters(t *testing.T, ctx context.Context) fileCountQu
 		SchemaVersion:    1,
 	}
 	resourceScope := stressResourceScope(t, ctx, sessionctx.ScopeKind(ns.Scope))
-	broker, _, _ := newStressPluginData(t, ctx, []string{ns.PluginInstanceID}, ns)
+	broker, _, _, _ := newStressPluginData(t, ctx, []string{ns.PluginInstanceID}, ns)
 	defer broker.Close()
 	if _, err := broker.WriteFile(ctx, storage.FileWriteRequest{
 		PluginInstanceID: ns.PluginInstanceID,
@@ -681,7 +693,7 @@ func stressSQLiteQuotaBypassCounters(t *testing.T, ctx context.Context) sqliteQu
 		SchemaVersion:    1,
 	}
 	resourceScope := stressResourceScope(t, ctx, sessionctx.ScopeKind(ns.Scope))
-	broker, _, _ := newStressPluginData(t, ctx, []string{ns.PluginInstanceID}, ns)
+	broker, _, _, _ := newStressPluginData(t, ctx, []string{ns.PluginInstanceID}, ns)
 	defer broker.Close()
 	if _, err := broker.ExecSQLite(ctx, storage.SQLiteExecRequest{
 		PluginInstanceID: ns.PluginInstanceID,
@@ -732,7 +744,7 @@ func stressSQLiteQuotaBypassCounters(t *testing.T, ctx context.Context) sqliteQu
 	}
 }
 
-func newStressPluginData(t *testing.T, ctx context.Context, pluginInstanceIDs []string, namespace storage.Namespace) (*plugindata.FileStore, map[string]registry.PluginRecord, plugindata.Shape) {
+func newStressPluginData(t *testing.T, ctx context.Context, pluginInstanceIDs []string, namespace storage.Namespace) (*plugindata.FileStore, registry.Store, map[string]registry.PluginRecord, plugindata.Shape) {
 	t.Helper()
 	if len(pluginInstanceIDs) == 0 {
 		t.Fatal("at least one plugin instance is required")
@@ -794,7 +806,7 @@ func newStressPluginData(t *testing.T, ctx context.Context, pluginInstanceIDs []
 		_ = pluginData.Close()
 		t.Fatal(err)
 	}
-	return pluginData, records, shape
+	return pluginData, registryStore, records, shape
 }
 
 func sqliteSingleInt(t *testing.T, broker storage.SQLiteBroker, ctx context.Context, req storage.SQLiteQueryRequest) int64 {

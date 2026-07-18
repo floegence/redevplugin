@@ -85,11 +85,12 @@ type Binding struct {
 }
 
 type Object struct {
-	ObjectID    string    `json:"object_id"`
-	ContentHash string    `json:"content_hash"`
-	ShapeHash   string    `json:"shape_hash"`
-	SizeBytes   int64     `json:"size_bytes"`
-	CreatedAt   time.Time `json:"created_at"`
+	PluginInstanceID string    `json:"plugin_instance_id"`
+	ObjectID         string    `json:"object_id"`
+	ContentHash      string    `json:"content_hash"`
+	ShapeHash        string    `json:"shape_hash"`
+	SizeBytes        int64     `json:"size_bytes"`
+	CreatedAt        time.Time `json:"created_at"`
 }
 
 type MaintenanceBinding struct {
@@ -112,11 +113,11 @@ type Catalog interface {
 	DeleteRetained(ctx context.Context, expected Binding) error
 	CleanupExpired(ctx context.Context, now time.Time, expected []Binding) ([]Binding, error)
 	CommitUninstall(ctx context.Context, req CommitUninstallRequest) (CommitUninstallResult, error)
-	GetObject(ctx context.Context, objectID string) (Object, bool, error)
-	ListObjects(ctx context.Context, cursor string, limit int) ([]Object, string, error)
+	GetObject(ctx context.Context, scope sessionctx.ScopeKind, pluginInstanceID, objectID string) (Object, bool, error)
+	ListObjects(ctx context.Context, scope sessionctx.ScopeKind, pluginInstanceID, cursor string, limit int) ([]Object, string, error)
 	ListAllObjectsForMaintenance(ctx context.Context, cursor string, limit int) ([]MaintenanceObject, string, error)
-	CreateObject(ctx context.Context, object Object) error
-	DeleteObject(ctx context.Context, objectID string) error
+	CreateObject(ctx context.Context, scope sessionctx.ScopeKind, object Object) error
+	DeleteObject(ctx context.Context, scope sessionctx.ScopeKind, pluginInstanceID, objectID string) error
 }
 
 type Dataset struct {
@@ -140,6 +141,11 @@ type CommitEnableRequest struct {
 
 type ExportRequest struct {
 	PluginInstanceID string
+}
+
+type DeleteExportRequest struct {
+	PluginInstanceID string
+	ObjectID         string
 }
 
 type Export struct {
@@ -204,7 +210,7 @@ type PatchSettingsRequest struct {
 type Store interface {
 	CommitEnable(ctx context.Context, req CommitEnableRequest) (Dataset, error)
 	Export(ctx context.Context, req ExportRequest) (Export, error)
-	DeleteExport(ctx context.Context, objectID string) error
+	DeleteExport(ctx context.Context, req DeleteExportRequest) error
 	Import(ctx context.Context, req ImportRequest) (Dataset, error)
 	BindRetained(ctx context.Context, req BindRetainedRequest) (Dataset, error)
 	DeleteRetained(ctx context.Context, req DeleteRetainedRequest) error

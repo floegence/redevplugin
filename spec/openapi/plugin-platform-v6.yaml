@@ -2744,9 +2744,10 @@ components:
         plugin_instance_id: { type: string, minLength: 1 }
     DeleteDataExportRequest:
       type: object
-      required: [bundle_ref]
+      required: [plugin_instance_id, bundle_ref]
       additionalProperties: false
       properties:
+        plugin_instance_id: { type: string, minLength: 1 }
         bundle_ref: { type: string, minLength: 1 }
     ImportDataRequest:
       type: object

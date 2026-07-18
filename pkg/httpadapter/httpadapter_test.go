@@ -3366,7 +3366,7 @@ func TestHandlerDataExportImportFlow(t *testing.T) {
 	if imported.PluginInstanceID != installed.PluginInstanceID {
 		t.Fatalf("import response mismatch: %#v", imported)
 	}
-	deleted := postJSON[map[string]bool](t, handler, "/_redevplugin/api/plugins/data/export/delete", map[string]any{"bundle_ref": exported.BundleRef})
+	deleted := postJSON[map[string]bool](t, handler, "/_redevplugin/api/plugins/data/export/delete", map[string]any{"plugin_instance_id": installed.PluginInstanceID, "bundle_ref": exported.BundleRef})
 	if !deleted["deleted"] {
 		t.Fatalf("export delete response mismatch: %#v", deleted)
 	}

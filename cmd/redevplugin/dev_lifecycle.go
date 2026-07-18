@@ -502,7 +502,7 @@ func devDeleteExport(ctx context.Context, stateRoot string, bundleRef string) er
 	if bundleRef == "" {
 		return plugindata.ErrInvalidArgument
 	}
-	if err := harness.host.DeleteExportedPluginData(ctx, host.DeleteExportDataRequest{BundleRef: bundleRef}); err != nil {
+	if err := harness.host.DeleteExportedPluginData(ctx, host.DeleteExportDataRequest{PluginInstanceID: plugin.PluginInstanceID, BundleRef: bundleRef}); err != nil {
 		return err
 	}
 	return writeJSON(devDataSummary{OK: true, Action: "dev-delete-export", StateRoot: harness.stateRoot, PluginInstanceID: plugin.PluginInstanceID, PluginID: plugin.PluginID, BundleRef: bundleRef, Deleted: true, UpdatedAt: time.Now().UTC()})

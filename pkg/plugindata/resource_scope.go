@@ -80,8 +80,11 @@ func (s *FileStore) scopedWorkspacePath(scope sessionctx.ResourceScope, generati
 	return filepath.Join(s.workspacesRoot(), environmentOwnersDirName, scope.OwnerEnvHash, generationID)
 }
 
-func (s *FileStore) scopedObjectPath(scope sessionctx.ResourceScope, objectID string) string {
-	return filepath.Join(s.objectsRoot(), userOwnersDirName, scope.OwnerEnvHash, scope.OwnerUserHash, objectID)
+func (s *FileStore) scopedObjectPath(scope sessionctx.ResourceScope, pluginInstanceID, objectID string) string {
+	if scope.Kind == sessionctx.ScopeEnvironment {
+		return filepath.Join(s.objectsRoot(), environmentOwnersDirName, scope.OwnerEnvHash, pluginInstanceID, objectID)
+	}
+	return filepath.Join(s.objectsRoot(), userOwnersDirName, scope.OwnerEnvHash, scope.OwnerUserHash, pluginInstanceID, objectID)
 }
 
 func workspaceScopeRoot(workspaceRoot string, scope sessionctx.ResourceScope) string {
@@ -100,21 +103,21 @@ func workspaceNamespaceRoot(workspaceRoot string, scope sessionctx.ResourceScope
 }
 
 func prepareResourceScopeLayout(root string) error {
-	for _, item := range []struct {
-		root     string
-		expected string
-	}{
-		{root: filepath.Join(root, workspacesDirName), expected: environmentOwnersDirName},
-		{root: filepath.Join(root, objectsDirName), expected: userOwnersDirName},
-	} {
-		if err := removeEmptyLegacyEntries(item.root, item.expected); err != nil {
-			return err
-		}
+	if err := removeEmptyLegacyEntries(filepath.Join(root, workspacesDirName), environmentOwnersDirName); err != nil {
+		return err
 	}
-	return nil
+	objectsRoot := filepath.Join(root, objectsDirName)
+	if err := removeEmptyLegacyEntries(objectsRoot, environmentOwnersDirName, userOwnersDirName); err != nil {
+		return err
+	}
+	return rejectPluginlessObjectLayout(objectsRoot)
 }
 
-func removeEmptyLegacyEntries(root, expected string) error {
+func removeEmptyLegacyEntries(root string, expected ...string) error {
+	expectedNames := make(map[string]struct{}, len(expected))
+	for _, name := range expected {
+		expectedNames[name] = struct{}{}
+	}
 	entries, err := os.ReadDir(root)
 	if errors.Is(err, fs.ErrNotExist) {
 		return nil
@@ -123,7 +126,7 @@ func removeEmptyLegacyEntries(root, expected string) error {
 		return err
 	}
 	for _, entry := range entries {
-		if entry.Name() == expected {
+		if _, ok := expectedNames[entry.Name()]; ok {
 			if entry.Type()&os.ModeSymlink != 0 || !entry.IsDir() {
 				return fmt.Errorf("%w: invalid owner-scoped data root", ErrUnsafeFilesystem)
 			}
@@ -139,6 +142,55 @@ func removeEmptyLegacyEntries(root, expected string) error {
 		}
 		if err := os.RemoveAll(path); err != nil {
 			return err
+		}
+	}
+	return nil
+}
+
+func rejectPluginlessObjectLayout(objectsRoot string) error {
+	for _, root := range []struct {
+		path       string
+		ownerDepth int
+	}{
+		{path: filepath.Join(objectsRoot, environmentOwnersDirName), ownerDepth: 1},
+		{path: filepath.Join(objectsRoot, userOwnersDirName), ownerDepth: 2},
+	} {
+		if err := inspectObjectOwnerLayout(root.path, root.ownerDepth); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func inspectObjectOwnerLayout(root string, ownerDepth int) error {
+	entries, err := os.ReadDir(root)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if ownerDepth > 0 {
+		for _, entry := range entries {
+			if entry.Type()&os.ModeSymlink != 0 || !entry.IsDir() {
+				return fmt.Errorf("%w: invalid owner-scoped object root", ErrUnsafeFilesystem)
+			}
+			if err := inspectObjectOwnerLayout(filepath.Join(root, entry.Name()), ownerDepth-1); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	for _, entry := range entries {
+		if entry.Type()&os.ModeSymlink != 0 || !entry.IsDir() {
+			return fmt.Errorf("%w: invalid owner-scoped object root", ErrUnsafeFilesystem)
+		}
+		for _, legacyEntry := range []string{exportManifestName, exportPayloadName} {
+			if _, err := os.Lstat(filepath.Join(root, entry.Name(), legacyEntry)); err == nil {
+				return ErrOwnerScopeMigrationRequired
+			} else if !errors.Is(err, fs.ErrNotExist) {
+				return err
+			}
 		}
 	}
 	return nil

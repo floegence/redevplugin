@@ -12,6 +12,7 @@ import (
 	"github.com/floegence/redevplugin/pkg/manifest"
 	"github.com/floegence/redevplugin/pkg/mutation"
 	"github.com/floegence/redevplugin/pkg/plugindata"
+	"github.com/floegence/redevplugin/pkg/sessionctx"
 )
 
 func TestCatalogManagementMutationsAreAtomic(t *testing.T) {
@@ -86,6 +87,7 @@ func TestCatalogPagesBindingsAndObjects(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := registryTestContext()
 			store := tc.open(t)
+			const objectPluginInstanceID = "plugini_page_objects"
 			for i := 0; i < 17; i++ {
 				instanceID := fmt.Sprintf("plugini_page_%02d", i)
 				record := putCatalogPlugin(t, store, instanceID, time.Now())
@@ -101,7 +103,7 @@ func TestCatalogPagesBindingsAndObjects(t *testing.T) {
 					t.Fatal(err)
 				}
 				objectID := fmt.Sprintf("obj_page_%02d", i)
-				if err := store.CreateObject(ctx, plugindata.Object{ObjectID: objectID, ContentHash: strings.Repeat("a", 64), ShapeHash: strings.Repeat("b", 64), SizeBytes: 1, CreatedAt: time.Now()}); err != nil {
+				if err := store.CreateObject(ctx, sessionctx.ScopeUser, plugindata.Object{PluginInstanceID: objectPluginInstanceID, ObjectID: objectID, ContentHash: strings.Repeat("a", 64), ShapeHash: strings.Repeat("b", 64), SizeBytes: 1, CreatedAt: time.Now()}); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -122,7 +124,7 @@ func TestCatalogPagesBindingsAndObjects(t *testing.T) {
 				}
 			}
 			for objectCursor != "done" {
-				page, next, err := store.ListObjects(ctx, objectCursor, 7)
+				page, next, err := store.ListObjects(ctx, sessionctx.ScopeUser, objectPluginInstanceID, objectCursor, 7)
 				if err != nil {
 					t.Fatal(err)
 				}

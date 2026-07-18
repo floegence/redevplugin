@@ -115,14 +115,16 @@ func (c *internalCatalog) CommitUninstall(_ context.Context, req CommitUninstall
 	}
 	return CommitUninstallResult{ManagementRevision: req.ExpectedManagementRevision + 1, RevokeEpoch: 1, DeletedAt: req.Now}, nil
 }
-func (c *internalCatalog) GetObject(_ context.Context, id string) (Object, bool, error) {
-	object, ok := c.objects[id]
+func (c *internalCatalog) GetObject(_ context.Context, _ sessionctx.ScopeKind, pluginInstanceID, id string) (Object, bool, error) {
+	object, ok := c.objects[persistentPathKey(pluginInstanceID, id)]
 	return object, ok, nil
 }
-func (c *internalCatalog) ListObjects(_ context.Context, cursor string, limit int) ([]Object, string, error) {
+func (c *internalCatalog) ListObjects(_ context.Context, _ sessionctx.ScopeKind, pluginInstanceID, cursor string, limit int) ([]Object, string, error) {
 	objects := make([]Object, 0, len(c.objects))
 	for _, object := range c.objects {
-		objects = append(objects, object)
+		if object.PluginInstanceID == pluginInstanceID {
+			objects = append(objects, object)
+		}
 	}
 	sort.Slice(objects, func(i, j int) bool { return objects[i].ObjectID < objects[j].ObjectID })
 	start := sort.Search(len(objects), func(i int) bool { return objects[i].ObjectID > cursor })
@@ -133,22 +135,43 @@ func (c *internalCatalog) ListObjects(_ context.Context, cursor string, limit in
 	return objects, "", nil
 }
 func (c *internalCatalog) ListAllObjectsForMaintenance(ctx context.Context, cursor string, limit int) ([]MaintenanceObject, string, error) {
-	objects, next, err := c.ListObjects(ctx, cursor, limit)
+	objects := make([]Object, 0, len(c.objects))
+	for _, object := range c.objects {
+		objects = append(objects, object)
+	}
+	sort.Slice(objects, func(i, j int) bool {
+		if objects[i].PluginInstanceID == objects[j].PluginInstanceID {
+			return objects[i].ObjectID < objects[j].ObjectID
+		}
+		return objects[i].PluginInstanceID < objects[j].PluginInstanceID
+	})
+	start := sort.Search(len(objects), func(i int) bool { return persistentPathKey(objects[i].PluginInstanceID, objects[i].ObjectID) > cursor })
+	objects = objects[start:]
+	next := ""
+	if limit > 0 && len(objects) > limit {
+		objects = objects[:limit]
+		last := objects[len(objects)-1]
+		next = persistentPathKey(last.PluginInstanceID, last.ObjectID)
+	}
 	items := make([]MaintenanceObject, 0, len(objects))
 	for _, object := range objects {
 		items = append(items, MaintenanceObject{Scope: internalUserScope(), Object: object})
 	}
-	return items, next, err
+	return items, next, nil
 }
-func (c *internalCatalog) CreateObject(_ context.Context, object Object) error {
+func (c *internalCatalog) CreateObject(_ context.Context, _ sessionctx.ScopeKind, object Object) error {
 	if c.createObjectErr != nil {
 		return c.createObjectErr
 	}
-	c.objects[object.ObjectID] = object
+	c.objects[persistentPathKey(object.PluginInstanceID, object.ObjectID)] = object
 	return nil
 }
-func (c *internalCatalog) DeleteObject(_ context.Context, id string) error {
-	delete(c.objects, id)
+func (c *internalCatalog) DeleteObject(_ context.Context, _ sessionctx.ScopeKind, pluginInstanceID, id string) error {
+	key := persistentPathKey(pluginInstanceID, id)
+	if _, ok := c.objects[key]; !ok {
+		return ErrExportNotFound
+	}
+	delete(c.objects, key)
 	return nil
 }
 
@@ -328,10 +351,10 @@ func TestImportAndExportDeletionReclaimPublishedObjects(t *testing.T) {
 	if _, err := os.Stat(store.scopedWorkspacePath(internalEnvironmentScope(), oldBinding.GenerationID)); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("stale generation remains after import: %v", err)
 	}
-	if err := store.DeleteExport(ctx, exported.ObjectID); err != nil {
+	if err := store.DeleteExport(ctx, DeleteExportRequest{PluginInstanceID: "plugini_test", ObjectID: exported.ObjectID}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := os.Stat(store.scopedObjectPath(internalUserScope(), exported.ObjectID)); !errors.Is(err, os.ErrNotExist) {
+	if _, err := os.Stat(store.scopedObjectPath(internalUserScope(), "plugini_test", exported.ObjectID)); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("deleted export object remains: %v", err)
 	}
 }
@@ -480,8 +503,8 @@ func TestCommittedDeletionFailuresAreUnknownAndCollectorConverges(t *testing.T) 
 		if err != nil {
 			t.Fatal(err)
 		}
-		assertDeletionFailureConverges(t, store, store.scopedObjectPath(internalUserScope(), exported.ObjectID), func() error {
-			return store.DeleteExport(ctx, exported.ObjectID)
+		assertDeletionFailureConverges(t, store, store.scopedObjectPath(internalUserScope(), "plugini_test", exported.ObjectID), func() error {
+			return store.DeleteExport(ctx, DeleteExportRequest{PluginInstanceID: "plugini_test", ObjectID: exported.ObjectID})
 		})
 	})
 
@@ -553,7 +576,7 @@ func TestCatalogFailuresRollBackUnpublishedDirectories(t *testing.T) {
 		if _, err := store.Export(ctx, ExportRequest{PluginInstanceID: "plugini_test"}); !errors.Is(err, catalogErr) {
 			t.Fatalf("Export() error = %v, want %v", err, catalogErr)
 		}
-		entries, err := os.ReadDir(filepath.Dir(store.scopedObjectPath(internalUserScope(), "object")))
+		entries, err := os.ReadDir(filepath.Dir(store.scopedObjectPath(internalUserScope(), "plugini_test", "object")))
 		if err != nil || len(entries) != 0 {
 			t.Fatalf("unpublished objects = %#v, err = %v", entries, err)
 		}
@@ -596,7 +619,7 @@ func TestCommittedDeletionSyncFailureIsUnknownAfterDirectoryDisappears(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	target := store.scopedObjectPath(internalUserScope(), exported.ObjectID)
+	target := store.scopedObjectPath(internalUserScope(), "plugini_test", exported.ObjectID)
 	syncErr := errors.New("object directory sync failed")
 	originalSyncDir := store.ops.syncDir
 	store.ops.syncDir = func(path string) error {
@@ -605,7 +628,7 @@ func TestCommittedDeletionSyncFailureIsUnknownAfterDirectoryDisappears(t *testin
 		}
 		return originalSyncDir(path)
 	}
-	err = store.DeleteExport(ctx, exported.ObjectID)
+	err = store.DeleteExport(ctx, DeleteExportRequest{PluginInstanceID: "plugini_test", ObjectID: exported.ObjectID})
 	if !errors.Is(err, syncErr) || mutation.ForError(err) != mutation.OutcomeUnknown {
 		t.Fatalf("DeleteExport() error = %v, outcome = %q", err, mutation.ForError(err))
 	}

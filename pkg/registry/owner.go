@@ -20,10 +20,6 @@ func environmentOwner(ctx context.Context) (string, error) {
 	return scope.OwnerEnvHash, nil
 }
 
-func userOwner(ctx context.Context) (sessionctx.ResourceScope, error) {
-	return resourceOwner(ctx, sessionctx.ScopeUser)
-}
-
 func resourceOwner(ctx context.Context, kind sessionctx.ScopeKind) (sessionctx.ResourceScope, error) {
 	session, err := sessionctx.Require(ctx)
 	if err != nil {
@@ -36,8 +32,8 @@ func environmentRecordKey(ownerEnvHash, pluginInstanceID string) string {
 	return strings.TrimSpace(ownerEnvHash) + "\x00" + strings.TrimSpace(pluginInstanceID)
 }
 
-func scopedObjectKey(scope sessionctx.ResourceScope, objectID string) string {
-	return string(scope.Kind) + "\x00" + scope.OwnerEnvHash + "\x00" + scope.OwnerUserHash + "\x00" + strings.TrimSpace(objectID)
+func scopedObjectKey(scope sessionctx.ResourceScope, pluginInstanceID, objectID string) string {
+	return string(scope.Kind) + "\x00" + scope.OwnerEnvHash + "\x00" + scope.OwnerUserHash + "\x00" + strings.TrimSpace(pluginInstanceID) + "\x00" + strings.TrimSpace(objectID)
 }
 
 func maintenanceCursor(parts ...string) string {

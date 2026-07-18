@@ -55,11 +55,12 @@ type settingsDocument struct {
 }
 
 type exportManifest struct {
-	ObjectID    string                   `json:"object_id"`
-	Scope       sessionctx.ResourceScope `json:"scope"`
-	ContentHash string                   `json:"content_hash"`
-	ShapeHash   string                   `json:"shape_hash"`
-	CreatedAt   time.Time                `json:"created_at"`
+	PluginInstanceID string                   `json:"plugin_instance_id"`
+	ObjectID         string                   `json:"object_id"`
+	Scope            sessionctx.ResourceScope `json:"scope"`
+	ContentHash      string                   `json:"content_hash"`
+	ShapeHash        string                   `json:"shape_hash"`
+	CreatedAt        time.Time                `json:"created_at"`
 }
 
 type namespaceDocument struct {
@@ -187,6 +188,7 @@ func Open(ctx context.Context, root string, catalog Catalog) (*FileStore, error)
 	}
 	for _, path := range []string{
 		filepath.Join(store.workspacesRoot(), environmentOwnersDirName),
+		filepath.Join(store.objectsRoot(), environmentOwnersDirName),
 		filepath.Join(store.objectsRoot(), userOwnersDirName),
 		store.stagingRoot(),
 	} {
@@ -363,7 +365,7 @@ func (s *FileStore) Export(ctx context.Context, req ExportRequest) (Export, erro
 		return Export{}, err
 	}
 	createdAt := s.now()
-	if err := writeJSON(filepath.Join(stage, exportManifestName), exportManifest{ObjectID: objectID, Scope: user, ContentHash: contentHash, ShapeHash: manifest.ShapeHash, CreatedAt: createdAt}); err != nil {
+	if err := writeJSON(filepath.Join(stage, exportManifestName), exportManifest{PluginInstanceID: pluginID, ObjectID: objectID, Scope: user, ContentHash: contentHash, ShapeHash: manifest.ShapeHash, CreatedAt: createdAt}); err != nil {
 		return Export{}, err
 	}
 	if err := validateTree(stage); err != nil {
@@ -372,7 +374,7 @@ func (s *FileStore) Export(ctx context.Context, req ExportRequest) (Export, erro
 	if err := syncTree(stage); err != nil {
 		return Export{}, err
 	}
-	destination := s.scopedObjectPath(user, objectID)
+	destination := s.scopedObjectPath(user, pluginID, objectID)
 	s.publicationMu.Lock()
 	defer s.publicationMu.Unlock()
 	if err := s.publishStage(stage, destination); err != nil {
@@ -382,20 +384,24 @@ func (s *FileStore) Export(ctx context.Context, req ExportRequest) (Export, erro
 	if err != nil {
 		return Export{}, s.rollbackPublishedDirectory(destination, filepath.Dir(destination), err)
 	}
-	object := Object{ObjectID: objectID, ContentHash: contentHash, ShapeHash: manifest.ShapeHash, SizeBytes: size, CreatedAt: createdAt}
-	if err := s.catalog.CreateObject(ctx, object); err != nil {
+	object := Object{PluginInstanceID: pluginID, ObjectID: objectID, ContentHash: contentHash, ShapeHash: manifest.ShapeHash, SizeBytes: size, CreatedAt: createdAt}
+	if err := s.catalog.CreateObject(ctx, sessionctx.ScopeUser, object); err != nil {
 		return Export{}, s.rollbackPublishedDirectory(destination, filepath.Dir(destination), fmt.Errorf("publish export object: %w", err))
 	}
 	return Export{ObjectID: objectID, ContentHash: contentHash, SizeBytes: size, CreatedAt: createdAt}, nil
 }
 
-func (s *FileStore) DeleteExport(ctx context.Context, objectID string) error {
+func (s *FileStore) DeleteExport(ctx context.Context, req DeleteExportRequest) error {
 	release, err := s.begin()
 	if err != nil {
 		return err
 	}
 	defer release()
-	objectID, err = normalizeIdentifier("object ID", objectID)
+	pluginID, err := normalizeIdentifier("plugin instance ID", req.PluginInstanceID)
+	if err != nil {
+		return err
+	}
+	objectID, err := normalizeIdentifier("object ID", req.ObjectID)
 	if err != nil {
 		return err
 	}
@@ -403,14 +409,14 @@ func (s *FileStore) DeleteExport(ctx context.Context, objectID string) error {
 	if err != nil {
 		return err
 	}
-	unlock := s.objectLocks.lockWrite(scopedLockKey(owner, objectID))
+	unlock := s.objectLocks.lockWrite(scopedLockKey(owner, persistentPathKey(pluginID, objectID)))
 	defer unlock()
 	s.publicationMu.Lock()
 	defer s.publicationMu.Unlock()
-	if err := s.catalog.DeleteObject(ctx, objectID); err != nil {
+	if err := s.catalog.DeleteObject(ctx, sessionctx.ScopeUser, pluginID, objectID); err != nil {
 		return err
 	}
-	objectPath := s.scopedObjectPath(owner, objectID)
+	objectPath := s.scopedObjectPath(owner, pluginID, objectID)
 	if err := s.removePublishedDirectory(objectPath, filepath.Dir(objectPath)); err != nil {
 		return err
 	}
@@ -445,7 +451,7 @@ func (s *FileStore) Import(ctx context.Context, req ImportRequest) (Dataset, err
 	}
 	unlock := s.locks.lockWrite(scopedLockKey(environment, pluginID))
 	defer unlock()
-	objectUnlock := s.objectLocks.lockRead(scopedLockKey(user, objectID))
+	objectUnlock := s.objectLocks.lockRead(scopedLockKey(user, persistentPathKey(pluginID, objectID)))
 	defer objectUnlock()
 
 	current, found, err := s.catalog.GetBinding(ctx, pluginID)
@@ -455,7 +461,7 @@ func (s *FileStore) Import(ctx context.Context, req ImportRequest) (Dataset, err
 	if found && current.State != BindingActive {
 		return Dataset{}, fmt.Errorf("%w: %s", ErrNotActive, pluginID)
 	}
-	object, catalogObject, sourceManifest, err := s.validateObject(ctx, user, objectID)
+	object, catalogObject, sourceManifest, err := s.validateObject(ctx, user, pluginID, objectID)
 	if err != nil {
 		return Dataset{}, err
 	}
@@ -986,8 +992,8 @@ func (s *FileStore) finalizeWorkspace(ctx context.Context, stage, generationID s
 	return manifest, nil
 }
 
-func (s *FileStore) validateObject(ctx context.Context, owner sessionctx.ResourceScope, objectID string) (string, Object, datasetManifest, error) {
-	catalogObject, found, err := s.catalog.GetObject(ctx, objectID)
+func (s *FileStore) validateObject(ctx context.Context, owner sessionctx.ResourceScope, pluginInstanceID, objectID string) (string, Object, datasetManifest, error) {
+	catalogObject, found, err := s.catalog.GetObject(ctx, owner.Kind, pluginInstanceID, objectID)
 	if err != nil {
 		return "", Object{}, datasetManifest{}, err
 	}
@@ -997,7 +1003,7 @@ func (s *FileStore) validateObject(ctx context.Context, owner sessionctx.Resourc
 	if err := validateObjectMetadata(catalogObject); err != nil {
 		return "", Object{}, datasetManifest{}, err
 	}
-	object := s.scopedObjectPath(owner, objectID)
+	object := s.scopedObjectPath(owner, pluginInstanceID, objectID)
 	var exported exportManifest
 	if err := readJSON(filepath.Join(object, exportManifestName), &exported); err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
@@ -1005,7 +1011,10 @@ func (s *FileStore) validateObject(ctx context.Context, owner sessionctx.Resourc
 		}
 		return "", Object{}, datasetManifest{}, err
 	}
-	if exported.ObjectID != objectID || !exported.Scope.Matches(owner) || exported.ContentHash != catalogObject.ContentHash || exported.ShapeHash != catalogObject.ShapeHash {
+	if exported.PluginInstanceID == "" {
+		return "", Object{}, datasetManifest{}, ErrOwnerScopeMigrationRequired
+	}
+	if exported.PluginInstanceID != pluginInstanceID || catalogObject.PluginInstanceID != pluginInstanceID || exported.ObjectID != objectID || !exported.Scope.Matches(owner) || exported.ContentHash != catalogObject.ContentHash || exported.ShapeHash != catalogObject.ShapeHash {
 		return "", Object{}, datasetManifest{}, fmt.Errorf("%w: export catalog metadata mismatch", ErrDatasetCorrupt)
 	}
 	payload := filepath.Join(object, exportPayloadName)
@@ -1027,6 +1036,9 @@ func (s *FileStore) validateObject(ctx context.Context, owner sessionctx.Resourc
 }
 
 func validateObjectMetadata(object Object) error {
+	if object.PluginInstanceID == "" {
+		return ErrOwnerScopeMigrationRequired
+	}
 	if object.ObjectID == "" || object.SizeBytes <= 0 || object.CreatedAt.IsZero() || !canonicalHash(object.ContentHash) || !canonicalHash(object.ShapeHash) {
 		return fmt.Errorf("%w: invalid export object metadata", ErrDatasetCorrupt)
 	}
@@ -1192,10 +1204,13 @@ func (s *FileStore) cleanupOnOpen(ctx context.Context) error {
 		}
 		object := item.Object
 		var manifest exportManifest
-		if err := readJSON(filepath.Join(s.scopedObjectPath(item.Scope, object.ObjectID), exportManifestName), &manifest); err != nil {
+		if err := readJSON(filepath.Join(s.scopedObjectPath(item.Scope, object.PluginInstanceID, object.ObjectID), exportManifestName), &manifest); err != nil {
 			return fmt.Errorf("%w: missing export object %s", ErrDatasetCorrupt, object.ObjectID)
 		}
-		if manifest.ObjectID != object.ObjectID || !manifest.Scope.Matches(item.Scope) || manifest.ContentHash != object.ContentHash || manifest.ShapeHash != object.ShapeHash {
+		if manifest.PluginInstanceID == "" {
+			return ErrOwnerScopeMigrationRequired
+		}
+		if manifest.PluginInstanceID != object.PluginInstanceID || manifest.ObjectID != object.ObjectID || !manifest.Scope.Matches(item.Scope) || manifest.ContentHash != object.ContentHash || manifest.ShapeHash != object.ShapeHash {
 			return fmt.Errorf("%w: export object metadata mismatch", ErrDatasetCorrupt)
 		}
 	}
@@ -1223,7 +1238,7 @@ func (s *FileStore) collectUnreferenced(ctx context.Context) error {
 		if err := validateMaintenanceObject(item); err != nil {
 			return err
 		}
-		referencedObjects[persistentPathKey(item.Scope.OwnerEnvHash, item.Scope.OwnerUserHash, item.Object.ObjectID)] = struct{}{}
+		referencedObjects[persistentPathKey(string(item.Scope.Kind), item.Scope.OwnerEnvHash, item.Scope.OwnerUserHash, item.Object.PluginInstanceID, item.Object.ObjectID)] = struct{}{}
 	}
 	if err := s.removeUnreferencedWorkspaces(referencedWorkspaces); err != nil {
 		return err
@@ -1263,27 +1278,27 @@ func (s *FileStore) removeUnreferencedWorkspaces(referenced map[string]struct{})
 }
 
 func (s *FileStore) removeUnreferencedObjects(referenced map[string]struct{}) error {
-	environmentsRoot := filepath.Join(s.objectsRoot(), userOwnersDirName)
-	environments, err := os.ReadDir(environmentsRoot)
-	if err != nil {
-		return err
-	}
-	for _, environmentEntry := range environments {
-		if environmentEntry.Type()&os.ModeSymlink != 0 || !environmentEntry.IsDir() {
-			return fmt.Errorf("%w: invalid object environment owner", ErrUnsafeFilesystem)
+	for _, kind := range []sessionctx.ScopeKind{sessionctx.ScopeEnvironment, sessionctx.ScopeUser} {
+		if err := s.removeUnreferencedObjectsForScope(kind, referenced); err != nil {
+			return err
 		}
-		usersRoot := filepath.Join(environmentsRoot, environmentEntry.Name())
-		users, err := os.ReadDir(usersRoot)
+	}
+	return nil
+}
+
+func (s *FileStore) removeUnreferencedObjectsForScope(kind sessionctx.ScopeKind, referenced map[string]struct{}) error {
+	root := filepath.Join(s.objectsRoot(), string(kind))
+	return walkObjectScopeOwners(root, kind, func(scope sessionctx.ResourceScope, ownerRoot string) error {
+		plugins, err := os.ReadDir(ownerRoot)
 		if err != nil {
 			return err
 		}
-		for _, userEntry := range users {
-			scope := sessionctx.ResourceScope{Kind: sessionctx.ScopeUser, OwnerEnvHash: environmentEntry.Name(), OwnerUserHash: userEntry.Name()}
-			if userEntry.Type()&os.ModeSymlink != 0 || !userEntry.IsDir() || scope.Validate() != nil {
-				return fmt.Errorf("%w: invalid object user owner", ErrUnsafeFilesystem)
+		for _, plugin := range plugins {
+			if plugin.Type()&os.ModeSymlink != 0 || !plugin.IsDir() || !identifierPattern.MatchString(plugin.Name()) {
+				return fmt.Errorf("%w: invalid object plugin entry %s", ErrUnsafeFilesystem, plugin.Name())
 			}
-			userRoot := filepath.Join(usersRoot, userEntry.Name())
-			objects, err := os.ReadDir(userRoot)
+			pluginRoot := filepath.Join(ownerRoot, plugin.Name())
+			objects, err := os.ReadDir(pluginRoot)
 			if err != nil {
 				return err
 			}
@@ -1291,12 +1306,50 @@ func (s *FileStore) removeUnreferencedObjects(referenced map[string]struct{}) er
 				if object.Type()&os.ModeSymlink != 0 || !object.IsDir() || !identifierPattern.MatchString(object.Name()) {
 					return fmt.Errorf("%w: invalid object entry %s", ErrUnsafeFilesystem, object.Name())
 				}
-				if _, ok := referenced[persistentPathKey(scope.OwnerEnvHash, scope.OwnerUserHash, object.Name())]; ok {
+				key := persistentPathKey(string(scope.Kind), scope.OwnerEnvHash, scope.OwnerUserHash, plugin.Name(), object.Name())
+				if _, ok := referenced[key]; ok {
 					continue
 				}
-				if err := s.removePublishedDirectory(filepath.Join(userRoot, object.Name()), userRoot); err != nil {
+				if err := s.removePublishedDirectory(filepath.Join(pluginRoot, object.Name()), pluginRoot); err != nil {
 					return err
 				}
+			}
+		}
+		return nil
+	})
+}
+
+func walkObjectScopeOwners(root string, kind sessionctx.ScopeKind, visit func(sessionctx.ResourceScope, string) error) error {
+	environments, err := os.ReadDir(root)
+	if err != nil {
+		return err
+	}
+	for _, environment := range environments {
+		if environment.Type()&os.ModeSymlink != 0 || !environment.IsDir() {
+			return fmt.Errorf("%w: invalid object environment owner", ErrUnsafeFilesystem)
+		}
+		environmentRoot := filepath.Join(root, environment.Name())
+		if kind == sessionctx.ScopeEnvironment {
+			scope := sessionctx.ResourceScope{Kind: kind, OwnerEnvHash: environment.Name()}
+			if scope.Validate() != nil {
+				return fmt.Errorf("%w: invalid object environment owner", ErrUnsafeFilesystem)
+			}
+			if err := visit(scope, environmentRoot); err != nil {
+				return err
+			}
+			continue
+		}
+		users, err := os.ReadDir(environmentRoot)
+		if err != nil {
+			return err
+		}
+		for _, user := range users {
+			scope := sessionctx.ResourceScope{Kind: kind, OwnerEnvHash: environment.Name(), OwnerUserHash: user.Name()}
+			if user.Type()&os.ModeSymlink != 0 || !user.IsDir() || scope.Validate() != nil {
+				return fmt.Errorf("%w: invalid object user owner", ErrUnsafeFilesystem)
+			}
+			if err := visit(scope, filepath.Join(environmentRoot, user.Name())); err != nil {
+				return err
 			}
 		}
 	}
@@ -1368,7 +1421,7 @@ func validateMaintenanceBinding(item MaintenanceBinding) error {
 }
 
 func validateMaintenanceObject(item MaintenanceObject) error {
-	if err := item.Scope.Validate(); err != nil || item.Scope.Kind != sessionctx.ScopeUser {
+	if err := item.Scope.Validate(); err != nil {
 		return fmt.Errorf("%w: invalid object owner scope", ErrDatasetCorrupt)
 	}
 	return validateObjectMetadata(item.Object)

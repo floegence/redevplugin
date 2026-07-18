@@ -886,6 +886,7 @@ func TestCLIDevLifecycleExportsAndImportsPluginData(t *testing.T) {
 		"user",
 		session.OwnerEnvHash,
 		session.OwnerUserHash,
+		exportSummary.PluginInstanceID,
 		exportSummary.BundleRef,
 	), []byte("api_token"))
 
@@ -973,7 +974,7 @@ func TestCLIDevLifecycleExportsAndImportsPluginData(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	objects, next, err := registryStore.ListObjects(ctx, "", 10)
+	objects, next, err := registryStore.ListObjects(ctx, sessionctx.ScopeUser, plugin.PluginInstanceID, "", 10)
 	if err != nil {
 		t.Fatal(err)
 	}

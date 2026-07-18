@@ -1939,6 +1939,7 @@ export interface components {
             plugin_instance_id: string;
         };
         DeleteDataExportRequest: {
+            plugin_instance_id: string;
             bundle_ref: string;
         };
         ImportDataRequest: {
