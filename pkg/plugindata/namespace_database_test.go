@@ -2,11 +2,16 @@ package plugindata
 
 import (
 	"context"
+	"database/sql"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	settingsdomain "github.com/floegence/redevplugin/pkg/settings"
 	"github.com/floegence/redevplugin/pkg/storage"
@@ -99,6 +104,208 @@ func TestNamespaceTransactionsEnforceLogicalFileQuotas(t *testing.T) {
 	}
 	if _, err := store.PutKV(ctx, storage.KVPutRequest{PluginInstanceID: "plugini_quota", StoreID: "kv", Key: "two", Value: []byte("2")}); !errors.Is(err, storage.ErrQuotaExceeded) {
 		t.Fatalf("second kv write error = %v", err)
+	}
+}
+
+func TestNamespaceDatabaseCacheReusesAndClosesGenerationConnections(t *testing.T) {
+	store, _, shape := newInternalStore(t)
+	ctx := context.Background()
+	dataset, err := store.CommitEnable(ctx, CommitEnableRequest{PluginInstanceID: "plugini_test", Shape: shape, ExpectedManagementRevision: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 2; i++ {
+		if _, err := store.ListFiles(ctx, storage.FileListRequest{PluginInstanceID: "plugini_test", StoreID: "files", MaxEntries: 1}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	key := namespaceDatabaseCacheKey(dataset.Binding.GenerationID, "files", NamespaceFiles)
+	store.namespaceDBMu.Lock()
+	entry := store.namespaceDB[key]
+	if entry == nil || entry.db == nil || entry.refs != 0 {
+		store.namespaceDBMu.Unlock()
+		t.Fatalf("namespace cache entry = %#v", entry)
+	}
+	db := entry.db
+	store.namespaceDBMu.Unlock()
+	if err := db.PingContext(ctx); err != nil {
+		t.Fatalf("cached namespace database ping: %v", err)
+	}
+	if _, err := store.CommitUninstall(ctx, CommitUninstallRequest{
+		PluginInstanceID:           "plugini_test",
+		DeleteData:                 true,
+		ExpectedManagementRevision: 2,
+		Now:                        time.Now().UTC(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	store.namespaceDBMu.Lock()
+	_, cached := store.namespaceDB[key]
+	store.namespaceDBMu.Unlock()
+	if cached {
+		t.Fatal("generation namespace database remained cached after deletion")
+	}
+	if err := db.PingContext(ctx); err == nil {
+		t.Fatal("deleted generation namespace database remained open")
+	}
+}
+
+func TestCachedNamespaceUsageSharesConcurrentMiss(t *testing.T) {
+	var loads atomic.Int32
+	started := make(chan struct{})
+	release := make(chan struct{})
+	store := &FileStore{
+		usage:        map[string]namespaceUsage{},
+		usageFlights: map[string]*namespaceUsageFlight{},
+	}
+	loader := func(context.Context, string, NamespaceKind, *sql.DB) (namespaceUsage, error) {
+		if loads.Add(1) == 1 {
+			close(started)
+		}
+		<-release
+		return namespaceUsage{bytes: 42, files: 3}, nil
+	}
+	const callers = 16
+	results := make(chan namespaceUsage, callers)
+	errs := make(chan error, callers)
+	var wg sync.WaitGroup
+	wg.Add(callers)
+	for i := 0; i < callers; i++ {
+		go func() {
+			defer wg.Done()
+			usage, err := store.cachedNamespaceUsageWithLoader(context.Background(), "generation\x00files", "unused", NamespaceFiles, nil, loader)
+			results <- usage
+			errs <- err
+		}()
+	}
+	<-started
+	close(release)
+	wg.Wait()
+	close(results)
+	close(errs)
+	if loads.Load() != 1 {
+		t.Fatalf("usage loader calls = %d, want 1", loads.Load())
+	}
+	for err := range errs {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	for usage := range results {
+		if usage != (namespaceUsage{bytes: 42, files: 3}) {
+			t.Fatalf("usage = %#v", usage)
+		}
+	}
+}
+
+func TestNamespaceDatabaseCacheWaitsWhenEveryEntryIsActive(t *testing.T) {
+	root := t.TempDir()
+	if err := initializeNamespaceDatabase(context.Background(), root, NamespaceKV); err != nil {
+		t.Fatal(err)
+	}
+	rootInfo, err := os.Lstat(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := &FileStore{
+		namespaceDB:     make(map[string]*namespaceDBEntry, maxNamespaceDatabaseCacheEntries),
+		namespaceDBWake: make(chan struct{}),
+	}
+	for i := 0; i < maxNamespaceDatabaseCacheEntries; i++ {
+		key := fmt.Sprintf("generation-%03d", i)
+		store.namespaceDB[key] = &namespaceDBEntry{rootPath: key, refs: 1, lastUse: uint64(i + 1)}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	defer cancel()
+	if _, _, _, err := store.acquireNamespaceDatabase(ctx, "new", root, rootInfo); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("acquireNamespaceDatabase() error = %v, want context deadline", err)
+	}
+	if len(store.namespaceDB) != maxNamespaceDatabaseCacheEntries {
+		t.Fatalf("namespace cache entries = %d, want %d", len(store.namespaceDB), maxNamespaceDatabaseCacheEntries)
+	}
+}
+
+func TestNamespaceDatabaseCacheSharesConcurrentOpen(t *testing.T) {
+	root := t.TempDir()
+	if err := initializeNamespaceDatabase(context.Background(), root, NamespaceKV); err != nil {
+		t.Fatal(err)
+	}
+	rootInfo, err := os.Lstat(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := &FileStore{namespaceDB: map[string]*namespaceDBEntry{}, namespaceDBWake: make(chan struct{})}
+	t.Cleanup(func() { _ = store.closeNamespaceDatabases("") })
+	const callers = 16
+	type lease struct {
+		db      *sql.DB
+		root    *os.Root
+		release func()
+		err     error
+	}
+	leases := make(chan lease, callers)
+	var wg sync.WaitGroup
+	wg.Add(callers)
+	for i := 0; i < callers; i++ {
+		go func() {
+			defer wg.Done()
+			db, namespaceRoot, release, err := store.acquireNamespaceDatabase(context.Background(), "generation\x00kv", root, rootInfo)
+			leases <- lease{db: db, root: namespaceRoot, release: release, err: err}
+		}()
+	}
+	wg.Wait()
+	close(leases)
+	var first lease
+	for current := range leases {
+		if current.err != nil {
+			t.Fatal(current.err)
+		}
+		if first.db == nil {
+			first = current
+		} else if current.db != first.db || current.root != first.root {
+			t.Fatal("concurrent namespace opens did not share the cached resources")
+		}
+		current.release()
+	}
+	store.namespaceDBMu.Lock()
+	entry := store.namespaceDB["generation\x00kv"]
+	store.namespaceDBMu.Unlock()
+	if entry == nil || entry.refs != 0 {
+		t.Fatalf("namespace cache entry = %#v", entry)
+	}
+}
+
+func TestNamespaceDatabaseCacheEvictsLeastRecentlyUsedIdleEntry(t *testing.T) {
+	root := t.TempDir()
+	if err := initializeNamespaceDatabase(context.Background(), root, NamespaceKV); err != nil {
+		t.Fatal(err)
+	}
+	rootInfo, err := os.Lstat(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := &FileStore{
+		namespaceDB:     make(map[string]*namespaceDBEntry, maxNamespaceDatabaseCacheEntries),
+		namespaceDBWake: make(chan struct{}),
+	}
+	for i := 0; i < maxNamespaceDatabaseCacheEntries; i++ {
+		key := fmt.Sprintf("cached-%03d", i)
+		store.namespaceDB[key] = &namespaceDBEntry{rootPath: key, lastUse: uint64(i + 1)}
+	}
+	_, _, release, err := store.acquireNamespaceDatabase(context.Background(), "new", root, rootInfo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	release()
+	store.namespaceDBMu.Lock()
+	_, oldestPresent := store.namespaceDB["cached-000"]
+	entryCount := len(store.namespaceDB)
+	store.namespaceDBMu.Unlock()
+	if oldestPresent || entryCount != maxNamespaceDatabaseCacheEntries {
+		t.Fatalf("oldest present = %v, entries = %d", oldestPresent, entryCount)
+	}
+	if err := store.closeNamespaceDatabases(""); err != nil {
+		t.Fatal(err)
 	}
 }
 

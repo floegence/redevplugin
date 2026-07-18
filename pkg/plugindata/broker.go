@@ -25,6 +25,7 @@ const (
 type namespaceAccess struct {
 	root      *os.Root
 	absRoot   string
+	db        *sql.DB
 	binding   Binding
 	namespace Namespace
 	usage     namespaceUsage
@@ -87,44 +88,82 @@ func (s *FileStore) withNamespace(ctx context.Context, pluginInstanceID string, 
 	if err := rejectRootSymlinkPath(s.rootHandle, namespaceRoot); err != nil {
 		return fmt.Errorf("%w: namespace root is unsafe", storage.ErrInvalidNamespace)
 	}
-	root, err := s.rootHandle.OpenRoot(namespaceRoot)
-	if err != nil {
-		return err
-	}
-	defer root.Close()
 	usageKey := binding.GenerationID + "\x00" + namespace.ID
-	usage, err := s.cachedNamespaceUsage(ctx, usageKey, absRoot, namespace.Kind)
+	var db *sql.DB
+	var root *os.Root
+	if namespace.Kind == NamespaceFiles || namespace.Kind == NamespaceKV {
+		dbKey := namespaceDatabaseCacheKey(binding.GenerationID, namespace.ID, namespace.Kind)
+		var releaseDB func()
+		db, root, releaseDB, err = s.acquireNamespaceDatabase(ctx, dbKey, absRoot, info)
+		if err != nil {
+			return err
+		}
+		defer releaseDB()
+	} else {
+		root, err = s.rootHandle.OpenRoot(namespaceRoot)
+		if err != nil {
+			return err
+		}
+		defer root.Close()
+	}
+	usage, err := s.cachedNamespaceUsage(ctx, usageKey, absRoot, namespace.Kind, db)
 	if err != nil {
 		return err
 	}
-	return use(&namespaceAccess{root: root, absRoot: absRoot, binding: binding, namespace: namespace, usage: usage, usageKey: usageKey})
+	return use(&namespaceAccess{root: root, absRoot: absRoot, db: db, binding: binding, namespace: namespace, usage: usage, usageKey: usageKey})
 }
 
-func (s *FileStore) cachedNamespaceUsage(ctx context.Context, key string, root string, kind NamespaceKind) (namespaceUsage, error) {
+func (s *FileStore) cachedNamespaceUsage(ctx context.Context, key string, root string, kind NamespaceKind, db *sql.DB) (namespaceUsage, error) {
+	return s.cachedNamespaceUsageWithLoader(ctx, key, root, kind, db, loadNamespaceUsage)
+}
+
+func (s *FileStore) cachedNamespaceUsageWithLoader(ctx context.Context, key string, root string, kind NamespaceKind, db *sql.DB, loader namespaceUsageLoader) (namespaceUsage, error) {
 	s.usageMu.Lock()
 	cached, ok := s.usage[key]
-	s.usageMu.Unlock()
 	if ok {
+		s.usageMu.Unlock()
 		return cached, nil
 	}
-	var usage namespaceUsage
-	var err error
-	if kind == NamespaceFiles || kind == NamespaceKV {
-		usage, err = namespaceDatabaseUsage(ctx, root)
-	} else {
-		usage, err = scanNamespaceUsage(root)
+	if s.usageFlights == nil {
+		s.usageFlights = make(map[string]*namespaceUsageFlight)
 	}
-	if err != nil {
-		return namespaceUsage{}, err
+	if flight, ok := s.usageFlights[key]; ok {
+		s.usageMu.Unlock()
+		select {
+		case <-ctx.Done():
+			return namespaceUsage{}, ctx.Err()
+		case <-flight.ready:
+			return flight.usage, flight.err
+		}
 	}
-	s.usageMu.Lock()
-	if existing, ok := s.usage[key]; ok {
-		usage = existing
-	} else {
-		s.usage[key] = usage
-	}
+	flight := &namespaceUsageFlight{ready: make(chan struct{})}
+	s.usageFlights[key] = flight
 	s.usageMu.Unlock()
-	return usage, nil
+	usage, err := loader(ctx, root, kind, db)
+	s.usageMu.Lock()
+	if err == nil {
+		if existing, ok := s.usage[key]; ok {
+			usage = existing
+		} else {
+			s.usage[key] = usage
+		}
+	}
+	flight.usage = usage
+	flight.err = err
+	delete(s.usageFlights, key)
+	close(flight.ready)
+	s.usageMu.Unlock()
+	return usage, err
+}
+
+func loadNamespaceUsage(ctx context.Context, root string, kind NamespaceKind, db *sql.DB) (namespaceUsage, error) {
+	if kind == NamespaceFiles || kind == NamespaceKV {
+		if db == nil {
+			return namespaceUsage{}, storage.ErrInvalidNamespace
+		}
+		return readNamespaceDatabaseUsage(ctx, db)
+	}
+	return scanNamespaceUsage(root)
 }
 
 func (s *FileStore) setNamespaceUsage(key string, usage namespaceUsage) {
@@ -192,11 +231,7 @@ func (s *FileStore) ReadFile(ctx context.Context, req storage.FileReadRequest) (
 		return result, err
 	}
 	err = s.withNamespace(ctx, req.PluginInstanceID, req.StoreID, NamespaceFiles, false, func(a *namespaceAccess) error {
-		db, err := openNamespaceDatabase(ctx, a.absRoot, true)
-		if err != nil {
-			return err
-		}
-		defer db.Close()
+		db := a.db
 		var entryType int
 		var data []byte
 		var size int64
@@ -223,11 +258,7 @@ func (s *FileStore) WriteFile(ctx context.Context, req storage.FileWriteRequest)
 		return result, err
 	}
 	err = s.withNamespace(ctx, req.PluginInstanceID, req.StoreID, NamespaceFiles, true, func(a *namespaceAccess) error {
-		db, err := openNamespaceDatabase(ctx, a.absRoot, false)
-		if err != nil {
-			return err
-		}
-		defer db.Close()
+		db := a.db
 		tx, err := db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelSerializable})
 		if err != nil {
 			return err
@@ -290,11 +321,7 @@ func (s *FileStore) DeleteFile(ctx context.Context, req storage.FileDeleteReques
 		return err
 	}
 	return s.withNamespace(ctx, req.PluginInstanceID, req.StoreID, NamespaceFiles, true, func(a *namespaceAccess) error {
-		db, err := openNamespaceDatabase(ctx, a.absRoot, false)
-		if err != nil {
-			return err
-		}
-		defer db.Close()
+		db := a.db
 		tx, err := db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelSerializable})
 		if err != nil {
 			return err
@@ -359,11 +386,7 @@ func (s *FileStore) ListFiles(ctx context.Context, req storage.FileListRequest) 
 		}
 	}
 	err = s.withNamespace(ctx, req.PluginInstanceID, req.StoreID, NamespaceFiles, false, func(a *namespaceAccess) error {
-		db, err := openNamespaceDatabase(ctx, a.absRoot, true)
-		if err != nil {
-			return err
-		}
-		defer db.Close()
+		db := a.db
 		if path != "." {
 			var entryType int
 			if err := db.QueryRowContext(ctx, `SELECT entry_type FROM file_entries WHERE path = ?`, path).Scan(&entryType); errors.Is(err, sql.ErrNoRows) {
@@ -420,11 +443,7 @@ func (s *FileStore) GetKV(ctx context.Context, req storage.KVGetRequest) (result
 		return result, err
 	}
 	err = s.withNamespace(ctx, req.PluginInstanceID, req.StoreID, NamespaceKV, false, func(a *namespaceAccess) error {
-		db, err := openNamespaceDatabase(ctx, a.absRoot, true)
-		if err != nil {
-			return err
-		}
-		defer db.Close()
+		db := a.db
 		var value []byte
 		var size int64
 		if err := db.QueryRowContext(ctx, `SELECT value, size_bytes FROM kv_entries WHERE key = ?`, key).Scan(&value, &size); errors.Is(err, sql.ErrNoRows) {
@@ -447,11 +466,7 @@ func (s *FileStore) PutKV(ctx context.Context, req storage.KVPutRequest) (result
 		return result, err
 	}
 	err = s.withNamespace(ctx, req.PluginInstanceID, req.StoreID, NamespaceKV, true, func(a *namespaceAccess) error {
-		db, err := openNamespaceDatabase(ctx, a.absRoot, false)
-		if err != nil {
-			return err
-		}
-		defer db.Close()
+		db := a.db
 		tx, err := db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelSerializable})
 		if err != nil {
 			return err
@@ -505,11 +520,7 @@ func (s *FileStore) DeleteKV(ctx context.Context, req storage.KVDeleteRequest) e
 		return err
 	}
 	return s.withNamespace(ctx, req.PluginInstanceID, req.StoreID, NamespaceKV, true, func(a *namespaceAccess) error {
-		db, err := openNamespaceDatabase(ctx, a.absRoot, false)
-		if err != nil {
-			return err
-		}
-		defer db.Close()
+		db := a.db
 		tx, err := db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelSerializable})
 		if err != nil {
 			return err
@@ -555,11 +566,7 @@ func (s *FileStore) ListKV(ctx context.Context, req storage.KVListRequest) (resu
 		}
 	}
 	err = s.withNamespace(ctx, req.PluginInstanceID, req.StoreID, NamespaceKV, false, func(a *namespaceAccess) error {
-		db, err := openNamespaceDatabase(ctx, a.absRoot, true)
-		if err != nil {
-			return err
-		}
-		defer db.Close()
+		db := a.db
 		limit := req.MaxEntries
 		if limit <= 0 || limit > 1000 {
 			limit = 1000
@@ -651,8 +658,26 @@ func (s *FileStore) ListNamespaces(ctx context.Context, pluginInstanceID string)
 	defer namespaceUnlock()
 	records := make([]storage.NamespaceRecord, 0, len(workspace.shape.Namespaces))
 	for _, namespace := range workspace.shape.Namespaces {
-		root := filepath.Join(workspace.root, namespacesDirName, namespace.ID, namespaceDataName)
-		usage, err := s.cachedNamespaceUsage(ctx, binding.GenerationID+"\x00"+namespace.ID, root, namespace.Kind)
+		namespaceRoot := filepath.Join(workspacesDirName, binding.GenerationID, namespacesDirName, namespace.ID, namespaceDataName)
+		root := filepath.Join(s.root, namespaceRoot)
+		info, err := s.rootHandle.Lstat(namespaceRoot)
+		if err != nil || info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+			return nil, fmt.Errorf("%w: namespace root is unsafe", storage.ErrInvalidNamespace)
+		}
+		if err := rejectRootSymlinkPath(s.rootHandle, namespaceRoot); err != nil {
+			return nil, fmt.Errorf("%w: namespace root is unsafe", storage.ErrInvalidNamespace)
+		}
+		var db *sql.DB
+		releaseDB := func() {}
+		if namespace.Kind == NamespaceFiles || namespace.Kind == NamespaceKV {
+			dbKey := namespaceDatabaseCacheKey(binding.GenerationID, namespace.ID, namespace.Kind)
+			db, _, releaseDB, err = s.acquireNamespaceDatabase(ctx, dbKey, root, info)
+			if err != nil {
+				return nil, err
+			}
+		}
+		usage, err := s.cachedNamespaceUsage(ctx, binding.GenerationID+"\x00"+namespace.ID, root, namespace.Kind, db)
+		releaseDB()
 		if err != nil {
 			return nil, err
 		}

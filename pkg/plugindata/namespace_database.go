@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"unicode/utf8"
 
 	"github.com/floegence/redevplugin/pkg/storage"
@@ -128,6 +129,190 @@ func openNamespaceDatabase(ctx context.Context, root string, readOnly bool) (*sq
 		}
 	}
 	return db, nil
+}
+
+func namespaceDatabaseCacheKey(generationID, namespaceID string, kind NamespaceKind) string {
+	return generationID + "\x00" + namespaceID + "\x00" + string(kind)
+}
+
+func (s *FileStore) acquireNamespaceDatabase(ctx context.Context, key, rootPath string, rootInfo os.FileInfo) (*sql.DB, *os.Root, func(), error) {
+	if s == nil {
+		return nil, nil, func() {}, storage.ErrInvalidNamespace
+	}
+	for {
+		databasePath := filepath.Join(rootPath, namespaceDatabaseName)
+		databaseInfo, statErr := os.Lstat(databasePath)
+		if statErr != nil || !validPathRegular(databasePath, databaseInfo) {
+			return nil, nil, func() {}, storage.ErrInvalidNamespace
+		}
+		s.namespaceDBMu.Lock()
+		if s.namespaceDB == nil {
+			s.namespaceDB = make(map[string]*namespaceDBEntry)
+		}
+		if s.namespaceDBWake == nil {
+			s.namespaceDBWake = make(chan struct{})
+		}
+		if entry, ok := s.namespaceDB[key]; ok {
+			if entry.rootPath != rootPath || !os.SameFile(entry.rootInfo, rootInfo) || !os.SameFile(entry.databaseInfo, databaseInfo) {
+				s.namespaceDBMu.Unlock()
+				return nil, nil, func() {}, storage.ErrInvalidNamespace
+			}
+			if entry.opening {
+				ready := entry.ready
+				s.namespaceDBMu.Unlock()
+				select {
+				case <-ctx.Done():
+					return nil, nil, func() {}, ctx.Err()
+				case <-ready:
+				}
+				s.namespaceDBMu.Lock()
+				current := s.namespaceDB[key]
+				if current != nil && current.err != nil {
+					err := current.err
+					s.namespaceDBMu.Unlock()
+					return nil, nil, func() {}, err
+				}
+				s.namespaceDBMu.Unlock()
+				continue
+			}
+			if entry.err != nil {
+				err := entry.err
+				delete(s.namespaceDB, key)
+				s.namespaceDBMu.Unlock()
+				return nil, nil, func() {}, err
+			}
+			entry.refs++
+			s.namespaceDBTick++
+			entry.lastUse = s.namespaceDBTick
+			db := entry.db
+			root := entry.root
+			s.namespaceDBMu.Unlock()
+			return db, root, s.releaseNamespaceDatabase(key), nil
+		}
+
+		var evictedKey string
+		var evicted *namespaceDBEntry
+		if len(s.namespaceDB) >= maxNamespaceDatabaseCacheEntries {
+			for candidateKey, candidate := range s.namespaceDB {
+				if candidate.opening || candidate.refs != 0 {
+					continue
+				}
+				if evicted == nil || candidate.lastUse < evicted.lastUse {
+					evictedKey = candidateKey
+					evicted = candidate
+				}
+			}
+			if evicted == nil {
+				wake := s.namespaceDBWake
+				s.namespaceDBMu.Unlock()
+				select {
+				case <-ctx.Done():
+					return nil, nil, func() {}, ctx.Err()
+				case <-wake:
+				}
+				continue
+			}
+			delete(s.namespaceDB, evictedKey)
+		}
+		entry := &namespaceDBEntry{
+			rootPath:     rootPath,
+			rootInfo:     rootInfo,
+			databaseInfo: databaseInfo,
+			opening:      true,
+			ready:        make(chan struct{}),
+		}
+		s.namespaceDB[key] = entry
+		s.namespaceDBMu.Unlock()
+		if evicted != nil && evicted.db != nil {
+			_ = evicted.db.Close()
+		}
+		if evicted != nil && evicted.root != nil {
+			_ = evicted.root.Close()
+		}
+
+		root, rootErr := os.OpenRoot(rootPath)
+		if rootErr != nil {
+			s.namespaceDBMu.Lock()
+			entry.err = storage.ErrInvalidNamespace
+			entry.opening = false
+			close(entry.ready)
+			s.signalNamespaceDBWakeLocked()
+			s.namespaceDBMu.Unlock()
+			return nil, nil, func() {}, storage.ErrInvalidNamespace
+		}
+		db, err := openNamespaceDatabase(ctx, rootPath, false)
+		s.namespaceDBMu.Lock()
+		if err != nil {
+			_ = root.Close()
+			entry.err = err
+			entry.opening = false
+			close(entry.ready)
+			s.signalNamespaceDBWakeLocked()
+			s.namespaceDBMu.Unlock()
+			return nil, nil, func() {}, err
+		}
+		entry.db = db
+		entry.root = root
+		entry.refs = 1
+		entry.opening = false
+		s.namespaceDBTick++
+		entry.lastUse = s.namespaceDBTick
+		close(entry.ready)
+		s.signalNamespaceDBWakeLocked()
+		s.namespaceDBMu.Unlock()
+		return db, root, s.releaseNamespaceDatabase(key), nil
+	}
+}
+
+func (s *FileStore) releaseNamespaceDatabase(key string) func() {
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			s.namespaceDBMu.Lock()
+			if entry := s.namespaceDB[key]; entry != nil && entry.refs > 0 {
+				entry.refs--
+				if entry.refs == 0 {
+					s.signalNamespaceDBWakeLocked()
+				}
+			}
+			s.namespaceDBMu.Unlock()
+		})
+	}
+}
+
+func (s *FileStore) signalNamespaceDBWakeLocked() {
+	close(s.namespaceDBWake)
+	s.namespaceDBWake = make(chan struct{})
+}
+
+func (s *FileStore) closeNamespaceDatabases(generationID string) error {
+	s.namespaceDBMu.Lock()
+	var closeErr error
+	prefix := ""
+	if generationID != "" {
+		prefix = generationID + "\x00"
+	}
+	for key, entry := range s.namespaceDB {
+		if prefix != "" && !strings.HasPrefix(key, prefix) {
+			continue
+		}
+		if entry.opening || entry.refs != 0 {
+			closeErr = errors.Join(closeErr, fmt.Errorf("namespace database %q is still in use", key))
+			continue
+		}
+		delete(s.namespaceDB, key)
+		if entry.db != nil {
+			closeErr = errors.Join(closeErr, entry.db.Close())
+		}
+		if entry.root != nil {
+			closeErr = errors.Join(closeErr, entry.root.Close())
+		}
+	}
+	if s.namespaceDBWake != nil {
+		s.signalNamespaceDBWakeLocked()
+	}
+	s.namespaceDBMu.Unlock()
+	return closeErr
 }
 
 func validateNamespaceDatabase(ctx context.Context, root string, kind NamespaceKind) (namespaceUsage, error) {

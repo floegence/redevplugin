@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -80,6 +81,29 @@ type keyedLocks struct {
 	locks map[string]*keyedLock
 }
 
+const maxNamespaceDatabaseCacheEntries = 128
+
+type namespaceDBEntry struct {
+	db           *sql.DB
+	root         *os.Root
+	rootPath     string
+	rootInfo     os.FileInfo
+	databaseInfo os.FileInfo
+	refs         int
+	lastUse      uint64
+	opening      bool
+	ready        chan struct{}
+	err          error
+}
+
+type namespaceUsageFlight struct {
+	ready chan struct{}
+	usage namespaceUsage
+	err   error
+}
+
+type namespaceUsageLoader func(context.Context, string, NamespaceKind, *sql.DB) (namespaceUsage, error)
+
 type FileStore struct {
 	root        string
 	catalog     Catalog
@@ -91,12 +115,17 @@ type FileStore struct {
 	rootHandle  *os.Root
 	lifecycle   sync.RWMutex
 	// Keeps orphan collection from observing a directory before its catalog commit.
-	publicationMu  sync.Mutex
-	closed         bool
-	usageMu        sync.Mutex
-	usage          map[string]namespaceUsage
-	namespaceLocks keyedLocks
-	sqliteQueries  sync.Map
+	publicationMu   sync.Mutex
+	closed          bool
+	usageMu         sync.Mutex
+	usage           map[string]namespaceUsage
+	usageFlights    map[string]*namespaceUsageFlight
+	namespaceDBMu   sync.Mutex
+	namespaceDB     map[string]*namespaceDBEntry
+	namespaceDBTick uint64
+	namespaceDBWake chan struct{}
+	namespaceLocks  keyedLocks
+	sqliteQueries   sync.Map
 }
 
 func Open(ctx context.Context, root string, catalog Catalog) (*FileStore, error) {
@@ -126,15 +155,18 @@ func Open(ctx context.Context, root string, catalog Catalog) (*FileStore, error)
 		return nil, err
 	}
 	store := &FileStore{
-		root:           resolvedRoot,
-		catalog:        catalog,
-		now:            func() time.Time { return time.Now().UTC() },
-		locks:          keyedLocks{locks: map[string]*keyedLock{}},
-		objectLocks:    keyedLocks{locks: map[string]*keyedLock{}},
-		rootLock:       lock,
-		rootHandle:     rootHandle,
-		usage:          map[string]namespaceUsage{},
-		namespaceLocks: keyedLocks{locks: map[string]*keyedLock{}},
+		root:            resolvedRoot,
+		catalog:         catalog,
+		now:             func() time.Time { return time.Now().UTC() },
+		locks:           keyedLocks{locks: map[string]*keyedLock{}},
+		objectLocks:     keyedLocks{locks: map[string]*keyedLock{}},
+		rootLock:        lock,
+		rootHandle:      rootHandle,
+		usage:           map[string]namespaceUsage{},
+		usageFlights:    map[string]*namespaceUsageFlight{},
+		namespaceDB:     map[string]*namespaceDBEntry{},
+		namespaceDBWake: make(chan struct{}),
+		namespaceLocks:  keyedLocks{locks: map[string]*keyedLock{}},
 	}
 	store.ops.rename = os.Rename
 	store.ops.copyDir = store.copyDirectory
@@ -164,8 +196,9 @@ func (s *FileStore) Close() error {
 	}
 	s.closed = true
 	var closeErr error
+	closeErr = s.closeNamespaceDatabases("")
 	if s.rootHandle != nil {
-		closeErr = s.rootHandle.Close()
+		closeErr = errors.Join(closeErr, s.rootHandle.Close())
 		s.rootHandle = nil
 	}
 	if s.rootLock != nil {
@@ -911,6 +944,11 @@ func (s *FileStore) publishStage(stage, destination string) error {
 }
 
 func (s *FileStore) removePublishedDirectory(path, parent string) error {
+	if filepath.Clean(parent) == filepath.Clean(s.workspacesRoot()) {
+		if err := s.closeNamespaceDatabases(filepath.Base(path)); err != nil {
+			return mutation.Unknown(fmt.Errorf("close published plugin data databases: %w", err))
+		}
+	}
 	if err := s.ops.removeAll(path); err != nil {
 		return mutation.Unknown(fmt.Errorf("remove published plugin data: %w", err))
 	}
