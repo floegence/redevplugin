@@ -1242,23 +1242,33 @@ func TestSQLiteStoreCloseWakesWaitersAndRejectsNewWaits(t *testing.T) {
 		t.Fatal(err)
 	}
 	observed := make(chan struct{})
+	releaseObservation := make(chan struct{})
 	observationCount := 0
 	store.queryObserver = func(kind sqliteQueryKind) {
 		if kind == sqliteQueryWaitObservation {
 			observationCount++
 			if observationCount == 3 {
 				close(observed)
+				<-releaseObservation
 			}
 		}
+	}
+	_, transitionReady, err := store.transitionSnapshot()
+	if err != nil {
+		t.Fatal(err)
 	}
 	result := make(chan error, 1)
 	go func() { result <- store.Wait(context.Background(), "stream_store_close") }()
 	<-observed
-	if err := store.CloseDatabase(); err != nil {
-		t.Fatal(err)
-	}
+	closeResult := make(chan error, 1)
+	go func() { closeResult <- store.CloseDatabase() }()
+	<-transitionReady
+	close(releaseObservation)
 	if err := <-result; err != nil {
 		t.Fatalf("parked Wait() after store close: %v", err)
+	}
+	if err := <-closeResult; err != nil {
+		t.Fatal(err)
 	}
 	if err := store.Wait(context.Background(), "stream_store_close"); !errors.Is(err, ErrStoreClosed) {
 		t.Fatalf("new Wait() after store close = %v, want %v", err, ErrStoreClosed)

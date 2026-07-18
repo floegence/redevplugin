@@ -24,6 +24,8 @@ type SQLiteStore struct {
 	transitionMu       sync.Mutex
 	transitionRevision uint64
 	transitionReady    chan struct{}
+	waitObservations   int
+	observationsReady  chan struct{}
 	pluginNotify       map[string]*streamNotification
 	closed             bool
 	lockTableMu        sync.Mutex
@@ -92,7 +94,9 @@ func (s *SQLiteStore) CloseDatabase() error {
 	if s == nil || s.db == nil {
 		return nil
 	}
-	s.closeNotifications()
+	if observationsReady := s.closeNotifications(); observationsReady != nil {
+		<-observationsReady
+	}
 	return s.db.Close()
 }
 
@@ -307,10 +311,11 @@ func (s *SQLiteStore) Wait(ctx context.Context, streamID string) error {
 	}
 	releaseLocks := release
 	defer func() { releaseLocks() }()
-	transitionRevision, transitionReady, err := s.transitionSnapshot()
+	transitionRevision, transitionReady, finishObservation, err := s.beginWaitObservation()
 	if err != nil {
 		return err
 	}
+	defer finishObservation()
 	notification, revision := s.notification(streamID)
 	defer s.releaseNotification(streamID, notification)
 	s.observeQuery(sqliteQueryWaitObservation)
@@ -346,6 +351,8 @@ func (s *SQLiteStore) Wait(ctx context.Context, streamID string) error {
 	}
 	releaseLocks()
 	releaseLocks = func() {}
+	finishObservation()
+	finishObservation = func() {}
 	return waitForStreamNotification(ctx, notification.ready, pluginNotification.ready)
 }
 
@@ -1106,6 +1113,36 @@ func (s *SQLiteStore) notificationChanged(streamID string, notification *streamN
 	return s.notify[streamID] != notification || notification.revision != revision
 }
 
+func (s *SQLiteStore) beginWaitObservation() (uint64, <-chan struct{}, func(), error) {
+	s.transitionMu.Lock()
+	if s.closed {
+		s.transitionMu.Unlock()
+		return 0, nil, nil, ErrStoreClosed
+	}
+	if s.waitObservations == 0 {
+		s.observationsReady = make(chan struct{})
+	}
+	s.waitObservations++
+	revision := s.transitionRevision
+	ready := s.transitionReady
+	s.transitionMu.Unlock()
+	finished := false
+	finish := func() {
+		if finished {
+			return
+		}
+		finished = true
+		s.transitionMu.Lock()
+		s.waitObservations--
+		if s.waitObservations == 0 {
+			close(s.observationsReady)
+			s.observationsReady = nil
+		}
+		s.transitionMu.Unlock()
+	}
+	return revision, ready, finish, nil
+}
+
 func (s *SQLiteStore) transitionSnapshot() (uint64, <-chan struct{}, error) {
 	s.transitionMu.Lock()
 	defer s.transitionMu.Unlock()
@@ -1175,15 +1212,17 @@ func (s *SQLiteStore) notifyPluginTransition(pluginInstanceID string) {
 	s.transitionMu.Unlock()
 }
 
-func (s *SQLiteStore) closeNotifications() {
+func (s *SQLiteStore) closeNotifications() <-chan struct{} {
 	s.transitionMu.Lock()
 	if s.closed {
+		observationsReady := s.observationsReady
 		s.transitionMu.Unlock()
-		return
+		return observationsReady
 	}
 	s.closed = true
 	s.transitionRevision++
 	close(s.transitionReady)
+	observationsReady := s.observationsReady
 	for pluginInstanceID, notification := range s.pluginNotify {
 		notification.revision++
 		delete(s.pluginNotify, pluginInstanceID)
@@ -1198,6 +1237,7 @@ func (s *SQLiteStore) closeNotifications() {
 		close(notification.ready)
 	}
 	s.notifyMu.Unlock()
+	return observationsReady
 }
 
 func (s *SQLiteStore) releaseNotification(streamID string, notification *streamNotification) {
