@@ -468,7 +468,7 @@ func examplesHealthHandler(runtimeHealth examplesRuntimeHealthReader, pluginCoun
 			w.WriteHeader(http.StatusMethodNotAllowed)
 			return
 		}
-		health, err := runtimeHealth.RuntimeHealth(r.Context())
+		health, err := runtimeHealth.RuntimeHealth(examplesContext(r.Context()))
 		if err != nil {
 			writeExampleError(w, http.StatusServiceUnavailable, "EXAMPLE_RUNTIME_HEALTH_FAILED", "runtime health is unavailable")
 			return

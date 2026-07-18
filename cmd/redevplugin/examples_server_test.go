@@ -270,6 +270,9 @@ func TestExamplesHealthHandlerReadsLiveRuntimeHealth(t *testing.T) {
 	if second.Code != http.StatusOK || !strings.Contains(second.Body.String(), `"ready":false`) {
 		t.Fatalf("live health response = HTTP %d %s", second.Code, second.Body.String())
 	}
+	if runtimeHealth.session != examplesSession() {
+		t.Fatalf("runtime health session = %#v, want %#v", runtimeHealth.session, examplesSession())
+	}
 }
 
 func TestValidateExamplesJSONMutationRequestRequiresExactOriginAndJSON(t *testing.T) {
@@ -487,11 +490,13 @@ func waitForExamplesHealth(t *testing.T, origin string) {
 type examplesFixtureNetworkExecutor struct{}
 
 type examplesRuntimeHealthStub struct {
-	health runtimeclient.ManagerHealth
-	err    error
+	health  runtimeclient.ManagerHealth
+	err     error
+	session sessionctx.Context
 }
 
-func (s *examplesRuntimeHealthStub) RuntimeHealth(context.Context) (runtimeclient.ManagerHealth, error) {
+func (s *examplesRuntimeHealthStub) RuntimeHealth(ctx context.Context) (runtimeclient.ManagerHealth, error) {
+	s.session, _ = sessionctx.FromContext(ctx)
 	return s.health, s.err
 }
 
