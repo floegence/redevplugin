@@ -606,17 +606,21 @@ type ExecutorOptions struct {
 }
 
 type Executor struct {
-	httpClient       *http.Client
 	dialContext      func(ctx context.Context, network string, address string) (net.Conn, error)
+	resolveAddresses func(ctx context.Context, network string, address string) ([]netip.Addr, error)
+	dialResolved     func(ctx context.Context, network string, address string, addresses []netip.Addr) (net.Conn, error)
 	udpRateLimiter   UDPRateLimiter
 	maxRequestBytes  int64
 	maxResponseBytes int64
 	defaultTimeout   time.Duration
 	now              func() time.Time
+	httpPools        httpConnectionPools
 }
 
 type executorNetworkOptions struct {
-	dialContext func(ctx context.Context, network string, address string) (net.Conn, error)
+	dialContext      func(ctx context.Context, network string, address string) (net.Conn, error)
+	resolveAddresses func(ctx context.Context, network string, address string) ([]netip.Addr, error)
+	dialResolved     func(ctx context.Context, network string, address string, addresses []netip.Addr) (net.Conn, error)
 }
 
 const (
@@ -807,20 +811,25 @@ func newExecutor(options ExecutorOptions, networkOptions executorNetworkOptions)
 	if dialer == nil {
 		dialer = &net.Dialer{}
 	}
+	resolveAddresses := networkOptions.resolveAddresses
+	if resolveAddresses == nil {
+		resolveAddresses = guardedResolveAddresses(options.LookupIPAddr)
+	}
+	dialResolved := networkOptions.dialResolved
+	if dialResolved == nil {
+		dialResolved = func(ctx context.Context, network string, address string, addresses []netip.Addr) (net.Conn, error) {
+			return dialResolvedAddresses(ctx, dialer, network, address, addresses)
+		}
+	}
 	dialContext := networkOptions.dialContext
 	if dialContext == nil {
-		dialContext = guardedDialContext(dialer, options.LookupIPAddr)
-	}
-	httpClient := &http.Client{
-		Transport: &http.Transport{
-			Proxy:             nil,
-			DialContext:       dialContext,
-			DisableKeepAlives: true,
-			TLSClientConfig:   &tls.Config{MinVersion: tls.VersionTLS12},
-		},
-		CheckRedirect: func(*http.Request, []*http.Request) error {
-			return http.ErrUseLastResponse
-		},
+		dialContext = func(ctx context.Context, network string, address string) (net.Conn, error) {
+			addresses, err := resolveAddresses(ctx, network, address)
+			if err != nil {
+				return nil, err
+			}
+			return dialResolved(ctx, network, address, addresses)
+		}
 	}
 	maxRequestBytes := options.MaxRequestBytes
 	if maxRequestBytes <= 0 {
@@ -842,15 +851,18 @@ func newExecutor(options ExecutorOptions, networkOptions executorNetworkOptions)
 	if now == nil {
 		now = func() time.Time { return time.Now().UTC() }
 	}
-	return &Executor{
-		httpClient:       httpClient,
+	executor := &Executor{
 		dialContext:      dialContext,
+		resolveAddresses: resolveAddresses,
+		dialResolved:     dialResolved,
 		udpRateLimiter:   udpRateLimiter,
 		maxRequestBytes:  maxRequestBytes,
 		maxResponseBytes: maxResponseBytes,
 		defaultTimeout:   defaultTimeout,
 		now:              now,
 	}
+	executor.httpPools.init()
+	return executor
 }
 
 var _ NetworkExecutor = (*Executor)(nil)
@@ -992,15 +1004,26 @@ func (e *Executor) openHTTP(ctx context.Context, req HTTPRequest) (*http.Respons
 	if err != nil {
 		return nil, nil, err
 	}
+	requestCtx, cancel := context.WithTimeout(ctx, timeoutOrDefault(req.Timeout, e.defaultTimeout))
+	poolBinding, err := e.resolveHTTPPoolBinding(requestCtx, req.Grant)
+	if err != nil {
+		cancel()
+		return nil, nil, err
+	}
+	pool, releasePool, err := e.acquireHTTPPool(poolBinding)
+	if err != nil {
+		cancel()
+		return nil, nil, err
+	}
 	target := url.URL{
 		Scheme:   req.Grant.Destination.Scheme,
 		Host:     net.JoinHostPort(req.Grant.Destination.Host, strconv.Itoa(req.Grant.Destination.Port)),
 		Path:     path,
 		RawQuery: req.Query.Encode(),
 	}
-	ctx, cancel := context.WithTimeout(ctx, timeoutOrDefault(req.Timeout, e.defaultTimeout))
-	httpReq, err := http.NewRequestWithContext(ctx, method, target.String(), bytes.NewReader(req.Body))
+	httpReq, err := http.NewRequestWithContext(requestCtx, method, target.String(), bytes.NewReader(req.Body))
 	if err != nil {
+		releasePool()
 		cancel()
 		return nil, nil, err
 	}
@@ -1010,11 +1033,13 @@ func (e *Executor) openHTTP(ctx context.Context, req HTTPRequest) (*http.Respons
 			httpReq.Header.Add(key, value)
 		}
 	}
-	resp, err := e.httpClient.Do(httpReq)
+	resp, err := pool.client.Do(httpReq)
 	if err != nil {
+		releasePool()
 		cancel()
 		return nil, nil, err
 	}
+	resp.Body = &httpPoolResponseBody{ReadCloser: resp.Body, release: releasePool}
 	return resp, cancel, nil
 }
 
@@ -1311,11 +1336,22 @@ func guardedDialContext(dialer *net.Dialer, lookupIPAddr func(context.Context, s
 	if dialer == nil {
 		dialer = &net.Dialer{}
 	}
+	resolveAddresses := guardedResolveAddresses(lookupIPAddr)
+	return func(ctx context.Context, network string, address string) (net.Conn, error) {
+		addresses, err := resolveAddresses(ctx, network, address)
+		if err != nil {
+			return nil, err
+		}
+		return dialResolvedAddresses(ctx, dialer, network, address, addresses)
+	}
+}
+
+func guardedResolveAddresses(lookupIPAddr func(context.Context, string) ([]net.IPAddr, error)) func(context.Context, string, string) ([]netip.Addr, error) {
 	if lookupIPAddr == nil {
 		lookupIPAddr = net.DefaultResolver.LookupIPAddr
 	}
 	classifier := DefaultClassifier()
-	return func(ctx context.Context, network string, address string) (net.Conn, error) {
+	return func(ctx context.Context, network string, address string) ([]netip.Addr, error) {
 		host, portText, err := net.SplitHostPort(address)
 		if err != nil {
 			return nil, err
@@ -1329,14 +1365,20 @@ func guardedDialContext(dialer *net.Dialer, lookupIPAddr func(context.Context, s
 			transport = TransportUDP
 		}
 		destination := Destination{Transport: transport, Host: strings.Trim(host, "[]"), Port: port}
-		addresses, err := lookupIPAddr(ctx, host)
-		if err != nil {
-			return nil, err
+		var addresses []net.IPAddr
+		if literal, parseErr := netip.ParseAddr(strings.Trim(host, "[]")); parseErr == nil {
+			addresses = []net.IPAddr{{IP: net.IP(literal.AsSlice())}}
+		} else {
+			addresses, err = lookupIPAddr(ctx, host)
+			if err != nil {
+				return nil, err
+			}
 		}
 		if len(addresses) == 0 {
 			return nil, fmt.Errorf("%w: destination resolved to no addresses", ErrTargetDenied)
 		}
 		resolvedAddresses := make([]netip.Addr, 0, len(addresses))
+		seen := make(map[netip.Addr]struct{}, len(addresses))
 		for _, resolved := range addresses {
 			addr, ok := netip.AddrFromSlice(resolved.IP)
 			if !ok {
@@ -1346,21 +1388,36 @@ func guardedDialContext(dialer *net.Dialer, lookupIPAddr func(context.Context, s
 			if err := classifier.EvaluateResolvedAddress(destination, addr); err != nil {
 				return nil, err
 			}
+			if _, ok := seen[addr]; ok {
+				continue
+			}
+			seen[addr] = struct{}{}
 			resolvedAddresses = append(resolvedAddresses, addr)
 		}
-		var dialErrors []error
-		for _, addr := range resolvedAddresses {
-			conn, err := dialer.DialContext(ctx, network, net.JoinHostPort(addr.String(), portText))
-			if err == nil {
-				return conn, nil
-			}
-			dialErrors = append(dialErrors, err)
-			if ctx.Err() != nil {
-				return nil, ctx.Err()
-			}
-		}
-		return nil, errors.Join(dialErrors...)
+		return resolvedAddresses, nil
 	}
+}
+
+func dialResolvedAddresses(ctx context.Context, dialer *net.Dialer, network string, address string, resolvedAddresses []netip.Addr) (net.Conn, error) {
+	_, portText, err := net.SplitHostPort(address)
+	if err != nil {
+		return nil, err
+	}
+	var dialErrors []error
+	for _, addr := range resolvedAddresses {
+		conn, err := dialer.DialContext(ctx, network, net.JoinHostPort(addr.String(), portText))
+		if err == nil {
+			return conn, nil
+		}
+		dialErrors = append(dialErrors, err)
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+	}
+	if len(dialErrors) == 0 {
+		return nil, fmt.Errorf("%w: destination resolved to no addresses", ErrTargetDenied)
+	}
+	return nil, errors.Join(dialErrors...)
 }
 
 func (e *Executor) dialWebSocket(ctx context.Context, grant ConnectionGrant) (net.Conn, error) {

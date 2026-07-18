@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/binary"
 	"encoding/json"
 	"errors"
@@ -11,6 +12,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"net/netip"
 	"net/url"
 	"os"
@@ -20,6 +22,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -369,21 +372,26 @@ func TestExecutorPublicOptionsExposeOnlyGuardedNetworkConfiguration(t *testing.T
 		t.Fatalf("ExecutorOptions fields = %#v, want %#v", gotFields, wantFields)
 	}
 	executor := NewExecutor(ExecutorOptions{})
-	transport, ok := executor.httpClient.Transport.(*http.Transport)
-	if !ok {
-		t.Fatalf("executor transport = %T, want *http.Transport", executor.httpClient.Transport)
+	pool, release, err := executor.acquireHTTPPool(testHTTPPoolBinding("93.184.216.34"))
+	if err != nil {
+		t.Fatal(err)
 	}
-	if transport.Proxy != nil || transport.DialContext == nil || !transport.DisableKeepAlives {
+	defer release()
+	transport := pool.transport
+	if transport.Proxy != nil || transport.DialContext == nil || transport.DisableKeepAlives {
 		t.Fatalf("executor transport safety settings are incomplete")
 	}
-	if executor.httpClient.CheckRedirect == nil {
+	if transport.MaxIdleConns != maxHTTPIdleConnsPerHost || transport.MaxIdleConnsPerHost != maxHTTPIdleConnsPerHost || transport.MaxConnsPerHost != maxHTTPConnectionsPerHost || transport.IdleConnTimeout != httpConnectionIdleTimeout {
+		t.Fatalf("executor transport pool limits are incomplete")
+	}
+	if pool.client.CheckRedirect == nil {
 		t.Fatal("executor redirect policy is unset")
 	}
 	request, err := http.NewRequest(http.MethodGet, "https://other.example.com/", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := executor.httpClient.CheckRedirect(request, nil); !errors.Is(err, http.ErrUseLastResponse) {
+	if err := pool.client.CheckRedirect(request, nil); !errors.Is(err, http.ErrUseLastResponse) {
 		t.Fatalf("redirect policy error = %v, want http.ErrUseLastResponse", err)
 	}
 }
@@ -864,6 +872,319 @@ func TestExecutorRejectsDNSRebindingResolvedAddresses(t *testing.T) {
 	_, err := executor.DoHTTP(context.Background(), HTTPRequest{Grant: grant, Timeout: time.Millisecond})
 	if !errors.Is(err, ErrTargetDenied) {
 		t.Fatalf("DoHTTP(rebinding DNS) error = %v, want ErrTargetDenied", err)
+	}
+}
+
+func TestExecutorHTTPKeepAliveReusesOnlyTheExactResolvedAddressSet(t *testing.T) {
+	serverAddress := startHTTPPoolTestServer(t)
+	lookupCalls := atomic.Int64{}
+	executor, dials := newHTTPPoolTestExecutor(serverAddress, func(context.Context, string) ([]net.IPAddr, error) {
+		if lookupCalls.Add(1)%2 == 0 {
+			return publicIPAddresses("93.184.216.35", "93.184.216.34"), nil
+		}
+		return publicIPAddresses("93.184.216.34", "93.184.216.35"), nil
+	})
+	defer closeExecutor(t, executor)
+	grant := testGrant(t, TransportHTTP, "http://api.example.com", time.Minute)
+	for index := 0; index < 2; index++ {
+		response, err := executor.DoHTTP(context.Background(), HTTPRequest{Grant: grant})
+		if err != nil {
+			t.Fatalf("DoHTTP(%d) error = %v", index, err)
+		}
+		if string(response.Body) != "ok" {
+			t.Fatalf("DoHTTP(%d) body = %q", index, response.Body)
+		}
+	}
+	if got := dials.Load(); got != 1 {
+		t.Fatalf("HTTP dials = %d, want one reused connection", got)
+	}
+}
+
+func TestExecutorHTTPKeepAliveDoesNotReuseAfterResolvedAddressChange(t *testing.T) {
+	serverAddress := startHTTPPoolTestServer(t)
+	lookupCalls := atomic.Int64{}
+	executor, dials := newHTTPPoolTestExecutor(serverAddress, func(context.Context, string) ([]net.IPAddr, error) {
+		if lookupCalls.Add(1) == 1 {
+			return publicIPAddresses("93.184.216.34"), nil
+		}
+		return publicIPAddresses("93.184.216.35"), nil
+	})
+	defer closeExecutor(t, executor)
+	grant := testGrant(t, TransportHTTP, "http://api.example.com", time.Minute)
+	for index := 0; index < 2; index++ {
+		if _, err := executor.DoHTTP(context.Background(), HTTPRequest{Grant: grant}); err != nil {
+			t.Fatalf("DoHTTP(%d) error = %v", index, err)
+		}
+	}
+	if got := dials.Load(); got != 2 {
+		t.Fatalf("HTTP dials = %d, want a new connection after address change", got)
+	}
+	if got := executorHTTPPoolCount(executor); got != 1 {
+		t.Fatalf("HTTP pool count = %d, want only the current address binding", got)
+	}
+}
+
+func TestExecutorHTTPKeepAliveClosesPoolWhenDNSStartsReturningBlockedAddress(t *testing.T) {
+	serverAddress := startHTTPPoolTestServer(t)
+	lookupCalls := atomic.Int64{}
+	executor, dials := newHTTPPoolTestExecutor(serverAddress, func(context.Context, string) ([]net.IPAddr, error) {
+		if lookupCalls.Add(1) == 1 {
+			return publicIPAddresses("93.184.216.34"), nil
+		}
+		return publicIPAddresses("93.184.216.34", "10.0.0.10"), nil
+	})
+	defer closeExecutor(t, executor)
+	grant := testGrant(t, TransportHTTP, "http://api.example.com", time.Minute)
+	if _, err := executor.DoHTTP(context.Background(), HTTPRequest{Grant: grant}); err != nil {
+		t.Fatalf("DoHTTP(public) error = %v", err)
+	}
+	if _, err := executor.DoHTTP(context.Background(), HTTPRequest{Grant: grant}); !errors.Is(err, ErrTargetDenied) {
+		t.Fatalf("DoHTTP(rebinding) error = %v, want ErrTargetDenied", err)
+	}
+	if got := dials.Load(); got != 1 {
+		t.Fatalf("HTTP dials = %d, want blocked DNS response to stop before dial", got)
+	}
+	if got := executorHTTPPoolCount(executor); got != 0 {
+		t.Fatalf("HTTP pool count = %d, want blocked DNS response to retire the old pool", got)
+	}
+}
+
+func TestExecutorHTTPKeepAliveDoesNotCrossRevisionOrRevokeEpoch(t *testing.T) {
+	serverAddress := startHTTPPoolTestServer(t)
+	executor, dials := newHTTPPoolTestExecutor(serverAddress, func(context.Context, string) ([]net.IPAddr, error) {
+		return publicIPAddresses("93.184.216.34"), nil
+	})
+	defer closeExecutor(t, executor)
+	grant := testGrant(t, TransportHTTP, "http://api.example.com", time.Minute)
+	if _, err := executor.DoHTTP(context.Background(), HTTPRequest{Grant: grant}); err != nil {
+		t.Fatal(err)
+	}
+	grant.PolicyRevision++
+	if _, err := executor.DoHTTP(context.Background(), HTTPRequest{Grant: grant}); err != nil {
+		t.Fatal(err)
+	}
+	grant.RevokeEpoch++
+	if _, err := executor.DoHTTP(context.Background(), HTTPRequest{Grant: grant}); err != nil {
+		t.Fatal(err)
+	}
+	if got := dials.Load(); got != 3 {
+		t.Fatalf("HTTP dials = %d, want separate connections for revision and revoke changes", got)
+	}
+	if got := executorHTTPPoolCount(executor); got != 1 {
+		t.Fatalf("HTTP pool count = %d, want only the current authorization binding", got)
+	}
+}
+
+func TestExecutorHTTPKeepAliveDoesNotCrossOrEvictResourceScopes(t *testing.T) {
+	serverAddress := startHTTPPoolTestServer(t)
+	executor, dials := newHTTPPoolTestExecutor(serverAddress, func(context.Context, string) ([]net.IPAddr, error) {
+		return publicIPAddresses("93.184.216.34"), nil
+	})
+	defer closeExecutor(t, executor)
+	firstOwner := testGrant(t, TransportHTTP, "http://api.example.com", time.Minute)
+	secondOwner := firstOwner
+	secondOwner.ResourceScope.OwnerUserHash = "other_user_hash"
+	for _, grant := range []ConnectionGrant{firstOwner, secondOwner, firstOwner} {
+		if _, err := executor.DoHTTP(context.Background(), HTTPRequest{Grant: grant}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := dials.Load(); got != 2 {
+		t.Fatalf("HTTP dials = %d, want one isolated reusable connection per resource scope", got)
+	}
+	if got := executorHTTPPoolCount(executor); got != 2 {
+		t.Fatalf("HTTP pool count = %d, want one pool per resource scope", got)
+	}
+}
+
+func TestExecutorHTTPKeepAliveLimitsConcurrentConnectionsPerHost(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	started := make(chan struct{}, 2*maxHTTPConnectionsPerHost)
+	releaseHandlers := make(chan struct{})
+	server := http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		started <- struct{}{}
+		<-releaseHandlers
+		_, _ = io.WriteString(w, "ok")
+	})}
+	go func() { _ = server.Serve(listener) }()
+	defer server.Close()
+
+	executor, dials := newHTTPPoolTestExecutor(listener.Addr().String(), func(context.Context, string) ([]net.IPAddr, error) {
+		return publicIPAddresses("93.184.216.34"), nil
+	})
+	defer closeExecutor(t, executor)
+	grant := testGrant(t, TransportHTTP, "http://api.example.com", time.Minute)
+	errCh := make(chan error, 2*maxHTTPConnectionsPerHost)
+	for index := 0; index < cap(errCh); index++ {
+		go func() {
+			_, err := executor.DoHTTP(context.Background(), HTTPRequest{Grant: grant})
+			errCh <- err
+		}()
+	}
+	for index := 0; index < maxHTTPConnectionsPerHost; index++ {
+		select {
+		case <-started:
+		case <-time.After(time.Second):
+			t.Fatalf("only %d handlers started before timeout", index)
+		}
+	}
+	select {
+	case <-started:
+		t.Fatalf("more than %d HTTP connections became active for one host", maxHTTPConnectionsPerHost)
+	case <-time.After(25 * time.Millisecond):
+	}
+	close(releaseHandlers)
+	for index := 0; index < cap(errCh); index++ {
+		if err := <-errCh; err != nil {
+			t.Fatalf("DoHTTP concurrent request error = %v", err)
+		}
+	}
+	if got := dials.Load(); got > maxHTTPConnectionsPerHost {
+		t.Fatalf("HTTP dials = %d, want <= %d", got, maxHTTPConnectionsPerHost)
+	}
+}
+
+func TestExecutorHTTPKeepAlivePreservesTLSHostForSNI(t *testing.T) {
+	serverName := make(chan string, 1)
+	server := httptest.NewUnstartedServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	server.TLS = &tls.Config{
+		GetConfigForClient: func(hello *tls.ClientHelloInfo) (*tls.Config, error) {
+			select {
+			case serverName <- hello.ServerName:
+			default:
+			}
+			return nil, nil
+		},
+	}
+	server.StartTLS()
+	defer server.Close()
+	executor, _ := newHTTPPoolTestExecutor(server.Listener.Addr().String(), func(context.Context, string) ([]net.IPAddr, error) {
+		return publicIPAddresses("93.184.216.34"), nil
+	})
+	defer closeExecutor(t, executor)
+	grant := testGrant(t, TransportHTTP, "https://api.example.com", time.Minute)
+	if _, err := executor.DoHTTP(context.Background(), HTTPRequest{Grant: grant}); err == nil {
+		t.Fatal("DoHTTP() unexpectedly trusted the test server certificate")
+	}
+	select {
+	case got := <-serverName:
+		if got != "api.example.com" {
+			t.Fatalf("TLS SNI = %q, want api.example.com", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("TLS server did not receive a ClientHello")
+	}
+}
+
+func TestExecutorHTTPPoolCapacityEvictsIdleAndFailsClosedWhenAllPoolsAreActive(t *testing.T) {
+	executor := NewExecutor(ExecutorOptions{})
+	for index := 0; index < maxHTTPConnectionPools+1; index++ {
+		binding := indexedHTTPPoolBinding(index)
+		_, release, err := executor.acquireHTTPPool(binding)
+		if err != nil {
+			t.Fatalf("acquire idle pool %d: %v", index, err)
+		}
+		release()
+	}
+	if got := executorHTTPPoolCount(executor); got != maxHTTPConnectionPools {
+		t.Fatalf("HTTP pool count = %d, want %d after idle eviction", got, maxHTTPConnectionPools)
+	}
+	closeExecutor(t, executor)
+
+	executor = NewExecutor(ExecutorOptions{})
+	releases := make([]func(), 0, maxHTTPConnectionPools)
+	for index := 0; index < maxHTTPConnectionPools; index++ {
+		_, release, err := executor.acquireHTTPPool(indexedHTTPPoolBinding(index))
+		if err != nil {
+			t.Fatalf("acquire active pool %d: %v", index, err)
+		}
+		releases = append(releases, release)
+	}
+	if _, _, err := executor.acquireHTTPPool(indexedHTTPPoolBinding(maxHTTPConnectionPools)); !errors.Is(err, ErrRateLimited) {
+		t.Fatalf("acquire beyond active capacity error = %v, want ErrRateLimited", err)
+	}
+	for _, release := range releases {
+		release()
+	}
+	closeExecutor(t, executor)
+}
+
+func TestExecutorCloseDrainsActiveHTTPPoolsAndRejectsNewRequests(t *testing.T) {
+	executor := NewExecutor(ExecutorOptions{})
+	_, release, err := executor.acquireHTTPPool(testHTTPPoolBinding("93.184.216.34"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	defer cancel()
+	if err := executor.Close(ctx); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Close(active) error = %v, want deadline exceeded", err)
+	}
+	release()
+	if err := executor.Close(context.Background()); err != nil {
+		t.Fatalf("Close(drained) error = %v", err)
+	}
+	if _, _, err := executor.acquireHTTPPool(testHTTPPoolBinding("93.184.216.34")); !errors.Is(err, ErrConnectionClosed) {
+		t.Fatalf("acquire after close error = %v, want ErrConnectionClosed", err)
+	}
+}
+
+func TestExecutorConcurrentCloseWaitersObserveTheSameDrain(t *testing.T) {
+	executor := NewExecutor(ExecutorOptions{})
+	_, release, err := executor.acquireHTTPPool(testHTTPPoolBinding("93.184.216.34"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	const waiterCount = 16
+	errorsCh := make(chan error, waiterCount)
+	for index := 0; index < waiterCount; index++ {
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			defer cancel()
+			errorsCh <- executor.Close(ctx)
+		}()
+	}
+	deadline := time.Now().Add(time.Second)
+	for {
+		executor.httpPools.mu.Lock()
+		closed := executor.httpPools.closed
+		executor.httpPools.mu.Unlock()
+		if closed {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("concurrent Close calls did not begin draining")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	release()
+	for index := 0; index < waiterCount; index++ {
+		if err := <-errorsCh; err != nil {
+			t.Fatalf("Close waiter %d error = %v", index, err)
+		}
+	}
+}
+
+func BenchmarkExecutorHTTPKeepAlivePool(b *testing.B) {
+	serverAddress := startHTTPPoolBenchmarkServer(b)
+	executor, dials := newHTTPPoolTestExecutor(serverAddress, func(context.Context, string) ([]net.IPAddr, error) {
+		return publicIPAddresses("93.184.216.34"), nil
+	})
+	defer func() { _ = executor.Close(context.Background()) }()
+	grant := benchmarkHTTPGrant()
+	b.ReportAllocs()
+	b.ResetTimer()
+	for index := 0; index < b.N; index++ {
+		if _, err := executor.DoHTTP(context.Background(), HTTPRequest{Grant: grant}); err != nil {
+			b.Fatal(err)
+		}
+	}
+	b.StopTimer()
+	if b.N > 0 {
+		b.ReportMetric(float64(dials.Load())/float64(b.N), "dials/op")
 	}
 }
 
@@ -1609,7 +1930,134 @@ func mapDialer(target string) func(context.Context, string, string) (net.Conn, e
 }
 
 func newTestExecutor(options ExecutorOptions, dialContext func(context.Context, string, string) (net.Conn, error)) *Executor {
-	return newExecutor(options, executorNetworkOptions{dialContext: dialContext})
+	return newExecutor(options, executorNetworkOptions{
+		dialContext: dialContext,
+		resolveAddresses: func(context.Context, string, string) ([]netip.Addr, error) {
+			return []netip.Addr{netip.MustParseAddr("93.184.216.34")}, nil
+		},
+		dialResolved: func(ctx context.Context, network string, address string, _ []netip.Addr) (net.Conn, error) {
+			return dialContext(ctx, network, address)
+		},
+	})
+}
+
+func testHTTPPoolBinding(addresses ...string) httpPoolBinding {
+	resolved := make([]netip.Addr, len(addresses))
+	for index, address := range addresses {
+		resolved[index] = netip.MustParseAddr(address)
+	}
+	grant := ConnectionGrant{
+		PluginInstanceID:        "plugini_test",
+		ActiveFingerprint:       "sha256:fingerprint",
+		ResourceScope:           userResourceScope(),
+		PolicyRevision:          1,
+		ManagementRevision:      2,
+		RevokeEpoch:             3,
+		ConnectorID:             "test",
+		Destination:             Destination{Transport: TransportHTTP, Scheme: "http", Host: "api.example.com", Port: 80},
+		RuntimeGenerationID:     "runtime_gen_1",
+		TargetClassifierVersion: version.TargetClassifierVersion,
+	}
+	addressParts := append([]string(nil), addresses...)
+	sort.Strings(addressParts)
+	return httpPoolBinding{
+		scope: httpPoolScope{pluginInstanceID: grant.PluginInstanceID, resourceScope: grant.ResourceScope, connectorID: grant.ConnectorID, destination: grant.Destination},
+		key: httpPoolKey{
+			pluginInstanceID:        grant.PluginInstanceID,
+			activeFingerprint:       grant.ActiveFingerprint,
+			resourceScope:           grant.ResourceScope,
+			connectorID:             grant.ConnectorID,
+			destination:             grant.Destination,
+			policyRevision:          grant.PolicyRevision,
+			managementRevision:      grant.ManagementRevision,
+			revokeEpoch:             grant.RevokeEpoch,
+			runtimeGenerationID:     grant.RuntimeGenerationID,
+			targetClassifierVersion: grant.TargetClassifierVersion,
+			tlsMode:                 httpConnectionTLSModePlain,
+			proxyMode:               httpConnectionProxyMode,
+			resolvedAddressSet:      strings.Join(addressParts, ","),
+		},
+		addresses: resolved,
+	}
+}
+
+func indexedHTTPPoolBinding(index int) httpPoolBinding {
+	binding := testHTTPPoolBinding("93.184.216.34")
+	pluginInstanceID := fmt.Sprintf("plugini_pool_%03d", index)
+	binding.scope.pluginInstanceID = pluginInstanceID
+	binding.key.pluginInstanceID = pluginInstanceID
+	return binding
+}
+
+func newHTTPPoolTestExecutor(target string, lookupIPAddr func(context.Context, string) ([]net.IPAddr, error)) (*Executor, *atomic.Int64) {
+	dials := &atomic.Int64{}
+	dial := mapDialer(target)
+	executor := newExecutor(ExecutorOptions{}, executorNetworkOptions{
+		resolveAddresses: guardedResolveAddresses(lookupIPAddr),
+		dialResolved: func(ctx context.Context, network string, address string, _ []netip.Addr) (net.Conn, error) {
+			dials.Add(1)
+			return dial(ctx, network, address)
+		},
+	})
+	return executor, dials
+}
+
+func publicIPAddresses(addresses ...string) []net.IPAddr {
+	result := make([]net.IPAddr, len(addresses))
+	for index, address := range addresses {
+		result[index] = net.IPAddr{IP: net.ParseIP(address)}
+	}
+	return result
+}
+
+func startHTTPPoolTestServer(t testing.TB) string {
+	t.Helper()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, "ok")
+	})}
+	go func() { _ = server.Serve(listener) }()
+	t.Cleanup(func() { _ = server.Close() })
+	return listener.Addr().String()
+}
+
+func startHTTPPoolBenchmarkServer(b *testing.B) string {
+	return startHTTPPoolTestServer(b)
+}
+
+func executorHTTPPoolCount(executor *Executor) int {
+	executor.httpPools.mu.Lock()
+	defer executor.httpPools.mu.Unlock()
+	return executor.httpPools.totalLocked()
+}
+
+func closeExecutor(t testing.TB, executor *Executor) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := executor.Close(ctx); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+}
+
+func benchmarkHTTPGrant() ConnectionGrant {
+	return ConnectionGrant{
+		GrantID:                 "netgrant_benchmark_0123456789abcdef",
+		PluginInstanceID:        "plugini_benchmark",
+		ActiveFingerprint:       "sha256:benchmark",
+		PolicyRevision:          1,
+		ManagementRevision:      2,
+		RevokeEpoch:             3,
+		ConnectorID:             "benchmark",
+		Transport:               TransportHTTP,
+		Destination:             Destination{Transport: TransportHTTP, Scheme: "http", Host: "api.example.com", Port: 80},
+		RuntimeGenerationID:     "runtime_gen_benchmark",
+		TargetClassifierVersion: version.TargetClassifierVersion,
+		ExpiresAt:               time.Now().UTC().Add(time.Hour),
+	}
 }
 
 func writeTestWebSocketHandshake(writer io.Writer, key string) error {
