@@ -37,7 +37,7 @@ func TestCompatibilityManifestSchemaDefinesReleasedMatrix(t *testing.T) {
 		"release_metadata_schema_version":         "release-metadata-v5",
 		"source_policy_schema_version":            "source-policy-v1",
 		"source_revocations_schema_version":       "source-revocations-v1",
-		"token_ticket_schema_version":             "token-ticket-v2",
+		"token_ticket_schema_version":             "token-ticket-v3",
 		"bridge_schema_version":                   "bridge-v5",
 		"opaque_surface_document_schema_version":  "opaque-surface-document-v3",
 		"opaque_surface_transport_schema_version": "opaque-surface-transport-v4",
@@ -118,6 +118,10 @@ func TestContractRegistryPublishesOnlyCurrentPlatformContracts(t *testing.T) {
 		"opaque-surface-document-v2",
 		"opaque-surface-transport-v3",
 		"ipc-v2",
+		"token-ticket-v2",
+		"rust-ipc-v3",
+		"network-grant-v1",
+		"worker-invocation-v2",
 	} {
 		if bytes.Contains(registryRaw, []byte(identifier)) {
 			t.Fatalf("contract registry retains superseded identifier %q", identifier)
@@ -133,6 +137,10 @@ func TestContractRegistryPublishesOnlyCurrentPlatformContracts(t *testing.T) {
 		"spec/plugin/opaque-surface-document-v2.schema.json",
 		"spec/plugin/opaque-surface-transport-v3.schema.json",
 		"spec/plugin/ipc-v2.schema.json",
+		"spec/plugin/token-ticket-v2.schema.json",
+		"spec/plugin/ipc-v3.schema.json",
+		"spec/plugin/network-grant-v1.schema.json",
+		"spec/plugin/worker-invocation-v2.schema.json",
 	} {
 		if _, err := os.Stat(filepath.Join(root, filepath.FromSlash(path))); !os.IsNotExist(err) {
 			t.Fatalf("superseded contract %s must be absent, stat error = %v", path, err)

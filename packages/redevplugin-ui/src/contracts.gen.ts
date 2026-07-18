@@ -3,7 +3,7 @@
 export const pluginUIProtocolVersion = "plugin-ui-v5" as const;
 export const pluginHostProtocolVersion = "plugin-host-v4" as const;
 export const bridgeSchemaVersion = "bridge-v5" as const;
-export const tokenTicketSchemaVersion = "token-ticket-v2" as const;
+export const tokenTicketSchemaVersion = "token-ticket-v3" as const;
 
 export const redevPluginContractVersions = {
   "plugin_ui_protocol_version": "plugin-ui-v5",
@@ -15,7 +15,7 @@ export const redevPluginContractVersions = {
   "release_metadata_schema_version": "release-metadata-v5",
   "source_policy_schema_version": "source-policy-v1",
   "source_revocations_schema_version": "source-revocations-v1",
-  "token_ticket_schema_version": "token-ticket-v2",
+  "token_ticket_schema_version": "token-ticket-v3",
   "bridge_schema_version": "bridge-v5",
   "opaque_surface_document_schema_version": "opaque-surface-document-v3",
   "opaque_surface_transport_schema_version": "opaque-surface-transport-v4",
@@ -85,9 +85,9 @@ export const redevPluginContractArtifacts = [
   },
   {
     id: "token-ticket-schema",
-    path: "spec/plugin/token-ticket-v2.schema.json",
-    version: "token-ticket-v2",
-    sha256: "47fb014e8ffc899174f63259771ae7315e810e542948fcfef21b33443e0795a9",
+    path: "spec/plugin/token-ticket-v3.schema.json",
+    version: "token-ticket-v3",
+    sha256: "95c9e02ffdb755eb345e2d4e3bb9fdd9507a1552d6956ae9cbdfbc27ff944460",
   },
   {
     id: "iframe-bridge-schema",
@@ -111,7 +111,7 @@ export const redevPluginContractArtifacts = [
     id: "compatibility-manifest-schema",
     path: "spec/plugin/compatibility-manifest-v6.schema.json",
     version: "compatibility-manifest-v6",
-    sha256: "8b8782db076e77c1e678b5f486694097e09911f70244b7c1a31f4814a86f51fb",
+    sha256: "0a205c2ce2c3d3184c265d6e744d3cb7c4870888ebb7c7542766bc122b7ed91a",
   },
   {
     id: "release-manifest-schema",
@@ -123,7 +123,7 @@ export const redevPluginContractArtifacts = [
     id: "worker-invocation-schema",
     path: "spec/plugin/worker-invocation-v3.schema.json",
     version: "worker-invocation-v3",
-    sha256: "562a7c0e7b8a5ded23e469f65020d66c129ebc3d5cfe2c7b573f3b53599f4780",
+    sha256: "f08af491cbf5e7b71d1aeafbeac9ae581ee5fc3bcb76184daec369f94bab3927",
   },
   {
     id: "host-capability-contract-schema",
@@ -183,7 +183,7 @@ export const redevPluginContractArtifacts = [
     id: "rust-ipc-schema",
     path: "spec/plugin/ipc-v4.schema.json",
     version: "rust-ipc-v4",
-    sha256: "437d03f0912288be85affdafc63a87e8a9acda190f888b253d61151626775124",
+    sha256: "0a41860c64fe51db684bb565251a1b18dea18ef877239fdba5a829d3bb4a95cf",
   },
   {
     id: "wasm-worker-schema",
@@ -213,6 +213,6 @@ export const redevPluginContractArtifacts = [
     id: "contract-registry",
     path: "spec/plugin/contract-registry-v1.json",
     version: "contract-registry-v1",
-    sha256: "7ce64105968ee340597e19eadd93b0be066210815a89acade759d4e5222758c9",
+    sha256: "dbaca59348f4c5eadb226539c8e468f7767808325c169d0e877c4dc41ac6904e",
   },
 ] as const satisfies readonly ReDevPluginContractArtifact[];

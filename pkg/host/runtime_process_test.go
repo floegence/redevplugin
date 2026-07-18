@@ -1064,14 +1064,18 @@ func TestCallPluginMethodWorkerStorageSQLiteMemoryHostcallThroughBuiltRustRuntim
 }
 
 type runtimeRevoker interface {
-	Revoke(context.Context, string, uint64) (runtimeclient.RevokeResult, error)
+	Revoke(context.Context, runtimeclient.RevokeRequest) (runtimeclient.RevokeResult, error)
 }
 
 func assertRuntimeRevokeCounts(t *testing.T, supervisor runtimeRevoker, pluginInstanceID string, revokeEpoch uint64, socket, stream, storageHandle int) {
 	t.Helper()
 	revokeCtx, cancel := context.WithTimeout(hostTestContext(), 3*time.Second)
 	defer cancel()
-	result, err := supervisor.Revoke(revokeCtx, pluginInstanceID, revokeEpoch)
+	result, err := supervisor.Revoke(revokeCtx, runtimeclient.RevokeRequest{
+		ResourceScope:    sessionctx.ResourceScope{Kind: sessionctx.ScopeEnvironment, OwnerEnvHash: "env_hash"},
+		PluginInstanceID: pluginInstanceID,
+		RevokeEpoch:      revokeEpoch,
+	})
 	if err != nil {
 		t.Fatalf("Revoke() error = %v", err)
 	}

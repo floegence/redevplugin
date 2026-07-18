@@ -80,9 +80,10 @@
           "items": {
             "type": "object",
             "additionalProperties": false,
-            "required": ["store_id", "operations"],
+            "required": ["store_id", "scope", "operations"],
             "properties": {
               "store_id": { "type": "string", "minLength": 1, "maxLength": 128 },
+              "scope": { "enum": ["user", "environment"] },
               "operations": {
                 "type": "array",
                 "minItems": 1,

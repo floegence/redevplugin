@@ -567,6 +567,7 @@ struct WorkerBrokerAccessPayload {
 #[serde(deny_unknown_fields)]
 struct WorkerStorageBrokerAccessPayload {
     store_id: String,
+    scope: String,
     operations: Vec<String>,
 }
 
@@ -676,6 +677,7 @@ pub struct HeartbeatRequest {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RevokeEpochRequest {
+    pub resource_scope: NetworkResourceScope,
     pub plugin_instance_id: String,
     pub revoke_epoch: u64,
 }
@@ -690,6 +692,7 @@ struct HeartbeatRequestPayload {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RevokeEpochRequestPayload {
+    resource_scope: NetworkResourceScope,
     plugin_instance_id: String,
     revoke_epoch: u64,
 }
@@ -1027,6 +1030,23 @@ impl ParsedWorkerInvocation {
         Ok(())
     }
 
+    pub fn storage_broker_scope(&self, store_id: &str) -> IpcResult<String> {
+        let scope = self
+            .invocation
+            .broker_access
+            .as_ref()
+            .and_then(|access| {
+                access
+                    .storage
+                    .iter()
+                    .find(|entry| entry.store_id == store_id)
+            })
+            .map(|entry| entry.scope.as_str())
+            .filter(|scope| matches!(*scope, "user" | "environment"))
+            .ok_or_else(|| invalid_field("worker invocation storage scope"))?;
+        Ok(scope.to_string())
+    }
+
     pub fn validate_network_broker_access(
         &self,
         connector_id: &str,
@@ -1099,7 +1119,11 @@ pub fn parse_revoke_epoch_request(input: &str) -> IpcResult<RevokeEpochRequest> 
     if payload.plugin_instance_id.trim().is_empty() {
         return Err(invalid_field("plugin_instance_id"));
     }
+    if !payload.resource_scope.valid() || payload.resource_scope.kind != "environment" {
+        return Err(invalid_field("revoke resource_scope"));
+    }
     Ok(RevokeEpochRequest {
+        resource_scope: payload.resource_scope,
         plugin_instance_id: payload.plugin_instance_id,
         revoke_epoch: payload.revoke_epoch,
     })
@@ -1889,20 +1913,27 @@ fn render_response_frame(
 }
 
 pub fn revoke_epoch_ack_result_json(
+    resource_scope: &NetworkResourceScope,
     plugin_instance_id: &str,
     revoke_epoch: u64,
     closed_socket_count: u64,
     closed_stream_count: u64,
     closed_storage_handle_count: u64,
-) -> String {
-    format!(
-        "{{\"plugin_instance_id\":\"{}\",\"revoke_epoch\":{},\"closed_socket_count\":{},\"closed_stream_count\":{},\"closed_storage_handle_count\":{}}}",
+) -> IpcResult<String> {
+    if !resource_scope.valid() || resource_scope.kind != "environment" {
+        return Err(invalid_field("revoke resource scope"));
+    }
+    let resource_scope = serde_json::to_string(resource_scope)
+        .map_err(|_| encode_failed("revoke resource scope"))?;
+    Ok(format!(
+        "{{\"resource_scope\":{},\"plugin_instance_id\":\"{}\",\"revoke_epoch\":{},\"closed_socket_count\":{},\"closed_stream_count\":{},\"closed_storage_handle_count\":{}}}",
+        resource_scope,
         escape_json_string(plugin_instance_id),
         revoke_epoch,
         closed_socket_count,
         closed_stream_count,
         closed_storage_handle_count
-    )
+    ))
 }
 
 pub fn heartbeat_ack_result_json(
@@ -2021,6 +2052,7 @@ struct HandleGrantSuccessResponsePayload {
     handle_id: String,
     method: String,
     runtime_generation_id: String,
+    resource_scope: NetworkResourceScope,
     max_bytes_per_second: Option<u64>,
     max_total_bytes: Option<u64>,
 }
@@ -2704,12 +2736,18 @@ pub fn validate_handle_grant_frame(
     active_fingerprint: &str,
     handle_id: &str,
     method: &str,
+    resource_scope: &NetworkResourceScope,
     policy_revision: u64,
     management_revision: u64,
     revoke_epoch: u64,
-) -> String {
-    format!(
-        "{{\"ipc_version\":\"{}\",\"frame_type\":\"{}\",\"request_id\":\"{}\",\"runtime_generation_id\":\"{}\",\"payload\":{{\"handle_grant_token\":\"{}\",\"plugin_instance_id\":\"{}\",\"active_fingerprint\":\"{}\",\"runtime_generation_id\":\"{}\",\"handle_id\":\"{}\",\"method\":\"{}\",\"policy_revision\":{},\"management_revision\":{},\"revoke_epoch\":{}}}}}",
+) -> IpcResult<String> {
+    if !resource_scope.valid() {
+        return Err(invalid_field("handle grant resource scope"));
+    }
+    let resource_scope = serde_json::to_string(resource_scope)
+        .map_err(|_| encode_failed("handle grant resource scope"))?;
+    Ok(format!(
+        "{{\"ipc_version\":\"{}\",\"frame_type\":\"{}\",\"request_id\":\"{}\",\"runtime_generation_id\":\"{}\",\"payload\":{{\"handle_grant_token\":\"{}\",\"plugin_instance_id\":\"{}\",\"active_fingerprint\":\"{}\",\"runtime_generation_id\":\"{}\",\"handle_id\":\"{}\",\"method\":\"{}\",\"resource_scope\":{},\"policy_revision\":{},\"management_revision\":{},\"revoke_epoch\":{}}}}}",
         RUST_IPC_VERSION,
         FRAME_TYPE_VALIDATE_HANDLE_GRANT,
         escape_json_string(request_id),
@@ -2720,10 +2758,11 @@ pub fn validate_handle_grant_frame(
         escape_json_string(runtime_generation_id),
         escape_json_string(handle_id),
         escape_json_string(method),
+        resource_scope,
         policy_revision,
         management_revision,
         revoke_epoch
-    )
+    ))
 }
 
 pub fn validate_handle_grant_response(
@@ -2732,6 +2771,7 @@ pub fn validate_handle_grant_response(
     expected_runtime_generation_id: &str,
     expected_handle_id: &str,
     expected_method: &str,
+    expected_resource_scope: &NetworkResourceScope,
 ) -> IpcResult<()> {
     let (frame, response) = parse_hostcall_response_frame::<HandleGrantSuccessResponsePayload>(
         input,
@@ -2764,6 +2804,11 @@ pub fn validate_handle_grant_response(
             "validate_handle_grant payload runtime_generation_id mismatch",
         ));
     }
+    if !success.resource_scope.valid() || success.resource_scope != *expected_resource_scope {
+        return Err(protocol_violation(
+            "validate_handle_grant payload resource_scope mismatch",
+        ));
+    }
     Ok(())
 }
 
@@ -2777,6 +2822,7 @@ pub struct StorageFileRequest {
     pub runtime_shard_id: String,
     pub handle_id: String,
     pub method: String,
+    pub resource_scope: NetworkResourceScope,
     pub policy_revision: u64,
     pub management_revision: u64,
     pub revoke_epoch: u64,
@@ -2793,9 +2839,14 @@ pub fn storage_file_frame(
     request_id: &str,
     runtime_generation_id: &str,
     req: &StorageFileRequest,
-) -> String {
-    format!(
-        "{{\"ipc_version\":\"{}\",\"frame_type\":\"{}\",\"request_id\":\"{}\",\"runtime_generation_id\":\"{}\",\"payload\":{{\"handle_grant_token\":\"{}\",\"plugin_instance_id\":\"{}\",\"active_fingerprint\":\"{}\",\"runtime_instance_id\":\"{}\",\"runtime_generation_id\":\"{}\",\"runtime_shard_id\":\"{}\",\"handle_id\":\"{}\",\"method\":\"{}\",\"policy_revision\":{},\"management_revision\":{},\"revoke_epoch\":{},\"operation\":\"{}\",\"store_id\":\"{}\",\"path\":\"{}\",\"data_base64\":\"{}\",\"max_bytes\":{},\"max_entries\":{},\"recursive\":{}}}}}",
+) -> IpcResult<String> {
+    if !req.resource_scope.valid() {
+        return Err(invalid_field("storage file resource scope"));
+    }
+    let resource_scope = serde_json::to_string(&req.resource_scope)
+        .map_err(|_| encode_failed("storage file resource scope"))?;
+    Ok(format!(
+        "{{\"ipc_version\":\"{}\",\"frame_type\":\"{}\",\"request_id\":\"{}\",\"runtime_generation_id\":\"{}\",\"payload\":{{\"handle_grant_token\":\"{}\",\"plugin_instance_id\":\"{}\",\"active_fingerprint\":\"{}\",\"runtime_instance_id\":\"{}\",\"runtime_generation_id\":\"{}\",\"runtime_shard_id\":\"{}\",\"handle_id\":\"{}\",\"method\":\"{}\",\"resource_scope\":{},\"policy_revision\":{},\"management_revision\":{},\"revoke_epoch\":{},\"operation\":\"{}\",\"store_id\":\"{}\",\"path\":\"{}\",\"data_base64\":\"{}\",\"max_bytes\":{},\"max_entries\":{},\"recursive\":{}}}}}",
         RUST_IPC_VERSION,
         FRAME_TYPE_STORAGE_FILE,
         escape_json_string(request_id),
@@ -2808,6 +2859,7 @@ pub fn storage_file_frame(
         escape_json_string(&req.runtime_shard_id),
         escape_json_string(&req.handle_id),
         escape_json_string(&req.method),
+        resource_scope,
         req.policy_revision,
         req.management_revision,
         req.revoke_epoch,
@@ -2818,7 +2870,7 @@ pub fn storage_file_frame(
         req.max_bytes,
         req.max_entries,
         if req.recursive { "true" } else { "false" }
-    )
+    ))
 }
 
 pub fn validate_storage_file_response(
@@ -2875,6 +2927,7 @@ pub struct StorageKVRequest {
     pub runtime_shard_id: String,
     pub handle_id: String,
     pub method: String,
+    pub resource_scope: NetworkResourceScope,
     pub policy_revision: u64,
     pub management_revision: u64,
     pub revoke_epoch: u64,
@@ -2891,9 +2944,14 @@ pub fn storage_kv_frame(
     request_id: &str,
     runtime_generation_id: &str,
     req: &StorageKVRequest,
-) -> String {
-    format!(
-        "{{\"ipc_version\":\"{}\",\"frame_type\":\"{}\",\"request_id\":\"{}\",\"runtime_generation_id\":\"{}\",\"payload\":{{\"handle_grant_token\":\"{}\",\"plugin_instance_id\":\"{}\",\"active_fingerprint\":\"{}\",\"runtime_instance_id\":\"{}\",\"runtime_generation_id\":\"{}\",\"runtime_shard_id\":\"{}\",\"handle_id\":\"{}\",\"method\":\"{}\",\"policy_revision\":{},\"management_revision\":{},\"revoke_epoch\":{},\"operation\":\"{}\",\"store_id\":\"{}\",\"key\":\"{}\",\"value_base64\":\"{}\",\"prefix\":\"{}\",\"max_bytes\":{},\"max_entries\":{}}}}}",
+) -> IpcResult<String> {
+    if !req.resource_scope.valid() {
+        return Err(invalid_field("storage kv resource scope"));
+    }
+    let resource_scope = serde_json::to_string(&req.resource_scope)
+        .map_err(|_| encode_failed("storage kv resource scope"))?;
+    Ok(format!(
+        "{{\"ipc_version\":\"{}\",\"frame_type\":\"{}\",\"request_id\":\"{}\",\"runtime_generation_id\":\"{}\",\"payload\":{{\"handle_grant_token\":\"{}\",\"plugin_instance_id\":\"{}\",\"active_fingerprint\":\"{}\",\"runtime_instance_id\":\"{}\",\"runtime_generation_id\":\"{}\",\"runtime_shard_id\":\"{}\",\"handle_id\":\"{}\",\"method\":\"{}\",\"resource_scope\":{},\"policy_revision\":{},\"management_revision\":{},\"revoke_epoch\":{},\"operation\":\"{}\",\"store_id\":\"{}\",\"key\":\"{}\",\"value_base64\":\"{}\",\"prefix\":\"{}\",\"max_bytes\":{},\"max_entries\":{}}}}}",
         RUST_IPC_VERSION,
         FRAME_TYPE_STORAGE_KV,
         escape_json_string(request_id),
@@ -2906,6 +2964,7 @@ pub fn storage_kv_frame(
         escape_json_string(&req.runtime_shard_id),
         escape_json_string(&req.handle_id),
         escape_json_string(&req.method),
+        resource_scope,
         req.policy_revision,
         req.management_revision,
         req.revoke_epoch,
@@ -2916,7 +2975,7 @@ pub fn storage_kv_frame(
         escape_json_string(&req.prefix),
         req.max_bytes,
         req.max_entries
-    )
+    ))
 }
 
 pub fn validate_storage_kv_response(
@@ -2973,6 +3032,7 @@ pub struct StorageSQLiteRequest {
     pub runtime_shard_id: String,
     pub handle_id: String,
     pub method: String,
+    pub resource_scope: NetworkResourceScope,
     pub policy_revision: u64,
     pub management_revision: u64,
     pub revoke_epoch: u64,
@@ -2990,14 +3050,19 @@ pub fn storage_sqlite_frame(
     request_id: &str,
     runtime_generation_id: &str,
     req: &StorageSQLiteRequest,
-) -> String {
+) -> IpcResult<String> {
+    if !req.resource_scope.valid() {
+        return Err(invalid_field("storage sqlite resource scope"));
+    }
+    let resource_scope = serde_json::to_string(&req.resource_scope)
+        .map_err(|_| encode_failed("storage sqlite resource scope"))?;
     let args_json = if req.args_json.trim().is_empty() {
         "[]"
     } else {
         req.args_json.trim()
     };
-    format!(
-        "{{\"ipc_version\":\"{}\",\"frame_type\":\"{}\",\"request_id\":\"{}\",\"runtime_generation_id\":\"{}\",\"payload\":{{\"handle_grant_token\":\"{}\",\"plugin_instance_id\":\"{}\",\"active_fingerprint\":\"{}\",\"runtime_instance_id\":\"{}\",\"runtime_generation_id\":\"{}\",\"runtime_shard_id\":\"{}\",\"handle_id\":\"{}\",\"method\":\"{}\",\"policy_revision\":{},\"management_revision\":{},\"revoke_epoch\":{},\"operation\":\"{}\",\"store_id\":\"{}\",\"database\":\"{}\",\"sql\":\"{}\",\"args\":{},\"max_rows\":{},\"max_response_bytes\":{},\"timeout_ms\":{}}}}}",
+    Ok(format!(
+        "{{\"ipc_version\":\"{}\",\"frame_type\":\"{}\",\"request_id\":\"{}\",\"runtime_generation_id\":\"{}\",\"payload\":{{\"handle_grant_token\":\"{}\",\"plugin_instance_id\":\"{}\",\"active_fingerprint\":\"{}\",\"runtime_instance_id\":\"{}\",\"runtime_generation_id\":\"{}\",\"runtime_shard_id\":\"{}\",\"handle_id\":\"{}\",\"method\":\"{}\",\"resource_scope\":{},\"policy_revision\":{},\"management_revision\":{},\"revoke_epoch\":{},\"operation\":\"{}\",\"store_id\":\"{}\",\"database\":\"{}\",\"sql\":\"{}\",\"args\":{},\"max_rows\":{},\"max_response_bytes\":{},\"timeout_ms\":{}}}}}",
         RUST_IPC_VERSION,
         FRAME_TYPE_STORAGE_SQLITE,
         escape_json_string(request_id),
@@ -3010,6 +3075,7 @@ pub fn storage_sqlite_frame(
         escape_json_string(&req.runtime_shard_id),
         escape_json_string(&req.handle_id),
         escape_json_string(&req.method),
+        resource_scope,
         req.policy_revision,
         req.management_revision,
         req.revoke_epoch,
@@ -3021,7 +3087,7 @@ pub fn storage_sqlite_frame(
         req.max_rows,
         req.max_response_bytes,
         req.timeout_ms
-    )
+    ))
 }
 
 pub fn validate_storage_sqlite_response(
@@ -3679,6 +3745,22 @@ mod tests {
         }
     }
 
+    fn user_resource_scope() -> NetworkResourceScope {
+        NetworkResourceScope {
+            kind: "user".to_string(),
+            owner_env_hash: "env_hash".to_string(),
+            owner_user_hash: "user_hash".to_string(),
+        }
+    }
+
+    fn environment_resource_scope() -> NetworkResourceScope {
+        NetworkResourceScope {
+            kind: "environment".to_string(),
+            owner_env_hash: "env_hash".to_string(),
+            owner_user_hash: String::new(),
+        }
+    }
+
     fn closed_worker_frame(lease: &str, invocation: &str) -> String {
         format!(
             r#"{{"ipc_version":"rust-ipc-v4","frame_type":"invoke_worker","request_id":"r1","runtime_generation_id":"g1","payload":{{"lease":{lease},"method":"worker.echo","invocation":{invocation}}}}}"#
@@ -3782,7 +3864,7 @@ mod tests {
         );
         assert_closed_hostcall_response_union::<HandleGrantSuccessResponsePayload>(
             FRAME_TYPE_VALIDATE_HANDLE_GRANT,
-            r#"{"ok":true,"handle_grant_id":"grant_1","handle_id":"storage:settings","method":"storage.kv","runtime_generation_id":"g1"}"#,
+            r#"{"ok":true,"handle_grant_id":"grant_1","handle_id":"storage:settings","method":"storage.kv","runtime_generation_id":"g1","resource_scope":{"kind":"user","owner_env_hash":"env_hash","owner_user_hash":"user_hash"}}"#,
             r#""handle_id":"storage:settings""#,
         );
         assert_closed_hostcall_response_union::<StorageFileDeleteSuccessResponsePayload>(
@@ -3978,7 +4060,7 @@ mod tests {
         for invocation in [
             r#"{"method":"worker.echo","params":[]}"#,
             r#"{"method":"worker.echo","broker_access":{"unknown":true}}"#,
-            r#"{"method":"worker.echo","broker_access":{"storage":[{"store_id":"notes","operations":["read"],"unknown":true}]}}"#,
+            r#"{"method":"worker.echo","broker_access":{"storage":[{"store_id":"notes","scope":"user","operations":["read"],"unknown":true}]}}"#,
         ] {
             let error = match parse_worker_invocation(&closed_worker_frame("{}", invocation)) {
                 Ok(_) => panic!("typed invocation fields must fail during initial frame decode"),
@@ -3992,18 +4074,18 @@ mod tests {
             );
         }
 
-        let parsed = parse_worker_invocation(&closed_worker_frame(
-            "{}",
-            r#"{"method":"worker.echo","params":{"title":"Launch notes","body":"<script>&\u2028"},"broker_access":{"storage":[{"store_id":"notes","operations":["read"]}]}}"#,
-        ))
-        .expect("typed worker invocation");
+        let invocation = r#"{"method":"worker.echo","params":{"title":"Launch notes","body":"<script>&\u2028"},"broker_access":{"storage":[{"store_id":"notes","scope":"user","operations":["read"]}]}}"#;
+        serde_json::from_str::<WorkerInvocationPayload>(invocation)
+            .expect("direct typed worker invocation payload");
+        let parsed = parse_worker_invocation(&closed_worker_frame("{}", invocation))
+            .expect("typed worker invocation");
         assert_eq!(
             parsed.params_json.as_deref(),
             Some(r#"{"body":"<script>&\u2028","title":"Launch notes"}"#)
         );
         assert_eq!(
             parsed.broker_access_json.as_deref(),
-            Some(r#"{"storage":[{"store_id":"notes","operations":["read"]}]}"#)
+            Some(r#"{"storage":[{"store_id":"notes","scope":"user","operations":["read"]}]}"#)
         );
     }
 
@@ -4589,7 +4671,13 @@ mod tests {
 
     #[test]
     fn renders_revoke_epoch_ack_result_json() {
-        let result = revoke_epoch_ack_result_json("plugini_1", 7, 2, 3, 4);
+        let result =
+            revoke_epoch_ack_result_json(&environment_resource_scope(), "plugini_1", 7, 2, 3, 4)
+                .expect("valid revoke result");
+        assert!(
+            result
+                .contains(r#""resource_scope":{"kind":"environment","owner_env_hash":"env_hash"}"#)
+        );
         assert!(result.contains(r#""plugin_instance_id":"plugini_1""#));
         assert!(result.contains(r#""revoke_epoch":7"#));
         assert!(result.contains(r#""closed_socket_count":2"#));
@@ -4710,10 +4798,12 @@ mod tests {
             "sha256:active",
             "storage:db",
             "storage.sqlite",
+            &user_resource_scope(),
             1,
             2,
             3,
-        );
+        )
+        .expect("valid handle grant frame");
         assert!(frame.contains(r#""frame_type":"validate_handle_grant""#));
         assert!(frame.contains(r#""handle_id":"storage:db""#));
         assert!(frame.contains(r#""policy_revision":1"#));
@@ -4721,9 +4811,16 @@ mod tests {
 
     #[test]
     fn validates_handle_grant_response() {
-        let frame = r#"{"ipc_version":"rust-ipc-v4","frame_type":"validate_handle_grant","request_id":"r1:handle","runtime_generation_id":"g1","payload":{"ok":true,"handle_grant_id":"h1","handle_id":"storage:db","method":"storage.sqlite","runtime_generation_id":"g1","max_total_bytes":4096}}"#;
-        validate_handle_grant_response(frame, "r1:handle", "g1", "storage:db", "storage.sqlite")
-            .expect("valid handle grant");
+        let frame = r#"{"ipc_version":"rust-ipc-v4","frame_type":"validate_handle_grant","request_id":"r1:handle","runtime_generation_id":"g1","payload":{"ok":true,"handle_grant_id":"h1","handle_id":"storage:db","method":"storage.sqlite","runtime_generation_id":"g1","resource_scope":{"kind":"user","owner_env_hash":"env_hash","owner_user_hash":"user_hash"},"max_total_bytes":4096}}"#;
+        validate_handle_grant_response(
+            frame,
+            "r1:handle",
+            "g1",
+            "storage:db",
+            "storage.sqlite",
+            &user_resource_scope(),
+        )
+        .expect("valid handle grant");
         let failed = r#"{"ipc_version":"rust-ipc-v4","frame_type":"validate_handle_grant","request_id":"r1:handle","runtime_generation_id":"g1","payload":{"ok":false,"code":"HANDLE_GRANT_VALIDATION_FAILED","message":"denied","error_origin":"hostcall"}}"#;
         let err = validate_handle_grant_response(
             failed,
@@ -4731,6 +4828,7 @@ mod tests {
             "g1",
             "storage:db",
             "storage.sqlite",
+            &user_resource_scope(),
         )
         .expect_err("failed handle grant response");
         assert_eq!(
@@ -4752,6 +4850,7 @@ mod tests {
             runtime_shard_id: "runtime_shard_1".to_string(),
             handle_id: "storage:workspace".to_string(),
             method: "storage.files".to_string(),
+            resource_scope: user_resource_scope(),
             policy_revision: 1,
             management_revision: 2,
             revoke_epoch: 3,
@@ -4763,7 +4862,8 @@ mod tests {
             max_entries: 10,
             recursive: false,
         };
-        let frame = storage_file_frame("r1:storage_file", "g1", &req);
+        let frame =
+            storage_file_frame("r1:storage_file", "g1", &req).expect("valid storage file frame");
         assert!(frame.contains(r#""frame_type":"storage_file""#));
         assert!(frame.contains(r#""handle_id":"storage:workspace""#));
         assert!(frame.contains(r#""method":"storage.files""#));
@@ -4860,6 +4960,7 @@ mod tests {
             runtime_shard_id: "runtime_shard_1".to_string(),
             handle_id: "storage:settings".to_string(),
             method: "storage.kv".to_string(),
+            resource_scope: user_resource_scope(),
             policy_revision: 1,
             management_revision: 2,
             revoke_epoch: 3,
@@ -4871,7 +4972,7 @@ mod tests {
             max_bytes: 0,
             max_entries: 10,
         };
-        let frame = storage_kv_frame("r1:storage_kv", "g1", &req);
+        let frame = storage_kv_frame("r1:storage_kv", "g1", &req).expect("valid storage kv frame");
         assert!(frame.contains(r#""frame_type":"storage_kv""#));
         assert!(frame.contains(r#""handle_id":"storage:settings""#));
         assert!(frame.contains(r#""method":"storage.kv""#));
@@ -4978,6 +5079,7 @@ mod tests {
             runtime_shard_id: "runtime_shard_1".to_string(),
             handle_id: "storage:db".to_string(),
             method: "storage.sqlite".to_string(),
+            resource_scope: user_resource_scope(),
             policy_revision: 1,
             management_revision: 2,
             revoke_epoch: 3,
@@ -4990,7 +5092,8 @@ mod tests {
             max_response_bytes: 4096,
             timeout_ms: 1000,
         };
-        let frame = storage_sqlite_frame("r1:storage_sqlite", "g1", &req);
+        let frame = storage_sqlite_frame("r1:storage_sqlite", "g1", &req)
+            .expect("valid storage sqlite frame");
         assert!(frame.contains(r#""frame_type":"storage_sqlite""#));
         assert!(frame.contains(r#""handle_id":"storage:db""#));
         assert!(frame.contains(r#""method":"storage.sqlite""#));
@@ -5327,7 +5430,7 @@ mod tests {
     fn read_effect_rejects_mutating_storage_broker_operations() {
         for operation in ["write", "delete", "put", "exec"] {
             let frame = format!(
-                r#"{{"effect":"read","broker_access":{{"storage":[{{"store_id":"store","operations":["{operation}"]}}]}}}}"#
+                r#"{{"effect":"read","broker_access":{{"storage":[{{"store_id":"store","scope":"user","operations":["{operation}"]}}]}}}}"#
             );
             let frame = closed_worker_frame("{}", &frame);
             let err = validate_worker_storage_broker_access(&frame, "store", operation)

@@ -133,7 +133,7 @@ function verifyRequiredArtifacts(bundleDir) {
     "contracts/spec/plugin/resource-scope-v1.schema.json",
     "contracts/spec/plugin/source-policy-v1.schema.json",
     "contracts/spec/plugin/source-revocations-v1.schema.json",
-    "contracts/spec/plugin/token-ticket-v2.schema.json",
+    "contracts/spec/plugin/token-ticket-v3.schema.json",
     "contracts/spec/plugin/worker-invocation-v3.schema.json",
     "examples/host-capability/sample-documents-v1/example-documents.public.json",
     "examples/host-capability/sample-documents-v1/host-capability.pin.json",

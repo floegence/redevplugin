@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/floegence/redevplugin/pkg/sessionctx"
 )
 
 func TestAssetTicketConsumesOnce(t *testing.T) {
@@ -243,10 +245,10 @@ func TestTokenManagerRevokeFloorCapacityFailsClosed(t *testing.T) {
 		MaxTTL:              time.Minute,
 	})
 	now := testNow()
-	if _, err := manager.RevokePlugin("plugini_first", 2, now); err != nil {
+	if _, err := manager.RevokePlugin("env_hash", "plugini_first", 2, now); err != nil {
 		t.Fatalf("RevokePlugin(first) error = %v", err)
 	}
-	if _, err := manager.RevokePlugin("plugini_second", 2, now); !errors.Is(err, ErrTokenRevokeFloorCapacity) {
+	if _, err := manager.RevokePlugin("env_hash", "plugini_second", 2, now); !errors.Is(err, ErrTokenRevokeFloorCapacity) {
 		t.Fatalf("RevokePlugin(over floor capacity) error = %v, want %v", err, ErrTokenRevokeFloorCapacity)
 	}
 	audience := testAudienceForTokenKind(TokenKindPluginGatewayToken)
@@ -461,8 +463,20 @@ func TestRevokePluginInvalidatesOlderEpoch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	otherEnvironmentAudience := testAudienceForTokenKind(TokenKindPluginGatewayToken)
+	otherEnvironmentAudience.OwnerEnvHash = "env_other"
+	otherEnvironmentToken, err := manager.Mint(MintRequest{
+		Kind:      TokenKindPluginGatewayToken,
+		Audience:  otherEnvironmentAudience,
+		Revision:  oldRevision,
+		ExpiresAt: now.Add(time.Minute),
+		Now:       now,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 
-	if revoked, err := manager.RevokePlugin("plugini_test", 5, now.Add(time.Second)); err != nil || revoked != 1 {
+	if revoked, err := manager.RevokePlugin("env_hash", "plugini_test", 5, now.Add(time.Second)); err != nil || revoked != 1 {
 		t.Fatalf("RevokePlugin() = %d, want 1", revoked)
 	}
 	_, err = manager.Validate(ValidateRequest{
@@ -483,6 +497,15 @@ func TestRevokePluginInvalidatesOlderEpoch(t *testing.T) {
 		Now:      now.Add(2 * time.Second),
 	}); err != nil {
 		t.Fatalf("Validate() new token error = %v", err)
+	}
+	if _, err := manager.Validate(ValidateRequest{
+		Kind:     TokenKindPluginGatewayToken,
+		Token:    otherEnvironmentToken.Token,
+		Audience: otherEnvironmentAudience,
+		Revision: oldRevision,
+		Now:      now.Add(2 * time.Second),
+	}); err != nil {
+		t.Fatalf("Validate() same plugin in another environment error = %v", err)
 	}
 }
 
@@ -557,6 +580,7 @@ func testAudienceForTokenKind(kind TokenKind) Audience {
 		audience.RuntimeGenerationID = "generation_test"
 		audience.HandleID = "handle_test"
 		audience.Method = "handle.read"
+		audience.ResourceScope = sessionctx.ResourceScope{Kind: sessionctx.ScopeUser, OwnerEnvHash: "env_hash", OwnerUserHash: "user_hash"}
 	case TokenKindStreamTicket:
 		audience.BridgeChannelID = "bridge_test"
 		audience.StreamID = "stream_test"

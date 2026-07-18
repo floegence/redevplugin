@@ -441,7 +441,11 @@ func TestStressGateRuntimeRevokeACKP95(t *testing.T) {
 	for i := 0; i < iterations; i++ {
 		revokeCtx, revokeCancel := context.WithTimeout(ctx, hardTimeout)
 		start := time.Now()
-		result, err := supervisor.Revoke(revokeCtx, "plugini_stress_runtime", uint64(i+1))
+		result, err := supervisor.Revoke(revokeCtx, runtimeclient.RevokeRequest{
+			ResourceScope:    sessionctx.ResourceScope{Kind: sessionctx.ScopeEnvironment, OwnerEnvHash: "env_hash"},
+			PluginInstanceID: "plugini_stress_runtime",
+			RevokeEpoch:      uint64(i + 1),
+		})
 		elapsed := time.Since(start)
 		revokeCancel()
 		if err != nil {
@@ -1018,8 +1022,9 @@ type stressHeartbeatPayload struct {
 }
 
 type stressRevokePayload struct {
-	PluginInstanceID string `json:"plugin_instance_id"`
-	RevokeEpoch      uint64 `json:"revoke_epoch"`
+	ResourceScope    sessionctx.ResourceScope `json:"resource_scope"`
+	PluginInstanceID string                   `json:"plugin_instance_id"`
+	RevokeEpoch      uint64                   `json:"revoke_epoch"`
 }
 
 type stressRuntimeResponsePayload struct {
@@ -1107,6 +1112,7 @@ func runStressRuntimeHelper() {
 			respondStressRuntime(encoder, request, "revoke_epoch_ack", stressRawJSON(stressRuntimeResponsePayload{
 				OK: true,
 				Result: stressRawJSON(map[string]any{
+					"resource_scope":              revoke.ResourceScope,
 					"plugin_instance_id":          revoke.PluginInstanceID,
 					"revoke_epoch":                revoke.RevokeEpoch,
 					"closed_socket_count":         2,

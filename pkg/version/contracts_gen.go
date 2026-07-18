@@ -12,7 +12,7 @@ const (
 	ReleaseMetadataSchemaVersion             = "release-metadata-v5"
 	SourcePolicySchemaVersion                = "source-policy-v1"
 	SourceRevocationsSchemaVersion           = "source-revocations-v1"
-	TokenTicketSchemaVersion                 = "token-ticket-v2"
+	TokenTicketSchemaVersion                 = "token-ticket-v3"
 	BridgeSchemaVersion                      = "bridge-v5"
 	OpaqueSurfaceDocumentSchemaVersion       = "opaque-surface-document-v3"
 	OpaqueSurfaceTransportSchemaVersion      = "opaque-surface-transport-v4"
@@ -75,9 +75,9 @@ var generatedContractArtifacts = []ContractArtifact{
 	},
 	{
 		ID:      "token-ticket-schema",
-		Path:    "spec/plugin/token-ticket-v2.schema.json",
-		Version: "token-ticket-v2",
-		SHA256:  "47fb014e8ffc899174f63259771ae7315e810e542948fcfef21b33443e0795a9",
+		Path:    "spec/plugin/token-ticket-v3.schema.json",
+		Version: "token-ticket-v3",
+		SHA256:  "95c9e02ffdb755eb345e2d4e3bb9fdd9507a1552d6956ae9cbdfbc27ff944460",
 	},
 	{
 		ID:      "iframe-bridge-schema",
@@ -101,7 +101,7 @@ var generatedContractArtifacts = []ContractArtifact{
 		ID:      "compatibility-manifest-schema",
 		Path:    "spec/plugin/compatibility-manifest-v6.schema.json",
 		Version: "compatibility-manifest-v6",
-		SHA256:  "8b8782db076e77c1e678b5f486694097e09911f70244b7c1a31f4814a86f51fb",
+		SHA256:  "0a205c2ce2c3d3184c265d6e744d3cb7c4870888ebb7c7542766bc122b7ed91a",
 	},
 	{
 		ID:      "release-manifest-schema",
@@ -113,7 +113,7 @@ var generatedContractArtifacts = []ContractArtifact{
 		ID:      "worker-invocation-schema",
 		Path:    "spec/plugin/worker-invocation-v3.schema.json",
 		Version: "worker-invocation-v3",
-		SHA256:  "562a7c0e7b8a5ded23e469f65020d66c129ebc3d5cfe2c7b573f3b53599f4780",
+		SHA256:  "f08af491cbf5e7b71d1aeafbeac9ae581ee5fc3bcb76184daec369f94bab3927",
 	},
 	{
 		ID:      "host-capability-contract-schema",
@@ -173,7 +173,7 @@ var generatedContractArtifacts = []ContractArtifact{
 		ID:      "rust-ipc-schema",
 		Path:    "spec/plugin/ipc-v4.schema.json",
 		Version: "rust-ipc-v4",
-		SHA256:  "437d03f0912288be85affdafc63a87e8a9acda190f888b253d61151626775124",
+		SHA256:  "0a41860c64fe51db684bb565251a1b18dea18ef877239fdba5a829d3bb4a95cf",
 	},
 	{
 		ID:      "wasm-worker-schema",
@@ -203,6 +203,6 @@ var generatedContractArtifacts = []ContractArtifact{
 		ID:      "contract-registry",
 		Path:    "spec/plugin/contract-registry-v1.json",
 		Version: "contract-registry-v1",
-		SHA256:  "7ce64105968ee340597e19eadd93b0be066210815a89acade759d4e5222758c9",
+		SHA256:  "dbaca59348f4c5eadb226539c8e468f7767808325c169d0e877c4dc41ac6904e",
 	},
 }

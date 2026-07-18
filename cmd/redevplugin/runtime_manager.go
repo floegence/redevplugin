@@ -140,6 +140,7 @@ func (v commandRuntimeHandleGrantValidator) ValidateHandleGrant(_ context.Contex
 			RuntimeShardID:      req.RuntimeShardID,
 			HandleID:            req.HandleID,
 			Method:              req.Method,
+			ResourceScope:       req.ResourceScope,
 		},
 		Revision: bridge.RevisionBinding{
 			PolicyRevision:     req.PolicyRevision,
@@ -155,6 +156,7 @@ func (v commandRuntimeHandleGrantValidator) ValidateHandleGrant(_ context.Contex
 		HandleID:            record.Audience.HandleID,
 		Method:              record.Audience.Method,
 		RuntimeGenerationID: record.Audience.RuntimeGenerationID,
+		ResourceScope:       record.Audience.ResourceScope,
 		MaxBytesPerSecond:   record.Limits.MaxBytesPerSecond,
 		MaxTotalBytes:       record.Limits.MaxTotalBytes,
 	}, nil

@@ -1835,10 +1835,20 @@ func TestHandlerOpenSurfaceOmitsTrustedScopeHashes(t *testing.T) {
 		"surface_instance_id":          "surface_http_public_bootstrap",
 		"expected_management_revision": mustManagementRevision(t, h, installed.PluginInstanceID),
 	})
-	for _, field := range []string{"owner_session_hash", "owner_user_hash", "session_channel_id_hash"} {
+	for _, field := range []string{"owner_session_hash", "owner_user_hash", "owner_env_hash", "session_channel_id_hash"} {
 		if _, present := bootstrap[field]; present {
 			t.Fatalf("public surface bootstrap exposed %s: %#v", field, bootstrap)
 		}
+	}
+	injected := postJSONError(t, handler, "/_redevplugin/api/plugins/surfaces/open", map[string]any{
+		"plugin_instance_id":           installed.PluginInstanceID,
+		"surface_id":                   "http.view",
+		"surface_instance_id":          "surface_http_owner_injection",
+		"expected_management_revision": mustManagementRevision(t, h, installed.PluginInstanceID),
+		"owner_env_hash":               "attacker_controlled_env",
+	}, http.StatusBadRequest)
+	if injected.Code != string(security.ErrInvalidRequest) {
+		t.Fatalf("owner injection error = %#v", injected)
 	}
 }
 
@@ -5877,12 +5887,13 @@ func (s *httpRecordingRuntimeManager) InvokeWorker(context.Context, runtimeclien
 	return nil, runtimeclient.ErrRuntimeIPCUnavailable
 }
 
-func (s *httpRecordingRuntimeManager) Revoke(_ context.Context, pluginInstanceID string, revokeEpoch uint64) (runtimeclient.RevokeResult, error) {
+func (s *httpRecordingRuntimeManager) Revoke(_ context.Context, req runtimeclient.RevokeRequest) (runtimeclient.RevokeResult, error) {
 	if s.err != nil {
 		return runtimeclient.RevokeResult{}, s.err
 	}
 	return runtimeclient.RevokeResult{
-		PluginInstanceID: pluginInstanceID,
-		RevokeEpoch:      revokeEpoch,
+		ResourceScope:    req.ResourceScope,
+		PluginInstanceID: req.PluginInstanceID,
+		RevokeEpoch:      req.RevokeEpoch,
 	}, nil
 }

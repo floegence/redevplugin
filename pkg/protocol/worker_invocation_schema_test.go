@@ -61,6 +61,12 @@ func TestWorkerInvocationSchemaDefinesHostRuntimePayload(t *testing.T) {
 	if !stringSetEqual(scopeKinds, []string{"user", "environment"}) {
 		t.Fatalf("worker network scope = %#v", scopeKinds)
 	}
+	storageItems := requireNestedObject(t, brokerAccess, "properties", "storage", "items")
+	assertRequiredFields(t, storageItems, "worker storage broker access", []string{"store_id", "scope", "operations"})
+	storageScopeKinds := requireStringSlice(t, requireNestedObject(t, storageItems, "properties", "scope")["enum"], "worker storage scope")
+	if !stringSetEqual(storageScopeKinds, []string{"user", "environment"}) {
+		t.Fatalf("worker storage scope = %#v", storageScopeKinds)
+	}
 	if property := requireNestedObject(t, properties, "broker_access_sha256"); property["$ref"] != "#/$defs/sha256" {
 		t.Fatalf("broker_access_sha256 ref = %#v, want #/$defs/sha256", property["$ref"])
 	}

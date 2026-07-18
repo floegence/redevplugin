@@ -9,12 +9,13 @@ import (
 	"testing"
 
 	"github.com/floegence/redevplugin/pkg/bridge"
+	"github.com/floegence/redevplugin/pkg/sessionctx"
 	jsonschema "github.com/santhosh-tekuri/jsonschema/v5"
 )
 
 func TestTokenTicketSchemaBindsEveryTokenKind(t *testing.T) {
 	root := repoRoot(t)
-	raw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", "token-ticket-v2.schema.json"))
+	raw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", "token-ticket-v3.schema.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -123,6 +124,7 @@ func TestTokenTicketSchemaBindsEveryTokenKind(t *testing.T) {
 		"runtime_generation_id",
 		"handle_id",
 		"method",
+		"resource_scope",
 	}, "^hg_[A-Za-z0-9_-]+$")
 	assertTokenTicketCondition(t, conditions, "stream_ticket", "single_use", []string{
 		"plugin_id",
@@ -155,7 +157,7 @@ func TestTokenTicketSchemaBindsEveryTokenKind(t *testing.T) {
 
 func TestAssetTicketGoldenFixtureBindsRuntimeGeneration(t *testing.T) {
 	root := repoRoot(t)
-	raw, err := os.ReadFile(filepath.Join(root, "testdata", "contracts", "tokens", "asset-ticket-v2.json"))
+	raw, err := os.ReadFile(filepath.Join(root, "testdata", "contracts", "tokens", "asset-ticket-v3.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -165,7 +167,7 @@ func TestAssetTicketGoldenFixtureBindsRuntimeGeneration(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := compiled.Validate(fixture); err != nil {
-		t.Fatalf("asset ticket fixture does not validate against token-ticket-v2 schema: %v", err)
+		t.Fatalf("asset ticket fixture does not validate against token-ticket-v3 schema: %v", err)
 	}
 	var record bridge.TokenRecord
 	decodeStrictJSON(t, raw, &record)
@@ -198,7 +200,7 @@ func TestAssetTicketGoldenFixtureBindsRuntimeGeneration(t *testing.T) {
 
 func TestAssetTicketGoldenFixtureRejectsUnknownFields(t *testing.T) {
 	root := repoRoot(t)
-	raw, err := os.ReadFile(filepath.Join(root, "testdata", "contracts", "tokens", "asset-ticket-v2.json"))
+	raw, err := os.ReadFile(filepath.Join(root, "testdata", "contracts", "tokens", "asset-ticket-v3.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -212,7 +214,7 @@ func TestAssetTicketGoldenFixtureRejectsUnknownFields(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := compileTokenTicketSchema(t, root).Validate(fixture); err == nil {
-		t.Fatal("token-ticket-v2 schema accepted an unknown top-level field")
+		t.Fatal("token-ticket-v3 schema accepted an unknown top-level field")
 	}
 	decoder := json.NewDecoder(bytes.NewReader(mutated))
 	decoder.DisallowUnknownFields()
@@ -221,16 +223,62 @@ func TestAssetTicketGoldenFixtureRejectsUnknownFields(t *testing.T) {
 	}
 }
 
+func TestHandleGrantGoldenFixtureBindsResourceScope(t *testing.T) {
+	root := repoRoot(t)
+	raw, err := os.ReadFile(filepath.Join(root, "testdata", "contracts", "tokens", "handle-grant-v3.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fixture map[string]any
+	if err := json.Unmarshal(raw, &fixture); err != nil {
+		t.Fatal(err)
+	}
+	if err := compileTokenTicketSchema(t, root).Validate(fixture); err != nil {
+		t.Fatalf("handle grant fixture does not validate against token-ticket-v3 schema: %v", err)
+	}
+	var record bridge.TokenRecord
+	decodeStrictJSON(t, raw, &record)
+	canonical, err := json.MarshalIndent(record, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	canonical = append(canonical, '\n')
+	if !bytes.Equal(canonical, raw) {
+		t.Fatalf("handle grant fixture is not canonical\n got: %s\nwant: %s", raw, canonical)
+	}
+	if !record.Audience.ResourceScope.Matches(sessionctx.ResourceScope{
+		Kind: sessionctx.ScopeUser, OwnerEnvHash: "owner_env_hash_fixture_1", OwnerUserHash: "owner_user_hash_fixture_1",
+	}) {
+		t.Fatalf("handle grant resource scope = %#v", record.Audience.ResourceScope)
+	}
+	wrongScope := fixture
+	audience := mapsClone(wrongScope["audience"].(map[string]any))
+	audience["resource_scope"] = map[string]any{
+		"kind": "environment", "owner_env_hash": "owner_env_hash_fixture_1", "owner_user_hash": "owner_user_hash_fixture_1",
+	}
+	wrongScope["audience"] = audience
+	if err := compileTokenTicketSchema(t, root).Validate(wrongScope); err == nil {
+		t.Fatal("token-ticket-v3 accepted an environment scope with owner_user_hash")
+	}
+}
+
 func compileTokenTicketSchema(t testing.TB, root string) *jsonschema.Schema {
 	t.Helper()
-	path := filepath.Join(root, "spec", "plugin", "token-ticket-v2.schema.json")
+	path := filepath.Join(root, "spec", "plugin", "token-ticket-v3.schema.json")
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
 	}
 	compiler := jsonschema.NewCompiler()
 	compiler.Draft = jsonschema.Draft2020
-	const resource = "urn:redevplugin:test:token-ticket-v2"
+	resourceScopeRaw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", "resource-scope-v1.schema.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := compiler.AddResource("https://schemas.redevplugin.dev/plugin/resource-scope-v1.schema.json", bytes.NewReader(resourceScopeRaw)); err != nil {
+		t.Fatal(err)
+	}
+	const resource = "urn:redevplugin:test:token-ticket-v3"
 	if err := compiler.AddResource(resource, bytes.NewReader(raw)); err != nil {
 		t.Fatal(err)
 	}

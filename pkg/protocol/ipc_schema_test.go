@@ -339,6 +339,53 @@ func TestIPCSchemaBindsRuntimeHostcallsToParentInvocation(t *testing.T) {
 	t.Fatal("ipc schema missing runtime hostcall parent binding")
 }
 
+func TestIPCSchemaBindsResourceScopesAcrossHandleStorageAndRevocation(t *testing.T) {
+	schema := readPluginSchema(t, "ipc-v4.schema.json")
+	defs := requireNestedObject(t, schema, "$defs")
+
+	for _, name := range []string{
+		"validate_handle_grant_request_payload",
+		"storage_file_request_payload",
+		"storage_kv_request_payload",
+		"storage_sqlite_request_payload",
+	} {
+		definition := requireNestedObject(t, defs, name)
+		required := requireStringSlice(t, definition["required"], name+" required")
+		if !containsRequiredString(required, "resource_scope") {
+			t.Fatalf("%s must require resource_scope: %#v", name, required)
+		}
+		if got := requireNestedObject(t, definition, "properties", "resource_scope")["$ref"]; got != "#/$defs/resource_scope" {
+			t.Fatalf("%s resource_scope ref = %#v", name, got)
+		}
+	}
+
+	responseBranches := requireObjectArray(t, requireNestedObject(t, defs, "validate_handle_grant_response_payload")["oneOf"], "handle grant response branches")
+	handleResult := responseBranches[0]
+	if !containsRequiredString(requireStringSlice(t, handleResult["required"], "handle grant result required"), "resource_scope") {
+		t.Fatalf("handle grant result must require resource_scope: %#v", handleResult)
+	}
+
+	environmentScope := requireNestedObject(t, defs, "environment_resource_scope")
+	if got := requireNestedObject(t, environmentScope, "properties", "kind")["const"]; got != "environment" {
+		t.Fatalf("environment resource scope kind = %#v", got)
+	}
+	allOf, ok := schema["allOf"].([]any)
+	if !ok {
+		t.Fatal("ipc schema missing allOf")
+	}
+	revoke := requireNestedObject(t, findIPCFrameBlock(t, allOf, "revoke_epoch"), "then", "properties", "payload")
+	if !containsRequiredString(requireStringSlice(t, revoke["required"], "revoke required"), "resource_scope") {
+		t.Fatalf("revoke request must require resource_scope: %#v", revoke)
+	}
+	if got := requireNestedObject(t, revoke, "properties", "resource_scope")["$ref"]; got != "#/$defs/environment_resource_scope" {
+		t.Fatalf("revoke request resource_scope ref = %#v", got)
+	}
+	revokeResult := requireNestedObject(t, defs, "revoke_epoch_ack_result")
+	if !containsRequiredString(requireStringSlice(t, revokeResult["required"], "revoke result required"), "resource_scope") {
+		t.Fatalf("revoke result must require resource_scope: %#v", revokeResult)
+	}
+}
+
 func TestIPCSchemaValidatesV4Frames(t *testing.T) {
 	root := repoRoot(t)
 	compiler := jsonschema.NewCompiler()
@@ -818,16 +865,16 @@ func TestIPCSchemaDefinesHandleGrantValidationPayloads(t *testing.T) {
 	defs := requireNestedObject(t, schema, "$defs")
 	request := requireNestedObject(t, defs, "validate_handle_grant_request_payload")
 	requestProps := requireNestedObject(t, request, "properties")
-	for _, name := range []string{"handle_grant_token", "plugin_instance_id", "active_fingerprint", "runtime_generation_id", "handle_id", "method", "policy_revision", "management_revision", "revoke_epoch"} {
+	for _, name := range []string{"handle_grant_token", "plugin_instance_id", "active_fingerprint", "runtime_generation_id", "handle_id", "method", "resource_scope", "policy_revision", "management_revision", "revoke_epoch"} {
 		if _, ok := requestProps[name].(map[string]any); !ok {
 			t.Fatalf("validate_handle_grant request missing %s", name)
 		}
 	}
 	response := requireNestedObject(t, defs, "validate_handle_grant_response_payload")
 	success, failure := requireClosedResponseBranches(t, defs, response, "validate_handle_grant response")
-	assertClosedSuccessBranch(t, success, "validate_handle_grant response", []string{"ok", "handle_grant_id", "handle_id", "method", "runtime_generation_id"})
+	assertClosedSuccessBranch(t, success, "validate_handle_grant response", []string{"ok", "handle_grant_id", "handle_id", "method", "runtime_generation_id", "resource_scope"})
 	successProps := requireNestedObject(t, success, "properties")
-	for _, name := range []string{"ok", "handle_grant_id", "handle_id", "method", "runtime_generation_id", "max_total_bytes"} {
+	for _, name := range []string{"ok", "handle_grant_id", "handle_id", "method", "runtime_generation_id", "resource_scope", "max_total_bytes"} {
 		if _, ok := successProps[name].(map[string]any); !ok {
 			t.Fatalf("validate_handle_grant response missing %s", name)
 		}

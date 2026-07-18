@@ -111,12 +111,19 @@ type ModuleCacheMetrics struct {
 }
 
 type RevokeResult struct {
-	PluginInstanceID         string `json:"plugin_instance_id"`
-	RevokeEpoch              uint64 `json:"revoke_epoch"`
-	ClosedSocketCount        int    `json:"closed_socket_count"`
-	ClosedStreamCount        int    `json:"closed_stream_count"`
-	ClosedStorageHandleCount int    `json:"closed_storage_handle_count"`
-	RuntimeStopped           bool   `json:"runtime_stopped,omitempty"`
+	ResourceScope            sessionctx.ResourceScope `json:"resource_scope"`
+	PluginInstanceID         string                   `json:"plugin_instance_id"`
+	RevokeEpoch              uint64                   `json:"revoke_epoch"`
+	ClosedSocketCount        int                      `json:"closed_socket_count"`
+	ClosedStreamCount        int                      `json:"closed_stream_count"`
+	ClosedStorageHandleCount int                      `json:"closed_storage_handle_count"`
+	RuntimeStopped           bool                     `json:"runtime_stopped,omitempty"`
+}
+
+type RevokeRequest struct {
+	ResourceScope    sessionctx.ResourceScope `json:"resource_scope"`
+	PluginInstanceID string                   `json:"plugin_instance_id"`
+	RevokeEpoch      uint64                   `json:"revoke_epoch"`
 }
 
 type HeartbeatResult struct {
@@ -187,6 +194,7 @@ type workerBrokerAccess struct {
 
 type workerStorageBrokerAccess struct {
 	StoreID    string   `json:"store_id"`
+	Scope      string   `json:"scope"`
 	Operations []string `json:"operations"`
 }
 
@@ -199,26 +207,28 @@ type workerNetworkBrokerAccess struct {
 }
 
 type HandleGrantValidationRequest struct {
-	HandleGrantToken    string `json:"handle_grant_token"`
-	PluginInstanceID    string `json:"plugin_instance_id"`
-	ActiveFingerprint   string `json:"active_fingerprint"`
-	RuntimeInstanceID   string `json:"runtime_instance_id,omitempty"`
-	RuntimeGenerationID string `json:"runtime_generation_id"`
-	RuntimeShardID      string `json:"runtime_shard_id,omitempty"`
-	HandleID            string `json:"handle_id"`
-	Method              string `json:"method"`
-	PolicyRevision      uint64 `json:"policy_revision"`
-	ManagementRevision  uint64 `json:"management_revision"`
-	RevokeEpoch         uint64 `json:"revoke_epoch"`
+	HandleGrantToken    string                   `json:"handle_grant_token"`
+	PluginInstanceID    string                   `json:"plugin_instance_id"`
+	ActiveFingerprint   string                   `json:"active_fingerprint"`
+	RuntimeInstanceID   string                   `json:"runtime_instance_id,omitempty"`
+	RuntimeGenerationID string                   `json:"runtime_generation_id"`
+	RuntimeShardID      string                   `json:"runtime_shard_id,omitempty"`
+	HandleID            string                   `json:"handle_id"`
+	Method              string                   `json:"method"`
+	ResourceScope       sessionctx.ResourceScope `json:"resource_scope"`
+	PolicyRevision      uint64                   `json:"policy_revision"`
+	ManagementRevision  uint64                   `json:"management_revision"`
+	RevokeEpoch         uint64                   `json:"revoke_epoch"`
 }
 
 type HandleGrantValidationResult struct {
-	HandleGrantID       string `json:"handle_grant_id"`
-	HandleID            string `json:"handle_id"`
-	Method              string `json:"method"`
-	RuntimeGenerationID string `json:"runtime_generation_id"`
-	MaxBytesPerSecond   int64  `json:"max_bytes_per_second,omitempty"`
-	MaxTotalBytes       int64  `json:"max_total_bytes,omitempty"`
+	HandleGrantID       string                   `json:"handle_grant_id"`
+	HandleID            string                   `json:"handle_id"`
+	Method              string                   `json:"method"`
+	RuntimeGenerationID string                   `json:"runtime_generation_id"`
+	ResourceScope       sessionctx.ResourceScope `json:"resource_scope"`
+	MaxBytesPerSecond   int64                    `json:"max_bytes_per_second,omitempty"`
+	MaxTotalBytes       int64                    `json:"max_total_bytes,omitempty"`
 }
 
 var (
@@ -1012,16 +1022,20 @@ func (s *ProcessSupervisor) InvokeWorker(ctx context.Context, lease Lease, metho
 	return append([]byte(nil), response.Result...), nil
 }
 
-func (s *ProcessSupervisor) Revoke(ctx context.Context, pluginInstanceID string, revokeEpoch uint64) (RevokeResult, error) {
+func (s *ProcessSupervisor) Revoke(ctx context.Context, req RevokeRequest) (RevokeResult, error) {
 	if err := ctx.Err(); err != nil {
 		return RevokeResult{}, err
 	}
 	if s == nil || !s.isReady() {
 		return RevokeResult{}, ErrRuntimeNotReady
 	}
+	if err := validateRevokeRequest(req); err != nil {
+		return RevokeResult{}, err
+	}
 	rawPayload, err := json.Marshal(revokeEpochRequestPayload{
-		PluginInstanceID: pluginInstanceID,
-		RevokeEpoch:      revokeEpoch,
+		ResourceScope:    req.ResourceScope,
+		PluginInstanceID: req.PluginInstanceID,
+		RevokeEpoch:      req.RevokeEpoch,
 	})
 	if err != nil {
 		return RevokeResult{}, err
@@ -1040,7 +1054,17 @@ func (s *ProcessSupervisor) Revoke(ctx context.Context, pluginInstanceID string,
 	if len(response.Result) == 0 {
 		return RevokeResult{}, fmt.Errorf("%w: revoke ack missing result", ErrRuntimeRequestFailed)
 	}
-	return decodeRevokeResult(response.Result, pluginInstanceID, revokeEpoch)
+	return decodeRevokeResult(response.Result, req)
+}
+
+func validateRevokeRequest(req RevokeRequest) error {
+	if req.ResourceScope.Kind != sessionctx.ScopeEnvironment || req.ResourceScope.Validate() != nil {
+		return fmt.Errorf("%w: revoke resource scope must be an environment scope", ErrRuntimeRequestFailed)
+	}
+	if strings.TrimSpace(req.PluginInstanceID) == "" || req.RevokeEpoch == 0 {
+		return fmt.Errorf("%w: revoke plugin_instance_id and revoke_epoch are required", ErrRuntimeRequestFailed)
+	}
+	return nil
 }
 
 func (s *ProcessSupervisor) consumeRuntimeLease(ctx context.Context, lease Lease, method string) error {
@@ -1121,14 +1145,15 @@ func validateRuntimeLeaseAudience(lease Lease, health Health) error {
 }
 
 type revokeResultPayload struct {
-	PluginInstanceID         string  `json:"plugin_instance_id"`
-	RevokeEpoch              *uint64 `json:"revoke_epoch"`
-	ClosedSocketCount        *int    `json:"closed_socket_count"`
-	ClosedStreamCount        *int    `json:"closed_stream_count"`
-	ClosedStorageHandleCount *int    `json:"closed_storage_handle_count"`
+	ResourceScope            sessionctx.ResourceScope `json:"resource_scope"`
+	PluginInstanceID         string                   `json:"plugin_instance_id"`
+	RevokeEpoch              *uint64                  `json:"revoke_epoch"`
+	ClosedSocketCount        *int                     `json:"closed_socket_count"`
+	ClosedStreamCount        *int                     `json:"closed_stream_count"`
+	ClosedStorageHandleCount *int                     `json:"closed_storage_handle_count"`
 }
 
-func decodeRevokeResult(raw json.RawMessage, pluginInstanceID string, revokeEpoch uint64) (RevokeResult, error) {
+func decodeRevokeResult(raw json.RawMessage, request RevokeRequest) (RevokeResult, error) {
 	var payload revokeResultPayload
 	if err := decodeStrictJSON(raw, &payload); err != nil {
 		return RevokeResult{}, err
@@ -1141,23 +1166,27 @@ func decodeRevokeResult(raw json.RawMessage, pluginInstanceID string, revokeEpoc
 		return RevokeResult{}, fmt.Errorf("%w: revoke ack result missing required field", ErrRuntimeRequestFailed)
 	}
 	result := RevokeResult{
+		ResourceScope:            payload.ResourceScope,
 		PluginInstanceID:         payload.PluginInstanceID,
 		RevokeEpoch:              *payload.RevokeEpoch,
 		ClosedSocketCount:        *payload.ClosedSocketCount,
 		ClosedStreamCount:        *payload.ClosedStreamCount,
 		ClosedStorageHandleCount: *payload.ClosedStorageHandleCount,
 	}
-	if err := validateRevokeResult(result, pluginInstanceID, revokeEpoch); err != nil {
+	if err := validateRevokeResult(result, request); err != nil {
 		return RevokeResult{}, err
 	}
 	return result, nil
 }
 
-func validateRevokeResult(result RevokeResult, pluginInstanceID string, revokeEpoch uint64) error {
-	if result.PluginInstanceID != pluginInstanceID {
+func validateRevokeResult(result RevokeResult, request RevokeRequest) error {
+	if !result.ResourceScope.Matches(request.ResourceScope) {
+		return fmt.Errorf("%w: revoke ack resource_scope mismatch", ErrRuntimeRequestFailed)
+	}
+	if result.PluginInstanceID != request.PluginInstanceID {
 		return fmt.Errorf("%w: revoke ack plugin_instance_id mismatch", ErrRuntimeRequestFailed)
 	}
-	if result.RevokeEpoch != revokeEpoch {
+	if result.RevokeEpoch != request.RevokeEpoch {
 		return fmt.Errorf("%w: revoke ack revoke_epoch mismatch", ErrRuntimeRequestFailed)
 	}
 	if result.ClosedSocketCount < 0 || result.ClosedStreamCount < 0 || result.ClosedStorageHandleCount < 0 {
@@ -1429,8 +1458,9 @@ type cancelInvokeAckResultPayload struct {
 }
 
 type revokeEpochRequestPayload struct {
-	PluginInstanceID string `json:"plugin_instance_id"`
-	RevokeEpoch      uint64 `json:"revoke_epoch"`
+	ResourceScope    sessionctx.ResourceScope `json:"resource_scope"`
+	PluginInstanceID string                   `json:"plugin_instance_id"`
+	RevokeEpoch      uint64                   `json:"revoke_epoch"`
 }
 
 type runtimeResponsePayload struct {
@@ -1474,37 +1504,39 @@ type artifactHandleResultPayload struct {
 }
 
 type handleGrantValidationResultPayload struct {
-	OK                  bool              `json:"ok"`
-	HandleGrantID       string            `json:"handle_grant_id"`
-	HandleID            string            `json:"handle_id"`
-	Method              string            `json:"method"`
-	RuntimeGenerationID string            `json:"runtime_generation_id"`
-	MaxBytesPerSecond   int64             `json:"max_bytes_per_second,omitempty"`
-	MaxTotalBytes       int64             `json:"max_total_bytes,omitempty"`
-	Code                string            `json:"code,omitempty"`
-	Message             string            `json:"message,omitempty"`
-	ErrorOrigin         WorkerErrorOrigin `json:"error_origin,omitempty"`
+	OK                  bool                     `json:"ok"`
+	HandleGrantID       string                   `json:"handle_grant_id"`
+	HandleID            string                   `json:"handle_id"`
+	Method              string                   `json:"method"`
+	RuntimeGenerationID string                   `json:"runtime_generation_id"`
+	ResourceScope       sessionctx.ResourceScope `json:"resource_scope"`
+	MaxBytesPerSecond   int64                    `json:"max_bytes_per_second,omitempty"`
+	MaxTotalBytes       int64                    `json:"max_total_bytes,omitempty"`
+	Code                string                   `json:"code,omitempty"`
+	Message             string                   `json:"message,omitempty"`
+	ErrorOrigin         WorkerErrorOrigin        `json:"error_origin,omitempty"`
 }
 
 type storageFileRequestPayload struct {
-	HandleGrantToken    string `json:"handle_grant_token"`
-	PluginInstanceID    string `json:"plugin_instance_id"`
-	ActiveFingerprint   string `json:"active_fingerprint"`
-	RuntimeInstanceID   string `json:"runtime_instance_id,omitempty"`
-	RuntimeGenerationID string `json:"runtime_generation_id"`
-	RuntimeShardID      string `json:"runtime_shard_id,omitempty"`
-	HandleID            string `json:"handle_id"`
-	Method              string `json:"method"`
-	PolicyRevision      uint64 `json:"policy_revision"`
-	ManagementRevision  uint64 `json:"management_revision"`
-	RevokeEpoch         uint64 `json:"revoke_epoch"`
-	Operation           string `json:"operation"`
-	StoreID             string `json:"store_id"`
-	Path                string `json:"path,omitempty"`
-	DataBase64          string `json:"data_base64,omitempty"`
-	MaxBytes            int64  `json:"max_bytes,omitempty"`
-	MaxEntries          int    `json:"max_entries,omitempty"`
-	Recursive           bool   `json:"recursive,omitempty"`
+	HandleGrantToken    string                   `json:"handle_grant_token"`
+	PluginInstanceID    string                   `json:"plugin_instance_id"`
+	ActiveFingerprint   string                   `json:"active_fingerprint"`
+	RuntimeInstanceID   string                   `json:"runtime_instance_id,omitempty"`
+	RuntimeGenerationID string                   `json:"runtime_generation_id"`
+	RuntimeShardID      string                   `json:"runtime_shard_id,omitempty"`
+	HandleID            string                   `json:"handle_id"`
+	Method              string                   `json:"method"`
+	ResourceScope       sessionctx.ResourceScope `json:"resource_scope"`
+	PolicyRevision      uint64                   `json:"policy_revision"`
+	ManagementRevision  uint64                   `json:"management_revision"`
+	RevokeEpoch         uint64                   `json:"revoke_epoch"`
+	Operation           string                   `json:"operation"`
+	StoreID             string                   `json:"store_id"`
+	Path                string                   `json:"path,omitempty"`
+	DataBase64          string                   `json:"data_base64,omitempty"`
+	MaxBytes            int64                    `json:"max_bytes,omitempty"`
+	MaxEntries          int                      `json:"max_entries,omitempty"`
+	Recursive           bool                     `json:"recursive,omitempty"`
 }
 
 type storageFileResponsePayload struct {
@@ -1549,24 +1581,25 @@ type storageFileListSuccessPayload struct {
 }
 
 type storageKVRequestPayload struct {
-	HandleGrantToken    string `json:"handle_grant_token"`
-	PluginInstanceID    string `json:"plugin_instance_id"`
-	ActiveFingerprint   string `json:"active_fingerprint"`
-	RuntimeInstanceID   string `json:"runtime_instance_id,omitempty"`
-	RuntimeGenerationID string `json:"runtime_generation_id"`
-	RuntimeShardID      string `json:"runtime_shard_id,omitempty"`
-	HandleID            string `json:"handle_id"`
-	Method              string `json:"method"`
-	PolicyRevision      uint64 `json:"policy_revision"`
-	ManagementRevision  uint64 `json:"management_revision"`
-	RevokeEpoch         uint64 `json:"revoke_epoch"`
-	Operation           string `json:"operation"`
-	StoreID             string `json:"store_id"`
-	Key                 string `json:"key,omitempty"`
-	ValueBase64         string `json:"value_base64,omitempty"`
-	Prefix              string `json:"prefix,omitempty"`
-	MaxBytes            int64  `json:"max_bytes,omitempty"`
-	MaxEntries          int    `json:"max_entries,omitempty"`
+	HandleGrantToken    string                   `json:"handle_grant_token"`
+	PluginInstanceID    string                   `json:"plugin_instance_id"`
+	ActiveFingerprint   string                   `json:"active_fingerprint"`
+	RuntimeInstanceID   string                   `json:"runtime_instance_id,omitempty"`
+	RuntimeGenerationID string                   `json:"runtime_generation_id"`
+	RuntimeShardID      string                   `json:"runtime_shard_id,omitempty"`
+	HandleID            string                   `json:"handle_id"`
+	Method              string                   `json:"method"`
+	ResourceScope       sessionctx.ResourceScope `json:"resource_scope"`
+	PolicyRevision      uint64                   `json:"policy_revision"`
+	ManagementRevision  uint64                   `json:"management_revision"`
+	RevokeEpoch         uint64                   `json:"revoke_epoch"`
+	Operation           string                   `json:"operation"`
+	StoreID             string                   `json:"store_id"`
+	Key                 string                   `json:"key,omitempty"`
+	ValueBase64         string                   `json:"value_base64,omitempty"`
+	Prefix              string                   `json:"prefix,omitempty"`
+	MaxBytes            int64                    `json:"max_bytes,omitempty"`
+	MaxEntries          int                      `json:"max_entries,omitempty"`
 }
 
 type storageKVResponsePayload struct {
@@ -1612,25 +1645,26 @@ type storageKVListSuccessPayload struct {
 }
 
 type storageSQLiteRequestPayload struct {
-	HandleGrantToken    string                  `json:"handle_grant_token"`
-	PluginInstanceID    string                  `json:"plugin_instance_id"`
-	ActiveFingerprint   string                  `json:"active_fingerprint"`
-	RuntimeInstanceID   string                  `json:"runtime_instance_id,omitempty"`
-	RuntimeGenerationID string                  `json:"runtime_generation_id"`
-	RuntimeShardID      string                  `json:"runtime_shard_id,omitempty"`
-	HandleID            string                  `json:"handle_id"`
-	Method              string                  `json:"method"`
-	PolicyRevision      uint64                  `json:"policy_revision"`
-	ManagementRevision  uint64                  `json:"management_revision"`
-	RevokeEpoch         uint64                  `json:"revoke_epoch"`
-	Operation           string                  `json:"operation"`
-	StoreID             string                  `json:"store_id"`
-	Database            string                  `json:"database,omitempty"`
-	SQL                 string                  `json:"sql"`
-	Args                []storageSQLiteValueIPC `json:"args,omitempty"`
-	MaxRows             int                     `json:"max_rows,omitempty"`
-	MaxResponseBytes    int64                   `json:"max_response_bytes,omitempty"`
-	TimeoutMillis       int64                   `json:"timeout_ms,omitempty"`
+	HandleGrantToken    string                   `json:"handle_grant_token"`
+	PluginInstanceID    string                   `json:"plugin_instance_id"`
+	ActiveFingerprint   string                   `json:"active_fingerprint"`
+	RuntimeInstanceID   string                   `json:"runtime_instance_id,omitempty"`
+	RuntimeGenerationID string                   `json:"runtime_generation_id"`
+	RuntimeShardID      string                   `json:"runtime_shard_id,omitempty"`
+	HandleID            string                   `json:"handle_id"`
+	Method              string                   `json:"method"`
+	ResourceScope       sessionctx.ResourceScope `json:"resource_scope"`
+	PolicyRevision      uint64                   `json:"policy_revision"`
+	ManagementRevision  uint64                   `json:"management_revision"`
+	RevokeEpoch         uint64                   `json:"revoke_epoch"`
+	Operation           string                   `json:"operation"`
+	StoreID             string                   `json:"store_id"`
+	Database            string                   `json:"database,omitempty"`
+	SQL                 string                   `json:"sql"`
+	Args                []storageSQLiteValueIPC  `json:"args,omitempty"`
+	MaxRows             int                      `json:"max_rows,omitempty"`
+	MaxResponseBytes    int64                    `json:"max_response_bytes,omitempty"`
+	TimeoutMillis       int64                    `json:"timeout_ms,omitempty"`
 }
 
 type storageSQLiteResponsePayload struct {
@@ -2251,7 +2285,7 @@ func (s *ProcessSupervisor) dispatchRuntimeHostcall(generation *runtimeGeneratio
 		var err error
 		switch frame.FrameType {
 		case ipcFrameTypeValidateHandleGrant:
-			err = s.respondToValidateHandleGrant(ctx, stdin, health.RuntimeGenerationID, frame, allowedArtifactRequest(invocation))
+			err = s.respondToValidateHandleGrant(ctx, stdin, health.RuntimeGenerationID, frame, invocation)
 		case ipcFrameTypeStorageFile:
 			err = s.respondToStorageFile(ctx, stdin, health, frame, invocation)
 		case ipcFrameTypeStorageKV:
@@ -2419,8 +2453,8 @@ func (s *ProcessSupervisor) writeOpenHandleResponse(stdin io.Writer, runtimeGene
 	return nil
 }
 
-func (s *ProcessSupervisor) respondToValidateHandleGrant(ctx context.Context, stdin io.Writer, runtimeGenerationID string, frame ipcFrame, allowedArtifact *ArtifactRequest) error {
-	if allowedArtifact == nil {
+func (s *ProcessSupervisor) respondToValidateHandleGrant(ctx context.Context, stdin io.Writer, runtimeGenerationID string, frame ipcFrame, allowedInvocation *workerInvocationContext) error {
+	if allowedInvocation == nil {
 		return s.writeHandleGrantValidationResponse(stdin, runtimeGenerationID, frame, handleGrantValidationResultPayload{
 			OK:      false,
 			Code:    "HANDLE_GRANT_REQUEST_DENIED",
@@ -2453,11 +2487,26 @@ func (s *ProcessSupervisor) respondToValidateHandleGrant(ctx context.Context, st
 		strings.TrimSpace(req.PluginInstanceID) == "" ||
 		strings.TrimSpace(req.ActiveFingerprint) == "" ||
 		strings.TrimSpace(req.HandleID) == "" ||
-		strings.TrimSpace(req.Method) == "" {
+		strings.TrimSpace(req.Method) == "" ||
+		req.ResourceScope.Validate() != nil {
 		return s.writeHandleGrantValidationResponse(stdin, runtimeGenerationID, frame, handleGrantValidationResultPayload{
 			OK:      false,
 			Code:    "HANDLE_GRANT_REQUEST_INVALID",
 			Message: "handle grant token, plugin identity, handle id, and method are required",
+		})
+	}
+	if !allowedInvocation.identity.matchesRuntimeHostcall(
+		req.PluginInstanceID,
+		req.ActiveFingerprint,
+		req.RuntimeInstanceID,
+		req.RuntimeGenerationID,
+		req.RuntimeShardID,
+		req.PolicyRevision,
+		req.ManagementRevision,
+		req.RevokeEpoch,
+	) || !allowedInvocation.identity.matchesResourceScope(req.ResourceScope) {
+		return s.writeHandleGrantValidationResponse(stdin, runtimeGenerationID, frame, handleGrantValidationResultPayload{
+			OK: false, Code: "HANDLE_GRANT_REQUEST_DENIED", Message: "handle grant request is not bound to the active worker invocation",
 		})
 	}
 	if s.handleGrants == nil {
@@ -2488,6 +2537,7 @@ func (s *ProcessSupervisor) respondToValidateHandleGrant(ctx context.Context, st
 		HandleID:            result.HandleID,
 		Method:              result.Method,
 		RuntimeGenerationID: result.RuntimeGenerationID,
+		ResourceScope:       result.ResourceScope,
 		MaxBytesPerSecond:   result.MaxBytesPerSecond,
 		MaxTotalBytes:       result.MaxTotalBytes,
 	})
@@ -2557,6 +2607,16 @@ func (s *ProcessSupervisor) respondToStorageFile(ctx context.Context, stdin io.W
 			Message: "storage file request identity is not bound to the active worker invocation",
 		})
 	}
+	if !allowedInvocation.identity.matchesResourceScope(req.ResourceScope) {
+		return s.writeStorageFileResponse(stdin, health.RuntimeGenerationID, frame, storageFileResponsePayload{
+			OK: false, Code: "STORAGE_FILE_REQUEST_DENIED", Message: "storage file resource scope is not bound to the active worker invocation",
+		})
+	}
+	if scope, ok := allowedInvocation.BrokerAccess.storageScope(req.StoreID); !ok || req.ResourceScope.Kind != scope {
+		return s.writeStorageFileResponse(stdin, health.RuntimeGenerationID, frame, storageFileResponsePayload{
+			OK: false, Code: "STORAGE_FILE_REQUEST_DENIED", Message: "storage file resource scope does not match the declared store scope",
+		})
+	}
 	if !allowedInvocation.BrokerAccess.allowsStorage(req.StoreID, req.Operation) {
 		return s.writeStorageFileResponse(stdin, health.RuntimeGenerationID, frame, storageFileResponsePayload{
 			OK: false, Code: "STORAGE_FILE_REQUEST_DENIED", Message: "worker method is not allowed to perform this storage operation",
@@ -2587,6 +2647,7 @@ func (s *ProcessSupervisor) respondToStorageFile(ctx context.Context, stdin io.W
 		RuntimeShardID:      req.RuntimeShardID,
 		HandleID:            req.HandleID,
 		Method:              req.Method,
+		ResourceScope:       req.ResourceScope,
 		PolicyRevision:      req.PolicyRevision,
 		ManagementRevision:  req.ManagementRevision,
 		RevokeEpoch:         req.RevokeEpoch,
@@ -2608,6 +2669,11 @@ func (s *ProcessSupervisor) respondToStorageFile(ctx context.Context, stdin io.W
 			OK:      false,
 			Code:    "HANDLE_GRANT_VALIDATION_FAILED",
 			Message: "handle grant validation result did not match storage file request",
+		})
+	}
+	if !grant.ResourceScope.Matches(req.ResourceScope) {
+		return s.writeStorageFileResponse(stdin, health.RuntimeGenerationID, frame, storageFileResponsePayload{
+			OK: false, Code: "HANDLE_GRANT_VALIDATION_FAILED", Message: "handle grant resource scope did not match storage file request",
 		})
 	}
 	payload := dispatchStorageFileRequest(hostcallCtx, s.storageFiles, req)
@@ -2652,6 +2718,9 @@ func validateStorageFileRequest(req storageFileRequestPayload, runtimeGeneration
 	if req.Method != "storage.files" {
 		return errors.New("storage file access requires method storage.files")
 	}
+	if err := req.ResourceScope.Validate(); err != nil {
+		return errors.New("storage file resource scope is invalid")
+	}
 	if req.HandleID != "storage:"+req.StoreID {
 		return errors.New("storage handle id must match store id")
 	}
@@ -2675,6 +2744,7 @@ func dispatchStorageFileRequest(ctx context.Context, broker storage.FilesBroker,
 		}
 		result, err := broker.ReadFile(ctx, storage.FileReadRequest{
 			PluginInstanceID: req.PluginInstanceID,
+			ResourceScope:    req.ResourceScope,
 			StoreID:          req.StoreID,
 			Path:             req.Path,
 			MaxBytes:         maxBytes,
@@ -2697,6 +2767,7 @@ func dispatchStorageFileRequest(ctx context.Context, broker storage.FilesBroker,
 		}
 		result, err := broker.WriteFile(ctx, storage.FileWriteRequest{
 			PluginInstanceID: req.PluginInstanceID,
+			ResourceScope:    req.ResourceScope,
 			StoreID:          req.StoreID,
 			Path:             req.Path,
 			Data:             data,
@@ -2709,6 +2780,7 @@ func dispatchStorageFileRequest(ctx context.Context, broker storage.FilesBroker,
 	case "delete":
 		if err := broker.DeleteFile(ctx, storage.FileDeleteRequest{
 			PluginInstanceID: req.PluginInstanceID,
+			ResourceScope:    req.ResourceScope,
 			StoreID:          req.StoreID,
 			Path:             req.Path,
 			Recursive:        req.Recursive,
@@ -2719,6 +2791,7 @@ func dispatchStorageFileRequest(ctx context.Context, broker storage.FilesBroker,
 	case "list":
 		result, err := broker.ListFiles(ctx, storage.FileListRequest{
 			PluginInstanceID: req.PluginInstanceID,
+			ResourceScope:    req.ResourceScope,
 			StoreID:          req.StoreID,
 			Path:             req.Path,
 			MaxEntries:       req.MaxEntries,
@@ -2794,6 +2867,16 @@ func (s *ProcessSupervisor) respondToStorageKV(ctx context.Context, stdin io.Wri
 			Message: "storage kv request identity is not bound to the active worker invocation",
 		})
 	}
+	if !allowedInvocation.identity.matchesResourceScope(req.ResourceScope) {
+		return s.writeStorageKVResponse(stdin, health.RuntimeGenerationID, frame, storageKVResponsePayload{
+			OK: false, Code: "STORAGE_KV_REQUEST_DENIED", Message: "storage kv resource scope is not bound to the active worker invocation",
+		})
+	}
+	if scope, ok := allowedInvocation.BrokerAccess.storageScope(req.StoreID); !ok || req.ResourceScope.Kind != scope {
+		return s.writeStorageKVResponse(stdin, health.RuntimeGenerationID, frame, storageKVResponsePayload{
+			OK: false, Code: "STORAGE_KV_REQUEST_DENIED", Message: "storage kv resource scope does not match the declared store scope",
+		})
+	}
 	if !allowedInvocation.BrokerAccess.allowsStorage(req.StoreID, req.Operation) {
 		return s.writeStorageKVResponse(stdin, health.RuntimeGenerationID, frame, storageKVResponsePayload{
 			OK: false, Code: "STORAGE_KV_REQUEST_DENIED", Message: "worker method is not allowed to perform this storage operation",
@@ -2824,6 +2907,7 @@ func (s *ProcessSupervisor) respondToStorageKV(ctx context.Context, stdin io.Wri
 		RuntimeShardID:      req.RuntimeShardID,
 		HandleID:            req.HandleID,
 		Method:              req.Method,
+		ResourceScope:       req.ResourceScope,
 		PolicyRevision:      req.PolicyRevision,
 		ManagementRevision:  req.ManagementRevision,
 		RevokeEpoch:         req.RevokeEpoch,
@@ -2845,6 +2929,11 @@ func (s *ProcessSupervisor) respondToStorageKV(ctx context.Context, stdin io.Wri
 			OK:      false,
 			Code:    "HANDLE_GRANT_VALIDATION_FAILED",
 			Message: "handle grant validation result did not match storage kv request",
+		})
+	}
+	if !grant.ResourceScope.Matches(req.ResourceScope) {
+		return s.writeStorageKVResponse(stdin, health.RuntimeGenerationID, frame, storageKVResponsePayload{
+			OK: false, Code: "HANDLE_GRANT_VALIDATION_FAILED", Message: "handle grant resource scope did not match storage kv request",
 		})
 	}
 	payload := dispatchStorageKVRequest(hostcallCtx, s.storageKV, req)
@@ -2889,6 +2978,9 @@ func validateStorageKVRequest(req storageKVRequestPayload, runtimeGenerationID s
 	if req.Method != "storage.kv" {
 		return errors.New("storage kv access requires method storage.kv")
 	}
+	if err := req.ResourceScope.Validate(); err != nil {
+		return errors.New("storage kv resource scope is invalid")
+	}
 	if req.HandleID != "storage:"+req.StoreID {
 		return errors.New("storage handle id must match store id")
 	}
@@ -2920,6 +3012,7 @@ func dispatchStorageKVRequest(ctx context.Context, broker storage.KVBroker, req 
 		}
 		result, err := broker.GetKV(ctx, storage.KVGetRequest{
 			PluginInstanceID: req.PluginInstanceID,
+			ResourceScope:    req.ResourceScope,
 			StoreID:          req.StoreID,
 			Key:              req.Key,
 			MaxBytes:         maxBytes,
@@ -2942,6 +3035,7 @@ func dispatchStorageKVRequest(ctx context.Context, broker storage.KVBroker, req 
 		}
 		result, err := broker.PutKV(ctx, storage.KVPutRequest{
 			PluginInstanceID: req.PluginInstanceID,
+			ResourceScope:    req.ResourceScope,
 			StoreID:          req.StoreID,
 			Key:              req.Key,
 			Value:            value,
@@ -2954,6 +3048,7 @@ func dispatchStorageKVRequest(ctx context.Context, broker storage.KVBroker, req 
 	case "delete":
 		if err := broker.DeleteKV(ctx, storage.KVDeleteRequest{
 			PluginInstanceID: req.PluginInstanceID,
+			ResourceScope:    req.ResourceScope,
 			StoreID:          req.StoreID,
 			Key:              req.Key,
 		}); err != nil {
@@ -2963,6 +3058,7 @@ func dispatchStorageKVRequest(ctx context.Context, broker storage.KVBroker, req 
 	case "list":
 		result, err := broker.ListKV(ctx, storage.KVListRequest{
 			PluginInstanceID: req.PluginInstanceID,
+			ResourceScope:    req.ResourceScope,
 			StoreID:          req.StoreID,
 			Prefix:           req.Prefix,
 			MaxEntries:       req.MaxEntries,
@@ -3038,6 +3134,16 @@ func (s *ProcessSupervisor) respondToStorageSQLite(ctx context.Context, stdin io
 			Message: "storage sqlite request identity is not bound to the active worker invocation",
 		})
 	}
+	if !allowedInvocation.identity.matchesResourceScope(req.ResourceScope) {
+		return s.writeStorageSQLiteResponse(stdin, health.RuntimeGenerationID, frame, storageSQLiteResponsePayload{
+			OK: false, Code: "STORAGE_SQLITE_REQUEST_DENIED", Message: "storage sqlite resource scope is not bound to the active worker invocation",
+		})
+	}
+	if scope, ok := allowedInvocation.BrokerAccess.storageScope(req.StoreID); !ok || req.ResourceScope.Kind != scope {
+		return s.writeStorageSQLiteResponse(stdin, health.RuntimeGenerationID, frame, storageSQLiteResponsePayload{
+			OK: false, Code: "STORAGE_SQLITE_REQUEST_DENIED", Message: "storage sqlite resource scope does not match the declared store scope",
+		})
+	}
 	if !allowedInvocation.BrokerAccess.allowsStorage(req.StoreID, req.Operation) {
 		return s.writeStorageSQLiteResponse(stdin, health.RuntimeGenerationID, frame, storageSQLiteResponsePayload{
 			OK: false, Code: "STORAGE_SQLITE_REQUEST_DENIED", Message: "worker method is not allowed to perform this storage operation",
@@ -3068,6 +3174,7 @@ func (s *ProcessSupervisor) respondToStorageSQLite(ctx context.Context, stdin io
 		RuntimeShardID:      req.RuntimeShardID,
 		HandleID:            req.HandleID,
 		Method:              req.Method,
+		ResourceScope:       req.ResourceScope,
 		PolicyRevision:      req.PolicyRevision,
 		ManagementRevision:  req.ManagementRevision,
 		RevokeEpoch:         req.RevokeEpoch,
@@ -3089,6 +3196,11 @@ func (s *ProcessSupervisor) respondToStorageSQLite(ctx context.Context, stdin io
 			OK:      false,
 			Code:    "HANDLE_GRANT_VALIDATION_FAILED",
 			Message: "handle grant validation result did not match storage sqlite request",
+		})
+	}
+	if !grant.ResourceScope.Matches(req.ResourceScope) {
+		return s.writeStorageSQLiteResponse(stdin, health.RuntimeGenerationID, frame, storageSQLiteResponsePayload{
+			OK: false, Code: "HANDLE_GRANT_VALIDATION_FAILED", Message: "handle grant resource scope did not match storage sqlite request",
 		})
 	}
 	payload := dispatchStorageSQLiteRequest(hostcallCtx, s.storageSQLite, req)
@@ -3134,6 +3246,9 @@ func validateStorageSQLiteRequest(req storageSQLiteRequestPayload, runtimeGenera
 	if req.Method != "storage.sqlite" {
 		return errors.New("storage sqlite access requires method storage.sqlite")
 	}
+	if err := req.ResourceScope.Validate(); err != nil {
+		return errors.New("storage sqlite resource scope is invalid")
+	}
 	if req.HandleID != "storage:"+req.StoreID {
 		return errors.New("storage handle id must match store id")
 	}
@@ -3161,6 +3276,7 @@ func dispatchStorageSQLiteRequest(ctx context.Context, broker storage.SQLiteBrok
 	case "exec":
 		result, err := broker.ExecSQLite(ctx, storage.SQLiteExecRequest{
 			PluginInstanceID: req.PluginInstanceID,
+			ResourceScope:    req.ResourceScope,
 			StoreID:          req.StoreID,
 			Database:         req.Database,
 			SQL:              req.SQL,
@@ -3186,6 +3302,7 @@ func dispatchStorageSQLiteRequest(ctx context.Context, broker storage.SQLiteBrok
 		}
 		result, err := broker.QuerySQLite(ctx, storage.SQLiteQueryRequest{
 			PluginInstanceID: req.PluginInstanceID,
+			ResourceScope:    req.ResourceScope,
 			StoreID:          req.StoreID,
 			Database:         req.Database,
 			SQL:              req.SQL,
@@ -4123,6 +4240,20 @@ func (access workerBrokerAccess) allowsStorage(storeID string, operation string)
 		}
 	}
 	return false
+}
+
+func (access workerBrokerAccess) storageScope(storeID string) (sessionctx.ScopeKind, bool) {
+	for _, item := range access.Storage {
+		if item.StoreID != storeID {
+			continue
+		}
+		scope := sessionctx.ScopeKind(strings.TrimSpace(item.Scope))
+		if scope == sessionctx.ScopeUser || scope == sessionctx.ScopeEnvironment {
+			return scope, true
+		}
+		return "", false
+	}
+	return "", false
 }
 
 func (access workerBrokerAccess) allowsNetworkConnector(connectorID string, transport string) bool {

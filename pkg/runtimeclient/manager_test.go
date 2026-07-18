@@ -300,7 +300,7 @@ func TestProcessManagerTerminatesOwningShardWhenRevokeFails(t *testing.T) {
 	if _, err := manager.Start(context.Background(), testRuntimeTarget); err != nil {
 		t.Fatal(err)
 	}
-	result, err := manager.Revoke(context.Background(), "plugini_1", 4)
+	result, err := manager.Revoke(context.Background(), testRevokeRequest("plugini_1", 4))
 	if err != nil {
 		t.Fatalf("Revoke() error = %v", err)
 	}
@@ -320,9 +320,26 @@ func TestProcessManagerReturnsRevokeAndTerminationFailures(t *testing.T) {
 	if _, err := manager.Start(context.Background(), testRuntimeTarget); err != nil {
 		t.Fatal(err)
 	}
-	_, err := manager.Revoke(context.Background(), "plugini_1", 4)
+	_, err := manager.Revoke(context.Background(), testRevokeRequest("plugini_1", 4))
 	if !errors.Is(err, revokeFailure) || !errors.Is(err, stopFailure) {
 		t.Fatalf("Revoke() error = %v, want revoke and termination failures", err)
+	}
+}
+
+func TestProcessManagerRejectsNonEnvironmentRevokeScopeBeforeShardAccess(t *testing.T) {
+	shard := &fakeProcessShard{health: testShardHealth("a")}
+	manager := testProcessManager(t, []*fakeProcessShard{shard})
+	if _, err := manager.Start(context.Background(), testRuntimeTarget); err != nil {
+		t.Fatal(err)
+	}
+	req := testRevokeRequest("plugini_1", 4)
+	req.ResourceScope = testUserResourceScope()
+	_, err := manager.Revoke(context.Background(), req)
+	if !errors.Is(err, ErrRuntimeRequestFailed) || !strings.Contains(err.Error(), "revoke resource scope must be an environment scope") {
+		t.Fatalf("Revoke() error = %v, want typed environment scope validation failure", err)
+	}
+	if shard.revokeCalls.Load() != 0 || shard.stopCalls.Load() != 0 {
+		t.Fatalf("invalid revoke reached shard: revoke=%d stop=%d", shard.revokeCalls.Load(), shard.stopCalls.Load())
 	}
 }
 
@@ -558,7 +575,7 @@ func (s *fakeProcessShard) InvokeWorker(ctx context.Context, _ Lease, _ string, 
 	return []byte("ok"), nil
 }
 
-func (s *fakeProcessShard) Revoke(context.Context, string, uint64) (RevokeResult, error) {
+func (s *fakeProcessShard) Revoke(context.Context, RevokeRequest) (RevokeResult, error) {
 	s.revokeCalls.Add(1)
 	return RevokeResult{}, s.revokeErr
 }

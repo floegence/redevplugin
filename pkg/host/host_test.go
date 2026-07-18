@@ -2430,6 +2430,7 @@ func TestCurrentSourcePolicyFailureRevokesStorageHandleAndRuntime(t *testing.T) 
 			RuntimeShardID:      "runtime_shard_a",
 			HandleID:            "storage:db",
 			Method:              "storage.sqlite",
+			ResourceScope:       sessionctx.ResourceScope{Kind: sessionctx.ScopeEnvironment, OwnerEnvHash: "env_hash"},
 		},
 		Revision: bridge.RevisionBinding{
 			PolicyRevision:     enabled.PolicyRevision,
@@ -2507,6 +2508,7 @@ func TestUnsignedLocalPolicyFailureRevokesStorageHandleAndRuntime(t *testing.T) 
 			RuntimeShardID:      "runtime_shard_a",
 			HandleID:            "storage:db",
 			Method:              "storage.sqlite",
+			ResourceScope:       sessionctx.ResourceScope{Kind: sessionctx.ScopeEnvironment, OwnerEnvHash: "env_hash"},
 		},
 		Revision: bridge.RevisionBinding{
 			PolicyRevision:     enabled.PolicyRevision,
@@ -4029,6 +4031,7 @@ func TestCallPluginMethodClosesStreamWhenTicketMintFails(t *testing.T) {
 			RuntimeGenerationID: "runtime_filler",
 			HandleID:            "handle_filler",
 			Method:              "filler.reserve",
+			ResourceScope:       sessionctx.ResourceScope{Kind: sessionctx.ScopeUser, OwnerEnvHash: "env_hash", OwnerUserHash: "user_hash"},
 		},
 		Revision: bridge.RevisionBinding{
 			PolicyRevision:     installed.PolicyRevision,
@@ -7587,6 +7590,7 @@ func TestMintStorageHandleGrantBindsStoreAndQuota(t *testing.T) {
 			RuntimeShardID:      "runtime_shard_a",
 			HandleID:            "storage:db",
 			Method:              "storage.sqlite",
+			ResourceScope:       sessionctx.ResourceScope{Kind: sessionctx.ScopeEnvironment, OwnerEnvHash: "env_hash"},
 		},
 		Revision: bridge.RevisionBinding{
 			PolicyRevision:     enabled.PolicyRevision,
@@ -7687,6 +7691,7 @@ func TestEnableInstallsConnectivityPolicyAndMintsGrant(t *testing.T) {
 			RuntimeShardID:      "runtime_shard_a",
 			HandleID:            handle.ConnectionGrant.GrantID,
 			Method:              "network.tcp",
+			ResourceScope:       handle.ConnectionGrant.ResourceScope,
 		},
 		Revision: bridge.RevisionBinding{
 			PolicyRevision:     handle.ConnectionGrant.PolicyRevision,
@@ -10814,6 +10819,7 @@ func mintHostTokenCapacityFiller(t *testing.T, manager *bridge.TokenManager, ins
 		Audience: bridge.Audience{
 			PluginInstanceID: installed.PluginInstanceID, ActiveFingerprint: installed.ActiveFingerprint,
 			RuntimeGenerationID: "runtime_filler", HandleID: "handle_filler", Method: "filler.reserve",
+			ResourceScope: sessionctx.ResourceScope{Kind: sessionctx.ScopeUser, OwnerEnvHash: "env_hash", OwnerUserHash: "user_hash"},
 		},
 		Revision: bridge.RevisionBinding{
 			PolicyRevision: installed.PolicyRevision, ManagementRevision: installed.ManagementRevision, RevokeEpoch: installed.RevokeEpoch,
@@ -12145,16 +12151,19 @@ func (r *recordingRuntimeManager) InvokeWorker(ctx context.Context, _ runtimecli
 	return json.Marshal(r.result)
 }
 
-func (r *recordingRuntimeManager) Revoke(_ context.Context, pluginInstanceID string, revokeEpoch uint64) (runtimeclient.RevokeResult, error) {
+func (r *recordingRuntimeManager) Revoke(_ context.Context, req runtimeclient.RevokeRequest) (runtimeclient.RevokeResult, error) {
 	r.revokeCalls++
-	r.lastRevokedPlugin = pluginInstanceID
-	r.lastRevokeEpoch = revokeEpoch
+	r.lastRevokedPlugin = req.PluginInstanceID
+	r.lastRevokeEpoch = req.RevokeEpoch
 	result := r.revokeResult
+	if !result.ResourceScope.Valid() {
+		result.ResourceScope = req.ResourceScope
+	}
 	if result.PluginInstanceID == "" {
-		result.PluginInstanceID = pluginInstanceID
+		result.PluginInstanceID = req.PluginInstanceID
 	}
 	if result.RevokeEpoch == 0 {
-		result.RevokeEpoch = revokeEpoch
+		result.RevokeEpoch = req.RevokeEpoch
 	}
 	return result, r.revokeErr
 }

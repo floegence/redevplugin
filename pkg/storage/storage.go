@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"time"
+
+	"github.com/floegence/redevplugin/pkg/sessionctx"
 )
 
 type StoreKind string
@@ -79,10 +81,11 @@ type Inspector interface {
 }
 
 type FileReadRequest struct {
-	PluginInstanceID string `json:"plugin_instance_id"`
-	StoreID          string `json:"store_id"`
-	Path             string `json:"path"`
-	MaxBytes         int64  `json:"max_bytes,omitempty"`
+	PluginInstanceID string                   `json:"plugin_instance_id"`
+	ResourceScope    sessionctx.ResourceScope `json:"resource_scope"`
+	StoreID          string                   `json:"store_id"`
+	Path             string                   `json:"path"`
+	MaxBytes         int64                    `json:"max_bytes,omitempty"`
 }
 
 type FileReadResult struct {
@@ -93,10 +96,11 @@ type FileReadResult struct {
 }
 
 type FileWriteRequest struct {
-	PluginInstanceID string `json:"plugin_instance_id"`
-	StoreID          string `json:"store_id"`
-	Path             string `json:"path"`
-	Data             []byte `json:"-"`
+	PluginInstanceID string                   `json:"plugin_instance_id"`
+	ResourceScope    sessionctx.ResourceScope `json:"resource_scope"`
+	StoreID          string                   `json:"store_id"`
+	Path             string                   `json:"path"`
+	Data             []byte                   `json:"-"`
 }
 
 type FileWriteResult struct {
@@ -106,18 +110,20 @@ type FileWriteResult struct {
 }
 
 type FileDeleteRequest struct {
-	PluginInstanceID string `json:"plugin_instance_id"`
-	StoreID          string `json:"store_id"`
-	Path             string `json:"path"`
-	Recursive        bool   `json:"recursive,omitempty"`
+	PluginInstanceID string                   `json:"plugin_instance_id"`
+	ResourceScope    sessionctx.ResourceScope `json:"resource_scope"`
+	StoreID          string                   `json:"store_id"`
+	Path             string                   `json:"path"`
+	Recursive        bool                     `json:"recursive,omitempty"`
 }
 
 type FileListRequest struct {
-	PluginInstanceID string `json:"plugin_instance_id"`
-	StoreID          string `json:"store_id"`
-	Path             string `json:"path,omitempty"`
-	MaxEntries       int    `json:"max_entries,omitempty"`
-	Cursor           string `json:"cursor,omitempty"`
+	PluginInstanceID string                   `json:"plugin_instance_id"`
+	ResourceScope    sessionctx.ResourceScope `json:"resource_scope"`
+	StoreID          string                   `json:"store_id"`
+	Path             string                   `json:"path,omitempty"`
+	MaxEntries       int                      `json:"max_entries,omitempty"`
+	Cursor           string                   `json:"cursor,omitempty"`
 }
 
 type FileListResult struct {
@@ -135,10 +141,11 @@ type FileEntry struct {
 }
 
 type KVGetRequest struct {
-	PluginInstanceID string `json:"plugin_instance_id"`
-	StoreID          string `json:"store_id"`
-	Key              string `json:"key"`
-	MaxBytes         int64  `json:"max_bytes,omitempty"`
+	PluginInstanceID string                   `json:"plugin_instance_id"`
+	ResourceScope    sessionctx.ResourceScope `json:"resource_scope"`
+	StoreID          string                   `json:"store_id"`
+	Key              string                   `json:"key"`
+	MaxBytes         int64                    `json:"max_bytes,omitempty"`
 }
 
 type KVGetResult struct {
@@ -149,10 +156,11 @@ type KVGetResult struct {
 }
 
 type KVPutRequest struct {
-	PluginInstanceID string `json:"plugin_instance_id"`
-	StoreID          string `json:"store_id"`
-	Key              string `json:"key"`
-	Value            []byte `json:"-"`
+	PluginInstanceID string                   `json:"plugin_instance_id"`
+	ResourceScope    sessionctx.ResourceScope `json:"resource_scope"`
+	StoreID          string                   `json:"store_id"`
+	Key              string                   `json:"key"`
+	Value            []byte                   `json:"-"`
 }
 
 type KVPutResult struct {
@@ -162,17 +170,19 @@ type KVPutResult struct {
 }
 
 type KVDeleteRequest struct {
-	PluginInstanceID string `json:"plugin_instance_id"`
-	StoreID          string `json:"store_id"`
-	Key              string `json:"key"`
+	PluginInstanceID string                   `json:"plugin_instance_id"`
+	ResourceScope    sessionctx.ResourceScope `json:"resource_scope"`
+	StoreID          string                   `json:"store_id"`
+	Key              string                   `json:"key"`
 }
 
 type KVListRequest struct {
-	PluginInstanceID string `json:"plugin_instance_id"`
-	StoreID          string `json:"store_id"`
-	Prefix           string `json:"prefix,omitempty"`
-	MaxEntries       int    `json:"max_entries,omitempty"`
-	Cursor           string `json:"cursor,omitempty"`
+	PluginInstanceID string                   `json:"plugin_instance_id"`
+	ResourceScope    sessionctx.ResourceScope `json:"resource_scope"`
+	StoreID          string                   `json:"store_id"`
+	Prefix           string                   `json:"prefix,omitempty"`
+	MaxEntries       int                      `json:"max_entries,omitempty"`
+	Cursor           string                   `json:"cursor,omitempty"`
 }
 
 type KVListResult struct {
@@ -197,12 +207,13 @@ type SQLiteValue struct {
 }
 
 type SQLiteExecRequest struct {
-	PluginInstanceID string        `json:"plugin_instance_id"`
-	StoreID          string        `json:"store_id"`
-	Database         string        `json:"database,omitempty"`
-	SQL              string        `json:"sql"`
-	Args             []SQLiteValue `json:"args,omitempty"`
-	Timeout          time.Duration `json:"timeout,omitempty"`
+	PluginInstanceID string                   `json:"plugin_instance_id"`
+	ResourceScope    sessionctx.ResourceScope `json:"resource_scope"`
+	StoreID          string                   `json:"store_id"`
+	Database         string                   `json:"database,omitempty"`
+	SQL              string                   `json:"sql"`
+	Args             []SQLiteValue            `json:"args,omitempty"`
+	Timeout          time.Duration            `json:"timeout,omitempty"`
 }
 
 type SQLiteExecResult struct {
@@ -213,14 +224,15 @@ type SQLiteExecResult struct {
 }
 
 type SQLiteQueryRequest struct {
-	PluginInstanceID string        `json:"plugin_instance_id"`
-	StoreID          string        `json:"store_id"`
-	Database         string        `json:"database,omitempty"`
-	SQL              string        `json:"sql"`
-	Args             []SQLiteValue `json:"args,omitempty"`
-	MaxRows          int           `json:"max_rows,omitempty"`
-	MaxResponseBytes int64         `json:"max_response_bytes,omitempty"`
-	Timeout          time.Duration `json:"timeout,omitempty"`
+	PluginInstanceID string                   `json:"plugin_instance_id"`
+	ResourceScope    sessionctx.ResourceScope `json:"resource_scope"`
+	StoreID          string                   `json:"store_id"`
+	Database         string                   `json:"database,omitempty"`
+	SQL              string                   `json:"sql"`
+	Args             []SQLiteValue            `json:"args,omitempty"`
+	MaxRows          int                      `json:"max_rows,omitempty"`
+	MaxResponseBytes int64                    `json:"max_response_bytes,omitempty"`
+	Timeout          time.Duration            `json:"timeout,omitempty"`
 }
 
 type SQLiteQueryResult struct {

@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/floegence/redevplugin/pkg/sessionctx"
 	"github.com/floegence/redevplugin/pkg/version"
 )
 
@@ -70,12 +71,12 @@ type OpenSurfaceRequest struct {
 	EntrySHA256          string          `json:"entry_sha256"`
 	RouteRole            string          `json:"route_role"`
 	RuntimeGenerationID  string          `json:"runtime_generation_id,omitempty"`
-	OwnerSessionHash     string          `json:"owner_session_hash,omitempty"`
-	OwnerUserHash        string          `json:"owner_user_hash,omitempty"`
-	OwnerEnvHash         string          `json:"owner_env_hash,omitempty"`
-	SessionChannelIDHash string          `json:"session_channel_id_hash,omitempty"`
+	OwnerSessionHash     string          `json:"-"`
+	OwnerUserHash        string          `json:"-"`
+	OwnerEnvHash         string          `json:"-"`
+	SessionChannelIDHash string          `json:"-"`
 	Revision             RevisionBinding `json:"revision"`
-	Now                  time.Time       `json:"now,omitempty"`
+	Now                  time.Time       `json:"-"`
 }
 
 type SurfaceBootstrap struct {
@@ -105,11 +106,11 @@ type SurfaceBootstrap struct {
 type ExchangeAssetTicketRequest struct {
 	SurfaceInstanceID    string    `json:"surface_instance_id"`
 	AssetTicket          string    `json:"asset_ticket"`
-	OwnerSessionHash     string    `json:"owner_session_hash,omitempty"`
-	OwnerUserHash        string    `json:"owner_user_hash,omitempty"`
-	OwnerEnvHash         string    `json:"owner_env_hash,omitempty"`
-	SessionChannelIDHash string    `json:"session_channel_id_hash,omitempty"`
-	Now                  time.Time `json:"now,omitempty"`
+	OwnerSessionHash     string    `json:"-"`
+	OwnerUserHash        string    `json:"-"`
+	OwnerEnvHash         string    `json:"-"`
+	SessionChannelIDHash string    `json:"-"`
+	Now                  time.Time `json:"-"`
 }
 
 type AssetSessionResult struct {
@@ -127,40 +128,40 @@ type AssetSessionResult struct {
 type ValidateAssetSessionRequest struct {
 	AssetSession         string    `json:"asset_session"`
 	AssetSessionID       string    `json:"asset_session_id,omitempty"`
-	OwnerSessionHash     string    `json:"owner_session_hash,omitempty"`
-	OwnerUserHash        string    `json:"owner_user_hash,omitempty"`
-	OwnerEnvHash         string    `json:"owner_env_hash,omitempty"`
-	SessionChannelIDHash string    `json:"session_channel_id_hash,omitempty"`
-	Now                  time.Time `json:"now,omitempty"`
+	OwnerSessionHash     string    `json:"-"`
+	OwnerUserHash        string    `json:"-"`
+	OwnerEnvHash         string    `json:"-"`
+	SessionChannelIDHash string    `json:"-"`
+	Now                  time.Time `json:"-"`
 }
 
 type MarkSurfacePreparedRequest struct {
 	SurfaceInstanceID    string    `json:"surface_instance_id"`
 	AssetSessionID       string    `json:"asset_session_id"`
 	BridgeNonce          string    `json:"bridge_nonce"`
-	OwnerSessionHash     string    `json:"owner_session_hash"`
-	OwnerUserHash        string    `json:"owner_user_hash,omitempty"`
-	OwnerEnvHash         string    `json:"owner_env_hash"`
-	SessionChannelIDHash string    `json:"session_channel_id_hash"`
-	Now                  time.Time `json:"now,omitempty"`
+	OwnerSessionHash     string    `json:"-"`
+	OwnerUserHash        string    `json:"-"`
+	OwnerEnvHash         string    `json:"-"`
+	SessionChannelIDHash string    `json:"-"`
+	Now                  time.Time `json:"-"`
 }
 
 type DisposeSurfaceRequest struct {
 	SurfaceInstanceID    string    `json:"surface_instance_id"`
 	BridgeNonce          string    `json:"bridge_nonce"`
-	OwnerSessionHash     string    `json:"owner_session_hash"`
-	OwnerUserHash        string    `json:"owner_user_hash,omitempty"`
-	OwnerEnvHash         string    `json:"owner_env_hash"`
-	SessionChannelIDHash string    `json:"session_channel_id_hash"`
-	Now                  time.Time `json:"now,omitempty"`
+	OwnerSessionHash     string    `json:"-"`
+	OwnerUserHash        string    `json:"-"`
+	OwnerEnvHash         string    `json:"-"`
+	SessionChannelIDHash string    `json:"-"`
+	Now                  time.Time `json:"-"`
 }
 
 type RevokeSurfaceScopeRequest struct {
-	OwnerSessionHash     string    `json:"owner_session_hash"`
-	OwnerUserHash        string    `json:"owner_user_hash,omitempty"`
-	OwnerEnvHash         string    `json:"owner_env_hash"`
-	SessionChannelIDHash string    `json:"session_channel_id_hash,omitempty"`
-	Now                  time.Time `json:"now,omitempty"`
+	OwnerSessionHash     string    `json:"-"`
+	OwnerUserHash        string    `json:"-"`
+	OwnerEnvHash         string    `json:"-"`
+	SessionChannelIDHash string    `json:"-"`
+	Now                  time.Time `json:"-"`
 }
 
 type AssetSessionValidation struct {
@@ -177,7 +178,7 @@ type MintGatewayTokenRequest struct {
 	BridgeChannelID           string    `json:"bridge_channel_id"`
 	HandshakeTranscriptSHA256 string    `json:"handshake_transcript_sha256"`
 	PreviousGatewayToken      string    `json:"previous_plugin_gateway_token,omitempty"`
-	Now                       time.Time `json:"now,omitempty"`
+	Now                       time.Time `json:"-"`
 }
 
 type GatewayTokenResult struct {
@@ -201,10 +202,10 @@ type MintConfirmationTokenRequest struct {
 	AssetSessionNonce      string          `json:"asset_session_nonce,omitempty"`
 	RouteRole              string          `json:"route_role,omitempty"`
 	ConfirmationID         string          `json:"confirmation_id"`
-	OwnerSessionHash       string          `json:"owner_session_hash,omitempty"`
-	OwnerUserHash          string          `json:"owner_user_hash,omitempty"`
-	OwnerEnvHash           string          `json:"owner_env_hash,omitempty"`
-	SessionChannelIDHash   string          `json:"session_channel_id_hash,omitempty"`
+	OwnerSessionHash       string          `json:"-"`
+	OwnerUserHash          string          `json:"-"`
+	OwnerEnvHash           string          `json:"-"`
+	SessionChannelIDHash   string          `json:"-"`
 	BridgeChannelID        string          `json:"bridge_channel_id"`
 	RuntimeGenerationID    string          `json:"runtime_generation_id,omitempty"`
 	Method                 string          `json:"method"`
@@ -212,7 +213,7 @@ type MintConfirmationTokenRequest struct {
 	PlanHash               string          `json:"plan_hash"`
 	TargetDescriptorSHA256 string          `json:"target_descriptor_sha256"`
 	Revision               RevisionBinding `json:"revision"`
-	Now                    time.Time       `json:"now,omitempty"`
+	Now                    time.Time       `json:"-"`
 	ExpiresAt              time.Time       `json:"expires_at,omitempty"`
 }
 
@@ -227,29 +228,29 @@ type ConfirmationTokenResult struct {
 
 type ValidateConfirmationTokenRequest struct {
 	ConfirmationToken string          `json:"confirmation_token"`
-	Audience          Audience        `json:"audience"`
+	Audience          Audience        `json:"-"`
 	Revision          RevisionBinding `json:"revision"`
-	Now               time.Time       `json:"now,omitempty"`
+	Now               time.Time       `json:"-"`
 }
 
 type ValidateConfirmationTokenIDRequest struct {
 	ConfirmationTokenID string          `json:"confirmation_token_id"`
-	Audience            Audience        `json:"audience"`
+	Audience            Audience        `json:"-"`
 	Revision            RevisionBinding `json:"revision"`
-	Now                 time.Time       `json:"now,omitempty"`
+	Now                 time.Time       `json:"-"`
 }
 
 type ValidateSurfaceGatewayTokenRequest struct {
 	GatewayToken         string          `json:"plugin_gateway_token"`
 	PluginInstanceID     string          `json:"plugin_instance_id"`
 	SurfaceInstanceID    string          `json:"surface_instance_id"`
-	OwnerSessionHash     string          `json:"owner_session_hash,omitempty"`
-	OwnerUserHash        string          `json:"owner_user_hash,omitempty"`
-	OwnerEnvHash         string          `json:"owner_env_hash,omitempty"`
-	SessionChannelIDHash string          `json:"session_channel_id_hash,omitempty"`
+	OwnerSessionHash     string          `json:"-"`
+	OwnerUserHash        string          `json:"-"`
+	OwnerEnvHash         string          `json:"-"`
+	SessionChannelIDHash string          `json:"-"`
 	BridgeChannelID      string          `json:"bridge_channel_id"`
 	Revision             RevisionBinding `json:"revision"`
-	Now                  time.Time       `json:"now,omitempty"`
+	Now                  time.Time       `json:"-"`
 }
 
 type MintRuntimeExecutionLeaseRequest struct {
@@ -258,10 +259,10 @@ type MintRuntimeExecutionLeaseRequest struct {
 	PluginVersion          string                      `json:"plugin_version,omitempty"`
 	ActiveFingerprint      string                      `json:"active_fingerprint"`
 	SurfaceInstanceID      string                      `json:"surface_instance_id,omitempty"`
-	OwnerSessionHash       string                      `json:"owner_session_hash,omitempty"`
-	OwnerUserHash          string                      `json:"owner_user_hash,omitempty"`
-	OwnerEnvHash           string                      `json:"owner_env_hash,omitempty"`
-	SessionChannelIDHash   string                      `json:"session_channel_id_hash,omitempty"`
+	OwnerSessionHash       string                      `json:"-"`
+	OwnerUserHash          string                      `json:"-"`
+	OwnerEnvHash           string                      `json:"-"`
+	SessionChannelIDHash   string                      `json:"-"`
 	BridgeChannelID        string                      `json:"bridge_channel_id,omitempty"`
 	RuntimeInstanceID      string                      `json:"runtime_instance_id,omitempty"`
 	RuntimeGenerationID    string                      `json:"runtime_generation_id"`
@@ -277,7 +278,7 @@ type MintRuntimeExecutionLeaseRequest struct {
 	TargetDescriptorHashes []string                    `json:"target_descriptor_hashes,omitempty"`
 	Limits                 RuntimeExecutionLeaseLimits `json:"limits,omitempty"`
 	Revision               RevisionBinding             `json:"revision"`
-	Now                    time.Time                   `json:"now,omitempty"`
+	Now                    time.Time                   `json:"-"`
 	ExpiresAt              time.Time                   `json:"expires_at,omitempty"`
 }
 
@@ -325,34 +326,36 @@ type RuntimeExecutionLeaseResult struct {
 }
 
 type MintHandleGrantRequest struct {
-	PluginInstanceID    string          `json:"plugin_instance_id"`
-	ActiveFingerprint   string          `json:"active_fingerprint"`
-	RuntimeInstanceID   string          `json:"runtime_instance_id,omitempty"`
-	RuntimeGenerationID string          `json:"runtime_generation_id"`
-	RuntimeShardID      string          `json:"runtime_shard_id,omitempty"`
-	HandleID            string          `json:"handle_id"`
-	Method              string          `json:"method"`
-	Revision            RevisionBinding `json:"revision"`
-	Limits              Limits          `json:"limits,omitempty"`
-	Now                 time.Time       `json:"now,omitempty"`
-	ExpiresAt           time.Time       `json:"expires_at,omitempty"`
+	PluginInstanceID    string                   `json:"plugin_instance_id"`
+	ActiveFingerprint   string                   `json:"active_fingerprint"`
+	RuntimeInstanceID   string                   `json:"runtime_instance_id,omitempty"`
+	RuntimeGenerationID string                   `json:"runtime_generation_id"`
+	RuntimeShardID      string                   `json:"runtime_shard_id,omitempty"`
+	HandleID            string                   `json:"handle_id"`
+	Method              string                   `json:"method"`
+	ResourceScope       sessionctx.ResourceScope `json:"-"`
+	Revision            RevisionBinding          `json:"revision"`
+	Limits              Limits                   `json:"limits,omitempty"`
+	Now                 time.Time                `json:"-"`
+	ExpiresAt           time.Time                `json:"expires_at,omitempty"`
 }
 
 type HandleGrantResult struct {
-	HandleGrantToken    string    `json:"handle_grant_token"`
-	HandleGrantID       string    `json:"handle_grant_id"`
-	RuntimeGenerationID string    `json:"runtime_generation_id"`
-	HandleID            string    `json:"handle_id"`
-	Limits              Limits    `json:"limits,omitempty"`
-	IssuedAt            time.Time `json:"issued_at"`
-	ExpiresAt           time.Time `json:"expires_at"`
+	HandleGrantToken    string                   `json:"handle_grant_token"`
+	HandleGrantID       string                   `json:"handle_grant_id"`
+	RuntimeGenerationID string                   `json:"runtime_generation_id"`
+	HandleID            string                   `json:"handle_id"`
+	ResourceScope       sessionctx.ResourceScope `json:"resource_scope"`
+	Limits              Limits                   `json:"limits,omitempty"`
+	IssuedAt            time.Time                `json:"issued_at"`
+	ExpiresAt           time.Time                `json:"expires_at"`
 }
 
 type ValidateHandleGrantRequest struct {
 	HandleGrantToken string          `json:"handle_grant_token"`
-	Audience         Audience        `json:"audience"`
+	Audience         Audience        `json:"-"`
 	Revision         RevisionBinding `json:"revision"`
-	Now              time.Time       `json:"now,omitempty"`
+	Now              time.Time       `json:"-"`
 }
 
 type MintStreamTicketRequest struct {
@@ -366,10 +369,10 @@ type MintStreamTicketRequest struct {
 	EntrySHA256          string          `json:"entry_sha256,omitempty"`
 	AssetSessionNonce    string          `json:"asset_session_nonce,omitempty"`
 	RouteRole            string          `json:"route_role,omitempty"`
-	OwnerSessionHash     string          `json:"owner_session_hash,omitempty"`
-	OwnerUserHash        string          `json:"owner_user_hash,omitempty"`
-	OwnerEnvHash         string          `json:"owner_env_hash,omitempty"`
-	SessionChannelIDHash string          `json:"session_channel_id_hash,omitempty"`
+	OwnerSessionHash     string          `json:"-"`
+	OwnerUserHash        string          `json:"-"`
+	OwnerEnvHash         string          `json:"-"`
+	SessionChannelIDHash string          `json:"-"`
 	BridgeChannelID      string          `json:"bridge_channel_id"`
 	RuntimeGenerationID  string          `json:"runtime_generation_id,omitempty"`
 	StreamID             string          `json:"stream_id"`
@@ -377,7 +380,7 @@ type MintStreamTicketRequest struct {
 	StreamDirection      string          `json:"stream_direction"`
 	Method               string          `json:"method"`
 	Revision             RevisionBinding `json:"revision"`
-	Now                  time.Time       `json:"now,omitempty"`
+	Now                  time.Time       `json:"-"`
 	ExpiresAt            time.Time       `json:"expires_at,omitempty"`
 }
 
@@ -393,9 +396,9 @@ type StreamTicketResult struct {
 
 type ValidateStreamTicketRequest struct {
 	StreamTicket string          `json:"stream_ticket"`
-	Audience     Audience        `json:"audience"`
+	Audience     Audience        `json:"-"`
 	Revision     RevisionBinding `json:"revision"`
-	Now          time.Time       `json:"now,omitempty"`
+	Now          time.Time       `json:"-"`
 }
 
 type ValidateBoundStreamTicketRequest struct {
@@ -407,17 +410,17 @@ type ValidateBoundStreamTicketRequest struct {
 	SurfaceID            string          `json:"surface_id,omitempty"`
 	SurfaceInstanceID    string          `json:"surface_instance_id,omitempty"`
 	EntryPath            string          `json:"entry_path,omitempty"`
-	OwnerSessionHash     string          `json:"owner_session_hash,omitempty"`
-	OwnerUserHash        string          `json:"owner_user_hash,omitempty"`
-	OwnerEnvHash         string          `json:"owner_env_hash,omitempty"`
-	SessionChannelIDHash string          `json:"session_channel_id_hash,omitempty"`
+	OwnerSessionHash     string          `json:"-"`
+	OwnerUserHash        string          `json:"-"`
+	OwnerEnvHash         string          `json:"-"`
+	SessionChannelIDHash string          `json:"-"`
 	BridgeChannelID      string          `json:"bridge_channel_id,omitempty"`
 	StreamID             string          `json:"stream_id"`
 	OperationID          string          `json:"operation_id"`
 	StreamDirection      string          `json:"stream_direction"`
 	Method               string          `json:"method"`
 	Revision             RevisionBinding `json:"revision"`
-	Now                  time.Time       `json:"now,omitempty"`
+	Now                  time.Time       `json:"-"`
 }
 
 type surfaceState struct {
@@ -580,12 +583,12 @@ func (s *SurfaceTokenService) OpenSurface(req OpenSurfaceRequest) (SurfaceBootst
 }
 
 func (s *SurfaceTokenService) reserveSurfaceSession(session SurfaceSession, now time.Time) error {
-	revokedSurfaceIDs := make([]string, 0)
+	revokedSessions := make([]SurfaceSession, 0)
 	s.mu.Lock()
 	for surfaceInstanceID, state := range s.sessions {
 		if !now.Before(state.session.ExpiresAt) {
 			delete(s.sessions, surfaceInstanceID)
-			revokedSurfaceIDs = append(revokedSurfaceIDs, surfaceInstanceID)
+			revokedSessions = append(revokedSessions, state.session)
 		}
 	}
 
@@ -593,7 +596,7 @@ func (s *SurfaceTokenService) reserveSurfaceSession(session SurfaceSession, now 
 	if existing, exists := s.sessions[session.SurfaceInstanceID]; exists {
 		if surfaceSessionCanReplaceStaleBinding(existing.session, session) {
 			delete(s.sessions, session.SurfaceInstanceID)
-			revokedSurfaceIDs = append(revokedSurfaceIDs, session.SurfaceInstanceID)
+			revokedSessions = append(revokedSessions, existing.session)
 		} else {
 			reserveErr = ErrSurfaceSessionAlreadyExists
 		}
@@ -615,8 +618,8 @@ func (s *SurfaceTokenService) reserveSurfaceSession(session SurfaceSession, now 
 	}
 	s.mu.Unlock()
 
-	for _, surfaceInstanceID := range revokedSurfaceIDs {
-		s.tokens.RevokeSurface(surfaceInstanceID, now)
+	for _, revokedSession := range revokedSessions {
+		s.revokeSurfaceTokens(revokedSession, now)
 	}
 	return reserveErr
 }
@@ -688,7 +691,7 @@ func (s *SurfaceTokenService) ExchangeAssetTicket(req ExchangeAssetTicketRequest
 	current, ok := s.sessions[req.SurfaceInstanceID]
 	if !ok || current != state {
 		s.mu.Unlock()
-		s.tokens.RevokeSurface(req.SurfaceInstanceID, now)
+		s.revokeSurfaceTokens(state.session, now)
 		return AssetSessionResult{}, ErrTokenRevoked
 	}
 	state.assetSessionIssued = true
@@ -776,7 +779,7 @@ func (s *SurfaceTokenService) MarkSurfacePrepared(req MarkSurfacePreparedRequest
 	if !now.Before(state.session.ExpiresAt) {
 		delete(s.sessions, req.SurfaceInstanceID)
 		s.mu.Unlock()
-		s.tokens.RevokeSurface(req.SurfaceInstanceID, now)
+		s.revokeSurfaceTokens(state.session, now)
 		return ErrSurfaceSessionExpired
 	}
 	if !state.assetSessionIssued || state.assetSessionTokenID != req.AssetSessionID {
@@ -1208,7 +1211,8 @@ func (s *SurfaceTokenService) MintHandleGrant(req MintHandleGrantRequest) (Handl
 		strings.TrimSpace(req.ActiveFingerprint) == "" ||
 		strings.TrimSpace(req.RuntimeGenerationID) == "" ||
 		strings.TrimSpace(req.HandleID) == "" ||
-		strings.TrimSpace(req.Method) == "" {
+		strings.TrimSpace(req.Method) == "" ||
+		req.ResourceScope.Validate() != nil {
 		return HandleGrantResult{}, ErrMissingTokenAudience
 	}
 	now := req.Now
@@ -1232,6 +1236,7 @@ func (s *SurfaceTokenService) MintHandleGrant(req MintHandleGrantRequest) (Handl
 			RuntimeShardID:      req.RuntimeShardID,
 			HandleID:            req.HandleID,
 			Method:              req.Method,
+			ResourceScope:       req.ResourceScope,
 		},
 		Revision:  req.Revision,
 		ExpiresAt: expiresAt,
@@ -1246,6 +1251,7 @@ func (s *SurfaceTokenService) MintHandleGrant(req MintHandleGrantRequest) (Handl
 		HandleGrantID:       minted.TokenID,
 		RuntimeGenerationID: req.RuntimeGenerationID,
 		HandleID:            req.HandleID,
+		ResourceScope:       req.ResourceScope,
 		Limits:              minted.Limits,
 		IssuedAt:            minted.IssuedAt,
 		ExpiresAt:           minted.ExpiresAt,
@@ -1260,7 +1266,8 @@ func (s *SurfaceTokenService) ValidateHandleGrant(req ValidateHandleGrantRequest
 		strings.TrimSpace(req.Audience.ActiveFingerprint) == "" ||
 		strings.TrimSpace(req.Audience.RuntimeGenerationID) == "" ||
 		strings.TrimSpace(req.Audience.HandleID) == "" ||
-		strings.TrimSpace(req.Audience.Method) == "" {
+		strings.TrimSpace(req.Audience.Method) == "" ||
+		req.Audience.ResourceScope.Validate() != nil {
 		return TokenRecord{}, ErrMissingTokenAudience
 	}
 	return s.tokens.Validate(ValidateRequest{
@@ -1547,7 +1554,7 @@ func (s *SurfaceTokenService) DisposeSurface(surfaceInstanceID string, now time.
 		now = time.Now().UTC()
 	}
 	s.mu.Lock()
-	_, ok := s.sessions[surfaceInstanceID]
+	state, ok := s.sessions[surfaceInstanceID]
 	if ok {
 		delete(s.sessions, surfaceInstanceID)
 	}
@@ -1555,7 +1562,7 @@ func (s *SurfaceTokenService) DisposeSurface(surfaceInstanceID string, now time.
 	if !ok {
 		return false
 	}
-	s.tokens.RevokeSurface(surfaceInstanceID, now)
+	s.revokeSurfaceTokens(state.session, now)
 	return true
 }
 
@@ -1584,7 +1591,7 @@ func (s *SurfaceTokenService) DisposeBoundSurface(req DisposeSurfaceRequest) err
 	if !now.Before(state.session.ExpiresAt) {
 		delete(s.sessions, req.SurfaceInstanceID)
 		s.mu.Unlock()
-		s.tokens.RevokeSurface(req.SurfaceInstanceID, now)
+		s.revokeSurfaceTokens(state.session, now)
 		return ErrSurfaceSessionExpired
 	}
 	if state.session.BridgeNonce != req.BridgeNonce ||
@@ -1594,7 +1601,7 @@ func (s *SurfaceTokenService) DisposeBoundSurface(req DisposeSurfaceRequest) err
 	}
 	delete(s.sessions, req.SurfaceInstanceID)
 	s.mu.Unlock()
-	s.tokens.RevokeSurface(req.SurfaceInstanceID, now)
+	s.revokeSurfaceTokens(state.session, now)
 	return nil
 }
 
@@ -1615,7 +1622,7 @@ func (s *SurfaceTokenService) DisposeAssetSession(req ValidateAssetSessionReques
 	}
 	delete(s.sessions, validation.Session.SurfaceInstanceID)
 	s.mu.Unlock()
-	s.tokens.RevokeSurface(validation.Session.SurfaceInstanceID, now)
+	s.revokeSurfaceTokens(validation.Session, now)
 	return nil
 }
 
@@ -1631,7 +1638,7 @@ func (s *SurfaceTokenService) RevokeSurfaceScope(req RevokeSurfaceScopeRequest) 
 	if now.IsZero() {
 		now = time.Now().UTC()
 	}
-	revokedSurfaceIDs := make([]string, 0)
+	revokedSessions := make([]SurfaceSession, 0)
 	s.mu.Lock()
 	for surfaceInstanceID, state := range s.sessions {
 		if state.session.OwnerSessionHash != req.OwnerSessionHash ||
@@ -1641,13 +1648,13 @@ func (s *SurfaceTokenService) RevokeSurfaceScope(req RevokeSurfaceScopeRequest) 
 			continue
 		}
 		delete(s.sessions, surfaceInstanceID)
-		revokedSurfaceIDs = append(revokedSurfaceIDs, surfaceInstanceID)
+		revokedSessions = append(revokedSessions, state.session)
 	}
 	s.mu.Unlock()
-	for _, surfaceInstanceID := range revokedSurfaceIDs {
-		s.tokens.RevokeSurface(surfaceInstanceID, now)
+	for _, revokedSession := range revokedSessions {
+		s.revokeSurfaceTokens(revokedSession, now)
 	}
-	return len(revokedSurfaceIDs), nil
+	return len(revokedSessions), nil
 }
 
 func (s *SurfaceTokenService) RevokeAllSurfaces(now time.Time) int {
@@ -1657,17 +1664,17 @@ func (s *SurfaceTokenService) RevokeAllSurfaces(now time.Time) int {
 	if now.IsZero() {
 		now = time.Now().UTC()
 	}
-	revokedSurfaceIDs := make([]string, 0)
+	revokedSessions := make([]SurfaceSession, 0)
 	s.mu.Lock()
-	for surfaceInstanceID := range s.sessions {
+	for surfaceInstanceID, state := range s.sessions {
 		delete(s.sessions, surfaceInstanceID)
-		revokedSurfaceIDs = append(revokedSurfaceIDs, surfaceInstanceID)
+		revokedSessions = append(revokedSessions, state.session)
 	}
 	s.mu.Unlock()
-	for _, surfaceInstanceID := range revokedSurfaceIDs {
-		s.tokens.RevokeSurface(surfaceInstanceID, now)
+	for _, revokedSession := range revokedSessions {
+		s.revokeSurfaceTokens(revokedSession, now)
 	}
-	return len(revokedSurfaceIDs)
+	return len(revokedSessions)
 }
 
 // RevokeSurfacesExceptGeneration revokes sessions bound to runtime
@@ -1679,23 +1686,23 @@ func (s *SurfaceTokenService) RevokeSurfacesExceptGeneration(preservedGeneration
 	if now.IsZero() {
 		now = time.Now().UTC()
 	}
-	revokedSurfaceIDs := make([]string, 0)
+	revokedSessions := make([]SurfaceSession, 0)
 	s.mu.Lock()
 	for surfaceInstanceID, state := range s.sessions {
 		if state.session.RuntimeGenerationID == preservedGenerationID {
 			continue
 		}
 		delete(s.sessions, surfaceInstanceID)
-		revokedSurfaceIDs = append(revokedSurfaceIDs, surfaceInstanceID)
+		revokedSessions = append(revokedSessions, state.session)
 	}
 	s.mu.Unlock()
-	for _, surfaceInstanceID := range revokedSurfaceIDs {
-		s.tokens.RevokeSurface(surfaceInstanceID, now)
+	for _, revokedSession := range revokedSessions {
+		s.revokeSurfaceTokens(revokedSession, now)
 	}
-	return len(revokedSurfaceIDs)
+	return len(revokedSessions)
 }
 
-func (s *SurfaceTokenService) RevokePlugin(pluginInstanceID string, minimumRevokeEpoch uint64, now time.Time) (int, error) {
+func (s *SurfaceTokenService) RevokePlugin(ownerEnvHash string, pluginInstanceID string, minimumRevokeEpoch uint64, now time.Time) (int, error) {
 	if s == nil {
 		return 0, nil
 	}
@@ -1704,12 +1711,16 @@ func (s *SurfaceTokenService) RevokePlugin(pluginInstanceID string, minimumRevok
 	}
 	s.mu.Lock()
 	for surfaceInstanceID, state := range s.sessions {
-		if state.session.PluginInstanceID == pluginInstanceID {
+		if state.session.OwnerEnvHash == ownerEnvHash && state.session.PluginInstanceID == pluginInstanceID {
 			delete(s.sessions, surfaceInstanceID)
 		}
 	}
 	s.mu.Unlock()
-	return s.tokens.RevokePlugin(pluginInstanceID, minimumRevokeEpoch, now)
+	return s.tokens.RevokePlugin(ownerEnvHash, pluginInstanceID, minimumRevokeEpoch, now)
+}
+
+func (s *SurfaceTokenService) revokeSurfaceTokens(session SurfaceSession, now time.Time) {
+	s.tokens.RevokeSurface(session.OwnerEnvHash, session.PluginInstanceID, session.SurfaceInstanceID, now)
 }
 
 func (s *SurfaceTokenService) getState(surfaceInstanceID string, now time.Time) (surfaceState, error) {
@@ -1721,7 +1732,7 @@ func (s *SurfaceTokenService) getState(surfaceInstanceID string, now time.Time) 
 	}
 	if !now.Before(state.session.ExpiresAt) {
 		delete(s.sessions, surfaceInstanceID)
-		s.tokens.RevokeSurface(surfaceInstanceID, now)
+		s.revokeSurfaceTokens(state.session, now)
 		s.mu.Unlock()
 		return surfaceState{}, ErrSurfaceSessionExpired
 	}

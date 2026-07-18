@@ -20,6 +20,7 @@ import (
 	"github.com/floegence/redevplugin/pkg/observability"
 	"github.com/floegence/redevplugin/pkg/pluginpkg"
 	"github.com/floegence/redevplugin/pkg/runtimeclient"
+	"github.com/floegence/redevplugin/pkg/sessionctx"
 )
 
 func TestRuntimeLifecycleUsesInjectedSupervisor(t *testing.T) {
@@ -397,6 +398,7 @@ func TestRuntimeHandleGrantValidatorUsesSurfaceTokens(t *testing.T) {
 		RuntimeShardID:      "runtime_shard_1",
 		HandleID:            "storage:db",
 		Method:              "storage.sqlite",
+		ResourceScope:       sessionctx.ResourceScope{Kind: sessionctx.ScopeUser, OwnerEnvHash: "env_hash", OwnerUserHash: "user_hash"},
 		Revision:            revision,
 		Limits:              bridge.Limits{MaxTotalBytes: 4096},
 		Now:                 now,
@@ -414,6 +416,7 @@ func TestRuntimeHandleGrantValidatorUsesSurfaceTokens(t *testing.T) {
 		RuntimeShardID:      "runtime_shard_1",
 		HandleID:            "storage:db",
 		Method:              "storage.sqlite",
+		ResourceScope:       sessionctx.ResourceScope{Kind: sessionctx.ScopeUser, OwnerEnvHash: "env_hash", OwnerUserHash: "user_hash"},
 		PolicyRevision:      1,
 		ManagementRevision:  2,
 		RevokeEpoch:         3,
@@ -431,6 +434,7 @@ func TestRuntimeHandleGrantValidatorUsesSurfaceTokens(t *testing.T) {
 		RuntimeGenerationID: "runtime_gen_1",
 		HandleID:            "storage:other",
 		Method:              "storage.sqlite",
+		ResourceScope:       sessionctx.ResourceScope{Kind: sessionctx.ScopeUser, OwnerEnvHash: "env_hash", OwnerUserHash: "user_hash"},
 		PolicyRevision:      1,
 		ManagementRevision:  2,
 		RevokeEpoch:         3,

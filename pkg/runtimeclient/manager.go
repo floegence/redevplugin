@@ -82,7 +82,7 @@ type Manager interface {
 	Health(ctx context.Context) (ManagerHealth, error)
 	BindPlugin(ctx context.Context, pluginInstanceID string) (RuntimeBinding, error)
 	InvokeWorker(ctx context.Context, binding RuntimeBinding, lease Lease, method string, payload []byte) ([]byte, error)
-	Revoke(ctx context.Context, pluginInstanceID string, revokeEpoch uint64) (RevokeResult, error)
+	Revoke(ctx context.Context, req RevokeRequest) (RevokeResult, error)
 }
 
 // ProcessManagerOptions configures a ProcessManager. ShardCount and all
@@ -99,7 +99,7 @@ type processShard interface {
 	Stop(context.Context) error
 	Health(context.Context) (Health, error)
 	InvokeWorker(context.Context, Lease, string, []byte) ([]byte, error)
-	Revoke(context.Context, string, uint64) (RevokeResult, error)
+	Revoke(context.Context, RevokeRequest) (RevokeResult, error)
 }
 
 type processShardFactory func(ProcessSupervisorOptions) (processShard, error)
@@ -393,23 +393,23 @@ func (m *ProcessManager) InvokeWorker(ctx context.Context, binding RuntimeBindin
 	return shard.process.InvokeWorker(ctx, lease, method, payload)
 }
 
-func (m *ProcessManager) Revoke(ctx context.Context, pluginInstanceID string, revokeEpoch uint64) (RevokeResult, error) {
-	pluginInstanceID = strings.TrimSpace(pluginInstanceID)
+func (m *ProcessManager) Revoke(ctx context.Context, req RevokeRequest) (RevokeResult, error) {
+	req.PluginInstanceID = strings.TrimSpace(req.PluginInstanceID)
 	shards, boundErr := m.boundShards()
 	if boundErr != nil {
 		return RevokeResult{}, boundErr
 	}
-	if pluginInstanceID == "" {
-		return RevokeResult{}, fmt.Errorf("%w: plugin_instance_id is required", ErrRuntimeBindingInvalid)
+	if err := validateRevokeRequest(req); err != nil {
+		return RevokeResult{}, err
 	}
-	shard := shards[processShardIndex(pluginInstanceID, len(shards))]
+	shard := shards[processShardIndex(req.PluginInstanceID, len(shards))]
 	health, err := shard.process.Health(ctx)
 	if err == nil {
 		err = validateReadyHealth(health)
 	}
 	if err == nil {
 		var result RevokeResult
-		result, err = shard.process.Revoke(ctx, pluginInstanceID, revokeEpoch)
+		result, err = shard.process.Revoke(ctx, req)
 		if err == nil {
 			return result, nil
 		}
@@ -423,7 +423,7 @@ func (m *ProcessManager) Revoke(ctx context.Context, pluginInstanceID string, re
 			fmt.Errorf("terminate runtime shard %s after revoke failure: %w", shard.id, stopErr),
 		)
 	}
-	return RevokeResult{PluginInstanceID: pluginInstanceID, RevokeEpoch: revokeEpoch, RuntimeStopped: true}, nil
+	return RevokeResult{ResourceScope: req.ResourceScope, PluginInstanceID: req.PluginInstanceID, RevokeEpoch: req.RevokeEpoch, RuntimeStopped: true}, nil
 }
 
 func (m *ProcessManager) boundShards() ([]processManagerShard, error) {

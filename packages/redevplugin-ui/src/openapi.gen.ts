@@ -2034,7 +2034,7 @@ export interface components {
                 /** @constant */
                 source_revocations_schema_version: "source-revocations-v1";
                 /** @constant */
-                token_ticket_schema_version: "token-ticket-v2";
+                token_ticket_schema_version: "token-ticket-v3";
                 /** @constant */
                 bridge_schema_version: "bridge-v5";
                 /** @constant */

@@ -53,8 +53,9 @@ export GOWORK=off
   grep -q '"unsigned_policy": { "enum": \["dev_only", "review_required", "block"\] }' spec/plugin/source-policy-v1.schema.json
   grep -q '"schema_version": { "const": "redevplugin.source_revocations.v1" }' spec/plugin/source-revocations-v1.schema.json
   grep -q '"revoked_key_ids"' spec/plugin/source-revocations-v1.schema.json
-  ! grep -q '"runtime_execution_lease"' spec/plugin/token-ticket-v2.schema.json
-  grep -q '"handle_grant"' spec/plugin/token-ticket-v2.schema.json
+  ! grep -q '"runtime_execution_lease"' spec/plugin/token-ticket-v3.schema.json
+  grep -q '"handle_grant"' spec/plugin/token-ticket-v3.schema.json
+  grep -q '"resource_scope"' spec/plugin/token-ticket-v3.schema.json
   grep -q '"schema_version": "redevplugin.runtime_execution_lease.signature_fixture.v1"' testdata/contracts/runtime-lease-signature-v1.json
   grep -q '\\"token_kind\\":\\"runtime_execution_lease\\"' testdata/contracts/runtime-lease-signature-v1.json
   ! grep -q '"type": { "const": "redevplugin.bridge.handshake" }' spec/plugin/bridge-v5.schema.json

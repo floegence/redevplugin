@@ -356,8 +356,9 @@
           "payload": {
             "type": "object",
             "additionalProperties": false,
-            "required": ["plugin_instance_id", "revoke_epoch"],
+            "required": ["resource_scope", "plugin_instance_id", "revoke_epoch"],
             "properties": {
+              "resource_scope": { "$ref": "#/$defs/environment_resource_scope" },
               "plugin_instance_id": { "type": "string", "minLength": 1 },
               "revoke_epoch": { "type": "integer", "minimum": 0 }
             }
@@ -595,6 +596,7 @@
         "runtime_shard_id",
         "handle_id",
         "method",
+        "resource_scope",
         "policy_revision",
         "management_revision",
         "revoke_epoch"
@@ -608,6 +610,7 @@
         "runtime_shard_id": { "type": "string", "minLength": 1 },
         "handle_id": { "type": "string", "minLength": 1 },
         "method": { "type": "string", "minLength": 1 },
+        "resource_scope": { "$ref": "#/$defs/resource_scope" },
         "policy_revision": { "type": "integer", "minimum": 0 },
         "management_revision": { "type": "integer", "minimum": 0 },
         "revoke_epoch": { "type": "integer", "minimum": 0 }
@@ -618,13 +621,14 @@
         {
           "type": "object",
           "additionalProperties": false,
-          "required": ["ok", "handle_grant_id", "handle_id", "method", "runtime_generation_id"],
+          "required": ["ok", "handle_grant_id", "handle_id", "method", "runtime_generation_id", "resource_scope"],
           "properties": {
             "ok": { "const": true },
             "handle_grant_id": { "type": "string", "minLength": 1 },
             "handle_id": { "type": "string", "minLength": 1 },
             "method": { "type": "string", "minLength": 1 },
             "runtime_generation_id": { "type": "string", "minLength": 1 },
+            "resource_scope": { "$ref": "#/$defs/resource_scope" },
             "max_bytes_per_second": { "type": "integer", "minimum": 0 },
             "max_total_bytes": { "type": "integer", "minimum": 0 }
           }
@@ -644,6 +648,7 @@
         "runtime_shard_id",
         "handle_id",
         "method",
+        "resource_scope",
         "policy_revision",
         "management_revision",
         "revoke_epoch",
@@ -659,6 +664,7 @@
         "runtime_shard_id": { "type": "string", "minLength": 1 },
         "handle_id": { "type": "string", "pattern": "^storage:[A-Za-z0-9_.-]+$" },
         "method": { "const": "storage.files" },
+        "resource_scope": { "$ref": "#/$defs/resource_scope" },
         "policy_revision": { "type": "integer", "minimum": 0 },
         "management_revision": { "type": "integer", "minimum": 0 },
         "revoke_epoch": { "type": "integer", "minimum": 0 },
@@ -749,6 +755,7 @@
         "runtime_shard_id",
         "handle_id",
         "method",
+        "resource_scope",
         "policy_revision",
         "management_revision",
         "revoke_epoch",
@@ -764,6 +771,7 @@
         "runtime_shard_id": { "type": "string", "minLength": 1 },
         "handle_id": { "type": "string", "pattern": "^storage:[A-Za-z0-9_.-]+$" },
         "method": { "const": "storage.kv" },
+        "resource_scope": { "$ref": "#/$defs/resource_scope" },
         "policy_revision": { "type": "integer", "minimum": 0 },
         "management_revision": { "type": "integer", "minimum": 0 },
         "revoke_epoch": { "type": "integer", "minimum": 0 },
@@ -853,6 +861,7 @@
         "runtime_shard_id",
         "handle_id",
         "method",
+        "resource_scope",
         "policy_revision",
         "management_revision",
         "revoke_epoch",
@@ -869,6 +878,7 @@
         "runtime_shard_id": { "type": "string", "minLength": 1 },
         "handle_id": { "type": "string", "pattern": "^storage:[A-Za-z0-9_.-]+$" },
         "method": { "const": "storage.sqlite" },
+        "resource_scope": { "$ref": "#/$defs/resource_scope" },
         "policy_revision": { "type": "integer", "minimum": 0 },
         "management_revision": { "type": "integer", "minimum": 0 },
         "revoke_epoch": { "type": "integer", "minimum": 0 },
@@ -1142,6 +1152,15 @@
         { "properties": { "kind": { "const": "environment" } }, "not": { "required": ["owner_user_hash"] } }
       ]
     },
+    "environment_resource_scope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "owner_env_hash"],
+      "properties": {
+        "kind": { "const": "environment" },
+        "owner_env_hash": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$" }
+      }
+    },
     "network_destination": {
       "type": "object",
       "additionalProperties": false,
@@ -1181,6 +1200,7 @@
       "type": "object",
       "additionalProperties": false,
       "required": [
+        "resource_scope",
         "plugin_instance_id",
         "revoke_epoch",
         "closed_socket_count",
@@ -1188,6 +1208,7 @@
         "closed_storage_handle_count"
       ],
       "properties": {
+        "resource_scope": { "$ref": "#/$defs/environment_resource_scope" },
         "plugin_instance_id": { "type": "string", "minLength": 1 },
         "revoke_epoch": { "type": "integer", "minimum": 0 },
         "closed_socket_count": { "type": "integer", "minimum": 0 },

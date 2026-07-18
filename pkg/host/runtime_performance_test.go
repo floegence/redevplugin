@@ -17,7 +17,6 @@ import (
 
 	"github.com/floegence/redevplugin/internal/performanceevidence"
 	"github.com/floegence/redevplugin/pkg/connectivity"
-	"github.com/floegence/redevplugin/pkg/manifest"
 	"github.com/floegence/redevplugin/pkg/observability"
 	"github.com/floegence/redevplugin/pkg/pluginpkg"
 	"github.com/floegence/redevplugin/pkg/runtimeclient"
@@ -489,8 +488,8 @@ func (m performanceRuntimeManager) InvokeWorker(ctx context.Context, _ runtimecl
 	return m.supervisor.InvokeWorker(ctx, lease, method, payload)
 }
 
-func (m performanceRuntimeManager) Revoke(ctx context.Context, pluginInstanceID string, revokeEpoch uint64) (runtimeclient.RevokeResult, error) {
-	return m.supervisor.Revoke(ctx, pluginInstanceID, revokeEpoch)
+func (m performanceRuntimeManager) Revoke(ctx context.Context, req runtimeclient.RevokeRequest) (runtimeclient.RevokeResult, error) {
+	return m.supervisor.Revoke(ctx, req)
 }
 
 func callWorkerConcurrentlyBounded(h *Host, pluginInstanceID string, gatewayToken string, count int, maxInFlight int) ([]error, []time.Duration) {

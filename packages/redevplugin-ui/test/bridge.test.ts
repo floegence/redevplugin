@@ -194,7 +194,7 @@ test("platform client reads compatibility manifest through host API", async () =
         release_metadata_schema_version: "release-metadata-v5",
         source_policy_schema_version: "source-policy-v1",
         source_revocations_schema_version: "source-revocations-v1",
-        token_ticket_schema_version: "token-ticket-v2",
+        token_ticket_schema_version: "token-ticket-v3",
         bridge_schema_version: "bridge-v5",
         opaque_surface_document_schema_version: "opaque-surface-document-v3",
         opaque_surface_transport_schema_version: "opaque-surface-transport-v4",

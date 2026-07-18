@@ -164,7 +164,7 @@ window source, frame generation, port, asset session, surface instance, bridge
 nonce, active fingerprint, owner and session hashes, management revision, and revoke
 epoch. `event.origin` is diagnostic context only.
 
-Token and ticket kinds are described in `token-ticket-v2.schema.json`. Schema
+Token and ticket kinds are described in `token-ticket-v3.schema.json`. Schema
 tests bind every token kind to its required `use`, audience fields, and
 token-id namespace:
 

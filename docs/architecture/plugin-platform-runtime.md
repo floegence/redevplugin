@@ -320,7 +320,7 @@ Machine-readable contracts are first-class platform artifacts:
 - `spec/plugin/release-metadata-v5.schema.json`;
 - `spec/plugin/source-policy-v1.schema.json`;
 - `spec/plugin/source-revocations-v1.schema.json`;
-- `spec/plugin/token-ticket-v2.schema.json`;
+- `spec/plugin/token-ticket-v3.schema.json`;
 - `spec/plugin/bridge-v5.schema.json`;
 - `spec/plugin/opaque-surface-document-v3.schema.json`;
 - `spec/plugin/opaque-surface-transport-v4.schema.json`;

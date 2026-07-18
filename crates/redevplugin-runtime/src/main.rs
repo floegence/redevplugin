@@ -1324,7 +1324,8 @@ fn perform_multiplexed_hostcall(
                 &request_id,
                 &execution.runtime_generation_id,
                 &req,
-            );
+            )
+            .map_err(ipc_contract_error)?;
             let response = wait_for_hostcall_response(job, execution, &request_id, frame)?;
             redevplugin_ipc::validate_storage_file_response(
                 &response,
@@ -1350,7 +1351,8 @@ fn perform_multiplexed_hostcall(
                 &request_id,
                 &execution.runtime_generation_id,
                 &req,
-            );
+            )
+            .map_err(ipc_contract_error)?;
             let response = wait_for_hostcall_response(job, execution, &request_id, frame)?;
             redevplugin_ipc::validate_storage_kv_response(
                 &response,
@@ -1376,7 +1378,8 @@ fn perform_multiplexed_hostcall(
                 &request_id,
                 &execution.runtime_generation_id,
                 &req,
-            );
+            )
+            .map_err(ipc_contract_error)?;
             let response = wait_for_hostcall_response(job, execution, &request_id, frame)?;
             redevplugin_ipc::validate_storage_sqlite_response(
                 &response,
@@ -1746,15 +1749,24 @@ impl RuntimeSharedState {
     }
 }
 
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+struct RuntimeRevocationKey {
+    owner_env_hash: String,
+    plugin_instance_id: String,
+}
+
 #[derive(Default)]
 struct RuntimeRevocations {
-    revoked_epoch_by_plugin: HashMap<String, u64>,
+    revoked_epoch_by_plugin: HashMap<RuntimeRevocationKey, u64>,
 }
 
 impl RuntimeRevocations {
-    fn revoke_plugin(&mut self, plugin_instance_id: &str, revoke_epoch: u64) {
+    fn revoke_plugin(&mut self, owner_env_hash: &str, plugin_instance_id: &str, revoke_epoch: u64) {
         self.revoked_epoch_by_plugin
-            .entry(plugin_instance_id.to_string())
+            .entry(RuntimeRevocationKey {
+                owner_env_hash: owner_env_hash.to_string(),
+                plugin_instance_id: plugin_instance_id.to_string(),
+            })
             .and_modify(|current| *current = (*current).max(revoke_epoch))
             .or_insert(revoke_epoch);
     }
@@ -1771,8 +1783,13 @@ impl RuntimeRevocations {
         invocation: &redevplugin_ipc::WorkerInvocationContext,
     ) -> Result<(), RuntimeRevocationError> {
         let plugin_instance_id = invocation.plugin_instance_id.clone();
+        let owner_env_hash = invocation.owner_env_hash.clone();
         let invocation_epoch = invocation.revoke_epoch;
-        match self.revoked_epoch_by_plugin.get(&plugin_instance_id) {
+        let key = RuntimeRevocationKey {
+            owner_env_hash,
+            plugin_instance_id: plugin_instance_id.clone(),
+        };
+        match self.revoked_epoch_by_plugin.get(&key) {
             Some(revoked_epoch) if invocation_epoch < *revoked_epoch => {
                 Err(RuntimeRevocationError::Revoked {
                     plugin_instance_id,
@@ -1975,15 +1992,21 @@ fn handle_revoke_epoch(
         .revocations
         .lock()
         .expect("runtime revocation mutex poisoned")
-        .revoke_plugin(&request.plugin_instance_id, request.revoke_epoch);
+        .revoke_plugin(
+            &request.resource_scope.owner_env_hash,
+            &request.plugin_instance_id,
+            request.revoke_epoch,
+        );
     shared.control.refresh_without_staleness_change();
     let result_json = redevplugin_ipc::revoke_epoch_ack_result_json(
+        &request.resource_scope,
         &request.plugin_instance_id,
         request.revoke_epoch,
         0,
         0,
         0,
-    );
+    )
+    .map_err(ipc_contract_error)?;
     ipc_frame(redevplugin_ipc::success_response_frame(
         redevplugin_ipc::FRAME_TYPE_REVOKE_EPOCH_ACK,
         request_id,
@@ -2727,6 +2750,24 @@ fn require_non_empty(value: &str, field: &str) -> Result<(), String> {
     }
 }
 
+fn invocation_resource_scope(
+    context: &redevplugin_ipc::WorkerInvocationContext,
+    scope: String,
+) -> Result<redevplugin_ipc::NetworkResourceScope, String> {
+    let owner_user_hash = if scope == "user" {
+        context.owner_user_hash.clone()
+    } else if scope == "environment" {
+        String::new()
+    } else {
+        return Err("broker resource scope is invalid".to_string());
+    };
+    Ok(redevplugin_ipc::NetworkResourceScope {
+        kind: scope,
+        owner_env_hash: context.owner_env_hash.clone(),
+        owner_user_hash,
+    })
+}
+
 fn storage_file_request_parsed(
     invocation: &redevplugin_ipc::ParsedWorkerInvocation,
     runtime_generation_id: &str,
@@ -2741,6 +2782,10 @@ fn storage_file_request_parsed(
     }
     let context = invocation.context().map_err(ipc_contract_error)?;
     let store_id = request.store_id;
+    let scope = invocation
+        .storage_broker_scope(&store_id)
+        .map_err(ipc_contract_error)?;
+    let resource_scope = invocation_resource_scope(&context, scope)?;
     let handle_grant_token = invocation
         .storage_handle_grant(&store_id)
         .map_err(ipc_contract_error)?;
@@ -2753,6 +2798,7 @@ fn storage_file_request_parsed(
         runtime_shard_id: context.runtime_shard_id,
         handle_id: format!("storage:{store_id}"),
         method: "storage.files".to_string(),
+        resource_scope,
         policy_revision: context.policy_revision,
         management_revision: context.management_revision,
         revoke_epoch: context.revoke_epoch,
@@ -2780,6 +2826,10 @@ fn storage_kv_request_parsed(
     }
     let context = invocation.context().map_err(ipc_contract_error)?;
     let store_id = request.store_id;
+    let scope = invocation
+        .storage_broker_scope(&store_id)
+        .map_err(ipc_contract_error)?;
+    let resource_scope = invocation_resource_scope(&context, scope)?;
     let handle_grant_token = invocation
         .storage_handle_grant(&store_id)
         .map_err(ipc_contract_error)?;
@@ -2792,6 +2842,7 @@ fn storage_kv_request_parsed(
         runtime_shard_id: context.runtime_shard_id,
         handle_id: format!("storage:{store_id}"),
         method: "storage.kv".to_string(),
+        resource_scope,
         policy_revision: context.policy_revision,
         management_revision: context.management_revision,
         revoke_epoch: context.revoke_epoch,
@@ -2817,6 +2868,10 @@ fn storage_sqlite_request_parsed(
     require_non_empty(&request.sql, "sql")?;
     let context = invocation.context().map_err(ipc_contract_error)?;
     let store_id = request.store_id;
+    let scope = invocation
+        .storage_broker_scope(&store_id)
+        .map_err(ipc_contract_error)?;
+    let resource_scope = invocation_resource_scope(&context, scope)?;
     let handle_grant_token = invocation
         .storage_handle_grant(&store_id)
         .map_err(ipc_contract_error)?;
@@ -2829,6 +2884,7 @@ fn storage_sqlite_request_parsed(
         runtime_shard_id: context.runtime_shard_id,
         handle_id: format!("storage:{store_id}"),
         method: "storage.sqlite".to_string(),
+        resource_scope,
         policy_revision: context.policy_revision,
         management_revision: context.management_revision,
         revoke_epoch: context.revoke_epoch,
@@ -3612,9 +3668,9 @@ mod tests {
     #[test]
     fn runtime_revocations_keep_highest_epoch_per_plugin() {
         let mut revocations = RuntimeRevocations::default();
-        revocations.revoke_plugin("plugini_1", 4);
-        revocations.revoke_plugin("plugini_1", 2);
-        revocations.revoke_plugin("plugini_2", 1);
+        revocations.revoke_plugin("env_hash", "plugini_1", 4);
+        revocations.revoke_plugin("env_hash", "plugini_1", 2);
+        revocations.revoke_plugin("env_hash", "plugini_2", 1);
 
         let stale = revocations
             .validate_invocation_frame(&worker_invocation_frame("plugini_1", 3))
@@ -3633,6 +3689,13 @@ mod tests {
         revocations
             .validate_invocation_frame(&worker_invocation_frame("plugini_2", 1))
             .expect("another plugin has an independent revoke epoch");
+        revocations
+            .validate_invocation_frame(&worker_invocation_frame_for_env(
+                "plugini_1",
+                3,
+                "env_other",
+            ))
+            .expect("the same plugin id in another environment has an independent revoke epoch");
     }
 
     #[test]
@@ -3788,7 +3851,7 @@ mod tests {
             .revocations
             .lock()
             .expect("runtime revocation mutex")
-            .revoke_plugin("plugini_1", 2);
+            .revoke_plugin("env_hash", "plugini_1", 2);
         let frame = worker_invocation_frame("plugini_1", 1);
         let mut host_io_calls = 0;
         let result = shared.validate_hostcall(&frame, 1_000).map(|()| {
@@ -3823,11 +3886,15 @@ mod tests {
             &shared,
             "r1",
             "g1",
-            r#"{"ipc_version":"rust-ipc-v4","frame_type":"revoke_epoch","request_id":"r1","runtime_generation_id":"g1","payload":{"plugin_instance_id":"plugini_1","revoke_epoch":7}}"#,
+            r#"{"ipc_version":"rust-ipc-v4","frame_type":"revoke_epoch","request_id":"r1","runtime_generation_id":"g1","payload":{"resource_scope":{"kind":"environment","owner_env_hash":"env_hash"},"plugin_instance_id":"plugini_1","revoke_epoch":7}}"#,
         )
         .expect("revoke epoch response");
         assert!(response.contains(r#""frame_type":"revoke_epoch_ack""#));
         assert!(response.contains(r#""ok":true"#));
+        assert!(
+            response
+                .contains(r#""resource_scope":{"kind":"environment","owner_env_hash":"env_hash"}"#)
+        );
         assert!(response.contains(r#""plugin_instance_id":"plugini_1""#));
         assert!(response.contains(r#""revoke_epoch":7"#));
         assert!(response.contains(r#""closed_socket_count":0"#));
@@ -3860,7 +3927,8 @@ mod tests {
         invocation
             .validate_storage_broker_access(&request.store_id, &request.operation)
             .expect("storage access is authorized");
-        let frame = redevplugin_ipc::storage_file_frame("r1:storage_file", "g1", &request);
+        let frame = redevplugin_ipc::storage_file_frame("r1:storage_file", "g1", &request)
+            .expect("valid storage file frame");
         assert!(frame.contains(r#""frame_type":"storage_file""#), "{frame}");
         let response = r#"{"ipc_version":"rust-ipc-v4","frame_type":"storage_file","request_id":"r1:storage_file","runtime_generation_id":"g1","payload":{"ok":true,"path":"notes/from-memory.txt","size_bytes":34,"usage":{"plugin_instance_id":"plugini_1","store_id":"workspace","usage_bytes":34,"quota_bytes":4096,"usage_files":1,"quota_files":64}}}"#;
         redevplugin_ipc::validate_storage_file_response(
@@ -3999,7 +4067,7 @@ mod tests {
             &shared,
             "r1",
             "g1",
-            r#"{"ipc_version":"rust-ipc-v4","frame_type":"revoke_epoch","request_id":"r1","runtime_generation_id":"g1","payload":{"plugin_instance_id":"plugini_1"}}"#,
+            r#"{"ipc_version":"rust-ipc-v4","frame_type":"revoke_epoch","request_id":"r1","runtime_generation_id":"g1","payload":{"resource_scope":{"kind":"environment","owner_env_hash":"env_hash"},"plugin_instance_id":"plugini_1"}}"#,
         )
         .expect("invalid revoke epoch error response");
         assert!(response.contains(r#""frame_type":"revoke_epoch_ack""#));
@@ -4489,7 +4557,7 @@ mod tests {
 
     #[test]
     fn storage_request_uses_host_only_grant_map() {
-        let invocation = r#"{"ipc_version":"rust-ipc-v4","frame_type":"invoke_worker","request_id":"r1","runtime_generation_id":"g1","payload":{"lease":{"plugin_instance_id":"plugini_1","runtime_shard_id":"runtime_shard_signed"},"method":"notes.list","invocation":{"plugin_id":"com.example.notes","plugin_instance_id":"plugini_1","active_fingerprint":"sha256:active","runtime_instance_id":"runtime_1","runtime_generation_id":"g1","policy_revision":1,"management_revision":2,"revoke_epoch":3,"storage_handle_grants":{"notes":"handle_grant.host-only-secret"},"method":"notes.list","effect":"read","execution":"sync"}}}"#;
+        let invocation = r#"{"ipc_version":"rust-ipc-v4","frame_type":"invoke_worker","request_id":"r1","runtime_generation_id":"g1","payload":{"lease":{"plugin_instance_id":"plugini_1","runtime_shard_id":"runtime_shard_signed"},"method":"notes.list","invocation":{"plugin_id":"com.example.notes","plugin_instance_id":"plugini_1","active_fingerprint":"sha256:active","runtime_instance_id":"runtime_1","runtime_generation_id":"g1","policy_revision":1,"management_revision":2,"revoke_epoch":3,"owner_user_hash":"user_hash","owner_env_hash":"env_hash","storage_handle_grants":{"notes":"handle_grant.host-only-secret"},"broker_access":{"storage":[{"store_id":"notes","scope":"user","operations":["query"]}]},"method":"notes.list","effect":"read","execution":"sync"}}}"#;
         let request = r#"{"store_id":"notes","operation":"query","database":"notes.sqlite","sql":"SELECT id FROM notes","args":[]}"#;
         let invocation =
             redevplugin_ipc::parse_worker_invocation(invocation).expect("typed invocation");
@@ -4499,6 +4567,9 @@ mod tests {
         assert_eq!(got.handle_grant_token, "handle_grant.host-only-secret");
         assert_eq!(got.runtime_shard_id, "runtime_shard_signed");
         assert_eq!(got.store_id, "notes");
+        assert_eq!(got.resource_scope.kind, "user");
+        assert_eq!(got.resource_scope.owner_env_hash, "env_hash");
+        assert_eq!(got.resource_scope.owner_user_hash, "user_hash");
     }
 
     #[test]
@@ -4615,27 +4686,43 @@ mod tests {
     }
 
     fn worker_invocation_frame(plugin_instance_id: &str, revoke_epoch: u64) -> String {
-        worker_invocation_frame_with_lease(plugin_instance_id, revoke_epoch, "lease_1", "nonce_1")
+        worker_invocation_frame_for_env(plugin_instance_id, revoke_epoch, "env_hash")
+    }
+
+    fn worker_invocation_frame_for_env(
+        plugin_instance_id: &str,
+        revoke_epoch: u64,
+        owner_env_hash: &str,
+    ) -> String {
+        worker_invocation_frame_with_lease_for_env(
+            plugin_instance_id,
+            revoke_epoch,
+            "lease_1",
+            "nonce_1",
+            owner_env_hash,
+        )
     }
 
     fn broker_invocation_frame(plugin_instance_id: &str) -> String {
         format!(
-            r#"{{"ipc_version":"rust-ipc-v4","frame_type":"invoke_worker","request_id":"r1","runtime_generation_id":"g1","payload":{{"lease":{{"runtime_shard_id":"runtime_shard_signed"}},"method":"worker.echo","invocation":{{"plugin_id":"com.example.worker","plugin_instance_id":"{plugin_instance_id}","active_fingerprint":"sha256:active","runtime_instance_id":"runtime_1","runtime_generation_id":"g1","policy_revision":1,"management_revision":1,"revoke_epoch":1,"storage_handle_grants":{{"workspace":"handle_grant.secret"}},"broker_access":{{"storage":[{{"store_id":"workspace","operations":["read","write","delete","list"]}},{{"store_id":"notes","operations":["query","exec"]}}],"network":[{{"connector_id":"api","transport":"http","scope":"user","operations":["http","http_stream"],"http_methods":["GET","POST"]}}]}},"method":"worker.echo","effect":"write","execution":"subscription","stream_id":"stream_1","surface_instance_id":"surface_1","owner_session_hash":"session_hash","owner_user_hash":"user_hash","owner_env_hash":"env_hash","session_channel_id_hash":"channel_hash","bridge_channel_id":"bridge_1"}}}}}}"#
+            r#"{{"ipc_version":"rust-ipc-v4","frame_type":"invoke_worker","request_id":"r1","runtime_generation_id":"g1","payload":{{"lease":{{"runtime_shard_id":"runtime_shard_signed"}},"method":"worker.echo","invocation":{{"plugin_id":"com.example.worker","plugin_instance_id":"{plugin_instance_id}","active_fingerprint":"sha256:active","runtime_instance_id":"runtime_1","runtime_generation_id":"g1","policy_revision":1,"management_revision":1,"revoke_epoch":1,"storage_handle_grants":{{"workspace":"handle_grant.secret"}},"broker_access":{{"storage":[{{"store_id":"workspace","scope":"user","operations":["read","write","delete","list"]}},{{"store_id":"notes","scope":"user","operations":["query","exec"]}}],"network":[{{"connector_id":"api","transport":"http","scope":"user","operations":["http","http_stream"],"http_methods":["GET","POST"]}}]}},"method":"worker.echo","effect":"write","execution":"subscription","stream_id":"stream_1","surface_instance_id":"surface_1","owner_session_hash":"session_hash","owner_user_hash":"user_hash","owner_env_hash":"env_hash","session_channel_id_hash":"channel_hash","bridge_channel_id":"bridge_1"}}}}}}"#
         )
     }
 
-    fn worker_invocation_frame_with_lease(
+    fn worker_invocation_frame_with_lease_for_env(
         plugin_instance_id: &str,
         revoke_epoch: u64,
         lease_id: &str,
         lease_nonce: &str,
+        owner_env_hash: &str,
     ) -> String {
-        worker_invocation_frame_with_lease_expiry(
+        worker_invocation_frame_with_lease_expiry_for_env(
             plugin_instance_id,
             revoke_epoch,
             lease_id,
             lease_nonce,
             10_000,
+            owner_env_hash,
         )
     }
 
@@ -4646,8 +4733,26 @@ mod tests {
         lease_nonce: &str,
         expires_at_unix_ms: i64,
     ) -> String {
+        worker_invocation_frame_with_lease_expiry_for_env(
+            plugin_instance_id,
+            revoke_epoch,
+            lease_id,
+            lease_nonce,
+            expires_at_unix_ms,
+            "env_hash",
+        )
+    }
+
+    fn worker_invocation_frame_with_lease_expiry_for_env(
+        plugin_instance_id: &str,
+        revoke_epoch: u64,
+        lease_id: &str,
+        lease_nonce: &str,
+        expires_at_unix_ms: i64,
+        owner_env_hash: &str,
+    ) -> String {
         format!(
-            r#"{{"ipc_version":"rust-ipc-v4","frame_type":"invoke_worker","request_id":"r1","runtime_generation_id":"g1","payload":{{"lease":{{"lease_id":"{lease_id}","lease_nonce":"{lease_nonce}","runtime_generation_id":"g1","runtime_shard_id":"runtime_shard_signed","plugin_instance_id":"{plugin_instance_id}","revoke_epoch":{revoke_epoch},"expires_at_unix_ms":{expires_at_unix_ms}}},"method":"worker.echo","invocation":{{"plugin_id":"com.example.worker","plugin_instance_id":"{plugin_instance_id}","active_fingerprint":"sha256:active","runtime_instance_id":"runtime_1","runtime_generation_id":"g1","policy_revision":1,"management_revision":1,"revoke_epoch":{revoke_epoch},"package_hash":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","worker_id":"backend","worker_mode":"job","worker_scope":"user","artifact":"workers/backend.wasm","artifact_sha256":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","abi":"redevplugin-wasm-worker-v2","method":"worker.echo","effect":"read","execution":"sync","audit_correlation_id":"audit_1","params_sha256":"sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a","params":{{}},"broker_access":{{}},"broker_access_sha256":"sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"}}}}}}"#
+            r#"{{"ipc_version":"rust-ipc-v4","frame_type":"invoke_worker","request_id":"r1","runtime_generation_id":"g1","payload":{{"lease":{{"lease_id":"{lease_id}","lease_nonce":"{lease_nonce}","runtime_generation_id":"g1","runtime_shard_id":"runtime_shard_signed","plugin_instance_id":"{plugin_instance_id}","owner_user_hash":"user_hash","owner_env_hash":"{owner_env_hash}","revoke_epoch":{revoke_epoch},"expires_at_unix_ms":{expires_at_unix_ms}}},"method":"worker.echo","invocation":{{"plugin_id":"com.example.worker","plugin_instance_id":"{plugin_instance_id}","active_fingerprint":"sha256:active","runtime_instance_id":"runtime_1","runtime_generation_id":"g1","policy_revision":1,"management_revision":1,"revoke_epoch":{revoke_epoch},"package_hash":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","worker_id":"backend","worker_mode":"job","worker_scope":"user","artifact":"workers/backend.wasm","artifact_sha256":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","abi":"redevplugin-wasm-worker-v2","method":"worker.echo","effect":"read","execution":"sync","audit_correlation_id":"audit_1","owner_user_hash":"user_hash","owner_env_hash":"{owner_env_hash}","params_sha256":"sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a","params":{{}},"broker_access":{{}},"broker_access_sha256":"sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"}}}}}}"#
         )
     }
 

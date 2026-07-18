@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/floegence/redevplugin/pkg/sessionctx"
 )
 
 func TestSurfaceBootstrapJSONOmitsInternalOwnerScope(t *testing.T) {
@@ -22,6 +24,61 @@ func TestSurfaceBootstrapJSONOmitsInternalOwnerScope(t *testing.T) {
 		if strings.Contains(string(encoded), internal) {
 			t.Fatalf("SurfaceBootstrap JSON exposed %q: %s", internal, encoded)
 		}
+	}
+}
+
+func TestBridgeCommandDTOsDoNotSerializePrivateContext(t *testing.T) {
+	now := testNow()
+	audience := Audience{
+		PluginInstanceID:     "plugini_private",
+		ActiveFingerprint:    "sha256:private",
+		OwnerSessionHash:     "session_private",
+		OwnerUserHash:        "user_private",
+		OwnerEnvHash:         "env_private",
+		SessionChannelIDHash: "channel_private",
+		ResourceScope: sessionctx.ResourceScope{
+			Kind: sessionctx.ScopeUser, OwnerEnvHash: "env_private", OwnerUserHash: "user_private",
+		},
+	}
+	requests := map[string]any{
+		"token mint":               MintRequest{Audience: audience, Now: now},
+		"token validate":           ValidateRequest{Audience: audience, Now: now},
+		"token id validate":        ValidateTokenIDRequest{Audience: audience, Now: now},
+		"token inspect":            InspectRequest{Now: now},
+		"open surface":             OpenSurfaceRequest{OwnerSessionHash: "session_private", OwnerUserHash: "user_private", OwnerEnvHash: "env_private", SessionChannelIDHash: "channel_private", Now: now},
+		"exchange asset ticket":    ExchangeAssetTicketRequest{OwnerSessionHash: "session_private", OwnerUserHash: "user_private", OwnerEnvHash: "env_private", SessionChannelIDHash: "channel_private", Now: now},
+		"validate asset session":   ValidateAssetSessionRequest{OwnerSessionHash: "session_private", OwnerUserHash: "user_private", OwnerEnvHash: "env_private", SessionChannelIDHash: "channel_private", Now: now},
+		"mark surface prepared":    MarkSurfacePreparedRequest{OwnerSessionHash: "session_private", OwnerUserHash: "user_private", OwnerEnvHash: "env_private", SessionChannelIDHash: "channel_private", Now: now},
+		"dispose surface":          DisposeSurfaceRequest{OwnerSessionHash: "session_private", OwnerUserHash: "user_private", OwnerEnvHash: "env_private", SessionChannelIDHash: "channel_private", Now: now},
+		"revoke surface scope":     RevokeSurfaceScopeRequest{OwnerSessionHash: "session_private", OwnerUserHash: "user_private", OwnerEnvHash: "env_private", SessionChannelIDHash: "channel_private", Now: now},
+		"mint gateway":             MintGatewayTokenRequest{Now: now},
+		"mint confirmation":        MintConfirmationTokenRequest{OwnerSessionHash: "session_private", OwnerUserHash: "user_private", OwnerEnvHash: "env_private", SessionChannelIDHash: "channel_private", Now: now},
+		"validate confirmation":    ValidateConfirmationTokenRequest{Audience: audience, Now: now},
+		"validate confirmation id": ValidateConfirmationTokenIDRequest{Audience: audience, Now: now},
+		"validate gateway":         ValidateSurfaceGatewayTokenRequest{OwnerSessionHash: "session_private", OwnerUserHash: "user_private", OwnerEnvHash: "env_private", SessionChannelIDHash: "channel_private", Now: now},
+		"mint runtime lease":       MintRuntimeExecutionLeaseRequest{OwnerSessionHash: "session_private", OwnerUserHash: "user_private", OwnerEnvHash: "env_private", SessionChannelIDHash: "channel_private", Now: now},
+		"mint handle grant":        MintHandleGrantRequest{ResourceScope: audience.ResourceScope, Now: now},
+		"validate handle grant":    ValidateHandleGrantRequest{Audience: audience, Now: now},
+		"mint stream ticket":       MintStreamTicketRequest{OwnerSessionHash: "session_private", OwnerUserHash: "user_private", OwnerEnvHash: "env_private", SessionChannelIDHash: "channel_private", Now: now},
+		"validate stream ticket":   ValidateStreamTicketRequest{Audience: audience, Now: now},
+		"validate bound stream":    ValidateBoundStreamTicketRequest{OwnerSessionHash: "session_private", OwnerUserHash: "user_private", OwnerEnvHash: "env_private", SessionChannelIDHash: "channel_private", Now: now},
+	}
+	for name, request := range requests {
+		t.Run(name, func(t *testing.T) {
+			encoded, err := json.Marshal(request)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, forbidden := range []string{
+				"now", "audience", "resource_scope",
+				"owner_session_hash", "owner_user_hash", "owner_env_hash", "session_channel_id_hash",
+				"session_private", "user_private", "env_private", "channel_private",
+			} {
+				if strings.Contains(string(encoded), forbidden) {
+					t.Fatalf("command JSON exposed %q: %s", forbidden, encoded)
+				}
+			}
+		})
 	}
 }
 
@@ -449,7 +506,7 @@ func TestSurfaceRevokePluginDropsSessionsAndTokens(t *testing.T) {
 	bootstrap, gateway := mintTestGatewayToken(t, service, now)
 	audience := surfaceAudienceFromBootstrap(bootstrap, "bridge_1")
 
-	if revoked, err := service.RevokePlugin(audience.PluginInstanceID, 0, now.Add(4*time.Second)); err != nil || revoked == 0 {
+	if revoked, err := service.RevokePlugin(audience.OwnerEnvHash, audience.PluginInstanceID, 0, now.Add(4*time.Second)); err != nil || revoked == 0 {
 		t.Fatal("RevokePlugin() revoked no tokens")
 	}
 	if _, err := service.ValidateGatewayToken(gateway.GatewayToken, audience, testRevision(4), now.Add(5*time.Second)); !errors.Is(err, ErrTokenRevoked) {
@@ -946,6 +1003,7 @@ func TestHandleGrantBindsRuntimeGenerationHandleAndMethod(t *testing.T) {
 		RuntimeShardID:      "runtime_shard_a",
 		HandleID:            "handle_network_1",
 		Method:              "network.open",
+		ResourceScope:       sessionctx.ResourceScope{Kind: sessionctx.ScopeUser, OwnerEnvHash: "env_hash", OwnerUserHash: "user_hash"},
 		Revision:            revision,
 		Limits:              limits,
 		Now:                 now,
@@ -969,6 +1027,7 @@ func TestHandleGrantBindsRuntimeGenerationHandleAndMethod(t *testing.T) {
 		RuntimeShardID:      "runtime_shard_a",
 		HandleID:            "handle_network_1",
 		Method:              "network.open",
+		ResourceScope:       result.ResourceScope,
 	}
 	record, err := service.ValidateHandleGrant(ValidateHandleGrantRequest{
 		HandleGrantToken: result.HandleGrantToken,
@@ -993,6 +1052,26 @@ func TestHandleGrantBindsRuntimeGenerationHandleAndMethod(t *testing.T) {
 	}); !errors.Is(err, ErrTokenAudience) {
 		t.Fatalf("ValidateHandleGrant() wrong handle error = %v, want %v", err, ErrTokenAudience)
 	}
+	wrongUser := audience
+	wrongUser.ResourceScope.OwnerUserHash = "user_other"
+	if _, err := service.ValidateHandleGrant(ValidateHandleGrantRequest{
+		HandleGrantToken: result.HandleGrantToken,
+		Audience:         wrongUser,
+		Revision:         revision,
+		Now:              now.Add(2 * time.Second),
+	}); !errors.Is(err, ErrTokenAudience) {
+		t.Fatalf("ValidateHandleGrant() cross-user replay error = %v, want %v", err, ErrTokenAudience)
+	}
+	wrongKind := audience
+	wrongKind.ResourceScope = sessionctx.ResourceScope{Kind: sessionctx.ScopeEnvironment, OwnerEnvHash: "env_hash"}
+	if _, err := service.ValidateHandleGrant(ValidateHandleGrantRequest{
+		HandleGrantToken: result.HandleGrantToken,
+		Audience:         wrongKind,
+		Revision:         revision,
+		Now:              now.Add(2 * time.Second),
+	}); !errors.Is(err, ErrTokenAudience) {
+		t.Fatalf("ValidateHandleGrant() scope-kind tamper error = %v, want %v", err, ErrTokenAudience)
+	}
 }
 
 func TestHandleGrantRequiresRuntimeGenerationHandleAndMethod(t *testing.T) {
@@ -1003,6 +1082,7 @@ func TestHandleGrantRequiresRuntimeGenerationHandleAndMethod(t *testing.T) {
 		RuntimeGenerationID: "runtime_gen_1",
 		HandleID:            "handle_network_1",
 		Method:              "network.open",
+		ResourceScope:       sessionctx.ResourceScope{Kind: sessionctx.ScopeUser, OwnerEnvHash: "env_hash", OwnerUserHash: "user_hash"},
 		Revision:            testRevision(9),
 		Now:                 testNow(),
 	}
@@ -1031,6 +1111,7 @@ func TestHandleGrantRequiresRuntimeGenerationHandleAndMethod(t *testing.T) {
 		ActiveFingerprint:   req.ActiveFingerprint,
 		RuntimeGenerationID: req.RuntimeGenerationID,
 		HandleID:            req.HandleID,
+		ResourceScope:       req.ResourceScope,
 	}
 	if _, err := service.ValidateHandleGrant(ValidateHandleGrantRequest{
 		HandleGrantToken: result.HandleGrantToken,
@@ -1051,6 +1132,7 @@ func TestHandleGrantRevisionMismatchAndTTLClamp(t *testing.T) {
 		RuntimeGenerationID: "runtime_gen_1",
 		HandleID:            "handle_storage_1",
 		Method:              "storage.read",
+		ResourceScope:       sessionctx.ResourceScope{Kind: sessionctx.ScopeEnvironment, OwnerEnvHash: "env_hash"},
 		Revision:            testRevision(9),
 		Now:                 now,
 		ExpiresAt:           now.Add(time.Hour),
@@ -1068,6 +1150,7 @@ func TestHandleGrantRevisionMismatchAndTTLClamp(t *testing.T) {
 		RuntimeGenerationID: "runtime_gen_1",
 		HandleID:            "handle_storage_1",
 		Method:              "storage.read",
+		ResourceScope:       result.ResourceScope,
 	}
 	if _, err := service.ValidateHandleGrant(ValidateHandleGrantRequest{
 		HandleGrantToken: result.HandleGrantToken,

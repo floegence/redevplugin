@@ -139,7 +139,7 @@ func TestHostcallHandlersRejectNonCanonicalRequests(t *testing.T) {
 			return supervisor.respondToOpenHandle(context.Background(), writer, "g1", frame, allowedArtifact)
 		}},
 		{name: "validate handle grant", wantCode: "HANDLE_GRANT_REQUEST_INVALID", knownKey: "handle_grant_token", call: func(supervisor *ProcessSupervisor, writer io.Writer, frame ipcFrame) error {
-			return supervisor.respondToValidateHandleGrant(context.Background(), writer, "g1", frame, allowedArtifact)
+			return supervisor.respondToValidateHandleGrant(context.Background(), writer, "g1", frame, allowedInvocation)
 		}},
 		{name: "storage file", wantCode: "STORAGE_FILE_REQUEST_INVALID", knownKey: "handle_grant_token", call: func(supervisor *ProcessSupervisor, writer io.Writer, frame ipcFrame) error {
 			return supervisor.respondToStorageFile(context.Background(), writer, health, frame, allowedInvocation)
@@ -429,7 +429,7 @@ func TestProcessSupervisorLifecycleAndDiagnostics(t *testing.T) {
 	if decoded["data"].(map[string]any)["from_runtime"] != true {
 		t.Fatalf("worker result mismatch: %#v", decoded)
 	}
-	revokeResult, err := supervisor.Revoke(context.Background(), "plugini_1", 3)
+	revokeResult, err := supervisor.Revoke(context.Background(), testRevokeRequest("plugini_1", 3))
 	if err != nil {
 		t.Fatalf("Revoke() error = %v", err)
 	}
@@ -900,7 +900,7 @@ func TestProcessSupervisorControlIPCRemainsAvailableWhenInvocationAdmissionIsFul
 	if _, err := supervisor.Heartbeat(controlCtx); err != nil {
 		t.Fatalf("Heartbeat() while invocation admission was full: %v", err)
 	}
-	if _, err := supervisor.Revoke(controlCtx, "plugini_1", 2); err != nil {
+	if _, err := supervisor.Revoke(controlCtx, testRevokeRequest("plugini_1", 2)); err != nil {
 		t.Fatalf("Revoke() while invocation admission was full: %v", err)
 	}
 	for index, done := range []<-chan error{activeDone, pendingDone} {
@@ -999,7 +999,7 @@ func TestProcessSupervisorRevokeUsesIndependentControlChannelDuringInvocation(t 
 	waitForSustainedIPCLock(t, supervisor, 20*time.Millisecond)
 	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 	defer cancel()
-	result, err := supervisor.Revoke(ctx, "plugini_1", 4)
+	result, err := supervisor.Revoke(ctx, testRevokeRequest("plugini_1", 4))
 	if err != nil {
 		t.Fatalf("Revoke(during invocation) error = %v", err)
 	}
@@ -1314,24 +1314,25 @@ func TestProcessSupervisorRejectsRevokeWhenRuntimeIsNotReady(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := supervisor.Revoke(context.Background(), "plugini_1", 1); !errors.Is(err, ErrRuntimeNotReady) {
+	if _, err := supervisor.Revoke(context.Background(), testRevokeRequest("plugini_1", 1)); !errors.Is(err, ErrRuntimeNotReady) {
 		t.Fatalf("Revoke(not ready) error = %v, want ErrRuntimeNotReady", err)
 	}
 }
 
 func TestDecodeRevokeResultRequiresStructuredCounters(t *testing.T) {
-	_, err := decodeRevokeResult(json.RawMessage(`{"plugin_instance_id":"plugini_1","revoke_epoch":3}`), "plugini_1", 3)
+	request := testRevokeRequest("plugini_1", 3)
+	_, err := decodeRevokeResult(json.RawMessage(`{"plugin_instance_id":"plugini_1","revoke_epoch":3}`), request)
 	if !errors.Is(err, ErrRuntimeRequestFailed) {
 		t.Fatalf("decodeRevokeResult(missing counters) error = %v, want ErrRuntimeRequestFailed", err)
 	}
-	_, err = decodeRevokeResult(json.RawMessage(`{"plugin_instance_id":"other","revoke_epoch":3,"closed_socket_count":0,"closed_stream_count":0,"closed_storage_handle_count":0}`), "plugini_1", 3)
+	_, err = decodeRevokeResult(json.RawMessage(`{"resource_scope":{"kind":"environment","owner_env_hash":"env_hash"},"plugin_instance_id":"other","revoke_epoch":3,"closed_socket_count":0,"closed_stream_count":0,"closed_storage_handle_count":0}`), request)
 	if !errors.Is(err, ErrRuntimeRequestFailed) {
 		t.Fatalf("decodeRevokeResult(plugin mismatch) error = %v, want ErrRuntimeRequestFailed", err)
 	}
-	if _, err := decodeRevokeResult(json.RawMessage(`{"plugin_instance_id":"plugini_1","revoke_epoch":3,"closed_socket_count":0,"closed_stream_count":0,"closed_storage_handle_count":0,"extra":true}`), "plugini_1", 3); err == nil {
+	if _, err := decodeRevokeResult(json.RawMessage(`{"resource_scope":{"kind":"environment","owner_env_hash":"env_hash"},"plugin_instance_id":"plugini_1","revoke_epoch":3,"closed_socket_count":0,"closed_stream_count":0,"closed_storage_handle_count":0,"extra":true}`), request); err == nil {
 		t.Fatal("decodeRevokeResult(extra field) expected fail-closed error")
 	}
-	result, err := decodeRevokeResult(json.RawMessage(`{"plugin_instance_id":"plugini_1","revoke_epoch":3,"closed_socket_count":2,"closed_stream_count":3,"closed_storage_handle_count":4}`), "plugini_1", 3)
+	result, err := decodeRevokeResult(json.RawMessage(`{"resource_scope":{"kind":"environment","owner_env_hash":"env_hash"},"plugin_instance_id":"plugini_1","revoke_epoch":3,"closed_socket_count":2,"closed_stream_count":3,"closed_storage_handle_count":4}`), request)
 	if err != nil {
 		t.Fatalf("decodeRevokeResult() error = %v", err)
 	}
@@ -1455,7 +1456,7 @@ func validateIPCGoldenFixture(fixture ipcGoldenFixture) error {
 
 func TestWorkerInvocationContextBindsBrokerAccessHash(t *testing.T) {
 	payload := workerInvocationFixtureWithAccess(workerBrokerAccess{
-		Storage: []workerStorageBrokerAccess{{StoreID: "notes", Operations: []string{"query"}}},
+		Storage: []workerStorageBrokerAccess{{StoreID: "notes", Scope: "user", Operations: []string{"query"}}},
 		Network: []workerNetworkBrokerAccess{{ConnectorID: "forecast", Transport: "http", Scope: "user", Operations: []string{"http"}, HTTPMethods: []string{"GET"}}},
 	})
 	lease := workerInvocationLeaseFixture()
@@ -1539,6 +1540,7 @@ func TestStorageHostcallIdentityMismatchStopsBeforeGrantAndBroker(t *testing.T) 
 		RuntimeShardID:      lease.RuntimeShardID,
 		HandleID:            "storage:workspace",
 		Method:              "storage.files",
+		ResourceScope:       testUserResourceScope(),
 		PolicyRevision:      lease.PolicyRevision,
 		ManagementRevision:  lease.ManagementRevision,
 		RevokeEpoch:         lease.RevokeEpoch,
@@ -1559,6 +1561,11 @@ func TestStorageHostcallIdentityMismatchStopsBeforeGrantAndBroker(t *testing.T) 
 		{name: "policy_revision", mutate: func(req *storageFileRequestPayload) { req.PolicyRevision++ }},
 		{name: "management_revision", mutate: func(req *storageFileRequestPayload) { req.ManagementRevision++ }},
 		{name: "revoke_epoch", mutate: func(req *storageFileRequestPayload) { req.RevokeEpoch++ }},
+		{name: "owner_user_hash", mutate: func(req *storageFileRequestPayload) { req.ResourceScope.OwnerUserHash = "user_spoofed" }},
+		{name: "store_scope", mutate: func(req *storageFileRequestPayload) {
+			req.ResourceScope = sessionctx.ResourceScope{Kind: sessionctx.ScopeEnvironment, OwnerEnvHash: "env_hash"}
+		}},
+		{name: "missing_resource_scope", mutate: func(req *storageFileRequestPayload) { req.ResourceScope = sessionctx.ResourceScope{} }},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -2022,6 +2029,7 @@ func TestProcessSupervisorValidatesHandleGrantDuringWorkerInvocation(t *testing.
 			HandleID:            "storage:db",
 			Method:              "storage.sqlite",
 			RuntimeGenerationID: "runtime_gen_test",
+			ResourceScope:       testUserResourceScope(),
 			MaxTotalBytes:       4096,
 		},
 	}
@@ -2075,6 +2083,7 @@ func TestProcessSupervisorServesStorageFileRequestDuringWorkerInvocation(t *test
 			HandleID:            "storage:workspace",
 			Method:              "storage.files",
 			RuntimeGenerationID: "runtime_gen_test",
+			ResourceScope:       testUserResourceScope(),
 			MaxTotalBytes:       4096,
 		},
 	}
@@ -2174,7 +2183,7 @@ func TestProcessSupervisorDeniesStorageOperationOutsideMethodBrokerAccess(t *tes
 		ManagementRevision:  2,
 		RevokeEpoch:         3,
 	}, "worker.echo", workerInvocationFixtureWithAccess(workerBrokerAccess{
-		Storage: []workerStorageBrokerAccess{{StoreID: "workspace", Operations: []string{"write"}}},
+		Storage: []workerStorageBrokerAccess{{StoreID: "workspace", Scope: "user", Operations: []string{"write"}}},
 	}))
 	if !errors.Is(err, ErrRuntimeRequestFailed) || !strings.Contains(err.Error(), "STORAGE_FILE_REQUEST_DENIED") {
 		t.Fatalf("InvokeWorker() error = %v, want method-scoped storage denial", err)
@@ -2192,6 +2201,7 @@ func TestProcessSupervisorServesStorageKVRequestDuringWorkerInvocation(t *testin
 			HandleID:            "storage:settings",
 			Method:              "storage.kv",
 			RuntimeGenerationID: "runtime_gen_test",
+			ResourceScope:       testUserResourceScope(),
 			MaxTotalBytes:       4096,
 		},
 	}
@@ -2264,6 +2274,7 @@ func TestProcessSupervisorServesStorageSQLiteRequestDuringWorkerInvocation(t *te
 			HandleID:            "storage:db",
 			Method:              "storage.sqlite",
 			RuntimeGenerationID: "runtime_gen_test",
+			ResourceScope:       testUserResourceScope(),
 			MaxTotalBytes:       4096,
 		},
 	}
@@ -2839,6 +2850,7 @@ func TestRuntimeHostcallFailuresRedactPublicErrorsAndRetainDiagnostics(t *testin
 				HandleID:            "storage:db",
 				Method:              "storage.sqlite",
 				RuntimeGenerationID: "runtime_gen_test",
+				ResourceScope:       testUserResourceScope(),
 			},
 		}
 		supervisor, err := newTestProcessSupervisor(t, ProcessSupervisorOptions{
@@ -3211,6 +3223,7 @@ func TestProcessSupervisorDeniesStorageFileWithoutBroker(t *testing.T) {
 			HandleID:            "storage:workspace",
 			Method:              "storage.files",
 			RuntimeGenerationID: "runtime_gen_test",
+			ResourceScope:       testUserResourceScope(),
 			MaxTotalBytes:       4096,
 		},
 	}
@@ -3252,6 +3265,7 @@ func TestProcessSupervisorDeniesStorageKVWithoutBroker(t *testing.T) {
 			HandleID:            "storage:settings",
 			Method:              "storage.kv",
 			RuntimeGenerationID: "runtime_gen_test",
+			ResourceScope:       testUserResourceScope(),
 			MaxTotalBytes:       4096,
 		},
 	}
@@ -3293,6 +3307,7 @@ func TestProcessSupervisorDeniesStorageFileOutsideWorkerInvocation(t *testing.T)
 			HandleID:            "storage:workspace",
 			Method:              "storage.files",
 			RuntimeGenerationID: "runtime_gen_test",
+			ResourceScope:       testUserResourceScope(),
 			MaxTotalBytes:       4096,
 		},
 	}
@@ -3315,7 +3330,7 @@ func TestProcessSupervisorDeniesStorageFileOutsideWorkerInvocation(t *testing.T)
 	if err := supervisor.Start(context.Background(), testRuntimeTarget); err != nil {
 		t.Fatalf("Start() error = %v", err)
 	}
-	if _, err := supervisor.Revoke(context.Background(), "plugini_1", 3); !errors.Is(err, ErrRuntimeRequestFailed) {
+	if _, err := supervisor.Revoke(context.Background(), testRevokeRequest("plugini_1", 3)); !errors.Is(err, ErrRuntimeRequestFailed) {
 		t.Fatalf("Revoke() error = %v, want ErrRuntimeRequestFailed", err)
 	}
 	if validator.calls != 0 || files.readCalls != 0 {
@@ -3331,6 +3346,7 @@ func TestProcessSupervisorDeniesStorageKVOutsideWorkerInvocation(t *testing.T) {
 			HandleID:            "storage:settings",
 			Method:              "storage.kv",
 			RuntimeGenerationID: "runtime_gen_test",
+			ResourceScope:       testUserResourceScope(),
 			MaxTotalBytes:       4096,
 		},
 	}
@@ -3353,7 +3369,7 @@ func TestProcessSupervisorDeniesStorageKVOutsideWorkerInvocation(t *testing.T) {
 	if err := supervisor.Start(context.Background(), testRuntimeTarget); err != nil {
 		t.Fatalf("Start() error = %v", err)
 	}
-	if _, err := supervisor.Revoke(context.Background(), "plugini_1", 3); !errors.Is(err, ErrRuntimeRequestFailed) {
+	if _, err := supervisor.Revoke(context.Background(), testRevokeRequest("plugini_1", 3)); !errors.Is(err, ErrRuntimeRequestFailed) {
 		t.Fatalf("Revoke() error = %v, want ErrRuntimeRequestFailed", err)
 	}
 	if validator.calls != 0 || kv.putCalls != 0 {
@@ -3381,7 +3397,7 @@ func TestProcessSupervisorDeniesNetworkGrantOutsideWorkerInvocation(t *testing.T
 	if err := supervisor.Start(context.Background(), testRuntimeTarget); err != nil {
 		t.Fatalf("Start() error = %v", err)
 	}
-	if _, err := supervisor.Revoke(context.Background(), "plugini_1", 3); !errors.Is(err, ErrRuntimeRequestFailed) {
+	if _, err := supervisor.Revoke(context.Background(), testRevokeRequest("plugini_1", 3)); !errors.Is(err, ErrRuntimeRequestFailed) {
 		t.Fatalf("Revoke() error = %v, want ErrRuntimeRequestFailed", err)
 	}
 	if broker.calls != 0 {
@@ -3408,7 +3424,7 @@ func TestProcessSupervisorDeniesHandleGrantOutsideWorkerInvocation(t *testing.T)
 	if err := supervisor.Start(context.Background(), testRuntimeTarget); err != nil {
 		t.Fatalf("Start() error = %v", err)
 	}
-	if _, err := supervisor.Revoke(context.Background(), "plugini_1", 3); !errors.Is(err, ErrRuntimeRequestFailed) {
+	if _, err := supervisor.Revoke(context.Background(), testRevokeRequest("plugini_1", 3)); !errors.Is(err, ErrRuntimeRequestFailed) {
 		t.Fatalf("Revoke() error = %v, want ErrRuntimeRequestFailed", err)
 	}
 	stopRuntimeSupervisor(t, supervisor)
@@ -3938,6 +3954,7 @@ func runRuntimeClientControlHelper(
 			_ = json.Unmarshal(request.Payload, &revokeReq)
 			revokeOnce.Do(func() { close(revoked) })
 			raw, _ := json.Marshal(runtimeResponsePayload{OK: true, Result: mustMarshalRaw(map[string]any{
+				"resource_scope":              revokeReq.ResourceScope,
 				"plugin_instance_id":          revokeReq.PluginInstanceID,
 				"revoke_epoch":                revokeReq.RevokeEpoch,
 				"closed_socket_count":         2,
@@ -4200,6 +4217,7 @@ func validateHandleGrantFromHelper(reader *bufio.Reader, encoder *json.Encoder, 
 			"handle_id":             grant.HandleID,
 			"method":                grant.Method,
 			"runtime_generation_id": grant.RuntimeGenerationID,
+			"resource_scope":        grant.ResourceScope,
 			"max_total_bytes":       grant.MaxTotalBytes,
 		},
 	})})
@@ -4484,6 +4502,7 @@ func storageFileRequestFromInvoke(request ipcFrame, operation string) storageFil
 		RuntimeShardID:      "runtime_shard_1",
 		HandleID:            "storage:workspace",
 		Method:              "storage.files",
+		ResourceScope:       resourceScopeFromHelperRequest(request),
 		PolicyRevision:      1,
 		ManagementRevision:  2,
 		RevokeEpoch:         3,
@@ -4520,6 +4539,7 @@ func storageKVRequestFromInvoke(request ipcFrame, operation string) storageKVReq
 		RuntimeShardID:      "runtime_shard_1",
 		HandleID:            "storage:settings",
 		Method:              "storage.kv",
+		ResourceScope:       resourceScopeFromHelperRequest(request),
 		PolicyRevision:      1,
 		ManagementRevision:  2,
 		RevokeEpoch:         3,
@@ -4558,6 +4578,7 @@ func storageSQLiteRequestFromInvoke(request ipcFrame, operation string) storageS
 		RuntimeShardID:      "runtime_shard_1",
 		HandleID:            "storage:db",
 		Method:              "storage.sqlite",
+		ResourceScope:       resourceScopeFromHelperRequest(request),
 		PolicyRevision:      1,
 		ManagementRevision:  2,
 		RevokeEpoch:         3,
@@ -4718,6 +4739,7 @@ func handleGrantValidationRequestFromInvoke(request ipcFrame) HandleGrantValidat
 		RuntimeShardID:      "runtime_shard_1",
 		HandleID:            "storage:db",
 		Method:              "storage.sqlite",
+		ResourceScope:       resourceScopeFromHelperRequest(request),
 		PolicyRevision:      1,
 		ManagementRevision:  2,
 		RevokeEpoch:         3,
@@ -4739,6 +4761,29 @@ func handleGrantValidationRequestFromInvoke(request ipcFrame) HandleGrantValidat
 		req.HandleGrantToken = ""
 	}
 	return req
+}
+
+func resourceScopeFromHelperRequest(request ipcFrame) sessionctx.ResourceScope {
+	if request.FrameType == ipcFrameTypeRevokeEpoch {
+		var payload revokeEpochRequestPayload
+		if json.Unmarshal(request.Payload, &payload) == nil && payload.ResourceScope.Valid() {
+			return payload.ResourceScope
+		}
+	}
+	if request.FrameType == ipcFrameTypeInvokeWorker {
+		var payload invokeWorkerRequestPayload
+		if json.Unmarshal(request.Payload, &payload) == nil {
+			if strings.TrimSpace(payload.Lease.OwnerUserHash) != "" {
+				return sessionctx.ResourceScope{
+					Kind:          sessionctx.ScopeUser,
+					OwnerEnvHash:  payload.Lease.OwnerEnvHash,
+					OwnerUserHash: payload.Lease.OwnerUserHash,
+				}
+			}
+			return sessionctx.ResourceScope{Kind: sessionctx.ScopeEnvironment, OwnerEnvHash: payload.Lease.OwnerEnvHash}
+		}
+	}
+	return sessionctx.ResourceScope{Kind: sessionctx.ScopeUser, OwnerEnvHash: "env_hash", OwnerUserHash: "user_hash"}
 }
 
 func mustMarshalRaw(value any) json.RawMessage {
@@ -5153,9 +5198,9 @@ func assertBoundedDeadline(t *testing.T, label string, calledAt time.Time, deadl
 func workerInvocationFixture() []byte {
 	return workerInvocationFixtureWithAccess(workerBrokerAccess{
 		Storage: []workerStorageBrokerAccess{
-			{StoreID: "workspace", Operations: []string{"read", "write", "delete", "list"}},
-			{StoreID: "settings", Operations: []string{"get", "put", "delete", "list"}},
-			{StoreID: "db", Operations: []string{"exec", "query"}},
+			{StoreID: "workspace", Scope: "user", Operations: []string{"read", "write", "delete", "list"}},
+			{StoreID: "settings", Scope: "user", Operations: []string{"get", "put", "delete", "list"}},
+			{StoreID: "db", Scope: "user", Operations: []string{"exec", "query"}},
 		},
 		Network: []workerNetworkBrokerAccess{
 			{ConnectorID: "api", Transport: "http", Scope: "user", Operations: []string{"http", "http_stream"}, HTTPMethods: []string{"GET", "POST"}},
@@ -5164,6 +5209,10 @@ func workerInvocationFixture() []byte {
 			{ConnectorID: "api", Transport: "udp", Scope: "user", Operations: []string{"udp_round_trip"}},
 		},
 	})
+}
+
+func testUserResourceScope() sessionctx.ResourceScope {
+	return sessionctx.ResourceScope{Kind: sessionctx.ScopeUser, OwnerEnvHash: "env_hash", OwnerUserHash: "user_hash"}
 }
 
 func workerInvocationFixtureForPlugin(pluginInstanceID string) []byte {
@@ -5193,6 +5242,14 @@ func workerInvocationLeaseFixture() Lease {
 		PolicyRevision:       1,
 		ManagementRevision:   2,
 		RevokeEpoch:          3,
+	}
+}
+
+func testRevokeRequest(pluginInstanceID string, revokeEpoch uint64) RevokeRequest {
+	return RevokeRequest{
+		ResourceScope:    sessionctx.ResourceScope{Kind: sessionctx.ScopeEnvironment, OwnerEnvHash: "env_hash"},
+		PluginInstanceID: pluginInstanceID,
+		RevokeEpoch:      revokeEpoch,
 	}
 }
 

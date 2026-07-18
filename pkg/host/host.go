@@ -1030,35 +1030,54 @@ type InvokeIntentRequest struct {
 }
 
 type workerInvocationPayload struct {
-	PluginID             string                          `json:"plugin_id"`
-	PluginInstanceID     string                          `json:"plugin_instance_id"`
-	ActiveFingerprint    string                          `json:"active_fingerprint"`
-	RuntimeInstanceID    string                          `json:"runtime_instance_id"`
-	RuntimeGenerationID  string                          `json:"runtime_generation_id"`
-	PackageHash          string                          `json:"package_hash"`
-	WorkerID             string                          `json:"worker_id"`
-	WorkerMode           string                          `json:"worker_mode"`
-	WorkerScope          string                          `json:"worker_scope"`
-	Artifact             string                          `json:"artifact"`
-	ArtifactSHA256       string                          `json:"artifact_sha256"`
-	ABI                  string                          `json:"abi"`
-	Method               string                          `json:"method"`
-	Effect               string                          `json:"effect"`
-	Execution            string                          `json:"execution"`
-	SurfaceInstanceID    string                          `json:"surface_instance_id,omitempty"`
-	OwnerSessionHash     string                          `json:"owner_session_hash,omitempty"`
-	OwnerUserHash        string                          `json:"owner_user_hash,omitempty"`
-	OwnerEnvHash         string                          `json:"owner_env_hash,omitempty"`
-	SessionChannelIDHash string                          `json:"session_channel_id_hash,omitempty"`
-	BridgeChannelID      string                          `json:"bridge_channel_id,omitempty"`
-	OperationID          string                          `json:"operation_id,omitempty"`
-	StreamID             string                          `json:"stream_id,omitempty"`
-	AuditCorrelationID   string                          `json:"audit_correlation_id"`
-	ParamsSHA256         string                          `json:"params_sha256"`
-	Params               map[string]any                  `json:"params"`
-	StorageHandleGrants  map[string]string               `json:"storage_handle_grants,omitempty"`
-	BrokerAccess         manifest.MethodBrokerAccessSpec `json:"broker_access"`
-	BrokerAccessSHA256   string                          `json:"broker_access_sha256"`
+	PluginID             string             `json:"plugin_id"`
+	PluginInstanceID     string             `json:"plugin_instance_id"`
+	ActiveFingerprint    string             `json:"active_fingerprint"`
+	RuntimeInstanceID    string             `json:"runtime_instance_id"`
+	RuntimeGenerationID  string             `json:"runtime_generation_id"`
+	PackageHash          string             `json:"package_hash"`
+	WorkerID             string             `json:"worker_id"`
+	WorkerMode           string             `json:"worker_mode"`
+	WorkerScope          string             `json:"worker_scope"`
+	Artifact             string             `json:"artifact"`
+	ArtifactSHA256       string             `json:"artifact_sha256"`
+	ABI                  string             `json:"abi"`
+	Method               string             `json:"method"`
+	Effect               string             `json:"effect"`
+	Execution            string             `json:"execution"`
+	SurfaceInstanceID    string             `json:"surface_instance_id,omitempty"`
+	OwnerSessionHash     string             `json:"owner_session_hash,omitempty"`
+	OwnerUserHash        string             `json:"owner_user_hash,omitempty"`
+	OwnerEnvHash         string             `json:"owner_env_hash,omitempty"`
+	SessionChannelIDHash string             `json:"session_channel_id_hash,omitempty"`
+	BridgeChannelID      string             `json:"bridge_channel_id,omitempty"`
+	OperationID          string             `json:"operation_id,omitempty"`
+	StreamID             string             `json:"stream_id,omitempty"`
+	AuditCorrelationID   string             `json:"audit_correlation_id"`
+	ParamsSHA256         string             `json:"params_sha256"`
+	Params               map[string]any     `json:"params"`
+	StorageHandleGrants  map[string]string  `json:"storage_handle_grants,omitempty"`
+	BrokerAccess         workerBrokerAccess `json:"broker_access"`
+	BrokerAccessSHA256   string             `json:"broker_access_sha256"`
+}
+
+type workerBrokerAccess struct {
+	Storage []workerStorageBrokerAccess `json:"storage,omitempty"`
+	Network []workerNetworkBrokerAccess `json:"network,omitempty"`
+}
+
+type workerStorageBrokerAccess struct {
+	StoreID    string   `json:"store_id"`
+	Scope      string   `json:"scope"`
+	Operations []string `json:"operations"`
+}
+
+type workerNetworkBrokerAccess struct {
+	ConnectorID string   `json:"connector_id"`
+	Transport   string   `json:"transport"`
+	Scope       string   `json:"scope"`
+	Operations  []string `json:"operations"`
+	HTTPMethods []string `json:"http_methods,omitempty"`
 }
 
 type PrepareMethodConfirmationRequest struct {
@@ -5917,6 +5936,7 @@ func (h *Host) MintNetworkHandleGrant(ctx context.Context, req MintConnectionGra
 		RuntimeShardID:      req.RuntimeShardID,
 		HandleID:            grant.GrantID,
 		Method:              "network." + string(grant.Transport),
+		ResourceScope:       grant.ResourceScope,
 		Revision: bridge.RevisionBinding{
 			PolicyRevision:     grant.PolicyRevision,
 			ManagementRevision: grant.ManagementRevision,
@@ -5933,7 +5953,8 @@ func (h *Host) MintNetworkHandleGrant(ctx context.Context, req MintConnectionGra
 }
 
 func (h *Host) MintStorageHandleGrant(ctx context.Context, req MintStorageHandleGrantRequest) (result StorageHandleGrantResult, retErr error) {
-	if _, err := h.authorizeManagement(ctx, ManagementActionMintStorageHandleGrant, req.PluginInstanceID, req.StoreID); err != nil {
+	session, err := h.authorizeManagement(ctx, ManagementActionMintStorageHandleGrant, req.PluginInstanceID, req.StoreID)
+	if err != nil {
 		return StorageHandleGrantResult{}, err
 	}
 	if strings.TrimSpace(req.RuntimeGenerationID) == "" || strings.TrimSpace(req.StoreID) == "" {
@@ -5961,6 +5982,10 @@ func (h *Host) MintStorageHandleGrant(ctx context.Context, req MintStorageHandle
 	if !ok {
 		return StorageHandleGrantResult{}, storage.ErrNamespaceNotFound
 	}
+	resourceScope, err := session.ResourceScope(sessionctx.ScopeKind(namespace.Scope))
+	if err != nil {
+		return StorageHandleGrantResult{}, fmt.Errorf("%w: store %q", ErrStorageScopeMismatch, namespace.StoreID)
+	}
 	now := req.Now
 	if now.IsZero() {
 		now = time.Now().UTC()
@@ -5977,6 +6002,7 @@ func (h *Host) MintStorageHandleGrant(ctx context.Context, req MintStorageHandle
 		RuntimeShardID:      req.RuntimeShardID,
 		HandleID:            "storage:" + namespace.StoreID,
 		Method:              "storage." + string(namespace.Kind),
+		ResourceScope:       resourceScope,
 		Revision: bridge.RevisionBinding{
 			PolicyRevision:     record.PolicyRevision,
 			ManagementRevision: record.ManagementRevision,
@@ -6657,6 +6683,7 @@ func (v runtimeHandleGrantValidator) ValidateHandleGrant(_ context.Context, req 
 			RuntimeShardID:      req.RuntimeShardID,
 			HandleID:            req.HandleID,
 			Method:              req.Method,
+			ResourceScope:       req.ResourceScope,
 		},
 		Revision: bridge.RevisionBinding{
 			PolicyRevision:     req.PolicyRevision,
@@ -6672,6 +6699,7 @@ func (v runtimeHandleGrantValidator) ValidateHandleGrant(_ context.Context, req 
 		HandleID:            record.Audience.HandleID,
 		Method:              record.Audience.Method,
 		RuntimeGenerationID: record.Audience.RuntimeGenerationID,
+		ResourceScope:       record.Audience.ResourceScope,
 		MaxBytesPerSecond:   record.Limits.MaxBytesPerSecond,
 		MaxTotalBytes:       record.Limits.MaxTotalBytes,
 	}, nil
@@ -7332,17 +7360,22 @@ func (h *Host) mintWorkerStorageHandleGrants(ctx context.Context, record registr
 	return grants, nil
 }
 
-func normalizedWorkerBrokerAccess(pluginManifest manifest.Manifest, access *manifest.MethodBrokerAccessSpec) (manifest.MethodBrokerAccessSpec, error) {
+func normalizedWorkerBrokerAccess(pluginManifest manifest.Manifest, access *manifest.MethodBrokerAccessSpec) (workerBrokerAccess, error) {
 	if access == nil {
-		return manifest.MethodBrokerAccessSpec{}, nil
+		return workerBrokerAccess{}, nil
 	}
-	normalized := manifest.MethodBrokerAccessSpec{
-		Storage: make([]manifest.StorageBrokerAccessSpec, len(access.Storage)),
-		Network: make([]manifest.NetworkBrokerAccessSpec, len(access.Network)),
+	normalized := workerBrokerAccess{
+		Storage: make([]workerStorageBrokerAccess, len(access.Storage)),
+		Network: make([]workerNetworkBrokerAccess, len(access.Network)),
 	}
 	for i, item := range access.Storage {
-		normalized.Storage[i] = manifest.StorageBrokerAccessSpec{
+		scope, ok := declaredStoreScope(pluginManifest, item.StoreID)
+		if !ok {
+			return workerBrokerAccess{}, fmt.Errorf("%w: store %q is not declared", storage.ErrNamespaceNotFound, item.StoreID)
+		}
+		normalized.Storage[i] = workerStorageBrokerAccess{
 			StoreID:    item.StoreID,
+			Scope:      scope,
 			Operations: append([]string(nil), item.Operations...),
 		}
 		sort.Strings(normalized.Storage[i].Operations)
@@ -7350,9 +7383,9 @@ func normalizedWorkerBrokerAccess(pluginManifest manifest.Manifest, access *mani
 	for i, item := range access.Network {
 		scope, ok := declaredConnectorScope(pluginManifest, item.ConnectorID, item.Transport)
 		if !ok {
-			return manifest.MethodBrokerAccessSpec{}, fmt.Errorf("%w: connector %q/%q is not declared", connectivity.ErrInvalidConnector, item.ConnectorID, item.Transport)
+			return workerBrokerAccess{}, fmt.Errorf("%w: connector %q/%q is not declared", connectivity.ErrInvalidConnector, item.ConnectorID, item.Transport)
 		}
-		normalized.Network[i] = manifest.NetworkBrokerAccessSpec{
+		normalized.Network[i] = workerNetworkBrokerAccess{
 			ConnectorID: item.ConnectorID,
 			Transport:   item.Transport,
 			Scope:       scope,
@@ -7365,6 +7398,18 @@ func normalizedWorkerBrokerAccess(pluginManifest manifest.Manifest, access *mani
 	sort.Slice(normalized.Storage, func(i, j int) bool { return normalized.Storage[i].StoreID < normalized.Storage[j].StoreID })
 	sort.Slice(normalized.Network, func(i, j int) bool { return normalized.Network[i].ConnectorID < normalized.Network[j].ConnectorID })
 	return normalized, nil
+}
+
+func declaredStoreScope(pluginManifest manifest.Manifest, storeID string) (string, bool) {
+	if pluginManifest.Storage == nil {
+		return "", false
+	}
+	for _, store := range pluginManifest.Storage.Stores {
+		if strings.TrimSpace(store.StoreID) == strings.TrimSpace(storeID) {
+			return strings.TrimSpace(store.Scope), true
+		}
+	}
+	return "", false
 }
 
 func declaredConnectorScope(pluginManifest manifest.Manifest, connectorID, transport string) (string, bool) {
@@ -7380,7 +7425,7 @@ func declaredConnectorScope(pluginManifest manifest.Manifest, connectorID, trans
 	return "", false
 }
 
-func workerBrokerAccessHash(access manifest.MethodBrokerAccessSpec) (string, error) {
+func workerBrokerAccessHash(access workerBrokerAccess) (string, error) {
 	raw, err := marshalWorkerCanonicalJSON(access)
 	if err != nil {
 		return "", fmt.Errorf("marshal worker broker access: %w", err)
@@ -7903,9 +7948,13 @@ func (h *Host) revokePluginRuntimeCapabilities(ctx context.Context, record regis
 	revokedExecutionLeases := h.executions.cancelPlugin(record.PluginInstanceID, capability.ErrExecutionRevoked)
 	var resultErr error
 	revokedTokens := 0
+	ownerEnvHash := strings.TrimSpace(record.OwnerEnvHash)
+	if ownerEnvHash == "" {
+		return fmt.Errorf("%w: plugin owner environment is missing", ErrOwnerScopeMismatch)
+	}
 	if h.surfaceTokens != nil {
 		var err error
-		revokedTokens, err = h.surfaceTokens.RevokePlugin(record.PluginInstanceID, record.RevokeEpoch, now)
+		revokedTokens, err = h.surfaceTokens.RevokePlugin(ownerEnvHash, record.PluginInstanceID, record.RevokeEpoch, now)
 		if err != nil {
 			resultErr = errors.Join(resultErr, err)
 		}
@@ -7924,7 +7973,11 @@ func (h *Host) revokePluginRuntimeCapabilities(ctx context.Context, record regis
 			revokeCtx, cancel = context.WithTimeout(ctx, runtimeCapabilityRevokeTimeout)
 		}
 		defer cancel()
-		result, err := h.adapters.RuntimeManager.Revoke(revokeCtx, record.PluginInstanceID, record.RevokeEpoch)
+		result, err := h.adapters.RuntimeManager.Revoke(revokeCtx, runtimeclient.RevokeRequest{
+			ResourceScope:    sessionctx.ResourceScope{Kind: sessionctx.ScopeEnvironment, OwnerEnvHash: ownerEnvHash},
+			PluginInstanceID: record.PluginInstanceID,
+			RevokeEpoch:      record.RevokeEpoch,
+		})
 		if err != nil {
 			h.diagnostic(ctx, observability.DiagnosticEvent{
 				Type:              "plugin.runtime_capabilities.revoke_failed",

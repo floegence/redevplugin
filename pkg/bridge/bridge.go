@@ -10,6 +10,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/floegence/redevplugin/pkg/sessionctx"
 )
 
 type TokenKind string
@@ -122,36 +124,37 @@ type CallRequest struct {
 }
 
 type Audience struct {
-	PluginID               string `json:"plugin_id,omitempty"`
-	PluginInstanceID       string `json:"plugin_instance_id"`
-	PluginVersion          string `json:"plugin_version,omitempty"`
-	ActiveFingerprint      string `json:"active_fingerprint"`
-	SurfaceID              string `json:"surface_id,omitempty"`
-	SurfaceInstanceID      string `json:"surface_instance_id,omitempty"`
-	EntryPath              string `json:"entry_path,omitempty"`
-	EntrySHA256            string `json:"entry_sha256,omitempty"`
-	AssetSessionNonce      string `json:"asset_session_nonce,omitempty"`
-	RouteRole              string `json:"route_role,omitempty"`
-	OwnerSessionHash       string `json:"owner_session_hash,omitempty"`
-	OwnerUserHash          string `json:"owner_user_hash,omitempty"`
-	OwnerEnvHash           string `json:"owner_env_hash,omitempty"`
-	SessionChannelIDHash   string `json:"session_channel_id_hash,omitempty"`
-	BridgeChannelID        string `json:"bridge_channel_id,omitempty"`
-	RuntimeInstanceID      string `json:"runtime_instance_id,omitempty"`
-	RuntimeGenerationID    string `json:"runtime_generation_id,omitempty"`
-	RuntimeShardID         string `json:"runtime_shard_id,omitempty"`
-	IPCChannelID           string `json:"ipc_channel_id,omitempty"`
-	ConnectionNonce        string `json:"connection_nonce,omitempty"`
-	StreamID               string `json:"stream_id,omitempty"`
-	StreamDirection        string `json:"stream_direction,omitempty"`
-	OperationID            string `json:"operation_id,omitempty"`
-	AuditCorrelationID     string `json:"audit_correlation_id,omitempty"`
-	HandleID               string `json:"handle_id,omitempty"`
-	ConfirmationID         string `json:"confirmation_id,omitempty"`
-	Method                 string `json:"method,omitempty"`
-	RequestHash            string `json:"request_hash,omitempty"`
-	PlanHash               string `json:"plan_hash,omitempty"`
-	TargetDescriptorSHA256 string `json:"target_descriptor_sha256,omitempty"`
+	PluginID               string                   `json:"plugin_id,omitempty"`
+	PluginInstanceID       string                   `json:"plugin_instance_id"`
+	PluginVersion          string                   `json:"plugin_version,omitempty"`
+	ActiveFingerprint      string                   `json:"active_fingerprint"`
+	SurfaceID              string                   `json:"surface_id,omitempty"`
+	SurfaceInstanceID      string                   `json:"surface_instance_id,omitempty"`
+	EntryPath              string                   `json:"entry_path,omitempty"`
+	EntrySHA256            string                   `json:"entry_sha256,omitempty"`
+	AssetSessionNonce      string                   `json:"asset_session_nonce,omitempty"`
+	RouteRole              string                   `json:"route_role,omitempty"`
+	OwnerSessionHash       string                   `json:"owner_session_hash,omitempty"`
+	OwnerUserHash          string                   `json:"owner_user_hash,omitempty"`
+	OwnerEnvHash           string                   `json:"owner_env_hash,omitempty"`
+	SessionChannelIDHash   string                   `json:"session_channel_id_hash,omitempty"`
+	BridgeChannelID        string                   `json:"bridge_channel_id,omitempty"`
+	RuntimeInstanceID      string                   `json:"runtime_instance_id,omitempty"`
+	RuntimeGenerationID    string                   `json:"runtime_generation_id,omitempty"`
+	RuntimeShardID         string                   `json:"runtime_shard_id,omitempty"`
+	IPCChannelID           string                   `json:"ipc_channel_id,omitempty"`
+	ConnectionNonce        string                   `json:"connection_nonce,omitempty"`
+	StreamID               string                   `json:"stream_id,omitempty"`
+	StreamDirection        string                   `json:"stream_direction,omitempty"`
+	OperationID            string                   `json:"operation_id,omitempty"`
+	AuditCorrelationID     string                   `json:"audit_correlation_id,omitempty"`
+	HandleID               string                   `json:"handle_id,omitempty"`
+	ConfirmationID         string                   `json:"confirmation_id,omitempty"`
+	Method                 string                   `json:"method,omitempty"`
+	RequestHash            string                   `json:"request_hash,omitempty"`
+	PlanHash               string                   `json:"plan_hash,omitempty"`
+	TargetDescriptorSHA256 string                   `json:"target_descriptor_sha256,omitempty"`
+	ResourceScope          sessionctx.ResourceScope `json:"resource_scope,omitzero"`
 }
 
 type RevisionBinding struct {
@@ -168,10 +171,10 @@ type Limits struct {
 type MintRequest struct {
 	Kind      TokenKind       `json:"kind"`
 	Use       TokenUse        `json:"use,omitempty"`
-	Audience  Audience        `json:"audience"`
+	Audience  Audience        `json:"-"`
 	Revision  RevisionBinding `json:"revision"`
 	ExpiresAt time.Time       `json:"expires_at"`
-	Now       time.Time       `json:"now,omitempty"`
+	Now       time.Time       `json:"-"`
 	Limits    Limits          `json:"limits,omitzero"`
 }
 
@@ -191,9 +194,9 @@ type MintedToken struct {
 type ValidateRequest struct {
 	Kind     TokenKind       `json:"kind"`
 	Token    string          `json:"token"`
-	Audience Audience        `json:"audience"`
+	Audience Audience        `json:"-"`
 	Revision RevisionBinding `json:"revision"`
-	Now      time.Time       `json:"now,omitempty"`
+	Now      time.Time       `json:"-"`
 	Consume  bool            `json:"consume,omitempty"`
 	Bind     *ChannelBinding `json:"bind,omitempty"`
 }
@@ -201,16 +204,16 @@ type ValidateRequest struct {
 type ValidateTokenIDRequest struct {
 	Kind     TokenKind       `json:"kind"`
 	TokenID  string          `json:"token_id"`
-	Audience Audience        `json:"audience"`
+	Audience Audience        `json:"-"`
 	Revision RevisionBinding `json:"revision"`
-	Now      time.Time       `json:"now,omitempty"`
+	Now      time.Time       `json:"-"`
 	Consume  bool            `json:"consume,omitempty"`
 }
 
 type InspectRequest struct {
 	Kind  TokenKind `json:"kind"`
 	Token string    `json:"token"`
-	Now   time.Time `json:"now,omitempty"`
+	Now   time.Time `json:"-"`
 }
 
 type ChannelBinding struct {
@@ -297,22 +300,26 @@ func (m *TokenManager) Mint(req MintRequest) (MintedToken, error) {
 		return MintedToken{}, err
 	}
 	now := record.IssuedAt
+	pluginKey, err := tokenPluginIndexKey(record.Audience)
+	if err != nil {
+		return MintedToken{}, err
+	}
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.pruneExpiredRecordsLocked(now)
 	if m.revokeFloorsSaturated {
-		if _, tracked := m.pluginRevokeFloors[record.Audience.PluginInstanceID]; !tracked {
+		if _, tracked := m.pluginRevokeFloors[pluginKey]; !tracked {
 			return MintedToken{}, ErrTokenRevokeFloorCapacity
 		}
 	}
-	if floor := m.pluginRevokeFloors[record.Audience.PluginInstanceID]; floor > 0 && record.Revision.RevokeEpoch < floor {
+	if floor := m.pluginRevokeFloors[pluginKey]; floor > 0 && record.Revision.RevokeEpoch < floor {
 		return MintedToken{}, ErrTokenRevoked
 	}
 	if len(m.records) >= m.options.MaxRecords {
 		return MintedToken{}, ErrTokenCapacity
 	}
-	if len(m.pluginIndex[record.Audience.PluginInstanceID]) >= m.options.MaxRecordsPerPlugin {
+	if len(m.pluginIndex[pluginKey]) >= m.options.MaxRecordsPerPlugin {
 		return MintedToken{}, ErrTokenPluginCapacity
 	}
 	if _, exists := m.records[record.TokenHash]; exists {
@@ -390,15 +397,17 @@ func (m *TokenManager) pruneExpiredRecordsLocked(now time.Time) {
 func (m *TokenManager) addRecordLocked(record TokenRecord) {
 	m.records[record.TokenHash] = record
 	m.idIndex[tokenIDIndexKey(record.Kind, record.TokenID)] = record.TokenHash
-	addTokenIndexEntry(m.pluginIndex, record.Audience.PluginInstanceID, record.TokenHash)
-	addTokenIndexEntry(m.surfaceIndex, record.Audience.SurfaceInstanceID, record.TokenHash)
+	pluginKey, _ := tokenPluginIndexKey(record.Audience)
+	addTokenIndexEntry(m.pluginIndex, pluginKey, record.TokenHash)
+	addTokenIndexEntry(m.surfaceIndex, tokenSurfaceIndexKey(record.Audience), record.TokenHash)
 }
 
 func (m *TokenManager) removeRecordLocked(tokenHash string, record TokenRecord) {
 	delete(m.records, tokenHash)
 	delete(m.idIndex, tokenIDIndexKey(record.Kind, record.TokenID))
-	removeTokenIndexEntry(m.pluginIndex, record.Audience.PluginInstanceID, tokenHash)
-	removeTokenIndexEntry(m.surfaceIndex, record.Audience.SurfaceInstanceID, tokenHash)
+	pluginKey, _ := tokenPluginIndexKey(record.Audience)
+	removeTokenIndexEntry(m.pluginIndex, pluginKey, tokenHash)
+	removeTokenIndexEntry(m.surfaceIndex, tokenSurfaceIndexKey(record.Audience), tokenHash)
 }
 
 func addTokenIndexEntry(index map[string]map[string]struct{}, key string, tokenHash string) {
@@ -575,9 +584,13 @@ func (m *TokenManager) loadTokenRecordLocked(req InspectRequest, tokenHash strin
 	return record, nil
 }
 
-func (m *TokenManager) RevokePlugin(pluginInstanceID string, minimumRevokeEpoch uint64, now time.Time) (int, error) {
+func (m *TokenManager) RevokePlugin(ownerEnvHash string, pluginInstanceID string, minimumRevokeEpoch uint64, now time.Time) (int, error) {
 	if m == nil {
 		return 0, nil
+	}
+	pluginKey, err := ownerPluginIndexKey(ownerEnvHash, pluginInstanceID)
+	if err != nil {
+		return 0, err
 	}
 	if now.IsZero() {
 		now = time.Now().UTC()
@@ -585,17 +598,17 @@ func (m *TokenManager) RevokePlugin(pluginInstanceID string, minimumRevokeEpoch 
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	var floorErr error
-	if minimumRevokeEpoch > m.pluginRevokeFloors[pluginInstanceID] {
-		if _, exists := m.pluginRevokeFloors[pluginInstanceID]; !exists && len(m.pluginRevokeFloors) >= m.options.MaxRevokeFloors {
+	if minimumRevokeEpoch > m.pluginRevokeFloors[pluginKey] {
+		if _, exists := m.pluginRevokeFloors[pluginKey]; !exists && len(m.pluginRevokeFloors) >= m.options.MaxRevokeFloors {
 			m.revokeFloorsSaturated = true
 			floorErr = ErrTokenRevokeFloorCapacity
 		} else {
-			m.pluginRevokeFloors[pluginInstanceID] = minimumRevokeEpoch
+			m.pluginRevokeFloors[pluginKey] = minimumRevokeEpoch
 		}
 	}
 
 	count := 0
-	for key := range m.pluginIndex[pluginInstanceID] {
+	for key := range m.pluginIndex[pluginKey] {
 		record, ok := m.records[key]
 		if !ok {
 			continue
@@ -613,8 +626,12 @@ func (m *TokenManager) RevokePlugin(pluginInstanceID string, minimumRevokeEpoch 
 	return count, floorErr
 }
 
-func (m *TokenManager) RevokeSurface(surfaceInstanceID string, now time.Time) int {
+func (m *TokenManager) RevokeSurface(ownerEnvHash string, pluginInstanceID string, surfaceInstanceID string, now time.Time) int {
 	if m == nil {
+		return 0
+	}
+	surfaceKey, err := ownerSurfaceIndexKey(ownerEnvHash, pluginInstanceID, surfaceInstanceID)
+	if err != nil {
 		return 0
 	}
 	if now.IsZero() {
@@ -624,7 +641,7 @@ func (m *TokenManager) RevokeSurface(surfaceInstanceID string, now time.Time) in
 	defer m.mu.Unlock()
 
 	count := 0
-	for key := range m.surfaceIndex[surfaceInstanceID] {
+	for key := range m.surfaceIndex[surfaceKey] {
 		record, ok := m.records[key]
 		if !ok || record.Revoked {
 			continue
@@ -767,7 +784,10 @@ func validateTokenAudience(kind TokenKind, audience Audience) error {
 			audience.RuntimeGenerationID,
 		)
 	case TokenKindHandleGrant:
-		return require(audience.RuntimeGenerationID, audience.HandleID, audience.Method)
+		if err := require(audience.RuntimeGenerationID, audience.HandleID, audience.Method); err != nil {
+			return err
+		}
+		return audience.ResourceScope.Validate()
 	case TokenKindStreamTicket:
 		if err := require(
 			audience.PluginID,
@@ -852,7 +872,42 @@ func audienceMatches(expected Audience, got Audience) bool {
 		expected.Method == got.Method &&
 		expected.RequestHash == got.RequestHash &&
 		expected.PlanHash == got.PlanHash &&
-		expected.TargetDescriptorSHA256 == got.TargetDescriptorSHA256
+		expected.TargetDescriptorSHA256 == got.TargetDescriptorSHA256 &&
+		expected.ResourceScope == got.ResourceScope
+}
+
+func tokenPluginIndexKey(audience Audience) (string, error) {
+	ownerEnvHash := strings.TrimSpace(audience.OwnerEnvHash)
+	if audience.ResourceScope.Valid() {
+		ownerEnvHash = audience.ResourceScope.OwnerEnvHash
+	}
+	return ownerPluginIndexKey(ownerEnvHash, audience.PluginInstanceID)
+}
+
+func tokenSurfaceIndexKey(audience Audience) string {
+	key, _ := ownerSurfaceIndexKey(audience.OwnerEnvHash, audience.PluginInstanceID, audience.SurfaceInstanceID)
+	return key
+}
+
+func ownerPluginIndexKey(ownerEnvHash string, pluginInstanceID string) (string, error) {
+	ownerEnvHash = strings.TrimSpace(ownerEnvHash)
+	pluginInstanceID = strings.TrimSpace(pluginInstanceID)
+	if ownerEnvHash == "" || pluginInstanceID == "" {
+		return "", ErrMissingTokenAudience
+	}
+	return ownerEnvHash + "\x00" + pluginInstanceID, nil
+}
+
+func ownerSurfaceIndexKey(ownerEnvHash string, pluginInstanceID string, surfaceInstanceID string) (string, error) {
+	pluginKey, err := ownerPluginIndexKey(ownerEnvHash, pluginInstanceID)
+	if err != nil {
+		return "", err
+	}
+	surfaceInstanceID = strings.TrimSpace(surfaceInstanceID)
+	if surfaceInstanceID == "" {
+		return "", ErrMissingTokenAudience
+	}
+	return pluginKey + "\x00" + surfaceInstanceID, nil
 }
 
 func prefixedID(kind TokenKind) (string, error) {
