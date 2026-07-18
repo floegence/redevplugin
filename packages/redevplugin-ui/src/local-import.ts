@@ -65,7 +65,7 @@ export class PluginLocalImportClient {
           "Accept": "application/json",
           "Content-Type": "application/vnd.redevplugin.package+zip",
         },
-        body: body as unknown as string,
+        body,
         credentials: "same-origin",
         signal: options.signal,
       });

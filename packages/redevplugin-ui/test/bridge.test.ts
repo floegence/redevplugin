@@ -259,6 +259,25 @@ test("platform client reads compatibility manifest through host API", async () =
   assert.equal(fetch.calls[0]?.init.headers["X-ReDevPlugin-Owner-Session-Hash"], undefined);
 });
 
+test("platform client forwards per-call abort signals without changing absolute API bases", async () => {
+  const fetch = new FakeFetch();
+  fetch.push({ ok: true, data: { plugins: [] } });
+  fetch.push({ ok: true, data: { plugin_instance_id: "plugin_instance_1", plugin_id: "com.example.plugin", version: "1.0.0", active_fingerprint: "sha256:a", trust_state: "verified", enable_state: "enabled" } });
+  const controller = new AbortController();
+  const client = new PluginPlatformClient({
+    apiBaseURL: "https://host.example/plugin-api/",
+    fetch: fetch.fetch,
+  });
+
+  await client.catalog({ signal: controller.signal });
+  await client.enablePlugin({ plugin_instance_id: "plugin_instance_1", expected_management_revision: 3 }, { signal: controller.signal });
+
+  assert.equal(fetch.calls[0]?.input, "https://host.example/plugin-api/_redevplugin/api/plugins/catalog");
+  assert.equal(fetch.calls[1]?.input, "https://host.example/plugin-api/_redevplugin/api/plugins/enable");
+  assert.equal(fetch.calls[0]?.init.signal, controller.signal);
+  assert.equal(fetch.calls[1]?.init.signal, controller.signal);
+});
+
 test("platform client reads and patches plugin settings through host API", async () => {
   const fetch = new FakeFetch();
   fetch.push({
@@ -341,11 +360,15 @@ test("platform client manages plugin lifecycle and surface opening routes", asyn
   fetch.push({ ok: true, data: { plugin_instance_id: "plugin_instance_1", plugin_id: "com.example.plugin", version: "1.0.0", active_fingerprint: "sha256:a", trust_state: "verified", enable_state: "disabled" } });
   const client = new PluginPlatformClient({ fetch: fetch.fetch });
   const localImportClient = new PluginLocalImportClient({ fetch: fetch.fetch });
+  const uploadController = new AbortController();
 
   assert.equal("importLocalPackage" in client, false);
   assert.equal("updateLocalPackage" in client, false);
 
-  const installed = await localImportClient.importLocalPackage(new Blob(["pkg"]), { pluginInstanceId: "plugin_instance_1" });
+  const installed = await localImportClient.importLocalPackage(new Blob(["pkg"]), {
+    pluginInstanceId: "plugin_instance_1",
+    signal: uploadController.signal,
+  });
   const updated = await localImportClient.updateLocalPackage("plugin_instance_1", 1, new Blob(["pkg2"]));
   const downgraded = await client.downgradePlugin({ plugin_instance_id: "plugin_instance_1", version: "1.0.0", expected_management_revision: 2 });
   const enabled = await client.enablePlugin({ plugin_instance_id: "plugin_instance_1", expected_management_revision: 3 });
@@ -368,6 +391,7 @@ test("platform client manages plugin lifecycle and surface opening routes", asyn
   assert.equal(uninstalled.enable_state, "disabled");
   assert.equal(fetch.calls[0]?.input, "/_redevplugin/api/plugins/local-imports?plugin_instance_id=plugin_instance_1");
   assert.equal(fetch.calls[0]?.init.body instanceof Blob, true);
+  assert.equal(fetch.calls[0]?.init.signal, uploadController.signal);
   assert.equal(fetch.calls[0]?.init.headers["Content-Type"], "application/vnd.redevplugin.package+zip");
   assert.equal(fetch.calls[1]?.input, "/_redevplugin/api/plugins/plugin_instance_1/local-import?expected_management_revision=1");
   assert.equal(fetch.calls[1]?.init.body instanceof Blob, true);

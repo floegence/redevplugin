@@ -575,6 +575,125 @@ test("plugin bridge client exposes only a public handle and its private port", a
   assert.equal(pluginPort.closed, true);
 });
 
+test("plugin bridge serializes concurrent reads for the same stream handle", async () => {
+  const { port1: rendererPort, port2: pluginPort } = fakeChannel();
+  const client = new PluginBridgeClient({ port: pluginPort, surfaceHandle: "surface_12345678", timeoutMs: 1000 });
+
+  const first = client.readStream("stream_12345678");
+  const second = client.readStream("stream_12345678");
+  await waitFor(() => pluginPort.sent.length === 1);
+  assert.deepEqual(pluginPort.sent[0], {
+    type: "redevplugin.bridge.stream.read",
+    id: "stream_1",
+    stream_handle: "stream_12345678",
+  });
+
+  rendererPort.postMessage({
+    type: "redevplugin.bridge.response",
+    id: "stream_1",
+    ok: true,
+    data: { events: [], done: false, retry_after_ms: 25 },
+  });
+  assert.deepEqual(await first, { events: [], done: false, retry_after_ms: 25 });
+  await waitFor(() => pluginPort.sent.length === 2);
+  assert.deepEqual(pluginPort.sent[1], {
+    type: "redevplugin.bridge.stream.read",
+    id: "stream_2",
+    stream_handle: "stream_12345678",
+  });
+
+  rendererPort.postMessage({
+    type: "redevplugin.bridge.response",
+    id: "stream_2",
+    ok: true,
+    data: { events: [], done: true, terminal_status: "closed", retry_after_ms: 0 },
+  });
+  assert.deepEqual(await second, { events: [], done: true, terminal_status: "closed", retry_after_ms: 0 });
+  client.dispose();
+});
+
+test("plugin bridge aborts an active stream read and ignores its late response", async () => {
+  const { port1: rendererPort, port2: pluginPort } = fakeChannel();
+  const client = new PluginBridgeClient({ port: pluginPort, surfaceHandle: "surface_12345678", timeoutMs: 1000 });
+  const controller = new AbortController();
+
+  const read = client.readStream("stream_12345678", { signal: controller.signal });
+  await waitFor(() => pluginPort.sent.length === 1);
+  controller.abort();
+  await assert.rejects(
+    read,
+    (error: unknown) => error instanceof PluginBridgeError && error.errorCode === "PLUGIN_STREAM_CANCELLED",
+  );
+  assert.deepEqual(pluginPort.sent[1], { type: "redevplugin.bridge.cancel", id: "stream_1" });
+
+  rendererPort.postMessage({
+    type: "redevplugin.bridge.response",
+    id: "stream_1",
+    ok: true,
+    data: { events: [], done: false, retry_after_ms: 25 },
+  });
+  const next = client.readStream("stream_12345678");
+  await waitFor(() => pluginPort.sent.length === 3);
+  assert.deepEqual(pluginPort.sent[2], {
+    type: "redevplugin.bridge.stream.read",
+    id: "stream_2",
+    stream_handle: "stream_12345678",
+  });
+  rendererPort.postMessage({
+    type: "redevplugin.bridge.response",
+    id: "stream_2",
+    ok: true,
+    data: { events: [], done: true, terminal_status: "closed", retry_after_ms: 0 },
+  });
+  await next;
+  client.dispose();
+});
+
+test("plugin bridge preserves an unacknowledged delivery when its read is aborted", async () => {
+  const { port1: rendererPort, port2: pluginPort } = fakeChannel();
+  const client = new PluginBridgeClient({ port: pluginPort, surfaceHandle: "surface_12345678", timeoutMs: 1000 });
+  const controller = new AbortController();
+  const delivered = {
+    events: [{ sequence: 1, kind: "data", data: "b2s=", at: "2026-07-12T00:00:00Z" }],
+    done: false as const,
+    retry_after_ms: 0,
+  };
+
+  const read = client.readStream("stream_12345678", { signal: controller.signal });
+  await waitFor(() => pluginPort.sent.length === 1);
+  rendererPort.postMessage({
+    type: "redevplugin.bridge.response",
+    id: "stream_1",
+    ok: true,
+    data: { delivery_id: "delivery_12345678", ...delivered },
+  });
+  await waitFor(() => pluginPort.sent.length === 2);
+  assert.deepEqual(pluginPort.sent[1], {
+    type: "redevplugin.bridge.stream.ack",
+    id: "stream_ack_2",
+    stream_handle: "stream_12345678",
+    delivery_id: "delivery_12345678",
+  });
+  controller.abort();
+  await assert.rejects(
+    read,
+    (error: unknown) => error instanceof PluginBridgeError && error.errorCode === "PLUGIN_STREAM_CANCELLED",
+  );
+  assert.deepEqual(pluginPort.sent[2], { type: "redevplugin.bridge.cancel", id: "stream_ack_2" });
+
+  const replay = client.readStream("stream_12345678");
+  await waitFor(() => pluginPort.sent.length === 4);
+  assert.deepEqual(pluginPort.sent[3], {
+    type: "redevplugin.bridge.stream.ack",
+    id: "stream_ack_3",
+    stream_handle: "stream_12345678",
+    delivery_id: "delivery_12345678",
+  });
+  rendererPort.postMessage({ type: "redevplugin.bridge.response", id: "stream_ack_3", ok: true });
+  assert.deepEqual(await replay, delivered);
+  client.dispose();
+});
+
 test("plugin bridge acknowledges quiesce only after async lifecycle observers settle", async () => {
   const { port1: rendererPort, port2: pluginPort } = fakeChannel();
   const client = new PluginBridgeClient({ port: pluginPort, surfaceHandle: "surface_12345678", timeoutMs: 1000 });
@@ -1107,6 +1226,85 @@ test("surface host exposes no iframe before the first worker UI commit", async (
   host.dispose();
 });
 
+test("platform client fails closed when absolute surface transport base has no browser origin", () => {
+  const previousLocation = Object.getOwnPropertyDescriptor(globalThis, "location");
+  Reflect.deleteProperty(globalThis, "location");
+  const client = new PluginPlatformClient({
+    apiBaseURL: "https://host.example/plugin-api/",
+    fetch: new FakeFetch().fetch,
+  });
+  try {
+    assert.throws(
+      () => client.openSurfaceInSlot({} as PluginSurfaceSlot, {
+        plugin_instance_id: "plugin_instance_1",
+        surface_id: "example.view",
+        surface_instance_id: "surface_1",
+        expected_management_revision: 7,
+      }),
+      /same-origin/,
+    );
+  } finally {
+    if (previousLocation) Object.defineProperty(globalThis, "location", previousLocation);
+  }
+});
+
+test("platform client opens a surface in a slot with one SDK-owned same-origin transport", async () => {
+  const frame = new FakeFrame();
+  const channel = fakeChannel();
+  const restoreDOM = installSurfaceSlotDOM([frame], [channel]);
+  const fetch = new FakeFetch();
+  fetch.push({
+    plugin_id: hostBootstrap.pluginId,
+    plugin_instance_id: hostBootstrap.pluginInstanceId,
+    plugin_version: hostBootstrap.pluginVersion,
+    surface_id: hostBootstrap.surfaceId,
+    surface_instance_id: hostBootstrap.surfaceInstanceId,
+    active_fingerprint: hostBootstrap.activeFingerprint,
+    bridge_nonce: hostBootstrap.bridgeNonce,
+    entry_path: hostBootstrap.entryPath,
+    entry_sha256: hostBootstrap.entrySHA256,
+    asset_ticket: hostBootstrap.assetTicket,
+    asset_session_nonce: hostBootstrap.assetSessionNonce,
+    management_revision: hostBootstrap.managementRevision,
+    revoke_epoch: hostBootstrap.revokeEpoch,
+    runtime_generation_id: hostBootstrap.runtimeGenerationId,
+  });
+  fetch.push(preparation());
+  fetch.push(gatewayLease());
+  const controller = new AbortController();
+  const stage = new FakeStage();
+  const slot = PluginSurfaceSlot.create({ stage: stage as unknown as HTMLElement });
+  const client = new PluginPlatformClient({
+    apiBaseURL: "https://host.example/plugin-api/",
+    fetch: fetch.fetch,
+  });
+
+  try {
+    const opening = withLocationOrigin("https://host.example", () => client.openSurfaceInSlot(slot, {
+      plugin_instance_id: "plugin_instance_1",
+      surface_id: "example.view",
+      surface_instance_id: "surface_1",
+      expected_management_revision: 7,
+    }, { signal: controller.signal, bridgeChannelId: "bridge_12345678" }));
+    await waitFor(() => stage.children.length === 1);
+    frame.load();
+    await waitFor(() => frame.transferred.length === 1);
+    channel.port2.postMessage({ type: "redevplugin.surface.first_paint" });
+    channel.port2.postMessage({ type: "redevplugin.surface.worker_ready" });
+    const host = await opening;
+
+    assert.equal(host.bootstrap.surfaceInstanceId, "surface_1");
+    assert.equal(fetch.calls[0]?.input, "https://host.example/plugin-api/_redevplugin/api/plugins/surfaces/open");
+    assert.equal(fetch.calls[0]?.init.signal, controller.signal);
+    assert.equal(fetch.calls[1]?.input, "/plugin-api/_redevplugin/api/plugins/surfaces/surface_1/prepare");
+    assert.equal(fetch.calls[2]?.input, "/plugin-api/_redevplugin/api/plugins/surfaces/surface_1/bridge-token");
+  } finally {
+    fetch.push({});
+    slot.dispose();
+    restoreDOM();
+  }
+});
+
 test("surface slot opens the next surface while the retired surface quiesces", async () => {
   const firstFrame = new FakeFrame();
   const secondFrame = new FakeFrame();
@@ -1356,7 +1554,7 @@ test("trusted parent replays and acknowledges private stream deliveries behind o
   assert.equal(JSON.stringify(response).includes("stream_private_1"), false);
 
   fetch.pushHandler(async (_input, init) => {
-    const body = JSON.parse(init.body ?? "{}") as { read_id: string };
+    const body = JSON.parse(String(init.body ?? "{}")) as { read_id: string };
     return {
       ok: true,
       status: 200,
@@ -1412,7 +1610,7 @@ test("trusted parent replays and acknowledges private stream deliveries behind o
   ));
 
   fetch.pushHandler(async (_input, init) => {
-    const body = JSON.parse(init.body ?? "{}") as { read_id: string };
+    const body = JSON.parse(String(init.body ?? "{}")) as { read_id: string };
     return {
       ok: true,
       status: 200,
@@ -1494,11 +1692,11 @@ test("trusted parent retries a lost stream response once with the same read id",
 
   let firstReadID = "";
   fetch.pushHandler(async (_input, init) => {
-    firstReadID = (JSON.parse(init.body ?? "{}") as { read_id: string }).read_id;
+    firstReadID = (JSON.parse(String(init.body ?? "{}")) as { read_id: string }).read_id;
     throw new TypeError("stream response connection closed");
   });
   fetch.pushHandler(async (_input, init) => {
-    const readID = (JSON.parse(init.body ?? "{}") as { read_id: string }).read_id;
+    const readID = (JSON.parse(String(init.body ?? "{}")) as { read_id: string }).read_id;
     assert.equal(readID, firstReadID);
     return {
       ok: true,
@@ -1559,7 +1757,7 @@ test("trusted parent rejects concurrent reads without consuming the reusable str
     let resolveFirstRead: ((response: FetchResponseLike) => void) | undefined;
     let firstReadID = "";
     fetch.pushHandler(async (_input, init) => new Promise<FetchResponseLike>((resolve) => {
-      firstReadID = (JSON.parse(init.body ?? "{}") as { read_id: string }).read_id;
+      firstReadID = (JSON.parse(String(init.body ?? "{}")) as { read_id: string }).read_id;
       resolveFirstRead = resolve;
     }));
     channel.port2.postMessage({ type: "redevplugin.bridge.stream.read", id: "stream_2", stream_handle: call.data.stream_handle });
@@ -1586,7 +1784,7 @@ test("trusted parent rejects concurrent reads without consuming the reusable str
     await waitFor(() => channel.port1.sent.some((value) => (value as { id?: string }).id === "stream_2"));
 
     fetch.pushHandler(async (_input, init) => {
-      const body = JSON.parse(init.body ?? "{}") as { read_id: string };
+      const body = JSON.parse(String(init.body ?? "{}")) as { read_id: string };
       return {
         ok: true,
         status: 200,

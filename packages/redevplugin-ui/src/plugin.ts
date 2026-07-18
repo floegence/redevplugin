@@ -11,6 +11,7 @@ export type {
   BridgeLifecycleEvent,
   MessagePortLike,
   PluginBridgeClientOptions,
+  PluginBridgeRequestOptions,
   PluginCanvasAccessibilityState,
   PluginCanvasInputEvent,
   PluginCanvasKeyEvent,

@@ -11,7 +11,7 @@ export type FetchLike = (input: string, init: FetchInitLike) => Promise<FetchRes
 export type FetchInitLike = {
   method: string;
   headers: Record<string, string>;
-  body?: string;
+  body?: BodyInit;
   credentials?: "same-origin" | "include" | "omit";
   signal?: AbortSignal;
   keepalive?: boolean;

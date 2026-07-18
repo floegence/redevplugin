@@ -290,10 +290,15 @@ export type PluginBridgeClientOptions = {
   surfaceHandle?: string;
 };
 
+export type PluginBridgeRequestOptions = {
+  signal?: AbortSignal;
+};
+
 type PendingCall = {
   resolve: (value: unknown) => void;
   reject: (reason: unknown) => void;
   timer: ReturnType<typeof setTimeout>;
+  abortCleanup?: () => void;
   kind: "json" | "canvas" | "asset";
   identifier?: string;
 };
@@ -302,6 +307,7 @@ type PendingCallOptions = {
   kind?: PendingCall["kind"];
   identifier?: string;
   mutationOutcomeOnTimeout?: PluginMutationOutcome;
+  signal?: AbortSignal;
 };
 
 type PendingRender = {
@@ -371,6 +377,7 @@ export class PluginBridgeClient {
   #renderLoop?: Promise<void>;
   #controlEditRevisions = new Map<string, number>();
   #pendingStreamDeliveries = new Map<string, { deliveryID: string; result: PluginStreamReadResult }>();
+  #streamReadTails = new Map<string, Promise<PluginStreamReadResult>>();
   #onMessage = (event: MessageEventLike): void => {
     void this.#handleMessage(event);
   };
@@ -417,18 +424,28 @@ export class PluginBridgeClient {
     }, { mutationOutcomeOnTimeout: "unknown" });
   }
 
-  readStream(streamHandle: string): Promise<PluginStreamReadResult> {
+  readStream(streamHandle: string, options: PluginBridgeRequestOptions = {}): Promise<PluginStreamReadResult> {
     this.#assertActive();
     if (!validOpaqueHandle(streamHandle, "stream")) {
       throw new PluginBridgeError("PLUGIN_INVALID_REQUEST", "Plugin stream handle is invalid");
     }
-    return this.#readStream(streamHandle);
+    const previous = this.#streamReadTails.get(streamHandle);
+    const read = (previous ? previous.catch(() => undefined) : Promise.resolve()).then(() => {
+      this.#assertActive();
+      if (options.signal?.aborted) throw streamReadAbortedError();
+      return this.#readStream(streamHandle, options.signal);
+    });
+    this.#streamReadTails.set(streamHandle, read);
+    void read.finally(() => {
+      if (this.#streamReadTails.get(streamHandle) === read) this.#streamReadTails.delete(streamHandle);
+    }).catch(() => undefined);
+    return abortableStreamRead(read, options.signal);
   }
 
-  async #readStream(streamHandle: string): Promise<PluginStreamReadResult> {
+  async #readStream(streamHandle: string, signal?: AbortSignal): Promise<PluginStreamReadResult> {
     const pending = this.#pendingStreamDeliveries.get(streamHandle);
     if (pending) {
-      await this.#acknowledgeStream(streamHandle, pending.deliveryID);
+      await this.#acknowledgeStream(streamHandle, pending.deliveryID, signal);
       this.#pendingStreamDeliveries.delete(streamHandle);
       return pending.result;
     }
@@ -437,23 +454,23 @@ export class PluginBridgeClient {
       type: "redevplugin.bridge.stream.read",
       id,
       stream_handle: streamHandle,
-    });
+    }, { signal });
     const { delivery_id: deliveryID, ...result } = privateResult;
     if (!deliveryID) return result;
     this.#pendingStreamDeliveries.set(streamHandle, { deliveryID, result });
-    await this.#acknowledgeStream(streamHandle, deliveryID);
+    await this.#acknowledgeStream(streamHandle, deliveryID, signal);
     this.#pendingStreamDeliveries.delete(streamHandle);
     return result;
   }
 
-  async #acknowledgeStream(streamHandle: string, deliveryID: string): Promise<void> {
+  async #acknowledgeStream(streamHandle: string, deliveryID: string, signal?: AbortSignal): Promise<void> {
     const id = this.#requestID("stream_ack");
     await this.#request<void>(id, {
       type: "redevplugin.bridge.stream.ack",
       id,
       stream_handle: streamHandle,
       delivery_id: deliveryID,
-    }, { mutationOutcomeOnTimeout: "unknown" });
+    }, { mutationOutcomeOnTimeout: "unknown", signal });
   }
 
   cancelOperation(operationID: string, reason?: string): Promise<void> {
@@ -574,6 +591,7 @@ export class PluginBridgeClient {
     this.#port.removeEventListener("message", this.#onMessage);
     for (const [id, pending] of this.#pending) {
       clearTimeout(pending.timer);
+      pending.abortCleanup?.();
       pending.reject(new PluginBridgeError("PLUGIN_BRIDGE_DISPOSED", `Plugin bridge request ${id} was disposed`));
     }
     this.#pending.clear();
@@ -660,15 +678,17 @@ export class PluginBridgeClient {
     if (this.#pending.size >= maxPendingPluginBridgeRequests) {
       throw new PluginBridgeError("PLUGIN_JSON_LIMIT_EXCEEDED", "Plugin bridge has too many pending requests");
     }
+    if (options.signal?.aborted) return Promise.reject(streamReadAbortedError());
     const result = new Promise<T>((resolve, reject) => {
       const timer = setTimeout(() => {
-        if (!this.#pending.delete(id)) return;
+        const pending = this.#takePending(id);
+        if (!pending) return;
         try {
           this.#port.postMessage({ type: "redevplugin.bridge.cancel", id } satisfies PluginBridgeCancelMessage);
         } catch {
           // The request is already locally cancelled when the port closes concurrently.
         }
-        reject(new PluginBridgeError(
+        pending.reject(new PluginBridgeError(
           "PLUGIN_BRIDGE_TIMEOUT",
           `Plugin bridge request ${id} timed out`,
           undefined,
@@ -676,10 +696,22 @@ export class PluginBridgeClient {
           options.mutationOutcomeOnTimeout,
         ));
       }, this.timeoutMs);
+      const onAbort = (): void => {
+        const pending = this.#takePending(id);
+        if (!pending) return;
+        try {
+          this.#port.postMessage({ type: "redevplugin.bridge.cancel", id } satisfies PluginBridgeCancelMessage);
+        } catch {
+          // The request is already locally cancelled when the port closes concurrently.
+        }
+        pending.reject(streamReadAbortedError());
+      };
+      options.signal?.addEventListener("abort", onAbort, { once: true });
       this.#pending.set(id, {
         resolve: (value: unknown) => resolve(value as T),
         reject,
         timer,
+        abortCleanup: options.signal ? () => options.signal?.removeEventListener("abort", onAbort) : undefined,
         kind: options.kind ?? "json",
         identifier: options.identifier,
       });
@@ -687,24 +719,29 @@ export class PluginBridgeClient {
     try {
       this.#port.postMessage(normalizedMessage);
     } catch {
-      const pending = this.#pending.get(id);
+      const pending = this.#takePending(id);
       if (pending) {
-        this.#pending.delete(id);
-        clearTimeout(pending.timer);
         pending.reject(new PluginBridgeError("PLUGIN_BRIDGE_DISPOSED", `Plugin bridge request ${id} could not be posted`));
       }
     }
     return result;
   }
 
+  #takePending(id: string): PendingCall | undefined {
+    const pending = this.#pending.get(id);
+    if (!pending) return undefined;
+    this.#pending.delete(id);
+    clearTimeout(pending.timer);
+    pending.abortCleanup?.();
+    return pending;
+  }
+
   async #handleMessage(event: MessageEventLike): Promise<void> {
     if (this.#lifecycleState === "disposed") return;
     const data = event.data;
     if (isCanvasReadyCandidate(data)) {
-      const pending = this.#pending.get(data.id);
+      const pending = this.#takePending(data.id);
       if (!pending) return;
-      this.#pending.delete(data.id);
-      clearTimeout(pending.timer);
       if (pending.kind !== "canvas" || pending.identifier !== data.canvas_id || !isCanvasReadyMessage(data)) {
         pending.reject(new PluginBridgeError("PLUGIN_CONTRACT_MISMATCH", `Plugin canvas response ${data.id} is invalid`));
         return;
@@ -719,10 +756,8 @@ export class PluginBridgeClient {
       return;
     }
     if (isImageReadyCandidate(data)) {
-      const pending = this.#pending.get(data.id);
+      const pending = this.#takePending(data.id);
       if (!pending) return;
-      this.#pending.delete(data.id);
-      clearTimeout(pending.timer);
       if (pending.kind !== "asset" || pending.identifier !== data.asset_id || !isImageReadyMessage(data)) {
         pending.reject(new PluginBridgeError("PLUGIN_CONTRACT_MISMATCH", `Plugin image response ${data.id} is invalid`));
         return;
@@ -732,10 +767,8 @@ export class PluginBridgeClient {
     }
     if (!messageWithinLimit(data)) return;
     if (isBridgeResponseCandidate(data)) {
-      const pending = this.#pending.get(data.id);
+      const pending = this.#takePending(data.id);
       if (!pending) return;
-      this.#pending.delete(data.id);
-      clearTimeout(pending.timer);
       if (!isBridgeResponse(data)) {
         pending.reject(new PluginBridgeError("PLUGIN_CONTRACT_MISMATCH", `Plugin bridge response ${data.id} is invalid`));
         return;
@@ -4503,6 +4536,33 @@ function isPluginRiskEffect(value: unknown): value is PluginRiskEffect {
 
 function confirmationDecisionAccepted(decision: PluginConfirmationDecision): boolean {
   return typeof decision === "boolean" ? decision : decision.confirmed;
+}
+
+function streamReadAbortedError(): PluginBridgeError {
+  return new PluginBridgeError("PLUGIN_STREAM_CANCELLED", "Plugin stream read was aborted");
+}
+
+function abortableStreamRead(
+  read: Promise<PluginStreamReadResult>,
+  signal?: AbortSignal,
+): Promise<PluginStreamReadResult> {
+  if (!signal) return read;
+  if (signal.aborted) return Promise.reject(streamReadAbortedError());
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const finish = (callback: (value: never) => void, value: unknown): void => {
+      if (settled) return;
+      settled = true;
+      signal.removeEventListener("abort", onAbort);
+      callback(value as never);
+    };
+    const onAbort = (): void => finish(reject, streamReadAbortedError());
+    signal.addEventListener("abort", onAbort, { once: true });
+    read.then(
+      (value) => finish(resolve, value),
+      (error: unknown) => finish(reject, error),
+    );
+  });
 }
 
 function abortableConfirmationDecision(

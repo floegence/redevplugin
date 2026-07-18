@@ -271,6 +271,56 @@ test("subscription read cancels the host operation when an event violates the pu
   assert.deepEqual(bridge.cancellations, [{ operationID: "operation_direct_read_invalid", reason: "stream_contract_mismatch" }]);
 });
 
+test("subscription read abort stays per-call and leaves the stream reusable", async () => {
+  const controller = new AbortController();
+  let receivedSignal: AbortSignal | undefined;
+  let streamReads = 0;
+  const cancellations: string[] = [];
+  const bridge = {
+    call: async () => ({
+      data: { accepted: true },
+      operation_id: "operation_signal_1",
+      stream_handle: "stream_signal_1",
+    }),
+    readStream: async (_streamHandle: string, options?: { signal?: AbortSignal }) => {
+      streamReads += 1;
+      if (streamReads === 1) {
+        receivedSignal = options?.signal;
+        return new Promise<never>((_resolve, reject) => {
+          options?.signal?.addEventListener("abort", () => {
+            reject(new PluginBridgeError("PLUGIN_STREAM_CANCELLED", "Plugin stream read was aborted"));
+          }, { once: true });
+        });
+      }
+      return { events: [], done: true, terminal_status: "closed", retry_after_ms: 0 } as const;
+    },
+    cancelOperation: async (_operationID: string, reason?: string) => {
+      if (reason) cancellations.push(reason);
+    },
+  } as unknown as PluginBridgeClient;
+  const stream = await callCapabilityStream(
+    bridge,
+    "documents.watch",
+    { document_id: "doc-1" },
+    requestSchema,
+    responseSchema,
+    eventTypeName,
+    eventSchema,
+  );
+
+  const read = stream.read({ signal: controller.signal });
+  controller.abort();
+  await assert.rejects(
+    read,
+    (error: unknown) => error instanceof PluginBridgeError && error.errorCode === "PLUGIN_STREAM_CANCELLED",
+  );
+  const next = await stream.read();
+
+  assert.equal(receivedSignal, controller.signal);
+  assert.deepEqual(next, { events: [], done: true, terminal_status: "closed", retry_after_ms: 0 });
+  assert.deepEqual(cancellations, []);
+});
+
 test("non-cancelable operation helpers do not expose or dispatch cancellation", async () => {
   const bridge = fakeBridge({ data: { accepted: true }, operation_id: "operation_non_cancelable" });
   const operation = await callCapabilityOperation(

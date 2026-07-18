@@ -2,6 +2,7 @@ import { PluginBridgeError } from "./errors.js";
 import { decodePluginStreamText } from "./surface.js";
 import type {
   PluginBridgeClient,
+  PluginBridgeRequestOptions,
   PluginJSONObject,
   PluginStreamEvent as PluginRawStreamEvent,
   PluginStreamReadResult as PluginRawStreamReadResult,
@@ -34,7 +35,7 @@ export type PluginStream<Initial, Event> = {
   data: Initial;
   operation_id: string;
   stream_handle: string;
-  read(): Promise<PluginCapabilityStreamReadResult<Event>>;
+  read(options?: PluginBridgeRequestOptions): Promise<PluginCapabilityStreamReadResult<Event>>;
   cancel(reason?: string): Promise<void>;
   [Symbol.asyncIterator](): AsyncIterableIterator<PluginCapabilityStreamEvent<Event>>;
 };
@@ -93,12 +94,15 @@ export async function callCapabilityStream<Request extends object, Response, Eve
     await cancelAfterResponseMismatch(bridge, result.operation_id, error);
   }
   let settled = false;
-  const read = async () => {
+  const read = async (options: PluginBridgeRequestOptions = {}) => {
     try {
-      const batch = decodeCapabilityStreamBatch<Event>(method, await bridge.readStream(result.stream_handle), eventTypeName, eventSchema);
+      const batch = decodeCapabilityStreamBatch<Event>(method, await bridge.readStream(result.stream_handle, options), eventTypeName, eventSchema);
       if (batch.done) settled = true;
       return batch;
     } catch (error) {
+      if (options.signal?.aborted && error instanceof PluginBridgeError && error.errorCode === "PLUGIN_STREAM_CANCELLED") {
+        throw error;
+      }
       settled = true;
       return cancelAfterStreamMismatch(bridge, result.operation_id, error);
     }
