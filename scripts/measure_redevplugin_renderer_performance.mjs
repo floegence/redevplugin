@@ -6,6 +6,7 @@ import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { build } from "esbuild";
 import { chromium } from "playwright";
+import { isExpectedSandboxConsoleLine } from "../internal/browserharness/smoke-console-policy.mjs";
 
 const options = parseArgs(process.argv.slice(2));
 const reconciler = await import(pathToFileURL(resolve("packages/redevplugin-ui/dist/ui-reconciler.js")));
@@ -154,7 +155,10 @@ async function runScenario(browser, harnessURL) {
     const observedLongTasks = await frame.evaluate(() => [...globalThis.__redevpluginLongTasks]);
     const firstKey = await frame.locator("[data-redevplugin-key]").first().getAttribute("data-redevplugin-key");
     if (firstKey !== "root") throw new Error(`renderer root key mismatch: ${firstKey}`);
-    const unexpectedConsole = consoleMessages.filter((message) => message.type === "error" || message.type === "warning");
+    const unexpectedConsole = consoleMessages.filter((message) =>
+      (message.type === "error" || message.type === "warning") &&
+      !isExpectedSandboxConsoleLine(`${message.type}: ${message.text}`),
+    );
     if (unexpectedConsole.length > 0 || pageErrors.length > 0) {
       throw new Error(
         `renderer console errors: console=${JSON.stringify(unexpectedConsole)}; pageErrors=${JSON.stringify(pageErrors)}`,

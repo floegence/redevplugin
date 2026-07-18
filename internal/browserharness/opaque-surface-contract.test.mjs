@@ -105,3 +105,9 @@ test("browser smoke accepts only known sandbox console evidence", () => {
   assert.equal(isExpectedSandboxConsoleLine("error: violates the following Content Security Policy directive"), true);
   assert.equal(isExpectedSandboxConsoleLine("error: unexpected plugin failure"), false);
 });
+
+test("renderer performance shares the browser console policy", async () => {
+  const rendererPerformance = await readFile(new URL("../../scripts/measure_redevplugin_renderer_performance.mjs", import.meta.url), "utf8");
+  assert.match(rendererPerformance, /smoke-console-policy\.mjs/);
+  assert.match(rendererPerformance, /isExpectedSandboxConsoleLine/);
+});
