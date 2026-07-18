@@ -42,6 +42,9 @@
 
 ### Changed
 
+- Consolidate plugin-data workspace finalization and export verification into a
+  symlink-safe rooted tree snapshot that reuses canonical hashes, file sizes,
+  and entry metadata while failing closed on post-hash filesystem changes.
 - Bind immutable plugin-data export objects to the authenticated resource scope
   and `plugin_instance_id` across catalog keys, disk paths, manifests, Host APIs,
   and HTTP/TypeScript requests. Cross-plugin access now returns not found, and

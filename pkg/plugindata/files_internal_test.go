@@ -1,6 +1,7 @@
 package plugindata
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -329,6 +330,93 @@ func TestExportPreservesCallerCancellationDuringWorkspaceValidation(t *testing.T
 	if _, err := store.Export(canceled, ExportRequest{PluginInstanceID: "plugini_test"}); !errors.Is(err, context.Canceled) {
 		t.Fatalf("Export() error = %v, want context.Canceled", err)
 	}
+}
+
+func TestWorkspaceSnapshotRejectsSettingsMutationBeforeSemanticValidation(t *testing.T) {
+	store, catalog, shape := newInternalStore(t)
+	ctx := internalTestContext()
+	if _, err := store.CommitEnable(ctx, CommitEnableRequest{PluginInstanceID: "plugini_test", Shape: shape, ExpectedManagementRevision: 1}); err != nil {
+		t.Fatal(err)
+	}
+	binding, found, err := catalog.GetBinding(ctx, "plugini_test")
+	if err != nil || !found {
+		t.Fatalf("GetBinding() found = %v, err = %v", found, err)
+	}
+	workspace, manifest, err := store.workspaceForBinding(internalEnvironmentScope(), binding)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := snapshotRootedTree(workspace.root, rootedTreeSnapshotOptions{hashContents: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	settingsPath := workspaceSettingsPath(workspace.root, internalUserScope())
+	settingsBytes, err := os.ReadFile(settingsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mutated := bytes.Replace(settingsBytes, []byte(`"revision":1`), []byte(`"revision":2`), 1)
+	if bytes.Equal(mutated, settingsBytes) || len(mutated) != len(settingsBytes) {
+		t.Fatal("settings fixture did not support a same-size valid mutation")
+	}
+	if err := os.WriteFile(settingsPath, mutated, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	changedAt := time.Now().Add(time.Hour)
+	if err := os.Chtimes(settingsPath, changedAt, changedAt); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateWorkspaceContentsSnapshot(ctx, workspace.root, manifest, snapshot); !errors.Is(err, ErrUnsafeFilesystem) {
+		t.Fatalf("validateWorkspaceContentsSnapshot() error = %v, want ErrUnsafeFilesystem", err)
+	}
+}
+
+func TestExportReportsSnapshotHashAndPhysicalSize(t *testing.T) {
+	store, catalog, shape := newInternalStore(t)
+	ctx := internalTestContext()
+	if _, err := store.CommitEnable(ctx, CommitEnableRequest{PluginInstanceID: "plugini_test", Shape: shape, ExpectedManagementRevision: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.WriteFile(ctx, storage.FileWriteRequest{PluginInstanceID: "plugini_test", ResourceScope: internalUserScope(), StoreID: "files", Path: "notes/value.txt", Data: []byte("snapshot-value")}); err != nil {
+		t.Fatal(err)
+	}
+	exported, err := store.Export(ctx, ExportRequest{PluginInstanceID: "plugini_test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	objectRoot := store.scopedObjectPath(internalUserScope(), "plugini_test", exported.ObjectID)
+	wantHash, err := referenceHashTree(filepath.Join(objectRoot, exportPayloadName), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantSize, err := regularFileTreeSize(objectRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if exported.ContentHash != wantHash || exported.SizeBytes != wantSize {
+		t.Fatalf("Export() = {hash:%q size:%d}, want {hash:%q size:%d}", exported.ContentHash, exported.SizeBytes, wantHash, wantSize)
+	}
+	object, found, err := catalog.GetObject(ctx, sessionctx.ScopeUser, "plugini_test", exported.ObjectID)
+	if err != nil || !found {
+		t.Fatalf("GetObject() found = %v, err = %v", found, err)
+	}
+	if object.ContentHash != wantHash || object.SizeBytes != wantSize {
+		t.Fatalf("catalog object = {hash:%q size:%d}, want {hash:%q size:%d}", object.ContentHash, object.SizeBytes, wantHash, wantSize)
+	}
+}
+
+func regularFileTreeSize(root string) (int64, error) {
+	var size int64
+	err := filepath.Walk(root, func(_ string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if info.Mode().IsRegular() {
+			size += info.Size()
+		}
+		return nil
+	})
+	return size, err
 }
 
 func TestImportAndExportDeletionReclaimPublishedObjects(t *testing.T) {

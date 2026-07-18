@@ -360,35 +360,37 @@ func (s *FileStore) Export(ctx context.Context, req ExportRequest) (Export, erro
 	if err := s.createExportPayload(ctx, workspace.root, payload, user, manifest); err != nil {
 		return Export{}, err
 	}
-	contentHash, err := hashTree(payload, "")
+	payloadSnapshot, err := snapshotRootedTree(payload, rootedTreeSnapshotOptions{hashContents: true, syncContents: true})
 	if err != nil {
 		return Export{}, err
 	}
+	if _, err := validateExportableWorkspaceSnapshot(ctx, payload, payloadSnapshot); err != nil {
+		return Export{}, err
+	}
 	createdAt := s.now()
-	if err := writeJSON(filepath.Join(stage, exportManifestName), exportManifest{PluginInstanceID: pluginID, ObjectID: objectID, Scope: user, ContentHash: contentHash, ShapeHash: manifest.ShapeHash, CreatedAt: createdAt}); err != nil {
+	exported := exportManifest{PluginInstanceID: pluginID, ObjectID: objectID, Scope: user, ContentHash: payloadSnapshot.contentHash, ShapeHash: manifest.ShapeHash, CreatedAt: createdAt}
+	exportManifestBytes, err := marshalJSON(exported)
+	if err != nil {
 		return Export{}, err
 	}
-	if err := validateTree(stage); err != nil {
+	if err := writeFile(filepath.Join(stage, exportManifestName), exportManifestBytes, 0o600); err != nil {
 		return Export{}, err
 	}
-	if err := syncTree(stage); err != nil {
+	if err := validateExportStage(stage, payloadSnapshot, exportManifestBytes); err != nil {
 		return Export{}, err
 	}
+	size := payloadSnapshot.sizeBytes + int64(len(exportManifestBytes))
 	destination := s.scopedObjectPath(user, pluginID, objectID)
 	s.publicationMu.Lock()
 	defer s.publicationMu.Unlock()
 	if err := s.publishStage(stage, destination); err != nil {
 		return Export{}, err
 	}
-	size, err := directorySize(destination)
-	if err != nil {
-		return Export{}, s.rollbackPublishedDirectory(destination, filepath.Dir(destination), err)
-	}
-	object := Object{PluginInstanceID: pluginID, ObjectID: objectID, ContentHash: contentHash, ShapeHash: manifest.ShapeHash, SizeBytes: size, CreatedAt: createdAt}
+	object := Object{PluginInstanceID: pluginID, ObjectID: objectID, ContentHash: payloadSnapshot.contentHash, ShapeHash: manifest.ShapeHash, SizeBytes: size, CreatedAt: createdAt}
 	if err := s.catalog.CreateObject(ctx, sessionctx.ScopeUser, object); err != nil {
 		return Export{}, s.rollbackPublishedDirectory(destination, filepath.Dir(destination), fmt.Errorf("publish export object: %w", err))
 	}
-	return Export{ObjectID: objectID, ContentHash: contentHash, SizeBytes: size, CreatedAt: createdAt}, nil
+	return Export{ObjectID: objectID, ContentHash: payloadSnapshot.contentHash, SizeBytes: size, CreatedAt: createdAt}, nil
 }
 
 func (s *FileStore) DeleteExport(ctx context.Context, req DeleteExportRequest) error {
@@ -980,13 +982,11 @@ func (s *FileStore) finalizeWorkspace(ctx context.Context, stage, generationID s
 	if err := writeJSON(filepath.Join(stage, datasetManifestName), manifest); err != nil {
 		return datasetManifest{}, err
 	}
-	if err := validateWorkspaceContents(ctx, stage, manifest); err != nil {
+	snapshot, err := snapshotRootedTree(stage, rootedTreeSnapshotOptions{hashContents: true, syncContents: true})
+	if err != nil {
 		return datasetManifest{}, err
 	}
-	if _, err := hashTree(stage, ""); err != nil {
-		return datasetManifest{}, err
-	}
-	if err := syncTree(stage); err != nil {
+	if err := validateWorkspaceContentsSnapshot(ctx, stage, manifest, snapshot); err != nil {
 		return datasetManifest{}, err
 	}
 	return manifest, nil
@@ -1018,19 +1018,16 @@ func (s *FileStore) validateObject(ctx context.Context, owner sessionctx.Resourc
 		return "", Object{}, datasetManifest{}, fmt.Errorf("%w: export catalog metadata mismatch", ErrDatasetCorrupt)
 	}
 	payload := filepath.Join(object, exportPayloadName)
-	if err := validateExportableWorkspace(ctx, payload); err != nil {
-		return "", Object{}, datasetManifest{}, err
-	}
-	hash, err := hashTree(payload, "")
+	snapshot, err := snapshotRootedTree(payload, rootedTreeSnapshotOptions{hashContents: true})
 	if err != nil {
 		return "", Object{}, datasetManifest{}, err
 	}
-	if hash != exported.ContentHash {
+	manifest, err := validateExportableWorkspaceSnapshot(ctx, payload, snapshot)
+	if err != nil {
+		return "", Object{}, datasetManifest{}, err
+	}
+	if snapshot.contentHash != exported.ContentHash {
 		return "", Object{}, datasetManifest{}, fmt.Errorf("%w: export content hash mismatch", ErrDatasetCorrupt)
-	}
-	manifest, err := readDatasetManifest(filepath.Join(payload, datasetManifestName))
-	if err != nil {
-		return "", Object{}, datasetManifest{}, err
 	}
 	return object, catalogObject, manifest, nil
 }
@@ -1054,11 +1051,23 @@ func canonicalHash(value string) bool {
 }
 
 func validateExportableWorkspace(ctx context.Context, root string) error {
-	manifest, err := readDatasetManifest(filepath.Join(root, datasetManifestName))
+	snapshot, err := snapshotRootedTree(root, rootedTreeSnapshotOptions{})
 	if err != nil {
 		return err
 	}
-	return validateWorkspaceContents(ctx, root, manifest)
+	_, err = validateExportableWorkspaceSnapshot(ctx, root, snapshot)
+	return err
+}
+
+func validateExportableWorkspaceSnapshot(ctx context.Context, root string, snapshot rootedTreeSnapshot) (datasetManifest, error) {
+	manifest, err := readDatasetManifest(filepath.Join(root, datasetManifestName))
+	if err != nil {
+		return datasetManifest{}, err
+	}
+	if err := validateWorkspaceContentsSnapshot(ctx, root, manifest, snapshot); err != nil {
+		return datasetManifest{}, err
+	}
+	return manifest, nil
 }
 
 func (s *FileStore) createExportPayload(ctx context.Context, source, destination string, user sessionctx.ResourceScope, manifest datasetManifest) error {
@@ -1079,7 +1088,66 @@ func (s *FileStore) createExportPayload(ctx context.Context, source, destination
 	if err := s.ops.copyDir(workspaceScopeRoot(source, user), userDestination); err != nil {
 		return fmt.Errorf("copy user-scoped export data: %w", err)
 	}
-	return validateExportableWorkspace(ctx, destination)
+	return nil
+}
+
+func validateExportStage(stage string, payload rootedTreeSnapshot, expectedManifest []byte) error {
+	namedStage, err := os.Lstat(stage)
+	if err != nil || !namedStage.IsDir() || namedStage.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("%w: invalid export stage", ErrUnsafeFilesystem)
+	}
+	root, err := os.OpenRoot(stage)
+	if err != nil {
+		return err
+	}
+	defer root.Close()
+	openedStage, err := root.Lstat(".")
+	if err != nil || !sameSnapshotInfo(namedStage, openedStage) {
+		return fmt.Errorf("%w: export stage changed while opening", ErrUnsafeFilesystem)
+	}
+	entries, err := fs.ReadDir(root.FS(), ".")
+	if err != nil {
+		return err
+	}
+	if len(entries) != 2 || entries[0].Name() != exportManifestName || entries[1].Name() != exportPayloadName {
+		return fmt.Errorf("%w: export stage layout mismatch", ErrDatasetCorrupt)
+	}
+	manifestInfo, err := root.Lstat(exportManifestName)
+	if err != nil || manifestInfo.Size() != int64(len(expectedManifest)) || !validRootRegular(root, exportManifestName, manifestInfo) {
+		return fmt.Errorf("%w: invalid export manifest", ErrUnsafeFilesystem)
+	}
+	manifestFile, err := root.Open(exportManifestName)
+	if err != nil {
+		return err
+	}
+	openedManifest, statErr := manifestFile.Stat()
+	if statErr != nil || !sameSnapshotInfo(manifestInfo, openedManifest) {
+		manifestFile.Close()
+		return fmt.Errorf("%w: export manifest changed while opening", ErrUnsafeFilesystem)
+	}
+	manifestBytes, readErr := io.ReadAll(io.LimitReader(manifestFile, int64(len(expectedManifest))+1))
+	closedManifest, finalStatErr := manifestFile.Stat()
+	closeErr := manifestFile.Close()
+	if readErr != nil {
+		return readErr
+	}
+	if finalStatErr != nil || !sameSnapshotInfo(openedManifest, closedManifest) {
+		return fmt.Errorf("%w: export manifest changed while reading", ErrUnsafeFilesystem)
+	}
+	if closeErr != nil {
+		return closeErr
+	}
+	if !bytes.Equal(manifestBytes, expectedManifest) {
+		return fmt.Errorf("%w: export manifest bytes mismatch", ErrDatasetCorrupt)
+	}
+	if err := payload.revalidate(filepath.Join(stage, exportPayloadName)); err != nil {
+		return err
+	}
+	currentStage, err := os.Lstat(stage)
+	if err != nil || !sameSnapshotInfo(namedStage, currentStage) {
+		return fmt.Errorf("%w: export stage changed during validation", ErrUnsafeFilesystem)
+	}
+	return nil
 }
 
 func (s *FileStore) createImportedWorkspace(ctx context.Context, currentWorkspace, payloadRoot, stage string, user sessionctx.ResourceScope) error {
@@ -1623,8 +1691,8 @@ func namespacesForScope(namespaces []Namespace, kind sessionctx.ScopeKind) []Nam
 	return result
 }
 
-func validateWorkspaceContents(ctx context.Context, root string, manifest datasetManifest) error {
-	if err := validateTree(root); err != nil {
+func validateWorkspaceContentsSnapshot(ctx context.Context, root string, manifest datasetManifest, snapshot rootedTreeSnapshot) error {
+	if err := snapshot.validateRoot(root); err != nil {
 		return err
 	}
 	environment := sessionctx.ResourceScope{Kind: sessionctx.ScopeEnvironment, OwnerEnvHash: manifest.OwnerEnvHash}
@@ -1655,7 +1723,7 @@ func validateWorkspaceContents(ctx context.Context, root string, manifest datase
 			return err
 		}
 	}
-	return nil
+	return snapshot.revalidate(root)
 }
 
 func validateWorkspaceScope(ctx context.Context, root string, shape Shape, scope sessionctx.ResourceScope) error {
