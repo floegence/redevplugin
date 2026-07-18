@@ -23,6 +23,11 @@ const (
 	fileEntryTypeDirectory
 )
 
+var (
+	errNamespaceUsageInUse           = errors.New("namespace usage loader is still in use")
+	errFileStoreLifecycleUnavailable = errors.New("plugin data store lifecycle is unavailable")
+)
+
 type namespaceAccess struct {
 	root      *os.Root
 	absRoot   string
@@ -31,6 +36,14 @@ type namespaceAccess struct {
 	namespace Namespace
 	usage     namespaceUsage
 	usageKey  string
+}
+
+type namespaceUsageLoadRequest struct {
+	cacheKey    string
+	root        string
+	kind        NamespaceKind
+	databaseKey string
+	database    *sql.DB
 }
 
 func (s *FileStore) withNamespace(ctx context.Context, pluginInstanceID string, requestScope sessionctx.ResourceScope, storeID string, kind NamespaceKind, write bool, use func(*namespaceAccess) error) error {
@@ -124,12 +137,13 @@ func (s *FileStore) withNamespaceAccess(ctx context.Context, pluginInstanceID st
 	}
 	usageKey := namespaceKey
 	var db *sql.DB
+	var dbKey string
 	var root *os.Root
 	if namespace.Kind == NamespaceFiles || namespace.Kind == NamespaceKV {
 		if err := validateNamespaceDatabaseFileLayout(absRoot, namespace.Kind); err != nil {
 			return err
 		}
-		dbKey := namespaceDatabaseCacheKey(generationScopeKey, namespace.ID, namespace.Kind)
+		dbKey = namespaceDatabaseCacheKey(generationScopeKey, namespace.ID, namespace.Kind)
 		var releaseDB func()
 		db, root, releaseDB, err = s.acquireNamespaceDatabase(ctx, dbKey, absRoot, info)
 		if err != nil {
@@ -143,20 +157,38 @@ func (s *FileStore) withNamespaceAccess(ctx context.Context, pluginInstanceID st
 		}
 		defer root.Close()
 	}
-	usage, err := s.cachedNamespaceUsage(ctx, usageKey, absRoot, namespace.Kind, db)
+	usage, err := s.cachedNamespaceUsage(ctx, namespaceUsageLoadRequest{
+		cacheKey:    usageKey,
+		root:        absRoot,
+		kind:        namespace.Kind,
+		databaseKey: dbKey,
+		database:    db,
+	})
 	if err != nil {
 		return err
 	}
 	return use(&namespaceAccess{root: root, absRoot: absRoot, db: db, binding: binding, namespace: namespace, usage: usage, usageKey: usageKey})
 }
 
-func (s *FileStore) cachedNamespaceUsage(ctx context.Context, key string, root string, kind NamespaceKind, db *sql.DB) (namespaceUsage, error) {
-	return s.cachedNamespaceUsageWithLoader(ctx, key, root, kind, db, loadNamespaceUsage)
+func (s *FileStore) cachedNamespaceUsage(ctx context.Context, req namespaceUsageLoadRequest) (namespaceUsage, error) {
+	return s.cachedNamespaceUsageWithLoader(ctx, req, loadNamespaceUsage)
 }
 
-func (s *FileStore) cachedNamespaceUsageWithLoader(ctx context.Context, key string, root string, kind NamespaceKind, db *sql.DB, loader namespaceUsageLoader) (namespaceUsage, error) {
+func (s *FileStore) cachedNamespaceUsageWithLoader(ctx context.Context, req namespaceUsageLoadRequest, loader namespaceUsageLoader) (namespaceUsage, error) {
 	s.usageMu.Lock()
-	cached, ok := s.usage[key]
+	if s.usageClosing {
+		s.usageMu.Unlock()
+		return namespaceUsage{}, context.Canceled
+	}
+	if s.lifecycleCtx == nil {
+		s.usageMu.Unlock()
+		return namespaceUsage{}, errFileStoreLifecycleUnavailable
+	}
+	if err := s.lifecycleCtx.Err(); err != nil {
+		s.usageMu.Unlock()
+		return namespaceUsage{}, err
+	}
+	cached, ok := s.usage[req.cacheKey]
 	if ok {
 		s.usageMu.Unlock()
 		return cached, nil
@@ -164,19 +196,42 @@ func (s *FileStore) cachedNamespaceUsageWithLoader(ctx context.Context, key stri
 	if s.usageFlights == nil {
 		s.usageFlights = make(map[string]*namespaceUsageFlight)
 	}
-	if flight, ok := s.usageFlights[key]; ok {
+	if flight, ok := s.usageFlights[req.cacheKey]; ok {
+		flight.waiters++
 		s.usageMu.Unlock()
-		select {
-		case <-ctx.Done():
-			return namespaceUsage{}, ctx.Err()
-		case <-flight.ready:
-			return flight.usage, flight.err
-		}
+		return s.waitNamespaceUsageFlight(ctx, flight)
 	}
-	flight := &namespaceUsageFlight{ready: make(chan struct{})}
-	s.usageFlights[key] = flight
+	flight := &namespaceUsageFlight{ready: make(chan struct{}), waiters: 1}
+	s.usageFlights[req.cacheKey] = flight
+	s.usageLoaderWG.Add(1)
+	loaderCtx := s.lifecycleCtx
 	s.usageMu.Unlock()
-	usage, err := loader(ctx, root, kind, db)
+	releaseResources, err := s.retainNamespaceUsageLoadResources(req)
+	if err != nil {
+		s.finishNamespaceUsageFlight(req.cacheKey, namespaceUsage{}, err, flight)
+		s.usageLoaderWG.Done()
+		return s.waitNamespaceUsageFlight(ctx, flight)
+	}
+	go s.runNamespaceUsageFlight(loaderCtx, req, loader, releaseResources, flight)
+	return s.waitNamespaceUsageFlight(ctx, flight)
+}
+
+func (s *FileStore) retainNamespaceUsageLoadResources(req namespaceUsageLoadRequest) (func(), error) {
+	releaseDatabase, err := s.retainNamespaceDatabase(req.databaseKey, req.database)
+	if err != nil {
+		return nil, err
+	}
+	return releaseDatabase, nil
+}
+
+func (s *FileStore) runNamespaceUsageFlight(ctx context.Context, req namespaceUsageLoadRequest, loader namespaceUsageLoader, releaseResources func(), flight *namespaceUsageFlight) {
+	defer s.usageLoaderWG.Done()
+	defer releaseResources()
+	usage, err := loader(ctx, req.root, req.kind, req.database)
+	s.finishNamespaceUsageFlight(req.cacheKey, usage, err, flight)
+}
+
+func (s *FileStore) finishNamespaceUsageFlight(key string, usage namespaceUsage, err error, flight *namespaceUsageFlight) {
 	s.usageMu.Lock()
 	if err == nil {
 		if existing, ok := s.usage[key]; ok {
@@ -190,7 +245,20 @@ func (s *FileStore) cachedNamespaceUsageWithLoader(ctx context.Context, key stri
 	delete(s.usageFlights, key)
 	close(flight.ready)
 	s.usageMu.Unlock()
-	return usage, err
+}
+
+func (s *FileStore) waitNamespaceUsageFlight(ctx context.Context, flight *namespaceUsageFlight) (namespaceUsage, error) {
+	defer func() {
+		s.usageMu.Lock()
+		flight.waiters--
+		s.usageMu.Unlock()
+	}()
+	select {
+	case <-ctx.Done():
+		return namespaceUsage{}, ctx.Err()
+	case <-flight.ready:
+		return flight.usage, flight.err
+	}
 }
 
 func loadNamespaceUsage(ctx context.Context, root string, kind NamespaceKind, db *sql.DB) (namespaceUsage, error) {
@@ -200,7 +268,7 @@ func loadNamespaceUsage(ctx context.Context, root string, kind NamespaceKind, db
 		}
 		return readNamespaceDatabaseUsage(ctx, db)
 	}
-	return scanNamespaceUsage(root)
+	return scanNamespaceUsage(ctx, root)
 }
 
 func (s *FileStore) setNamespaceUsage(key string, usage namespaceUsage) {
@@ -213,6 +281,17 @@ func (s *FileStore) invalidateNamespaceUsage(key string) {
 	s.usageMu.Lock()
 	delete(s.usage, key)
 	s.usageMu.Unlock()
+}
+
+func (s *FileStore) namespaceUsageFlightsInUse(generationPrefix string) error {
+	s.usageMu.Lock()
+	defer s.usageMu.Unlock()
+	for key := range s.usageFlights {
+		if generationPrefix == "" || strings.HasPrefix(key, generationPrefix) {
+			return errNamespaceUsageInUse
+		}
+	}
+	return nil
 }
 
 func (a *namespaceAccess) resultUsage() storage.Usage {
@@ -730,18 +809,25 @@ func (s *FileStore) ListNamespaces(ctx context.Context, pluginInstanceID string)
 			return nil, fmt.Errorf("%w: namespace root is unsafe", storage.ErrInvalidNamespace)
 		}
 		var db *sql.DB
+		var dbKey string
 		releaseDB := func() {}
 		if namespace.Kind == NamespaceFiles || namespace.Kind == NamespaceKV {
 			if err := validateNamespaceDatabaseFileLayout(root, namespace.Kind); err != nil {
 				return nil, err
 			}
-			dbKey := namespaceDatabaseCacheKey(scopedGenerationCacheKey(owner, binding.GenerationID), namespace.ID, namespace.Kind)
+			dbKey = namespaceDatabaseCacheKey(scopedGenerationCacheKey(owner, binding.GenerationID), namespace.ID, namespace.Kind)
 			db, _, releaseDB, err = s.acquireNamespaceDatabase(ctx, dbKey, root, info)
 			if err != nil {
 				return nil, err
 			}
 		}
-		usage, err := s.cachedNamespaceUsage(ctx, scopedNamespaceCacheKey(owner, binding.GenerationID, namespace.ID), root, namespace.Kind, db)
+		usage, err := s.cachedNamespaceUsage(ctx, namespaceUsageLoadRequest{
+			cacheKey:    scopedNamespaceCacheKey(owner, binding.GenerationID, namespace.ID),
+			root:        root,
+			kind:        namespace.Kind,
+			databaseKey: dbKey,
+			database:    db,
+		})
 		releaseDB()
 		if err != nil {
 			return nil, err

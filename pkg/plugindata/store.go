@@ -107,29 +107,34 @@ type namespaceDBEntry struct {
 }
 
 type namespaceUsageFlight struct {
-	ready chan struct{}
-	usage namespaceUsage
-	err   error
+	ready   chan struct{}
+	usage   namespaceUsage
+	err     error
+	waiters int
 }
 
 type namespaceUsageLoader func(context.Context, string, NamespaceKind, *sql.DB) (namespaceUsage, error)
 
 type FileStore struct {
-	root        string
-	catalog     Catalog
-	now         func() time.Time
-	locks       keyedLocks
-	objectLocks keyedLocks
-	ops         fileOps
-	rootLock    rootLock
-	rootHandle  *os.Root
-	lifecycle   sync.RWMutex
+	root            string
+	catalog         Catalog
+	now             func() time.Time
+	locks           keyedLocks
+	objectLocks     keyedLocks
+	ops             fileOps
+	rootLock        rootLock
+	rootHandle      *os.Root
+	lifecycle       sync.RWMutex
+	lifecycleCtx    context.Context
+	lifecycleCancel context.CancelFunc
 	// Keeps orphan collection from observing a directory before its catalog commit.
 	publicationMu   sync.Mutex
 	closed          bool
 	usageMu         sync.Mutex
 	usage           map[string]namespaceUsage
 	usageFlights    map[string]*namespaceUsageFlight
+	usageClosing    bool
+	usageLoaderWG   sync.WaitGroup
 	namespaceDBMu   sync.Mutex
 	namespaceDB     map[string]*namespaceDBEntry
 	namespaceDBTick uint64
@@ -164,6 +169,7 @@ func Open(ctx context.Context, root string, catalog Catalog) (*FileStore, error)
 		_ = lock.Close()
 		return nil, err
 	}
+	lifecycleCtx, lifecycleCancel := context.WithCancel(context.Background())
 	store := &FileStore{
 		root:            resolvedRoot,
 		catalog:         catalog,
@@ -172,6 +178,8 @@ func Open(ctx context.Context, root string, catalog Catalog) (*FileStore, error)
 		objectLocks:     keyedLocks{locks: map[string]*keyedLock{}},
 		rootLock:        lock,
 		rootHandle:      rootHandle,
+		lifecycleCtx:    lifecycleCtx,
+		lifecycleCancel: lifecycleCancel,
 		usage:           map[string]namespaceUsage{},
 		usageFlights:    map[string]*namespaceUsageFlight{},
 		namespaceDB:     map[string]*namespaceDBEntry{},
@@ -208,12 +216,19 @@ func (s *FileStore) Close() error {
 	if s == nil {
 		return nil
 	}
+	if s.lifecycleCancel != nil {
+		s.lifecycleCancel()
+	}
 	s.lifecycle.Lock()
 	defer s.lifecycle.Unlock()
 	if s.closed {
 		return nil
 	}
 	s.closed = true
+	s.usageMu.Lock()
+	s.usageClosing = true
+	s.usageMu.Unlock()
+	s.usageLoaderWG.Wait()
 	var closeErr error
 	closeErr = s.closeNamespaceDatabases("")
 	if s.rootHandle != nil {
@@ -232,7 +247,7 @@ func (s *FileStore) begin() (func(), error) {
 		return nil, errors.New("plugin data store is nil")
 	}
 	s.lifecycle.RLock()
-	if s.closed {
+	if s.closed || (s.lifecycleCtx != nil && s.lifecycleCtx.Err() != nil) {
 		s.lifecycle.RUnlock()
 		return nil, errors.New("plugin data store is closed")
 	}
@@ -1737,7 +1752,7 @@ func validateWorkspaceScope(ctx context.Context, root string, shape Shape, scope
 		if namespace.Kind == NamespaceFiles || namespace.Kind == NamespaceKV {
 			usage, err = validateNamespaceDatabase(ctx, dataRoot, namespace.Kind)
 		} else {
-			usage, err = scanNamespaceUsage(dataRoot)
+			usage, err = scanNamespaceUsage(ctx, dataRoot)
 		}
 		if err != nil {
 			return err
@@ -1807,9 +1822,15 @@ type namespaceUsage struct {
 	files int64
 }
 
-func scanNamespaceUsage(root string) (namespaceUsage, error) {
+func scanNamespaceUsage(ctx context.Context, root string) (namespaceUsage, error) {
+	if err := ctx.Err(); err != nil {
+		return namespaceUsage{}, err
+	}
 	var usage namespaceUsage
 	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
+		if contextErr := ctx.Err(); contextErr != nil {
+			return contextErr
+		}
 		if err != nil {
 			return err
 		}

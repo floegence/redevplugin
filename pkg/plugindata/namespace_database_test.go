@@ -241,10 +241,7 @@ func TestCachedNamespaceUsageSharesConcurrentMiss(t *testing.T) {
 	var loads atomic.Int32
 	started := make(chan struct{})
 	release := make(chan struct{})
-	store := &FileStore{
-		usage:        map[string]namespaceUsage{},
-		usageFlights: map[string]*namespaceUsageFlight{},
-	}
+	store := newNamespaceUsageFlightTestStore(t)
 	loader := func(context.Context, string, NamespaceKind, *sql.DB) (namespaceUsage, error) {
 		if loads.Add(1) == 1 {
 			close(started)
@@ -260,7 +257,7 @@ func TestCachedNamespaceUsageSharesConcurrentMiss(t *testing.T) {
 	for i := 0; i < callers; i++ {
 		go func() {
 			defer wg.Done()
-			usage, err := store.cachedNamespaceUsageWithLoader(internalTestContext(), "generation\x00files", "unused", NamespaceFiles, nil, loader)
+			usage, err := store.cachedNamespaceUsageWithLoader(internalTestContext(), namespaceUsageLoadRequest{cacheKey: "generation\x00files", root: "unused", kind: NamespaceFiles}, loader)
 			results <- usage
 			errs <- err
 		}()

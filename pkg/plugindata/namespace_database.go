@@ -279,6 +279,23 @@ func (s *FileStore) acquireNamespaceDatabase(ctx context.Context, key, rootPath 
 	}
 }
 
+func (s *FileStore) retainNamespaceDatabase(key string, db *sql.DB) (func(), error) {
+	if db == nil {
+		return func() {}, nil
+	}
+	s.namespaceDBMu.Lock()
+	entry := s.namespaceDB[key]
+	if entry == nil || entry.opening || entry.err != nil || entry.db != db {
+		s.namespaceDBMu.Unlock()
+		return nil, storage.ErrInvalidNamespace
+	}
+	entry.refs++
+	s.namespaceDBTick++
+	entry.lastUse = s.namespaceDBTick
+	s.namespaceDBMu.Unlock()
+	return s.releaseNamespaceDatabase(key), nil
+}
+
 func (s *FileStore) releaseNamespaceDatabase(key string) func() {
 	var once sync.Once
 	return func() {
@@ -301,8 +318,8 @@ func (s *FileStore) signalNamespaceDBWakeLocked() {
 }
 
 func (s *FileStore) closeNamespaceDatabases(generationPrefix string) error {
+	closeErr := s.namespaceUsageFlightsInUse(generationPrefix)
 	s.namespaceDBMu.Lock()
-	var closeErr error
 	for key, entry := range s.namespaceDB {
 		if generationPrefix != "" && !strings.HasPrefix(key, generationPrefix) {
 			continue
