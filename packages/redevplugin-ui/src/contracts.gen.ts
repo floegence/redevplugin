@@ -171,13 +171,13 @@ export const redevPluginContractArtifacts = [
     id: "performance-contract",
     path: "spec/plugin/performance-contract-v1.json",
     version: "performance-contract-v1",
-    sha256: "0754128585eea079c106e2215f92b45801adb2f51def8ee8c13238c39bcb9f17",
+    sha256: "93f54632e327c62a83947b30fd073ebf7640293ca9953872be1c22f2642e68d8",
   },
   {
     id: "performance-evidence-schema",
     path: "spec/plugin/performance-evidence-v1.schema.json",
     version: "performance-evidence-v1",
-    sha256: "12865d1ebb165a923dfafad1881aa0f6c00f07ef430e1d16807ee66de451256f",
+    sha256: "99bd635c97886f382090d4d8cac13ac499e81c7b236338b53a96dc94e9063a59",
   },
   {
     id: "rust-ipc-schema",

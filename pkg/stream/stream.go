@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/floegence/redevplugin/internal/executionbinding"
 	"github.com/floegence/redevplugin/pkg/capability"
 	"github.com/floegence/redevplugin/pkg/sessionctx"
 )
@@ -751,11 +752,7 @@ func cloneExecutionBinding(binding capability.ExecutionBinding) (capability.Exec
 }
 
 func cloneRecord(record Record) (Record, error) {
-	binding, err := capability.CloneExecutionBinding(record.ExecutionBinding)
-	if err != nil {
-		return Record{}, err
-	}
-	record.ExecutionBinding = binding
+	record.ExecutionBinding = executionbinding.CloneTrusted(record.ExecutionBinding)
 	if record.ClosedAt != nil {
 		value := *record.ClosedAt
 		record.ClosedAt = &value

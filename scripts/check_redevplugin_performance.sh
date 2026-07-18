@@ -52,6 +52,20 @@ fi
 if [[ -z "$SOURCE_COMMIT" ]]; then
   SOURCE_COMMIT=$(git rev-parse HEAD)
 fi
+HEAD_COMMIT=$(git rev-parse HEAD)
+if [[ "$SOURCE_COMMIT" != "$HEAD_COMMIT" ]]; then
+  echo "performance evidence source commit $SOURCE_COMMIT does not match HEAD $HEAD_COMMIT" >&2
+  exit 1
+fi
+if [[ -n "$(git status --porcelain --untracked-files=normal)" ]]; then
+  echo "performance evidence requires a clean tracked and untracked worktree" >&2
+  exit 1
+fi
+RUNTIME_PATH="${REDEVPLUGIN_PERFORMANCE_RUNTIME:-}"
+if [[ "$MODE" == "release" && -n "$RUNTIME_PATH" ]]; then
+  echo "release performance evidence must build redevplugin-runtime from the clean checked-out HEAD" >&2
+  exit 1
+fi
 if [[ "$OUTPUT" != /* ]]; then
   OUTPUT="$ROOT_DIR/$OUTPUT"
 fi
@@ -61,12 +75,11 @@ TMP_DIR=$(mktemp -d "${TMPDIR:-/tmp}/redevplugin-performance.XXXXXX")
 trap 'rm -rf "$TMP_DIR"' EXIT
 MEASUREMENTS="$TMP_DIR/measurements.ndjson"
 COMPATIBILITY="$TMP_DIR/compatibility.json"
-RUNTIME_PATH="${REDEVPLUGIN_PERFORMANCE_RUNTIME:-}"
 
 npm run contracts:check
 npm --prefix packages/redevplugin-ui run build
 if [[ -z "$RUNTIME_PATH" ]]; then
-  cargo build --release -p redevplugin-runtime
+  REDEVPLUGIN_RUNTIME_VERSION="$VERSION" cargo build --release -p redevplugin-runtime
   RUNTIME_PATH="$ROOT_DIR/target/release/redevplugin-runtime"
 elif [[ ! -x "$RUNTIME_PATH" ]]; then
   echo "configured performance runtime is not executable: $RUNTIME_PATH" >&2
@@ -74,6 +87,24 @@ elif [[ ! -x "$RUNTIME_PATH" ]]; then
 fi
 GOWORK=off REDEVPLUGIN_PERFORMANCE_RUNTIME="$RUNTIME_PATH" REDEVPLUGIN_PERFORMANCE_RUNTIME_VERSION="$VERSION" REDEVPLUGIN_PERFORMANCE_MEASUREMENTS="$MEASUREMENTS" REDEVPLUGIN_PERFORMANCE_GATE="$MODE" \
   go test ./pkg/host -run '^TestPerformanceRuntime' -count=1
+REDEVPLUGIN_RUNTIME_VERSION="$VERSION" REDEVPLUGIN_PERFORMANCE_MEASUREMENTS="$MEASUREMENTS" REDEVPLUGIN_PERFORMANCE_GATE="$MODE" \
+  cargo test --release -p redevplugin-runtime ipc_writer_burst_performance_evidence -- --nocapture
+REDEVPLUGIN_RUNTIME_VERSION="$VERSION" REDEVPLUGIN_PERFORMANCE_MEASUREMENTS="$MEASUREMENTS" REDEVPLUGIN_PERFORMANCE_GATE="$MODE" \
+  cargo test --release -p redevplugin-runtime indexed_cancel_performance_evidence -- --nocapture
+REDEVPLUGIN_RUNTIME_VERSION="$VERSION" REDEVPLUGIN_PERFORMANCE_MEASUREMENTS="$MEASUREMENTS" REDEVPLUGIN_PERFORMANCE_GATE="$MODE" \
+  cargo test --release -p redevplugin-runtime indexed_eviction_performance_evidence -- --nocapture
+REDEVPLUGIN_RUNTIME_VERSION="$VERSION" \
+  cargo test --release -p redevplugin-runtime module_cache::tests::recency_index_matches_cached_entries_after_hits_and_evictions -- --exact
+GOWORK=off REDEVPLUGIN_PERFORMANCE_MEASUREMENTS="$MEASUREMENTS" REDEVPLUGIN_PERFORMANCE_GATE="$MODE" \
+  go test ./pkg/connectivity -run '^TestPerformance' -count=1
+GOWORK=off REDEVPLUGIN_PERFORMANCE_MEASUREMENTS="$MEASUREMENTS" REDEVPLUGIN_PERFORMANCE_GATE="$MODE" \
+  go test ./pkg/plugindata -run '^TestPerformance' -count=1
+GOWORK=off REDEVPLUGIN_PERFORMANCE_MEASUREMENTS="$MEASUREMENTS" REDEVPLUGIN_PERFORMANCE_GATE="$MODE" \
+  go test ./pkg/pluginpkg -run '^TestPerformance' -count=1
+GOWORK=off REDEVPLUGIN_PERFORMANCE_MEASUREMENTS="$MEASUREMENTS" REDEVPLUGIN_PERFORMANCE_GATE="$MODE" \
+  go test ./pkg/registry -run '^TestPerformance' -count=1
+GOWORK=off REDEVPLUGIN_PERFORMANCE_MEASUREMENTS="$MEASUREMENTS" REDEVPLUGIN_PERFORMANCE_GATE="$MODE" \
+  go test ./pkg/operation -run '^TestPerformance' -count=1
 GOWORK=off REDEVPLUGIN_PERFORMANCE_MEASUREMENTS="$MEASUREMENTS" REDEVPLUGIN_PERFORMANCE_GATE="$MODE" \
   go test ./pkg/stream -run '^TestPerformance' -count=1
 node scripts/measure_redevplugin_ui_performance.mjs --output "$MEASUREMENTS" --gate "$MODE"

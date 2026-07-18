@@ -161,13 +161,13 @@ var generatedContractArtifacts = []ContractArtifact{
 		ID:      "performance-contract",
 		Path:    "spec/plugin/performance-contract-v1.json",
 		Version: "performance-contract-v1",
-		SHA256:  "0754128585eea079c106e2215f92b45801adb2f51def8ee8c13238c39bcb9f17",
+		SHA256:  "93f54632e327c62a83947b30fd073ebf7640293ca9953872be1c22f2642e68d8",
 	},
 	{
 		ID:      "performance-evidence-schema",
 		Path:    "spec/plugin/performance-evidence-v1.schema.json",
 		Version: "performance-evidence-v1",
-		SHA256:  "12865d1ebb165a923dfafad1881aa0f6c00f07ef430e1d16807ee66de451256f",
+		SHA256:  "99bd635c97886f382090d4d8cac13ac499e81c7b236338b53a96dc94e9063a59",
 	},
 	{
 		ID:      "rust-ipc-schema",

@@ -78,7 +78,7 @@
       "required": ["name", "unit", "observed", "limit", "comparator"],
       "properties": {
         "name": { "type": "string", "pattern": "^[a-z][a-z0-9._-]+$" },
-        "unit": { "enum": ["milliseconds", "count", "bytes", "queries", "long_tasks"] },
+        "unit": { "enum": ["milliseconds", "count", "bytes", "queries", "long_tasks", "basis_points"] },
         "observed": { "type": "number", "minimum": 0 },
         "limit": { "type": "number", "minimum": 0 },
         "comparator": { "enum": ["lte", "eq"] }

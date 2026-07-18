@@ -22,7 +22,7 @@ const nextRows = [...rows];
 nextRows[2048] = element("row-2048", "p", [], { class: "row", title: "Updated" });
 const nextLeaf = reconciler.validatePluginUITree(element("root", "main", nextRows));
 const leafDurations = measure(40, () => {
-  const operations = reconciler.reconcilePluginUITrees(currentLeaf, nextLeaf);
+  const operations = reconciler.reconcileValidatedPluginUITrees(currentLeaf, nextLeaf);
   if (operations.length !== 1 || operations[0]?.type !== "patch_attributes" || operations[0]?.target_key !== "row-2048") {
     throw new Error("single-leaf reconciliation emitted an unexpected patch");
   }
@@ -46,7 +46,7 @@ const keyedChildren = Array.from({ length: 1000 }, (_, index) => element(`item-$
 const currentReverse = reconciler.validatePluginUITree(element("root", "main", keyedChildren));
 const nextReverse = reconciler.validatePluginUITree(element("root", "main", [...keyedChildren].reverse()));
 const reverseDurations = measure(30, () => {
-  const operations = reconciler.reconcilePluginUITrees(currentReverse, nextReverse);
+  const operations = reconciler.reconcileValidatedPluginUITrees(currentReverse, nextReverse);
   if (operations.length !== 999 || operations.some((operation) => operation.type !== "move_child")) {
     throw new Error("keyed reversal did not emit the minimal LIS move set");
   }

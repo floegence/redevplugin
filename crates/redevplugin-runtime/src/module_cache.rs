@@ -84,6 +84,8 @@ struct ModuleCacheState {
     hits: u64,
     misses: u64,
     compiles: u64,
+    #[cfg(test)]
+    eviction_index_pops: u64,
 }
 
 #[derive(Clone, Hash, PartialEq, Eq, PartialOrd, Ord)]
@@ -200,8 +202,10 @@ impl ModuleCache {
                 let previous_last_used = entry.last_used;
                 entry.last_used = tick;
                 let compiled = entry.compiled.clone();
-                debug_assert!(state.recency.remove(&(previous_last_used, key.clone())));
-                debug_assert!(state.recency.insert((tick, key.clone())));
+                let removed = state.recency.remove(&(previous_last_used, key.clone()));
+                debug_assert!(removed);
+                let inserted = state.recency.insert((tick, key.clone()));
+                debug_assert!(inserted);
                 state.hits += 1;
                 return Ok(compiled);
             }
@@ -260,6 +264,10 @@ impl ModuleCache {
             let Some((last_used, key)) = state.recency.pop_first() else {
                 break;
             };
+            #[cfg(test)]
+            {
+                state.eviction_index_pops += 1;
+            }
             if let Some(entry) = state.entries.remove(&key) {
                 debug_assert_eq!(entry.last_used, last_used);
                 state.source_bytes -= entry.compiled.source_bytes;
@@ -315,7 +323,8 @@ impl ModuleCache {
                 state.source_bytes -= previous.compiled.source_bytes;
             }
             state.source_bytes += compiled.source_bytes;
-            debug_assert!(state.recency.insert((last_used, key.clone())));
+            let inserted = state.recency.insert((last_used, key.clone()));
+            debug_assert!(inserted);
             self.evict_locked(&mut state);
         }
         flight.complete(result);
@@ -786,6 +795,58 @@ mod tests {
         release_load.wait();
         assert!(leader.join().unwrap().is_ok());
         assert_eq!(cache.metrics().compiles, 1);
+    }
+
+    #[test]
+    fn indexed_eviction_performance_evidence() {
+        const ENTRY_COUNT: usize = 10_000;
+        const MAX_ENTRIES: usize = 128;
+        let source = worker_module();
+        let cache = ModuleCache::new(engine(), MAX_ENTRIES, source.len() * ENTRY_COUNT * 2);
+        let compiled = cache.compile_module(|| Ok(source)).unwrap();
+        let mut state = cache.state.lock().expect("module cache mutex poisoned");
+        for index in 0..ENTRY_COUNT {
+            let key = ModuleKey {
+                artifact_sha256: format!("sha256:{index:064x}"),
+                wasm_abi_version: ABI_VERSION.to_string(),
+            };
+            let last_used = index as u64 + 1;
+            state.entries.insert(
+                key.clone(),
+                CacheEntry {
+                    compiled: compiled.clone(),
+                    last_used,
+                },
+            );
+            assert!(state.recency.insert((last_used, key)));
+            state.source_bytes += compiled.source_bytes;
+        }
+        cache.evict_locked(&mut state);
+        let evicted = ENTRY_COUNT - MAX_ENTRIES;
+        assert_eq!(state.entries.len(), MAX_ENTRIES);
+        assert_eq!(state.recency.len(), MAX_ENTRIES);
+        assert_eq!(state.eviction_index_pops, evicted as u64);
+        let pops_per_eviction = state.eviction_index_pops as f64 / evicted as f64 * 10_000.0;
+        crate::performance_evidence::record(serde_json::json!({
+            "id": "runtime.module-cache-indexed-eviction",
+            "sample_count": ENTRY_COUNT,
+            "metrics": [
+                {
+                    "name": "index_pops_per_eviction",
+                    "unit": "basis_points",
+                    "observed": pops_per_eviction,
+                    "limit": 10_000,
+                    "comparator": "eq"
+                },
+                {
+                    "name": "remaining_entries",
+                    "unit": "count",
+                    "observed": state.entries.len(),
+                    "limit": MAX_ENTRIES,
+                    "comparator": "eq"
+                }
+            ]
+        }));
     }
 
     fn engine() -> wasmi::Engine {

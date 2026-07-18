@@ -25,12 +25,18 @@
   invocations plus the compiled-module cache.
 - Add a shared Wasmi engine and single-flight, deterministic LRU module cache
   keyed by artifact SHA-256 and WASM ABI version. Cache hits no longer read or
-  transfer the worker artifact again within a runtime generation.
+  transfer the worker artifact again within a runtime generation, and release
+  builds preserve every recency-index mutation required for bounded eviction.
 - Add `performance-evidence-v1` as a released machine contract. Full and release
   gates measure runtime concurrency, cache behavior, cancellation, event-driven
   streams, SQLite reads, keyed reconciliation, real Chromium rendering, and
   long tasks; every runtime bundle includes the resulting evidence before
   manifest hashing and signing.
+- Extend immutable performance evidence with paired namespace allocation, HTTP
+  keep-alive P95, package `MaxRSS`, SQLite authorization scaling, and real
+  operation/stream `MemoryStore` snapshot measurements, plus bounded IPC burst,
+  indexed scheduler, module-cache eviction, and fixed-capacity UDP limiter
+  structural evidence.
 - Add the closed `resource-scope-v1` ownership contract for host-issued user and
   environment scopes. Persistent ownership excludes short-lived session and
   channel hashes and rejects undeclared or ambiguous owner fields.

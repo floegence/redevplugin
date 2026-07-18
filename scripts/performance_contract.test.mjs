@@ -93,8 +93,32 @@ test("performance contract is a closed unique machine contract", () => {
   const raw = JSON.parse(readFileSync(contractPath, "utf8"));
   assert.deepEqual(Object.keys(raw).sort(), ["scenarios", "schema_version"]);
   assert.equal(raw.schema_version, "redevplugin.performance_contract.v1");
-  assert.equal(raw.scenarios.length, 11);
-  assert.equal(new Set(raw.scenarios.map((scenario) => scenario.id)).size, 11);
+  assert.equal(raw.scenarios.length, 22);
+  assert.equal(new Set(raw.scenarios.map((scenario) => scenario.id)).size, 22);
+});
+
+test("performance contract closes the v0.5.0 platform acceptance targets", () => {
+  const contract = readPerformanceContract(contractPath);
+  const scenarios = new Map(contract.scenarios.map((scenario) => [scenario.id, scenario]));
+  const targets = {
+    "plugindata.namespace-cache-warm": ["relative_allocations", "basis_points", "lte", 3000],
+    "connectivity.http-keepalive": ["p95_relative_to_connect", "basis_points", "lte", 7000],
+    "runtime.ipc-writer-burst": ["peak_rss_bytes", "bytes", "lte", 67108864],
+    "pluginpkg.package-owned-materialization": ["peak_rss_relative_to_cloned", "basis_points", "lte", 6500],
+    "pluginpkg.wasm-inspection-cache": ["inspector_calls", "count", "eq", 1],
+    "registry.sqlite-authorization-scaling": ["p95_1000_grants_relative_to_1", "basis_points", "lte", 20000],
+    "operation.memory-store-snapshot": ["relative_allocations", "basis_points", "lte", 2000],
+    "stream.memory-store-snapshot": ["relative_allocations", "basis_points", "lte", 2000],
+    "runtime.scheduler-indexed-cancel": ["index_lookups", "count", "eq", 10000],
+    "runtime.module-cache-indexed-eviction": ["index_pops_per_eviction", "basis_points", "eq", 10000],
+    "connectivity.udp-limiter-scaling": ["bucket_capacity", "count", "eq", 65536],
+  };
+  for (const [scenarioID, [metricName, unit, comparator, limit]] of Object.entries(targets)) {
+    const scenario = scenarios.get(scenarioID);
+    assert.ok(scenario, `missing scenario ${scenarioID}`);
+    const metric = scenario.metrics.find((candidate) => candidate.name === metricName);
+    assert.deepEqual(metric, { name: metricName, unit, comparator, limit });
+  }
 });
 
 function measurementsFrom(contract, gate) {

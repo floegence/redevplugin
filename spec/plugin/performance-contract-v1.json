@@ -43,6 +43,96 @@
       ]
     },
     {
+      "id": "runtime.ipc-writer-burst",
+      "sample_count": 10000,
+      "metrics": [
+        { "name": "frames", "unit": "count", "comparator": "eq", "limit": 10000 },
+        { "name": "queue_capacity", "unit": "count", "comparator": "eq", "limit": 136 },
+        { "name": "blocked_at_capacity", "unit": "count", "comparator": "eq", "limit": 1 },
+        { "name": "peak_rss_bytes", "unit": "bytes", "comparator": "lte", "limit": 67108864 },
+        { "name": "flushes", "unit": "count", "comparator": "lte", "limit": 625 }
+      ]
+    },
+    {
+      "id": "runtime.scheduler-indexed-cancel",
+      "sample_count": 10000,
+      "metrics": [
+        { "name": "index_lookups", "unit": "count", "comparator": "eq", "limit": 10000 },
+        { "name": "compaction_entries_per_cancel", "unit": "basis_points", "comparator": "lte", "limit": 25000 },
+        { "name": "remaining_requests", "unit": "count", "comparator": "eq", "limit": 0 }
+      ]
+    },
+    {
+      "id": "runtime.module-cache-indexed-eviction",
+      "sample_count": 10000,
+      "metrics": [
+        { "name": "index_pops_per_eviction", "unit": "basis_points", "comparator": "eq", "limit": 10000 },
+        { "name": "remaining_entries", "unit": "count", "comparator": "eq", "limit": 128 }
+      ]
+    },
+    {
+      "id": "connectivity.http-keepalive",
+      "sample_count": 64,
+      "metrics": [
+        { "name": "p95_relative_to_connect", "unit": "basis_points", "comparator": "lte", "limit": 7000 },
+        { "name": "reused_connection_dials", "unit": "count", "comparator": "eq", "limit": 1 }
+      ]
+    },
+    {
+      "id": "connectivity.udp-limiter-scaling",
+      "sample_count": 1000,
+      "metrics": [
+        { "name": "p95_large_relative_to_small", "unit": "basis_points", "comparator": "lte", "limit": 20000 },
+        { "name": "bucket_capacity", "unit": "count", "comparator": "eq", "limit": 65536 },
+        { "name": "overflow_denied", "unit": "count", "comparator": "eq", "limit": 1 }
+      ]
+    },
+    {
+      "id": "plugindata.namespace-cache-warm",
+      "sample_count": 100,
+      "metrics": [
+        { "name": "relative_allocations", "unit": "basis_points", "comparator": "lte", "limit": 3000 }
+      ]
+    },
+    {
+      "id": "pluginpkg.package-owned-materialization",
+      "sample_count": 3,
+      "metrics": [
+        { "name": "peak_rss_relative_to_cloned", "unit": "basis_points", "comparator": "lte", "limit": 6500 }
+      ]
+    },
+    {
+      "id": "pluginpkg.wasm-inspection-cache",
+      "sample_count": 1000,
+      "metrics": [
+        { "name": "inspector_calls", "unit": "count", "comparator": "eq", "limit": 1 },
+        { "name": "cache_entries", "unit": "count", "comparator": "eq", "limit": 1 },
+        { "name": "cache_capacity", "unit": "count", "comparator": "eq", "limit": 128 },
+        { "name": "warm_relative_allocations", "unit": "basis_points", "comparator": "lte", "limit": 5000 }
+      ]
+    },
+    {
+      "id": "registry.sqlite-authorization-scaling",
+      "sample_count": 500,
+      "metrics": [
+        { "name": "p95_1000_grants_relative_to_1", "unit": "basis_points", "comparator": "lte", "limit": 20000 }
+      ]
+    },
+    {
+      "id": "operation.memory-store-snapshot",
+      "sample_count": 1000,
+      "metrics": [
+        { "name": "relative_allocations", "unit": "basis_points", "comparator": "lte", "limit": 2000 }
+      ]
+    },
+    {
+      "id": "stream.memory-store-snapshot",
+      "sample_count": 1000,
+      "metrics": [
+        { "name": "relative_allocations", "unit": "basis_points", "comparator": "lte", "limit": 2000 }
+      ]
+    },
+    {
       "id": "stream.event-backpressure",
       "sample_count": 257,
       "metrics": [

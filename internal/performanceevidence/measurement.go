@@ -3,8 +3,11 @@ package performanceevidence
 import (
 	"encoding/json"
 	"errors"
+	"math"
 	"os"
+	"sort"
 	"strings"
+	"time"
 )
 
 type Metric struct {
@@ -53,4 +56,30 @@ func Gate() string {
 		return "full"
 	}
 	return gate
+}
+
+func EnforceThresholds() bool {
+	gate := Gate()
+	return gate == "full" || gate == "release"
+}
+
+func P95(values []time.Duration) time.Duration {
+	if len(values) == 0 {
+		return 0
+	}
+	ordered := append([]time.Duration(nil), values...)
+	sort.Slice(ordered, func(i, j int) bool { return ordered[i] < ordered[j] })
+	index := (len(ordered)*95 + 99) / 100
+	return ordered[index-1]
+}
+
+func RelativeBasisPoints(observed, baseline float64) (float64, error) {
+	if !isFiniteNonNegative(observed) || !isFiniteNonNegative(baseline) || baseline == 0 {
+		return 0, errors.New("performance ratio requires finite non-negative values and a positive baseline")
+	}
+	return observed / baseline * 10_000, nil
+}
+
+func isFiniteNonNegative(value float64) bool {
+	return !math.IsNaN(value) && !math.IsInf(value, 0) && value >= 0
 }

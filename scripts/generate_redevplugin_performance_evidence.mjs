@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
 import { arch, cpus, platform } from "node:os";
 import { join, resolve } from "node:path";
@@ -9,6 +9,7 @@ import { chromium } from "playwright";
 import { readPerformanceContract, validatePerformanceEvidence } from "./performance_contract.mjs";
 
 const options = parseArgs(process.argv.slice(2));
+assertEvidenceSourceState(options.sourceCommit);
 const compatibility = JSON.parse(readFileSync(resolve(options.compatibility), "utf8"));
 const performanceContract = readPerformanceContract(join(import.meta.dirname, "../spec/plugin/performance-contract-v1.json"));
 const scenarios = readMeasurements(resolve(options.measurements));
@@ -40,6 +41,51 @@ validatePerformanceEvidence(evidence, performanceContract, {
   contractHashes: compatibility.contracts,
 });
 writeFileSync(resolve(options.output), `${JSON.stringify(evidence, null, 2)}\n`, { mode: 0o600 });
+
+function assertEvidenceSourceState(sourceCommit) {
+  const repositoryRoot = resolve(import.meta.dirname, "..");
+  const head = runGit(repositoryRoot, ["rev-parse", "HEAD"], "resolve the repository HEAD").trim();
+  if (sourceCommit !== head) {
+    throw new Error(`performance evidence source_commit must equal the checked-out HEAD: got ${sourceCommit}, want ${head}`);
+  }
+
+  assertGitDiffQuiet(
+    repositoryRoot,
+    ["diff", "--quiet", "--"],
+    "performance evidence requires a clean tracked working tree",
+  );
+  assertGitDiffQuiet(
+    repositoryRoot,
+    ["diff", "--cached", "--quiet", "--"],
+    "performance evidence requires a clean Git index",
+  );
+
+  const untracked = runGit(
+    repositoryRoot,
+    ["ls-files", "--others", "--exclude-standard", "-z"],
+    "inspect non-ignored untracked files",
+  ).split("\0").filter(Boolean);
+  if (untracked.length > 0) {
+    throw new Error(`performance evidence requires no non-ignored untracked files: ${untracked.join(", ")}`);
+  }
+}
+
+function assertGitDiffQuiet(repositoryRoot, args, message) {
+  const result = spawnSync("git", args, { cwd: repositoryRoot, encoding: "utf8", stdio: "pipe" });
+  if (result.status === 0) return;
+  if (result.status === 1) throw new Error(message);
+  const detail = (result.stderr || result.stdout || result.error?.message || "unknown Git failure").trim();
+  throw new Error(`unable to verify the Git worktree for performance evidence: ${detail}`);
+}
+
+function runGit(repositoryRoot, args, operation) {
+  try {
+    return execFileSync("git", args, { cwd: repositoryRoot, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+  } catch (error) {
+    const detail = (error.stderr || error.stdout || error.message || "unknown Git failure").toString().trim();
+    throw new Error(`unable to ${operation}: ${detail}`);
+  }
+}
 
 function readMeasurements(path) {
   const lines = readFileSync(path, "utf8").split("\n").map((line) => line.trim()).filter(Boolean);

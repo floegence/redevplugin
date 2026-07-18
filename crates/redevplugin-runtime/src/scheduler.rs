@@ -194,6 +194,16 @@ struct SchedulerState {
     stale_order_tokens: usize,
     queued: usize,
     shutdown: bool,
+    #[cfg(test)]
+    cancel_request_index_lookups: u64,
+    #[cfg(test)]
+    cancel_plugin_compaction_entries: u64,
+    #[cfg(test)]
+    cancel_order_compaction_entries: u64,
+    #[cfg(test)]
+    cancel_plugin_compactions: u64,
+    #[cfg(test)]
+    cancel_order_compactions: u64,
 }
 
 struct PluginQueue {
@@ -392,7 +402,7 @@ impl InvocationScheduler {
 
     pub fn cancel(&self, request_id: &str) -> CancelDisposition {
         let mut state = self.state.lock().expect("scheduler mutex poisoned");
-        if let Some(job) = state.queued_by_request.remove(request_id) {
+        if let Some(job) = Self::remove_queued_request_for_cancel(&mut state, request_id) {
             let plugin_instance_id = job.plugin_instance_id.clone();
             let queue_empty = {
                 let queue = state
@@ -430,6 +440,17 @@ impl InvocationScheduler {
         CancelDisposition::Missing
     }
 
+    fn remove_queued_request_for_cancel(
+        state: &mut SchedulerState,
+        request_id: &str,
+    ) -> Option<InvocationJob> {
+        #[cfg(test)]
+        {
+            state.cancel_request_index_lookups += 1;
+        }
+        state.queued_by_request.remove(request_id)
+    }
+
     fn compact_plugin_queue(state: &mut SchedulerState, plugin_instance_id: &str) {
         let should_compact = state.queues.get(plugin_instance_id).is_some_and(|queue| {
             queue.tombstones >= QUEUE_TOMBSTONE_COMPACT_MIN && queue.tombstones > queue.live
@@ -437,18 +458,27 @@ impl InvocationScheduler {
         if !should_compact {
             return;
         }
-        let SchedulerState {
-            queues,
-            queued_by_request,
-            ..
-        } = state;
-        let queue = queues
-            .get_mut(plugin_instance_id)
-            .expect("scheduler plugin queue exists for compaction");
-        queue
-            .request_ids
-            .retain(|request_id| queued_by_request.contains_key(request_id));
-        queue.tombstones = 0;
+        let _scanned_entries = {
+            let SchedulerState {
+                queues,
+                queued_by_request,
+                ..
+            } = state;
+            let queue = queues
+                .get_mut(plugin_instance_id)
+                .expect("scheduler plugin queue exists for compaction");
+            let scanned_entries = queue.request_ids.len();
+            queue
+                .request_ids
+                .retain(|request_id| queued_by_request.contains_key(request_id));
+            queue.tombstones = 0;
+            scanned_entries
+        };
+        #[cfg(test)]
+        {
+            state.cancel_plugin_compaction_entries += _scanned_entries as u64;
+            state.cancel_plugin_compactions += 1;
+        }
     }
 
     fn compact_order(state: &mut SchedulerState) {
@@ -457,6 +487,7 @@ impl InvocationScheduler {
         {
             return;
         }
+        let _scanned_entries = state.order.len();
         state.order.retain(|token| {
             state
                 .queues
@@ -464,6 +495,11 @@ impl InvocationScheduler {
                 .is_some_and(|queue| queue.generation == token.generation)
         });
         state.stale_order_tokens = 0;
+        #[cfg(test)]
+        {
+            state.cancel_order_compaction_entries += _scanned_entries as u64;
+            state.cancel_order_compactions += 1;
+        }
     }
 
     fn remember_recent_request_id(state: &mut SchedulerState, request_id: &str) {
@@ -762,6 +798,87 @@ mod tests {
         assert!(state.queues.is_empty());
         assert!(state.stale_order_tokens < ORDER_TOMBSTONE_COMPACT_MIN);
         assert!(state.order.len() < ORDER_TOMBSTONE_COMPACT_MIN);
+    }
+
+    #[test]
+    fn indexed_cancel_performance_evidence() {
+        const REQUESTS: usize = 10_000;
+        const SHARED_PLUGIN_REQUESTS: usize = REQUESTS / 2;
+        const UNIQUE_PLUGIN_REQUESTS: usize = REQUESTS - SHARED_PLUGIN_REQUESTS;
+        let scheduler = InvocationScheduler::new(REQUESTS, REQUESTS / 2);
+        for index in 0..SHARED_PLUGIN_REQUESTS {
+            scheduler
+                .enqueue(job(
+                    &format!("indexed-shared-{index:05}"),
+                    "indexed-shared-plugin",
+                ))
+                .unwrap();
+        }
+        for index in 0..UNIQUE_PLUGIN_REQUESTS {
+            scheduler
+                .enqueue(job(
+                    &format!("indexed-unique-{index:05}"),
+                    &format!("indexed-plugin-{index:05}"),
+                ))
+                .unwrap();
+        }
+        for index in 0..SHARED_PLUGIN_REQUESTS {
+            assert!(matches!(
+                scheduler.cancel(&format!("indexed-shared-{index:05}")),
+                CancelDisposition::Queued(_)
+            ));
+        }
+        for index in 0..UNIQUE_PLUGIN_REQUESTS {
+            assert!(matches!(
+                scheduler.cancel(&format!("indexed-unique-{index:05}")),
+                CancelDisposition::Queued(_)
+            ));
+        }
+        let state = scheduler.state.lock().expect("scheduler mutex poisoned");
+        assert_eq!(state.cancel_request_index_lookups, REQUESTS as u64);
+        assert!(state.cancel_plugin_compactions > 0);
+        assert!(state.cancel_order_compactions > 0);
+        assert!(state.cancel_plugin_compaction_entries > 0);
+        assert!(state.cancel_order_compaction_entries > 0);
+        assert!(state.queued_by_request.is_empty());
+        assert!(state.queues.is_empty());
+        assert!(state.order.len() < ORDER_TOMBSTONE_COMPACT_MIN);
+        let compaction_entries = state
+            .cancel_plugin_compaction_entries
+            .checked_add(state.cancel_order_compaction_entries)
+            .expect("scheduler compaction accounting overflow");
+        let compaction_basis_points = compaction_entries as f64 / REQUESTS as f64 * 10_000.0;
+        assert!(
+            compaction_basis_points <= 25_000.0,
+            "amortized compaction = {compaction_basis_points} basis points"
+        );
+        crate::performance_evidence::record(serde_json::json!({
+            "id": "runtime.scheduler-indexed-cancel",
+            "sample_count": REQUESTS,
+            "metrics": [
+                {
+                    "name": "index_lookups",
+                    "unit": "count",
+                    "observed": state.cancel_request_index_lookups,
+                    "limit": REQUESTS,
+                    "comparator": "eq"
+                },
+                {
+                    "name": "compaction_entries_per_cancel",
+                    "unit": "basis_points",
+                    "observed": compaction_basis_points,
+                    "limit": 25_000,
+                    "comparator": "lte"
+                },
+                {
+                    "name": "remaining_requests",
+                    "unit": "count",
+                    "observed": state.queued_by_request.len(),
+                    "limit": 0,
+                    "comparator": "eq"
+                }
+            ]
+        }));
     }
 
     #[test]

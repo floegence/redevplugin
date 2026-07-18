@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 
 const scenarioIDPattern = /^[a-z][a-z0-9._-]+$/;
 const metricNamePattern = /^[a-z][a-z0-9._-]+$/;
-const metricUnits = new Set(["milliseconds", "count", "bytes", "queries", "long_tasks"]);
+const metricUnits = new Set(["milliseconds", "count", "bytes", "queries", "long_tasks", "basis_points"]);
 const metricComparators = new Set(["eq", "lte"]);
 const semanticVersionPattern = /^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-[0-9A-Za-z.-]+)?$/;
 const gitCommitPattern = /^[0-9a-f]{40}$/;

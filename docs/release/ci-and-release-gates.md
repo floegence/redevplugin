@@ -161,9 +161,12 @@ sink boundary.
 - `--fast` runs deterministic admission, notification, backpressure, migration,
   TypeScript type, and renderer reconciliation tests in normal CI.
 - `--full` runs the real Go Host and Rust runtime, 32-way invocation and cache
-  scenarios, blocking-hostcall isolation, queued and running cancellation, 500
-  stream waiters, SQLite batch reads, Node reconciliation measurements, and a
-  real Chromium opaque-surface renderer measurement. The weekly workflow uploads
+  scenarios, blocking-hostcall isolation, queued and running cancellation, a
+  bounded 10,000-frame IPC burst, indexed scheduler and module-cache stress,
+  paired namespace/package/HTTP/authorization measurements, real operation and
+  stream `MemoryStore` snapshots, the fixed-capacity UDP limiter, 500 stream
+  waiters, SQLite batch reads, Node reconciliation measurements, and a real
+  Chromium opaque-surface renderer measurement. The weekly workflow uploads
   `performance-evidence-full.json`.
 - `--smoke` executes every scenario and records actual measurements without
   enforcing absolute latency thresholds. It is used only by non-publishing
@@ -171,14 +174,29 @@ sink boundary.
 - `--release` runs the same acceptance set with release gate identity before a
   bundle manifest or checksum is created.
 
+`REDEVPLUGIN_PERFORMANCE_RUNTIME` may select an explicit executable for smoke
+and full measurements. Release evidence rejects that override and always builds
+`redevplugin-runtime` from the clean checked-out HEAD bound to `source_commit`.
+
 `performance-contract-v1.json` is the single machine-readable definition of the
-11 required scenarios and each scenario's sample count, metric name, unit,
+22 required scenarios and each scenario's sample count, metric name, unit,
 comparator, and limit. The generator and bundle verifier both consume that
 contract and reject any missing, extra, duplicate, or drifted metric. The
 release workflow generates immutable release evidence once on `ubuntu-24.04`;
 all runtime bundles validate and copy those exact bytes through
 `--performance-evidence`. `--skip-execution` and `--allow-smoke` are independent
 verifier permissions, and published bundles never enable `--allow-smoke`.
+
+Relative acceptance targets use paired measurements from the same process and
+input fixture and encode the current-to-reference ratio in basis points. The
+package materialization scenario is the exception: it compares isolated child
+process `MaxRSS` values so retained package bytes cannot be hidden by heap
+accounting. Scheduler and module-cache complexity evidence records operations on
+the actual request index, bounded tombstone compaction, and `BTreeSet` eviction
+index instead of inferring algorithmic behavior from noisy wall-clock timings.
+The UDP limiter combines a fixed 65,536-bucket capacity assertion with a paired
+high-cardinality P95 measurement. Release evidence is emitted only by the owning
+Go package or Rust runtime test after its behavioral assertions pass.
 
 ## Release Bundle
 

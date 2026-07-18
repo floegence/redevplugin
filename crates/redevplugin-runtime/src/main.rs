@@ -1,4 +1,6 @@
 mod module_cache;
+#[cfg(test)]
+mod performance_evidence;
 mod scheduler;
 
 use serde::Deserialize;
@@ -996,14 +998,29 @@ fn start_ipc_writer(
     limits: redevplugin_ipc::RuntimeLimits,
     failures: IpcWriterFailurePublisher,
 ) -> Result<(FrameSender, thread::JoinHandle<Result<(), IpcWriterError>>), IpcWriterError> {
+    start_ipc_writer_with_runner(limits, failures, |receiver, thread_failures| {
+        let stdout = io::stdout();
+        run_ipc_writer(receiver, stdout.lock(), thread_failures)
+    })
+}
+
+fn start_ipc_writer_with_runner<F>(
+    limits: redevplugin_ipc::RuntimeLimits,
+    failures: IpcWriterFailurePublisher,
+    runner: F,
+) -> Result<(FrameSender, thread::JoinHandle<Result<(), IpcWriterError>>), IpcWriterError>
+where
+    F: FnOnce(Receiver<String>, &IpcWriterFailurePublisher) -> Result<(), IpcWriterError>
+        + Send
+        + 'static,
+{
     let (sender, receiver) = mpsc::sync_channel::<String>(ipc_writer_capacity(limits)?);
     let thread_failures = failures.clone();
     let handle = thread::Builder::new()
         .name("redevplugin-ipc-writer".to_string())
         .spawn(move || {
-            let stdout = io::stdout();
             match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                run_ipc_writer(receiver, stdout.lock(), &thread_failures)
+                runner(receiver, &thread_failures)
             })) {
                 Ok(result) => result,
                 Err(_) => Err(thread_failures.publish(IpcWriterError::Panicked)),
@@ -3434,7 +3451,17 @@ fn decode_base64(input: &str) -> Result<Vec<u8>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Barrier;
     use std::sync::atomic::Ordering;
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    const IPC_WRITER_BURST_PROBE_OUTPUT: &str = "REDEVPLUGIN_IPC_WRITER_BURST_PROBE_OUTPUT";
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    const IPC_WRITER_BURST_FRAME_COUNT: usize = 10_000;
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    const IPC_WRITER_BURST_FRAME_BYTES: usize = 1_024;
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    const IPC_WRITER_BURST_PEAK_RSS_LIMIT: u64 = 64 * 1024 * 1024;
 
     fn writer_failure_channel() -> (IpcWriterFailurePublisher, Receiver<RuntimeEvent>) {
         let (events_sender, events) = mpsc::sync_channel(1);
@@ -3464,6 +3491,47 @@ mod tests {
         fn flush(&mut self) -> io::Result<()> {
             self.flushed_bytes.push(self.bytes_since_flush);
             self.bytes_since_flush = 0;
+            Ok(())
+        }
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[derive(Default)]
+    struct DiscardCountingWriterStats {
+        bytes: usize,
+        frames: usize,
+        flushes: usize,
+    }
+
+    struct DiscardCountingWriter {
+        stats: Arc<Mutex<DiscardCountingWriterStats>>,
+        write_delay: Duration,
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    impl Write for DiscardCountingWriter {
+        fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
+            if !self.write_delay.is_zero() {
+                thread::sleep(self.write_delay);
+            }
+            let mut stats = self.stats.lock().expect("IPC writer stats mutex poisoned");
+            stats.bytes = stats
+                .bytes
+                .checked_add(buffer.len())
+                .ok_or_else(|| io::Error::other("counted IPC bytes overflow usize"))?;
+            stats.frames = stats
+                .frames
+                .checked_add(buffer.iter().filter(|byte| **byte == b'\n').count())
+                .ok_or_else(|| io::Error::other("counted IPC frames overflow usize"))?;
+            Ok(buffer.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            let mut stats = self.stats.lock().expect("IPC writer stats mutex poisoned");
+            stats.flushes = stats
+                .flushes
+                .checked_add(1)
+                .ok_or_else(|| io::Error::other("counted IPC flushes overflow usize"))?;
             Ok(())
         }
     }
@@ -3781,6 +3849,199 @@ mod tests {
             next_runtime_input_line(&events, &failures),
             Err(RuntimeLoopError::Writer(IpcWriterError::FlushFailed))
         );
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn ipc_writer_burst_performance_evidence() {
+        let probe_path = std::env::temp_dir().join(format!(
+            "redevplugin-ipc-writer-burst-{}-{}.json",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("performance probe clock is before the Unix epoch")
+                .as_nanos()
+        ));
+        let output = std::process::Command::new(
+            std::env::current_exe().expect("resolve runtime test executable"),
+        )
+        .arg("--exact")
+        .arg("tests::ipc_writer_burst_child_probe")
+        .arg("--nocapture")
+        .env(IPC_WRITER_BURST_PROBE_OUTPUT, &probe_path)
+        .output()
+        .expect("run isolated IPC writer burst probe");
+        assert!(
+            output.status.success(),
+            "isolated IPC writer burst probe failed:\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let probe_bytes = std::fs::read(&probe_path).expect("read IPC writer burst probe output");
+        std::fs::remove_file(&probe_path).expect("remove IPC writer burst probe output");
+        let probe: serde_json::Value =
+            serde_json::from_slice(&probe_bytes).expect("decode IPC writer burst probe output");
+        let observed = |name: &str| {
+            probe[name]
+                .as_u64()
+                .unwrap_or_else(|| panic!("IPC writer burst probe is missing {name}"))
+        };
+        let frames = observed("frames");
+        let queue_capacity = observed("queue_capacity");
+        let blocked_at_capacity = observed("blocked_at_capacity");
+        let peak_rss_bytes = observed("peak_rss_bytes");
+        let flushes = observed("flushes");
+        assert_eq!(frames, IPC_WRITER_BURST_FRAME_COUNT as u64);
+        assert_eq!(queue_capacity, IPC_WRITER_MAX_QUEUE_CAPACITY as u64);
+        assert_eq!(blocked_at_capacity, 1);
+        assert!(
+            peak_rss_bytes <= IPC_WRITER_BURST_PEAK_RSS_LIMIT,
+            "peak RSS = {peak_rss_bytes}, want <= {IPC_WRITER_BURST_PEAK_RSS_LIMIT}"
+        );
+        assert!(flushes <= 625, "flushes = {flushes}");
+        crate::performance_evidence::record(serde_json::json!({
+            "id": "runtime.ipc-writer-burst",
+            "sample_count": IPC_WRITER_BURST_FRAME_COUNT,
+            "metrics": [
+                {
+                    "name": "frames",
+                    "unit": "count",
+                    "observed": frames,
+                    "limit": IPC_WRITER_BURST_FRAME_COUNT,
+                    "comparator": "eq"
+                },
+                {
+                    "name": "queue_capacity",
+                    "unit": "count",
+                    "observed": queue_capacity,
+                    "limit": IPC_WRITER_MAX_QUEUE_CAPACITY,
+                    "comparator": "eq"
+                },
+                {
+                    "name": "blocked_at_capacity",
+                    "unit": "count",
+                    "observed": blocked_at_capacity,
+                    "limit": 1,
+                    "comparator": "eq"
+                },
+                {
+                    "name": "peak_rss_bytes",
+                    "unit": "bytes",
+                    "observed": peak_rss_bytes,
+                    "limit": IPC_WRITER_BURST_PEAK_RSS_LIMIT,
+                    "comparator": "lte"
+                },
+                {
+                    "name": "flushes",
+                    "unit": "count",
+                    "observed": flushes,
+                    "limit": 625,
+                    "comparator": "lte"
+                }
+            ]
+        }));
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn ipc_writer_burst_child_probe() {
+        let Some(output_path) = std::env::var_os(IPC_WRITER_BURST_PROBE_OUTPUT) else {
+            return;
+        };
+        let limits = redevplugin_ipc::RuntimeLimits {
+            worker_count: 64,
+            queue_capacity: 64,
+            per_plugin_concurrency: 4,
+            module_cache_entries: 64,
+            module_cache_source_bytes: 128 * 1024 * 1024,
+        };
+        assert_eq!(
+            ipc_writer_capacity(limits).unwrap(),
+            IPC_WRITER_MAX_QUEUE_CAPACITY
+        );
+        let (failures, _events) = writer_failure_channel();
+        let writer_start = Arc::new(Barrier::new(2));
+        let runner_start = Arc::clone(&writer_start);
+        let writer_stats = Arc::new(Mutex::new(DiscardCountingWriterStats::default()));
+        let runner_stats = Arc::clone(&writer_stats);
+        let (writer, writer_thread) =
+            start_ipc_writer_with_runner(limits, failures, move |receiver, thread_failures| {
+                runner_start.wait();
+                run_ipc_writer(
+                    receiver,
+                    DiscardCountingWriter {
+                        stats: runner_stats,
+                        write_delay: Duration::from_millis(1),
+                    },
+                    thread_failures,
+                )
+            })
+            .unwrap();
+        let sent = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let producer_sent = Arc::clone(&sent);
+        let frame = "x".repeat(IPC_WRITER_BURST_FRAME_BYTES);
+        let (producer_done_sender, producer_done) = mpsc::channel();
+        let producer = thread::spawn(move || {
+            let result: Result<(), IpcWriterError> = (|| {
+                for _ in 0..IPC_WRITER_BURST_FRAME_COUNT {
+                    writer.send(frame.clone())?;
+                    producer_sent.fetch_add(1, Ordering::Release);
+                }
+                Ok(())
+            })();
+            producer_done_sender.send(result).unwrap();
+        });
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while sent.load(Ordering::Acquire) < IPC_WRITER_MAX_QUEUE_CAPACITY {
+            assert!(Instant::now() < deadline, "IPC writer queue did not fill");
+            thread::yield_now();
+        }
+        let blocked_at_capacity = match producer_done.recv_timeout(Duration::from_millis(50)) {
+            Err(mpsc::RecvTimeoutError::Timeout) => 1,
+            Ok(result) => {
+                panic!("IPC writer producer completed before the writer started: {result:?}")
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                panic!("IPC writer producer completion channel disconnected")
+            }
+        };
+        let observed_queue_capacity = sent.load(Ordering::Acquire);
+        assert_eq!(
+            observed_queue_capacity, IPC_WRITER_MAX_QUEUE_CAPACITY,
+            "IPC writer producer did not remain blocked at queue capacity"
+        );
+        writer_start.wait();
+        producer_done
+            .recv_timeout(Duration::from_secs(5))
+            .expect("IPC writer producer did not finish")
+            .unwrap();
+        producer.join().unwrap();
+        writer_thread.join().unwrap().unwrap();
+        assert_eq!(sent.load(Ordering::Acquire), IPC_WRITER_BURST_FRAME_COUNT);
+        let output = writer_stats
+            .lock()
+            .expect("IPC writer stats mutex poisoned");
+        assert_eq!(output.frames, IPC_WRITER_BURST_FRAME_COUNT);
+        assert_eq!(
+            output.bytes,
+            IPC_WRITER_BURST_FRAME_COUNT * (IPC_WRITER_BURST_FRAME_BYTES + 1)
+        );
+        assert!(output.flushes <= 625, "flushes = {}", output.flushes);
+        let peak_rss_bytes = crate::performance_evidence::peak_rss_bytes()
+            .expect("read isolated IPC writer burst peak RSS");
+        assert!(peak_rss_bytes <= IPC_WRITER_BURST_PEAK_RSS_LIMIT);
+        std::fs::write(
+            output_path,
+            serde_json::to_vec(&serde_json::json!({
+                "frames": output.frames,
+                "queue_capacity": observed_queue_capacity,
+                "blocked_at_capacity": blocked_at_capacity,
+                "peak_rss_bytes": peak_rss_bytes,
+                "flushes": output.flushes
+            }))
+            .expect("encode IPC writer burst probe output"),
+        )
+        .expect("write IPC writer burst probe output");
     }
 
     #[test]

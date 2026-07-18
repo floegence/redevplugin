@@ -20,7 +20,7 @@ const children = Array.from({ length: 1000 }, (_, index) =>
   element(`item-${String(index).padStart(4, "0")}${"x".repeat(119)}`));
 const current = reconciler.validatePluginUITree(element("root", children));
 const next = reconciler.validatePluginUITree(element("root", [...children].reverse()));
-const operations = reconciler.reconcilePluginUITrees(current, next);
+const operations = reconciler.reconcileValidatedPluginUITrees(current, next);
 if (operations.length !== 999 || operations.some((operation) => operation.type !== "move_child")) {
   throw new Error("renderer fixture did not produce the minimal keyed reversal");
 }
