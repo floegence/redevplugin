@@ -2,6 +2,7 @@ package stream
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"path/filepath"
@@ -515,18 +516,24 @@ func TestStoreScopesListsAndTransitionsToExecutionOwners(t *testing.T) {
 func TestMemoryStoreDeepClonesExecutionBindings(t *testing.T) {
 	store := NewMemoryStore()
 	binding := streamTestBinding("plugini_1")
+	binding.Target.Fields["nested"] = []any{map[string]any{"value": "original"}}
 	registered, err := store.Register(context.Background(), RegisterRequest{StreamID: "stream_clone", ExecutionBinding: binding})
 	if err != nil {
 		t.Fatal(err)
 	}
 	binding.Target.Fields["workspace_id"] = "mutated-input"
+	binding.Target.Fields["nested"].([]any)[0].(map[string]any)["value"] = "mutated-input"
 	registered.Target.Fields["workspace_id"] = "mutated-return"
+	registered.Target.Fields["nested"].([]any)[0].(map[string]any)["value"] = "mutated-return"
 	stored, err := store.Get(context.Background(), "stream_clone")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if got := stored.Target.Fields["workspace_id"]; got != "workspace-1" {
 		t.Fatalf("stored target was mutated through a boundary: %#v", got)
+	}
+	if got := stored.Target.Fields["nested"].([]any)[0].(map[string]any)["value"]; got != "original" {
+		t.Fatalf("stored nested target was mutated through a boundary: %#v", got)
 	}
 	stored.Target.Fields["workspace_id"] = "mutated-get"
 	again, err := store.Get(context.Background(), "stream_clone")
@@ -535,6 +542,48 @@ func TestMemoryStoreDeepClonesExecutionBindings(t *testing.T) {
 	}
 	if got := again.Target.Fields["workspace_id"]; got != "workspace-1" {
 		t.Fatalf("Get() returned shared target state: %#v", got)
+	}
+}
+
+func TestStoreRegisterRejectsNonCanonicalExecutionBindingJSON(t *testing.T) {
+	mapCycle := map[string]any{}
+	mapCycle["self"] = mapCycle
+	tests := []struct {
+		name  string
+		value any
+	}{
+		{name: "native integer", value: 1},
+		{name: "unsafe float", value: float64(1 << 53)},
+		{name: "unsafe number", value: json.Number("9007199254740992")},
+		{name: "cycle", value: mapCycle},
+		{name: "typed slice", value: []string{"value"}},
+	}
+	stores := []struct {
+		name string
+		open func(*testing.T) Store
+	}{
+		{name: "memory", open: func(*testing.T) Store { return NewMemoryStore() }},
+		{name: "sqlite", open: func(t *testing.T) Store {
+			store, err := NewSQLiteStore(context.Background(), filepath.Join(t.TempDir(), "streams.sqlite"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = store.CloseDatabase() })
+			return store
+		}},
+	}
+	for _, storeCase := range stores {
+		for _, test := range tests {
+			t.Run(storeCase.name+"/"+test.name, func(t *testing.T) {
+				store := storeCase.open(t)
+				binding := streamTestBinding("plugini_invalid")
+				binding.Target.Fields["invalid"] = test.value
+				_, err := store.Register(context.Background(), RegisterRequest{StreamID: "stream_invalid", ExecutionBinding: binding})
+				if !errors.Is(err, ErrInvalidStream) {
+					t.Fatalf("Register() error = %v, want ErrInvalidStream", err)
+				}
+			})
+		}
 	}
 }
 

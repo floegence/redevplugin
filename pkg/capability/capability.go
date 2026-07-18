@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/floegence/redevplugin/internal/jsonvalue"
 	"github.com/floegence/redevplugin/pkg/capabilitycontract"
 )
 
@@ -70,15 +71,12 @@ func (e *BusinessError) Error() string {
 	return e.Message
 }
 
-func NewBusinessError(code, message string, details map[string]any) *BusinessError {
-	clonedDetails := make(map[string]any, len(details))
-	for key, value := range details {
-		clonedDetails[key] = value
+func NewBusinessError(code, message string, details map[string]any) (*BusinessError, error) {
+	ownedDetails, err := jsonvalue.CloneCanonicalMap(details)
+	if err != nil {
+		return nil, fmt.Errorf("create capability business error: %w", err)
 	}
-	if details == nil {
-		clonedDetails = nil
-	}
-	return &BusinessError{Code: strings.TrimSpace(code), Message: strings.TrimSpace(message), Details: clonedDetails}
+	return &BusinessError{Code: strings.TrimSpace(code), Message: strings.TrimSpace(message), Details: ownedDetails}, nil
 }
 
 type PluginIdentity struct {
@@ -386,18 +384,21 @@ func (r *Registry) Resolve(pin capabilitycontract.Pin) (Registration, error) {
 	return registration, nil
 }
 
-func cloneMap(value map[string]any) map[string]any {
-	if value == nil {
-		return nil
+func OwnTargetDescriptor(target TargetDescriptor) (TargetDescriptor, error) {
+	fields, err := jsonvalue.CloneCanonicalMap(target.Fields)
+	if err != nil {
+		return TargetDescriptor{}, fmt.Errorf("own capability target descriptor: %w", err)
 	}
-	cloned := make(map[string]any, len(value))
-	for key, item := range value {
-		cloned[key] = cloneValue(item)
-	}
-	return cloned
+	target.Fields = fields
+	return target, nil
 }
 
-func CloneExecutionBinding(binding ExecutionBinding) ExecutionBinding {
+func OwnExecutionBinding(binding ExecutionBinding) (ExecutionBinding, error) {
+	target, err := OwnTargetDescriptor(binding.Target)
+	if err != nil {
+		return ExecutionBinding{}, err
+	}
+	binding.Target = target
 	if binding.Contract != nil {
 		contract := *binding.Contract
 		binding.Contract = &contract
@@ -408,23 +409,5 @@ func CloneExecutionBinding(binding ExecutionBinding) ExecutionBinding {
 	if binding.Permissions.Granted != nil {
 		binding.Permissions.Granted = append([]string{}, binding.Permissions.Granted...)
 	}
-	binding.Target.Fields = cloneMap(binding.Target.Fields)
-	return binding
-}
-
-func cloneValue(value any) any {
-	switch typed := value.(type) {
-	case map[string]any:
-		return cloneMap(typed)
-	case []any:
-		cloned := make([]any, len(typed))
-		for index, item := range typed {
-			cloned[index] = cloneValue(item)
-		}
-		return cloned
-	case []string:
-		return append([]string(nil), typed...)
-	default:
-		return typed
-	}
+	return binding, nil
 }

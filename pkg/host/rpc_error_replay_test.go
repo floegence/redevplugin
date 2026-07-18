@@ -69,7 +69,7 @@ func obtainAttestedCapabilityRPCError(t *testing.T) error {
 		}, []string{"document_id"}),
 	}}
 	verified := verifyFixtureCapabilityContract(t, contract)
-	adapter := &recordingCapabilityAdapter{err: capability.NewBusinessError(
+	adapter := &recordingCapabilityAdapter{err: mustCapabilityBusinessError(t,
 		"DOCUMENT_NOT_FOUND", "adapter detail", map[string]any{"document_id": "doc-1"},
 	)}
 	h, _, _ := newTestHostWithOptions(t, testHostOptions{

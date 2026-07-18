@@ -39,7 +39,11 @@ func (DocumentsAdapter) Invoke(_ context.Context, req capability.Invocation) (ca
 		go publishDocumentEvents(req.Execution.Stream)
 		return capability.Result{Data: map[string]any{"watching": true}}, nil
 	default:
-		return capability.Result{}, capability.NewBusinessError("DOCUMENT_NOT_FOUND", "Document not found", map[string]any{"document_id": "unknown"})
+		businessError, err := capability.NewBusinessError("DOCUMENT_NOT_FOUND", "Document not found", map[string]any{"document_id": "unknown"})
+		if err != nil {
+			return capability.Result{}, err
+		}
+		return capability.Result{}, businessError
 	}
 }
 

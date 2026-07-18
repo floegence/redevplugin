@@ -7290,6 +7290,10 @@ func (h *Host) prepareCoreActionExecution(ctx context.Context, record registry.P
 	if strings.TrimSpace(target.Kind) == "" || target.Fields == nil {
 		return capability.Invocation{}, nil, nil, errors.New("core action adapter returned an invalid target descriptor")
 	}
+	target, err = capability.OwnTargetDescriptor(target)
+	if err != nil {
+		return capability.Invocation{}, nil, nil, err
+	}
 	targetHash, err := canonicalDescriptorHash(target)
 	if err != nil {
 		return capability.Invocation{}, nil, nil, err
@@ -8012,6 +8016,10 @@ func (h *Host) resolveMethodConfirmationTarget(ctx context.Context, record regis
 		}
 		if strings.TrimSpace(target.Kind) == "" || target.Fields == nil {
 			return capability.TargetDescriptor{}, "", errors.New("core action adapter returned an invalid target descriptor")
+		}
+		target, err = capability.OwnTargetDescriptor(target)
+		if err != nil {
+			return capability.TargetDescriptor{}, "", err
 		}
 		hash, err := canonicalDescriptorHash(target)
 		return target, hash, err

@@ -220,7 +220,7 @@ func (s *MemoryStore) Register(_ context.Context, req RegisterRequest) (Record, 
 	s.ownerOrder[owner] = insertOperationOrder(s.ownerOrder[owner], s.records, record)
 	pluginOwner := pluginOwnerKey{PluginInstanceID: record.PluginInstanceID, OwnerScope: owner}
 	s.pluginOwnerOrder[pluginOwner] = insertOperationOrder(s.pluginOwnerOrder[pluginOwner], s.records, record)
-	return cloneRecord(record), nil
+	return cloneRecord(record)
 }
 
 func registerCancelable(value *bool) bool {
@@ -258,7 +258,11 @@ func (s *MemoryStore) List(_ context.Context, req ListRequest) (Page, error) {
 	end := min(len(order), start+limit+1)
 	records := make([]Record, 0, end-start)
 	for _, operationID := range order[start:end] {
-		records = append(records, cloneRecord(s.records[operationID]))
+		record, err := cloneRecord(s.records[operationID])
+		if err != nil {
+			return Page{}, err
+		}
+		records = append(records, record)
 	}
 	return pageRecords(records, limit), nil
 }
@@ -375,7 +379,7 @@ func (s *MemoryStore) Get(_ context.Context, operationID string) (Record, error)
 	if !ok {
 		return Record{}, ErrNotFound
 	}
-	return cloneRecord(record), nil
+	return cloneRecord(record)
 }
 
 func (s *MemoryStore) RequestCancel(_ context.Context, req CancelRequest) (Record, error) {
@@ -397,7 +401,7 @@ func (s *MemoryStore) RequestCancel(_ context.Context, req CancelRequest) (Recor
 	}
 	record = requestCancel(record, now, req.Reason)
 	s.records[record.OperationID] = record
-	return cloneRecord(record), nil
+	return cloneRecord(record)
 }
 
 func (s *MemoryStore) Finish(_ context.Context, req FinishRequest) (Record, error) {
@@ -422,7 +426,7 @@ func (s *MemoryStore) Finish(_ context.Context, req FinishRequest) (Record, erro
 		return Record{}, ErrNotFound
 	}
 	if terminal(record.Status) {
-		return cloneRecord(record), nil
+		return cloneRecord(record)
 	}
 	record.Status = req.Status
 	record.FailureCode = failureCode
@@ -430,7 +434,7 @@ func (s *MemoryStore) Finish(_ context.Context, req FinishRequest) (Record, erro
 	record.UpdatedAt = now
 	record.TerminalAt = &now
 	s.records[record.OperationID] = record
-	return cloneRecord(record), nil
+	return cloneRecord(record)
 }
 
 func normalizeFinishOutcome(status Status, failureCode capability.ExecutionFailureCode, reason string) (capability.ExecutionFailureCode, string, error) {
@@ -474,7 +478,11 @@ func (s *MemoryStore) MarkPluginDisabled(_ context.Context, req PluginTransition
 			record = requestCancel(record, now, req.Reason)
 		}
 		s.records[id] = record
-		changed = append(changed, cloneRecord(record))
+		cloned, err := cloneRecord(record)
+		if err != nil {
+			return nil, err
+		}
+		changed = append(changed, cloned)
 	}
 	return changed, nil
 }
@@ -504,7 +512,11 @@ func (s *MemoryStore) MarkPluginUninstalled(_ context.Context, req PluginTransit
 			record = requestCancel(record, now, req.Reason)
 		}
 		s.records[id] = record
-		changed = append(changed, cloneRecord(record))
+		cloned, err := cloneRecord(record)
+		if err != nil {
+			return nil, err
+		}
+		changed = append(changed, cloned)
 	}
 	return changed, nil
 }
@@ -686,14 +698,15 @@ func normalizeUninstallBehavior(behavior string) string {
 }
 
 func cloneExecutionBinding(binding capability.ExecutionBinding) (capability.ExecutionBinding, error) {
-	if _, err := json.Marshal(binding); err != nil {
-		return capability.ExecutionBinding{}, err
-	}
-	return capability.CloneExecutionBinding(binding), nil
+	return capability.OwnExecutionBinding(binding)
 }
 
-func cloneRecord(record Record) Record {
-	record.ExecutionBinding = capability.CloneExecutionBinding(record.ExecutionBinding)
+func cloneRecord(record Record) (Record, error) {
+	binding, err := capability.OwnExecutionBinding(record.ExecutionBinding)
+	if err != nil {
+		return Record{}, err
+	}
+	record.ExecutionBinding = binding
 	if record.CancelRequestedAt != nil {
 		value := *record.CancelRequestedAt
 		record.CancelRequestedAt = &value
@@ -706,5 +719,5 @@ func cloneRecord(record Record) Record {
 		value := *record.TerminalAt
 		record.TerminalAt = &value
 	}
-	return record
+	return record, nil
 }

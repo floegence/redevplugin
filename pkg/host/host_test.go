@@ -47,6 +47,15 @@ import (
 
 var testPluginInstanceSequence atomic.Uint64
 
+func mustCapabilityBusinessError(t testing.TB, code, message string, details map[string]any) *capability.BusinessError {
+	t.Helper()
+	businessError, err := capability.NewBusinessError(code, message, details)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return businessError
+}
+
 func nextTestPluginInstanceID(t testing.TB) string {
 	t.Helper()
 	return fmt.Sprintf("plugini_test_%d", testPluginInstanceSequence.Add(1))
@@ -6116,7 +6125,7 @@ func TestCallPluginMethodValidatesPublishedBusinessErrors(t *testing.T) {
 	t.Run("declared error", func(t *testing.T) {
 		adapter := &recordingCapabilityAdapter{err: &mutation.Error{
 			Outcome: mutation.OutcomeNotCommitted,
-			Err:     capability.NewBusinessError("DOCUMENT_NOT_FOUND", "adapter detail", map[string]any{"document_id": "doc-1"}),
+			Err:     mustCapabilityBusinessError(t, "DOCUMENT_NOT_FOUND", "adapter detail", map[string]any{"document_id": "doc-1"}),
 		}}
 		h, installed, gateway, audits := newHost(t, adapter)
 		err := call(h, installed, gateway)
@@ -6198,7 +6207,7 @@ func TestCallPluginMethodValidatesPublishedBusinessErrors(t *testing.T) {
 		for index := range 30000 {
 			environment[index] = "API_TOKEN="
 		}
-		adapter := &recordingCapabilityAdapter{err: capability.NewBusinessError(
+		adapter := &recordingCapabilityAdapter{err: mustCapabilityBusinessError(t,
 			"DETAILS_TOO_LARGE", "adapter detail", map[string]any{"env": environment},
 		)}
 		h, _, _ := newTestHostWithOptions(t, testHostOptions{
@@ -6230,8 +6239,8 @@ func TestCallPluginMethodValidatesPublishedBusinessErrors(t *testing.T) {
 		name string
 		err  error
 	}{
-		{name: "undeclared code", err: capability.NewBusinessError("UNKNOWN", "unknown", nil)},
-		{name: "invalid details", err: capability.NewBusinessError("DOCUMENT_NOT_FOUND", "invalid", map[string]any{"unexpected": true})},
+		{name: "undeclared code", err: mustCapabilityBusinessError(t, "UNKNOWN", "unknown", nil)},
+		{name: "invalid details", err: mustCapabilityBusinessError(t, "DOCUMENT_NOT_FOUND", "invalid", map[string]any{"unexpected": true})},
 		{name: "panicking business error As", err: panickingBusinessErrorAs{}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

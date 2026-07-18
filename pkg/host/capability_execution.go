@@ -20,6 +20,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/floegence/redevplugin/internal/jsonvalue"
 	"github.com/floegence/redevplugin/pkg/capability"
 	"github.com/floegence/redevplugin/pkg/capabilitycontract"
 	"github.com/floegence/redevplugin/pkg/manifest"
@@ -543,7 +544,7 @@ func (h *Host) resolveCapabilityTarget(ctx context.Context, record registry.Plug
 	if strings.TrimSpace(target.Kind) == "" || target.Fields == nil {
 		return capability.TargetDescriptor{}, "", errors.New("capability adapter returned an invalid target descriptor")
 	}
-	target.Fields, err = deepCloneParams(target.Fields)
+	target, err = capability.OwnTargetDescriptor(target)
 	if err != nil {
 		return capability.TargetDescriptor{}, "", err
 	}
@@ -564,27 +565,9 @@ func extractCapabilityTargetInput(params map[string]any, targetFields []string) 
 		if !ok {
 			continue
 		}
-		cloned, err := deepCloneJSONValue(value)
-		if err != nil {
-			return nil, err
-		}
-		input[field] = cloned
+		input[field] = value
 	}
-	return input, nil
-}
-
-func deepCloneJSONValue(value any) (any, error) {
-	raw, err := json.Marshal(value)
-	if err != nil {
-		return nil, err
-	}
-	var cloned any
-	decoder := json.NewDecoder(strings.NewReader(string(raw)))
-	decoder.UseNumber()
-	if err := decoder.Decode(&cloned); err != nil {
-		return nil, err
-	}
-	return cloned, nil
+	return jsonvalue.CloneCanonicalMap(input)
 }
 
 func (h *Host) prepareCapabilityExecution(ctx context.Context, record registry.PluginRecord, method manifest.MethodSpec, req CallMethodRequest, auth methodExecutionAuthorization, resolved resolvedCapabilityMethod) (capability.Invocation, context.Context, executionFinish, error) {
@@ -694,6 +677,11 @@ func (h *Host) startMethodExecution(ctx context.Context, record registry.PluginR
 	if err := validateExecutionBindingShape(binding); err != nil {
 		return capability.Invocation{}, nil, nil, err
 	}
+	ownedBinding, err := capability.OwnExecutionBinding(binding)
+	if err != nil {
+		return capability.Invocation{}, nil, nil, err
+	}
+	binding = ownedBinding
 	if err := h.reconcilePendingExecutionSetups(ctx, record.PluginInstanceID); err != nil {
 		return capability.Invocation{}, nil, nil, err
 	}
@@ -711,8 +699,14 @@ func (h *Host) startMethodExecution(ctx context.Context, record registry.PluginR
 		}
 		binding.StreamID = streamID
 	}
-	leaseBinding := capability.CloneExecutionBinding(binding)
-	validationBinding := capability.CloneExecutionBinding(binding)
+	leaseBinding, err := capability.OwnExecutionBinding(binding)
+	if err != nil {
+		return capability.Invocation{}, nil, nil, err
+	}
+	validationBinding, err := capability.OwnExecutionBinding(binding)
+	if err != nil {
+		return capability.Invocation{}, nil, nil, err
+	}
 	h.lifecycleMu.RLock()
 	if h.closed {
 		h.lifecycleMu.RUnlock()
@@ -730,7 +724,12 @@ func (h *Host) startMethodExecution(ctx context.Context, record registry.PluginR
 	if err != nil {
 		return capability.Invocation{}, nil, nil, err
 	}
-	execution := capability.ExecutionContext{ExecutionBinding: capability.CloneExecutionBinding(binding)}
+	executionBinding, err := capability.OwnExecutionBinding(binding)
+	if err != nil {
+		lease.finish()
+		return capability.Invocation{}, nil, nil, err
+	}
+	execution := capability.ExecutionContext{ExecutionBinding: executionBinding}
 	if method.Execution == manifest.MethodExecutionOperation || method.Execution == manifest.MethodExecutionSubscription {
 		cancelable := method.CancelPolicy.Cancelable
 		auditMutation, err := h.beginSecurityMutation(ctx, AuditEvent{
@@ -745,7 +744,7 @@ func (h *Host) startMethodExecution(ctx context.Context, record registry.PluginR
 		}
 		_, registerErr := h.adapters.Operations.Register(ctx, operation.RegisterRequest{
 			OperationID:        binding.OperationID,
-			ExecutionBinding:   capability.CloneExecutionBinding(binding),
+			ExecutionBinding:   binding,
 			Cancelable:         &cancelable,
 			CancelAckTimeoutMS: method.CancelPolicy.AckTimeoutMS,
 			DisableBehavior:    cancelPolicyDisableBehavior(method.CancelPolicy),
@@ -775,7 +774,7 @@ func (h *Host) startMethodExecution(ctx context.Context, record registry.PluginR
 		}
 		_, registerErr := h.adapters.Streams.Register(ctx, stream.RegisterRequest{
 			StreamID:         binding.StreamID,
-			ExecutionBinding: capability.CloneExecutionBinding(binding),
+			ExecutionBinding: binding,
 			Direction:        stream.DirectionRead,
 			MaxBufferedBytes: binding.Quota.MaxStreamBytes,
 			Now:              now,
@@ -1241,17 +1240,7 @@ func deepCloneParams(params map[string]any) (map[string]any, error) {
 	if params == nil {
 		return map[string]any{}, nil
 	}
-	raw, err := json.Marshal(params)
-	if err != nil {
-		return nil, err
-	}
-	var cloned map[string]any
-	decoder := json.NewDecoder(strings.NewReader(string(raw)))
-	decoder.UseNumber()
-	if err := decoder.Decode(&cloned); err != nil {
-		return nil, err
-	}
-	return cloned, nil
+	return jsonvalue.CloneCanonicalMap(params)
 }
 
 func newCapabilityID(prefix string) (string, error) {
@@ -1439,7 +1428,7 @@ func (r *executionLeaseRegistry) start(parent context.Context, binding capabilit
 	ctx, cancel := context.WithCancelCause(base)
 	lease := &executionLease{
 		registry:        r,
-		binding:         capability.CloneExecutionBinding(binding),
+		binding:         binding,
 		ctx:             ctx,
 		cancel:          cancel,
 		done:            make(chan struct{}),

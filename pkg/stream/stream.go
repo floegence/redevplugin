@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/base64"
-	"encoding/json"
 	"errors"
 	"regexp"
 	"sort"
@@ -243,7 +242,7 @@ func (s *MemoryStore) Register(_ context.Context, req RegisterRequest) (Record, 
 		UpdatedAt:        now,
 	}
 	s.records[streamID] = record
-	return cloneRecord(record), nil
+	return cloneRecord(record)
 }
 
 func (s *MemoryStore) Get(_ context.Context, streamID string) (Record, error) {
@@ -256,7 +255,7 @@ func (s *MemoryStore) Get(_ context.Context, streamID string) (Record, error) {
 	if !ok {
 		return Record{}, ErrNotFound
 	}
-	return cloneRecord(record), nil
+	return cloneRecord(record)
 }
 
 func (s *MemoryStore) List(_ context.Context, req ListRequest) ([]Record, error) {
@@ -276,7 +275,11 @@ func (s *MemoryStore) List(_ context.Context, req ListRequest) ([]Record, error)
 		if !req.AllOwners && record.ExecutionBinding.OwnerScope() != req.Owner {
 			continue
 		}
-		records = append(records, cloneRecord(record))
+		cloned, err := cloneRecord(record)
+		if err != nil {
+			return nil, err
+		}
+		records = append(records, cloned)
 	}
 	sort.Slice(records, func(i, j int) bool {
 		if records[i].CreatedAt.Equal(records[j].CreatedAt) {
@@ -386,7 +389,7 @@ func (s *MemoryStore) Deliver(_ context.Context, req DeliverRequest) (Record, De
 		return Record{}, Delivery{}, ErrNotFound
 	}
 	if pending, ok := s.pending[streamID]; ok {
-		return cloneRecord(record), cloneDelivery(pending), nil
+		return cloneRecordDelivery(record, pending)
 	}
 	events := s.events[streamID]
 	if len(events) == 0 {
@@ -397,13 +400,13 @@ func (s *MemoryStore) Deliver(_ context.Context, req DeliverRequest) (Record, De
 			}
 			delivery := Delivery{DeliveryID: deliveryID, ReadID: readID, StreamID: streamID, Done: true, TerminalStatus: record.Status}
 			s.pending[streamID] = delivery
-			return cloneRecord(record), cloneDelivery(delivery), nil
+			return cloneRecordDelivery(record, delivery)
 		}
-		return cloneRecord(record), Delivery{ReadID: readID, StreamID: streamID}, nil
+		return cloneRecordDelivery(record, Delivery{ReadID: readID, StreamID: streamID})
 	}
 	limit := streamReadLimit(events, req.MaxEvents, req.MaxBytes)
 	if limit <= 0 {
-		return cloneRecord(record), Delivery{ReadID: readID, StreamID: streamID}, nil
+		return cloneRecordDelivery(record, Delivery{ReadID: readID, StreamID: streamID})
 	}
 	deliveryID, err := newDeliveryID()
 	if err != nil {
@@ -421,7 +424,7 @@ func (s *MemoryStore) Deliver(_ context.Context, req DeliverRequest) (Record, De
 		delivery.TerminalStatus = record.Status
 	}
 	s.pending[streamID] = delivery
-	return cloneRecord(record), cloneDelivery(delivery), nil
+	return cloneRecordDelivery(record, delivery)
 }
 
 func (s *MemoryStore) Acknowledge(_ context.Context, req AcknowledgeRequest) (Record, error) {
@@ -442,13 +445,13 @@ func (s *MemoryStore) Acknowledge(_ context.Context, req AcknowledgeRequest) (Re
 	pending, hasPending := s.pending[streamID]
 	if !hasPending {
 		if s.lastAck[streamID] == deliveryID {
-			return cloneRecord(record), nil
+			return cloneRecord(record)
 		}
 		return Record{}, ErrDeliveryInvalid
 	}
 	if pending.DeliveryID != deliveryID {
 		if s.lastAck[streamID] == deliveryID {
-			return cloneRecord(record), nil
+			return cloneRecord(record)
 		}
 		return Record{}, ErrDeliveryInvalid
 	}
@@ -473,7 +476,7 @@ func (s *MemoryStore) Acknowledge(_ context.Context, req AcknowledgeRequest) (Re
 		s.terminalAcknowledged[streamID] = true
 	}
 	s.notifyLocked(streamID)
-	return cloneRecord(record), nil
+	return cloneRecord(record)
 }
 
 func (s *MemoryStore) Close(_ context.Context, req CloseRequest) (Record, error) {
@@ -502,7 +505,7 @@ func (s *MemoryStore) Close(_ context.Context, req CloseRequest) (Record, error)
 		return Record{}, ErrNotFound
 	}
 	if record.Status != StatusOpen {
-		return cloneRecord(record), nil
+		return cloneRecord(record)
 	}
 	record.Status = status
 	record.FailureCode = failureCode
@@ -511,7 +514,7 @@ func (s *MemoryStore) Close(_ context.Context, req CloseRequest) (Record, error)
 	record.ClosedAt = &now
 	s.records[record.StreamID] = record
 	s.notifyLocked(record.StreamID)
-	return cloneRecord(record), nil
+	return cloneRecord(record)
 }
 
 func (s *MemoryStore) MarkPluginTransition(_ context.Context, req PluginTransitionRequest) (PluginTransitionResult, error) {
@@ -740,19 +743,28 @@ func cloneEvent(event Event) Event {
 }
 
 func cloneExecutionBinding(binding capability.ExecutionBinding) (capability.ExecutionBinding, error) {
-	if _, err := json.Marshal(binding); err != nil {
-		return capability.ExecutionBinding{}, err
-	}
-	return capability.CloneExecutionBinding(binding), nil
+	return capability.OwnExecutionBinding(binding)
 }
 
-func cloneRecord(record Record) Record {
-	record.ExecutionBinding = capability.CloneExecutionBinding(record.ExecutionBinding)
+func cloneRecord(record Record) (Record, error) {
+	binding, err := capability.OwnExecutionBinding(record.ExecutionBinding)
+	if err != nil {
+		return Record{}, err
+	}
+	record.ExecutionBinding = binding
 	if record.ClosedAt != nil {
 		value := *record.ClosedAt
 		record.ClosedAt = &value
 	}
-	return record
+	return record, nil
+}
+
+func cloneRecordDelivery(record Record, delivery Delivery) (Record, Delivery, error) {
+	cloned, err := cloneRecord(record)
+	if err != nil {
+		return Record{}, Delivery{}, err
+	}
+	return cloned, cloneDelivery(delivery), nil
 }
 
 func eventsCost(events []Event) int64 {

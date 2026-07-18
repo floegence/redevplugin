@@ -127,6 +127,10 @@ func (s *SQLiteStore) Register(ctx context.Context, req RegisterRequest) (Record
 	if !validDirection(direction) {
 		return Record{}, ErrInvalidStream
 	}
+	binding, err := cloneExecutionBinding(req.ExecutionBinding)
+	if err != nil {
+		return Record{}, ErrInvalidStream
+	}
 	maxBuffered := req.MaxBufferedBytes
 	if maxBuffered <= 0 {
 		maxBuffered = DefaultMaxBufferedBytes
@@ -158,7 +162,7 @@ func (s *SQLiteStore) Register(ctx context.Context, req RegisterRequest) (Record
 	}
 	record := Record{
 		StreamID:         streamID,
-		ExecutionBinding: req.ExecutionBinding,
+		ExecutionBinding: binding,
 		Direction:        direction,
 		Status:           StatusOpen,
 		ContentType:      strings.TrimSpace(req.ContentType),

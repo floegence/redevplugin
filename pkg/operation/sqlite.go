@@ -76,6 +76,10 @@ func (s *SQLiteStore) Register(ctx context.Context, req RegisterRequest) (Record
 	if req.CancelAckTimeoutMS < 0 || !registerCancelable(req.Cancelable) && req.CancelAckTimeoutMS != 0 {
 		return Record{}, ErrInvalidOperation
 	}
+	binding, err := cloneExecutionBinding(req.ExecutionBinding)
+	if err != nil {
+		return Record{}, ErrInvalidOperation
+	}
 	now := req.Now
 	if now.IsZero() {
 		now = time.Now().UTC()
@@ -99,7 +103,7 @@ func (s *SQLiteStore) Register(ctx context.Context, req RegisterRequest) (Record
 	}
 	record := Record{
 		OperationID:        operationID,
-		ExecutionBinding:   req.ExecutionBinding,
+		ExecutionBinding:   binding,
 		Status:             StatusRunning,
 		Cancelable:         registerCancelable(req.Cancelable),
 		CancelAckTimeoutMS: req.CancelAckTimeoutMS,

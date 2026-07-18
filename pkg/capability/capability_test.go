@@ -4,6 +4,8 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -11,19 +13,135 @@ import (
 	"github.com/floegence/redevplugin/pkg/capabilitycontract"
 )
 
-func TestNewBusinessErrorDoesNotTraverseAdapterDetails(t *testing.T) {
+func TestNewBusinessErrorOwnsCanonicalAdapterDetails(t *testing.T) {
+	nested := map[string]any{"items": []any{map[string]any{"value": "original"}}}
+	businessError, err := NewBusinessError("FAILED", "failed", nested)
+	if err != nil {
+		t.Fatal(err)
+	}
+	nested["items"].([]any)[0].(map[string]any)["value"] = "changed"
+	if got := businessError.Details["items"].([]any)[0].(map[string]any)["value"]; got != "original" {
+		t.Fatalf("NewBusinessError() retained nested adapter details: %#v", got)
+	}
+}
+
+func TestNewBusinessErrorRejectsNonCanonicalAdapterDetails(t *testing.T) {
 	cycle := map[string]any{}
 	cycle["self"] = cycle
-	details := map[string]any{"payload": cycle}
+	for _, details := range []map[string]any{
+		{"cycle": cycle},
+		{"integer": 1},
+	} {
+		if _, err := NewBusinessError("FAILED", "failed", details); err == nil {
+			t.Fatalf("NewBusinessError() accepted non-canonical details %#v", details)
+		}
+	}
+}
 
-	businessError := NewBusinessError("FAILED", "failed", details)
-	if businessError.Details == nil || businessError.Details["payload"] == nil {
-		t.Fatalf("NewBusinessError() details = %#v", businessError.Details)
+func TestOwnExecutionBindingRejectsNonCanonicalTargetFields(t *testing.T) {
+	cycle := map[string]any{}
+	cycle["self"] = cycle
+	for _, value := range []any{
+		1,
+		float64(1 << 53),
+		json.Number("9007199254740992"),
+		[]string{"value"},
+		cycle,
+	} {
+		binding := testExecutionBinding(map[string]any{"invalid": value})
+		if _, err := OwnExecutionBinding(binding); err == nil {
+			t.Fatalf("OwnExecutionBinding() accepted non-canonical target value %T", value)
+		}
 	}
-	details["payload"] = "changed"
-	if businessError.Details["payload"] == "changed" {
-		t.Fatal("NewBusinessError() retained the caller's top-level map")
+}
+
+func TestOwnExecutionBindingIsolatesConcurrentAdapterMutation(t *testing.T) {
+	input := map[string]any{"nested": []any{map[string]any{"value": "original"}}}
+	owned, err := OwnExecutionBinding(testExecutionBinding(input))
+	if err != nil {
+		t.Fatal(err)
 	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for range 1000 {
+			input["nested"].([]any)[0].(map[string]any)["value"] = "mutated"
+		}
+	}()
+	for range 1000 {
+		if got := owned.Target.Fields["nested"].([]any)[0].(map[string]any)["value"]; got != "original" {
+			t.Fatalf("owned binding observed adapter mutation: %#v", got)
+		}
+	}
+	<-done
+}
+
+func TestOwnExecutionBindingReducesSnapshotAllocations(t *testing.T) {
+	binding := largeExecutionBindingFixture()
+	var owned ExecutionBinding
+	var roundTripped ExecutionBinding
+	ownedAllocs := testing.AllocsPerRun(50, func() {
+		var err error
+		owned, err = OwnExecutionBinding(binding)
+		if err != nil {
+			panic(err)
+		}
+	})
+	roundTripAllocs := testing.AllocsPerRun(50, func() {
+		raw, err := json.Marshal(binding)
+		if err != nil {
+			panic(err)
+		}
+		if err := json.Unmarshal(raw, &roundTripped); err != nil {
+			panic(err)
+		}
+	})
+	if owned.Target.Fields == nil || roundTripped.Target.Fields == nil {
+		t.Fatal("allocation fixtures were optimized away")
+	}
+	if ownedAllocs > roundTripAllocs*0.20 {
+		t.Fatalf("owned snapshot allocations = %.2f, JSON round trip = %.2f; want at least 80%% reduction", ownedAllocs, roundTripAllocs)
+	}
+}
+
+func BenchmarkExecutionBindingSnapshot(b *testing.B) {
+	binding := largeExecutionBindingFixture()
+	b.Run("owned-canonical-clone", func(b *testing.B) {
+		b.ReportAllocs()
+		for range b.N {
+			if _, err := OwnExecutionBinding(binding); err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
+	b.Run("json-round-trip", func(b *testing.B) {
+		b.ReportAllocs()
+		for range b.N {
+			raw, err := json.Marshal(binding)
+			if err != nil {
+				b.Fatal(err)
+			}
+			var cloned ExecutionBinding
+			if err := json.Unmarshal(raw, &cloned); err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
+}
+
+func testExecutionBinding(fields map[string]any) ExecutionBinding {
+	return ExecutionBinding{
+		Permissions: PermissionEvidence{Required: []string{}, Granted: []string{}},
+		Target:      TargetDescriptor{Kind: "test", Fields: fields},
+	}
+}
+
+func largeExecutionBindingFixture() ExecutionBinding {
+	fields := make(map[string]any, 1024)
+	for index := range 1024 {
+		fields[fmt.Sprintf("field_%04d", index)] = "snapshot-value"
+	}
+	return testExecutionBinding(fields)
 }
 
 func TestRegistryOwnsExactContractPins(t *testing.T) {

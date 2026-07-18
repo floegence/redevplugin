@@ -3,6 +3,7 @@ package operation
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"path/filepath"
@@ -425,15 +426,21 @@ func TestStoreDeepClonesExecutionBindings(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			store := tc.open(t)
 			binding := operationTestBinding("com.example.plugin", "plugin_1", "documents.archive", nil)
+			binding.Target.Fields["nested"] = []any{map[string]any{"value": "original"}}
 			registered := mustRegisterOperation(t, store, RegisterRequest{OperationID: "op_clone", ExecutionBinding: binding})
 			binding.Target.Fields["document_id"] = "mutated-input"
+			binding.Target.Fields["nested"].([]any)[0].(map[string]any)["value"] = "mutated-input"
 			registered.Target.Fields["document_id"] = "mutated-return"
+			registered.Target.Fields["nested"].([]any)[0].(map[string]any)["value"] = "mutated-return"
 			stored, err := store.Get(context.Background(), "op_clone")
 			if err != nil {
 				t.Fatal(err)
 			}
 			if got := stored.Target.Fields["document_id"]; got != "doc-1" {
 				t.Fatalf("stored target was mutated through a boundary: %#v", got)
+			}
+			if got := stored.Target.Fields["nested"].([]any)[0].(map[string]any)["value"]; got != "original" {
+				t.Fatalf("stored nested target was mutated through a boundary: %#v", got)
 			}
 			stored.Target.Fields["document_id"] = "mutated-get"
 			again, err := store.Get(context.Background(), "op_clone")
@@ -461,6 +468,34 @@ func TestStoreDeepClonesExecutionBindings(t *testing.T) {
 				t.Fatalf("Finish() returned shared target state: %#v", got)
 			}
 		})
+	}
+}
+
+func TestStoreRegisterRejectsNonCanonicalExecutionBindingJSON(t *testing.T) {
+	mapCycle := map[string]any{}
+	mapCycle["self"] = mapCycle
+	tests := []struct {
+		name  string
+		value any
+	}{
+		{name: "native integer", value: 1},
+		{name: "unsafe float", value: float64(1 << 53)},
+		{name: "unsafe number", value: json.Number("9007199254740992")},
+		{name: "cycle", value: mapCycle},
+		{name: "typed slice", value: []string{"value"}},
+	}
+	for _, storeCase := range operationStoreCases() {
+		for _, test := range tests {
+			t.Run(storeCase.name+"/"+test.name, func(t *testing.T) {
+				store := storeCase.open(t)
+				binding := operationTestBinding("com.example.plugin", "plugin_invalid", "documents.archive", nil)
+				binding.Target.Fields["invalid"] = test.value
+				_, err := store.Register(context.Background(), RegisterRequest{OperationID: "op_invalid", ExecutionBinding: binding})
+				if !errors.Is(err, ErrInvalidOperation) {
+					t.Fatalf("Register() error = %v, want ErrInvalidOperation", err)
+				}
+			})
+		}
 	}
 }
 

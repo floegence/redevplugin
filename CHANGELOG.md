@@ -84,6 +84,11 @@
 - Normalize every adapter result and business-error detail into a JSON data tree
   before redaction and response-schema validation, failing closed for cycles and
   non-JSON values without mutating the adapter-owned input.
+- Require capability targets, execution bindings, operation and stream records,
+  direct Host parameters, and business-error details to use the closed canonical
+  Go JSON value set. A shared bounded recursive clone now owns every nested map
+  and slice without JSON round trips; `NewBusinessError` returns validation
+  errors instead of retaining unsupported or aliased adapter values.
 - Bundle external JSON Schemas structurally into namespaced OpenAPI components;
   generated TypeScript contracts now preserve manifest, capability pin, and
   settings patch types without `$defs` leakage or `unknown` collapse.
