@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/floegence/redevplugin/pkg/capability"
+	"github.com/floegence/redevplugin/pkg/sessionctx"
 )
 
 type Status string
@@ -87,35 +88,10 @@ type ListRequest struct {
 	AllOwners        bool       `json:"-"`
 }
 
-type OwnerScope struct {
-	OwnerSessionHash     string
-	OwnerUserHash        string
-	OwnerEnvHash         string
-	SessionChannelIDHash string
-}
-
-func (s OwnerScope) Valid() bool {
-	return strings.TrimSpace(s.OwnerSessionHash) != "" &&
-		strings.TrimSpace(s.OwnerUserHash) != "" &&
-		strings.TrimSpace(s.OwnerEnvHash) != "" &&
-		strings.TrimSpace(s.SessionChannelIDHash) != ""
-}
-
-func (s OwnerScope) normalized() OwnerScope {
-	s.OwnerSessionHash = strings.TrimSpace(s.OwnerSessionHash)
-	s.OwnerUserHash = strings.TrimSpace(s.OwnerUserHash)
-	s.OwnerEnvHash = strings.TrimSpace(s.OwnerEnvHash)
-	s.SessionChannelIDHash = strings.TrimSpace(s.SessionChannelIDHash)
-	return s
-}
+type OwnerScope = capability.ExecutionOwnerScope
 
 func ownerScopeForBinding(binding capability.ExecutionBinding) OwnerScope {
-	return OwnerScope{
-		OwnerSessionHash:     binding.OwnerSessionHash,
-		OwnerUserHash:        binding.OwnerUserHash,
-		OwnerEnvHash:         binding.OwnerEnvHash,
-		SessionChannelIDHash: binding.SessionChannelIDHash,
-	}
+	return binding.OwnerScope()
 }
 
 type pluginOwnerKey struct {
@@ -148,9 +124,10 @@ type FinishRequest struct {
 }
 
 type PluginTransitionRequest struct {
-	PluginInstanceID string    `json:"plugin_instance_id"`
-	Reason           string    `json:"reason,omitempty"`
-	Now              time.Time `json:"now,omitempty"`
+	PluginInstanceID string                   `json:"plugin_instance_id"`
+	ResourceScope    sessionctx.ResourceScope `json:"-"`
+	Reason           string                   `json:"reason,omitempty"`
+	Now              time.Time                `json:"now,omitempty"`
 }
 
 type PruneRequest struct {
@@ -201,7 +178,7 @@ func (s *MemoryStore) Register(_ context.Context, req RegisterRequest) (Record, 
 	operationID := strings.TrimSpace(req.OperationID)
 	pluginInstanceID := strings.TrimSpace(req.ExecutionBinding.PluginInstanceID)
 	method := strings.TrimSpace(req.ExecutionBinding.Method)
-	owner := ownerScopeForBinding(req.ExecutionBinding).normalized()
+	owner := ownerScopeForBinding(req.ExecutionBinding).Normalized()
 	if operationID == "" || pluginInstanceID == "" || method == "" || !owner.Valid() {
 		return Record{}, ErrInvalidOperation
 	}
@@ -347,7 +324,7 @@ func DecodeCursor(value string) (*Cursor, error) {
 
 func normalizeListRequest(req *ListRequest) (int, error) {
 	req.PluginInstanceID = strings.TrimSpace(req.PluginInstanceID)
-	req.Owner = req.Owner.normalized()
+	req.Owner = req.Owner.Normalized()
 	if (req.AllOwners && req.Owner.Valid()) || (!req.AllOwners && !req.Owner.Valid()) {
 		return 0, ErrInvalidOperation
 	}
@@ -473,6 +450,10 @@ func (s *MemoryStore) MarkPluginDisabled(_ context.Context, req PluginTransition
 	if s == nil {
 		return nil, errors.New("operation store is nil")
 	}
+	pluginInstanceID, ownerEnvHash, err := normalizePluginTransition(req)
+	if err != nil {
+		return nil, err
+	}
 	now := req.Now
 	if now.IsZero() {
 		now = s.now()
@@ -481,7 +462,7 @@ func (s *MemoryStore) MarkPluginDisabled(_ context.Context, req PluginTransition
 	defer s.mu.Unlock()
 	var changed []Record
 	for id, record := range s.records {
-		if record.PluginInstanceID != req.PluginInstanceID || terminal(record.Status) {
+		if record.PluginInstanceID != pluginInstanceID || record.OwnerEnvHash != ownerEnvHash || terminal(record.Status) {
 			continue
 		}
 		switch record.DisableBehavior {
@@ -502,6 +483,10 @@ func (s *MemoryStore) MarkPluginUninstalled(_ context.Context, req PluginTransit
 	if s == nil {
 		return nil, errors.New("operation store is nil")
 	}
+	pluginInstanceID, ownerEnvHash, err := normalizePluginTransition(req)
+	if err != nil {
+		return nil, err
+	}
 	now := req.Now
 	if now.IsZero() {
 		now = s.now()
@@ -510,7 +495,7 @@ func (s *MemoryStore) MarkPluginUninstalled(_ context.Context, req PluginTransit
 	defer s.mu.Unlock()
 	var changed []Record
 	for id, record := range s.records {
-		if record.PluginInstanceID != req.PluginInstanceID || terminal(record.Status) {
+		if record.PluginInstanceID != pluginInstanceID || record.OwnerEnvHash != ownerEnvHash || terminal(record.Status) {
 			continue
 		}
 		if record.UninstallBehavior == UninstallBehaviorForceCleanupAllowed {
@@ -535,10 +520,15 @@ func (s *MemoryStore) Prune(_ context.Context, req PruneRequest) (PruneResult, e
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	terminalByPlugin := make(map[string][]Record)
+	type retentionKey struct {
+		OwnerEnvHash     string
+		PluginInstanceID string
+	}
+	terminalByPlugin := make(map[retentionKey][]Record)
 	for _, record := range s.records {
 		if terminal(record.Status) && record.TerminalAt != nil {
-			terminalByPlugin[record.PluginInstanceID] = append(terminalByPlugin[record.PluginInstanceID], record)
+			key := retentionKey{OwnerEnvHash: record.OwnerEnvHash, PluginInstanceID: record.PluginInstanceID}
+			terminalByPlugin[key] = append(terminalByPlugin[key], record)
 		}
 	}
 	candidates := make([]Record, 0)
@@ -598,6 +588,14 @@ func (s *MemoryStore) Prune(_ context.Context, req PruneRequest) (PruneResult, e
 		}
 	}
 	return PruneResult{Deleted: len(candidates)}, nil
+}
+
+func normalizePluginTransition(req PluginTransitionRequest) (string, string, error) {
+	pluginInstanceID := strings.TrimSpace(req.PluginInstanceID)
+	if pluginInstanceID == "" || req.ResourceScope.Kind != sessionctx.ScopeEnvironment || req.ResourceScope.Validate() != nil {
+		return "", "", ErrInvalidOperation
+	}
+	return pluginInstanceID, req.ResourceScope.OwnerEnvHash, nil
 }
 
 func removeOperationIDs(order []string, deleted map[string]struct{}) []string {

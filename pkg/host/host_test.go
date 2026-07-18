@@ -5228,7 +5228,7 @@ func TestHostCloseWaitsForDurableExecutionSetup(t *testing.T) {
 				t.Fatalf("durable operation state = %#v, %v", page.Records, err)
 			}
 			if tc.wantStream != "" {
-				records, err := streamStore.List(hostTestContext(), stream.ListRequest{PluginInstanceID: installed.PluginInstanceID})
+				records, err := streamStore.List(hostTestContext(), stream.ListRequest{PluginInstanceID: installed.PluginInstanceID, AllOwners: true})
 				if err != nil || len(records) != 1 || records[0].Status != tc.wantStream {
 					t.Fatalf("durable stream state = %#v, %v", records, err)
 				}
@@ -7848,6 +7848,33 @@ func TestDisableConnectivityPolicyOnlyRemovesAuthenticatedEnvironment(t *testing
 	if err != nil {
 		t.Fatalf("EnablePlugin(env B) error = %v", err)
 	}
+	registerExecution := func(suffix, ownerSessionHash, ownerUserHash, ownerEnvHash, sessionChannelIDHash string) {
+		t.Helper()
+		binding := capability.ExecutionBinding{
+			PluginID:             enabledA.PluginID,
+			PluginInstanceID:     enabledA.PluginInstanceID,
+			Method:               "network.watch",
+			Execution:            string(manifest.MethodExecutionSubscription),
+			OwnerSessionHash:     ownerSessionHash,
+			OwnerUserHash:        ownerUserHash,
+			OwnerEnvHash:         ownerEnvHash,
+			SessionChannelIDHash: sessionChannelIDHash,
+		}
+		if _, err := h.adapters.Operations.Register(context.Background(), operation.RegisterRequest{
+			OperationID:      "operation_" + suffix,
+			ExecutionBinding: binding,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := h.adapters.Streams.Register(context.Background(), stream.RegisterRequest{
+			StreamID:         "stream_" + suffix,
+			ExecutionBinding: binding,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	registerExecution("env_a", "session_a", "user_a", "env_a", "channel_a")
+	registerExecution("env_b", "session_b", "user_b", "env_b", "channel_b")
 
 	mintRequest := MintConnectionGrantRequest{
 		PluginInstanceID:    installedA.PluginInstanceID,
@@ -7869,6 +7896,28 @@ func TestDisableConnectivityPolicyOnlyRemovesAuthenticatedEnvironment(t *testing
 		ExpectedManagementRevision: enabledA.ManagementRevision,
 	}); err != nil {
 		t.Fatalf("DisablePlugin(env A) error = %v", err)
+	}
+	operationA, err := h.adapters.Operations.Get(ctxA, "operation_env_a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	operationB, err := h.adapters.Operations.Get(ctxB, "operation_env_b")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if operationA.Status != operation.StatusCancelRequested || operationB.Status != operation.StatusRunning {
+		t.Fatalf("cross-environment operation statuses = %s, %s", operationA.Status, operationB.Status)
+	}
+	streamA, err := h.adapters.Streams.Get(ctxA, "stream_env_a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	streamB, err := h.adapters.Streams.Get(ctxB, "stream_env_b")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if streamA.Status != stream.StatusOrphanedDisabled || streamB.Status != stream.StatusOpen {
+		t.Fatalf("cross-environment stream statuses = %s, %s", streamA.Status, streamB.Status)
 	}
 	if _, err := connectivityBroker.MintConnectionGrant(ctxA, connectivity.GrantRequest{
 		PluginInstanceID:   enabledA.PluginInstanceID,
@@ -8117,6 +8166,7 @@ func TestUninstallEnabledPluginClearsSurfacesStreamsAndNetworkPolicy(t *testing.
 			SurfaceInstanceID:    "surface_network",
 			OwnerSessionHash:     "session_hash",
 			OwnerUserHash:        "user_hash",
+			OwnerEnvHash:         "env_hash",
 			SessionChannelIDHash: "channel_hash",
 			BridgeChannelID:      "bridge_network",
 		},

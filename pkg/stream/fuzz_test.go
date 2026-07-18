@@ -20,8 +20,12 @@ func FuzzMemoryStreamState(f *testing.F) {
 		_, _ = store.Register(ctx, RegisterRequest{
 			StreamID: "stream_fuzz",
 			ExecutionBinding: capability.ExecutionBinding{
-				PluginInstanceID: "plugini_fuzz",
-				Method:           "fuzz.stream",
+				PluginInstanceID:     "plugini_fuzz",
+				Method:               "fuzz.stream",
+				OwnerSessionHash:     "session_fuzz",
+				OwnerUserHash:        "user_fuzz",
+				OwnerEnvHash:         "env_fuzz",
+				SessionChannelIDHash: "channel_fuzz",
 			},
 			Direction: DirectionRead,
 			Now:       time.Unix(0, 0),

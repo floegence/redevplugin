@@ -173,6 +173,39 @@ type ExecutionBinding struct {
 	StreamEventSchemaSHA256 string                  `json:"stream_event_schema_sha256,omitempty"`
 }
 
+// ExecutionOwnerScope is the exact short-lived session boundary for an
+// operation or stream. Persistent resource ownership uses sessionctx.ResourceScope.
+type ExecutionOwnerScope struct {
+	OwnerSessionHash     string
+	OwnerUserHash        string
+	OwnerEnvHash         string
+	SessionChannelIDHash string
+}
+
+func (s ExecutionOwnerScope) Valid() bool {
+	return strings.TrimSpace(s.OwnerSessionHash) != "" &&
+		strings.TrimSpace(s.OwnerUserHash) != "" &&
+		strings.TrimSpace(s.OwnerEnvHash) != "" &&
+		strings.TrimSpace(s.SessionChannelIDHash) != ""
+}
+
+func (s ExecutionOwnerScope) Normalized() ExecutionOwnerScope {
+	s.OwnerSessionHash = strings.TrimSpace(s.OwnerSessionHash)
+	s.OwnerUserHash = strings.TrimSpace(s.OwnerUserHash)
+	s.OwnerEnvHash = strings.TrimSpace(s.OwnerEnvHash)
+	s.SessionChannelIDHash = strings.TrimSpace(s.SessionChannelIDHash)
+	return s
+}
+
+func (b ExecutionBinding) OwnerScope() ExecutionOwnerScope {
+	return ExecutionOwnerScope{
+		OwnerSessionHash:     b.OwnerSessionHash,
+		OwnerUserHash:        b.OwnerUserHash,
+		OwnerEnvHash:         b.OwnerEnvHash,
+		SessionChannelIDHash: b.SessionChannelIDHash,
+	}.Normalized()
+}
+
 func (b ExecutionBinding) Identity() PluginIdentity {
 	return PluginIdentity{
 		PublisherID:       b.PublisherID,

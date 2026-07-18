@@ -6062,7 +6062,12 @@ func (h *Host) EnablePlugin(ctx context.Context, req EnableRequest) (result regi
 }
 
 func (h *Host) DisablePlugin(ctx context.Context, req DisableRequest) (result registry.PluginRecord, retErr error) {
-	if _, err := h.authorizeManagement(ctx, ManagementActionDisablePlugin, req.PluginInstanceID); err != nil {
+	session, err := h.authorizeManagement(ctx, ManagementActionDisablePlugin, req.PluginInstanceID)
+	if err != nil {
+		return registry.PluginRecord{}, err
+	}
+	resourceScope, err := session.ResourceScope(sessionctx.ScopeEnvironment)
+	if err != nil {
 		return registry.PluginRecord{}, err
 	}
 	releaseLifecycle, err := h.lifecycleLocks.acquireWrite(ctx, req.PluginInstanceID)
@@ -6092,6 +6097,7 @@ func (h *Host) DisablePlugin(ctx context.Context, req DisableRequest) (result re
 	}
 	operations, err := h.adapters.Operations.MarkPluginDisabled(ctx, operation.PluginTransitionRequest{
 		PluginInstanceID: disabled.PluginInstanceID,
+		ResourceScope:    resourceScope,
 		Reason:           reason,
 		Now:              req.Now,
 	})
@@ -6114,6 +6120,7 @@ func (h *Host) DisablePlugin(ctx context.Context, req DisableRequest) (result re
 	}
 	streams, err := h.adapters.Streams.MarkPluginTransition(ctx, stream.PluginTransitionRequest{
 		PluginInstanceID: disabled.PluginInstanceID,
+		ResourceScope:    resourceScope,
 		Status:           stream.StatusOrphanedDisabled,
 		Reason:           reason,
 		Now:              req.Now,
@@ -6140,7 +6147,12 @@ func (h *Host) DisablePlugin(ctx context.Context, req DisableRequest) (result re
 }
 
 func (h *Host) UninstallPlugin(ctx context.Context, req UninstallRequest) (result registry.PluginRecord, retErr error) {
-	if _, err := h.authorizeManagement(ctx, ManagementActionUninstallPlugin, req.PluginInstanceID); err != nil {
+	session, err := h.authorizeManagement(ctx, ManagementActionUninstallPlugin, req.PluginInstanceID)
+	if err != nil {
+		return registry.PluginRecord{}, err
+	}
+	resourceScope, err := session.ResourceScope(sessionctx.ScopeEnvironment)
+	if err != nil {
 		return registry.PluginRecord{}, err
 	}
 	releaseLifecycle, err := h.lifecycleLocks.acquireWrite(ctx, req.PluginInstanceID)
@@ -6162,6 +6174,7 @@ func (h *Host) UninstallPlugin(ctx context.Context, req UninstallRequest) (resul
 	defer func() { retErr = auditMutation.complete(context.WithoutCancel(ctx), retErr) }()
 	operations, err := h.adapters.Operations.MarkPluginUninstalled(ctx, operation.PluginTransitionRequest{
 		PluginInstanceID: record.PluginInstanceID,
+		ResourceScope:    resourceScope,
 		Reason:           "uninstalled",
 		Now:              req.Now,
 	})
@@ -6209,6 +6222,7 @@ func (h *Host) UninstallPlugin(ctx context.Context, req UninstallRequest) (resul
 	}
 	streams, err := h.adapters.Streams.MarkPluginTransition(ctx, stream.PluginTransitionRequest{
 		PluginInstanceID: record.PluginInstanceID,
+		ResourceScope:    resourceScope,
 		Status:           stream.StatusOrphanedRemoved,
 		Reason:           "uninstalled",
 		Now:              req.Now,

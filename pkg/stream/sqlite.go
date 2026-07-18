@@ -108,7 +108,8 @@ func (s *SQLiteStore) Register(ctx context.Context, req RegisterRequest) (Record
 	streamID := strings.TrimSpace(req.StreamID)
 	pluginInstanceID := strings.TrimSpace(req.ExecutionBinding.PluginInstanceID)
 	method := strings.TrimSpace(req.ExecutionBinding.Method)
-	if streamID == "" || pluginInstanceID == "" || method == "" {
+	owner := req.ExecutionBinding.OwnerScope()
+	if streamID == "" || pluginInstanceID == "" || method == "" || !owner.Valid() {
 		return Record{}, ErrInvalidStream
 	}
 	now := req.Now
@@ -194,11 +195,22 @@ func (s *SQLiteStore) List(ctx context.Context, req ListRequest) ([]Record, erro
 	if s == nil {
 		return nil, errors.New("stream store is nil")
 	}
+	if err := normalizeListRequest(&req); err != nil {
+		return nil, err
+	}
 	query := streamSelectColumns + ` FROM plugin_streams`
 	args := []any{}
-	if pluginInstanceID := strings.TrimSpace(req.PluginInstanceID); pluginInstanceID != "" {
-		query += ` WHERE plugin_instance_id = ?`
-		args = append(args, pluginInstanceID)
+	conditions := []string{}
+	if req.PluginInstanceID != "" {
+		conditions = append(conditions, `plugin_instance_id = ?`)
+		args = append(args, req.PluginInstanceID)
+	}
+	if !req.AllOwners {
+		conditions = append(conditions, `owner_session_hash = ?`, `owner_user_hash = ?`, `owner_env_hash = ?`, `session_channel_id_hash = ?`)
+		args = append(args, req.Owner.OwnerSessionHash, req.Owner.OwnerUserHash, req.Owner.OwnerEnvHash, req.Owner.SessionChannelIDHash)
+	}
+	if len(conditions) > 0 {
+		query += ` WHERE ` + strings.Join(conditions, ` AND `)
 	}
 	query += ` ORDER BY created_at ASC, stream_id ASC`
 	rows, err := s.db.QueryContext(ctx, query, args...)
@@ -327,11 +339,12 @@ func (s *SQLiteStore) Wait(ctx context.Context, streamID string) error {
 	if !exists {
 		return ErrNotFound
 	}
-	pluginNotification, pluginRevision, err := s.pluginNotification(record.PluginInstanceID)
+	pluginKey := pluginTransitionKey(record.OwnerEnvHash, record.PluginInstanceID)
+	pluginNotification, pluginRevision, err := s.pluginNotification(pluginKey)
 	if err != nil {
 		return err
 	}
-	defer s.releasePluginNotification(record.PluginInstanceID, pluginNotification)
+	defer s.releasePluginNotification(pluginKey, pluginNotification)
 	s.observeQuery(sqliteQueryWaitObservation)
 	deliveryState, err := getSQLiteDeliveryState(ctx, s.db, streamID)
 	if err != nil {
@@ -347,7 +360,7 @@ func (s *SQLiteStore) Wait(ctx context.Context, streamID string) error {
 		terminalStatus(record.Status) ||
 		s.notificationChanged(streamID, notification, revision) ||
 		s.transitionChanged(transitionRevision, transitionReady) ||
-		s.pluginNotificationChanged(record.PluginInstanceID, pluginNotification, pluginRevision) {
+		s.pluginNotificationChanged(pluginKey, pluginNotification, pluginRevision) {
 		return nil
 	}
 	releaseLocks()
@@ -610,9 +623,9 @@ func (s *SQLiteStore) MarkPluginTransition(ctx context.Context, req PluginTransi
 	if err != nil {
 		return PluginTransitionResult{}, err
 	}
-	pluginInstanceID := strings.TrimSpace(req.PluginInstanceID)
-	if pluginInstanceID == "" {
-		return PluginTransitionResult{}, ErrInvalidStream
+	pluginInstanceID, ownerEnvHash, err := normalizePluginTransition(req)
+	if err != nil {
+		return PluginTransitionResult{}, err
 	}
 	now := req.Now
 	if now.IsZero() {
@@ -633,12 +646,13 @@ func (s *SQLiteStore) MarkPluginTransition(ctx context.Context, req PluginTransi
 	result, err := tx.ExecContext(ctx, `
 		UPDATE plugin_streams
 		SET status = ?, failure_code = ?, reason = ?, updated_at = ?, closed_at = ?
-		WHERE plugin_instance_id = ? AND status = ?`,
+		WHERE owner_env_hash = ? AND plugin_instance_id = ? AND status = ?`,
 		string(req.Status),
 		string(failureCode),
 		reason,
 		now.UnixNano(),
 		now.UnixNano(),
+		ownerEnvHash,
 		pluginInstanceID,
 		string(StatusOpen),
 	)
@@ -656,7 +670,7 @@ func (s *SQLiteStore) MarkPluginTransition(ctx context.Context, req PluginTransi
 		return PluginTransitionResult{}, mutation.Unknown(err)
 	}
 	if changed > 0 {
-		s.notifyPluginTransition(pluginInstanceID)
+		s.notifyPluginTransition(pluginTransitionKey(ownerEnvHash, pluginInstanceID))
 	}
 	return PluginTransitionResult{Changed: int(changed)}, nil
 }
@@ -686,7 +700,7 @@ WITH ranked_terminal AS (
 		stream_id,
 		closed_at,
 		ROW_NUMBER() OVER (
-			PARTITION BY plugin_instance_id
+			PARTITION BY owner_env_hash, plugin_instance_id
 			ORDER BY closed_at DESC, stream_id DESC
 		) AS terminal_rank
 	FROM plugin_streams
@@ -858,7 +872,13 @@ CREATE TABLE IF NOT EXISTS plugin_stream_events (
 	if _, err := tx.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_plugin_streams_plugin_instance ON plugin_streams(plugin_instance_id, created_at, stream_id)`); err != nil {
 		return err
 	}
+	if _, err := tx.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_plugin_streams_owner_plugin_instance ON plugin_streams(owner_env_hash, plugin_instance_id, created_at, stream_id)`); err != nil {
+		return err
+	}
 	if _, err := tx.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_plugin_streams_terminal_retention ON plugin_streams(plugin_instance_id, closed_at DESC, stream_id DESC) WHERE terminal_acknowledged = 1`); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_plugin_streams_owner_terminal_retention ON plugin_streams(owner_env_hash, plugin_instance_id, closed_at DESC, stream_id DESC) WHERE terminal_acknowledged = 1`); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -1176,39 +1196,39 @@ func (s *SQLiteStore) transitionChanged(revision uint64, ready <-chan struct{}) 
 	return s.closed || s.transitionRevision != revision
 }
 
-func (s *SQLiteStore) pluginNotification(pluginInstanceID string) (*streamNotification, uint64, error) {
+func (s *SQLiteStore) pluginNotification(pluginKey string) (*streamNotification, uint64, error) {
 	s.transitionMu.Lock()
 	defer s.transitionMu.Unlock()
 	if s.closed {
 		return nil, 0, ErrStoreClosed
 	}
-	notification := s.pluginNotify[pluginInstanceID]
+	notification := s.pluginNotify[pluginKey]
 	if notification == nil {
 		notification = &streamNotification{ready: make(chan struct{})}
-		s.pluginNotify[pluginInstanceID] = notification
+		s.pluginNotify[pluginKey] = notification
 	}
 	notification.waiters++
 	return notification, notification.revision, nil
 }
 
-func (s *SQLiteStore) pluginNotificationChanged(pluginInstanceID string, notification *streamNotification, revision uint64) bool {
+func (s *SQLiteStore) pluginNotificationChanged(pluginKey string, notification *streamNotification, revision uint64) bool {
 	s.transitionMu.Lock()
 	defer s.transitionMu.Unlock()
-	return s.closed || s.pluginNotify[pluginInstanceID] != notification || notification.revision != revision
+	return s.closed || s.pluginNotify[pluginKey] != notification || notification.revision != revision
 }
 
-func (s *SQLiteStore) releasePluginNotification(pluginInstanceID string, notification *streamNotification) {
+func (s *SQLiteStore) releasePluginNotification(pluginKey string, notification *streamNotification) {
 	s.transitionMu.Lock()
 	defer s.transitionMu.Unlock()
 	if notification.waiters > 0 {
 		notification.waiters--
 	}
-	if notification.waiters == 0 && s.pluginNotify[pluginInstanceID] == notification {
-		delete(s.pluginNotify, pluginInstanceID)
+	if notification.waiters == 0 && s.pluginNotify[pluginKey] == notification {
+		delete(s.pluginNotify, pluginKey)
 	}
 }
 
-func (s *SQLiteStore) notifyPluginTransition(pluginInstanceID string) {
+func (s *SQLiteStore) notifyPluginTransition(pluginKey string) {
 	s.transitionMu.Lock()
 	if s.closed {
 		s.transitionMu.Unlock()
@@ -1217,9 +1237,9 @@ func (s *SQLiteStore) notifyPluginTransition(pluginInstanceID string) {
 	s.transitionRevision++
 	close(s.transitionReady)
 	s.transitionReady = make(chan struct{})
-	if notification := s.pluginNotify[pluginInstanceID]; notification != nil {
+	if notification := s.pluginNotify[pluginKey]; notification != nil {
 		notification.revision++
-		delete(s.pluginNotify, pluginInstanceID)
+		delete(s.pluginNotify, pluginKey)
 		close(notification.ready)
 	}
 	s.transitionMu.Unlock()
@@ -1236,9 +1256,9 @@ func (s *SQLiteStore) closeNotifications() <-chan struct{} {
 	s.transitionRevision++
 	close(s.transitionReady)
 	observationsReady := s.observationsReady
-	for pluginInstanceID, notification := range s.pluginNotify {
+	for pluginKey, notification := range s.pluginNotify {
 		notification.revision++
-		delete(s.pluginNotify, pluginInstanceID)
+		delete(s.pluginNotify, pluginKey)
 		close(notification.ready)
 	}
 	s.transitionMu.Unlock()
@@ -1251,6 +1271,10 @@ func (s *SQLiteStore) closeNotifications() <-chan struct{} {
 	}
 	s.notifyMu.Unlock()
 	return observationsReady
+}
+
+func pluginTransitionKey(ownerEnvHash, pluginInstanceID string) string {
+	return ownerEnvHash + "\x00" + pluginInstanceID
 }
 
 func (s *SQLiteStore) releaseNotification(streamID string, notification *streamNotification) {

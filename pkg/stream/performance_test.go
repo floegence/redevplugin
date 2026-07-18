@@ -41,8 +41,12 @@ func TestPerformanceStreamWaitersAndBackpressure(t *testing.T) {
 		if _, err := store.Register(context.Background(), RegisterRequest{
 			StreamID: streamID,
 			ExecutionBinding: capability.ExecutionBinding{
-				PluginInstanceID: "plugini_performance",
-				Method:           "performance.events",
+				PluginInstanceID:     "plugini_performance",
+				Method:               "performance.events",
+				OwnerSessionHash:     "session_performance",
+				OwnerUserHash:        "user_performance",
+				OwnerEnvHash:         "env_performance",
+				SessionChannelIDHash: "channel_performance",
 			},
 		}); err != nil {
 			t.Fatal(err)
@@ -104,8 +108,12 @@ func TestPerformanceStreamWaitersAndBackpressure(t *testing.T) {
 	if _, err := backpressureStore.Register(context.Background(), RegisterRequest{
 		StreamID: "stream_backpressure_performance",
 		ExecutionBinding: capability.ExecutionBinding{
-			PluginInstanceID: "plugini_performance",
-			Method:           "performance.events",
+			PluginInstanceID:     "plugini_performance",
+			Method:               "performance.events",
+			OwnerSessionHash:     "session_performance",
+			OwnerUserHash:        "user_performance",
+			OwnerEnvHash:         "env_performance",
+			SessionChannelIDHash: "channel_performance",
 		},
 		MaxBufferedBytes: acceptedEvents * eventBytes,
 	}); err != nil {
@@ -139,8 +147,12 @@ func TestSQLiteEmptyObservationDoesNotAcquireWriteGate(t *testing.T) {
 	if _, err := store.Register(context.Background(), RegisterRequest{
 		StreamID: "stream_read_only",
 		ExecutionBinding: capability.ExecutionBinding{
-			PluginInstanceID: "plugini_performance",
-			Method:           "performance.events",
+			PluginInstanceID:     "plugini_performance",
+			Method:               "performance.events",
+			OwnerSessionHash:     "session_performance",
+			OwnerUserHash:        "user_performance",
+			OwnerEnvHash:         "env_performance",
+			SessionChannelIDHash: "channel_performance",
 		},
 	}); err != nil {
 		t.Fatal(err)
@@ -204,8 +216,12 @@ func TestPerformanceSQLiteStreamBatchDelivery(t *testing.T) {
 	if _, err := store.Register(context.Background(), RegisterRequest{
 		StreamID: "stream_sqlite_performance",
 		ExecutionBinding: capability.ExecutionBinding{
-			PluginInstanceID: "plugini_performance",
-			Method:           "performance.events",
+			PluginInstanceID:     "plugini_performance",
+			Method:               "performance.events",
+			OwnerSessionHash:     "session_performance",
+			OwnerUserHash:        "user_performance",
+			OwnerEnvHash:         "env_performance",
+			SessionChannelIDHash: "channel_performance",
 		},
 		MaxBufferedBytes: 1 << 20,
 	}); err != nil {

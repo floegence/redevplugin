@@ -69,7 +69,7 @@ func (s *SQLiteStore) Register(ctx context.Context, req RegisterRequest) (Record
 	operationID := strings.TrimSpace(req.OperationID)
 	pluginInstanceID := strings.TrimSpace(req.ExecutionBinding.PluginInstanceID)
 	method := strings.TrimSpace(req.ExecutionBinding.Method)
-	owner := ownerScopeForBinding(req.ExecutionBinding).normalized()
+	owner := ownerScopeForBinding(req.ExecutionBinding).Normalized()
 	if operationID == "" || pluginInstanceID == "" || method == "" || !owner.Valid() {
 		return Record{}, ErrInvalidOperation
 	}
@@ -259,7 +259,7 @@ WITH ranked_terminal AS (
 		operation_id,
 		terminal_at,
 		ROW_NUMBER() OVER (
-			PARTITION BY plugin_instance_id
+			PARTITION BY owner_env_hash, plugin_instance_id
 			ORDER BY terminal_at DESC, operation_id DESC
 		) AS terminal_rank
 	FROM plugin_operations
@@ -332,9 +332,9 @@ func (s *SQLiteStore) transitionPluginOperations(ctx context.Context, req Plugin
 	if s == nil {
 		return nil, errors.New("operation store is nil")
 	}
-	pluginInstanceID := strings.TrimSpace(req.PluginInstanceID)
-	if pluginInstanceID == "" {
-		return nil, ErrInvalidOperation
+	pluginInstanceID, ownerEnvHash, err := normalizePluginTransition(req)
+	if err != nil {
+		return nil, err
 	}
 	now := req.Now
 	if now.IsZero() {
@@ -350,7 +350,7 @@ func (s *SQLiteStore) transitionPluginOperations(ctx context.Context, req Plugin
 	}
 	defer rollbackUnlessCommitted(tx)
 
-	records, err := listSQLiteOperations(ctx, tx, pluginInstanceID)
+	records, err := listSQLiteOperations(ctx, tx, ownerEnvHash, pluginInstanceID)
 	if err != nil {
 		return nil, err
 	}
@@ -423,6 +423,9 @@ CREATE TABLE IF NOT EXISTS plugin_operations (
 	if _, err := tx.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_plugin_operations_plugin_instance ON plugin_operations(plugin_instance_id, created_at DESC, operation_id DESC)`); err != nil {
 		return err
 	}
+	if _, err := tx.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_plugin_operations_owner_plugin_instance ON plugin_operations(owner_env_hash, plugin_instance_id, created_at DESC, operation_id DESC)`); err != nil {
+		return err
+	}
 	if _, err := tx.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_plugin_operations_created ON plugin_operations(created_at DESC, operation_id DESC)`); err != nil {
 		return err
 	}
@@ -432,7 +435,13 @@ CREATE TABLE IF NOT EXISTS plugin_operations (
 	if _, err := tx.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_plugin_operations_plugin_owner ON plugin_operations(plugin_instance_id, owner_session_hash, owner_user_hash, owner_env_hash, session_channel_id_hash, created_at DESC, operation_id DESC)`); err != nil {
 		return err
 	}
+	if _, err := tx.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_plugin_operations_owner_plugin_session ON plugin_operations(owner_env_hash, plugin_instance_id, owner_session_hash, owner_user_hash, session_channel_id_hash, created_at DESC, operation_id DESC)`); err != nil {
+		return err
+	}
 	if _, err := tx.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_plugin_operations_terminal_retention ON plugin_operations(plugin_instance_id, terminal_at DESC, operation_id DESC) WHERE terminal_at IS NOT NULL`); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_plugin_operations_owner_terminal_retention ON plugin_operations(owner_env_hash, plugin_instance_id, terminal_at DESC, operation_id DESC) WHERE terminal_at IS NOT NULL`); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -446,8 +455,8 @@ SELECT
 	cancelable, cancel_ack_timeout_ms, disable_behavior, uninstall_behavior, failure_code, reason, created_at, updated_at,
 	cancel_requested_at, orphaned_at, terminal_at`
 
-func listSQLiteOperations(ctx context.Context, q sqliteQuerier, pluginInstanceID string) ([]Record, error) {
-	rows, err := q.QueryContext(ctx, operationSelectColumns+` FROM plugin_operations WHERE plugin_instance_id = ? ORDER BY created_at ASC, operation_id ASC`, pluginInstanceID)
+func listSQLiteOperations(ctx context.Context, q sqliteQuerier, ownerEnvHash, pluginInstanceID string) ([]Record, error) {
+	rows, err := q.QueryContext(ctx, operationSelectColumns+` FROM plugin_operations WHERE owner_env_hash = ? AND plugin_instance_id = ? ORDER BY created_at ASC, operation_id ASC`, ownerEnvHash, pluginInstanceID)
 	if err != nil {
 		return nil, err
 	}

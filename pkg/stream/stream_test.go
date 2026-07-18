@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/floegence/redevplugin/pkg/capability"
+	"github.com/floegence/redevplugin/pkg/sessionctx"
 )
 
 func TestMemoryStoreRegisterAppendReadAndClose(t *testing.T) {
@@ -413,6 +414,7 @@ func TestMemoryStoreMarksPluginTransition(t *testing.T) {
 	}
 	changed, err := store.MarkPluginTransition(context.Background(), PluginTransitionRequest{
 		PluginInstanceID: "plugini_1",
+		ResourceScope:    streamTestEnvironmentScope(),
 		Status:           StatusOrphanedDisabled,
 		Reason:           "policy",
 	})
@@ -438,6 +440,75 @@ func TestMemoryStoreMarksPluginTransition(t *testing.T) {
 	if other.Status != StatusOpen {
 		t.Fatalf("other stream status = %s", other.Status)
 	}
+}
+
+func TestStoreScopesListsAndTransitionsToExecutionOwners(t *testing.T) {
+	forEachStreamStore(t, func(t *testing.T, store Store) {
+		ctx := context.Background()
+		bindingA := streamTestBinding("plugini_shared")
+		bindingB := streamTestBindingWith("plugini_shared", func(binding *capability.ExecutionBinding) {
+			binding.OwnerSessionHash = "session_b"
+			binding.OwnerUserHash = "user_b"
+			binding.OwnerEnvHash = "env_b"
+			binding.SessionChannelIDHash = "channel_b"
+		})
+		if _, err := store.Register(ctx, RegisterRequest{StreamID: "stream_env_a", ExecutionBinding: bindingA}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := store.Register(ctx, RegisterRequest{StreamID: "stream_env_b", ExecutionBinding: bindingB}); err != nil {
+			t.Fatal(err)
+		}
+		invalidBinding := streamTestBinding("plugini_shared")
+		invalidBinding.OwnerEnvHash = ""
+		if _, err := store.Register(ctx, RegisterRequest{StreamID: "stream_ownerless", ExecutionBinding: invalidBinding}); !errors.Is(err, ErrInvalidStream) {
+			t.Fatalf("ownerless register error = %v, want ErrInvalidStream", err)
+		}
+
+		listed, err := store.List(ctx, ListRequest{PluginInstanceID: "plugini_shared", Owner: bindingA.OwnerScope()})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(listed) != 1 || listed[0].StreamID != "stream_env_a" {
+			t.Fatalf("owner list = %#v", listed)
+		}
+		all, err := store.List(ctx, ListRequest{PluginInstanceID: "plugini_shared", AllOwners: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(all) != 2 {
+			t.Fatalf("maintenance list = %#v", all)
+		}
+		if _, err := store.List(ctx, ListRequest{PluginInstanceID: "plugini_shared"}); !errors.Is(err, ErrInvalidStream) {
+			t.Fatalf("unscoped list error = %v, want ErrInvalidStream", err)
+		}
+
+		changed, err := store.MarkPluginTransition(ctx, PluginTransitionRequest{
+			PluginInstanceID: "plugini_shared",
+			ResourceScope:    streamTestEnvironmentScope(),
+			Status:           StatusOrphanedDisabled,
+			Reason:           "disabled",
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if changed.Changed != 1 {
+			t.Fatalf("environment A changed = %d, want 1", changed.Changed)
+		}
+		recordA, err := store.Get(ctx, "stream_env_a")
+		if err != nil {
+			t.Fatal(err)
+		}
+		recordB, err := store.Get(ctx, "stream_env_b")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if recordA.Status != StatusOrphanedDisabled || recordB.Status != StatusOpen {
+			t.Fatalf("cross-environment statuses = %s, %s", recordA.Status, recordB.Status)
+		}
+		if _, err := store.MarkPluginTransition(ctx, PluginTransitionRequest{PluginInstanceID: "plugini_shared", Status: StatusOrphanedRemoved}); !errors.Is(err, ErrInvalidStream) {
+			t.Fatalf("missing transition scope error = %v, want ErrInvalidStream", err)
+		}
+	})
 }
 
 func TestMemoryStoreDeepClonesExecutionBindings(t *testing.T) {
@@ -606,6 +677,7 @@ func TestSQLiteStoreMarksPluginTransition(t *testing.T) {
 	}
 	changed, err := store.MarkPluginTransition(ctx, PluginTransitionRequest{
 		PluginInstanceID: "plugini_1",
+		ResourceScope:    streamTestEnvironmentScope(),
 		Status:           StatusOrphanedRemoved,
 		Reason:           "uninstalled",
 	})
@@ -984,6 +1056,53 @@ func TestStoresBoundRecentReplayCompleteStreamsPerPlugin(t *testing.T) {
 	})
 }
 
+func TestStoresPartitionTerminalStreamRetentionByEnvironment(t *testing.T) {
+	forEachStreamStore(t, func(t *testing.T, store Store) {
+		ctx := context.Background()
+		now := time.Date(2026, 7, 18, 8, 0, 0, 0, time.UTC)
+		for _, environment := range []string{"env_hash", "env_b"} {
+			for index := 0; index < 2; index++ {
+				streamID := fmt.Sprintf("stream_%s_%d", environment, index)
+				binding := streamTestBindingWith("plugin_shared_retention", func(binding *capability.ExecutionBinding) {
+					binding.OwnerEnvHash = environment
+					binding.OwnerSessionHash = "session_" + environment
+					binding.OwnerUserHash = "user_" + environment
+					binding.SessionChannelIDHash = "channel_" + environment
+				})
+				if _, err := store.Register(ctx, RegisterRequest{StreamID: streamID, ExecutionBinding: binding, Now: now}); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := store.Close(ctx, CloseRequest{StreamID: streamID, Now: now.Add(time.Duration(index) * time.Second)}); err != nil {
+					t.Fatal(err)
+				}
+				_, delivery, err := store.Deliver(ctx, DeliverRequest{StreamID: streamID, ReadID: "read_" + streamID})
+				if err != nil || delivery.DeliveryID == "" || !delivery.Done {
+					t.Fatalf("Deliver(%s) = %#v, %v", streamID, delivery, err)
+				}
+				if _, err := store.Acknowledge(ctx, AcknowledgeRequest{StreamID: streamID, DeliveryID: delivery.DeliveryID}); err != nil {
+					t.Fatal(err)
+				}
+			}
+		}
+
+		result, err := store.Prune(ctx, PruneRequest{
+			Before:                      time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC),
+			Limit:                       MaxPruneLimit,
+			MaxTerminalRecordsPerPlugin: 1,
+		})
+		if err != nil || result.Deleted != 2 {
+			t.Fatalf("Prune(environment partitions) = %#v, %v", result, err)
+		}
+		listed, err := store.List(ctx, ListRequest{PluginInstanceID: "plugin_shared_retention", AllOwners: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(listed) != 2 {
+			t.Fatalf("retained streams = %#v", listed)
+		}
+	})
+}
+
 func TestSQLiteStorePerStreamLocksAreIndependentAndCancelable(t *testing.T) {
 	ctx := context.Background()
 	store, err := NewSQLiteStore(ctx, filepath.Join(t.TempDir(), "streams.sqlite"))
@@ -1106,7 +1225,7 @@ func TestSQLiteStorePluginTransitionWakesAllRegisteredLongPolls(t *testing.T) {
 	}
 	waitForNotificationState(t, store, streamID, 1, waiterCount)
 	transition, err := store.MarkPluginTransition(ctx, PluginTransitionRequest{
-		PluginInstanceID: "plugini_transition_waiters", Status: StatusOrphanedRemoved, Reason: "plugin removed",
+		PluginInstanceID: "plugini_transition_waiters", ResourceScope: streamTestEnvironmentScope(), Status: StatusOrphanedRemoved, Reason: "plugin removed",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1161,6 +1280,7 @@ func TestSQLiteStoreWaitDoesNotLoseConcurrentPluginTransition(t *testing.T) {
 
 	if _, err := store.MarkPluginTransition(ctx, PluginTransitionRequest{
 		PluginInstanceID: pluginInstanceID,
+		ResourceScope:    streamTestEnvironmentScope(),
 		Status:           StatusOrphanedRemoved,
 		Reason:           "plugin removed",
 	}); err != nil {
@@ -1211,6 +1331,7 @@ func TestSQLiteStorePluginTransitionDoesNotWakeUnrelatedWaiter(t *testing.T) {
 
 	if _, err := store.MarkPluginTransition(ctx, PluginTransitionRequest{
 		PluginInstanceID: "plugini_other",
+		ResourceScope:    streamTestEnvironmentScope(),
 		Status:           StatusOrphanedDisabled,
 		Reason:           "plugin disabled",
 	}); err != nil {
@@ -1630,9 +1751,21 @@ func streamTestBindingWith(pluginInstanceID string, mutate func(*capability.Exec
 		Execution:              "subscription",
 		Target:                 capability.TargetDescriptor{Kind: "workspace", Fields: map[string]any{"workspace_id": "workspace-1"}},
 		TargetDescriptorSHA256: "sha256:target",
+		OwnerSessionHash:       "session_hash",
+		OwnerUserHash:          "user_hash",
+		OwnerEnvHash:           "env_hash",
+		SessionChannelIDHash:   "channel_hash",
 	}
 	if mutate != nil {
 		mutate(&binding)
 	}
 	return binding
+}
+
+func streamTestEnvironmentScope() sessionctx.ResourceScope {
+	return streamTestEnvironmentScopeFor("env_hash")
+}
+
+func streamTestEnvironmentScopeFor(ownerEnvHash string) sessionctx.ResourceScope {
+	return sessionctx.ResourceScope{Kind: sessionctx.ScopeEnvironment, OwnerEnvHash: ownerEnvHash}
 }

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/floegence/redevplugin/pkg/capability"
+	"github.com/floegence/redevplugin/pkg/sessionctx"
 )
 
 type Direction string
@@ -122,6 +123,7 @@ type CloseRequest struct {
 
 type PluginTransitionRequest struct {
 	PluginInstanceID string                          `json:"plugin_instance_id"`
+	ResourceScope    sessionctx.ResourceScope        `json:"-"`
 	Status           Status                          `json:"status"`
 	FailureCode      capability.ExecutionFailureCode `json:"failure_code,omitempty"`
 	Reason           string                          `json:"reason,omitempty"`
@@ -143,8 +145,12 @@ type PruneResult struct {
 }
 
 type ListRequest struct {
-	PluginInstanceID string `json:"plugin_instance_id,omitempty"`
+	PluginInstanceID string     `json:"plugin_instance_id,omitempty"`
+	Owner            OwnerScope `json:"-"`
+	AllOwners        bool       `json:"-"`
 }
+
+type OwnerScope = capability.ExecutionOwnerScope
 
 type Store interface {
 	Register(ctx context.Context, req RegisterRequest) (Record, error)
@@ -197,7 +203,8 @@ func (s *MemoryStore) Register(_ context.Context, req RegisterRequest) (Record, 
 	streamID := strings.TrimSpace(req.StreamID)
 	pluginInstanceID := strings.TrimSpace(req.ExecutionBinding.PluginInstanceID)
 	method := strings.TrimSpace(req.ExecutionBinding.Method)
-	if streamID == "" || pluginInstanceID == "" || method == "" {
+	owner := req.ExecutionBinding.OwnerScope()
+	if streamID == "" || pluginInstanceID == "" || method == "" || !owner.Valid() {
 		return Record{}, ErrInvalidStream
 	}
 	now := req.Now
@@ -256,11 +263,17 @@ func (s *MemoryStore) List(_ context.Context, req ListRequest) ([]Record, error)
 	if s == nil {
 		return nil, errors.New("stream store is nil")
 	}
+	if err := normalizeListRequest(&req); err != nil {
+		return nil, err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	records := make([]Record, 0, len(s.records))
 	for _, record := range s.records {
 		if req.PluginInstanceID != "" && record.PluginInstanceID != req.PluginInstanceID {
+			continue
+		}
+		if !req.AllOwners && record.ExecutionBinding.OwnerScope() != req.Owner {
 			continue
 		}
 		records = append(records, cloneRecord(record))
@@ -512,9 +525,9 @@ func (s *MemoryStore) MarkPluginTransition(_ context.Context, req PluginTransiti
 	if err != nil {
 		return PluginTransitionResult{}, err
 	}
-	pluginInstanceID := strings.TrimSpace(req.PluginInstanceID)
-	if pluginInstanceID == "" {
-		return PluginTransitionResult{}, ErrInvalidStream
+	pluginInstanceID, ownerEnvHash, err := normalizePluginTransition(req)
+	if err != nil {
+		return PluginTransitionResult{}, err
 	}
 	now := req.Now
 	if now.IsZero() {
@@ -524,7 +537,7 @@ func (s *MemoryStore) MarkPluginTransition(_ context.Context, req PluginTransiti
 	defer s.mu.Unlock()
 	changed := 0
 	for id, record := range s.records {
-		if record.PluginInstanceID != pluginInstanceID || record.Status != StatusOpen {
+		if record.PluginInstanceID != pluginInstanceID || record.OwnerEnvHash != ownerEnvHash || record.Status != StatusOpen {
 			continue
 		}
 		record.Status = req.Status
@@ -563,13 +576,18 @@ func (s *MemoryStore) Prune(_ context.Context, req PruneRequest) (PruneResult, e
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	terminalByPlugin := make(map[string][]Record)
+	type retentionKey struct {
+		OwnerEnvHash     string
+		PluginInstanceID string
+	}
+	terminalByPlugin := make(map[retentionKey][]Record)
 	for streamID, record := range s.records {
 		if !terminalStatus(record.Status) || record.ClosedAt == nil ||
 			!s.terminalAcknowledged[streamID] || len(s.events[streamID]) != 0 || s.pending[streamID].DeliveryID != "" || record.BufferedBytes != 0 {
 			continue
 		}
-		terminalByPlugin[record.PluginInstanceID] = append(terminalByPlugin[record.PluginInstanceID], record)
+		key := retentionKey{OwnerEnvHash: record.OwnerEnvHash, PluginInstanceID: record.PluginInstanceID}
+		terminalByPlugin[key] = append(terminalByPlugin[key], record)
 	}
 	candidates := make([]Record, 0)
 	for _, records := range terminalByPlugin {
@@ -608,6 +626,23 @@ func (s *MemoryStore) Prune(_ context.Context, req PruneRequest) (PruneResult, e
 		}
 	}
 	return PruneResult{Deleted: len(candidates)}, nil
+}
+
+func normalizeListRequest(req *ListRequest) error {
+	req.PluginInstanceID = strings.TrimSpace(req.PluginInstanceID)
+	req.Owner = req.Owner.Normalized()
+	if (req.AllOwners && req.Owner.Valid()) || (!req.AllOwners && !req.Owner.Valid()) {
+		return ErrInvalidStream
+	}
+	return nil
+}
+
+func normalizePluginTransition(req PluginTransitionRequest) (string, string, error) {
+	pluginInstanceID := strings.TrimSpace(req.PluginInstanceID)
+	if pluginInstanceID == "" || req.ResourceScope.Kind != sessionctx.ScopeEnvironment || req.ResourceScope.Validate() != nil {
+		return "", "", ErrInvalidStream
+	}
+	return pluginInstanceID, req.ResourceScope.OwnerEnvHash, nil
 }
 
 func (s *MemoryStore) notifyLocked(streamID string) {

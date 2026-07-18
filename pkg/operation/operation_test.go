@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/floegence/redevplugin/pkg/capability"
+	"github.com/floegence/redevplugin/pkg/sessionctx"
 	_ "modernc.org/sqlite"
 )
 
@@ -323,6 +324,46 @@ func TestStoresBoundRecentTerminalOperationsPerPlugin(t *testing.T) {
 	}
 }
 
+func TestStoresPartitionTerminalOperationRetentionByEnvironment(t *testing.T) {
+	for _, tc := range operationStoreCases() {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			store := tc.open(t)
+			now := time.Date(2026, 7, 18, 8, 0, 0, 0, time.UTC)
+			for _, environment := range []string{"env_hash", "env_b"} {
+				for index := 0; index < 2; index++ {
+					operationID := fmt.Sprintf("op_%s_%d", environment, index)
+					request := operationTestRegister(operationID, "plugin_shared_retention", "documents.archive")
+					request.ExecutionBinding.OwnerEnvHash = environment
+					request.ExecutionBinding.OwnerSessionHash = "session_" + environment
+					request.ExecutionBinding.OwnerUserHash = "user_" + environment
+					request.ExecutionBinding.SessionChannelIDHash = "channel_" + environment
+					mustRegisterOperation(t, store, request)
+					if _, err := store.Finish(ctx, FinishRequest{OperationID: operationID, Status: StatusCompleted, Now: now.Add(time.Duration(index) * time.Second)}); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+
+			result, err := store.Prune(ctx, PruneRequest{
+				Before:                      time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC),
+				Limit:                       MaxPruneLimit,
+				MaxTerminalRecordsPerPlugin: 1,
+			})
+			if err != nil || result.Deleted != 2 {
+				t.Fatalf("Prune(environment partitions) = %#v, %v", result, err)
+			}
+			page, err := store.List(ctx, ListRequest{PluginInstanceID: "plugin_shared_retention", AllOwners: true, Limit: MaxListLimit})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(page.Records) != 2 {
+				t.Fatalf("retained operations = %#v", page.Records)
+			}
+		})
+	}
+}
+
 func TestSQLiteStoreListQueriesUseCursorIndexes(t *testing.T) {
 	store, err := NewSQLiteStore(context.Background(), filepath.Join(t.TempDir(), "operations.sqlite"))
 	if err != nil {
@@ -529,6 +570,7 @@ func TestStoreDisableTransitions(t *testing.T) {
 
 			changed, err := store.MarkPluginDisabled(ctx, PluginTransitionRequest{
 				PluginInstanceID: "plugin_1",
+				ResourceScope:    operationTestEnvironmentScope(),
 				Reason:           "disabled",
 				Now:              now,
 			})
@@ -561,6 +603,7 @@ func TestStoreUninstallTransitions(t *testing.T) {
 
 			changed, err := store.MarkPluginUninstalled(ctx, PluginTransitionRequest{
 				PluginInstanceID: "plugin_1",
+				ResourceScope:    operationTestEnvironmentScope(),
 				Reason:           "uninstalled",
 				Now:              now,
 			})
@@ -586,7 +629,7 @@ func TestStoreTransitionSkipsTerminalStatuses(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			changed, err := store.MarkPluginDisabled(ctx, PluginTransitionRequest{PluginInstanceID: "plugin_1"})
+			changed, err := store.MarkPluginDisabled(ctx, PluginTransitionRequest{PluginInstanceID: "plugin_1", ResourceScope: operationTestEnvironmentScope()})
 			if err != nil {
 				t.Fatalf("MarkPluginDisabled() error = %v", err)
 			}
@@ -594,6 +637,52 @@ func TestStoreTransitionSkipsTerminalStatuses(t *testing.T) {
 				t.Fatalf("terminal operation changed: %#v", changed)
 			}
 			assertOperationStatus(t, store, completed.OperationID, StatusCompleted)
+		})
+	}
+}
+
+func TestStoreTransitionsOnlyMatchingEnvironmentOwner(t *testing.T) {
+	for _, tc := range operationStoreCases() {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			store := tc.open(t)
+			environmentA := mustRegisterOperation(t, store, operationTestRegister("op_env_a", "plugin_shared", "documents.run"))
+			environmentBRequest := operationTestRegister("op_env_b", "plugin_shared", "documents.run")
+			environmentBRequest.ExecutionBinding.OwnerSessionHash = "session_b"
+			environmentBRequest.ExecutionBinding.OwnerUserHash = "user_b"
+			environmentBRequest.ExecutionBinding.OwnerEnvHash = "env_b"
+			environmentBRequest.ExecutionBinding.SessionChannelIDHash = "channel_b"
+			environmentB := mustRegisterOperation(t, store, environmentBRequest)
+
+			changed, err := store.MarkPluginDisabled(ctx, PluginTransitionRequest{
+				PluginInstanceID: "plugin_shared",
+				ResourceScope:    operationTestEnvironmentScope(),
+				Reason:           "disabled",
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(changed) != 1 || changed[0].OperationID != environmentA.OperationID {
+				t.Fatalf("environment A transition = %#v", changed)
+			}
+			assertOperationStatus(t, store, environmentA.OperationID, StatusCancelRequested)
+			assertOperationStatus(t, store, environmentB.OperationID, StatusRunning)
+
+			changed, err = store.MarkPluginUninstalled(ctx, PluginTransitionRequest{
+				PluginInstanceID: "plugin_shared",
+				ResourceScope:    operationTestEnvironmentScopeFor("env_b"),
+				Reason:           "uninstalled",
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(changed) != 1 || changed[0].OperationID != environmentB.OperationID {
+				t.Fatalf("environment B transition = %#v", changed)
+			}
+			assertOperationStatus(t, store, environmentB.OperationID, StatusCancelRequested)
+			if _, err := store.MarkPluginDisabled(ctx, PluginTransitionRequest{PluginInstanceID: "plugin_shared"}); !errors.Is(err, ErrInvalidOperation) {
+				t.Fatalf("missing owner scope error = %v, want ErrInvalidOperation", err)
+			}
 		})
 	}
 }
@@ -692,6 +781,14 @@ func operationTestBinding(pluginID, pluginInstanceID, method string, mutate func
 
 func operationTestOwnerScope() OwnerScope {
 	return OwnerScope{OwnerSessionHash: "session_hash", OwnerUserHash: "user_hash", OwnerEnvHash: "env_hash", SessionChannelIDHash: "channel_hash"}
+}
+
+func operationTestEnvironmentScope() sessionctx.ResourceScope {
+	return operationTestEnvironmentScopeFor("env_hash")
+}
+
+func operationTestEnvironmentScopeFor(ownerEnvHash string) sessionctx.ResourceScope {
+	return sessionctx.ResourceScope{Kind: sessionctx.ScopeEnvironment, OwnerEnvHash: ownerEnvHash}
 }
 
 func assertOperationStatus(t *testing.T, store Store, operationID string, want Status) {
