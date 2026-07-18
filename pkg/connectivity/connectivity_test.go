@@ -261,6 +261,7 @@ func sameStrings(a, b []string) bool {
 }
 
 func TestMemoryBrokerMintsBoundedConnectionGrant(t *testing.T) {
+	ctx := connectivityTestContext("env_hash", "user_hash")
 	policy, err := CompilePolicy(CompileRequest{
 		PluginInstanceID:   "plugini_test",
 		PluginID:           "com.example.net",
@@ -281,11 +282,11 @@ func TestMemoryBrokerMintsBoundedConnectionGrant(t *testing.T) {
 		t.Fatal(err)
 	}
 	broker := NewMemoryBroker()
-	if err := broker.InstallPolicy(context.Background(), policy); err != nil {
+	if err := broker.InstallPolicy(ctx, policy); err != nil {
 		t.Fatal(err)
 	}
 	now := time.Date(2026, 6, 30, 12, 0, 0, 0, time.UTC)
-	grant, err := broker.MintConnectionGrant(context.Background(), GrantRequest{
+	grant, err := broker.MintConnectionGrant(ctx, GrantRequest{
 		PluginInstanceID:    "plugini_test",
 		ActiveFingerprint:   "sha256:fingerprint",
 		ResourceScope:       environmentResourceScope(),
@@ -308,7 +309,7 @@ func TestMemoryBrokerMintsBoundedConnectionGrant(t *testing.T) {
 	if !grant.ResourceScope.Matches(environmentResourceScope()) {
 		t.Fatalf("grant resource scope = %#v", grant.ResourceScope)
 	}
-	if _, err := broker.MintConnectionGrant(context.Background(), GrantRequest{
+	if _, err := broker.MintConnectionGrant(ctx, GrantRequest{
 		PluginInstanceID:   "plugini_test",
 		ActiveFingerprint:  "sha256:fingerprint",
 		ResourceScope:      environmentResourceScope(),
@@ -321,7 +322,7 @@ func TestMemoryBrokerMintsBoundedConnectionGrant(t *testing.T) {
 	}); !errors.Is(err, ErrTargetDenied) {
 		t.Fatalf("MintConnectionGrant(undeclared) error = %v, want ErrTargetDenied", err)
 	}
-	if _, err := broker.MintConnectionGrant(context.Background(), GrantRequest{
+	if _, err := broker.MintConnectionGrant(ctx, GrantRequest{
 		PluginInstanceID:   "plugini_test",
 		ActiveFingerprint:  "sha256:fingerprint",
 		ResourceScope:      environmentResourceScope(),
@@ -334,7 +335,7 @@ func TestMemoryBrokerMintsBoundedConnectionGrant(t *testing.T) {
 	}); !errors.Is(err, ErrConnectorDenied) {
 		t.Fatalf("MintConnectionGrant(stale) error = %v, want ErrConnectorDenied", err)
 	}
-	if _, err := broker.MintConnectionGrant(context.Background(), GrantRequest{
+	if _, err := broker.MintConnectionGrant(ctx, GrantRequest{
 		PluginInstanceID:   "plugini_test",
 		ActiveFingerprint:  "sha256:fingerprint",
 		ResourceScope:      userResourceScope(),
@@ -347,7 +348,7 @@ func TestMemoryBrokerMintsBoundedConnectionGrant(t *testing.T) {
 	}); !errors.Is(err, ErrConnectorDenied) || !errors.Is(err, ErrResourceScopeMismatch) {
 		t.Fatalf("MintConnectionGrant(scope mismatch) error = %v, want ErrConnectorDenied and ErrResourceScopeMismatch", err)
 	}
-	if _, err := broker.MintConnectionGrant(context.Background(), GrantRequest{
+	if _, err := broker.MintConnectionGrant(ctx, GrantRequest{
 		PluginInstanceID:   "plugini_test",
 		ActiveFingerprint:  "sha256:fingerprint",
 		PolicyRevision:     7,
@@ -358,6 +359,165 @@ func TestMemoryBrokerMintsBoundedConnectionGrant(t *testing.T) {
 		Destination:        "db.example.com:3306",
 	}); !errors.Is(err, ErrConnectorDenied) || !errors.Is(err, ErrResourceScopeMismatch) {
 		t.Fatalf("MintConnectionGrant(invalid scope) error = %v, want ErrConnectorDenied and ErrResourceScopeMismatch", err)
+	}
+}
+
+func TestMemoryBrokerIsolatesPoliciesByEnvironmentOwner(t *testing.T) {
+	const pluginInstanceID = "plugini_shared"
+	policyFor := func(destination string) PolicySet {
+		t.Helper()
+		policy, err := CompilePolicy(CompileRequest{
+			PluginInstanceID:   pluginInstanceID,
+			PluginID:           "com.example.shared",
+			ActiveFingerprint:  "sha256:fingerprint",
+			PolicyRevision:     7,
+			ManagementRevision: 11,
+			RevokeEpoch:        3,
+			Manifest: manifest.Manifest{NetworkAccess: &manifest.NetworkAccessSpec{Connectors: []manifest.NetworkConnectorSpec{
+				{ConnectorID: "database", Transport: "tcp", Scope: "environment", Destinations: []string{destination}},
+				{ConnectorID: "profile", Transport: "http", Scope: "user", Destinations: []string{"https://profile.example.com"}},
+			}}},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return policy
+	}
+
+	ctxA := connectivityTestContext("env_a", "user_a")
+	ctxB := connectivityTestContext("env_b", "user_b")
+	broker := NewMemoryBroker()
+	if err := broker.InstallPolicy(ctxA, policyFor("db-a.example.com:5432")); err != nil {
+		t.Fatal(err)
+	}
+	if err := broker.InstallPolicy(ctxB, policyFor("db-b.example.com:5432")); err != nil {
+		t.Fatal(err)
+	}
+
+	request := GrantRequest{
+		PluginInstanceID:   pluginInstanceID,
+		ActiveFingerprint:  "sha256:fingerprint",
+		ResourceScope:      resourceScopeFor("env_a", "", sessionctx.ScopeEnvironment),
+		PolicyRevision:     7,
+		ManagementRevision: 11,
+		RevokeEpoch:        3,
+		ConnectorID:        "database",
+		Transport:          TransportTCP,
+		Destination:        "db-a.example.com:5432",
+	}
+	if _, err := broker.MintConnectionGrant(ctxA, request); err != nil {
+		t.Fatalf("MintConnectionGrant(env A) error = %v", err)
+	}
+
+	request.Destination = "db-b.example.com:5432"
+	if _, err := broker.MintConnectionGrant(ctxA, request); !errors.Is(err, ErrTargetDenied) {
+		t.Fatalf("MintConnectionGrant(env A using env B policy) error = %v, want ErrTargetDenied", err)
+	}
+	request.ResourceScope = resourceScopeFor("env_b", "", sessionctx.ScopeEnvironment)
+	if _, err := broker.MintConnectionGrant(ctxA, request); !errors.Is(err, ErrResourceScopeMismatch) {
+		t.Fatalf("MintConnectionGrant(spoofed environment owner) error = %v, want ErrResourceScopeMismatch", err)
+	}
+
+	request.ResourceScope = resourceScopeFor("env_b", "", sessionctx.ScopeEnvironment)
+	if _, err := broker.MintConnectionGrant(ctxB, request); err != nil {
+		t.Fatalf("MintConnectionGrant(env B) error = %v", err)
+	}
+	request.ConnectorID = "profile"
+	request.Transport = TransportHTTP
+	request.Destination = "https://profile.example.com"
+	request.ResourceScope = resourceScopeFor("env_b", "user_a", sessionctx.ScopeUser)
+	if _, err := broker.MintConnectionGrant(ctxB, request); !errors.Is(err, ErrResourceScopeMismatch) {
+		t.Fatalf("MintConnectionGrant(spoofed user owner) error = %v, want ErrResourceScopeMismatch", err)
+	}
+
+	if err := broker.RemovePolicy(ctxA, pluginInstanceID); err != nil {
+		t.Fatal(err)
+	}
+	request.ConnectorID = "database"
+	request.Transport = TransportTCP
+	request.Destination = "db-a.example.com:5432"
+	request.ResourceScope = resourceScopeFor("env_a", "", sessionctx.ScopeEnvironment)
+	if _, err := broker.MintConnectionGrant(ctxA, request); !errors.Is(err, ErrConnectorDenied) {
+		t.Fatalf("MintConnectionGrant(env A after remove) error = %v, want ErrConnectorDenied", err)
+	}
+	request.Destination = "db-b.example.com:5432"
+	request.ResourceScope = resourceScopeFor("env_b", "", sessionctx.ScopeEnvironment)
+	if _, err := broker.MintConnectionGrant(ctxB, request); err != nil {
+		t.Fatalf("MintConnectionGrant(env B after env A remove) error = %v", err)
+	}
+}
+
+func TestMemoryBrokerRequiresAuthenticatedSession(t *testing.T) {
+	broker := NewMemoryBroker()
+	policy := PolicySet{PluginInstanceID: "plugini_test"}
+	if err := broker.InstallPolicy(context.Background(), policy); !errors.Is(err, sessionctx.ErrSessionRequired) {
+		t.Fatalf("InstallPolicy() error = %v, want ErrSessionRequired", err)
+	}
+	if err := broker.RemovePolicy(context.Background(), policy.PluginInstanceID); !errors.Is(err, sessionctx.ErrSessionRequired) {
+		t.Fatalf("RemovePolicy() error = %v, want ErrSessionRequired", err)
+	}
+	if _, err := broker.MintConnectionGrant(context.Background(), GrantRequest{PluginInstanceID: policy.PluginInstanceID}); !errors.Is(err, sessionctx.ErrSessionRequired) {
+		t.Fatalf("MintConnectionGrant() error = %v, want ErrSessionRequired", err)
+	}
+}
+
+func TestMemoryBrokerConcurrentEnvironmentOwners(t *testing.T) {
+	broker := NewMemoryBroker()
+	errorsByOwner := make(chan error, 2)
+	var workers sync.WaitGroup
+	for _, owner := range []struct {
+		env         string
+		user        string
+		destination string
+	}{
+		{env: "env_a", user: "user_a", destination: "db-a.example.com:5432"},
+		{env: "env_b", user: "user_b", destination: "db-b.example.com:5432"},
+	} {
+		owner := owner
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			ctx := connectivityTestContext(owner.env, owner.user)
+			policy, err := CompilePolicy(CompileRequest{
+				PluginInstanceID:   "plugini_shared",
+				PluginID:           "com.example.shared",
+				ActiveFingerprint:  "sha256:fingerprint",
+				PolicyRevision:     1,
+				ManagementRevision: 1,
+				RevokeEpoch:        1,
+				Manifest: manifest.Manifest{NetworkAccess: &manifest.NetworkAccessSpec{Connectors: []manifest.NetworkConnectorSpec{{
+					ConnectorID: "database", Transport: "tcp", Scope: "environment", Destinations: []string{owner.destination},
+				}}}},
+			})
+			if err != nil {
+				errorsByOwner <- err
+				return
+			}
+			for range 100 {
+				if err := broker.InstallPolicy(ctx, policy); err != nil {
+					errorsByOwner <- err
+					return
+				}
+				if _, err := broker.MintConnectionGrant(ctx, GrantRequest{
+					PluginInstanceID: "plugini_shared", ActiveFingerprint: "sha256:fingerprint",
+					ResourceScope:  resourceScopeFor(owner.env, "", sessionctx.ScopeEnvironment),
+					PolicyRevision: 1, ManagementRevision: 1, RevokeEpoch: 1,
+					ConnectorID: "database", Transport: TransportTCP, Destination: owner.destination,
+				}); err != nil {
+					errorsByOwner <- err
+					return
+				}
+				if err := broker.RemovePolicy(ctx, "plugini_shared"); err != nil {
+					errorsByOwner <- err
+					return
+				}
+			}
+		}()
+	}
+	workers.Wait()
+	close(errorsByOwner)
+	for err := range errorsByOwner {
+		t.Fatal(err)
 	}
 }
 
@@ -1905,11 +2065,24 @@ func testGrant(t *testing.T, transport Transport, rawDestination string, ttl tim
 }
 
 func userResourceScope() sessionctx.ResourceScope {
-	return sessionctx.ResourceScope{Kind: sessionctx.ScopeUser, OwnerEnvHash: "env_hash", OwnerUserHash: "user_hash"}
+	return resourceScopeFor("env_hash", "user_hash", sessionctx.ScopeUser)
 }
 
 func environmentResourceScope() sessionctx.ResourceScope {
-	return sessionctx.ResourceScope{Kind: sessionctx.ScopeEnvironment, OwnerEnvHash: "env_hash"}
+	return resourceScopeFor("env_hash", "", sessionctx.ScopeEnvironment)
+}
+
+func resourceScopeFor(ownerEnvHash, ownerUserHash string, kind sessionctx.ScopeKind) sessionctx.ResourceScope {
+	return sessionctx.ResourceScope{Kind: kind, OwnerEnvHash: ownerEnvHash, OwnerUserHash: ownerUserHash}
+}
+
+func connectivityTestContext(ownerEnvHash, ownerUserHash string) context.Context {
+	return sessionctx.WithContext(context.Background(), sessionctx.Context{
+		OwnerSessionHash:     "session_" + ownerUserHash,
+		OwnerUserHash:        ownerUserHash,
+		OwnerEnvHash:         ownerEnvHash,
+		SessionChannelIDHash: "channel_" + ownerUserHash,
+	})
 }
 
 func TestParseDestinationAcceptsLoopbackForExecutorTestHelper(t *testing.T) {

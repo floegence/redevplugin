@@ -610,7 +610,7 @@ func installPerformanceBlockingArtifact(t *testing.T, assets pluginpkg.AssetStor
 		pluginInstanceID:  "plugini_performance_blocking",
 		activeFingerprint: performanceSHA256([]byte("redevplugin-performance-active-v1")),
 	}
-	if err := broker.InstallPolicy(context.Background(), connectivity.PolicySet{
+	if err := broker.InstallPolicy(hostTestContext(), connectivity.PolicySet{
 		PluginInstanceID:        artifact.pluginInstanceID,
 		PluginID:                artifact.pluginID,
 		ActiveFingerprint:       artifact.activeFingerprint,

@@ -2489,6 +2489,9 @@ func TestProcessSupervisorMintsNetworkGrantDuringWorkerInvocation(t *testing.T) 
 		broker.last.TTL != 30*time.Second {
 		t.Fatalf("connectivity broker mismatch: calls=%d last=%#v", broker.calls, broker.last)
 	}
+	if !broker.hasLastSession || broker.lastSession.OwnerEnvHash != "env_hash" || broker.lastSession.OwnerUserHash != "user_hash" {
+		t.Fatalf("connectivity broker session = %#v, present=%v", broker.lastSession, broker.hasLastSession)
+	}
 	stopRuntimeSupervisor(t, supervisor)
 }
 
@@ -4892,6 +4895,8 @@ type recordingConnectivityBroker struct {
 	installCall    int
 	removeCall     int
 	last           connectivity.GrantRequest
+	lastSession    sessionctx.Context
+	hasLastSession bool
 	lastCalledAt   time.Time
 	lastDeadline   time.Time
 	lastDeadlineOK bool
@@ -4935,6 +4940,7 @@ func (b *recordingConnectivityBroker) RemovePolicy(context.Context, string) erro
 func (b *recordingConnectivityBroker) MintConnectionGrant(ctx context.Context, req connectivity.GrantRequest) (connectivity.ConnectionGrant, error) {
 	b.calls++
 	b.last = req
+	b.lastSession, b.hasLastSession = sessionctx.FromContext(ctx)
 	b.lastCalledAt = time.Now()
 	b.lastDeadline, b.lastDeadlineOK = ctx.Deadline()
 	if b.err != nil {

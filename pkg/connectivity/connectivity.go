@@ -105,37 +105,55 @@ type PolicySet struct {
 
 type MemoryBroker struct {
 	mu       sync.RWMutex
-	policies map[string]PolicySet
+	policies map[policyOwnerKey]PolicySet
 }
 
 func NewMemoryBroker() *MemoryBroker {
-	return &MemoryBroker{policies: map[string]PolicySet{}}
+	return &MemoryBroker{policies: map[policyOwnerKey]PolicySet{}}
 }
 
-func (b *MemoryBroker) InstallPolicy(_ context.Context, policy PolicySet) error {
+type policyOwnerKey struct {
+	ownerEnvHash     string
+	pluginInstanceID string
+}
+
+func authenticatedPolicyOwner(ctx context.Context, pluginInstanceID string) (sessionctx.Context, policyOwnerKey, error) {
+	pluginInstanceID = strings.TrimSpace(pluginInstanceID)
+	if pluginInstanceID == "" {
+		return sessionctx.Context{}, policyOwnerKey{}, fmt.Errorf("%w: plugin_instance_id is required", ErrInvalidConnector)
+	}
+	session, err := sessionctx.Require(ctx)
+	if err != nil {
+		return sessionctx.Context{}, policyOwnerKey{}, err
+	}
+	return session, policyOwnerKey{ownerEnvHash: session.OwnerEnvHash, pluginInstanceID: pluginInstanceID}, nil
+}
+
+func (b *MemoryBroker) InstallPolicy(ctx context.Context, policy PolicySet) error {
 	if b == nil {
 		return errors.New("connectivity broker is nil")
 	}
-	if strings.TrimSpace(policy.PluginInstanceID) == "" {
-		return fmt.Errorf("%w: plugin_instance_id is required", ErrInvalidConnector)
+	_, key, err := authenticatedPolicyOwner(ctx, policy.PluginInstanceID)
+	if err != nil {
+		return err
 	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	b.policies[policy.PluginInstanceID] = policy
+	b.policies[key] = policy
 	return nil
 }
 
-func (b *MemoryBroker) RemovePolicy(_ context.Context, pluginInstanceID string) error {
+func (b *MemoryBroker) RemovePolicy(ctx context.Context, pluginInstanceID string) error {
 	if b == nil {
 		return errors.New("connectivity broker is nil")
 	}
-	pluginInstanceID = strings.TrimSpace(pluginInstanceID)
-	if pluginInstanceID == "" {
-		return fmt.Errorf("%w: plugin_instance_id is required", ErrInvalidConnector)
+	_, key, err := authenticatedPolicyOwner(ctx, pluginInstanceID)
+	if err != nil {
+		return err
 	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	delete(b.policies, pluginInstanceID)
+	delete(b.policies, key)
 	return nil
 }
 
@@ -143,13 +161,17 @@ func (b *MemoryBroker) MintConnectionGrant(ctx context.Context, req GrantRequest
 	if b == nil {
 		return ConnectionGrant{}, errors.New("connectivity broker is nil")
 	}
+	session, key, err := authenticatedPolicyOwner(ctx, req.PluginInstanceID)
+	if err != nil {
+		return ConnectionGrant{}, err
+	}
 	b.mu.RLock()
-	policy, ok := b.policies[req.PluginInstanceID]
+	policy, ok := b.policies[key]
 	b.mu.RUnlock()
 	if !ok {
 		return ConnectionGrant{}, fmt.Errorf("%w: policy is not installed for plugin instance %q", ErrConnectorDenied, req.PluginInstanceID)
 	}
-	return MintConnectionGrant(ctx, policy, req)
+	return mintConnectionGrant(session, policy, req)
 }
 
 type CompileRequest struct {
@@ -867,7 +889,15 @@ func newExecutor(options ExecutorOptions, networkOptions executorNetworkOptions)
 
 var _ NetworkExecutor = (*Executor)(nil)
 
-func MintConnectionGrant(_ context.Context, policy PolicySet, req GrantRequest) (ConnectionGrant, error) {
+func MintConnectionGrant(ctx context.Context, policy PolicySet, req GrantRequest) (ConnectionGrant, error) {
+	session, err := sessionctx.Require(ctx)
+	if err != nil {
+		return ConnectionGrant{}, err
+	}
+	return mintConnectionGrant(session, policy, req)
+}
+
+func mintConnectionGrant(session sessionctx.Context, policy PolicySet, req GrantRequest) (ConnectionGrant, error) {
 	now := req.Now
 	if now.IsZero() {
 		now = time.Now().UTC()
@@ -895,10 +925,11 @@ func MintConnectionGrant(_ context.Context, policy PolicySet, req GrantRequest) 
 	if connector.Transport != req.Transport {
 		return ConnectionGrant{}, fmt.Errorf("%w: transport mismatch for connector %q", ErrConnectorDenied, req.ConnectorID)
 	}
-	if err := req.ResourceScope.Validate(); err != nil {
-		return ConnectionGrant{}, fmt.Errorf("%w: %w: resource scope is invalid", ErrConnectorDenied, ErrResourceScopeMismatch)
+	expectedScope, err := session.ResourceScope(sessionctx.ScopeKind(connector.Scope))
+	if err != nil {
+		return ConnectionGrant{}, fmt.Errorf("%w: %w for connector %q", ErrConnectorDenied, ErrResourceScopeMismatch, req.ConnectorID)
 	}
-	if sessionctx.ScopeKind(connector.Scope) != req.ResourceScope.Kind {
+	if !req.ResourceScope.Matches(expectedScope) {
 		return ConnectionGrant{}, fmt.Errorf("%w: %w for connector %q", ErrConnectorDenied, ErrResourceScopeMismatch, req.ConnectorID)
 	}
 	destination, err := ParseDestination(req.Transport, req.Destination)
@@ -914,7 +945,7 @@ func MintConnectionGrant(_ context.Context, policy PolicySet, req GrantRequest) 
 	grant := ConnectionGrant{
 		PluginInstanceID:        policy.PluginInstanceID,
 		ActiveFingerprint:       policy.ActiveFingerprint,
-		ResourceScope:           req.ResourceScope,
+		ResourceScope:           expectedScope,
 		PolicyRevision:          policy.PolicyRevision,
 		ManagementRevision:      policy.ManagementRevision,
 		RevokeEpoch:             policy.RevokeEpoch,

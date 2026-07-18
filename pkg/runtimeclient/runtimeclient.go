@@ -171,6 +171,15 @@ type workerInvocationIdentity struct {
 	SessionChannelIDHash string
 }
 
+func (identity workerInvocationIdentity) authenticatedContext(ctx context.Context) context.Context {
+	return sessionctx.WithContext(ctx, sessionctx.Context{
+		OwnerSessionHash:     identity.OwnerSessionHash,
+		OwnerUserHash:        identity.OwnerUserHash,
+		OwnerEnvHash:         identity.OwnerEnvHash,
+		SessionChannelIDHash: identity.SessionChannelIDHash,
+	})
+}
+
 type workerBrokerAccess struct {
 	Storage []workerStorageBrokerAccess `json:"storage,omitempty"`
 	Network []workerNetworkBrokerAccess `json:"network,omitempty"`
@@ -3379,6 +3388,7 @@ func (s *ProcessSupervisor) respondToNetworkGrant(ctx context.Context, stdin io.
 	}
 	hostcallCtx, cancel := runtimeHostcallContext(ctx, 0)
 	defer cancel()
+	hostcallCtx = allowedInvocation.identity.authenticatedContext(hostcallCtx)
 	ttl := time.Duration(req.TTLMillis) * time.Millisecond
 	grant, err := s.connectivity.MintConnectionGrant(hostcallCtx, connectivity.GrantRequest{
 		PluginInstanceID:    req.PluginInstanceID,
@@ -3515,6 +3525,7 @@ func (s *ProcessSupervisor) respondToNetworkExecute(ctx context.Context, stdin i
 	}
 	hostcallCtx, cancel := runtimeHostcallContext(ctx, time.Duration(req.TimeoutMillis)*time.Millisecond)
 	defer cancel()
+	hostcallCtx = allowedInvocation.identity.authenticatedContext(hostcallCtx)
 	grant, err := s.mintGrantForNetworkExecute(hostcallCtx, req)
 	if err != nil {
 		payload := networkExecuteErrorResponse(err)

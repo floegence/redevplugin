@@ -7812,6 +7812,92 @@ func TestEnableInstallsConnectivityPolicyAndMintsGrant(t *testing.T) {
 	}
 }
 
+func TestDisableConnectivityPolicyOnlyRemovesAuthenticatedEnvironment(t *testing.T) {
+	ctxA := hostTestContextWith("session_a", "user_a", "env_a", "channel_a")
+	ctxB := hostTestContextWith("session_b", "user_b", "env_b", "channel_b")
+	connectivityBroker := connectivity.NewMemoryBroker()
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{
+		developerMode:      true,
+		localGenerated:     true,
+		connectivityBroker: connectivityBroker,
+	})
+	packageBytes := buildNetworkFixturePackage(t)
+
+	installedA, err := ImportLocalPackageBytes(ctxA, h, packageBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	enabledA, err := h.EnablePlugin(ctxA, EnableRequest{
+		PluginInstanceID:           installedA.PluginInstanceID,
+		ExpectedManagementRevision: installedA.ManagementRevision,
+	})
+	if err != nil {
+		t.Fatalf("EnablePlugin(env A) error = %v", err)
+	}
+	installedB, err := ImportLocalPackageBytes(ctxB, h, packageBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if installedB.PluginInstanceID != installedA.PluginInstanceID {
+		t.Fatalf("plugin instance IDs differ across owners: %q, %q", installedA.PluginInstanceID, installedB.PluginInstanceID)
+	}
+	enabledB, err := h.EnablePlugin(ctxB, EnableRequest{
+		PluginInstanceID:           installedB.PluginInstanceID,
+		ExpectedManagementRevision: installedB.ManagementRevision,
+	})
+	if err != nil {
+		t.Fatalf("EnablePlugin(env B) error = %v", err)
+	}
+
+	mintRequest := MintConnectionGrantRequest{
+		PluginInstanceID:    installedA.PluginInstanceID,
+		ConnectorID:         "mysql",
+		Transport:           connectivity.TransportTCP,
+		Destination:         "db.example.com:3306",
+		RuntimeGenerationID: "runtime_gen_1",
+	}
+	if _, err := h.MintConnectionGrant(ctxA, mintRequest); err != nil {
+		t.Fatalf("MintConnectionGrant(env A) error = %v", err)
+	}
+	if _, err := h.MintConnectionGrant(ctxB, mintRequest); err != nil {
+		t.Fatalf("MintConnectionGrant(env B) error = %v", err)
+	}
+
+	if _, err := h.DisablePlugin(ctxA, DisableRequest{
+		PluginInstanceID:           installedA.PluginInstanceID,
+		Reason:                     "test",
+		ExpectedManagementRevision: enabledA.ManagementRevision,
+	}); err != nil {
+		t.Fatalf("DisablePlugin(env A) error = %v", err)
+	}
+	if _, err := connectivityBroker.MintConnectionGrant(ctxA, connectivity.GrantRequest{
+		PluginInstanceID:   enabledA.PluginInstanceID,
+		ActiveFingerprint:  enabledA.ActiveFingerprint,
+		ResourceScope:      sessionctx.ResourceScope{Kind: sessionctx.ScopeEnvironment, OwnerEnvHash: "env_a"},
+		PolicyRevision:     enabledA.PolicyRevision,
+		ManagementRevision: enabledA.ManagementRevision,
+		RevokeEpoch:        enabledA.RevokeEpoch,
+		ConnectorID:        "mysql",
+		Transport:          connectivity.TransportTCP,
+		Destination:        "db.example.com:3306",
+	}); !errors.Is(err, connectivity.ErrConnectorDenied) {
+		t.Fatalf("MintConnectionGrant(env A after disable) error = %v, want ErrConnectorDenied", err)
+	}
+	if _, err := connectivityBroker.MintConnectionGrant(ctxB, connectivity.GrantRequest{
+		PluginInstanceID:   enabledB.PluginInstanceID,
+		ActiveFingerprint:  enabledB.ActiveFingerprint,
+		ResourceScope:      sessionctx.ResourceScope{Kind: sessionctx.ScopeEnvironment, OwnerEnvHash: "env_b"},
+		PolicyRevision:     enabledB.PolicyRevision,
+		ManagementRevision: enabledB.ManagementRevision,
+		RevokeEpoch:        enabledB.RevokeEpoch,
+		ConnectorID:        "mysql",
+		Transport:          connectivity.TransportTCP,
+		Destination:        "db.example.com:3306",
+	}); err != nil {
+		t.Fatalf("MintConnectionGrant(env B after env A disable) error = %v", err)
+	}
+}
+
 func TestRefreshEnabledPluginResultIsClosed(t *testing.T) {
 	for _, result := range []RefreshEnabledPluginResult{
 		refreshedPluginResult("plugini_refreshed"),

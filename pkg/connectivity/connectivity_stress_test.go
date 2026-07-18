@@ -16,7 +16,7 @@ func TestStressGateConnectivityClassifierEvidence(t *testing.T) {
 	if os.Getenv("REDEVPLUGIN_STRESS_EVIDENCE_PATH") == "" {
 		t.Skip("connectivity stress evidence is collected by scripts/check_redevplugin_stress.sh")
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(connectivityTestContext("env_hash", "user_hash"), 10*time.Second)
 	defer cancel()
 	policy, err := CompilePolicy(CompileRequest{
 		PluginInstanceID:   "plugini_stress_net",
