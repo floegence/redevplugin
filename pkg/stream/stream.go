@@ -705,22 +705,14 @@ func cloneEvent(event Event) Event {
 }
 
 func cloneExecutionBinding(binding capability.ExecutionBinding) (capability.ExecutionBinding, error) {
-	raw, err := json.Marshal(binding)
-	if err != nil {
+	if _, err := json.Marshal(binding); err != nil {
 		return capability.ExecutionBinding{}, err
 	}
-	var cloned capability.ExecutionBinding
-	if err := json.Unmarshal(raw, &cloned); err != nil {
-		return capability.ExecutionBinding{}, err
-	}
-	return cloned, nil
+	return capability.CloneExecutionBinding(binding), nil
 }
 
 func cloneRecord(record Record) Record {
-	binding, err := cloneExecutionBinding(record.ExecutionBinding)
-	if err == nil {
-		record.ExecutionBinding = binding
-	}
+	record.ExecutionBinding = capability.CloneExecutionBinding(record.ExecutionBinding)
 	if record.ClosedAt != nil {
 		value := *record.ClosedAt
 		record.ClosedAt = &value

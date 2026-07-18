@@ -1503,6 +1503,24 @@ func BenchmarkSQLiteStoreBatchAcknowledge(b *testing.B) {
 	}
 }
 
+func BenchmarkMemoryStoreGet(b *testing.B) {
+	store := NewMemoryStore()
+	if _, err := store.Register(context.Background(), RegisterRequest{
+		StreamID:         "stream_memory_get",
+		ExecutionBinding: streamTestBinding("plugini_memory_get"),
+	}); err != nil {
+		b.Fatal(err)
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		record, err := store.Get(context.Background(), "stream_memory_get")
+		if err != nil || record.StreamID == "" {
+			b.Fatalf("Get() record=%#v err=%v", record, err)
+		}
+	}
+}
+
 func forEachStreamStore(t *testing.T, run func(t *testing.T, store Store)) {
 	t.Helper()
 	tests := []struct {

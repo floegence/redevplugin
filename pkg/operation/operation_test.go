@@ -801,6 +801,24 @@ func BenchmarkSQLiteStoreOwnerScopedParallelReadWrite(b *testing.B) {
 	})
 }
 
+func BenchmarkMemoryStoreGet(b *testing.B) {
+	store := NewMemoryStore()
+	if _, err := store.Register(context.Background(), RegisterRequest{
+		OperationID:      "op_memory_get",
+		ExecutionBinding: operationTestBinding("com.example.plugin", "plugin_memory_get", "documents.read", nil),
+	}); err != nil {
+		b.Fatal(err)
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		record, err := store.Get(context.Background(), "op_memory_get")
+		if err != nil || record.OperationID == "" {
+			b.Fatalf("Get() record=%#v err=%v", record, err)
+		}
+	}
+}
+
 type operationStoreCase struct {
 	name string
 	open func(t *testing.T) Store
