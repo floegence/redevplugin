@@ -69,6 +69,14 @@ func (s *SQLiteStore) Close() error {
 }
 
 func (s *SQLiteStore) PutPlugin(ctx context.Context, record PluginRecord, opts PutOptions) (PluginRecord, error) {
+	ownerEnvHash, err := environmentOwner(ctx)
+	if err != nil {
+		return PluginRecord{}, err
+	}
+	if record.OwnerEnvHash != "" && record.OwnerEnvHash != ownerEnvHash {
+		return PluginRecord{}, ErrOwnerScopeMismatch
+	}
+	record.OwnerEnvHash = ownerEnvHash
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -85,7 +93,7 @@ func (s *SQLiteStore) PutPlugin(ctx context.Context, record PluginRecord, opts P
 	}
 	defer rollbackUnlessCommitted(tx)
 
-	existing, exists, err := getSQLitePlugin(ctx, tx, record.PluginInstanceID, true)
+	existing, exists, err := getSQLitePlugin(ctx, tx, ownerEnvHash, record.PluginInstanceID, true)
 	if err != nil {
 		return PluginRecord{}, err
 	}
@@ -114,10 +122,14 @@ func (s *SQLiteStore) PutPlugin(ctx context.Context, record PluginRecord, opts P
 }
 
 func (s *SQLiteStore) GetPlugin(ctx context.Context, pluginInstanceID string) (PluginRecord, error) {
+	ownerEnvHash, err := environmentOwner(ctx)
+	if err != nil {
+		return PluginRecord{}, err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	record, exists, err := getSQLitePlugin(ctx, s.db, pluginInstanceID, false)
+	record, exists, err := getSQLitePlugin(ctx, s.db, ownerEnvHash, pluginInstanceID, false)
 	if err != nil {
 		return PluginRecord{}, err
 	}
@@ -128,20 +140,24 @@ func (s *SQLiteStore) GetPlugin(ctx context.Context, pluginInstanceID string) (P
 }
 
 func (s *SQLiteStore) ListPlugins(ctx context.Context) ([]PluginRecord, error) {
+	ownerEnvHash, err := environmentOwner(ctx)
+	if err != nil {
+		return nil, err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	rows, err := s.db.QueryContext(ctx, `
 	SELECT
-		plugin_instance_id, publisher_id, plugin_id, version, active_fingerprint,
+		owner_env_hash, plugin_instance_id, publisher_id, plugin_id, version, active_fingerprint,
 		package_hash, manifest_hash, entries_hash, trust_state, trust_assessment_json,
 		source_policy_snapshot_hash, source_policy_snapshot_json, local_import_provenance_json, capability_contracts_json, enable_state,
 		disabled_reason, policy_revision, management_revision,
 		revoke_epoch, manifest_json, package_entries_json, version_history_json,
 		runtime_requirement_json, installed_at, enabled_at, updated_at, deleted_at, metadata_json
 FROM plugin_records
-WHERE deleted_at IS NULL
-ORDER BY plugin_id ASC, plugin_instance_id ASC`)
+WHERE owner_env_hash = ? AND deleted_at IS NULL
+ORDER BY plugin_id ASC, plugin_instance_id ASC`, ownerEnvHash)
 	if err != nil {
 		return nil, err
 	}
@@ -184,6 +200,10 @@ func (s *SQLiteStore) SetEnableState(ctx context.Context, pluginInstanceID strin
 }
 
 func (s *SQLiteStore) CommitUninstall(ctx context.Context, req plugindata.CommitUninstallRequest) (plugindata.CommitUninstallResult, error) {
+	ownerEnvHash, err := environmentOwner(ctx)
+	if err != nil {
+		return plugindata.CommitUninstallResult{}, err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -196,7 +216,7 @@ func (s *SQLiteStore) CommitUninstall(ctx context.Context, req plugindata.Commit
 		return plugindata.CommitUninstallResult{}, err
 	}
 	defer rollbackUnlessCommitted(tx)
-	record, exists, err := getSQLitePlugin(ctx, tx, req.PluginInstanceID, false)
+	record, exists, err := getSQLitePlugin(ctx, tx, ownerEnvHash, req.PluginInstanceID, false)
 	if err != nil {
 		return plugindata.CommitUninstallResult{}, err
 	}
@@ -216,18 +236,18 @@ func (s *SQLiteStore) CommitUninstall(ctx context.Context, req plugindata.Commit
 	if err := upsertSQLitePlugin(ctx, tx, record); err != nil {
 		return plugindata.CommitUninstallResult{}, err
 	}
-	if err := deleteSQLiteAuthorization(ctx, tx, req.PluginInstanceID); err != nil {
+	if err := deleteSQLiteAuthorization(ctx, tx, ownerEnvHash, req.PluginInstanceID); err != nil {
 		return plugindata.CommitUninstallResult{}, err
 	}
 	if req.DeleteData {
-		if _, err := tx.ExecContext(ctx, `DELETE FROM plugin_data_bindings WHERE plugin_instance_id = ?`, req.PluginInstanceID); err != nil {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM plugin_data_bindings WHERE owner_env_hash = ? AND plugin_instance_id = ?`, ownerEnvHash, req.PluginInstanceID); err != nil {
 			return plugindata.CommitUninstallResult{}, err
 		}
 	} else if _, err := tx.ExecContext(ctx, `
 UPDATE plugin_data_bindings
 SET state = ?, revision = revision + 1, retained_at = ?, expires_at = ?
-WHERE plugin_instance_id = ?`,
-		string(plugindata.BindingRetained), now.UnixNano(), timePtrToNullableUnix(req.RetainUntil), req.PluginInstanceID,
+WHERE owner_env_hash = ? AND plugin_instance_id = ?`,
+		string(plugindata.BindingRetained), now.UnixNano(), timePtrToNullableUnix(req.RetainUntil), ownerEnvHash, req.PluginInstanceID,
 	); err != nil {
 		return plugindata.CommitUninstallResult{}, err
 	}
@@ -238,6 +258,10 @@ WHERE plugin_instance_id = ?`,
 }
 
 func (s *SQLiteStore) AbortInstall(ctx context.Context, pluginInstanceID string) error {
+	ownerEnvHash, err := environmentOwner(ctx)
+	if err != nil {
+		return err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -246,10 +270,10 @@ func (s *SQLiteStore) AbortInstall(ctx context.Context, pluginInstanceID string)
 		return err
 	}
 	defer rollbackUnlessCommitted(tx)
-	if _, err := tx.ExecContext(ctx, `DELETE FROM plugin_data_bindings WHERE plugin_instance_id = ?`, pluginInstanceID); err != nil {
+	if _, err := tx.ExecContext(ctx, `DELETE FROM plugin_data_bindings WHERE owner_env_hash = ? AND plugin_instance_id = ?`, ownerEnvHash, pluginInstanceID); err != nil {
 		return err
 	}
-	result, err := tx.ExecContext(ctx, `DELETE FROM plugin_records WHERE plugin_instance_id = ?`, pluginInstanceID)
+	result, err := tx.ExecContext(ctx, `DELETE FROM plugin_records WHERE owner_env_hash = ? AND plugin_instance_id = ?`, ownerEnvHash, pluginInstanceID)
 	if err != nil {
 		return err
 	}
@@ -317,6 +341,10 @@ func (s *SQLiteStore) GetSourceSecurityFloor(ctx context.Context, sourceID strin
 }
 
 func (s *SQLiteStore) updatePlugin(ctx context.Context, pluginInstanceID string, now time.Time, mutate func(PluginRecord, time.Time) PluginRecord) (PluginRecord, error) {
+	ownerEnvHash, err := environmentOwner(ctx)
+	if err != nil {
+		return PluginRecord{}, err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -329,7 +357,7 @@ func (s *SQLiteStore) updatePlugin(ctx context.Context, pluginInstanceID string,
 	}
 	defer rollbackUnlessCommitted(tx)
 
-	record, exists, err := getSQLitePlugin(ctx, tx, pluginInstanceID, false)
+	record, exists, err := getSQLitePlugin(ctx, tx, ownerEnvHash, pluginInstanceID, false)
 	if err != nil {
 		return PluginRecord{}, err
 	}
@@ -362,10 +390,14 @@ func (s *SQLiteStore) initializeSchema(ctx context.Context) error {
 		return err
 	}
 	defer rollbackUnlessCommitted(tx)
+	if err := prepareOwnerScopedTables(ctx, tx); err != nil {
+		return err
+	}
 
 	if _, err := tx.ExecContext(ctx, `
-CREATE TABLE IF NOT EXISTS plugin_records (
-	plugin_instance_id TEXT PRIMARY KEY,
+	CREATE TABLE IF NOT EXISTS plugin_records (
+		owner_env_hash TEXT NOT NULL,
+		plugin_instance_id TEXT NOT NULL,
 	publisher_id TEXT NOT NULL,
 	plugin_id TEXT NOT NULL,
 	version TEXT NOT NULL,
@@ -392,8 +424,9 @@ CREATE TABLE IF NOT EXISTS plugin_records (
 	enabled_at INTEGER,
 	updated_at INTEGER NOT NULL,
 	deleted_at INTEGER,
-	metadata_json TEXT NOT NULL
-)`); err != nil {
+		metadata_json TEXT NOT NULL,
+		PRIMARY KEY(owner_env_hash, plugin_instance_id)
+	)`); err != nil {
 		return err
 	}
 	addedRuntimeRequirementColumn, err := ensureRuntimeRequirementColumn(ctx, tx)
@@ -405,15 +438,16 @@ CREATE TABLE IF NOT EXISTS plugin_records (
 			return err
 		}
 	}
-	if _, err := tx.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_plugin_records_plugin_id ON plugin_records(plugin_id)`); err != nil {
+	if _, err := tx.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_plugin_records_plugin_id ON plugin_records(owner_env_hash, plugin_id)`); err != nil {
 		return err
 	}
-	if _, err := tx.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_plugin_records_deleted_at ON plugin_records(deleted_at)`); err != nil {
+	if _, err := tx.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_plugin_records_deleted_at ON plugin_records(owner_env_hash, deleted_at)`); err != nil {
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, `
-CREATE TABLE IF NOT EXISTS plugin_permission_grants (
-	plugin_instance_id TEXT NOT NULL,
+	CREATE TABLE IF NOT EXISTS plugin_permission_grants (
+		owner_env_hash TEXT NOT NULL,
+		plugin_instance_id TEXT NOT NULL,
 	permission_id TEXT NOT NULL,
 	effect TEXT NOT NULL,
 	granted_by TEXT NOT NULL,
@@ -422,44 +456,52 @@ CREATE TABLE IF NOT EXISTS plugin_permission_grants (
 	revoked_at INTEGER,
 	revoked_by TEXT NOT NULL,
 	revoked_reason TEXT NOT NULL,
-	PRIMARY KEY(plugin_instance_id, permission_id),
-	FOREIGN KEY(plugin_instance_id) REFERENCES plugin_records(plugin_instance_id) ON DELETE CASCADE
-)`); err != nil {
+		PRIMARY KEY(owner_env_hash, plugin_instance_id, permission_id),
+		FOREIGN KEY(owner_env_hash, plugin_instance_id) REFERENCES plugin_records(owner_env_hash, plugin_instance_id) ON DELETE CASCADE
+	)`); err != nil {
 		return err
 	}
-	if _, err := tx.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_registry_permission_grants_plugin ON plugin_permission_grants(plugin_instance_id, permission_id)`); err != nil {
+	if _, err := tx.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_registry_permission_grants_plugin ON plugin_permission_grants(owner_env_hash, plugin_instance_id, permission_id)`); err != nil {
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, `
-CREATE TABLE IF NOT EXISTS plugin_security_policies (
-	plugin_instance_id TEXT PRIMARY KEY,
+	CREATE TABLE IF NOT EXISTS plugin_security_policies (
+		owner_env_hash TEXT NOT NULL,
+		plugin_instance_id TEXT NOT NULL,
 	allowed_permissions_json TEXT NOT NULL,
 	denied_methods_json TEXT NOT NULL,
-	updated_at INTEGER NOT NULL,
-	FOREIGN KEY(plugin_instance_id) REFERENCES plugin_records(plugin_instance_id) ON DELETE CASCADE
+		updated_at INTEGER NOT NULL,
+		PRIMARY KEY(owner_env_hash, plugin_instance_id),
+		FOREIGN KEY(owner_env_hash, plugin_instance_id) REFERENCES plugin_records(owner_env_hash, plugin_instance_id) ON DELETE CASCADE
 )`); err != nil {
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, `
-CREATE TABLE IF NOT EXISTS plugin_data_bindings (
-	plugin_instance_id TEXT PRIMARY KEY,
+	CREATE TABLE IF NOT EXISTS plugin_data_bindings (
+		owner_env_hash TEXT NOT NULL,
+		plugin_instance_id TEXT NOT NULL,
 	generation_id TEXT NOT NULL,
 	state TEXT NOT NULL,
 	revision INTEGER NOT NULL,
 	shape_hash TEXT NOT NULL,
 	retained_at INTEGER,
-	expires_at INTEGER
+		expires_at INTEGER,
+		PRIMARY KEY(owner_env_hash, plugin_instance_id),
+		FOREIGN KEY(owner_env_hash, plugin_instance_id) REFERENCES plugin_records(owner_env_hash, plugin_instance_id) ON DELETE CASCADE
 )`); err != nil {
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, `
-CREATE TABLE IF NOT EXISTS plugin_data_objects (
-	object_id TEXT PRIMARY KEY,
+	CREATE TABLE IF NOT EXISTS plugin_data_objects (
+		owner_env_hash TEXT NOT NULL,
+		owner_user_hash TEXT NOT NULL,
+		object_id TEXT NOT NULL,
 	content_hash TEXT NOT NULL,
 	shape_hash TEXT NOT NULL,
 	size_bytes INTEGER NOT NULL,
-	created_at INTEGER NOT NULL
-)`); err != nil {
+		created_at INTEGER NOT NULL,
+		PRIMARY KEY(owner_env_hash, owner_user_hash, object_id)
+	)`); err != nil {
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, `
@@ -478,6 +520,182 @@ CREATE TABLE IF NOT EXISTS plugin_source_security_floors (
 		return err
 	}
 	return tx.Commit()
+}
+
+type ownerScopedTableSpec struct {
+	name                  string
+	primaryKey            map[string]int
+	referencesPluginTable bool
+}
+
+var ownerScopedTableSpecs = []ownerScopedTableSpec{
+	{name: "plugin_records", primaryKey: map[string]int{"owner_env_hash": 1, "plugin_instance_id": 2}},
+	{name: "plugin_permission_grants", primaryKey: map[string]int{"owner_env_hash": 1, "plugin_instance_id": 2, "permission_id": 3}, referencesPluginTable: true},
+	{name: "plugin_security_policies", primaryKey: map[string]int{"owner_env_hash": 1, "plugin_instance_id": 2}, referencesPluginTable: true},
+	{name: "plugin_data_bindings", primaryKey: map[string]int{"owner_env_hash": 1, "plugin_instance_id": 2}, referencesPluginTable: true},
+	{name: "plugin_data_objects", primaryKey: map[string]int{"owner_env_hash": 1, "owner_user_hash": 2, "object_id": 3}},
+}
+
+func prepareOwnerScopedTables(ctx context.Context, tx *sql.Tx) error {
+	type tableState struct {
+		exists     bool
+		compatible bool
+		rowCount   int64
+	}
+	states := make(map[string]tableState, len(ownerScopedTableSpecs))
+	for _, spec := range ownerScopedTableSpecs {
+		var count int
+		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?`, spec.name).Scan(&count); err != nil {
+			return err
+		}
+		if count == 0 {
+			continue
+		}
+		compatible, err := ownerScopedTableCompatible(ctx, tx, spec)
+		if err != nil {
+			return err
+		}
+		var rowCount int64
+		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM `+spec.name).Scan(&rowCount); err != nil {
+			return err
+		}
+		states[spec.name] = tableState{exists: true, compatible: compatible, rowCount: rowCount}
+	}
+	parent := states["plugin_records"]
+	if parent.exists && !parent.compatible {
+		for _, state := range states {
+			if state.rowCount != 0 {
+				return ErrOwnerScopeMigrationRequired
+			}
+		}
+		for i := len(ownerScopedTableSpecs) - 1; i >= 0; i-- {
+			if !states[ownerScopedTableSpecs[i].name].exists {
+				continue
+			}
+			if _, err := tx.ExecContext(ctx, `DROP TABLE `+ownerScopedTableSpecs[i].name); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+
+	for _, spec := range ownerScopedTableSpecs {
+		state := states[spec.name]
+		if !state.exists || state.compatible {
+			continue
+		}
+		if state.rowCount != 0 {
+			return ErrOwnerScopeMigrationRequired
+		}
+	}
+	for i := len(ownerScopedTableSpecs) - 1; i >= 0; i-- {
+		state := states[ownerScopedTableSpecs[i].name]
+		if !state.exists || state.compatible {
+			continue
+		}
+		if _, err := tx.ExecContext(ctx, `DROP TABLE `+ownerScopedTableSpecs[i].name); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func ownerScopedTableCompatible(ctx context.Context, tx *sql.Tx, spec ownerScopedTableSpec) (bool, error) {
+	rows, err := tx.QueryContext(ctx, `PRAGMA table_info(`+spec.name+`)`)
+	if err != nil {
+		return false, err
+	}
+	primaryKey := make(map[string]int, len(spec.primaryKey))
+	notNull := make(map[string]bool, len(spec.primaryKey))
+	columnTypes := make(map[string]string, len(spec.primaryKey))
+	primaryKeyColumns := 0
+	for rows.Next() {
+		var (
+			columnID    int
+			name        string
+			columnType  string
+			required    int
+			defaultExpr sql.NullString
+			position    int
+		)
+		if err := rows.Scan(&columnID, &name, &columnType, &required, &defaultExpr, &position); err != nil {
+			return false, err
+		}
+		if _, ok := spec.primaryKey[name]; ok {
+			primaryKey[name] = position
+			notNull[name] = required == 1
+			columnTypes[name] = columnType
+		}
+		if position != 0 {
+			primaryKeyColumns++
+		}
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return false, err
+	}
+	if err := rows.Close(); err != nil {
+		return false, err
+	}
+	if primaryKeyColumns != len(spec.primaryKey) {
+		return false, nil
+	}
+	for name, position := range spec.primaryKey {
+		if primaryKey[name] != position || !notNull[name] || !strings.EqualFold(columnTypes[name], "TEXT") {
+			return false, nil
+		}
+	}
+	if spec.referencesPluginTable {
+		return ownerScopedPluginForeignKeyCompatible(ctx, tx, spec.name)
+	}
+	return true, nil
+}
+
+func ownerScopedPluginForeignKeyCompatible(ctx context.Context, tx *sql.Tx, table string) (bool, error) {
+	rows, err := tx.QueryContext(ctx, `PRAGMA foreign_key_list(`+table+`)`)
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+	type foreignKey struct {
+		table    string
+		onDelete string
+		columns  map[string]string
+	}
+	foreignKeys := map[int]foreignKey{}
+	for rows.Next() {
+		var (
+			id       int
+			sequence int
+			target   string
+			from     string
+			to       string
+			onUpdate string
+			onDelete string
+			match    string
+		)
+		if err := rows.Scan(&id, &sequence, &target, &from, &to, &onUpdate, &onDelete, &match); err != nil {
+			return false, err
+		}
+		key := foreignKeys[id]
+		if key.columns == nil {
+			key.columns = map[string]string{}
+		}
+		key.table = target
+		key.onDelete = onDelete
+		key.columns[from] = to
+		foreignKeys[id] = key
+	}
+	if err := rows.Err(); err != nil {
+		return false, err
+	}
+	if len(foreignKeys) != 1 {
+		return false, nil
+	}
+	for _, key := range foreignKeys {
+		return key.table == "plugin_records" && strings.EqualFold(key.onDelete, "CASCADE") && len(key.columns) == 2 && key.columns["owner_env_hash"] == "owner_env_hash" && key.columns["plugin_instance_id"] == "plugin_instance_id", nil
+	}
+	return false, nil
 }
 
 func ensureRuntimeRequirementColumn(ctx context.Context, tx *sql.Tx) (bool, error) {
@@ -525,21 +743,23 @@ func ensureRuntimeRequirementColumn(ctx context.Context, tx *sql.Tx) (bool, erro
 }
 
 func migrateLegacyRuntimeRequirements(ctx context.Context, tx *sql.Tx) error {
-	rows, err := tx.QueryContext(ctx, `SELECT plugin_instance_id, manifest_json, version_history_json FROM plugin_records`)
+	rows, err := tx.QueryContext(ctx, `SELECT owner_env_hash, plugin_instance_id, manifest_json, version_history_json FROM plugin_records`)
 	if err != nil {
 		return err
 	}
 	type migration struct {
+		ownerEnvHash           string
 		pluginInstanceID       string
 		runtimeRequirementJSON string
 		versionHistoryJSON     string
 	}
 	migrations := make([]migration, 0)
 	for rows.Next() {
+		var ownerEnvHash string
 		var pluginInstanceID string
 		var manifestJSON string
 		var versionHistoryJSON string
-		if err := rows.Scan(&pluginInstanceID, &manifestJSON, &versionHistoryJSON); err != nil {
+		if err := rows.Scan(&ownerEnvHash, &pluginInstanceID, &manifestJSON, &versionHistoryJSON); err != nil {
 			_ = rows.Close()
 			return err
 		}
@@ -579,6 +799,7 @@ func migrateLegacyRuntimeRequirements(ctx context.Context, tx *sql.Tx) error {
 			return err
 		}
 		migrations = append(migrations, migration{
+			ownerEnvHash:           ownerEnvHash,
 			pluginInstanceID:       pluginInstanceID,
 			runtimeRequirementJSON: runtimeRequirementJSON,
 			versionHistoryJSON:     migratedHistoryJSON,
@@ -595,7 +816,7 @@ func migrateLegacyRuntimeRequirements(ctx context.Context, tx *sql.Tx) error {
 		if _, err := tx.ExecContext(ctx, `
 UPDATE plugin_records
 SET runtime_requirement_json = ?, version_history_json = ?
-WHERE plugin_instance_id = ?`, migrated.runtimeRequirementJSON, migrated.versionHistoryJSON, migrated.pluginInstanceID); err != nil {
+WHERE owner_env_hash = ? AND plugin_instance_id = ?`, migrated.runtimeRequirementJSON, migrated.versionHistoryJSON, migrated.ownerEnvHash, migrated.pluginInstanceID); err != nil {
 			return err
 		}
 	}
@@ -613,21 +834,21 @@ func legacyRuntimeRequirement(pluginManifest manifest.Manifest) (*RuntimeRequire
 	return &RuntimeRequirement{MinVersion: minimumVersion.String()}, nil
 }
 
-func getSQLitePlugin(ctx context.Context, q sqliteQuerier, pluginInstanceID string, includeDeleted bool) (PluginRecord, bool, error) {
+func getSQLitePlugin(ctx context.Context, q sqliteQuerier, ownerEnvHash, pluginInstanceID string, includeDeleted bool) (PluginRecord, bool, error) {
 	query := `
 SELECT
-		plugin_instance_id, publisher_id, plugin_id, version, active_fingerprint,
+		owner_env_hash, plugin_instance_id, publisher_id, plugin_id, version, active_fingerprint,
 		package_hash, manifest_hash, entries_hash, trust_state, trust_assessment_json,
 		source_policy_snapshot_hash, source_policy_snapshot_json, local_import_provenance_json, capability_contracts_json, enable_state,
 		disabled_reason, policy_revision, management_revision,
 		revoke_epoch, manifest_json, package_entries_json, version_history_json,
 		runtime_requirement_json, installed_at, enabled_at, updated_at, deleted_at, metadata_json
 FROM plugin_records
-WHERE plugin_instance_id = ?`
+WHERE owner_env_hash = ? AND plugin_instance_id = ?`
 	if !includeDeleted {
 		query += ` AND deleted_at IS NULL`
 	}
-	row := q.QueryRowContext(ctx, query, pluginInstanceID)
+	row := q.QueryRowContext(ctx, query, ownerEnvHash, pluginInstanceID)
 	record, err := scanSQLitePlugin(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		return PluginRecord{}, false, nil
@@ -678,14 +899,14 @@ func upsertSQLitePlugin(ctx context.Context, tx *sql.Tx, record PluginRecord) er
 	}
 	_, err = tx.ExecContext(ctx, `
 	INSERT INTO plugin_records (
-		plugin_instance_id, publisher_id, plugin_id, version, active_fingerprint,
+		owner_env_hash, plugin_instance_id, publisher_id, plugin_id, version, active_fingerprint,
 		package_hash, manifest_hash, entries_hash, trust_state, trust_assessment_json,
 		source_policy_snapshot_hash, source_policy_snapshot_json, local_import_provenance_json, capability_contracts_json, enable_state,
 		disabled_reason, policy_revision, management_revision,
 		revoke_epoch, manifest_json, package_entries_json, version_history_json,
 		runtime_requirement_json, installed_at, enabled_at, updated_at, deleted_at, metadata_json
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	ON CONFLICT(plugin_instance_id) DO UPDATE SET
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	ON CONFLICT(owner_env_hash, plugin_instance_id) DO UPDATE SET
 	publisher_id = excluded.publisher_id,
 	plugin_id = excluded.plugin_id,
 	version = excluded.version,
@@ -713,6 +934,7 @@ func upsertSQLitePlugin(ctx context.Context, tx *sql.Tx, record PluginRecord) er
 	updated_at = excluded.updated_at,
 	deleted_at = excluded.deleted_at,
 	metadata_json = excluded.metadata_json`,
+		record.OwnerEnvHash,
 		record.PluginInstanceID,
 		record.PublisherID,
 		record.PluginID,
@@ -771,6 +993,7 @@ func scanSQLitePlugin(scanner sqlitePluginScanner) (PluginRecord, error) {
 	var updatedAt int64
 	var deletedAt sql.NullInt64
 	if err := scanner.Scan(
+		&record.OwnerEnvHash,
 		&record.PluginInstanceID,
 		&record.PublisherID,
 		&record.PluginID,

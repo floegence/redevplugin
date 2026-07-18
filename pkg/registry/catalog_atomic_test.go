@@ -1,7 +1,6 @@
 package registry
 
 import (
-	"context"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -18,7 +17,7 @@ import (
 func TestCatalogManagementMutationsAreAtomic(t *testing.T) {
 	for _, tc := range registryStoreCases() {
 		t.Run(tc.name, func(t *testing.T) {
-			ctx := context.Background()
+			ctx := registryTestContext()
 			store := tc.open(t)
 			now := time.Date(2026, 7, 17, 12, 0, 0, 0, time.UTC)
 			record := putCatalogPlugin(t, store, "plugini_atomic", now)
@@ -68,14 +67,14 @@ func TestCommitUninstallWithoutBinding(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			store := tc.open(t)
 			record := putCatalogPlugin(t, store, "plugini_missing_data", time.Now())
-			result, err := store.CommitUninstall(context.Background(), plugindata.CommitUninstallRequest{PluginInstanceID: record.PluginInstanceID, ExpectedManagementRevision: record.ManagementRevision, Now: time.Now()})
+			result, err := store.CommitUninstall(registryTestContext(), plugindata.CommitUninstallRequest{PluginInstanceID: record.PluginInstanceID, ExpectedManagementRevision: record.ManagementRevision, Now: time.Now()})
 			if err != nil {
 				t.Fatalf("CommitUninstall() error = %v", err)
 			}
 			if result.ManagementRevision != record.ManagementRevision+1 || result.RevokeEpoch != record.RevokeEpoch+1 || result.DeletedAt.IsZero() {
 				t.Fatalf("CommitUninstall() result = %#v", result)
 			}
-			if _, err := store.GetPlugin(context.Background(), record.PluginInstanceID); !errors.Is(err, ErrNotFound) {
+			if _, err := store.GetPlugin(registryTestContext(), record.PluginInstanceID); !errors.Is(err, ErrNotFound) {
 				t.Fatalf("GetPlugin() error = %v, want ErrNotFound", err)
 			}
 		})
@@ -85,7 +84,7 @@ func TestCommitUninstallWithoutBinding(t *testing.T) {
 func TestCatalogPagesBindingsAndObjects(t *testing.T) {
 	for _, tc := range registryStoreCases() {
 		t.Run(tc.name, func(t *testing.T) {
-			ctx := context.Background()
+			ctx := registryTestContext()
 			store := tc.open(t)
 			for i := 0; i < 17; i++ {
 				instanceID := fmt.Sprintf("plugini_page_%02d", i)
@@ -142,7 +141,7 @@ func TestCatalogPagesBindingsAndObjects(t *testing.T) {
 }
 
 func TestSQLiteCommitUninstallReportsUnknownAndKeepsCommittedState(t *testing.T) {
-	ctx := context.Background()
+	ctx := registryTestContext()
 	store, err := NewSQLiteStore(ctx, filepath.Join(t.TempDir(), "registry.sqlite"))
 	if err != nil {
 		t.Fatal(err)
@@ -177,7 +176,7 @@ func TestSQLiteCommitUninstallReportsUnknownAndKeepsCommittedState(t *testing.T)
 func putCatalogPlugin(t *testing.T, store Store, instanceID string, now time.Time) PluginRecord {
 	t.Helper()
 	quotaFiles := int64(16)
-	record, err := store.PutPlugin(context.Background(), PluginRecord{
+	record, err := store.PutPlugin(registryTestContext(), PluginRecord{
 		PluginInstanceID:  instanceID,
 		PublisherID:       "example",
 		PluginID:          "com.example.atomic",

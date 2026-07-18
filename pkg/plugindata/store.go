@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/floegence/redevplugin/pkg/mutation"
+	"github.com/floegence/redevplugin/pkg/sessionctx"
 	settingsdomain "github.com/floegence/redevplugin/pkg/settings"
 )
 
@@ -989,26 +990,27 @@ func (s *FileStore) cleanupOnOpen(ctx context.Context) error {
 	if err := removeDirectoryContents(s.stagingRoot()); err != nil {
 		return fmt.Errorf("clean plugin data staging directory: %w", err)
 	}
-	bindings, err := s.listAllBindings(ctx)
+	bindings, err := s.listAllBindingsForMaintenance(ctx)
 	if err != nil {
 		return fmt.Errorf("read plugin data catalog during reopen: %w", err)
 	}
-	for _, binding := range bindings {
-		if err := validateBinding(binding); err != nil {
+	for _, item := range bindings {
+		if err := validateMaintenanceBinding(item); err != nil {
 			return err
 		}
-		if _, _, err := s.workspaceForBinding(binding); err != nil {
+		if _, _, err := s.workspaceForBinding(item.Binding); err != nil {
 			return err
 		}
 	}
-	objects, err := s.listAllObjects(ctx)
+	objects, err := s.listAllObjectsForMaintenance(ctx)
 	if err != nil {
 		return err
 	}
-	for _, object := range objects {
-		if err := validateObjectMetadata(object); err != nil {
+	for _, item := range objects {
+		if err := validateMaintenanceObject(item); err != nil {
 			return err
 		}
+		object := item.Object
 		var manifest exportManifest
 		if err := readJSON(filepath.Join(s.objectPath(object.ObjectID), exportManifestName), &manifest); err != nil {
 			return fmt.Errorf("%w: missing export object %s", ErrDatasetCorrupt, object.ObjectID)
@@ -1021,27 +1023,27 @@ func (s *FileStore) cleanupOnOpen(ctx context.Context) error {
 }
 
 func (s *FileStore) collectUnreferenced(ctx context.Context) error {
-	bindings, err := s.listAllBindings(ctx)
+	bindings, err := s.listAllBindingsForMaintenance(ctx)
 	if err != nil {
 		return err
 	}
 	referencedWorkspaces := make(map[string]struct{}, len(bindings))
-	for _, binding := range bindings {
-		if err := validateBinding(binding); err != nil {
+	for _, item := range bindings {
+		if err := validateMaintenanceBinding(item); err != nil {
 			return err
 		}
-		referencedWorkspaces[binding.GenerationID] = struct{}{}
+		referencedWorkspaces[item.Binding.GenerationID] = struct{}{}
 	}
-	objects, err := s.listAllObjects(ctx)
+	objects, err := s.listAllObjectsForMaintenance(ctx)
 	if err != nil {
 		return err
 	}
 	referencedObjects := make(map[string]struct{}, len(objects))
-	for _, object := range objects {
-		if err := validateObjectMetadata(object); err != nil {
+	for _, item := range objects {
+		if err := validateMaintenanceObject(item); err != nil {
 			return err
 		}
-		referencedObjects[object.ObjectID] = struct{}{}
+		referencedObjects[item.Object.ObjectID] = struct{}{}
 	}
 	if err := s.removeUnreferencedDirectories(s.workspacesRoot(), "workspace", referencedWorkspaces); err != nil {
 		return err
@@ -1104,6 +1106,58 @@ func (s *FileStore) listAllObjects(ctx context.Context) ([]Object, error) {
 		}
 		cursor = next
 	}
+}
+
+func (s *FileStore) listAllBindingsForMaintenance(ctx context.Context) ([]MaintenanceBinding, error) {
+	var result []MaintenanceBinding
+	cursor := ""
+	for {
+		page, next, err := s.catalog.ListAllBindingsForMaintenance(ctx, cursor, 256)
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, page...)
+		if next == "" {
+			return result, nil
+		}
+		if next <= cursor {
+			return nil, fmt.Errorf("%w: binding maintenance cursor did not advance", ErrDatasetCorrupt)
+		}
+		cursor = next
+	}
+}
+
+func (s *FileStore) listAllObjectsForMaintenance(ctx context.Context) ([]MaintenanceObject, error) {
+	var result []MaintenanceObject
+	cursor := ""
+	for {
+		page, next, err := s.catalog.ListAllObjectsForMaintenance(ctx, cursor, 256)
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, page...)
+		if next == "" {
+			return result, nil
+		}
+		if next <= cursor {
+			return nil, fmt.Errorf("%w: object maintenance cursor did not advance", ErrDatasetCorrupt)
+		}
+		cursor = next
+	}
+}
+
+func validateMaintenanceBinding(item MaintenanceBinding) error {
+	if err := item.Scope.Validate(); err != nil || item.Scope.Kind != sessionctx.ScopeEnvironment {
+		return fmt.Errorf("%w: invalid binding owner scope", ErrDatasetCorrupt)
+	}
+	return validateBinding(item.Binding)
+}
+
+func validateMaintenanceObject(item MaintenanceObject) error {
+	if err := item.Scope.Validate(); err != nil || item.Scope.Kind != sessionctx.ScopeUser {
+		return fmt.Errorf("%w: invalid object owner scope", ErrDatasetCorrupt)
+	}
+	return validateObjectMetadata(item.Object)
 }
 
 func normalizeEnable(req CommitEnableRequest) (string, Shape, map[string]json.RawMessage, error) {

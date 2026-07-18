@@ -18,7 +18,7 @@ import (
 func TestAuthorizationStoreContract(t *testing.T) {
 	for _, tc := range registryStoreCases() {
 		t.Run(tc.name, func(t *testing.T) {
-			ctx := context.Background()
+			ctx := registryTestContext()
 			store := tc.open(t)
 			now := time.Date(2026, 7, 17, 8, 0, 0, 0, time.UTC)
 			plugin := putAuthorizationTestPlugin(t, store, "plugini_authorization", "com.example.authorization", now)
@@ -146,7 +146,7 @@ func TestAuthorizationStoreContract(t *testing.T) {
 }
 
 func TestSQLiteStoreRejectsCorruptPersistedAuthorizationDataOnOpen(t *testing.T) {
-	ctx := context.Background()
+	ctx := registryTestContext()
 	path := filepath.Join(t.TempDir(), "registry.sqlite")
 	store, err := NewSQLiteStore(ctx, path)
 	if err != nil {
@@ -188,7 +188,7 @@ func TestSQLiteStoreRejectsCorruptPersistedAuthorizationDataOnOpen(t *testing.T)
 func TestAuthorizationMutationsRejectEveryStaleRevision(t *testing.T) {
 	for _, tc := range registryStoreCases() {
 		t.Run(tc.name, func(t *testing.T) {
-			ctx := context.Background()
+			ctx := registryTestContext()
 			store := tc.open(t)
 			now := time.Date(2026, 7, 17, 9, 0, 0, 0, time.UTC)
 			plugin := putAuthorizationTestPlugin(t, store, "plugini_stale", "com.example.stale", now)
@@ -230,7 +230,7 @@ func TestAuthorizationMutationsRejectEveryStaleRevision(t *testing.T) {
 func TestAuthorizationMutationConcurrencyCommitsOneSnapshot(t *testing.T) {
 	for _, tc := range registryStoreCases() {
 		t.Run(tc.name, func(t *testing.T) {
-			ctx := context.Background()
+			ctx := registryTestContext()
 			store := tc.open(t)
 			now := time.Date(2026, 7, 17, 10, 0, 0, 0, time.UTC)
 			plugin := putAuthorizationTestPlugin(t, store, "plugini_concurrent", "com.example.concurrent", now)
@@ -284,7 +284,7 @@ func TestAuthorizationMutationConcurrencyCommitsOneSnapshot(t *testing.T) {
 func TestMarkUninstalledDeletesAuthorizationState(t *testing.T) {
 	for _, tc := range registryStoreCases() {
 		t.Run(tc.name, func(t *testing.T) {
-			ctx := context.Background()
+			ctx := registryTestContext()
 			store := tc.open(t)
 			now := time.Date(2026, 7, 17, 11, 0, 0, 0, time.UTC)
 			plugin := putAuthorizationTestPlugin(t, store, "plugini_uninstall_auth", "com.example.uninstall-auth", now)
@@ -331,7 +331,7 @@ func TestMarkUninstalledDeletesAuthorizationState(t *testing.T) {
 }
 
 func TestSQLiteAuthorizationPersistsAcrossOpen(t *testing.T) {
-	ctx := context.Background()
+	ctx := registryTestContext()
 	path := filepath.Join(t.TempDir(), "registry.sqlite")
 	now := time.Date(2026, 7, 17, 12, 0, 0, 0, time.UTC)
 	store, err := NewSQLiteStore(ctx, path)
@@ -379,7 +379,7 @@ func TestSQLiteAuthorizationPersistsAcrossOpen(t *testing.T) {
 }
 
 func TestSQLiteAuthorizationCASAcrossStoreInstances(t *testing.T) {
-	ctx := context.Background()
+	ctx := registryTestContext()
 	path := filepath.Join(t.TempDir(), "registry.sqlite")
 	first, err := NewSQLiteStore(ctx, path)
 	if err != nil {
@@ -430,7 +430,7 @@ func TestSQLiteAuthorizationCASAcrossStoreInstances(t *testing.T) {
 }
 
 func TestSQLiteAuthorizationCrossPluginReadsBypassWriteCoordinator(t *testing.T) {
-	ctx := context.Background()
+	ctx := registryTestContext()
 	store, err := NewSQLiteStore(ctx, filepath.Join(t.TempDir(), "registry.sqlite"))
 	if err != nil {
 		t.Fatal(err)
@@ -482,7 +482,7 @@ func TestSQLiteAuthorizationCrossPluginReadsBypassWriteCoordinator(t *testing.T)
 }
 
 func TestSQLiteAuthorizationReadSeesCommittedSnapshotsDuringWrite(t *testing.T) {
-	ctx := context.Background()
+	ctx := registryTestContext()
 	store, err := NewSQLiteStore(ctx, filepath.Join(t.TempDir(), "registry.sqlite"))
 	if err != nil {
 		t.Fatal(err)
@@ -513,7 +513,7 @@ func TestSQLiteAuthorizationReadSeesCommittedSnapshotsDuringWrite(t *testing.T) 
 	}
 	defer func() { _ = tx.Rollback() }()
 	updatedAt := now.Add(2 * time.Second)
-	updatedPlugin, err := advanceSQLiteAuthorizationRevisions(ctx, tx, plugin.PluginInstanceID, AuthorizationRevisionsFromRecord(before.Plugin), true, updatedAt)
+	updatedPlugin, err := advanceSQLiteAuthorizationRevisions(ctx, tx, plugin.OwnerEnvHash, plugin.PluginInstanceID, AuthorizationRevisionsFromRecord(before.Plugin), true, updatedAt)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -525,7 +525,7 @@ func TestSQLiteAuthorizationReadSeesCommittedSnapshotsDuringWrite(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := upsertSQLiteSecurityPolicy(ctx, tx, policy); err != nil {
+	if err := upsertSQLiteSecurityPolicy(ctx, tx, plugin.OwnerEnvHash, policy); err != nil {
 		t.Fatal(err)
 	}
 
@@ -585,7 +585,7 @@ func TestSQLiteAuthorizationReadSeesCommittedSnapshotsDuringWrite(t *testing.T) 
 }
 
 func TestSQLiteAuthorizationReadPoolConfigurationSurvivesReopen(t *testing.T) {
-	ctx := context.Background()
+	ctx := registryTestContext()
 	path := filepath.Join(t.TempDir(), "registry pool #1.sqlite")
 	for attempt := 0; attempt < 2; attempt++ {
 		store, err := NewSQLiteStore(ctx, path)
@@ -636,7 +636,7 @@ func assertSQLiteAuthorizationReadPoolConfiguration(t *testing.T, ctx context.Co
 
 func putAuthorizationTestPlugin(t *testing.T, store Store, pluginInstanceID string, pluginID string, now time.Time) PluginRecord {
 	t.Helper()
-	record, err := store.PutPlugin(context.Background(), authorizationTestPlugin(pluginInstanceID, pluginID), PutOptions{Now: now})
+	record, err := store.PutPlugin(registryTestContext(), authorizationTestPlugin(pluginInstanceID, pluginID), PutOptions{Now: now})
 	if err != nil {
 		t.Fatal(err)
 	}

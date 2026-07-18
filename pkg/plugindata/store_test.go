@@ -13,9 +13,23 @@ import (
 	"github.com/floegence/redevplugin/pkg/manifest"
 	"github.com/floegence/redevplugin/pkg/plugindata"
 	"github.com/floegence/redevplugin/pkg/registry"
+	"github.com/floegence/redevplugin/pkg/sessionctx"
 	"github.com/floegence/redevplugin/pkg/settings"
 	"github.com/floegence/redevplugin/pkg/storage"
 )
+
+func pluginDataTestContext() context.Context {
+	return pluginDataTestContextFor("owner_user_hash_test", "owner_env_hash_test")
+}
+
+func pluginDataTestContextFor(ownerUserHash, ownerEnvHash string) context.Context {
+	return sessionctx.WithContext(context.Background(), sessionctx.Context{
+		OwnerSessionHash:     "owner_session_hash_test",
+		OwnerUserHash:        ownerUserHash,
+		OwnerEnvHash:         ownerEnvHash,
+		SessionChannelIDHash: "session_channel_id_hash_test",
+	})
+}
 
 type catalogCase struct {
 	name string
@@ -26,7 +40,7 @@ func catalogCases() []catalogCase {
 	return []catalogCase{
 		{name: "memory", open: func(t *testing.T) registry.Store { return registry.NewMemoryStore() }},
 		{name: "sqlite", open: func(t *testing.T) registry.Store {
-			store, err := registry.NewSQLiteStore(context.Background(), filepath.Join(t.TempDir(), "registry.sqlite"))
+			store, err := registry.NewSQLiteStore(pluginDataTestContext(), filepath.Join(t.TempDir(), "registry.sqlite"))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -39,7 +53,7 @@ func catalogCases() []catalogCase {
 func TestFileStoreLifecycleAndBrokers(t *testing.T) {
 	for _, tc := range catalogCases() {
 		t.Run(tc.name, func(t *testing.T) {
-			ctx := context.Background()
+			ctx := pluginDataTestContext()
 			catalog := tc.open(t)
 			root := resolvedTempDir(t)
 			store, err := plugindata.Open(ctx, root, catalog)
@@ -164,7 +178,7 @@ func TestFileStoreLifecycleAndBrokers(t *testing.T) {
 func TestFileStoreExportImportAndRetainedBinding(t *testing.T) {
 	for _, tc := range catalogCases() {
 		t.Run(tc.name, func(t *testing.T) {
-			ctx := context.Background()
+			ctx := pluginDataTestContext()
 			catalog := tc.open(t)
 			store, err := plugindata.Open(ctx, resolvedTempDir(t), catalog)
 			if err != nil {
@@ -221,7 +235,7 @@ func TestFileStoreExportImportAndRetainedBinding(t *testing.T) {
 func TestCleanupExpiredRemovesEveryReturnedGeneration(t *testing.T) {
 	for _, tc := range catalogCases() {
 		t.Run(tc.name, func(t *testing.T) {
-			ctx := context.Background()
+			ctx := pluginDataTestContext()
 			catalog := tc.open(t)
 			root := resolvedTempDir(t)
 			store, err := plugindata.Open(ctx, root, catalog)
@@ -270,7 +284,7 @@ func TestCleanupExpiredRemovesEveryReturnedGeneration(t *testing.T) {
 }
 
 func TestFileStoreQuotaRootLockAndClose(t *testing.T) {
-	ctx := context.Background()
+	ctx := pluginDataTestContext()
 	catalog := registry.NewMemoryStore()
 	root := resolvedTempDir(t)
 	store, err := plugindata.Open(ctx, root, catalog)
@@ -311,7 +325,7 @@ func TestFileStoreQuotaRootLockAndClose(t *testing.T) {
 }
 
 func TestFileStoreImportRejectsTamperedObject(t *testing.T) {
-	ctx := context.Background()
+	ctx := pluginDataTestContext()
 	catalog := registry.NewMemoryStore()
 	root := resolvedTempDir(t)
 	store, err := plugindata.Open(ctx, root, catalog)
@@ -340,7 +354,7 @@ func TestFileStoreImportRejectsTamperedObject(t *testing.T) {
 }
 
 func TestCommitEnableRejectsCallerDefinedShape(t *testing.T) {
-	ctx := context.Background()
+	ctx := pluginDataTestContext()
 	catalog := registry.NewMemoryStore()
 	store, err := plugindata.Open(ctx, resolvedTempDir(t), catalog)
 	if err != nil {
@@ -374,7 +388,7 @@ func TestOpenCanonicalizesSymlinkAncestor(t *testing.T) {
 		t.Fatal(err)
 	}
 	catalog := registry.NewMemoryStore()
-	store, err := plugindata.Open(context.Background(), filepath.Join(link, "data"), catalog)
+	store, err := plugindata.Open(pluginDataTestContext(), filepath.Join(link, "data"), catalog)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -390,7 +404,7 @@ func TestOpenCanonicalizesSymlinkAncestor(t *testing.T) {
 		t.Fatal(err)
 	}
 	record := putPlugin(t, catalog, "plugini_canonical_root", time.Now())
-	if _, err := store.CommitEnable(context.Background(), enableRequest(record, testShape(), time.Now())); err != nil {
+	if _, err := store.CommitEnable(pluginDataTestContext(), enableRequest(record, testShape(), time.Now())); err != nil {
 		t.Fatal(err)
 	}
 	if entries, err := os.ReadDir(filepath.Join(real, "data", "workspaces")); err != nil || len(entries) != 1 {
@@ -410,8 +424,60 @@ func TestOpenRejectsSymlinkRootLock(t *testing.T) {
 	if err := os.Symlink(target, filepath.Join(root, ".redevplugin.lock")); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := plugindata.Open(context.Background(), root, registry.NewMemoryStore()); !errors.Is(err, plugindata.ErrUnsafeFilesystem) {
+	if _, err := plugindata.Open(pluginDataTestContext(), root, registry.NewMemoryStore()); !errors.Is(err, plugindata.ErrUnsafeFilesystem) {
 		t.Fatalf("Open() error = %v, want ErrUnsafeFilesystem", err)
+	}
+}
+
+func TestFileStoreMaintenancePreservesOtherOwners(t *testing.T) {
+	for _, tc := range catalogCases() {
+		t.Run(tc.name, func(t *testing.T) {
+			ctxA := pluginDataTestContextFor("owner_user_a", "owner_env_a")
+			ctxB := pluginDataTestContextFor("owner_user_b", "owner_env_b")
+			catalog := tc.open(t)
+			root := resolvedTempDir(t)
+			store, err := plugindata.Open(ctxA, root, catalog)
+			if err != nil {
+				t.Fatal(err)
+			}
+			shape := testShape()
+			recordA := putPluginWithContext(t, ctxA, catalog, "plugini_shared", time.Now(), testManifest())
+			recordB := putPluginWithContext(t, ctxB, catalog, "plugini_shared", time.Now(), testManifest())
+			datasetA, err := store.CommitEnable(ctxA, enableRequest(recordA, shape, time.Now()))
+			if err != nil {
+				t.Fatal(err)
+			}
+			datasetB, err := store.CommitEnable(ctxB, enableRequest(recordB, shape, time.Now()))
+			if err != nil {
+				t.Fatal(err)
+			}
+			exportA, err := store.Export(ctxA, plugindata.ExportRequest{PluginInstanceID: recordA.PluginInstanceID})
+			if err != nil {
+				t.Fatal(err)
+			}
+			exportB, err := store.Export(ctxB, plugindata.ExportRequest{PluginInstanceID: recordB.PluginInstanceID})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := store.Close(); err != nil {
+				t.Fatal(err)
+			}
+			reopened, err := plugindata.Open(ctxA, root, catalog)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer reopened.Close()
+			for _, path := range []string{
+				filepath.Join(root, "workspaces", datasetA.Binding.GenerationID),
+				filepath.Join(root, "workspaces", datasetB.Binding.GenerationID),
+				filepath.Join(root, "objects", exportA.ObjectID),
+				filepath.Join(root, "objects", exportB.ObjectID),
+			} {
+				if info, err := os.Stat(path); err != nil || !info.IsDir() {
+					t.Fatalf("maintained directory %s: info=%v err=%v", path, info, err)
+				}
+			}
+		})
 	}
 }
 
@@ -420,8 +486,12 @@ func putPlugin(t *testing.T, store registry.Store, instanceID string, now time.T
 }
 
 func putPluginWithManifest(t *testing.T, store registry.Store, instanceID string, now time.Time, pluginManifest manifest.Manifest) registry.PluginRecord {
+	return putPluginWithContext(t, pluginDataTestContext(), store, instanceID, now, pluginManifest)
+}
+
+func putPluginWithContext(t *testing.T, ctx context.Context, store registry.Store, instanceID string, now time.Time, pluginManifest manifest.Manifest) registry.PluginRecord {
 	t.Helper()
-	record, err := store.PutPlugin(context.Background(), registry.PluginRecord{
+	record, err := store.PutPlugin(ctx, registry.PluginRecord{
 		PluginInstanceID:  instanceID,
 		PublisherID:       "example",
 		PluginID:          "com.example.notes",

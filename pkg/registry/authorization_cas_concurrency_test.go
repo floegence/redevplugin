@@ -145,7 +145,7 @@ func TestAuthorizationConcurrentCASMutations(t *testing.T) {
 	for _, test := range tests {
 		for _, backend := range []string{"memory", "sqlite"} {
 			t.Run(test.name+"/"+backend, func(t *testing.T) {
-				ctx := context.Background()
+				ctx := registryTestContext()
 				now := time.Date(2026, 7, 17, 15, 0, 0, 0, time.UTC)
 				store, sqliteStore, sqlitePath := openConcurrentAuthorizationStore(t, ctx, backend)
 				plugin := putAuthorizationTestPlugin(t, store, "plugini_concurrent_"+test.name, "com.example.concurrent-"+test.name, now.Add(-time.Hour))

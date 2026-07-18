@@ -1,7 +1,6 @@
 package registry
 
 import (
-	"context"
 	"fmt"
 	"path/filepath"
 	"runtime"
@@ -39,7 +38,7 @@ func BenchmarkAuthorizationCrossPlugin(b *testing.B) {
 func BenchmarkListAuthorizationSQLite(b *testing.B) {
 	for _, pluginCount := range []int{10, 100, 1000} {
 		b.Run(fmt.Sprintf("plugins_%d", pluginCount), func(b *testing.B) {
-			ctx := context.Background()
+			ctx := registryTestContext()
 			store, err := NewSQLiteStore(ctx, filepath.Join(b.TempDir(), "registry.sqlite"))
 			if err != nil {
 				b.Fatal(err)
@@ -89,7 +88,7 @@ func BenchmarkListAuthorizationSQLite(b *testing.B) {
 func BenchmarkSQLiteAuthorizeGrantScaling(b *testing.B) {
 	for _, grantCount := range []int{1, 1000} {
 		b.Run(fmt.Sprintf("grants_%d", grantCount), func(b *testing.B) {
-			ctx := context.Background()
+			ctx := registryTestContext()
 			store, err := NewSQLiteStore(ctx, filepath.Join(b.TempDir(), "registry.sqlite"))
 			if err != nil {
 				b.Fatal(err)
@@ -106,7 +105,7 @@ func BenchmarkSQLiteAuthorizeGrantScaling(b *testing.B) {
 			}
 			for index := 0; index < grantCount; index++ {
 				permissionID := fmt.Sprintf("permission.%04d", index)
-				if err := upsertSQLitePermissionGrant(ctx, tx, permissions.Record{
+				if err := upsertSQLitePermissionGrant(ctx, tx, plugin.OwnerEnvHash, permissions.Record{
 					PluginInstanceID: plugin.PluginInstanceID,
 					PermissionID:     permissionID,
 					Effect:           permissions.EffectGrant,
@@ -141,7 +140,7 @@ func BenchmarkSQLiteAuthorizeGrantScaling(b *testing.B) {
 
 func newAuthorizationBenchmarkStore(b *testing.B, backend string) (Store, []AuthorizationSnapshot) {
 	b.Helper()
-	ctx := context.Background()
+	ctx := registryTestContext()
 	var store Store
 	if backend == "memory" {
 		store = NewMemoryStore()
@@ -180,7 +179,7 @@ func newAuthorizationBenchmarkStore(b *testing.B, backend string) (Store, []Auth
 
 func benchmarkAuthorizeSequential(b *testing.B, store Store, snapshots []AuthorizationSnapshot) {
 	b.Helper()
-	ctx := context.Background()
+	ctx := registryTestContext()
 	now := time.Date(2026, 7, 17, 12, 1, 0, 0, time.UTC)
 	b.ReportAllocs()
 	b.ResetTimer()
@@ -201,7 +200,7 @@ func benchmarkAuthorizeSequential(b *testing.B, store Store, snapshots []Authori
 
 func benchmarkAuthorizeParallel(b *testing.B, store Store, snapshots []AuthorizationSnapshot) {
 	b.Helper()
-	ctx := context.Background()
+	ctx := registryTestContext()
 	now := time.Date(2026, 7, 17, 12, 1, 0, 0, time.UTC)
 	var workerID atomic.Uint64
 	b.ReportAllocs()
@@ -226,7 +225,7 @@ func benchmarkAuthorizeParallel(b *testing.B, store Store, snapshots []Authoriza
 
 func benchmarkPolicyMutationSequential(b *testing.B, store Store, snapshots []AuthorizationSnapshot) {
 	b.Helper()
-	ctx := context.Background()
+	ctx := registryTestContext()
 	now := time.Date(2026, 7, 17, 12, 2, 0, 0, time.UTC)
 	b.ReportAllocs()
 	b.ResetTimer()
@@ -247,7 +246,7 @@ func benchmarkPolicyMutationSequential(b *testing.B, store Store, snapshots []Au
 
 func benchmarkPolicyMutationParallel(b *testing.B, store Store, snapshots []AuthorizationSnapshot) {
 	b.Helper()
-	ctx := context.Background()
+	ctx := registryTestContext()
 	now := time.Date(2026, 7, 17, 12, 2, 0, 0, time.UTC)
 	var workerID atomic.Uint64
 	b.ReportAllocs()

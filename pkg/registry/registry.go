@@ -62,6 +62,7 @@ type TrustAssessment struct {
 }
 
 type PluginRecord struct {
+	OwnerEnvHash             string                   `json:"-"`
 	PluginInstanceID         string                   `json:"plugin_instance_id"`
 	PublisherID              string                   `json:"publisher_id"`
 	PluginID                 string                   `json:"plugin_id"`
@@ -187,7 +188,15 @@ func NewMemoryStore() *MemoryStore {
 	}
 }
 
-func (s *MemoryStore) PutPlugin(_ context.Context, record PluginRecord, opts PutOptions) (PluginRecord, error) {
+func (s *MemoryStore) PutPlugin(ctx context.Context, record PluginRecord, opts PutOptions) (PluginRecord, error) {
+	ownerEnvHash, err := environmentOwner(ctx)
+	if err != nil {
+		return PluginRecord{}, err
+	}
+	if record.OwnerEnvHash != "" && record.OwnerEnvHash != ownerEnvHash {
+		return PluginRecord{}, ErrOwnerScopeMismatch
+	}
+	record.OwnerEnvHash = ownerEnvHash
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -203,7 +212,8 @@ func (s *MemoryStore) PutPlugin(_ context.Context, record PluginRecord, opts Put
 		return PluginRecord{}, fmt.Errorf("clone plugin record: %w", err)
 	}
 	record = cloned
-	existing, exists := s.records[record.PluginInstanceID]
+	key := environmentRecordKey(ownerEnvHash, record.PluginInstanceID)
+	existing, exists := s.records[key]
 	if exists {
 		record.InstalledAt = existing.InstalledAt
 		record.ManagementRevision = existing.ManagementRevision + 1
@@ -220,28 +230,36 @@ func (s *MemoryStore) PutPlugin(_ context.Context, record PluginRecord, opts Put
 	}
 	record.UpdatedAt = now
 	record = normalizeTrustAssessment(record)
-	s.records[record.PluginInstanceID] = record
+	s.records[key] = record
 	return clonePluginRecord(record)
 }
 
-func (s *MemoryStore) GetPlugin(_ context.Context, pluginInstanceID string) (PluginRecord, error) {
+func (s *MemoryStore) GetPlugin(ctx context.Context, pluginInstanceID string) (PluginRecord, error) {
+	ownerEnvHash, err := environmentOwner(ctx)
+	if err != nil {
+		return PluginRecord{}, err
+	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	record, ok := s.records[pluginInstanceID]
+	record, ok := s.records[environmentRecordKey(ownerEnvHash, pluginInstanceID)]
 	if !ok || record.DeletedAt != nil {
 		return PluginRecord{}, ErrNotFound
 	}
 	return clonePluginRecord(record)
 }
 
-func (s *MemoryStore) ListPlugins(_ context.Context) ([]PluginRecord, error) {
+func (s *MemoryStore) ListPlugins(ctx context.Context) ([]PluginRecord, error) {
+	ownerEnvHash, err := environmentOwner(ctx)
+	if err != nil {
+		return nil, err
+	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
 	records := make([]PluginRecord, 0, len(s.records))
 	for _, record := range s.records {
-		if record.DeletedAt == nil {
+		if record.OwnerEnvHash == ownerEnvHash && record.DeletedAt == nil {
 			cloned, err := clonePluginRecord(record)
 			if err != nil {
 				return nil, fmt.Errorf("clone plugin record: %w", err)
@@ -258,11 +276,16 @@ func (s *MemoryStore) ListPlugins(_ context.Context) ([]PluginRecord, error) {
 	return records, nil
 }
 
-func (s *MemoryStore) SetEnableState(_ context.Context, pluginInstanceID string, state EnableState, reason string, now time.Time) (PluginRecord, error) {
+func (s *MemoryStore) SetEnableState(ctx context.Context, pluginInstanceID string, state EnableState, reason string, now time.Time) (PluginRecord, error) {
+	ownerEnvHash, err := environmentOwner(ctx)
+	if err != nil {
+		return PluginRecord{}, err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	record, ok := s.records[pluginInstanceID]
+	key := environmentRecordKey(ownerEnvHash, pluginInstanceID)
+	record, ok := s.records[key]
 	if !ok || record.DeletedAt != nil {
 		return PluginRecord{}, ErrNotFound
 	}
@@ -279,15 +302,20 @@ func (s *MemoryStore) SetEnableState(_ context.Context, pluginInstanceID string,
 	} else {
 		record.EnabledAt = nil
 	}
-	s.records[pluginInstanceID] = record
+	s.records[key] = record
 	return clonePluginRecord(record)
 }
 
-func (s *MemoryStore) CommitUninstall(_ context.Context, req plugindata.CommitUninstallRequest) (plugindata.CommitUninstallResult, error) {
+func (s *MemoryStore) CommitUninstall(ctx context.Context, req plugindata.CommitUninstallRequest) (plugindata.CommitUninstallResult, error) {
+	ownerEnvHash, err := environmentOwner(ctx)
+	if err != nil {
+		return plugindata.CommitUninstallResult{}, err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	record, ok := s.records[req.PluginInstanceID]
+	key := environmentRecordKey(ownerEnvHash, req.PluginInstanceID)
+	record, ok := s.records[key]
 	if !ok || record.DeletedAt != nil {
 		return plugindata.CommitUninstallResult{}, ErrNotFound
 	}
@@ -298,7 +326,7 @@ func (s *MemoryStore) CommitUninstall(_ context.Context, req plugindata.CommitUn
 	if now.IsZero() {
 		now = time.Now().UTC()
 	}
-	binding, hasBinding := s.dataBindings[req.PluginInstanceID]
+	binding, hasBinding := s.dataBindings[key]
 	record.EnableState = EnableDisabled
 	record.DisabledReason = "uninstalled"
 	record.ManagementRevision++
@@ -306,34 +334,39 @@ func (s *MemoryStore) CommitUninstall(_ context.Context, req plugindata.CommitUn
 	record.UpdatedAt = now
 	record.DeletedAt = &now
 	record.EnabledAt = nil
-	s.records[req.PluginInstanceID] = record
-	delete(s.permissionGrants, req.PluginInstanceID)
-	delete(s.securityPolicies, req.PluginInstanceID)
+	s.records[key] = record
+	delete(s.permissionGrants, key)
+	delete(s.securityPolicies, key)
 	if hasBinding {
 		if req.DeleteData {
-			delete(s.dataBindings, req.PluginInstanceID)
+			delete(s.dataBindings, key)
 		} else {
 			binding.State = plugindata.BindingRetained
 			binding.Revision++
 			binding.RetainedAt = &now
 			binding.ExpiresAt = cloneRegistryTime(req.RetainUntil)
-			s.dataBindings[req.PluginInstanceID] = binding
+			s.dataBindings[key] = binding
 		}
 	}
 	return plugindata.CommitUninstallResult{ManagementRevision: record.ManagementRevision, RevokeEpoch: record.RevokeEpoch, DeletedAt: now}, nil
 }
 
-func (s *MemoryStore) AbortInstall(_ context.Context, pluginInstanceID string) error {
+func (s *MemoryStore) AbortInstall(ctx context.Context, pluginInstanceID string) error {
+	ownerEnvHash, err := environmentOwner(ctx)
+	if err != nil {
+		return err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if _, ok := s.records[pluginInstanceID]; !ok {
+	key := environmentRecordKey(ownerEnvHash, pluginInstanceID)
+	if _, ok := s.records[key]; !ok {
 		return ErrNotFound
 	}
-	delete(s.records, pluginInstanceID)
-	delete(s.permissionGrants, pluginInstanceID)
-	delete(s.securityPolicies, pluginInstanceID)
-	delete(s.dataBindings, pluginInstanceID)
+	delete(s.records, key)
+	delete(s.permissionGrants, key)
+	delete(s.securityPolicies, key)
+	delete(s.dataBindings, key)
 	return nil
 }
 
@@ -389,6 +422,7 @@ func normalizeTrustAssessment(record PluginRecord) PluginRecord {
 }
 
 func clonePluginRecord(record PluginRecord) (PluginRecord, error) {
+	ownerEnvHash := record.OwnerEnvHash
 	raw, err := json.Marshal(record)
 	if err != nil {
 		return PluginRecord{}, err
@@ -397,6 +431,7 @@ func clonePluginRecord(record PluginRecord) (PluginRecord, error) {
 	if err := json.Unmarshal(raw, &cloned); err != nil {
 		return PluginRecord{}, err
 	}
+	cloned.OwnerEnvHash = ownerEnvHash
 	return cloned, nil
 }
 

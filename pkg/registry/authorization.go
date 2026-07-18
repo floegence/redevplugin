@@ -96,7 +96,11 @@ func (e *AuthorizationRevisionConflictError) Unwrap() error {
 	return ErrAuthorizationRevisionConflict
 }
 
-func (s *MemoryStore) GrantPermission(_ context.Context, req permissions.GrantRequest, expected AuthorizationRevisions) (AuthorizationSnapshot, error) {
+func (s *MemoryStore) GrantPermission(ctx context.Context, req permissions.GrantRequest, expected AuthorizationRevisions) (AuthorizationSnapshot, error) {
+	ownerEnvHash, err := environmentOwner(ctx)
+	if err != nil {
+		return AuthorizationSnapshot{}, err
+	}
 	grant, err := permissions.NewGrant(req)
 	if err != nil {
 		return AuthorizationSnapshot{}, err
@@ -104,34 +108,40 @@ func (s *MemoryStore) GrantPermission(_ context.Context, req permissions.GrantRe
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	record, err := s.requireAuthorizationMutationLocked(grant.PluginInstanceID, expected)
+	key := environmentRecordKey(ownerEnvHash, grant.PluginInstanceID)
+	record, err := s.requireAuthorizationMutationLocked(key, grant.PluginInstanceID, expected)
 	if err != nil {
 		return AuthorizationSnapshot{}, err
 	}
-	grants := s.permissionGrants[record.PluginInstanceID]
+	grants := s.permissionGrants[key]
 	if grants == nil {
 		grants = map[string]permissions.Record{}
-		s.permissionGrants[record.PluginInstanceID] = grants
+		s.permissionGrants[key] = grants
 	}
 	grants[grant.PermissionID] = permissions.CloneRecord(grant)
 	record.PolicyRevision++
 	record.UpdatedAt = grant.GrantedAt
-	s.records[record.PluginInstanceID] = record
+	s.records[key] = record
 	return s.authorizationSnapshotLocked(record)
 }
 
-func (s *MemoryStore) RevokePermission(_ context.Context, req permissions.RevokeRequest, expected AuthorizationRevisions) (AuthorizationSnapshot, error) {
+func (s *MemoryStore) RevokePermission(ctx context.Context, req permissions.RevokeRequest, expected AuthorizationRevisions) (AuthorizationSnapshot, error) {
+	ownerEnvHash, err := environmentOwner(ctx)
+	if err != nil {
+		return AuthorizationSnapshot{}, err
+	}
 	if err := permissions.ValidateRevokeRequest(req); err != nil {
 		return AuthorizationSnapshot{}, err
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	pluginInstanceID := strings.TrimSpace(req.PluginInstanceID)
-	record, err := s.requireAuthorizationMutationLocked(pluginInstanceID, expected)
+	key := environmentRecordKey(ownerEnvHash, pluginInstanceID)
+	record, err := s.requireAuthorizationMutationLocked(key, pluginInstanceID, expected)
 	if err != nil {
 		return AuthorizationSnapshot{}, err
 	}
-	grants := s.permissionGrants[record.PluginInstanceID]
+	grants := s.permissionGrants[key]
 	existing, ok := grants[strings.TrimSpace(req.PermissionID)]
 	if !ok {
 		return AuthorizationSnapshot{}, permissions.ErrGrantNotFound
@@ -144,11 +154,15 @@ func (s *MemoryStore) RevokePermission(_ context.Context, req permissions.Revoke
 	record.PolicyRevision++
 	record.RevokeEpoch++
 	record.UpdatedAt = *revoked.RevokedAt
-	s.records[record.PluginInstanceID] = record
+	s.records[key] = record
 	return s.authorizationSnapshotLocked(record)
 }
 
-func (s *MemoryStore) PutSecurityPolicy(_ context.Context, req security.PutPolicyRequest, expected AuthorizationRevisions) (AuthorizationSnapshot, error) {
+func (s *MemoryStore) PutSecurityPolicy(ctx context.Context, req security.PutPolicyRequest, expected AuthorizationRevisions) (AuthorizationSnapshot, error) {
+	ownerEnvHash, err := environmentOwner(ctx)
+	if err != nil {
+		return AuthorizationSnapshot{}, err
+	}
 	policy, err := security.NewPolicy(req)
 	if err != nil {
 		return AuthorizationSnapshot{}, err
@@ -156,19 +170,24 @@ func (s *MemoryStore) PutSecurityPolicy(_ context.Context, req security.PutPolic
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	record, err := s.requireAuthorizationMutationLocked(policy.PluginInstanceID, expected)
+	key := environmentRecordKey(ownerEnvHash, policy.PluginInstanceID)
+	record, err := s.requireAuthorizationMutationLocked(key, policy.PluginInstanceID, expected)
 	if err != nil {
 		return AuthorizationSnapshot{}, err
 	}
-	s.securityPolicies[record.PluginInstanceID] = security.ClonePolicy(policy)
+	s.securityPolicies[key] = security.ClonePolicy(policy)
 	record.PolicyRevision++
 	record.RevokeEpoch++
 	record.UpdatedAt = policy.UpdatedAt
-	s.records[record.PluginInstanceID] = record
+	s.records[key] = record
 	return s.authorizationSnapshotLocked(record)
 }
 
-func (s *MemoryStore) DeleteSecurityPolicy(_ context.Context, pluginInstanceID string, now time.Time, expected AuthorizationRevisions) (AuthorizationSnapshot, error) {
+func (s *MemoryStore) DeleteSecurityPolicy(ctx context.Context, pluginInstanceID string, now time.Time, expected AuthorizationRevisions) (AuthorizationSnapshot, error) {
+	ownerEnvHash, err := environmentOwner(ctx)
+	if err != nil {
+		return AuthorizationSnapshot{}, err
+	}
 	if err := security.ValidatePolicyID(pluginInstanceID); err != nil {
 		return AuthorizationSnapshot{}, err
 	}
@@ -179,34 +198,43 @@ func (s *MemoryStore) DeleteSecurityPolicy(_ context.Context, pluginInstanceID s
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	record, err := s.requireAuthorizationMutationLocked(pluginInstanceID, expected)
+	key := environmentRecordKey(ownerEnvHash, pluginInstanceID)
+	record, err := s.requireAuthorizationMutationLocked(key, pluginInstanceID, expected)
 	if err != nil {
 		return AuthorizationSnapshot{}, err
 	}
-	delete(s.securityPolicies, pluginInstanceID)
+	delete(s.securityPolicies, key)
 	record.PolicyRevision++
 	record.RevokeEpoch++
 	record.UpdatedAt = now
-	s.records[pluginInstanceID] = record
+	s.records[key] = record
 	return s.authorizationSnapshotLocked(record)
 }
 
-func (s *MemoryStore) GetAuthorization(_ context.Context, pluginInstanceID string) (AuthorizationSnapshot, error) {
+func (s *MemoryStore) GetAuthorization(ctx context.Context, pluginInstanceID string) (AuthorizationSnapshot, error) {
+	ownerEnvHash, err := environmentOwner(ctx)
+	if err != nil {
+		return AuthorizationSnapshot{}, err
+	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	record, ok := s.records[strings.TrimSpace(pluginInstanceID)]
+	record, ok := s.records[environmentRecordKey(ownerEnvHash, pluginInstanceID)]
 	if !ok || record.DeletedAt != nil {
 		return AuthorizationSnapshot{}, ErrNotFound
 	}
 	return s.authorizationSnapshotLocked(record)
 }
 
-func (s *MemoryStore) ListAuthorization(_ context.Context) ([]AuthorizationSnapshot, error) {
+func (s *MemoryStore) ListAuthorization(ctx context.Context) ([]AuthorizationSnapshot, error) {
+	ownerEnvHash, err := environmentOwner(ctx)
+	if err != nil {
+		return nil, err
+	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	snapshots := make([]AuthorizationSnapshot, 0, len(s.records))
 	for _, record := range s.records {
-		if record.DeletedAt != nil {
+		if record.OwnerEnvHash != ownerEnvHash || record.DeletedAt != nil {
 			continue
 		}
 		snapshot, err := s.authorizationSnapshotLocked(record)
@@ -220,6 +248,10 @@ func (s *MemoryStore) ListAuthorization(_ context.Context) ([]AuthorizationSnaps
 }
 
 func (s *MemoryStore) Authorize(ctx context.Context, req AuthorizeRequest) (AuthorizationDecision, error) {
+	ownerEnvHash, err := environmentOwner(ctx)
+	if err != nil {
+		return AuthorizationDecision{}, err
+	}
 	pluginInstanceID := strings.TrimSpace(req.PluginInstanceID)
 	if err := security.ValidatePolicyEvaluationRequest(security.EvaluatePolicyRequest{
 		PluginInstanceID:    pluginInstanceID,
@@ -230,7 +262,8 @@ func (s *MemoryStore) Authorize(ctx context.Context, req AuthorizeRequest) (Auth
 	}
 
 	s.mu.RLock()
-	record, ok := s.records[pluginInstanceID]
+	key := environmentRecordKey(ownerEnvHash, pluginInstanceID)
+	record, ok := s.records[key]
 	if !ok || record.DeletedAt != nil {
 		s.mu.RUnlock()
 		return AuthorizationDecision{}, ErrNotFound
@@ -241,7 +274,7 @@ func (s *MemoryStore) Authorize(ctx context.Context, req AuthorizeRequest) (Auth
 	}
 	state := authorizationStateFromRecord(record)
 	requiredPermissionIDs := permissions.NormalizePermissionIDs(req.PermissionIDs)
-	grantsByPermissionID := s.permissionGrants[record.PluginInstanceID]
+	grantsByPermissionID := s.permissionGrants[key]
 	grants := make([]permissions.Record, 0, len(requiredPermissionIDs))
 	for _, permissionID := range requiredPermissionIDs {
 		if grant, ok := grantsByPermissionID[permissionID]; ok {
@@ -249,7 +282,7 @@ func (s *MemoryStore) Authorize(ctx context.Context, req AuthorizeRequest) (Auth
 		}
 	}
 	var policy *security.PolicyRecord
-	if current, ok := s.securityPolicies[record.PluginInstanceID]; ok {
+	if current, ok := s.securityPolicies[key]; ok {
 		cloned := security.ClonePolicy(current)
 		policy = &cloned
 	}
@@ -257,8 +290,8 @@ func (s *MemoryStore) Authorize(ctx context.Context, req AuthorizeRequest) (Auth
 	return evaluateAuthorization(state, grants, policy, req)
 }
 
-func (s *MemoryStore) requireAuthorizationMutationLocked(pluginInstanceID string, expected AuthorizationRevisions) (PluginRecord, error) {
-	record, ok := s.records[pluginInstanceID]
+func (s *MemoryStore) requireAuthorizationMutationLocked(key, pluginInstanceID string, expected AuthorizationRevisions) (PluginRecord, error) {
+	record, ok := s.records[key]
 	if !ok || record.DeletedAt != nil {
 		return PluginRecord{}, ErrNotFound
 	}
@@ -273,11 +306,12 @@ func (s *MemoryStore) authorizationSnapshotLocked(record PluginRecord) (Authoriz
 	if err != nil {
 		return AuthorizationSnapshot{}, err
 	}
+	key := environmentRecordKey(record.OwnerEnvHash, record.PluginInstanceID)
 	snapshot := AuthorizationSnapshot{
 		Plugin: plugin,
-		Grants: clonePermissionRecordsFromMap(s.permissionGrants[record.PluginInstanceID]),
+		Grants: clonePermissionRecordsFromMap(s.permissionGrants[key]),
 	}
-	if policy, ok := s.securityPolicies[record.PluginInstanceID]; ok {
+	if policy, ok := s.securityPolicies[key]; ok {
 		cloned := security.ClonePolicy(policy)
 		snapshot.Policy = &cloned
 	}

@@ -12,6 +12,7 @@ import (
 
 	"github.com/floegence/redevplugin/pkg/mutation"
 	"github.com/floegence/redevplugin/pkg/plugindata"
+	"github.com/floegence/redevplugin/pkg/sessionctx"
 )
 
 var ErrManagementRevisionConflict = errors.New("management revision conflict")
@@ -28,17 +29,25 @@ func (e *ManagementRevisionConflictError) Error() string {
 
 func (e *ManagementRevisionConflictError) Unwrap() error { return ErrManagementRevisionConflict }
 
-func (s *MemoryStore) GetBinding(_ context.Context, pluginInstanceID string) (plugindata.Binding, bool, error) {
+func (s *MemoryStore) GetBinding(ctx context.Context, pluginInstanceID string) (plugindata.Binding, bool, error) {
+	ownerEnvHash, err := environmentOwner(ctx)
+	if err != nil {
+		return plugindata.Binding{}, false, err
+	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	binding, ok := s.dataBindings[strings.TrimSpace(pluginInstanceID)]
+	binding, ok := s.dataBindings[environmentRecordKey(ownerEnvHash, pluginInstanceID)]
 	return cloneDataBinding(binding), ok, nil
 }
 
-func (s *MemoryStore) ListBindings(_ context.Context, cursor string, limit int) ([]plugindata.Binding, string, error) {
+func (s *MemoryStore) ListBindings(ctx context.Context, cursor string, limit int) ([]plugindata.Binding, string, error) {
+	ownerEnvHash, err := environmentOwner(ctx)
+	if err != nil {
+		return nil, "", err
+	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	bindings := sortedDataBindings(s.dataBindings)
+	bindings := sortedDataBindings(s.dataBindings, ownerEnvHash)
 	start := sort.Search(len(bindings), func(i int) bool { return bindings[i].PluginInstanceID > cursor })
 	bindings = bindings[start:]
 	if limit <= 0 || limit > 1000 {
@@ -50,13 +59,55 @@ func (s *MemoryStore) ListBindings(_ context.Context, cursor string, limit int) 
 	return bindings, "", nil
 }
 
-func (s *MemoryStore) CommitEnable(_ context.Context, expectedManagementRevision uint64, expected *plugindata.Binding, next plugindata.Binding, shape plugindata.Shape, now time.Time) error {
+func (s *MemoryStore) ListAllBindingsForMaintenance(_ context.Context, cursor string, limit int) ([]plugindata.MaintenanceBinding, string, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	keys := make([]string, 0, len(s.dataBindings))
+	for key := range s.dataBindings {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	start := sort.SearchStrings(keys, cursor)
+	for start < len(keys) && keys[start] <= cursor {
+		start++
+	}
+	keys = keys[start:]
+	if limit <= 0 || limit > 1000 {
+		limit = 256
+	}
+	more := len(keys) > limit
+	if more {
+		keys = keys[:limit]
+	}
+	bindings := make([]plugindata.MaintenanceBinding, 0, len(keys))
+	for _, key := range keys {
+		ownerEnvHash, _, ok := strings.Cut(key, "\x00")
+		if !ok {
+			return nil, "", ErrOwnerScopeMismatch
+		}
+		bindings = append(bindings, plugindata.MaintenanceBinding{
+			Scope:   sessionctx.ResourceScope{Kind: sessionctx.ScopeEnvironment, OwnerEnvHash: ownerEnvHash},
+			Binding: cloneDataBinding(s.dataBindings[key]),
+		})
+	}
+	if more {
+		return bindings, keys[len(keys)-1], nil
+	}
+	return bindings, "", nil
+}
+
+func (s *MemoryStore) CommitEnable(ctx context.Context, expectedManagementRevision uint64, expected *plugindata.Binding, next plugindata.Binding, shape plugindata.Shape, now time.Time) error {
+	ownerEnvHash, err := environmentOwner(ctx)
+	if err != nil {
+		return err
+	}
 	if err := validateDataBinding(next); err != nil || next.State != plugindata.BindingActive {
 		return plugindata.ErrInvalidArgument
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	record, ok := s.records[next.PluginInstanceID]
+	key := environmentRecordKey(ownerEnvHash, next.PluginInstanceID)
+	record, ok := s.records[key]
 	if !ok || record.DeletedAt != nil {
 		return ErrNotFound
 	}
@@ -66,7 +117,7 @@ func (s *MemoryStore) CommitEnable(_ context.Context, expectedManagementRevision
 	if record.ManagementRevision != expectedManagementRevision {
 		return &ManagementRevisionConflictError{PluginInstanceID: next.PluginInstanceID, Expected: expectedManagementRevision, Actual: record.ManagementRevision}
 	}
-	actual, exists := s.dataBindings[next.PluginInstanceID]
+	actual, exists := s.dataBindings[key]
 	if expected == nil {
 		if exists || next.Revision != 1 {
 			return plugindata.ErrBindingConflict
@@ -74,7 +125,7 @@ func (s *MemoryStore) CommitEnable(_ context.Context, expectedManagementRevision
 	} else if !exists || !sameDataBinding(actual, *expected) || !sameDataBinding(next, *expected) {
 		return plugindata.ErrBindingConflict
 	}
-	s.dataBindings[next.PluginInstanceID] = cloneDataBinding(next)
+	s.dataBindings[key] = cloneDataBinding(next)
 	if now.IsZero() {
 		now = time.Now().UTC()
 	}
@@ -84,17 +135,22 @@ func (s *MemoryStore) CommitEnable(_ context.Context, expectedManagementRevision
 	record.RevokeEpoch++
 	record.EnabledAt = &now
 	record.UpdatedAt = now
-	s.records[next.PluginInstanceID] = record
+	s.records[key] = record
 	return nil
 }
 
-func (s *MemoryStore) SwapImport(_ context.Context, expectedManagementRevision uint64, expected *plugindata.Binding, next plugindata.Binding, shape plugindata.Shape, now time.Time) error {
+func (s *MemoryStore) SwapImport(ctx context.Context, expectedManagementRevision uint64, expected *plugindata.Binding, next plugindata.Binding, shape plugindata.Shape, now time.Time) error {
+	ownerEnvHash, err := environmentOwner(ctx)
+	if err != nil {
+		return err
+	}
 	if err := validateDataBinding(next); err != nil || next.State != plugindata.BindingActive {
 		return plugindata.ErrInvalidArgument
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	record, ok := s.records[next.PluginInstanceID]
+	key := environmentRecordKey(ownerEnvHash, next.PluginInstanceID)
+	record, ok := s.records[key]
 	if !ok || record.DeletedAt != nil {
 		return ErrNotFound
 	}
@@ -107,7 +163,7 @@ func (s *MemoryStore) SwapImport(_ context.Context, expectedManagementRevision u
 	if record.EnableState == EnableEnabled {
 		return plugindata.ErrBindingConflict
 	}
-	actual, exists := s.dataBindings[next.PluginInstanceID]
+	actual, exists := s.dataBindings[key]
 	if expected == nil {
 		if exists || next.Revision != 1 {
 			return plugindata.ErrBindingConflict
@@ -115,25 +171,30 @@ func (s *MemoryStore) SwapImport(_ context.Context, expectedManagementRevision u
 	} else if !exists || !sameDataBinding(actual, *expected) || next.Revision != expected.Revision+1 {
 		return plugindata.ErrBindingConflict
 	}
-	s.dataBindings[next.PluginInstanceID] = cloneDataBinding(next)
+	s.dataBindings[key] = cloneDataBinding(next)
 	if now.IsZero() {
 		now = time.Now().UTC()
 	}
 	record.ManagementRevision++
 	record.RevokeEpoch++
 	record.UpdatedAt = now
-	s.records[next.PluginInstanceID] = record
+	s.records[key] = record
 	return nil
 }
 
-func (s *MemoryStore) BindRetained(_ context.Context, expected plugindata.Binding, targetPluginInstanceID string, targetExpectedManagementRevision uint64, targetShape plugindata.Shape, now time.Time) (plugindata.Binding, error) {
+func (s *MemoryStore) BindRetained(ctx context.Context, expected plugindata.Binding, targetPluginInstanceID string, targetExpectedManagementRevision uint64, targetShape plugindata.Shape, now time.Time) (plugindata.Binding, error) {
+	ownerEnvHash, err := environmentOwner(ctx)
+	if err != nil {
+		return plugindata.Binding{}, err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	targetShapeHash, err := plugindata.HashShape(targetShape)
 	if err != nil {
 		return plugindata.Binding{}, err
 	}
-	actual, exists := s.dataBindings[expected.PluginInstanceID]
+	sourceKey := environmentRecordKey(ownerEnvHash, expected.PluginInstanceID)
+	actual, exists := s.dataBindings[sourceKey]
 	if !exists || !sameDataBinding(actual, expected) || actual.State != plugindata.BindingRetained || actual.ShapeHash != targetShapeHash {
 		return plugindata.Binding{}, plugindata.ErrBindingConflict
 	}
@@ -141,7 +202,8 @@ func (s *MemoryStore) BindRetained(_ context.Context, expected plugindata.Bindin
 	if targetPluginInstanceID == expected.PluginInstanceID {
 		return plugindata.Binding{}, plugindata.ErrInvalidArgument
 	}
-	target, ok := s.records[targetPluginInstanceID]
+	targetKey := environmentRecordKey(ownerEnvHash, targetPluginInstanceID)
+	target, ok := s.records[targetKey]
 	if !ok || target.DeletedAt != nil {
 		return plugindata.Binding{}, ErrNotFound
 	}
@@ -163,68 +225,88 @@ func (s *MemoryStore) BindRetained(_ context.Context, expected plugindata.Bindin
 		return plugindata.Binding{}, plugindata.ErrBindingConflict
 	}
 	if targetPluginInstanceID != expected.PluginInstanceID {
-		if _, exists := s.dataBindings[targetPluginInstanceID]; exists {
+		if _, exists := s.dataBindings[targetKey]; exists {
 			return plugindata.Binding{}, plugindata.ErrBindingConflict
 		}
-		delete(s.dataBindings, expected.PluginInstanceID)
+		delete(s.dataBindings, sourceKey)
 	}
 	actual.PluginInstanceID = targetPluginInstanceID
 	actual.State = plugindata.BindingActive
 	actual.Revision++
 	actual.RetainedAt = nil
 	actual.ExpiresAt = nil
-	s.dataBindings[targetPluginInstanceID] = actual
+	s.dataBindings[targetKey] = actual
 	if now.IsZero() {
 		now = time.Now().UTC()
 	}
 	target.ManagementRevision++
 	target.RevokeEpoch++
 	target.UpdatedAt = now
-	s.records[targetPluginInstanceID] = target
+	s.records[targetKey] = target
 	return cloneDataBinding(actual), nil
 }
 
-func (s *MemoryStore) DeleteRetained(_ context.Context, expected plugindata.Binding) error {
+func (s *MemoryStore) DeleteRetained(ctx context.Context, expected plugindata.Binding) error {
+	ownerEnvHash, err := environmentOwner(ctx)
+	if err != nil {
+		return err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	actual, exists := s.dataBindings[expected.PluginInstanceID]
+	key := environmentRecordKey(ownerEnvHash, expected.PluginInstanceID)
+	actual, exists := s.dataBindings[key]
 	if !exists || !sameDataBinding(actual, expected) || actual.State != plugindata.BindingRetained {
 		return plugindata.ErrBindingConflict
 	}
-	delete(s.dataBindings, expected.PluginInstanceID)
+	delete(s.dataBindings, key)
 	return nil
 }
 
-func (s *MemoryStore) CleanupExpired(_ context.Context, now time.Time, expected []plugindata.Binding) ([]plugindata.Binding, error) {
+func (s *MemoryStore) CleanupExpired(ctx context.Context, now time.Time, expected []plugindata.Binding) ([]plugindata.Binding, error) {
+	ownerEnvHash, err := environmentOwner(ctx)
+	if err != nil {
+		return nil, err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, binding := range expected {
-		actual, exists := s.dataBindings[binding.PluginInstanceID]
+		actual, exists := s.dataBindings[environmentRecordKey(ownerEnvHash, binding.PluginInstanceID)]
 		if !exists || !sameDataBinding(actual, binding) || actual.State != plugindata.BindingRetained || actual.ExpiresAt == nil || actual.ExpiresAt.After(now) {
 			return nil, plugindata.ErrBindingConflict
 		}
 	}
 	deleted := make([]plugindata.Binding, 0, len(expected))
 	for _, binding := range expected {
-		delete(s.dataBindings, binding.PluginInstanceID)
+		delete(s.dataBindings, environmentRecordKey(ownerEnvHash, binding.PluginInstanceID))
 		deleted = append(deleted, cloneDataBinding(binding))
 	}
 	return deleted, nil
 }
 
-func (s *MemoryStore) GetObject(_ context.Context, objectID string) (plugindata.Object, bool, error) {
+func (s *MemoryStore) GetObject(ctx context.Context, objectID string) (plugindata.Object, bool, error) {
+	owner, err := userOwner(ctx)
+	if err != nil {
+		return plugindata.Object{}, false, err
+	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	object, ok := s.dataObjects[strings.TrimSpace(objectID)]
+	object, ok := s.dataObjects[scopedObjectKey(owner, objectID)]
 	return object, ok, nil
 }
 
-func (s *MemoryStore) ListObjects(_ context.Context, cursor string, limit int) ([]plugindata.Object, string, error) {
+func (s *MemoryStore) ListObjects(ctx context.Context, cursor string, limit int) ([]plugindata.Object, string, error) {
+	owner, err := userOwner(ctx)
+	if err != nil {
+		return nil, "", err
+	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	objects := make([]plugindata.Object, 0, len(s.dataObjects))
-	for _, object := range s.dataObjects {
-		objects = append(objects, object)
+	prefix := scopedObjectKey(owner, "")
+	for key, object := range s.dataObjects {
+		if strings.HasPrefix(key, prefix) {
+			objects = append(objects, object)
+		}
 	}
 	sort.Slice(objects, func(i, j int) bool { return objects[i].ObjectID < objects[j].ObjectID })
 	start := sort.Search(len(objects), func(i int) bool { return objects[i].ObjectID > cursor })
@@ -238,48 +320,170 @@ func (s *MemoryStore) ListObjects(_ context.Context, cursor string, limit int) (
 	return objects, "", nil
 }
 
-func (s *MemoryStore) CreateObject(_ context.Context, object plugindata.Object) error {
+func (s *MemoryStore) ListAllObjectsForMaintenance(_ context.Context, cursor string, limit int) ([]plugindata.MaintenanceObject, string, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	keys := make([]string, 0, len(s.dataObjects))
+	for key := range s.dataObjects {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	start := sort.SearchStrings(keys, cursor)
+	for start < len(keys) && keys[start] <= cursor {
+		start++
+	}
+	keys = keys[start:]
+	if limit <= 0 || limit > 1000 {
+		limit = 256
+	}
+	more := len(keys) > limit
+	if more {
+		keys = keys[:limit]
+	}
+	objects := make([]plugindata.MaintenanceObject, 0, len(keys))
+	for _, key := range keys {
+		parts := strings.Split(key, "\x00")
+		if len(parts) != 4 || sessionctx.ScopeKind(parts[0]) != sessionctx.ScopeUser {
+			return nil, "", ErrOwnerScopeMismatch
+		}
+		objects = append(objects, plugindata.MaintenanceObject{
+			Scope: sessionctx.ResourceScope{
+				Kind:          sessionctx.ScopeUser,
+				OwnerEnvHash:  parts[1],
+				OwnerUserHash: parts[2],
+			},
+			Object: s.dataObjects[key],
+		})
+	}
+	if more {
+		return objects, keys[len(keys)-1], nil
+	}
+	return objects, "", nil
+}
+
+func (s *MemoryStore) CreateObject(ctx context.Context, object plugindata.Object) error {
+	owner, err := userOwner(ctx)
+	if err != nil {
+		return err
+	}
 	if err := validateDataObject(object); err != nil {
 		return err
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if _, exists := s.dataObjects[object.ObjectID]; exists {
+	key := scopedObjectKey(owner, object.ObjectID)
+	if _, exists := s.dataObjects[key]; exists {
 		return plugindata.ErrBindingConflict
 	}
-	s.dataObjects[object.ObjectID] = object
+	s.dataObjects[key] = object
 	return nil
 }
 
-func (s *MemoryStore) DeleteObject(_ context.Context, objectID string) error {
+func (s *MemoryStore) DeleteObject(ctx context.Context, objectID string) error {
+	owner, err := userOwner(ctx)
+	if err != nil {
+		return err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	objectID = strings.TrimSpace(objectID)
-	if _, exists := s.dataObjects[objectID]; !exists {
+	key := scopedObjectKey(owner, objectID)
+	if _, exists := s.dataObjects[key]; !exists {
 		return plugindata.ErrExportNotFound
 	}
-	delete(s.dataObjects, objectID)
+	delete(s.dataObjects, key)
 	return nil
 }
 
 func (s *SQLiteStore) GetBinding(ctx context.Context, pluginInstanceID string) (plugindata.Binding, bool, error) {
+	ownerEnvHash, err := environmentOwner(ctx)
+	if err != nil {
+		return plugindata.Binding{}, false, err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return getSQLiteDataBinding(ctx, s.db, strings.TrimSpace(pluginInstanceID))
+	return getSQLiteDataBinding(ctx, s.db, ownerEnvHash, strings.TrimSpace(pluginInstanceID))
 }
 
 func (s *SQLiteStore) ListBindings(ctx context.Context, cursor string, limit int) ([]plugindata.Binding, string, error) {
+	ownerEnvHash, err := environmentOwner(ctx)
+	if err != nil {
+		return nil, "", err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return listSQLiteDataBindings(ctx, s.db, cursor, limit)
+	return listSQLiteDataBindings(ctx, s.db, ownerEnvHash, cursor, limit)
+}
+
+func (s *SQLiteStore) ListAllBindingsForMaintenance(ctx context.Context, cursor string, limit int) ([]plugindata.MaintenanceBinding, string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if limit <= 0 || limit > 1000 {
+		limit = 256
+	}
+	parts := parseMaintenanceCursor(cursor, 2)
+	rows, err := s.db.QueryContext(ctx, `
+SELECT owner_env_hash, plugin_instance_id, generation_id, state, revision, shape_hash, retained_at, expires_at
+FROM plugin_data_bindings
+WHERE (owner_env_hash, plugin_instance_id) > (?, ?)
+ORDER BY owner_env_hash, plugin_instance_id
+LIMIT ?`, parts[0], parts[1], limit+1)
+	if err != nil {
+		return nil, "", err
+	}
+	defer rows.Close()
+	type entry struct {
+		ownerEnvHash string
+		binding      plugindata.Binding
+	}
+	entries := make([]entry, 0, limit+1)
+	for rows.Next() {
+		var item entry
+		var state string
+		var retainedAt sql.NullInt64
+		var expiresAt sql.NullInt64
+		if err := rows.Scan(&item.ownerEnvHash, &item.binding.PluginInstanceID, &item.binding.GenerationID, &state, &item.binding.Revision, &item.binding.ShapeHash, &retainedAt, &expiresAt); err != nil {
+			return nil, "", err
+		}
+		item.binding.State = plugindata.BindingState(state)
+		item.binding.RetainedAt = nullableUnixToTimePtr(retainedAt)
+		item.binding.ExpiresAt = nullableUnixToTimePtr(expiresAt)
+		if err := validateDataBinding(item.binding); err != nil {
+			return nil, "", err
+		}
+		entries = append(entries, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, "", err
+	}
+	more := len(entries) > limit
+	if more {
+		entries = entries[:limit]
+	}
+	bindings := make([]plugindata.MaintenanceBinding, 0, len(entries))
+	for _, item := range entries {
+		bindings = append(bindings, plugindata.MaintenanceBinding{
+			Scope:   sessionctx.ResourceScope{Kind: sessionctx.ScopeEnvironment, OwnerEnvHash: item.ownerEnvHash},
+			Binding: item.binding,
+		})
+	}
+	if more {
+		last := entries[len(entries)-1]
+		return bindings, maintenanceCursor(last.ownerEnvHash, last.binding.PluginInstanceID), nil
+	}
+	return bindings, "", nil
 }
 
 func (s *SQLiteStore) CommitEnable(ctx context.Context, expectedManagementRevision uint64, expected *plugindata.Binding, next plugindata.Binding, shape plugindata.Shape, now time.Time) error {
+	ownerEnvHash, err := environmentOwner(ctx)
+	if err != nil {
+		return err
+	}
 	if err := validateDataBinding(next); err != nil || next.State != plugindata.BindingActive {
 		return plugindata.ErrInvalidArgument
 	}
 	return s.sqliteCatalogMutation(ctx, func(tx *sql.Tx) error {
-		record, exists, err := getSQLitePlugin(ctx, tx, next.PluginInstanceID, false)
+		record, exists, err := getSQLitePlugin(ctx, tx, ownerEnvHash, next.PluginInstanceID, false)
 		if err != nil {
 			return err
 		} else if !exists {
@@ -291,7 +495,7 @@ func (s *SQLiteStore) CommitEnable(ctx context.Context, expectedManagementRevisi
 		if record.ManagementRevision != expectedManagementRevision {
 			return &ManagementRevisionConflictError{PluginInstanceID: next.PluginInstanceID, Expected: expectedManagementRevision, Actual: record.ManagementRevision}
 		}
-		actual, exists, err := getSQLiteDataBinding(ctx, tx, next.PluginInstanceID)
+		actual, exists, err := getSQLiteDataBinding(ctx, tx, ownerEnvHash, next.PluginInstanceID)
 		if err != nil {
 			return err
 		}
@@ -299,7 +503,7 @@ func (s *SQLiteStore) CommitEnable(ctx context.Context, expectedManagementRevisi
 			if exists || next.Revision != 1 {
 				return plugindata.ErrBindingConflict
 			}
-			if err := insertSQLiteDataBinding(ctx, tx, next); err != nil {
+			if err := insertSQLiteDataBinding(ctx, tx, ownerEnvHash, next); err != nil {
 				return err
 			}
 		} else {
@@ -321,11 +525,15 @@ func (s *SQLiteStore) CommitEnable(ctx context.Context, expectedManagementRevisi
 }
 
 func (s *SQLiteStore) SwapImport(ctx context.Context, expectedManagementRevision uint64, expected *plugindata.Binding, next plugindata.Binding, shape plugindata.Shape, now time.Time) error {
+	ownerEnvHash, err := environmentOwner(ctx)
+	if err != nil {
+		return err
+	}
 	if err := validateDataBinding(next); err != nil || next.State != plugindata.BindingActive {
 		return plugindata.ErrInvalidArgument
 	}
 	return s.sqliteCatalogMutation(ctx, func(tx *sql.Tx) error {
-		record, exists, err := getSQLitePlugin(ctx, tx, next.PluginInstanceID, false)
+		record, exists, err := getSQLitePlugin(ctx, tx, ownerEnvHash, next.PluginInstanceID, false)
 		if err != nil {
 			return err
 		}
@@ -341,7 +549,7 @@ func (s *SQLiteStore) SwapImport(ctx context.Context, expectedManagementRevision
 		if record.EnableState == EnableEnabled {
 			return plugindata.ErrBindingConflict
 		}
-		actual, exists, err := getSQLiteDataBinding(ctx, tx, next.PluginInstanceID)
+		actual, exists, err := getSQLiteDataBinding(ctx, tx, ownerEnvHash, next.PluginInstanceID)
 		if err != nil {
 			return err
 		}
@@ -349,14 +557,14 @@ func (s *SQLiteStore) SwapImport(ctx context.Context, expectedManagementRevision
 			if exists || next.Revision != 1 {
 				return plugindata.ErrBindingConflict
 			}
-			if err := insertSQLiteDataBinding(ctx, tx, next); err != nil {
+			if err := insertSQLiteDataBinding(ctx, tx, ownerEnvHash, next); err != nil {
 				return err
 			}
 		} else {
 			if !exists || !sameDataBinding(actual, *expected) || next.Revision != expected.Revision+1 {
 				return plugindata.ErrBindingConflict
 			}
-			if err := updateSQLiteDataBinding(ctx, tx, next); err != nil {
+			if err := updateSQLiteDataBinding(ctx, tx, ownerEnvHash, next); err != nil {
 				return err
 			}
 		}
@@ -371,13 +579,17 @@ func (s *SQLiteStore) SwapImport(ctx context.Context, expectedManagementRevision
 }
 
 func (s *SQLiteStore) BindRetained(ctx context.Context, expected plugindata.Binding, targetPluginInstanceID string, targetExpectedManagementRevision uint64, targetShape plugindata.Shape, now time.Time) (plugindata.Binding, error) {
+	ownerEnvHash, err := environmentOwner(ctx)
+	if err != nil {
+		return plugindata.Binding{}, err
+	}
 	var active plugindata.Binding
-	err := s.sqliteCatalogMutation(ctx, func(tx *sql.Tx) error {
+	err = s.sqliteCatalogMutation(ctx, func(tx *sql.Tx) error {
 		targetShapeHash, err := plugindata.HashShape(targetShape)
 		if err != nil {
 			return err
 		}
-		actual, exists, err := getSQLiteDataBinding(ctx, tx, expected.PluginInstanceID)
+		actual, exists, err := getSQLiteDataBinding(ctx, tx, ownerEnvHash, expected.PluginInstanceID)
 		if err != nil {
 			return err
 		}
@@ -388,7 +600,7 @@ func (s *SQLiteStore) BindRetained(ctx context.Context, expected plugindata.Bind
 		if targetPluginInstanceID == expected.PluginInstanceID {
 			return plugindata.ErrInvalidArgument
 		}
-		target, exists, err := getSQLitePlugin(ctx, tx, targetPluginInstanceID, false)
+		target, exists, err := getSQLitePlugin(ctx, tx, ownerEnvHash, targetPluginInstanceID, false)
 		if err != nil {
 			return err
 		} else if !exists {
@@ -412,12 +624,12 @@ func (s *SQLiteStore) BindRetained(ctx context.Context, expected plugindata.Bind
 			return plugindata.ErrBindingConflict
 		}
 		if targetPluginInstanceID != expected.PluginInstanceID {
-			if _, exists, err := getSQLiteDataBinding(ctx, tx, targetPluginInstanceID); err != nil {
+			if _, exists, err := getSQLiteDataBinding(ctx, tx, ownerEnvHash, targetPluginInstanceID); err != nil {
 				return err
 			} else if exists {
 				return plugindata.ErrBindingConflict
 			}
-			if _, err := tx.ExecContext(ctx, `DELETE FROM plugin_data_bindings WHERE plugin_instance_id = ?`, expected.PluginInstanceID); err != nil {
+			if _, err := tx.ExecContext(ctx, `DELETE FROM plugin_data_bindings WHERE owner_env_hash = ? AND plugin_instance_id = ?`, ownerEnvHash, expected.PluginInstanceID); err != nil {
 				return err
 			}
 		}
@@ -427,7 +639,7 @@ func (s *SQLiteStore) BindRetained(ctx context.Context, expected plugindata.Bind
 		actual.RetainedAt = nil
 		actual.ExpiresAt = nil
 		active = actual
-		if err := insertSQLiteDataBinding(ctx, tx, actual); err != nil {
+		if err := insertSQLiteDataBinding(ctx, tx, ownerEnvHash, actual); err != nil {
 			return err
 		}
 		if now.IsZero() {
@@ -442,24 +654,32 @@ func (s *SQLiteStore) BindRetained(ctx context.Context, expected plugindata.Bind
 }
 
 func (s *SQLiteStore) DeleteRetained(ctx context.Context, expected plugindata.Binding) error {
+	ownerEnvHash, err := environmentOwner(ctx)
+	if err != nil {
+		return err
+	}
 	return s.sqliteCatalogMutation(ctx, func(tx *sql.Tx) error {
-		actual, exists, err := getSQLiteDataBinding(ctx, tx, expected.PluginInstanceID)
+		actual, exists, err := getSQLiteDataBinding(ctx, tx, ownerEnvHash, expected.PluginInstanceID)
 		if err != nil {
 			return err
 		}
 		if !exists || !sameDataBinding(actual, expected) || actual.State != plugindata.BindingRetained {
 			return plugindata.ErrBindingConflict
 		}
-		_, err = tx.ExecContext(ctx, `DELETE FROM plugin_data_bindings WHERE plugin_instance_id = ?`, expected.PluginInstanceID)
+		_, err = tx.ExecContext(ctx, `DELETE FROM plugin_data_bindings WHERE owner_env_hash = ? AND plugin_instance_id = ?`, ownerEnvHash, expected.PluginInstanceID)
 		return err
 	})
 }
 
 func (s *SQLiteStore) CleanupExpired(ctx context.Context, now time.Time, expected []plugindata.Binding) ([]plugindata.Binding, error) {
+	ownerEnvHash, err := environmentOwner(ctx)
+	if err != nil {
+		return nil, err
+	}
 	deleted := make([]plugindata.Binding, 0, len(expected))
-	err := s.sqliteCatalogMutation(ctx, func(tx *sql.Tx) error {
+	err = s.sqliteCatalogMutation(ctx, func(tx *sql.Tx) error {
 		for _, binding := range expected {
-			actual, exists, err := getSQLiteDataBinding(ctx, tx, binding.PluginInstanceID)
+			actual, exists, err := getSQLiteDataBinding(ctx, tx, ownerEnvHash, binding.PluginInstanceID)
 			if err != nil {
 				return err
 			}
@@ -468,7 +688,7 @@ func (s *SQLiteStore) CleanupExpired(ctx context.Context, now time.Time, expecte
 			}
 		}
 		for _, binding := range expected {
-			if _, err := tx.ExecContext(ctx, `DELETE FROM plugin_data_bindings WHERE plugin_instance_id = ?`, binding.PluginInstanceID); err != nil {
+			if _, err := tx.ExecContext(ctx, `DELETE FROM plugin_data_bindings WHERE owner_env_hash = ? AND plugin_instance_id = ?`, ownerEnvHash, binding.PluginInstanceID); err != nil {
 				return err
 			}
 			deleted = append(deleted, cloneDataBinding(binding))
@@ -479,18 +699,26 @@ func (s *SQLiteStore) CleanupExpired(ctx context.Context, now time.Time, expecte
 }
 
 func (s *SQLiteStore) GetObject(ctx context.Context, objectID string) (plugindata.Object, bool, error) {
+	owner, err := userOwner(ctx)
+	if err != nil {
+		return plugindata.Object{}, false, err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return getSQLiteDataObject(ctx, s.db, strings.TrimSpace(objectID))
+	return getSQLiteDataObject(ctx, s.db, owner.OwnerEnvHash, owner.OwnerUserHash, strings.TrimSpace(objectID))
 }
 
 func (s *SQLiteStore) ListObjects(ctx context.Context, cursor string, limit int) ([]plugindata.Object, string, error) {
+	owner, err := userOwner(ctx)
+	if err != nil {
+		return nil, "", err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if limit <= 0 || limit > 1000 {
 		limit = 256
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT object_id, content_hash, shape_hash, size_bytes, created_at FROM plugin_data_objects WHERE object_id > ? ORDER BY object_id LIMIT ?`, cursor, limit+1)
+	rows, err := s.db.QueryContext(ctx, `SELECT object_id, content_hash, shape_hash, size_bytes, created_at FROM plugin_data_objects WHERE owner_env_hash = ? AND owner_user_hash = ? AND object_id > ? ORDER BY object_id LIMIT ?`, owner.OwnerEnvHash, owner.OwnerUserHash, cursor, limit+1)
 	if err != nil {
 		return nil, "", err
 	}
@@ -515,24 +743,92 @@ func (s *SQLiteStore) ListObjects(ctx context.Context, cursor string, limit int)
 	return objects, "", nil
 }
 
+func (s *SQLiteStore) ListAllObjectsForMaintenance(ctx context.Context, cursor string, limit int) ([]plugindata.MaintenanceObject, string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if limit <= 0 || limit > 1000 {
+		limit = 256
+	}
+	parts := parseMaintenanceCursor(cursor, 3)
+	rows, err := s.db.QueryContext(ctx, `
+SELECT owner_env_hash, owner_user_hash, object_id, content_hash, shape_hash, size_bytes, created_at
+FROM plugin_data_objects
+WHERE (owner_env_hash, owner_user_hash, object_id) > (?, ?, ?)
+ORDER BY owner_env_hash, owner_user_hash, object_id
+LIMIT ?`, parts[0], parts[1], parts[2], limit+1)
+	if err != nil {
+		return nil, "", err
+	}
+	defer rows.Close()
+	type entry struct {
+		ownerEnvHash  string
+		ownerUserHash string
+		object        plugindata.Object
+	}
+	entries := make([]entry, 0, limit+1)
+	for rows.Next() {
+		var item entry
+		var createdAt int64
+		if err := rows.Scan(&item.ownerEnvHash, &item.ownerUserHash, &item.object.ObjectID, &item.object.ContentHash, &item.object.ShapeHash, &item.object.SizeBytes, &createdAt); err != nil {
+			return nil, "", err
+		}
+		item.object.CreatedAt = unixToTime(createdAt)
+		if err := validateDataObject(item.object); err != nil {
+			return nil, "", err
+		}
+		entries = append(entries, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, "", err
+	}
+	more := len(entries) > limit
+	if more {
+		entries = entries[:limit]
+	}
+	objects := make([]plugindata.MaintenanceObject, 0, len(entries))
+	for _, item := range entries {
+		objects = append(objects, plugindata.MaintenanceObject{
+			Scope: sessionctx.ResourceScope{
+				Kind:          sessionctx.ScopeUser,
+				OwnerEnvHash:  item.ownerEnvHash,
+				OwnerUserHash: item.ownerUserHash,
+			},
+			Object: item.object,
+		})
+	}
+	if more {
+		last := entries[len(entries)-1]
+		return objects, maintenanceCursor(last.ownerEnvHash, last.ownerUserHash, last.object.ObjectID), nil
+	}
+	return objects, "", nil
+}
+
 func (s *SQLiteStore) CreateObject(ctx context.Context, object plugindata.Object) error {
+	owner, err := userOwner(ctx)
+	if err != nil {
+		return err
+	}
 	if err := validateDataObject(object); err != nil {
 		return err
 	}
 	return s.sqliteCatalogMutation(ctx, func(tx *sql.Tx) error {
-		if _, exists, err := getSQLiteDataObject(ctx, tx, object.ObjectID); err != nil {
+		if _, exists, err := getSQLiteDataObject(ctx, tx, owner.OwnerEnvHash, owner.OwnerUserHash, object.ObjectID); err != nil {
 			return err
 		} else if exists {
 			return plugindata.ErrBindingConflict
 		}
-		_, err := tx.ExecContext(ctx, `INSERT INTO plugin_data_objects (object_id, content_hash, shape_hash, size_bytes, created_at) VALUES (?, ?, ?, ?, ?)`, object.ObjectID, object.ContentHash, object.ShapeHash, object.SizeBytes, object.CreatedAt.UnixNano())
+		_, err := tx.ExecContext(ctx, `INSERT INTO plugin_data_objects (owner_env_hash, owner_user_hash, object_id, content_hash, shape_hash, size_bytes, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`, owner.OwnerEnvHash, owner.OwnerUserHash, object.ObjectID, object.ContentHash, object.ShapeHash, object.SizeBytes, object.CreatedAt.UnixNano())
 		return err
 	})
 }
 
 func (s *SQLiteStore) DeleteObject(ctx context.Context, objectID string) error {
+	owner, err := userOwner(ctx)
+	if err != nil {
+		return err
+	}
 	return s.sqliteCatalogMutation(ctx, func(tx *sql.Tx) error {
-		result, err := tx.ExecContext(ctx, `DELETE FROM plugin_data_objects WHERE object_id = ?`, strings.TrimSpace(objectID))
+		result, err := tx.ExecContext(ctx, `DELETE FROM plugin_data_objects WHERE owner_env_hash = ? AND owner_user_hash = ? AND object_id = ?`, owner.OwnerEnvHash, owner.OwnerUserHash, strings.TrimSpace(objectID))
 		if err != nil {
 			return err
 		}
@@ -564,12 +860,12 @@ func (s *SQLiteStore) sqliteCatalogMutation(ctx context.Context, mutate func(*sq
 	return nil
 }
 
-func getSQLiteDataBinding(ctx context.Context, q sqliteQuerier, pluginInstanceID string) (plugindata.Binding, bool, error) {
+func getSQLiteDataBinding(ctx context.Context, q sqliteQuerier, ownerEnvHash, pluginInstanceID string) (plugindata.Binding, bool, error) {
 	var binding plugindata.Binding
 	var state string
 	var retainedAt sql.NullInt64
 	var expiresAt sql.NullInt64
-	err := q.QueryRowContext(ctx, `SELECT plugin_instance_id, generation_id, state, revision, shape_hash, retained_at, expires_at FROM plugin_data_bindings WHERE plugin_instance_id = ?`, pluginInstanceID).Scan(&binding.PluginInstanceID, &binding.GenerationID, &state, &binding.Revision, &binding.ShapeHash, &retainedAt, &expiresAt)
+	err := q.QueryRowContext(ctx, `SELECT plugin_instance_id, generation_id, state, revision, shape_hash, retained_at, expires_at FROM plugin_data_bindings WHERE owner_env_hash = ? AND plugin_instance_id = ?`, ownerEnvHash, pluginInstanceID).Scan(&binding.PluginInstanceID, &binding.GenerationID, &state, &binding.Revision, &binding.ShapeHash, &retainedAt, &expiresAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return plugindata.Binding{}, false, nil
 	}
@@ -584,11 +880,11 @@ func getSQLiteDataBinding(ctx context.Context, q sqliteQuerier, pluginInstanceID
 
 func listSQLiteDataBindings(ctx context.Context, q interface {
 	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
-}, cursor string, limit int) ([]plugindata.Binding, string, error) {
+}, ownerEnvHash, cursor string, limit int) ([]plugindata.Binding, string, error) {
 	if limit <= 0 || limit > 1000 {
 		limit = 256
 	}
-	rows, err := q.QueryContext(ctx, `SELECT plugin_instance_id, generation_id, state, revision, shape_hash, retained_at, expires_at FROM plugin_data_bindings WHERE plugin_instance_id > ? ORDER BY plugin_instance_id LIMIT ?`, cursor, limit+1)
+	rows, err := q.QueryContext(ctx, `SELECT plugin_instance_id, generation_id, state, revision, shape_hash, retained_at, expires_at FROM plugin_data_bindings WHERE owner_env_hash = ? AND plugin_instance_id > ? ORDER BY plugin_instance_id LIMIT ?`, ownerEnvHash, cursor, limit+1)
 	if err != nil {
 		return nil, "", err
 	}
@@ -617,20 +913,20 @@ func listSQLiteDataBindings(ctx context.Context, q interface {
 	return bindings, "", nil
 }
 
-func insertSQLiteDataBinding(ctx context.Context, tx *sql.Tx, binding plugindata.Binding) error {
-	_, err := tx.ExecContext(ctx, `INSERT INTO plugin_data_bindings (plugin_instance_id, generation_id, state, revision, shape_hash, retained_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?)`, binding.PluginInstanceID, binding.GenerationID, string(binding.State), binding.Revision, binding.ShapeHash, timePtrToNullableUnix(binding.RetainedAt), timePtrToNullableUnix(binding.ExpiresAt))
+func insertSQLiteDataBinding(ctx context.Context, tx *sql.Tx, ownerEnvHash string, binding plugindata.Binding) error {
+	_, err := tx.ExecContext(ctx, `INSERT INTO plugin_data_bindings (owner_env_hash, plugin_instance_id, generation_id, state, revision, shape_hash, retained_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, ownerEnvHash, binding.PluginInstanceID, binding.GenerationID, string(binding.State), binding.Revision, binding.ShapeHash, timePtrToNullableUnix(binding.RetainedAt), timePtrToNullableUnix(binding.ExpiresAt))
 	return err
 }
 
-func updateSQLiteDataBinding(ctx context.Context, tx *sql.Tx, binding plugindata.Binding) error {
-	_, err := tx.ExecContext(ctx, `UPDATE plugin_data_bindings SET generation_id = ?, state = ?, revision = ?, shape_hash = ?, retained_at = ?, expires_at = ? WHERE plugin_instance_id = ?`, binding.GenerationID, string(binding.State), binding.Revision, binding.ShapeHash, timePtrToNullableUnix(binding.RetainedAt), timePtrToNullableUnix(binding.ExpiresAt), binding.PluginInstanceID)
+func updateSQLiteDataBinding(ctx context.Context, tx *sql.Tx, ownerEnvHash string, binding plugindata.Binding) error {
+	_, err := tx.ExecContext(ctx, `UPDATE plugin_data_bindings SET generation_id = ?, state = ?, revision = ?, shape_hash = ?, retained_at = ?, expires_at = ? WHERE owner_env_hash = ? AND plugin_instance_id = ?`, binding.GenerationID, string(binding.State), binding.Revision, binding.ShapeHash, timePtrToNullableUnix(binding.RetainedAt), timePtrToNullableUnix(binding.ExpiresAt), ownerEnvHash, binding.PluginInstanceID)
 	return err
 }
 
-func getSQLiteDataObject(ctx context.Context, q sqliteQuerier, objectID string) (plugindata.Object, bool, error) {
+func getSQLiteDataObject(ctx context.Context, q sqliteQuerier, ownerEnvHash, ownerUserHash, objectID string) (plugindata.Object, bool, error) {
 	var object plugindata.Object
 	var createdAt int64
-	err := q.QueryRowContext(ctx, `SELECT object_id, content_hash, shape_hash, size_bytes, created_at FROM plugin_data_objects WHERE object_id = ?`, objectID).Scan(&object.ObjectID, &object.ContentHash, &object.ShapeHash, &object.SizeBytes, &createdAt)
+	err := q.QueryRowContext(ctx, `SELECT object_id, content_hash, shape_hash, size_bytes, created_at FROM plugin_data_objects WHERE owner_env_hash = ? AND owner_user_hash = ? AND object_id = ?`, ownerEnvHash, ownerUserHash, objectID).Scan(&object.ObjectID, &object.ContentHash, &object.ShapeHash, &object.SizeBytes, &createdAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return plugindata.Object{}, false, nil
 	}
@@ -694,10 +990,13 @@ func validateRecordDataShape(record PluginRecord, binding plugindata.Binding, sh
 	return nil
 }
 
-func sortedDataBindings(bindings map[string]plugindata.Binding) []plugindata.Binding {
+func sortedDataBindings(bindings map[string]plugindata.Binding, ownerEnvHash string) []plugindata.Binding {
 	result := make([]plugindata.Binding, 0, len(bindings))
-	for _, binding := range bindings {
-		result = append(result, cloneDataBinding(binding))
+	prefix := environmentRecordKey(ownerEnvHash, "")
+	for key, binding := range bindings {
+		if strings.HasPrefix(key, prefix) {
+			result = append(result, cloneDataBinding(binding))
+		}
 	}
 	sort.Slice(result, func(i, j int) bool { return result[i].PluginInstanceID < result[j].PluginInstanceID })
 	return result

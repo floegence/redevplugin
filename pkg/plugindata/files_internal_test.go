@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/floegence/redevplugin/pkg/mutation"
+	"github.com/floegence/redevplugin/pkg/sessionctx"
 	settingsdomain "github.com/floegence/redevplugin/pkg/settings"
 	"github.com/floegence/redevplugin/pkg/storage"
 )
@@ -34,6 +35,14 @@ func (c *internalCatalog) ListBindings(context.Context, string, int) ([]Binding,
 		return nil, "", nil
 	}
 	return []Binding{cloneBinding(*c.binding)}, "", nil
+}
+func (c *internalCatalog) ListAllBindingsForMaintenance(ctx context.Context, cursor string, limit int) ([]MaintenanceBinding, string, error) {
+	bindings, next, err := c.ListBindings(ctx, cursor, limit)
+	items := make([]MaintenanceBinding, 0, len(bindings))
+	for _, binding := range bindings {
+		items = append(items, MaintenanceBinding{Scope: sessionctx.ResourceScope{Kind: sessionctx.ScopeEnvironment, OwnerEnvHash: "owner_env_test"}, Binding: binding})
+	}
+	return items, next, err
 }
 func (c *internalCatalog) CommitEnable(_ context.Context, _ uint64, _ *Binding, next Binding, _ Shape, _ time.Time) error {
 	if c.commitEnableErr != nil {
@@ -104,6 +113,14 @@ func (c *internalCatalog) ListObjects(_ context.Context, cursor string, limit in
 		return objects[:limit], objects[limit-1].ObjectID, nil
 	}
 	return objects, "", nil
+}
+func (c *internalCatalog) ListAllObjectsForMaintenance(ctx context.Context, cursor string, limit int) ([]MaintenanceObject, string, error) {
+	objects, next, err := c.ListObjects(ctx, cursor, limit)
+	items := make([]MaintenanceObject, 0, len(objects))
+	for _, object := range objects {
+		items = append(items, MaintenanceObject{Scope: sessionctx.ResourceScope{Kind: sessionctx.ScopeUser, OwnerEnvHash: "owner_env_test", OwnerUserHash: "owner_user_test"}, Object: object})
+	}
+	return items, next, err
 }
 func (c *internalCatalog) CreateObject(_ context.Context, object Object) error {
 	if c.createObjectErr != nil {

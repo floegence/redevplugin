@@ -1,7 +1,6 @@
 package registry
 
 import (
-	"context"
 	"errors"
 	"path/filepath"
 	"strings"
@@ -29,7 +28,7 @@ func TestStoreRevisionsAndList(t *testing.T) {
 				EnableState:       EnableDisabled,
 				Manifest:          manifest.Manifest{Plugin: manifest.Plugin{PluginID: "com.example.test", Version: "1.0.0"}},
 			}
-			stored, err := store.PutPlugin(context.Background(), record, PutOptions{Now: now})
+			stored, err := store.PutPlugin(registryTestContext(), record, PutOptions{Now: now})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -37,7 +36,7 @@ func TestStoreRevisionsAndList(t *testing.T) {
 				t.Fatalf("initial revisions = %#v", stored)
 			}
 
-			enabled, err := store.SetEnableState(context.Background(), stored.PluginInstanceID, EnableEnabled, "", now.Add(time.Second))
+			enabled, err := store.SetEnableState(registryTestContext(), stored.PluginInstanceID, EnableEnabled, "", now.Add(time.Second))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -45,7 +44,7 @@ func TestStoreRevisionsAndList(t *testing.T) {
 				t.Fatalf("enable revisions = %#v", enabled)
 			}
 
-			granted, err := store.GrantPermission(context.Background(), permissions.GrantRequest{
+			granted, err := store.GrantPermission(registryTestContext(), permissions.GrantRequest{
 				PluginInstanceID: stored.PluginInstanceID,
 				PermissionID:     "documents.read",
 				Now:              now.Add(2 * time.Second),
@@ -57,7 +56,7 @@ func TestStoreRevisionsAndList(t *testing.T) {
 				t.Fatalf("grant policy revisions = %#v", granted)
 			}
 
-			revoked, err := store.RevokePermission(context.Background(), permissions.RevokeRequest{
+			revoked, err := store.RevokePermission(registryTestContext(), permissions.RevokeRequest{
 				PluginInstanceID: stored.PluginInstanceID,
 				PermissionID:     "documents.read",
 				Now:              now.Add(3 * time.Second),
@@ -69,7 +68,7 @@ func TestStoreRevisionsAndList(t *testing.T) {
 				t.Fatalf("revoke policy revisions = %#v", revoked)
 			}
 
-			_, err = store.CommitUninstall(context.Background(), plugindata.CommitUninstallRequest{
+			_, err = store.CommitUninstall(registryTestContext(), plugindata.CommitUninstallRequest{
 				PluginInstanceID:           revoked.Plugin.PluginInstanceID,
 				DeleteData:                 true,
 				ExpectedManagementRevision: revoked.Plugin.ManagementRevision,
@@ -78,7 +77,7 @@ func TestStoreRevisionsAndList(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			list, err := store.ListPlugins(context.Background())
+			list, err := store.ListPlugins(registryTestContext())
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -106,7 +105,7 @@ func TestStorePreservesVersionHistoryOnOverwrite(t *testing.T) {
 				Manifest:          manifest.Manifest{Plugin: manifest.Plugin{PluginID: "com.example.test", Version: "1.0.0"}},
 				Metadata:          map[string]string{"trust.key_id": "publisher-key"},
 			}
-			stored, err := store.PutPlugin(context.Background(), record, PutOptions{Now: now})
+			stored, err := store.PutPlugin(registryTestContext(), record, PutOptions{Now: now})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -114,7 +113,7 @@ func TestStorePreservesVersionHistoryOnOverwrite(t *testing.T) {
 			stored.ActiveFingerprint = "sha256:v2"
 			stored.PackageHash = "sha256:v2"
 			stored.VersionHistory = []PluginVersion{{Version: "1.0.0", PackageHash: "sha256:v1"}}
-			updated, err := store.PutPlugin(context.Background(), stored, PutOptions{Now: now.Add(time.Second)})
+			updated, err := store.PutPlugin(registryTestContext(), stored, PutOptions{Now: now.Add(time.Second)})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -184,7 +183,7 @@ func TestStoreDeepClonesNestedPluginRecords(t *testing.T) {
 				}},
 				Metadata: map[string]string{"record": "original"},
 			}
-			stored, err := store.PutPlugin(context.Background(), record, PutOptions{})
+			stored, err := store.PutPlugin(registryTestContext(), record, PutOptions{})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -195,7 +194,7 @@ func TestStoreDeepClonesNestedPluginRecords(t *testing.T) {
 			stored.Manifest.Methods[0].RequestSchema["properties"].(map[string]any)["document_id"].(map[string]any)["type"] = "number"
 			stored.VersionHistory[0].Metadata["history"] = "mutated-return"
 
-			got, err := store.GetPlugin(context.Background(), record.PluginInstanceID)
+			got, err := store.GetPlugin(registryTestContext(), record.PluginInstanceID)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -207,12 +206,12 @@ func TestStoreDeepClonesNestedPluginRecords(t *testing.T) {
 			}
 
 			got.Metadata["record"] = "mutated-get"
-			listed, err := store.ListPlugins(context.Background())
+			listed, err := store.ListPlugins(registryTestContext())
 			if err != nil {
 				t.Fatal(err)
 			}
 			listed[0].CapabilityContracts[0].ArtifactSHA256 = strings.Repeat("0", 64)
-			again, err := store.GetPlugin(context.Background(), record.PluginInstanceID)
+			again, err := store.GetPlugin(registryTestContext(), record.PluginInstanceID)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -237,16 +236,16 @@ func TestStoreAbortInstall(t *testing.T) {
 				EnableState:       EnableDisabled,
 				Manifest:          manifest.Manifest{Plugin: manifest.Plugin{PluginID: "com.example.delete", Version: "1.0.0"}},
 			}
-			if _, err := store.PutPlugin(context.Background(), record, PutOptions{}); err != nil {
+			if _, err := store.PutPlugin(registryTestContext(), record, PutOptions{}); err != nil {
 				t.Fatal(err)
 			}
-			if err := store.AbortInstall(context.Background(), record.PluginInstanceID); err != nil {
+			if err := store.AbortInstall(registryTestContext(), record.PluginInstanceID); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := store.GetPlugin(context.Background(), record.PluginInstanceID); !errors.Is(err, ErrNotFound) {
+			if _, err := store.GetPlugin(registryTestContext(), record.PluginInstanceID); !errors.Is(err, ErrNotFound) {
 				t.Fatalf("GetPlugin() after delete error = %v, want %v", err, ErrNotFound)
 			}
-			if err := store.AbortInstall(context.Background(), record.PluginInstanceID); !errors.Is(err, ErrNotFound) {
+			if err := store.AbortInstall(registryTestContext(), record.PluginInstanceID); !errors.Is(err, ErrNotFound) {
 				t.Fatalf("AbortInstall() after delete error = %v, want %v", err, ErrNotFound)
 			}
 		})
@@ -266,14 +265,14 @@ func TestStoreSourceSecurityFloorRejectsRollback(t *testing.T) {
 				SourcePolicySnapshotHash: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
 				RevocationMetadataSHA256: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
 			}
-			stored, err := store.PutSourceSecurityFloor(context.Background(), initial, PutOptions{Now: now})
+			stored, err := store.PutSourceSecurityFloor(registryTestContext(), initial, PutOptions{Now: now})
 			if err != nil {
 				t.Fatal(err)
 			}
 			if !stored.UpdatedAt.Equal(now) {
 				t.Fatalf("stored updated_at = %s, want %s", stored.UpdatedAt, now)
 			}
-			got, err := store.GetSourceSecurityFloor(context.Background(), initial.SourceID)
+			got, err := store.GetSourceSecurityFloor(registryTestContext(), initial.SourceID)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -283,7 +282,7 @@ func TestStoreSourceSecurityFloorRejectsRollback(t *testing.T) {
 
 			equivocated := initial
 			equivocated.SourcePolicySnapshotHash = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
-			if _, err := store.PutSourceSecurityFloor(context.Background(), equivocated, PutOptions{Now: now.Add(500 * time.Millisecond)}); !errors.Is(err, ErrSourceSecurityFloorRollback) {
+			if _, err := store.PutSourceSecurityFloor(registryTestContext(), equivocated, PutOptions{Now: now.Add(500 * time.Millisecond)}); !errors.Is(err, ErrSourceSecurityFloorRollback) {
 				t.Fatalf("PutSourceSecurityFloor(same epoch equivocation) error = %v, want %v", err, ErrSourceSecurityFloorRollback)
 			}
 
@@ -291,7 +290,7 @@ func TestStoreSourceSecurityFloorRejectsRollback(t *testing.T) {
 			higher.PolicyEpoch = "11"
 			higher.KeyRotationEpoch = "21"
 			higher.RevocationEpoch = "31"
-			if _, err := store.PutSourceSecurityFloor(context.Background(), higher, PutOptions{Now: now.Add(time.Second)}); err != nil {
+			if _, err := store.PutSourceSecurityFloor(registryTestContext(), higher, PutOptions{Now: now.Add(time.Second)}); err != nil {
 				t.Fatalf("PutSourceSecurityFloor(higher) error = %v", err)
 			}
 
@@ -317,7 +316,7 @@ func TestStoreSourceSecurityFloorRejectsRollback(t *testing.T) {
 				}},
 			} {
 				t.Run(tc.name, func(t *testing.T) {
-					if _, err := store.PutSourceSecurityFloor(context.Background(), tc.mutate(higher), PutOptions{Now: now.Add(2 * time.Second)}); !errors.Is(err, ErrSourceSecurityFloorRollback) {
+					if _, err := store.PutSourceSecurityFloor(registryTestContext(), tc.mutate(higher), PutOptions{Now: now.Add(2 * time.Second)}); !errors.Is(err, ErrSourceSecurityFloorRollback) {
 						t.Fatalf("PutSourceSecurityFloor rollback error = %v, want %v", err, ErrSourceSecurityFloorRollback)
 					}
 				})
@@ -329,7 +328,7 @@ func TestStoreSourceSecurityFloorRejectsRollback(t *testing.T) {
 func TestSQLiteStorePersistsRecordsAcrossOpen(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "registry.sqlite")
 	now := time.Date(2026, 6, 29, 0, 0, 0, 0, time.UTC)
-	store, err := NewSQLiteStore(context.Background(), path)
+	store, err := NewSQLiteStore(registryTestContext(), path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -379,7 +378,7 @@ func TestSQLiteStorePersistsRecordsAcrossOpen(t *testing.T) {
 		}},
 		Metadata: map[string]string{"source": "sqlite-test"},
 	}
-	stored, err := store.PutPlugin(context.Background(), record, PutOptions{Now: now})
+	stored, err := store.PutPlugin(registryTestContext(), record, PutOptions{Now: now})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -387,14 +386,14 @@ func TestSQLiteStorePersistsRecordsAcrossOpen(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	reopened, err := NewSQLiteStore(context.Background(), path)
+	reopened, err := NewSQLiteStore(registryTestContext(), path)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
 		_ = reopened.Close()
 	})
-	got, err := reopened.GetPlugin(context.Background(), stored.PluginInstanceID)
+	got, err := reopened.GetPlugin(registryTestContext(), stored.PluginInstanceID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -420,14 +419,14 @@ func TestSQLiteStorePersistsRecordsAcrossOpen(t *testing.T) {
 		!got.InstalledAt.Equal(now) {
 		t.Fatalf("persisted record mismatch: %#v", got)
 	}
-	listed, err := reopened.ListPlugins(context.Background())
+	listed, err := reopened.ListPlugins(registryTestContext())
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(listed) != 1 || listed[0].TrustAssessment.VerifiedSignature == nil || listed[0].TrustAssessment.VerifiedSignature.KeyID != "official" {
 		t.Fatalf("ListPlugins() trust assessment mismatch: %#v", listed)
 	}
-	authorization, err := reopened.ListAuthorization(context.Background())
+	authorization, err := reopened.ListAuthorization(registryTestContext())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -437,7 +436,7 @@ func TestSQLiteStorePersistsRecordsAcrossOpen(t *testing.T) {
 }
 
 func TestSQLiteStoreMigratesRuntimeRequirementColumn(t *testing.T) {
-	ctx := context.Background()
+	ctx := registryTestContext()
 	path := filepath.Join(t.TempDir(), "registry.sqlite")
 	legacy, err := NewSQLiteStore(ctx, path)
 	if err != nil {
@@ -521,7 +520,7 @@ func registryStoreCases() []registryStoreCase {
 			name: "sqlite",
 			open: func(t *testing.T) Store {
 				t.Helper()
-				store, err := NewSQLiteStore(context.Background(), filepath.Join(t.TempDir(), "registry.sqlite"))
+				store, err := NewSQLiteStore(registryTestContext(), filepath.Join(t.TempDir(), "registry.sqlite"))
 				if err != nil {
 					t.Fatal(err)
 				}

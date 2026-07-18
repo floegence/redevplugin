@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/floegence/redevplugin/pkg/sessionctx"
 	settingsdomain "github.com/floegence/redevplugin/pkg/settings"
 )
 
@@ -88,9 +89,20 @@ type Object struct {
 	CreatedAt   time.Time `json:"created_at"`
 }
 
+type MaintenanceBinding struct {
+	Scope   sessionctx.ResourceScope
+	Binding Binding
+}
+
+type MaintenanceObject struct {
+	Scope  sessionctx.ResourceScope
+	Object Object
+}
+
 type Catalog interface {
 	GetBinding(ctx context.Context, pluginInstanceID string) (Binding, bool, error)
 	ListBindings(ctx context.Context, cursor string, limit int) ([]Binding, string, error)
+	ListAllBindingsForMaintenance(ctx context.Context, cursor string, limit int) ([]MaintenanceBinding, string, error)
 	CommitEnable(ctx context.Context, expectedManagementRevision uint64, expected *Binding, next Binding, shape Shape, now time.Time) error
 	SwapImport(ctx context.Context, expectedManagementRevision uint64, expected *Binding, next Binding, shape Shape, now time.Time) error
 	BindRetained(ctx context.Context, expected Binding, targetPluginInstanceID string, targetExpectedManagementRevision uint64, targetShape Shape, now time.Time) (Binding, error)
@@ -99,6 +111,7 @@ type Catalog interface {
 	CommitUninstall(ctx context.Context, req CommitUninstallRequest) (CommitUninstallResult, error)
 	GetObject(ctx context.Context, objectID string) (Object, bool, error)
 	ListObjects(ctx context.Context, cursor string, limit int) ([]Object, string, error)
+	ListAllObjectsForMaintenance(ctx context.Context, cursor string, limit int) ([]MaintenanceObject, string, error)
 	CreateObject(ctx context.Context, object Object) error
 	DeleteObject(ctx context.Context, objectID string) error
 }

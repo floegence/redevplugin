@@ -14,6 +14,10 @@ import (
 )
 
 func (s *SQLiteStore) GrantPermission(ctx context.Context, req permissions.GrantRequest, expected AuthorizationRevisions) (AuthorizationSnapshot, error) {
+	ownerEnvHash, err := environmentOwner(ctx)
+	if err != nil {
+		return AuthorizationSnapshot{}, err
+	}
 	grant, err := permissions.NewGrant(req)
 	if err != nil {
 		return AuthorizationSnapshot{}, err
@@ -29,11 +33,11 @@ func (s *SQLiteStore) GrantPermission(ctx context.Context, req permissions.Grant
 		return AuthorizationSnapshot{}, err
 	}
 	defer rollbackUnlessCommitted(tx)
-	record, err := advanceSQLiteAuthorizationRevisions(ctx, tx, grant.PluginInstanceID, expected, false, grant.GrantedAt)
+	record, err := advanceSQLiteAuthorizationRevisions(ctx, tx, ownerEnvHash, grant.PluginInstanceID, expected, false, grant.GrantedAt)
 	if err != nil {
 		return AuthorizationSnapshot{}, err
 	}
-	if err := upsertSQLitePermissionGrant(ctx, tx, grant); err != nil {
+	if err := upsertSQLitePermissionGrant(ctx, tx, ownerEnvHash, grant); err != nil {
 		return AuthorizationSnapshot{}, err
 	}
 	snapshot, err := getSQLiteAuthorizationSnapshot(ctx, tx, record)
@@ -47,6 +51,10 @@ func (s *SQLiteStore) GrantPermission(ctx context.Context, req permissions.Grant
 }
 
 func (s *SQLiteStore) RevokePermission(ctx context.Context, req permissions.RevokeRequest, expected AuthorizationRevisions) (AuthorizationSnapshot, error) {
+	ownerEnvHash, err := environmentOwner(ctx)
+	if err != nil {
+		return AuthorizationSnapshot{}, err
+	}
 	if err := permissions.ValidateRevokeRequest(req); err != nil {
 		return AuthorizationSnapshot{}, err
 	}
@@ -65,11 +73,11 @@ func (s *SQLiteStore) RevokePermission(ctx context.Context, req permissions.Revo
 		return AuthorizationSnapshot{}, err
 	}
 	defer rollbackUnlessCommitted(tx)
-	record, err := advanceSQLiteAuthorizationRevisions(ctx, tx, pluginInstanceID, expected, true, req.Now)
+	record, err := advanceSQLiteAuthorizationRevisions(ctx, tx, ownerEnvHash, pluginInstanceID, expected, true, req.Now)
 	if err != nil {
 		return AuthorizationSnapshot{}, err
 	}
-	existing, found, err := getSQLitePermissionGrant(ctx, tx, pluginInstanceID, strings.TrimSpace(req.PermissionID))
+	existing, found, err := getSQLitePermissionGrant(ctx, tx, ownerEnvHash, pluginInstanceID, strings.TrimSpace(req.PermissionID))
 	if err != nil {
 		return AuthorizationSnapshot{}, err
 	}
@@ -80,7 +88,7 @@ func (s *SQLiteStore) RevokePermission(ctx context.Context, req permissions.Revo
 	if err != nil {
 		return AuthorizationSnapshot{}, err
 	}
-	if err := upsertSQLitePermissionGrant(ctx, tx, revoked); err != nil {
+	if err := upsertSQLitePermissionGrant(ctx, tx, ownerEnvHash, revoked); err != nil {
 		return AuthorizationSnapshot{}, err
 	}
 	snapshot, err := getSQLiteAuthorizationSnapshot(ctx, tx, record)
@@ -94,6 +102,10 @@ func (s *SQLiteStore) RevokePermission(ctx context.Context, req permissions.Revo
 }
 
 func (s *SQLiteStore) PutSecurityPolicy(ctx context.Context, req security.PutPolicyRequest, expected AuthorizationRevisions) (AuthorizationSnapshot, error) {
+	ownerEnvHash, err := environmentOwner(ctx)
+	if err != nil {
+		return AuthorizationSnapshot{}, err
+	}
 	policy, err := security.NewPolicy(req)
 	if err != nil {
 		return AuthorizationSnapshot{}, err
@@ -109,11 +121,11 @@ func (s *SQLiteStore) PutSecurityPolicy(ctx context.Context, req security.PutPol
 		return AuthorizationSnapshot{}, err
 	}
 	defer rollbackUnlessCommitted(tx)
-	record, err := advanceSQLiteAuthorizationRevisions(ctx, tx, policy.PluginInstanceID, expected, true, policy.UpdatedAt)
+	record, err := advanceSQLiteAuthorizationRevisions(ctx, tx, ownerEnvHash, policy.PluginInstanceID, expected, true, policy.UpdatedAt)
 	if err != nil {
 		return AuthorizationSnapshot{}, err
 	}
-	if err := upsertSQLiteSecurityPolicy(ctx, tx, policy); err != nil {
+	if err := upsertSQLiteSecurityPolicy(ctx, tx, ownerEnvHash, policy); err != nil {
 		return AuthorizationSnapshot{}, err
 	}
 	snapshot, err := getSQLiteAuthorizationSnapshot(ctx, tx, record)
@@ -127,6 +139,10 @@ func (s *SQLiteStore) PutSecurityPolicy(ctx context.Context, req security.PutPol
 }
 
 func (s *SQLiteStore) DeleteSecurityPolicy(ctx context.Context, pluginInstanceID string, now time.Time, expected AuthorizationRevisions) (AuthorizationSnapshot, error) {
+	ownerEnvHash, err := environmentOwner(ctx)
+	if err != nil {
+		return AuthorizationSnapshot{}, err
+	}
 	if err := security.ValidatePolicyID(pluginInstanceID); err != nil {
 		return AuthorizationSnapshot{}, err
 	}
@@ -145,11 +161,11 @@ func (s *SQLiteStore) DeleteSecurityPolicy(ctx context.Context, pluginInstanceID
 		return AuthorizationSnapshot{}, err
 	}
 	defer rollbackUnlessCommitted(tx)
-	record, err := advanceSQLiteAuthorizationRevisions(ctx, tx, pluginInstanceID, expected, true, now)
+	record, err := advanceSQLiteAuthorizationRevisions(ctx, tx, ownerEnvHash, pluginInstanceID, expected, true, now)
 	if err != nil {
 		return AuthorizationSnapshot{}, err
 	}
-	if _, err := tx.ExecContext(ctx, `DELETE FROM plugin_security_policies WHERE plugin_instance_id = ?`, pluginInstanceID); err != nil {
+	if _, err := tx.ExecContext(ctx, `DELETE FROM plugin_security_policies WHERE owner_env_hash = ? AND plugin_instance_id = ?`, ownerEnvHash, pluginInstanceID); err != nil {
 		return AuthorizationSnapshot{}, err
 	}
 	snapshot, err := getSQLiteAuthorizationSnapshot(ctx, tx, record)
@@ -163,16 +179,20 @@ func (s *SQLiteStore) DeleteSecurityPolicy(ctx context.Context, pluginInstanceID
 }
 
 func (s *SQLiteStore) GetAuthorization(ctx context.Context, pluginInstanceID string) (AuthorizationSnapshot, error) {
-	return s.readSQLiteAuthorization(ctx, strings.TrimSpace(pluginInstanceID), nil)
+	ownerEnvHash, err := environmentOwner(ctx)
+	if err != nil {
+		return AuthorizationSnapshot{}, err
+	}
+	return s.readSQLiteAuthorization(ctx, ownerEnvHash, strings.TrimSpace(pluginInstanceID), nil)
 }
 
-func (s *SQLiteStore) readSQLiteAuthorization(ctx context.Context, pluginInstanceID string, expected *AuthorizationRevisions) (AuthorizationSnapshot, error) {
+func (s *SQLiteStore) readSQLiteAuthorization(ctx context.Context, ownerEnvHash, pluginInstanceID string, expected *AuthorizationRevisions) (AuthorizationSnapshot, error) {
 	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
 		return AuthorizationSnapshot{}, err
 	}
 	defer rollbackUnlessCommitted(tx)
-	record, exists, err := getSQLitePlugin(ctx, tx, pluginInstanceID, false)
+	record, exists, err := getSQLitePlugin(ctx, tx, ownerEnvHash, pluginInstanceID, false)
 	if err != nil {
 		return AuthorizationSnapshot{}, err
 	}
@@ -195,12 +215,16 @@ func (s *SQLiteStore) readSQLiteAuthorization(ctx context.Context, pluginInstanc
 }
 
 func (s *SQLiteStore) ListAuthorization(ctx context.Context) ([]AuthorizationSnapshot, error) {
+	ownerEnvHash, err := environmentOwner(ctx)
+	if err != nil {
+		return nil, err
+	}
 	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
 		return nil, err
 	}
 	defer rollbackUnlessCommitted(tx)
-	rows, err := tx.QueryContext(ctx, registryPluginSelectColumns+` FROM plugin_records WHERE deleted_at IS NULL ORDER BY plugin_id, plugin_instance_id`)
+	rows, err := tx.QueryContext(ctx, registryPluginSelectColumns+` FROM plugin_records WHERE owner_env_hash = ? AND deleted_at IS NULL ORDER BY plugin_id, plugin_instance_id`, ownerEnvHash)
 	if err != nil {
 		return nil, err
 	}
@@ -219,11 +243,11 @@ func (s *SQLiteStore) ListAuthorization(ctx context.Context) ([]AuthorizationSna
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-	grantsByPlugin, err := listAllSQLitePermissionGrants(ctx, tx)
+	grantsByPlugin, err := listAllSQLitePermissionGrants(ctx, tx, ownerEnvHash)
 	if err != nil {
 		return nil, err
 	}
-	policiesByPlugin, err := listAllSQLiteSecurityPolicies(ctx, tx)
+	policiesByPlugin, err := listAllSQLiteSecurityPolicies(ctx, tx, ownerEnvHash)
 	if err != nil {
 		return nil, err
 	}
@@ -249,14 +273,15 @@ func (s *SQLiteStore) ListAuthorization(ctx context.Context) ([]AuthorizationSna
 	return snapshots, nil
 }
 
-func listAllSQLitePermissionGrants(ctx context.Context, q sqliteAuthorizationQuerier) (map[string][]permissions.Record, error) {
+func listAllSQLitePermissionGrants(ctx context.Context, q sqliteAuthorizationQuerier, ownerEnvHash string) (map[string][]permissions.Record, error) {
 	rows, err := q.QueryContext(ctx, `
 SELECT grants.plugin_instance_id, grants.permission_id, grants.effect, grants.granted_by,
        grants.granted_at, grants.expires_at, grants.revoked_at, grants.revoked_by, grants.revoked_reason
 FROM plugin_permission_grants AS grants
-JOIN plugin_records AS plugins ON plugins.plugin_instance_id = grants.plugin_instance_id
-WHERE plugins.deleted_at IS NULL
-ORDER BY grants.plugin_instance_id, grants.permission_id`)
+JOIN plugin_records AS plugins
+	ON plugins.owner_env_hash = grants.owner_env_hash AND plugins.plugin_instance_id = grants.plugin_instance_id
+WHERE grants.owner_env_hash = ? AND plugins.deleted_at IS NULL
+ORDER BY grants.plugin_instance_id, grants.permission_id`, ownerEnvHash)
 	if err != nil {
 		return nil, err
 	}
@@ -293,14 +318,15 @@ ORDER BY grants.plugin_instance_id, grants.permission_id`)
 	return grantsByPlugin, nil
 }
 
-func listAllSQLiteSecurityPolicies(ctx context.Context, q sqliteAuthorizationQuerier) (map[string]security.PolicyRecord, error) {
+func listAllSQLiteSecurityPolicies(ctx context.Context, q sqliteAuthorizationQuerier, ownerEnvHash string) (map[string]security.PolicyRecord, error) {
 	rows, err := q.QueryContext(ctx, `
 SELECT policies.plugin_instance_id, policies.allowed_permissions_json,
        policies.denied_methods_json, policies.updated_at
 FROM plugin_security_policies AS policies
-JOIN plugin_records AS plugins ON plugins.plugin_instance_id = policies.plugin_instance_id
-WHERE plugins.deleted_at IS NULL
-ORDER BY policies.plugin_instance_id`)
+JOIN plugin_records AS plugins
+	ON plugins.owner_env_hash = policies.owner_env_hash AND plugins.plugin_instance_id = policies.plugin_instance_id
+WHERE policies.owner_env_hash = ? AND plugins.deleted_at IS NULL
+ORDER BY policies.plugin_instance_id`, ownerEnvHash)
 	if err != nil {
 		return nil, err
 	}
@@ -406,6 +432,10 @@ ORDER BY plugin_instance_id`)
 }
 
 func (s *SQLiteStore) Authorize(ctx context.Context, req AuthorizeRequest) (AuthorizationDecision, error) {
+	ownerEnvHash, err := environmentOwner(ctx)
+	if err != nil {
+		return AuthorizationDecision{}, err
+	}
 	pluginInstanceID := strings.TrimSpace(req.PluginInstanceID)
 	if err := security.ValidatePolicyEvaluationRequest(security.EvaluatePolicyRequest{
 		PluginInstanceID:    pluginInstanceID,
@@ -422,7 +452,7 @@ func (s *SQLiteStore) Authorize(ctx context.Context, req AuthorizeRequest) (Auth
 		return AuthorizationDecision{}, err
 	}
 	defer rollbackUnlessCommitted(tx)
-	state, exists, err := getSQLiteAuthorizationState(ctx, tx, pluginInstanceID)
+	state, exists, err := getSQLiteAuthorizationState(ctx, tx, ownerEnvHash, pluginInstanceID)
 	if err != nil {
 		return AuthorizationDecision{}, err
 	}
@@ -437,11 +467,11 @@ func (s *SQLiteStore) Authorize(ctx context.Context, req AuthorizeRequest) (Auth
 		}
 	}
 	requiredPermissionIDs := permissions.NormalizePermissionIDs(req.PermissionIDs)
-	grants, err := listSQLitePermissionGrantsByID(ctx, tx, pluginInstanceID, requiredPermissionIDs)
+	grants, err := listSQLitePermissionGrantsByID(ctx, tx, ownerEnvHash, pluginInstanceID, requiredPermissionIDs)
 	if err != nil {
 		return AuthorizationDecision{}, err
 	}
-	policy, hasPolicy, err := getSQLiteSecurityPolicy(ctx, tx, pluginInstanceID)
+	policy, hasPolicy, err := getSQLiteSecurityPolicy(ctx, tx, ownerEnvHash, pluginInstanceID)
 	if err != nil {
 		return AuthorizationDecision{}, err
 	}
@@ -455,7 +485,7 @@ func (s *SQLiteStore) Authorize(ctx context.Context, req AuthorizeRequest) (Auth
 	return evaluateAuthorization(state, grants, policyPtr, req)
 }
 
-func getSQLiteAuthorizationState(ctx context.Context, q sqliteAuthorizationQuerier, pluginInstanceID string) (AuthorizationState, bool, error) {
+func getSQLiteAuthorizationState(ctx context.Context, q sqliteAuthorizationQuerier, ownerEnvHash, pluginInstanceID string) (AuthorizationState, bool, error) {
 	var state AuthorizationState
 	var trustState string
 	var enableState string
@@ -463,7 +493,7 @@ func getSQLiteAuthorizationState(ctx context.Context, q sqliteAuthorizationQueri
 SELECT plugin_instance_id, version, active_fingerprint, trust_state, enable_state,
        policy_revision, management_revision, revoke_epoch
 FROM plugin_records
-WHERE plugin_instance_id = ? AND deleted_at IS NULL`, pluginInstanceID).Scan(
+WHERE owner_env_hash = ? AND plugin_instance_id = ? AND deleted_at IS NULL`, ownerEnvHash, pluginInstanceID).Scan(
 		&state.PluginInstanceID,
 		&state.PluginVersion,
 		&state.ActiveFingerprint,
@@ -484,7 +514,7 @@ WHERE plugin_instance_id = ? AND deleted_at IS NULL`, pluginInstanceID).Scan(
 	return state, true, nil
 }
 
-func advanceSQLiteAuthorizationRevisions(ctx context.Context, tx *sql.Tx, pluginInstanceID string, expected AuthorizationRevisions, revoke bool, now time.Time) (PluginRecord, error) {
+func advanceSQLiteAuthorizationRevisions(ctx context.Context, tx *sql.Tx, ownerEnvHash, pluginInstanceID string, expected AuthorizationRevisions, revoke bool, now time.Time) (PluginRecord, error) {
 	revokeIncrement := 0
 	if revoke {
 		revokeIncrement = 1
@@ -494,13 +524,15 @@ UPDATE plugin_records
 SET policy_revision = policy_revision + 1,
 	revoke_epoch = revoke_epoch + ?,
 	updated_at = ?
-WHERE plugin_instance_id = ?
+WHERE owner_env_hash = ?
+	AND plugin_instance_id = ?
 	AND deleted_at IS NULL
 	AND policy_revision = ?
 	AND management_revision = ?
 	AND revoke_epoch = ?`,
 		revokeIncrement,
 		now.UTC().UnixNano(),
+		ownerEnvHash,
 		pluginInstanceID,
 		expected.PolicyRevision,
 		expected.ManagementRevision,
@@ -514,7 +546,7 @@ WHERE plugin_instance_id = ?
 		return PluginRecord{}, err
 	}
 	if affected == 1 {
-		record, exists, err := getSQLitePlugin(ctx, tx, pluginInstanceID, false)
+		record, exists, err := getSQLitePlugin(ctx, tx, ownerEnvHash, pluginInstanceID, false)
 		if err != nil {
 			return PluginRecord{}, err
 		}
@@ -523,7 +555,7 @@ WHERE plugin_instance_id = ?
 		}
 		return record, nil
 	}
-	actualRecord, exists, err := getSQLitePlugin(ctx, tx, pluginInstanceID, false)
+	actualRecord, exists, err := getSQLitePlugin(ctx, tx, ownerEnvHash, pluginInstanceID, false)
 	if err != nil {
 		return PluginRecord{}, err
 	}
@@ -542,11 +574,11 @@ func getSQLiteAuthorizationSnapshot(ctx context.Context, q sqliteAuthorizationQu
 	if err != nil {
 		return AuthorizationSnapshot{}, err
 	}
-	grants, err := listSQLitePermissionGrants(ctx, q, record.PluginInstanceID)
+	grants, err := listSQLitePermissionGrants(ctx, q, record.OwnerEnvHash, record.PluginInstanceID)
 	if err != nil {
 		return AuthorizationSnapshot{}, err
 	}
-	policy, exists, err := getSQLiteSecurityPolicy(ctx, q, record.PluginInstanceID)
+	policy, exists, err := getSQLiteSecurityPolicy(ctx, q, record.OwnerEnvHash, record.PluginInstanceID)
 	if err != nil {
 		return AuthorizationSnapshot{}, err
 	}
@@ -557,12 +589,12 @@ func getSQLiteAuthorizationSnapshot(ctx context.Context, q sqliteAuthorizationQu
 	return snapshot, nil
 }
 
-func listSQLitePermissionGrants(ctx context.Context, q sqliteAuthorizationQuerier, pluginInstanceID string) ([]permissions.Record, error) {
+func listSQLitePermissionGrants(ctx context.Context, q sqliteAuthorizationQuerier, ownerEnvHash, pluginInstanceID string) ([]permissions.Record, error) {
 	rows, err := q.QueryContext(ctx, `
 SELECT permission_id, effect, granted_by, granted_at, expires_at, revoked_at, revoked_by, revoked_reason
 FROM plugin_permission_grants
-WHERE plugin_instance_id = ?
-ORDER BY permission_id`, pluginInstanceID)
+WHERE owner_env_hash = ? AND plugin_instance_id = ?
+ORDER BY permission_id`, ownerEnvHash, pluginInstanceID)
 	if err != nil {
 		return nil, err
 	}
@@ -581,12 +613,12 @@ ORDER BY permission_id`, pluginInstanceID)
 	return records, nil
 }
 
-func listSQLitePermissionGrantsByID(ctx context.Context, q sqliteAuthorizationQuerier, pluginInstanceID string, permissionIDs []string) ([]permissions.Record, error) {
+func listSQLitePermissionGrantsByID(ctx context.Context, q sqliteAuthorizationQuerier, ownerEnvHash, pluginInstanceID string, permissionIDs []string) ([]permissions.Record, error) {
 	if len(permissionIDs) == 0 {
 		return []permissions.Record{}, nil
 	}
 	if len(permissionIDs) == 1 {
-		record, found, err := getSQLitePermissionGrant(ctx, q, pluginInstanceID, permissionIDs[0])
+		record, found, err := getSQLitePermissionGrant(ctx, q, ownerEnvHash, pluginInstanceID, permissionIDs[0])
 		if err != nil {
 			return nil, err
 		}
@@ -607,8 +639,8 @@ SELECT grants.permission_id, grants.effect, grants.granted_by, grants.granted_at
 	grants.expires_at, grants.revoked_at, grants.revoked_by, grants.revoked_reason
 FROM required
 JOIN plugin_permission_grants AS grants
-	ON grants.plugin_instance_id = ? AND grants.permission_id = required.permission_id
-ORDER BY grants.permission_id`, requiredJSON, pluginInstanceID)
+	ON grants.owner_env_hash = ? AND grants.plugin_instance_id = ? AND grants.permission_id = required.permission_id
+ORDER BY grants.permission_id`, requiredJSON, ownerEnvHash, pluginInstanceID)
 	if err != nil {
 		return nil, err
 	}
@@ -627,11 +659,11 @@ ORDER BY grants.permission_id`, requiredJSON, pluginInstanceID)
 	return records, nil
 }
 
-func getSQLitePermissionGrant(ctx context.Context, q sqliteAuthorizationQuerier, pluginInstanceID, permissionID string) (permissions.Record, bool, error) {
+func getSQLitePermissionGrant(ctx context.Context, q sqliteAuthorizationQuerier, ownerEnvHash, pluginInstanceID, permissionID string) (permissions.Record, bool, error) {
 	row := q.QueryRowContext(ctx, `
 SELECT permission_id, effect, granted_by, granted_at, expires_at, revoked_at, revoked_by, revoked_reason
 FROM plugin_permission_grants
-WHERE plugin_instance_id = ? AND permission_id = ?`, pluginInstanceID, permissionID)
+WHERE owner_env_hash = ? AND plugin_instance_id = ? AND permission_id = ?`, ownerEnvHash, pluginInstanceID, permissionID)
 	record, err := scanSQLitePermissionGrant(row, pluginInstanceID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return permissions.Record{}, false, nil
@@ -668,13 +700,13 @@ func scanSQLitePermissionGrant(scanner sqliteAuthorizationScanner, pluginInstanc
 	return record, nil
 }
 
-func upsertSQLitePermissionGrant(ctx context.Context, tx *sql.Tx, record permissions.Record) error {
+func upsertSQLitePermissionGrant(ctx context.Context, tx *sql.Tx, ownerEnvHash string, record permissions.Record) error {
 	_, err := tx.ExecContext(ctx, `
 INSERT INTO plugin_permission_grants (
-	plugin_instance_id, permission_id, effect, granted_by, granted_at,
+	owner_env_hash, plugin_instance_id, permission_id, effect, granted_by, granted_at,
 	expires_at, revoked_at, revoked_by, revoked_reason
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-ON CONFLICT(plugin_instance_id, permission_id) DO UPDATE SET
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT(owner_env_hash, plugin_instance_id, permission_id) DO UPDATE SET
 	effect = excluded.effect,
 	granted_by = excluded.granted_by,
 	granted_at = excluded.granted_at,
@@ -682,6 +714,7 @@ ON CONFLICT(plugin_instance_id, permission_id) DO UPDATE SET
 	revoked_at = excluded.revoked_at,
 	revoked_by = excluded.revoked_by,
 	revoked_reason = excluded.revoked_reason`,
+		ownerEnvHash,
 		record.PluginInstanceID,
 		record.PermissionID,
 		string(record.Effect),
@@ -695,14 +728,14 @@ ON CONFLICT(plugin_instance_id, permission_id) DO UPDATE SET
 	return err
 }
 
-func getSQLiteSecurityPolicy(ctx context.Context, q sqliteAuthorizationQuerier, pluginInstanceID string) (security.PolicyRecord, bool, error) {
+func getSQLiteSecurityPolicy(ctx context.Context, q sqliteAuthorizationQuerier, ownerEnvHash, pluginInstanceID string) (security.PolicyRecord, bool, error) {
 	var allowedJSON string
 	var deniedJSON string
 	var updatedAt int64
 	err := q.QueryRowContext(ctx, `
 SELECT allowed_permissions_json, denied_methods_json, updated_at
 FROM plugin_security_policies
-WHERE plugin_instance_id = ?`, pluginInstanceID).Scan(&allowedJSON, &deniedJSON, &updatedAt)
+WHERE owner_env_hash = ? AND plugin_instance_id = ?`, ownerEnvHash, pluginInstanceID).Scan(&allowedJSON, &deniedJSON, &updatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return security.PolicyRecord{}, false, nil
 	}
@@ -719,7 +752,7 @@ WHERE plugin_instance_id = ?`, pluginInstanceID).Scan(&allowedJSON, &deniedJSON,
 	return security.ClonePolicy(record), true, nil
 }
 
-func upsertSQLiteSecurityPolicy(ctx context.Context, tx *sql.Tx, record security.PolicyRecord) error {
+func upsertSQLiteSecurityPolicy(ctx context.Context, tx *sql.Tx, ownerEnvHash string, record security.PolicyRecord) error {
 	allowedJSON, err := encodeRegistryJSON(record.AllowedPermissions)
 	if err != nil {
 		return err
@@ -730,12 +763,13 @@ func upsertSQLiteSecurityPolicy(ctx context.Context, tx *sql.Tx, record security
 	}
 	_, err = tx.ExecContext(ctx, `
 INSERT INTO plugin_security_policies (
-	plugin_instance_id, allowed_permissions_json, denied_methods_json, updated_at
-) VALUES (?, ?, ?, ?)
-ON CONFLICT(plugin_instance_id) DO UPDATE SET
+	owner_env_hash, plugin_instance_id, allowed_permissions_json, denied_methods_json, updated_at
+) VALUES (?, ?, ?, ?, ?)
+ON CONFLICT(owner_env_hash, plugin_instance_id) DO UPDATE SET
 	allowed_permissions_json = excluded.allowed_permissions_json,
 	denied_methods_json = excluded.denied_methods_json,
 	updated_at = excluded.updated_at`,
+		ownerEnvHash,
 		record.PluginInstanceID,
 		allowedJSON,
 		deniedJSON,
@@ -744,11 +778,11 @@ ON CONFLICT(plugin_instance_id) DO UPDATE SET
 	return err
 }
 
-func deleteSQLiteAuthorization(ctx context.Context, tx *sql.Tx, pluginInstanceID string) error {
-	if _, err := tx.ExecContext(ctx, `DELETE FROM plugin_permission_grants WHERE plugin_instance_id = ?`, pluginInstanceID); err != nil {
+func deleteSQLiteAuthorization(ctx context.Context, tx *sql.Tx, ownerEnvHash, pluginInstanceID string) error {
+	if _, err := tx.ExecContext(ctx, `DELETE FROM plugin_permission_grants WHERE owner_env_hash = ? AND plugin_instance_id = ?`, ownerEnvHash, pluginInstanceID); err != nil {
 		return err
 	}
-	_, err := tx.ExecContext(ctx, `DELETE FROM plugin_security_policies WHERE plugin_instance_id = ?`, pluginInstanceID)
+	_, err := tx.ExecContext(ctx, `DELETE FROM plugin_security_policies WHERE owner_env_hash = ? AND plugin_instance_id = ?`, ownerEnvHash, pluginInstanceID)
 	return err
 }
 
@@ -763,7 +797,7 @@ type sqliteAuthorizationScanner interface {
 
 const registryPluginSelectColumns = `
 SELECT
-	plugin_instance_id, publisher_id, plugin_id, version, active_fingerprint,
+	owner_env_hash, plugin_instance_id, publisher_id, plugin_id, version, active_fingerprint,
 	package_hash, manifest_hash, entries_hash, trust_state, trust_assessment_json,
 	source_policy_snapshot_hash, source_policy_snapshot_json, local_import_provenance_json, capability_contracts_json, enable_state,
 	disabled_reason, policy_revision, management_revision,

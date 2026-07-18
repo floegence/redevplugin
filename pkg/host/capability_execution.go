@@ -795,6 +795,7 @@ func (h *Host) startMethodExecution(ctx context.Context, record registry.PluginR
 	lifecycleLocked = false
 	lease.armTimeout(h)
 	finish := func(success bool, cause error) error {
+		terminalCtx := context.WithoutCancel(ctx)
 		terminalCause := cause
 		if terminalCause == nil {
 			terminalCause = context.Cause(lease.ctx)
@@ -812,14 +813,14 @@ func (h *Host) startMethodExecution(ctx context.Context, record registry.PluginR
 				if completeOnReturn {
 					operationSink, _, _ := lease.snapshotExecution()
 					if operationSink != nil {
-						return operationSink.Complete(context.Background())
+						return operationSink.Complete(terminalCtx)
 					}
 				}
 				lease.detachParent()
 				return nil
 			}
 			if operationSink, _, _ := lease.snapshotExecution(); operationSink != nil {
-				if err := operationSink.terminateUnchecked(context.Background(), executionFailureCode(binding, terminalCause), terminalCause); err != nil {
+				if err := operationSink.terminateUnchecked(terminalCtx, executionFailureCode(binding, terminalCause), terminalCause); err != nil {
 					if success {
 						return errors.Join(terminalCause, err)
 					}
@@ -840,14 +841,14 @@ func (h *Host) startMethodExecution(ctx context.Context, record registry.PluginR
 						return nil
 					}
 					if completeOnReturn {
-						return streamSink.closeWithStatus(context.Background(), stream.StatusClosed, operation.StatusCompleted, "", "")
+						return streamSink.closeWithStatus(terminalCtx, stream.StatusClosed, operation.StatusCompleted, "", "")
 					}
 				}
 				lease.detachParent()
 				return nil
 			}
 			if _, streamSink, _ := lease.snapshotExecution(); streamSink != nil {
-				if err := streamSink.failCauseUnchecked(context.Background(), executionFailureCode(binding, terminalCause), terminalCause); err != nil {
+				if err := streamSink.failCauseUnchecked(terminalCtx, executionFailureCode(binding, terminalCause), terminalCause); err != nil {
 					if success {
 						return errors.Join(terminalCause, err)
 					}

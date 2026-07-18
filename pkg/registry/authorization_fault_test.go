@@ -147,7 +147,7 @@ func TestSQLiteAuthorizationMutationFaultRollsBack(t *testing.T) {
 	for _, test := range tests {
 		for _, fault := range test.faults {
 			t.Run(test.name+"/"+fault.operation+"_"+fault.table, func(t *testing.T) {
-				ctx := context.Background()
+				ctx := registryTestContext()
 				path := filepath.Join(t.TempDir(), "registry.sqlite")
 				store, err := NewSQLiteStore(ctx, path)
 				if err != nil {
@@ -203,14 +203,14 @@ BEFORE %s ON %s
 BEGIN
 	SELECT RAISE(ABORT, 'injected authorization statement fault');
 END`, fault.operation, fault.table)
-	if _, err := store.db.ExecContext(context.Background(), statement); err != nil {
+	if _, err := store.db.ExecContext(registryTestContext(), statement); err != nil {
 		t.Fatal(err)
 	}
 }
 
 func assertAuthorizationSnapshotEqual(t *testing.T, store *SQLiteStore, want AuthorizationSnapshot) {
 	t.Helper()
-	got, err := store.GetAuthorization(context.Background(), want.Plugin.PluginInstanceID)
+	got, err := store.GetAuthorization(registryTestContext(), want.Plugin.PluginInstanceID)
 	if err != nil {
 		t.Fatal(err)
 	}
