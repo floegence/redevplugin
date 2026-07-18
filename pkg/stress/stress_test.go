@@ -250,6 +250,7 @@ func TestStressGateOperationCancelOwnershipEvidence(t *testing.T) {
 	pluginHost, err := host.Open(ctx, host.Config{
 		Core: host.CoreAdapters{
 			Policy:               stressPolicy{},
+			Authorization:        stressAuthorization{},
 			PackageTrustVerifier: platformAdapter,
 			Registry:             registryStore,
 			Audit:                audit,
@@ -971,6 +972,15 @@ func (stressPlatformAdapter) InvokeCoreAction(context.Context, capability.Invoca
 }
 
 type stressPolicy struct{}
+
+type stressAuthorization struct{}
+
+func (stressAuthorization) Authorize(_ context.Context, req host.AuthorizationRequest) error {
+	if !req.Session.Valid() || !req.Action.Valid() || !req.Resource.Valid() || req.Resource != req.Action.Resource() {
+		return host.ErrActionDenied
+	}
+	return nil
+}
 
 func (stressPolicy) EvaluateLocalPolicy(context.Context, sessionctx.Context, host.PluginRef, manifest.MethodSpec) (host.PolicyDecision, error) {
 	return host.PolicyAllow, nil

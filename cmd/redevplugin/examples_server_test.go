@@ -153,7 +153,7 @@ func TestExamplesWeatherPluginFetchesLiveForecast(t *testing.T) {
 	case <-time.After(20 * time.Second):
 		t.Fatal("examples Host did not become ready")
 	}
-	records, err := pluginHost.ListPlugins(context.Background())
+	records, err := pluginHost.ListPlugins(examplesContext(context.Background()))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -380,7 +380,7 @@ func TestExamplesServerBrowserSmoke(t *testing.T) {
 		"REDEVPLUGIN_EXAMPLES_EVIDENCE_DIR="+evidenceDir,
 	)
 	if output, err := command.CombinedOutput(); err != nil {
-		health, healthErr := pluginHost.RuntimeHealth(context.Background())
+		health, healthErr := pluginHost.RuntimeHealth(examplesContext(context.Background()))
 		diagnostics, diagnosticErr := pluginHost.ListDiagnosticEvents(examplesContext(context.Background()), host.ListDiagnosticEventsRequest{Limit: 50})
 		t.Fatalf("examples browser smoke failed: %v\n%s\nruntime health: %#v (error=%v)\ndiagnostics: %#v (error=%v)\ninternal diagnostics: %#v", err, output, health, healthErr, diagnostics, diagnosticErr, events.snapshotDiagnostics())
 	}

@@ -1199,6 +1199,7 @@ func newEphemeralCLIAdapters(registryStore registry.Store, pluginData host.Plugi
 	return host.Config{
 		Core: host.CoreAdapters{
 			Policy:               staticPolicyAdapter{},
+			Authorization:        staticAuthorizationAdapter{},
 			PackageTrustVerifier: trust.Ed25519Verifier{Keyring: trust.StaticKeyring{}},
 			Registry:             registryStore,
 			Audit:                events,
@@ -1221,6 +1222,15 @@ func newEphemeralCLIAdapters(registryStore registry.Store, pluginData host.Plugi
 }
 
 type staticPolicyAdapter struct{}
+
+type staticAuthorizationAdapter struct{}
+
+func (staticAuthorizationAdapter) Authorize(_ context.Context, req host.AuthorizationRequest) error {
+	if !req.Session.Valid() || !req.Action.Valid() || !req.Resource.Valid() || req.Resource != req.Action.Resource() {
+		return host.ErrActionDenied
+	}
+	return nil
+}
 
 func (staticPolicyAdapter) EvaluateLocalPolicy(context.Context, sessionctx.Context, host.PluginRef, manifest.MethodSpec) (host.PolicyDecision, error) {
 	return host.PolicyAllow, nil

@@ -593,6 +593,7 @@ type PluginRef struct {
 // core because every package mutation crosses the same trust boundary.
 type CoreAdapters struct {
 	Policy               PolicyAdapter
+	Authorization        AuthorizationAdapter
 	PackageTrustVerifier PackageTrustVerifier
 	Registry             registry.Store
 	Audit                AuditSink
@@ -651,6 +652,7 @@ type Config struct {
 
 type normalizedAdapters struct {
 	Policy                      PolicyAdapter
+	Authorization               AuthorizationAdapter
 	PackageTrustVerifier        PackageTrustVerifier
 	ReleaseMetadataVerifier     ReleaseMetadataVerifier
 	RevocationVerifier          SourceRevocationEvidenceVerifier
@@ -1089,6 +1091,7 @@ func normalizeConfig(config Config) (normalizedAdapters, map[Feature]struct{}, e
 	adapters := normalizedAdapters{}
 	core := config.Core
 	adapters.Policy = core.Policy
+	adapters.Authorization = core.Authorization
 	adapters.PackageTrustVerifier = core.PackageTrustVerifier
 	adapters.Registry = core.Registry
 	adapters.Audit = core.Audit
@@ -1144,6 +1147,7 @@ func validateConfig(adapters normalizedAdapters, config Config) error {
 		value any
 	}{
 		{"policy", adapters.Policy},
+		{"authorization", adapters.Authorization},
 		{"package trust verifier", adapters.PackageTrustVerifier},
 		{"registry store", adapters.Registry},
 		{"audit sink", adapters.Audit},
@@ -1571,7 +1575,7 @@ func requireUserSession(ctx context.Context) (sessionctx.Context, error) {
 }
 
 func (h *Host) OpenSurface(ctx context.Context, req OpenSurfaceRequest) (result bridge.SurfaceBootstrap, retErr error) {
-	session, err := requireUserSession(ctx)
+	session, err := h.authorizeManagement(ctx, ManagementActionOpenSurface, req.PluginInstanceID, req.SurfaceID)
 	if err != nil {
 		return bridge.SurfaceBootstrap{}, err
 	}
@@ -2250,7 +2254,7 @@ func (h *Host) RejectMethodConfirmation(ctx context.Context, req RejectMethodCon
 }
 
 func (h *Host) ListIntents(ctx context.Context, req ListIntentsRequest) ([]IntentRecord, error) {
-	if _, err := requireUserSession(ctx); err != nil {
+	if _, err := h.authorizeManagement(ctx, ManagementActionListIntents, req.PluginInstanceID, req.IntentID); err != nil {
 		return nil, err
 	}
 	records, err := h.adapters.Registry.ListPlugins(ctx)
@@ -2308,14 +2312,14 @@ func (h *Host) ListIntents(ctx context.Context, req ListIntentsRequest) ([]Inten
 }
 
 func (h *Host) InvokeIntent(ctx context.Context, req InvokeIntentRequest) (response CallMethodResult, resultErr error) {
+	session, err := h.authorizeManagement(ctx, ManagementActionInvokeIntent, req.PluginInstanceID, req.IntentID)
+	if err != nil {
+		return CallMethodResult{}, err
+	}
 	ctx = withRPCErrorScope(ctx)
 	defer func() {
 		resultErr = finalizeRPCError(ctx, resultErr)
 	}()
-	session, err := requireUserSession(ctx)
-	if err != nil {
-		return CallMethodResult{}, err
-	}
 	req.session = session
 	resolved, err := h.resolveIntent(ctx, req)
 	if err != nil {
@@ -2553,6 +2557,9 @@ func (h *Host) resolveIntent(ctx context.Context, req InvokeIntentRequest) (reso
 }
 
 func (h *Host) ImportLocalPackage(ctx context.Context, req ImportLocalPackageRequest) (registry.PluginRecord, error) {
+	if _, err := h.authorizeManagement(ctx, ManagementActionImportLocalPackage, req.PluginInstanceID); err != nil {
+		return registry.PluginRecord{}, err
+	}
 	if err := h.enforceUnsignedLocalPluginPolicy(ctx); err != nil {
 		return registry.PluginRecord{}, err
 	}
@@ -2576,7 +2583,7 @@ func (h *Host) ImportLocalPackage(ctx context.Context, req ImportLocalPackageReq
 }
 
 func (h *Host) InstallReleaseRef(ctx context.Context, req InstallReleaseRefRequest) (registry.PluginRecord, error) {
-	if _, err := requireUserSession(ctx); err != nil {
+	if _, err := h.authorizeManagement(ctx, ManagementActionInstallReleaseRef, req.PluginInstanceID, req.ReleaseRef.PluginID); err != nil {
 		return registry.PluginRecord{}, err
 	}
 	pkg, release, sourcePolicy, metadata, err := h.resolveReleasePackage(ctx, PackageTrustActionInstall, req.ReleaseRef, nil, req.PluginInstanceID, req.Now)
@@ -2686,6 +2693,9 @@ func (h *Host) installResolvedPackage(ctx context.Context, pkg pluginpkg.Package
 }
 
 func (h *Host) UpdateLocalPackage(ctx context.Context, req UpdateLocalPackageRequest) (registry.PluginRecord, error) {
+	if _, err := h.authorizeManagement(ctx, ManagementActionUpdateLocalPackage, req.PluginInstanceID); err != nil {
+		return registry.PluginRecord{}, err
+	}
 	if err := h.enforceUnsignedLocalPluginPolicy(ctx); err != nil {
 		return registry.PluginRecord{}, err
 	}
@@ -2712,7 +2722,7 @@ func (h *Host) UpdateLocalPackage(ctx context.Context, req UpdateLocalPackageReq
 }
 
 func (h *Host) UpdateReleaseRef(ctx context.Context, req UpdateReleaseRefRequest) (registry.PluginRecord, error) {
-	if _, err := requireUserSession(ctx); err != nil {
+	if _, err := h.authorizeManagement(ctx, ManagementActionUpdateReleaseRef, req.PluginInstanceID, req.ReleaseRef.PluginID); err != nil {
 		return registry.PluginRecord{}, err
 	}
 	current, err := h.adapters.Registry.GetPlugin(ctx, req.PluginInstanceID)
@@ -4114,7 +4124,7 @@ func requireStablePluginDataShape(current manifest.Manifest, next manifest.Manif
 }
 
 func (h *Host) DowngradePlugin(ctx context.Context, req DowngradeRequest) (result registry.PluginRecord, retErr error) {
-	if _, err := requireUserSession(ctx); err != nil {
+	if _, err := h.authorizeManagement(ctx, ManagementActionDowngradePlugin, req.PluginInstanceID); err != nil {
 		return registry.PluginRecord{}, err
 	}
 	releaseLifecycle, err := h.lifecycleLocks.acquireWrite(ctx, req.PluginInstanceID)
@@ -4888,7 +4898,7 @@ func cloneEntries(entries []pluginpkg.Entry) []pluginpkg.Entry {
 }
 
 func (h *Host) ListPlugins(ctx context.Context) ([]registry.PluginRecord, error) {
-	if _, err := requireUserSession(ctx); err != nil {
+	if _, err := h.authorizeManagement(ctx, ManagementActionListPlugins, ""); err != nil {
 		return nil, err
 	}
 	return h.adapters.Registry.ListPlugins(ctx)
@@ -4959,6 +4969,9 @@ func (result RefreshEnabledPluginResult) MarshalJSON() ([]byte, error) {
 }
 
 func (h *Host) RefreshEnabledPlugins(ctx context.Context) ([]RefreshEnabledPluginResult, error) {
+	if _, err := h.authorizeManagement(ctx, ManagementActionRefreshEnabledPlugins, ""); err != nil {
+		return nil, err
+	}
 	releaseOpen, err := h.ensureOpen()
 	if err != nil {
 		return nil, err
@@ -4987,7 +5000,7 @@ func (h *Host) RefreshEnabledPlugins(ctx context.Context) ([]RefreshEnabledPlugi
 }
 
 func (h *Host) GrantPermission(ctx context.Context, req GrantPermissionRequest) (result PermissionMutationResult, retErr error) {
-	session, err := requireUserSession(ctx)
+	session, err := h.authorizeManagement(ctx, ManagementActionGrantPermission, req.PluginInstanceID, req.PermissionID)
 	if err != nil {
 		return PermissionMutationResult{}, err
 	}
@@ -5033,7 +5046,7 @@ func (h *Host) GrantPermission(ctx context.Context, req GrantPermissionRequest) 
 }
 
 func (h *Host) RevokePermission(ctx context.Context, req RevokePermissionRequest) (result PermissionMutationResult, retErr error) {
-	session, err := requireUserSession(ctx)
+	session, err := h.authorizeManagement(ctx, ManagementActionRevokePermission, req.PluginInstanceID, req.PermissionID)
 	if err != nil {
 		return PermissionMutationResult{}, err
 	}
@@ -5070,7 +5083,7 @@ func (h *Host) RevokePermission(ctx context.Context, req RevokePermissionRequest
 }
 
 func (h *Host) ListPermissionGrants(ctx context.Context, req ListPermissionGrantsRequest) ([]permissions.Record, error) {
-	if _, err := requireUserSession(ctx); err != nil {
+	if _, err := h.authorizeManagement(ctx, ManagementActionListPermissionGrants, req.PluginInstanceID); err != nil {
 		return nil, err
 	}
 	var snapshots []registry.AuthorizationSnapshot
@@ -5100,7 +5113,7 @@ func (h *Host) ListPermissionGrants(ctx context.Context, req ListPermissionGrant
 }
 
 func (h *Host) PutSecurityPolicy(ctx context.Context, req PutSecurityPolicyRequest) (result SecurityPolicyResult, retErr error) {
-	if _, err := requireUserSession(ctx); err != nil {
+	if _, err := h.authorizeManagement(ctx, ManagementActionPutSecurityPolicy, req.PluginInstanceID); err != nil {
 		return SecurityPolicyResult{}, err
 	}
 	record, err := h.adapters.Registry.GetPlugin(ctx, req.PluginInstanceID)
@@ -5134,7 +5147,7 @@ func (h *Host) PutSecurityPolicy(ctx context.Context, req PutSecurityPolicyReque
 }
 
 func (h *Host) GetSecurityPolicy(ctx context.Context, req GetSecurityPolicyRequest) (SecurityPolicyResult, error) {
-	if _, err := requireUserSession(ctx); err != nil {
+	if _, err := h.authorizeManagement(ctx, ManagementActionGetSecurityPolicy, req.PluginInstanceID); err != nil {
 		return SecurityPolicyResult{}, err
 	}
 	snapshot, err := h.adapters.Registry.GetAuthorization(ctx, req.PluginInstanceID)
@@ -5148,7 +5161,7 @@ func (h *Host) GetSecurityPolicy(ctx context.Context, req GetSecurityPolicyReque
 }
 
 func (h *Host) ListSecurityPolicies(ctx context.Context) ([]SecurityPolicyResult, error) {
-	if _, err := requireUserSession(ctx); err != nil {
+	if _, err := h.authorizeManagement(ctx, ManagementActionListSecurityPolicies, ""); err != nil {
 		return nil, err
 	}
 	snapshots, err := h.adapters.Registry.ListAuthorization(ctx)
@@ -5172,7 +5185,7 @@ func securityPolicyResult(snapshot registry.AuthorizationSnapshot) SecurityPolic
 }
 
 func (h *Host) DeleteSecurityPolicy(ctx context.Context, req DeleteSecurityPolicyRequest) (result registry.AuthorizationRevisions, retErr error) {
-	if _, err := requireUserSession(ctx); err != nil {
+	if _, err := h.authorizeManagement(ctx, ManagementActionDeleteSecurityPolicy, req.PluginInstanceID); err != nil {
 		return registry.AuthorizationRevisions{}, err
 	}
 	record, err := h.adapters.Registry.GetPlugin(ctx, req.PluginInstanceID)
@@ -5226,7 +5239,7 @@ func activePermissionGrant(record permissions.Record, now time.Time) bool {
 }
 
 func (h *Host) ListDiagnosticEvents(ctx context.Context, req ListDiagnosticEventsRequest) ([]DiagnosticEvent, error) {
-	session, err := requireUserSession(ctx)
+	session, err := h.authorizeManagement(ctx, ManagementActionListDiagnosticEvents, req.PluginInstanceID)
 	if err != nil {
 		return nil, err
 	}
@@ -5306,7 +5319,7 @@ func (h *Host) ListDiagnosticEvents(ctx context.Context, req ListDiagnosticEvent
 }
 
 func (h *Host) ListOperations(ctx context.Context, req ListOperationsRequest) (ListOperationsResult, error) {
-	session, err := requireUserSession(ctx)
+	session, err := h.authorizeManagement(ctx, ManagementActionListOperations, req.PluginInstanceID)
 	if err != nil {
 		return ListOperationsResult{}, err
 	}
@@ -5331,6 +5344,9 @@ func (h *Host) ListOperations(ctx context.Context, req ListOperationsRequest) (L
 }
 
 func (h *Host) StartRuntime(ctx context.Context, req StartRuntimeRequest) (result runtimeclient.ManagerHealth, retErr error) {
+	if _, err := h.authorizeManagement(ctx, ManagementActionStartRuntime, ""); err != nil {
+		return runtimeclient.ManagerHealth{}, err
+	}
 	releaseOpen, err := h.ensureOpen()
 	if err != nil {
 		return runtimeclient.ManagerHealth{}, err
@@ -5381,6 +5397,9 @@ func (h *Host) StartRuntime(ctx context.Context, req StartRuntimeRequest) (resul
 }
 
 func (h *Host) StopRuntime(ctx context.Context) (retErr error) {
+	if _, err := h.authorizeManagement(ctx, ManagementActionStopRuntime, ""); err != nil {
+		return err
+	}
 	releaseOpen, err := h.ensureOpen()
 	if err != nil {
 		return err
@@ -5418,6 +5437,9 @@ func (h *Host) StopRuntime(ctx context.Context) (retErr error) {
 }
 
 func (h *Host) RuntimeHealth(ctx context.Context) (runtimeclient.ManagerHealth, error) {
+	if _, err := h.authorizeManagement(ctx, ManagementActionGetRuntimeHealth, ""); err != nil {
+		return runtimeclient.ManagerHealth{}, err
+	}
 	releaseOpen, err := h.ensureOpen()
 	if err != nil {
 		return runtimeclient.ManagerHealth{}, err
@@ -5460,7 +5482,7 @@ func (h *Host) requireSurfaceRuntimeGeneration(ctx context.Context, pluginInstan
 }
 
 func (h *Host) GetOperation(ctx context.Context, operationID string) (operation.Record, error) {
-	session, err := requireUserSession(ctx)
+	session, err := h.authorizeManagement(ctx, ManagementActionGetOperation, operationID)
 	if err != nil {
 		return operation.Record{}, err
 	}
@@ -5475,7 +5497,7 @@ func (h *Host) GetOperation(ctx context.Context, operationID string) (operation.
 }
 
 func (h *Host) CancelOperation(ctx context.Context, req CancelOperationRequest) (result operation.Record, retErr error) {
-	session, err := requireUserSession(ctx)
+	session, err := h.authorizeManagement(ctx, ManagementActionCancelOperation, req.OperationID)
 	if err != nil {
 		return operation.Record{}, err
 	}
@@ -5779,7 +5801,7 @@ func (h *Host) resolveStreamReadAuthorization(ctx context.Context, req ReadStrea
 }
 
 func (h *Host) MintConnectionGrant(ctx context.Context, req MintConnectionGrantRequest) (result connectivity.ConnectionGrant, retErr error) {
-	if _, err := requireUserSession(ctx); err != nil {
+	if _, err := h.authorizeManagement(ctx, ManagementActionMintConnectionGrant, req.PluginInstanceID, req.ConnectorID); err != nil {
 		return connectivity.ConnectionGrant{}, err
 	}
 	auditMutation, err := h.beginSecurityMutation(ctx, AuditEvent{Type: "plugin.connectivity.grant_minted", PluginInstanceID: req.PluginInstanceID})
@@ -5854,7 +5876,7 @@ func connectorResourceScope(m manifest.Manifest, connectorID string, session ses
 }
 
 func (h *Host) MintNetworkHandleGrant(ctx context.Context, req MintConnectionGrantRequest) (result NetworkHandleGrantResult, retErr error) {
-	if _, err := requireUserSession(ctx); err != nil {
+	if _, err := h.authorizeManagement(ctx, ManagementActionMintNetworkHandleGrant, req.PluginInstanceID, req.ConnectorID); err != nil {
 		return NetworkHandleGrantResult{}, err
 	}
 	if strings.TrimSpace(req.RuntimeGenerationID) == "" {
@@ -5905,7 +5927,7 @@ func (h *Host) MintNetworkHandleGrant(ctx context.Context, req MintConnectionGra
 }
 
 func (h *Host) MintStorageHandleGrant(ctx context.Context, req MintStorageHandleGrantRequest) (result StorageHandleGrantResult, retErr error) {
-	if _, err := requireUserSession(ctx); err != nil {
+	if _, err := h.authorizeManagement(ctx, ManagementActionMintStorageHandleGrant, req.PluginInstanceID, req.StoreID); err != nil {
 		return StorageHandleGrantResult{}, err
 	}
 	if strings.TrimSpace(req.RuntimeGenerationID) == "" || strings.TrimSpace(req.StoreID) == "" {
@@ -5965,7 +5987,7 @@ func (h *Host) MintStorageHandleGrant(ctx context.Context, req MintStorageHandle
 }
 
 func (h *Host) EnablePlugin(ctx context.Context, req EnableRequest) (result registry.PluginRecord, retErr error) {
-	if _, err := requireUserSession(ctx); err != nil {
+	if _, err := h.authorizeManagement(ctx, ManagementActionEnablePlugin, req.PluginInstanceID); err != nil {
 		return registry.PluginRecord{}, err
 	}
 	releaseLifecycle, err := h.lifecycleLocks.acquireWrite(ctx, req.PluginInstanceID)
@@ -6038,7 +6060,7 @@ func (h *Host) EnablePlugin(ctx context.Context, req EnableRequest) (result regi
 }
 
 func (h *Host) DisablePlugin(ctx context.Context, req DisableRequest) (result registry.PluginRecord, retErr error) {
-	if _, err := requireUserSession(ctx); err != nil {
+	if _, err := h.authorizeManagement(ctx, ManagementActionDisablePlugin, req.PluginInstanceID); err != nil {
 		return registry.PluginRecord{}, err
 	}
 	releaseLifecycle, err := h.lifecycleLocks.acquireWrite(ctx, req.PluginInstanceID)
@@ -6116,7 +6138,7 @@ func (h *Host) DisablePlugin(ctx context.Context, req DisableRequest) (result re
 }
 
 func (h *Host) UninstallPlugin(ctx context.Context, req UninstallRequest) (result registry.PluginRecord, retErr error) {
-	if _, err := requireUserSession(ctx); err != nil {
+	if _, err := h.authorizeManagement(ctx, ManagementActionUninstallPlugin, req.PluginInstanceID); err != nil {
 		return registry.PluginRecord{}, err
 	}
 	releaseLifecycle, err := h.lifecycleLocks.acquireWrite(ctx, req.PluginInstanceID)
@@ -6215,14 +6237,14 @@ func (h *Host) UninstallPlugin(ctx context.Context, req UninstallRequest) (resul
 }
 
 func (h *Host) ListRetainedData(ctx context.Context, req ListRetainedDataRequest) ([]plugindata.Binding, error) {
-	if _, err := requireUserSession(ctx); err != nil {
+	if _, err := h.authorizeManagement(ctx, ManagementActionListRetainedData, req.PluginInstanceID); err != nil {
 		return nil, err
 	}
 	return h.adapters.PluginData.ListRetained(ctx, plugindata.RetainedFilter{PluginInstanceID: req.PluginInstanceID})
 }
 
 func (h *Host) DeleteRetainedData(ctx context.Context, req DeleteRetainedDataRequest) (result plugindata.Binding, retErr error) {
-	if _, err := requireUserSession(ctx); err != nil {
+	if _, err := h.authorizeManagement(ctx, ManagementActionDeleteRetainedData, req.PluginInstanceID); err != nil {
 		return plugindata.Binding{}, err
 	}
 	releaseLifecycle, err := h.lifecycleLocks.acquireWrite(ctx, req.PluginInstanceID)
@@ -6249,7 +6271,7 @@ func (h *Host) DeleteRetainedData(ctx context.Context, req DeleteRetainedDataReq
 }
 
 func (h *Host) BindRetainedData(ctx context.Context, req BindRetainedDataRequest) (result plugindata.Binding, retErr error) {
-	if _, err := requireUserSession(ctx); err != nil {
+	if _, err := h.authorizeManagement(ctx, ManagementActionBindRetainedData, req.SourcePluginInstanceID, req.TargetPluginInstanceID); err != nil {
 		return plugindata.Binding{}, err
 	}
 	targetPluginInstanceID := strings.TrimSpace(req.TargetPluginInstanceID)
@@ -6295,7 +6317,7 @@ func (h *Host) BindRetainedData(ctx context.Context, req BindRetainedDataRequest
 }
 
 func (h *Host) CleanupExpiredRetainedData(ctx context.Context, req CleanupExpiredRetainedDataRequest) (RetainedDataCleanupResult, error) {
-	if _, err := requireUserSession(ctx); err != nil {
+	if _, err := h.authorizeManagement(ctx, ManagementActionCleanupExpiredRetainedData, ""); err != nil {
 		return RetainedDataCleanupResult{}, err
 	}
 	result, err := h.adapters.PluginData.CleanupExpired(ctx, lifecycleNow(req.Now))
@@ -6306,7 +6328,7 @@ func (h *Host) CleanupExpiredRetainedData(ctx context.Context, req CleanupExpire
 }
 
 func (h *Host) ExportPluginData(ctx context.Context, req ExportDataRequest) (result ExportDataResult, retErr error) {
-	if _, err := requireUserSession(ctx); err != nil {
+	if _, err := h.authorizeManagement(ctx, ManagementActionExportPluginData, req.PluginInstanceID); err != nil {
 		return ExportDataResult{}, err
 	}
 	record, err := h.adapters.Registry.GetPlugin(ctx, req.PluginInstanceID)
@@ -6329,14 +6351,14 @@ func (h *Host) ExportPluginData(ctx context.Context, req ExportDataRequest) (res
 }
 
 func (h *Host) DeleteExportedPluginData(ctx context.Context, req DeleteExportDataRequest) error {
-	if _, err := requireUserSession(ctx); err != nil {
+	if _, err := h.authorizeManagement(ctx, ManagementActionDeleteExportedPluginData, req.BundleRef); err != nil {
 		return err
 	}
 	return h.adapters.PluginData.DeleteExport(ctx, strings.TrimSpace(req.BundleRef))
 }
 
 func (h *Host) GetSettingsSchema(ctx context.Context, req GetSettingsRequest) (SettingsSchemaResult, error) {
-	if _, err := requireUserSession(ctx); err != nil {
+	if _, err := h.authorizeManagement(ctx, ManagementActionGetSettingsSchema, req.PluginInstanceID); err != nil {
 		return SettingsSchemaResult{}, err
 	}
 	record, err := h.adapters.Registry.GetPlugin(ctx, req.PluginInstanceID)
@@ -6359,7 +6381,7 @@ func (h *Host) GetSettingsSchema(ctx context.Context, req GetSettingsRequest) (S
 }
 
 func (h *Host) GetPluginSettings(ctx context.Context, req GetSettingsRequest) (SettingsResult, error) {
-	if _, err := requireUserSession(ctx); err != nil {
+	if _, err := h.authorizeManagement(ctx, ManagementActionGetPluginSettings, req.PluginInstanceID); err != nil {
 		return SettingsResult{}, err
 	}
 	record, err := h.adapters.Registry.GetPlugin(ctx, req.PluginInstanceID)
@@ -6381,7 +6403,7 @@ func (h *Host) GetPluginSettings(ctx context.Context, req GetSettingsRequest) (S
 }
 
 func (h *Host) PatchPluginSettings(ctx context.Context, req PatchSettingsRequest) (result SettingsResult, retErr error) {
-	if _, err := requireUserSession(ctx); err != nil {
+	if _, err := h.authorizeManagement(ctx, ManagementActionPatchPluginSettings, req.PluginInstanceID); err != nil {
 		return SettingsResult{}, err
 	}
 	record, err := h.adapters.Registry.GetPlugin(ctx, req.PluginInstanceID)
@@ -6421,7 +6443,7 @@ func (h *Host) PatchPluginSettings(ctx context.Context, req PatchSettingsRequest
 }
 
 func (h *Host) ImportPluginData(ctx context.Context, req ImportDataRequest) (result registry.PluginRecord, retErr error) {
-	if _, err := requireUserSession(ctx); err != nil {
+	if _, err := h.authorizeManagement(ctx, ManagementActionImportPluginData, req.PluginInstanceID, req.BundleRef); err != nil {
 		return registry.PluginRecord{}, err
 	}
 	pluginInstanceID := strings.TrimSpace(req.PluginInstanceID)
@@ -6466,7 +6488,7 @@ func (h *Host) BindSecretRef(ctx context.Context, req SecretBindRequest) (retErr
 	if err := h.requireFeature(FeatureSecrets); err != nil {
 		return err
 	}
-	if _, err := requireUserSession(ctx); err != nil {
+	if _, err := h.authorizeManagement(ctx, ManagementActionBindSecretRef, req.PluginInstanceID, req.SecretRef); err != nil {
 		return err
 	}
 	record, normalized, err := h.resolveSecretRequest(ctx, req)
@@ -6489,7 +6511,7 @@ func (h *Host) TestSecretRef(ctx context.Context, req SecretTestRequest) (retErr
 	if err := h.requireFeature(FeatureSecrets); err != nil {
 		return err
 	}
-	if _, err := requireUserSession(ctx); err != nil {
+	if _, err := h.authorizeManagement(ctx, ManagementActionTestSecretRef, req.PluginInstanceID, req.SecretRef); err != nil {
 		return err
 	}
 	record, normalized, err := h.resolveSecretRequest(ctx, SecretBindRequest(req))
@@ -6512,7 +6534,7 @@ func (h *Host) DeleteSecretRef(ctx context.Context, req SecretDeleteRequest) (re
 	if err := h.requireFeature(FeatureSecrets); err != nil {
 		return err
 	}
-	if _, err := requireUserSession(ctx); err != nil {
+	if _, err := h.authorizeManagement(ctx, ManagementActionDeleteSecretRef, req.PluginInstanceID, req.SecretRef); err != nil {
 		return err
 	}
 	record, normalized, err := h.resolveSecretRequest(ctx, SecretBindRequest(req))

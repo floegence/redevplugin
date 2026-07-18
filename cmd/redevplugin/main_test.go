@@ -349,7 +349,7 @@ func TestCLIScaffoldRunsGeneratedWorkerThroughBuiltRustRuntime(t *testing.T) {
 		}
 	}
 	t.Cleanup(func() {
-		stopCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		stopCtx, cancel := context.WithTimeout(cliContext(context.Background()), 3*time.Second)
 		defer cancel()
 		if err := h.StopRuntime(stopCtx); err != nil {
 			t.Errorf("StopRuntime() error = %v", err)

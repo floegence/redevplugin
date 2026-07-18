@@ -327,6 +327,7 @@ func modularTestConfig(t *testing.T) Config {
 	adapters := legacy.adapters
 	return Config{Core: CoreAdapters{
 		Policy:               adapters.Policy,
+		Authorization:        adapters.Authorization,
 		PackageTrustVerifier: adapters.PackageTrustVerifier,
 		Registry:             adapters.Registry,
 		Audit:                adapters.Audit,

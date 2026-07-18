@@ -290,6 +290,7 @@ func examplesServerWithOptions(ctx context.Context, stateRoot string, runtimePat
 	pluginHost, err := host.Open(ctx, host.Config{
 		Core: host.CoreAdapters{
 			Policy:               staticPolicyAdapter{},
+			Authorization:        staticAuthorizationAdapter{},
 			PackageTrustVerifier: trust.Ed25519Verifier{Keyring: trust.StaticKeyring{}},
 			Registry:             registryStore,
 			Audit:                events,

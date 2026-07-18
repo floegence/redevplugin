@@ -1422,7 +1422,11 @@ func (h Handler) handleDowngrade(w http.ResponseWriter, r *http.Request) {
 func (h Handler) handleCatalog(w http.ResponseWriter, r *http.Request) {
 	records, err := h.host.ListPlugins(r.Context())
 	if err != nil {
-		writeJSON(w, http.StatusForbidden, errorResponse{OK: false, Message: h.publicFailureMessage(r.Context(), "plugin.catalog", security.ErrPermissionDenied, err), Code: security.ErrPermissionDenied})
+		code := security.ErrPermissionDenied
+		if errors.Is(err, host.ErrActionDenied) {
+			code = security.ErrActionDenied
+		}
+		writeJSON(w, http.StatusForbidden, errorResponse{OK: false, Message: h.publicFailureMessage(r.Context(), "plugin.catalog", code, err), Code: code})
 		return
 	}
 	writeJSON(w, http.StatusOK, successResponse{OK: true, Data: map[string]any{"plugins": records}})
@@ -1821,7 +1825,8 @@ func (h Handler) handleStartRuntime(w http.ResponseWriter, r *http.Request) {
 	}
 	health, err := h.host.StartRuntime(r.Context(), host.StartRuntimeRequest{Target: req.Target})
 	if err != nil {
-		writeMutationError(w, http.StatusServiceUnavailable, security.ErrRuntimeUnavailable, h.publicFailureMessage(r.Context(), "runtime.start", security.ErrRuntimeUnavailable, err), errorDetails{}, mutation.ForError(err))
+		code, status := runtimeManagementError(err)
+		writeMutationError(w, status, code, h.publicFailureMessage(r.Context(), "runtime.start", code, err), errorDetails{}, mutation.ForError(err))
 		return
 	}
 	writeMutationSuccess(w, health)
@@ -1834,7 +1839,8 @@ func (h Handler) handleStopRuntime(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := h.host.StopRuntime(r.Context()); err != nil {
-		writeMutationError(w, http.StatusServiceUnavailable, security.ErrRuntimeUnavailable, h.publicFailureMessage(r.Context(), "runtime.stop", security.ErrRuntimeUnavailable, err), errorDetails{}, mutation.ForError(err))
+		code, status := runtimeManagementError(err)
+		writeMutationError(w, status, code, h.publicFailureMessage(r.Context(), "runtime.stop", code, err), errorDetails{}, mutation.ForError(err))
 		return
 	}
 	writeMutationSuccess(w, map[string]bool{"stopped": true})
@@ -1843,7 +1849,8 @@ func (h Handler) handleStopRuntime(w http.ResponseWriter, r *http.Request) {
 func (h Handler) handleRuntimeHealth(w http.ResponseWriter, r *http.Request) {
 	health, err := h.host.RuntimeHealth(r.Context())
 	if err != nil {
-		writeJSON(w, http.StatusServiceUnavailable, errorResponse{OK: false, Message: h.publicFailureMessage(r.Context(), "runtime.health", security.ErrRuntimeUnavailable, err), Code: security.ErrRuntimeUnavailable})
+		code, status := runtimeManagementError(err)
+		writeJSON(w, status, errorResponse{OK: false, Message: h.publicFailureMessage(r.Context(), "runtime.health", code, err), Code: code})
 		return
 	}
 	writeJSON(w, http.StatusOK, successResponse{OK: true, Data: health})
@@ -1857,7 +1864,8 @@ func (h Handler) handleRefreshEnabledRuntimeState(w http.ResponseWriter, r *http
 	}
 	records, err := h.host.RefreshEnabledPlugins(r.Context())
 	if err != nil {
-		writeMutationError(w, http.StatusServiceUnavailable, security.ErrRuntimeUnavailable, "Plugin runtime state could not be refreshed", errorDetails{}, mutation.ForError(err))
+		code, status := runtimeManagementError(err)
+		writeMutationError(w, status, code, h.publicFailureMessage(r.Context(), "runtime.refresh_enabled", code, err), errorDetails{}, mutation.ForError(err))
 		return
 	}
 	writeMutationSuccess(w, map[string]any{"results": records})
@@ -2227,7 +2235,11 @@ func (h Handler) handleListDiagnostics(w http.ResponseWriter, r *http.Request) {
 		Limit:             limit,
 	})
 	if err != nil {
-		writeInvalidRequestError(w, err)
+		if errors.Is(err, host.ErrActionDenied) {
+			writeError(w, http.StatusForbidden, security.ErrActionDenied, h.publicFailureMessage(r.Context(), "diagnostic.list", security.ErrActionDenied, err), errorDetails{})
+		} else {
+			writeInvalidRequestError(w, err)
+		}
 		return
 	}
 	writeJSON(w, http.StatusOK, successResponse{OK: true, Data: map[string]any{"diagnostic_events": events}})
@@ -2700,6 +2712,13 @@ func errorCodeForBridgeError(err error) security.ErrorCode {
 	}
 }
 
+func runtimeManagementError(err error) (security.ErrorCode, int) {
+	if errors.Is(err, host.ErrActionDenied) {
+		return security.ErrActionDenied, http.StatusForbidden
+	}
+	return security.ErrRuntimeUnavailable, http.StatusServiceUnavailable
+}
+
 func errorCodeForBridgeTokenError(err error, renewal bool) security.ErrorCode {
 	if renewal && isGatewayTokenValidationError(err) {
 		return errorCodeForGatewayTokenError(err)
@@ -2709,6 +2728,8 @@ func errorCodeForBridgeTokenError(err error, renewal bool) security.ErrorCode {
 
 func errorCodeForOpenSurfaceError(err error) security.ErrorCode {
 	switch {
+	case errors.Is(err, host.ErrActionDenied):
+		return security.ErrActionDenied
 	case errors.Is(err, host.ErrManagementRevisionMismatch):
 		return security.ErrManagementRevisionMismatch
 	case errors.Is(err, host.ErrPluginUIProtocolUnsupported):
@@ -2939,6 +2960,8 @@ func errorCodeForManagementError(err error) security.ErrorCode {
 		}
 	}
 	switch {
+	case errors.Is(err, host.ErrActionDenied):
+		return security.ErrActionDenied
 	case errors.Is(err, host.ErrManagementRevisionMismatch):
 		return security.ErrManagementRevisionMismatch
 	case errors.Is(err, host.ErrPluginUIProtocolUnsupported):
@@ -3040,6 +3063,8 @@ func httpStatusForManagementError(err error) int {
 
 func errorCodeForOperationError(err error) security.ErrorCode {
 	switch {
+	case errors.Is(err, host.ErrActionDenied):
+		return security.ErrActionDenied
 	case errors.Is(err, host.ErrOperationCancelDispatchFailed):
 		return security.ErrRuntimeUnavailable
 	case errors.Is(err, operation.ErrNotCancelable):
@@ -3123,6 +3148,8 @@ func httpStatusForRPCError(err error) int {
 
 func errorCodeForIntentError(err error) security.ErrorCode {
 	switch {
+	case errors.Is(err, host.ErrActionDenied):
+		return security.ErrActionDenied
 	case errors.Is(err, host.ErrFeatureNotConfigured):
 		return security.ErrFeatureNotConfigured
 	case isCapabilityBusinessError(err):
@@ -3261,6 +3288,8 @@ func publicWorkerErrorMessage(value string) string {
 
 func httpStatusForIntentError(err error) int {
 	switch {
+	case errors.Is(err, host.ErrActionDenied):
+		return http.StatusForbidden
 	case isCapabilityBusinessError(err):
 		return http.StatusUnprocessableEntity
 	case isUnattestedStructuredRPCError(err):
@@ -3288,6 +3317,8 @@ func httpStatusForIntentError(err error) int {
 
 func errorCodeForDataLifecycleError(err error) security.ErrorCode {
 	switch {
+	case errors.Is(err, host.ErrActionDenied):
+		return security.ErrActionDenied
 	case errors.Is(err, storage.ErrQuotaExceeded):
 		return security.ErrStorageQuotaExceeded
 	case errors.Is(err, plugindata.ErrBindingRevisionConflict):
@@ -3340,6 +3371,8 @@ func (h Handler) valuesRevisionDetails(ctx context.Context, pluginInstanceID str
 
 func errorCodeForSecretError(err error) security.ErrorCode {
 	switch {
+	case errors.Is(err, host.ErrActionDenied):
+		return security.ErrActionDenied
 	case errors.Is(err, host.ErrResourceScopeMismatch):
 		return security.ErrPermissionDenied
 	case errors.Is(err, host.ErrInvalidSecretRef), errors.Is(err, registry.ErrNotFound):
@@ -3368,6 +3401,8 @@ func publicSecretErrorMessage(err error) string {
 
 func errorCodeForSettingsError(err error) security.ErrorCode {
 	switch {
+	case errors.Is(err, host.ErrActionDenied):
+		return security.ErrActionDenied
 	case errors.Is(err, plugindata.ErrRevisionConflict):
 		return security.ErrValuesRevisionMismatch
 	case errors.Is(err, registry.ErrNotFound), errors.Is(err, host.ErrPluginSettingsNotDeclared), errors.Is(err, plugindata.ErrUnknownSetting), errors.Is(err, settings.ErrInvalidSetting):
@@ -3438,6 +3473,8 @@ func httpStatusForAssetError(err error) int {
 
 func errorCodeForPermissionError(err error) security.ErrorCode {
 	switch {
+	case errors.Is(err, host.ErrActionDenied):
+		return security.ErrActionDenied
 	case errors.Is(err, registry.ErrNotFound), errors.Is(err, permissions.ErrInvalidPermission), errors.Is(err, permissions.ErrGrantNotFound):
 		return security.ErrInvalidRequest
 	case errors.Is(err, permissions.ErrPermissionDenied):
@@ -3460,6 +3497,8 @@ func httpStatusForPermissionError(err error) int {
 
 func errorCodeForSecurityPolicyError(err error) security.ErrorCode {
 	switch {
+	case errors.Is(err, host.ErrActionDenied):
+		return security.ErrActionDenied
 	case errors.Is(err, registry.ErrAuthorizationRevisionConflict):
 		return security.ErrAuthorizationRevisionMismatch
 	case errors.Is(err, registry.ErrNotFound),
@@ -3492,6 +3531,8 @@ func errorDetailsForSecurityPolicyError(err error) errorDetails {
 
 func httpStatusForSecurityPolicyError(err error) int {
 	switch {
+	case errors.Is(err, host.ErrActionDenied):
+		return http.StatusForbidden
 	case errors.Is(err, registry.ErrAuthorizationRevisionConflict):
 		return http.StatusConflict
 	case errors.Is(err, security.ErrPolicyNotFound):

@@ -910,6 +910,23 @@ func TestHandlerWebSecurityRejectsUnauthorizedRouteAction(t *testing.T) {
 	}
 }
 
+func TestHandlerMapsHostDirectAuthorizationDenialToStableActionCode(t *testing.T) {
+	h := newHTTPTestHostWithOptions(t, httpTestHostOptions{authorization: httpDenyAuthorization{}})
+	handler := mustNewHandler(t, h, allowHTTPTestGuard())
+	req := httptest.NewRequest(http.MethodGet, "/_redevplugin/api/plugins/catalog", nil)
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	var envelope decodedErrorResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &envelope); err != nil {
+		t.Fatal(err)
+	}
+	if rec.Code != http.StatusForbidden || envelope.Code != string(security.ErrActionDenied) {
+		t.Fatalf("host authorization denial = status:%d envelope:%#v", rec.Code, envelope)
+	}
+}
+
 func TestHandlerWebSecurityDistinguishesInvalidCSRF(t *testing.T) {
 	guard := &httpTestWebSecurityGuard{csrfErr: websecurity.ErrCSRFInvalid}
 	handler := mustNewHandler(t, newHTTPTestHost(t), guard)
@@ -4258,6 +4275,7 @@ func newHTTPTestHost(t *testing.T) *host.Host {
 }
 
 type httpTestHostOptions struct {
+	authorization           host.AuthorizationAdapter
 	secrets                 host.SecretStoreAdapter
 	diagnostics             host.DiagnosticsSink
 	runtimeManager          runtimeclient.Manager
@@ -4280,6 +4298,10 @@ func newHTTPTestHostWithOptions(t *testing.T, opts httpTestHostOptions) *host.Ho
 	diagnostics := opts.diagnostics
 	if diagnostics == nil {
 		diagnostics = observabilityStore
+	}
+	authorization := opts.authorization
+	if authorization == nil {
+		authorization = httpTestAuthorization{}
 	}
 	if opts.capabilityID != "" && opts.capabilityAdapter != nil {
 		verified := httpVerifiedCapabilityContract(t)
@@ -4329,6 +4351,7 @@ func newHTTPTestHostWithOptions(t *testing.T, opts httpTestHostOptions) *host.Ho
 	h, err := host.Open(httpTestContext(), host.Config{
 		Core: host.CoreAdapters{
 			Policy:               httpTestPolicy{},
+			Authorization:        authorization,
 			PackageTrustVerifier: httpTestPackageTrustVerifier{},
 			Registry:             registryStore,
 			Audit:                observabilityStore,
@@ -5069,6 +5092,21 @@ func patchJSON[T any](t *testing.T, handler http.Handler, path string, body any)
 }
 
 type httpTestPolicy struct{}
+
+type httpTestAuthorization struct{}
+
+func (httpTestAuthorization) Authorize(_ context.Context, req host.AuthorizationRequest) error {
+	if !req.Session.Valid() || !req.Action.Valid() || !req.Resource.Valid() || req.Resource != req.Action.Resource() {
+		return host.ErrActionDenied
+	}
+	return nil
+}
+
+type httpDenyAuthorization struct{}
+
+func (httpDenyAuthorization) Authorize(context.Context, host.AuthorizationRequest) error {
+	return errors.New("private host authorization denial")
+}
 
 func (httpTestPolicy) EvaluateLocalPolicy(context.Context, sessionctx.Context, host.PluginRef, manifest.MethodSpec) (host.PolicyDecision, error) {
 	return host.PolicyAllow, nil

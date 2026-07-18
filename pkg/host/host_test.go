@@ -129,6 +129,7 @@ func TestOpenRequiresCompletePlatformDependencies(t *testing.T) {
 		})
 		return Config{Core: CoreAdapters{
 			Policy:               policyAdapter{decision: PolicyAllow},
+			Authorization:        allowAuthorizationAdapter{},
 			PackageTrustVerifier: &recordingPackageTrustVerifier{},
 			Registry:             registryStore,
 			Audit:                observabilityStore,
@@ -150,6 +151,7 @@ func TestOpenRequiresCompletePlatformDependencies(t *testing.T) {
 		clear func(*CoreAdapters)
 	}{
 		{name: "policy", clear: func(a *CoreAdapters) { a.Policy = nil }},
+		{name: "authorization", clear: func(a *CoreAdapters) { a.Authorization = nil }},
 		{name: "package trust verifier", clear: func(a *CoreAdapters) { a.PackageTrustVerifier = nil }},
 		{name: "registry", clear: func(a *CoreAdapters) { a.Registry = nil }},
 		{name: "audit", clear: func(a *CoreAdapters) { a.Audit = nil }},
@@ -7862,6 +7864,7 @@ func TestRefreshEnabledPluginsRestoresRuntimeState(t *testing.T) {
 				localGenerated: true,
 				decision:       PolicyAllow,
 			},
+			Authorization:        allowAuthorizationAdapter{},
 			PackageTrustVerifier: h.adapters.PackageTrustVerifier,
 			Registry:             h.adapters.Registry,
 			Audit:                restartedAudits,
@@ -8487,7 +8490,7 @@ func TestExplicitObservabilitySinksReceiveAuditAndScopedDiagnostics(t *testing.T
 func TestUserTriggeredDiagnosticHelpersAttachScopeAndHideInternalCause(t *testing.T) {
 	const sensitive = "vault-token-super-secret at /Users/secret/path"
 	diagnostics := &listingDiagnosticSink{}
-	h := &Host{adapters: normalizedAdapters{Diagnostics: diagnostics}, securityJournal: observability.NewMemorySecurityAuditJournal()}
+	h := &Host{adapters: normalizedAdapters{Authorization: allowAuthorizationAdapter{}, Diagnostics: diagnostics}, securityJournal: observability.NewMemorySecurityAuditJournal()}
 	record := registry.PluginRecord{
 		PluginID: "com.example.plugin", PluginInstanceID: "plugini_1", ActiveFingerprint: "sha256:active",
 	}
@@ -8578,6 +8581,7 @@ type testHostOptions struct {
 	developerMode           bool
 	localGenerated          bool
 	policyDecision          PolicyDecision
+	authorization           AuthorizationAdapter
 	trustVerifier           PackageTrustVerifier
 	releaseMetadataVerifier ReleaseMetadataVerifier
 	releaseSourcePolicy     ReleaseSourcePolicyResolver
@@ -8659,6 +8663,10 @@ func newTestHostWithOptions(t *testing.T, opts testHostOptions) (*Host, *surface
 	decision := opts.policyDecision
 	if decision == "" {
 		decision = PolicyAllow
+	}
+	authorization := opts.authorization
+	if authorization == nil {
+		authorization = allowAuthorizationAdapter{}
 	}
 	trustVerifier := opts.trustVerifier
 	if trustVerifier == nil {
@@ -8778,6 +8786,7 @@ func newTestHostWithOptions(t *testing.T, opts testHostOptions) (*Host, *surface
 				localGenerated: opts.localGenerated,
 				decision:       decision,
 			},
+			Authorization:        authorization,
 			PackageTrustVerifier: trustVerifier,
 			Registry:             registryStore,
 			SurfaceCatalog:       surfaces,
@@ -10734,6 +10743,15 @@ type policyAdapter struct {
 	developerMode  bool
 	localGenerated bool
 	decision       PolicyDecision
+}
+
+type allowAuthorizationAdapter struct{}
+
+func (allowAuthorizationAdapter) Authorize(_ context.Context, req AuthorizationRequest) error {
+	if !req.Session.Valid() || !req.Action.Valid() || !req.Resource.Valid() || req.Resource != req.Action.Resource() {
+		return ErrActionDenied
+	}
+	return nil
 }
 
 func (p policyAdapter) EvaluateLocalPolicy(context.Context, sessionctx.Context, PluginRef, manifest.MethodSpec) (PolicyDecision, error) {
