@@ -230,7 +230,7 @@ async function verifyScenario(credentiallessScenario) {
   assert.equal(eventLog.includes("confirmation-aborted"), true);
   assert.equal(finalDiagnostics.dispose_completed_at > 0, true);
   assert.equal(disposed.iframeSrcdocEmpty, true);
-  assert.equal(await iframe.getAttribute("srcdoc"), "");
+  assert.equal(await iframe.count(), 0, `${credentiallessScenario} slot removes the disposed iframe`);
   assert.equal(disposed.errors.length, 0, `${credentiallessScenario} disposed surface errors`);
   await page.close();
   return {
@@ -270,6 +270,7 @@ function requestAllowed(request, credentiallessScenario) {
     ["/testdata/browser-harness/opaque-surface/styles.css", "GET"],
     ["/testdata/browser-harness/opaque-surface/host.mjs", "GET"],
     ["/packages/redevplugin-ui/dist/trusted-parent.js", "GET"],
+    ["/packages/redevplugin-ui/dist/bridge-capability.js", "GET"],
     ["/packages/redevplugin-ui/dist/contracts.gen.js", "GET"],
     ["/packages/redevplugin-ui/dist/error-codes.gen.js", "GET"],
     ["/packages/redevplugin-ui/dist/errors.js", "GET"],

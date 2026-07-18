@@ -64,9 +64,13 @@ timeouts send one `redevplugin.bridge.cancel`, and late responses after cancel o
 port close are ignored fail closed.
 
 Bridge errors carry the platform's optional `mutation_outcome` unchanged.
-Trusted-parent transport failures are reported as `unknown`; plugin UI must stop
-destructive retries and perform an authoritative read before allowing more
-mutations. An explicit `not_committed` outcome may keep the original retry path.
+Trusted-parent mutation requests report `not_committed` when cancellation,
+request serialization, or a synchronous fetch failure occurs before dispatch.
+Once fetch returns a promise, transport failure or cancellation is `unknown`;
+plugin UI must stop destructive retries and perform an authoritative read before
+allowing more mutations. If surface teardown or a shell observer also fails,
+`PluginMutationLifecycleError` aggregates those failures while retaining the
+original mutation outcome.
 
 The trusted-parent SDK computes `handshake_transcript_sha256` before it asks the Go
 Host for a parent-only `plugin_gateway_token`. The transcript is the SHA-256 of
@@ -169,25 +173,36 @@ when local import is allowed for that product surface.
 
 ## Opaque Surface Host
 
-`PluginSurfaceHost.create(...)` is the only public construction path. It creates
-and owns a fresh iframe, hardens it before returning, and exposes the read-only
-`element` only so trusted product chrome can mount it. The public options do not
-accept an existing iframe or frame factory. The frame has explicit
+`PluginPlatformClient.openSurfaceInSlot(...)` is the only public opening path. It
+owns bootstrap issuance, the opening lease, replacement teardown, and creation
+of a fresh iframe. The returned `PluginSurfaceHost` exposes a read-only `element`
+for product metadata, while `PluginSurfaceSlot` owns placement. The public API
+does not expose raw bootstrap adoption, an existing iframe, or a frame factory.
+The frame has explicit
 `src="about:blank"`, exactly `sandbox="allow-scripts"`, an explicit Permissions
 Policy deny-list, and `no-referrer`. The
 iframe receives a unique opaque origin. It never navigates to a plugin origin,
 Host origin, localhost URL, remote URL, or caller-created blob URL.
 
 ```ts
-const surfaceHost = PluginSurfaceHost.create({
-  bootstrap: toPluginSurfaceHostBootstrap(openedSurface),
-  hostTransport: createReDevPluginSurfaceTransport(),
+const surfaceScope = createPluginSurfaceScope();
+const surfaceTransport = createReDevPluginSurfaceTransport({ fetch: authenticatedFetch });
+const platformClient = new PluginPlatformClient({
+  fetch: authenticatedFetch,
+  surfaceScope,
+  surfaceTransport,
+});
+const surfaceSlot = PluginSurfaceSlot.create({ stage: surfaceMount });
+
+const surfaceHost = await platformClient.openSurfaceInSlot(surfaceSlot, {
+  plugin_instance_id: pluginInstanceId,
+  surface_id: surfaceId,
+  expected_management_revision: managementRevision,
+}, {
   confirm: showProductConfirmation,
 });
 
 surfaceHost.element.title = pluginSurfaceLabel;
-surfaceMount.replaceChildren(surfaceHost.element);
-await surfaceHost.open();
 ```
 
 `loadTimeoutMs` is one aggregate opening deadline, not a fresh timeout for each

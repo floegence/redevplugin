@@ -1,10 +1,10 @@
 import {
-  PluginSurfaceHost,
+  PluginPlatformClient,
   PluginSurfaceSlot,
   createReDevPluginSurfaceTransport,
-  toPluginSurfaceHostBootstrap,
+  createPluginSurfaceScope,
   type PluginConfirmationIntent,
-  type PluginSurfaceBootstrapResult,
+  type PluginSurfaceHost,
 } from "../../packages/redevplugin-ui/src/trusted-parent.js";
 
 type CatalogPlugin = {
@@ -53,6 +53,9 @@ const elements = {
 let catalog: CatalogPlugin[] = [];
 let activePlugin: CatalogPlugin | undefined;
 let surfaceHost: PluginSurfaceHost | undefined;
+const surfaceScope = createPluginSurfaceScope();
+const surfaceTransport = createReDevPluginSurfaceTransport();
+const platformClient = new PluginPlatformClient({ surfaceScope, surfaceTransport });
 const surfaceSlot = PluginSurfaceSlot.create({ stage: elements.stage });
 let openSequence = 0;
 let inspectorReturnFocus: HTMLButtonElement | undefined;
@@ -150,17 +153,17 @@ async function openPlugin(
   restoreNavigationFocus(navigationTrigger);
   let surfaceError: unknown;
   try {
-    const next = await surfaceSlot.open(
-      request<PluginSurfaceBootstrapResult>("/api/open", { slug: plugin.slug }).then((bootstrap) => ({
-        bootstrap: toPluginSurfaceHostBootstrap(bootstrap),
-        hostTransport: createReDevPluginSurfaceTransport(),
-        confirm: confirmAction,
-        onError: (error) => {
-          surfaceError ??= error;
-          if (sequence === openSequence) showError(error);
-        },
-      })),
-    );
+    const next = await platformClient.openSurfaceInSlot(surfaceSlot, {
+      plugin_instance_id: plugin.plugin_instance_id,
+      surface_id: plugin.surface_id,
+      expected_management_revision: plugin.management_revision,
+    }, {
+      confirm: confirmAction,
+      onError: (error) => {
+        surfaceError ??= error;
+        if (sequence === openSequence) showError(error);
+      },
+    });
     next.element.title = `${plugin.name} plugin`;
     surfaceHost = next;
     if (sequence !== openSequence || surfaceHost !== next) {

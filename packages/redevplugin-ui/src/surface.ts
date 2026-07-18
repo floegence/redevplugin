@@ -5,6 +5,10 @@ import {
   pluginBridgeErrorCodes,
   type PluginMutationOutcome,
 } from "./errors.js";
+import {
+  pluginBridgeCapabilityEffect,
+  type PluginBridgeCapabilityRequestOptions,
+} from "./bridge-capability.js";
 import { pluginUIProtocolVersion } from "./contracts.gen.js";
 import {
   opaqueSurfaceAllowedTags,
@@ -306,7 +310,8 @@ type PendingCall = {
 type PendingCallOptions = {
   kind?: PendingCall["kind"];
   identifier?: string;
-  mutationOutcomeOnTimeout?: PluginMutationOutcome;
+  cancellationKind?: "bridge" | "stream";
+  mutation?: boolean;
   signal?: AbortSignal;
 };
 
@@ -403,7 +408,21 @@ export class PluginBridgeClient {
     return this.#ready ? Promise.resolve() : this.#readyPromise;
   }
 
-  call<T = unknown>(method: string, params?: PluginJSONObject): Promise<T> {
+  call<T = unknown>(
+    method: string,
+    params?: PluginJSONObject,
+    options: PluginBridgeRequestOptions = {},
+  ): Promise<T> {
+    const effect = (options as PluginBridgeCapabilityRequestOptions)[pluginBridgeCapabilityEffect];
+    return this.#call(method, params, options, effect === undefined || effect !== "read");
+  }
+
+  #call<T>(
+    method: string,
+    params: PluginJSONObject | undefined,
+    options: PluginBridgeRequestOptions,
+    mutation: boolean,
+  ): Promise<T> {
     this.#assertActive();
     if (!validMethod(method)) {
       throw new PluginBridgeError("PLUGIN_INVALID_REQUEST", "Plugin bridge method and params are invalid");
@@ -421,7 +440,7 @@ export class PluginBridgeClient {
     return this.#request<T>(id, {
       type: "redevplugin.bridge.call",
       request,
-    }, { mutationOutcomeOnTimeout: "unknown" });
+    }, { mutation, signal: options.signal });
   }
 
   readStream(streamHandle: string, options: PluginBridgeRequestOptions = {}): Promise<PluginStreamReadResult> {
@@ -454,7 +473,7 @@ export class PluginBridgeClient {
       type: "redevplugin.bridge.stream.read",
       id,
       stream_handle: streamHandle,
-    }, { signal });
+    }, { cancellationKind: "stream", signal });
     const { delivery_id: deliveryID, ...result } = privateResult;
     if (!deliveryID) return result;
     this.#pendingStreamDeliveries.set(streamHandle, { deliveryID, result });
@@ -470,10 +489,14 @@ export class PluginBridgeClient {
       id,
       stream_handle: streamHandle,
       delivery_id: deliveryID,
-    }, { mutationOutcomeOnTimeout: "unknown", signal });
+    }, { cancellationKind: "stream", signal });
   }
 
-  cancelOperation(operationID: string, reason?: string): Promise<void> {
+  cancelOperation(
+    operationID: string,
+    reason?: string,
+    options: PluginBridgeRequestOptions = {},
+  ): Promise<void> {
     this.#assertActive();
     if (!validOpaqueHandle(operationID, "operation") || (reason !== undefined && (typeof reason !== "string" || reason.length > 256))) {
       throw new PluginBridgeError("PLUGIN_INVALID_REQUEST", "Plugin operation cancellation is invalid");
@@ -484,7 +507,7 @@ export class PluginBridgeClient {
       id,
       operation_id: operationID,
       reason,
-    }), { mutationOutcomeOnTimeout: "unknown" });
+    }), { mutation: true, signal: options.signal });
   }
 
   render(tree: PluginUIVNode): Promise<void> {
@@ -678,7 +701,8 @@ export class PluginBridgeClient {
     if (this.#pending.size >= maxPendingPluginBridgeRequests) {
       throw new PluginBridgeError("PLUGIN_JSON_LIMIT_EXCEEDED", "Plugin bridge has too many pending requests");
     }
-    if (options.signal?.aborted) return Promise.reject(streamReadAbortedError());
+    if (options.signal?.aborted) return Promise.reject(requestCancelledError(options, false));
+    let posted = false;
     const result = new Promise<T>((resolve, reject) => {
       const timer = setTimeout(() => {
         const pending = this.#takePending(id);
@@ -693,20 +717,21 @@ export class PluginBridgeClient {
           `Plugin bridge request ${id} timed out`,
           undefined,
           undefined,
-          options.mutationOutcomeOnTimeout,
+          mutationOutcome(options, posted),
         ));
       }, this.timeoutMs);
       const onAbort = (): void => {
         const pending = this.#takePending(id);
         if (!pending) return;
-        try {
-          this.#port.postMessage({ type: "redevplugin.bridge.cancel", id } satisfies PluginBridgeCancelMessage);
-        } catch {
-          // The request is already locally cancelled when the port closes concurrently.
+        if (posted) {
+          try {
+            this.#port.postMessage({ type: "redevplugin.bridge.cancel", id } satisfies PluginBridgeCancelMessage);
+          } catch {
+            // The request is already locally cancelled when the port closes concurrently.
+          }
         }
-        pending.reject(streamReadAbortedError());
+        pending.reject(requestCancelledError(options, posted));
       };
-      options.signal?.addEventListener("abort", onAbort, { once: true });
       this.#pending.set(id, {
         resolve: (value: unknown) => resolve(value as T),
         reject,
@@ -715,13 +740,23 @@ export class PluginBridgeClient {
         kind: options.kind ?? "json",
         identifier: options.identifier,
       });
+      options.signal?.addEventListener("abort", onAbort, { once: true });
+      if (options.signal?.aborted) onAbort();
     });
+    if (!this.#pending.has(id)) return result;
     try {
       this.#port.postMessage(normalizedMessage);
+      posted = true;
     } catch {
       const pending = this.#takePending(id);
       if (pending) {
-        pending.reject(new PluginBridgeError("PLUGIN_BRIDGE_DISPOSED", `Plugin bridge request ${id} could not be posted`));
+        pending.reject(new PluginBridgeError(
+          "PLUGIN_BRIDGE_DISPOSED",
+          `Plugin bridge request ${id} could not be posted`,
+          undefined,
+          undefined,
+          options.mutation ? "not_committed" : undefined,
+        ));
       }
     }
     return result;
@@ -1046,6 +1081,22 @@ export type PluginSurfaceOpeningProgress = {
   elapsedMs: number;
 };
 
+export type PluginSurfaceHost = {
+  readonly element: HTMLIFrameElement;
+  readonly surfaceInstanceId: string;
+  sendLifecycle(event: Exclude<BridgeLifecycleEvent, { type: "ready" | "dispose" }>): void;
+  close(): Promise<PluginSurfaceCloseResult>;
+  dispose(): Promise<void>;
+};
+
+export type PreparedPluginSurfaceHost = PluginSurfaceHost & {
+  readonly bootstrap: PluginSurfaceHostBootstrap;
+  readonly bridgeChannelId: string;
+  readonly frameGenerationId: string;
+  readonly surfaceHandle: string;
+  open(): Promise<void>;
+};
+
 export type PluginSurfaceHostOptions = {
   bootstrap: PluginSurfaceHostBootstrap;
   hostTransport: ReDevPluginSurfaceTransport;
@@ -1058,6 +1109,26 @@ export type PluginSurfaceHostOptions = {
   confirm?: PluginConfirmationHandler;
   onOpeningProgress?: (progress: PluginSurfaceOpeningProgress) => void;
   onError?: (error: PluginBridgeError) => void;
+};
+
+type PluginSurfaceOpeningRequest = {
+  pluginInstanceId: string;
+  surfaceScope: PluginSurfaceScope;
+  signal?: AbortSignal;
+  abortError: () => Error;
+  open: () => Promise<PluginSurfaceHostOptions>;
+};
+
+type PluginSurfaceOpeningLease = {
+  options: Promise<PluginSurfaceHostOptions>;
+  readonly pluginInstanceId: string;
+  readonly signal?: AbortSignal;
+  readonly abortError: () => Error;
+  owner: "opening" | "host" | "revoked";
+  cancelled: boolean;
+  adopt(): void;
+  cancel(): Promise<void>;
+  revoke(): Promise<void>;
 };
 
 declare const redevPluginSurfaceTransportBrand: unique symbol;
@@ -1088,6 +1159,70 @@ export function createReDevPluginSurfaceTransport(
   });
   return transport;
 }
+
+function requireSurfaceTransportInternals(transport: ReDevPluginSurfaceTransport): ReDevPluginSurfaceTransportInternals {
+  const internals = surfaceTransportInternals.get(transport);
+  if (!internals) {
+    throw new PluginBridgeError("PLUGIN_CONTRACT_MISMATCH", "Plugin surface host transport is invalid");
+  }
+  return internals;
+}
+
+async function revokeSurfaceBootstrap(
+  transport: ReDevPluginSurfaceTransportInternals,
+  bootstrap: PluginSurfaceHostBootstrap,
+  timeoutMs: number,
+  keepalive: boolean,
+): Promise<void> {
+  const path = `/_redevplugin/api/plugins/surfaces/${encodeURIComponent(bootstrap.surfaceInstanceId)}/dispose`;
+  const controller = new AbortController();
+  let timedOut = false;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+      reject(new PluginBridgeError(
+        "PLUGIN_BRIDGE_TIMEOUT",
+        `Plugin surface request timed out: ${path}`,
+        undefined,
+        undefined,
+        "unknown",
+      ));
+    }, timeoutMs);
+  });
+  try {
+    const response = await Promise.race([
+      transport.fetch(transport.apiBaseURL + path, {
+        method: "POST",
+        headers: { "Accept": "application/json", "Content-Type": "application/json" },
+        body: JSON.stringify({ bridge_nonce: bootstrap.bridgeNonce }),
+        credentials: "same-origin",
+        signal: controller.signal,
+        keepalive,
+      }),
+      timeout,
+    ]);
+    await readMutationPlatformResponse<Record<string, unknown>>(response);
+  } catch (error) {
+    if (timedOut) {
+      throw new PluginBridgeError(
+        "PLUGIN_BRIDGE_TIMEOUT",
+        `Plugin surface request timed out: ${path}`,
+        undefined,
+        undefined,
+        "unknown",
+      );
+    }
+    if (error instanceof PluginBridgeError || error instanceof PluginPlatformRequestError || error instanceof PluginTransportError) {
+      throw error;
+    }
+    throw new PluginTransportError(`Plugin surface request failed for POST ${path}`, error, "unknown");
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 
 export type OpaquePluginBootstrapHTMLOptions = {
   scriptNonce?: string;
@@ -2727,10 +2862,9 @@ export function createOpaquePluginBootstrapHTML(options: OpaquePluginBootstrapHT
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="${escapeHTMLAttribute(csp)}"><title>Plugin</title></head><body><script nonce="${scriptNonce}">${bootstrapScript}</script></body></html>`;
 }
 
-const pluginSurfaceHostConstructorToken = Symbol("redevplugin.surface-host.constructor");
-
-export class PluginSurfaceHost {
+class PluginSurfaceHostImplementation implements PluginSurfaceHost {
   readonly element: HTMLIFrameElement;
+  readonly surfaceInstanceId: string;
   readonly bootstrap: PluginSurfaceHostBootstrap;
   readonly bridgeChannelId: string;
   readonly frameGenerationId: string;
@@ -2790,26 +2924,14 @@ export class PluginSurfaceHost {
     void this.#failSurface(error);
   };
 
-  static create(options: PluginSurfaceHostOptions): PluginSurfaceHost {
-    validateHostBootstrap(options.bootstrap);
-    const transport = surfaceTransportInternals.get(options.hostTransport);
-    if (!transport) {
-      throw new PluginBridgeError("PLUGIN_CONTRACT_MISMATCH", "Plugin surface host transport is invalid");
-    }
-    return new PluginSurfaceHost(pluginSurfaceHostConstructorToken, options, transport, createPluginSurfaceFrame());
-  }
-
-  private constructor(
-    constructorToken: typeof pluginSurfaceHostConstructorToken,
+  constructor(
     options: PluginSurfaceHostOptions,
     transport: ReDevPluginSurfaceTransportInternals,
     iframe: HTMLIFrameElement,
   ) {
-    if (constructorToken !== pluginSurfaceHostConstructorToken) {
-      throw new PluginBridgeError("PLUGIN_CONTRACT_MISMATCH", "Plugin surface hosts must be created through PluginSurfaceHost.create()");
-    }
     this.element = iframe;
     this.bootstrap = options.bootstrap;
+    this.surfaceInstanceId = options.bootstrap.surfaceInstanceId;
     this.bridgeChannelId = options.bridgeChannelId ?? randomOpaqueHandle("bridge");
     this.frameGenerationId = randomOpaqueHandle("frame");
     this.surfaceHandle = randomOpaqueHandle("surface");
@@ -2840,7 +2962,7 @@ export class PluginSurfaceHost {
     const startedAt = Date.now();
     const progressTimer = setTimeout(() => {
       if (!this.#ready && !this.#disposed) {
-        this.#onOpeningProgress?.({
+        this.#reportOpeningProgress({
           phase: "opening",
           elapsedMs: Math.max(openingProgressDelayMs, Date.now() - startedAt),
         });
@@ -2875,7 +2997,7 @@ export class PluginSurfaceHost {
       const bridgeError = toBridgeError(error, "PLUGIN_BRIDGE_HANDSHAKE_FAILED");
       if (bridgeError.errorCode === "PLUGIN_BRIDGE_TIMEOUT") this.#reloadLimiter.recordCrash();
       this.#reportError(bridgeError);
-      const revoke = this.#bestEffortRevokeSurface(false);
+      const revoke = this.#revokeSurface(false);
       this.#disposeLocal();
       await revoke;
       throw bridgeError;
@@ -2941,21 +3063,24 @@ export class PluginSurfaceHost {
 
   close(): Promise<PluginSurfaceCloseResult> {
     if (this.#disposed) {
-      return Promise.resolve({
+      const result: PluginSurfaceCloseResult = {
         quiesce: { outcome: "not_ready", durationMs: 0 },
         revokeDurationMs: 0,
         totalDurationMs: 0,
-      });
+      };
+      return this.#revokePromise ? this.#revokePromise.then(() => result) : Promise.resolve(result);
     }
     if (this.#closePromise) return this.#closePromise;
     this.#closePromise = this.#closeSurface();
     return this.#closePromise;
   }
 
-  dispose(): void {
-    if (this.#disposed) return;
-    void this.#bestEffortRevokeSurface(true);
+  dispose(): Promise<void> {
+    if (this.#disposed) return this.#revokePromise ?? Promise.resolve();
+    const revoke = this.#revokeSurface(true);
+    void revoke.catch(() => undefined);
     this.#disposeLocal();
+    return revoke;
   }
 
   async #closeSurface(): Promise<PluginSurfaceCloseResult> {
@@ -3582,22 +3707,13 @@ export class PluginSurfaceHost {
 
   #revokeSurface(keepalive: boolean): Promise<void> {
     if (this.#revokePromise) return this.#revokePromise;
-    this.#revokePromise = (async () => {
-      await this.#fetchJSONRequest<Record<string, unknown>>(
-        `/_redevplugin/api/plugins/surfaces/${encodeURIComponent(this.bootstrap.surfaceInstanceId)}/dispose`,
-        { bridge_nonce: this.bootstrap.bridgeNonce },
-        { keepalive, independentLifecycle: true, mutation: true },
-      );
-    })();
+    this.#revokePromise = revokeSurfaceBootstrap(
+      this.#transport,
+      this.bootstrap,
+      this.#requestTimeoutMs,
+      keepalive,
+    );
     return this.#revokePromise;
-  }
-
-  async #bestEffortRevokeSurface(keepalive: boolean): Promise<void> {
-    try {
-      await this.#revokeSurface(keepalive);
-    } catch {
-      // The server may already have revoked the surface after a failed prepare.
-    }
   }
 
   async #quiesceSurface(): Promise<PluginSurfaceQuiesceResult> {
@@ -3640,7 +3756,7 @@ export class PluginSurfaceHost {
     this.#openSignals?.firstPaint.reject(error);
     this.#openSignals?.workerReady.reject(error);
     this.#reportError(error);
-    const revoke = this.#bestEffortRevokeSurface(true);
+    const revoke = this.#revokeSurface(true);
     this.#disposeLocal();
     await revoke;
   }
@@ -3700,6 +3816,14 @@ export class PluginSurfaceHost {
     }
   }
 
+  #reportOpeningProgress(progress: PluginSurfaceOpeningProgress): void {
+    try {
+      this.#onOpeningProgress?.(progress);
+    } catch {
+      // Observers cannot weaken opening, revocation, or local teardown invariants.
+    }
+  }
+
   #assertReady(): void {
     this.#assertActive();
     if (!this.#ready || !this.#port) {
@@ -3714,6 +3838,16 @@ export class PluginSurfaceHost {
   }
 }
 
+export function createPreparedPluginSurfaceHost(options: PluginSurfaceHostOptions): PreparedPluginSurfaceHost {
+  return createPluginSurfaceHostImplementation(options);
+}
+
+function createPluginSurfaceHostImplementation(options: PluginSurfaceHostOptions): PluginSurfaceHostImplementation {
+  validateHostBootstrap(options.bootstrap);
+  const transport = requireSurfaceTransportInternals(options.hostTransport);
+  return new PluginSurfaceHostImplementation(options, transport, createPluginSurfaceFrame());
+}
+
 export type PluginSurfaceSlotState = "empty" | "opening" | "ready" | "error" | "disposed";
 
 export type PluginSurfaceSlotOptions = {
@@ -3722,15 +3856,118 @@ export type PluginSurfaceSlotOptions = {
   onSurfaceClosed?: (result: PluginSurfaceCloseResult) => void;
 };
 
+type PluginSurfaceSlotInternals = {
+  open(request: PluginSurfaceOpeningRequest): Promise<PluginSurfaceHost>;
+  openPrepared(options: PluginSurfaceHostOptions | PromiseLike<PluginSurfaceHostOptions>): Promise<PluginSurfaceHost>;
+};
+
+const surfaceSlotInternals = new WeakMap<PluginSurfaceSlot, PluginSurfaceSlotInternals>();
+
+class PluginSurfaceCleanupError extends Error {
+  override readonly cause: unknown;
+
+  constructor(cause: unknown) {
+    super("Plugin surface cleanup failed", { cause });
+    this.name = "PluginSurfaceCleanupError";
+    this.cause = cause;
+  }
+}
+
+export function openPluginSurfaceInSlot(
+  slot: PluginSurfaceSlot,
+  request: PluginSurfaceOpeningRequest,
+): Promise<PluginSurfaceHost> {
+  const internals = surfaceSlotInternals.get(slot);
+  if (!internals) throw new PluginBridgeError("PLUGIN_INVALID_REQUEST", "Plugin surface slot is invalid");
+  return internals.open(request);
+}
+
+export function openPreparedPluginSurfaceInSlot(
+  slot: PluginSurfaceSlot,
+  options: PluginSurfaceHostOptions | PromiseLike<PluginSurfaceHostOptions>,
+): Promise<PluginSurfaceHost> {
+  const internals = surfaceSlotInternals.get(slot);
+  if (!internals) throw new PluginBridgeError("PLUGIN_INVALID_REQUEST", "Plugin surface slot is invalid");
+  return internals.openPrepared(options);
+}
+
+function createPluginSurfaceOpeningLease(request: PluginSurfaceOpeningRequest): PluginSurfaceOpeningLease {
+  let unregister = (): void => undefined;
+  let revokePromise: Promise<void> | undefined;
+  let removeAbortListener = (): void => undefined;
+  const lease: PluginSurfaceOpeningLease = {
+    options: Promise.resolve(undefined as never),
+    pluginInstanceId: request.pluginInstanceId,
+    signal: request.signal,
+    abortError: request.abortError,
+    owner: "opening",
+    cancelled: false,
+    adopt() {
+      if (lease.owner !== "opening" || lease.cancelled) {
+        throw new PluginBridgeError("PLUGIN_BRIDGE_DISPOSED", "Plugin surface opening was cancelled before adoption");
+      }
+      lease.owner = "host";
+      unregister();
+      removeAbortListener();
+    },
+    cancel() {
+      lease.cancelled = true;
+      if (lease.owner === "host") return Promise.resolve();
+      return lease.revoke();
+    },
+    revoke() {
+      if (lease.owner === "host") {
+        throw new PluginBridgeError("PLUGIN_CONTRACT_MISMATCH", "Plugin surface ownership was already adopted");
+      }
+      lease.cancelled = true;
+      lease.owner = "revoked";
+      unregister();
+      removeAbortListener();
+      revokePromise ??= lease.options.then(async (options) => {
+        await revokeSurfaceBootstrap(
+          requireSurfaceTransportInternals(options.hostTransport),
+          options.bootstrap,
+          normalizeTimeout(options.requestTimeoutMs),
+          false,
+        );
+      }, () => undefined);
+      return revokePromise;
+    },
+  };
+  unregister = registerPluginSurface(request.surfaceScope, request.pluginInstanceId, () => lease.cancel());
+  try {
+    lease.options = Promise.resolve(request.open());
+  } catch (error) {
+    lease.options = Promise.reject(error);
+  }
+  void lease.options.catch(() => {
+    if (lease.owner !== "opening") return;
+    lease.owner = "revoked";
+    unregister();
+    removeAbortListener();
+  });
+  if (request.signal) {
+    const onAbort = (): void => {
+      void lease.cancel().catch(() => undefined);
+    };
+    request.signal.addEventListener("abort", onAbort, { once: true });
+    removeAbortListener = () => request.signal?.removeEventListener("abort", onAbort);
+    if (request.signal.aborted) onAbort();
+  }
+  return lease;
+}
+
 export class PluginSurfaceSlot {
   readonly element: HTMLElement;
   #onStateChange?: PluginSurfaceSlotOptions["onStateChange"];
   #onSurfaceClosed?: PluginSurfaceSlotOptions["onSurfaceClosed"];
-  #active?: PluginSurfaceHost;
-  #opening?: PluginSurfaceHost;
-  #transition = 0;
+  #active?: PluginSurfaceHostImplementation;
+  #opening?: PluginSurfaceHostImplementation;
+  #transitionController?: AbortController;
+  #tail: Promise<void> = Promise.resolve();
   #disposed = false;
-  #retired = new WeakSet<PluginSurfaceHost>();
+  #retired = new WeakMap<PluginSurfaceHostImplementation, Promise<PluginSurfaceCloseResult>>();
+  #disposePromise?: Promise<void>;
 
   static create(options: PluginSurfaceSlotOptions): PluginSurfaceSlot {
     if (!options.stage || typeof options.stage.append !== "function" || !options.stage.dataset) {
@@ -3743,38 +3980,114 @@ export class PluginSurfaceSlot {
     this.element = options.stage;
     this.#onStateChange = options.onStateChange;
     this.#onSurfaceClosed = options.onSurfaceClosed;
+    surfaceSlotInternals.set(this, {
+      open: (request) => {
+        this.#assertActive();
+        return this.#openLease(createPluginSurfaceOpeningLease(request));
+      },
+      openPrepared: (preparedOptions) => this.#queueOpening(Promise.resolve(preparedOptions)),
+    });
     this.#setState("empty");
   }
 
-  async open(options: PluginSurfaceHostOptions | PromiseLike<PluginSurfaceHostOptions>): Promise<PluginSurfaceHost> {
+  #openLease(lease: PluginSurfaceOpeningLease): Promise<PluginSurfaceHost> {
+    return this.#queueOpening(lease.options, lease);
+  }
+
+  #queueOpening(
+    resolvedOptions: Promise<PluginSurfaceHostOptions>,
+    lease?: PluginSurfaceOpeningLease,
+  ): Promise<PluginSurfaceHostImplementation> {
     this.#assertActive();
-    const transition = ++this.#transition;
-    const previous = new Set([this.#active, this.#opening].filter((host): host is PluginSurfaceHost => host !== undefined));
-    this.#active = undefined;
-    this.#opening = undefined;
-    for (const host of previous) this.#retire(host);
+    void resolvedOptions.catch(() => undefined);
+    this.#transitionController?.abort();
+    const controller = new AbortController();
+    this.#transitionController = controller;
     this.#setState("opening");
+    const transition = this.#tail.then(
+      () => this.#openSurface(resolvedOptions, controller, lease),
+      async (error) => {
+        await this.#revokeOpening(lease);
+        throw error;
+      },
+    );
+    this.#tail = transition.then(
+      () => undefined,
+      (error) => error instanceof PluginSurfaceCleanupError ? Promise.reject(error) : undefined,
+    );
+    void this.#tail.catch(() => undefined);
+    return transition.catch((error: unknown) => {
+      if (error instanceof PluginSurfaceCleanupError) throw error.cause;
+      throw error;
+    });
+  }
+
+  async #openSurface(
+    options: Promise<PluginSurfaceHostOptions>,
+    controller: AbortController,
+    lease: PluginSurfaceOpeningLease | undefined,
+  ): Promise<PluginSurfaceHostImplementation> {
     let resolvedOptions: PluginSurfaceHostOptions;
     try {
       resolvedOptions = await options;
     } catch (error) {
-      if (!this.#disposed && transition === this.#transition) {
+      if (!this.#disposed && this.#transitionController === controller && !controller.signal.aborted) {
         this.#setState("error", toBridgeError(error, "PLUGIN_BRIDGE_HANDSHAKE_FAILED"));
       }
       throw error;
     }
-    if (this.#disposed || transition !== this.#transition) {
-      throw new PluginBridgeError("PLUGIN_BRIDGE_DISPOSED", "Plugin surface opening was superseded");
+
+    if (lease && resolvedOptions.bootstrap.pluginInstanceId !== lease.pluginInstanceId) {
+      await this.#revokeOpening(lease);
+      throw new PluginBridgeError(
+        "PLUGIN_CONTRACT_MISMATCH",
+        "Plugin surface bootstrap identity does not match the opening lease",
+      );
     }
-    const host = PluginSurfaceHost.create(resolvedOptions);
+
+    if (this.#openingCancelled(controller, lease)) {
+      await this.#revokeOpening(lease);
+      this.#setCancelledState(controller);
+      throw this.#openingCancellationError(lease);
+    }
+
+    const previous = this.#active;
+    this.#active = undefined;
+    if (previous) {
+      try {
+        await this.#awaitRetirement(previous);
+      } catch (error) {
+        await this.#revokeOpening(lease);
+        throw error;
+      }
+    }
+
+    if (this.#openingCancelled(controller, lease)) {
+      await this.#revokeOpening(lease);
+      this.#setCancelledState(controller);
+      throw this.#openingCancellationError(lease);
+    }
+
+    let host: PluginSurfaceHostImplementation;
+    try {
+      host = createPluginSurfaceHostImplementation(resolvedOptions);
+    } catch (error) {
+      await this.#revokeOpening(lease);
+      if (!this.#disposed && this.#transitionController === controller) {
+        this.#setState("error", toBridgeError(error, "PLUGIN_BRIDGE_HANDSHAKE_FAILED"));
+      }
+      throw error;
+    }
+    this.#adoptOpening(lease);
     this.#opening = host;
     setSurfaceInteractive(host.element, false);
     this.element.append(host.element);
     try {
-      await host.open();
-      if (this.#disposed || transition !== this.#transition || this.#opening !== host) {
-        this.#retire(host);
-        throw new PluginBridgeError("PLUGIN_BRIDGE_DISPOSED", "Plugin surface opening was superseded");
+      await this.#openHostUntilCancelled(host, controller, lease);
+      if (this.#openingCancelled(controller, lease) || this.#opening !== host) {
+        await this.#awaitRetirement(host);
+        this.#setCancelledState(controller);
+        throw this.#openingCancellationError(lease);
       }
       this.#opening = undefined;
       this.#active = host;
@@ -3782,9 +4095,8 @@ export class PluginSurfaceSlot {
       this.#setState("ready");
       return host;
     } catch (error) {
-      this.#retire(host);
-      if (!this.#disposed && transition === this.#transition) {
-        this.#opening = undefined;
+      await this.#awaitRetirement(host);
+      if (!this.#disposed && this.#transitionController === controller && !this.#openingCancelled(controller, lease)) {
         const bridgeError = toBridgeError(error, "PLUGIN_BRIDGE_HANDSHAKE_FAILED");
         this.#setState("error", bridgeError);
       }
@@ -3794,48 +4106,151 @@ export class PluginSurfaceSlot {
 
   async close(): Promise<PluginSurfaceCloseResult | undefined> {
     this.#assertActive();
-    this.#transition += 1;
-    const hosts = new Set([this.#active, this.#opening].filter((host): host is PluginSurfaceHost => host !== undefined));
+    this.#transitionController?.abort();
+    this.#transitionController = undefined;
+    this.#setState("empty");
+    const closing = this.#tail.then(() => this.#closeCurrentSurface());
+    this.#tail = closing.then(
+      () => undefined,
+      (error) => error instanceof PluginSurfaceCleanupError ? Promise.reject(error) : undefined,
+    );
+    void this.#tail.catch(() => undefined);
+    return this.#unwrapCleanupError(closing);
+  }
+
+  dispose(): Promise<void> {
+    if (this.#disposePromise) return this.#disposePromise;
+    this.#disposed = true;
+    this.#transitionController?.abort();
+    this.#transitionController = undefined;
+    this.#setState("disposed");
+    const disposal = this.#tail.then(async () => {
+      await this.#closeCurrentSurface();
+    });
+    this.#disposePromise = this.#unwrapCleanupError(disposal);
+    void this.#disposePromise.catch(() => undefined);
+    this.#tail = disposal.then(
+      () => undefined,
+      (error) => error instanceof PluginSurfaceCleanupError ? Promise.reject(error) : undefined,
+    );
+    void this.#tail.catch(() => undefined);
+    return this.#disposePromise;
+  }
+
+  async #closeCurrentSurface(): Promise<PluginSurfaceCloseResult | undefined> {
+    const hosts = new Set([this.#active, this.#opening].filter((host): host is PluginSurfaceHostImplementation => host !== undefined));
     this.#active = undefined;
     this.#opening = undefined;
-    this.#setState("empty");
     let result: PluginSurfaceCloseResult | undefined;
+    const failures: unknown[] = [];
     for (const host of hosts) {
-      setSurfaceInteractive(host.element, false);
-      const closed = await host.close();
-      host.element.remove();
-      this.#onSurfaceClosed?.(closed);
-      result ??= closed;
+      try {
+        const closed = await this.#retire(host);
+        result ??= closed;
+      } catch (error) {
+        failures.push(error);
+      }
     }
+    if (failures.length === 1) throw failures[0];
+    if (failures.length > 1) throw new AggregateError(failures, "Plugin surface slot cleanup failed");
     return result;
   }
 
-  dispose(): void {
-    if (this.#disposed) return;
-    this.#disposed = true;
-    this.#transition += 1;
-    const hosts = new Set([this.#active, this.#opening].filter((host): host is PluginSurfaceHost => host !== undefined));
-    this.#active = undefined;
-    this.#opening = undefined;
-    for (const host of hosts) {
-      host.dispose();
-      host.element.remove();
-    }
-    this.#setState("disposed");
+  #retire(host: PluginSurfaceHostImplementation): Promise<PluginSurfaceCloseResult> {
+    const existing = this.#retired.get(host);
+    if (existing) return existing;
+    setSurfaceInteractive(host.element, false);
+    const closing = Promise.resolve().then(async () => {
+      try {
+        const result = await host.close();
+        try {
+          this.#onSurfaceClosed?.(result);
+        } catch {
+          // Observers cannot turn a completed revocation into a cleanup failure.
+        }
+        return result;
+      } finally {
+        host.element.remove();
+      }
+    });
+    this.#retired.set(host, closing);
+    return closing;
   }
 
-  #retire(host: PluginSurfaceHost): void {
-    if (this.#retired.has(host)) return;
-    this.#retired.add(host);
-    setSurfaceInteractive(host.element, false);
-    void host.close().then((result) => {
-      this.#onSurfaceClosed?.(result);
-    }).catch(() => undefined).finally(() => host.element.remove());
+  async #awaitRetirement(host: PluginSurfaceHostImplementation): Promise<PluginSurfaceCloseResult> {
+    try {
+      return await this.#retire(host);
+    } catch (error) {
+      throw new PluginSurfaceCleanupError(error);
+    }
+  }
+
+  async #openHostUntilCancelled(
+    host: PluginSurfaceHostImplementation,
+    controller: AbortController,
+    lease: PluginSurfaceOpeningLease | undefined,
+  ): Promise<void> {
+    const signals = [controller.signal, lease?.signal].filter((signal): signal is AbortSignal => signal !== undefined);
+    let cancel!: () => void;
+    const cancelled = new Promise<never>((_resolve, reject) => {
+      cancel = (): void => {
+        void this.#awaitRetirement(host).then(
+          () => reject(this.#openingCancellationError(lease)),
+          reject,
+        );
+      };
+      for (const signal of signals) signal.addEventListener("abort", cancel, { once: true });
+      if (signals.some((signal) => signal.aborted)) cancel();
+    });
+    try {
+      await Promise.race([host.open(), cancelled]);
+    } finally {
+      for (const signal of signals) signal.removeEventListener("abort", cancel);
+    }
+  }
+
+  #openingCancelled(controller: AbortController, lease: PluginSurfaceOpeningLease | undefined): boolean {
+    return this.#disposed || controller.signal.aborted || lease?.cancelled === true || lease?.signal?.aborted === true;
+  }
+
+  #openingCancellationError(lease: PluginSurfaceOpeningLease | undefined): Error {
+    if (lease?.signal?.aborted) return lease.abortError();
+    return new PluginBridgeError("PLUGIN_BRIDGE_DISPOSED", "Plugin surface opening was superseded");
+  }
+
+  #setCancelledState(controller: AbortController): void {
+    if (!this.#disposed && this.#transitionController === controller) this.#setState("empty");
+  }
+
+  #adoptOpening(lease: PluginSurfaceOpeningLease | undefined): void {
+    lease?.adopt();
+  }
+
+  async #revokeOpening(lease: PluginSurfaceOpeningLease | undefined): Promise<void> {
+    if (!lease || lease.owner === "host") return;
+    try {
+      await lease.revoke();
+    } catch (error) {
+      throw new PluginSurfaceCleanupError(error);
+    }
+  }
+
+  async #unwrapCleanupError<T>(result: Promise<T>): Promise<T> {
+    try {
+      return await result;
+    } catch (error) {
+      if (error instanceof PluginSurfaceCleanupError) throw error.cause;
+      throw error;
+    }
   }
 
   #setState(state: PluginSurfaceSlotState, error?: PluginBridgeError): void {
     this.element.dataset.redevpluginSurfaceState = state;
-    this.#onStateChange?.(state, error);
+    try {
+      this.#onStateChange?.(state, error);
+    } catch {
+      // Observers cannot alter the slot lifecycle state machine.
+    }
   }
 
   #assertActive(): void {
@@ -4540,6 +4955,22 @@ function confirmationDecisionAccepted(decision: PluginConfirmationDecision): boo
 
 function streamReadAbortedError(): PluginBridgeError {
   return new PluginBridgeError("PLUGIN_STREAM_CANCELLED", "Plugin stream read was aborted");
+}
+
+function mutationOutcome(options: PendingCallOptions, posted: boolean): PluginMutationOutcome | undefined {
+  if (!options.mutation) return undefined;
+  return posted ? "unknown" : "not_committed";
+}
+
+function requestCancelledError(options: PendingCallOptions, posted: boolean): PluginBridgeError {
+  if (options.cancellationKind === "stream") return streamReadAbortedError();
+  return new PluginBridgeError(
+    "PLUGIN_BRIDGE_CANCELLED",
+    "Plugin bridge request was cancelled",
+    undefined,
+    undefined,
+    mutationOutcome(options, posted),
+  );
 }
 
 function abortableStreamRead(

@@ -6,6 +6,7 @@ import {
   isCapabilityBusinessError,
   type PluginBridgeClient,
   type PluginBridgeError,
+  type PluginBridgeRequestOptions,
   type PluginOperation,
   type PluginStream,
 } from "@floegence/redevplugin-ui/plugin";
@@ -61,6 +62,33 @@ export function isExampleDocumentsBusinessError(error: unknown): error is Plugin
   });
 }
 
+const listContract = Object.freeze({
+  method: "documents.list",
+  effect: "read",
+  execution: "sync",
+  requestSchema: {"additionalProperties":false,"properties":{"workspace_id":{"minLength":1,"type":"string"}},"required":["workspace_id"],"type":"object"},
+  responseSchema: {"additionalProperties":false,"properties":{"documents":{"items":{"additionalProperties":false,"properties":{"document_id":{"minLength":1,"type":"string"},"title":{"minLength":1,"type":"string"}},"required":["document_id","title"],"type":"object"},"type":"array"}},"required":["documents"],"type":"object"},
+} as const);
+
+const archiveContract = Object.freeze({
+  method: "documents.archive",
+  effect: "write",
+  execution: "operation",
+  requestSchema: {"additionalProperties":false,"properties":{"document_id":{"minLength":1,"type":"string"}},"required":["document_id"],"type":"object"},
+  responseSchema: {"additionalProperties":false,"properties":{"accepted":{"type":"boolean"}},"required":["accepted"],"type":"object"},
+  cancelable: true,
+} as const);
+
+const watchContract = Object.freeze({
+  method: "documents.watch",
+  effect: "read",
+  execution: "subscription",
+  requestSchema: {"additionalProperties":false,"properties":{"workspace_id":{"minLength":1,"type":"string"}},"required":["workspace_id"],"type":"object"},
+  responseSchema: {"additionalProperties":false,"properties":{"watching":{"type":"boolean"}},"required":["watching"],"type":"object"},
+  eventTypeName: "DocumentsWatchEvent",
+  eventSchema: {"additionalProperties":false,"properties":{"change":{"enum":["created","updated","deleted"],"type":"string"},"document_id":{"minLength":1,"type":"string"}},"required":["document_id","change"],"type":"object"},
+} as const);
+
 export class ExampleDocumentsClient {
   readonly #bridge: PluginBridgeClient;
 
@@ -68,35 +96,30 @@ export class ExampleDocumentsClient {
     this.#bridge = bridge;
   }
 
-  async list(request: DocumentsListRequest): Promise<DocumentsListResponse> {
+  async list(request: DocumentsListRequest, options: PluginBridgeRequestOptions = {}): Promise<DocumentsListResponse> {
     return callCapabilitySync<DocumentsListRequest, DocumentsListResponse>(
       this.#bridge,
-      "documents.list",
+      listContract,
       request,
-      {"additionalProperties":false,"properties":{"workspace_id":{"minLength":1,"type":"string"}},"required":["workspace_id"],"type":"object"},
-      {"additionalProperties":false,"properties":{"documents":{"items":{"additionalProperties":false,"properties":{"document_id":{"minLength":1,"type":"string"},"title":{"minLength":1,"type":"string"}},"required":["document_id","title"],"type":"object"},"type":"array"}},"required":["documents"],"type":"object"},
+      options,
     );
   }
 
-  async archive(request: DocumentsArchiveRequest): Promise<PluginOperation<DocumentsArchiveResponse>> {
+  async archive(request: DocumentsArchiveRequest, options: PluginBridgeRequestOptions = {}): Promise<PluginOperation<DocumentsArchiveResponse>> {
     return callCapabilityOperation<DocumentsArchiveRequest, DocumentsArchiveResponse>(
       this.#bridge,
-      "documents.archive",
+      archiveContract,
       request,
-      {"additionalProperties":false,"properties":{"document_id":{"minLength":1,"type":"string"}},"required":["document_id"],"type":"object"},
-      {"additionalProperties":false,"properties":{"accepted":{"type":"boolean"}},"required":["accepted"],"type":"object"},
+      options,
     );
   }
 
-  async watch(request: DocumentsWatchRequest): Promise<PluginStream<DocumentsWatchResponse, DocumentsWatchEvent>> {
+  async watch(request: DocumentsWatchRequest, options: PluginBridgeRequestOptions = {}): Promise<PluginStream<DocumentsWatchResponse, DocumentsWatchEvent>> {
     return callCapabilityStream<DocumentsWatchRequest, DocumentsWatchResponse, DocumentsWatchEvent>(
       this.#bridge,
-      "documents.watch",
+      watchContract,
       request,
-      {"additionalProperties":false,"properties":{"workspace_id":{"minLength":1,"type":"string"}},"required":["workspace_id"],"type":"object"},
-      {"additionalProperties":false,"properties":{"watching":{"type":"boolean"}},"required":["watching"],"type":"object"},
-      "DocumentsWatchEvent",
-      {"additionalProperties":false,"properties":{"change":{"enum":["created","updated","deleted"],"type":"string"},"document_id":{"minLength":1,"type":"string"}},"required":["document_id","change"],"type":"object"},
+      options,
     );
   }
 

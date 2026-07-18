@@ -275,62 +275,6 @@ func TestExamplesHealthHandlerReadsLiveRuntimeHealth(t *testing.T) {
 	}
 }
 
-func TestValidateExamplesJSONMutationRequestRequiresExactOriginAndJSON(t *testing.T) {
-	origin := "http://127.0.0.1:4175"
-	tests := []struct {
-		name    string
-		request *http.Request
-		wantErr error
-	}{
-		{
-			name: "same origin JSON",
-			request: func() *http.Request {
-				r := httptest.NewRequest(http.MethodPost, origin+"/api/open", strings.NewReader(`{"slug":"weather"}`))
-				r.Header.Set("Origin", origin)
-				r.Header.Set("Content-Type", "application/json; charset=utf-8")
-				return r
-			}(),
-		},
-		{
-			name: "missing origin",
-			request: func() *http.Request {
-				r := httptest.NewRequest(http.MethodPost, origin+"/api/open", strings.NewReader(`{"slug":"weather"}`))
-				r.Header.Set("Content-Type", "application/json")
-				return r
-			}(),
-			wantErr: errExamplesOriginDenied,
-		},
-		{
-			name: "foreign origin",
-			request: func() *http.Request {
-				r := httptest.NewRequest(http.MethodPost, origin+"/api/open", strings.NewReader(`{"slug":"weather"}`))
-				r.Header.Set("Origin", "https://attacker.example")
-				r.Header.Set("Content-Type", "application/json")
-				return r
-			}(),
-			wantErr: errExamplesOriginDenied,
-		},
-		{
-			name: "simple text body",
-			request: func() *http.Request {
-				r := httptest.NewRequest(http.MethodPost, origin+"/api/open", strings.NewReader(`{"slug":"weather"}`))
-				r.Header.Set("Origin", origin)
-				r.Header.Set("Content-Type", "text/plain")
-				return r
-			}(),
-			wantErr: errExamplesContentTypeInvalid,
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			err := validateExamplesJSONMutationRequest(tt.request, origin)
-			if !errors.Is(err, tt.wantErr) {
-				t.Fatalf("validateExamplesJSONMutationRequest() error = %v, want %v", err, tt.wantErr)
-			}
-		})
-	}
-}
-
 func TestExamplesServerBrowserSmoke(t *testing.T) {
 	if os.Getenv("REDEVPLUGIN_RUN_BROWSER_SMOKE") != "1" {
 		t.Skip("set REDEVPLUGIN_RUN_BROWSER_SMOKE=1 to run the browser acceptance suite")

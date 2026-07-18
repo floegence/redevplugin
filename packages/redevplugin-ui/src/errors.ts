@@ -67,3 +67,22 @@ export class PluginBridgeError extends Error {
     this.mutationOutcome = mutationOutcome;
   }
 }
+
+export function pluginMutationOutcome(error: unknown): PluginMutationOutcome | undefined {
+  if (error instanceof PluginPlatformRequestError ||
+      error instanceof PluginTransportError ||
+      error instanceof PluginBridgeError) {
+    return error.mutationOutcome;
+  }
+  return undefined;
+}
+
+export class PluginMutationLifecycleError extends AggregateError {
+  readonly mutationOutcome?: PluginMutationOutcome;
+
+  constructor(message: string, mutationError: unknown, lifecycleErrors: readonly unknown[]) {
+    super([mutationError, ...lifecycleErrors], message, { cause: mutationError });
+    this.name = "PluginMutationLifecycleError";
+    this.mutationOutcome = pluginMutationOutcome(mutationError);
+  }
+}

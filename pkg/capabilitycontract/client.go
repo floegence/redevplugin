@@ -20,6 +20,7 @@ func GenerateTypeScript(contract Contract) ([]byte, error) {
 	out.WriteString("  isCapabilityBusinessError,\n")
 	out.WriteString("  type PluginBridgeClient,\n")
 	out.WriteString("  type PluginBridgeError,\n")
+	out.WriteString("  type PluginBridgeRequestOptions,\n")
 	out.WriteString("  type PluginOperation,\n")
 	out.WriteString("  type PluginStream,\n")
 	out.WriteString("} from \"@floegence/redevplugin-ui/plugin\";\n\n")
@@ -105,11 +106,6 @@ func GenerateTypeScript(contract Contract) ([]byte, error) {
 		out.WriteString("  });\n")
 		out.WriteString("}\n\n")
 	}
-	fmt.Fprintf(&out, "export class %s {\n", contract.ClientName)
-	out.WriteString("  readonly #bridge: PluginBridgeClient;\n\n")
-	out.WriteString("  constructor(bridge: PluginBridgeClient) {\n")
-	out.WriteString("    this.#bridge = bridge;\n")
-	out.WriteString("  }\n\n")
 	for _, method := range contract.Methods {
 		requestSchema, err := json.Marshal(method.RequestSchema)
 		if err != nil {
@@ -119,6 +115,31 @@ func GenerateTypeScript(contract Contract) ([]byte, error) {
 		if err != nil {
 			return nil, err
 		}
+		fmt.Fprintf(&out, "const %sContract = Object.freeze({\n", method.ClientMethod)
+		fmt.Fprintf(&out, "  method: %q,\n", method.Name)
+		fmt.Fprintf(&out, "  effect: %q,\n", method.Effect)
+		fmt.Fprintf(&out, "  execution: %q,\n", method.Execution)
+		fmt.Fprintf(&out, "  requestSchema: %s,\n", requestSchema)
+		fmt.Fprintf(&out, "  responseSchema: %s,\n", responseSchema)
+		if method.Execution == "operation" {
+			fmt.Fprintf(&out, "  cancelable: %t,\n", method.CancelPolicy.Cancelable)
+		}
+		if method.Execution == "subscription" {
+			eventSchema, err := json.Marshal(method.EventSchema)
+			if err != nil {
+				return nil, err
+			}
+			fmt.Fprintf(&out, "  eventTypeName: %q,\n", method.EventTypeName)
+			fmt.Fprintf(&out, "  eventSchema: %s,\n", eventSchema)
+		}
+		out.WriteString("} as const);\n\n")
+	}
+	fmt.Fprintf(&out, "export class %s {\n", contract.ClientName)
+	out.WriteString("  readonly #bridge: PluginBridgeClient;\n\n")
+	out.WriteString("  constructor(bridge: PluginBridgeClient) {\n")
+	out.WriteString("    this.#bridge = bridge;\n")
+	out.WriteString("  }\n\n")
+	for _, method := range contract.Methods {
 		returnType := method.ResponseTypeName
 		call := "callCapabilitySync"
 		operationCancelable := true
@@ -134,7 +155,7 @@ func GenerateTypeScript(contract Contract) ([]byte, error) {
 			returnType = "PluginStream<" + method.ResponseTypeName + ", " + method.EventTypeName + ">"
 			call = "callCapabilityStream"
 		}
-		fmt.Fprintf(&out, "  async %s(request: %s): Promise<%s> {\n", method.ClientMethod, method.RequestTypeName, returnType)
+		fmt.Fprintf(&out, "  async %s(request: %s, options: PluginBridgeRequestOptions = {}): Promise<%s> {\n", method.ClientMethod, method.RequestTypeName, returnType)
 		if method.Execution == "subscription" {
 			fmt.Fprintf(&out, "    return %s<%s, %s, %s>(\n", call, method.RequestTypeName, method.ResponseTypeName, method.EventTypeName)
 		} else if method.Execution == "operation" && !operationCancelable {
@@ -143,21 +164,9 @@ func GenerateTypeScript(contract Contract) ([]byte, error) {
 			fmt.Fprintf(&out, "    return %s<%s, %s>(\n", call, method.RequestTypeName, method.ResponseTypeName)
 		}
 		out.WriteString("      this.#bridge,\n")
-		fmt.Fprintf(&out, "      %q,\n", method.Name)
+		fmt.Fprintf(&out, "      %sContract,\n", method.ClientMethod)
 		out.WriteString("      request,\n")
-		fmt.Fprintf(&out, "      %s,\n", requestSchema)
-		fmt.Fprintf(&out, "      %s,\n", responseSchema)
-		if method.Execution == "operation" && !operationCancelable {
-			out.WriteString("      false,\n")
-		}
-		if method.Execution == "subscription" {
-			eventSchema, err := json.Marshal(method.EventSchema)
-			if err != nil {
-				return nil, err
-			}
-			fmt.Fprintf(&out, "      %q,\n", method.EventTypeName)
-			fmt.Fprintf(&out, "      %s,\n", eventSchema)
-		}
+		out.WriteString("      options,\n")
 		out.WriteString("    );\n")
 		out.WriteString("  }\n\n")
 	}

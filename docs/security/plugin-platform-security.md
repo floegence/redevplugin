@@ -91,8 +91,9 @@ path traversal into installable artifacts.
 
 ## Sandbox UI Boundary
 
-`PluginSurfaceHost.create(...)` creates every plugin frame itself; its public
-options do not accept an existing iframe. The SDK-owned frame starts with
+`PluginPlatformClient.openSurfaceInSlot(...)` creates every plugin frame through
+one opening lease and slot-owned replacement flow. The public API does not expose
+raw bootstrap adoption or accept an existing iframe. The SDK-owned frame starts with
 `src="about:blank"`, an explicit Permissions Policy deny-list for sensors,
 capture, credentials, payments, USB/HID/serial, and other browser capabilities,
 `no-referrer`, and exactly

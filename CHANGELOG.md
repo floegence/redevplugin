@@ -86,6 +86,10 @@
   `release-metadata-v5`, compatibility manifest v6, `error-codes-v4`,
   `resource-scope-v1`, and token/ticket v3. WASM ABI v2, worker invocation v3,
   package signature v1, and release manifest v3 remain unchanged.
+- Make `PluginPlatformClient.openSurfaceInSlot(...)` the only public trusted-parent
+  opening path. Raw bootstrap opening, caller-created surface hosts, and direct
+  slot adoption are no longer public API; replacement waits for the previous
+  surface to revoke before a fresh iframe is created.
 - Bind handle grants, storage and network hostcalls, and runtime revocation to
   authenticated resource scopes. Runtime revoke epochs are isolated by
   environment owner and plugin instance, and plugin input cannot override
@@ -93,8 +97,11 @@
 - Regenerate the examples, scaffold, browser harness, Go DTOs, TypeScript
   contracts, Rust constants, fixtures, compatibility hashes, and release
   verification around the v6 platform contract.
-- Carry explicit mutation outcomes through trusted-parent bridge errors so a
-  plugin can reconcile an unknown destructive result before enabling writes.
+- Carry explicit mutation outcomes through trusted-parent errors. Pre-aborted
+  requests, body serialization failures, and synchronous fetch rejection are
+  `not_committed`; failures after fetch returns a promise are `unknown`.
+  `PluginMutationLifecycleError` retains that outcome when local teardown or
+  shell observers also fail.
 - Validate worker VNode tags, attributes, input types, and render limits against
   the generated opaque-surface policy before emitting a mount or patch.
 - Add deterministic parallel surface replacement, first-commit visibility,
@@ -486,8 +493,9 @@
 
 - Plugin iframes now use a generated `srcdoc` with exactly
   `sandbox="allow-scripts"`, a unique opaque origin, and a fail-closed CSP.
-- `PluginSurfaceHost.create(...)` creates and owns a fresh hardened iframe;
-  callers mount its read-only `element` and cannot provide a pre-existing frame.
+- `PluginPlatformClient.openSurfaceInSlot(...)` creates and owns each fresh
+  hardened iframe through a scope-bound opening lease; callers cannot obtain a
+  raw bootstrap, adopt prepared options, or provide a pre-existing frame.
 - Plugin packages must declare exactly one package-local
   `text/redevplugin-worker` classic bundle. Package validation and the trusted
   renderer share a generated closed render policy and reject unsupported DOM,

@@ -1,8 +1,8 @@
 import {
   PluginPlatformClient,
-  PluginSurfaceHost,
+  PluginSurfaceSlot,
   createReDevPluginSurfaceTransport,
-  toPluginSurfaceHostBootstrap,
+  createPluginSurfaceScope,
 } from "../../../packages/redevplugin-ui/dist/trusted-parent.js";
 
 const surfaceMount = document.querySelector("#plugin-surface-mount");
@@ -25,8 +25,10 @@ const reopenSurface = document.querySelector("#reopen-surface");
 const credentiallessScenario = new URLSearchParams(location.search).get("credentialless") === "unsupported"
   ? "unsupported"
   : "supported";
-const platformClient = new PluginPlatformClient();
+const surfaceScope = createPluginSurfaceScope();
 const hostTransport = createReDevPluginSurfaceTransport();
+const platformClient = new PluginPlatformClient({ surfaceScope, surfaceTransport: hostTransport });
+const surfaceSlot = PluginSurfaceSlot.create({ stage: surfaceMount });
 const state = {
   surfaceHost: null,
   pendingConfirmation: null,
@@ -46,7 +48,7 @@ disposeSurface.addEventListener("click", () => void closeSurface());
 reopenSurface.addEventListener("click", () => void openSurface());
 approveConfirmation.addEventListener("click", () => resolveConfirmation(true));
 denyConfirmation.addEventListener("click", () => resolveConfirmation(false));
-addEventListener("beforeunload", () => state.surfaceHost?.dispose());
+addEventListener("beforeunload", () => void surfaceSlot.dispose());
 
 window.__redevpluginHarness = Object.freeze({
   open: openSurface,
@@ -66,10 +68,7 @@ window.__redevpluginHarness = Object.freeze({
 void openSurface();
 
 async function openSurface() {
-  if (state.surfaceHost) {
-    state.surfaceHost.dispose();
-    state.surfaceHost = null;
-  }
+  state.surfaceHost = null;
   state.pendingConfirmation = null;
   state.progressEvents = [];
   state.openedAt = 0;
@@ -79,14 +78,11 @@ async function openSurface() {
   setStatus("opening");
   addLog("surface-open-start", { credentialless: credentiallessScenario });
   try {
-    const opened = await platformClient.openSurface({
+    const surfaceHost = await platformClient.openSurfaceInSlot(surfaceSlot, {
       plugin_instance_id: "plugin_browser_harness_1",
       surface_id: "dev.redevplugin.opaque-browser.view",
       expected_management_revision: 1,
-    });
-    const surfaceHost = PluginSurfaceHost.create({
-      bootstrap: toPluginSurfaceHostBootstrap(opened),
-      hostTransport,
+    }, {
       confirm: confirmDangerousAction,
       onOpeningProgress(progress) {
         state.progressEvents.push(progress.elapsedMs);
@@ -101,9 +97,7 @@ async function openSurface() {
     const iframe = surfaceHost.element;
     iframe.id = "plugin-frame";
     iframe.title = "Opaque ReDevPlugin surface";
-    surfaceMount.replaceChildren(iframe);
     state.surfaceHost = surfaceHost;
-    await surfaceHost.open();
     if (state.surfaceHost !== surfaceHost) return;
     state.openedAt = Date.now();
     sandboxMode.textContent = iframe.getAttribute("sandbox") || "missing";
@@ -129,7 +123,7 @@ async function closeSurface() {
   if (!surfaceHost) return;
   const iframe = surfaceHost.element;
   try {
-    await surfaceHost.close();
+    await surfaceSlot.close();
     state.disposedAt = Date.now();
     setStatus("disposed");
     addLog("surface-disposed", { iframe_srcdoc_empty: iframe.srcdoc === "" });

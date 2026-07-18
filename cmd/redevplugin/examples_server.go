@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"mime"
 	"net"
 	"net/http"
 	"os"
@@ -42,11 +41,6 @@ const (
 	examplesUserHash        = "examples_owner_user"
 	examplesEnvHash         = "examples_owner_environment"
 	examplesChannelHash     = "examples_session_channel"
-)
-
-var (
-	errExamplesOriginDenied       = errors.New("examples request origin is denied")
-	errExamplesContentTypeInvalid = errors.New("examples request content type is invalid")
 )
 
 type examplePluginSpec struct {
@@ -162,10 +156,6 @@ type exampleCatalogItem struct {
 	Description        string   `json:"description"`
 	Icon               string   `json:"icon"`
 	Capabilities       []string `json:"capabilities"`
-}
-
-type exampleOpenRequest struct {
-	Slug string `json:"slug"`
 }
 
 type exampleSuccessResponse struct {
@@ -391,44 +381,6 @@ func examplesServerWithOptions(ctx context.Context, stateRoot string, runtimePat
 		}
 		writeExampleEnvelope(w, http.StatusOK, items)
 	})
-	mux.HandleFunc("/api/open", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost {
-			w.WriteHeader(http.StatusMethodNotAllowed)
-			return
-		}
-		if err := validateExamplesJSONMutationRequest(r, origin); err != nil {
-			switch {
-			case errors.Is(err, errExamplesOriginDenied):
-				writeExampleError(w, http.StatusForbidden, "EXAMPLE_ORIGIN_DENIED", "request origin is not allowed")
-			default:
-				writeExampleError(w, http.StatusUnsupportedMediaType, "EXAMPLE_CONTENT_TYPE_INVALID", "request content type must be application/json")
-			}
-			return
-		}
-		var request exampleOpenRequest
-		decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 16<<10))
-		decoder.DisallowUnknownFields()
-		if err := decoder.Decode(&request); err != nil {
-			writeExampleError(w, http.StatusBadRequest, "EXAMPLE_REQUEST_INVALID", "open request is invalid")
-			return
-		}
-		plugin, ok := installed[strings.TrimSpace(request.Slug)]
-		if !ok {
-			writeExampleError(w, http.StatusNotFound, "EXAMPLE_PLUGIN_NOT_FOUND", "example plugin is unavailable")
-			return
-		}
-		bootstrap, err := pluginHost.OpenSurface(examplesContext(r.Context()), host.OpenSurfaceRequest{
-			PluginInstanceID:           plugin.Record.PluginInstanceID,
-			ExpectedManagementRevision: plugin.Record.ManagementRevision,
-			SurfaceID:                  plugin.Spec.SurfaceID,
-			SurfaceInstanceID:          fmt.Sprintf("surface_examples_%s_%d", strings.ReplaceAll(plugin.Spec.Slug, "-", "_"), time.Now().UnixNano()),
-		})
-		if err != nil {
-			writeExampleError(w, http.StatusInternalServerError, "EXAMPLE_SURFACE_OPEN_FAILED", err.Error())
-			return
-		}
-		writeExampleEnvelope(w, http.StatusOK, bootstrap)
-	})
 	mux.HandleFunc("/api/health", examplesHealthHandler(pluginHost, len(installed)))
 	mux.Handle("/", noStoreStatic(showcaseRoot))
 
@@ -453,17 +405,6 @@ func examplesServerWithOptions(ctx context.Context, stateRoot string, runtimePat
 		}
 		return err
 	}
-}
-
-func validateExamplesJSONMutationRequest(r *http.Request, origin string) error {
-	if strings.TrimSpace(r.Header.Get("Origin")) != origin {
-		return errExamplesOriginDenied
-	}
-	mediaType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
-	if err != nil || mediaType != "application/json" {
-		return errExamplesContentTypeInvalid
-	}
-	return nil
 }
 
 func examplesHealthHandler(runtimeHealth examplesRuntimeHealthReader, pluginCount int) http.HandlerFunc {

@@ -174,7 +174,7 @@ async function buildHostHarnessSource(workerContent) {
   const result = await build({
     stdin: {
       contents: `
-import { PluginSurfaceHost, createReDevPluginSurfaceTransport } from "./packages/redevplugin-ui/src/surface.ts";
+import { createPreparedPluginSurfaceHost, createReDevPluginSurfaceTransport } from "./packages/redevplugin-ui/src/surface.ts";
 const digest = (character) => "sha256:" + character.repeat(64);
 const workerContent = ${JSON.stringify(workerContent)};
 const now = Date.now();
@@ -224,7 +224,7 @@ const fetchLike = async (input, init) => {
   else throw new Error("unexpected performance harness request: " + path);
   return { ok: true, status: 200, json: async () => ({ ok: true, data }) };
 };
-const host = PluginSurfaceHost.create({
+const host = createPreparedPluginSurfaceHost({
   bootstrap: {
     pluginId: "com.example.performance",
     pluginInstanceId: "plugini_performance_1",

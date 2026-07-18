@@ -719,8 +719,8 @@ func typeScriptSDKRouteBindings() []typeScriptSDKRouteBinding {
 		},
 		{
 			routeFixture: routeFixture{Method: "POST", Path: "/_redevplugin/api/plugins/surfaces/open"},
-			Owner:        "PluginPlatformClient.openSurface",
-			Snippets:     []string{"openSurface(request: PluginOpenSurfaceRequest)", `#requestMutation("POST", "/_redevplugin/api/plugins/surfaces/open"`},
+			Owner:        "PluginPlatformClient.openSurfaceInSlot",
+			Snippets:     []string{"openSurfaceInSlot(", "#openSurface(request: PluginOpenSurfaceRequest)", `#requestMutation("POST", "/_redevplugin/api/plugins/surfaces/open"`},
 		},
 		{
 			routeFixture: routeFixture{Method: "POST", Path: "/_redevplugin/api/plugins/surfaces/revoke-scope"},
@@ -764,8 +764,8 @@ func typeScriptSDKRouteBindings() []typeScriptSDKRouteBinding {
 		},
 		{
 			routeFixture: routeFixture{Method: "POST", Path: "/_redevplugin/api/plugins/surfaces/{surface_instance_id}/dispose"},
-			Owner:        "PluginSurfaceHost.close",
-			Snippets:     []string{"close(): Promise<PluginSurfaceCloseResult>", "async #closeSurface(): Promise<PluginSurfaceCloseResult>", `/_redevplugin/api/plugins/surfaces/${encodeURIComponent(this.bootstrap.surfaceInstanceId)}/dispose`},
+			Owner:        "PluginSurfaceHost and PluginSurfaceSlot lifecycle",
+			Snippets:     []string{"close(): Promise<PluginSurfaceCloseResult>", "async #closeSurface(): Promise<PluginSurfaceCloseResult>", "async function revokeSurfaceBootstrap(", `/_redevplugin/api/plugins/surfaces/${encodeURIComponent(bootstrap.surfaceInstanceId)}/dispose`},
 		},
 		{
 			routeFixture: routeFixture{Method: "POST", Path: "/_redevplugin/api/plugins/rpc"},

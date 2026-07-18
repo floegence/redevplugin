@@ -86,9 +86,17 @@ func TestBuildAndVerifyPublishedBundle(t *testing.T) {
 		"capability_version: \"1.0.0\"",
 		"detail_schema_sha256: \"" + detailDigest + "\"",
 		"business_error_code: \"DOCUMENT_NOT_FOUND\"",
-		"async list(request: DocumentsListRequest)",
-		"async archive(request: DocumentsArchiveRequest)",
-		"async watch(request: DocumentsWatchRequest)",
+		"const listContract = Object.freeze({",
+		"effect: \"read\"",
+		"execution: \"sync\"",
+		"const archiveContract = Object.freeze({",
+		"effect: \"write\"",
+		"execution: \"operation\"",
+		"const watchContract = Object.freeze({",
+		"execution: \"subscription\"",
+		"async list(request: DocumentsListRequest, options: PluginBridgeRequestOptions = {})",
+		"async archive(request: DocumentsArchiveRequest, options: PluginBridgeRequestOptions = {})",
+		"async watch(request: DocumentsWatchRequest, options: PluginBridgeRequestOptions = {})",
 		"PluginOperation<DocumentsArchiveResponse>",
 		"export type DocumentsWatchEvent",
 		"PluginStream<DocumentsWatchResponse, DocumentsWatchEvent>",
@@ -178,7 +186,7 @@ func TestGenerateTypeScriptPreservesCancelabilityAndPrimitiveLiterals(t *testing
 		"dry_run: true;",
 		"PluginOperation<DocumentsArchiveResponse, false>",
 		"callCapabilityOperation<DocumentsArchiveRequest, DocumentsArchiveResponse, false>",
-		"      false,",
+		"cancelable: false,",
 	} {
 		if !strings.Contains(client, expected) {
 			t.Fatalf("generated client missing %q:\n%s", expected, client)
@@ -428,7 +436,7 @@ func TestPublishedSampleArtifactVerifies(t *testing.T) {
 			PolicyEpoch:     pin.SignaturePolicyEpoch,
 			RevocationEpoch: pin.SignatureRevocationEpoch,
 		},
-		CurrentReDevPluginVersion: "0.3.0",
+		CurrentReDevPluginVersion: "0.5.0",
 	})
 	if err != nil {
 		t.Fatalf("Verify(sample) error = %v", err)
@@ -822,6 +830,7 @@ func TestContractValidationRejectsGeneratedTypeNamesReservedByTheSDK(t *testing.
 	reserved := []string{
 		"PluginBridgeClient",
 		"PluginBridgeError",
+		"PluginBridgeRequestOptions",
 		"PluginOperation",
 		"PluginStream",
 		"callCapabilityOperation",

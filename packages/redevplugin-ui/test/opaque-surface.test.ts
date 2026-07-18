@@ -4,7 +4,7 @@ import { test } from "node:test";
 import {
   PluginBridgeError,
   PluginPlatformClient,
-  PluginSurfaceHost,
+  PluginTransportError,
   PluginSurfaceReloadLimiter,
   PluginSurfaceSlot,
   createReDevPluginSurfaceTransport,
@@ -16,12 +16,19 @@ import {
   type MessageChannelLike,
   type MessageEventLike,
   type MessagePortLike,
-  type PluginSurfaceHostOptions,
 } from "../src/trusted-parent.js";
-import { PluginBridgeClient } from "../src/plugin.js";
-import { createOpaquePluginBootstrapHTML, decodePluginStreamText } from "../src/surface.js";
+import { PluginBridgeClient, callCapabilitySync } from "../src/plugin.js";
+import {
+  createOpaquePluginBootstrapHTML,
+  createPreparedPluginSurfaceHost,
+  decodePluginStreamText,
+  openPreparedPluginSurfaceInSlot,
+  type PluginSurfaceHostOptions,
+  type PreparedPluginSurfaceHost,
+} from "../src/surface.js";
 import { PluginLocalImportClient } from "../src/local-import.js";
 import { opaqueSurfaceRenderLimits } from "../src/opaque-surface-policy.gen.js";
+import { disposePluginSurfaceScope, registerPluginSurface } from "../src/surface-scope.js";
 import { validatePluginUITree, type PluginUIElementVNode, type PluginUITextVNode } from "../src/ui-reconciler.js";
 
 const uiText = (key: string, text: string): PluginUITextVNode => ({ type: "text", key, text });
@@ -171,7 +178,7 @@ class FakeFrameWithoutCredentialless {
 function createSurfaceHost(
   frame: FakeFrame | FakeFrameWithoutCredentialless,
   options: PluginSurfaceHostOptions & { testMessageChannel?: MessageChannelLike },
-): PluginSurfaceHost {
+): PreparedPluginSurfaceHost {
   const previousDocument = Object.getOwnPropertyDescriptor(globalThis, "document");
   const previousMessageChannel = Object.getOwnPropertyDescriptor(globalThis, "MessageChannel");
   const { testMessageChannel, ...hostOptions } = options;
@@ -197,7 +204,7 @@ function createSurfaceHost(
     });
   }
   try {
-    const host = PluginSurfaceHost.create(hostOptions);
+    const host = createPreparedPluginSurfaceHost(hostOptions);
     assert.equal(host.element, frame);
     assert.equal(createdFrames, 1);
     assert.equal(frame.attributes.get("src"), "about:blank");
@@ -273,13 +280,25 @@ const hostBootstrap = {
   runtimeGenerationId: "runtime_gen_1",
 };
 
-test("surface host construction cannot bypass the SDK factory", () => {
-  const UnsafeSurfaceHost = PluginSurfaceHost as unknown as new () => PluginSurfaceHost;
-  assert.throws(
-    () => new UnsafeSurfaceHost(),
-    (error: unknown) => error instanceof PluginBridgeError && error.errorCode === "PLUGIN_CONTRACT_MISMATCH",
-  );
-});
+function platformSurfaceBootstrap(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    plugin_id: hostBootstrap.pluginId,
+    plugin_instance_id: hostBootstrap.pluginInstanceId,
+    plugin_version: hostBootstrap.pluginVersion,
+    surface_id: hostBootstrap.surfaceId,
+    surface_instance_id: hostBootstrap.surfaceInstanceId,
+    active_fingerprint: hostBootstrap.activeFingerprint,
+    bridge_nonce: hostBootstrap.bridgeNonce,
+    entry_path: hostBootstrap.entryPath,
+    entry_sha256: hostBootstrap.entrySHA256,
+    asset_ticket: hostBootstrap.assetTicket,
+    asset_session_nonce: hostBootstrap.assetSessionNonce,
+    management_revision: hostBootstrap.managementRevision,
+    revoke_epoch: hostBootstrap.revokeEpoch,
+    runtime_generation_id: hostBootstrap.runtimeGenerationId,
+    ...overrides,
+  };
+}
 
 function preparation() {
   return {
@@ -434,6 +453,7 @@ test("surface host rejects unknown fields in the closed preparation document", a
   const invalid = preparation();
   (invalid.document as unknown as Record<string, unknown>).asset_ticket = "must-not-enter-iframe";
   fetch.push(invalid);
+  fetch.push({});
   const host = createSurfaceHost(frame, {
     bootstrap: hostBootstrap,
     hostTransport: createReDevPluginSurfaceTransport({ fetch: fetch.fetch }),
@@ -445,6 +465,7 @@ test("surface host rejects unknown fields in the closed preparation document", a
     opening,
     (error: unknown) => error instanceof PluginBridgeError && error.errorCode === "PLUGIN_CONTRACT_MISMATCH",
   );
+  assert.equal(fetch.calls.length, 2);
   assert.equal(frame.srcdoc, "");
 });
 
@@ -611,6 +632,84 @@ test("plugin bridge serializes concurrent reads for the same stream handle", asy
     data: { events: [], done: true, terminal_status: "closed", retry_after_ms: 0 },
   });
   assert.deepEqual(await second, { events: [], done: true, terminal_status: "closed", retry_after_ms: 0 });
+  client.dispose();
+});
+
+test("plugin bridge classifies cancellation before and after mutation dispatch", async () => {
+  const { port1: rendererPort, port2: pluginPort } = fakeChannel();
+  const client = new PluginBridgeClient({ port: pluginPort, surfaceHandle: "surface_12345678", timeoutMs: 1000 });
+
+  const preDispatch = new AbortController();
+  preDispatch.abort("cancel before dispatch");
+  await assert.rejects(
+    client.call("documents.archive", { document_id: "doc-1" }, { signal: preDispatch.signal }),
+    (error: unknown) => error instanceof PluginBridgeError &&
+      error.errorCode === "PLUGIN_BRIDGE_CANCELLED" &&
+      error.mutationOutcome === "not_committed",
+  );
+  assert.deepEqual(pluginPort.sent, []);
+
+  const postDispatch = new AbortController();
+  const call = client.call("documents.archive", { document_id: "doc-1" }, { signal: postDispatch.signal });
+  await waitFor(() => pluginPort.sent.length === 1);
+  postDispatch.abort("cancel after dispatch");
+  await assert.rejects(
+    call,
+    (error: unknown) => error instanceof PluginBridgeError &&
+      error.errorCode === "PLUGIN_BRIDGE_CANCELLED" &&
+      error.mutationOutcome === "unknown",
+  );
+  assert.deepEqual(pluginPort.sent[1], { type: "redevplugin.bridge.cancel", id: "rpc_2" });
+
+  rendererPort.postMessage({ type: "redevplugin.bridge.response", id: "rpc_2", ok: true, data: { ignored: true } });
+  const next = client.call("documents.get", { document_id: "doc-1" });
+  await waitFor(() => pluginPort.sent.length === 3);
+  rendererPort.postMessage({ type: "redevplugin.bridge.response", id: "rpc_3", ok: true, data: { ok: true } });
+  assert.deepEqual(await next, { ok: true });
+  client.dispose();
+});
+
+test("generated read capability cancellation never reports an unknown mutation outcome", async () => {
+  const { port2: pluginPort } = fakeChannel();
+  const client = new PluginBridgeClient({ port: pluginPort, surfaceHandle: "surface_12345678", timeoutMs: 1000 });
+  const controller = new AbortController();
+  const read = callCapabilitySync(
+    client,
+    {
+      method: "documents.get",
+      effect: "read",
+      execution: "sync",
+      requestSchema: { type: "object", additionalProperties: false },
+      responseSchema: { type: "object", additionalProperties: false },
+    },
+    {},
+    { signal: controller.signal },
+  );
+  await waitFor(() => pluginPort.sent.length === 1);
+  controller.abort();
+  await assert.rejects(
+    read,
+    (error: unknown) => error instanceof PluginBridgeError &&
+      error.errorCode === "PLUGIN_BRIDGE_CANCELLED" &&
+      error.mutationOutcome === undefined,
+  );
+  client.dispose();
+});
+
+test("operation cancellation accepts a per-call abort signal", async () => {
+  const { port2: pluginPort } = fakeChannel();
+  const client = new PluginBridgeClient({ port: pluginPort, surfaceHandle: "surface_12345678", timeoutMs: 1000 });
+  const controller = new AbortController();
+  const cancellation = client.cancelOperation("operation_12345678", "user_cancelled", { signal: controller.signal });
+  await waitFor(() => pluginPort.sent.length === 1);
+  controller.abort();
+  await assert.rejects(
+    cancellation,
+    (error: unknown) => error instanceof PluginBridgeError &&
+      error.errorCode === "PLUGIN_BRIDGE_CANCELLED" &&
+      error.mutationOutcome === "unknown",
+  );
+  assert.deepEqual(pluginPort.sent[1], { type: "redevplugin.bridge.cancel", id: "operation_1" });
   client.dispose();
 });
 
@@ -1068,7 +1167,9 @@ test("plugin bridge client clears pending requests when postMessage fails synchr
   for (let index = 0; index < 256; index += 1) {
     await assert.rejects(
       client.call("echo.closed"),
-      (error: unknown) => error instanceof PluginBridgeError && error.errorCode === "PLUGIN_BRIDGE_DISPOSED",
+      (error: unknown) => error instanceof PluginBridgeError &&
+        error.errorCode === "PLUGIN_BRIDGE_DISPOSED" &&
+        error.mutationOutcome === "not_committed",
     );
   }
 
@@ -1255,30 +1356,20 @@ test("platform client opens a surface in a slot with one SDK-owned same-origin t
   const channel = fakeChannel();
   const restoreDOM = installSurfaceSlotDOM([frame], [channel]);
   const fetch = new FakeFetch();
-  fetch.push({
-    plugin_id: hostBootstrap.pluginId,
-    plugin_instance_id: hostBootstrap.pluginInstanceId,
-    plugin_version: hostBootstrap.pluginVersion,
-    surface_id: hostBootstrap.surfaceId,
-    surface_instance_id: hostBootstrap.surfaceInstanceId,
-    active_fingerprint: hostBootstrap.activeFingerprint,
-    bridge_nonce: hostBootstrap.bridgeNonce,
-    entry_path: hostBootstrap.entryPath,
-    entry_sha256: hostBootstrap.entrySHA256,
-    asset_ticket: hostBootstrap.assetTicket,
-    asset_session_nonce: hostBootstrap.assetSessionNonce,
-    management_revision: hostBootstrap.managementRevision,
-    revoke_epoch: hostBootstrap.revokeEpoch,
-    runtime_generation_id: hostBootstrap.runtimeGenerationId,
-  });
+  fetch.push(platformSurfaceBootstrap());
   fetch.push(preparation());
   fetch.push(gatewayLease());
   const controller = new AbortController();
   const stage = new FakeStage();
   const slot = PluginSurfaceSlot.create({ stage: stage as unknown as HTMLElement });
+  const surfaceTransport = withLocationOrigin("https://host.example", () => createReDevPluginSurfaceTransport({
+    apiBaseURL: "https://host.example/plugin-api/",
+    fetch: fetch.fetch,
+  }));
   const client = new PluginPlatformClient({
     apiBaseURL: "https://host.example/plugin-api/",
     fetch: fetch.fetch,
+    surfaceTransport,
   });
 
   try {
@@ -1295,19 +1386,278 @@ test("platform client opens a surface in a slot with one SDK-owned same-origin t
     channel.port2.postMessage({ type: "redevplugin.surface.worker_ready" });
     const host = await opening;
 
-    assert.equal(host.bootstrap.surfaceInstanceId, "surface_1");
+    assert.equal(host.surfaceInstanceId, "surface_1");
     assert.equal(fetch.calls[0]?.input, "https://host.example/plugin-api/_redevplugin/api/plugins/surfaces/open");
-    assert.equal(fetch.calls[0]?.init.signal, controller.signal);
-    assert.equal(fetch.calls[1]?.input, "/plugin-api/_redevplugin/api/plugins/surfaces/surface_1/prepare");
-    assert.equal(fetch.calls[2]?.input, "/plugin-api/_redevplugin/api/plugins/surfaces/surface_1/bridge-token");
+    assert.equal(fetch.calls[0]?.init.signal, undefined, "dispatch cancellation must preserve the bootstrap needed for revocation");
+    assert.equal(fetch.calls[1]?.input, "https://host.example/plugin-api/_redevplugin/api/plugins/surfaces/surface_1/prepare");
+    assert.equal(fetch.calls[2]?.input, "https://host.example/plugin-api/_redevplugin/api/plugins/surfaces/surface_1/bridge-token");
   } finally {
     fetch.push({});
-    slot.dispose();
+    await slot.dispose();
     restoreDOM();
   }
 });
 
-test("surface slot opens the next surface while the retired surface quiesces", async () => {
+test("platform surface opening aborts before dispatch without fetch or iframe creation", async () => {
+  const fetch = new FakeFetch();
+  const stage = new FakeStage();
+  const slot = PluginSurfaceSlot.create({ stage: stage as unknown as HTMLElement });
+  const controller = new AbortController();
+  controller.abort("closed before dispatch");
+  const client = new PluginPlatformClient({ fetch: fetch.fetch });
+
+  await assert.rejects(
+    client.openSurfaceInSlot(slot, {
+      plugin_instance_id: "plugin_instance_1",
+      surface_id: "example.view",
+      surface_instance_id: "surface_1",
+      expected_management_revision: 7,
+    }, { signal: controller.signal }),
+    (error: unknown) => error instanceof PluginTransportError && error.mutationOutcome === "not_committed",
+  );
+  assert.deepEqual(fetch.calls, []);
+  assert.equal(stage.children.length, 0);
+  await slot.dispose();
+});
+
+test("platform surface opening rejects an empty canonical plugin instance before dispatch", async () => {
+  const fetch = new FakeFetch();
+  const stage = new FakeStage();
+  const slot = PluginSurfaceSlot.create({ stage: stage as unknown as HTMLElement });
+  const client = new PluginPlatformClient({ fetch: fetch.fetch });
+
+  await assert.rejects(
+    client.openSurfaceInSlot(slot, {
+      plugin_instance_id: "   ",
+      surface_id: "example.view",
+      surface_instance_id: "surface_1",
+      expected_management_revision: 7,
+    }),
+    (error: unknown) => error instanceof PluginBridgeError && error.errorCode === "PLUGIN_INVALID_REQUEST",
+  );
+  assert.deepEqual(fetch.calls, []);
+  assert.equal(stage.children.length, 0);
+  await slot.dispose();
+});
+
+test("platform surface opening uses one canonical plugin instance for dispatch and scope teardown", async () => {
+  const fetch = new FakeFetch();
+  let resolveOpen!: (response: FetchResponseLike) => void;
+  fetch.pushHandler(async () => new Promise<FetchResponseLike>((resolve) => { resolveOpen = resolve; }));
+  fetch.push({});
+  const scope = createPluginSurfaceScope();
+  const stage = new FakeStage();
+  const slot = PluginSurfaceSlot.create({ stage: stage as unknown as HTMLElement });
+  const client = new PluginPlatformClient({ fetch: fetch.fetch, surfaceScope: scope });
+  const opening = client.openSurfaceInSlot(slot, {
+    plugin_instance_id: "  plugin_instance_1  ",
+    surface_id: "example.view",
+    surface_instance_id: "surface_1",
+    expected_management_revision: 7,
+  });
+  await waitFor(() => fetch.calls.length === 1);
+
+  const teardown = disposePluginSurfaceScope(scope, "plugin_instance_1");
+  resolveOpen({ ok: true, status: 200, json: async () => ({ ok: true, data: platformSurfaceBootstrap() }) });
+  await teardown;
+  await assert.rejects(
+    opening,
+    (error: unknown) => error instanceof PluginBridgeError && error.errorCode === "PLUGIN_BRIDGE_DISPOSED",
+  );
+  assert.deepEqual(JSON.parse(fetch.calls[0]?.init.body ?? ""), {
+    plugin_instance_id: "plugin_instance_1",
+    surface_id: "example.view",
+    surface_instance_id: "surface_1",
+    expected_management_revision: 7,
+  });
+  assert.equal(fetch.calls[1]?.input, "/_redevplugin/api/plugins/surfaces/surface_1/dispose");
+  assert.equal(stage.children.length, 0);
+  await slot.dispose();
+});
+
+test("platform surface opening on a disposed slot never dispatches", async () => {
+  const fetch = new FakeFetch();
+  const stage = new FakeStage();
+  const slot = PluginSurfaceSlot.create({ stage: stage as unknown as HTMLElement });
+  await slot.dispose();
+  const client = new PluginPlatformClient({ fetch: fetch.fetch });
+
+  assert.throws(
+    () => client.openSurfaceInSlot(slot, {
+      plugin_instance_id: "plugin_instance_1",
+      surface_id: "example.view",
+      surface_instance_id: "surface_1",
+      expected_management_revision: 7,
+    }),
+    (error: unknown) => error instanceof PluginBridgeError && error.errorCode === "PLUGIN_BRIDGE_DISPOSED",
+  );
+  assert.deepEqual(fetch.calls, []);
+});
+
+test("platform surface opening waits for bootstrap and revocation after dispatch abort", async () => {
+  const frame = new FakeFrame();
+  const channel = fakeChannel();
+  const restoreDOM = installSurfaceSlotDOM([frame], [channel]);
+  const fetch = new FakeFetch();
+  let resolveOpen!: (response: FetchResponseLike) => void;
+  let resolveRevoke!: (response: FetchResponseLike) => void;
+  fetch.pushHandler(async () => new Promise<FetchResponseLike>((resolve) => { resolveOpen = resolve; }));
+  fetch.pushHandler(async () => new Promise<FetchResponseLike>((resolve) => { resolveRevoke = resolve; }));
+  const stage = new FakeStage();
+  const slot = PluginSurfaceSlot.create({ stage: stage as unknown as HTMLElement });
+  const controller = new AbortController();
+  const client = new PluginPlatformClient({ fetch: fetch.fetch });
+
+  try {
+    let settled = false;
+    const opening = client.openSurfaceInSlot(slot, {
+      plugin_instance_id: "plugin_instance_1",
+      surface_id: "example.view",
+      surface_instance_id: "surface_1",
+      expected_management_revision: 7,
+    }, { signal: controller.signal }).finally(() => { settled = true; });
+    await waitFor(() => fetch.calls.length === 1);
+    controller.abort("closed after dispatch");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(settled, false);
+    assert.equal(fetch.calls[0]?.init.signal, undefined);
+
+    resolveOpen({ ok: true, status: 200, json: async () => ({ ok: true, data: platformSurfaceBootstrap() }) });
+    await waitFor(() => fetch.calls.length === 2);
+    assert.equal(settled, false);
+    assert.equal(fetch.calls[1]?.input, "/_redevplugin/api/plugins/surfaces/surface_1/dispose");
+    assert.equal(stage.children.length, 0);
+
+    resolveRevoke({ ok: true, status: 200, json: async () => ({ ok: true, data: {} }) });
+    await assert.rejects(
+      opening,
+      (error: unknown) => error instanceof PluginTransportError && error.mutationOutcome === "unknown",
+    );
+    assert.equal(frame.transferred.length, 0);
+  } finally {
+    await slot.dispose();
+    restoreDOM();
+  }
+});
+
+test("surface slot dispose waits for a pending server opening lease to revoke", async () => {
+  const fetch = new FakeFetch();
+  let resolveOpen!: (response: FetchResponseLike) => void;
+  let resolveRevoke!: (response: FetchResponseLike) => void;
+  fetch.pushHandler(async () => new Promise<FetchResponseLike>((resolve) => { resolveOpen = resolve; }));
+  fetch.pushHandler(async () => new Promise<FetchResponseLike>((resolve) => { resolveRevoke = resolve; }));
+  const stage = new FakeStage();
+  const slot = PluginSurfaceSlot.create({ stage: stage as unknown as HTMLElement });
+  const client = new PluginPlatformClient({ fetch: fetch.fetch });
+  const opening = client.openSurfaceInSlot(slot, {
+    plugin_instance_id: "plugin_instance_1",
+    surface_id: "example.view",
+    surface_instance_id: "surface_1",
+    expected_management_revision: 7,
+  });
+  await waitFor(() => fetch.calls.length === 1);
+
+  let disposed = false;
+  const disposal = slot.dispose().finally(() => { disposed = true; });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(disposed, false);
+  resolveOpen({ ok: true, status: 200, json: async () => ({ ok: true, data: platformSurfaceBootstrap() }) });
+  await waitFor(() => fetch.calls.length === 2);
+  assert.equal(disposed, false);
+  resolveRevoke({ ok: true, status: 200, json: async () => ({ ok: true, data: {} }) });
+  await disposal;
+  await assert.rejects(
+    opening,
+    (error: unknown) => error instanceof PluginBridgeError && error.errorCode === "PLUGIN_BRIDGE_DISPOSED",
+  );
+});
+
+test("surface scope teardown waits for every registration before reporting failure", async () => {
+  const scope = createPluginSurfaceScope();
+  const failure = new Error("first teardown failed");
+  let releaseSecond!: () => void;
+  const second = new Promise<void>((resolve) => { releaseSecond = resolve; });
+  registerPluginSurface(scope, "plugin_instance_1", () => { throw failure; });
+  registerPluginSurface(scope, "plugin_instance_2", async () => { await second; });
+
+  let settled = false;
+  const teardown = disposePluginSurfaceScope(scope).finally(() => { settled = true; });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(settled, false);
+  releaseSecond();
+  await assert.rejects(teardown, (error: unknown) => error === failure);
+});
+
+test("surface scope canonicalizes plugin instance identifiers at registration and teardown", async () => {
+  const scope = createPluginSurfaceScope();
+  let disposed = 0;
+  registerPluginSurface(scope, "  plugin_instance_1  ", () => { disposed += 1; });
+
+  await disposePluginSurfaceScope(scope, " plugin_instance_1 ");
+
+  assert.equal(disposed, 1);
+});
+
+test("surface scope rejects empty canonical plugin instance identifiers", async () => {
+  const scope = createPluginSurfaceScope();
+
+  assert.throws(
+    () => registerPluginSurface(scope, "   ", () => undefined),
+    (error: unknown) => error instanceof TypeError && error.message === "Plugin instance identifier must be a non-empty string",
+  );
+  await assert.rejects(
+    disposePluginSurfaceScope(scope, "   "),
+    (error: unknown) => error instanceof TypeError && error.message === "Plugin instance identifier must be a non-empty string",
+  );
+});
+
+test("platform surface opening revokes exactly once when host construction fails", async () => {
+  const fetch = new FakeFetch();
+  fetch.push(platformSurfaceBootstrap({ management_revision: 0 }));
+  fetch.push({});
+  const stage = new FakeStage();
+  const slot = PluginSurfaceSlot.create({ stage: stage as unknown as HTMLElement });
+  const client = new PluginPlatformClient({ fetch: fetch.fetch });
+
+  await assert.rejects(
+    client.openSurfaceInSlot(slot, {
+      plugin_instance_id: "plugin_instance_1",
+      surface_id: "example.view",
+      surface_instance_id: "surface_1",
+      expected_management_revision: 7,
+    }),
+    (error: unknown) => error instanceof PluginBridgeError && error.errorCode === "PLUGIN_CONTRACT_MISMATCH",
+  );
+  assert.equal(fetch.calls.length, 2);
+  assert.equal(fetch.calls[1]?.input, "/_redevplugin/api/plugins/surfaces/surface_1/dispose");
+  assert.equal(stage.children.length, 0);
+  await slot.dispose();
+});
+
+test("platform surface opening revokes a bootstrap with a mismatched plugin identity", async () => {
+  const fetch = new FakeFetch();
+  fetch.push(platformSurfaceBootstrap({ plugin_instance_id: "plugin_instance_other" }));
+  fetch.push({});
+  const stage = new FakeStage();
+  const slot = PluginSurfaceSlot.create({ stage: stage as unknown as HTMLElement });
+  const client = new PluginPlatformClient({ fetch: fetch.fetch });
+
+  await assert.rejects(
+    client.openSurfaceInSlot(slot, {
+      plugin_instance_id: "plugin_instance_1",
+      surface_id: "example.view",
+      surface_instance_id: "surface_1",
+      expected_management_revision: 7,
+    }),
+    (error: unknown) => error instanceof PluginBridgeError && error.errorCode === "PLUGIN_CONTRACT_MISMATCH",
+  );
+  assert.equal(fetch.calls.length, 2);
+  assert.equal(fetch.calls[1]?.input, "/_redevplugin/api/plugins/surfaces/surface_1/dispose");
+  assert.equal(stage.children.length, 0);
+  await slot.dispose();
+});
+
+test("surface slot waits for retired surface revocation before opening the next iframe", async () => {
   const firstFrame = new FakeFrame();
   const secondFrame = new FakeFrame();
   const firstChannel = fakeChannel();
@@ -1327,7 +1677,7 @@ test("surface slot opens the next surface while the retired surface quiesces", a
   });
 
   try {
-    const firstOpening = slot.open({
+    const firstOpening = openPreparedPluginSurfaceInSlot(slot, {
       bootstrap: hostBootstrap,
       hostTransport: createReDevPluginSurfaceTransport({ fetch: firstFetch.fetch }),
     });
@@ -1341,7 +1691,7 @@ test("surface slot opens the next surface while the retired surface quiesces", a
     assert.equal(firstFrame.inert, false);
 
     firstFetch.push({});
-    const secondOpening = slot.open({
+    const secondOpening = openPreparedPluginSurfaceInSlot(slot, {
       bootstrap: {
         ...hostBootstrap,
         surfaceInstanceId: "surface_2",
@@ -1349,11 +1699,19 @@ test("surface slot opens the next surface while the retired surface quiesces", a
       },
       hostTransport: createReDevPluginSurfaceTransport({ fetch: secondFetch.fetch }),
     });
-    await waitFor(() => stage.children.length === 2);
+    await waitFor(() => firstFrame.hidden && firstFrame.inert);
+    assert.equal(stage.children.length, 1);
     assert.equal(firstFrame.hidden, true);
     assert.equal(firstFrame.inert, true);
-    assert.equal(secondFrame.hidden, true);
-    assert.equal(secondFrame.inert, true);
+
+    const firstQuiesce = await waitForQuiesce(firstChannel.port1);
+    firstChannel.port2.postMessage({
+      type: "redevplugin.surface.quiesce_ack",
+      quiesce_id: firstQuiesce,
+    });
+    await waitFor(() => firstFrame.removed);
+    await waitFor(() => stage.children.at(-1) === secondFrame);
+    assert.equal(firstFrame === secondFrame, false);
 
     secondFrame.load();
     await waitFor(() => secondFrame.transferred.length === 1);
@@ -1362,14 +1720,6 @@ test("surface slot opens the next surface while the retired surface quiesces", a
     await secondOpening;
     assert.equal(secondFrame.hidden, false);
     assert.equal(secondFrame.inert, false);
-    assert.equal(firstFrame.removed, false, "retirement must not block the next surface opening");
-
-    const firstQuiesce = await waitForQuiesce(firstChannel.port1);
-    firstChannel.port2.postMessage({
-      type: "redevplugin.surface.quiesce_ack",
-      quiesce_id: firstQuiesce,
-    });
-    await waitFor(() => firstFrame.removed);
 
     secondFetch.push({});
     const closing = slot.close();
@@ -1382,7 +1732,114 @@ test("surface slot opens the next surface while the retired surface quiesces", a
     assert.equal(secondFrame.removed, true);
     assert.deepEqual(states, ["empty", "opening", "ready", "opening", "ready", "empty"]);
   } finally {
-    slot.dispose();
+    await slot.dispose();
+    restoreDOM();
+  }
+});
+
+test("surface lifecycle observers cannot interrupt opening or revocation", async () => {
+  const frame = new FakeFrame();
+  const channel = fakeChannel();
+  const restoreDOM = installSurfaceSlotDOM([frame], [channel]);
+  const fetch = new FakeFetch();
+  fetch.push(preparation());
+  fetch.push(gatewayLease());
+  fetch.push({});
+  const stage = new FakeStage();
+  const slot = PluginSurfaceSlot.create({
+    stage: stage as unknown as HTMLElement,
+    onStateChange: () => { throw new Error("state observer failed"); },
+    onSurfaceClosed: () => { throw new Error("close observer failed"); },
+  });
+
+  try {
+    const opening = openPreparedPluginSurfaceInSlot(slot, {
+      bootstrap: hostBootstrap,
+      hostTransport: createReDevPluginSurfaceTransport({ fetch: fetch.fetch }),
+      onOpeningProgress: () => { throw new Error("progress observer failed"); },
+    });
+    await waitFor(() => stage.children.length === 1);
+    await new Promise((resolve) => setTimeout(resolve, 320));
+    frame.load();
+    await waitFor(() => frame.transferred.length === 1);
+    channel.port2.postMessage({ type: "redevplugin.surface.first_paint" });
+    channel.port2.postMessage({ type: "redevplugin.surface.worker_ready" });
+    await opening;
+
+    const closing = slot.close();
+    const quiesce = await waitForQuiesce(channel.port1);
+    channel.port2.postMessage({ type: "redevplugin.surface.quiesce_ack", quiesce_id: quiesce });
+    const result = await closing;
+    assert.equal(result?.quiesce.outcome, "acknowledged");
+    assert.equal(frame.removed, true);
+    assert.equal(stage.dataset.redevpluginSurfaceState, "empty");
+    assert.equal(fetch.calls.at(-1)?.input, "/_redevplugin/api/plugins/surfaces/surface_1/dispose");
+  } finally {
+    await slot.dispose();
+    restoreDOM();
+  }
+});
+
+test("surface slot fails closed and revokes queued lease when prior surface cleanup fails", async () => {
+  const firstFrame = new FakeFrame();
+  const firstChannel = fakeChannel();
+  const restoreDOM = installSurfaceSlotDOM([firstFrame], [firstChannel]);
+  const firstFetch = new FakeFetch();
+  firstFetch.push(preparation());
+  firstFetch.push(gatewayLease());
+  firstFetch.push({
+    ok: false,
+    error: {
+      code: "PLUGIN_RUNTIME_UNAVAILABLE",
+      message: "surface cleanup failed",
+      details: {},
+      mutation_outcome: "unknown",
+    },
+  }, 503);
+  const secondFetch = new FakeFetch();
+  secondFetch.push(platformSurfaceBootstrap({ surface_instance_id: "surface_2", bridge_nonce: "bridge_nonce_2" }));
+  secondFetch.push({});
+  const stage = new FakeStage();
+  const slot = PluginSurfaceSlot.create({ stage: stage as unknown as HTMLElement });
+
+  try {
+    const firstOpening = openPreparedPluginSurfaceInSlot(slot, {
+      bootstrap: hostBootstrap,
+      hostTransport: createReDevPluginSurfaceTransport({ fetch: firstFetch.fetch }),
+    });
+    await waitFor(() => stage.children.length === 1);
+    firstFrame.load();
+    await waitFor(() => firstFrame.transferred.length === 1);
+    firstChannel.port2.postMessage({ type: "redevplugin.surface.first_paint" });
+    firstChannel.port2.postMessage({ type: "redevplugin.surface.worker_ready" });
+    await firstOpening;
+
+    const client = new PluginPlatformClient({ fetch: secondFetch.fetch });
+    const secondOpening = client.openSurfaceInSlot(slot, {
+      plugin_instance_id: "plugin_instance_1",
+      surface_id: "example.view",
+      surface_instance_id: "surface_2",
+      expected_management_revision: 7,
+    });
+    const quiesce = await waitForQuiesce(firstChannel.port1);
+    firstChannel.port2.postMessage({ type: "redevplugin.surface.quiesce_ack", quiesce_id: quiesce });
+    await assert.rejects(
+      secondOpening,
+      (error: unknown) => error instanceof PluginBridgeError && error.errorCode === "PLUGIN_RUNTIME_UNAVAILABLE",
+    );
+    assert.equal(secondFetch.calls.length, 2, "queued server surface must be revoked after prior cleanup failure");
+    assert.equal(secondFetch.calls[1]?.input, "/_redevplugin/api/plugins/surfaces/surface_2/dispose");
+    assert.equal(stage.children.length, 1, "no replacement iframe may be created after cleanup failure");
+
+    await assert.rejects(
+      openPreparedPluginSurfaceInSlot(slot, {
+        bootstrap: { ...hostBootstrap, surfaceInstanceId: "surface_3", bridgeNonce: "bridge_nonce_3" },
+        hostTransport: createReDevPluginSurfaceTransport({ fetch: new FakeFetch().fetch }),
+      }),
+      (error: unknown) => error instanceof PluginBridgeError && error.errorCode === "PLUGIN_RUNTIME_UNAVAILABLE",
+    );
+  } finally {
+    await assert.rejects(slot.dispose());
     restoreDOM();
   }
 });
@@ -1400,20 +1857,20 @@ test("surface slot keeps only the latest unresolved opening and exposes its erro
   const firstOptions = new Promise<PluginSurfaceHostOptions>((resolve) => {
     resolveFirst = resolve;
   });
-  const firstOpening = slot.open(firstOptions);
+  const firstOpening = openPreparedPluginSurfaceInSlot(slot, firstOptions);
   const latestError = new Error("surface options failed");
-  const latestOpening = slot.open(Promise.reject(latestError));
+  const latestOpening = openPreparedPluginSurfaceInSlot(slot, Promise.reject(latestError));
 
-  await assert.rejects(latestOpening, (error: unknown) => error === latestError);
-  assert.equal(stage.dataset.redevpluginSurfaceState, "error");
-  assert.equal(errors[0]?.errorCode, "PLUGIN_BRIDGE_HANDSHAKE_FAILED");
   resolveFirst({} as PluginSurfaceHostOptions);
   await assert.rejects(
     firstOpening,
     (error: unknown) => error instanceof PluginBridgeError && error.errorCode === "PLUGIN_BRIDGE_DISPOSED",
   );
+  await assert.rejects(latestOpening, (error: unknown) => error === latestError);
+  assert.equal(stage.dataset.redevpluginSurfaceState, "error");
+  assert.equal(errors[0]?.errorCode, "PLUGIN_BRIDGE_HANDSHAKE_FAILED");
   assert.equal(stage.children.length, 0);
-  slot.dispose();
+  await slot.dispose();
 });
 
 test("surface host dispose sends a keepalive revocation before local teardown", async () => {

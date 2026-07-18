@@ -31,6 +31,10 @@ export type {
 
 export type {
   PluginCapabilitySchema,
+  PluginCapabilityEffect,
+  PluginCapabilityOperationContract,
+  PluginCapabilityStreamContract,
+  PluginCapabilitySyncContract,
   PluginCapabilityStreamEvent,
   PluginCapabilityStreamReadResult,
   PluginOperation,

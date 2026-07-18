@@ -197,15 +197,16 @@ var (
 		"with": {}, "yield": {},
 	}
 	generatedTypeScriptReservedNames = map[string]struct{}{
-		"PluginBridgeClient":        {},
-		"PluginBridgeError":         {},
-		"PluginOperation":           {},
-		"PluginStream":              {},
-		"callCapabilityOperation":   {},
-		"callCapabilityStream":      {},
-		"callCapabilitySync":        {},
-		"decodePluginStreamText":    {},
-		"isCapabilityBusinessError": {},
+		"PluginBridgeClient":         {},
+		"PluginBridgeError":          {},
+		"PluginBridgeRequestOptions": {},
+		"PluginOperation":            {},
+		"PluginStream":               {},
+		"callCapabilityOperation":    {},
+		"callCapabilityStream":       {},
+		"callCapabilitySync":         {},
+		"decodePluginStreamText":     {},
+		"isCapabilityBusinessError":  {},
 	}
 )
 
@@ -264,6 +265,11 @@ func Validate(contract Contract) error {
 			return invalid("methods[%d].client_method is duplicated", index)
 		}
 		clientMethods[method.ClientMethod] = struct{}{}
+		contractName := method.ClientMethod + "Contract"
+		if previous, exists := generatedNames[contractName]; exists {
+			return invalid("methods[%d].client_method generates contract name duplicating %s %q", index, previous, contractName)
+		}
+		generatedNames[contractName] = fmt.Sprintf("methods[%d] generated contract descriptor", index)
 		switch method.Effect {
 		case "read", "write", "execute", "delete", "admin":
 		default:

@@ -1,11 +1,27 @@
-import { defaultFetch, readMutationPlatformResponse, readPlatformResponse, trimTrailingSlash, type FetchLike } from "./http.js";
-import { PluginPlatformRequestError, PluginTransportError } from "./errors.js";
+import {
+  assertMutationDispatchable,
+  defaultFetch,
+  dispatchMutationRequest,
+  readMutationPlatformResponse,
+  readPlatformResponse,
+  trimTrailingSlash,
+  type FetchLike,
+} from "./http.js";
+import {
+  PluginBridgeError,
+  PluginMutationLifecycleError,
+  PluginTransportError,
+  pluginMutationOutcome,
+} from "./errors.js";
 import type { components, operations } from "./openapi.gen.js";
 import {
   createReDevPluginSurfaceTransport,
+  openPluginSurfaceInSlot,
+  type PluginConfirmationHandler,
   type PluginSurfaceHost,
   type PluginSurfaceHostBootstrap,
-  type PluginSurfaceHostOptions,
+  type PluginSurfaceOpeningProgress,
+  type PluginSurfaceReloadLimiter,
   type PluginSurfaceSlot,
   type PluginTrustedMethodResult,
   type ReDevPluginSurfaceTransport,
@@ -20,6 +36,7 @@ export type PluginPlatformClientOptions = {
   fetch?: FetchLike;
   apiBaseURL?: string;
   surfaceScope?: PluginSurfaceScope;
+  surfaceTransport?: ReDevPluginSurfaceTransport;
   onMutationOutcomeUnknown?: (pluginInstanceId?: string) => void;
 };
 
@@ -52,14 +69,22 @@ export type PluginEnableRequest = PlatformSchemas["EnableRequest"];
 export type PluginDisableRequest = PlatformSchemas["DisableRequest"];
 export type PluginUninstallRequest = PlatformSchemas["UninstallRequest"];
 export type PluginOpenSurfaceRequest = PlatformSchemas["OpenSurfaceRequest"];
-export type PluginOpenSurfaceInSlotOptions =
-  Omit<PluginSurfaceHostOptions, "bootstrap" | "hostTransport" | "surfaceScope"> & PluginRequestOptions;
+export type PluginOpenSurfaceInSlotOptions = PluginRequestOptions & {
+  bridgeChannelId?: string;
+  loadTimeoutMs?: number;
+  requestTimeoutMs?: number;
+  leaseRenewalLeadMs?: number;
+  reloadLimiter?: PluginSurfaceReloadLimiter;
+  confirm?: PluginConfirmationHandler;
+  onOpeningProgress?: (progress: PluginSurfaceOpeningProgress) => void;
+  onError?: (error: import("./errors.js").PluginBridgeError) => void;
+};
 
 export type PluginSurfaceScopeRevokeResult = PlatformSchemas["SurfaceScopeRevokeResult"];
 
 export type PluginSurfaceBootstrapResult = PlatformSchemas["SurfaceBootstrap"];
 
-export function toPluginSurfaceHostBootstrap(value: PluginSurfaceBootstrapResult): PluginSurfaceHostBootstrap {
+function toPluginSurfaceHostBootstrap(value: PluginSurfaceBootstrapResult): PluginSurfaceHostBootstrap {
   return {
     pluginId: value.plugin_id,
     pluginInstanceId: value.plugin_instance_id,
@@ -154,6 +179,7 @@ export class PluginPlatformClient {
     this.#fetch = options.fetch ?? defaultFetch();
     this.#apiBaseURL = trimTrailingSlash(options.apiBaseURL ?? "");
     this.#surfaceScope = options.surfaceScope ?? defaultPluginSurfaceScope;
+    this.#surfaceTransport = options.surfaceTransport;
     this.#onMutationOutcomeUnknown = options.onMutationOutcomeUnknown;
   }
 
@@ -178,8 +204,8 @@ export class PluginPlatformClient {
   uninstallPlugin(request: PluginUninstallRequest, options: PluginRequestOptions = {}): Promise<PluginRecord> {
     return this.#mutatePlugin("/_redevplugin/api/plugins/uninstall", request, options);
   }
-  openSurface(request: PluginOpenSurfaceRequest, options: PluginRequestOptions = {}): Promise<PluginSurfaceBootstrapResult> {
-    return this.#requestMutation("POST", "/_redevplugin/api/plugins/surfaces/open", request, options);
+  #openSurface(request: PluginOpenSurfaceRequest): Promise<PluginSurfaceBootstrapResult> {
+    return this.#requestMutation("POST", "/_redevplugin/api/plugins/surfaces/open", request, {});
   }
   openSurfaceInSlot(
     slot: PluginSurfaceSlot,
@@ -187,26 +213,57 @@ export class PluginPlatformClient {
     options: PluginOpenSurfaceInSlotOptions = {},
   ): Promise<PluginSurfaceHost> {
     const { signal, ...hostOptions } = options;
+    const pluginInstanceId = typeof request.plugin_instance_id === "string"
+      ? request.plugin_instance_id.trim()
+      : "";
+    if (!pluginInstanceId) {
+      return Promise.reject(new PluginBridgeError(
+        "PLUGIN_INVALID_REQUEST",
+        "Plugin surface opening requires a canonical plugin instance identifier",
+      ));
+    }
+    if (signal?.aborted) {
+      return Promise.reject(new PluginTransportError(
+        "Plugin surface opening was aborted before dispatch",
+        signal.reason,
+        "not_committed",
+      ));
+    }
     const surfaceTransport = this.#surfaceTransport ??= createReDevPluginSurfaceTransport({
       fetch: this.#fetch,
       apiBaseURL: surfaceTransportAPIBaseURL(this.#apiBaseURL),
     });
-    return slot.open(this.openSurface(request, { signal }).then((result) => ({
-      ...hostOptions,
-      bootstrap: toPluginSurfaceHostBootstrap(result),
-      hostTransport: surfaceTransport,
+    const canonicalRequest: PluginOpenSurfaceRequest = {
+      ...request,
+      plugin_instance_id: pluginInstanceId,
+    };
+    return openPluginSurfaceInSlot(slot, {
+      pluginInstanceId,
       surfaceScope: this.#surfaceScope,
-    })));
+      signal,
+      abortError: () => new PluginTransportError(
+        "Plugin surface opening was aborted after dispatch",
+        signal?.reason,
+        "unknown",
+      ),
+      open: () => this.#openSurface(canonicalRequest).then((result) => ({
+        ...hostOptions,
+        bootstrap: toPluginSurfaceHostBootstrap(result),
+        hostTransport: surfaceTransport,
+        surfaceScope: this.#surfaceScope,
+      })),
+    });
   }
   async revokeSurfaceScope(options: PluginRequestOptions = {}): Promise<PluginSurfaceScopeRevokeResult> {
+    let result: PluginSurfaceScopeRevokeResult;
     try {
-      const result = await this.#requestMutation<PluginSurfaceScopeRevokeResult>("POST", "/_redevplugin/api/plugins/surfaces/revoke-scope", {}, options);
-      disposePluginSurfaceScope(this.#surfaceScope);
-      return result;
+      result = await this.#requestMutation<PluginSurfaceScopeRevokeResult>("POST", "/_redevplugin/api/plugins/surfaces/revoke-scope", {}, options);
     } catch (error) {
-      this.#handleMutationFailure(error);
+      await this.#handleMutationFailure(error, undefined, "Plugin surface scope revocation and local teardown failed");
       throw error;
     }
+    await disposePluginSurfaceScope(this.#surfaceScope);
+    return result;
   }
   startRuntime(request: PluginRuntimeStartRequest, options: PluginRequestOptions = {}): Promise<PluginRuntimeHealth> {
     return this.#requestMutation("POST", "/_redevplugin/api/plugins/runtime/start", request, options);
@@ -338,20 +395,31 @@ export class PluginPlatformClient {
     request: unknown,
     options: PluginRequestOptions,
   ): Promise<Result> {
+    let result: Result;
     try {
-      const result = await this.#requestMutation<Result>(method, path, request, options);
-      disposePluginSurfaceScope(this.#surfaceScope, pluginInstanceId);
-      return result;
+      result = await this.#requestMutation<Result>(method, path, request, options);
     } catch (error) {
-      this.#handleMutationFailure(error, pluginInstanceId);
+      await this.#handleMutationFailure(error, pluginInstanceId, "Plugin mutation and local surface teardown failed");
       throw error;
     }
+    await disposePluginSurfaceScope(this.#surfaceScope, pluginInstanceId);
+    return result;
   }
 
-  #handleMutationFailure(error: unknown, pluginInstanceId?: string): void {
-    if (error instanceof PluginPlatformRequestError && error.mutationOutcome === "not_committed") return;
-    disposePluginSurfaceScope(this.#surfaceScope, pluginInstanceId);
-    this.#onMutationOutcomeUnknown?.(pluginInstanceId);
+  async #handleMutationFailure(error: unknown, pluginInstanceId: string | undefined, message: string): Promise<void> {
+    if (pluginMutationOutcome(error) === "not_committed") return;
+    const lifecycleErrors: unknown[] = [];
+    try {
+      await disposePluginSurfaceScope(this.#surfaceScope, pluginInstanceId);
+    } catch (caught) {
+      lifecycleErrors.push(caught);
+    }
+    try {
+      this.#onMutationOutcomeUnknown?.(pluginInstanceId);
+    } catch (caught) {
+      lifecycleErrors.push(caught);
+    }
+    if (lifecycleErrors.length > 0) throw new PluginMutationLifecycleError(message, error, lifecycleErrors);
   }
 
   async #requestJSON<T>(method: string, path: string, options: PluginRequestOptions): Promise<T> {
@@ -375,22 +443,25 @@ export class PluginPlatformClient {
     body: unknown,
     options: PluginRequestOptions,
   ): Promise<T> {
+    const operation = `${method} ${path}`;
+    assertMutationDispatchable(options.signal, operation);
     const headers: Record<string, string> = {
       "Accept": "application/json",
       "Content-Type": "application/json",
     };
-    let response;
+    let encodedBody: string | undefined;
     try {
-      response = await this.#fetch(this.#apiBaseURL + path, {
-        method,
-        headers,
-        body: JSON.stringify(body),
-        credentials: "same-origin",
-        signal: options.signal,
-      });
+      encodedBody = JSON.stringify(body);
     } catch (cause) {
-      throw new PluginTransportError(`Plugin platform request failed for ${method} ${path}`, cause, "unknown");
+      throw new PluginTransportError(`Plugin platform request body serialization failed for ${operation}`, cause, "not_committed");
     }
+    const response = await dispatchMutationRequest(this.#fetch, this.#apiBaseURL + path, {
+      method,
+      headers,
+      body: encodedBody,
+      credentials: "same-origin",
+      signal: options.signal,
+    }, operation);
     return readMutationPlatformResponse<T>(response);
   }
 }

@@ -3,7 +3,6 @@ export * from "./errors.js";
 export * from "./platform.js";
 export { PluginSurfaceScope, createPluginSurfaceScope } from "./surface-scope.js";
 export {
-  PluginSurfaceHost,
   PluginSurfaceReloadLimiter,
   PluginSurfaceSlot,
   createReDevPluginSurfaceTransport,
@@ -33,8 +32,7 @@ export type {
   PluginRiskPlan,
   PluginRiskSeverity,
   PluginStreamEvent,
-  PluginSurfaceHostBootstrap,
-  PluginSurfaceHostOptions,
+  PluginSurfaceHost,
   PluginSurfaceCloseResult,
   PluginSurfaceOpeningProgress,
   PluginSurfaceQuiesceResult,

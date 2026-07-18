@@ -535,7 +535,12 @@ async function verifyNpmTarball(bundleDir, expectedVersion, manifest) {
           throw new Error("plugin entrypoint runtime exports are not closed: " + JSON.stringify(pluginKeys));
         }
         const trusted = await import("@floegence/redevplugin-ui/trusted-parent");
-        for (const forbidden of ["PluginBridgeClient", "createOpaquePluginBootstrapHTML"]) {
+        for (const forbidden of [
+          "PluginBridgeClient",
+          "PluginSurfaceHost",
+          "createOpaquePluginBootstrapHTML",
+          "toPluginSurfaceHostBootstrap",
+        ]) {
           if (forbidden in trusted) throw new Error("trusted-parent entrypoint exposes forbidden export " + forbidden);
         }
       `],
@@ -553,8 +558,12 @@ async function verifyNpmTarball(bundleDir, expectedVersion, manifest) {
       if (pluginTypes.includes(forbidden)) fail(`plugin entrypoint types expose ${forbidden}`);
     }
     for (const entrypoint of ["index.d.ts", "trusted-parent.d.ts"]) {
-      if (readFileSync(join(packageDir, "dist", entrypoint), "utf8").includes("createOpaquePluginBootstrapHTML")) {
+      const declaration = readFileSync(join(packageDir, "dist", entrypoint), "utf8");
+      if (declaration.includes("createOpaquePluginBootstrapHTML")) {
         fail(`${entrypoint} exposes the internal opaque bootstrap HTML factory`);
+      }
+      for (const forbidden of ["PluginSurfaceHostBootstrap", "PluginSurfaceHostOptions", "toPluginSurfaceHostBootstrap"]) {
+        if (declaration.includes(forbidden)) fail(`${entrypoint} exposes raw surface API ${forbidden}`);
       }
     }
     verifyPackedTypeScriptConsumer(bundleDir, npmPath, tmp);
@@ -769,10 +778,16 @@ async function verifyExamplesServer(bundleDir, skipExecution) {
     if (!page.includes("ReDevPlugin Examples") || !page.includes("mobile-plugin-navigation") || !page.includes("plugin-dock")) {
       throw new Error("showcase HTML is incomplete");
     }
-    const opened = await fetch(`${origin}/api/open`, {
+    const weather = catalog.data.find((item) => item.slug === "weather");
+    if (!weather) throw new Error("weather catalog item is missing");
+    const opened = await fetch(`${origin}/_redevplugin/api/plugins/surfaces/open`, {
       method: "POST",
       headers: { "Content-Type": "application/json", Origin: origin },
-      body: JSON.stringify({ slug: "weather" }),
+      body: JSON.stringify({
+        plugin_instance_id: weather.plugin_instance_id,
+        surface_id: weather.surface_id,
+        expected_management_revision: weather.management_revision,
+      }),
     }).then((response) => response.json());
     if (opened?.ok !== true || opened?.data?.surface_id !== "weather.view") {
       throw new Error(`weather surface open failed: ${JSON.stringify(opened)}`);

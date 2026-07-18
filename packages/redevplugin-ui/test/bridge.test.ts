@@ -10,12 +10,12 @@ import {
   PluginPlatformRequestError,
   PluginSurfaceReloadLimiter,
   redevPluginContractArtifacts,
-  toPluginSurfaceHostBootstrap,
   type FetchInitLike,
+  type FetchLike,
   type FetchResponseLike,
   type PluginRuntimeHealth,
 } from "../src/trusted-parent.js";
-import { PluginTransportError } from "../src/errors.js";
+import { PluginMutationLifecycleError, PluginTransportError } from "../src/errors.js";
 import { PluginLocalImportClient } from "../src/local-import.js";
 import { createPluginSurfaceScope, registerPluginSurface } from "../src/surface-scope.js";
 
@@ -48,6 +48,7 @@ test("stable error-code exports separate platform, bridge, and client-only codes
   assert.equal(pluginPlatformErrorCodes.includes("PLUGIN_JSON_LIMIT_EXCEEDED"), true);
   assert.equal(pluginPlatformErrorCodes.includes("PLUGIN_AUTHORIZATION_REVISION_MISMATCH"), true);
   assert.equal(pluginBridgeErrorCodes.includes("PLUGIN_BRIDGE_HANDSHAKE_REQUIRED"), true);
+  assert.equal(pluginBridgeErrorCodes.includes("PLUGIN_BRIDGE_CANCELLED"), true);
   assert.equal(pluginClientErrorCodes.includes("PLUGIN_PLATFORM_REQUEST_FAILED"), true);
   assert.equal((pluginPlatformErrorCodes as readonly string[]).includes("PLUGIN_PLATFORM_REQUEST_FAILED"), false);
   assert.equal((pluginBridgeErrorCodes as readonly string[]).includes("PLUGIN_STREAM_FAILED"), false);
@@ -350,35 +351,13 @@ test("platform client reads and patches plugin settings through host API", async
   });
 });
 
-test("platform client manages plugin lifecycle and surface opening routes", async () => {
+test("platform client manages plugin lifecycle routes", async () => {
   const fetch = new FakeFetch();
   fetch.push({ ok: true, data: { plugin_instance_id: "plugin_instance_1", plugin_id: "com.example.plugin", version: "1.0.0", active_fingerprint: "sha256:a", trust_state: "verified", enable_state: "disabled" } });
   fetch.push({ ok: true, data: { plugin_instance_id: "plugin_instance_1", plugin_id: "com.example.plugin", version: "1.1.0", active_fingerprint: "sha256:b", trust_state: "verified", enable_state: "disabled" } });
   fetch.push({ ok: true, data: { plugin_instance_id: "plugin_instance_1", plugin_id: "com.example.plugin", version: "1.0.0", active_fingerprint: "sha256:a", trust_state: "verified", enable_state: "disabled" } });
   fetch.push({ ok: true, data: { plugin_instance_id: "plugin_instance_1", plugin_id: "com.example.plugin", version: "1.0.0", active_fingerprint: "sha256:a", trust_state: "verified", enable_state: "enabled" } });
   fetch.push({ ok: true, data: { plugin_instance_id: "plugin_instance_1", plugin_id: "com.example.plugin", version: "1.0.0", active_fingerprint: "sha256:a", trust_state: "verified", enable_state: "disabled", disabled_reason: "admin" } });
-  fetch.push({
-    ok: true,
-    data: {
-      plugin_id: "com.example.plugin",
-      plugin_instance_id: "plugin_instance_1",
-      surface_id: "example.view",
-      surface_instance_id: "surface_1",
-      active_fingerprint: "sha256:a",
-      plugin_version: "1.0.0",
-      entry_path: "ui/index.html",
-      entry_sha256: "sha256:b",
-      asset_session_nonce: "asset_session_nonce_1",
-      management_revision: 1,
-      revoke_epoch: 1,
-      runtime_generation_id: "runtime_gen_1",
-      asset_ticket: "asset_ticket_1",
-      asset_ticket_id: "asset_ticket_id_1",
-      bridge_nonce: "bridge_nonce_1",
-      issued_at: "2026-06-30T00:00:00Z",
-      expires_at: "2026-06-30T00:05:00Z",
-    },
-  });
   fetch.push({ ok: true, data: { plugin_instance_id: "plugin_instance_1", plugin_id: "com.example.plugin", version: "1.0.0", active_fingerprint: "sha256:a", trust_state: "verified", enable_state: "disabled" } });
   const client = new PluginPlatformClient({ fetch: fetch.fetch });
   const localImportClient = new PluginLocalImportClient({ fetch: fetch.fetch });
@@ -394,12 +373,6 @@ test("platform client manages plugin lifecycle and surface opening routes", asyn
   const downgraded = await client.downgradePlugin({ plugin_instance_id: "plugin_instance_1", version: "1.0.0", expected_management_revision: 2 });
   const enabled = await client.enablePlugin({ plugin_instance_id: "plugin_instance_1", expected_management_revision: 3 });
   const disabled = await client.disablePlugin({ plugin_instance_id: "plugin_instance_1", expected_management_revision: 4, reason: "admin" });
-  const surface = await client.openSurface({
-    plugin_instance_id: "plugin_instance_1",
-    surface_id: "example.view",
-    surface_instance_id: "surface_1",
-    expected_management_revision: 5,
-  });
   const uninstalled = await client.uninstallPlugin({ plugin_instance_id: "plugin_instance_1", expected_management_revision: 5, delete_data: true });
 
   assert.equal(installed.enable_state, "disabled");
@@ -407,8 +380,6 @@ test("platform client manages plugin lifecycle and surface opening routes", asyn
   assert.equal(downgraded.version, "1.0.0");
   assert.equal(enabled.enable_state, "enabled");
   assert.equal(disabled.disabled_reason, "admin");
-  assert.equal(surface.asset_ticket, "asset_ticket_1");
-  assert.equal(toPluginSurfaceHostBootstrap(surface).runtimeGenerationId, "runtime_gen_1");
   assert.equal(uninstalled.enable_state, "disabled");
   assert.equal(fetch.calls[0]?.input, "/_redevplugin/api/plugins/local-imports?plugin_instance_id=plugin_instance_1");
   assert.equal(fetch.calls[0]?.init.body instanceof Blob, true);
@@ -422,15 +393,8 @@ test("platform client manages plugin lifecycle and surface opening routes", asyn
   assert.deepEqual(JSON.parse(fetch.calls[3]?.init.body ?? ""), { plugin_instance_id: "plugin_instance_1", expected_management_revision: 3 });
   assert.equal(fetch.calls[4]?.input, "/_redevplugin/api/plugins/disable");
   assert.deepEqual(JSON.parse(fetch.calls[4]?.init.body ?? ""), { plugin_instance_id: "plugin_instance_1", expected_management_revision: 4, reason: "admin" });
-  assert.equal(fetch.calls[5]?.input, "/_redevplugin/api/plugins/surfaces/open");
-  assert.deepEqual(JSON.parse(fetch.calls[5]?.init.body ?? ""), {
-    plugin_instance_id: "plugin_instance_1",
-    surface_id: "example.view",
-    surface_instance_id: "surface_1",
-    expected_management_revision: 5,
-  });
-  assert.equal(fetch.calls[6]?.input, "/_redevplugin/api/plugins/uninstall");
-  assert.deepEqual(JSON.parse(fetch.calls[6]?.init.body ?? ""), { plugin_instance_id: "plugin_instance_1", expected_management_revision: 5, delete_data: true });
+  assert.equal(fetch.calls[5]?.input, "/_redevplugin/api/plugins/uninstall");
+  assert.deepEqual(JSON.parse(fetch.calls[5]?.init.body ?? ""), { plugin_instance_id: "plugin_instance_1", expected_management_revision: 5, delete_data: true });
 });
 
 test("local import update canonicalizes identity for transport and teardown", async () => {
@@ -438,7 +402,7 @@ test("local import update canonicalizes identity for transport and teardown", as
   fetch.push({ ok: true, data: { plugin_instance_id: "plugin_instance_1", plugin_id: "com.example.plugin", version: "1.1.0", active_fingerprint: "sha256:b", trust_state: "verified", enable_state: "disabled" } });
   const scope = createPluginSurfaceScope();
   let disposed = 0;
-  registerPluginSurface(scope, "plugin_instance_1", () => disposed++);
+  registerPluginSurface(scope, "plugin_instance_1", () => { disposed += 1; });
   const client = new PluginLocalImportClient({ fetch: fetch.fetch, surfaceScope: scope });
 
   await client.updateLocalPackage("  plugin_instance_1  ", 7, new Blob(["pkg"]));
@@ -454,7 +418,7 @@ test("local import update canonicalizes identity for transport and teardown", as
   const unknownScope = createPluginSurfaceScope();
   let unknownDisposed = 0;
   let unknownPluginInstanceId: string | undefined;
-  registerPluginSurface(unknownScope, "plugin_instance_1", () => unknownDisposed++);
+  registerPluginSurface(unknownScope, "plugin_instance_1", () => { unknownDisposed += 1; });
   const failingClient = new PluginLocalImportClient({
     fetch: async () => { throw new Error("private network failure"); },
     surfaceScope: unknownScope,
@@ -467,6 +431,198 @@ test("local import update canonicalizes identity for transport and teardown", as
   );
   assert.equal(unknownDisposed, 1);
   assert.equal(unknownPluginInstanceId, "plugin_instance_1");
+});
+
+test("pre-aborted platform mutations remain not committed without surface teardown", async () => {
+  const fetch = new FakeFetch();
+  const scope = createPluginSurfaceScope();
+  let disposed = 0;
+  const unregister = registerPluginSurface(scope, "plugin_instance_1", () => { disposed += 1; });
+  const unknown: Array<string | undefined> = [];
+  const client = new PluginPlatformClient({
+    fetch: fetch.fetch,
+    surfaceScope: scope,
+    onMutationOutcomeUnknown: (pluginInstanceId) => unknown.push(pluginInstanceId),
+  });
+  const controller = new AbortController();
+  controller.abort("cancelled before dispatch");
+
+  await assert.rejects(
+    client.disablePlugin({
+      plugin_instance_id: "plugin_instance_1",
+      expected_management_revision: 7,
+    }, { signal: controller.signal }),
+    (error: unknown) => error instanceof PluginTransportError && error.mutationOutcome === "not_committed",
+  );
+
+  assert.equal(fetch.calls.length, 0);
+  assert.equal(disposed, 0);
+  assert.deepEqual(unknown, []);
+  unregister();
+});
+
+test("synchronous mutation fetch failures remain not committed", async () => {
+  let fetchCalls = 0;
+  const fetch = (() => {
+    fetchCalls += 1;
+    throw new Error("synchronous fetch rejection");
+  }) as FetchLike;
+  const scope = createPluginSurfaceScope();
+  let disposed = 0;
+  const unregister = registerPluginSurface(scope, "plugin_instance_1", () => { disposed += 1; });
+  let notified = false;
+  const client = new PluginPlatformClient({
+    fetch,
+    surfaceScope: scope,
+    onMutationOutcomeUnknown: () => { notified = true; },
+  });
+
+  await assert.rejects(
+    client.disablePlugin({
+      plugin_instance_id: "plugin_instance_1",
+      expected_management_revision: 7,
+    }),
+    (error: unknown) => error instanceof PluginTransportError && error.mutationOutcome === "not_committed",
+  );
+
+  assert.equal(fetchCalls, 1);
+  assert.equal(disposed, 0);
+  assert.equal(notified, false);
+  unregister();
+});
+
+test("mutation serialization failures remain not committed", async () => {
+  const fetch = new FakeFetch();
+  const scope = createPluginSurfaceScope();
+  let disposed = 0;
+  const unregister = registerPluginSurface(scope, "plugin_instance_1", () => { disposed += 1; });
+  let notified = false;
+  const client = new PluginPlatformClient({
+    fetch: fetch.fetch,
+    surfaceScope: scope,
+    onMutationOutcomeUnknown: () => { notified = true; },
+  });
+  const request: Record<string, unknown> = {
+    plugin_instance_id: "plugin_instance_1",
+    expected_management_revision: 7,
+  };
+  request.circular = request;
+
+  await assert.rejects(
+    client.disablePlugin(request as Parameters<PluginPlatformClient["disablePlugin"]>[0]),
+    (error: unknown) => error instanceof PluginTransportError && error.mutationOutcome === "not_committed",
+  );
+
+  assert.equal(fetch.calls.length, 0);
+  assert.equal(disposed, 0);
+  assert.equal(notified, false);
+  unregister();
+});
+
+test("pre-aborted local updates remain not committed without surface teardown", async () => {
+  const fetch = new FakeFetch();
+  const scope = createPluginSurfaceScope();
+  let disposed = 0;
+  const unregister = registerPluginSurface(scope, "plugin_instance_1", () => { disposed += 1; });
+  let notified = false;
+  const client = new PluginLocalImportClient({
+    fetch: fetch.fetch,
+    surfaceScope: scope,
+    onMutationOutcomeUnknown: () => { notified = true; },
+  });
+  const controller = new AbortController();
+  controller.abort("cancelled before upload");
+
+  await assert.rejects(
+    client.updateLocalPackage("plugin_instance_1", 7, new Blob(["pkg"]), { signal: controller.signal }),
+    (error: unknown) => error instanceof PluginTransportError && error.mutationOutcome === "not_committed",
+  );
+
+  assert.equal(fetch.calls.length, 0);
+  assert.equal(disposed, 0);
+  assert.equal(notified, false);
+  unregister();
+});
+
+test("post-dispatch local abort preserves unknown outcome through cleanup failures", async () => {
+  let fetchCalls = 0;
+  const fetch: FetchLike = (_input, init) => {
+    fetchCalls += 1;
+    return new Promise<FetchResponseLike>((_resolve, reject) => {
+      const signal = init.signal;
+      if (!signal) throw new TypeError("test mutation requires an abort signal");
+      if (signal.aborted) {
+        reject(signal.reason);
+        return;
+      }
+      signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+    });
+  };
+  const cleanupFailure = new Error("surface cleanup failed");
+  const observerFailure = new Error("unknown outcome observer failed");
+  const scope = createPluginSurfaceScope();
+  let disposed = 0;
+  registerPluginSurface(scope, "plugin_instance_1", () => {
+    disposed += 1;
+    throw cleanupFailure;
+  });
+  let observedPluginInstanceId: string | undefined;
+  const client = new PluginLocalImportClient({
+    fetch,
+    surfaceScope: scope,
+    onMutationOutcomeUnknown: (pluginInstanceId) => {
+      observedPluginInstanceId = pluginInstanceId;
+      throw observerFailure;
+    },
+  });
+  const controller = new AbortController();
+
+  const update = client.updateLocalPackage("plugin_instance_1", 7, new Blob(["pkg"]), { signal: controller.signal });
+  assert.equal(fetchCalls, 1);
+  controller.abort("cancelled after dispatch");
+
+  await assert.rejects(
+    update,
+    (error: unknown) => error instanceof PluginMutationLifecycleError &&
+      error.mutationOutcome === "unknown" &&
+      error.errors.length === 3 &&
+      error.errors[0] instanceof PluginTransportError &&
+      error.errors[0].mutationOutcome === "unknown" &&
+      error.errors.includes(cleanupFailure) &&
+      error.errors.includes(observerFailure),
+  );
+  assert.equal(disposed, 1);
+  assert.equal(observedPluginInstanceId, "plugin_instance_1");
+});
+
+test("platform cleanup failures preserve the original unknown mutation outcome", async () => {
+  const fetch: FetchLike = async () => {
+    await Promise.resolve();
+    throw new Error("connection closed after dispatch");
+  };
+  const cleanupFailure = new Error("surface cleanup failed");
+  const observerFailure = new Error("unknown outcome observer failed");
+  const scope = createPluginSurfaceScope();
+  registerPluginSurface(scope, "plugin_instance_1", () => { throw cleanupFailure; });
+  const client = new PluginPlatformClient({
+    fetch,
+    surfaceScope: scope,
+    onMutationOutcomeUnknown: () => { throw observerFailure; },
+  });
+
+  await assert.rejects(
+    client.disablePlugin({
+      plugin_instance_id: "plugin_instance_1",
+      expected_management_revision: 7,
+    }),
+    (error: unknown) => error instanceof PluginMutationLifecycleError &&
+      error.mutationOutcome === "unknown" &&
+      error.errors.length === 3 &&
+      error.errors[0] instanceof PluginTransportError &&
+      error.errors[0].mutationOutcome === "unknown" &&
+      error.errors.includes(cleanupFailure) &&
+      error.errors.includes(observerFailure),
+  );
 });
 
 test("platform client installs and updates plugin release refs without package bytes", async () => {

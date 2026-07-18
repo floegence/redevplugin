@@ -17,21 +17,22 @@ export type DocumentsConsumerResult = {
 export async function runDocumentsConsumer(
   bridge: PluginBridgeClient,
   writeLine: (line: string) => void,
+  signal?: AbortSignal,
 ): Promise<DocumentsConsumerResult> {
   const client = new ExampleDocumentsClient(bridge);
   let documentCount = 0;
   try {
-    const listed = await client.list({ workspace_id: "workspace-1" });
+    const listed = await client.list({ workspace_id: "workspace-1" }, { signal });
     documentCount = listed.documents.length;
   } catch (error) {
     if (!isExampleDocumentsBusinessError(error)) throw error;
     writeLine(`missing document: ${error.details.business_error_details.document_id}`);
   }
 
-  const archive = await client.archive({ document_id: "doc-1" });
-  if (!archive.data.accepted) await archive.cancel("archive was not accepted");
+  const archive = await client.archive({ document_id: "doc-1" }, { signal });
+  if (!archive.data.accepted) await archive.cancel("archive was not accepted", { signal });
 
-  const watch = await client.watch({ workspace_id: "workspace-1" });
+  const watch = await client.watch({ workspace_id: "workspace-1" }, { signal });
   if (watch.data.watching) {
     for await (const event of watch) {
       writeLine(`${event.data.change}: ${event.data.document_id}`);

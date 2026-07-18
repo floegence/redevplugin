@@ -4,15 +4,17 @@ import { test } from "node:test";
 import * as pluginEntrypoint from "../src/plugin.js";
 import * as rootEntrypoint from "../src/index.js";
 import * as trustedParentEntrypoint from "../src/trusted-parent.js";
-import type { PluginJSONObject, PluginUIVNode } from "../src/plugin.js";
+import type { PluginBridgeRequestOptions, PluginJSONObject, PluginUIVNode } from "../src/plugin.js";
 import type {
   PluginCatalogResult,
   PluginDiagnosticEventList,
   PluginIntentList,
   PluginOperationList,
   PluginPermissionList,
+  PluginPlatformClient,
   PluginRuntimeHealth,
   PluginRuntimeLimits,
+  PluginSurfaceSlot,
 } from "../src/trusted-parent.js";
 
 // @ts-expect-error trusted parent transport must not be available to plugin workers
@@ -21,10 +23,15 @@ import type { ReDevPluginSurfaceTransport } from "../src/plugin.js";
 import type { PluginTrustedMethodResult } from "../src/plugin.js";
 
 const pluginParams: PluginJSONObject = { ready: true };
+const pluginRequestOptions: PluginBridgeRequestOptions = { signal: new AbortController().signal };
+// @ts-expect-error capability effect is generated from the signed contract, not caller options
+const invalidPluginRequestOptions: PluginBridgeRequestOptions = { effect: "read" };
 const pluginTree: PluginUIVNode = { type: "text", key: "ready-text", text: "ready" };
 // @ts-expect-error raw string text nodes are not part of the v5 UI protocol
 const invalidPluginTree: PluginUIVNode = "ready";
 void pluginParams;
+void pluginRequestOptions;
+void invalidPluginRequestOptions;
 void pluginTree;
 void invalidPluginTree;
 void (null as unknown as ReDevPluginSurfaceTransport);
@@ -62,6 +69,14 @@ void invalidRuntimeHealth;
 void validRuntimeLimits;
 void mutateRuntimeLimits;
 
+function assertTrustedSurfaceOrchestration(client: PluginPlatformClient, slot: PluginSurfaceSlot): void {
+  // @ts-expect-error raw bootstrap opening is private to the orchestrated slot flow
+  void client.openSurface({});
+  // @ts-expect-error slots cannot adopt caller-created bootstrap options
+  void slot.open({});
+}
+void assertTrustedSurfaceOrchestration;
+
 test("plugin worker entrypoint exposes only bridge and generated capability client primitives", () => {
   assert.deepEqual(Object.keys(pluginEntrypoint), [
     "PluginBridgeClient",
@@ -85,4 +100,6 @@ test("root entrypoint is the trusted parent allowlist", () => {
   assert.deepEqual(Object.keys(rootEntrypoint).sort(), Object.keys(trustedParentEntrypoint).sort());
   assert.equal("createOpaquePluginBootstrapHTML" in rootEntrypoint, false);
   assert.equal("PluginBridgeClient" in rootEntrypoint, false);
+  assert.equal("PluginSurfaceHost" in rootEntrypoint, false);
+  assert.equal("toPluginSurfaceHostBootstrap" in rootEntrypoint, false);
 });

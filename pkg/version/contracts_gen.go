@@ -83,7 +83,7 @@ var generatedContractArtifacts = []ContractArtifact{
 		ID:      "iframe-bridge-schema",
 		Path:    "spec/plugin/bridge-v5.schema.json",
 		Version: "bridge-v5",
-		SHA256:  "94cd15da6fd7fc56cfe81c014bd20099f1330e0ff04fe417422532581c701345",
+		SHA256:  "b7bfeaad2eb34440881889d608297ef941e4d4a46c914c6bd19dfe4331d59729",
 	},
 	{
 		ID:      "opaque-surface-document-schema",
@@ -119,7 +119,7 @@ var generatedContractArtifacts = []ContractArtifact{
 		ID:      "host-capability-contract-schema",
 		Path:    "spec/plugin/host-capability-contract-v1.schema.json",
 		Version: "host-capability-contract-v1",
-		SHA256:  "a2318b01211aa6dbd8ca983f7ebca311619527aa4828a0ea0d201ebac7427292",
+		SHA256:  "0a653e36d44104f1d16b06ee424648086c146f23c907b176bdf470ae73025485",
 	},
 	{
 		ID:      "host-capability-pin-schema",
@@ -155,7 +155,7 @@ var generatedContractArtifacts = []ContractArtifact{
 		ID:      "error-codes-schema",
 		Path:    "spec/plugin/error-codes-v4.schema.json",
 		Version: "error-codes-v4",
-		SHA256:  "54f42bce8081b22d79b336e3690be4362a8147f150db47e6b36b49418ec19810",
+		SHA256:  "21afd88cfbdc62496f79a08011914f011f7df9c130c56fc3dd5a94e8910f5317",
 	},
 	{
 		ID:      "performance-contract",

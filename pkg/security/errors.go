@@ -61,6 +61,7 @@ const (
 	ErrCSRFRequired                  ErrorCode = "PLUGIN_CSRF_REQUIRED"
 	ErrCSRFInvalid                   ErrorCode = "PLUGIN_CSRF_INVALID"
 
+	ErrBridgeCancelled         ErrorCode = "PLUGIN_BRIDGE_CANCELLED"
 	ErrBridgeTimeout           ErrorCode = "PLUGIN_BRIDGE_TIMEOUT"
 	ErrBridgeDisposed          ErrorCode = "PLUGIN_BRIDGE_DISPOSED"
 	ErrBridgeHandshakeFailed   ErrorCode = "PLUGIN_BRIDGE_HANDSHAKE_FAILED"
@@ -132,6 +133,7 @@ var platformErrorCodes = []ErrorCode{
 
 var bridgeErrorCodes = append(platformErrorCodes, []ErrorCode{
 	ErrConfirmationRejected,
+	ErrBridgeCancelled,
 	ErrBridgeTimeout,
 	ErrBridgeDisposed,
 	ErrBridgeHandshakeFailed,

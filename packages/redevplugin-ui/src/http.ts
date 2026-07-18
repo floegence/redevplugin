@@ -49,6 +49,35 @@ export function trimTrailingSlash(value: string): string {
   return value.endsWith("/") ? value.slice(0, -1) : value;
 }
 
+export function assertMutationDispatchable(signal: AbortSignal | undefined, operation: string): void {
+  if (!signal?.aborted) return;
+  throw new PluginTransportError(
+    `Plugin platform request was aborted before dispatch for ${operation}`,
+    signal.reason,
+    "not_committed",
+  );
+}
+
+export async function dispatchMutationRequest(
+  fetch: FetchLike,
+  input: string,
+  init: FetchInitLike,
+  operation: string,
+): Promise<FetchResponseLike> {
+  assertMutationDispatchable(init.signal, operation);
+  let pending: Promise<FetchResponseLike>;
+  try {
+    pending = fetch(input, init);
+  } catch (cause) {
+    throw new PluginTransportError(`Plugin platform request failed before dispatch for ${operation}`, cause, "not_committed");
+  }
+  try {
+    return await pending;
+  } catch (cause) {
+    throw new PluginTransportError(`Plugin platform request failed after dispatch for ${operation}`, cause, "unknown");
+  }
+}
+
 export async function readPlatformResponse<T>(response: FetchResponseLike): Promise<T> {
   return readResponse<T>(response, false);
 }

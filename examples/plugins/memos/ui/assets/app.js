@@ -60,6 +60,7 @@
         "PLUGIN_CSRF_INVALID",
         "PLUGIN_FEATURE_NOT_CONFIGURED",
         "PLUGIN_CONFIRMATION_REJECTED",
+        "PLUGIN_BRIDGE_CANCELLED",
         "PLUGIN_BRIDGE_TIMEOUT",
         "PLUGIN_BRIDGE_DISPOSED",
         "PLUGIN_BRIDGE_HANDSHAKE_FAILED",
@@ -70,15 +71,16 @@
         data;
         details;
         mutationOutcome;
-        constructor(errorCode, message, data, details, mutationOutcome) {
+        constructor(errorCode, message, data, details, mutationOutcome2) {
             super(message);
             this.name = "PluginBridgeError";
             this.errorCode = errorCode;
             this.data = data;
             this.details = details ?? data;
-            this.mutationOutcome = mutationOutcome;
+            this.mutationOutcome = mutationOutcome2;
         }
     };
+    var pluginBridgeCapabilityEffect = Symbol("redevplugin.capability.effect");
     var opaqueSurfaceAllowedTags = [
         "main",
         "section",
@@ -776,7 +778,11 @@
             this.#assertActive();
             return this.#ready ? Promise.resolve() : this.#readyPromise;
         }
-        call(method, params) {
+        call(method, params, options = {}) {
+            const effect = options[pluginBridgeCapabilityEffect];
+            return this.#call(method, params, options, effect === void 0 || effect !== "read");
+        }
+        #call(method, params, options, mutation) {
             this.#assertActive();
             if (!validMethod(method)) {
                 throw new PluginBridgeError("PLUGIN_INVALID_REQUEST", "Plugin bridge method and params are invalid");
@@ -793,7 +799,7 @@
             return this.#request(id, {
                 type: "redevplugin.bridge.call",
                 request
-            }, { mutationOutcomeOnTimeout: "unknown" });
+            }, { mutation, signal: options.signal });
         }
         readStream(streamHandle, options = {}) {
             this.#assertActive();
@@ -826,7 +832,7 @@
                 type: "redevplugin.bridge.stream.read",
                 id,
                 stream_handle: streamHandle
-            }, { signal });
+            }, { cancellationKind: "stream", signal });
             const { delivery_id: deliveryID, ...result } = privateResult;
             if (!deliveryID)
                 return result;
@@ -842,9 +848,9 @@
                 id,
                 stream_handle: streamHandle,
                 delivery_id: deliveryID
-            }, { mutationOutcomeOnTimeout: "unknown", signal });
+            }, { cancellationKind: "stream", signal });
         }
-        cancelOperation(operationID, reason) {
+        cancelOperation(operationID, reason, options = {}) {
             this.#assertActive();
             if (!validOpaqueHandle(operationID, "operation") || reason !== void 0 && (typeof reason !== "string" || reason.length > 256)) {
                 throw new PluginBridgeError("PLUGIN_INVALID_REQUEST", "Plugin operation cancellation is invalid");
@@ -855,7 +861,7 @@
                 id,
                 operation_id: operationID,
                 reason
-            }), { mutationOutcomeOnTimeout: "unknown" });
+            }), { mutation: true, signal: options.signal });
         }
         render(tree) {
             this.#assertActive();
@@ -1048,7 +1054,8 @@
                 throw new PluginBridgeError("PLUGIN_JSON_LIMIT_EXCEEDED", "Plugin bridge has too many pending requests");
             }
             if (options.signal?.aborted)
-                return Promise.reject(streamReadAbortedError());
+                return Promise.reject(requestCancelledError(options, false));
+            let posted = false;
             const result = new Promise((resolve, reject) => {
                 const timer = setTimeout(() => {
                     const pending = this.#takePending(id);
@@ -1059,20 +1066,21 @@
                     }
                     catch {
                     }
-                    pending.reject(new PluginBridgeError("PLUGIN_BRIDGE_TIMEOUT", `Plugin bridge request ${id} timed out`, void 0, void 0, options.mutationOutcomeOnTimeout));
+                    pending.reject(new PluginBridgeError("PLUGIN_BRIDGE_TIMEOUT", `Plugin bridge request ${id} timed out`, void 0, void 0, mutationOutcome(options, posted)));
                 }, this.timeoutMs);
                 const onAbort = () => {
                     const pending = this.#takePending(id);
                     if (!pending)
                         return;
-                    try {
-                        this.#port.postMessage({ type: "redevplugin.bridge.cancel", id });
+                    if (posted) {
+                        try {
+                            this.#port.postMessage({ type: "redevplugin.bridge.cancel", id });
+                        }
+                        catch {
+                        }
                     }
-                    catch {
-                    }
-                    pending.reject(streamReadAbortedError());
+                    pending.reject(requestCancelledError(options, posted));
                 };
-                options.signal?.addEventListener("abort", onAbort, { once: true });
                 this.#pending.set(id, {
                     resolve: (value) => resolve(value),
                     reject,
@@ -1081,14 +1089,20 @@
                     kind: options.kind ?? "json",
                     identifier: options.identifier
                 });
+                options.signal?.addEventListener("abort", onAbort, { once: true });
+                if (options.signal?.aborted)
+                    onAbort();
             });
+            if (!this.#pending.has(id))
+                return result;
             try {
                 this.#port.postMessage(normalizedMessage);
+                posted = true;
             }
             catch {
                 const pending = this.#takePending(id);
                 if (pending) {
-                    pending.reject(new PluginBridgeError("PLUGIN_BRIDGE_DISPOSED", `Plugin bridge request ${id} could not be posted`));
+                    pending.reject(new PluginBridgeError("PLUGIN_BRIDGE_DISPOSED", `Plugin bridge request ${id} could not be posted`, void 0, void 0, options.mutation ? "not_committed" : void 0));
                 }
             }
             return result;
@@ -1205,7 +1219,6 @@
             return this.#lifecycleState === "active" || this.#lifecycleState === "quiescing" && this.#handlingLifecycle;
         }
     };
-    var pluginSurfaceHostConstructorToken = Symbol("redevplugin.surface-host.constructor");
     function claimOpaquePluginBridge() {
         const value = globalThis[opaquePluginBridgeGlobalKey];
         if (!isRecord(value) || typeof value.claim !== "function") {
@@ -1422,6 +1435,16 @@
     }
     function streamReadAbortedError() {
         return new PluginBridgeError("PLUGIN_STREAM_CANCELLED", "Plugin stream read was aborted");
+    }
+    function mutationOutcome(options, posted) {
+        if (!options.mutation)
+            return void 0;
+        return posted ? "unknown" : "not_committed";
+    }
+    function requestCancelledError(options, posted) {
+        if (options.cancellationKind === "stream")
+            return streamReadAbortedError();
+        return new PluginBridgeError("PLUGIN_BRIDGE_CANCELLED", "Plugin bridge request was cancelled", void 0, void 0, mutationOutcome(options, posted));
     }
     function abortableStreamRead(read, signal) {
         if (!signal)

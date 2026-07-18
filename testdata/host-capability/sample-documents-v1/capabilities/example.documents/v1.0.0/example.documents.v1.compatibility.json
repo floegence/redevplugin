@@ -1,1 +1,1 @@
-{"schema_version":"redevplugin.host_capability_compatibility.v1","contract_id":"example.documents.v1","contract_version":"1.0.0","capability_id":"example.capability.documents","capability_version":"1.0.0","min_redevplugin_version":"0.3.0"}
+{"schema_version":"redevplugin.host_capability_compatibility.v1","contract_id":"example.documents.v1","contract_version":"1.0.0","capability_id":"example.capability.documents","capability_version":"1.0.0","min_redevplugin_version":"0.5.0"}

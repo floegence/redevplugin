@@ -249,14 +249,16 @@ error instead of silently running a plugin.
 
 ## TypeScript Surface Package
 
-The package `@floegence/redevplugin-ui` provides `PluginSurfaceHost`, the trusted
-opaque renderer, the plugin-side `PluginBridgeClient`, generated render-policy
-constants, and a host-side `PluginPlatformClient`. It is a released npm artifact,
-not copied into host products through local paths.
+The package `@floegence/redevplugin-ui` provides the `PluginSurfaceHost` handle,
+the trusted opaque renderer, the plugin-side `PluginBridgeClient`, generated
+render-policy constants, and a host-side `PluginPlatformClient`. It is a released
+npm artifact, not copied into host products through local paths.
 
-`PluginSurfaceHost.create(...)` is the sole public constructor. It creates and
-owns a fresh iframe, hardens it before returning, and exposes only its read-only
-`element` for host-product placement. Callers cannot supply an existing frame.
+`PluginPlatformClient.openSurfaceInSlot(...)` is the sole public opening and
+replacement orchestrator. It creates and owns a fresh iframe, hardens it before
+slot placement, and returns a handle exposing its read-only `element`. Callers
+cannot obtain a raw bootstrap, construct a host, adopt prepared options, or
+supply an existing frame.
 The frame uses explicit `src="about:blank"`, `sandbox="allow-scripts"`, a
 Permissions Policy deny-list for browser capabilities, and a generated
 `srcdoc`. It has a unique opaque

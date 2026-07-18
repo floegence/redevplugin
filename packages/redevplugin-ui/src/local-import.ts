@@ -1,5 +1,15 @@
-import { defaultFetch, readMutationPlatformResponse, trimTrailingSlash, type FetchLike } from "./http.js";
-import { PluginPlatformRequestError, PluginTransportError } from "./errors.js";
+import {
+  assertMutationDispatchable,
+  defaultFetch,
+  dispatchMutationRequest,
+  readMutationPlatformResponse,
+  trimTrailingSlash,
+  type FetchLike,
+} from "./http.js";
+import {
+  PluginMutationLifecycleError,
+  pluginMutationOutcome,
+} from "./errors.js";
 import type { PluginPlatformClientOptions, PluginRecord } from "./platform.js";
 import {
   defaultPluginSurfaceScope,
@@ -44,43 +54,54 @@ export class PluginLocalImportClient {
     if (!canonicalPluginInstanceId) {
       throw new TypeError("pluginInstanceId is required");
     }
+    let plugin: PluginRecord;
     try {
-      const plugin = await this.#requestMutation<PluginRecord>(
+      plugin = await this.#requestMutation<PluginRecord>(
         `/_redevplugin/api/plugins/${encodeURIComponent(canonicalPluginInstanceId)}/local-import?expected_management_revision=${encodeURIComponent(String(expectedManagementRevision))}`,
         packageBlob,
         options,
       );
-      disposePluginSurfaceScope(this.#surfaceScope, canonicalPluginInstanceId);
-      return plugin;
     } catch (error) {
-      if (!(error instanceof PluginPlatformRequestError && error.mutationOutcome === "not_committed")) {
-        disposePluginSurfaceScope(this.#surfaceScope, canonicalPluginInstanceId);
-        this.#onMutationOutcomeUnknown?.(canonicalPluginInstanceId);
+      if (pluginMutationOutcome(error) !== "not_committed") {
+        const lifecycleErrors: unknown[] = [];
+        try {
+          await disposePluginSurfaceScope(this.#surfaceScope, canonicalPluginInstanceId);
+        } catch (caught) {
+          lifecycleErrors.push(caught);
+        }
+        try {
+          this.#onMutationOutcomeUnknown?.(canonicalPluginInstanceId);
+        } catch (caught) {
+          lifecycleErrors.push(caught);
+        }
+        if (lifecycleErrors.length > 0) {
+          throw new PluginMutationLifecycleError("Local plugin update and surface teardown failed", error, lifecycleErrors);
+        }
       }
       throw error;
     }
+    await disposePluginSurfaceScope(this.#surfaceScope, canonicalPluginInstanceId);
+    return plugin;
   }
 
   async #requestMutation<T>(path: string, body: Blob, options: PluginLocalImportOptions): Promise<T> {
     if (!(body instanceof Blob)) {
       throw new TypeError("package upload must be a Blob");
     }
+    const method = path.includes("/local-import?") ? "PUT" : "POST";
+    const operation = `${method} ${path}`;
+    assertMutationDispatchable(options.signal, operation);
     options.onProgress?.(0, body.size);
-    let response;
-    try {
-      response = await this.#fetch(this.#apiBaseURL + path, {
-        method: path.includes("/local-import?") ? "PUT" : "POST",
-        headers: {
-          "Accept": "application/json",
-          "Content-Type": "application/vnd.redevplugin.package+zip",
-        },
-        body,
-        credentials: "same-origin",
-        signal: options.signal,
-      });
-    } catch (cause) {
-      throw new PluginTransportError(`Plugin platform request failed for POST ${path}`, cause, "unknown");
-    }
+    const response = await dispatchMutationRequest(this.#fetch, this.#apiBaseURL + path, {
+      method,
+      headers: {
+        "Accept": "application/json",
+        "Content-Type": "application/vnd.redevplugin.package+zip",
+      },
+      body,
+      credentials: "same-origin",
+      signal: options.signal,
+    }, operation);
     const result = await readMutationPlatformResponse<T>(response);
     options.onProgress?.(body.size, body.size);
     return result;

@@ -1,4 +1,5 @@
 import { PluginBridgeError } from "./errors.js";
+import { callPluginBridgeCapability } from "./bridge-capability.js";
 import { decodePluginStreamText } from "./surface.js";
 import type {
   PluginBridgeClient,
@@ -10,6 +11,29 @@ import type {
 } from "./surface.js";
 
 export type PluginCapabilitySchema = Readonly<Record<string, unknown>>;
+export type PluginCapabilityEffect = "read" | "write" | "execute" | "delete" | "admin";
+
+type PluginCapabilityMethodContract = {
+  method: string;
+  effect: PluginCapabilityEffect;
+  requestSchema: PluginCapabilitySchema;
+  responseSchema: PluginCapabilitySchema;
+};
+
+export type PluginCapabilitySyncContract = PluginCapabilityMethodContract & {
+  execution: "sync";
+};
+
+export type PluginCapabilityOperationContract<Cancelable extends boolean = boolean> = PluginCapabilityMethodContract & {
+  execution: "operation";
+  cancelable: Cancelable;
+};
+
+export type PluginCapabilityStreamContract = PluginCapabilityMethodContract & {
+  execution: "subscription";
+  eventTypeName: string;
+  eventSchema: PluginCapabilitySchema;
+};
 
 export type PluginCapabilityBusinessErrorSpec = {
   detail_schema_sha256: string;
@@ -20,7 +44,7 @@ export type PluginOperation<T, Cancelable extends boolean = true> = {
   data: T;
   operation_id: string;
 } & (Cancelable extends true ? {
-  cancel(reason?: string): Promise<void>;
+  cancel(reason?: string, options?: PluginBridgeRequestOptions): Promise<void>;
 } : Record<never, never>);
 
 export type PluginCapabilityStreamEvent<Event> = Omit<PluginRawStreamEvent, "data" | "error"> & {
@@ -36,67 +60,78 @@ export type PluginStream<Initial, Event> = {
   operation_id: string;
   stream_handle: string;
   read(options?: PluginBridgeRequestOptions): Promise<PluginCapabilityStreamReadResult<Event>>;
-  cancel(reason?: string): Promise<void>;
+  cancel(reason?: string, options?: PluginBridgeRequestOptions): Promise<void>;
   [Symbol.asyncIterator](): AsyncIterableIterator<PluginCapabilityStreamEvent<Event>>;
 };
 
 export async function callCapabilitySync<Request extends object, Response>(
   bridge: PluginBridgeClient,
-  method: string,
+  contract: PluginCapabilitySyncContract,
   request: Request,
-  requestSchema: PluginCapabilitySchema,
-  responseSchema: PluginCapabilitySchema,
+  options: PluginBridgeRequestOptions = {},
 ): Promise<Response> {
-  const params = validateRequest(request, requestSchema);
-  const result = parseSyncResult(method, await bridge.call<unknown>(method, params));
-  return validateResponse(method, result.data, responseSchema);
+  const params = validateRequest(request, contract.requestSchema);
+  const result = parseSyncResult(
+    contract.method,
+    await callPluginBridgeCapability<unknown>(bridge, contract.method, params, contract.effect, options),
+  );
+  return validateResponse(contract.method, result.data, contract.responseSchema);
 }
 
 export async function callCapabilityOperation<Request extends object, Response, Cancelable extends boolean = true>(
   bridge: PluginBridgeClient,
-  method: string,
+  contract: PluginCapabilityOperationContract<Cancelable>,
   request: Request,
-  requestSchema: PluginCapabilitySchema,
-  responseSchema: PluginCapabilitySchema,
-  cancelable: Cancelable = true as Cancelable,
+  options: PluginBridgeRequestOptions = {},
 ): Promise<PluginOperation<Response, Cancelable>> {
-  const params = validateRequest(request, requestSchema);
-  const result = parseOperationResult(method, await bridge.call<unknown>(method, params));
+  const params = validateRequest(request, contract.requestSchema);
+  const result = parseOperationResult(
+    contract.method,
+    await callPluginBridgeCapability<unknown>(bridge, contract.method, params, contract.effect, options),
+  );
   let data: Response;
   try {
-    data = validateResponse(method, result.data, responseSchema);
+    data = validateResponse(contract.method, result.data, contract.responseSchema);
   } catch (error) {
-    if (cancelable) await cancelAfterResponseMismatch(bridge, result.operation_id, error);
+    if (contract.cancelable) await cancelAfterResponseMismatch(bridge, result.operation_id, error);
     throw error;
   }
   return Object.freeze({
     data: data!,
     operation_id: result.operation_id,
-    ...(cancelable ? { cancel: (reason?: string) => bridge.cancelOperation(result.operation_id, reason) } : {}),
+    ...(contract.cancelable ? {
+      cancel: (reason?: string, cancelOptions?: PluginBridgeRequestOptions) =>
+        bridge.cancelOperation(result.operation_id, reason, cancelOptions),
+    } : {}),
   }) as PluginOperation<Response, Cancelable>;
 }
 
 export async function callCapabilityStream<Request extends object, Response, Event>(
   bridge: PluginBridgeClient,
-  method: string,
+  contract: PluginCapabilityStreamContract,
   request: Request,
-  requestSchema: PluginCapabilitySchema,
-  responseSchema: PluginCapabilitySchema,
-  eventTypeName: string,
-  eventSchema: PluginCapabilitySchema,
+  options: PluginBridgeRequestOptions = {},
 ): Promise<PluginStream<Response, Event>> {
-  const params = validateRequest(request, requestSchema);
-  const result = parseStreamResult(method, await bridge.call<unknown>(method, params));
+  const params = validateRequest(request, contract.requestSchema);
+  const result = parseStreamResult(
+    contract.method,
+    await callPluginBridgeCapability<unknown>(bridge, contract.method, params, contract.effect, options),
+  );
   let data: Response;
   try {
-    data = validateResponse(method, result.data, responseSchema);
+    data = validateResponse(contract.method, result.data, contract.responseSchema);
   } catch (error) {
     await cancelAfterResponseMismatch(bridge, result.operation_id, error);
   }
   let settled = false;
   const read = async (options: PluginBridgeRequestOptions = {}) => {
     try {
-      const batch = decodeCapabilityStreamBatch<Event>(method, await bridge.readStream(result.stream_handle, options), eventTypeName, eventSchema);
+      const batch = decodeCapabilityStreamBatch<Event>(
+        contract.method,
+        await bridge.readStream(result.stream_handle, options),
+        contract.eventTypeName,
+        contract.eventSchema,
+      );
       if (batch.done) settled = true;
       return batch;
     } catch (error) {
@@ -107,9 +142,9 @@ export async function callCapabilityStream<Request extends object, Response, Eve
       return cancelAfterStreamMismatch(bridge, result.operation_id, error);
     }
   };
-  const cancel = async (reason?: string) => {
+  const cancel = async (reason?: string, cancelOptions: PluginBridgeRequestOptions = {}) => {
     if (settled) return;
-    await bridge.cancelOperation(result.operation_id, reason);
+    await bridge.cancelOperation(result.operation_id, reason, cancelOptions);
     settled = true;
   };
   return Object.freeze({

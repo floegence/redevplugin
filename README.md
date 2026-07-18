@@ -152,9 +152,11 @@ capabilities.
   CSRF policy. The guard returns the host-neutral `trusted_parent` or `deny`
   decision plus an authenticated request scope; product-specific origin roles
   and concrete session semantics stay in the host product.
-- `PluginSurfaceHost.create(...)` is the only public construction path. It
-  creates a fresh SDK-owned iframe, exposes it as the read-only `element` for
-  product-shell placement, and immediately applies `src="about:blank"`,
+- `PluginPlatformClient.openSurfaceInSlot(...)` is the only public surface
+  opening path. It owns the HTTP bootstrap, opening lease, replacement ordering,
+  and fresh SDK-owned iframe, then returns a `PluginSurfaceHost` handle whose
+  read-only `element` is available for product-shell metadata. The slot places
+  the element and the SDK immediately applies `src="about:blank"`,
   `sandbox="allow-scripts"`, no same-origin capability, no plugin URL, and a
   fail-closed CSP. The trusted parent prepares the validated surface document,
   marks the server session prepared only after the closed document succeeds,
@@ -512,8 +514,8 @@ capabilities.
   persistence preserves the active edit and blocks navigation, surface quiesce
   flushes pending drafts and edits, and compact layouts use a full-height
   explorer drawer with modal deletion confirmation. The Showcase asks
-  `PluginSurfaceHost.create(...)` to create a fresh
-  opaque `srcdoc` iframe and mount only its `element`; no caller-provided
+  `PluginPlatformClient.openSurfaceInSlot(...)` to create and place a fresh
+  opaque `srcdoc` iframe in the selected slot; no caller-provided
   iframe, plugin server, subdomain, cookie bootstrap, GET asset
   route, or query credential exists. The trusted renderer loads a static
   validated document, starts one classic Dedicated Worker, and connects it to

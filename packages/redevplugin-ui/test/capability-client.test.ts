@@ -37,16 +37,45 @@ const eventSchema = {
   properties: { line: { type: "string" } },
 } as const;
 
+type CapabilityEffect = "read" | "write" | "execute" | "delete" | "admin";
+
+function syncContract(
+  method: string,
+  request: Readonly<Record<string, unknown>> = requestSchema,
+  response: Readonly<Record<string, unknown>> = responseSchema,
+  effect: CapabilityEffect = "read",
+) {
+  return { method, effect, execution: "sync" as const, requestSchema: request, responseSchema: response };
+}
+
+function operationContract<Cancelable extends boolean = true>(
+  method: string,
+  cancelable: Cancelable = true as Cancelable,
+  effect: CapabilityEffect = "write",
+) {
+  return { method, effect, execution: "operation" as const, cancelable, requestSchema, responseSchema };
+}
+
+function streamContract(method: string, effect: CapabilityEffect = "read") {
+  return {
+    method,
+    effect,
+    execution: "subscription" as const,
+    requestSchema,
+    responseSchema,
+    eventTypeName,
+    eventSchema,
+  };
+}
+
 const encodeEvent = (event: unknown) => btoa(JSON.stringify(event));
 
 test("generated capability helpers validate sync request and response payloads", async () => {
   const bridge = fakeBridge({ data: { accepted: true } });
   const result = await callCapabilitySync(
     bridge.client,
-    "documents.get",
+    syncContract("documents.get"),
     { document_id: "doc-1" },
-    requestSchema,
-    responseSchema,
   );
   assert.deepEqual(result, { accepted: true });
   assert.deepEqual(bridge.calls, [{ method: "documents.get", params: { document_id: "doc-1" } }]);
@@ -54,10 +83,8 @@ test("generated capability helpers validate sync request and response payloads",
   await assert.rejects(
     callCapabilitySync(
       bridge.client,
-      "documents.get",
+      syncContract("documents.get"),
       { document_id: "", extra: true } as never,
-      requestSchema,
-      responseSchema,
     ),
     (error: unknown) => error instanceof PluginBridgeError && error.errorCode === "PLUGIN_INVALID_REQUEST",
   );
@@ -67,10 +94,8 @@ test("generated capability helpers validate sync request and response payloads",
   await assert.rejects(
     callCapabilitySync(
       invalidResponse.client,
-      "documents.get",
+      syncContract("documents.get"),
       { document_id: "doc-1" },
-      requestSchema,
-      responseSchema,
     ),
     (error: unknown) => error instanceof PluginBridgeError && error.errorCode === "PLUGIN_CONTRACT_MISMATCH",
   );
@@ -80,10 +105,8 @@ test("generated capability helpers preserve host-owned operation and stream hand
   const operationBridge = fakeBridge({ data: { accepted: true }, operation_id: "operation_opaque_1" });
   const operation = await callCapabilityOperation<{ document_id: string }, { accepted: boolean }>(
     operationBridge.client,
-    "documents.archive",
+    operationContract("documents.archive"),
     { document_id: "doc-1" },
-    requestSchema,
-    responseSchema,
   );
   assert.equal(operation.data.accepted, true);
   assert.equal(operation.operation_id, "operation_opaque_1");
@@ -92,12 +115,8 @@ test("generated capability helpers preserve host-owned operation and stream hand
   const streamBridge = fakeBridge({ data: { accepted: true }, operation_id: "operation_opaque_2", stream_handle: "stream_opaque_1" });
   const stream = await callCapabilityStream<{ document_id: string }, { accepted: boolean }, { line: string }>(
     streamBridge.client,
-    "documents.watch",
+    streamContract("documents.watch"),
     { document_id: "doc-1" },
-    requestSchema,
-    responseSchema,
-    eventTypeName,
-    eventSchema,
   );
   assert.equal(stream.data.accepted, true);
   assert.equal(stream.operation_id, "operation_opaque_2");
@@ -112,13 +131,42 @@ test("generated capability helpers preserve host-owned operation and stream hand
   await assert.rejects(
     callCapabilityOperation(
       fakeBridge({ data: { accepted: true } }).client,
-      "documents.archive",
+      operationContract("documents.archive"),
       { document_id: "doc-1" },
-      requestSchema,
-      responseSchema,
     ),
     (error: unknown) => error instanceof PluginBridgeError && error.errorCode === "PLUGIN_CONTRACT_MISMATCH",
   );
+});
+
+test("capability calls and returned handle cancellation forward only per-call abort signals", async () => {
+  const controller = new AbortController();
+  const operationBridge = fakeBridge({ data: { accepted: true }, operation_id: "operation_signal_1" });
+  const operation = await callCapabilityOperation(
+    operationBridge.client,
+    operationContract("documents.archive"),
+    { document_id: "doc-1" },
+    { signal: controller.signal },
+  );
+  assert.deepEqual(operationBridge.callOptions, [{ signal: controller.signal }]);
+
+  const cancelController = new AbortController();
+  await operation.cancel("user_cancelled", { signal: cancelController.signal });
+  assert.deepEqual(operationBridge.cancellationOptions, [{ signal: cancelController.signal }]);
+
+  const streamBridge = fakeBridge({
+    data: { accepted: true },
+    operation_id: "operation_signal_2",
+    stream_handle: "stream_signal_2",
+  });
+  const stream = await callCapabilityStream(
+    streamBridge.client,
+    streamContract("documents.watch"),
+    { document_id: "doc-1" },
+    { signal: controller.signal },
+  );
+  assert.deepEqual(streamBridge.callOptions, [{ signal: controller.signal }]);
+  await stream.cancel(undefined, { signal: cancelController.signal });
+  assert.deepEqual(streamBridge.cancellationOptions, [{ signal: cancelController.signal }]);
 });
 
 test("capability helpers reject malformed result envelopes with stable errors", async () => {
@@ -126,10 +174,8 @@ test("capability helpers reject malformed result envelopes with stable errors", 
     await assert.rejects(
       callCapabilitySync(
         fakeBridge(result).client,
-        "documents.get",
+        syncContract("documents.get"),
         { document_id: "doc-1" },
-        requestSchema,
-        responseSchema,
       ),
       (error: unknown) => error instanceof PluginBridgeError && error.errorCode === "PLUGIN_CONTRACT_MISMATCH",
     );
@@ -140,8 +186,8 @@ test("capability helpers reject malformed result envelopes with stable errors", 
     { data: { accepted: true }, operation_id: "operation_opaque_1", stream_handle: "wrong.handle" },
   ]) {
     const invocation = "stream_handle" in result
-      ? callCapabilityStream(fakeBridge(result).client, "documents.invalid", { document_id: "doc-1" }, requestSchema, responseSchema, eventTypeName, eventSchema)
-      : callCapabilityOperation(fakeBridge(result).client, "documents.invalid", { document_id: "doc-1" }, requestSchema, responseSchema);
+      ? callCapabilityStream(fakeBridge(result).client, streamContract("documents.invalid"), { document_id: "doc-1" })
+      : callCapabilityOperation(fakeBridge(result).client, operationContract("documents.invalid"), { document_id: "doc-1" });
     await assert.rejects(
       invocation,
       (error: unknown) => error instanceof PluginBridgeError && error.errorCode === "PLUGIN_CONTRACT_MISMATCH",
@@ -154,10 +200,8 @@ test("capability helpers cancel live handles when response validation fails", as
   await assert.rejects(
     callCapabilityOperation(
       operationBridge.client,
-      "documents.archive",
+      operationContract("documents.archive"),
       { document_id: "doc-1" },
-      requestSchema,
-      responseSchema,
     ),
     (error: unknown) => error instanceof PluginBridgeError && error.errorCode === "PLUGIN_CONTRACT_MISMATCH",
   );
@@ -171,12 +215,8 @@ test("capability helpers cancel live handles when response validation fails", as
   await assert.rejects(
     callCapabilityStream(
       streamBridge.client,
-      "documents.watch",
+      streamContract("documents.watch"),
       { document_id: "doc-1" },
-      requestSchema,
-      responseSchema,
-      eventTypeName,
-      eventSchema,
     ),
     (error: unknown) => error instanceof PluginBridgeError && error.errorCode === "PLUGIN_CONTRACT_MISMATCH",
   );
@@ -205,12 +245,8 @@ test("subscription helpers keep reading events produced after dispatch", async (
   );
   const stream = await callCapabilityStream<{ document_id: string }, { accepted: boolean }, { line: string }>(
     bridge.client,
-    "documents.watch",
+    streamContract("documents.watch"),
     { document_id: "doc-1" },
-    requestSchema,
-    responseSchema,
-    eventTypeName,
-    eventSchema,
   );
   const text: string[] = [];
   for await (const event of stream) text.push(event.data.line);
@@ -230,12 +266,8 @@ test("subscription helpers reject event type and schema mismatches", async () =>
     );
     const stream = await callCapabilityStream(
       bridge.client,
-      "documents.watch",
+      streamContract("documents.watch"),
       { document_id: "doc-1" },
-      requestSchema,
-      responseSchema,
-      eventTypeName,
-      eventSchema,
     );
     await assert.rejects(
       stream[Symbol.asyncIterator]().next(),
@@ -256,12 +288,8 @@ test("subscription read cancels the host operation when an event violates the pu
   );
   const stream = await callCapabilityStream(
     bridge.client,
-    "documents.watch",
+    streamContract("documents.watch"),
     { document_id: "doc-1" },
-    requestSchema,
-    responseSchema,
-    eventTypeName,
-    eventSchema,
   );
 
   await assert.rejects(
@@ -300,12 +328,8 @@ test("subscription read abort stays per-call and leaves the stream reusable", as
   } as unknown as PluginBridgeClient;
   const stream = await callCapabilityStream(
     bridge,
-    "documents.watch",
+    streamContract("documents.watch"),
     { document_id: "doc-1" },
-    requestSchema,
-    responseSchema,
-    eventTypeName,
-    eventSchema,
   );
 
   const read = stream.read({ signal: controller.signal });
@@ -325,11 +349,8 @@ test("non-cancelable operation helpers do not expose or dispatch cancellation", 
   const bridge = fakeBridge({ data: { accepted: true }, operation_id: "operation_non_cancelable" });
   const operation = await callCapabilityOperation(
     bridge.client,
-    "documents.archive",
+    operationContract("documents.archive", false),
     { document_id: "doc-1" },
-    requestSchema,
-    responseSchema,
-    false,
   );
 
   assert.equal("cancel" in operation, false);
@@ -343,12 +364,8 @@ test("subscription helpers reject failed terminal states and cancel early iterat
   );
   const failed = await callCapabilityStream(
     failedBridge.client,
-    "documents.watch",
+    streamContract("documents.watch"),
     { document_id: "doc-1" },
-    requestSchema,
-    responseSchema,
-    eventTypeName,
-    eventSchema,
   );
   await assert.rejects(
     async () => {
@@ -370,12 +387,8 @@ test("subscription helpers reject failed terminal states and cancel early iterat
   );
   const early = await callCapabilityStream(
     earlyBridge.client,
-    "documents.watch",
+    streamContract("documents.watch"),
     { document_id: "doc-1" },
-    requestSchema,
-    responseSchema,
-    eventTypeName,
-    eventSchema,
   );
   const iterator = early[Symbol.asyncIterator]();
   assert.equal((await iterator.next()).done, false);
@@ -404,13 +417,13 @@ test("generated capability helpers enforce exact oneOf matches", async () => {
     ],
   } as const;
   const bridge = fakeBridge({ data: { accepted: true } });
-  await callCapabilitySync(bridge.client, "documents.resolve", { id: "doc-1", kind: "archive" }, unionSchema, responseSchema);
+  await callCapabilitySync(bridge.client, syncContract("documents.resolve", unionSchema, responseSchema), { id: "doc-1", kind: "archive" });
   await assert.rejects(
-    callCapabilitySync(bridge.client, "documents.resolve", { id: "doc-1" }, unionSchema, responseSchema),
+    callCapabilitySync(bridge.client, syncContract("documents.resolve", unionSchema, responseSchema), { id: "doc-1" }),
     (error: unknown) => error instanceof PluginBridgeError && error.errorCode === "PLUGIN_INVALID_REQUEST",
   );
   await assert.rejects(
-    callCapabilitySync(bridge.client, "documents.resolve", { slug: "doc-1" }, unionSchema, responseSchema),
+    callCapabilitySync(bridge.client, syncContract("documents.resolve", unionSchema, responseSchema), { slug: "doc-1" }),
     (error: unknown) => error instanceof PluginBridgeError && error.errorCode === "PLUGIN_INVALID_REQUEST",
   );
 });
@@ -422,19 +435,15 @@ test("generated capability helpers treat missing object properties as an empty c
   } as const;
   const valid = await callCapabilitySync(
     fakeBridge({ data: {} }).client,
-    "documents.empty",
+    syncContract("documents.empty", emptyObjectSchema, emptyObjectSchema),
     {},
-    emptyObjectSchema,
-    emptyObjectSchema,
   );
   assert.deepEqual(valid, {});
   await assert.rejects(
     callCapabilitySync(
       fakeBridge({ data: {} }).client,
-      "documents.empty",
+      syncContract("documents.empty", emptyObjectSchema, emptyObjectSchema),
       { unexpected: true } as never,
-      emptyObjectSchema,
-      emptyObjectSchema,
     ),
     (error: unknown) => error instanceof PluginBridgeError && error.errorCode === "PLUGIN_INVALID_REQUEST",
   );
@@ -460,7 +469,10 @@ test("generated capability helpers validate every published string format", asyn
     ipv4: "192.0.2.10",
     ipv6: "2001:db8::10",
   };
-  assert.deepEqual(await callCapabilitySync(fakeBridge({ data: valid }).client, "documents.formats", valid, formatSchema, formatSchema), valid);
+  assert.deepEqual(
+    await callCapabilitySync(fakeBridge({ data: valid }).client, syncContract("documents.formats", formatSchema, formatSchema), valid),
+    valid,
+  );
 
   const invalidValues = {
     date_time: "2026-07-13 08:09:10",
@@ -473,10 +485,8 @@ test("generated capability helpers validate every published string format", asyn
     await assert.rejects(
       callCapabilitySync(
         fakeBridge({ data: valid }).client,
-        "documents.formats",
+        syncContract("documents.formats", formatSchema, formatSchema),
         { ...valid, [field]: value },
-        formatSchema,
-        formatSchema,
       ),
       (error: unknown) => error instanceof PluginBridgeError && error.errorCode === "PLUGIN_INVALID_REQUEST",
     );
@@ -502,10 +512,8 @@ for (const testCase of restrictedSchemaFixture.cases) {
     } as const;
     const invocation = callCapabilitySync(
       fakeBridge({ data: { value: testCase.value } }).client,
-      "documents.conformance",
+      syncContract("documents.conformance", wrappedSchema, wrappedSchema),
       { value: testCase.value },
-      wrappedSchema,
-      wrappedSchema,
     );
     if (testCase.valid) {
       assert.deepEqual(await invocation, { value: testCase.value });
@@ -571,22 +579,30 @@ function fakeBridge(
 ): {
   client: PluginBridgeClient;
   calls: Array<{ method: string; params: unknown }>;
+  callOptions: Array<{ signal?: AbortSignal } | undefined>;
   cancellations: Array<{ operationID: string; reason?: string }>;
+  cancellationOptions: Array<{ signal?: AbortSignal } | undefined>;
   streamReads: number;
 } {
   const calls: Array<{ method: string; params: unknown }> = [];
+  const callOptions: Array<{ signal?: AbortSignal } | undefined> = [];
   const cancellations: Array<{ operationID: string; reason?: string }> = [];
+  const cancellationOptions: Array<{ signal?: AbortSignal } | undefined> = [];
   const state = {
     calls,
+    callOptions,
     cancellations,
+    cancellationOptions,
     streamReads: 0,
     client: {
-      call: async (method: string, params?: unknown) => {
+      call: async (method: string, params?: unknown, options?: { signal?: AbortSignal }) => {
         calls.push({ method, params });
+        callOptions.push(options ? { signal: options.signal } : undefined);
         return result;
       },
-      cancelOperation: async (operationID: string, reason?: string) => {
+      cancelOperation: async (operationID: string, reason?: string, options?: { signal?: AbortSignal }) => {
         cancellations.push({ operationID, reason });
+        cancellationOptions.push(options ? { signal: options.signal } : undefined);
       },
       readStream: async () => {
         const read = streamResults?.[state.streamReads];

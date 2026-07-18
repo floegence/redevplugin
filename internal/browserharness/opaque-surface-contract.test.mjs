@@ -51,7 +51,7 @@ test("browser harness exposes one same-origin opaque surface transport", async (
   assert.equal(assetEnvelope.data.content_base64.length > 256 * 1024, true);
 });
 
-test("browser host delegates sandbox construction to PluginSurfaceHost", async () => {
+test("browser host delegates surface ownership to PluginPlatformClient", async () => {
   const html = await readFile(new URL("../../testdata/browser-harness/opaque-surface/index.html", import.meta.url), "utf8");
   assert.match(html, /id="plugin-surface-mount"/);
   assert.doesNotMatch(html, /<iframe/);
@@ -60,12 +60,12 @@ test("browser host delegates sandbox construction to PluginSurfaceHost", async (
 
   const host = await readFile(new URL("../../testdata/browser-harness/opaque-surface/host.mjs", import.meta.url), "utf8");
   for (const expected of [
-    "PluginSurfaceHost",
-    "PluginSurfaceHost.create",
+    "PluginPlatformClient",
+    "PluginSurfaceSlot",
+    "openSurfaceInSlot",
     "createReDevPluginSurfaceTransport",
     "surfaceHost.element",
-    "surfaceHost.open()",
-    "surfaceHost.close()",
+    "surfaceSlot.close()",
     "credentiallessScenario",
   ]) {
     assert.match(host, new RegExp(expected.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
@@ -79,6 +79,10 @@ test("browser host delegates sandbox construction to PluginSurfaceHost", async (
     "asset_ticket=",
     "stream_ticket=",
     "new PluginSurfaceHost",
+    "PluginSurfaceHost.create",
+    "platformClient.openSurface(",
+    "surfaceSlot.open(",
+    "toPluginSurfaceHostBootstrap",
     "frameForScenario",
   ]) {
     assert.equal(host.includes(forbidden), false, `host script retained ${forbidden}`);
