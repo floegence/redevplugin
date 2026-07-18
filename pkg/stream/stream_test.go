@@ -1458,6 +1458,32 @@ func BenchmarkSQLiteStoreBoundedRead(b *testing.B) {
 	}
 }
 
+func BenchmarkSQLiteStoreEmptyDeliver(b *testing.B) {
+	ctx := context.Background()
+	store, err := NewSQLiteStore(ctx, filepath.Join(b.TempDir(), "streams.sqlite"))
+	if err != nil {
+		b.Fatal(err)
+	}
+	b.Cleanup(func() { _ = store.CloseDatabase() })
+	if _, err := store.Register(ctx, RegisterRequest{
+		StreamID:         "stream_empty_bench",
+		ExecutionBinding: streamTestBinding("plugini_empty_bench"),
+	}); err != nil {
+		b.Fatal(err)
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for index := 0; index < b.N; index++ {
+		_, delivery, err := store.Deliver(ctx, DeliverRequest{
+			StreamID: "stream_empty_bench",
+			ReadID:   fmt.Sprintf("read_empty_%08d", index),
+		})
+		if err != nil || delivery.DeliveryID != "" {
+			b.Fatalf("Deliver() delivery=%#v err=%v", delivery, err)
+		}
+	}
+}
+
 func BenchmarkSQLiteStoreBatchAcknowledge(b *testing.B) {
 	ctx := context.Background()
 	store, err := NewSQLiteStore(ctx, filepath.Join(b.TempDir(), "streams.sqlite"))

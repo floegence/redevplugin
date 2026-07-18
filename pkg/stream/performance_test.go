@@ -145,6 +145,12 @@ func TestSQLiteEmptyObservationDoesNotAcquireWriteGate(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	var deliverySnapshots atomic.Int64
+	store.queryObserver = func(kind sqliteQueryKind) {
+		if kind == sqliteQueryDeliverySnapshot {
+			deliverySnapshots.Add(1)
+		}
+	}
 
 	<-store.writeGate
 	t.Cleanup(func() { store.writeGate <- struct{}{} })
@@ -154,6 +160,9 @@ func TestSQLiteEmptyObservationDoesNotAcquireWriteGate(t *testing.T) {
 		t.Fatalf("empty delivery acquired write gate: %v", err)
 	} else if delivery.DeliveryID != "" || len(delivery.Events) != 0 {
 		t.Fatalf("empty delivery = %#v", delivery)
+	}
+	if deliverySnapshots.Load() != 1 {
+		t.Fatalf("empty delivery snapshots = %d, want 1", deliverySnapshots.Load())
 	}
 
 	waitDone := make(chan error, 1)
@@ -181,8 +190,11 @@ func TestPerformanceSQLiteStreamBatchDelivery(t *testing.T) {
 	t.Cleanup(func() { _ = store.CloseDatabase() })
 	var boundedSelects atomic.Int64
 	var rangeDeletes atomic.Int64
+	var deliverySnapshots atomic.Int64
 	store.queryObserver = func(kind sqliteQueryKind) {
 		switch kind {
+		case sqliteQueryDeliverySnapshot:
+			deliverySnapshots.Add(1)
 		case sqliteQueryBoundedEvents:
 			boundedSelects.Add(1)
 		case sqliteQueryRangeDelete:
@@ -225,8 +237,9 @@ func TestPerformanceSQLiteStreamBatchDelivery(t *testing.T) {
 	}
 	observedSelects := boundedSelects.Load()
 	observedDeletes := rangeDeletes.Load()
-	if observedSelects != 1 || observedDeletes != 1 {
-		t.Fatalf("SQLite batch query counts selects=%d deletes=%d, want 1 and 1", observedSelects, observedDeletes)
+	observedSnapshots := deliverySnapshots.Load()
+	if observedSnapshots != 2 || observedSelects != 1 || observedDeletes != 1 {
+		t.Fatalf("SQLite batch query counts snapshots=%d selects=%d deletes=%d, want 2, 1, and 1", observedSnapshots, observedSelects, observedDeletes)
 	}
 	_, remaining, err := store.Deliver(context.Background(), DeliverRequest{
 		StreamID:  "stream_sqlite_performance",
@@ -247,6 +260,7 @@ func TestPerformanceSQLiteStreamBatchDelivery(t *testing.T) {
 		Metrics: []performanceevidence.Metric{
 			{Name: "events_selected", Unit: "count", Observed: float64(len(delivery.Events)), Limit: 256, Comparator: "eq"},
 			{Name: "bounded_selects", Unit: "queries", Observed: float64(observedSelects), Limit: 1, Comparator: "eq"},
+			{Name: "delivery_snapshots", Unit: "queries", Observed: float64(observedSnapshots), Limit: 2, Comparator: "eq"},
 			{Name: "range_deletes", Unit: "queries", Observed: float64(observedDeletes), Limit: 1, Comparator: "eq"},
 			{Name: "remaining_events", Unit: "count", Observed: float64(len(remaining.Events)), Limit: 256, Comparator: "eq"},
 		},

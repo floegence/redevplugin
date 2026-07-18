@@ -36,9 +36,10 @@ type SQLiteStore struct {
 type sqliteQueryKind string
 
 const (
-	sqliteQueryWaitObservation sqliteQueryKind = "wait_observation"
-	sqliteQueryBoundedEvents   sqliteQueryKind = "bounded_event_select"
-	sqliteQueryRangeDelete     sqliteQueryKind = "range_delete"
+	sqliteQueryWaitObservation  sqliteQueryKind = "wait_observation"
+	sqliteQueryDeliverySnapshot sqliteQueryKind = "delivery_snapshot"
+	sqliteQueryBoundedEvents    sqliteQueryKind = "bounded_event_select"
+	sqliteQueryRangeDelete      sqliteQueryKind = "range_delete"
 )
 
 func (s *SQLiteStore) observeQuery(kind sqliteQueryKind) {
@@ -382,16 +383,13 @@ func (s *SQLiteStore) Deliver(ctx context.Context, req DeliverRequest) (Record, 
 	}
 	defer release()
 
-	record, exists, err := getSQLiteStream(ctx, s.db, streamID)
+	s.observeQuery(sqliteQueryDeliverySnapshot)
+	record, deliveryState, eventExists, exists, err := getSQLiteDeliverySnapshot(ctx, s.db, streamID)
 	if err != nil {
 		return Record{}, Delivery{}, err
 	}
 	if !exists {
 		return Record{}, Delivery{}, ErrNotFound
-	}
-	deliveryState, err := getSQLiteDeliveryState(ctx, s.db, streamID)
-	if err != nil {
-		return Record{}, Delivery{}, err
 	}
 	if deliveryState.Pending.DeliveryID != "" {
 		if deliveryState.Pending.ThroughSequence > 0 {
@@ -401,10 +399,6 @@ func (s *SQLiteStore) Deliver(ctx context.Context, req DeliverRequest) (Record, 
 			}
 		}
 		return record, cloneDelivery(deliveryState.Pending), nil
-	}
-	var eventExists bool
-	if err := s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM plugin_stream_events WHERE stream_id = ? LIMIT 1)`, streamID).Scan(&eventExists); err != nil {
-		return Record{}, Delivery{}, err
 	}
 	if !eventExists && (!terminalStatus(record.Status) || deliveryState.TerminalAcknowledged) {
 		return record, Delivery{ReadID: readID, StreamID: streamID}, nil
@@ -422,16 +416,13 @@ func (s *SQLiteStore) Deliver(ctx context.Context, req DeliverRequest) (Record, 
 	}
 	defer rollbackUnlessCommitted(tx)
 
-	record, exists, err = getSQLiteStream(ctx, tx, streamID)
+	s.observeQuery(sqliteQueryDeliverySnapshot)
+	record, deliveryState, eventExists, exists, err = getSQLiteDeliverySnapshot(ctx, tx, streamID)
 	if err != nil {
 		return Record{}, Delivery{}, err
 	}
 	if !exists {
 		return Record{}, Delivery{}, ErrNotFound
-	}
-	deliveryState, err = getSQLiteDeliveryState(ctx, tx, streamID)
-	if err != nil {
-		return Record{}, Delivery{}, err
 	}
 	if deliveryState.Pending.DeliveryID != "" {
 		if deliveryState.Pending.ThroughSequence > 0 {
@@ -445,10 +436,13 @@ func (s *SQLiteStore) Deliver(ctx context.Context, req DeliverRequest) (Record, 
 		}
 		return record, cloneDelivery(deliveryState.Pending), nil
 	}
-	s.observeQuery(sqliteQueryBoundedEvents)
-	events, err := listSQLiteStreamEvents(ctx, tx, streamID, req.MaxEvents, req.MaxBytes)
-	if err != nil {
-		return Record{}, Delivery{}, err
+	var events []Event
+	if eventExists {
+		s.observeQuery(sqliteQueryBoundedEvents)
+		events, err = listSQLiteStreamEvents(ctx, tx, streamID, req.MaxEvents, req.MaxBytes)
+		if err != nil {
+			return Record{}, Delivery{}, err
+		}
 	}
 	if len(events) == 0 {
 		if terminalStatus(record.Status) && !deliveryState.TerminalAcknowledged {
@@ -887,6 +881,26 @@ func getSQLiteStream(ctx context.Context, q sqliteQuerier, streamID string) (Rec
 		return Record{}, false, err
 	}
 	return record, true, nil
+}
+
+func getSQLiteDeliverySnapshot(ctx context.Context, q sqliteQuerier, streamID string) (Record, sqliteDeliveryState, bool, bool, error) {
+	row := q.QueryRowContext(ctx, streamSelectColumns+`,
+	pending_delivery_id, pending_read_id, pending_through_sequence, pending_done,
+	pending_terminal_status, last_acknowledged_delivery_id, terminal_acknowledged,
+	EXISTS(
+		SELECT 1 FROM plugin_stream_events
+		WHERE plugin_stream_events.stream_id = plugin_streams.stream_id
+		LIMIT 1
+	)
+FROM plugin_streams WHERE stream_id = ?`, streamID)
+	record, state, eventExists, err := scanSQLiteDeliverySnapshot(row, streamID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Record{}, sqliteDeliveryState{}, false, false, nil
+	}
+	if err != nil {
+		return Record{}, sqliteDeliveryState{}, false, false, err
+	}
+	return record, state, eventExists, true, nil
 }
 
 func insertSQLiteStream(ctx context.Context, tx *sql.Tx, record Record) error {
@@ -1362,6 +1376,63 @@ func scanSQLiteStream(scanner sqliteStreamScanner) (Record, error) {
 	); err != nil {
 		return Record{}, err
 	}
+	return finishSQLiteStreamScan(record, bindingJSON, direction, status, createdAt, updatedAt, closedAt)
+}
+
+func scanSQLiteDeliverySnapshot(scanner sqliteStreamScanner, streamID string) (Record, sqliteDeliveryState, bool, error) {
+	var record Record
+	var state sqliteDeliveryState
+	var eventExists bool
+	var bindingJSON string
+	var direction string
+	var status string
+	var createdAt int64
+	var updatedAt int64
+	var closedAt sql.NullInt64
+	if err := scanner.Scan(
+		&record.StreamID,
+		&record.PluginID,
+		&record.PluginInstanceID,
+		&record.Method,
+		&record.Effect,
+		&record.Execution,
+		&record.SurfaceInstanceID,
+		&record.OwnerSessionHash,
+		&record.OwnerUserHash,
+		&record.OwnerEnvHash,
+		&record.SessionChannelIDHash,
+		&record.BridgeChannelID,
+		&bindingJSON,
+		&direction,
+		&status,
+		&record.FailureCode,
+		&record.Reason,
+		&record.ContentType,
+		&record.MaxBufferedBytes,
+		&record.BufferedBytes,
+		&createdAt,
+		&updatedAt,
+		&closedAt,
+		&state.Pending.DeliveryID,
+		&state.Pending.ReadID,
+		&state.Pending.ThroughSequence,
+		&state.Pending.Done,
+		&state.Pending.TerminalStatus,
+		&state.LastAcknowledgedID,
+		&state.TerminalAcknowledged,
+		&eventExists,
+	); err != nil {
+		return Record{}, sqliteDeliveryState{}, false, err
+	}
+	record, err := finishSQLiteStreamScan(record, bindingJSON, direction, status, createdAt, updatedAt, closedAt)
+	if err != nil {
+		return Record{}, sqliteDeliveryState{}, false, err
+	}
+	state.Pending.StreamID = streamID
+	return record, state, eventExists, nil
+}
+
+func finishSQLiteStreamScan(record Record, bindingJSON, direction, status string, createdAt, updatedAt int64, closedAt sql.NullInt64) (Record, error) {
 	if strings.TrimSpace(bindingJSON) != "" && strings.TrimSpace(bindingJSON) != "{}" {
 		if err := json.Unmarshal([]byte(bindingJSON), &record.ExecutionBinding); err != nil {
 			return Record{}, err
