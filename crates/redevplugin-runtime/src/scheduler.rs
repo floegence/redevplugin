@@ -1,11 +1,13 @@
 use redevplugin_ipc::ParsedWorkerInvocation;
-use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Condvar, Mutex, Weak};
 
 type CancellationNotifier = Arc<dyn Fn() + Send + Sync>;
 const RECENT_REQUEST_REPLAY_CAPACITY: usize = 1024;
+const QUEUE_TOMBSTONE_COMPACT_MIN: usize = 16;
+const ORDER_TOMBSTONE_COMPACT_MIN: usize = 16;
 
 pub struct Cancellation {
     canceled: AtomicBool,
@@ -181,14 +183,29 @@ struct SchedulerLimits {
 
 #[derive(Default)]
 struct SchedulerState {
-    queues: BTreeMap<String, VecDeque<InvocationJob>>,
-    order: VecDeque<String>,
+    queues: HashMap<String, PluginQueue>,
+    order: VecDeque<QueueToken>,
+    queued_by_request: HashMap<String, InvocationJob>,
     active: HashMap<String, ActiveInvocation>,
     active_by_plugin: HashMap<String, usize>,
     recent_request_ids: HashSet<String>,
     recent_request_order: VecDeque<String>,
+    next_queue_generation: u64,
+    stale_order_tokens: usize,
     queued: usize,
     shutdown: bool,
+}
+
+struct PluginQueue {
+    request_ids: VecDeque<String>,
+    live: usize,
+    tombstones: usize,
+    generation: u64,
+}
+
+struct QueueToken {
+    plugin_instance_id: String,
+    generation: u64,
 }
 
 struct ActiveInvocation {
@@ -227,28 +244,43 @@ impl InvocationScheduler {
         let plugin_queued = state
             .queues
             .get(&job.plugin_instance_id)
-            .map(VecDeque::len)
+            .map(|queue| queue.live)
             .unwrap_or_default();
         if plugin_active.saturating_add(plugin_queued) >= self.limits.per_plugin_capacity {
             return Err(EnqueueError::PluginCapacity);
         }
         if state.active.contains_key(&job.request_id)
             || state.recent_request_ids.contains(&job.request_id)
-            || state.queues.values().any(|queue| {
-                queue
-                    .iter()
-                    .any(|queued| queued.request_id == job.request_id)
-            })
+            || state.queued_by_request.contains_key(&job.request_id)
         {
             return Err(EnqueueError::Duplicate);
         }
         let plugin_instance_id = job.plugin_instance_id.clone();
-        let queue = state.queues.entry(plugin_instance_id.clone()).or_default();
-        let was_empty = queue.is_empty();
-        queue.push_back(job);
-        if was_empty {
-            state.order.push_back(plugin_instance_id);
+        let request_id = job.request_id.clone();
+        if let Some(queue) = state.queues.get_mut(&plugin_instance_id) {
+            queue.request_ids.push_back(request_id.clone());
+            queue.live += 1;
+        } else {
+            state.next_queue_generation = state
+                .next_queue_generation
+                .checked_add(1)
+                .expect("scheduler queue generation exhausted");
+            let generation = state.next_queue_generation;
+            state.queues.insert(
+                plugin_instance_id.clone(),
+                PluginQueue {
+                    request_ids: VecDeque::from([request_id.clone()]),
+                    live: 1,
+                    tombstones: 0,
+                    generation,
+                },
+            );
+            state.order.push_back(QueueToken {
+                plugin_instance_id,
+                generation,
+            });
         }
+        state.queued_by_request.insert(request_id, job);
         state.queued += 1;
         self.available.notify_all();
         Ok(())
@@ -259,25 +291,63 @@ impl InvocationScheduler {
         loop {
             let plugin_count = state.order.len();
             for _ in 0..plugin_count {
-                let plugin_instance_id = state.order.pop_front()?;
+                let token = state.order.pop_front()?;
+                let plugin_instance_id = token.plugin_instance_id;
+                let valid_token = state
+                    .queues
+                    .get(&plugin_instance_id)
+                    .is_some_and(|queue| queue.generation == token.generation);
+                if !valid_token {
+                    state.stale_order_tokens = state
+                        .stale_order_tokens
+                        .checked_sub(1)
+                        .expect("stale scheduler order token is counted");
+                    continue;
+                };
                 let active = state
                     .active_by_plugin
                     .get(&plugin_instance_id)
                     .copied()
                     .unwrap_or_default();
                 if active >= self.limits.per_plugin_concurrency {
-                    state.order.push_back(plugin_instance_id);
+                    state.order.push_back(QueueToken {
+                        plugin_instance_id,
+                        generation: token.generation,
+                    });
                     continue;
                 }
+                let job = loop {
+                    let request_id = state
+                        .queues
+                        .get_mut(&plugin_instance_id)
+                        .expect("scheduler order references a queue")
+                        .request_ids
+                        .pop_front()
+                        .expect("scheduler live queue is not empty");
+                    if let Some(job) = state.queued_by_request.remove(&request_id) {
+                        break job;
+                    }
+                    let queue = state
+                        .queues
+                        .get_mut(&plugin_instance_id)
+                        .expect("scheduler order references a queue");
+                    queue.tombstones = queue
+                        .tombstones
+                        .checked_sub(1)
+                        .expect("queued request tombstone is counted");
+                };
                 let queue = state
                     .queues
                     .get_mut(&plugin_instance_id)
                     .expect("scheduler order references a queue");
-                let job = queue.pop_front().expect("scheduler queue is not empty");
-                if queue.is_empty() {
+                queue.live -= 1;
+                if queue.live == 0 {
                     state.queues.remove(&plugin_instance_id);
                 } else {
-                    state.order.push_back(plugin_instance_id.clone());
+                    state.order.push_back(QueueToken {
+                        plugin_instance_id: plugin_instance_id.clone(),
+                        generation: token.generation,
+                    });
                 }
                 state.queued -= 1;
                 *state
@@ -322,41 +392,78 @@ impl InvocationScheduler {
 
     pub fn cancel(&self, request_id: &str) -> CancelDisposition {
         let mut state = self.state.lock().expect("scheduler mutex poisoned");
-        let plugins = state.queues.keys().cloned().collect::<Vec<_>>();
-        for plugin_instance_id in plugins {
-            let removed = {
+        if let Some(job) = state.queued_by_request.remove(request_id) {
+            let plugin_instance_id = job.plugin_instance_id.clone();
+            let queue_empty = {
                 let queue = state
                     .queues
                     .get_mut(&plugin_instance_id)
-                    .expect("queued plugin exists");
-                queue
-                    .iter()
-                    .position(|job| job.request_id == request_id)
-                    .map(|position| {
-                        let job = queue.remove(position).expect("queued invocation exists");
-                        (job, queue.is_empty())
-                    })
+                    .expect("queued invocation references a plugin queue");
+                queue.live -= 1;
+                queue.tombstones += 1;
+                queue.live == 0
             };
-            if let Some((job, queue_empty)) = removed {
-                job.cancellation.cancel();
-                state.queued -= 1;
-                if queue_empty {
-                    state.queues.remove(&plugin_instance_id);
-                    state.order.retain(|plugin| plugin != &plugin_instance_id);
-                }
-                Self::remember_recent_request_id(&mut state, &job.request_id);
-                return CancelDisposition::Queued(job);
+            state.queued -= 1;
+            if queue_empty {
+                state.queues.remove(&plugin_instance_id);
+                state.stale_order_tokens += 1;
+            } else {
+                Self::compact_plugin_queue(&mut state, &plugin_instance_id);
             }
+            Self::compact_order(&mut state);
+            Self::remember_recent_request_id(&mut state, &job.request_id);
+            drop(state);
+            job.cancellation.cancel();
+            return CancelDisposition::Queued(job);
         }
         if let Some(active) = state.active.get(request_id) {
-            active.cancellation.cancel();
-            let _ = active.signal_sender.send(InvocationSignal::Canceled);
+            let cancellation = Arc::clone(&active.cancellation);
+            let signal_sender = active.signal_sender.clone();
+            drop(state);
+            cancellation.cancel();
+            let _ = signal_sender.send(InvocationSignal::Canceled);
             return CancelDisposition::Running;
         }
         if state.recent_request_ids.contains(request_id) {
             return CancelDisposition::Complete;
         }
         CancelDisposition::Missing
+    }
+
+    fn compact_plugin_queue(state: &mut SchedulerState, plugin_instance_id: &str) {
+        let should_compact = state.queues.get(plugin_instance_id).is_some_and(|queue| {
+            queue.tombstones >= QUEUE_TOMBSTONE_COMPACT_MIN && queue.tombstones > queue.live
+        });
+        if !should_compact {
+            return;
+        }
+        let SchedulerState {
+            queues,
+            queued_by_request,
+            ..
+        } = state;
+        let queue = queues
+            .get_mut(plugin_instance_id)
+            .expect("scheduler plugin queue exists for compaction");
+        queue
+            .request_ids
+            .retain(|request_id| queued_by_request.contains_key(request_id));
+        queue.tombstones = 0;
+    }
+
+    fn compact_order(state: &mut SchedulerState) {
+        if state.stale_order_tokens < ORDER_TOMBSTONE_COMPACT_MIN
+            || state.stale_order_tokens * 2 < state.order.len()
+        {
+            return;
+        }
+        state.order.retain(|token| {
+            state
+                .queues
+                .get(&token.plugin_instance_id)
+                .is_some_and(|queue| queue.generation == token.generation)
+        });
+        state.stale_order_tokens = 0;
     }
 
     fn remember_recent_request_id(state: &mut SchedulerState, request_id: &str) {
@@ -389,19 +496,30 @@ impl InvocationScheduler {
     pub fn shutdown(&self) -> Vec<InvocationJob> {
         let mut state = self.state.lock().expect("scheduler mutex poisoned");
         state.shutdown = true;
-        let mut canceled = Vec::new();
-        for queue in state.queues.values_mut() {
-            while let Some(job) = queue.pop_front() {
-                job.cancellation.cancel();
-                canceled.push(job);
+        let mut plugin_instance_ids = state.queues.keys().cloned().collect::<Vec<_>>();
+        plugin_instance_ids.sort_unstable();
+        let mut canceled = Vec::with_capacity(state.queued);
+        for plugin_instance_id in plugin_instance_ids {
+            let queue = state
+                .queues
+                .remove(&plugin_instance_id)
+                .expect("shutdown plugin queue exists");
+            for request_id in queue.request_ids {
+                if let Some(job) = state.queued_by_request.remove(&request_id) {
+                    canceled.push(job);
+                }
             }
+        }
+        debug_assert!(state.queued_by_request.is_empty());
+        for job in &canceled {
+            job.cancellation.cancel();
         }
         for active in state.active.values() {
             active.cancellation.cancel();
             let _ = active.signal_sender.send(InvocationSignal::Canceled);
         }
-        state.queues.clear();
         state.order.clear();
+        state.stale_order_tokens = 0;
         state.queued = 0;
         self.available.notify_all();
         canceled
@@ -601,6 +719,70 @@ mod tests {
         ));
         assert_eq!(scheduler.take().unwrap().request_id, "a2");
         assert_eq!(scheduler.take().unwrap().request_id, "b1");
+    }
+
+    #[test]
+    fn queued_cancel_compacts_request_tombstones() {
+        let scheduler = InvocationScheduler::new(64, 64);
+        for index in 0..64 {
+            scheduler
+                .enqueue(job(&format!("a-{index:02}"), "a"))
+                .unwrap();
+        }
+        for index in 0..40 {
+            assert!(matches!(
+                scheduler.cancel(&format!("a-{index:02}")),
+                CancelDisposition::Queued(_)
+            ));
+        }
+        let state = scheduler.state.lock().unwrap();
+        let queue = state.queues.get("a").unwrap();
+        assert_eq!(queue.live, 24);
+        assert!(queue.tombstones < QUEUE_TOMBSTONE_COMPACT_MIN);
+        assert!(queue.request_ids.len() <= queue.live + QUEUE_TOMBSTONE_COMPACT_MIN - 1);
+        drop(state);
+        assert_eq!(scheduler.take().unwrap().request_id, "a-40");
+    }
+
+    #[test]
+    fn queued_cancel_compacts_stale_round_robin_tokens() {
+        let scheduler = InvocationScheduler::new(1, 1);
+        for index in 0..128 {
+            let request_id = format!("request-{index:03}");
+            let plugin_instance_id = format!("plugin-{index:03}");
+            scheduler
+                .enqueue(job(&request_id, &plugin_instance_id))
+                .unwrap();
+            assert!(matches!(
+                scheduler.cancel(&request_id),
+                CancelDisposition::Queued(_)
+            ));
+        }
+        let state = scheduler.state.lock().unwrap();
+        assert!(state.queues.is_empty());
+        assert!(state.stale_order_tokens < ORDER_TOMBSTONE_COMPACT_MIN);
+        assert!(state.order.len() < ORDER_TOMBSTONE_COMPACT_MIN);
+    }
+
+    #[test]
+    fn shutdown_preserves_plugin_and_fifo_order_while_skipping_tombstones() {
+        let scheduler = InvocationScheduler::new(8, 2);
+        for (request_id, plugin_instance_id) in [("b1", "b"), ("a1", "a"), ("a2", "a"), ("b2", "b")]
+        {
+            scheduler
+                .enqueue(job(request_id, plugin_instance_id))
+                .unwrap();
+        }
+        assert!(matches!(
+            scheduler.cancel("a1"),
+            CancelDisposition::Queued(_)
+        ));
+        let canceled = scheduler
+            .shutdown()
+            .into_iter()
+            .map(|job| job.request_id)
+            .collect::<Vec<_>>();
+        assert_eq!(canceled, ["a2", "b1", "b2"]);
     }
 
     fn job(request_id: &str, plugin_instance_id: &str) -> InvocationJob {
