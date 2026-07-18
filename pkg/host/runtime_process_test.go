@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -106,7 +107,11 @@ func hostRuntimeTestDescriptor(t *testing.T, runtimePath string) runtimeclient.R
 	if _, err := io.Copy(hasher, file); err != nil {
 		t.Fatalf("hash runtime executable: %v", err)
 	}
-	runtimeVersion, err := version.ParseSemVer(version.RuntimeVersion)
+	runtimeVersionText := strings.TrimSpace(os.Getenv("REDEVPLUGIN_PERFORMANCE_RUNTIME_VERSION"))
+	if runtimeVersionText == "" {
+		runtimeVersionText = version.RuntimeVersion
+	}
+	runtimeVersion, err := version.ParseSemVer(runtimeVersionText)
 	if err != nil {
 		t.Fatalf("parse runtime version: %v", err)
 	}

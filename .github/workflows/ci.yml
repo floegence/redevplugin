@@ -170,8 +170,8 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npx playwright install --with-deps chromium
-      - run: ./scripts/build_redevplugin_release.sh --performance-gate smoke --version "0.0.0-ci.${GITHUB_RUN_NUMBER}"
+      - run: ./scripts/build_redevplugin_release.sh --performance-gate smoke --version "0.5.0-ci.${GITHUB_RUN_NUMBER}"
       - run: ./dist/redevplugin-release/bin/redevplugin verify-compatibility ./dist/redevplugin-release/compatibility.json ./dist/redevplugin-release/contracts
-      - run: node scripts/verify_redevplugin_release_bundle.mjs --skip-execution --allow-smoke ./dist/redevplugin-release "0.0.0-ci.${GITHUB_RUN_NUMBER}"
+      - run: node scripts/verify_redevplugin_release_bundle.mjs --skip-execution --allow-smoke ./dist/redevplugin-release "0.5.0-ci.${GITHUB_RUN_NUMBER}"
       - name: Verify standalone published-release toolchain isolation
-        run: node scripts/test_published_release_verifier.mjs ./dist/redevplugin-release "0.0.0-ci.${GITHUB_RUN_NUMBER}" "$GITHUB_SHA"
+        run: node scripts/test_published_release_verifier.mjs ./dist/redevplugin-release "0.5.0-ci.${GITHUB_RUN_NUMBER}" "$GITHUB_SHA"

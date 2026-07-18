@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"net/url"
-	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -1346,15 +1345,6 @@ func scanSQLiteStreamEvent(scanner sqliteStreamScanner) (Event, error) {
 	event.Data = append([]byte(nil), event.Data...)
 	event.At = unixToTime(at)
 	return event, nil
-}
-
-func sortStreams(records []Record) {
-	sort.Slice(records, func(i, j int) bool {
-		if records[i].CreatedAt.Equal(records[j].CreatedAt) {
-			return records[i].StreamID < records[j].StreamID
-		}
-		return records[i].CreatedAt.Before(records[j].CreatedAt)
-	})
 }
 
 func timePtrToNullableUnix(value *time.Time) any {

@@ -1169,7 +1169,6 @@ func (s *ProcessSupervisor) wait(cmd *exec.Cmd, exit *processExit, cancel contex
 	err := cmd.Wait()
 	cancel()
 	<-exit.ipcReaderDone
-	s.failPendingGeneration(generation, fmt.Errorf("%w: runtime generation exited", ErrRuntimeIPCUnavailable))
 	var controlIn io.WriteCloser
 	var controlOut io.Closer
 	s.mu.Lock()
@@ -1191,6 +1190,7 @@ func (s *ProcessSupervisor) wait(cmd *exec.Cmd, exit *processExit, cancel contex
 		}
 	}
 	s.mu.Unlock()
+	s.failPendingGeneration(generation, fmt.Errorf("%w: runtime generation exited", ErrRuntimeIPCUnavailable))
 	if controlIn != nil {
 		_ = controlIn.Close()
 	}
@@ -2044,30 +2044,24 @@ func (s *ProcessSupervisor) readIPCLoop(stdout *bufio.Reader, generation *runtim
 		frame, err := readIPCFrame(stdout)
 		if err != nil {
 			wrapped := fmt.Errorf("%w: read ipc frame: %v", ErrRuntimeIPCUnavailable, err)
-			s.failPendingGeneration(generation, wrapped)
-			if s.runtimeGenerationReady(health) {
-				s.invalidateRuntimeAfterIPCFailure(health, "runtime ipc reader failed", wrapped)
-			}
+			s.invalidateAndFailPending(generation, health, "runtime ipc reader failed", wrapped)
 			return
 		}
 		if frame.IPCVersion != version.RustIPCVersion || frame.RuntimeGenerationID != health.RuntimeGenerationID {
 			err := fmt.Errorf("%w: invalid runtime frame identity", ErrRuntimeIPCUnavailable)
-			s.failPendingGeneration(generation, err)
-			s.invalidateRuntimeAfterIPCFailure(health, "runtime ipc frame identity failed", err)
+			s.invalidateAndFailPending(generation, health, "runtime ipc frame identity failed", err)
 			return
 		}
 		switch frame.FrameType {
 		case ipcFrameTypeCompileFlightRegister:
 			if err := s.registerCompileFlight(generation, frame); err != nil {
-				s.failPendingGeneration(generation, err)
-				s.invalidateRuntimeAfterIPCFailure(health, "runtime compile flight registration failed", err)
+				s.invalidateAndFailPending(generation, health, "runtime compile flight registration failed", err)
 				return
 			}
 			continue
 		case ipcFrameTypeCompileFlightComplete:
 			if err := s.completeCompileFlight(generation, frame); err != nil {
-				s.failPendingGeneration(generation, err)
-				s.invalidateRuntimeAfterIPCFailure(health, "runtime compile flight completion failed", err)
+				s.invalidateAndFailPending(generation, health, "runtime compile flight completion failed", err)
 				return
 			}
 			continue
@@ -2075,8 +2069,7 @@ func (s *ProcessSupervisor) readIPCLoop(stdout *bufio.Reader, generation *runtim
 			flight, ok := s.claimCompileFlightArtifact(generation, frame)
 			if !ok {
 				err := fmt.Errorf("%w: runtime artifact request is not bound to a registered compile flight", ErrRuntimeIPCUnavailable)
-				s.failPendingGeneration(generation, err)
-				s.invalidateRuntimeAfterIPCFailure(health, "runtime compile flight artifact binding failed", err)
+				s.invalidateAndFailPending(generation, health, "runtime compile flight artifact binding failed", err)
 				return
 			}
 			s.dispatchCompileFlightArtifact(generation, health, frame, flight)
@@ -2088,8 +2081,7 @@ func (s *ProcessSupervisor) readIPCLoop(stdout *bufio.Reader, generation *runtim
 			parent, ok := s.activeInvocationParent(generation, frame.ParentRequestID)
 			if !ok {
 				err := fmt.Errorf("%w: runtime hostcall parent_request_id is not an active invocation", ErrRuntimeIPCUnavailable)
-				s.failPendingGeneration(generation, err)
-				s.invalidateRuntimeAfterIPCFailure(health, "runtime hostcall parent binding failed", err)
+				s.invalidateAndFailPending(generation, health, "runtime hostcall parent binding failed", err)
 				return
 			}
 			s.dispatchRuntimeHostcall(generation, health, frame, parent)
@@ -2110,6 +2102,11 @@ func (s *ProcessSupervisor) readIPCLoop(stdout *bufio.Reader, generation *runtim
 		default:
 		}
 	}
+}
+
+func (s *ProcessSupervisor) invalidateAndFailPending(generation *runtimeGeneration, health Health, message string, err error) {
+	s.invalidateRuntimeAfterIPCFailure(health, message, err)
+	s.failPendingGeneration(generation, err)
 }
 
 func runtimeOriginFrame(frameType string) bool {
