@@ -42,6 +42,9 @@
 
 ### Changed
 
+- Release per-plugin scheduler capacity before publishing a completed worker
+  response, so an immediately following invocation cannot observe stale active
+  state and receive a spurious capacity denial.
 - Consolidate plugin-data workspace finalization and export verification into a
   symlink-safe rooted tree snapshot that reuses canonical hashes, file sizes,
   and entry metadata while failing closed on post-hash filesystem changes.

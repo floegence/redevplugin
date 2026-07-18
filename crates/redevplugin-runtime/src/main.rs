@@ -832,15 +832,29 @@ fn start_invocation_workers(
                                     format!("runtime response frame failed: {err}"),
                                 )
                             });
-                        if let Ok(response) = response {
-                            let _ = send_frame(&execution.writer, response);
-                        }
-                        scheduler.finish(&request_id);
+                        complete_scheduled_invocation(
+                            &scheduler,
+                            &execution.writer,
+                            &request_id,
+                            response,
+                        );
                     }
                 })
                 .map_err(|err| format!("start runtime invocation worker: {err}"))
         })
         .collect()
+}
+
+fn complete_scheduled_invocation(
+    scheduler: &scheduler::InvocationScheduler,
+    writer: &FrameSender,
+    request_id: &str,
+    response: Result<String, String>,
+) {
+    scheduler.finish(request_id);
+    if let Ok(response) = response {
+        let _ = send_frame(writer, response);
+    }
 }
 
 fn wait_for_hostcall_response(
@@ -3150,6 +3164,55 @@ mod tests {
             send_frame(&sender, "frame".to_string()).unwrap_err(),
             "runtime IPC writer is unavailable"
         );
+    }
+
+    #[test]
+    fn scheduled_invocation_releases_capacity_before_publishing_response() {
+        fn job(request_id: &str) -> scheduler::InvocationJob {
+            let frame = worker_invocation_frame("plugini_capacity", 1).replacen(
+                r#""request_id":"r1""#,
+                &format!(r#""request_id":"{request_id}""#),
+                1,
+            );
+            let invocation = redevplugin_ipc::parse_worker_invocation(&frame)
+                .expect("worker invocation must be valid");
+            scheduler::InvocationJob::new(invocation).expect("invocation job must be valid")
+        }
+
+        let scheduler = Arc::new(scheduler::InvocationScheduler::new(2, 1));
+        scheduler.enqueue(job("r1")).unwrap();
+        let running = scheduler.take().unwrap();
+        scheduler.enqueue(job("r2")).unwrap();
+        assert_eq!(scheduler.metrics().active, 1);
+        assert_eq!(scheduler.metrics().queued, 1);
+
+        let (writer, outbound) = mpsc::sync_channel(0);
+        let completion_scheduler = Arc::clone(&scheduler);
+        let request_id = running.request_id.clone();
+        let completion = thread::spawn(move || {
+            complete_scheduled_invocation(
+                &completion_scheduler,
+                &writer,
+                &request_id,
+                Ok("completed".to_string()),
+            );
+        });
+
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while scheduler.metrics().active != 0 && Instant::now() < deadline {
+            thread::yield_now();
+        }
+        assert_eq!(scheduler.metrics().active, 0);
+        scheduler
+            .enqueue(job("r3"))
+            .expect("replacement invocation must use released plugin capacity");
+        assert_eq!(scheduler.metrics().queued, 2);
+
+        assert_eq!(
+            outbound.recv_timeout(Duration::from_secs(1)).unwrap(),
+            "completed"
+        );
+        completion.join().unwrap();
     }
 
     #[test]
