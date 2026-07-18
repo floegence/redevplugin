@@ -807,10 +807,10 @@ var routes = []routeSpec{
 
 func NewHandler(deps Dependencies) (*Handler, error) {
 	if deps.Host == nil {
-		return nil, errors.New("host is required")
+		return nil, &host.HostConfigError{Module: "http", Adapter: "host"}
 	}
-	if deps.Guard == nil {
-		return nil, errors.New("web security guard is required")
+	if isNilInterfaceValue(deps.Guard) {
+		return nil, &host.HostConfigError{Module: "http", Adapter: "web security guard"}
 	}
 	h := &Handler{host: deps.Host, guard: deps.Guard, mux: http.NewServeMux()}
 	for _, route := range routes {
@@ -834,6 +834,19 @@ func NewHandler(deps Dependencies) (*Handler, error) {
 		writeError(w, http.StatusNotFound, security.ErrInvalidRequest, "route not found", errorDetails{})
 	})
 	return h, nil
+}
+
+func isNilInterfaceValue(value any) bool {
+	if value == nil {
+		return true
+	}
+	reflected := reflect.ValueOf(value)
+	switch reflected.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
+		return reflected.IsNil()
+	default:
+		return false
+	}
 }
 
 func (h *Handler) bindRoute(route routeSpec) http.HandlerFunc {

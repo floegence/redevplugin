@@ -14,6 +14,7 @@ import (
 	"io"
 	"net/url"
 	"path"
+	"reflect"
 	"runtime"
 	"slices"
 	"sort"
@@ -98,6 +99,7 @@ var (
 	ErrPluginRuntimeIncompatible     = errors.New("plugin runtime is incompatible")
 	ErrSecurityEventPersistence      = errors.New("plugin security event persistence failed")
 	ErrHostClosed                    = errors.New("plugin host is closed")
+	ErrHostConfig                    = errors.New("plugin host configuration is invalid")
 	ErrFeatureNotConfigured          = errors.New("plugin feature is not configured")
 	ErrReleaseModuleRequired         = errors.New("release module is required")
 	ErrRuntimeModuleRequired         = errors.New("runtime module is required")
@@ -106,6 +108,35 @@ var (
 	ErrSecretsModuleRequired         = errors.New("secrets module is required")
 	ErrCoreActionModuleRequired      = errors.New("core action module is required")
 )
+
+// HostConfigError identifies the module and adapter that made a host
+// configuration invalid. Cause preserves legacy module-required sentinels.
+type HostConfigError struct {
+	Module  string
+	Adapter string
+	Cause   error
+}
+
+func (e *HostConfigError) Error() string {
+	if e == nil {
+		return ""
+	}
+	module := strings.TrimSpace(e.Module)
+	adapter := strings.TrimSpace(e.Adapter)
+	if module == "" {
+		module = "host"
+	}
+	if adapter == "" {
+		return fmt.Sprintf("%s: %s module is incomplete", ErrHostConfig, module)
+	}
+	return fmt.Sprintf("%s: %s %s is required", ErrHostConfig, module, adapter)
+}
+
+func (e *HostConfigError) Unwrap() error { return ErrHostConfig }
+
+func (e *HostConfigError) Is(target error) bool {
+	return target == ErrHostConfig || (e != nil && e.Cause != nil && errors.Is(e.Cause, target))
+}
 
 // Feature identifies an optional host integration module. The values are part
 // of the host contract and must remain a closed, sorted set.
@@ -1107,51 +1138,84 @@ func normalizeConfig(config Config) (normalizedAdapters, map[Feature]struct{}, e
 
 func validateConfig(adapters normalizedAdapters, config Config) error {
 	checks := []struct {
-		name string
-		ok   bool
+		name  string
+		value any
 	}{
-		{"policy adapter", adapters.Policy != nil},
-		{"package trust verifier", adapters.PackageTrustVerifier != nil},
-		{"registry store", adapters.Registry != nil},
-		{"audit sink", adapters.Audit != nil},
-		{"security audit journal", adapters.SecurityAudit != nil},
-		{"diagnostics sink", adapters.Diagnostics != nil},
-		{"surface token service", adapters.SurfaceTokens != nil},
-		{"plugin data store", adapters.PluginData != nil},
-		{"asset store", adapters.Assets != nil},
-		{"install stage store", adapters.InstallStages != nil},
-		{"operation store", adapters.Operations != nil},
-		{"confirmation intent store", adapters.ConfirmationIntents != nil},
-		{"stream store", adapters.Streams != nil},
+		{"policy", adapters.Policy},
+		{"package trust verifier", adapters.PackageTrustVerifier},
+		{"registry store", adapters.Registry},
+		{"audit sink", adapters.Audit},
+		{"security audit journal", adapters.SecurityAudit},
+		{"diagnostics sink", adapters.Diagnostics},
+		{"surface token service", adapters.SurfaceTokens},
+		{"plugin data store", adapters.PluginData},
+		{"asset store", adapters.Assets},
+		{"install stage store", adapters.InstallStages},
+		{"operation store", adapters.Operations},
+		{"confirmation intent store", adapters.ConfirmationIntents},
+		{"stream store", adapters.Streams},
 	}
 	for _, check := range checks {
-		if !check.ok {
-			return fmt.Errorf("core adapter %s is required", check.name)
+		if isNilInterfaceValue(check.value) {
+			return &HostConfigError{Module: "core", Adapter: check.name}
 		}
+	}
+	if adapters.SurfaceCatalog != nil && isNilInterfaceValue(adapters.SurfaceCatalog) {
+		return &HostConfigError{Module: "core", Adapter: "surface catalog sink"}
 	}
 	if module := config.Release; module != nil {
-		if module.ReleaseMetadataVerifier == nil || module.RevocationVerifier == nil ||
-			module.ReleaseSourcePolicy == nil || module.ReleaseArtifactResolver == nil || module.HostRequirements == nil ||
-			module.CapabilityContractArtifacts == nil || module.CapabilityContractKeys == nil {
-			return ErrReleaseModuleRequired
+		checks := []struct {
+			name  string
+			value any
+		}{
+			{"metadata verifier", module.ReleaseMetadataVerifier},
+			{"revocation verifier", module.RevocationVerifier},
+			{"source policy", module.ReleaseSourcePolicy},
+			{"artifact resolver", module.ReleaseArtifactResolver},
+			{"host requirements", module.HostRequirements},
+			{"capability contract artifacts", module.CapabilityContractArtifacts},
+			{"capability contract keys", module.CapabilityContractKeys},
+		}
+		for _, check := range checks {
+			if isNilInterfaceValue(check.value) {
+				return &HostConfigError{Module: string(FeatureRelease), Adapter: check.name, Cause: ErrReleaseModuleRequired}
+			}
 		}
 	}
-	if module := config.Runtime; module != nil && module.Manager == nil {
-		return ErrRuntimeModuleRequired
+	if module := config.Runtime; module != nil && isNilInterfaceValue(module.Manager) {
+		return &HostConfigError{Module: string(FeatureRuntime), Adapter: "manager", Cause: ErrRuntimeModuleRequired}
 	}
-	if module := config.Capability; module != nil && module.Registry == nil {
-		return ErrCapabilityModuleRequired
+	if module := config.Capability; module != nil && isNilInterfaceValue(module.Registry) {
+		return &HostConfigError{Module: string(FeatureCapability), Adapter: "registry", Cause: ErrCapabilityModuleRequired}
 	}
-	if module := config.Connectivity; module != nil && (module.Broker == nil || module.NetworkExecutor == nil) {
-		return ErrConnectivityModuleRequired
+	if module := config.Connectivity; module != nil {
+		if isNilInterfaceValue(module.Broker) {
+			return &HostConfigError{Module: string(FeatureConnectivity), Adapter: "broker", Cause: ErrConnectivityModuleRequired}
+		}
+		if isNilInterfaceValue(module.NetworkExecutor) {
+			return &HostConfigError{Module: string(FeatureConnectivity), Adapter: "network executor", Cause: ErrConnectivityModuleRequired}
+		}
 	}
-	if module := config.Secrets; module != nil && module.Store == nil {
-		return ErrSecretsModuleRequired
+	if module := config.Secrets; module != nil && isNilInterfaceValue(module.Store) {
+		return &HostConfigError{Module: string(FeatureSecrets), Adapter: "store", Cause: ErrSecretsModuleRequired}
 	}
-	if module := config.CoreAction; module != nil && module.Adapter == nil {
-		return ErrCoreActionModuleRequired
+	if module := config.CoreAction; module != nil && isNilInterfaceValue(module.Adapter) {
+		return &HostConfigError{Module: string(FeatureCoreAction), Adapter: "action", Cause: ErrCoreActionModuleRequired}
 	}
 	return nil
+}
+
+func isNilInterfaceValue(value any) bool {
+	if value == nil {
+		return true
+	}
+	reflected := reflect.ValueOf(value)
+	switch reflected.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
+		return reflected.IsNil()
+	default:
+		return false
+	}
 }
 
 var (

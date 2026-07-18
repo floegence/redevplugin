@@ -794,6 +794,23 @@ func TestHandlerWebSecurityRejectsHostSpecificOriginDecision(t *testing.T) {
 func TestHandlerWebSecurityFailsClosedWithoutGuard(t *testing.T) {
 	if _, err := NewHandler(Dependencies{Host: newHTTPTestHost(t)}); err == nil {
 		t.Fatal("NewHandler() expected missing guard error")
+	} else {
+		var configErr *host.HostConfigError
+		if !errors.As(err, &configErr) || !errors.Is(err, host.ErrHostConfig) {
+			t.Fatalf("NewHandler() error = %v, want HostConfigError", err)
+		}
+	}
+}
+
+func TestHandlerWebSecurityFailsClosedWithTypedNilGuard(t *testing.T) {
+	var guard *httpTestWebSecurityGuard
+	_, err := NewHandler(Dependencies{Host: newHTTPTestHost(t), Guard: guard})
+	var configErr *host.HostConfigError
+	if !errors.As(err, &configErr) || !errors.Is(err, host.ErrHostConfig) {
+		t.Fatalf("NewHandler() error = %v, want HostConfigError", err)
+	}
+	if configErr.Module != "http" || configErr.Adapter != "web security guard" {
+		t.Fatalf("HostConfigError = %#v", configErr)
 	}
 }
 

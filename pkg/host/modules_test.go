@@ -45,6 +45,57 @@ func TestOpenConfigRequiresCompleteCoreAdapters(t *testing.T) {
 	if errors.Is(err, ErrFeatureNotConfigured) {
 		t.Fatalf("core validation returned optional feature error: %v", err)
 	}
+	var configErr *HostConfigError
+	if !errors.As(err, &configErr) || !errors.Is(err, ErrHostConfig) {
+		t.Fatalf("Open() error = %v, want HostConfigError", err)
+	}
+}
+
+func TestOpenConfigRejectsTypedNilAdapters(t *testing.T) {
+	t.Run("core", func(t *testing.T) {
+		config := modularTestConfig(t)
+		var policy *policyAdapter
+		config.Core.Policy = policy
+
+		_, err := Open(context.Background(), config)
+		var configErr *HostConfigError
+		if !errors.As(err, &configErr) || !errors.Is(err, ErrHostConfig) {
+			t.Fatalf("Open() error = %v, want HostConfigError", err)
+		}
+		if configErr.Module != "core" || configErr.Adapter != "policy" {
+			t.Fatalf("HostConfigError = %#v", configErr)
+		}
+	})
+
+	t.Run("optional module", func(t *testing.T) {
+		config := modularTestConfig(t)
+		var store *recordingSecretStore
+		config.Secrets = &SecretsModule{Store: store}
+
+		_, err := Open(context.Background(), config)
+		var configErr *HostConfigError
+		if !errors.As(err, &configErr) || !errors.Is(err, ErrHostConfig) || !errors.Is(err, ErrSecretsModuleRequired) {
+			t.Fatalf("Open() error = %v, want HostConfigError and ErrSecretsModuleRequired", err)
+		}
+		if configErr.Module != string(FeatureSecrets) || configErr.Adapter != "store" {
+			t.Fatalf("HostConfigError = %#v", configErr)
+		}
+	})
+
+	t.Run("optional core adapter", func(t *testing.T) {
+		config := modularTestConfig(t)
+		var catalog *surfaceSink
+		config.Core.SurfaceCatalog = catalog
+
+		_, err := Open(context.Background(), config)
+		var configErr *HostConfigError
+		if !errors.As(err, &configErr) || !errors.Is(err, ErrHostConfig) {
+			t.Fatalf("Open() error = %v, want HostConfigError", err)
+		}
+		if configErr.Module != "core" || configErr.Adapter != "surface catalog sink" {
+			t.Fatalf("HostConfigError = %#v", configErr)
+		}
+	})
 }
 
 func TestOpenConfigRejectsIncompleteDeclaredModules(t *testing.T) {
