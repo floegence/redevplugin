@@ -1,7 +1,6 @@
 package plugindata
 
 import (
-	"bufio"
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
@@ -209,20 +208,33 @@ func validateTree(root string) error {
 }
 
 func hashTree(root, excludedRootFile string) (string, error) {
-	if err := validateTree(root); err != nil {
-		return "", err
-	}
 	var paths []string
 	if err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
-		if path == root {
-			return nil
-		}
-		relative, err := filepath.Rel(root, path)
+		info, err := entry.Info()
 		if err != nil {
 			return err
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			if path == root {
+				return fmt.Errorf("%w: dataset root is not a directory", ErrUnsafeFilesystem)
+			}
+			return fmt.Errorf("%w: symlink %s", ErrUnsafeFilesystem, path)
+		}
+		if path == root {
+			if !info.IsDir() {
+				return fmt.Errorf("%w: dataset root is not a directory", ErrUnsafeFilesystem)
+			}
+			return nil
+		}
+		if !info.IsDir() && !validPathRegular(path, info) {
+			return fmt.Errorf("%w: unsupported filesystem entry %s", ErrUnsafeFilesystem, path)
+		}
+		relative, err := filepath.Rel(root, path)
+		if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) || filepath.IsAbs(relative) {
+			return fmt.Errorf("%w: path escapes dataset root", ErrUnsafeFilesystem)
 		}
 		if relative == excludedRootFile {
 			return nil
@@ -234,6 +246,7 @@ func hashTree(root, excludedRootFile string) (string, error) {
 	}
 	slices.Sort(paths)
 	hasher := sha256.New()
+	var copyBuffer []byte
 	for _, relative := range paths {
 		path := filepath.Join(root, filepath.FromSlash(relative))
 		info, err := os.Lstat(path)
@@ -252,7 +265,11 @@ func hashTree(root, excludedRootFile string) (string, error) {
 		if err != nil {
 			return "", err
 		}
-		_, copyErr := io.Copy(hasher, bufio.NewReader(file))
+		if copyBuffer == nil {
+			copyBuffer = make([]byte, 32<<10)
+		}
+		reader := struct{ io.Reader }{Reader: file}
+		_, copyErr := io.CopyBuffer(hasher, reader, copyBuffer)
 		closeErr := file.Close()
 		if copyErr != nil {
 			return "", copyErr
