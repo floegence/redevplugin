@@ -118,7 +118,7 @@ fn run() -> Result<(), String> {
     for job in scheduler.shutdown() {
         send_frame(
             &writer,
-            canceled_invocation_frame(&job.request_id, &runtime_generation_id),
+            canceled_invocation_frame(&job.request_id, &runtime_generation_id)?,
         )?;
     }
     execution.pending_artifacts.shutdown();
@@ -175,7 +175,7 @@ fn dispatch_runtime_input(
                             runtime_generation_id,
                             redevplugin_ipc::ERR_WORKER_INVOCATION_INVALID,
                             "invalid worker invocation",
-                        ),
+                        )?,
                     );
                 }
             };
@@ -207,7 +207,7 @@ fn dispatch_runtime_input(
                                 runtime_generation_id,
                                 code,
                                 message,
-                            ),
+                            )?,
                         )?;
                     }
                 }
@@ -218,7 +218,7 @@ fn dispatch_runtime_input(
                         runtime_generation_id,
                         redevplugin_ipc::ERR_WORKER_INVOCATION_INVALID,
                         &err,
-                    ),
+                    )?,
                 )?,
             }
         }
@@ -230,7 +230,7 @@ fn dispatch_runtime_input(
                 scheduler::CancelDisposition::Queued(job) => {
                     send_frame(
                         writer,
-                        canceled_invocation_frame(&job.request_id, runtime_generation_id),
+                        canceled_invocation_frame(&job.request_id, runtime_generation_id)?,
                     )?;
                     "queued"
                 }
@@ -245,12 +245,12 @@ fn dispatch_runtime_input(
             };
             send_frame(
                 writer,
-                redevplugin_ipc::cancel_invoke_ack_frame(
+                ipc_frame(redevplugin_ipc::cancel_invoke_ack_frame(
                     &cancel.identity.request_id,
                     runtime_generation_id,
                     &cancel.invocation_request_id,
                     disposition,
-                ),
+                ))?,
             )?;
         }
         redevplugin_ipc::RuntimeInputFrame::HostcallResponse(response) => {
@@ -293,15 +293,13 @@ fn dispatch_runtime_input(
             }
             send_frame(
                 writer,
-                redevplugin_ipc::error_response_frame(
+                runtime_error_frame(
                     "diagnostic",
                     &identity.request_id,
                     runtime_generation_id,
-                    redevplugin_ipc::ResponseError::runtime(
-                        redevplugin_ipc::ERR_UNSUPPORTED_FRAME,
-                        "runtime frame type is not supported",
-                    ),
-                ),
+                    redevplugin_ipc::ERR_UNSUPPORTED_FRAME,
+                    "runtime frame type is not supported",
+                )?,
             )?;
         }
     }
@@ -684,6 +682,40 @@ fn send_frame(writer: &FrameSender, frame: String) -> Result<(), String> {
         .map_err(|_| "runtime IPC writer is unavailable".to_string())
 }
 
+fn ipc_frame(frame: redevplugin_ipc::IpcResult<String>) -> Result<String, String> {
+    frame.map_err(|err| format!("build runtime IPC response frame: {err}"))
+}
+
+fn response_error_frame(
+    frame_type: &str,
+    request_id: &str,
+    runtime_generation_id: &str,
+    error: redevplugin_ipc::IpcResult<redevplugin_ipc::ResponseError<'_>>,
+) -> Result<String, String> {
+    let error = error.map_err(|err| format!("build runtime IPC response error: {err}"))?;
+    ipc_frame(redevplugin_ipc::error_response_frame(
+        frame_type,
+        request_id,
+        runtime_generation_id,
+        error,
+    ))
+}
+
+fn runtime_error_frame(
+    frame_type: &str,
+    request_id: &str,
+    runtime_generation_id: &str,
+    code: &str,
+    message: &str,
+) -> Result<String, String> {
+    response_error_frame(
+        frame_type,
+        request_id,
+        runtime_generation_id,
+        redevplugin_ipc::ResponseError::runtime(code, message),
+    )
+}
+
 fn worker_engine() -> wasmi::Engine {
     let mut config = Config::default();
     config.consume_fuel(true);
@@ -707,16 +739,20 @@ fn invocation_error_frame(
     runtime_generation_id: &str,
     code: &str,
     message: &str,
-) -> String {
-    redevplugin_ipc::error_response_frame(
+) -> Result<String, String> {
+    runtime_error_frame(
         redevplugin_ipc::FRAME_TYPE_INVOKE_WORKER_RESULT,
         request_id,
         runtime_generation_id,
-        redevplugin_ipc::ResponseError::runtime(code, message),
+        code,
+        message,
     )
 }
 
-fn canceled_invocation_frame(request_id: &str, runtime_generation_id: &str) -> String {
+fn canceled_invocation_frame(
+    request_id: &str,
+    runtime_generation_id: &str,
+) -> Result<String, String> {
     invocation_error_frame(
         request_id,
         runtime_generation_id,
@@ -739,8 +775,18 @@ fn start_invocation_workers(
                 .spawn(move || {
                     while let Some(job) = scheduler.take() {
                         let request_id = job.request_id.clone();
-                        let response = handle_scheduled_worker_invocation(&job, &execution);
-                        let _ = send_frame(&execution.writer, response);
+                        let response = handle_scheduled_worker_invocation(&job, &execution)
+                            .or_else(|err| {
+                                invocation_error_frame(
+                                    &request_id,
+                                    &execution.runtime_generation_id,
+                                    redevplugin_ipc::ERR_WASM_WORKER_FAILED,
+                                    &format!("runtime response frame failed: {err}"),
+                                )
+                            });
+                        if let Ok(response) = response {
+                            let _ = send_frame(&execution.writer, response);
+                        }
                         scheduler.finish(&request_id);
                     }
                 })
@@ -867,7 +913,7 @@ fn load_worker_artifact(
 fn handle_scheduled_worker_invocation(
     job: &scheduler::InvocationJob,
     execution: &Arc<ConcurrentExecutionState>,
-) -> String {
+) -> Result<String, String> {
     let invocation = job.invocation.as_ref();
     let request_id = job.request_id.as_str();
     let runtime_generation_id = execution.runtime_generation_id.as_str();
@@ -1163,12 +1209,12 @@ fn handle_scheduled_worker_invocation(
     }
     match redevplugin_ipc::parse_worker_response_v2(&result.response_json) {
         Ok(redevplugin_ipc::WorkerResponseV2::Success(data)) => {
-            redevplugin_ipc::success_response_frame(
+            ipc_frame(redevplugin_ipc::success_response_frame(
                 redevplugin_ipc::FRAME_TYPE_INVOKE_WORKER_RESULT,
                 request_id,
                 runtime_generation_id,
                 &format!("{{\"data\":{data}}}"),
-            )
+            ))
         }
         Ok(redevplugin_ipc::WorkerResponseV2::Failure { code, message }) => {
             let error = if worker_error_is_hostcall(&result, &code, &message) {
@@ -1176,7 +1222,7 @@ fn handle_scheduled_worker_invocation(
             } else {
                 redevplugin_ipc::ResponseError::plugin(&code, &message)
             };
-            redevplugin_ipc::error_response_frame(
+            response_error_frame(
                 redevplugin_ipc::FRAME_TYPE_INVOKE_WORKER_RESULT,
                 request_id,
                 runtime_generation_id,
@@ -1394,16 +1440,14 @@ fn run_control_channel(
             redevplugin_ipc::FRAME_TYPE_REVOKE_EPOCH => {
                 handle_revoke_epoch(shared, &request_id, runtime_generation_id, &line)
             }
-            _ => redevplugin_ipc::error_response_frame(
+            _ => runtime_error_frame(
                 "diagnostic",
                 &request_id,
                 runtime_generation_id,
-                redevplugin_ipc::ResponseError::runtime(
-                    redevplugin_ipc::ERR_UNSUPPORTED_FRAME,
-                    "runtime control frame type is not supported",
-                ),
+                redevplugin_ipc::ERR_UNSUPPORTED_FRAME,
+                "runtime control frame type is not supported",
             ),
-        };
+        }?;
         write_file
             .write_all(response.as_bytes())
             .and_then(|_| write_file.write_all(b"\n"))
@@ -1418,32 +1462,28 @@ fn handle_heartbeat(
     runtime_generation_id: &str,
     line: &str,
     status: &RuntimeStatus,
-) -> String {
+) -> Result<String, String> {
     let request = match redevplugin_ipc::parse_heartbeat_request(line) {
         Ok(value) => value,
         Err(err) => {
-            return redevplugin_ipc::error_response_frame(
+            return runtime_error_frame(
                 redevplugin_ipc::FRAME_TYPE_HEARTBEAT,
                 request_id,
                 runtime_generation_id,
-                redevplugin_ipc::ResponseError::runtime(
-                    redevplugin_ipc::ERR_WORKER_INVOCATION_INVALID,
-                    err.as_str(),
-                ),
+                redevplugin_ipc::ERR_WORKER_INVOCATION_INVALID,
+                err.as_str(),
             );
         }
     };
     let max_staleness_ms = match request.max_staleness_ms {
         value if value > 0 => value,
         _ => {
-            return redevplugin_ipc::error_response_frame(
+            return runtime_error_frame(
                 redevplugin_ipc::FRAME_TYPE_HEARTBEAT,
                 request_id,
                 runtime_generation_id,
-                redevplugin_ipc::ResponseError::runtime(
-                    redevplugin_ipc::ERR_WORKER_INVOCATION_INVALID,
-                    "max_staleness_ms must be positive",
-                ),
+                redevplugin_ipc::ERR_WORKER_INVOCATION_INVALID,
+                "max_staleness_ms must be positive",
             );
         }
     };
@@ -1465,12 +1505,12 @@ fn handle_heartbeat(
             module_cache: module_cache_metrics(status.module_cache.metrics()),
         },
     );
-    redevplugin_ipc::success_response_frame(
+    ipc_frame(redevplugin_ipc::success_response_frame(
         redevplugin_ipc::FRAME_TYPE_HEARTBEAT,
         request_id,
         runtime_generation_id,
         &result_json,
-    )
+    ))
 }
 
 #[derive(Debug)]
@@ -1847,18 +1887,16 @@ fn handle_revoke_epoch(
     request_id: &str,
     runtime_generation_id: &str,
     line: &str,
-) -> String {
+) -> Result<String, String> {
     let request = match redevplugin_ipc::parse_revoke_epoch_request(line) {
         Ok(value) => value,
         Err(err) => {
-            return redevplugin_ipc::error_response_frame(
+            return runtime_error_frame(
                 redevplugin_ipc::FRAME_TYPE_REVOKE_EPOCH_ACK,
                 request_id,
                 runtime_generation_id,
-                redevplugin_ipc::ResponseError::runtime(
-                    redevplugin_ipc::ERR_WORKER_INVOCATION_INVALID,
-                    err.as_str(),
-                ),
+                redevplugin_ipc::ERR_WORKER_INVOCATION_INVALID,
+                err.as_str(),
             );
         }
     };
@@ -1875,12 +1913,12 @@ fn handle_revoke_epoch(
         0,
         0,
     );
-    redevplugin_ipc::success_response_frame(
+    ipc_frame(redevplugin_ipc::success_response_frame(
         redevplugin_ipc::FRAME_TYPE_REVOKE_EPOCH_ACK,
         request_id,
         runtime_generation_id,
         &result_json,
-    )
+    ))
 }
 
 #[derive(Debug)]
@@ -3284,7 +3322,8 @@ mod tests {
             hostcall_routes: OutstandingHostcallRoutes::new(2, 4),
         });
 
-        let response = handle_scheduled_worker_invocation(&job, &execution);
+        let response = handle_scheduled_worker_invocation(&job, &execution)
+            .expect("runtime invocation error response");
 
         assert!(response.contains(redevplugin_ipc::ERR_RUNTIME_LEASE_INVALID));
         assert!(response.contains("test clock unavailable"));
@@ -3591,7 +3630,8 @@ mod tests {
             "r1",
             "g1",
             r#"{"ipc_version":"rust-ipc-v3","frame_type":"revoke_epoch","request_id":"r1","runtime_generation_id":"g1","payload":{"plugin_instance_id":"plugini_1","revoke_epoch":7}}"#,
-        );
+        )
+        .expect("revoke epoch response");
         assert!(response.contains(r#""frame_type":"revoke_epoch_ack""#));
         assert!(response.contains(r#""ok":true"#));
         assert!(response.contains(r#""plugin_instance_id":"plugini_1""#));
@@ -3719,7 +3759,8 @@ mod tests {
             "g1",
             r#"{"ipc_version":"rust-ipc-v3","frame_type":"heartbeat","request_id":"r1","runtime_generation_id":"g1","payload":{"sent_unix_nano":100,"max_staleness_ms":5000}}"#,
             &status,
-        );
+        )
+        .expect("heartbeat response");
         assert!(response.contains(r#""frame_type":"heartbeat""#));
         assert!(response.contains(r#""ok":true"#));
         assert!(response.contains(r#""runtime_generation_id":"g1""#));
@@ -3740,7 +3781,8 @@ mod tests {
             "g1",
             r#"{"ipc_version":"rust-ipc-v3","frame_type":"heartbeat","request_id":"r1","runtime_generation_id":"g1","payload":{"sent_unix_nano":100}}"#,
             &status,
-        );
+        )
+        .expect("invalid heartbeat error response");
         assert!(response.contains(r#""frame_type":"heartbeat""#));
         assert!(response.contains(r#""ok":false"#));
     }
@@ -3753,7 +3795,8 @@ mod tests {
             "r1",
             "g1",
             r#"{"ipc_version":"rust-ipc-v3","frame_type":"revoke_epoch","request_id":"r1","runtime_generation_id":"g1","payload":{"plugin_instance_id":"plugini_1"}}"#,
-        );
+        )
+        .expect("invalid revoke epoch error response");
         assert!(response.contains(r#""frame_type":"revoke_epoch_ack""#));
         assert!(response.contains(r#""ok":false"#));
         assert!(response.contains(redevplugin_ipc::ERR_WORKER_INVOCATION_INVALID));

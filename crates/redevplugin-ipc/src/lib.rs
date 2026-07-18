@@ -60,6 +60,28 @@ pub const ERROR_ORIGIN_RUNTIME: &str = "runtime";
 pub const ERROR_ORIGIN_HOSTCALL: &str = "hostcall";
 pub const ERROR_ORIGIN_PLUGIN: &str = "plugin";
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum IpcError {
+    InvalidResponseResultJson,
+    EmptyResponseErrorCode,
+    EmptyResponseErrorMessage,
+}
+
+pub type IpcResult<T> = Result<T, IpcError>;
+
+impl std::fmt::Display for IpcError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            Self::InvalidResponseResultJson => "runtime response result must be valid JSON",
+            Self::EmptyResponseErrorCode => "runtime response code is required",
+            Self::EmptyResponseErrorMessage => "runtime response message is required",
+        })
+    }
+}
+
+impl std::error::Error for IpcError {}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FrameType {
     Hello,
@@ -91,6 +113,39 @@ mod property_gates {
         fn ipc_frame_parser_is_total(input in any::<String>()) {
             let _ = decode_runtime_input_frame(&input);
             let _ = parse_frame_identity_v3(&input);
+        }
+
+        #[test]
+        fn response_frame_builders_are_total(
+            frame_type in any::<String>(),
+            request_id in any::<String>(),
+            runtime_generation_id in any::<String>(),
+            result_json in any::<String>(),
+            code in any::<String>(),
+            message in any::<String>(),
+        ) {
+            let success = std::panic::catch_unwind(|| {
+                success_response_frame(
+                    &frame_type,
+                    &request_id,
+                    &runtime_generation_id,
+                    &result_json,
+                )
+            });
+            prop_assert!(success.is_ok());
+            let error = std::panic::catch_unwind(|| ResponseError::runtime(&code, &message));
+            prop_assert!(error.is_ok());
+            if let Ok(Ok(error)) = error {
+                let frame = std::panic::catch_unwind(|| {
+                    error_response_frame(
+                        &frame_type,
+                        &request_id,
+                        &runtime_generation_id,
+                        error,
+                    )
+                });
+                prop_assert!(frame.is_ok());
+            }
         }
 
         #[test]
@@ -1565,15 +1620,19 @@ pub fn success_response_frame(
     request_id: &str,
     runtime_generation_id: &str,
     result_json: &str,
-) -> String {
-    assert!(
-        serde_json::from_str::<serde_json::Value>(result_json).is_ok(),
-        "runtime response result must be valid JSON"
-    );
+) -> IpcResult<String> {
+    serde_json::from_str::<serde_json::Value>(result_json)
+        .map_err(|_| IpcError::InvalidResponseResultJson)?;
     let payload = format!("{{\"ok\":true,\"result\":{result_json}}}");
-    render_response_frame(frame_type, request_id, runtime_generation_id, &payload)
+    Ok(render_response_frame(
+        frame_type,
+        request_id,
+        runtime_generation_id,
+        &payload,
+    ))
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ResponseError<'a> {
     code: &'a str,
     message: &'a str,
@@ -1581,29 +1640,30 @@ pub struct ResponseError<'a> {
 }
 
 impl<'a> ResponseError<'a> {
-    pub fn runtime(code: &'a str, message: &'a str) -> Self {
+    pub fn runtime(code: &'a str, message: &'a str) -> IpcResult<Self> {
         Self::new(code, message, ERROR_ORIGIN_RUNTIME)
     }
 
-    pub fn hostcall(code: &'a str, message: &'a str) -> Self {
+    pub fn hostcall(code: &'a str, message: &'a str) -> IpcResult<Self> {
         Self::new(code, message, ERROR_ORIGIN_HOSTCALL)
     }
 
-    pub fn plugin(code: &'a str, message: &'a str) -> Self {
+    pub fn plugin(code: &'a str, message: &'a str) -> IpcResult<Self> {
         Self::new(code, message, ERROR_ORIGIN_PLUGIN)
     }
 
-    fn new(code: &'a str, message: &'a str, origin: &'static str) -> Self {
-        assert!(!code.trim().is_empty(), "runtime response code is required");
-        assert!(
-            !message.trim().is_empty(),
-            "runtime response message is required"
-        );
-        Self {
+    fn new(code: &'a str, message: &'a str, origin: &'static str) -> IpcResult<Self> {
+        if code.trim().is_empty() {
+            return Err(IpcError::EmptyResponseErrorCode);
+        }
+        if message.trim().is_empty() {
+            return Err(IpcError::EmptyResponseErrorMessage);
+        }
+        Ok(Self {
             code,
             message,
             origin,
-        }
+        })
     }
 }
 
@@ -1612,9 +1672,14 @@ pub fn error_response_frame(
     request_id: &str,
     runtime_generation_id: &str,
     error: ResponseError<'_>,
-) -> String {
+) -> IpcResult<String> {
     let payload = render_error_payload(error);
-    render_response_frame(frame_type, request_id, runtime_generation_id, &payload)
+    Ok(render_response_frame(
+        frame_type,
+        request_id,
+        runtime_generation_id,
+        &payload,
+    ))
 }
 
 fn render_error_payload(error: ResponseError<'_>) -> String {
@@ -1724,7 +1789,7 @@ pub fn cancel_invoke_ack_frame(
     runtime_generation_id: &str,
     invocation_request_id: &str,
     disposition: &str,
-) -> String {
+) -> IpcResult<String> {
     let result = serde_json::json!({
         "invocation_request_id": invocation_request_id,
         "disposition": disposition,
@@ -3601,7 +3666,8 @@ mod tests {
     fn parses_cancel_and_binds_parent_request_id() {
         let cancel = r#"{"ipc_version":"rust-ipc-v3","frame_type":"cancel_invoke","request_id":"cancel-1","runtime_generation_id":"g1","payload":{"invocation_request_id":"invoke-1"}}"#;
         assert_eq!(parse_cancel_invoke(cancel).unwrap(), "invoke-1");
-        let ack = cancel_invoke_ack_frame("cancel-1", "g1", "invoke-1", "running");
+        let ack = cancel_invoke_ack_frame("cancel-1", "g1", "invoke-1", "running")
+            .expect("cancel acknowledgement frame");
         assert!(ack.contains(r#""frame_type":"cancel_invoke_ack""#));
         let hostcall = bind_parent_request_id(
             r#"{"ipc_version":"rust-ipc-v3","frame_type":"open_handle","request_id":"invoke-1:artifact","runtime_generation_id":"g1","payload":{}}"#,
@@ -4058,8 +4124,10 @@ mod tests {
             FRAME_TYPE_INVOKE_WORKER_RESULT,
             "r1",
             "g1",
-            ResponseError::runtime(ERR_WASM_WORKER_FAILED, "runtime worker execution failed"),
-        );
+            ResponseError::runtime(ERR_WASM_WORKER_FAILED, "runtime worker execution failed")
+                .expect("runtime response error"),
+        )
+        .expect("runtime error response frame");
         assert!(frame.contains(r#""frame_type":"invoke_worker_result""#));
         assert!(frame.contains(r#""ok":false"#));
         assert!(frame.contains(r#""code":"WASM_WORKER_FAILED""#));
@@ -4069,21 +4137,35 @@ mod tests {
             FRAME_TYPE_INVOKE_WORKER_RESULT,
             "r2",
             "g1",
-            ResponseError::plugin("NOTE_NOT_FOUND", "note was not found"),
-        );
+            ResponseError::plugin("NOTE_NOT_FOUND", "note was not found")
+                .expect("plugin response error"),
+        )
+        .expect("plugin error response frame");
         assert!(plugin_frame.contains(r#""error_origin":"plugin""#));
     }
 
     #[test]
-    #[should_panic(expected = "runtime response code is required")]
     fn error_response_rejects_empty_code() {
-        let _ = ResponseError::runtime(" ", "failed");
+        assert_eq!(
+            ResponseError::runtime(" ", "failed"),
+            Err(IpcError::EmptyResponseErrorCode),
+        );
     }
 
     #[test]
-    #[should_panic(expected = "runtime response message is required")]
     fn error_response_rejects_empty_message() {
-        let _ = ResponseError::runtime("FAILED", " ");
+        assert_eq!(
+            ResponseError::runtime("FAILED", " "),
+            Err(IpcError::EmptyResponseErrorMessage),
+        );
+    }
+
+    #[test]
+    fn success_response_rejects_invalid_result_json_without_panicking() {
+        assert_eq!(
+            success_response_frame(FRAME_TYPE_INVOKE_WORKER_RESULT, "r1", "g1", "{"),
+            Err(IpcError::InvalidResponseResultJson),
+        );
     }
 
     #[test]
@@ -4144,7 +4226,8 @@ mod tests {
                             .as_str()
                             .expect("runtime_generation_id"),
                         &result,
-                    );
+                    )
+                    .expect("success response frame");
                     assert_json_eq(&frame_json, &encoded, fixture_name);
                 }
                 "missing_required.json" => {
