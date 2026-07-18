@@ -148,7 +148,7 @@ func TestLocalImportRoutesUseDedicatedTypeScriptEntrypoint(t *testing.T) {
 	for _, snippet := range []string{
 		"export class PluginLocalImportClient",
 		"export type PluginUploadProgress",
-		"importLocalPackage(packageBlob: Blob",
+		"importLocalPackage(pluginInstanceId: string, packageBlob: Blob",
 		"/_redevplugin/api/plugins/local-imports",
 		"updateLocalPackage(pluginInstanceId: string",
 		"/_redevplugin/api/plugins/${encodeURIComponent(pluginInstanceId)}/local-import",
@@ -665,7 +665,7 @@ func typeScriptSDKRouteBindings() []typeScriptSDKRouteBinding {
 		{
 			routeFixture: routeFixture{Method: "POST", Path: "/_redevplugin/api/plugins/local-imports"},
 			Owner:        "PluginLocalImportClient.importLocalPackage",
-			Snippets:     []string{"importLocalPackage(packageBlob: Blob", "/_redevplugin/api/plugins/local-imports"},
+			Snippets:     []string{"importLocalPackage(pluginInstanceId: string, packageBlob: Blob", "/_redevplugin/api/plugins/local-imports"},
 		},
 		{
 			routeFixture: routeFixture{Method: "PUT", Path: "/_redevplugin/api/plugins/{plugin_instance_id}/local-import"},
