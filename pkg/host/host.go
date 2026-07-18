@@ -2424,16 +2424,15 @@ func (h *Host) InvokeIntent(ctx context.Context, req InvokeIntentRequest) (respo
 	defer func() {
 		resultErr = finalizeRPCError(ctx, resultErr)
 	}()
+	if _, err := h.authorizeManagementSession(ctx, session, ManagementActionInvokeIntent,
+		scopedAuthorizationTarget(ResourceIntent, req.IntentID, sessionctx.ScopeEnvironment),
+		relatedAuthorizationTargets(scopedAuthorizationTarget(ResourcePlugin, req.PluginInstanceID, sessionctx.ScopeEnvironment))...,
+	); err != nil {
+		return CallMethodResult{}, err
+	}
 	req.session = session
 	resolved, err := h.resolveIntentIdentity(ctx, req)
 	if err != nil {
-		return CallMethodResult{}, err
-	}
-	if _, err := h.authorizeManagementSession(ctx, session, ManagementActionInvokeIntent,
-		scopedAuthorizationTarget(ResourceIntent, resolved.intent.IntentID, sessionctx.ScopeEnvironment),
-		scopedAuthorizationTarget(ResourcePlugin, resolved.record.PluginInstanceID, sessionctx.ScopeEnvironment),
-		authorizationTarget(ResourceMethod, resolved.method.Method),
-	); err != nil {
 		return CallMethodResult{}, err
 	}
 	if err := h.authorizeResolvedIntent(ctx, req, resolved); err != nil {
@@ -2707,9 +2706,9 @@ func (h *Host) InstallReleaseRef(ctx context.Context, req InstallReleaseRefReque
 	if err != nil {
 		return registry.PluginRecord{}, err
 	}
-	pluginInstanceID := strings.TrimSpace(req.PluginInstanceID)
+	req.PluginInstanceID = strings.TrimSpace(req.PluginInstanceID)
 	if _, err := h.authorizeManagementSession(ctx, session, ManagementActionInstallReleaseRef,
-		scopedAuthorizationTarget(ResourcePlugin, pluginInstanceID, sessionctx.ScopeEnvironment),
+		scopedAuthorizationTarget(ResourcePlugin, req.PluginInstanceID, sessionctx.ScopeEnvironment),
 	); err != nil {
 		return registry.PluginRecord{}, err
 	}
@@ -2717,13 +2716,13 @@ func (h *Host) InstallReleaseRef(ctx context.Context, req InstallReleaseRefReque
 	if err != nil {
 		return registry.PluginRecord{}, err
 	}
-	unlockLifecycle, err := h.lifecycleLocks.acquireWrite(ctx, pluginInstanceID)
+	unlockLifecycle, err := h.lifecycleLocks.acquireWrite(ctx, req.PluginInstanceID)
 	if err != nil {
 		return registry.PluginRecord{}, err
 	}
 	defer unlockLifecycle()
 	releaseRef := req.ReleaseRef
-	return h.installResolvedPackage(ctx, pkg, pluginInstanceID, packageTrustInput{
+	return h.installResolvedPackage(ctx, pkg, req.PluginInstanceID, packageTrustInput{
 		ReleaseRef:           &releaseRef,
 		Release:              &release,
 		SourcePolicySnapshot: &sourcePolicy,
@@ -2858,6 +2857,11 @@ func (h *Host) UpdateReleaseRef(ctx context.Context, req UpdateReleaseRefRequest
 		return registry.PluginRecord{}, err
 	}
 	req.PluginInstanceID = strings.TrimSpace(req.PluginInstanceID)
+	if _, err := h.authorizeManagementSession(ctx, session, ManagementActionUpdateReleaseRef,
+		scopedAuthorizationTarget(ResourcePlugin, req.PluginInstanceID, sessionctx.ScopeEnvironment),
+	); err != nil {
+		return registry.PluginRecord{}, err
+	}
 	current, err := h.adapters.Registry.GetPlugin(ctx, req.PluginInstanceID)
 	if err != nil {
 		return registry.PluginRecord{}, err
@@ -2867,12 +2871,6 @@ func (h *Host) UpdateReleaseRef(ctx context.Context, req UpdateReleaseRefRequest
 	}
 	pkg, release, sourcePolicy, metadata, err := h.resolveReleasePackage(ctx, PackageTrustActionUpdate, req.ReleaseRef, &current, current.PluginInstanceID, req.Now)
 	if err != nil {
-		return registry.PluginRecord{}, err
-	}
-	if _, err := h.authorizeManagementSession(ctx, session, ManagementActionUpdateReleaseRef,
-		scopedAuthorizationTarget(ResourcePlugin, current.PluginInstanceID, sessionctx.ScopeEnvironment),
-		authorizationTarget(ResourcePackage, pkg.PackageHash),
-	); err != nil {
 		return registry.PluginRecord{}, err
 	}
 	unlockLifecycle, err := h.lifecycleLocks.acquireWrite(ctx, req.PluginInstanceID)
@@ -5380,8 +5378,10 @@ func activePermissionGrant(record permissions.Record, now time.Time) bool {
 }
 
 func (h *Host) ListDiagnosticEvents(ctx context.Context, req ListDiagnosticEventsRequest) ([]DiagnosticEvent, error) {
+	req.PluginID = strings.TrimSpace(req.PluginID)
 	req.PluginInstanceID = strings.TrimSpace(req.PluginInstanceID)
 	req.SurfaceInstanceID = strings.TrimSpace(req.SurfaceInstanceID)
+	req.Type = strings.TrimSpace(req.Type)
 	authorization, err := h.authorizeManagement(ctx, ManagementActionListDiagnosticEvents,
 		authorizationCollectionTarget(ResourceDiagnostic),
 		relatedAuthorizationTargets(
@@ -5415,10 +5415,6 @@ func (h *Host) ListDiagnosticEvents(ctx context.Context, req ListDiagnosticEvent
 	if err != nil {
 		return nil, err
 	}
-	pluginID := strings.TrimSpace(req.PluginID)
-	pluginInstanceID := strings.TrimSpace(req.PluginInstanceID)
-	surfaceInstanceID := strings.TrimSpace(req.SurfaceInstanceID)
-	eventType := strings.TrimSpace(req.Type)
 	limit := req.Limit
 	if limit <= 0 {
 		limit = 100
@@ -5433,10 +5429,10 @@ func (h *Host) ListDiagnosticEvents(ctx context.Context, req ListDiagnosticEvent
 			event.SessionChannelIDHash != session.SessionChannelIDHash {
 			continue
 		}
-		if pluginID != "" && event.PluginID != pluginID ||
-			pluginInstanceID != "" && event.PluginInstanceID != pluginInstanceID ||
-			surfaceInstanceID != "" && event.SurfaceInstanceID != surfaceInstanceID ||
-			eventType != "" && event.Type != eventType ||
+		if req.PluginID != "" && event.PluginID != req.PluginID ||
+			req.PluginInstanceID != "" && event.PluginInstanceID != req.PluginInstanceID ||
+			req.SurfaceInstanceID != "" && event.SurfaceInstanceID != req.SurfaceInstanceID ||
+			req.Type != "" && event.Type != req.Type ||
 			req.Severity != "" && event.Severity != req.Severity ||
 			!event.Severity.Valid() {
 			continue

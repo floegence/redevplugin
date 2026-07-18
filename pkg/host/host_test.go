@@ -666,6 +666,7 @@ func TestInstallReleaseRefResolvesArtifactAndInstallsVerifiedPackage(t *testing.
 	resolver := &recordingReleaseArtifactResolver{
 		artifact: resolvedArtifactForPackage(t, ref, pkg, packageBytes),
 	}
+	sourceResolver := &recordingReleaseSourcePolicyResolver{snapshot: sourcePolicyForRelease(ref)}
 	metadataVerifier := &recordingReleaseMetadataVerifier{}
 	verifier := &recordingPackageTrustVerifier{trustState: registry.TrustVerified, metadata: map[string]string{"trust.key_id": "official"}}
 	h, _, _ := newTestHostWithOptions(t, testHostOptions{
@@ -673,13 +674,13 @@ func TestInstallReleaseRefResolvesArtifactAndInstallsVerifiedPackage(t *testing.
 		localGenerated:          true,
 		trustVerifier:           verifier,
 		releaseMetadataVerifier: metadataVerifier,
-		releaseSourcePolicy:     &recordingReleaseSourcePolicyResolver{snapshot: sourcePolicyForRelease(ref)},
+		releaseSourcePolicy:     sourceResolver,
 		releaseArtifactResolver: resolver,
 	})
 
 	installed, err := h.InstallReleaseRef(ctx, InstallReleaseRefRequest{
 		ReleaseRef:       ref,
-		PluginInstanceID: "plugini_release_ref",
+		PluginInstanceID: "  plugini_release_ref  ",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -712,13 +713,16 @@ func TestInstallReleaseRefResolvesArtifactAndInstallsVerifiedPackage(t *testing.
 		installed.Metadata["trust.key_id"] != "official" {
 		t.Fatalf("metadata = %#v", installed.Metadata)
 	}
-	if resolver.last.Action != PackageTrustActionInstall || resolver.last.ReleaseRef.PluginID != pkg.Manifest.PluginID() {
+	if sourceResolver.last.PluginInstanceID != "plugini_release_ref" {
+		t.Fatalf("source policy request identity = %#v", sourceResolver.last)
+	}
+	if resolver.last.Action != PackageTrustActionInstall || resolver.last.ReleaseRef.PluginID != pkg.Manifest.PluginID() || resolver.last.PluginInstanceID != "plugini_release_ref" {
 		t.Fatalf("resolver request mismatch: %#v", resolver.last)
 	}
 	if resolver.last.SourcePolicySnapshot.SourceClass != PackageSourceClassOfficial || !resolver.last.SourcePolicySnapshot.RequireSignature {
 		t.Fatalf("resolver source policy mismatch: %#v", resolver.last.SourcePolicySnapshot)
 	}
-	if verifier.last.Action != PackageTrustActionInstall || verifier.last.LocalImport || verifier.last.Package.PackageHash != pkg.PackageHash {
+	if verifier.last.Action != PackageTrustActionInstall || verifier.last.LocalImport || verifier.last.Package.PackageHash != pkg.PackageHash || verifier.last.PluginInstanceID != "plugini_release_ref" {
 		t.Fatalf("verifier request mismatch: %#v", verifier.last)
 	}
 	if verifier.last.SourcePolicySnapshot == nil || verifier.last.SourcePolicySnapshot.SourceClass != PackageSourceClassOfficial || !verifier.last.SourcePolicySnapshot.RequireSignature {
@@ -727,7 +731,7 @@ func TestInstallReleaseRefResolvesArtifactAndInstallsVerifiedPackage(t *testing.
 	if verifier.last.ReleaseRef == nil || verifier.last.ReleaseRef.PluginID != pkg.Manifest.PluginID() {
 		t.Fatalf("verifier release ref mismatch: %#v", verifier.last.ReleaseRef)
 	}
-	if metadataVerifier.calls != 1 || metadataVerifier.last.ReleaseRef.PluginID != pkg.Manifest.PluginID() || len(metadataVerifier.last.ReleaseMetadataBytes) == 0 || len(metadataVerifier.last.ReleaseMetadataSignature) == 0 {
+	if metadataVerifier.calls != 1 || metadataVerifier.last.ReleaseRef.PluginID != pkg.Manifest.PluginID() || metadataVerifier.last.PluginInstanceID != "plugini_release_ref" || len(metadataVerifier.last.ReleaseMetadataBytes) == 0 || len(metadataVerifier.last.ReleaseMetadataSignature) == 0 {
 		t.Fatalf("metadata verifier request mismatch: calls=%d request=%#v", metadataVerifier.calls, metadataVerifier.last)
 	}
 	floor, err := h.adapters.Registry.GetSourceSecurityFloor(ctx, ref.SourceID)

@@ -40,18 +40,22 @@ export class PluginLocalImportClient {
   }
 
   async updateLocalPackage(pluginInstanceId: string, expectedManagementRevision: number, packageBlob: Blob, options: PluginLocalImportOptions = {}): Promise<PluginRecord> {
+    const canonicalPluginInstanceId = pluginInstanceId.trim();
+    if (!canonicalPluginInstanceId) {
+      throw new TypeError("pluginInstanceId is required");
+    }
     try {
       const plugin = await this.#requestMutation<PluginRecord>(
-        `/_redevplugin/api/plugins/${encodeURIComponent(pluginInstanceId)}/local-import?expected_management_revision=${encodeURIComponent(String(expectedManagementRevision))}`,
+        `/_redevplugin/api/plugins/${encodeURIComponent(canonicalPluginInstanceId)}/local-import?expected_management_revision=${encodeURIComponent(String(expectedManagementRevision))}`,
         packageBlob,
         options,
       );
-      disposePluginSurfaceScope(this.#surfaceScope, pluginInstanceId);
+      disposePluginSurfaceScope(this.#surfaceScope, canonicalPluginInstanceId);
       return plugin;
     } catch (error) {
       if (!(error instanceof PluginPlatformRequestError && error.mutationOutcome === "not_committed")) {
-        disposePluginSurfaceScope(this.#surfaceScope, pluginInstanceId);
-        this.#onMutationOutcomeUnknown?.(pluginInstanceId);
+        disposePluginSurfaceScope(this.#surfaceScope, canonicalPluginInstanceId);
+        this.#onMutationOutcomeUnknown?.(canonicalPluginInstanceId);
       }
       throw error;
     }

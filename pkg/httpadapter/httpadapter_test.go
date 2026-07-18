@@ -936,6 +936,26 @@ func TestHandlerMapsHostDirectAuthorizationDenialToStableActionCode(t *testing.T
 	}
 }
 
+func TestHandlerMapsHostAuthorizationAdapterFailureWithoutLeakingDetails(t *testing.T) {
+	h := newHTTPTestHostWithOptions(t, httpTestHostOptions{authorization: httpFailAuthorization{}})
+	handler := mustNewHandler(t, h, allowHTTPTestGuard())
+	req := httptest.NewRequest(http.MethodGet, "/_redevplugin/api/plugins/catalog", nil)
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	var envelope decodedErrorResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &envelope); err != nil {
+		t.Fatal(err)
+	}
+	if rec.Code != http.StatusBadGateway || envelope.Code != string(security.ErrAdapterFailure) {
+		t.Fatalf("host authorization adapter failure = status:%d envelope:%#v", rec.Code, envelope)
+	}
+	if strings.Contains(rec.Body.String(), "private authorization backend unavailable") {
+		t.Fatalf("authorization adapter detail leaked: %s", rec.Body.String())
+	}
+}
+
 func TestHandlerRouteAndHostAuthorizationShareOneClosedAction(t *testing.T) {
 	authorization := &httpRecordingAuthorization{}
 	guard := allowHTTPTestGuard()
@@ -3618,10 +3638,17 @@ func TestStableOwnerScopeAndAdapterFailuresMapToHTTPContracts(t *testing.T) {
 		statusFor func(error) int
 	}{
 		{name: "bridge action", err: host.ErrActionDenied, code: security.ErrActionDenied, status: http.StatusForbidden, codeFor: errorCodeForBridgeError, statusFor: httpStatusForBridgeError},
+		{name: "bridge adapter", err: host.ErrAdapterFailure, code: security.ErrAdapterFailure, status: http.StatusBadGateway, codeFor: errorCodeForBridgeError, statusFor: httpStatusForBridgeError},
 		{name: "rpc action", err: host.ErrActionDenied, code: security.ErrActionDenied, status: http.StatusForbidden, codeFor: errorCodeForRPCError, statusFor: httpStatusForRPCError},
+		{name: "rpc adapter", err: host.ErrAdapterFailure, code: security.ErrAdapterFailure, status: http.StatusBadGateway, codeFor: errorCodeForRPCError, statusFor: httpStatusForRPCError},
 		{name: "stream action", err: host.ErrActionDenied, code: security.ErrActionDenied, status: http.StatusForbidden, codeFor: errorCodeForStreamError, statusFor: httpStatusForStreamError},
+		{name: "stream adapter", err: host.ErrAdapterFailure, code: security.ErrAdapterFailure, status: http.StatusBadGateway, codeFor: errorCodeForStreamError, statusFor: httpStatusForStreamError},
 		{name: "asset action", err: host.ErrActionDenied, code: security.ErrActionDenied, status: http.StatusForbidden, codeFor: errorCodeForAssetError, statusFor: httpStatusForAssetError},
+		{name: "asset adapter", err: host.ErrAdapterFailure, code: security.ErrAdapterFailure, status: http.StatusBadGateway, codeFor: errorCodeForAssetError, statusFor: httpStatusForAssetError},
 		{name: "operation action", err: host.ErrActionDenied, code: security.ErrActionDenied, status: http.StatusForbidden, codeFor: errorCodeForOperationError, statusFor: httpStatusForOperationError},
+		{name: "operation adapter", err: host.ErrAdapterFailure, code: security.ErrAdapterFailure, status: http.StatusBadGateway, codeFor: errorCodeForOperationError, statusFor: httpStatusForOperationError},
+		{name: "intent adapter", err: host.ErrAdapterFailure, code: security.ErrAdapterFailure, status: http.StatusBadGateway, codeFor: errorCodeForIntentError, statusFor: httpStatusForIntentError},
+		{name: "open surface adapter", err: host.ErrAdapterFailure, code: security.ErrAdapterFailure, status: http.StatusBadGateway, codeFor: errorCodeForOpenSurfaceError, statusFor: httpStatusForOpenSurfaceError},
 		{name: "management owner scope", err: host.ErrOwnerScopeMismatch, code: security.ErrOwnerScopeMismatch, status: http.StatusForbidden, codeFor: errorCodeForManagementError, statusFor: httpStatusForManagementError},
 		{name: "management storage scope", err: host.ErrStorageScopeMismatch, code: security.ErrStorageScopeMismatch, status: http.StatusForbidden, codeFor: errorCodeForManagementError, statusFor: httpStatusForManagementError},
 		{name: "management adapter", err: host.ErrAdapterFailure, code: security.ErrAdapterFailure, status: http.StatusBadGateway, codeFor: errorCodeForManagementError, statusFor: httpStatusForManagementError},
@@ -3647,6 +3674,9 @@ func TestStableOwnerScopeAndAdapterFailuresMapToHTTPContracts(t *testing.T) {
 				t.Fatalf("http status = %d, want %d", got, test.status)
 			}
 		})
+	}
+	if code, status := runtimeManagementError(host.ErrAdapterFailure); code != security.ErrAdapterFailure || status != http.StatusBadGateway {
+		t.Fatalf("runtime adapter failure = code:%q status:%d", code, status)
 	}
 }
 
@@ -5278,7 +5308,13 @@ func (httpTestAuthorization) Authorize(_ context.Context, req host.Authorization
 type httpDenyAuthorization struct{}
 
 func (httpDenyAuthorization) Authorize(context.Context, host.AuthorizationRequest) error {
-	return errors.New("private host authorization denial")
+	return host.ErrActionDenied
+}
+
+type httpFailAuthorization struct{}
+
+func (httpFailAuthorization) Authorize(context.Context, host.AuthorizationRequest) error {
+	return errors.New("private authorization backend unavailable")
 }
 
 func (httpTestPolicy) EvaluateLocalPolicy(context.Context, sessionctx.Context, host.PluginRef, manifest.MethodSpec) (host.PolicyDecision, error) {

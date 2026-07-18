@@ -128,6 +128,14 @@
 - Require hosts to choose `plugin_instance_id` before local or release install;
   package APIs, HTTP, OpenAPI, and TypeScript no longer derive an implicit
   instance identity from package contents.
+- Authorize release updates and intent invocation before registry or release
+  discovery, and carry one canonical plugin instance identity through release
+  policy, artifact resolution, trust verification, lifecycle locks, registry,
+  and TypeScript surface teardown.
+- Treat only explicit `ErrActionDenied` results from `AuthorizationAdapter` as
+  policy denials. Operational adapter failures are redacted and exposed through
+  the stable `PLUGIN_ADAPTER_FAILURE` contract instead of being mislabeled as
+  permission failures.
 
 - Require a private Host attestation before the HTTP adapter can expose a
   published capability business error. Business errors that bypass the exact

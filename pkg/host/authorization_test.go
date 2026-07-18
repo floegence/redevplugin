@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/floegence/redevplugin/pkg/registry"
@@ -13,6 +14,32 @@ import (
 type recordingAuthorizationAdapter struct {
 	err      error
 	requests []AuthorizationRequest
+}
+
+type authorizationProbeRegistry struct {
+	registry.Store
+	getCalls  int
+	listCalls int
+}
+
+func (r *authorizationProbeRegistry) GetPlugin(ctx context.Context, pluginInstanceID string) (registry.PluginRecord, error) {
+	r.getCalls++
+	return r.Store.GetPlugin(ctx, pluginInstanceID)
+}
+
+func (r *authorizationProbeRegistry) ListPlugins(ctx context.Context) ([]registry.PluginRecord, error) {
+	r.listCalls++
+	return r.Store.ListPlugins(ctx)
+}
+
+func authorizationTargetsEqual(left, right AuthorizationTarget) bool {
+	if left.Kind != right.Kind || left.ID != right.ID || left.Collection != right.Collection {
+		return false
+	}
+	if left.Scope == nil || right.Scope == nil {
+		return left.Scope == nil && right.Scope == nil
+	}
+	return *left.Scope == *right.Scope
 }
 
 func (a *recordingAuthorizationAdapter) Authorize(_ context.Context, req AuthorizationRequest) error {
@@ -97,7 +124,7 @@ func TestManagementActionAndResourceContractsAreClosed(t *testing.T) {
 	}
 }
 
-func TestDirectManagementAPIsFailClosedBeforeBusinessValidation(t *testing.T) {
+func TestDirectManagementAPIsSanitizeAuthorizationAdapterFailuresBeforeBusinessValidation(t *testing.T) {
 	adapterFailure := errors.New("private authorization backend detail")
 	authorization := &recordingAuthorizationAdapter{err: adapterFailure}
 	h, _, _ := newTestHostWithOptions(t, testHostOptions{
@@ -187,8 +214,8 @@ func TestDirectManagementAPIsFailClosedBeforeBusinessValidation(t *testing.T) {
 			if err == nil {
 				t.Fatal("direct Host API unexpectedly succeeded")
 			}
-			if len(authorization.requests) == 1 && !errors.Is(err, ErrActionDenied) {
-				t.Fatalf("authorized call error = %v, want %v", err, ErrActionDenied)
+			if len(authorization.requests) == 1 && !errors.Is(err, ErrAdapterFailure) {
+				t.Fatalf("authorized call error = %v, want %v", err, ErrAdapterFailure)
 			}
 			if errors.Is(err, adapterFailure) || err.Error() == adapterFailure.Error() {
 				t.Fatalf("authorization adapter error leaked: %v", err)
@@ -249,16 +276,16 @@ func TestAuthorizeManagementDerivesOwnerAndResourceFromHostCall(t *testing.T) {
 		t.Fatalf("authorization requests = %d, want 1", len(authorization.requests))
 	}
 	got := authorization.requests[0]
-	if got.Session != wantSession || got.Action != ManagementActionCancelSurfaceOperation || got.Target != (AuthorizationTarget{Kind: ResourceOperation, ID: "operation_1"}) {
+	if got.Session != wantSession || got.Action != ManagementActionCancelSurfaceOperation || !authorizationTargetsEqual(got.Target, AuthorizationTarget{Kind: ResourceOperation, ID: "operation_1"}) {
 		t.Fatalf("authorization request = %#v", got)
 	}
-	if len(got.RelatedTargets) != 2 || got.RelatedTargets[0] != (AuthorizationTarget{Kind: ResourceSurface, ID: "surface_1"}) || got.RelatedTargets[1] != (AuthorizationTarget{Kind: ResourceBridgeChannel, ID: "channel_1"}) {
+	if len(got.RelatedTargets) != 2 || !authorizationTargetsEqual(got.RelatedTargets[0], AuthorizationTarget{Kind: ResourceSurface, ID: "surface_1"}) || !authorizationTargetsEqual(got.RelatedTargets[1], AuthorizationTarget{Kind: ResourceBridgeChannel, ID: "channel_1"}) {
 		t.Fatalf("related targets = %#v", got.RelatedTargets)
 	}
 }
 
 func TestDirectHostAPIsProjectClosedAuthorizationResources(t *testing.T) {
-	authorization := &recordingAuthorizationAdapter{err: errors.New("deny")}
+	authorization := &recordingAuthorizationAdapter{err: ErrActionDenied}
 	h, _, _ := newTestHostWithOptions(t, testHostOptions{authorization: authorization})
 	ctx := hostTestContext()
 	tests := []struct {
@@ -315,14 +342,14 @@ func TestDirectHostAPIsProjectClosedAuthorizationResources(t *testing.T) {
 				t.Fatalf("authorization requests = %d, want 1", len(authorization.requests))
 			}
 			got := authorization.requests[0]
-			if got.Action != tt.action || got.Target != tt.target {
+			if got.Action != tt.action || !authorizationTargetsEqual(got.Target, tt.target) {
 				t.Fatalf("authorization request = %#v", got)
 			}
 			if len(got.RelatedTargets) != len(tt.related) {
 				t.Fatalf("related targets = %#v, want %#v", got.RelatedTargets, tt.related)
 			}
 			for i := range tt.related {
-				if got.RelatedTargets[i] != tt.related[i] {
+				if !authorizationTargetsEqual(got.RelatedTargets[i], tt.related[i]) {
 					t.Fatalf("related targets = %#v, want %#v", got.RelatedTargets, tt.related)
 				}
 			}
@@ -362,7 +389,7 @@ func TestOpenRejectsTypedNilAuthorizationAdapter(t *testing.T) {
 }
 
 func TestAuthorizationCanonicalizesTargetsBeforeAdapterDispatch(t *testing.T) {
-	authorization := &recordingAuthorizationAdapter{err: errors.New("deny")}
+	authorization := &recordingAuthorizationAdapter{err: ErrActionDenied}
 	h, _, _ := newTestHostWithOptions(t, testHostOptions{authorization: authorization, developerMode: true, localGenerated: true})
 	reader := &readAtProbe{reader: bytes.NewReader(buildFixturePackage(t))}
 
@@ -382,7 +409,7 @@ func TestAuthorizationCanonicalizesTargetsBeforeAdapterDispatch(t *testing.T) {
 	}
 	request := authorization.requests[0]
 	wantScope := sessionctx.ResourceScope{Kind: sessionctx.ScopeEnvironment, OwnerEnvHash: "env_hash"}
-	if request.Target != (AuthorizationTarget{Kind: ResourcePlugin, ID: "plugini_canonical", ResourceScope: wantScope}) {
+	if !authorizationTargetsEqual(request.Target, AuthorizationTarget{Kind: ResourcePlugin, ID: "plugini_canonical", Scope: &wantScope}) {
 		t.Fatalf("canonical target = %#v", request.Target)
 	}
 }
@@ -417,6 +444,74 @@ func TestInstallEntryPointsRejectMissingPluginInstanceIDBeforeExternalInput(t *t
 	if len(authorization.requests) != 0 {
 		t.Fatalf("invalid install target reached authorization adapter: %#v", authorization.requests)
 	}
+}
+
+func TestAuthorizationAdapterOperationalFailureIsSanitized(t *testing.T) {
+	const sensitive = "authorization database unavailable at /private/policy.db"
+	authorization := &recordingAuthorizationAdapter{err: errors.New(sensitive)}
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{authorization: authorization})
+
+	_, err := h.ListPlugins(hostTestContext())
+	if !errors.Is(err, ErrAdapterFailure) || errors.Is(err, ErrActionDenied) {
+		t.Fatalf("ListPlugins() error = %v, want sanitized ErrAdapterFailure", err)
+	}
+	if strings.Contains(err.Error(), sensitive) {
+		t.Fatalf("authorization adapter detail leaked: %v", err)
+	}
+}
+
+func TestReleaseUpdateAndIntentAuthorizationPrecedeDiscovery(t *testing.T) {
+	t.Run("release update", func(t *testing.T) {
+		authorization := &recordingAuthorizationAdapter{err: ErrActionDenied}
+		sourceResolver := &recordingReleaseSourcePolicyResolver{}
+		artifactResolver := &recordingReleaseArtifactResolver{}
+		h, _, _ := newTestHostWithOptions(t, testHostOptions{
+			authorization:           authorization,
+			releaseSourcePolicy:     sourceResolver,
+			releaseArtifactResolver: artifactResolver,
+		})
+		registryProbe := &authorizationProbeRegistry{Store: h.adapters.Registry}
+		h.adapters.Registry = registryProbe
+
+		_, err := h.UpdateReleaseRef(hostTestContext(), UpdateReleaseRefRequest{
+			PluginInstanceID: "  plugini_update_auth  ",
+		})
+		if !errors.Is(err, ErrActionDenied) {
+			t.Fatalf("UpdateReleaseRef() error = %v, want ErrActionDenied", err)
+		}
+		if registryProbe.getCalls != 0 || registryProbe.listCalls != 0 || sourceResolver.calls != 0 || artifactResolver.calls != 0 {
+			t.Fatalf("authorization denial reached discovery: registry get=%d list=%d source=%d artifact=%d", registryProbe.getCalls, registryProbe.listCalls, sourceResolver.calls, artifactResolver.calls)
+		}
+		wantScope := sessionctx.ResourceScope{Kind: sessionctx.ScopeEnvironment, OwnerEnvHash: "env_hash"}
+		if len(authorization.requests) != 1 || !authorizationTargetsEqual(authorization.requests[0].Target, AuthorizationTarget{Kind: ResourcePlugin, ID: "plugini_update_auth", Scope: &wantScope}) {
+			t.Fatalf("authorization requests = %#v", authorization.requests)
+		}
+	})
+
+	t.Run("intent invoke", func(t *testing.T) {
+		authorization := &recordingAuthorizationAdapter{err: ErrActionDenied}
+		h, _, _ := newTestHostWithOptions(t, testHostOptions{authorization: authorization})
+		registryProbe := &authorizationProbeRegistry{Store: h.adapters.Registry}
+		h.adapters.Registry = registryProbe
+
+		_, err := h.InvokeIntent(hostTestContext(), InvokeIntentRequest{
+			PluginInstanceID: "  plugini_intent_auth  ",
+			IntentID:         "  example.open  ",
+		})
+		if !errors.Is(err, ErrActionDenied) {
+			t.Fatalf("InvokeIntent() error = %v, want ErrActionDenied", err)
+		}
+		if registryProbe.getCalls != 0 || registryProbe.listCalls != 0 {
+			t.Fatalf("authorization denial reached registry: get=%d list=%d", registryProbe.getCalls, registryProbe.listCalls)
+		}
+		wantScope := sessionctx.ResourceScope{Kind: sessionctx.ScopeEnvironment, OwnerEnvHash: "env_hash"}
+		if len(authorization.requests) != 1 || !authorizationTargetsEqual(authorization.requests[0].Target, AuthorizationTarget{Kind: ResourceIntent, ID: "example.open", Scope: &wantScope}) {
+			t.Fatalf("authorization requests = %#v", authorization.requests)
+		}
+		if len(authorization.requests[0].RelatedTargets) != 1 || !authorizationTargetsEqual(authorization.requests[0].RelatedTargets[0], AuthorizationTarget{Kind: ResourcePlugin, ID: "plugini_intent_auth", Scope: &wantScope}) {
+			t.Fatalf("related targets = %#v", authorization.requests[0].RelatedTargets)
+		}
+	})
 }
 
 func TestScopedDirectActionsDeriveResourceScopeBeforeAuthorization(t *testing.T) {
@@ -470,7 +565,7 @@ func TestScopedDirectActionsDeriveResourceScopeBeforeAuthorization(t *testing.T)
 			if err != nil {
 				t.Fatal(err)
 			}
-			authorization := &recordingAuthorizationAdapter{err: errors.New("deny")}
+			authorization := &recordingAuthorizationAdapter{err: ErrActionDenied}
 			h.adapters.Authorization = authorization
 			errs := test.calls(h, record)
 			if len(errs) != len(test.wantKinds) || len(authorization.requests) != len(test.wantKinds) {
@@ -481,13 +576,13 @@ func TestScopedDirectActionsDeriveResourceScopeBeforeAuthorization(t *testing.T)
 					t.Fatalf("call %d error = %v, want ErrActionDenied", i, errs[i])
 				}
 				target := authorization.requests[i].Target
-				if target.Kind != test.wantKinds[i] || target.ResourceScope.Kind != test.wantScopes[i] || target.ResourceScope.OwnerEnvHash != "env_hash" {
+				if target.Scope == nil || target.Kind != test.wantKinds[i] || target.Scope.Kind != test.wantScopes[i] || target.Scope.OwnerEnvHash != "env_hash" {
 					t.Fatalf("call %d target = %#v", i, target)
 				}
-				if test.wantScopes[i] == sessionctx.ScopeUser && target.ResourceScope.OwnerUserHash != "user_hash" {
+				if test.wantScopes[i] == sessionctx.ScopeUser && target.Scope.OwnerUserHash != "user_hash" {
 					t.Fatalf("call %d user target = %#v", i, target)
 				}
-				if test.wantScopes[i] == sessionctx.ScopeEnvironment && target.ResourceScope.OwnerUserHash != "" {
+				if test.wantScopes[i] == sessionctx.ScopeEnvironment && target.Scope.OwnerUserHash != "" {
 					t.Fatalf("call %d environment target = %#v", i, target)
 				}
 			}
@@ -497,7 +592,7 @@ func TestScopedDirectActionsDeriveResourceScopeBeforeAuthorization(t *testing.T)
 
 func TestDeleteExportAuthorizationBindsBundleAndPluginOwnership(t *testing.T) {
 	h, _, _ := newTestHost(t, true, true)
-	authorization := &recordingAuthorizationAdapter{err: errors.New("deny")}
+	authorization := &recordingAuthorizationAdapter{err: ErrActionDenied}
 	h.adapters.Authorization = authorization
 
 	err := h.DeleteExportedPluginData(hostTestContext(), DeleteExportDataRequest{
@@ -512,12 +607,12 @@ func TestDeleteExportAuthorizationBindsBundleAndPluginOwnership(t *testing.T) {
 	}
 	request := authorization.requests[0]
 	wantUserScope := sessionctx.ResourceScope{Kind: sessionctx.ScopeUser, OwnerEnvHash: "env_hash", OwnerUserHash: "user_hash"}
-	if request.Target != (AuthorizationTarget{Kind: ResourceDataExport, ID: "export_bundle_1", ResourceScope: wantUserScope}) {
+	if !authorizationTargetsEqual(request.Target, AuthorizationTarget{Kind: ResourceDataExport, ID: "export_bundle_1", Scope: &wantUserScope}) {
 		t.Fatalf("export target = %#v", request.Target)
 	}
 	wantEnvironmentScope := sessionctx.ResourceScope{Kind: sessionctx.ScopeEnvironment, OwnerEnvHash: "env_hash"}
-	wantRelated := []AuthorizationTarget{{Kind: ResourcePlugin, ID: "plugini_export_owner", ResourceScope: wantEnvironmentScope}}
-	if len(request.RelatedTargets) != 1 || request.RelatedTargets[0] != wantRelated[0] {
+	wantRelated := []AuthorizationTarget{{Kind: ResourcePlugin, ID: "plugini_export_owner", Scope: &wantEnvironmentScope}}
+	if len(request.RelatedTargets) != 1 || !authorizationTargetsEqual(request.RelatedTargets[0], wantRelated[0]) {
 		t.Fatalf("related targets = %#v, want %#v", request.RelatedTargets, wantRelated)
 	}
 }

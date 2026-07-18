@@ -17,6 +17,7 @@ import {
 } from "../src/trusted-parent.js";
 import { PluginTransportError } from "../src/errors.js";
 import { PluginLocalImportClient } from "../src/local-import.js";
+import { createPluginSurfaceScope, registerPluginSurface } from "../src/surface-scope.js";
 
 type FetchCall = {
   input: string;
@@ -430,6 +431,42 @@ test("platform client manages plugin lifecycle and surface opening routes", asyn
   });
   assert.equal(fetch.calls[6]?.input, "/_redevplugin/api/plugins/uninstall");
   assert.deepEqual(JSON.parse(fetch.calls[6]?.init.body ?? ""), { plugin_instance_id: "plugin_instance_1", expected_management_revision: 5, delete_data: true });
+});
+
+test("local import update canonicalizes identity for transport and teardown", async () => {
+  const fetch = new FakeFetch();
+  fetch.push({ ok: true, data: { plugin_instance_id: "plugin_instance_1", plugin_id: "com.example.plugin", version: "1.1.0", active_fingerprint: "sha256:b", trust_state: "verified", enable_state: "disabled" } });
+  const scope = createPluginSurfaceScope();
+  let disposed = 0;
+  registerPluginSurface(scope, "plugin_instance_1", () => disposed++);
+  const client = new PluginLocalImportClient({ fetch: fetch.fetch, surfaceScope: scope });
+
+  await client.updateLocalPackage("  plugin_instance_1  ", 7, new Blob(["pkg"]));
+
+  assert.equal(fetch.calls[0]?.input, "/_redevplugin/api/plugins/plugin_instance_1/local-import?expected_management_revision=7");
+  assert.equal(disposed, 1);
+  await assert.rejects(
+    client.updateLocalPackage("   ", 7, new Blob(["pkg"])),
+    (error: unknown) => error instanceof TypeError && error.message === "pluginInstanceId is required",
+  );
+  assert.equal(fetch.calls.length, 1);
+
+  const unknownScope = createPluginSurfaceScope();
+  let unknownDisposed = 0;
+  let unknownPluginInstanceId: string | undefined;
+  registerPluginSurface(unknownScope, "plugin_instance_1", () => unknownDisposed++);
+  const failingClient = new PluginLocalImportClient({
+    fetch: async () => { throw new Error("private network failure"); },
+    surfaceScope: unknownScope,
+    onMutationOutcomeUnknown: (pluginInstanceId) => { unknownPluginInstanceId = pluginInstanceId; },
+  });
+
+  await assert.rejects(
+    failingClient.updateLocalPackage("  plugin_instance_1  ", 8, new Blob(["pkg"])),
+    (error: unknown) => error instanceof PluginTransportError,
+  );
+  assert.equal(unknownDisposed, 1);
+  assert.equal(unknownPluginInstanceId, "plugin_instance_1");
 });
 
 test("platform client installs and updates plugin release refs without package bytes", async () => {

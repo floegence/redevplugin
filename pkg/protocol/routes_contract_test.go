@@ -151,7 +151,7 @@ func TestLocalImportRoutesUseDedicatedTypeScriptEntrypoint(t *testing.T) {
 		"importLocalPackage(pluginInstanceId: string, packageBlob: Blob",
 		"/_redevplugin/api/plugins/local-imports",
 		"updateLocalPackage(pluginInstanceId: string",
-		"/_redevplugin/api/plugins/${encodeURIComponent(pluginInstanceId)}/local-import",
+		"/_redevplugin/api/plugins/${encodeURIComponent(canonicalPluginInstanceId)}/local-import",
 	} {
 		if !strings.Contains(localImportSDK, snippet) {
 			t.Fatalf("local-import TypeScript entrypoint missing snippet %q", snippet)
@@ -670,7 +670,7 @@ func typeScriptSDKRouteBindings() []typeScriptSDKRouteBinding {
 		{
 			routeFixture: routeFixture{Method: "PUT", Path: "/_redevplugin/api/plugins/{plugin_instance_id}/local-import"},
 			Owner:        "PluginLocalImportClient.updateLocalPackage",
-			Snippets:     []string{"updateLocalPackage(pluginInstanceId: string", "/_redevplugin/api/plugins/${encodeURIComponent(pluginInstanceId)}/local-import"},
+			Snippets:     []string{"updateLocalPackage(pluginInstanceId: string", "/_redevplugin/api/plugins/${encodeURIComponent(canonicalPluginInstanceId)}/local-import"},
 		},
 		{
 			routeFixture: routeFixture{Method: "POST", Path: "/_redevplugin/api/plugins/install-release-ref"},

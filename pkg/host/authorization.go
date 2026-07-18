@@ -139,7 +139,6 @@ type ResourceRef string
 
 const (
 	ResourcePlugin            ResourceRef = "plugin"
-	ResourcePackage           ResourceRef = "package"
 	ResourcePlatform          ResourceRef = "platform"
 	ResourceSurface           ResourceRef = "surface"
 	ResourceSurfaceDefinition ResourceRef = "surface_definition"
@@ -166,7 +165,7 @@ const (
 
 func (resource ResourceRef) Valid() bool {
 	switch resource {
-	case ResourcePlugin, ResourcePackage, ResourcePlatform, ResourceSurface,
+	case ResourcePlugin, ResourcePlatform, ResourceSurface,
 		ResourceSurfaceDefinition, ResourceSurfaceAsset,
 		ResourceAssetSession, ResourceBridgeChannel, ResourceStream,
 		ResourceConfirmation, ResourceMethod, ResourceIntent, ResourcePermission,
@@ -184,10 +183,10 @@ func (resource ResourceRef) Valid() bool {
 // product's authorization policy. ResourceScope is always derived by Host from
 // the authenticated session and is never accepted from wire or plugin input.
 type AuthorizationTarget struct {
-	Kind          ResourceRef              `json:"kind"`
-	ID            string                   `json:"id,omitempty"`
-	Collection    bool                     `json:"collection,omitempty"`
-	ResourceScope sessionctx.ResourceScope `json:"-"`
+	Kind       ResourceRef               `json:"kind"`
+	ID         string                    `json:"id,omitempty"`
+	Collection bool                      `json:"collection,omitempty"`
+	Scope      *sessionctx.ResourceScope `json:"-"`
 }
 
 type AuthorizationRequest struct {
@@ -200,6 +199,8 @@ type AuthorizationRequest struct {
 }
 
 type AuthorizationAdapter interface {
+	// Authorize returns ErrActionDenied only for an explicit policy denial.
+	// Any other error is treated as an operational adapter failure.
 	Authorize(ctx context.Context, req AuthorizationRequest) error
 }
 
@@ -298,7 +299,10 @@ func (h *Host) authorizeManagementSession(ctx context.Context, session sessionct
 		RelatedTargets: relatedTargets,
 	}
 	if err := h.adapters.Authorization.Authorize(ctx, req); err != nil {
-		return authorizedAction{}, ActionDeniedError{Action: action, Target: canonicalTarget}
+		if errors.Is(err, ErrActionDenied) {
+			return authorizedAction{}, ActionDeniedError{Action: action, Target: canonicalTarget}
+		}
+		return authorizedAction{}, fmt.Errorf("%w: authorization", ErrAdapterFailure)
 	}
 	return authorizedAction{session: session}, nil
 }
@@ -316,7 +320,7 @@ func canonicalAuthorizationTarget(session sessionctx.Context, spec authorization
 		if err != nil {
 			return target, err
 		}
-		target.ResourceScope = scope
+		target.Scope = &scope
 	}
 	return target, nil
 }

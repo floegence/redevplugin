@@ -1443,11 +1443,8 @@ func (h Handler) handleDowngrade(w http.ResponseWriter, r *http.Request) {
 func (h Handler) handleCatalog(w http.ResponseWriter, r *http.Request) {
 	records, err := h.host.ListPlugins(r.Context())
 	if err != nil {
-		code := security.ErrPermissionDenied
-		if errors.Is(err, host.ErrActionDenied) {
-			code = security.ErrActionDenied
-		}
-		writeJSON(w, http.StatusForbidden, errorResponse{OK: false, Message: h.publicFailureMessage(r.Context(), "plugin.catalog", code, err), Code: code})
+		code := errorCodeForManagementError(err)
+		writeError(w, httpStatusForManagementError(err), code, h.publicFailureMessage(r.Context(), "plugin.catalog", code, err), errorDetails{})
 		return
 	}
 	writeJSON(w, http.StatusOK, successResponse{OK: true, Data: map[string]any{"plugins": records}})
@@ -1456,7 +1453,8 @@ func (h Handler) handleCatalog(w http.ResponseWriter, r *http.Request) {
 func (h Handler) handleFeatures(w http.ResponseWriter, r *http.Request) {
 	features, err := h.host.Features(r.Context())
 	if err != nil {
-		writeError(w, http.StatusForbidden, security.ErrActionDenied, h.publicFailureMessage(r.Context(), "platform.list_features", security.ErrActionDenied, err), errorDetails{})
+		code := errorCodeForManagementError(err)
+		writeError(w, httpStatusForManagementError(err), code, h.publicFailureMessage(r.Context(), "platform.list_features", code, err), errorDetails{})
 		return
 	}
 	writeJSON(w, http.StatusOK, successResponse{OK: true, Data: features})
@@ -1465,7 +1463,8 @@ func (h Handler) handleFeatures(w http.ResponseWriter, r *http.Request) {
 func (h Handler) handleCompatibility(w http.ResponseWriter, r *http.Request) {
 	compatibility, err := h.host.GetCompatibility(r.Context())
 	if err != nil {
-		writeError(w, http.StatusForbidden, security.ErrActionDenied, h.publicFailureMessage(r.Context(), "platform.get_compatibility", security.ErrActionDenied, err), errorDetails{})
+		code := errorCodeForManagementError(err)
+		writeError(w, httpStatusForManagementError(err), code, h.publicFailureMessage(r.Context(), "platform.get_compatibility", code, err), errorDetails{})
 		return
 	}
 	writeJSON(w, http.StatusOK, successResponse{OK: true, Data: compatibility})
@@ -2272,8 +2271,9 @@ func (h Handler) handleListDiagnostics(w http.ResponseWriter, r *http.Request) {
 		Limit:             limit,
 	})
 	if err != nil {
-		if errors.Is(err, host.ErrActionDenied) {
-			writeError(w, http.StatusForbidden, security.ErrActionDenied, h.publicFailureMessage(r.Context(), "diagnostic.list", security.ErrActionDenied, err), errorDetails{})
+		if errors.Is(err, host.ErrActionDenied) || errors.Is(err, host.ErrAdapterFailure) {
+			code := errorCodeForManagementError(err)
+			writeError(w, httpStatusForManagementError(err), code, h.publicFailureMessage(r.Context(), "diagnostic.list", code, err), errorDetails{})
 		} else {
 			writeInvalidRequestError(w, err)
 		}
@@ -2772,6 +2772,8 @@ func validateOptionalEnumQueryParameter(query map[string]string, key string, all
 
 func errorCodeForBridgeError(err error) security.ErrorCode {
 	switch {
+	case errors.Is(err, host.ErrAdapterFailure):
+		return security.ErrAdapterFailure
 	case errors.Is(err, host.ErrActionDenied):
 		return security.ErrActionDenied
 	case errors.Is(err, bridge.ErrTokenExpired):
@@ -2788,6 +2790,9 @@ func errorCodeForBridgeError(err error) security.ErrorCode {
 }
 
 func runtimeManagementError(err error) (security.ErrorCode, int) {
+	if errors.Is(err, host.ErrAdapterFailure) {
+		return security.ErrAdapterFailure, http.StatusBadGateway
+	}
 	if errors.Is(err, host.ErrActionDenied) {
 		return security.ErrActionDenied, http.StatusForbidden
 	}
@@ -2806,6 +2811,8 @@ func errorCodeForBridgeTokenError(err error, renewal bool) security.ErrorCode {
 
 func errorCodeForOpenSurfaceError(err error) security.ErrorCode {
 	switch {
+	case errors.Is(err, host.ErrAdapterFailure):
+		return security.ErrAdapterFailure
 	case errors.Is(err, host.ErrActionDenied):
 		return security.ErrActionDenied
 	case errors.Is(err, host.ErrManagementRevisionMismatch):
@@ -2827,6 +2834,8 @@ func errorCodeForOpenSurfaceError(err error) security.ErrorCode {
 
 func httpStatusForOpenSurfaceError(err error) int {
 	switch {
+	case errors.Is(err, host.ErrAdapterFailure):
+		return http.StatusBadGateway
 	case errors.Is(err, host.ErrManagementRevisionMismatch):
 		return http.StatusConflict
 	case errors.Is(err, host.ErrPluginUIProtocolUnsupported):
@@ -2846,6 +2855,8 @@ func httpStatusForOpenSurfaceError(err error) int {
 
 func httpStatusForBridgeError(err error) int {
 	switch {
+	case errors.Is(err, host.ErrAdapterFailure):
+		return http.StatusBadGateway
 	case errors.Is(err, bridge.ErrTokenExpired), errors.Is(err, bridge.ErrTokenReplay), errors.Is(err, bridge.ErrTokenAlreadyBound), errors.Is(err, bridge.ErrTokenInvalid), errors.Is(err, bridge.ErrTokenAudience), errors.Is(err, bridge.ErrTokenRevoked), errors.Is(err, bridge.ErrTokenKind), errors.Is(err, bridge.ErrSurfaceSessionNotFound), errors.Is(err, bridge.ErrSurfaceSessionExpired), errors.Is(err, bridge.ErrAssetSessionRequired):
 		return http.StatusForbidden
 	default:
@@ -2855,6 +2866,8 @@ func httpStatusForBridgeError(err error) int {
 
 func errorCodeForRPCError(err error) security.ErrorCode {
 	switch {
+	case errors.Is(err, host.ErrAdapterFailure):
+		return security.ErrAdapterFailure
 	case errors.Is(err, host.ErrActionDenied):
 		return security.ErrActionDenied
 	case errors.Is(err, host.ErrFeatureNotConfigured):
@@ -3159,6 +3172,8 @@ func httpStatusForManagementError(err error) int {
 
 func errorCodeForOperationError(err error) security.ErrorCode {
 	switch {
+	case errors.Is(err, host.ErrAdapterFailure):
+		return security.ErrAdapterFailure
 	case errors.Is(err, host.ErrActionDenied):
 		return security.ErrActionDenied
 	case errors.Is(err, host.ErrOperationCancelDispatchFailed):
@@ -3174,6 +3189,8 @@ func errorCodeForOperationError(err error) security.ErrorCode {
 
 func httpStatusForOperationError(err error) int {
 	switch {
+	case errors.Is(err, host.ErrAdapterFailure):
+		return http.StatusBadGateway
 	case errors.Is(err, host.ErrOperationCancelDispatchFailed):
 		return http.StatusServiceUnavailable
 	case errors.Is(err, operation.ErrNotCancelable):
@@ -3187,6 +3204,8 @@ func httpStatusForOperationError(err error) int {
 
 func errorCodeForStreamError(err error) security.ErrorCode {
 	switch {
+	case errors.Is(err, host.ErrAdapterFailure):
+		return security.ErrAdapterFailure
 	case errors.Is(err, host.ErrActionDenied):
 		return security.ErrActionDenied
 	case errors.Is(err, stream.ErrNotFound), errors.Is(err, stream.ErrInvalidStream):
@@ -3204,6 +3223,8 @@ func errorCodeForStreamError(err error) security.ErrorCode {
 
 func httpStatusForStreamError(err error) int {
 	switch {
+	case errors.Is(err, host.ErrAdapterFailure):
+		return http.StatusBadGateway
 	case errors.Is(err, stream.ErrNotFound), errors.Is(err, stream.ErrInvalidStream):
 		return http.StatusBadRequest
 	case errors.Is(err, stream.ErrDeliveryInvalid):
@@ -3217,6 +3238,8 @@ func httpStatusForStreamError(err error) int {
 
 func httpStatusForRPCError(err error) int {
 	switch {
+	case errors.Is(err, host.ErrAdapterFailure):
+		return http.StatusBadGateway
 	case errors.Is(err, host.ErrFeatureNotConfigured):
 		return http.StatusNotImplemented
 	case isCapabilityBusinessError(err):
@@ -3246,6 +3269,8 @@ func httpStatusForRPCError(err error) int {
 
 func errorCodeForIntentError(err error) security.ErrorCode {
 	switch {
+	case errors.Is(err, host.ErrAdapterFailure):
+		return security.ErrAdapterFailure
 	case errors.Is(err, host.ErrActionDenied):
 		return security.ErrActionDenied
 	case errors.Is(err, host.ErrFeatureNotConfigured):
@@ -3386,6 +3411,8 @@ func publicWorkerErrorMessage(value string) string {
 
 func httpStatusForIntentError(err error) int {
 	switch {
+	case errors.Is(err, host.ErrAdapterFailure):
+		return http.StatusBadGateway
 	case errors.Is(err, host.ErrActionDenied):
 		return http.StatusForbidden
 	case isCapabilityBusinessError(err):
@@ -3564,6 +3591,8 @@ func httpStatusForSecretError(err error) int {
 
 func errorCodeForAssetError(err error) security.ErrorCode {
 	switch {
+	case errors.Is(err, host.ErrAdapterFailure):
+		return security.ErrAdapterFailure
 	case errors.Is(err, host.ErrActionDenied):
 		return security.ErrActionDenied
 	case errors.Is(err, bridge.ErrTokenReplay):
@@ -3590,6 +3619,8 @@ func isSandboxTokenValidationError(err error) bool {
 
 func httpStatusForAssetError(err error) int {
 	switch {
+	case errors.Is(err, host.ErrAdapterFailure):
+		return http.StatusBadGateway
 	case errors.Is(err, bridge.ErrTokenExpired), errors.Is(err, bridge.ErrTokenReplay), errors.Is(err, bridge.ErrTokenInvalid), errors.Is(err, bridge.ErrTokenAudience), errors.Is(err, bridge.ErrTokenRevoked), errors.Is(err, bridge.ErrTokenKind), errors.Is(err, bridge.ErrSurfaceSessionNotFound), errors.Is(err, bridge.ErrSurfaceSessionExpired), errors.Is(err, bridge.ErrAssetSessionRequired):
 		return http.StatusForbidden
 	case errors.Is(err, registry.ErrNotFound):
