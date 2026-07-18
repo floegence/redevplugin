@@ -7340,8 +7340,8 @@ func (h *Host) resolveSecretRequest(ctx context.Context, req SecretBindRequest) 
 	if err != nil {
 		return registry.PluginRecord{}, SecretBindRequest{}, err
 	}
-	if !secretRefDeclared(record.Manifest, req.SecretRef) {
-		return registry.PluginRecord{}, SecretBindRequest{}, fmt.Errorf("%w: secret_ref %q is not declared", ErrInvalidSecretRef, req.SecretRef)
+	if !secretRefDeclared(record.Manifest, req.SecretRef, req.Scope) {
+		return registry.PluginRecord{}, SecretBindRequest{}, fmt.Errorf("%w: secret_ref %q is not declared for %s scope", ErrInvalidSecretRef, req.SecretRef, req.Scope)
 	}
 	return record, req, nil
 }
@@ -8305,13 +8305,16 @@ func cloneSettingFields(fields []manifest.SettingFieldSpec) []manifest.SettingFi
 	return cloned
 }
 
-func secretRefDeclared(m manifest.Manifest, secretRef string) bool {
-	if m.Settings != nil && settingsSecretRefDeclared(m.Settings.Fields, secretRef) {
+func secretRefDeclared(m manifest.Manifest, secretRef, scope string) bool {
+	secretRef = strings.TrimSpace(secretRef)
+	scope = strings.TrimSpace(scope)
+	if m.Settings != nil && settingsSecretRefDeclared(m.Settings.Fields, secretRef, scope) {
 		return true
 	}
 	if m.NetworkAccess != nil {
 		for _, connector := range m.NetworkAccess.Connectors {
-			if secretRefInMap(connector.Auth, secretRef) || secretRefInMap(connector.TLS, secretRef) {
+			if strings.TrimSpace(connector.Scope) == scope &&
+				(secretRefInMap(connector.Auth, secretRef) || secretRefInMap(connector.TLS, secretRef)) {
 				return true
 			}
 		}
@@ -8319,10 +8322,11 @@ func secretRefDeclared(m manifest.Manifest, secretRef string) bool {
 	return false
 }
 
-func settingsSecretRefDeclared(fields []manifest.SettingFieldSpec, secretRef string) bool {
-	secretRef = strings.TrimSpace(secretRef)
+func settingsSecretRefDeclared(fields []manifest.SettingFieldSpec, secretRef, scope string) bool {
 	for _, field := range fields {
-		if field.Type == settings.FieldSecret && strings.TrimSpace(field.SecretRef) == secretRef {
+		if field.Type == settings.FieldSecret &&
+			strings.TrimSpace(field.SecretRef) == secretRef &&
+			strings.TrimSpace(field.Scope) == scope {
 			return true
 		}
 	}

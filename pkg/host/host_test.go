@@ -8240,6 +8240,64 @@ func TestSecretLifecycleUsesAdapter(t *testing.T) {
 	}
 }
 
+func TestSecretRefRequiresExactDeclaredScope(t *testing.T) {
+	t.Run("settings", func(t *testing.T) {
+		secretStore := &recordingSecretStore{}
+		h, _, _ := newTestHostWithOptions(t, testHostOptions{
+			developerMode: true, localGenerated: true, secrets: secretStore,
+		})
+		installed, err := ImportLocalPackageBytes(hostTestContext(), h, buildSettingsFixturePackage(t))
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		err = h.BindSecretRef(hostTestContext(), SecretBindRequest{
+			PluginInstanceID: installed.PluginInstanceID,
+			SecretRef:        "api_token",
+			Scope:            "environment",
+		})
+		if !errors.Is(err, ErrInvalidSecretRef) {
+			t.Fatalf("BindSecretRef(scope mismatch) error = %v, want ErrInvalidSecretRef", err)
+		}
+		if secretStore.bind != (SecretBindRequest{}) {
+			t.Fatalf("scope mismatch reached secret adapter: %#v", secretStore.bind)
+		}
+	})
+
+	t.Run("connector auth and tls", func(t *testing.T) {
+		secretStore := &recordingSecretStore{}
+		h, _, _ := newTestHostWithOptions(t, testHostOptions{
+			developerMode: true, localGenerated: true, secrets: secretStore,
+		})
+		installed, err := ImportLocalPackageBytes(hostTestContext(), h, buildConnectorSecretFixturePackage(t))
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		for _, req := range []SecretBindRequest{
+			{PluginInstanceID: installed.PluginInstanceID, SecretRef: "database_password", Scope: "environment"},
+			{PluginInstanceID: installed.PluginInstanceID, SecretRef: "client_certificate", Scope: "user"},
+		} {
+			if err := h.BindSecretRef(hostTestContext(), req); err != nil {
+				t.Fatalf("BindSecretRef(%s, %s) error = %v", req.SecretRef, req.Scope, err)
+			}
+		}
+
+		lastAccepted := secretStore.bind
+		for _, req := range []SecretBindRequest{
+			{PluginInstanceID: installed.PluginInstanceID, SecretRef: "database_password", Scope: "user"},
+			{PluginInstanceID: installed.PluginInstanceID, SecretRef: "client_certificate", Scope: "environment"},
+		} {
+			if err := h.BindSecretRef(hostTestContext(), req); !errors.Is(err, ErrInvalidSecretRef) {
+				t.Fatalf("BindSecretRef(%s, %s) error = %v, want ErrInvalidSecretRef", req.SecretRef, req.Scope, err)
+			}
+			if secretStore.bind != lastAccepted {
+				t.Fatalf("scope mismatch reached secret adapter: got %#v want %#v", secretStore.bind, lastAccepted)
+			}
+		}
+	})
+}
+
 func TestSecretStoreIsTheOnlySettingsSecretAuthorityAndExportDoesNotReadIt(t *testing.T) {
 	secretStore := secrets.NewMemoryStore()
 	h, _, _ := newTestHostWithOptions(t, testHostOptions{
@@ -9000,6 +9058,31 @@ func buildSettingsFixturePackage(t *testing.T) []byte {
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "manifest.json"), settingsFixtureManifestJSON())
 	writeSurfaceFixture(t, dir, "Settings")
+	var buf bytes.Buffer
+	if _, err := pluginpkg.BuildFromDir(hostTestContext(), dir, &buf, pluginpkg.DefaultReadLimits()); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
+func buildConnectorSecretFixturePackage(t *testing.T) []byte {
+	t.Helper()
+	dir := t.TempDir()
+	manifestJSON := networkFixtureManifestJSON(false)
+	manifestJSON = strings.Replace(
+		manifestJSON,
+		`"destinations": ["https://api.example.com"]}`,
+		`"destinations": ["https://api.example.com"], "tls": {"client": {"secret_ref": "client_certificate"}}}`,
+		1,
+	)
+	manifestJSON = strings.Replace(
+		manifestJSON,
+		`"destinations": ["db.example.com:3306"]}`,
+		`"destinations": ["db.example.com:3306"], "auth": {"secret_ref": "database_password"}}`,
+		1,
+	)
+	writeFile(t, filepath.Join(dir, "manifest.json"), manifestJSON)
+	writeSurfaceFixture(t, dir, "Connector Secrets")
 	var buf bytes.Buffer
 	if _, err := pluginpkg.BuildFromDir(hostTestContext(), dir, &buf, pluginpkg.DefaultReadLimits()); err != nil {
 		t.Fatal(err)
