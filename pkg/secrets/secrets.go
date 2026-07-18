@@ -8,6 +8,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/floegence/redevplugin/pkg/sessionctx"
 )
 
 const (
@@ -16,6 +18,10 @@ const (
 )
 
 var ErrInvalidSecretRef = errors.New("secret_ref is invalid")
+
+var ErrSecretScopeMismatch = errors.New("secret owner scope mismatch")
+
+var ErrOwnerScopeMigrationRequired = errors.New("secret owner scope migration required")
 
 type Store interface {
 	BindSecretRef(ctx context.Context, req BindRequest) error
@@ -47,6 +53,8 @@ type ListRequest struct {
 }
 
 type Record struct {
+	OwnerEnvHash     string     `json:"-"`
+	OwnerUserHash    string     `json:"-"`
 	PluginInstanceID string     `json:"plugin_instance_id"`
 	SecretRef        string     `json:"secret_ref"`
 	Scope            string     `json:"scope"`
@@ -83,7 +91,7 @@ func NewMemoryStore(opts ...MemoryStoreOptions) *MemoryStore {
 	}
 }
 
-func (s *MemoryStore) BindSecretRef(_ context.Context, req BindRequest) error {
+func (s *MemoryStore) BindSecretRef(ctx context.Context, req BindRequest) error {
 	if s == nil {
 		return errors.New("secret store is nil")
 	}
@@ -91,8 +99,14 @@ func (s *MemoryStore) BindSecretRef(_ context.Context, req BindRequest) error {
 	if err != nil {
 		return err
 	}
+	owner, err := ownerForScope(ctx, normalized.Scope)
+	if err != nil {
+		return err
+	}
 	now := s.now()
 	record := Record{
+		OwnerEnvHash:     owner.OwnerEnvHash,
+		OwnerUserHash:    owner.OwnerUserHash,
 		PluginInstanceID: normalized.PluginInstanceID,
 		SecretRef:        normalized.SecretRef,
 		Scope:            normalized.Scope,
@@ -102,11 +116,11 @@ func (s *MemoryStore) BindSecretRef(_ context.Context, req BindRequest) error {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.records[recordKey(normalized)] = record
+	s.records[recordKey(owner, normalized)] = record
 	return nil
 }
 
-func (s *MemoryStore) TestSecretRef(_ context.Context, req TestRequest) error {
+func (s *MemoryStore) TestSecretRef(ctx context.Context, req TestRequest) error {
 	if s == nil {
 		return errors.New("secret store is nil")
 	}
@@ -114,10 +128,15 @@ func (s *MemoryStore) TestSecretRef(_ context.Context, req TestRequest) error {
 	if err != nil {
 		return err
 	}
+	owner, err := ownerForScope(ctx, normalized.Scope)
+	if err != nil {
+		return err
+	}
 	now := s.now()
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	record, ok := s.records[recordKey(normalized)]
+	key := recordKey(owner, normalized)
+	record, ok := s.records[key]
 	if !ok || !record.Bound {
 		return fmt.Errorf("%w: secret_ref must be bound before testing", ErrInvalidSecretRef)
 	}
@@ -132,11 +151,11 @@ func (s *MemoryStore) TestSecretRef(_ context.Context, req TestRequest) error {
 	record.TestedAt = &now
 	record.DeletedAt = nil
 	record.UpdatedAt = now
-	s.records[recordKey(normalized)] = record
+	s.records[key] = record
 	return nil
 }
 
-func (s *MemoryStore) DeleteSecretRef(_ context.Context, req DeleteRequest) error {
+func (s *MemoryStore) DeleteSecretRef(ctx context.Context, req DeleteRequest) error {
 	if s == nil {
 		return errors.New("secret store is nil")
 	}
@@ -144,10 +163,17 @@ func (s *MemoryStore) DeleteSecretRef(_ context.Context, req DeleteRequest) erro
 	if err != nil {
 		return err
 	}
+	owner, err := ownerForScope(ctx, normalized.Scope)
+	if err != nil {
+		return err
+	}
 	now := s.now()
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	record := s.records[recordKey(normalized)]
+	key := recordKey(owner, normalized)
+	record := s.records[key]
+	record.OwnerEnvHash = owner.OwnerEnvHash
+	record.OwnerUserHash = owner.OwnerUserHash
 	record.PluginInstanceID = normalized.PluginInstanceID
 	record.SecretRef = normalized.SecretRef
 	record.Scope = normalized.Scope
@@ -155,11 +181,11 @@ func (s *MemoryStore) DeleteSecretRef(_ context.Context, req DeleteRequest) erro
 	record.LastTestStatus = ""
 	record.DeletedAt = &now
 	record.UpdatedAt = now
-	s.records[recordKey(normalized)] = record
+	s.records[key] = record
 	return nil
 }
 
-func (s *MemoryStore) List(_ context.Context, req ListRequest) ([]Record, error) {
+func (s *MemoryStore) List(ctx context.Context, req ListRequest) ([]Record, error) {
 	if s == nil {
 		return nil, errors.New("secret store is nil")
 	}
@@ -168,11 +194,18 @@ func (s *MemoryStore) List(_ context.Context, req ListRequest) ([]Record, error)
 	if scope != "" && scope != ScopeUser && scope != ScopeEnvironment {
 		return nil, ErrInvalidSecretRef
 	}
+	session, err := sessionctx.Require(ctx)
+	if err != nil {
+		return nil, err
+	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	records := make([]Record, 0, len(s.records))
 	for _, record := range s.records {
+		if !recordVisibleToSession(record, session) {
+			continue
+		}
 		if pluginInstanceID != "" && record.PluginInstanceID != pluginInstanceID {
 			continue
 		}
@@ -188,7 +221,7 @@ func (s *MemoryStore) List(_ context.Context, req ListRequest) ([]Record, error)
 	return records, nil
 }
 
-func (s *MemoryStore) DeletePlugin(_ context.Context, pluginInstanceID string) error {
+func (s *MemoryStore) DeletePlugin(ctx context.Context, pluginInstanceID string) error {
 	if s == nil {
 		return errors.New("secret store is nil")
 	}
@@ -196,10 +229,14 @@ func (s *MemoryStore) DeletePlugin(_ context.Context, pluginInstanceID string) e
 	if pluginInstanceID == "" {
 		return ErrInvalidSecretRef
 	}
+	session, err := sessionctx.Require(ctx)
+	if err != nil {
+		return err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for key, record := range s.records {
-		if record.PluginInstanceID == pluginInstanceID {
+		if record.OwnerEnvHash == session.OwnerEnvHash && record.PluginInstanceID == pluginInstanceID {
 			delete(s.records, key)
 		}
 	}
@@ -219,8 +256,31 @@ func normalizeRequest(req BindRequest) (BindRequest, error) {
 	return req, nil
 }
 
-func recordKey(req BindRequest) string {
-	return req.PluginInstanceID + "\x00" + req.Scope + "\x00" + req.SecretRef
+func ownerForScope(ctx context.Context, scope string) (sessionctx.ResourceScope, error) {
+	session, err := sessionctx.Require(ctx)
+	if err != nil {
+		return sessionctx.ResourceScope{}, err
+	}
+	kind := sessionctx.ScopeKind(scope)
+	owner, err := session.ResourceScope(kind)
+	if err != nil {
+		return sessionctx.ResourceScope{}, ErrSecretScopeMismatch
+	}
+	return owner, nil
+}
+
+func recordKey(owner sessionctx.ResourceScope, req BindRequest) string {
+	return owner.OwnerEnvHash + "\x00" + owner.OwnerUserHash + "\x00" + req.PluginInstanceID + "\x00" + req.Scope + "\x00" + req.SecretRef
+}
+
+func recordVisibleToSession(record Record, session sessionctx.Context) bool {
+	if record.OwnerEnvHash != session.OwnerEnvHash {
+		return false
+	}
+	if record.Scope == ScopeEnvironment {
+		return record.OwnerUserHash == ""
+	}
+	return record.Scope == ScopeUser && record.OwnerUserHash == session.OwnerUserHash
 }
 
 func sortRecords(records []Record) {

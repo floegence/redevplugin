@@ -9,11 +9,12 @@ import (
 	"sync"
 	"time"
 
+	"github.com/floegence/redevplugin/pkg/sessionctx"
 	_ "modernc.org/sqlite"
 )
 
 const secretBindingSelectColumns = `
-SELECT plugin_instance_id, secret_ref, scope, bound, last_test_status,
+SELECT owner_env_hash, owner_user_hash, plugin_instance_id, secret_ref, scope, bound, last_test_status,
        bound_at, tested_at, deleted_at, updated_at`
 
 type SQLiteStore struct {
@@ -62,8 +63,14 @@ func (s *SQLiteStore) BindSecretRef(ctx context.Context, req BindRequest) error 
 	if err != nil {
 		return err
 	}
+	owner, err := ownerForScope(ctx, normalized.Scope)
+	if err != nil {
+		return err
+	}
 	now := s.now()
 	record := Record{
+		OwnerEnvHash:     owner.OwnerEnvHash,
+		OwnerUserHash:    owner.OwnerUserHash,
 		PluginInstanceID: normalized.PluginInstanceID,
 		SecretRef:        normalized.SecretRef,
 		Scope:            normalized.Scope,
@@ -85,12 +92,16 @@ func (s *SQLiteStore) TestSecretRef(ctx context.Context, req TestRequest) error 
 	if err != nil {
 		return err
 	}
+	owner, err := ownerForScope(ctx, normalized.Scope)
+	if err != nil {
+		return err
+	}
 	now := s.now()
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	record, exists, err := getSQLiteRecord(ctx, s.db, normalized)
+	record, exists, err := getSQLiteRecord(ctx, s.db, owner, normalized)
 	if err != nil {
 		return err
 	}
@@ -119,17 +130,23 @@ func (s *SQLiteStore) DeleteSecretRef(ctx context.Context, req DeleteRequest) er
 	if err != nil {
 		return err
 	}
+	owner, err := ownerForScope(ctx, normalized.Scope)
+	if err != nil {
+		return err
+	}
 	now := s.now()
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	record, exists, err := getSQLiteRecord(ctx, s.db, normalized)
+	record, exists, err := getSQLiteRecord(ctx, s.db, owner, normalized)
 	if err != nil {
 		return err
 	}
 	if !exists {
 		record = Record{
+			OwnerEnvHash:     owner.OwnerEnvHash,
+			OwnerUserHash:    owner.OwnerUserHash,
 			PluginInstanceID: normalized.PluginInstanceID,
 			SecretRef:        normalized.SecretRef,
 			Scope:            normalized.Scope,
@@ -151,13 +168,17 @@ func (s *SQLiteStore) List(ctx context.Context, req ListRequest) ([]Record, erro
 	if scope != "" && scope != ScopeUser && scope != ScopeEnvironment {
 		return nil, ErrInvalidSecretRef
 	}
+	session, err := sessionctx.Require(ctx)
+	if err != nil {
+		return nil, err
+	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	query := secretBindingSelectColumns + ` FROM plugin_secret_bindings`
-	args := []any{}
-	conditions := []string{}
+	args := []any{session.OwnerEnvHash, session.OwnerUserHash}
+	conditions := []string{`owner_env_hash = ? AND ((scope = 'environment' AND owner_user_hash = '') OR (scope = 'user' AND owner_user_hash = ?))`}
 	if pluginInstanceID != "" {
 		conditions = append(conditions, `plugin_instance_id = ?`)
 		args = append(args, pluginInstanceID)
@@ -203,24 +224,33 @@ func (s *SQLiteStore) DeletePlugin(ctx context.Context, pluginInstanceID string)
 	if pluginInstanceID == "" {
 		return ErrInvalidSecretRef
 	}
+	session, err := sessionctx.Require(ctx)
+	if err != nil {
+		return err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	_, err := s.db.ExecContext(ctx, `DELETE FROM plugin_secret_bindings WHERE plugin_instance_id = ?`, pluginInstanceID)
+	_, err = s.db.ExecContext(ctx, `DELETE FROM plugin_secret_bindings WHERE owner_env_hash = ? AND plugin_instance_id = ?`, session.OwnerEnvHash, pluginInstanceID)
 	return err
 }
 
 func (s *SQLiteStore) upsert(ctx context.Context, record Record) error {
+	if err := validateRecordOwner(record); err != nil {
+		return err
+	}
 	_, err := s.db.ExecContext(ctx, `
-INSERT INTO plugin_secret_bindings(plugin_instance_id, secret_ref, scope, bound, last_test_status, bound_at, tested_at, deleted_at, updated_at)
-VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
-ON CONFLICT(plugin_instance_id, scope, secret_ref) DO UPDATE SET
+INSERT INTO plugin_secret_bindings(owner_env_hash, owner_user_hash, plugin_instance_id, secret_ref, scope, bound, last_test_status, bound_at, tested_at, deleted_at, updated_at)
+VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT(owner_env_hash, owner_user_hash, plugin_instance_id, scope, secret_ref) DO UPDATE SET
 	bound = excluded.bound,
 	last_test_status = excluded.last_test_status,
 	bound_at = excluded.bound_at,
 	tested_at = excluded.tested_at,
 	deleted_at = excluded.deleted_at,
 	updated_at = excluded.updated_at`,
+		record.OwnerEnvHash,
+		record.OwnerUserHash,
 		record.PluginInstanceID,
 		record.SecretRef,
 		record.Scope,
@@ -250,9 +280,27 @@ func (s *SQLiteStore) initializeSchema(ctx context.Context) error {
 		return err
 	}
 	defer rollbackUnlessCommitted(tx)
+	legacy, err := secretSchemaNeedsOwnerMigration(ctx, tx)
+	if err != nil {
+		return err
+	}
+	if legacy {
+		var count int64
+		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM plugin_secret_bindings`).Scan(&count); err != nil {
+			return err
+		}
+		if count != 0 {
+			return ErrOwnerScopeMigrationRequired
+		}
+		if _, err := tx.ExecContext(ctx, `DROP TABLE plugin_secret_bindings`); err != nil {
+			return err
+		}
+	}
 
 	if _, err := tx.ExecContext(ctx, `
 CREATE TABLE IF NOT EXISTS plugin_secret_bindings (
+	owner_env_hash TEXT NOT NULL,
+	owner_user_hash TEXT NOT NULL,
 	plugin_instance_id TEXT NOT NULL,
 	secret_ref TEXT NOT NULL,
 	scope TEXT NOT NULL,
@@ -262,18 +310,51 @@ CREATE TABLE IF NOT EXISTS plugin_secret_bindings (
 	tested_at INTEGER,
 	deleted_at INTEGER,
 	updated_at INTEGER NOT NULL,
-	PRIMARY KEY(plugin_instance_id, scope, secret_ref)
+	PRIMARY KEY(owner_env_hash, owner_user_hash, plugin_instance_id, scope, secret_ref),
+	CHECK((scope = 'environment' AND owner_user_hash = '') OR (scope = 'user' AND owner_user_hash <> ''))
 )`); err != nil {
 		return err
 	}
-	if _, err := tx.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_plugin_secret_bindings_plugin ON plugin_secret_bindings(plugin_instance_id, bound, updated_at)`); err != nil {
+	if _, err := tx.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_plugin_secret_bindings_plugin ON plugin_secret_bindings(owner_env_hash, plugin_instance_id, scope, owner_user_hash, bound, updated_at)`); err != nil {
 		return err
 	}
 	return tx.Commit()
 }
 
-func getSQLiteRecord(ctx context.Context, db queryer, req BindRequest) (Record, bool, error) {
-	row := db.QueryRowContext(ctx, secretBindingSelectColumns+` FROM plugin_secret_bindings WHERE plugin_instance_id = ? AND scope = ? AND secret_ref = ?`, req.PluginInstanceID, req.Scope, req.SecretRef)
+func secretSchemaNeedsOwnerMigration(ctx context.Context, tx *sql.Tx) (bool, error) {
+	rows, err := tx.QueryContext(ctx, `PRAGMA table_info(plugin_secret_bindings)`)
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+	columns := map[string]struct{}{}
+	for rows.Next() {
+		var (
+			columnID    int
+			name        string
+			columnType  string
+			notNull     int
+			defaultExpr sql.NullString
+			primaryKey  int
+		)
+		if err := rows.Scan(&columnID, &name, &columnType, &notNull, &defaultExpr, &primaryKey); err != nil {
+			return false, err
+		}
+		columns[name] = struct{}{}
+	}
+	if err := rows.Err(); err != nil {
+		return false, err
+	}
+	if len(columns) == 0 {
+		return false, nil
+	}
+	_, hasEnv := columns["owner_env_hash"]
+	_, hasUser := columns["owner_user_hash"]
+	return !hasEnv || !hasUser, nil
+}
+
+func getSQLiteRecord(ctx context.Context, db queryer, owner sessionctx.ResourceScope, req BindRequest) (Record, bool, error) {
+	row := db.QueryRowContext(ctx, secretBindingSelectColumns+` FROM plugin_secret_bindings WHERE owner_env_hash = ? AND owner_user_hash = ? AND plugin_instance_id = ? AND scope = ? AND secret_ref = ?`, owner.OwnerEnvHash, owner.OwnerUserHash, req.PluginInstanceID, req.Scope, req.SecretRef)
 	record, err := scanSQLiteRow(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Record{}, false, nil
@@ -302,6 +383,8 @@ func scanSQLiteScanner(scanner interface {
 	var deletedAt sql.NullInt64
 	var updatedAt int64
 	if err := scanner.Scan(
+		&record.OwnerEnvHash,
+		&record.OwnerUserHash,
 		&record.PluginInstanceID,
 		&record.SecretRef,
 		&record.Scope,
@@ -319,7 +402,22 @@ func scanSQLiteScanner(scanner interface {
 	record.TestedAt = nullableUnixToTime(testedAt)
 	record.DeletedAt = nullableUnixToTime(deletedAt)
 	record.UpdatedAt = time.Unix(0, updatedAt).UTC()
+	if err := validateRecordOwner(record); err != nil {
+		return Record{}, err
+	}
 	return cloneRecord(record), nil
+}
+
+func validateRecordOwner(record Record) error {
+	owner := sessionctx.ResourceScope{
+		Kind:          sessionctx.ScopeKind(record.Scope),
+		OwnerEnvHash:  record.OwnerEnvHash,
+		OwnerUserHash: record.OwnerUserHash,
+	}
+	if err := owner.Validate(); err != nil {
+		return ErrSecretScopeMismatch
+	}
+	return nil
 }
 
 func nullableUnixToTime(value sql.NullInt64) *time.Time {
