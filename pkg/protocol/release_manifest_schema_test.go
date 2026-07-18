@@ -321,7 +321,7 @@ func assertReleaseManifestVerifierContract(t *testing.T, path string) {
 		`verifyExecutableTargets(bundleDir, manifest.runtime_target);`,
 		`target: { os: process.platform, arch: process.arch },`,
 		`host_process_id: process.pid,`,
-		`host_ipc_version: "rust-ipc-v3",`,
+		`host_ipc_version: "rust-ipc-v4",`,
 		`host_wasm_abi: "redevplugin-wasm-worker-v2",`,
 		`started_unix_nano: 1,`,
 		`verifyCompatibility(bundleDir, expectedVersion, manifest, skipExecution);`,

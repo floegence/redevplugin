@@ -98,6 +98,7 @@ var (
 	ErrPluginRuntimeNotConfigured    = errors.New("plugin runtime is not configured")
 	ErrPluginRuntimeIncompatible     = errors.New("plugin runtime is incompatible")
 	ErrSecurityEventPersistence      = errors.New("plugin security event persistence failed")
+	ErrResourceScopeMismatch         = errors.New("plugin resource scope mismatch")
 	ErrHostClosed                    = errors.New("plugin host is closed")
 	ErrHostConfig                    = errors.New("plugin host configuration is invalid")
 	ErrFeatureNotConfigured          = errors.New("plugin feature is not configured")
@@ -5797,9 +5798,18 @@ func (h *Host) mintConnectionGrant(ctx context.Context, req MintConnectionGrantR
 	if err := h.canRun(ctx, record); err != nil {
 		return registry.PluginRecord{}, connectivity.ConnectionGrant{}, err
 	}
+	session, err := requireUserSession(ctx)
+	if err != nil {
+		return registry.PluginRecord{}, connectivity.ConnectionGrant{}, err
+	}
+	resourceScope, err := connectorResourceScope(record.Manifest, req.ConnectorID, session)
+	if err != nil {
+		return registry.PluginRecord{}, connectivity.ConnectionGrant{}, err
+	}
 	grant, err := h.adapters.Connectivity.MintConnectionGrant(ctx, connectivity.GrantRequest{
 		PluginInstanceID:    record.PluginInstanceID,
 		ActiveFingerprint:   record.ActiveFingerprint,
+		ResourceScope:       resourceScope,
 		PolicyRevision:      record.PolicyRevision,
 		ManagementRevision:  record.ManagementRevision,
 		RevokeEpoch:         record.RevokeEpoch,
@@ -5813,7 +5823,24 @@ func (h *Host) mintConnectionGrant(ctx context.Context, req MintConnectionGrantR
 	if err != nil {
 		return registry.PluginRecord{}, connectivity.ConnectionGrant{}, err
 	}
+	if !grant.ResourceScope.Matches(resourceScope) {
+		return registry.PluginRecord{}, connectivity.ConnectionGrant{}, fmt.Errorf("%w: %w: connectivity broker returned mismatched resource scope", connectivity.ErrConnectorDenied, connectivity.ErrResourceScopeMismatch)
+	}
 	return record, grant, nil
+}
+
+func connectorResourceScope(m manifest.Manifest, connectorID string, session sessionctx.Context) (sessionctx.ResourceScope, error) {
+	connectorID = strings.TrimSpace(connectorID)
+	if m.NetworkAccess == nil {
+		return sessionctx.ResourceScope{}, fmt.Errorf("%w: connector %q is not declared", connectivity.ErrConnectorDenied, connectorID)
+	}
+	for _, connector := range m.NetworkAccess.Connectors {
+		if strings.TrimSpace(connector.ConnectorID) != connectorID {
+			continue
+		}
+		return session.ResourceScope(sessionctx.ScopeKind(strings.TrimSpace(connector.Scope)))
+	}
+	return sessionctx.ResourceScope{}, fmt.Errorf("%w: connector %q is not declared", connectivity.ErrConnectorDenied, connectorID)
 }
 
 func (h *Host) MintNetworkHandleGrant(ctx context.Context, req MintConnectionGrantRequest) (result NetworkHandleGrantResult, retErr error) {
@@ -7037,6 +7064,10 @@ func (h *Host) invokeWorker(ctx context.Context, record registry.PluginRecord, m
 	if err != nil {
 		return dispatch, err
 	}
+	brokerAccess, err := normalizedWorkerBrokerAccess(record.Manifest, method.BrokerAccess)
+	if err != nil {
+		return dispatch, err
+	}
 	payload := workerInvocationPayload{
 		PluginID:             record.PluginID,
 		PluginInstanceID:     record.PluginInstanceID,
@@ -7063,7 +7094,7 @@ func (h *Host) invokeWorker(ctx context.Context, record registry.PluginRecord, m
 		StreamID:             dispatch.streamID,
 		AuditCorrelationID:   binding.AuditCorrelationID,
 		Params:               params,
-		BrokerAccess:         normalizedWorkerBrokerAccess(method.BrokerAccess),
+		BrokerAccess:         brokerAccess,
 	}
 	payload.BrokerAccessSHA256, err = workerBrokerAccessHash(payload.BrokerAccess)
 	if err != nil {
@@ -7224,9 +7255,9 @@ func (h *Host) mintWorkerStorageHandleGrants(ctx context.Context, record registr
 	return grants, nil
 }
 
-func normalizedWorkerBrokerAccess(access *manifest.MethodBrokerAccessSpec) manifest.MethodBrokerAccessSpec {
+func normalizedWorkerBrokerAccess(pluginManifest manifest.Manifest, access *manifest.MethodBrokerAccessSpec) (manifest.MethodBrokerAccessSpec, error) {
 	if access == nil {
-		return manifest.MethodBrokerAccessSpec{}
+		return manifest.MethodBrokerAccessSpec{}, nil
 	}
 	normalized := manifest.MethodBrokerAccessSpec{
 		Storage: make([]manifest.StorageBrokerAccessSpec, len(access.Storage)),
@@ -7240,9 +7271,14 @@ func normalizedWorkerBrokerAccess(access *manifest.MethodBrokerAccessSpec) manif
 		sort.Strings(normalized.Storage[i].Operations)
 	}
 	for i, item := range access.Network {
+		scope, ok := declaredConnectorScope(pluginManifest, item.ConnectorID, item.Transport)
+		if !ok {
+			return manifest.MethodBrokerAccessSpec{}, fmt.Errorf("%w: connector %q/%q is not declared", connectivity.ErrInvalidConnector, item.ConnectorID, item.Transport)
+		}
 		normalized.Network[i] = manifest.NetworkBrokerAccessSpec{
 			ConnectorID: item.ConnectorID,
 			Transport:   item.Transport,
+			Scope:       scope,
 			Operations:  append([]string(nil), item.Operations...),
 			HTTPMethods: append([]string(nil), item.HTTPMethods...),
 		}
@@ -7251,7 +7287,20 @@ func normalizedWorkerBrokerAccess(access *manifest.MethodBrokerAccessSpec) manif
 	}
 	sort.Slice(normalized.Storage, func(i, j int) bool { return normalized.Storage[i].StoreID < normalized.Storage[j].StoreID })
 	sort.Slice(normalized.Network, func(i, j int) bool { return normalized.Network[i].ConnectorID < normalized.Network[j].ConnectorID })
-	return normalized
+	return normalized, nil
+}
+
+func declaredConnectorScope(pluginManifest manifest.Manifest, connectorID, transport string) (string, bool) {
+	if pluginManifest.NetworkAccess == nil {
+		return "", false
+	}
+	for _, connector := range pluginManifest.NetworkAccess.Connectors {
+		if strings.TrimSpace(connector.ConnectorID) == strings.TrimSpace(connectorID) &&
+			strings.TrimSpace(connector.Transport) == strings.TrimSpace(transport) {
+			return strings.TrimSpace(connector.Scope), true
+		}
+	}
+	return "", false
 }
 
 func workerBrokerAccessHash(access manifest.MethodBrokerAccessSpec) (string, error) {
@@ -7343,7 +7392,7 @@ func (h *Host) resolveSecretRequest(ctx context.Context, req SecretBindRequest) 
 		return registry.PluginRecord{}, SecretBindRequest{}, err
 	}
 	if !secretRefDeclared(record.Manifest, req.SecretRef, req.Scope) {
-		return registry.PluginRecord{}, SecretBindRequest{}, fmt.Errorf("%w: secret_ref %q is not declared for %s scope", ErrInvalidSecretRef, req.SecretRef, req.Scope)
+		return registry.PluginRecord{}, SecretBindRequest{}, fmt.Errorf("%w: %w: secret_ref %q is not declared for %s scope", ErrInvalidSecretRef, ErrResourceScopeMismatch, req.SecretRef, req.Scope)
 	}
 	return record, req, nil
 }

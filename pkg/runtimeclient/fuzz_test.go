@@ -11,7 +11,7 @@ import (
 // panic or an unbounded read.
 func FuzzReadIPCFrame(f *testing.F) {
 	f.Add([]byte("{}\n"))
-	f.Add([]byte("{\"ipc_version\":\"rust-ipc-v3\",\"frame_type\":\"heartbeat\",\"request_id\":\"r1\",\"runtime_generation_id\":\"g1\",\"payload\":{}}\n"))
+	f.Add([]byte("{\"ipc_version\":\"rust-ipc-v4\",\"frame_type\":\"heartbeat\",\"request_id\":\"r1\",\"runtime_generation_id\":\"g1\",\"payload\":{}}\n"))
 	f.Add([]byte("{\"request_id\":\"r1\",\"request_id\":\"r2\"}\n"))
 	f.Fuzz(func(t *testing.T, input []byte) {
 		_, _ = readIPCFrame(bufio.NewReader(bytes.NewReader(input)))

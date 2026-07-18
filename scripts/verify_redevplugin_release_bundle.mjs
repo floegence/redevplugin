@@ -122,7 +122,7 @@ function verifyRequiredArtifacts(bundleDir) {
     "contracts/spec/plugin/host-capability-compatibility-v1.schema.json",
     "contracts/spec/plugin/host-capability-signature-v1.schema.json",
     "contracts/spec/plugin/host-capability-notices-v1.schema.json",
-    "contracts/spec/plugin/ipc-v3.schema.json",
+    "contracts/spec/plugin/ipc-v4.schema.json",
     "contracts/spec/plugin/manifest-v5.schema.json",
     "contracts/spec/plugin/opaque-surface-document-v3.schema.json",
     "contracts/spec/plugin/opaque-surface-transport-v4.schema.json",
@@ -133,7 +133,7 @@ function verifyRequiredArtifacts(bundleDir) {
     "contracts/spec/plugin/source-policy-v1.schema.json",
     "contracts/spec/plugin/source-revocations-v1.schema.json",
     "contracts/spec/plugin/token-ticket-v2.schema.json",
-    "contracts/spec/plugin/worker-invocation-v2.schema.json",
+    "contracts/spec/plugin/worker-invocation-v3.schema.json",
     "examples/host-capability/sample-documents-v1/example-documents.public.json",
     "examples/host-capability/sample-documents-v1/host-capability.pin.json",
     "examples/host-capability/sample-documents-v1/plugin-consumer.ts",
@@ -257,14 +257,14 @@ function verifyRuntimeHello(bundleDir, expectedVersion, skipExecution) {
   }
   const hello =
     JSON.stringify({
-      ipc_version: "rust-ipc-v3",
+      ipc_version: "rust-ipc-v4",
       frame_type: "hello",
       request_id: "hello-1",
       runtime_generation_id: "gen-1",
       payload: {
         target: { os: process.platform, arch: process.arch },
         host_process_id: process.pid,
-        host_ipc_version: "rust-ipc-v3",
+        host_ipc_version: "rust-ipc-v4",
         host_wasm_abi: "redevplugin-wasm-worker-v2",
         started_unix_nano: 1,
         channel_nonce: channelNonce,
@@ -296,7 +296,7 @@ function verifyRuntimeHello(bundleDir, expectedVersion, skipExecution) {
   const ack = JSON.parse(output);
   assertEqual(ack.frame_type, "hello_ack", "runtime hello frame_type");
   assertEqual(ack.payload?.runtime_version, expectedVersion, "runtime hello version");
-  assertEqual(ack.payload?.rust_ipc_version, "rust-ipc-v3", "runtime hello rust_ipc_version");
+  assertEqual(ack.payload?.rust_ipc_version, "rust-ipc-v4", "runtime hello rust_ipc_version");
   assertEqual(ack.payload?.wasm_abi_version, "redevplugin-wasm-worker-v2", "runtime hello wasm_abi_version");
   assertEqual(ack.payload?.channel_nonce, channelNonce, "runtime hello channel_nonce");
   assertDeepEqual(ack.payload?.limits, limits, "runtime hello limits");

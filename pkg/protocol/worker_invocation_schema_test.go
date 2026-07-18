@@ -9,7 +9,7 @@ import (
 
 func TestWorkerInvocationSchemaDefinesHostRuntimePayload(t *testing.T) {
 	root := repoRoot(t)
-	raw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", "worker-invocation-v2.schema.json"))
+	raw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", "worker-invocation-v3.schema.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -55,6 +55,12 @@ func TestWorkerInvocationSchemaDefinesHostRuntimePayload(t *testing.T) {
 	if brokerAccess["additionalProperties"] != false {
 		t.Fatalf("broker_access additionalProperties = %#v, want false", brokerAccess["additionalProperties"])
 	}
+	networkItems := requireNestedObject(t, brokerAccess, "properties", "network", "items")
+	assertRequiredFields(t, networkItems, "worker network broker access", []string{"connector_id", "transport", "scope", "operations"})
+	scopeKinds := requireStringSlice(t, requireNestedObject(t, networkItems, "properties", "scope")["enum"], "worker network scope")
+	if !stringSetEqual(scopeKinds, []string{"user", "environment"}) {
+		t.Fatalf("worker network scope = %#v", scopeKinds)
+	}
 	if property := requireNestedObject(t, properties, "broker_access_sha256"); property["$ref"] != "#/$defs/sha256" {
 		t.Fatalf("broker_access_sha256 ref = %#v, want #/$defs/sha256", property["$ref"])
 	}
@@ -76,7 +82,7 @@ func TestWorkerInvocationSchemaDefinesHostRuntimePayload(t *testing.T) {
 
 func TestWorkerInvocationSchemaBindsOperationAndStreamHandlesByExecution(t *testing.T) {
 	root := repoRoot(t)
-	raw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", "worker-invocation-v2.schema.json"))
+	raw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", "worker-invocation-v3.schema.json"))
 	if err != nil {
 		t.Fatal(err)
 	}

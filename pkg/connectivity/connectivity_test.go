@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"github.com/floegence/redevplugin/pkg/manifest"
+	"github.com/floegence/redevplugin/pkg/sessionctx"
 	"github.com/floegence/redevplugin/pkg/version"
 )
 
@@ -284,6 +285,7 @@ func TestMemoryBrokerMintsBoundedConnectionGrant(t *testing.T) {
 	grant, err := broker.MintConnectionGrant(context.Background(), GrantRequest{
 		PluginInstanceID:    "plugini_test",
 		ActiveFingerprint:   "sha256:fingerprint",
+		ResourceScope:       environmentResourceScope(),
 		PolicyRevision:      7,
 		ManagementRevision:  11,
 		RevokeEpoch:         3,
@@ -300,9 +302,13 @@ func TestMemoryBrokerMintsBoundedConnectionGrant(t *testing.T) {
 	if grant.GrantID == "" || grant.Destination.Host != "db.example.com" || grant.ExpiresAt != now.Add(MaxGrantTTL) {
 		t.Fatalf("grant mismatch: %#v", grant)
 	}
+	if !grant.ResourceScope.Matches(environmentResourceScope()) {
+		t.Fatalf("grant resource scope = %#v", grant.ResourceScope)
+	}
 	if _, err := broker.MintConnectionGrant(context.Background(), GrantRequest{
 		PluginInstanceID:   "plugini_test",
 		ActiveFingerprint:  "sha256:fingerprint",
+		ResourceScope:      environmentResourceScope(),
 		PolicyRevision:     7,
 		ManagementRevision: 11,
 		RevokeEpoch:        3,
@@ -315,6 +321,7 @@ func TestMemoryBrokerMintsBoundedConnectionGrant(t *testing.T) {
 	if _, err := broker.MintConnectionGrant(context.Background(), GrantRequest{
 		PluginInstanceID:   "plugini_test",
 		ActiveFingerprint:  "sha256:fingerprint",
+		ResourceScope:      environmentResourceScope(),
 		PolicyRevision:     7,
 		ManagementRevision: 11,
 		RevokeEpoch:        4,
@@ -323,6 +330,31 @@ func TestMemoryBrokerMintsBoundedConnectionGrant(t *testing.T) {
 		Destination:        "db.example.com:3306",
 	}); !errors.Is(err, ErrConnectorDenied) {
 		t.Fatalf("MintConnectionGrant(stale) error = %v, want ErrConnectorDenied", err)
+	}
+	if _, err := broker.MintConnectionGrant(context.Background(), GrantRequest{
+		PluginInstanceID:   "plugini_test",
+		ActiveFingerprint:  "sha256:fingerprint",
+		ResourceScope:      userResourceScope(),
+		PolicyRevision:     7,
+		ManagementRevision: 11,
+		RevokeEpoch:        3,
+		ConnectorID:        "mysql",
+		Transport:          TransportTCP,
+		Destination:        "db.example.com:3306",
+	}); !errors.Is(err, ErrConnectorDenied) || !errors.Is(err, ErrResourceScopeMismatch) {
+		t.Fatalf("MintConnectionGrant(scope mismatch) error = %v, want ErrConnectorDenied and ErrResourceScopeMismatch", err)
+	}
+	if _, err := broker.MintConnectionGrant(context.Background(), GrantRequest{
+		PluginInstanceID:   "plugini_test",
+		ActiveFingerprint:  "sha256:fingerprint",
+		PolicyRevision:     7,
+		ManagementRevision: 11,
+		RevokeEpoch:        3,
+		ConnectorID:        "mysql",
+		Transport:          TransportTCP,
+		Destination:        "db.example.com:3306",
+	}); !errors.Is(err, ErrConnectorDenied) || !errors.Is(err, ErrResourceScopeMismatch) {
+		t.Fatalf("MintConnectionGrant(invalid scope) error = %v, want ErrConnectorDenied and ErrResourceScopeMismatch", err)
 	}
 }
 
@@ -1395,6 +1427,11 @@ func TestExecutorRejectsExpiredAndMismatchedGrants(t *testing.T) {
 	if _, err := NewExecutor(ExecutorOptions{}).TCPRoundTrip(context.Background(), TCPRoundTripRequest{Grant: httpGrant}); !errors.Is(err, ErrConnectorDenied) {
 		t.Fatalf("TCPRoundTrip(http grant) error = %v, want ErrConnectorDenied", err)
 	}
+	tamperedScope := testGrant(t, TransportTCP, "127.0.0.1:443", time.Minute)
+	tamperedScope.ResourceScope.OwnerUserHash = ""
+	if _, err := NewExecutor(ExecutorOptions{}).TCPRoundTrip(context.Background(), TCPRoundTripRequest{Grant: tamperedScope}); !errors.Is(err, ErrConnectorDenied) || !errors.Is(err, ErrResourceScopeMismatch) {
+		t.Fatalf("TCPRoundTrip(tampered scope) error = %v, want ErrConnectorDenied and ErrResourceScopeMismatch", err)
+	}
 }
 
 func TestExecutorRejectsGrantClassifierVersionMismatchBeforeDial(t *testing.T) {
@@ -1533,6 +1570,7 @@ func testGrant(t *testing.T, transport Transport, rawDestination string, ttl tim
 		GrantID:                 "netgrant_0123456789abcdef0123456789abcdef",
 		PluginInstanceID:        "plugini_test",
 		ActiveFingerprint:       "sha256:fingerprint",
+		ResourceScope:           userResourceScope(),
 		PolicyRevision:          1,
 		ManagementRevision:      2,
 		RevokeEpoch:             3,
@@ -1543,6 +1581,14 @@ func testGrant(t *testing.T, transport Transport, rawDestination string, ttl tim
 		TargetClassifierVersion: version.TargetClassifierVersion,
 		ExpiresAt:               time.Now().UTC().Add(ttl),
 	}
+}
+
+func userResourceScope() sessionctx.ResourceScope {
+	return sessionctx.ResourceScope{Kind: sessionctx.ScopeUser, OwnerEnvHash: "env_hash", OwnerUserHash: "user_hash"}
+}
+
+func environmentResourceScope() sessionctx.ResourceScope {
+	return sessionctx.ResourceScope{Kind: sessionctx.ScopeEnvironment, OwnerEnvHash: "env_hash"}
 }
 
 func TestParseDestinationAcceptsLoopbackForExecutorTestHelper(t *testing.T) {

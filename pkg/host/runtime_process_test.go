@@ -20,6 +20,7 @@ import (
 
 	"github.com/floegence/redevplugin/pkg/connectivity"
 	"github.com/floegence/redevplugin/pkg/runtimeclient"
+	"github.com/floegence/redevplugin/pkg/sessionctx"
 	"github.com/floegence/redevplugin/pkg/storage"
 	"github.com/floegence/redevplugin/pkg/stream"
 	"github.com/floegence/redevplugin/pkg/version"
@@ -1131,40 +1132,41 @@ type hostRuntimeInvokePayload struct {
 }
 
 type hostRuntimeNetworkExecuteRequest struct {
-	PluginID             string                 `json:"plugin_id,omitempty"`
-	PluginInstanceID     string                 `json:"plugin_instance_id"`
-	ActiveFingerprint    string                 `json:"active_fingerprint"`
-	RuntimeInstanceID    string                 `json:"runtime_instance_id,omitempty"`
-	RuntimeGenerationID  string                 `json:"runtime_generation_id"`
-	RuntimeShardID       string                 `json:"runtime_shard_id,omitempty"`
-	PolicyRevision       uint64                 `json:"policy_revision"`
-	ManagementRevision   uint64                 `json:"management_revision"`
-	RevokeEpoch          uint64                 `json:"revoke_epoch"`
-	ConnectorID          string                 `json:"connector_id"`
-	Transport            connectivity.Transport `json:"transport"`
-	Destination          string                 `json:"destination"`
-	TTLMillis            int64                  `json:"ttl_ms,omitempty"`
-	Operation            string                 `json:"operation,omitempty"`
-	Method               string                 `json:"method,omitempty"`
-	Path                 string                 `json:"path,omitempty"`
-	Headers              http.Header            `json:"headers,omitempty"`
-	BodyBase64           string                 `json:"body_base64,omitempty"`
-	MaxChunkBytes        int64                  `json:"max_chunk_bytes,omitempty"`
-	MaxBufferedBytes     int64                  `json:"max_buffered_bytes,omitempty"`
-	MaxRequestBytes      int64                  `json:"max_request_bytes,omitempty"`
-	MaxResponseBytes     int64                  `json:"max_response_bytes,omitempty"`
-	TimeoutMillis        int64                  `json:"timeout_ms,omitempty"`
-	StreamID             string                 `json:"stream_id,omitempty"`
-	StreamMethod         string                 `json:"stream_method,omitempty"`
-	StreamEffect         string                 `json:"stream_effect,omitempty"`
-	StreamExecution      string                 `json:"stream_execution,omitempty"`
-	SurfaceInstanceID    string                 `json:"surface_instance_id,omitempty"`
-	OwnerSessionHash     string                 `json:"owner_session_hash,omitempty"`
-	OwnerUserHash        string                 `json:"owner_user_hash,omitempty"`
-	OwnerEnvHash         string                 `json:"owner_env_hash,omitempty"`
-	SessionChannelIDHash string                 `json:"session_channel_id_hash,omitempty"`
-	BridgeChannelID      string                 `json:"bridge_channel_id,omitempty"`
-	ContentType          string                 `json:"content_type,omitempty"`
+	PluginID             string                   `json:"plugin_id,omitempty"`
+	PluginInstanceID     string                   `json:"plugin_instance_id"`
+	ActiveFingerprint    string                   `json:"active_fingerprint"`
+	ResourceScope        sessionctx.ResourceScope `json:"resource_scope"`
+	RuntimeInstanceID    string                   `json:"runtime_instance_id,omitempty"`
+	RuntimeGenerationID  string                   `json:"runtime_generation_id"`
+	RuntimeShardID       string                   `json:"runtime_shard_id,omitempty"`
+	PolicyRevision       uint64                   `json:"policy_revision"`
+	ManagementRevision   uint64                   `json:"management_revision"`
+	RevokeEpoch          uint64                   `json:"revoke_epoch"`
+	ConnectorID          string                   `json:"connector_id"`
+	Transport            connectivity.Transport   `json:"transport"`
+	Destination          string                   `json:"destination"`
+	TTLMillis            int64                    `json:"ttl_ms,omitempty"`
+	Operation            string                   `json:"operation,omitempty"`
+	Method               string                   `json:"method,omitempty"`
+	Path                 string                   `json:"path,omitempty"`
+	Headers              http.Header              `json:"headers,omitempty"`
+	BodyBase64           string                   `json:"body_base64,omitempty"`
+	MaxChunkBytes        int64                    `json:"max_chunk_bytes,omitempty"`
+	MaxBufferedBytes     int64                    `json:"max_buffered_bytes,omitempty"`
+	MaxRequestBytes      int64                    `json:"max_request_bytes,omitempty"`
+	MaxResponseBytes     int64                    `json:"max_response_bytes,omitempty"`
+	TimeoutMillis        int64                    `json:"timeout_ms,omitempty"`
+	StreamID             string                   `json:"stream_id,omitempty"`
+	StreamMethod         string                   `json:"stream_method,omitempty"`
+	StreamEffect         string                   `json:"stream_effect,omitempty"`
+	StreamExecution      string                   `json:"stream_execution,omitempty"`
+	SurfaceInstanceID    string                   `json:"surface_instance_id,omitempty"`
+	OwnerSessionHash     string                   `json:"owner_session_hash,omitempty"`
+	OwnerUserHash        string                   `json:"owner_user_hash,omitempty"`
+	OwnerEnvHash         string                   `json:"owner_env_hash,omitempty"`
+	SessionChannelIDHash string                   `json:"session_channel_id_hash,omitempty"`
+	BridgeChannelID      string                   `json:"bridge_channel_id,omitempty"`
+	ContentType          string                   `json:"content_type,omitempty"`
 }
 
 type hostRuntimeNetworkExecuteResponse struct {
@@ -1293,6 +1295,7 @@ func hostRuntimeProcessNetworkExecute(reader *bufio.Reader, encoder *json.Encode
 		PluginID:             invoke.Invocation.PluginID,
 		PluginInstanceID:     invoke.Lease.PluginInstanceID,
 		ActiveFingerprint:    invoke.Invocation.ActiveFingerprint,
+		ResourceScope:        sessionctx.ResourceScope{Kind: sessionctx.ScopeUser, OwnerEnvHash: invoke.Lease.OwnerEnvHash, OwnerUserHash: invoke.Lease.OwnerUserHash},
 		RuntimeInstanceID:    invoke.Lease.RuntimeInstanceID,
 		RuntimeGenerationID:  invoke.Lease.RuntimeGenerationID,
 		RuntimeShardID:       invoke.Lease.RuntimeShardID,

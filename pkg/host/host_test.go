@@ -7249,6 +7249,7 @@ func TestDisableFailsClosedWhenRuntimeRevokeFails(t *testing.T) {
 	if _, err := connectivityBroker.MintConnectionGrant(ctx, connectivity.GrantRequest{
 		PluginInstanceID:   enabled.PluginInstanceID,
 		ActiveFingerprint:  enabled.ActiveFingerprint,
+		ResourceScope:      sessionctx.ResourceScope{Kind: sessionctx.ScopeUser, OwnerEnvHash: "env_hash", OwnerUserHash: "user_hash"},
 		PolicyRevision:     enabled.PolicyRevision,
 		ManagementRevision: enabled.ManagementRevision,
 		RevokeEpoch:        enabled.RevokeEpoch,
@@ -7279,6 +7280,7 @@ func TestDisableFailsClosedWhenRuntimeRevokeFails(t *testing.T) {
 	if _, err := connectivityBroker.MintConnectionGrant(ctx, connectivity.GrantRequest{
 		PluginInstanceID:   enabled.PluginInstanceID,
 		ActiveFingerprint:  enabled.ActiveFingerprint,
+		ResourceScope:      sessionctx.ResourceScope{Kind: sessionctx.ScopeUser, OwnerEnvHash: "env_hash", OwnerUserHash: "user_hash"},
 		PolicyRevision:     enabled.PolicyRevision,
 		ManagementRevision: enabled.ManagementRevision,
 		RevokeEpoch:        enabled.RevokeEpoch,
@@ -7638,6 +7640,9 @@ func TestEnableInstallsConnectivityPolicyAndMintsGrant(t *testing.T) {
 	if grant.GrantID == "" || grant.PluginInstanceID != installed.PluginInstanceID || grant.Destination.Port != 3306 {
 		t.Fatalf("grant mismatch: %#v", grant)
 	}
+	if !grant.ResourceScope.Matches(sessionctx.ResourceScope{Kind: sessionctx.ScopeEnvironment, OwnerEnvHash: "env_hash"}) {
+		t.Fatalf("grant resource scope = %#v", grant.ResourceScope)
+	}
 	if !audits.hasEvent("plugin.connectivity.grant_minted") {
 		t.Fatalf("missing connectivity grant audit event: %#v", audits.events)
 	}
@@ -7704,6 +7709,7 @@ func TestEnableInstallsConnectivityPolicyAndMintsGrant(t *testing.T) {
 	if _, err := connectivityBroker.MintConnectionGrant(hostTestContext(), connectivity.GrantRequest{
 		PluginInstanceID:   enabled.PluginInstanceID,
 		ActiveFingerprint:  enabled.ActiveFingerprint,
+		ResourceScope:      sessionctx.ResourceScope{Kind: sessionctx.ScopeEnvironment, OwnerEnvHash: "env_hash"},
 		PolicyRevision:     enabled.PolicyRevision,
 		ManagementRevision: enabled.ManagementRevision,
 		RevokeEpoch:        enabled.RevokeEpoch,
@@ -7716,6 +7722,7 @@ func TestEnableInstallsConnectivityPolicyAndMintsGrant(t *testing.T) {
 	if _, err := connectivityBroker.MintConnectionGrant(hostTestContext(), connectivity.GrantRequest{
 		PluginInstanceID:   afterGrant.PluginInstanceID,
 		ActiveFingerprint:  afterGrant.ActiveFingerprint,
+		ResourceScope:      sessionctx.ResourceScope{Kind: sessionctx.ScopeEnvironment, OwnerEnvHash: "env_hash"},
 		PolicyRevision:     afterGrant.PolicyRevision,
 		ManagementRevision: afterGrant.ManagementRevision,
 		RevokeEpoch:        afterGrant.RevokeEpoch,
@@ -7743,6 +7750,7 @@ func TestEnableInstallsConnectivityPolicyAndMintsGrant(t *testing.T) {
 	if _, err := connectivityBroker.MintConnectionGrant(hostTestContext(), connectivity.GrantRequest{
 		PluginInstanceID:   afterGrant.PluginInstanceID,
 		ActiveFingerprint:  afterGrant.ActiveFingerprint,
+		ResourceScope:      sessionctx.ResourceScope{Kind: sessionctx.ScopeEnvironment, OwnerEnvHash: "env_hash"},
 		PolicyRevision:     afterGrant.PolicyRevision,
 		ManagementRevision: afterGrant.ManagementRevision,
 		RevokeEpoch:        afterGrant.RevokeEpoch,
@@ -7755,6 +7763,7 @@ func TestEnableInstallsConnectivityPolicyAndMintsGrant(t *testing.T) {
 	if _, err := connectivityBroker.MintConnectionGrant(hostTestContext(), connectivity.GrantRequest{
 		PluginInstanceID:   afterRevoke.PluginInstanceID,
 		ActiveFingerprint:  afterRevoke.ActiveFingerprint,
+		ResourceScope:      sessionctx.ResourceScope{Kind: sessionctx.ScopeEnvironment, OwnerEnvHash: "env_hash"},
 		PolicyRevision:     afterRevoke.PolicyRevision,
 		ManagementRevision: afterRevoke.ManagementRevision,
 		RevokeEpoch:        afterRevoke.RevokeEpoch,
@@ -7779,6 +7788,7 @@ func TestEnableInstallsConnectivityPolicyAndMintsGrant(t *testing.T) {
 	if _, err := connectivityBroker.MintConnectionGrant(hostTestContext(), connectivity.GrantRequest{
 		PluginInstanceID:   installed.PluginInstanceID,
 		ActiveFingerprint:  installed.ActiveFingerprint,
+		ResourceScope:      sessionctx.ResourceScope{Kind: sessionctx.ScopeEnvironment, OwnerEnvHash: "env_hash"},
 		PolicyRevision:     installed.PolicyRevision,
 		ManagementRevision: installed.ManagementRevision,
 		RevokeEpoch:        installed.RevokeEpoch,
@@ -7988,6 +7998,7 @@ func TestUninstallEnabledPluginClearsSurfacesStreamsAndNetworkPolicy(t *testing.
 	if _, err := connectivityBroker.MintConnectionGrant(ctx, connectivity.GrantRequest{
 		PluginInstanceID:   enabled.PluginInstanceID,
 		ActiveFingerprint:  enabled.ActiveFingerprint,
+		ResourceScope:      sessionctx.ResourceScope{Kind: sessionctx.ScopeUser, OwnerEnvHash: "env_hash", OwnerUserHash: "user_hash"},
 		PolicyRevision:     enabled.PolicyRevision,
 		ManagementRevision: enabled.ManagementRevision,
 		RevokeEpoch:        enabled.RevokeEpoch,
@@ -8031,6 +8042,7 @@ func TestUninstallEnabledPluginClearsSurfacesStreamsAndNetworkPolicy(t *testing.
 	if _, err := connectivityBroker.MintConnectionGrant(ctx, connectivity.GrantRequest{
 		PluginInstanceID:   enabled.PluginInstanceID,
 		ActiveFingerprint:  enabled.ActiveFingerprint,
+		ResourceScope:      sessionctx.ResourceScope{Kind: sessionctx.ScopeUser, OwnerEnvHash: "env_hash", OwnerUserHash: "user_hash"},
 		PolicyRevision:     enabled.PolicyRevision,
 		ManagementRevision: enabled.ManagementRevision,
 		RevokeEpoch:        enabled.RevokeEpoch,
@@ -8256,8 +8268,8 @@ func TestSecretRefRequiresExactDeclaredScope(t *testing.T) {
 			SecretRef:        "api_token",
 			Scope:            "environment",
 		})
-		if !errors.Is(err, ErrInvalidSecretRef) {
-			t.Fatalf("BindSecretRef(scope mismatch) error = %v, want ErrInvalidSecretRef", err)
+		if !errors.Is(err, ErrInvalidSecretRef) || !errors.Is(err, ErrResourceScopeMismatch) {
+			t.Fatalf("BindSecretRef(scope mismatch) error = %v, want ErrInvalidSecretRef and ErrResourceScopeMismatch", err)
 		}
 		if secretStore.bind != (SecretBindRequest{}) {
 			t.Fatalf("scope mismatch reached secret adapter: %#v", secretStore.bind)
@@ -8288,8 +8300,8 @@ func TestSecretRefRequiresExactDeclaredScope(t *testing.T) {
 			{PluginInstanceID: installed.PluginInstanceID, SecretRef: "database_password", Scope: "user"},
 			{PluginInstanceID: installed.PluginInstanceID, SecretRef: "client_certificate", Scope: "environment"},
 		} {
-			if err := h.BindSecretRef(hostTestContext(), req); !errors.Is(err, ErrInvalidSecretRef) {
-				t.Fatalf("BindSecretRef(%s, %s) error = %v, want ErrInvalidSecretRef", req.SecretRef, req.Scope, err)
+			if err := h.BindSecretRef(hostTestContext(), req); !errors.Is(err, ErrInvalidSecretRef) || !errors.Is(err, ErrResourceScopeMismatch) {
+				t.Fatalf("BindSecretRef(%s, %s) error = %v, want ErrInvalidSecretRef and ErrResourceScopeMismatch", req.SecretRef, req.Scope, err)
 			}
 			if secretStore.bind != lastAccepted {
 				t.Fatalf("scope mismatch reached secret adapter: got %#v want %#v", secretStore.bind, lastAccepted)

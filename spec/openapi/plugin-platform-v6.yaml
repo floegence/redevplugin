@@ -1788,7 +1788,7 @@ components:
       properties:
         version: { $ref: "#/components/schemas/StrictSemVer" }
         target: { $ref: "#/components/schemas/RuntimeTarget" }
-        ipc_version: { const: rust-ipc-v3 }
+        ipc_version: { const: rust-ipc-v4 }
         wasm_abi_version: { const: redevplugin-wasm-worker-v2 }
         artifact_sha256: { type: string, pattern: '^[0-9a-f]{64}$' }
     RuntimeLimits:

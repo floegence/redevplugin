@@ -12,7 +12,7 @@ import (
 
 func TestNetworkGrantSchemaMatchesConnectivityContract(t *testing.T) {
 	root := repoRoot(t)
-	raw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", "network-grant-v1.schema.json"))
+	raw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", "network-grant-v2.schema.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -29,6 +29,7 @@ func TestNetworkGrantSchemaMatchesConnectivityContract(t *testing.T) {
 		"grant_id",
 		"plugin_instance_id",
 		"active_fingerprint",
+		"resource_scope",
 		"policy_revision",
 		"management_revision",
 		"revoke_epoch",
@@ -53,6 +54,15 @@ func TestNetworkGrantSchemaMatchesConnectivityContract(t *testing.T) {
 	}
 	if props["runtime_generation_id"] == nil {
 		t.Fatal("network grant schema missing optional runtime_generation_id")
+	}
+	resourceScope := requireNestedObject(t, schema, "$defs", "resource_scope")
+	if resourceScope["additionalProperties"] != false {
+		t.Fatalf("resource_scope additionalProperties = %#v, want false", resourceScope["additionalProperties"])
+	}
+	assertRequiredFields(t, resourceScope, "resource scope", []string{"kind", "owner_env_hash"})
+	scopeKinds := requireStringSlice(t, requireNestedObject(t, resourceScope, "properties", "kind")["enum"], "resource scope kind")
+	if !stringSetEqual(scopeKinds, []string{"user", "environment"}) {
+		t.Fatalf("resource scope kinds = %#v", scopeKinds)
 	}
 
 	destination := requireNestedObject(t, schema, "$defs", "destination")

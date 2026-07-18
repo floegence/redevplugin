@@ -28,6 +28,7 @@ import (
 	"github.com/floegence/redevplugin/pkg/capability"
 	"github.com/floegence/redevplugin/pkg/connectivity"
 	"github.com/floegence/redevplugin/pkg/observability"
+	"github.com/floegence/redevplugin/pkg/sessionctx"
 	"github.com/floegence/redevplugin/pkg/storage"
 	"github.com/floegence/redevplugin/pkg/stream"
 	"github.com/floegence/redevplugin/pkg/version"
@@ -67,12 +68,12 @@ func TestReadIPCFrameRejectsNonCanonicalJSON(t *testing.T) {
 		name  string
 		frame string
 	}{
-		{name: "unknown field", frame: `{"ipc_version":"rust-ipc-v3","frame_type":"diagnostic","request_id":"r1","payload":{},"future":true}`},
-		{name: "duplicate frame type", frame: `{"ipc_version":"rust-ipc-v3","frame_type":"diagnostic","frame_type":"heartbeat","request_id":"r1","payload":{}}`},
-		{name: "case folded request id", frame: `{"ipc_version":"rust-ipc-v3","frame_type":"diagnostic","request_id":"r1","REQUEST_ID":"r2","payload":{}}`},
-		{name: "case alias only", frame: `{"ipc_version":"rust-ipc-v3","frame_type":"diagnostic","REQUEST_ID":"r1","payload":{}}`},
-		{name: "duplicate nested payload key", frame: `{"ipc_version":"rust-ipc-v3","frame_type":"diagnostic","request_id":"r1","payload":{"ok":true,"ok":false}}`},
-		{name: "trailing JSON", frame: `{"ipc_version":"rust-ipc-v3","frame_type":"diagnostic","request_id":"r1","payload":{}} {}`},
+		{name: "unknown field", frame: `{"ipc_version":"rust-ipc-v4","frame_type":"diagnostic","request_id":"r1","payload":{},"future":true}`},
+		{name: "duplicate frame type", frame: `{"ipc_version":"rust-ipc-v4","frame_type":"diagnostic","frame_type":"heartbeat","request_id":"r1","payload":{}}`},
+		{name: "case folded request id", frame: `{"ipc_version":"rust-ipc-v4","frame_type":"diagnostic","request_id":"r1","REQUEST_ID":"r2","payload":{}}`},
+		{name: "case alias only", frame: `{"ipc_version":"rust-ipc-v4","frame_type":"diagnostic","REQUEST_ID":"r1","payload":{}}`},
+		{name: "duplicate nested payload key", frame: `{"ipc_version":"rust-ipc-v4","frame_type":"diagnostic","request_id":"r1","payload":{"ok":true,"ok":false}}`},
+		{name: "trailing JSON", frame: `{"ipc_version":"rust-ipc-v4","frame_type":"diagnostic","request_id":"r1","payload":{}} {}`},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -91,11 +92,11 @@ func TestValidateHelloAckRejectsNonCanonicalPayload(t *testing.T) {
 		RuntimeGenerationID: "g1",
 	}
 	for _, payload := range []string{
-		`{"runtime_version":"1.0.0","rust_ipc_version":"rust-ipc-v3","wasm_abi_version":"redevplugin-wasm-worker-v2","channel_nonce":"nonce_1234567890123456","future":true}`,
-		`{"runtime_version":"1.0.0","runtime_version":"2.0.0","rust_ipc_version":"rust-ipc-v3","wasm_abi_version":"redevplugin-wasm-worker-v2","channel_nonce":"nonce_1234567890123456"}`,
-		`{"runtime_version":"1.0.0","RUNTIME_VERSION":"2.0.0","rust_ipc_version":"rust-ipc-v3","wasm_abi_version":"redevplugin-wasm-worker-v2","channel_nonce":"nonce_1234567890123456"}`,
-		`{"RUNTIME_VERSION":"1.0.0","rust_ipc_version":"rust-ipc-v3","wasm_abi_version":"redevplugin-wasm-worker-v2","channel_nonce":"nonce_1234567890123456"}`,
-		`{"runtime_version":"1.0.0","rust_ipc_version":"rust-ipc-v3","wasm_abi_version":"redevplugin-wasm-worker-v2","channel_nonce":"nonce_1234567890123456"} {}`,
+		`{"runtime_version":"1.0.0","rust_ipc_version":"rust-ipc-v4","wasm_abi_version":"redevplugin-wasm-worker-v2","channel_nonce":"nonce_1234567890123456","future":true}`,
+		`{"runtime_version":"1.0.0","runtime_version":"2.0.0","rust_ipc_version":"rust-ipc-v4","wasm_abi_version":"redevplugin-wasm-worker-v2","channel_nonce":"nonce_1234567890123456"}`,
+		`{"runtime_version":"1.0.0","RUNTIME_VERSION":"2.0.0","rust_ipc_version":"rust-ipc-v4","wasm_abi_version":"redevplugin-wasm-worker-v2","channel_nonce":"nonce_1234567890123456"}`,
+		`{"RUNTIME_VERSION":"1.0.0","rust_ipc_version":"rust-ipc-v4","wasm_abi_version":"redevplugin-wasm-worker-v2","channel_nonce":"nonce_1234567890123456"}`,
+		`{"runtime_version":"1.0.0","rust_ipc_version":"rust-ipc-v4","wasm_abi_version":"redevplugin-wasm-worker-v2","channel_nonce":"nonce_1234567890123456"} {}`,
 	} {
 		frame := baseFrame
 		frame.Payload = json.RawMessage(payload)
@@ -1455,7 +1456,7 @@ func validateIPCGoldenFixture(fixture ipcGoldenFixture) error {
 func TestWorkerInvocationContextBindsBrokerAccessHash(t *testing.T) {
 	payload := workerInvocationFixtureWithAccess(workerBrokerAccess{
 		Storage: []workerStorageBrokerAccess{{StoreID: "notes", Operations: []string{"query"}}},
-		Network: []workerNetworkBrokerAccess{{ConnectorID: "forecast", Transport: "http", Operations: []string{"http"}, HTTPMethods: []string{"GET"}}},
+		Network: []workerNetworkBrokerAccess{{ConnectorID: "forecast", Transport: "http", Scope: "user", Operations: []string{"http"}, HTTPMethods: []string{"GET"}}},
 	})
 	lease := workerInvocationLeaseFixture()
 	invocation, err := workerInvocationContextFromInvocation(lease, payload)
@@ -1467,6 +1468,9 @@ func TestWorkerInvocationContextBindsBrokerAccessHash(t *testing.T) {
 	}
 	if !invocation.BrokerAccess.allowsNetwork("forecast", "http", "http", "GET") || invocation.BrokerAccess.allowsNetwork("forecast", "http", "http", "POST") {
 		t.Fatalf("network broker access mismatch: %#v", invocation.BrokerAccess.Network)
+	}
+	if scope, ok := invocation.BrokerAccess.networkScope("forecast", "http"); !ok || scope != sessionctx.ScopeUser {
+		t.Fatalf("network broker scope = %q, %v", scope, ok)
 	}
 	var tampered map[string]any
 	if err := json.Unmarshal(payload, &tampered); err != nil {
@@ -1598,6 +1602,7 @@ func TestNetworkHostcallIdentityMismatchStopsBeforeBrokerAndExecutor(t *testing.
 		PluginID:             lease.PluginID,
 		PluginInstanceID:     lease.PluginInstanceID,
 		ActiveFingerprint:    lease.ActiveFingerprint,
+		ResourceScope:        sessionctx.ResourceScope{Kind: sessionctx.ScopeUser, OwnerEnvHash: lease.OwnerEnvHash, OwnerUserHash: lease.OwnerUserHash},
 		RuntimeInstanceID:    lease.RuntimeInstanceID,
 		RuntimeGenerationID:  lease.RuntimeGenerationID,
 		RuntimeShardID:       lease.RuntimeShardID,
@@ -1634,6 +1639,7 @@ func TestNetworkHostcallIdentityMismatchStopsBeforeBrokerAndExecutor(t *testing.
 		{name: "owner_session_hash", mutate: func(req *networkExecuteRequestPayload) { req.OwnerSessionHash = "session_spoofed" }},
 		{name: "owner_user_hash", mutate: func(req *networkExecuteRequestPayload) { req.OwnerUserHash = "user_spoofed" }},
 		{name: "owner_env_hash", mutate: func(req *networkExecuteRequestPayload) { req.OwnerEnvHash = "env_spoofed" }},
+		{name: "resource_scope", mutate: func(req *networkExecuteRequestPayload) { req.ResourceScope.OwnerUserHash = "user_spoofed" }},
 		{name: "session_channel_id_hash", mutate: func(req *networkExecuteRequestPayload) { req.SessionChannelIDHash = "channel_spoofed" }},
 	}
 	for _, test := range tests {
@@ -2477,6 +2483,7 @@ func TestProcessSupervisorMintsNetworkGrantDuringWorkerInvocation(t *testing.T) 
 	if broker.calls != 1 ||
 		broker.last.PluginInstanceID != "plugini_1" ||
 		broker.last.RuntimeGenerationID != health.RuntimeGenerationID ||
+		!broker.last.ResourceScope.Matches(sessionctx.ResourceScope{Kind: sessionctx.ScopeUser, OwnerEnvHash: "env_hash", OwnerUserHash: "user_hash"}) ||
 		broker.last.ConnectorID != "api" ||
 		broker.last.Destination != "https://api.example.com" ||
 		broker.last.TTL != 30*time.Second {
@@ -2668,7 +2675,7 @@ func TestProcessSupervisorDeniesHTTPMethodOutsideMethodBrokerAccess(t *testing.T
 		ManagementRevision:  2,
 		RevokeEpoch:         3,
 	}, "worker.echo", workerInvocationFixtureWithAccess(workerBrokerAccess{
-		Network: []workerNetworkBrokerAccess{{ConnectorID: "api", Transport: "http", Operations: []string{"http"}, HTTPMethods: []string{"GET"}}},
+		Network: []workerNetworkBrokerAccess{{ConnectorID: "api", Transport: "http", Scope: "user", Operations: []string{"http"}, HTTPMethods: []string{"GET"}}},
 	}))
 	if !errors.Is(err, ErrRuntimeRequestFailed) || !strings.Contains(err.Error(), "NETWORK_EXECUTE_REQUEST_DENIED") {
 		t.Fatalf("InvokeWorker() error = %v, want method-scoped HTTP method denial", err)
@@ -4564,6 +4571,7 @@ func networkExecuteRequestFromInvoke(request ipcFrame, operation string) network
 		PluginID:            "com.example.worker",
 		PluginInstanceID:    grantReq.PluginInstanceID,
 		ActiveFingerprint:   grantReq.ActiveFingerprint,
+		ResourceScope:       grantReq.ResourceScope,
 		RuntimeInstanceID:   grantReq.RuntimeInstanceID,
 		RuntimeGenerationID: grantReq.RuntimeGenerationID,
 		RuntimeShardID:      grantReq.RuntimeShardID,
@@ -4646,6 +4654,7 @@ func networkGrantRequestFromInvoke(request ipcFrame) networkGrantRequestPayload 
 	req := networkGrantRequestPayload{
 		PluginInstanceID:    "plugini_1",
 		ActiveFingerprint:   "sha256:active",
+		ResourceScope:       sessionctx.ResourceScope{Kind: sessionctx.ScopeUser, OwnerEnvHash: "env_hash", OwnerUserHash: "user_hash"},
 		RuntimeInstanceID:   "runtime_1",
 		RuntimeGenerationID: request.RuntimeGenerationID,
 		RuntimeShardID:      "runtime_shard_1",
@@ -4662,6 +4671,7 @@ func networkGrantRequestFromInvoke(request ipcFrame) networkGrantRequestPayload 
 		if err := json.Unmarshal(request.Payload, &payload); err == nil {
 			req.PluginInstanceID = payload.Lease.PluginInstanceID
 			req.ActiveFingerprint = payload.Lease.ActiveFingerprint
+			req.ResourceScope = sessionctx.ResourceScope{Kind: sessionctx.ScopeUser, OwnerEnvHash: payload.Lease.OwnerEnvHash, OwnerUserHash: payload.Lease.OwnerUserHash}
 			req.RuntimeInstanceID = payload.Lease.RuntimeInstanceID
 			req.RuntimeGenerationID = payload.Lease.RuntimeGenerationID
 			req.RuntimeShardID = payload.Lease.RuntimeShardID
@@ -4909,7 +4919,11 @@ func (b *recordingConnectivityBroker) MintConnectionGrant(ctx context.Context, r
 	if b.err != nil {
 		return connectivity.ConnectionGrant{}, b.err
 	}
-	return b.grant, nil
+	grant := b.grant
+	if !grant.ResourceScope.Valid() {
+		grant.ResourceScope = req.ResourceScope
+	}
+	return grant, nil
 }
 
 func (e *recordingNetworkExecutor) DoHTTP(ctx context.Context, req connectivity.HTTPRequest) (connectivity.HTTPResponse, error) {
@@ -5116,10 +5130,10 @@ func workerInvocationFixture() []byte {
 			{StoreID: "db", Operations: []string{"exec", "query"}},
 		},
 		Network: []workerNetworkBrokerAccess{
-			{ConnectorID: "api", Transport: "http", Operations: []string{"http", "http_stream"}, HTTPMethods: []string{"GET", "POST"}},
-			{ConnectorID: "api", Transport: "websocket", Operations: []string{"websocket_round_trip"}},
-			{ConnectorID: "api", Transport: "tcp", Operations: []string{"tcp_round_trip"}},
-			{ConnectorID: "api", Transport: "udp", Operations: []string{"udp_round_trip"}},
+			{ConnectorID: "api", Transport: "http", Scope: "user", Operations: []string{"http", "http_stream"}, HTTPMethods: []string{"GET", "POST"}},
+			{ConnectorID: "api", Transport: "websocket", Scope: "user", Operations: []string{"websocket_round_trip"}},
+			{ConnectorID: "api", Transport: "tcp", Scope: "user", Operations: []string{"tcp_round_trip"}},
+			{ConnectorID: "api", Transport: "udp", Scope: "user", Operations: []string{"udp_round_trip"}},
 		},
 	})
 }

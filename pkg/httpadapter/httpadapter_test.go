@@ -3408,6 +3408,15 @@ func TestHandlerSecretLifecycleFlow(t *testing.T) {
 	if secrets.bind.PluginInstanceID != installed.PluginInstanceID || secrets.bind.SecretRef != "api_token" || secrets.test.SecretRef != "api_token" || secrets.delete.SecretRef != "api_token" {
 		t.Fatalf("secret adapter calls mismatch: %#v", secrets)
 	}
+
+	scopeMismatch := postJSONError(t, handler, "/_redevplugin/api/plugins/secrets/bind", map[string]any{
+		"plugin_instance_id": installed.PluginInstanceID,
+		"secret_ref":         "api_token",
+		"scope":              "environment",
+	}, http.StatusForbidden)
+	if scopeMismatch.Code != string(security.ErrPermissionDenied) || scopeMismatch.Message != "secret reference scope does not match the request" {
+		t.Fatalf("secret scope mismatch envelope = %#v", scopeMismatch)
+	}
 }
 
 func TestHandlerDeleteSecretErrorsUseMutationEnvelope(t *testing.T) {

@@ -1,0 +1,63 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.redevplugin.dev/plugin/network-grant-v2.schema.json",
+  "title": "ReDevPlugin network grant v2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "grant_id",
+    "plugin_instance_id",
+    "active_fingerprint",
+    "resource_scope",
+    "policy_revision",
+    "management_revision",
+    "revoke_epoch",
+    "connector_id",
+    "transport",
+    "destination",
+    "target_classifier_version",
+    "expires_at"
+  ],
+  "properties": {
+    "grant_id": { "type": "string", "pattern": "^netgrant_[0-9a-f]{32}$" },
+    "plugin_instance_id": { "type": "string", "minLength": 1 },
+    "active_fingerprint": { "type": "string", "minLength": 1 },
+    "resource_scope": { "$ref": "#/$defs/resource_scope" },
+    "policy_revision": { "type": "integer", "minimum": 0 },
+    "management_revision": { "type": "integer", "minimum": 0 },
+    "revoke_epoch": { "type": "integer", "minimum": 0 },
+    "connector_id": { "type": "string", "minLength": 1 },
+    "transport": { "enum": ["http", "websocket", "tcp", "udp"] },
+    "destination": { "$ref": "#/$defs/destination" },
+    "runtime_generation_id": { "type": "string" },
+    "target_classifier_version": { "const": "target-classifier-v2" },
+    "expires_at": { "type": "string", "format": "date-time" }
+  },
+  "$defs": {
+    "resource_scope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "owner_env_hash"],
+      "properties": {
+        "kind": { "enum": ["user", "environment"] },
+        "owner_env_hash": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$" },
+        "owner_user_hash": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$" }
+      },
+      "oneOf": [
+        { "properties": { "kind": { "const": "user" } }, "required": ["owner_user_hash"] },
+        { "properties": { "kind": { "const": "environment" } }, "not": { "required": ["owner_user_hash"] } }
+      ]
+    },
+    "destination": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["transport", "host", "port"],
+      "properties": {
+        "transport": { "enum": ["http", "websocket", "tcp", "udp"] },
+        "scheme": { "enum": ["http", "https", "ws", "wss"] },
+        "host": { "type": "string", "minLength": 1 },
+        "port": { "type": "integer", "minimum": 1, "maximum": 65535 }
+      }
+    }
+  }
+}

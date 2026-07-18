@@ -27,6 +27,7 @@ import (
 	"github.com/floegence/redevplugin/pkg/capability"
 	"github.com/floegence/redevplugin/pkg/connectivity"
 	"github.com/floegence/redevplugin/pkg/observability"
+	"github.com/floegence/redevplugin/pkg/sessionctx"
 	"github.com/floegence/redevplugin/pkg/storage"
 	"github.com/floegence/redevplugin/pkg/stream"
 	"github.com/floegence/redevplugin/pkg/version"
@@ -183,6 +184,7 @@ type workerStorageBrokerAccess struct {
 type workerNetworkBrokerAccess struct {
 	ConnectorID string   `json:"connector_id"`
 	Transport   string   `json:"transport"`
+	Scope       string   `json:"scope"`
 	Operations  []string `json:"operations"`
 	HTTPMethods []string `json:"http_methods,omitempty"`
 }
@@ -1656,18 +1658,19 @@ type storageSQLiteValueIPC struct {
 }
 
 type networkGrantRequestPayload struct {
-	PluginInstanceID    string                 `json:"plugin_instance_id"`
-	ActiveFingerprint   string                 `json:"active_fingerprint"`
-	RuntimeInstanceID   string                 `json:"runtime_instance_id,omitempty"`
-	RuntimeGenerationID string                 `json:"runtime_generation_id"`
-	RuntimeShardID      string                 `json:"runtime_shard_id,omitempty"`
-	PolicyRevision      uint64                 `json:"policy_revision"`
-	ManagementRevision  uint64                 `json:"management_revision"`
-	RevokeEpoch         uint64                 `json:"revoke_epoch"`
-	ConnectorID         string                 `json:"connector_id"`
-	Transport           connectivity.Transport `json:"transport"`
-	Destination         string                 `json:"destination"`
-	TTLMillis           int64                  `json:"ttl_ms,omitempty"`
+	PluginInstanceID    string                   `json:"plugin_instance_id"`
+	ActiveFingerprint   string                   `json:"active_fingerprint"`
+	ResourceScope       sessionctx.ResourceScope `json:"resource_scope"`
+	RuntimeInstanceID   string                   `json:"runtime_instance_id,omitempty"`
+	RuntimeGenerationID string                   `json:"runtime_generation_id"`
+	RuntimeShardID      string                   `json:"runtime_shard_id,omitempty"`
+	PolicyRevision      uint64                   `json:"policy_revision"`
+	ManagementRevision  uint64                   `json:"management_revision"`
+	RevokeEpoch         uint64                   `json:"revoke_epoch"`
+	ConnectorID         string                   `json:"connector_id"`
+	Transport           connectivity.Transport   `json:"transport"`
+	Destination         string                   `json:"destination"`
+	TTLMillis           int64                    `json:"ttl_ms,omitempty"`
 }
 
 type networkGrantResponsePayload struct {
@@ -1675,6 +1678,7 @@ type networkGrantResponsePayload struct {
 	GrantID                 string                   `json:"grant_id"`
 	PluginInstanceID        string                   `json:"plugin_instance_id"`
 	ActiveFingerprint       string                   `json:"active_fingerprint"`
+	ResourceScope           sessionctx.ResourceScope `json:"resource_scope"`
 	PolicyRevision          uint64                   `json:"policy_revision"`
 	ManagementRevision      uint64                   `json:"management_revision"`
 	RevokeEpoch             uint64                   `json:"revoke_epoch"`
@@ -1691,43 +1695,44 @@ type networkGrantResponsePayload struct {
 }
 
 type networkExecuteRequestPayload struct {
-	PluginID             string                 `json:"plugin_id,omitempty"`
-	PluginInstanceID     string                 `json:"plugin_instance_id"`
-	ActiveFingerprint    string                 `json:"active_fingerprint"`
-	RuntimeInstanceID    string                 `json:"runtime_instance_id,omitempty"`
-	RuntimeGenerationID  string                 `json:"runtime_generation_id"`
-	RuntimeShardID       string                 `json:"runtime_shard_id,omitempty"`
-	PolicyRevision       uint64                 `json:"policy_revision"`
-	ManagementRevision   uint64                 `json:"management_revision"`
-	RevokeEpoch          uint64                 `json:"revoke_epoch"`
-	ConnectorID          string                 `json:"connector_id"`
-	Transport            connectivity.Transport `json:"transport"`
-	Destination          string                 `json:"destination"`
-	TTLMillis            int64                  `json:"ttl_ms,omitempty"`
-	Operation            string                 `json:"operation,omitempty"`
-	Method               string                 `json:"method,omitempty"`
-	Path                 string                 `json:"path,omitempty"`
-	Query                url.Values             `json:"query,omitempty"`
-	Headers              http.Header            `json:"headers,omitempty"`
-	MessageType          string                 `json:"message_type,omitempty"`
-	BodyBase64           string                 `json:"body_base64,omitempty"`
-	PayloadBase64        string                 `json:"payload_base64,omitempty"`
-	MaxRequestBytes      int64                  `json:"max_request_bytes,omitempty"`
-	MaxResponseBytes     int64                  `json:"max_response_bytes,omitempty"`
-	MaxChunkBytes        int64                  `json:"max_chunk_bytes,omitempty"`
-	MaxBufferedBytes     int64                  `json:"max_buffered_bytes,omitempty"`
-	TimeoutMillis        int64                  `json:"timeout_ms,omitempty"`
-	StreamID             string                 `json:"stream_id,omitempty"`
-	StreamMethod         string                 `json:"stream_method,omitempty"`
-	StreamEffect         string                 `json:"stream_effect,omitempty"`
-	StreamExecution      string                 `json:"stream_execution,omitempty"`
-	SurfaceInstanceID    string                 `json:"surface_instance_id,omitempty"`
-	OwnerSessionHash     string                 `json:"owner_session_hash,omitempty"`
-	OwnerUserHash        string                 `json:"owner_user_hash,omitempty"`
-	OwnerEnvHash         string                 `json:"owner_env_hash,omitempty"`
-	SessionChannelIDHash string                 `json:"session_channel_id_hash,omitempty"`
-	BridgeChannelID      string                 `json:"bridge_channel_id,omitempty"`
-	ContentType          string                 `json:"content_type,omitempty"`
+	PluginID             string                   `json:"plugin_id,omitempty"`
+	PluginInstanceID     string                   `json:"plugin_instance_id"`
+	ActiveFingerprint    string                   `json:"active_fingerprint"`
+	ResourceScope        sessionctx.ResourceScope `json:"resource_scope"`
+	RuntimeInstanceID    string                   `json:"runtime_instance_id,omitempty"`
+	RuntimeGenerationID  string                   `json:"runtime_generation_id"`
+	RuntimeShardID       string                   `json:"runtime_shard_id,omitempty"`
+	PolicyRevision       uint64                   `json:"policy_revision"`
+	ManagementRevision   uint64                   `json:"management_revision"`
+	RevokeEpoch          uint64                   `json:"revoke_epoch"`
+	ConnectorID          string                   `json:"connector_id"`
+	Transport            connectivity.Transport   `json:"transport"`
+	Destination          string                   `json:"destination"`
+	TTLMillis            int64                    `json:"ttl_ms,omitempty"`
+	Operation            string                   `json:"operation,omitempty"`
+	Method               string                   `json:"method,omitempty"`
+	Path                 string                   `json:"path,omitempty"`
+	Query                url.Values               `json:"query,omitempty"`
+	Headers              http.Header              `json:"headers,omitempty"`
+	MessageType          string                   `json:"message_type,omitempty"`
+	BodyBase64           string                   `json:"body_base64,omitempty"`
+	PayloadBase64        string                   `json:"payload_base64,omitempty"`
+	MaxRequestBytes      int64                    `json:"max_request_bytes,omitempty"`
+	MaxResponseBytes     int64                    `json:"max_response_bytes,omitempty"`
+	MaxChunkBytes        int64                    `json:"max_chunk_bytes,omitempty"`
+	MaxBufferedBytes     int64                    `json:"max_buffered_bytes,omitempty"`
+	TimeoutMillis        int64                    `json:"timeout_ms,omitempty"`
+	StreamID             string                   `json:"stream_id,omitempty"`
+	StreamMethod         string                   `json:"stream_method,omitempty"`
+	StreamEffect         string                   `json:"stream_effect,omitempty"`
+	StreamExecution      string                   `json:"stream_execution,omitempty"`
+	SurfaceInstanceID    string                   `json:"surface_instance_id,omitempty"`
+	OwnerSessionHash     string                   `json:"owner_session_hash,omitempty"`
+	OwnerUserHash        string                   `json:"owner_user_hash,omitempty"`
+	OwnerEnvHash         string                   `json:"owner_env_hash,omitempty"`
+	SessionChannelIDHash string                   `json:"session_channel_id_hash,omitempty"`
+	BridgeChannelID      string                   `json:"bridge_channel_id,omitempty"`
+	ContentType          string                   `json:"content_type,omitempty"`
 }
 
 type networkExecuteResponsePayload struct {
@@ -3331,16 +3336,17 @@ func (s *ProcessSupervisor) respondToNetworkGrant(ctx context.Context, stdin io.
 			Message: "network grant request is invalid",
 		})
 	}
-	if !allowedInvocation.identity.matchesRuntimeHostcall(
-		req.PluginInstanceID,
-		req.ActiveFingerprint,
-		req.RuntimeInstanceID,
-		req.RuntimeGenerationID,
-		req.RuntimeShardID,
-		req.PolicyRevision,
-		req.ManagementRevision,
-		req.RevokeEpoch,
-	) {
+	if !allowedInvocation.identity.matchesResourceScope(req.ResourceScope) ||
+		!allowedInvocation.identity.matchesRuntimeHostcall(
+			req.PluginInstanceID,
+			req.ActiveFingerprint,
+			req.RuntimeInstanceID,
+			req.RuntimeGenerationID,
+			req.RuntimeShardID,
+			req.PolicyRevision,
+			req.ManagementRevision,
+			req.RevokeEpoch,
+		) {
 		return s.writeNetworkGrantResponse(stdin, health.RuntimeGenerationID, frame, networkGrantResponsePayload{
 			OK:      false,
 			Code:    "NETWORK_GRANT_REQUEST_DENIED",
@@ -3350,6 +3356,12 @@ func (s *ProcessSupervisor) respondToNetworkGrant(ctx context.Context, stdin io.
 	if !allowedInvocation.BrokerAccess.allowsNetworkConnector(req.ConnectorID, string(req.Transport)) {
 		return s.writeNetworkGrantResponse(stdin, health.RuntimeGenerationID, frame, networkGrantResponsePayload{
 			OK: false, Code: "NETWORK_GRANT_REQUEST_DENIED", Message: "worker method is not allowed to use this network connector",
+		})
+	}
+	declaredScope, ok := allowedInvocation.BrokerAccess.networkScope(req.ConnectorID, string(req.Transport))
+	if !ok || req.ResourceScope.Kind != declaredScope {
+		return s.writeNetworkGrantResponse(stdin, health.RuntimeGenerationID, frame, networkGrantResponsePayload{
+			OK: false, Code: "NETWORK_GRANT_REQUEST_DENIED", Message: "network grant resource scope is not bound to the declared connector",
 		})
 	}
 	if s.connectivity == nil {
@@ -3365,6 +3377,7 @@ func (s *ProcessSupervisor) respondToNetworkGrant(ctx context.Context, stdin io.
 	grant, err := s.connectivity.MintConnectionGrant(hostcallCtx, connectivity.GrantRequest{
 		PluginInstanceID:    req.PluginInstanceID,
 		ActiveFingerprint:   req.ActiveFingerprint,
+		ResourceScope:       req.ResourceScope,
 		PolicyRevision:      req.PolicyRevision,
 		ManagementRevision:  req.ManagementRevision,
 		RevokeEpoch:         req.RevokeEpoch,
@@ -3401,6 +3414,7 @@ func (s *ProcessSupervisor) respondToNetworkGrant(ctx context.Context, stdin io.
 		GrantID:                 grant.GrantID,
 		PluginInstanceID:        grant.PluginInstanceID,
 		ActiveFingerprint:       grant.ActiveFingerprint,
+		ResourceScope:           grant.ResourceScope,
 		PolicyRevision:          grant.PolicyRevision,
 		ManagementRevision:      grant.ManagementRevision,
 		RevokeEpoch:             grant.RevokeEpoch,
@@ -3473,6 +3487,12 @@ func (s *ProcessSupervisor) respondToNetworkExecute(ctx context.Context, stdin i
 			OK: false, Code: "NETWORK_EXECUTE_REQUEST_DENIED", Message: "worker method is not allowed to perform this network operation",
 		})
 	}
+	declaredScope, ok := allowedInvocation.BrokerAccess.networkScope(req.ConnectorID, string(req.Transport))
+	if !ok || req.ResourceScope.Kind != declaredScope {
+		return s.writeNetworkExecuteResponse(stdin, health.RuntimeGenerationID, frame, networkExecuteResponsePayload{
+			OK: false, Code: "NETWORK_EXECUTE_REQUEST_DENIED", Message: "network execute resource scope is not bound to the declared connector",
+		})
+	}
 	if s.connectivity == nil {
 		return s.writeNetworkExecuteResponse(stdin, health.RuntimeGenerationID, frame, networkExecuteResponsePayload{
 			OK:      false,
@@ -3503,6 +3523,7 @@ func (s *ProcessSupervisor) respondToNetworkExecute(ctx context.Context, stdin i
 	if err := validateNetworkGrantResult(networkGrantRequestPayload{
 		PluginInstanceID:    req.PluginInstanceID,
 		ActiveFingerprint:   req.ActiveFingerprint,
+		ResourceScope:       req.ResourceScope,
 		RuntimeGenerationID: req.RuntimeGenerationID,
 		PolicyRevision:      req.PolicyRevision,
 		ManagementRevision:  req.ManagementRevision,
@@ -3548,6 +3569,7 @@ func (s *ProcessSupervisor) mintGrantForNetworkExecute(ctx context.Context, req 
 	return s.connectivity.MintConnectionGrant(ctx, connectivity.GrantRequest{
 		PluginInstanceID:    req.PluginInstanceID,
 		ActiveFingerprint:   req.ActiveFingerprint,
+		ResourceScope:       req.ResourceScope,
 		PolicyRevision:      req.PolicyRevision,
 		ManagementRevision:  req.ManagementRevision,
 		RevokeEpoch:         req.RevokeEpoch,
@@ -3575,6 +3597,7 @@ func validateNetworkGrantResult(req networkGrantRequestPayload, grant connectivi
 	if strings.TrimSpace(grant.GrantID) == "" ||
 		strings.TrimSpace(grant.PluginInstanceID) != strings.TrimSpace(req.PluginInstanceID) ||
 		strings.TrimSpace(grant.ActiveFingerprint) != strings.TrimSpace(req.ActiveFingerprint) ||
+		!grant.ResourceScope.Matches(req.ResourceScope) ||
 		grant.PolicyRevision != req.PolicyRevision ||
 		grant.ManagementRevision != req.ManagementRevision ||
 		grant.RevokeEpoch != req.RevokeEpoch ||
@@ -3607,6 +3630,9 @@ func validateNetworkGrantRequest(req networkGrantRequestPayload, runtimeGenerati
 		strings.TrimSpace(req.Destination) == "" {
 		return errors.New("plugin identity, connector id, and destination are required")
 	}
+	if err := req.ResourceScope.Validate(); err != nil {
+		return errors.New("network grant resource scope is invalid")
+	}
 	if !connectivity.ValidTransport(req.Transport) {
 		return errors.New("network transport is not supported")
 	}
@@ -3620,6 +3646,7 @@ func validateNetworkExecuteRequest(req networkExecuteRequestPayload, runtimeGene
 	grantReq := networkGrantRequestPayload{
 		PluginInstanceID:    req.PluginInstanceID,
 		ActiveFingerprint:   req.ActiveFingerprint,
+		ResourceScope:       req.ResourceScope,
 		RuntimeInstanceID:   req.RuntimeInstanceID,
 		RuntimeGenerationID: req.RuntimeGenerationID,
 		RuntimeShardID:      req.RuntimeShardID,
@@ -3859,6 +3886,8 @@ func decodeOptionalBase64(value string) ([]byte, error) {
 
 func networkGrantErrorResponse(err error) networkGrantResponsePayload {
 	switch {
+	case errors.Is(err, connectivity.ErrResourceScopeMismatch):
+		return networkGrantResponsePayload{OK: false, Code: "NETWORK_CONNECTOR_DENIED", Message: "network connector resource scope did not match", InternalError: err}
 	case errors.Is(err, connectivity.ErrInvalidConnector):
 		return networkGrantResponsePayload{OK: false, Code: "NETWORK_GRANT_REQUEST_INVALID", Message: "network grant request is invalid", InternalError: err}
 	case errors.Is(err, connectivity.ErrTargetDenied):
@@ -3872,6 +3901,8 @@ func networkGrantErrorResponse(err error) networkGrantResponsePayload {
 
 func networkExecuteErrorResponse(err error) networkExecuteResponsePayload {
 	switch {
+	case errors.Is(err, connectivity.ErrResourceScopeMismatch):
+		return networkExecuteResponsePayload{OK: false, Code: "NETWORK_CONNECTOR_DENIED", Message: "network connector resource scope did not match", InternalError: err}
 	case errors.Is(err, connectivity.ErrInvalidConnector):
 		return networkExecuteResponsePayload{OK: false, Code: "NETWORK_EXECUTE_REQUEST_INVALID", Message: "network execute request is invalid", InternalError: err}
 	case errors.Is(err, connectivity.ErrTargetDenied):
@@ -3941,11 +3972,23 @@ func (identity workerInvocationIdentity) matchesNetworkExecute(req networkExecut
 		req.ManagementRevision,
 		req.RevokeEpoch,
 	) &&
+		identity.matchesResourceScope(req.ResourceScope) &&
 		req.PluginID == identity.PluginID &&
 		req.OwnerSessionHash == identity.OwnerSessionHash &&
 		req.OwnerUserHash == identity.OwnerUserHash &&
 		req.OwnerEnvHash == identity.OwnerEnvHash &&
 		req.SessionChannelIDHash == identity.SessionChannelIDHash
+}
+
+func (identity workerInvocationIdentity) matchesResourceScope(scope sessionctx.ResourceScope) bool {
+	expected := sessionctx.ResourceScope{
+		Kind:         scope.Kind,
+		OwnerEnvHash: identity.OwnerEnvHash,
+	}
+	if scope.Kind == sessionctx.ScopeUser {
+		expected.OwnerUserHash = identity.OwnerUserHash
+	}
+	return scope.Matches(expected)
 }
 
 func workerInvocationContextFromInvocation(lease Lease, invocation json.RawMessage) (workerInvocationContext, error) {
@@ -4072,6 +4115,20 @@ func (access workerBrokerAccess) allowsNetworkConnector(connectorID string, tran
 		}
 	}
 	return false
+}
+
+func (access workerBrokerAccess) networkScope(connectorID string, transport string) (sessionctx.ScopeKind, bool) {
+	for _, item := range access.Network {
+		if item.ConnectorID != connectorID || item.Transport != transport {
+			continue
+		}
+		scope := sessionctx.ScopeKind(strings.TrimSpace(item.Scope))
+		if scope == sessionctx.ScopeUser || scope == sessionctx.ScopeEnvironment {
+			return scope, true
+		}
+		return "", false
+	}
+	return "", false
 }
 
 func (access workerBrokerAccess) allowsNetwork(connectorID string, transport string, operation string, httpMethod string) bool {

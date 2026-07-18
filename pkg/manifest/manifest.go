@@ -119,6 +119,7 @@ type StorageBrokerAccessSpec struct {
 type NetworkBrokerAccessSpec struct {
 	ConnectorID string   `json:"connector_id"`
 	Transport   string   `json:"transport"`
+	Scope       string   `json:"scope,omitempty"`
 	Operations  []string `json:"operations"`
 	HTTPMethods []string `json:"http_methods,omitempty"`
 }
@@ -561,6 +562,9 @@ func Validate(m Manifest) error {
 			}
 		}
 	}
+	if err := validateSecretRefScopes(m); err != nil {
+		return err
+	}
 
 	storeKinds := map[string]string{}
 	if m.Storage != nil {
@@ -581,6 +585,82 @@ func Validate(m Manifest) error {
 	}
 
 	return nil
+}
+
+type secretRefScopeDeclaration struct {
+	scope string
+	field string
+}
+
+func validateSecretRefScopes(m Manifest) error {
+	declared := map[string]secretRefScopeDeclaration{}
+	register := func(secretRef, scope, field string) error {
+		secretRef = strings.TrimSpace(secretRef)
+		if secretRef == "" {
+			return nil
+		}
+		if existing, ok := declared[secretRef]; ok && existing.scope != scope {
+			return ValidationError{
+				Field:   field,
+				Message: fmt.Sprintf("secret_ref %q is already declared with %s scope at %s", secretRef, existing.scope, existing.field),
+			}
+		}
+		declared[secretRef] = secretRefScopeDeclaration{scope: scope, field: field}
+		return nil
+	}
+	if m.Settings != nil {
+		for index, field := range m.Settings.Fields {
+			if field.Type != "secret" {
+				continue
+			}
+			if err := register(field.SecretRef, field.Scope, fmt.Sprintf("settings.fields[%d].secret_ref", index)); err != nil {
+				return err
+			}
+		}
+	}
+	if m.NetworkAccess != nil {
+		for index, connector := range m.NetworkAccess.Connectors {
+			for _, declaration := range []struct {
+				field  string
+				values map[string]any
+			}{
+				{field: fmt.Sprintf("network_access.connectors[%d].auth", index), values: connector.Auth},
+				{field: fmt.Sprintf("network_access.connectors[%d].tls", index), values: connector.TLS},
+			} {
+				for _, secretRef := range declaredSecretRefs(declaration.values) {
+					if err := register(secretRef, connector.Scope, declaration.field); err != nil {
+						return err
+					}
+				}
+			}
+		}
+	}
+	return nil
+}
+
+func declaredSecretRefs(values map[string]any) []string {
+	refs := make([]string, 0, 1)
+	var visit func(any)
+	visit = func(value any) {
+		switch typed := value.(type) {
+		case map[string]any:
+			for key, nested := range typed {
+				if strings.EqualFold(key, "secret_ref") {
+					if secretRef, ok := nested.(string); ok && strings.TrimSpace(secretRef) != "" {
+						refs = append(refs, strings.TrimSpace(secretRef))
+					}
+				}
+				visit(nested)
+			}
+		case []any:
+			for _, nested := range typed {
+				visit(nested)
+			}
+		}
+	}
+	visit(values)
+	sort.Strings(refs)
+	return refs
 }
 
 func capabilityMethodDeclaresUnsignedPolicy(method MethodSpec) bool {
@@ -628,6 +708,9 @@ func validateMethodBrokerAccess(field string, method MethodSpec, stores map[stri
 	seenConnectors := map[string]struct{}{}
 	for i, item := range access.Network {
 		itemField := fmt.Sprintf("%s.network[%d]", field, i)
+		if strings.TrimSpace(item.Scope) != "" {
+			return ValidationError{Field: itemField + ".scope", Message: "is host-derived and must not be declared"}
+		}
 		transport, ok := connectors[item.ConnectorID]
 		if !ok || strings.TrimSpace(item.ConnectorID) == "" {
 			return ValidationError{Field: itemField + ".connector_id", Message: "must reference a declared connector"}

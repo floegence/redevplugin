@@ -18,7 +18,7 @@ func TestNewRuntimeDescriptorRequiresClosedIdentity(t *testing.T) {
 	descriptor, err := NewRuntimeDescriptor(
 		runtimeVersion,
 		Target{OS: "linux", Arch: "amd64"},
-		"rust-ipc-v3",
+		"rust-ipc-v4",
 		"redevplugin-wasm-worker-v2",
 		validDigest,
 	)
@@ -26,7 +26,7 @@ func TestNewRuntimeDescriptorRequiresClosedIdentity(t *testing.T) {
 		t.Fatalf("NewRuntimeDescriptor() error = %v", err)
 	}
 	if descriptor.Version() != runtimeVersion || descriptor.Target() != (Target{OS: "linux", Arch: "amd64"}) ||
-		descriptor.IPCVersion() != "rust-ipc-v3" || descriptor.WASMABIVersion() != "redevplugin-wasm-worker-v2" ||
+		descriptor.IPCVersion() != "rust-ipc-v4" || descriptor.WASMABIVersion() != "redevplugin-wasm-worker-v2" ||
 		descriptor.ArtifactSHA256() != validDigest {
 		t.Fatalf("descriptor projection = %#v", descriptor)
 	}
@@ -50,15 +50,15 @@ func TestNewRuntimeDescriptorRequiresClosedIdentity(t *testing.T) {
 		digest     string
 		wantTarget bool
 	}{
-		{name: "empty os", target: Target{Arch: "amd64"}, ipc: "rust-ipc-v3", wasm: "redevplugin-wasm-worker-v2", digest: validDigest, wantTarget: true},
-		{name: "unsupported os", target: Target{OS: "windows", Arch: "amd64"}, ipc: "rust-ipc-v3", wasm: "redevplugin-wasm-worker-v2", digest: validDigest, wantTarget: true},
-		{name: "alias arch", target: Target{OS: "linux", Arch: "x86_64"}, ipc: "rust-ipc-v3", wasm: "redevplugin-wasm-worker-v2", digest: validDigest, wantTarget: true},
+		{name: "empty os", target: Target{Arch: "amd64"}, ipc: "rust-ipc-v4", wasm: "redevplugin-wasm-worker-v2", digest: validDigest, wantTarget: true},
+		{name: "unsupported os", target: Target{OS: "windows", Arch: "amd64"}, ipc: "rust-ipc-v4", wasm: "redevplugin-wasm-worker-v2", digest: validDigest, wantTarget: true},
+		{name: "alias arch", target: Target{OS: "linux", Arch: "x86_64"}, ipc: "rust-ipc-v4", wasm: "redevplugin-wasm-worker-v2", digest: validDigest, wantTarget: true},
 		{name: "blank ipc", target: Target{OS: "linux", Arch: "amd64"}, wasm: "redevplugin-wasm-worker-v2", digest: validDigest},
-		{name: "whitespace ipc", target: Target{OS: "linux", Arch: "amd64"}, ipc: " rust-ipc-v3", wasm: "redevplugin-wasm-worker-v2", digest: validDigest},
-		{name: "blank wasm", target: Target{OS: "linux", Arch: "amd64"}, ipc: "rust-ipc-v3", digest: validDigest},
-		{name: "prefixed digest", target: Target{OS: "linux", Arch: "amd64"}, ipc: "rust-ipc-v3", wasm: "redevplugin-wasm-worker-v2", digest: "sha256:" + validDigest},
-		{name: "uppercase digest", target: Target{OS: "linux", Arch: "amd64"}, ipc: "rust-ipc-v3", wasm: "redevplugin-wasm-worker-v2", digest: strings.Repeat("A", 64)},
-		{name: "short digest", target: Target{OS: "linux", Arch: "amd64"}, ipc: "rust-ipc-v3", wasm: "redevplugin-wasm-worker-v2", digest: "abc"},
+		{name: "whitespace ipc", target: Target{OS: "linux", Arch: "amd64"}, ipc: " rust-ipc-v4", wasm: "redevplugin-wasm-worker-v2", digest: validDigest},
+		{name: "blank wasm", target: Target{OS: "linux", Arch: "amd64"}, ipc: "rust-ipc-v4", digest: validDigest},
+		{name: "prefixed digest", target: Target{OS: "linux", Arch: "amd64"}, ipc: "rust-ipc-v4", wasm: "redevplugin-wasm-worker-v2", digest: "sha256:" + validDigest},
+		{name: "uppercase digest", target: Target{OS: "linux", Arch: "amd64"}, ipc: "rust-ipc-v4", wasm: "redevplugin-wasm-worker-v2", digest: strings.Repeat("A", 64)},
+		{name: "short digest", target: Target{OS: "linux", Arch: "amd64"}, ipc: "rust-ipc-v4", wasm: "redevplugin-wasm-worker-v2", digest: "abc"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			_, err := NewRuntimeDescriptor(runtimeVersion, test.target, test.ipc, test.wasm, test.digest)
@@ -76,7 +76,7 @@ func TestNewRuntimeDescriptorRequiresClosedIdentity(t *testing.T) {
 func TestRuntimeDescriptorJSONIsClosedAndStrict(t *testing.T) {
 	version, _ := platformversion.ParseSemVer("0.5.0+build.1")
 	descriptor, _ := NewRuntimeDescriptor(
-		version, Target{OS: "darwin", Arch: "arm64"}, "rust-ipc-v3", "redevplugin-wasm-worker-v2", strings.Repeat("b", 64),
+		version, Target{OS: "darwin", Arch: "arm64"}, "rust-ipc-v4", "redevplugin-wasm-worker-v2", strings.Repeat("b", 64),
 	)
 	raw, err := json.Marshal(descriptor)
 	if err != nil {
@@ -106,8 +106,8 @@ func TestRuntimeDescriptorJSONIsClosedAndStrict(t *testing.T) {
 func TestRuntimeDescriptorIdentityIncludesBuildMetadata(t *testing.T) {
 	leftVersion, _ := platformversion.ParseSemVer("0.5.0+build.1")
 	rightVersion, _ := platformversion.ParseSemVer("0.5.0+build.2")
-	left, _ := NewRuntimeDescriptor(leftVersion, Target{OS: "linux", Arch: "arm64"}, "rust-ipc-v3", "redevplugin-wasm-worker-v2", strings.Repeat("c", 64))
-	right, _ := NewRuntimeDescriptor(rightVersion, Target{OS: "linux", Arch: "arm64"}, "rust-ipc-v3", "redevplugin-wasm-worker-v2", strings.Repeat("c", 64))
+	left, _ := NewRuntimeDescriptor(leftVersion, Target{OS: "linux", Arch: "arm64"}, "rust-ipc-v4", "redevplugin-wasm-worker-v2", strings.Repeat("c", 64))
+	right, _ := NewRuntimeDescriptor(rightVersion, Target{OS: "linux", Arch: "arm64"}, "rust-ipc-v4", "redevplugin-wasm-worker-v2", strings.Repeat("c", 64))
 	if left == right {
 		t.Fatal("descriptor identity ignored build metadata")
 	}

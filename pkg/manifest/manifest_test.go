@@ -1086,6 +1086,62 @@ func validCapabilityManifest() Manifest {
 	return m
 }
 
+func TestValidateRejectsSecretRefAcrossScopes(t *testing.T) {
+	tests := []struct {
+		name     string
+		manifest Manifest
+	}{
+		{
+			name: "settings and connector",
+			manifest: func() Manifest {
+				m := validManifest()
+				m.Settings = &SettingsSpec{SchemaVersion: 1, Fields: []SettingFieldSpec{{
+					Key: "api_token", Type: "secret", Scope: "user", Label: "API token", SecretRef: "shared_token",
+				}}}
+				m.NetworkAccess = &NetworkAccessSpec{Connectors: []NetworkConnectorSpec{{
+					ConnectorID: "api", Transport: "http", Scope: "environment", Destinations: []string{"https://api.example.com"},
+					Auth: map[string]any{"secret_ref": "shared_token"},
+				}}}
+				return m
+			}(),
+		},
+		{
+			name: "connector auth and tls",
+			manifest: func() Manifest {
+				m := validManifest()
+				m.NetworkAccess = &NetworkAccessSpec{Connectors: []NetworkConnectorSpec{
+					{ConnectorID: "api", Transport: "http", Scope: "user", Destinations: []string{"https://api.example.com"}, Auth: map[string]any{"secret_ref": "shared_token"}},
+					{ConnectorID: "stream", Transport: "websocket", Scope: "environment", Destinations: []string{"wss://stream.example.com"}, TLS: map[string]any{"client": map[string]any{"secret_ref": "shared_token"}}},
+				}}
+				return m
+			}(),
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			err := Validate(test.manifest)
+			var validationErr ValidationError
+			if !errors.As(err, &validationErr) || !strings.Contains(validationErr.Message, "already declared") {
+				t.Fatalf("Validate() error = %v, want cross-scope secret_ref error", err)
+			}
+		})
+	}
+}
+
+func TestValidateAllowsSecretRefWithinSameScope(t *testing.T) {
+	m := validManifest()
+	m.Settings = &SettingsSpec{SchemaVersion: 1, Fields: []SettingFieldSpec{{
+		Key: "api_token", Type: "secret", Scope: "user", Label: "API token", SecretRef: "shared_token",
+	}}}
+	m.NetworkAccess = &NetworkAccessSpec{Connectors: []NetworkConnectorSpec{{
+		ConnectorID: "api", Transport: "http", Scope: "user", Destinations: []string{"https://api.example.com"},
+		Auth: map[string]any{"secret_ref": "shared_token"},
+	}}}
+	if err := Validate(m); err != nil {
+		t.Fatalf("Validate() error = %v", err)
+	}
+}
+
 func validManifestJSON() string {
 	return fmt.Sprintf(`{
 		"schema_version": "redevplugin.manifest.v5",

@@ -1318,7 +1318,7 @@ export interface components {
             version: components["schemas"]["StrictSemVer"];
             target: components["schemas"]["RuntimeTarget"];
             /** @constant */
-            ipc_version: "rust-ipc-v3";
+            ipc_version: "rust-ipc-v4";
             /** @constant */
             wasm_abi_version: "redevplugin-wasm-worker-v2";
             artifact_sha256: string;
@@ -2015,7 +2015,7 @@ export interface components {
                 /** @constant */
                 plugin_host_protocol_version: "plugin-host-v4";
                 /** @constant */
-                rust_ipc_version: "rust-ipc-v3";
+                rust_ipc_version: "rust-ipc-v4";
                 /** @constant */
                 wasm_abi_version: "redevplugin-wasm-worker-v2";
                 /** @constant */
@@ -2039,7 +2039,7 @@ export interface components {
                 /** @constant */
                 target_classifier_version: "target-classifier-v2";
                 /** @constant */
-                network_grant_schema_version: "network-grant-v1";
+                network_grant_schema_version: "network-grant-v2";
                 /** @constant */
                 plugin_platform_openapi_version: "plugin-platform-v6";
                 /** @constant */
@@ -2047,7 +2047,7 @@ export interface components {
                 /** @constant */
                 release_manifest_schema_version: "release-manifest-v3";
                 /** @constant */
-                worker_invocation_schema_version: "worker-invocation-v2";
+                worker_invocation_schema_version: "worker-invocation-v3";
                 /** @constant */
                 host_capability_contract_schema_version: "host-capability-contract-v1";
                 /** @constant */

@@ -50,6 +50,7 @@ func TestStressGateConnectivityClassifierEvidence(t *testing.T) {
 		_, err := broker.MintConnectionGrant(ctx, GrantRequest{
 			PluginInstanceID:   policy.PluginInstanceID,
 			ActiveFingerprint:  policy.ActiveFingerprint,
+			ResourceScope:      userResourceScope(),
 			PolicyRevision:     policy.PolicyRevision,
 			ManagementRevision: policy.ManagementRevision,
 			RevokeEpoch:        revokeEpoch,

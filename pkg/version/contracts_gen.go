@@ -5,7 +5,7 @@ package version
 const (
 	PluginUIProtocolVersion                  = "plugin-ui-v5"
 	PluginHostProtocolVersion                = "plugin-host-v4"
-	RustIPCVersion                           = "rust-ipc-v3"
+	RustIPCVersion                           = "rust-ipc-v4"
 	WASMABIVersion                           = "redevplugin-wasm-worker-v2"
 	ManifestSchemaVersion                    = "manifest-v5"
 	PackageSignatureSchemaVersion            = "package-signature-v1"
@@ -17,12 +17,12 @@ const (
 	OpaqueSurfaceDocumentSchemaVersion       = "opaque-surface-document-v3"
 	OpaqueSurfaceTransportSchemaVersion      = "opaque-surface-transport-v4"
 	TargetClassifierVersion                  = "target-classifier-v2"
-	NetworkGrantSchemaVersion                = "network-grant-v1"
+	NetworkGrantSchemaVersion                = "network-grant-v2"
 	PluginPlatformOpenAPIVersion             = "plugin-platform-v6"
 	CompatibilityManifestVersion             = "redevplugin.compatibility.v6"
 	CompatibilitySchemaVersion               = "compatibility-manifest-v6"
 	ReleaseManifestSchemaVersion             = "release-manifest-v3"
-	WorkerInvocationSchemaVersion            = "worker-invocation-v2"
+	WorkerInvocationSchemaVersion            = "worker-invocation-v3"
 	HostCapabilityContractSchemaVersion      = "host-capability-contract-v1"
 	HostCapabilityPinSchemaVersion           = "host-capability-pin-v1"
 	HostCapabilityManifestSchemaVersion      = "host-capability-manifest-v1"
@@ -40,7 +40,7 @@ var generatedContractArtifacts = []ContractArtifact{
 		ID:      "plugin-platform-openapi",
 		Path:    "spec/openapi/plugin-platform-v6.yaml",
 		Version: "plugin-platform-v6",
-		SHA256:  "4390f45006c6d0af54636da74901022c6c0d1fc3ac30e500963c6280ab4659f3",
+		SHA256:  "0cc261e87a4c583675cc1f989aecfe6c6441073ce5a4e1e6deaf9cb8825d7c3d",
 	},
 	{
 		ID:      "manifest-schema",
@@ -100,7 +100,7 @@ var generatedContractArtifacts = []ContractArtifact{
 		ID:      "compatibility-manifest-schema",
 		Path:    "spec/plugin/compatibility-manifest-v6.schema.json",
 		Version: "compatibility-manifest-v6",
-		SHA256:  "d83772eea04b80e7aad86bd337e75d65bf7f50941c09595e4e89ec8fc24139aa",
+		SHA256:  "bd205e73e6dde97893e3b069dc5e959c7c0748fb3525fc353e931fcdd41a55f3",
 	},
 	{
 		ID:      "release-manifest-schema",
@@ -110,9 +110,9 @@ var generatedContractArtifacts = []ContractArtifact{
 	},
 	{
 		ID:      "worker-invocation-schema",
-		Path:    "spec/plugin/worker-invocation-v2.schema.json",
-		Version: "worker-invocation-v2",
-		SHA256:  "3532967b57c8309c5012a4554dd82157a591481ce177141a3088622c855c3e22",
+		Path:    "spec/plugin/worker-invocation-v3.schema.json",
+		Version: "worker-invocation-v3",
+		SHA256:  "562a7c0e7b8a5ded23e469f65020d66c129ebc3d5cfe2c7b573f3b53599f4780",
 	},
 	{
 		ID:      "host-capability-contract-schema",
@@ -170,9 +170,9 @@ var generatedContractArtifacts = []ContractArtifact{
 	},
 	{
 		ID:      "rust-ipc-schema",
-		Path:    "spec/plugin/ipc-v3.schema.json",
-		Version: "rust-ipc-v3",
-		SHA256:  "fe6e4b88b875ccad2e7462def073820089507fa6bdda9eb043d7d877cd51b1a4",
+		Path:    "spec/plugin/ipc-v4.schema.json",
+		Version: "rust-ipc-v4",
+		SHA256:  "437d03f0912288be85affdafc63a87e8a9acda190f888b253d61151626775124",
 	},
 	{
 		ID:      "wasm-worker-schema",
@@ -182,9 +182,9 @@ var generatedContractArtifacts = []ContractArtifact{
 	},
 	{
 		ID:      "network-grant-schema",
-		Path:    "spec/plugin/network-grant-v1.schema.json",
-		Version: "network-grant-v1",
-		SHA256:  "e993893160fc7a302fc6ccffdd6deec060d6fa386d90f8f2b88a9beb235480a3",
+		Path:    "spec/plugin/network-grant-v2.schema.json",
+		Version: "network-grant-v2",
+		SHA256:  "37cb6f2913726f7202563238d7b322e4d539ef22498360603b8429081812382b",
 	},
 	{
 		ID:      "target-classifier-fixture",
@@ -196,6 +196,6 @@ var generatedContractArtifacts = []ContractArtifact{
 		ID:      "contract-registry",
 		Path:    "spec/plugin/contract-registry-v1.json",
 		Version: "contract-registry-v1",
-		SHA256:  "0db8a1176953d5e2a367e362bddbddcdfe50f30006187274f83d19cc4654bb81",
+		SHA256:  "e3381de67cbed22c6b12ae6df901cc71fc223ac7c72dcc520d36a05d7af508f4",
 	},
 }

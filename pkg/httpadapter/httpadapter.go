@@ -3264,6 +3264,8 @@ func (h Handler) valuesRevisionDetails(ctx context.Context, pluginInstanceID str
 
 func errorCodeForSecretError(err error) security.ErrorCode {
 	switch {
+	case errors.Is(err, host.ErrResourceScopeMismatch):
+		return security.ErrPermissionDenied
 	case errors.Is(err, host.ErrInvalidSecretRef), errors.Is(err, registry.ErrNotFound):
 		return security.ErrInvalidRequest
 	case errors.Is(err, host.ErrSecretStoreRequired):
@@ -3275,6 +3277,8 @@ func errorCodeForSecretError(err error) security.ErrorCode {
 
 func publicSecretErrorMessage(err error) string {
 	switch {
+	case errors.Is(err, host.ErrResourceScopeMismatch):
+		return "secret reference scope does not match the request"
 	case errors.Is(err, host.ErrInvalidSecretRef):
 		return "secret reference request is invalid"
 	case errors.Is(err, registry.ErrNotFound):
@@ -3310,6 +3314,8 @@ func httpStatusForSettingsError(err error) int {
 
 func httpStatusForSecretError(err error) int {
 	switch {
+	case errors.Is(err, host.ErrResourceScopeMismatch):
+		return http.StatusForbidden
 	case errors.Is(err, host.ErrInvalidSecretRef), errors.Is(err, registry.ErrNotFound):
 		return http.StatusBadRequest
 	case errors.Is(err, host.ErrSecretStoreRequired):

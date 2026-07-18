@@ -23,6 +23,7 @@ import (
 	"github.com/floegence/redevplugin/pkg/host"
 	"github.com/floegence/redevplugin/pkg/observability"
 	"github.com/floegence/redevplugin/pkg/runtimeclient"
+	"github.com/floegence/redevplugin/pkg/sessionctx"
 	"github.com/floegence/redevplugin/pkg/version"
 	"golang.org/x/net/dns/dnsmessage"
 )
@@ -56,6 +57,7 @@ func TestExamplesNetworkExecutorRejectsBlockedResolvedAddress(t *testing.T) {
 		GrantID:                 "netgrant_examples_test",
 		PluginInstanceID:        "plugini_examples_weather",
 		ActiveFingerprint:       "sha256:examples",
+		ResourceScope:           sessionctx.ResourceScope{Kind: sessionctx.ScopeUser, OwnerEnvHash: "env_examples", OwnerUserHash: "user_examples"},
 		ConnectorID:             "geocoding",
 		Transport:               connectivity.TransportHTTP,
 		Destination:             connectivity.Destination{Transport: connectivity.TransportHTTP, Scheme: "http", Host: "weather.example", Port: 80},
@@ -80,6 +82,7 @@ func TestExamplesNetworkExecutorFetchesOpenMeteo(t *testing.T) {
 			GrantID:                 "netgrant_examples_open_meteo",
 			PluginInstanceID:        "plugini_examples_weather",
 			ActiveFingerprint:       "sha256:examples",
+			ResourceScope:           sessionctx.ResourceScope{Kind: sessionctx.ScopeUser, OwnerEnvHash: "env_examples", OwnerUserHash: "user_examples"},
 			ConnectorID:             "forecast",
 			Transport:               connectivity.TransportHTTP,
 			Destination:             connectivity.Destination{Transport: connectivity.TransportHTTP, Scheme: "https", Host: "api.open-meteo.com", Port: 443},

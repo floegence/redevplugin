@@ -6,7 +6,7 @@ use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::sync::OnceLock;
 
-pub const RUST_IPC_VERSION: &str = "rust-ipc-v3";
+pub const RUST_IPC_VERSION: &str = "rust-ipc-v4";
 pub const WASM_ABI_VERSION: &str = "redevplugin-wasm-worker-v2";
 pub const RUNTIME_LEASE_SIGNATURE_SCHEMA_VERSION: &str = "redevplugin.runtime_execution_lease.v1";
 pub const RUNTIME_LEASE_TOKEN_KIND: &str = "runtime_execution_lease";
@@ -432,6 +432,7 @@ struct WorkerStorageBrokerAccessPayload {
 struct WorkerNetworkBrokerAccessPayload {
     connector_id: String,
     transport: String,
+    scope: String,
     operations: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     http_methods: Vec<String>,
@@ -896,6 +897,30 @@ impl ParsedWorkerInvocation {
             ));
         }
         Ok(())
+    }
+
+    pub fn network_broker_scope(
+        &self,
+        connector_id: &str,
+        transport: &str,
+    ) -> Result<String, String> {
+        let scope = self
+            .invocation
+            .broker_access
+            .as_ref()
+            .and_then(|access| {
+                access.network.iter().find(|entry| {
+                    entry.connector_id == connector_id && entry.transport == transport
+                })
+            })
+            .map(|entry| entry.scope.trim())
+            .filter(|scope| matches!(*scope, "user" | "environment"))
+            .ok_or_else(|| {
+                format!(
+                    "worker invocation has no valid network scope for {connector_id:?}/{transport:?}"
+                )
+            })?;
+        Ok(scope.to_string())
     }
 }
 
@@ -2016,6 +2041,7 @@ struct NetworkGrantSuccessResponsePayload {
     grant_id: String,
     plugin_instance_id: String,
     active_fingerprint: String,
+    resource_scope: NetworkResourceScope,
     policy_revision: u64,
     management_revision: u64,
     revoke_epoch: u64,
@@ -2862,10 +2888,31 @@ pub fn validate_storage_sqlite_response(
     Ok(())
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NetworkResourceScope {
+    pub kind: String,
+    pub owner_env_hash: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub owner_user_hash: String,
+}
+
+impl NetworkResourceScope {
+    fn valid(&self) -> bool {
+        !self.owner_env_hash.trim().is_empty()
+            && match self.kind.as_str() {
+                "user" => !self.owner_user_hash.trim().is_empty(),
+                "environment" => self.owner_user_hash.trim().is_empty(),
+                _ => false,
+            }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NetworkGrantRequest {
     pub plugin_instance_id: String,
     pub active_fingerprint: String,
+    pub resource_scope: NetworkResourceScope,
     pub runtime_instance_id: String,
     pub runtime_generation_id: String,
     pub runtime_shard_id: String,
@@ -2883,14 +2930,17 @@ pub fn network_grant_frame(
     runtime_generation_id: &str,
     req: &NetworkGrantRequest,
 ) -> String {
+    let resource_scope = serde_json::to_string(&req.resource_scope)
+        .expect("network resource scope serialization cannot fail");
     format!(
-        "{{\"ipc_version\":\"{}\",\"frame_type\":\"{}\",\"request_id\":\"{}\",\"runtime_generation_id\":\"{}\",\"payload\":{{\"plugin_instance_id\":\"{}\",\"active_fingerprint\":\"{}\",\"runtime_instance_id\":\"{}\",\"runtime_generation_id\":\"{}\",\"runtime_shard_id\":\"{}\",\"policy_revision\":{},\"management_revision\":{},\"revoke_epoch\":{},\"connector_id\":\"{}\",\"transport\":\"{}\",\"destination\":\"{}\",\"ttl_ms\":{}}}}}",
+        "{{\"ipc_version\":\"{}\",\"frame_type\":\"{}\",\"request_id\":\"{}\",\"runtime_generation_id\":\"{}\",\"payload\":{{\"plugin_instance_id\":\"{}\",\"active_fingerprint\":\"{}\",\"resource_scope\":{},\"runtime_instance_id\":\"{}\",\"runtime_generation_id\":\"{}\",\"runtime_shard_id\":\"{}\",\"policy_revision\":{},\"management_revision\":{},\"revoke_epoch\":{},\"connector_id\":\"{}\",\"transport\":\"{}\",\"destination\":\"{}\",\"ttl_ms\":{}}}}}",
         RUST_IPC_VERSION,
         FRAME_TYPE_NETWORK_GRANT,
         escape_json_string(request_id),
         escape_json_string(runtime_generation_id),
         escape_json_string(&req.plugin_instance_id),
         escape_json_string(&req.active_fingerprint),
+        resource_scope,
         escape_json_string(&req.runtime_instance_id),
         escape_json_string(&req.runtime_generation_id),
         escape_json_string(&req.runtime_shard_id),
@@ -2910,6 +2960,7 @@ pub fn validate_network_grant_response(
     expected_runtime_generation_id: &str,
     expected_connector_id: &str,
     expected_transport: &str,
+    expected_resource_scope: &NetworkResourceScope,
 ) -> Result<(), String> {
     let success = parse_validated_hostcall_success::<NetworkGrantSuccessResponsePayload, _>(
         input,
@@ -2927,6 +2978,9 @@ pub fn validate_network_grant_response(
     if success.connector_id != expected_connector_id || success.transport != expected_transport {
         return Err("network_grant audience mismatch".to_string());
     }
+    if !success.resource_scope.valid() || success.resource_scope != *expected_resource_scope {
+        return Err("network_grant resource scope mismatch".to_string());
+    }
     if success.runtime_generation_id != expected_runtime_generation_id {
         return Err("network_grant payload runtime_generation_id mismatch".to_string());
     }
@@ -2941,6 +2995,7 @@ pub struct NetworkExecuteRequest {
     pub plugin_id: String,
     pub plugin_instance_id: String,
     pub active_fingerprint: String,
+    pub resource_scope: NetworkResourceScope,
     pub runtime_instance_id: String,
     pub runtime_generation_id: String,
     pub runtime_shard_id: String,
@@ -2992,8 +3047,10 @@ pub fn network_execute_frame(
     } else {
         req.headers_json.trim()
     };
+    let resource_scope = serde_json::to_string(&req.resource_scope)
+        .expect("network resource scope serialization cannot fail");
     format!(
-        "{{\"ipc_version\":\"{}\",\"frame_type\":\"{}\",\"request_id\":\"{}\",\"runtime_generation_id\":\"{}\",\"payload\":{{\"plugin_id\":\"{}\",\"plugin_instance_id\":\"{}\",\"active_fingerprint\":\"{}\",\"runtime_instance_id\":\"{}\",\"runtime_generation_id\":\"{}\",\"runtime_shard_id\":\"{}\",\"policy_revision\":{},\"management_revision\":{},\"revoke_epoch\":{},\"connector_id\":\"{}\",\"transport\":\"{}\",\"destination\":\"{}\",\"ttl_ms\":{},\"operation\":\"{}\",\"method\":\"{}\",\"path\":\"{}\",\"query\":{},\"headers\":{},\"message_type\":\"{}\",\"body_base64\":\"{}\",\"payload_base64\":\"{}\",\"max_request_bytes\":{},\"max_response_bytes\":{},\"max_chunk_bytes\":{},\"max_buffered_bytes\":{},\"timeout_ms\":{},\"stream_id\":\"{}\",\"stream_method\":\"{}\",\"stream_effect\":\"{}\",\"stream_execution\":\"{}\",\"surface_instance_id\":\"{}\",\"owner_session_hash\":\"{}\",\"owner_user_hash\":\"{}\",\"owner_env_hash\":\"{}\",\"session_channel_id_hash\":\"{}\",\"bridge_channel_id\":\"{}\",\"content_type\":\"{}\"}}}}",
+        "{{\"ipc_version\":\"{}\",\"frame_type\":\"{}\",\"request_id\":\"{}\",\"runtime_generation_id\":\"{}\",\"payload\":{{\"plugin_id\":\"{}\",\"plugin_instance_id\":\"{}\",\"active_fingerprint\":\"{}\",\"resource_scope\":{},\"runtime_instance_id\":\"{}\",\"runtime_generation_id\":\"{}\",\"runtime_shard_id\":\"{}\",\"policy_revision\":{},\"management_revision\":{},\"revoke_epoch\":{},\"connector_id\":\"{}\",\"transport\":\"{}\",\"destination\":\"{}\",\"ttl_ms\":{},\"operation\":\"{}\",\"method\":\"{}\",\"path\":\"{}\",\"query\":{},\"headers\":{},\"message_type\":\"{}\",\"body_base64\":\"{}\",\"payload_base64\":\"{}\",\"max_request_bytes\":{},\"max_response_bytes\":{},\"max_chunk_bytes\":{},\"max_buffered_bytes\":{},\"timeout_ms\":{},\"stream_id\":\"{}\",\"stream_method\":\"{}\",\"stream_effect\":\"{}\",\"stream_execution\":\"{}\",\"surface_instance_id\":\"{}\",\"owner_session_hash\":\"{}\",\"owner_user_hash\":\"{}\",\"owner_env_hash\":\"{}\",\"session_channel_id_hash\":\"{}\",\"bridge_channel_id\":\"{}\",\"content_type\":\"{}\"}}}}",
         RUST_IPC_VERSION,
         FRAME_TYPE_NETWORK_EXECUTE,
         escape_json_string(request_id),
@@ -3001,6 +3058,7 @@ pub fn network_execute_frame(
         escape_json_string(&req.plugin_id),
         escape_json_string(&req.plugin_instance_id),
         escape_json_string(&req.active_fingerprint),
+        resource_scope,
         escape_json_string(&req.runtime_instance_id),
         escape_json_string(&req.runtime_generation_id),
         escape_json_string(&req.runtime_shard_id),
@@ -3453,7 +3511,7 @@ mod tests {
 
     fn closed_worker_frame(lease: &str, invocation: &str) -> String {
         format!(
-            r#"{{"ipc_version":"rust-ipc-v3","frame_type":"invoke_worker","request_id":"r1","runtime_generation_id":"g1","payload":{{"lease":{lease},"method":"worker.echo","invocation":{invocation}}}}}"#
+            r#"{{"ipc_version":"rust-ipc-v4","frame_type":"invoke_worker","request_id":"r1","runtime_generation_id":"g1","payload":{{"lease":{lease},"method":"worker.echo","invocation":{invocation}}}}}"#
         )
     }
 
@@ -3472,13 +3530,13 @@ mod tests {
             .map(|value| format!(",\"channel_nonce\":\"{value}\""))
             .unwrap_or_default();
         format!(
-            r#"{{"ipc_version":"rust-ipc-v3","frame_type":"hello","request_id":"r1","runtime_generation_id":"g1","payload":{{"target":{{"os":"linux","arch":"amd64"}},"host_process_id":1,"host_ipc_version":"rust-ipc-v3","host_wasm_abi":"redevplugin-wasm-worker-v2","started_unix_nano":1{channel_nonce},"runtime_lease_public_keys":{public_keys},"limits":{{"worker_count":8,"queue_capacity":32,"per_plugin_concurrency":4,"module_cache_entries":64,"module_cache_source_bytes":134217728}}}}}}"#
+            r#"{{"ipc_version":"rust-ipc-v4","frame_type":"hello","request_id":"r1","runtime_generation_id":"g1","payload":{{"target":{{"os":"linux","arch":"amd64"}},"host_process_id":1,"host_ipc_version":"rust-ipc-v4","host_wasm_abi":"redevplugin-wasm-worker-v2","started_unix_nano":1{channel_nonce},"runtime_lease_public_keys":{public_keys},"limits":{{"worker_count":8,"queue_capacity":32,"per_plugin_concurrency":4,"module_cache_entries":64,"module_cache_source_bytes":134217728}}}}}}"#
         )
     }
 
     fn hostcall_response_frame(frame_type: &str, payload: &str) -> String {
         format!(
-            r#"{{"ipc_version":"rust-ipc-v3","frame_type":"{frame_type}","request_id":"r1","runtime_generation_id":"g1","payload":{payload}}}"#
+            r#"{{"ipc_version":"rust-ipc-v4","frame_type":"{frame_type}","request_id":"r1","runtime_generation_id":"g1","payload":{payload}}}"#
         )
     }
 
@@ -3574,7 +3632,7 @@ mod tests {
         );
         assert_closed_hostcall_response_union::<NetworkGrantSuccessResponsePayload>(
             FRAME_TYPE_NETWORK_GRANT,
-            r#"{"ok":true,"grant_id":"netgrant_00112233445566778899aabbccddeeff","plugin_instance_id":"plugini_1","active_fingerprint":"sha256:active","policy_revision":1,"management_revision":2,"revoke_epoch":3,"connector_id":"api","transport":"http","destination":{"transport":"http","scheme":"https","host":"api.example.com","port":443},"runtime_generation_id":"g1","target_classifier_version":"target-classifier-v2","expires_at":"2026-06-30T10:00:30Z"}"#,
+            r#"{"ok":true,"grant_id":"netgrant_00112233445566778899aabbccddeeff","plugin_instance_id":"plugini_1","active_fingerprint":"sha256:active","resource_scope":{"kind":"user","owner_env_hash":"env_hash","owner_user_hash":"user_hash"},"policy_revision":1,"management_revision":2,"revoke_epoch":3,"connector_id":"api","transport":"http","destination":{"transport":"http","scheme":"https","host":"api.example.com","port":443},"runtime_generation_id":"g1","target_classifier_version":"target-classifier-v2","expires_at":"2026-06-30T10:00:30Z"}"#,
             r#""grant_id":"netgrant_00112233445566778899aabbccddeeff""#,
         );
         assert_closed_hostcall_response_union::<NetworkExecuteSuccessResponsePayload>(
@@ -3632,7 +3690,7 @@ mod tests {
                 r#"[{{"algorithm":"ed25519","key_id":"host_ephemeral_key_1","public_key_base64":"{public_key}"}}]"#
             ),
         );
-        assert!(parse_hello_frame(&valid.replace("rust-ipc-v3", "rust-ipc-v2")).is_err());
+        assert!(parse_hello_frame(&valid.replace("rust-ipc-v4", "rust-ipc-v2")).is_err());
         assert!(
             parse_hello_frame(&valid.replacen("\"worker_count\":8", "\"worker_count\":0", 1))
                 .is_err()
@@ -3652,7 +3710,7 @@ mod tests {
 
     #[test]
     fn decodes_invalid_worker_input_once_into_a_typed_runtime_variant() {
-        let input = r#"{"ipc_version":"rust-ipc-v3","frame_type":"invoke_worker","request_id":"invoke-invalid","runtime_generation_id":"g1","payload":{"method":"worker.echo","invocation":{}}}"#;
+        let input = r#"{"ipc_version":"rust-ipc-v4","frame_type":"invoke_worker","request_id":"invoke-invalid","runtime_generation_id":"g1","payload":{"method":"worker.echo","invocation":{}}}"#;
         let decoded = decode_runtime_input_frame(input).expect("outer IPC frame decodes");
         let RuntimeInputFrame::InvokeWorker(worker) = decoded else {
             panic!("invoke_worker must use the typed worker variant");
@@ -3664,13 +3722,13 @@ mod tests {
 
     #[test]
     fn parses_cancel_and_binds_parent_request_id() {
-        let cancel = r#"{"ipc_version":"rust-ipc-v3","frame_type":"cancel_invoke","request_id":"cancel-1","runtime_generation_id":"g1","payload":{"invocation_request_id":"invoke-1"}}"#;
+        let cancel = r#"{"ipc_version":"rust-ipc-v4","frame_type":"cancel_invoke","request_id":"cancel-1","runtime_generation_id":"g1","payload":{"invocation_request_id":"invoke-1"}}"#;
         assert_eq!(parse_cancel_invoke(cancel).unwrap(), "invoke-1");
         let ack = cancel_invoke_ack_frame("cancel-1", "g1", "invoke-1", "running")
             .expect("cancel acknowledgement frame");
         assert!(ack.contains(r#""frame_type":"cancel_invoke_ack""#));
         let hostcall = bind_parent_request_id(
-            r#"{"ipc_version":"rust-ipc-v3","frame_type":"open_handle","request_id":"invoke-1:artifact","runtime_generation_id":"g1","payload":{}}"#,
+            r#"{"ipc_version":"rust-ipc-v4","frame_type":"open_handle","request_id":"invoke-1:artifact","runtime_generation_id":"g1","payload":{}}"#,
             "invoke-1",
         )
         .unwrap();
@@ -3684,7 +3742,7 @@ mod tests {
 
     #[test]
     fn closed_ipc_decoding_rejects_ambiguous_or_extended_frames() {
-        let valid = r#"{"ipc_version":"rust-ipc-v3","frame_type":"heartbeat","request_id":"outer","runtime_generation_id":"g1","payload":{"request_id":"nested"}}"#;
+        let valid = r#"{"ipc_version":"rust-ipc-v4","frame_type":"heartbeat","request_id":"outer","runtime_generation_id":"g1","payload":{"request_id":"nested"}}"#;
         let (_, request_id, _) = parse_frame_identity(valid).expect("top-level frame identity");
         assert_eq!(request_id, "outer");
 
@@ -3702,7 +3760,7 @@ mod tests {
 
     #[test]
     fn runtime_hostcall_response_requires_nonempty_parent_request_id() {
-        let without_parent = r#"{"ipc_version":"rust-ipc-v3","frame_type":"open_handle","request_id":"r1:artifact","runtime_generation_id":"g1","payload":{"ok":false,"code":"ARTIFACT_HANDLE_FAILED","message":"unavailable","error_origin":"hostcall"}}"#;
+        let without_parent = r#"{"ipc_version":"rust-ipc-v4","frame_type":"open_handle","request_id":"r1:artifact","runtime_generation_id":"g1","payload":{"ok":false,"code":"ARTIFACT_HANDLE_FAILED","message":"unavailable","error_origin":"hostcall"}}"#;
         assert!(decode_runtime_input_frame(without_parent).is_err());
         let empty_parent = without_parent.replace(
             r#""request_id":"r1:artifact""#,
@@ -4112,7 +4170,7 @@ mod tests {
         assert!(frame.contains(r#""request_id":"r1""#));
         assert!(frame.contains(r#""runtime_generation_id":"g1""#));
         assert!(frame.contains(r#""actual_target":{"os":"linux","arch":"amd64"}"#));
-        assert!(frame.contains(r#""rust_ipc_version":"rust-ipc-v3""#));
+        assert!(frame.contains(r#""rust_ipc_version":"rust-ipc-v4""#));
         assert!(frame.contains(r#""channel_nonce":"nonce_1""#));
         assert!(frame.contains(r#""worker_count":8"#));
         assert!(frame.contains(r#""module_cache_source_bytes":134217728"#));
@@ -4373,7 +4431,7 @@ mod tests {
                 "complete"
             };
             let expected = format!(
-                r#"{{"ipc_version":"rust-ipc-v3","frame_type":"{frame_type}","request_id":"invoke-1:artifact:{suffix}","parent_request_id":"invoke-1","runtime_generation_id":"generation-1","payload":{{"artifact_request_id":"invoke-1:artifact","package_hash":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","artifact":"workers/backend.wasm","artifact_sha256":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","wasm_abi_version":"redevplugin-wasm-worker-v2"}}}}"#
+                r#"{{"ipc_version":"rust-ipc-v4","frame_type":"{frame_type}","request_id":"invoke-1:artifact:{suffix}","parent_request_id":"invoke-1","runtime_generation_id":"generation-1","payload":{{"artifact_request_id":"invoke-1:artifact","package_hash":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","artifact":"workers/backend.wasm","artifact_sha256":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","wasm_abi_version":"redevplugin-wasm-worker-v2"}}}}"#
             );
             assert_json_eq(&actual, &expected, frame_type);
         }
@@ -4391,10 +4449,10 @@ mod tests {
             worker_id: "backend".to_string(),
             method: "worker.echo".to_string(),
         };
-        let frame = r#"{"ipc_version":"rust-ipc-v3","frame_type":"open_handle","request_id":"r1:artifact","parent_request_id":"r1","runtime_generation_id":"g1","payload":{"ok":true,"package_hash":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","artifact":"workers/backend.wasm","sha256":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","content_base64":"AAE="}}"#;
+        let frame = r#"{"ipc_version":"rust-ipc-v4","frame_type":"open_handle","request_id":"r1:artifact","parent_request_id":"r1","runtime_generation_id":"g1","payload":{"ok":true,"package_hash":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","artifact":"workers/backend.wasm","sha256":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","content_base64":"AAE="}}"#;
         validate_open_handle_response(frame, "r1:artifact", "r1", "g1", &identity)
             .expect("valid open_handle");
-        let failed = r#"{"ipc_version":"rust-ipc-v3","frame_type":"open_handle","request_id":"r1:artifact","parent_request_id":"r1","runtime_generation_id":"g1","payload":{"ok":false,"code":"ARTIFACT_HANDLE_FAILED","message":"unavailable","error_origin":"hostcall"}}"#;
+        let failed = r#"{"ipc_version":"rust-ipc-v4","frame_type":"open_handle","request_id":"r1:artifact","parent_request_id":"r1","runtime_generation_id":"g1","payload":{"ok":false,"code":"ARTIFACT_HANDLE_FAILED","message":"unavailable","error_origin":"hostcall"}}"#;
         let err = validate_open_handle_response(failed, "r1:artifact", "r1", "g1", &identity)
             .expect_err("failed open_handle response");
         assert!(err.contains("ARTIFACT_HANDLE_FAILED"));
@@ -4421,10 +4479,10 @@ mod tests {
 
     #[test]
     fn validates_handle_grant_response() {
-        let frame = r#"{"ipc_version":"rust-ipc-v3","frame_type":"validate_handle_grant","request_id":"r1:handle","runtime_generation_id":"g1","payload":{"ok":true,"handle_grant_id":"h1","handle_id":"storage:db","method":"storage.sqlite","runtime_generation_id":"g1","max_total_bytes":4096}}"#;
+        let frame = r#"{"ipc_version":"rust-ipc-v4","frame_type":"validate_handle_grant","request_id":"r1:handle","runtime_generation_id":"g1","payload":{"ok":true,"handle_grant_id":"h1","handle_id":"storage:db","method":"storage.sqlite","runtime_generation_id":"g1","max_total_bytes":4096}}"#;
         validate_handle_grant_response(frame, "r1:handle", "g1", "storage:db", "storage.sqlite")
             .expect("valid handle grant");
-        let failed = r#"{"ipc_version":"rust-ipc-v3","frame_type":"validate_handle_grant","request_id":"r1:handle","runtime_generation_id":"g1","payload":{"ok":false,"code":"HANDLE_GRANT_VALIDATION_FAILED","message":"denied","error_origin":"hostcall"}}"#;
+        let failed = r#"{"ipc_version":"rust-ipc-v4","frame_type":"validate_handle_grant","request_id":"r1:handle","runtime_generation_id":"g1","payload":{"ok":false,"code":"HANDLE_GRANT_VALIDATION_FAILED","message":"denied","error_origin":"hostcall"}}"#;
         let err = validate_handle_grant_response(
             failed,
             "r1:handle",
@@ -4467,7 +4525,7 @@ mod tests {
 
     #[test]
     fn validates_storage_file_response() {
-        let frame = r#"{"ipc_version":"rust-ipc-v3","frame_type":"storage_file","request_id":"r1:storage_file","runtime_generation_id":"g1","payload":{"ok":true,"path":"notes/today.txt","data_base64":"aGVsbG8=","size_bytes":5,"usage":{"plugin_instance_id":"plugini_1","store_id":"workspace","usage_bytes":5,"quota_bytes":100,"usage_files":1,"quota_files":10}}}"#;
+        let frame = r#"{"ipc_version":"rust-ipc-v4","frame_type":"storage_file","request_id":"r1:storage_file","runtime_generation_id":"g1","payload":{"ok":true,"path":"notes/today.txt","data_base64":"aGVsbG8=","size_bytes":5,"usage":{"plugin_instance_id":"plugini_1","store_id":"workspace","usage_bytes":5,"quota_bytes":100,"usage_files":1,"quota_files":10}}}"#;
         validate_storage_file_response(frame, "r1:storage_file", "g1", "read")
             .expect("valid storage file response");
         let payload = storage_file_payload_json(frame, "read").expect("storage file payload");
@@ -4483,15 +4541,15 @@ mod tests {
         assert!(validate_storage_file_response(&mixed, "r1:storage_file", "g1", "read").is_err());
         let missing = without_payload_field(frame, "data_base64");
         assert!(validate_storage_file_response(&missing, "r1:storage_file", "g1", "read").is_err());
-        let failed = r#"{"ipc_version":"rust-ipc-v3","frame_type":"storage_file","request_id":"r1:storage_file","runtime_generation_id":"g1","payload":{"ok":false,"code":"STORAGE_FILE_NOT_FOUND","message":"missing","error_origin":"hostcall"}}"#;
+        let failed = r#"{"ipc_version":"rust-ipc-v4","frame_type":"storage_file","request_id":"r1:storage_file","runtime_generation_id":"g1","payload":{"ok":false,"code":"STORAGE_FILE_NOT_FOUND","message":"missing","error_origin":"hostcall"}}"#;
         let err = validate_storage_file_response(failed, "r1:storage_file", "g1", "read")
             .expect_err("failed storage file response");
         assert!(err.contains("STORAGE_FILE_NOT_FOUND"));
-        let missing_origin = r#"{"ipc_version":"rust-ipc-v3","frame_type":"storage_file","request_id":"r1:storage_file","runtime_generation_id":"g1","payload":{"ok":false,"code":"STORAGE_FILE_NOT_FOUND","message":"missing"}}"#;
+        let missing_origin = r#"{"ipc_version":"rust-ipc-v4","frame_type":"storage_file","request_id":"r1:storage_file","runtime_generation_id":"g1","payload":{"ok":false,"code":"STORAGE_FILE_NOT_FOUND","message":"missing"}}"#;
         let err = validate_storage_file_response(missing_origin, "r1:storage_file", "g1", "read")
             .expect_err("hostcall origin is required");
         assert!(err.contains("error_origin"));
-        let spoofed_origin = r#"{"ipc_version":"rust-ipc-v3","frame_type":"storage_file","request_id":"r1:storage_file","runtime_generation_id":"g1","payload":{"ok":false,"code":"STORAGE_FILE_NOT_FOUND","message":"missing","error_origin":"plugin"}}"#;
+        let spoofed_origin = r#"{"ipc_version":"rust-ipc-v4","frame_type":"storage_file","request_id":"r1:storage_file","runtime_generation_id":"g1","payload":{"ok":false,"code":"STORAGE_FILE_NOT_FOUND","message":"missing","error_origin":"plugin"}}"#;
         let err = validate_storage_file_response(spoofed_origin, "r1:storage_file", "g1", "read")
             .expect_err("hostcall origin cannot be spoofed");
         assert!(err.contains("must be hostcall"));
@@ -4561,7 +4619,7 @@ mod tests {
 
     #[test]
     fn validates_storage_kv_response() {
-        let frame = r#"{"ipc_version":"rust-ipc-v3","frame_type":"storage_kv","request_id":"r1:storage_kv","runtime_generation_id":"g1","payload":{"ok":true,"key":"demo/last_broker_run","value_base64":"aGVsbG8=","size_bytes":5,"usage":{"plugin_instance_id":"plugini_1","store_id":"settings","usage_bytes":5,"quota_bytes":100,"usage_files":1,"quota_files":10}}}"#;
+        let frame = r#"{"ipc_version":"rust-ipc-v4","frame_type":"storage_kv","request_id":"r1:storage_kv","runtime_generation_id":"g1","payload":{"ok":true,"key":"demo/last_broker_run","value_base64":"aGVsbG8=","size_bytes":5,"usage":{"plugin_instance_id":"plugini_1","store_id":"settings","usage_bytes":5,"quota_bytes":100,"usage_files":1,"quota_files":10}}}"#;
         validate_storage_kv_response(frame, "r1:storage_kv", "g1", "get")
             .expect("valid storage kv response");
         let payload = storage_kv_payload_json(frame, "get").expect("storage kv payload");
@@ -4576,7 +4634,7 @@ mod tests {
         assert!(validate_storage_kv_response(&mixed, "r1:storage_kv", "g1", "get").is_err());
         let missing = without_payload_field(frame, "value_base64");
         assert!(validate_storage_kv_response(&missing, "r1:storage_kv", "g1", "get").is_err());
-        let failed = r#"{"ipc_version":"rust-ipc-v3","frame_type":"storage_kv","request_id":"r1:storage_kv","runtime_generation_id":"g1","payload":{"ok":false,"code":"STORAGE_KV_NOT_FOUND","message":"missing","error_origin":"hostcall"}}"#;
+        let failed = r#"{"ipc_version":"rust-ipc-v4","frame_type":"storage_kv","request_id":"r1:storage_kv","runtime_generation_id":"g1","payload":{"ok":false,"code":"STORAGE_KV_NOT_FOUND","message":"missing","error_origin":"hostcall"}}"#;
         let err = validate_storage_kv_response(failed, "r1:storage_kv", "g1", "get")
             .expect_err("failed storage kv response");
         assert!(err.contains("STORAGE_KV_NOT_FOUND"));
@@ -4675,7 +4733,7 @@ mod tests {
 
     #[test]
     fn validates_storage_sqlite_response() {
-        let frame = r#"{"ipc_version":"rust-ipc-v3","frame_type":"storage_sqlite","request_id":"r1:storage_sqlite","runtime_generation_id":"g1","payload":{"ok":true,"database":"plugin.sqlite","columns":["title"],"rows":[[{"text":"stored from wasm"}]],"usage":{"plugin_instance_id":"plugini_1","store_id":"db","usage_bytes":5,"quota_bytes":100,"usage_files":1,"quota_files":10}}}"#;
+        let frame = r#"{"ipc_version":"rust-ipc-v4","frame_type":"storage_sqlite","request_id":"r1:storage_sqlite","runtime_generation_id":"g1","payload":{"ok":true,"database":"plugin.sqlite","columns":["title"],"rows":[[{"text":"stored from wasm"}]],"usage":{"plugin_instance_id":"plugini_1","store_id":"db","usage_bytes":5,"quota_bytes":100,"usage_files":1,"quota_files":10}}}"#;
         validate_storage_sqlite_response(frame, "r1:storage_sqlite", "g1", "query")
             .expect("valid storage sqlite response");
         let payload = storage_sqlite_payload_json(frame, "query").expect("storage sqlite payload");
@@ -4709,7 +4767,7 @@ mod tests {
                 "accepted invalid SQLite value {invalid_value}"
             );
         }
-        let failed = r#"{"ipc_version":"rust-ipc-v3","frame_type":"storage_sqlite","request_id":"r1:storage_sqlite","runtime_generation_id":"g1","payload":{"ok":false,"code":"STORAGE_SQLITE_RESULT_TOO_LARGE","message":"too large","error_origin":"hostcall"}}"#;
+        let failed = r#"{"ipc_version":"rust-ipc-v4","frame_type":"storage_sqlite","request_id":"r1:storage_sqlite","runtime_generation_id":"g1","payload":{"ok":false,"code":"STORAGE_SQLITE_RESULT_TOO_LARGE","message":"too large","error_origin":"hostcall"}}"#;
         let err = validate_storage_sqlite_response(failed, "r1:storage_sqlite", "g1", "query")
             .expect_err("failed storage sqlite response");
         assert!(err.contains("STORAGE_SQLITE_RESULT_TOO_LARGE"));
@@ -4749,6 +4807,11 @@ mod tests {
         let req = NetworkGrantRequest {
             plugin_instance_id: "plugini_1".to_string(),
             active_fingerprint: "sha256:active".to_string(),
+            resource_scope: NetworkResourceScope {
+                kind: "user".to_string(),
+                owner_env_hash: "env_hash".to_string(),
+                owner_user_hash: "user_hash".to_string(),
+            },
             runtime_instance_id: "runtime_1".to_string(),
             runtime_generation_id: "g1".to_string(),
             runtime_shard_id: "runtime_shard_1".to_string(),
@@ -4764,17 +4827,30 @@ mod tests {
         assert!(frame.contains(r#""frame_type":"network_grant""#));
         assert!(frame.contains(r#""connector_id":"api""#));
         assert!(frame.contains(r#""transport":"http""#));
+        assert!(frame.contains(r#""resource_scope":{"kind":"user","owner_env_hash":"env_hash","owner_user_hash":"user_hash"}"#));
         assert!(frame.contains(r#""ttl_ms":30000"#));
     }
 
     #[test]
     fn validates_network_grant_response() {
-        let frame = r#"{"ipc_version":"rust-ipc-v3","frame_type":"network_grant","request_id":"r1:network_grant","runtime_generation_id":"g1","payload":{"ok":true,"grant_id":"netgrant_00112233445566778899aabbccddeeff","plugin_instance_id":"plugini_1","active_fingerprint":"sha256:active","policy_revision":1,"management_revision":2,"revoke_epoch":3,"connector_id":"api","transport":"http","destination":{"transport":"http","scheme":"https","host":"api.example.com","port":443},"runtime_generation_id":"g1","target_classifier_version":"target-classifier-v2","expires_at":"2026-06-30T10:00:30Z"}}"#;
-        validate_network_grant_response(frame, "r1:network_grant", "g1", "api", "http")
+        let scope = NetworkResourceScope {
+            kind: "user".to_string(),
+            owner_env_hash: "env_hash".to_string(),
+            owner_user_hash: "user_hash".to_string(),
+        };
+        let frame = r#"{"ipc_version":"rust-ipc-v4","frame_type":"network_grant","request_id":"r1:network_grant","runtime_generation_id":"g1","payload":{"ok":true,"grant_id":"netgrant_00112233445566778899aabbccddeeff","plugin_instance_id":"plugini_1","active_fingerprint":"sha256:active","resource_scope":{"kind":"user","owner_env_hash":"env_hash","owner_user_hash":"user_hash"},"policy_revision":1,"management_revision":2,"revoke_epoch":3,"connector_id":"api","transport":"http","destination":{"transport":"http","scheme":"https","host":"api.example.com","port":443},"runtime_generation_id":"g1","target_classifier_version":"target-classifier-v2","expires_at":"2026-06-30T10:00:30Z"}}"#;
+        validate_network_grant_response(frame, "r1:network_grant", "g1", "api", "http", &scope)
             .expect("valid network grant response");
-        let failed = r#"{"ipc_version":"rust-ipc-v3","frame_type":"network_grant","request_id":"r1:network_grant","runtime_generation_id":"g1","payload":{"ok":false,"code":"NETWORK_TARGET_DENIED","message":"blocked","error_origin":"hostcall"}}"#;
-        let err = validate_network_grant_response(failed, "r1:network_grant", "g1", "api", "http")
-            .expect_err("failed network grant response");
+        let failed = r#"{"ipc_version":"rust-ipc-v4","frame_type":"network_grant","request_id":"r1:network_grant","runtime_generation_id":"g1","payload":{"ok":false,"code":"NETWORK_TARGET_DENIED","message":"blocked","error_origin":"hostcall"}}"#;
+        let err = validate_network_grant_response(
+            failed,
+            "r1:network_grant",
+            "g1",
+            "api",
+            "http",
+            &scope,
+        )
+        .expect_err("failed network grant response");
         assert!(err.contains("NETWORK_TARGET_DENIED"));
     }
 
@@ -4784,6 +4860,11 @@ mod tests {
             plugin_id: "com.example.worker".to_string(),
             plugin_instance_id: "plugini_1".to_string(),
             active_fingerprint: "sha256:active".to_string(),
+            resource_scope: NetworkResourceScope {
+                kind: "user".to_string(),
+                owner_env_hash: "env_hash".to_string(),
+                owner_user_hash: "user_hash".to_string(),
+            },
             runtime_instance_id: "runtime_1".to_string(),
             runtime_generation_id: "g1".to_string(),
             runtime_shard_id: "runtime_shard_1".to_string(),
@@ -4833,10 +4914,10 @@ mod tests {
 
     #[test]
     fn validates_network_execute_response() {
-        let frame = r#"{"ipc_version":"rust-ipc-v3","frame_type":"network_execute","request_id":"r1:network_execute","runtime_generation_id":"g1","payload":{"ok":true,"transport":"http","destination":{"transport":"http","scheme":"https","host":"api.example.com","port":443},"status_code":201,"headers":{"X-Worker":["ok"]},"body_base64":"e30=","grant_id":"netgrant_00112233445566778899aabbccddeeff","connector_id":"api","runtime_generation_id":"g1"}}"#;
+        let frame = r#"{"ipc_version":"rust-ipc-v4","frame_type":"network_execute","request_id":"r1:network_execute","runtime_generation_id":"g1","payload":{"ok":true,"transport":"http","destination":{"transport":"http","scheme":"https","host":"api.example.com","port":443},"status_code":201,"headers":{"X-Worker":["ok"]},"body_base64":"e30=","grant_id":"netgrant_00112233445566778899aabbccddeeff","connector_id":"api","runtime_generation_id":"g1"}}"#;
         validate_network_execute_response(frame, "r1:network_execute", "g1", "api", "http")
             .expect("valid network execute response");
-        let failed = r#"{"ipc_version":"rust-ipc-v3","frame_type":"network_execute","request_id":"r1:network_execute","runtime_generation_id":"g1","payload":{"ok":false,"code":"NETWORK_RESPONSE_TOO_LARGE","message":"too large","error_origin":"hostcall"}}"#;
+        let failed = r#"{"ipc_version":"rust-ipc-v4","frame_type":"network_execute","request_id":"r1:network_execute","runtime_generation_id":"g1","payload":{"ok":false,"code":"NETWORK_RESPONSE_TOO_LARGE","message":"too large","error_origin":"hostcall"}}"#;
         let err =
             validate_network_execute_response(failed, "r1:network_execute", "g1", "api", "http")
                 .expect_err("failed network execute response");
@@ -4897,7 +4978,7 @@ mod tests {
 
     #[test]
     fn projects_closed_worker_request_v2() {
-        let frame = r#"{"ipc_version":"rust-ipc-v3","frame_type":"invoke_worker","request_id":"r1","runtime_generation_id":"g1","payload":{"lease":{},"method":"notes.save","invocation":{"plugin_id":"com.example.notes","plugin_instance_id":"plugini_1","storage_handle_grants":{"notes":"handle-secret"},"method":"notes.save","params":{"title":"Launch notes","body":"Ship the examples"}}}}"#;
+        let frame = r#"{"ipc_version":"rust-ipc-v4","frame_type":"invoke_worker","request_id":"r1","runtime_generation_id":"g1","payload":{"lease":{},"method":"notes.save","invocation":{"plugin_id":"com.example.notes","plugin_instance_id":"plugini_1","storage_handle_grants":{"notes":"handle-secret"},"method":"notes.save","params":{"title":"Launch notes","body":"Ship the examples"}}}}"#;
 
         let request = worker_request_json_v2(frame).expect("worker request projection");
 
@@ -4951,7 +5032,7 @@ mod tests {
     fn read_effect_allows_declared_http_post_network_request() {
         let frame = closed_worker_frame(
             "{}",
-            r#"{"effect":"read","broker_access":{"network":[{"connector_id":"search","transport":"http","operations":["http"],"http_methods":["POST"]}]}}"#,
+            r#"{"effect":"read","broker_access":{"network":[{"connector_id":"search","transport":"http","scope":"user","operations":["http"],"http_methods":["POST"]}]}}"#,
         );
         validate_worker_network_broker_access(&frame, "search", "http", "http", "POST")
             .expect("HTTP verbs do not define method effect");
@@ -5109,7 +5190,7 @@ mod tests {
             lease[key] = serde_json::Value::Number(parsed.into());
         }
         format!(
-            r#"{{"ipc_version":"rust-ipc-v3","frame_type":"invoke_worker","request_id":"r1","runtime_generation_id":"rtgen_1","payload":{{"lease":{},"method":"worker.echo","invocation":{{"package_hash":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","artifact":"workers/backend.wasm","artifact_sha256":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","worker_id":"backend","method":"worker.echo"}}}}}}"#,
+            r#"{{"ipc_version":"rust-ipc-v4","frame_type":"invoke_worker","request_id":"r1","runtime_generation_id":"rtgen_1","payload":{{"lease":{},"method":"worker.echo","invocation":{{"package_hash":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","artifact":"workers/backend.wasm","artifact_sha256":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","worker_id":"backend","method":"worker.echo"}}}}}}"#,
             serde_json::to_string(&lease).expect("lease json")
         )
     }

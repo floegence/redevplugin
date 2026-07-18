@@ -8,7 +8,7 @@ export const tokenTicketSchemaVersion = "token-ticket-v2" as const;
 export const redevPluginContractVersions = {
   "plugin_ui_protocol_version": "plugin-ui-v5",
   "plugin_host_protocol_version": "plugin-host-v4",
-  "rust_ipc_version": "rust-ipc-v3",
+  "rust_ipc_version": "rust-ipc-v4",
   "wasm_abi_version": "redevplugin-wasm-worker-v2",
   "manifest_schema_version": "manifest-v5",
   "package_signature_schema_version": "package-signature-v1",
@@ -20,12 +20,12 @@ export const redevPluginContractVersions = {
   "opaque_surface_document_schema_version": "opaque-surface-document-v3",
   "opaque_surface_transport_schema_version": "opaque-surface-transport-v4",
   "target_classifier_version": "target-classifier-v2",
-  "network_grant_schema_version": "network-grant-v1",
+  "network_grant_schema_version": "network-grant-v2",
   "plugin_platform_openapi_version": "plugin-platform-v6",
   "compatibility_manifest_version": "redevplugin.compatibility.v6",
   "compatibility_schema_version": "compatibility-manifest-v6",
   "release_manifest_schema_version": "release-manifest-v3",
-  "worker_invocation_schema_version": "worker-invocation-v2",
+  "worker_invocation_schema_version": "worker-invocation-v3",
   "host_capability_contract_schema_version": "host-capability-contract-v1",
   "host_capability_pin_schema_version": "host-capability-pin-v1",
   "host_capability_manifest_schema_version": "host-capability-manifest-v1",
@@ -50,7 +50,7 @@ export const redevPluginContractArtifacts = [
     id: "plugin-platform-openapi",
     path: "spec/openapi/plugin-platform-v6.yaml",
     version: "plugin-platform-v6",
-    sha256: "4390f45006c6d0af54636da74901022c6c0d1fc3ac30e500963c6280ab4659f3",
+    sha256: "0cc261e87a4c583675cc1f989aecfe6c6441073ce5a4e1e6deaf9cb8825d7c3d",
   },
   {
     id: "manifest-schema",
@@ -110,7 +110,7 @@ export const redevPluginContractArtifacts = [
     id: "compatibility-manifest-schema",
     path: "spec/plugin/compatibility-manifest-v6.schema.json",
     version: "compatibility-manifest-v6",
-    sha256: "d83772eea04b80e7aad86bd337e75d65bf7f50941c09595e4e89ec8fc24139aa",
+    sha256: "bd205e73e6dde97893e3b069dc5e959c7c0748fb3525fc353e931fcdd41a55f3",
   },
   {
     id: "release-manifest-schema",
@@ -120,9 +120,9 @@ export const redevPluginContractArtifacts = [
   },
   {
     id: "worker-invocation-schema",
-    path: "spec/plugin/worker-invocation-v2.schema.json",
-    version: "worker-invocation-v2",
-    sha256: "3532967b57c8309c5012a4554dd82157a591481ce177141a3088622c855c3e22",
+    path: "spec/plugin/worker-invocation-v3.schema.json",
+    version: "worker-invocation-v3",
+    sha256: "562a7c0e7b8a5ded23e469f65020d66c129ebc3d5cfe2c7b573f3b53599f4780",
   },
   {
     id: "host-capability-contract-schema",
@@ -180,9 +180,9 @@ export const redevPluginContractArtifacts = [
   },
   {
     id: "rust-ipc-schema",
-    path: "spec/plugin/ipc-v3.schema.json",
-    version: "rust-ipc-v3",
-    sha256: "fe6e4b88b875ccad2e7462def073820089507fa6bdda9eb043d7d877cd51b1a4",
+    path: "spec/plugin/ipc-v4.schema.json",
+    version: "rust-ipc-v4",
+    sha256: "437d03f0912288be85affdafc63a87e8a9acda190f888b253d61151626775124",
   },
   {
     id: "wasm-worker-schema",
@@ -192,9 +192,9 @@ export const redevPluginContractArtifacts = [
   },
   {
     id: "network-grant-schema",
-    path: "spec/plugin/network-grant-v1.schema.json",
-    version: "network-grant-v1",
-    sha256: "e993893160fc7a302fc6ccffdd6deec060d6fa386d90f8f2b88a9beb235480a3",
+    path: "spec/plugin/network-grant-v2.schema.json",
+    version: "network-grant-v2",
+    sha256: "37cb6f2913726f7202563238d7b322e4d539ef22498360603b8429081812382b",
   },
   {
     id: "target-classifier-fixture",
@@ -206,6 +206,6 @@ export const redevPluginContractArtifacts = [
     id: "contract-registry",
     path: "spec/plugin/contract-registry-v1.json",
     version: "contract-registry-v1",
-    sha256: "0db8a1176953d5e2a367e362bddbddcdfe50f30006187274f83d19cc4654bb81",
+    sha256: "e3381de67cbed22c6b12ae6df901cc71fc223ac7c72dcc520d36a05d7af508f4",
   },
 ] as const satisfies readonly ReDevPluginContractArtifact[];

@@ -787,7 +787,7 @@ mod tests {
 
     fn job(request_id: &str, plugin_instance_id: &str) -> InvocationJob {
         let frame = format!(
-            r#"{{"ipc_version":"rust-ipc-v3","frame_type":"invoke_worker","request_id":"{request_id}","runtime_generation_id":"g1","payload":{{"lease":{{}},"method":"worker.echo","invocation":{{"plugin_instance_id":"{plugin_instance_id}","method":"worker.echo"}}}}}}"#
+            r#"{{"ipc_version":"rust-ipc-v4","frame_type":"invoke_worker","request_id":"{request_id}","runtime_generation_id":"g1","payload":{{"lease":{{}},"method":"worker.echo","invocation":{{"plugin_instance_id":"{plugin_instance_id}","method":"worker.echo"}}}}}}"#
         );
         InvocationJob::new(redevplugin_ipc::parse_worker_invocation(&frame).unwrap()).unwrap()
     }
@@ -830,7 +830,7 @@ mod property_gates {
 
     fn property_job(request_id: &str, plugin_instance_id: &str) -> InvocationJob {
         let frame = format!(
-            r#"{{"ipc_version":"rust-ipc-v3","frame_type":"invoke_worker","request_id":"{request_id}","runtime_generation_id":"g1","payload":{{"lease":{{}},"method":"worker.echo","invocation":{{"plugin_instance_id":"{plugin_instance_id}","method":"worker.echo"}}}}}}"#
+            r#"{{"ipc_version":"rust-ipc-v4","frame_type":"invoke_worker","request_id":"{request_id}","runtime_generation_id":"g1","payload":{{"lease":{{}},"method":"worker.echo","invocation":{{"plugin_instance_id":"{plugin_instance_id}","method":"worker.echo"}}}}}}"#
         );
         InvocationJob::new(redevplugin_ipc::parse_worker_invocation(&frame).unwrap()).unwrap()
     }

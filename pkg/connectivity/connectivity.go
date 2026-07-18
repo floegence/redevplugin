@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"github.com/floegence/redevplugin/pkg/manifest"
+	"github.com/floegence/redevplugin/pkg/sessionctx"
 	"github.com/floegence/redevplugin/pkg/version"
 	"golang.org/x/net/http/httpguts"
 )
@@ -51,15 +52,16 @@ const (
 )
 
 var (
-	ErrInvalidConnector = errors.New("network connector is invalid")
-	ErrTargetDenied     = errors.New("network target denied")
-	ErrConnectorDenied  = errors.New("network connector denied")
-	ErrGrantExpired     = errors.New("network grant expired")
-	ErrRequestTooLarge  = errors.New("network request too large")
-	ErrResponseTooLarge = errors.New("network response too large")
-	ErrRateLimited      = errors.New("network rate limited")
-	ErrConnectionClosed = errors.New("network connection closed")
-	ErrWebSocketFailed  = errors.New("websocket handshake failed")
+	ErrInvalidConnector      = errors.New("network connector is invalid")
+	ErrTargetDenied          = errors.New("network target denied")
+	ErrConnectorDenied       = errors.New("network connector denied")
+	ErrResourceScopeMismatch = errors.New("network resource scope mismatch")
+	ErrGrantExpired          = errors.New("network grant expired")
+	ErrRequestTooLarge       = errors.New("network request too large")
+	ErrResponseTooLarge      = errors.New("network response too large")
+	ErrRateLimited           = errors.New("network rate limited")
+	ErrConnectionClosed      = errors.New("network connection closed")
+	ErrWebSocketFailed       = errors.New("websocket handshake failed")
 )
 
 type Broker interface {
@@ -476,6 +478,7 @@ func (c Classifier) EvaluateResolvedAddress(destination Destination, addr netip.
 type GrantRequest struct {
 	PluginInstanceID    string
 	ActiveFingerprint   string
+	ResourceScope       sessionctx.ResourceScope
 	PolicyRevision      uint64
 	ManagementRevision  uint64
 	RevokeEpoch         uint64
@@ -488,18 +491,19 @@ type GrantRequest struct {
 }
 
 type ConnectionGrant struct {
-	GrantID                 string      `json:"grant_id"`
-	PluginInstanceID        string      `json:"plugin_instance_id"`
-	ActiveFingerprint       string      `json:"active_fingerprint"`
-	PolicyRevision          uint64      `json:"policy_revision"`
-	ManagementRevision      uint64      `json:"management_revision"`
-	RevokeEpoch             uint64      `json:"revoke_epoch"`
-	ConnectorID             string      `json:"connector_id"`
-	Transport               Transport   `json:"transport"`
-	Destination             Destination `json:"destination"`
-	RuntimeGenerationID     string      `json:"runtime_generation_id,omitempty"`
-	TargetClassifierVersion string      `json:"target_classifier_version"`
-	ExpiresAt               time.Time   `json:"expires_at"`
+	GrantID                 string                   `json:"grant_id"`
+	PluginInstanceID        string                   `json:"plugin_instance_id"`
+	ActiveFingerprint       string                   `json:"active_fingerprint"`
+	ResourceScope           sessionctx.ResourceScope `json:"resource_scope"`
+	PolicyRevision          uint64                   `json:"policy_revision"`
+	ManagementRevision      uint64                   `json:"management_revision"`
+	RevokeEpoch             uint64                   `json:"revoke_epoch"`
+	ConnectorID             string                   `json:"connector_id"`
+	Transport               Transport                `json:"transport"`
+	Destination             Destination              `json:"destination"`
+	RuntimeGenerationID     string                   `json:"runtime_generation_id,omitempty"`
+	TargetClassifierVersion string                   `json:"target_classifier_version"`
+	ExpiresAt               time.Time                `json:"expires_at"`
 }
 
 type HTTPRequest struct {
@@ -879,6 +883,12 @@ func MintConnectionGrant(_ context.Context, policy PolicySet, req GrantRequest) 
 	if connector.Transport != req.Transport {
 		return ConnectionGrant{}, fmt.Errorf("%w: transport mismatch for connector %q", ErrConnectorDenied, req.ConnectorID)
 	}
+	if err := req.ResourceScope.Validate(); err != nil {
+		return ConnectionGrant{}, fmt.Errorf("%w: %w: resource scope is invalid", ErrConnectorDenied, ErrResourceScopeMismatch)
+	}
+	if sessionctx.ScopeKind(connector.Scope) != req.ResourceScope.Kind {
+		return ConnectionGrant{}, fmt.Errorf("%w: %w for connector %q", ErrConnectorDenied, ErrResourceScopeMismatch, req.ConnectorID)
+	}
 	destination, err := ParseDestination(req.Transport, req.Destination)
 	if err != nil {
 		return ConnectionGrant{}, err
@@ -892,6 +902,7 @@ func MintConnectionGrant(_ context.Context, policy PolicySet, req GrantRequest) 
 	grant := ConnectionGrant{
 		PluginInstanceID:        policy.PluginInstanceID,
 		ActiveFingerprint:       policy.ActiveFingerprint,
+		ResourceScope:           req.ResourceScope,
 		PolicyRevision:          policy.PolicyRevision,
 		ManagementRevision:      policy.ManagementRevision,
 		RevokeEpoch:             policy.RevokeEpoch,
@@ -1168,6 +1179,9 @@ func validateGrantForTransport(grant ConnectionGrant, transport Transport, now t
 		strings.TrimSpace(grant.ActiveFingerprint) == "" ||
 		strings.TrimSpace(grant.ConnectorID) == "" {
 		return fmt.Errorf("%w: grant identity is incomplete", ErrConnectorDenied)
+	}
+	if err := grant.ResourceScope.Validate(); err != nil {
+		return fmt.Errorf("%w: %w: grant resource scope is invalid", ErrConnectorDenied, ErrResourceScopeMismatch)
 	}
 	if strings.TrimSpace(grant.TargetClassifierVersion) != version.TargetClassifierVersion {
 		return fmt.Errorf("%w: target classifier version mismatch", ErrConnectorDenied)
