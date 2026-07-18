@@ -41,7 +41,7 @@ func TestPackageFromFilesTakesOwnership(t *testing.T) {
 		t.Fatal(err)
 	}
 	manifestBytes := files["manifest.json"]
-	pkg, err := packageFromFiles(files, signatureFiles)
+	pkg, err := packageFromFiles(context.Background(), files, signatureFiles)
 	if err != nil {
 		t.Fatal(err)
 	}

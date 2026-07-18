@@ -311,7 +311,7 @@ func testAssetPackage(t *testing.T) Package {
 		"ui/index.html":    []byte("<!doctype html><title>Plugin</title><script type=\"text/redevplugin-worker\" src=\"assets/app.js\"></script>"),
 		"ui/assets/app.js": []byte("void 0;"),
 	}
-	pkg, err := packageFromFiles(files, nil)
+	pkg, err := packageFromFiles(context.Background(), files, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

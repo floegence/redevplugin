@@ -206,7 +206,7 @@ func BuildFromDir(ctx context.Context, srcDir string, w io.Writer, limits ReadLi
 	if err != nil {
 		return Package{}, err
 	}
-	pkg, err := packageFromFiles(files, signatureFiles)
+	pkg, err := packageFromFiles(ctx, files, signatureFiles)
 	if err != nil {
 		return Package{}, err
 	}
@@ -232,7 +232,7 @@ func WritePackage(ctx context.Context, w io.Writer, pkg Package) error {
 		}
 		signatureFiles[PackageSignaturePath] = signatureBytes
 	}
-	normalized, err := packageFromFiles(files, signatureFiles)
+	normalized, err := packageFromFiles(ctx, files, signatureFiles)
 	if err != nil {
 		return err
 	}
@@ -401,7 +401,7 @@ func Read(ctx context.Context, r io.ReaderAt, size int64, limits ReadLimits) (Pa
 		files[entryPath] = content
 	}
 
-	return packageFromFiles(files, signatureFiles)
+	return packageFromFiles(ctx, files, signatureFiles)
 }
 
 func ReadFile(ctx context.Context, filename string, limits ReadLimits) (Package, error) {
@@ -418,7 +418,7 @@ func ReadFile(ctx context.Context, filename string, limits ReadLimits) (Package,
 }
 
 // packageFromFiles takes ownership of both maps and their byte slices.
-func packageFromFiles(files map[string][]byte, signatureFiles map[string][]byte) (Package, error) {
+func packageFromFiles(ctx context.Context, files map[string][]byte, signatureFiles map[string][]byte) (Package, error) {
 	manifestBytes, ok := files["manifest.json"]
 	if !ok {
 		return Package{}, validationErrorf(ValidationCodeManifestInvalid, "manifest_missing", "manifest.json", "", "manifest.json is required")
@@ -430,7 +430,7 @@ func packageFromFiles(files map[string][]byte, signatureFiles map[string][]byte)
 	if err := validatePackageArtifactBoundary(files); err != nil {
 		return Package{}, ensurePackageValidationError(err, ValidationCodePackageInvalid, "package_artifact_boundary")
 	}
-	if err := validateManifestArtifacts(decodedManifest, files); err != nil {
+	if err := validateManifestArtifacts(ctx, decodedManifest, files); err != nil {
 		return Package{}, ensurePackageValidationError(err, ValidationCodePackageInvalid, "manifest_artifact")
 	}
 	if err := validatePackageAssetSecurity(decodedManifest, files); err != nil {
@@ -638,7 +638,7 @@ func jsonPointerFromManifestField(field string) string {
 	return "/" + strings.Join(tokens, "/")
 }
 
-func validateManifestArtifacts(m manifest.Manifest, files map[string][]byte) error {
+func validateManifestArtifacts(ctx context.Context, m manifest.Manifest, files map[string][]byte) error {
 	for i, worker := range m.Workers {
 		artifact, err := validateEntryPath(worker.Artifact)
 		if err != nil {
@@ -648,7 +648,7 @@ func validateManifestArtifacts(m manifest.Manifest, files map[string][]byte) err
 		if !ok {
 			return fmt.Errorf("workers[%d].artifact %q is not present in package", i, artifact)
 		}
-		contract, err := inspectWASMModule(content)
+		contract, err := defaultWASMInspectionCache.inspect(ctx, content, worker.ABI)
 		if err != nil {
 			return fmt.Errorf("workers[%d].artifact %q: %w", i, artifact, err)
 		}
