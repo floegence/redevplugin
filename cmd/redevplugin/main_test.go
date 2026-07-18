@@ -557,6 +557,7 @@ func mustDescribeCommandRuntime(t *testing.T, path string) runtimeclient.Runtime
 }
 
 func TestCLIDevLifecyclePersistsGeneratedPluginState(t *testing.T) {
+	ctx := cliContext(context.Background())
 	dir := t.TempDir()
 	scaffoldDir := filepath.Join(dir, "generated")
 	stateRoot := filepath.Join(dir, "state")
@@ -599,7 +600,7 @@ func TestCLIDevLifecyclePersistsGeneratedPluginState(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	record, err := registryStore.GetPlugin(context.Background(), installSummary.PluginInstanceID)
+	record, err := registryStore.GetPlugin(ctx, installSummary.PluginInstanceID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -610,7 +611,7 @@ func TestCLIDevLifecyclePersistsGeneratedPluginState(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	harness, _, err := loadDevHarness(context.Background(), stateRoot)
+	harness, _, err := loadDevHarness(ctx, stateRoot)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -777,7 +778,7 @@ func TestCLIDevLifecyclePersistsPluginSettingsState(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	secretRecords, err := secretStore.List(context.Background(), secrets.ListRequest{PluginInstanceID: installSummary.PluginInstanceID})
+	secretRecords, err := secretStore.List(ctx, secrets.ListRequest{PluginInstanceID: installSummary.PluginInstanceID})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -822,7 +823,7 @@ func TestCLIDevLifecycleExportsAndImportsPluginData(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := harness.pluginData.WriteFile(context.Background(), storage.FileWriteRequest{
+	if _, err := harness.pluginData.WriteFile(ctx, storage.FileWriteRequest{
 		PluginInstanceID: installSummary.PluginInstanceID,
 		StoreID:          "workspace",
 		Path:             "notes/exported.txt",
@@ -863,7 +864,7 @@ func TestCLIDevLifecycleExportsAndImportsPluginData(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := harness.pluginData.WriteFile(context.Background(), storage.FileWriteRequest{
+	if _, err := harness.pluginData.WriteFile(ctx, storage.FileWriteRequest{
 		PluginInstanceID: installSummary.PluginInstanceID,
 		StoreID:          "workspace",
 		Path:             "notes/exported.txt",
@@ -903,7 +904,7 @@ func TestCLIDevLifecycleExportsAndImportsPluginData(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	read, err := harness.pluginData.ReadFile(context.Background(), storage.FileReadRequest{
+	read, err := harness.pluginData.ReadFile(ctx, storage.FileReadRequest{
 		PluginInstanceID: installSummary.PluginInstanceID,
 		StoreID:          "workspace",
 		Path:             "notes/exported.txt",
@@ -923,7 +924,7 @@ func TestCLIDevLifecycleExportsAndImportsPluginData(t *testing.T) {
 		importedSettings.Values["sync_enabled"] != exportedSettings.Values["sync_enabled"] {
 		t.Fatalf("import did not restore settings: %#v want %#v", importedSettings, exportedSettings)
 	}
-	secretRecords, err := harness.secretStore.List(context.Background(), secrets.ListRequest{PluginInstanceID: plugin.PluginInstanceID, BoundOnly: true})
+	secretRecords, err := harness.secretStore.List(ctx, secrets.ListRequest{PluginInstanceID: plugin.PluginInstanceID, BoundOnly: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -940,7 +941,7 @@ func TestCLIDevLifecycleExportsAndImportsPluginData(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	objects, next, err := registryStore.ListObjects(context.Background(), "", 10)
+	objects, next, err := registryStore.ListObjects(ctx, "", 10)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -962,6 +963,7 @@ func TestCLIDevLifecycleExportsAndImportsPluginData(t *testing.T) {
 }
 
 func TestCLIDevLifecyclePersistsPermissionGrants(t *testing.T) {
+	ctx := cliContext(context.Background())
 	dir := t.TempDir()
 	scaffoldDir := filepath.Join(dir, "generated")
 	stateRoot := filepath.Join(dir, "state")
@@ -1009,7 +1011,7 @@ func TestCLIDevLifecyclePersistsPermissionGrants(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	grantedState, err := registryStore.GetAuthorization(context.Background(), installSummary.PluginInstanceID)
+	grantedState, err := registryStore.GetAuthorization(ctx, installSummary.PluginInstanceID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1055,7 +1057,7 @@ func TestCLIDevLifecyclePersistsPermissionGrants(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	revokedState, err := registryStore.GetAuthorization(context.Background(), installSummary.PluginInstanceID)
+	revokedState, err := registryStore.GetAuthorization(ctx, installSummary.PluginInstanceID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1272,6 +1274,7 @@ func TestCLIVerifyCompatibilityManifest(t *testing.T) {
 }
 
 func TestCLIInspectDataReportsCatalogWithoutFileContents(t *testing.T) {
+	ctx := cliContext(context.Background())
 	dir := t.TempDir()
 	scaffoldDir := filepath.Join(dir, "generated")
 	stateRoot := filepath.Join(dir, "state")
@@ -1295,11 +1298,11 @@ func TestCLIInspectDataReportsCatalogWithoutFileContents(t *testing.T) {
 	if _, err := captureCLIOutput(t, "dev-enable", stateRoot); err != nil {
 		t.Fatal(err)
 	}
-	harness, _, err := loadDevHarness(context.Background(), stateRoot)
+	harness, _, err := loadDevHarness(ctx, stateRoot)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := harness.pluginData.WriteFile(context.Background(), storage.FileWriteRequest{
+	if _, err := harness.pluginData.WriteFile(ctx, storage.FileWriteRequest{
 		PluginInstanceID: installed.PluginInstanceID,
 		StoreID:          "workspace",
 		Path:             "notes/private.txt",
