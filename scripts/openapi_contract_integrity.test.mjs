@@ -134,3 +134,12 @@ test("OpenAPI and IPC runtime limits have identical bounds and descriptions", as
     );
   }
 });
+
+test("runtime module cache metrics stay within negotiated platform maxima", async () => {
+  const openAPI = await readOpenAPI();
+  const metrics = openAPI.components.schemas.RuntimeModuleCacheMetrics;
+  assert.equal(metrics.properties.entries.minimum, 0);
+  assert.equal(metrics.properties.entries.maximum, 1024);
+  assert.equal(metrics.properties.source_bytes.minimum, 0);
+  assert.equal(metrics.properties.source_bytes.maximum, 134217728);
+});

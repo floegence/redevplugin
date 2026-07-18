@@ -132,13 +132,10 @@ impl std::fmt::Debug for InvocationJob {
 }
 
 impl InvocationJob {
-    pub fn new(invocation: ParsedWorkerInvocation) -> Result<Self, String> {
+    pub fn new(invocation: ParsedWorkerInvocation) -> redevplugin_ipc::IpcResult<Self> {
         let (signal_sender, signals) = mpsc::channel();
         let request_id = invocation.request_id().to_string();
-        let plugin_instance_id = invocation
-            .plugin_instance_id()
-            .map_err(|err| format!("runtime IPC contract error: {err}"))?
-            .to_string();
+        let plugin_instance_id = invocation.plugin_instance_id()?.to_string();
         Ok(Self {
             request_id,
             plugin_instance_id,
@@ -786,6 +783,19 @@ mod tests {
             .map(|job| job.request_id)
             .collect::<Vec<_>>();
         assert_eq!(canceled, ["a2", "b1", "b2"]);
+    }
+
+    #[test]
+    fn invocation_job_builder_returns_typed_error_without_panicking() {
+        let frame = r#"{"ipc_version":"rust-ipc-v4","frame_type":"invoke_worker","request_id":"missing-plugin","runtime_generation_id":"g1","payload":{"lease":{},"method":"worker.echo","invocation":{"method":"worker.echo"}}}"#;
+        let invocation = redevplugin_ipc::parse_worker_invocation(frame).unwrap();
+        let result = std::panic::catch_unwind(|| InvocationJob::new(invocation));
+        assert_eq!(
+            result.unwrap().unwrap_err(),
+            redevplugin_ipc::IpcError::MissingField {
+                field: "plugin_instance_id"
+            }
+        );
     }
 
     fn job(request_id: &str, plugin_instance_id: &str) -> InvocationJob {
