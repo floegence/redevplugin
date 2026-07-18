@@ -416,7 +416,7 @@ func TestSQLiteOwnerScopeMigrationFailsClosedForLegacyData(t *testing.T) {
 			if store != nil {
 				_ = store.Close()
 			}
-			if !errors.Is(err, ErrOwnerScopeMigrationRequired) {
+			if !errors.Is(err, sessionctx.ErrOwnerScopeMigrationRequired) {
 				t.Fatalf("NewSQLiteStore() error = %v, want owner migration required", err)
 			}
 		})
@@ -453,7 +453,7 @@ func TestSQLiteObjectPluginScopeMigrationFailsClosedForExistingRows(t *testing.T
 	if store != nil {
 		_ = store.Close()
 	}
-	if !errors.Is(err, ErrOwnerScopeMigrationRequired) {
+	if !errors.Is(err, sessionctx.ErrOwnerScopeMigrationRequired) {
 		t.Fatalf("NewSQLiteStore() error = %v, want owner migration required", err)
 	}
 }

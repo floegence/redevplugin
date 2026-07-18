@@ -10,8 +10,6 @@ import (
 
 var ErrOwnerScopeMismatch = errors.New("plugin registry owner scope mismatch")
 
-var ErrOwnerScopeMigrationRequired = errors.New("plugin registry owner scope migration required")
-
 func environmentOwner(ctx context.Context) (string, error) {
 	scope, err := resourceOwner(ctx, sessionctx.ScopeEnvironment)
 	if err != nil {

@@ -3387,7 +3387,7 @@ func errorCodeForDataLifecycleError(err error) security.ErrorCode {
 	switch {
 	case errors.Is(err, host.ErrActionDenied):
 		return security.ErrActionDenied
-	case errors.Is(err, host.ErrOwnerScopeMismatch):
+	case errors.Is(err, host.ErrOwnerScopeMismatch), errors.Is(err, sessionctx.ErrOwnerScopeMigrationRequired):
 		return security.ErrOwnerScopeMismatch
 	case errors.Is(err, host.ErrStorageScopeMismatch), errors.Is(err, plugindata.ErrStorageScopeMismatch):
 		return security.ErrStorageScopeMismatch
@@ -3449,7 +3449,7 @@ func errorCodeForSecretError(err error) security.ErrorCode {
 		return security.ErrActionDenied
 	case errors.Is(err, host.ErrSecretScopeMismatch):
 		return security.ErrSecretScopeMismatch
-	case errors.Is(err, host.ErrOwnerScopeMismatch):
+	case errors.Is(err, host.ErrOwnerScopeMismatch), errors.Is(err, sessionctx.ErrOwnerScopeMigrationRequired):
 		return security.ErrOwnerScopeMismatch
 	case errors.Is(err, host.ErrAdapterFailure):
 		return security.ErrAdapterFailure
@@ -3466,7 +3466,7 @@ func publicSecretErrorMessage(err error) string {
 	switch {
 	case errors.Is(err, host.ErrSecretScopeMismatch):
 		return "secret reference scope does not match the request"
-	case errors.Is(err, host.ErrOwnerScopeMismatch):
+	case errors.Is(err, host.ErrOwnerScopeMismatch), errors.Is(err, sessionctx.ErrOwnerScopeMigrationRequired):
 		return "secret owner scope does not match the authenticated session"
 	case errors.Is(err, host.ErrAdapterFailure):
 		return "secret adapter operation failed"
@@ -3485,7 +3485,7 @@ func errorCodeForSettingsError(err error) security.ErrorCode {
 	switch {
 	case errors.Is(err, host.ErrActionDenied):
 		return security.ErrActionDenied
-	case errors.Is(err, host.ErrOwnerScopeMismatch):
+	case errors.Is(err, host.ErrOwnerScopeMismatch), errors.Is(err, sessionctx.ErrOwnerScopeMigrationRequired):
 		return security.ErrOwnerScopeMismatch
 	case errors.Is(err, plugindata.ErrSettingScopeMismatch):
 		return security.ErrOwnerScopeMismatch
@@ -3506,6 +3506,8 @@ func httpStatusForSettingsError(err error) int {
 	switch {
 	case errors.Is(err, host.ErrAdapterFailure):
 		return http.StatusBadGateway
+	case errors.Is(err, host.ErrOwnerScopeMismatch), errors.Is(err, sessionctx.ErrOwnerScopeMigrationRequired):
+		return http.StatusForbidden
 	case errors.Is(err, plugindata.ErrRevisionConflict):
 		return http.StatusConflict
 	case errors.Is(err, registry.ErrNotFound), errors.Is(err, host.ErrPluginSettingsNotDeclared), errors.Is(err, plugindata.ErrUnknownSetting), errors.Is(err, settings.ErrInvalidSetting):
@@ -3519,7 +3521,7 @@ func httpStatusForSecretError(err error) int {
 	switch {
 	case errors.Is(err, host.ErrAdapterFailure):
 		return http.StatusBadGateway
-	case errors.Is(err, host.ErrSecretScopeMismatch), errors.Is(err, host.ErrOwnerScopeMismatch):
+	case errors.Is(err, host.ErrSecretScopeMismatch), errors.Is(err, host.ErrOwnerScopeMismatch), errors.Is(err, sessionctx.ErrOwnerScopeMigrationRequired):
 		return http.StatusForbidden
 	case errors.Is(err, host.ErrInvalidSecretRef), errors.Is(err, registry.ErrNotFound):
 		return http.StatusBadRequest
@@ -3654,7 +3656,7 @@ func httpStatusForDataLifecycleError(err error) int {
 	switch {
 	case errors.Is(err, host.ErrAdapterFailure):
 		return http.StatusBadGateway
-	case errors.Is(err, host.ErrOwnerScopeMismatch), errors.Is(err, host.ErrStorageScopeMismatch):
+	case errors.Is(err, host.ErrOwnerScopeMismatch), errors.Is(err, sessionctx.ErrOwnerScopeMigrationRequired), errors.Is(err, host.ErrStorageScopeMismatch):
 		return http.StatusForbidden
 	case errors.Is(err, storage.ErrQuotaExceeded):
 		return http.StatusRequestEntityTooLarge

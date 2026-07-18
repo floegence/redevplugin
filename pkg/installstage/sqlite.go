@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/floegence/redevplugin/pkg/sessionctx"
 	_ "modernc.org/sqlite"
 )
 
@@ -367,7 +368,7 @@ func (s *SQLiteStore) initializeSchema(ctx context.Context) error {
 			return err
 		}
 		if count != 0 {
-			return ErrOwnerScopeMigrationRequired
+			return sessionctx.ErrOwnerScopeMigrationRequired
 		}
 		if _, err := tx.ExecContext(ctx, `DROP TABLE plugin_install_stages`); err != nil {
 			return err

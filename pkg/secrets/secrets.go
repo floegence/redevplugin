@@ -21,8 +21,6 @@ var ErrInvalidSecretRef = errors.New("secret_ref is invalid")
 
 var ErrSecretScopeMismatch = errors.New("secret owner scope mismatch")
 
-var ErrOwnerScopeMigrationRequired = errors.New("secret owner scope migration required")
-
 type Store interface {
 	BindSecretRef(ctx context.Context, req BindRequest) error
 	DeleteSecretRef(ctx context.Context, req DeleteRequest) error

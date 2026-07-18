@@ -23,6 +23,10 @@ func TestResourceScopeSchemaMatchesSessionContextContract(t *testing.T) {
 	}
 	defs := requireNestedObject(t, schema, "$defs")
 	assertStringSlicesEqual(t, schemaEnum(t, defs, "scope_kind"), []string{"user", "environment"}, "resource scope kind")
+	migrationCode := requireNestedObject(t, defs, "owner_scope_migration_required_code")
+	if migrationCode["const"] != sessionctx.OwnerScopeMigrationRequiredCode {
+		t.Fatalf("owner scope migration code = %#v, want %q", migrationCode["const"], sessionctx.OwnerScopeMigrationRequiredCode)
+	}
 	compiler := jsonschema.NewCompiler()
 	compiler.Draft = jsonschema.Draft2020
 	if err := compiler.AddResource("urn:redevplugin:resource-scope-v1", bytes.NewReader(raw)); err != nil {

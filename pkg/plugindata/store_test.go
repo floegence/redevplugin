@@ -767,7 +767,7 @@ func TestFileStoreRejectsNonemptyLegacyOwnerlessData(t *testing.T) {
 		if err := os.WriteFile(filepath.Join(legacy, "dataset.json"), []byte("{}\n"), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := plugindata.Open(pluginDataTestContext(), root, registry.NewMemoryStore()); !errors.Is(err, plugindata.ErrOwnerScopeMigrationRequired) {
+		if _, err := plugindata.Open(pluginDataTestContext(), root, registry.NewMemoryStore()); !errors.Is(err, sessionctx.ErrOwnerScopeMigrationRequired) {
 			t.Fatalf("Open() error = %v, want ErrOwnerScopeMigrationRequired", err)
 		}
 	})
@@ -785,7 +785,7 @@ func TestFileStoreRejectsNonemptyLegacyOwnerlessData(t *testing.T) {
 			if err := os.MkdirAll(filepath.Join(legacy, "payload"), 0o700); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := plugindata.Open(pluginDataTestContext(), root, registry.NewMemoryStore()); !errors.Is(err, plugindata.ErrOwnerScopeMigrationRequired) {
+			if _, err := plugindata.Open(pluginDataTestContext(), root, registry.NewMemoryStore()); !errors.Is(err, sessionctx.ErrOwnerScopeMigrationRequired) {
 				t.Fatalf("Open() error = %v, want ErrOwnerScopeMigrationRequired", err)
 			}
 		})
@@ -853,7 +853,7 @@ func TestFileStoreRejectsExportManifestWithoutPluginOwner(t *testing.T) {
 	if err := os.WriteFile(manifestPath, append(raw, '\n'), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := plugindata.Open(ctx, root, catalog); !errors.Is(err, plugindata.ErrOwnerScopeMigrationRequired) {
+	if _, err := plugindata.Open(ctx, root, catalog); !errors.Is(err, sessionctx.ErrOwnerScopeMigrationRequired) {
 		t.Fatalf("Open() error = %v, want ErrOwnerScopeMigrationRequired", err)
 	}
 }

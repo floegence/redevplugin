@@ -12,6 +12,12 @@ var ErrSessionRequired = errors.New("authenticated session is required")
 
 var ErrInvalidResourceScope = errors.New("resource owner scope is invalid")
 
+const OwnerScopeMigrationRequiredCode = "owner_scope_migration_required"
+
+// ErrOwnerScopeMigrationRequired rejects persisted resources whose owner scope
+// cannot be reconstructed without guessing.
+var ErrOwnerScopeMigrationRequired = errors.New(OwnerScopeMigrationRequiredCode)
+
 var ownerHashPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$`)
 
 type ScopeKind string

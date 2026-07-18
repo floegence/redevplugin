@@ -16,6 +16,7 @@ import (
 	"github.com/floegence/redevplugin/pkg/manifest"
 	"github.com/floegence/redevplugin/pkg/mutation"
 	"github.com/floegence/redevplugin/pkg/plugindata"
+	"github.com/floegence/redevplugin/pkg/sessionctx"
 	platformversion "github.com/floegence/redevplugin/pkg/version"
 	_ "modernc.org/sqlite"
 )
@@ -567,7 +568,7 @@ func prepareOwnerScopedTables(ctx context.Context, tx *sql.Tx) error {
 	if parent.exists && !parent.compatible {
 		for _, state := range states {
 			if state.rowCount != 0 {
-				return ErrOwnerScopeMigrationRequired
+				return sessionctx.ErrOwnerScopeMigrationRequired
 			}
 		}
 		for i := len(ownerScopedTableSpecs) - 1; i >= 0; i-- {
@@ -587,7 +588,7 @@ func prepareOwnerScopedTables(ctx context.Context, tx *sql.Tx) error {
 			continue
 		}
 		if state.rowCount != 0 {
-			return ErrOwnerScopeMigrationRequired
+			return sessionctx.ErrOwnerScopeMigrationRequired
 		}
 	}
 	for i := len(ownerScopedTableSpecs) - 1; i >= 0; i-- {

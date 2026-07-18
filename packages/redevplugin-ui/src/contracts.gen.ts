@@ -201,7 +201,7 @@ export const redevPluginContractArtifacts = [
     id: "resource-scope-schema",
     path: "spec/plugin/resource-scope-v1.schema.json",
     version: "resource-scope-v1",
-    sha256: "b307dacba983c5afb4422b9e63f844869920ed580afb526f4fc44b30ec1ec8bd",
+    sha256: "e6021bd576c7220ad5536645a7ad8e57ee7aeb9901c31a89444fa6b695d8dc6f",
   },
   {
     id: "target-classifier-fixture",

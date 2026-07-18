@@ -16,6 +16,10 @@
       "type": "string",
       "enum": ["user", "environment"]
     },
+    "owner_scope_migration_required_code": {
+      "type": "string",
+      "const": "owner_scope_migration_required"
+    },
     "user_scope": {
       "type": "object",
       "additionalProperties": false,

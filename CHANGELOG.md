@@ -45,6 +45,10 @@
   and HTTP/TypeScript requests. Cross-plugin access now returns not found, and
   existing rows or layouts without reliable plugin ownership require explicit
   owner-scope migration.
+- Unify ambiguous persisted-owner failures across registry, plugin data,
+  install stages, and secrets under the machine-readable
+  `owner_scope_migration_required` sentinel. Runtime HTTP projections use the
+  stable `PLUGIN_OWNER_SCOPE_MISMATCH` contract and never infer an owner.
 - Replace unbounded package materialization and Base64 local imports with
   positive immutable read limits, bounded `ReaderAt` artifact descriptors,
   streaming package uploads, metadata-only worker hot paths, and symlink-safe

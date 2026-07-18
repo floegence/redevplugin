@@ -290,7 +290,7 @@ func (s *SQLiteStore) initializeSchema(ctx context.Context) error {
 			return err
 		}
 		if count != 0 {
-			return ErrOwnerScopeMigrationRequired
+			return sessionctx.ErrOwnerScopeMigrationRequired
 		}
 		if _, err := tx.ExecContext(ctx, `DROP TABLE plugin_secret_bindings`); err != nil {
 			return err

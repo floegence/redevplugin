@@ -1012,7 +1012,7 @@ func (s *FileStore) validateObject(ctx context.Context, owner sessionctx.Resourc
 		return "", Object{}, datasetManifest{}, err
 	}
 	if exported.PluginInstanceID == "" {
-		return "", Object{}, datasetManifest{}, ErrOwnerScopeMigrationRequired
+		return "", Object{}, datasetManifest{}, sessionctx.ErrOwnerScopeMigrationRequired
 	}
 	if exported.PluginInstanceID != pluginInstanceID || catalogObject.PluginInstanceID != pluginInstanceID || exported.ObjectID != objectID || !exported.Scope.Matches(owner) || exported.ContentHash != catalogObject.ContentHash || exported.ShapeHash != catalogObject.ShapeHash {
 		return "", Object{}, datasetManifest{}, fmt.Errorf("%w: export catalog metadata mismatch", ErrDatasetCorrupt)
@@ -1037,7 +1037,7 @@ func (s *FileStore) validateObject(ctx context.Context, owner sessionctx.Resourc
 
 func validateObjectMetadata(object Object) error {
 	if object.PluginInstanceID == "" {
-		return ErrOwnerScopeMigrationRequired
+		return sessionctx.ErrOwnerScopeMigrationRequired
 	}
 	if object.ObjectID == "" || object.SizeBytes <= 0 || object.CreatedAt.IsZero() || !canonicalHash(object.ContentHash) || !canonicalHash(object.ShapeHash) {
 		return fmt.Errorf("%w: invalid export object metadata", ErrDatasetCorrupt)
@@ -1208,7 +1208,7 @@ func (s *FileStore) cleanupOnOpen(ctx context.Context) error {
 			return fmt.Errorf("%w: missing export object %s", ErrDatasetCorrupt, object.ObjectID)
 		}
 		if manifest.PluginInstanceID == "" {
-			return ErrOwnerScopeMigrationRequired
+			return sessionctx.ErrOwnerScopeMigrationRequired
 		}
 		if manifest.PluginInstanceID != object.PluginInstanceID || manifest.ObjectID != object.ObjectID || !manifest.Scope.Matches(item.Scope) || manifest.ContentHash != object.ContentHash || manifest.ShapeHash != object.ShapeHash {
 			return fmt.Errorf("%w: export object metadata mismatch", ErrDatasetCorrupt)

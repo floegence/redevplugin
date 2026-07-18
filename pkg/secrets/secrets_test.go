@@ -318,7 +318,7 @@ VALUES('plugin_legacy', 'token', 'user', 1, '', 1)`); err != nil {
 	if err := db.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := NewSQLiteStore(context.Background(), path); !errors.Is(err, ErrOwnerScopeMigrationRequired) {
+	if _, err := NewSQLiteStore(context.Background(), path); !errors.Is(err, sessionctx.ErrOwnerScopeMigrationRequired) {
 		t.Fatalf("NewSQLiteStore() error = %v, want migration required", err)
 	}
 }

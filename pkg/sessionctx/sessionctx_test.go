@@ -3,8 +3,21 @@ package sessionctx
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 )
+
+func TestOwnerScopeMigrationRequiredContract(t *testing.T) {
+	if OwnerScopeMigrationRequiredCode != "owner_scope_migration_required" {
+		t.Fatalf("OwnerScopeMigrationRequiredCode = %q", OwnerScopeMigrationRequiredCode)
+	}
+	if ErrOwnerScopeMigrationRequired.Error() != OwnerScopeMigrationRequiredCode {
+		t.Fatalf("ErrOwnerScopeMigrationRequired = %q", ErrOwnerScopeMigrationRequired)
+	}
+	if !errors.Is(fmt.Errorf("open owner-scoped store: %w", ErrOwnerScopeMigrationRequired), ErrOwnerScopeMigrationRequired) {
+		t.Fatal("wrapped migration error did not preserve the platform sentinel")
+	}
+}
 
 func TestContextResourceScope(t *testing.T) {
 	session := Context{

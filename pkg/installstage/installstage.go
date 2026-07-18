@@ -31,9 +31,8 @@ const (
 )
 
 var (
-	ErrNotFound                    = errors.New("install stage not found")
-	ErrInvalidStage                = errors.New("install stage is invalid")
-	ErrOwnerScopeMigrationRequired = errors.New("install stage owner scope migration required")
+	ErrNotFound     = errors.New("install stage not found")
+	ErrInvalidStage = errors.New("install stage is invalid")
 )
 
 type Record struct {

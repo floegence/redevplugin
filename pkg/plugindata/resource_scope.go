@@ -138,7 +138,7 @@ func removeEmptyLegacyEntries(root string, expected ...string) error {
 			return err
 		}
 		if !empty {
-			return ErrOwnerScopeMigrationRequired
+			return sessionctx.ErrOwnerScopeMigrationRequired
 		}
 		if err := os.RemoveAll(path); err != nil {
 			return err
@@ -187,7 +187,7 @@ func inspectObjectOwnerLayout(root string, ownerDepth int) error {
 		}
 		for _, legacyEntry := range []string{exportManifestName, exportPayloadName} {
 			if _, err := os.Lstat(filepath.Join(root, entry.Name(), legacyEntry)); err == nil {
-				return ErrOwnerScopeMigrationRequired
+				return sessionctx.ErrOwnerScopeMigrationRequired
 			} else if !errors.Is(err, fs.ErrNotExist) {
 				return err
 			}
