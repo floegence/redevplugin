@@ -3,6 +3,7 @@ package connectivity
 import (
 	"bufio"
 	"bytes"
+	"container/heap"
 	"context"
 	"crypto/rand"
 	"crypto/sha1"
@@ -621,6 +622,7 @@ const (
 	DefaultNetworkTimeout          = 10 * time.Second
 	DefaultUDPRateLimitRoundTrips  = 120
 	DefaultUDPRateLimitWindow      = time.Second
+	maxMemoryUDPRateLimitBuckets   = 65_536
 )
 
 type UDPRateLimitKey struct {
@@ -650,21 +652,57 @@ type UDPRateLimit struct {
 }
 
 type MemoryUDPRateLimiter struct {
-	mu      sync.Mutex
-	limit   UDPRateLimit
-	windows map[string]udpRateWindow
+	mu          sync.Mutex
+	limit       UDPRateLimit
+	maxBuckets  int
+	windows     map[string]udpRateWindow
+	expirations udpRateExpiryHeap
+	nextVersion uint64
 }
 
 type udpRateWindow struct {
 	startedAt time.Time
 	lastSeen  time.Time
 	count     int
+	version   uint64
+}
+
+type udpRateExpiry struct {
+	expiresAt time.Time
+	version   uint64
+	bucket    string
+}
+
+type udpRateExpiryHeap []udpRateExpiry
+
+func (h udpRateExpiryHeap) Len() int { return len(h) }
+func (h udpRateExpiryHeap) Less(i, j int) bool {
+	if h[i].expiresAt.Equal(h[j].expiresAt) {
+		if h[i].version == h[j].version {
+			return h[i].bucket < h[j].bucket
+		}
+		return h[i].version < h[j].version
+	}
+	return h[i].expiresAt.Before(h[j].expiresAt)
+}
+func (h udpRateExpiryHeap) Swap(i, j int) { h[i], h[j] = h[j], h[i] }
+func (h *udpRateExpiryHeap) Push(value any) {
+	*h = append(*h, value.(udpRateExpiry))
+}
+func (h *udpRateExpiryHeap) Pop() any {
+	old := *h
+	last := len(old) - 1
+	value := old[last]
+	old[last] = udpRateExpiry{}
+	*h = old[:last]
+	return value
 }
 
 func NewMemoryUDPRateLimiter(limit UDPRateLimit) *MemoryUDPRateLimiter {
 	return &MemoryUDPRateLimiter{
-		limit:   normalizeUDPRateLimit(limit),
-		windows: map[string]udpRateWindow{},
+		limit:      normalizeUDPRateLimit(limit),
+		maxBuckets: maxMemoryUDPRateLimitBuckets,
+		windows:    map[string]udpRateWindow{},
 	}
 }
 
@@ -678,19 +716,31 @@ func (l *MemoryUDPRateLimiter) AllowUDPRoundTrip(now time.Time, key UDPRateLimit
 	bucket := key.udpRateBucketKey()
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	window := l.windows[bucket]
+	l.pruneLocked(now)
+	window, exists := l.windows[bucket]
+	if !exists && len(l.windows) >= l.maxBuckets {
+		return false
+	}
 	if window.startedAt.IsZero() || !now.Before(window.startedAt.Add(l.limit.Window)) {
 		window = udpRateWindow{startedAt: now}
 	}
-	window.lastSeen = now
+	if !window.lastSeen.After(now) {
+		window.lastSeen = now
+	}
+	version, ok := nextUDPWindowVersion(l.nextVersion)
+	if !ok {
+		return false
+	}
+	l.nextVersion = version
+	window.version = version
 	if window.count >= l.limit.MaxRoundTrips {
 		l.windows[bucket] = window
-		l.pruneLocked(now)
+		l.pushExpiryLocked(bucket, window)
 		return false
 	}
 	window.count++
 	l.windows[bucket] = window
-	l.pruneLocked(now)
+	l.pushExpiryLocked(bucket, window)
 	return true
 }
 
@@ -705,15 +755,38 @@ func normalizeUDPRateLimit(limit UDPRateLimit) UDPRateLimit {
 }
 
 func (l *MemoryUDPRateLimiter) pruneLocked(now time.Time) {
-	if len(l.windows) <= 1024 {
-		return
-	}
-	cutoff := now.Add(-2 * l.limit.Window)
-	for bucket, window := range l.windows {
-		if window.lastSeen.Before(cutoff) {
-			delete(l.windows, bucket)
+	for l.expirations.Len() > 0 && l.expirations[0].expiresAt.Before(now) {
+		expiry := heap.Pop(&l.expirations).(udpRateExpiry)
+		if window, ok := l.windows[expiry.bucket]; ok && window.version == expiry.version {
+			delete(l.windows, expiry.bucket)
 		}
 	}
+}
+
+func (l *MemoryUDPRateLimiter) pushExpiryLocked(bucket string, window udpRateWindow) {
+	heap.Push(&l.expirations, udpRateExpiry{
+		expiresAt: window.lastSeen.Add(2 * l.limit.Window),
+		version:   window.version,
+		bucket:    bucket,
+	})
+	if l.expirations.Len() > 4*len(l.windows)+64 {
+		l.expirations = make(udpRateExpiryHeap, 0, len(l.windows))
+		for bucket, window := range l.windows {
+			l.expirations = append(l.expirations, udpRateExpiry{
+				expiresAt: window.lastSeen.Add(2 * l.limit.Window),
+				version:   window.version,
+				bucket:    bucket,
+			})
+		}
+		heap.Init(&l.expirations)
+	}
+}
+
+func nextUDPWindowVersion(current uint64) (uint64, bool) {
+	if current == ^uint64(0) {
+		return 0, false
+	}
+	return current + 1, true
 }
 
 func (key UDPRateLimitKey) udpRateBucketKey() string {

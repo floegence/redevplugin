@@ -1324,6 +1324,68 @@ func TestExecutorUDPRoundTripRateLimitsEndpointBeforeDial(t *testing.T) {
 	}
 }
 
+func TestMemoryUDPRateLimiterFailsClosedAtBucketCapacityAndRecoversAfterExpiry(t *testing.T) {
+	limiter := NewMemoryUDPRateLimiter(UDPRateLimit{MaxRoundTrips: 2, Window: time.Second})
+	limiter.maxBuckets = 2
+	now := time.Date(2026, 7, 18, 0, 0, 0, 0, time.UTC)
+	first := udpLimiterTestKey("first.example")
+	second := udpLimiterTestKey("second.example")
+	third := udpLimiterTestKey("third.example")
+	if !limiter.AllowUDPRoundTrip(now, first) || !limiter.AllowUDPRoundTrip(now, second) {
+		t.Fatal("initial UDP limiter buckets were rejected")
+	}
+	if limiter.AllowUDPRoundTrip(now, third) {
+		t.Fatal("UDP limiter accepted a new bucket beyond its fixed capacity")
+	}
+	if !limiter.AllowUDPRoundTrip(now.Add(time.Millisecond), first) {
+		t.Fatal("UDP limiter rejected an existing bucket at capacity")
+	}
+	if !limiter.AllowUDPRoundTrip(now.Add(2*time.Second+2*time.Millisecond), third) {
+		t.Fatal("UDP limiter did not admit a bucket after inactive entries expired")
+	}
+	if len(limiter.windows) != 1 {
+		t.Fatalf("UDP limiter windows = %d, want 1", len(limiter.windows))
+	}
+}
+
+func TestMemoryUDPRateLimiterBoundsStaleExpiryEntries(t *testing.T) {
+	limiter := NewMemoryUDPRateLimiter(UDPRateLimit{MaxRoundTrips: 20_000, Window: time.Minute})
+	now := time.Date(2026, 7, 18, 0, 0, 0, 0, time.UTC)
+	key := udpLimiterTestKey("metrics.example")
+	for index := 0; index < 10_000; index++ {
+		if !limiter.AllowUDPRoundTrip(now.Add(time.Duration(index)), key) {
+			t.Fatalf("UDP limiter rejected update %d", index)
+		}
+	}
+	if got, limit := limiter.expirations.Len(), 4*len(limiter.windows)+64; got > limit {
+		t.Fatalf("UDP expiry heap entries = %d, want <= %d", got, limit)
+	}
+}
+
+func BenchmarkMemoryUDPRateLimiterHighCardinality(b *testing.B) {
+	limiter := NewMemoryUDPRateLimiter(UDPRateLimit{MaxRoundTrips: 1_000_000, Window: time.Minute})
+	now := time.Date(2026, 7, 18, 0, 0, 0, 0, time.UTC)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for index := 0; index < b.N; index++ {
+		key := udpLimiterTestKey(fmt.Sprintf("endpoint-%05d.example", index%maxMemoryUDPRateLimitBuckets))
+		_ = limiter.AllowUDPRoundTrip(now.Add(time.Duration(index%1000)), key)
+	}
+}
+
+func udpLimiterTestKey(host string) UDPRateLimitKey {
+	return UDPRateLimitKey{
+		PluginInstanceID:  "plugini_udp_limiter",
+		ActiveFingerprint: "sha256:udp-limiter",
+		ConnectorID:       "metrics",
+		Destination: Destination{
+			Transport: TransportUDP,
+			Host:      host,
+			Port:      8125,
+		},
+	}
+}
+
 func TestExecutorRejectsExpiredAndMismatchedGrants(t *testing.T) {
 	grant := testGrant(t, TransportTCP, "127.0.0.1:443", -time.Second)
 	if _, err := NewExecutor(ExecutorOptions{}).TCPRoundTrip(context.Background(), TCPRoundTripRequest{Grant: grant}); !errors.Is(err, ErrGrantExpired) {
