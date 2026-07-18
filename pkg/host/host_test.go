@@ -18,6 +18,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -43,6 +44,13 @@ import (
 	"github.com/floegence/redevplugin/pkg/stream"
 	"github.com/floegence/redevplugin/pkg/version"
 )
+
+var testPluginInstanceSequence atomic.Uint64
+
+func nextTestPluginInstanceID(t testing.TB) string {
+	t.Helper()
+	return fmt.Sprintf("plugini_test_%d", testPluginInstanceSequence.Add(1))
+}
 
 type responseBoundaryContainer struct {
 	ID     string            `json:"id"`
@@ -180,7 +188,7 @@ func TestLifecycleInstallEnableDisableUninstall(t *testing.T) {
 	host, surfaces, audits := newTestHost(t, true, true)
 	packageBytes := buildFixturePackage(t)
 
-	installed, err := ImportLocalPackageBytes(hostTestContext(), host, packageBytes)
+	installed, err := ImportLocalPackageBytes(hostTestContext(), host, nextTestPluginInstanceID(t), packageBytes)
 	if err != nil {
 		t.Fatalf("ImportLocalPackageBytes() error = %v", err)
 	}
@@ -253,8 +261,9 @@ func TestLocalPackageMutationsRequirePolicyBeforePackageRead(t *testing.T) {
 			})
 			reader := &readAtProbe{reader: bytes.NewReader(packageBytes)}
 			if _, err := h.ImportLocalPackage(ctx, ImportLocalPackageRequest{
-				PackageReader: reader,
-				PackageSize:   int64(len(packageBytes)),
+				PluginInstanceID: nextTestPluginInstanceID(t),
+				PackageReader:    reader,
+				PackageSize:      int64(len(packageBytes)),
 			}); !errors.Is(err, security.ErrPolicyDenied) {
 				t.Fatalf("ImportLocalPackage() error = %v, want ErrPolicyDenied", err)
 			}
@@ -281,7 +290,7 @@ func TestLocalPackageMutationsRequirePolicyBeforePackageRead(t *testing.T) {
 		localGenerated: true,
 		installStages:  stages,
 	})
-	installed, err := ImportLocalPackageBytes(ctx, h, packageBytes)
+	installed, err := ImportLocalPackageBytes(ctx, h, nextTestPluginInstanceID(t), packageBytes)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -322,7 +331,7 @@ func TestLocalPackageMutationsRequirePolicyBeforePackageRead(t *testing.T) {
 func TestManagementRevisionFailsClosedWithoutSideEffects(t *testing.T) {
 	ctx := hostTestContext()
 	h, surfaces, audits := newTestHost(t, true, true)
-	installed, err := ImportLocalPackageBytes(ctx, h, buildFixturePackage(t))
+	installed, err := ImportLocalPackageBytes(ctx, h, nextTestPluginInstanceID(t), buildFixturePackage(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -389,7 +398,7 @@ func TestManagementRevisionFailsClosedWithoutSideEffects(t *testing.T) {
 
 func TestEnableReportsUnknownOutcomeAfterRegistryCommit(t *testing.T) {
 	h, _, _ := newTestHost(t, true, true)
-	installed, err := ImportLocalPackageBytes(hostTestContext(), h, buildFixturePackage(t))
+	installed, err := ImportLocalPackageBytes(hostTestContext(), h, nextTestPluginInstanceID(t), buildFixturePackage(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -426,7 +435,7 @@ func TestUpdateAndDowngradeRefreshEnabledPluginAndRevokeOldTokens(t *testing.T) 
 	v2 := buildVersionedRPCPackage(t, "2.0.0", "RPC v2")
 	now := time.Date(2026, 6, 30, 12, 0, 0, 0, time.UTC)
 
-	installed, err := ImportLocalPackageBytes(ctx, h, v1)
+	installed, err := ImportLocalPackageBytes(ctx, h, nextTestPluginInstanceID(t), v1)
 	if err != nil {
 		t.Fatalf("ImportLocalPackageBytes() error = %v", err)
 	}
@@ -527,7 +536,7 @@ func TestUpdateAndDowngradeRefreshEnabledPluginAndRevokeOldTokens(t *testing.T) 
 func TestUpdateRejectsDifferentPluginIdentity(t *testing.T) {
 	ctx := hostTestContext()
 	h, _, _ := newTestHost(t, true, true)
-	installed, err := ImportLocalPackageBytes(ctx, h, buildVersionedLifecyclePackage(t, "1.0.0", "Lifecycle"))
+	installed, err := ImportLocalPackageBytes(ctx, h, nextTestPluginInstanceID(t), buildVersionedLifecyclePackage(t, "1.0.0", "Lifecycle"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -556,7 +565,7 @@ func TestUpdateRejectsPluginDataContractChanges(t *testing.T) {
 		StorageSchema:  2,
 	})
 
-	installed, err := ImportLocalPackageBytes(ctx, h, v1)
+	installed, err := ImportLocalPackageBytes(ctx, h, nextTestPluginInstanceID(t), v1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -573,7 +582,7 @@ func TestUpdateRejectsPluginDataContractChanges(t *testing.T) {
 func TestEnableRejectsUntrusted(t *testing.T) {
 	host, _, _ := newTestHost(t, true, true)
 	pkg := readTestPackage(t, buildFixturePackage(t))
-	installed, err := host.adapters.Registry.PutPlugin(hostTestContext(), packageRecord(pkg, registry.TrustAssessment{TrustState: registry.TrustUntrusted}, "", nil, nil), registry.PutOptions{})
+	installed, err := host.adapters.Registry.PutPlugin(hostTestContext(), packageRecord(pkg, registry.TrustAssessment{TrustState: registry.TrustUntrusted}, nextTestPluginInstanceID(t), nil, nil), registry.PutOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -585,7 +594,7 @@ func TestEnableRejectsUntrusted(t *testing.T) {
 func TestEnableUnsignedLocalRequiresPolicy(t *testing.T) {
 	host, _, _ := newTestHostWithOptions(t, testHostOptions{developerMode: false, localGenerated: true})
 	pkg := readTestPackage(t, buildFixturePackage(t))
-	installed, err := host.adapters.Registry.PutPlugin(hostTestContext(), packageRecord(pkg, registry.TrustAssessment{TrustState: registry.TrustUnsignedLocal}, "", nil, nil), registry.PutOptions{})
+	installed, err := host.adapters.Registry.PutPlugin(hostTestContext(), packageRecord(pkg, registry.TrustAssessment{TrustState: registry.TrustUnsignedLocal}, nextTestPluginInstanceID(t), nil, nil), registry.PutOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -618,7 +627,7 @@ func TestInstallReleaseRefRejectsNonVerifiedTrustAssessment(t *testing.T) {
 		releaseArtifactResolver: resolver,
 	})
 
-	if _, err := h.InstallReleaseRef(ctx, InstallReleaseRefRequest{ReleaseRef: ref}); !errors.Is(err, ErrPackageTrustVerificationInvalid) {
+	if _, err := h.InstallReleaseRef(ctx, InstallReleaseRefRequest{PluginInstanceID: nextTestPluginInstanceID(t), ReleaseRef: ref}); !errors.Is(err, ErrPackageTrustVerificationInvalid) {
 		t.Fatalf("InstallReleaseRef() error = %v, want ErrPackageTrustVerificationInvalid", err)
 	}
 }
@@ -634,7 +643,7 @@ func TestInstallUsesVerifierTrustDecisionAndMetadata(t *testing.T) {
 		trustVerifier:  verifier,
 	})
 
-	installed, err := ImportLocalPackageBytes(hostTestContext(), h, buildFixturePackage(t))
+	installed, err := ImportLocalPackageBytes(hostTestContext(), h, nextTestPluginInstanceID(t), buildFixturePackage(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -889,7 +898,7 @@ func TestInstallReleaseRefRejectsRevokedReleaseSignatureKey(t *testing.T) {
 		releaseArtifactResolver: &recordingReleaseArtifactResolver{artifact: resolvedArtifactForPackage(t, ref, pkg, packageBytes)},
 	})
 
-	if _, err := h.InstallReleaseRef(ctx, InstallReleaseRefRequest{ReleaseRef: ref}); !errors.Is(err, ErrReleaseRefVerificationFailed) {
+	if _, err := h.InstallReleaseRef(ctx, InstallReleaseRefRequest{PluginInstanceID: nextTestPluginInstanceID(t), ReleaseRef: ref}); !errors.Is(err, ErrReleaseRefVerificationFailed) {
 		t.Fatalf("InstallReleaseRef() error = %v, want ErrReleaseRefVerificationFailed", err)
 	}
 }
@@ -911,7 +920,7 @@ func TestInstallReleaseRefRejectsDigestMismatchWithoutRegistryMutation(t *testin
 		releaseArtifactResolver: resolver,
 	})
 
-	if _, err := h.InstallReleaseRef(ctx, InstallReleaseRefRequest{ReleaseRef: ref}); !errors.Is(err, ErrReleaseRefVerificationFailed) {
+	if _, err := h.InstallReleaseRef(ctx, InstallReleaseRefRequest{PluginInstanceID: nextTestPluginInstanceID(t), ReleaseRef: ref}); !errors.Is(err, ErrReleaseRefVerificationFailed) {
 		t.Fatalf("InstallReleaseRef() error = %v, want ErrReleaseRefVerificationFailed", err)
 	}
 	records, err := h.ListPlugins(ctx)
@@ -940,7 +949,7 @@ func TestInstallReleaseRefRejectsReleaseMetadataHashMismatchWithoutRegistryMutat
 		releaseArtifactResolver: resolver,
 	})
 
-	if _, err := h.InstallReleaseRef(ctx, InstallReleaseRefRequest{ReleaseRef: ref}); !errors.Is(err, ErrReleaseRefVerificationFailed) {
+	if _, err := h.InstallReleaseRef(ctx, InstallReleaseRefRequest{PluginInstanceID: nextTestPluginInstanceID(t), ReleaseRef: ref}); !errors.Is(err, ErrReleaseRefVerificationFailed) {
 		t.Fatalf("InstallReleaseRef() error = %v, want ErrReleaseRefVerificationFailed", err)
 	}
 	records, err := h.ListPlugins(ctx)
@@ -969,7 +978,7 @@ func TestInstallReleaseRefRejectsPackageChangedAfterMetadataResolvedWithoutRegis
 		releaseArtifactResolver: resolver,
 	})
 
-	if _, err := h.InstallReleaseRef(ctx, InstallReleaseRefRequest{ReleaseRef: ref}); !errors.Is(err, ErrReleaseRefVerificationFailed) {
+	if _, err := h.InstallReleaseRef(ctx, InstallReleaseRefRequest{PluginInstanceID: nextTestPluginInstanceID(t), ReleaseRef: ref}); !errors.Is(err, ErrReleaseRefVerificationFailed) {
 		t.Fatalf("InstallReleaseRef() error = %v, want ErrReleaseRefVerificationFailed", err)
 	}
 	records, err := h.ListPlugins(ctx)
@@ -997,7 +1006,7 @@ func TestInstallReleaseRefRejectsUnavailableSourcePolicyBeforeArtifactResolution
 		releaseArtifactResolver: artifactResolver,
 	})
 
-	if _, err := h.InstallReleaseRef(ctx, InstallReleaseRefRequest{ReleaseRef: ref}); err == nil || !strings.Contains(err.Error(), "revocation metadata unavailable") {
+	if _, err := h.InstallReleaseRef(ctx, InstallReleaseRefRequest{PluginInstanceID: nextTestPluginInstanceID(t), ReleaseRef: ref}); err == nil || !strings.Contains(err.Error(), "revocation metadata unavailable") {
 		t.Fatalf("InstallReleaseRef() error = %v, want source policy error", err)
 	}
 	if sourceResolver.calls != 1 {
@@ -1040,7 +1049,7 @@ func TestInstallReleaseRefRejectsUnsafeArtifactPath(t *testing.T) {
 				releaseArtifactResolver: resolver,
 			})
 
-			if _, err := h.InstallReleaseRef(ctx, InstallReleaseRefRequest{ReleaseRef: ref}); !errors.Is(err, ErrReleaseRefVerificationFailed) {
+			if _, err := h.InstallReleaseRef(ctx, InstallReleaseRefRequest{PluginInstanceID: nextTestPluginInstanceID(t), ReleaseRef: ref}); !errors.Is(err, ErrReleaseRefVerificationFailed) {
 				t.Fatalf("InstallReleaseRef() error = %v, want ErrReleaseRefVerificationFailed", err)
 			}
 		})
@@ -1064,7 +1073,7 @@ func TestInstallReleaseRefRejectsOfficialSourceWithoutSignatureRequirement(t *te
 		releaseArtifactResolver: resolver,
 	})
 
-	if _, err := h.InstallReleaseRef(ctx, InstallReleaseRefRequest{ReleaseRef: ref}); !errors.Is(err, ErrReleaseRefVerificationFailed) {
+	if _, err := h.InstallReleaseRef(ctx, InstallReleaseRefRequest{PluginInstanceID: nextTestPluginInstanceID(t), ReleaseRef: ref}); !errors.Is(err, ErrReleaseRefVerificationFailed) {
 		t.Fatalf("InstallReleaseRef() error = %v, want ErrReleaseRefVerificationFailed", err)
 	}
 }
@@ -1097,7 +1106,7 @@ func TestInstallReleaseRefRejectsInvalidSourcePolicyTrustEvidence(t *testing.T) 
 				releaseArtifactResolver: &recordingReleaseArtifactResolver{artifact: resolvedArtifactForPackage(t, ref, pkg, packageBytes)},
 			})
 
-			if _, err := h.InstallReleaseRef(ctx, InstallReleaseRefRequest{ReleaseRef: ref}); !errors.Is(err, ErrReleaseRefVerificationFailed) {
+			if _, err := h.InstallReleaseRef(ctx, InstallReleaseRefRequest{PluginInstanceID: nextTestPluginInstanceID(t), ReleaseRef: ref}); !errors.Is(err, ErrReleaseRefVerificationFailed) {
 				t.Fatalf("InstallReleaseRef() error = %v, want ErrReleaseRefVerificationFailed", err)
 			}
 		})
@@ -1123,7 +1132,7 @@ func TestInstallReleaseRefRejectsCommunitySourceWithoutSignatureRequirement(t *t
 		releaseArtifactResolver: resolver,
 	})
 
-	if _, err := h.InstallReleaseRef(ctx, InstallReleaseRefRequest{ReleaseRef: ref}); !errors.Is(err, ErrReleaseRefVerificationFailed) {
+	if _, err := h.InstallReleaseRef(ctx, InstallReleaseRefRequest{PluginInstanceID: nextTestPluginInstanceID(t), ReleaseRef: ref}); !errors.Is(err, ErrReleaseRefVerificationFailed) {
 		t.Fatalf("InstallReleaseRef() error = %v, want ErrReleaseRefVerificationFailed", err)
 	}
 }
@@ -1145,7 +1154,7 @@ func TestInstallReleaseRefRejectsPublisherOutsideSourcePolicy(t *testing.T) {
 		releaseArtifactResolver: resolver,
 	})
 
-	if _, err := h.InstallReleaseRef(ctx, InstallReleaseRefRequest{ReleaseRef: ref}); !errors.Is(err, ErrReleaseRefVerificationFailed) {
+	if _, err := h.InstallReleaseRef(ctx, InstallReleaseRefRequest{PluginInstanceID: nextTestPluginInstanceID(t), ReleaseRef: ref}); !errors.Is(err, ErrReleaseRefVerificationFailed) {
 		t.Fatalf("InstallReleaseRef() error = %v, want ErrReleaseRefVerificationFailed", err)
 	}
 }
@@ -1168,7 +1177,7 @@ func TestInstallReleaseRefRejectsLocalImportDistribution(t *testing.T) {
 		releaseArtifactResolver: resolver,
 	})
 
-	if _, err := h.InstallReleaseRef(ctx, InstallReleaseRefRequest{ReleaseRef: ref}); !errors.Is(err, ErrReleaseRefVerificationFailed) {
+	if _, err := h.InstallReleaseRef(ctx, InstallReleaseRefRequest{PluginInstanceID: nextTestPluginInstanceID(t), ReleaseRef: ref}); !errors.Is(err, ErrReleaseRefVerificationFailed) {
 		t.Fatalf("InstallReleaseRef() error = %v, want ErrReleaseRefVerificationFailed", err)
 	}
 }
@@ -1192,7 +1201,7 @@ func TestInstallReleaseRefRejectsMissingReleaseDistribution(t *testing.T) {
 		releaseArtifactResolver: resolver,
 	})
 
-	if _, err := h.InstallReleaseRef(ctx, InstallReleaseRefRequest{ReleaseRef: ref}); !errors.Is(err, ErrReleaseRefVerificationFailed) {
+	if _, err := h.InstallReleaseRef(ctx, InstallReleaseRefRequest{PluginInstanceID: nextTestPluginInstanceID(t), ReleaseRef: ref}); !errors.Is(err, ErrReleaseRefVerificationFailed) {
 		t.Fatalf("InstallReleaseRef() error = %v, want ErrReleaseRefVerificationFailed", err)
 	}
 }
@@ -1216,7 +1225,7 @@ func TestInstallReleaseRefRejectsReleaseDistributionImportID(t *testing.T) {
 		releaseArtifactResolver: resolver,
 	})
 
-	if _, err := h.InstallReleaseRef(ctx, InstallReleaseRefRequest{ReleaseRef: ref}); !errors.Is(err, ErrReleaseRefVerificationFailed) {
+	if _, err := h.InstallReleaseRef(ctx, InstallReleaseRefRequest{PluginInstanceID: nextTestPluginInstanceID(t), ReleaseRef: ref}); !errors.Is(err, ErrReleaseRefVerificationFailed) {
 		t.Fatalf("InstallReleaseRef() error = %v, want ErrReleaseRefVerificationFailed", err)
 	}
 }
@@ -1265,7 +1274,7 @@ func TestInstallReleaseRefRequiresCompleteHostCapabilityContractPins(t *testing.
 			capabilities:            capabilities,
 		})
 
-		if _, err := h.InstallReleaseRef(ctx, InstallReleaseRefRequest{ReleaseRef: ref}); err != nil {
+		if _, err := h.InstallReleaseRef(ctx, InstallReleaseRefRequest{PluginInstanceID: nextTestPluginInstanceID(t), ReleaseRef: ref}); err != nil {
 			t.Fatalf("InstallReleaseRef() error = %v", err)
 		}
 		got := metadataVerifier.last.Release.HostRequirements[0].RequiredCapabilityContracts[0].Contract
@@ -1296,7 +1305,7 @@ func TestInstallReleaseRefRequiresCompleteHostCapabilityContractPins(t *testing.
 			releaseArtifactResolver: &recordingReleaseArtifactResolver{artifact: resolvedArtifactForRelease(t, ref, release, packageBytes)},
 		})
 
-		if _, err := h.InstallReleaseRef(ctx, InstallReleaseRefRequest{ReleaseRef: ref}); !errors.Is(err, ErrReleaseRefVerificationFailed) {
+		if _, err := h.InstallReleaseRef(ctx, InstallReleaseRefRequest{PluginInstanceID: nextTestPluginInstanceID(t), ReleaseRef: ref}); !errors.Is(err, ErrReleaseRefVerificationFailed) {
 			t.Fatalf("InstallReleaseRef() error = %v, want ErrReleaseRefVerificationFailed", err)
 		}
 	})
@@ -1323,7 +1332,7 @@ func TestInstallReleaseRefRequiresCompleteHostCapabilityContractPins(t *testing.
 			releaseArtifactResolver: &recordingReleaseArtifactResolver{artifact: resolvedArtifactForRelease(t, ref, release, packageBytes)},
 		})
 
-		if _, err := h.InstallReleaseRef(ctx, InstallReleaseRefRequest{ReleaseRef: ref}); !errors.Is(err, ErrReleaseRefVerificationFailed) {
+		if _, err := h.InstallReleaseRef(ctx, InstallReleaseRefRequest{PluginInstanceID: nextTestPluginInstanceID(t), ReleaseRef: ref}); !errors.Is(err, ErrReleaseRefVerificationFailed) {
 			t.Fatalf("InstallReleaseRef() error = %v, want ErrReleaseRefVerificationFailed", err)
 		}
 	})
@@ -1577,7 +1586,7 @@ func TestInstallReleaseRefRejectsMissingPackageSignature(t *testing.T) {
 		releaseArtifactResolver: resolver,
 	})
 
-	if _, err := h.InstallReleaseRef(ctx, InstallReleaseRefRequest{ReleaseRef: ref}); !errors.Is(err, ErrReleaseRefVerificationFailed) {
+	if _, err := h.InstallReleaseRef(ctx, InstallReleaseRefRequest{PluginInstanceID: nextTestPluginInstanceID(t), ReleaseRef: ref}); !errors.Is(err, ErrReleaseRefVerificationFailed) {
 		t.Fatalf("InstallReleaseRef() error = %v, want ErrReleaseRefVerificationFailed", err)
 	}
 }
@@ -1600,7 +1609,7 @@ func TestInstallReleaseRefRejectsMissingReleaseMetadataSignature(t *testing.T) {
 		releaseArtifactResolver: resolver,
 	})
 
-	if _, err := h.InstallReleaseRef(ctx, InstallReleaseRefRequest{ReleaseRef: ref}); !errors.Is(err, ErrReleaseRefVerificationFailed) {
+	if _, err := h.InstallReleaseRef(ctx, InstallReleaseRefRequest{PluginInstanceID: nextTestPluginInstanceID(t), ReleaseRef: ref}); !errors.Is(err, ErrReleaseRefVerificationFailed) {
 		t.Fatalf("InstallReleaseRef() error = %v, want ErrReleaseRefVerificationFailed", err)
 	}
 }
@@ -1624,7 +1633,7 @@ func TestInstallReleaseRefRejectsMissingReleaseMetadataSourcePolicyEpoch(t *test
 		releaseArtifactResolver: resolver,
 	})
 
-	if _, err := h.InstallReleaseRef(ctx, InstallReleaseRefRequest{ReleaseRef: ref}); !errors.Is(err, ErrReleaseRefVerificationFailed) {
+	if _, err := h.InstallReleaseRef(ctx, InstallReleaseRefRequest{PluginInstanceID: nextTestPluginInstanceID(t), ReleaseRef: ref}); !errors.Is(err, ErrReleaseRefVerificationFailed) {
 		t.Fatalf("InstallReleaseRef() error = %v, want ErrReleaseRefVerificationFailed", err)
 	}
 }
@@ -1647,7 +1656,7 @@ func TestInstallReleaseRefRejectsMissingPackageSignatureMetadata(t *testing.T) {
 		releaseArtifactResolver: resolver,
 	})
 
-	if _, err := h.InstallReleaseRef(ctx, InstallReleaseRefRequest{ReleaseRef: ref}); !errors.Is(err, ErrReleaseRefVerificationFailed) {
+	if _, err := h.InstallReleaseRef(ctx, InstallReleaseRefRequest{PluginInstanceID: nextTestPluginInstanceID(t), ReleaseRef: ref}); !errors.Is(err, ErrReleaseRefVerificationFailed) {
 		t.Fatalf("InstallReleaseRef() error = %v, want ErrReleaseRefVerificationFailed", err)
 	}
 }
@@ -1671,7 +1680,7 @@ func TestInstallReleaseRefRejectsPackageSignatureRevocationEpochMismatch(t *test
 		releaseArtifactResolver: resolver,
 	})
 
-	if _, err := h.InstallReleaseRef(ctx, InstallReleaseRefRequest{ReleaseRef: ref}); !errors.Is(err, ErrReleaseRefVerificationFailed) {
+	if _, err := h.InstallReleaseRef(ctx, InstallReleaseRefRequest{PluginInstanceID: nextTestPluginInstanceID(t), ReleaseRef: ref}); !errors.Is(err, ErrReleaseRefVerificationFailed) {
 		t.Fatalf("InstallReleaseRef() error = %v, want ErrReleaseRefVerificationFailed", err)
 	}
 }
@@ -1694,7 +1703,7 @@ func TestInstallReleaseRefRejectsUntrustedReleaseMetadataSignatureKey(t *testing
 		releaseArtifactResolver: resolver,
 	})
 
-	if _, err := h.InstallReleaseRef(ctx, InstallReleaseRefRequest{ReleaseRef: ref}); !errors.Is(err, ErrReleaseRefVerificationFailed) {
+	if _, err := h.InstallReleaseRef(ctx, InstallReleaseRefRequest{PluginInstanceID: nextTestPluginInstanceID(t), ReleaseRef: ref}); !errors.Is(err, ErrReleaseRefVerificationFailed) {
 		t.Fatalf("InstallReleaseRef() error = %v, want ErrReleaseRefVerificationFailed", err)
 	}
 }
@@ -1717,7 +1726,7 @@ func TestInstallReleaseRefRejectsUntrustedReleasePackageSignatureKey(t *testing.
 		releaseArtifactResolver: resolver,
 	})
 
-	if _, err := h.InstallReleaseRef(ctx, InstallReleaseRefRequest{ReleaseRef: ref}); !errors.Is(err, ErrReleaseRefVerificationFailed) {
+	if _, err := h.InstallReleaseRef(ctx, InstallReleaseRefRequest{PluginInstanceID: nextTestPluginInstanceID(t), ReleaseRef: ref}); !errors.Is(err, ErrReleaseRefVerificationFailed) {
 		t.Fatalf("InstallReleaseRef() error = %v, want ErrReleaseRefVerificationFailed", err)
 	}
 }
@@ -1740,7 +1749,7 @@ func TestInstallReleaseRefRejectsSourcePolicyInstallReviewRequired(t *testing.T)
 		releaseArtifactResolver: resolver,
 	})
 
-	if _, err := h.InstallReleaseRef(ctx, InstallReleaseRefRequest{ReleaseRef: ref}); !errors.Is(err, ErrReleaseRefPolicyDenied) {
+	if _, err := h.InstallReleaseRef(ctx, InstallReleaseRefRequest{PluginInstanceID: nextTestPluginInstanceID(t), ReleaseRef: ref}); !errors.Is(err, ErrReleaseRefPolicyDenied) {
 		t.Fatalf("InstallReleaseRef() error = %v, want ErrReleaseRefPolicyDenied", err)
 	}
 }
@@ -1763,7 +1772,7 @@ func TestInstallReleaseRefRejectsCanonicalMetadataOverride(t *testing.T) {
 		releaseArtifactResolver: resolver,
 	})
 
-	if _, err := h.InstallReleaseRef(ctx, InstallReleaseRefRequest{ReleaseRef: ref}); !errors.Is(err, ErrReleaseRefVerificationFailed) {
+	if _, err := h.InstallReleaseRef(ctx, InstallReleaseRefRequest{PluginInstanceID: nextTestPluginInstanceID(t), ReleaseRef: ref}); !errors.Is(err, ErrReleaseRefVerificationFailed) {
 		t.Fatalf("InstallReleaseRef() error = %v, want ErrReleaseRefVerificationFailed", err)
 	}
 }
@@ -1784,7 +1793,7 @@ func TestInstallReleaseRefRejectsTrailingReleaseMetadataJSON(t *testing.T) {
 		releaseArtifactResolver: resolver,
 	})
 
-	if _, err := h.InstallReleaseRef(ctx, InstallReleaseRefRequest{ReleaseRef: ref}); !errors.Is(err, ErrReleaseRefVerificationFailed) {
+	if _, err := h.InstallReleaseRef(ctx, InstallReleaseRefRequest{PluginInstanceID: nextTestPluginInstanceID(t), ReleaseRef: ref}); !errors.Is(err, ErrReleaseRefVerificationFailed) {
 		t.Fatalf("InstallReleaseRef() error = %v, want ErrReleaseRefVerificationFailed", err)
 	}
 }
@@ -1807,7 +1816,7 @@ func TestInstallReleaseRefRejectsMissingReleaseCompatibility(t *testing.T) {
 		releaseArtifactResolver: resolver,
 	})
 
-	if _, err := h.InstallReleaseRef(ctx, InstallReleaseRefRequest{ReleaseRef: ref}); !errors.Is(err, ErrReleaseRefVerificationFailed) {
+	if _, err := h.InstallReleaseRef(ctx, InstallReleaseRefRequest{PluginInstanceID: nextTestPluginInstanceID(t), ReleaseRef: ref}); !errors.Is(err, ErrReleaseRefVerificationFailed) {
 		t.Fatalf("InstallReleaseRef() error = %v, want ErrReleaseRefVerificationFailed", err)
 	}
 }
@@ -1845,7 +1854,7 @@ func TestUpdateReleaseRefRejectsDowngradeWhenSourcePolicyBlocks(t *testing.T) {
 		localGenerated:          true,
 		releaseMetadataVerifier: &recordingReleaseMetadataVerifier{},
 	})
-	current, err := ImportLocalPackageBytes(ctx, h, buildVersionedLifecyclePackage(t, "1.0.0", "Lifecycle"))
+	current, err := ImportLocalPackageBytes(ctx, h, nextTestPluginInstanceID(t), buildVersionedLifecyclePackage(t, "1.0.0", "Lifecycle"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2052,7 +2061,7 @@ func TestUpdateUsesVerifierCurrentRecordAndMetadata(t *testing.T) {
 		localGenerated: true,
 		trustVerifier:  verifier,
 	})
-	installed, err := ImportLocalPackageBytes(ctx, h, buildVersionedLifecyclePackage(t, "1.0.0", "Lifecycle"))
+	installed, err := ImportLocalPackageBytes(ctx, h, nextTestPluginInstanceID(t), buildVersionedLifecyclePackage(t, "1.0.0", "Lifecycle"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2093,9 +2102,10 @@ func TestInstallAndUpdateRecordLifecycleStages(t *testing.T) {
 	now := time.Date(2026, 7, 2, 20, 0, 0, 0, time.UTC)
 
 	installed, err := h.ImportLocalPackage(ctx, ImportLocalPackageRequest{
-		PackageReader: bytes.NewReader(v1),
-		PackageSize:   int64(len(v1)),
-		Now:           now,
+		PluginInstanceID: nextTestPluginInstanceID(t),
+		PackageReader:    bytes.NewReader(v1),
+		PackageSize:      int64(len(v1)),
+		Now:              now,
 	})
 	if err != nil {
 		t.Fatalf("ImportLocalPackage() error = %v", err)
@@ -2202,7 +2212,7 @@ func TestLocalInstallUsesTheManifestExactCapabilityContractPin(t *testing.T) {
 	h, _, _ := newTestHostWithOptions(t, testHostOptions{
 		developerMode: true, localGenerated: true, capabilities: capabilities,
 	})
-	installed, err := ImportLocalPackageBytes(hostTestContext(), h, buildRPCFixturePackage(t))
+	installed, err := ImportLocalPackageBytes(hostTestContext(), h, nextTestPluginInstanceID(t), buildRPCFixturePackage(t))
 	if err != nil {
 		t.Fatalf("ImportLocalPackageBytes() error = %v", err)
 	}
@@ -2459,7 +2469,7 @@ func TestUnsignedLocalPolicyFailureRevokesStorageHandleAndRuntime(t *testing.T) 
 		localGenerated: true,
 		runtimeManager: runtime,
 	})
-	installed, err := ImportLocalPackageBytes(ctx, h, buildWorkerStorageSQLiteMemoryHostcallFixturePackage(t))
+	installed, err := ImportLocalPackageBytes(ctx, h, nextTestPluginInstanceID(t), buildWorkerStorageSQLiteMemoryHostcallFixturePackage(t))
 	if err != nil {
 		t.Fatalf("ImportLocalPackageBytes() error = %v", err)
 	}
@@ -2543,8 +2553,9 @@ func TestInstallTrustFailureMarksLifecycleStageFailed(t *testing.T) {
 	})
 	packageBytes := buildFixturePackage(t)
 	if _, err := h.ImportLocalPackage(ctx, ImportLocalPackageRequest{
-		PackageReader: bytes.NewReader(packageBytes),
-		PackageSize:   int64(len(packageBytes)),
+		PluginInstanceID: nextTestPluginInstanceID(t),
+		PackageReader:    bytes.NewReader(packageBytes),
+		PackageSize:      int64(len(packageBytes)),
 	}); err == nil {
 		t.Fatal("ImportLocalPackage() expected trust failure")
 	}
@@ -2566,7 +2577,7 @@ func TestInstallTrustFailureMarksLifecycleStageFailed(t *testing.T) {
 func TestSurfaceBridgeLifecycle(t *testing.T) {
 	host, _, _ := newTestHost(t, true, true)
 	now := time.Date(2026, 6, 29, 12, 0, 0, 0, time.UTC)
-	installed, err := ImportLocalPackageBytes(hostTestContext(), host, buildFixturePackage(t))
+	installed, err := ImportLocalPackageBytes(hostTestContext(), host, nextTestPluginInstanceID(t), buildFixturePackage(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2635,7 +2646,7 @@ func TestOpenSurfaceBindsRuntimeGenerationFromSupervisor(t *testing.T) {
 		capabilityAdapter: &recordingCapabilityAdapter{result: capability.Result{Data: map[string]any{"ok": true}}},
 	})
 	now := time.Date(2026, 6, 29, 12, 0, 0, 0, time.UTC)
-	installed, err := ImportLocalPackageBytes(hostTestContext(), h, buildWorkerFixturePackage(t))
+	installed, err := ImportLocalPackageBytes(hostTestContext(), h, nextTestPluginInstanceID(t), buildWorkerFixturePackage(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2718,7 +2729,7 @@ func TestMintBridgeTokenRejectsSurfaceAfterRuntimeGenerationChanges(t *testing.T
 func TestReadSurfaceAssetRequiresAssetSession(t *testing.T) {
 	h, _, _ := newTestHost(t, true, true)
 	now := time.Date(2026, 6, 29, 12, 0, 0, 0, time.UTC)
-	installed, err := ImportLocalPackageBytes(hostTestContext(), h, buildFixturePackage(t))
+	installed, err := ImportLocalPackageBytes(hostTestContext(), h, nextTestPluginInstanceID(t), buildFixturePackage(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2740,6 +2751,15 @@ func TestReadSurfaceAssetRequiresAssetSession(t *testing.T) {
 		AssetSession:   "not-a-session",
 		AssetSessionID: "as_invalid",
 		BindingID:      "asset_invalid",
+		Now:            now.Add(2 * time.Second),
+	}); !errors.Is(err, ErrActionDenied) {
+		t.Fatalf("ReadSurfaceAsset(empty surface) error = %v, want ErrActionDenied", err)
+	}
+	if _, err := h.ReadSurfaceAsset(hostTestContext(), ReadSurfaceAssetRequest{
+		SurfaceInstanceID: bootstrap.SurfaceInstanceID,
+		AssetSession:      "not-a-session",
+		AssetSessionID:    "as_invalid",
+		BindingID:         "asset_invalid",
 
 		Now: now.Add(2 * time.Second),
 	}); !errors.Is(err, bridge.ErrTokenInvalid) {
@@ -2754,9 +2774,10 @@ func TestReadSurfaceAssetRequiresAssetSession(t *testing.T) {
 	}
 	preparedAsset := prepared.Document.Assets[0]
 	asset, err := h.ReadSurfaceAsset(hostTestContext(), ReadSurfaceAssetRequest{
-		AssetSession:   prepared.AssetSession,
-		AssetSessionID: prepared.AssetSessionID,
-		BindingID:      preparedAsset.BindingID,
+		SurfaceInstanceID: bootstrap.SurfaceInstanceID,
+		AssetSession:      prepared.AssetSession,
+		AssetSessionID:    prepared.AssetSessionID,
+		BindingID:         preparedAsset.BindingID,
 
 		Now: now.Add(3 * time.Second),
 	})
@@ -2804,9 +2825,10 @@ func TestReadSurfaceAssetRequiresAssetSession(t *testing.T) {
 			h.adapters.Assets = mutatingAssetStore{AssetStore: originalAssets, mutate: tt.mutate}
 			defer func() { h.adapters.Assets = originalAssets }()
 			_, err := h.ReadSurfaceAsset(hostTestContext(), ReadSurfaceAssetRequest{
-				AssetSession:   prepared.AssetSession,
-				AssetSessionID: prepared.AssetSessionID,
-				BindingID:      preparedAsset.BindingID,
+				SurfaceInstanceID: bootstrap.SurfaceInstanceID,
+				AssetSession:      prepared.AssetSession,
+				AssetSessionID:    prepared.AssetSessionID,
+				BindingID:         preparedAsset.BindingID,
 
 				Now: now.Add(3 * time.Second),
 			})
@@ -2816,18 +2838,20 @@ func TestReadSurfaceAssetRequiresAssetSession(t *testing.T) {
 		})
 	}
 	if _, err := h.ReadSurfaceAsset(hostTestContext(), ReadSurfaceAssetRequest{
-		AssetSession:   prepared.AssetSession,
-		AssetSessionID: prepared.AssetSessionID,
-		BindingID:      "asset_not_prepared",
+		SurfaceInstanceID: bootstrap.SurfaceInstanceID,
+		AssetSession:      prepared.AssetSession,
+		AssetSessionID:    prepared.AssetSessionID,
+		BindingID:         "asset_not_prepared",
 
 		Now: now.Add(3 * time.Second),
 	}); !errors.Is(err, bridge.ErrTokenAudience) {
 		t.Fatalf("ReadSurfaceAsset(unprepared binding) error = %v, want ErrTokenAudience", err)
 	}
 	if _, err := h.ReadSurfaceAsset(hostTestContext(), ReadSurfaceAssetRequest{
-		AssetSession:   prepared.AssetSession,
-		AssetSessionID: "asset_session_other",
-		BindingID:      preparedAsset.BindingID,
+		SurfaceInstanceID: bootstrap.SurfaceInstanceID,
+		AssetSession:      prepared.AssetSession,
+		AssetSessionID:    "asset_session_other",
+		BindingID:         preparedAsset.BindingID,
 
 		Now: now.Add(3 * time.Second),
 	}); !errors.Is(err, bridge.ErrTokenAudience) {
@@ -2850,7 +2874,7 @@ func (s mutatingAssetStore) ReadAsset(ctx context.Context, packageHash string, a
 
 func TestOpenSurfaceRequiresEnabledPlugin(t *testing.T) {
 	host, _, _ := newTestHost(t, true, true)
-	installed, err := ImportLocalPackageBytes(hostTestContext(), host, buildFixturePackage(t))
+	installed, err := ImportLocalPackageBytes(hostTestContext(), host, nextTestPluginInstanceID(t), buildFixturePackage(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -7265,7 +7289,7 @@ func TestDisableFailsClosedWhenRuntimeRevokeFails(t *testing.T) {
 		connectivityBroker: connectivityBroker,
 		diagnostics:        diagnostics,
 	})
-	installed, err := ImportLocalPackageBytes(ctx, h, buildWorkerNetworkFixturePackage(t))
+	installed, err := ImportLocalPackageBytes(ctx, h, nextTestPluginInstanceID(t), buildWorkerNetworkFixturePackage(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -7330,7 +7354,7 @@ func TestListAndInvokeIntentDispatchesCapability(t *testing.T) {
 		capabilityID:      "example.capability.echo",
 		capabilityAdapter: capabilityAdapter,
 	})
-	installed, err := ImportLocalPackageBytes(hostTestContext(), h, buildIntentFixturePackage(t, false))
+	installed, err := ImportLocalPackageBytes(hostTestContext(), h, nextTestPluginInstanceID(t), buildIntentFixturePackage(t, false))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -7370,7 +7394,7 @@ func TestInvokeIntentRequiresPermissions(t *testing.T) {
 		capabilityID:      "example.capability.echo",
 		capabilityAdapter: capabilityAdapter,
 	})
-	installed, err := ImportLocalPackageBytes(hostTestContext(), h, buildIntentFixturePackage(t, false))
+	installed, err := ImportLocalPackageBytes(hostTestContext(), h, nextTestPluginInstanceID(t), buildIntentFixturePackage(t, false))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -7397,7 +7421,7 @@ func TestInvokeIntentRequiresPluginInstanceWhenAmbiguous(t *testing.T) {
 		capabilityID:      "example.capability.echo",
 		capabilityAdapter: capabilityAdapter,
 	})
-	first, err := ImportLocalPackageBytes(hostTestContext(), h, buildIntentFixturePackage(t, false))
+	first, err := ImportLocalPackageBytes(hostTestContext(), h, nextTestPluginInstanceID(t), buildIntentFixturePackage(t, false))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -7432,7 +7456,7 @@ func TestInvokeIntentFailsClosedForDangerousMethod(t *testing.T) {
 		capabilityID:      "example.capability.echo",
 		capabilityAdapter: capabilityAdapter,
 	})
-	installed, err := ImportLocalPackageBytes(hostTestContext(), h, buildIntentFixturePackage(t, true))
+	installed, err := ImportLocalPackageBytes(hostTestContext(), h, nextTestPluginInstanceID(t), buildIntentFixturePackage(t, true))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -7567,7 +7591,7 @@ func TestStorageQuotaFilesFromManifestUsesBoundedDefault(t *testing.T) {
 
 func TestMintStorageHandleGrantBindsStoreAndQuota(t *testing.T) {
 	host, _, audits := newTestHost(t, true, true)
-	installed, err := ImportLocalPackageBytes(hostTestContext(), host, buildStorageFixturePackage(t))
+	installed, err := ImportLocalPackageBytes(hostTestContext(), host, nextTestPluginInstanceID(t), buildStorageFixturePackage(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -7647,7 +7671,7 @@ func TestEnableInstallsConnectivityPolicyAndMintsGrant(t *testing.T) {
 		localGenerated:     true,
 		connectivityBroker: connectivityBroker,
 	})
-	installed, err := ImportLocalPackageBytes(hostTestContext(), h, buildNetworkFixturePackage(t))
+	installed, err := ImportLocalPackageBytes(hostTestContext(), h, nextTestPluginInstanceID(t), buildNetworkFixturePackage(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -7847,8 +7871,9 @@ func TestDisableConnectivityPolicyOnlyRemovesAuthenticatedEnvironment(t *testing
 		connectivityBroker: connectivityBroker,
 	})
 	packageBytes := buildNetworkFixturePackage(t)
+	pluginInstanceID := nextTestPluginInstanceID(t)
 
-	installedA, err := ImportLocalPackageBytes(ctxA, h, packageBytes)
+	installedA, err := ImportLocalPackageBytes(ctxA, h, pluginInstanceID, packageBytes)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -7859,7 +7884,7 @@ func TestDisableConnectivityPolicyOnlyRemovesAuthenticatedEnvironment(t *testing
 	if err != nil {
 		t.Fatalf("EnablePlugin(env A) error = %v", err)
 	}
-	installedB, err := ImportLocalPackageBytes(ctxB, h, packageBytes)
+	installedB, err := ImportLocalPackageBytes(ctxB, h, pluginInstanceID, packageBytes)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -8000,7 +8025,7 @@ func TestRefreshEnabledPluginsRestoresRuntimeState(t *testing.T) {
 		localGenerated:     true,
 		connectivityBroker: connectivity.NewMemoryBroker(),
 	})
-	installed, err := ImportLocalPackageBytes(ctx, h, buildNetworkFixturePackage(t))
+	installed, err := ImportLocalPackageBytes(ctx, h, nextTestPluginInstanceID(t), buildNetworkFixturePackage(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -8157,7 +8182,7 @@ func TestUninstallEnabledPluginClearsSurfacesStreamsAndNetworkPolicy(t *testing.
 		localGenerated:     true,
 		connectivityBroker: connectivityBroker,
 	})
-	installed, err := ImportLocalPackageBytes(ctx, h, buildNetworkFixturePackage(t))
+	installed, err := ImportLocalPackageBytes(ctx, h, nextTestPluginInstanceID(t), buildNetworkFixturePackage(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -8233,7 +8258,7 @@ func TestUninstallEnabledPluginClearsSurfacesStreamsAndNetworkPolicy(t *testing.
 
 func TestDisableTransitionsOperations(t *testing.T) {
 	h, _, _ := newTestHost(t, true, true)
-	installed, err := ImportLocalPackageBytes(hostTestContext(), h, buildFixturePackage(t))
+	installed, err := ImportLocalPackageBytes(hostTestContext(), h, nextTestPluginInstanceID(t), buildFixturePackage(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -8266,7 +8291,7 @@ func TestUninstallDeleteDataBlockedByRunningOperation(t *testing.T) {
 		developerMode:  true,
 		localGenerated: true,
 	})
-	installed, err := ImportLocalPackageBytes(ctx, h, buildStorageFixturePackage(t))
+	installed, err := ImportLocalPackageBytes(ctx, h, nextTestPluginInstanceID(t), buildStorageFixturePackage(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -8323,7 +8348,7 @@ func TestUninstallDeleteDataDispatchesCancellationToLiveAdapterBeforeBlocking(t 
 func TestUninstallDeleteDataSucceedsAfterOperationCancelAck(t *testing.T) {
 	ctx := hostTestContext()
 	h, _, _ := newTestHost(t, true, true)
-	installed, err := ImportLocalPackageBytes(ctx, h, buildStorageFixturePackage(t))
+	installed, err := ImportLocalPackageBytes(ctx, h, nextTestPluginInstanceID(t), buildStorageFixturePackage(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -8362,7 +8387,7 @@ func TestUninstallDeleteDataSucceedsAfterOperationCancelAck(t *testing.T) {
 func TestUninstallForceCleanupOperationAllowsDeleteData(t *testing.T) {
 	ctx := hostTestContext()
 	h, _, _ := newTestHost(t, true, true)
-	installed, err := ImportLocalPackageBytes(ctx, h, buildStorageFixturePackage(t))
+	installed, err := ImportLocalPackageBytes(ctx, h, nextTestPluginInstanceID(t), buildStorageFixturePackage(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -8397,7 +8422,7 @@ func TestSecretLifecycleUsesAdapter(t *testing.T) {
 		localGenerated: true,
 		secrets:        secrets,
 	})
-	installed, err := ImportLocalPackageBytes(hostTestContext(), h, buildSettingsFixturePackage(t))
+	installed, err := ImportLocalPackageBytes(hostTestContext(), h, nextTestPluginInstanceID(t), buildSettingsFixturePackage(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -8432,7 +8457,7 @@ func TestSecretRefRequiresExactDeclaredScope(t *testing.T) {
 		h, _, _ := newTestHostWithOptions(t, testHostOptions{
 			developerMode: true, localGenerated: true, secrets: secretStore,
 		})
-		installed, err := ImportLocalPackageBytes(hostTestContext(), h, buildSettingsFixturePackage(t))
+		installed, err := ImportLocalPackageBytes(hostTestContext(), h, nextTestPluginInstanceID(t), buildSettingsFixturePackage(t))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -8455,7 +8480,7 @@ func TestSecretRefRequiresExactDeclaredScope(t *testing.T) {
 		h, _, _ := newTestHostWithOptions(t, testHostOptions{
 			developerMode: true, localGenerated: true, secrets: secretStore,
 		})
-		installed, err := ImportLocalPackageBytes(hostTestContext(), h, buildConnectorSecretFixturePackage(t))
+		installed, err := ImportLocalPackageBytes(hostTestContext(), h, nextTestPluginInstanceID(t), buildConnectorSecretFixturePackage(t))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -8514,7 +8539,7 @@ func TestSecretStoreIsTheOnlySettingsSecretAuthorityAndExportDoesNotReadIt(t *te
 	h, _, _ := newTestHostWithOptions(t, testHostOptions{
 		developerMode: true, localGenerated: true, secrets: secretStore,
 	})
-	installed, err := ImportLocalPackageBytes(hostTestContext(), h, buildSettingsFixturePackage(t))
+	installed, err := ImportLocalPackageBytes(hostTestContext(), h, nextTestPluginInstanceID(t), buildSettingsFixturePackage(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -8565,7 +8590,7 @@ func TestSecretStoreIsTheOnlySettingsSecretAuthorityAndExportDoesNotReadIt(t *te
 
 func TestSecretLifecycleValidatesRequestAndAdapter(t *testing.T) {
 	h, _, _ := newTestHost(t, true, true)
-	installed, err := ImportLocalPackageBytes(hostTestContext(), h, buildFixturePackage(t))
+	installed, err := ImportLocalPackageBytes(hostTestContext(), h, nextTestPluginInstanceID(t), buildFixturePackage(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -8582,7 +8607,7 @@ func TestSecretLifecycleValidatesRequestAndAdapter(t *testing.T) {
 		t.Fatalf("BindSecretRef() error = %v, want ErrInvalidSecretRef", err)
 	}
 
-	withSecretsInstalled, err := ImportLocalPackageBytes(hostTestContext(), withSecrets, buildFixturePackage(t))
+	withSecretsInstalled, err := ImportLocalPackageBytes(hostTestContext(), withSecrets, nextTestPluginInstanceID(t), buildFixturePackage(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -8601,7 +8626,7 @@ func TestExplicitObservabilitySinksReceiveAuditAndScopedDiagnostics(t *testing.T
 	h, _, _ := newTestHostWithOptions(t, testHostOptions{
 		developerMode: true, localGenerated: true, audit: audits, diagnostics: diagnostics,
 	})
-	installed, err := ImportLocalPackageBytes(hostTestContext(), h, buildFixturePackage(t))
+	installed, err := ImportLocalPackageBytes(hostTestContext(), h, nextTestPluginInstanceID(t), buildFixturePackage(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -10735,7 +10760,7 @@ func installAndEnablePlugin(t *testing.T, h *Host, packageBytes []byte) registry
 	t.Helper()
 	ctx := hostTestContext()
 	now := stableRecentTestNow()
-	installed, err := ImportLocalPackageBytes(ctx, h, packageBytes)
+	installed, err := ImportLocalPackageBytes(ctx, h, nextTestPluginInstanceID(t), packageBytes)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -10912,7 +10937,7 @@ type policyAdapter struct {
 type allowAuthorizationAdapter struct{}
 
 func (allowAuthorizationAdapter) Authorize(_ context.Context, req AuthorizationRequest) error {
-	if !req.Session.Valid() || !req.Action.Valid() || !req.Resource.Valid() || req.Resource != req.Action.Resource() {
+	if !req.Session.Valid() || !req.Action.Valid() || !req.Target.Kind.Valid() || req.Target.Kind != req.Action.Resource() {
 		return ErrActionDenied
 	}
 	return nil

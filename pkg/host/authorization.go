@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/floegence/redevplugin/pkg/sessionctx"
 )
@@ -87,9 +88,9 @@ func (action ManagementAction) Resource() ResourceRef {
 		return ResourceStream
 	case ManagementActionCancelSurfaceOperation:
 		return ResourceOperation
-	case ManagementActionRejectSurfaceConfirmation, ManagementActionPrepareMethodConfirmation:
+	case ManagementActionRejectSurfaceConfirmation:
 		return ResourceConfirmation
-	case ManagementActionCallPluginMethod:
+	case ManagementActionCallPluginMethod, ManagementActionPrepareMethodConfirmation:
 		return ResourceMethod
 	case ManagementActionListIntents, ManagementActionInvokeIntent:
 		return ResourceIntent
@@ -114,9 +115,9 @@ func (action ManagementAction) Resource() ResourceRef {
 		ManagementActionRefreshEnabledPlugins:
 		return ResourceRuntime
 	case ManagementActionMintConnectionGrant, ManagementActionMintNetworkHandleGrant:
-		return ResourceConnectivity
+		return ResourceConnector
 	case ManagementActionMintStorageHandleGrant:
-		return ResourceStorage
+		return ResourceStore
 	case ManagementActionListRetainedData, ManagementActionDeleteRetainedData,
 		ManagementActionBindRetainedData, ManagementActionCleanupExpiredRetainedData:
 		return ResourceRetainedData
@@ -133,38 +134,44 @@ func (action ManagementAction) Resource() ResourceRef {
 	}
 }
 
-// ResourceRef identifies the closed resource family governed by a management
-// action. ResourceID carries the host-neutral instance identifier separately.
+// ResourceRef identifies one closed host-neutral resource family.
 type ResourceRef string
 
 const (
-	ResourcePlugin         ResourceRef = "plugin"
-	ResourcePlatform       ResourceRef = "platform"
-	ResourceSurface        ResourceRef = "surface"
-	ResourceStream         ResourceRef = "stream"
-	ResourceConfirmation   ResourceRef = "confirmation"
-	ResourceMethod         ResourceRef = "method"
-	ResourceIntent         ResourceRef = "intent"
-	ResourcePermission     ResourceRef = "permission"
-	ResourceSecurityPolicy ResourceRef = "security_policy"
-	ResourceDiagnostic     ResourceRef = "diagnostic"
-	ResourceOperation      ResourceRef = "operation"
-	ResourceRuntime        ResourceRef = "runtime"
-	ResourceConnectivity   ResourceRef = "connectivity"
-	ResourceStorage        ResourceRef = "storage"
-	ResourceRetainedData   ResourceRef = "retained_data"
-	ResourcePluginData     ResourceRef = "plugin_data"
-	ResourceDataExport     ResourceRef = "data_export"
-	ResourceSettings       ResourceRef = "settings"
-	ResourceSecret         ResourceRef = "secret"
+	ResourcePlugin            ResourceRef = "plugin"
+	ResourcePackage           ResourceRef = "package"
+	ResourcePlatform          ResourceRef = "platform"
+	ResourceSurface           ResourceRef = "surface"
+	ResourceSurfaceDefinition ResourceRef = "surface_definition"
+	ResourceSurfaceAsset      ResourceRef = "surface_asset"
+	ResourceAssetSession      ResourceRef = "asset_session"
+	ResourceBridgeChannel     ResourceRef = "bridge_channel"
+	ResourceStream            ResourceRef = "stream"
+	ResourceConfirmation      ResourceRef = "confirmation"
+	ResourceMethod            ResourceRef = "method"
+	ResourceIntent            ResourceRef = "intent"
+	ResourcePermission        ResourceRef = "permission"
+	ResourceSecurityPolicy    ResourceRef = "security_policy"
+	ResourceDiagnostic        ResourceRef = "diagnostic"
+	ResourceOperation         ResourceRef = "operation"
+	ResourceRuntime           ResourceRef = "runtime"
+	ResourceConnector         ResourceRef = "connector"
+	ResourceStore             ResourceRef = "store"
+	ResourceRetainedData      ResourceRef = "retained_data"
+	ResourcePluginData        ResourceRef = "plugin_data"
+	ResourceDataExport        ResourceRef = "data_export"
+	ResourceSettings          ResourceRef = "settings"
+	ResourceSecret            ResourceRef = "secret"
 )
 
 func (resource ResourceRef) Valid() bool {
 	switch resource {
-	case ResourcePlugin, ResourcePlatform, ResourceSurface, ResourceStream,
+	case ResourcePlugin, ResourcePackage, ResourcePlatform, ResourceSurface,
+		ResourceSurfaceDefinition, ResourceSurfaceAsset,
+		ResourceAssetSession, ResourceBridgeChannel, ResourceStream,
 		ResourceConfirmation, ResourceMethod, ResourceIntent, ResourcePermission,
 		ResourceSecurityPolicy, ResourceDiagnostic, ResourceOperation,
-		ResourceRuntime, ResourceConnectivity, ResourceStorage,
+		ResourceRuntime, ResourceConnector, ResourceStore,
 		ResourceRetainedData, ResourcePluginData, ResourceDataExport,
 		ResourceSettings, ResourceSecret:
 		return true
@@ -173,14 +180,23 @@ func (resource ResourceRef) Valid() bool {
 	}
 }
 
+// AuthorizationTarget is one canonical resource presented to an embedding
+// product's authorization policy. ResourceScope is always derived by Host from
+// the authenticated session and is never accepted from wire or plugin input.
+type AuthorizationTarget struct {
+	Kind          ResourceRef              `json:"kind"`
+	ID            string                   `json:"id,omitempty"`
+	Collection    bool                     `json:"collection,omitempty"`
+	ResourceScope sessionctx.ResourceScope `json:"-"`
+}
+
 type AuthorizationRequest struct {
 	// Session is derived from the authenticated context by Host and is never
 	// accepted from a command, HTTP payload, or plugin IPC request.
-	Session            sessionctx.Context `json:"-"`
-	Action             ManagementAction   `json:"action"`
-	Resource           ResourceRef        `json:"resource"`
-	ResourceID         string             `json:"resource_id,omitempty"`
-	RelatedResourceIDs []string           `json:"related_resource_ids,omitempty"`
+	Session        sessionctx.Context    `json:"-"`
+	Action         ManagementAction      `json:"action"`
+	Target         AuthorizationTarget   `json:"target"`
+	RelatedTargets []AuthorizationTarget `json:"related_targets,omitempty"`
 }
 
 type AuthorizationAdapter interface {
@@ -191,36 +207,134 @@ type authorizedAction struct {
 	session sessionctx.Context
 }
 
+type authorizationTargetSpec struct {
+	kind       ResourceRef
+	id         string
+	collection bool
+	scopeKind  sessionctx.ScopeKind
+}
+
+func authorizationTarget(kind ResourceRef, id string) authorizationTargetSpec {
+	return authorizationTargetSpec{kind: kind, id: id}
+}
+
+func scopedAuthorizationTarget(kind ResourceRef, id string, scopeKind sessionctx.ScopeKind) authorizationTargetSpec {
+	return authorizationTargetSpec{kind: kind, id: id, scopeKind: scopeKind}
+}
+
+func authorizationCollectionTarget(kind ResourceRef) authorizationTargetSpec {
+	return authorizationTargetSpec{kind: kind, collection: true}
+}
+
+func scopedAuthorizationCollectionTarget(kind ResourceRef, scopeKind sessionctx.ScopeKind) authorizationTargetSpec {
+	return authorizationTargetSpec{kind: kind, collection: true, scopeKind: scopeKind}
+}
+
+func authorizationTargetOrCollection(kind ResourceRef, id string) authorizationTargetSpec {
+	if strings.TrimSpace(id) == "" {
+		return authorizationCollectionTarget(kind)
+	}
+	return authorizationTarget(kind, id)
+}
+
+func scopedAuthorizationTargetOrCollection(kind ResourceRef, id string, scopeKind sessionctx.ScopeKind) authorizationTargetSpec {
+	if strings.TrimSpace(id) == "" {
+		return scopedAuthorizationCollectionTarget(kind, scopeKind)
+	}
+	return scopedAuthorizationTarget(kind, id, scopeKind)
+}
+
+func relatedAuthorizationTargets(specs ...authorizationTargetSpec) []authorizationTargetSpec {
+	result := make([]authorizationTargetSpec, 0, len(specs))
+	for _, spec := range specs {
+		if strings.TrimSpace(spec.id) != "" {
+			result = append(result, spec)
+		}
+	}
+	return result
+}
+
 type ActionDeniedError struct {
-	Action     ManagementAction
-	Resource   ResourceRef
-	ResourceID string
+	Action ManagementAction
+	Target AuthorizationTarget
 }
 
 func (e ActionDeniedError) Error() string {
-	return fmt.Sprintf("%s: %s on %s", ErrActionDenied, e.Action, e.Resource)
+	return fmt.Sprintf("%s: %s on %s", ErrActionDenied, e.Action, e.Target.Kind)
 }
 
 func (e ActionDeniedError) Unwrap() error { return ErrActionDenied }
 
-func (h *Host) authorizeManagement(ctx context.Context, action ManagementAction, resourceID string, relatedResourceIDs ...string) (authorizedAction, error) {
+func (h *Host) authorizeManagement(ctx context.Context, action ManagementAction, target authorizationTargetSpec, related ...authorizationTargetSpec) (authorizedAction, error) {
 	session, err := requireUserSession(ctx)
 	if err != nil {
 		return authorizedAction{}, err
 	}
+	return h.authorizeManagementSession(ctx, session, action, target, related...)
+}
+
+func (h *Host) authorizeManagementSession(ctx context.Context, session sessionctx.Context, action ManagementAction, target authorizationTargetSpec, related ...authorizationTargetSpec) (authorizedAction, error) {
 	resource := action.Resource()
 	if !action.Valid() || !resource.Valid() || isNilInterfaceValue(h.adapters.Authorization) {
-		return authorizedAction{}, ActionDeniedError{Action: action, Resource: resource, ResourceID: resourceID}
+		return authorizedAction{}, ActionDeniedError{Action: action, Target: AuthorizationTarget{Kind: resource}}
+	}
+	canonicalTarget, err := canonicalAuthorizationTarget(session, target)
+	if err != nil || canonicalTarget.Kind != resource ||
+		(canonicalTarget.Collection && !action.allowsCollectionTarget()) ||
+		(!canonicalTarget.Collection && canonicalTarget.ID == "") {
+		return authorizedAction{}, ActionDeniedError{Action: action, Target: canonicalTarget}
+	}
+	relatedTargets := make([]AuthorizationTarget, len(related))
+	for i := range related {
+		relatedTargets[i], err = canonicalAuthorizationTarget(session, related[i])
+		if err != nil || relatedTargets[i].ID == "" {
+			return authorizedAction{}, ActionDeniedError{Action: action, Target: canonicalTarget}
+		}
 	}
 	req := AuthorizationRequest{
-		Session:            session,
-		Action:             action,
-		Resource:           resource,
-		ResourceID:         resourceID,
-		RelatedResourceIDs: append([]string(nil), relatedResourceIDs...),
+		Session:        session,
+		Action:         action,
+		Target:         canonicalTarget,
+		RelatedTargets: relatedTargets,
 	}
 	if err := h.adapters.Authorization.Authorize(ctx, req); err != nil {
-		return authorizedAction{}, ActionDeniedError{Action: action, Resource: resource, ResourceID: resourceID}
+		return authorizedAction{}, ActionDeniedError{Action: action, Target: canonicalTarget}
 	}
 	return authorizedAction{session: session}, nil
+}
+
+func canonicalAuthorizationTarget(session sessionctx.Context, spec authorizationTargetSpec) (AuthorizationTarget, error) {
+	target := AuthorizationTarget{Kind: spec.kind, ID: strings.TrimSpace(spec.id), Collection: spec.collection}
+	if !target.Kind.Valid() {
+		return target, errors.New("authorization target kind is invalid")
+	}
+	if target.Collection && target.ID != "" {
+		return target, errors.New("authorization collection target must not include an ID")
+	}
+	if spec.scopeKind != "" {
+		scope, err := session.ResourceScope(spec.scopeKind)
+		if err != nil {
+			return target, err
+		}
+		target.ResourceScope = scope
+	}
+	return target, nil
+}
+
+func (action ManagementAction) allowsCollectionTarget() bool {
+	switch action {
+	case ManagementActionRevokeSurfaceScope,
+		ManagementActionListIntents,
+		ManagementActionListPlugins,
+		ManagementActionRefreshEnabledPlugins,
+		ManagementActionListPermissionGrants,
+		ManagementActionListSecurityPolicies,
+		ManagementActionListDiagnosticEvents,
+		ManagementActionListOperations,
+		ManagementActionListRetainedData,
+		ManagementActionCleanupExpiredRetainedData:
+		return true
+	default:
+		return false
+	}
 }

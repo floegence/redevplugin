@@ -955,7 +955,11 @@ func lifecycleHarness(ctx context.Context, action string, packageFile string) er
 		return err
 	}
 	defer h.Close()
-	record, err := host.ImportLocalPackageBytes(ctx, h, data)
+	pluginInstanceID, err := newCLIPluginInstanceID()
+	if err != nil {
+		return err
+	}
+	record, err := host.ImportLocalPackageBytes(ctx, h, pluginInstanceID, data)
 	if err != nil {
 		return err
 	}
@@ -1014,11 +1018,23 @@ func installVerifiedHarness(ctx context.Context, packageFile string, publicKeyFi
 		return err
 	}
 	defer h.Close()
-	record, err := host.ImportLocalPackageBytes(ctx, h, data)
+	pluginInstanceID, err := newCLIPluginInstanceID()
+	if err != nil {
+		return err
+	}
+	record, err := host.ImportLocalPackageBytes(ctx, h, pluginInstanceID, data)
 	if err != nil {
 		return err
 	}
 	return writeLifecycle("install-verified", record)
+}
+
+func newCLIPluginInstanceID() (string, error) {
+	raw := make([]byte, 18)
+	if _, err := crand.Read(raw); err != nil {
+		return "", err
+	}
+	return "plugini_" + base64.RawURLEncoding.EncodeToString(raw), nil
 }
 
 func writeLifecycle(action string, record registry.PluginRecord) error {
@@ -1242,7 +1258,7 @@ type staticPolicyAdapter struct{}
 type staticAuthorizationAdapter struct{}
 
 func (staticAuthorizationAdapter) Authorize(_ context.Context, req host.AuthorizationRequest) error {
-	if !req.Session.Valid() || !req.Action.Valid() || !req.Resource.Valid() || req.Resource != req.Action.Resource() {
+	if !req.Session.Valid() || !req.Action.Valid() || !req.Target.Kind.Valid() || req.Target.Kind != req.Action.Resource() {
 		return host.ErrActionDenied
 	}
 	return nil

@@ -401,7 +401,7 @@ func (route routeSpec) validate() error {
 
 type installReleaseRefRequest struct {
 	ReleaseRef       host.PluginReleaseRef `json:"release_ref"`
-	PluginInstanceID string                `json:"plugin_instance_id,omitempty"`
+	PluginInstanceID string                `json:"plugin_instance_id"`
 }
 
 type updateReleaseRefRequest struct {
@@ -1172,6 +1172,11 @@ const localImportContentType = "application/vnd.redevplugin.package+zip"
 const maxLocalImportBytes int64 = 256 << 20
 
 func (h Handler) handleImportLocalPackageUpload(w http.ResponseWriter, r *http.Request) {
+	pluginInstanceID := strings.TrimSpace(r.URL.Query().Get("plugin_instance_id"))
+	if pluginInstanceID == "" {
+		writeMutationInvalidRequestError(w, errors.New("plugin_instance_id is required"))
+		return
+	}
 	if err := requirePackageContentType(r); err != nil {
 		writeMutationError(w, http.StatusUnsupportedMediaType, security.ErrInvalidRequest, err.Error(), errorDetails{}, mutation.OutcomeNotCommitted)
 		return
@@ -1188,7 +1193,7 @@ func (h Handler) handleImportLocalPackageUpload(w http.ResponseWriter, r *http.R
 	defer cleanup()
 	record, err := h.host.ImportLocalPackage(r.Context(), host.ImportLocalPackageRequest{
 		PackageReader: file, PackageSize: size,
-		PluginInstanceID: strings.TrimSpace(r.URL.Query().Get("plugin_instance_id")),
+		PluginInstanceID: pluginInstanceID,
 	})
 	if err != nil {
 		code := errorCodeForManagementError(err)
@@ -1202,6 +1207,11 @@ func (h Handler) handleInstallReleaseRef(w http.ResponseWriter, r *http.Request)
 	var req installReleaseRefRequest
 	if err := decodeJSON(r, &req); err != nil {
 		writeMutationInvalidRequestError(w, err)
+		return
+	}
+	req.PluginInstanceID = strings.TrimSpace(req.PluginInstanceID)
+	if req.PluginInstanceID == "" {
+		writeMutationInvalidRequestError(w, errors.New("plugin_instance_id is required"))
 		return
 	}
 	record, err := h.host.InstallReleaseRef(r.Context(), host.InstallReleaseRefRequest{
@@ -1444,7 +1454,7 @@ func (h Handler) handleCatalog(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h Handler) handleFeatures(w http.ResponseWriter, r *http.Request) {
-	features, err := h.host.ListFeatures(r.Context())
+	features, err := h.host.Features(r.Context())
 	if err != nil {
 		writeError(w, http.StatusForbidden, security.ErrActionDenied, h.publicFailureMessage(r.Context(), "platform.list_features", security.ErrActionDenied, err), errorDetails{})
 		return

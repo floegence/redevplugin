@@ -169,8 +169,9 @@ func installLifecycleFixture(t *testing.T, h *Host) registry.PluginRecord {
 	t.Helper()
 	pkg := buildVersionedLifecyclePackage(t, "1.0.0", "Audit lifecycle")
 	installed, err := h.ImportLocalPackage(hostTestContext(), ImportLocalPackageRequest{
-		PackageReader: bytes.NewReader(pkg),
-		PackageSize:   int64(len(pkg)),
+		PluginInstanceID: nextTestPluginInstanceID(t),
+		PackageReader:    bytes.NewReader(pkg),
+		PackageSize:      int64(len(pkg)),
 	})
 	if err != nil {
 		t.Fatalf("ImportLocalPackage() error = %v", err)

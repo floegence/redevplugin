@@ -178,9 +178,14 @@ func devInstall(ctx context.Context, stateRoot string, packageFile string, capab
 			_ = harness.Close()
 		}
 	}()
+	pluginInstanceID, err := newCLIPluginInstanceID()
+	if err != nil {
+		return err
+	}
 	record, err := harness.host.ImportLocalPackage(ctx, host.ImportLocalPackageRequest{
-		PackageReader: bytes.NewReader(data),
-		PackageSize:   int64(len(data)),
+		PackageReader:    bytes.NewReader(data),
+		PackageSize:      int64(len(data)),
+		PluginInstanceID: pluginInstanceID,
 	})
 	if err != nil {
 		return err

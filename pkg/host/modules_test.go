@@ -120,13 +120,13 @@ func TestFeaturesReturnsClosedConfiguredSet(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = h.Close() })
 	want := []Feature{FeatureRuntime, FeatureSecrets}
-	got := h.Features()
+	got := h.configuredFeatures()
 	if len(got) != len(want) {
-		t.Fatalf("Features() = %#v, want %#v", got, want)
+		t.Fatalf("configuredFeatures() = %#v, want %#v", got, want)
 	}
 	for i := range want {
 		if got[i] != want[i] {
-			t.Fatalf("Features() = %#v, want %#v", got, want)
+			t.Fatalf("configuredFeatures() = %#v, want %#v", got, want)
 		}
 	}
 }
@@ -148,14 +148,14 @@ func TestLocalInstallPreflightRejectsMissingConnectivityBeforeSideEffects(t *tes
 	h, registryStore, stages, assets := newModulePreflightTestHost(t)
 	disableModuleFeatures(h, FeatureConnectivity)
 
-	_, err := ImportLocalPackageBytes(hostTestContext(), h, buildNetworkFixturePackage(t))
+	_, err := ImportLocalPackageBytes(hostTestContext(), h, nextTestPluginInstanceID(t), buildNetworkFixturePackage(t))
 	assertMissingFeatures(t, err, FeatureConnectivity)
 	assertModulePreflightHasNoWrites(t, registryStore, stages, assets, 0)
 }
 
 func TestUpdatePreflightRejectsMissingConnectivityBeforeSideEffects(t *testing.T) {
 	h, registryStore, stages, assets := newModulePreflightTestHost(t)
-	installed, err := ImportLocalPackageBytes(hostTestContext(), h, buildFixturePackage(t))
+	installed, err := ImportLocalPackageBytes(hostTestContext(), h, nextTestPluginInstanceID(t), buildFixturePackage(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -177,7 +177,7 @@ func TestUpdatePreflightRejectsMissingConnectivityBeforeSideEffects(t *testing.T
 
 func TestDowngradePreflightRejectsMissingConnectivityBeforeRegistryMutation(t *testing.T) {
 	h, registryStore, stages, assets := newModulePreflightTestHost(t)
-	installed, err := ImportLocalPackageBytes(hostTestContext(), h, buildFixturePackage(t))
+	installed, err := ImportLocalPackageBytes(hostTestContext(), h, nextTestPluginInstanceID(t), buildFixturePackage(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -223,7 +223,7 @@ func TestReleaseInstallPreflightDoesNotPersistSourceFloorForMissingRuntime(t *te
 	})
 	disableModuleFeatures(h, FeatureRuntime)
 
-	_, err := h.InstallReleaseRef(ctx, InstallReleaseRefRequest{ReleaseRef: ref})
+	_, err := h.InstallReleaseRef(ctx, InstallReleaseRefRequest{PluginInstanceID: nextTestPluginInstanceID(t), ReleaseRef: ref})
 	assertMissingFeatures(t, err, FeatureRuntime)
 	if _, floorErr := registryStore.GetSourceSecurityFloor(ctx, ref.SourceID); !errors.Is(floorErr, registry.ErrNotFound) {
 		t.Fatalf("source security floor persisted before module preflight: %v", floorErr)

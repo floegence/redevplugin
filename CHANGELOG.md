@@ -14,7 +14,7 @@
 - Add durable pending/completed/exported security-audit journals for memory and
   SQLite hosts, startup reconciliation, stable event IDs, idempotent export, and
   explicit committed/not-committed/unknown mutation outcomes.
-- Add explicit Host feature modules, the closed `Host.Features()` contract, and
+- Add explicit Host feature modules, the authorized `Host.Features(ctx)` contract, and
   `GET /_redevplugin/api/plugins/features`; unconfigured features now return
   `PLUGIN_FEATURE_NOT_CONFIGURED` instead of relying on placeholder adapters.
 - Add fixed-seed Go fuzz gates and Rust property tests for packages, manifests,
@@ -121,6 +121,13 @@
   confirmation flows, and platform metadata. Nested surface preparation and
   surface-scoped cancellation now enter private already-authorized
   implementations instead of repeating or bypassing Host authorization.
+- Project every direct Host authorization as canonical typed primary and related
+  resource targets. Persistent targets carry only Host-derived user or
+  environment scopes, collection targets are explicit, and resource-specific
+  targets cannot use empty or non-canonical identifiers.
+- Require hosts to choose `plugin_instance_id` before local or release install;
+  package APIs, HTTP, OpenAPI, and TypeScript no longer derive an implicit
+  instance identity from package contents.
 
 - Require a private Host attestation before the HTTP adapter can expose a
   published capability business error. Business errors that bypass the exact

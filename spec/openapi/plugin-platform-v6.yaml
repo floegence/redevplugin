@@ -13,7 +13,7 @@ paths:
       parameters:
         - name: plugin_instance_id
           in: query
-          required: false
+          required: true
           schema: { type: string, minLength: 1 }
       requestBody:
         required: true
@@ -2150,7 +2150,7 @@ components:
           $ref: "#/components/schemas/PackageHashSet"
     InstallReleaseRefRequest:
       type: object
-      required: [release_ref]
+      required: [plugin_instance_id, release_ref]
       additionalProperties: false
       properties:
         release_ref:

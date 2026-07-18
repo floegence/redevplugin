@@ -1567,7 +1567,7 @@ export interface components {
         };
         InstallReleaseRefRequest: {
             release_ref: components["schemas"]["PluginReleaseRef"];
-            plugin_instance_id?: string;
+            plugin_instance_id: string;
         };
         UpdateReleaseRefRequest: {
             plugin_instance_id: string;
@@ -2902,8 +2902,8 @@ export type $defs = Record<string, never>;
 export interface operations {
     importLocalPackage: {
         parameters: {
-            query?: {
-                plugin_instance_id?: string;
+            query: {
+                plugin_instance_id: string;
             };
             header?: never;
             path?: never;

@@ -25,8 +25,9 @@ func TestUIOnlyLifecycleDoesNotRequireRuntimeManager(t *testing.T) {
 	})
 	packageBytes := buildFixturePackage(t)
 	installed, err := h.ImportLocalPackage(hostTestContext(), ImportLocalPackageRequest{
-		PackageReader: bytes.NewReader(packageBytes),
-		PackageSize:   int64(len(packageBytes)),
+		PluginInstanceID: nextTestPluginInstanceID(t),
+		PackageReader:    bytes.NewReader(packageBytes),
+		PackageSize:      int64(len(packageBytes)),
 	})
 	if err != nil {
 		t.Fatalf("InstallLocalPackage() error = %v", err)
@@ -61,8 +62,9 @@ func TestUIOnlyDisableDoesNotRevokeRuntime(t *testing.T) {
 	})
 	packageBytes := buildFixturePackage(t)
 	installed, err := h.ImportLocalPackage(hostTestContext(), ImportLocalPackageRequest{
-		PackageReader: bytes.NewReader(packageBytes),
-		PackageSize:   int64(len(packageBytes)),
+		PluginInstanceID: nextTestPluginInstanceID(t),
+		PackageReader:    bytes.NewReader(packageBytes),
+		PackageSize:      int64(len(packageBytes)),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -94,8 +96,9 @@ func TestWorkerInstallRejectsMissingRuntimeBeforeMutation(t *testing.T) {
 	})
 	packageBytes := buildWorkerFixturePackage(t)
 	_, err := h.ImportLocalPackage(hostTestContext(), ImportLocalPackageRequest{
-		PackageReader: bytes.NewReader(packageBytes),
-		PackageSize:   int64(len(packageBytes)),
+		PluginInstanceID: nextTestPluginInstanceID(t),
+		PackageReader:    bytes.NewReader(packageBytes),
+		PackageSize:      int64(len(packageBytes)),
 	})
 	if !errors.Is(err, ErrFeatureNotConfigured) {
 		t.Fatalf("InstallLocalPackage() error = %v, want ErrFeatureNotConfigured", err)
@@ -136,8 +139,9 @@ func TestWorkerInstallRejectsIncompatibleRuntimeVersionBeforeMutation(t *testing
 	})
 	packageBytes := buildWorkerFixturePackageWithMinRuntime(t, "0.1.0")
 	_, err = h.ImportLocalPackage(hostTestContext(), ImportLocalPackageRequest{
-		PackageReader: bytes.NewReader(packageBytes),
-		PackageSize:   int64(len(packageBytes)),
+		PluginInstanceID: nextTestPluginInstanceID(t),
+		PackageReader:    bytes.NewReader(packageBytes),
+		PackageSize:      int64(len(packageBytes)),
 	})
 	if !errors.Is(err, ErrPluginRuntimeIncompatible) {
 		t.Fatalf("InstallLocalPackage() error = %v, want ErrPluginRuntimeIncompatible", err)
@@ -366,8 +370,9 @@ func TestStopRuntimePreservesUIOnlySurface(t *testing.T) {
 	})
 	packageBytes := buildFixturePackage(t)
 	installed, err := h.ImportLocalPackage(hostTestContext(), ImportLocalPackageRequest{
-		PackageReader: bytes.NewReader(packageBytes),
-		PackageSize:   int64(len(packageBytes)),
+		PluginInstanceID: nextTestPluginInstanceID(t),
+		PackageReader:    bytes.NewReader(packageBytes),
+		PackageSize:      int64(len(packageBytes)),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -447,8 +452,9 @@ func importWorkerVersion(t *testing.T, h *Host, pluginVersion string, minimumVer
 	t.Helper()
 	packageBytes := buildWorkerFixturePackageVersion(t, pluginVersion, minimumVersion)
 	installed, err := h.ImportLocalPackage(hostTestContext(), ImportLocalPackageRequest{
-		PackageReader: bytes.NewReader(packageBytes),
-		PackageSize:   int64(len(packageBytes)),
+		PluginInstanceID: nextTestPluginInstanceID(t),
+		PackageReader:    bytes.NewReader(packageBytes),
+		PackageSize:      int64(len(packageBytes)),
 	})
 	if err != nil {
 		t.Fatal(err)

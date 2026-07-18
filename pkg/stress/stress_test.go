@@ -1022,7 +1022,7 @@ type stressPolicy struct{}
 type stressAuthorization struct{}
 
 func (stressAuthorization) Authorize(_ context.Context, req host.AuthorizationRequest) error {
-	if !req.Session.Valid() || !req.Action.Valid() || !req.Resource.Valid() || req.Resource != req.Action.Resource() {
+	if !req.Session.Valid() || !req.Action.Valid() || !req.Target.Kind.Valid() || req.Target.Kind != req.Action.Resource() {
 		return host.ErrActionDenied
 	}
 	return nil

@@ -12,7 +12,6 @@ export type PluginUploadProgress = (uploadedBytes: number, totalBytes: number) =
 export type PluginLocalImportOptions = {
   signal?: AbortSignal;
   onProgress?: PluginUploadProgress;
-  pluginInstanceId?: string;
 };
 
 export class PluginLocalImportClient {
@@ -28,18 +27,24 @@ export class PluginLocalImportClient {
     this.#onMutationOutcomeUnknown = options.onMutationOutcomeUnknown;
   }
 
-  importLocalPackage(packageBlob: Blob, options: PluginLocalImportOptions = {}): Promise<PluginRecord> {
-    const query = options.pluginInstanceId ? `?plugin_instance_id=${encodeURIComponent(options.pluginInstanceId)}` : "";
-    return this.#requestMutation(`/_redevplugin/api/plugins/local-imports${query}`, packageBlob, options);
+  importLocalPackage(pluginInstanceId: string, packageBlob: Blob, options: PluginLocalImportOptions = {}): Promise<PluginRecord> {
+    const canonicalPluginInstanceId = pluginInstanceId.trim();
+    if (!canonicalPluginInstanceId) {
+      throw new TypeError("pluginInstanceId is required");
+    }
+    return this.#requestMutation(
+      `/_redevplugin/api/plugins/local-imports?plugin_instance_id=${encodeURIComponent(canonicalPluginInstanceId)}`,
+      packageBlob,
+      options,
+    );
   }
 
   async updateLocalPackage(pluginInstanceId: string, expectedManagementRevision: number, packageBlob: Blob, options: PluginLocalImportOptions = {}): Promise<PluginRecord> {
-    const requestOptions = { ...options, pluginInstanceId };
     try {
       const plugin = await this.#requestMutation<PluginRecord>(
         `/_redevplugin/api/plugins/${encodeURIComponent(pluginInstanceId)}/local-import?expected_management_revision=${encodeURIComponent(String(expectedManagementRevision))}`,
         packageBlob,
-        requestOptions,
+        options,
       );
       disposePluginSurfaceScope(this.#surfaceScope, pluginInstanceId);
       return plugin;

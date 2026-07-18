@@ -21,11 +21,12 @@ func TestPublicRequestDTOsDeclareClosedJSONFieldNames(t *testing.T) {
 		CallMethodRequest{}, ListIntentsRequest{}, InvokeIntentRequest{}, PrepareMethodConfirmationRequest{},
 		RejectMethodConfirmationRequest{}, ListOperationsRequest{}, CancelOperationRequest{}, CancelSurfaceOperationRequest{},
 		ReadStreamRequest{}, AcknowledgeStreamRequest{}, MintConnectionGrantRequest{}, MintStorageHandleGrantRequest{},
-		AuthorizationRequest{},
+		AuthorizationRequest{}, AuthorizationTarget{},
 	}
 	internalFields := map[string]struct{}{
 		"Now": {}, "WaitTimeout": {}, "PackageReader": {}, "PackageSize": {}, "TTL": {},
 		"Session":              {},
+		"ResourceScope":        {},
 		"ReleaseMetadataBytes": {}, "ReleaseMetadataSignature": {},
 		"RevocationMetadataBytes": {}, "RevocationMetadataSignature": {},
 	}

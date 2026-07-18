@@ -358,7 +358,7 @@ func TestCLIScaffoldRunsGeneratedWorkerThroughBuiltRustRuntime(t *testing.T) {
 		}
 	})
 
-	installed, err := host.ImportLocalPackageBytes(ctx, h, packageBytes)
+	installed, err := host.ImportLocalPackageBytes(ctx, h, "plugini_cli_test", packageBytes)
 	if err != nil {
 		t.Fatalf("ImportLocalPackageBytes() error = %v", err)
 	}

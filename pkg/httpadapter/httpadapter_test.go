@@ -21,6 +21,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -47,6 +48,13 @@ import (
 	platformversion "github.com/floegence/redevplugin/pkg/version"
 	"github.com/floegence/redevplugin/pkg/websecurity"
 )
+
+var httpTestPluginInstanceSequence atomic.Uint64
+
+func nextHTTPTestPluginInstanceID(t testing.TB) string {
+	t.Helper()
+	return fmt.Sprintf("plugini_http_test_%d", httpTestPluginInstanceSequence.Add(1))
+}
 
 func mustManagementRevision(t testing.TB, h *host.Host, pluginInstanceID string) uint64 {
 	t.Helper()
@@ -944,7 +952,7 @@ func TestHandlerRouteAndHostAuthorizationShareOneClosedAction(t *testing.T) {
 		t.Fatalf("authorization calls = route:%d host:%d", guard.authorizeCount, len(authorization.requests))
 	}
 	hostRequest := authorization.requests[0]
-	if string(guard.lastAction) != string(hostRequest.Action) || hostRequest.Resource != host.ResourcePlugin || !hostRequest.Session.Valid() {
+	if string(guard.lastAction) != string(hostRequest.Action) || hostRequest.Target.Kind != host.ResourcePlugin || !hostRequest.Target.Collection || !hostRequest.Session.Valid() {
 		t.Fatalf("route action = %q host request = %#v", guard.lastAction, hostRequest)
 	}
 }
@@ -1152,7 +1160,7 @@ func TestHandlerManagementLifecycleFlow(t *testing.T) {
 	handler := mustNewHandler(t, h, allowHTTPTestGuard())
 	packageBytes := buildHTTPFixturePackage(t)
 
-	installed := postLocalImport[registry.PluginRecord](t, handler, packageBytes)
+	installed := postLocalImport[registry.PluginRecord](t, handler, nextHTTPTestPluginInstanceID(t), packageBytes)
 	if installed.PluginInstanceID == "" || installed.EnableState != registry.EnableDisabled {
 		t.Fatalf("install response mismatch: %#v", installed)
 	}
@@ -1201,7 +1209,7 @@ func TestHandlerManagementLifecycleFlow(t *testing.T) {
 func TestHandlerReportsUnknownMutationOutcomeAfterCommit(t *testing.T) {
 	h := newHTTPTestHostWithOptions(t, httpTestHostOptions{surfaceCatalog: httpFailingSurfaceCatalogSink{}})
 	handler := mustNewHandler(t, h, allowHTTPTestGuard())
-	installed := postLocalImport[registry.PluginRecord](t, handler, buildHTTPFixturePackage(t))
+	installed := postLocalImport[registry.PluginRecord](t, handler, nextHTTPTestPluginInstanceID(t), buildHTTPFixturePackage(t))
 
 	envelope := postJSONError(t, handler, "/_redevplugin/api/plugins/enable", map[string]any{
 		"plugin_instance_id":           installed.PluginInstanceID,
@@ -1222,7 +1230,7 @@ func TestHandlerReportsUnknownMutationOutcomeAfterCommit(t *testing.T) {
 func TestHandlerManagementRevisionContractFailsClosed(t *testing.T) {
 	h := newHTTPTestHost(t)
 	handler := mustNewHandler(t, h, allowHTTPTestGuard())
-	installed := postLocalImport[registry.PluginRecord](t, handler, buildHTTPFixturePackage(t))
+	installed := postLocalImport[registry.PluginRecord](t, handler, nextHTTPTestPluginInstanceID(t), buildHTTPFixturePackage(t))
 
 	for _, tc := range []struct {
 		body     map[string]any
@@ -1290,7 +1298,8 @@ func TestHandlerInstallReleaseRefUsesResolverWithoutPackageBase64(t *testing.T) 
 	handler := mustNewHandler(t, h, allowHTTPTestGuard())
 
 	installed := postJSON[registry.PluginRecord](t, handler, "/_redevplugin/api/plugins/install-release-ref", map[string]any{
-		"release_ref": ref,
+		"plugin_instance_id": nextHTTPTestPluginInstanceID(t),
+		"release_ref":        ref,
 	})
 
 	if installed.PackageHash != pkg.PackageHash || installed.TrustState != registry.TrustVerified {
@@ -1338,7 +1347,8 @@ func TestHandlerInstallReleaseRefPolicyDeniedUsesReleaseRefErrorCode(t *testing.
 	handler := mustNewHandler(t, h, allowHTTPTestGuard())
 
 	envelope := postJSONError(t, handler, "/_redevplugin/api/plugins/install-release-ref", map[string]any{
-		"release_ref": ref,
+		"plugin_instance_id": nextHTTPTestPluginInstanceID(t),
+		"release_ref":        ref,
 	}, http.StatusForbidden)
 	if envelope.Code != string(security.ErrReleaseRefPolicyDenied) {
 		t.Fatalf("error_code = %q, want %q body = %#v", envelope.Code, security.ErrReleaseRefPolicyDenied, envelope)
@@ -1351,7 +1361,7 @@ func TestHandlerUpdateAndDowngradeFlow(t *testing.T) {
 	v1 := buildHTTPVersionedFixturePackage(t, "1.0.0", "HTTP")
 	v2 := buildHTTPVersionedFixturePackage(t, "2.0.0", "HTTP v2")
 
-	installed := postLocalImport[registry.PluginRecord](t, handler, v1)
+	installed := postLocalImport[registry.PluginRecord](t, handler, nextHTTPTestPluginInstanceID(t), v1)
 	enabled := postJSON[registry.PluginRecord](t, handler, "/_redevplugin/api/plugins/enable", map[string]any{
 		"plugin_instance_id":           installed.PluginInstanceID,
 		"expected_management_revision": installed.ManagementRevision,
@@ -1378,7 +1388,7 @@ func TestHandlerUpdateAndDowngradeFlow(t *testing.T) {
 func TestHandlerManagementRejectsInvalidInstallAndTrustStateInput(t *testing.T) {
 	h := newHTTPTestHost(t)
 	handler := mustNewHandler(t, h, allowHTTPTestGuard())
-	req := httptest.NewRequest(http.MethodPost, "/_redevplugin/api/plugins/local-imports", bytes.NewBufferString("not-a-zip"))
+	req := httptest.NewRequest(http.MethodPost, "/_redevplugin/api/plugins/local-imports?plugin_instance_id="+url.QueryEscape(nextHTTPTestPluginInstanceID(t)), bytes.NewBufferString("not-a-zip"))
 	req.Header.Set("Content-Type", localImportContentType)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
@@ -1386,11 +1396,43 @@ func TestHandlerManagementRejectsInvalidInstallAndTrustStateInput(t *testing.T) 
 		t.Fatalf("invalid install status = %d body = %s", rec.Code, rec.Body.String())
 	}
 
-	req = newJSONHTTPRequest(http.MethodPost, "/_redevplugin/api/plugins/local-imports", bytes.NewBufferString(`{"unexpected":true}`))
+	req = newJSONHTTPRequest(http.MethodPost, "/_redevplugin/api/plugins/local-imports?plugin_instance_id="+url.QueryEscape(nextHTTPTestPluginInstanceID(t)), bytes.NewBufferString(`{"unexpected":true}`))
 	rec = httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusUnsupportedMediaType {
 		t.Fatalf("trust_state input status = %d body = %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandlerInstallRequiresPluginInstanceIDBeforeConsumingExternalInput(t *testing.T) {
+	h := newHTTPTestHost(t)
+	handler := mustNewHandler(t, h, allowHTTPTestGuard())
+	body := &httpReadProbe{reader: strings.NewReader("not-a-zip")}
+	req := httptest.NewRequest(http.MethodPost, "/_redevplugin/api/plugins/local-imports", body)
+	req.Header.Set("Content-Type", localImportContentType)
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	var envelope decodedErrorResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &envelope); err != nil {
+		t.Fatal(err)
+	}
+	if rec.Code != http.StatusBadRequest || envelope.Code != string(security.ErrInvalidRequest) {
+		t.Fatalf("missing local import ID = status:%d envelope:%#v", rec.Code, envelope)
+	}
+	if body.calls != 0 {
+		t.Fatalf("missing local import ID consumed request body %d times", body.calls)
+	}
+
+	req = newJSONHTTPRequest(http.MethodPost, "/_redevplugin/api/plugins/install-release-ref", bytes.NewBufferString(`{"release_ref":{}}`))
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if err := json.Unmarshal(rec.Body.Bytes(), &envelope); err != nil {
+		t.Fatal(err)
+	}
+	if rec.Code != http.StatusBadRequest || envelope.Code != string(security.ErrInvalidRequest) {
+		t.Fatalf("missing release install ID = status:%d envelope:%#v", rec.Code, envelope)
 	}
 }
 
@@ -1430,7 +1472,7 @@ func TestHandlerInstallMapsPackageValidationErrorDetails(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			req := httptest.NewRequest(http.MethodPost, "/_redevplugin/api/plugins/local-imports", bytes.NewReader(buildHTTPRawPackage(t, tt.entries)))
+			req := httptest.NewRequest(http.MethodPost, "/_redevplugin/api/plugins/local-imports?plugin_instance_id="+url.QueryEscape(nextHTTPTestPluginInstanceID(t)), bytes.NewReader(buildHTTPRawPackage(t, tt.entries)))
 			req.Header.Set("Content-Type", localImportContentType)
 			rec := httptest.NewRecorder()
 
@@ -1464,7 +1506,7 @@ func TestHandlerInstallMapsPackageValidationErrorDetails(t *testing.T) {
 func TestHandlerEnableMapsBlockedNetworkTarget(t *testing.T) {
 	h := newHTTPTestHost(t)
 	handler := mustNewHandler(t, h, allowHTTPTestGuard())
-	installed := postLocalImport[registry.PluginRecord](t, handler, buildHTTPBlockedNetworkFixturePackage(t))
+	installed := postLocalImport[registry.PluginRecord](t, handler, nextHTTPTestPluginInstanceID(t), buildHTTPBlockedNetworkFixturePackage(t))
 	raw, err := json.Marshal(map[string]any{"plugin_instance_id": installed.PluginInstanceID, "expected_management_revision": installed.ManagementRevision})
 	if err != nil {
 		t.Fatal(err)
@@ -1486,7 +1528,7 @@ func TestHandlerEnableMapsBlockedNetworkTarget(t *testing.T) {
 
 func TestHandlerSurfaceBridgeFlow(t *testing.T) {
 	h := newHTTPTestHost(t)
-	installed, err := host.ImportLocalPackageBytes(httpTestContext(), h, buildHTTPFixturePackage(t))
+	installed, err := host.ImportLocalPackageBytes(httpTestContext(), h, nextHTTPTestPluginInstanceID(t), buildHTTPFixturePackage(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1523,7 +1565,7 @@ func TestHandlerSurfaceBridgeFlow(t *testing.T) {
 
 func TestHandlerRevokesAllSurfacesForCurrentSessionChannel(t *testing.T) {
 	h := newHTTPTestHost(t)
-	installed, err := host.ImportLocalPackageBytes(httpTestContext(), h, buildHTTPFixturePackage(t))
+	installed, err := host.ImportLocalPackageBytes(httpTestContext(), h, nextHTTPTestPluginInstanceID(t), buildHTTPFixturePackage(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1583,7 +1625,7 @@ func TestOpenSurfaceErrorsUseStableRecoverySemantics(t *testing.T) {
 
 func TestHandlerBridgeTokenRejectsInvalidHandshakeType(t *testing.T) {
 	h := newHTTPTestHost(t)
-	installed, err := host.ImportLocalPackageBytes(httpTestContext(), h, buildHTTPFixturePackage(t))
+	installed, err := host.ImportLocalPackageBytes(httpTestContext(), h, nextHTTPTestPluginInstanceID(t), buildHTTPFixturePackage(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1628,7 +1670,7 @@ func TestHandlerBridgeTokenRejectsInvalidHandshakeType(t *testing.T) {
 
 func TestHandlerBridgeTokenRejectsTranscriptMismatch(t *testing.T) {
 	h := newHTTPTestHost(t)
-	installed, err := host.ImportLocalPackageBytes(httpTestContext(), h, buildHTTPFixturePackage(t))
+	installed, err := host.ImportLocalPackageBytes(httpTestContext(), h, nextHTTPTestPluginInstanceID(t), buildHTTPFixturePackage(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1657,7 +1699,7 @@ func TestHandlerBridgeTokenRejectsTranscriptMismatch(t *testing.T) {
 
 func TestHandlerPrepareAndPrivateAssetFlow(t *testing.T) {
 	h := newHTTPTestHost(t)
-	installed, err := host.ImportLocalPackageBytes(httpTestContext(), h, buildHTTPFixturePackage(t))
+	installed, err := host.ImportLocalPackageBytes(httpTestContext(), h, nextHTTPTestPluginInstanceID(t), buildHTTPFixturePackage(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1735,7 +1777,7 @@ func TestHandlerRPCFlow(t *testing.T) {
 		capabilityID:      "example.capability.echo",
 		capabilityAdapter: adapter,
 	})
-	installed, err := host.ImportLocalPackageBytes(httpTestContext(), h, buildHTTPRPCFixturePackage(t))
+	installed, err := host.ImportLocalPackageBytes(httpTestContext(), h, nextHTTPTestPluginInstanceID(t), buildHTTPRPCFixturePackage(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1778,7 +1820,7 @@ func TestHandlerRPCSchemaErrorsUseStableCodes(t *testing.T) {
 		capabilityID:      "example.capability.echo",
 		capabilityAdapter: adapter,
 	})
-	installed, err := host.ImportLocalPackageBytes(httpTestContext(), h, buildHTTPRPCFixturePackage(t))
+	installed, err := host.ImportLocalPackageBytes(httpTestContext(), h, nextHTTPTestPluginInstanceID(t), buildHTTPRPCFixturePackage(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1818,7 +1860,7 @@ func TestHandlerRPCDoesNotExposeAdapterErrorDetails(t *testing.T) {
 		capabilityID:      "example.capability.echo",
 		capabilityAdapter: adapter,
 	})
-	installed, err := host.ImportLocalPackageBytes(httpTestContext(), h, buildHTTPRPCFixturePackage(t))
+	installed, err := host.ImportLocalPackageBytes(httpTestContext(), h, nextHTTPTestPluginInstanceID(t), buildHTTPRPCFixturePackage(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1847,7 +1889,7 @@ func TestHandlerRPCDoesNotExposeAdapterErrorDetails(t *testing.T) {
 
 func TestHandlerOpenSurfaceOmitsTrustedScopeHashes(t *testing.T) {
 	h := newHTTPTestHost(t)
-	installed, err := host.ImportLocalPackageBytes(httpTestContext(), h, buildHTTPFixturePackage(t))
+	installed, err := host.ImportLocalPackageBytes(httpTestContext(), h, nextHTTPTestPluginInstanceID(t), buildHTTPFixturePackage(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1903,7 +1945,7 @@ func TestHandlerRPCFlowRedactsCapabilityResponseData(t *testing.T) {
 		capabilityID:      "example.capability.echo",
 		capabilityAdapter: adapter,
 	})
-	installed, err := host.ImportLocalPackageBytes(httpTestContext(), h, buildHTTPRPCFixturePackage(t))
+	installed, err := host.ImportLocalPackageBytes(httpTestContext(), h, nextHTTPTestPluginInstanceID(t), buildHTTPRPCFixturePackage(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1953,7 +1995,7 @@ func TestHandlerRPCExposesHostAttestedCapabilityBusinessError(t *testing.T) {
 	h := newHTTPTestHostWithOptions(t, httpTestHostOptions{
 		capabilityID: "example.capability.echo", capabilityAdapter: adapter,
 	})
-	installed, err := host.ImportLocalPackageBytes(httpTestContext(), h, buildHTTPRPCFixturePackage(t))
+	installed, err := host.ImportLocalPackageBytes(httpTestContext(), h, nextHTTPTestPluginInstanceID(t), buildHTTPRPCFixturePackage(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1996,7 +2038,7 @@ func TestHandlerRPCGatewayTokenErrorsUseStableCodes(t *testing.T) {
 		capabilityID:      "example.capability.echo",
 		capabilityAdapter: adapter,
 	})
-	installed, err := host.ImportLocalPackageBytes(httpTestContext(), h, buildHTTPRPCFixturePackage(t))
+	installed, err := host.ImportLocalPackageBytes(httpTestContext(), h, nextHTTPTestPluginInstanceID(t), buildHTTPRPCFixturePackage(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2032,7 +2074,7 @@ func TestHandlerRPCGatewayTokenErrorsUseStableCodes(t *testing.T) {
 func TestHandlerBridgeTokenDuplicateChannelUsesGatewayMismatchCode(t *testing.T) {
 	h := newHTTPTestHost(t)
 	handler := mustNewHandler(t, h, allowHTTPTestGuard())
-	installed, err := host.ImportLocalPackageBytes(httpTestContext(), h, buildHTTPFixturePackage(t))
+	installed, err := host.ImportLocalPackageBytes(httpTestContext(), h, nextHTTPTestPluginInstanceID(t), buildHTTPFixturePackage(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2114,7 +2156,7 @@ func TestHandlerPermissionGrantRevokeFlow(t *testing.T) {
 		capabilityID:      "example.capability.echo",
 		capabilityAdapter: adapter,
 	})
-	installed, err := host.ImportLocalPackageBytes(httpTestContext(), h, buildHTTPRPCFixturePackage(t))
+	installed, err := host.ImportLocalPackageBytes(httpTestContext(), h, nextHTTPTestPluginInstanceID(t), buildHTTPRPCFixturePackage(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2252,7 +2294,7 @@ func TestHandlerSecurityPolicyCRUD(t *testing.T) {
 		capabilityID:      "example.capability.echo",
 		capabilityAdapter: &httpRecordingCapabilityAdapter{result: capability.Result{Data: map[string]any{"pong": true}}},
 	})
-	installed, err := host.ImportLocalPackageBytes(httpTestContext(), h, buildHTTPRPCFixturePackage(t))
+	installed, err := host.ImportLocalPackageBytes(httpTestContext(), h, nextHTTPTestPluginInstanceID(t), buildHTTPRPCFixturePackage(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2368,7 +2410,7 @@ func TestHandlerRPCConfirmationFlow(t *testing.T) {
 		capabilityID:      "example.capability.echo",
 		capabilityAdapter: adapter,
 	})
-	installed, err := host.ImportLocalPackageBytes(httpTestContext(), h, buildHTTPDangerousRPCFixturePackage(t))
+	installed, err := host.ImportLocalPackageBytes(httpTestContext(), h, nextHTTPTestPluginInstanceID(t), buildHTTPDangerousRPCFixturePackage(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2440,7 +2482,7 @@ func TestHandlerRPCConfirmationRejectionFlow(t *testing.T) {
 		capabilityID:      "example.capability.echo",
 		capabilityAdapter: adapter,
 	})
-	installed, err := host.ImportLocalPackageBytes(httpTestContext(), h, buildHTTPDangerousRPCFixturePackage(t))
+	installed, err := host.ImportLocalPackageBytes(httpTestContext(), h, nextHTTPTestPluginInstanceID(t), buildHTTPDangerousRPCFixturePackage(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2485,7 +2527,7 @@ func TestHandlerIntentListAndInvokeFlow(t *testing.T) {
 		capabilityID:      "example.capability.echo",
 		capabilityAdapter: adapter,
 	})
-	installed, err := host.ImportLocalPackageBytes(httpTestContext(), h, buildHTTPIntentFixturePackage(t, false))
+	installed, err := host.ImportLocalPackageBytes(httpTestContext(), h, nextHTTPTestPluginInstanceID(t), buildHTTPIntentFixturePackage(t, false))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2564,7 +2606,7 @@ func TestHandlerIntentInvokeRequiresPermission(t *testing.T) {
 		capabilityID:      "example.capability.echo",
 		capabilityAdapter: adapter,
 	})
-	installed, err := host.ImportLocalPackageBytes(httpTestContext(), h, buildHTTPIntentFixturePackage(t, false))
+	installed, err := host.ImportLocalPackageBytes(httpTestContext(), h, nextHTTPTestPluginInstanceID(t), buildHTTPIntentFixturePackage(t, false))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2605,7 +2647,7 @@ func TestHandlerIntentInvokeDangerousFailsClosed(t *testing.T) {
 		capabilityID:      "example.capability.echo",
 		capabilityAdapter: adapter,
 	})
-	installed, err := host.ImportLocalPackageBytes(httpTestContext(), h, buildHTTPIntentFixturePackage(t, true))
+	installed, err := host.ImportLocalPackageBytes(httpTestContext(), h, nextHTTPTestPluginInstanceID(t), buildHTTPIntentFixturePackage(t, true))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2648,7 +2690,7 @@ func TestHandlerOperationManagementFlow(t *testing.T) {
 		capabilityID:      "example.capability.echo",
 		capabilityAdapter: adapter,
 	})
-	installed, err := host.ImportLocalPackageBytes(httpTestContext(), h, buildHTTPOperationRPCFixturePackage(t))
+	installed, err := host.ImportLocalPackageBytes(httpTestContext(), h, nextHTTPTestPluginInstanceID(t), buildHTTPOperationRPCFixturePackage(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2722,7 +2764,7 @@ func TestHandlerOperationManagementRejectsCrossOwnerAccess(t *testing.T) {
 		capabilityID:      "example.capability.echo",
 		capabilityAdapter: adapter,
 	})
-	installed, err := host.ImportLocalPackageBytes(httpTestContext(), h, buildHTTPOperationRPCFixturePackage(t))
+	installed, err := host.ImportLocalPackageBytes(httpTestContext(), h, nextHTTPTestPluginInstanceID(t), buildHTTPOperationRPCFixturePackage(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2784,7 +2826,7 @@ func TestHandlerReportsUnknownOutcomeAfterMutatingRPCResponseFailure(t *testing.
 		capabilityID:      "example.capability.echo",
 		capabilityAdapter: adapter,
 	})
-	installed, err := host.ImportLocalPackageBytes(httpTestContext(), h, buildHTTPOperationRPCFixturePackage(t))
+	installed, err := host.ImportLocalPackageBytes(httpTestContext(), h, nextHTTPTestPluginInstanceID(t), buildHTTPOperationRPCFixturePackage(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2816,7 +2858,7 @@ func TestHandlerOperationCancelDispatchFailure(t *testing.T) {
 		capabilityID:      "example.capability.echo",
 		capabilityAdapter: adapter,
 	})
-	installed, err := host.ImportLocalPackageBytes(httpTestContext(), h, buildHTTPOperationRPCFixturePackage(t))
+	installed, err := host.ImportLocalPackageBytes(httpTestContext(), h, nextHTTPTestPluginInstanceID(t), buildHTTPOperationRPCFixturePackage(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2881,7 +2923,7 @@ func TestHandlerSurfaceOperationCancelRequiresMatchingBridgeScope(t *testing.T) 
 		capabilityID:      "example.capability.echo",
 		capabilityAdapter: adapter,
 	})
-	installed, err := host.ImportLocalPackageBytes(httpTestContext(), h, buildHTTPOperationRPCFixturePackage(t))
+	installed, err := host.ImportLocalPackageBytes(httpTestContext(), h, nextHTTPTestPluginInstanceID(t), buildHTTPOperationRPCFixturePackage(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2938,7 +2980,7 @@ func TestHandlerPrivateSurfaceStreamFlow(t *testing.T) {
 		capabilityID:      "example.capability.echo",
 		capabilityAdapter: adapter,
 	})
-	installed, err := host.ImportLocalPackageBytes(httpTestContext(), h, buildHTTPSubscriptionRPCFixturePackage(t))
+	installed, err := host.ImportLocalPackageBytes(httpTestContext(), h, nextHTTPTestPluginInstanceID(t), buildHTTPSubscriptionRPCFixturePackage(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -3032,7 +3074,7 @@ func TestStreamTokenValidationErrorsMapToInvalidCode(t *testing.T) {
 func TestHandlerCoreActionRPCFlow(t *testing.T) {
 	coreAdapter := &httpRecordingCoreActionAdapter{result: capability.Result{Data: map[string]any{"opened": true}}}
 	h := newHTTPTestHostWithOptions(t, httpTestHostOptions{coreActions: coreAdapter})
-	installed, err := host.ImportLocalPackageBytes(httpTestContext(), h, buildHTTPCoreActionFixturePackage(t))
+	installed, err := host.ImportLocalPackageBytes(httpTestContext(), h, nextHTTPTestPluginInstanceID(t), buildHTTPCoreActionFixturePackage(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -3068,7 +3110,7 @@ func TestHandlerCoreActionCannotForgeCapabilityErrorDetails(t *testing.T) {
 		Details:            map[string]any{"secret_token": "adapter-secret"},
 	}}
 	h := newHTTPTestHostWithOptions(t, httpTestHostOptions{coreActions: coreAdapter})
-	installed, err := host.ImportLocalPackageBytes(httpTestContext(), h, buildHTTPCoreActionFixturePackage(t))
+	installed, err := host.ImportLocalPackageBytes(httpTestContext(), h, nextHTTPTestPluginInstanceID(t), buildHTTPCoreActionFixturePackage(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -3102,7 +3144,7 @@ func TestHandlerWorkerRuntimeErrorMapsToRuntimeUnavailable(t *testing.T) {
 	runtime := newHTTPRecordingRuntimeManager(t)
 	runtime.err = runtimeclient.ErrRuntimeRequestFailed
 	h := newHTTPTestHostWithOptions(t, httpTestHostOptions{runtimeManager: runtime})
-	installed, err := host.ImportLocalPackageBytes(httpTestContext(), h, buildHTTPWorkerFixturePackage(t))
+	installed, err := host.ImportLocalPackageBytes(httpTestContext(), h, nextHTTPTestPluginInstanceID(t), buildHTTPWorkerFixturePackage(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -3142,7 +3184,7 @@ func TestHandlerWorkerBusinessErrorPreservesWorkerCode(t *testing.T) {
 	runtime := newHTTPRecordingRuntimeManager(t)
 	runtime.err = &runtimeclient.WorkerExecutionError{Code: "NOTE_NOT_FOUND", Message: "note was not found", Origin: runtimeclient.WorkerErrorOriginPlugin}
 	h := newHTTPTestHostWithOptions(t, httpTestHostOptions{runtimeManager: runtime})
-	installed, err := host.ImportLocalPackageBytes(httpTestContext(), h, buildHTTPWorkerFixturePackage(t))
+	installed, err := host.ImportLocalPackageBytes(httpTestContext(), h, nextHTTPTestPluginInstanceID(t), buildHTTPWorkerFixturePackage(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -3234,7 +3276,7 @@ func TestWorkerExecutionErrorsSeparatePlatformFailuresFromPluginDomainErrors(t *
 func TestHandlerSettingsFlow(t *testing.T) {
 	h := newHTTPTestHostWithOptions(t, httpTestHostOptions{secrets: &httpRecordingSecretStore{}})
 	handler := mustNewHandler(t, h, allowHTTPTestGuard())
-	installed, err := host.ImportLocalPackageBytes(httpTestContext(), h, buildHTTPSettingsFixturePackage(t))
+	installed, err := host.ImportLocalPackageBytes(httpTestContext(), h, nextHTTPTestPluginInstanceID(t), buildHTTPSettingsFixturePackage(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -3307,7 +3349,7 @@ func TestHandlerUninstallDeleteDataBlockedByOperation(t *testing.T) {
 		capabilityID:      "example.capability.echo",
 		capabilityAdapter: adapter,
 	})
-	installed, err := host.ImportLocalPackageBytes(httpTestContext(), h, buildHTTPOperationRPCFixturePackage(t))
+	installed, err := host.ImportLocalPackageBytes(httpTestContext(), h, nextHTTPTestPluginInstanceID(t), buildHTTPOperationRPCFixturePackage(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -3360,7 +3402,7 @@ func TestHandlerRejectsTrailingJSON(t *testing.T) {
 
 func TestHandlerDataExportImportFlow(t *testing.T) {
 	h := newHTTPTestHost(t)
-	installed, err := host.ImportLocalPackageBytes(httpTestContext(), h, buildHTTPStorageFixturePackage(t))
+	installed, err := host.ImportLocalPackageBytes(httpTestContext(), h, nextHTTPTestPluginInstanceID(t), buildHTTPStorageFixturePackage(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -3400,7 +3442,7 @@ func TestHandlerDataExportImportFlow(t *testing.T) {
 func TestHandlerRetainedDataLifecycleFlow(t *testing.T) {
 	h := newHTTPTestHost(t)
 	handler := mustNewHandler(t, h, allowHTTPTestGuard())
-	installed := postLocalImport[registry.PluginRecord](t, handler, buildHTTPStorageFixturePackage(t))
+	installed := postLocalImport[registry.PluginRecord](t, handler, nextHTTPTestPluginInstanceID(t), buildHTTPStorageFixturePackage(t))
 	enabled := postJSON[registry.PluginRecord](t, handler, "/_redevplugin/api/plugins/enable", map[string]any{
 		"plugin_instance_id":           installed.PluginInstanceID,
 		"expected_management_revision": installed.ManagementRevision,
@@ -3437,7 +3479,7 @@ func TestHandlerBindRetainedDataRestoresPayload(t *testing.T) {
 	h := newHTTPTestHost(t)
 	handler := mustNewHandler(t, h, allowHTTPTestGuard())
 	packageBytes := buildHTTPStorageFixturePackage(t)
-	installed := postLocalImport[registry.PluginRecord](t, handler, packageBytes)
+	installed := postLocalImport[registry.PluginRecord](t, handler, nextHTTPTestPluginInstanceID(t), packageBytes)
 	enabled := postJSON[registry.PluginRecord](t, handler, "/_redevplugin/api/plugins/enable", map[string]any{
 		"plugin_instance_id":           installed.PluginInstanceID,
 		"expected_management_revision": installed.ManagementRevision,
@@ -3450,7 +3492,7 @@ func TestHandlerBindRetainedDataRestoresPayload(t *testing.T) {
 	listed := getJSON[struct {
 		RetainedData []plugindata.Binding `json:"retained_data"`
 	}](t, handler, "/_redevplugin/api/plugins/retained-data?plugin_instance_id="+installed.PluginInstanceID)
-	target := postLocalImport[registry.PluginRecord](t, handler, packageBytes, "plugini_http_storage_rebind_target")
+	target := postLocalImport[registry.PluginRecord](t, handler, "plugini_http_storage_rebind_target", packageBytes)
 
 	bound := postJSON[plugindata.Binding](t, handler, "/_redevplugin/api/plugins/retained-data/bind", map[string]any{
 		"source_plugin_instance_id":           installed.PluginInstanceID,
@@ -3484,7 +3526,7 @@ func TestHandlerCleanupExpiredRetainedDataRejectsUnknownFields(t *testing.T) {
 
 func TestHandlerDataExportImportSettingsBundle(t *testing.T) {
 	h := newHTTPTestHost(t)
-	installed, err := host.ImportLocalPackageBytes(httpTestContext(), h, buildHTTPSettingsFixturePackage(t))
+	installed, err := host.ImportLocalPackageBytes(httpTestContext(), h, nextHTTPTestPluginInstanceID(t), buildHTTPSettingsFixturePackage(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -3530,7 +3572,7 @@ func TestHandlerDataExportImportSettingsBundle(t *testing.T) {
 func TestHandlerSecretLifecycleFlow(t *testing.T) {
 	secrets := &httpRecordingSecretStore{}
 	h := newHTTPTestHostWithOptions(t, httpTestHostOptions{secrets: secrets})
-	installed, err := host.ImportLocalPackageBytes(httpTestContext(), h, buildHTTPSettingsFixturePackage(t))
+	installed, err := host.ImportLocalPackageBytes(httpTestContext(), h, nextHTTPTestPluginInstanceID(t), buildHTTPSettingsFixturePackage(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -3611,7 +3653,7 @@ func TestStableOwnerScopeAndAdapterFailuresMapToHTTPContracts(t *testing.T) {
 func TestHandlerDeleteSecretErrorsUseMutationEnvelope(t *testing.T) {
 	secretStore := &httpRecordingSecretStore{}
 	h := newHTTPTestHostWithOptions(t, httpTestHostOptions{secrets: secretStore})
-	installed, err := host.ImportLocalPackageBytes(httpTestContext(), h, buildHTTPSettingsFixturePackage(t))
+	installed, err := host.ImportLocalPackageBytes(httpTestContext(), h, nextHTTPTestPluginInstanceID(t), buildHTTPSettingsFixturePackage(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -3692,7 +3734,7 @@ func TestHandlerSecretAdapterFailuresAfterDispatchAreUnknown(t *testing.T) {
 			test.setErr(secretStore, errors.New(sensitive))
 			diagnostics := newHTTPRecordingDiagnostics()
 			h := newHTTPTestHostWithOptions(t, httpTestHostOptions{secrets: secretStore, diagnostics: diagnostics})
-			installed, err := host.ImportLocalPackageBytes(httpTestContext(), h, buildHTTPSettingsFixturePackage(t))
+			installed, err := host.ImportLocalPackageBytes(httpTestContext(), h, nextHTTPTestPluginInstanceID(t), buildHTTPSettingsFixturePackage(t))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -3928,7 +3970,7 @@ func TestHandlerInternalErrorsUseStableMessagesAndOwnerScopedDiagnostics(t *test
 func TestHandlerPatchSettingsReportsUnknownWhenMetadataReadFailsAfterCommit(t *testing.T) {
 	secretStore := &httpRecordingSecretStore{listErr: errors.New("secret metadata unavailable")}
 	h := newHTTPTestHostWithOptions(t, httpTestHostOptions{secrets: secretStore})
-	installed, err := host.ImportLocalPackageBytes(httpTestContext(), h, buildHTTPSettingsFixturePackage(t))
+	installed, err := host.ImportLocalPackageBytes(httpTestContext(), h, nextHTTPTestPluginInstanceID(t), buildHTTPSettingsFixturePackage(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -4004,7 +4046,7 @@ func TestHandlerRuntimeStartRejectsUnknownTargetsBeforeHostDispatch(t *testing.T
 func TestHandlerRefreshEnabledRuntimeState(t *testing.T) {
 	h := newHTTPTestHost(t)
 	handler := mustNewHandler(t, h, allowHTTPTestGuard())
-	installed := postLocalImport[registry.PluginRecord](t, handler, buildHTTPFixturePackage(t))
+	installed := postLocalImport[registry.PluginRecord](t, handler, nextHTTPTestPluginInstanceID(t), buildHTTPFixturePackage(t))
 	enabled := postJSON[registry.PluginRecord](t, handler, "/_redevplugin/api/plugins/enable", map[string]any{
 		"plugin_instance_id":           installed.PluginInstanceID,
 		"expected_management_revision": installed.ManagementRevision,
@@ -4047,11 +4089,8 @@ func postJSON[T any](t *testing.T, handler http.Handler, path string, body any) 
 	return data
 }
 
-func postLocalImport[T any](t *testing.T, handler http.Handler, packageBytes []byte, pluginInstanceID ...string) T {
-	path := "/_redevplugin/api/plugins/local-imports"
-	if len(pluginInstanceID) > 0 && pluginInstanceID[0] != "" {
-		path += "?plugin_instance_id=" + url.QueryEscape(pluginInstanceID[0])
-	}
+func postLocalImport[T any](t *testing.T, handler http.Handler, pluginInstanceID string, packageBytes []byte) T {
+	path := "/_redevplugin/api/plugins/local-imports?plugin_instance_id=" + url.QueryEscape(pluginInstanceID)
 	return requestBinary[T](t, handler, http.MethodPost, path, packageBytes, http.StatusOK)
 }
 
@@ -5224,13 +5263,13 @@ type httpRecordingAuthorization struct {
 }
 
 func (a *httpRecordingAuthorization) Authorize(_ context.Context, req host.AuthorizationRequest) error {
-	req.RelatedResourceIDs = append([]string(nil), req.RelatedResourceIDs...)
+	req.RelatedTargets = append([]host.AuthorizationTarget(nil), req.RelatedTargets...)
 	a.requests = append(a.requests, req)
 	return nil
 }
 
 func (httpTestAuthorization) Authorize(_ context.Context, req host.AuthorizationRequest) error {
-	if !req.Session.Valid() || !req.Action.Valid() || !req.Resource.Valid() || req.Resource != req.Action.Resource() {
+	if !req.Session.Valid() || !req.Action.Valid() || !req.Target.Kind.Valid() || req.Target.Kind != req.Action.Resource() {
 		return host.ErrActionDenied
 	}
 	return nil
@@ -5273,6 +5312,16 @@ type httpRecordingReleaseArtifactResolver struct {
 	artifact host.ResolvedPackageArtifact
 	err      error
 	last     host.ReleaseArtifactResolveRequest
+}
+
+type httpReadProbe struct {
+	reader io.Reader
+	calls  int
+}
+
+func (r *httpReadProbe) Read(p []byte) (int, error) {
+	r.calls++
+	return r.reader.Read(p)
 }
 
 func artifactSHA256(data []byte) string {

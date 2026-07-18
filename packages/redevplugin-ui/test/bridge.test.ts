@@ -386,9 +386,8 @@ test("platform client manages plugin lifecycle and surface opening routes", asyn
   assert.equal("importLocalPackage" in client, false);
   assert.equal("updateLocalPackage" in client, false);
 
-  const installed = await localImportClient.importLocalPackage(new Blob(["pkg"]), {
-    pluginInstanceId: "plugin_instance_1",
-    signal: uploadController.signal,
+	const installed = await localImportClient.importLocalPackage("plugin_instance_1", new Blob(["pkg"]), {
+		signal: uploadController.signal,
   });
   const updated = await localImportClient.updateLocalPackage("plugin_instance_1", 1, new Blob(["pkg2"]));
   const downgraded = await client.downgradePlugin({ plugin_instance_id: "plugin_instance_1", version: "1.0.0", expected_management_revision: 2 });
@@ -452,11 +451,11 @@ test("platform client installs and updates plugin release refs without package b
     },
   };
 
-  await client.installReleaseRef({ release_ref: releaseRef });
+	await client.installReleaseRef({ plugin_instance_id: "plugin_instance_1", release_ref: releaseRef });
   await client.updateReleaseRef({ plugin_instance_id: "plugin_instance_1", release_ref: { ...releaseRef, version: "1.1.0" }, expected_management_revision: 1 });
 
   assert.equal(fetch.calls[0]?.input, "/_redevplugin/api/plugins/install-release-ref");
-  assert.deepEqual(JSON.parse(fetch.calls[0]?.init.body ?? ""), { release_ref: releaseRef });
+	assert.deepEqual(JSON.parse(fetch.calls[0]?.init.body ?? ""), { plugin_instance_id: "plugin_instance_1", release_ref: releaseRef });
   assert.equal(fetch.calls[1]?.input, "/_redevplugin/api/plugins/update-release-ref");
   assert.deepEqual(JSON.parse(fetch.calls[1]?.init.body ?? ""), { plugin_instance_id: "plugin_instance_1", release_ref: { ...releaseRef, version: "1.1.0" }, expected_management_revision: 1 });
 });
