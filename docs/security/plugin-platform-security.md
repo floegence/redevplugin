@@ -214,16 +214,18 @@ confirmation consumption fails closed.
 
 Surface prepare/token/dispose, asset reads, and stream reads are parent-only POST
 routes. Responses use `Cache-Control: no-store`, and the Host's origin/CSRF guard
-must return the host-neutral `OriginTrustedParent` decision with a valid trusted
-request scope. Product-specific origin names or roles are not part of the
-ReDevPlugin adapter contract. Asset tickets, asset sessions, gateway tokens, and
-stream tickets remain in parent memory. For a lazy asset, plugin code sends only
-the opaque `binding_id` from the prepared document. The HTTP API does not accept
-a caller-selected package path or digest: the Host resolves both from its cached
-prepared document, checks the active fingerprint, entry path and entry digest,
-then revalidates the asset digest before returning typed bytes over the private
-port. Every read compares registry path, metadata size, content type, actual byte
-length, and recomputed SHA-256. A prepared document permits at most 128 lazy assets and 32
+must authenticate the request, validate the closed `trusted_host` origin policy,
+validate the required CSRF policy, and authorize the route's closed
+`RouteAction` before request decoding or Host dispatch. Product-specific origin
+names, CSRF tokens, session semantics, and authorization roles are not part of
+the ReDevPlugin adapter contract. Asset tickets, asset sessions, gateway tokens,
+and stream tickets remain in parent memory. For a lazy asset, plugin code sends
+only the opaque `binding_id` from the prepared document. The HTTP API does not
+accept a caller-selected package path or digest: the Host resolves both from its
+cached prepared document, checks the active fingerprint, entry path and entry
+digest, then revalidates the asset digest before returning typed bytes over the
+private port. Every read compares registry path, metadata size, content type,
+actual byte length, and recomputed SHA-256. A prepared document permits at most 128 lazy assets and 32
 MiB cumulative lazy bytes; the renderer and trusted parent allow at most four
 concurrent reads. Unknown or stale bindings fail closed. The plugin worker receives random
 `surface_handle` and `stream_handle` values; there are no query credentials,
@@ -440,9 +442,9 @@ Host products must:
 
 - keep session, origin, CSRF, state root, vault, audit, diagnostics, runtime
   artifact, and business capability adapters explicit;
-- map product-specific origin/session policy into `OriginTrustedParent` or
-  `OriginDeny` and a valid request scope without adding product roles to the
-  ReDevPlugin adapter;
+- implement all four `websecurity.Guard` stages, return a complete authenticated
+  session, validate trusted-host origin and CSRF policy, and authorize the closed
+  route action without adding product roles to the ReDevPlugin adapter;
 - verify compatibility manifests and release artifacts before upgrades;
 - avoid local sibling dependency wiring;
 - present policy decisions and confirmations through product UI without

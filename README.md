@@ -148,10 +148,13 @@ capabilities.
   operation/subscription cancel policy, and delete-effect metadata.
   `testdata/generated_plugins/malicious-build/*`
   must fail packaging before any dependency install or build step can run.
-- Mountable HTTP routes call a host-provided `websecurity.Guard` for origin and
-  CSRF policy. The guard returns the host-neutral `trusted_parent` or `deny`
-  decision plus an authenticated request scope; product-specific origin roles
-  and concrete session semantics stay in the host product.
+- Mountable HTTP routes call a host-provided `websecurity.Guard` through the
+  explicit `Authenticate`, `ValidateOrigin`, `ValidateCSRF`, and
+  `AuthorizeRoute` stages. Every platform route requires the closed
+  `trusted_host` origin policy, every unsafe method including asset and stream
+  reads requires CSRF validation, and every route carries a closed
+  `RouteAction`. The authenticated session and product-specific origin, CSRF,
+  and authorization policy stay in the host product.
 - `PluginPlatformClient.openSurfaceInSlot(...)` is the only public surface
   opening path. It owns the HTTP bootstrap, opening lease, replacement ordering,
   and fresh SDK-owned iframe, then returns a `PluginSurfaceHost` handle whose
