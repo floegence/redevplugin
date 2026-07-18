@@ -927,17 +927,18 @@ type OpenSurfaceRequest struct {
 	Now                        time.Time `json:"-"`
 }
 
-type ExchangeAssetTicketRequest struct {
+type PrepareSurfaceRequest struct {
 	SurfaceInstanceID string    `json:"surface_instance_id"`
 	AssetTicket       string    `json:"asset_ticket"`
 	Now               time.Time `json:"-"`
 }
 
 type ReadSurfaceAssetRequest struct {
-	AssetSession   string    `json:"asset_session"`
-	AssetSessionID string    `json:"asset_session_id"`
-	BindingID      string    `json:"binding_id"`
-	Now            time.Time `json:"-"`
+	SurfaceInstanceID string    `json:"surface_instance_id"`
+	AssetSession      string    `json:"asset_session"`
+	AssetSessionID    string    `json:"asset_session_id"`
+	BindingID         string    `json:"binding_id"`
+	Now               time.Time `json:"-"`
 }
 
 type DisposeSurfaceRequest struct {
@@ -1471,7 +1472,8 @@ func (h *Host) Close() error {
 	return h.closeErr
 }
 
-// Features returns the configured optional modules in canonical order.
+// Features returns process configuration for host initialization and diagnostics.
+// Session-facing feature discovery must use ListFeatures.
 func (h *Host) Features() []Feature {
 	if h == nil || len(h.features) == 0 {
 		return []Feature{}
@@ -1484,6 +1486,21 @@ func (h *Host) Features() []Feature {
 		}
 	}
 	return result
+}
+
+func (h *Host) ListFeatures(ctx context.Context) ([]Feature, error) {
+	if _, err := h.authorizeManagement(ctx, ManagementActionListFeatures, ""); err != nil {
+		return nil, err
+	}
+	return h.Features(), nil
+}
+
+// GetCompatibility returns the current platform contract after host authorization.
+func (h *Host) GetCompatibility(ctx context.Context) (version.CompatibilityManifest, error) {
+	if _, err := h.authorizeManagement(ctx, ManagementActionGetCompatibility, ""); err != nil {
+		return version.CompatibilityManifest{}, err
+	}
+	return version.CurrentCompatibilityManifest(), nil
 }
 
 func (h *Host) requireFeature(feature Feature) error {
@@ -1596,10 +1613,11 @@ func requireUserSession(ctx context.Context) (sessionctx.Context, error) {
 }
 
 func (h *Host) OpenSurface(ctx context.Context, req OpenSurfaceRequest) (result bridge.SurfaceBootstrap, retErr error) {
-	session, err := h.authorizeManagement(ctx, ManagementActionOpenSurface, req.PluginInstanceID, req.SurfaceID)
+	authorization, err := h.authorizeManagement(ctx, ManagementActionOpenSurface, req.PluginInstanceID, req.SurfaceID)
 	if err != nil {
 		return bridge.SurfaceBootstrap{}, err
 	}
+	session := authorization.session
 	releaseLifecycle, err := h.lifecycleLocks.acquireRead(ctx, req.PluginInstanceID)
 	if err != nil {
 		return bridge.SurfaceBootstrap{}, err
@@ -1676,11 +1694,8 @@ func (h *Host) OpenSurface(ctx context.Context, req OpenSurfaceRequest) (result 
 	return bootstrap, nil
 }
 
-func (h *Host) ExchangeAssetTicket(ctx context.Context, req ExchangeAssetTicketRequest) (bridge.AssetSessionResult, error) {
-	session, err := requireUserSession(ctx)
-	if err != nil {
-		return bridge.AssetSessionResult{}, err
-	}
+func (h *Host) exchangeAssetTicketAuthorized(_ context.Context, authorization authorizedAction, req PrepareSurfaceRequest) (bridge.AssetSessionResult, error) {
+	session := authorization.session
 	result, err := h.surfaceTokens.ExchangeAssetTicket(bridge.ExchangeAssetTicketRequest{
 		SurfaceInstanceID:    req.SurfaceInstanceID,
 		AssetTicket:          req.AssetTicket,
@@ -1696,12 +1711,13 @@ func (h *Host) ExchangeAssetTicket(ctx context.Context, req ExchangeAssetTicketR
 	return result, nil
 }
 
-func (h *Host) PrepareSurface(ctx context.Context, req ExchangeAssetTicketRequest) (result PrepareSurfaceResult, err error) {
-	session, err := requireUserSession(ctx)
+func (h *Host) PrepareSurface(ctx context.Context, req PrepareSurfaceRequest) (result PrepareSurfaceResult, err error) {
+	authorization, err := h.authorizeManagement(ctx, ManagementActionPrepareSurface, req.SurfaceInstanceID)
 	if err != nil {
 		return PrepareSurfaceResult{}, err
 	}
-	assetSession, err := h.ExchangeAssetTicket(ctx, req)
+	session := authorization.session
+	assetSession, err := h.exchangeAssetTicketAuthorized(ctx, authorization, req)
 	if err != nil {
 		return PrepareSurfaceResult{}, err
 	}
@@ -1719,9 +1735,10 @@ func (h *Host) PrepareSurface(ctx context.Context, req ExchangeAssetTicketReques
 		}
 	}()
 	assetRequest := ReadSurfaceAssetRequest{
-		AssetSession:   assetSession.AssetSession,
-		AssetSessionID: assetSession.AssetSessionID,
-		Now:            req.Now,
+		SurfaceInstanceID: req.SurfaceInstanceID,
+		AssetSession:      assetSession.AssetSession,
+		AssetSessionID:    assetSession.AssetSessionID,
+		Now:               req.Now,
 	}
 	validation, record, err := h.validateSurfaceAssetSession(ctx, assetRequest)
 	if err != nil {
@@ -1776,6 +1793,9 @@ func (h *Host) PrepareSurface(ctx context.Context, req ExchangeAssetTicketReques
 }
 
 func (h *Host) ReadSurfaceAsset(ctx context.Context, req ReadSurfaceAssetRequest) (ReadSurfaceAssetResult, error) {
+	if _, err := h.authorizeManagement(ctx, ManagementActionReadSurfaceAsset, req.SurfaceInstanceID, req.AssetSessionID, req.BindingID); err != nil {
+		return ReadSurfaceAssetResult{}, err
+	}
 	validation, record, err := h.validateSurfaceAssetSession(ctx, req)
 	if err != nil {
 		return ReadSurfaceAssetResult{}, err
@@ -1820,6 +1840,9 @@ func (h *Host) validateSurfaceAssetSession(ctx context.Context, req ReadSurfaceA
 	})
 	if err != nil {
 		return bridge.AssetSessionValidation{}, registry.PluginRecord{}, err
+	}
+	if req.SurfaceInstanceID != "" && validation.Session.SurfaceInstanceID != req.SurfaceInstanceID {
+		return bridge.AssetSessionValidation{}, registry.PluginRecord{}, bridge.ErrTokenAudience
 	}
 	record, err := h.adapters.Registry.GetPlugin(ctx, validation.Session.PluginInstanceID)
 	if err != nil {
@@ -1866,10 +1889,11 @@ func (h *Host) readValidatedSurfaceAsset(ctx context.Context, validation bridge.
 }
 
 func (h *Host) DisposeSurface(ctx context.Context, req DisposeSurfaceRequest) error {
-	session, err := requireUserSession(ctx)
+	authorization, err := h.authorizeManagement(ctx, ManagementActionDisposeSurface, req.SurfaceInstanceID)
 	if err != nil {
 		return err
 	}
+	session := authorization.session
 	return h.surfaceTokens.DisposeBoundSurface(bridge.DisposeSurfaceRequest{
 		SurfaceInstanceID:    req.SurfaceInstanceID,
 		BridgeNonce:          req.BridgeNonce,
@@ -1882,10 +1906,11 @@ func (h *Host) DisposeSurface(ctx context.Context, req DisposeSurfaceRequest) er
 }
 
 func (h *Host) RevokeSurfaceScope(ctx context.Context, req RevokeSurfaceScopeRequest) (result int, retErr error) {
-	session, err := requireUserSession(ctx)
+	authorization, err := h.authorizeManagement(ctx, ManagementActionRevokeSurfaceScope, "")
 	if err != nil {
 		return 0, err
 	}
+	session := authorization.session
 	auditMutation, err := h.beginSecurityMutation(ctx, AuditEvent{Type: "plugin.surface_scope.revoked"})
 	if err != nil {
 		return 0, err
@@ -1910,10 +1935,11 @@ func (h *Host) RevokeSurfaceScope(ctx context.Context, req RevokeSurfaceScopeReq
 }
 
 func (h *Host) MintBridgeToken(ctx context.Context, req MintBridgeTokenRequest) (result bridge.GatewayTokenResult, retErr error) {
-	session, err := requireUserSession(ctx)
+	authorization, err := h.authorizeManagement(ctx, ManagementActionMintBridgeToken, req.Handshake.SurfaceInstanceID, req.BridgeChannelID)
 	if err != nil {
 		return bridge.GatewayTokenResult{}, err
 	}
+	session := authorization.session
 	validation, err := h.surfaceTokens.ValidateBridgeHandshake(bridge.MintGatewayTokenRequest{
 		Handshake:                 req.Handshake,
 		BridgeChannelID:           req.BridgeChannelID,
@@ -1974,11 +2000,11 @@ func (h *Host) CallPluginMethod(ctx context.Context, req CallMethodRequest) (res
 			resultErr = mergeRPCFailures(ctx, resultErr, reportErr)
 		}
 	}()
-	session, err := requireUserSession(ctx)
+	authorization, err := h.authorizeManagement(ctx, ManagementActionCallPluginMethod, req.PluginInstanceID, req.SurfaceInstanceID, req.Method)
 	if err != nil {
 		return CallMethodResult{}, err
 	}
-	req.session = session
+	req.session = authorization.session
 	frozenParams, err := deepCloneParams(req.Params)
 	if err != nil {
 		return CallMethodResult{}, err
@@ -2086,10 +2112,11 @@ func (h *Host) PrepareMethodConfirmation(ctx context.Context, req PrepareMethodC
 	defer func() {
 		resultErr = finalizeRPCError(ctx, resultErr)
 	}()
-	session, err := requireUserSession(ctx)
+	authorization, err := h.authorizeManagement(ctx, ManagementActionPrepareMethodConfirmation, req.PluginInstanceID, req.SurfaceInstanceID, req.Method)
 	if err != nil {
 		return PrepareMethodConfirmationResult{}, err
 	}
+	session := authorization.session
 	frozenParams, err := deepCloneParams(req.Params)
 	if err != nil {
 		return PrepareMethodConfirmationResult{}, err
@@ -2206,10 +2233,11 @@ func (h *Host) RejectMethodConfirmation(ctx context.Context, req RejectMethodCon
 	defer func() {
 		resultErr = finalizeRPCError(ctx, resultErr)
 	}()
-	session, err := requireUserSession(ctx)
+	authorization, err := h.authorizeManagement(ctx, ManagementActionRejectSurfaceConfirmation, req.ConfirmationID, req.PluginInstanceID, req.SurfaceInstanceID)
 	if err != nil {
 		return RejectMethodConfirmationResult{}, err
 	}
+	session := authorization.session
 	if strings.TrimSpace(req.PluginInstanceID) == "" || strings.TrimSpace(req.SurfaceInstanceID) == "" ||
 		strings.TrimSpace(req.BridgeChannelID) == "" || strings.TrimSpace(req.GatewayToken) == "" ||
 		strings.TrimSpace(req.ConfirmationID) == "" {
@@ -2333,10 +2361,11 @@ func (h *Host) ListIntents(ctx context.Context, req ListIntentsRequest) ([]Inten
 }
 
 func (h *Host) InvokeIntent(ctx context.Context, req InvokeIntentRequest) (response CallMethodResult, resultErr error) {
-	session, err := h.authorizeManagement(ctx, ManagementActionInvokeIntent, req.PluginInstanceID, req.IntentID)
+	authorization, err := h.authorizeManagement(ctx, ManagementActionInvokeIntent, req.PluginInstanceID, req.IntentID)
 	if err != nil {
 		return CallMethodResult{}, err
 	}
+	session := authorization.session
 	ctx = withRPCErrorScope(ctx)
 	defer func() {
 		resultErr = finalizeRPCError(ctx, resultErr)
@@ -5005,10 +5034,11 @@ func (h *Host) RefreshEnabledPlugins(ctx context.Context) ([]RefreshEnabledPlugi
 }
 
 func (h *Host) GrantPermission(ctx context.Context, req GrantPermissionRequest) (result PermissionMutationResult, retErr error) {
-	session, err := h.authorizeManagement(ctx, ManagementActionGrantPermission, req.PluginInstanceID, req.PermissionID)
+	authorization, err := h.authorizeManagement(ctx, ManagementActionGrantPermission, req.PluginInstanceID, req.PermissionID)
 	if err != nil {
 		return PermissionMutationResult{}, err
 	}
+	session := authorization.session
 	record, err := h.adapters.Registry.GetPlugin(ctx, req.PluginInstanceID)
 	if err != nil {
 		return PermissionMutationResult{}, err
@@ -5051,10 +5081,11 @@ func (h *Host) GrantPermission(ctx context.Context, req GrantPermissionRequest) 
 }
 
 func (h *Host) RevokePermission(ctx context.Context, req RevokePermissionRequest) (result PermissionMutationResult, retErr error) {
-	session, err := h.authorizeManagement(ctx, ManagementActionRevokePermission, req.PluginInstanceID, req.PermissionID)
+	authorization, err := h.authorizeManagement(ctx, ManagementActionRevokePermission, req.PluginInstanceID, req.PermissionID)
 	if err != nil {
 		return PermissionMutationResult{}, err
 	}
+	session := authorization.session
 	record, err := h.adapters.Registry.GetPlugin(ctx, req.PluginInstanceID)
 	if err != nil {
 		return PermissionMutationResult{}, err
@@ -5244,10 +5275,11 @@ func activePermissionGrant(record permissions.Record, now time.Time) bool {
 }
 
 func (h *Host) ListDiagnosticEvents(ctx context.Context, req ListDiagnosticEventsRequest) ([]DiagnosticEvent, error) {
-	session, err := h.authorizeManagement(ctx, ManagementActionListDiagnosticEvents, req.PluginInstanceID)
+	authorization, err := h.authorizeManagement(ctx, ManagementActionListDiagnosticEvents, req.PluginInstanceID)
 	if err != nil {
 		return nil, err
 	}
+	session := authorization.session
 	lister, ok := h.adapters.Diagnostics.(DiagnosticLister)
 	if !ok {
 		return nil, errors.New("diagnostic event lister is unavailable")
@@ -5324,10 +5356,11 @@ func (h *Host) ListDiagnosticEvents(ctx context.Context, req ListDiagnosticEvent
 }
 
 func (h *Host) ListOperations(ctx context.Context, req ListOperationsRequest) (ListOperationsResult, error) {
-	session, err := h.authorizeManagement(ctx, ManagementActionListOperations, req.PluginInstanceID)
+	authorization, err := h.authorizeManagement(ctx, ManagementActionListOperations, req.PluginInstanceID)
 	if err != nil {
 		return ListOperationsResult{}, err
 	}
+	session := authorization.session
 	cursor, err := operation.DecodeCursor(req.Cursor)
 	if err != nil {
 		return ListOperationsResult{}, err
@@ -5487,10 +5520,11 @@ func (h *Host) requireSurfaceRuntimeGeneration(ctx context.Context, pluginInstan
 }
 
 func (h *Host) GetOperation(ctx context.Context, operationID string) (operation.Record, error) {
-	session, err := h.authorizeManagement(ctx, ManagementActionGetOperation, operationID)
+	authorization, err := h.authorizeManagement(ctx, ManagementActionGetOperation, operationID)
 	if err != nil {
 		return operation.Record{}, err
 	}
+	session := authorization.session
 	record, err := h.adapters.Operations.Get(ctx, operationID)
 	if err != nil {
 		return operation.Record{}, err
@@ -5502,10 +5536,15 @@ func (h *Host) GetOperation(ctx context.Context, operationID string) (operation.
 }
 
 func (h *Host) CancelOperation(ctx context.Context, req CancelOperationRequest) (result operation.Record, retErr error) {
-	session, err := h.authorizeManagement(ctx, ManagementActionCancelOperation, req.OperationID)
+	authorization, err := h.authorizeManagement(ctx, ManagementActionCancelOperation, req.OperationID)
 	if err != nil {
 		return operation.Record{}, err
 	}
+	return h.cancelOperationAuthorized(ctx, authorization, req)
+}
+
+func (h *Host) cancelOperationAuthorized(ctx context.Context, authorization authorizedAction, req CancelOperationRequest) (result operation.Record, retErr error) {
+	session := authorization.session
 	current, err := h.adapters.Operations.Get(ctx, req.OperationID)
 	if err != nil {
 		return operation.Record{}, err
@@ -5573,10 +5612,11 @@ func (h *Host) dispatchOperationCancellation(ctx context.Context, record operati
 }
 
 func (h *Host) CancelSurfaceOperation(ctx context.Context, req CancelSurfaceOperationRequest) (operation.Record, error) {
-	session, err := requireUserSession(ctx)
+	authorization, err := h.authorizeManagement(ctx, ManagementActionCancelSurfaceOperation, req.OperationID, req.SurfaceInstanceID, req.BridgeChannelID)
 	if err != nil {
 		return operation.Record{}, err
 	}
+	session := authorization.session
 	record, err := h.adapters.Operations.Get(ctx, req.OperationID)
 	if err != nil {
 		return operation.Record{}, err
@@ -5589,7 +5629,7 @@ func (h *Host) CancelSurfaceOperation(ctx context.Context, req CancelSurfaceOper
 		record.BridgeChannelID != req.BridgeChannelID {
 		return operation.Record{}, bridge.ErrTokenAudience
 	}
-	return h.CancelOperation(ctx, CancelOperationRequest{OperationID: req.OperationID, Reason: req.Reason, Now: req.Now})
+	return h.cancelOperationAuthorized(ctx, authorization, CancelOperationRequest{OperationID: req.OperationID, Reason: req.Reason, Now: req.Now})
 }
 
 func (h *Host) armDetachedOperationCancelAckTimeout(record operation.Record) {
@@ -5651,10 +5691,11 @@ func (h *Host) armDetachedOperationCancelAckTimeout(record operation.Record) {
 }
 
 func (h *Host) ReadStream(ctx context.Context, req ReadStreamRequest) (ReadStreamResult, error) {
-	session, err := requireUserSession(ctx)
+	authorization, err := h.authorizeManagement(ctx, ManagementActionReadSurfaceStream, req.StreamID, req.SurfaceInstanceID, req.ReadID)
 	if err != nil {
 		return ReadStreamResult{}, err
 	}
+	session := authorization.session
 	if strings.TrimSpace(req.StreamTicket) == "" {
 		return ReadStreamResult{}, ErrStreamTicketRequired
 	}
@@ -5722,10 +5763,11 @@ func readStreamResult(record stream.Record, delivery stream.Delivery) ReadStream
 }
 
 func (h *Host) AcknowledgeStream(ctx context.Context, req AcknowledgeStreamRequest) (stream.Record, error) {
-	session, err := requireUserSession(ctx)
+	authorization, err := h.authorizeManagement(ctx, ManagementActionAcknowledgeSurfaceStream, req.StreamID, req.SurfaceInstanceID, req.DeliveryID)
 	if err != nil {
 		return stream.Record{}, err
 	}
+	session := authorization.session
 	if strings.TrimSpace(req.StreamTicket) == "" {
 		return stream.Record{}, ErrStreamTicketRequired
 	}
@@ -5881,10 +5923,11 @@ func connectorResourceScope(m manifest.Manifest, connectorID string, session ses
 }
 
 func (h *Host) MintNetworkHandleGrant(ctx context.Context, req MintConnectionGrantRequest) (result NetworkHandleGrantResult, retErr error) {
-	session, err := h.authorizeManagement(ctx, ManagementActionMintNetworkHandleGrant, req.PluginInstanceID, req.ConnectorID)
+	authorization, err := h.authorizeManagement(ctx, ManagementActionMintNetworkHandleGrant, req.PluginInstanceID, req.ConnectorID)
 	if err != nil {
 		return NetworkHandleGrantResult{}, err
 	}
+	session := authorization.session
 	if strings.TrimSpace(req.RuntimeGenerationID) == "" {
 		return NetworkHandleGrantResult{}, bridge.ErrMissingTokenAudience
 	}
@@ -5938,10 +5981,11 @@ func (h *Host) MintNetworkHandleGrant(ctx context.Context, req MintConnectionGra
 }
 
 func (h *Host) MintStorageHandleGrant(ctx context.Context, req MintStorageHandleGrantRequest) (result StorageHandleGrantResult, retErr error) {
-	session, err := h.authorizeManagement(ctx, ManagementActionMintStorageHandleGrant, req.PluginInstanceID, req.StoreID)
+	authorization, err := h.authorizeManagement(ctx, ManagementActionMintStorageHandleGrant, req.PluginInstanceID, req.StoreID)
 	if err != nil {
 		return StorageHandleGrantResult{}, err
 	}
+	session := authorization.session
 	if strings.TrimSpace(req.RuntimeGenerationID) == "" || strings.TrimSpace(req.StoreID) == "" {
 		return StorageHandleGrantResult{}, bridge.ErrMissingTokenAudience
 	}
@@ -6081,10 +6125,11 @@ func (h *Host) EnablePlugin(ctx context.Context, req EnableRequest) (result regi
 }
 
 func (h *Host) DisablePlugin(ctx context.Context, req DisableRequest) (result registry.PluginRecord, retErr error) {
-	session, err := h.authorizeManagement(ctx, ManagementActionDisablePlugin, req.PluginInstanceID)
+	authorization, err := h.authorizeManagement(ctx, ManagementActionDisablePlugin, req.PluginInstanceID)
 	if err != nil {
 		return registry.PluginRecord{}, err
 	}
+	session := authorization.session
 	resourceScope, err := session.ResourceScope(sessionctx.ScopeEnvironment)
 	if err != nil {
 		return registry.PluginRecord{}, err
@@ -6166,10 +6211,11 @@ func (h *Host) DisablePlugin(ctx context.Context, req DisableRequest) (result re
 }
 
 func (h *Host) UninstallPlugin(ctx context.Context, req UninstallRequest) (result registry.PluginRecord, retErr error) {
-	session, err := h.authorizeManagement(ctx, ManagementActionUninstallPlugin, req.PluginInstanceID)
+	authorization, err := h.authorizeManagement(ctx, ManagementActionUninstallPlugin, req.PluginInstanceID)
 	if err != nil {
 		return registry.PluginRecord{}, err
 	}
+	session := authorization.session
 	resourceScope, err := session.ResourceScope(sessionctx.ScopeEnvironment)
 	if err != nil {
 		return registry.PluginRecord{}, err

@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"testing"
+
+	"github.com/floegence/redevplugin/pkg/sessionctx"
 )
 
 type recordingAuthorizationAdapter struct {
@@ -27,6 +29,17 @@ func TestManagementActionAndResourceContractsAreClosed(t *testing.T) {
 	seen := make(map[ManagementAction]struct{})
 	for _, action := range []ManagementAction{
 		ManagementActionOpenSurface,
+		ManagementActionPrepareSurface,
+		ManagementActionMintBridgeToken,
+		ManagementActionReadSurfaceAsset,
+		ManagementActionReadSurfaceStream,
+		ManagementActionAcknowledgeSurfaceStream,
+		ManagementActionCancelSurfaceOperation,
+		ManagementActionRejectSurfaceConfirmation,
+		ManagementActionDisposeSurface,
+		ManagementActionRevokeSurfaceScope,
+		ManagementActionCallPluginMethod,
+		ManagementActionPrepareMethodConfirmation,
 		ManagementActionListIntents,
 		ManagementActionInvokeIntent,
 		ManagementActionImportLocalPackage,
@@ -35,6 +48,8 @@ func TestManagementActionAndResourceContractsAreClosed(t *testing.T) {
 		ManagementActionUpdateReleaseRef,
 		ManagementActionDowngradePlugin,
 		ManagementActionListPlugins,
+		ManagementActionListFeatures,
+		ManagementActionGetCompatibility,
 		ManagementActionRefreshEnabledPlugins,
 		ManagementActionGrantPermission,
 		ManagementActionRevokePermission,
@@ -89,6 +104,10 @@ func TestDirectManagementAPIsFailClosedBeforeBusinessValidation(t *testing.T) {
 		authorization:  authorization,
 	})
 	ctx := hostTestContext()
+	wantSession, err := requireUserSession(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	tests := []struct {
 		name   string
@@ -96,6 +115,20 @@ func TestDirectManagementAPIsFailClosedBeforeBusinessValidation(t *testing.T) {
 		call   func() error
 	}{
 		{"open surface", ManagementActionOpenSurface, func() error { _, err := h.OpenSurface(ctx, OpenSurfaceRequest{}); return err }},
+		{"prepare surface", ManagementActionPrepareSurface, func() error { _, err := h.PrepareSurface(ctx, PrepareSurfaceRequest{}); return err }},
+		{"mint bridge token", ManagementActionMintBridgeToken, func() error { _, err := h.MintBridgeToken(ctx, MintBridgeTokenRequest{}); return err }},
+		{"read surface asset", ManagementActionReadSurfaceAsset, func() error { _, err := h.ReadSurfaceAsset(ctx, ReadSurfaceAssetRequest{}); return err }},
+		{"read surface stream", ManagementActionReadSurfaceStream, func() error { _, err := h.ReadStream(ctx, ReadStreamRequest{}); return err }},
+		{"acknowledge surface stream", ManagementActionAcknowledgeSurfaceStream, func() error { _, err := h.AcknowledgeStream(ctx, AcknowledgeStreamRequest{}); return err }},
+		{"cancel surface operation", ManagementActionCancelSurfaceOperation, func() error { _, err := h.CancelSurfaceOperation(ctx, CancelSurfaceOperationRequest{}); return err }},
+		{"reject surface confirmation", ManagementActionRejectSurfaceConfirmation, func() error { _, err := h.RejectMethodConfirmation(ctx, RejectMethodConfirmationRequest{}); return err }},
+		{"dispose surface", ManagementActionDisposeSurface, func() error { return h.DisposeSurface(ctx, DisposeSurfaceRequest{}) }},
+		{"revoke surface scope", ManagementActionRevokeSurfaceScope, func() error { _, err := h.RevokeSurfaceScope(ctx, RevokeSurfaceScopeRequest{}); return err }},
+		{"call plugin method", ManagementActionCallPluginMethod, func() error { _, err := h.CallPluginMethod(ctx, CallMethodRequest{}); return err }},
+		{"prepare method confirmation", ManagementActionPrepareMethodConfirmation, func() error {
+			_, err := h.PrepareMethodConfirmation(ctx, PrepareMethodConfirmationRequest{})
+			return err
+		}},
 		{"list intents", ManagementActionListIntents, func() error { _, err := h.ListIntents(ctx, ListIntentsRequest{}); return err }},
 		{"invoke intent", ManagementActionInvokeIntent, func() error { _, err := h.InvokeIntent(ctx, InvokeIntentRequest{}); return err }},
 		{"import local package", ManagementActionImportLocalPackage, func() error { _, err := h.ImportLocalPackage(ctx, ImportLocalPackageRequest{}); return err }},
@@ -104,6 +137,8 @@ func TestDirectManagementAPIsFailClosedBeforeBusinessValidation(t *testing.T) {
 		{"update release ref", ManagementActionUpdateReleaseRef, func() error { _, err := h.UpdateReleaseRef(ctx, UpdateReleaseRefRequest{}); return err }},
 		{"downgrade", ManagementActionDowngradePlugin, func() error { _, err := h.DowngradePlugin(ctx, DowngradeRequest{}); return err }},
 		{"list plugins", ManagementActionListPlugins, func() error { _, err := h.ListPlugins(ctx); return err }},
+		{"list features", ManagementActionListFeatures, func() error { _, err := h.ListFeatures(ctx); return err }},
+		{"get compatibility", ManagementActionGetCompatibility, func() error { _, err := h.GetCompatibility(ctx); return err }},
 		{"refresh enabled", ManagementActionRefreshEnabledPlugins, func() error { _, err := h.RefreshEnabledPlugins(ctx); return err }},
 		{"grant permission", ManagementActionGrantPermission, func() error { _, err := h.GrantPermission(ctx, GrantPermissionRequest{}); return err }},
 		{"revoke permission", ManagementActionRevokePermission, func() error { _, err := h.RevokePermission(ctx, RevokePermissionRequest{}); return err }},
@@ -157,8 +192,129 @@ func TestDirectManagementAPIsFailClosedBeforeBusinessValidation(t *testing.T) {
 				t.Fatalf("authorization requests = %d, want 1", len(authorization.requests))
 			}
 			got := authorization.requests[0]
-			if got.Action != tt.action || got.Resource != tt.action.Resource() || !got.Session.Valid() {
+			if got.Action != tt.action || got.Resource != tt.action.Resource() || got.Session != wantSession {
 				t.Fatalf("authorization request = %#v, want action %q resource %q", got, tt.action, tt.action.Resource())
+			}
+		})
+	}
+}
+
+func TestAuthorizeManagementRejectsUnknownActionAndInvalidOwner(t *testing.T) {
+	authorization := &recordingAuthorizationAdapter{}
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{authorization: authorization})
+
+	if _, err := h.authorizeManagement(hostTestContext(), ManagementAction("plugin.unknown"), "plugin_1"); !errors.Is(err, ErrActionDenied) {
+		t.Fatalf("unknown action error = %v, want %v", err, ErrActionDenied)
+	}
+	if len(authorization.requests) != 0 {
+		t.Fatalf("unknown action reached adapter with requests %#v", authorization.requests)
+	}
+
+	if _, err := h.authorizeManagement(context.Background(), ManagementActionListPlugins, "plugin_1"); !errors.Is(err, sessionctx.ErrSessionRequired) {
+		t.Fatalf("invalid owner error = %v, want %v", err, sessionctx.ErrSessionRequired)
+	}
+	if len(authorization.requests) != 0 {
+		t.Fatalf("invalid owner reached adapter with requests %#v", authorization.requests)
+	}
+}
+
+func TestAuthorizeManagementDerivesOwnerAndResourceFromHostCall(t *testing.T) {
+	authorization := &recordingAuthorizationAdapter{}
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{authorization: authorization})
+	ctx := hostTestContext()
+	wantSession, err := requireUserSession(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := h.authorizeManagement(ctx, ManagementActionCancelSurfaceOperation, "operation_1", "surface_1", "channel_1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.session != wantSession {
+		t.Fatalf("authorized session = %#v, want %#v", result.session, wantSession)
+	}
+	if len(authorization.requests) != 1 {
+		t.Fatalf("authorization requests = %d, want 1", len(authorization.requests))
+	}
+	got := authorization.requests[0]
+	if got.Session != wantSession || got.Action != ManagementActionCancelSurfaceOperation || got.Resource != ResourceOperation || got.ResourceID != "operation_1" {
+		t.Fatalf("authorization request = %#v", got)
+	}
+	if len(got.RelatedResourceIDs) != 2 || got.RelatedResourceIDs[0] != "surface_1" || got.RelatedResourceIDs[1] != "channel_1" {
+		t.Fatalf("related resource IDs = %#v", got.RelatedResourceIDs)
+	}
+}
+
+func TestDirectHostAPIsProjectClosedAuthorizationResources(t *testing.T) {
+	authorization := &recordingAuthorizationAdapter{err: errors.New("deny")}
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{authorization: authorization})
+	ctx := hostTestContext()
+	tests := []struct {
+		name       string
+		action     ManagementAction
+		resource   ResourceRef
+		resourceID string
+		related    []string
+		call       func() error
+	}{
+		{
+			name: "prepare surface", action: ManagementActionPrepareSurface, resource: ResourceSurface,
+			resourceID: "surface_1", call: func() error {
+				_, err := h.PrepareSurface(ctx, PrepareSurfaceRequest{SurfaceInstanceID: "surface_1"})
+				return err
+			},
+		},
+		{
+			name: "read surface asset", action: ManagementActionReadSurfaceAsset, resource: ResourceSurface,
+			resourceID: "surface_1", related: []string{"asset_session_1", "binding_1"}, call: func() error {
+				_, err := h.ReadSurfaceAsset(ctx, ReadSurfaceAssetRequest{SurfaceInstanceID: "surface_1", AssetSessionID: "asset_session_1", BindingID: "binding_1"})
+				return err
+			},
+		},
+		{
+			name: "call plugin method", action: ManagementActionCallPluginMethod, resource: ResourceMethod,
+			resourceID: "plugin_1", related: []string{"surface_1", "method_1"}, call: func() error {
+				_, err := h.CallPluginMethod(ctx, CallMethodRequest{PluginInstanceID: "plugin_1", SurfaceInstanceID: "surface_1", Method: "method_1"})
+				return err
+			},
+		},
+		{
+			name: "read stream", action: ManagementActionReadSurfaceStream, resource: ResourceStream,
+			resourceID: "stream_1", related: []string{"surface_1", "read_1"}, call: func() error {
+				_, err := h.ReadStream(ctx, ReadStreamRequest{StreamID: "stream_1", SurfaceInstanceID: "surface_1", ReadID: "read_1"})
+				return err
+			},
+		},
+		{
+			name: "cancel surface operation", action: ManagementActionCancelSurfaceOperation, resource: ResourceOperation,
+			resourceID: "operation_1", related: []string{"surface_1", "channel_1"}, call: func() error {
+				_, err := h.CancelSurfaceOperation(ctx, CancelSurfaceOperationRequest{OperationID: "operation_1", SurfaceInstanceID: "surface_1", BridgeChannelID: "channel_1"})
+				return err
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			authorization.requests = nil
+			if err := tt.call(); !errors.Is(err, ErrActionDenied) {
+				t.Fatalf("error = %v, want %v", err, ErrActionDenied)
+			}
+			if len(authorization.requests) != 1 {
+				t.Fatalf("authorization requests = %d, want 1", len(authorization.requests))
+			}
+			got := authorization.requests[0]
+			if got.Action != tt.action || got.Resource != tt.resource || got.ResourceID != tt.resourceID {
+				t.Fatalf("authorization request = %#v", got)
+			}
+			if len(got.RelatedResourceIDs) != len(tt.related) {
+				t.Fatalf("related resource IDs = %#v, want %#v", got.RelatedResourceIDs, tt.related)
+			}
+			for i := range tt.related {
+				if got.RelatedResourceIDs[i] != tt.related[i] {
+					t.Fatalf("related resource IDs = %#v, want %#v", got.RelatedResourceIDs, tt.related)
+				}
 			}
 		})
 	}

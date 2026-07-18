@@ -928,6 +928,27 @@ func TestHandlerMapsHostDirectAuthorizationDenialToStableActionCode(t *testing.T
 	}
 }
 
+func TestHandlerRouteAndHostAuthorizationShareOneClosedAction(t *testing.T) {
+	authorization := &httpRecordingAuthorization{}
+	guard := allowHTTPTestGuard()
+	handler := mustNewHandler(t, newHTTPTestHostWithOptions(t, httpTestHostOptions{authorization: authorization}), guard)
+	req := httptest.NewRequest(http.MethodGet, "/_redevplugin/api/plugins/catalog", nil)
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body = %s", rec.Code, rec.Body.String())
+	}
+	if guard.authorizeCount != 1 || len(authorization.requests) != 1 {
+		t.Fatalf("authorization calls = route:%d host:%d", guard.authorizeCount, len(authorization.requests))
+	}
+	hostRequest := authorization.requests[0]
+	if string(guard.lastAction) != string(hostRequest.Action) || hostRequest.Resource != host.ResourcePlugin || !hostRequest.Session.Valid() {
+		t.Fatalf("route action = %q host request = %#v", guard.lastAction, hostRequest)
+	}
+}
+
 func TestHandlerWebSecurityDistinguishesInvalidCSRF(t *testing.T) {
 	guard := &httpTestWebSecurityGuard{csrfErr: websecurity.ErrCSRFInvalid}
 	handler := mustNewHandler(t, newHTTPTestHost(t), guard)
@@ -985,6 +1006,10 @@ func TestHandlerWebSecurityCSRFClassificationCoversRouteSet(t *testing.T) {
 		})
 		if previous, exists := actions[route.action]; exists {
 			t.Fatalf("route action %q is shared by %s %s and %s %s", route.action, previous.Method, previous.Path, route.Method, route.Path)
+		}
+		hostAction := host.ManagementAction(route.action)
+		if !hostAction.Valid() || string(hostAction) != string(route.action) {
+			t.Fatalf("route action %q has no exact Host action", route.action)
 		}
 		actions[route.action] = route.Route
 	}
@@ -3550,6 +3575,11 @@ func TestStableOwnerScopeAndAdapterFailuresMapToHTTPContracts(t *testing.T) {
 		codeFor   func(error) security.ErrorCode
 		statusFor func(error) int
 	}{
+		{name: "bridge action", err: host.ErrActionDenied, code: security.ErrActionDenied, status: http.StatusForbidden, codeFor: errorCodeForBridgeError, statusFor: httpStatusForBridgeError},
+		{name: "rpc action", err: host.ErrActionDenied, code: security.ErrActionDenied, status: http.StatusForbidden, codeFor: errorCodeForRPCError, statusFor: httpStatusForRPCError},
+		{name: "stream action", err: host.ErrActionDenied, code: security.ErrActionDenied, status: http.StatusForbidden, codeFor: errorCodeForStreamError, statusFor: httpStatusForStreamError},
+		{name: "asset action", err: host.ErrActionDenied, code: security.ErrActionDenied, status: http.StatusForbidden, codeFor: errorCodeForAssetError, statusFor: httpStatusForAssetError},
+		{name: "operation action", err: host.ErrActionDenied, code: security.ErrActionDenied, status: http.StatusForbidden, codeFor: errorCodeForOperationError, statusFor: httpStatusForOperationError},
 		{name: "management owner scope", err: host.ErrOwnerScopeMismatch, code: security.ErrOwnerScopeMismatch, status: http.StatusForbidden, codeFor: errorCodeForManagementError, statusFor: httpStatusForManagementError},
 		{name: "management storage scope", err: host.ErrStorageScopeMismatch, code: security.ErrStorageScopeMismatch, status: http.StatusForbidden, codeFor: errorCodeForManagementError, statusFor: httpStatusForManagementError},
 		{name: "management adapter", err: host.ErrAdapterFailure, code: security.ErrAdapterFailure, status: http.StatusBadGateway, codeFor: errorCodeForManagementError, statusFor: httpStatusForManagementError},
@@ -5188,6 +5218,16 @@ func patchJSON[T any](t *testing.T, handler http.Handler, path string, body any)
 type httpTestPolicy struct{}
 
 type httpTestAuthorization struct{}
+
+type httpRecordingAuthorization struct {
+	requests []host.AuthorizationRequest
+}
+
+func (a *httpRecordingAuthorization) Authorize(_ context.Context, req host.AuthorizationRequest) error {
+	req.RelatedResourceIDs = append([]string(nil), req.RelatedResourceIDs...)
+	a.requests = append(a.requests, req)
+	return nil
+}
 
 func (httpTestAuthorization) Authorize(_ context.Context, req host.AuthorizationRequest) error {
 	if !req.Session.Valid() || !req.Action.Valid() || !req.Resource.Valid() || req.Resource != req.Action.Resource() {

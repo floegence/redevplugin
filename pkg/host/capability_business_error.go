@@ -472,7 +472,7 @@ func stableRPCSentinel(err error) error {
 		ErrStreamTicketRequired, ErrPluginDataNotDeclared, ErrPluginStorageNotDeclared, ErrPluginSettingsNotDeclared,
 		ErrPluginDataContractChanged, ErrOperationCancelDispatchFailed, ErrMethodRequestContract, ErrMethodResponseContract,
 		ErrMethodAdapterPanic, ErrManagementRevisionMismatch, ErrPluginAlreadyInstalled, ErrPluginUIProtocolUnsupported,
-		ErrPluginRuntimeNotConfigured, ErrPluginRuntimeIncompatible,
+		ErrPluginRuntimeNotConfigured, ErrPluginRuntimeIncompatible, ErrActionDenied,
 		ErrConfirmationRequired, ErrConfirmationInvalid, ErrConfirmationRejected, ErrSecurityEventPersistence,
 		ErrPluginTrustUnavailable, ErrPluginTrustDenied, ErrReleaseRefVerificationFailed, ErrHostClosed,
 		ErrSecretStoreRequired, ErrInvalidSecretRef, ErrPackageTrustVerifierRequired, ErrPackageTrustVerificationInvalid,

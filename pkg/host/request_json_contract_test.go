@@ -16,14 +16,16 @@ func TestPublicRequestDTOsDeclareClosedJSONFieldNames(t *testing.T) {
 		DeleteRetainedDataRequest{}, BindRetainedDataRequest{}, CleanupExpiredRetainedDataRequest{}, ExportDataRequest{},
 		ImportDataRequest{}, DeleteExportDataRequest{}, GrantPermissionRequest{}, RevokePermissionRequest{},
 		ListPermissionGrantsRequest{}, PutSecurityPolicyRequest{}, GetSecurityPolicyRequest{}, DeleteSecurityPolicyRequest{},
-		GetSettingsRequest{}, PatchSettingsRequest{}, OpenSurfaceRequest{}, ExchangeAssetTicketRequest{},
+		GetSettingsRequest{}, PatchSettingsRequest{}, OpenSurfaceRequest{}, PrepareSurfaceRequest{},
 		ReadSurfaceAssetRequest{}, DisposeSurfaceRequest{}, RevokeSurfaceScopeRequest{}, MintBridgeTokenRequest{},
 		CallMethodRequest{}, ListIntentsRequest{}, InvokeIntentRequest{}, PrepareMethodConfirmationRequest{},
 		RejectMethodConfirmationRequest{}, ListOperationsRequest{}, CancelOperationRequest{}, CancelSurfaceOperationRequest{},
 		ReadStreamRequest{}, AcknowledgeStreamRequest{}, MintConnectionGrantRequest{}, MintStorageHandleGrantRequest{},
+		AuthorizationRequest{},
 	}
 	internalFields := map[string]struct{}{
 		"Now": {}, "WaitTimeout": {}, "PackageReader": {}, "PackageSize": {}, "TTL": {},
+		"Session":              {},
 		"ReleaseMetadataBytes": {}, "ReleaseMetadataSignature": {},
 		"RevocationMetadataBytes": {}, "RevocationMetadataSignature": {},
 	}

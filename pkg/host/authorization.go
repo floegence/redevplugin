@@ -8,14 +8,25 @@ import (
 	"github.com/floegence/redevplugin/pkg/sessionctx"
 )
 
-var ErrActionDenied = errors.New("host management action is denied")
+var ErrActionDenied = errors.New("host platform action is denied")
 
-// ManagementAction identifies one direct Host management operation. The set is
+// ManagementAction identifies one direct Host platform operation. The set is
 // closed so embedding products can implement exhaustive authorization policy.
 type ManagementAction string
 
 const (
 	ManagementActionOpenSurface                ManagementAction = "surface.open"
+	ManagementActionPrepareSurface             ManagementAction = "surface.prepare"
+	ManagementActionMintBridgeToken            ManagementAction = "surface.mint_bridge_token"
+	ManagementActionReadSurfaceAsset           ManagementAction = "surface.read_asset"
+	ManagementActionReadSurfaceStream          ManagementAction = "surface.read_stream"
+	ManagementActionAcknowledgeSurfaceStream   ManagementAction = "surface.acknowledge_stream"
+	ManagementActionCancelSurfaceOperation     ManagementAction = "surface.cancel_operation"
+	ManagementActionRejectSurfaceConfirmation  ManagementAction = "surface.reject_confirmation"
+	ManagementActionDisposeSurface             ManagementAction = "surface.dispose"
+	ManagementActionRevokeSurfaceScope         ManagementAction = "surface.revoke_scope"
+	ManagementActionCallPluginMethod           ManagementAction = "plugin.call_method"
+	ManagementActionPrepareMethodConfirmation  ManagementAction = "plugin.prepare_method_confirmation"
 	ManagementActionListIntents                ManagementAction = "intent.list"
 	ManagementActionInvokeIntent               ManagementAction = "intent.invoke"
 	ManagementActionImportLocalPackage         ManagementAction = "plugin.import_local_package"
@@ -24,7 +35,9 @@ const (
 	ManagementActionUpdateReleaseRef           ManagementAction = "plugin.update_release_ref"
 	ManagementActionDowngradePlugin            ManagementAction = "plugin.downgrade"
 	ManagementActionListPlugins                ManagementAction = "plugin.list"
-	ManagementActionRefreshEnabledPlugins      ManagementAction = "plugin.refresh_enabled"
+	ManagementActionListFeatures               ManagementAction = "platform.list_features"
+	ManagementActionGetCompatibility           ManagementAction = "platform.get_compatibility"
+	ManagementActionRefreshEnabledPlugins      ManagementAction = "runtime.refresh_enabled"
 	ManagementActionGrantPermission            ManagementAction = "permission.grant"
 	ManagementActionRevokePermission           ManagementAction = "permission.revoke"
 	ManagementActionListPermissionGrants       ManagementAction = "permission.list"
@@ -66,16 +79,28 @@ func (action ManagementAction) Valid() bool {
 
 func (action ManagementAction) Resource() ResourceRef {
 	switch action {
-	case ManagementActionOpenSurface:
+	case ManagementActionOpenSurface, ManagementActionPrepareSurface,
+		ManagementActionMintBridgeToken, ManagementActionReadSurfaceAsset,
+		ManagementActionDisposeSurface, ManagementActionRevokeSurfaceScope:
 		return ResourceSurface
+	case ManagementActionReadSurfaceStream, ManagementActionAcknowledgeSurfaceStream:
+		return ResourceStream
+	case ManagementActionCancelSurfaceOperation:
+		return ResourceOperation
+	case ManagementActionRejectSurfaceConfirmation, ManagementActionPrepareMethodConfirmation:
+		return ResourceConfirmation
+	case ManagementActionCallPluginMethod:
+		return ResourceMethod
 	case ManagementActionListIntents, ManagementActionInvokeIntent:
 		return ResourceIntent
 	case ManagementActionImportLocalPackage, ManagementActionInstallReleaseRef,
 		ManagementActionUpdateLocalPackage, ManagementActionUpdateReleaseRef,
 		ManagementActionDowngradePlugin, ManagementActionListPlugins,
-		ManagementActionRefreshEnabledPlugins, ManagementActionEnablePlugin,
+		ManagementActionEnablePlugin,
 		ManagementActionDisablePlugin, ManagementActionUninstallPlugin:
 		return ResourcePlugin
+	case ManagementActionListFeatures, ManagementActionGetCompatibility:
+		return ResourcePlatform
 	case ManagementActionGrantPermission, ManagementActionRevokePermission, ManagementActionListPermissionGrants:
 		return ResourcePermission
 	case ManagementActionPutSecurityPolicy, ManagementActionGetSecurityPolicy,
@@ -85,7 +110,8 @@ func (action ManagementAction) Resource() ResourceRef {
 		return ResourceDiagnostic
 	case ManagementActionListOperations, ManagementActionGetOperation, ManagementActionCancelOperation:
 		return ResourceOperation
-	case ManagementActionStartRuntime, ManagementActionStopRuntime, ManagementActionGetRuntimeHealth:
+	case ManagementActionStartRuntime, ManagementActionStopRuntime, ManagementActionGetRuntimeHealth,
+		ManagementActionRefreshEnabledPlugins:
 		return ResourceRuntime
 	case ManagementActionMintConnectionGrant, ManagementActionMintNetworkHandleGrant:
 		return ResourceConnectivity
@@ -113,7 +139,11 @@ type ResourceRef string
 
 const (
 	ResourcePlugin         ResourceRef = "plugin"
+	ResourcePlatform       ResourceRef = "platform"
 	ResourceSurface        ResourceRef = "surface"
+	ResourceStream         ResourceRef = "stream"
+	ResourceConfirmation   ResourceRef = "confirmation"
+	ResourceMethod         ResourceRef = "method"
 	ResourceIntent         ResourceRef = "intent"
 	ResourcePermission     ResourceRef = "permission"
 	ResourceSecurityPolicy ResourceRef = "security_policy"
@@ -131,7 +161,8 @@ const (
 
 func (resource ResourceRef) Valid() bool {
 	switch resource {
-	case ResourcePlugin, ResourceSurface, ResourceIntent, ResourcePermission,
+	case ResourcePlugin, ResourcePlatform, ResourceSurface, ResourceStream,
+		ResourceConfirmation, ResourceMethod, ResourceIntent, ResourcePermission,
 		ResourceSecurityPolicy, ResourceDiagnostic, ResourceOperation,
 		ResourceRuntime, ResourceConnectivity, ResourceStorage,
 		ResourceRetainedData, ResourcePluginData, ResourceDataExport,
@@ -143,6 +174,8 @@ func (resource ResourceRef) Valid() bool {
 }
 
 type AuthorizationRequest struct {
+	// Session is derived from the authenticated context by Host and is never
+	// accepted from a command, HTTP payload, or plugin IPC request.
 	Session            sessionctx.Context `json:"-"`
 	Action             ManagementAction   `json:"action"`
 	Resource           ResourceRef        `json:"resource"`
@@ -152,6 +185,10 @@ type AuthorizationRequest struct {
 
 type AuthorizationAdapter interface {
 	Authorize(ctx context.Context, req AuthorizationRequest) error
+}
+
+type authorizedAction struct {
+	session sessionctx.Context
 }
 
 type ActionDeniedError struct {
@@ -166,14 +203,14 @@ func (e ActionDeniedError) Error() string {
 
 func (e ActionDeniedError) Unwrap() error { return ErrActionDenied }
 
-func (h *Host) authorizeManagement(ctx context.Context, action ManagementAction, resourceID string, relatedResourceIDs ...string) (sessionctx.Context, error) {
+func (h *Host) authorizeManagement(ctx context.Context, action ManagementAction, resourceID string, relatedResourceIDs ...string) (authorizedAction, error) {
 	session, err := requireUserSession(ctx)
 	if err != nil {
-		return sessionctx.Context{}, err
+		return authorizedAction{}, err
 	}
 	resource := action.Resource()
 	if !action.Valid() || !resource.Valid() || isNilInterfaceValue(h.adapters.Authorization) {
-		return sessionctx.Context{}, ActionDeniedError{Action: action, Resource: resource, ResourceID: resourceID}
+		return authorizedAction{}, ActionDeniedError{Action: action, Resource: resource, ResourceID: resourceID}
 	}
 	req := AuthorizationRequest{
 		Session:            session,
@@ -183,7 +220,7 @@ func (h *Host) authorizeManagement(ctx context.Context, action ManagementAction,
 		RelatedResourceIDs: append([]string(nil), relatedResourceIDs...),
 	}
 	if err := h.adapters.Authorization.Authorize(ctx, req); err != nil {
-		return sessionctx.Context{}, ActionDeniedError{Action: action, Resource: resource, ResourceID: resourceID}
+		return authorizedAction{}, ActionDeniedError{Action: action, Resource: resource, ResourceID: resourceID}
 	}
-	return session, nil
+	return authorizedAction{session: session}, nil
 }

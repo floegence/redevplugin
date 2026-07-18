@@ -36,7 +36,9 @@
   channel hashes and rejects undeclared or ambiguous owner fields.
 - Add explicit route and direct Host authorization contracts. HTTP requests pass
   authentication, origin, CSRF, and closed-action authorization, while embedded
-  Host calls enforce the same management action and resource boundary.
+  Host calls enforce the same platform action, resource, and session-derived
+  owner boundary across surfaces, assets, RPC, confirmations, operations,
+  streams, runtime management, data, settings, secrets, and platform metadata.
 
 ### Changed
 
@@ -114,6 +116,12 @@
 
 ### Fixed
 
+- Make every HTTP route action map to an exact direct Host action, including
+  surface preparation, bridge minting, asset and stream reads, RPC and
+  confirmation flows, and platform metadata. Nested surface preparation and
+  surface-scoped cancellation now enter private already-authorized
+  implementations instead of repeating or bypassing Host authorization.
+
 - Require a private Host attestation before the HTTP adapter can expose a
   published capability business error. Business errors that bypass the exact
   capability validation path, including wrapped, joined, typed-nil, or forged
@@ -132,6 +140,11 @@
 
 ### Removed
 
+- Remove the direct `Host.ExchangeAssetTicket` entry point and its misleading
+  request name. Hosts now use the single authorized
+  `Host.PrepareSurface(PrepareSurfaceRequest)` operation, which atomically
+  exchanges the ticket, validates the owner-bound asset session, and prepares
+  the opaque document.
 - Remove CLI release, SurfaceCatalog, and CoreAction placeholder adapters; CLI
   and example hosts now declare only modules they actually provide.
 - Remove IPC v2 decoding, UI v4 rendering, polling stream stores, and legacy

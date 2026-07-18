@@ -10804,8 +10804,8 @@ func stableRecentTestNow() time.Time {
 	return time.Now().UTC().Add(-1 * time.Minute)
 }
 
-func exchangeAssetTicketRequestForBootstrap(bootstrap bridge.SurfaceBootstrap, now time.Time) ExchangeAssetTicketRequest {
-	return ExchangeAssetTicketRequest{
+func exchangeAssetTicketRequestForBootstrap(bootstrap bridge.SurfaceBootstrap, now time.Time) PrepareSurfaceRequest {
+	return PrepareSurfaceRequest{
 		SurfaceInstanceID: bootstrap.SurfaceInstanceID,
 		AssetTicket:       bootstrap.AssetTicket,
 

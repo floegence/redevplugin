@@ -382,7 +382,7 @@ func TestCLIScaffoldRunsGeneratedWorkerThroughBuiltRustRuntime(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenSurface() error = %v", err)
 	}
-	prepared, err := h.PrepareSurface(ctx, host.ExchangeAssetTicketRequest{
+	prepared, err := h.PrepareSurface(ctx, host.PrepareSurfaceRequest{
 		SurfaceInstanceID: bootstrap.SurfaceInstanceID,
 		AssetTicket:       bootstrap.AssetTicket,
 

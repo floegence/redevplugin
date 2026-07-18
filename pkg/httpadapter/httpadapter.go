@@ -40,7 +40,6 @@ import (
 	"github.com/floegence/redevplugin/pkg/settings"
 	"github.com/floegence/redevplugin/pkg/storage"
 	"github.com/floegence/redevplugin/pkg/stream"
-	"github.com/floegence/redevplugin/pkg/version"
 	"github.com/floegence/redevplugin/pkg/websecurity"
 )
 
@@ -379,6 +378,10 @@ func apiRoute(method, path string, action websecurity.RouteAction, bind func(*Ha
 func (route routeSpec) validate() error {
 	if !route.action.Valid() {
 		return fmt.Errorf("%w: %q", websecurity.ErrRouteActionInvalid, route.action)
+	}
+	hostAction := host.ManagementAction(route.action)
+	if !hostAction.Valid() {
+		return fmt.Errorf("%w: route action %q has no matching Host action", websecurity.ErrRouteActionInvalid, route.action)
 	}
 	if !route.originPolicy.Valid() {
 		return fmt.Errorf("%w: %q", websecurity.ErrOriginPolicyInvalid, route.originPolicy)
@@ -1440,12 +1443,22 @@ func (h Handler) handleCatalog(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, successResponse{OK: true, Data: map[string]any{"plugins": records}})
 }
 
-func (h Handler) handleFeatures(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, successResponse{OK: true, Data: h.host.Features()})
+func (h Handler) handleFeatures(w http.ResponseWriter, r *http.Request) {
+	features, err := h.host.ListFeatures(r.Context())
+	if err != nil {
+		writeError(w, http.StatusForbidden, security.ErrActionDenied, h.publicFailureMessage(r.Context(), "platform.list_features", security.ErrActionDenied, err), errorDetails{})
+		return
+	}
+	writeJSON(w, http.StatusOK, successResponse{OK: true, Data: features})
 }
 
-func (h Handler) handleCompatibility(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, successResponse{OK: true, Data: version.CurrentCompatibilityManifest()})
+func (h Handler) handleCompatibility(w http.ResponseWriter, r *http.Request) {
+	compatibility, err := h.host.GetCompatibility(r.Context())
+	if err != nil {
+		writeError(w, http.StatusForbidden, security.ErrActionDenied, h.publicFailureMessage(r.Context(), "platform.get_compatibility", security.ErrActionDenied, err), errorDetails{})
+		return
+	}
+	writeJSON(w, http.StatusOK, successResponse{OK: true, Data: compatibility})
 }
 
 func (h Handler) handleOpenSurface(w http.ResponseWriter, r *http.Request) {
@@ -1483,7 +1496,7 @@ func (h Handler) handlePrepareSurface(w http.ResponseWriter, r *http.Request) {
 		writeMutationInvalidRequestError(w, err)
 		return
 	}
-	result, err := h.host.PrepareSurface(r.Context(), host.ExchangeAssetTicketRequest{
+	result, err := h.host.PrepareSurface(r.Context(), host.PrepareSurfaceRequest{
 		SurfaceInstanceID: surfaceInstanceID,
 		AssetTicket:       req.AssetTicket,
 	})
@@ -1554,9 +1567,10 @@ func (h Handler) handleReadSurfaceAsset(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	result, err := h.host.ReadSurfaceAsset(r.Context(), host.ReadSurfaceAssetRequest{
-		AssetSession:   req.AssetSession,
-		AssetSessionID: req.AssetSessionID,
-		BindingID:      req.BindingID,
+		SurfaceInstanceID: surfaceInstanceID,
+		AssetSession:      req.AssetSession,
+		AssetSessionID:    req.AssetSessionID,
+		BindingID:         req.BindingID,
 	})
 	if err != nil {
 		code := errorCodeForAssetError(err)
@@ -2748,6 +2762,8 @@ func validateOptionalEnumQueryParameter(query map[string]string, key string, all
 
 func errorCodeForBridgeError(err error) security.ErrorCode {
 	switch {
+	case errors.Is(err, host.ErrActionDenied):
+		return security.ErrActionDenied
 	case errors.Is(err, bridge.ErrTokenExpired):
 		return security.ErrTokenExpired
 	case errors.Is(err, bridge.ErrTokenReplay):
@@ -2829,6 +2845,8 @@ func httpStatusForBridgeError(err error) int {
 
 func errorCodeForRPCError(err error) security.ErrorCode {
 	switch {
+	case errors.Is(err, host.ErrActionDenied):
+		return security.ErrActionDenied
 	case errors.Is(err, host.ErrFeatureNotConfigured):
 		return security.ErrFeatureNotConfigured
 	case isCapabilityBusinessError(err):
@@ -3159,6 +3177,8 @@ func httpStatusForOperationError(err error) int {
 
 func errorCodeForStreamError(err error) security.ErrorCode {
 	switch {
+	case errors.Is(err, host.ErrActionDenied):
+		return security.ErrActionDenied
 	case errors.Is(err, stream.ErrNotFound), errors.Is(err, stream.ErrInvalidStream):
 		return security.ErrInvalidRequest
 	case errors.Is(err, stream.ErrDeliveryInvalid):
@@ -3534,6 +3554,8 @@ func httpStatusForSecretError(err error) int {
 
 func errorCodeForAssetError(err error) security.ErrorCode {
 	switch {
+	case errors.Is(err, host.ErrActionDenied):
+		return security.ErrActionDenied
 	case errors.Is(err, bridge.ErrTokenReplay):
 		return security.ErrTokenReplay
 	case errors.Is(err, bridge.ErrTokenExpired):

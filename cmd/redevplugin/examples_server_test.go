@@ -185,7 +185,7 @@ func TestExamplesWeatherPluginFetchesLiveForecast(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := pluginHost.PrepareSurface(context.Background(), host.ExchangeAssetTicketRequest{
+	if _, err := pluginHost.PrepareSurface(context.Background(), host.PrepareSurfaceRequest{
 		SurfaceInstanceID: bootstrap.SurfaceInstanceID,
 		AssetTicket:       bootstrap.AssetTicket,
 
