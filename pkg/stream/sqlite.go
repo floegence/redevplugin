@@ -11,7 +11,8 @@ import (
 	"time"
 
 	"github.com/floegence/redevplugin/pkg/mutation"
-	_ "modernc.org/sqlite"
+	"modernc.org/sqlite"
+	sqlite3 "modernc.org/sqlite/lib"
 )
 
 const maxSQLiteReadEvents = 1000
@@ -38,6 +39,9 @@ type sqliteQueryKind string
 const (
 	sqliteQueryWaitObservation  sqliteQueryKind = "wait_observation"
 	sqliteQueryDeliverySnapshot sqliteQueryKind = "delivery_snapshot"
+	sqliteQueryDeliveryMutation sqliteQueryKind = "delivery_mutation"
+	sqliteQueryDeliveryReplay   sqliteQueryKind = "delivery_replay"
+	sqliteQueryDeliveryCAS      sqliteQueryKind = "delivery_cas"
 	sqliteQueryBoundedEvents    sqliteQueryKind = "bounded_event_select"
 	sqliteQueryRangeDelete      sqliteQueryKind = "range_delete"
 )
@@ -396,93 +400,170 @@ func (s *SQLiteStore) Deliver(ctx context.Context, req DeliverRequest) (Record, 
 	}
 	defer release()
 
-	s.observeQuery(sqliteQueryDeliverySnapshot)
-	record, deliveryState, eventExists, exists, err := getSQLiteDeliverySnapshot(ctx, s.db, streamID)
-	if err != nil {
-		return Record{}, Delivery{}, err
-	}
-	if !exists {
-		return Record{}, Delivery{}, ErrNotFound
-	}
-	if deliveryState.Pending.DeliveryID != "" {
-		if deliveryState.Pending.ThroughSequence > 0 {
-			deliveryState.Pending.Events, err = listSQLiteStreamEventsThrough(ctx, s.db, streamID, deliveryState.Pending.ThroughSequence)
+	for {
+		if err := ctx.Err(); err != nil {
+			return Record{}, Delivery{}, err
+		}
+		s.observeQuery(sqliteQueryDeliverySnapshot)
+		record, deliveryState, eventExists, exists, err := getSQLiteDeliverySnapshot(ctx, s.db, streamID)
+		if err != nil {
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return Record{}, Delivery{}, ctxErr
+			}
+			if sqliteDeliveryRetryable(err) {
+				continue
+			}
+			return Record{}, Delivery{}, err
+		}
+		if !exists {
+			return Record{}, Delivery{}, ErrNotFound
+		}
+		if deliveryState.Pending.DeliveryID != "" {
+			delivery, retry, err := s.replaySQLiteDelivery(ctx, streamID, deliveryState)
 			if err != nil {
 				return Record{}, Delivery{}, err
 			}
+			if retry {
+				continue
+			}
+			return record, delivery, nil
 		}
-		return record, cloneDelivery(deliveryState.Pending), nil
-	}
-	if !eventExists && (!terminalStatus(record.Status) || deliveryState.TerminalAcknowledged) {
-		return record, Delivery{ReadID: readID, StreamID: streamID}, nil
-	}
+		if !eventExists && (!terminalStatus(record.Status) || deliveryState.TerminalAcknowledged) {
+			return record, Delivery{ReadID: readID, StreamID: streamID}, nil
+		}
 
+		s.observeQuery(sqliteQueryDeliveryMutation)
+		delivery, retry, err := s.installSQLiteDelivery(ctx, req, record, deliveryState, eventExists)
+		if err != nil {
+			return Record{}, Delivery{}, err
+		}
+		if retry {
+			continue
+		}
+		return record, delivery, nil
+	}
+}
+
+func (s *SQLiteStore) replaySQLiteDelivery(ctx context.Context, streamID string, state sqliteDeliveryState) (Delivery, bool, error) {
+	pending := state.Pending
+	if pending.ThroughSequence == 0 {
+		return cloneDelivery(pending), false, nil
+	}
+	s.observeQuery(sqliteQueryDeliveryReplay)
+	events, err := listSQLiteStreamEventsThrough(ctx, s.db, streamID, pending.ThroughSequence)
+	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return Delivery{}, false, ctxErr
+		}
+		if sqliteDeliveryRetryable(err) {
+			return Delivery{}, true, nil
+		}
+		return Delivery{}, false, err
+	}
+	matches, err := sqliteDeliveryStateMatches(ctx, s.db, streamID, state)
+	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return Delivery{}, false, ctxErr
+		}
+		if sqliteDeliveryRetryable(err) {
+			return Delivery{}, true, nil
+		}
+		return Delivery{}, false, err
+	}
+	if !matches {
+		return Delivery{}, true, nil
+	}
+	pending.Events = events
+	return cloneDelivery(pending), false, nil
+}
+
+func (s *SQLiteStore) installSQLiteDelivery(ctx context.Context, req DeliverRequest, record Record, state sqliteDeliveryState, eventExists bool) (Delivery, bool, error) {
 	releaseWrite, err := s.lockWrite(ctx)
 	if err != nil {
-		return Record{}, Delivery{}, err
+		return Delivery{}, false, err
 	}
 	defer releaseWrite()
 
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return Record{}, Delivery{}, err
+		return sqliteDeliveryMutationError(ctx, err)
 	}
 	defer rollbackUnlessCommitted(tx)
+
 	var events []Event
 	if eventExists {
 		s.observeQuery(sqliteQueryBoundedEvents)
-		events, err = listSQLiteStreamEvents(ctx, tx, streamID, req.MaxEvents, req.MaxBytes)
+		events, err = listSQLiteStreamEvents(ctx, tx, record.StreamID, req.MaxEvents, req.MaxBytes)
 		if err != nil {
-			return Record{}, Delivery{}, err
+			return sqliteDeliveryMutationError(ctx, err)
 		}
 	}
+	delivery := Delivery{ReadID: strings.TrimSpace(req.ReadID), StreamID: record.StreamID}
 	if len(events) == 0 {
-		if terminalStatus(record.Status) && !deliveryState.TerminalAcknowledged {
-			deliveryID, idErr := newDeliveryID()
-			if idErr != nil {
-				return Record{}, Delivery{}, idErr
-			}
-			deliveryState.Pending = Delivery{DeliveryID: deliveryID, ReadID: readID, StreamID: streamID, Done: true, TerminalStatus: record.Status}
-			if err := updateSQLiteDeliveryState(ctx, tx, streamID, deliveryState); err != nil {
-				return Record{}, Delivery{}, err
-			}
+		if !terminalStatus(record.Status) || state.TerminalAcknowledged {
+			return delivery, false, nil
 		}
-		if err := tx.Commit(); err != nil {
-			return Record{}, Delivery{}, err
+		deliveryID, err := newDeliveryID()
+		if err != nil {
+			return Delivery{}, false, err
 		}
-		delivery := deliveryState.Pending
-		if delivery.DeliveryID == "" {
-			delivery = Delivery{ReadID: readID, StreamID: streamID}
+		delivery.DeliveryID = deliveryID
+		delivery.Done = true
+		delivery.TerminalStatus = record.Status
+	} else {
+		deliveryID, err := newDeliveryID()
+		if err != nil {
+			return Delivery{}, false, err
 		}
-		return record, cloneDelivery(delivery), nil
+		throughSequence := events[len(events)-1].Sequence
+		var remaining bool
+		if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM plugin_stream_events WHERE stream_id = ? AND sequence > ? LIMIT 1)`, record.StreamID, throughSequence).Scan(&remaining); err != nil {
+			return sqliteDeliveryMutationError(ctx, err)
+		}
+		delivery.DeliveryID = deliveryID
+		delivery.ThroughSequence = throughSequence
+		delivery.Events = cloneEvents(events)
+		delivery.Done = terminalStatus(record.Status) && !remaining
+		if delivery.Done {
+			delivery.TerminalStatus = record.Status
+		}
 	}
-	deliveryID, err := newDeliveryID()
+
+	s.observeQuery(sqliteQueryDeliveryCAS)
+	updated, err := compareAndSetSQLitePendingDelivery(ctx, tx, record, state, delivery)
 	if err != nil {
-		return Record{}, Delivery{}, err
+		return sqliteDeliveryMutationError(ctx, err)
 	}
-	throughSequence := events[len(events)-1].Sequence
-	var remaining bool
-	if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM plugin_stream_events WHERE stream_id = ? AND sequence > ? LIMIT 1)`, streamID, throughSequence).Scan(&remaining); err != nil {
-		return Record{}, Delivery{}, err
-	}
-	deliveryState.Pending = Delivery{
-		DeliveryID:      deliveryID,
-		ReadID:          readID,
-		StreamID:        streamID,
-		ThroughSequence: throughSequence,
-		Events:          cloneEvents(events),
-		Done:            terminalStatus(record.Status) && !remaining,
-	}
-	if deliveryState.Pending.Done {
-		deliveryState.Pending.TerminalStatus = record.Status
-	}
-	if err := updateSQLiteDeliveryState(ctx, tx, streamID, deliveryState); err != nil {
-		return Record{}, Delivery{}, err
+	if !updated {
+		return Delivery{}, true, nil
 	}
 	if err := tx.Commit(); err != nil {
-		return Record{}, Delivery{}, err
+		return sqliteDeliveryMutationError(ctx, err)
 	}
-	return record, cloneDelivery(deliveryState.Pending), nil
+	return cloneDelivery(delivery), false, nil
+}
+
+func sqliteDeliveryMutationError(ctx context.Context, err error) (Delivery, bool, error) {
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return Delivery{}, false, ctxErr
+	}
+	if sqliteDeliveryRetryable(err) {
+		return Delivery{}, true, nil
+	}
+	return Delivery{}, false, err
+}
+
+func sqliteDeliveryRetryable(err error) bool {
+	var sqliteErr *sqlite.Error
+	if !errors.As(err, &sqliteErr) {
+		return false
+	}
+	switch sqliteErr.Code() & 0xff {
+	case sqlite3.SQLITE_BUSY:
+		return true
+	default:
+		return false
+	}
 }
 
 func (s *SQLiteStore) Acknowledge(ctx context.Context, req AcknowledgeRequest) (Record, error) {
@@ -1012,6 +1093,76 @@ WHERE stream_id = ?`,
 		streamID,
 	)
 	return err
+}
+
+func compareAndSetSQLitePendingDelivery(ctx context.Context, tx *sql.Tx, record Record, expected sqliteDeliveryState, pending Delivery) (bool, error) {
+	result, err := tx.ExecContext(ctx, `
+	UPDATE plugin_streams
+	SET pending_delivery_id = ?, pending_read_id = ?, pending_through_sequence = ?, pending_done = ?,
+		pending_terminal_status = ?
+	WHERE stream_id = ?
+		AND status = ?
+		AND buffered_bytes = ?
+		AND pending_delivery_id = ?
+		AND pending_read_id = ?
+		AND pending_through_sequence = ?
+		AND pending_done = ?
+		AND pending_terminal_status = ?
+		AND last_acknowledged_delivery_id = ?
+		AND terminal_acknowledged = ?`,
+		pending.DeliveryID,
+		pending.ReadID,
+		pending.ThroughSequence,
+		pending.Done,
+		string(pending.TerminalStatus),
+		record.StreamID,
+		string(record.Status),
+		record.BufferedBytes,
+		expected.Pending.DeliveryID,
+		expected.Pending.ReadID,
+		expected.Pending.ThroughSequence,
+		expected.Pending.Done,
+		string(expected.Pending.TerminalStatus),
+		expected.LastAcknowledgedID,
+		expected.TerminalAcknowledged,
+	)
+	if err != nil {
+		return false, err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	if affected < 0 || affected > 1 {
+		return false, ErrStreamInvariant
+	}
+	return affected == 1, nil
+}
+
+func sqliteDeliveryStateMatches(ctx context.Context, q sqliteQuerier, streamID string, expected sqliteDeliveryState) (bool, error) {
+	var matches bool
+	err := q.QueryRowContext(ctx, `
+	SELECT EXISTS(
+		SELECT 1 FROM plugin_streams
+		WHERE stream_id = ?
+			AND pending_delivery_id = ?
+			AND pending_read_id = ?
+			AND pending_through_sequence = ?
+			AND pending_done = ?
+			AND pending_terminal_status = ?
+			AND last_acknowledged_delivery_id = ?
+			AND terminal_acknowledged = ?
+	)`,
+		streamID,
+		expected.Pending.DeliveryID,
+		expected.Pending.ReadID,
+		expected.Pending.ThroughSequence,
+		expected.Pending.Done,
+		string(expected.Pending.TerminalStatus),
+		expected.LastAcknowledgedID,
+		expected.TerminalAcknowledged,
+	).Scan(&matches)
+	return matches, err
 }
 
 func insertSQLiteStreamEvent(ctx context.Context, tx *sql.Tx, event Event) error {

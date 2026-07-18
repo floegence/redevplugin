@@ -8,6 +8,7 @@ import (
 	"reflect"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -647,6 +648,315 @@ func TestSQLiteStorePersistsStreamsAcrossOpen(t *testing.T) {
 	}
 	if _, err := replayedStore.Acknowledge(ctx, AcknowledgeRequest{StreamID: "stream_sqlite_1", DeliveryID: second.DeliveryID}); err != nil {
 		t.Fatalf("Acknowledge(second) error = %v", err)
+	}
+}
+
+func TestSQLiteStoreConcurrentDeliveryCASAcrossInstances(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		prepare  func(t *testing.T, store *SQLiteStore, streamID string)
+		validate func(t *testing.T, delivery Delivery)
+	}{
+		{
+			name: "event",
+			prepare: func(t *testing.T, store *SQLiteStore, streamID string) {
+				t.Helper()
+				if _, err := store.Append(context.Background(), AppendRequest{StreamID: streamID, Data: []byte("event")}); err != nil {
+					t.Fatal(err)
+				}
+			},
+			validate: func(t *testing.T, delivery Delivery) {
+				t.Helper()
+				if len(delivery.Events) != 1 || string(delivery.Events[0].Data) != "event" || delivery.Done {
+					t.Fatalf("event delivery = %#v", delivery)
+				}
+			},
+		},
+		{
+			name: "terminal",
+			prepare: func(t *testing.T, store *SQLiteStore, streamID string) {
+				t.Helper()
+				if _, err := store.Close(context.Background(), CloseRequest{StreamID: streamID, Status: StatusClosed}); err != nil {
+					t.Fatal(err)
+				}
+			},
+			validate: func(t *testing.T, delivery Delivery) {
+				t.Helper()
+				if len(delivery.Events) != 0 || !delivery.Done || delivery.TerminalStatus != StatusClosed {
+					t.Fatalf("terminal delivery = %#v", delivery)
+				}
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			first, second := openSQLiteStreamStorePair(t)
+			streamID := "stream_concurrent_" + test.name
+			if _, err := first.Register(context.Background(), RegisterRequest{
+				StreamID:         streamID,
+				ExecutionBinding: streamTestBinding("plugini_concurrent_" + test.name),
+			}); err != nil {
+				t.Fatal(err)
+			}
+			test.prepare(t, first, streamID)
+
+			reached := make(chan struct{}, 2)
+			release := make(chan struct{})
+			var releaseOnce sync.Once
+			defer releaseOnce.Do(func() { close(release) })
+			var snapshots [2]atomic.Int64
+			armSQLiteDeliveryBarrier(first, sqliteQueryDeliveryCAS, reached, release, &snapshots[0])
+			armSQLiteDeliveryBarrier(second, sqliteQueryDeliveryCAS, reached, release, &snapshots[1])
+
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			results := make(chan sqliteDeliveryResult, 2)
+			for index, store := range []*SQLiteStore{first, second} {
+				go func(index int, store *SQLiteStore) {
+					record, delivery, err := store.Deliver(ctx, DeliverRequest{
+						StreamID: streamID,
+						ReadID:   fmt.Sprintf("read_concurrent_%s_%08d", test.name, index),
+					})
+					results <- sqliteDeliveryResult{record: record, delivery: delivery, err: err}
+				}(index, store)
+			}
+			waitForSQLiteDeliveryBarrier(t, reached, 2)
+			releaseOnce.Do(func() { close(release) })
+
+			got := []sqliteDeliveryResult{<-results, <-results}
+			for _, result := range got {
+				if result.err != nil {
+					t.Fatalf("Deliver() error = %v", result.err)
+				}
+				if result.delivery.DeliveryID == "" {
+					t.Fatalf("Deliver() returned no pending delivery: %#v", result.delivery)
+				}
+				test.validate(t, result.delivery)
+			}
+			if !reflect.DeepEqual(got[0].delivery, got[1].delivery) {
+				t.Fatalf("concurrent deliveries diverged:\nfirst  %#v\nsecond %#v", got[0].delivery, got[1].delivery)
+			}
+			if snapshots[0].Load()+snapshots[1].Load() < 3 {
+				t.Fatalf("delivery snapshots = (%d, %d), want one CAS loser to re-read", snapshots[0].Load(), snapshots[1].Load())
+			}
+		})
+	}
+}
+
+func TestSQLiteStoreDeliveryRetriesConcurrentCloseAndAppend(t *testing.T) {
+	t.Run("close", func(t *testing.T) {
+		first, second := openSQLiteStreamStorePair(t)
+		const streamID = "stream_delivery_close_race"
+		if _, err := first.Register(context.Background(), RegisterRequest{StreamID: streamID, ExecutionBinding: streamTestBinding("plugini_close_race")}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := first.Append(context.Background(), AppendRequest{StreamID: streamID, Data: []byte("event")}); err != nil {
+			t.Fatal(err)
+		}
+
+		reached := make(chan struct{}, 1)
+		release := make(chan struct{})
+		var releaseOnce sync.Once
+		defer releaseOnce.Do(func() { close(release) })
+		var snapshots atomic.Int64
+		armSQLiteDeliveryBarrier(first, sqliteQueryDeliveryMutation, reached, release, &snapshots)
+		result := make(chan sqliteDeliveryResult, 1)
+		go func() {
+			record, delivery, err := first.Deliver(context.Background(), DeliverRequest{StreamID: streamID, ReadID: "read_close_race_0001"})
+			result <- sqliteDeliveryResult{record: record, delivery: delivery, err: err}
+		}()
+		waitForSQLiteDeliveryBarrier(t, reached, 1)
+		if _, err := second.Close(context.Background(), CloseRequest{StreamID: streamID, Status: StatusClosed}); err != nil {
+			t.Fatal(err)
+		}
+		releaseOnce.Do(func() { close(release) })
+
+		got := <-result
+		if got.err != nil {
+			t.Fatal(got.err)
+		}
+		if got.record.Status != StatusClosed || len(got.delivery.Events) != 1 || !got.delivery.Done || got.delivery.TerminalStatus != StatusClosed {
+			t.Fatalf("delivery after concurrent close: record=%#v delivery=%#v", got.record, got.delivery)
+		}
+		if snapshots.Load() < 2 {
+			t.Fatalf("delivery snapshots = %d, want retry after close", snapshots.Load())
+		}
+	})
+
+	t.Run("append", func(t *testing.T) {
+		first, second := openSQLiteStreamStorePair(t)
+		const streamID = "stream_delivery_append_race"
+		if _, err := first.Register(context.Background(), RegisterRequest{StreamID: streamID, ExecutionBinding: streamTestBinding("plugini_append_race")}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := first.Append(context.Background(), AppendRequest{StreamID: streamID, Data: []byte("first")}); err != nil {
+			t.Fatal(err)
+		}
+
+		reached := make(chan struct{}, 1)
+		release := make(chan struct{})
+		var releaseOnce sync.Once
+		defer releaseOnce.Do(func() { close(release) })
+		var snapshots atomic.Int64
+		armSQLiteDeliveryBarrier(first, sqliteQueryDeliveryMutation, reached, release, &snapshots)
+		result := make(chan sqliteDeliveryResult, 1)
+		go func() {
+			record, delivery, err := first.Deliver(context.Background(), DeliverRequest{StreamID: streamID, ReadID: "read_append_race_0001"})
+			result <- sqliteDeliveryResult{record: record, delivery: delivery, err: err}
+		}()
+		waitForSQLiteDeliveryBarrier(t, reached, 1)
+		if _, err := second.Append(context.Background(), AppendRequest{StreamID: streamID, Data: []byte("second")}); err != nil {
+			t.Fatal(err)
+		}
+		releaseOnce.Do(func() { close(release) })
+
+		got := <-result
+		if got.err != nil {
+			t.Fatal(got.err)
+		}
+		wantBuffered := streamEventCost(Event{Kind: "data", Data: []byte("first")}) + streamEventCost(Event{Kind: "data", Data: []byte("second")})
+		if got.record.BufferedBytes != wantBuffered || len(got.delivery.Events) != 2 || string(got.delivery.Events[0].Data) != "first" || string(got.delivery.Events[1].Data) != "second" {
+			t.Fatalf("delivery after concurrent append: record=%#v delivery=%#v", got.record, got.delivery)
+		}
+		if snapshots.Load() < 2 {
+			t.Fatalf("delivery snapshots = %d, want retry after append", snapshots.Load())
+		}
+	})
+}
+
+func TestSQLiteStoreDeliveryRetriesConcurrentAcknowledge(t *testing.T) {
+	first, second := openSQLiteStreamStorePair(t)
+	const streamID = "stream_delivery_ack_race"
+	if _, err := first.Register(context.Background(), RegisterRequest{StreamID: streamID, ExecutionBinding: streamTestBinding("plugini_ack_race")}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := first.Append(context.Background(), AppendRequest{StreamID: streamID, Data: []byte("first")}); err != nil {
+		t.Fatal(err)
+	}
+	_, pending, err := first.Deliver(context.Background(), DeliverRequest{StreamID: streamID, ReadID: "read_ack_race_first"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	reached := make(chan struct{}, 1)
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	defer releaseOnce.Do(func() { close(release) })
+	var snapshots atomic.Int64
+	armSQLiteDeliveryBarrier(first, sqliteQueryDeliveryReplay, reached, release, &snapshots)
+	result := make(chan sqliteDeliveryResult, 1)
+	go func() {
+		record, delivery, err := first.Deliver(context.Background(), DeliverRequest{StreamID: streamID, ReadID: "read_ack_race_retry"})
+		result <- sqliteDeliveryResult{record: record, delivery: delivery, err: err}
+	}()
+	waitForSQLiteDeliveryBarrier(t, reached, 1)
+	if _, err := second.Acknowledge(context.Background(), AcknowledgeRequest{StreamID: streamID, DeliveryID: pending.DeliveryID}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := second.Append(context.Background(), AppendRequest{StreamID: streamID, Data: []byte("second")}); err != nil {
+		t.Fatal(err)
+	}
+	releaseOnce.Do(func() { close(release) })
+
+	got := <-result
+	if got.err != nil {
+		t.Fatal(got.err)
+	}
+	if got.delivery.DeliveryID == "" || got.delivery.DeliveryID == pending.DeliveryID || got.delivery.ReadID != "read_ack_race_retry" || len(got.delivery.Events) != 1 || string(got.delivery.Events[0].Data) != "second" {
+		t.Fatalf("delivery after concurrent acknowledgement: %#v", got.delivery)
+	}
+	if snapshots.Load() < 2 {
+		t.Fatalf("delivery snapshots = %d, want retry after acknowledgement", snapshots.Load())
+	}
+}
+
+func TestSQLiteStoreDeliveryCASRetriesRespectContext(t *testing.T) {
+	first, second := openSQLiteStreamStorePair(t)
+	const streamID = "stream_delivery_context_race"
+	if _, err := first.Register(context.Background(), RegisterRequest{
+		StreamID:         streamID,
+		ExecutionBinding: streamTestBinding("plugini_context_race"),
+		MaxBufferedBytes: 1 << 20,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := first.Append(context.Background(), AppendRequest{StreamID: streamID, Data: []byte("initial")}); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var snapshots atomic.Int64
+	var mutations atomic.Int64
+	var mutationErr error
+	first.queryObserver = func(kind sqliteQueryKind) {
+		switch kind {
+		case sqliteQueryDeliverySnapshot:
+			snapshots.Add(1)
+		case sqliteQueryDeliveryMutation:
+			attempt := mutations.Add(1)
+			_, mutationErr = second.Append(context.Background(), AppendRequest{StreamID: streamID, Data: []byte(fmt.Sprintf("event-%d", attempt))})
+			if attempt == 3 {
+				cancel()
+			}
+		}
+	}
+	_, _, err := first.Deliver(ctx, DeliverRequest{StreamID: streamID, ReadID: "read_context_race"})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Deliver() error = %v, want context canceled", err)
+	}
+	if mutationErr != nil {
+		t.Fatalf("concurrent mutation error = %v", mutationErr)
+	}
+	if mutations.Load() != 3 || snapshots.Load() < 3 {
+		t.Fatalf("retry observations mutations=%d snapshots=%d, want three context-bounded attempts", mutations.Load(), snapshots.Load())
+	}
+}
+
+type sqliteDeliveryResult struct {
+	record   Record
+	delivery Delivery
+	err      error
+}
+
+func openSQLiteStreamStorePair(t *testing.T) (*SQLiteStore, *SQLiteStore) {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "streams.sqlite")
+	first, err := NewSQLiteStore(context.Background(), path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = first.CloseDatabase() })
+	second, err := NewSQLiteStore(context.Background(), path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = second.CloseDatabase() })
+	return first, second
+}
+
+func armSQLiteDeliveryBarrier(store *SQLiteStore, kind sqliteQueryKind, reached chan<- struct{}, release <-chan struct{}, snapshots *atomic.Int64) {
+	var once sync.Once
+	store.queryObserver = func(observed sqliteQueryKind) {
+		if observed == sqliteQueryDeliverySnapshot {
+			snapshots.Add(1)
+		}
+		if observed == kind {
+			once.Do(func() {
+				reached <- struct{}{}
+				<-release
+			})
+		}
+	}
+}
+
+func waitForSQLiteDeliveryBarrier(t *testing.T, reached <-chan struct{}, count int) {
+	t.Helper()
+	for index := 0; index < count; index++ {
+		select {
+		case <-reached:
+		case <-time.After(5 * time.Second):
+			t.Fatalf("delivery barrier reached %d of %d participants", index, count)
+		}
 	}
 }
 
