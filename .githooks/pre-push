@@ -1,0 +1,50 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR=$(git rev-parse --show-toplevel)
+main_local_ref=""
+main_local_oid=""
+main_remote_oid=""
+
+while read -r local_ref local_oid remote_ref remote_oid; do
+  if [[ "$remote_ref" == "refs/heads/main" ]]; then
+    main_local_ref="$local_ref"
+    main_local_oid="$local_oid"
+    main_remote_oid="$remote_oid"
+  fi
+done
+
+if [[ -z "$main_local_ref" ]]; then
+  exit 0
+fi
+
+if [[ "$main_local_ref" != "refs/heads/main" || "$main_local_oid" =~ ^0+$ ]]; then
+  echo "refusing to update main: push the checked-out main branch and do not delete it" >&2
+  exit 1
+fi
+if [[ "$(git symbolic-ref --quiet --short HEAD || true)" != "main" ]]; then
+  echo "refusing to update main: the current worktree must be on branch main" >&2
+  exit 1
+fi
+if [[ "$(git rev-parse HEAD)" != "$main_local_oid" || "$(git rev-parse refs/heads/main)" != "$main_local_oid" ]]; then
+  echo "refusing to update main: local HEAD and refs/heads/main must match the pushed object" >&2
+  exit 1
+fi
+if [[ -n "$(git status --porcelain --untracked-files=normal)" ]]; then
+  echo "refusing to update main: the worktree must be clean" >&2
+  exit 1
+fi
+if [[ ! "$main_local_oid" =~ ^[0-9a-fA-F]+$ ]] || ! git cat-file -e "$main_local_oid^{commit}" 2>/dev/null; then
+  echo "refusing to update main: local object is not a commit" >&2
+  exit 1
+fi
+if [[ ! "$main_remote_oid" =~ ^0+$ ]] && ! git cat-file -e "$main_remote_oid^{commit}" 2>/dev/null; then
+  echo "refusing to update main: remote object is not available locally" >&2
+  exit 1
+fi
+if [[ ! "$main_remote_oid" =~ ^0+$ ]] && ! git merge-base --is-ancestor "$main_remote_oid" "$main_local_oid"; then
+  echo "refusing to update main: the push is not fast-forward" >&2
+  exit 1
+fi
+
+exec "$ROOT_DIR/scripts/check_redevplugin_pre_push.sh"

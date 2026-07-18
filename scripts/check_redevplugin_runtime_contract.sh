@@ -127,6 +127,16 @@ export GOWORK=off
   grep -q './examples/...' scripts/check_redevplugin_release_audit.sh
 	grep -q './pkg/...' scripts/check_redevplugin_release_audit.sh
   grep -q 'release-audit:' .github/workflows/ci.yml
+  test -x scripts/check_redevplugin_pre_push.sh
+  test -x .githooks/pre-push
+  test -x scripts/test_redevplugin_pre_push_hook.sh
+  node --check scripts/resolve_redevplugin_smoke_version.mjs
+  scripts/test_redevplugin_pre_push_hook.sh
+  grep -q 'Main Pre-Push Equivalent' .github/workflows/ci.yml
+  grep -q './scripts/check_redevplugin_pre_push.sh --ci' .github/workflows/ci.yml
+  grep -q 'scripts/resolve_redevplugin_smoke_version.mjs ci.' .github/workflows/ci.yml
+  grep -q 'refs/heads/main' .githooks/pre-push
+  grep -q './scripts/check_redevplugin_pre_push.sh' .githooks/pre-push
   grep -q '^permissions:$' .github/workflows/ci.yml
 	grep -q 'GOWORK=off golangci-lint run ./cmd/... ./examples/... ./pkg/...' .github/workflows/ci.yml
 	grep -q 'GOWORK=off go list ./cmd/... ./examples/... ./pkg/...' .github/workflows/ci.yml

@@ -674,6 +674,25 @@ Core invariants:
 Keep local checks aligned with CI. As the repository is bootstrapped, add the
 exact scripts and workflows here when they land.
 
+Before pushing `main`, configure the tracked hook with:
+
+```bash
+git config core.hooksPath .githooks
+```
+
+`.githooks/pre-push` invokes `scripts/check_redevplugin_pre_push.sh` only for a
+clean, fast-forward update of `refs/heads/main` from the checked-out `main`
+branch whose `HEAD` matches the pushed object. That script is the authoritative
+local equivalent of every CI check that does not require GitHub credentials,
+artifact storage, tag/ref identity, registry readback, Sigstore signing, or a
+hosted multi-platform runner. It includes Go, TypeScript, browser, canonical
+WASM, bridge, performance, Rust, audit, stress, property, contract, platform,
+and release-bundle smoke gates. The hook behavior itself is covered by
+`scripts/test_redevplugin_pre_push_hook.sh`. The main-branch CI workflow
+invokes the same gate in its `Main Pre-Push Equivalent` job. Do not add a
+repository gate to a workflow without adding it to this script and running it
+before the next main push.
+
 Run the relevant gate before creating any commit that another person or host
 product may build on. Do not commit or push first and use CI as the first place
 that discovers broken formatting, stale generated contracts, incompatible
@@ -695,6 +714,12 @@ Expected gates for platform changes:
 - Release: runtime artifact presence, checksums, signatures, third-party notices,
   platform matrix coverage, version matrix consistency, and host-consumable
   compatibility manifest validation.
+
+The complete main-push gate is:
+
+```bash
+./scripts/check_redevplugin_pre_push.sh
+```
 
 Dependency-boundary checks must prove that the repository builds without sibling
 workspace wiring:

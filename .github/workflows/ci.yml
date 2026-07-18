@@ -10,6 +10,30 @@ permissions:
   contents: read
 
 jobs:
+  pre-push-main-equivalent:
+    name: Main Pre-Push Equivalent
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: rustup show
+      - run: ./scripts/check_redevplugin_pre_push.sh --ci
+        env:
+          REDEVPLUGIN_INSTALL_AUDIT_TOOLS: "1"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: redevplugin-pre-push-stress
+          path: dist/redevplugin-pre-push-stress.json
+          if-no-files-found: ignore
+
   go:
     name: Go
     runs-on: ubuntu-latest
@@ -170,8 +194,10 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npx playwright install --with-deps chromium
-      - run: ./scripts/build_redevplugin_release.sh --performance-gate smoke --version "0.5.0-ci.${GITHUB_RUN_NUMBER}"
+      - id: smoke-version
+        run: echo "version=$(node scripts/resolve_redevplugin_smoke_version.mjs ci.${GITHUB_RUN_NUMBER})" >> "$GITHUB_OUTPUT"
+      - run: ./scripts/build_redevplugin_release.sh --performance-gate smoke --version "${{ steps.smoke-version.outputs.version }}"
       - run: ./dist/redevplugin-release/bin/redevplugin verify-compatibility ./dist/redevplugin-release/compatibility.json ./dist/redevplugin-release/contracts
-      - run: node scripts/verify_redevplugin_release_bundle.mjs --skip-execution --allow-smoke ./dist/redevplugin-release "0.5.0-ci.${GITHUB_RUN_NUMBER}"
+      - run: node scripts/verify_redevplugin_release_bundle.mjs --skip-execution --allow-smoke ./dist/redevplugin-release "${{ steps.smoke-version.outputs.version }}"
       - name: Verify standalone published-release toolchain isolation
-        run: node scripts/test_published_release_verifier.mjs ./dist/redevplugin-release "0.5.0-ci.${GITHUB_RUN_NUMBER}" "$GITHUB_SHA"
+        run: node scripts/test_published_release_verifier.mjs ./dist/redevplugin-release "${{ steps.smoke-version.outputs.version }}" "$GITHUB_SHA"

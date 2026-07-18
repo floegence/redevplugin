@@ -276,16 +276,17 @@ func TestCLIScaffoldRunsGeneratedWorkerThroughBuiltRustRuntime(t *testing.T) {
 		t.Skip("cargo not found; skipping scaffold Rust runtime integration")
 	}
 	repoRoot := cliRepoRoot(t)
+	cargoTargetDir := filepath.Join(t.TempDir(), "cargo-target")
 	build := exec.Command("cargo", "build", "-p", "redevplugin-runtime")
 	build.Dir = repoRoot
 	oldRuntimeVersion := version.RuntimeVersion
 	version.RuntimeVersion = "0.5.0"
 	t.Cleanup(func() { version.RuntimeVersion = oldRuntimeVersion })
-	build.Env = append(os.Environ(), "CARGO_TERM_COLOR=never", "REDEVPLUGIN_RUNTIME_VERSION="+version.RuntimeVersion)
+	build.Env = append(os.Environ(), "CARGO_TARGET_DIR="+cargoTargetDir, "CARGO_TERM_COLOR=never", "REDEVPLUGIN_RUNTIME_VERSION="+version.RuntimeVersion)
 	if output, err := build.CombinedOutput(); err != nil {
 		t.Fatalf("cargo build -p redevplugin-runtime failed: %v\n%s", err, output)
 	}
-	runtimePath := filepath.Join(repoRoot, "target", "debug", "redevplugin-runtime")
+	runtimePath := filepath.Join(cargoTargetDir, "debug", "redevplugin-runtime")
 	if goruntime.GOOS == "windows" {
 		runtimePath += ".exe"
 	}

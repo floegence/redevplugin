@@ -41,28 +41,17 @@ packaging also verifies the scaffold before building the CLI, including runtime
 matrix jobs that consume a prebuilt npm tarball, and the package job installs
 the pinned WASM target before that check.
 
-Core local checks:
+The authoritative local gate, also invoked by the `main` pre-push hook and the
+main-branch CI equivalent job, is:
 
 ```bash
-GOWORK=off go list ./cmd/... ./examples/... ./pkg/...
-GOWORK=off go test ./cmd/... ./examples/... ./pkg/...
-GOWORK=off golangci-lint run ./cmd/... ./examples/... ./pkg/...
-npm ci
-npx playwright install chromium
-npm run check
-npm run performance:fast
-npm run canonical-wasm:test
-npm run examples:check:canonical
-npm run scaffold:check:canonical
-node scripts/check_redevplugin_release_metadata.mjs --source
-./scripts/check_redevplugin_runtime_contract.sh --ci
-./scripts/check_redevplugin_platform.sh --ci
-REDEVPLUGIN_INSTALL_AUDIT_TOOLS=1 ./scripts/check_redevplugin_release_audit.sh
-./scripts/check_redevplugin_stress.sh --fast --summary dist/redevplugin-stress-fast.json
-cargo fmt --check
-cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace
+./scripts/check_redevplugin_pre_push.sh
 ```
+
+The hook rejects main deletion, non-fast-forward updates, dirty worktrees,
+feature worktrees, and local objects that do not match `HEAD`. It does not
+cover GitHub-only publication, hosted multi-platform execution, registry
+readback, artifact upload/download, Sigstore signing, or GitHub API checks.
 
 The tagged release workflow has one `quality-release` dependency shared by npm
 packing, native runtime packing, npm publication, and GitHub Release

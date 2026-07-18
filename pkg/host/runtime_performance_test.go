@@ -40,7 +40,7 @@ func TestPerformanceRuntimeWarmConcurrencyAndCache(t *testing.T) {
 	installed, gateway := installEnableAndMintGateway(t, h, buildWorkerFixturePackage(t), "worker.view")
 	assets.reads.Store(0)
 
-	coldErrors, _ := callWorkerConcurrently(h, installed.PluginInstanceID, gateway.GatewayToken, 32)
+	coldErrors, _ := callWorkerConcurrentlyBounded(h, installed.PluginInstanceID, gateway.GatewayToken, 32, performanceRuntimeAdmissionCapacity(limits))
 	if len(coldErrors) > 0 {
 		t.Fatalf("cold concurrent invocations failed: %v", coldErrors[0])
 	}
@@ -55,7 +55,7 @@ func TestPerformanceRuntimeWarmConcurrencyAndCache(t *testing.T) {
 		t.Fatalf("module cache after cold concurrency = %#v", heartbeat.ModuleCache)
 	}
 
-	warmErrors, durations := callWorkerConcurrently(h, installed.PluginInstanceID, gateway.GatewayToken, 32)
+	warmErrors, durations := callWorkerConcurrentlyBounded(h, installed.PluginInstanceID, gateway.GatewayToken, 32, performanceRuntimeAdmissionCapacity(limits))
 	if len(warmErrors) > 0 {
 		t.Fatalf("warm concurrent invocations failed: %v", warmErrors[0])
 	}
@@ -176,14 +176,14 @@ func TestPerformanceRuntimeIsolationAndCancellation(t *testing.T) {
 	executor := newPerformanceBlockingNetworkExecutor()
 	h, supervisor, assets := newPerformanceRuntimeHost(t, runtimePath, limits, broker, executor)
 	installed, gateway := installEnableAndMintGateway(t, h, buildWorkerFixturePackage(t), "worker.view")
-	if errors, _ := callWorkerConcurrently(h, installed.PluginInstanceID, gateway.GatewayToken, 1); len(errors) > 0 {
+	if errors, _ := callWorkerConcurrentlyBounded(h, installed.PluginInstanceID, gateway.GatewayToken, 1, 1); len(errors) > 0 {
 		t.Fatalf("warm echo invocation failed: %v", errors[0])
 	}
 	blocking := installPerformanceBlockingArtifact(t, assets, broker)
 
 	blockedDone := invokePerformanceBlockingWorker(supervisor, blocking, context.Background(), "isolation")
 	blockedRequest := <-executor.started
-	errs, durations := callWorkerConcurrently(h, installed.PluginInstanceID, gateway.GatewayToken, 16)
+	errs, durations := callWorkerConcurrentlyBounded(h, installed.PluginInstanceID, gateway.GatewayToken, 16, performanceRuntimeAdmissionCapacity(limits))
 	if len(errs) > 0 {
 		t.Fatalf("isolated invocations failed: %v", errs[0])
 	}
@@ -290,7 +290,7 @@ func TestPerformanceRuntimeSaturatedPluginPreservesOtherPluginCapacity(t *testin
 	executor := newPerformanceBlockingNetworkExecutor()
 	h, supervisor, assets := newPerformanceRuntimeHost(t, runtimePath, limits, broker, executor)
 	installed, gateway := installEnableAndMintGateway(t, h, buildWorkerFixturePackage(t), "worker.view")
-	if errors, _ := callWorkerConcurrently(h, installed.PluginInstanceID, gateway.GatewayToken, 1); len(errors) > 0 {
+	if errors, _ := callWorkerConcurrentlyBounded(h, installed.PluginInstanceID, gateway.GatewayToken, 1, 1); len(errors) > 0 {
 		t.Fatalf("warm invocation failed: %v", errors[0])
 	}
 	blocking := installPerformanceBlockingArtifact(t, assets, broker)
@@ -310,7 +310,7 @@ func TestPerformanceRuntimeSaturatedPluginPreservesOtherPluginCapacity(t *testin
 	}
 	waitForRuntimeQueue(t, supervisor, limits.PerPluginConcurrency)
 
-	errs, durations := callWorkerConcurrently(h, installed.PluginInstanceID, gateway.GatewayToken, 8)
+	errs, durations := callWorkerConcurrentlyBounded(h, installed.PluginInstanceID, gateway.GatewayToken, 8, performanceRuntimeAdmissionCapacity(limits))
 	if len(errs) > 0 {
 		t.Fatalf("other plugin invocation failed while saturated plugin owned its queue: %v", errs[0])
 	}
@@ -493,7 +493,14 @@ func (m performanceRuntimeManager) Revoke(ctx context.Context, pluginInstanceID 
 	return m.supervisor.Revoke(ctx, pluginInstanceID, revokeEpoch)
 }
 
-func callWorkerConcurrently(h *Host, pluginInstanceID string, gatewayToken string, count int) ([]error, []time.Duration) {
+func callWorkerConcurrentlyBounded(h *Host, pluginInstanceID string, gatewayToken string, count int, maxInFlight int) ([]error, []time.Duration) {
+	if count < 1 {
+		panic("performance invocation count must be positive")
+	}
+	if maxInFlight < 1 || maxInFlight > count {
+		panic("performance invocation maxInFlight must be between one and count")
+	}
+	admission := make(chan struct{}, maxInFlight)
 	var wg sync.WaitGroup
 	var mu sync.Mutex
 	errs := make([]error, 0)
@@ -503,6 +510,8 @@ func callWorkerConcurrently(h *Host, pluginInstanceID string, gatewayToken strin
 		go func(index int) {
 			defer wg.Done()
 			started := time.Now()
+			admission <- struct{}{}
+			defer func() { <-admission }()
 			_, err := h.CallPluginMethod(hostTestContext(), CallMethodRequest{
 				PluginInstanceID:  pluginInstanceID,
 				SurfaceInstanceID: "surface_rpc",
@@ -523,6 +532,10 @@ func callWorkerConcurrently(h *Host, pluginInstanceID string, gatewayToken strin
 	}
 	wg.Wait()
 	return errs, durations
+}
+
+func performanceRuntimeAdmissionCapacity(limits runtimeclient.RuntimeLimits) int {
+	return limits.PerPluginConcurrency + min(limits.QueueCapacity, limits.PerPluginConcurrency)
 }
 
 type performanceBlockingRequest struct {

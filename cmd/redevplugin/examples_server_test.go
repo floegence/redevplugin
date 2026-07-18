@@ -440,13 +440,14 @@ func buildExamplesRuntime(t *testing.T, repositoryRoot string) string {
 			t.Fatalf("cargo is unavailable: %v", err)
 		}
 	}
+	cargoTargetDir := filepath.Join(t.TempDir(), "cargo-target")
 	command := exec.Command(cargo, "build", "-p", "redevplugin-runtime")
 	command.Dir = repositoryRoot
-	command.Env = append(os.Environ(), "CARGO_TERM_COLOR=never", "REDEVPLUGIN_RUNTIME_VERSION="+runtimeVersion)
+	command.Env = append(os.Environ(), "CARGO_TARGET_DIR="+cargoTargetDir, "CARGO_TERM_COLOR=never", "REDEVPLUGIN_RUNTIME_VERSION="+runtimeVersion)
 	if output, err := command.CombinedOutput(); err != nil {
 		t.Fatalf("cargo build -p redevplugin-runtime failed: %v\n%s", err, output)
 	}
-	runtimePath := filepath.Join(repositoryRoot, "target", "debug", "redevplugin-runtime")
+	runtimePath := filepath.Join(cargoTargetDir, "debug", "redevplugin-runtime")
 	if runtime.GOOS == "windows" {
 		runtimePath += ".exe"
 	}

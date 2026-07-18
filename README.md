@@ -608,23 +608,26 @@ vendoring, not an instruction to wire a sibling checkout.
 
 ## Local Checks
 
+Before pushing `main`, install the repository hook once:
+
 ```bash
-GOWORK=off go list ./cmd/... ./examples/... ./pkg/...
-GOWORK=off go test ./cmd/... ./examples/... ./pkg/...
-npm ci
-npx playwright install chromium
-npm run check
-npm run canonical-wasm:test
-npm run examples:check:canonical
-npm run scaffold:check:canonical
-npm run examples
-npm run test:browser-harness
-npm run test:browser-harness:smoke
-./scripts/check_redevplugin_runtime_contract.sh
-./scripts/check_redevplugin_platform.sh
-REDEVPLUGIN_INSTALL_AUDIT_TOOLS=1 ./scripts/check_redevplugin_release_audit.sh
-./scripts/check_redevplugin_stress.sh --fast --summary dist/redevplugin-stress-fast.json
+git config core.hooksPath .githooks
 ```
+
+The hook runs the same non-GitHub-infrastructure gate used by the main-branch
+workflow. It only accepts a clean, fast-forward update from the checked-out
+`main` branch whose `HEAD` exactly matches the pushed object. Feature-branch
+pushes do not run the gate; attempts to push a feature ref to remote `main` are
+rejected. Run the authoritative gate directly when investigating a failure:
+
+```bash
+./scripts/check_redevplugin_pre_push.sh
+```
+
+GitHub-only release publication, tag identity, artifact upload/download,
+multi-runner runtime execution, npm/Go registry readback, Sigstore signing, and
+GitHub API checks remain in the release workflows because they require GitHub
+credentials or hosted runner infrastructure.
 
 Rust checks require a local Rust toolchain:
 
