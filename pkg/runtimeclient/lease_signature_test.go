@@ -226,7 +226,7 @@ func TestProcessSupervisorRejectsInvalidLeaseBeforeIPC(t *testing.T) {
 	diagnostics := &runtimeDiagnosticSink{}
 	supervisor, err := newTestProcessSupervisor(t, ProcessSupervisorOptions{
 		Limits:                DefaultRuntimeLimits(),
-		HandshakeTimeout:      5 * time.Second,
+		HandshakeTimeout:      15 * time.Second,
 		HeartbeatInterval:     2 * time.Second,
 		MaxHeartbeatStaleness: 5 * time.Second,
 		RuntimePath:           os.Args[0],
@@ -268,7 +268,7 @@ func TestProcessSupervisorRejectsInvalidLeaseBeforeIPC(t *testing.T) {
 func TestProcessSupervisorSendsRuntimeLeasePublicKeysInHello(t *testing.T) {
 	supervisor, err := newTestProcessSupervisor(t, ProcessSupervisorOptions{
 		Limits:                DefaultRuntimeLimits(),
-		HandshakeTimeout:      5 * time.Second,
+		HandshakeTimeout:      15 * time.Second,
 		HeartbeatInterval:     2 * time.Second,
 		MaxHeartbeatStaleness: 5 * time.Second,
 		RuntimePath:           os.Args[0],

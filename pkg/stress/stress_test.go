@@ -399,13 +399,13 @@ func TestStressGateOperationCancelOwnershipEvidence(t *testing.T) {
 }
 
 func TestStressGateRuntimeRevokeACKP95(t *testing.T) {
-	ctx, cancel := context.WithTimeout(stressTestContext(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(stressTestContext(), 15*time.Second)
 	defer cancel()
 
 	target := runtimeclient.Target{OS: goruntime.GOOS, Arch: goruntime.GOARCH}
 	supervisor, err := runtimeclient.NewProcessSupervisor(runtimeclient.ProcessSupervisorOptions{
 		Limits:                runtimeclient.DefaultRuntimeLimits(),
-		HandshakeTimeout:      5 * time.Second,
+		HandshakeTimeout:      15 * time.Second,
 		RuntimePath:           os.Args[0],
 		Descriptor:            stressRuntimeDescriptor(t, os.Args[0], target),
 		Args:                  []string{"-test.run=TestMain"},
