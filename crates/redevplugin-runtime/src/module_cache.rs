@@ -1,5 +1,5 @@
 use crate::scheduler::Cancellation;
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 
@@ -77,6 +77,7 @@ impl std::fmt::Display for ModuleCacheError {
 #[derive(Default)]
 struct ModuleCacheState {
     entries: HashMap<ModuleKey, CacheEntry>,
+    recency: BTreeSet<(u64, ModuleKey)>,
     flights: HashMap<ModuleKey, Arc<CompileFlight>>,
     tick: u64,
     source_bytes: usize,
@@ -196,8 +197,11 @@ impl ModuleCache {
             state.tick += 1;
             let tick = state.tick;
             if let Some(entry) = state.entries.get_mut(&key) {
+                let previous_last_used = entry.last_used;
                 entry.last_used = tick;
                 let compiled = entry.compiled.clone();
+                debug_assert!(state.recency.remove(&(previous_last_used, key.clone())));
+                debug_assert!(state.recency.insert((tick, key.clone())));
                 state.hits += 1;
                 return Ok(compiled);
             }
@@ -253,19 +257,11 @@ impl ModuleCache {
 
     fn evict_locked(&self, state: &mut ModuleCacheState) {
         while state.entries.len() > self.max_entries || state.source_bytes > self.max_source_bytes {
-            let Some(key) = state
-                .entries
-                .iter()
-                .min_by(|(left_key, left), (right_key, right)| {
-                    left.last_used
-                        .cmp(&right.last_used)
-                        .then_with(|| left_key.cmp(right_key))
-                })
-                .map(|(key, _)| key.clone())
-            else {
+            let Some((last_used, key)) = state.recency.pop_first() else {
                 break;
             };
             if let Some(entry) = state.entries.remove(&key) {
+                debug_assert_eq!(entry.last_used, last_used);
                 state.source_bytes -= entry.compiled.source_bytes;
             }
         }
@@ -308,14 +304,18 @@ impl ModuleCache {
         if let Ok(compiled) = &result {
             state.tick += 1;
             let last_used = state.tick;
-            state.source_bytes += compiled.source_bytes;
-            state.entries.insert(
+            if let Some(previous) = state.entries.insert(
                 key.clone(),
                 CacheEntry {
                     compiled: compiled.clone(),
                     last_used,
                 },
-            );
+            ) {
+                state.recency.remove(&(previous.last_used, key.clone()));
+                state.source_bytes -= previous.compiled.source_bytes;
+            }
+            state.source_bytes += compiled.source_bytes;
+            debug_assert!(state.recency.insert((last_used, key.clone())));
             self.evict_locked(&mut state);
         }
         flight.complete(result);
@@ -441,6 +441,35 @@ mod tests {
         load("sha256:b");
         assert_eq!(loads.load(Ordering::SeqCst), 4);
         assert_eq!(cache.metrics().entries, 2);
+    }
+
+    #[test]
+    fn recency_index_matches_cached_entries_after_hits_and_evictions() {
+        let cache = ModuleCache::new(engine(), 4, 128 * 1024 * 1024);
+        let canceled = Cancellation::new();
+        for key in ["sha256:a", "sha256:b", "sha256:c", "sha256:d", "sha256:e"] {
+            cache
+                .get_or_compile(key, ABI_VERSION, &canceled, || Ok(worker_module()))
+                .unwrap();
+        }
+        cache
+            .get_or_compile("sha256:c", ABI_VERSION, &canceled, || {
+                Err(ModuleCacheError::Load("unexpected reload".to_string()))
+            })
+            .unwrap();
+        let state = cache.state.lock().unwrap();
+        assert_eq!(state.entries.len(), state.recency.len());
+        assert_eq!(
+            state.source_bytes,
+            state
+                .entries
+                .values()
+                .map(|entry| entry.compiled.source_bytes)
+                .sum::<usize>()
+        );
+        for (last_used, key) in &state.recency {
+            assert_eq!(state.entries.get(key).unwrap().last_used, *last_used);
+        }
     }
 
     #[test]
