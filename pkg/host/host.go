@@ -98,8 +98,10 @@ var (
 	ErrPluginRuntimeNotConfigured    = errors.New("plugin runtime is not configured")
 	ErrPluginRuntimeIncompatible     = errors.New("plugin runtime is incompatible")
 	ErrSecurityEventPersistence      = errors.New("plugin security event persistence failed")
-	ErrAdapterFailed                 = errors.New("plugin host adapter failed")
-	ErrResourceScopeMismatch         = errors.New("plugin resource scope mismatch")
+	ErrAdapterFailure                = errors.New("plugin host adapter failed")
+	ErrOwnerScopeMismatch            = errors.New("plugin owner scope mismatch")
+	ErrSecretScopeMismatch           = errors.New("plugin secret scope mismatch")
+	ErrStorageScopeMismatch          = errors.New("plugin storage scope mismatch")
 	ErrHostClosed                    = errors.New("plugin host is closed")
 	ErrHostConfig                    = errors.New("plugin host configuration is invalid")
 	ErrFeatureNotConfigured          = errors.New("plugin feature is not configured")
@@ -6574,7 +6576,7 @@ func (h *Host) reportSecretAdapterFailure(ctx context.Context, record registry.P
 }
 
 func secretAdapterFailure(operation string, err error) error {
-	sanitized := fmt.Errorf("%w: secrets %s operation", ErrAdapterFailed, operation)
+	sanitized := fmt.Errorf("%w: secrets %s operation", ErrAdapterFailure, operation)
 	if outcome, explicit := mutation.Explicit(err); explicit {
 		return &mutation.Error{Outcome: outcome, Err: sanitized}
 	}
@@ -7432,7 +7434,7 @@ func (h *Host) resolveSecretRequest(ctx context.Context, req SecretBindRequest) 
 		return registry.PluginRecord{}, SecretBindRequest{}, err
 	}
 	if !secretRefDeclared(record.Manifest, req.SecretRef, req.Scope) {
-		return registry.PluginRecord{}, SecretBindRequest{}, fmt.Errorf("%w: %w: secret_ref %q is not declared for %s scope", ErrInvalidSecretRef, ErrResourceScopeMismatch, req.SecretRef, req.Scope)
+		return registry.PluginRecord{}, SecretBindRequest{}, fmt.Errorf("%w: %w: secret_ref %q is not declared for %s scope", ErrInvalidSecretRef, ErrSecretScopeMismatch, req.SecretRef, req.Scope)
 	}
 	return record, req, nil
 }

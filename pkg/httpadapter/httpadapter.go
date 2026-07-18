@@ -2908,6 +2908,14 @@ func publicPluginErrorMessage(code security.ErrorCode) string {
 		return "request origin was denied"
 	case security.ErrActionDenied:
 		return "plugin platform action was denied"
+	case security.ErrOwnerScopeMismatch:
+		return "plugin owner scope does not match the authenticated session"
+	case security.ErrSecretScopeMismatch:
+		return "plugin secret scope does not match the request"
+	case security.ErrStorageScopeMismatch:
+		return "plugin storage scope does not match the request"
+	case security.ErrAdapterFailure:
+		return "plugin host adapter failed"
 	case security.ErrCSRFRequired:
 		return "csrf token is required"
 	case security.ErrCSRFInvalid:
@@ -2962,6 +2970,12 @@ func errorCodeForManagementError(err error) security.ErrorCode {
 	switch {
 	case errors.Is(err, host.ErrActionDenied):
 		return security.ErrActionDenied
+	case errors.Is(err, host.ErrOwnerScopeMismatch), errors.Is(err, connectivity.ErrResourceScopeMismatch):
+		return security.ErrOwnerScopeMismatch
+	case errors.Is(err, host.ErrStorageScopeMismatch):
+		return security.ErrStorageScopeMismatch
+	case errors.Is(err, host.ErrAdapterFailure):
+		return security.ErrAdapterFailure
 	case errors.Is(err, host.ErrManagementRevisionMismatch):
 		return security.ErrManagementRevisionMismatch
 	case errors.Is(err, host.ErrPluginUIProtocolUnsupported):
@@ -3028,6 +3042,8 @@ func httpStatusForManagementError(err error) int {
 		return http.StatusBadRequest
 	}
 	switch {
+	case errors.Is(err, host.ErrAdapterFailure):
+		return http.StatusBadGateway
 	case errors.Is(err, host.ErrManagementRevisionMismatch):
 		return http.StatusConflict
 	case errors.Is(err, host.ErrPluginUIProtocolUnsupported):
@@ -3319,6 +3335,12 @@ func errorCodeForDataLifecycleError(err error) security.ErrorCode {
 	switch {
 	case errors.Is(err, host.ErrActionDenied):
 		return security.ErrActionDenied
+	case errors.Is(err, host.ErrOwnerScopeMismatch):
+		return security.ErrOwnerScopeMismatch
+	case errors.Is(err, host.ErrStorageScopeMismatch):
+		return security.ErrStorageScopeMismatch
+	case errors.Is(err, host.ErrAdapterFailure):
+		return security.ErrAdapterFailure
 	case errors.Is(err, storage.ErrQuotaExceeded):
 		return security.ErrStorageQuotaExceeded
 	case errors.Is(err, plugindata.ErrBindingRevisionConflict):
@@ -3373,8 +3395,12 @@ func errorCodeForSecretError(err error) security.ErrorCode {
 	switch {
 	case errors.Is(err, host.ErrActionDenied):
 		return security.ErrActionDenied
-	case errors.Is(err, host.ErrResourceScopeMismatch):
-		return security.ErrPermissionDenied
+	case errors.Is(err, host.ErrSecretScopeMismatch):
+		return security.ErrSecretScopeMismatch
+	case errors.Is(err, host.ErrOwnerScopeMismatch):
+		return security.ErrOwnerScopeMismatch
+	case errors.Is(err, host.ErrAdapterFailure):
+		return security.ErrAdapterFailure
 	case errors.Is(err, host.ErrInvalidSecretRef), errors.Is(err, registry.ErrNotFound):
 		return security.ErrInvalidRequest
 	case errors.Is(err, host.ErrSecretStoreRequired):
@@ -3386,8 +3412,12 @@ func errorCodeForSecretError(err error) security.ErrorCode {
 
 func publicSecretErrorMessage(err error) string {
 	switch {
-	case errors.Is(err, host.ErrResourceScopeMismatch):
+	case errors.Is(err, host.ErrSecretScopeMismatch):
 		return "secret reference scope does not match the request"
+	case errors.Is(err, host.ErrOwnerScopeMismatch):
+		return "secret owner scope does not match the authenticated session"
+	case errors.Is(err, host.ErrAdapterFailure):
+		return "secret adapter operation failed"
 	case errors.Is(err, host.ErrInvalidSecretRef):
 		return "secret reference request is invalid"
 	case errors.Is(err, registry.ErrNotFound):
@@ -3403,6 +3433,12 @@ func errorCodeForSettingsError(err error) security.ErrorCode {
 	switch {
 	case errors.Is(err, host.ErrActionDenied):
 		return security.ErrActionDenied
+	case errors.Is(err, host.ErrOwnerScopeMismatch):
+		return security.ErrOwnerScopeMismatch
+	case errors.Is(err, host.ErrStorageScopeMismatch):
+		return security.ErrStorageScopeMismatch
+	case errors.Is(err, host.ErrAdapterFailure):
+		return security.ErrAdapterFailure
 	case errors.Is(err, plugindata.ErrRevisionConflict):
 		return security.ErrValuesRevisionMismatch
 	case errors.Is(err, registry.ErrNotFound), errors.Is(err, host.ErrPluginSettingsNotDeclared), errors.Is(err, plugindata.ErrUnknownSetting), errors.Is(err, settings.ErrInvalidSetting):
@@ -3414,6 +3450,8 @@ func errorCodeForSettingsError(err error) security.ErrorCode {
 
 func httpStatusForSettingsError(err error) int {
 	switch {
+	case errors.Is(err, host.ErrAdapterFailure):
+		return http.StatusBadGateway
 	case errors.Is(err, plugindata.ErrRevisionConflict):
 		return http.StatusConflict
 	case errors.Is(err, registry.ErrNotFound), errors.Is(err, host.ErrPluginSettingsNotDeclared), errors.Is(err, plugindata.ErrUnknownSetting), errors.Is(err, settings.ErrInvalidSetting):
@@ -3425,7 +3463,9 @@ func httpStatusForSettingsError(err error) int {
 
 func httpStatusForSecretError(err error) int {
 	switch {
-	case errors.Is(err, host.ErrResourceScopeMismatch):
+	case errors.Is(err, host.ErrAdapterFailure):
+		return http.StatusBadGateway
+	case errors.Is(err, host.ErrSecretScopeMismatch), errors.Is(err, host.ErrOwnerScopeMismatch):
 		return http.StatusForbidden
 	case errors.Is(err, host.ErrInvalidSecretRef), errors.Is(err, registry.ErrNotFound):
 		return http.StatusBadRequest
@@ -3475,6 +3515,10 @@ func errorCodeForPermissionError(err error) security.ErrorCode {
 	switch {
 	case errors.Is(err, host.ErrActionDenied):
 		return security.ErrActionDenied
+	case errors.Is(err, host.ErrOwnerScopeMismatch):
+		return security.ErrOwnerScopeMismatch
+	case errors.Is(err, host.ErrAdapterFailure):
+		return security.ErrAdapterFailure
 	case errors.Is(err, registry.ErrNotFound), errors.Is(err, permissions.ErrInvalidPermission), errors.Is(err, permissions.ErrGrantNotFound):
 		return security.ErrInvalidRequest
 	case errors.Is(err, permissions.ErrPermissionDenied):
@@ -3486,6 +3530,8 @@ func errorCodeForPermissionError(err error) security.ErrorCode {
 
 func httpStatusForPermissionError(err error) int {
 	switch {
+	case errors.Is(err, host.ErrAdapterFailure):
+		return http.StatusBadGateway
 	case errors.Is(err, registry.ErrNotFound), errors.Is(err, permissions.ErrInvalidPermission), errors.Is(err, permissions.ErrGrantNotFound):
 		return http.StatusBadRequest
 	case errors.Is(err, permissions.ErrPermissionDenied):
@@ -3499,6 +3545,10 @@ func errorCodeForSecurityPolicyError(err error) security.ErrorCode {
 	switch {
 	case errors.Is(err, host.ErrActionDenied):
 		return security.ErrActionDenied
+	case errors.Is(err, host.ErrOwnerScopeMismatch):
+		return security.ErrOwnerScopeMismatch
+	case errors.Is(err, host.ErrAdapterFailure):
+		return security.ErrAdapterFailure
 	case errors.Is(err, registry.ErrAuthorizationRevisionConflict):
 		return security.ErrAuthorizationRevisionMismatch
 	case errors.Is(err, registry.ErrNotFound),
@@ -3531,6 +3581,8 @@ func errorDetailsForSecurityPolicyError(err error) errorDetails {
 
 func httpStatusForSecurityPolicyError(err error) int {
 	switch {
+	case errors.Is(err, host.ErrAdapterFailure):
+		return http.StatusBadGateway
 	case errors.Is(err, host.ErrActionDenied):
 		return http.StatusForbidden
 	case errors.Is(err, registry.ErrAuthorizationRevisionConflict):
@@ -3546,6 +3598,10 @@ func httpStatusForSecurityPolicyError(err error) int {
 
 func httpStatusForDataLifecycleError(err error) int {
 	switch {
+	case errors.Is(err, host.ErrAdapterFailure):
+		return http.StatusBadGateway
+	case errors.Is(err, host.ErrOwnerScopeMismatch), errors.Is(err, host.ErrStorageScopeMismatch):
+		return http.StatusForbidden
 	case errors.Is(err, storage.ErrQuotaExceeded):
 		return http.StatusRequestEntityTooLarge
 	case errors.Is(err, plugindata.ErrBindingRevisionConflict), errors.Is(err, plugindata.ErrRevisionConflict):

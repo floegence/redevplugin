@@ -19,11 +19,13 @@ capabilities.
   token/ticket schema, iframe bridge and render policy, opaque surface document
   and transport schemas, compatibility and release manifest schemas, IPC schema,
   WASM ABI schema, worker invocation payload schema, stable error-code schema,
-  performance-evidence schema, and target classifier fixture
+  persistent resource-scope schema, performance-evidence schema, and target
+  classifier fixture
 - Active coordinated contracts are `plugin-host-v4`, `rust-ipc-v4`,
   `plugin-ui-v5`, `bridge-v5`, `plugin-platform-v6`, `manifest-v5`, opaque
   document v3, opaque transport v4, release metadata v5, compatibility manifest
-  v6, and error codes v3. WASM ABI v2, worker invocation v3, token/ticket v2,
+  v6, error codes v4, and resource scope v1. WASM ABI v2, worker invocation v3,
+  token/ticket v2,
   package signature v1, and release manifest v3 remain unchanged.
 - Host-neutral Go package boundaries for manifest validation, package IO,
   registry, host adapters, bridge, PluginData, runtime supervision, grants,

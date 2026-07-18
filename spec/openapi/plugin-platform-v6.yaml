@@ -1540,7 +1540,7 @@ components:
         expected_values_revision: { type: integer, minimum: 1, maximum: 9007199254740991 }
         actual_values_revision: { type: integer, minimum: 1, maximum: 9007199254740991 }
     ErrorCode:
-      $ref: "../plugin/error-codes-v3.schema.json#/$defs/platform_error_code"
+      $ref: "../plugin/error-codes-v4.schema.json#/$defs/platform_error_code"
     PlatformErrorMessage:
       type: string
       minLength: 1
@@ -1559,6 +1559,12 @@ components:
         - PLUGIN_DISABLED
         - PLUGIN_DISABLED_BY_POLICY
         - PLUGIN_PERMISSION_DENIED
+        - PLUGIN_ORIGIN_DENIED
+        - PLUGIN_ACTION_DENIED
+        - PLUGIN_OWNER_SCOPE_MISMATCH
+        - PLUGIN_SECRET_SCOPE_MISMATCH
+        - PLUGIN_STORAGE_SCOPE_MISMATCH
+        - PLUGIN_ADAPTER_FAILURE
         - PLUGIN_CONFIRMATION_REQUIRED
         - PLUGIN_CONFIRMATION_INVALID
         - PLUGIN_TOKEN_EXPIRED
@@ -1587,6 +1593,7 @@ components:
         - PLUGIN_SURFACE_QUIESCE_TIMEOUT
         - PLUGIN_CONTRACT_MISMATCH
         - PLUGIN_CSRF_REQUIRED
+        - PLUGIN_CSRF_INVALID
         - PLUGIN_FEATURE_NOT_CONFIGURED
     SurfaceDisposeResult:
       type: object

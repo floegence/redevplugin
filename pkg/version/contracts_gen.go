@@ -18,6 +18,7 @@ const (
 	OpaqueSurfaceTransportSchemaVersion      = "opaque-surface-transport-v4"
 	TargetClassifierVersion                  = "target-classifier-v2"
 	NetworkGrantSchemaVersion                = "network-grant-v2"
+	ResourceScopeSchemaVersion               = "resource-scope-v1"
 	PluginPlatformOpenAPIVersion             = "plugin-platform-v6"
 	CompatibilityManifestVersion             = "redevplugin.compatibility.v6"
 	CompatibilitySchemaVersion               = "compatibility-manifest-v6"
@@ -29,7 +30,7 @@ const (
 	HostCapabilityCompatibilitySchemaVersion = "host-capability-compatibility-v1"
 	HostCapabilitySignatureSchemaVersion     = "host-capability-signature-v1"
 	HostCapabilityNoticesSchemaVersion       = "host-capability-notices-v1"
-	ErrorCodesSchemaVersion                  = "error-codes-v3"
+	ErrorCodesSchemaVersion                  = "error-codes-v4"
 	PerformanceContractVersion               = "performance-contract-v1"
 	PerformanceEvidenceSchemaVersion         = "performance-evidence-v1"
 	ContractRegistryVersion                  = "contract-registry-v1"
@@ -40,7 +41,7 @@ var generatedContractArtifacts = []ContractArtifact{
 		ID:      "plugin-platform-openapi",
 		Path:    "spec/openapi/plugin-platform-v6.yaml",
 		Version: "plugin-platform-v6",
-		SHA256:  "0cc261e87a4c583675cc1f989aecfe6c6441073ce5a4e1e6deaf9cb8825d7c3d",
+		SHA256:  "5521d6f12d1936ccd91feb8e72d6aa007821302105db400a4f611adc5615f4b3",
 	},
 	{
 		ID:      "manifest-schema",
@@ -82,7 +83,7 @@ var generatedContractArtifacts = []ContractArtifact{
 		ID:      "iframe-bridge-schema",
 		Path:    "spec/plugin/bridge-v5.schema.json",
 		Version: "bridge-v5",
-		SHA256:  "bc8bd753e098413ad6bb6946f86c00ba87ddae29a458cd7cf70c205e31cdc0fb",
+		SHA256:  "94cd15da6fd7fc56cfe81c014bd20099f1330e0ff04fe417422532581c701345",
 	},
 	{
 		ID:      "opaque-surface-document-schema",
@@ -100,7 +101,7 @@ var generatedContractArtifacts = []ContractArtifact{
 		ID:      "compatibility-manifest-schema",
 		Path:    "spec/plugin/compatibility-manifest-v6.schema.json",
 		Version: "compatibility-manifest-v6",
-		SHA256:  "bd205e73e6dde97893e3b069dc5e959c7c0748fb3525fc353e931fcdd41a55f3",
+		SHA256:  "8b8782db076e77c1e678b5f486694097e09911f70244b7c1a31f4814a86f51fb",
 	},
 	{
 		ID:      "release-manifest-schema",
@@ -152,9 +153,9 @@ var generatedContractArtifacts = []ContractArtifact{
 	},
 	{
 		ID:      "error-codes-schema",
-		Path:    "spec/plugin/error-codes-v3.schema.json",
-		Version: "error-codes-v3",
-		SHA256:  "685827324b58a677d1f8a7852bda314f7c652375d90dd47259d2c39a9c39b8b8",
+		Path:    "spec/plugin/error-codes-v4.schema.json",
+		Version: "error-codes-v4",
+		SHA256:  "54f42bce8081b22d79b336e3690be4362a8147f150db47e6b36b49418ec19810",
 	},
 	{
 		ID:      "performance-contract",
@@ -187,6 +188,12 @@ var generatedContractArtifacts = []ContractArtifact{
 		SHA256:  "37cb6f2913726f7202563238d7b322e4d539ef22498360603b8429081812382b",
 	},
 	{
+		ID:      "resource-scope-schema",
+		Path:    "spec/plugin/resource-scope-v1.schema.json",
+		Version: "resource-scope-v1",
+		SHA256:  "b307dacba983c5afb4422b9e63f844869920ed580afb526f4fc44b30ec1ec8bd",
+	},
+	{
 		ID:      "target-classifier-fixture",
 		Path:    "spec/plugin/target-classifier-v2.json",
 		Version: "target-classifier-v2",
@@ -196,6 +203,6 @@ var generatedContractArtifacts = []ContractArtifact{
 		ID:      "contract-registry",
 		Path:    "spec/plugin/contract-registry-v1.json",
 		Version: "contract-registry-v1",
-		SHA256:  "e3381de67cbed22c6b12ae6df901cc71fc223ac7c72dcc520d36a05d7af508f4",
+		SHA256:  "7ce64105968ee340597e19eadd93b0be066210815a89acade759d4e5222758c9",
 	},
 }

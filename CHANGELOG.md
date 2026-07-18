@@ -27,6 +27,12 @@
   streams, SQLite reads, keyed reconciliation, real Chromium rendering, and
   long tasks; every runtime bundle includes the resulting evidence before
   manifest hashing and signing.
+- Add the closed `resource-scope-v1` ownership contract for host-issued user and
+  environment scopes. Persistent ownership excludes short-lived session and
+  channel hashes and rejects undeclared or ambiguous owner fields.
+- Add explicit route and direct Host authorization contracts. HTTP requests pass
+  authentication, origin, CSRF, and closed-action authorization, while embedded
+  Host calls enforce the same management action and resource boundary.
 
 ### Changed
 
@@ -60,10 +66,11 @@
   validation, and atomic animation-frame DOM commits while preserving focus,
   IME, scroll, canvas, edit-revision, and first-commit behavior.
 - Advance the coordinated public contract set to `plugin-host-v4`,
-  `rust-ipc-v3`, `plugin-ui-v5`, `bridge-v5`, `plugin-platform-v6`,
+  `rust-ipc-v4`, `plugin-ui-v5`, `bridge-v5`, `plugin-platform-v6`,
   `manifest-v5`, opaque document v3, opaque transport v4,
-  `release-metadata-v5`, compatibility manifest v6, and `error-codes-v3`.
-  WASM ABI v2, worker invocation v2, token/ticket v2, package signature v1,
+  `release-metadata-v5`, compatibility manifest v6, `error-codes-v4`, and
+  `resource-scope-v1`. WASM ABI v2, worker invocation v3, token/ticket v2,
+  package signature v1,
   and release manifest v3 remain unchanged.
 - Regenerate the examples, scaffold, browser harness, Go DTOs, TypeScript
   contracts, Rust constants, fixtures, compatibility hashes, and release

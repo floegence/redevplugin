@@ -14,7 +14,7 @@ import (
 
 func TestStableErrorCodeCatalogsMatchContracts(t *testing.T) {
 	root := repoRoot(t)
-	errorCodeSchema := readJSONMap(t, filepath.Join(root, "spec", "plugin", "error-codes-v3.schema.json"))
+	errorCodeSchema := readJSONMap(t, filepath.Join(root, "spec", "plugin", "error-codes-v4.schema.json"))
 	defs := requireNestedObject(t, errorCodeSchema, "$defs")
 
 	platformCodes := errorCodesToStrings(security.PlatformErrorCodes())
@@ -30,7 +30,7 @@ func TestStableErrorCodeCatalogsMatchContracts(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !strings.Contains(string(openAPIRaw), `ErrorCode:
-      $ref: "../plugin/error-codes-v3.schema.json#/$defs/platform_error_code"`) {
+      $ref: "../plugin/error-codes-v4.schema.json#/$defs/platform_error_code"`) {
 		t.Fatal("OpenAPI ErrorCode must reference the canonical error-code schema")
 	}
 	typedCodes := []string{
@@ -88,7 +88,7 @@ func readOpenAPIEnum(t *testing.T, source string, schemaName string) []string {
 
 func TestRustIPCErrorCodesMatchSchemaAndSource(t *testing.T) {
 	root := repoRoot(t)
-	errorCodeSchema := readJSONMap(t, filepath.Join(root, "spec", "plugin", "error-codes-v3.schema.json"))
+	errorCodeSchema := readJSONMap(t, filepath.Join(root, "spec", "plugin", "error-codes-v4.schema.json"))
 	want := schemaEnum(t, requireNestedObject(t, errorCodeSchema, "$defs"), "rust_ipc_error_code")
 	source, err := os.ReadFile(filepath.Join(root, "crates", "redevplugin-ipc", "src", "lib.rs"))
 	if err != nil {

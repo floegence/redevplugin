@@ -3504,8 +3504,42 @@ func TestHandlerSecretLifecycleFlow(t *testing.T) {
 		"secret_ref":         "api_token",
 		"scope":              "environment",
 	}, http.StatusForbidden)
-	if scopeMismatch.Code != string(security.ErrPermissionDenied) || scopeMismatch.Message != "secret reference scope does not match the request" {
+	if scopeMismatch.Code != string(security.ErrSecretScopeMismatch) || scopeMismatch.Message != "secret reference scope does not match the request" {
 		t.Fatalf("secret scope mismatch envelope = %#v", scopeMismatch)
+	}
+}
+
+func TestStableOwnerScopeAndAdapterFailuresMapToHTTPContracts(t *testing.T) {
+	tests := []struct {
+		name      string
+		err       error
+		code      security.ErrorCode
+		status    int
+		codeFor   func(error) security.ErrorCode
+		statusFor func(error) int
+	}{
+		{name: "management owner scope", err: host.ErrOwnerScopeMismatch, code: security.ErrOwnerScopeMismatch, status: http.StatusForbidden, codeFor: errorCodeForManagementError, statusFor: httpStatusForManagementError},
+		{name: "management storage scope", err: host.ErrStorageScopeMismatch, code: security.ErrStorageScopeMismatch, status: http.StatusForbidden, codeFor: errorCodeForManagementError, statusFor: httpStatusForManagementError},
+		{name: "management adapter", err: host.ErrAdapterFailure, code: security.ErrAdapterFailure, status: http.StatusBadGateway, codeFor: errorCodeForManagementError, statusFor: httpStatusForManagementError},
+		{name: "secret scope", err: host.ErrSecretScopeMismatch, code: security.ErrSecretScopeMismatch, status: http.StatusForbidden, codeFor: errorCodeForSecretError, statusFor: httpStatusForSecretError},
+		{name: "secret owner scope", err: host.ErrOwnerScopeMismatch, code: security.ErrOwnerScopeMismatch, status: http.StatusForbidden, codeFor: errorCodeForSecretError, statusFor: httpStatusForSecretError},
+		{name: "secret adapter", err: host.ErrAdapterFailure, code: security.ErrAdapterFailure, status: http.StatusBadGateway, codeFor: errorCodeForSecretError, statusFor: httpStatusForSecretError},
+		{name: "settings owner scope", err: host.ErrOwnerScopeMismatch, code: security.ErrOwnerScopeMismatch, status: http.StatusForbidden, codeFor: errorCodeForSettingsError, statusFor: httpStatusForSettingsError},
+		{name: "settings storage scope", err: host.ErrStorageScopeMismatch, code: security.ErrStorageScopeMismatch, status: http.StatusForbidden, codeFor: errorCodeForSettingsError, statusFor: httpStatusForSettingsError},
+		{name: "settings adapter", err: host.ErrAdapterFailure, code: security.ErrAdapterFailure, status: http.StatusBadGateway, codeFor: errorCodeForSettingsError, statusFor: httpStatusForSettingsError},
+		{name: "data owner scope", err: host.ErrOwnerScopeMismatch, code: security.ErrOwnerScopeMismatch, status: http.StatusForbidden, codeFor: errorCodeForDataLifecycleError, statusFor: httpStatusForDataLifecycleError},
+		{name: "data storage scope", err: host.ErrStorageScopeMismatch, code: security.ErrStorageScopeMismatch, status: http.StatusForbidden, codeFor: errorCodeForDataLifecycleError, statusFor: httpStatusForDataLifecycleError},
+		{name: "data adapter", err: host.ErrAdapterFailure, code: security.ErrAdapterFailure, status: http.StatusBadGateway, codeFor: errorCodeForDataLifecycleError, statusFor: httpStatusForDataLifecycleError},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := test.codeFor(test.err); got != test.code {
+				t.Fatalf("error code = %q, want %q", got, test.code)
+			}
+			if got := test.statusFor(test.err); got != test.status {
+				t.Fatalf("http status = %d, want %d", got, test.status)
+			}
+		})
 	}
 }
 
@@ -3538,8 +3572,8 @@ func TestHandlerDeleteSecretErrorsUseMutationEnvelope(t *testing.T) {
 		"plugin_instance_id": installed.PluginInstanceID,
 		"secret_ref":         "api_token",
 		"scope":              "user",
-	}, http.StatusForbidden)
-	if adapterEnvelope.Code != string(security.ErrPermissionDenied) || adapterEnvelope.MutationOutcome != string(mutation.OutcomeUnknown) {
+	}, http.StatusBadGateway)
+	if adapterEnvelope.Code != string(security.ErrAdapterFailure) || adapterEnvelope.MutationOutcome != string(mutation.OutcomeUnknown) {
 		t.Fatalf("adapter delete envelope mismatch: %#v", adapterEnvelope)
 	}
 
@@ -3548,8 +3582,8 @@ func TestHandlerDeleteSecretErrorsUseMutationEnvelope(t *testing.T) {
 		"plugin_instance_id": installed.PluginInstanceID,
 		"secret_ref":         "api_token",
 		"scope":              "user",
-	}, http.StatusForbidden)
-	if explicitEnvelope.MutationOutcome != string(mutation.OutcomeNotCommitted) {
+	}, http.StatusBadGateway)
+	if explicitEnvelope.Code != string(security.ErrAdapterFailure) || explicitEnvelope.MutationOutcome != string(mutation.OutcomeNotCommitted) {
 		t.Fatalf("explicit delete mutation_outcome = %q, want %q", explicitEnvelope.MutationOutcome, mutation.OutcomeNotCommitted)
 	}
 }
@@ -3610,8 +3644,8 @@ func TestHandlerSecretAdapterFailuresAfterDispatchAreUnknown(t *testing.T) {
 			request.Header.Set("Content-Type", "application/json")
 			response := httptest.NewRecorder()
 			handler.ServeHTTP(response, request)
-			if response.Code != http.StatusForbidden {
-				t.Fatalf("status = %d, want %d body = %s", response.Code, http.StatusForbidden, response.Body.String())
+			if response.Code != http.StatusBadGateway {
+				t.Fatalf("status = %d, want %d body = %s", response.Code, http.StatusBadGateway, response.Body.String())
 			}
 			var envelope decodedErrorResponse
 			if err := json.Unmarshal(response.Body.Bytes(), &envelope); err != nil {
@@ -3620,7 +3654,10 @@ func TestHandlerSecretAdapterFailuresAfterDispatchAreUnknown(t *testing.T) {
 			if envelope.MutationOutcome != string(mutation.OutcomeUnknown) {
 				t.Fatalf("mutation_outcome = %q, want %q body = %#v", envelope.MutationOutcome, mutation.OutcomeUnknown, envelope)
 			}
-			if envelope.Message != "secret operation failed" {
+			if envelope.Code != string(security.ErrAdapterFailure) {
+				t.Fatalf("error code = %q, want %q", envelope.Code, security.ErrAdapterFailure)
+			}
+			if envelope.Message != "secret adapter operation failed" {
 				t.Fatalf("public secret error message = %q, want fixed message", envelope.Message)
 			}
 			for _, secret := range []string{sensitive, "sk-live-" + test.operation, "/Users/secret/path"} {

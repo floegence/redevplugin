@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.redevplugin.dev/plugin/resource-scope-v1.schema.json",
+  "title": "ReDevPlugin persistent resource scope v1",
+  "description": "Host-issued ownership scope for persistent plugin resources. Session and channel hashes are intentionally excluded.",
+  "oneOf": [
+    { "$ref": "#/$defs/user_scope" },
+    { "$ref": "#/$defs/environment_scope" }
+  ],
+  "$defs": {
+    "owner_hash": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$"
+    },
+    "scope_kind": {
+      "type": "string",
+      "enum": ["user", "environment"]
+    },
+    "user_scope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "owner_env_hash", "owner_user_hash"],
+      "properties": {
+        "kind": { "const": "user" },
+        "owner_env_hash": { "$ref": "#/$defs/owner_hash" },
+        "owner_user_hash": { "$ref": "#/$defs/owner_hash" }
+      }
+    },
+    "environment_scope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "owner_env_hash"],
+      "properties": {
+        "kind": { "const": "environment" },
+        "owner_env_hash": { "$ref": "#/$defs/owner_hash" }
+      }
+    }
+  }
+}

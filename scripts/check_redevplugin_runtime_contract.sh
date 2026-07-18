@@ -75,13 +75,24 @@ export GOWORK=off
   grep -q '"release_metadata_schema_version": { "const": "release-metadata-v5" }' spec/plugin/compatibility-manifest-v6.schema.json
   grep -q '"opaque_surface_document_schema_version"' spec/plugin/compatibility-manifest-v6.schema.json
   grep -q '"opaque_surface_transport_schema_version"' spec/plugin/compatibility-manifest-v6.schema.json
-  grep -q '"title": "ReDevPlugin stable error codes v3"' spec/plugin/error-codes-v3.schema.json
-  grep -q '"PLUGIN_JSON_LIMIT_EXCEEDED"' spec/plugin/error-codes-v3.schema.json
-  grep -q '"PLUGIN_PLATFORM_REQUEST_FAILED"' spec/plugin/error-codes-v3.schema.json
-  grep -q '"RUNTIME_LEASE_SIGNATURE_INVALID"' spec/plugin/error-codes-v3.schema.json
-  grep -q '"RUNTIME_CAPACITY_EXCEEDED"' spec/plugin/error-codes-v3.schema.json
-  grep -q '"RUNTIME_INVOCATION_CANCELED"' spec/plugin/error-codes-v3.schema.json
-  grep -q '"UNSUPPORTED_FRAME"' spec/plugin/error-codes-v3.schema.json
+  grep -q '"resource_scope_schema_version": { "const": "resource-scope-v1" }' spec/plugin/compatibility-manifest-v6.schema.json
+  grep -q '"title": "ReDevPlugin stable error codes v4"' spec/plugin/error-codes-v4.schema.json
+  grep -q '"PLUGIN_ORIGIN_DENIED"' spec/plugin/error-codes-v4.schema.json
+  grep -q '"PLUGIN_ACTION_DENIED"' spec/plugin/error-codes-v4.schema.json
+  grep -q '"PLUGIN_OWNER_SCOPE_MISMATCH"' spec/plugin/error-codes-v4.schema.json
+  grep -q '"PLUGIN_SECRET_SCOPE_MISMATCH"' spec/plugin/error-codes-v4.schema.json
+  grep -q '"PLUGIN_STORAGE_SCOPE_MISMATCH"' spec/plugin/error-codes-v4.schema.json
+  grep -q '"PLUGIN_ADAPTER_FAILURE"' spec/plugin/error-codes-v4.schema.json
+  grep -q '"PLUGIN_CSRF_INVALID"' spec/plugin/error-codes-v4.schema.json
+  grep -q '"PLUGIN_JSON_LIMIT_EXCEEDED"' spec/plugin/error-codes-v4.schema.json
+  grep -q '"PLUGIN_PLATFORM_REQUEST_FAILED"' spec/plugin/error-codes-v4.schema.json
+  grep -q '"RUNTIME_LEASE_SIGNATURE_INVALID"' spec/plugin/error-codes-v4.schema.json
+  grep -q '"RUNTIME_CAPACITY_EXCEEDED"' spec/plugin/error-codes-v4.schema.json
+  grep -q '"RUNTIME_INVOCATION_CANCELED"' spec/plugin/error-codes-v4.schema.json
+  grep -q '"UNSUPPORTED_FRAME"' spec/plugin/error-codes-v4.schema.json
+  grep -q '"title": "ReDevPlugin persistent resource scope v1"' spec/plugin/resource-scope-v1.schema.json
+  grep -q '"enum": \["user", "environment"\]' spec/plugin/resource-scope-v1.schema.json
+  ! grep -q 'owner_session_hash\|session_channel_id_hash' spec/plugin/resource-scope-v1.schema.json
   grep -q '"schema_version": { "const": "redevplugin.release_manifest.v3" }' spec/plugin/release-manifest-v3.schema.json
   grep -q '"source_commit"' spec/plugin/release-manifest-v3.schema.json
   grep -q '"npm_package"' spec/plugin/release-manifest-v3.schema.json
@@ -101,6 +112,9 @@ export GOWORK=off
   test ! -e spec/plugin/compatibility-manifest-v4.schema.json
   test ! -e spec/plugin/release-metadata-v4.schema.json
   test ! -e spec/plugin/error-codes-v2.schema.json
+  error_code_contracts=(spec/plugin/error-codes-v*.schema.json)
+  test "${#error_code_contracts[@]}" -eq 1
+  test "${error_code_contracts[0]}" = spec/plugin/error-codes-v4.schema.json
   test ! -e spec/plugin/bridge-v4.schema.json
   test ! -e spec/plugin/opaque-surface-document-v2.schema.json
   test ! -e spec/plugin/opaque-surface-transport-v3.schema.json
@@ -421,6 +435,8 @@ NODE
   go run ./cmd/redevplugin version | grep -q '"id": "source-revocations-schema"'
   go run ./cmd/redevplugin version | grep -q '"network_grant_schema_version": "network-grant-v2"'
   go run ./cmd/redevplugin version | grep -q '"id": "network-grant-schema"'
+  go run ./cmd/redevplugin version | grep -q '"resource_scope_schema_version": "resource-scope-v1"'
+  go run ./cmd/redevplugin version | grep -q '"id": "resource-scope-schema"'
   go run ./cmd/redevplugin version | grep -q '"id": "error-codes-schema"'
   go run ./cmd/redevplugin version | grep -q '"id": "host-capability-contract-schema"'
   go run ./cmd/redevplugin version | grep -q '"id": "host-capability-pin-schema"'

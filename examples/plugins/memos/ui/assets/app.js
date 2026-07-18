@@ -16,6 +16,12 @@
         "PLUGIN_DISABLED",
         "PLUGIN_DISABLED_BY_POLICY",
         "PLUGIN_PERMISSION_DENIED",
+        "PLUGIN_ORIGIN_DENIED",
+        "PLUGIN_ACTION_DENIED",
+        "PLUGIN_OWNER_SCOPE_MISMATCH",
+        "PLUGIN_SECRET_SCOPE_MISMATCH",
+        "PLUGIN_STORAGE_SCOPE_MISMATCH",
+        "PLUGIN_ADAPTER_FAILURE",
         "PLUGIN_CONFIRMATION_REQUIRED",
         "PLUGIN_CONFIRMATION_INVALID",
         "PLUGIN_TOKEN_EXPIRED",
@@ -51,6 +57,7 @@
         "PLUGIN_BINDING_REVISION_MISMATCH",
         "PLUGIN_VALUES_REVISION_MISMATCH",
         "PLUGIN_CSRF_REQUIRED",
+        "PLUGIN_CSRF_INVALID",
         "PLUGIN_FEATURE_NOT_CONFIGURED",
         "PLUGIN_CONFIRMATION_REJECTED",
         "PLUGIN_BRIDGE_TIMEOUT",
@@ -335,6 +342,8 @@
     var allowedTags = new Set(opaqueSurfaceAllowedTags);
     var globalAttributes = new Set(opaqueSurfaceGlobalAttributes);
     var safeInputTypes = new Set(opaqueSurfaceSafeInputTypes);
+    var textNodeKeys = new Set(["type", "key", "text"]);
+    var elementNodeKeys = new Set(["type", "key", "tag", "attributes", "children"]);
     var tagAttributes = new Map(Object.entries(opaqueSurfaceTagAttributes).map(([tag, attributes]) => [tag, new Set(attributes)]));
     function validatePluginUITree(tree) {
         if (!isElement(tree)) {
@@ -391,16 +400,19 @@
         return tree;
     }
     function isText(value) {
-        return isPlainRecord(value) && hasExactKeys2(value, ["type", "key", "text"]) && value.type === "text" && typeof value.key === "string" && typeof value.text === "string";
+        return isPlainRecord(value) && hasExactKeys2(value, textNodeKeys) && value.type === "text" && typeof value.key === "string" && typeof value.text === "string";
     }
     function isElement(value) {
         if (!isPlainRecord(value))
             return false;
-        return Object.keys(value).every((key) => ["type", "key", "tag", "attributes", "children"].includes(key)) && value.type === "element" && typeof value.key === "string" && typeof value.tag === "string";
+        return hasAllowedKeys2(value, elementNodeKeys) && value.type === "element" && typeof value.key === "string" && typeof value.tag === "string";
     }
     function hasExactKeys2(value, keys) {
         const actual = Object.keys(value);
-        return actual.length === keys.length && keys.every((key) => Object.prototype.hasOwnProperty.call(value, key));
+        return actual.length === keys.size && actual.every((key) => keys.has(key));
+    }
+    function hasAllowedKeys2(value, keys) {
+        return Object.keys(value).every((key) => keys.has(key));
     }
     function isPlainRecord(value) {
         if (value === null || typeof value !== "object" || Array.isArray(value))
@@ -442,9 +454,7 @@
     var editableValueTags = new Set(["input", "textarea", "select", "option"]);
     var emptyAttributes = {};
     var maxPluginUIPatchOperations = opaqueSurfaceRenderLimits.max_patch_operations;
-    function reconcilePluginUITrees(current, next, options = {}) {
-        validatePluginUITree(current);
-        validatePluginUITree(next);
+    function reconcileValidatedPluginUITrees(current, next, options = {}) {
         if (current.key !== next.key || current.tag !== next.tag) {
             throw new PluginUIReconcileError("Plugin UI root key and tag are immutable");
         }
@@ -745,6 +755,7 @@
         #renderLoop;
         #controlEditRevisions = new Map();
         #pendingStreamDeliveries = new Map();
+        #streamReadTails = new Map();
         #onMessage = (event) => {
             void this.#handleMessage(event);
         };
@@ -784,17 +795,29 @@
                 request
             }, { mutationOutcomeOnTimeout: "unknown" });
         }
-        readStream(streamHandle) {
+        readStream(streamHandle, options = {}) {
             this.#assertActive();
             if (!validOpaqueHandle(streamHandle, "stream")) {
                 throw new PluginBridgeError("PLUGIN_INVALID_REQUEST", "Plugin stream handle is invalid");
             }
-            return this.#readStream(streamHandle);
+            const previous = this.#streamReadTails.get(streamHandle);
+            const read = (previous ? previous.catch(() => void 0) : Promise.resolve()).then(() => {
+                this.#assertActive();
+                if (options.signal?.aborted)
+                    throw streamReadAbortedError();
+                return this.#readStream(streamHandle, options.signal);
+            });
+            this.#streamReadTails.set(streamHandle, read);
+            void read.finally(() => {
+                if (this.#streamReadTails.get(streamHandle) === read)
+                    this.#streamReadTails.delete(streamHandle);
+            }).catch(() => void 0);
+            return abortableStreamRead(read, options.signal);
         }
-        async #readStream(streamHandle) {
+        async #readStream(streamHandle, signal) {
             const pending = this.#pendingStreamDeliveries.get(streamHandle);
             if (pending) {
-                await this.#acknowledgeStream(streamHandle, pending.deliveryID);
+                await this.#acknowledgeStream(streamHandle, pending.deliveryID, signal);
                 this.#pendingStreamDeliveries.delete(streamHandle);
                 return pending.result;
             }
@@ -803,23 +826,23 @@
                 type: "redevplugin.bridge.stream.read",
                 id,
                 stream_handle: streamHandle
-            });
+            }, { signal });
             const { delivery_id: deliveryID, ...result } = privateResult;
             if (!deliveryID)
                 return result;
             this.#pendingStreamDeliveries.set(streamHandle, { deliveryID, result });
-            await this.#acknowledgeStream(streamHandle, deliveryID);
+            await this.#acknowledgeStream(streamHandle, deliveryID, signal);
             this.#pendingStreamDeliveries.delete(streamHandle);
             return result;
         }
-        async #acknowledgeStream(streamHandle, deliveryID) {
+        async #acknowledgeStream(streamHandle, deliveryID, signal) {
             const id = this.#requestID("stream_ack");
             await this.#request(id, {
                 type: "redevplugin.bridge.stream.ack",
                 id,
                 stream_handle: streamHandle,
                 delivery_id: deliveryID
-            }, { mutationOutcomeOnTimeout: "unknown" });
+            }, { mutationOutcomeOnTimeout: "unknown", signal });
         }
         cancelOperation(operationID, reason) {
             this.#assertActive();
@@ -933,6 +956,7 @@
             this.#port.removeEventListener("message", this.#onMessage);
             for (const [id, pending] of this.#pending) {
                 clearTimeout(pending.timer);
+                pending.abortCleanup?.();
                 pending.reject(new PluginBridgeError("PLUGIN_BRIDGE_DISPOSED", `Plugin bridge request ${id} was disposed`));
             }
             this.#pending.clear();
@@ -962,7 +986,7 @@
                         });
                     }
                     else {
-                        const operations = reconcilePluginUITrees(this.#committedTree, pending.tree, {
+                        const operations = reconcileValidatedPluginUITrees(this.#committedTree, pending.tree, {
                             controlEditRevisions: this.#controlEditRevisions
                         });
                         if (operations.length > 0) {
@@ -1023,21 +1047,37 @@
             if (this.#pending.size >= maxPendingPluginBridgeRequests) {
                 throw new PluginBridgeError("PLUGIN_JSON_LIMIT_EXCEEDED", "Plugin bridge has too many pending requests");
             }
+            if (options.signal?.aborted)
+                return Promise.reject(streamReadAbortedError());
             const result = new Promise((resolve, reject) => {
                 const timer = setTimeout(() => {
-                    if (!this.#pending.delete(id))
+                    const pending = this.#takePending(id);
+                    if (!pending)
                         return;
                     try {
                         this.#port.postMessage({ type: "redevplugin.bridge.cancel", id });
                     }
                     catch {
                     }
-                    reject(new PluginBridgeError("PLUGIN_BRIDGE_TIMEOUT", `Plugin bridge request ${id} timed out`, void 0, void 0, options.mutationOutcomeOnTimeout));
+                    pending.reject(new PluginBridgeError("PLUGIN_BRIDGE_TIMEOUT", `Plugin bridge request ${id} timed out`, void 0, void 0, options.mutationOutcomeOnTimeout));
                 }, this.timeoutMs);
+                const onAbort = () => {
+                    const pending = this.#takePending(id);
+                    if (!pending)
+                        return;
+                    try {
+                        this.#port.postMessage({ type: "redevplugin.bridge.cancel", id });
+                    }
+                    catch {
+                    }
+                    pending.reject(streamReadAbortedError());
+                };
+                options.signal?.addEventListener("abort", onAbort, { once: true });
                 this.#pending.set(id, {
                     resolve: (value) => resolve(value),
                     reject,
                     timer,
+                    abortCleanup: options.signal ? () => options.signal?.removeEventListener("abort", onAbort) : void 0,
                     kind: options.kind ?? "json",
                     identifier: options.identifier
                 });
@@ -1046,25 +1086,30 @@
                 this.#port.postMessage(normalizedMessage);
             }
             catch {
-                const pending = this.#pending.get(id);
+                const pending = this.#takePending(id);
                 if (pending) {
-                    this.#pending.delete(id);
-                    clearTimeout(pending.timer);
                     pending.reject(new PluginBridgeError("PLUGIN_BRIDGE_DISPOSED", `Plugin bridge request ${id} could not be posted`));
                 }
             }
             return result;
+        }
+        #takePending(id) {
+            const pending = this.#pending.get(id);
+            if (!pending)
+                return void 0;
+            this.#pending.delete(id);
+            clearTimeout(pending.timer);
+            pending.abortCleanup?.();
+            return pending;
         }
         async #handleMessage(event) {
             if (this.#lifecycleState === "disposed")
                 return;
             const data = event.data;
             if (isCanvasReadyCandidate(data)) {
-                const pending = this.#pending.get(data.id);
+                const pending = this.#takePending(data.id);
                 if (!pending)
                     return;
-                this.#pending.delete(data.id);
-                clearTimeout(pending.timer);
                 if (pending.kind !== "canvas" || pending.identifier !== data.canvas_id || !isCanvasReadyMessage(data)) {
                     pending.reject(new PluginBridgeError("PLUGIN_CONTRACT_MISMATCH", `Plugin canvas response ${data.id} is invalid`));
                     return;
@@ -1079,11 +1124,9 @@
                 return;
             }
             if (isImageReadyCandidate(data)) {
-                const pending = this.#pending.get(data.id);
+                const pending = this.#takePending(data.id);
                 if (!pending)
                     return;
-                this.#pending.delete(data.id);
-                clearTimeout(pending.timer);
                 if (pending.kind !== "asset" || pending.identifier !== data.asset_id || !isImageReadyMessage(data)) {
                     pending.reject(new PluginBridgeError("PLUGIN_CONTRACT_MISMATCH", `Plugin image response ${data.id} is invalid`));
                     return;
@@ -1094,11 +1137,9 @@
             if (!messageWithinLimit(data))
                 return;
             if (isBridgeResponseCandidate(data)) {
-                const pending = this.#pending.get(data.id);
+                const pending = this.#takePending(data.id);
                 if (!pending)
                     return;
-                this.#pending.delete(data.id);
-                clearTimeout(pending.timer);
                 if (!isBridgeResponse(data)) {
                     pending.reject(new PluginBridgeError("PLUGIN_CONTRACT_MISMATCH", `Plugin bridge response ${data.id} is invalid`));
                     return;
@@ -1378,6 +1419,28 @@
     }
     function validOpaqueHandle(value, prefix) {
         return typeof value === "string" && value.startsWith(`${prefix}_`) && opaqueHandlePattern2.test(value);
+    }
+    function streamReadAbortedError() {
+        return new PluginBridgeError("PLUGIN_STREAM_CANCELLED", "Plugin stream read was aborted");
+    }
+    function abortableStreamRead(read, signal) {
+        if (!signal)
+            return read;
+        if (signal.aborted)
+            return Promise.reject(streamReadAbortedError());
+        return new Promise((resolve, reject) => {
+            let settled = false;
+            const finish = (callback, value) => {
+                if (settled)
+                    return;
+                settled = true;
+                signal.removeEventListener("abort", onAbort);
+                callback(value);
+            };
+            const onAbort = () => finish(reject, streamReadAbortedError());
+            signal.addEventListener("abort", onAbort, { once: true });
+            read.then((value) => finish(resolve, value), (error) => finish(reject, error));
+        });
     }
     function messageWithinLimit(value) {
         try {

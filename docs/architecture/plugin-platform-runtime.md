@@ -332,7 +332,8 @@ Machine-readable contracts are first-class platform artifacts:
 - `spec/plugin/wasm-worker-v2.schema.json`;
 - `spec/plugin/worker-invocation-v3.schema.json`;
 - `spec/plugin/network-grant-v2.schema.json`;
-- `spec/plugin/error-codes-v3.schema.json`;
+- `spec/plugin/resource-scope-v1.schema.json`;
+- `spec/plugin/error-codes-v4.schema.json`;
 - `spec/plugin/target-classifier-v2.json`;
 - `spec/plugin/contract-registry-v1.json`, the generated inventory and SHA-256
   identity for every public contract above.

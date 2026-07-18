@@ -19,6 +19,10 @@ const (
 	ErrPermissionDenied              ErrorCode = "PLUGIN_PERMISSION_DENIED"
 	ErrOriginDenied                  ErrorCode = "PLUGIN_ORIGIN_DENIED"
 	ErrActionDenied                  ErrorCode = "PLUGIN_ACTION_DENIED"
+	ErrOwnerScopeMismatch            ErrorCode = "PLUGIN_OWNER_SCOPE_MISMATCH"
+	ErrSecretScopeMismatch           ErrorCode = "PLUGIN_SECRET_SCOPE_MISMATCH"
+	ErrStorageScopeMismatch          ErrorCode = "PLUGIN_STORAGE_SCOPE_MISMATCH"
+	ErrAdapterFailure                ErrorCode = "PLUGIN_ADAPTER_FAILURE"
 	ErrConfirmationRequired          ErrorCode = "PLUGIN_CONFIRMATION_REQUIRED"
 	ErrConfirmationInvalid           ErrorCode = "PLUGIN_CONFIRMATION_INVALID"
 	ErrConfirmationRejected          ErrorCode = "PLUGIN_CONFIRMATION_REJECTED"
@@ -83,6 +87,10 @@ var platformErrorCodes = []ErrorCode{
 	ErrPermissionDenied,
 	ErrOriginDenied,
 	ErrActionDenied,
+	ErrOwnerScopeMismatch,
+	ErrSecretScopeMismatch,
+	ErrStorageScopeMismatch,
+	ErrAdapterFailure,
 	ErrConfirmationRequired,
 	ErrConfirmationInvalid,
 	ErrTokenExpired,

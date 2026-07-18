@@ -43,11 +43,12 @@ func TestCompatibilityManifestSchemaDefinesReleasedMatrix(t *testing.T) {
 		"opaque_surface_transport_schema_version": "opaque-surface-transport-v4",
 		"target_classifier_version":               "target-classifier-v2",
 		"network_grant_schema_version":            "network-grant-v2",
+		"resource_scope_schema_version":           "resource-scope-v1",
 		"plugin_platform_openapi_version":         "plugin-platform-v6",
 		"compatibility_schema_version":            "compatibility-manifest-v6",
 		"release_manifest_schema_version":         "release-manifest-v3",
 		"worker_invocation_schema_version":        "worker-invocation-v3",
-		"error_codes_schema_version":              "error-codes-v3",
+		"error_codes_schema_version":              "error-codes-v4",
 		"performance_contract_version":            "performance-contract-v1",
 		"performance_evidence_schema_version":     "performance-evidence-v1",
 		"contract_registry_version":               "contract-registry-v1",
@@ -78,6 +79,7 @@ func TestCompatibilityManifestSchemaDefinesReleasedMatrix(t *testing.T) {
 		"opaque_surface_transport_schema_version",
 		"target_classifier_version",
 		"network_grant_schema_version",
+		"resource_scope_schema_version",
 		"plugin_platform_openapi_version",
 		"compatibility_schema_version",
 		"release_manifest_schema_version",
@@ -135,5 +137,12 @@ func TestContractRegistryPublishesOnlyCurrentPlatformContracts(t *testing.T) {
 		if _, err := os.Stat(filepath.Join(root, filepath.FromSlash(path))); !os.IsNotExist(err) {
 			t.Fatalf("superseded contract %s must be absent, stat error = %v", path, err)
 		}
+	}
+	errorCodeSchemas, err := filepath.Glob(filepath.Join(root, "spec", "plugin", "error-codes-v*.schema.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(errorCodeSchemas) != 1 || filepath.Base(errorCodeSchemas[0]) != "error-codes-v4.schema.json" {
+		t.Fatalf("stable error-code schemas = %#v, want only error-codes-v4.schema.json", errorCodeSchemas)
 	}
 }

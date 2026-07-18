@@ -20,6 +20,12 @@
     "PLUGIN_DISABLED",
     "PLUGIN_DISABLED_BY_POLICY",
     "PLUGIN_PERMISSION_DENIED",
+    "PLUGIN_ORIGIN_DENIED",
+    "PLUGIN_ACTION_DENIED",
+    "PLUGIN_OWNER_SCOPE_MISMATCH",
+    "PLUGIN_SECRET_SCOPE_MISMATCH",
+    "PLUGIN_STORAGE_SCOPE_MISMATCH",
+    "PLUGIN_ADAPTER_FAILURE",
     "PLUGIN_CONFIRMATION_REQUIRED",
     "PLUGIN_CONFIRMATION_INVALID",
     "PLUGIN_TOKEN_EXPIRED",
@@ -55,6 +61,7 @@
     "PLUGIN_BINDING_REVISION_MISMATCH",
     "PLUGIN_VALUES_REVISION_MISMATCH",
     "PLUGIN_CSRF_REQUIRED",
+    "PLUGIN_CSRF_INVALID",
     "PLUGIN_FEATURE_NOT_CONFIGURED"
   ];
   var pluginBridgeErrorCodes = [
@@ -72,6 +79,12 @@
     "PLUGIN_DISABLED",
     "PLUGIN_DISABLED_BY_POLICY",
     "PLUGIN_PERMISSION_DENIED",
+    "PLUGIN_ORIGIN_DENIED",
+    "PLUGIN_ACTION_DENIED",
+    "PLUGIN_OWNER_SCOPE_MISMATCH",
+    "PLUGIN_SECRET_SCOPE_MISMATCH",
+    "PLUGIN_STORAGE_SCOPE_MISMATCH",
+    "PLUGIN_ADAPTER_FAILURE",
     "PLUGIN_CONFIRMATION_REQUIRED",
     "PLUGIN_CONFIRMATION_INVALID",
     "PLUGIN_TOKEN_EXPIRED",
@@ -107,6 +120,7 @@
     "PLUGIN_BINDING_REVISION_MISMATCH",
     "PLUGIN_VALUES_REVISION_MISMATCH",
     "PLUGIN_CSRF_REQUIRED",
+    "PLUGIN_CSRF_INVALID",
     "PLUGIN_FEATURE_NOT_CONFIGURED",
     "PLUGIN_CONFIRMATION_REJECTED",
     "PLUGIN_BRIDGE_TIMEOUT",
@@ -320,48 +334,6 @@
   }
   function hasRequiredKeys(value, keys) {
     return keys.every((key) => Object.hasOwn(value, key));
-  }
-
-  // packages/redevplugin-ui/src/surface-scope.ts
-  var registrations = /* @__PURE__ */ new WeakMap();
-  var PluginSurfaceScope = class _PluginSurfaceScope {
-    constructor() {
-      registrations.set(this, /* @__PURE__ */ new Map());
-    }
-    static create() {
-      return new _PluginSurfaceScope();
-    }
-  };
-  function createPluginSurfaceScope() {
-    return PluginSurfaceScope.create();
-  }
-  var defaultPluginSurfaceScope = createPluginSurfaceScope();
-  function registerPluginSurface(scope, pluginInstanceId, dispose) {
-    const state = registrations.get(scope);
-    if (!state) throw new TypeError("Plugin surface scope is invalid");
-    const registration = Symbol(pluginInstanceId);
-    state.set(registration, { pluginInstanceId, dispose });
-    return () => state.delete(registration);
-  }
-
-  // packages/redevplugin-ui/src/platform.ts
-  function toPluginSurfaceHostBootstrap(value) {
-    return {
-      pluginId: value.plugin_id,
-      pluginInstanceId: value.plugin_instance_id,
-      pluginVersion: value.plugin_version,
-      surfaceId: value.surface_id,
-      surfaceInstanceId: value.surface_instance_id,
-      activeFingerprint: value.active_fingerprint,
-      bridgeNonce: value.bridge_nonce,
-      entryPath: value.entry_path,
-      entrySHA256: value.entry_sha256,
-      assetTicket: value.asset_ticket,
-      assetSessionNonce: value.asset_session_nonce,
-      managementRevision: value.management_revision,
-      revokeEpoch: value.revoke_epoch,
-      runtimeGenerationId: value.runtime_generation_id
-    };
   }
 
   // packages/redevplugin-ui/src/opaque-surface-policy.gen.ts
@@ -590,6 +562,28 @@
     "worker_heartbeat_interval_ms": 1e4,
     "worker_heartbeat_timeout_ms": 5e3
   };
+
+  // packages/redevplugin-ui/src/surface-scope.ts
+  var registrations = /* @__PURE__ */ new WeakMap();
+  var PluginSurfaceScope = class _PluginSurfaceScope {
+    constructor() {
+      registrations.set(this, /* @__PURE__ */ new Map());
+    }
+    static create() {
+      return new _PluginSurfaceScope();
+    }
+  };
+  function createPluginSurfaceScope() {
+    return PluginSurfaceScope.create();
+  }
+  var defaultPluginSurfaceScope = createPluginSurfaceScope();
+  function registerPluginSurface(scope, pluginInstanceId, dispose) {
+    const state = registrations.get(scope);
+    if (!state) throw new TypeError("Plugin surface scope is invalid");
+    const registration = Symbol(pluginInstanceId);
+    state.set(registration, { pluginInstanceId, dispose });
+    return () => state.delete(registration);
+  }
 
   // packages/redevplugin-ui/src/ui-patch-validator.ts
   var keyPattern = new RegExp("^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$");
@@ -3733,6 +3727,26 @@
   }
   function retryableStreamReadTransportFailure(error) {
     return error instanceof PluginTransportError || error instanceof PluginBridgeError && error.errorCode === "PLUGIN_BRIDGE_TIMEOUT";
+  }
+
+  // packages/redevplugin-ui/src/platform.ts
+  function toPluginSurfaceHostBootstrap(value) {
+    return {
+      pluginId: value.plugin_id,
+      pluginInstanceId: value.plugin_instance_id,
+      pluginVersion: value.plugin_version,
+      surfaceId: value.surface_id,
+      surfaceInstanceId: value.surface_instance_id,
+      activeFingerprint: value.active_fingerprint,
+      bridgeNonce: value.bridge_nonce,
+      entryPath: value.entry_path,
+      entrySHA256: value.entry_sha256,
+      assetTicket: value.asset_ticket,
+      assetSessionNonce: value.asset_session_nonce,
+      managementRevision: value.management_revision,
+      revokeEpoch: value.revoke_epoch,
+      runtimeGenerationId: value.runtime_generation_id
+    };
   }
 
   // examples/showcase/app.ts

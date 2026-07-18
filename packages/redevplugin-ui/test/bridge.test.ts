@@ -200,6 +200,7 @@ test("platform client reads compatibility manifest through host API", async () =
         opaque_surface_transport_schema_version: "opaque-surface-transport-v4",
         target_classifier_version: "target-classifier-v2",
         network_grant_schema_version: "network-grant-v2",
+        resource_scope_schema_version: "resource-scope-v1",
         plugin_platform_openapi_version: "plugin-platform-v6",
         compatibility_schema_version: "compatibility-manifest-v6",
         release_manifest_schema_version: "release-manifest-v3",
@@ -210,7 +211,7 @@ test("platform client reads compatibility manifest through host API", async () =
         host_capability_compatibility_schema_version: "host-capability-compatibility-v1",
         host_capability_signature_schema_version: "host-capability-signature-v1",
         host_capability_notices_schema_version: "host-capability-notices-v1",
-        error_codes_schema_version: "error-codes-v3",
+        error_codes_schema_version: "error-codes-v4",
         performance_evidence_schema_version: "performance-evidence-v1",
         contract_registry_version: "contract-registry-v1",
       },
@@ -242,6 +243,7 @@ test("platform client reads compatibility manifest through host API", async () =
   assert.equal(compatibility.matrix.release_metadata_schema_version, "release-metadata-v5");
   assert.equal(compatibility.matrix.source_policy_schema_version, "source-policy-v1");
   assert.equal(compatibility.matrix.source_revocations_schema_version, "source-revocations-v1");
+  assert.equal(compatibility.matrix.resource_scope_schema_version, "resource-scope-v1");
   assert.equal(compatibility.matrix.host_capability_contract_schema_version, "host-capability-contract-v1");
   assert.equal(compatibility.matrix.host_capability_pin_schema_version, "host-capability-pin-v1");
   assert.equal(compatibility.matrix.host_capability_manifest_schema_version, "host-capability-manifest-v1");

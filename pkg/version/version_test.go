@@ -66,6 +66,7 @@ func TestCompatibilityManifestHashesMatchContractFiles(t *testing.T) {
 		"rust-ipc-schema",
 		"wasm-worker-schema",
 		"network-grant-schema",
+		"resource-scope-schema",
 		"target-classifier-fixture",
 		"contract-registry",
 	} {
@@ -90,6 +91,23 @@ func TestCompatibilityManifestUsesDedicatedNetworkGrantSchemaVersion(t *testing.
 		return
 	}
 	t.Fatal("compatibility manifest missing network-grant-schema")
+}
+
+func TestCompatibilityManifestIncludesResourceScopeSchema(t *testing.T) {
+	manifest := CurrentCompatibilityManifest()
+	if manifest.Matrix.ResourceScopeSchemaVersion != ResourceScopeSchemaVersion {
+		t.Fatalf("resource scope matrix version = %q, want %q", manifest.Matrix.ResourceScopeSchemaVersion, ResourceScopeSchemaVersion)
+	}
+	for _, contract := range manifest.Contracts {
+		if contract.ID != "resource-scope-schema" {
+			continue
+		}
+		if contract.Version != ResourceScopeSchemaVersion {
+			t.Fatalf("resource-scope-schema version = %q, want %q", contract.Version, ResourceScopeSchemaVersion)
+		}
+		return
+	}
+	t.Fatal("compatibility manifest missing resource-scope-schema")
 }
 
 func TestCompatibilityManifestIncludesHostCapabilityContractSchema(t *testing.T) {

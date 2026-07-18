@@ -8281,8 +8281,8 @@ func TestSecretRefRequiresExactDeclaredScope(t *testing.T) {
 			SecretRef:        "api_token",
 			Scope:            "environment",
 		})
-		if !errors.Is(err, ErrInvalidSecretRef) || !errors.Is(err, ErrResourceScopeMismatch) {
-			t.Fatalf("BindSecretRef(scope mismatch) error = %v, want ErrInvalidSecretRef and ErrResourceScopeMismatch", err)
+		if !errors.Is(err, ErrInvalidSecretRef) || !errors.Is(err, ErrSecretScopeMismatch) {
+			t.Fatalf("BindSecretRef(scope mismatch) error = %v, want ErrInvalidSecretRef and ErrSecretScopeMismatch", err)
 		}
 		if secretStore.bind != (SecretBindRequest{}) {
 			t.Fatalf("scope mismatch reached secret adapter: %#v", secretStore.bind)
@@ -8313,8 +8313,8 @@ func TestSecretRefRequiresExactDeclaredScope(t *testing.T) {
 			{PluginInstanceID: installed.PluginInstanceID, SecretRef: "database_password", Scope: "user"},
 			{PluginInstanceID: installed.PluginInstanceID, SecretRef: "client_certificate", Scope: "environment"},
 		} {
-			if err := h.BindSecretRef(hostTestContext(), req); !errors.Is(err, ErrInvalidSecretRef) || !errors.Is(err, ErrResourceScopeMismatch) {
-				t.Fatalf("BindSecretRef(%s, %s) error = %v, want ErrInvalidSecretRef and ErrResourceScopeMismatch", req.SecretRef, req.Scope, err)
+			if err := h.BindSecretRef(hostTestContext(), req); !errors.Is(err, ErrInvalidSecretRef) || !errors.Is(err, ErrSecretScopeMismatch) {
+				t.Fatalf("BindSecretRef(%s, %s) error = %v, want ErrInvalidSecretRef and ErrSecretScopeMismatch", req.SecretRef, req.Scope, err)
 			}
 			if secretStore.bind != lastAccepted {
 				t.Fatalf("scope mismatch reached secret adapter: got %#v want %#v", secretStore.bind, lastAccepted)
@@ -8335,8 +8335,8 @@ func TestSecretAdapterFailureRedactsCauseAndPreservesOutcome(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			err := secretAdapterFailure("bind", test.cause)
-			if !errors.Is(err, ErrAdapterFailed) {
-				t.Fatalf("secretAdapterFailure() error = %v, want ErrAdapterFailed", err)
+			if !errors.Is(err, ErrAdapterFailure) {
+				t.Fatalf("secretAdapterFailure() error = %v, want ErrAdapterFailure", err)
 			}
 			if got := mutation.ForError(err); got != test.wantOutcome {
 				t.Fatalf("secretAdapterFailure() outcome = %q, want %q", got, test.wantOutcome)

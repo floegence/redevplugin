@@ -47,6 +47,7 @@ type Matrix struct {
 	OpaqueSurfaceTransportVersion  string `json:"opaque_surface_transport_schema_version"`
 	TargetClassifierVersion        string `json:"target_classifier_version"`
 	NetworkGrantSchemaVersion      string `json:"network_grant_schema_version"`
+	ResourceScopeSchemaVersion     string `json:"resource_scope_schema_version"`
 	PluginPlatformOpenAPIVersion   string `json:"plugin_platform_openapi_version"`
 	CompatibilitySchemaVersion     string `json:"compatibility_schema_version"`
 	ReleaseManifestSchemaVersion   string `json:"release_manifest_schema_version"`
@@ -103,6 +104,7 @@ func CurrentMatrix() Matrix {
 		OpaqueSurfaceTransportVersion:  OpaqueSurfaceTransportSchemaVersion,
 		TargetClassifierVersion:        TargetClassifierVersion,
 		NetworkGrantSchemaVersion:      NetworkGrantSchemaVersion,
+		ResourceScopeSchemaVersion:     ResourceScopeSchemaVersion,
 		PluginPlatformOpenAPIVersion:   PluginPlatformOpenAPIVersion,
 		CompatibilitySchemaVersion:     CompatibilitySchemaVersion,
 		ReleaseManifestSchemaVersion:   ReleaseManifestSchemaVersion,

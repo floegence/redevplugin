@@ -112,6 +112,7 @@ function renderGo(matrix, contracts) {
     ["OpaqueSurfaceTransportSchemaVersion", "opaque_surface_transport_schema_version"],
     ["TargetClassifierVersion", "target_classifier_version"],
     ["NetworkGrantSchemaVersion", "network_grant_schema_version"],
+    ["ResourceScopeSchemaVersion", "resource_scope_schema_version"],
     ["PluginPlatformOpenAPIVersion", "plugin_platform_openapi_version"],
     ["CompatibilityManifestVersion", "compatibility_manifest_version"],
     ["CompatibilitySchemaVersion", "compatibility_schema_version"],
