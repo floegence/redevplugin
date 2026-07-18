@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 	"sync"
 	"time"
@@ -145,6 +146,9 @@ func (j *MemorySecurityAuditJournal) CompleteSecurityAudit(_ context.Context, ev
 	if !validMutationOutcome(outcome) {
 		return ErrInvalidMutationOutcome
 	}
+	if !validAuditDetails(details) {
+		return ErrInvalidAuditDetails
+	}
 	clonedDetails, err := cloneJSONMap(details)
 	if err != nil {
 		return err
@@ -223,7 +227,7 @@ func (j *MemorySecurityAuditJournal) ReconcilePendingSecurityAudits(_ context.Co
 		}
 		record.State = SecurityAuditCompleted
 		record.Outcome = mutation.OutcomeUnknown
-		record.CompletionDetails = map[string]any{"reason": "pending journal reconciled at startup"}
+		record.CompletionDetails = map[string]any{"reason": "pending_reconciled"}
 		record.CompletedAt = &now
 	}
 	return nil
@@ -286,7 +290,7 @@ func NewSecurityAuditExporter(journal SecurityAuditJournal, sink AuditSink) *Sec
 }
 
 func (e *SecurityAuditExporter) Export(ctx context.Context) error {
-	if e == nil || e.journal == nil || e.sink == nil {
+	if e == nil || nilInterface(e.journal) || nilInterface(e.sink) {
 		return errors.New("security audit exporter dependencies are required")
 	}
 	records, err := e.journal.ListUnexportedSecurityAudits(ctx)
@@ -294,11 +298,25 @@ func (e *SecurityAuditExporter) Export(ctx context.Context) error {
 		return err
 	}
 	for _, record := range records {
-		event := cloneAuditEvent(record.Event)
+		if record.State != SecurityAuditCompleted || !validMutationOutcome(record.Outcome) || record.EventID != record.Event.EventID {
+			return ErrInvalidEvent
+		}
+		if err := ValidateAuditEvent(record.Event); err != nil || !validAuditDetails(record.CompletionDetails) {
+			return ErrInvalidEvent
+		}
+		event := record.Event
+		event.Details, err = cloneJSONMap(record.Event.Details)
+		if err != nil {
+			return err
+		}
+		completionDetails, err := cloneJSONMap(record.CompletionDetails)
+		if err != nil {
+			return err
+		}
 		if event.Details == nil {
 			event.Details = map[string]any{}
 		}
-		for key, value := range record.CompletionDetails {
+		for key, value := range completionDetails {
 			event.Details[key] = value
 		}
 		event.Details["mutation_outcome"] = string(record.Outcome)
@@ -312,29 +330,21 @@ func (e *SecurityAuditExporter) Export(ctx context.Context) error {
 	return nil
 }
 
+func nilInterface(value any) bool {
+	if value == nil {
+		return true
+	}
+	reflected := reflect.ValueOf(value)
+	switch reflected.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
+		return reflected.IsNil()
+	default:
+		return false
+	}
+}
+
 func normalizeJournalEvent(event AuditEvent, now func() time.Time) (AuditEvent, error) {
-	event.Type = strings.TrimSpace(event.Type)
-	if event.Type == "" {
-		return AuditEvent{}, ErrInvalidEvent
-	}
-	if event.OccurredAt.IsZero() {
-		event.OccurredAt = now().UTC()
-	} else {
-		event.OccurredAt = event.OccurredAt.UTC()
-	}
-	event.EventID = strings.TrimSpace(event.EventID)
-	event.PluginID = strings.TrimSpace(event.PluginID)
-	event.PluginInstanceID = strings.TrimSpace(event.PluginInstanceID)
-	event.SurfaceID = strings.TrimSpace(event.SurfaceID)
-	event.SurfaceInstanceID = strings.TrimSpace(event.SurfaceInstanceID)
-	event.RequestID = strings.TrimSpace(event.RequestID)
-	event.Actor = strings.TrimSpace(event.Actor)
-	cloned, err := cloneJSONMap(event.Details)
-	if err != nil {
-		return AuditEvent{}, fmt.Errorf("normalize security audit details: %w", err)
-	}
-	event.Details = cloned
-	return event, nil
+	return normalizeAuditEvent(event, now)
 }
 
 func validMutationOutcome(outcome mutation.Outcome) bool {

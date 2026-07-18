@@ -1094,7 +1094,7 @@ func TestProcessSupervisorStopWaitsForInvalidatedProcessBeforeRestart(t *testing
 	supervisor.health = health
 	supervisor.mu.Unlock()
 
-	supervisor.invalidateRuntimeAfterIPCFailure(health, "test invalidation", errors.New("ipc failed"))
+	supervisor.invalidateRuntimeAfterIPCFailure(health, errors.New("ipc failed"))
 	select {
 	case <-canceled:
 	case <-time.After(time.Second):
@@ -3009,11 +3009,11 @@ func assertHostcallFailureDiagnostic(t *testing.T, store *runtimeDiagnosticSink,
 		t.Fatalf("hostcall failure diagnostics = %#v, want exactly one event", events)
 	}
 	event := events[0]
-	if event.Message != "runtime hostcall failed" || event.Details["hostcall"] != hostcall || event.Details["code"] != code {
+	if event.Message != "runtime hostcall failed" || event.Details.Hostcall != hostcall || event.Details.Code != code {
 		t.Fatalf("hostcall failure diagnostic mismatch: %#v", event)
 	}
-	failure, ok := event.InternalDetails["failure"].(observability.Failure)
-	if !ok || failure.Code != observability.FailureAction || failure.Action != "runtime.hostcall" || strings.Contains(fmt.Sprint(event.InternalDetails), rawError) {
+	failure := event.Failure
+	if failure.Code != observability.FailureAction || failure.Component != observability.FailureComponentRuntime || failure.Operation != "runtime.hostcall" || strings.Contains(fmt.Sprint(event), rawError) {
 		t.Fatalf("hostcall failure diagnostic retained raw cause: %#v", event)
 	}
 }
@@ -3027,7 +3027,7 @@ func TestProcessSupervisorRedactsRuntimeProcessOutput(t *testing.T) {
 
 	supervisor.scanPipe(strings.NewReader(sensitive+"\n"), "stderr")
 	events := diagnostics.list("plugin.runtime.process.stderr")
-	if len(events) != 1 || events[0].Details["stream"] != "stderr" || events[0].InternalDetails != nil {
+	if len(events) != 1 || events[0].Details.Stream != "stderr" || !events[0].Failure.Empty() {
 		t.Fatalf("runtime process stderr diagnostic = %#v", events)
 	}
 	if strings.Contains(fmt.Sprint(events[0]), sensitive) || strings.Contains(fmt.Sprint(events[0]), "sk-live-secret") || strings.Contains(fmt.Sprint(events[0]), "/Users/secret/path") {

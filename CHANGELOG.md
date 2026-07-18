@@ -162,6 +162,11 @@
 
 ### Fixed
 
+- Persist only closed diagnostic and audit fields with typed failure code,
+  component, operation, request/correlation identity, and mutation outcome.
+  Adapter and runtime causes, bearer/cookie values, URL queries, secret
+  references, private runtime identifiers, and absolute paths are rejected at
+  memory and SQLite sink boundaries; invalid persisted rows fail reopen.
 - Make every HTTP route action map to an exact direct Host action, including
   surface preparation, bridge minting, asset and stream reads, RPC and
   confirmation flows, and platform metadata. Nested surface preparation and

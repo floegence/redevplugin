@@ -3823,15 +3823,15 @@ func TestHandlerSecretAdapterFailuresAfterDispatchAreUnknown(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if len(events) != 1 || events[0].Message != "secret adapter operation failed" || events[0].Details["operation"] != test.operation || events[0].InternalDetails != nil {
+			if len(events) != 1 || events[0].Message != "secret adapter operation failed" || events[0].Details.Operation != test.operation || !events[0].Failure.Empty() {
 				t.Fatalf("secret adapter diagnostic mismatch: %#v", events)
 			}
 			internalEvent, ok := diagnostics.last("plugin.secret.adapter_failed")
-			failure, failureOK := internalEvent.InternalDetails["failure"].(observability.Failure)
-			if !ok || !failureOK || failure.Code != observability.FailureAdapter || failure.Action != test.operation {
+			failure := internalEvent.Failure
+			if !ok || failure.Code != observability.FailureAdapter || failure.Component != observability.FailureComponentSecrets || failure.Operation != observability.FailureOperation("secrets."+test.operation) {
 				t.Fatalf("secret diagnostics sink failure mismatch: %#v", internalEvent)
 			}
-			if internalRaw := fmt.Sprint(internalEvent.InternalDetails); strings.Contains(internalRaw, sensitive) || strings.Contains(internalRaw, "/Users/secret/path") {
+			if internalRaw := fmt.Sprint(internalEvent); strings.Contains(internalRaw, sensitive) || strings.Contains(internalRaw, "/Users/secret/path") {
 				t.Fatalf("secret diagnostics sink retained sensitive cause: %s", internalRaw)
 			}
 			listed := getJSON[struct {
@@ -3873,19 +3873,20 @@ func TestHandlerDiagnosticsAreScopedToAuthenticatedOwner(t *testing.T) {
 	diagnostics := observability.NewMemoryStore()
 	h := newHTTPTestHostWithOptions(t, httpTestHostOptions{diagnostics: diagnostics})
 	if err := diagnostics.AppendPluginDiagnostic(context.Background(), observability.DiagnosticEvent{
-		Type: "plugin.runtime.hostcall.failed", Severity: "warning", Message: "background raw failure",
-		Details: map[string]any{"error": "vault token at /Users/secret/path"},
+		Type: "plugin.runtime.hostcall.failed", Severity: "warning", Message: "runtime hostcall failed",
+		Details: observability.DiagnosticDetails{Hostcall: "storage.kv", Code: "STORAGE_FAILED"},
+		Failure: observability.FailureFromError(observability.FailureAction, observability.FailureComponentRuntime, "runtime.hostcall", errors.New("vault token at /Users/secret/path")),
 	}); err != nil {
 		t.Fatal(err)
 	}
 	if err := diagnostics.AppendPluginDiagnostic(context.Background(), observability.DiagnosticEvent{
-		Type: "plugin.owner.failure", Severity: "warning", Message: "current owner failure",
+		Type: "plugin.runtime.stop_failed", Severity: "warning", Message: "plugin runtime stop failed",
 		OwnerSessionHash: "session_hash", OwnerUserHash: "user_hash", OwnerEnvHash: "env_hash", SessionChannelIDHash: "channel_hash",
 	}); err != nil {
 		t.Fatal(err)
 	}
 	if err := diagnostics.AppendPluginDiagnostic(context.Background(), observability.DiagnosticEvent{
-		Type: "plugin.owner.failure", Severity: "warning", Message: "other owner failure",
+		Type: "plugin.runtime.warning", Severity: "warning", Message: "runtime warning",
 		OwnerSessionHash: "session_other", OwnerUserHash: "user_other", OwnerEnvHash: "env_other", SessionChannelIDHash: "channel_other",
 	}); err != nil {
 		t.Fatal(err)
@@ -3894,14 +3895,14 @@ func TestHandlerDiagnosticsAreScopedToAuthenticatedOwner(t *testing.T) {
 	listed := getJSON[struct {
 		DiagnosticEvents []host.DiagnosticEvent `json:"diagnostic_events"`
 	}](t, handler, "/_redevplugin/api/plugins/diagnostics?severity=warning&limit=10")
-	if len(listed.DiagnosticEvents) != 1 || listed.DiagnosticEvents[0].Message != "current owner failure" {
+	if len(listed.DiagnosticEvents) != 1 || listed.DiagnosticEvents[0].Message != "plugin runtime stop failed" {
 		t.Fatalf("owner-scoped diagnostics mismatch: %#v", listed.DiagnosticEvents)
 	}
 	raw, err := json.Marshal(listed)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, forbidden := range []string{"background raw failure", "/Users/secret/path", "other owner failure", "owner_session_hash", "owner_user_hash", "owner_env_hash", "session_channel_id_hash"} {
+	for _, forbidden := range []string{"runtime hostcall failed", "/Users/secret/path", "runtime warning", "owner_session_hash", "owner_user_hash", "owner_env_hash", "session_channel_id_hash"} {
 		if strings.Contains(string(raw), forbidden) {
 			t.Fatalf("diagnostics route leaked %q: %s", forbidden, raw)
 		}
@@ -3934,15 +3935,15 @@ func TestHandlerInternalErrorsUseStableMessagesAndOwnerScopedDiagnostics(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(events) != 1 || events[0].Message != "plugin HTTP operation failed" || events[0].Details["operation"] != "runtime.start" || events[0].InternalDetails != nil {
+	if len(events) != 1 || events[0].Message != "plugin HTTP operation failed" || events[0].Details.Operation != "runtime.start" || !events[0].Failure.Empty() {
 		t.Fatalf("runtime failure diagnostic mismatch: %#v", events)
 	}
 	internalRuntimeEvent, ok := diagnostics.last("plugin.http.operation_failed")
-	failure, failureOK := internalRuntimeEvent.InternalDetails["failure"].(observability.Failure)
-	if !ok || !failureOK || failure.Code != observability.FailureAction || failure.Action != "runtime.start" {
+	failure := internalRuntimeEvent.Failure
+	if !ok || failure.Code != observability.FailureAction || failure.Component != observability.FailureComponentHTTP || failure.Operation != "runtime.start" {
 		t.Fatalf("runtime diagnostics sink failure mismatch: %#v", internalRuntimeEvent)
 	}
-	if internalRaw := fmt.Sprint(internalRuntimeEvent.InternalDetails); strings.Contains(internalRaw, sensitive) || strings.Contains(internalRaw, "/Users/secret/path") {
+	if internalRaw := fmt.Sprint(internalRuntimeEvent); strings.Contains(internalRaw, sensitive) || strings.Contains(internalRaw, "/Users/secret/path") {
 		t.Fatalf("runtime diagnostics sink retained sensitive cause: %s", internalRaw)
 	}
 	rawEvent, err := json.Marshal(events[0])
@@ -3983,15 +3984,15 @@ func TestHandlerInternalErrorsUseStableMessagesAndOwnerScopedDiagnostics(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(stopEvents) != 1 || stopEvents[0].InternalDetails != nil {
+	if len(stopEvents) != 1 || !stopEvents[0].Failure.Empty() {
 		t.Fatalf("runtime stop internal diagnostic mismatch: %#v", stopEvents)
 	}
 	internalStopEvent, ok := diagnostics.last("plugin.runtime.stop_failed")
-	stopFailure, failureOK := internalStopEvent.InternalDetails["failure"].(observability.Failure)
-	if !ok || !failureOK || stopFailure.Code != observability.FailureAdapter || stopFailure.Action != "runtime.stop" {
+	stopFailure := internalStopEvent.Failure
+	if !ok || stopFailure.Code != observability.FailureAdapter || stopFailure.Component != observability.FailureComponentRuntime || stopFailure.Operation != "runtime.stop" {
 		t.Fatalf("runtime stop diagnostics sink failure mismatch: %#v", internalStopEvent)
 	}
-	if internalRaw := fmt.Sprint(internalStopEvent.InternalDetails); strings.Contains(internalRaw, stopSensitive) || strings.Contains(internalRaw, "/Users/secret/path") {
+	if internalRaw := fmt.Sprint(internalStopEvent); strings.Contains(internalRaw, stopSensitive) || strings.Contains(internalRaw, "/Users/secret/path") {
 		t.Fatalf("runtime stop diagnostics sink retained sensitive cause: %s", internalRaw)
 	}
 	listedStop := getJSON[struct {

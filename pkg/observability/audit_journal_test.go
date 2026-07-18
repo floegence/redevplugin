@@ -3,7 +3,9 @@ package observability
 import (
 	"context"
 	"errors"
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -28,7 +30,7 @@ func TestMemorySecurityAuditJournalRequiresCompleteBeforeExport(t *testing.T) {
 	if len(sink.events) != 0 {
 		t.Fatalf("exported incomplete journal: %#v", sink.events)
 	}
-	if err := journal.CompleteSecurityAudit(ctx, event.EventID, mutation.OutcomeNotCommitted, map[string]any{"reason": "done"}); err != nil {
+	if err := journal.CompleteSecurityAudit(ctx, event.EventID, mutation.OutcomeNotCommitted, map[string]any{"reason": "unavailable"}); err != nil {
 		t.Fatal(err)
 	}
 	if err := exporter.Export(ctx); err != nil {
@@ -74,12 +76,12 @@ func TestMemorySecurityAuditJournalReconcilesPendingAsUnknown(t *testing.T) {
 func TestSecurityAuditJournalRejectsInvalidCompletionAndPreservesInput(t *testing.T) {
 	ctx := context.Background()
 	journal := NewMemorySecurityAuditJournal()
-	details := map[string]any{"nested": map[string]any{"value": "before"}}
+	details := map[string]any{"target_descriptor_hashes": []string{"sha256:before"}}
 	event, err := journal.BeginSecurityAudit(ctx, AuditEvent{Type: "plugin.updated", Details: details})
 	if err != nil {
 		t.Fatal(err)
 	}
-	details["nested"].(map[string]any)["value"] = "after"
+	details["target_descriptor_hashes"].([]string)[0] = "sha256:after"
 	if err := journal.CompleteSecurityAudit(ctx, event.EventID, "invalid", nil); !errors.Is(err, ErrInvalidMutationOutcome) {
 		t.Fatalf("invalid outcome error = %v", err)
 	}
@@ -90,7 +92,7 @@ func TestSecurityAuditJournalRejectsInvalidCompletionAndPreservesInput(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := completed[0].Event.Details["nested"].(map[string]any)["value"]; got != "before" {
+	if got := completed[0].Event.Details["target_descriptor_hashes"].([]any)[0]; got != "sha256:before" {
 		t.Fatalf("journal details mutated by caller: %#v", completed[0].Event.Details)
 	}
 }
@@ -328,6 +330,78 @@ func TestSecurityAuditExporterRetryAfterMarkFailureDoesNotDuplicateSinkEvent(t *
 	}
 }
 
+func TestSecurityAuditExporterRejectsTypedNilAndInvalidJournalRecords(t *testing.T) {
+	ctx := context.Background()
+	var nilSink *recordingAuditSink
+	if err := NewSecurityAuditExporter(NewMemorySecurityAuditJournal(), nilSink).Export(ctx); err == nil {
+		t.Fatal("Export(typed-nil sink) error = nil")
+	}
+	var nilJournal *MemorySecurityAuditJournal
+	if err := NewSecurityAuditExporter(nilJournal, &recordingAuditSink{}).Export(ctx); err == nil {
+		t.Fatal("Export(typed-nil journal) error = nil")
+	}
+
+	sink := &recordingAuditSink{}
+	journal := &invalidListingSecurityAuditJournal{
+		SecurityAuditJournal: NewMemorySecurityAuditJournal(),
+		records: []SecurityAuditRecord{{
+			EventID: "audit_invalid",
+			Event: AuditEvent{
+				EventID: "audit_invalid", Type: "plugin.enabled", OccurredAt: time.Now().UTC(),
+				Details: map[string]any{"unknown": "Authorization: Bearer secret"},
+			},
+			State: SecurityAuditCompleted, Outcome: mutation.OutcomeCommitted,
+		}},
+	}
+	if err := NewSecurityAuditExporter(journal, sink).Export(ctx); !errors.Is(err, ErrInvalidEvent) {
+		t.Fatalf("Export(invalid record) error = %v, want ErrInvalidEvent", err)
+	}
+	if len(sink.events) != 0 {
+		t.Fatalf("invalid journal record reached sink: %#v", sink.events)
+	}
+}
+
+func TestSQLiteSecurityAuditJournalRejectsSensitiveCompletionWithoutPersistence(t *testing.T) {
+	const sensitive = "Authorization: Bearer bearer-token-super-secret at /Users/private/plugin.sqlite?access_token=query-secret"
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "audit.sqlite")
+	store, err := NewSQLiteStore(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, err := store.BeginSecurityAudit(ctx, AuditEvent{Type: "plugin.enabled"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.CompleteSecurityAudit(ctx, record.EventID, mutation.OutcomeUnknown, map[string]any{"reason": sensitive}); !errors.Is(err, ErrInvalidAuditDetails) {
+		t.Fatalf("CompleteSecurityAudit(sensitive) error = %v, want ErrInvalidAuditDetails", err)
+	}
+	pending, err := store.ListPendingSecurityAudits(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pending) != 1 || pending[0].EventID != record.EventID {
+		t.Fatalf("sensitive completion changed journal state: %#v", pending)
+	}
+	if err := store.CompleteSecurityAudit(ctx, record.EventID, mutation.OutcomeUnknown, map[string]any{
+		"failure": FailureFromError(FailureAdapter, FailureComponentSecurity, "security_mutation.complete", errors.New(sensitive)),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, forbidden := range []string{sensitive, "bearer-token-super-secret", "/Users/private/plugin.sqlite", "query-secret"} {
+		if strings.Contains(string(raw), forbidden) {
+			t.Fatalf("security audit journal leaked %q", forbidden)
+		}
+	}
+}
+
 type recordingAuditSink struct {
 	events []AuditEvent
 }
@@ -340,6 +414,15 @@ func (s *recordingAuditSink) AppendPluginAudit(_ context.Context, event AuditEve
 type failFirstMarkSecurityAuditJournal struct {
 	SecurityAuditJournal
 	failed bool
+}
+
+type invalidListingSecurityAuditJournal struct {
+	SecurityAuditJournal
+	records []SecurityAuditRecord
+}
+
+func (j *invalidListingSecurityAuditJournal) ListUnexportedSecurityAudits(context.Context) ([]SecurityAuditRecord, error) {
+	return append([]SecurityAuditRecord(nil), j.records...), nil
 }
 
 func (j *failFirstMarkSecurityAuditJournal) MarkSecurityAuditExported(ctx context.Context, eventID string) error {

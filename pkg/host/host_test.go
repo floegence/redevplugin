@@ -3367,7 +3367,7 @@ func TestCallPluginMethodRequiresGrantedBindingPermissions(t *testing.T) {
 	if event, ok := audits.lastEvent("plugin.method.rejected"); !ok || event.Details["reason"] != "permission_denied" {
 		t.Fatalf("missing permission rejection audit: %#v", audits.events)
 	}
-	if len(diagnostics.events) != 1 || diagnostics.events[0].Details["reason"] != "permission_denied" {
+	if len(diagnostics.events) != 1 || diagnostics.events[0].Details.Reason != "permission_denied" {
 		t.Fatalf("missing permission rejection diagnostic: %#v", diagnostics.events)
 	}
 
@@ -3957,11 +3957,11 @@ func TestReadStreamReportsFailedTerminalStatus(t *testing.T) {
 			break
 		}
 	}
-	if failureDiagnostic == nil || failureDiagnostic.Details["failure_code"] != capability.ExecutionFailureRuntimeFailed {
+	if failureDiagnostic == nil || failureDiagnostic.Details.FailureCode != string(capability.ExecutionFailureRuntimeFailed) {
 		t.Fatalf("execution failure diagnostic = %#v", failureDiagnostic)
 	}
-	failure, ok := failureDiagnostic.InternalDetails["failure"].(observability.Failure)
-	if !ok || failure.Code != observability.FailureAction || failure.Action != "execution.fail" || strings.Contains(fmt.Sprint(failureDiagnostic.InternalDetails), sensitiveCause) {
+	failure := failureDiagnostic.Failure
+	if failure.Code != observability.FailureAction || failure.Component != observability.FailureComponentExecution || failure.Operation != "execution.fail" || strings.Contains(fmt.Sprint(failureDiagnostic), sensitiveCause) {
 		t.Fatalf("execution failure diagnostic cause was not redacted: %#v", failureDiagnostic)
 	}
 	terminal, err := h.ReadStream(hostTestContext(), scopedReadStreamRequest(result.StreamID, result.StreamTicket))
@@ -4305,14 +4305,16 @@ func TestCallPluginMethodDispatchesWorkerRoute(t *testing.T) {
 		leaseAudit.SurfaceInstanceID != "surface_rpc" {
 		t.Fatalf("runtime lease audit identity mismatch: %#v", leaseAudit)
 	}
-	assertAuditDetail(t, leaseAudit, "lease_id", runtime.lastLease.LeaseID)
-	assertAuditDetail(t, leaseAudit, "token_id", runtime.lastLease.TokenID)
+	for _, privateKey := range []string{"lease_id", "token_id", "ipc_channel_id"} {
+		if _, exists := leaseAudit.Details[privateKey]; exists {
+			t.Fatalf("runtime lease audit exposed %s: %#v", privateKey, leaseAudit.Details)
+		}
+	}
 	assertAuditDetail(t, leaseAudit, "method", "worker.echo")
 	assertAuditDetail(t, leaseAudit, "effect", "read")
 	assertAuditDetail(t, leaseAudit, "execution", "sync")
 	assertAuditDetail(t, leaseAudit, "runtime_instance_id", "runtime_1")
 	assertAuditDetail(t, leaseAudit, "runtime_generation_id", "runtime_gen_1")
-	assertAuditDetail(t, leaseAudit, "ipc_channel_id", "ipc_1")
 	assertAuditDetail(t, leaseAudit, "policy_revision", current.PolicyRevision)
 	assertAuditDetail(t, leaseAudit, "management_revision", current.ManagementRevision)
 	assertAuditDetail(t, leaseAudit, "revoke_epoch", current.RevokeEpoch)
@@ -6122,8 +6124,8 @@ func TestOperationFailurePathsCloseHostOwnedHandle(t *testing.T) {
 				t.Fatalf("execution failure diagnostic mismatch: %#v", diagnostics.events)
 			}
 			if tc.internalCause != "" {
-				failure, ok := failureDiagnostic.InternalDetails["failure"].(observability.Failure)
-				if !ok || failure.Code != observability.FailureAction || failure.Action != "execution.fail" || strings.Contains(fmt.Sprint(failureDiagnostic.InternalDetails), errRPCUnavailable.Error()) {
+				failure := failureDiagnostic.Failure
+				if failure.Code != observability.FailureAction || failure.Component != observability.FailureComponentExecution || failure.Operation != "execution.fail" || strings.Contains(fmt.Sprint(failureDiagnostic), errRPCUnavailable.Error()) {
 					t.Fatalf("execution failure retained adapter-controlled cause: %#v", failureDiagnostic)
 				}
 			}
@@ -6162,7 +6164,7 @@ func TestCallPluginMethodRecordsNegativeAuditAndDiagnostic(t *testing.T) {
 			if !ok || event.Details["reason"] != tc.wantReason || event.Details["method"] != "echo.ping" {
 				t.Fatalf("negative audit mismatch: %#v", audits.events)
 			}
-			if len(diagnostics.events) != 1 || diagnostics.events[0].Type != "plugin.method.rejected" || diagnostics.events[0].Details["reason"] != tc.wantReason {
+			if len(diagnostics.events) != 1 || diagnostics.events[0].Type != "plugin.method.rejected" || diagnostics.events[0].Details.Reason != tc.wantReason {
 				t.Fatalf("negative diagnostic mismatch: %#v", diagnostics.events)
 			}
 			if tc.wantReason == "request_contract" && tc.adapter.calls != 0 {
@@ -6418,7 +6420,7 @@ func TestCallPluginMethodRejectsInvalidGatewayToken(t *testing.T) {
 	if event, ok := audits.lastEvent("plugin.method.rejected"); !ok || event.Details["reason"] != "token_invalid" {
 		t.Fatalf("missing token rejection audit: %#v", audits.events)
 	}
-	if len(diagnostics.events) != 1 || diagnostics.events[0].Details["reason"] != "token_invalid" {
+	if len(diagnostics.events) != 1 || diagnostics.events[0].Details.Reason != "token_invalid" {
 		t.Fatalf("missing token rejection diagnostic: %#v", diagnostics.events)
 	}
 }
@@ -6444,7 +6446,7 @@ func TestCallPluginMethodAuditsRemoteSessionMismatch(t *testing.T) {
 	if event, ok := audits.lastEvent("plugin.method.rejected"); !ok || event.Details["reason"] != "remote_mismatch" {
 		t.Fatalf("missing remote mismatch audit: %#v", audits.events)
 	}
-	if len(diagnostics.events) != 1 || diagnostics.events[0].Details["reason"] != "remote_mismatch" {
+	if len(diagnostics.events) != 1 || diagnostics.events[0].Details.Reason != "remote_mismatch" {
 		t.Fatalf("missing remote mismatch diagnostic: %#v", diagnostics.events)
 	}
 }
@@ -6479,7 +6481,7 @@ func TestCallPluginMethodAuditsTrustUnavailable(t *testing.T) {
 	if event, ok := audits.lastEvent("plugin.method.rejected"); !ok || event.Details["reason"] != "trust_unavailable" {
 		t.Fatalf("missing trust-unavailable audit: %#v", audits.events)
 	}
-	if len(diagnostics.events) != 1 || diagnostics.events[0].Details["reason"] != "trust_unavailable" {
+	if len(diagnostics.events) != 1 || diagnostics.events[0].Details.Reason != "trust_unavailable" {
 		t.Fatalf("missing trust-unavailable diagnostic: %#v", diagnostics.events)
 	}
 }
@@ -6513,7 +6515,7 @@ func TestCallPluginMethodHonorsLocalPolicyDeny(t *testing.T) {
 	if event, ok := audits.lastEvent("plugin.method.rejected"); !ok || event.Details["reason"] != "policy_denied" {
 		t.Fatalf("missing policy rejection audit: %#v", audits.events)
 	}
-	if len(diagnostics.events) != 1 || diagnostics.events[0].Details["reason"] != "policy_denied" {
+	if len(diagnostics.events) != 1 || diagnostics.events[0].Details.Reason != "policy_denied" {
 		t.Fatalf("missing policy rejection diagnostic: %#v", diagnostics.events)
 	}
 }
@@ -6628,7 +6630,7 @@ func TestCallPluginMethodRequiresConfirmationForDangerousMethod(t *testing.T) {
 	if event, ok := audits.lastEvent("plugin.method.rejected"); !ok || event.Details["reason"] != "confirmation_required" {
 		t.Fatalf("missing confirmation rejection audit: %#v", audits.events)
 	}
-	if len(diagnostics.events) != 1 || diagnostics.events[0].Details["reason"] != "confirmation_required" {
+	if len(diagnostics.events) != 1 || diagnostics.events[0].Details.Reason != "confirmation_required" {
 		t.Fatalf("missing confirmation rejection diagnostic: %#v", diagnostics.events)
 	}
 
@@ -6716,7 +6718,7 @@ func TestRejectMethodConfirmationConsumesIntentWithoutDispatch(t *testing.T) {
 	if event, ok := audits.lastEvent("plugin.method.rejected"); !ok || event.Details["reason"] != "confirmation_rejected" {
 		t.Fatalf("confirmation rejection audit mismatch: %#v", audits.events)
 	}
-	if len(diagnostics.events) != 1 || diagnostics.events[0].Details["reason"] != "confirmation_rejected" {
+	if len(diagnostics.events) != 1 || diagnostics.events[0].Details.Reason != "confirmation_rejected" {
 		t.Fatalf("confirmation rejection diagnostic mismatch: %#v", diagnostics.events)
 	}
 
@@ -6893,7 +6895,7 @@ func TestConfirmedCapabilityRerunsPreflightAndRejectsAStalePlan(t *testing.T) {
 	if !ok || event.Details["reason"] != "confirmation_invalid" {
 		t.Fatalf("stale confirmation audit mismatch: %#v", audits.events)
 	}
-	if len(diagnostics.events) != 1 || diagnostics.events[0].Details["reason"] != "confirmation_invalid" {
+	if len(diagnostics.events) != 1 || diagnostics.events[0].Details.Reason != "confirmation_invalid" {
 		t.Fatalf("stale confirmation diagnostic mismatch: %#v", diagnostics.events)
 	}
 }
@@ -8749,13 +8751,13 @@ func TestExplicitObservabilitySinksReceiveAuditAndScopedDiagnostics(t *testing.T
 	h.diagnostic(hostTestContext(), observability.DiagnosticEvent{
 		Type:              "plugin.surface.renderer_error",
 		Severity:          "warning",
-		Message:           "renderer rejected plugin output",
+		Message:           "plugin surface renderer failed",
 		PluginID:          installed.PluginID,
 		PluginInstanceID:  installed.PluginInstanceID,
 		SurfaceInstanceID: "surface_default_observability",
 	})
 	if err := diagnostics.AppendPluginDiagnostic(context.Background(), observability.DiagnosticEvent{
-		Type: "plugin.runtime.hostcall.failed", Severity: "warning", Message: "background failure",
+		Type: "plugin.runtime.hostcall.failed", Severity: "warning", Message: "runtime hostcall failed",
 		PluginID: installed.PluginID, PluginInstanceID: installed.PluginInstanceID,
 	}); err != nil {
 		t.Fatal(err)
@@ -8768,7 +8770,7 @@ func TestExplicitObservabilitySinksReceiveAuditAndScopedDiagnostics(t *testing.T
 	if err != nil {
 		t.Fatalf("ListDiagnosticEvents() error = %v", err)
 	}
-	if len(diagnosticEvents) != 1 || diagnosticEvents[0].Type != "plugin.surface.renderer_error" || diagnosticEvents[0].Message != "renderer rejected plugin output" {
+	if len(diagnosticEvents) != 1 || diagnosticEvents[0].Type != "plugin.surface.renderer_error" || diagnosticEvents[0].Message != "plugin surface renderer failed" {
 		t.Fatalf("diagnostic events mismatch: %#v", diagnosticEvents)
 	}
 	background, err := h.ListDiagnosticEvents(hostTestContext(), ListDiagnosticEventsRequest{Type: "plugin.runtime.hostcall.failed"})
@@ -8788,7 +8790,14 @@ func TestUserTriggeredDiagnosticHelpersAttachScopeAndHideInternalCause(t *testin
 		PluginID: "com.example.plugin", PluginInstanceID: "plugini_1", ActiveFingerprint: "sha256:active",
 	}
 
-	h.reportLifecycleDiagnostic(hostTestContext(), record, "plugin.runtime_state.refresh_failed", errors.New(sensitive), map[string]any{"stage": "refresh"})
+	h.reportLifecycleDiagnostic(
+		hostTestContext(),
+		record,
+		"plugin.runtime_state.refresh_failed",
+		"plugin runtime state refresh failed",
+		errors.New(sensitive),
+		observability.DiagnosticDetails{StageID: "refresh"},
+	)
 	if err := h.reportMethodRejection(hostTestContext(), record, "example.read", "surface_1", fmt.Errorf("%w: %s", permissions.ErrPermissionDenied, sensitive)); err != nil {
 		t.Fatal(err)
 	}
@@ -8800,12 +8809,12 @@ func TestUserTriggeredDiagnosticHelpersAttachScopeAndHideInternalCause(t *testin
 			t.Fatalf("diagnostic owner scope mismatch: %#v", event)
 		}
 		if index == 0 {
-			failure, ok := event.InternalDetails["failure"].(observability.Failure)
-			if !ok || failure.Code != observability.FailureAction || failure.Action != "plugin.runtime_state.refresh_failed" || strings.Contains(fmt.Sprint(event.InternalDetails), sensitive) {
+			failure := event.Failure
+			if failure.Code != observability.FailureAction || failure.Component != observability.FailureComponentLifecycle || failure.Operation != "plugin.runtime_state.refresh_failed" || strings.Contains(fmt.Sprint(event), sensitive) {
 				t.Fatalf("diagnostic internal cause was not redacted: %#v", event)
 			}
 		}
-		if index == 1 && len(event.InternalDetails) != 0 {
+		if index == 1 && !event.Failure.Empty() {
 			t.Fatalf("method rejection retained adapter error details: %#v", event)
 		}
 		encoded, err := json.Marshal(event)
@@ -8816,15 +8825,13 @@ func TestUserTriggeredDiagnosticHelpersAttachScopeAndHideInternalCause(t *testin
 			t.Fatalf("diagnostic internal cause was serialized: %s", encoded)
 		}
 	}
-	if diagnostics.events[0].Message != "plugin lifecycle operation failed" || diagnostics.events[1].Message != "plugin method was rejected" {
+	if diagnostics.events[0].Message != "plugin runtime state refresh failed" || diagnostics.events[1].Message != "plugin method was rejected" {
 		t.Fatalf("diagnostic public messages are unstable: %#v", diagnostics.events)
 	}
 	diagnostics.events = append(diagnostics.events, observability.DiagnosticEvent{
-		Type: "plugin.other_owner.failure", Severity: "warning", Message: "other owner failure",
+		Type: "plugin.runtime.warning", Severity: "warning", Message: "runtime warning", OccurredAt: time.Now().UTC(),
 		OwnerSessionHash: "session_other", OwnerUserHash: "user_other", OwnerEnvHash: "env_other", SessionChannelIDHash: "channel_other",
-		InternalDetails: map[string]any{
-			"failure": observability.FailureFromError(observability.FailureAction, "plugin.other_owner.failure", errors.New(sensitive)),
-		},
+		Failure: observability.FailureFromError(observability.FailureAction, observability.FailureComponentRuntime, "runtime.warning", errors.New(sensitive)),
 	})
 	listed, err := h.ListDiagnosticEvents(hostTestContext(), ListDiagnosticEventsRequest{Limit: 10})
 	if err != nil {
@@ -8844,12 +8851,12 @@ func TestUserTriggeredDiagnosticHelpersAttachScopeAndHideInternalCause(t *testin
 	}
 	diagnostics.events = append(diagnostics.events,
 		observability.DiagnosticEvent{
-			EventID: "diagnostic_wrong_plugin", Type: "plugin.method.rejected", Severity: "warning", Message: "wrong plugin",
+			EventID: "diagnostic_wrong_plugin", Type: "plugin.method.rejected", Severity: "warning", Message: "plugin method was rejected", OccurredAt: time.Now().UTC(),
 			PluginID: "com.example.other", PluginInstanceID: "plugini_other", SurfaceInstanceID: "surface_1",
 			OwnerSessionHash: "session_hash", OwnerUserHash: "user_hash", OwnerEnvHash: "env_hash", SessionChannelIDHash: "channel_hash",
 		},
 		observability.DiagnosticEvent{
-			EventID: "diagnostic_wrong_type", Type: "plugin.other", Severity: "info", Message: "wrong type",
+			EventID: "diagnostic_wrong_type", Type: "plugin.runtime.warning", Severity: "warning", Message: "runtime warning", OccurredAt: time.Now().UTC(),
 			PluginID: record.PluginID, PluginInstanceID: record.PluginInstanceID, SurfaceInstanceID: "surface_other",
 			OwnerSessionHash: "session_hash", OwnerUserHash: "user_hash", OwnerEnvHash: "env_hash", SessionChannelIDHash: "channel_hash",
 		},

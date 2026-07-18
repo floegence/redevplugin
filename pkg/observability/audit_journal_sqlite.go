@@ -68,7 +68,17 @@ func (s *SQLiteStore) CompleteSecurityAudit(ctx context.Context, eventID string,
 	if eventID == "" {
 		return ErrSecurityAuditNotFound
 	}
-	rawDetails, err := marshalDetails(details)
+	if !validAuditDetails(details) {
+		return ErrInvalidAuditDetails
+	}
+	clonedDetails, err := cloneJSONMap(details)
+	if err != nil {
+		return err
+	}
+	if !validAuditDetails(clonedDetails) {
+		return ErrInvalidAuditDetails
+	}
+	rawDetails, err := marshalDetails(clonedDetails)
 	if err != nil {
 		return err
 	}
@@ -176,7 +186,7 @@ func (s *SQLiteStore) ReconcilePendingSecurityAudits(ctx context.Context) error 
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	_, err := s.db.ExecContext(ctx, `UPDATE plugin_security_audit_journal SET state = ?, mutation_outcome = ?, completion_details_json = ?, completed_at = ? WHERE state = ?`, string(SecurityAuditCompleted), string(mutation.OutcomeUnknown), []byte(`{"reason":"pending journal reconciled at startup"}`), s.now().UTC().UnixNano(), string(SecurityAuditPending))
+	_, err := s.db.ExecContext(ctx, `UPDATE plugin_security_audit_journal SET state = ?, mutation_outcome = ?, completion_details_json = ?, completed_at = ? WHERE state = ?`, string(SecurityAuditCompleted), string(mutation.OutcomeUnknown), []byte(`{"reason":"pending_reconciled"}`), s.now().UTC().UnixNano(), string(SecurityAuditPending))
 	return err
 }
 
@@ -242,6 +252,15 @@ func scanSecurityAuditRecord(scanner securityAuditScanner, record *SecurityAudit
 	record.Outcome = mutation.Outcome(outcome)
 	record.CompletionDetails = completion
 	record.CreatedAt = time.Unix(0, createdAt).UTC()
+	if err := ValidateAuditEvent(record.Event); err != nil || !validAuditDetails(record.CompletionDetails) {
+		return ErrInvalidEvent
+	}
+	if record.State != SecurityAuditPending && record.State != SecurityAuditCompleted {
+		return ErrInvalidEvent
+	}
+	if record.State == SecurityAuditPending && record.Outcome != "" || record.State == SecurityAuditCompleted && !validMutationOutcome(record.Outcome) {
+		return ErrInvalidMutationOutcome
+	}
 	if completedAt.Valid {
 		value := time.Unix(0, completedAt.Int64).UTC()
 		record.CompletedAt = &value
@@ -251,6 +270,21 @@ func scanSecurityAuditRecord(scanner securityAuditScanner, record *SecurityAudit
 		record.ExportedAt = &value
 	}
 	return nil
+}
+
+func validateSQLiteSecurityAudits(ctx context.Context, tx *sql.Tx) error {
+	rows, err := tx.QueryContext(ctx, `SELECT event_id, type, plugin_id, plugin_instance_id, surface_id, surface_instance_id, request_id, actor, occurred_at, details_json, state, mutation_outcome, completion_details_json, created_at, completed_at, exported_at FROM plugin_security_audit_journal`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var record SecurityAuditRecord
+		if err := scanSecurityAuditRecord(rows, &record); err != nil {
+			return errors.Join(ErrInvalidEvent, err)
+		}
+	}
+	return rows.Err()
 }
 
 var _ SecurityAuditJournal = (*SQLiteStore)(nil)

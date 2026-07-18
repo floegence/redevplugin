@@ -677,11 +677,11 @@ func (s *ProcessSupervisor) Start(ctx context.Context, target runtimetarget.Targ
 	s.exitError = nil
 	s.mu.Unlock()
 
-	s.emit("plugin.runtime.process.started", "info", "runtime process started", map[string]any{
-		"runtime_instance_id":   health.RuntimeInstanceID,
-		"runtime_generation_id": health.RuntimeGenerationID,
-		"os":                    target.OS(),
-		"arch":                  target.Arch(),
+	s.emit("plugin.runtime.process.started", "info", "runtime process started", observability.DiagnosticDetails{
+		RuntimeInstanceID:   health.RuntimeInstanceID,
+		RuntimeGenerationID: health.RuntimeGenerationID,
+		OS:                  target.OS(),
+		Arch:                target.Arch(),
 	})
 	go s.scanPipe(stderr, "stderr")
 	go s.wait(cmd, exit, cancel, generation, health)
@@ -698,9 +698,9 @@ func (s *ProcessSupervisor) Start(ctx context.Context, target runtimetarget.Targ
 		select {
 		case <-exit.done:
 		case <-time.After(3 * time.Second):
-			s.emit("plugin.runtime.process.cleanup_timeout", "warning", "runtime process did not exit after failed handshake", map[string]any{
-				"runtime_instance_id":   health.RuntimeInstanceID,
-				"runtime_generation_id": health.RuntimeGenerationID,
+			s.emit("plugin.runtime.process.cleanup_timeout", "warning", "runtime process did not exit after failed handshake", observability.DiagnosticDetails{
+				RuntimeInstanceID:   health.RuntimeInstanceID,
+				RuntimeGenerationID: health.RuntimeGenerationID,
 			})
 		}
 		return err
@@ -720,15 +720,15 @@ func (s *ProcessSupervisor) Start(ctx context.Context, target runtimetarget.Targ
 		defer exit.finishIPCReader()
 		s.readIPCLoop(stdoutReader, generation, health)
 	}()
-	s.emit("plugin.runtime.ipc.handshake", "info", "runtime ipc handshake completed", map[string]any{
-		"runtime_instance_id":     health.RuntimeInstanceID,
-		"runtime_generation_id":   health.RuntimeGenerationID,
-		"runtime_version":         health.Descriptor.Version().String(),
-		"rust_ipc_version":        health.Descriptor.IPCVersion(),
-		"wasm_abi_version":        health.Descriptor.WASMABIVersion(),
-		"runtime_target_os":       health.Descriptor.Target().OS(),
-		"runtime_target_arch":     health.Descriptor.Target().Arch(),
-		"runtime_artifact_sha256": health.Descriptor.ArtifactSHA256(),
+	s.emit("plugin.runtime.ipc.handshake", "info", "runtime IPC handshake completed", observability.DiagnosticDetails{
+		RuntimeInstanceID:     health.RuntimeInstanceID,
+		RuntimeGenerationID:   health.RuntimeGenerationID,
+		RuntimeVersion:        health.Descriptor.Version().String(),
+		RustIPCVersion:        health.Descriptor.IPCVersion(),
+		WASMABIVersion:        health.Descriptor.WASMABIVersion(),
+		RuntimeTargetOS:       health.Descriptor.Target().OS(),
+		RuntimeTargetArch:     health.Descriptor.Target().Arch(),
+		RuntimeArtifactSHA256: health.Descriptor.ArtifactSHA256(),
 	})
 	go s.heartbeatLoop(runtimeCtx, health)
 	return nil
@@ -877,13 +877,18 @@ func (s *ProcessSupervisor) Stop(ctx context.Context) error {
 	select {
 	case <-exit.done:
 		exit.stopEvent.Do(func() {
-			details := map[string]any{
-				"runtime_instance_id":   health.RuntimeInstanceID,
-				"runtime_generation_id": health.RuntimeGenerationID,
+			details := observability.DiagnosticDetails{
+				RuntimeInstanceID:   health.RuntimeInstanceID,
+				RuntimeGenerationID: health.RuntimeGenerationID,
 			}
 			var failure observability.Failure
 			if exit.err != nil && ctx.Err() == nil {
-				failure = observability.FailureFromError(observability.FailureAction, "runtime.process.stop", exit.err)
+				failure = observability.FailureFromError(
+					observability.FailureAction,
+					observability.FailureComponentRuntime,
+					"runtime.process.stop",
+					exit.err,
+				)
 			}
 			s.emitInternal("plugin.runtime.process.stopped", observability.DiagnosticSeverityInfo, "runtime process stopped", details, failure)
 		})
@@ -994,14 +999,12 @@ func (s *ProcessSupervisor) InvokeWorker(ctx context.Context, lease Lease, metho
 	lease.Signature = ""
 	lease, err = SignRuntimeLease(lease, method, s.runtimeLeaseSigningKey, s.runtimeLeasePrivateKey)
 	if err != nil {
-		s.emit("plugin.runtime.lease.signature_rejected", observability.DiagnosticSeverityWarning, "runtime execution lease could not be signed", map[string]any{
-			"lease_id":              lease.LeaseID,
-			"plugin_instance_id":    lease.PluginInstanceID,
-			"runtime_generation_id": lease.RuntimeGenerationID,
-			"runtime_instance_id":   lease.RuntimeInstanceID,
-			"ipc_channel_id":        lease.IPCChannelID,
-			"method":                method,
-			"revoke_epoch":          lease.RevokeEpoch,
+		s.emit("plugin.runtime.lease.signature_rejected", observability.DiagnosticSeverityWarning, "runtime execution lease signature was rejected", observability.DiagnosticDetails{
+			PluginInstanceID:    lease.PluginInstanceID,
+			RuntimeGenerationID: lease.RuntimeGenerationID,
+			RuntimeInstanceID:   lease.RuntimeInstanceID,
+			Method:              method,
+			RevokeEpoch:         lease.RevokeEpoch,
 		})
 		return nil, err
 	}
@@ -1095,12 +1098,11 @@ func (s *ProcessSupervisor) consumeRuntimeLease(ctx context.Context, lease Lease
 		return nil
 	}
 	if errors.Is(err, ErrRuntimeLeaseReplay) {
-		s.emit("plugin.runtime.lease.replayed", observability.DiagnosticSeverityWarning, "runtime execution lease was already consumed", map[string]any{
-			"lease_id":              lease.LeaseID,
-			"plugin_instance_id":    lease.PluginInstanceID,
-			"runtime_generation_id": lease.RuntimeGenerationID,
-			"method":                method,
-			"revoke_epoch":          lease.RevokeEpoch,
+		s.emit("plugin.runtime.lease.replayed", observability.DiagnosticSeverityWarning, "runtime execution lease was already consumed", observability.DiagnosticDetails{
+			PluginInstanceID:    lease.PluginInstanceID,
+			RuntimeGenerationID: lease.RuntimeGenerationID,
+			Method:              method,
+			RevokeEpoch:         lease.RevokeEpoch,
 		})
 	}
 	return err
@@ -1118,15 +1120,12 @@ func (s *ProcessSupervisor) verifyRuntimeLease(ctx context.Context, lease Lease,
 	if err == nil {
 		return nil
 	}
-	s.emit("plugin.runtime.lease.signature_rejected", observability.DiagnosticSeverityWarning, "runtime execution lease signature was rejected", map[string]any{
-		"lease_id":              lease.LeaseID,
-		"plugin_instance_id":    lease.PluginInstanceID,
-		"runtime_generation_id": lease.RuntimeGenerationID,
-		"runtime_instance_id":   lease.RuntimeInstanceID,
-		"ipc_channel_id":        lease.IPCChannelID,
-		"key_id":                lease.KeyID,
-		"method":                method,
-		"revoke_epoch":          lease.RevokeEpoch,
+	s.emit("plugin.runtime.lease.signature_rejected", observability.DiagnosticSeverityWarning, "runtime execution lease signature was rejected", observability.DiagnosticDetails{
+		PluginInstanceID:    lease.PluginInstanceID,
+		RuntimeGenerationID: lease.RuntimeGenerationID,
+		RuntimeInstanceID:   lease.RuntimeInstanceID,
+		Method:              method,
+		RevokeEpoch:         lease.RevokeEpoch,
 	})
 	return err
 }
@@ -1254,15 +1253,20 @@ func (s *ProcessSupervisor) wait(cmd *exec.Cmd, exit *processExit, cancel contex
 	}
 	severity := observability.DiagnosticSeverityInfo
 	message := "runtime process exited"
-	details := map[string]any{
-		"runtime_instance_id":   health.RuntimeInstanceID,
-		"runtime_generation_id": health.RuntimeGenerationID,
+	details := observability.DiagnosticDetails{
+		RuntimeInstanceID:   health.RuntimeInstanceID,
+		RuntimeGenerationID: health.RuntimeGenerationID,
 	}
 	var failure observability.Failure
 	if err != nil {
 		severity = observability.DiagnosticSeverityWarning
 		message = "runtime process exited with error"
-		failure = observability.FailureFromError(observability.FailureAction, "runtime.process.exit", err)
+		failure = observability.FailureFromError(
+			observability.FailureAction,
+			observability.FailureComponentRuntime,
+			"runtime.process.exit",
+			err,
+		)
 	}
 	s.emitInternal("plugin.runtime.process.exited", severity, message, details, failure)
 	exit.err = err
@@ -1290,7 +1294,7 @@ func (s *ProcessSupervisor) heartbeatLoop(ctx context.Context, health Health) {
 		if ctx.Err() != nil || !s.runtimeGenerationReady(health) {
 			return
 		}
-		s.invalidateRuntimeAfterIPCFailure(health, "runtime heartbeat failed", err)
+		s.invalidateRuntimeAfterIPCFailure(health, err)
 		return
 	}
 }
@@ -1320,7 +1324,7 @@ func (s *ProcessSupervisor) scanPipe(reader io.Reader, streamName string) {
 			"plugin.runtime.process."+streamName,
 			severity,
 			"runtime process wrote to "+streamName,
-			map[string]any{"stream": streamName},
+			observability.DiagnosticDetails{Stream: streamName},
 			observability.Failure{},
 		)
 	}
@@ -1329,56 +1333,59 @@ func (s *ProcessSupervisor) scanPipe(reader io.Reader, streamName string) {
 			"plugin.runtime.process."+streamName+".error",
 			observability.DiagnosticSeverityWarning,
 			"runtime process output could not be read",
-			map[string]any{"stream": streamName},
-			observability.FailureFromError(observability.FailureAction, "runtime.process.output", err),
+			observability.DiagnosticDetails{Stream: streamName},
+			observability.FailureFromError(
+				observability.FailureAction,
+				observability.FailureComponentRuntime,
+				"runtime.process.output",
+				err,
+			),
 		)
 	}
 }
 
-func (s *ProcessSupervisor) emit(eventType string, severity observability.DiagnosticSeverity, message string, details map[string]any) {
+func (s *ProcessSupervisor) emit(eventType string, severity observability.DiagnosticSeverity, message string, details observability.DiagnosticDetails) {
 	s.emitInternal(eventType, severity, message, details, observability.Failure{})
 }
 
-func (s *ProcessSupervisor) emitInternal(eventType string, severity observability.DiagnosticSeverity, message string, details map[string]any, failure observability.Failure) {
+func (s *ProcessSupervisor) emitInternal(eventType string, severity observability.DiagnosticSeverity, message string, details observability.DiagnosticDetails, failure observability.Failure) {
 	if s == nil || s.diagnostics == nil {
 		return
 	}
-	var internalDetails map[string]any
-	if failure.Valid() {
-		internalDetails = map[string]any{"failure": failure}
-	}
 	_ = s.diagnostics.AppendPluginDiagnostic(context.Background(), observability.DiagnosticEvent{
-		Type:            eventType,
-		Severity:        severity,
-		Message:         message,
-		OccurredAt:      s.now(),
-		Details:         details,
-		InternalDetails: internalDetails,
+		Type:       eventType,
+		Severity:   severity,
+		Message:    message,
+		OccurredAt: s.now(),
+		Details:    details,
+		Failure:    failure,
 	})
 }
 
-func (s *ProcessSupervisor) emitHostcallFailure(runtimeGenerationID, hostcall, code string, err error, details map[string]any) {
+func (s *ProcessSupervisor) emitHostcallFailure(requestID, correlationID, runtimeGenerationID, hostcall, code string, err error, details observability.DiagnosticDetails) {
 	if err == nil {
 		return
 	}
-	if details == nil {
-		details = map[string]any{}
-	}
-	details["runtime_generation_id"] = runtimeGenerationID
-	details["hostcall"] = hostcall
-	details["code"] = code
+	details.RuntimeGenerationID = runtimeGenerationID
+	details.Hostcall = hostcall
+	details.Code = code
 	if s == nil || s.diagnostics == nil {
 		return
 	}
 	_ = s.diagnostics.AppendPluginDiagnostic(context.Background(), observability.DiagnosticEvent{
-		Type:       "plugin.runtime.hostcall.failed",
-		Severity:   "warning",
-		Message:    "runtime hostcall failed",
-		OccurredAt: s.now(),
-		Details:    details,
-		InternalDetails: map[string]any{
-			"failure": observability.FailureFromError(observability.FailureAction, "runtime.hostcall", err),
-		},
+		Type:          "plugin.runtime.hostcall.failed",
+		Severity:      "warning",
+		Message:       "runtime hostcall failed",
+		OccurredAt:    s.now(),
+		RequestID:     requestID,
+		CorrelationID: correlationID,
+		Details:       details,
+		Failure: observability.FailureFromError(
+			observability.FailureAction,
+			observability.FailureComponentRuntime,
+			"runtime.hostcall",
+			err,
+		),
 	})
 }
 
@@ -1951,7 +1958,7 @@ func (s *ProcessSupervisor) callControlIPC(ctx context.Context, frameType string
 	}()
 	select {
 	case <-ctx.Done():
-		s.invalidateRuntimeAfterIPCFailure(health, "runtime control request context canceled", ctx.Err())
+		s.invalidateRuntimeAfterIPCFailure(health, ctx.Err())
 		return ipcFrame{}, ctx.Err()
 	case got := <-result:
 		if got.err != nil {
@@ -2078,7 +2085,7 @@ func (s *ProcessSupervisor) callIPCRequest(ctx context.Context, frameType string
 		}
 		unregister()
 		if cancelErr != nil {
-			s.invalidateRuntimeAfterIPCFailure(health, "runtime invocation cancellation acknowledgement failed", cancelErr)
+			s.invalidateRuntimeAfterIPCFailure(health, cancelErr)
 		}
 		return ipcFrame{}, ctx.Err()
 	}
@@ -2117,24 +2124,24 @@ func (s *ProcessSupervisor) readIPCLoop(stdout *bufio.Reader, generation *runtim
 		frame, err := readIPCFrame(stdout)
 		if err != nil {
 			wrapped := fmt.Errorf("%w: read ipc frame: %v", ErrRuntimeIPCUnavailable, err)
-			s.invalidateAndFailPending(generation, health, "runtime ipc reader failed", wrapped)
+			s.invalidateAndFailPending(generation, health, wrapped)
 			return
 		}
 		if frame.IPCVersion != version.RustIPCVersion || frame.RuntimeGenerationID != health.RuntimeGenerationID {
 			err := fmt.Errorf("%w: invalid runtime frame identity", ErrRuntimeIPCUnavailable)
-			s.invalidateAndFailPending(generation, health, "runtime ipc frame identity failed", err)
+			s.invalidateAndFailPending(generation, health, err)
 			return
 		}
 		switch frame.FrameType {
 		case ipcFrameTypeCompileFlightRegister:
 			if err := s.registerCompileFlight(generation, frame); err != nil {
-				s.invalidateAndFailPending(generation, health, "runtime compile flight registration failed", err)
+				s.invalidateAndFailPending(generation, health, err)
 				return
 			}
 			continue
 		case ipcFrameTypeCompileFlightComplete:
 			if err := s.completeCompileFlight(generation, frame); err != nil {
-				s.invalidateAndFailPending(generation, health, "runtime compile flight completion failed", err)
+				s.invalidateAndFailPending(generation, health, err)
 				return
 			}
 			continue
@@ -2142,7 +2149,7 @@ func (s *ProcessSupervisor) readIPCLoop(stdout *bufio.Reader, generation *runtim
 			flight, ok := s.claimCompileFlightArtifact(generation, frame)
 			if !ok {
 				err := fmt.Errorf("%w: runtime artifact request is not bound to a registered compile flight", ErrRuntimeIPCUnavailable)
-				s.invalidateAndFailPending(generation, health, "runtime compile flight artifact binding failed", err)
+				s.invalidateAndFailPending(generation, health, err)
 				return
 			}
 			s.dispatchCompileFlightArtifact(generation, health, frame, flight)
@@ -2154,7 +2161,7 @@ func (s *ProcessSupervisor) readIPCLoop(stdout *bufio.Reader, generation *runtim
 			parent, ok := s.activeInvocationParent(generation, frame.ParentRequestID)
 			if !ok {
 				err := fmt.Errorf("%w: runtime hostcall parent_request_id is not an active invocation", ErrRuntimeIPCUnavailable)
-				s.invalidateAndFailPending(generation, health, "runtime hostcall parent binding failed", err)
+				s.invalidateAndFailPending(generation, health, err)
 				return
 			}
 			s.dispatchRuntimeHostcall(generation, health, frame, parent)
@@ -2177,8 +2184,8 @@ func (s *ProcessSupervisor) readIPCLoop(stdout *bufio.Reader, generation *runtim
 	}
 }
 
-func (s *ProcessSupervisor) invalidateAndFailPending(generation *runtimeGeneration, health Health, message string, err error) {
-	s.invalidateRuntimeAfterIPCFailure(health, message, err)
+func (s *ProcessSupervisor) invalidateAndFailPending(generation *runtimeGeneration, health Health, err error) {
+	s.invalidateRuntimeAfterIPCFailure(health, err)
 	s.failPendingGeneration(generation, err)
 }
 
@@ -2278,7 +2285,7 @@ func (s *ProcessSupervisor) dispatchCompileFlightArtifact(generation *runtimeGen
 		err := s.respondToOpenHandle(artifactCtx, stdin, health.RuntimeGenerationID, frame, &flight.artifact)
 		cancelArtifact()
 		if err != nil {
-			s.invalidateRuntimeAfterIPCFailure(health, "runtime compile flight artifact response failed", err)
+			s.invalidateRuntimeAfterIPCFailure(health, err)
 		}
 	}()
 }
@@ -2317,7 +2324,7 @@ func (s *ProcessSupervisor) dispatchRuntimeHostcall(generation *runtimeGeneratio
 			err = s.respondToNetworkExecute(ctx, stdin, health, frame, invocation)
 		}
 		if err != nil {
-			s.invalidateRuntimeAfterIPCFailure(health, "runtime hostcall response failed", err)
+			s.invalidateRuntimeAfterIPCFailure(health, err)
 		}
 	}()
 }
@@ -2355,7 +2362,7 @@ func (s *ProcessSupervisor) failPendingGeneration(generation *runtimeGeneration,
 	}
 }
 
-func (s *ProcessSupervisor) invalidateRuntimeAfterIPCFailure(health Health, message string, err error) {
+func (s *ProcessSupervisor) invalidateRuntimeAfterIPCFailure(health Health, err error) {
 	if s == nil {
 		return
 	}
@@ -2374,15 +2381,20 @@ func (s *ProcessSupervisor) invalidateRuntimeAfterIPCFailure(health Health, mess
 	if cmd != nil && cmd.Process != nil {
 		_ = cmd.Process.Kill()
 	}
-	details := map[string]any{
-		"runtime_instance_id":   health.RuntimeInstanceID,
-		"runtime_generation_id": health.RuntimeGenerationID,
+	details := observability.DiagnosticDetails{
+		RuntimeInstanceID:   health.RuntimeInstanceID,
+		RuntimeGenerationID: health.RuntimeGenerationID,
 	}
 	var failure observability.Failure
 	if err != nil {
-		failure = observability.FailureFromError(observability.FailureAction, "runtime.ipc.invalidate", err)
+		failure = observability.FailureFromError(
+			observability.FailureAction,
+			observability.FailureComponentRuntime,
+			"runtime.ipc.invalidate",
+			err,
+		)
 	}
-	s.emitInternal("plugin.runtime.ipc.invalidated", observability.DiagnosticSeverityWarning, message, details, failure)
+	s.emitInternal("plugin.runtime.ipc.invalidated", observability.DiagnosticSeverityWarning, "runtime IPC channel was invalidated", details, failure)
 }
 
 func (s *ProcessSupervisor) respondToOpenHandle(ctx context.Context, stdin io.Writer, runtimeGenerationID string, frame ipcFrame, allowedArtifact *ArtifactRequest) error {
@@ -2419,9 +2431,9 @@ func (s *ProcessSupervisor) respondToOpenHandle(ctx context.Context, stdin io.Wr
 	defer cancel()
 	artifact, err := s.artifacts.ReadArtifact(hostcallCtx, ArtifactRequest(req))
 	if err != nil {
-		s.emitHostcallFailure(runtimeGenerationID, "artifact", "ARTIFACT_READ_FAILED", err, map[string]any{
-			"package_hash": req.PackageHash,
-			"artifact":     req.Artifact,
+		s.emitHostcallFailure(frame.RequestID, frame.ParentRequestID, runtimeGenerationID, "artifact", "ARTIFACT_READ_FAILED", err, observability.DiagnosticDetails{
+			PackageHash: req.PackageHash,
+			Artifact:    req.Artifact,
 		})
 		return s.writeOpenHandleResponse(stdin, runtimeGenerationID, frame, artifactHandleResultPayload{
 			OK:      false,
@@ -2550,10 +2562,9 @@ func (s *ProcessSupervisor) respondToValidateHandleGrant(ctx context.Context, st
 	defer cancel()
 	result, err := s.handleGrants.ValidateHandleGrant(hostcallCtx, req)
 	if err != nil {
-		s.emitHostcallFailure(runtimeGenerationID, "handle_grant", "HANDLE_GRANT_VALIDATION_FAILED", err, map[string]any{
-			"plugin_instance_id": req.PluginInstanceID,
-			"handle_id":          req.HandleID,
-			"method":             req.Method,
+		s.emitHostcallFailure(frame.RequestID, frame.ParentRequestID, runtimeGenerationID, "handle_grant", "HANDLE_GRANT_VALIDATION_FAILED", err, observability.DiagnosticDetails{
+			PluginInstanceID: req.PluginInstanceID,
+			Method:           req.Method,
 		})
 		return s.writeHandleGrantValidationResponse(stdin, runtimeGenerationID, frame, handleGrantValidationResultPayload{
 			OK:      false,
@@ -2685,10 +2696,10 @@ func (s *ProcessSupervisor) respondToStorageFile(ctx context.Context, stdin io.W
 		RevokeEpoch:          req.RevokeEpoch,
 	})
 	if err != nil {
-		s.emitHostcallFailure(health.RuntimeGenerationID, "storage_file", "HANDLE_GRANT_VALIDATION_FAILED", err, map[string]any{
-			"plugin_instance_id": req.PluginInstanceID,
-			"store_id":           req.StoreID,
-			"operation":          req.Operation,
+		s.emitHostcallFailure(frame.RequestID, frame.ParentRequestID, health.RuntimeGenerationID, "storage_file", "HANDLE_GRANT_VALIDATION_FAILED", err, observability.DiagnosticDetails{
+			PluginInstanceID: req.PluginInstanceID,
+			StoreID:          req.StoreID,
+			Operation:        req.Operation,
 		})
 		return s.writeStorageFileResponse(stdin, health.RuntimeGenerationID, frame, storageFileResponsePayload{
 			OK:      false,
@@ -2711,10 +2722,10 @@ func (s *ProcessSupervisor) respondToStorageFile(ctx context.Context, stdin io.W
 	payload := dispatchStorageFileRequest(hostcallCtx, s.storageFiles, req)
 	payload.Operation = req.Operation
 	if payload.InternalError != nil {
-		s.emitHostcallFailure(health.RuntimeGenerationID, "storage_file", payload.Code, payload.InternalError, map[string]any{
-			"plugin_instance_id": req.PluginInstanceID,
-			"store_id":           req.StoreID,
-			"operation":          req.Operation,
+		s.emitHostcallFailure(frame.RequestID, frame.ParentRequestID, health.RuntimeGenerationID, "storage_file", payload.Code, payload.InternalError, observability.DiagnosticDetails{
+			PluginInstanceID: req.PluginInstanceID,
+			StoreID:          req.StoreID,
+			Operation:        req.Operation,
 		})
 	}
 	return s.writeStorageFileResponse(stdin, health.RuntimeGenerationID, frame, payload)
@@ -2947,10 +2958,10 @@ func (s *ProcessSupervisor) respondToStorageKV(ctx context.Context, stdin io.Wri
 		RevokeEpoch:          req.RevokeEpoch,
 	})
 	if err != nil {
-		s.emitHostcallFailure(health.RuntimeGenerationID, "storage_kv", "HANDLE_GRANT_VALIDATION_FAILED", err, map[string]any{
-			"plugin_instance_id": req.PluginInstanceID,
-			"store_id":           req.StoreID,
-			"operation":          req.Operation,
+		s.emitHostcallFailure(frame.RequestID, frame.ParentRequestID, health.RuntimeGenerationID, "storage_kv", "HANDLE_GRANT_VALIDATION_FAILED", err, observability.DiagnosticDetails{
+			PluginInstanceID: req.PluginInstanceID,
+			StoreID:          req.StoreID,
+			Operation:        req.Operation,
 		})
 		return s.writeStorageKVResponse(stdin, health.RuntimeGenerationID, frame, storageKVResponsePayload{
 			OK:      false,
@@ -2973,10 +2984,10 @@ func (s *ProcessSupervisor) respondToStorageKV(ctx context.Context, stdin io.Wri
 	payload := dispatchStorageKVRequest(hostcallCtx, s.storageKV, req)
 	payload.Operation = req.Operation
 	if payload.InternalError != nil {
-		s.emitHostcallFailure(health.RuntimeGenerationID, "storage_kv", payload.Code, payload.InternalError, map[string]any{
-			"plugin_instance_id": req.PluginInstanceID,
-			"store_id":           req.StoreID,
-			"operation":          req.Operation,
+		s.emitHostcallFailure(frame.RequestID, frame.ParentRequestID, health.RuntimeGenerationID, "storage_kv", payload.Code, payload.InternalError, observability.DiagnosticDetails{
+			PluginInstanceID: req.PluginInstanceID,
+			StoreID:          req.StoreID,
+			Operation:        req.Operation,
 		})
 	}
 	return s.writeStorageKVResponse(stdin, health.RuntimeGenerationID, frame, payload)
@@ -3216,10 +3227,10 @@ func (s *ProcessSupervisor) respondToStorageSQLite(ctx context.Context, stdin io
 		RevokeEpoch:          req.RevokeEpoch,
 	})
 	if err != nil {
-		s.emitHostcallFailure(health.RuntimeGenerationID, "storage_sqlite", "HANDLE_GRANT_VALIDATION_FAILED", err, map[string]any{
-			"plugin_instance_id": req.PluginInstanceID,
-			"store_id":           req.StoreID,
-			"operation":          req.Operation,
+		s.emitHostcallFailure(frame.RequestID, frame.ParentRequestID, health.RuntimeGenerationID, "storage_sqlite", "HANDLE_GRANT_VALIDATION_FAILED", err, observability.DiagnosticDetails{
+			PluginInstanceID: req.PluginInstanceID,
+			StoreID:          req.StoreID,
+			Operation:        req.Operation,
 		})
 		return s.writeStorageSQLiteResponse(stdin, health.RuntimeGenerationID, frame, storageSQLiteResponsePayload{
 			OK:      false,
@@ -3242,10 +3253,10 @@ func (s *ProcessSupervisor) respondToStorageSQLite(ctx context.Context, stdin io
 	payload := dispatchStorageSQLiteRequest(hostcallCtx, s.storageSQLite, req)
 	payload.Operation = req.Operation
 	if payload.InternalError != nil {
-		s.emitHostcallFailure(health.RuntimeGenerationID, "storage_sqlite", payload.Code, payload.InternalError, map[string]any{
-			"plugin_instance_id": req.PluginInstanceID,
-			"store_id":           req.StoreID,
-			"operation":          req.Operation,
+		s.emitHostcallFailure(frame.RequestID, frame.ParentRequestID, health.RuntimeGenerationID, "storage_sqlite", payload.Code, payload.InternalError, observability.DiagnosticDetails{
+			PluginInstanceID: req.PluginInstanceID,
+			StoreID:          req.StoreID,
+			Operation:        req.Operation,
 		})
 	}
 	return s.writeStorageSQLiteResponse(stdin, health.RuntimeGenerationID, frame, payload)
@@ -3559,18 +3570,18 @@ func (s *ProcessSupervisor) respondToNetworkGrant(ctx context.Context, stdin io.
 	})
 	if err != nil {
 		payload := networkGrantErrorResponse(err)
-		s.emitHostcallFailure(health.RuntimeGenerationID, "network_grant", payload.Code, err, map[string]any{
-			"plugin_instance_id": req.PluginInstanceID,
-			"connector_id":       req.ConnectorID,
-			"transport":          req.Transport,
+		s.emitHostcallFailure(frame.RequestID, frame.ParentRequestID, health.RuntimeGenerationID, "network_grant", payload.Code, err, observability.DiagnosticDetails{
+			PluginInstanceID: req.PluginInstanceID,
+			ConnectorID:      req.ConnectorID,
+			Transport:        string(req.Transport),
 		})
 		return s.writeNetworkGrantResponse(stdin, health.RuntimeGenerationID, frame, payload)
 	}
 	if err := validateNetworkGrantResult(req, grant, health.RuntimeGenerationID); err != nil {
-		s.emitHostcallFailure(health.RuntimeGenerationID, "network_grant", "NETWORK_GRANT_VALIDATION_FAILED", err, map[string]any{
-			"plugin_instance_id": req.PluginInstanceID,
-			"connector_id":       req.ConnectorID,
-			"transport":          req.Transport,
+		s.emitHostcallFailure(frame.RequestID, frame.ParentRequestID, health.RuntimeGenerationID, "network_grant", "NETWORK_GRANT_VALIDATION_FAILED", err, observability.DiagnosticDetails{
+			PluginInstanceID: req.PluginInstanceID,
+			ConnectorID:      req.ConnectorID,
+			Transport:        string(req.Transport),
 		})
 		return s.writeNetworkGrantResponse(stdin, health.RuntimeGenerationID, frame, networkGrantResponsePayload{
 			OK:      false,
@@ -3682,11 +3693,11 @@ func (s *ProcessSupervisor) respondToNetworkExecute(ctx context.Context, stdin i
 	grant, err := s.mintGrantForNetworkExecute(hostcallCtx, req)
 	if err != nil {
 		payload := networkExecuteErrorResponse(err)
-		s.emitHostcallFailure(health.RuntimeGenerationID, "network_execute", payload.Code, err, map[string]any{
-			"plugin_instance_id": req.PluginInstanceID,
-			"connector_id":       req.ConnectorID,
-			"transport":          req.Transport,
-			"operation":          req.Operation,
+		s.emitHostcallFailure(frame.RequestID, frame.ParentRequestID, health.RuntimeGenerationID, "network_execute", payload.Code, err, observability.DiagnosticDetails{
+			PluginInstanceID: req.PluginInstanceID,
+			ConnectorID:      req.ConnectorID,
+			Transport:        string(req.Transport),
+			Operation:        req.Operation,
 		})
 		return s.writeNetworkExecuteResponse(stdin, health.RuntimeGenerationID, frame, payload)
 	}
@@ -3703,11 +3714,11 @@ func (s *ProcessSupervisor) respondToNetworkExecute(ctx context.Context, stdin i
 		Destination:         req.Destination,
 		TTLMillis:           req.TTLMillis,
 	}, grant, health.RuntimeGenerationID); err != nil {
-		s.emitHostcallFailure(health.RuntimeGenerationID, "network_execute", "NETWORK_GRANT_VALIDATION_FAILED", err, map[string]any{
-			"plugin_instance_id": req.PluginInstanceID,
-			"connector_id":       req.ConnectorID,
-			"transport":          req.Transport,
-			"operation":          req.Operation,
+		s.emitHostcallFailure(frame.RequestID, frame.ParentRequestID, health.RuntimeGenerationID, "network_execute", "NETWORK_GRANT_VALIDATION_FAILED", err, observability.DiagnosticDetails{
+			PluginInstanceID: req.PluginInstanceID,
+			ConnectorID:      req.ConnectorID,
+			Transport:        string(req.Transport),
+			Operation:        req.Operation,
 		})
 		return s.writeNetworkExecuteResponse(stdin, health.RuntimeGenerationID, frame, networkExecuteResponsePayload{
 			OK:      false,
@@ -3717,11 +3728,11 @@ func (s *ProcessSupervisor) respondToNetworkExecute(ctx context.Context, stdin i
 	}
 	payload := dispatchNetworkExecute(hostcallCtx, s.networkExecutor, s.streamSink, grant, req, s.now())
 	if payload.InternalError != nil {
-		s.emitHostcallFailure(health.RuntimeGenerationID, "network_execute", payload.Code, payload.InternalError, map[string]any{
-			"plugin_instance_id": req.PluginInstanceID,
-			"connector_id":       req.ConnectorID,
-			"transport":          req.Transport,
-			"operation":          req.Operation,
+		s.emitHostcallFailure(frame.RequestID, frame.ParentRequestID, health.RuntimeGenerationID, "network_execute", payload.Code, payload.InternalError, observability.DiagnosticDetails{
+			PluginInstanceID: req.PluginInstanceID,
+			ConnectorID:      req.ConnectorID,
+			Transport:        string(req.Transport),
+			Operation:        req.Operation,
 		})
 	}
 	if payload.OK {

@@ -1,14 +1,18 @@
 package observability
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/floegence/redevplugin/pkg/mutation"
 
 	_ "modernc.org/sqlite"
 )
@@ -71,21 +75,10 @@ func (s *SQLiteStore) AppendPluginAudit(ctx context.Context, event AuditEvent) e
 	if s == nil {
 		return errors.New("observability store is nil")
 	}
-	event.Type = strings.TrimSpace(event.Type)
-	if event.Type == "" {
-		return ErrInvalidEvent
+	event, err := normalizeAuditEvent(event, s.now)
+	if err != nil {
+		return err
 	}
-	if event.OccurredAt.IsZero() {
-		event.OccurredAt = s.now()
-	}
-	event.PluginID = strings.TrimSpace(event.PluginID)
-	event.PluginInstanceID = strings.TrimSpace(event.PluginInstanceID)
-	event.SurfaceID = strings.TrimSpace(event.SurfaceID)
-	event.SurfaceInstanceID = strings.TrimSpace(event.SurfaceInstanceID)
-	event.RequestID = strings.TrimSpace(event.RequestID)
-	event.Actor = strings.TrimSpace(event.Actor)
-	event.EventID = strings.TrimSpace(event.EventID)
-	event.Details = cloneMap(event.Details)
 	rawDetails, err := marshalDetails(event.Details)
 	if err != nil {
 		return err
@@ -153,34 +146,11 @@ func (s *SQLiteStore) AppendPluginDiagnostic(ctx context.Context, event Diagnost
 	if s == nil {
 		return errors.New("observability store is nil")
 	}
-	event.Type = strings.TrimSpace(event.Type)
-	if event.Type == "" {
-		return ErrInvalidEvent
-	}
-	severity, err := normalizeDiagnosticSeverity(event.Severity)
+	event, err := normalizeDiagnosticEvent(event, s.now)
 	if err != nil {
 		return err
 	}
-	event.Severity = severity
-	event.Message = strings.TrimSpace(event.Message)
-	if event.Message == "" {
-		event.Message = event.Type
-	}
-	if event.OccurredAt.IsZero() {
-		event.OccurredAt = s.now()
-	}
-	event.PluginID = strings.TrimSpace(event.PluginID)
-	event.PluginInstanceID = strings.TrimSpace(event.PluginInstanceID)
-	event.SurfaceID = strings.TrimSpace(event.SurfaceID)
-	event.SurfaceInstanceID = strings.TrimSpace(event.SurfaceInstanceID)
-	event.ActiveFingerprint = strings.TrimSpace(event.ActiveFingerprint)
-	event.RequestID = strings.TrimSpace(event.RequestID)
-	event.OwnerSessionHash = strings.TrimSpace(event.OwnerSessionHash)
-	event.OwnerUserHash = strings.TrimSpace(event.OwnerUserHash)
-	event.OwnerEnvHash = strings.TrimSpace(event.OwnerEnvHash)
-	event.SessionChannelIDHash = strings.TrimSpace(event.SessionChannelIDHash)
-	event.Details = cloneMap(event.Details)
-	rawDetails, err := marshalDetails(event.Details)
+	rawDetails, err := marshalDiagnosticDetails(event.Details)
 	if err != nil {
 		return err
 	}
@@ -204,8 +174,8 @@ func (s *SQLiteStore) AppendPluginDiagnostic(ctx context.Context, event Diagnost
 		event.EventID = strings.TrimSpace(event.EventID)
 	}
 	if _, err := tx.ExecContext(ctx, `
-INSERT INTO plugin_diagnostic_events(seq, event_id, type, severity, message, plugin_id, plugin_instance_id, surface_id, surface_instance_id, active_fingerprint, request_id, owner_session_hash, owner_user_hash, owner_env_hash, session_channel_id_hash, occurred_at, details_json)
-VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+INSERT INTO plugin_diagnostic_events(seq, event_id, type, severity, message, plugin_id, plugin_instance_id, surface_id, surface_instance_id, active_fingerprint, request_id, correlation_id, mutation_outcome, owner_session_hash, owner_user_hash, owner_env_hash, session_channel_id_hash, occurred_at, details_json, failure_code, failure_component, failure_operation)
+VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		seq,
 		event.EventID,
 		event.Type,
@@ -217,12 +187,17 @@ VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		event.SurfaceInstanceID,
 		event.ActiveFingerprint,
 		event.RequestID,
+		event.CorrelationID,
+		event.MutationOutcome,
 		event.OwnerSessionHash,
 		event.OwnerUserHash,
 		event.OwnerEnvHash,
 		event.SessionChannelIDHash,
 		event.OccurredAt.UTC().UnixNano(),
 		rawDetails,
+		event.Failure.Code,
+		event.Failure.Component,
+		event.Failure.Operation,
 	); err != nil {
 		return err
 	}
@@ -254,7 +229,7 @@ func (s *SQLiteStore) ListPluginDiagnostics(ctx context.Context, req ListDiagnos
 	defer s.mu.Unlock()
 
 	query := `
-SELECT event_id, type, severity, message, plugin_id, plugin_instance_id, surface_id, surface_instance_id, active_fingerprint, request_id, owner_session_hash, owner_user_hash, owner_env_hash, session_channel_id_hash, occurred_at, details_json
+SELECT event_id, type, severity, message, plugin_id, plugin_instance_id, surface_id, surface_instance_id, active_fingerprint, request_id, correlation_id, mutation_outcome, owner_session_hash, owner_user_hash, owner_env_hash, session_channel_id_hash, occurred_at, details_json, failure_code, failure_component, failure_operation
 FROM plugin_diagnostic_events`
 	args := []any{}
 	conditions := []string{}
@@ -400,13 +375,21 @@ CREATE TABLE IF NOT EXISTS plugin_diagnostic_events (
 	surface_instance_id TEXT NOT NULL,
 	active_fingerprint TEXT NOT NULL,
 	request_id TEXT NOT NULL,
+	correlation_id TEXT NOT NULL DEFAULT '',
+	mutation_outcome TEXT NOT NULL DEFAULT '' CHECK(mutation_outcome IN ('', 'committed', 'not_committed', 'unknown')),
 	owner_session_hash TEXT NOT NULL,
 	owner_user_hash TEXT NOT NULL,
 	owner_env_hash TEXT NOT NULL,
 	session_channel_id_hash TEXT NOT NULL,
 	occurred_at INTEGER NOT NULL,
-	details_json BLOB NOT NULL
+	details_json BLOB NOT NULL,
+	failure_code TEXT NOT NULL DEFAULT '',
+	failure_component TEXT NOT NULL DEFAULT '',
+	failure_operation TEXT NOT NULL DEFAULT ''
 )`); err != nil {
+		return err
+	}
+	if err := ensureDiagnosticColumns(ctx, tx); err != nil {
 		return err
 	}
 	for _, statement := range []string{
@@ -421,7 +404,105 @@ CREATE TABLE IF NOT EXISTS plugin_diagnostic_events (
 			return err
 		}
 	}
+	if err := validateSQLiteDiagnosticEvents(ctx, tx); err != nil {
+		return err
+	}
+	if err := validateSQLiteAuditEvents(ctx, tx); err != nil {
+		return err
+	}
+	if err := validateSQLiteSecurityAudits(ctx, tx); err != nil {
+		return err
+	}
 	return tx.Commit()
+}
+
+func validateSQLiteAuditEvents(ctx context.Context, tx *sql.Tx) error {
+	rows, err := tx.QueryContext(ctx, `SELECT event_id, type, plugin_id, plugin_instance_id, surface_id, surface_instance_id, request_id, actor, occurred_at, details_json FROM plugin_audit_events`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var event AuditEvent
+		var occurredAt int64
+		var rawDetails []byte
+		if err := rows.Scan(&event.EventID, &event.Type, &event.PluginID, &event.PluginInstanceID, &event.SurfaceID, &event.SurfaceInstanceID, &event.RequestID, &event.Actor, &occurredAt, &rawDetails); err != nil {
+			return err
+		}
+		details, err := unmarshalDetails(rawDetails)
+		if err != nil {
+			return fmt.Errorf("%w: persisted audit details are invalid", ErrInvalidEvent)
+		}
+		event.OccurredAt = time.Unix(0, occurredAt).UTC()
+		event.Details = details
+		if err := ValidateAuditEvent(event); err != nil {
+			return fmt.Errorf("%w: persisted audit event is invalid", ErrInvalidEvent)
+		}
+	}
+	return rows.Err()
+}
+
+func ensureDiagnosticColumns(ctx context.Context, tx *sql.Tx) error {
+	rows, err := tx.QueryContext(ctx, `PRAGMA table_info(plugin_diagnostic_events)`)
+	if err != nil {
+		return err
+	}
+	columns := map[string]struct{}{}
+	for rows.Next() {
+		var cid int
+		var name string
+		var columnType string
+		var notNull int
+		var defaultValue any
+		var primaryKey int
+		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &primaryKey); err != nil {
+			rows.Close()
+			return err
+		}
+		columns[name] = struct{}{}
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	statements := []struct {
+		column    string
+		statement string
+	}{
+		{column: "correlation_id", statement: `ALTER TABLE plugin_diagnostic_events ADD COLUMN correlation_id TEXT NOT NULL DEFAULT ''`},
+		{column: "mutation_outcome", statement: `ALTER TABLE plugin_diagnostic_events ADD COLUMN mutation_outcome TEXT NOT NULL DEFAULT '' CHECK(mutation_outcome IN ('', 'committed', 'not_committed', 'unknown'))`},
+		{column: "failure_code", statement: `ALTER TABLE plugin_diagnostic_events ADD COLUMN failure_code TEXT NOT NULL DEFAULT ''`},
+		{column: "failure_component", statement: `ALTER TABLE plugin_diagnostic_events ADD COLUMN failure_component TEXT NOT NULL DEFAULT ''`},
+		{column: "failure_operation", statement: `ALTER TABLE plugin_diagnostic_events ADD COLUMN failure_operation TEXT NOT NULL DEFAULT ''`},
+	}
+	for _, item := range statements {
+		if _, exists := columns[item.column]; exists {
+			continue
+		}
+		if _, err := tx.ExecContext(ctx, item.statement); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateSQLiteDiagnosticEvents(ctx context.Context, tx *sql.Tx) error {
+	rows, err := tx.QueryContext(ctx, `
+SELECT event_id, type, severity, message, plugin_id, plugin_instance_id, surface_id, surface_instance_id, active_fingerprint, request_id, correlation_id, mutation_outcome, owner_session_hash, owner_user_hash, owner_env_hash, session_channel_id_hash, occurred_at, details_json, failure_code, failure_component, failure_operation
+FROM plugin_diagnostic_events`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		if _, err := scanSQLiteDiagnosticEvent(rows); err != nil {
+			return fmt.Errorf("%w: persisted diagnostic event is invalid", ErrInvalidEvent)
+		}
+	}
+	return rows.Err()
 }
 
 func nextSQLiteSequence(ctx context.Context, tx *sql.Tx, column string) (uint64, error) {
@@ -463,6 +544,10 @@ func trimSQLiteEvents(ctx context.Context, tx *sql.Tx, table string, max int) er
 func scanSQLiteDiagnosticEvent(rows *sql.Rows) (DiagnosticEvent, error) {
 	var event DiagnosticEvent
 	var severity string
+	var mutationOutcome string
+	var failureCode string
+	var failureComponent string
+	var failureOperation string
 	var occurredAt int64
 	var rawDetails []byte
 	if err := rows.Scan(
@@ -476,16 +561,21 @@ func scanSQLiteDiagnosticEvent(rows *sql.Rows) (DiagnosticEvent, error) {
 		&event.SurfaceInstanceID,
 		&event.ActiveFingerprint,
 		&event.RequestID,
+		&event.CorrelationID,
+		&mutationOutcome,
 		&event.OwnerSessionHash,
 		&event.OwnerUserHash,
 		&event.OwnerEnvHash,
 		&event.SessionChannelIDHash,
 		&occurredAt,
 		&rawDetails,
+		&failureCode,
+		&failureComponent,
+		&failureOperation,
 	); err != nil {
 		return DiagnosticEvent{}, err
 	}
-	details, err := unmarshalDetails(rawDetails)
+	details, err := unmarshalDiagnosticDetails(rawDetails)
 	if err != nil {
 		return DiagnosticEvent{}, err
 	}
@@ -495,6 +585,13 @@ func scanSQLiteDiagnosticEvent(rows *sql.Rows) (DiagnosticEvent, error) {
 	}
 	event.OccurredAt = time.Unix(0, occurredAt).UTC()
 	event.Details = details
+	event.MutationOutcome = mutation.Outcome(mutationOutcome)
+	event.Failure = Failure{
+		Code: FailureCode(failureCode), Component: FailureComponent(failureComponent), Operation: FailureOperation(failureOperation),
+	}
+	if err := ValidateDiagnosticEvent(event); err != nil {
+		return DiagnosticEvent{}, err
+	}
 	return publicDiagnosticEvent(event), nil
 }
 
@@ -506,6 +603,36 @@ func marshalDetails(details map[string]any) ([]byte, error) {
 	return raw, nil
 }
 
+func marshalDiagnosticDetails(details DiagnosticDetails) ([]byte, error) {
+	if !details.Valid() {
+		return nil, ErrInvalidDiagnosticDetails
+	}
+	raw, err := json.Marshal(details)
+	if err != nil {
+		return nil, fmt.Errorf("encode diagnostic details: %w", err)
+	}
+	return raw, nil
+}
+
+func unmarshalDiagnosticDetails(raw []byte) (DiagnosticDetails, error) {
+	if len(raw) == 0 {
+		return DiagnosticDetails{}, nil
+	}
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	var details DiagnosticDetails
+	if err := decoder.Decode(&details); err != nil {
+		return DiagnosticDetails{}, fmt.Errorf("decode diagnostic details: %w", err)
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		return DiagnosticDetails{}, errors.New("decode diagnostic details: trailing JSON value")
+	}
+	if !details.Valid() {
+		return DiagnosticDetails{}, ErrInvalidDiagnosticDetails
+	}
+	return details, nil
+}
+
 func unmarshalDetails(raw []byte) (map[string]any, error) {
 	if len(raw) == 0 {
 		return nil, nil
@@ -514,7 +641,7 @@ func unmarshalDetails(raw []byte) (map[string]any, error) {
 	if err := json.Unmarshal(raw, &details); err != nil {
 		return nil, fmt.Errorf("decode observability details: %w", err)
 	}
-	return cloneMap(details), nil
+	return details, nil
 }
 
 func rollbackUnlessCommitted(tx *sql.Tx) {

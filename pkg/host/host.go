@@ -2809,7 +2809,14 @@ func (h *Host) installResolvedPackage(ctx context.Context, pkg pluginpkg.Package
 	}
 	if _, err := h.adapters.InstallStages.MarkCommitted(ctx, installstage.MarkCommittedRequest{StageID: stage.StageID, Now: now}); err != nil {
 		_ = h.rollbackInstallRecord(ctx, previous, hadPrevious, stored.PluginInstanceID, pkg.PackageHash, now)
-		h.reportLifecycleDiagnostic(ctx, stored, "plugin.install_stage.commit_failed", err, map[string]any{"stage_id": stage.StageID})
+		h.reportLifecycleDiagnostic(
+			ctx,
+			stored,
+			"plugin.install_stage.commit_failed",
+			"plugin install stage commit failed",
+			err,
+			observability.DiagnosticDetails{StageID: stage.StageID},
+		)
 		return registry.PluginRecord{}, mutation.Unknown(err)
 	}
 	return stored, nil
@@ -2979,12 +2986,26 @@ func (h *Host) updateResolvedPackage(ctx context.Context, current registry.Plugi
 	}
 	if err := h.revokePluginRuntimeCapabilities(ctx, stored, now); err != nil {
 		_ = h.rollbackVersionSwitch(ctx, current, pkg.PackageHash, now)
-		h.reportLifecycleDiagnostic(ctx, stored, "plugin.runtime_capabilities.revoke_failed", err, map[string]any{"stage_id": stage.StageID})
+		h.reportLifecycleDiagnostic(
+			ctx,
+			stored,
+			"plugin.runtime_capabilities.revoke_failed",
+			"plugin runtime capability revocation failed",
+			err,
+			observability.DiagnosticDetails{StageID: stage.StageID},
+		)
 		return registry.PluginRecord{}, mutation.Unknown(h.markInstallStageFailed(ctx, stage.StageID, "runtime_revoke_failed", err, now))
 	}
 	if _, err := h.adapters.InstallStages.MarkCommitted(ctx, installstage.MarkCommittedRequest{StageID: stage.StageID, Now: now}); err != nil {
 		_ = h.rollbackVersionSwitch(ctx, current, pkg.PackageHash, now)
-		h.reportLifecycleDiagnostic(ctx, stored, "plugin.install_stage.commit_failed", err, map[string]any{"stage_id": stage.StageID})
+		h.reportLifecycleDiagnostic(
+			ctx,
+			stored,
+			"plugin.install_stage.commit_failed",
+			"plugin install stage commit failed",
+			err,
+			observability.DiagnosticDetails{StageID: stage.StageID},
+		)
 		return registry.PluginRecord{}, mutation.Unknown(err)
 	}
 	return stored, nil
@@ -5107,7 +5128,14 @@ func (h *Host) RefreshEnabledPlugins(ctx context.Context) ([]RefreshEnabledPlugi
 			continue
 		}
 		if err := h.refreshEnabledRuntimeState(ctx, record); err != nil {
-			h.reportLifecycleDiagnostic(ctx, record, "plugin.runtime_state.refresh_failed", err, nil)
+			h.reportLifecycleDiagnostic(
+				ctx,
+				record,
+				"plugin.runtime_state.refresh_failed",
+				"plugin runtime state refresh failed",
+				err,
+				observability.DiagnosticDetails{},
+			)
 			results = append(results, failedPluginRefreshResult(record.PluginInstanceID))
 			continue
 		}
@@ -5423,6 +5451,9 @@ func (h *Host) ListDiagnosticEvents(ctx context.Context, req ListDiagnosticEvent
 	}
 	filtered := make([]DiagnosticEvent, 0, len(events))
 	for _, event := range events {
+		if err := observability.ValidateDiagnosticEvent(event); err != nil {
+			return nil, err
+		}
 		if event.OwnerSessionHash != session.OwnerSessionHash ||
 			event.OwnerUserHash != session.OwnerUserHash ||
 			event.OwnerEnvHash != session.OwnerEnvHash ||
@@ -5449,7 +5480,7 @@ func (h *Host) ListDiagnosticEvents(ctx context.Context, req ListDiagnosticEvent
 			ActiveFingerprint: event.ActiveFingerprint,
 			RequestID:         event.RequestID,
 			OccurredAt:        event.OccurredAt,
-			Details:           cloneAnyMap(event.Details),
+			Details:           event.Details.PublicMap(),
 		})
 	}
 	sort.Slice(filtered, func(i, j int) bool {
@@ -5573,12 +5604,16 @@ func (h *Host) StopRuntime(ctx context.Context) (retErr error) {
 	auditDetails = map[string]any{"revoked_surface_count": revokedSurfaces}
 	if stopErr != nil {
 		h.diagnostic(ctx, observability.DiagnosticEvent{
-			Type:     "plugin.runtime.stop_failed",
-			Severity: "warning",
-			Message:  "plugin runtime stop failed",
-			InternalDetails: map[string]any{
-				"failure": observability.FailureFromError(observability.FailureAdapter, "runtime.stop", stopErr),
-			},
+			Type:            "plugin.runtime.stop_failed",
+			Severity:        "warning",
+			Message:         "plugin runtime stop failed",
+			MutationOutcome: mutation.OutcomeUnknown,
+			Failure: observability.FailureFromError(
+				observability.FailureAdapter,
+				observability.FailureComponentRuntime,
+				"runtime.stop",
+				stopErr,
+			),
 		})
 	}
 	if stopErr != nil {
@@ -5797,12 +5832,16 @@ func (h *Host) armDetachedOperationCancelAckTimeout(record operation.Record) {
 		if err == nil {
 			if auditErr := h.recordSecurityEvent(ctx, AuditEvent{Type: "plugin.operation.finished", PluginID: finished.PluginID, PluginInstanceID: finished.PluginInstanceID, Details: map[string]any{"operation_id": finished.OperationID, "status": finished.Status}}); auditErr != nil {
 				h.diagnostic(ctx, observability.DiagnosticEvent{
-					Type:     "plugin.security_event.persistence_failed",
-					Severity: observability.DiagnosticSeverityWarning,
-					Message:  "security event persistence failed",
-					InternalDetails: map[string]any{
-						"failure": observability.FailureFromError(observability.FailureAdapter, "security_event.persist", auditErr),
-					},
+					Type:            "plugin.security_event.persistence_failed",
+					Severity:        observability.DiagnosticSeverityWarning,
+					Message:         "security event persistence failed",
+					MutationOutcome: mutation.ForError(auditErr),
+					Failure: observability.FailureFromError(
+						observability.FailureAdapter,
+						observability.FailureComponentSecurity,
+						"security_event.persist",
+						auditErr,
+					),
 				})
 			}
 		}
@@ -6906,12 +6945,16 @@ func (h *Host) reportSecretAdapterFailure(ctx context.Context, record registry.P
 		PluginID:          record.PluginID,
 		PluginInstanceID:  record.PluginInstanceID,
 		ActiveFingerprint: record.ActiveFingerprint,
-		Details: map[string]any{
-			"operation": operation,
+		MutationOutcome:   mutation.ForError(err),
+		Details: observability.DiagnosticDetails{
+			Operation: operation,
 		},
-		InternalDetails: map[string]any{
-			"failure": observability.FailureFromError(observability.FailureAdapter, operation, err),
-		},
+		Failure: observability.FailureFromError(
+			observability.FailureAdapter,
+			observability.FailureComponentSecrets,
+			observability.FailureOperation("secrets."+operation),
+			err,
+		),
 	})
 }
 
@@ -7554,14 +7597,11 @@ func (h *Host) invokeWorker(ctx context.Context, record registry.PluginRecord, m
 	var leaseAuditDetails map[string]any
 	if leaseErr == nil {
 		leaseAuditDetails = map[string]any{
-			"lease_id":                 lease.LeaseID,
-			"token_id":                 lease.TokenID,
 			"method":                   lease.Method,
 			"effect":                   lease.Effect,
 			"execution":                lease.Execution,
 			"runtime_instance_id":      lease.RuntimeInstanceID,
 			"runtime_generation_id":    lease.RuntimeGenerationID,
-			"ipc_channel_id":           lease.IPCChannelID,
 			"policy_revision":          lease.PolicyRevision,
 			"management_revision":      lease.ManagementRevision,
 			"revoke_epoch":             lease.RevokeEpoch,
@@ -8275,12 +8315,16 @@ func (h *Host) revokePluginRuntimeCapabilities(ctx context.Context, record regis
 				PluginID:          record.PluginID,
 				PluginInstanceID:  record.PluginInstanceID,
 				ActiveFingerprint: record.ActiveFingerprint,
-				Details: map[string]any{
-					"revoke_epoch": record.RevokeEpoch,
+				MutationOutcome:   mutation.ForError(err),
+				Details: observability.DiagnosticDetails{
+					RevokeEpoch: record.RevokeEpoch,
 				},
-				InternalDetails: map[string]any{
-					"failure": observability.FailureFromError(observability.FailureAdapter, "runtime.revoke", err),
-				},
+				Failure: observability.FailureFromError(
+					observability.FailureAdapter,
+					observability.FailureComponentRuntime,
+					"runtime.revoke",
+					err,
+				),
 			})
 		} else {
 			runtimeRevokeResult = result
@@ -8322,6 +8366,9 @@ func (h *Host) appendDiagnostic(ctx context.Context, event observability.Diagnos
 	if h.adapters.Diagnostics == nil {
 		return nil
 	}
+	if event.OccurredAt.IsZero() {
+		event.OccurredAt = time.Now().UTC()
+	}
 	if session, ok := sessionctx.FromContext(ctx); ok {
 		event.OwnerSessionHash = session.OwnerSessionHash
 		event.OwnerUserHash = session.OwnerUserHash
@@ -8336,16 +8383,20 @@ func (h *Host) ReportHTTPAdapterFailure(ctx context.Context, operation string, c
 		return
 	}
 	h.diagnostic(ctx, observability.DiagnosticEvent{
-		Type:     "plugin.http.operation_failed",
-		Severity: "warning",
-		Message:  "plugin HTTP operation failed",
-		Details: map[string]any{
-			"operation": strings.TrimSpace(operation),
-			"code":      string(code),
+		Type:            "plugin.http.operation_failed",
+		Severity:        "warning",
+		Message:         "plugin HTTP operation failed",
+		MutationOutcome: mutation.ForError(err),
+		Details: observability.DiagnosticDetails{
+			Operation: strings.TrimSpace(operation),
+			Code:      string(code),
 		},
-		InternalDetails: map[string]any{
-			"failure": observability.FailureFromError(observability.FailureAction, operation, err),
-		},
+		Failure: observability.FailureFromError(
+			observability.FailureAction,
+			observability.FailureComponentHTTP,
+			observability.FailureOperation(operation),
+			err,
+		),
 	})
 }
 
@@ -8576,24 +8627,25 @@ func (h *Host) deleteSecretBindingsIfNeeded(ctx context.Context, record registry
 	return nil
 }
 
-func (h *Host) reportLifecycleDiagnostic(ctx context.Context, record registry.PluginRecord, eventType string, err error, details map[string]any) {
+func (h *Host) reportLifecycleDiagnostic(ctx context.Context, record registry.PluginRecord, eventType, message string, err error, details observability.DiagnosticDetails) {
 	if err == nil {
 		return
-	}
-	if details == nil {
-		details = map[string]any{}
 	}
 	h.diagnostic(ctx, observability.DiagnosticEvent{
 		Type:              eventType,
 		Severity:          "warning",
-		Message:           "plugin lifecycle operation failed",
+		Message:           message,
 		PluginID:          record.PluginID,
 		PluginInstanceID:  record.PluginInstanceID,
 		ActiveFingerprint: record.ActiveFingerprint,
+		MutationOutcome:   mutation.ForError(err),
 		Details:           details,
-		InternalDetails: map[string]any{
-			"failure": observability.FailureFromError(observability.FailureAction, eventType, err),
-		},
+		Failure: observability.FailureFromError(
+			observability.FailureAction,
+			observability.FailureComponentLifecycle,
+			observability.FailureOperation(eventType),
+			err,
+		),
 	})
 }
 
@@ -8625,10 +8677,10 @@ func (h *Host) reportMethodRejection(ctx context.Context, record registry.Plugin
 			PluginInstanceID:  record.PluginInstanceID,
 			SurfaceInstanceID: surfaceInstanceID,
 			ActiveFingerprint: record.ActiveFingerprint,
-			Details: map[string]any{
-				"method":              method,
-				"reason":              reason,
-				"surface_instance_id": surfaceInstanceID,
+			Details: observability.DiagnosticDetails{
+				Method:            method,
+				Reason:            reason,
+				SurfaceInstanceID: surfaceInstanceID,
 			},
 		}); diagnosticErr != nil {
 			persistenceErr = errors.Join(persistenceErr, fmt.Errorf("%w: diagnostic append failed", ErrSecurityEventPersistence))

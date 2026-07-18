@@ -992,9 +992,9 @@ func (h *Host) pruneTerminalExecutionRecords(ctx context.Context, now time.Time)
 			Type:     "plugin.execution.retention_pruned",
 			Severity: "info",
 			Message:  "terminal operation and stream retention was pruned",
-			Details: map[string]any{
-				"operations_deleted": operationResult.Deleted,
-				"streams_deleted":    streamResult.Deleted,
+			Details: observability.DiagnosticDetails{
+				OperationsDeleted: int64(operationResult.Deleted),
+				StreamsDeleted:    int64(streamResult.Deleted),
 			},
 		})
 	}
@@ -1012,9 +1012,12 @@ func (h *Host) maintainTerminalExecutionRecords(_ context.Context, now time.Time
 				Type:     "plugin.execution.retention_prune_failed",
 				Severity: observability.DiagnosticSeverityWarning,
 				Message:  "terminal execution retention pruning failed",
-				InternalDetails: map[string]any{
-					"failure": observability.FailureFromError(observability.FailureAdapter, "execution.retention_prune", err),
-				},
+				Failure: observability.FailureFromError(
+					observability.FailureAdapter,
+					observability.FailureComponentExecution,
+					"execution.retention_prune",
+					err,
+				),
 			})
 		}
 	})
@@ -1300,16 +1303,16 @@ func (h *Host) reportExecutionFailure(ctx context.Context, binding capability.Ex
 	if h == nil || !code.Valid() || cause == nil {
 		return
 	}
-	details := map[string]any{
-		"invocation_id": binding.InvocationID,
-		"method":        binding.Method,
-		"failure_code":  code,
+	details := observability.DiagnosticDetails{
+		InvocationID: binding.InvocationID,
+		Method:       binding.Method,
+		FailureCode:  string(code),
 	}
 	if binding.OperationID != "" {
-		details["operation_id"] = binding.OperationID
+		details.OperationID = binding.OperationID
 	}
 	if binding.StreamID != "" {
-		details["stream_id"] = binding.StreamID
+		details.StreamID = binding.StreamID
 	}
 	h.diagnostic(ctx, observability.DiagnosticEvent{
 		Type:                 "plugin.execution.failed",
@@ -1323,10 +1326,15 @@ func (h *Host) reportExecutionFailure(ctx context.Context, binding capability.Ex
 		OwnerUserHash:        binding.OwnerUserHash,
 		OwnerEnvHash:         binding.OwnerEnvHash,
 		SessionChannelIDHash: binding.SessionChannelIDHash,
+		CorrelationID:        binding.AuditCorrelationID,
+		MutationOutcome:      mutation.ForError(cause),
 		Details:              details,
-		InternalDetails: map[string]any{
-			"failure": observability.FailureFromError(observability.FailureAction, "execution.fail", cause),
-		},
+		Failure: observability.FailureFromError(
+			observability.FailureAction,
+			observability.FailureComponentExecution,
+			"execution.fail",
+			cause,
+		),
 	})
 }
 
@@ -1790,9 +1798,13 @@ func (l *executionLease) armTimeout(host *Host) {
 					OwnerUserHash:        l.binding.OwnerUserHash,
 					OwnerEnvHash:         l.binding.OwnerEnvHash,
 					SessionChannelIDHash: l.binding.SessionChannelIDHash,
-					InternalDetails: map[string]any{
-						"failure": observability.FailureFromError(observability.FailureAdapter, "execution.duration_terminal", err),
-					},
+					MutationOutcome:      mutation.ForError(err),
+					Failure: observability.FailureFromError(
+						observability.FailureAdapter,
+						observability.FailureComponentExecution,
+						"execution.duration_terminal",
+						err,
+					),
 				})
 			}
 			l.finish()
