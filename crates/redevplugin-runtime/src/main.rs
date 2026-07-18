@@ -44,7 +44,7 @@ fn run() -> Result<(), String> {
     if line.is_empty() {
         return Err("hello frame is empty".to_string());
     }
-    let hello = redevplugin_ipc::parse_hello_frame(&line)?;
+    let hello = redevplugin_ipc::parse_hello_frame(&line).map_err(ipc_contract_error)?;
     let request_id = hello.request_id;
     let runtime_generation_id = hello.runtime_generation_id;
     let channel_nonce = hello.channel_nonce;
@@ -61,7 +61,8 @@ fn run() -> Result<(), String> {
         &actual_target,
         redevplugin_ipc::WASM_ABI_VERSION,
         limits,
-    );
+    )
+    .map_err(ipc_contract_error)?;
     let (writer, writer_thread) = start_ipc_writer(limits)?;
     send_frame(&writer, ack)?;
     let shared = Arc::new(RuntimeSharedState::default());
@@ -95,7 +96,9 @@ fn run() -> Result<(), String> {
         pending_artifacts: PendingArtifactRoutes::new(limits.compile_flight_route_capacity()),
         hostcall_routes: OutstandingHostcallRoutes::new(
             limits.hostcall_active_route_capacity(),
-            limits.hostcall_canceled_route_capacity()?,
+            limits
+                .hostcall_canceled_route_capacity()
+                .map_err(ipc_contract_error)?,
         ),
     });
     let workers = start_invocation_workers(
@@ -109,7 +112,8 @@ fn run() -> Result<(), String> {
         if line.is_empty() {
             break;
         }
-        let input = redevplugin_ipc::decode_runtime_input_frame(&line)?;
+        let input =
+            redevplugin_ipc::decode_runtime_input_frame(&line).map_err(ipc_contract_error)?;
         dispatch_runtime_input(
             input,
             &runtime_generation_id,
@@ -152,7 +156,7 @@ fn compiled_runtime_target() -> Result<redevplugin_ipc::RuntimeTarget, String> {
         "aarch64" => "arm64",
         other => return Err(format!("unsupported compiled runtime arch {other}")),
     };
-    redevplugin_ipc::RuntimeTarget::new(os, arch)
+    redevplugin_ipc::RuntimeTarget::new(os, arch).map_err(ipc_contract_error)
 }
 
 fn dispatch_runtime_input(
@@ -726,7 +730,11 @@ fn send_frame(writer: &FrameSender, frame: String) -> Result<(), String> {
 }
 
 fn ipc_frame(frame: redevplugin_ipc::IpcResult<String>) -> Result<String, String> {
-    frame.map_err(|err| format!("build runtime IPC response frame: {err}"))
+    frame.map_err(ipc_contract_error)
+}
+
+fn ipc_contract_error(error: redevplugin_ipc::IpcError) -> String {
+    format!("runtime IPC contract error: {error}")
 }
 
 fn response_error_frame(
@@ -749,13 +757,14 @@ fn runtime_error_frame(
     request_id: &str,
     runtime_generation_id: &str,
     code: &str,
-    message: &str,
+    message: impl std::fmt::Display,
 ) -> Result<String, String> {
+    let message = message.to_string();
     response_error_frame(
         frame_type,
         request_id,
         runtime_generation_id,
-        redevplugin_ipc::ResponseError::runtime(code, message),
+        redevplugin_ipc::ResponseError::runtime(code, &message),
     )
 }
 
@@ -781,7 +790,7 @@ fn invocation_error_frame(
     request_id: &str,
     runtime_generation_id: &str,
     code: &str,
-    message: &str,
+    message: impl std::fmt::Display,
 ) -> Result<String, String> {
     runtime_error_frame(
         redevplugin_ipc::FRAME_TYPE_INVOKE_WORKER_RESULT,
@@ -824,7 +833,7 @@ fn start_invocation_workers(
                                     &request_id,
                                     &execution.runtime_generation_id,
                                     redevplugin_ipc::ERR_WASM_WORKER_FAILED,
-                                    &format!("runtime response frame failed: {err}"),
+                                    format!("runtime response frame failed: {err}"),
                                 )
                             });
                         if let Ok(response) = response {
@@ -850,7 +859,8 @@ fn wait_for_hostcall_response(
             redevplugin_ipc::ERR_RUNTIME_INVOCATION_CANCELED
         ));
     }
-    let frame = redevplugin_ipc::bind_parent_request_id(&frame, &job.request_id)?;
+    let frame = redevplugin_ipc::bind_parent_request_id(&frame, &job.request_id)
+        .map_err(ipc_contract_error)?;
     execution.hostcall_routes.register(
         request_id,
         &job.request_id,
@@ -922,7 +932,9 @@ fn load_worker_artifact(
                 &parent_request_id,
                 &execution.runtime_generation_id,
             );
-            return Err(module_cache::ModuleCacheError::Load(err));
+            return Err(module_cache::ModuleCacheError::Load(ipc_contract_error(
+                err,
+            )));
         }
     };
     if let Err(err) = send_frame(&execution.writer, frame) {
@@ -945,11 +957,11 @@ fn load_worker_artifact(
         &execution.runtime_generation_id,
         &identity,
     )
-    .map_err(module_cache::ModuleCacheError::Load)?;
+    .map_err(|err| module_cache::ModuleCacheError::Load(ipc_contract_error(err)))?;
     let content =
         decode_base64(&content_base64).map_err(module_cache::ModuleCacheError::Invalid)?;
     redevplugin_ipc::validate_worker_artifact_bytes(&identity, &content)
-        .map_err(module_cache::ModuleCacheError::Invalid)?;
+        .map_err(|err| module_cache::ModuleCacheError::Invalid(ipc_contract_error(err)))?;
     Ok(content)
 }
 
@@ -968,7 +980,7 @@ fn handle_scheduled_worker_invocation(
             request_id,
             runtime_generation_id,
             err.code(),
-            &err.to_string(),
+            err.to_string(),
         );
     }
     let identity = match invocation.identity() {
@@ -995,7 +1007,7 @@ fn handle_scheduled_worker_invocation(
             request_id,
             runtime_generation_id,
             err.code(),
-            &err.to_string(),
+            err.to_string(),
         );
     }
     if let Err(err) =
@@ -1048,7 +1060,7 @@ fn handle_scheduled_worker_invocation(
             request_id,
             runtime_generation_id,
             err.code(),
-            &err.to_string(),
+            err.to_string(),
         );
     }
     let artifact_execution = Arc::clone(execution);
@@ -1144,7 +1156,7 @@ fn handle_scheduled_worker_invocation(
                 request_id,
                 runtime_generation_id,
                 code,
-                &err.to_string(),
+                err.to_string(),
             );
         }
     };
@@ -1304,7 +1316,9 @@ fn perform_multiplexed_hostcall(
                 &execution.runtime_generation_id,
                 &request_json,
             )?;
-            invocation.validate_storage_broker_access(&req.store_id, &req.operation)?;
+            invocation
+                .validate_storage_broker_access(&req.store_id, &req.operation)
+                .map_err(ipc_contract_error)?;
             let request_id = format!("{}:storage_file", job.request_id);
             let frame = redevplugin_ipc::storage_file_frame(
                 &request_id,
@@ -1317,8 +1331,10 @@ fn perform_multiplexed_hostcall(
                 &request_id,
                 &execution.runtime_generation_id,
                 &req.operation,
-            )?;
+            )
+            .map_err(ipc_contract_error)?;
             redevplugin_ipc::storage_file_payload_json(&response, &req.operation)
+                .map_err(ipc_contract_error)
         }
         WorkerHostcallRequest::StorageKV(request_json) => {
             let req = storage_kv_request_parsed(
@@ -1326,7 +1342,9 @@ fn perform_multiplexed_hostcall(
                 &execution.runtime_generation_id,
                 &request_json,
             )?;
-            invocation.validate_storage_broker_access(&req.store_id, &req.operation)?;
+            invocation
+                .validate_storage_broker_access(&req.store_id, &req.operation)
+                .map_err(ipc_contract_error)?;
             let request_id = format!("{}:storage_kv", job.request_id);
             let frame = redevplugin_ipc::storage_kv_frame(
                 &request_id,
@@ -1339,8 +1357,10 @@ fn perform_multiplexed_hostcall(
                 &request_id,
                 &execution.runtime_generation_id,
                 &req.operation,
-            )?;
+            )
+            .map_err(ipc_contract_error)?;
             redevplugin_ipc::storage_kv_payload_json(&response, &req.operation)
+                .map_err(ipc_contract_error)
         }
         WorkerHostcallRequest::StorageSQLite(request_json) => {
             let req = storage_sqlite_request_parsed(
@@ -1348,7 +1368,9 @@ fn perform_multiplexed_hostcall(
                 &execution.runtime_generation_id,
                 &request_json,
             )?;
-            invocation.validate_storage_broker_access(&req.store_id, &req.operation)?;
+            invocation
+                .validate_storage_broker_access(&req.store_id, &req.operation)
+                .map_err(ipc_contract_error)?;
             let request_id = format!("{}:storage_sqlite", job.request_id);
             let frame = redevplugin_ipc::storage_sqlite_frame(
                 &request_id,
@@ -1361,8 +1383,10 @@ fn perform_multiplexed_hostcall(
                 &request_id,
                 &execution.runtime_generation_id,
                 &req.operation,
-            )?;
+            )
+            .map_err(ipc_contract_error)?;
             redevplugin_ipc::storage_sqlite_payload_json(&response, &req.operation)
+                .map_err(ipc_contract_error)
         }
         WorkerHostcallRequest::NetworkExecute(request_json) => {
             let req = network_execute_request_parsed(
@@ -1370,18 +1394,21 @@ fn perform_multiplexed_hostcall(
                 &execution.runtime_generation_id,
                 &request_json,
             )?;
-            invocation.validate_network_broker_access(
-                &req.connector_id,
-                &req.transport,
-                &req.operation,
-                &req.method,
-            )?;
+            invocation
+                .validate_network_broker_access(
+                    &req.connector_id,
+                    &req.transport,
+                    &req.operation,
+                    &req.method,
+                )
+                .map_err(ipc_contract_error)?;
             let request_id = format!("{}:network_execute", job.request_id);
             let frame = redevplugin_ipc::network_execute_frame(
                 &request_id,
                 &execution.runtime_generation_id,
                 &req,
-            );
+            )
+            .map_err(ipc_contract_error)?;
             let response = wait_for_hostcall_response(job, execution, &request_id, frame)?;
             redevplugin_ipc::validate_network_execute_response(
                 &response,
@@ -1389,8 +1416,9 @@ fn perform_multiplexed_hostcall(
                 &execution.runtime_generation_id,
                 &req.connector_id,
                 &req.transport,
-            )?;
-            redevplugin_ipc::network_execute_payload_json(&response)
+            )
+            .map_err(ipc_contract_error)?;
+            redevplugin_ipc::network_execute_payload_json(&response).map_err(ipc_contract_error)
         }
     }
 }
@@ -1514,7 +1542,7 @@ fn handle_heartbeat(
                 request_id,
                 runtime_generation_id,
                 redevplugin_ipc::ERR_WORKER_INVOCATION_INVALID,
-                err.as_str(),
+                err,
             );
         }
     };
@@ -1939,7 +1967,7 @@ fn handle_revoke_epoch(
                 request_id,
                 runtime_generation_id,
                 redevplugin_ipc::ERR_WORKER_INVOCATION_INVALID,
-                err.as_str(),
+                err,
             );
         }
     };
@@ -2711,9 +2739,11 @@ fn storage_file_request_parsed(
     if request.operation != "list" {
         require_non_empty(&request.path, "path")?;
     }
-    let context = invocation.context()?;
+    let context = invocation.context().map_err(ipc_contract_error)?;
     let store_id = request.store_id;
-    let handle_grant_token = invocation.storage_handle_grant(&store_id)?;
+    let handle_grant_token = invocation
+        .storage_handle_grant(&store_id)
+        .map_err(ipc_contract_error)?;
     Ok(redevplugin_ipc::StorageFileRequest {
         handle_grant_token,
         plugin_instance_id: context.plugin_instance_id,
@@ -2748,9 +2778,11 @@ fn storage_kv_request_parsed(
     if request.operation != "list" {
         require_non_empty(&request.key, "key")?;
     }
-    let context = invocation.context()?;
+    let context = invocation.context().map_err(ipc_contract_error)?;
     let store_id = request.store_id;
-    let handle_grant_token = invocation.storage_handle_grant(&store_id)?;
+    let handle_grant_token = invocation
+        .storage_handle_grant(&store_id)
+        .map_err(ipc_contract_error)?;
     Ok(redevplugin_ipc::StorageKVRequest {
         handle_grant_token,
         plugin_instance_id: context.plugin_instance_id,
@@ -2783,9 +2815,11 @@ fn storage_sqlite_request_parsed(
     require_non_empty(&request.operation, "operation")?;
     require_non_empty(&request.store_id, "store_id")?;
     require_non_empty(&request.sql, "sql")?;
-    let context = invocation.context()?;
+    let context = invocation.context().map_err(ipc_contract_error)?;
     let store_id = request.store_id;
-    let handle_grant_token = invocation.storage_handle_grant(&store_id)?;
+    let handle_grant_token = invocation
+        .storage_handle_grant(&store_id)
+        .map_err(ipc_contract_error)?;
     Ok(redevplugin_ipc::StorageSQLiteRequest {
         handle_grant_token,
         plugin_instance_id: context.plugin_instance_id,
@@ -2844,8 +2878,10 @@ fn network_execute_request_parsed(
     if request.stream_id.is_some() {
         return Err("network request must not set the host-owned stream_id".to_string());
     }
-    let context = invocation.context()?;
-    let scope = invocation.network_broker_scope(&request.connector_id, &request.transport)?;
+    let context = invocation.context().map_err(ipc_contract_error)?;
+    let scope = invocation
+        .network_broker_scope(&request.connector_id, &request.transport)
+        .map_err(ipc_contract_error)?;
     let is_user_scope = scope == "user";
     let resource_scope = redevplugin_ipc::NetworkResourceScope {
         kind: scope,
@@ -3854,7 +3890,12 @@ mod tests {
         let err = invocation
             .validate_storage_broker_access(&request.store_id, &request.operation)
             .expect_err("write access must be denied");
-        assert!(err.contains("not allowed"), "{err}");
+        assert_eq!(
+            err,
+            redevplugin_ipc::IpcError::ProtocolViolation {
+                message: "worker method is not allowed to perform the storage operation"
+            }
+        );
     }
 
     #[test]
@@ -3876,7 +3917,8 @@ mod tests {
                 &request.method,
             )
             .expect("network access is authorized");
-        let frame = redevplugin_ipc::network_execute_frame("r1:network_execute", "g1", &request);
+        let frame = redevplugin_ipc::network_execute_frame("r1:network_execute", "g1", &request)
+            .expect("network execute frame");
         assert!(
             frame.contains(r#""frame_type":"network_execute""#),
             "{frame}"
@@ -3903,7 +3945,12 @@ mod tests {
                 &request.method,
             )
             .expect_err("DELETE access must be denied");
-        assert!(err.contains("not allowed"), "{err}");
+        assert_eq!(
+            err,
+            redevplugin_ipc::IpcError::ProtocolViolation {
+                message: "worker method is not allowed to perform the network operation"
+            }
+        );
     }
 
     #[test]

@@ -135,7 +135,10 @@ impl InvocationJob {
     pub fn new(invocation: ParsedWorkerInvocation) -> Result<Self, String> {
         let (signal_sender, signals) = mpsc::channel();
         let request_id = invocation.request_id().to_string();
-        let plugin_instance_id = invocation.plugin_instance_id()?.to_string();
+        let plugin_instance_id = invocation
+            .plugin_instance_id()
+            .map_err(|err| format!("runtime IPC contract error: {err}"))?
+            .to_string();
         Ok(Self {
             request_id,
             plugin_instance_id,
