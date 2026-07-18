@@ -5,6 +5,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -38,7 +39,7 @@ func TestNewBusinessErrorRejectsNonCanonicalAdapterDetails(t *testing.T) {
 	}
 }
 
-func TestOwnExecutionBindingRejectsNonCanonicalTargetFields(t *testing.T) {
+func TestCloneExecutionBindingRejectsNonCanonicalTargetFields(t *testing.T) {
 	cycle := map[string]any{}
 	cycle["self"] = cycle
 	for _, value := range []any{
@@ -49,15 +50,93 @@ func TestOwnExecutionBindingRejectsNonCanonicalTargetFields(t *testing.T) {
 		cycle,
 	} {
 		binding := testExecutionBinding(map[string]any{"invalid": value})
-		if _, err := OwnExecutionBinding(binding); err == nil {
-			t.Fatalf("OwnExecutionBinding() accepted non-canonical target value %T", value)
+		if _, err := CloneExecutionBinding(binding); err == nil {
+			t.Fatalf("CloneExecutionBinding() accepted non-canonical target value %T", value)
 		}
 	}
 }
 
-func TestOwnExecutionBindingIsolatesConcurrentAdapterMutation(t *testing.T) {
+func TestCloneExecutionBindingDoesNotInvokeCustomJSONMarshalers(t *testing.T) {
+	called := false
+	binding := testExecutionBinding(map[string]any{"probe": responseTestMarshalProbe{called: &called}})
+	if _, err := CloneExecutionBinding(binding); !errors.Is(err, ErrInvalidExecutionBinding) {
+		t.Fatalf("CloneExecutionBinding() error = %v, want %v", err, ErrInvalidExecutionBinding)
+	}
+	if called {
+		t.Fatal("CloneExecutionBinding() invoked adapter-owned MarshalJSON")
+	}
+}
+
+func TestCloneExecutionBindingRejectsInvalidScalarEvidence(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*ExecutionBinding)
+	}{
+		{name: "unsafe policy revision", mutate: func(binding *ExecutionBinding) { binding.Revision.PolicyRevision = 1 << 53 }},
+		{name: "unsafe management revision", mutate: func(binding *ExecutionBinding) { binding.Revision.ManagementRevision = 1 << 53 }},
+		{name: "unsafe revoke epoch", mutate: func(binding *ExecutionBinding) { binding.Revision.RevokeEpoch = 1 << 53 }},
+		{name: "negative concurrent quota", mutate: func(binding *ExecutionBinding) { binding.Quota.MaxConcurrent = -1 }},
+		{name: "unsafe duration quota", mutate: func(binding *ExecutionBinding) { binding.Quota.MaxDurationMS = 1 << 53 }},
+		{name: "unsafe stream quota", mutate: func(binding *ExecutionBinding) { binding.Quota.MaxStreamBytes = 1 << 53 }},
+		{name: "noncanonical expiry location", mutate: func(binding *ExecutionBinding) {
+			binding.Quota.ExpiresAt = time.Date(2026, 7, 18, 12, 0, 0, 0, time.FixedZone("+01", 60*60))
+		}},
+		{name: "unencodable expiry", mutate: func(binding *ExecutionBinding) {
+			binding.Quota.ExpiresAt = time.Date(10000, 1, 1, 0, 0, 0, 0, time.UTC)
+		}},
+		{name: "unknown route", mutate: func(binding *ExecutionBinding) { binding.RouteKind = "unknown" }},
+		{name: "unknown effect", mutate: func(binding *ExecutionBinding) { binding.Effect = "unknown" }},
+		{name: "unknown execution", mutate: func(binding *ExecutionBinding) { binding.Execution = "unknown" }},
+		{name: "invalid utf8 scalar", mutate: func(binding *ExecutionBinding) { binding.PluginID = string([]byte{0xff}) }},
+		{name: "invalid utf8 permission", mutate: func(binding *ExecutionBinding) {
+			binding.Permissions.Required = []string{string([]byte{0xff})}
+		}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			binding := testExecutionBinding(map[string]any{})
+			test.mutate(&binding)
+			if _, err := CloneExecutionBinding(binding); !errors.Is(err, ErrInvalidExecutionBinding) {
+				t.Fatalf("CloneExecutionBinding() error = %v, want %v", err, ErrInvalidExecutionBinding)
+			}
+		})
+	}
+}
+
+func TestValidateExecutionBindingAcceptsSafeBoundariesAndPartialSnapshots(t *testing.T) {
+	binding := testExecutionBinding(nil)
+	binding.Revision = RevisionEvidence{
+		PolicyRevision:     1<<53 - 1,
+		ManagementRevision: 1<<53 - 1,
+		RevokeEpoch:        1<<53 - 1,
+	}
+	binding.Quota = QuotaGrant{
+		MaxConcurrent:  1<<53 - 1,
+		MaxDurationMS:  1<<53 - 1,
+		MaxStreamBytes: 1<<53 - 1,
+		ExpiresAt:      time.Date(2026, 7, 18, 12, 0, 0, 0, time.UTC),
+	}
+	if err := ValidateExecutionBinding(binding); err != nil {
+		t.Fatalf("ValidateExecutionBinding() rejected safe boundaries: %v", err)
+	}
+	if _, err := CloneExecutionBinding(binding); err != nil {
+		t.Fatalf("CloneExecutionBinding() rejected partial snapshot: %v", err)
+	}
+}
+
+func TestCloneExecutionBindingRejectsInvalidContractPin(t *testing.T) {
+	pin := testVerifiedContract(t, "1.0.0", "1.0.0").Pin
+	pin.ArtifactSHA256 = "invalid"
+	binding := testExecutionBinding(map[string]any{})
+	binding.Contract = &pin
+	if _, err := CloneExecutionBinding(binding); !errors.Is(err, ErrInvalidExecutionBinding) {
+		t.Fatalf("CloneExecutionBinding() error = %v, want %v", err, ErrInvalidExecutionBinding)
+	}
+}
+
+func TestCloneExecutionBindingIsolatesConcurrentAdapterMutation(t *testing.T) {
 	input := map[string]any{"nested": []any{map[string]any{"value": "original"}}}
-	owned, err := OwnExecutionBinding(testExecutionBinding(input))
+	owned, err := CloneExecutionBinding(testExecutionBinding(input))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -76,13 +155,13 @@ func TestOwnExecutionBindingIsolatesConcurrentAdapterMutation(t *testing.T) {
 	<-done
 }
 
-func TestOwnExecutionBindingReducesSnapshotAllocations(t *testing.T) {
+func TestCloneExecutionBindingReducesSnapshotAllocations(t *testing.T) {
 	binding := largeExecutionBindingFixture()
 	var owned ExecutionBinding
 	var roundTripped ExecutionBinding
 	ownedAllocs := testing.AllocsPerRun(50, func() {
 		var err error
-		owned, err = OwnExecutionBinding(binding)
+		owned, err = CloneExecutionBinding(binding)
 		if err != nil {
 			panic(err)
 		}
@@ -109,7 +188,7 @@ func BenchmarkExecutionBindingSnapshot(b *testing.B) {
 	b.Run("owned-canonical-clone", func(b *testing.B) {
 		b.ReportAllocs()
 		for range b.N {
-			if _, err := OwnExecutionBinding(binding); err != nil {
+			if _, err := CloneExecutionBinding(binding); err != nil {
 				b.Fatal(err)
 			}
 		}

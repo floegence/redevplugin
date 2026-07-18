@@ -96,6 +96,30 @@ func Normalize(value any) (normalized any, err error) {
 	return normalized, nil
 }
 
+// DecodeClosed decodes exactly one JSON value, preserves numbers as json.Number,
+// and rejects unknown struct fields and trailing values.
+func DecodeClosed(raw []byte, target any) error {
+	if len(raw) == 0 || len(raw) > maxEncodedBytes {
+		return fmt.Errorf("%w: encoded value must contain 1 to %d bytes", errInvalidValue, maxEncodedBytes)
+	}
+	if !utf8.Valid(raw) {
+		return fmt.Errorf("%w: encoded value is not valid UTF-8", errInvalidValue)
+	}
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(target); err != nil {
+		return fmt.Errorf("%w: %v", errInvalidValue, err)
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		if err != nil {
+			return fmt.Errorf("%w: %v", errInvalidValue, err)
+		}
+		return fmt.Errorf("%w: trailing JSON value", errInvalidValue)
+	}
+	return nil
+}
+
 // ValidateCanonical enforces limits on the closed Go representation of a JSON
 // value without invoking caller-defined encoding behavior.
 func ValidateCanonical(value any) error {

@@ -12,6 +12,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/floegence/redevplugin/internal/jsonvalue"
+	"github.com/floegence/redevplugin/pkg/capability"
 	_ "modernc.org/sqlite"
 )
 
@@ -80,6 +82,10 @@ func (s *SQLiteStore) Register(ctx context.Context, req RegisterRequest) (Record
 	if err != nil {
 		return Record{}, ErrInvalidOperation
 	}
+	if embeddedID := strings.TrimSpace(binding.OperationID); embeddedID != "" && embeddedID != operationID {
+		return Record{}, ErrInvalidOperation
+	}
+	binding.OperationID = operationID
 	now := req.Now
 	if now.IsZero() {
 		now = time.Now().UTC()
@@ -607,6 +613,7 @@ func scanSQLiteOperation(scanner sqliteOperationScanner) (Record, error) {
 	); err != nil {
 		return Record{}, err
 	}
+	indexedOperationID := record.OperationID
 	indexedPluginID := record.PluginID
 	indexedPluginInstanceID := record.PluginInstanceID
 	indexedMethod := record.Method
@@ -618,10 +625,16 @@ func scanSQLiteOperation(scanner sqliteOperationScanner) (Record, error) {
 	if strings.TrimSpace(bindingJSON) == "" || strings.TrimSpace(bindingJSON) == "{}" {
 		return Record{}, ErrInvalidOperation
 	}
-	if err := json.Unmarshal([]byte(bindingJSON), &record.ExecutionBinding); err != nil {
-		return Record{}, err
+	var decodedBinding capability.ExecutionBinding
+	if err := jsonvalue.DecodeClosed([]byte(bindingJSON), &decodedBinding); err != nil {
+		return Record{}, ErrInvalidOperation
 	}
-	if record.PluginID != indexedPluginID || record.PluginInstanceID != indexedPluginInstanceID ||
+	binding, err := cloneExecutionBinding(decodedBinding)
+	if err != nil {
+		return Record{}, ErrInvalidOperation
+	}
+	record.ExecutionBinding = binding
+	if record.ExecutionBinding.OperationID != indexedOperationID || record.PluginID != indexedPluginID || record.PluginInstanceID != indexedPluginInstanceID ||
 		record.Method != indexedMethod || record.Effect != indexedEffect || record.Execution != indexedExecution ||
 		record.SurfaceInstanceID != indexedSurfaceInstanceID || record.BridgeChannelID != indexedBridgeChannelID ||
 		ownerScopeForBinding(record.ExecutionBinding) != indexedOwner {

@@ -199,6 +199,10 @@ func (s *MemoryStore) Register(_ context.Context, req RegisterRequest) (Record, 
 	if err != nil {
 		return Record{}, ErrInvalidOperation
 	}
+	if embeddedID := strings.TrimSpace(binding.OperationID); embeddedID != "" && embeddedID != operationID {
+		return Record{}, ErrInvalidOperation
+	}
+	binding.OperationID = operationID
 	record := Record{
 		OperationID:        operationID,
 		ExecutionBinding:   binding,
@@ -698,11 +702,11 @@ func normalizeUninstallBehavior(behavior string) string {
 }
 
 func cloneExecutionBinding(binding capability.ExecutionBinding) (capability.ExecutionBinding, error) {
-	return capability.OwnExecutionBinding(binding)
+	return capability.CloneExecutionBinding(binding)
 }
 
 func cloneRecord(record Record) (Record, error) {
-	binding, err := capability.OwnExecutionBinding(record.ExecutionBinding)
+	binding, err := capability.CloneExecutionBinding(record.ExecutionBinding)
 	if err != nil {
 		return Record{}, err
 	}

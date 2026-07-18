@@ -87,8 +87,13 @@
 - Require capability targets, execution bindings, operation and stream records,
   direct Host parameters, and business-error details to use the closed canonical
   Go JSON value set. A shared bounded recursive clone now owns every nested map
-  and slice without JSON round trips; `NewBusinessError` returns validation
-  errors instead of retaining unsupported or aliased adapter values.
+  and slice without JSON round trips; the public copy APIs are
+  `CloneTargetDescriptor` and `CloneExecutionBinding`, each Host adapter receives
+  an independent execution snapshot, cancellation is re-derived from the active
+  lease, target resolution cannot mutate invocation arguments, execution revisions
+  and quotas are bounded to JavaScript-safe integers, SQLite reopen uses a closed
+  number-preserving decoder with exact binding IDs, and `NewBusinessError` returns
+  validation errors instead of retaining unsupported or aliased adapter values.
 - Bundle external JSON Schemas structurally into namespaced OpenAPI components;
   generated TypeScript contracts now preserve manifest, capability pin, and
   settings patch types without `$defs` leakage or `unknown` collapse.

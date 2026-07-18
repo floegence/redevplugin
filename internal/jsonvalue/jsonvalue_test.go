@@ -50,6 +50,29 @@ func TestCloneCanonicalPreservesNumberAndNullRepresentations(t *testing.T) {
 	}
 }
 
+func TestDecodeClosedPreservesNumbersAndRejectsOpenDocuments(t *testing.T) {
+	type document struct {
+		Value any `json:"value"`
+	}
+	var decoded document
+	if err := DecodeClosed([]byte(`{"value":42.5}`), &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if decoded.Value != json.Number("42.5") {
+		t.Fatalf("decoded number = %#v, want json.Number", decoded.Value)
+	}
+	for _, raw := range []string{
+		`{"value":42.5,"unexpected":true}`,
+		`{"value":42.5} {}`,
+		``,
+		string([]byte{'{', '"', 'v', 'a', 'l', 'u', 'e', '"', ':', '"', 0xff, '"', '}'}),
+	} {
+		if err := DecodeClosed([]byte(raw), &document{}); err == nil {
+			t.Fatalf("DecodeClosed() accepted %q", raw)
+		}
+	}
+}
+
 func TestCloneCanonicalRejectsValuesOutsideClosedJSONSet(t *testing.T) {
 	mapCycle := map[string]any{}
 	mapCycle["self"] = mapCycle

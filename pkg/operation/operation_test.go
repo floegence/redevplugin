@@ -499,6 +499,31 @@ func TestStoreRegisterRejectsNonCanonicalExecutionBindingJSON(t *testing.T) {
 	}
 }
 
+func TestStoreRegisterRejectsInvalidExecutionBindingScalars(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*capability.ExecutionBinding)
+	}{
+		{name: "unsafe revision", mutate: func(binding *capability.ExecutionBinding) { binding.Revision.PolicyRevision = 1 << 53 }},
+		{name: "negative quota", mutate: func(binding *capability.ExecutionBinding) { binding.Quota.MaxConcurrent = -1 }},
+		{name: "noncanonical expiry", mutate: func(binding *capability.ExecutionBinding) {
+			binding.Quota.ExpiresAt = time.Date(2026, 7, 18, 12, 0, 0, 0, time.FixedZone("+01", 60*60))
+		}},
+		{name: "unknown route", mutate: func(binding *capability.ExecutionBinding) { binding.RouteKind = "unknown" }},
+	}
+	for _, storeCase := range operationStoreCases() {
+		for _, test := range tests {
+			t.Run(storeCase.name+"/"+test.name, func(t *testing.T) {
+				binding := operationTestBinding("com.example.plugin", "plugin_invalid_scalar", "documents.archive", test.mutate)
+				_, err := storeCase.open(t).Register(context.Background(), RegisterRequest{OperationID: "op_invalid_scalar", ExecutionBinding: binding})
+				if !errors.Is(err, ErrInvalidOperation) {
+					t.Fatalf("Register() error = %v, want %v", err, ErrInvalidOperation)
+				}
+			})
+		}
+	}
+}
+
 func TestStoreRequestCancel(t *testing.T) {
 	for _, tc := range operationStoreCases() {
 		t.Run(tc.name, func(t *testing.T) {
@@ -737,6 +762,7 @@ func TestSQLiteStorePersistsRecordsAcrossOpen(t *testing.T) {
 			binding.SurfaceInstanceID = "surface_1"
 			binding.SessionChannelIDHash = "channel_hash"
 			binding.BridgeChannelID = "bridge_1"
+			binding.Target.Fields["number"] = json.Number("42.5")
 		}),
 		Now: now,
 	})
@@ -764,8 +790,147 @@ func TestSQLiteStorePersistsRecordsAcrossOpen(t *testing.T) {
 		got.CancelRequestedAt == nil ||
 		!got.CancelRequestedAt.Equal(now.Add(time.Minute)) ||
 		got.SessionChannelIDHash != "channel_hash" ||
-		!got.CreatedAt.Equal(now) {
+		!got.CreatedAt.Equal(now) ||
+		got.ExecutionBinding.OperationID != canceled.OperationID ||
+		got.Target.Fields["number"] != json.Number("42.5") {
 		t.Fatalf("persisted operation mismatch: %#v", got)
+	}
+	nullRecord := mustRegisterOperation(t, reopened, RegisterRequest{
+		OperationID: "op_null_containers",
+		ExecutionBinding: operationTestBinding("com.example.plugin", "plugin_1", "documents.null", func(binding *capability.ExecutionBinding) {
+			binding.Target.Fields = nil
+			binding.Permissions.Required = nil
+			binding.Permissions.Granted = nil
+		}),
+	})
+	if nullRecord.Target.Fields != nil || nullRecord.Permissions.Required != nil || nullRecord.Permissions.Granted != nil {
+		t.Fatalf("registered nil containers changed representation: %#v", nullRecord.ExecutionBinding)
+	}
+	if err := reopened.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err = NewSQLiteStore(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	nullRecord, err = reopened.Get(ctx, "op_null_containers")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if nullRecord.Target.Fields != nil || nullRecord.Permissions.Required != nil || nullRecord.Permissions.Granted != nil {
+		t.Fatalf("reopened nil containers changed representation: %#v", nullRecord.ExecutionBinding)
+	}
+}
+
+func TestSQLiteStoreRejectsOpenExecutionBindingDocumentsOnReopen(t *testing.T) {
+	tests := []struct {
+		name    string
+		corrupt func(t *testing.T, raw string) string
+	}{
+		{name: "unknown field", corrupt: func(t *testing.T, raw string) string {
+			var document map[string]any
+			if err := json.Unmarshal([]byte(raw), &document); err != nil {
+				t.Fatal(err)
+			}
+			document["unexpected"] = true
+			encoded, err := json.Marshal(document)
+			if err != nil {
+				t.Fatal(err)
+			}
+			return string(encoded)
+		}},
+		{name: "trailing value", corrupt: func(_ *testing.T, raw string) string { return raw + ` {}` }},
+		{name: "empty binding", corrupt: func(*testing.T, string) string { return `{}` }},
+		{name: "mismatched operation id", corrupt: func(t *testing.T, raw string) string {
+			var document map[string]any
+			if err := json.Unmarshal([]byte(raw), &document); err != nil {
+				t.Fatal(err)
+			}
+			document["operation_id"] = "op_other"
+			encoded, err := json.Marshal(document)
+			if err != nil {
+				t.Fatal(err)
+			}
+			return string(encoded)
+		}},
+		{name: "missing operation id", corrupt: func(t *testing.T, raw string) string {
+			return removeOperationBindingField(t, raw, "operation_id")
+		}},
+		{name: "missing plugin id", corrupt: func(t *testing.T, raw string) string {
+			return removeOperationBindingField(t, raw, "plugin_id")
+		}},
+		{name: "missing owner env hash", corrupt: func(t *testing.T, raw string) string {
+			return removeOperationBindingField(t, raw, "owner_env_hash")
+		}},
+		{name: "unsafe revision", corrupt: func(t *testing.T, raw string) string {
+			var document map[string]any
+			if err := json.Unmarshal([]byte(raw), &document); err != nil {
+				t.Fatal(err)
+			}
+			document["revision"].(map[string]any)["policy_revision"] = float64(1 << 53)
+			encoded, err := json.Marshal(document)
+			if err != nil {
+				t.Fatal(err)
+			}
+			return string(encoded)
+		}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			ctx := context.Background()
+			path := filepath.Join(t.TempDir(), "operations.sqlite")
+			store, err := NewSQLiteStore(ctx, path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			mustRegisterOperation(t, store, operationTestRegister("op_corrupt", "plugin_corrupt", "documents.read"))
+			var raw string
+			if err := store.db.QueryRowContext(ctx, `SELECT execution_binding_json FROM plugin_operations WHERE operation_id = ?`, "op_corrupt").Scan(&raw); err != nil {
+				_ = store.Close()
+				t.Fatal(err)
+			}
+			if _, err := store.db.ExecContext(ctx, `UPDATE plugin_operations SET execution_binding_json = ? WHERE operation_id = ?`, test.corrupt(t, raw), "op_corrupt"); err != nil {
+				_ = store.Close()
+				t.Fatal(err)
+			}
+			if err := store.Close(); err != nil {
+				t.Fatal(err)
+			}
+			reopened, err := NewSQLiteStore(ctx, path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = reopened.Close() }()
+			if _, err := reopened.Get(ctx, "op_corrupt"); !errors.Is(err, ErrInvalidOperation) {
+				t.Fatalf("Get() error = %v, want %v", err, ErrInvalidOperation)
+			}
+		})
+	}
+}
+
+func removeOperationBindingField(t *testing.T, raw, field string) string {
+	t.Helper()
+	var document map[string]any
+	if err := json.Unmarshal([]byte(raw), &document); err != nil {
+		t.Fatal(err)
+	}
+	delete(document, field)
+	encoded, err := json.Marshal(document)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(encoded)
+}
+
+func TestStoreRegisterRejectsConflictingExecutionBindingOperationID(t *testing.T) {
+	for _, storeCase := range operationStoreCases() {
+		t.Run(storeCase.name, func(t *testing.T) {
+			binding := operationTestBinding("com.example.plugin", "plugin_conflict", "documents.read", nil)
+			binding.OperationID = "op_other"
+			if _, err := storeCase.open(t).Register(context.Background(), RegisterRequest{OperationID: "op_expected", ExecutionBinding: binding}); !errors.Is(err, ErrInvalidOperation) {
+				t.Fatalf("Register() error = %v, want %v", err, ErrInvalidOperation)
+			}
+		})
 	}
 }
 

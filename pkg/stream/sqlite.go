@@ -10,6 +10,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/floegence/redevplugin/internal/jsonvalue"
+	"github.com/floegence/redevplugin/pkg/capability"
 	"github.com/floegence/redevplugin/pkg/mutation"
 	"modernc.org/sqlite"
 	sqlite3 "modernc.org/sqlite/lib"
@@ -131,6 +133,10 @@ func (s *SQLiteStore) Register(ctx context.Context, req RegisterRequest) (Record
 	if err != nil {
 		return Record{}, ErrInvalidStream
 	}
+	if embeddedID := strings.TrimSpace(binding.StreamID); embeddedID != "" && embeddedID != streamID {
+		return Record{}, ErrInvalidStream
+	}
+	binding.StreamID = streamID
 	maxBuffered := req.MaxBufferedBytes
 	if maxBuffered <= 0 {
 		maxBuffered = DefaultMaxBufferedBytes
@@ -1591,10 +1597,32 @@ func scanSQLiteDeliverySnapshot(scanner sqliteStreamScanner, streamID string) (R
 }
 
 func finishSQLiteStreamScan(record Record, bindingJSON, direction, status string, createdAt, updatedAt int64, closedAt sql.NullInt64) (Record, error) {
-	if strings.TrimSpace(bindingJSON) != "" && strings.TrimSpace(bindingJSON) != "{}" {
-		if err := json.Unmarshal([]byte(bindingJSON), &record.ExecutionBinding); err != nil {
-			return Record{}, err
-		}
+	indexedStreamID := record.StreamID
+	indexedPluginID := record.PluginID
+	indexedPluginInstanceID := record.PluginInstanceID
+	indexedMethod := record.Method
+	indexedEffect := record.Effect
+	indexedExecution := record.Execution
+	indexedSurfaceInstanceID := record.SurfaceInstanceID
+	indexedOwner := record.ExecutionBinding.OwnerScope()
+	indexedBridgeChannelID := record.BridgeChannelID
+	if strings.TrimSpace(bindingJSON) == "" || strings.TrimSpace(bindingJSON) == "{}" {
+		return Record{}, ErrInvalidStream
+	}
+	var decodedBinding capability.ExecutionBinding
+	if err := jsonvalue.DecodeClosed([]byte(bindingJSON), &decodedBinding); err != nil {
+		return Record{}, ErrInvalidStream
+	}
+	binding, err := cloneExecutionBinding(decodedBinding)
+	if err != nil {
+		return Record{}, ErrInvalidStream
+	}
+	record.ExecutionBinding = binding
+	if record.ExecutionBinding.StreamID != indexedStreamID || record.PluginID != indexedPluginID || record.PluginInstanceID != indexedPluginInstanceID ||
+		record.Method != indexedMethod || record.Effect != indexedEffect || record.Execution != indexedExecution ||
+		record.SurfaceInstanceID != indexedSurfaceInstanceID || record.BridgeChannelID != indexedBridgeChannelID ||
+		record.ExecutionBinding.OwnerScope() != indexedOwner {
+		return Record{}, ErrInvalidStream
 	}
 	record.Direction = Direction(direction)
 	record.Status = Status(status)

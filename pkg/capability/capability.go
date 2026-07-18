@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/floegence/redevplugin/internal/jsonvalue"
 	"github.com/floegence/redevplugin/pkg/capabilitycontract"
@@ -25,6 +26,7 @@ const (
 var (
 	ErrInvalidRegistration     = errors.New("capability registration is invalid")
 	ErrRegistrationMissing     = errors.New("capability registration is missing")
+	ErrInvalidExecutionBinding = errors.New("capability execution binding is invalid")
 	ErrExecutionRevoked        = errors.New("capability execution is revoked")
 	ErrInvalidExecutionFailure = errors.New("capability execution failure is invalid")
 	ErrQuotaExceeded           = errors.New("capability execution quota exceeded")
@@ -71,6 +73,11 @@ func (e *BusinessError) Error() string {
 	return e.Message
 }
 
+// NewBusinessError validates details against the closed canonical JSON set and
+// retains a recursively cloned value. Callers may mutate their input after the
+// function returns. Integers must be represented as safe json.Number or
+// float64 values because native integer types are outside the cross-language
+// execution contract.
 func NewBusinessError(code, message string, details map[string]any) (*BusinessError, error) {
 	ownedDetails, err := jsonvalue.CloneCanonicalMap(details)
 	if err != nil {
@@ -384,17 +391,37 @@ func (r *Registry) Resolve(pin capabilitycontract.Pin) (Registration, error) {
 	return registration, nil
 }
 
-func OwnTargetDescriptor(target TargetDescriptor) (TargetDescriptor, error) {
+// CloneTargetDescriptor validates and recursively clones target fields.
+func CloneTargetDescriptor(target TargetDescriptor) (TargetDescriptor, error) {
+	if !utf8.ValidString(target.Kind) {
+		return TargetDescriptor{}, fmt.Errorf("%w: target kind is not valid UTF-8", ErrInvalidExecutionBinding)
+	}
 	fields, err := jsonvalue.CloneCanonicalMap(target.Fields)
 	if err != nil {
-		return TargetDescriptor{}, fmt.Errorf("own capability target descriptor: %w", err)
+		return TargetDescriptor{}, fmt.Errorf("%w: target fields: %v", ErrInvalidExecutionBinding, err)
 	}
 	target.Fields = fields
 	return target, nil
 }
 
-func OwnExecutionBinding(binding ExecutionBinding) (ExecutionBinding, error) {
-	target, err := OwnTargetDescriptor(binding.Target)
+// ValidateExecutionBinding validates the closed cross-language execution
+// snapshot without invoking JSON marshalers or changing container ownership.
+func ValidateExecutionBinding(binding ExecutionBinding) error {
+	if err := validateExecutionBindingScalars(binding); err != nil {
+		return err
+	}
+	if err := jsonvalue.ValidateCanonical(binding.Target.Fields); err != nil {
+		return fmt.Errorf("%w: target fields: %v", ErrInvalidExecutionBinding, err)
+	}
+	return nil
+}
+
+// CloneExecutionBinding returns an independently owned execution snapshot.
+func CloneExecutionBinding(binding ExecutionBinding) (ExecutionBinding, error) {
+	if err := validateExecutionBindingScalars(binding); err != nil {
+		return ExecutionBinding{}, err
+	}
+	target, err := CloneTargetDescriptor(binding.Target)
 	if err != nil {
 		return ExecutionBinding{}, err
 	}
@@ -410,4 +437,121 @@ func OwnExecutionBinding(binding ExecutionBinding) (ExecutionBinding, error) {
 		binding.Permissions.Granted = append([]string{}, binding.Permissions.Granted...)
 	}
 	return binding, nil
+}
+
+func validateExecutionBindingScalars(binding ExecutionBinding) error {
+	if binding.RouteKind != "" && !validExecutionRouteKind(binding.RouteKind) {
+		return fmt.Errorf("%w: route_kind %q is invalid", ErrInvalidExecutionBinding, binding.RouteKind)
+	}
+	if binding.Effect != "" && !validExecutionEffect(binding.Effect) {
+		return fmt.Errorf("%w: effect %q is invalid", ErrInvalidExecutionBinding, binding.Effect)
+	}
+	if binding.Execution != "" && !validExecutionMode(binding.Execution) {
+		return fmt.Errorf("%w: execution %q is invalid", ErrInvalidExecutionBinding, binding.Execution)
+	}
+	if !jsonvalue.IsSafeUnsignedInteger(binding.Revision.PolicyRevision) ||
+		!jsonvalue.IsSafeUnsignedInteger(binding.Revision.ManagementRevision) ||
+		!jsonvalue.IsSafeUnsignedInteger(binding.Revision.RevokeEpoch) {
+		return fmt.Errorf("%w: revision exceeds the JSON safe integer range", ErrInvalidExecutionBinding)
+	}
+	if !safeNonnegativeInt(binding.Quota.MaxConcurrent) ||
+		!safeNonnegativeInt(binding.Quota.MaxDurationMS) ||
+		!safeNonnegativeInt64(binding.Quota.MaxStreamBytes) {
+		return fmt.Errorf("%w: quota is outside the JSON safe integer range", ErrInvalidExecutionBinding)
+	}
+	if !binding.Quota.ExpiresAt.IsZero() {
+		year := binding.Quota.ExpiresAt.Year()
+		if year < 0 || year > 9999 || binding.Quota.ExpiresAt != binding.Quota.ExpiresAt.UTC().Round(0) {
+			return fmt.Errorf("%w: quota expiry must be a canonical UTC RFC3339 value", ErrInvalidExecutionBinding)
+		}
+	}
+	if binding.Contract != nil {
+		if err := capabilitycontract.ValidatePin(*binding.Contract); err != nil {
+			return fmt.Errorf("%w: contract pin: %v", ErrInvalidExecutionBinding, err)
+		}
+	}
+	if err := validateExecutionBindingStrings(binding); err != nil {
+		return err
+	}
+	return nil
+}
+
+func validExecutionRouteKind(kind RouteKind) bool {
+	switch kind {
+	case RouteCapability, RouteWorker, RouteCoreAction:
+		return true
+	default:
+		return false
+	}
+}
+
+func validExecutionEffect(effect Effect) bool {
+	switch effect {
+	case EffectRead, EffectWrite, EffectExecute, EffectDelete, EffectAdmin:
+		return true
+	default:
+		return false
+	}
+}
+
+func validExecutionMode(mode string) bool {
+	switch mode {
+	case "sync", "operation", "subscription":
+		return true
+	default:
+		return false
+	}
+}
+
+func safeNonnegativeInt(value int) bool {
+	return value >= 0 && uint64(value) <= jsonvalue.MaxSafeInteger
+}
+
+func safeNonnegativeInt64(value int64) bool {
+	return value >= 0 && uint64(value) <= jsonvalue.MaxSafeInteger
+}
+
+func validateExecutionBindingStrings(binding ExecutionBinding) error {
+	if !validUTF8Strings(
+		binding.InvocationID, binding.AuditCorrelationID, binding.OperationID, binding.StreamID,
+		binding.PublisherID, binding.PluginID, binding.PluginInstanceID, binding.PluginVersion,
+		binding.ActiveFingerprint, binding.SurfaceInstanceID, binding.OwnerSessionHash,
+		binding.OwnerUserHash, binding.OwnerEnvHash, binding.SessionChannelIDHash,
+		binding.BridgeChannelID, binding.CapabilityID, binding.CapabilityVersion,
+		binding.BindingID, binding.Method, binding.TargetMethod, binding.Target.Kind,
+		binding.TargetDescriptorSHA256, binding.StreamEventTypeName, binding.StreamEventSchemaSHA256,
+		binding.Confirmation.ConfirmationID, binding.Confirmation.RequestSHA256,
+		binding.Confirmation.PlanSHA256, binding.Confirmation.TargetSHA256,
+	) {
+		return fmt.Errorf("%w: string field is not valid UTF-8", ErrInvalidExecutionBinding)
+	}
+	if binding.Contract != nil {
+		pin := binding.Contract
+		if !validUTF8Strings(
+			pin.PublisherID, pin.ContractID, pin.ContractVersion, pin.ArtifactRef, pin.ArtifactSHA256,
+			pin.ManifestRef, pin.ManifestSHA256, pin.SignatureRef, pin.SignatureSHA256,
+			pin.SignatureKeyID, pin.SignaturePolicyEpoch, pin.SignatureRevocationEpoch,
+			pin.CompatibilityRef, pin.CompatibilitySHA256, pin.GeneratedClientRef,
+			pin.GeneratedClientSHA256, pin.NoticesRef, pin.NoticesSHA256,
+		) {
+			return fmt.Errorf("%w: contract string field is not valid UTF-8", ErrInvalidExecutionBinding)
+		}
+	}
+	for _, values := range [][]string{binding.Permissions.Required, binding.Permissions.Granted} {
+		for _, value := range values {
+			if !utf8.ValidString(value) {
+				return fmt.Errorf("%w: permission is not valid UTF-8", ErrInvalidExecutionBinding)
+			}
+		}
+	}
+	return nil
+}
+
+func validUTF8Strings(values ...string) bool {
+	for _, value := range values {
+		if !utf8.ValidString(value) {
+			return false
+		}
+	}
+	return true
 }

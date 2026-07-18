@@ -231,6 +231,10 @@ func (s *MemoryStore) Register(_ context.Context, req RegisterRequest) (Record, 
 	if err != nil {
 		return Record{}, ErrInvalidStream
 	}
+	if embeddedID := strings.TrimSpace(binding.StreamID); embeddedID != "" && embeddedID != streamID {
+		return Record{}, ErrInvalidStream
+	}
+	binding.StreamID = streamID
 	record := Record{
 		StreamID:         streamID,
 		ExecutionBinding: binding,
@@ -743,11 +747,11 @@ func cloneEvent(event Event) Event {
 }
 
 func cloneExecutionBinding(binding capability.ExecutionBinding) (capability.ExecutionBinding, error) {
-	return capability.OwnExecutionBinding(binding)
+	return capability.CloneExecutionBinding(binding)
 }
 
 func cloneRecord(record Record) (Record, error) {
-	binding, err := capability.OwnExecutionBinding(record.ExecutionBinding)
+	binding, err := capability.CloneExecutionBinding(record.ExecutionBinding)
 	if err != nil {
 		return Record{}, err
 	}

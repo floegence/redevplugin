@@ -544,7 +544,7 @@ func (h *Host) resolveCapabilityTarget(ctx context.Context, record registry.Plug
 	if strings.TrimSpace(target.Kind) == "" || target.Fields == nil {
 		return capability.TargetDescriptor{}, "", errors.New("capability adapter returned an invalid target descriptor")
 	}
-	target, err = capability.OwnTargetDescriptor(target)
+	target, err = capability.CloneTargetDescriptor(target)
 	if err != nil {
 		return capability.TargetDescriptor{}, "", err
 	}
@@ -677,7 +677,7 @@ func (h *Host) startMethodExecution(ctx context.Context, record registry.PluginR
 	if err := validateExecutionBindingShape(binding); err != nil {
 		return capability.Invocation{}, nil, nil, err
 	}
-	ownedBinding, err := capability.OwnExecutionBinding(binding)
+	ownedBinding, err := capability.CloneExecutionBinding(binding)
 	if err != nil {
 		return capability.Invocation{}, nil, nil, err
 	}
@@ -699,11 +699,25 @@ func (h *Host) startMethodExecution(ctx context.Context, record registry.PluginR
 		}
 		binding.StreamID = streamID
 	}
-	leaseBinding, err := capability.OwnExecutionBinding(binding)
+	var operationRegistrationBinding capability.ExecutionBinding
+	if method.Execution == manifest.MethodExecutionOperation || method.Execution == manifest.MethodExecutionSubscription {
+		operationRegistrationBinding, err = capability.CloneExecutionBinding(binding)
+		if err != nil {
+			return capability.Invocation{}, nil, nil, err
+		}
+	}
+	var streamRegistrationBinding capability.ExecutionBinding
+	if method.Execution == manifest.MethodExecutionSubscription {
+		streamRegistrationBinding, err = capability.CloneExecutionBinding(binding)
+		if err != nil {
+			return capability.Invocation{}, nil, nil, err
+		}
+	}
+	leaseBinding, err := capability.CloneExecutionBinding(binding)
 	if err != nil {
 		return capability.Invocation{}, nil, nil, err
 	}
-	validationBinding, err := capability.OwnExecutionBinding(binding)
+	validationBinding, err := capability.CloneExecutionBinding(binding)
 	if err != nil {
 		return capability.Invocation{}, nil, nil, err
 	}
@@ -724,7 +738,7 @@ func (h *Host) startMethodExecution(ctx context.Context, record registry.PluginR
 	if err != nil {
 		return capability.Invocation{}, nil, nil, err
 	}
-	executionBinding, err := capability.OwnExecutionBinding(binding)
+	executionBinding, err := capability.CloneExecutionBinding(binding)
 	if err != nil {
 		lease.finish()
 		return capability.Invocation{}, nil, nil, err
@@ -744,7 +758,7 @@ func (h *Host) startMethodExecution(ctx context.Context, record registry.PluginR
 		}
 		_, registerErr := h.adapters.Operations.Register(ctx, operation.RegisterRequest{
 			OperationID:        binding.OperationID,
-			ExecutionBinding:   binding,
+			ExecutionBinding:   operationRegistrationBinding,
 			Cancelable:         &cancelable,
 			CancelAckTimeoutMS: method.CancelPolicy.AckTimeoutMS,
 			DisableBehavior:    cancelPolicyDisableBehavior(method.CancelPolicy),
@@ -774,7 +788,7 @@ func (h *Host) startMethodExecution(ctx context.Context, record registry.PluginR
 		}
 		_, registerErr := h.adapters.Streams.Register(ctx, stream.RegisterRequest{
 			StreamID:         binding.StreamID,
-			ExecutionBinding: binding,
+			ExecutionBinding: streamRegistrationBinding,
 			Direction:        stream.DirectionRead,
 			MaxBufferedBytes: binding.Quota.MaxStreamBytes,
 			Now:              now,
@@ -1521,6 +1535,12 @@ func (r *executionLeaseRegistry) cancelOperation(ctx context.Context, req capabi
 	if matched == nil {
 		return false, nil
 	}
+	binding, err := capability.CloneExecutionBinding(matched.binding)
+	if err != nil {
+		return true, err
+	}
+	req.Execution = capability.ExecutionContext{ExecutionBinding: binding}
+	req.OperationID = binding.OperationID
 	matched.requestCancel(cause)
 	operationSink, _, dispatch := matched.snapshotExecution()
 	if operationSink != nil {

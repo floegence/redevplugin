@@ -4529,6 +4529,31 @@ func TestCallPluginMethodDispatchesCoreAction(t *testing.T) {
 	}
 }
 
+func TestCoreActionTargetResolutionCannotMutateInvocationArguments(t *testing.T) {
+	coreAdapter := &recordingCoreActionAdapter{
+		result: capability.Result{Data: map[string]any{"opened": true}},
+		mutateTargetInput: func(input map[string]any) {
+			input["target"].(map[string]any)["name"] = "mutated-by-resolver"
+		},
+	}
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{
+		developerMode: true, localGenerated: true, coreActions: coreAdapter,
+	})
+	installed, gateway := installEnableAndMintGateway(t, h, buildNestedCoreActionFixturePackage(t), "core.view")
+	_, err := h.CallPluginMethod(hostTestContext(), CallMethodRequest{
+		PluginInstanceID: installed.PluginInstanceID, SurfaceInstanceID: "surface_rpc",
+		BridgeChannelID: "bridge_rpc", GatewayToken: gateway.GatewayToken, Method: "core.open",
+		Params: map[string]any{"target": map[string]any{"name": "settings"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := coreAdapter.last.Arguments["target"].(map[string]any)["name"]
+	if got != "settings" {
+		t.Fatalf("resolver mutation reached invocation arguments: %#v", coreAdapter.last.Arguments)
+	}
+}
+
 func TestCallPluginMethodRejectsUnpublishedCoreActionBusinessError(t *testing.T) {
 	coreAdapter := &recordingCoreActionAdapter{err: &capability.BusinessError{
 		CapabilityID:       "example.capability.forged",
@@ -4776,6 +4801,46 @@ func TestSubscriptionStreamCompletionCompletesOperation(t *testing.T) {
 	}
 	assertHostOperationStatus(t, h, result.OperationID, operation.StatusCompleted)
 	assertHostStreamStatus(t, h, result.StreamID, stream.StatusClosed)
+}
+
+func TestSubscriptionRegistrationBindingsAreIsolatedBetweenStores(t *testing.T) {
+	operations := &mutatingOperationRegisterStore{Store: operation.NewMemoryStore()}
+	streams := &recordingStreamRegisterStore{Store: stream.NewMemoryStore()}
+	adapter := &recordingCapabilityAdapter{result: capability.Result{Data: map[string]any{}}}
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{
+		developerMode: true, localGenerated: true, capabilityID: "example.capability.echo", capabilityAdapter: adapter,
+		operations: operations, streams: streams,
+	})
+	installed, gateway := installEnableAndMintGateway(t, h, buildSubscriptionRPCFixturePackage(t), "subscription.view")
+	result, err := h.CallPluginMethod(hostTestContext(), CallMethodRequest{
+		PluginInstanceID: installed.PluginInstanceID, SurfaceInstanceID: "surface_rpc",
+		BridgeChannelID: "bridge_rpc",
+		GatewayToken:    gateway.GatewayToken, Method: "logs.tail",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, mutated := streams.binding.Target.Fields["operation_store_mutation"]; mutated ||
+		len(streams.binding.Permissions.Required) == 0 || streams.binding.Permissions.Required[0] == "operation.store.mutated" {
+		t.Fatalf("stream store received operation-store mutation: %#v", streams.binding)
+	}
+	operations.retained.Target.Fields["late_operation_store_mutation"] = true
+	if _, mutated := streams.binding.Target.Fields["late_operation_store_mutation"]; mutated {
+		t.Fatalf("operation and stream stores retained aliased bindings: %#v", streams.binding)
+	}
+	storedStream, err := streams.Store.Get(hostTestContext(), result.StreamID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, mutated := storedStream.Target.Fields["late_operation_store_mutation"]; mutated {
+		t.Fatalf("stored stream retained operation-store binding state: %#v", storedStream.ExecutionBinding)
+	}
+	if _, mutated := adapter.last.Execution.Target.Fields["late_operation_store_mutation"]; mutated {
+		t.Fatalf("capability adapter retained operation-store binding state: %#v", adapter.last.Execution.ExecutionBinding)
+	}
+	if err := adapter.last.Execution.Stream.Close(hostTestContext()); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestSubscriptionStreamRegistrationFailureRollsBackOperationAndLease(t *testing.T) {
@@ -5505,6 +5570,35 @@ func TestCancelOperationRequestsCancel(t *testing.T) {
 	}
 	if !audits.hasEvent("plugin.operation.cancel_requested") {
 		t.Fatalf("missing cancel audit event: %#v", audits.events)
+	}
+}
+
+func TestCancelOperationDoesNotForwardStoreOwnedBindingToAdapter(t *testing.T) {
+	operations := &retainingCancelOperationStore{Store: operation.NewMemoryStore()}
+	capabilityAdapter := &recordingCapabilityAdapter{
+		result: capability.Result{Data: map[string]any{}},
+		mutateCancellation: func(binding *capability.ExecutionBinding) {
+			binding.Target.Fields["cancel_adapter_mutation"] = true
+			binding.Permissions.Required[0] = "cancel.adapter.mutated"
+		},
+	}
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{
+		developerMode: true, localGenerated: true, capabilityID: "example.capability.echo",
+		capabilityAdapter: capabilityAdapter, operations: operations,
+	})
+	installed, gateway := installEnableAndMintGateway(t, h, buildOperationRPCFixturePackage(t), "operation.view")
+	started, err := h.CallPluginMethod(hostTestContext(), CallMethodRequest{
+		PluginInstanceID: installed.PluginInstanceID, SurfaceInstanceID: "surface_rpc",
+		BridgeChannelID: "bridge_rpc", GatewayToken: gateway.GatewayToken, Method: "documents.archive",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.CancelOperation(hostTestContext(), CancelOperationRequest{OperationID: started.OperationID, Reason: "user"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := operations.retained.Target.Fields["cancel_adapter_mutation"]; ok || operations.retained.Permissions.Required[0] == "cancel.adapter.mutated" {
+		t.Fatalf("cancellation adapter mutated store-owned binding: %#v", operations.retained)
 	}
 }
 
@@ -9570,6 +9664,21 @@ func buildCoreActionOperationFixturePackage(t *testing.T) []byte {
 	return buf.Bytes()
 }
 
+func buildNestedCoreActionFixturePackage(t *testing.T) []byte {
+	t.Helper()
+	dir := t.TempDir()
+	manifestJSON := strings.Replace(coreActionFixtureManifestJSON(),
+		`"properties": {"target": {"type": "string"}}`,
+		`"properties": {"target": {"type": "object", "additionalProperties": false, "required": ["name"], "properties": {"name": {"type": "string"}}}}`, 1)
+	writeFile(t, filepath.Join(dir, "manifest.json"), manifestJSON)
+	writeSurfaceFixture(t, dir, "Core Action")
+	var buf bytes.Buffer
+	if _, err := pluginpkg.BuildFromDir(hostTestContext(), dir, &buf, pluginpkg.DefaultReadLimits()); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
 func buildWorkerFixturePackage(t *testing.T) []byte {
 	t.Helper()
 	dir := t.TempDir()
@@ -11542,29 +11651,66 @@ func (s *listingDiagnosticSink) ListPluginDiagnostics(context.Context, observabi
 }
 
 type recordingCapabilityAdapter struct {
-	calls             int
-	last              capability.Invocation
-	lastTarget        capability.TargetResolutionRequest
-	result            capability.Result
-	resultsByTarget   map[string]capability.Result
-	err               error
-	cancelCalls       int
-	lastCancellation  capability.OperationCancellation
-	cancellationError error
-	invokeContext     context.Context
-	panicValue        any
-	invokeDelay       time.Duration
-	invokeEntered     chan<- struct{}
-	invokeRelease     <-chan struct{}
-	targetFields      map[string]any
-	targetError       error
-	mutateExecution   func(*capability.ExecutionBinding)
+	calls              int
+	last               capability.Invocation
+	lastTarget         capability.TargetResolutionRequest
+	result             capability.Result
+	resultsByTarget    map[string]capability.Result
+	err                error
+	cancelCalls        int
+	lastCancellation   capability.OperationCancellation
+	cancellationError  error
+	invokeContext      context.Context
+	panicValue         any
+	invokeDelay        time.Duration
+	invokeEntered      chan<- struct{}
+	invokeRelease      <-chan struct{}
+	targetFields       map[string]any
+	targetError        error
+	mutateExecution    func(*capability.ExecutionBinding)
+	mutateCancellation func(*capability.ExecutionBinding)
 }
 
 type blockingOperationRegisterStore struct {
 	operation.Store
 	entered chan<- struct{}
 	release <-chan struct{}
+}
+
+type mutatingOperationRegisterStore struct {
+	operation.Store
+	retained capability.ExecutionBinding
+}
+
+type retainingCancelOperationStore struct {
+	operation.Store
+	retained capability.ExecutionBinding
+}
+
+func (s *retainingCancelOperationStore) RequestCancel(ctx context.Context, req operation.CancelRequest) (operation.Record, error) {
+	record, err := s.Store.RequestCancel(ctx, req)
+	if err != nil {
+		return operation.Record{}, err
+	}
+	s.retained = record.ExecutionBinding
+	return record, nil
+}
+
+func (s *mutatingOperationRegisterStore) Register(ctx context.Context, req operation.RegisterRequest) (operation.Record, error) {
+	s.retained = req.ExecutionBinding
+	req.ExecutionBinding.Target.Fields["operation_store_mutation"] = true
+	req.ExecutionBinding.Permissions.Required[0] = "operation.store.mutated"
+	return s.Store.Register(ctx, req)
+}
+
+type recordingStreamRegisterStore struct {
+	stream.Store
+	binding capability.ExecutionBinding
+}
+
+func (s *recordingStreamRegisterStore) Register(ctx context.Context, req stream.RegisterRequest) (stream.Record, error) {
+	s.binding = req.ExecutionBinding
+	return s.Store.Register(ctx, req)
 }
 
 func (s *blockingOperationRegisterStore) Register(ctx context.Context, req operation.RegisterRequest) (operation.Record, error) {
@@ -11818,6 +11964,7 @@ type recordingCoreActionAdapter struct {
 	cancelCalls       int
 	lastCancellation  capability.OperationCancellation
 	cancellationError error
+	mutateTargetInput func(map[string]any)
 }
 
 type tamperingConfirmationIntentStore struct {
@@ -12073,6 +12220,9 @@ func (a *recordingCapabilityAdapter) Invoke(ctx context.Context, req capability.
 
 func (a *recordingCapabilityAdapter) CancelOperation(_ context.Context, req capability.OperationCancellation) error {
 	a.cancelCalls++
+	if a.mutateCancellation != nil {
+		a.mutateCancellation(&req.Execution.ExecutionBinding)
+	}
 	a.lastCancellation = req
 	return a.cancellationError
 }
@@ -12087,6 +12237,9 @@ func (a *recordingCoreActionAdapter) InvokeCoreAction(_ context.Context, req cap
 }
 
 func (a *recordingCoreActionAdapter) ResolveCoreActionTarget(_ context.Context, req capability.TargetResolutionRequest) (capability.TargetDescriptor, error) {
+	if a.mutateTargetInput != nil {
+		a.mutateTargetInput(req.TargetInput)
+	}
 	return capability.TargetDescriptor{Kind: "core_action", Fields: cloneParams(req.TargetInput)}, nil
 }
 

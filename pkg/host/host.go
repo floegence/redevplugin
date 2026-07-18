@@ -7263,6 +7263,10 @@ func (h *Host) prepareCoreActionExecution(ctx context.Context, record registry.P
 	if err != nil {
 		return capability.Invocation{}, nil, nil, err
 	}
+	targetInput, err := deepCloneParams(arguments)
+	if err != nil {
+		return capability.Invocation{}, nil, nil, err
+	}
 	target, err := h.adapters.CoreActions.ResolveCoreActionTarget(ctx, capability.TargetResolutionRequest{
 		Identity: capability.PluginIdentity{
 			PublisherID:       record.PublisherID,
@@ -7282,7 +7286,7 @@ func (h *Host) prepareCoreActionExecution(ctx context.Context, record registry.P
 		CapabilityID: "core_action",
 		Method:       method.Method,
 		TargetMethod: actionID,
-		TargetInput:  arguments,
+		TargetInput:  targetInput,
 	})
 	if err != nil {
 		return capability.Invocation{}, nil, nil, err
@@ -7290,7 +7294,7 @@ func (h *Host) prepareCoreActionExecution(ctx context.Context, record registry.P
 	if strings.TrimSpace(target.Kind) == "" || target.Fields == nil {
 		return capability.Invocation{}, nil, nil, errors.New("core action adapter returned an invalid target descriptor")
 	}
-	target, err = capability.OwnTargetDescriptor(target)
+	target, err = capability.CloneTargetDescriptor(target)
 	if err != nil {
 		return capability.Invocation{}, nil, nil, err
 	}
@@ -8017,7 +8021,7 @@ func (h *Host) resolveMethodConfirmationTarget(ctx context.Context, record regis
 		if strings.TrimSpace(target.Kind) == "" || target.Fields == nil {
 			return capability.TargetDescriptor{}, "", errors.New("core action adapter returned an invalid target descriptor")
 		}
-		target, err = capability.OwnTargetDescriptor(target)
+		target, err = capability.CloneTargetDescriptor(target)
 		if err != nil {
 			return capability.TargetDescriptor{}, "", err
 		}

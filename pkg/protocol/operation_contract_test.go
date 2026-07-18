@@ -40,6 +40,9 @@ func TestOperationDTOCarriesCompleteExecutionEvidence(t *testing.T) {
 		"reason: { const: \"execution failed\" }",
 		"status:\n                  enum: [running, cancel_requested, canceled, completed, orphaned_after_disable, orphaned_after_uninstall]",
 		"not:\n                required: [failure_code]",
+		"max_concurrent: { type: integer, minimum: 0, maximum: 9007199254740991 }",
+		"max_duration_ms: { type: integer, minimum: 0, maximum: 9007199254740991 }",
+		"max_stream_bytes: { type: integer, minimum: 0, maximum: 9007199254740991 }",
 	} {
 		if !strings.Contains(string(openAPI), snippet) {
 			t.Fatalf("OpenAPI operation contract is missing %q", snippet)

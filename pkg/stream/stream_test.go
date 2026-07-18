@@ -587,6 +587,31 @@ func TestStoreRegisterRejectsNonCanonicalExecutionBindingJSON(t *testing.T) {
 	}
 }
 
+func TestStoreRegisterRejectsInvalidExecutionBindingScalars(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*capability.ExecutionBinding)
+	}{
+		{name: "unsafe revision", mutate: func(binding *capability.ExecutionBinding) { binding.Revision.PolicyRevision = 1 << 53 }},
+		{name: "negative quota", mutate: func(binding *capability.ExecutionBinding) { binding.Quota.MaxStreamBytes = -1 }},
+		{name: "noncanonical expiry", mutate: func(binding *capability.ExecutionBinding) {
+			binding.Quota.ExpiresAt = time.Date(2026, 7, 18, 12, 0, 0, 0, time.FixedZone("+01", 60*60))
+		}},
+		{name: "unknown execution", mutate: func(binding *capability.ExecutionBinding) { binding.Execution = "unknown" }},
+	}
+	forEachStreamStore(t, func(t *testing.T, store Store) {
+		for _, test := range tests {
+			t.Run(test.name, func(t *testing.T) {
+				binding := streamTestBindingWith("plugini_invalid_scalar", test.mutate)
+				_, err := store.Register(context.Background(), RegisterRequest{StreamID: "stream_invalid_scalar", ExecutionBinding: binding})
+				if !errors.Is(err, ErrInvalidStream) {
+					t.Fatalf("Register() error = %v, want %v", err, ErrInvalidStream)
+				}
+			})
+		}
+	})
+}
+
 func TestMemoryStoreDeepClonesAppendedEventData(t *testing.T) {
 	store := NewMemoryStore()
 	if _, err := store.Register(context.Background(), RegisterRequest{
@@ -628,6 +653,7 @@ func TestSQLiteStorePersistsStreamsAcrossOpen(t *testing.T) {
 			binding.OwnerEnvHash = "owner_env"
 			binding.SessionChannelIDHash = "channel_hash"
 			binding.BridgeChannelID = "bridge_channel"
+			binding.Target.Fields["number"] = json.Number("42.5")
 		}),
 		ContentType:      "text/plain",
 		MaxBufferedBytes: 128,
@@ -661,7 +687,9 @@ func TestSQLiteStorePersistsStreamsAcrossOpen(t *testing.T) {
 		persisted.SurfaceInstanceID != "surface_1" ||
 		persisted.OwnerSessionHash != "owner_session" ||
 		persisted.OwnerEnvHash != "owner_env" ||
-		persisted.BufferedBytes != streamEventCost(Event{Kind: "data", Data: []byte("alpha")})+streamEventCost(Event{Kind: "data", Data: []byte("beta")}) {
+		persisted.BufferedBytes != streamEventCost(Event{Kind: "data", Data: []byte("alpha")})+streamEventCost(Event{Kind: "data", Data: []byte("beta")}) ||
+		persisted.ExecutionBinding.StreamID != "stream_sqlite_1" ||
+		persisted.Target.Fields["number"] != json.Number("42.5") {
 		t.Fatalf("persisted record mismatch: %#v", persisted)
 	}
 	persisted, delivery, err := reopened.Deliver(ctx, DeliverRequest{StreamID: "stream_sqlite_1", ReadID: "read_sqlite_1", MaxEvents: 1})
@@ -698,6 +726,156 @@ func TestSQLiteStorePersistsStreamsAcrossOpen(t *testing.T) {
 	if _, err := replayedStore.Acknowledge(ctx, AcknowledgeRequest{StreamID: "stream_sqlite_1", DeliveryID: second.DeliveryID}); err != nil {
 		t.Fatalf("Acknowledge(second) error = %v", err)
 	}
+}
+
+func TestSQLiteStorePersistsNilExecutionBindingContainers(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "streams.sqlite")
+	store, err := NewSQLiteStore(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	registered, err := store.Register(ctx, RegisterRequest{
+		StreamID: "stream_null_containers",
+		ExecutionBinding: streamTestBindingWith("plugini_null_containers", func(binding *capability.ExecutionBinding) {
+			binding.Target.Fields = nil
+			binding.Permissions.Required = nil
+			binding.Permissions.Granted = nil
+		}),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if registered.Target.Fields != nil || registered.Permissions.Required != nil || registered.Permissions.Granted != nil {
+		t.Fatalf("registered nil containers changed representation: %#v", registered.ExecutionBinding)
+	}
+	if err := store.CloseDatabase(); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := NewSQLiteStore(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = reopened.CloseDatabase() }()
+	persisted, err := reopened.Get(ctx, "stream_null_containers")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if persisted.Target.Fields != nil || persisted.Permissions.Required != nil || persisted.Permissions.Granted != nil {
+		t.Fatalf("reopened nil containers changed representation: %#v", persisted.ExecutionBinding)
+	}
+}
+
+func TestSQLiteStoreRejectsOpenExecutionBindingDocumentsOnReopen(t *testing.T) {
+	tests := []struct {
+		name    string
+		corrupt func(t *testing.T, raw string) string
+	}{
+		{name: "unknown field", corrupt: func(t *testing.T, raw string) string {
+			var document map[string]any
+			if err := json.Unmarshal([]byte(raw), &document); err != nil {
+				t.Fatal(err)
+			}
+			document["unexpected"] = true
+			encoded, err := json.Marshal(document)
+			if err != nil {
+				t.Fatal(err)
+			}
+			return string(encoded)
+		}},
+		{name: "trailing value", corrupt: func(_ *testing.T, raw string) string { return raw + ` {}` }},
+		{name: "empty binding", corrupt: func(*testing.T, string) string { return `{}` }},
+		{name: "mismatched stream id", corrupt: func(t *testing.T, raw string) string {
+			var document map[string]any
+			if err := json.Unmarshal([]byte(raw), &document); err != nil {
+				t.Fatal(err)
+			}
+			document["stream_id"] = "stream_other"
+			encoded, err := json.Marshal(document)
+			if err != nil {
+				t.Fatal(err)
+			}
+			return string(encoded)
+		}},
+		{name: "missing stream id", corrupt: func(t *testing.T, raw string) string {
+			return removeStreamBindingField(t, raw, "stream_id")
+		}},
+		{name: "missing plugin id", corrupt: func(t *testing.T, raw string) string {
+			return removeStreamBindingField(t, raw, "plugin_id")
+		}},
+		{name: "missing owner env hash", corrupt: func(t *testing.T, raw string) string {
+			return removeStreamBindingField(t, raw, "owner_env_hash")
+		}},
+		{name: "unsafe revision", corrupt: func(t *testing.T, raw string) string {
+			var document map[string]any
+			if err := json.Unmarshal([]byte(raw), &document); err != nil {
+				t.Fatal(err)
+			}
+			document["revision"].(map[string]any)["policy_revision"] = float64(1 << 53)
+			encoded, err := json.Marshal(document)
+			if err != nil {
+				t.Fatal(err)
+			}
+			return string(encoded)
+		}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			ctx := context.Background()
+			path := filepath.Join(t.TempDir(), "streams.sqlite")
+			store, err := NewSQLiteStore(ctx, path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := store.Register(ctx, RegisterRequest{StreamID: "stream_corrupt", ExecutionBinding: streamTestBinding("plugini_corrupt")}); err != nil {
+				t.Fatal(err)
+			}
+			var raw string
+			if err := store.db.QueryRowContext(ctx, `SELECT execution_binding_json FROM plugin_streams WHERE stream_id = ?`, "stream_corrupt").Scan(&raw); err != nil {
+				_ = store.CloseDatabase()
+				t.Fatal(err)
+			}
+			if _, err := store.db.ExecContext(ctx, `UPDATE plugin_streams SET execution_binding_json = ? WHERE stream_id = ?`, test.corrupt(t, raw), "stream_corrupt"); err != nil {
+				_ = store.CloseDatabase()
+				t.Fatal(err)
+			}
+			if err := store.CloseDatabase(); err != nil {
+				t.Fatal(err)
+			}
+			reopened, err := NewSQLiteStore(ctx, path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = reopened.CloseDatabase() }()
+			if _, err := reopened.Get(ctx, "stream_corrupt"); !errors.Is(err, ErrInvalidStream) {
+				t.Fatalf("Get() error = %v, want %v", err, ErrInvalidStream)
+			}
+		})
+	}
+}
+
+func removeStreamBindingField(t *testing.T, raw, field string) string {
+	t.Helper()
+	var document map[string]any
+	if err := json.Unmarshal([]byte(raw), &document); err != nil {
+		t.Fatal(err)
+	}
+	delete(document, field)
+	encoded, err := json.Marshal(document)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(encoded)
+}
+
+func TestStoreRegisterRejectsConflictingExecutionBindingStreamID(t *testing.T) {
+	forEachStreamStore(t, func(t *testing.T, store Store) {
+		binding := streamTestBinding("plugini_conflict")
+		binding.StreamID = "stream_other"
+		if _, err := store.Register(context.Background(), RegisterRequest{StreamID: "stream_expected", ExecutionBinding: binding}); !errors.Is(err, ErrInvalidStream) {
+			t.Fatalf("Register() error = %v, want %v", err, ErrInvalidStream)
+		}
+	})
 }
 
 func TestSQLiteStoreConcurrentDeliveryCASAcrossInstances(t *testing.T) {
