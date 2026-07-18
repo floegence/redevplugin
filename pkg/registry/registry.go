@@ -460,6 +460,17 @@ func ensureSourceSecurityFloorMonotonic(existing SourceSecurityFloor, next Sourc
 	return nil
 }
 
+// ValidateSourceSecurityFloorTransition checks a candidate floor without
+// mutating the registry. Callers that need to stage other work before the
+// floor is persisted can use this read-only preflight; PutSourceSecurityFloor
+// remains the final atomic validation boundary.
+func ValidateSourceSecurityFloorTransition(existing SourceSecurityFloor, next SourceSecurityFloor) error {
+	if err := validateSourceSecurityFloor(next); err != nil {
+		return err
+	}
+	return ensureSourceSecurityFloorMonotonic(existing, next)
+}
+
 func compareSourceSecurityEpoch(left string, right string) (int, error) {
 	leftValue, err := parseSourceSecurityEpoch(left)
 	if err != nil {

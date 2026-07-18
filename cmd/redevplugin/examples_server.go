@@ -31,6 +31,7 @@ import (
 	"github.com/floegence/redevplugin/pkg/security"
 	"github.com/floegence/redevplugin/pkg/sessionctx"
 	"github.com/floegence/redevplugin/pkg/stream"
+	"github.com/floegence/redevplugin/pkg/trust"
 	"github.com/floegence/redevplugin/pkg/websecurity"
 )
 
@@ -165,6 +166,7 @@ type examplesRuntimeHealthReader interface {
 
 type examplesEventStore interface {
 	observability.AuditSink
+	observability.SecurityAuditJournal
 	observability.DiagnosticsSink
 	observability.DiagnosticLister
 }
@@ -263,24 +265,26 @@ func examplesServerWithOptions(ctx context.Context, stateRoot string, runtimePat
 	}
 	pluginHost, err := host.Open(ctx, host.Config{
 		Core: host.CoreAdapters{
-			Policy:              staticPolicyAdapter{},
-			Registry:            registryStore,
-			Audit:               events,
-			Diagnostics:         events,
-			SurfaceTokens:       surfaceTokens,
-			PluginData:          pluginData,
-			Assets:              assetStore,
-			InstallStages:       installstage.NewMemoryStore(),
-			Operations:          operationStore,
-			ConfirmationIntents: confirmationIntentStore,
-			Streams:             streamStore,
+			Policy:               staticPolicyAdapter{},
+			PackageTrustVerifier: trust.Ed25519Verifier{Keyring: trust.StaticKeyring{}},
+			Registry:             registryStore,
+			Audit:                events,
+			SecurityAudit:        events,
+			Diagnostics:          events,
+			SurfaceTokens:        surfaceTokens,
+			PluginData:           pluginData,
+			Assets:               assetStore,
+			InstallStages:        installstage.NewMemoryStore(),
+			Operations:           operationStore,
+			ConfirmationIntents:  confirmationIntentStore,
+			Streams:              streamStore,
 		},
 		Runtime: &host.RuntimeModule{Manager: runtimeManager},
-		ConnectivityModule: &host.ConnectivityModule{
+		Connectivity: &host.ConnectivityModule{
 			Broker:          connectivityBroker,
 			NetworkExecutor: networkExecutor,
 		},
-		SecretsModule: &host.SecretsModule{Store: secretStore},
+		Secrets: &host.SecretsModule{Store: secretStore},
 	})
 	if err != nil {
 		_ = secretStore.Close()

@@ -14,6 +14,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strconv"
 	"strings"
@@ -113,9 +114,9 @@ func prepareConfirmationRequest(call CallMethodRequest) PrepareMethodConfirmatio
 }
 
 func TestOpenRequiresCompletePlatformDependencies(t *testing.T) {
-	base := func() Adapters {
+	base := func(t *testing.T) Config {
+		t.Helper()
 		observabilityStore := observability.NewMemoryStore()
-		releaseVerifier := &recordingReleaseMetadataVerifier{}
 		registryStore := registry.NewMemoryStore()
 		pluginData, err := plugindata.Open(hostTestContext(), t.TempDir(), registryStore)
 		if err != nil {
@@ -126,71 +127,47 @@ func TestOpenRequiresCompletePlatformDependencies(t *testing.T) {
 				t.Errorf("PluginData.Close() error = %v", err)
 			}
 		})
-		return Adapters{
-			Policy:                      policyAdapter{decision: PolicyAllow},
-			PackageTrustVerifier:        &recordingPackageTrustVerifier{},
-			ReleaseMetadataVerifier:     releaseVerifier,
-			RevocationVerifier:          releaseVerifier,
-			ReleaseSourcePolicy:         &recordingReleaseSourcePolicyResolver{},
-			ReleaseArtifactResolver:     &recordingReleaseArtifactResolver{},
-			HostRequirements:            &fixedHostRequirementPolicy{hostID: "test-host"},
-			CapabilityContractArtifacts: &recordingCapabilityContractArtifactResolver{},
-			CapabilityContractKeys:      &recordingCapabilityContractKeyResolver{},
-			Registry:                    registryStore,
-			Audit:                       observabilityStore,
-			Diagnostics:                 observabilityStore,
-			Secrets:                     secrets.NewMemoryStore(),
-			RuntimeManager:              newRecordingRuntimeManager(),
-			SurfaceCatalog:              &surfaceSink{},
-			Assets:                      pluginpkg.NewMemoryAssetStore(),
-			InstallStages:               installstage.NewMemoryStore(),
-			Capabilities:                capability.NewRegistry(),
-			CoreActions:                 &recordingCoreActionAdapter{},
-			SurfaceTokens:               bridge.NewSurfaceTokenService(nil, bridge.SurfaceTokenOptions{}),
-			PluginData:                  pluginData,
-			Connectivity:                connectivity.NewMemoryBroker(),
-			NetworkExecutor:             connectivity.NewExecutor(connectivity.ExecutorOptions{}),
-			Operations:                  operation.NewMemoryStore(),
-			ConfirmationIntents:         security.NewMemoryConfirmationIntentStore(),
-			Streams:                     stream.NewMemoryStore(),
-		}
+		return Config{Core: CoreAdapters{
+			Policy:               policyAdapter{decision: PolicyAllow},
+			PackageTrustVerifier: &recordingPackageTrustVerifier{},
+			Registry:             registryStore,
+			Audit:                observabilityStore,
+			SecurityAudit:        observabilityStore,
+			Diagnostics:          observabilityStore,
+			SurfaceCatalog:       &surfaceSink{},
+			Assets:               pluginpkg.NewMemoryAssetStore(),
+			InstallStages:        installstage.NewMemoryStore(),
+			SurfaceTokens:        bridge.NewSurfaceTokenService(nil, bridge.SurfaceTokenOptions{}),
+			PluginData:           pluginData,
+			Operations:           operation.NewMemoryStore(),
+			ConfirmationIntents:  security.NewMemoryConfirmationIntentStore(),
+			Streams:              stream.NewMemoryStore(),
+		}}
 	}
 
 	tests := []struct {
 		name  string
-		clear func(*Adapters)
+		clear func(*CoreAdapters)
 	}{
-		{name: "policy", clear: func(a *Adapters) { a.Policy = nil }},
-		{name: "package trust verifier", clear: func(a *Adapters) { a.PackageTrustVerifier = nil }},
-		{name: "release metadata verifier", clear: func(a *Adapters) { a.ReleaseMetadataVerifier = nil }},
-		{name: "revocation verifier", clear: func(a *Adapters) { a.RevocationVerifier = nil }},
-		{name: "release source policy", clear: func(a *Adapters) { a.ReleaseSourcePolicy = nil }},
-		{name: "release artifact resolver", clear: func(a *Adapters) { a.ReleaseArtifactResolver = nil }},
-		{name: "host requirements", clear: func(a *Adapters) { a.HostRequirements = nil }},
-		{name: "capability artifacts", clear: func(a *Adapters) { a.CapabilityContractArtifacts = nil }},
-		{name: "capability keys", clear: func(a *Adapters) { a.CapabilityContractKeys = nil }},
-		{name: "registry", clear: func(a *Adapters) { a.Registry = nil }},
-		{name: "audit", clear: func(a *Adapters) { a.Audit = nil }},
-		{name: "diagnostics", clear: func(a *Adapters) { a.Diagnostics = nil }},
-		{name: "secrets", clear: func(a *Adapters) { a.Secrets = nil }},
-		{name: "surface catalog", clear: func(a *Adapters) { a.SurfaceCatalog = nil }},
-		{name: "assets", clear: func(a *Adapters) { a.Assets = nil }},
-		{name: "install stages", clear: func(a *Adapters) { a.InstallStages = nil }},
-		{name: "capabilities", clear: func(a *Adapters) { a.Capabilities = nil }},
-		{name: "core actions", clear: func(a *Adapters) { a.CoreActions = nil }},
-		{name: "surface tokens", clear: func(a *Adapters) { a.SurfaceTokens = nil }},
-		{name: "plugin data", clear: func(a *Adapters) { a.PluginData = nil }},
-		{name: "connectivity", clear: func(a *Adapters) { a.Connectivity = nil }},
-		{name: "network executor", clear: func(a *Adapters) { a.NetworkExecutor = nil }},
-		{name: "operations", clear: func(a *Adapters) { a.Operations = nil }},
-		{name: "confirmation intents", clear: func(a *Adapters) { a.ConfirmationIntents = nil }},
-		{name: "streams", clear: func(a *Adapters) { a.Streams = nil }},
+		{name: "policy", clear: func(a *CoreAdapters) { a.Policy = nil }},
+		{name: "package trust verifier", clear: func(a *CoreAdapters) { a.PackageTrustVerifier = nil }},
+		{name: "registry", clear: func(a *CoreAdapters) { a.Registry = nil }},
+		{name: "audit", clear: func(a *CoreAdapters) { a.Audit = nil }},
+		{name: "security audit", clear: func(a *CoreAdapters) { a.SecurityAudit = nil }},
+		{name: "diagnostics", clear: func(a *CoreAdapters) { a.Diagnostics = nil }},
+		{name: "assets", clear: func(a *CoreAdapters) { a.Assets = nil }},
+		{name: "install stages", clear: func(a *CoreAdapters) { a.InstallStages = nil }},
+		{name: "surface tokens", clear: func(a *CoreAdapters) { a.SurfaceTokens = nil }},
+		{name: "plugin data", clear: func(a *CoreAdapters) { a.PluginData = nil }},
+		{name: "operations", clear: func(a *CoreAdapters) { a.Operations = nil }},
+		{name: "confirmation intents", clear: func(a *CoreAdapters) { a.ConfirmationIntents = nil }},
+		{name: "streams", clear: func(a *CoreAdapters) { a.Streams = nil }},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			adapters := base()
-			tt.clear(&adapters)
-			if _, err := Open(hostTestContext(), adapters); err == nil {
+			config := base(t)
+			tt.clear(&config.Core)
+			if _, err := Open(hostTestContext(), config); err == nil {
 				t.Fatal("Open() accepted incomplete platform dependencies")
 			}
 		})
@@ -1388,7 +1365,7 @@ func TestResolveAndVerifyExternalHostCapabilityContract(t *testing.T) {
 	artifactSet := &memoryCapabilityContractArtifactSet{bundle: bundle}
 	artifactResolver := &recordingCapabilityContractArtifactResolver{result: ResolvedCapabilityContractArtifact{Artifacts: artifactSet}}
 	keyResolver := &recordingCapabilityContractKeyResolver{publicKey: publicKey}
-	h := &Host{adapters: Adapters{
+	h := &Host{adapters: normalizedAdapters{
 		CapabilityContractArtifacts: artifactResolver,
 		CapabilityContractKeys:      keyResolver,
 	}}
@@ -1491,7 +1468,7 @@ func TestEnsureReleaseCapabilityContractsRevalidatesCachedSigningKey(t *testing.
 		RevocationEpoch:             "1",
 	})
 	hostRequirements := &fixedHostRequirementPolicy{hostID: "example-host"}
-	h := &Host{adapters: Adapters{
+	h := &Host{adapters: normalizedAdapters{
 		HostRequirements: hostRequirements,
 		Capabilities:     capabilities,
 	}}
@@ -1524,7 +1501,7 @@ func TestEnsureReleaseCapabilityContractsRevalidatesCachedSigningKey(t *testing.
 func TestReleaseHostRequirementsAreEvaluatedWithoutManifestBindings(t *testing.T) {
 	policyErr := errors.New("host version is unsupported")
 	hostRequirements := &fixedHostRequirementPolicy{err: policyErr}
-	h := &Host{adapters: Adapters{HostRequirements: hostRequirements, Capabilities: capability.NewRegistry()}}
+	h := &Host{adapters: normalizedAdapters{HostRequirements: hostRequirements, Capabilities: capability.NewRegistry()}}
 	release := PluginPackageRelease{
 		SourceID: "official", PublisherID: "example", PluginID: "com.example.no_capabilities", Version: "1.0.0",
 		HostRequirements: []HostRequirement{{HostID: "example-host", MinHostVersion: "2.0.0"}},
@@ -2917,7 +2894,7 @@ func TestCapabilityRejectionFailsClosedWhenAuditPersistenceFails(t *testing.T) {
 		developerMode: true, localGenerated: true, capabilityID: "example.capability.echo", capabilityAdapter: capabilityAdapter,
 	})
 	installed, gateway := installEnableAndMintGateway(t, h, buildRPCFixturePackage(t), "rpc.view")
-	h.adapters.Audit = failingAuditSink{err: errors.New("audit store unavailable")}
+	h.securityJournal = &hostFailingSecurityJournal{beginErr: errors.New("audit store unavailable")}
 	_, err := h.CallPluginMethod(hostTestContext(), CallMethodRequest{
 		PluginInstanceID: installed.PluginInstanceID, SurfaceInstanceID: "surface_rpc",
 		BridgeChannelID: "bridge_rpc", GatewayToken: gateway.GatewayToken,
@@ -4279,9 +4256,7 @@ func TestCallPluginMethodDispatchesWorkerRoute(t *testing.T) {
 	assertAuditDetail(t, leaseAudit, "management_revision", current.ManagementRevision)
 	assertAuditDetail(t, leaseAudit, "revoke_epoch", current.RevokeEpoch)
 	assertAuditDetail(t, leaseAudit, "expires_at_unix_ms", runtime.lastLease.ExpiresAtUnixMillis)
-	if hashes, ok := leaseAudit.Details["target_descriptor_hashes"].([]string); !ok || len(hashes) < 4 {
-		t.Fatalf("runtime lease audit target_descriptor_hashes mismatch: %#v", leaseAudit.Details)
-	}
+	assertAuditDetail(t, leaseAudit, "target_descriptor_hashes", runtime.lastLease.TargetDescriptorHashes)
 }
 
 func TestCallPluginMethodWorkerPayloadIncludesEmptyParams(t *testing.T) {
@@ -6600,13 +6575,14 @@ func TestRejectMethodConfirmationReportsUnknownAfterDurableReject(t *testing.T) 
 	reportErr := errors.New("audit unavailable")
 	capabilityAdapter := &recordingCapabilityAdapter{result: capability.Result{Data: map[string]any{"result": "done"}}}
 	confirmationIntents := security.NewMemoryConfirmationIntentStore()
+	audit := &switchableAuditSink{}
 	h, _, _ := newTestHostWithOptions(t, testHostOptions{
 		developerMode:       true,
 		localGenerated:      true,
 		capabilityID:        "example.capability.echo",
 		capabilityAdapter:   capabilityAdapter,
 		confirmationIntents: confirmationIntents,
-		audit:               failingAuditSink{err: reportErr},
+		audit:               audit,
 	})
 	installed, gateway := installEnableAndMintGateway(t, h, buildDangerousRPCFixturePackage(t), "danger.view")
 	call := CallMethodRequest{
@@ -6621,6 +6597,7 @@ func TestRejectMethodConfirmationReportsUnknownAfterDurableReject(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
+	audit.setErr(reportErr)
 
 	result, err := h.RejectMethodConfirmation(hostTestContext(), RejectMethodConfirmationRequest{
 		PluginInstanceID:  call.PluginInstanceID,
@@ -7857,37 +7834,42 @@ func TestRefreshEnabledPluginsRestoresRuntimeState(t *testing.T) {
 	restartedSurfaces := &surfaceSink{}
 	restartedAudits := &auditSink{}
 	restartedDiagnostics := &diagnosticSink{}
-	restarted, err := Open(hostTestContext(), Adapters{
-		Policy: policyAdapter{
-			developerMode:  true,
-			localGenerated: true,
-			decision:       PolicyAllow,
+	restartedAuditJournal := observability.NewMemorySecurityAuditJournal()
+	restarted, err := Open(hostTestContext(), Config{
+		Core: CoreAdapters{
+			Policy: policyAdapter{
+				developerMode:  true,
+				localGenerated: true,
+				decision:       PolicyAllow,
+			},
+			PackageTrustVerifier: h.adapters.PackageTrustVerifier,
+			Registry:             h.adapters.Registry,
+			Audit:                restartedAudits,
+			SecurityAudit:        restartedAuditJournal,
+			Diagnostics:          restartedDiagnostics,
+			SurfaceCatalog:       restartedSurfaces,
+			PluginData:           h.adapters.PluginData,
+			Assets:               h.adapters.Assets,
+			InstallStages:        h.adapters.InstallStages,
+			SurfaceTokens:        bridge.NewSurfaceTokenService(nil, bridge.SurfaceTokenOptions{}),
+			Operations:           operation.NewMemoryStore(),
+			ConfirmationIntents:  security.NewMemoryConfirmationIntentStore(),
+			Streams:              stream.NewMemoryStore(),
 		},
-		PackageTrustVerifier:        h.adapters.PackageTrustVerifier,
-		ReleaseMetadataVerifier:     h.adapters.ReleaseMetadataVerifier,
-		RevocationVerifier:          h.adapters.RevocationVerifier,
-		ReleaseSourcePolicy:         h.adapters.ReleaseSourcePolicy,
-		ReleaseArtifactResolver:     h.adapters.ReleaseArtifactResolver,
-		HostRequirements:            h.adapters.HostRequirements,
-		CapabilityContractArtifacts: h.adapters.CapabilityContractArtifacts,
-		CapabilityContractKeys:      h.adapters.CapabilityContractKeys,
-		Registry:                    h.adapters.Registry,
-		Audit:                       restartedAudits,
-		Diagnostics:                 restartedDiagnostics,
-		SurfaceCatalog:              restartedSurfaces,
-		PluginData:                  h.adapters.PluginData,
-		Connectivity:                restartedBroker,
-		NetworkExecutor:             connectivity.NewExecutor(connectivity.ExecutorOptions{}),
-		Assets:                      h.adapters.Assets,
-		InstallStages:               h.adapters.InstallStages,
-		Capabilities:                capability.NewRegistry(),
-		SurfaceTokens:               bridge.NewSurfaceTokenService(nil, bridge.SurfaceTokenOptions{}),
-		Operations:                  operation.NewMemoryStore(),
-		ConfirmationIntents:         security.NewMemoryConfirmationIntentStore(),
-		Streams:                     stream.NewMemoryStore(),
-		Secrets:                     secrets.NewMemoryStore(),
-		RuntimeManager:              newRecordingRuntimeManager(),
-		CoreActions:                 &recordingCoreActionAdapter{},
+		Release: &ReleaseModule{
+			ReleaseMetadataVerifier:     h.adapters.ReleaseMetadataVerifier,
+			RevocationVerifier:          h.adapters.RevocationVerifier,
+			ReleaseSourcePolicy:         h.adapters.ReleaseSourcePolicy,
+			ReleaseArtifactResolver:     h.adapters.ReleaseArtifactResolver,
+			HostRequirements:            h.adapters.HostRequirements,
+			CapabilityContractArtifacts: h.adapters.CapabilityContractArtifacts,
+			CapabilityContractKeys:      h.adapters.CapabilityContractKeys,
+		},
+		Runtime:      &RuntimeModule{Manager: newRecordingRuntimeManager()},
+		Capability:   &CapabilityModule{Registry: capability.NewRegistry()},
+		Connectivity: &ConnectivityModule{Broker: restartedBroker, NetworkExecutor: connectivity.NewExecutor(connectivity.ExecutorOptions{})},
+		Secrets:      &SecretsModule{Store: secrets.NewMemoryStore()},
+		CoreAction:   &CoreActionModule{Adapter: &recordingCoreActionAdapter{}},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -8400,7 +8382,7 @@ func TestExplicitObservabilitySinksReceiveAuditAndScopedDiagnostics(t *testing.T
 func TestUserTriggeredDiagnosticHelpersAttachScopeAndHideInternalCause(t *testing.T) {
 	const sensitive = "vault-token-super-secret at /Users/secret/path"
 	diagnostics := &listingDiagnosticSink{}
-	h := &Host{adapters: Adapters{Diagnostics: diagnostics}}
+	h := &Host{adapters: normalizedAdapters{Diagnostics: diagnostics}, securityJournal: observability.NewMemorySecurityAuditJournal()}
 	record := registry.PluginRecord{
 		PluginID: "com.example.plugin", PluginInstanceID: "plugini_1", ActiveFingerprint: "sha256:active",
 	}
@@ -8674,37 +8656,46 @@ func newTestHostWithOptions(t *testing.T, opts testHostOptions) (*Host, *surface
 	if runtimeManager == nil && !opts.withoutRuntimeManager {
 		runtimeManager = newRecordingRuntimeManager()
 	}
-	host, err := Open(hostTestContext(), Adapters{
-		Policy: policyAdapter{
-			developerMode:  opts.developerMode,
-			localGenerated: opts.localGenerated,
-			decision:       decision,
+	var runtimeModule *RuntimeModule
+	if runtimeManager != nil {
+		runtimeModule = &RuntimeModule{Manager: runtimeManager}
+	}
+	securityJournal := observability.NewMemorySecurityAuditJournal()
+	host, err := Open(hostTestContext(), Config{
+		Core: CoreAdapters{
+			Policy: policyAdapter{
+				developerMode:  opts.developerMode,
+				localGenerated: opts.localGenerated,
+				decision:       decision,
+			},
+			PackageTrustVerifier: trustVerifier,
+			Registry:             registryStore,
+			SurfaceCatalog:       surfaces,
+			Audit:                audit,
+			SecurityAudit:        securityJournal,
+			Diagnostics:          diagnostics,
+			Assets:               assetStore,
+			PluginData:           pluginData,
+			InstallStages:        installStageStore,
+			ConfirmationIntents:  confirmationIntentStore,
+			Operations:           operationStore,
+			Streams:              streamStore,
+			SurfaceTokens:        surfaceTokens,
 		},
-		PackageTrustVerifier:        trustVerifier,
-		ReleaseMetadataVerifier:     releaseMetadataVerifier,
-		RevocationVerifier:          revocationVerifier,
-		ReleaseSourcePolicy:         releaseSourcePolicy,
-		ReleaseArtifactResolver:     releaseArtifactResolver,
-		HostRequirements:            hostRequirements,
-		CapabilityContractArtifacts: &recordingCapabilityContractArtifactResolver{},
-		CapabilityContractKeys:      &recordingCapabilityContractKeyResolver{},
-		Registry:                    registryStore,
-		SurfaceCatalog:              surfaces,
-		Audit:                       audit,
-		Diagnostics:                 diagnostics,
-		Assets:                      assetStore,
-		PluginData:                  pluginData,
-		Connectivity:                connectivityBroker,
-		NetworkExecutor:             networkExecutor,
-		InstallStages:               installStageStore,
-		ConfirmationIntents:         confirmationIntentStore,
-		Operations:                  operationStore,
-		Streams:                     streamStore,
-		RuntimeManager:              runtimeManager,
-		Secrets:                     secretStore,
-		Capabilities:                capabilities,
-		CoreActions:                 coreActions,
-		SurfaceTokens:               surfaceTokens,
+		Release: &ReleaseModule{
+			ReleaseMetadataVerifier:     releaseMetadataVerifier,
+			RevocationVerifier:          revocationVerifier,
+			ReleaseSourcePolicy:         releaseSourcePolicy,
+			ReleaseArtifactResolver:     releaseArtifactResolver,
+			HostRequirements:            hostRequirements,
+			CapabilityContractArtifacts: &recordingCapabilityContractArtifactResolver{},
+			CapabilityContractKeys:      &recordingCapabilityContractKeyResolver{},
+		},
+		Runtime:      runtimeModule,
+		Capability:   &CapabilityModule{Registry: capabilities},
+		Connectivity: &ConnectivityModule{Broker: connectivityBroker, NetworkExecutor: networkExecutor},
+		Secrets:      &SecretsModule{Store: secretStore},
+		CoreAction:   &CoreActionModule{Adapter: coreActions},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -11119,9 +11110,24 @@ func (s *auditSink) lastEvent(eventType string) (AuditEvent, bool) {
 
 func assertAuditDetail(t *testing.T, event AuditEvent, key string, want any) {
 	t.Helper()
-	if got := event.Details[key]; got != want {
+	got := event.Details[key]
+	gotJSON, gotErr := normalizeAuditTestJSON(got)
+	wantJSON, wantErr := normalizeAuditTestJSON(want)
+	if gotErr != nil || wantErr != nil || !reflect.DeepEqual(gotJSON, wantJSON) {
 		t.Fatalf("audit detail %s = %#v, want %#v: %#v", key, got, want, event.Details)
 	}
+}
+
+func normalizeAuditTestJSON(value any) (any, error) {
+	raw, err := json.Marshal(value)
+	if err != nil {
+		return nil, err
+	}
+	var normalized any
+	if err := json.Unmarshal(raw, &normalized); err != nil {
+		return nil, err
+	}
+	return normalized, nil
 }
 
 func assertRuntimeLeaseField(t *testing.T, name string, ok bool) {
@@ -11151,6 +11157,23 @@ type failingAuditSink struct {
 }
 
 func (s failingAuditSink) AppendPluginAudit(context.Context, AuditEvent) error {
+	return s.err
+}
+
+type switchableAuditSink struct {
+	mu  sync.Mutex
+	err error
+}
+
+func (s *switchableAuditSink) setErr(err error) {
+	s.mu.Lock()
+	s.err = err
+	s.mu.Unlock()
+}
+
+func (s *switchableAuditSink) AppendPluginAudit(context.Context, AuditEvent) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	return s.err
 }
 

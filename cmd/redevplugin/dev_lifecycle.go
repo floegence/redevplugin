@@ -649,7 +649,7 @@ func newDevHarness(ctx context.Context, stateRoot string, loadedCapabilities []l
 	adapters := newEphemeralCLIAdapters(registryStore, pluginData)
 	adapters.Core.Registry = registryStore
 	adapters.Core.Assets = assets
-	adapters.SecretsModule = &host.SecretsModule{Store: secretStore}
+	adapters.Secrets = &host.SecretsModule{Store: secretStore}
 	adapters.Capability = &host.CapabilityModule{Registry: capabilities}
 	h, err := host.Open(cliContext(ctx), adapters)
 	if err != nil {

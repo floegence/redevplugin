@@ -245,32 +245,37 @@ func TestStressGateOperationCancelOwnershipEvidence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	pluginHost, err := host.Open(ctx, host.Adapters{
-		Policy:                      stressPolicy{},
-		PackageTrustVerifier:        platformAdapter,
-		ReleaseMetadataVerifier:     platformAdapter,
-		RevocationVerifier:          platformAdapter,
-		ReleaseSourcePolicy:         platformAdapter,
-		ReleaseArtifactResolver:     platformAdapter,
-		HostRequirements:            platformAdapter,
-		CapabilityContractArtifacts: platformAdapter,
-		CapabilityContractKeys:      platformAdapter,
-		Registry:                    registryStore,
-		Audit:                       audit,
-		Diagnostics:                 diagnostics,
-		Secrets:                     secrets.NewMemoryStore(),
-		SurfaceCatalog:              platformAdapter,
-		Assets:                      pluginpkg.NewMemoryAssetStore(),
-		InstallStages:               installstage.NewMemoryStore(),
-		Capabilities:                capabilities,
-		CoreActions:                 platformAdapter,
-		SurfaceTokens:               bridge.NewSurfaceTokenService(nil, bridge.SurfaceTokenOptions{}),
-		PluginData:                  pluginData,
-		Connectivity:                connectivityBroker,
-		NetworkExecutor:             connectivity.NewExecutor(connectivity.ExecutorOptions{}),
-		Operations:                  operations,
-		ConfirmationIntents:         security.NewMemoryConfirmationIntentStore(),
-		Streams:                     stream.NewMemoryStore(),
+	securityJournal := observability.NewMemorySecurityAuditJournal()
+	pluginHost, err := host.Open(ctx, host.Config{
+		Core: host.CoreAdapters{
+			Policy:               stressPolicy{},
+			PackageTrustVerifier: platformAdapter,
+			Registry:             registryStore,
+			Audit:                audit,
+			SecurityAudit:        securityJournal,
+			Diagnostics:          diagnostics,
+			SurfaceCatalog:       platformAdapter,
+			Assets:               pluginpkg.NewMemoryAssetStore(),
+			InstallStages:        installstage.NewMemoryStore(),
+			SurfaceTokens:        bridge.NewSurfaceTokenService(nil, bridge.SurfaceTokenOptions{}),
+			PluginData:           pluginData,
+			Operations:           operations,
+			ConfirmationIntents:  security.NewMemoryConfirmationIntentStore(),
+			Streams:              stream.NewMemoryStore(),
+		},
+		Release: &host.ReleaseModule{
+			ReleaseMetadataVerifier:     platformAdapter,
+			RevocationVerifier:          platformAdapter,
+			ReleaseSourcePolicy:         platformAdapter,
+			ReleaseArtifactResolver:     platformAdapter,
+			HostRequirements:            platformAdapter,
+			CapabilityContractArtifacts: platformAdapter,
+			CapabilityContractKeys:      platformAdapter,
+		},
+		Capability:   &host.CapabilityModule{Registry: capabilities},
+		Connectivity: &host.ConnectivityModule{Broker: connectivityBroker, NetworkExecutor: connectivity.NewExecutor(connectivity.ExecutorOptions{})},
+		Secrets:      &host.SecretsModule{Store: secrets.NewMemoryStore()},
+		CoreAction:   &host.CoreActionModule{Adapter: platformAdapter},
 	})
 	if err != nil {
 		_ = pluginData.Close()

@@ -23,6 +23,7 @@ import (
 	"github.com/floegence/redevplugin/pkg/capability"
 	"github.com/floegence/redevplugin/pkg/capabilitycontract"
 	"github.com/floegence/redevplugin/pkg/manifest"
+	"github.com/floegence/redevplugin/pkg/mutation"
 	"github.com/floegence/redevplugin/pkg/observability"
 	"github.com/floegence/redevplugin/pkg/operation"
 	"github.com/floegence/redevplugin/pkg/registry"
@@ -81,14 +82,11 @@ func (h *Host) resolvePackageCapabilityPins(ctx context.Context, pkg manifest.Ma
 }
 
 func (h *Host) ensureReleaseCapabilityContracts(ctx context.Context, release PluginPackageRelease, sourcePolicy SourcePolicySnapshot) ([]capabilitycontract.Pin, error) {
-	if err := h.requireFeature(FeatureCapability); err != nil {
-		return nil, err
-	}
 	requirement, err := h.selectHostRequirement(ctx, release)
 	if err != nil {
 		return nil, err
 	}
-	if requirement == nil {
+	if requirement == nil || len(requirement.RequiredCapabilityContracts) == 0 {
 		return nil, nil
 	}
 	pins := make([]capabilitycontract.Pin, 0, len(requirement.RequiredCapabilityContracts))
@@ -735,7 +733,17 @@ func (h *Host) startMethodExecution(ctx context.Context, record registry.PluginR
 	execution := capability.ExecutionContext{ExecutionBinding: capability.CloneExecutionBinding(binding)}
 	if method.Execution == manifest.MethodExecutionOperation || method.Execution == manifest.MethodExecutionSubscription {
 		cancelable := method.CancelPolicy.Cancelable
-		if _, err := h.adapters.Operations.Register(ctx, operation.RegisterRequest{
+		auditMutation, err := h.beginSecurityMutation(ctx, AuditEvent{
+			Type:             "plugin.operation.started",
+			PluginID:         record.PluginID,
+			PluginInstanceID: record.PluginInstanceID,
+			Details:          executionStartedAuditDetails(binding, "operation_id", binding.OperationID),
+		})
+		if err != nil {
+			lease.finish()
+			return capability.Invocation{}, nil, nil, err
+		}
+		_, registerErr := h.adapters.Operations.Register(ctx, operation.RegisterRequest{
 			OperationID:        binding.OperationID,
 			ExecutionBinding:   capability.CloneExecutionBinding(binding),
 			Cancelable:         &cancelable,
@@ -743,7 +751,8 @@ func (h *Host) startMethodExecution(ctx context.Context, record registry.PluginR
 			DisableBehavior:    cancelPolicyDisableBehavior(method.CancelPolicy),
 			UninstallBehavior:  cancelPolicyUninstallBehavior(method.CancelPolicy),
 			Now:                now,
-		}); err != nil {
+		})
+		if err := auditMutation.complete(context.WithoutCancel(ctx), registerErr); err != nil {
 			lease.finish()
 			return capability.Invocation{}, nil, nil, err
 		}
@@ -753,21 +762,25 @@ func (h *Host) startMethodExecution(ctx context.Context, record registry.PluginR
 		}
 		lease.setOperation(sink, cancelDispatch)
 		execution.Operation = sink
-		h.audit(ctx, AuditEvent{
-			Type:             "plugin.operation.started",
-			PluginID:         record.PluginID,
-			PluginInstanceID: record.PluginInstanceID,
-			Details:          executionStartedAuditDetails(binding, "operation_id", binding.OperationID),
-		})
 	}
 	if method.Execution == manifest.MethodExecutionSubscription {
-		if _, err := h.adapters.Streams.Register(ctx, stream.RegisterRequest{
+		auditMutation, err := h.beginSecurityMutation(ctx, AuditEvent{
+			Type:             "plugin.stream.started",
+			PluginID:         record.PluginID,
+			PluginInstanceID: record.PluginInstanceID,
+			Details:          executionStartedAuditDetails(binding, "stream_id", binding.StreamID),
+		})
+		if err != nil {
+			return capability.Invocation{}, nil, nil, h.rollbackMethodExecutionSetup(ctx, lease, err)
+		}
+		_, registerErr := h.adapters.Streams.Register(ctx, stream.RegisterRequest{
 			StreamID:         binding.StreamID,
 			ExecutionBinding: capability.CloneExecutionBinding(binding),
 			Direction:        stream.DirectionRead,
 			MaxBufferedBytes: binding.Quota.MaxStreamBytes,
 			Now:              now,
-		}); err != nil {
+		})
+		if err := auditMutation.complete(context.WithoutCancel(ctx), registerErr); err != nil {
 			return capability.Invocation{}, nil, nil, h.rollbackMethodExecutionSetup(ctx, lease, err)
 		}
 		sink := &hostStreamSink{host: h, lease: lease, streamID: binding.StreamID, maxBytes: binding.Quota.MaxStreamBytes}
@@ -777,12 +790,6 @@ func (h *Host) startMethodExecution(ctx context.Context, record registry.PluginR
 		}
 		lease.setStream(sink)
 		execution.Stream = sink
-		h.audit(ctx, AuditEvent{
-			Type:             "plugin.stream.started",
-			PluginID:         record.PluginID,
-			PluginInstanceID: record.PluginInstanceID,
-			Details:          executionStartedAuditDetails(binding, "stream_id", binding.StreamID),
-		})
 	}
 	h.lifecycleMu.RUnlock()
 	lifecycleLocked = false
@@ -903,7 +910,7 @@ func (h *Host) rollbackMethodExecutionSetup(ctx context.Context, lease *executio
 	cleanupErr := operationSink.failCauseUnchecked(context.WithoutCancel(ctx), capability.ExecutionFailurePlatformFailed, cause)
 	if cleanupErr != nil {
 		lease.markSetupRollbackPending(cause)
-		h.audit(context.WithoutCancel(ctx), AuditEvent{
+		auditErr := h.recordSecurityEvent(context.WithoutCancel(ctx), AuditEvent{
 			Type:             "plugin.operation.setup_rollback_pending",
 			PluginID:         lease.binding.PluginID,
 			PluginInstanceID: lease.binding.PluginInstanceID,
@@ -912,6 +919,7 @@ func (h *Host) rollbackMethodExecutionSetup(ctx context.Context, lease *executio
 				"stream_id":    lease.binding.StreamID,
 			},
 		})
+		cleanupErr = errors.Join(cleanupErr, auditErr)
 	}
 	return errors.Join(cause, cleanupErr)
 }
@@ -1031,7 +1039,9 @@ func (h *Host) reconcileDurableExecutionPage(ctx context.Context, records []oper
 					result = errors.Join(result, finishErr)
 					continue
 				}
-				h.audit(ctx, AuditEvent{Type: "plugin.operation.reconciled", PluginID: finished.PluginID, PluginInstanceID: finished.PluginInstanceID, Details: map[string]any{"operation_id": finished.OperationID, "status": finished.Status}})
+				if auditErr := h.recordSecurityEvent(ctx, AuditEvent{Type: "plugin.operation.reconciled", PluginID: finished.PluginID, PluginInstanceID: finished.PluginInstanceID, Details: map[string]any{"operation_id": finished.OperationID, "status": finished.Status}}); auditErr != nil {
+					result = errors.Join(result, mutation.Unknown(auditErr))
+				}
 				continue
 			}
 			result = errors.Join(result, streamErr)
@@ -1082,7 +1092,9 @@ func (h *Host) reconcileDurableExecutionPage(ctx context.Context, records []oper
 				}
 				reason = closed.Reason
 				failureCode = closed.FailureCode
-				h.audit(ctx, AuditEvent{Type: "plugin.stream.reconciled", PluginID: closed.PluginID, PluginInstanceID: closed.PluginInstanceID, Details: map[string]any{"stream_id": closed.StreamID, "status": closed.Status}})
+				if auditErr := h.recordSecurityEvent(ctx, AuditEvent{Type: "plugin.stream.reconciled", PluginID: closed.PluginID, PluginInstanceID: closed.PluginInstanceID, Details: map[string]any{"stream_id": closed.StreamID, "status": closed.Status}}); auditErr != nil {
+					result = errors.Join(result, mutation.Unknown(auditErr))
+				}
 			}
 			finished, finishErr := h.adapters.Operations.Finish(ctx, operation.FinishRequest{
 				OperationID: operationRecord.OperationID, Status: operationStatus, FailureCode: failureCode,
@@ -1092,7 +1104,9 @@ func (h *Host) reconcileDurableExecutionPage(ctx context.Context, records []oper
 				result = errors.Join(result, finishErr)
 				continue
 			}
-			h.audit(ctx, AuditEvent{Type: "plugin.operation.reconciled", PluginID: finished.PluginID, PluginInstanceID: finished.PluginInstanceID, Details: map[string]any{"operation_id": finished.OperationID, "status": finished.Status}})
+			if auditErr := h.recordSecurityEvent(ctx, AuditEvent{Type: "plugin.operation.reconciled", PluginID: finished.PluginID, PluginInstanceID: finished.PluginInstanceID, Details: map[string]any{"operation_id": finished.OperationID, "status": finished.Status}}); auditErr != nil {
+				result = errors.Join(result, mutation.Unknown(auditErr))
+			}
 			continue
 		}
 		switch {
@@ -1109,7 +1123,9 @@ func (h *Host) reconcileDurableExecutionPage(ctx context.Context, records []oper
 				result = errors.Join(result, closeErr)
 				continue
 			}
-			h.audit(ctx, AuditEvent{Type: "plugin.stream.reconciled", PluginID: closed.PluginID, PluginInstanceID: closed.PluginInstanceID, Details: map[string]any{"stream_id": closed.StreamID, "status": closed.Status}})
+			if auditErr := h.recordSecurityEvent(ctx, AuditEvent{Type: "plugin.stream.reconciled", PluginID: closed.PluginID, PluginInstanceID: closed.PluginInstanceID, Details: map[string]any{"stream_id": closed.StreamID, "status": closed.Status}}); auditErr != nil {
+				result = errors.Join(result, mutation.Unknown(auditErr))
+			}
 		case !operationDone && streamDone:
 			status, ok := operationStatusForStreamStatus(streamRecord.Status)
 			if !ok {
@@ -1123,7 +1139,9 @@ func (h *Host) reconcileDurableExecutionPage(ctx context.Context, records []oper
 				result = errors.Join(result, finishErr)
 				continue
 			}
-			h.audit(ctx, AuditEvent{Type: "plugin.operation.reconciled", PluginID: finished.PluginID, PluginInstanceID: finished.PluginInstanceID, Details: map[string]any{"operation_id": finished.OperationID, "status": finished.Status}})
+			if auditErr := h.recordSecurityEvent(ctx, AuditEvent{Type: "plugin.operation.reconciled", PluginID: finished.PluginID, PluginInstanceID: finished.PluginInstanceID, Details: map[string]any{"operation_id": finished.OperationID, "status": finished.Status}}); auditErr != nil {
+				result = errors.Join(result, mutation.Unknown(auditErr))
+			}
 		}
 	}
 	return result
@@ -1885,7 +1903,9 @@ func (s *hostOperationSink) Complete(ctx context.Context) error {
 	}
 	record, err := s.host.adapters.Operations.Finish(ctx, operation.FinishRequest{OperationID: s.operationID, Status: operation.StatusCompleted})
 	if err == nil && s.lease.finish() {
-		s.host.audit(ctx, AuditEvent{Type: "plugin.operation.finished", PluginID: record.PluginID, PluginInstanceID: record.PluginInstanceID, Details: map[string]any{"operation_id": record.OperationID, "status": record.Status}})
+		if auditErr := s.host.recordSecurityEvent(ctx, AuditEvent{Type: "plugin.operation.finished", PluginID: record.PluginID, PluginInstanceID: record.PluginInstanceID, Details: map[string]any{"operation_id": record.OperationID, "status": record.Status}}); auditErr != nil {
+			err = mutation.Unknown(auditErr)
+		}
 		s.host.maintainTerminalExecutionRecords(ctx, time.Now().UTC())
 	}
 	return err
@@ -1909,7 +1929,9 @@ func (s *hostOperationSink) Cancel(ctx context.Context, reason string) error {
 	}
 	record, err := s.host.adapters.Operations.Finish(ctx, operation.FinishRequest{OperationID: s.operationID, Status: operation.StatusCanceled, Reason: reason})
 	if err == nil && s.lease.finish() {
-		s.host.audit(ctx, AuditEvent{Type: "plugin.operation.finished", PluginID: record.PluginID, PluginInstanceID: record.PluginInstanceID, Details: map[string]any{"operation_id": record.OperationID, "status": record.Status}})
+		if auditErr := s.host.recordSecurityEvent(ctx, AuditEvent{Type: "plugin.operation.finished", PluginID: record.PluginID, PluginInstanceID: record.PluginInstanceID, Details: map[string]any{"operation_id": record.OperationID, "status": record.Status}}); auditErr != nil {
+			err = mutation.Unknown(auditErr)
+		}
 		s.host.maintainTerminalExecutionRecords(ctx, time.Now().UTC())
 	}
 	return err
@@ -1931,7 +1953,9 @@ func (s *hostOperationSink) Fail(ctx context.Context, code capability.ExecutionF
 func (s *hostOperationSink) failUnchecked(ctx context.Context, code capability.ExecutionFailureCode) error {
 	record, err := s.host.adapters.Operations.Finish(ctx, operation.FinishRequest{OperationID: s.operationID, Status: operation.StatusFailed, FailureCode: code})
 	if err == nil && s.lease.finish() {
-		s.host.audit(ctx, AuditEvent{Type: "plugin.operation.finished", PluginID: record.PluginID, PluginInstanceID: record.PluginInstanceID, Details: map[string]any{"operation_id": record.OperationID, "status": record.Status}})
+		if auditErr := s.host.recordSecurityEvent(ctx, AuditEvent{Type: "plugin.operation.finished", PluginID: record.PluginID, PluginInstanceID: record.PluginInstanceID, Details: map[string]any{"operation_id": record.OperationID, "status": record.Status}}); auditErr != nil {
+			err = mutation.Unknown(auditErr)
+		}
 		s.host.maintainTerminalExecutionRecords(ctx, time.Now().UTC())
 	}
 	return err
@@ -1977,7 +2001,9 @@ func (s *hostOperationSink) terminateUnchecked(ctx context.Context, code capabil
 	}
 	record, err := s.host.adapters.Operations.Finish(ctx, request)
 	if err == nil && s.lease.finish() {
-		s.host.audit(ctx, AuditEvent{Type: "plugin.operation.finished", PluginID: record.PluginID, PluginInstanceID: record.PluginInstanceID, Details: map[string]any{"operation_id": record.OperationID, "status": record.Status}})
+		if auditErr := s.host.recordSecurityEvent(ctx, AuditEvent{Type: "plugin.operation.finished", PluginID: record.PluginID, PluginInstanceID: record.PluginInstanceID, Details: map[string]any{"operation_id": record.OperationID, "status": record.Status}}); auditErr != nil {
+			err = mutation.Unknown(auditErr)
+		}
 		s.host.maintainTerminalExecutionRecords(ctx, time.Now().UTC())
 	}
 	return err
@@ -2156,9 +2182,13 @@ func (s *hostStreamSink) closeWithStatus(ctx context.Context, streamStatus strea
 	if s.lease.dispatchCompleted() {
 		s.lease.finish()
 	}
-	s.host.audit(ctx, AuditEvent{Type: "plugin.stream.closed", PluginID: streamRecord.PluginID, PluginInstanceID: streamRecord.PluginInstanceID, Details: map[string]any{"stream_id": streamRecord.StreamID, "status": streamRecord.Status}})
+	if auditErr := s.host.recordSecurityEvent(ctx, AuditEvent{Type: "plugin.stream.closed", PluginID: streamRecord.PluginID, PluginInstanceID: streamRecord.PluginInstanceID, Details: map[string]any{"stream_id": streamRecord.StreamID, "status": streamRecord.Status}}); auditErr != nil {
+		return mutation.Unknown(auditErr)
+	}
 	if operationSink != nil {
-		s.host.audit(ctx, AuditEvent{Type: "plugin.operation.finished", PluginID: operationRecord.PluginID, PluginInstanceID: operationRecord.PluginInstanceID, Details: map[string]any{"operation_id": operationRecord.OperationID, "status": operationRecord.Status}})
+		if auditErr := s.host.recordSecurityEvent(ctx, AuditEvent{Type: "plugin.operation.finished", PluginID: operationRecord.PluginID, PluginInstanceID: operationRecord.PluginInstanceID, Details: map[string]any{"operation_id": operationRecord.OperationID, "status": operationRecord.Status}}); auditErr != nil {
+			return mutation.Unknown(auditErr)
+		}
 	}
 	s.host.maintainTerminalExecutionRecords(ctx, time.Now().UTC())
 	return nil

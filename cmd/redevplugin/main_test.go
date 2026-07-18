@@ -257,12 +257,12 @@ func TestCLIScaffoldProducesPackageablePlugin(t *testing.T) {
 	if document.Worker.Type != pluginpkg.OpaqueSurfaceWorkerClassic || document.Worker.Path != "ui/assets/app.js" {
 		t.Fatalf("scaffold opaque worker = %#v", document.Worker)
 	}
-	if _, err := captureCLIOutput(t, "install-local", packageFile); !errors.Is(err, host.ErrPluginRuntimeNotConfigured) {
-		t.Fatalf("install-local scaffold package error = %v, want ErrPluginRuntimeNotConfigured", err)
+	if _, err := captureCLIOutput(t, "install-local", packageFile); !errors.Is(err, host.ErrFeatureNotConfigured) {
+		t.Fatalf("install-local scaffold package error = %v, want ErrFeatureNotConfigured", err)
 	}
 	for _, action := range []string{"enable", "disable", "uninstall"} {
-		if _, err := captureCLIOutput(t, action, packageFile); !errors.Is(err, host.ErrPluginRuntimeNotConfigured) {
-			t.Fatalf("%s scaffold package error = %v, want ErrPluginRuntimeNotConfigured", action, err)
+		if _, err := captureCLIOutput(t, action, packageFile); !errors.Is(err, host.ErrFeatureNotConfigured) {
+			t.Fatalf("%s scaffold package error = %v, want ErrFeatureNotConfigured", action, err)
 		}
 	}
 
@@ -318,8 +318,8 @@ func TestCLIScaffoldRunsGeneratedWorkerThroughBuiltRustRuntime(t *testing.T) {
 		Assets:           adapters.Core.Assets,
 		SurfaceTokens:    adapters.Core.SurfaceTokens,
 		PluginData:       pluginData,
-		Connectivity:     adapters.ConnectivityModule.Broker,
-		NetworkExecutor:  adapters.ConnectivityModule.NetworkExecutor,
+		Connectivity:     adapters.Connectivity.Broker,
+		NetworkExecutor:  adapters.Connectivity.NetworkExecutor,
 		ShardCount:       1,
 		HandshakeTimeout: 15 * time.Second,
 	})
@@ -455,8 +455,8 @@ func TestCommandRuntimeManagerRequiresExplicitShardCount(t *testing.T) {
 		Assets:          adapters.Core.Assets,
 		SurfaceTokens:   adapters.Core.SurfaceTokens,
 		PluginData:      pluginData,
-		Connectivity:    adapters.ConnectivityModule.Broker,
-		NetworkExecutor: adapters.ConnectivityModule.NetworkExecutor,
+		Connectivity:    adapters.Connectivity.Broker,
+		NetworkExecutor: adapters.Connectivity.NetworkExecutor,
 		ShardCount:      0,
 	})
 	if !errors.Is(err, runtimeclient.ErrRuntimeShardCount) {
@@ -480,8 +480,8 @@ func TestCommandRuntimeManagerProvidesExplicitRuntimeTiming(t *testing.T) {
 		Assets:           adapters.Core.Assets,
 		SurfaceTokens:    adapters.Core.SurfaceTokens,
 		PluginData:       pluginData,
-		Connectivity:     adapters.ConnectivityModule.Broker,
-		NetworkExecutor:  adapters.ConnectivityModule.NetworkExecutor,
+		Connectivity:     adapters.Connectivity.Broker,
+		NetworkExecutor:  adapters.Connectivity.NetworkExecutor,
 		ShardCount:       1,
 		HandshakeTimeout: 15 * time.Second,
 	})
@@ -536,8 +536,8 @@ func TestCommandRuntimeManagerRejectsMissingDescriptor(t *testing.T) {
 		Assets:           adapters.Core.Assets,
 		SurfaceTokens:    adapters.Core.SurfaceTokens,
 		PluginData:       pluginData,
-		Connectivity:     adapters.ConnectivityModule.Broker,
-		NetworkExecutor:  adapters.ConnectivityModule.NetworkExecutor,
+		Connectivity:     adapters.Connectivity.Broker,
+		NetworkExecutor:  adapters.Connectivity.NetworkExecutor,
 		ShardCount:       1,
 		HandshakeTimeout: 15 * time.Second,
 	})

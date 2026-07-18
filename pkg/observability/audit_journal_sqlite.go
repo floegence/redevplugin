@@ -37,6 +37,9 @@ func (s *SQLiteStore) BeginSecurityAudit(ctx context.Context, event AuditEvent) 
 			return SecurityAuditRecord{}, err
 		}
 	}
+	if err := reserveSQLiteSecurityAuditCapacity(ctx, tx, s.maxAuditEvents); err != nil {
+		return SecurityAuditRecord{}, err
+	}
 	seq, err := nextSQLiteSecurityAuditSequence(ctx, tx)
 	if err != nil {
 		return SecurityAuditRecord{}, err
@@ -46,9 +49,6 @@ func (s *SQLiteStore) BeginSecurityAudit(ctx context.Context, event AuditEvent) 
 	}
 	createdAt := event.OccurredAt.UTC().UnixNano()
 	if _, err := tx.ExecContext(ctx, `INSERT INTO plugin_security_audit_journal(event_id, seq, type, plugin_id, plugin_instance_id, surface_id, surface_instance_id, request_id, actor, occurred_at, details_json, state, mutation_outcome, completion_details_json, created_at, completed_at, exported_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL)`, event.EventID, seq, event.Type, event.PluginID, event.PluginInstanceID, event.SurfaceID, event.SurfaceInstanceID, event.RequestID, event.Actor, createdAt, rawDetails, string(SecurityAuditPending), "", []byte("null"), createdAt); err != nil {
-		return SecurityAuditRecord{}, err
-	}
-	if err := trimSQLiteSecurityAudits(ctx, tx, s.maxAuditEvents); err != nil {
 		return SecurityAuditRecord{}, err
 	}
 	if err := tx.Commit(); err != nil {
@@ -192,19 +192,31 @@ func nextSQLiteSecurityAuditSequence(ctx context.Context, tx *sql.Tx) (uint64, e
 	return next, nil
 }
 
-func trimSQLiteSecurityAudits(ctx context.Context, tx *sql.Tx, max int) error {
+func reserveSQLiteSecurityAuditCapacity(ctx context.Context, tx *sql.Tx, max int) error {
 	if max <= 0 {
 		max = defaultMaxEvents
 	}
-	var current uint64
-	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(seq), 0) FROM plugin_security_audit_journal`).Scan(&current); err != nil {
-		return err
+	for {
+		var boundary uint64
+		err := tx.QueryRowContext(ctx, `SELECT seq FROM plugin_security_audit_journal ORDER BY seq LIMIT 1 OFFSET ?`, max-1).Scan(&boundary)
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		result, err := tx.ExecContext(ctx, `DELETE FROM plugin_security_audit_journal WHERE seq = (SELECT seq FROM plugin_security_audit_journal WHERE exported_at IS NOT NULL ORDER BY seq LIMIT 1)`)
+		if err != nil {
+			return err
+		}
+		deleted, err := result.RowsAffected()
+		if err != nil {
+			return err
+		}
+		if deleted != 1 {
+			return ErrSecurityAuditCapacity
+		}
 	}
-	if current <= uint64(max) {
-		return nil
-	}
-	_, err := tx.ExecContext(ctx, `DELETE FROM plugin_security_audit_journal WHERE seq <= ?`, current-uint64(max))
-	return err
 }
 
 type securityAuditScanner interface{ Scan(dest ...any) error }

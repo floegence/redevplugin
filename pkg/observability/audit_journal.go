@@ -26,6 +26,7 @@ var (
 	ErrInvalidMutationOutcome = errors.New("invalid security audit mutation outcome")
 	ErrSecurityAuditNotFound  = errors.New("security audit journal record not found")
 	ErrSecurityAuditCompleted = errors.New("security audit mutation is already completed")
+	ErrSecurityAuditCapacity  = errors.New("security audit journal capacity exhausted")
 )
 
 // SecurityAuditRecord is an immutable snapshot of a journal record. EventID
@@ -59,9 +60,10 @@ type MemorySecurityAuditJournalOptions struct {
 	MaxEntries int
 }
 
-// MemorySecurityAuditJournal is a fixed-capacity ring implementation for
-// tests and in-memory hosts. A non-positive MaxEntries uses the platform
-// default and never disables retention limits.
+// MemorySecurityAuditJournal is a fixed-capacity implementation for tests and
+// in-memory hosts. Capacity pressure only evicts records that were exported;
+// protected records make Begin fail closed. A non-positive MaxEntries uses the
+// platform default and never disables retention limits.
 type MemorySecurityAuditJournal struct {
 	mu         sync.RWMutex
 	now        func() time.Time
@@ -107,6 +109,19 @@ func (j *MemorySecurityAuditJournal) BeginSecurityAudit(_ context.Context, event
 			return cloneSecurityAuditRecord(existing), nil
 		}
 	}
+	if j.count == j.maxEntries {
+		exportedIndex := -1
+		for index := 0; index < j.count; index++ {
+			if j.entries[(j.start+index)%j.maxEntries].ExportedAt != nil {
+				exportedIndex = index
+				break
+			}
+		}
+		if exportedIndex < 0 {
+			return SecurityAuditRecord{}, ErrSecurityAuditCapacity
+		}
+		j.removeLocked(exportedIndex)
+	}
 	j.nextSeq++
 	if event.EventID == "" {
 		event.EventID = eventID("audit", j.nextSeq)
@@ -117,14 +132,9 @@ func (j *MemorySecurityAuditJournal) BeginSecurityAudit(_ context.Context, event
 		State:     SecurityAuditPending,
 		CreatedAt: event.OccurredAt,
 	}
-	if j.count < j.maxEntries {
-		index := (j.start + j.count) % j.maxEntries
-		j.entries[index] = record
-		j.count++
-	} else {
-		j.entries[j.start] = record
-		j.start = (j.start + 1) % j.maxEntries
-	}
+	index := (j.start + j.count) % j.maxEntries
+	j.entries[index] = record
+	j.count++
 	return cloneSecurityAuditRecord(record), nil
 }
 
@@ -251,6 +261,17 @@ func (j *MemorySecurityAuditJournal) findLocked(eventID string) (SecurityAuditRe
 		return SecurityAuditRecord{}, false
 	}
 	return j.entries[index], true
+}
+
+func (j *MemorySecurityAuditJournal) removeLocked(logicalIndex int) {
+	for index := logicalIndex; index < j.count-1; index++ {
+		current := (j.start + index) % j.maxEntries
+		next := (j.start + index + 1) % j.maxEntries
+		j.entries[current] = j.entries[next]
+	}
+	last := (j.start + j.count - 1) % j.maxEntries
+	j.entries[last] = SecurityAuditRecord{}
+	j.count--
 }
 
 // SecurityAuditExporter delivers complete journal records to a host sink.

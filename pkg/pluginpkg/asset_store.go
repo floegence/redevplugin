@@ -12,6 +12,7 @@ import (
 var (
 	ErrPackageAssetNotFound = errors.New("package asset not found")
 	ErrInvalidAssetPath     = errors.New("package asset path is invalid")
+	ErrAssetStoreClosed     = errors.New("package asset store is closed")
 )
 
 type AssetStore interface {
@@ -19,11 +20,13 @@ type AssetStore interface {
 	ReadPackageMetadata(ctx context.Context, packageHash string) ([]Entry, error)
 	ReadAsset(ctx context.Context, packageHash string, assetPath string) (Asset, error)
 	DeletePackage(ctx context.Context, packageHash string) error
+	Close() error
 }
 
 type MemoryAssetStore struct {
 	mu       sync.RWMutex
 	packages map[string]map[string]Asset
+	closed   bool
 }
 
 func NewMemoryAssetStore() *MemoryAssetStore {
@@ -51,6 +54,9 @@ func (s *MemoryAssetStore) PutPackage(_ context.Context, pkg Package) error {
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.closed {
+		return ErrAssetStoreClosed
+	}
 	s.packages[pkg.PackageHash] = assets
 	return nil
 }
@@ -70,6 +76,9 @@ func (s *MemoryAssetStore) ReadAsset(_ context.Context, packageHash string, asse
 
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	if s.closed {
+		return Asset{}, ErrAssetStoreClosed
+	}
 	assets, ok := s.packages[packageHash]
 	if !ok {
 		return Asset{}, ErrPackageAssetNotFound
@@ -89,6 +98,9 @@ func (s *MemoryAssetStore) ReadPackageMetadata(_ context.Context, packageHash st
 	packageHash = strings.TrimSpace(packageHash)
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	if s.closed {
+		return nil, ErrAssetStoreClosed
+	}
 	assets, ok := s.packages[packageHash]
 	if !ok {
 		return nil, ErrPackageAssetNotFound
@@ -111,6 +123,20 @@ func (s *MemoryAssetStore) DeletePackage(_ context.Context, packageHash string) 
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.closed {
+		return ErrAssetStoreClosed
+	}
 	delete(s.packages, packageHash)
+	return nil
+}
+
+func (s *MemoryAssetStore) Close() error {
+	if s == nil {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.closed = true
+	s.packages = nil
 	return nil
 }

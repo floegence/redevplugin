@@ -40,6 +40,25 @@ func TestMemoryStoreAppendsAudit(t *testing.T) {
 	}
 }
 
+func TestMemoryStoreAuditSinkIsIdempotentByEventID(t *testing.T) {
+	store := NewMemoryStore()
+	ctx := context.Background()
+	event := AuditEvent{EventID: " security-event-1 ", Type: "plugin.enabled", Details: map[string]any{"attempt": 1}}
+	if err := store.AppendPluginAudit(ctx, event); err != nil {
+		t.Fatal(err)
+	}
+	event.Details["attempt"] = 2
+	if err := store.AppendPluginAudit(ctx, event); err != nil {
+		t.Fatal(err)
+	}
+	store.mu.RLock()
+	events := store.auditEvents.Snapshot()
+	store.mu.RUnlock()
+	if len(events) != 1 || events[0].EventID != "security-event-1" || events[0].Details["attempt"] != 1 {
+		t.Fatalf("audit events = %#v", events)
+	}
+}
+
 func TestMemoryStoreDiagnosticsListFiltersAndDefaults(t *testing.T) {
 	now := time.Date(2026, 6, 30, 12, 0, 0, 0, time.UTC)
 	store := NewMemoryStore(MemoryStoreOptions{Now: func() time.Time { return now }})
@@ -332,6 +351,35 @@ func TestSQLiteStoreTrimsOldestEvents(t *testing.T) {
 	}
 	if len(diagnostics) != 1 || diagnostics[0].Type != "d2" {
 		t.Fatalf("trimmed sqlite diagnostics mismatch: %#v", diagnostics)
+	}
+}
+
+func TestSQLiteStoreAuditSinkIsIdempotentByEventID(t *testing.T) {
+	ctx := context.Background()
+	store, err := NewSQLiteStore(ctx, filepath.Join(t.TempDir(), "observability.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	event := AuditEvent{EventID: " security-event-1 ", Type: "plugin.enabled", Details: map[string]any{"attempt": 1}}
+	if err := store.AppendPluginAudit(ctx, event); err != nil {
+		t.Fatal(err)
+	}
+	event.Details["attempt"] = 2
+	if err := store.AppendPluginAudit(ctx, event); err != nil {
+		t.Fatal(err)
+	}
+	var count int
+	var rawDetails []byte
+	if err := store.db.QueryRowContext(ctx, `SELECT COUNT(*), details_json FROM plugin_audit_events WHERE event_id = ?`, "security-event-1").Scan(&count, &rawDetails); err != nil {
+		t.Fatal(err)
+	}
+	details, err := unmarshalDetails(rawDetails)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 || details["attempt"] != float64(1) {
+		t.Fatalf("count = %d, details = %#v", count, details)
 	}
 }
 

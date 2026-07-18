@@ -195,9 +195,8 @@ func TestStopRuntimeRevokesSurfacesWhenManagerStopFails(t *testing.T) {
 	if !ok {
 		t.Fatalf("missing runtime stopped audit: %#v", audits.events)
 	}
-	if len(stopAudit.Details) != 1 || stopAudit.Details["revoked_surface_count"] != 1 {
-		t.Fatalf("runtime stopped audit details mismatch: %#v", stopAudit)
-	}
+	assertAuditDetail(t, stopAudit, "revoked_surface_count", 1)
+	assertAuditDetail(t, stopAudit, "mutation_outcome", string(mutation.OutcomeUnknown))
 	if len(diagnostics.events) != 1 || diagnostics.events[0].Type != "plugin.runtime.stop_failed" || diagnostics.events[0].Message != "plugin runtime stop failed" || diagnostics.events[0].InternalDetails["error"] != stopFailure.Error() {
 		t.Fatalf("runtime stop diagnostic mismatch: %#v", diagnostics.events)
 	}

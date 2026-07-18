@@ -982,7 +982,7 @@ func installVerifiedHarness(ctx context.Context, packageFile string, publicKeyFi
 		return err
 	}
 	adapters := newEphemeralCLIAdapters(registryStore, pluginData)
-	adapters.PackageTrustVerifier = trust.Ed25519Verifier{
+	verifier := trust.Ed25519Verifier{
 		Keyring: trust.StaticKeyring{Keys: []trust.SigningKey{{
 			Algorithm:   publicDoc.Algorithm,
 			KeyID:       publicDoc.KeyID,
@@ -991,6 +991,7 @@ func installVerifiedHarness(ctx context.Context, packageFile string, publicKeyFi
 			PublicKey:   publicKey,
 		}}},
 	}
+	adapters.Core.PackageTrustVerifier = verifier
 	h, err := host.Open(ctx, adapters)
 	if err != nil {
 		_ = pluginData.Close()
@@ -1192,29 +1193,30 @@ func cliContext(ctx context.Context) context.Context {
 	})
 }
 
-func newEphemeralCLIAdapters(registryStore registry.Store, pluginData host.PluginData) host.Adapters {
+func newEphemeralCLIAdapters(registryStore registry.Store, pluginData host.PluginData) host.Config {
 	events := observability.NewMemoryStore()
 	connectivityBroker := connectivity.NewMemoryBroker()
 	return host.Config{
 		Core: host.CoreAdapters{
-			Policy:              staticPolicyAdapter{},
-			Registry:            registryStore,
-			Audit:               events,
-			SecurityAudit:       events,
-			Diagnostics:         events,
-			SurfaceTokens:       bridge.NewSurfaceTokenService(nil, bridge.SurfaceTokenOptions{}),
-			PluginData:          pluginData,
-			Assets:              pluginpkg.NewMemoryAssetStore(),
-			InstallStages:       installstage.NewMemoryStore(),
-			Operations:          operation.NewMemoryStore(),
-			ConfirmationIntents: security.NewMemoryConfirmationIntentStore(),
-			Streams:             stream.NewMemoryStore(),
+			Policy:               staticPolicyAdapter{},
+			PackageTrustVerifier: trust.Ed25519Verifier{Keyring: trust.StaticKeyring{}},
+			Registry:             registryStore,
+			Audit:                events,
+			SecurityAudit:        events,
+			Diagnostics:          events,
+			SurfaceTokens:        bridge.NewSurfaceTokenService(nil, bridge.SurfaceTokenOptions{}),
+			PluginData:           pluginData,
+			Assets:               pluginpkg.NewMemoryAssetStore(),
+			InstallStages:        installstage.NewMemoryStore(),
+			Operations:           operation.NewMemoryStore(),
+			ConfirmationIntents:  security.NewMemoryConfirmationIntentStore(),
+			Streams:              stream.NewMemoryStore(),
 		},
-		ConnectivityModule: &host.ConnectivityModule{
+		Connectivity: &host.ConnectivityModule{
 			Broker:          connectivityBroker,
 			NetworkExecutor: connectivity.NewExecutor(connectivity.ExecutorOptions{}),
 		},
-		SecretsModule: &host.SecretsModule{Store: secrets.NewMemoryStore()},
+		Secrets: &host.SecretsModule{Store: secrets.NewMemoryStore()},
 	}
 }
 

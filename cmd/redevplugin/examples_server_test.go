@@ -536,13 +536,15 @@ func (examplesFixtureNetworkExecutor) UDPRoundTrip(context.Context, connectivity
 }
 
 type examplesRecordingEvents struct {
+	observability.SecurityAuditJournal
 	store       *observability.MemoryStore
 	mu          sync.Mutex
 	diagnostics []observability.DiagnosticEvent
 }
 
 func newExamplesRecordingEvents() *examplesRecordingEvents {
-	return &examplesRecordingEvents{store: observability.NewMemoryStore()}
+	store := observability.NewMemoryStore()
+	return &examplesRecordingEvents{SecurityAuditJournal: store, store: store}
 }
 
 func (s *examplesRecordingEvents) AppendPluginAudit(ctx context.Context, event observability.AuditEvent) error {

@@ -136,7 +136,17 @@ func TestSQLiteSecurityAuditJournalPersistsAndReconciles(t *testing.T) {
 func TestMemorySecurityAuditJournalUsesFixedCapacity(t *testing.T) {
 	ctx := context.Background()
 	journal := NewMemorySecurityAuditJournal(MemorySecurityAuditJournalOptions{MaxEntries: 2})
-	for _, typ := range []string{"a", "b", "c"} {
+	first, err := journal.BeginSecurityAudit(ctx, AuditEvent{Type: "a"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := journal.CompleteSecurityAudit(ctx, first.EventID, mutation.OutcomeCommitted, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := journal.MarkSecurityAuditExported(ctx, first.EventID); err != nil {
+		t.Fatal(err)
+	}
+	for _, typ := range []string{"b", "c"} {
 		if _, err := journal.BeginSecurityAudit(ctx, AuditEvent{Type: typ}); err != nil {
 			t.Fatal(err)
 		}
@@ -150,6 +160,174 @@ func TestMemorySecurityAuditJournalUsesFixedCapacity(t *testing.T) {
 	}
 }
 
+func TestMemorySecurityAuditJournalFailsClosedWhenProtectedRecordsFillCapacity(t *testing.T) {
+	ctx := context.Background()
+	journal := NewMemorySecurityAuditJournal(MemorySecurityAuditJournalOptions{MaxEntries: 2})
+	pending, err := journal.BeginSecurityAudit(ctx, AuditEvent{Type: "pending"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	unexported, err := journal.BeginSecurityAudit(ctx, AuditEvent{Type: "unexported"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := journal.CompleteSecurityAudit(ctx, unexported.EventID, mutation.OutcomeCommitted, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := journal.BeginSecurityAudit(ctx, AuditEvent{Type: "must-not-start"}); !errors.Is(err, ErrSecurityAuditCapacity) {
+		t.Fatalf("BeginSecurityAudit() error = %v, want ErrSecurityAuditCapacity", err)
+	}
+	pendingRecords, err := journal.ListPendingSecurityAudits(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	unexportedRecords, err := journal.ListUnexportedSecurityAudits(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pendingRecords) != 1 || pendingRecords[0].EventID != pending.EventID {
+		t.Fatalf("pending records = %#v", pendingRecords)
+	}
+	if len(unexportedRecords) != 1 || unexportedRecords[0].EventID != unexported.EventID {
+		t.Fatalf("unexported records = %#v", unexportedRecords)
+	}
+	if err := journal.MarkSecurityAuditExported(ctx, unexported.EventID); err != nil {
+		t.Fatal(err)
+	}
+	next, err := journal.BeginSecurityAudit(ctx, AuditEvent{Type: "after-capacity-release"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if next.EventID != "audit_000000000003" {
+		t.Fatalf("event ID after failed begin = %q, want audit_000000000003", next.EventID)
+	}
+}
+
+func TestSQLiteSecurityAuditJournalOnlyTrimsExportedRecords(t *testing.T) {
+	ctx := context.Background()
+	store, err := NewSQLiteStore(ctx, filepath.Join(t.TempDir(), "audit.sqlite"), MemoryStoreOptions{MaxAuditEvents: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	first, err := store.BeginSecurityAudit(ctx, AuditEvent{Type: "exported"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.CompleteSecurityAudit(ctx, first.EventID, mutation.OutcomeCommitted, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.MarkSecurityAuditExported(ctx, first.EventID); err != nil {
+		t.Fatal(err)
+	}
+	second, err := store.BeginSecurityAudit(ctx, AuditEvent{Type: "pending"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	third, err := store.BeginSecurityAudit(ctx, AuditEvent{Type: "replacement"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var exportedCount int
+	if err := store.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM plugin_security_audit_journal WHERE event_id = ?`, first.EventID).Scan(&exportedCount); err != nil {
+		t.Fatal(err)
+	}
+	if exportedCount != 0 {
+		t.Fatalf("exported retained record count = %d, want 0", exportedCount)
+	}
+	pendingRecords, err := store.ListPendingSecurityAudits(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pendingRecords) != 2 || pendingRecords[0].EventID != second.EventID || pendingRecords[1].EventID != third.EventID {
+		t.Fatalf("pending records = %#v", pendingRecords)
+	}
+}
+
+func TestSQLiteSecurityAuditJournalFailsClosedWhenProtectedRecordsFillCapacity(t *testing.T) {
+	ctx := context.Background()
+	store, err := NewSQLiteStore(ctx, filepath.Join(t.TempDir(), "audit.sqlite"), MemoryStoreOptions{MaxAuditEvents: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	pending, err := store.BeginSecurityAudit(ctx, AuditEvent{Type: "pending"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	unexported, err := store.BeginSecurityAudit(ctx, AuditEvent{Type: "unexported"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.CompleteSecurityAudit(ctx, unexported.EventID, mutation.OutcomeCommitted, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.BeginSecurityAudit(ctx, AuditEvent{Type: "must-not-start"}); !errors.Is(err, ErrSecurityAuditCapacity) {
+		t.Fatalf("BeginSecurityAudit() error = %v, want ErrSecurityAuditCapacity", err)
+	}
+	var count int
+	if err := store.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM plugin_security_audit_journal`).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 2 {
+		t.Fatalf("journal count = %d, want 2", count)
+	}
+	pendingRecords, err := store.ListPendingSecurityAudits(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	unexportedRecords, err := store.ListUnexportedSecurityAudits(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pendingRecords) != 1 || pendingRecords[0].EventID != pending.EventID {
+		t.Fatalf("pending records = %#v", pendingRecords)
+	}
+	if len(unexportedRecords) != 1 || unexportedRecords[0].EventID != unexported.EventID {
+		t.Fatalf("unexported records = %#v", unexportedRecords)
+	}
+	if err := store.MarkSecurityAuditExported(ctx, unexported.EventID); err != nil {
+		t.Fatal(err)
+	}
+	next, err := store.BeginSecurityAudit(ctx, AuditEvent{Type: "after-capacity-release"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if next.EventID != "audit_000000000003" {
+		t.Fatalf("event ID after failed begin = %q, want audit_000000000003", next.EventID)
+	}
+}
+
+func TestSecurityAuditExporterRetryAfterMarkFailureDoesNotDuplicateSinkEvent(t *testing.T) {
+	ctx := context.Background()
+	journal := NewMemorySecurityAuditJournal()
+	record, err := journal.BeginSecurityAudit(ctx, AuditEvent{Type: "plugin.enabled"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := journal.CompleteSecurityAudit(ctx, record.EventID, mutation.OutcomeCommitted, nil); err != nil {
+		t.Fatal(err)
+	}
+	failingJournal := &failFirstMarkSecurityAuditJournal{SecurityAuditJournal: journal}
+	sink := NewMemoryStore()
+	exporter := NewSecurityAuditExporter(failingJournal, sink)
+	if err := exporter.Export(ctx); err == nil {
+		t.Fatal("first Export() error = nil, want mark failure")
+	}
+	if err := exporter.Export(ctx); err != nil {
+		t.Fatal(err)
+	}
+	sink.mu.RLock()
+	events := sink.auditEvents.Snapshot()
+	sink.mu.RUnlock()
+	if len(events) != 1 || events[0].EventID != record.EventID {
+		t.Fatalf("sink events = %#v", events)
+	}
+}
+
 type recordingAuditSink struct {
 	events []AuditEvent
 }
@@ -157,4 +335,17 @@ type recordingAuditSink struct {
 func (s *recordingAuditSink) AppendPluginAudit(_ context.Context, event AuditEvent) error {
 	s.events = append(s.events, event)
 	return nil
+}
+
+type failFirstMarkSecurityAuditJournal struct {
+	SecurityAuditJournal
+	failed bool
+}
+
+func (j *failFirstMarkSecurityAuditJournal) MarkSecurityAuditExported(ctx context.Context, eventID string) error {
+	if !j.failed {
+		j.failed = true
+		return errors.New("injected mark failure")
+	}
+	return j.SecurityAuditJournal.MarkSecurityAuditExported(ctx, eventID)
 }

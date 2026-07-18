@@ -84,6 +84,7 @@ func (s *SQLiteStore) AppendPluginAudit(ctx context.Context, event AuditEvent) e
 	event.SurfaceInstanceID = strings.TrimSpace(event.SurfaceInstanceID)
 	event.RequestID = strings.TrimSpace(event.RequestID)
 	event.Actor = strings.TrimSpace(event.Actor)
+	event.EventID = strings.TrimSpace(event.EventID)
 	event.Details = cloneMap(event.Details)
 	rawDetails, err := marshalDetails(event.Details)
 	if err != nil {
@@ -98,19 +99,28 @@ func (s *SQLiteStore) AppendPluginAudit(ctx context.Context, event AuditEvent) e
 		return err
 	}
 	defer rollbackUnlessCommitted(tx)
+	if event.EventID != "" {
+		var exists int
+		err := tx.QueryRowContext(ctx, `SELECT 1 FROM plugin_audit_events WHERE event_id = ? LIMIT 1`, event.EventID).Scan(&exists)
+		if err == nil {
+			return nil
+		}
+		if !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
+	}
 
 	seq, err := nextSQLiteSequence(ctx, tx, "audit_seq")
 	if err != nil {
 		return err
 	}
-	if strings.TrimSpace(event.EventID) == "" {
+	if event.EventID == "" {
 		event.EventID = eventID("audit", seq)
-	} else {
-		event.EventID = strings.TrimSpace(event.EventID)
 	}
-	if _, err := tx.ExecContext(ctx, `
+	result, err := tx.ExecContext(ctx, `
 INSERT INTO plugin_audit_events(seq, event_id, type, plugin_id, plugin_instance_id, surface_id, surface_instance_id, request_id, actor, occurred_at, details_json)
-VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT(event_id) DO NOTHING`,
 		seq,
 		event.EventID,
 		event.Type,
@@ -122,8 +132,16 @@ VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		event.Actor,
 		event.OccurredAt.UTC().UnixNano(),
 		rawDetails,
-	); err != nil {
+	)
+	if err != nil {
 		return err
+	}
+	inserted, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if inserted == 0 {
+		return nil
 	}
 	if err := trimSQLiteEvents(ctx, tx, "plugin_audit_events", s.maxAuditEvents); err != nil {
 		return err
@@ -392,10 +410,12 @@ CREATE TABLE IF NOT EXISTS plugin_diagnostic_events (
 		return err
 	}
 	for _, statement := range []string{
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_plugin_audit_event_id ON plugin_audit_events(event_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_plugin_diagnostics_plugin_instance ON plugin_diagnostic_events(plugin_instance_id, type, severity, occurred_at)`,
 		`CREATE INDEX IF NOT EXISTS idx_plugin_diagnostics_surface ON plugin_diagnostic_events(surface_instance_id, severity, occurred_at)`,
 		`CREATE INDEX IF NOT EXISTS idx_plugin_diagnostics_owner ON plugin_diagnostic_events(owner_session_hash, owner_user_hash, owner_env_hash, session_channel_id_hash, occurred_at)`,
 		`CREATE INDEX IF NOT EXISTS idx_plugin_security_audit_journal_state ON plugin_security_audit_journal(state, exported_at, seq)`,
+		`CREATE INDEX IF NOT EXISTS idx_plugin_security_audit_journal_exported ON plugin_security_audit_journal(seq) WHERE exported_at IS NOT NULL`,
 	} {
 		if _, err := tx.ExecContext(ctx, statement); err != nil {
 			return err

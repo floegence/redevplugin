@@ -96,8 +96,12 @@ func TestWorkerInstallRejectsMissingRuntimeBeforeMutation(t *testing.T) {
 		PackageReader: bytes.NewReader(packageBytes),
 		PackageSize:   int64(len(packageBytes)),
 	})
-	if !errors.Is(err, ErrPluginRuntimeNotConfigured) {
-		t.Fatalf("InstallLocalPackage() error = %v, want ErrPluginRuntimeNotConfigured", err)
+	if !errors.Is(err, ErrFeatureNotConfigured) {
+		t.Fatalf("InstallLocalPackage() error = %v, want ErrFeatureNotConfigured", err)
+	}
+	var missing FeatureNotConfiguredError
+	if !errors.As(err, &missing) || len(missing.MissingFeatures()) != 1 || missing.MissingFeatures()[0] != FeatureRuntime {
+		t.Fatalf("InstallLocalPackage() missing features = %#v, want runtime", missing.MissingFeatures())
 	}
 	records, listErr := h.ListPlugins(hostTestContext())
 	if listErr != nil {

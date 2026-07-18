@@ -153,12 +153,21 @@ func (s *MemoryStore) AppendPluginAudit(_ context.Context, event AuditEvent) err
 	event.SurfaceInstanceID = strings.TrimSpace(event.SurfaceInstanceID)
 	event.RequestID = strings.TrimSpace(event.RequestID)
 	event.Actor = strings.TrimSpace(event.Actor)
+	event.EventID = strings.TrimSpace(event.EventID)
 	event.Details = cloneMap(event.Details)
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if event.EventID != "" {
+		for index := 0; index < s.auditEvents.count; index++ {
+			stored := s.auditEvents.values[(s.auditEvents.start+index)%len(s.auditEvents.values)]
+			if stored.EventID == event.EventID {
+				return nil
+			}
+		}
+	}
 	s.nextAuditSeq++
-	if strings.TrimSpace(event.EventID) == "" {
+	if event.EventID == "" {
 		event.EventID = eventID("audit", s.nextAuditSeq)
 	}
 	s.auditEvents.Push(event)

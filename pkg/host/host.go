@@ -15,6 +15,7 @@ import (
 	"net/url"
 	"path"
 	"runtime"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -122,14 +123,22 @@ const (
 // FeatureNotConfiguredError identifies an optional module that was not
 // installed in the host configuration.
 type FeatureNotConfiguredError struct {
-	Feature Feature
+	Features []Feature
 }
 
 func (e FeatureNotConfiguredError) Error() string {
-	return fmt.Sprintf("%s: %s", ErrFeatureNotConfigured, e.Feature)
+	values := make([]string, len(e.Features))
+	for index, feature := range e.Features {
+		values[index] = string(feature)
+	}
+	return fmt.Sprintf("%s: %s", ErrFeatureNotConfigured, strings.Join(values, ", "))
 }
 
 func (e FeatureNotConfiguredError) Unwrap() error { return ErrFeatureNotConfigured }
+
+func (e FeatureNotConfiguredError) MissingFeatures() []Feature {
+	return append([]Feature(nil), e.Features...)
+}
 
 type PolicyAdapter interface {
 	EvaluateLocalPolicy(ctx context.Context, session sessionctx.Context, plugin PluginRef, method manifest.MethodSpec) (PolicyDecision, error)
@@ -547,25 +556,26 @@ type PluginRef struct {
 
 // CoreAdapters contains the dependencies required by every Host instance.
 // Optional capabilities are intentionally kept out of this structure so a
-// host can expose only the integrations it actually provides.
+// host can expose only the integrations it actually provides. Package trust is
+// core because every package mutation crosses the same trust boundary.
 type CoreAdapters struct {
-	Policy              PolicyAdapter
-	Registry            registry.Store
-	Audit               AuditSink
-	SecurityAudit       observability.SecurityAuditJournal
-	Diagnostics         DiagnosticsSink
-	SurfaceCatalog      SurfaceCatalogSink
-	SurfaceTokens       *bridge.SurfaceTokenService
-	PluginData          PluginData
-	Assets              pluginpkg.AssetStore
-	InstallStages       installstage.Store
-	Operations          operation.Store
-	ConfirmationIntents security.ConfirmationIntentStore
-	Streams             stream.Store
+	Policy               PolicyAdapter
+	PackageTrustVerifier PackageTrustVerifier
+	Registry             registry.Store
+	Audit                AuditSink
+	SecurityAudit        observability.SecurityAuditJournal
+	Diagnostics          DiagnosticsSink
+	SurfaceCatalog       SurfaceCatalogSink
+	SurfaceTokens        *bridge.SurfaceTokenService
+	PluginData           PluginData
+	Assets               pluginpkg.AssetStore
+	InstallStages        installstage.Store
+	Operations           operation.Store
+	ConfirmationIntents  security.ConfirmationIntentStore
+	Streams              stream.Store
 }
 
 type ReleaseModule struct {
-	PackageTrustVerifier        PackageTrustVerifier
 	ReleaseMetadataVerifier     ReleaseMetadataVerifier
 	RevocationVerifier          SourceRevocationEvidenceVerifier
 	ReleaseSourcePolicy         ReleaseSourcePolicyResolver
@@ -596,18 +606,17 @@ type CoreActionModule struct {
 	Adapter CoreActionAdapter
 }
 
-type Adapters struct {
-	// Core and optional modules are the public configuration surface. The
-	// flattened fields below remain the Host's internal adapter view so the
-	// lifecycle implementation has one dependency lookup path.
-	Core               CoreAdapters
-	Release            *ReleaseModule
-	Runtime            *RuntimeModule
-	Capability         *CapabilityModule
-	ConnectivityModule *ConnectivityModule
-	SecretsModule      *SecretsModule
-	CoreActionModule   *CoreActionModule
+type Config struct {
+	Core         CoreAdapters
+	Release      *ReleaseModule
+	Runtime      *RuntimeModule
+	Capability   *CapabilityModule
+	Connectivity *ConnectivityModule
+	Secrets      *SecretsModule
+	CoreAction   *CoreActionModule
+}
 
+type normalizedAdapters struct {
 	Policy                      PolicyAdapter
 	PackageTrustVerifier        PackageTrustVerifier
 	ReleaseMetadataVerifier     ReleaseMetadataVerifier
@@ -637,11 +646,6 @@ type Adapters struct {
 	Streams                     stream.Store
 }
 
-// Config is the stable constructor configuration. It aliases Adapters so
-// existing embedders can migrate field-by-field without introducing a second
-// constructor or a second lifecycle implementation.
-type Config = Adapters
-
 type PluginData interface {
 	plugindata.Store
 	storage.FilesBroker
@@ -652,11 +656,11 @@ type PluginData interface {
 }
 
 type Host struct {
-	adapters            Adapters
-	modular             bool
+	adapters            normalizedAdapters
 	features            map[Feature]struct{}
 	securityJournal     observability.SecurityAuditJournal
 	securityExporter    *observability.SecurityAuditExporter
+	securityExportMu    sync.Mutex
 	surfaceTokens       *bridge.SurfaceTokenService
 	surfaceDocuments    *surfaceDocumentCache
 	methodSchemas       *methodSchemaCache
@@ -669,6 +673,7 @@ type Host struct {
 	lifecycleCancel     context.CancelFunc
 	lifecycleMu         sync.RWMutex
 	lifecycleWG         sync.WaitGroup
+	securityAuditWG     sync.WaitGroup
 	closed              bool
 	closeOnce           sync.Once
 	closeErr            error
@@ -1047,86 +1052,26 @@ type RejectMethodConfirmationResult struct {
 	Rejected bool `json:"rejected"`
 }
 
-func coreAdaptersConfigured(core CoreAdapters) bool {
-	return core.Policy != nil || core.Registry != nil || core.Audit != nil || core.Diagnostics != nil ||
-		core.SurfaceCatalog != nil || core.SurfaceTokens != nil || core.PluginData != nil || core.Assets != nil ||
-		core.InstallStages != nil || core.Operations != nil || core.ConfirmationIntents != nil || core.Streams != nil
-}
-
-func modularConfigConfigured(config Adapters) bool {
-	return coreAdaptersConfigured(config.Core) || config.Release != nil || config.Runtime != nil ||
-		config.Capability != nil || config.ConnectivityModule != nil || config.SecretsModule != nil || config.CoreActionModule != nil
-}
-
-func normalizeConfig(config Adapters) (Adapters, bool, map[Feature]struct{}, error) {
-	modular := modularConfigConfigured(config)
-	if !modular {
-		features := make(map[Feature]struct{}, 6)
-		if config.PackageTrustVerifier != nil {
-			features[FeatureRelease] = struct{}{}
-		}
-		if config.RuntimeManager != nil {
-			features[FeatureRuntime] = struct{}{}
-		}
-		if config.Capabilities != nil {
-			features[FeatureCapability] = struct{}{}
-		}
-		if config.Connectivity != nil && config.NetworkExecutor != nil {
-			features[FeatureConnectivity] = struct{}{}
-		}
-		if config.Secrets != nil {
-			features[FeatureSecrets] = struct{}{}
-		}
-		if config.CoreActions != nil {
-			features[FeatureCoreAction] = struct{}{}
-		}
-		return config, false, features, nil
-	}
-	adapters := config
+func normalizeConfig(config Config) (normalizedAdapters, map[Feature]struct{}, error) {
+	adapters := normalizedAdapters{}
 	core := config.Core
-	if core.Policy != nil {
-		adapters.Policy = core.Policy
-	}
-	if core.Registry != nil {
-		adapters.Registry = core.Registry
-	}
-	if core.Audit != nil {
-		adapters.Audit = core.Audit
-	}
-	if core.SecurityAudit != nil {
-		adapters.SecurityAudit = core.SecurityAudit
-	}
-	if core.Diagnostics != nil {
-		adapters.Diagnostics = core.Diagnostics
-	}
-	if core.SurfaceCatalog != nil {
-		adapters.SurfaceCatalog = core.SurfaceCatalog
-	}
-	if core.SurfaceTokens != nil {
-		adapters.SurfaceTokens = core.SurfaceTokens
-	}
-	if core.PluginData != nil {
-		adapters.PluginData = core.PluginData
-	}
-	if core.Assets != nil {
-		adapters.Assets = core.Assets
-	}
-	if core.InstallStages != nil {
-		adapters.InstallStages = core.InstallStages
-	}
-	if core.Operations != nil {
-		adapters.Operations = core.Operations
-	}
-	if core.ConfirmationIntents != nil {
-		adapters.ConfirmationIntents = core.ConfirmationIntents
-	}
-	if core.Streams != nil {
-		adapters.Streams = core.Streams
-	}
+	adapters.Policy = core.Policy
+	adapters.PackageTrustVerifier = core.PackageTrustVerifier
+	adapters.Registry = core.Registry
+	adapters.Audit = core.Audit
+	adapters.SecurityAudit = core.SecurityAudit
+	adapters.Diagnostics = core.Diagnostics
+	adapters.SurfaceCatalog = core.SurfaceCatalog
+	adapters.SurfaceTokens = core.SurfaceTokens
+	adapters.PluginData = core.PluginData
+	adapters.Assets = core.Assets
+	adapters.InstallStages = core.InstallStages
+	adapters.Operations = core.Operations
+	adapters.ConfirmationIntents = core.ConfirmationIntents
+	adapters.Streams = core.Streams
 
 	features := make(map[Feature]struct{}, 6)
 	if module := config.Release; module != nil {
-		adapters.PackageTrustVerifier = module.PackageTrustVerifier
 		adapters.ReleaseMetadataVerifier = module.ReleaseMetadataVerifier
 		adapters.RevocationVerifier = module.RevocationVerifier
 		adapters.ReleaseSourcePolicy = module.ReleaseSourcePolicy
@@ -1144,30 +1089,32 @@ func normalizeConfig(config Adapters) (Adapters, bool, map[Feature]struct{}, err
 		adapters.Capabilities = module.Registry
 		features[FeatureCapability] = struct{}{}
 	}
-	if module := config.ConnectivityModule; module != nil {
+	if module := config.Connectivity; module != nil {
 		adapters.Connectivity = module.Broker
 		adapters.NetworkExecutor = module.NetworkExecutor
 		features[FeatureConnectivity] = struct{}{}
 	}
-	if module := config.SecretsModule; module != nil {
+	if module := config.Secrets; module != nil {
 		adapters.Secrets = module.Store
 		features[FeatureSecrets] = struct{}{}
 	}
-	if module := config.CoreActionModule; module != nil {
+	if module := config.CoreAction; module != nil {
 		adapters.CoreActions = module.Adapter
 		features[FeatureCoreAction] = struct{}{}
 	}
-	return adapters, true, features, validateModularAdapters(adapters, config)
+	return adapters, features, validateConfig(adapters, config)
 }
 
-func validateModularAdapters(adapters Adapters, config Adapters) error {
+func validateConfig(adapters normalizedAdapters, config Config) error {
 	checks := []struct {
 		name string
 		ok   bool
 	}{
 		{"policy adapter", adapters.Policy != nil},
+		{"package trust verifier", adapters.PackageTrustVerifier != nil},
 		{"registry store", adapters.Registry != nil},
 		{"audit sink", adapters.Audit != nil},
+		{"security audit journal", adapters.SecurityAudit != nil},
 		{"diagnostics sink", adapters.Diagnostics != nil},
 		{"surface token service", adapters.SurfaceTokens != nil},
 		{"plugin data store", adapters.PluginData != nil},
@@ -1183,7 +1130,7 @@ func validateModularAdapters(adapters Adapters, config Adapters) error {
 		}
 	}
 	if module := config.Release; module != nil {
-		if module.PackageTrustVerifier == nil || module.ReleaseMetadataVerifier == nil || module.RevocationVerifier == nil ||
+		if module.ReleaseMetadataVerifier == nil || module.RevocationVerifier == nil ||
 			module.ReleaseSourcePolicy == nil || module.ReleaseArtifactResolver == nil || module.HostRequirements == nil ||
 			module.CapabilityContractArtifacts == nil || module.CapabilityContractKeys == nil {
 			return ErrReleaseModuleRequired
@@ -1195,13 +1142,13 @@ func validateModularAdapters(adapters Adapters, config Adapters) error {
 	if module := config.Capability; module != nil && module.Registry == nil {
 		return ErrCapabilityModuleRequired
 	}
-	if module := config.ConnectivityModule; module != nil && (module.Broker == nil || module.NetworkExecutor == nil) {
+	if module := config.Connectivity; module != nil && (module.Broker == nil || module.NetworkExecutor == nil) {
 		return ErrConnectivityModuleRequired
 	}
-	if module := config.SecretsModule; module != nil && module.Store == nil {
+	if module := config.Secrets; module != nil && module.Store == nil {
 		return ErrSecretsModuleRequired
 	}
-	if module := config.CoreActionModule; module != nil && module.Adapter == nil {
+	if module := config.CoreAction; module != nil && module.Adapter == nil {
 		return ErrCoreActionModuleRequired
 	}
 	return nil
@@ -1335,92 +1282,9 @@ func Open(ctx context.Context, config Config) (*Host, error) {
 	if ctx == nil {
 		return nil, errors.New("context is required")
 	}
-	adapters, modular, features, err := normalizeConfig(config)
+	adapters, features, err := normalizeConfig(config)
 	if err != nil {
 		return nil, err
-	}
-	if modular {
-		if config.SurfaceCatalog == nil && config.Core.SurfaceCatalog == nil {
-			// Surface publication is a host presentation concern. A host that
-			// does not expose it remains valid for headless lifecycle use.
-			adapters.SurfaceCatalog = nil
-		}
-	} else {
-		if adapters.Policy == nil {
-			return nil, errors.New("policy adapter is required")
-		}
-		if adapters.PackageTrustVerifier == nil {
-			return nil, errors.New("package trust verifier is required")
-		}
-		if adapters.ReleaseMetadataVerifier == nil {
-			return nil, errors.New("release metadata verifier is required")
-		}
-		if adapters.RevocationVerifier == nil {
-			return nil, errors.New("source revocation verifier is required")
-		}
-		if adapters.ReleaseSourcePolicy == nil {
-			return nil, errors.New("release source policy resolver is required")
-		}
-		if adapters.ReleaseArtifactResolver == nil {
-			return nil, errors.New("release artifact resolver is required")
-		}
-		if adapters.HostRequirements == nil {
-			return nil, errors.New("host requirement policy is required")
-		}
-		if adapters.CapabilityContractArtifacts == nil {
-			return nil, errors.New("capability contract artifact resolver is required")
-		}
-		if adapters.CapabilityContractKeys == nil {
-			return nil, errors.New("capability contract key resolver is required")
-		}
-		if adapters.Registry == nil {
-			return nil, errors.New("registry store is required")
-		}
-		if adapters.Audit == nil {
-			return nil, errors.New("audit sink is required")
-		}
-		if adapters.Diagnostics == nil {
-			return nil, errors.New("diagnostics sink is required")
-		}
-		if adapters.Secrets == nil {
-			return nil, errors.New("secret store is required")
-		}
-		if adapters.SurfaceCatalog == nil {
-			return nil, errors.New("surface catalog sink is required")
-		}
-		if adapters.Capabilities == nil {
-			return nil, errors.New("capability registry is required")
-		}
-		if adapters.SurfaceTokens == nil {
-			return nil, errors.New("surface token service is required")
-		}
-		if adapters.Connectivity == nil {
-			return nil, errors.New("connectivity broker is required")
-		}
-		if adapters.PluginData == nil {
-			return nil, errors.New("plugin data store is required")
-		}
-		if adapters.NetworkExecutor == nil {
-			return nil, errors.New("network executor is required")
-		}
-		if adapters.Operations == nil {
-			return nil, errors.New("operation store is required")
-		}
-		if adapters.ConfirmationIntents == nil {
-			return nil, errors.New("confirmation intent store is required")
-		}
-		if adapters.Streams == nil {
-			return nil, errors.New("stream store is required")
-		}
-		if adapters.Assets == nil {
-			return nil, errors.New("asset store is required")
-		}
-		if adapters.InstallStages == nil {
-			return nil, errors.New("install stage store is required")
-		}
-		if adapters.CoreActions == nil {
-			return nil, errors.New("core action adapter is required")
-		}
 	}
 	surfaceGenerationID, err := newHostSurfaceGenerationID()
 	if err != nil {
@@ -1429,7 +1293,6 @@ func Open(ctx context.Context, config Config) (*Host, error) {
 	lifecycleCtx, lifecycleCancel := context.WithCancel(context.Background())
 	host := &Host{
 		adapters:            adapters,
-		modular:             modular,
 		features:            features,
 		securityJournal:     adapters.SecurityAudit,
 		surfaceTokens:       adapters.SurfaceTokens,
@@ -1441,11 +1304,6 @@ func Open(ctx context.Context, config Config) (*Host, error) {
 		streamReads:         newStreamReadLockRegistry(),
 		lifecycleCtx:        lifecycleCtx,
 		lifecycleCancel:     lifecycleCancel,
-	}
-	if host.securityJournal == nil {
-		if journal, ok := adapters.Audit.(observability.SecurityAuditJournal); ok {
-			host.securityJournal = journal
-		}
 	}
 	if host.securityJournal != nil {
 		if err := host.securityJournal.ReconcilePendingSecurityAudits(ctx); err != nil {
@@ -1502,6 +1360,7 @@ func (h *Host) Close() error {
 			h.executions.finishAll()
 		}
 		h.lifecycleWG.Wait()
+		h.securityAuditWG.Wait()
 		var runtimeCloseErr error
 		if h.adapters.RuntimeManager != nil {
 			shutdownCtx, cancel := context.WithTimeout(context.Background(), hostRuntimeShutdownTimeout)
@@ -1512,7 +1371,11 @@ func (h *Host) Close() error {
 		if h.adapters.PluginData != nil {
 			pluginDataCloseErr = h.adapters.PluginData.Close()
 		}
-		h.closeErr = errors.Join(runtimeCloseErr, pluginDataCloseErr)
+		var assetStoreCloseErr error
+		if h.adapters.Assets != nil {
+			assetStoreCloseErr = h.adapters.Assets.Close()
+		}
+		h.closeErr = errors.Join(runtimeCloseErr, pluginDataCloseErr, assetStoreCloseErr)
 	})
 	return h.closeErr
 }
@@ -1533,13 +1396,48 @@ func (h *Host) Features() []string {
 }
 
 func (h *Host) requireFeature(feature Feature) error {
-	if h == nil || !h.modular {
-		return nil
+	return h.requireFeatures([]Feature{feature})
+}
+
+func (h *Host) requireFeatures(required []Feature) error {
+	missing := make([]Feature, 0, len(required))
+	for _, candidate := range []Feature{FeatureRelease, FeatureRuntime, FeatureCapability, FeatureConnectivity, FeatureSecrets, FeatureCoreAction} {
+		if slices.Contains(required, candidate) && !h.featureConfigured(candidate) {
+			missing = append(missing, candidate)
+		}
 	}
-	if _, ok := h.features[feature]; !ok {
-		return FeatureNotConfiguredError{Feature: feature}
+	if len(missing) > 0 {
+		return FeatureNotConfiguredError{Features: missing}
 	}
 	return nil
+}
+
+func (h *Host) featureConfigured(feature Feature) bool {
+	if h == nil {
+		return false
+	}
+	if _, ok := h.features[feature]; !ok {
+		return false
+	}
+	switch feature {
+	case FeatureRelease:
+		return h.adapters.ReleaseMetadataVerifier != nil && h.adapters.RevocationVerifier != nil &&
+			h.adapters.ReleaseSourcePolicy != nil && h.adapters.ReleaseArtifactResolver != nil &&
+			h.adapters.HostRequirements != nil && h.adapters.CapabilityContractArtifacts != nil &&
+			h.adapters.CapabilityContractKeys != nil
+	case FeatureRuntime:
+		return h.adapters.RuntimeManager != nil
+	case FeatureCapability:
+		return h.adapters.Capabilities != nil
+	case FeatureConnectivity:
+		return h.adapters.Connectivity != nil && h.adapters.NetworkExecutor != nil
+	case FeatureSecrets:
+		return h.adapters.Secrets != nil
+	case FeatureCoreAction:
+		return h.adapters.CoreActions != nil
+	default:
+		return false
+	}
 }
 
 // ensureOpen registers an admitted lifecycle call before Close can publish the closed state.
@@ -1684,7 +1582,6 @@ func (h *Host) OpenSurface(ctx context.Context, req OpenSurfaceRequest) (result 
 	if err != nil {
 		return bridge.SurfaceBootstrap{}, err
 	}
-	h.audit(ctx, AuditEvent{Type: "plugin.surface.opened", PluginID: record.PluginID, PluginInstanceID: record.PluginInstanceID})
 	return bootstrap, nil
 }
 
@@ -1902,7 +1799,8 @@ func (h *Host) RevokeSurfaceScope(ctx context.Context, req RevokeSurfaceScopeReq
 	if err != nil {
 		return 0, err
 	}
-	defer func() { retErr = auditMutation.complete(context.WithoutCancel(ctx), retErr) }()
+	var auditDetails map[string]any
+	defer func() { retErr = auditMutation.completeWithDetails(context.WithoutCancel(ctx), retErr, auditDetails) }()
 	revoked, err := h.surfaceTokens.RevokeSurfaceScope(bridge.RevokeSurfaceScopeRequest{
 		OwnerSessionHash:     session.OwnerSessionHash,
 		OwnerUserHash:        session.OwnerUserHash,
@@ -1913,13 +1811,10 @@ func (h *Host) RevokeSurfaceScope(ctx context.Context, req RevokeSurfaceScopeReq
 	if err != nil {
 		return 0, err
 	}
-	h.audit(ctx, AuditEvent{
-		Type: "plugin.surface_scope.revoked",
-		Details: map[string]any{
-			"surface_count":  revoked,
-			"channel_scoped": session.SessionChannelIDHash != "",
-		},
-	})
+	auditDetails = map[string]any{
+		"surface_count":  revoked,
+		"channel_scoped": session.SessionChannelIDHash != "",
+	}
 	return revoked, nil
 }
 
@@ -1975,7 +1870,6 @@ func (h *Host) MintBridgeToken(ctx context.Context, req MintBridgeTokenRequest) 
 	if err != nil {
 		return bridge.GatewayTokenResult{}, err
 	}
-	h.audit(ctx, AuditEvent{Type: "plugin.bridge_token.minted", PluginID: req.Handshake.PluginID})
 	return result, nil
 }
 
@@ -2018,9 +1912,16 @@ func (h *Host) CallPluginMethod(ctx context.Context, req CallMethodRequest) (res
 				RequestHash:          requestHash,
 			}, ErrConfirmationRequired
 		}
-		intent, err := h.consumeConfirmationIntent(ctx, req.ConfirmationID, req.Now)
+		confirmationAudit, err := h.beginSecurityMutation(ctx, AuditEvent{Type: "plugin.confirmation.consumed", PluginID: call.record.PluginID, PluginInstanceID: call.record.PluginInstanceID})
 		if err != nil {
-			return CallMethodResult{}, fmt.Errorf("%w: %v", ErrConfirmationInvalid, err)
+			return CallMethodResult{}, err
+		}
+		intent, consumeErr := h.consumeConfirmationIntent(ctx, req.ConfirmationID, req.Now)
+		if err := confirmationAudit.complete(context.WithoutCancel(ctx), consumeErr); err != nil {
+			if consumeErr != nil && !errors.Is(err, ErrSecurityEventPersistence) {
+				return CallMethodResult{}, fmt.Errorf("%w: %v", ErrConfirmationInvalid, err)
+			}
+			return CallMethodResult{}, err
 		}
 		if intent.PluginInstanceID != call.record.PluginInstanceID ||
 			intent.SurfaceInstanceID != req.SurfaceInstanceID ||
@@ -2065,7 +1966,6 @@ func (h *Host) CallPluginMethod(ctx context.Context, req CallMethodRequest) (res
 		}); err != nil {
 			return CallMethodResult{}, fmt.Errorf("%w: %v", ErrConfirmationInvalid, err)
 		}
-		h.audit(ctx, AuditEvent{Type: "plugin.confirmation.consumed", PluginID: call.record.PluginID, PluginInstanceID: call.record.PluginInstanceID})
 		req.executionAuthorization = methodExecutionAuthorization{
 			confirmation: capability.ConfirmationEvidence{
 				Required:       true,
@@ -2084,7 +1984,9 @@ func (h *Host) CallPluginMethod(ctx context.Context, req CallMethodRequest) (res
 	if err != nil {
 		return CallMethodResult{}, err
 	}
-	h.audit(ctx, AuditEvent{Type: "plugin.method.called", PluginID: call.record.PluginID, PluginInstanceID: call.record.PluginInstanceID})
+	if err := h.recordSecurityEvent(ctx, AuditEvent{Type: "plugin.method.called", PluginID: call.record.PluginID, PluginInstanceID: call.record.PluginInstanceID}); err != nil {
+		return result, mutation.Unknown(err)
+	}
 	return result, nil
 }
 
@@ -2198,7 +2100,6 @@ func (h *Host) PrepareMethodConfirmation(ctx context.Context, req PrepareMethodC
 	}); err != nil {
 		return PrepareMethodConfirmationResult{}, err
 	}
-	h.audit(ctx, AuditEvent{Type: "plugin.confirmation.issued", PluginID: call.record.PluginID, PluginInstanceID: call.record.PluginInstanceID})
 	return PrepareMethodConfirmationResult{
 		ConfirmationID:      confirmationID,
 		ConfirmationTokenID: result.ConfirmationTokenID,
@@ -2389,7 +2290,7 @@ func (h *Host) InvokeIntent(ctx context.Context, req InvokeIntentRequest) (respo
 	if err != nil {
 		return CallMethodResult{}, err
 	}
-	h.audit(ctx, AuditEvent{
+	if err := h.recordSecurityEvent(ctx, AuditEvent{
 		Type:             "plugin.intent.invoked",
 		PluginID:         resolved.record.PluginID,
 		PluginInstanceID: resolved.record.PluginInstanceID,
@@ -2397,7 +2298,9 @@ func (h *Host) InvokeIntent(ctx context.Context, req InvokeIntentRequest) (respo
 			"intent_id": req.IntentID,
 			"method":    resolved.method.Method,
 		},
-	})
+	}); err != nil {
+		return result, mutation.Unknown(err)
+	}
 	return result, nil
 }
 
@@ -2635,6 +2538,9 @@ func (h *Host) installResolvedPackage(ctx context.Context, pkg pluginpkg.Package
 	if strings.TrimSpace(pluginInstanceID) == "" {
 		pluginInstanceID = defaultPluginInstanceID(pkg)
 	}
+	if err := h.preflightPackageFeatures(pkg.Manifest, trustInput); err != nil {
+		return registry.PluginRecord{}, err
+	}
 	if existing, err := h.adapters.Registry.GetPlugin(ctx, pluginInstanceID); err == nil {
 		return registry.PluginRecord{}, fmt.Errorf("%w: plugin %q is at management revision %d", ErrPluginAlreadyInstalled, pluginInstanceID, existing.ManagementRevision)
 	} else if !errors.Is(err, registry.ErrNotFound) {
@@ -2646,6 +2552,11 @@ func (h *Host) installResolvedPackage(ctx context.Context, pkg pluginpkg.Package
 	}
 	if err := h.preflightWorkerRuntime(ctx, registry.PluginRecord{Manifest: pkg.Manifest, RuntimeRequirement: runtimeRequirement}); err != nil {
 		return registry.PluginRecord{}, err
+	}
+	if trustInput.SourcePolicySnapshot != nil {
+		if err := h.recordSourceSecurityFloor(ctx, *trustInput.SourcePolicySnapshot, now); err != nil {
+			return registry.PluginRecord{}, err
+		}
 	}
 	auditMutation, err := h.beginSecurityMutation(ctx, AuditEvent{Type: "plugin.installed", PluginID: pkg.Manifest.PluginID(), PluginInstanceID: pluginInstanceID})
 	if err != nil {
@@ -2705,7 +2616,6 @@ func (h *Host) installResolvedPackage(ctx context.Context, pkg pluginpkg.Package
 		h.reportLifecycleDiagnostic(ctx, stored, "plugin.install_stage.commit_failed", err, map[string]any{"stage_id": stage.StageID})
 		return registry.PluginRecord{}, mutation.Unknown(err)
 	}
-	h.audit(ctx, AuditEvent{Type: "plugin.installed", PluginID: stored.PluginID, PluginInstanceID: stored.PluginInstanceID})
 	return stored, nil
 }
 
@@ -2771,12 +2681,20 @@ func (h *Host) UpdateReleaseRef(ctx context.Context, req UpdateReleaseRefRequest
 }
 
 func (h *Host) updateResolvedPackage(ctx context.Context, current registry.PluginRecord, pkg pluginpkg.Package, trustInput packageTrustInput, now time.Time, baseMetadata map[string]string) (result registry.PluginRecord, retErr error) {
+	if err := h.preflightPackageFeatures(pkg.Manifest, trustInput); err != nil {
+		return registry.PluginRecord{}, err
+	}
 	runtimeRequirement, err := runtimeRequirementForPackage(pkg.Manifest, trustInput)
 	if err != nil {
 		return registry.PluginRecord{}, err
 	}
 	if err := h.preflightWorkerRuntime(ctx, registry.PluginRecord{Manifest: pkg.Manifest, RuntimeRequirement: runtimeRequirement}); err != nil {
 		return registry.PluginRecord{}, err
+	}
+	if trustInput.SourcePolicySnapshot != nil {
+		if err := h.recordSourceSecurityFloor(ctx, *trustInput.SourcePolicySnapshot, now); err != nil {
+			return registry.PluginRecord{}, err
+		}
 	}
 	auditMutation, err := h.beginSecurityMutation(ctx, AuditEvent{Type: "plugin.updated", PluginID: current.PluginID, PluginInstanceID: current.PluginInstanceID})
 	if err != nil {
@@ -2856,7 +2774,6 @@ func (h *Host) updateResolvedPackage(ctx context.Context, current registry.Plugi
 		h.reportLifecycleDiagnostic(ctx, stored, "plugin.install_stage.commit_failed", err, map[string]any{"stage_id": stage.StageID})
 		return registry.PluginRecord{}, mutation.Unknown(err)
 	}
-	h.audit(ctx, AuditEvent{Type: "plugin.updated", PluginID: stored.PluginID, PluginInstanceID: stored.PluginInstanceID})
 	return stored, nil
 }
 
@@ -2887,10 +2804,10 @@ func (h *Host) resolveReleasePackage(ctx context.Context, action PackageTrustAct
 	if err != nil {
 		return pluginpkg.Package{}, PluginPackageRelease{}, SourcePolicySnapshot{}, nil, err
 	}
-	if err := h.recordSourceSecurityFloor(ctx, sourcePolicy, now); err != nil {
+	if err := enforceReleaseSourcePolicy(action, current, ref, sourcePolicy); err != nil {
 		return pluginpkg.Package{}, PluginPackageRelease{}, SourcePolicySnapshot{}, nil, err
 	}
-	if err := enforceReleaseSourcePolicy(action, current, ref, sourcePolicy); err != nil {
+	if err := h.validateSourceSecurityFloor(ctx, sourcePolicy); err != nil {
 		return pluginpkg.Package{}, PluginPackageRelease{}, SourcePolicySnapshot{}, nil, err
 	}
 	resolved, err := h.adapters.ReleaseArtifactResolver.ResolveReleaseArtifact(ctx, ReleaseArtifactResolveRequest{
@@ -4029,6 +3946,38 @@ func (h *Host) recordSourceSecurityFloor(ctx context.Context, snapshot SourcePol
 	return nil
 }
 
+func (h *Host) validateSourceSecurityFloor(ctx context.Context, snapshot SourcePolicySnapshot) error {
+	if snapshot.RevocationEvidence == nil {
+		return fmt.Errorf("%w: source policy revocation_evidence is required", ErrReleaseRefVerificationFailed)
+	}
+	hash, _, err := sourcePolicySnapshotProjection(snapshot)
+	if err != nil {
+		return err
+	}
+	candidate := registry.SourceSecurityFloor{
+		SourceID:                 snapshot.SourceID,
+		PolicyEpoch:              snapshot.PolicyEpoch,
+		KeyRotationEpoch:         snapshot.KeyRotationEpoch,
+		RevocationEpoch:          snapshot.RevocationEpoch,
+		SourcePolicySnapshotHash: hash,
+		RevocationMetadataSHA256: snapshot.RevocationEvidence.MetadataSHA256,
+	}
+	existing, err := h.adapters.Registry.GetSourceSecurityFloor(ctx, snapshot.SourceID)
+	if errors.Is(err, registry.ErrNotFound) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if err := registry.ValidateSourceSecurityFloorTransition(existing, candidate); err != nil {
+		if errors.Is(err, registry.ErrSourceSecurityFloorRollback) {
+			return ErrReleaseRefPolicyDenied
+		}
+		return err
+	}
+	return nil
+}
+
 func (h *Host) createInstallStage(ctx context.Context, action installstage.Action, pkg pluginpkg.Package, pluginInstanceID string, requestedTrust string, now time.Time) (installstage.Record, error) {
 	if h.adapters.InstallStages == nil {
 		return installstage.Record{}, errors.New("install stage store is required")
@@ -4122,6 +4071,9 @@ func (h *Host) DowngradePlugin(ctx context.Context, req DowngradeRequest) (resul
 	if err := requireStablePluginDataShape(current.Manifest, next.Manifest); err != nil {
 		return registry.PluginRecord{}, err
 	}
+	if err := h.preflightPackageFeatures(next.Manifest, packageTrustInput{}); err != nil {
+		return registry.PluginRecord{}, err
+	}
 	if err := h.preflightWorkerRuntime(ctx, next); err != nil {
 		return registry.PluginRecord{}, err
 	}
@@ -4147,7 +4099,6 @@ func (h *Host) DowngradePlugin(ctx context.Context, req DowngradeRequest) (resul
 	if err := h.refreshEnabledRuntimeState(ctx, stored); err != nil {
 		return registry.PluginRecord{}, mutation.Unknown(err)
 	}
-	h.audit(ctx, AuditEvent{Type: "plugin.downgraded", PluginID: stored.PluginID, PluginInstanceID: stored.PluginInstanceID})
 	return stored, nil
 }
 
@@ -4410,6 +4361,101 @@ func cloneRuntimeRequirement(requirement *registry.RuntimeRequirement) *registry
 		MinVersion:       requirement.MinVersion,
 		SupportedTargets: append([]string(nil), requirement.SupportedTargets...),
 	}
+}
+
+func (h *Host) preflightPackageFeatures(pluginManifest manifest.Manifest, input packageTrustInput) error {
+	return h.requireFeatures(requiredPackageFeatures(pluginManifest, input))
+}
+
+func requiredPackageFeatures(pluginManifest manifest.Manifest, input packageTrustInput) []Feature {
+	required := make([]Feature, 0, 6)
+	if input.ReleaseRef != nil || input.Release != nil {
+		required = append(required, FeatureRelease)
+	}
+	if len(pluginManifest.Workers) > 0 {
+		required = append(required, FeatureRuntime)
+	}
+	if len(pluginManifest.CapabilityBindings) > 0 || releaseRequiresCapabilities(input.Release) {
+		required = append(required, FeatureCapability)
+	}
+	if manifestRequiresConnectivity(pluginManifest) {
+		required = append(required, FeatureConnectivity)
+	}
+	if manifestRequiresSecrets(pluginManifest) {
+		required = append(required, FeatureSecrets)
+	}
+	for _, method := range pluginManifest.Methods {
+		if method.Route.Kind == manifest.MethodRouteCoreAction {
+			required = append(required, FeatureCoreAction)
+			break
+		}
+	}
+	return required
+}
+
+func releaseRequiresCapabilities(release *PluginPackageRelease) bool {
+	if release == nil {
+		return false
+	}
+	for _, requirement := range release.HostRequirements {
+		if len(requirement.RequiredCapabilityContracts) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+func manifestRequiresConnectivity(pluginManifest manifest.Manifest) bool {
+	if pluginManifest.NetworkAccess != nil && len(pluginManifest.NetworkAccess.Connectors) > 0 {
+		return true
+	}
+	for _, method := range pluginManifest.Methods {
+		if method.BrokerAccess != nil && len(method.BrokerAccess.Network) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+func manifestRequiresSecrets(pluginManifest manifest.Manifest) bool {
+	if pluginManifest.Settings != nil {
+		for _, field := range pluginManifest.Settings.Fields {
+			if strings.TrimSpace(field.SecretRef) != "" {
+				return true
+			}
+		}
+	}
+	if pluginManifest.NetworkAccess != nil {
+		for _, connector := range pluginManifest.NetworkAccess.Connectors {
+			if mapContainsSecretRef(connector.Auth) || mapContainsSecretRef(connector.TLS) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func mapContainsSecretRef(values map[string]any) bool {
+	for key, value := range values {
+		if strings.EqualFold(key, "secret_ref") {
+			if text, ok := value.(string); ok && strings.TrimSpace(text) != "" {
+				return true
+			}
+		}
+		switch nested := value.(type) {
+		case map[string]any:
+			if mapContainsSecretRef(nested) {
+				return true
+			}
+		case []any:
+			for _, item := range nested {
+				if object, ok := item.(map[string]any); ok && mapContainsSecretRef(object) {
+					return true
+				}
+			}
+		}
+	}
+	return false
 }
 
 func runtimeRequirementForPackage(pluginManifest manifest.Manifest, input packageTrustInput) (*registry.RuntimeRequirement, error) {
@@ -4867,7 +4913,9 @@ func (h *Host) RefreshEnabledPlugins(ctx context.Context) ([]RefreshEnabledPlugi
 			continue
 		}
 		results = append(results, refreshedPluginResult(record.PluginInstanceID))
-		h.audit(ctx, AuditEvent{Type: "plugin.runtime_state.refreshed", PluginID: record.PluginID, PluginInstanceID: record.PluginInstanceID})
+		if err := h.recordSecurityEvent(ctx, AuditEvent{Type: "plugin.runtime_state.refreshed", PluginID: record.PluginID, PluginInstanceID: record.PluginInstanceID}); err != nil {
+			return results, mutation.Unknown(err)
+		}
 	}
 	return results, nil
 }
@@ -4911,7 +4959,6 @@ func (h *Host) GrantPermission(ctx context.Context, req GrantPermissionRequest) 
 	if err := h.refreshConnectivityPolicy(ctx, snapshot.Plugin); err != nil {
 		return PermissionMutationResult{}, mutation.Unknown(err)
 	}
-	h.audit(ctx, AuditEvent{Type: "plugin.permission.granted", PluginID: record.PluginID, PluginInstanceID: record.PluginInstanceID})
 	permission, err := permissionGrantFromSnapshot(snapshot, req.PermissionID)
 	if err != nil {
 		return PermissionMutationResult{}, err
@@ -4949,7 +4996,6 @@ func (h *Host) RevokePermission(ctx context.Context, req RevokePermissionRequest
 	); err != nil {
 		return PermissionMutationResult{}, mutation.Unknown(err)
 	}
-	h.audit(ctx, AuditEvent{Type: "plugin.permission.revoked", PluginID: record.PluginID, PluginInstanceID: record.PluginInstanceID})
 	permission, err := permissionGrantFromSnapshot(snapshot, req.PermissionID)
 	if err != nil {
 		return PermissionMutationResult{}, err
@@ -5015,7 +5061,6 @@ func (h *Host) PutSecurityPolicy(ctx context.Context, req PutSecurityPolicyReque
 	); err != nil {
 		return SecurityPolicyResult{}, mutation.Unknown(err)
 	}
-	h.audit(ctx, AuditEvent{Type: "plugin.security_policy.updated", PluginID: record.PluginID, PluginInstanceID: record.PluginInstanceID})
 	if snapshot.Policy == nil {
 		return SecurityPolicyResult{}, mutation.Unknown(errors.New("committed security policy is missing from authorization snapshot"))
 	}
@@ -5088,7 +5133,6 @@ func (h *Host) DeleteSecurityPolicy(ctx context.Context, req DeleteSecurityPolic
 	); err != nil {
 		return registry.AuthorizationRevisions{}, mutation.Unknown(err)
 	}
-	h.audit(ctx, AuditEvent{Type: "plugin.security_policy.deleted", PluginID: record.PluginID, PluginInstanceID: record.PluginInstanceID})
 	return registry.AuthorizationRevisionsFromRecord(snapshot.Plugin), nil
 }
 
@@ -5267,7 +5311,6 @@ func (h *Host) StartRuntime(ctx context.Context, req StartRuntimeRequest) (resul
 	if err := validateRuntimeManagerHealth(health, descriptor); err != nil {
 		return runtimeclient.ManagerHealth{}, fmt.Errorf("%w: started runtime health: %v", ErrPluginRuntimeIncompatible, err)
 	}
-	h.audit(ctx, AuditEvent{Type: "plugin.runtime.started"})
 	return health, nil
 }
 
@@ -5284,13 +5327,14 @@ func (h *Host) StopRuntime(ctx context.Context) (retErr error) {
 	if err != nil {
 		return err
 	}
-	defer func() { retErr = auditMutation.complete(context.WithoutCancel(ctx), retErr) }()
+	var auditDetails map[string]any
+	defer func() { retErr = auditMutation.completeWithDetails(context.WithoutCancel(ctx), retErr, auditDetails) }()
 	var stopErr error
 	if h.adapters.RuntimeManager != nil {
 		stopErr = h.adapters.RuntimeManager.Stop(ctx)
 	}
 	revokedSurfaces := h.surfaceTokens.RevokeSurfacesExceptGeneration(h.surfaceGenerationID, time.Time{})
-	details := map[string]any{"revoked_surface_count": revokedSurfaces}
+	auditDetails = map[string]any{"revoked_surface_count": revokedSurfaces}
 	if stopErr != nil {
 		h.diagnostic(ctx, observability.DiagnosticEvent{
 			Type:            "plugin.runtime.stop_failed",
@@ -5299,7 +5343,6 @@ func (h *Host) StopRuntime(ctx context.Context) (retErr error) {
 			InternalDetails: map[string]any{"error": stopErr.Error()},
 		})
 	}
-	h.audit(ctx, AuditEvent{Type: "plugin.runtime.stopped", Details: details})
 	if stopErr != nil {
 		return mutation.Unknown(stopErr)
 	}
@@ -5363,7 +5406,7 @@ func (h *Host) GetOperation(ctx context.Context, operationID string) (operation.
 	return record, nil
 }
 
-func (h *Host) CancelOperation(ctx context.Context, req CancelOperationRequest) (operation.Record, error) {
+func (h *Host) CancelOperation(ctx context.Context, req CancelOperationRequest) (result operation.Record, retErr error) {
 	session, err := requireUserSession(ctx)
 	if err != nil {
 		return operation.Record{}, err
@@ -5381,6 +5424,11 @@ func (h *Host) CancelOperation(ctx context.Context, req CancelOperationRequest) 
 	if !current.Cancelable {
 		return operation.Record{}, operation.ErrNotCancelable
 	}
+	auditMutation, err := h.beginSecurityMutation(ctx, AuditEvent{Type: "plugin.operation.cancel_requested", PluginID: current.PluginID, PluginInstanceID: current.PluginInstanceID})
+	if err != nil {
+		return operation.Record{}, err
+	}
+	defer func() { retErr = auditMutation.complete(context.WithoutCancel(ctx), retErr) }()
 	record, err := h.adapters.Operations.RequestCancel(ctx, operation.CancelRequest{
 		OperationID: req.OperationID,
 		Reason:      req.Reason,
@@ -5389,7 +5437,6 @@ func (h *Host) CancelOperation(ctx context.Context, req CancelOperationRequest) 
 	if err != nil {
 		return operation.Record{}, err
 	}
-	h.audit(ctx, AuditEvent{Type: "plugin.operation.cancel_requested", PluginID: record.PluginID, PluginInstanceID: record.PluginInstanceID})
 	if err := h.dispatchOperationCancellation(ctx, record, req.Reason, req.Now, errors.New("operation cancellation requested")); err != nil {
 		return record, mutation.Unknown(err)
 	}
@@ -5491,7 +5538,9 @@ func (h *Host) armDetachedOperationCancelAckTimeout(record operation.Record) {
 			OperationID: current.OperationID, Status: current.Status, Reason: current.Reason,
 		})
 		if err == nil {
-			h.audit(ctx, AuditEvent{Type: "plugin.operation.finished", PluginID: finished.PluginID, PluginInstanceID: finished.PluginInstanceID, Details: map[string]any{"operation_id": finished.OperationID, "status": finished.Status}})
+			if auditErr := h.recordSecurityEvent(ctx, AuditEvent{Type: "plugin.operation.finished", PluginID: finished.PluginID, PluginInstanceID: finished.PluginInstanceID, Details: map[string]any{"operation_id": finished.OperationID, "status": finished.Status}}); auditErr != nil {
+				h.diagnostic(ctx, observability.DiagnosticEvent{Type: "plugin.security_event.persistence_failed", Severity: observability.DiagnosticSeverityWarning, Message: "security event persistence failed", InternalDetails: map[string]any{"error": auditErr.Error()}})
+			}
 		}
 	})
 	if !started {
@@ -5700,7 +5749,6 @@ func (h *Host) mintConnectionGrant(ctx context.Context, req MintConnectionGrantR
 	if err != nil {
 		return registry.PluginRecord{}, connectivity.ConnectionGrant{}, err
 	}
-	h.audit(ctx, AuditEvent{Type: "plugin.connectivity.grant_minted", PluginID: record.PluginID, PluginInstanceID: record.PluginInstanceID})
 	return record, grant, nil
 }
 
@@ -5716,7 +5764,7 @@ func (h *Host) MintNetworkHandleGrant(ctx context.Context, req MintConnectionGra
 		return NetworkHandleGrantResult{}, err
 	}
 	defer func() { retErr = auditMutation.complete(context.WithoutCancel(ctx), retErr) }()
-	record, grant, err := h.mintConnectionGrant(ctx, req)
+	_, grant, err := h.mintConnectionGrant(ctx, req)
 	if err != nil {
 		return NetworkHandleGrantResult{}, err
 	}
@@ -5752,7 +5800,6 @@ func (h *Host) MintNetworkHandleGrant(ctx context.Context, req MintConnectionGra
 	if err != nil {
 		return NetworkHandleGrantResult{}, err
 	}
-	h.audit(ctx, AuditEvent{Type: "plugin.connectivity.handle_grant_minted", PluginID: record.PluginID, PluginInstanceID: record.PluginInstanceID})
 	return NetworkHandleGrantResult{ConnectionGrant: grant, HandleGrant: handleGrant}, nil
 }
 
@@ -5813,7 +5860,6 @@ func (h *Host) MintStorageHandleGrant(ctx context.Context, req MintStorageHandle
 	if err != nil {
 		return StorageHandleGrantResult{}, err
 	}
-	h.audit(ctx, AuditEvent{Type: "plugin.storage.handle_grant_minted", PluginID: record.PluginID, PluginInstanceID: record.PluginInstanceID})
 	return StorageHandleGrantResult{Namespace: namespace, HandleGrant: handleGrant}, nil
 }
 
@@ -5887,7 +5933,6 @@ func (h *Host) EnablePlugin(ctx context.Context, req EnableRequest) (result regi
 			return registry.PluginRecord{}, mutation.Unknown(err)
 		}
 	}
-	h.audit(ctx, AuditEvent{Type: "plugin.enabled", PluginID: enabled.PluginID, PluginInstanceID: enabled.PluginInstanceID})
 	return enabled, nil
 }
 
@@ -5937,9 +5982,10 @@ func (h *Host) DisablePlugin(ctx context.Context, req DisableRequest) (result re
 			return registry.PluginRecord{}, mutation.Unknown(err)
 		}
 	}
-	h.audit(ctx, AuditEvent{Type: "plugin.disabled", PluginID: disabled.PluginID, PluginInstanceID: disabled.PluginInstanceID})
 	if len(operations) > 0 {
-		h.audit(ctx, AuditEvent{Type: "plugin.operations.disabled_transitioned", PluginID: disabled.PluginID, PluginInstanceID: disabled.PluginInstanceID})
+		if err := h.recordSecurityEvent(ctx, AuditEvent{Type: "plugin.operations.disabled_transitioned", PluginID: disabled.PluginID, PluginInstanceID: disabled.PluginInstanceID}); err != nil {
+			return registry.PluginRecord{}, mutation.Unknown(err)
+		}
 	}
 	streams, err := h.adapters.Streams.MarkPluginTransition(ctx, stream.PluginTransitionRequest{
 		PluginInstanceID: disabled.PluginInstanceID,
@@ -5951,7 +5997,9 @@ func (h *Host) DisablePlugin(ctx context.Context, req DisableRequest) (result re
 		return registry.PluginRecord{}, mutation.Unknown(err)
 	}
 	if streams.Changed > 0 {
-		h.audit(ctx, AuditEvent{Type: "plugin.streams.disabled_transitioned", PluginID: disabled.PluginID, PluginInstanceID: disabled.PluginInstanceID})
+		if err := h.recordSecurityEvent(ctx, AuditEvent{Type: "plugin.streams.disabled_transitioned", PluginID: disabled.PluginID, PluginInstanceID: disabled.PluginInstanceID}); err != nil {
+			return registry.PluginRecord{}, mutation.Unknown(err)
+		}
 	}
 	var revokeErr error
 	if err := h.revokePluginRuntimeCapabilities(ctx, disabled, req.Now); err != nil {
@@ -6003,7 +6051,9 @@ func (h *Host) UninstallPlugin(ctx context.Context, req UninstallRequest) (resul
 		}
 	}
 	if req.DeleteData && operationsBlockDelete(operations) {
-		h.audit(ctx, AuditEvent{Type: "plugin.operations.delete_blocked", PluginID: record.PluginID, PluginInstanceID: record.PluginInstanceID})
+		if err := h.recordSecurityEvent(ctx, AuditEvent{Type: "plugin.operations.delete_blocked", PluginID: record.PluginID, PluginInstanceID: record.PluginInstanceID}); err != nil {
+			return registry.PluginRecord{}, mutation.Unknown(errors.Join(operation.ErrDeleteBlocked, err))
+		}
 		return registry.PluginRecord{}, mutation.Unknown(operation.ErrDeleteBlocked)
 	}
 	commit, err := h.adapters.PluginData.CommitUninstall(ctx, plugindata.CommitUninstallRequest{
@@ -6047,12 +6097,15 @@ func (h *Host) UninstallPlugin(ctx context.Context, req UninstallRequest) (resul
 	if err := h.deleteSecretBindingsIfNeeded(ctx, record, req.DeleteData); err != nil {
 		derivedErr = errors.Join(derivedErr, err)
 	}
-	h.audit(ctx, AuditEvent{Type: "plugin.uninstalled", PluginID: record.PluginID, PluginInstanceID: record.PluginInstanceID, Details: map[string]any{"delete_data": req.DeleteData}})
 	if len(operations) > 0 {
-		h.audit(ctx, AuditEvent{Type: "plugin.operations.uninstalled_transitioned", PluginID: record.PluginID, PluginInstanceID: record.PluginInstanceID})
+		if err := h.recordSecurityEvent(ctx, AuditEvent{Type: "plugin.operations.uninstalled_transitioned", PluginID: record.PluginID, PluginInstanceID: record.PluginInstanceID}); err != nil {
+			derivedErr = errors.Join(derivedErr, err)
+		}
 	}
 	if streams.Changed > 0 {
-		h.audit(ctx, AuditEvent{Type: "plugin.streams.uninstalled_transitioned", PluginID: record.PluginID, PluginInstanceID: record.PluginInstanceID})
+		if err := h.recordSecurityEvent(ctx, AuditEvent{Type: "plugin.streams.uninstalled_transitioned", PluginID: record.PluginID, PluginInstanceID: record.PluginInstanceID}); err != nil {
+			derivedErr = errors.Join(derivedErr, err)
+		}
 	}
 	if derivedErr != nil {
 		return registry.PluginRecord{}, mutation.Unknown(derivedErr)
@@ -6067,7 +6120,7 @@ func (h *Host) ListRetainedData(ctx context.Context, req ListRetainedDataRequest
 	return h.adapters.PluginData.ListRetained(ctx, plugindata.RetainedFilter{PluginInstanceID: req.PluginInstanceID})
 }
 
-func (h *Host) DeleteRetainedData(ctx context.Context, req DeleteRetainedDataRequest) (plugindata.Binding, error) {
+func (h *Host) DeleteRetainedData(ctx context.Context, req DeleteRetainedDataRequest) (result plugindata.Binding, retErr error) {
 	if _, err := requireUserSession(ctx); err != nil {
 		return plugindata.Binding{}, err
 	}
@@ -6083,14 +6136,18 @@ func (h *Host) DeleteRetainedData(ctx context.Context, req DeleteRetainedDataReq
 	if len(records) != 1 {
 		return plugindata.Binding{}, plugindata.ErrBindingNotFound
 	}
+	auditMutation, err := h.beginSecurityMutation(ctx, AuditEvent{Type: "plugin.retained_data.deleted", PluginInstanceID: req.PluginInstanceID})
+	if err != nil {
+		return plugindata.Binding{}, err
+	}
+	defer func() { retErr = auditMutation.complete(context.WithoutCancel(ctx), retErr) }()
 	if err := h.adapters.PluginData.DeleteRetained(ctx, plugindata.DeleteRetainedRequest{PluginInstanceID: req.PluginInstanceID, ExpectedBindingRevision: req.ExpectedBindingRevision}); err != nil {
 		return plugindata.Binding{}, err
 	}
-	h.audit(ctx, AuditEvent{Type: "plugin.retained_data.deleted", PluginInstanceID: req.PluginInstanceID})
 	return records[0], nil
 }
 
-func (h *Host) BindRetainedData(ctx context.Context, req BindRetainedDataRequest) (plugindata.Binding, error) {
+func (h *Host) BindRetainedData(ctx context.Context, req BindRetainedDataRequest) (result plugindata.Binding, retErr error) {
 	if _, err := requireUserSession(ctx); err != nil {
 		return plugindata.Binding{}, err
 	}
@@ -6117,7 +6174,12 @@ func (h *Host) BindRetainedData(ctx context.Context, req BindRetainedDataRequest
 	if err != nil {
 		return plugindata.Binding{}, err
 	}
-	result, err := h.adapters.PluginData.BindRetained(ctx, plugindata.BindRetainedRequest{
+	auditMutation, err := h.beginSecurityMutation(ctx, AuditEvent{Type: "plugin.retained_data.bound", PluginID: target.PluginID, PluginInstanceID: target.PluginInstanceID, Details: map[string]any{"source_plugin_instance_id": req.SourcePluginInstanceID}})
+	if err != nil {
+		return plugindata.Binding{}, err
+	}
+	defer func() { retErr = auditMutation.complete(context.WithoutCancel(ctx), retErr) }()
+	dataset, err := h.adapters.PluginData.BindRetained(ctx, plugindata.BindRetainedRequest{
 		SourcePluginInstanceID:           req.SourcePluginInstanceID,
 		ExpectedSourceBindingRevision:    req.ExpectedSourceBindingRevision,
 		TargetPluginInstanceID:           target.PluginInstanceID,
@@ -6128,8 +6190,7 @@ func (h *Host) BindRetainedData(ctx context.Context, req BindRetainedDataRequest
 	if err != nil {
 		return plugindata.Binding{}, managementMutationError(target, err)
 	}
-	h.audit(ctx, AuditEvent{Type: "plugin.retained_data.bound", PluginID: target.PluginID, PluginInstanceID: target.PluginInstanceID, Details: map[string]any{"source_plugin_instance_id": req.SourcePluginInstanceID}})
-	return result.Binding, nil
+	return dataset.Binding, nil
 }
 
 func (h *Host) CleanupExpiredRetainedData(ctx context.Context, req CleanupExpiredRetainedDataRequest) (RetainedDataCleanupResult, error) {
@@ -6143,7 +6204,7 @@ func (h *Host) CleanupExpiredRetainedData(ctx context.Context, req CleanupExpire
 	return RetainedDataCleanupResult{Deleted: result.Deleted}, nil
 }
 
-func (h *Host) ExportPluginData(ctx context.Context, req ExportDataRequest) (ExportDataResult, error) {
+func (h *Host) ExportPluginData(ctx context.Context, req ExportDataRequest) (result ExportDataResult, retErr error) {
 	if _, err := requireUserSession(ctx); err != nil {
 		return ExportDataResult{}, err
 	}
@@ -6154,11 +6215,15 @@ func (h *Host) ExportPluginData(ctx context.Context, req ExportDataRequest) (Exp
 	if record.Manifest.Settings == nil && (record.Manifest.Storage == nil || len(record.Manifest.Storage.Stores) == 0) {
 		return ExportDataResult{}, ErrPluginDataNotDeclared
 	}
+	auditMutation, err := h.beginSecurityMutation(ctx, AuditEvent{Type: "plugin.data.exported", PluginID: record.PluginID, PluginInstanceID: record.PluginInstanceID})
+	if err != nil {
+		return ExportDataResult{}, err
+	}
+	defer func() { retErr = auditMutation.complete(context.WithoutCancel(ctx), retErr) }()
 	exported, err := h.adapters.PluginData.Export(ctx, plugindata.ExportRequest{PluginInstanceID: record.PluginInstanceID})
 	if err != nil {
 		return ExportDataResult{}, err
 	}
-	h.audit(ctx, AuditEvent{Type: "plugin.data.exported", PluginID: record.PluginID, PluginInstanceID: record.PluginInstanceID})
 	return ExportDataResult{BundleRef: exported.ObjectID, ContentHash: exported.ContentHash, SizeBytes: exported.SizeBytes}, nil
 }
 
@@ -6214,7 +6279,7 @@ func (h *Host) GetPluginSettings(ctx context.Context, req GetSettingsRequest) (S
 	return pluginSettingsResult(record, snapshot, secretMetadata)
 }
 
-func (h *Host) PatchPluginSettings(ctx context.Context, req PatchSettingsRequest) (SettingsResult, error) {
+func (h *Host) PatchPluginSettings(ctx context.Context, req PatchSettingsRequest) (result SettingsResult, retErr error) {
 	if _, err := requireUserSession(ctx); err != nil {
 		return SettingsResult{}, err
 	}
@@ -6233,6 +6298,11 @@ func (h *Host) PatchPluginSettings(ctx context.Context, req PatchSettingsRequest
 		}
 		set[key] = raw
 	}
+	auditMutation, err := h.beginSecurityMutation(ctx, AuditEvent{Type: "plugin.settings.updated", PluginID: record.PluginID, PluginInstanceID: record.PluginInstanceID})
+	if err != nil {
+		return SettingsResult{}, err
+	}
+	defer func() { retErr = auditMutation.complete(context.WithoutCancel(ctx), retErr) }()
 	snapshot, err := h.adapters.PluginData.PatchSettings(ctx, plugindata.PatchSettingsRequest{
 		PluginInstanceID:       record.PluginInstanceID,
 		ExpectedValuesRevision: req.ExpectedValuesRevision,
@@ -6242,7 +6312,6 @@ func (h *Host) PatchPluginSettings(ctx context.Context, req PatchSettingsRequest
 	if err != nil {
 		return SettingsResult{}, err
 	}
-	h.audit(ctx, AuditEvent{Type: "plugin.settings.updated", PluginID: record.PluginID, PluginInstanceID: record.PluginInstanceID})
 	secretMetadata, err := h.settingsSecretMetadata(ctx, record)
 	if err != nil {
 		return SettingsResult{}, mutation.Unknown(err)
@@ -6250,7 +6319,7 @@ func (h *Host) PatchPluginSettings(ctx context.Context, req PatchSettingsRequest
 	return pluginSettingsResult(record, snapshot, secretMetadata)
 }
 
-func (h *Host) ImportPluginData(ctx context.Context, req ImportDataRequest) (registry.PluginRecord, error) {
+func (h *Host) ImportPluginData(ctx context.Context, req ImportDataRequest) (result registry.PluginRecord, retErr error) {
 	if _, err := requireUserSession(ctx); err != nil {
 		return registry.PluginRecord{}, err
 	}
@@ -6271,6 +6340,11 @@ func (h *Host) ImportPluginData(ctx context.Context, req ImportDataRequest) (reg
 	if err != nil {
 		return registry.PluginRecord{}, err
 	}
+	auditMutation, err := h.beginSecurityMutation(ctx, AuditEvent{Type: "plugin.data.imported", PluginID: record.PluginID, PluginInstanceID: record.PluginInstanceID})
+	if err != nil {
+		return registry.PluginRecord{}, err
+	}
+	defer func() { retErr = auditMutation.complete(context.WithoutCancel(ctx), retErr) }()
 	if _, err := h.adapters.PluginData.Import(ctx, plugindata.ImportRequest{
 		PluginInstanceID:           record.PluginInstanceID,
 		ObjectID:                   strings.TrimSpace(req.BundleRef),
@@ -6284,11 +6358,10 @@ func (h *Host) ImportPluginData(ctx context.Context, req ImportDataRequest) (reg
 	if err != nil {
 		return registry.PluginRecord{}, mutation.Unknown(err)
 	}
-	h.audit(ctx, AuditEvent{Type: "plugin.data.imported", PluginID: record.PluginID, PluginInstanceID: record.PluginInstanceID})
 	return updated, nil
 }
 
-func (h *Host) BindSecretRef(ctx context.Context, req SecretBindRequest) error {
+func (h *Host) BindSecretRef(ctx context.Context, req SecretBindRequest) (retErr error) {
 	if err := h.requireFeature(FeatureSecrets); err != nil {
 		return err
 	}
@@ -6299,15 +6372,19 @@ func (h *Host) BindSecretRef(ctx context.Context, req SecretBindRequest) error {
 	if err != nil {
 		return err
 	}
+	auditMutation, err := h.beginSecurityMutation(ctx, AuditEvent{Type: "plugin.secret.bound", PluginID: record.PluginID, PluginInstanceID: record.PluginInstanceID})
+	if err != nil {
+		return err
+	}
+	defer func() { retErr = auditMutation.complete(context.WithoutCancel(ctx), retErr) }()
 	if err := h.adapters.Secrets.BindSecretRef(ctx, normalized); err != nil {
 		h.reportSecretAdapterFailure(ctx, record, "bind", err)
 		return mutation.Unknown(err)
 	}
-	h.audit(ctx, AuditEvent{Type: "plugin.secret.bound", PluginID: record.PluginID, PluginInstanceID: record.PluginInstanceID})
 	return nil
 }
 
-func (h *Host) TestSecretRef(ctx context.Context, req SecretTestRequest) error {
+func (h *Host) TestSecretRef(ctx context.Context, req SecretTestRequest) (retErr error) {
 	if err := h.requireFeature(FeatureSecrets); err != nil {
 		return err
 	}
@@ -6318,15 +6395,19 @@ func (h *Host) TestSecretRef(ctx context.Context, req SecretTestRequest) error {
 	if err != nil {
 		return err
 	}
+	auditMutation, err := h.beginSecurityMutation(ctx, AuditEvent{Type: "plugin.secret.tested", PluginID: record.PluginID, PluginInstanceID: record.PluginInstanceID})
+	if err != nil {
+		return err
+	}
+	defer func() { retErr = auditMutation.complete(context.WithoutCancel(ctx), retErr) }()
 	if err := h.adapters.Secrets.TestSecretRef(ctx, SecretTestRequest(normalized)); err != nil {
 		h.reportSecretAdapterFailure(ctx, record, "test", err)
 		return mutation.Unknown(err)
 	}
-	h.audit(ctx, AuditEvent{Type: "plugin.secret.tested", PluginID: record.PluginID, PluginInstanceID: record.PluginInstanceID})
 	return nil
 }
 
-func (h *Host) DeleteSecretRef(ctx context.Context, req SecretDeleteRequest) error {
+func (h *Host) DeleteSecretRef(ctx context.Context, req SecretDeleteRequest) (retErr error) {
 	if err := h.requireFeature(FeatureSecrets); err != nil {
 		return err
 	}
@@ -6337,11 +6418,15 @@ func (h *Host) DeleteSecretRef(ctx context.Context, req SecretDeleteRequest) err
 	if err != nil {
 		return err
 	}
+	auditMutation, err := h.beginSecurityMutation(ctx, AuditEvent{Type: "plugin.secret.deleted", PluginID: record.PluginID, PluginInstanceID: record.PluginInstanceID})
+	if err != nil {
+		return err
+	}
+	defer func() { retErr = auditMutation.complete(context.WithoutCancel(ctx), retErr) }()
 	if err := h.adapters.Secrets.DeleteSecretRef(ctx, SecretDeleteRequest(normalized)); err != nil {
 		h.reportSecretAdapterFailure(ctx, record, "delete", err)
 		return mutation.Unknown(err)
 	}
-	h.audit(ctx, AuditEvent{Type: "plugin.secret.deleted", PluginID: record.PluginID, PluginInstanceID: record.PluginInstanceID})
 	return nil
 }
 
@@ -6973,19 +7058,9 @@ func (h *Host) invokeWorker(ctx context.Context, record registry.PluginRecord, m
 		Revision: revision,
 		Now:      now,
 	})
-	if err := leaseAudit.complete(context.WithoutCancel(ctx), leaseErr); err != nil {
-		return dispatch, err
-	}
-	if leaseErr != nil {
-		return dispatch, leaseErr
-	}
-	h.audit(ctx, AuditEvent{
-		Type:              "plugin.runtime.lease.issued",
-		PluginID:          record.PluginID,
-		PluginInstanceID:  record.PluginInstanceID,
-		SurfaceInstanceID: req.SurfaceInstanceID,
-		Actor:             "host",
-		Details: map[string]any{
+	var leaseAuditDetails map[string]any
+	if leaseErr == nil {
+		leaseAuditDetails = map[string]any{
 			"lease_id":                 lease.LeaseID,
 			"token_id":                 lease.TokenID,
 			"method":                   lease.Method,
@@ -6999,8 +7074,14 @@ func (h *Host) invokeWorker(ctx context.Context, record registry.PluginRecord, m
 			"revoke_epoch":             lease.RevokeEpoch,
 			"target_descriptor_hashes": append([]string(nil), lease.TargetDescriptorHashes...),
 			"expires_at_unix_ms":       lease.ExpiresAtUnixMillis,
-		},
-	})
+		}
+	}
+	if err := leaseAudit.completeWithDetails(context.WithoutCancel(ctx), leaseErr, leaseAuditDetails); err != nil {
+		return dispatch, err
+	}
+	if leaseErr != nil {
+		return dispatch, leaseErr
+	}
 	rawPayload, err := json.Marshal(payload)
 	if err != nil {
 		return dispatch, err
@@ -7491,7 +7572,7 @@ func (h *Host) prepareConfirmationPlan(ctx context.Context, call resolvedMethodC
 		return nil, "", err
 	}
 	if preflightMethodName != "" {
-		h.audit(ctx, AuditEvent{
+		if err := h.recordSecurityEvent(ctx, AuditEvent{
 			Type:             "plugin.confirmation.preflighted",
 			PluginID:         call.record.PluginID,
 			PluginInstanceID: call.record.PluginInstanceID,
@@ -7500,7 +7581,9 @@ func (h *Host) prepareConfirmationPlan(ctx context.Context, call resolvedMethodC
 				"preflight_method": preflightMethodName,
 				"plan_hash":        planHash,
 			},
-		})
+		}); err != nil {
+			return nil, "", mutation.Unknown(err)
+		}
 	}
 	return plan, planHash, nil
 }
@@ -7623,7 +7706,8 @@ func (h *Host) revokePluginRuntimeCapabilities(ctx context.Context, record regis
 	if err != nil {
 		return err
 	}
-	defer func() { retErr = auditMutation.complete(context.WithoutCancel(ctx), retErr) }()
+	var auditDetails map[string]any
+	defer func() { retErr = auditMutation.completeWithDetails(context.WithoutCancel(ctx), retErr, auditDetails) }()
 	revokedExecutionLeases := h.executions.cancelPlugin(record.PluginInstanceID, capability.ErrExecutionRevoked)
 	var resultErr error
 	revokedTokens := 0
@@ -7677,7 +7761,7 @@ func (h *Host) revokePluginRuntimeCapabilities(ctx context.Context, record regis
 	reconcileCancel()
 	revokedExecutions := len(revokedExecutionLeases)
 	if runtimeRevoked || revokedTokens > 0 || revokedConfirmations > 0 || revokedExecutions > 0 {
-		details := map[string]any{
+		auditDetails = map[string]any{
 			"token_count":        revokedTokens,
 			"confirmation_count": revokedConfirmations,
 			"revoke_epoch":       record.RevokeEpoch,
@@ -7685,17 +7769,11 @@ func (h *Host) revokePluginRuntimeCapabilities(ctx context.Context, record regis
 			"execution_count":    revokedExecutions,
 		}
 		if runtimeRevoked {
-			details["closed_socket_count"] = runtimeRevokeResult.ClosedSocketCount
-			details["closed_stream_count"] = runtimeRevokeResult.ClosedStreamCount
-			details["closed_storage_handle_count"] = runtimeRevokeResult.ClosedStorageHandleCount
-			details["runtime_stopped"] = runtimeRevokeResult.RuntimeStopped
+			auditDetails["closed_socket_count"] = runtimeRevokeResult.ClosedSocketCount
+			auditDetails["closed_stream_count"] = runtimeRevokeResult.ClosedStreamCount
+			auditDetails["closed_storage_handle_count"] = runtimeRevokeResult.ClosedStorageHandleCount
+			auditDetails["runtime_stopped"] = runtimeRevokeResult.RuntimeStopped
 		}
-		h.audit(ctx, AuditEvent{
-			Type:             "plugin.runtime_capabilities.revoked",
-			PluginID:         record.PluginID,
-			PluginInstanceID: record.PluginInstanceID,
-			Details:          details,
-		})
 	}
 	return errors.Join(resultErr, runtimeErr)
 }
@@ -7906,16 +7984,20 @@ func compileConnectivityPolicy(record registry.PluginRecord) (connectivity.Polic
 	return policy, true, nil
 }
 
-func (h *Host) installConnectivityPolicy(ctx context.Context, record registry.PluginRecord, policy connectivity.PolicySet, hasPolicy bool) error {
+func (h *Host) installConnectivityPolicy(ctx context.Context, record registry.PluginRecord, policy connectivity.PolicySet, hasPolicy bool) (retErr error) {
 	if !hasPolicy {
 		return nil
 	}
+	auditMutation, err := h.beginSecurityMutation(ctx, AuditEvent{Type: "plugin.connectivity.policy_installed", PluginID: record.PluginID, PluginInstanceID: record.PluginInstanceID})
+	if err != nil {
+		return err
+	}
+	defer func() { retErr = auditMutation.complete(context.WithoutCancel(ctx), retErr) }()
 	if h.adapters.Connectivity != nil {
 		if err := h.adapters.Connectivity.InstallPolicy(ctx, policy); err != nil {
 			return err
 		}
 	}
-	h.audit(ctx, AuditEvent{Type: "plugin.connectivity.policy_installed", PluginID: record.PluginID, PluginInstanceID: record.PluginInstanceID})
 	return nil
 }
 
@@ -7941,14 +8023,18 @@ func (h *Host) refreshConnectivityPolicy(ctx context.Context, record registry.Pl
 	return nil
 }
 
-func (h *Host) deleteSecretBindingsIfNeeded(ctx context.Context, record registry.PluginRecord, deleteData bool) error {
+func (h *Host) deleteSecretBindingsIfNeeded(ctx context.Context, record registry.PluginRecord, deleteData bool) (retErr error) {
 	if !deleteData {
 		return nil
 	}
+	auditMutation, err := h.beginSecurityMutation(ctx, AuditEvent{Type: "plugin.secrets.deleted", PluginID: record.PluginID, PluginInstanceID: record.PluginInstanceID})
+	if err != nil {
+		return err
+	}
+	defer func() { retErr = auditMutation.complete(context.WithoutCancel(ctx), retErr) }()
 	if err := h.adapters.Secrets.DeletePlugin(ctx, record.PluginInstanceID); err != nil {
 		return err
 	}
-	h.audit(ctx, AuditEvent{Type: "plugin.secrets.deleted", PluginID: record.PluginID, PluginInstanceID: record.PluginInstanceID})
 	return nil
 }
 
@@ -7978,19 +8064,17 @@ func (h *Host) reportMethodRejection(ctx context.Context, record registry.Plugin
 	err = finalizeRPCError(ctx, err)
 	reason := methodRejectionReason(err)
 	var persistenceErr error
-	if h.adapters.Audit != nil {
-		if auditErr := h.adapters.Audit.AppendPluginAudit(ctx, AuditEvent{
-			Type:              "plugin.method.rejected",
-			PluginID:          record.PluginID,
-			PluginInstanceID:  record.PluginInstanceID,
-			SurfaceInstanceID: surfaceInstanceID,
-			Details: map[string]any{
-				"method": method,
-				"reason": reason,
-			},
-		}); auditErr != nil {
-			persistenceErr = errors.Join(persistenceErr, fmt.Errorf("%w: audit append failed", ErrSecurityEventPersistence))
-		}
+	if auditErr := h.recordSecurityEvent(ctx, AuditEvent{
+		Type:              "plugin.method.rejected",
+		PluginID:          record.PluginID,
+		PluginInstanceID:  record.PluginInstanceID,
+		SurfaceInstanceID: surfaceInstanceID,
+		Details: map[string]any{
+			"method": method,
+			"reason": reason,
+		},
+	}); auditErr != nil {
+		persistenceErr = errors.Join(persistenceErr, auditErr)
 	}
 	if h.adapters.Diagnostics != nil {
 		if diagnosticErr := h.appendDiagnostic(ctx, observability.DiagnosticEvent{
@@ -8193,12 +8277,6 @@ func secretRefInMap(values map[string]any, secretRef string) bool {
 		}
 	}
 	return false
-}
-
-func (h *Host) audit(ctx context.Context, event AuditEvent) {
-	if h.adapters.Audit != nil {
-		_ = h.adapters.Audit.AppendPluginAudit(ctx, event)
-	}
 }
 
 func defaultPluginInstanceID(pkg pluginpkg.Package) string {
