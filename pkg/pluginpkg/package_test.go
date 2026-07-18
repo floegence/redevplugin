@@ -35,6 +35,24 @@ func TestBuildAndReadPackage(t *testing.T) {
 	}
 }
 
+func TestPackageFromFilesTakesOwnership(t *testing.T) {
+	files, signatureFiles, err := collectFiles(writeFixturePackageDir(t), DefaultReadLimits())
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifestBytes := files["manifest.json"]
+	pkg, err := packageFromFiles(files, signatureFiles)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(manifestBytes) == 0 || len(pkg.Files["manifest.json"]) == 0 {
+		t.Fatal("manifest bytes are empty")
+	}
+	if &pkg.Files["manifest.json"][0] != &manifestBytes[0] {
+		t.Fatal("packageFromFiles cloned owned file bytes")
+	}
+}
+
 func TestBuildGeneratedPluginFixtures(t *testing.T) {
 	for _, name := range []string{"minimal", "networked", "storage", "method-contract"} {
 		t.Run(name, func(t *testing.T) {

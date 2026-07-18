@@ -196,6 +196,7 @@ type PackageSignature struct {
 }
 
 var deterministicModTime = time.Date(1980, 1, 1, 0, 0, 0, 0, time.UTC)
+var errZipEntrySizeMismatch = errors.New("zip entry size mismatch")
 
 func BuildFromDir(ctx context.Context, srcDir string, w io.Writer, limits ReadLimits) (Package, error) {
 	if err := limits.validate(); err != nil {
@@ -350,22 +351,37 @@ func Read(ctx context.Context, r io.ReaderAt, size int64, limits ReadLimits) (Pa
 		if !file.FileInfo().Mode().IsRegular() {
 			return Package{}, validationErrorf(ValidationCodePackagePathForbidden, "non_regular_entry", entryPath, "", "non-regular entry %q is not allowed", entryPath)
 		}
-		if int64(file.UncompressedSize64) > limits.maxEntryBytes {
+		if file.UncompressedSize64 > uint64(limits.maxEntryBytes) || file.UncompressedSize64 > uint64(^uint(0)>>1) {
 			return Package{}, validationErrorf(ValidationCodePackageTooLarge, "entry_bytes", entryPath, "", "entry %q too large", entryPath)
 		}
 		if file.CompressedSize64 > 0 && int64(file.UncompressedSize64/file.CompressedSize64) > limits.maxCompressionRatio {
 			return Package{}, validationErrorf(ValidationCodePackageTooLarge, "compression_ratio", entryPath, "", "entry %q compression ratio exceeds limit", entryPath)
 		}
-		total += int64(file.UncompressedSize64)
-		if total > limits.maxUncompressedBytes {
+		entryBytes := int64(file.UncompressedSize64)
+		if entryBytes > limits.maxUncompressedBytes-total {
 			return Package{}, validationErrorf(ValidationCodePackageTooLarge, "total_uncompressed_bytes", "", "", "package too large")
 		}
+		total += entryBytes
 		rc, err := file.Open()
 		if err != nil {
 			return Package{}, wrapValidationError(ValidationCodePackageInvalid, "entry_open_failed", entryPath, "", err)
 		}
-		content, readErr := io.ReadAll(io.LimitReader(rc, int64(file.UncompressedSize64)+1))
+		content := make([]byte, int(file.UncompressedSize64))
+		_, readErr := io.ReadFull(rc, content)
+		if readErr == nil {
+			var extra [1]byte
+			var extraBytes int
+			extraBytes, readErr = io.ReadFull(rc, extra[:])
+			if extraBytes > 0 {
+				readErr = errZipEntrySizeMismatch
+			} else if errors.Is(readErr, io.EOF) {
+				readErr = nil
+			}
+		}
 		closeErr := rc.Close()
+		if errors.Is(readErr, errZipEntrySizeMismatch) {
+			return Package{}, validationErrorf(ValidationCodePackageInvalid, "entry_size_mismatch", entryPath, "", "entry %q size mismatch", entryPath)
+		}
 		if readErr != nil {
 			return Package{}, wrapValidationError(ValidationCodePackageInvalid, "entry_read_failed", entryPath, "", readErr)
 		}
@@ -401,6 +417,7 @@ func ReadFile(ctx context.Context, filename string, limits ReadLimits) (Package,
 	return Read(ctx, file, stat.Size(), limits)
 }
 
+// packageFromFiles takes ownership of both maps and their byte slices.
 func packageFromFiles(files map[string][]byte, signatureFiles map[string][]byte) (Package, error) {
 	manifestBytes, ok := files["manifest.json"]
 	if !ok {
@@ -449,8 +466,8 @@ func packageFromFiles(files map[string][]byte, signatureFiles map[string][]byte)
 		Entries:           entries,
 		EntriesHash:       entriesHash,
 		PackageSignature:  packageSignature,
-		Files:             cloneFiles(files),
-		SignatureFiles:    cloneFiles(signatureFiles),
+		Files:             files,
+		SignatureFiles:    signatureFiles,
 	}, nil
 }
 
