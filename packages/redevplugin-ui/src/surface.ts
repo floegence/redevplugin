@@ -29,7 +29,7 @@ import {
 } from "./surface-scope.js";
 import {
   PluginUIReconcileError,
-  reconcilePluginUITrees,
+  reconcileValidatedPluginUITrees,
   validatePluginUITree,
   type PluginUIElementVNode,
   type PluginUIVNode,
@@ -620,7 +620,7 @@ export class PluginBridgeClient {
             tree: pending.tree,
           });
         } else {
-          const operations = reconcilePluginUITrees(this.#committedTree, pending.tree, {
+          const operations = reconcileValidatedPluginUITrees(this.#committedTree, pending.tree, {
             controlEditRevisions: this.#controlEditRevisions,
           });
           if (operations.length > 0) {

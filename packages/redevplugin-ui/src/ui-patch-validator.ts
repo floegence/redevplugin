@@ -101,6 +101,8 @@ const opaqueHandlePattern = new RegExp("^[A-Za-z0-9_-]{8,160}$");
 const allowedTags = new Set<string>(opaqueSurfaceAllowedTags);
 const globalAttributes = new Set<string>(opaqueSurfaceGlobalAttributes);
 const safeInputTypes = new Set<string>(opaqueSurfaceSafeInputTypes);
+const textNodeKeys = new Set(["type", "key", "text"]);
+const elementNodeKeys = new Set(["type", "key", "tag", "attributes", "children"]);
 const tagAttributes = new Map<string, ReadonlySet<string>>(
   Object.entries(opaqueSurfaceTagAttributes).map(([tag, attributes]) => [tag, new Set<string>(attributes)]),
 );
@@ -161,19 +163,23 @@ export function validatePluginUITree(tree: PluginUIVNode): PluginUIElementVNode 
 }
 
 function isText(value: unknown): value is PluginUITextVNode {
-  return isPlainRecord(value) && hasExactKeys(value, ["type", "key", "text"]) &&
+  return isPlainRecord(value) && hasExactKeys(value, textNodeKeys) &&
     value.type === "text" && typeof value.key === "string" && typeof value.text === "string";
 }
 
 function isElement(value: unknown): value is PluginUIElementVNode {
   if (!isPlainRecord(value)) return false;
-  return Object.keys(value).every((key) => ["type", "key", "tag", "attributes", "children"].includes(key)) &&
+  return hasAllowedKeys(value, elementNodeKeys) &&
     value.type === "element" && typeof value.key === "string" && typeof value.tag === "string";
 }
 
-function hasExactKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
+function hasExactKeys(value: Record<string, unknown>, keys: ReadonlySet<string>): boolean {
   const actual = Object.keys(value);
-  return actual.length === keys.length && keys.every((key) => Object.prototype.hasOwnProperty.call(value, key));
+  return actual.length === keys.size && actual.every((key) => keys.has(key));
+}
+
+function hasAllowedKeys(value: Record<string, unknown>, keys: ReadonlySet<string>): boolean {
+  return Object.keys(value).every((key) => keys.has(key));
 }
 
 function isPlainRecord(value: unknown): value is Record<string, unknown> {

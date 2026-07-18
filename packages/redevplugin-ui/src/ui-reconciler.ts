@@ -55,6 +55,15 @@ export function reconcilePluginUITrees(
 ): PluginUIPatchOperation[] {
   validatePluginUITree(current);
   validatePluginUITree(next);
+  return reconcileValidatedPluginUITrees(current, next, options);
+}
+
+// Internal fast path for callers that retain trees returned by validatePluginUITree.
+export function reconcileValidatedPluginUITrees(
+  current: PluginUIElementVNode,
+  next: PluginUIElementVNode,
+  options: PluginUIReconcileOptions = {},
+): PluginUIPatchOperation[] {
   if (current.key !== next.key || current.tag !== next.tag) {
     throw new PluginUIReconcileError("Plugin UI root key and tag are immutable");
   }
