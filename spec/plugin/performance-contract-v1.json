@@ -65,6 +65,7 @@
       "metrics": [
         { "name": "events_selected", "unit": "count", "comparator": "eq", "limit": 256 },
         { "name": "bounded_selects", "unit": "queries", "comparator": "eq", "limit": 1 },
+        { "name": "delivery_snapshots", "unit": "queries", "comparator": "eq", "limit": 2 },
         { "name": "range_deletes", "unit": "queries", "comparator": "eq", "limit": 1 },
         { "name": "remaining_events", "unit": "count", "comparator": "eq", "limit": 256 }
       ]
