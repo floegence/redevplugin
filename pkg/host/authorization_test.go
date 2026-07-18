@@ -494,3 +494,30 @@ func TestScopedDirectActionsDeriveResourceScopeBeforeAuthorization(t *testing.T)
 		})
 	}
 }
+
+func TestDeleteExportAuthorizationBindsBundleAndPluginOwnership(t *testing.T) {
+	h, _, _ := newTestHost(t, true, true)
+	authorization := &recordingAuthorizationAdapter{err: errors.New("deny")}
+	h.adapters.Authorization = authorization
+
+	err := h.DeleteExportedPluginData(hostTestContext(), DeleteExportDataRequest{
+		PluginInstanceID: "  plugini_export_owner  ",
+		BundleRef:        "  export_bundle_1  ",
+	})
+	if !errors.Is(err, ErrActionDenied) {
+		t.Fatalf("DeleteExportedPluginData() error = %v, want ErrActionDenied", err)
+	}
+	if len(authorization.requests) != 1 {
+		t.Fatalf("authorization requests = %#v", authorization.requests)
+	}
+	request := authorization.requests[0]
+	wantUserScope := sessionctx.ResourceScope{Kind: sessionctx.ScopeUser, OwnerEnvHash: "env_hash", OwnerUserHash: "user_hash"}
+	if request.Target != (AuthorizationTarget{Kind: ResourceDataExport, ID: "export_bundle_1", ResourceScope: wantUserScope}) {
+		t.Fatalf("export target = %#v", request.Target)
+	}
+	wantEnvironmentScope := sessionctx.ResourceScope{Kind: sessionctx.ScopeEnvironment, OwnerEnvHash: "env_hash"}
+	wantRelated := []AuthorizationTarget{{Kind: ResourcePlugin, ID: "plugini_export_owner", ResourceScope: wantEnvironmentScope}}
+	if len(request.RelatedTargets) != 1 || request.RelatedTargets[0] != wantRelated[0] {
+		t.Fatalf("related targets = %#v, want %#v", request.RelatedTargets, wantRelated)
+	}
+}
