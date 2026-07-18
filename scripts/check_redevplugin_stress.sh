@@ -186,7 +186,7 @@ if [[ "$MODE" != "fast" ]]; then
   }
 fi
 
-run_step go_race_core env GOWORK=off go test -race ./pkg/bridge ./pkg/connectivity ./pkg/host ./pkg/httpadapter ./pkg/operation ./pkg/registry ./pkg/runtimeclient ./pkg/storage ./pkg/stream ./pkg/stress || {
+run_step go_race_core env GOWORK=off go test -p=1 -race ./pkg/bridge ./pkg/connectivity ./pkg/host ./pkg/httpadapter ./pkg/operation ./pkg/registry ./pkg/runtimeclient ./pkg/storage ./pkg/stream ./pkg/stress || {
   write_summary
   exit "$STATUS"
 }
@@ -202,7 +202,7 @@ run_step stress_evidence env GOWORK=off REDEVPLUGIN_STRESS_EVIDENCE_PATH="$STRES
 }
 
 if [[ "$MODE" != "fast" ]]; then
-	run_step go_all env GOWORK=off go test ./cmd/... ./examples/... ./pkg/... || {
+	run_step go_all env GOWORK=off go test -p=1 ./cmd/... ./examples/... ./pkg/... || {
     write_summary
     exit "$STATUS"
   }

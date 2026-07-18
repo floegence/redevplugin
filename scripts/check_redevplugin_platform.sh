@@ -38,7 +38,8 @@ export GOWORK=off
 (
   cd "$ROOT_DIR"
   go list ./cmd/... ./examples/... ./pkg/...
-  go test ./cmd/... ./examples/... ./pkg/...
+  # Keep process-supervisor handshakes isolated from fresh Cargo builds.
+  go test -p=1 ./cmd/... ./examples/... ./pkg/...
   tmp_compatibility_manifest=$(mktemp "${TMPDIR:-/tmp}/redevplugin-compatibility.XXXXXX.json")
   tmp_scaffold_dir=$(mktemp -d "${TMPDIR:-/tmp}/redevplugin-scaffold.XXXXXX")
   tmp_package=$(mktemp "${TMPDIR:-/tmp}/redevplugin-minimal.XXXXXX.redevplugin")

@@ -122,7 +122,8 @@ export GOWORK=off
   test ! -e spec/plugin/ipc-v2.schema.json
   grep -q '^  quality-release:$' .github/workflows/release.yml
   grep -q 'name: Complete Release Quality Gate' .github/workflows/release.yml
-	grep -q 'GOWORK=off go test ./cmd/... ./examples/... ./pkg/...' .github/workflows/release.yml
+	grep -q 'GOWORK=off go test -p=1 ./cmd/... ./examples/... ./pkg/...' .github/workflows/ci.yml
+	grep -q 'GOWORK=off go test -p=1 ./cmd/... ./examples/... ./pkg/...' .github/workflows/release.yml
 	grep -q 'GOWORK=off go list ./cmd/... ./examples/... ./pkg/...' .github/workflows/release.yml
 	grep -q 'GOWORK=off golangci-lint run ./cmd/... ./examples/... ./pkg/...' .github/workflows/release.yml
   grep -q 'TypeScript, Examples, and browser-harness checks' .github/workflows/release.yml
