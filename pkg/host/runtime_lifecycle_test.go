@@ -289,7 +289,7 @@ func TestRuntimeArtifactProviderReadsBoundPackageAsset(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := h.adapters.Assets.PutPackage(hostTestContext(), pkg); err != nil {
+	if err := h.adapters.Assets.PutOwnedPackage(hostTestContext(), &pkg); err != nil {
 		t.Fatal(err)
 	}
 	asset, err := h.adapters.Assets.ReadAsset(hostTestContext(), pkg.PackageHash, "workers/echo.wasm")

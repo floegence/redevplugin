@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -35,13 +36,13 @@ func TestBuildAndReadPackage(t *testing.T) {
 	}
 }
 
-func TestPackageFromFilesTakesOwnership(t *testing.T) {
+func TestPackageFromOwnedFilesTakesOwnership(t *testing.T) {
 	files, signatureFiles, err := collectFiles(writeFixturePackageDir(t), DefaultReadLimits())
 	if err != nil {
 		t.Fatal(err)
 	}
 	manifestBytes := files["manifest.json"]
-	pkg, err := packageFromFiles(context.Background(), files, signatureFiles)
+	pkg, err := packageFromOwnedFiles(context.Background(), files, signatureFiles)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -49,7 +50,7 @@ func TestPackageFromFilesTakesOwnership(t *testing.T) {
 		t.Fatal("manifest bytes are empty")
 	}
 	if &pkg.Files["manifest.json"][0] != &manifestBytes[0] {
-		t.Fatal("packageFromFiles cloned owned file bytes")
+		t.Fatal("packageFromOwnedFiles cloned owned file bytes")
 	}
 }
 
@@ -121,6 +122,30 @@ func TestWritePackageRoundTripsUnsignedPackage(t *testing.T) {
 	}
 	if read.PackageHash != built.PackageHash || read.PackageSignature != nil {
 		t.Fatalf("unsigned package round trip mismatch: hash=%s signature=%#v", read.PackageHash, read.PackageSignature)
+	}
+}
+
+func TestWritePackageBorrowsPackageFilesWithoutMutation(t *testing.T) {
+	dir := writeFixturePackageDir(t)
+	var builtBytes bytes.Buffer
+	pkg, err := BuildFromDir(context.Background(), dir, &builtBytes, DefaultReadLimits())
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifestBytes := pkg.Files["manifest.json"]
+	manifestBefore := append([]byte(nil), manifestBytes...)
+	filesBefore := pkg.Files
+	signaturesBefore := pkg.SignatureFiles
+
+	var output bytes.Buffer
+	if err := WritePackage(context.Background(), &output, pkg); err != nil {
+		t.Fatal(err)
+	}
+	if pkg.Files == nil || pkg.SignatureFiles == nil || len(pkg.Files) != len(filesBefore) || len(pkg.SignatureFiles) != len(signaturesBefore) {
+		t.Fatal("WritePackage() changed caller-owned maps")
+	}
+	if len(manifestBytes) == 0 || &pkg.Files["manifest.json"][0] != &manifestBytes[0] || !bytes.Equal(pkg.Files["manifest.json"], manifestBefore) {
+		t.Fatal("WritePackage() replaced or mutated caller-owned file bytes")
 	}
 }
 
@@ -1024,8 +1049,8 @@ func TestAssetStoreReadsPackageAssets(t *testing.T) {
 				t.Fatal(err)
 			}
 			store := tc.open(t)
-			if err := store.PutPackage(context.Background(), pkg); err != nil {
-				t.Fatalf("PutPackage() error = %v", err)
+			if err := store.PutOwnedPackage(context.Background(), &pkg); err != nil {
+				t.Fatalf("PutOwnedPackage() error = %v", err)
 			}
 			asset, err := store.ReadAsset(context.Background(), pkg.PackageHash, "ui/index.html")
 			if err != nil {
@@ -1043,6 +1068,99 @@ func TestAssetStoreReadsPackageAssets(t *testing.T) {
 				t.Fatalf("asset content was not cloned: %q", string(again.Content))
 			}
 		})
+	}
+}
+
+func TestAssetStoreConsumesOwnedPackageFiles(t *testing.T) {
+	for _, tc := range assetStoreCases() {
+		t.Run(tc.name, func(t *testing.T) {
+			pkg := testAssetPackage(t)
+			pkg.SignatureFiles = map[string][]byte{PackageSignaturePath: []byte("signature")}
+			store := tc.open(t)
+			if err := store.PutOwnedPackage(context.Background(), &pkg); err != nil {
+				t.Fatal(err)
+			}
+			if pkg.Files != nil || pkg.SignatureFiles != nil {
+				t.Fatal("PutOwnedPackage() retained caller access to transferred maps")
+			}
+		})
+	}
+}
+
+func TestMemoryAssetStoreRetainsTransferredBytesWithoutClone(t *testing.T) {
+	pkg := testAssetPackage(t)
+	content := pkg.Files["ui/index.html"]
+	store := NewMemoryAssetStore()
+	if err := store.PutOwnedPackage(context.Background(), &pkg); err != nil {
+		t.Fatal(err)
+	}
+	stored := store.packages[pkg.PackageHash].files["ui/index.html"]
+	if len(content) == 0 || len(stored) == 0 || &content[0] != &stored[0] {
+		t.Fatal("MemoryAssetStore cloned transferred package bytes")
+	}
+}
+
+func TestPutOwnedPackageConsumesFilesOnValidationFailure(t *testing.T) {
+	for _, tc := range assetStoreCases() {
+		t.Run(tc.name, func(t *testing.T) {
+			pkg := Package{
+				Entries:        []Entry{{Path: "ui/index.html", Size: 1, SHA256: sha256String([]byte("x")), Mode: "0644"}},
+				Files:          map[string][]byte{"ui/index.html": []byte("x")},
+				SignatureFiles: map[string][]byte{PackageSignaturePath: []byte("signature")},
+			}
+			if err := tc.open(t).PutOwnedPackage(context.Background(), &pkg); err == nil {
+				t.Fatal("PutOwnedPackage() accepted a missing package hash")
+			}
+			if pkg.Files != nil || pkg.SignatureFiles != nil {
+				t.Fatal("failed PutOwnedPackage() did not consume transferred maps")
+			}
+		})
+	}
+}
+
+func TestPutOwnedPackageRejectsUnindexedFiles(t *testing.T) {
+	for _, tc := range assetStoreCases() {
+		t.Run(tc.name, func(t *testing.T) {
+			pkg := testAssetPackage(t)
+			pkg.Files["ui/unindexed.bin"] = []byte("unindexed")
+			if err := tc.open(t).PutOwnedPackage(context.Background(), &pkg); err == nil {
+				t.Fatal("PutOwnedPackage() accepted an unindexed file")
+			}
+			if pkg.Files != nil || pkg.SignatureFiles != nil {
+				t.Fatal("failed PutOwnedPackage() did not consume transferred maps")
+			}
+		})
+	}
+}
+
+func TestMemoryAssetStoreConcurrentReadsCloneTransferredContent(t *testing.T) {
+	pkg := testAssetPackage(t)
+	want := append([]byte(nil), pkg.Files["ui/index.html"]...)
+	store := NewMemoryAssetStore()
+	if err := store.PutOwnedPackage(context.Background(), &pkg); err != nil {
+		t.Fatal(err)
+	}
+	const readers = 32
+	var wait sync.WaitGroup
+	wait.Add(readers)
+	for index := 0; index < readers; index++ {
+		go func() {
+			defer wait.Done()
+			asset, err := store.ReadAsset(context.Background(), pkg.PackageHash, "ui/index.html")
+			if err != nil {
+				t.Error(err)
+				return
+			}
+			asset.Content[0] ^= 0xff
+		}()
+	}
+	wait.Wait()
+	asset, err := store.ReadAsset(context.Background(), pkg.PackageHash, "ui/index.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(asset.Content, want) {
+		t.Fatalf("stored content changed through read alias: %q", string(asset.Content))
 	}
 }
 
@@ -1070,8 +1188,8 @@ func TestAssetStoreDeletePackage(t *testing.T) {
 				t.Fatal(err)
 			}
 			store := tc.open(t)
-			if err := store.PutPackage(context.Background(), pkg); err != nil {
-				t.Fatalf("PutPackage() error = %v", err)
+			if err := store.PutOwnedPackage(context.Background(), &pkg); err != nil {
+				t.Fatalf("PutOwnedPackage() error = %v", err)
 			}
 			if err := store.DeletePackage(context.Background(), pkg.PackageHash); err != nil {
 				t.Fatalf("DeletePackage() error = %v", err)
@@ -1095,8 +1213,8 @@ func TestFileAssetStorePersistsAssetsAcrossOpen(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := store.PutPackage(context.Background(), pkg); err != nil {
-		t.Fatalf("PutPackage() error = %v", err)
+	if err := store.PutOwnedPackage(context.Background(), &pkg); err != nil {
+		t.Fatalf("PutOwnedPackage() error = %v", err)
 	}
 
 	reopened, err := NewFileAssetStore(root)

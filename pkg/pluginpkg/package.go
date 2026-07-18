@@ -50,8 +50,10 @@ type Package struct {
 	Entries           []Entry           `json:"entries"`
 	EntriesHash       string            `json:"entries_hash"`
 	PackageSignature  *PackageSignature `json:"package_signature,omitempty"`
-	Files             map[string][]byte `json:"-"`
-	SignatureFiles    map[string][]byte `json:"-"`
+	// Files and SignatureFiles are owned materialized bytes. Borrowing APIs do
+	// not mutate them; AssetStore.PutOwnedPackage transfers and clears them.
+	Files          map[string][]byte `json:"-"`
+	SignatureFiles map[string][]byte `json:"-"`
 }
 
 // ReadLimits is an immutable set of resource limits for package archives.
@@ -206,7 +208,7 @@ func BuildFromDir(ctx context.Context, srcDir string, w io.Writer, limits ReadLi
 	if err != nil {
 		return Package{}, err
 	}
-	pkg, err := packageFromFiles(ctx, files, signatureFiles)
+	pkg, err := packageFromOwnedFiles(ctx, files, signatureFiles)
 	if err != nil {
 		return Package{}, err
 	}
@@ -223,7 +225,6 @@ func WritePackage(ctx context.Context, w io.Writer, pkg Package) error {
 	if len(pkg.Files) == 0 {
 		return errors.New("package files are required")
 	}
-	files := cloneFiles(pkg.Files)
 	signatureFiles := map[string][]byte{}
 	if pkg.PackageSignature != nil {
 		signatureBytes, err := marshalPackageSignature(*pkg.PackageSignature)
@@ -232,7 +233,7 @@ func WritePackage(ctx context.Context, w io.Writer, pkg Package) error {
 		}
 		signatureFiles[PackageSignaturePath] = signatureBytes
 	}
-	normalized, err := packageFromFiles(ctx, files, signatureFiles)
+	normalized, err := packageMetadataFromFiles(ctx, pkg.Files, signatureFiles)
 	if err != nil {
 		return err
 	}
@@ -245,6 +246,8 @@ func WritePackage(ctx context.Context, w io.Writer, pkg Package) error {
 	if pkg.EntriesHash != "" && normalized.EntriesHash != pkg.EntriesHash {
 		return fmt.Errorf("entries_hash mismatch: %s != %s", normalized.EntriesHash, pkg.EntriesHash)
 	}
+	normalized.Files = pkg.Files
+	normalized.SignatureFiles = signatureFiles
 	return writePackageZip(ctx, w, normalized)
 }
 
@@ -401,7 +404,7 @@ func Read(ctx context.Context, r io.ReaderAt, size int64, limits ReadLimits) (Pa
 		files[entryPath] = content
 	}
 
-	return packageFromFiles(ctx, files, signatureFiles)
+	return packageFromOwnedFiles(ctx, files, signatureFiles)
 }
 
 func ReadFile(ctx context.Context, filename string, limits ReadLimits) (Package, error) {
@@ -417,8 +420,19 @@ func ReadFile(ctx context.Context, filename string, limits ReadLimits) (Package,
 	return Read(ctx, file, stat.Size(), limits)
 }
 
-// packageFromFiles takes ownership of both maps and their byte slices.
-func packageFromFiles(ctx context.Context, files map[string][]byte, signatureFiles map[string][]byte) (Package, error) {
+// packageFromOwnedFiles takes ownership of both maps and their byte slices.
+func packageFromOwnedFiles(ctx context.Context, files map[string][]byte, signatureFiles map[string][]byte) (Package, error) {
+	pkg, err := packageMetadataFromFiles(ctx, files, signatureFiles)
+	if err != nil {
+		return Package{}, err
+	}
+	pkg.Files = files
+	pkg.SignatureFiles = signatureFiles
+	return pkg, nil
+}
+
+// packageMetadataFromFiles borrows both maps for the duration of the call.
+func packageMetadataFromFiles(ctx context.Context, files map[string][]byte, signatureFiles map[string][]byte) (Package, error) {
 	manifestBytes, ok := files["manifest.json"]
 	if !ok {
 		return Package{}, validationErrorf(ValidationCodeManifestInvalid, "manifest_missing", "manifest.json", "", "manifest.json is required")
@@ -466,8 +480,6 @@ func packageFromFiles(ctx context.Context, files map[string][]byte, signatureFil
 		Entries:           entries,
 		EntriesHash:       entriesHash,
 		PackageSignature:  packageSignature,
-		Files:             files,
-		SignatureFiles:    signatureFiles,
 	}, nil
 }
 
@@ -1516,17 +1528,6 @@ func sortedFilePaths(files map[string][]byte) []string {
 	}
 	sort.Strings(paths)
 	return paths
-}
-
-func cloneFiles(files map[string][]byte) map[string][]byte {
-	if files == nil {
-		return nil
-	}
-	cloned := make(map[string][]byte, len(files))
-	for entryPath, content := range files {
-		cloned[entryPath] = append([]byte(nil), content...)
-	}
-	return cloned
 }
 
 func contentType(entryPath string, content []byte) string {

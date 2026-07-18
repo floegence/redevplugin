@@ -249,9 +249,9 @@ type modulePreflightAssetStore struct {
 	putPackageCalls int
 }
 
-func (s *modulePreflightAssetStore) PutPackage(ctx context.Context, pkg pluginpkg.Package) error {
+func (s *modulePreflightAssetStore) PutOwnedPackage(ctx context.Context, pkg *pluginpkg.Package) error {
 	s.putPackageCalls++
-	return s.AssetStore.PutPackage(ctx, pkg)
+	return s.AssetStore.PutOwnedPackage(ctx, pkg)
 }
 
 func (s *modulePreflightAssetStore) resetWrites() {

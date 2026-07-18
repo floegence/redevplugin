@@ -605,7 +605,7 @@ func loadDevHarness(ctx context.Context, stateRoot string) (devHarness, registry
 		return devHarness{}, registry.PluginRecord{}, err
 	}
 	assets := pluginpkg.NewMemoryAssetStore()
-	if err := assets.PutPackage(ctx, pkg); err != nil {
+	if err := assets.PutOwnedPackage(ctx, &pkg); err != nil {
 		return devHarness{}, registry.PluginRecord{}, err
 	}
 	loadedCapabilities, err := loadPersistedDevCapabilities(stateRoot)

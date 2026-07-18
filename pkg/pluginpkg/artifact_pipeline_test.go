@@ -34,7 +34,7 @@ func TestReadLimitsRejectsZeroValueAndInvalidWithMethods(t *testing.T) {
 func TestAssetStoreExposesImmutablePackageMetadata(t *testing.T) {
 	pkg := testAssetPackage(t)
 	store := NewMemoryAssetStore()
-	if err := store.PutPackage(context.Background(), pkg); err != nil {
+	if err := store.PutOwnedPackage(context.Background(), &pkg); err != nil {
 		t.Fatal(err)
 	}
 	entries, err := store.ReadPackageMetadata(context.Background(), pkg.PackageHash)
@@ -61,7 +61,7 @@ func TestFileAssetStoreRejectsIntermediateSymlink(t *testing.T) {
 		t.Fatal(err)
 	}
 	pkg := testAssetPackage(t)
-	if err := store.PutPackage(context.Background(), pkg); err != nil {
+	if err := store.PutOwnedPackage(context.Background(), &pkg); err != nil {
 		t.Fatal(err)
 	}
 	packagePath, err := store.packagePath(pkg.PackageHash)
@@ -105,7 +105,8 @@ func TestFileAssetStoreRejectsFinalSymlink(t *testing.T) {
 		t.Fatal(err)
 	}
 	pkg := testAssetPackage(t)
-	if err := store.PutPackage(context.Background(), pkg); err != nil {
+	content := append([]byte(nil), pkg.Files["ui/index.html"]...)
+	if err := store.PutOwnedPackage(context.Background(), &pkg); err != nil {
 		t.Fatal(err)
 	}
 	packagePath, err := store.packagePath(pkg.PackageHash)
@@ -115,7 +116,6 @@ func TestFileAssetStoreRejectsFinalSymlink(t *testing.T) {
 	filesPath := filepath.Join(packagePath, fileAssetFilesDir, "ui")
 	indexPath := filepath.Join(filesPath, "index.html")
 	realPath := filepath.Join(filesPath, "real.html")
-	content := pkg.Files["ui/index.html"]
 	if err := os.WriteFile(realPath, content, 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -140,7 +140,8 @@ func TestFileAssetStoreRejectsAssetSizeMismatch(t *testing.T) {
 		t.Fatal(err)
 	}
 	pkg := testAssetPackage(t)
-	if err := store.PutPackage(context.Background(), pkg); err != nil {
+	content := append([]byte(nil), pkg.Files["ui/index.html"]...)
+	if err := store.PutOwnedPackage(context.Background(), &pkg); err != nil {
 		t.Fatal(err)
 	}
 	packagePath, err := store.packagePath(pkg.PackageHash)
@@ -148,7 +149,7 @@ func TestFileAssetStoreRejectsAssetSizeMismatch(t *testing.T) {
 		t.Fatal(err)
 	}
 	indexPath := filepath.Join(packagePath, fileAssetFilesDir, "ui", "index.html")
-	if err := os.WriteFile(indexPath, append(pkg.Files["ui/index.html"], 'x'), 0o600); err != nil {
+	if err := os.WriteFile(indexPath, append(content, 'x'), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -209,7 +210,8 @@ func TestFileAssetStoreCloseReleasesSharedRootState(t *testing.T) {
 	if err := first.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if err := second.PutPackage(context.Background(), testAssetPackage(t)); err != nil {
+	pkg := testAssetPackage(t)
+	if err := second.PutOwnedPackage(context.Background(), &pkg); err != nil {
 		t.Fatalf("remaining store failed after peer close: %v", err)
 	}
 	if err := second.Close(); err != nil {
@@ -242,7 +244,7 @@ func TestFileAssetStoreUsesImmutableCachedManifestIndex(t *testing.T) {
 		t.Fatal(err)
 	}
 	pkg := testAssetPackage(t)
-	if err := first.PutPackage(context.Background(), pkg); err != nil {
+	if err := first.PutOwnedPackage(context.Background(), &pkg); err != nil {
 		t.Fatal(err)
 	}
 	second, err := NewFileAssetStore(root)
@@ -311,7 +313,7 @@ func testAssetPackage(t *testing.T) Package {
 		"ui/index.html":    []byte("<!doctype html><title>Plugin</title><script type=\"text/redevplugin-worker\" src=\"assets/app.js\"></script>"),
 		"ui/assets/app.js": []byte("void 0;"),
 	}
-	pkg, err := packageFromFiles(context.Background(), files, nil)
+	pkg, err := packageFromOwnedFiles(context.Background(), files, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

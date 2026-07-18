@@ -104,9 +104,13 @@ func NewFileAssetStore(root string) (*FileAssetStore, error) {
 	return store, nil
 }
 
-func (s *FileAssetStore) PutPackage(ctx context.Context, pkg Package) error {
+func (s *FileAssetStore) PutOwnedPackage(ctx context.Context, pkg *Package) error {
 	if s == nil {
 		return errors.New("package asset store is nil")
+	}
+	files, err := takePackageFiles(pkg)
+	if err != nil {
+		return err
 	}
 	release, err := s.acquire()
 	if err != nil {
@@ -123,11 +127,13 @@ func (s *FileAssetStore) PutPackage(ctx context.Context, pkg Package) error {
 	if len(manifest.Entries) == 0 {
 		return fmt.Errorf("%w: package entries are required", ErrInvalidAssetPath)
 	}
+	if len(files) != len(manifest.Entries) {
+		return fmt.Errorf("%w: package files do not match entries", ErrPackageAssetNotFound)
+	}
 	index, err := newFileAssetManifestIndex(manifest, manifest.PackageHash)
 	if err != nil {
 		return err
 	}
-	assets := make(map[string][]byte, len(manifest.Entries))
 	for _, entry := range manifest.Entries {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -136,14 +142,13 @@ func (s *FileAssetStore) PutPackage(ctx context.Context, pkg Package) error {
 		if err != nil {
 			return err
 		}
-		content, ok := pkg.Files[entryPath]
+		content, ok := files[entryPath]
 		if !ok {
 			return fmt.Errorf("%w: package entry %q has no content", ErrPackageAssetNotFound, entryPath)
 		}
 		if err := validateStoredAssetContent(entry, content); err != nil {
 			return err
 		}
-		assets[entryPath] = append([]byte(nil), content...)
 	}
 
 	tmpName, tmpRoot, err := s.createTempPackageDir()
@@ -171,7 +176,7 @@ func (s *FileAssetStore) PutPackage(ctx context.Context, pkg Package) error {
 		if err := tmpRoot.MkdirAll(filepath.Dir(target), 0o700); err != nil {
 			return err
 		}
-		if err := tmpRoot.WriteFile(target, assets[entry.Path], 0o600); err != nil {
+		if err := tmpRoot.WriteFile(target, files[entry.Path], 0o600); err != nil {
 			return err
 		}
 	}

@@ -61,6 +61,9 @@
   positive immutable read limits, bounded `ReaderAt` artifact descriptors,
   streaming package uploads, metadata-only worker hot paths, and symlink-safe
   rooted asset access.
+- Replace package file cloning with explicit owned AssetStore writes. ZIP
+  writers borrow caller packages without mutation, while successful or failed
+  owned writes consume the materialized file maps and retain only one payload.
 - Normalize every adapter result and business-error detail into a JSON data tree
   before redaction and response-schema validation, failing closed for cycles and
   non-JSON values without mutating the adapter-owned input.

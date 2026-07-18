@@ -2794,7 +2794,7 @@ func (h *Host) installResolvedPackage(ctx context.Context, pkg pluginpkg.Package
 		}
 	}
 	record.EnableState = registry.EnableDisabled
-	if err := h.adapters.Assets.PutPackage(ctx, pkg); err != nil {
+	if err := h.adapters.Assets.PutOwnedPackage(ctx, &pkg); err != nil {
 		return registry.PluginRecord{}, h.markInstallStageFailed(ctx, stage.StageID, "asset_store_failed", err, now)
 	}
 	previous, hadPrevious, err := h.getExistingInstallRecord(ctx, record.PluginInstanceID)
@@ -2965,7 +2965,7 @@ func (h *Host) updateResolvedPackage(ctx context.Context, current registry.Plugi
 			return registry.PluginRecord{}, h.markInstallStageFailed(ctx, stage.StageID, "runtime_prepare_failed", err, now)
 		}
 	}
-	if err := h.adapters.Assets.PutPackage(ctx, pkg); err != nil {
+	if err := h.adapters.Assets.PutOwnedPackage(ctx, &pkg); err != nil {
 		return registry.PluginRecord{}, h.markInstallStageFailed(ctx, stage.StageID, "asset_store_failed", err, now)
 	}
 	stored, err := h.adapters.Registry.PutPlugin(ctx, next, registry.PutOptions{Now: now})

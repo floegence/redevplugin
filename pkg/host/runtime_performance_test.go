@@ -592,11 +592,12 @@ func installPerformanceBlockingArtifact(t *testing.T, assets pluginpkg.AssetStor
 	artifactSHA256 := performanceSHA256(module)
 	packageHash := performanceSHA256([]byte("redevplugin-performance-blocking-worker-v1"))
 	entry := pluginpkg.Entry{Path: "workers/blocking.wasm", Size: int64(len(module)), SHA256: artifactSHA256, Mode: "0644", ContentType: "application/wasm"}
-	if err := assets.PutPackage(context.Background(), pluginpkg.Package{
+	pkg := pluginpkg.Package{
 		PackageHash: packageHash,
 		Entries:     []pluginpkg.Entry{entry},
 		Files:       map[string][]byte{entry.Path: module},
-	}); err != nil {
+	}
+	if err := assets.PutOwnedPackage(context.Background(), &pkg); err != nil {
 		t.Fatal(err)
 	}
 	destination, err := connectivity.ParseDestination(connectivity.TransportHTTP, "https://api.example.com")

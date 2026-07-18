@@ -16,7 +16,10 @@ var (
 )
 
 type AssetStore interface {
-	PutPackage(ctx context.Context, pkg Package) error
+	// PutOwnedPackage takes ownership of pkg.Files and pkg.SignatureFiles when
+	// the call begins, including when the operation returns an error. Callers
+	// must not retain aliases to transferred byte slices.
+	PutOwnedPackage(ctx context.Context, pkg *Package) error
 	ReadPackageMetadata(ctx context.Context, packageHash string) ([]Entry, error)
 	ReadAsset(ctx context.Context, packageHash string, assetPath string) (Asset, error)
 	DeletePackage(ctx context.Context, packageHash string) error
@@ -25,31 +28,50 @@ type AssetStore interface {
 
 type MemoryAssetStore struct {
 	mu       sync.RWMutex
-	packages map[string]map[string]Asset
+	packages map[string]memoryAssetPackage
 	closed   bool
 }
 
-func NewMemoryAssetStore() *MemoryAssetStore {
-	return &MemoryAssetStore{packages: map[string]map[string]Asset{}}
+type memoryAssetPackage struct {
+	entries map[string]Entry
+	files   map[string][]byte
 }
 
-func (s *MemoryAssetStore) PutPackage(_ context.Context, pkg Package) error {
+func NewMemoryAssetStore() *MemoryAssetStore {
+	return &MemoryAssetStore{packages: map[string]memoryAssetPackage{}}
+}
+
+func (s *MemoryAssetStore) PutOwnedPackage(_ context.Context, pkg *Package) error {
 	if s == nil {
 		return errors.New("package asset store is nil")
+	}
+	files, err := takePackageFiles(pkg)
+	if err != nil {
+		return err
 	}
 	if strings.TrimSpace(pkg.PackageHash) == "" {
 		return fmt.Errorf("%w: package_hash is required", ErrInvalidAssetPath)
 	}
-	assets := make(map[string]Asset, len(pkg.Entries))
+	if len(files) != len(pkg.Entries) {
+		return fmt.Errorf("%w: package files do not match entries", ErrPackageAssetNotFound)
+	}
+	entries := make(map[string]Entry, len(pkg.Entries))
 	for _, entry := range pkg.Entries {
-		content, ok := pkg.Files[entry.Path]
+		entryPath, err := validateServableAssetPath(entry.Path)
+		if err != nil {
+			return err
+		}
+		content, ok := files[entryPath]
 		if !ok {
 			return fmt.Errorf("%w: package entry %q has no content", ErrPackageAssetNotFound, entry.Path)
 		}
-		assets[entry.Path] = Asset{
-			Entry:   entry,
-			Content: append([]byte(nil), content...),
+		if _, duplicate := entries[entryPath]; duplicate {
+			return fmt.Errorf("%w: duplicate package entry %q", ErrInvalidAssetPath, entryPath)
 		}
+		if err := validateStoredAssetContent(entry, content); err != nil {
+			return err
+		}
+		entries[entryPath] = entry
 	}
 
 	s.mu.Lock()
@@ -57,8 +79,21 @@ func (s *MemoryAssetStore) PutPackage(_ context.Context, pkg Package) error {
 	if s.closed {
 		return ErrAssetStoreClosed
 	}
-	s.packages[pkg.PackageHash] = assets
+	s.packages[pkg.PackageHash] = memoryAssetPackage{entries: entries, files: files}
 	return nil
+}
+
+func takePackageFiles(pkg *Package) (map[string][]byte, error) {
+	if pkg == nil {
+		return nil, errors.New("package is required")
+	}
+	files := pkg.Files
+	pkg.Files = nil
+	pkg.SignatureFiles = nil
+	if len(files) == 0 {
+		return nil, errors.New("package files are required")
+	}
+	return files, nil
 }
 
 func (s *MemoryAssetStore) ReadAsset(_ context.Context, packageHash string, assetPath string) (Asset, error) {
@@ -79,16 +114,15 @@ func (s *MemoryAssetStore) ReadAsset(_ context.Context, packageHash string, asse
 	if s.closed {
 		return Asset{}, ErrAssetStoreClosed
 	}
-	assets, ok := s.packages[packageHash]
+	pkg, ok := s.packages[packageHash]
 	if !ok {
 		return Asset{}, ErrPackageAssetNotFound
 	}
-	asset, ok := assets[assetPath]
+	entry, ok := pkg.entries[assetPath]
 	if !ok {
 		return Asset{}, ErrPackageAssetNotFound
 	}
-	asset.Content = append([]byte(nil), asset.Content...)
-	return asset, nil
+	return Asset{Entry: entry, Content: append([]byte(nil), pkg.files[assetPath]...)}, nil
 }
 
 func (s *MemoryAssetStore) ReadPackageMetadata(_ context.Context, packageHash string) ([]Entry, error) {
@@ -101,13 +135,13 @@ func (s *MemoryAssetStore) ReadPackageMetadata(_ context.Context, packageHash st
 	if s.closed {
 		return nil, ErrAssetStoreClosed
 	}
-	assets, ok := s.packages[packageHash]
+	pkg, ok := s.packages[packageHash]
 	if !ok {
 		return nil, ErrPackageAssetNotFound
 	}
-	entries := make([]Entry, 0, len(assets))
-	for _, asset := range assets {
-		entries = append(entries, asset.Entry)
+	entries := make([]Entry, 0, len(pkg.entries))
+	for _, entry := range pkg.entries {
+		entries = append(entries, entry)
 	}
 	sort.Slice(entries, func(i, j int) bool { return entries[i].Path < entries[j].Path })
 	return entries, nil
