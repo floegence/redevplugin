@@ -1036,11 +1036,7 @@ func (s *ProcessSupervisor) Revoke(ctx context.Context, req RevokeRequest) (Revo
 	if err := validateRevokeRequest(req); err != nil {
 		return RevokeResult{}, err
 	}
-	rawPayload, err := json.Marshal(revokeEpochRequestPayload{
-		ResourceScope:    req.ResourceScope,
-		PluginInstanceID: req.PluginInstanceID,
-		RevokeEpoch:      req.RevokeEpoch,
-	})
+	rawPayload, err := json.Marshal(revokeEpochRequestPayload(req))
 	if err != nil {
 		return RevokeResult{}, err
 	}
@@ -4087,13 +4083,6 @@ func networkExecuteErrorResponse(err error) networkExecuteResponsePayload {
 	default:
 		return networkExecuteResponsePayload{OK: false, Code: "NETWORK_EXECUTE_FAILED", Message: "network execute operation failed", InternalError: err}
 	}
-}
-
-func allowedArtifactRequest(invocation *workerInvocationContext) *ArtifactRequest {
-	if invocation == nil {
-		return nil
-	}
-	return &invocation.Artifact
 }
 
 func (identity workerInvocationIdentity) matchesRuntimeHostcall(

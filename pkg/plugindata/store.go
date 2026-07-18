@@ -1322,25 +1322,6 @@ func (s *FileStore) listAllBindings(ctx context.Context) ([]Binding, error) {
 	}
 }
 
-func (s *FileStore) listAllObjects(ctx context.Context) ([]Object, error) {
-	var result []Object
-	cursor := ""
-	for {
-		page, next, err := s.catalog.ListObjects(ctx, cursor, 256)
-		if err != nil {
-			return nil, err
-		}
-		result = append(result, page...)
-		if next == "" {
-			return result, nil
-		}
-		if next <= cursor {
-			return nil, fmt.Errorf("%w: object catalog cursor did not advance", ErrDatasetCorrupt)
-		}
-		cursor = next
-	}
-}
-
 func (s *FileStore) listAllBindingsForMaintenance(ctx context.Context) ([]MaintenanceBinding, error) {
 	var result []MaintenanceBinding
 	cursor := ""

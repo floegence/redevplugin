@@ -478,15 +478,6 @@ func validateKVNamespaceDatabase(ctx context.Context, db *sql.DB) (namespaceUsag
 	return persisted, nil
 }
 
-func namespaceDatabaseUsage(ctx context.Context, root string) (namespaceUsage, error) {
-	db, err := openNamespaceDatabase(ctx, root, true)
-	if err != nil {
-		return namespaceUsage{}, err
-	}
-	defer db.Close()
-	return readNamespaceDatabaseUsage(ctx, db)
-}
-
 type namespaceUsageReader interface {
 	QueryRowContext(context.Context, string, ...any) *sql.Row
 }
