@@ -33,6 +33,56 @@ func (severity DiagnosticSeverity) Valid() bool {
 	return severity == DiagnosticSeverityInfo || severity == DiagnosticSeverityWarning
 }
 
+type FailureCode string
+
+const (
+	FailureAdapter FailureCode = "adapter_failure"
+	FailureOwner   FailureCode = "owner_failure"
+	FailureScope   FailureCode = "scope_failure"
+	FailureAction  FailureCode = "action_failure"
+)
+
+func (code FailureCode) Valid() bool {
+	switch code {
+	case FailureAdapter, FailureOwner, FailureScope, FailureAction:
+		return true
+	default:
+		return false
+	}
+}
+
+// Failure is a stable diagnostic description that intentionally excludes the
+// underlying error text. It is safe to persist at adapter and action boundaries.
+type Failure struct {
+	Code   FailureCode `json:"code"`
+	Action string      `json:"action,omitempty"`
+}
+
+func FailureFromError(code FailureCode, action string, cause error) Failure {
+	if cause == nil {
+		return Failure{}
+	}
+	if !code.Valid() {
+		code = FailureAction
+	}
+	return Failure{Code: code, Action: normalizeFailureAction(action)}
+}
+
+func (f Failure) Valid() bool {
+	return f.Code.Valid() && f.Action == normalizeFailureAction(f.Action)
+}
+
+func (f Failure) Error() string {
+	code := f.Code
+	if !code.Valid() {
+		code = FailureAction
+	}
+	if action := normalizeFailureAction(f.Action); action != "" {
+		return string(code) + ": " + action
+	}
+	return string(code)
+}
+
 type AuditSink interface {
 	AppendPluginAudit(ctx context.Context, event AuditEvent) error
 }
@@ -390,6 +440,22 @@ func cloneMap(values map[string]any) map[string]any {
 		cloned[key] = value
 	}
 	return cloned
+}
+
+func normalizeFailureAction(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" || len(value) > 128 {
+		return ""
+	}
+	for index, character := range value {
+		if (character >= 'a' && character <= 'z') ||
+			(character >= '0' && character <= '9') ||
+			(index > 0 && (character == '.' || character == '_' || character == '-')) {
+			continue
+		}
+		return ""
+	}
+	return value
 }
 
 func minInt(a int, b int) int {

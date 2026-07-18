@@ -3545,8 +3545,12 @@ func TestHandlerSecretAdapterFailuresAfterDispatchAreUnknown(t *testing.T) {
 				t.Fatalf("secret adapter diagnostic mismatch: %#v", events)
 			}
 			internalEvent, ok := diagnostics.last("plugin.secret.adapter_failed")
-			if !ok || internalEvent.InternalDetails["error"] != sensitive {
-				t.Fatalf("secret diagnostics sink lost internal cause: %#v", internalEvent)
+			failure, failureOK := internalEvent.InternalDetails["failure"].(observability.Failure)
+			if !ok || !failureOK || failure.Code != observability.FailureAdapter || failure.Action != test.operation {
+				t.Fatalf("secret diagnostics sink failure mismatch: %#v", internalEvent)
+			}
+			if internalRaw := fmt.Sprint(internalEvent.InternalDetails); strings.Contains(internalRaw, sensitive) || strings.Contains(internalRaw, "/Users/secret/path") {
+				t.Fatalf("secret diagnostics sink retained sensitive cause: %s", internalRaw)
 			}
 			listed := getJSON[struct {
 				DiagnosticEvents []host.DiagnosticEvent `json:"diagnostic_events"`
@@ -3652,8 +3656,12 @@ func TestHandlerInternalErrorsUseStableMessagesAndOwnerScopedDiagnostics(t *test
 		t.Fatalf("runtime failure diagnostic mismatch: %#v", events)
 	}
 	internalRuntimeEvent, ok := diagnostics.last("plugin.http.operation_failed")
-	if !ok || internalRuntimeEvent.InternalDetails["error"] != sensitive {
-		t.Fatalf("runtime diagnostics sink lost internal cause: %#v", internalRuntimeEvent)
+	failure, failureOK := internalRuntimeEvent.InternalDetails["failure"].(observability.Failure)
+	if !ok || !failureOK || failure.Code != observability.FailureAction || failure.Action != "runtime.start" {
+		t.Fatalf("runtime diagnostics sink failure mismatch: %#v", internalRuntimeEvent)
+	}
+	if internalRaw := fmt.Sprint(internalRuntimeEvent.InternalDetails); strings.Contains(internalRaw, sensitive) || strings.Contains(internalRaw, "/Users/secret/path") {
+		t.Fatalf("runtime diagnostics sink retained sensitive cause: %s", internalRaw)
 	}
 	rawEvent, err := json.Marshal(events[0])
 	if err != nil {

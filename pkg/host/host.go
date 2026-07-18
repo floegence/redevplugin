@@ -6508,7 +6508,9 @@ func (h *Host) reportSecretAdapterFailure(ctx context.Context, record registry.P
 		Details: map[string]any{
 			"operation": operation,
 		},
-		InternalDetails: map[string]any{"error": err.Error()},
+		InternalDetails: map[string]any{
+			"failure": observability.FailureFromError(observability.FailureAdapter, operation, err),
+		},
 	})
 }
 
@@ -7871,7 +7873,9 @@ func (h *Host) ReportHTTPAdapterFailure(ctx context.Context, operation string, c
 			"operation": strings.TrimSpace(operation),
 			"code":      string(code),
 		},
-		InternalDetails: map[string]any{"error": err.Error()},
+		InternalDetails: map[string]any{
+			"failure": observability.FailureFromError(observability.FailureAction, operation, err),
+		},
 	})
 }
 

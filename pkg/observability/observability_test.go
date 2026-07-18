@@ -40,6 +40,48 @@ func TestMemoryStoreAppendsAudit(t *testing.T) {
 	}
 }
 
+func TestFailureFromErrorRedactsCause(t *testing.T) {
+	causes := []error{
+		errors.New("Authorization: Bearer bearer-token-super-secret"),
+		errors.New("open /Users/private/plugin.sqlite: permission denied"),
+		errors.New("GET https://api.example.com/resource?access_token=query-secret"),
+		errors.New("Cookie: session=cookie-secret"),
+		errors.New("secret_ref=vault-production-token"),
+	}
+	for _, cause := range causes {
+		failure := FailureFromError(FailureAdapter, "secret.bind", cause)
+		if !failure.Valid() || failure.Code != FailureAdapter || failure.Action != "secret.bind" {
+			t.Fatalf("FailureFromError() = %#v", failure)
+		}
+		encoded, err := json.Marshal(failure)
+		if err != nil {
+			t.Fatal(err)
+		}
+		combined := string(encoded) + " " + failure.Error()
+		for _, forbidden := range []string{
+			"bearer-token-super-secret",
+			"/Users/private",
+			"query-secret",
+			"cookie-secret",
+			"vault-production-token",
+		} {
+			if strings.Contains(combined, forbidden) {
+				t.Fatalf("failure leaked %q from %q: %s", forbidden, cause, combined)
+			}
+		}
+	}
+}
+
+func TestFailureFromErrorNormalizesUntrustedMetadata(t *testing.T) {
+	failure := FailureFromError("unknown", "runtime.start?token=secret", errors.New("secret"))
+	if failure.Code != FailureAction || failure.Action != "" || failure.Error() != string(FailureAction) {
+		t.Fatalf("FailureFromError() = %#v, error = %q", failure, failure.Error())
+	}
+	if failure := FailureFromError(FailureAdapter, "secret.bind", nil); failure != (Failure{}) {
+		t.Fatalf("FailureFromError(nil) = %#v", failure)
+	}
+}
+
 func TestMemoryStoreAuditSinkIsIdempotentByEventID(t *testing.T) {
 	store := NewMemoryStore()
 	ctx := context.Background()
