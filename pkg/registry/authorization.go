@@ -240,7 +240,14 @@ func (s *MemoryStore) Authorize(ctx context.Context, req AuthorizeRequest) (Auth
 		return AuthorizationDecision{}, err
 	}
 	state := authorizationStateFromRecord(record)
-	grants := clonePermissionRecordsFromMap(s.permissionGrants[record.PluginInstanceID])
+	requiredPermissionIDs := permissions.NormalizePermissionIDs(req.PermissionIDs)
+	grantsByPermissionID := s.permissionGrants[record.PluginInstanceID]
+	grants := make([]permissions.Record, 0, len(requiredPermissionIDs))
+	for _, permissionID := range requiredPermissionIDs {
+		if grant, ok := grantsByPermissionID[permissionID]; ok {
+			grants = append(grants, permissions.CloneRecord(grant))
+		}
+	}
 	var policy *security.PolicyRecord
 	if current, ok := s.securityPolicies[record.PluginInstanceID]; ok {
 		cloned := security.ClonePolicy(current)

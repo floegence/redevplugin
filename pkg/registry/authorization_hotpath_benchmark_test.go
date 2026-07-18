@@ -86,6 +86,59 @@ func BenchmarkListAuthorizationSQLite(b *testing.B) {
 	}
 }
 
+func BenchmarkSQLiteAuthorizeGrantScaling(b *testing.B) {
+	for _, grantCount := range []int{1, 1000} {
+		b.Run(fmt.Sprintf("grants_%d", grantCount), func(b *testing.B) {
+			ctx := context.Background()
+			store, err := NewSQLiteStore(ctx, filepath.Join(b.TempDir(), "registry.sqlite"))
+			if err != nil {
+				b.Fatal(err)
+			}
+			b.Cleanup(func() { _ = store.Close() })
+			now := time.Date(2026, 7, 18, 12, 0, 0, 0, time.UTC)
+			plugin, err := store.PutPlugin(ctx, authorizationTestPlugin("plugini_grant_scaling", "com.example.grant-scaling"), PutOptions{Now: now})
+			if err != nil {
+				b.Fatal(err)
+			}
+			tx, err := store.db.BeginTx(ctx, nil)
+			if err != nil {
+				b.Fatal(err)
+			}
+			for index := 0; index < grantCount; index++ {
+				permissionID := fmt.Sprintf("permission.%04d", index)
+				if err := upsertSQLitePermissionGrant(ctx, tx, permissions.Record{
+					PluginInstanceID: plugin.PluginInstanceID,
+					PermissionID:     permissionID,
+					Effect:           permissions.EffectGrant,
+					GrantedBy:        "benchmark",
+					GrantedAt:        now,
+				}); err != nil {
+					_ = tx.Rollback()
+					b.Fatal(err)
+				}
+			}
+			if err := tx.Commit(); err != nil {
+				b.Fatal(err)
+			}
+			expected := AuthorizationRevisionsFromRecord(plugin)
+			b.ReportAllocs()
+			b.ResetTimer()
+			for b.Loop() {
+				decision, err := store.Authorize(ctx, AuthorizeRequest{
+					PluginInstanceID: plugin.PluginInstanceID,
+					Method:           "documents.get",
+					PermissionIDs:    []string{"permission.0000"},
+					Expected:         expected,
+					Now:              now.Add(time.Minute),
+				})
+				if err != nil || !decision.Allowed {
+					b.Fatalf("Authorize() decision=%#v err=%v", decision, err)
+				}
+			}
+		})
+	}
+}
+
 func newAuthorizationBenchmarkStore(b *testing.B, backend string) (Store, []AuthorizationSnapshot) {
 	b.Helper()
 	ctx := context.Background()

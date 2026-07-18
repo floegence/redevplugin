@@ -474,6 +474,9 @@ CREATE TABLE IF NOT EXISTS plugin_source_security_floors (
 )`); err != nil {
 		return err
 	}
+	if err := validateSQLiteAuthorizationData(ctx, tx); err != nil {
+		return err
+	}
 	return tx.Commit()
 }
 

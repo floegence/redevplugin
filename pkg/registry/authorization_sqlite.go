@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 
@@ -68,18 +69,9 @@ func (s *SQLiteStore) RevokePermission(ctx context.Context, req permissions.Revo
 	if err != nil {
 		return AuthorizationSnapshot{}, err
 	}
-	grants, err := listSQLitePermissionGrants(ctx, tx, pluginInstanceID)
+	existing, found, err := getSQLitePermissionGrant(ctx, tx, pluginInstanceID, strings.TrimSpace(req.PermissionID))
 	if err != nil {
 		return AuthorizationSnapshot{}, err
-	}
-	var existing permissions.Record
-	found := false
-	for _, grant := range grants {
-		if grant.PermissionID == strings.TrimSpace(req.PermissionID) {
-			existing = grant
-			found = true
-			break
-		}
 	}
 	if !found {
 		return AuthorizationSnapshot{}, permissions.ErrGrantNotFound
@@ -337,6 +329,82 @@ ORDER BY policies.plugin_instance_id`)
 	return policiesByPlugin, nil
 }
 
+func validateSQLiteAuthorizationData(ctx context.Context, q sqliteAuthorizationQuerier) error {
+	grantRows, err := q.QueryContext(ctx, `
+SELECT plugin_instance_id, permission_id, effect, granted_by, granted_at,
+	expires_at, revoked_at, revoked_by, revoked_reason
+FROM plugin_permission_grants
+ORDER BY plugin_instance_id, permission_id`)
+	if err != nil {
+		return err
+	}
+	for grantRows.Next() {
+		var record permissions.Record
+		var effect string
+		var grantedAt int64
+		var expiresAt sql.NullInt64
+		var revokedAt sql.NullInt64
+		if err := grantRows.Scan(
+			&record.PluginInstanceID,
+			&record.PermissionID,
+			&effect,
+			&record.GrantedBy,
+			&grantedAt,
+			&expiresAt,
+			&revokedAt,
+			&record.RevokedBy,
+			&record.RevokedReason,
+		); err != nil {
+			_ = grantRows.Close()
+			return err
+		}
+		record.Effect = permissions.Effect(effect)
+		record.GrantedAt = unixToTime(grantedAt)
+		record.ExpiresAt = nullableUnixToTimePtr(expiresAt)
+		record.RevokedAt = nullableUnixToTimePtr(revokedAt)
+		if err := permissions.ValidateRecord(permissions.NormalizeRecord(record)); err != nil {
+			_ = grantRows.Close()
+			return fmt.Errorf("validate persisted permission grant: %w", err)
+		}
+	}
+	if err := grantRows.Err(); err != nil {
+		_ = grantRows.Close()
+		return err
+	}
+	if err := grantRows.Close(); err != nil {
+		return err
+	}
+
+	policyRows, err := q.QueryContext(ctx, `
+SELECT plugin_instance_id, allowed_permissions_json, denied_methods_json, updated_at
+FROM plugin_security_policies
+ORDER BY plugin_instance_id`)
+	if err != nil {
+		return err
+	}
+	defer policyRows.Close()
+	for policyRows.Next() {
+		var record security.PolicyRecord
+		var allowedJSON string
+		var deniedJSON string
+		var updatedAt int64
+		if err := policyRows.Scan(&record.PluginInstanceID, &allowedJSON, &deniedJSON, &updatedAt); err != nil {
+			return err
+		}
+		if err := decodeRegistryJSON(allowedJSON, &record.AllowedPermissions); err != nil {
+			return err
+		}
+		if err := decodeRegistryJSON(deniedJSON, &record.DeniedMethods); err != nil {
+			return err
+		}
+		record.UpdatedAt = unixToTime(updatedAt)
+		if err := security.ValidatePolicy(security.NormalizePolicy(record)); err != nil {
+			return fmt.Errorf("validate persisted security policy: %w", err)
+		}
+	}
+	return policyRows.Err()
+}
+
 func (s *SQLiteStore) Authorize(ctx context.Context, req AuthorizeRequest) (AuthorizationDecision, error) {
 	pluginInstanceID := strings.TrimSpace(req.PluginInstanceID)
 	if err := security.ValidatePolicyEvaluationRequest(security.EvaluatePolicyRequest{
@@ -368,7 +436,8 @@ func (s *SQLiteStore) Authorize(ctx context.Context, req AuthorizeRequest) (Auth
 			Actual:           state.Revisions,
 		}
 	}
-	grants, err := listSQLitePermissionGrants(ctx, tx, pluginInstanceID)
+	requiredPermissionIDs := permissions.NormalizePermissionIDs(req.PermissionIDs)
+	grants, err := listSQLitePermissionGrantsByID(ctx, tx, pluginInstanceID, requiredPermissionIDs)
 	if err != nil {
 		return AuthorizationDecision{}, err
 	}
@@ -500,34 +569,103 @@ ORDER BY permission_id`, pluginInstanceID)
 	defer rows.Close()
 	records := []permissions.Record{}
 	for rows.Next() {
-		var record permissions.Record
-		var effect string
-		var grantedAt int64
-		var expiresAt sql.NullInt64
-		var revokedAt sql.NullInt64
-		record.PluginInstanceID = pluginInstanceID
-		if err := rows.Scan(
-			&record.PermissionID,
-			&effect,
-			&record.GrantedBy,
-			&grantedAt,
-			&expiresAt,
-			&revokedAt,
-			&record.RevokedBy,
-			&record.RevokedReason,
-		); err != nil {
+		record, err := scanSQLitePermissionGrant(rows, pluginInstanceID)
+		if err != nil {
 			return nil, err
 		}
-		record.Effect = permissions.Effect(effect)
-		record.GrantedAt = unixToTime(grantedAt)
-		record.ExpiresAt = nullableUnixToTimePtr(expiresAt)
-		record.RevokedAt = nullableUnixToTimePtr(revokedAt)
 		records = append(records, record)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
 	return records, nil
+}
+
+func listSQLitePermissionGrantsByID(ctx context.Context, q sqliteAuthorizationQuerier, pluginInstanceID string, permissionIDs []string) ([]permissions.Record, error) {
+	if len(permissionIDs) == 0 {
+		return []permissions.Record{}, nil
+	}
+	if len(permissionIDs) == 1 {
+		record, found, err := getSQLitePermissionGrant(ctx, q, pluginInstanceID, permissionIDs[0])
+		if err != nil {
+			return nil, err
+		}
+		if !found {
+			return []permissions.Record{}, nil
+		}
+		return []permissions.Record{record}, nil
+	}
+	requiredJSON, err := encodeRegistryJSON(permissionIDs)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := q.QueryContext(ctx, `
+WITH required(permission_id) AS (
+	SELECT value FROM json_each(?)
+)
+SELECT grants.permission_id, grants.effect, grants.granted_by, grants.granted_at,
+	grants.expires_at, grants.revoked_at, grants.revoked_by, grants.revoked_reason
+FROM required
+JOIN plugin_permission_grants AS grants
+	ON grants.plugin_instance_id = ? AND grants.permission_id = required.permission_id
+ORDER BY grants.permission_id`, requiredJSON, pluginInstanceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	records := make([]permissions.Record, 0, len(permissionIDs))
+	for rows.Next() {
+		record, err := scanSQLitePermissionGrant(rows, pluginInstanceID)
+		if err != nil {
+			return nil, err
+		}
+		records = append(records, record)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return records, nil
+}
+
+func getSQLitePermissionGrant(ctx context.Context, q sqliteAuthorizationQuerier, pluginInstanceID, permissionID string) (permissions.Record, bool, error) {
+	row := q.QueryRowContext(ctx, `
+SELECT permission_id, effect, granted_by, granted_at, expires_at, revoked_at, revoked_by, revoked_reason
+FROM plugin_permission_grants
+WHERE plugin_instance_id = ? AND permission_id = ?`, pluginInstanceID, permissionID)
+	record, err := scanSQLitePermissionGrant(row, pluginInstanceID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return permissions.Record{}, false, nil
+	}
+	if err != nil {
+		return permissions.Record{}, false, err
+	}
+	return record, true, nil
+}
+
+func scanSQLitePermissionGrant(scanner sqliteAuthorizationScanner, pluginInstanceID string) (permissions.Record, error) {
+	var record permissions.Record
+	var effect string
+	var grantedAt int64
+	var expiresAt sql.NullInt64
+	var revokedAt sql.NullInt64
+	record.PluginInstanceID = pluginInstanceID
+	if err := scanner.Scan(
+		&record.PermissionID,
+		&effect,
+		&record.GrantedBy,
+		&grantedAt,
+		&expiresAt,
+		&revokedAt,
+		&record.RevokedBy,
+		&record.RevokedReason,
+	); err != nil {
+		return permissions.Record{}, err
+	}
+	record.Effect = permissions.Effect(effect)
+	record.GrantedAt = unixToTime(grantedAt)
+	record.ExpiresAt = nullableUnixToTimePtr(expiresAt)
+	record.RevokedAt = nullableUnixToTimePtr(revokedAt)
+	return record, nil
 }
 
 func upsertSQLitePermissionGrant(ctx context.Context, tx *sql.Tx, record permissions.Record) error {
@@ -617,6 +755,10 @@ func deleteSQLiteAuthorization(ctx context.Context, tx *sql.Tx, pluginInstanceID
 type sqliteAuthorizationQuerier interface {
 	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
 	QueryRowContext(context.Context, string, ...any) *sql.Row
+}
+
+type sqliteAuthorizationScanner interface {
+	Scan(...any) error
 }
 
 const registryPluginSelectColumns = `

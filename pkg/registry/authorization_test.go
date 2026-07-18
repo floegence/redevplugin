@@ -145,6 +145,46 @@ func TestAuthorizationStoreContract(t *testing.T) {
 	}
 }
 
+func TestSQLiteStoreRejectsCorruptPersistedAuthorizationDataOnOpen(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "registry.sqlite")
+	store, err := NewSQLiteStore(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 7, 18, 12, 0, 0, 0, time.UTC)
+	plugin, err := store.PutPlugin(ctx, authorizationTestPlugin("plugini_corrupt_auth", "com.example.corrupt-auth"), PutOptions{Now: now})
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := store.GrantPermission(ctx, permissions.GrantRequest{
+		PluginInstanceID: plugin.PluginInstanceID,
+		PermissionID:     "documents.read",
+		GrantedBy:        "test",
+		Now:              now,
+	}, AuthorizationRevisionsFromRecord(plugin))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.GrantPermission(ctx, permissions.GrantRequest{
+		PluginInstanceID: plugin.PluginInstanceID,
+		PermissionID:     "documents.write",
+		GrantedBy:        "test",
+		Now:              now,
+	}, AuthorizationRevisionsFromRecord(snapshot.Plugin)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.ExecContext(ctx, `UPDATE plugin_permission_grants SET effect = 'invalid' WHERE plugin_instance_id = ? AND permission_id = ?`, plugin.PluginInstanceID, "documents.write"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := NewSQLiteStore(ctx, path); !errors.Is(err, permissions.ErrInvalidPermission) {
+		t.Fatalf("NewSQLiteStore() error = %v, want invalid permission", err)
+	}
+}
+
 func TestAuthorizationMutationsRejectEveryStaleRevision(t *testing.T) {
 	for _, tc := range registryStoreCases() {
 		t.Run(tc.name, func(t *testing.T) {
