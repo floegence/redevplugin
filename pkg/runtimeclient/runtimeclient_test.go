@@ -629,17 +629,31 @@ func TestRuntimeLimitsMustBeExplicitAndValid(t *testing.T) {
 	if supervisor.limits != limits {
 		t.Fatalf("runtime limits = %#v, want %#v", supervisor.limits, limits)
 	}
+	maximums := RuntimeLimits{
+		WorkerCount:            RuntimeWorkerCountMax,
+		QueueCapacity:          RuntimeQueueCapacityMax,
+		PerPluginConcurrency:   RuntimePerPluginConcurrencyMax,
+		ModuleCacheEntries:     RuntimeModuleCacheEntriesMax,
+		ModuleCacheSourceBytes: RuntimeModuleCacheSourceBytesMax,
+	}
+	if err := ValidateRuntimeLimits(maximums); err != nil {
+		t.Fatalf("ValidateRuntimeLimits(maximums) error = %v", err)
+	}
 	invalid := []RuntimeLimits{
 		{},
-		{WorkerCount: 65, QueueCapacity: 1, PerPluginConcurrency: 1, ModuleCacheEntries: 1, ModuleCacheSourceBytes: 1},
-		{WorkerCount: 1, QueueCapacity: 65, PerPluginConcurrency: 1, ModuleCacheEntries: 1, ModuleCacheSourceBytes: 1},
+		{WorkerCount: RuntimeWorkerCountMax + 1, QueueCapacity: 1, PerPluginConcurrency: 1, ModuleCacheEntries: 1, ModuleCacheSourceBytes: 1},
+		{WorkerCount: 1, QueueCapacity: RuntimeQueueCapacityMax + 1, PerPluginConcurrency: 1, ModuleCacheEntries: 1, ModuleCacheSourceBytes: 1},
+		{WorkerCount: 1, QueueCapacity: 1, PerPluginConcurrency: RuntimePerPluginConcurrencyMax + 1, ModuleCacheEntries: 1, ModuleCacheSourceBytes: 1},
 		{WorkerCount: 1, QueueCapacity: 1, PerPluginConcurrency: 2, ModuleCacheEntries: 1, ModuleCacheSourceBytes: 1},
-		{WorkerCount: 1, QueueCapacity: 1, PerPluginConcurrency: 1, ModuleCacheEntries: 1025, ModuleCacheSourceBytes: 1},
-		{WorkerCount: 1, QueueCapacity: 1, PerPluginConcurrency: 1, ModuleCacheEntries: 1, ModuleCacheSourceBytes: 0},
+		{WorkerCount: 1, QueueCapacity: 1, PerPluginConcurrency: 1, ModuleCacheEntries: RuntimeModuleCacheEntriesMax + 1, ModuleCacheSourceBytes: 1},
+		{WorkerCount: 1, QueueCapacity: 1, PerPluginConcurrency: 1, ModuleCacheEntries: 1, ModuleCacheSourceBytes: RuntimeModuleCacheSourceBytesMax + 1},
 	}
 	for _, limits := range invalid {
-		if err := ValidateRuntimeLimits(limits); err == nil {
-			t.Fatalf("ValidateRuntimeLimits(%#v) accepted invalid limits", limits)
+		if err := ValidateRuntimeLimits(limits); !errors.Is(err, ErrRuntimeLimitsInvalid) {
+			if err == nil {
+				t.Fatalf("ValidateRuntimeLimits(%#v) accepted invalid limits", limits)
+			}
+			t.Fatalf("ValidateRuntimeLimits(%#v) error = %v, want %v", limits, err, ErrRuntimeLimitsInvalid)
 		}
 	}
 }

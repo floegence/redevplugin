@@ -10,6 +10,10 @@ async function readOpenAPI() {
   return parseYAML(await readFile(join(root, "spec/openapi/plugin-platform-v6.yaml"), "utf8"));
 }
 
+async function readIPCSchema() {
+  return JSON.parse(await readFile(join(root, "spec/plugin/ipc-v4.schema.json"), "utf8"));
+}
+
 test("PatchSettingsRequest requires a non-empty set or remove object", async () => {
   const openAPI = await readOpenAPI();
   const schema = openAPI.components.schemas.PatchSettingsRequest;
@@ -58,4 +62,21 @@ test("generated OpenAPI types contain a closed capability pin and patch type", a
   assert.match(generated, /CapabilityContractPin: components\["schemas"\]\["HostCapabilityPinV1"\]/);
   assert.doesNotMatch(generated, /\$defs\s*:/);
   assert.doesNotMatch(generated, /PatchSettingsRequest:[\s\S]{0,600}?\| unknown/);
+});
+
+test("OpenAPI and IPC runtime limits have identical bounds and descriptions", async () => {
+  const [openAPI, ipcSchema] = await Promise.all([readOpenAPI(), readIPCSchema()]);
+  const openAPILimits = openAPI.components.schemas.RuntimeLimits;
+  const ipcLimits = ipcSchema.$defs.runtime_limits;
+  assert.equal(openAPILimits.type, ipcLimits.type);
+  assert.equal(openAPILimits.additionalProperties, ipcLimits.additionalProperties);
+  assert.equal(openAPILimits.description, ipcLimits.description);
+  assert.deepEqual(openAPILimits.required, ipcLimits.required);
+  for (const field of openAPILimits.required) {
+    assert.deepEqual(
+      openAPILimits.properties[field],
+      ipcLimits.properties[field],
+      `${field} must have one cross-language contract`,
+    );
+  }
 });

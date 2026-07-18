@@ -51,7 +51,7 @@ export const redevPluginContractArtifacts = [
     id: "plugin-platform-openapi",
     path: "spec/openapi/plugin-platform-v6.yaml",
     version: "plugin-platform-v6",
-    sha256: "f81fb3b17798f9683b55b3d09b80ce1e56921ac80b54dd152aef1df990e1c1d1",
+    sha256: "f104852c097e8f12a31a1bed7d15377b4a28b43b55098c0ce9bd6313295d3d64",
   },
   {
     id: "manifest-schema",
@@ -183,7 +183,7 @@ export const redevPluginContractArtifacts = [
     id: "rust-ipc-schema",
     path: "spec/plugin/ipc-v4.schema.json",
     version: "rust-ipc-v4",
-    sha256: "05d7fe4f7b4ec6291886dd352b74d33e8eb258c1bb490798d9909c429f05c611",
+    sha256: "1555a394231a5825165d90c0f585fce785d6da887f61645420e704d1c485ba23",
   },
   {
     id: "wasm-worker-schema",

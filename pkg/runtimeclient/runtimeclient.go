@@ -102,6 +102,19 @@ type RuntimeLimits struct {
 	ModuleCacheSourceBytes int64 `json:"module_cache_source_bytes"`
 }
 
+const (
+	RuntimeWorkerCountMin            = 1
+	RuntimeWorkerCountMax            = 64
+	RuntimeQueueCapacityMin          = 1
+	RuntimeQueueCapacityMax          = 64
+	RuntimePerPluginConcurrencyMin   = 1
+	RuntimePerPluginConcurrencyMax   = 64
+	RuntimeModuleCacheEntriesMin     = 1
+	RuntimeModuleCacheEntriesMax     = 1024
+	RuntimeModuleCacheSourceBytesMin = 1
+	RuntimeModuleCacheSourceBytesMax = 128 << 20
+)
+
 type ModuleCacheMetrics struct {
 	Hits        uint64 `json:"hits"`
 	Misses      uint64 `json:"misses"`
@@ -242,6 +255,9 @@ var (
 	ErrRuntimeHandshake      = errors.New("runtime ipc handshake failed")
 	ErrRuntimeRequestFailed  = errors.New("runtime ipc request failed")
 	ErrRuntimeArtifactDigest = errors.New("runtime artifact digest mismatch")
+	// ErrRuntimeLimitsInvalid reports runtime capacity limits outside the
+	// negotiated platform contract.
+	ErrRuntimeLimitsInvalid = errors.New("runtime limits are invalid")
 	// ErrRuntimeTimingInvalid reports a non-positive or internally inconsistent
 	// process handshake and heartbeat timing configuration.
 	ErrRuntimeTimingInvalid = errors.New("runtime timing is invalid")
@@ -511,28 +527,31 @@ func DefaultRuntimeLimits() RuntimeLimits {
 	workerCount := min(max(runtime.GOMAXPROCS(0), 4), 16)
 	return RuntimeLimits{
 		WorkerCount:            workerCount,
-		QueueCapacity:          min(workerCount*4, 64),
+		QueueCapacity:          min(workerCount*4, RuntimeQueueCapacityMax),
 		PerPluginConcurrency:   min(max(workerCount/2, 2), 8),
 		ModuleCacheEntries:     64,
-		ModuleCacheSourceBytes: 128 << 20,
+		ModuleCacheSourceBytes: RuntimeModuleCacheSourceBytesMax,
 	}
 }
 
 func ValidateRuntimeLimits(limits RuntimeLimits) error {
-	if limits.WorkerCount < 1 || limits.WorkerCount > 64 {
-		return errors.New("runtime worker_count must be between 1 and 64")
+	if limits.WorkerCount < RuntimeWorkerCountMin || limits.WorkerCount > RuntimeWorkerCountMax {
+		return fmt.Errorf("%w: worker_count must be between %d and %d", ErrRuntimeLimitsInvalid, RuntimeWorkerCountMin, RuntimeWorkerCountMax)
 	}
-	if limits.QueueCapacity < 1 || limits.QueueCapacity > 64 {
-		return errors.New("runtime queue_capacity must be between 1 and 64")
+	if limits.QueueCapacity < RuntimeQueueCapacityMin || limits.QueueCapacity > RuntimeQueueCapacityMax {
+		return fmt.Errorf("%w: queue_capacity must be between %d and %d", ErrRuntimeLimitsInvalid, RuntimeQueueCapacityMin, RuntimeQueueCapacityMax)
 	}
-	if limits.PerPluginConcurrency < 1 || limits.PerPluginConcurrency > limits.WorkerCount {
-		return errors.New("runtime per_plugin_concurrency must be between 1 and worker_count")
+	if limits.PerPluginConcurrency < RuntimePerPluginConcurrencyMin || limits.PerPluginConcurrency > RuntimePerPluginConcurrencyMax {
+		return fmt.Errorf("%w: per_plugin_concurrency must be between %d and %d", ErrRuntimeLimitsInvalid, RuntimePerPluginConcurrencyMin, RuntimePerPluginConcurrencyMax)
 	}
-	if limits.ModuleCacheEntries < 1 || limits.ModuleCacheEntries > 1024 {
-		return errors.New("runtime module_cache_entries must be between 1 and 1024")
+	if limits.PerPluginConcurrency > limits.WorkerCount {
+		return fmt.Errorf("%w: per_plugin_concurrency must not exceed worker_count", ErrRuntimeLimitsInvalid)
 	}
-	if limits.ModuleCacheSourceBytes < 1 {
-		return errors.New("runtime module_cache_source_bytes must be positive")
+	if limits.ModuleCacheEntries < RuntimeModuleCacheEntriesMin || limits.ModuleCacheEntries > RuntimeModuleCacheEntriesMax {
+		return fmt.Errorf("%w: module_cache_entries must be between %d and %d", ErrRuntimeLimitsInvalid, RuntimeModuleCacheEntriesMin, RuntimeModuleCacheEntriesMax)
+	}
+	if limits.ModuleCacheSourceBytes < RuntimeModuleCacheSourceBytesMin || limits.ModuleCacheSourceBytes > RuntimeModuleCacheSourceBytesMax {
+		return fmt.Errorf("%w: module_cache_source_bytes must be between %d and %d", ErrRuntimeLimitsInvalid, RuntimeModuleCacheSourceBytesMin, RuntimeModuleCacheSourceBytesMax)
 	}
 	return nil
 }

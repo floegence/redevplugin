@@ -135,14 +135,21 @@ generation instead of silently evicting an authorization record.
 marks running work canceled; the runtime acknowledges cancellation and remains
 ready for unrelated work.
 
-The Host must supply positive `RuntimeLimits`; `DefaultRuntimeLimits()` creates
-an explicit value with worker count
-`clamp(GOMAXPROCS, 4, 16)`, queue capacity to `min(worker_count * 4, 64)`, and
-per-plugin concurrency to `min(max(worker_count / 2, 2), 8)`. Go admission waits
+The Host must supply `RuntimeLimits` within the platform min/max contract;
+`per_plugin_concurrency` must not exceed `worker_count`, and cached source WASM
+is capped at 128 MiB. `DefaultRuntimeLimits()` creates an explicit value with
+worker count `clamp(GOMAXPROCS, 4, 16)`, queue capacity to
+`min(worker_count * 4, 64)`, and per-plugin concurrency to
+`min(max(worker_count / 2, 2), 8)`. Go admission waits
 before consuming the execution lease. Rust enforces the same hello-negotiated
 limits with a fixed worker pool and round-robin per-plugin queues. Capacity and
 cancellation are reported separately as `RUNTIME_CAPACITY_EXCEEDED` and
 `RUNTIME_INVOCATION_CANCELED`.
+
+OpenAPI and the IPC Draft 2020-12 schema publish identical per-field bounds and
+document `per_plugin_concurrency <= worker_count`. Standard JSON Schema has no
+property-relative numeric keyword, so the Go and Rust parsers are authoritative
+for that cross-field rule; the schemas do not expand it into a conditional table.
 
 One Wasmi Engine is shared for the runtime generation. Validated modules are
 single-flight compiled and cached by `(artifact_sha256, wasm_abi_version)` in a

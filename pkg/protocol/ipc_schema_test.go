@@ -3,11 +3,13 @@ package protocol
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
 
 	"github.com/floegence/redevplugin/pkg/manifest"
+	"github.com/floegence/redevplugin/pkg/runtimeclient"
 	jsonschema "github.com/santhosh-tekuri/jsonschema/v5"
 )
 
@@ -185,7 +187,7 @@ func TestIPCSchemaNegotiatesClosedRuntimeLimits(t *testing.T) {
 	schema := readPluginSchema(t, "ipc-v4.schema.json")
 	defs := requireNestedObject(t, schema, "$defs")
 	limits := requireNestedObject(t, defs, "runtime_limits")
-	const routeCapacityContract = "Route capacities are derived exactly from negotiated limits: active hostcall routes = worker_count, canceled hostcall retention = worker_count + queue_capacity, and compile-flight artifact routes = worker_count."
+	const routeCapacityContract = "Negotiated runtime capacities. per_plugin_concurrency must not exceed worker_count. Route capacities are derived exactly from negotiated limits: active hostcall routes = worker_count, canceled hostcall retention = worker_count + queue_capacity, and compile-flight artifact routes = worker_count."
 	if limits["description"] != routeCapacityContract {
 		t.Fatalf("runtime limits route capacity contract = %#v", limits["description"])
 	}
@@ -200,23 +202,25 @@ func TestIPCSchemaNegotiatesClosedRuntimeLimits(t *testing.T) {
 		"module_cache_source_bytes",
 	}, "runtime limits required")
 	limitProps := requireNestedObject(t, limits, "properties")
-	for _, name := range []string{
-		"worker_count",
-		"queue_capacity",
-		"per_plugin_concurrency",
-		"module_cache_entries",
-		"module_cache_source_bytes",
-	} {
+	minimums := map[string]float64{
+		"worker_count":              runtimeclient.RuntimeWorkerCountMin,
+		"queue_capacity":            runtimeclient.RuntimeQueueCapacityMin,
+		"per_plugin_concurrency":    runtimeclient.RuntimePerPluginConcurrencyMin,
+		"module_cache_entries":      runtimeclient.RuntimeModuleCacheEntriesMin,
+		"module_cache_source_bytes": runtimeclient.RuntimeModuleCacheSourceBytesMin,
+	}
+	for name, minimum := range minimums {
 		field := requireNestedObject(t, limitProps, name)
-		if field["type"] != "integer" || field["minimum"] != float64(1) {
-			t.Fatalf("runtime limit %s schema = %#v", name, field)
+		if field["type"] != "integer" || field["minimum"] != minimum {
+			t.Fatalf("runtime limit %s schema = %#v, want minimum %v", name, field, minimum)
 		}
 	}
 	for name, maximum := range map[string]float64{
-		"worker_count":           64,
-		"queue_capacity":         64,
-		"per_plugin_concurrency": 64,
-		"module_cache_entries":   1024,
+		"worker_count":              runtimeclient.RuntimeWorkerCountMax,
+		"queue_capacity":            runtimeclient.RuntimeQueueCapacityMax,
+		"per_plugin_concurrency":    runtimeclient.RuntimePerPluginConcurrencyMax,
+		"module_cache_entries":      runtimeclient.RuntimeModuleCacheEntriesMax,
+		"module_cache_source_bytes": runtimeclient.RuntimeModuleCacheSourceBytesMax,
 	} {
 		if got := requireNestedObject(t, limitProps, name)["maximum"]; got != maximum {
 			t.Fatalf("runtime limit %s maximum = %#v, want %v", name, got, maximum)
@@ -500,6 +504,30 @@ func TestIPCSchemaValidatesV4Frames(t *testing.T) {
 		if err := compiled.Validate(frame); err != nil {
 			t.Errorf("%s: %v", name, err)
 		}
+	}
+
+	// Draft 2020-12 has no standard property-relative numeric keyword. The
+	// schema documents this cross-field rule while the language parsers enforce it.
+	crossFieldInvalid := mapsClone(frames["heartbeat ack"])
+	payload := mapsClone(crossFieldInvalid["payload"].(map[string]any))
+	result := mapsClone(payload["result"].(map[string]any))
+	limits := mapsClone(result["limits"].(map[string]any))
+	limits["worker_count"] = 1
+	limits["per_plugin_concurrency"] = 2
+	result["limits"] = limits
+	payload["result"] = result
+	crossFieldInvalid["payload"] = payload
+	if err := compiled.Validate(crossFieldInvalid); err != nil {
+		t.Fatalf("per-field runtime limit schema rejected parser-enforced cross-field input: %v", err)
+	}
+	if err := runtimeclient.ValidateRuntimeLimits(runtimeclient.RuntimeLimits{
+		WorkerCount:            1,
+		QueueCapacity:          32,
+		PerPluginConcurrency:   2,
+		ModuleCacheEntries:     64,
+		ModuleCacheSourceBytes: runtimeclient.RuntimeModuleCacheSourceBytesMax,
+	}); !errors.Is(err, runtimeclient.ErrRuntimeLimitsInvalid) {
+		t.Fatalf("runtime parser cross-field error = %v, want %v", err, runtimeclient.ErrRuntimeLimitsInvalid)
 	}
 
 	missingParent := mapsClone(frames["hostcall request"])

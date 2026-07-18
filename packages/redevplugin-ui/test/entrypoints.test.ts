@@ -12,6 +12,7 @@ import type {
   PluginOperationList,
   PluginPermissionList,
   PluginRuntimeHealth,
+  PluginRuntimeLimits,
 } from "../src/trusted-parent.js";
 
 // @ts-expect-error trusted parent transport must not be available to plugin workers
@@ -41,12 +42,25 @@ const invalidPermissions: PluginPermissionList = {};
 const invalidDiagnostics: PluginDiagnosticEventList = {};
 // @ts-expect-error runtime health is manager health and requires shards
 const invalidRuntimeHealth: PluginRuntimeHealth = { ready: true };
+const validRuntimeLimits: PluginRuntimeLimits = {
+  worker_count: 8,
+  queue_capacity: 32,
+  per_plugin_concurrency: 4,
+  module_cache_entries: 64,
+  module_cache_source_bytes: 134217728,
+};
+function mutateRuntimeLimits(limits: PluginRuntimeLimits): void {
+  // @ts-expect-error negotiated runtime limits are observational
+  limits.worker_count = 9;
+}
 void invalidCatalog;
 void invalidOperations;
 void invalidIntents;
 void invalidPermissions;
 void invalidDiagnostics;
 void invalidRuntimeHealth;
+void validRuntimeLimits;
+void mutateRuntimeLimits;
 
 test("plugin worker entrypoint exposes only bridge and generated capability client primitives", () => {
   assert.deepEqual(Object.keys(pluginEntrypoint), [

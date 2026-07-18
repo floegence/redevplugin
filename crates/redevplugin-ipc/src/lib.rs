@@ -14,6 +14,16 @@ pub const RUNTIME_LEASE_SIGNATURE_ALGORITHM: &str = "ed25519";
 pub const WORKER_INVOCATION_TARGET_SCHEMA_VERSION: &str = "redevplugin.worker_invocation_target.v1";
 pub const MAX_RUNTIME_LEASE_MEMORY_BYTES: u64 = 256 * 1024 * 1024;
 pub const MAX_JSON_SAFE_INTEGER: u64 = (1_u64 << 53) - 1;
+pub const MIN_RUNTIME_WORKER_COUNT: usize = 1;
+pub const MAX_RUNTIME_WORKER_COUNT: usize = 64;
+pub const MIN_RUNTIME_QUEUE_CAPACITY: usize = 1;
+pub const MAX_RUNTIME_QUEUE_CAPACITY: usize = 64;
+pub const MIN_RUNTIME_PER_PLUGIN_CONCURRENCY: usize = 1;
+pub const MAX_RUNTIME_PER_PLUGIN_CONCURRENCY: usize = 64;
+pub const MIN_RUNTIME_MODULE_CACHE_ENTRIES: usize = 1;
+pub const MAX_RUNTIME_MODULE_CACHE_ENTRIES: usize = 1024;
+pub const MIN_RUNTIME_MODULE_CACHE_SOURCE_BYTES: usize = 1;
+pub const MAX_RUNTIME_MODULE_CACHE_SOURCE_BYTES: usize = 128 * 1024 * 1024;
 pub const FRAME_TYPE_HELLO: &str = "hello";
 pub const FRAME_TYPE_HELLO_ACK: &str = "hello_ack";
 pub const FRAME_TYPE_HEARTBEAT: &str = "heartbeat";
@@ -290,11 +300,11 @@ mod property_gates {
 
         #[test]
         fn runtime_limits_keep_derived_capacities_bounded(
-            worker_count in 1usize..=64,
-            queue_capacity in 1usize..=64,
-            per_plugin_concurrency in 1usize..=64,
-            module_cache_entries in 1usize..=1024,
-            module_cache_source_bytes in 1usize..=(128 * 1024 * 1024),
+            worker_count in MIN_RUNTIME_WORKER_COUNT..=MAX_RUNTIME_WORKER_COUNT,
+            queue_capacity in MIN_RUNTIME_QUEUE_CAPACITY..=MAX_RUNTIME_QUEUE_CAPACITY,
+            per_plugin_concurrency in MIN_RUNTIME_PER_PLUGIN_CONCURRENCY..=MAX_RUNTIME_PER_PLUGIN_CONCURRENCY,
+            module_cache_entries in MIN_RUNTIME_MODULE_CACHE_ENTRIES..=MAX_RUNTIME_MODULE_CACHE_ENTRIES,
+            module_cache_source_bytes in MIN_RUNTIME_MODULE_CACHE_SOURCE_BYTES..=MAX_RUNTIME_MODULE_CACHE_SOURCE_BYTES,
         ) {
             let limits = RuntimeLimits {
                 worker_count,
@@ -303,13 +313,18 @@ mod property_gates {
                 module_cache_entries,
                 module_cache_source_bytes,
             };
-            let validated = limits.validate().expect("generated limits are within bounds");
-            prop_assert_eq!(validated.hostcall_active_route_capacity(), worker_count);
-            prop_assert_eq!(
-                validated.hostcall_canceled_route_capacity().unwrap(),
-                worker_count + queue_capacity,
-            );
-            prop_assert_eq!(validated.compile_flight_route_capacity(), worker_count);
+            match limits.validate() {
+                Ok(validated) => {
+                    prop_assert!(per_plugin_concurrency <= worker_count);
+                    prop_assert_eq!(validated.hostcall_active_route_capacity(), worker_count);
+                    prop_assert_eq!(
+                        validated.hostcall_canceled_route_capacity().unwrap(),
+                        worker_count + queue_capacity,
+                    );
+                    prop_assert_eq!(validated.compile_flight_route_capacity(), worker_count);
+                }
+                Err(_) => prop_assert!(per_plugin_concurrency > worker_count),
+            }
         }
 
         #[test]
@@ -360,21 +375,29 @@ pub struct RuntimeLimits {
 
 impl RuntimeLimits {
     pub fn validate(self) -> IpcResult<Self> {
-        if self.worker_count == 0
-            || self.queue_capacity == 0
-            || self.per_plugin_concurrency == 0
-            || self.module_cache_entries == 0
-            || self.module_cache_source_bytes == 0
+        if self.worker_count < MIN_RUNTIME_WORKER_COUNT
+            || self.queue_capacity < MIN_RUNTIME_QUEUE_CAPACITY
+            || self.per_plugin_concurrency < MIN_RUNTIME_PER_PLUGIN_CONCURRENCY
+            || self.module_cache_entries < MIN_RUNTIME_MODULE_CACHE_ENTRIES
+            || self.module_cache_source_bytes < MIN_RUNTIME_MODULE_CACHE_SOURCE_BYTES
         {
-            return Err(protocol_violation("runtime limits must be positive"));
+            return Err(protocol_violation(
+                "runtime limits are below platform minimums",
+            ));
         }
-        if self.worker_count > 64
-            || self.queue_capacity > 64
-            || self.per_plugin_concurrency > 64
-            || self.module_cache_entries > 1024
+        if self.worker_count > MAX_RUNTIME_WORKER_COUNT
+            || self.queue_capacity > MAX_RUNTIME_QUEUE_CAPACITY
+            || self.per_plugin_concurrency > MAX_RUNTIME_PER_PLUGIN_CONCURRENCY
+            || self.module_cache_entries > MAX_RUNTIME_MODULE_CACHE_ENTRIES
+            || self.module_cache_source_bytes > MAX_RUNTIME_MODULE_CACHE_SOURCE_BYTES
         {
             return Err(protocol_violation(
                 "runtime limits exceed platform maximums",
+            ));
+        }
+        if self.per_plugin_concurrency > self.worker_count {
+            return Err(protocol_violation(
+                "runtime per_plugin_concurrency exceeds worker_count",
             ));
         }
         self.hostcall_canceled_route_capacity()?;
@@ -1844,6 +1867,7 @@ pub fn hello_ack_frame(
     wasm_abi_version: &str,
     limits: RuntimeLimits,
 ) -> IpcResult<String> {
+    let limits = limits.validate()?;
     let limits = serde_json::to_string(&limits).map_err(|_| encode_failed("runtime limits"))?;
     Ok(format!(
         "{{\"ipc_version\":\"{}\",\"frame_type\":\"{}\",\"request_id\":\"{}\",\"runtime_generation_id\":\"{}\",\"payload\":{{\"runtime_version\":\"{}\",\"actual_target\":{{\"os\":\"{}\",\"arch\":\"{}\"}},\"rust_ipc_version\":\"{}\",\"wasm_abi_version\":\"{}\",\"channel_nonce\":\"{}\",\"limits\":{}}}}}",
@@ -1984,18 +2008,19 @@ pub fn heartbeat_ack_result_json(
     max_staleness_ms: u64,
     host_sent_unix_nano: u64,
     status: RuntimeHeartbeatStatus,
-) -> String {
-    serde_json::json!({
+) -> IpcResult<String> {
+    let limits = status.limits.validate()?;
+    Ok(serde_json::json!({
         "runtime_generation_id": runtime_generation_id,
         "runtime_unix_nano": runtime_unix_nano,
         "max_staleness_ms": max_staleness_ms,
         "host_sent_unix_nano": host_sent_unix_nano,
         "active_invocations": status.active_invocations,
         "queued_invocations": status.queued_invocations,
-        "limits": status.limits,
+        "limits": limits,
         "module_cache": status.module_cache,
     })
-    .to_string()
+    .to_string())
 }
 
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
@@ -3882,6 +3907,104 @@ mod tests {
         }
     }
 
+    fn invalid_runtime_limits() -> RuntimeLimits {
+        RuntimeLimits {
+            worker_count: 1,
+            per_plugin_concurrency: 2,
+            ..runtime_limits()
+        }
+    }
+
+    #[test]
+    fn runtime_limit_constants_match_the_ipc_schema() {
+        let schema: Value =
+            serde_json::from_str(include_str!("../../../spec/plugin/ipc-v4.schema.json"))
+                .expect("IPC schema");
+        let properties = schema["$defs"]["runtime_limits"]["properties"]
+            .as_object()
+            .expect("runtime limit properties");
+        for (field, minimum, maximum) in [
+            (
+                "worker_count",
+                MIN_RUNTIME_WORKER_COUNT,
+                MAX_RUNTIME_WORKER_COUNT,
+            ),
+            (
+                "queue_capacity",
+                MIN_RUNTIME_QUEUE_CAPACITY,
+                MAX_RUNTIME_QUEUE_CAPACITY,
+            ),
+            (
+                "per_plugin_concurrency",
+                MIN_RUNTIME_PER_PLUGIN_CONCURRENCY,
+                MAX_RUNTIME_PER_PLUGIN_CONCURRENCY,
+            ),
+            (
+                "module_cache_entries",
+                MIN_RUNTIME_MODULE_CACHE_ENTRIES,
+                MAX_RUNTIME_MODULE_CACHE_ENTRIES,
+            ),
+            (
+                "module_cache_source_bytes",
+                MIN_RUNTIME_MODULE_CACHE_SOURCE_BYTES,
+                MAX_RUNTIME_MODULE_CACHE_SOURCE_BYTES,
+            ),
+        ] {
+            let property = properties.get(field).expect("runtime limit property");
+            assert_eq!(property["minimum"].as_u64(), Some(minimum as u64));
+            assert_eq!(property["maximum"].as_u64(), Some(maximum as u64));
+        }
+    }
+
+    #[test]
+    fn runtime_limits_enforce_all_platform_bounds() {
+        RuntimeLimits {
+            worker_count: MAX_RUNTIME_WORKER_COUNT,
+            queue_capacity: MAX_RUNTIME_QUEUE_CAPACITY,
+            per_plugin_concurrency: MAX_RUNTIME_PER_PLUGIN_CONCURRENCY,
+            module_cache_entries: MAX_RUNTIME_MODULE_CACHE_ENTRIES,
+            module_cache_source_bytes: MAX_RUNTIME_MODULE_CACHE_SOURCE_BYTES,
+        }
+        .validate()
+        .expect("maximum runtime limits");
+
+        for invalid in [
+            RuntimeLimits {
+                worker_count: 0,
+                queue_capacity: 0,
+                per_plugin_concurrency: 0,
+                module_cache_entries: 0,
+                module_cache_source_bytes: 0,
+            },
+            RuntimeLimits {
+                worker_count: MAX_RUNTIME_WORKER_COUNT + 1,
+                ..runtime_limits()
+            },
+            RuntimeLimits {
+                queue_capacity: MAX_RUNTIME_QUEUE_CAPACITY + 1,
+                ..runtime_limits()
+            },
+            RuntimeLimits {
+                per_plugin_concurrency: MAX_RUNTIME_PER_PLUGIN_CONCURRENCY + 1,
+                ..runtime_limits()
+            },
+            invalid_runtime_limits(),
+            RuntimeLimits {
+                module_cache_entries: MAX_RUNTIME_MODULE_CACHE_ENTRIES + 1,
+                ..runtime_limits()
+            },
+            RuntimeLimits {
+                module_cache_source_bytes: MAX_RUNTIME_MODULE_CACHE_SOURCE_BYTES + 1,
+                ..runtime_limits()
+            },
+        ] {
+            assert!(matches!(
+                invalid.validate(),
+                Err(IpcError::ProtocolViolation { .. })
+            ));
+        }
+    }
+
     fn user_resource_scope() -> NetworkResourceScope {
         NetworkResourceScope {
             kind: "user".to_string(),
@@ -4161,7 +4284,7 @@ mod tests {
     }
 
     #[test]
-    fn rejects_v2_and_non_positive_runtime_limits() {
+    fn rejects_v2_and_invalid_runtime_limits() {
         let public_key = base64::engine::general_purpose::STANDARD.encode([7u8; 32]);
         let valid = hello_frame(
             Some("nonce_1234567890"),
@@ -4173,6 +4296,22 @@ mod tests {
         assert!(
             parse_hello_frame(&valid.replacen("\"worker_count\":8", "\"worker_count\":0", 1))
                 .is_err()
+        );
+        assert!(
+            parse_hello_frame(&valid.replacen(
+                "\"module_cache_source_bytes\":134217728",
+                "\"module_cache_source_bytes\":134217729",
+                1,
+            ))
+            .is_err()
+        );
+        assert!(
+            parse_hello_frame(&valid.replacen(
+                "\"per_plugin_concurrency\":4",
+                "\"per_plugin_concurrency\":9",
+                1,
+            ))
+            .is_err()
         );
     }
 
@@ -4701,6 +4840,23 @@ mod tests {
     }
 
     #[test]
+    fn hello_ack_frame_rejects_invalid_runtime_limits() {
+        let actual_target = RuntimeTarget::new("linux", "amd64").unwrap();
+        assert!(matches!(
+            hello_ack_frame(
+                "r1",
+                "g1",
+                "nonce_1",
+                "0.0.0-dev",
+                &actual_target,
+                WASM_ABI_VERSION,
+                invalid_runtime_limits(),
+            ),
+            Err(IpcError::ProtocolViolation { .. })
+        ));
+    }
+
+    #[test]
     fn renders_error_response_frame() {
         let frame = error_response_frame(
             FRAME_TYPE_INVOKE_WORKER_RESULT,
@@ -4962,11 +5118,37 @@ mod tests {
                     source_bytes: 1024,
                 },
             },
-        );
+        )
+        .expect("heartbeat acknowledgement result");
         assert!(result.contains(r#""runtime_generation_id":"runtime_gen_1""#));
         assert!(result.contains(r#""runtime_unix_nano":101"#));
         assert!(result.contains(r#""max_staleness_ms":5000"#));
         assert!(result.contains(r#""host_sent_unix_nano":100"#));
+    }
+
+    #[test]
+    fn heartbeat_ack_result_rejects_invalid_runtime_limits() {
+        assert!(matches!(
+            heartbeat_ack_result_json(
+                "runtime_gen_1",
+                101,
+                5000,
+                100,
+                RuntimeHeartbeatStatus {
+                    active_invocations: 0,
+                    queued_invocations: 0,
+                    limits: invalid_runtime_limits(),
+                    module_cache: ModuleCacheMetrics {
+                        hits: 0,
+                        misses: 0,
+                        compiles: 0,
+                        entries: 0,
+                        source_bytes: 0,
+                    },
+                },
+            ),
+            Err(IpcError::ProtocolViolation { .. })
+        ));
     }
 
     #[test]

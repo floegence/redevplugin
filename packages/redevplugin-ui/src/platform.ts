@@ -80,6 +80,8 @@ export function toPluginSurfaceHostBootstrap(value: PluginSurfaceBootstrapResult
 
 export type PluginRuntimeStartRequest = PlatformSchemas["StartRuntimeRequest"];
 export type PluginRuntimeTarget = NonNullable<PluginRuntimeStartRequest["target"]>;
+/** Negotiated limits reported by runtime health; configuration is Host-owned. */
+export type PluginRuntimeLimits = Readonly<PlatformSchemas["RuntimeLimits"]>;
 export type PluginRuntimeHealth = PlatformSchemas["PluginRuntimeHealth"];
 export type PluginRuntimeShardHealth = PlatformSchemas["PluginRuntimeShardHealth"];
 export type PluginRuntimeStopResult = PlatformSchemas["PluginRuntimeStopResult"];

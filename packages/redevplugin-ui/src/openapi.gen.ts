@@ -1323,11 +1323,17 @@ export interface components {
             wasm_abi_version: "redevplugin-wasm-worker-v2";
             artifact_sha256: string;
         };
+        /** @description Negotiated runtime capacities. per_plugin_concurrency must not exceed worker_count. Route capacities are derived exactly from negotiated limits: active hostcall routes = worker_count, canceled hostcall retention = worker_count + queue_capacity, and compile-flight artifact routes = worker_count. */
         RuntimeLimits: {
+            /** @description Number of runtime worker threads. */
             worker_count: number;
+            /** @description Maximum queued worker invocations. */
             queue_capacity: number;
+            /** @description Maximum concurrent invocations for one plugin; must not exceed worker_count. */
             per_plugin_concurrency: number;
+            /** @description Maximum compiled modules retained by the runtime cache. */
             module_cache_entries: number;
+            /** @description Maximum source WASM bytes retained by the runtime cache (128 MiB). */
             module_cache_source_bytes: number;
         };
         RuntimeModuleCacheMetrics: {

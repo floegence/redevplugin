@@ -407,15 +407,15 @@
     },
     "runtime_limits": {
       "type": "object",
-      "description": "Route capacities are derived exactly from negotiated limits: active hostcall routes = worker_count, canceled hostcall retention = worker_count + queue_capacity, and compile-flight artifact routes = worker_count.",
+      "description": "Negotiated runtime capacities. per_plugin_concurrency must not exceed worker_count. Route capacities are derived exactly from negotiated limits: active hostcall routes = worker_count, canceled hostcall retention = worker_count + queue_capacity, and compile-flight artifact routes = worker_count.",
       "additionalProperties": false,
       "required": ["worker_count", "queue_capacity", "per_plugin_concurrency", "module_cache_entries", "module_cache_source_bytes"],
       "properties": {
-        "worker_count": { "type": "integer", "minimum": 1, "maximum": 64 },
-        "queue_capacity": { "type": "integer", "minimum": 1, "maximum": 64 },
-        "per_plugin_concurrency": { "type": "integer", "minimum": 1, "maximum": 64 },
-        "module_cache_entries": { "type": "integer", "minimum": 1, "maximum": 1024 },
-        "module_cache_source_bytes": { "type": "integer", "minimum": 1 }
+        "worker_count": { "type": "integer", "minimum": 1, "maximum": 64, "description": "Number of runtime worker threads." },
+        "queue_capacity": { "type": "integer", "minimum": 1, "maximum": 64, "description": "Maximum queued worker invocations." },
+        "per_plugin_concurrency": { "type": "integer", "minimum": 1, "maximum": 64, "description": "Maximum concurrent invocations for one plugin; must not exceed worker_count." },
+        "module_cache_entries": { "type": "integer", "minimum": 1, "maximum": 1024, "description": "Maximum compiled modules retained by the runtime cache." },
+        "module_cache_source_bytes": { "type": "integer", "minimum": 1, "maximum": 134217728, "description": "Maximum source WASM bytes retained by the runtime cache (128 MiB)." }
       }
     },
     "module_cache_metrics": {

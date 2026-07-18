@@ -231,7 +231,8 @@ capabilities.
   from `GOMAXPROCS`, cap the queue at 64, cap each plugin at 2-8 concurrent
   workers, and allow 64 compiled modules or 128 MiB of source WASM. Go waits for
   capacity before consuming an execution lease; Rust independently enforces the
-  negotiated limits with a fair per-plugin scheduler.
+  same closed bounds, including `per_plugin_concurrency <= worker_count`, with a
+  fair per-plugin scheduler.
 - One Wasmi engine is shared by the runtime generation. Validated modules are
   single-flight compiled and retained in a deterministic content-addressed LRU
   keyed by artifact SHA-256 and ABI version. Each invocation still receives an

@@ -1578,7 +1578,8 @@ fn handle_heartbeat(
             limits: status.limits,
             module_cache: module_cache_metrics(status.module_cache.metrics()),
         },
-    );
+    )
+    .map_err(ipc_contract_error)?;
     ipc_frame(redevplugin_ipc::success_response_frame(
         redevplugin_ipc::FRAME_TYPE_HEARTBEAT,
         request_id,
