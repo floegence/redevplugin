@@ -3206,19 +3206,21 @@ func TestHandlerSettingsFlow(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	schema := getJSON[host.SettingsSchemaResult](t, handler, "/_redevplugin/api/plugins/"+installed.PluginInstanceID+"/settings/schema")
-	if schema.SchemaVersion != 1 || len(schema.Fields) != 3 || schema.ValuesRevision == 0 {
+	settingsPath := "/_redevplugin/api/plugins/" + installed.PluginInstanceID + "/settings"
+	schema := getJSON[host.SettingsSchemaResult](t, handler, settingsPath+"/schema?scope=user")
+	if schema.Scope != sessionctx.ScopeUser || schema.SchemaVersion != 1 || len(schema.Fields) != 3 || schema.ValuesRevision == 0 {
 		t.Fatalf("settings schema mismatch: %#v", schema)
 	}
-	initial := getJSON[host.SettingsResult](t, handler, "/_redevplugin/api/plugins/"+installed.PluginInstanceID+"/settings")
-	if initial.Values["default_engine"] != "docker" {
+	initial := getJSON[host.SettingsResult](t, handler, settingsPath+"?scope=user")
+	if initial.Scope != sessionctx.ScopeUser || initial.Values["default_engine"] != "docker" {
 		t.Fatalf("settings defaults mismatch: %#v", initial)
 	}
 	if _, exists := initial.Values["api_token"]; exists || len(initial.SecretMetadata) != 1 || initial.SecretMetadata[0].Bound {
 		t.Fatalf("secret metadata should be separate from settings values: %#v", initial)
 	}
 
-	patched := patchJSON[host.SettingsResult](t, handler, "/_redevplugin/api/plugins/"+installed.PluginInstanceID+"/settings", map[string]any{
+	patched := patchJSON[host.SettingsResult](t, handler, settingsPath, map[string]any{
+		"scope":                    "user",
 		"expected_values_revision": initial.ValuesRevision,
 		"set":                      map[string]any{"default_engine": "podman"},
 	})
@@ -3231,17 +3233,35 @@ func TestHandlerSettingsFlow(t *testing.T) {
 		"secret_ref":         "api_token",
 		"scope":              "user",
 	})
-	withSecret := getJSON[host.SettingsResult](t, handler, "/_redevplugin/api/plugins/"+installed.PluginInstanceID+"/settings")
+	withSecret := getJSON[host.SettingsResult](t, handler, settingsPath+"?scope=user")
 	if len(withSecret.SecretMetadata) != 1 || !withSecret.SecretMetadata[0].Bound || withSecret.SecretMetadata[0].SecretRef != "api_token" {
 		t.Fatalf("bound secret metadata mismatch: %#v", withSecret.SecretMetadata)
 	}
 
-	conflict := requestJSONError(t, handler, http.MethodPatch, "/_redevplugin/api/plugins/"+installed.PluginInstanceID+"/settings", map[string]any{
+	conflict := requestJSONError(t, handler, http.MethodPatch, settingsPath, map[string]any{
+		"scope":                    "user",
 		"expected_values_revision": initial.ValuesRevision,
 		"set":                      map[string]any{"default_engine": "docker"},
 	}, http.StatusConflict)
 	if conflict.Code != string(security.ErrValuesRevisionMismatch) || conflict.Details["actual_values_revision"] != float64(patched.ValuesRevision) {
 		t.Fatalf("settings values revision conflict mismatch: %#v", conflict)
+	}
+
+	missingScope := requestJSONError(t, handler, http.MethodGet, settingsPath, nil, http.StatusBadRequest)
+	if missingScope.Code != string(security.ErrInvalidRequest) {
+		t.Fatalf("missing settings scope error = %#v", missingScope)
+	}
+	invalidScope := requestJSONError(t, handler, http.MethodGet, settingsPath+"?scope=global", nil, http.StatusBadRequest)
+	if invalidScope.Code != string(security.ErrInvalidRequest) {
+		t.Fatalf("invalid settings scope error = %#v", invalidScope)
+	}
+	scopeMismatch := requestJSONError(t, handler, http.MethodPatch, settingsPath, map[string]any{
+		"scope":                    "environment",
+		"expected_values_revision": 1,
+		"set":                      map[string]any{"default_engine": "docker"},
+	}, http.StatusForbidden)
+	if scopeMismatch.Code != string(security.ErrOwnerScopeMismatch) || scopeMismatch.MutationOutcome != string(mutation.OutcomeNotCommitted) {
+		t.Fatalf("settings scope mismatch error = %#v", scopeMismatch)
 	}
 }
 
@@ -3437,6 +3457,7 @@ func TestHandlerDataExportImportSettingsBundle(t *testing.T) {
 	}
 	if _, err := h.PatchPluginSettings(httpTestContext(), host.PatchSettingsRequest{
 		PluginInstanceID:       installed.PluginInstanceID,
+		Scope:                  sessionctx.ScopeUser,
 		ExpectedValuesRevision: 1,
 		Set:                    map[string]any{"default_engine": "podman"},
 	}); err != nil {
@@ -3711,7 +3732,7 @@ func TestHandlerSecretAdapterFailuresAfterDispatchAreUnknown(t *testing.T) {
 				}); err != nil {
 					t.Fatal(err)
 				}
-				snapshot, err := h.GetPluginSettings(httpTestContext(), host.GetSettingsRequest{PluginInstanceID: installed.PluginInstanceID})
+				snapshot, err := h.GetPluginSettings(httpTestContext(), host.GetSettingsRequest{PluginInstanceID: installed.PluginInstanceID, Scope: sessionctx.ScopeUser})
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -3876,6 +3897,7 @@ func TestHandlerPatchSettingsReportsUnknownWhenMetadataReadFailsAfterCommit(t *t
 	handler := mustNewHandler(t, h, allowHTTPTestGuard())
 
 	envelope := requestJSONError(t, handler, http.MethodPatch, "/_redevplugin/api/plugins/"+installed.PluginInstanceID+"/settings", map[string]any{
+		"scope":                    "user",
 		"expected_values_revision": 1,
 		"set":                      map[string]any{"default_engine": "podman"},
 	}, http.StatusForbidden)
@@ -3884,7 +3906,7 @@ func TestHandlerPatchSettingsReportsUnknownWhenMetadataReadFailsAfterCommit(t *t
 	}
 
 	secretStore.listErr = nil
-	snapshot := getJSON[host.SettingsResult](t, handler, "/_redevplugin/api/plugins/"+installed.PluginInstanceID+"/settings")
+	snapshot := getJSON[host.SettingsResult](t, handler, "/_redevplugin/api/plugins/"+installed.PluginInstanceID+"/settings?scope=user")
 	if snapshot.ValuesRevision != 2 || snapshot.Values["default_engine"] != "podman" {
 		t.Fatalf("committed settings snapshot mismatch: %#v", snapshot)
 	}

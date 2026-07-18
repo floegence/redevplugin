@@ -8499,7 +8499,7 @@ func TestSecretStoreIsTheOnlySettingsSecretAuthorityAndExportDoesNotReadIt(t *te
 		t.Fatal(err)
 	}
 
-	settingsBefore, err := h.GetPluginSettings(hostTestContext(), GetSettingsRequest{PluginInstanceID: installed.PluginInstanceID})
+	settingsBefore, err := h.GetPluginSettings(hostTestContext(), GetSettingsRequest{PluginInstanceID: installed.PluginInstanceID, Scope: sessionctx.ScopeUser})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -8510,7 +8510,7 @@ func TestSecretStoreIsTheOnlySettingsSecretAuthorityAndExportDoesNotReadIt(t *te
 	if err := h.BindSecretRef(hostTestContext(), secretRequest); err != nil {
 		t.Fatal(err)
 	}
-	settingsAfterBind, err := h.GetPluginSettings(hostTestContext(), GetSettingsRequest{PluginInstanceID: installed.PluginInstanceID})
+	settingsAfterBind, err := h.GetPluginSettings(hostTestContext(), GetSettingsRequest{PluginInstanceID: installed.PluginInstanceID, Scope: sessionctx.ScopeUser})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -8529,7 +8529,7 @@ func TestSecretStoreIsTheOnlySettingsSecretAuthorityAndExportDoesNotReadIt(t *te
 	if err := h.DeleteSecretRef(hostTestContext(), SecretDeleteRequest(secretRequest)); err != nil {
 		t.Fatal(err)
 	}
-	settingsAfterDelete, err := h.GetPluginSettings(hostTestContext(), GetSettingsRequest{PluginInstanceID: installed.PluginInstanceID})
+	settingsAfterDelete, err := h.GetPluginSettings(hostTestContext(), GetSettingsRequest{PluginInstanceID: installed.PluginInstanceID, Scope: sessionctx.ScopeUser})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -1385,7 +1385,7 @@ export interface components {
             key: string;
             type: string;
             label: string;
-            scope: string;
+            scope: components["schemas"]["ResourceScopeKind"];
             default?: unknown;
             secret_ref?: string;
             options?: string[];
@@ -1395,12 +1395,14 @@ export interface components {
         };
         PluginSettingsSchema: {
             plugin_instance_id: string;
+            scope: components["schemas"]["ResourceScopeKind"];
             schema_version: number;
             fields: components["schemas"]["PluginSettingsField"][];
             values_revision: number;
         };
         PluginSettingsSnapshot: {
             plugin_instance_id: string;
+            scope: components["schemas"]["ResourceScopeKind"];
             schema_version: number;
             values_revision: number;
             values: {
@@ -1987,7 +1989,10 @@ export interface components {
             /** @enum {string} */
             scope: "user" | "environment";
         };
+        /** @enum {string} */
+        ResourceScopeKind: "user" | "environment";
         PatchSettingsRequest: {
+            scope: components["schemas"]["ResourceScopeKind"];
             expected_values_revision: number;
             set?: {
                 [key: string]: unknown;
@@ -2693,6 +2698,7 @@ export interface components {
     parameters: {
         OperationID: string;
         PluginInstanceID: string;
+        SettingsScope: components["schemas"]["ResourceScopeKind"];
         SurfaceInstanceID: string;
     };
     requestBodies: {
@@ -3583,7 +3589,9 @@ export interface operations {
     };
     getPluginSettingsSchema: {
         parameters: {
-            query?: never;
+            query: {
+                scope: components["parameters"]["SettingsScope"];
+            };
             header?: never;
             path: {
                 plugin_instance_id: components["parameters"]["PluginInstanceID"];
@@ -3598,7 +3606,9 @@ export interface operations {
     };
     getPluginSettings: {
         parameters: {
-            query?: never;
+            query: {
+                scope: components["parameters"]["SettingsScope"];
+            };
             header?: never;
             path: {
                 plugin_instance_id: components["parameters"]["PluginInstanceID"];

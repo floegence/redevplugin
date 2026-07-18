@@ -14,6 +14,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/floegence/redevplugin/pkg/mutation"
+	"github.com/floegence/redevplugin/pkg/sessionctx"
 	"github.com/floegence/redevplugin/pkg/storage"
 )
 
@@ -49,7 +50,11 @@ func (s *FileStore) withNamespace(ctx context.Context, pluginInstanceID string, 
 	if err != nil {
 		return err
 	}
-	unlock := s.locks.lockRead(pluginID)
+	environment, err := environmentScope(ctx)
+	if err != nil {
+		return err
+	}
+	unlock := s.locks.lockRead(scopedLockKey(environment, pluginID))
 	defer unlock()
 	binding, err := s.getBinding(ctx, pluginID)
 	if err != nil {
@@ -58,7 +63,7 @@ func (s *FileStore) withNamespace(ctx context.Context, pluginInstanceID string, 
 	if binding.State != BindingActive {
 		return storage.ErrNamespaceNotFound
 	}
-	workspace, _, err := s.workspaceForBinding(binding)
+	workspace, manifest, err := s.workspaceForBinding(environment, binding)
 	if err != nil {
 		return err
 	}
@@ -77,10 +82,28 @@ func (s *FileStore) withNamespace(ctx context.Context, pluginInstanceID string, 
 	if namespace.Kind != kind {
 		return fmt.Errorf("%w: store %q is %s, not %s", storage.ErrInvalidNamespace, storeID, namespace.Kind, kind)
 	}
-	namespaceUnlock := s.namespaceLocks.lock(binding.GenerationID+"\x00"+namespace.ID, write)
+	owner, err := resourceScope(ctx, sessionctx.ScopeKind(namespace.Scope))
+	if err != nil {
+		return err
+	}
+	if sessionctx.ScopeKind(namespace.Scope) != owner.Kind {
+		return ErrStorageScopeMismatch
+	}
+	generationScopeKey := scopedGenerationCacheKey(owner, binding.GenerationID)
+	initUnlock := s.namespaceLocks.lock(generationScopeKey+"\x00scope", true)
+	if err := s.ensureWorkspaceScope(ctx, workspace.root, manifest.Shape, owner, nil); err != nil {
+		initUnlock()
+		return err
+	}
+	initUnlock()
+	namespaceKey := scopedNamespaceCacheKey(owner, binding.GenerationID, namespace.ID)
+	namespaceUnlock := s.namespaceLocks.lock(namespaceKey, write)
 	defer namespaceUnlock()
-	namespaceRoot := filepath.Join(workspacesDirName, binding.GenerationID, namespacesDirName, namespace.ID, namespaceDataName)
-	absRoot := filepath.Join(s.root, namespaceRoot)
+	absRoot := filepath.Join(workspaceNamespaceRoot(workspace.root, owner), namespace.ID, namespaceDataName)
+	namespaceRoot, err := filepath.Rel(s.root, absRoot)
+	if err != nil || namespaceRoot == "." || strings.HasPrefix(namespaceRoot, ".."+string(filepath.Separator)) || filepath.IsAbs(namespaceRoot) {
+		return fmt.Errorf("%w: namespace root is unsafe", storage.ErrInvalidNamespace)
+	}
 	info, err := s.rootHandle.Lstat(namespaceRoot)
 	if err != nil || info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
 		return fmt.Errorf("%w: namespace root is unsafe", storage.ErrInvalidNamespace)
@@ -88,11 +111,11 @@ func (s *FileStore) withNamespace(ctx context.Context, pluginInstanceID string, 
 	if err := rejectRootSymlinkPath(s.rootHandle, namespaceRoot); err != nil {
 		return fmt.Errorf("%w: namespace root is unsafe", storage.ErrInvalidNamespace)
 	}
-	usageKey := binding.GenerationID + "\x00" + namespace.ID
+	usageKey := namespaceKey
 	var db *sql.DB
 	var root *os.Root
 	if namespace.Kind == NamespaceFiles || namespace.Kind == NamespaceKV {
-		dbKey := namespaceDatabaseCacheKey(binding.GenerationID, namespace.ID, namespace.Kind)
+		dbKey := namespaceDatabaseCacheKey(generationScopeKey, namespace.ID, namespace.Kind)
 		var releaseDB func()
 		db, root, releaseDB, err = s.acquireNamespaceDatabase(ctx, dbKey, absRoot, info)
 		if err != nil {
@@ -637,7 +660,11 @@ func (s *FileStore) ListNamespaces(ctx context.Context, pluginInstanceID string)
 	if err != nil {
 		return nil, err
 	}
-	unlock := s.locks.lockRead(pluginID)
+	environment, err := environmentScope(ctx)
+	if err != nil {
+		return nil, err
+	}
+	unlock := s.locks.lockRead(scopedLockKey(environment, pluginID))
 	defer unlock()
 	binding, err := s.getBinding(ctx, pluginID)
 	if err != nil {
@@ -646,20 +673,34 @@ func (s *FileStore) ListNamespaces(ctx context.Context, pluginInstanceID string)
 		}
 		return nil, err
 	}
-	workspace, _, err := s.workspaceForBinding(binding)
+	workspace, manifest, err := s.workspaceForBinding(environment, binding)
 	if err != nil {
 		return nil, err
 	}
 	lockKeys := make([]string, 0, len(workspace.shape.Namespaces))
 	for _, namespace := range workspace.shape.Namespaces {
-		lockKeys = append(lockKeys, binding.GenerationID+"\x00"+namespace.ID)
+		owner, err := resourceScope(ctx, sessionctx.ScopeKind(namespace.Scope))
+		if err != nil {
+			return nil, err
+		}
+		if err := s.ensureWorkspaceScope(ctx, workspace.root, manifest.Shape, owner, nil); err != nil {
+			return nil, err
+		}
+		lockKeys = append(lockKeys, scopedNamespaceCacheKey(owner, binding.GenerationID, namespace.ID))
 	}
 	namespaceUnlock := s.namespaceLocks.lockManyMode(false, lockKeys...)
 	defer namespaceUnlock()
 	records := make([]storage.NamespaceRecord, 0, len(workspace.shape.Namespaces))
 	for _, namespace := range workspace.shape.Namespaces {
-		namespaceRoot := filepath.Join(workspacesDirName, binding.GenerationID, namespacesDirName, namespace.ID, namespaceDataName)
-		root := filepath.Join(s.root, namespaceRoot)
+		owner, err := resourceScope(ctx, sessionctx.ScopeKind(namespace.Scope))
+		if err != nil {
+			return nil, err
+		}
+		root := filepath.Join(workspaceNamespaceRoot(workspace.root, owner), namespace.ID, namespaceDataName)
+		namespaceRoot, err := filepath.Rel(s.root, root)
+		if err != nil || namespaceRoot == "." || strings.HasPrefix(namespaceRoot, ".."+string(filepath.Separator)) || filepath.IsAbs(namespaceRoot) {
+			return nil, fmt.Errorf("%w: namespace root is unsafe", storage.ErrInvalidNamespace)
+		}
 		info, err := s.rootHandle.Lstat(namespaceRoot)
 		if err != nil || info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
 			return nil, fmt.Errorf("%w: namespace root is unsafe", storage.ErrInvalidNamespace)
@@ -670,13 +711,13 @@ func (s *FileStore) ListNamespaces(ctx context.Context, pluginInstanceID string)
 		var db *sql.DB
 		releaseDB := func() {}
 		if namespace.Kind == NamespaceFiles || namespace.Kind == NamespaceKV {
-			dbKey := namespaceDatabaseCacheKey(binding.GenerationID, namespace.ID, namespace.Kind)
+			dbKey := namespaceDatabaseCacheKey(scopedGenerationCacheKey(owner, binding.GenerationID), namespace.ID, namespace.Kind)
 			db, _, releaseDB, err = s.acquireNamespaceDatabase(ctx, dbKey, root, info)
 			if err != nil {
 				return nil, err
 			}
 		}
-		usage, err := s.cachedNamespaceUsage(ctx, binding.GenerationID+"\x00"+namespace.ID, root, namespace.Kind, db)
+		usage, err := s.cachedNamespaceUsage(ctx, scopedNamespaceCacheKey(owner, binding.GenerationID, namespace.ID), root, namespace.Kind, db)
 		releaseDB()
 		if err != nil {
 			return nil, err

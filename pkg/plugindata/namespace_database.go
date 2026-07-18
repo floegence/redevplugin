@@ -109,15 +109,23 @@ func openNamespaceDatabase(ctx context.Context, root string, readOnly bool) (*sq
 	db.SetMaxOpenConns(1)
 	if err := db.PingContext(ctx); err != nil {
 		db.Close()
-		return nil, storage.ErrInvalidNamespace
+		return nil, contextOr(ctx, storage.ErrInvalidNamespace)
 	}
 	if existing {
 		var applicationID, version int
-		if err := db.QueryRowContext(ctx, `PRAGMA application_id`).Scan(&applicationID); err != nil || applicationID != namespaceDatabaseApplicationID {
+		if err := db.QueryRowContext(ctx, `PRAGMA application_id`).Scan(&applicationID); err != nil {
+			db.Close()
+			return nil, contextOr(ctx, storage.ErrInvalidNamespace)
+		}
+		if applicationID != namespaceDatabaseApplicationID {
 			db.Close()
 			return nil, storage.ErrInvalidNamespace
 		}
-		if err := db.QueryRowContext(ctx, `PRAGMA user_version`).Scan(&version); err != nil || version != namespaceDatabaseVersion {
+		if err := db.QueryRowContext(ctx, `PRAGMA user_version`).Scan(&version); err != nil {
+			db.Close()
+			return nil, contextOr(ctx, storage.ErrInvalidNamespace)
+		}
+		if version != namespaceDatabaseVersion {
 			db.Close()
 			return nil, storage.ErrInvalidNamespace
 		}
@@ -131,8 +139,15 @@ func openNamespaceDatabase(ctx context.Context, root string, readOnly bool) (*sq
 	return db, nil
 }
 
-func namespaceDatabaseCacheKey(generationID, namespaceID string, kind NamespaceKind) string {
-	return generationID + "\x00" + namespaceID + "\x00" + string(kind)
+func contextOr(ctx context.Context, fallback error) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return fallback
+}
+
+func namespaceDatabaseCacheKey(generationScopeKey, namespaceID string, kind NamespaceKind) string {
+	return generationScopeKey + "\x00" + namespaceID + "\x00" + string(kind)
 }
 
 func (s *FileStore) acquireNamespaceDatabase(ctx context.Context, key, rootPath string, rootInfo os.FileInfo) (*sql.DB, *os.Root, func(), error) {
@@ -285,15 +300,11 @@ func (s *FileStore) signalNamespaceDBWakeLocked() {
 	s.namespaceDBWake = make(chan struct{})
 }
 
-func (s *FileStore) closeNamespaceDatabases(generationID string) error {
+func (s *FileStore) closeNamespaceDatabases(generationPrefix string) error {
 	s.namespaceDBMu.Lock()
 	var closeErr error
-	prefix := ""
-	if generationID != "" {
-		prefix = generationID + "\x00"
-	}
 	for key, entry := range s.namespaceDB {
-		if prefix != "" && !strings.HasPrefix(key, prefix) {
+		if generationPrefix != "" && !strings.HasPrefix(key, generationPrefix) {
 			continue
 		}
 		if entry.opening || entry.refs != 0 {
@@ -329,14 +340,23 @@ func validateNamespaceDatabase(ctx context.Context, root string, kind NamespaceK
 	}
 	defer db.Close()
 	var applicationID, version int
-	if err := db.QueryRowContext(ctx, `PRAGMA application_id`).Scan(&applicationID); err != nil || applicationID != namespaceDatabaseApplicationID {
+	if err := db.QueryRowContext(ctx, `PRAGMA application_id`).Scan(&applicationID); err != nil {
+		return namespaceUsage{}, contextOr(ctx, fmt.Errorf("%w: invalid namespace database application ID", ErrDatasetCorrupt))
+	}
+	if applicationID != namespaceDatabaseApplicationID {
 		return namespaceUsage{}, fmt.Errorf("%w: invalid namespace database application ID", ErrDatasetCorrupt)
 	}
-	if err := db.QueryRowContext(ctx, `PRAGMA user_version`).Scan(&version); err != nil || version != namespaceDatabaseVersion {
+	if err := db.QueryRowContext(ctx, `PRAGMA user_version`).Scan(&version); err != nil {
+		return namespaceUsage{}, contextOr(ctx, fmt.Errorf("%w: invalid namespace database version", ErrDatasetCorrupt))
+	}
+	if version != namespaceDatabaseVersion {
 		return namespaceUsage{}, fmt.Errorf("%w: invalid namespace database version", ErrDatasetCorrupt)
 	}
 	var integrity string
-	if err := db.QueryRowContext(ctx, `PRAGMA integrity_check(1)`).Scan(&integrity); err != nil || integrity != "ok" {
+	if err := db.QueryRowContext(ctx, `PRAGMA integrity_check(1)`).Scan(&integrity); err != nil {
+		return namespaceUsage{}, contextOr(ctx, fmt.Errorf("%w: namespace database integrity check failed", ErrDatasetCorrupt))
+	}
+	if integrity != "ok" {
 		return namespaceUsage{}, fmt.Errorf("%w: namespace database integrity check failed", ErrDatasetCorrupt)
 	}
 	if err := validateNamespaceDatabaseObjects(ctx, db, kind); err != nil {
@@ -378,7 +398,7 @@ func validateNamespaceDatabaseObjects(ctx context.Context, db *sql.DB, kind Name
 func validateFilesNamespaceDatabase(ctx context.Context, db *sql.DB) (namespaceUsage, error) {
 	rows, err := db.QueryContext(ctx, `SELECT path, parent, entry_type, size_bytes, updated_at_ns FROM file_entries ORDER BY path`)
 	if err != nil {
-		return namespaceUsage{}, fmt.Errorf("%w: read files namespace database", ErrDatasetCorrupt)
+		return namespaceUsage{}, contextOr(ctx, fmt.Errorf("%w: read files namespace database", ErrDatasetCorrupt))
 	}
 	defer rows.Close()
 	var usage namespaceUsage
@@ -409,7 +429,10 @@ func validateFilesNamespaceDatabase(ctx context.Context, db *sql.DB) (namespaceU
 		return namespaceUsage{}, err
 	}
 	persisted, err := readNamespaceDatabaseUsage(ctx, db)
-	if err != nil || persisted != usage {
+	if err != nil {
+		return namespaceUsage{}, contextOr(ctx, fmt.Errorf("%w: files namespace usage does not match entries", ErrDatasetCorrupt))
+	}
+	if persisted != usage {
 		return namespaceUsage{}, fmt.Errorf("%w: files namespace usage does not match entries", ErrDatasetCorrupt)
 	}
 	return persisted, nil
@@ -418,7 +441,7 @@ func validateFilesNamespaceDatabase(ctx context.Context, db *sql.DB) (namespaceU
 func validateKVNamespaceDatabase(ctx context.Context, db *sql.DB) (namespaceUsage, error) {
 	rows, err := db.QueryContext(ctx, `SELECT key, size_bytes, updated_at_ns FROM kv_entries ORDER BY key`)
 	if err != nil {
-		return namespaceUsage{}, fmt.Errorf("%w: read kv namespace database", ErrDatasetCorrupt)
+		return namespaceUsage{}, contextOr(ctx, fmt.Errorf("%w: read kv namespace database", ErrDatasetCorrupt))
 	}
 	defer rows.Close()
 	var usage namespaceUsage
@@ -439,7 +462,10 @@ func validateKVNamespaceDatabase(ctx context.Context, db *sql.DB) (namespaceUsag
 		return namespaceUsage{}, err
 	}
 	persisted, err := readNamespaceDatabaseUsage(ctx, db)
-	if err != nil || persisted != usage {
+	if err != nil {
+		return namespaceUsage{}, contextOr(ctx, fmt.Errorf("%w: kv namespace usage does not match entries", ErrDatasetCorrupt))
+	}
+	if persisted != usage {
 		return namespaceUsage{}, fmt.Errorf("%w: kv namespace usage does not match entries", ErrDatasetCorrupt)
 	}
 	return persisted, nil

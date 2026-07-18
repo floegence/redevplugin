@@ -642,9 +642,10 @@ type secretRefRequest struct {
 }
 
 type patchSettingsRequest struct {
-	ExpectedValuesRevision *uint64        `json:"expected_values_revision"`
-	Set                    map[string]any `json:"set,omitempty"`
-	Remove                 []string       `json:"remove,omitempty"`
+	Scope                  sessionctx.ScopeKind `json:"scope"`
+	ExpectedValuesRevision *uint64              `json:"expected_values_revision"`
+	Set                    map[string]any       `json:"set,omitempty"`
+	Remove                 []string             `json:"remove,omitempty"`
 }
 
 type cancelOperationRequest struct {
@@ -840,8 +841,8 @@ var routes = []routeSpec{
 	apiRoute(http.MethodPost, "/_redevplugin/api/plugins/secrets/bind", websecurity.RouteActionBindSecret, func(h *Handler) http.HandlerFunc { return h.handleBindSecret }),
 	apiRoute(http.MethodPost, "/_redevplugin/api/plugins/secrets/test", websecurity.RouteActionTestSecret, func(h *Handler) http.HandlerFunc { return h.handleTestSecret }),
 	apiRoute(http.MethodPost, "/_redevplugin/api/plugins/secrets/delete", websecurity.RouteActionDeleteSecret, func(h *Handler) http.HandlerFunc { return h.handleDeleteSecret }),
-	apiRoute(http.MethodGet, "/_redevplugin/api/plugins/{plugin_instance_id}/settings/schema", websecurity.RouteActionGetSettingsSchema, func(h *Handler) http.HandlerFunc { return h.handleGetSettingsSchema }),
-	apiRoute(http.MethodGet, "/_redevplugin/api/plugins/{plugin_instance_id}/settings", websecurity.RouteActionGetSettings, func(h *Handler) http.HandlerFunc { return h.handleGetSettings }),
+	apiRoute(http.MethodGet, "/_redevplugin/api/plugins/{plugin_instance_id}/settings/schema", websecurity.RouteActionGetSettingsSchema, func(h *Handler) http.HandlerFunc { return h.handleGetSettingsSchema }, "scope"),
+	apiRoute(http.MethodGet, "/_redevplugin/api/plugins/{plugin_instance_id}/settings", websecurity.RouteActionGetSettings, func(h *Handler) http.HandlerFunc { return h.handleGetSettings }, "scope"),
 	apiRoute(http.MethodPatch, "/_redevplugin/api/plugins/{plugin_instance_id}/settings", websecurity.RouteActionPatchSettings, func(h *Handler) http.HandlerFunc { return h.handlePatchSettings }),
 }
 
@@ -2290,7 +2291,12 @@ func (h Handler) handleGetSettingsSchema(w http.ResponseWriter, r *http.Request)
 		writeJSON(w, http.StatusNotFound, errorResponse{OK: false, Message: "route not found", Code: security.ErrInvalidRequest})
 		return
 	}
-	result, err := h.host.GetSettingsSchema(r.Context(), host.GetSettingsRequest{PluginInstanceID: pluginInstanceID})
+	scope, err := requiredSettingsScope(r)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, errorResponse{OK: false, Message: "settings scope is required", Code: security.ErrInvalidRequest})
+		return
+	}
+	result, err := h.host.GetSettingsSchema(r.Context(), host.GetSettingsRequest{PluginInstanceID: pluginInstanceID, Scope: scope})
 	if err != nil {
 		code := errorCodeForSettingsError(err)
 		writeJSON(w, httpStatusForSettingsError(err), errorResponse{OK: false, Message: h.publicFailureMessage(r.Context(), "settings.schema", code, err), Code: code})
@@ -2305,7 +2311,12 @@ func (h Handler) handleGetSettings(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusNotFound, errorResponse{OK: false, Message: "route not found", Code: security.ErrInvalidRequest})
 		return
 	}
-	result, err := h.host.GetPluginSettings(r.Context(), host.GetSettingsRequest{PluginInstanceID: pluginInstanceID})
+	scope, err := requiredSettingsScope(r)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, errorResponse{OK: false, Message: "settings scope is required", Code: security.ErrInvalidRequest})
+		return
+	}
+	result, err := h.host.GetPluginSettings(r.Context(), host.GetSettingsRequest{PluginInstanceID: pluginInstanceID, Scope: scope})
 	if err != nil {
 		code := errorCodeForSettingsError(err)
 		writeJSON(w, httpStatusForSettingsError(err), errorResponse{OK: false, Message: h.publicFailureMessage(r.Context(), "settings.get", code, err), Code: code})
@@ -2334,14 +2345,19 @@ func (h Handler) handlePatchSettings(w http.ResponseWriter, r *http.Request) {
 		writeMutationInvalidRequestError(w, errors.New("set or remove is required"))
 		return
 	}
+	if _, err := requiredScopeKind(req.Scope); err != nil {
+		writeMutationInvalidRequestError(w, err)
+		return
+	}
 	result, err := h.host.PatchPluginSettings(r.Context(), host.PatchSettingsRequest{
 		PluginInstanceID:       pluginInstanceID,
+		Scope:                  req.Scope,
 		ExpectedValuesRevision: expectedValuesRevision,
 		Set:                    req.Set,
 		Remove:                 req.Remove,
 	})
 	if err != nil {
-		details := h.valuesRevisionDetails(r.Context(), pluginInstanceID, expectedValuesRevision, err)
+		details := h.valuesRevisionDetails(r.Context(), pluginInstanceID, req.Scope, expectedValuesRevision, err)
 		code := errorCodeForSettingsError(err)
 		writeMutationError(w, httpStatusForSettingsError(err), code, h.publicFailureMessage(r.Context(), "settings.patch", code, err), details, mutation.ForError(err))
 		return
@@ -2650,6 +2666,27 @@ func parseQueryParameters(r *http.Request, allowedKeys ...string) (map[string]st
 		result[key] = value
 	}
 	return result, nil
+}
+
+func requiredSettingsScope(r *http.Request) (sessionctx.ScopeKind, error) {
+	query, err := parseQueryParameters(r, "scope")
+	if err != nil {
+		return "", err
+	}
+	value, ok := query["scope"]
+	if !ok {
+		return "", errors.New("query parameter \"scope\" is required")
+	}
+	return requiredScopeKind(sessionctx.ScopeKind(value))
+}
+
+func requiredScopeKind(scope sessionctx.ScopeKind) (sessionctx.ScopeKind, error) {
+	switch scope {
+	case sessionctx.ScopeUser, sessionctx.ScopeEnvironment:
+		return scope, nil
+	default:
+		return "", errors.New("scope must be user or environment")
+	}
 }
 
 func optionalBooleanQueryParameter(query map[string]string, key string) (bool, error) {
@@ -3337,7 +3374,7 @@ func errorCodeForDataLifecycleError(err error) security.ErrorCode {
 		return security.ErrActionDenied
 	case errors.Is(err, host.ErrOwnerScopeMismatch):
 		return security.ErrOwnerScopeMismatch
-	case errors.Is(err, host.ErrStorageScopeMismatch):
+	case errors.Is(err, host.ErrStorageScopeMismatch), errors.Is(err, plugindata.ErrStorageScopeMismatch):
 		return security.ErrStorageScopeMismatch
 	case errors.Is(err, host.ErrAdapterFailure):
 		return security.ErrAdapterFailure
@@ -3375,11 +3412,11 @@ func bindingRevisionDetails(err error) errorDetails {
 	}
 }
 
-func (h Handler) valuesRevisionDetails(ctx context.Context, pluginInstanceID string, expected uint64, err error) errorDetails {
+func (h Handler) valuesRevisionDetails(ctx context.Context, pluginInstanceID string, scope sessionctx.ScopeKind, expected uint64, err error) errorDetails {
 	if !errors.Is(err, plugindata.ErrRevisionConflict) {
 		return errorDetails{}
 	}
-	snapshot, getErr := h.host.GetPluginSettings(ctx, host.GetSettingsRequest{PluginInstanceID: pluginInstanceID})
+	snapshot, getErr := h.host.GetPluginSettings(ctx, host.GetSettingsRequest{PluginInstanceID: pluginInstanceID, Scope: scope})
 	if getErr != nil {
 		return errorDetails{}
 	}
@@ -3434,6 +3471,8 @@ func errorCodeForSettingsError(err error) security.ErrorCode {
 	case errors.Is(err, host.ErrActionDenied):
 		return security.ErrActionDenied
 	case errors.Is(err, host.ErrOwnerScopeMismatch):
+		return security.ErrOwnerScopeMismatch
+	case errors.Is(err, plugindata.ErrSettingScopeMismatch):
 		return security.ErrOwnerScopeMismatch
 	case errors.Is(err, host.ErrStorageScopeMismatch):
 		return security.ErrStorageScopeMismatch

@@ -1,7 +1,6 @@
 package plugindata
 
 import (
-	"context"
 	"fmt"
 	"path/filepath"
 	"testing"
@@ -22,12 +21,12 @@ func BenchmarkBrokerCursorPagination(b *testing.B) {
 				b.ResetTimer()
 				for i := 0; i < b.N; i++ {
 					if kind == NamespaceFiles {
-						result, err := store.ListFiles(context.Background(), storage.FileListRequest{PluginInstanceID: "plugini_bench", StoreID: "data", MaxEntries: paginationBenchmarkPageSize})
+						result, err := store.ListFiles(internalTestContext(), storage.FileListRequest{PluginInstanceID: "plugini_bench", StoreID: "data", MaxEntries: paginationBenchmarkPageSize})
 						if err != nil || len(result.Entries) != paginationBenchmarkPageSize {
 							b.Fatalf("ListFiles() entries = %d, err = %v", len(result.Entries), err)
 						}
 					} else {
-						result, err := store.ListKV(context.Background(), storage.KVListRequest{PluginInstanceID: "plugini_bench", StoreID: "data", MaxEntries: paginationBenchmarkPageSize})
+						result, err := store.ListKV(internalTestContext(), storage.KVListRequest{PluginInstanceID: "plugini_bench", StoreID: "data", MaxEntries: paginationBenchmarkPageSize})
 						if err != nil || len(result.Entries) != paginationBenchmarkPageSize {
 							b.Fatalf("ListKV() entries = %d, err = %v", len(result.Entries), err)
 						}
@@ -57,7 +56,7 @@ func newPaginationBenchmarkStore(b *testing.B, kind NamespaceKind, entries int) 
 		b.Fatal(err)
 	}
 	catalog := &internalCatalog{objects: map[string]Object{}}
-	store, err := Open(context.Background(), root, catalog)
+	store, err := Open(internalTestContext(), root, catalog)
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -75,7 +74,7 @@ func newPaginationBenchmarkStore(b *testing.B, kind NamespaceKind, entries int) 
 			QuotaFiles:    int64(entries + 100),
 		}},
 	}
-	dataset, err := store.CommitEnable(context.Background(), CommitEnableRequest{
+	dataset, err := store.CommitEnable(internalTestContext(), CommitEnableRequest{
 		PluginInstanceID:           "plugini_bench",
 		Shape:                      shape,
 		ExpectedManagementRevision: 1,
@@ -83,8 +82,9 @@ func newPaginationBenchmarkStore(b *testing.B, kind NamespaceKind, entries int) 
 	if err != nil {
 		b.Fatal(err)
 	}
-	namespaceRoot := filepath.Join(store.root, workspacesDirName, dataset.Binding.GenerationID, namespacesDirName, "data", namespaceDataName)
-	db, err := openNamespaceDatabase(context.Background(), namespaceRoot, false)
+	workspaceRoot := store.scopedWorkspacePath(internalEnvironmentScope(), dataset.Binding.GenerationID)
+	namespaceRoot := filepath.Join(workspaceNamespaceRoot(workspaceRoot, internalUserScope()), "data", namespaceDataName)
+	db, err := openNamespaceDatabase(internalTestContext(), namespaceRoot, false)
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -125,9 +125,9 @@ func newPaginationBenchmarkStore(b *testing.B, kind NamespaceKind, entries int) 
 	}
 	// Warm the usage cache so the benchmark isolates cursor enumeration.
 	if kind == NamespaceFiles {
-		_, err = store.ListFiles(context.Background(), storage.FileListRequest{PluginInstanceID: "plugini_bench", StoreID: "data", MaxEntries: 1})
+		_, err = store.ListFiles(internalTestContext(), storage.FileListRequest{PluginInstanceID: "plugini_bench", StoreID: "data", MaxEntries: 1})
 	} else {
-		_, err = store.ListKV(context.Background(), storage.KVListRequest{PluginInstanceID: "plugini_bench", StoreID: "data", MaxEntries: 1})
+		_, err = store.ListKV(internalTestContext(), storage.KVListRequest{PluginInstanceID: "plugini_bench", StoreID: "data", MaxEntries: 1})
 	}
 	if err != nil {
 		b.Fatal(err)
@@ -141,14 +141,14 @@ func pageThroughBenchmarkNamespace(b *testing.B, store *FileStore, kind Namespac
 	cursor := ""
 	for {
 		if kind == NamespaceFiles {
-			result, err := store.ListFiles(context.Background(), storage.FileListRequest{PluginInstanceID: "plugini_bench", StoreID: "data", MaxEntries: paginationBenchmarkPageSize, Cursor: cursor})
+			result, err := store.ListFiles(internalTestContext(), storage.FileListRequest{PluginInstanceID: "plugini_bench", StoreID: "data", MaxEntries: paginationBenchmarkPageSize, Cursor: cursor})
 			if err != nil {
 				b.Fatal(err)
 			}
 			count += len(result.Entries)
 			cursor = result.NextCursor
 		} else {
-			result, err := store.ListKV(context.Background(), storage.KVListRequest{PluginInstanceID: "plugini_bench", StoreID: "data", MaxEntries: paginationBenchmarkPageSize, Cursor: cursor})
+			result, err := store.ListKV(internalTestContext(), storage.KVListRequest{PluginInstanceID: "plugini_bench", StoreID: "data", MaxEntries: paginationBenchmarkPageSize, Cursor: cursor})
 			if err != nil {
 				b.Fatal(err)
 			}

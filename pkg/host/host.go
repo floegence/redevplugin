@@ -878,18 +878,21 @@ type SecurityPolicyResult struct {
 }
 
 type GetSettingsRequest struct {
-	PluginInstanceID string `json:"plugin_instance_id"`
+	PluginInstanceID string               `json:"plugin_instance_id"`
+	Scope            sessionctx.ScopeKind `json:"scope"`
 }
 
 type PatchSettingsRequest struct {
-	PluginInstanceID       string         `json:"plugin_instance_id"`
-	ExpectedValuesRevision uint64         `json:"expected_values_revision"`
-	Set                    map[string]any `json:"set"`
-	Remove                 []string       `json:"remove,omitempty"`
+	PluginInstanceID       string               `json:"plugin_instance_id"`
+	Scope                  sessionctx.ScopeKind `json:"scope"`
+	ExpectedValuesRevision uint64               `json:"expected_values_revision"`
+	Set                    map[string]any       `json:"set"`
+	Remove                 []string             `json:"remove,omitempty"`
 }
 
 type SettingsSchemaResult struct {
 	PluginInstanceID string                      `json:"plugin_instance_id"`
+	Scope            sessionctx.ScopeKind        `json:"scope"`
 	SchemaVersion    int                         `json:"schema_version"`
 	Fields           []manifest.SettingFieldSpec `json:"fields"`
 	ValuesRevision   uint64                      `json:"values_revision"`
@@ -897,6 +900,7 @@ type SettingsSchemaResult struct {
 
 type SettingsResult struct {
 	PluginInstanceID string                   `json:"plugin_instance_id"`
+	Scope            sessionctx.ScopeKind     `json:"scope"`
 	SchemaVersion    int                      `json:"schema_version"`
 	ValuesRevision   uint64                   `json:"values_revision"`
 	Values           map[string]any           `json:"values"`
@@ -6384,14 +6388,19 @@ func (h *Host) GetSettingsSchema(ctx context.Context, req GetSettingsRequest) (S
 	if record.Manifest.Settings == nil {
 		return SettingsSchemaResult{}, ErrPluginSettingsNotDeclared
 	}
-	snapshot, err := h.adapters.PluginData.GetSettings(ctx, record.PluginInstanceID)
+	scope, err := requireSettingsScope(req.Scope)
+	if err != nil {
+		return SettingsSchemaResult{}, err
+	}
+	snapshot, err := h.adapters.PluginData.GetSettings(ctx, record.PluginInstanceID, scope)
 	if err != nil {
 		return SettingsSchemaResult{}, err
 	}
 	return SettingsSchemaResult{
 		PluginInstanceID: record.PluginInstanceID,
+		Scope:            scope,
 		SchemaVersion:    record.Manifest.Settings.SchemaVersion,
-		Fields:           cloneSettingFields(record.Manifest.Settings.Fields),
+		Fields:           cloneSettingFieldsForScope(record.Manifest.Settings.Fields, scope),
 		ValuesRevision:   snapshot.Revision,
 	}, nil
 }
@@ -6407,11 +6416,15 @@ func (h *Host) GetPluginSettings(ctx context.Context, req GetSettingsRequest) (S
 	if record.Manifest.Settings == nil {
 		return SettingsResult{}, ErrPluginSettingsNotDeclared
 	}
-	snapshot, err := h.adapters.PluginData.GetSettings(ctx, record.PluginInstanceID)
+	scope, err := requireSettingsScope(req.Scope)
 	if err != nil {
 		return SettingsResult{}, err
 	}
-	secretMetadata, err := h.settingsSecretMetadata(ctx, record)
+	snapshot, err := h.adapters.PluginData.GetSettings(ctx, record.PluginInstanceID, scope)
+	if err != nil {
+		return SettingsResult{}, err
+	}
+	secretMetadata, err := h.settingsSecretMetadata(ctx, record, scope)
 	if err != nil {
 		return SettingsResult{}, err
 	}
@@ -6429,6 +6442,10 @@ func (h *Host) PatchPluginSettings(ctx context.Context, req PatchSettingsRequest
 	if record.Manifest.Settings == nil {
 		return SettingsResult{}, ErrPluginSettingsNotDeclared
 	}
+	scope, err := requireSettingsScope(req.Scope)
+	if err != nil {
+		return SettingsResult{}, err
+	}
 	set := make(map[string]json.RawMessage, len(req.Set))
 	for key, value := range req.Set {
 		raw, err := json.Marshal(value)
@@ -6444,14 +6461,18 @@ func (h *Host) PatchPluginSettings(ctx context.Context, req PatchSettingsRequest
 	defer func() { retErr = auditMutation.complete(context.WithoutCancel(ctx), retErr) }()
 	snapshot, err := h.adapters.PluginData.PatchSettings(ctx, plugindata.PatchSettingsRequest{
 		PluginInstanceID:       record.PluginInstanceID,
+		Scope:                  scope,
 		ExpectedValuesRevision: req.ExpectedValuesRevision,
 		Set:                    set,
 		Remove:                 append([]string(nil), req.Remove...),
 	})
 	if err != nil {
+		if errors.Is(err, plugindata.ErrSettingScopeMismatch) {
+			return SettingsResult{}, errors.Join(ErrOwnerScopeMismatch, err)
+		}
 		return SettingsResult{}, err
 	}
-	secretMetadata, err := h.settingsSecretMetadata(ctx, record)
+	secretMetadata, err := h.settingsSecretMetadata(ctx, record, scope)
 	if err != nil {
 		return SettingsResult{}, mutation.Unknown(err)
 	}
@@ -8367,7 +8388,7 @@ func storageNamespaceByStoreID(record registry.PluginRecord, storeID string) (st
 	return storage.Namespace{}, false, nil
 }
 
-func (h *Host) settingsSecretMetadata(ctx context.Context, record registry.PluginRecord) ([]SettingsSecretMetadata, error) {
+func (h *Host) settingsSecretMetadata(ctx context.Context, record registry.PluginRecord, requestedScope sessionctx.ScopeKind) ([]SettingsSecretMetadata, error) {
 	records, err := h.adapters.Secrets.List(ctx, secrets.ListRequest{PluginInstanceID: record.PluginInstanceID})
 	if err != nil {
 		return nil, err
@@ -8378,7 +8399,7 @@ func (h *Host) settingsSecretMetadata(ctx context.Context, record registry.Plugi
 	}
 	metadata := make([]SettingsSecretMetadata, 0)
 	for _, field := range record.Manifest.Settings.Fields {
-		if field.Type != settings.FieldSecret {
+		if field.Type != settings.FieldSecret || sessionctx.ScopeKind(field.Scope) != requestedScope {
 			continue
 		}
 		secretRef := strings.TrimSpace(field.SecretRef)
@@ -8405,6 +8426,7 @@ func pluginSettingsResult(record registry.PluginRecord, snapshot plugindata.Sett
 	}
 	return SettingsResult{
 		PluginInstanceID: record.PluginInstanceID,
+		Scope:            snapshot.Scope,
 		SchemaVersion:    record.Manifest.Settings.SchemaVersion,
 		ValuesRevision:   snapshot.Revision,
 		Values:           values,
@@ -8412,9 +8434,22 @@ func pluginSettingsResult(record registry.PluginRecord, snapshot plugindata.Sett
 	}, nil
 }
 
-func cloneSettingFields(fields []manifest.SettingFieldSpec) []manifest.SettingFieldSpec {
-	cloned := make([]manifest.SettingFieldSpec, len(fields))
-	copy(cloned, fields)
+func requireSettingsScope(scope sessionctx.ScopeKind) (sessionctx.ScopeKind, error) {
+	switch scope {
+	case sessionctx.ScopeUser, sessionctx.ScopeEnvironment:
+		return scope, nil
+	default:
+		return "", fmt.Errorf("%w: settings scope must be user or environment", plugindata.ErrInvalidArgument)
+	}
+}
+
+func cloneSettingFieldsForScope(fields []manifest.SettingFieldSpec, scope sessionctx.ScopeKind) []manifest.SettingFieldSpec {
+	cloned := make([]manifest.SettingFieldSpec, 0, len(fields))
+	for _, field := range fields {
+		if sessionctx.ScopeKind(field.Scope) == scope {
+			cloned = append(cloned, field)
+		}
+	}
 	return cloned
 }
 

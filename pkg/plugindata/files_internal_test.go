@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"sync"
 	"testing"
 	"time"
 
@@ -15,6 +16,23 @@ import (
 	settingsdomain "github.com/floegence/redevplugin/pkg/settings"
 	"github.com/floegence/redevplugin/pkg/storage"
 )
+
+func internalTestContext() context.Context {
+	return sessionctx.WithContext(context.Background(), sessionctx.Context{
+		OwnerSessionHash:     "owner_session_test",
+		OwnerUserHash:        "owner_user_test",
+		OwnerEnvHash:         "owner_env_test",
+		SessionChannelIDHash: "channel_test",
+	})
+}
+
+func internalEnvironmentScope() sessionctx.ResourceScope {
+	return sessionctx.ResourceScope{Kind: sessionctx.ScopeEnvironment, OwnerEnvHash: "owner_env_test"}
+}
+
+func internalUserScope() sessionctx.ResourceScope {
+	return sessionctx.ResourceScope{Kind: sessionctx.ScopeUser, OwnerEnvHash: "owner_env_test", OwnerUserHash: "owner_user_test"}
+}
 
 type internalCatalog struct {
 	binding         *Binding
@@ -40,7 +58,7 @@ func (c *internalCatalog) ListAllBindingsForMaintenance(ctx context.Context, cur
 	bindings, next, err := c.ListBindings(ctx, cursor, limit)
 	items := make([]MaintenanceBinding, 0, len(bindings))
 	for _, binding := range bindings {
-		items = append(items, MaintenanceBinding{Scope: sessionctx.ResourceScope{Kind: sessionctx.ScopeEnvironment, OwnerEnvHash: "owner_env_test"}, Binding: binding})
+		items = append(items, MaintenanceBinding{Scope: internalEnvironmentScope(), Binding: binding})
 	}
 	return items, next, err
 }
@@ -118,7 +136,7 @@ func (c *internalCatalog) ListAllObjectsForMaintenance(ctx context.Context, curs
 	objects, next, err := c.ListObjects(ctx, cursor, limit)
 	items := make([]MaintenanceObject, 0, len(objects))
 	for _, object := range objects {
-		items = append(items, MaintenanceObject{Scope: sessionctx.ResourceScope{Kind: sessionctx.ScopeUser, OwnerEnvHash: "owner_env_test", OwnerUserHash: "owner_user_test"}, Object: object})
+		items = append(items, MaintenanceObject{Scope: internalUserScope(), Object: object})
 	}
 	return items, next, err
 }
@@ -165,14 +183,18 @@ func TestKeyedLocksAllowIndependentNamespaceProgress(t *testing.T) {
 
 func TestBrokerAllowsIndependentNamespaceProgress(t *testing.T) {
 	store, catalog, shape := newInternalStore(t)
-	if _, err := store.CommitEnable(context.Background(), CommitEnableRequest{PluginInstanceID: "plugini_test", Shape: shape, ExpectedManagementRevision: 1}); err != nil {
+	if _, err := store.CommitEnable(internalTestContext(), CommitEnableRequest{PluginInstanceID: "plugini_test", Shape: shape, ExpectedManagementRevision: 1}); err != nil {
 		t.Fatal(err)
 	}
-	binding, _, _ := catalog.GetBinding(context.Background(), "plugini_test")
-	releaseFiles := store.namespaceLocks.lock(binding.GenerationID+"\x00files", true)
+	binding, _, _ := catalog.GetBinding(internalTestContext(), "plugini_test")
+	owner, err := resourceScope(internalTestContext(), sessionctx.ScopeUser)
+	if err != nil {
+		t.Fatal(err)
+	}
+	releaseFiles := store.namespaceLocks.lock(scopedNamespaceCacheKey(owner, binding.GenerationID, "files"), true)
 	kvDone := make(chan error, 1)
 	go func() {
-		_, err := store.PutKV(context.Background(), storage.KVPutRequest{PluginInstanceID: "plugini_test", StoreID: "kv", Key: "ready", Value: []byte("yes")})
+		_, err := store.PutKV(internalTestContext(), storage.KVPutRequest{PluginInstanceID: "plugini_test", StoreID: "kv", Key: "ready", Value: []byte("yes")})
 		kvDone <- err
 	}()
 	select {
@@ -185,7 +207,7 @@ func TestBrokerAllowsIndependentNamespaceProgress(t *testing.T) {
 	}
 	fileDone := make(chan error, 1)
 	go func() {
-		_, err := store.WriteFile(context.Background(), storage.FileWriteRequest{PluginInstanceID: "plugini_test", StoreID: "files", Path: "blocked", Data: []byte("x")})
+		_, err := store.WriteFile(internalTestContext(), storage.FileWriteRequest{PluginInstanceID: "plugini_test", StoreID: "files", Path: "blocked", Data: []byte("x")})
 		fileDone <- err
 	}()
 	select {
@@ -201,7 +223,7 @@ func TestBrokerAllowsIndependentNamespaceProgress(t *testing.T) {
 
 func TestBrokerPersistsNamespaceTransactionsAcrossReopen(t *testing.T) {
 	store, catalog, shape := newInternalStore(t)
-	ctx := context.Background()
+	ctx := internalTestContext()
 	if _, err := store.CommitEnable(ctx, CommitEnableRequest{PluginInstanceID: "plugini_test", Shape: shape, InitialSettings: map[string]json.RawMessage{}, ExpectedManagementRevision: 1}); err != nil {
 		t.Fatal(err)
 	}
@@ -234,20 +256,23 @@ func TestBrokerPersistsNamespaceTransactionsAcrossReopen(t *testing.T) {
 
 func TestCloseWaitsForInFlightExportAndRejectsFutureCalls(t *testing.T) {
 	store, _, shape := newInternalStore(t)
-	if _, err := store.CommitEnable(context.Background(), CommitEnableRequest{PluginInstanceID: "plugini_test", Shape: shape, ExpectedManagementRevision: 1}); err != nil {
+	if _, err := store.CommitEnable(internalTestContext(), CommitEnableRequest{PluginInstanceID: "plugini_test", Shape: shape, ExpectedManagementRevision: 1}); err != nil {
 		t.Fatal(err)
 	}
 	originalCopy := store.ops.copyDir
 	started := make(chan struct{})
 	releaseCopy := make(chan struct{})
+	var blockFirstCopy sync.Once
 	store.ops.copyDir = func(source, destination string) error {
-		close(started)
-		<-releaseCopy
+		blockFirstCopy.Do(func() {
+			close(started)
+			<-releaseCopy
+		})
 		return originalCopy(source, destination)
 	}
 	exportDone := make(chan error, 1)
 	go func() {
-		_, err := store.Export(context.Background(), ExportRequest{PluginInstanceID: "plugini_test"})
+		_, err := store.Export(internalTestContext(), ExportRequest{PluginInstanceID: "plugini_test"})
 		exportDone <- err
 	}()
 	<-started
@@ -265,14 +290,27 @@ func TestCloseWaitsForInFlightExportAndRejectsFutureCalls(t *testing.T) {
 	if err := <-closeDone; err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.GetSettings(context.Background(), "plugini_test"); err == nil {
+	if _, err := store.GetSettings(internalTestContext(), "plugini_test", sessionctx.ScopeUser); err == nil {
 		t.Fatal("closed store accepted GetSettings")
+	}
+}
+
+func TestExportPreservesCallerCancellationDuringWorkspaceValidation(t *testing.T) {
+	store, _, shape := newInternalStore(t)
+	ctx := internalTestContext()
+	if _, err := store.CommitEnable(ctx, CommitEnableRequest{PluginInstanceID: "plugini_test", Shape: shape, ExpectedManagementRevision: 1}); err != nil {
+		t.Fatal(err)
+	}
+	canceled, cancel := context.WithCancel(ctx)
+	cancel()
+	if _, err := store.Export(canceled, ExportRequest{PluginInstanceID: "plugini_test"}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Export() error = %v, want context.Canceled", err)
 	}
 }
 
 func TestImportAndExportDeletionReclaimPublishedObjects(t *testing.T) {
 	store, catalog, shape := newInternalStore(t)
-	ctx := context.Background()
+	ctx := internalTestContext()
 	if _, err := store.CommitEnable(ctx, CommitEnableRequest{PluginInstanceID: "plugini_test", Shape: shape, ExpectedManagementRevision: 1}); err != nil {
 		t.Fatal(err)
 	}
@@ -287,20 +325,20 @@ func TestImportAndExportDeletionReclaimPublishedObjects(t *testing.T) {
 	if _, err := store.Import(ctx, ImportRequest{PluginInstanceID: "plugini_test", ObjectID: exported.ObjectID, ExpectedShape: shape, ExpectedManagementRevision: 2}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := os.Stat(store.workspacePath(oldBinding.GenerationID)); !errors.Is(err, os.ErrNotExist) {
+	if _, err := os.Stat(store.scopedWorkspacePath(internalEnvironmentScope(), oldBinding.GenerationID)); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("stale generation remains after import: %v", err)
 	}
 	if err := store.DeleteExport(ctx, exported.ObjectID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := os.Stat(store.objectPath(exported.ObjectID)); !errors.Is(err, os.ErrNotExist) {
+	if _, err := os.Stat(store.scopedObjectPath(internalUserScope(), exported.ObjectID)); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("deleted export object remains: %v", err)
 	}
 }
 
 func TestDeleteRetainedWaitsForReaderLeaseBeforeRemovingWorkspace(t *testing.T) {
 	store, catalog, shape := newInternalStore(t)
-	ctx := context.Background()
+	ctx := internalTestContext()
 	if _, err := store.CommitEnable(ctx, CommitEnableRequest{PluginInstanceID: "plugini_test", Shape: shape, ExpectedManagementRevision: 1}); err != nil {
 		t.Fatal(err)
 	}
@@ -311,8 +349,8 @@ func TestDeleteRetainedWaitsForReaderLeaseBeforeRemovingWorkspace(t *testing.T) 
 	if err != nil || !found {
 		t.Fatalf("retained binding found = %v, err = %v", found, err)
 	}
-	workspace := store.workspacePath(binding.GenerationID)
-	releaseReader := store.locks.lockRead(binding.PluginInstanceID)
+	workspace := store.scopedWorkspacePath(internalEnvironmentScope(), binding.GenerationID)
+	releaseReader := store.locks.lockRead(scopedLockKey(internalEnvironmentScope(), binding.PluginInstanceID))
 	started := make(chan struct{})
 	done := make(chan error, 1)
 	go func() {
@@ -342,7 +380,7 @@ func TestDeleteRetainedWaitsForReaderLeaseBeforeRemovingWorkspace(t *testing.T) 
 
 func TestImportWaitsForReaderLeaseBeforeReplacingGeneration(t *testing.T) {
 	store, catalog, shape := newInternalStore(t)
-	ctx := context.Background()
+	ctx := internalTestContext()
 	if _, err := store.CommitEnable(ctx, CommitEnableRequest{PluginInstanceID: "plugini_test", Shape: shape, ExpectedManagementRevision: 1}); err != nil {
 		t.Fatal(err)
 	}
@@ -351,7 +389,7 @@ func TestImportWaitsForReaderLeaseBeforeReplacingGeneration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	releaseReader := store.locks.lockRead(oldBinding.PluginInstanceID)
+	releaseReader := store.locks.lockRead(scopedLockKey(internalEnvironmentScope(), oldBinding.PluginInstanceID))
 	started := make(chan struct{})
 	done := make(chan error, 1)
 	go func() {
@@ -370,14 +408,14 @@ func TestImportWaitsForReaderLeaseBeforeReplacingGeneration(t *testing.T) {
 		t.Fatalf("Import() bypassed reader lease: %v", err)
 	case <-time.After(50 * time.Millisecond):
 	}
-	if _, err := os.Stat(store.workspacePath(oldBinding.GenerationID)); err != nil {
+	if _, err := os.Stat(store.scopedWorkspacePath(internalEnvironmentScope(), oldBinding.GenerationID)); err != nil {
 		t.Fatalf("old generation disappeared while reader lease was active: %v", err)
 	}
 	releaseReader()
 	if err := <-done; err != nil {
 		t.Fatal(err)
 	}
-	if _, err := os.Stat(store.workspacePath(oldBinding.GenerationID)); !errors.Is(err, os.ErrNotExist) {
+	if _, err := os.Stat(store.scopedWorkspacePath(internalEnvironmentScope(), oldBinding.GenerationID)); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("old generation remains after import: %v", err)
 	}
 }
@@ -385,7 +423,7 @@ func TestImportWaitsForReaderLeaseBeforeReplacingGeneration(t *testing.T) {
 func TestCommittedDeletionFailuresAreUnknownAndCollectorConverges(t *testing.T) {
 	t.Run("delete retained", func(t *testing.T) {
 		store, catalog, shape := newInternalStore(t)
-		ctx := context.Background()
+		ctx := internalTestContext()
 		if _, err := store.CommitEnable(ctx, CommitEnableRequest{PluginInstanceID: "plugini_test", Shape: shape, ExpectedManagementRevision: 1}); err != nil {
 			t.Fatal(err)
 		}
@@ -393,19 +431,19 @@ func TestCommittedDeletionFailuresAreUnknownAndCollectorConverges(t *testing.T) 
 			t.Fatal(err)
 		}
 		binding, _, _ := catalog.GetBinding(ctx, "plugini_test")
-		assertDeletionFailureConverges(t, store, store.workspacePath(binding.GenerationID), func() error {
+		assertDeletionFailureConverges(t, store, store.scopedWorkspacePath(internalEnvironmentScope(), binding.GenerationID), func() error {
 			return store.DeleteRetained(ctx, DeleteRetainedRequest{PluginInstanceID: binding.PluginInstanceID, ExpectedBindingRevision: binding.Revision})
 		})
 	})
 
 	t.Run("uninstall delete", func(t *testing.T) {
 		store, catalog, shape := newInternalStore(t)
-		ctx := context.Background()
+		ctx := internalTestContext()
 		if _, err := store.CommitEnable(ctx, CommitEnableRequest{PluginInstanceID: "plugini_test", Shape: shape, ExpectedManagementRevision: 1}); err != nil {
 			t.Fatal(err)
 		}
 		binding, _, _ := catalog.GetBinding(ctx, "plugini_test")
-		assertDeletionFailureConverges(t, store, store.workspacePath(binding.GenerationID), func() error {
+		assertDeletionFailureConverges(t, store, store.scopedWorkspacePath(internalEnvironmentScope(), binding.GenerationID), func() error {
 			_, err := store.CommitUninstall(ctx, CommitUninstallRequest{PluginInstanceID: binding.PluginInstanceID, DeleteData: true, ExpectedManagementRevision: 2, Now: time.Now()})
 			return err
 		})
@@ -413,7 +451,7 @@ func TestCommittedDeletionFailuresAreUnknownAndCollectorConverges(t *testing.T) 
 
 	t.Run("cleanup expired", func(t *testing.T) {
 		store, catalog, shape := newInternalStore(t)
-		ctx := context.Background()
+		ctx := internalTestContext()
 		now := time.Now().UTC()
 		expiresAt := now.Add(time.Minute)
 		if _, err := store.CommitEnable(ctx, CommitEnableRequest{PluginInstanceID: "plugini_test", Shape: shape, ExpectedManagementRevision: 1}); err != nil {
@@ -423,7 +461,7 @@ func TestCommittedDeletionFailuresAreUnknownAndCollectorConverges(t *testing.T) 
 			t.Fatal(err)
 		}
 		binding, _, _ := catalog.GetBinding(ctx, "plugini_test")
-		assertDeletionFailureConverges(t, store, store.workspacePath(binding.GenerationID), func() error {
+		assertDeletionFailureConverges(t, store, store.scopedWorkspacePath(internalEnvironmentScope(), binding.GenerationID), func() error {
 			result, err := store.CleanupExpired(ctx, expiresAt.Add(time.Second))
 			if len(result.Deleted) != 1 || result.Deleted[0].GenerationID != binding.GenerationID {
 				t.Fatalf("CleanupExpired() result = %#v", result)
@@ -434,7 +472,7 @@ func TestCommittedDeletionFailuresAreUnknownAndCollectorConverges(t *testing.T) 
 
 	t.Run("delete export", func(t *testing.T) {
 		store, _, shape := newInternalStore(t)
-		ctx := context.Background()
+		ctx := internalTestContext()
 		if _, err := store.CommitEnable(ctx, CommitEnableRequest{PluginInstanceID: "plugini_test", Shape: shape, ExpectedManagementRevision: 1}); err != nil {
 			t.Fatal(err)
 		}
@@ -442,14 +480,14 @@ func TestCommittedDeletionFailuresAreUnknownAndCollectorConverges(t *testing.T) 
 		if err != nil {
 			t.Fatal(err)
 		}
-		assertDeletionFailureConverges(t, store, store.objectPath(exported.ObjectID), func() error {
+		assertDeletionFailureConverges(t, store, store.scopedObjectPath(internalUserScope(), exported.ObjectID), func() error {
 			return store.DeleteExport(ctx, exported.ObjectID)
 		})
 	})
 
 	t.Run("import replacement", func(t *testing.T) {
 		store, catalog, shape := newInternalStore(t)
-		ctx := context.Background()
+		ctx := internalTestContext()
 		if _, err := store.CommitEnable(ctx, CommitEnableRequest{PluginInstanceID: "plugini_test", Shape: shape, ExpectedManagementRevision: 1}); err != nil {
 			t.Fatal(err)
 		}
@@ -458,7 +496,7 @@ func TestCommittedDeletionFailuresAreUnknownAndCollectorConverges(t *testing.T) 
 		if err != nil {
 			t.Fatal(err)
 		}
-		assertDeletionFailureConverges(t, store, store.workspacePath(oldBinding.GenerationID), func() error {
+		assertDeletionFailureConverges(t, store, store.scopedWorkspacePath(internalEnvironmentScope(), oldBinding.GenerationID), func() error {
 			_, err := store.Import(ctx, ImportRequest{PluginInstanceID: "plugini_test", ObjectID: exported.ObjectID, ExpectedShape: shape, ExpectedManagementRevision: 2})
 			return err
 		})
@@ -471,7 +509,7 @@ func TestCommittedDeletionFailuresAreUnknownAndCollectorConverges(t *testing.T) 
 
 func TestCatalogFailureRollbackPreservesCleanupErrorAndCollectorConverges(t *testing.T) {
 	store, catalog, shape := newInternalStore(t)
-	ctx := context.Background()
+	ctx := internalTestContext()
 	catalogErr := errors.New("catalog commit failed")
 	cleanupErr := errors.New("published directory cleanup failed")
 	catalog.commitEnableErr = catalogErr
@@ -506,7 +544,7 @@ func TestCatalogFailureRollbackPreservesCleanupErrorAndCollectorConverges(t *tes
 func TestCatalogFailuresRollBackUnpublishedDirectories(t *testing.T) {
 	t.Run("export object", func(t *testing.T) {
 		store, catalog, shape := newInternalStore(t)
-		ctx := context.Background()
+		ctx := internalTestContext()
 		if _, err := store.CommitEnable(ctx, CommitEnableRequest{PluginInstanceID: "plugini_test", Shape: shape, ExpectedManagementRevision: 1}); err != nil {
 			t.Fatal(err)
 		}
@@ -515,7 +553,7 @@ func TestCatalogFailuresRollBackUnpublishedDirectories(t *testing.T) {
 		if _, err := store.Export(ctx, ExportRequest{PluginInstanceID: "plugini_test"}); !errors.Is(err, catalogErr) {
 			t.Fatalf("Export() error = %v, want %v", err, catalogErr)
 		}
-		entries, err := os.ReadDir(store.objectsRoot())
+		entries, err := os.ReadDir(filepath.Dir(store.scopedObjectPath(internalUserScope(), "object")))
 		if err != nil || len(entries) != 0 {
 			t.Fatalf("unpublished objects = %#v, err = %v", entries, err)
 		}
@@ -523,7 +561,7 @@ func TestCatalogFailuresRollBackUnpublishedDirectories(t *testing.T) {
 
 	t.Run("import workspace", func(t *testing.T) {
 		store, catalog, shape := newInternalStore(t)
-		ctx := context.Background()
+		ctx := internalTestContext()
 		if _, err := store.CommitEnable(ctx, CommitEnableRequest{PluginInstanceID: "plugini_test", Shape: shape, ExpectedManagementRevision: 1}); err != nil {
 			t.Fatal(err)
 		}
@@ -541,7 +579,7 @@ func TestCatalogFailuresRollBackUnpublishedDirectories(t *testing.T) {
 		if err != nil || !found || current.GenerationID != oldBinding.GenerationID {
 			t.Fatalf("binding changed after failed import: %#v, found = %v, err = %v", current, found, err)
 		}
-		entries, err := os.ReadDir(store.workspacesRoot())
+		entries, err := os.ReadDir(filepath.Dir(store.scopedWorkspacePath(internalEnvironmentScope(), "generation")))
 		if err != nil || len(entries) != 1 || entries[0].Name() != oldBinding.GenerationID {
 			t.Fatalf("unpublished workspaces = %#v, err = %v", entries, err)
 		}
@@ -550,7 +588,7 @@ func TestCatalogFailuresRollBackUnpublishedDirectories(t *testing.T) {
 
 func TestCommittedDeletionSyncFailureIsUnknownAfterDirectoryDisappears(t *testing.T) {
 	store, _, shape := newInternalStore(t)
-	ctx := context.Background()
+	ctx := internalTestContext()
 	if _, err := store.CommitEnable(ctx, CommitEnableRequest{PluginInstanceID: "plugini_test", Shape: shape, ExpectedManagementRevision: 1}); err != nil {
 		t.Fatal(err)
 	}
@@ -558,11 +596,11 @@ func TestCommittedDeletionSyncFailureIsUnknownAfterDirectoryDisappears(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	target := store.objectPath(exported.ObjectID)
+	target := store.scopedObjectPath(internalUserScope(), exported.ObjectID)
 	syncErr := errors.New("object directory sync failed")
 	originalSyncDir := store.ops.syncDir
 	store.ops.syncDir = func(path string) error {
-		if path == store.objectsRoot() {
+		if path == filepath.Dir(target) {
 			return syncErr
 		}
 		return originalSyncDir(path)
@@ -599,7 +637,7 @@ func assertDeletionFailureConverges(t *testing.T, store *FileStore, target strin
 		t.Fatalf("failed deletion did not leave retryable directory: %v", err)
 	}
 	store.ops.removeAll = originalRemoveAll
-	if _, err := store.CleanupExpired(context.Background(), time.Now().Add(24*time.Hour)); err != nil {
+	if _, err := store.CleanupExpired(internalTestContext(), time.Now().Add(24*time.Hour)); err != nil {
 		t.Fatalf("collector retry failed: %v", err)
 	}
 	if _, err := os.Stat(target); !errors.Is(err, os.ErrNotExist) {
@@ -607,14 +645,15 @@ func assertDeletionFailureConverges(t *testing.T, store *FileStore, target strin
 	}
 }
 
-func TestExportRejectsHardlinkedWorkspaceFile(t *testing.T) {
+func TestExportRejectsUnexpectedPhysicalNamespaceEntries(t *testing.T) {
 	store, catalog, shape := newInternalStore(t)
-	ctx := context.Background()
+	ctx := internalTestContext()
 	if _, err := store.CommitEnable(ctx, CommitEnableRequest{PluginInstanceID: "plugini_test", Shape: shape, ExpectedManagementRevision: 1}); err != nil {
 		t.Fatal(err)
 	}
 	binding, _, _ := catalog.GetBinding(ctx, "plugini_test")
-	dataRoot := filepath.Join(store.workspacePath(binding.GenerationID), namespacesDirName, "files", namespaceDataName)
+	workspaceRoot := store.scopedWorkspacePath(internalEnvironmentScope(), binding.GenerationID)
+	dataRoot := filepath.Join(workspaceNamespaceRoot(workspaceRoot, internalUserScope()), "files", namespaceDataName)
 	first := filepath.Join(dataRoot, "first.txt")
 	if err := os.WriteFile(first, []byte("shared"), 0o600); err != nil {
 		t.Fatal(err)
@@ -622,14 +661,14 @@ func TestExportRejectsHardlinkedWorkspaceFile(t *testing.T) {
 	if err := os.Link(first, filepath.Join(dataRoot, "second.txt")); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.Export(ctx, ExportRequest{PluginInstanceID: "plugini_test"}); !errors.Is(err, ErrUnsafeFilesystem) {
-		t.Fatalf("Export() error = %v, want ErrUnsafeFilesystem", err)
+	if _, err := store.Export(ctx, ExportRequest{PluginInstanceID: "plugini_test"}); !errors.Is(err, ErrDatasetCorrupt) {
+		t.Fatalf("Export() error = %v, want ErrDatasetCorrupt", err)
 	}
 }
 
 func TestBindRetainedRejectsSamePluginInstance(t *testing.T) {
 	store, catalog, shape := newInternalStore(t)
-	ctx := context.Background()
+	ctx := internalTestContext()
 	if _, err := store.CommitEnable(ctx, CommitEnableRequest{PluginInstanceID: "plugini_test", Shape: shape, ExpectedManagementRevision: 1}); err != nil {
 		t.Fatal(err)
 	}
@@ -649,7 +688,7 @@ func newInternalStore(t *testing.T) (*FileStore, *internalCatalog, Shape) {
 		t.Fatal(err)
 	}
 	catalog := &internalCatalog{objects: map[string]Object{}}
-	store, err := Open(context.Background(), root, catalog)
+	store, err := Open(internalTestContext(), root, catalog)
 	if err != nil {
 		t.Fatal(err)
 	}

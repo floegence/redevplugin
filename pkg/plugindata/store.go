@@ -42,21 +42,29 @@ var identifierPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
 
 type datasetManifest struct {
 	GenerationID string    `json:"generation_id"`
+	OwnerEnvHash string    `json:"owner_env_hash"`
 	CreatedAt    time.Time `json:"created_at"`
 	Shape        Shape     `json:"shape"`
 	ShapeHash    string    `json:"shape_hash"`
 }
 
 type settingsDocument struct {
+	Scope    sessionctx.ResourceScope   `json:"scope"`
 	Revision uint64                     `json:"revision"`
 	Values   map[string]json.RawMessage `json:"values"`
 }
 
 type exportManifest struct {
-	ObjectID    string    `json:"object_id"`
-	ContentHash string    `json:"content_hash"`
-	ShapeHash   string    `json:"shape_hash"`
-	CreatedAt   time.Time `json:"created_at"`
+	ObjectID    string                   `json:"object_id"`
+	Scope       sessionctx.ResourceScope `json:"scope"`
+	ContentHash string                   `json:"content_hash"`
+	ShapeHash   string                   `json:"shape_hash"`
+	CreatedAt   time.Time                `json:"created_at"`
+}
+
+type namespaceDocument struct {
+	Scope     sessionctx.ResourceScope `json:"scope"`
+	Namespace Namespace                `json:"namespace"`
 }
 
 type workspace struct {
@@ -173,7 +181,15 @@ func Open(ctx context.Context, root string, catalog Catalog) (*FileStore, error)
 	store.ops.copyDir = store.copyDirectory
 	store.ops.removeAll = os.RemoveAll
 	store.ops.syncDir = syncDirectory
-	for _, path := range []string{store.workspacesRoot(), store.objectsRoot(), store.stagingRoot()} {
+	if err := prepareResourceScopeLayout(store.root); err != nil {
+		_ = store.Close()
+		return nil, err
+	}
+	for _, path := range []string{
+		filepath.Join(store.workspacesRoot(), environmentOwnersDirName),
+		filepath.Join(store.objectsRoot(), userOwnersDirName),
+		store.stagingRoot(),
+	} {
 		if err := ensurePrivateDirectory(path); err != nil {
 			_ = store.Close()
 			return nil, err
@@ -234,7 +250,11 @@ func (s *FileStore) CommitEnable(ctx context.Context, req CommitEnableRequest) (
 	if err != nil {
 		return Dataset{}, err
 	}
-	unlock := s.locks.lockWrite(pluginID)
+	environment, user, err := requestScopes(ctx)
+	if err != nil {
+		return Dataset{}, err
+	}
+	unlock := s.locks.lockWrite(scopedLockKey(environment, pluginID))
 	defer unlock()
 	existing, found, err := s.catalog.GetBinding(ctx, pluginID)
 	if err != nil {
@@ -247,7 +267,7 @@ func (s *FileStore) CommitEnable(ctx context.Context, req CommitEnableRequest) (
 		if existing.State != BindingActive {
 			return Dataset{}, ErrNotActive
 		}
-		_, manifest, err := s.workspaceForBinding(existing)
+		_, manifest, err := s.workspaceForBinding(environment, existing)
 		if err != nil {
 			return Dataset{}, err
 		}
@@ -268,17 +288,14 @@ func (s *FileStore) CommitEnable(ctx context.Context, req CommitEnableRequest) (
 			return Dataset{}, err
 		}
 		defer os.RemoveAll(stage)
-		if err := writeSettings(filepath.Join(stage, settingsFileName), settingsDocument{Revision: 1, Values: initialSettings}); err != nil {
+		if err := initializeWorkspaceScopes(ctx, stage, shape, environment, user, initialSettings); err != nil {
 			return Dataset{}, err
 		}
-		if err := createNamespaces(ctx, stage, shape.Namespaces); err != nil {
-			return Dataset{}, err
-		}
-		manifest, err := s.finalizeWorkspace(stage, generationID, shape)
+		manifest, err := s.finalizeWorkspace(ctx, stage, generationID, shape, environment)
 		if err != nil {
 			return Dataset{}, err
 		}
-		publishedWorkspace = s.workspacePath(generationID)
+		publishedWorkspace = s.scopedWorkspacePath(environment, generationID)
 		if err := s.publishStage(stage, publishedWorkspace); err != nil {
 			return Dataset{}, err
 		}
@@ -291,7 +308,7 @@ func (s *FileStore) CommitEnable(ctx context.Context, req CommitEnableRequest) (
 	if err := s.catalog.CommitEnable(ctx, req.ExpectedManagementRevision, expected, next, shape, now); err != nil {
 		cause := fmt.Errorf("commit plugin enable: %w", err)
 		if publishedWorkspace != "" {
-			cause = s.rollbackPublishedDirectory(publishedWorkspace, s.workspacesRoot(), cause)
+			cause = s.rollbackPublishedDirectory(publishedWorkspace, filepath.Dir(publishedWorkspace), cause)
 		}
 		return Dataset{}, cause
 	}
@@ -308,7 +325,11 @@ func (s *FileStore) Export(ctx context.Context, req ExportRequest) (Export, erro
 	if err != nil {
 		return Export{}, err
 	}
-	unlock := s.locks.lockWrite(pluginID)
+	environment, user, err := requestScopes(ctx)
+	if err != nil {
+		return Export{}, err
+	}
+	unlock := s.locks.lockWrite(scopedLockKey(environment, pluginID))
 	defer unlock()
 	binding, err := s.getBinding(ctx, pluginID)
 	if err != nil {
@@ -317,7 +338,7 @@ func (s *FileStore) Export(ctx context.Context, req ExportRequest) (Export, erro
 	if binding.State != BindingActive {
 		return Export{}, fmt.Errorf("%w: %s", ErrNotActive, pluginID)
 	}
-	workspace, manifest, err := s.workspaceForBinding(binding)
+	workspace, manifest, err := s.workspaceForBinding(environment, binding)
 	if err != nil {
 		return Export{}, err
 	}
@@ -331,10 +352,7 @@ func (s *FileStore) Export(ctx context.Context, req ExportRequest) (Export, erro
 	}
 	defer os.RemoveAll(stage)
 	payload := filepath.Join(stage, exportPayloadName)
-	if err := s.ops.copyDir(workspace.root, payload); err != nil {
-		return Export{}, fmt.Errorf("copy export dataset: %w", err)
-	}
-	if err := validateExportableWorkspace(payload); err != nil {
+	if err := s.createExportPayload(ctx, workspace.root, payload, user, manifest); err != nil {
 		return Export{}, err
 	}
 	contentHash, err := hashTree(payload, "")
@@ -342,7 +360,7 @@ func (s *FileStore) Export(ctx context.Context, req ExportRequest) (Export, erro
 		return Export{}, err
 	}
 	createdAt := s.now()
-	if err := writeJSON(filepath.Join(stage, exportManifestName), exportManifest{ObjectID: objectID, ContentHash: contentHash, ShapeHash: manifest.ShapeHash, CreatedAt: createdAt}); err != nil {
+	if err := writeJSON(filepath.Join(stage, exportManifestName), exportManifest{ObjectID: objectID, Scope: user, ContentHash: contentHash, ShapeHash: manifest.ShapeHash, CreatedAt: createdAt}); err != nil {
 		return Export{}, err
 	}
 	if err := validateTree(stage); err != nil {
@@ -351,7 +369,7 @@ func (s *FileStore) Export(ctx context.Context, req ExportRequest) (Export, erro
 	if err := syncTree(stage); err != nil {
 		return Export{}, err
 	}
-	destination := s.objectPath(objectID)
+	destination := s.scopedObjectPath(user, objectID)
 	s.publicationMu.Lock()
 	defer s.publicationMu.Unlock()
 	if err := s.publishStage(stage, destination); err != nil {
@@ -359,11 +377,11 @@ func (s *FileStore) Export(ctx context.Context, req ExportRequest) (Export, erro
 	}
 	size, err := directorySize(destination)
 	if err != nil {
-		return Export{}, s.rollbackPublishedDirectory(destination, s.objectsRoot(), err)
+		return Export{}, s.rollbackPublishedDirectory(destination, filepath.Dir(destination), err)
 	}
 	object := Object{ObjectID: objectID, ContentHash: contentHash, ShapeHash: manifest.ShapeHash, SizeBytes: size, CreatedAt: createdAt}
 	if err := s.catalog.CreateObject(ctx, object); err != nil {
-		return Export{}, s.rollbackPublishedDirectory(destination, s.objectsRoot(), fmt.Errorf("publish export object: %w", err))
+		return Export{}, s.rollbackPublishedDirectory(destination, filepath.Dir(destination), fmt.Errorf("publish export object: %w", err))
 	}
 	return Export{ObjectID: objectID, ContentHash: contentHash, SizeBytes: size, CreatedAt: createdAt}, nil
 }
@@ -378,14 +396,19 @@ func (s *FileStore) DeleteExport(ctx context.Context, objectID string) error {
 	if err != nil {
 		return err
 	}
-	unlock := s.objectLocks.lockWrite(objectID)
+	owner, err := userScope(ctx)
+	if err != nil {
+		return err
+	}
+	unlock := s.objectLocks.lockWrite(scopedLockKey(owner, objectID))
 	defer unlock()
 	s.publicationMu.Lock()
 	defer s.publicationMu.Unlock()
 	if err := s.catalog.DeleteObject(ctx, objectID); err != nil {
 		return err
 	}
-	if err := s.removePublishedDirectory(s.objectPath(objectID), s.objectsRoot()); err != nil {
+	objectPath := s.scopedObjectPath(owner, objectID)
+	if err := s.removePublishedDirectory(objectPath, filepath.Dir(objectPath)); err != nil {
 		return err
 	}
 	return s.collectAfterCommit(ctx)
@@ -413,9 +436,13 @@ func (s *FileStore) Import(ctx context.Context, req ImportRequest) (Dataset, err
 		return Dataset{}, err
 	}
 	expectedShapeHash := shapeHash(expectedShape)
-	unlock := s.locks.lockWrite(pluginID)
+	environment, user, err := requestScopes(ctx)
+	if err != nil {
+		return Dataset{}, err
+	}
+	unlock := s.locks.lockWrite(scopedLockKey(environment, pluginID))
 	defer unlock()
-	objectUnlock := s.objectLocks.lockRead(objectID)
+	objectUnlock := s.objectLocks.lockRead(scopedLockKey(user, objectID))
 	defer objectUnlock()
 
 	current, found, err := s.catalog.GetBinding(ctx, pluginID)
@@ -425,7 +452,7 @@ func (s *FileStore) Import(ctx context.Context, req ImportRequest) (Dataset, err
 	if found && current.State != BindingActive {
 		return Dataset{}, fmt.Errorf("%w: %s", ErrNotActive, pluginID)
 	}
-	object, catalogObject, sourceManifest, err := s.validateObject(ctx, objectID)
+	object, catalogObject, sourceManifest, err := s.validateObject(ctx, user, objectID)
 	if err != nil {
 		return Dataset{}, err
 	}
@@ -437,27 +464,32 @@ func (s *FileStore) Import(ctx context.Context, req ImportRequest) (Dataset, err
 		return Dataset{}, err
 	}
 	defer os.RemoveAll(stage)
-	if err := s.ops.copyDir(filepath.Join(object, exportPayloadName), stage); err != nil {
-		return Dataset{}, fmt.Errorf("copy imported dataset: %w", err)
-	}
-	copiedHash, err := hashTree(stage, "")
+	payloadRoot := filepath.Join(object, exportPayloadName)
+	copiedHash, err := hashTree(payloadRoot, "")
 	if err != nil {
 		return Dataset{}, err
 	}
 	if copiedHash != catalogObject.ContentHash {
 		return Dataset{}, fmt.Errorf("%w: export changed while importing", ErrDatasetCorrupt)
 	}
+	var currentWorkspace string
+	if found {
+		currentWorkspace = s.scopedWorkspacePath(environment, current.GenerationID)
+	}
+	if err := s.createImportedWorkspace(ctx, currentWorkspace, payloadRoot, stage, user); err != nil {
+		return Dataset{}, err
+	}
 	generationID, err := newID("gen")
 	if err != nil {
 		return Dataset{}, err
 	}
-	manifest, err := s.finalizeWorkspace(stage, generationID, expectedShape)
+	manifest, err := s.finalizeWorkspace(ctx, stage, generationID, expectedShape, environment)
 	if err != nil {
 		return Dataset{}, err
 	}
 	s.publicationMu.Lock()
 	defer s.publicationMu.Unlock()
-	publishedWorkspace := s.workspacePath(generationID)
+	publishedWorkspace := s.scopedWorkspacePath(environment, generationID)
 	if err := s.publishStage(stage, publishedWorkspace); err != nil {
 		return Dataset{}, err
 	}
@@ -474,14 +506,15 @@ func (s *FileStore) Import(ctx context.Context, req ImportRequest) (Dataset, err
 		now = s.now()
 	}
 	if err := s.catalog.SwapImport(ctx, req.ExpectedManagementRevision, expected, next, expectedShape, now); err != nil {
-		return Dataset{}, s.rollbackPublishedDirectory(publishedWorkspace, s.workspacesRoot(), fmt.Errorf("publish imported dataset: %w", err))
+		return Dataset{}, s.rollbackPublishedDirectory(publishedWorkspace, filepath.Dir(publishedWorkspace), fmt.Errorf("publish imported dataset: %w", err))
 	}
 	if found && current.GenerationID != generationID {
-		if err := s.removePublishedDirectory(s.workspacePath(current.GenerationID), s.workspacesRoot()); err != nil {
-			s.dropGenerationUsage(current.GenerationID)
+		currentPath := s.scopedWorkspacePath(environment, current.GenerationID)
+		if err := s.removePublishedDirectory(currentPath, filepath.Dir(currentPath)); err != nil {
+			s.dropGenerationUsage(environment, current.GenerationID)
 			return Dataset{}, err
 		}
-		s.dropGenerationUsage(current.GenerationID)
+		s.dropGenerationUsage(environment, current.GenerationID)
 	}
 	if err := s.collectAfterCommit(ctx); err != nil {
 		return Dataset{}, err
@@ -514,7 +547,11 @@ func (s *FileStore) BindRetained(ctx context.Context, req BindRetainedRequest) (
 		return Dataset{}, err
 	}
 	expectedShapeHash := shapeHash(expectedShape)
-	unlock := s.locks.lockMany(sourceID, targetID)
+	environment, err := environmentScope(ctx)
+	if err != nil {
+		return Dataset{}, err
+	}
+	unlock := s.locks.lockMany(scopedLockKey(environment, sourceID), scopedLockKey(environment, targetID))
 	defer unlock()
 	sourceBinding, err := s.getBinding(ctx, sourceID)
 	if err != nil {
@@ -526,7 +563,7 @@ func (s *FileStore) BindRetained(ctx context.Context, req BindRetainedRequest) (
 	if sourceBinding.Revision != req.ExpectedSourceBindingRevision {
 		return Dataset{}, &BindingRevisionConflictError{PluginInstanceID: sourceID, Expected: req.ExpectedSourceBindingRevision, Actual: sourceBinding.Revision}
 	}
-	_, sourceManifest, err := s.workspaceForBinding(sourceBinding)
+	_, sourceManifest, err := s.workspaceForBinding(environment, sourceBinding)
 	if err != nil {
 		return Dataset{}, err
 	}
@@ -557,7 +594,11 @@ func (s *FileStore) DeleteRetained(ctx context.Context, req DeleteRetainedReques
 	if err != nil {
 		return err
 	}
-	unlock := s.locks.lockWrite(pluginID)
+	environment, err := environmentScope(ctx)
+	if err != nil {
+		return err
+	}
+	unlock := s.locks.lockWrite(scopedLockKey(environment, pluginID))
 	defer unlock()
 	s.publicationMu.Lock()
 	defer s.publicationMu.Unlock()
@@ -577,11 +618,12 @@ func (s *FileStore) DeleteRetained(ctx context.Context, req DeleteRetainedReques
 	if err := s.catalog.DeleteRetained(ctx, current); err != nil {
 		return fmt.Errorf("delete retained plugin data: %w", err)
 	}
-	if err := s.removePublishedDirectory(s.workspacePath(current.GenerationID), s.workspacesRoot()); err != nil {
-		s.dropGenerationUsage(current.GenerationID)
+	workspacePath := s.scopedWorkspacePath(environment, current.GenerationID)
+	if err := s.removePublishedDirectory(workspacePath, filepath.Dir(workspacePath)); err != nil {
+		s.dropGenerationUsage(environment, current.GenerationID)
 		return err
 	}
-	s.dropGenerationUsage(current.GenerationID)
+	s.dropGenerationUsage(environment, current.GenerationID)
 	return s.collectAfterCommit(ctx)
 }
 
@@ -605,7 +647,11 @@ func (s *FileStore) CommitUninstall(ctx context.Context, req CommitUninstallRequ
 		return CommitUninstallResult{}, fmt.Errorf("%w: retain deadline must be after uninstall time", ErrInvalidArgument)
 	}
 	req.PluginInstanceID = pluginID
-	unlock := s.locks.lockWrite(pluginID)
+	environment, err := environmentScope(ctx)
+	if err != nil {
+		return CommitUninstallResult{}, err
+	}
+	unlock := s.locks.lockWrite(scopedLockKey(environment, pluginID))
 	defer unlock()
 	s.publicationMu.Lock()
 	defer s.publicationMu.Unlock()
@@ -618,11 +664,12 @@ func (s *FileStore) CommitUninstall(ctx context.Context, req CommitUninstallRequ
 		return CommitUninstallResult{}, fmt.Errorf("commit plugin uninstall: %w", err)
 	}
 	if req.DeleteData && found {
-		if err := s.removePublishedDirectory(s.workspacePath(current.GenerationID), s.workspacesRoot()); err != nil {
-			s.dropGenerationUsage(current.GenerationID)
+		workspacePath := s.scopedWorkspacePath(environment, current.GenerationID)
+		if err := s.removePublishedDirectory(workspacePath, filepath.Dir(workspacePath)); err != nil {
+			s.dropGenerationUsage(environment, current.GenerationID)
 			return CommitUninstallResult{}, err
 		}
-		s.dropGenerationUsage(current.GenerationID)
+		s.dropGenerationUsage(environment, current.GenerationID)
 	}
 	if req.DeleteData {
 		if err := s.collectAfterCommit(ctx); err != nil {
@@ -632,8 +679,8 @@ func (s *FileStore) CommitUninstall(ctx context.Context, req CommitUninstallRequ
 	return result, nil
 }
 
-func (s *FileStore) dropGenerationUsage(generationID string) {
-	prefix := generationID + "\x00"
+func (s *FileStore) dropGenerationUsage(environment sessionctx.ResourceScope, generationID string) {
+	prefix := generationCachePrefix(environment.OwnerEnvHash, generationID)
 	s.usageMu.Lock()
 	for key := range s.usage {
 		if strings.HasPrefix(key, prefix) {
@@ -689,10 +736,14 @@ func (s *FileStore) CleanupExpired(ctx context.Context, now time.Time) (CleanupR
 	}
 	candidates := make([]Binding, 0)
 	keys := make([]string, 0)
+	environment, err := environmentScope(ctx)
+	if err != nil {
+		return CleanupResult{}, err
+	}
 	for _, binding := range bindings {
 		if binding.State == BindingRetained && binding.ExpiresAt != nil && !binding.ExpiresAt.After(now) {
 			candidates = append(candidates, binding)
-			keys = append(keys, binding.PluginInstanceID)
+			keys = append(keys, scopedLockKey(environment, binding.PluginInstanceID))
 		}
 	}
 	unlock := s.locks.lockMany(keys...)
@@ -707,10 +758,11 @@ func (s *FileStore) CleanupExpired(ctx context.Context, now time.Time) (CleanupR
 	slices.SortFunc(result.Deleted, func(a, b Binding) int { return strings.Compare(a.PluginInstanceID, b.PluginInstanceID) })
 	var removalErr error
 	for _, binding := range deleted {
-		if err := s.removePublishedDirectory(s.workspacePath(binding.GenerationID), s.workspacesRoot()); err != nil {
+		workspacePath := s.scopedWorkspacePath(environment, binding.GenerationID)
+		if err := s.removePublishedDirectory(workspacePath, filepath.Dir(workspacePath)); err != nil {
 			removalErr = errors.Join(removalErr, err)
 		}
-		s.dropGenerationUsage(binding.GenerationID)
+		s.dropGenerationUsage(environment, binding.GenerationID)
 	}
 	if removalErr != nil {
 		return result, mutation.Unknown(removalErr)
@@ -721,7 +773,7 @@ func (s *FileStore) CleanupExpired(ctx context.Context, now time.Time) (CleanupR
 	return result, nil
 }
 
-func (s *FileStore) GetSettings(ctx context.Context, pluginInstanceID string) (Settings, error) {
+func (s *FileStore) GetSettings(ctx context.Context, pluginInstanceID string, kind sessionctx.ScopeKind) (Settings, error) {
 	release, err := s.begin()
 	if err != nil {
 		return Settings{}, err
@@ -731,17 +783,39 @@ func (s *FileStore) GetSettings(ctx context.Context, pluginInstanceID string) (S
 	if err != nil {
 		return Settings{}, err
 	}
-	unlock := s.locks.lockRead(pluginID)
+	kind, err = normalizedScopeKind(kind)
+	if err != nil {
+		return Settings{}, err
+	}
+	environment, err := environmentScope(ctx)
+	if err != nil {
+		return Settings{}, err
+	}
+	owner, err := resourceScope(ctx, kind)
+	if err != nil {
+		return Settings{}, err
+	}
+	unlock := s.locks.lockWrite(scopedLockKey(environment, pluginID))
 	defer unlock()
 	binding, err := s.getBinding(ctx, pluginID)
 	if err != nil {
 		return Settings{}, err
 	}
-	document, err := readSettings(filepath.Join(s.workspacePath(binding.GenerationID), settingsFileName))
+	workspace, manifest, err := s.workspaceForBinding(environment, binding)
 	if err != nil {
 		return Settings{}, err
 	}
-	return Settings{Revision: document.Revision, Values: cloneRawMap(document.Values)}, nil
+	if err := s.ensureWorkspaceScope(ctx, workspace.root, manifest.Shape, owner, nil); err != nil {
+		return Settings{}, err
+	}
+	document, err := readSettings(workspaceSettingsPath(workspace.root, owner))
+	if err != nil {
+		return Settings{}, err
+	}
+	if !document.Scope.Matches(owner) {
+		return Settings{}, ErrDatasetCorrupt
+	}
+	return Settings{Scope: kind, Revision: document.Revision, Values: cloneRawMap(document.Values)}, nil
 }
 
 func (s *FileStore) PatchSettings(ctx context.Context, req PatchSettingsRequest) (Settings, error) {
@@ -754,7 +828,19 @@ func (s *FileStore) PatchSettings(ctx context.Context, req PatchSettingsRequest)
 	if err != nil {
 		return Settings{}, err
 	}
-	unlock := s.locks.lockWrite(pluginID)
+	kind, err := normalizedScopeKind(req.Scope)
+	if err != nil {
+		return Settings{}, err
+	}
+	environment, err := environmentScope(ctx)
+	if err != nil {
+		return Settings{}, err
+	}
+	owner, err := resourceScope(ctx, kind)
+	if err != nil {
+		return Settings{}, err
+	}
+	unlock := s.locks.lockWrite(scopedLockKey(environment, pluginID))
 	defer unlock()
 	binding, err := s.getBinding(ctx, pluginID)
 	if err != nil {
@@ -763,18 +849,29 @@ func (s *FileStore) PatchSettings(ctx context.Context, req PatchSettingsRequest)
 	if binding.State != BindingActive {
 		return Settings{}, fmt.Errorf("%w: %s", ErrNotActive, pluginID)
 	}
-	_, manifest, err := s.workspaceForBinding(binding)
+	workspace, manifest, err := s.workspaceForBinding(environment, binding)
 	if err != nil {
 		return Settings{}, err
 	}
 	allowed := make(map[string]struct{}, len(manifest.Shape.Settings.Fields))
+	declared := make(map[string]sessionctx.ScopeKind, len(manifest.Shape.Settings.Fields))
 	for _, field := range manifest.Shape.Settings.Fields {
-		allowed[field.Key] = struct{}{}
+		fieldScope := sessionctx.ScopeKind(field.Scope)
+		declared[field.Key] = fieldScope
+		if fieldScope == kind {
+			allowed[field.Key] = struct{}{}
+		}
 	}
-	path := filepath.Join(s.workspacePath(binding.GenerationID), settingsFileName)
+	if err := s.ensureWorkspaceScope(ctx, workspace.root, manifest.Shape, owner, nil); err != nil {
+		return Settings{}, err
+	}
+	path := workspaceSettingsPath(workspace.root, owner)
 	document, err := readSettings(path)
 	if err != nil {
 		return Settings{}, err
+	}
+	if !document.Scope.Matches(owner) {
+		return Settings{}, ErrDatasetCorrupt
 	}
 	if req.ExpectedValuesRevision == 0 || req.ExpectedValuesRevision != document.Revision {
 		return Settings{}, fmt.Errorf("%w: expected %d, actual %d", ErrRevisionConflict, req.ExpectedValuesRevision, document.Revision)
@@ -791,6 +888,9 @@ func (s *FileStore) PatchSettings(ctx context.Context, req PatchSettingsRequest)
 	}
 	for key, raw := range req.Set {
 		if _, ok := allowed[key]; !ok {
+			if declaredScope, exists := declared[key]; exists && declaredScope != kind {
+				return Settings{}, fmt.Errorf("%w: setting %s is declared for %s scope", ErrSettingScopeMismatch, key, declaredScope)
+			}
 			return Settings{}, fmt.Errorf("%w: %s", ErrUnknownSetting, key)
 		}
 		normalized, err := normalizeRawJSON(raw)
@@ -801,15 +901,22 @@ func (s *FileStore) PatchSettings(ctx context.Context, req PatchSettingsRequest)
 	}
 	for _, key := range req.Remove {
 		if _, ok := allowed[key]; !ok {
+			if declaredScope, exists := declared[key]; exists && declaredScope != kind {
+				return Settings{}, fmt.Errorf("%w: setting %s is declared for %s scope", ErrSettingScopeMismatch, key, declaredScope)
+			}
 			return Settings{}, fmt.Errorf("%w: %s", ErrUnknownSetting, key)
 		}
 		delete(document.Values, key)
+	}
+	document.Values, err = settingsdomain.NormalizeRawValues(settingsFieldsForScope(manifest.Shape.Settings.Fields, kind), document.Values)
+	if err != nil {
+		return Settings{}, err
 	}
 	document.Revision++
 	if err := writeSettingsWithSync(path, document, s.ops.syncDir); err != nil {
 		return Settings{}, err
 	}
-	return Settings{Revision: document.Revision, Values: cloneRawMap(document.Values)}, nil
+	return Settings{Scope: kind, Revision: document.Revision, Values: cloneRawMap(document.Values)}, nil
 }
 
 func (s *FileStore) getBinding(ctx context.Context, pluginInstanceID string) (Binding, error) {
@@ -827,34 +934,41 @@ func (s *FileStore) getBinding(ctx context.Context, pluginInstanceID string) (Bi
 	return cloneBinding(binding), nil
 }
 
-func (s *FileStore) workspaceForBinding(binding Binding) (workspace, datasetManifest, error) {
+func (s *FileStore) workspaceForBinding(environment sessionctx.ResourceScope, binding Binding) (workspace, datasetManifest, error) {
 	if err := validateBinding(binding); err != nil {
 		return workspace{}, datasetManifest{}, err
 	}
-	manifest, err := readDatasetManifest(filepath.Join(s.workspacePath(binding.GenerationID), datasetManifestName))
+	if err := environment.Validate(); err != nil || environment.Kind != sessionctx.ScopeEnvironment {
+		return workspace{}, datasetManifest{}, ErrDatasetCorrupt
+	}
+	root := s.scopedWorkspacePath(environment, binding.GenerationID)
+	manifest, err := readDatasetManifest(filepath.Join(root, datasetManifestName))
 	if err != nil {
 		return workspace{}, datasetManifest{}, err
 	}
-	if manifest.GenerationID != binding.GenerationID {
+	if manifest.GenerationID != binding.GenerationID || manifest.OwnerEnvHash != environment.OwnerEnvHash {
 		return workspace{}, datasetManifest{}, fmt.Errorf("%w: catalog binding does not match generation", ErrDatasetCorrupt)
 	}
 	if manifest.ShapeHash != binding.ShapeHash {
 		return workspace{}, datasetManifest{}, fmt.Errorf("%w: catalog shape does not match generation", ErrDatasetCorrupt)
 	}
-	return s.workspaceForManifest(binding, manifest), manifest, nil
+	return s.workspaceForManifest(environment, binding, manifest), manifest, nil
 }
 
-func (s *FileStore) workspaceForManifest(binding Binding, manifest datasetManifest) workspace {
-	root := s.workspacePath(binding.GenerationID)
+func (s *FileStore) workspaceForManifest(environment sessionctx.ResourceScope, binding Binding, manifest datasetManifest) workspace {
+	root := s.scopedWorkspacePath(environment, binding.GenerationID)
 	return workspace{binding: cloneBinding(binding), root: root, shape: cloneShape(manifest.Shape)}
 }
 
-func (s *FileStore) finalizeWorkspace(stage, generationID string, shape Shape) (datasetManifest, error) {
-	manifest := datasetManifest{GenerationID: generationID, CreatedAt: s.now(), Shape: cloneShape(shape), ShapeHash: shapeHash(shape)}
+func (s *FileStore) finalizeWorkspace(ctx context.Context, stage, generationID string, shape Shape, environment sessionctx.ResourceScope) (datasetManifest, error) {
+	if err := environment.Validate(); err != nil || environment.Kind != sessionctx.ScopeEnvironment {
+		return datasetManifest{}, ErrDatasetCorrupt
+	}
+	manifest := datasetManifest{GenerationID: generationID, OwnerEnvHash: environment.OwnerEnvHash, CreatedAt: s.now(), Shape: cloneShape(shape), ShapeHash: shapeHash(shape)}
 	if err := writeJSON(filepath.Join(stage, datasetManifestName), manifest); err != nil {
 		return datasetManifest{}, err
 	}
-	if err := validateWorkspaceContents(stage, shape.Settings.Fields, shape.Namespaces); err != nil {
+	if err := validateWorkspaceContents(ctx, stage, manifest); err != nil {
 		return datasetManifest{}, err
 	}
 	if _, err := hashTree(stage, ""); err != nil {
@@ -866,7 +980,7 @@ func (s *FileStore) finalizeWorkspace(stage, generationID string, shape Shape) (
 	return manifest, nil
 }
 
-func (s *FileStore) validateObject(ctx context.Context, objectID string) (string, Object, datasetManifest, error) {
+func (s *FileStore) validateObject(ctx context.Context, owner sessionctx.ResourceScope, objectID string) (string, Object, datasetManifest, error) {
 	catalogObject, found, err := s.catalog.GetObject(ctx, objectID)
 	if err != nil {
 		return "", Object{}, datasetManifest{}, err
@@ -877,7 +991,7 @@ func (s *FileStore) validateObject(ctx context.Context, objectID string) (string
 	if err := validateObjectMetadata(catalogObject); err != nil {
 		return "", Object{}, datasetManifest{}, err
 	}
-	object := s.objectPath(objectID)
+	object := s.scopedObjectPath(owner, objectID)
 	var exported exportManifest
 	if err := readJSON(filepath.Join(object, exportManifestName), &exported); err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
@@ -885,11 +999,11 @@ func (s *FileStore) validateObject(ctx context.Context, objectID string) (string
 		}
 		return "", Object{}, datasetManifest{}, err
 	}
-	if exported.ObjectID != objectID || exported.ContentHash != catalogObject.ContentHash || exported.ShapeHash != catalogObject.ShapeHash {
+	if exported.ObjectID != objectID || !exported.Scope.Matches(owner) || exported.ContentHash != catalogObject.ContentHash || exported.ShapeHash != catalogObject.ShapeHash {
 		return "", Object{}, datasetManifest{}, fmt.Errorf("%w: export catalog metadata mismatch", ErrDatasetCorrupt)
 	}
 	payload := filepath.Join(object, exportPayloadName)
-	if err := validateExportableWorkspace(payload); err != nil {
+	if err := validateExportableWorkspace(ctx, payload); err != nil {
 		return "", Object{}, datasetManifest{}, err
 	}
 	hash, err := hashTree(payload, "")
@@ -921,15 +1035,68 @@ func canonicalHash(value string) bool {
 	return err == nil
 }
 
-func validateExportableWorkspace(root string) error {
+func validateExportableWorkspace(ctx context.Context, root string) error {
 	manifest, err := readDatasetManifest(filepath.Join(root, datasetManifestName))
 	if err != nil {
 		return err
 	}
-	return validateWorkspaceContents(root, manifest.Shape.Settings.Fields, manifest.Shape.Namespaces)
+	return validateWorkspaceContents(ctx, root, manifest)
+}
+
+func (s *FileStore) createExportPayload(ctx context.Context, source, destination string, user sessionctx.ResourceScope, manifest datasetManifest) error {
+	if err := s.ensureWorkspaceScope(ctx, source, manifest.Shape, user, nil); err != nil {
+		return err
+	}
+	if err := s.ops.copyDir(source, destination); err != nil {
+		return fmt.Errorf("copy export dataset: %w", err)
+	}
+	usersRoot := filepath.Join(destination, workspaceScopesDirName, workspaceUsersDirName)
+	if err := os.RemoveAll(usersRoot); err != nil {
+		return err
+	}
+	if err := ensurePrivateDirectory(usersRoot); err != nil {
+		return err
+	}
+	userDestination := workspaceScopeRoot(destination, user)
+	if err := s.ops.copyDir(workspaceScopeRoot(source, user), userDestination); err != nil {
+		return fmt.Errorf("copy user-scoped export data: %w", err)
+	}
+	return validateExportableWorkspace(ctx, destination)
+}
+
+func (s *FileStore) createImportedWorkspace(ctx context.Context, currentWorkspace, payloadRoot, stage string, user sessionctx.ResourceScope) error {
+	if err := validateExportableWorkspace(ctx, payloadRoot); err != nil {
+		return err
+	}
+	if currentWorkspace == "" {
+		if err := s.ops.copyDir(payloadRoot, stage); err != nil {
+			return fmt.Errorf("copy imported dataset: %w", err)
+		}
+		return nil
+	}
+	if err := s.ops.copyDir(currentWorkspace, stage); err != nil {
+		return fmt.Errorf("copy current dataset: %w", err)
+	}
+	for _, scope := range []sessionctx.ResourceScope{
+		{Kind: sessionctx.ScopeEnvironment, OwnerEnvHash: user.OwnerEnvHash},
+		user,
+	} {
+		target := workspaceScopeRoot(stage, scope)
+		if err := os.RemoveAll(target); err != nil {
+			return err
+		}
+		if err := s.ops.copyDir(workspaceScopeRoot(payloadRoot, scope), target); err != nil {
+			return fmt.Errorf("merge imported %s data: %w", scope.Kind, err)
+		}
+	}
+	return nil
 }
 
 func (s *FileStore) publishStage(stage, destination string) error {
+	parent := filepath.Dir(destination)
+	if err := ensurePrivateDirectory(parent); err != nil {
+		return fmt.Errorf("prepare immutable dataset parent: %w", err)
+	}
 	if _, err := os.Lstat(destination); err == nil {
 		return fmt.Errorf("%w: destination already exists", ErrBindingConflict)
 	} else if !errors.Is(err, fs.ErrNotExist) {
@@ -938,16 +1105,23 @@ func (s *FileStore) publishStage(stage, destination string) error {
 	if err := s.ops.rename(stage, destination); err != nil {
 		return fmt.Errorf("publish immutable dataset: %w", err)
 	}
-	if err := s.ops.syncDir(filepath.Dir(destination)); err != nil {
-		return s.rollbackPublishedDirectory(destination, filepath.Dir(destination), mutation.Unknown(fmt.Errorf("sync immutable dataset parent: %w", err)))
+	if err := s.ops.syncDir(parent); err != nil {
+		return s.rollbackPublishedDirectory(destination, parent, mutation.Unknown(fmt.Errorf("sync immutable dataset parent: %w", err)))
 	}
 	return nil
 }
 
 func (s *FileStore) removePublishedDirectory(path, parent string) error {
-	if filepath.Clean(parent) == filepath.Clean(s.workspacesRoot()) {
-		if err := s.closeNamespaceDatabases(filepath.Base(path)); err != nil {
-			return mutation.Unknown(fmt.Errorf("close published plugin data databases: %w", err))
+	workspaceOwnersRoot := filepath.Join(s.workspacesRoot(), environmentOwnersDirName)
+	if relative, err := filepath.Rel(workspaceOwnersRoot, path); err == nil {
+		parts := strings.Split(relative, string(filepath.Separator))
+		if len(parts) == 2 && parts[0] != ".." {
+			environment := sessionctx.ResourceScope{Kind: sessionctx.ScopeEnvironment, OwnerEnvHash: parts[0]}
+			if environment.Validate() == nil {
+				if err := s.closeNamespaceDatabases(generationCachePrefix(environment.OwnerEnvHash, parts[1])); err != nil {
+					return mutation.Unknown(fmt.Errorf("close published plugin data databases: %w", err))
+				}
+			}
 		}
 	}
 	if err := s.ops.removeAll(path); err != nil {
@@ -998,7 +1172,7 @@ func (s *FileStore) cleanupOnOpen(ctx context.Context) error {
 		if err := validateMaintenanceBinding(item); err != nil {
 			return err
 		}
-		if _, _, err := s.workspaceForBinding(item.Binding); err != nil {
+		if _, _, err := s.workspaceForBinding(item.Scope, item.Binding); err != nil {
 			return err
 		}
 	}
@@ -1012,10 +1186,10 @@ func (s *FileStore) cleanupOnOpen(ctx context.Context) error {
 		}
 		object := item.Object
 		var manifest exportManifest
-		if err := readJSON(filepath.Join(s.objectPath(object.ObjectID), exportManifestName), &manifest); err != nil {
+		if err := readJSON(filepath.Join(s.scopedObjectPath(item.Scope, object.ObjectID), exportManifestName), &manifest); err != nil {
 			return fmt.Errorf("%w: missing export object %s", ErrDatasetCorrupt, object.ObjectID)
 		}
-		if manifest.ObjectID != object.ObjectID || manifest.ContentHash != object.ContentHash || manifest.ShapeHash != object.ShapeHash {
+		if manifest.ObjectID != object.ObjectID || !manifest.Scope.Matches(item.Scope) || manifest.ContentHash != object.ContentHash || manifest.ShapeHash != object.ShapeHash {
 			return fmt.Errorf("%w: export object metadata mismatch", ErrDatasetCorrupt)
 		}
 	}
@@ -1032,7 +1206,7 @@ func (s *FileStore) collectUnreferenced(ctx context.Context) error {
 		if err := validateMaintenanceBinding(item); err != nil {
 			return err
 		}
-		referencedWorkspaces[item.Binding.GenerationID] = struct{}{}
+		referencedWorkspaces[persistentPathKey(item.Scope.OwnerEnvHash, item.Binding.GenerationID)] = struct{}{}
 	}
 	objects, err := s.listAllObjectsForMaintenance(ctx)
 	if err != nil {
@@ -1043,28 +1217,81 @@ func (s *FileStore) collectUnreferenced(ctx context.Context) error {
 		if err := validateMaintenanceObject(item); err != nil {
 			return err
 		}
-		referencedObjects[item.Object.ObjectID] = struct{}{}
+		referencedObjects[persistentPathKey(item.Scope.OwnerEnvHash, item.Scope.OwnerUserHash, item.Object.ObjectID)] = struct{}{}
 	}
-	if err := s.removeUnreferencedDirectories(s.workspacesRoot(), "workspace", referencedWorkspaces); err != nil {
+	if err := s.removeUnreferencedWorkspaces(referencedWorkspaces); err != nil {
 		return err
 	}
-	return s.removeUnreferencedDirectories(s.objectsRoot(), "object", referencedObjects)
+	return s.removeUnreferencedObjects(referencedObjects)
 }
 
-func (s *FileStore) removeUnreferencedDirectories(root, kind string, referenced map[string]struct{}) error {
-	entries, err := os.ReadDir(root)
+func (s *FileStore) removeUnreferencedWorkspaces(referenced map[string]struct{}) error {
+	ownersRoot := filepath.Join(s.workspacesRoot(), environmentOwnersDirName)
+	owners, err := os.ReadDir(ownersRoot)
 	if err != nil {
 		return err
 	}
-	for _, entry := range entries {
-		if entry.Type()&os.ModeSymlink != 0 || !entry.IsDir() || !identifierPattern.MatchString(entry.Name()) {
-			return fmt.Errorf("%w: invalid %s entry %s", ErrUnsafeFilesystem, kind, entry.Name())
+	for _, ownerEntry := range owners {
+		scope := sessionctx.ResourceScope{Kind: sessionctx.ScopeEnvironment, OwnerEnvHash: ownerEntry.Name()}
+		if ownerEntry.Type()&os.ModeSymlink != 0 || !ownerEntry.IsDir() || scope.Validate() != nil {
+			return fmt.Errorf("%w: invalid workspace owner %s", ErrUnsafeFilesystem, ownerEntry.Name())
 		}
-		if _, ok := referenced[entry.Name()]; ok {
-			continue
-		}
-		if err := s.removePublishedDirectory(filepath.Join(root, entry.Name()), root); err != nil {
+		ownerRoot := filepath.Join(ownersRoot, ownerEntry.Name())
+		generations, err := os.ReadDir(ownerRoot)
+		if err != nil {
 			return err
+		}
+		for _, generation := range generations {
+			if generation.Type()&os.ModeSymlink != 0 || !generation.IsDir() || !identifierPattern.MatchString(generation.Name()) {
+				return fmt.Errorf("%w: invalid workspace entry %s", ErrUnsafeFilesystem, generation.Name())
+			}
+			if _, ok := referenced[persistentPathKey(scope.OwnerEnvHash, generation.Name())]; ok {
+				continue
+			}
+			if err := s.removePublishedDirectory(filepath.Join(ownerRoot, generation.Name()), ownerRoot); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func (s *FileStore) removeUnreferencedObjects(referenced map[string]struct{}) error {
+	environmentsRoot := filepath.Join(s.objectsRoot(), userOwnersDirName)
+	environments, err := os.ReadDir(environmentsRoot)
+	if err != nil {
+		return err
+	}
+	for _, environmentEntry := range environments {
+		if environmentEntry.Type()&os.ModeSymlink != 0 || !environmentEntry.IsDir() {
+			return fmt.Errorf("%w: invalid object environment owner", ErrUnsafeFilesystem)
+		}
+		usersRoot := filepath.Join(environmentsRoot, environmentEntry.Name())
+		users, err := os.ReadDir(usersRoot)
+		if err != nil {
+			return err
+		}
+		for _, userEntry := range users {
+			scope := sessionctx.ResourceScope{Kind: sessionctx.ScopeUser, OwnerEnvHash: environmentEntry.Name(), OwnerUserHash: userEntry.Name()}
+			if userEntry.Type()&os.ModeSymlink != 0 || !userEntry.IsDir() || scope.Validate() != nil {
+				return fmt.Errorf("%w: invalid object user owner", ErrUnsafeFilesystem)
+			}
+			userRoot := filepath.Join(usersRoot, userEntry.Name())
+			objects, err := os.ReadDir(userRoot)
+			if err != nil {
+				return err
+			}
+			for _, object := range objects {
+				if object.Type()&os.ModeSymlink != 0 || !object.IsDir() || !identifierPattern.MatchString(object.Name()) {
+					return fmt.Errorf("%w: invalid object entry %s", ErrUnsafeFilesystem, object.Name())
+				}
+				if _, ok := referenced[persistentPathKey(scope.OwnerEnvHash, scope.OwnerUserHash, object.Name())]; ok {
+					continue
+				}
+				if err := s.removePublishedDirectory(filepath.Join(userRoot, object.Name()), userRoot); err != nil {
+					return err
+				}
+			}
 		}
 	}
 	return nil
@@ -1245,17 +1472,145 @@ func cloneShape(shape Shape) Shape {
 	return cloned
 }
 
-func validateWorkspaceContents(root string, fields []settingsdomain.Field, namespaces []Namespace) error {
+func initializeWorkspaceScopes(ctx context.Context, root string, shape Shape, environment, user sessionctx.ResourceScope, initialSettings map[string]json.RawMessage) error {
+	for _, scope := range []sessionctx.ResourceScope{environment, user} {
+		if err := initializeWorkspaceScope(ctx, workspaceScopeRoot(root, scope), shape, scope, initialSettings); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *FileStore) ensureWorkspaceScope(ctx context.Context, root string, shape Shape, scope sessionctx.ResourceScope, initialSettings map[string]json.RawMessage) error {
+	target := workspaceScopeRoot(root, scope)
+	if info, err := os.Lstat(target); err == nil {
+		if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+			return fmt.Errorf("%w: invalid workspace scope root", ErrUnsafeFilesystem)
+		}
+		return validateWorkspaceScope(ctx, target, shape, scope)
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+	parent := filepath.Dir(target)
+	if err := ensurePrivateDirectory(parent); err != nil {
+		return err
+	}
+	stage, err := os.MkdirTemp(parent, ".scope-")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(stage)
+	if err := os.Chmod(stage, 0o700); err != nil {
+		return err
+	}
+	if err := initializeWorkspaceScope(ctx, stage, shape, scope, initialSettings); err != nil {
+		return err
+	}
+	if err := syncTree(stage); err != nil {
+		return err
+	}
+	if err := os.Rename(stage, target); err != nil {
+		return err
+	}
+	if err := s.ops.syncDir(parent); err != nil {
+		return mutation.Unknown(err)
+	}
+	return nil
+}
+
+func initializeWorkspaceScope(ctx context.Context, root string, shape Shape, scope sessionctx.ResourceScope, initialSettings map[string]json.RawMessage) error {
+	if err := scope.Validate(); err != nil {
+		return err
+	}
+	if err := ensurePrivateDirectory(root); err != nil {
+		return err
+	}
+	fields := settingsFieldsForScope(shape.Settings.Fields, scope.Kind)
+	values, err := settingsdomain.DefaultValues(fields)
+	if err != nil {
+		return err
+	}
+	for key, value := range initialSettings {
+		for _, field := range fields {
+			if field.Key == key {
+				values[key] = bytes.Clone(value)
+				break
+			}
+		}
+	}
+	if err := writeSettings(filepath.Join(root, settingsFileName), settingsDocument{Scope: scope, Revision: 1, Values: values}); err != nil {
+		return err
+	}
+	return createNamespaces(ctx, root, scope, namespacesForScope(shape.Namespaces, scope.Kind))
+}
+
+func settingsFieldsForScope(fields []settingsdomain.Field, kind sessionctx.ScopeKind) []settingsdomain.Field {
+	result := make([]settingsdomain.Field, 0, len(fields))
+	for _, field := range fields {
+		if sessionctx.ScopeKind(field.Scope) == kind {
+			result = append(result, field)
+		}
+	}
+	return result
+}
+
+func namespacesForScope(namespaces []Namespace, kind sessionctx.ScopeKind) []Namespace {
+	result := make([]Namespace, 0, len(namespaces))
+	for _, namespace := range namespaces {
+		if sessionctx.ScopeKind(namespace.Scope) == kind {
+			result = append(result, namespace)
+		}
+	}
+	return result
+}
+
+func validateWorkspaceContents(ctx context.Context, root string, manifest datasetManifest) error {
 	if err := validateTree(root); err != nil {
 		return err
 	}
+	environment := sessionctx.ResourceScope{Kind: sessionctx.ScopeEnvironment, OwnerEnvHash: manifest.OwnerEnvHash}
+	if err := environment.Validate(); err != nil {
+		return fmt.Errorf("%w: invalid dataset owner", ErrDatasetCorrupt)
+	}
+	scopesRoot := filepath.Join(root, workspaceScopesDirName)
+	entries, err := os.ReadDir(scopesRoot)
+	if err != nil {
+		return fmt.Errorf("read dataset scopes: %w", err)
+	}
+	if len(entries) != 2 || entries[0].Name() != environmentOwnersDirName || entries[1].Name() != workspaceUsersDirName {
+		return fmt.Errorf("%w: workspace scope roots do not match the owner layout", ErrDatasetCorrupt)
+	}
+	if err := validateWorkspaceScope(ctx, workspaceScopeRoot(root, environment), manifest.Shape, environment); err != nil {
+		return err
+	}
+	userEntries, err := os.ReadDir(filepath.Join(scopesRoot, workspaceUsersDirName))
+	if err != nil {
+		return err
+	}
+	for _, entry := range userEntries {
+		user := sessionctx.ResourceScope{Kind: sessionctx.ScopeUser, OwnerEnvHash: manifest.OwnerEnvHash, OwnerUserHash: entry.Name()}
+		if entry.Type()&os.ModeSymlink != 0 || !entry.IsDir() || user.Validate() != nil {
+			return fmt.Errorf("%w: invalid user workspace scope", ErrUnsafeFilesystem)
+		}
+		if err := validateWorkspaceScope(ctx, filepath.Join(scopesRoot, workspaceUsersDirName, entry.Name()), manifest.Shape, user); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateWorkspaceScope(ctx context.Context, root string, shape Shape, scope sessionctx.ResourceScope) error {
 	document, err := readSettings(filepath.Join(root, settingsFileName))
 	if err != nil {
 		return err
 	}
-	if _, err := settingsdomain.NormalizeRawValues(fields, document.Values); err != nil {
+	if !document.Scope.Matches(scope) {
+		return fmt.Errorf("%w: settings owner scope mismatch", ErrDatasetCorrupt)
+	}
+	if _, err := settingsdomain.NormalizeRawValues(settingsFieldsForScope(shape.Settings.Fields, scope.Kind), document.Values); err != nil {
 		return fmt.Errorf("%w: %v", ErrDatasetCorrupt, err)
 	}
+	namespaces := namespacesForScope(shape.Namespaces, scope.Kind)
 	namespaceRoot := filepath.Join(root, namespacesDirName)
 	entries, err := os.ReadDir(namespaceRoot)
 	if err != nil {
@@ -1266,11 +1621,11 @@ func validateWorkspaceContents(root string, fields []settingsdomain.Field, names
 	}
 	for _, namespace := range namespaces {
 		base := filepath.Join(namespaceRoot, namespace.ID)
-		var stored Namespace
+		var stored namespaceDocument
 		if err := readJSON(filepath.Join(base, namespaceMetaName), &stored); err != nil {
 			return err
 		}
-		if stored != namespace {
+		if !stored.Scope.Matches(scope) || stored.Namespace != namespace {
 			return fmt.Errorf("%w: namespace metadata mismatch for %s", ErrDatasetCorrupt, namespace.ID)
 		}
 		info, err := os.Lstat(filepath.Join(base, namespaceDataName))
@@ -1280,7 +1635,7 @@ func validateWorkspaceContents(root string, fields []settingsdomain.Field, names
 		dataRoot := filepath.Join(base, namespaceDataName)
 		var usage namespaceUsage
 		if namespace.Kind == NamespaceFiles || namespace.Kind == NamespaceKV {
-			usage, err = validateNamespaceDatabase(context.Background(), dataRoot, namespace.Kind)
+			usage, err = validateNamespaceDatabase(ctx, dataRoot, namespace.Kind)
 		} else {
 			usage, err = scanNamespaceUsage(dataRoot)
 		}
@@ -1324,7 +1679,7 @@ func scanNamespaceUsage(root string) (namespaceUsage, error) {
 	return usage, err
 }
 
-func createNamespaces(ctx context.Context, root string, namespaces []Namespace) error {
+func createNamespaces(ctx context.Context, root string, scope sessionctx.ResourceScope, namespaces []Namespace) error {
 	base := filepath.Join(root, namespacesDirName)
 	if err := ensurePrivateDirectory(base); err != nil {
 		return err
@@ -1338,7 +1693,10 @@ func createNamespaces(ctx context.Context, root string, namespaces []Namespace) 
 		if err := initializeNamespaceDatabase(ctx, dataRoot, namespace.Kind); err != nil {
 			return fmt.Errorf("initialize namespace %s: %w", namespace.ID, err)
 		}
-		if err := writeJSON(filepath.Join(nsRoot, namespaceMetaName), namespace); err != nil {
+		if sessionctx.ScopeKind(namespace.Scope) != scope.Kind {
+			return ErrStorageScopeMismatch
+		}
+		if err := writeJSON(filepath.Join(nsRoot, namespaceMetaName), namespaceDocument{Scope: scope, Namespace: namespace}); err != nil {
 			return err
 		}
 	}
@@ -1393,6 +1751,9 @@ func readDatasetManifest(path string) (datasetManifest, error) {
 	if _, err := normalizeIdentifier("generation ID", manifest.GenerationID); err != nil {
 		return datasetManifest{}, fmt.Errorf("%w: %v", ErrDatasetCorrupt, err)
 	}
+	if err := (sessionctx.ResourceScope{Kind: sessionctx.ScopeEnvironment, OwnerEnvHash: manifest.OwnerEnvHash}).Validate(); err != nil {
+		return datasetManifest{}, fmt.Errorf("%w: invalid dataset owner", ErrDatasetCorrupt)
+	}
 	if manifest.CreatedAt.IsZero() {
 		return datasetManifest{}, fmt.Errorf("%w: missing dataset creation time", ErrDatasetCorrupt)
 	}
@@ -1432,6 +1793,9 @@ func readSettings(path string) (settingsDocument, error) {
 	}
 	if document.Revision == 0 || document.Values == nil {
 		return settingsDocument{}, fmt.Errorf("%w: invalid settings document", ErrDatasetCorrupt)
+	}
+	if err := document.Scope.Validate(); err != nil {
+		return settingsDocument{}, fmt.Errorf("%w: invalid settings owner scope", ErrDatasetCorrupt)
 	}
 	for key, raw := range document.Values {
 		if _, err := normalizeIdentifier("setting key", key); err != nil {
@@ -1556,8 +1920,6 @@ func (l *keyedLocks) lockManyMode(write bool, keys ...string) func() {
 	}
 }
 
-func (s *FileStore) workspacesRoot() string         { return filepath.Join(s.root, workspacesDirName) }
-func (s *FileStore) objectsRoot() string            { return filepath.Join(s.root, objectsDirName) }
-func (s *FileStore) stagingRoot() string            { return filepath.Join(s.root, stagingDirName) }
-func (s *FileStore) workspacePath(id string) string { return filepath.Join(s.workspacesRoot(), id) }
-func (s *FileStore) objectPath(id string) string    { return filepath.Join(s.objectsRoot(), id) }
+func (s *FileStore) workspacesRoot() string { return filepath.Join(s.root, workspacesDirName) }
+func (s *FileStore) objectsRoot() string    { return filepath.Join(s.root, objectsDirName) }
+func (s *FileStore) stagingRoot() string    { return filepath.Join(s.root, stagingDirName) }

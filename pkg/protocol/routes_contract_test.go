@@ -915,12 +915,12 @@ func typeScriptSDKRouteBindings() []typeScriptSDKRouteBinding {
 		{
 			routeFixture: routeFixture{Method: "GET", Path: "/_redevplugin/api/plugins/{plugin_instance_id}/settings/schema"},
 			Owner:        "PluginPlatformClient.getSettingsSchema",
-			Snippets:     []string{"getSettingsSchema(pluginInstanceId: string)", `/_redevplugin/api/plugins/${encodeURIComponent(pluginInstanceId)}/settings/schema`},
+			Snippets:     []string{"getSettingsSchema(pluginInstanceId: string, scope: PluginResourceScopeKind", `/_redevplugin/api/plugins/${encodeURIComponent(pluginInstanceId)}/settings/schema?scope=${encodeURIComponent(scope)}`},
 		},
 		{
 			routeFixture: routeFixture{Method: "GET", Path: "/_redevplugin/api/plugins/{plugin_instance_id}/settings"},
 			Owner:        "PluginPlatformClient.getSettings",
-			Snippets:     []string{"getSettings(pluginInstanceId: string)", `/_redevplugin/api/plugins/${encodeURIComponent(pluginInstanceId)}/settings`},
+			Snippets:     []string{"getSettings(pluginInstanceId: string, scope: PluginResourceScopeKind", `/_redevplugin/api/plugins/${encodeURIComponent(pluginInstanceId)}/settings?scope=${encodeURIComponent(scope)}`},
 		},
 		{
 			routeFixture: routeFixture{Method: "PATCH", Path: "/_redevplugin/api/plugins/{plugin_instance_id}/settings"},

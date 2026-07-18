@@ -88,7 +88,8 @@ export type PluginRuntimeRefreshResult = PlatformSchemas["PluginRuntimeRefreshRe
 export type PluginSettingsField = PlatformSchemas["PluginSettingsField"];
 export type PluginSettingsSchema = PlatformSchemas["PluginSettingsSchema"];
 export type PluginSettingsSnapshot = PlatformSchemas["PluginSettingsSnapshot"];
-type PluginSettingsPatchBase = Pick<PlatformSchemas["PatchSettingsRequest"], "expected_values_revision">;
+export type PluginResourceScopeKind = PlatformSchemas["ResourceScopeKind"];
+type PluginSettingsPatchBase = Pick<PlatformSchemas["PatchSettingsRequest"], "scope" | "expected_values_revision">;
 export type PluginSettingsPatchRequest = PluginSettingsPatchBase & (
   | { set: Record<string, unknown>; remove?: [string, ...string[]] }
   | { set?: Record<string, unknown>; remove: [string, ...string[]] }
@@ -215,11 +216,11 @@ export class PluginPlatformClient {
     return this.#requestMutation("POST", "/_redevplugin/api/plugins/runtime/refresh-enabled", {}, options);
   }
   runtimeHealth(options: PluginRequestOptions = {}): Promise<PluginRuntimeHealth> { return this.#getJSON("/_redevplugin/api/plugins/runtime/health", options); }
-  getSettingsSchema(pluginInstanceId: string, options: PluginRequestOptions = {}): Promise<PluginSettingsSchema> {
-    return this.#getJSON(`/_redevplugin/api/plugins/${encodeURIComponent(pluginInstanceId)}/settings/schema`, options);
+  getSettingsSchema(pluginInstanceId: string, scope: PluginResourceScopeKind, options: PluginRequestOptions = {}): Promise<PluginSettingsSchema> {
+    return this.#getJSON(`/_redevplugin/api/plugins/${encodeURIComponent(pluginInstanceId)}/settings/schema?scope=${encodeURIComponent(scope)}`, options);
   }
-  getSettings(pluginInstanceId: string, options: PluginRequestOptions = {}): Promise<PluginSettingsSnapshot> {
-    return this.#getJSON(`/_redevplugin/api/plugins/${encodeURIComponent(pluginInstanceId)}/settings`, options);
+  getSettings(pluginInstanceId: string, scope: PluginResourceScopeKind, options: PluginRequestOptions = {}): Promise<PluginSettingsSnapshot> {
+    return this.#getJSON(`/_redevplugin/api/plugins/${encodeURIComponent(pluginInstanceId)}/settings?scope=${encodeURIComponent(scope)}`, options);
   }
   patchSettings(pluginInstanceId: string, request: PluginSettingsPatchRequest, options: PluginRequestOptions = {}): Promise<PluginSettingsSnapshot> {
     return this.#mutatePluginAt("PATCH", `/_redevplugin/api/plugins/${encodeURIComponent(pluginInstanceId)}/settings`, pluginInstanceId, request, options);

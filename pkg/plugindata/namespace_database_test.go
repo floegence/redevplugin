@@ -13,13 +13,14 @@ import (
 	"testing"
 	"time"
 
+	"github.com/floegence/redevplugin/pkg/sessionctx"
 	settingsdomain "github.com/floegence/redevplugin/pkg/settings"
 	"github.com/floegence/redevplugin/pkg/storage"
 )
 
 func TestBrokerPaginatesFilesAndKVWithPersistentKeys(t *testing.T) {
 	store, _, shape := newInternalStore(t)
-	ctx := context.Background()
+	ctx := internalTestContext()
 	if _, err := store.CommitEnable(ctx, CommitEnableRequest{PluginInstanceID: "plugini_test", Shape: shape, ExpectedManagementRevision: 1}); err != nil {
 		t.Fatal(err)
 	}
@@ -84,7 +85,7 @@ func TestBrokerPaginatesFilesAndKVWithPersistentKeys(t *testing.T) {
 
 func TestNamespaceTransactionsEnforceLogicalFileQuotas(t *testing.T) {
 	store, _, _ := newInternalStore(t)
-	ctx := context.Background()
+	ctx := internalTestContext()
 	shape := Shape{PublisherID: "example", PluginID: "com.example.quota", Settings: settingsdomain.Schema{}, Namespaces: []Namespace{
 		{ID: "files", Kind: NamespaceFiles, Scope: "user", SchemaVersion: 1, QuotaBytes: 1024, QuotaFiles: 2},
 		{ID: "kv", Kind: NamespaceKV, Scope: "user", SchemaVersion: 1, QuotaBytes: 1024, QuotaFiles: 1},
@@ -108,28 +109,64 @@ func TestNamespaceTransactionsEnforceLogicalFileQuotas(t *testing.T) {
 }
 
 func TestNamespaceDatabaseCacheReusesAndClosesGenerationConnections(t *testing.T) {
-	store, _, shape := newInternalStore(t)
-	ctx := context.Background()
+	store, _, _ := newInternalStore(t)
+	ctx := internalTestContext()
+	secondUserCtx := sessionctx.WithContext(context.Background(), sessionctx.Context{
+		OwnerSessionHash:     "owner_session_second",
+		OwnerUserHash:        "owner_user_second",
+		OwnerEnvHash:         "owner_env_test",
+		SessionChannelIDHash: "channel_second",
+	})
+	shape := Shape{PublisherID: "example", PluginID: "com.example.cache", Settings: settingsdomain.Schema{}, Namespaces: []Namespace{
+		{ID: "user_files", Kind: NamespaceFiles, Scope: "user", SchemaVersion: 1, QuotaBytes: 1024, QuotaFiles: 16},
+		{ID: "environment_files", Kind: NamespaceFiles, Scope: "environment", SchemaVersion: 1, QuotaBytes: 1024, QuotaFiles: 16},
+	}}
 	dataset, err := store.CommitEnable(ctx, CommitEnableRequest{PluginInstanceID: "plugini_test", Shape: shape, ExpectedManagementRevision: 1})
 	if err != nil {
 		t.Fatal(err)
 	}
-	for i := 0; i < 2; i++ {
-		if _, err := store.ListFiles(ctx, storage.FileListRequest{PluginInstanceID: "plugini_test", StoreID: "files", MaxEntries: 1}); err != nil {
-			t.Fatal(err)
+	for _, access := range []struct {
+		ctx     context.Context
+		storeID string
+	}{
+		{ctx: ctx, storeID: "user_files"},
+		{ctx: secondUserCtx, storeID: "user_files"},
+		{ctx: ctx, storeID: "environment_files"},
+	} {
+		for i := 0; i < 2; i++ {
+			if _, err := store.ListFiles(access.ctx, storage.FileListRequest{PluginInstanceID: "plugini_test", StoreID: access.storeID, MaxEntries: 1}); err != nil {
+				t.Fatal(err)
+			}
 		}
 	}
-	key := namespaceDatabaseCacheKey(dataset.Binding.GenerationID, "files", NamespaceFiles)
-	store.namespaceDBMu.Lock()
-	entry := store.namespaceDB[key]
-	if entry == nil || entry.db == nil || entry.refs != 0 {
-		store.namespaceDBMu.Unlock()
-		t.Fatalf("namespace cache entry = %#v", entry)
+	environment, user, err := requestScopes(ctx)
+	if err != nil {
+		t.Fatal(err)
 	}
-	db := entry.db
+	secondUser, err := userScope(secondUserCtx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keys := []string{
+		namespaceDatabaseCacheKey(scopedGenerationCacheKey(user, dataset.Binding.GenerationID), "user_files", NamespaceFiles),
+		namespaceDatabaseCacheKey(scopedGenerationCacheKey(secondUser, dataset.Binding.GenerationID), "user_files", NamespaceFiles),
+		namespaceDatabaseCacheKey(scopedGenerationCacheKey(environment, dataset.Binding.GenerationID), "environment_files", NamespaceFiles),
+	}
+	dbs := make([]*sql.DB, 0, len(keys))
+	store.namespaceDBMu.Lock()
+	for _, key := range keys {
+		entry := store.namespaceDB[key]
+		if entry == nil || entry.db == nil || entry.refs != 0 {
+			store.namespaceDBMu.Unlock()
+			t.Fatalf("namespace cache entry %q = %#v", key, entry)
+		}
+		dbs = append(dbs, entry.db)
+	}
 	store.namespaceDBMu.Unlock()
-	if err := db.PingContext(ctx); err != nil {
-		t.Fatalf("cached namespace database ping: %v", err)
+	for _, db := range dbs {
+		if err := db.PingContext(ctx); err != nil {
+			t.Fatalf("cached namespace database ping: %v", err)
+		}
 	}
 	if _, err := store.CommitUninstall(ctx, CommitUninstallRequest{
 		PluginInstanceID:           "plugini_test",
@@ -140,13 +177,57 @@ func TestNamespaceDatabaseCacheReusesAndClosesGenerationConnections(t *testing.T
 		t.Fatal(err)
 	}
 	store.namespaceDBMu.Lock()
-	_, cached := store.namespaceDB[key]
-	store.namespaceDBMu.Unlock()
-	if cached {
-		t.Fatal("generation namespace database remained cached after deletion")
+	for _, key := range keys {
+		if _, cached := store.namespaceDB[key]; cached {
+			store.namespaceDBMu.Unlock()
+			t.Fatalf("generation namespace database %q remained cached after deletion", key)
+		}
 	}
-	if err := db.PingContext(ctx); err == nil {
-		t.Fatal("deleted generation namespace database remained open")
+	store.namespaceDBMu.Unlock()
+	for _, db := range dbs {
+		if err := db.PingContext(ctx); err == nil {
+			t.Fatal("deleted generation namespace database remained open")
+		}
+	}
+}
+
+func TestDropGenerationUsageClearsEveryScopeForEnvironment(t *testing.T) {
+	environment := sessionctx.ResourceScope{Kind: sessionctx.ScopeEnvironment, OwnerEnvHash: "env_a"}
+	user := sessionctx.ResourceScope{Kind: sessionctx.ScopeUser, OwnerEnvHash: "env_a", OwnerUserHash: "user_a"}
+	secondUser := sessionctx.ResourceScope{Kind: sessionctx.ScopeUser, OwnerEnvHash: "env_a", OwnerUserHash: "user_b"}
+	otherUser := sessionctx.ResourceScope{Kind: sessionctx.ScopeUser, OwnerEnvHash: "env_b", OwnerUserHash: "user_a"}
+	targetKeys := []string{
+		scopedNamespaceCacheKey(environment, "gen_a", "environment_files"),
+		scopedNamespaceCacheKey(user, "gen_a", "user_files"),
+		scopedNamespaceCacheKey(secondUser, "gen_a", "user_files"),
+	}
+	preservedKeys := []string{
+		scopedNamespaceCacheKey(environment, "gen_b", "environment_files"),
+		scopedNamespaceCacheKey(otherUser, "gen_a", "user_files"),
+	}
+	store := &FileStore{usage: map[string]namespaceUsage{}}
+	for _, key := range append(append([]string{}, targetKeys...), preservedKeys...) {
+		store.usage[key] = namespaceUsage{bytes: 1}
+		store.sqliteQueries.Store(key, make(chan struct{}, 1))
+	}
+
+	store.dropGenerationUsage(environment, "gen_a")
+
+	for _, key := range targetKeys {
+		if _, ok := store.usage[key]; ok {
+			t.Fatalf("target usage key %q remained cached", key)
+		}
+		if _, ok := store.sqliteQueries.Load(key); ok {
+			t.Fatalf("target sqlite limiter key %q remained cached", key)
+		}
+	}
+	for _, key := range preservedKeys {
+		if _, ok := store.usage[key]; !ok {
+			t.Fatalf("unrelated usage key %q was removed", key)
+		}
+		if _, ok := store.sqliteQueries.Load(key); !ok {
+			t.Fatalf("unrelated sqlite limiter key %q was removed", key)
+		}
 	}
 }
 
@@ -173,7 +254,7 @@ func TestCachedNamespaceUsageSharesConcurrentMiss(t *testing.T) {
 	for i := 0; i < callers; i++ {
 		go func() {
 			defer wg.Done()
-			usage, err := store.cachedNamespaceUsageWithLoader(context.Background(), "generation\x00files", "unused", NamespaceFiles, nil, loader)
+			usage, err := store.cachedNamespaceUsageWithLoader(internalTestContext(), "generation\x00files", "unused", NamespaceFiles, nil, loader)
 			results <- usage
 			errs <- err
 		}()
@@ -200,7 +281,7 @@ func TestCachedNamespaceUsageSharesConcurrentMiss(t *testing.T) {
 
 func TestNamespaceDatabaseCacheWaitsWhenEveryEntryIsActive(t *testing.T) {
 	root := t.TempDir()
-	if err := initializeNamespaceDatabase(context.Background(), root, NamespaceKV); err != nil {
+	if err := initializeNamespaceDatabase(internalTestContext(), root, NamespaceKV); err != nil {
 		t.Fatal(err)
 	}
 	rootInfo, err := os.Lstat(root)
@@ -215,7 +296,7 @@ func TestNamespaceDatabaseCacheWaitsWhenEveryEntryIsActive(t *testing.T) {
 		key := fmt.Sprintf("generation-%03d", i)
 		store.namespaceDB[key] = &namespaceDBEntry{rootPath: key, refs: 1, lastUse: uint64(i + 1)}
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	ctx, cancel := context.WithTimeout(internalTestContext(), 10*time.Millisecond)
 	defer cancel()
 	if _, _, _, err := store.acquireNamespaceDatabase(ctx, "new", root, rootInfo); !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("acquireNamespaceDatabase() error = %v, want context deadline", err)
@@ -227,7 +308,7 @@ func TestNamespaceDatabaseCacheWaitsWhenEveryEntryIsActive(t *testing.T) {
 
 func TestNamespaceDatabaseCacheSharesConcurrentOpen(t *testing.T) {
 	root := t.TempDir()
-	if err := initializeNamespaceDatabase(context.Background(), root, NamespaceKV); err != nil {
+	if err := initializeNamespaceDatabase(internalTestContext(), root, NamespaceKV); err != nil {
 		t.Fatal(err)
 	}
 	rootInfo, err := os.Lstat(root)
@@ -249,7 +330,7 @@ func TestNamespaceDatabaseCacheSharesConcurrentOpen(t *testing.T) {
 	for i := 0; i < callers; i++ {
 		go func() {
 			defer wg.Done()
-			db, namespaceRoot, release, err := store.acquireNamespaceDatabase(context.Background(), "generation\x00kv", root, rootInfo)
+			db, namespaceRoot, release, err := store.acquireNamespaceDatabase(internalTestContext(), "generation\x00kv", root, rootInfo)
 			leases <- lease{db: db, root: namespaceRoot, release: release, err: err}
 		}()
 	}
@@ -277,7 +358,7 @@ func TestNamespaceDatabaseCacheSharesConcurrentOpen(t *testing.T) {
 
 func TestNamespaceDatabaseCacheEvictsLeastRecentlyUsedIdleEntry(t *testing.T) {
 	root := t.TempDir()
-	if err := initializeNamespaceDatabase(context.Background(), root, NamespaceKV); err != nil {
+	if err := initializeNamespaceDatabase(internalTestContext(), root, NamespaceKV); err != nil {
 		t.Fatal(err)
 	}
 	rootInfo, err := os.Lstat(root)
@@ -292,7 +373,7 @@ func TestNamespaceDatabaseCacheEvictsLeastRecentlyUsedIdleEntry(t *testing.T) {
 		key := fmt.Sprintf("cached-%03d", i)
 		store.namespaceDB[key] = &namespaceDBEntry{rootPath: key, lastUse: uint64(i + 1)}
 	}
-	_, _, release, err := store.acquireNamespaceDatabase(context.Background(), "new", root, rootInfo)
+	_, _, release, err := store.acquireNamespaceDatabase(internalTestContext(), "new", root, rootInfo)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -311,7 +392,7 @@ func TestNamespaceDatabaseCacheEvictsLeastRecentlyUsedIdleEntry(t *testing.T) {
 
 func TestExportRejectsNonCanonicalFilesNamespaceLayout(t *testing.T) {
 	store, catalog, shape := newInternalStore(t)
-	ctx := context.Background()
+	ctx := internalTestContext()
 	if _, err := store.CommitEnable(ctx, CommitEnableRequest{PluginInstanceID: "plugini_test", Shape: shape, ExpectedManagementRevision: 1}); err != nil {
 		t.Fatal(err)
 	}
@@ -319,7 +400,8 @@ func TestExportRejectsNonCanonicalFilesNamespaceLayout(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	dataRoot := filepath.Join(store.workspacePath(binding.GenerationID), namespacesDirName, "files", namespaceDataName)
+	workspaceRoot := store.scopedWorkspacePath(internalEnvironmentScope(), binding.GenerationID)
+	dataRoot := filepath.Join(workspaceNamespaceRoot(workspaceRoot, internalUserScope()), "files", namespaceDataName)
 	if err := os.WriteFile(filepath.Join(dataRoot, "unexpected.txt"), []byte("unexpected"), 0o600); err != nil {
 		t.Fatal(err)
 	}

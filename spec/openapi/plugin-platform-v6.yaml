@@ -489,6 +489,7 @@ paths:
       operationId: getPluginSettingsSchema
       parameters:
         - $ref: "#/components/parameters/PluginInstanceID"
+        - $ref: "#/components/parameters/SettingsScope"
       responses:
         "200": { $ref: "#/components/responses/SettingsSchemaResponse" }
         default: { $ref: "#/components/responses/PlatformErrorResponse" }
@@ -497,6 +498,7 @@ paths:
       operationId: getPluginSettings
       parameters:
         - $ref: "#/components/parameters/PluginInstanceID"
+        - $ref: "#/components/parameters/SettingsScope"
       responses:
         "200": { $ref: "#/components/responses/SettingsSnapshotResponse" }
         default: { $ref: "#/components/responses/PlatformErrorResponse" }
@@ -521,6 +523,11 @@ components:
       in: path
       required: true
       schema: { type: string }
+    SettingsScope:
+      name: scope
+      in: query
+      required: true
+      schema: { $ref: "#/components/schemas/ResourceScopeKind" }
     SurfaceInstanceID:
       name: surface_instance_id
       in: path
@@ -1898,7 +1905,7 @@ components:
         key: { type: string }
         type: { type: string }
         label: { type: string }
-        scope: { type: string }
+        scope: { $ref: "#/components/schemas/ResourceScopeKind" }
         default: true
         secret_ref: { type: string }
         options:
@@ -1909,10 +1916,11 @@ components:
           additionalProperties: true
     PluginSettingsSchema:
       type: object
-      required: [plugin_instance_id, schema_version, fields, values_revision]
+      required: [plugin_instance_id, scope, schema_version, fields, values_revision]
       additionalProperties: false
       properties:
         plugin_instance_id: { type: string }
+        scope: { $ref: "#/components/schemas/ResourceScopeKind" }
         schema_version: { type: integer, minimum: 1 }
         fields:
           type: array
@@ -1920,10 +1928,11 @@ components:
         values_revision: { type: integer, minimum: 1, maximum: 9007199254740991 }
     PluginSettingsSnapshot:
       type: object
-      required: [plugin_instance_id, schema_version, values_revision, values, secret_metadata]
+      required: [plugin_instance_id, scope, schema_version, values_revision, values, secret_metadata]
       additionalProperties: false
       properties:
         plugin_instance_id: { type: string }
+        scope: { $ref: "#/components/schemas/ResourceScopeKind" }
         schema_version: { type: integer, minimum: 1 }
         values_revision: { type: integer, minimum: 1, maximum: 9007199254740991 }
         values:
@@ -2830,12 +2839,16 @@ components:
         plugin_instance_id: { type: string, minLength: 1 }
         secret_ref: { type: string, minLength: 1 }
         scope: { type: string, enum: [user, environment] }
+    ResourceScopeKind:
+      type: string
+      enum: [user, environment]
     PatchSettingsRequest:
       type: object
-      required: [expected_values_revision]
+      required: [scope, expected_values_revision]
       additionalProperties: false
-      minProperties: 2
+      minProperties: 3
       properties:
+        scope: { $ref: "#/components/schemas/ResourceScopeKind" }
         expected_values_revision: { type: integer, minimum: 1, maximum: 9007199254740991 }
         set:
           type: object

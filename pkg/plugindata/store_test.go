@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -29,6 +30,21 @@ func pluginDataTestContextFor(ownerUserHash, ownerEnvHash string) context.Contex
 		OwnerEnvHash:         ownerEnvHash,
 		SessionChannelIDHash: "session_channel_id_hash_test",
 	})
+}
+
+func pluginDataWorkspacePath(root, ownerEnvHash, generationID string) string {
+	return filepath.Join(root, "workspaces", "environment", ownerEnvHash, generationID)
+}
+
+func pluginDataObjectPath(root, ownerEnvHash, ownerUserHash, objectID string) string {
+	return filepath.Join(root, "objects", "user", ownerEnvHash, ownerUserHash, objectID)
+}
+
+func pluginDataScopeRoot(workspaceRoot, ownerUserHash string, scope sessionctx.ScopeKind) string {
+	if scope == sessionctx.ScopeEnvironment {
+		return filepath.Join(workspaceRoot, "scopes", "environment")
+	}
+	return filepath.Join(workspaceRoot, "scopes", "users", ownerUserHash)
 }
 
 type catalogCase struct {
@@ -160,15 +176,15 @@ func TestFileStoreLifecycleAndBrokers(t *testing.T) {
 				t.Fatalf("ExecSQLite(argument limit) error = %v, want ErrInvalidSQLite", err)
 			}
 
-			initial, err := store.GetSettings(ctx, record.PluginInstanceID)
+			initial, err := store.GetSettings(ctx, record.PluginInstanceID, sessionctx.ScopeUser)
 			if err != nil || initial.Revision != 1 {
 				t.Fatalf("initial settings = %#v, err = %v", initial, err)
 			}
-			patched, err := store.PatchSettings(ctx, plugindata.PatchSettingsRequest{PluginInstanceID: record.PluginInstanceID, ExpectedValuesRevision: 1, Set: map[string]json.RawMessage{"theme": json.RawMessage(`"light"`)}})
+			patched, err := store.PatchSettings(ctx, plugindata.PatchSettingsRequest{PluginInstanceID: record.PluginInstanceID, Scope: sessionctx.ScopeUser, ExpectedValuesRevision: 1, Set: map[string]json.RawMessage{"theme": json.RawMessage(`"light"`)}})
 			if err != nil || patched.Revision != 2 {
 				t.Fatalf("patched settings = %#v, err = %v", patched, err)
 			}
-			if _, err := store.PatchSettings(ctx, plugindata.PatchSettingsRequest{PluginInstanceID: record.PluginInstanceID, ExpectedValuesRevision: 1}); !errors.Is(err, plugindata.ErrRevisionConflict) {
+			if _, err := store.PatchSettings(ctx, plugindata.PatchSettingsRequest{PluginInstanceID: record.PluginInstanceID, Scope: sessionctx.ScopeUser, ExpectedValuesRevision: 1}); !errors.Is(err, plugindata.ErrRevisionConflict) {
 				t.Fatalf("stale patch error = %v", err)
 			}
 		})
@@ -275,7 +291,7 @@ func TestCleanupExpiredRemovesEveryReturnedGeneration(t *testing.T) {
 				t.Fatalf("CleanupExpired() deleted = %#v", result.Deleted)
 			}
 			for _, generationID := range generationIDs {
-				if _, err := os.Stat(filepath.Join(root, "workspaces", generationID)); !errors.Is(err, os.ErrNotExist) {
+				if _, err := os.Stat(pluginDataWorkspacePath(root, "owner_env_hash_test", generationID)); !errors.Is(err, os.ErrNotExist) {
 					t.Fatalf("expired generation %s remains: %v", generationID, err)
 				}
 			}
@@ -314,7 +330,7 @@ func TestFileStoreQuotaRootLockAndClose(t *testing.T) {
 	if err := store.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.GetSettings(ctx, plugin.PluginInstanceID); err == nil {
+	if _, err := store.GetSettings(ctx, plugin.PluginInstanceID, sessionctx.ScopeUser); err == nil {
 		t.Fatal("closed store accepted an operation")
 	}
 	reopened, err := plugindata.Open(ctx, root, catalog)
@@ -343,8 +359,9 @@ func TestFileStoreImportRejectsTamperedObject(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	settingsPath := filepath.Join(root, "objects", exported.ObjectID, "payload", "settings.json")
-	if err := os.WriteFile(settingsPath, []byte(`{"revision":1,"values":{"theme":"tampered"}}`), 0o600); err != nil {
+	objectRoot := pluginDataObjectPath(root, "owner_env_hash_test", "owner_user_hash_test", exported.ObjectID)
+	settingsPath := filepath.Join(pluginDataScopeRoot(filepath.Join(objectRoot, "payload"), "owner_user_hash_test", sessionctx.ScopeUser), "settings.json")
+	if err := os.WriteFile(settingsPath, []byte(`{"scope":{"kind":"user","owner_env_hash":"owner_env_hash_test","owner_user_hash":"owner_user_hash_test"},"revision":1,"values":{"theme":"tampered"}}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	target := putPlugin(t, catalog, "plugini_target", now)
@@ -407,7 +424,7 @@ func TestOpenCanonicalizesSymlinkAncestor(t *testing.T) {
 	if _, err := store.CommitEnable(pluginDataTestContext(), enableRequest(record, testShape(), time.Now())); err != nil {
 		t.Fatal(err)
 	}
-	if entries, err := os.ReadDir(filepath.Join(real, "data", "workspaces")); err != nil || len(entries) != 1 {
+	if entries, err := os.ReadDir(filepath.Join(real, "data", "workspaces", "environment", "owner_env_hash_test")); err != nil || len(entries) != 1 {
 		t.Fatalf("canonical workspace entries = %d, err = %v", len(entries), err)
 	}
 	if _, err := os.Stat(filepath.Join(attacker, "data")); !errors.Is(err, os.ErrNotExist) {
@@ -468,10 +485,10 @@ func TestFileStoreMaintenancePreservesOtherOwners(t *testing.T) {
 			}
 			defer reopened.Close()
 			for _, path := range []string{
-				filepath.Join(root, "workspaces", datasetA.Binding.GenerationID),
-				filepath.Join(root, "workspaces", datasetB.Binding.GenerationID),
-				filepath.Join(root, "objects", exportA.ObjectID),
-				filepath.Join(root, "objects", exportB.ObjectID),
+				pluginDataWorkspacePath(root, "owner_env_a", datasetA.Binding.GenerationID),
+				pluginDataWorkspacePath(root, "owner_env_b", datasetB.Binding.GenerationID),
+				pluginDataObjectPath(root, "owner_env_a", "owner_user_a", exportA.ObjectID),
+				pluginDataObjectPath(root, "owner_env_b", "owner_user_b", exportB.ObjectID),
 			} {
 				if info, err := os.Stat(path); err != nil || !info.IsDir() {
 					t.Fatalf("maintained directory %s: info=%v err=%v", path, info, err)
@@ -479,6 +496,278 @@ func TestFileStoreMaintenancePreservesOtherOwners(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestFileStoreScopesSettingsAndStorageByAuthenticatedOwner(t *testing.T) {
+	for _, tc := range catalogCases() {
+		t.Run(tc.name, func(t *testing.T) {
+			ctxA := pluginDataTestContextFor("owner_user_a", "owner_env_shared")
+			ctxB := pluginDataTestContextFor("owner_user_b", "owner_env_shared")
+			ctxOtherEnv := pluginDataTestContextFor("owner_user_a", "owner_env_other")
+			catalog := tc.open(t)
+			store, err := plugindata.Open(ctxA, resolvedTempDir(t), catalog)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer store.Close()
+			manifest := scopedTestManifest()
+			shape, err := plugindata.ShapeFromManifest(manifest)
+			if err != nil {
+				t.Fatal(err)
+			}
+			record := putPluginWithContext(t, ctxA, catalog, "plugini_scoped", time.Now(), manifest)
+			if _, err := store.CommitEnable(ctxA, plugindata.CommitEnableRequest{
+				PluginInstanceID: record.PluginInstanceID,
+				Shape:            shape,
+				InitialSettings: map[string]json.RawMessage{
+					"user_theme": json.RawMessage(`"default"`),
+					"env_mode":   json.RawMessage(`"shared"`),
+				},
+				ExpectedManagementRevision: record.ManagementRevision,
+			}); err != nil {
+				t.Fatal(err)
+			}
+
+			patchSetting := func(ctx context.Context, scope sessionctx.ScopeKind, revision uint64, key, value string) {
+				t.Helper()
+				if _, err := store.PatchSettings(ctx, plugindata.PatchSettingsRequest{
+					PluginInstanceID:       record.PluginInstanceID,
+					Scope:                  scope,
+					ExpectedValuesRevision: revision,
+					Set:                    map[string]json.RawMessage{key: json.RawMessage(strconv.Quote(value))},
+				}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			patchSetting(ctxA, sessionctx.ScopeUser, 1, "user_theme", "a")
+			patchSetting(ctxA, sessionctx.ScopeEnvironment, 1, "env_mode", "updated")
+			patchSetting(ctxB, sessionctx.ScopeUser, 1, "user_theme", "b")
+
+			for _, check := range []struct {
+				ctx      context.Context
+				scope    sessionctx.ScopeKind
+				key      string
+				want     string
+				revision uint64
+			}{
+				{ctx: ctxA, scope: sessionctx.ScopeUser, key: "user_theme", want: `"a"`, revision: 2},
+				{ctx: ctxB, scope: sessionctx.ScopeUser, key: "user_theme", want: `"b"`, revision: 2},
+				{ctx: ctxA, scope: sessionctx.ScopeEnvironment, key: "env_mode", want: `"updated"`, revision: 2},
+				{ctx: ctxB, scope: sessionctx.ScopeEnvironment, key: "env_mode", want: `"updated"`, revision: 2},
+			} {
+				snapshot, err := store.GetSettings(check.ctx, record.PluginInstanceID, check.scope)
+				if err != nil || snapshot.Scope != check.scope || snapshot.Revision != check.revision || string(snapshot.Values[check.key]) != check.want {
+					t.Fatalf("settings scope %s = %#v, err = %v", check.scope, snapshot, err)
+				}
+			}
+			if _, err := store.PatchSettings(ctxA, plugindata.PatchSettingsRequest{
+				PluginInstanceID:       record.PluginInstanceID,
+				Scope:                  sessionctx.ScopeUser,
+				ExpectedValuesRevision: 2,
+				Set:                    map[string]json.RawMessage{"env_mode": json.RawMessage(`"private"`)},
+			}); !errors.Is(err, plugindata.ErrSettingScopeMismatch) {
+				t.Fatalf("mixed-scope settings patch error = %v", err)
+			}
+
+			for _, write := range []struct {
+				ctx     context.Context
+				storeID string
+				value   string
+			}{
+				{ctx: ctxA, storeID: "user_files", value: "a"},
+				{ctx: ctxB, storeID: "user_files", value: "b"},
+				{ctx: ctxA, storeID: "env_files", value: "shared"},
+			} {
+				if _, err := store.WriteFile(write.ctx, storage.FileWriteRequest{PluginInstanceID: record.PluginInstanceID, StoreID: write.storeID, Path: "value.txt", Data: []byte(write.value)}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			for _, read := range []struct {
+				ctx     context.Context
+				storeID string
+				want    string
+			}{
+				{ctx: ctxA, storeID: "user_files", want: "a"},
+				{ctx: ctxB, storeID: "user_files", want: "b"},
+				{ctx: ctxB, storeID: "env_files", want: "shared"},
+			} {
+				result, err := store.ReadFile(read.ctx, storage.FileReadRequest{PluginInstanceID: record.PluginInstanceID, StoreID: read.storeID, Path: "value.txt"})
+				if err != nil || string(result.Data) != read.want {
+					t.Fatalf("read %s = %q, err = %v", read.storeID, result.Data, err)
+				}
+			}
+
+			otherRecord := putPluginWithContext(t, ctxOtherEnv, catalog, record.PluginInstanceID, time.Now(), manifest)
+			if _, err := store.CommitEnable(ctxOtherEnv, plugindata.CommitEnableRequest{PluginInstanceID: otherRecord.PluginInstanceID, Shape: shape, ExpectedManagementRevision: otherRecord.ManagementRevision}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := store.ReadFile(ctxOtherEnv, storage.FileReadRequest{PluginInstanceID: otherRecord.PluginInstanceID, StoreID: "env_files", Path: "value.txt"}); !errors.Is(err, storage.ErrFileNotFound) {
+				t.Fatalf("other environment read error = %v, want ErrFileNotFound", err)
+			}
+		})
+	}
+}
+
+func TestFileStoreExportImportPreservesOtherUsersAndScopesObjects(t *testing.T) {
+	for _, tc := range catalogCases() {
+		t.Run(tc.name, func(t *testing.T) {
+			ctxA := pluginDataTestContextFor("owner_user_a", "owner_env_shared")
+			ctxB := pluginDataTestContextFor("owner_user_b", "owner_env_shared")
+			catalog := tc.open(t)
+			root := resolvedTempDir(t)
+			store, err := plugindata.Open(ctxA, root, catalog)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer store.Close()
+			manifest := scopedTestManifest()
+			shape, err := plugindata.ShapeFromManifest(manifest)
+			if err != nil {
+				t.Fatal(err)
+			}
+			record := putPluginWithContext(t, ctxA, catalog, "plugini_export_scoped", time.Now(), manifest)
+			if _, err := store.CommitEnable(ctxA, plugindata.CommitEnableRequest{PluginInstanceID: record.PluginInstanceID, Shape: shape, ExpectedManagementRevision: record.ManagementRevision}); err != nil {
+				t.Fatal(err)
+			}
+			write := func(ctx context.Context, storeID, value string) {
+				t.Helper()
+				if _, err := store.WriteFile(ctx, storage.FileWriteRequest{PluginInstanceID: record.PluginInstanceID, StoreID: storeID, Path: "value.txt", Data: []byte(value)}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			patch := func(ctx context.Context, scope sessionctx.ScopeKind, revision uint64, key, value string) {
+				t.Helper()
+				if _, err := store.PatchSettings(ctx, plugindata.PatchSettingsRequest{PluginInstanceID: record.PluginInstanceID, Scope: scope, ExpectedValuesRevision: revision, Set: map[string]json.RawMessage{key: json.RawMessage(strconv.Quote(value))}}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			write(ctxA, "user_files", "exported-a")
+			write(ctxB, "user_files", "before-b")
+			write(ctxA, "env_files", "exported-env")
+			patch(ctxA, sessionctx.ScopeUser, 1, "user_theme", "exported-a")
+			patch(ctxB, sessionctx.ScopeUser, 1, "user_theme", "before-b")
+			patch(ctxA, sessionctx.ScopeEnvironment, 1, "env_mode", "exported-env")
+
+			exported, err := store.Export(ctxA, plugindata.ExportRequest{PluginInstanceID: record.PluginInstanceID})
+			if err != nil {
+				t.Fatal(err)
+			}
+			currentRecord, err := catalog.GetPlugin(ctxA, record.PluginInstanceID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := store.Import(ctxB, plugindata.ImportRequest{PluginInstanceID: record.PluginInstanceID, ObjectID: exported.ObjectID, ExpectedShape: shape, ExpectedManagementRevision: currentRecord.ManagementRevision}); !errors.Is(err, plugindata.ErrExportNotFound) {
+				t.Fatalf("other user import error = %v, want ErrExportNotFound", err)
+			}
+			if err := store.DeleteExport(ctxB, exported.ObjectID); !errors.Is(err, plugindata.ErrExportNotFound) {
+				t.Fatalf("other user delete error = %v, want ErrExportNotFound", err)
+			}
+
+			write(ctxA, "user_files", "changed-a")
+			write(ctxB, "user_files", "preserved-b")
+			write(ctxA, "env_files", "changed-env")
+			patch(ctxA, sessionctx.ScopeUser, 2, "user_theme", "changed-a")
+			patch(ctxB, sessionctx.ScopeUser, 2, "user_theme", "preserved-b")
+			patch(ctxA, sessionctx.ScopeEnvironment, 2, "env_mode", "changed-env")
+			disabled, err := catalog.SetEnableState(ctxA, record.PluginInstanceID, registry.EnableDisabled, "import", time.Now())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := store.Import(ctxA, plugindata.ImportRequest{PluginInstanceID: record.PluginInstanceID, ObjectID: exported.ObjectID, ExpectedShape: shape, ExpectedManagementRevision: disabled.ManagementRevision}); err != nil {
+				t.Fatal(err)
+			}
+
+			for _, read := range []struct {
+				ctx     context.Context
+				storeID string
+				want    string
+			}{
+				{ctx: ctxA, storeID: "user_files", want: "exported-a"},
+				{ctx: ctxB, storeID: "user_files", want: "preserved-b"},
+				{ctx: ctxB, storeID: "env_files", want: "exported-env"},
+			} {
+				result, err := store.ReadFile(read.ctx, storage.FileReadRequest{PluginInstanceID: record.PluginInstanceID, StoreID: read.storeID, Path: "value.txt"})
+				if err != nil || string(result.Data) != read.want {
+					t.Fatalf("imported %s = %q, err = %v", read.storeID, result.Data, err)
+				}
+			}
+			for _, check := range []struct {
+				ctx   context.Context
+				scope sessionctx.ScopeKind
+				key   string
+				want  string
+			}{
+				{ctx: ctxA, scope: sessionctx.ScopeUser, key: "user_theme", want: `"exported-a"`},
+				{ctx: ctxB, scope: sessionctx.ScopeUser, key: "user_theme", want: `"preserved-b"`},
+				{ctx: ctxB, scope: sessionctx.ScopeEnvironment, key: "env_mode", want: `"exported-env"`},
+			} {
+				snapshot, err := store.GetSettings(check.ctx, record.PluginInstanceID, check.scope)
+				if err != nil || string(snapshot.Values[check.key]) != check.want {
+					t.Fatalf("imported settings %s = %#v, err = %v", check.scope, snapshot, err)
+				}
+			}
+
+			object, found, err := catalog.GetObject(ctxA, exported.ObjectID)
+			if err != nil || !found {
+				t.Fatalf("export object found = %v, err = %v", found, err)
+			}
+			aPath := pluginDataObjectPath(root, "owner_env_shared", "owner_user_a", exported.ObjectID)
+			bPath := pluginDataObjectPath(root, "owner_env_shared", "owner_user_b", exported.ObjectID)
+			if err := os.CopyFS(bPath, os.DirFS(aPath)); err != nil {
+				t.Fatal(err)
+			}
+			if err := catalog.CreateObject(ctxB, object); err != nil {
+				t.Fatal(err)
+			}
+			if err := store.DeleteExport(ctxB, exported.ObjectID); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := os.Stat(aPath); err != nil {
+				t.Fatalf("deleting colliding user object removed owner A object: %v", err)
+			}
+		})
+	}
+}
+
+func TestFileStoreRejectsNonemptyLegacyOwnerlessData(t *testing.T) {
+	t.Run("nonempty", func(t *testing.T) {
+		root := resolvedTempDir(t)
+		legacy := filepath.Join(root, "workspaces", "gen_legacy")
+		if err := os.MkdirAll(legacy, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(legacy, "dataset.json"), []byte("{}\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := plugindata.Open(pluginDataTestContext(), root, registry.NewMemoryStore()); !errors.Is(err, plugindata.ErrOwnerScopeMigrationRequired) {
+			t.Fatalf("Open() error = %v, want ErrOwnerScopeMigrationRequired", err)
+		}
+	})
+
+	t.Run("empty", func(t *testing.T) {
+		root := resolvedTempDir(t)
+		for _, legacy := range []string{
+			filepath.Join(root, "workspaces", "gen_empty"),
+			filepath.Join(root, "objects", "obj_empty"),
+		} {
+			if err := os.MkdirAll(legacy, 0o700); err != nil {
+				t.Fatal(err)
+			}
+		}
+		store, err := plugindata.Open(pluginDataTestContext(), root, registry.NewMemoryStore())
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer store.Close()
+		for _, legacy := range []string{
+			filepath.Join(root, "workspaces", "gen_empty"),
+			filepath.Join(root, "objects", "obj_empty"),
+		} {
+			if _, err := os.Stat(legacy); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("empty legacy path remains: %s: %v", legacy, err)
+			}
+		}
+	})
 }
 
 func putPlugin(t *testing.T, store registry.Store, instanceID string, now time.Time) registry.PluginRecord {
@@ -493,8 +782,8 @@ func putPluginWithContext(t *testing.T, ctx context.Context, store registry.Stor
 	t.Helper()
 	record, err := store.PutPlugin(ctx, registry.PluginRecord{
 		PluginInstanceID:  instanceID,
-		PublisherID:       "example",
-		PluginID:          "com.example.notes",
+		PublisherID:       pluginManifest.Publisher.PublisherID,
+		PluginID:          pluginManifest.PluginID(),
 		Version:           "1.0.0",
 		ActiveFingerprint: "sha256:" + instanceID,
 		TrustState:        registry.TrustVerified,
@@ -528,6 +817,22 @@ func testManifest() manifest.Manifest {
 			{StoreID: "db", Kind: string(plugindata.NamespaceSQLite), Scope: "user", SchemaVersion: 1, QuotaBytes: 1024 * 1024, QuotaFiles: &dbFiles},
 			{StoreID: "files", Kind: string(plugindata.NamespaceFiles), Scope: "user", SchemaVersion: 1, QuotaBytes: 1024 * 1024, QuotaFiles: &files},
 			{StoreID: "kv", Kind: string(plugindata.NamespaceKV), Scope: "user", SchemaVersion: 1, QuotaBytes: 1024 * 1024, QuotaFiles: &files},
+		}},
+	}
+}
+
+func scopedTestManifest() manifest.Manifest {
+	files := int64(64)
+	return manifest.Manifest{
+		Publisher: manifest.Publisher{PublisherID: "example"},
+		Plugin:    manifest.Plugin{PluginID: "com.example.scoped", Version: "1.0.0"},
+		Settings: &manifest.SettingsSpec{SchemaVersion: 1, Fields: []manifest.SettingFieldSpec{
+			{Key: "user_theme", Type: settings.FieldString, Scope: "user", Default: "default", Label: "User theme"},
+			{Key: "env_mode", Type: settings.FieldString, Scope: "environment", Default: "shared", Label: "Environment mode"},
+		}},
+		Storage: &manifest.StorageSpec{Stores: []manifest.StoreSpec{
+			{StoreID: "user_files", Kind: string(plugindata.NamespaceFiles), Scope: "user", SchemaVersion: 1, QuotaBytes: 1024 * 1024, QuotaFiles: &files},
+			{StoreID: "env_files", Kind: string(plugindata.NamespaceFiles), Scope: "environment", SchemaVersion: 1, QuotaBytes: 1024 * 1024, QuotaFiles: &files},
 		}},
 	}
 }

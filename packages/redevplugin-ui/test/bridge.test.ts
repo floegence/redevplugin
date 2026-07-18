@@ -286,6 +286,7 @@ test("platform client reads and patches plugin settings through host API", async
     ok: true,
     data: {
       plugin_instance_id: "plugin_instance_1",
+      scope: "user",
       schema_version: 1,
       fields: [{ key: "default_engine", type: "select", label: "Default engine", scope: "user", options: ["docker", "podman"] }],
       values_revision: 7,
@@ -295,10 +296,22 @@ test("platform client reads and patches plugin settings through host API", async
     ok: true,
     data: {
       plugin_instance_id: "plugin_instance_1",
+      scope: "environment",
+      schema_version: 1,
+      values_revision: 4,
+      values: { default_engine: "docker" },
+      secret_metadata: [],
+    },
+  });
+  fetch.push({
+    ok: true,
+    data: {
+      plugin_instance_id: "plugin_instance_1",
+      scope: "user",
       schema_version: 1,
       values_revision: 8,
       values: { default_engine: "podman" },
-      secret_metadata: [{ secret_ref: "registry_token", scope: "user", bound: true, updated_at: "2026-06-30T00:00:00Z" }],
+      secret_metadata: [{ key: "registry_token", secret_ref: "registry_token", scope: "user", bound: true, updated_at: "2026-06-30T00:00:00Z" }],
     },
   });
   const client = new PluginPlatformClient({
@@ -306,24 +319,30 @@ test("platform client reads and patches plugin settings through host API", async
     fetch: fetch.fetch,
   });
 
-  const schema = await client.getSettingsSchema("plugin instance/1");
+  const schema = await client.getSettingsSchema("plugin instance/1", "user");
+  const snapshot = await client.getSettings("plugin instance/1", "environment");
   const patched = await client.patchSettings("plugin instance/1", {
+    scope: "user",
     expected_values_revision: 7,
     set: { default_engine: "podman" },
     remove: ["unused_setting"],
   });
 
   assert.equal(schema.fields[0]?.key, "default_engine");
+  assert.equal(snapshot.scope, "environment");
   assert.equal(patched.values.default_engine, "podman");
-  assert.equal(fetch.calls[0]?.input, "https://host.example/_redevplugin/api/plugins/plugin%20instance%2F1/settings/schema");
+  assert.equal(fetch.calls[0]?.input, "https://host.example/_redevplugin/api/plugins/plugin%20instance%2F1/settings/schema?scope=user");
   assert.equal(fetch.calls[0]?.init.method, "GET");
   assert.equal(fetch.calls[0]?.init.headers["Accept"], "application/json");
   assert.equal(fetch.calls[0]?.init.headers["Content-Type"], undefined);
   assert.equal(fetch.calls[0]?.init.headers["X-ReDevPlugin-Owner-Session-Hash"], undefined);
-  assert.equal(fetch.calls[1]?.input, "https://host.example/_redevplugin/api/plugins/plugin%20instance%2F1/settings");
-  assert.equal(fetch.calls[1]?.init.method, "PATCH");
-  assert.equal(fetch.calls[1]?.init.headers["Content-Type"], "application/json");
-  assert.deepEqual(JSON.parse(fetch.calls[1]?.init.body ?? ""), {
+  assert.equal(fetch.calls[1]?.input, "https://host.example/_redevplugin/api/plugins/plugin%20instance%2F1/settings?scope=environment");
+  assert.equal(fetch.calls[1]?.init.method, "GET");
+  assert.equal(fetch.calls[2]?.input, "https://host.example/_redevplugin/api/plugins/plugin%20instance%2F1/settings");
+  assert.equal(fetch.calls[2]?.init.method, "PATCH");
+  assert.equal(fetch.calls[2]?.init.headers["Content-Type"], "application/json");
+  assert.deepEqual(JSON.parse(fetch.calls[2]?.init.body ?? ""), {
+    scope: "user",
     expected_values_revision: 7,
     set: { default_engine: "podman" },
     remove: ["unused_setting"],
@@ -696,7 +715,7 @@ test("platform client exposes closed plugin data revision conflicts", async () =
     },
   }, 409);
   await assert.rejects(
-    new PluginPlatformClient({ fetch: settings.fetch }).patchSettings("plugin_instance_1", { expected_values_revision: 7, set: { engine: "podman" } }),
+    new PluginPlatformClient({ fetch: settings.fetch }).patchSettings("plugin_instance_1", { scope: "environment", expected_values_revision: 7, set: { engine: "podman" } }),
     (err) => err instanceof PluginPlatformRequestError &&
       err.errorCode === "PLUGIN_VALUES_REVISION_MISMATCH" &&
       err.details.actual_values_revision === 8,
@@ -1000,7 +1019,7 @@ test("platform client maps management envelope errors", async () => {
   const client = new PluginPlatformClient({ fetch: fetch.fetch });
 
   await assert.rejects(
-    client.getSettings("plugin_instance_missing"),
+    client.getSettings("plugin_instance_missing", "user"),
     (err) => err instanceof PluginPlatformRequestError && err.errorCode === "PLUGIN_INVALID_REQUEST" && err.message === "plugin settings are not declared",
   );
 });

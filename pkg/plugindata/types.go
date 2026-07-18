@@ -12,18 +12,21 @@ import (
 )
 
 var (
-	ErrInvalidArgument         = errors.New("invalid plugin data argument")
-	ErrBindingNotFound         = errors.New("plugin data binding not found")
-	ErrBindingConflict         = errors.New("plugin data binding state conflicts with the operation")
-	ErrBindingRevisionConflict = errors.New("plugin data binding revision changed")
-	ErrShapeMismatch           = errors.New("plugin data shape does not match")
-	ErrNotActive               = errors.New("plugin data binding is not active")
-	ErrNotRetained             = errors.New("plugin data binding is not retained")
-	ErrDatasetCorrupt          = errors.New("plugin data dataset is corrupt")
-	ErrExportNotFound          = errors.New("plugin data export not found")
-	ErrUnknownSetting          = errors.New("plugin data setting is not declared non-secret")
-	ErrUnsafeFilesystem        = errors.New("plugin data filesystem entry is unsafe")
-	ErrRevisionConflict        = errors.New("plugin data revision conflict")
+	ErrInvalidArgument             = errors.New("invalid plugin data argument")
+	ErrBindingNotFound             = errors.New("plugin data binding not found")
+	ErrBindingConflict             = errors.New("plugin data binding state conflicts with the operation")
+	ErrBindingRevisionConflict     = errors.New("plugin data binding revision changed")
+	ErrShapeMismatch               = errors.New("plugin data shape does not match")
+	ErrNotActive                   = errors.New("plugin data binding is not active")
+	ErrNotRetained                 = errors.New("plugin data binding is not retained")
+	ErrDatasetCorrupt              = errors.New("plugin data dataset is corrupt")
+	ErrExportNotFound              = errors.New("plugin data export not found")
+	ErrUnknownSetting              = errors.New("plugin data setting is not declared non-secret")
+	ErrSettingScopeMismatch        = errors.New("plugin data setting scope does not match the request")
+	ErrStorageScopeMismatch        = errors.New("plugin data storage scope does not match the request")
+	ErrOwnerScopeMigrationRequired = errors.New("plugin data owner scope migration required")
+	ErrUnsafeFilesystem            = errors.New("plugin data filesystem entry is unsafe")
+	ErrRevisionConflict            = errors.New("plugin data revision conflict")
 )
 
 type BindingRevisionConflictError struct {
@@ -122,6 +125,7 @@ type Dataset struct {
 }
 
 type Settings struct {
+	Scope    sessionctx.ScopeKind       `json:"scope"`
 	Revision uint64                     `json:"revision"`
 	Values   map[string]json.RawMessage `json:"values"`
 }
@@ -191,6 +195,7 @@ type CommitUninstallResult struct {
 
 type PatchSettingsRequest struct {
 	PluginInstanceID       string
+	Scope                  sessionctx.ScopeKind
 	ExpectedValuesRevision uint64
 	Set                    map[string]json.RawMessage
 	Remove                 []string
@@ -206,6 +211,6 @@ type Store interface {
 	CommitUninstall(ctx context.Context, req CommitUninstallRequest) (CommitUninstallResult, error)
 	ListRetained(ctx context.Context, filter RetainedFilter) ([]Binding, error)
 	CleanupExpired(ctx context.Context, now time.Time) (CleanupResult, error)
-	GetSettings(ctx context.Context, pluginInstanceID string) (Settings, error)
+	GetSettings(ctx context.Context, pluginInstanceID string, scope sessionctx.ScopeKind) (Settings, error)
 	PatchSettings(ctx context.Context, req PatchSettingsRequest) (Settings, error)
 }
