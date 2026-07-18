@@ -38,13 +38,14 @@ fn main() {
 }
 
 fn run() -> Result<(), String> {
-    let stdin = io::stdin();
-    let mut reader = stdin.lock();
-    let mut line = read_bounded_line(&mut reader, MAX_IPC_FRAME_BYTES, "hello frame")?;
+    let mut reader = io::BufReader::new(io::stdin());
+    let line = read_bounded_line(&mut reader, MAX_IPC_FRAME_BYTES, "hello frame")?;
     if line.is_empty() {
         return Err("hello frame is empty".to_string());
     }
     let hello = redevplugin_ipc::parse_hello_frame(&line).map_err(ipc_contract_error)?;
+    let (events_sender, events) = mpsc::sync_channel(1);
+    let input_thread = start_runtime_input_reader(reader, events_sender.clone())?;
     let request_id = hello.request_id;
     let runtime_generation_id = hello.runtime_generation_id;
     let channel_nonce = hello.channel_nonce;
@@ -63,8 +64,14 @@ fn run() -> Result<(), String> {
         limits,
     )
     .map_err(ipc_contract_error)?;
-    let (writer, writer_thread) = start_ipc_writer(limits)?;
-    send_frame(&writer, ack)?;
+    let writer_failures = IpcWriterFailurePublisher::new(events_sender);
+    let (writer, writer_thread) = start_ipc_writer(limits, writer_failures)?;
+    if let Err(send_error) = send_frame(&writer, ack) {
+        drop(writer);
+        let writer_error = initial_writer_failure(writer_thread, send_error);
+        drop(input_thread);
+        return Err(writer_error.into());
+    }
     let shared = Arc::new(RuntimeSharedState::default());
     let scheduler = Arc::new(scheduler::InvocationScheduler::new(
         limits.queue_capacity,
@@ -107,26 +114,29 @@ fn run() -> Result<(), String> {
         Arc::clone(&execution),
     )?;
 
-    loop {
-        line = read_bounded_line(&mut reader, MAX_IPC_FRAME_BYTES, "ipc frame")?;
-        if line.is_empty() {
-            break;
+    let mut runtime_result = run_runtime_input_loop(
+        &events,
+        &runtime_generation_id,
+        &scheduler,
+        &execution,
+        &writer,
+    );
+    let writer_failed = matches!(runtime_result, Err(RuntimeLoopError::Writer(_)));
+    let canceled_jobs = scheduler.shutdown();
+    if !writer_failed {
+        for job in canceled_jobs {
+            let frame = match canceled_invocation_frame(&job.request_id, &runtime_generation_id) {
+                Ok(frame) => frame,
+                Err(err) => {
+                    runtime_result = Err(RuntimeLoopError::Runtime(err));
+                    break;
+                }
+            };
+            if let Err(err) = send_frame(&writer, frame) {
+                runtime_result = Err(RuntimeLoopError::Writer(err));
+                break;
+            }
         }
-        let input =
-            redevplugin_ipc::decode_runtime_input_frame(&line).map_err(ipc_contract_error)?;
-        dispatch_runtime_input(
-            input,
-            &runtime_generation_id,
-            &scheduler,
-            &execution,
-            &writer,
-        )?;
-    }
-    for job in scheduler.shutdown() {
-        send_frame(
-            &writer,
-            canceled_invocation_frame(&job.request_id, &runtime_generation_id)?,
-        )?;
     }
     execution.pending_artifacts.shutdown();
     execution.hostcall_routes.shutdown();
@@ -139,10 +149,15 @@ fn run() -> Result<(), String> {
     drop(status);
     drop(scheduler);
     drop(writer);
-    writer_thread
+    let writer_result = writer_thread
         .join()
-        .map_err(|_| IpcWriterError::Panicked)??;
-    Ok(())
+        .map_err(|_| IpcWriterError::Panicked)
+        .and_then(|result| result);
+    drop(input_thread);
+    match writer_result {
+        Err(err) => Err(err.into()),
+        Ok(()) => runtime_result.map_err(String::from),
+    }
 }
 
 fn compiled_runtime_target() -> Result<redevplugin_ipc::RuntimeTarget, String> {
@@ -155,17 +170,78 @@ fn compiled_runtime_target() -> Result<redevplugin_ipc::RuntimeTarget, String> {
     }
 }
 
+fn start_runtime_input_reader<R>(
+    mut reader: R,
+    events: SyncSender<RuntimeEvent>,
+) -> Result<thread::JoinHandle<()>, String>
+where
+    R: BufRead + Send + 'static,
+{
+    thread::Builder::new()
+        .name("redevplugin-ipc-reader".to_string())
+        .spawn(move || {
+            run_runtime_input_reader(&mut reader, &events);
+        })
+        .map_err(|err| format!("start runtime IPC reader: {err}"))
+}
+
+fn run_runtime_input_reader<R: BufRead>(reader: &mut R, events: &SyncSender<RuntimeEvent>) {
+    loop {
+        let input = read_bounded_line(reader, MAX_IPC_FRAME_BYTES, "ipc frame");
+        let terminal = !matches!(&input, Ok(line) if !line.is_empty());
+        if events.send(RuntimeEvent::Input(input)).is_err() || terminal {
+            return;
+        }
+    }
+}
+
+fn next_runtime_input_line(
+    events: &Receiver<RuntimeEvent>,
+    failures: &IpcWriterFailurePublisher,
+) -> Result<Option<String>, RuntimeLoopError> {
+    if let Some(err) = failures.current() {
+        return Err(RuntimeLoopError::Writer(err));
+    }
+    let event = events
+        .recv()
+        .map_err(|_| "runtime event channel is closed".to_string())?;
+    if let Some(err) = failures.current() {
+        return Err(RuntimeLoopError::Writer(err));
+    }
+    match event {
+        RuntimeEvent::Input(Ok(line)) if line.is_empty() => Ok(None),
+        RuntimeEvent::Input(Ok(line)) => Ok(Some(line)),
+        RuntimeEvent::Input(Err(err)) => Err(RuntimeLoopError::Runtime(err)),
+        RuntimeEvent::WriterFailed(err) => Err(RuntimeLoopError::Writer(err)),
+    }
+}
+
+fn run_runtime_input_loop(
+    events: &Receiver<RuntimeEvent>,
+    runtime_generation_id: &str,
+    scheduler: &scheduler::InvocationScheduler,
+    execution: &ConcurrentExecutionState,
+    writer: &FrameSender,
+) -> Result<(), RuntimeLoopError> {
+    while let Some(line) = next_runtime_input_line(events, &writer.failures)? {
+        let input =
+            redevplugin_ipc::decode_runtime_input_frame(&line).map_err(ipc_contract_error)?;
+        dispatch_runtime_input(input, runtime_generation_id, scheduler, execution, writer)?;
+    }
+    Ok(())
+}
+
 fn dispatch_runtime_input(
     input: redevplugin_ipc::RuntimeInputFrame,
     runtime_generation_id: &str,
     scheduler: &scheduler::InvocationScheduler,
     execution: &ConcurrentExecutionState,
     writer: &FrameSender,
-) -> Result<(), String> {
+) -> Result<(), RuntimeLoopError> {
     match input {
         redevplugin_ipc::RuntimeInputFrame::InvokeWorker(worker) => {
             if worker.identity.runtime_generation_id != runtime_generation_id {
-                return Err("runtime_generation_id mismatch".to_string());
+                return Err("runtime_generation_id mismatch".to_string().into());
             }
             let request_id = worker.identity.request_id;
             let invocation = match worker.invocation {
@@ -180,7 +256,7 @@ fn dispatch_runtime_input(
                             "invalid worker invocation",
                         )?,
                     )
-                    .map_err(String::from);
+                    .map_err(RuntimeLoopError::Writer);
                 }
             };
             match scheduler::InvocationJob::new(invocation) {
@@ -228,7 +304,7 @@ fn dispatch_runtime_input(
         }
         redevplugin_ipc::RuntimeInputFrame::CancelInvoke(cancel) => {
             if cancel.identity.runtime_generation_id != runtime_generation_id {
-                return Err("runtime_generation_id mismatch".to_string());
+                return Err("runtime_generation_id mismatch".to_string().into());
             }
             let disposition = match scheduler.cancel(&cancel.invocation_request_id) {
                 scheduler::CancelDisposition::Queued(job) => {
@@ -259,7 +335,7 @@ fn dispatch_runtime_input(
         }
         redevplugin_ipc::RuntimeInputFrame::HostcallResponse(response) => {
             if response.identity.runtime_generation_id != runtime_generation_id {
-                return Err("runtime_generation_id mismatch".to_string());
+                return Err("runtime_generation_id mismatch".to_string().into());
             }
             let parent_request_id = response
                 .identity
@@ -285,7 +361,9 @@ fn dispatch_runtime_input(
                         parent_request_id,
                         scheduler::InvocationSignal::HostcallResponse(response.raw_frame),
                     ) {
-                        return Err("hostcall response parent_request_id is not active".to_string());
+                        return Err("hostcall response parent_request_id is not active"
+                            .to_string()
+                            .into());
                     }
                 }
                 HostcallRouteDisposition::DiscardCanceled => {}
@@ -293,7 +371,7 @@ fn dispatch_runtime_input(
         }
         redevplugin_ipc::RuntimeInputFrame::Unsupported(identity) => {
             if identity.runtime_generation_id != runtime_generation_id {
-                return Err("runtime_generation_id mismatch".to_string());
+                return Err("runtime_generation_id mismatch".to_string().into());
             }
             send_frame(
                 writer,
@@ -308,6 +386,47 @@ fn dispatch_runtime_input(
         }
     }
     Ok(())
+}
+
+#[derive(Debug)]
+enum RuntimeEvent {
+    Input(Result<String, String>),
+    WriterFailed(IpcWriterError),
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum RuntimeLoopError {
+    Runtime(String),
+    Writer(IpcWriterError),
+}
+
+impl std::fmt::Display for RuntimeLoopError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Runtime(message) => formatter.write_str(message),
+            Self::Writer(error) => error.fmt(formatter),
+        }
+    }
+}
+
+impl std::error::Error for RuntimeLoopError {}
+
+impl From<String> for RuntimeLoopError {
+    fn from(error: String) -> Self {
+        Self::Runtime(error)
+    }
+}
+
+impl From<IpcWriterError> for RuntimeLoopError {
+    fn from(error: IpcWriterError) -> Self {
+        Self::Writer(error)
+    }
+}
+
+impl From<RuntimeLoopError> for String {
+    fn from(error: RuntimeLoopError) -> Self {
+        error.to_string()
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -362,13 +481,57 @@ impl From<IpcWriterError> for String {
 }
 
 #[derive(Clone)]
+struct IpcWriterFailurePublisher {
+    events: SyncSender<RuntimeEvent>,
+    failure: Arc<Mutex<Option<IpcWriterError>>>,
+}
+
+impl IpcWriterFailurePublisher {
+    fn new(events: SyncSender<RuntimeEvent>) -> Self {
+        Self {
+            events,
+            failure: Arc::new(Mutex::new(None)),
+        }
+    }
+
+    fn publish(&self, error: IpcWriterError) -> IpcWriterError {
+        let should_publish = {
+            let mut failure = self
+                .failure
+                .lock()
+                .expect("IPC writer failure mutex poisoned");
+            if failure.is_some() {
+                false
+            } else {
+                *failure = Some(error);
+                true
+            }
+        };
+        if should_publish {
+            match self.events.try_send(RuntimeEvent::WriterFailed(error)) {
+                Ok(()) | Err(TrySendError::Full(_) | TrySendError::Disconnected(_)) => {}
+            }
+        }
+        error
+    }
+
+    fn current(&self) -> Option<IpcWriterError> {
+        *self
+            .failure
+            .lock()
+            .expect("IPC writer failure mutex poisoned")
+    }
+}
+
+#[derive(Clone)]
 struct FrameSender {
     sender: SyncSender<String>,
+    failures: IpcWriterFailurePublisher,
 }
 
 impl FrameSender {
-    fn new(sender: SyncSender<String>) -> Self {
-        Self { sender }
+    fn new(sender: SyncSender<String>, failures: IpcWriterFailurePublisher) -> Self {
+        Self { sender, failures }
     }
 
     fn send(&self, frame: String) -> Result<(), IpcWriterError> {
@@ -381,14 +544,18 @@ impl FrameSender {
     }
 
     fn send_inner(&self, frame: String, block_when_full: bool) -> Result<(), IpcWriterError> {
-        match self.sender.try_send(frame) {
+        let result = match self.sender.try_send(frame) {
             Ok(()) => Ok(()),
             Err(TrySendError::Full(frame)) if block_when_full => {
                 self.sender.send(frame).map_err(|_| IpcWriterError::Closed)
             }
             Err(TrySendError::Full(_)) => Err(IpcWriterError::QueueFull),
             Err(TrySendError::Disconnected(_)) => Err(IpcWriterError::Closed),
+        };
+        if matches!(result, Err(IpcWriterError::Closed)) {
+            self.failures.publish(IpcWriterError::Closed);
         }
+        result
     }
 }
 
@@ -742,16 +909,34 @@ impl ConcurrentExecutionState {
 
 fn start_ipc_writer(
     limits: redevplugin_ipc::RuntimeLimits,
+    failures: IpcWriterFailurePublisher,
 ) -> Result<(FrameSender, thread::JoinHandle<Result<(), IpcWriterError>>), IpcWriterError> {
     let (sender, receiver) = mpsc::sync_channel::<String>(ipc_writer_capacity(limits)?);
+    let thread_failures = failures.clone();
     let handle = thread::Builder::new()
         .name("redevplugin-ipc-writer".to_string())
         .spawn(move || {
             let stdout = io::stdout();
-            run_ipc_writer(receiver, stdout.lock())
+            match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                run_ipc_writer(receiver, stdout.lock(), &thread_failures)
+            })) {
+                Ok(result) => result,
+                Err(_) => Err(thread_failures.publish(IpcWriterError::Panicked)),
+            }
         })
         .map_err(|_| IpcWriterError::StartFailed)?;
-    Ok((FrameSender::new(sender), handle))
+    Ok((FrameSender::new(sender, failures), handle))
+}
+
+fn initial_writer_failure(
+    writer_thread: thread::JoinHandle<Result<(), IpcWriterError>>,
+    send_error: IpcWriterError,
+) -> IpcWriterError {
+    match writer_thread.join() {
+        Ok(Ok(())) => send_error,
+        Ok(Err(err)) => err,
+        Err(_) => IpcWriterError::Panicked,
+    }
 }
 
 fn ipc_writer_capacity(limits: redevplugin_ipc::RuntimeLimits) -> Result<usize, IpcWriterError> {
@@ -762,26 +947,43 @@ fn ipc_writer_capacity(limits: redevplugin_ipc::RuntimeLimits) -> Result<usize, 
         .ok_or(IpcWriterError::CapacityOverflow)
 }
 
-fn run_ipc_writer<W: Write>(receiver: Receiver<String>, output: W) -> Result<(), IpcWriterError> {
+fn run_ipc_writer<W: Write>(
+    receiver: Receiver<String>,
+    output: W,
+    failures: &IpcWriterFailurePublisher,
+) -> Result<(), IpcWriterError> {
     let mut output = BufWriter::with_capacity(IPC_WRITER_MAX_BATCH_BYTES, output);
-    while let Ok(first_frame) = receiver.recv() {
+    let mut pending_frame = None;
+    loop {
+        let first_frame = match pending_frame.take() {
+            Some(frame) => frame,
+            None => match receiver.recv() {
+                Ok(frame) => frame,
+                Err(_) => return Ok(()),
+            },
+        };
         let mut frame_count = 0usize;
         let mut byte_count = 0usize;
         let mut frame = first_frame;
         loop {
+            let frame_bytes = frame
+                .len()
+                .checked_add(1)
+                .ok_or_else(|| failures.publish(IpcWriterError::BatchSizeOverflow))?;
+            let next_byte_count = byte_count
+                .checked_add(frame_bytes)
+                .ok_or_else(|| failures.publish(IpcWriterError::BatchSizeOverflow))?;
+            // An oversized first frame is valid but must occupy the flush cycle alone.
+            if frame_count > 0 && next_byte_count > IPC_WRITER_MAX_BATCH_BYTES {
+                pending_frame = Some(frame);
+                break;
+            }
             output
                 .write_all(frame.as_bytes())
                 .and_then(|_| output.write_all(b"\n"))
-                .map_err(|_| IpcWriterError::WriteFailed)?;
+                .map_err(|_| failures.publish(IpcWriterError::WriteFailed))?;
             frame_count += 1;
-            byte_count = byte_count
-                .checked_add(
-                    frame
-                        .len()
-                        .checked_add(1)
-                        .ok_or(IpcWriterError::BatchSizeOverflow)?,
-                )
-                .ok_or(IpcWriterError::BatchSizeOverflow)?;
+            byte_count = next_byte_count;
             if frame_count >= IPC_WRITER_MAX_BATCH_FRAMES
                 || byte_count >= IPC_WRITER_MAX_BATCH_BYTES
             {
@@ -792,9 +994,10 @@ fn run_ipc_writer<W: Write>(receiver: Receiver<String>, output: W) -> Result<(),
                 Err(TryRecvError::Empty | TryRecvError::Disconnected) => break,
             }
         }
-        output.flush().map_err(|_| IpcWriterError::FlushFailed)?;
+        output
+            .flush()
+            .map_err(|_| failures.publish(IpcWriterError::FlushFailed))?;
     }
-    Ok(())
 }
 
 fn send_frame(writer: &FrameSender, frame: String) -> Result<(), IpcWriterError> {
@@ -908,12 +1111,16 @@ fn start_invocation_workers(
                                     format!("runtime response frame failed: {err}"),
                                 )
                             });
-                        complete_scheduled_invocation(
+                        if complete_scheduled_invocation(
                             &scheduler,
                             &execution.writer,
                             &request_id,
                             response,
-                        );
+                        )
+                        .is_err()
+                        {
+                            return;
+                        }
                     }
                 })
                 .map_err(|err| format!("start runtime invocation worker: {err}"))
@@ -926,10 +1133,11 @@ fn complete_scheduled_invocation(
     writer: &FrameSender,
     request_id: &str,
     response: Result<String, String>,
-) {
+) -> Result<(), IpcWriterError> {
     scheduler.finish(request_id);
-    if let Ok(response) = response {
-        let _ = send_frame(writer, response);
+    match response {
+        Ok(response) => send_frame(writer, response),
+        Err(_) => Ok(()),
     }
 }
 
@@ -3139,25 +3347,34 @@ mod tests {
     use super::*;
     use std::sync::atomic::Ordering;
 
+    fn writer_failure_channel() -> (IpcWriterFailurePublisher, Receiver<RuntimeEvent>) {
+        let (events_sender, events) = mpsc::sync_channel(1);
+        (IpcWriterFailurePublisher::new(events_sender), events)
+    }
+
     fn frame_channel(capacity: usize) -> (FrameSender, Receiver<String>) {
         let (sender, receiver) = mpsc::sync_channel(capacity);
-        (FrameSender::new(sender), receiver)
+        let (failures, _events) = writer_failure_channel();
+        (FrameSender::new(sender, failures), receiver)
     }
 
     #[derive(Default)]
     struct FlushCountingWriter {
         bytes: Vec<u8>,
-        flushes: usize,
+        bytes_since_flush: usize,
+        flushed_bytes: Vec<usize>,
     }
 
     impl Write for FlushCountingWriter {
         fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
             self.bytes.extend_from_slice(buffer);
+            self.bytes_since_flush += buffer.len();
             Ok(buffer.len())
         }
 
         fn flush(&mut self) -> io::Result<()> {
-            self.flushes += 1;
+            self.flushed_bytes.push(self.bytes_since_flush);
+            self.bytes_since_flush = 0;
             Ok(())
         }
     }
@@ -3268,15 +3485,33 @@ mod tests {
     }
 
     #[test]
+    fn initial_writer_send_failure_preserves_the_thread_root_cause() {
+        let write_failure = thread::spawn(|| Err(IpcWriterError::WriteFailed));
+        assert_eq!(
+            initial_writer_failure(write_failure, IpcWriterError::Closed),
+            IpcWriterError::WriteFailed
+        );
+
+        let panic = thread::spawn(|| -> Result<(), IpcWriterError> {
+            panic!("sensitive writer panic detail")
+        });
+        assert_eq!(
+            initial_writer_failure(panic, IpcWriterError::Closed),
+            IpcWriterError::Panicked
+        );
+    }
+
+    #[test]
     fn ipc_writer_batches_queued_frames_without_reordering() {
         let (sender, receiver) = mpsc::sync_channel(8);
         sender.send("one".to_string()).unwrap();
         sender.send("two".to_string()).unwrap();
         drop(sender);
+        let (failures, _events) = writer_failure_channel();
         let mut output = FlushCountingWriter::default();
-        run_ipc_writer(receiver, &mut output).unwrap();
+        run_ipc_writer(receiver, &mut output, &failures).unwrap();
         assert_eq!(output.bytes, b"one\ntwo\n");
-        assert_eq!(output.flushes, 1);
+        assert_eq!(output.flushed_bytes, [8]);
     }
 
     #[test]
@@ -3286,9 +3521,10 @@ mod tests {
             sender.send(format!("frame-{index}")).unwrap();
         }
         drop(sender);
+        let (failures, _events) = writer_failure_channel();
         let mut output = FlushCountingWriter::default();
-        run_ipc_writer(receiver, &mut output).unwrap();
-        assert_eq!(output.flushes, 2);
+        run_ipc_writer(receiver, &mut output, &failures).unwrap();
+        assert_eq!(output.flushed_bytes.len(), 2);
         assert_eq!(
             output.bytes.iter().filter(|byte| **byte == b'\n').count(),
             IPC_WRITER_MAX_BATCH_FRAMES + 1
@@ -3296,16 +3532,38 @@ mod tests {
     }
 
     #[test]
-    fn ipc_writer_flushes_at_the_byte_batch_limit() {
-        let (sender, receiver) = mpsc::sync_channel(3);
-        let frame = "x".repeat(IPC_WRITER_MAX_BATCH_BYTES / 2);
-        for _ in 0..3 {
-            sender.send(frame.clone()).unwrap();
-        }
+    fn ipc_writer_never_adds_a_frame_that_exceeds_the_batch_byte_limit() {
+        let (sender, receiver) = mpsc::sync_channel(4);
+        let first = "a".repeat(IPC_WRITER_MAX_BATCH_BYTES / 2 - 1);
+        let second = "b".repeat(IPC_WRITER_MAX_BATCH_BYTES / 2 - 1);
+        let third = "c".repeat(31);
+        sender.send(first).unwrap();
+        sender.send(second).unwrap();
+        sender.send(third).unwrap();
         drop(sender);
+        let (failures, _events) = writer_failure_channel();
         let mut output = FlushCountingWriter::default();
-        run_ipc_writer(receiver, &mut output).unwrap();
-        assert_eq!(output.flushes, 2);
+        run_ipc_writer(receiver, &mut output, &failures).unwrap();
+        assert_eq!(output.flushed_bytes, [IPC_WRITER_MAX_BATCH_BYTES, 32]);
+        assert!(
+            output
+                .flushed_bytes
+                .iter()
+                .all(|bytes| *bytes <= IPC_WRITER_MAX_BATCH_BYTES)
+        );
+    }
+
+    #[test]
+    fn ipc_writer_flushes_a_single_oversized_frame_without_batching_another_frame() {
+        let (sender, receiver) = mpsc::sync_channel(2);
+        let oversized_frame_bytes = IPC_WRITER_MAX_BATCH_BYTES + 18;
+        sender.send("x".repeat(oversized_frame_bytes - 1)).unwrap();
+        sender.send("next".to_string()).unwrap();
+        drop(sender);
+        let (failures, _events) = writer_failure_channel();
+        let mut output = FlushCountingWriter::default();
+        run_ipc_writer(receiver, &mut output, &failures).unwrap();
+        assert_eq!(output.flushed_bytes, [oversized_frame_bytes, 5]);
     }
 
     #[test]
@@ -3313,11 +3571,18 @@ mod tests {
         let (sender, receiver) = mpsc::sync_channel(1);
         sender.send("x".repeat(IPC_WRITER_MAX_BATCH_BYTES)).unwrap();
         drop(sender);
-        let result = std::panic::catch_unwind(|| run_ipc_writer(receiver, WriteFailingWriter));
+        let (failures, events) = writer_failure_channel();
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            run_ipc_writer(receiver, WriteFailingWriter, &failures)
+        }));
         let error = result.unwrap().unwrap_err();
         assert_eq!(error, IpcWriterError::WriteFailed);
         assert_eq!(error.code(), "IPC_WRITER_WRITE_FAILED");
         assert!(!error.to_string().contains("bearer"));
+        assert_eq!(
+            next_runtime_input_line(&events, &failures),
+            Err(RuntimeLoopError::Writer(IpcWriterError::WriteFailed))
+        );
     }
 
     #[test]
@@ -3325,17 +3590,25 @@ mod tests {
         let (sender, receiver) = mpsc::sync_channel(1);
         sender.send("frame".to_string()).unwrap();
         drop(sender);
-        let result = std::panic::catch_unwind(|| run_ipc_writer(receiver, FlushFailingWriter));
+        let (failures, events) = writer_failure_channel();
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            run_ipc_writer(receiver, FlushFailingWriter, &failures)
+        }));
         let error = result.unwrap().unwrap_err();
         assert_eq!(error, IpcWriterError::FlushFailed);
         assert_eq!(error.code(), "IPC_WRITER_FLUSH_FAILED");
         assert!(!error.to_string().contains("absolute path"));
+        assert_eq!(
+            next_runtime_input_line(&events, &failures),
+            Err(RuntimeLoopError::Writer(IpcWriterError::FlushFailed))
+        );
     }
 
     #[test]
     fn bounded_frame_sender_blocks_until_capacity_is_available() {
         let (sender, receiver) = mpsc::sync_channel(1);
-        let sender = FrameSender::new(sender);
+        let (failures, _events) = writer_failure_channel();
+        let sender = FrameSender::new(sender, failures);
         sender.send("first".to_string()).unwrap();
         let (done_sender, done_receiver) = mpsc::channel();
         let producer = thread::spawn(move || {
@@ -3358,7 +3631,8 @@ mod tests {
     #[test]
     fn frame_sender_reports_typed_queue_full_without_discarding_the_frame() {
         let (sender, receiver) = mpsc::sync_channel(1);
-        let sender = FrameSender::new(sender);
+        let (failures, _events) = writer_failure_channel();
+        let sender = FrameSender::new(sender, failures);
         sender.send("first".to_string()).unwrap();
         assert_eq!(
             sender.try_send("second".to_string()),
@@ -3371,11 +3645,118 @@ mod tests {
     fn frame_sender_reports_writer_disconnect() {
         let (sender, receiver) = mpsc::sync_channel(1);
         drop(receiver);
-        let sender = FrameSender::new(sender);
+        let (failures, events) = writer_failure_channel();
+        let sender = FrameSender::new(sender, failures);
         assert_eq!(
             send_frame(&sender, "frame".to_string()),
             Err(IpcWriterError::Closed)
         );
+        assert_eq!(
+            next_runtime_input_line(&events, &sender.failures),
+            Err(RuntimeLoopError::Writer(IpcWriterError::Closed))
+        );
+    }
+
+    #[test]
+    fn writer_disconnect_does_not_replace_the_published_write_failure() {
+        let (sender, receiver) = mpsc::sync_channel(1);
+        drop(receiver);
+        let (failures, events) = writer_failure_channel();
+        failures.publish(IpcWriterError::WriteFailed);
+        let sender = FrameSender::new(sender, failures);
+
+        assert_eq!(
+            send_frame(&sender, "frame".to_string()),
+            Err(IpcWriterError::Closed)
+        );
+        assert_eq!(sender.failures.current(), Some(IpcWriterError::WriteFailed));
+        assert_eq!(
+            next_runtime_input_line(&events, &sender.failures),
+            Err(RuntimeLoopError::Writer(IpcWriterError::WriteFailed))
+        );
+        assert!(matches!(
+            events.try_recv(),
+            Ok(RuntimeEvent::WriterFailed(IpcWriterError::WriteFailed))
+        ));
+        assert!(matches!(events.try_recv(), Err(TryRecvError::Empty)));
+    }
+
+    #[test]
+    fn writer_failure_publication_never_blocks_behind_a_queued_input() {
+        let (failures, events) = writer_failure_channel();
+        failures
+            .events
+            .send(RuntimeEvent::Input(Ok("queued\n".to_string())))
+            .unwrap();
+        let thread_failures = failures.clone();
+        let (done_sender, done_receiver) = mpsc::channel();
+        let publisher = thread::spawn(move || {
+            let error = thread_failures.publish(IpcWriterError::FlushFailed);
+            done_sender.send(error).unwrap();
+        });
+
+        assert_eq!(
+            done_receiver.recv_timeout(Duration::from_secs(1)).unwrap(),
+            IpcWriterError::FlushFailed
+        );
+        assert_eq!(
+            next_runtime_input_line(&events, &failures),
+            Err(RuntimeLoopError::Writer(IpcWriterError::FlushFailed))
+        );
+        assert!(matches!(
+            events.try_recv(),
+            Ok(RuntimeEvent::Input(Ok(line))) if line == "queued\n"
+        ));
+        publisher.join().unwrap();
+    }
+
+    #[test]
+    fn scheduled_invocation_releases_capacity_before_publishing_response() {
+        fn job(request_id: &str) -> scheduler::InvocationJob {
+            let frame = worker_invocation_frame("plugini_capacity", 1).replacen(
+                r#""request_id":"r1""#,
+                &format!(r#""request_id":"{request_id}""#),
+                1,
+            );
+            let invocation = redevplugin_ipc::parse_worker_invocation(&frame)
+                .expect("worker invocation must be valid");
+            scheduler::InvocationJob::new(invocation).expect("invocation job must be valid")
+        }
+
+        let scheduler = Arc::new(scheduler::InvocationScheduler::new(2, 1));
+        scheduler.enqueue(job("r1")).unwrap();
+        let running = scheduler.take().unwrap();
+        scheduler.enqueue(job("r2")).unwrap();
+        assert_eq!(scheduler.metrics().active, 1);
+        assert_eq!(scheduler.metrics().queued, 1);
+
+        let (writer, outbound) = frame_channel(0);
+        let completion_scheduler = Arc::clone(&scheduler);
+        let request_id = running.request_id.clone();
+        let completion = thread::spawn(move || {
+            complete_scheduled_invocation(
+                &completion_scheduler,
+                &writer,
+                &request_id,
+                Ok("completed".to_string()),
+            )
+        });
+
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while scheduler.metrics().active != 0 && Instant::now() < deadline {
+            thread::yield_now();
+        }
+        assert_eq!(scheduler.metrics().active, 0);
+        scheduler
+            .enqueue(job("r3"))
+            .expect("replacement invocation must use released plugin capacity");
+        assert_eq!(scheduler.metrics().queued, 2);
+
+        assert_eq!(
+            outbound.recv_timeout(Duration::from_secs(1)).unwrap(),
+            "completed"
+        );
+        completion.join().unwrap().unwrap();
     }
 
     #[test]
