@@ -56,8 +56,9 @@ type nativeState struct {
 }
 
 type canonicalState struct {
-	nodes int
-	bytes int
+	nodes  int
+	bytes  int
+	active map[nativeVisit]struct{}
 }
 
 func Normalize(value any) (normalized any, err error) {
@@ -95,14 +96,34 @@ func Normalize(value any) (normalized any, err error) {
 	return normalized, nil
 }
 
-// ValidateCanonical enforces response limits on a normalized JSON data tree
-// without invoking any caller-defined encoding behavior.
+// ValidateCanonical enforces limits on the closed Go representation of a JSON
+// value without invoking caller-defined encoding behavior.
 func ValidateCanonical(value any) error {
-	state := canonicalState{}
-	if err := state.walk(value, 0); err != nil {
+	state := canonicalState{active: map[nativeVisit]struct{}{}}
+	if _, err := state.clone(value, 0, false); err != nil {
 		return fmt.Errorf("%w: %v", errInvalidValue, err)
 	}
 	return nil
+}
+
+// CloneCanonical validates a closed JSON value and returns a recursively owned
+// copy. Maps and slices in the result never alias caller-owned containers.
+func CloneCanonical(value any) (any, error) {
+	state := canonicalState{active: map[nativeVisit]struct{}{}}
+	cloned, err := state.clone(value, 0, true)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", errInvalidValue, err)
+	}
+	return cloned, nil
+}
+
+// CloneCanonicalMap is the typed map form used at adapter and store boundaries.
+func CloneCanonicalMap(value map[string]any) (map[string]any, error) {
+	cloned, err := CloneCanonical(value)
+	if err != nil {
+		return nil, err
+	}
+	return cloned.(map[string]any), nil
 }
 
 func validateNativeStructure(value any) error {
@@ -327,67 +348,136 @@ func (s *nativeState) walk(value reflect.Value, depth int, quoted bool) error {
 	}
 }
 
-func (s *canonicalState) walk(value any, depth int) error {
+func (s *canonicalState) clone(value any, depth int, copyContainers bool) (any, error) {
 	if depth > maxDepth {
-		return fmt.Errorf("depth exceeds %d", maxDepth)
+		return nil, fmt.Errorf("depth exceeds %d", maxDepth)
 	}
 	s.nodes++
 	if s.nodes > maxNodes {
-		return fmt.Errorf("structure exceeds %d nodes", maxNodes)
+		return nil, fmt.Errorf("structure exceeds %d nodes", maxNodes)
 	}
 	switch typed := value.(type) {
 	case nil:
-		return s.addBytes(4)
+		return nil, s.addBytes(4)
 	case bool:
 		if typed {
-			return s.addBytes(4)
+			return typed, s.addBytes(4)
 		}
-		return s.addBytes(5)
+		return typed, s.addBytes(5)
 	case float64:
 		if math.IsNaN(typed) || math.IsInf(typed, 0) || math.Abs(typed) > float64(maxSafeInteger) {
-			return errors.New("number is outside the canonical JSON range")
+			return nil, errors.New("number is outside the canonical JSON range")
 		}
-		return s.addBytes(jsonFloatEncodedLength(typed, 64))
+		return typed, s.addBytes(jsonFloatEncodedLength(typed, 64))
+	case json.Number:
+		text := typed.String()
+		if !validJSONNumber(text) {
+			return nil, errors.New("invalid JSON number")
+		}
+		if numberExceedsSafeMagnitude(typed) {
+			return nil, errors.New("number exceeds JSON safe magnitude")
+		}
+		return typed, s.addBytes(len(text))
 	case string:
-		return s.addBytes(jsonStringEncodedLength(typed))
+		if !utf8.ValidString(typed) {
+			return nil, errors.New("string is not valid UTF-8")
+		}
+		return typed, s.addBytes(jsonStringEncodedLength(typed))
 	case []any:
+		if typed == nil {
+			return []any(nil), s.addBytes(4)
+		}
+		release, err := s.enter(reflect.ValueOf(typed))
+		if err != nil {
+			return nil, err
+		}
+		defer release()
 		if err := s.addBytes(2); err != nil {
-			return err
+			return nil, err
+		}
+		var cloned []any
+		if copyContainers {
+			cloned = make([]any, len(typed))
 		}
 		for index, item := range typed {
 			if index > 0 {
 				if err := s.addBytes(1); err != nil {
-					return err
+					return nil, err
 				}
 			}
-			if err := s.walk(item, depth+1); err != nil {
-				return err
+			child, err := s.clone(item, depth+1, copyContainers)
+			if err != nil {
+				return nil, err
+			}
+			if copyContainers {
+				cloned[index] = child
 			}
 		}
-		return nil
+		if copyContainers {
+			return cloned, nil
+		}
+		return typed, nil
 	case map[string]any:
+		if typed == nil {
+			return map[string]any(nil), s.addBytes(4)
+		}
+		release, err := s.enter(reflect.ValueOf(typed))
+		if err != nil {
+			return nil, err
+		}
+		defer release()
 		if err := s.addBytes(2); err != nil {
-			return err
+			return nil, err
+		}
+		var cloned map[string]any
+		if copyContainers {
+			cloned = make(map[string]any, len(typed))
 		}
 		index := 0
 		for key, item := range typed {
+			if !utf8.ValidString(key) {
+				return nil, errors.New("object key is not valid UTF-8")
+			}
+			if isPrototypeSensitiveKey(key) {
+				return nil, fmt.Errorf("object key %q is forbidden", key)
+			}
 			if index > 0 {
 				if err := s.addBytes(1); err != nil {
-					return err
+					return nil, err
 				}
 			}
 			if err := s.addBytes(jsonStringEncodedLength(key) + 1); err != nil {
-				return err
+				return nil, err
 			}
-			if err := s.walk(item, depth+1); err != nil {
-				return err
+			child, err := s.clone(item, depth+1, copyContainers)
+			if err != nil {
+				return nil, err
+			}
+			if copyContainers {
+				cloned[key] = child
 			}
 			index++
 		}
-		return nil
+		if copyContainers {
+			return cloned, nil
+		}
+		return typed, nil
 	default:
-		return fmt.Errorf("non-canonical JSON type %T", value)
+		return nil, fmt.Errorf("non-canonical JSON type %T", value)
 	}
+}
+
+func (s *canonicalState) enter(value reflect.Value) (func(), error) {
+	visit := nativeVisit{typeName: value.Type(), pointer: value.Pointer()}
+	if value.Kind() == reflect.Slice {
+		visit.length = value.Len()
+		visit.capacity = value.Cap()
+	}
+	if _, exists := s.active[visit]; exists {
+		return nil, errors.New("canonical JSON value contains a cycle")
+	}
+	s.active[visit] = struct{}{}
+	return func() { delete(s.active, visit) }, nil
 }
 
 func (s *canonicalState) addBytes(count int) error {

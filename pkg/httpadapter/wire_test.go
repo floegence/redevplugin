@@ -250,6 +250,36 @@ func TestPublicWireMappersOwnNestedCollections(t *testing.T) {
 	}
 }
 
+func TestPublicWireClonePreservesCanonicalNumbersAndNulls(t *testing.T) {
+	data := map[string]any{
+		"number": json.Number("42.5"),
+		"object": map[string]any(nil),
+		"array":  []any(nil),
+	}
+	call := mustPublicCallMethod(t, host.CallMethodResult{Data: data})
+	operationRecord := mustPublicOperationRecord(t, operation.Record{ExecutionBinding: capability.ExecutionBinding{
+		Target: capability.TargetDescriptor{Fields: data},
+	}})
+
+	for name, value := range map[string]map[string]any{
+		"rpc":       call.Data.(map[string]any),
+		"operation": operationRecord.Target.Fields,
+	} {
+		t.Run(name, func(t *testing.T) {
+			if value["number"] != json.Number("42.5") {
+				t.Fatalf("number representation changed: %#v", value["number"])
+			}
+			raw, err := json.Marshal(value)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := string(raw); got != `{"array":null,"number":42.5,"object":null}` {
+				t.Fatalf("wire projection = %s", got)
+			}
+		})
+	}
+}
+
 func TestHTTPWireDTOJSONTagsAreSnakeCase(t *testing.T) {
 	types := []any{
 		successResponse{}, mutationSuccessResponse{}, errorBody{}, mutationErrorBody{}, errorDetails{},
@@ -422,14 +452,6 @@ func TestPublicWireCloneRejectsNonCanonicalValues(t *testing.T) {
 				t.Fatalf("publicCallMethod() error = %T %v, want wireProjectionError", err, err)
 			}
 		})
-	}
-	if _, err := cloneValidatedWireJSONValue(int(1), "$[\"unexpected\"]"); err == nil {
-		t.Fatal("cloneValidatedWireJSONValue() accepted an unsupported type")
-	} else {
-		var projectionErr *wireProjectionError
-		if !errors.As(err, &projectionErr) {
-			t.Fatalf("cloneValidatedWireJSONValue() error = %T %v, want wireProjectionError", err, err)
-		}
 	}
 }
 

@@ -21,56 +21,19 @@ func (e *wireProjectionError) Unwrap() error {
 }
 
 func cloneWireJSONMap(values map[string]any) (map[string]any, error) {
-	if values == nil {
-		return nil, nil
-	}
-	if err := jsonvalue.ValidateCanonical(values); err != nil {
+	cloned, err := jsonvalue.CloneCanonicalMap(values)
+	if err != nil {
 		return nil, &wireProjectionError{path: "$", err: err}
-	}
-	return cloneValidatedWireJSONMap(values, "$")
-}
-
-func cloneWireJSONValue(value any) (any, error) {
-	if err := jsonvalue.ValidateCanonical(value); err != nil {
-		return nil, &wireProjectionError{path: "$", err: err}
-	}
-	return cloneValidatedWireJSONValue(value, "$")
-}
-
-func cloneValidatedWireJSONMap(values map[string]any, path string) (map[string]any, error) {
-	cloned := make(map[string]any, len(values))
-	for key, item := range values {
-		mapped, err := cloneValidatedWireJSONValue(item, fmt.Sprintf("%s[%q]", path, key))
-		if err != nil {
-			return nil, err
-		}
-		cloned[key] = mapped
 	}
 	return cloned, nil
 }
 
-func cloneValidatedWireJSONValue(value any, path string) (any, error) {
-	switch typed := value.(type) {
-	case nil, bool, string, float64:
-		return typed, nil
-	case map[string]any:
-		return cloneValidatedWireJSONMap(typed, path)
-	case []any:
-		cloned := make([]any, len(typed))
-		for index, item := range typed {
-			mapped, err := cloneValidatedWireJSONValue(item, fmt.Sprintf("%s[%d]", path, index))
-			if err != nil {
-				return nil, err
-			}
-			cloned[index] = mapped
-		}
-		return cloned, nil
-	default:
-		return nil, &wireProjectionError{
-			path: path,
-			err:  fmt.Errorf("unsupported canonical JSON type %T", value),
-		}
+func cloneWireJSONValue(value any) (any, error) {
+	cloned, err := jsonvalue.CloneCanonical(value)
+	if err != nil {
+		return nil, &wireProjectionError{path: "$", err: err}
 	}
+	return cloned, nil
 }
 
 func cloneWireStringMap(values map[string]string) map[string]string {

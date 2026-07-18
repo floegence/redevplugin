@@ -2,9 +2,120 @@ package jsonvalue
 
 import (
 	"encoding/json"
+	"math"
 	"strings"
 	"testing"
 )
+
+func TestCloneCanonicalOwnsEveryNestedContainer(t *testing.T) {
+	shared := map[string]any{"values": []any{map[string]any{"value": "original"}}}
+	input := map[string]any{"first": shared, "second": shared}
+	clonedValue, err := CloneCanonical(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cloned := clonedValue.(map[string]any)
+	shared["values"].([]any)[0].(map[string]any)["value"] = "adapter mutation"
+	first := cloned["first"].(map[string]any)
+	second := cloned["second"].(map[string]any)
+	if got := first["values"].([]any)[0].(map[string]any)["value"]; got != "original" {
+		t.Fatalf("clone retained adapter-owned state: %#v", got)
+	}
+	first["values"].([]any)[0].(map[string]any)["value"] = "first mutation"
+	if got := second["values"].([]any)[0].(map[string]any)["value"]; got != "original" {
+		t.Fatalf("clone retained repeated-container alias: %#v", got)
+	}
+}
+
+func TestCloneCanonicalPreservesNumberAndNullRepresentations(t *testing.T) {
+	input := map[string]any{
+		"number": json.Number("42.5"),
+		"object": map[string]any(nil),
+		"array":  []any(nil),
+	}
+	clonedValue, err := CloneCanonical(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cloned := clonedValue.(map[string]any)
+	if cloned["number"] != json.Number("42.5") {
+		t.Fatalf("number representation changed: %#v", cloned["number"])
+	}
+	raw, err := json.Marshal(cloned)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := string(raw); got != `{"array":null,"number":42.5,"object":null}` {
+		t.Fatalf("canonical null projection = %s", got)
+	}
+}
+
+func TestCloneCanonicalRejectsValuesOutsideClosedJSONSet(t *testing.T) {
+	mapCycle := map[string]any{}
+	mapCycle["self"] = mapCycle
+	sliceCycle := make([]any, 1)
+	sliceCycle[0] = sliceCycle
+	tests := []struct {
+		name  string
+		value any
+	}{
+		{name: "native integer", value: 1},
+		{name: "typed slice", value: []string{"value"}},
+		{name: "struct", value: struct{ Value string }{Value: "value"}},
+		{name: "nan", value: math.NaN()},
+		{name: "infinity", value: math.Inf(1)},
+		{name: "unsafe float", value: float64(1 << 53)},
+		{name: "unsafe number", value: json.Number("9007199254740992")},
+		{name: "invalid number", value: json.Number("01")},
+		{name: "map cycle", value: mapCycle},
+		{name: "slice cycle", value: sliceCycle},
+		{name: "prototype key", value: map[string]any{"__proto__": nil}},
+		{name: "invalid utf8 value", value: string([]byte{0xff})},
+		{name: "invalid utf8 key", value: map[string]any{string([]byte{0xff}): nil}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if _, err := CloneCanonical(test.value); err == nil {
+				t.Fatalf("CloneCanonical() accepted %#v", test.value)
+			}
+		})
+	}
+}
+
+func TestCloneCanonicalEnforcesStructuralBudgets(t *testing.T) {
+	deep := any("leaf")
+	for range maxDepth + 1 {
+		deep = []any{deep}
+	}
+	for _, value := range []any{
+		deep,
+		make([]any, maxNodes),
+		strings.Repeat("x", maxEncodedBytes),
+	} {
+		if _, err := CloneCanonical(value); err == nil {
+			t.Fatal("CloneCanonical() accepted a value beyond its structural budget")
+		}
+	}
+}
+
+func BenchmarkCloneCanonical(b *testing.B) {
+	items := make([]any, 256)
+	for index := range items {
+		items[index] = map[string]any{
+			"id":    json.Number("42"),
+			"name":  "canonical-owned-value",
+			"flags": []any{true, false, nil},
+		}
+	}
+	value := map[string]any{"items": items}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for range b.N {
+		if _, err := CloneCanonical(value); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
 
 func TestValidateCanonicalExactLimits(t *testing.T) {
 	exactBytes := strings.Repeat("x", maxEncodedBytes-2)

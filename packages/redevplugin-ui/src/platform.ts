@@ -123,7 +123,7 @@ export type PluginSettingsPatchRequest = PluginSettingsPatchBase & (
 );
 
 export type PluginCapabilityContractPin = PlatformSchemas["HostCapabilityPinV1"];
-export type PluginExecutionBinding = PlatformSchemas["PublicOperationBinding"];
+export type PluginPublicOperationBinding = PlatformSchemas["PublicOperationBinding"];
 export type PluginOperationRecord = PlatformSchemas["OperationRecord"];
 export type PluginOperationList = PlatformSchemas["PluginOperationList"];
 export type PluginOperationListOptions = NonNullable<operations["listPluginOperations"]["parameters"]["query"]>;

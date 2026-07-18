@@ -22,7 +22,6 @@ import (
 	"unicode/utf8"
 
 	"github.com/floegence/redevplugin/pkg/bridge"
-	"github.com/floegence/redevplugin/pkg/capability"
 	"github.com/floegence/redevplugin/pkg/connectivity"
 	"github.com/floegence/redevplugin/pkg/host"
 	"github.com/floegence/redevplugin/pkg/mutation"
@@ -736,7 +735,7 @@ type operationListResponse struct {
 }
 
 func publicOperationRecord(record operation.Record) (operationResponse, error) {
-	binding := capability.CloneExecutionBinding(record.ExecutionBinding)
+	binding := record.ExecutionBinding
 	targetFields, err := cloneWireJSONMap(binding.Target.Fields)
 	if err != nil {
 		return operationResponse{}, err
