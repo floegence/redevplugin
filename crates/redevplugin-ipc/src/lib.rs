@@ -3284,17 +3284,12 @@ pub enum WorkerResponseV2 {
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct RawWorkerSuccessV2 {
+struct RawWorkerResponseV2<'a> {
     ok: bool,
-    data: Box<serde_json::value::RawValue>,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct RawWorkerFailureV2 {
-    ok: bool,
-    error_code: String,
-    message: String,
+    #[serde(borrow)]
+    data: Option<&'a serde_json::value::RawValue>,
+    error_code: Option<String>,
+    message: Option<String>,
 }
 
 pub fn worker_request_json_v2(input: &str) -> Result<String, String> {
@@ -3333,30 +3328,35 @@ pub fn validate_worker_network_broker_access(
 }
 
 pub fn parse_worker_response_v2(input: &str) -> Result<WorkerResponseV2, String> {
-    let discriminator: BooleanResponseDiscriminator = serde_json::from_str(input)
-        .map_err(|err| format!("decode worker response discriminator: {err}"))?;
-    if discriminator.ok {
-        let success: RawWorkerSuccessV2 = serde_json::from_str(input)
-            .map_err(|err| format!("decode worker success response: {err}"))?;
-        if !success.ok {
-            return Err("worker success response ok must be true".to_string());
+    let response: RawWorkerResponseV2<'_> =
+        serde_json::from_str(input).map_err(|err| format!("decode worker response: {err}"))?;
+    if response.ok {
+        if response.error_code.is_some() || response.message.is_some() {
+            return Err("worker success response contains failure fields".to_string());
         }
-        return Ok(WorkerResponseV2::Success(success.data.get().to_string()));
+        let data = response
+            .data
+            .ok_or_else(|| "worker success response data is required".to_string())?;
+        return Ok(WorkerResponseV2::Success(data.get().to_string()));
     }
-    let failure: RawWorkerFailureV2 = serde_json::from_str(input)
-        .map_err(|err| format!("decode worker failure response: {err}"))?;
-    if failure.ok {
-        return Err("worker failure response ok must be false".to_string());
+    if response.data.is_some() {
+        return Err("worker failure response contains success data".to_string());
     }
-    if !is_stable_worker_error_code(&failure.error_code) {
+    let error_code = response
+        .error_code
+        .ok_or_else(|| "worker failure response error_code is required".to_string())?;
+    let message = response
+        .message
+        .ok_or_else(|| "worker failure response message is required".to_string())?;
+    if !is_stable_worker_error_code(&error_code) {
         return Err("worker failure response error_code is invalid".to_string());
     }
-    if failure.message.trim().is_empty() || failure.message.len() > 4096 {
+    if message.trim().is_empty() || message.len() > 4096 {
         return Err("worker failure response message is invalid".to_string());
     }
     Ok(WorkerResponseV2::Failure {
-        code: failure.error_code,
-        message: failure.message,
+        code: error_code,
+        message,
     })
 }
 
@@ -4972,6 +4972,48 @@ mod tests {
         )
         .expect_err("extra response authority must fail closed");
         assert!(error.contains("unknown field `gateway_token`"), "{error}");
+    }
+
+    #[test]
+    fn worker_response_v2_enforces_closed_success_and_failure_branches() {
+        let failure = parse_worker_response_v2(
+            r#"{"ok":false,"error_code":"WORKER_FAILED","message":"failed"}"#,
+        )
+        .expect("worker failure response");
+        assert_eq!(
+            failure,
+            WorkerResponseV2::Failure {
+                code: "WORKER_FAILED".to_string(),
+                message: "failed".to_string(),
+            }
+        );
+
+        for invalid in [
+            r#"{"ok":true}"#,
+            r#"{"ok":true,"data":{},"error_code":"WORKER_FAILED"}"#,
+            r#"{"ok":false,"data":{},"error_code":"WORKER_FAILED","message":"failed"}"#,
+            r#"{"ok":false,"message":"failed"}"#,
+            r#"{"ok":false,"error_code":"WORKER_FAILED"}"#,
+        ] {
+            assert!(
+                parse_worker_response_v2(invalid).is_err(),
+                "accepted ambiguous worker response {invalid}"
+            );
+        }
+    }
+
+    #[test]
+    fn worker_response_v2_preserves_large_raw_success_payload() {
+        let payload = "x".repeat(512 * 1024 - 64);
+        let input = format!(r#"{{"ok":true,"data":{{"payload":"{payload}"}}}}"#);
+        let response = parse_worker_response_v2(&input).expect("large worker response");
+        match response {
+            WorkerResponseV2::Success(data) => {
+                assert_eq!(data.len(), payload.len() + r#"{"payload":""}"#.len());
+                assert!(data.ends_with("\"}"));
+            }
+            WorkerResponseV2::Failure { .. } => panic!("expected success response"),
+        }
     }
 
     #[test]
