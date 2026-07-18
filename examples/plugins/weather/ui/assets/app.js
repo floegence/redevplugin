@@ -1495,6 +1495,7 @@
     errorMessage: "",
     searchMessage: ""
   };
+  var disposed = false;
   bridge.onAction("search-weather", (event) => void search(event));
   bridge.onAction("save-location", (event) => void saveLocation(event.value));
   bridge.onAction("open-location", (event) => void openLocation(event.value));
@@ -1502,7 +1503,10 @@
   bridge.onAction("remove-location", (event) => void removeLocation(event.value));
   bridge.onAction("retry-weather", () => void retryWeather());
   bridge.onAction("dismiss-results", () => dismissResults());
-  void initialize();
+  bridge.onLifecycle((event) => {
+    if (event.type === "dispose") disposed = true;
+  });
+  void initialize().catch(reportUnhandledFailure);
   async function initialize() {
     await bridge.ready();
     await run(async () => {
@@ -1644,6 +1648,7 @@
     return "The forecast service did not return fresh conditions. Your saved places are still here.";
   }
   function render() {
+    if (disposed) return Promise.resolve();
     const current = state.forecast?.current;
     const atmosphere = current ? `${current.is_day ? "day" : "night"} ${conditionKind(current.weather_code)}` : "day partly";
     return bridge.render({
@@ -1652,6 +1657,12 @@
       tag: "main",
       attributes: { class: `weather-app ${atmosphere}` },
       children: [topbar(), layout()]
+    });
+  }
+  function reportUnhandledFailure(error) {
+    if (disposed && error instanceof PluginBridgeError && error.errorCode === "PLUGIN_BRIDGE_DISPOSED") return;
+    queueMicrotask(() => {
+      throw error;
     });
   }
   function topbar() {

@@ -102,6 +102,9 @@
   `not_committed`; failures after fetch returns a promise are `unknown`.
   `PluginMutationLifecycleError` retains that outcome when local teardown or
   shell observers also fail.
+- Make generated and example plugin workers treat bridge disposal as an explicit
+  lifecycle boundary: they stop scheduling renders before pending work is
+  rejected and consume only the typed disposal error during startup teardown.
 - Validate worker VNode tags, attributes, input types, and render limits against
   the generated opaque-surface policy before emitting a mount or patch.
 - Add deterministic parallel surface replacement, first-commit visibility,

@@ -120,6 +120,7 @@ let editSaveInFlight: Promise<boolean> | undefined;
 let feedSequence = 0;
 let facetsSequence = 0;
 let unknownMutationReconciliation: UnknownMutationReconciliation | undefined;
+let disposed = false;
 
 bridge.onAction("toggle-explorer", () => void toggleExplorer());
 bridge.onAction("close-explorer", () => void closeExplorer());
@@ -154,6 +155,7 @@ bridge.onAction("toggle-task", (event) => void toggleTask(event));
 bridge.onAction("toggle-expanded", (event) => void toggleExpanded(event.value));
 bridge.onLifecycle(async (event) => {
   if (event.type === "dispose") {
+    disposed = true;
     clearTimers();
     await Promise.all([flushComposer(), flushEdit()]);
   } else if (event.type === "hidden") {
@@ -161,7 +163,7 @@ bridge.onLifecycle(async (event) => {
   }
 });
 
-void initialize();
+void initialize().catch(reportUnhandledFailure);
 
 async function initialize(): Promise<void> {
   await bridge.ready();
@@ -794,6 +796,7 @@ async function closeExplorer(): Promise<void> {
 }
 
 function render(): Promise<void> {
+  if (disposed) return Promise.resolve();
   return bridge.render({
     type: "element",
     key: "memos-root",
@@ -801,6 +804,11 @@ function render(): Promise<void> {
     attributes: { class: `memos-app${state.ui.drawerOpen ? " explorer-open" : ""}` },
     children: [explorerScrim(), explorer(), workspace(), deleteDialog(), toast()],
   });
+}
+
+function reportUnhandledFailure(error: unknown): void {
+  if (disposed && error instanceof PluginBridgeError && error.errorCode === "PLUGIN_BRIDGE_DISPOSED") return;
+  queueMicrotask(() => { throw error; });
 }
 
 function interactionBlocked(): boolean {

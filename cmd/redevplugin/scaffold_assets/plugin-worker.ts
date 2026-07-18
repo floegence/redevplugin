@@ -1,5 +1,6 @@
 import {
   PluginBridgeClient,
+  PluginBridgeError,
   type PluginMethodResult,
   type PluginUIActionEvent,
   type PluginUIVNode,
@@ -22,10 +23,14 @@ const state = {
   busy: false,
   error: false,
 };
+let disposed = false;
 
 bridge.onAction("echo-message", (event) => void echoMessage(event));
+bridge.onLifecycle((event) => {
+  if (event.type === "dispose") disposed = true;
+});
 
-void initialize();
+void initialize().catch(reportUnhandledFailure);
 
 async function initialize(): Promise<void> {
   await bridge.ready();
@@ -66,6 +71,7 @@ function text(key: string, value: string): PluginUIVNode {
 }
 
 function render(): Promise<void> {
+  if (disposed) return Promise.resolve();
   return bridge.render({
     type: "element",
     key: "plugin-root",
@@ -93,4 +99,9 @@ function render(): Promise<void> {
       ] },
     ],
   });
+}
+
+function reportUnhandledFailure(error: unknown): void {
+  if (disposed && error instanceof PluginBridgeError && error.errorCode === "PLUGIN_BRIDGE_DISPOSED") return;
+  queueMicrotask(() => { throw error; });
 }

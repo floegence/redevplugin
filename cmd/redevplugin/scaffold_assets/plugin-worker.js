@@ -1479,8 +1479,12 @@
     busy: false,
     error: false
   };
+  var disposed = false;
   bridge.onAction("echo-message", (event) => void echoMessage(event));
-  void initialize();
+  bridge.onLifecycle((event) => {
+    if (event.type === "dispose") disposed = true;
+  });
+  void initialize().catch(reportUnhandledFailure);
   async function initialize() {
     await bridge.ready();
     state.status = "Ready";
@@ -1517,6 +1521,7 @@
     return { type: "text", key, text: value };
   }
   function render() {
+    if (disposed) return Promise.resolve();
     return bridge.render({
       type: "element",
       key: "plugin-root",
@@ -1543,6 +1548,12 @@
           { type: "element", key: "worker-response-value", tag: "strong", children: [text("worker-response-value-copy", state.response)] }
         ] }
       ]
+    });
+  }
+  function reportUnhandledFailure(error) {
+    if (disposed && error instanceof PluginBridgeError && error.errorCode === "PLUGIN_BRIDGE_DISPOSED") return;
+    queueMicrotask(() => {
+      throw error;
     });
   }
 })();

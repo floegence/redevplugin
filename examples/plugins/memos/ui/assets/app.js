@@ -3144,6 +3144,7 @@ Please report this to https://github.com/markedjs/marked.`, e) {
     var feedSequence = 0;
     var facetsSequence = 0;
     var unknownMutationReconciliation;
+    var disposed = false;
     bridge.onAction("toggle-explorer", () => void toggleExplorer());
     bridge.onAction("close-explorer", () => void closeExplorer());
     bridge.onAction("search-query", (event) => updateSearch(event));
@@ -3177,6 +3178,7 @@ Please report this to https://github.com/markedjs/marked.`, e) {
     bridge.onAction("toggle-expanded", (event) => void toggleExpanded(event.value));
     bridge.onLifecycle(async (event) => {
         if (event.type === "dispose") {
+            disposed = true;
             clearTimers();
             await Promise.all([flushComposer(), flushEdit()]);
         }
@@ -3184,7 +3186,7 @@ Please report this to https://github.com/markedjs/marked.`, e) {
             await Promise.all([flushComposer(), flushEdit()]);
         }
     });
-    void initialize();
+    void initialize().catch(reportUnhandledFailure);
     async function initialize() {
         await bridge.ready();
         state.ui.busy = true;
@@ -3865,12 +3867,21 @@ Please report this to https://github.com/markedjs/marked.`, e) {
         await render();
     }
     function render() {
+        if (disposed)
+            return Promise.resolve();
         return bridge.render({
             type: "element",
             key: "memos-root",
             tag: "main",
             attributes: { class: `memos-app${state.ui.drawerOpen ? " explorer-open" : ""}` },
             children: [explorerScrim(), explorer(), workspace(), deleteDialog(), toast()]
+        });
+    }
+    function reportUnhandledFailure(error) {
+        if (disposed && error instanceof PluginBridgeError && error.errorCode === "PLUGIN_BRIDGE_DISPOSED")
+            return;
+        queueMicrotask(() => {
+            throw error;
         });
     }
     function interactionBlocked() {

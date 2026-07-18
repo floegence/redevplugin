@@ -1,4 +1,4 @@
-import { PluginBridgeClient, type PluginMethodResult, type PluginUIActionEvent, type PluginUIVNode } from "../../packages/redevplugin-ui/src/plugin.js";
+import { PluginBridgeClient, PluginBridgeError, type PluginMethodResult, type PluginUIActionEvent, type PluginUIVNode } from "../../packages/redevplugin-ui/src/plugin.js";
 
 type Location = { id: string; name: string; admin1: string; country: string; latitude: number; longitude: number; timezone: string };
 type CurrentWeather = { time: string; temperature: number; apparent_temperature: number; humidity: number; weather_code: number; wind_speed: number; is_day: boolean };
@@ -43,6 +43,7 @@ const state: {
   errorMessage: "",
   searchMessage: "",
 };
+let disposed = false;
 
 bridge.onAction("search-weather", (event) => void search(event));
 bridge.onAction("save-location", (event) => void saveLocation(event.value));
@@ -51,8 +52,11 @@ bridge.onAction("preview-location", (event) => void openLocation(event.value));
 bridge.onAction("remove-location", (event) => void removeLocation(event.value));
 bridge.onAction("retry-weather", () => void retryWeather());
 bridge.onAction("dismiss-results", () => dismissResults());
+bridge.onLifecycle((event) => {
+  if (event.type === "dispose") disposed = true;
+});
 
-void initialize();
+void initialize().catch(reportUnhandledFailure);
 
 async function initialize(): Promise<void> {
   await bridge.ready();
@@ -209,6 +213,7 @@ function friendlyWeatherError(error: unknown): string {
 }
 
 function render(): Promise<void> {
+  if (disposed) return Promise.resolve();
   const current = state.forecast?.current;
   const atmosphere = current ? `${current.is_day ? "day" : "night"} ${conditionKind(current.weather_code)}` : "day partly";
   return bridge.render({
@@ -218,6 +223,11 @@ function render(): Promise<void> {
     attributes: { class: `weather-app ${atmosphere}` },
     children: [topbar(), layout()],
   });
+}
+
+function reportUnhandledFailure(error: unknown): void {
+  if (disposed && error instanceof PluginBridgeError && error.errorCode === "PLUGIN_BRIDGE_DISPOSED") return;
+  queueMicrotask(() => { throw error; });
 }
 
 function topbar(): PluginUIVNode {
