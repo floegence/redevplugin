@@ -9,6 +9,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/floegence/redevplugin/pkg/sessionctx"
 )
 
 type Action string
@@ -29,11 +31,13 @@ const (
 )
 
 var (
-	ErrNotFound     = errors.New("install stage not found")
-	ErrInvalidStage = errors.New("install stage is invalid")
+	ErrNotFound                    = errors.New("install stage not found")
+	ErrInvalidStage                = errors.New("install stage is invalid")
+	ErrOwnerScopeMigrationRequired = errors.New("install stage owner scope migration required")
 )
 
 type Record struct {
+	OwnerEnvHash      string            `json:"-"`
 	StageID           string            `json:"stage_id"`
 	Action            Action            `json:"action"`
 	Status            Status            `json:"status"`
@@ -127,7 +131,7 @@ func NewStageID() (string, error) {
 	return "stage_" + hex.EncodeToString(buf[:]), nil
 }
 
-func (s *MemoryStore) Create(_ context.Context, req CreateRequest) (Record, error) {
+func (s *MemoryStore) Create(ctx context.Context, req CreateRequest) (Record, error) {
 	if s == nil {
 		return Record{}, errors.New("install stage store is nil")
 	}
@@ -139,17 +143,23 @@ func (s *MemoryStore) Create(_ context.Context, req CreateRequest) (Record, erro
 	if err != nil {
 		return Record{}, err
 	}
+	ownerEnvHash, err := ownerEnvironment(ctx)
+	if err != nil {
+		return Record{}, err
+	}
+	record.OwnerEnvHash = ownerEnvHash
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if existing, ok := s.records[record.StageID]; ok {
+	key := recordKey(ownerEnvHash, record.StageID)
+	if existing, ok := s.records[key]; ok {
 		return cloneRecord(existing), nil
 	}
-	s.records[record.StageID] = cloneRecord(record)
+	s.records[key] = cloneRecord(record)
 	return record, nil
 }
 
-func (s *MemoryStore) Get(_ context.Context, stageID string) (Record, error) {
+func (s *MemoryStore) Get(ctx context.Context, stageID string) (Record, error) {
 	if s == nil {
 		return Record{}, errors.New("install stage store is nil")
 	}
@@ -157,16 +167,20 @@ func (s *MemoryStore) Get(_ context.Context, stageID string) (Record, error) {
 	if stageID == "" {
 		return Record{}, ErrInvalidStage
 	}
+	ownerEnvHash, err := ownerEnvironment(ctx)
+	if err != nil {
+		return Record{}, err
+	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	record, ok := s.records[stageID]
+	record, ok := s.records[recordKey(ownerEnvHash, stageID)]
 	if !ok {
 		return Record{}, ErrNotFound
 	}
 	return cloneRecord(record), nil
 }
 
-func (s *MemoryStore) List(_ context.Context, req ListRequest) ([]Record, error) {
+func (s *MemoryStore) List(ctx context.Context, req ListRequest) ([]Record, error) {
 	if s == nil {
 		return nil, errors.New("install stage store is nil")
 	}
@@ -174,10 +188,17 @@ func (s *MemoryStore) List(_ context.Context, req ListRequest) ([]Record, error)
 	if req.Status != "" && !validStatus(req.Status) {
 		return nil, ErrInvalidStage
 	}
+	ownerEnvHash, err := ownerEnvironment(ctx)
+	if err != nil {
+		return nil, err
+	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	records := make([]Record, 0, len(s.records))
 	for _, record := range s.records {
+		if record.OwnerEnvHash != ownerEnvHash {
+			continue
+		}
 		if pluginInstanceID != "" && record.PluginInstanceID != pluginInstanceID {
 			continue
 		}
@@ -190,8 +211,8 @@ func (s *MemoryStore) List(_ context.Context, req ListRequest) ([]Record, error)
 	return records, nil
 }
 
-func (s *MemoryStore) MarkPrepared(_ context.Context, req MarkPreparedRequest) (Record, error) {
-	return s.update(normalizeID(req.StageID), req.Now, func(record Record, now time.Time) (Record, error) {
+func (s *MemoryStore) MarkPrepared(ctx context.Context, req MarkPreparedRequest) (Record, error) {
+	return s.update(ctx, normalizeID(req.StageID), req.Now, func(record Record, now time.Time) (Record, error) {
 		if terminalStatus(record.Status) {
 			return record, nil
 		}
@@ -203,8 +224,8 @@ func (s *MemoryStore) MarkPrepared(_ context.Context, req MarkPreparedRequest) (
 	})
 }
 
-func (s *MemoryStore) MarkCommitted(_ context.Context, req MarkCommittedRequest) (Record, error) {
-	return s.update(normalizeID(req.StageID), req.Now, func(record Record, now time.Time) (Record, error) {
+func (s *MemoryStore) MarkCommitted(ctx context.Context, req MarkCommittedRequest) (Record, error) {
+	return s.update(ctx, normalizeID(req.StageID), req.Now, func(record Record, now time.Time) (Record, error) {
 		if terminalStatus(record.Status) {
 			return record, nil
 		}
@@ -215,8 +236,8 @@ func (s *MemoryStore) MarkCommitted(_ context.Context, req MarkCommittedRequest)
 	})
 }
 
-func (s *MemoryStore) MarkFailed(_ context.Context, req MarkFailedRequest) (Record, error) {
-	return s.update(normalizeID(req.StageID), req.Now, func(record Record, now time.Time) (Record, error) {
+func (s *MemoryStore) MarkFailed(ctx context.Context, req MarkFailedRequest) (Record, error) {
+	return s.update(ctx, normalizeID(req.StageID), req.Now, func(record Record, now time.Time) (Record, error) {
 		if terminalStatus(record.Status) {
 			return record, nil
 		}
@@ -229,17 +250,24 @@ func (s *MemoryStore) MarkFailed(_ context.Context, req MarkFailedRequest) (Reco
 	})
 }
 
-func (s *MemoryStore) ExpireBefore(_ context.Context, now time.Time) ([]Record, error) {
+func (s *MemoryStore) ExpireBefore(ctx context.Context, now time.Time) ([]Record, error) {
 	if s == nil {
 		return nil, errors.New("install stage store is nil")
 	}
 	if now.IsZero() {
 		now = s.now()
 	}
+	ownerEnvHash, err := ownerEnvironment(ctx)
+	if err != nil {
+		return nil, err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	changed := []Record{}
 	for id, record := range s.records {
+		if record.OwnerEnvHash != ownerEnvHash {
+			continue
+		}
 		if terminalStatus(record.Status) || record.ExpiresAt.After(now) {
 			continue
 		}
@@ -255,7 +283,7 @@ func (s *MemoryStore) ExpireBefore(_ context.Context, now time.Time) ([]Record, 
 	return changed, nil
 }
 
-func (s *MemoryStore) Delete(_ context.Context, stageID string) error {
+func (s *MemoryStore) Delete(ctx context.Context, stageID string) error {
 	if s == nil {
 		return errors.New("install stage store is nil")
 	}
@@ -263,28 +291,38 @@ func (s *MemoryStore) Delete(_ context.Context, stageID string) error {
 	if stageID == "" {
 		return ErrInvalidStage
 	}
+	ownerEnvHash, err := ownerEnvironment(ctx)
+	if err != nil {
+		return err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if _, ok := s.records[stageID]; !ok {
+	key := recordKey(ownerEnvHash, stageID)
+	if _, ok := s.records[key]; !ok {
 		return ErrNotFound
 	}
-	delete(s.records, stageID)
+	delete(s.records, key)
 	return nil
 }
 
-func (s *MemoryStore) update(stageID string, now time.Time, mutate func(Record, time.Time) (Record, error)) (Record, error) {
+func (s *MemoryStore) update(ctx context.Context, stageID string, now time.Time, mutate func(Record, time.Time) (Record, error)) (Record, error) {
 	if s == nil {
 		return Record{}, errors.New("install stage store is nil")
 	}
 	if stageID == "" {
 		return Record{}, ErrInvalidStage
 	}
+	ownerEnvHash, err := ownerEnvironment(ctx)
+	if err != nil {
+		return Record{}, err
+	}
 	if now.IsZero() {
 		now = s.now()
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	record, ok := s.records[stageID]
+	key := recordKey(ownerEnvHash, stageID)
+	record, ok := s.records[key]
 	if !ok {
 		return Record{}, ErrNotFound
 	}
@@ -292,7 +330,7 @@ func (s *MemoryStore) update(stageID string, now time.Time, mutate func(Record, 
 	if err != nil {
 		return Record{}, err
 	}
-	s.records[stageID] = cloneRecord(updated)
+	s.records[key] = cloneRecord(updated)
 	return updated, nil
 }
 
@@ -332,6 +370,22 @@ func recordFromCreate(req CreateRequest, now time.Time) (Record, error) {
 		CreatedAt:         now.UTC(),
 		UpdatedAt:         now.UTC(),
 	}, nil
+}
+
+func ownerEnvironment(ctx context.Context) (string, error) {
+	session, err := sessionctx.Require(ctx)
+	if err != nil {
+		return "", err
+	}
+	scope, err := session.ResourceScope(sessionctx.ScopeEnvironment)
+	if err != nil {
+		return "", err
+	}
+	return scope.OwnerEnvHash, nil
+}
+
+func recordKey(ownerEnvHash, stageID string) string {
+	return ownerEnvHash + "\x00" + stageID
 }
 
 func validAction(action Action) bool {

@@ -13,7 +13,7 @@ import (
 )
 
 const installStageSelectColumns = `
-SELECT stage_id, action, status, plugin_instance_id, publisher_id, plugin_id, version,
+SELECT owner_env_hash, stage_id, action, status, plugin_instance_id, publisher_id, plugin_id, version,
        package_hash, manifest_hash, entries_hash, requested_trust, resolved_trust,
        validation_summary_json, error_code, error_message, expires_at, created_at,
        updated_at, finished_at`
@@ -59,6 +59,11 @@ func (s *SQLiteStore) Create(ctx context.Context, req CreateRequest) (Record, er
 	if err != nil {
 		return Record{}, err
 	}
+	ownerEnvHash, err := ownerEnvironment(ctx)
+	if err != nil {
+		return Record{}, err
+	}
+	record.OwnerEnvHash = ownerEnvHash
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -69,7 +74,7 @@ func (s *SQLiteStore) Create(ctx context.Context, req CreateRequest) (Record, er
 	}
 	defer rollbackUnlessCommitted(tx)
 
-	existing, exists, err := getSQLiteStage(ctx, tx, record.StageID)
+	existing, exists, err := getSQLiteStage(ctx, tx, ownerEnvHash, record.StageID)
 	if err != nil {
 		return Record{}, err
 	}
@@ -93,10 +98,14 @@ func (s *SQLiteStore) Get(ctx context.Context, stageID string) (Record, error) {
 	if stageID == "" {
 		return Record{}, ErrInvalidStage
 	}
+	ownerEnvHash, err := ownerEnvironment(ctx)
+	if err != nil {
+		return Record{}, err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	record, exists, err := getSQLiteStage(ctx, s.db, stageID)
+	record, exists, err := getSQLiteStage(ctx, s.db, ownerEnvHash, stageID)
 	if err != nil {
 		return Record{}, err
 	}
@@ -114,13 +123,17 @@ func (s *SQLiteStore) List(ctx context.Context, req ListRequest) ([]Record, erro
 	if req.Status != "" && !validStatus(req.Status) {
 		return nil, ErrInvalidStage
 	}
+	ownerEnvHash, err := ownerEnvironment(ctx)
+	if err != nil {
+		return nil, err
+	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	query := installStageSelectColumns + ` FROM plugin_install_stages`
-	args := []any{}
-	conditions := []string{}
+	args := []any{ownerEnvHash}
+	conditions := []string{`owner_env_hash = ?`}
 	if pluginInstanceID != "" {
 		conditions = append(conditions, `plugin_instance_id = ?`)
 		args = append(args, pluginInstanceID)
@@ -200,6 +213,10 @@ func (s *SQLiteStore) ExpireBefore(ctx context.Context, now time.Time) ([]Record
 	if now.IsZero() {
 		now = time.Now().UTC()
 	}
+	ownerEnvHash, err := ownerEnvironment(ctx)
+	if err != nil {
+		return nil, err
+	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -210,7 +227,7 @@ func (s *SQLiteStore) ExpireBefore(ctx context.Context, now time.Time) ([]Record
 	}
 	defer rollbackUnlessCommitted(tx)
 
-	rows, err := tx.QueryContext(ctx, installStageSelectColumns+` FROM plugin_install_stages WHERE status IN (?, ?) AND expires_at <= ? ORDER BY created_at ASC, stage_id ASC`, string(StatusStaged), string(StatusPrepared), now.UTC().UnixNano())
+	rows, err := tx.QueryContext(ctx, installStageSelectColumns+` FROM plugin_install_stages WHERE owner_env_hash = ? AND status IN (?, ?) AND expires_at <= ? ORDER BY created_at ASC, stage_id ASC`, ownerEnvHash, string(StatusStaged), string(StatusPrepared), now.UTC().UnixNano())
 	if err != nil {
 		return nil, err
 	}
@@ -258,11 +275,15 @@ func (s *SQLiteStore) Delete(ctx context.Context, stageID string) error {
 	if stageID == "" {
 		return ErrInvalidStage
 	}
+	ownerEnvHash, err := ownerEnvironment(ctx)
+	if err != nil {
+		return err
+	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	result, err := s.db.ExecContext(ctx, `DELETE FROM plugin_install_stages WHERE stage_id = ?`, stageID)
+	result, err := s.db.ExecContext(ctx, `DELETE FROM plugin_install_stages WHERE owner_env_hash = ? AND stage_id = ?`, ownerEnvHash, stageID)
 	if err != nil {
 		return err
 	}
@@ -283,6 +304,10 @@ func (s *SQLiteStore) update(ctx context.Context, stageID string, now time.Time,
 	if stageID == "" {
 		return Record{}, ErrInvalidStage
 	}
+	ownerEnvHash, err := ownerEnvironment(ctx)
+	if err != nil {
+		return Record{}, err
+	}
 	if now.IsZero() {
 		now = time.Now().UTC()
 	}
@@ -296,7 +321,7 @@ func (s *SQLiteStore) update(ctx context.Context, stageID string, now time.Time,
 	}
 	defer rollbackUnlessCommitted(tx)
 
-	record, exists, err := getSQLiteStage(ctx, tx, stageID)
+	record, exists, err := getSQLiteStage(ctx, tx, ownerEnvHash, stageID)
 	if err != nil {
 		return Record{}, err
 	}
@@ -332,9 +357,26 @@ func (s *SQLiteStore) initializeSchema(ctx context.Context) error {
 		return err
 	}
 	defer rollbackUnlessCommitted(tx)
+	legacy, err := installStageSchemaNeedsOwnerMigration(ctx, tx)
+	if err != nil {
+		return err
+	}
+	if legacy {
+		var count int64
+		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM plugin_install_stages`).Scan(&count); err != nil {
+			return err
+		}
+		if count != 0 {
+			return ErrOwnerScopeMigrationRequired
+		}
+		if _, err := tx.ExecContext(ctx, `DROP TABLE plugin_install_stages`); err != nil {
+			return err
+		}
+	}
 	if _, err := tx.ExecContext(ctx, `
 CREATE TABLE IF NOT EXISTS plugin_install_stages (
-	stage_id TEXT PRIMARY KEY,
+	owner_env_hash TEXT NOT NULL,
+	stage_id TEXT NOT NULL,
 	action TEXT NOT NULL,
 	status TEXT NOT NULL,
 	plugin_instance_id TEXT NOT NULL,
@@ -352,21 +394,53 @@ CREATE TABLE IF NOT EXISTS plugin_install_stages (
 	expires_at INTEGER NOT NULL,
 	created_at INTEGER NOT NULL,
 	updated_at INTEGER NOT NULL,
-	finished_at INTEGER
+	finished_at INTEGER,
+	PRIMARY KEY(owner_env_hash, stage_id)
 )`); err != nil {
 		return err
 	}
-	if _, err := tx.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_plugin_install_stages_plugin ON plugin_install_stages(plugin_instance_id, created_at)`); err != nil {
+	if _, err := tx.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_plugin_install_stages_plugin ON plugin_install_stages(owner_env_hash, plugin_instance_id, created_at)`); err != nil {
 		return err
 	}
-	if _, err := tx.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_plugin_install_stages_status_expiry ON plugin_install_stages(status, expires_at)`); err != nil {
+	if _, err := tx.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_plugin_install_stages_status_expiry ON plugin_install_stages(owner_env_hash, status, expires_at)`); err != nil {
 		return err
 	}
 	return tx.Commit()
 }
 
-func getSQLiteStage(ctx context.Context, q sqliteQuerier, stageID string) (Record, bool, error) {
-	row := q.QueryRowContext(ctx, installStageSelectColumns+` FROM plugin_install_stages WHERE stage_id = ?`, stageID)
+func installStageSchemaNeedsOwnerMigration(ctx context.Context, tx *sql.Tx) (bool, error) {
+	rows, err := tx.QueryContext(ctx, `PRAGMA table_info(plugin_install_stages)`)
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+	foundTable := false
+	foundOwner := false
+	for rows.Next() {
+		foundTable = true
+		var (
+			columnID    int
+			name        string
+			columnType  string
+			notNull     int
+			defaultExpr sql.NullString
+			primaryKey  int
+		)
+		if err := rows.Scan(&columnID, &name, &columnType, &notNull, &defaultExpr, &primaryKey); err != nil {
+			return false, err
+		}
+		if name == "owner_env_hash" {
+			foundOwner = true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return false, err
+	}
+	return foundTable && !foundOwner, nil
+}
+
+func getSQLiteStage(ctx context.Context, q sqliteQuerier, ownerEnvHash, stageID string) (Record, bool, error) {
+	row := q.QueryRowContext(ctx, installStageSelectColumns+` FROM plugin_install_stages WHERE owner_env_hash = ? AND stage_id = ?`, ownerEnvHash, stageID)
 	record, err := scanSQLiteStage(row)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -378,18 +452,21 @@ func getSQLiteStage(ctx context.Context, q sqliteQuerier, stageID string) (Recor
 }
 
 func upsertSQLiteStage(ctx context.Context, tx *sql.Tx, record Record) error {
+	if strings.TrimSpace(record.OwnerEnvHash) == "" {
+		return ErrInvalidStage
+	}
 	validationSummaryJSON, err := encodeStringMap(record.ValidationSummary)
 	if err != nil {
 		return err
 	}
 	_, err = tx.ExecContext(ctx, `
 INSERT INTO plugin_install_stages(
-	stage_id, action, status, plugin_instance_id, publisher_id, plugin_id, version,
+	owner_env_hash, stage_id, action, status, plugin_instance_id, publisher_id, plugin_id, version,
 	package_hash, manifest_hash, entries_hash, requested_trust, resolved_trust,
 	validation_summary_json, error_code, error_message, expires_at, created_at,
 	updated_at, finished_at
-) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-ON CONFLICT(stage_id) DO UPDATE SET
+) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT(owner_env_hash, stage_id) DO UPDATE SET
 	action = excluded.action,
 	status = excluded.status,
 	plugin_instance_id = excluded.plugin_instance_id,
@@ -408,6 +485,7 @@ ON CONFLICT(stage_id) DO UPDATE SET
 	created_at = excluded.created_at,
 	updated_at = excluded.updated_at,
 	finished_at = excluded.finished_at`,
+		record.OwnerEnvHash,
 		record.StageID,
 		string(record.Action),
 		string(record.Status),
@@ -441,6 +519,7 @@ func scanSQLiteStage(scanner sqliteScanner) (Record, error) {
 	var updatedAt int64
 	var finishedAt sql.NullInt64
 	if err := scanner.Scan(
+		&record.OwnerEnvHash,
 		&record.StageID,
 		&action,
 		&status,
@@ -465,7 +544,7 @@ func scanSQLiteStage(scanner sqliteScanner) (Record, error) {
 	}
 	record.Action = Action(action)
 	record.Status = Status(status)
-	if !validAction(record.Action) || !validStatus(record.Status) {
+	if strings.TrimSpace(record.OwnerEnvHash) == "" || !validAction(record.Action) || !validStatus(record.Status) {
 		return Record{}, ErrInvalidStage
 	}
 	validationSummary, err := decodeStringMap(validationSummaryJSON)

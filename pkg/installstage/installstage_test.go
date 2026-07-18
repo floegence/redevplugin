@@ -2,18 +2,34 @@ package installstage
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/floegence/redevplugin/pkg/sessionctx"
 )
+
+func installStageTestContext() context.Context {
+	return installStageTestContextFor("owner_user_hash_test", "owner_env_hash_test")
+}
+
+func installStageTestContextFor(ownerUserHash, ownerEnvHash string) context.Context {
+	return sessionctx.WithContext(context.Background(), sessionctx.Context{
+		OwnerSessionHash:     "owner_session_hash_test",
+		OwnerUserHash:        ownerUserHash,
+		OwnerEnvHash:         ownerEnvHash,
+		SessionChannelIDHash: "session_channel_id_hash_test",
+	})
+}
 
 func TestStoreCreatePrepareCommitAndDelete(t *testing.T) {
 	for _, tc := range storeCases() {
 		t.Run(tc.name, func(t *testing.T) {
-			ctx := context.Background()
+			ctx := installStageTestContext()
 			store := tc.open(t)
 			now := time.Date(2026, 7, 2, 12, 0, 0, 0, time.UTC)
 			created, err := store.Create(ctx, fixtureCreateRequest("stage_commit", now))
@@ -90,7 +106,7 @@ func TestStoreCreatePrepareCommitAndDelete(t *testing.T) {
 func TestStoreMarkFailedAndExpire(t *testing.T) {
 	for _, tc := range storeCases() {
 		t.Run(tc.name, func(t *testing.T) {
-			ctx := context.Background()
+			ctx := installStageTestContext()
 			store := tc.open(t)
 			now := time.Date(2026, 7, 2, 13, 0, 0, 0, time.UTC)
 			failing, err := store.Create(ctx, fixtureCreateRequest("stage_fail", now))
@@ -137,26 +153,30 @@ func TestStoreRejectsInvalidRequests(t *testing.T) {
 	for _, tc := range storeCases() {
 		t.Run(tc.name, func(t *testing.T) {
 			store := tc.open(t)
-			if _, err := store.Create(context.Background(), CreateRequest{}); !errors.Is(err, ErrInvalidStage) {
+			if _, err := store.Create(installStageTestContext(), CreateRequest{}); !errors.Is(err, ErrInvalidStage) {
 				t.Fatalf("Create() error = %v, want ErrInvalidStage", err)
 			}
 			now := time.Date(2026, 7, 2, 14, 0, 0, 0, time.UTC)
 			req := fixtureCreateRequest("stage_invalid", now)
 			req.ExpiresAt = now
-			if _, err := store.Create(context.Background(), req); !errors.Is(err, ErrInvalidStage) {
+			if _, err := store.Create(installStageTestContext(), req); !errors.Is(err, ErrInvalidStage) {
 				t.Fatalf("Create(expired) error = %v, want ErrInvalidStage", err)
 			}
-			if _, err := store.Get(context.Background(), " "); !errors.Is(err, ErrInvalidStage) {
+			if _, err := store.Get(installStageTestContext(), " "); !errors.Is(err, ErrInvalidStage) {
 				t.Fatalf("Get() error = %v, want ErrInvalidStage", err)
 			}
-			if _, err := store.MarkCommitted(context.Background(), MarkCommittedRequest{}); !errors.Is(err, ErrInvalidStage) {
+			if _, err := store.MarkCommitted(installStageTestContext(), MarkCommittedRequest{}); !errors.Is(err, ErrInvalidStage) {
 				t.Fatalf("MarkCommitted() error = %v, want ErrInvalidStage", err)
 			}
-			if _, err := store.List(context.Background(), ListRequest{Status: "bad"}); !errors.Is(err, ErrInvalidStage) {
+			if _, err := store.List(installStageTestContext(), ListRequest{Status: "bad"}); !errors.Is(err, ErrInvalidStage) {
 				t.Fatalf("List() error = %v, want ErrInvalidStage", err)
 			}
-			if err := store.Delete(context.Background(), " "); !errors.Is(err, ErrInvalidStage) {
+			if err := store.Delete(installStageTestContext(), " "); !errors.Is(err, ErrInvalidStage) {
 				t.Fatalf("Delete() error = %v, want ErrInvalidStage", err)
+			}
+			valid := fixtureCreateRequest("stage_no_session", now)
+			if _, err := store.Create(context.Background(), valid); !errors.Is(err, sessionctx.ErrSessionRequired) {
+				t.Fatalf("Create(no session) error = %v, want authenticated session", err)
 			}
 		})
 	}
@@ -177,7 +197,7 @@ func TestNewStageID(t *testing.T) {
 }
 
 func TestSQLiteStorePersistsAcrossOpen(t *testing.T) {
-	ctx := context.Background()
+	ctx := installStageTestContext()
 	path := filepath.Join(t.TempDir(), "install-stage.sqlite")
 	store, err := NewSQLiteStore(ctx, path)
 	if err != nil {
@@ -215,6 +235,103 @@ func TestSQLiteStorePersistsAcrossOpen(t *testing.T) {
 	}
 }
 
+func TestStoreIsolatesEnvironmentOwners(t *testing.T) {
+	for _, tc := range storeCases() {
+		t.Run(tc.name, func(t *testing.T) {
+			store := tc.open(t)
+			now := time.Date(2026, 7, 18, 2, 0, 0, 0, time.UTC)
+			environmentA := installStageTestContextFor("owner_user_a", "owner_env_a")
+			environmentB := installStageTestContextFor("owner_user_b", "owner_env_b")
+			requestA := fixtureCreateRequest("stage_shared", now)
+			requestB := requestA
+			requestB.Version = "2.0.0"
+			createdA, err := store.Create(environmentA, requestA)
+			if err != nil {
+				t.Fatal(err)
+			}
+			createdB, err := store.Create(environmentB, requestB)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if createdA.OwnerEnvHash != "owner_env_a" || createdB.OwnerEnvHash != "owner_env_b" {
+				t.Fatalf("owners = %q, %q", createdA.OwnerEnvHash, createdB.OwnerEnvHash)
+			}
+			for _, item := range []struct {
+				ctx     context.Context
+				version string
+			}{{environmentA, "1.2.3"}, {environmentB, "2.0.0"}} {
+				record, err := store.Get(item.ctx, "stage_shared")
+				if err != nil {
+					t.Fatal(err)
+				}
+				if record.Version != item.version {
+					t.Fatalf("Get() version = %q, want %q", record.Version, item.version)
+				}
+				listed, err := store.List(item.ctx, ListRequest{})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if len(listed) != 1 || listed[0].Version != item.version {
+					t.Fatalf("List() = %#v", listed)
+				}
+			}
+			expired, err := store.ExpireBefore(environmentA, now.Add(2*time.Hour))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(expired) != 1 || expired[0].OwnerEnvHash != "owner_env_a" {
+				t.Fatalf("ExpireBefore() = %#v", expired)
+			}
+			recordB, err := store.Get(environmentB, "stage_shared")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if recordB.Status != StatusStaged {
+				t.Fatalf("other environment status = %q", recordB.Status)
+			}
+		})
+	}
+}
+
+func TestSQLiteStoreFailsClosedForOwnerlessRecords(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "legacy.sqlite")
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`CREATE TABLE plugin_install_stages (stage_id TEXT PRIMARY KEY, action TEXT NOT NULL, status TEXT NOT NULL, plugin_instance_id TEXT NOT NULL, publisher_id TEXT NOT NULL, plugin_id TEXT NOT NULL, version TEXT NOT NULL, package_hash TEXT NOT NULL, manifest_hash TEXT NOT NULL, entries_hash TEXT NOT NULL, requested_trust TEXT NOT NULL, resolved_trust TEXT NOT NULL, validation_summary_json TEXT NOT NULL, error_code TEXT NOT NULL, error_message TEXT NOT NULL, expires_at INTEGER NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, finished_at INTEGER); INSERT INTO plugin_install_stages VALUES('stage_legacy', 'install', 'staged', 'plugin_legacy', 'publisher', 'plugin', '1.0.0', 'p', 'm', 'e', '', '', '{}', '', '', 2, 1, 1, NULL)`); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := NewSQLiteStore(context.Background(), path); !errors.Is(err, ErrOwnerScopeMigrationRequired) {
+		t.Fatalf("NewSQLiteStore() error = %v, want migration required", err)
+	}
+}
+
+func TestSQLiteStoreRebuildsEmptyOwnerlessTable(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "legacy-empty.sqlite")
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`CREATE TABLE plugin_install_stages (stage_id TEXT PRIMARY KEY, action TEXT NOT NULL, status TEXT NOT NULL, plugin_instance_id TEXT NOT NULL, publisher_id TEXT NOT NULL, plugin_id TEXT NOT NULL, version TEXT NOT NULL, package_hash TEXT NOT NULL, manifest_hash TEXT NOT NULL, entries_hash TEXT NOT NULL, requested_trust TEXT NOT NULL, resolved_trust TEXT NOT NULL, validation_summary_json TEXT NOT NULL, error_code TEXT NOT NULL, error_message TEXT NOT NULL, expires_at INTEGER NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, finished_at INTEGER)`); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	store, err := NewSQLiteStore(context.Background(), path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if _, err := store.Create(installStageTestContext(), fixtureCreateRequest("stage_new", time.Date(2026, 7, 18, 3, 0, 0, 0, time.UTC))); err != nil {
+		t.Fatal(err)
+	}
+}
+
 type storeCase struct {
 	name string
 	open func(t *testing.T) Store
@@ -233,7 +350,7 @@ func storeCases() []storeCase {
 			name: "sqlite",
 			open: func(t *testing.T) Store {
 				t.Helper()
-				store, err := NewSQLiteStore(context.Background(), filepath.Join(t.TempDir(), "install-stage.sqlite"))
+				store, err := NewSQLiteStore(installStageTestContext(), filepath.Join(t.TempDir(), "install-stage.sqlite"))
 				if err != nil {
 					t.Fatal(err)
 				}
