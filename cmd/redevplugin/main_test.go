@@ -25,6 +25,7 @@ import (
 	"github.com/floegence/redevplugin/pkg/pluginpkg"
 	"github.com/floegence/redevplugin/pkg/registry"
 	"github.com/floegence/redevplugin/pkg/runtimeclient"
+	"github.com/floegence/redevplugin/pkg/runtimetarget"
 	"github.com/floegence/redevplugin/pkg/secrets"
 	"github.com/floegence/redevplugin/pkg/sessionctx"
 	"github.com/floegence/redevplugin/pkg/settings"
@@ -336,7 +337,7 @@ func TestCLIScaffoldRunsGeneratedWorkerThroughBuiltRustRuntime(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = h.Close() })
 	health, err := h.StartRuntime(ctx, host.StartRuntimeRequest{
-		Target: host.RuntimeTarget{OS: goruntime.GOOS, Arch: goruntime.GOARCH},
+		Target: mustCurrentCommandRuntimeTarget(t),
 	})
 	if err != nil {
 		t.Fatalf("StartRuntime() error = %v", err)
@@ -498,13 +499,14 @@ func TestDescribeCommandRuntimeUsesExactArtifactAndPlatformContract(t *testing.T
 	if err := os.WriteFile(runtimePath, content, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	descriptor, err := describeCommandRuntime(runtimePath, runtimeclient.Target{OS: goruntime.GOOS, Arch: goruntime.GOARCH})
+	target := mustCurrentCommandRuntimeTarget(t)
+	descriptor, err := describeCommandRuntime(runtimePath, target)
 	if err != nil {
 		t.Fatalf("describeCommandRuntime() error = %v", err)
 	}
 	sum := sha256.Sum256(content)
 	if descriptor.Version().String() != version.RuntimeVersion ||
-		descriptor.Target() != (runtimeclient.Target{OS: goruntime.GOOS, Arch: goruntime.GOARCH}) ||
+		descriptor.Target() != target ||
 		descriptor.IPCVersion() != version.RustIPCVersion ||
 		descriptor.WASMABIVersion() != version.WASMABIVersion ||
 		descriptor.ArtifactSHA256() != fmt.Sprintf("%x", sum) {
@@ -517,7 +519,7 @@ func TestDescribeCommandRuntimeRejectsNonCanonicalRuntimeVersion(t *testing.T) {
 	version.RuntimeVersion = "v0.5.0"
 	t.Cleanup(func() { version.RuntimeVersion = original })
 
-	_, err := describeCommandRuntime(filepath.Join(t.TempDir(), "missing-runtime"), runtimeclient.Target{OS: goruntime.GOOS, Arch: goruntime.GOARCH})
+	_, err := describeCommandRuntime(filepath.Join(t.TempDir(), "missing-runtime"), mustCurrentCommandRuntimeTarget(t))
 	if !errors.Is(err, version.ErrInvalidSemVer) {
 		t.Fatalf("describeCommandRuntime() error = %v, want %v", err, version.ErrInvalidSemVer)
 	}
@@ -550,11 +552,20 @@ func TestCommandRuntimeManagerRejectsMissingDescriptor(t *testing.T) {
 
 func mustDescribeCommandRuntime(t *testing.T, path string) runtimeclient.RuntimeDescriptor {
 	t.Helper()
-	descriptor, err := describeCommandRuntime(path, runtimeclient.Target{OS: goruntime.GOOS, Arch: goruntime.GOARCH})
+	descriptor, err := describeCommandRuntime(path, mustCurrentCommandRuntimeTarget(t))
 	if err != nil {
 		t.Fatal(err)
 	}
 	return descriptor
+}
+
+func mustCurrentCommandRuntimeTarget(t *testing.T) runtimetarget.Target {
+	t.Helper()
+	target, err := runtimetarget.Current()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return target
 }
 
 func TestCLIDevLifecyclePersistsGeneratedPluginState(t *testing.T) {

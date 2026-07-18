@@ -332,7 +332,7 @@ Machine-readable contracts are first-class platform artifacts:
 - `spec/plugin/opaque-surface-document-v3.schema.json`;
 - `spec/plugin/opaque-surface-transport-v4.schema.json`;
 - `spec/plugin/compatibility-manifest-v6.schema.json`;
-- `spec/plugin/release-manifest-v3.schema.json`;
+- `spec/plugin/release-manifest-v4.schema.json`;
 - `spec/plugin/performance-contract-v1.json`;
 - `spec/plugin/performance-evidence-v1.schema.json`;
 - `spec/plugin/ipc-v4.schema.json`;

@@ -15,7 +15,6 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
-	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -36,6 +35,7 @@ import (
 	"github.com/floegence/redevplugin/pkg/pluginpkg"
 	"github.com/floegence/redevplugin/pkg/registry"
 	"github.com/floegence/redevplugin/pkg/runtimeclient"
+	"github.com/floegence/redevplugin/pkg/runtimetarget"
 	"github.com/floegence/redevplugin/pkg/secrets"
 	"github.com/floegence/redevplugin/pkg/security"
 	"github.com/floegence/redevplugin/pkg/sessionctx"
@@ -11819,7 +11819,7 @@ type recordingRuntimeManager struct {
 	startCalls        int
 	stopCalls         int
 	revokeCalls       int
-	startedTarget     runtimeclient.Target
+	startedTarget     runtimetarget.Target
 	health            runtimeclient.Health
 	descriptor        runtimeclient.RuntimeDescriptor
 	bindingDescriptor runtimeclient.RuntimeDescriptor
@@ -11869,9 +11869,13 @@ func hostTestRuntimeDescriptor() runtimeclient.RuntimeDescriptor {
 	if err != nil {
 		panic(err)
 	}
+	target, err := runtimetarget.Current()
+	if err != nil {
+		panic(err)
+	}
 	descriptor, err := runtimeclient.NewRuntimeDescriptor(
 		runtimeVersion,
-		runtimeclient.Target{OS: runtime.GOOS, Arch: runtime.GOARCH},
+		target,
 		version.RustIPCVersion,
 		version.WASMABIVersion,
 		strings.Repeat("a", 64),
@@ -12091,13 +12095,13 @@ func (s *recordingSecretStore) List(_ context.Context, req secrets.ListRequest) 
 	return result, nil
 }
 
-func (r *recordingRuntimeManager) Start(_ context.Context, target runtimeclient.Target) (runtimeclient.ManagerHealth, error) {
+func (r *recordingRuntimeManager) Start(_ context.Context, target runtimetarget.Target) (runtimeclient.ManagerHealth, error) {
 	r.startCalls++
 	r.startedTarget = target
 	return r.managerHealth(), r.startErr
 }
 
-func (r *recordingRuntimeManager) Preflight(_ context.Context, target runtimeclient.Target) (runtimeclient.RuntimeDescriptor, error) {
+func (r *recordingRuntimeManager) Preflight(_ context.Context, target runtimetarget.Target) (runtimeclient.RuntimeDescriptor, error) {
 	r.preflightCalls++
 	if r.preflightErr != nil {
 		return runtimeclient.RuntimeDescriptor{}, r.preflightErr

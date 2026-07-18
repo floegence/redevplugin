@@ -34,6 +34,7 @@ import (
 	"github.com/floegence/redevplugin/pkg/pluginpkg"
 	"github.com/floegence/redevplugin/pkg/registry"
 	"github.com/floegence/redevplugin/pkg/runtimeclient"
+	"github.com/floegence/redevplugin/pkg/runtimetarget"
 	"github.com/floegence/redevplugin/pkg/security"
 	"github.com/floegence/redevplugin/pkg/sessionctx"
 	"github.com/floegence/redevplugin/pkg/settings"
@@ -728,7 +729,12 @@ func publicOperationRecords(records []operation.Record) []operationResponse {
 }
 
 type startRuntimeRequest struct {
-	Target host.RuntimeTarget `json:"target,omitempty"`
+	Target runtimeTargetRequest `json:"target"`
+}
+
+type runtimeTargetRequest struct {
+	OS   string `json:"os"`
+	Arch string `json:"arch"`
 }
 
 type emptyRequest struct{}
@@ -1824,7 +1830,12 @@ func (h Handler) handleStartRuntime(w http.ResponseWriter, r *http.Request) {
 		writeMutationInvalidRequestError(w, err)
 		return
 	}
-	health, err := h.host.StartRuntime(r.Context(), host.StartRuntimeRequest{Target: req.Target})
+	target, err := runtimetarget.FromParts(req.Target.OS, req.Target.Arch)
+	if err != nil {
+		writeMutationInvalidRequestError(w, err)
+		return
+	}
+	health, err := h.host.StartRuntime(r.Context(), host.StartRuntimeRequest{Target: target})
 	if err != nil {
 		code, status := runtimeManagementError(err)
 		writeMutationError(w, status, code, h.publicFailureMessage(r.Context(), "runtime.start", code, err), errorDetails{}, mutation.ForError(err))
@@ -2752,6 +2763,9 @@ func errorCodeForBridgeError(err error) security.ErrorCode {
 func runtimeManagementError(err error) (security.ErrorCode, int) {
 	if errors.Is(err, host.ErrActionDenied) {
 		return security.ErrActionDenied, http.StatusForbidden
+	}
+	if errors.Is(err, runtimetarget.ErrUnsupported) {
+		return security.ErrInvalidRequest, http.StatusBadRequest
 	}
 	return security.ErrRuntimeUnavailable, http.StatusServiceUnavailable
 }

@@ -15,7 +15,6 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	goruntime "runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -38,6 +37,7 @@ import (
 	"github.com/floegence/redevplugin/pkg/pluginpkg"
 	"github.com/floegence/redevplugin/pkg/registry"
 	"github.com/floegence/redevplugin/pkg/runtimeclient"
+	"github.com/floegence/redevplugin/pkg/runtimetarget"
 	"github.com/floegence/redevplugin/pkg/secrets"
 	"github.com/floegence/redevplugin/pkg/security"
 	"github.com/floegence/redevplugin/pkg/sessionctx"
@@ -408,7 +408,10 @@ func TestStressGateRuntimeRevokeACKP95(t *testing.T) {
 	ctx, cancel := context.WithTimeout(stressTestContext(), 15*time.Second)
 	defer cancel()
 
-	target := runtimeclient.Target{OS: goruntime.GOOS, Arch: goruntime.GOARCH}
+	target, err := runtimetarget.Current()
+	if err != nil {
+		t.Fatal(err)
+	}
 	supervisor, err := runtimeclient.NewProcessSupervisor(runtimeclient.ProcessSupervisorOptions{
 		Limits:                runtimeclient.DefaultRuntimeLimits(),
 		HandshakeTimeout:      15 * time.Second,
@@ -1034,9 +1037,14 @@ type stressIPCFrame struct {
 }
 
 type stressHelloPayload struct {
-	Target       runtimeclient.Target        `json:"target"`
+	Target       stressRuntimeTargetWire     `json:"target"`
 	ChannelNonce string                      `json:"channel_nonce"`
 	Limits       runtimeclient.RuntimeLimits `json:"limits"`
+}
+
+type stressRuntimeTargetWire struct {
+	OS   string `json:"os"`
+	Arch string `json:"arch"`
 }
 
 type stressHeartbeatPayload struct {
@@ -1181,7 +1189,7 @@ func stressRawJSON(value any) json.RawMessage {
 	return raw
 }
 
-func stressRuntimeDescriptor(t *testing.T, path string, target runtimeclient.Target) runtimeclient.RuntimeDescriptor {
+func stressRuntimeDescriptor(t *testing.T, path string, target runtimetarget.Target) runtimeclient.RuntimeDescriptor {
 	t.Helper()
 	file, err := os.Open(path)
 	if err != nil {

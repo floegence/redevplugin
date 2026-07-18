@@ -113,6 +113,11 @@ if ! command -v npm >/dev/null 2>&1; then
   exit 1
 fi
 
+RUNTIME_PLATFORM_TARGET=""
+if [[ -n "$RUNTIME_TARGET" ]]; then
+  RUNTIME_PLATFORM_TARGET=$(node "$ROOT_DIR/scripts/runtime_targets.mjs" --platform-for-build "$RUNTIME_TARGET")
+fi
+
 if [[ -n "$PERFORMANCE_EVIDENCE" ]]; then
   GENERATED_AT=$(node --input-type=module - "$PERFORMANCE_EVIDENCE" "$VERSION" "$SOURCE_COMMIT" <<'NODE'
 import { readFileSync } from "node:fs";
@@ -244,7 +249,7 @@ else
     --generated-at "$GENERATED_AT"
 fi
 
-node --input-type=module - "$OUT_DIR" "$VERSION" "$RUNTIME_TARGET" "$SOURCE_COMMIT" "$GENERATED_AT" <<'NODE'
+node --input-type=module - "$OUT_DIR" "$VERSION" "$RUNTIME_PLATFORM_TARGET" "$SOURCE_COMMIT" "$GENERATED_AT" <<'NODE'
 import { createHash } from "node:crypto";
 import { readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join, relative } from "node:path";
@@ -302,7 +307,7 @@ writeFileSync(
   join(outDir, "release-manifest.json"),
   JSON.stringify(
     {
-      schema_version: "redevplugin.release_manifest.v3",
+      schema_version: "redevplugin.release_manifest.v4",
       version,
       source_commit: sourceCommit,
       runtime_target: runtimeTarget || null,

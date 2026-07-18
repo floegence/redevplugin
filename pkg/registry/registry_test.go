@@ -11,6 +11,7 @@ import (
 	"github.com/floegence/redevplugin/pkg/manifest"
 	"github.com/floegence/redevplugin/pkg/permissions"
 	"github.com/floegence/redevplugin/pkg/plugindata"
+	"github.com/floegence/redevplugin/pkg/runtimetarget"
 )
 
 func TestStoreRevisionsAndList(t *testing.T) {
@@ -367,13 +368,13 @@ func TestSQLiteStorePersistsRecordsAcrossOpen(t *testing.T) {
 		Manifest:    manifest.Manifest{Plugin: manifest.Plugin{PluginID: "com.example.persist", Version: "1.0.0"}},
 		RuntimeRequirement: &RuntimeRequirement{
 			MinVersion:       "0.5.0",
-			SupportedTargets: []string{"darwin/arm64", "linux/amd64"},
+			SupportedTargets: []runtimetarget.Target{runtimetarget.DarwinARM64, runtimetarget.LinuxAMD64},
 		},
 		VersionHistory: []PluginVersion{{
 			Version: "0.9.0",
 			RuntimeRequirement: &RuntimeRequirement{
 				MinVersion:       "0.4.3",
-				SupportedTargets: []string{"linux/amd64"},
+				SupportedTargets: []runtimetarget.Target{runtimetarget.LinuxAMD64},
 			},
 		}},
 		Metadata: map[string]string{"source": "sqlite-test"},
@@ -486,6 +487,52 @@ func TestSQLiteStoreMigratesRuntimeRequirementColumn(t *testing.T) {
 	}
 	if len(got.VersionHistory) != 1 || got.VersionHistory[0].RuntimeRequirement == nil || got.VersionHistory[0].RuntimeRequirement.MinVersion != "0.4.3" || len(got.VersionHistory[0].RuntimeRequirement.SupportedTargets) != 0 {
 		t.Fatalf("migrated historic runtime requirement = %#v", got.VersionHistory)
+	}
+}
+
+func TestSQLiteStoreRejectsUnknownPersistedRuntimeTargets(t *testing.T) {
+	ctx := registryTestContext()
+	store, err := NewSQLiteStore(ctx, filepath.Join(t.TempDir(), "registry.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	record, err := store.PutPlugin(ctx, PluginRecord{
+		PluginInstanceID: "plugini_unknown_target",
+		PublisherID:      "example",
+		PluginID:         "com.example.unknown-target",
+		Version:          "1.0.0",
+		TrustState:       TrustVerified,
+		EnableState:      EnableDisabled,
+		Manifest:         manifest.Manifest{Plugin: manifest.Plugin{PluginID: "com.example.unknown-target", Version: "1.0.0"}},
+		RuntimeRequirement: &RuntimeRequirement{
+			MinVersion:       "0.5.0",
+			SupportedTargets: []runtimetarget.Target{runtimetarget.LinuxAMD64},
+		},
+	}, PutOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, test := range []struct {
+		column string
+		value  string
+	}{
+		{column: "runtime_requirement_json", value: `{"min_version":"0.5.0","supported_targets":["windows/amd64"]}`},
+		{column: "version_history_json", value: `[{"version":"0.9.0","runtime_requirement":{"min_version":"0.5.0","supported_targets":["linux/x86_64"]}}]`},
+	} {
+		t.Run(test.column, func(t *testing.T) {
+			if _, err := store.db.ExecContext(ctx, `UPDATE plugin_records SET runtime_requirement_json = ?, version_history_json = ? WHERE plugin_instance_id = ?`, `{"min_version":"0.5.0","supported_targets":["linux/amd64"]}`, `[]`, record.PluginInstanceID); err != nil {
+				t.Fatal(err)
+			}
+			query := "UPDATE plugin_records SET " + test.column + " = ? WHERE plugin_instance_id = ?"
+			if _, err := store.db.ExecContext(ctx, query, test.value, record.PluginInstanceID); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := store.GetPlugin(ctx, record.PluginInstanceID); !errors.Is(err, runtimetarget.ErrUnsupported) {
+				t.Fatalf("GetPlugin() error = %v, want ErrUnsupported", err)
+			}
+		})
 	}
 }
 

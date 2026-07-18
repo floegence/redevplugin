@@ -1453,7 +1453,11 @@ func validateIPCGoldenFixture(fixture ipcGoldenFixture) error {
 		if err != nil {
 			return err
 		}
-		descriptor, err := NewRuntimeDescriptor(runtimeVersion, ack.ActualTarget, ack.RustIPCVersion, ack.WASMABIVersion, strings.Repeat("a", 64))
+		target, err := targetFromWire(ack.ActualTarget)
+		if err != nil {
+			return err
+		}
+		descriptor, err := NewRuntimeDescriptor(runtimeVersion, target, ack.RustIPCVersion, ack.WASMABIVersion, strings.Repeat("a", 64))
 		if err != nil {
 			return err
 		}
@@ -3722,7 +3726,7 @@ func runRuntimeClientHelper() {
 		channelNonce = "wrong_channel_nonce"
 	}
 	runtimeVersion := envOrDefault("REDEVPLUGIN_RUNTIMECLIENT_ACK_RUNTIME_VERSION", version.RuntimeVersion)
-	actualTarget := Target{
+	actualTarget := targetWire{
 		OS:   envOrDefault("REDEVPLUGIN_RUNTIMECLIENT_ACK_TARGET_OS", hello.Target.OS),
 		Arch: envOrDefault("REDEVPLUGIN_RUNTIMECLIENT_ACK_TARGET_ARCH", hello.Target.Arch),
 	}

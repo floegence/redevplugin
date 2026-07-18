@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join, relative, resolve, sep } from "node:path";
 
 import { readPerformanceContract, validatePerformanceEvidence } from "./performance_contract.mjs";
+import { runtimeTargetForPlatform, runtimeTargetPayloadForPlatform } from "./runtime_targets.mjs";
 
 const args = process.argv.slice(2);
 const skipExecution = args.includes("--skip-execution");
@@ -33,7 +34,7 @@ verifyRequiredArtifacts(bundleDir);
 verifyExecutableTargets(bundleDir, manifest.runtime_target);
 verifyCompatibility(bundleDir, expectedVersion, manifest, skipExecution);
 verifyPerformanceEvidence(bundleDir, expectedVersion, manifest, allowSmoke);
-verifyRuntimeHello(bundleDir, expectedVersion, skipExecution);
+verifyRuntimeHello(bundleDir, expectedVersion, manifest.runtime_target, skipExecution);
 await verifyNpmTarball(bundleDir, expectedVersion, manifest);
 verifyWorkerSDKCrate(bundleDir, expectedVersion, manifest);
 verifyNoticeEvidence(bundleDir);
@@ -55,7 +56,7 @@ function verifyReleaseManifestShape(manifest, expectedVersion) {
     "worker_sdk",
     "files",
   ], "release manifest");
-  assertEqual(manifest.schema_version, "redevplugin.release_manifest.v3", "release manifest schema_version");
+  assertEqual(manifest.schema_version, "redevplugin.release_manifest.v4", "release manifest schema_version");
   assertEqual(manifest.version, expectedVersion, "release manifest version");
   assertGitCommit(manifest.source_commit, "release manifest source_commit");
   if (manifest.runtime_target !== null && typeof manifest.runtime_target !== "string") {
@@ -129,7 +130,7 @@ function verifyRequiredArtifacts(bundleDir) {
     "contracts/spec/plugin/performance-contract-v1.json",
     "contracts/spec/plugin/performance-evidence-v1.schema.json",
     "contracts/spec/plugin/release-metadata-v5.schema.json",
-    "contracts/spec/plugin/release-manifest-v3.schema.json",
+    "contracts/spec/plugin/release-manifest-v4.schema.json",
     "contracts/spec/plugin/resource-scope-v1.schema.json",
     "contracts/spec/plugin/source-policy-v1.schema.json",
     "contracts/spec/plugin/source-revocations-v1.schema.json",
@@ -239,9 +240,18 @@ function verifyCompatibility(bundleDir, expectedVersion, manifest, skipExecution
   assertEqual(summary.ok, true, "verify-compatibility summary");
 }
 
-function verifyRuntimeHello(bundleDir, expectedVersion, skipExecution) {
+function verifyRuntimeHello(bundleDir, expectedVersion, runtimeTarget, skipExecution) {
   if (skipExecution || process.env.REDEVPLUGIN_SKIP_RUNTIME_EXEC === "1") {
     return;
+  }
+  if (runtimeTarget === null) {
+    fail("release manifest runtime_target is required for runtime execution verification");
+  }
+  let runtimeTargetPayload;
+  try {
+    runtimeTargetPayload = runtimeTargetPayloadForPlatform(runtimeTarget);
+  } catch (error) {
+    fail(error instanceof Error ? error.message : String(error));
   }
   const channelNonce = "release_bundle_nonce_1";
   const limits = {
@@ -263,7 +273,7 @@ function verifyRuntimeHello(bundleDir, expectedVersion, skipExecution) {
       request_id: "hello-1",
       runtime_generation_id: "gen-1",
       payload: {
-        target: { os: process.platform, arch: process.arch },
+        target: runtimeTargetPayload,
         host_process_id: process.pid,
         host_ipc_version: "rust-ipc-v4",
         host_wasm_abi: "redevplugin-wasm-worker-v2",
@@ -323,14 +333,12 @@ function verifyPerformanceEvidence(bundleDir, expectedVersion, manifest, allowSm
 
 function verifyExecutableTargets(bundleDir, runtimeTarget) {
   if (runtimeTarget === null) return;
-  const targets = {
-    "x86_64-unknown-linux-gnu": { format: "elf", machine: 62 },
-    "aarch64-unknown-linux-gnu": { format: "elf", machine: 183 },
-    "x86_64-apple-darwin": { format: "macho", machine: 0x01000007 },
-    "aarch64-apple-darwin": { format: "macho", machine: 0x0100000c },
-  };
-  const expected = targets[runtimeTarget];
-  if (!expected) fail(`unsupported runtime_target ${runtimeTarget}`);
+  let expected;
+  try {
+    expected = runtimeTargetForPlatform(runtimeTarget);
+  } catch (error) {
+    fail(error instanceof Error ? error.message : String(error));
+  }
   for (const relativePath of ["bin/redevplugin", "bin/redevplugin-runtime"]) {
     const bytes = readFileSync(join(bundleDir, relativePath));
     if (bytes.length < 32) fail(`${relativePath} is too small to be a supported executable`);

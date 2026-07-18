@@ -94,12 +94,13 @@ export GOWORK=off
   grep -q '"title": "ReDevPlugin persistent resource scope v1"' spec/plugin/resource-scope-v1.schema.json
   grep -q '"enum": \["user", "environment"\]' spec/plugin/resource-scope-v1.schema.json
   ! grep -q 'owner_session_hash\|session_channel_id_hash' spec/plugin/resource-scope-v1.schema.json
-  grep -q '"schema_version": { "const": "redevplugin.release_manifest.v3" }' spec/plugin/release-manifest-v3.schema.json
-  grep -q '"source_commit"' spec/plugin/release-manifest-v3.schema.json
-  grep -q '"npm_package"' spec/plugin/release-manifest-v3.schema.json
-  grep -q '"worker_sdk"' spec/plugin/release-manifest-v3.schema.json
-  grep -q '"runtime_target"' spec/plugin/release-manifest-v3.schema.json
-  grep -q '"files"' spec/plugin/release-manifest-v3.schema.json
+  grep -q '"schema_version": { "const": "redevplugin.release_manifest.v4" }' spec/plugin/release-manifest-v4.schema.json
+  grep -q '"source_commit"' spec/plugin/release-manifest-v4.schema.json
+  grep -q '"npm_package"' spec/plugin/release-manifest-v4.schema.json
+  grep -q '"worker_sdk"' spec/plugin/release-manifest-v4.schema.json
+  grep -q '"runtime_target"' spec/plugin/release-manifest-v4.schema.json
+  grep -q '"files"' spec/plugin/release-manifest-v4.schema.json
+  grep -q '"darwin/amd64".*"darwin/arm64".*"linux/amd64".*"linux/arm64"' spec/plugin/release-manifest-v4.schema.json
   grep -q '"type": { "const": "classic" }' spec/plugin/opaque-surface-document-v3.schema.json
   grep -q '"surface_handle"' spec/plugin/opaque-surface-transport-v4.schema.json
   grep -q '"runtime_control"' spec/plugin/opaque-surface-transport-v4.schema.json
@@ -112,6 +113,7 @@ export GOWORK=off
   test ! -e spec/plugin/manifest-v4.schema.json
   test ! -e spec/plugin/compatibility-manifest-v4.schema.json
   test ! -e spec/plugin/release-metadata-v4.schema.json
+  test ! -e spec/plugin/release-manifest-v3.schema.json
   test ! -e spec/plugin/error-codes-v2.schema.json
   error_code_contracts=(spec/plugin/error-codes-v*.schema.json)
   test "${#error_code_contracts[@]}" -eq 1
@@ -223,6 +225,12 @@ export GOWORK=off
   grep -q 'bash -n scripts/assert_github_release_absent.sh' .github/workflows/ci.yml
   grep -q 'bash -n scripts/verify_github_release_identity.sh' .github/workflows/ci.yml
   grep -q 'node --check scripts/verify_published_release.mjs' .github/workflows/ci.yml
+  grep -q 'node --check scripts/runtime_targets.mjs' .github/workflows/ci.yml
+  test "$(node scripts/runtime_targets.mjs --platform-for-build x86_64-unknown-linux-gnu)" = "linux/amd64"
+  test "$(node scripts/runtime_targets.mjs --platform-for-build aarch64-unknown-linux-gnu)" = "linux/arm64"
+  test "$(node scripts/runtime_targets.mjs --platform-for-build x86_64-apple-darwin)" = "darwin/amd64"
+  test "$(node scripts/runtime_targets.mjs --platform-for-build aarch64-apple-darwin)" = "darwin/arm64"
+  ! node scripts/runtime_targets.mjs --platform-for-build linux/x86_64 >/dev/null 2>&1
   grep -q 'node --check scripts/build_redevplugin_worker_sdk_package.mjs' .github/workflows/ci.yml
   grep -Fq 'CARGO_HOME: join(tempDirectory, "cargo-home")' scripts/build_redevplugin_worker_sdk_package.mjs
   ! grep -Fq '"--offline"' scripts/build_redevplugin_worker_sdk_package.mjs

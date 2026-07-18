@@ -9,11 +9,11 @@ import (
 	"testing"
 )
 
-const releaseManifestSchemaVersion = "redevplugin.release_manifest.v3"
+const releaseManifestSchemaVersion = "redevplugin.release_manifest.v4"
 
 func TestReleaseManifestSchemaMatchesBundleVerifierContract(t *testing.T) {
 	root := repoRoot(t)
-	raw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", "release-manifest-v3.schema.json"))
+	raw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", "release-manifest-v4.schema.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -25,8 +25,8 @@ func TestReleaseManifestSchemaMatchesBundleVerifierContract(t *testing.T) {
 	if schema["additionalProperties"] != false {
 		t.Fatalf("release manifest schema additionalProperties = %#v, want false", schema["additionalProperties"])
 	}
-	if id, ok := schema["$id"].(string); !ok || !strings.Contains(id, "release-manifest-v3") {
-		t.Fatalf("release manifest $id = %#v, want release-manifest-v3", schema["$id"])
+	if id, ok := schema["$id"].(string); !ok || !strings.Contains(id, "release-manifest-v4") {
+		t.Fatalf("release manifest $id = %#v, want release-manifest-v4", schema["$id"])
 	}
 	required := requireStringSlice(t, schema["required"], "release manifest required")
 	assertStringSet(t, required, []string{
@@ -205,27 +205,32 @@ func assertRuntimeTargetOneOf(t *testing.T, property map[string]any) {
 	if !ok || len(options) != 2 {
 		t.Fatalf("runtime_target oneOf = %#v, want string|null", property["oneOf"])
 	}
-	var hasString bool
+	var hasClosedEnum bool
 	var hasNull bool
 	for _, raw := range options {
 		option, ok := raw.(map[string]any)
 		if !ok {
 			t.Fatalf("runtime_target option = %#v, want object", raw)
 		}
-		switch option["type"] {
-		case "string":
-			if option["minLength"] != float64(1) {
-				t.Fatalf("runtime_target string option = %#v, want minLength 1", option)
-			}
-			hasString = true
-		case "null":
+		if option["type"] == "null" {
 			hasNull = true
-		default:
-			t.Fatalf("runtime_target option = %#v, want string|null", option)
+			continue
 		}
+		if option["type"] != "string" {
+			t.Fatalf("runtime_target enum option = %#v, want string enum", option)
+		}
+		values := requireStringSlice(t, option["enum"], "runtime_target enum")
+		assertStringSet(t, values, []string{"darwin/amd64", "darwin/arm64", "linux/amd64", "linux/arm64"}, "runtime_target enum")
+		hasClosedEnum = true
 	}
-	if !hasString || !hasNull {
-		t.Fatalf("runtime_target oneOf missing string/null: %#v", property["oneOf"])
+	if !hasClosedEnum || !hasNull {
+		t.Fatalf("runtime_target oneOf missing closed enum/null: %#v", property["oneOf"])
+	}
+	for _, raw := range options {
+		option := raw.(map[string]any)
+		if option["type"] == "string" && option["minLength"] != nil {
+			t.Fatalf("runtime_target retained open string schema: %#v", option)
+		}
 	}
 }
 
@@ -265,7 +270,8 @@ func assertReleaseManifestBuildScriptContract(t *testing.T, path string) {
 	for _, snippet := range []string{
 		`rel === "release-manifest.json" || rel === "SHA256SUMS"`,
 		`files.sort((a, b) => a.path.localeCompare(b.path))`,
-		`schema_version: "redevplugin.release_manifest.v3"`,
+		`schema_version: "redevplugin.release_manifest.v4"`,
+		`RUNTIME_PLATFORM_TARGET=$(node "$ROOT_DIR/scripts/runtime_targets.mjs" --platform-for-build "$RUNTIME_TARGET")`,
 		`source_commit: sourceCommit`,
 		`runtime_target: runtimeTarget || null`,
 		`generated_at: generatedAt`,
@@ -295,7 +301,7 @@ func assertReleaseManifestVerifierContract(t *testing.T, path string) {
 		`const sha256SumsPath = join(bundleDir, "SHA256SUMS");`,
 		`verifyReleaseManifestShape(manifest, expectedVersion);`,
 		`verifyManifestFiles(bundleDir, manifest);`,
-		`assertEqual(manifest.schema_version, "redevplugin.release_manifest.v3", "release manifest schema_version");`,
+		`assertEqual(manifest.schema_version, "redevplugin.release_manifest.v4", "release manifest schema_version");`,
 		`assertGitCommit(manifest.source_commit, "release manifest source_commit");`,
 		`manifest.runtime_target !== null && typeof manifest.runtime_target !== "string"`,
 		`!Number.isFinite(Date.parse(manifest.generated_at))`,
@@ -313,13 +319,15 @@ func assertReleaseManifestVerifierContract(t *testing.T, path string) {
 		`assertDeepEqual(manifestFiles, actualFiles, "release manifest file list");`,
 		"const expectedSums = manifestFiles.map((file) => `${file.sha256}  ${file.path}`).join(\"\\n\") + \"\\n\";",
 		`assertEqual(actualSums, expectedSums, "SHA256SUMS content");`,
-		`"contracts/spec/plugin/release-manifest-v3.schema.json"`,
+		`"contracts/spec/plugin/release-manifest-v4.schema.json"`,
 		`"contracts/spec/plugin/opaque-surface-document-v3.schema.json"`,
 		`"contracts/spec/plugin/opaque-surface-transport-v4.schema.json"`,
 		`const skipExecution = args.includes("--skip-execution");`,
 		`const allowSmoke = args.includes("--allow-smoke");`,
 		`verifyExecutableTargets(bundleDir, manifest.runtime_target);`,
-		`target: { os: process.platform, arch: process.arch },`,
+		`runtimeTargetForPlatform(runtimeTarget)`,
+		`runtimeTargetPayload = runtimeTargetPayloadForPlatform(runtimeTarget);`,
+		`target: runtimeTargetPayload,`,
 		`host_process_id: process.pid,`,
 		`host_ipc_version: "rust-ipc-v4",`,
 		`host_wasm_abi: "redevplugin-wasm-worker-v2",`,
@@ -335,6 +343,9 @@ func assertReleaseManifestVerifierContract(t *testing.T, path string) {
 		if !strings.Contains(source, snippet) {
 			t.Fatalf("%s missing release manifest verifier contract snippet %q", path, snippet)
 		}
+	}
+	if strings.Contains(source, "target: { os: process.platform") || strings.Contains(source, "arch: process.arch") {
+		t.Fatalf("%s derives runtime IPC target from the verifier process", path)
 	}
 }
 

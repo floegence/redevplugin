@@ -39,6 +39,7 @@ import (
 	"github.com/floegence/redevplugin/pkg/pluginpkg"
 	"github.com/floegence/redevplugin/pkg/registry"
 	"github.com/floegence/redevplugin/pkg/runtimeclient"
+	"github.com/floegence/redevplugin/pkg/runtimetarget"
 	"github.com/floegence/redevplugin/pkg/secrets"
 	"github.com/floegence/redevplugin/pkg/security"
 	"github.com/floegence/redevplugin/pkg/sessionctx"
@@ -3930,7 +3931,7 @@ func TestHandlerRuntimeLifecycleFlow(t *testing.T) {
 	health := postJSON[runtimeclient.ManagerHealth](t, handler, "/_redevplugin/api/plugins/runtime/start", map[string]any{
 		"target": map[string]any{"os": runtime.GOOS, "arch": runtime.GOARCH},
 	})
-	if !health.Ready || len(health.Shards) != 1 || health.Shards[0].RuntimeInstanceID != "runtime_http" || supervisor.startedTarget != (runtimeclient.Target{OS: runtime.GOOS, Arch: runtime.GOARCH}) {
+	if !health.Ready || len(health.Shards) != 1 || health.Shards[0].RuntimeInstanceID != "runtime_http" || supervisor.startedTarget != supervisor.health.Descriptor.Target() {
 		t.Fatalf("runtime start mismatch: health=%#v supervisor=%#v", health, supervisor)
 	}
 	if health.Descriptor != supervisor.health.Descriptor || health.Shards[0].Descriptor != health.Descriptor {
@@ -3943,6 +3944,27 @@ func TestHandlerRuntimeLifecycleFlow(t *testing.T) {
 	postJSON[map[string]bool](t, handler, "/_redevplugin/api/plugins/runtime/stop", map[string]any{})
 	if supervisor.stopCalls != 1 {
 		t.Fatalf("Stop calls = %d, want 1", supervisor.stopCalls)
+	}
+}
+
+func TestHandlerRuntimeStartRejectsUnknownTargetsBeforeHostDispatch(t *testing.T) {
+	supervisor := newHTTPRecordingRuntimeManager(t)
+	h := newHTTPTestHostWithOptions(t, httpTestHostOptions{runtimeManager: supervisor})
+	handler := mustNewHandler(t, h, allowHTTPTestGuard())
+
+	for _, body := range []map[string]any{
+		{},
+		{"target": map[string]any{"os": "windows", "arch": "amd64"}},
+		{"target": map[string]any{"os": "linux", "arch": "x86_64"}},
+		{"target": map[string]any{"os": "linux", "arch": "amd64", "variant": "gnu"}},
+	} {
+		envelope := requestJSONError(t, handler, http.MethodPost, "/_redevplugin/api/plugins/runtime/start", body, http.StatusBadRequest)
+		if envelope.Code != string(security.ErrInvalidRequest) || envelope.MutationOutcome != string(mutation.OutcomeNotCommitted) {
+			t.Fatalf("runtime target error = %#v", envelope)
+		}
+	}
+	if supervisor.startedTarget != 0 {
+		t.Fatalf("invalid runtime target reached manager: %v", supervisor.startedTarget)
 	}
 }
 
@@ -5504,7 +5526,7 @@ type httpRecordingSecretStore struct {
 
 type httpRecordingRuntimeManager struct {
 	health        runtimeclient.Health
-	startedTarget runtimeclient.Target
+	startedTarget runtimetarget.Target
 	stopCalls     int
 	startErr      error
 	stopErr       error
@@ -5520,7 +5542,7 @@ func newHTTPRecordingRuntimeManager(t testing.TB) *httpRecordingRuntimeManager {
 	}
 	descriptor, err := runtimeclient.NewRuntimeDescriptor(
 		runtimeVersion,
-		runtimeclient.Target{OS: runtime.GOOS, Arch: runtime.GOARCH},
+		mustCurrentHTTPRuntimeTarget(t),
 		platformversion.RustIPCVersion,
 		platformversion.WASMABIVersion,
 		strings.Repeat("a", 64),
@@ -5536,6 +5558,15 @@ func newHTTPRecordingRuntimeManager(t testing.TB) *httpRecordingRuntimeManager {
 		Descriptor:          descriptor,
 		Ready:               true,
 	}}
+}
+
+func mustCurrentHTTPRuntimeTarget(t testing.TB) runtimetarget.Target {
+	t.Helper()
+	target, err := runtimetarget.Current()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return target
 }
 
 type httpRecordingDiagnostics struct {
@@ -5818,7 +5849,7 @@ func (s *httpRecordingSecretStore) DeletePlugin(_ context.Context, pluginInstanc
 	return nil
 }
 
-func (s *httpRecordingRuntimeManager) Preflight(ctx context.Context, target runtimeclient.Target) (runtimeclient.RuntimeDescriptor, error) {
+func (s *httpRecordingRuntimeManager) Preflight(ctx context.Context, target runtimetarget.Target) (runtimeclient.RuntimeDescriptor, error) {
 	if err := ctx.Err(); err != nil {
 		return runtimeclient.RuntimeDescriptor{}, err
 	}
@@ -5832,7 +5863,7 @@ func (s *httpRecordingRuntimeManager) Preflight(ctx context.Context, target runt
 	return descriptor, nil
 }
 
-func (s *httpRecordingRuntimeManager) Start(ctx context.Context, target runtimeclient.Target) (runtimeclient.ManagerHealth, error) {
+func (s *httpRecordingRuntimeManager) Start(ctx context.Context, target runtimetarget.Target) (runtimeclient.ManagerHealth, error) {
 	s.startedTarget = target
 	if _, err := s.Preflight(ctx, target); err != nil {
 		return runtimeclient.ManagerHealth{}, err

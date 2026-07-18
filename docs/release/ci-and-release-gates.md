@@ -282,12 +282,14 @@ ambient npm version.
 
 ## Release Manifest And Compatibility
 
-`release-manifest-v3.schema.json` is the machine contract for release bundle
+`release-manifest-v4.schema.json` is the machine contract for release bundle
 provenance, file lists, and checksums. Release manifests exclude themselves and
 `SHA256SUMS`, require the full source commit, compatibility digest, one npm
 tarball identity, one Rust Worker SDK crate identity, safe sorted paths,
-lowercase SHA-256 hashes, byte sizes, nullable runtime targets, and ISO
-date-time generation metadata.
+lowercase SHA-256 hashes, byte sizes, nullable closed platform runtime targets,
+and ISO date-time generation metadata. Release builders map the four Rust build
+triples explicitly to `darwin/amd64`, `darwin/arm64`, `linux/amd64`, or
+`linux/arm64`; build triples are not platform target aliases.
 
 The compatibility manifest includes contract artifact IDs, versions, paths, and
 hashes for released OpenAPI, plugin schemas, release metadata, source policy,

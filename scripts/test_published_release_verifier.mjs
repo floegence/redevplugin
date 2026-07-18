@@ -6,6 +6,8 @@ import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 
+import { runtimeTargets } from "./runtime_targets.mjs";
+
 const [rawSourceBundle, version, sourceCommit] = process.argv.slice(2);
 if (!rawSourceBundle || !version || !/^[0-9a-f]{40}$/.test(sourceCommit ?? "")) {
   console.error("usage: test_published_release_verifier.mjs <source-bundle> <version> <source-commit>");
@@ -23,12 +25,7 @@ const bundleVerifier = join(verifierScripts, "verify_redevplugin_release_bundle.
 const rustToolchain = run("rustup", ["show", "active-toolchain"], "resolve release verifier Rust toolchain", { cwd: root }).trim().split(/\s+/, 1)[0];
 if (!/^[A-Za-z0-9_.-]+$/.test(rustToolchain)) throw new Error("rustup returned an invalid release verifier toolchain");
 const verifierEnvironment = { ...process.env, NPM_CONFIG_REGISTRY: "https://registry.invalid", RUSTUP_TOOLCHAIN: rustToolchain };
-const targets = [
-  { id: "x86_64-unknown-linux-gnu", format: "elf", machine: 62 },
-  { id: "aarch64-unknown-linux-gnu", format: "elf", machine: 183 },
-  { id: "x86_64-apple-darwin", format: "macho", machine: 0x01000007 },
-  { id: "aarch64-apple-darwin", format: "macho", machine: 0x0100000c },
-];
+const targets = runtimeTargets.map((target) => ({ ...target, id: target.buildTriple }));
 
 try {
   mkdirSync(artifactDir, { recursive: true });
@@ -36,6 +33,7 @@ try {
   cpSync(join(root, "scripts", "verify_published_release.mjs"), publishedVerifier);
   cpSync(join(root, "scripts", "verify_redevplugin_release_bundle.mjs"), bundleVerifier);
   cpSync(join(root, "scripts", "performance_contract.mjs"), join(verifierScripts, "performance_contract.mjs"));
+  cpSync(join(root, "scripts", "runtime_targets.mjs"), join(verifierScripts, "runtime_targets.mjs"));
   const bundles = [];
   for (const target of targets) {
     const bundleRoot = join(tempRoot, `redevplugin-v${version}-${target.id}`);
@@ -59,20 +57,30 @@ try {
     throw new Error("published verifier installed or reused dependencies outside its standalone consumer");
   }
 
+  const targetIdentityNegative = bundles[0];
+  refreshReleaseManifest(targetIdentityNegative.bundleRoot, targets[1].platformTarget);
+  archiveBundle(targetIdentityNegative);
+  assertPublishedVerifierRejects(
+    "runtime_target does not match build triple",
+    "manifest target and archive build triple mismatch",
+  );
+  refreshReleaseManifest(targetIdentityNegative.bundleRoot, targetIdentityNegative.target.platformTarget);
+  archiveBundle(targetIdentityNegative);
+
   const performanceNegative = bundles[0];
   const performancePath = join(performanceNegative.bundleRoot, "performance-evidence.json");
   const originalPerformanceBytes = readFileSync(performancePath);
   const driftedPerformance = JSON.parse(originalPerformanceBytes.toString("utf8"));
   driftedPerformance.environment.node_version += "-cross-bundle-drift";
   writeFileSync(performancePath, JSON.stringify(driftedPerformance, null, 2) + "\n");
-  refreshReleaseManifest(performanceNegative.bundleRoot, performanceNegative.target.id);
+  refreshReleaseManifest(performanceNegative.bundleRoot, performanceNegative.target.platformTarget);
   archiveBundle(performanceNegative);
   assertPublishedVerifierRejects(
     "runtime archives do not contain identical performance evidence bytes and hash",
     "cross-bundle performance evidence drift",
   );
   writeFileSync(performancePath, originalPerformanceBytes);
-  refreshReleaseManifest(performanceNegative.bundleRoot, performanceNegative.target.id);
+  refreshReleaseManifest(performanceNegative.bundleRoot, performanceNegative.target.platformTarget);
   archiveBundle(performanceNegative);
 
   const sdkNegative = bundles[3];
@@ -85,7 +93,7 @@ try {
   appendFileSync(join(sdkExtractRoot, sdkPackageRoot, "README.md"), "\nCross-bundle identity mutation fixture.\n");
   rmSync(sdkCratePath);
   run("tar", ["-C", sdkExtractRoot, "-czf", sdkCratePath, sdkPackageRoot], "repack worker SDK mutation fixture");
-  refreshReleaseManifest(sdkNegative.bundleRoot, sdkNegative.target.id);
+  refreshReleaseManifest(sdkNegative.bundleRoot, sdkNegative.target.platformTarget);
   const sdkArchive = join(artifactDir, `${basename(sdkNegative.bundleRoot)}.tar.gz`);
   rmSync(sdkArchive);
   run("tar", ["-C", tempRoot, "-czf", sdkArchive, basename(sdkNegative.bundleRoot)], "archive worker SDK mutation fixture");
@@ -143,15 +151,15 @@ try {
     const lock = JSON.parse(JSON.stringify(originalToolchainLock));
     testCase.mutate(lock);
     writeFileSync(toolchainLockPath, JSON.stringify(lock, null, 2) + "\n");
-    refreshReleaseManifest(toolchainNegative.bundleRoot, toolchainNegative.target.id);
+    refreshReleaseManifest(toolchainNegative.bundleRoot, toolchainNegative.target.platformTarget);
     assertBundleVerifierRejects(toolchainNegative.bundleRoot, testCase.expected, testCase.label);
   }
   writeFileSync(toolchainLockPath, JSON.stringify(originalToolchainLock, null, 2) + "\n");
-  refreshReleaseManifest(toolchainNegative.bundleRoot, toolchainNegative.target.id);
+  refreshReleaseManifest(toolchainNegative.bundleRoot, toolchainNegative.target.platformTarget);
 
   const negative = bundles[0];
   patchExecutable(join(negative.bundleRoot, "bin", "redevplugin-runtime"), targets[1]);
-  refreshReleaseManifest(negative.bundleRoot, negative.target.id);
+  refreshReleaseManifest(negative.bundleRoot, negative.target.platformTarget);
   assertBundleVerifierRejects(negative.bundleRoot, "ELF machine mismatch", "wrong runtime target");
 
   const provenanceNegative = bundles[1];
@@ -164,7 +172,7 @@ try {
   const performanceEvidence = JSON.parse(readFileSync(performanceEvidencePath, "utf8"));
   performanceEvidence.source_commit = alternateSourceCommit;
   writeFileSync(performanceEvidencePath, JSON.stringify(performanceEvidence, null, 2) + "\n");
-  refreshReleaseManifest(provenanceNegative.bundleRoot, provenanceNegative.target.id);
+  refreshReleaseManifest(provenanceNegative.bundleRoot, provenanceNegative.target.platformTarget);
   const refreshedProvenanceManifest = JSON.parse(readFileSync(provenanceManifestPath, "utf8"));
   refreshedProvenanceManifest.source_commit = alternateSourceCommit;
   writeFileSync(provenanceManifestPath, JSON.stringify(refreshedProvenanceManifest, null, 2) + "\n");
@@ -183,7 +191,7 @@ function prepareStructuralFixture(bundleRoot, target) {
     patchExecutable(join(bundleRoot, path), target);
   }
   prepareReleasePerformanceFixture(bundleRoot);
-  refreshReleaseManifest(bundleRoot, target.id);
+  refreshReleaseManifest(bundleRoot, target.platformTarget);
 }
 
 function prepareReleasePerformanceFixture(bundleRoot) {

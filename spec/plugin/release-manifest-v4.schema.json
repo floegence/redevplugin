@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://schemas.redevplugin.dev/plugin/release-manifest-v3.schema.json",
-  "title": "ReDevPlugin release manifest v3",
+  "$id": "https://schemas.redevplugin.dev/plugin/release-manifest-v4.schema.json",
+  "title": "ReDevPlugin release manifest v4",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -16,12 +16,12 @@
     "files"
   ],
   "properties": {
-    "schema_version": { "const": "redevplugin.release_manifest.v3" },
+    "schema_version": { "const": "redevplugin.release_manifest.v4" },
     "version": { "$ref": "#/$defs/semver" },
     "source_commit": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
     "runtime_target": {
       "oneOf": [
-        { "type": "string", "minLength": 1 },
+        { "type": "string", "enum": ["darwin/amd64", "darwin/arm64", "linux/amd64", "linux/arm64"] },
         { "type": "null" }
       ]
     },

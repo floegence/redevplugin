@@ -203,7 +203,7 @@ test("platform client reads compatibility manifest through host API", async () =
         resource_scope_schema_version: "resource-scope-v1",
         plugin_platform_openapi_version: "plugin-platform-v6",
         compatibility_schema_version: "compatibility-manifest-v6",
-        release_manifest_schema_version: "release-manifest-v3",
+        release_manifest_schema_version: "release-manifest-v4",
         worker_invocation_schema_version: "worker-invocation-v3",
         host_capability_contract_schema_version: "host-capability-contract-v1",
         host_capability_pin_schema_version: "host-capability-pin-v1",

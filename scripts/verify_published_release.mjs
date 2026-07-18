@@ -7,6 +7,8 @@ import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 
+import { runtimeTargetForBuildTriple, runtimeTargets } from "./runtime_targets.mjs";
+
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const args = process.argv.slice(2);
 const integrityOnly = args[0] === "--npm-integrity";
@@ -20,17 +22,13 @@ if (!artifactDir || (!integrityOnly && (!expectedVersion || !/^[0-9a-f]{40}$/.te
   process.exit(2);
 }
 
-const expectedTargets = new Set([
-  "x86_64-unknown-linux-gnu",
-  "aarch64-unknown-linux-gnu",
-  "x86_64-apple-darwin",
-  "aarch64-apple-darwin",
-]);
+const expectedBuildTriples = new Set(runtimeTargets.map((target) => target.buildTriple));
+const expectedPlatformTargets = new Set(runtimeTargets.map((target) => target.platformTarget));
 const archives = readdirSync(artifactDir)
   .filter((entry) => entry.endsWith(".tar.gz"))
   .sort();
-if (archives.length !== expectedTargets.size) {
-  throw new Error(`published release must contain ${expectedTargets.size} runtime archives, found ${archives.length}`);
+if (archives.length !== expectedBuildTriples.size) {
+  throw new Error(`published release must contain ${expectedBuildTriples.size} runtime archives, found ${archives.length}`);
 }
 
 const tempRoot = mkdtempSync(join(tmpdir(), "redevplugin-published-release-"));
@@ -53,7 +51,7 @@ try {
     throw new Error("runtime archives do not contain identical performance evidence bytes and hash");
   }
   const actualTargets = new Set(bundles.map((bundle) => bundle.runtimeTarget));
-  if (actualTargets.size !== expectedTargets.size || [...expectedTargets].some((target) => !actualTargets.has(target))) {
+  if (actualTargets.size !== expectedPlatformTargets.size || [...expectedPlatformTargets].some((target) => !actualTargets.has(target))) {
     throw new Error(`runtime target matrix mismatch: ${JSON.stringify([...actualTargets].sort())}`);
   }
   const npm = bundles[0].npm;
@@ -67,6 +65,11 @@ try {
 }
 
 function inspectArchive(archivePath) {
+  const archiveName = basename(archivePath);
+  const buildTriple = [...expectedBuildTriples].find((candidate) => archiveName.endsWith(`-${candidate}.tar.gz`));
+  if (!buildTriple) {
+    throw new Error(`${archiveName} does not identify a supported runtime build triple`);
+  }
   const extractRoot = mkdtempSync(join(tempRoot, "bundle-"));
   const extraction = spawnSync("tar", ["-xzf", archivePath, "-C", extractRoot], { encoding: "utf8" });
   if (extraction.status !== 0) {
@@ -78,6 +81,10 @@ function inspectArchive(archivePath) {
   }
   const bundleRoot = join(extractRoot, roots[0]);
   const manifest = JSON.parse(readFileSync(join(bundleRoot, "release-manifest.json"), "utf8"));
+  const expectedPlatformTarget = runtimeTargetForBuildTriple(buildTriple).platformTarget;
+  if (manifest.runtime_target !== expectedPlatformTarget) {
+    throw new Error(`${archiveName} runtime_target does not match build triple ${buildTriple}`);
+  }
   if (!integrityOnly) {
     if (manifest.version !== expectedVersion) {
       throw new Error(`${basename(archivePath)} version ${manifest.version} does not match ${expectedVersion}`);

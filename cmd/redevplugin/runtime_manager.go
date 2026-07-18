@@ -17,6 +17,7 @@ import (
 	"github.com/floegence/redevplugin/pkg/observability"
 	"github.com/floegence/redevplugin/pkg/pluginpkg"
 	"github.com/floegence/redevplugin/pkg/runtimeclient"
+	"github.com/floegence/redevplugin/pkg/runtimetarget"
 	"github.com/floegence/redevplugin/pkg/version"
 )
 
@@ -38,12 +39,12 @@ type commandRuntimeDependencies struct {
 	HandshakeTimeout time.Duration
 }
 
-func describeCommandRuntime(path string, target runtimeclient.Target) (runtimeclient.RuntimeDescriptor, error) {
+func describeCommandRuntime(path string, target runtimetarget.Target) (runtimeclient.RuntimeDescriptor, error) {
 	runtimeVersion, err := version.ParseSemVer(version.RuntimeVersion)
 	if err != nil {
 		return runtimeclient.RuntimeDescriptor{}, err
 	}
-	if err := runtimeclient.ValidateTarget(target); err != nil {
+	if err := runtimetarget.Validate(target); err != nil {
 		return runtimeclient.RuntimeDescriptor{}, err
 	}
 	file, err := os.Open(path)

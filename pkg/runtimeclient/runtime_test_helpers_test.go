@@ -7,12 +7,13 @@ import (
 	"os"
 	"testing"
 
+	"github.com/floegence/redevplugin/pkg/runtimetarget"
 	"github.com/floegence/redevplugin/pkg/version"
 )
 
-var testRuntimeTarget = Target{OS: "darwin", Arch: "arm64"}
+var testRuntimeTarget = runtimetarget.DarwinARM64
 
-func testRuntimeDescriptor(target Target, digest string) RuntimeDescriptor {
+func testRuntimeDescriptor(target runtimetarget.Target, digest string) RuntimeDescriptor {
 	runtimeVersion, err := version.ParseSemVer(version.RuntimeVersion)
 	if err != nil {
 		panic(err)

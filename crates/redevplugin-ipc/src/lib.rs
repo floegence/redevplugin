@@ -441,37 +441,37 @@ struct RuntimeTargetPayload {
     arch: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RuntimeTarget {
-    os: String,
-    arch: String,
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RuntimeTarget {
+    DarwinAmd64,
+    DarwinArm64,
+    LinuxAmd64,
+    LinuxArm64,
 }
 
 impl RuntimeTarget {
     pub fn new(os: &str, arch: &str) -> IpcResult<Self> {
-        let target = Self {
-            os: os.to_string(),
-            arch: arch.to_string(),
-        };
-        target.validate()?;
-        Ok(target)
+        match (os, arch) {
+            ("darwin", "amd64") => Ok(Self::DarwinAmd64),
+            ("darwin", "arm64") => Ok(Self::DarwinArm64),
+            ("linux", "amd64") => Ok(Self::LinuxAmd64),
+            ("linux", "arm64") => Ok(Self::LinuxArm64),
+            _ => Err(protocol_violation("unsupported runtime target")),
+        }
     }
 
     pub fn os(&self) -> &str {
-        &self.os
+        match self {
+            Self::DarwinAmd64 | Self::DarwinArm64 => "darwin",
+            Self::LinuxAmd64 | Self::LinuxArm64 => "linux",
+        }
     }
 
     pub fn arch(&self) -> &str {
-        &self.arch
-    }
-
-    fn validate(&self) -> IpcResult<()> {
-        if !matches!(self.os.as_str(), "darwin" | "linux")
-            || !matches!(self.arch.as_str(), "amd64" | "arm64")
-        {
-            return Err(protocol_violation("unsupported runtime target"));
+        match self {
+            Self::DarwinAmd64 | Self::LinuxAmd64 => "amd64",
+            Self::DarwinArm64 | Self::LinuxArm64 => "arm64",
         }
-        Ok(())
     }
 }
 
@@ -4259,6 +4259,34 @@ mod tests {
         let parsed = parse_hello_frame(&input).expect("typed hello");
         assert_eq!(parsed.target, RuntimeTarget::new("linux", "amd64").unwrap());
         assert_eq!(parsed.limits, runtime_limits());
+    }
+
+    #[test]
+    fn runtime_target_enum_covers_only_canonical_platform_pairs() {
+        for (os, arch, expected) in [
+            ("darwin", "amd64", RuntimeTarget::DarwinAmd64),
+            ("darwin", "arm64", RuntimeTarget::DarwinArm64),
+            ("linux", "amd64", RuntimeTarget::LinuxAmd64),
+            ("linux", "arm64", RuntimeTarget::LinuxArm64),
+        ] {
+            let parsed = RuntimeTarget::new(os, arch).expect("canonical runtime target");
+            assert_eq!(parsed, expected);
+            assert_eq!(parsed.os(), os);
+            assert_eq!(parsed.arch(), arch);
+        }
+        for (os, arch) in [
+            ("macos", "arm64"),
+            ("linux", "x86_64"),
+            ("darwin", "aarch64"),
+            ("windows", "amd64"),
+        ] {
+            assert_eq!(
+                RuntimeTarget::new(os, arch).unwrap_err(),
+                IpcError::ProtocolViolation {
+                    message: "unsupported runtime target"
+                }
+            );
+        }
     }
 
     #[test]

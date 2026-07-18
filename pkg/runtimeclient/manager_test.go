@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/floegence/redevplugin/pkg/capability"
+	"github.com/floegence/redevplugin/pkg/runtimetarget"
 )
 
 func TestProcessManagerStartsEveryShardAndBindsDeterministically(t *testing.T) {
@@ -105,7 +106,7 @@ func TestProcessManagerPreflightRejectsShardDescriptorDrift(t *testing.T) {
 }
 
 func TestProcessManagerPreflightRejectsDescriptorForDifferentTarget(t *testing.T) {
-	wrongTarget := Target{OS: "linux", Arch: "amd64"}
+	wrongTarget := runtimetarget.LinuxAMD64
 	manager := testProcessManager(t, []*fakeProcessShard{{
 		health:     testShardHealth("a"),
 		descriptor: testRuntimeDescriptor(wrongTarget, strings.Repeat("a", 64)),
@@ -526,7 +527,7 @@ func (*recordingRuntimeStreamSink) FailRuntimeStream(context.Context, string, ca
 	return nil
 }
 
-func (s *fakeProcessShard) Start(context.Context, Target) error {
+func (s *fakeProcessShard) Start(context.Context, runtimetarget.Target) error {
 	s.startCalls.Add(1)
 	if s.startErr != nil {
 		return s.startErr
@@ -538,7 +539,7 @@ func (s *fakeProcessShard) Start(context.Context, Target) error {
 	return nil
 }
 
-func (s *fakeProcessShard) Preflight(_ context.Context, target Target) (RuntimeDescriptor, error) {
+func (s *fakeProcessShard) Preflight(_ context.Context, target runtimetarget.Target) (RuntimeDescriptor, error) {
 	if s.preflightErr != nil {
 		return RuntimeDescriptor{}, s.preflightErr
 	}

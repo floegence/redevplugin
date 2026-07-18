@@ -16,6 +16,7 @@ import (
 	"github.com/floegence/redevplugin/pkg/permissions"
 	"github.com/floegence/redevplugin/pkg/plugindata"
 	"github.com/floegence/redevplugin/pkg/pluginpkg"
+	"github.com/floegence/redevplugin/pkg/runtimetarget"
 	"github.com/floegence/redevplugin/pkg/security"
 )
 
@@ -115,8 +116,8 @@ type PluginVersion struct {
 // RuntimeRequirement is the exact worker-runtime compatibility contract that
 // was verified for an installed package version. UI-only packages leave it nil.
 type RuntimeRequirement struct {
-	MinVersion       string   `json:"min_version"`
-	SupportedTargets []string `json:"supported_targets,omitempty"`
+	MinVersion       string                 `json:"min_version"`
+	SupportedTargets []runtimetarget.Target `json:"supported_targets,omitempty"`
 }
 
 type LocalImportProvenance struct {

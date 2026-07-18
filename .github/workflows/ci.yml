@@ -142,6 +142,7 @@ jobs:
           node --check scripts/test_redevplugin_release_metadata.mjs
           node --check scripts/verify_redevplugin_release_bundle.mjs
           node --check scripts/verify_published_release.mjs
+          node --check scripts/runtime_targets.mjs
           node --check scripts/verify_npm_registry_release.mjs
           node --check scripts/verify_go_module_readback.mjs
           node --check scripts/verify_redevplugin_release_stress.mjs

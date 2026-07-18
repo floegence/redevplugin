@@ -32,7 +32,7 @@ func TestRuntimeLifecycleUsesInjectedSupervisor(t *testing.T) {
 	})
 
 	target := hostTestRuntimeDescriptor().Target()
-	health, err := h.StartRuntime(hostTestContext(), StartRuntimeRequest{Target: RuntimeTarget{OS: target.OS, Arch: target.Arch}})
+	health, err := h.StartRuntime(hostTestContext(), StartRuntimeRequest{Target: target})
 	if err != nil {
 		t.Fatalf("StartRuntime() error = %v", err)
 	}
@@ -62,7 +62,7 @@ func TestHostCloseStopsRuntimeWithBoundedDeadlineAndWaitsForCompletion(t *testin
 	pluginData := &recordingClosePluginData{PluginData: h.adapters.PluginData}
 	h.adapters.PluginData = pluginData
 	target := hostTestRuntimeDescriptor().Target()
-	if _, err := h.StartRuntime(hostTestContext(), StartRuntimeRequest{Target: RuntimeTarget{OS: target.OS, Arch: target.Arch}}); err != nil {
+	if _, err := h.StartRuntime(hostTestContext(), StartRuntimeRequest{Target: target}); err != nil {
 		t.Fatalf("StartRuntime() error = %v", err)
 	}
 
@@ -134,7 +134,7 @@ func TestHostRuntimeLifecycleRejectsCallsAfterClose(t *testing.T) {
 		{
 			name: "start",
 			run: func(h *Host) error {
-				_, err := h.StartRuntime(hostTestContext(), StartRuntimeRequest{Target: RuntimeTarget{OS: "test-os", Arch: "test-arch"}})
+				_, err := h.StartRuntime(hostTestContext(), StartRuntimeRequest{})
 				return err
 			},
 		},

@@ -20,6 +20,7 @@ import (
 	"github.com/floegence/redevplugin/pkg/observability"
 	"github.com/floegence/redevplugin/pkg/pluginpkg"
 	"github.com/floegence/redevplugin/pkg/runtimeclient"
+	"github.com/floegence/redevplugin/pkg/runtimetarget"
 	"github.com/floegence/redevplugin/pkg/version"
 )
 
@@ -439,11 +440,11 @@ func (performanceRuntimeManager) BindHostServices(services runtimeclient.Runtime
 	return nil
 }
 
-func (m performanceRuntimeManager) Preflight(ctx context.Context, target runtimeclient.Target) (runtimeclient.RuntimeDescriptor, error) {
+func (m performanceRuntimeManager) Preflight(ctx context.Context, target runtimetarget.Target) (runtimeclient.RuntimeDescriptor, error) {
 	return m.supervisor.Preflight(ctx, target)
 }
 
-func (m performanceRuntimeManager) Start(ctx context.Context, target runtimeclient.Target) (runtimeclient.ManagerHealth, error) {
+func (m performanceRuntimeManager) Start(ctx context.Context, target runtimetarget.Target) (runtimeclient.ManagerHealth, error) {
 	if err := m.supervisor.Start(ctx, target); err != nil {
 		return runtimeclient.ManagerHealth{}, err
 	}

@@ -9,6 +9,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/floegence/redevplugin/pkg/runtimetarget"
 )
 
 const (
@@ -76,8 +78,8 @@ type Manager interface {
 	// manager unbound and retryable; a successful call makes every later call
 	// return ErrRuntimeHostServicesBound.
 	BindHostServices(services RuntimeHostServices) error
-	Preflight(ctx context.Context, target Target) (RuntimeDescriptor, error)
-	Start(ctx context.Context, target Target) (ManagerHealth, error)
+	Preflight(ctx context.Context, target runtimetarget.Target) (RuntimeDescriptor, error)
+	Start(ctx context.Context, target runtimetarget.Target) (ManagerHealth, error)
 	Stop(ctx context.Context) error
 	Health(ctx context.Context) (ManagerHealth, error)
 	BindPlugin(ctx context.Context, pluginInstanceID string) (RuntimeBinding, error)
@@ -94,8 +96,8 @@ type ProcessManagerOptions struct {
 }
 
 type processShard interface {
-	Preflight(context.Context, Target) (RuntimeDescriptor, error)
-	Start(context.Context, Target) error
+	Preflight(context.Context, runtimetarget.Target) (RuntimeDescriptor, error)
+	Start(context.Context, runtimetarget.Target) error
 	Stop(context.Context) error
 	Health(context.Context) (Health, error)
 	InvokeWorker(context.Context, Lease, string, []byte) ([]byte, error)
@@ -185,7 +187,7 @@ func (m *ProcessManager) BindHostServices(services RuntimeHostServices) error {
 	return nil
 }
 
-func (m *ProcessManager) Start(ctx context.Context, target Target) (ManagerHealth, error) {
+func (m *ProcessManager) Start(ctx context.Context, target runtimetarget.Target) (ManagerHealth, error) {
 	if m == nil {
 		return ManagerHealth{}, ErrRuntimePathRequired
 	}
@@ -244,7 +246,7 @@ func (m *ProcessManager) Start(ctx context.Context, target Target) (ManagerHealt
 	return health, nil
 }
 
-func (m *ProcessManager) Preflight(ctx context.Context, target Target) (RuntimeDescriptor, error) {
+func (m *ProcessManager) Preflight(ctx context.Context, target runtimetarget.Target) (RuntimeDescriptor, error) {
 	if m == nil {
 		return RuntimeDescriptor{}, ErrRuntimePathRequired
 	}
@@ -259,8 +261,8 @@ func (m *ProcessManager) Preflight(ctx context.Context, target Target) (RuntimeD
 	return m.preflight(ctx, target)
 }
 
-func (m *ProcessManager) preflight(ctx context.Context, target Target) (RuntimeDescriptor, error) {
-	if err := ValidateTarget(target); err != nil {
+func (m *ProcessManager) preflight(ctx context.Context, target runtimetarget.Target) (RuntimeDescriptor, error) {
+	if err := runtimetarget.Validate(target); err != nil {
 		return RuntimeDescriptor{}, err
 	}
 	var expected RuntimeDescriptor

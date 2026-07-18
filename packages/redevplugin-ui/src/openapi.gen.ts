@@ -1308,10 +1308,25 @@ export interface components {
             shards: components["schemas"]["PluginRuntimeShardHealth"][];
         };
         RuntimeTarget: {
-            /** @enum {string} */
-            os: "darwin" | "linux";
-            /** @enum {string} */
-            arch: "amd64" | "arm64";
+            /** @constant */
+            os: "darwin";
+            /** @constant */
+            arch: "amd64";
+        } | {
+            /** @constant */
+            os: "darwin";
+            /** @constant */
+            arch: "arm64";
+        } | {
+            /** @constant */
+            os: "linux";
+            /** @constant */
+            arch: "amd64";
+        } | {
+            /** @constant */
+            os: "linux";
+            /** @constant */
+            arch: "arm64";
         };
         StrictSemVer: string;
         RuntimeDescriptor: {
@@ -2058,7 +2073,7 @@ export interface components {
                 /** @constant */
                 compatibility_schema_version: "compatibility-manifest-v6";
                 /** @constant */
-                release_manifest_schema_version: "release-manifest-v3";
+                release_manifest_schema_version: "release-manifest-v4";
                 /** @constant */
                 worker_invocation_schema_version: "worker-invocation-v3";
                 /** @constant */

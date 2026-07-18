@@ -9,13 +9,13 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/floegence/redevplugin/pkg/runtimetarget"
 	platformversion "github.com/floegence/redevplugin/pkg/version"
 )
 
 var (
 	ErrRuntimeDescriptorInvalid  = errors.New("runtime descriptor is invalid")
 	ErrRuntimeDescriptorMismatch = errors.New("runtime descriptor does not match")
-	ErrRuntimeTargetUnsupported  = errors.New("runtime target is unsupported")
 
 	runtimeProtocolVersionPattern = regexp.MustCompile(`^[a-z][a-z0-9-]*-v(0|[1-9][0-9]*)$`)
 	runtimeArtifactSHA256Pattern  = regexp.MustCompile(`^[0-9a-f]{64}$`)
@@ -25,23 +25,23 @@ var (
 // Construct it with NewRuntimeDescriptor; the zero value is invalid.
 type RuntimeDescriptor struct {
 	version        platformversion.SemVer
-	target         Target
+	target         runtimetarget.Target
 	ipcVersion     string
 	wasmABIVersion string
 	artifactSHA256 string
 }
 
 type runtimeDescriptorJSON struct {
-	Version        string `json:"version"`
-	Target         Target `json:"target"`
-	IPCVersion     string `json:"ipc_version"`
-	WASMABIVersion string `json:"wasm_abi_version"`
-	ArtifactSHA256 string `json:"artifact_sha256"`
+	Version        string     `json:"version"`
+	Target         targetWire `json:"target"`
+	IPCVersion     string     `json:"ipc_version"`
+	WASMABIVersion string     `json:"wasm_abi_version"`
+	ArtifactSHA256 string     `json:"artifact_sha256"`
 }
 
 func NewRuntimeDescriptor(
 	runtimeVersion platformversion.SemVer,
-	target Target,
+	target runtimetarget.Target,
 	ipcVersion string,
 	wasmABIVersion string,
 	artifactSHA256 string,
@@ -49,7 +49,7 @@ func NewRuntimeDescriptor(
 	if runtimeVersion.String() == "" {
 		return RuntimeDescriptor{}, fmt.Errorf("%w: version is required", ErrRuntimeDescriptorInvalid)
 	}
-	if err := ValidateTarget(target); err != nil {
+	if err := runtimetarget.Validate(target); err != nil {
 		return RuntimeDescriptor{}, err
 	}
 	if !runtimeProtocolVersionPattern.MatchString(ipcVersion) || strings.TrimSpace(ipcVersion) != ipcVersion {
@@ -70,18 +70,11 @@ func NewRuntimeDescriptor(
 	}, nil
 }
 
-func ValidateTarget(target Target) error {
-	if (target.OS != "linux" && target.OS != "darwin") || (target.Arch != "amd64" && target.Arch != "arm64") {
-		return fmt.Errorf("%w: os=%q arch=%q", ErrRuntimeTargetUnsupported, target.OS, target.Arch)
-	}
-	return nil
-}
-
 func (d RuntimeDescriptor) Version() platformversion.SemVer {
 	return d.version
 }
 
-func (d RuntimeDescriptor) Target() Target {
+func (d RuntimeDescriptor) Target() runtimetarget.Target {
 	return d.target
 }
 
@@ -114,9 +107,13 @@ func (d RuntimeDescriptor) MarshalJSON() ([]byte, error) {
 	if d.version.String() == "" {
 		return nil, ErrRuntimeDescriptorInvalid
 	}
+	target, err := targetToWire(d.target)
+	if err != nil {
+		return nil, err
+	}
 	return json.Marshal(runtimeDescriptorJSON{
 		Version:        d.version.String(),
-		Target:         d.target,
+		Target:         target,
 		IPCVersion:     d.ipcVersion,
 		WASMABIVersion: d.wasmABIVersion,
 		ArtifactSHA256: d.artifactSHA256,
@@ -143,7 +140,11 @@ func (d *RuntimeDescriptor) UnmarshalJSON(raw []byte) error {
 	if err != nil {
 		return fmt.Errorf("%w: %v", ErrRuntimeDescriptorInvalid, err)
 	}
-	parsed, err := NewRuntimeDescriptor(parsedVersion, wire.Target, wire.IPCVersion, wire.WASMABIVersion, wire.ArtifactSHA256)
+	target, err := targetFromWire(wire.Target)
+	if err != nil {
+		return err
+	}
+	parsed, err := NewRuntimeDescriptor(parsedVersion, target, wire.IPCVersion, wire.WASMABIVersion, wire.ArtifactSHA256)
 	if err != nil {
 		return err
 	}

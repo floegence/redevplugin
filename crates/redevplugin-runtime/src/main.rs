@@ -146,17 +146,13 @@ fn run() -> Result<(), String> {
 }
 
 fn compiled_runtime_target() -> Result<redevplugin_ipc::RuntimeTarget, String> {
-    let os = match std::env::consts::OS {
-        "linux" => "linux",
-        "macos" => "darwin",
-        other => return Err(format!("unsupported compiled runtime os {other}")),
-    };
-    let arch = match std::env::consts::ARCH {
-        "x86_64" => "amd64",
-        "aarch64" => "arm64",
-        other => return Err(format!("unsupported compiled runtime arch {other}")),
-    };
-    redevplugin_ipc::RuntimeTarget::new(os, arch).map_err(ipc_contract_error)
+    match (std::env::consts::OS, std::env::consts::ARCH) {
+        ("linux", "x86_64") => Ok(redevplugin_ipc::RuntimeTarget::LinuxAmd64),
+        ("linux", "aarch64") => Ok(redevplugin_ipc::RuntimeTarget::LinuxArm64),
+        ("macos", "x86_64") => Ok(redevplugin_ipc::RuntimeTarget::DarwinAmd64),
+        ("macos", "aarch64") => Ok(redevplugin_ipc::RuntimeTarget::DarwinArm64),
+        (os, arch) => Err(format!("unsupported compiled runtime target {os}/{arch}")),
+    }
 }
 
 fn dispatch_runtime_input(

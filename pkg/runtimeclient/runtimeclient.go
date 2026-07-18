@@ -27,16 +27,12 @@ import (
 	"github.com/floegence/redevplugin/pkg/capability"
 	"github.com/floegence/redevplugin/pkg/connectivity"
 	"github.com/floegence/redevplugin/pkg/observability"
+	"github.com/floegence/redevplugin/pkg/runtimetarget"
 	"github.com/floegence/redevplugin/pkg/sessionctx"
 	"github.com/floegence/redevplugin/pkg/storage"
 	"github.com/floegence/redevplugin/pkg/stream"
 	"github.com/floegence/redevplugin/pkg/version"
 )
-
-type Target struct {
-	OS   string `json:"os"`
-	Arch string `json:"arch"`
-}
 
 type Lease struct {
 	LeaseID                string      `json:"lease_id"`
@@ -556,18 +552,18 @@ func ValidateRuntimeLimits(limits RuntimeLimits) error {
 	return nil
 }
 
-func (s *ProcessSupervisor) Start(ctx context.Context, target Target) error {
+func (s *ProcessSupervisor) Start(ctx context.Context, target runtimetarget.Target) error {
 	if s == nil {
 		return ErrRuntimePathRequired
 	}
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if err := ValidateTarget(target); err != nil {
+	if err := runtimetarget.Validate(target); err != nil {
 		return err
 	}
 	if target != s.descriptor.Target() {
-		return fmt.Errorf("%w: requested target os=%q arch=%q", ErrRuntimeDescriptorMismatch, target.OS, target.Arch)
+		return fmt.Errorf("%w: requested target=%q", ErrRuntimeDescriptorMismatch, target.String())
 	}
 	s.startMu.Lock()
 	defer s.startMu.Unlock()
@@ -684,8 +680,8 @@ func (s *ProcessSupervisor) Start(ctx context.Context, target Target) error {
 	s.emit("plugin.runtime.process.started", "info", "runtime process started", map[string]any{
 		"runtime_instance_id":   health.RuntimeInstanceID,
 		"runtime_generation_id": health.RuntimeGenerationID,
-		"os":                    target.OS,
-		"arch":                  target.Arch,
+		"os":                    target.OS(),
+		"arch":                  target.Arch(),
 	})
 	go s.scanPipe(stderr, "stderr")
 	go s.wait(cmd, exit, cancel, generation, health)
@@ -730,26 +726,26 @@ func (s *ProcessSupervisor) Start(ctx context.Context, target Target) error {
 		"runtime_version":         health.Descriptor.Version().String(),
 		"rust_ipc_version":        health.Descriptor.IPCVersion(),
 		"wasm_abi_version":        health.Descriptor.WASMABIVersion(),
-		"runtime_target_os":       health.Descriptor.Target().OS,
-		"runtime_target_arch":     health.Descriptor.Target().Arch,
+		"runtime_target_os":       health.Descriptor.Target().OS(),
+		"runtime_target_arch":     health.Descriptor.Target().Arch(),
 		"runtime_artifact_sha256": health.Descriptor.ArtifactSHA256(),
 	})
 	go s.heartbeatLoop(runtimeCtx, health)
 	return nil
 }
 
-func (s *ProcessSupervisor) Preflight(ctx context.Context, target Target) (RuntimeDescriptor, error) {
+func (s *ProcessSupervisor) Preflight(ctx context.Context, target runtimetarget.Target) (RuntimeDescriptor, error) {
 	if s == nil {
 		return RuntimeDescriptor{}, ErrRuntimePathRequired
 	}
 	if err := ctx.Err(); err != nil {
 		return RuntimeDescriptor{}, err
 	}
-	if err := ValidateTarget(target); err != nil {
+	if err := runtimetarget.Validate(target); err != nil {
 		return RuntimeDescriptor{}, err
 	}
 	if target != s.descriptor.Target() {
-		return RuntimeDescriptor{}, fmt.Errorf("%w: requested target os=%q arch=%q", ErrRuntimeDescriptorMismatch, target.OS, target.Arch)
+		return RuntimeDescriptor{}, fmt.Errorf("%w: requested target=%q", ErrRuntimeDescriptorMismatch, target.String())
 	}
 	if err := s.descriptor.CompatibleWithPlatform(); err != nil {
 		return RuntimeDescriptor{}, err
@@ -1426,7 +1422,7 @@ type ipcFrame struct {
 }
 
 type helloRequestPayload struct {
-	Target                 Target                  `json:"target"`
+	Target                 targetWire              `json:"target"`
 	HostProcessID          int                     `json:"host_process_id"`
 	HostIPCVersion         string                  `json:"host_ipc_version"`
 	HostWASMABI            string                  `json:"host_wasm_abi"`
@@ -1438,7 +1434,7 @@ type helloRequestPayload struct {
 
 type helloAckPayload struct {
 	RuntimeVersion string        `json:"runtime_version"`
-	ActualTarget   Target        `json:"actual_target"`
+	ActualTarget   targetWire    `json:"actual_target"`
 	RustIPCVersion string        `json:"rust_ipc_version"`
 	WASMABIVersion string        `json:"wasm_abi_version"`
 	ChannelNonce   string        `json:"channel_nonce"`
@@ -1842,7 +1838,7 @@ func (p runtimeResponsePayload) workerExecutionError() error {
 	return &WorkerExecutionError{Code: code, Message: message, Origin: p.ErrorOrigin}
 }
 
-func (s *ProcessSupervisor) performHandshake(ctx context.Context, stdin io.Writer, stdout *bufio.Reader, health Health, target Target) (helloAckPayload, error) {
+func (s *ProcessSupervisor) performHandshake(ctx context.Context, stdin io.Writer, stdout *bufio.Reader, health Health, target runtimetarget.Target) (helloAckPayload, error) {
 	handshakeCtx, cancel := context.WithTimeout(ctx, s.handshakeTimeout)
 	defer cancel()
 	requestID := health.RuntimeGenerationID + ":hello"
@@ -1850,8 +1846,12 @@ func (s *ProcessSupervisor) performHandshake(ctx context.Context, stdin io.Write
 	if err != nil {
 		return helloAckPayload{}, err
 	}
+	targetPayload, err := targetToWire(target)
+	if err != nil {
+		return helloAckPayload{}, err
+	}
 	payload, err := json.Marshal(helloRequestPayload{
-		Target:                 target,
+		Target:                 targetPayload,
 		HostProcessID:          os.Getpid(),
 		HostIPCVersion:         version.RustIPCVersion,
 		HostWASMABI:            version.WASMABIVersion,
@@ -4861,9 +4861,13 @@ func validateHelloAck(requestID string, runtimeGenerationID string, channelNonce
 	if err != nil {
 		return helloAckPayload{}, fmt.Errorf("%w: runtime version: %v", ErrRuntimeHandshake, err)
 	}
+	actualTarget, err := targetFromWire(ack.ActualTarget)
+	if err != nil {
+		return helloAckPayload{}, fmt.Errorf("%w: actual_target: %v", ErrRuntimeHandshake, err)
+	}
 	actualDescriptor, err := NewRuntimeDescriptor(
 		runtimeVersion,
-		ack.ActualTarget,
+		actualTarget,
 		ack.RustIPCVersion,
 		ack.WASMABIVersion,
 		expectedDescriptor.ArtifactSHA256(),

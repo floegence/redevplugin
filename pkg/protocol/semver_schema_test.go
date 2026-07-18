@@ -14,7 +14,7 @@ func TestPublishedSemVerSchemasUseCanonicalPattern(t *testing.T) {
 	for _, schemaName := range []string{
 		"manifest-v5.schema.json",
 		"release-metadata-v5.schema.json",
-		"release-manifest-v3.schema.json",
+		"release-manifest-v4.schema.json",
 		"ipc-v4.schema.json",
 	} {
 		t.Run(schemaName, func(t *testing.T) {

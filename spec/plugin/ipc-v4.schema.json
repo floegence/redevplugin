@@ -397,13 +397,32 @@
       "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(?:-(?:(?:0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))*))?(?:\\+[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?$"
     },
     "runtime_target": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["os", "arch"],
-      "properties": {
-        "os": { "enum": ["darwin", "linux"] },
-        "arch": { "enum": ["amd64", "arm64"] }
-      }
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["os", "arch"],
+          "properties": { "os": { "const": "darwin" }, "arch": { "const": "amd64" } }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["os", "arch"],
+          "properties": { "os": { "const": "darwin" }, "arch": { "const": "arm64" } }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["os", "arch"],
+          "properties": { "os": { "const": "linux" }, "arch": { "const": "amd64" } }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["os", "arch"],
+          "properties": { "os": { "const": "linux" }, "arch": { "const": "arm64" } }
+        }
+      ]
     },
     "runtime_limits": {
       "type": "object",

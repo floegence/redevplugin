@@ -25,7 +25,7 @@ export const redevPluginContractVersions = {
   "plugin_platform_openapi_version": "plugin-platform-v6",
   "compatibility_manifest_version": "redevplugin.compatibility.v6",
   "compatibility_schema_version": "compatibility-manifest-v6",
-  "release_manifest_schema_version": "release-manifest-v3",
+  "release_manifest_schema_version": "release-manifest-v4",
   "worker_invocation_schema_version": "worker-invocation-v3",
   "host_capability_contract_schema_version": "host-capability-contract-v1",
   "host_capability_pin_schema_version": "host-capability-pin-v1",
@@ -51,7 +51,7 @@ export const redevPluginContractArtifacts = [
     id: "plugin-platform-openapi",
     path: "spec/openapi/plugin-platform-v6.yaml",
     version: "plugin-platform-v6",
-    sha256: "f104852c097e8f12a31a1bed7d15377b4a28b43b55098c0ce9bd6313295d3d64",
+    sha256: "f8874061494f4a14bd8a0bb2a995c067833fc53cb0f1472a1f1b17415c45702b",
   },
   {
     id: "manifest-schema",
@@ -111,13 +111,13 @@ export const redevPluginContractArtifacts = [
     id: "compatibility-manifest-schema",
     path: "spec/plugin/compatibility-manifest-v6.schema.json",
     version: "compatibility-manifest-v6",
-    sha256: "0a205c2ce2c3d3184c265d6e744d3cb7c4870888ebb7c7542766bc122b7ed91a",
+    sha256: "4f9e2a42c5a4893afad4027a5f29e4fc37843f450451dc5db26ac7919166a0db",
   },
   {
     id: "release-manifest-schema",
-    path: "spec/plugin/release-manifest-v3.schema.json",
-    version: "release-manifest-v3",
-    sha256: "c2e7eb7d4ac59b6523f635ca13adef21d94bb059dfab0d3a3300e049ef9bfe02",
+    path: "spec/plugin/release-manifest-v4.schema.json",
+    version: "release-manifest-v4",
+    sha256: "b0a9e95b7bc819ee2a17a2d0bc4105b524e138945c11a19c77306a0a5351d63f",
   },
   {
     id: "worker-invocation-schema",
@@ -183,7 +183,7 @@ export const redevPluginContractArtifacts = [
     id: "rust-ipc-schema",
     path: "spec/plugin/ipc-v4.schema.json",
     version: "rust-ipc-v4",
-    sha256: "1555a394231a5825165d90c0f585fce785d6da887f61645420e704d1c485ba23",
+    sha256: "eb66a442f1c45b8c75a0232f68632df8fb07929addc6da5b2f79970adf77662c",
   },
   {
     id: "wasm-worker-schema",
@@ -213,6 +213,6 @@ export const redevPluginContractArtifacts = [
     id: "contract-registry",
     path: "spec/plugin/contract-registry-v1.json",
     version: "contract-registry-v1",
-    sha256: "dbaca59348f4c5eadb226539c8e468f7767808325c169d0e877c4dc41ac6904e",
+    sha256: "86cc5ccce02ef00b6cf8b44af07ad3a82867ee039d8d82ffc704194ee2c62547",
   },
 ] as const satisfies readonly ReDevPluginContractArtifact[];

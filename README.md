@@ -397,7 +397,7 @@ capabilities.
 - `spec/plugin/contract-registry-v1.json` is the generated complete inventory of
   those public contract IDs, paths, versions, and SHA-256 identities; Go and
   TypeScript registries are generated from the same source set.
-- Release-manifest schema tests keep `release-manifest-v3.schema.json` aligned
+- Release-manifest schema tests keep `release-manifest-v4.schema.json` aligned
   with the release bundle build script and verifier: `release-manifest.json`
   records the source commit, compatibility digest, exact npm tarball identity,
   exact Rust worker SDK crate identity, sorted file list, lowercase SHA-256

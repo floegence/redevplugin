@@ -7,6 +7,10 @@
 - Add immutable runtime descriptors and strict SemVer validation across install,
   update, downgrade, enable, surface opening, worker invocation, and runtime
   startup, including exact target, IPC, WASM ABI, and artifact SHA-256 checks.
+- Add one closed runtime target contract shared by Go host APIs, persisted
+  compatibility records, HTTP mappings, Rust IPC, generated TypeScript, and
+  release verification. Rust build triples map explicitly to the four canonical
+  platform targets and are never accepted as platform target aliases.
 - Add durable pending/completed/exported security-audit journals for memory and
   SQLite hosts, startup reconciliation, stable event IDs, idempotent export, and
   explicit committed/not-committed/unknown mutation outcomes.
@@ -199,7 +203,7 @@
   while desktop and mobile layouts share the same runtime behavior.
 - The CLI scaffold emits one ABI v2 Rust worker and generated browser worker
   through a single canonical build path.
-- Platform release bundles now use `redevplugin.release_manifest.v3`. The npm
+- Platform release bundles now use `redevplugin.release_manifest.v4`. The npm
   tarball and Rust worker SDK crate are each built once, embedded byte-for-byte
   in every runtime target bundle, and verified for cross-bundle identity.
 

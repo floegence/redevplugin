@@ -15,7 +15,6 @@ import (
 	"net/url"
 	"path"
 	"reflect"
-	"runtime"
 	"slices"
 	"sort"
 	"strconv"
@@ -37,6 +36,7 @@ import (
 	"github.com/floegence/redevplugin/pkg/pluginpkg"
 	"github.com/floegence/redevplugin/pkg/registry"
 	"github.com/floegence/redevplugin/pkg/runtimeclient"
+	"github.com/floegence/redevplugin/pkg/runtimetarget"
 	"github.com/floegence/redevplugin/pkg/secrets"
 	"github.com/floegence/redevplugin/pkg/security"
 	"github.com/floegence/redevplugin/pkg/sessionctx"
@@ -432,10 +432,10 @@ type PluginPackageRelease struct {
 }
 
 type ReleaseCompatibility struct {
-	MinReDevPluginVersion string   `json:"min_redevplugin_version,omitempty"`
-	MinRuntimeVersion     string   `json:"min_runtime_version,omitempty"`
-	UIProtocolVersion     string   `json:"ui_protocol_version,omitempty"`
-	SupportedTargets      []string `json:"supported_targets,omitempty"`
+	MinReDevPluginVersion string                 `json:"min_redevplugin_version,omitempty"`
+	MinRuntimeVersion     string                 `json:"min_runtime_version,omitempty"`
+	UIProtocolVersion     string                 `json:"ui_protocol_version,omitempty"`
+	SupportedTargets      []runtimetarget.Target `json:"supported_targets,omitempty"`
 }
 
 type HostRequirement struct {
@@ -563,13 +563,8 @@ type CoreActionAdapter interface {
 	InvokeCoreAction(ctx context.Context, req capability.Invocation) (capability.Result, error)
 }
 
-type RuntimeTarget struct {
-	OS   string `json:"os"`
-	Arch string `json:"arch"`
-}
-
 type StartRuntimeRequest struct {
-	Target RuntimeTarget `json:"target,omitempty"`
+	Target runtimetarget.Target `json:"-"`
 }
 
 type SurfaceCatalogSink interface {
@@ -3701,16 +3696,15 @@ func validateReleaseCompatibility(pkg pluginpkg.Package, release PluginPackageRe
 	if currentReDevPluginVersion.Compare(minimumReDevPluginVersion) < 0 {
 		return fmt.Errorf("%w: release requires newer redevplugin go version", ErrReleaseRefVerificationFailed)
 	}
-	seenTargets := make(map[string]struct{}, len(compatibility.SupportedTargets))
-	for _, value := range compatibility.SupportedTargets {
-		target, err := parseRuntimeTarget(value)
-		if err != nil || runtimeTargetString(target) != value {
-			return fmt.Errorf("%w: release compatibility supported target %q is invalid", ErrReleaseRefVerificationFailed, value)
+	seenTargets := make(map[runtimetarget.Target]struct{}, len(compatibility.SupportedTargets))
+	for _, target := range compatibility.SupportedTargets {
+		if err := runtimetarget.Validate(target); err != nil {
+			return fmt.Errorf("%w: release compatibility supported target %q is invalid", ErrReleaseRefVerificationFailed, target.String())
 		}
-		if _, exists := seenTargets[value]; exists {
-			return fmt.Errorf("%w: release compatibility supported target %q is duplicated", ErrReleaseRefVerificationFailed, value)
+		if _, exists := seenTargets[target]; exists {
+			return fmt.Errorf("%w: release compatibility supported target %q is duplicated", ErrReleaseRefVerificationFailed, target.String())
 		}
-		seenTargets[value] = struct{}{}
+		seenTargets[target] = struct{}{}
 	}
 	return nil
 }
@@ -4460,7 +4454,7 @@ func cloneRuntimeRequirement(requirement *registry.RuntimeRequirement) *registry
 	}
 	return &registry.RuntimeRequirement{
 		MinVersion:       requirement.MinVersion,
-		SupportedTargets: append([]string(nil), requirement.SupportedTargets...),
+		SupportedTargets: append([]runtimetarget.Target(nil), requirement.SupportedTargets...),
 	}
 }
 
@@ -4569,24 +4563,21 @@ func runtimeRequirementForPackage(pluginManifest manifest.Manifest, input packag
 	}
 	requirement := &registry.RuntimeRequirement{MinVersion: minimumVersion.String()}
 	if input.Release != nil && input.Release.Compatibility != nil {
-		requirement.SupportedTargets = append([]string(nil), input.Release.Compatibility.SupportedTargets...)
+		requirement.SupportedTargets = append([]runtimetarget.Target(nil), input.Release.Compatibility.SupportedTargets...)
 	}
-	seenTargets := make(map[string]struct{}, len(requirement.SupportedTargets))
-	for _, value := range requirement.SupportedTargets {
-		target, err := parseRuntimeTarget(value)
-		if err != nil {
-			return nil, fmt.Errorf("%w: supported target %q: %v", ErrPluginRuntimeIncompatible, value, err)
+	seenTargets := make(map[runtimetarget.Target]struct{}, len(requirement.SupportedTargets))
+	for _, target := range requirement.SupportedTargets {
+		if err := runtimetarget.Validate(target); err != nil {
+			return nil, fmt.Errorf("%w: supported target is invalid: %v", ErrPluginRuntimeIncompatible, err)
 		}
-		canonical := runtimeTargetString(target)
-		if canonical != value {
-			return nil, fmt.Errorf("%w: supported target %q is not canonical", ErrPluginRuntimeIncompatible, value)
+		if _, exists := seenTargets[target]; exists {
+			return nil, fmt.Errorf("%w: supported target %q is duplicated", ErrPluginRuntimeIncompatible, target.String())
 		}
-		if _, exists := seenTargets[canonical]; exists {
-			return nil, fmt.Errorf("%w: supported target %q is duplicated", ErrPluginRuntimeIncompatible, value)
-		}
-		seenTargets[canonical] = struct{}{}
+		seenTargets[target] = struct{}{}
 	}
-	sort.Strings(requirement.SupportedTargets)
+	sort.Slice(requirement.SupportedTargets, func(left, right int) bool {
+		return requirement.SupportedTargets[left].String() < requirement.SupportedTargets[right].String()
+	})
 	return requirement, nil
 }
 
@@ -4594,27 +4585,7 @@ func pluginHasWorkers(pluginManifest manifest.Manifest) bool {
 	return len(pluginManifest.Workers) > 0
 }
 
-func parseRuntimeTarget(value string) (runtimeclient.Target, error) {
-	parts := strings.Split(value, "/")
-	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
-		return runtimeclient.Target{}, runtimeclient.ErrRuntimeTargetUnsupported
-	}
-	target := runtimeclient.Target{OS: parts[0], Arch: parts[1]}
-	if err := runtimeclient.ValidateTarget(target); err != nil {
-		return runtimeclient.Target{}, err
-	}
-	return target, nil
-}
-
-func runtimeTargetString(target runtimeclient.Target) string {
-	return target.OS + "/" + target.Arch
-}
-
-func currentRuntimeTarget() runtimeclient.Target {
-	return runtimeclient.Target{OS: runtime.GOOS, Arch: runtime.GOARCH}
-}
-
-func validateWorkerRuntimeDescriptor(record registry.PluginRecord, descriptor runtimeclient.RuntimeDescriptor, expectedTarget runtimeclient.Target) error {
+func validateWorkerRuntimeDescriptor(record registry.PluginRecord, descriptor runtimeclient.RuntimeDescriptor, expectedTarget runtimetarget.Target) error {
 	if !pluginHasWorkers(record.Manifest) {
 		return nil
 	}
@@ -4632,8 +4603,8 @@ func validateWorkerRuntimeDescriptor(record registry.PluginRecord, descriptor ru
 		return fmt.Errorf(
 			"%w: runtime target %s does not match expected %s",
 			ErrPluginRuntimeIncompatible,
-			runtimeTargetString(descriptor.Target()),
-			runtimeTargetString(expectedTarget),
+			descriptor.Target().String(),
+			expectedTarget.String(),
 		)
 	}
 	if descriptor.Version().Compare(minimumVersion) < 0 {
@@ -4645,7 +4616,7 @@ func validateWorkerRuntimeDescriptor(record registry.PluginRecord, descriptor ru
 		)
 	}
 	if len(record.RuntimeRequirement.SupportedTargets) > 0 {
-		actualTarget := runtimeTargetString(descriptor.Target())
+		actualTarget := descriptor.Target()
 		supported := false
 		for _, target := range record.RuntimeRequirement.SupportedTargets {
 			if target == actualTarget {
@@ -4654,7 +4625,7 @@ func validateWorkerRuntimeDescriptor(record registry.PluginRecord, descriptor ru
 			}
 		}
 		if !supported {
-			return fmt.Errorf("%w: runtime target %s is unsupported by the package", ErrPluginRuntimeIncompatible, actualTarget)
+			return fmt.Errorf("%w: runtime target %s is unsupported by the package", ErrPluginRuntimeIncompatible, actualTarget.String())
 		}
 	}
 	for _, worker := range record.Manifest.Workers {
@@ -4678,11 +4649,15 @@ func (h *Host) preflightWorkerRuntime(ctx context.Context, record registry.Plugi
 	if h.adapters.RuntimeManager == nil {
 		return ErrPluginRuntimeNotConfigured
 	}
-	descriptor, err := h.adapters.RuntimeManager.Preflight(ctx, currentRuntimeTarget())
+	target, err := runtimetarget.Current()
 	if err != nil {
 		return fmt.Errorf("%w: %v", ErrPluginRuntimeIncompatible, err)
 	}
-	return validateWorkerRuntimeDescriptor(record, descriptor, currentRuntimeTarget())
+	descriptor, err := h.adapters.RuntimeManager.Preflight(ctx, target)
+	if err != nil {
+		return fmt.Errorf("%w: %v", ErrPluginRuntimeIncompatible, err)
+	}
+	return validateWorkerRuntimeDescriptor(record, descriptor, target)
 }
 
 func (h *Host) bindCompatibleWorkerRuntime(ctx context.Context, record registry.PluginRecord) (runtimeclient.RuntimeBinding, error) {
@@ -4702,7 +4677,11 @@ func (h *Host) bindCompatibleWorkerRuntime(ctx context.Context, record registry.
 	if err := validateRuntimeManagerHealth(health, health.Descriptor); err != nil {
 		return runtimeclient.RuntimeBinding{}, err
 	}
-	if err := validateWorkerRuntimeDescriptor(record, health.Descriptor, currentRuntimeTarget()); err != nil {
+	target, err := runtimetarget.Current()
+	if err != nil {
+		return runtimeclient.RuntimeBinding{}, fmt.Errorf("%w: %v", ErrPluginRuntimeIncompatible, err)
+	}
+	if err := validateWorkerRuntimeDescriptor(record, health.Descriptor, target); err != nil {
 		return runtimeclient.RuntimeBinding{}, err
 	}
 	binding, err := h.adapters.RuntimeManager.BindPlugin(ctx, record.PluginInstanceID)
@@ -5383,8 +5362,8 @@ func (h *Host) StartRuntime(ctx context.Context, req StartRuntimeRequest) (resul
 	if h.adapters.RuntimeManager == nil {
 		return runtimeclient.ManagerHealth{}, ErrPluginRuntimeNotConfigured
 	}
-	target := runtimeclient.Target{OS: req.Target.OS, Arch: req.Target.Arch}
-	if err := runtimeclient.ValidateTarget(target); err != nil {
+	target := req.Target
+	if err := runtimetarget.Validate(target); err != nil {
 		return runtimeclient.ManagerHealth{}, err
 	}
 	descriptor, err := h.adapters.RuntimeManager.Preflight(ctx, target)

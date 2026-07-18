@@ -13,6 +13,7 @@ import (
 	"github.com/floegence/redevplugin/pkg/pluginpkg"
 	"github.com/floegence/redevplugin/pkg/registry"
 	"github.com/floegence/redevplugin/pkg/runtimeclient"
+	"github.com/floegence/redevplugin/pkg/runtimetarget"
 	"github.com/floegence/redevplugin/pkg/version"
 )
 
@@ -119,7 +120,7 @@ func TestWorkerInstallRejectsIncompatibleRuntimeVersionBeforeMutation(t *testing
 	}
 	descriptor, err := runtimeclient.NewRuntimeDescriptor(
 		runtimeVersion,
-		currentRuntimeTarget(),
+		hostTestRuntimeDescriptor().Target(),
 		version.RustIPCVersion,
 		version.WASMABIVersion,
 		strings.Repeat("b", 64),
@@ -156,10 +157,13 @@ func TestWorkerInstallRejectsIncompatibleRuntimeVersionBeforeMutation(t *testing
 func TestValidateWorkerRuntimeDescriptorRejectsUnexpectedTarget(t *testing.T) {
 	descriptor := hostTestRuntimeDescriptor()
 	expectedTarget := descriptor.Target()
-	if expectedTarget.Arch == "arm64" {
-		expectedTarget.Arch = "amd64"
-	} else {
-		expectedTarget.Arch = "arm64"
+	otherArch := "arm64"
+	if expectedTarget.Arch() == "arm64" {
+		otherArch = "amd64"
+	}
+	expectedTarget, err := runtimetarget.FromParts(expectedTarget.OS(), otherArch)
+	if err != nil {
+		t.Fatal(err)
 	}
 	record := registry.PluginRecord{
 		Manifest: manifest.Manifest{Workers: []manifest.WorkerSpec{{WorkerID: "worker", ABI: version.WASMABIVersion}}},
@@ -175,8 +179,8 @@ func TestValidateWorkerRuntimeDescriptorRejectsUnexpectedTarget(t *testing.T) {
 func TestStartRuntimeRequiresExplicitCanonicalTarget(t *testing.T) {
 	manager := newRecordingRuntimeManager()
 	h, _, _ := newTestHostWithOptions(t, testHostOptions{runtimeManager: manager})
-	if _, err := h.StartRuntime(hostTestContext(), StartRuntimeRequest{}); !errors.Is(err, runtimeclient.ErrRuntimeTargetUnsupported) {
-		t.Fatalf("StartRuntime() error = %v, want ErrRuntimeTargetUnsupported", err)
+	if _, err := h.StartRuntime(hostTestContext(), StartRuntimeRequest{}); !errors.Is(err, runtimetarget.ErrUnsupported) {
+		t.Fatalf("StartRuntime() error = %v, want runtimetarget.ErrUnsupported", err)
 	}
 	if manager.preflightCalls != 0 || manager.startCalls != 0 {
 		t.Fatalf("invalid target reached manager: preflight=%d start=%d", manager.preflightCalls, manager.startCalls)

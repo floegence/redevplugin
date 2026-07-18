@@ -46,7 +46,7 @@ func TestCompatibilityManifestSchemaDefinesReleasedMatrix(t *testing.T) {
 		"resource_scope_schema_version":           "resource-scope-v1",
 		"plugin_platform_openapi_version":         "plugin-platform-v6",
 		"compatibility_schema_version":            "compatibility-manifest-v6",
-		"release_manifest_schema_version":         "release-manifest-v3",
+		"release_manifest_schema_version":         "release-manifest-v4",
 		"worker_invocation_schema_version":        "worker-invocation-v3",
 		"error_codes_schema_version":              "error-codes-v4",
 		"performance_contract_version":            "performance-contract-v1",
@@ -110,9 +110,9 @@ func TestContractRegistryPublishesOnlyCurrentPlatformContracts(t *testing.T) {
 	}
 	for _, identifier := range []string{
 		"plugin-platform-v4",
-		"manifest-v4",
 		"compatibility-manifest-v4",
 		"release-metadata-v4",
+		"release-manifest-v3",
 		"error-codes-v2",
 		"bridge-v4",
 		"opaque-surface-document-v2",
@@ -132,6 +132,7 @@ func TestContractRegistryPublishesOnlyCurrentPlatformContracts(t *testing.T) {
 		"spec/plugin/manifest-v4.schema.json",
 		"spec/plugin/compatibility-manifest-v4.schema.json",
 		"spec/plugin/release-metadata-v4.schema.json",
+		"spec/plugin/release-manifest-v3.schema.json",
 		"spec/plugin/error-codes-v2.schema.json",
 		"spec/plugin/bridge-v4.schema.json",
 		"spec/plugin/opaque-surface-document-v2.schema.json",

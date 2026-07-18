@@ -6,7 +6,7 @@
   "scripts": {
     "openapi:generate": "node scripts/generate_openapi_types.mjs",
     "openapi:check": "node scripts/generate_openapi_types.mjs --check",
-    "openapi-contract:test": "node --test scripts/openapi_contract_integrity.test.mjs",
+    "openapi-contract:test": "node --test scripts/openapi_contract_integrity.test.mjs scripts/runtime_targets.test.mjs",
     "error-codes:generate": "node scripts/generate_error_codes.mjs",
     "error-codes:check": "node scripts/generate_error_codes.mjs --check",
     "contracts:generate": "node scripts/generate_contract_registry.mjs",

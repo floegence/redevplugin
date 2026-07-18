@@ -12,7 +12,6 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"time"
 
@@ -27,6 +26,7 @@ import (
 	"github.com/floegence/redevplugin/pkg/pluginpkg"
 	"github.com/floegence/redevplugin/pkg/registry"
 	"github.com/floegence/redevplugin/pkg/runtimeclient"
+	"github.com/floegence/redevplugin/pkg/runtimetarget"
 	"github.com/floegence/redevplugin/pkg/secrets"
 	"github.com/floegence/redevplugin/pkg/security"
 	"github.com/floegence/redevplugin/pkg/sessionctx"
@@ -268,7 +268,11 @@ func examplesServerWithOptions(ctx context.Context, stateRoot string, runtimePat
 	operationStore := operation.NewMemoryStore()
 	confirmationIntentStore := security.NewMemoryConfirmationIntentStore()
 	streamStore := stream.NewMemoryStore()
-	runtimeDescriptor, err := describeCommandRuntime(runtimePath, runtimeclient.Target{OS: runtime.GOOS, Arch: runtime.GOARCH})
+	runtimeTarget, err := runtimetarget.Current()
+	if err != nil {
+		return err
+	}
+	runtimeDescriptor, err := describeCommandRuntime(runtimePath, runtimeTarget)
 	if err != nil {
 		return err
 	}
@@ -322,7 +326,7 @@ func examplesServerWithOptions(ctx context.Context, stateRoot string, runtimePat
 		_ = secretStore.Close()
 		_ = registryStore.Close()
 	}()
-	health, err := pluginHost.StartRuntime(ctx, host.StartRuntimeRequest{Target: host.RuntimeTarget{OS: runtime.GOOS, Arch: runtime.GOARCH}})
+	health, err := pluginHost.StartRuntime(ctx, host.StartRuntimeRequest{Target: runtimeTarget})
 	if err != nil {
 		return err
 	}

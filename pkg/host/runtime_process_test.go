@@ -20,6 +20,7 @@ import (
 
 	"github.com/floegence/redevplugin/pkg/connectivity"
 	"github.com/floegence/redevplugin/pkg/runtimeclient"
+	"github.com/floegence/redevplugin/pkg/runtimetarget"
 	"github.com/floegence/redevplugin/pkg/sessionctx"
 	"github.com/floegence/redevplugin/pkg/storage"
 	"github.com/floegence/redevplugin/pkg/stream"
@@ -42,7 +43,7 @@ func (m testProcessManager) BindHostServices(services runtimeclient.RuntimeHostS
 	return nil
 }
 
-func (m testProcessManager) Start(ctx context.Context, target runtimeclient.Target) (runtimeclient.ManagerHealth, error) {
+func (m testProcessManager) Start(ctx context.Context, target runtimetarget.Target) (runtimeclient.ManagerHealth, error) {
 	if err := m.ProcessSupervisor.Start(ctx, target); err != nil {
 		return runtimeclient.ManagerHealth{}, err
 	}
@@ -88,10 +89,10 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
-func hostRuntimeTestTarget(t *testing.T) runtimeclient.Target {
+func hostRuntimeTestTarget(t *testing.T) runtimetarget.Target {
 	t.Helper()
-	target := runtimeclient.Target{OS: runtime.GOOS, Arch: runtime.GOARCH}
-	if err := runtimeclient.ValidateTarget(target); err != nil {
+	target, err := runtimetarget.Current()
+	if err != nil {
 		t.Fatalf("test runtime target: %v", err)
 	}
 	return target
@@ -271,7 +272,7 @@ func TestCallPluginMethodWorkerHTTPStreamThroughRuntimeProcess(t *testing.T) {
 		t.Fatal("runtime manager factory did not return the process manager")
 	}
 	target := hostRuntimeTestTarget(t)
-	if _, err := h.StartRuntime(ctx, StartRuntimeRequest{Target: RuntimeTarget{OS: target.OS, Arch: target.Arch}}); err != nil {
+	if _, err := h.StartRuntime(ctx, StartRuntimeRequest{Target: target}); err != nil {
 		t.Fatalf("StartRuntime() error = %v", err)
 	}
 	installed, gateway := installEnableAndMintGateway(t, h, buildWorkerNetworkSubscriptionFixturePackage(t), "worker.view")
@@ -387,7 +388,7 @@ func TestCallPluginMethodWorkerHTTPStreamMemoryHostcallThroughBuiltRustRuntime(t
 			t.Errorf("Stop() error = %v", err)
 		}
 	})
-	if err := supervisor.Start(ctx, runtimeclient.Target{OS: runtime.GOOS, Arch: runtime.GOARCH}); err != nil {
+	if err := supervisor.Start(ctx, hostRuntimeTestTarget(t)); err != nil {
 		t.Fatalf("Start() error = %v", err)
 	}
 	installed, gateway := installEnableAndMintGateway(t, h, buildWorkerNetworkSubscriptionMemoryHostcallFixturePackage(t), "worker.view")
@@ -471,7 +472,7 @@ func TestCallPluginMethodWorkerThroughBuiltRustRuntime(t *testing.T) {
 			t.Errorf("Stop() error = %v", err)
 		}
 	})
-	if err := supervisor.Start(ctx, runtimeclient.Target{OS: runtime.GOOS, Arch: runtime.GOARCH}); err != nil {
+	if err := supervisor.Start(ctx, hostRuntimeTestTarget(t)); err != nil {
 		t.Fatalf("Start() error = %v", err)
 	}
 	installed, gateway := installEnableAndMintGateway(t, h, buildWorkerFixturePackage(t), "worker.view")
@@ -555,7 +556,7 @@ func TestCallPluginMethodWorkerNetworkMemoryHostcallThroughBuiltRustRuntime(t *t
 			t.Errorf("Stop() error = %v", err)
 		}
 	})
-	if err := supervisor.Start(ctx, runtimeclient.Target{OS: runtime.GOOS, Arch: runtime.GOARCH}); err != nil {
+	if err := supervisor.Start(ctx, hostRuntimeTestTarget(t)); err != nil {
 		t.Fatalf("Start() error = %v", err)
 	}
 	installed, gateway := installEnableAndMintGateway(t, h, buildWorkerNetworkMemoryHostcallFixturePackage(t), "worker.view")
@@ -756,7 +757,7 @@ func TestCallPluginMethodWorkerNetworkSocketMemoryHostcallsThroughBuiltRustRunti
 					t.Errorf("Stop() error = %v", err)
 				}
 			})
-			if err := supervisor.Start(ctx, runtimeclient.Target{OS: runtime.GOOS, Arch: runtime.GOARCH}); err != nil {
+			if err := supervisor.Start(ctx, hostRuntimeTestTarget(t)); err != nil {
 				t.Fatalf("Start() error = %v", err)
 			}
 			installed, gateway := installEnableAndMintGateway(t, h, buildWorkerNetworkTransportMemoryHostcallFixturePackage(t, tc.transport), "worker.view")
@@ -834,7 +835,7 @@ func TestCallPluginMethodWorkerStorageMemoryHostcallThroughBuiltRustRuntime(t *t
 			t.Errorf("Stop() error = %v", err)
 		}
 	})
-	if err := supervisor.Start(ctx, runtimeclient.Target{OS: runtime.GOOS, Arch: runtime.GOARCH}); err != nil {
+	if err := supervisor.Start(ctx, hostRuntimeTestTarget(t)); err != nil {
 		t.Fatalf("Start() error = %v", err)
 	}
 	installed, gateway := installEnableAndMintGateway(t, h, buildWorkerStorageMemoryHostcallFixturePackage(t), "worker.view")
@@ -924,7 +925,7 @@ func TestCallPluginMethodWorkerStorageKVMemoryHostcallThroughBuiltRustRuntime(t 
 			t.Errorf("Stop() error = %v", err)
 		}
 	})
-	if err := supervisor.Start(ctx, runtimeclient.Target{OS: runtime.GOOS, Arch: runtime.GOARCH}); err != nil {
+	if err := supervisor.Start(ctx, hostRuntimeTestTarget(t)); err != nil {
 		t.Fatalf("Start() error = %v", err)
 	}
 	installed, gateway := installEnableAndMintGateway(t, h, buildWorkerStorageKVMemoryHostcallFixturePackage(t), "worker.view")
@@ -1015,7 +1016,7 @@ func TestCallPluginMethodWorkerStorageSQLiteMemoryHostcallThroughBuiltRustRuntim
 			t.Errorf("Stop() error = %v", err)
 		}
 	})
-	if err := supervisor.Start(ctx, runtimeclient.Target{OS: runtime.GOOS, Arch: runtime.GOARCH}); err != nil {
+	if err := supervisor.Start(ctx, hostRuntimeTestTarget(t)); err != nil {
 		t.Fatalf("Start() error = %v", err)
 	}
 	installed, gateway := installEnableAndMintGateway(t, h, buildWorkerStorageSQLiteMemoryHostcallFixturePackage(t), "worker.view")
@@ -1117,9 +1118,14 @@ type hostRuntimeHelloAckPayload struct {
 	RuntimeVersion string                      `json:"runtime_version"`
 	RustIPCVersion string                      `json:"rust_ipc_version"`
 	WASMABIVersion string                      `json:"wasm_abi_version"`
-	ActualTarget   runtimeclient.Target        `json:"actual_target"`
+	ActualTarget   hostRuntimeTargetWire       `json:"actual_target"`
 	ChannelNonce   string                      `json:"channel_nonce"`
 	Limits         runtimeclient.RuntimeLimits `json:"limits"`
+}
+
+type hostRuntimeTargetWire struct {
+	OS   string `json:"os"`
+	Arch string `json:"arch"`
 }
 
 type hostRuntimeHelloPayload struct {
@@ -1221,7 +1227,7 @@ func runHostRuntimeProcessHelper() {
 				RuntimeVersion: version.RuntimeVersion,
 				RustIPCVersion: version.RustIPCVersion,
 				WASMABIVersion: version.WASMABIVersion,
-				ActualTarget:   runtimeclient.Target{OS: runtime.GOOS, Arch: runtime.GOARCH},
+				ActualTarget:   hostRuntimeTargetWire{OS: runtime.GOOS, Arch: runtime.GOARCH},
 				ChannelNonce:   hello.ChannelNonce,
 				Limits:         hello.Limits,
 			})
