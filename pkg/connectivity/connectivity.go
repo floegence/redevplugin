@@ -515,7 +515,7 @@ type GrantRequest struct {
 	Transport           Transport
 	Destination         string
 	RuntimeGenerationID string
-	Now                 time.Time
+	Now                 time.Time `json:"-"`
 	TTL                 time.Duration
 }
 
@@ -546,7 +546,7 @@ type HTTPRequest struct {
 	MaxResponseBytes int64           `json:"max_response_bytes,omitempty"`
 	MaxChunkBytes    int64           `json:"max_chunk_bytes,omitempty"`
 	Timeout          time.Duration   `json:"timeout,omitempty"`
-	Now              time.Time       `json:"now,omitempty"`
+	Now              time.Time       `json:"-"`
 }
 
 type HTTPResponse struct {
@@ -573,7 +573,7 @@ type TCPRoundTripRequest struct {
 	MaxRequestBytes int64           `json:"max_request_bytes,omitempty"`
 	MaxReadBytes    int64           `json:"max_read_bytes,omitempty"`
 	Timeout         time.Duration   `json:"timeout,omitempty"`
-	Now             time.Time       `json:"now,omitempty"`
+	Now             time.Time       `json:"-"`
 }
 
 type TCPRoundTripResponse struct {
@@ -585,7 +585,7 @@ type UDPRoundTripRequest struct {
 	Payload      []byte          `json:"-"`
 	MaxReadBytes int64           `json:"max_read_bytes,omitempty"`
 	Timeout      time.Duration   `json:"timeout,omitempty"`
-	Now          time.Time       `json:"now,omitempty"`
+	Now          time.Time       `json:"-"`
 }
 
 type UDPRoundTripResponse struct {
@@ -608,7 +608,7 @@ type WebSocketRoundTripRequest struct {
 	MaxRequestBytes  int64                `json:"max_request_bytes,omitempty"`
 	MaxResponseBytes int64                `json:"max_response_bytes,omitempty"`
 	Timeout          time.Duration        `json:"timeout,omitempty"`
-	Now              time.Time            `json:"now,omitempty"`
+	Now              time.Time            `json:"-"`
 }
 
 type WebSocketRoundTripResponse struct {

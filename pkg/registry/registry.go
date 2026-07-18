@@ -139,7 +139,7 @@ type SourceSecurityFloor struct {
 }
 
 type PutOptions struct {
-	Now time.Time
+	Now time.Time `json:"-"`
 }
 
 type AuthorizationStore interface {

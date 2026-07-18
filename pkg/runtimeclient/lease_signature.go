@@ -43,7 +43,7 @@ type RuntimeLeaseVerifier interface {
 type RuntimeLeaseVerificationRequest struct {
 	Lease  Lease     `json:"lease"`
 	Method string    `json:"method"`
-	Now    time.Time `json:"now,omitempty"`
+	Now    time.Time `json:"-"`
 }
 
 type RuntimeLeaseSigningKeyLookupRequest struct {

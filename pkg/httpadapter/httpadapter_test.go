@@ -35,7 +35,6 @@ import (
 	"github.com/floegence/redevplugin/pkg/mutation"
 	"github.com/floegence/redevplugin/pkg/observability"
 	"github.com/floegence/redevplugin/pkg/operation"
-	"github.com/floegence/redevplugin/pkg/permissions"
 	"github.com/floegence/redevplugin/pkg/plugindata"
 	"github.com/floegence/redevplugin/pkg/pluginpkg"
 	"github.com/floegence/redevplugin/pkg/registry"
@@ -210,7 +209,7 @@ func TestErrorResponseRejectsMismatchedTypedDetails(t *testing.T) {
 			OK:      false,
 			Code:    security.ErrWorkerError,
 			Message: "worker failed",
-			Details: errorDetails{WorkerErrorCode: "lowercase", WorkerErrorMessage: strings.Repeat("x", 4097), WorkerErrorOrigin: runtimeclient.WorkerErrorOriginPlugin},
+			Details: errorDetails{WorkerErrorCode: "lowercase", WorkerErrorMessage: strings.Repeat("x", 4097), WorkerErrorOrigin: string(runtimeclient.WorkerErrorOriginPlugin)},
 		},
 	}
 	for _, response := range tests {
@@ -1067,12 +1066,12 @@ func TestOpenAPIConfirmationPreparationResponseBelongsToPreparationRoute(t *test
 
 func TestOpenAPIOperationRecordOmitsOwnerScopeHashes(t *testing.T) {
 	spec := readOpenAPIContract(t)
-	for _, schemaName := range []string{"ExecutionBinding", "OperationRecord"} {
+	for _, schemaName := range []string{"PublicOperationBinding", "OperationRecord"} {
 		block, ok := openAPISchemaContractBlock(spec, schemaName)
 		if !ok {
 			t.Fatalf("OpenAPI schema %s is missing", schemaName)
 		}
-		for _, forbidden := range []string{"owner_session_hash", "owner_user_hash", "owner_env_hash", "session_channel_id_hash"} {
+		for _, forbidden := range []string{"owner_session_hash", "owner_user_hash", "owner_env_hash", "session_channel_id_hash", "bridge_channel_id"} {
 			if strings.Contains(block, forbidden) {
 				t.Fatalf("OpenAPI schema %s exposes %s:\n%s", schemaName, forbidden, block)
 			}
@@ -1089,7 +1088,11 @@ func TestPublicOperationRecordOmitsOwnerScopeHashes(t *testing.T) {
 			OwnerUserHash: "user_secret", OwnerEnvHash: "env_secret", SessionChannelIDHash: "channel_secret",
 		},
 	}
-	raw, err := json.Marshal(publicOperationRecord(record))
+	response, err := publicOperationRecord(record)
+	if err != nil {
+		t.Fatalf("publicOperationRecord() error = %v", err)
+	}
+	raw, err := json.Marshal(response)
 	if err != nil {
 		t.Fatalf("Marshal(publicOperationRecord()) error = %v", err)
 	}
@@ -1100,7 +1103,7 @@ func TestPublicOperationRecordOmitsOwnerScopeHashes(t *testing.T) {
 	if public["operation_id"] != "operation_public_1" || public["invocation_id"] != "invocation_public_1" {
 		t.Fatalf("public operation identity = %#v", public)
 	}
-	for _, forbidden := range []string{"owner_session_hash", "owner_user_hash", "owner_env_hash", "session_channel_id_hash"} {
+	for _, forbidden := range []string{"owner_session_hash", "owner_user_hash", "owner_env_hash", "session_channel_id_hash", "bridge_channel_id"} {
 		if _, present := public[forbidden]; present || strings.Contains(string(raw), "secret") {
 			t.Fatalf("public operation exposed owner scope through %s: %s", forbidden, raw)
 		}
@@ -2145,7 +2148,10 @@ func TestRPCErrorRejectsUnattestedCapabilityBusinessError(t *testing.T) {
 		if got := httpStatusForRPCError(err); got != http.StatusBadGateway {
 			t.Fatalf("httpStatusForRPCError(%T) = %d, want %d", err, got, http.StatusBadGateway)
 		}
-		details := errorDetailsForRPCError(err)
+		details, detailsErr := errorDetailsForRPCError(err)
+		if detailsErr != nil {
+			t.Fatalf("errorDetailsForRPCError(%T) error = %v", err, detailsErr)
+		}
 		if !reflect.DeepEqual(details, errorDetails{}) {
 			t.Fatalf("unattested business error details were exposed: %#v", details)
 		}
@@ -2223,21 +2229,24 @@ func TestHandlerPermissionGrantRevokeFlow(t *testing.T) {
 	if spoofedGrant.Code != string(security.ErrInvalidRequest) {
 		t.Fatalf("spoofed permission grant error_code = %s", spoofedGrant.Code)
 	}
-	grant := postJSON[host.PermissionMutationResult](t, handler, "/_redevplugin/api/plugins/permissions/grant", map[string]any{
+	grant := postJSON[permissionMutationResponse](t, handler, "/_redevplugin/api/plugins/permissions/grant", map[string]any{
 		"plugin_instance_id":           installed.PluginInstanceID,
 		"permission_id":                "read",
 		"expected_policy_revision":     expected.PolicyRevision,
 		"expected_management_revision": expected.ManagementRevision,
 		"expected_revoke_epoch":        expected.RevokeEpoch,
 	})
-	if grant.Permission.PermissionID != "read" || grant.Permission.GrantedBy != "user_hash" || grant.Permission.RevokedAt != nil || grant.Revisions.PolicyRevision != expected.PolicyRevision+1 {
+	if grant.Permission.PermissionID != "read" || grant.Permission.RevokedAt != nil || grant.Revisions.PolicyRevision != expected.PolicyRevision+1 {
 		t.Fatalf("grant response mismatch: %#v", grant)
 	}
 	listed := getJSON[struct {
-		Permissions []permissions.Record `json:"permissions"`
+		Permissions []map[string]any `json:"permissions"`
 	}](t, handler, "/_redevplugin/api/plugins/permissions?plugin_instance_id="+installed.PluginInstanceID+"&active_only=true")
-	if len(listed.Permissions) != 1 || listed.Permissions[0].PermissionID != "read" {
+	if len(listed.Permissions) != 1 || listed.Permissions[0]["permission_id"] != "read" {
 		t.Fatalf("permissions list mismatch: %#v", listed)
+	}
+	if _, present := listed.Permissions[0]["granted_by"]; present {
+		t.Fatalf("permissions list exposed granted_by: %#v", listed)
 	}
 
 	req = newJSONHTTPRequest(http.MethodPost, "/_redevplugin/api/plugins/rpc", bytes.NewReader(raw))
@@ -2272,7 +2281,7 @@ func TestHandlerPermissionGrantRevokeFlow(t *testing.T) {
 	if spoofedRevoke.Code != string(security.ErrInvalidRequest) {
 		t.Fatalf("spoofed permission revoke error_code = %s", spoofedRevoke.Code)
 	}
-	revoked := postJSON[host.PermissionMutationResult](t, handler, "/_redevplugin/api/plugins/permissions/revoke", map[string]any{
+	revoked := postJSON[permissionMutationResponse](t, handler, "/_redevplugin/api/plugins/permissions/revoke", map[string]any{
 		"plugin_instance_id":           installed.PluginInstanceID,
 		"permission_id":                "read",
 		"expected_policy_revision":     expected.PolicyRevision,
@@ -2280,11 +2289,11 @@ func TestHandlerPermissionGrantRevokeFlow(t *testing.T) {
 		"expected_revoke_epoch":        expected.RevokeEpoch,
 		"reason":                       "test",
 	})
-	if revoked.Permission.RevokedAt == nil || revoked.Permission.RevokedBy != "user_hash" || revoked.Permission.RevokedReason != "test" || revoked.Revisions.RevokeEpoch != expected.RevokeEpoch+1 {
+	if revoked.Permission.RevokedAt == nil || revoked.Permission.RevokedReason != "test" || revoked.Revisions.RevokeEpoch != expected.RevokeEpoch+1 {
 		t.Fatalf("revoke response mismatch: %#v", revoked)
 	}
 	active := getJSON[struct {
-		Permissions []permissions.Record `json:"permissions"`
+		Permissions []permissionResponse `json:"permissions"`
 	}](t, handler, "/_redevplugin/api/plugins/permissions?plugin_instance_id="+installed.PluginInstanceID+"&active_only=true")
 	if len(active.Permissions) != 0 {
 		t.Fatalf("active permissions after revoke mismatch: %#v", active)
@@ -2771,7 +2780,7 @@ func TestHandlerOperationManagementFlow(t *testing.T) {
 
 func assertPublicOperationHasNoOwnerScope(t testing.TB, record map[string]any) {
 	t.Helper()
-	for _, forbidden := range []string{"owner_session_hash", "owner_user_hash", "owner_env_hash", "session_channel_id_hash"} {
+	for _, forbidden := range []string{"owner_session_hash", "owner_user_hash", "owner_env_hash", "session_channel_id_hash", "bridge_channel_id"} {
 		if _, present := record[forbidden]; present {
 			t.Fatalf("public operation exposed %s: %#v", forbidden, record)
 		}
@@ -4045,6 +4054,20 @@ func TestHandlerRuntimeLifecycleFlow(t *testing.T) {
 	health = getJSON[runtimeclient.ManagerHealth](t, handler, "/_redevplugin/api/plugins/runtime/health")
 	if !health.Ready || len(health.Shards) != 1 || health.Shards[0].RuntimeGenerationID != "runtime_gen_http" || health.Descriptor != supervisor.health.Descriptor || health.Shards[0].Descriptor != health.Descriptor {
 		t.Fatalf("runtime health mismatch: %#v", health)
+	}
+	publicHealth := getJSON[map[string]any](t, handler, "/_redevplugin/api/plugins/runtime/health")
+	shards, ok := publicHealth["shards"].([]any)
+	if !ok || len(shards) != 1 {
+		t.Fatalf("runtime health public shards = %#v", publicHealth["shards"])
+	}
+	shard, ok := shards[0].(map[string]any)
+	if !ok {
+		t.Fatalf("runtime health public shard = %#v", shards[0])
+	}
+	for _, forbidden := range []string{"ipc_channel_id", "connection_nonce"} {
+		if _, present := shard[forbidden]; present {
+			t.Fatalf("runtime health exposed %s: %#v", forbidden, shard)
+		}
 	}
 	postJSON[map[string]bool](t, handler, "/_redevplugin/api/plugins/runtime/stop", map[string]any{})
 	if supervisor.stopCalls != 1 {

@@ -77,7 +77,7 @@ type RegisterRequest struct {
 	CancelAckTimeoutMS int                         `json:"cancel_ack_timeout_ms,omitempty"`
 	DisableBehavior    string                      `json:"disable_behavior,omitempty"`
 	UninstallBehavior  string                      `json:"uninstall_behavior,omitempty"`
-	Now                time.Time                   `json:"now,omitempty"`
+	Now                time.Time                   `json:"-"`
 }
 
 type ListRequest struct {
@@ -112,7 +112,7 @@ type Page struct {
 type CancelRequest struct {
 	OperationID string    `json:"operation_id"`
 	Reason      string    `json:"reason,omitempty"`
-	Now         time.Time `json:"now,omitempty"`
+	Now         time.Time `json:"-"`
 }
 
 type FinishRequest struct {
@@ -120,14 +120,14 @@ type FinishRequest struct {
 	Status      Status                          `json:"status"`
 	FailureCode capability.ExecutionFailureCode `json:"failure_code,omitempty"`
 	Reason      string                          `json:"reason,omitempty"`
-	Now         time.Time                       `json:"now,omitempty"`
+	Now         time.Time                       `json:"-"`
 }
 
 type PluginTransitionRequest struct {
 	PluginInstanceID string                   `json:"plugin_instance_id"`
 	ResourceScope    sessionctx.ResourceScope `json:"-"`
 	Reason           string                   `json:"reason,omitempty"`
-	Now              time.Time                `json:"now,omitempty"`
+	Now              time.Time                `json:"-"`
 }
 
 type PruneRequest struct {

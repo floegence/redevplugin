@@ -57,7 +57,7 @@ type AuthorizeRequest struct {
 	Method           string                 `json:"method"`
 	PermissionIDs    []string               `json:"permission_ids,omitempty"`
 	Expected         AuthorizationRevisions `json:"expected"`
-	Now              time.Time              `json:"now,omitempty"`
+	Now              time.Time              `json:"-"`
 }
 
 type AuthorizationDecision struct {

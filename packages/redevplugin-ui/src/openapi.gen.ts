@@ -1220,19 +1220,18 @@ export interface components {
         PluginIntentList: {
             intents: components["schemas"]["PluginIntentRecord"][];
         };
+        /** @description Explicit public HTTP projection of a permission grant. Internal actor ownership hashes are never returned. */
         PluginPermissionGrant: {
             plugin_instance_id: string;
             permission_id: string;
             /** @enum {string} */
             effect: "grant" | "deny";
-            granted_by?: string;
             /** Format: date-time */
             granted_at: string;
             /** Format: date-time */
             expires_at?: string;
             /** Format: date-time */
             revoked_at?: string;
-            revoked_by?: string;
             revoked_reason?: string;
         };
         PluginPermissionList: {
@@ -1289,12 +1288,11 @@ export interface components {
         PluginDiagnosticEventList: {
             diagnostic_events: components["schemas"]["PluginDiagnosticEvent"][];
         };
+        /** @description Explicit public HTTP projection of runtime shard health. IPC channel credentials and connection nonces are excluded. */
         PluginRuntimeShardHealth: {
             runtime_shard_id: string;
             runtime_instance_id: string;
             runtime_generation_id: string;
-            ipc_channel_id?: string;
-            connection_nonce?: string;
             descriptor: components["schemas"]["RuntimeDescriptor"];
             ready: boolean;
             active_invocations: number;
@@ -1302,6 +1300,7 @@ export interface components {
             limits: components["schemas"]["RuntimeLimits"];
             module_cache: components["schemas"]["RuntimeModuleCacheMetrics"];
         };
+        /** @description Explicit public HTTP projection of runtime manager health. */
         PluginRuntimeHealth: {
             ready: boolean;
             descriptor: components["schemas"]["RuntimeDescriptor"];
@@ -1414,6 +1413,7 @@ export interface components {
                 [key: string]: unknown;
             };
         };
+        /** @description Explicit public HTTP projection of the settings schema for one owner scope. */
         PluginSettingsSchema: {
             plugin_instance_id: string;
             scope: components["schemas"]["ResourceScopeKind"];
@@ -1421,6 +1421,7 @@ export interface components {
             fields: components["schemas"]["PluginSettingsField"][];
             values_revision: number;
         };
+        /** @description Explicit public HTTP projection of settings values and redacted secret metadata for one owner scope. */
         PluginSettingsSnapshot: {
             plugin_instance_id: string;
             scope: components["schemas"]["ResourceScopeKind"];
@@ -1491,6 +1492,7 @@ export interface components {
                 [key: string]: string;
             };
         };
+        /** @description Explicit public HTTP projection of a registry record. Persistent owner identity is excluded. */
         PluginRecord: {
             plugin_instance_id: string;
             publisher_id: string;
@@ -1831,8 +1833,8 @@ export interface components {
             reason?: string;
         };
         CapabilityContractPin: components["schemas"]["HostCapabilityPinV1"];
-        /** @description Immutable execution fields embedded into operation and stream records. */
-        ExecutionBinding: {
+        /** @description Public immutable execution evidence embedded into operation responses. Session and bridge channel ownership fields are excluded. */
+        PublicOperationBinding: {
             invocation_id: string;
             audit_correlation_id: string;
             operation_id?: string;
@@ -1843,7 +1845,6 @@ export interface components {
             plugin_version: components["schemas"]["StrictSemVer"];
             active_fingerprint: string;
             surface_instance_id?: string;
-            bridge_channel_id?: string;
             /** @enum {string} */
             route_kind: "capability" | "worker" | "core_action";
             capability_id: string;
@@ -1899,7 +1900,7 @@ export interface components {
             /** @constant */
             route_kind: "core_action";
         });
-        OperationRecord: components["schemas"]["ExecutionBinding"] & ({
+        OperationRecord: components["schemas"]["PublicOperationBinding"] & ({
             operation_id: string;
             /** @enum {string} */
             execution?: "operation" | "subscription";

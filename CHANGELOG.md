@@ -48,6 +48,13 @@
 - Consolidate plugin-data workspace finalization and export verification into a
   symlink-safe rooted tree snapshot that reuses canonical hashes, file sizes,
   and entry metadata while failing closed on post-hash filesystem changes.
+- Separate Go Host/domain DTOs from every HTTP request and response projection.
+  Closed wire decoders now map release and secret inputs explicitly, public
+  registry, permission, settings, operation, runtime, surface, intent, data,
+  and diagnostics responses own recursively cloned values, and internal owner,
+  bridge-channel, permission-actor, IPC-channel, connection-nonce, clock, and
+  reader fields cannot enter the public contract through automatic JSON
+  serialization.
 - Bind immutable plugin-data export objects to the authenticated resource scope
   and `plugin_instance_id` across catalog keys, disk paths, manifests, Host APIs,
   and HTTP/TypeScript requests. Cross-plugin access now returns not found, and

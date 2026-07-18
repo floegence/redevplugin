@@ -135,7 +135,7 @@ type CommitEnableRequest struct {
 	Shape                      Shape
 	InitialSettings            map[string]json.RawMessage
 	ExpectedManagementRevision uint64
-	Now                        time.Time
+	Now                        time.Time `json:"-"`
 }
 
 type ExportRequest struct {
@@ -159,7 +159,7 @@ type ImportRequest struct {
 	ObjectID                   string
 	ExpectedShape              Shape
 	ExpectedManagementRevision uint64
-	Now                        time.Time
+	Now                        time.Time `json:"-"`
 }
 
 type BindRetainedRequest struct {
@@ -168,7 +168,7 @@ type BindRetainedRequest struct {
 	TargetPluginInstanceID           string
 	ExpectedShape                    Shape
 	TargetExpectedManagementRevision uint64
-	Now                              time.Time
+	Now                              time.Time `json:"-"`
 }
 
 type DeleteRetainedRequest struct {
@@ -189,7 +189,7 @@ type CommitUninstallRequest struct {
 	DeleteData                 bool
 	ExpectedManagementRevision uint64
 	RetainUntil                *time.Time
-	Now                        time.Time
+	Now                        time.Time `json:"-"`
 }
 
 type CommitUninstallResult struct {

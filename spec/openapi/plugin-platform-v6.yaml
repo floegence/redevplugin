@@ -1661,17 +1661,16 @@ components:
           items: { $ref: "#/components/schemas/PluginIntentRecord" }
     PluginPermissionGrant:
       type: object
+      description: Explicit public HTTP projection of a permission grant. Internal actor ownership hashes are never returned.
       required: [plugin_instance_id, permission_id, effect, granted_at]
       additionalProperties: false
       properties:
         plugin_instance_id: { type: string }
         permission_id: { type: string }
         effect: { type: string, enum: [grant, deny] }
-        granted_by: { type: string }
         granted_at: { type: string, format: date-time }
         expires_at: { type: string, format: date-time }
         revoked_at: { type: string, format: date-time }
-        revoked_by: { type: string }
         revoked_reason: { type: string }
     PluginPermissionList:
       type: object
@@ -1761,14 +1760,13 @@ components:
           items: { $ref: "#/components/schemas/PluginDiagnosticEvent" }
     PluginRuntimeShardHealth:
       type: object
+      description: Explicit public HTTP projection of runtime shard health. IPC channel credentials and connection nonces are excluded.
       required: [runtime_shard_id, runtime_instance_id, runtime_generation_id, descriptor, ready, active_invocations, queued_invocations, limits, module_cache]
       additionalProperties: false
       properties:
         runtime_shard_id: { type: string }
         runtime_instance_id: { type: string }
         runtime_generation_id: { type: string }
-        ipc_channel_id: { type: string }
-        connection_nonce: { type: string }
         descriptor: { $ref: "#/components/schemas/RuntimeDescriptor" }
         ready: { type: boolean }
         active_invocations: { type: integer, minimum: 0 }
@@ -1777,6 +1775,7 @@ components:
         module_cache: { $ref: "#/components/schemas/RuntimeModuleCacheMetrics" }
     PluginRuntimeHealth:
       type: object
+      description: Explicit public HTTP projection of runtime manager health.
       required: [ready, descriptor, shards]
       additionalProperties: false
       properties:
@@ -1936,6 +1935,7 @@ components:
           additionalProperties: true
     PluginSettingsSchema:
       type: object
+      description: Explicit public HTTP projection of the settings schema for one owner scope.
       required: [plugin_instance_id, scope, schema_version, fields, values_revision]
       additionalProperties: false
       properties:
@@ -1948,6 +1948,7 @@ components:
         values_revision: { type: integer, minimum: 1, maximum: 9007199254740991 }
     PluginSettingsSnapshot:
       type: object
+      description: Explicit public HTTP projection of settings values and redacted secret metadata for one owner scope.
       required: [plugin_instance_id, scope, schema_version, values_revision, values, secret_metadata]
       additionalProperties: false
       properties:
@@ -2047,6 +2048,7 @@ components:
           additionalProperties: { type: string }
     PluginRecord:
       type: object
+      description: Explicit public HTTP projection of a registry record. Persistent owner identity is excluded.
       required: [plugin_instance_id, publisher_id, plugin_id, version, active_fingerprint, package_hash, manifest_hash, entries_hash, trust_state, trust_assessment, enable_state, policy_revision, management_revision, revoke_epoch, manifest, package_entries, installed_at, updated_at]
       additionalProperties: false
       properties:
@@ -2585,9 +2587,9 @@ components:
         reason: { type: string }
     CapabilityContractPin:
       $ref: "../plugin/host-capability-pin-v1.schema.json"
-    ExecutionBinding:
+    PublicOperationBinding:
       type: object
-      description: Immutable execution fields embedded into operation and stream records.
+      description: Public immutable execution evidence embedded into operation responses. Session and bridge channel ownership fields are excluded.
       required:
         - invocation_id
         - audit_correlation_id
@@ -2621,7 +2623,6 @@ components:
         plugin_version: { $ref: "#/components/schemas/StrictSemVer" }
         active_fingerprint: { type: string, minLength: 1 }
         surface_instance_id: { type: string }
-        bridge_channel_id: { type: string }
         route_kind: { type: string, enum: [capability, worker, core_action] }
         capability_id: { type: string, minLength: 1 }
         capability_version: { $ref: "#/components/schemas/StrictSemVer" }
@@ -2692,7 +2693,7 @@ components:
             required: [contract]
     OperationRecord:
       allOf:
-        - $ref: "#/components/schemas/ExecutionBinding"
+        - $ref: "#/components/schemas/PublicOperationBinding"
         - type: object
           required:
             - operation_id

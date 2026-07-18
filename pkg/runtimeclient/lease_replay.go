@@ -27,7 +27,7 @@ type RuntimeLeaseReplayLister interface {
 type RuntimeLeaseReplayConsumeRequest struct {
 	Lease  Lease     `json:"lease"`
 	Method string    `json:"method"`
-	Now    time.Time `json:"now,omitempty"`
+	Now    time.Time `json:"-"`
 }
 
 type RuntimeLeaseReplayListRequest struct {

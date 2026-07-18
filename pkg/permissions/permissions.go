@@ -30,7 +30,7 @@ type GrantRequest struct {
 	PluginInstanceID string    `json:"plugin_instance_id"`
 	PermissionID     string    `json:"permission_id"`
 	GrantedBy        string    `json:"granted_by,omitempty"`
-	Now              time.Time `json:"now,omitempty"`
+	Now              time.Time `json:"-"`
 	ExpiresAt        time.Time `json:"expires_at,omitempty"`
 }
 
@@ -39,13 +39,13 @@ type RevokeRequest struct {
 	PermissionID     string    `json:"permission_id"`
 	RevokedBy        string    `json:"revoked_by,omitempty"`
 	Reason           string    `json:"reason,omitempty"`
-	Now              time.Time `json:"now,omitempty"`
+	Now              time.Time `json:"-"`
 }
 
 type CheckRequest struct {
 	PluginInstanceID string    `json:"plugin_instance_id"`
 	PermissionIDs    []string  `json:"permission_ids"`
-	Now              time.Time `json:"now,omitempty"`
+	Now              time.Time `json:"-"`
 }
 
 var (

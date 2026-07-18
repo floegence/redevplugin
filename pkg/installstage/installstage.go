@@ -71,26 +71,26 @@ type CreateRequest struct {
 	RequestedTrust    string            `json:"requested_trust,omitempty"`
 	ValidationSummary map[string]string `json:"validation_summary,omitempty"`
 	ExpiresAt         time.Time         `json:"expires_at"`
-	Now               time.Time         `json:"now,omitempty"`
+	Now               time.Time         `json:"-"`
 }
 
 type MarkPreparedRequest struct {
 	StageID           string            `json:"stage_id"`
 	ResolvedTrust     string            `json:"resolved_trust,omitempty"`
 	ValidationSummary map[string]string `json:"validation_summary,omitempty"`
-	Now               time.Time         `json:"now,omitempty"`
+	Now               time.Time         `json:"-"`
 }
 
 type MarkCommittedRequest struct {
 	StageID string    `json:"stage_id"`
-	Now     time.Time `json:"now,omitempty"`
+	Now     time.Time `json:"-"`
 }
 
 type MarkFailedRequest struct {
 	StageID      string    `json:"stage_id"`
 	ErrorCode    string    `json:"error_code,omitempty"`
 	ErrorMessage string    `json:"error_message,omitempty"`
-	Now          time.Time `json:"now,omitempty"`
+	Now          time.Time `json:"-"`
 }
 
 type ListRequest struct {

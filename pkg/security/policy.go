@@ -23,7 +23,7 @@ type PutPolicyRequest struct {
 	PluginInstanceID   string    `json:"plugin_instance_id"`
 	AllowedPermissions []string  `json:"allowed_permissions,omitempty"`
 	DeniedMethods      []string  `json:"denied_methods,omitempty"`
-	Now                time.Time `json:"now,omitempty"`
+	Now                time.Time `json:"-"`
 }
 
 type EvaluatePolicyRequest struct {

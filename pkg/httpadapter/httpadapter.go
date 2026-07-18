@@ -23,7 +23,6 @@ import (
 
 	"github.com/floegence/redevplugin/pkg/bridge"
 	"github.com/floegence/redevplugin/pkg/capability"
-	"github.com/floegence/redevplugin/pkg/capabilitycontract"
 	"github.com/floegence/redevplugin/pkg/connectivity"
 	"github.com/floegence/redevplugin/pkg/host"
 	"github.com/floegence/redevplugin/pkg/mutation"
@@ -77,9 +76,9 @@ type errorResponse struct {
 }
 
 type errorBody struct {
-	Code    security.ErrorCode `json:"code"`
-	Message string             `json:"message"`
-	Details errorDetails       `json:"details"`
+	Code    string       `json:"code"`
+	Message string       `json:"message"`
+	Details errorDetails `json:"details"`
 }
 
 type mutationErrorResponse struct {
@@ -91,35 +90,35 @@ type mutationErrorResponse struct {
 }
 
 type mutationErrorBody struct {
-	Code            security.ErrorCode `json:"code"`
-	Message         string             `json:"message"`
-	Details         errorDetails       `json:"details"`
-	MutationOutcome mutation.Outcome   `json:"mutation_outcome"`
+	Code            string       `json:"code"`
+	Message         string       `json:"message"`
+	Details         errorDetails `json:"details"`
+	MutationOutcome string       `json:"mutation_outcome"`
 }
 
 type errorDetails struct {
-	Reason                     string                          `json:"reason,omitempty"`
-	Path                       string                          `json:"path,omitempty"`
-	Pointer                    string                          `json:"pointer,omitempty"`
-	CapabilityID               string                          `json:"capability_id,omitempty"`
-	CapabilityVersion          string                          `json:"capability_version,omitempty"`
-	DetailSchemaSHA256         string                          `json:"detail_schema_sha256,omitempty"`
-	BusinessErrorCode          string                          `json:"business_error_code,omitempty"`
-	BusinessErrorDetails       map[string]any                  `json:"business_error_details,omitempty"`
-	WorkerErrorCode            string                          `json:"worker_error_code,omitempty"`
-	WorkerErrorMessage         string                          `json:"worker_error_message,omitempty"`
-	WorkerErrorOrigin          runtimeclient.WorkerErrorOrigin `json:"worker_error_origin,omitempty"`
-	PluginInstanceID           string                          `json:"plugin_instance_id,omitempty"`
-	ExpectedPolicyRevision     uint64                          `json:"expected_policy_revision,omitempty"`
-	ActualPolicyRevision       uint64                          `json:"actual_policy_revision,omitempty"`
-	ExpectedManagementRevision uint64                          `json:"expected_management_revision,omitempty"`
-	ActualManagementRevision   uint64                          `json:"actual_management_revision,omitempty"`
-	ExpectedRevokeEpoch        *uint64                         `json:"expected_revoke_epoch,omitempty"`
-	ActualRevokeEpoch          *uint64                         `json:"actual_revoke_epoch,omitempty"`
-	ExpectedBindingRevision    uint64                          `json:"expected_binding_revision,omitempty"`
-	ActualBindingRevision      uint64                          `json:"actual_binding_revision,omitempty"`
-	ExpectedValuesRevision     *uint64                         `json:"expected_values_revision,omitempty"`
-	ActualValuesRevision       *uint64                         `json:"actual_values_revision,omitempty"`
+	Reason                     string         `json:"reason,omitempty"`
+	Path                       string         `json:"path,omitempty"`
+	Pointer                    string         `json:"pointer,omitempty"`
+	CapabilityID               string         `json:"capability_id,omitempty"`
+	CapabilityVersion          string         `json:"capability_version,omitempty"`
+	DetailSchemaSHA256         string         `json:"detail_schema_sha256,omitempty"`
+	BusinessErrorCode          string         `json:"business_error_code,omitempty"`
+	BusinessErrorDetails       map[string]any `json:"business_error_details,omitempty"`
+	WorkerErrorCode            string         `json:"worker_error_code,omitempty"`
+	WorkerErrorMessage         string         `json:"worker_error_message,omitempty"`
+	WorkerErrorOrigin          string         `json:"worker_error_origin,omitempty"`
+	PluginInstanceID           string         `json:"plugin_instance_id,omitempty"`
+	ExpectedPolicyRevision     uint64         `json:"expected_policy_revision,omitempty"`
+	ActualPolicyRevision       uint64         `json:"actual_policy_revision,omitempty"`
+	ExpectedManagementRevision uint64         `json:"expected_management_revision,omitempty"`
+	ActualManagementRevision   uint64         `json:"actual_management_revision,omitempty"`
+	ExpectedRevokeEpoch        *uint64        `json:"expected_revoke_epoch,omitempty"`
+	ActualRevokeEpoch          *uint64        `json:"actual_revoke_epoch,omitempty"`
+	ExpectedBindingRevision    uint64         `json:"expected_binding_revision,omitempty"`
+	ActualBindingRevision      uint64         `json:"actual_binding_revision,omitempty"`
+	ExpectedValuesRevision     *uint64        `json:"expected_values_revision,omitempty"`
+	ActualValuesRevision       *uint64        `json:"actual_values_revision,omitempty"`
 }
 
 var platformErrorCodeSet = func() map[security.ErrorCode]struct{} {
@@ -161,7 +160,7 @@ func (r errorResponse) MarshalJSON() ([]byte, error) {
 	}{
 		OK: r.OK,
 		Error: errorBody{
-			Code:    r.Code,
+			Code:    string(r.Code),
 			Message: r.Message,
 			Details: r.Details,
 		},
@@ -190,10 +189,10 @@ func (r mutationErrorResponse) MarshalJSON() ([]byte, error) {
 	}{
 		OK: r.OK,
 		Error: mutationErrorBody{
-			Code:            r.Code,
+			Code:            string(r.Code),
 			Message:         r.Message,
 			Details:         r.Details,
-			MutationOutcome: r.MutationOutcome,
+			MutationOutcome: string(r.MutationOutcome),
 		},
 	})
 }
@@ -236,9 +235,9 @@ func (d errorDetails) validateForCode(code security.ErrorCode) error {
 		}
 	case security.ErrWorkerError:
 		if !platformDetailCodePattern.MatchString(d.WorkerErrorCode) || d.WorkerErrorMessage == "" || utf8.RuneCountInString(d.WorkerErrorMessage) > 4096 ||
-			(d.WorkerErrorOrigin != runtimeclient.WorkerErrorOriginRuntime &&
-				d.WorkerErrorOrigin != runtimeclient.WorkerErrorOriginHostcall &&
-				d.WorkerErrorOrigin != runtimeclient.WorkerErrorOriginPlugin) || d.hasNonWorkerDetails() {
+			(d.WorkerErrorOrigin != string(runtimeclient.WorkerErrorOriginRuntime) &&
+				d.WorkerErrorOrigin != string(runtimeclient.WorkerErrorOriginHostcall) &&
+				d.WorkerErrorOrigin != string(runtimeclient.WorkerErrorOriginPlugin)) || d.hasNonWorkerDetails() {
 			return errors.New("worker error details are incomplete")
 		}
 	case security.ErrJSONLimitExceeded:
@@ -400,14 +399,14 @@ func (route routeSpec) validate() error {
 }
 
 type installReleaseRefRequest struct {
-	ReleaseRef       host.PluginReleaseRef `json:"release_ref"`
-	PluginInstanceID string                `json:"plugin_instance_id"`
+	ReleaseRef       releaseRefRequest `json:"release_ref"`
+	PluginInstanceID string            `json:"plugin_instance_id"`
 }
 
 type updateReleaseRefRequest struct {
-	PluginInstanceID           string                `json:"plugin_instance_id"`
-	ReleaseRef                 host.PluginReleaseRef `json:"release_ref"`
-	ExpectedManagementRevision *uint64               `json:"expected_management_revision"`
+	PluginInstanceID           string            `json:"plugin_instance_id"`
+	ReleaseRef                 releaseRefRequest `json:"release_ref"`
+	ExpectedManagementRevision *uint64           `json:"expected_management_revision"`
 }
 
 type downgradeRequest struct {
@@ -647,57 +646,88 @@ type secretRefRequest struct {
 }
 
 type patchSettingsRequest struct {
-	Scope                  sessionctx.ScopeKind `json:"scope"`
-	ExpectedValuesRevision *uint64              `json:"expected_values_revision"`
-	Set                    map[string]any       `json:"set,omitempty"`
-	Remove                 []string             `json:"remove,omitempty"`
+	Scope                  string         `json:"scope"`
+	ExpectedValuesRevision *uint64        `json:"expected_values_revision"`
+	Set                    map[string]any `json:"set,omitempty"`
+	Remove                 []string       `json:"remove,omitempty"`
 }
 
 type cancelOperationRequest struct {
 	Reason string `json:"reason,omitempty"`
 }
 
+type operationPermissionEvidenceResponse struct {
+	Required []string `json:"required"`
+	Granted  []string `json:"granted"`
+}
+
+type operationConfirmationEvidenceResponse struct {
+	Required       bool   `json:"required"`
+	Confirmed      bool   `json:"confirmed"`
+	ConfirmationID string `json:"confirmation_id,omitempty"`
+	RequestSHA256  string `json:"request_sha256,omitempty"`
+	PlanSHA256     string `json:"plan_sha256,omitempty"`
+	TargetSHA256   string `json:"target_sha256,omitempty"`
+}
+
+type operationRevisionEvidenceResponse struct {
+	PolicyRevision     uint64 `json:"policy_revision"`
+	ManagementRevision uint64 `json:"management_revision"`
+	RevokeEpoch        uint64 `json:"revoke_epoch"`
+}
+
+type operationQuotaResponse struct {
+	MaxConcurrent  int        `json:"max_concurrent,omitempty"`
+	MaxDurationMS  int        `json:"max_duration_ms,omitempty"`
+	MaxStreamBytes int64      `json:"max_stream_bytes,omitempty"`
+	ExpiresAt      *time.Time `json:"expires_at,omitempty"`
+}
+
+type operationTargetResponse struct {
+	Kind   string         `json:"kind"`
+	Fields map[string]any `json:"fields"`
+}
+
 type operationResponse struct {
-	OperationID             string                          `json:"operation_id"`
-	InvocationID            string                          `json:"invocation_id"`
-	AuditCorrelationID      string                          `json:"audit_correlation_id"`
-	StreamID                string                          `json:"stream_id,omitempty"`
-	PublisherID             string                          `json:"publisher_id"`
-	PluginID                string                          `json:"plugin_id"`
-	PluginInstanceID        string                          `json:"plugin_instance_id"`
-	PluginVersion           string                          `json:"plugin_version"`
-	ActiveFingerprint       string                          `json:"active_fingerprint"`
-	SurfaceInstanceID       string                          `json:"surface_instance_id,omitempty"`
-	BridgeChannelID         string                          `json:"bridge_channel_id,omitempty"`
-	RouteKind               capability.RouteKind            `json:"route_kind"`
-	CapabilityID            string                          `json:"capability_id"`
-	CapabilityVersion       string                          `json:"capability_version"`
-	BindingID               string                          `json:"binding_id"`
-	Contract                *capabilitycontract.Pin         `json:"contract,omitempty"`
-	Method                  string                          `json:"method"`
-	TargetMethod            string                          `json:"target_method"`
-	Effect                  capability.Effect               `json:"effect"`
-	Execution               string                          `json:"execution"`
-	Permissions             capability.PermissionEvidence   `json:"permissions"`
-	Confirmation            capability.ConfirmationEvidence `json:"confirmation"`
-	Revision                capability.RevisionEvidence     `json:"revision"`
-	Quota                   capability.QuotaGrant           `json:"quota"`
-	Target                  capability.TargetDescriptor     `json:"target"`
-	TargetDescriptorSHA256  string                          `json:"target_descriptor_sha256"`
-	StreamEventTypeName     string                          `json:"stream_event_type_name,omitempty"`
-	StreamEventSchemaSHA256 string                          `json:"stream_event_schema_sha256,omitempty"`
-	Status                  operation.Status                `json:"status"`
-	Cancelable              bool                            `json:"cancelable"`
-	CancelAckTimeoutMS      int                             `json:"cancel_ack_timeout_ms,omitempty"`
-	DisableBehavior         string                          `json:"disable_behavior,omitempty"`
-	UninstallBehavior       string                          `json:"uninstall_behavior,omitempty"`
-	FailureCode             capability.ExecutionFailureCode `json:"failure_code,omitempty"`
-	Reason                  string                          `json:"reason,omitempty"`
-	CreatedAt               time.Time                       `json:"created_at"`
-	UpdatedAt               time.Time                       `json:"updated_at"`
-	CancelRequestedAt       *time.Time                      `json:"cancel_requested_at,omitempty"`
-	OrphanedAt              *time.Time                      `json:"orphaned_at,omitempty"`
-	TerminalAt              *time.Time                      `json:"terminal_at,omitempty"`
+	OperationID             string                                `json:"operation_id"`
+	InvocationID            string                                `json:"invocation_id"`
+	AuditCorrelationID      string                                `json:"audit_correlation_id"`
+	StreamID                string                                `json:"stream_id,omitempty"`
+	PublisherID             string                                `json:"publisher_id"`
+	PluginID                string                                `json:"plugin_id"`
+	PluginInstanceID        string                                `json:"plugin_instance_id"`
+	PluginVersion           string                                `json:"plugin_version"`
+	ActiveFingerprint       string                                `json:"active_fingerprint"`
+	SurfaceInstanceID       string                                `json:"surface_instance_id,omitempty"`
+	RouteKind               string                                `json:"route_kind"`
+	CapabilityID            string                                `json:"capability_id"`
+	CapabilityVersion       string                                `json:"capability_version"`
+	BindingID               string                                `json:"binding_id"`
+	Contract                *capabilityPinResponse                `json:"contract,omitempty"`
+	Method                  string                                `json:"method"`
+	TargetMethod            string                                `json:"target_method"`
+	Effect                  string                                `json:"effect"`
+	Execution               string                                `json:"execution"`
+	Permissions             operationPermissionEvidenceResponse   `json:"permissions"`
+	Confirmation            operationConfirmationEvidenceResponse `json:"confirmation"`
+	Revision                operationRevisionEvidenceResponse     `json:"revision"`
+	Quota                   operationQuotaResponse                `json:"quota"`
+	Target                  operationTargetResponse               `json:"target"`
+	TargetDescriptorSHA256  string                                `json:"target_descriptor_sha256"`
+	StreamEventTypeName     string                                `json:"stream_event_type_name,omitempty"`
+	StreamEventSchemaSHA256 string                                `json:"stream_event_schema_sha256,omitempty"`
+	Status                  string                                `json:"status"`
+	Cancelable              bool                                  `json:"cancelable"`
+	CancelAckTimeoutMS      int                                   `json:"cancel_ack_timeout_ms,omitempty"`
+	DisableBehavior         string                                `json:"disable_behavior,omitempty"`
+	UninstallBehavior       string                                `json:"uninstall_behavior,omitempty"`
+	FailureCode             string                                `json:"failure_code,omitempty"`
+	Reason                  string                                `json:"reason,omitempty"`
+	CreatedAt               time.Time                             `json:"created_at"`
+	UpdatedAt               time.Time                             `json:"updated_at"`
+	CancelRequestedAt       *time.Time                            `json:"cancel_requested_at,omitempty"`
+	OrphanedAt              *time.Time                            `json:"orphaned_at,omitempty"`
+	TerminalAt              *time.Time                            `json:"terminal_at,omitempty"`
 }
 
 type operationListResponse struct {
@@ -705,31 +735,66 @@ type operationListResponse struct {
 	NextCursor string              `json:"next_cursor,omitempty"`
 }
 
-func publicOperationRecord(record operation.Record) operationResponse {
-	binding := record.ExecutionBinding
+func publicOperationRecord(record operation.Record) (operationResponse, error) {
+	binding := capability.CloneExecutionBinding(record.ExecutionBinding)
+	targetFields, err := cloneWireJSONMap(binding.Target.Fields)
+	if err != nil {
+		return operationResponse{}, err
+	}
+	var contract *capabilityPinResponse
+	if binding.Contract != nil {
+		mapped := publicCapabilityPin(*binding.Contract)
+		contract = &mapped
+	}
+	var quotaExpiresAt *time.Time
+	if !binding.Quota.ExpiresAt.IsZero() {
+		quotaExpiresAt = cloneWireTime(&binding.Quota.ExpiresAt)
+	}
 	return operationResponse{
 		OperationID: record.OperationID, InvocationID: binding.InvocationID, AuditCorrelationID: binding.AuditCorrelationID,
 		StreamID: binding.StreamID, PublisherID: binding.PublisherID, PluginID: binding.PluginID,
 		PluginInstanceID: binding.PluginInstanceID, PluginVersion: binding.PluginVersion, ActiveFingerprint: binding.ActiveFingerprint,
-		SurfaceInstanceID: binding.SurfaceInstanceID, BridgeChannelID: binding.BridgeChannelID, RouteKind: binding.RouteKind,
+		SurfaceInstanceID: binding.SurfaceInstanceID, RouteKind: string(binding.RouteKind),
 		CapabilityID: binding.CapabilityID, CapabilityVersion: binding.CapabilityVersion, BindingID: binding.BindingID,
-		Contract: binding.Contract, Method: binding.Method, TargetMethod: binding.TargetMethod, Effect: binding.Effect,
-		Execution: binding.Execution, Permissions: binding.Permissions, Confirmation: binding.Confirmation, Revision: binding.Revision,
-		Quota: binding.Quota, Target: binding.Target, TargetDescriptorSHA256: binding.TargetDescriptorSHA256,
-		StreamEventTypeName: binding.StreamEventTypeName, StreamEventSchemaSHA256: binding.StreamEventSchemaSHA256,
-		Status: record.Status, Cancelable: record.Cancelable, CancelAckTimeoutMS: record.CancelAckTimeoutMS,
-		DisableBehavior: record.DisableBehavior, UninstallBehavior: record.UninstallBehavior, FailureCode: record.FailureCode,
+		Contract: contract, Method: binding.Method, TargetMethod: binding.TargetMethod, Effect: string(binding.Effect),
+		Execution: binding.Execution,
+		Permissions: operationPermissionEvidenceResponse{
+			Required: append([]string(nil), binding.Permissions.Required...), Granted: append([]string(nil), binding.Permissions.Granted...),
+		},
+		Confirmation: operationConfirmationEvidenceResponse{
+			Required: binding.Confirmation.Required, Confirmed: binding.Confirmation.Confirmed,
+			ConfirmationID: binding.Confirmation.ConfirmationID, RequestSHA256: binding.Confirmation.RequestSHA256,
+			PlanSHA256: binding.Confirmation.PlanSHA256, TargetSHA256: binding.Confirmation.TargetSHA256,
+		},
+		Revision: operationRevisionEvidenceResponse{
+			PolicyRevision: binding.Revision.PolicyRevision, ManagementRevision: binding.Revision.ManagementRevision,
+			RevokeEpoch: binding.Revision.RevokeEpoch,
+		},
+		Quota: operationQuotaResponse{
+			MaxConcurrent: binding.Quota.MaxConcurrent, MaxDurationMS: binding.Quota.MaxDurationMS,
+			MaxStreamBytes: binding.Quota.MaxStreamBytes, ExpiresAt: quotaExpiresAt,
+		},
+		Target:                 operationTargetResponse{Kind: binding.Target.Kind, Fields: targetFields},
+		TargetDescriptorSHA256: binding.TargetDescriptorSHA256,
+		StreamEventTypeName:    binding.StreamEventTypeName, StreamEventSchemaSHA256: binding.StreamEventSchemaSHA256,
+		Status: string(record.Status), Cancelable: record.Cancelable, CancelAckTimeoutMS: record.CancelAckTimeoutMS,
+		DisableBehavior: record.DisableBehavior, UninstallBehavior: record.UninstallBehavior, FailureCode: string(record.FailureCode),
 		Reason: record.Reason, CreatedAt: record.CreatedAt, UpdatedAt: record.UpdatedAt,
-		CancelRequestedAt: record.CancelRequestedAt, OrphanedAt: record.OrphanedAt, TerminalAt: record.TerminalAt,
-	}
+		CancelRequestedAt: cloneWireTime(record.CancelRequestedAt), OrphanedAt: cloneWireTime(record.OrphanedAt),
+		TerminalAt: cloneWireTime(record.TerminalAt),
+	}, nil
 }
 
-func publicOperationRecords(records []operation.Record) []operationResponse {
+func publicOperationRecords(records []operation.Record) ([]operationResponse, error) {
 	result := make([]operationResponse, len(records))
 	for index, record := range records {
-		result[index] = publicOperationRecord(record)
+		mapped, err := publicOperationRecord(record)
+		if err != nil {
+			return nil, err
+		}
+		result[index] = mapped
 	}
-	return result
+	return result, nil
 }
 
 type startRuntimeRequest struct {
@@ -1027,7 +1092,12 @@ func (h Handler) handleCancelSurfaceOperation(w http.ResponseWriter, r *http.Req
 		writeMutationError(w, httpStatusForOperationError(err), errorCodeForOperationError(err), publicPluginErrorMessage(errorCodeForOperationError(err)), errorDetails{}, mutation.ForError(err))
 		return
 	}
-	writeMutationSuccess(w, publicOperationRecord(record))
+	response, err := publicOperationRecord(record)
+	if err != nil {
+		h.writeProjectionError(w, r, "surface.operation.cancel.response", err)
+		return
+	}
+	writeMutationSuccess(w, response)
 }
 
 func (h Handler) handleRejectSurfaceConfirmation(w http.ResponseWriter, r *http.Request) {
@@ -1050,10 +1120,10 @@ func (h Handler) handleRejectSurfaceConfirmation(w http.ResponseWriter, r *http.
 	})
 	if err != nil {
 		code := errorCodeForRPCError(err)
-		writeMutationError(w, httpStatusForRPCError(err), code, publicPluginErrorMessage(code), errorDetailsForRPCError(err), mutation.ForError(err))
+		h.writeRPCMutationError(w, r, "surface.confirmation.reject", httpStatusForRPCError(err), code, publicPluginErrorMessage(code), err)
 		return
 	}
-	writeMutationSuccess(w, result)
+	writeMutationSuccess(w, confirmationRejectionResponse{Rejected: result.Rejected})
 }
 
 func RouteSet() []Route {
@@ -1130,6 +1200,35 @@ func writeMutationSuccess(w http.ResponseWriter, data any) {
 	writeJSON(w, http.StatusOK, mutationSuccessResponse{OK: true, Data: data})
 }
 
+func (h Handler) writeProjectionError(w http.ResponseWriter, r *http.Request, operation string, err error) {
+	message := h.publicFailureMessage(r.Context(), operation, security.ErrAdapterFailure, err)
+	if requestIsMutation(r) {
+		writeMutationError(w, http.StatusBadGateway, security.ErrAdapterFailure, message, errorDetails{}, mutation.OutcomeUnknown)
+		return
+	}
+	writeJSON(w, http.StatusBadGateway, errorResponse{
+		OK: false, Message: message, Code: security.ErrAdapterFailure,
+	})
+}
+
+func (h Handler) writeRPCMutationError(w http.ResponseWriter, r *http.Request, operation string, status int, code security.ErrorCode, message string, err error) {
+	details, projectionErr := errorDetailsForRPCError(err)
+	if projectionErr != nil {
+		h.writeProjectionError(w, r, operation+".error_details", projectionErr)
+		return
+	}
+	writeMutationError(w, status, code, message, details, mutation.ForError(err))
+}
+
+func (h Handler) writePluginMutationSuccess(w http.ResponseWriter, r *http.Request, operation string, record registry.PluginRecord) {
+	response, err := publicPluginRecord(record)
+	if err != nil {
+		h.writeProjectionError(w, r, operation, err)
+		return
+	}
+	writeMutationSuccess(w, response)
+}
+
 func writeInvalidRequestError(w http.ResponseWriter, err error) {
 	var limitErr *jsonLimitError
 	if errors.As(err, &limitErr) {
@@ -1200,7 +1299,7 @@ func (h Handler) handleImportLocalPackageUpload(w http.ResponseWriter, r *http.R
 		writeMutationError(w, httpStatusForManagementError(err), code, h.publicFailureMessage(r.Context(), "local-import.install", code, err), errorDetailsForManagementError(err), mutation.ForError(err))
 		return
 	}
-	writeMutationSuccess(w, record)
+	h.writePluginMutationSuccess(w, r, "local-import.install.response", record)
 }
 
 func (h Handler) handleInstallReleaseRef(w http.ResponseWriter, r *http.Request) {
@@ -1215,7 +1314,7 @@ func (h Handler) handleInstallReleaseRef(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	record, err := h.host.InstallReleaseRef(r.Context(), host.InstallReleaseRefRequest{
-		ReleaseRef:       req.ReleaseRef,
+		ReleaseRef:       req.ReleaseRef.domain(),
 		PluginInstanceID: req.PluginInstanceID,
 	})
 	if err != nil {
@@ -1223,7 +1322,7 @@ func (h Handler) handleInstallReleaseRef(w http.ResponseWriter, r *http.Request)
 		writeMutationError(w, httpStatusForManagementError(err), code, h.publicFailureMessage(r.Context(), "release.install", code, err), errorDetailsForManagementError(err), mutation.ForError(err))
 		return
 	}
-	writeMutationSuccess(w, record)
+	h.writePluginMutationSuccess(w, r, "release.install.response", record)
 }
 
 func (h Handler) handleEnable(w http.ResponseWriter, r *http.Request) {
@@ -1242,7 +1341,7 @@ func (h Handler) handleEnable(w http.ResponseWriter, r *http.Request) {
 		writeMutationError(w, httpStatusForManagementError(err), code, h.publicFailureMessage(r.Context(), "plugin.enable", code, err), errorDetailsForManagementError(err), mutation.ForError(err))
 		return
 	}
-	writeMutationSuccess(w, record)
+	h.writePluginMutationSuccess(w, r, "plugin.enable.response", record)
 }
 
 func (h Handler) handleDisable(w http.ResponseWriter, r *http.Request) {
@@ -1261,7 +1360,7 @@ func (h Handler) handleDisable(w http.ResponseWriter, r *http.Request) {
 		writeMutationError(w, httpStatusForManagementError(err), code, h.publicFailureMessage(r.Context(), "plugin.disable", code, err), errorDetailsForManagementError(err), mutation.ForError(err))
 		return
 	}
-	writeMutationSuccess(w, record)
+	h.writePluginMutationSuccess(w, r, "plugin.disable.response", record)
 }
 
 func (h Handler) handleUninstall(w http.ResponseWriter, r *http.Request) {
@@ -1280,7 +1379,7 @@ func (h Handler) handleUninstall(w http.ResponseWriter, r *http.Request) {
 		writeMutationError(w, httpStatusForManagementError(err), code, h.publicFailureMessage(r.Context(), "plugin.uninstall", code, err), errorDetailsForManagementError(err), mutation.ForError(err))
 		return
 	}
-	writeMutationSuccess(w, record)
+	h.writePluginMutationSuccess(w, r, "plugin.uninstall.response", record)
 }
 
 func (h Handler) handleUpdateLocalPackageUpload(w http.ResponseWriter, r *http.Request) {
@@ -1312,7 +1411,7 @@ func (h Handler) handleUpdateLocalPackageUpload(w http.ResponseWriter, r *http.R
 		writeMutationError(w, httpStatusForManagementError(err), code, h.publicFailureMessage(r.Context(), "local-import.update", code, err), errorDetailsForManagementError(err), mutation.ForError(err))
 		return
 	}
-	writeMutationSuccess(w, record)
+	h.writePluginMutationSuccess(w, r, "local-import.update.response", record)
 }
 
 var errPackageUploadTooLarge = errors.New("package upload exceeds the maximum compressed size")
@@ -1406,14 +1505,14 @@ func (h Handler) handleUpdateReleaseRef(w http.ResponseWriter, r *http.Request) 
 	record, err := h.host.UpdateReleaseRef(r.Context(), host.UpdateReleaseRefRequest{
 		PluginInstanceID:           req.PluginInstanceID,
 		ExpectedManagementRevision: expectedManagementRevision,
-		ReleaseRef:                 req.ReleaseRef,
+		ReleaseRef:                 req.ReleaseRef.domain(),
 	})
 	if err != nil {
 		code := errorCodeForManagementError(err)
 		writeMutationError(w, httpStatusForManagementError(err), code, h.publicFailureMessage(r.Context(), "release.update", code, err), errorDetailsForManagementError(err), mutation.ForError(err))
 		return
 	}
-	writeMutationSuccess(w, record)
+	h.writePluginMutationSuccess(w, r, "release.update.response", record)
 }
 
 func (h Handler) handleDowngrade(w http.ResponseWriter, r *http.Request) {
@@ -1437,7 +1536,7 @@ func (h Handler) handleDowngrade(w http.ResponseWriter, r *http.Request) {
 		writeMutationError(w, httpStatusForManagementError(err), code, h.publicFailureMessage(r.Context(), "plugin.downgrade", code, err), errorDetailsForManagementError(err), mutation.ForError(err))
 		return
 	}
-	writeMutationSuccess(w, record)
+	h.writePluginMutationSuccess(w, r, "plugin.downgrade.response", record)
 }
 
 func (h Handler) handleCatalog(w http.ResponseWriter, r *http.Request) {
@@ -1447,7 +1546,12 @@ func (h Handler) handleCatalog(w http.ResponseWriter, r *http.Request) {
 		writeError(w, httpStatusForManagementError(err), code, h.publicFailureMessage(r.Context(), "plugin.catalog", code, err), errorDetails{})
 		return
 	}
-	writeJSON(w, http.StatusOK, successResponse{OK: true, Data: map[string]any{"plugins": records}})
+	plugins, err := publicPluginRecords(records)
+	if err != nil {
+		h.writeProjectionError(w, r, "plugin.catalog.response", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, successResponse{OK: true, Data: pluginCatalogResponse{Plugins: plugins}})
 }
 
 func (h Handler) handleFeatures(w http.ResponseWriter, r *http.Request) {
@@ -1457,7 +1561,7 @@ func (h Handler) handleFeatures(w http.ResponseWriter, r *http.Request) {
 		writeError(w, httpStatusForManagementError(err), code, h.publicFailureMessage(r.Context(), "platform.list_features", code, err), errorDetails{})
 		return
 	}
-	writeJSON(w, http.StatusOK, successResponse{OK: true, Data: features})
+	writeJSON(w, http.StatusOK, successResponse{OK: true, Data: publicFeatures(features)})
 }
 
 func (h Handler) handleCompatibility(w http.ResponseWriter, r *http.Request) {
@@ -1467,7 +1571,7 @@ func (h Handler) handleCompatibility(w http.ResponseWriter, r *http.Request) {
 		writeError(w, httpStatusForManagementError(err), code, h.publicFailureMessage(r.Context(), "platform.get_compatibility", code, err), errorDetails{})
 		return
 	}
-	writeJSON(w, http.StatusOK, successResponse{OK: true, Data: compatibility})
+	writeJSON(w, http.StatusOK, successResponse{OK: true, Data: publicCompatibility(compatibility)})
 }
 
 func (h Handler) handleOpenSurface(w http.ResponseWriter, r *http.Request) {
@@ -1514,7 +1618,7 @@ func (h Handler) handlePrepareSurface(w http.ResponseWriter, r *http.Request) {
 		writeMutationError(w, httpStatusForAssetError(err), code, h.publicFailureMessage(r.Context(), "surface.prepare", code, err), errorDetails{}, mutation.ForError(err))
 		return
 	}
-	writeMutationSuccess(w, result)
+	writeMutationSuccess(w, publicSurfacePreparation(result))
 }
 
 func (h Handler) handleBridgeToken(w http.ResponseWriter, r *http.Request) {
@@ -1547,7 +1651,7 @@ func (h Handler) handleBridgeToken(w http.ResponseWriter, r *http.Request) {
 		writeMutationError(w, http.StatusForbidden, code, h.publicFailureMessage(r.Context(), "surface.bridge-token", code, err), errorDetails{}, mutation.ForError(err))
 		return
 	}
-	writeMutationSuccess(w, result)
+	writeMutationSuccess(w, publicBridgeToken(result))
 }
 
 func bridgeHandshake(handshake pluginBridgeHandshake) bridge.Handshake {
@@ -1595,11 +1699,9 @@ func (h Handler) handleReadSurfaceAsset(w http.ResponseWriter, r *http.Request) 
 	if contentType == "" {
 		contentType = "application/octet-stream"
 	}
-	writeJSON(w, http.StatusOK, successResponse{OK: true, Data: map[string]any{
-		"path":           result.Entry.Path,
-		"sha256":         result.Entry.SHA256,
-		"content_type":   contentType,
-		"content_base64": base64.StdEncoding.EncodeToString(result.Content),
+	writeJSON(w, http.StatusOK, successResponse{OK: true, Data: surfaceAssetResponse{
+		Path: result.Entry.Path, SHA256: result.Entry.SHA256, ContentType: contentType,
+		ContentBase64: base64.StdEncoding.EncodeToString(result.Content),
 	}})
 }
 
@@ -1628,18 +1730,7 @@ func (h Handler) handleReadSurfaceStream(w http.ResponseWriter, r *http.Request)
 		writeJSON(w, httpStatusForStreamError(err), errorResponse{OK: false, Message: publicPluginErrorMessage(code), Code: code})
 		return
 	}
-	data := map[string]any{
-		"read_id": result.ReadID,
-		"events":  result.Events,
-		"done":    result.Done,
-	}
-	if result.DeliveryID != "" {
-		data["delivery_id"] = result.DeliveryID
-	}
-	if result.Done {
-		data["terminal_status"] = result.TerminalStatus
-	}
-	writeJSON(w, http.StatusOK, successResponse{OK: true, Data: data})
+	writeJSON(w, http.StatusOK, successResponse{OK: true, Data: publicSurfaceStream(result)})
 }
 
 func (h Handler) handleAcknowledgeSurfaceStream(w http.ResponseWriter, r *http.Request) {
@@ -1661,7 +1752,7 @@ func (h Handler) handleAcknowledgeSurfaceStream(w http.ResponseWriter, r *http.R
 		writeMutationError(w, httpStatusForStreamError(err), code, publicPluginErrorMessage(code), errorDetails{}, mutation.ForError(err))
 		return
 	}
-	writeMutationSuccess(w, map[string]bool{"acknowledged": true})
+	writeMutationSuccess(w, acknowledgementResponse{Acknowledged: true})
 }
 
 func (h Handler) handleDisposeSurface(w http.ResponseWriter, r *http.Request) {
@@ -1683,7 +1774,7 @@ func (h Handler) handleDisposeSurface(w http.ResponseWriter, r *http.Request) {
 		writeMutationError(w, httpStatusForBridgeError(err), code, h.publicFailureMessage(r.Context(), "surface.dispose", code, err), errorDetails{}, mutation.ForError(err))
 		return
 	}
-	writeMutationSuccess(w, map[string]bool{"disposed": true})
+	writeMutationSuccess(w, surfaceDisposeResponse{Disposed: true})
 }
 
 func (h Handler) handleRevokeSurfaceScope(w http.ResponseWriter, r *http.Request) {
@@ -1698,7 +1789,7 @@ func (h Handler) handleRevokeSurfaceScope(w http.ResponseWriter, r *http.Request
 		writeMutationError(w, httpStatusForBridgeError(err), code, h.publicFailureMessage(r.Context(), "surface.revoke-scope", code, err), errorDetails{}, mutation.ForError(err))
 		return
 	}
-	writeMutationSuccess(w, map[string]int{"revoked_surface_count": revoked})
+	writeMutationSuccess(w, surfaceScopeRevokeResponse{RevokedSurfaceCount: revoked})
 }
 
 func (h Handler) handleRPC(w http.ResponseWriter, r *http.Request) {
@@ -1718,10 +1809,15 @@ func (h Handler) handleRPC(w http.ResponseWriter, r *http.Request) {
 	})
 	if err != nil {
 		code := errorCodeForRPCError(err)
-		writeMutationError(w, httpStatusForRPCError(err), code, publicPluginErrorMessage(code), errorDetailsForRPCError(err), mutation.ForError(err))
+		h.writeRPCMutationError(w, r, "rpc", httpStatusForRPCError(err), code, publicPluginErrorMessage(code), err)
 		return
 	}
-	writeMutationSuccess(w, result)
+	response, err := publicCallMethod(result)
+	if err != nil {
+		h.writeProjectionError(w, r, "rpc.response", err)
+		return
+	}
+	writeMutationSuccess(w, response)
 }
 
 func (h Handler) handlePrepareMethodConfirmation(w http.ResponseWriter, r *http.Request) {
@@ -1740,10 +1836,15 @@ func (h Handler) handlePrepareMethodConfirmation(w http.ResponseWriter, r *http.
 	})
 	if err != nil {
 		code := errorCodeForRPCError(err)
-		writeMutationError(w, httpStatusForRPCError(err), code, publicPluginErrorMessage(code), errorDetailsForRPCError(err), mutation.ForError(err))
+		h.writeRPCMutationError(w, r, "confirmation.prepare", httpStatusForRPCError(err), code, publicPluginErrorMessage(code), err)
 		return
 	}
-	writeMutationSuccess(w, result)
+	response, err := publicConfirmationPreparation(result)
+	if err != nil {
+		h.writeProjectionError(w, r, "confirmation.prepare.response", err)
+		return
+	}
+	writeMutationSuccess(w, response)
 }
 
 func (h Handler) handleListIntents(w http.ResponseWriter, r *http.Request) {
@@ -1761,7 +1862,12 @@ func (h Handler) handleListIntents(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, httpStatusForIntentError(err), errorResponse{OK: false, Message: publicPluginErrorMessage(code), Code: code})
 		return
 	}
-	writeJSON(w, http.StatusOK, successResponse{OK: true, Data: map[string]any{"intents": records}})
+	response, err := publicIntents(records)
+	if err != nil {
+		h.writeProjectionError(w, r, "intent.list.response", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, successResponse{OK: true, Data: response})
 }
 
 func (h Handler) handleInvokeIntent(w http.ResponseWriter, r *http.Request) {
@@ -1777,10 +1883,15 @@ func (h Handler) handleInvokeIntent(w http.ResponseWriter, r *http.Request) {
 	})
 	if err != nil {
 		code := errorCodeForIntentError(err)
-		writeMutationError(w, httpStatusForIntentError(err), code, publicPluginErrorMessage(code), errorDetailsForRPCError(err), mutation.ForError(err))
+		h.writeRPCMutationError(w, r, "intent.invoke", httpStatusForIntentError(err), code, publicPluginErrorMessage(code), err)
 		return
 	}
-	writeMutationSuccess(w, result)
+	response, err := publicCallMethod(result)
+	if err != nil {
+		h.writeProjectionError(w, r, "intent.invoke.response", err)
+		return
+	}
+	writeMutationSuccess(w, response)
 }
 
 func (h Handler) handleListOperations(w http.ResponseWriter, r *http.Request) {
@@ -1804,8 +1915,13 @@ func (h Handler) handleListOperations(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, httpStatusForOperationError(err), errorResponse{OK: false, Message: h.publicFailureMessage(r.Context(), "operation.list", code, err), Code: code})
 		return
 	}
+	operations, err := publicOperationRecords(result.Operations)
+	if err != nil {
+		h.writeProjectionError(w, r, "operation.list.response", err)
+		return
+	}
 	writeJSON(w, http.StatusOK, successResponse{OK: true, Data: operationListResponse{
-		Operations: publicOperationRecords(result.Operations),
+		Operations: operations,
 		NextCursor: result.NextCursor,
 	}})
 }
@@ -1822,7 +1938,12 @@ func (h Handler) handleGetOperation(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, httpStatusForOperationError(err), errorResponse{OK: false, Message: h.publicFailureMessage(r.Context(), "operation.get", code, err), Code: code})
 		return
 	}
-	writeJSON(w, http.StatusOK, successResponse{OK: true, Data: publicOperationRecord(record)})
+	response, err := publicOperationRecord(record)
+	if err != nil {
+		h.writeProjectionError(w, r, "operation.get.response", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, successResponse{OK: true, Data: response})
 }
 
 func (h Handler) handleCancelOperation(w http.ResponseWriter, r *http.Request) {
@@ -1845,7 +1966,12 @@ func (h Handler) handleCancelOperation(w http.ResponseWriter, r *http.Request) {
 		writeMutationError(w, httpStatusForOperationError(err), code, h.publicFailureMessage(r.Context(), "operation.cancel", code, err), errorDetails{}, mutation.ForError(err))
 		return
 	}
-	writeMutationSuccess(w, publicOperationRecord(record))
+	response, err := publicOperationRecord(record)
+	if err != nil {
+		h.writeProjectionError(w, r, "operation.cancel.response", err)
+		return
+	}
+	writeMutationSuccess(w, response)
 }
 
 func (h Handler) handleStartRuntime(w http.ResponseWriter, r *http.Request) {
@@ -1865,7 +1991,7 @@ func (h Handler) handleStartRuntime(w http.ResponseWriter, r *http.Request) {
 		writeMutationError(w, status, code, h.publicFailureMessage(r.Context(), "runtime.start", code, err), errorDetails{}, mutation.ForError(err))
 		return
 	}
-	writeMutationSuccess(w, health)
+	writeMutationSuccess(w, publicRuntimeHealth(health))
 }
 
 func (h Handler) handleStopRuntime(w http.ResponseWriter, r *http.Request) {
@@ -1879,7 +2005,7 @@ func (h Handler) handleStopRuntime(w http.ResponseWriter, r *http.Request) {
 		writeMutationError(w, status, code, h.publicFailureMessage(r.Context(), "runtime.stop", code, err), errorDetails{}, mutation.ForError(err))
 		return
 	}
-	writeMutationSuccess(w, map[string]bool{"stopped": true})
+	writeMutationSuccess(w, runtimeStopResponse{Stopped: true})
 }
 
 func (h Handler) handleRuntimeHealth(w http.ResponseWriter, r *http.Request) {
@@ -1889,7 +2015,7 @@ func (h Handler) handleRuntimeHealth(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, status, errorResponse{OK: false, Message: h.publicFailureMessage(r.Context(), "runtime.health", code, err), Code: code})
 		return
 	}
-	writeJSON(w, http.StatusOK, successResponse{OK: true, Data: health})
+	writeJSON(w, http.StatusOK, successResponse{OK: true, Data: publicRuntimeHealth(health)})
 }
 
 func (h Handler) handleRefreshEnabledRuntimeState(w http.ResponseWriter, r *http.Request) {
@@ -1904,7 +2030,7 @@ func (h Handler) handleRefreshEnabledRuntimeState(w http.ResponseWriter, r *http
 		writeMutationError(w, status, code, h.publicFailureMessage(r.Context(), "runtime.refresh_enabled", code, err), errorDetails{}, mutation.ForError(err))
 		return
 	}
-	writeMutationSuccess(w, map[string]any{"results": records})
+	writeMutationSuccess(w, publicRuntimeRefresh(records))
 }
 
 func (h Handler) handleExportData(w http.ResponseWriter, r *http.Request) {
@@ -1921,7 +2047,7 @@ func (h Handler) handleExportData(w http.ResponseWriter, r *http.Request) {
 		writeMutationError(w, httpStatusForDataLifecycleError(err), code, h.publicFailureMessage(r.Context(), "data.export", code, err), errorDetails{}, mutation.ForError(err))
 		return
 	}
-	writeMutationSuccess(w, map[string]string{"bundle_ref": result.BundleRef})
+	writeMutationSuccess(w, dataExportResponse{BundleRef: result.BundleRef})
 }
 
 func (h Handler) handleDeleteDataExport(w http.ResponseWriter, r *http.Request) {
@@ -1935,7 +2061,7 @@ func (h Handler) handleDeleteDataExport(w http.ResponseWriter, r *http.Request) 
 		writeMutationError(w, httpStatusForDataLifecycleError(err), code, h.publicFailureMessage(r.Context(), "data.export.delete", code, err), errorDetails{}, mutation.ForError(err))
 		return
 	}
-	writeMutationSuccess(w, map[string]bool{"deleted": true})
+	writeMutationSuccess(w, deleteResponse{Deleted: true})
 }
 
 func (h Handler) handleImportData(w http.ResponseWriter, r *http.Request) {
@@ -1959,7 +2085,7 @@ func (h Handler) handleImportData(w http.ResponseWriter, r *http.Request) {
 		writeMutationError(w, httpStatusForDataLifecycleError(err), code, h.publicFailureMessage(r.Context(), "data.import", code, err), errorDetails{}, mutation.ForError(err))
 		return
 	}
-	writeMutationSuccess(w, record)
+	h.writePluginMutationSuccess(w, r, "data.import.response", record)
 }
 
 func (h Handler) handleListRetainedData(w http.ResponseWriter, r *http.Request) {
@@ -1976,7 +2102,7 @@ func (h Handler) handleListRetainedData(w http.ResponseWriter, r *http.Request) 
 		writeJSON(w, httpStatusForDataLifecycleError(err), errorResponse{OK: false, Message: h.publicFailureMessage(r.Context(), "retained-data.list", code, err), Code: code})
 		return
 	}
-	writeJSON(w, http.StatusOK, successResponse{OK: true, Data: map[string]any{"retained_data": records}})
+	writeJSON(w, http.StatusOK, successResponse{OK: true, Data: publicRetainedData(records)})
 }
 
 func (h Handler) handleDeleteRetainedData(w http.ResponseWriter, r *http.Request) {
@@ -2000,7 +2126,7 @@ func (h Handler) handleDeleteRetainedData(w http.ResponseWriter, r *http.Request
 		writeMutationError(w, httpStatusForDataLifecycleError(err), code, h.publicFailureMessage(r.Context(), "retained-data.delete", code, err), details, mutation.ForError(err))
 		return
 	}
-	writeMutationSuccess(w, record)
+	writeMutationSuccess(w, publicPluginDataBinding(record))
 }
 
 func (h Handler) handleBindRetainedData(w http.ResponseWriter, r *http.Request) {
@@ -2031,7 +2157,7 @@ func (h Handler) handleBindRetainedData(w http.ResponseWriter, r *http.Request) 
 		writeMutationError(w, httpStatusForDataLifecycleError(err), code, h.publicFailureMessage(r.Context(), "retained-data.bind", code, err), details, mutation.ForError(err))
 		return
 	}
-	writeMutationSuccess(w, record)
+	writeMutationSuccess(w, publicPluginDataBinding(record))
 }
 
 func (h Handler) handleCleanupExpiredRetainedData(w http.ResponseWriter, r *http.Request) {
@@ -2046,7 +2172,7 @@ func (h Handler) handleCleanupExpiredRetainedData(w http.ResponseWriter, r *http
 		writeMutationError(w, httpStatusForDataLifecycleError(err), code, h.publicFailureMessage(r.Context(), "retained-data.cleanup-expired", code, err), errorDetails{}, mutation.ForError(err))
 		return
 	}
-	writeMutationSuccess(w, result)
+	writeMutationSuccess(w, publicRetainedDataCleanup(result))
 }
 
 func (h Handler) handleListPermissions(w http.ResponseWriter, r *http.Request) {
@@ -2069,7 +2195,7 @@ func (h Handler) handleListPermissions(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, httpStatusForPermissionError(err), errorResponse{OK: false, Message: h.publicFailureMessage(r.Context(), "permission.list", code, err), Code: code})
 		return
 	}
-	writeJSON(w, http.StatusOK, successResponse{OK: true, Data: map[string]any{"permissions": records}})
+	writeJSON(w, http.StatusOK, successResponse{OK: true, Data: permissionListResponse{Permissions: publicPermissions(records)}})
 }
 
 func (h Handler) handleGrantPermission(w http.ResponseWriter, r *http.Request) {
@@ -2091,7 +2217,7 @@ func (h Handler) handleGrantPermission(w http.ResponseWriter, r *http.Request) {
 		writeMutationError(w, httpStatusForPermissionError(err), code, h.publicFailureMessage(r.Context(), "permission.grant", code, err), errorDetails{}, mutation.ForError(err))
 		return
 	}
-	writeMutationSuccess(w, record)
+	writeMutationSuccess(w, publicPermissionMutation(record))
 }
 
 func (h Handler) handleRevokePermission(w http.ResponseWriter, r *http.Request) {
@@ -2113,7 +2239,7 @@ func (h Handler) handleRevokePermission(w http.ResponseWriter, r *http.Request) 
 		writeMutationError(w, httpStatusForPermissionError(err), code, h.publicFailureMessage(r.Context(), "permission.revoke", code, err), errorDetails{}, mutation.ForError(err))
 		return
 	}
-	writeMutationSuccess(w, record)
+	writeMutationSuccess(w, publicPermissionMutation(record))
 }
 
 func (h Handler) handleListSecurityPolicies(w http.ResponseWriter, r *http.Request) {
@@ -2127,7 +2253,7 @@ func (h Handler) handleListSecurityPolicies(w http.ResponseWriter, r *http.Reque
 	for _, record := range records {
 		responses = append(responses, securityPolicyResponseFromRecord(record))
 	}
-	writeJSON(w, http.StatusOK, successResponse{OK: true, Data: map[string]any{"security_policies": responses}})
+	writeJSON(w, http.StatusOK, successResponse{OK: true, Data: securityPolicyListResponse{SecurityPolicies: responses}})
 }
 
 func (h Handler) handleGetSecurityPolicy(w http.ResponseWriter, r *http.Request) {
@@ -2215,12 +2341,9 @@ func (h Handler) handleDeleteSecurityPolicy(w http.ResponseWriter, r *http.Reque
 		writeMutationError(w, httpStatusForSecurityPolicyError(err), code, h.publicFailureMessage(r.Context(), "security-policy.delete", code, err), errorDetailsForSecurityPolicyError(err), mutation.ForError(err))
 		return
 	}
-	writeMutationSuccess(w, map[string]any{
-		"plugin_instance_id":  pluginInstanceID,
-		"deleted":             true,
-		"policy_revision":     revisions.PolicyRevision,
-		"management_revision": revisions.ManagementRevision,
-		"revoke_epoch":        revisions.RevokeEpoch,
+	writeMutationSuccess(w, securityPolicyDeleteResponse{
+		PluginInstanceID: pluginInstanceID, Deleted: true, PolicyRevision: revisions.PolicyRevision,
+		ManagementRevision: revisions.ManagementRevision, RevokeEpoch: revisions.RevokeEpoch,
 	})
 }
 
@@ -2279,7 +2402,12 @@ func (h Handler) handleListDiagnostics(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	writeJSON(w, http.StatusOK, successResponse{OK: true, Data: map[string]any{"diagnostic_events": events}})
+	response, err := publicDiagnostics(events)
+	if err != nil {
+		h.writeProjectionError(w, r, "diagnostic.list.response", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, successResponse{OK: true, Data: response})
 }
 
 func (h Handler) handleBindSecret(w http.ResponseWriter, r *http.Request) {
@@ -2288,11 +2416,15 @@ func (h Handler) handleBindSecret(w http.ResponseWriter, r *http.Request) {
 		writeMutationInvalidRequestError(w, err)
 		return
 	}
-	if err := h.host.BindSecretRef(r.Context(), host.SecretBindRequest(req)); err != nil {
+	if err := h.host.BindSecretRef(r.Context(), host.SecretBindRequest{
+		PluginInstanceID: req.PluginInstanceID,
+		SecretRef:        req.SecretRef,
+		Scope:            req.Scope,
+	}); err != nil {
 		writeMutationError(w, httpStatusForSecretError(err), errorCodeForSecretError(err), publicSecretErrorMessage(err), errorDetails{}, mutation.ForError(err))
 		return
 	}
-	writeMutationSuccess(w, map[string]bool{"bound": true})
+	writeMutationSuccess(w, secretBindResponse{Bound: true})
 }
 
 func (h Handler) handleTestSecret(w http.ResponseWriter, r *http.Request) {
@@ -2301,11 +2433,15 @@ func (h Handler) handleTestSecret(w http.ResponseWriter, r *http.Request) {
 		writeMutationInvalidRequestError(w, err)
 		return
 	}
-	if err := h.host.TestSecretRef(r.Context(), host.SecretTestRequest(req)); err != nil {
+	if err := h.host.TestSecretRef(r.Context(), host.SecretTestRequest{
+		PluginInstanceID: req.PluginInstanceID,
+		SecretRef:        req.SecretRef,
+		Scope:            req.Scope,
+	}); err != nil {
 		writeMutationError(w, httpStatusForSecretError(err), errorCodeForSecretError(err), publicSecretErrorMessage(err), errorDetails{}, mutation.ForError(err))
 		return
 	}
-	writeMutationSuccess(w, map[string]bool{"tested": true})
+	writeMutationSuccess(w, secretTestResponse{Tested: true})
 }
 
 func (h Handler) handleDeleteSecret(w http.ResponseWriter, r *http.Request) {
@@ -2314,11 +2450,15 @@ func (h Handler) handleDeleteSecret(w http.ResponseWriter, r *http.Request) {
 		writeMutationInvalidRequestError(w, err)
 		return
 	}
-	if err := h.host.DeleteSecretRef(r.Context(), host.SecretDeleteRequest(req)); err != nil {
+	if err := h.host.DeleteSecretRef(r.Context(), host.SecretDeleteRequest{
+		PluginInstanceID: req.PluginInstanceID,
+		SecretRef:        req.SecretRef,
+		Scope:            req.Scope,
+	}); err != nil {
 		writeMutationError(w, httpStatusForSecretError(err), errorCodeForSecretError(err), publicSecretErrorMessage(err), errorDetails{}, mutation.ForError(err))
 		return
 	}
-	writeMutationSuccess(w, map[string]bool{"deleted": true})
+	writeMutationSuccess(w, deleteResponse{Deleted: true})
 }
 
 func (h Handler) handleGetSettingsSchema(w http.ResponseWriter, r *http.Request) {
@@ -2338,7 +2478,12 @@ func (h Handler) handleGetSettingsSchema(w http.ResponseWriter, r *http.Request)
 		writeJSON(w, httpStatusForSettingsError(err), errorResponse{OK: false, Message: h.publicFailureMessage(r.Context(), "settings.schema", code, err), Code: code})
 		return
 	}
-	writeJSON(w, http.StatusOK, successResponse{OK: true, Data: result})
+	response, err := publicSettingsSchema(result)
+	if err != nil {
+		h.writeProjectionError(w, r, "settings.schema.response", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, successResponse{OK: true, Data: response})
 }
 
 func (h Handler) handleGetSettings(w http.ResponseWriter, r *http.Request) {
@@ -2358,7 +2503,12 @@ func (h Handler) handleGetSettings(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, httpStatusForSettingsError(err), errorResponse{OK: false, Message: h.publicFailureMessage(r.Context(), "settings.get", code, err), Code: code})
 		return
 	}
-	writeJSON(w, http.StatusOK, successResponse{OK: true, Data: result})
+	response, err := publicSettingsSnapshot(result)
+	if err != nil {
+		h.writeProjectionError(w, r, "settings.get.response", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, successResponse{OK: true, Data: response})
 }
 
 func (h Handler) handlePatchSettings(w http.ResponseWriter, r *http.Request) {
@@ -2381,24 +2531,30 @@ func (h Handler) handlePatchSettings(w http.ResponseWriter, r *http.Request) {
 		writeMutationInvalidRequestError(w, errors.New("set or remove is required"))
 		return
 	}
-	if _, err := requiredScopeKind(req.Scope); err != nil {
+	scope, err := requiredScopeKind(sessionctx.ScopeKind(req.Scope))
+	if err != nil {
 		writeMutationInvalidRequestError(w, err)
 		return
 	}
 	result, err := h.host.PatchPluginSettings(r.Context(), host.PatchSettingsRequest{
 		PluginInstanceID:       pluginInstanceID,
-		Scope:                  req.Scope,
+		Scope:                  scope,
 		ExpectedValuesRevision: expectedValuesRevision,
 		Set:                    req.Set,
 		Remove:                 req.Remove,
 	})
 	if err != nil {
-		details := h.valuesRevisionDetails(r.Context(), pluginInstanceID, req.Scope, expectedValuesRevision, err)
+		details := h.valuesRevisionDetails(r.Context(), pluginInstanceID, scope, expectedValuesRevision, err)
 		code := errorCodeForSettingsError(err)
 		writeMutationError(w, httpStatusForSettingsError(err), code, h.publicFailureMessage(r.Context(), "settings.patch", code, err), details, mutation.ForError(err))
 		return
 	}
-	writeMutationSuccess(w, result)
+	response, err := publicSettingsSnapshot(result)
+	if err != nil {
+		h.writeProjectionError(w, r, "settings.patch.response", err)
+		return
+	}
+	writeMutationSuccess(w, response)
 }
 
 func decodeJSON(r *http.Request, dst any) error {
@@ -3300,27 +3456,31 @@ func errorCodeForIntentError(err error) security.ErrorCode {
 	}
 }
 
-func errorDetailsForRPCError(err error) errorDetails {
+func errorDetailsForRPCError(err error) (errorDetails, error) {
 	if businessError, ok := host.AsValidatedCapabilityBusinessError(err); ok {
+		details, cloneErr := cloneWireJSONMap(businessError.Details)
+		if cloneErr != nil {
+			return errorDetails{}, cloneErr
+		}
 		return errorDetails{
 			CapabilityID:         businessError.CapabilityID,
 			CapabilityVersion:    businessError.CapabilityVersion,
 			DetailSchemaSHA256:   businessError.DetailSchemaSHA256,
 			BusinessErrorCode:    businessError.Code,
-			BusinessErrorDetails: businessError.Details,
-		}
+			BusinessErrorDetails: details,
+		}, nil
 	}
 	if workerError, ok := host.AsValidatedWorkerExecutionError(err); ok {
 		if errorCodeForWorkerExecutionError(err) != security.ErrWorkerError {
-			return errorDetails{}
+			return errorDetails{}, nil
 		}
 		return errorDetails{
 			WorkerErrorCode:    workerError.Code,
 			WorkerErrorMessage: publicWorkerErrorMessage(workerError.Message),
-			WorkerErrorOrigin:  workerError.Origin,
-		}
+			WorkerErrorOrigin:  string(workerError.Origin),
+		}, nil
 	}
-	return errorDetails{}
+	return errorDetails{}, nil
 }
 
 func isCapabilityBusinessError(err error) bool {

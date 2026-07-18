@@ -80,7 +80,7 @@ type RegisterRequest struct {
 	Direction        Direction                   `json:"direction,omitempty"`
 	ContentType      string                      `json:"content_type,omitempty"`
 	MaxBufferedBytes int64                       `json:"max_buffered_bytes,omitempty"`
-	Now              time.Time                   `json:"now,omitempty"`
+	Now              time.Time                   `json:"-"`
 }
 
 type AppendRequest struct {
@@ -88,7 +88,7 @@ type AppendRequest struct {
 	Kind     string    `json:"kind,omitempty"`
 	Data     []byte    `json:"data,omitempty"`
 	Error    string    `json:"error,omitempty"`
-	Now      time.Time `json:"now,omitempty"`
+	Now      time.Time `json:"-"`
 }
 
 type DeliverRequest struct {
@@ -118,7 +118,7 @@ type CloseRequest struct {
 	Status      Status                          `json:"status,omitempty"`
 	FailureCode capability.ExecutionFailureCode `json:"failure_code,omitempty"`
 	Reason      string                          `json:"reason,omitempty"`
-	Now         time.Time                       `json:"now,omitempty"`
+	Now         time.Time                       `json:"-"`
 }
 
 type PluginTransitionRequest struct {
@@ -127,7 +127,7 @@ type PluginTransitionRequest struct {
 	Status           Status                          `json:"status"`
 	FailureCode      capability.ExecutionFailureCode `json:"failure_code,omitempty"`
 	Reason           string                          `json:"reason,omitempty"`
-	Now              time.Time                       `json:"now,omitempty"`
+	Now              time.Time                       `json:"-"`
 }
 
 type PluginTransitionResult struct {

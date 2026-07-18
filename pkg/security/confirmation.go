@@ -46,7 +46,7 @@ type PutConfirmationIntentRequest struct {
 	Scope               ConfirmationScope `json:"scope"`
 	IssuedAt            time.Time         `json:"issued_at,omitempty"`
 	ExpiresAt           time.Time         `json:"expires_at"`
-	Now                 time.Time         `json:"now,omitempty"`
+	Now                 time.Time         `json:"-"`
 	MaxPendingPerPlugin int               `json:"max_pending_per_plugin,omitempty"`
 }
 
@@ -64,7 +64,7 @@ type ConfirmationScope struct {
 
 type ConsumeConfirmationIntentRequest struct {
 	ConfirmationID string    `json:"confirmation_id"`
-	Now            time.Time `json:"now,omitempty"`
+	Now            time.Time `json:"-"`
 }
 
 type RejectConfirmationIntentRequest struct {
@@ -80,7 +80,7 @@ type RejectConfirmationIntentRequest struct {
 	PolicyRevision       uint64    `json:"policy_revision"`
 	ManagementRevision   uint64    `json:"management_revision"`
 	RevokeEpoch          uint64    `json:"revoke_epoch"`
-	Now                  time.Time `json:"now,omitempty"`
+	Now                  time.Time `json:"-"`
 }
 
 type ListConfirmationIntentsRequest struct {
@@ -89,7 +89,7 @@ type ListConfirmationIntentsRequest struct {
 
 type RevokePluginConfirmationIntentsRequest struct {
 	PluginInstanceID string    `json:"plugin_instance_id"`
-	Now              time.Time `json:"now,omitempty"`
+	Now              time.Time `json:"-"`
 }
 
 type ConfirmationIntentStore interface {

@@ -1014,8 +1014,8 @@ test("platform client rejects unknown error codes and mismatched closed details"
 test("platform client manages permissions and secret refs without exposing local contracts", async () => {
   const fetch = new FakeFetch();
   fetch.push({ ok: true, data: { permissions: [{ plugin_instance_id: "plugin_instance_1", permission_id: "network.http", effect: "grant", granted_at: "2026-07-17T00:00:00Z" }] } });
-  fetch.push({ ok: true, data: { permission: { plugin_instance_id: "plugin_instance_1", permission_id: "network.http", effect: "grant", granted_by: "user_hash", granted_at: "2026-07-17T00:00:00Z" }, revisions: { policy_revision: 2, management_revision: 2, revoke_epoch: 0 } } });
-  fetch.push({ ok: true, data: { permission: { plugin_instance_id: "plugin_instance_1", permission_id: "network.http", effect: "deny", granted_at: "2026-07-17T00:00:00Z", revoked_by: "user_hash" }, revisions: { policy_revision: 3, management_revision: 2, revoke_epoch: 1 } } });
+  fetch.push({ ok: true, data: { permission: { plugin_instance_id: "plugin_instance_1", permission_id: "network.http", effect: "grant", granted_at: "2026-07-17T00:00:00Z" }, revisions: { policy_revision: 2, management_revision: 2, revoke_epoch: 0 } } });
+  fetch.push({ ok: true, data: { permission: { plugin_instance_id: "plugin_instance_1", permission_id: "network.http", effect: "deny", granted_at: "2026-07-17T00:00:00Z" }, revisions: { policy_revision: 3, management_revision: 2, revoke_epoch: 1 } } });
   fetch.push({ ok: true, data: { bound: true } });
   fetch.push({ ok: true, data: { tested: true } });
   fetch.push({ ok: true, data: { deleted: true } });
@@ -1042,9 +1042,9 @@ test("platform client manages permissions and secret refs without exposing local
   const deleted = await client.deleteSecret({ plugin_instance_id: "plugin_instance_1", secret_ref: "api_token", scope: "user" });
 
   assert.equal(grants.permissions[0]?.permission_id, "network.http");
-  assert.equal(grant.permission.granted_by, "user_hash");
+  assert.equal(grant.permission.permission_id, "network.http");
   assert.equal(grant.revisions.policy_revision, 2);
-  assert.equal(revoke.permission.revoked_by, "user_hash");
+  assert.equal(revoke.permission.effect, "deny");
   assert.equal(revoke.revisions.revoke_epoch, 1);
   assert.equal(bound.bound, true);
   assert.equal(tested.tested, true);
