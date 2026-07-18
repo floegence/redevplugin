@@ -12,23 +12,24 @@ import { runtimeTargetForBuildTriple, runtimeTargets } from "./runtime_targets.m
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const args = process.argv.slice(2);
 const integrityOnly = args[0] === "--npm-integrity";
-const artifactDir = resolve(integrityOnly ? args[1] ?? "" : args[0] ?? "");
-const expectedVersion = integrityOnly ? undefined : args[1];
-const expectedSourceCommit = integrityOnly ? undefined : args[2];
+const positional = integrityOnly ? args.slice(1) : args;
+const [rawArtifactDir, expectedVersion, expectedSourceCommit] = positional;
+const artifactDir = resolve(rawArtifactDir ?? "");
 
-if (!artifactDir || (!integrityOnly && (!expectedVersion || !/^[0-9a-f]{40}$/.test(expectedSourceCommit ?? "")))) {
+if (!rawArtifactDir || positional.length !== 3 || !expectedVersion || !/^[0-9a-f]{40}$/.test(expectedSourceCommit ?? "")) {
   console.error("usage: verify_published_release.mjs <artifact-dir> <version> <source-commit>");
-  console.error("       verify_published_release.mjs --npm-integrity <artifact-dir>");
+  console.error("       verify_published_release.mjs --npm-integrity <artifact-dir> <version> <source-commit>");
   process.exit(2);
 }
 
 const expectedBuildTriples = new Set(runtimeTargets.map((target) => target.buildTriple));
 const expectedPlatformTargets = new Set(runtimeTargets.map((target) => target.platformTarget));
+const expectedArchiveNames = new Set(runtimeTargets.map((target) => `redevplugin-v${expectedVersion}-${target.buildTriple}.tar.gz`));
 const archives = readdirSync(artifactDir)
   .filter((entry) => entry.endsWith(".tar.gz"))
   .sort();
-if (archives.length !== expectedBuildTriples.size) {
-  throw new Error(`published release must contain ${expectedBuildTriples.size} runtime archives, found ${archives.length}`);
+if (archives.length !== expectedArchiveNames.size || archives.some((archive) => !expectedArchiveNames.has(archive))) {
+  throw new Error(`published release runtime archive set mismatch: ${JSON.stringify(archives)}`);
 }
 
 const tempRoot = mkdtempSync(join(tmpdir(), "redevplugin-published-release-"));
@@ -55,11 +56,8 @@ try {
     throw new Error(`runtime target matrix mismatch: ${JSON.stringify([...actualTargets].sort())}`);
   }
   const npm = bundles[0].npm;
-  if (integrityOnly) {
-    process.stdout.write(`${npm.integrity}\n`);
-  } else {
-    console.log(`published ReDevPlugin ${expectedVersion} verified for ${bundles.length} runtime targets`);
-  }
+  if (integrityOnly) process.stdout.write(`${npm.integrity}\n`);
+  else console.log(`published ReDevPlugin ${expectedVersion} verified for ${bundles.length} runtime targets`);
 } finally {
   rmSync(tempRoot, { recursive: true, force: true });
 }
@@ -85,27 +83,25 @@ function inspectArchive(archivePath) {
   if (manifest.runtime_target !== expectedPlatformTarget) {
     throw new Error(`${archiveName} runtime_target does not match build triple ${buildTriple}`);
   }
-  if (!integrityOnly) {
-    if (manifest.version !== expectedVersion) {
-      throw new Error(`${basename(archivePath)} version ${manifest.version} does not match ${expectedVersion}`);
-    }
-    if (manifest.source_commit !== expectedSourceCommit) {
-      throw new Error(`${basename(archivePath)} source_commit does not match the release tag commit`);
-    }
-    const verification = spawnSync(
-      "node",
-      [join(root, "scripts", "verify_redevplugin_release_bundle.mjs"), "--skip-execution", bundleRoot, expectedVersion],
-      { encoding: "utf8" },
-    );
-    if (verification.status !== 0) {
-      throw new Error(`bundle verification failed for ${basename(archivePath)}: ${verification.stderr || verification.stdout}`);
-    }
+  if (manifest.version !== expectedVersion) {
+    throw new Error(`${basename(archivePath)} version ${manifest.version} does not match ${expectedVersion}`);
+  }
+  if (manifest.source_commit !== expectedSourceCommit) {
+    throw new Error(`${basename(archivePath)} source_commit does not match the release tag commit`);
+  }
+  const verification = spawnSync(
+    "node",
+    [join(root, "scripts", "verify_redevplugin_release_bundle.mjs"), "--skip-execution", bundleRoot, expectedVersion],
+    { encoding: "utf8" },
+  );
+  if (verification.status !== 0) {
+    throw new Error(`bundle verification failed for ${basename(archivePath)}: ${verification.stderr || verification.stdout}`);
   }
   const npmMetadata = manifest.npm_package;
   if (npmMetadata?.name !== "@floegence/redevplugin-ui" || typeof npmMetadata.path !== "string") {
     throw new Error(`${basename(archivePath)} has invalid npm package metadata`);
   }
-  if (!integrityOnly && npmMetadata.version !== expectedVersion) {
+  if (npmMetadata.version !== expectedVersion) {
     throw new Error(`${basename(archivePath)} npm package version mismatch`);
   }
   const npmPath = join(bundleRoot, npmMetadata.path);
@@ -125,7 +121,7 @@ function inspectArchive(archivePath) {
   if (workerSDKMetadata?.name !== "redevplugin-worker-sdk" || typeof workerSDKMetadata.path !== "string") {
     throw new Error(`${basename(archivePath)} has invalid worker SDK metadata`);
   }
-  if (!integrityOnly && workerSDKMetadata.version !== expectedVersion) {
+  if (workerSDKMetadata.version !== expectedVersion) {
     throw new Error(`${basename(archivePath)} worker SDK version mismatch`);
   }
   const workerSDKPath = join(bundleRoot, workerSDKMetadata.path);

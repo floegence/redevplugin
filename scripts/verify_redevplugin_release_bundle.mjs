@@ -62,9 +62,7 @@ function verifyReleaseManifestShape(manifest, expectedVersion) {
   if (manifest.runtime_target !== null && typeof manifest.runtime_target !== "string") {
     fail("release manifest runtime_target must be a string or null");
   }
-  if (!Number.isFinite(Date.parse(manifest.generated_at))) {
-    fail("release manifest generated_at must be an ISO date-time string");
-  }
+  assertRFC3339DateTime(manifest.generated_at, "release manifest generated_at");
   assertHexSHA256(manifest.compatibility_sha256, "release manifest compatibility_sha256");
   verifyNpmManifestEntry(manifest.npm_package, expectedVersion);
   verifyWorkerSDKManifestEntry(manifest.worker_sdk, expectedVersion);
@@ -74,6 +72,7 @@ function verifyReleaseManifestShape(manifest, expectedVersion) {
   const seen = new Set();
   for (const [index, file] of manifest.files.entries()) {
     assertObject(file, `release manifest files[${index}]`);
+    assertExactKeys(file, ["path", "sha256", "size"], `release manifest files[${index}]`);
     assertBundlePath(file.path, `release manifest files[${index}].path`);
     assertHexSHA256(file.sha256, `release manifest files[${index}].sha256`);
     if (!Number.isSafeInteger(file.size) || file.size < 0) {
@@ -93,7 +92,6 @@ function verifyManifestFiles(bundleDir, manifest) {
     sha256: file.sha256,
     size: file.size,
   }));
-  manifestFiles.sort((a, b) => a.path.localeCompare(b.path));
   assertDeepEqual(manifestFiles, actualFiles, "release manifest file list");
 
   const expectedSums = manifestFiles.map((file) => `${file.sha256}  ${file.path}`).join("\n") + "\n";
@@ -989,8 +987,18 @@ function assertBundlePath(value, label) {
   if (typeof value !== "string" || value.length === 0) {
     fail(`${label} must be a non-empty string`);
   }
-  if (value.startsWith("/") || value.includes("\\") || value.split("/").includes("..") || /\s/.test(value)) {
-    fail(`${label} must be a relative POSIX path without traversal or whitespace: ${value}`);
+  if (!/^[A-Za-z0-9._/@+-]+$/.test(value) || value.startsWith("/") || value.includes("\\") || value.split("/").includes("..")) {
+    fail(`${label} must match the closed release-manifest bundle path contract: ${value}`);
+  }
+}
+
+function assertRFC3339DateTime(value, label) {
+  if (
+    typeof value !== "string" ||
+    !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/.test(value) ||
+    !Number.isFinite(Date.parse(value))
+  ) {
+    fail(`${label} must be an RFC 3339 date-time string`);
   }
 }
 

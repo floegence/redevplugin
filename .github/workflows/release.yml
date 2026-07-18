@@ -471,18 +471,21 @@ jobs:
           mkdir -p dist/published
           gh release download "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --dir dist/published
       - name: Verify signatures, checksums, compatibility, runtime matrix, and npm identity
+        id: published-release
         run: |
           set -euo pipefail
           ./scripts/verify_redevplugin_release_artifacts.sh --tag "$GITHUB_REF_NAME" dist/published
-          node scripts/verify_published_release.mjs \
+          npm_integrity=$(node scripts/verify_published_release.mjs \
+            --npm-integrity \
             dist/published \
             "${{ needs.preflight.outputs.version }}" \
-            "$GITHUB_SHA"
+            "$GITHUB_SHA")
+          echo "npm_integrity=$npm_integrity" >> "$GITHUB_OUTPUT"
       - name: Verify npm and Go module registry readback
         run: |
           set -euo pipefail
           version="${{ needs.preflight.outputs.version }}"
-          expected_integrity=$(node scripts/verify_published_release.mjs --npm-integrity dist/published)
+          expected_integrity="${{ steps.published-release.outputs.npm_integrity }}"
           for attempt in $(seq 1 20); do
             if node scripts/verify_npm_registry_release.mjs "$version" "$GITHUB_SHA" "$expected_integrity"; then
               break

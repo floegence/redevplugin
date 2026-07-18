@@ -11,6 +11,29 @@ import (
 
 const releaseManifestSchemaVersion = "redevplugin.release_manifest.v4"
 
+func TestReleaseManifestDocumentationTracksV4Transition(t *testing.T) {
+	root := repoRoot(t)
+	readme := readTextFile(t, filepath.Join(root, "README.md"))
+	if !strings.Contains(readme, "release manifest\n  v4") || strings.Contains(readme, "release manifest v3 remain unchanged") {
+		t.Fatal("README current platform snapshot does not identify release manifest v4")
+	}
+
+	changelog := readTextFile(t, filepath.Join(root, "CHANGELOG.md"))
+	v050 := changelogSection(t, changelog, "## v0.5.0", "## v0.4.3")
+	if !strings.Contains(v050, "release manifest v4") || strings.Contains(v050, "release manifest v3 remain unchanged") {
+		t.Fatal("v0.5.0 changelog section does not own the release manifest v4 transition")
+	}
+	v040 := changelogSection(t, changelog, "## v0.4.0", "## v0.3.2")
+	if !strings.Contains(v040, "redevplugin.release_manifest.v3") || strings.Contains(v040, "redevplugin.release_manifest.v4") {
+		t.Fatal("published v0.4.0 changelog history does not retain release manifest v3")
+	}
+
+	releaseGuide := readTextFile(t, filepath.Join(root, "docs", "release", "ci-and-release-gates.md"))
+	if !strings.Contains(releaseGuide, "release manifest v4 Worker SDK identity") || strings.Contains(releaseGuide, "release manifest v3 Worker SDK identity") {
+		t.Fatal("release gate documentation does not identify release manifest v4")
+	}
+}
+
 func TestReleaseManifestSchemaMatchesBundleVerifierContract(t *testing.T) {
 	root := repoRoot(t)
 	raw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", "release-manifest-v4.schema.json"))
@@ -304,7 +327,7 @@ func assertReleaseManifestVerifierContract(t *testing.T, path string) {
 		`assertEqual(manifest.schema_version, "redevplugin.release_manifest.v4", "release manifest schema_version");`,
 		`assertGitCommit(manifest.source_commit, "release manifest source_commit");`,
 		`manifest.runtime_target !== null && typeof manifest.runtime_target !== "string"`,
-		`!Number.isFinite(Date.parse(manifest.generated_at))`,
+		`assertRFC3339DateTime(manifest.generated_at, "release manifest generated_at");`,
 		`assertHexSHA256(manifest.compatibility_sha256, "release manifest compatibility_sha256");`,
 		`verifyNpmManifestEntry(manifest.npm_package, expectedVersion);`,
 		`verifyWorkerSDKManifestEntry(manifest.worker_sdk, expectedVersion);`,
@@ -312,6 +335,7 @@ func assertReleaseManifestVerifierContract(t *testing.T, path string) {
 		`const rustToolchain = resolveRustToolchain();`,
 		`RUSTUP_TOOLCHAIN: rustToolchain`,
 		`!Array.isArray(manifest.files) || manifest.files.length === 0`,
+		`assertExactKeys(file, ["path", "sha256", "size"], ` + "`release manifest files[${index}]`" + `);`,
 		`assertBundlePath(file.path, ` + "`release manifest files[${index}].path`" + `);`,
 		`assertHexSHA256(file.sha256, ` + "`release manifest files[${index}].sha256`" + `);`,
 		`!Number.isSafeInteger(file.size) || file.size < 0`,
@@ -343,6 +367,9 @@ func assertReleaseManifestVerifierContract(t *testing.T, path string) {
 		if !strings.Contains(source, snippet) {
 			t.Fatalf("%s missing release manifest verifier contract snippet %q", path, snippet)
 		}
+	}
+	if strings.Contains(source, "manifestFiles.sort(") {
+		t.Fatalf("%s normalizes unordered release manifest files instead of rejecting them", path)
 	}
 	if strings.Contains(source, "target: { os: process.platform") || strings.Contains(source, "arch: process.arch") {
 		t.Fatalf("%s derives runtime IPC target from the verifier process", path)
@@ -393,6 +420,10 @@ func assertReleaseWorkflowContract(t *testing.T, path string) {
 		"redevplugin-worker-sdk-package",
 		`--worker-sdk-package "$worker_sdk_package"`,
 		`if published_integrity=$(npm view "@floegence/redevplugin-ui@${version}" dist.integrity 2>/dev/null); then`,
+		`id: published-release`,
+		`--npm-integrity`,
+		`echo "npm_integrity=$npm_integrity" >> "$GITHUB_OUTPUT"`,
+		`steps.published-release.outputs.npm_integrity`,
 	} {
 		if !strings.Contains(source, snippet) {
 			t.Fatalf("%s missing hardened release workflow snippet %q", path, snippet)
@@ -430,4 +461,14 @@ func readTextFile(t *testing.T, path string) string {
 		t.Fatal(err)
 	}
 	return string(raw)
+}
+
+func changelogSection(t *testing.T, changelog, startHeading, endHeading string) string {
+	t.Helper()
+	start := strings.Index(changelog, startHeading)
+	end := strings.Index(changelog, endHeading)
+	if start < 0 || end <= start {
+		t.Fatalf("CHANGELOG.md section boundaries are invalid: %s to %s", startHeading, endHeading)
+	}
+	return changelog[start:end]
 }

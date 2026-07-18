@@ -103,7 +103,7 @@ the same command shape.
   across SQLite reopen;
 - release artifact verifier fixture behavior, including exact four-target and
   signed-file sets plus rejection of every extra tar or non-tar asset;
-- release manifest v3 Worker SDK identity, safe `.crate` structure, immutable
+- release manifest v4 Worker SDK identity, safe `.crate` structure, immutable
   tag documentation, and rejection of cross-target SDK byte drift;
 - npm registry readback mutation fixtures for tarball SHA-512, SLSA subject,
   repository, workflow path/ref, tag, and source commit;

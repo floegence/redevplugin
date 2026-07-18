@@ -24,9 +24,9 @@ capabilities.
 - Active coordinated contracts are `plugin-host-v4`, `rust-ipc-v4`,
   `plugin-ui-v5`, `bridge-v5`, `plugin-platform-v6`, `manifest-v5`, opaque
   document v3, opaque transport v4, release metadata v5, compatibility manifest
-  v6, error codes v4, and resource scope v1. WASM ABI v2, worker invocation v3,
-  token/ticket v2,
-  package signature v1, and release manifest v3 remain unchanged.
+  v6, error codes v4, resource scope v1, token/ticket v3, and release manifest
+  v4. WASM ABI v2, worker invocation v3, and package signature v1 remain
+  unchanged.
 - Host-neutral Go package boundaries for manifest validation, package IO,
   registry, host adapters, bridge, PluginData, runtime supervision, grants,
   capability adapters, HTTP routes, session context, and web security.

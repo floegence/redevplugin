@@ -131,8 +131,8 @@
   `rust-ipc-v4`, `plugin-ui-v5`, `bridge-v5`, `plugin-platform-v6`,
   `manifest-v5`, opaque document v3, opaque transport v4,
   `release-metadata-v5`, compatibility manifest v6, `error-codes-v4`,
-  `resource-scope-v1`, and token/ticket v3. WASM ABI v2, worker invocation v3,
-  package signature v1, and release manifest v3 remain unchanged.
+  `resource-scope-v1`, token/ticket v3, and release manifest v4. WASM ABI v2,
+  worker invocation v3, and package signature v1 remain unchanged.
 - Make `PluginPlatformClient.openSurfaceInSlot(...)` the only public trusted-parent
   opening path. Raw bootstrap opening, caller-created surface hosts, and direct
   slot adoption are no longer public API; replacement waits for the previous
@@ -181,6 +181,10 @@
   Adapter and runtime causes, bearer/cookie values, URL queries, secret
   references, private runtime identifiers, and absolute paths are rejected at
   memory and SQLite sink boundaries; invalid persisted rows fail reopen.
+- Make published npm integrity readback execute the same strict v4 manifest,
+  version, source-commit, archive-matrix, and bundle verification as the release
+  verifier. Release manifests now reject open or unordered file entries instead
+  of normalizing them during verification.
 - Make every HTTP route action map to an exact direct Host action, including
   surface preparation, bridge minting, asset and stream reads, RPC and
   confirmation flows, and platform metadata. Nested surface preparation and
@@ -305,7 +309,7 @@
   while desktop and mobile layouts share the same runtime behavior.
 - The CLI scaffold emits one ABI v2 Rust worker and generated browser worker
   through a single canonical build path.
-- Platform release bundles now use `redevplugin.release_manifest.v4`. The npm
+- Platform release bundles now use `redevplugin.release_manifest.v3`. The npm
   tarball and Rust worker SDK crate are each built once, embedded byte-for-byte
   in every runtime target bundle, and verified for cross-bundle identity.
 

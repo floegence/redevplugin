@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { createHash } from "node:crypto";
-import { appendFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -44,18 +44,26 @@ try {
     bundles.push({ bundleRoot, target });
   }
 
-  run(
+  const expectedIntegrity = JSON.parse(readFileSync(join(bundles[0].bundleRoot, "release-manifest.json"), "utf8")).npm_package.integrity;
+  const verifiedIntegrity = run(
     "node",
-    [publishedVerifier, artifactDir, version, sourceCommit],
-    "verify published runtime matrix",
-    {
-      cwd: verifierRoot,
-      env: verifierEnvironment,
-    },
-  );
+    [publishedVerifier, "--npm-integrity", artifactDir, version, sourceCommit],
+    "read verified npm integrity",
+    { cwd: verifierRoot, env: verifierEnvironment },
+  ).trim();
+  if (verifiedIntegrity !== expectedIntegrity) {
+    throw new Error(`published verifier npm integrity mismatch: got ${verifiedIntegrity}, want ${expectedIntegrity}`);
+  }
   if (existsSync(join(verifierRoot, "node_modules"))) {
     throw new Error("published verifier installed or reused dependencies outside its standalone consumer");
   }
+
+  const archiveIdentityNegative = bundles[0];
+  const archiveIdentityPath = join(artifactDir, `${basename(archiveIdentityNegative.bundleRoot)}.tar.gz`);
+  const renamedArchiveIdentityPath = join(artifactDir, `unexpected-${archiveIdentityNegative.target.buildTriple}.tar.gz`);
+  renameSync(archiveIdentityPath, renamedArchiveIdentityPath);
+  assertPublishedVerifierRejects("runtime archive set mismatch", "unexpected runtime archive name");
+  renameSync(renamedArchiveIdentityPath, archiveIdentityPath);
 
   const targetIdentityNegative = bundles[0];
   refreshReleaseManifest(targetIdentityNegative.bundleRoot, targets[1].platformTarget);
@@ -66,6 +74,44 @@ try {
   );
   refreshReleaseManifest(targetIdentityNegative.bundleRoot, targetIdentityNegative.target.platformTarget);
   archiveBundle(targetIdentityNegative);
+
+  const manifestContractNegative = bundles[0];
+  const manifestContractPath = join(manifestContractNegative.bundleRoot, "release-manifest.json");
+  const manifestContract = JSON.parse(readFileSync(manifestContractPath, "utf8"));
+  manifestContract.schema_version = "redevplugin.release_manifest.v3";
+  writeFileSync(manifestContractPath, JSON.stringify(manifestContract, null, 2) + "\n");
+  archiveBundle(manifestContractNegative);
+  assertPublishedVerifierRejects(
+    "release manifest schema_version mismatch",
+    "release manifest v3 downgrade in npm integrity mode",
+    true,
+  );
+  manifestContract.schema_version = "redevplugin.release_manifest.v4";
+  writeFileSync(manifestContractPath, JSON.stringify(manifestContract, null, 2) + "\n");
+  archiveBundle(manifestContractNegative);
+
+  const manifestFilesNegative = bundles[1];
+  const manifestFilesPath = join(manifestFilesNegative.bundleRoot, "release-manifest.json");
+  const manifestFiles = JSON.parse(readFileSync(manifestFilesPath, "utf8"));
+  const originalGeneratedAt = manifestFiles.generated_at;
+  manifestFiles.generated_at = "2026-07-19";
+  writeFileSync(manifestFilesPath, JSON.stringify(manifestFiles, null, 2) + "\n");
+  assertBundleVerifierRejects(manifestFilesNegative.bundleRoot, "must be an RFC 3339 date-time string", "date-only generated_at");
+  manifestFiles.generated_at = originalGeneratedAt;
+  manifestFiles.files[0].unexpected = true;
+  writeFileSync(manifestFilesPath, JSON.stringify(manifestFiles, null, 2) + "\n");
+  assertBundleVerifierRejects(manifestFilesNegative.bundleRoot, "files[0] keys mismatch", "open release manifest file entry");
+  delete manifestFiles.files[0].unexpected;
+  const originalPath = manifestFiles.files[0].path;
+  manifestFiles.files[0].path = `${originalPath}?query`;
+  writeFileSync(manifestFilesPath, JSON.stringify(manifestFiles, null, 2) + "\n");
+  assertBundleVerifierRejects(manifestFilesNegative.bundleRoot, "closed release-manifest bundle path contract", "open release manifest path");
+  manifestFiles.files[0].path = originalPath;
+  [manifestFiles.files[0], manifestFiles.files[1]] = [manifestFiles.files[1], manifestFiles.files[0]];
+  writeFileSync(manifestFilesPath, JSON.stringify(manifestFiles, null, 2) + "\n");
+  assertBundleVerifierRejects(manifestFilesNegative.bundleRoot, "release manifest file list mismatch", "unsorted release manifest files");
+  manifestFiles.files.sort((left, right) => left.path.localeCompare(right.path));
+  writeFileSync(manifestFilesPath, JSON.stringify(manifestFiles, null, 2) + "\n");
 
   const performanceNegative = bundles[0];
   const performancePath = join(performanceNegative.bundleRoot, "performance-evidence.json");
@@ -246,10 +292,10 @@ function refreshReleaseManifest(bundleRoot, runtimeTarget) {
   writeFileSync(join(bundleRoot, "SHA256SUMS"), manifest.files.map((file) => `${file.sha256}  ${file.path}`).join("\n") + "\n");
 }
 
-function assertPublishedVerifierRejects(expectedMessage, label) {
+function assertPublishedVerifierRejects(expectedMessage, label, integrityOnly = false) {
   const result = spawnSync(
     "node",
-    [publishedVerifier, artifactDir, version, sourceCommit],
+    [publishedVerifier, ...(integrityOnly ? ["--npm-integrity"] : []), artifactDir, version, sourceCommit],
     {
       cwd: verifierRoot,
       encoding: "utf8",
