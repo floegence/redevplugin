@@ -327,6 +327,10 @@ func evaluateAuthorization(state AuthorizationState, grants []permissions.Record
 	if err != nil {
 		return AuthorizationDecision{}, err
 	}
+	return evaluateAuthorizationDecision(state, grants, policyEvaluation, req)
+}
+
+func evaluateAuthorizationDecision(state AuthorizationState, grants []permissions.Record, policyEvaluation security.PolicyEvaluation, req AuthorizeRequest) (AuthorizationDecision, error) {
 	granted, missing, err := permissions.Evaluate(grants, permissions.CheckRequest{
 		PluginInstanceID: state.PluginInstanceID,
 		PermissionIDs:    req.PermissionIDs,

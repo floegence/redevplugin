@@ -138,6 +138,63 @@ func BenchmarkSQLiteAuthorizeGrantScaling(b *testing.B) {
 	}
 }
 
+func BenchmarkSQLiteAuthorizePolicyScaling(b *testing.B) {
+	for _, policyValueCount := range []int{1, 1000} {
+		b.Run(fmt.Sprintf("policy_values_%d", policyValueCount), func(b *testing.B) {
+			ctx := registryTestContext()
+			store, err := NewSQLiteStore(ctx, filepath.Join(b.TempDir(), "registry.sqlite"))
+			if err != nil {
+				b.Fatal(err)
+			}
+			b.Cleanup(func() { _ = store.Close() })
+			now := time.Date(2026, 7, 18, 12, 30, 0, 0, time.UTC)
+			plugin, err := store.PutPlugin(ctx, authorizationTestPlugin("plugini_policy_scaling", "com.example.policy-scaling"), PutOptions{Now: now})
+			if err != nil {
+				b.Fatal(err)
+			}
+			snapshot, err := store.GrantPermission(ctx, permissions.GrantRequest{
+				PluginInstanceID: plugin.PluginInstanceID,
+				PermissionID:     "permission.0000",
+				GrantedBy:        "benchmark",
+				Now:              now.Add(time.Second),
+			}, AuthorizationRevisionsFromRecord(plugin))
+			if err != nil {
+				b.Fatal(err)
+			}
+			allowedPermissions := make([]string, policyValueCount)
+			deniedMethods := make([]string, policyValueCount)
+			for index := 0; index < policyValueCount; index++ {
+				allowedPermissions[index] = fmt.Sprintf("permission.%04d", index)
+				deniedMethods[index] = fmt.Sprintf("method.denied.%04d", index)
+			}
+			snapshot, err = store.PutSecurityPolicy(ctx, security.PutPolicyRequest{
+				PluginInstanceID:   plugin.PluginInstanceID,
+				AllowedPermissions: allowedPermissions,
+				DeniedMethods:      deniedMethods,
+				Now:                now.Add(2 * time.Second),
+			}, AuthorizationRevisionsFromRecord(snapshot.Plugin))
+			if err != nil {
+				b.Fatal(err)
+			}
+			expected := AuthorizationRevisionsFromRecord(snapshot.Plugin)
+			b.ReportAllocs()
+			b.ResetTimer()
+			for b.Loop() {
+				decision, err := store.Authorize(ctx, AuthorizeRequest{
+					PluginInstanceID: plugin.PluginInstanceID,
+					Method:           "method.allowed",
+					PermissionIDs:    []string{"permission.0000"},
+					Expected:         expected,
+					Now:              now.Add(time.Minute),
+				})
+				if err != nil || !decision.Allowed {
+					b.Fatalf("Authorize() decision=%#v err=%v", decision, err)
+				}
+			}
+		})
+	}
+}
+
 func newAuthorizationBenchmarkStore(b *testing.B, backend string) (Store, []AuthorizationSnapshot) {
 	b.Helper()
 	ctx := registryTestContext()

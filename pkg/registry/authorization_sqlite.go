@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -355,6 +356,66 @@ ORDER BY policies.plugin_instance_id`, ownerEnvHash)
 	return policiesByPlugin, nil
 }
 
+type sqliteSecurityPolicyRelations struct {
+	allowedPermissions []string
+	deniedMethods      []string
+}
+
+func listAllSQLiteSecurityPolicyRelations(ctx context.Context, q sqliteAuthorizationQuerier) (map[string]sqliteSecurityPolicyRelations, error) {
+	relations := map[string]sqliteSecurityPolicyRelations{}
+	permissionRows, err := q.QueryContext(ctx, `
+SELECT owner_env_hash, plugin_instance_id, permission_id
+FROM plugin_security_policy_allowed_permissions
+ORDER BY owner_env_hash, plugin_instance_id, permission_id`)
+	if err != nil {
+		return nil, err
+	}
+	for permissionRows.Next() {
+		var ownerEnvHash string
+		var pluginInstanceID string
+		var permissionID string
+		if err := permissionRows.Scan(&ownerEnvHash, &pluginInstanceID, &permissionID); err != nil {
+			_ = permissionRows.Close()
+			return nil, err
+		}
+		key := environmentRecordKey(ownerEnvHash, pluginInstanceID)
+		relation := relations[key]
+		relation.allowedPermissions = append(relation.allowedPermissions, permissionID)
+		relations[key] = relation
+	}
+	if err := permissionRows.Err(); err != nil {
+		_ = permissionRows.Close()
+		return nil, err
+	}
+	if err := permissionRows.Close(); err != nil {
+		return nil, err
+	}
+	methodRows, err := q.QueryContext(ctx, `
+SELECT owner_env_hash, plugin_instance_id, method
+FROM plugin_security_policy_denied_methods
+ORDER BY owner_env_hash, plugin_instance_id, method`)
+	if err != nil {
+		return nil, err
+	}
+	defer methodRows.Close()
+	for methodRows.Next() {
+		var ownerEnvHash string
+		var pluginInstanceID string
+		var method string
+		if err := methodRows.Scan(&ownerEnvHash, &pluginInstanceID, &method); err != nil {
+			return nil, err
+		}
+		key := environmentRecordKey(ownerEnvHash, pluginInstanceID)
+		relation := relations[key]
+		relation.deniedMethods = append(relation.deniedMethods, method)
+		relations[key] = relation
+	}
+	if err := methodRows.Err(); err != nil {
+		return nil, err
+	}
+	return relations, nil
+}
+
 func validateSQLiteAuthorizationData(ctx context.Context, q sqliteAuthorizationQuerier) error {
 	grantRows, err := q.QueryContext(ctx, `
 SELECT plugin_instance_id, permission_id, effect, granted_by, granted_at,
@@ -401,20 +462,25 @@ ORDER BY plugin_instance_id, permission_id`)
 		return err
 	}
 
+	relationsByPolicy, err := listAllSQLiteSecurityPolicyRelations(ctx, q)
+	if err != nil {
+		return err
+	}
 	policyRows, err := q.QueryContext(ctx, `
-SELECT plugin_instance_id, allowed_permissions_json, denied_methods_json, updated_at
+SELECT owner_env_hash, plugin_instance_id, allowed_permissions_json, denied_methods_json, updated_at
 FROM plugin_security_policies
-ORDER BY plugin_instance_id`)
+ORDER BY owner_env_hash, plugin_instance_id`)
 	if err != nil {
 		return err
 	}
 	defer policyRows.Close()
 	for policyRows.Next() {
+		var ownerEnvHash string
 		var record security.PolicyRecord
 		var allowedJSON string
 		var deniedJSON string
 		var updatedAt int64
-		if err := policyRows.Scan(&record.PluginInstanceID, &allowedJSON, &deniedJSON, &updatedAt); err != nil {
+		if err := policyRows.Scan(&ownerEnvHash, &record.PluginInstanceID, &allowedJSON, &deniedJSON, &updatedAt); err != nil {
 			return err
 		}
 		if err := decodeRegistryJSON(allowedJSON, &record.AllowedPermissions); err != nil {
@@ -424,11 +490,24 @@ ORDER BY plugin_instance_id`)
 			return err
 		}
 		record.UpdatedAt = unixToTime(updatedAt)
-		if err := security.ValidatePolicy(security.NormalizePolicy(record)); err != nil {
+		record = security.NormalizePolicy(record)
+		if err := security.ValidatePolicy(record); err != nil {
 			return fmt.Errorf("validate persisted security policy: %w", err)
 		}
+		key := environmentRecordKey(ownerEnvHash, record.PluginInstanceID)
+		relation := relationsByPolicy[key]
+		if !slices.Equal(record.AllowedPermissions, relation.allowedPermissions) || !slices.Equal(record.DeniedMethods, relation.deniedMethods) {
+			return fmt.Errorf("validate persisted security policy relations: policy %q relations do not match snapshot", record.PluginInstanceID)
+		}
+		delete(relationsByPolicy, key)
 	}
-	return policyRows.Err()
+	if err := policyRows.Err(); err != nil {
+		return err
+	}
+	if len(relationsByPolicy) != 0 {
+		return errors.New("validate persisted security policy relations: orphaned relation rows")
+	}
+	return nil
 }
 
 func (s *SQLiteStore) Authorize(ctx context.Context, req AuthorizeRequest) (AuthorizationDecision, error) {
@@ -471,18 +550,14 @@ func (s *SQLiteStore) Authorize(ctx context.Context, req AuthorizeRequest) (Auth
 	if err != nil {
 		return AuthorizationDecision{}, err
 	}
-	policy, hasPolicy, err := getSQLiteSecurityPolicy(ctx, tx, ownerEnvHash, pluginInstanceID)
+	policyEvaluation, err := evaluateSQLiteSecurityPolicy(ctx, tx, ownerEnvHash, pluginInstanceID, req.Method, requiredPermissionIDs)
 	if err != nil {
 		return AuthorizationDecision{}, err
-	}
-	var policyPtr *security.PolicyRecord
-	if hasPolicy {
-		policyPtr = &policy
 	}
 	if err := tx.Commit(); err != nil {
 		return AuthorizationDecision{}, err
 	}
-	return evaluateAuthorization(state, grants, policyPtr, req)
+	return evaluateAuthorizationDecision(state, grants, policyEvaluation, req)
 }
 
 func getSQLiteAuthorizationState(ctx context.Context, q sqliteAuthorizationQuerier, ownerEnvHash, pluginInstanceID string) (AuthorizationState, bool, error) {
@@ -728,6 +803,110 @@ ON CONFLICT(owner_env_hash, plugin_instance_id, permission_id) DO UPDATE SET
 	return err
 }
 
+func evaluateSQLiteSecurityPolicy(ctx context.Context, q sqliteAuthorizationQuerier, ownerEnvHash, pluginInstanceID, method string, requiredPermissionIDs []string) (security.PolicyEvaluation, error) {
+	method = strings.TrimSpace(method)
+	var hasPolicy bool
+	var methodDenied bool
+	var hasAllowedPermissions bool
+	if err := q.QueryRowContext(ctx, `
+SELECT
+	EXISTS(
+		SELECT 1 FROM plugin_security_policies
+		WHERE owner_env_hash = ? AND plugin_instance_id = ?
+	),
+	EXISTS(
+		SELECT 1 FROM plugin_security_policy_denied_methods
+		WHERE owner_env_hash = ? AND plugin_instance_id = ? AND method = ?
+	),
+	EXISTS(
+		SELECT 1 FROM plugin_security_policy_allowed_permissions
+		WHERE owner_env_hash = ? AND plugin_instance_id = ?
+		LIMIT 1
+	)`,
+		ownerEnvHash, pluginInstanceID,
+		ownerEnvHash, pluginInstanceID, method,
+		ownerEnvHash, pluginInstanceID,
+	).Scan(&hasPolicy, &methodDenied, &hasAllowedPermissions); err != nil {
+		return security.PolicyEvaluation{}, err
+	}
+	if !hasPolicy {
+		return security.PolicyEvaluation{Allowed: true}, nil
+	}
+	if methodDenied {
+		return security.PolicyEvaluation{Allowed: false, Reason: security.PolicyDenyReasonMethodDenied, DeniedMethod: method}, nil
+	}
+	if !hasAllowedPermissions {
+		return security.PolicyEvaluation{Allowed: true}, nil
+	}
+	allowedPermissionIDs, err := listSQLiteSecurityPolicyPermissionsByID(ctx, q, ownerEnvHash, pluginInstanceID, requiredPermissionIDs)
+	if err != nil {
+		return security.PolicyEvaluation{}, err
+	}
+	missing := make([]string, 0, len(requiredPermissionIDs))
+	for _, permissionID := range requiredPermissionIDs {
+		if _, allowed := allowedPermissionIDs[permissionID]; !allowed {
+			missing = append(missing, permissionID)
+		}
+	}
+	if len(missing) != 0 {
+		return security.PolicyEvaluation{
+			Allowed:            false,
+			Reason:             security.PolicyDenyReasonPermissionNotAllowed,
+			MissingPermissions: missing,
+		}, nil
+	}
+	return security.PolicyEvaluation{Allowed: true}, nil
+}
+
+func listSQLiteSecurityPolicyPermissionsByID(ctx context.Context, q sqliteAuthorizationQuerier, ownerEnvHash, pluginInstanceID string, permissionIDs []string) (map[string]struct{}, error) {
+	allowed := make(map[string]struct{}, len(permissionIDs))
+	if len(permissionIDs) == 0 {
+		return allowed, nil
+	}
+	if len(permissionIDs) == 1 {
+		var found bool
+		if err := q.QueryRowContext(ctx, `
+SELECT EXISTS(
+	SELECT 1 FROM plugin_security_policy_allowed_permissions
+	WHERE owner_env_hash = ? AND plugin_instance_id = ? AND permission_id = ?
+)`, ownerEnvHash, pluginInstanceID, permissionIDs[0]).Scan(&found); err != nil {
+			return nil, err
+		}
+		if found {
+			allowed[permissionIDs[0]] = struct{}{}
+		}
+		return allowed, nil
+	}
+	requiredJSON, err := encodeRegistryJSON(permissionIDs)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := q.QueryContext(ctx, `
+WITH required(permission_id) AS (
+	SELECT value FROM json_each(?)
+)
+SELECT policy.permission_id
+FROM required
+JOIN plugin_security_policy_allowed_permissions AS policy
+	ON policy.owner_env_hash = ? AND policy.plugin_instance_id = ? AND policy.permission_id = required.permission_id
+ORDER BY policy.permission_id`, requiredJSON, ownerEnvHash, pluginInstanceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var permissionID string
+		if err := rows.Scan(&permissionID); err != nil {
+			return nil, err
+		}
+		allowed[permissionID] = struct{}{}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return allowed, nil
+}
+
 func getSQLiteSecurityPolicy(ctx context.Context, q sqliteAuthorizationQuerier, ownerEnvHash, pluginInstanceID string) (security.PolicyRecord, bool, error) {
 	var allowedJSON string
 	var deniedJSON string
@@ -753,6 +932,7 @@ WHERE owner_env_hash = ? AND plugin_instance_id = ?`, ownerEnvHash, pluginInstan
 }
 
 func upsertSQLiteSecurityPolicy(ctx context.Context, tx *sql.Tx, ownerEnvHash string, record security.PolicyRecord) error {
+	record = security.NormalizePolicy(record)
 	allowedJSON, err := encodeRegistryJSON(record.AllowedPermissions)
 	if err != nil {
 		return err
@@ -761,7 +941,7 @@ func upsertSQLiteSecurityPolicy(ctx context.Context, tx *sql.Tx, ownerEnvHash st
 	if err != nil {
 		return err
 	}
-	_, err = tx.ExecContext(ctx, `
+	if _, err = tx.ExecContext(ctx, `
 INSERT INTO plugin_security_policies (
 	owner_env_hash, plugin_instance_id, allowed_permissions_json, denied_methods_json, updated_at
 ) VALUES (?, ?, ?, ?, ?)
@@ -774,8 +954,99 @@ ON CONFLICT(owner_env_hash, plugin_instance_id) DO UPDATE SET
 		allowedJSON,
 		deniedJSON,
 		record.UpdatedAt.UTC().UnixNano(),
-	)
-	return err
+	); err != nil {
+		return err
+	}
+	return replaceSQLiteSecurityPolicyRelations(ctx, tx, ownerEnvHash, record)
+}
+
+func replaceSQLiteSecurityPolicyRelations(ctx context.Context, tx *sql.Tx, ownerEnvHash string, record security.PolicyRecord) error {
+	if _, err := tx.ExecContext(ctx, `DELETE FROM plugin_security_policy_allowed_permissions WHERE owner_env_hash = ? AND plugin_instance_id = ?`, ownerEnvHash, record.PluginInstanceID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM plugin_security_policy_denied_methods WHERE owner_env_hash = ? AND plugin_instance_id = ?`, ownerEnvHash, record.PluginInstanceID); err != nil {
+		return err
+	}
+	return insertSQLiteSecurityPolicyRelations(ctx, tx, ownerEnvHash, record)
+}
+
+func insertSQLiteSecurityPolicyRelations(ctx context.Context, tx *sql.Tx, ownerEnvHash string, record security.PolicyRecord) error {
+	for _, permissionID := range record.AllowedPermissions {
+		if _, err := tx.ExecContext(ctx, `
+INSERT INTO plugin_security_policy_allowed_permissions(owner_env_hash, plugin_instance_id, permission_id)
+VALUES (?, ?, ?)`, ownerEnvHash, record.PluginInstanceID, permissionID); err != nil {
+			return err
+		}
+	}
+	for _, method := range record.DeniedMethods {
+		if _, err := tx.ExecContext(ctx, `
+INSERT INTO plugin_security_policy_denied_methods(owner_env_hash, plugin_instance_id, method)
+VALUES (?, ?, ?)`, ownerEnvHash, record.PluginInstanceID, method); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func migrateSQLiteSecurityPolicyRelations(ctx context.Context, tx *sql.Tx) error {
+	rows, err := tx.QueryContext(ctx, `
+SELECT owner_env_hash, plugin_instance_id, allowed_permissions_json, denied_methods_json, updated_at
+FROM plugin_security_policies
+ORDER BY owner_env_hash, plugin_instance_id`)
+	if err != nil {
+		return err
+	}
+	policies := make([]struct {
+		ownerEnvHash string
+		record       security.PolicyRecord
+	}, 0)
+	for rows.Next() {
+		var policy struct {
+			ownerEnvHash string
+			record       security.PolicyRecord
+		}
+		var allowedJSON string
+		var deniedJSON string
+		var updatedAt int64
+		if err := rows.Scan(&policy.ownerEnvHash, &policy.record.PluginInstanceID, &allowedJSON, &deniedJSON, &updatedAt); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		if err := decodeRegistryJSON(allowedJSON, &policy.record.AllowedPermissions); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		if err := decodeRegistryJSON(deniedJSON, &policy.record.DeniedMethods); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		policy.record.UpdatedAt = unixToTime(updatedAt)
+		policy.record = security.NormalizePolicy(policy.record)
+		if err := security.ValidatePolicy(policy.record); err != nil {
+			_ = rows.Close()
+			return fmt.Errorf("migrate security policy relations: %w", err)
+		}
+		policies = append(policies, policy)
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return err
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM plugin_security_policy_allowed_permissions`); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM plugin_security_policy_denied_methods`); err != nil {
+		return err
+	}
+	for _, policy := range policies {
+		if err := insertSQLiteSecurityPolicyRelations(ctx, tx, policy.ownerEnvHash, policy.record); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func deleteSQLiteAuthorization(ctx context.Context, tx *sql.Tx, ownerEnvHash, pluginInstanceID string) error {

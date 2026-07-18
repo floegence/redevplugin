@@ -408,7 +408,15 @@ func TestStoreEnvironmentScopedObjectsShareOnlyWithinEnvironment(t *testing.T) {
 }
 
 func TestSQLiteOwnerScopeMigrationFailsClosedForLegacyData(t *testing.T) {
-	for _, populatedTable := range []string{"plugin_records", "plugin_permission_grants", "plugin_security_policies", "plugin_data_bindings", "plugin_data_objects"} {
+	for _, populatedTable := range []string{
+		"plugin_records",
+		"plugin_permission_grants",
+		"plugin_security_policies",
+		"plugin_security_policy_allowed_permissions",
+		"plugin_security_policy_denied_methods",
+		"plugin_data_bindings",
+		"plugin_data_objects",
+	} {
 		t.Run(populatedTable, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "registry.sqlite")
 			createLegacyOwnerSchema(t, path, populatedTable)
@@ -557,6 +565,8 @@ func createLegacyOwnerSchema(t *testing.T, path, populatedTable string) {
 		`CREATE TABLE plugin_records (plugin_instance_id TEXT PRIMARY KEY)`,
 		`CREATE TABLE plugin_permission_grants (plugin_instance_id TEXT NOT NULL, permission_id TEXT NOT NULL, PRIMARY KEY(plugin_instance_id, permission_id))`,
 		`CREATE TABLE plugin_security_policies (plugin_instance_id TEXT PRIMARY KEY)`,
+		`CREATE TABLE plugin_security_policy_allowed_permissions (plugin_instance_id TEXT NOT NULL, permission_id TEXT NOT NULL, PRIMARY KEY(plugin_instance_id, permission_id))`,
+		`CREATE TABLE plugin_security_policy_denied_methods (plugin_instance_id TEXT NOT NULL, method TEXT NOT NULL, PRIMARY KEY(plugin_instance_id, method))`,
 		`CREATE TABLE plugin_data_bindings (plugin_instance_id TEXT PRIMARY KEY)`,
 		`CREATE TABLE plugin_data_objects (object_id TEXT PRIMARY KEY)`,
 	}
@@ -566,11 +576,13 @@ func createLegacyOwnerSchema(t *testing.T, path, populatedTable string) {
 		}
 	}
 	inserts := map[string]string{
-		"plugin_records":           `INSERT INTO plugin_records VALUES ('plugini_legacy')`,
-		"plugin_permission_grants": `INSERT INTO plugin_permission_grants VALUES ('plugini_legacy', 'documents.read')`,
-		"plugin_security_policies": `INSERT INTO plugin_security_policies VALUES ('plugini_legacy')`,
-		"plugin_data_bindings":     `INSERT INTO plugin_data_bindings VALUES ('plugini_legacy')`,
-		"plugin_data_objects":      `INSERT INTO plugin_data_objects VALUES ('object_legacy')`,
+		"plugin_records":                             `INSERT INTO plugin_records VALUES ('plugini_legacy')`,
+		"plugin_permission_grants":                   `INSERT INTO plugin_permission_grants VALUES ('plugini_legacy', 'documents.read')`,
+		"plugin_security_policies":                   `INSERT INTO plugin_security_policies VALUES ('plugini_legacy')`,
+		"plugin_security_policy_allowed_permissions": `INSERT INTO plugin_security_policy_allowed_permissions VALUES ('plugini_legacy', 'documents.read')`,
+		"plugin_security_policy_denied_methods":      `INSERT INTO plugin_security_policy_denied_methods VALUES ('plugini_legacy', 'documents.delete')`,
+		"plugin_data_bindings":                       `INSERT INTO plugin_data_bindings VALUES ('plugini_legacy')`,
+		"plugin_data_objects":                        `INSERT INTO plugin_data_objects VALUES ('object_legacy')`,
 	}
 	if statement := inserts[populatedTable]; statement != "" {
 		if _, err := db.Exec(statement); err != nil {

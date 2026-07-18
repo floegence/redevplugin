@@ -428,27 +428,6 @@ func (s *SQLiteStore) Deliver(ctx context.Context, req DeliverRequest) (Record, 
 		return Record{}, Delivery{}, err
 	}
 	defer rollbackUnlessCommitted(tx)
-
-	s.observeQuery(sqliteQueryDeliverySnapshot)
-	record, deliveryState, eventExists, exists, err = getSQLiteDeliverySnapshot(ctx, tx, streamID)
-	if err != nil {
-		return Record{}, Delivery{}, err
-	}
-	if !exists {
-		return Record{}, Delivery{}, ErrNotFound
-	}
-	if deliveryState.Pending.DeliveryID != "" {
-		if deliveryState.Pending.ThroughSequence > 0 {
-			deliveryState.Pending.Events, err = listSQLiteStreamEventsThrough(ctx, tx, streamID, deliveryState.Pending.ThroughSequence)
-			if err != nil {
-				return Record{}, Delivery{}, err
-			}
-		}
-		if err := tx.Commit(); err != nil {
-			return Record{}, Delivery{}, err
-		}
-		return record, cloneDelivery(deliveryState.Pending), nil
-	}
 	var events []Event
 	if eventExists {
 		s.observeQuery(sqliteQueryBoundedEvents)

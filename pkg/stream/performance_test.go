@@ -254,8 +254,8 @@ func TestPerformanceSQLiteStreamBatchDelivery(t *testing.T) {
 	observedSelects := boundedSelects.Load()
 	observedDeletes := rangeDeletes.Load()
 	observedSnapshots := deliverySnapshots.Load()
-	if observedSnapshots != 2 || observedSelects != 1 || observedDeletes != 1 {
-		t.Fatalf("SQLite batch query counts snapshots=%d selects=%d deletes=%d, want 2, 1, and 1", observedSnapshots, observedSelects, observedDeletes)
+	if observedSnapshots != 1 || observedSelects != 1 || observedDeletes != 1 {
+		t.Fatalf("SQLite batch query counts snapshots=%d selects=%d deletes=%d, want 1, 1, and 1", observedSnapshots, observedSelects, observedDeletes)
 	}
 	_, remaining, err := store.Deliver(context.Background(), DeliverRequest{
 		StreamID:  "stream_sqlite_performance",
@@ -276,7 +276,7 @@ func TestPerformanceSQLiteStreamBatchDelivery(t *testing.T) {
 		Metrics: []performanceevidence.Metric{
 			{Name: "events_selected", Unit: "count", Observed: float64(len(delivery.Events)), Limit: 256, Comparator: "eq"},
 			{Name: "bounded_selects", Unit: "queries", Observed: float64(observedSelects), Limit: 1, Comparator: "eq"},
-			{Name: "delivery_snapshots", Unit: "queries", Observed: float64(observedSnapshots), Limit: 2, Comparator: "eq"},
+			{Name: "delivery_snapshots", Unit: "queries", Observed: float64(observedSnapshots), Limit: 1, Comparator: "eq"},
 			{Name: "range_deletes", Unit: "queries", Observed: float64(observedDeletes), Limit: 1, Comparator: "eq"},
 			{Name: "remaining_events", Unit: "count", Observed: float64(len(remaining.Events)), Limit: 256, Comparator: "eq"},
 		},

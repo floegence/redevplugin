@@ -102,6 +102,8 @@ func TestSQLiteAuthorizationMutationFaultRollsBack(t *testing.T) {
 			faults: []statementFault{
 				{operation: "UPDATE", table: "plugin_records"},
 				{operation: "INSERT", table: "plugin_security_policies"},
+				{operation: "INSERT", table: "plugin_security_policy_allowed_permissions"},
+				{operation: "INSERT", table: "plugin_security_policy_denied_methods"},
 			},
 		},
 		{
@@ -121,6 +123,10 @@ func TestSQLiteAuthorizationMutationFaultRollsBack(t *testing.T) {
 			faults: []statementFault{
 				{operation: "UPDATE", table: "plugin_records"},
 				{operation: "UPDATE", table: "plugin_security_policies"},
+				{operation: "DELETE", table: "plugin_security_policy_allowed_permissions"},
+				{operation: "DELETE", table: "plugin_security_policy_denied_methods"},
+				{operation: "INSERT", table: "plugin_security_policy_allowed_permissions"},
+				{operation: "INSERT", table: "plugin_security_policy_denied_methods"},
 			},
 		},
 		{
@@ -140,6 +146,8 @@ func TestSQLiteAuthorizationMutationFaultRollsBack(t *testing.T) {
 			faults: []statementFault{
 				{operation: "UPDATE", table: "plugin_records"},
 				{operation: "DELETE", table: "plugin_security_policies"},
+				{operation: "DELETE", table: "plugin_security_policy_allowed_permissions"},
+				{operation: "DELETE", table: "plugin_security_policy_denied_methods"},
 			},
 		},
 	}

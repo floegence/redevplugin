@@ -394,6 +394,14 @@ func (s *SQLiteStore) initializeSchema(ctx context.Context) error {
 	if err := prepareOwnerScopedTables(ctx, tx); err != nil {
 		return err
 	}
+	policyPermissionRelationsExist, err := sqliteTableExists(ctx, tx, "plugin_security_policy_allowed_permissions")
+	if err != nil {
+		return err
+	}
+	policyMethodRelationsExist, err := sqliteTableExists(ctx, tx, "plugin_security_policy_denied_methods")
+	if err != nil {
+		return err
+	}
 
 	if _, err := tx.ExecContext(ctx, `
 	CREATE TABLE IF NOT EXISTS plugin_records (
@@ -469,13 +477,44 @@ func (s *SQLiteStore) initializeSchema(ctx context.Context) error {
 	CREATE TABLE IF NOT EXISTS plugin_security_policies (
 		owner_env_hash TEXT NOT NULL,
 		plugin_instance_id TEXT NOT NULL,
-	allowed_permissions_json TEXT NOT NULL,
-	denied_methods_json TEXT NOT NULL,
+		allowed_permissions_json TEXT NOT NULL,
+		denied_methods_json TEXT NOT NULL,
 		updated_at INTEGER NOT NULL,
 		PRIMARY KEY(owner_env_hash, plugin_instance_id),
 		FOREIGN KEY(owner_env_hash, plugin_instance_id) REFERENCES plugin_records(owner_env_hash, plugin_instance_id) ON DELETE CASCADE
 )`); err != nil {
 		return err
+	}
+	if _, err := tx.ExecContext(ctx, `
+	CREATE TABLE IF NOT EXISTS plugin_security_policy_allowed_permissions (
+		owner_env_hash TEXT NOT NULL,
+		plugin_instance_id TEXT NOT NULL,
+		permission_id TEXT NOT NULL,
+		PRIMARY KEY(owner_env_hash, plugin_instance_id, permission_id),
+		FOREIGN KEY(owner_env_hash, plugin_instance_id) REFERENCES plugin_security_policies(owner_env_hash, plugin_instance_id) ON DELETE CASCADE
+	)`); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_registry_security_policy_allowed_permission ON plugin_security_policy_allowed_permissions(owner_env_hash, plugin_instance_id, permission_id)`); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `
+	CREATE TABLE IF NOT EXISTS plugin_security_policy_denied_methods (
+		owner_env_hash TEXT NOT NULL,
+		plugin_instance_id TEXT NOT NULL,
+		method TEXT NOT NULL,
+		PRIMARY KEY(owner_env_hash, plugin_instance_id, method),
+		FOREIGN KEY(owner_env_hash, plugin_instance_id) REFERENCES plugin_security_policies(owner_env_hash, plugin_instance_id) ON DELETE CASCADE
+	)`); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_registry_security_policy_denied_method ON plugin_security_policy_denied_methods(owner_env_hash, plugin_instance_id, method)`); err != nil {
+		return err
+	}
+	if !policyPermissionRelationsExist || !policyMethodRelationsExist {
+		if err := migrateSQLiteSecurityPolicyRelations(ctx, tx); err != nil {
+			return err
+		}
 	}
 	if _, err := tx.ExecContext(ctx, `
 	CREATE TABLE IF NOT EXISTS plugin_data_bindings (
@@ -526,16 +565,18 @@ CREATE TABLE IF NOT EXISTS plugin_source_security_floors (
 }
 
 type ownerScopedTableSpec struct {
-	name                  string
-	primaryKey            map[string]int
-	referencesPluginTable bool
+	name            string
+	primaryKey      map[string]int
+	foreignKeyTable string
 }
 
 var ownerScopedTableSpecs = []ownerScopedTableSpec{
 	{name: "plugin_records", primaryKey: map[string]int{"owner_env_hash": 1, "plugin_instance_id": 2}},
-	{name: "plugin_permission_grants", primaryKey: map[string]int{"owner_env_hash": 1, "plugin_instance_id": 2, "permission_id": 3}, referencesPluginTable: true},
-	{name: "plugin_security_policies", primaryKey: map[string]int{"owner_env_hash": 1, "plugin_instance_id": 2}, referencesPluginTable: true},
-	{name: "plugin_data_bindings", primaryKey: map[string]int{"owner_env_hash": 1, "plugin_instance_id": 2}, referencesPluginTable: true},
+	{name: "plugin_permission_grants", primaryKey: map[string]int{"owner_env_hash": 1, "plugin_instance_id": 2, "permission_id": 3}, foreignKeyTable: "plugin_records"},
+	{name: "plugin_security_policies", primaryKey: map[string]int{"owner_env_hash": 1, "plugin_instance_id": 2}, foreignKeyTable: "plugin_records"},
+	{name: "plugin_security_policy_allowed_permissions", primaryKey: map[string]int{"owner_env_hash": 1, "plugin_instance_id": 2, "permission_id": 3}, foreignKeyTable: "plugin_security_policies"},
+	{name: "plugin_security_policy_denied_methods", primaryKey: map[string]int{"owner_env_hash": 1, "plugin_instance_id": 2, "method": 3}, foreignKeyTable: "plugin_security_policies"},
+	{name: "plugin_data_bindings", primaryKey: map[string]int{"owner_env_hash": 1, "plugin_instance_id": 2}, foreignKeyTable: "plugin_records"},
 	{name: "plugin_data_objects", primaryKey: map[string]int{"scope_kind": 1, "owner_env_hash": 2, "owner_user_hash": 3, "plugin_instance_id": 4, "object_id": 5}},
 }
 
@@ -648,13 +689,13 @@ func ownerScopedTableCompatible(ctx context.Context, tx *sql.Tx, spec ownerScope
 			return false, nil
 		}
 	}
-	if spec.referencesPluginTable {
-		return ownerScopedPluginForeignKeyCompatible(ctx, tx, spec.name)
+	if spec.foreignKeyTable != "" {
+		return ownerScopedForeignKeyCompatible(ctx, tx, spec.name, spec.foreignKeyTable)
 	}
 	return true, nil
 }
 
-func ownerScopedPluginForeignKeyCompatible(ctx context.Context, tx *sql.Tx, table string) (bool, error) {
+func ownerScopedForeignKeyCompatible(ctx context.Context, tx *sql.Tx, table, targetTable string) (bool, error) {
 	rows, err := tx.QueryContext(ctx, `PRAGMA foreign_key_list(`+table+`)`)
 	if err != nil {
 		return false, err
@@ -696,9 +737,17 @@ func ownerScopedPluginForeignKeyCompatible(ctx context.Context, tx *sql.Tx, tabl
 		return false, nil
 	}
 	for _, key := range foreignKeys {
-		return key.table == "plugin_records" && strings.EqualFold(key.onDelete, "CASCADE") && len(key.columns) == 2 && key.columns["owner_env_hash"] == "owner_env_hash" && key.columns["plugin_instance_id"] == "plugin_instance_id", nil
+		return key.table == targetTable && strings.EqualFold(key.onDelete, "CASCADE") && len(key.columns) == 2 && key.columns["owner_env_hash"] == "owner_env_hash" && key.columns["plugin_instance_id"] == "plugin_instance_id", nil
 	}
 	return false, nil
+}
+
+func sqliteTableExists(ctx context.Context, q sqliteQuerier, table string) (bool, error) {
+	var count int
+	if err := q.QueryRowContext(ctx, `SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?`, table).Scan(&count); err != nil {
+		return false, err
+	}
+	return count == 1, nil
 }
 
 func ensureRuntimeRequirementColumn(ctx context.Context, tx *sql.Tx) (bool, error) {

@@ -55,6 +55,10 @@
   bridge-channel, permission-actor, IPC-channel, connection-nonce, clock, and
   reader fields cannot enter the public contract through automatic JSON
   serialization.
+- Index owner-scoped SQLite security-policy allowlists and denied methods as
+  transactional relations so authorization reads only the requested method and
+  permission IDs, and reduce SQLite stream delivery to one state snapshot
+  before bounded event selection and pending-delivery mutation.
 - Bind immutable plugin-data export objects to the authenticated resource scope
   and `plugin_instance_id` across catalog keys, disk paths, manifests, Host APIs,
   and HTTP/TypeScript requests. Cross-plugin access now returns not found, and
