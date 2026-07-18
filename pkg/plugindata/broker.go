@@ -226,8 +226,10 @@ func (s *FileStore) retainNamespaceUsageLoadResources(req namespaceUsageLoadRequ
 
 func (s *FileStore) runNamespaceUsageFlight(ctx context.Context, req namespaceUsageLoadRequest, loader namespaceUsageLoader, releaseResources func(), flight *namespaceUsageFlight) {
 	defer s.usageLoaderWG.Done()
-	defer releaseResources()
-	usage, err := loader(ctx, req.root, req.kind, req.database)
+	usage, err := func() (namespaceUsage, error) {
+		defer releaseResources()
+		return loader(ctx, req.root, req.kind, req.database)
+	}()
 	s.finishNamespaceUsageFlight(req.cacheKey, usage, err, flight)
 }
 

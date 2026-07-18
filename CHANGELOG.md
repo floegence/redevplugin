@@ -42,6 +42,10 @@
 
 ### Changed
 
+- Make namespace usage cache misses share lifecycle-owned loaders whose database
+  leases are released before completion is published, so waiter cancellation
+  cannot cancel shared work and lifecycle mutations cannot observe stale
+  namespace database references.
 - Release per-plugin scheduler capacity before publishing a completed worker
   response, so an immediately following invocation cannot observe stale active
   state and receive a spurious capacity denial.

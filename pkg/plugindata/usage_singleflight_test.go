@@ -9,6 +9,63 @@ import (
 	"time"
 )
 
+func TestNamespaceUsageFlightReleasesResourcesBeforePublishingResult(t *testing.T) {
+	store := newNamespaceUsageFlightTestStore(t)
+	const key = "generation\x00release-before-publish"
+	want := namespaceUsage{bytes: 128, files: 8}
+	flight := &namespaceUsageFlight{ready: make(chan struct{})}
+	store.usageFlights[key] = flight
+	store.usageLoaderWG.Add(1)
+	releaseStarted := make(chan struct{})
+	allowRelease := make(chan struct{})
+	go store.runNamespaceUsageFlight(
+		internalTestContext(),
+		namespaceUsageLoadRequest{cacheKey: key, root: "unused", kind: NamespaceFiles},
+		func(context.Context, string, NamespaceKind, *sql.DB) (namespaceUsage, error) {
+			return want, nil
+		},
+		func() {
+			close(releaseStarted)
+			<-allowRelease
+		},
+		flight,
+	)
+	<-releaseStarted
+	select {
+	case <-flight.ready:
+		t.Fatal("usage flight published completion before releasing loader resources")
+	default:
+	}
+	if err := store.namespaceUsageFlightsInUse(""); !errors.Is(err, errNamespaceUsageInUse) {
+		t.Fatalf("namespaceUsageFlightsInUse() error = %v, want %v", err, errNamespaceUsageInUse)
+	}
+	store.usageMu.Lock()
+	_, cached := store.usage[key]
+	registered := store.usageFlights[key] == flight
+	store.usageMu.Unlock()
+	if cached || !registered {
+		t.Fatalf("usage flight before resource release cached=%v registered=%v", cached, registered)
+	}
+
+	close(allowRelease)
+	select {
+	case <-flight.ready:
+	case <-time.After(5 * time.Second):
+		t.Fatal("usage flight did not publish completion after releasing loader resources")
+	}
+	drained := make(chan struct{})
+	go func() {
+		store.usageLoaderWG.Wait()
+		close(drained)
+	}()
+	select {
+	case <-drained:
+	case <-time.After(5 * time.Second):
+		t.Fatal("usage loader wait group did not drain")
+	}
+	assertNamespaceUsageFlightCompleted(t, store, key, want)
+}
+
 func TestCachedNamespaceUsageLeaderCancellationDoesNotCancelFlight(t *testing.T) {
 	store := newNamespaceUsageFlightTestStore(t)
 	const key = "generation\x00leader-cancel"
