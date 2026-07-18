@@ -739,7 +739,7 @@ mod tests {
         let queue = state.queues.get("a").unwrap();
         assert_eq!(queue.live, 24);
         assert!(queue.tombstones < QUEUE_TOMBSTONE_COMPACT_MIN);
-        assert!(queue.request_ids.len() <= queue.live + QUEUE_TOMBSTONE_COMPACT_MIN - 1);
+        assert!(queue.request_ids.len() < queue.live + QUEUE_TOMBSTONE_COMPACT_MIN);
         drop(state);
         assert_eq!(scheduler.take().unwrap().request_id, "a-40");
     }
