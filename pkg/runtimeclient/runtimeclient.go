@@ -843,11 +843,11 @@ func (s *ProcessSupervisor) Stop(ctx context.Context) error {
 				"runtime_instance_id":   health.RuntimeInstanceID,
 				"runtime_generation_id": health.RuntimeGenerationID,
 			}
-			var internalDetails map[string]any
+			var failure observability.Failure
 			if exit.err != nil && ctx.Err() == nil {
-				internalDetails = map[string]any{"error": exit.err.Error()}
+				failure = observability.FailureFromError(observability.FailureAction, "runtime.process.stop", exit.err)
 			}
-			s.emitInternal("plugin.runtime.process.stopped", observability.DiagnosticSeverityInfo, "runtime process stopped", details, internalDetails)
+			s.emitInternal("plugin.runtime.process.stopped", observability.DiagnosticSeverityInfo, "runtime process stopped", details, failure)
 		})
 		return nil
 	case <-ctx.Done():
@@ -1205,13 +1205,13 @@ func (s *ProcessSupervisor) wait(cmd *exec.Cmd, exit *processExit, cancel contex
 		"runtime_instance_id":   health.RuntimeInstanceID,
 		"runtime_generation_id": health.RuntimeGenerationID,
 	}
-	var internalDetails map[string]any
+	var failure observability.Failure
 	if err != nil {
 		severity = observability.DiagnosticSeverityWarning
 		message = "runtime process exited with error"
-		internalDetails = map[string]any{"error": err.Error()}
+		failure = observability.FailureFromError(observability.FailureAction, "runtime.process.exit", err)
 	}
-	s.emitInternal("plugin.runtime.process.exited", severity, message, details, internalDetails)
+	s.emitInternal("plugin.runtime.process.exited", severity, message, details, failure)
 	exit.err = err
 	close(exit.done)
 }
@@ -1268,7 +1268,7 @@ func (s *ProcessSupervisor) scanPipe(reader io.Reader, streamName string) {
 			severity,
 			"runtime process wrote to "+streamName,
 			map[string]any{"stream": streamName},
-			map[string]any{"line": line},
+			observability.Failure{},
 		)
 	}
 	if err := scanner.Err(); err != nil {
@@ -1277,18 +1277,22 @@ func (s *ProcessSupervisor) scanPipe(reader io.Reader, streamName string) {
 			observability.DiagnosticSeverityWarning,
 			"runtime process output could not be read",
 			map[string]any{"stream": streamName},
-			map[string]any{"error": err.Error()},
+			observability.FailureFromError(observability.FailureAction, "runtime.process.output", err),
 		)
 	}
 }
 
 func (s *ProcessSupervisor) emit(eventType string, severity observability.DiagnosticSeverity, message string, details map[string]any) {
-	s.emitInternal(eventType, severity, message, details, nil)
+	s.emitInternal(eventType, severity, message, details, observability.Failure{})
 }
 
-func (s *ProcessSupervisor) emitInternal(eventType string, severity observability.DiagnosticSeverity, message string, details, internalDetails map[string]any) {
+func (s *ProcessSupervisor) emitInternal(eventType string, severity observability.DiagnosticSeverity, message string, details map[string]any, failure observability.Failure) {
 	if s == nil || s.diagnostics == nil {
 		return
+	}
+	var internalDetails map[string]any
+	if failure.Valid() {
+		internalDetails = map[string]any{"failure": failure}
 	}
 	_ = s.diagnostics.AppendPluginDiagnostic(context.Background(), observability.DiagnosticEvent{
 		Type:            eventType,
@@ -1314,12 +1318,14 @@ func (s *ProcessSupervisor) emitHostcallFailure(runtimeGenerationID, hostcall, c
 		return
 	}
 	_ = s.diagnostics.AppendPluginDiagnostic(context.Background(), observability.DiagnosticEvent{
-		Type:            "plugin.runtime.hostcall.failed",
-		Severity:        "warning",
-		Message:         "runtime hostcall failed",
-		OccurredAt:      s.now(),
-		Details:         details,
-		InternalDetails: map[string]any{"error": err.Error()},
+		Type:       "plugin.runtime.hostcall.failed",
+		Severity:   "warning",
+		Message:    "runtime hostcall failed",
+		OccurredAt: s.now(),
+		Details:    details,
+		InternalDetails: map[string]any{
+			"failure": observability.FailureFromError(observability.FailureAction, "runtime.hostcall", err),
+		},
 	})
 }
 
@@ -2310,11 +2316,11 @@ func (s *ProcessSupervisor) invalidateRuntimeAfterIPCFailure(health Health, mess
 		"runtime_instance_id":   health.RuntimeInstanceID,
 		"runtime_generation_id": health.RuntimeGenerationID,
 	}
-	var internalDetails map[string]any
+	var failure observability.Failure
 	if err != nil {
-		internalDetails = map[string]any{"error": err.Error()}
+		failure = observability.FailureFromError(observability.FailureAction, "runtime.ipc.invalidate", err)
 	}
-	s.emitInternal("plugin.runtime.ipc.invalidated", observability.DiagnosticSeverityWarning, message, details, internalDetails)
+	s.emitInternal("plugin.runtime.ipc.invalidated", observability.DiagnosticSeverityWarning, message, details, failure)
 }
 
 func (s *ProcessSupervisor) respondToOpenHandle(ctx context.Context, stdin io.Writer, runtimeGenerationID string, frame ipcFrame, allowedArtifact *ArtifactRequest) error {

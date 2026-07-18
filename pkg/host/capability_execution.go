@@ -995,10 +995,12 @@ func (h *Host) maintainTerminalExecutionRecords(_ context.Context, now time.Time
 		defer h.executions.finishTerminalMaintenance()
 		if err := h.pruneTerminalExecutionRecords(lifecycleCtx, now); err != nil && lifecycleCtx.Err() == nil {
 			h.diagnostic(lifecycleCtx, observability.DiagnosticEvent{
-				Type:            "plugin.execution.retention_prune_failed",
-				Severity:        observability.DiagnosticSeverityWarning,
-				Message:         "terminal execution retention pruning failed",
-				InternalDetails: map[string]any{"error": err.Error()},
+				Type:     "plugin.execution.retention_prune_failed",
+				Severity: observability.DiagnosticSeverityWarning,
+				Message:  "terminal execution retention pruning failed",
+				InternalDetails: map[string]any{
+					"failure": observability.FailureFromError(observability.FailureAdapter, "execution.retention_prune", err),
+				},
 			})
 		}
 	})
@@ -1318,7 +1320,9 @@ func (h *Host) reportExecutionFailure(ctx context.Context, binding capability.Ex
 		OwnerEnvHash:         binding.OwnerEnvHash,
 		SessionChannelIDHash: binding.SessionChannelIDHash,
 		Details:              details,
-		InternalDetails:      map[string]any{"error": cause.Error()},
+		InternalDetails: map[string]any{
+			"failure": observability.FailureFromError(observability.FailureAction, "execution.fail", cause),
+		},
 	})
 }
 
@@ -1776,7 +1780,9 @@ func (l *executionLease) armTimeout(host *Host) {
 					OwnerUserHash:        l.binding.OwnerUserHash,
 					OwnerEnvHash:         l.binding.OwnerEnvHash,
 					SessionChannelIDHash: l.binding.SessionChannelIDHash,
-					InternalDetails:      map[string]any{"error": err.Error()},
+					InternalDetails: map[string]any{
+						"failure": observability.FailureFromError(observability.FailureAdapter, "execution.duration_terminal", err),
+					},
 				})
 			}
 			l.finish()

@@ -98,6 +98,7 @@ var (
 	ErrPluginRuntimeNotConfigured    = errors.New("plugin runtime is not configured")
 	ErrPluginRuntimeIncompatible     = errors.New("plugin runtime is incompatible")
 	ErrSecurityEventPersistence      = errors.New("plugin security event persistence failed")
+	ErrAdapterFailed                 = errors.New("plugin host adapter failed")
 	ErrResourceScopeMismatch         = errors.New("plugin resource scope mismatch")
 	ErrHostClosed                    = errors.New("plugin host is closed")
 	ErrHostConfig                    = errors.New("plugin host configuration is invalid")
@@ -4081,7 +4082,7 @@ func (h *Host) markInstallStageFailed(ctx context.Context, stageID string, code 
 	if _, err := h.adapters.InstallStages.MarkFailed(ctx, installstage.MarkFailedRequest{
 		StageID:      stageID,
 		ErrorCode:    code,
-		ErrorMessage: cause.Error(),
+		ErrorMessage: "plugin package lifecycle stage failed",
 		Now:          lifecycleNow(now),
 	}); err != nil {
 		return fmt.Errorf("%w; failed to update install stage: %v", cause, err)
@@ -5402,10 +5403,12 @@ func (h *Host) StopRuntime(ctx context.Context) (retErr error) {
 	auditDetails = map[string]any{"revoked_surface_count": revokedSurfaces}
 	if stopErr != nil {
 		h.diagnostic(ctx, observability.DiagnosticEvent{
-			Type:            "plugin.runtime.stop_failed",
-			Severity:        "warning",
-			Message:         "plugin runtime stop failed",
-			InternalDetails: map[string]any{"error": stopErr.Error()},
+			Type:     "plugin.runtime.stop_failed",
+			Severity: "warning",
+			Message:  "plugin runtime stop failed",
+			InternalDetails: map[string]any{
+				"failure": observability.FailureFromError(observability.FailureAdapter, "runtime.stop", stopErr),
+			},
 		})
 	}
 	if stopErr != nil {
@@ -5604,7 +5607,14 @@ func (h *Host) armDetachedOperationCancelAckTimeout(record operation.Record) {
 		})
 		if err == nil {
 			if auditErr := h.recordSecurityEvent(ctx, AuditEvent{Type: "plugin.operation.finished", PluginID: finished.PluginID, PluginInstanceID: finished.PluginInstanceID, Details: map[string]any{"operation_id": finished.OperationID, "status": finished.Status}}); auditErr != nil {
-				h.diagnostic(ctx, observability.DiagnosticEvent{Type: "plugin.security_event.persistence_failed", Severity: observability.DiagnosticSeverityWarning, Message: "security event persistence failed", InternalDetails: map[string]any{"error": auditErr.Error()}})
+				h.diagnostic(ctx, observability.DiagnosticEvent{
+					Type:     "plugin.security_event.persistence_failed",
+					Severity: observability.DiagnosticSeverityWarning,
+					Message:  "security event persistence failed",
+					InternalDetails: map[string]any{
+						"failure": observability.FailureFromError(observability.FailureAdapter, "security_event.persist", auditErr),
+					},
+				})
 			}
 		}
 	})
@@ -6470,7 +6480,7 @@ func (h *Host) BindSecretRef(ctx context.Context, req SecretBindRequest) (retErr
 	defer func() { retErr = auditMutation.complete(context.WithoutCancel(ctx), retErr) }()
 	if err := h.adapters.Secrets.BindSecretRef(ctx, normalized); err != nil {
 		h.reportSecretAdapterFailure(ctx, record, "bind", err)
-		return mutation.Unknown(err)
+		return secretAdapterFailure("bind", err)
 	}
 	return nil
 }
@@ -6493,7 +6503,7 @@ func (h *Host) TestSecretRef(ctx context.Context, req SecretTestRequest) (retErr
 	defer func() { retErr = auditMutation.complete(context.WithoutCancel(ctx), retErr) }()
 	if err := h.adapters.Secrets.TestSecretRef(ctx, SecretTestRequest(normalized)); err != nil {
 		h.reportSecretAdapterFailure(ctx, record, "test", err)
-		return mutation.Unknown(err)
+		return secretAdapterFailure("test", err)
 	}
 	return nil
 }
@@ -6516,7 +6526,7 @@ func (h *Host) DeleteSecretRef(ctx context.Context, req SecretDeleteRequest) (re
 	defer func() { retErr = auditMutation.complete(context.WithoutCancel(ctx), retErr) }()
 	if err := h.adapters.Secrets.DeleteSecretRef(ctx, SecretDeleteRequest(normalized)); err != nil {
 		h.reportSecretAdapterFailure(ctx, record, "delete", err)
-		return mutation.Unknown(err)
+		return secretAdapterFailure("delete", err)
 	}
 	return nil
 }
@@ -6539,6 +6549,14 @@ func (h *Host) reportSecretAdapterFailure(ctx context.Context, record registry.P
 			"failure": observability.FailureFromError(observability.FailureAdapter, operation, err),
 		},
 	})
+}
+
+func secretAdapterFailure(operation string, err error) error {
+	sanitized := fmt.Errorf("%w: secrets %s operation", ErrAdapterFailed, operation)
+	if outcome, explicit := mutation.Explicit(err); explicit {
+		return &mutation.Error{Outcome: outcome, Err: sanitized}
+	}
+	return mutation.Unknown(sanitized)
 }
 
 type runtimeArtifactProvider struct {
@@ -7859,7 +7877,9 @@ func (h *Host) revokePluginRuntimeCapabilities(ctx context.Context, record regis
 				Details: map[string]any{
 					"revoke_epoch": record.RevokeEpoch,
 				},
-				InternalDetails: map[string]any{"error": err.Error()},
+				InternalDetails: map[string]any{
+					"failure": observability.FailureFromError(observability.FailureAdapter, "runtime.revoke", err),
+				},
 			})
 		} else {
 			runtimeRevokeResult = result
@@ -8170,7 +8190,9 @@ func (h *Host) reportLifecycleDiagnostic(ctx context.Context, record registry.Pl
 		PluginInstanceID:  record.PluginInstanceID,
 		ActiveFingerprint: record.ActiveFingerprint,
 		Details:           details,
-		InternalDetails:   map[string]any{"error": err.Error()},
+		InternalDetails: map[string]any{
+			"failure": observability.FailureFromError(observability.FailureAction, eventType, err),
+		},
 	})
 }
 

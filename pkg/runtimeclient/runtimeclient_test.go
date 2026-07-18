@@ -2952,8 +2952,29 @@ func assertHostcallFailureDiagnostic(t *testing.T, store *runtimeDiagnosticSink,
 		t.Fatalf("hostcall failure diagnostics = %#v, want exactly one event", events)
 	}
 	event := events[0]
-	if event.Message != "runtime hostcall failed" || event.Details["hostcall"] != hostcall || event.Details["code"] != code || event.InternalDetails["error"] != rawError {
+	if event.Message != "runtime hostcall failed" || event.Details["hostcall"] != hostcall || event.Details["code"] != code {
 		t.Fatalf("hostcall failure diagnostic mismatch: %#v", event)
+	}
+	failure, ok := event.InternalDetails["failure"].(observability.Failure)
+	if !ok || failure.Code != observability.FailureAction || failure.Action != "runtime.hostcall" || strings.Contains(fmt.Sprint(event.InternalDetails), rawError) {
+		t.Fatalf("hostcall failure diagnostic retained raw cause: %#v", event)
+	}
+}
+
+func TestProcessSupervisorRedactsRuntimeProcessOutput(t *testing.T) {
+	const sensitive = "vault token sk-live-secret at /Users/secret/path"
+	diagnostics := &runtimeDiagnosticSink{}
+	supervisor := &ProcessSupervisor{diagnostics: diagnostics, now: func() time.Time {
+		return time.Date(2026, 7, 18, 12, 0, 0, 0, time.UTC)
+	}}
+
+	supervisor.scanPipe(strings.NewReader(sensitive+"\n"), "stderr")
+	events := diagnostics.list("plugin.runtime.process.stderr")
+	if len(events) != 1 || events[0].Details["stream"] != "stderr" || events[0].InternalDetails != nil {
+		t.Fatalf("runtime process stderr diagnostic = %#v", events)
+	}
+	if strings.Contains(fmt.Sprint(events[0]), sensitive) || strings.Contains(fmt.Sprint(events[0]), "sk-live-secret") || strings.Contains(fmt.Sprint(events[0]), "/Users/secret/path") {
+		t.Fatalf("runtime process stderr diagnostic retained output: %#v", events[0])
 	}
 }
 

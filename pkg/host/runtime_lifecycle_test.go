@@ -6,7 +6,9 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"net/http"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -15,6 +17,7 @@ import (
 	"github.com/floegence/redevplugin/pkg/capability"
 	"github.com/floegence/redevplugin/pkg/connectivity"
 	"github.com/floegence/redevplugin/pkg/mutation"
+	"github.com/floegence/redevplugin/pkg/observability"
 	"github.com/floegence/redevplugin/pkg/pluginpkg"
 	"github.com/floegence/redevplugin/pkg/runtimeclient"
 )
@@ -197,8 +200,19 @@ func TestStopRuntimeRevokesSurfacesWhenManagerStopFails(t *testing.T) {
 	}
 	assertAuditDetail(t, stopAudit, "revoked_surface_count", 1)
 	assertAuditDetail(t, stopAudit, "mutation_outcome", string(mutation.OutcomeUnknown))
-	if len(diagnostics.events) != 1 || diagnostics.events[0].Type != "plugin.runtime.stop_failed" || diagnostics.events[0].Message != "plugin runtime stop failed" || diagnostics.events[0].InternalDetails["error"] != stopFailure.Error() {
+	auditFailure, ok := stopAudit.Details["failure"].(map[string]any)
+	if !ok || auditFailure["code"] != string(observability.FailureAction) || auditFailure["action"] != "security_mutation.complete" || strings.Contains(fmt.Sprint(stopAudit.Details), stopFailure.Error()) {
+		t.Fatalf("runtime stop audit failure was not redacted: %#v", stopAudit.Details)
+	}
+	if len(diagnostics.events) != 1 || diagnostics.events[0].Type != "plugin.runtime.stop_failed" || diagnostics.events[0].Message != "plugin runtime stop failed" {
 		t.Fatalf("runtime stop diagnostic mismatch: %#v", diagnostics.events)
+	}
+	failure, ok := diagnostics.events[0].InternalDetails["failure"].(observability.Failure)
+	if !ok || failure.Code != observability.FailureAdapter || failure.Action != "runtime.stop" {
+		t.Fatalf("runtime stop diagnostic failure = %#v", diagnostics.events[0].InternalDetails)
+	}
+	if strings.Contains(fmt.Sprint(diagnostics.events[0].InternalDetails), stopFailure.Error()) {
+		t.Fatalf("runtime stop diagnostic retained raw cause: %#v", diagnostics.events[0].InternalDetails)
 	}
 	if diagnostics.events[0].OwnerSessionHash != "session_hash" || diagnostics.events[0].OwnerUserHash != "user_hash" || diagnostics.events[0].OwnerEnvHash != "env_hash" || diagnostics.events[0].SessionChannelIDHash != "channel_hash" {
 		t.Fatalf("runtime stop diagnostic owner scope mismatch: %#v", diagnostics.events[0])

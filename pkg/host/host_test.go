@@ -2540,8 +2540,11 @@ func TestInstallTrustFailureMarksLifecycleStageFailed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(stageRecords) != 1 || stageRecords[0].ErrorCode != "trust_failed" || !strings.Contains(stageRecords[0].ErrorMessage, "signature revoked") {
+	if len(stageRecords) != 1 || stageRecords[0].ErrorCode != "trust_failed" || stageRecords[0].ErrorMessage != "plugin package lifecycle stage failed" {
 		t.Fatalf("failed stage mismatch: %#v", stageRecords)
+	}
+	if strings.Contains(stageRecords[0].ErrorMessage, "signature revoked") {
+		t.Fatalf("failed stage retained trust adapter cause: %#v", stageRecords[0])
 	}
 	if _, err := h.adapters.Registry.GetPlugin(ctx, stageRecords[0].PluginInstanceID); !errors.Is(err, registry.ErrNotFound) {
 		t.Fatalf("GetPlugin() after failed install error = %v, want ErrNotFound", err)
@@ -3905,8 +3908,12 @@ func TestReadStreamReportsFailedTerminalStatus(t *testing.T) {
 			break
 		}
 	}
-	if failureDiagnostic == nil || failureDiagnostic.Details["failure_code"] != capability.ExecutionFailureRuntimeFailed || failureDiagnostic.InternalDetails["error"] != sensitiveCause {
+	if failureDiagnostic == nil || failureDiagnostic.Details["failure_code"] != capability.ExecutionFailureRuntimeFailed {
 		t.Fatalf("execution failure diagnostic = %#v", failureDiagnostic)
+	}
+	failure, ok := failureDiagnostic.InternalDetails["failure"].(observability.Failure)
+	if !ok || failure.Code != observability.FailureAction || failure.Action != "execution.fail" || strings.Contains(fmt.Sprint(failureDiagnostic.InternalDetails), sensitiveCause) {
+		t.Fatalf("execution failure diagnostic cause was not redacted: %#v", failureDiagnostic)
 	}
 	terminal, err := h.ReadStream(hostTestContext(), scopedReadStreamRequest(result.StreamID, result.StreamTicket))
 	if err != nil {
@@ -5966,8 +5973,11 @@ func TestOperationFailurePathsCloseHostOwnedHandle(t *testing.T) {
 			if failureDiagnostic == nil || failureDiagnostic.Message != executionFailedReason {
 				t.Fatalf("execution failure diagnostic mismatch: %#v", diagnostics.events)
 			}
-			if tc.internalCause != "" && failureDiagnostic.InternalDetails["error"] != errRPCUnavailable.Error() {
-				t.Fatalf("execution failure retained adapter-controlled cause: %#v", failureDiagnostic)
+			if tc.internalCause != "" {
+				failure, ok := failureDiagnostic.InternalDetails["failure"].(observability.Failure)
+				if !ok || failure.Code != observability.FailureAction || failure.Action != "execution.fail" || strings.Contains(fmt.Sprint(failureDiagnostic.InternalDetails), errRPCUnavailable.Error()) {
+					t.Fatalf("execution failure retained adapter-controlled cause: %#v", failureDiagnostic)
+				}
 			}
 			if err := tc.adapter.last.Execution.Operation.Complete(hostTestContext()); !errors.Is(err, capability.ErrExecutionRevoked) {
 				t.Fatalf("Operation.Complete() after failure error = %v, want %v", err, capability.ErrExecutionRevoked)
@@ -8310,6 +8320,31 @@ func TestSecretRefRequiresExactDeclaredScope(t *testing.T) {
 	})
 }
 
+func TestSecretAdapterFailureRedactsCauseAndPreservesOutcome(t *testing.T) {
+	sensitive := "vault token sk-live-secret at /Users/secret/path"
+	for _, test := range []struct {
+		name        string
+		cause       error
+		wantOutcome mutation.Outcome
+	}{
+		{name: "unknown", cause: errors.New(sensitive), wantOutcome: mutation.OutcomeUnknown},
+		{name: "not committed", cause: &mutation.Error{Outcome: mutation.OutcomeNotCommitted, Err: errors.New(sensitive)}, wantOutcome: mutation.OutcomeNotCommitted},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			err := secretAdapterFailure("bind", test.cause)
+			if !errors.Is(err, ErrAdapterFailed) {
+				t.Fatalf("secretAdapterFailure() error = %v, want ErrAdapterFailed", err)
+			}
+			if got := mutation.ForError(err); got != test.wantOutcome {
+				t.Fatalf("secretAdapterFailure() outcome = %q, want %q", got, test.wantOutcome)
+			}
+			if strings.Contains(err.Error(), sensitive) || strings.Contains(err.Error(), "sk-live-secret") || strings.Contains(err.Error(), "/Users/secret/path") {
+				t.Fatalf("secretAdapterFailure() leaked adapter cause: %v", err)
+			}
+		})
+	}
+}
+
 func TestSecretStoreIsTheOnlySettingsSecretAuthorityAndExportDoesNotReadIt(t *testing.T) {
 	secretStore := secrets.NewMemoryStore()
 	h, _, _ := newTestHostWithOptions(t, testHostOptions{
@@ -8468,8 +8503,11 @@ func TestUserTriggeredDiagnosticHelpersAttachScopeAndHideInternalCause(t *testin
 		if event.OwnerSessionHash != "session_hash" || event.OwnerUserHash != "user_hash" || event.OwnerEnvHash != "env_hash" || event.SessionChannelIDHash != "channel_hash" {
 			t.Fatalf("diagnostic owner scope mismatch: %#v", event)
 		}
-		if index == 0 && (event.InternalDetails["error"] == nil || !strings.Contains(fmt.Sprint(event.InternalDetails["error"]), sensitive)) {
-			t.Fatalf("diagnostic internal cause mismatch: %#v", event)
+		if index == 0 {
+			failure, ok := event.InternalDetails["failure"].(observability.Failure)
+			if !ok || failure.Code != observability.FailureAction || failure.Action != "plugin.runtime_state.refresh_failed" || strings.Contains(fmt.Sprint(event.InternalDetails), sensitive) {
+				t.Fatalf("diagnostic internal cause was not redacted: %#v", event)
+			}
 		}
 		if index == 1 && len(event.InternalDetails) != 0 {
 			t.Fatalf("method rejection retained adapter error details: %#v", event)
@@ -8488,7 +8526,9 @@ func TestUserTriggeredDiagnosticHelpersAttachScopeAndHideInternalCause(t *testin
 	diagnostics.events = append(diagnostics.events, observability.DiagnosticEvent{
 		Type: "plugin.other_owner.failure", Severity: "warning", Message: "other owner failure",
 		OwnerSessionHash: "session_other", OwnerUserHash: "user_other", OwnerEnvHash: "env_other", SessionChannelIDHash: "channel_other",
-		InternalDetails: map[string]any{"error": sensitive},
+		InternalDetails: map[string]any{
+			"failure": observability.FailureFromError(observability.FailureAction, "plugin.other_owner.failure", errors.New(sensitive)),
+		},
 	})
 	listed, err := h.ListDiagnosticEvents(hostTestContext(), ListDiagnosticEventsRequest{Limit: 10})
 	if err != nil {

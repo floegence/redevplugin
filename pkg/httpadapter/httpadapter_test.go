@@ -3714,8 +3714,12 @@ func TestHandlerInternalErrorsUseStableMessagesAndOwnerScopedDiagnostics(t *test
 		t.Fatalf("runtime stop internal diagnostic mismatch: %#v", stopEvents)
 	}
 	internalStopEvent, ok := diagnostics.last("plugin.runtime.stop_failed")
-	if !ok || internalStopEvent.InternalDetails["error"] != stopSensitive {
-		t.Fatalf("runtime stop diagnostics sink lost internal cause: %#v", internalStopEvent)
+	stopFailure, failureOK := internalStopEvent.InternalDetails["failure"].(observability.Failure)
+	if !ok || !failureOK || stopFailure.Code != observability.FailureAdapter || stopFailure.Action != "runtime.stop" {
+		t.Fatalf("runtime stop diagnostics sink failure mismatch: %#v", internalStopEvent)
+	}
+	if internalRaw := fmt.Sprint(internalStopEvent.InternalDetails); strings.Contains(internalRaw, stopSensitive) || strings.Contains(internalRaw, "/Users/secret/path") {
+		t.Fatalf("runtime stop diagnostics sink retained sensitive cause: %s", internalRaw)
 	}
 	listedStop := getJSON[struct {
 		DiagnosticEvents []host.DiagnosticEvent `json:"diagnostic_events"`

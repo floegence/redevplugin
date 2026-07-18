@@ -61,7 +61,7 @@ func (m securityAuditMutation) completeWithDetails(ctx context.Context, operatio
 			}
 			details = cloned
 		}
-		details["error"] = operationErr.Error()
+		details["failure"] = observability.FailureFromError(observability.FailureAction, "security_mutation.complete", operationErr)
 	}
 	if err := m.journal.CompleteSecurityAudit(ctx, m.eventID, outcome, details); err != nil {
 		persistenceErr := fmt.Errorf("%w: complete security audit: %v", ErrSecurityEventPersistence, err)
@@ -131,10 +131,12 @@ func (h *Host) startSecurityAuditExporter() {
 			case <-ticker.C:
 				if err := h.exportSecurityAudits(h.lifecycleCtx); err != nil {
 					h.diagnostic(context.WithoutCancel(h.lifecycleCtx), observability.DiagnosticEvent{
-						Type:            "plugin.security_audit.export_failed",
-						Severity:        observability.DiagnosticSeverityWarning,
-						Message:         "security audit export failed",
-						InternalDetails: map[string]any{"error": err.Error()},
+						Type:     "plugin.security_audit.export_failed",
+						Severity: observability.DiagnosticSeverityWarning,
+						Message:  "security audit export failed",
+						InternalDetails: map[string]any{
+							"failure": observability.FailureFromError(observability.FailureAdapter, "security_audit.export", err),
+						},
 					})
 				}
 			}
