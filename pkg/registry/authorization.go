@@ -70,6 +70,7 @@ type AuthorizationDecision struct {
 var (
 	ErrInvalidAuthorizationRevisions = errors.New("authorization revisions are invalid")
 	ErrAuthorizationRevisionConflict = errors.New("authorization revision conflict")
+	ErrAuthorizationSchemaIncomplete = errors.New("authorization schema is incomplete")
 )
 
 type AuthorizationRevisionConflictError struct {

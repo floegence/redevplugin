@@ -402,6 +402,10 @@ func (s *SQLiteStore) initializeSchema(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	if policyPermissionRelationsExist != policyMethodRelationsExist {
+		return fmt.Errorf("%w: security policy relation tables must both exist or both be absent", ErrAuthorizationSchemaIncomplete)
+	}
+	migrateSecurityPolicyRelations := !policyPermissionRelationsExist
 
 	if _, err := tx.ExecContext(ctx, `
 	CREATE TABLE IF NOT EXISTS plugin_records (
@@ -470,9 +474,6 @@ func (s *SQLiteStore) initializeSchema(ctx context.Context) error {
 	)`); err != nil {
 		return err
 	}
-	if _, err := tx.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_registry_permission_grants_plugin ON plugin_permission_grants(owner_env_hash, plugin_instance_id, permission_id)`); err != nil {
-		return err
-	}
 	if _, err := tx.ExecContext(ctx, `
 	CREATE TABLE IF NOT EXISTS plugin_security_policies (
 		owner_env_hash TEXT NOT NULL,
@@ -495,9 +496,6 @@ func (s *SQLiteStore) initializeSchema(ctx context.Context) error {
 	)`); err != nil {
 		return err
 	}
-	if _, err := tx.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_registry_security_policy_allowed_permission ON plugin_security_policy_allowed_permissions(owner_env_hash, plugin_instance_id, permission_id)`); err != nil {
-		return err
-	}
 	if _, err := tx.ExecContext(ctx, `
 	CREATE TABLE IF NOT EXISTS plugin_security_policy_denied_methods (
 		owner_env_hash TEXT NOT NULL,
@@ -508,10 +506,16 @@ func (s *SQLiteStore) initializeSchema(ctx context.Context) error {
 	)`); err != nil {
 		return err
 	}
-	if _, err := tx.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_registry_security_policy_denied_method ON plugin_security_policy_denied_methods(owner_env_hash, plugin_instance_id, method)`); err != nil {
-		return err
+	for _, index := range []string{
+		"idx_registry_permission_grants_plugin",
+		"idx_registry_security_policy_allowed_permission",
+		"idx_registry_security_policy_denied_method",
+	} {
+		if _, err := tx.ExecContext(ctx, `DROP INDEX IF EXISTS `+index); err != nil {
+			return err
+		}
 	}
-	if !policyPermissionRelationsExist || !policyMethodRelationsExist {
+	if migrateSecurityPolicyRelations {
 		if err := migrateSQLiteSecurityPolicyRelations(ctx, tx); err != nil {
 			return err
 		}
