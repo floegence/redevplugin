@@ -2751,6 +2751,7 @@ func TestProcessSupervisorStreamsHTTPNetworkDuringWorkerInvocation(t *testing.T)
 			SurfaceInstanceID:    "surface_runtime",
 			OwnerSessionHash:     "session_hash",
 			OwnerUserHash:        "user_hash",
+			OwnerEnvHash:         "env_hash",
 			SessionChannelIDHash: "channel_hash",
 			BridgeChannelID:      "bridge_runtime",
 		},

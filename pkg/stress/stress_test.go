@@ -106,10 +106,14 @@ func TestStressGateStreamBackpressureKeepsOperationStoreResponsive(t *testing.T)
 			if _, err := streams.Register(ctx, stream.RegisterRequest{
 				StreamID: streamID,
 				ExecutionBinding: capability.ExecutionBinding{
-					PluginID:         "com.example.stress.logs",
-					PluginInstanceID: "plugini_stress_stream",
-					Method:           "stress.logs.tail",
-					Execution:        "subscription",
+					PluginID:             "com.example.stress.logs",
+					PluginInstanceID:     "plugini_stress_stream",
+					Method:               "stress.logs.tail",
+					Execution:            "subscription",
+					OwnerSessionHash:     "stress_session",
+					OwnerUserHash:        "stress_user",
+					OwnerEnvHash:         "stress_env",
+					SessionChannelIDHash: "stress_channel",
 				},
 				Direction:        stream.DirectionRead,
 				MaxBufferedBytes: 256,
