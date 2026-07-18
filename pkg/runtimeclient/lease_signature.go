@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/floegence/redevplugin/internal/jsonvalue"
 )
 
 const (
@@ -375,11 +377,20 @@ func validateRuntimeLeaseCanonicalFields(lease Lease, resolvedMethod string) err
 		seenTargets[target] = struct{}{}
 	}
 	if lease.Limits.TimeoutMillis < 0 ||
+		uint64(lease.Limits.TimeoutMillis) > jsonvalue.MaxSafeInteger ||
 		lease.Limits.MemoryBytes <= 0 ||
 		lease.Limits.MemoryBytes > maxRuntimeLeaseMemoryBytes ||
 		lease.Limits.MaxPayloadBytes < 0 ||
+		uint64(lease.Limits.MaxPayloadBytes) > jsonvalue.MaxSafeInteger ||
 		lease.Limits.MaxStreamBytesPerSecond < 0 ||
+		uint64(lease.Limits.MaxStreamBytesPerSecond) > jsonvalue.MaxSafeInteger ||
 		lease.IssuedAtUnixMillis <= 0 ||
+		uint64(lease.IssuedAtUnixMillis) > jsonvalue.MaxSafeInteger ||
+		lease.ExpiresAtUnixMillis <= 0 ||
+		uint64(lease.ExpiresAtUnixMillis) > jsonvalue.MaxSafeInteger ||
+		!jsonvalue.IsSafeUnsignedInteger(lease.PolicyRevision) ||
+		!jsonvalue.IsSafeUnsignedInteger(lease.ManagementRevision) ||
+		!jsonvalue.IsPositiveSafeUnsignedInteger(lease.RevokeEpoch) ||
 		lease.ExpiresAtUnixMillis <= lease.IssuedAtUnixMillis {
 		return ErrRuntimeLeaseInvalid
 	}

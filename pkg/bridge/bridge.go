@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/floegence/redevplugin/internal/jsonvalue"
 	"github.com/floegence/redevplugin/pkg/sessionctx"
 )
 
@@ -45,6 +46,8 @@ var (
 	ErrTokenPluginCapacity      = errors.New("plugin token capacity is exhausted")
 	ErrTokenTTLExceeded         = errors.New("token TTL exceeds the configured maximum")
 	ErrTokenRevokeFloorCapacity = errors.New("token revoke-floor capacity is exhausted")
+	ErrTokenRevision            = errors.New("token revision binding is invalid")
+	ErrTokenLimits              = errors.New("token limits are invalid")
 )
 
 const (
@@ -300,7 +303,7 @@ func (m *TokenManager) Mint(req MintRequest) (MintedToken, error) {
 		return MintedToken{}, err
 	}
 	now := record.IssuedAt
-	pluginKey, err := tokenPluginIndexKey(record.Audience)
+	pluginKey, err := tokenPluginIndexKey(record.Kind, record.Audience)
 	if err != nil {
 		return MintedToken{}, err
 	}
@@ -397,7 +400,7 @@ func (m *TokenManager) pruneExpiredRecordsLocked(now time.Time) {
 func (m *TokenManager) addRecordLocked(record TokenRecord) {
 	m.records[record.TokenHash] = record
 	m.idIndex[tokenIDIndexKey(record.Kind, record.TokenID)] = record.TokenHash
-	pluginKey, _ := tokenPluginIndexKey(record.Audience)
+	pluginKey, _ := tokenPluginIndexKey(record.Kind, record.Audience)
 	addTokenIndexEntry(m.pluginIndex, pluginKey, record.TokenHash)
 	addTokenIndexEntry(m.surfaceIndex, tokenSurfaceIndexKey(record.Audience), record.TokenHash)
 }
@@ -405,7 +408,7 @@ func (m *TokenManager) addRecordLocked(record TokenRecord) {
 func (m *TokenManager) removeRecordLocked(tokenHash string, record TokenRecord) {
 	delete(m.records, tokenHash)
 	delete(m.idIndex, tokenIDIndexKey(record.Kind, record.TokenID))
-	pluginKey, _ := tokenPluginIndexKey(record.Audience)
+	pluginKey, _ := tokenPluginIndexKey(record.Kind, record.Audience)
 	removeTokenIndexEntry(m.pluginIndex, pluginKey, tokenHash)
 	removeTokenIndexEntry(m.surfaceIndex, tokenSurfaceIndexKey(record.Audience), tokenHash)
 }
@@ -592,6 +595,9 @@ func (m *TokenManager) RevokePlugin(ownerEnvHash string, pluginInstanceID string
 	if err != nil {
 		return 0, err
 	}
+	if !jsonvalue.IsPositiveSafeUnsignedInteger(minimumRevokeEpoch) {
+		return 0, ErrTokenRevision
+	}
 	if now.IsZero() {
 		now = time.Now().UTC()
 	}
@@ -613,7 +619,7 @@ func (m *TokenManager) RevokePlugin(ownerEnvHash string, pluginInstanceID string
 		if !ok {
 			continue
 		}
-		if record.Revision.RevokeEpoch < minimumRevokeEpoch || minimumRevokeEpoch == 0 {
+		if record.Revision.RevokeEpoch < minimumRevokeEpoch {
 			if record.Revoked {
 				continue
 			}
@@ -705,6 +711,13 @@ func validateMintRequest(req MintRequest) error {
 	if err := validateTokenAudience(req.Kind, req.Audience); err != nil {
 		return err
 	}
+	if err := validateRevisionBinding(req.Revision); err != nil {
+		return err
+	}
+	if !validNonnegativeSafeInt64(req.Limits.MaxBytesPerSecond) ||
+		!validNonnegativeSafeInt64(req.Limits.MaxTotalBytes) {
+		return ErrTokenLimits
+	}
 	if req.ExpiresAt.IsZero() {
 		return errors.New("expires_at is required")
 	}
@@ -718,7 +731,23 @@ func validateMintRequest(req MintRequest) error {
 	return nil
 }
 
+func validateRevisionBinding(revision RevisionBinding) error {
+	if !jsonvalue.IsSafeUnsignedInteger(revision.PolicyRevision) ||
+		!jsonvalue.IsSafeUnsignedInteger(revision.ManagementRevision) ||
+		!jsonvalue.IsPositiveSafeUnsignedInteger(revision.RevokeEpoch) {
+		return ErrTokenRevision
+	}
+	return nil
+}
+
+func validNonnegativeSafeInt64(value int64) bool {
+	return value >= 0 && uint64(value) <= jsonvalue.MaxSafeInteger
+}
+
 func validateTokenAudience(kind TokenKind, audience Audience) error {
+	if _, err := tokenAudienceOwnerEnvHash(kind, audience); err != nil {
+		return err
+	}
 	require := func(values ...string) error {
 		for _, value := range values {
 			if strings.TrimSpace(value) == "" {
@@ -726,6 +755,15 @@ func validateTokenAudience(kind TokenKind, audience Audience) error {
 			}
 		}
 		return nil
+	}
+	if strings.TrimSpace(audience.OwnerUserHash) != "" && strings.TrimSpace(audience.OwnerEnvHash) != "" {
+		if err := (sessionctx.ResourceScope{
+			Kind:          sessionctx.ScopeUser,
+			OwnerEnvHash:  audience.OwnerEnvHash,
+			OwnerUserHash: audience.OwnerUserHash,
+		}).Validate(); err != nil {
+			return ErrTokenAudience
+		}
 	}
 	switch kind {
 	case TokenKindAssetTicket, TokenKindAssetSession:
@@ -784,10 +822,22 @@ func validateTokenAudience(kind TokenKind, audience Audience) error {
 			audience.RuntimeGenerationID,
 		)
 	case TokenKindHandleGrant:
-		if err := require(audience.RuntimeGenerationID, audience.HandleID, audience.Method); err != nil {
+		if err := require(
+			audience.RuntimeGenerationID,
+			audience.OwnerSessionHash,
+			audience.OwnerUserHash,
+			audience.OwnerEnvHash,
+			audience.SessionChannelIDHash,
+			audience.HandleID,
+			audience.Method,
+		); err != nil {
 			return err
 		}
-		return audience.ResourceScope.Validate()
+		if audience.ResourceScope.OwnerEnvHash != audience.OwnerEnvHash ||
+			(audience.ResourceScope.Kind == sessionctx.ScopeUser && audience.ResourceScope.OwnerUserHash != audience.OwnerUserHash) {
+			return ErrTokenAudience
+		}
+		return nil
 	case TokenKindStreamTicket:
 		if err := require(
 			audience.PluginID,
@@ -876,12 +926,29 @@ func audienceMatches(expected Audience, got Audience) bool {
 		expected.ResourceScope == got.ResourceScope
 }
 
-func tokenPluginIndexKey(audience Audience) (string, error) {
-	ownerEnvHash := strings.TrimSpace(audience.OwnerEnvHash)
-	if audience.ResourceScope.Valid() {
-		ownerEnvHash = audience.ResourceScope.OwnerEnvHash
+func tokenPluginIndexKey(kind TokenKind, audience Audience) (string, error) {
+	ownerEnvHash, err := tokenAudienceOwnerEnvHash(kind, audience)
+	if err != nil {
+		return "", err
 	}
 	return ownerPluginIndexKey(ownerEnvHash, audience.PluginInstanceID)
+}
+
+func tokenAudienceOwnerEnvHash(kind TokenKind, audience Audience) (string, error) {
+	switch kind {
+	case TokenKindHandleGrant:
+		if err := audience.ResourceScope.Validate(); err != nil {
+			return "", err
+		}
+		return audience.ResourceScope.OwnerEnvHash, nil
+	case TokenKindAssetTicket, TokenKindAssetSession, TokenKindPluginGatewayToken, TokenKindConfirmationToken, TokenKindStreamTicket:
+		if audience.ResourceScope != (sessionctx.ResourceScope{}) {
+			return "", ErrTokenAudience
+		}
+		return strings.TrimSpace(audience.OwnerEnvHash), nil
+	default:
+		return "", ErrTokenKind
+	}
 }
 
 func tokenSurfaceIndexKey(audience Audience) string {

@@ -637,7 +637,7 @@ func invokePerformanceBlockingWorker(supervisor *runtimeclient.ProcessSupervisor
 			done <- err
 			return
 		}
-		access := manifest.MethodBrokerAccessSpec{Network: []manifest.NetworkBrokerAccessSpec{{
+		access := workerBrokerAccess{Network: []workerNetworkBrokerAccess{{
 			ConnectorID: "api", Transport: "http", Scope: "user", Operations: []string{"http"}, HTTPMethods: []string{"GET"},
 		}}}
 		accessHash, err := workerBrokerAccessHash(access)

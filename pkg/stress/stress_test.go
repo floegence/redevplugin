@@ -509,6 +509,7 @@ func TestStressGateStorageQuotaExportImportUnderLoad(t *testing.T) {
 		QuotaBytes:       4096,
 		SchemaVersion:    1,
 	}
+	resourceScope := stressResourceScope(t, ctx, sessionctx.ScopeKind(ns.Scope))
 	const importedPluginInstanceID = "plugini_stress_storage_imported"
 	broker, records, shape := newStressPluginData(t, ctx, []string{ns.PluginInstanceID, importedPluginInstanceID}, ns)
 	defer broker.Close()
@@ -525,6 +526,7 @@ func TestStressGateStorageQuotaExportImportUnderLoad(t *testing.T) {
 			for i := 0; i < 16; i++ {
 				_, err := broker.PutKV(ctx, storage.KVPutRequest{
 					PluginInstanceID: ns.PluginInstanceID,
+					ResourceScope:    resourceScope,
 					StoreID:          ns.StoreID,
 					Key:              fmt.Sprintf("worker/%02d/%02d", worker, i),
 					Value:            value,
@@ -573,6 +575,7 @@ func TestStressGateStorageQuotaExportImportUnderLoad(t *testing.T) {
 	}
 	imported, err := broker.ListKV(ctx, storage.KVListRequest{
 		PluginInstanceID: importedPluginInstanceID,
+		ResourceScope:    resourceScope,
 		StoreID:          ns.StoreID,
 		MaxEntries:       1000,
 	})
@@ -619,10 +622,12 @@ func stressFileCountQuotaCounters(t *testing.T, ctx context.Context) fileCountQu
 		QuotaFiles:       1,
 		SchemaVersion:    1,
 	}
+	resourceScope := stressResourceScope(t, ctx, sessionctx.ScopeKind(ns.Scope))
 	broker, _, _ := newStressPluginData(t, ctx, []string{ns.PluginInstanceID}, ns)
 	defer broker.Close()
 	if _, err := broker.WriteFile(ctx, storage.FileWriteRequest{
 		PluginInstanceID: ns.PluginInstanceID,
+		ResourceScope:    resourceScope,
 		StoreID:          ns.StoreID,
 		Path:             "one.txt",
 		Data:             []byte("one"),
@@ -632,6 +637,7 @@ func stressFileCountQuotaCounters(t *testing.T, ctx context.Context) fileCountQu
 	quotaDenials := 0
 	if _, err := broker.WriteFile(ctx, storage.FileWriteRequest{
 		PluginInstanceID: ns.PluginInstanceID,
+		ResourceScope:    resourceScope,
 		StoreID:          ns.StoreID,
 		Path:             "two.txt",
 		Data:             []byte("two"),
@@ -671,10 +677,12 @@ func stressSQLiteQuotaBypassCounters(t *testing.T, ctx context.Context) sqliteQu
 		QuotaBytes:       16 * 1024,
 		SchemaVersion:    1,
 	}
+	resourceScope := stressResourceScope(t, ctx, sessionctx.ScopeKind(ns.Scope))
 	broker, _, _ := newStressPluginData(t, ctx, []string{ns.PluginInstanceID}, ns)
 	defer broker.Close()
 	if _, err := broker.ExecSQLite(ctx, storage.SQLiteExecRequest{
 		PluginInstanceID: ns.PluginInstanceID,
+		ResourceScope:    resourceScope,
 		StoreID:          ns.StoreID,
 		SQL:              "CREATE TABLE items (body TEXT)",
 	}); err != nil {
@@ -688,6 +696,7 @@ func stressSQLiteQuotaBypassCounters(t *testing.T, ctx context.Context) sqliteQu
 	quotaDenials := 0
 	if _, err := broker.ExecSQLite(ctx, storage.SQLiteExecRequest{
 		PluginInstanceID: ns.PluginInstanceID,
+		ResourceScope:    resourceScope,
 		StoreID:          ns.StoreID,
 		SQL:              "INSERT INTO items (body) VALUES (?)",
 		Args:             []storage.SQLiteValue{{Text: &body}},
@@ -703,6 +712,7 @@ func stressSQLiteQuotaBypassCounters(t *testing.T, ctx context.Context) sqliteQu
 	rollbackChecks := 0
 	if after.UsageBytes == before.UsageBytes && sqliteSingleInt(t, broker, ctx, storage.SQLiteQueryRequest{
 		PluginInstanceID: ns.PluginInstanceID,
+		ResourceScope:    resourceScope,
 		StoreID:          ns.StoreID,
 		SQL:              "SELECT COUNT(*) FROM items",
 	}) == 0 {
@@ -857,6 +867,19 @@ func stressTestContext() context.Context {
 		OwnerEnvHash:         "stress_env",
 		SessionChannelIDHash: "stress_channel",
 	})
+}
+
+func stressResourceScope(t testing.TB, ctx context.Context, kind sessionctx.ScopeKind) sessionctx.ResourceScope {
+	t.Helper()
+	session, err := sessionctx.Require(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	scope, err := session.ResourceScope(kind)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return scope
 }
 
 type stressOperationAdapter struct {

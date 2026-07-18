@@ -24,6 +24,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/floegence/redevplugin/internal/jsonvalue"
 	"github.com/floegence/redevplugin/pkg/manifest"
 	"github.com/floegence/redevplugin/pkg/sessionctx"
 	"github.com/floegence/redevplugin/pkg/version"
@@ -136,6 +137,9 @@ func (b *MemoryBroker) InstallPolicy(ctx context.Context, policy PolicySet) erro
 	_, key, err := authenticatedPolicyOwner(ctx, policy.PluginInstanceID)
 	if err != nil {
 		return err
+	}
+	if !validActiveRevisionBinding(policy.PolicyRevision, policy.ManagementRevision, policy.RevokeEpoch) {
+		return fmt.Errorf("%w: policy revision binding is invalid", ErrInvalidConnector)
 	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -252,6 +256,9 @@ func DefaultClassifier() Classifier {
 }
 
 func CompilePolicy(req CompileRequest) (PolicySet, error) {
+	if !validStoredRevisionValues(req.PolicyRevision, req.ManagementRevision, req.RevokeEpoch) {
+		return PolicySet{}, fmt.Errorf("%w: policy revision binding is invalid", ErrInvalidConnector)
+	}
 	classifier := DefaultClassifier()
 	policy := PolicySet{
 		PluginInstanceID:        strings.TrimSpace(req.PluginInstanceID),
@@ -915,6 +922,10 @@ func mintConnectionGrant(session sessionctx.Context, policy PolicySet, req Grant
 	if policy.ActiveFingerprint == "" || policy.ActiveFingerprint != req.ActiveFingerprint {
 		return ConnectionGrant{}, fmt.Errorf("%w: active_fingerprint mismatch", ErrConnectorDenied)
 	}
+	if !validActiveRevisionBinding(policy.PolicyRevision, policy.ManagementRevision, policy.RevokeEpoch) ||
+		!validActiveRevisionBinding(req.PolicyRevision, req.ManagementRevision, req.RevokeEpoch) {
+		return ConnectionGrant{}, fmt.Errorf("%w: revision binding is invalid", ErrConnectorDenied)
+	}
 	if policy.PolicyRevision != req.PolicyRevision || policy.ManagementRevision != req.ManagementRevision || policy.RevokeEpoch != req.RevokeEpoch {
 		return ConnectionGrant{}, fmt.Errorf("%w: stale policy revision", ErrConnectorDenied)
 	}
@@ -1239,6 +1250,9 @@ func validateGrantForTransport(grant ConnectionGrant, transport Transport, now t
 	if err := grant.ResourceScope.Validate(); err != nil {
 		return fmt.Errorf("%w: %w: grant resource scope is invalid", ErrConnectorDenied, ErrResourceScopeMismatch)
 	}
+	if !validActiveRevisionBinding(grant.PolicyRevision, grant.ManagementRevision, grant.RevokeEpoch) {
+		return fmt.Errorf("%w: grant revision binding is invalid", ErrConnectorDenied)
+	}
 	if strings.TrimSpace(grant.TargetClassifierVersion) != version.TargetClassifierVersion {
 		return fmt.Errorf("%w: target classifier version mismatch", ErrConnectorDenied)
 	}
@@ -1255,6 +1269,16 @@ func validateGrantForTransport(grant ConnectionGrant, transport Transport, now t
 		return ErrGrantExpired
 	}
 	return DefaultClassifier().Evaluate(grant.Destination)
+}
+
+func validStoredRevisionValues(policyRevision, managementRevision, revokeEpoch uint64) bool {
+	return jsonvalue.IsSafeUnsignedInteger(policyRevision) &&
+		jsonvalue.IsSafeUnsignedInteger(managementRevision) &&
+		jsonvalue.IsSafeUnsignedInteger(revokeEpoch)
+}
+
+func validActiveRevisionBinding(policyRevision, managementRevision, revokeEpoch uint64) bool {
+	return validStoredRevisionValues(policyRevision, managementRevision, revokeEpoch) && revokeEpoch > 0
 }
 
 func cleanHTTPPath(path string) (string, error) {

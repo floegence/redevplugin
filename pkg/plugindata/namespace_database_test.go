@@ -26,14 +26,14 @@ func TestBrokerPaginatesFilesAndKVWithPersistentKeys(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, path := range []string{"z.txt", "a.txt", "d.txt", "b.txt", "c.txt", "nested/child.txt"} {
-		if _, err := store.WriteFile(ctx, storage.FileWriteRequest{PluginInstanceID: "plugini_test", StoreID: "files", Path: path, Data: []byte(path)}); err != nil {
+		if _, err := store.WriteFile(ctx, storage.FileWriteRequest{PluginInstanceID: "plugini_test", ResourceScope: internalUserScope(), StoreID: "files", Path: path, Data: []byte(path)}); err != nil {
 			t.Fatal(err)
 		}
 	}
 	var filePaths []string
 	cursor := ""
 	for {
-		page, err := store.ListFiles(ctx, storage.FileListRequest{PluginInstanceID: "plugini_test", StoreID: "files", MaxEntries: 2, Cursor: cursor})
+		page, err := store.ListFiles(ctx, storage.FileListRequest{PluginInstanceID: "plugini_test", ResourceScope: internalUserScope(), StoreID: "files", MaxEntries: 2, Cursor: cursor})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -48,23 +48,23 @@ func TestBrokerPaginatesFilesAndKVWithPersistentKeys(t *testing.T) {
 	if want := []string{"a.txt", "b.txt", "c.txt", "d.txt", "nested", "z.txt"}; !reflect.DeepEqual(filePaths, want) {
 		t.Fatalf("file paths = %#v, want %#v", filePaths, want)
 	}
-	nested, err := store.ListFiles(ctx, storage.FileListRequest{PluginInstanceID: "plugini_test", StoreID: "files", Path: "nested", MaxEntries: 1})
+	nested, err := store.ListFiles(ctx, storage.FileListRequest{PluginInstanceID: "plugini_test", ResourceScope: internalUserScope(), StoreID: "files", Path: "nested", MaxEntries: 1})
 	if err != nil || len(nested.Entries) != 1 || nested.Entries[0].Path != "nested/child.txt" || nested.NextCursor != "" {
 		t.Fatalf("nested page = %#v, err = %v", nested, err)
 	}
-	if _, err := store.ListFiles(ctx, storage.FileListRequest{PluginInstanceID: "plugini_test", StoreID: "files", Path: "nested", Cursor: "a.txt"}); !errors.Is(err, storage.ErrInvalidFilePath) {
+	if _, err := store.ListFiles(ctx, storage.FileListRequest{PluginInstanceID: "plugini_test", ResourceScope: internalUserScope(), StoreID: "files", Path: "nested", Cursor: "a.txt"}); !errors.Is(err, storage.ErrInvalidFilePath) {
 		t.Fatalf("cross-directory cursor error = %v", err)
 	}
 
 	for _, key := range []string{"beta/1", "alpha/3", "alpha/1", "alpha/2"} {
-		if _, err := store.PutKV(ctx, storage.KVPutRequest{PluginInstanceID: "plugini_test", StoreID: "kv", Key: key, Value: []byte(key)}); err != nil {
+		if _, err := store.PutKV(ctx, storage.KVPutRequest{PluginInstanceID: "plugini_test", ResourceScope: internalUserScope(), StoreID: "kv", Key: key, Value: []byte(key)}); err != nil {
 			t.Fatal(err)
 		}
 	}
 	var keys []string
 	cursor = ""
 	for {
-		page, err := store.ListKV(ctx, storage.KVListRequest{PluginInstanceID: "plugini_test", StoreID: "kv", Prefix: "alpha/", MaxEntries: 2, Cursor: cursor})
+		page, err := store.ListKV(ctx, storage.KVListRequest{PluginInstanceID: "plugini_test", ResourceScope: internalUserScope(), StoreID: "kv", Prefix: "alpha/", MaxEntries: 2, Cursor: cursor})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -79,7 +79,7 @@ func TestBrokerPaginatesFilesAndKVWithPersistentKeys(t *testing.T) {
 	if want := []string{"alpha/1", "alpha/2", "alpha/3"}; !reflect.DeepEqual(keys, want) {
 		t.Fatalf("kv keys = %#v, want %#v", keys, want)
 	}
-	if _, err := store.ListKV(ctx, storage.KVListRequest{PluginInstanceID: "plugini_test", StoreID: "kv", Prefix: "alpha/", Cursor: "beta/1"}); !errors.Is(err, storage.ErrInvalidKVKey) {
+	if _, err := store.ListKV(ctx, storage.KVListRequest{PluginInstanceID: "plugini_test", ResourceScope: internalUserScope(), StoreID: "kv", Prefix: "alpha/", Cursor: "beta/1"}); !errors.Is(err, storage.ErrInvalidKVKey) {
 		t.Fatalf("cross-prefix cursor error = %v", err)
 	}
 }
@@ -94,17 +94,17 @@ func TestNamespaceTransactionsEnforceLogicalFileQuotas(t *testing.T) {
 	if _, err := store.CommitEnable(ctx, CommitEnableRequest{PluginInstanceID: "plugini_quota", Shape: shape, ExpectedManagementRevision: 1}); err != nil {
 		t.Fatal(err)
 	}
-	write, err := store.WriteFile(ctx, storage.FileWriteRequest{PluginInstanceID: "plugini_quota", StoreID: "files", Path: "notes/a.txt", Data: []byte("a")})
+	write, err := store.WriteFile(ctx, storage.FileWriteRequest{PluginInstanceID: "plugini_quota", ResourceScope: internalUserScope(), StoreID: "files", Path: "notes/a.txt", Data: []byte("a")})
 	if err != nil || write.Usage.UsageFiles != 2 {
 		t.Fatalf("first file write = %#v, err = %v", write, err)
 	}
-	if _, err := store.WriteFile(ctx, storage.FileWriteRequest{PluginInstanceID: "plugini_quota", StoreID: "files", Path: "b.txt", Data: []byte("b")}); !errors.Is(err, storage.ErrQuotaExceeded) {
+	if _, err := store.WriteFile(ctx, storage.FileWriteRequest{PluginInstanceID: "plugini_quota", ResourceScope: internalUserScope(), StoreID: "files", Path: "b.txt", Data: []byte("b")}); !errors.Is(err, storage.ErrQuotaExceeded) {
 		t.Fatalf("second file write error = %v", err)
 	}
-	if _, err := store.PutKV(ctx, storage.KVPutRequest{PluginInstanceID: "plugini_quota", StoreID: "kv", Key: "one", Value: []byte("1")}); err != nil {
+	if _, err := store.PutKV(ctx, storage.KVPutRequest{PluginInstanceID: "plugini_quota", ResourceScope: internalUserScope(), StoreID: "kv", Key: "one", Value: []byte("1")}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.PutKV(ctx, storage.KVPutRequest{PluginInstanceID: "plugini_quota", StoreID: "kv", Key: "two", Value: []byte("2")}); !errors.Is(err, storage.ErrQuotaExceeded) {
+	if _, err := store.PutKV(ctx, storage.KVPutRequest{PluginInstanceID: "plugini_quota", ResourceScope: internalUserScope(), StoreID: "kv", Key: "two", Value: []byte("2")}); !errors.Is(err, storage.ErrQuotaExceeded) {
 		t.Fatalf("second kv write error = %v", err)
 	}
 }
@@ -129,13 +129,18 @@ func TestNamespaceDatabaseCacheReusesAndClosesGenerationConnections(t *testing.T
 	for _, access := range []struct {
 		ctx     context.Context
 		storeID string
+		scope   sessionctx.ScopeKind
 	}{
-		{ctx: ctx, storeID: "user_files"},
-		{ctx: secondUserCtx, storeID: "user_files"},
-		{ctx: ctx, storeID: "environment_files"},
+		{ctx: ctx, storeID: "user_files", scope: sessionctx.ScopeUser},
+		{ctx: secondUserCtx, storeID: "user_files", scope: sessionctx.ScopeUser},
+		{ctx: ctx, storeID: "environment_files", scope: sessionctx.ScopeEnvironment},
 	} {
+		requestScope, err := resourceScope(access.ctx, access.scope)
+		if err != nil {
+			t.Fatal(err)
+		}
 		for i := 0; i < 2; i++ {
-			if _, err := store.ListFiles(access.ctx, storage.FileListRequest{PluginInstanceID: "plugini_test", StoreID: access.storeID, MaxEntries: 1}); err != nil {
+			if _, err := store.ListFiles(access.ctx, storage.FileListRequest{PluginInstanceID: "plugini_test", ResourceScope: requestScope, StoreID: access.storeID, MaxEntries: 1}); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -411,6 +416,7 @@ func TestExportClosesWarmNamespaceDatabasesBeforeSnapshot(t *testing.T) {
 			for index := 0; index < 16; index++ {
 				_, err := store.PutKV(ctx, storage.KVPutRequest{
 					PluginInstanceID: "plugini_test",
+					ResourceScope:    internalUserScope(),
 					StoreID:          "kv",
 					Key:              fmt.Sprintf("worker/%02d/%02d", worker, index),
 					Value:            make([]byte, 128),
@@ -488,7 +494,7 @@ func TestBrokerRejectsUnexpectedPhysicalNamespaceEntries(t *testing.T) {
 	if _, err := store.CommitEnable(ctx, CommitEnableRequest{PluginInstanceID: "plugini_test", Shape: shape, ExpectedManagementRevision: 1}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.PutKV(ctx, storage.KVPutRequest{PluginInstanceID: "plugini_test", StoreID: "kv", Key: "valid", Value: []byte("value")}); err != nil {
+	if _, err := store.PutKV(ctx, storage.KVPutRequest{PluginInstanceID: "plugini_test", ResourceScope: internalUserScope(), StoreID: "kv", Key: "valid", Value: []byte("value")}); err != nil {
 		t.Fatal(err)
 	}
 	binding, _, err := catalog.GetBinding(ctx, "plugini_test")
@@ -505,8 +511,84 @@ func TestBrokerRejectsUnexpectedPhysicalNamespaceEntries(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dataRoot, "unexpected"), []byte("tampered"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.GetKV(ctx, storage.KVGetRequest{PluginInstanceID: "plugini_test", StoreID: "kv", Key: "valid"}); !errors.Is(err, ErrDatasetCorrupt) {
+	if _, err := store.GetKV(ctx, storage.KVGetRequest{PluginInstanceID: "plugini_test", ResourceScope: internalUserScope(), StoreID: "kv", Key: "valid"}); !errors.Is(err, ErrDatasetCorrupt) {
 		t.Fatalf("GetKV() error = %v, want ErrDatasetCorrupt", err)
+	}
+}
+
+func TestBrokerRequiresExactRequestResourceScope(t *testing.T) {
+	store, _, shape := newInternalStore(t)
+	ctx := internalTestContext()
+	shape.Namespaces = append(shape.Namespaces, Namespace{ID: "db", Kind: NamespaceSQLite, Scope: "user", SchemaVersion: 1, QuotaBytes: 1 << 20, QuotaFiles: 8})
+	if _, err := store.CommitEnable(ctx, CommitEnableRequest{PluginInstanceID: "plugini_test", Shape: shape, ExpectedManagementRevision: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.WriteFile(ctx, storage.FileWriteRequest{PluginInstanceID: "plugini_test", ResourceScope: internalUserScope(), StoreID: "files", Path: "scope.txt", Data: []byte("scope")}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.PutKV(ctx, storage.KVPutRequest{PluginInstanceID: "plugini_test", ResourceScope: internalUserScope(), StoreID: "kv", Key: "scope", Value: []byte("scope")}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.ExecSQLite(ctx, storage.SQLiteExecRequest{PluginInstanceID: "plugini_test", ResourceScope: internalUserScope(), StoreID: "db", SQL: `CREATE TABLE scoped (id INTEGER PRIMARY KEY)`}); err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		name   string
+		invoke func(sessionctx.ResourceScope) error
+	}{
+		{name: "files read", invoke: func(scope sessionctx.ResourceScope) error {
+			_, err := store.ReadFile(ctx, storage.FileReadRequest{PluginInstanceID: "plugini_test", ResourceScope: scope, StoreID: "files", Path: "scope.txt"})
+			return err
+		}},
+		{name: "files write", invoke: func(scope sessionctx.ResourceScope) error {
+			_, err := store.WriteFile(ctx, storage.FileWriteRequest{PluginInstanceID: "plugini_test", ResourceScope: scope, StoreID: "files", Path: "scope.txt", Data: []byte("scope")})
+			return err
+		}},
+		{name: "files list", invoke: func(scope sessionctx.ResourceScope) error {
+			_, err := store.ListFiles(ctx, storage.FileListRequest{PluginInstanceID: "plugini_test", ResourceScope: scope, StoreID: "files"})
+			return err
+		}},
+		{name: "files delete", invoke: func(scope sessionctx.ResourceScope) error {
+			return store.DeleteFile(ctx, storage.FileDeleteRequest{PluginInstanceID: "plugini_test", ResourceScope: scope, StoreID: "files", Path: "scope.txt"})
+		}},
+		{name: "kv get", invoke: func(scope sessionctx.ResourceScope) error {
+			_, err := store.GetKV(ctx, storage.KVGetRequest{PluginInstanceID: "plugini_test", ResourceScope: scope, StoreID: "kv", Key: "scope"})
+			return err
+		}},
+		{name: "kv put", invoke: func(scope sessionctx.ResourceScope) error {
+			_, err := store.PutKV(ctx, storage.KVPutRequest{PluginInstanceID: "plugini_test", ResourceScope: scope, StoreID: "kv", Key: "scope", Value: []byte("scope")})
+			return err
+		}},
+		{name: "kv list", invoke: func(scope sessionctx.ResourceScope) error {
+			_, err := store.ListKV(ctx, storage.KVListRequest{PluginInstanceID: "plugini_test", ResourceScope: scope, StoreID: "kv"})
+			return err
+		}},
+		{name: "kv delete", invoke: func(scope sessionctx.ResourceScope) error {
+			return store.DeleteKV(ctx, storage.KVDeleteRequest{PluginInstanceID: "plugini_test", ResourceScope: scope, StoreID: "kv", Key: "scope"})
+		}},
+		{name: "sqlite exec", invoke: func(scope sessionctx.ResourceScope) error {
+			_, err := store.ExecSQLite(ctx, storage.SQLiteExecRequest{PluginInstanceID: "plugini_test", ResourceScope: scope, StoreID: "db", SQL: `INSERT INTO scoped DEFAULT VALUES`})
+			return err
+		}},
+		{name: "sqlite query", invoke: func(scope sessionctx.ResourceScope) error {
+			_, err := store.QuerySQLite(ctx, storage.SQLiteQueryRequest{PluginInstanceID: "plugini_test", ResourceScope: scope, StoreID: "db", SQL: `SELECT id FROM scoped`})
+			return err
+		}},
+	}
+	deniedScopes := []sessionctx.ResourceScope{
+		{},
+		internalEnvironmentScope(),
+		{Kind: sessionctx.ScopeUser, OwnerEnvHash: internalUserScope().OwnerEnvHash, OwnerUserHash: "owner_user_other"},
+		{Kind: sessionctx.ScopeUser, OwnerEnvHash: "owner_env_other", OwnerUserHash: internalUserScope().OwnerUserHash},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			for _, denied := range deniedScopes {
+				if err := test.invoke(denied); !errors.Is(err, ErrStorageScopeMismatch) {
+					t.Fatalf("scope %#v error = %v, want ErrStorageScopeMismatch", denied, err)
+				}
+			}
+		})
 	}
 }
 

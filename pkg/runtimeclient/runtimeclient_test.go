@@ -1370,6 +1370,7 @@ func TestIPCGoldenFixtures(t *testing.T) {
 		"unknown_enum.json",
 		"valid_hello_ack.json",
 		"valid_invoke_worker_result.json",
+		"valid_validate_handle_grant.json",
 	}
 	files, err := filepath.Glob(filepath.Join("..", "..", "testdata", "contracts", "ipc", "*.json"))
 	if err != nil {
@@ -1418,6 +1419,7 @@ type ipcGoldenFixture struct {
 	Name                string   `json:"name"`
 	Kind                string   `json:"kind"`
 	RequestID           string   `json:"request_id"`
+	ParentRequestID     string   `json:"parent_request_id,omitempty"`
 	RuntimeGenerationID string   `json:"runtime_generation_id"`
 	ResponseFrameType   string   `json:"response_frame_type,omitempty"`
 	ChannelNonce        string   `json:"channel_nonce,omitempty"`
@@ -1449,6 +1451,23 @@ func validateIPCGoldenFixture(fixture ipcGoldenFixture) error {
 		}
 		_, err := decodeRuntimeResponse(fixture.Frame)
 		return err
+	case "validate_handle_grant":
+		if fixture.Frame.FrameType != ipcFrameTypeValidateHandleGrant ||
+			fixture.Frame.RequestID != fixture.RequestID ||
+			fixture.Frame.ParentRequestID != fixture.ParentRequestID ||
+			fixture.Frame.RuntimeGenerationID != fixture.RuntimeGenerationID {
+			return errors.New("validate_handle_grant frame identity mismatch")
+		}
+		var request HandleGrantValidationRequest
+		if err := decodeStrictJSON(fixture.Frame.Payload, &request); err != nil {
+			return err
+		}
+		if request.ResourceScope.Validate() != nil ||
+			request.OwnerSessionHash == "" || request.OwnerUserHash == "" ||
+			request.OwnerEnvHash == "" || request.SessionChannelIDHash == "" {
+			return errors.New("validate_handle_grant audience is invalid")
+		}
+		return nil
 	default:
 		return fmt.Errorf("unsupported ipc fixture kind %q", fixture.Kind)
 	}
@@ -2073,6 +2092,7 @@ func TestProcessSupervisorValidatesHandleGrantDuringWorkerInvocation(t *testing.
 	if validator.calls != 1 || validator.last.RuntimeGenerationID != health.RuntimeGenerationID || validator.last.HandleID != "storage:db" {
 		t.Fatalf("validator mismatch: calls=%d last=%#v", validator.calls, validator.last)
 	}
+	assertHandleGrantSessionAudience(t, validator.last)
 	stopRuntimeSupervisor(t, supervisor)
 }
 
@@ -2143,6 +2163,7 @@ func TestProcessSupervisorServesStorageFileRequestDuringWorkerInvocation(t *test
 	if validator.calls != 1 || validator.last.HandleID != "storage:workspace" || validator.last.Method != "storage.files" {
 		t.Fatalf("validator mismatch: calls=%d last=%#v", validator.calls, validator.last)
 	}
+	assertHandleGrantSessionAudience(t, validator.last)
 	if files.readCalls != 1 || files.lastRead.PluginInstanceID != "plugini_1" || files.lastRead.StoreID != "workspace" || files.lastRead.Path != "notes/today.txt" {
 		t.Fatalf("storage read mismatch: calls=%d last=%#v", files.readCalls, files.lastRead)
 	}
@@ -2260,6 +2281,7 @@ func TestProcessSupervisorServesStorageKVRequestDuringWorkerInvocation(t *testin
 	if validator.calls != 1 || validator.last.HandleID != "storage:settings" || validator.last.Method != "storage.kv" {
 		t.Fatalf("validator mismatch: calls=%d last=%#v", validator.calls, validator.last)
 	}
+	assertHandleGrantSessionAudience(t, validator.last)
 	if kv.putCalls != 1 || kv.lastPut.PluginInstanceID != "plugini_1" || kv.lastPut.StoreID != "settings" || kv.lastPut.Key != "demo/last_broker_run" || string(kv.lastPut.Value) != "hello kv" {
 		t.Fatalf("storage kv put mismatch: calls=%d last=%#v", kv.putCalls, kv.lastPut)
 	}
@@ -2343,6 +2365,7 @@ func TestProcessSupervisorServesStorageSQLiteRequestDuringWorkerInvocation(t *te
 	if validator.calls != 1 || validator.last.HandleID != "storage:db" || validator.last.Method != "storage.sqlite" {
 		t.Fatalf("validator mismatch: calls=%d last=%#v", validator.calls, validator.last)
 	}
+	assertHandleGrantSessionAudience(t, validator.last)
 	if sqlite.queryCalls != 1 || sqlite.lastQuery.PluginInstanceID != "plugini_1" || sqlite.lastQuery.StoreID != "db" || sqlite.lastQuery.SQL != "SELECT title, score FROM events WHERE score = ?" {
 		t.Fatalf("storage sqlite query mismatch: calls=%d last=%#v", sqlite.queryCalls, sqlite.lastQuery)
 	}
@@ -3458,6 +3481,38 @@ func TestProcessSupervisorRejectsInvalidHandleGrantRequestBeforeValidator(t *tes
 	}
 	if validator.calls != 0 {
 		t.Fatalf("validator was called for invalid request: %d", validator.calls)
+	}
+	stopRuntimeSupervisor(t, supervisor)
+}
+
+func TestProcessSupervisorRejectsHandleGrantSessionMismatchBeforeValidator(t *testing.T) {
+	validator := &recordingHandleGrantValidator{}
+	supervisor, err := newTestProcessSupervisor(t, ProcessSupervisorOptions{
+		Limits:                DefaultRuntimeLimits(),
+		HandshakeTimeout:      5 * time.Second,
+		HeartbeatInterval:     2 * time.Second,
+		MaxHeartbeatStaleness: 5 * time.Second,
+		RuntimePath:           os.Args[0],
+		Args:                  []string{"-test.run=TestMain"},
+		Env:                   append(os.Environ(), "REDEVPLUGIN_RUNTIMECLIENT_HELPER=1", "REDEVPLUGIN_RUNTIMECLIENT_VALIDATE_HANDLE=1", "REDEVPLUGIN_RUNTIMECLIENT_HANDLE_OWNER_MISMATCH=1"),
+		HandleGrants:          validator,
+		StreamSink:            &recordingRuntimeStreamSink{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := supervisor.Start(context.Background(), testRuntimeTarget); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	health, err := supervisor.Health(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := supervisor.invokeWorkerForTest(context.Background(), Lease{LeaseID: "lease_1", RuntimeGenerationID: health.RuntimeGenerationID, PluginInstanceID: "plugini_1"}, "worker.echo", workerInvocationFixture()); !errors.Is(err, ErrRuntimeRequestFailed) {
+		t.Fatalf("InvokeWorker() error = %v, want ErrRuntimeRequestFailed", err)
+	}
+	if validator.calls != 0 {
+		t.Fatalf("validator was called for session-mismatched request: %d", validator.calls)
 	}
 	stopRuntimeSupervisor(t, supervisor)
 }
@@ -4731,18 +4786,22 @@ func networkGrantRequestFromInvoke(request ipcFrame) networkGrantRequestPayload 
 
 func handleGrantValidationRequestFromInvoke(request ipcFrame) HandleGrantValidationRequest {
 	req := HandleGrantValidationRequest{
-		HandleGrantToken:    "handle_grant_token_1",
-		PluginInstanceID:    "plugini_1",
-		ActiveFingerprint:   "sha256:active",
-		RuntimeInstanceID:   "runtime_1",
-		RuntimeGenerationID: request.RuntimeGenerationID,
-		RuntimeShardID:      "runtime_shard_1",
-		HandleID:            "storage:db",
-		Method:              "storage.sqlite",
-		ResourceScope:       resourceScopeFromHelperRequest(request),
-		PolicyRevision:      1,
-		ManagementRevision:  2,
-		RevokeEpoch:         3,
+		HandleGrantToken:     "handle_grant_token_1",
+		PluginInstanceID:     "plugini_1",
+		ActiveFingerprint:    "sha256:active",
+		RuntimeInstanceID:    "runtime_1",
+		RuntimeGenerationID:  request.RuntimeGenerationID,
+		RuntimeShardID:       "runtime_shard_1",
+		OwnerSessionHash:     "session_hash",
+		OwnerUserHash:        "user_hash",
+		OwnerEnvHash:         "env_hash",
+		SessionChannelIDHash: "channel_hash",
+		HandleID:             "storage:db",
+		Method:               "storage.sqlite",
+		ResourceScope:        resourceScopeFromHelperRequest(request),
+		PolicyRevision:       1,
+		ManagementRevision:   2,
+		RevokeEpoch:          3,
 	}
 	if request.FrameType == ipcFrameTypeInvokeWorker {
 		var payload invokeWorkerRequestPayload
@@ -4752,6 +4811,10 @@ func handleGrantValidationRequestFromInvoke(request ipcFrame) HandleGrantValidat
 			req.RuntimeInstanceID = payload.Lease.RuntimeInstanceID
 			req.RuntimeGenerationID = payload.Lease.RuntimeGenerationID
 			req.RuntimeShardID = payload.Lease.RuntimeShardID
+			req.OwnerSessionHash = payload.Lease.OwnerSessionHash
+			req.OwnerUserHash = payload.Lease.OwnerUserHash
+			req.OwnerEnvHash = payload.Lease.OwnerEnvHash
+			req.SessionChannelIDHash = payload.Lease.SessionChannelIDHash
 			req.PolicyRevision = payload.Lease.PolicyRevision
 			req.ManagementRevision = payload.Lease.ManagementRevision
 			req.RevokeEpoch = payload.Lease.RevokeEpoch
@@ -4760,7 +4823,20 @@ func handleGrantValidationRequestFromInvoke(request ipcFrame) HandleGrantValidat
 	if os.Getenv("REDEVPLUGIN_RUNTIMECLIENT_INVALID_HANDLE_REQUEST") == "1" {
 		req.HandleGrantToken = ""
 	}
+	if os.Getenv("REDEVPLUGIN_RUNTIMECLIENT_HANDLE_OWNER_MISMATCH") == "1" {
+		req.OwnerSessionHash = "session_other"
+	}
 	return req
+}
+
+func assertHandleGrantSessionAudience(t testing.TB, req HandleGrantValidationRequest) {
+	t.Helper()
+	if req.OwnerSessionHash != "session_hash" ||
+		req.OwnerUserHash != "user_hash" ||
+		req.OwnerEnvHash != "env_hash" ||
+		req.SessionChannelIDHash != "channel_hash" {
+		t.Fatalf("handle grant session audience mismatch: %#v", req)
+	}
 }
 
 func resourceScopeFromHelperRequest(request ipcFrame) sessionctx.ResourceScope {

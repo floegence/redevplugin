@@ -55,6 +55,16 @@ func TestNetworkGrantSchemaMatchesConnectivityContract(t *testing.T) {
 	if props["runtime_generation_id"] == nil {
 		t.Fatal("network grant schema missing optional runtime_generation_id")
 	}
+	for _, name := range []string{"policy_revision", "management_revision", "revoke_epoch"} {
+		field := requireNestedObject(t, props, name)
+		wantMinimum := float64(0)
+		if name == "revoke_epoch" {
+			wantMinimum = 1
+		}
+		if field["minimum"] != wantMinimum || field["maximum"] != float64(9007199254740991) {
+			t.Fatalf("network grant %s bounds = %#v", name, field)
+		}
+	}
 	resourceScope := requireNestedObject(t, schema, "$defs", "resource_scope")
 	if resourceScope["additionalProperties"] != false {
 		t.Fatalf("resource_scope additionalProperties = %#v, want false", resourceScope["additionalProperties"])

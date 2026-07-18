@@ -48,7 +48,7 @@ func (s *FileStore) ExecSQLite(ctx context.Context, req storage.SQLiteExecReques
 	}
 	ctx, cancel := sqliteContext(ctx, req.Timeout)
 	defer cancel()
-	err = s.withNamespace(ctx, req.PluginInstanceID, req.StoreID, NamespaceSQLite, true, func(a *namespaceAccess) error {
+	err = s.withNamespace(ctx, req.PluginInstanceID, req.ResourceScope, req.StoreID, NamespaceSQLite, true, func(a *namespaceAccess) error {
 		if err := rejectRootSymlinkPath(a.root, filepath.Dir(database)); err != nil {
 			return err
 		}
@@ -155,7 +155,7 @@ func (s *FileStore) QuerySQLite(ctx context.Context, req storage.SQLiteQueryRequ
 	}
 	ctx, cancel := sqliteContext(ctx, req.Timeout)
 	defer cancel()
-	err = s.withNamespace(ctx, req.PluginInstanceID, req.StoreID, NamespaceSQLite, false, func(a *namespaceAccess) error {
+	err = s.withNamespace(ctx, req.PluginInstanceID, req.ResourceScope, req.StoreID, NamespaceSQLite, false, func(a *namespaceAccess) error {
 		releaseQuery, err := s.acquireSQLiteQuery(ctx, a.usageKey)
 		if err != nil {
 			return err

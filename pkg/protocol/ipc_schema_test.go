@@ -414,8 +414,17 @@ func TestIPCSchemaValidatesV4Frames(t *testing.T) {
 	if err := json.Unmarshal(validHelloAck, &helloAckFixture); err != nil {
 		t.Fatal(err)
 	}
+	validHandleGrant, err := os.ReadFile(filepath.Join(root, "testdata", "contracts", "ipc", "valid_validate_handle_grant.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var handleGrantFixture map[string]any
+	if err := json.Unmarshal(validHandleGrant, &handleGrantFixture); err != nil {
+		t.Fatal(err)
+	}
 	frames := map[string]map[string]any{
-		"hello ack": requireNestedObject(t, helloAckFixture, "frame"),
+		"hello ack":             requireNestedObject(t, helloAckFixture, "frame"),
+		"validate handle grant": requireNestedObject(t, handleGrantFixture, "frame"),
 		"heartbeat ack": {
 			"ipc_version":           "rust-ipc-v4",
 			"frame_type":            "heartbeat",
@@ -865,9 +874,23 @@ func TestIPCSchemaDefinesHandleGrantValidationPayloads(t *testing.T) {
 	defs := requireNestedObject(t, schema, "$defs")
 	request := requireNestedObject(t, defs, "validate_handle_grant_request_payload")
 	requestProps := requireNestedObject(t, request, "properties")
-	for _, name := range []string{"handle_grant_token", "plugin_instance_id", "active_fingerprint", "runtime_generation_id", "handle_id", "method", "resource_scope", "policy_revision", "management_revision", "revoke_epoch"} {
+	for _, name := range []string{"handle_grant_token", "plugin_instance_id", "active_fingerprint", "runtime_instance_id", "runtime_generation_id", "runtime_shard_id", "owner_session_hash", "owner_user_hash", "owner_env_hash", "session_channel_id_hash", "handle_id", "method", "resource_scope", "policy_revision", "management_revision", "revoke_epoch"} {
 		if _, ok := requestProps[name].(map[string]any); !ok {
 			t.Fatalf("validate_handle_grant request missing %s", name)
+		}
+	}
+	assertRequiredFields(t, request, "validate_handle_grant request", []string{"owner_session_hash", "owner_user_hash", "owner_env_hash", "session_channel_id_hash"})
+	if minimum := requireNestedObject(t, requestProps, "revoke_epoch")["minimum"]; minimum != float64(1) {
+		t.Fatalf("validate_handle_grant revoke_epoch minimum = %#v, want 1", minimum)
+	}
+	for _, name := range []string{"policy_revision", "management_revision", "revoke_epoch"} {
+		field := requireNestedObject(t, requestProps, name)
+		wantMinimum := float64(0)
+		if name == "revoke_epoch" {
+			wantMinimum = 1
+		}
+		if field["minimum"] != wantMinimum || field["maximum"] != float64(9007199254740991) {
+			t.Fatalf("validate_handle_grant %s bounds = %#v", name, field)
 		}
 	}
 	response := requireNestedObject(t, defs, "validate_handle_grant_response_payload")
@@ -880,6 +903,80 @@ func TestIPCSchemaDefinesHandleGrantValidationPayloads(t *testing.T) {
 		}
 	}
 	assertClosedHostcallFailureBranch(t, response, failure, "validate_handle_grant response")
+}
+
+func TestIPCSchemaRequiresPositiveRevokeEpochs(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join(repoRoot(t), "spec", "plugin", "ipc-v4.schema.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var schema any
+	if err := json.Unmarshal(raw, &schema); err != nil {
+		t.Fatal(err)
+	}
+	count := 0
+	var visit func(any)
+	visit = func(value any) {
+		switch typed := value.(type) {
+		case map[string]any:
+			for key, child := range typed {
+				if key == "revoke_epoch" {
+					field, ok := child.(map[string]any)
+					if !ok || field["type"] != "integer" || field["minimum"] != float64(1) || field["maximum"] != float64(9007199254740991) {
+						t.Fatalf("revoke_epoch schema must require a positive integer: %#v", child)
+					}
+					count++
+				}
+				visit(child)
+			}
+		case []any:
+			for _, child := range typed {
+				visit(child)
+			}
+		}
+	}
+	visit(schema)
+	if count == 0 {
+		t.Fatal("ipc-v4 schema does not define revoke_epoch")
+	}
+}
+
+func TestIPCSchemaBoundsRevisionBindingsToJSONSafeIntegers(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join(repoRoot(t), "spec", "plugin", "ipc-v4.schema.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var schema any
+	if err := json.Unmarshal(raw, &schema); err != nil {
+		t.Fatal(err)
+	}
+	counts := map[string]int{"policy_revision": 0, "management_revision": 0}
+	var visit func(any)
+	visit = func(value any) {
+		switch typed := value.(type) {
+		case map[string]any:
+			for key, child := range typed {
+				if _, tracked := counts[key]; tracked {
+					field, ok := child.(map[string]any)
+					if !ok || field["type"] != "integer" || field["minimum"] != float64(0) || field["maximum"] != float64(9007199254740991) {
+						t.Fatalf("%s schema must be a non-negative JSON-safe integer: %#v", key, child)
+					}
+					counts[key]++
+				}
+				visit(child)
+			}
+		case []any:
+			for _, child := range typed {
+				visit(child)
+			}
+		}
+	}
+	visit(schema)
+	for key, count := range counts {
+		if count == 0 {
+			t.Fatalf("ipc-v4 schema does not define %s", key)
+		}
+	}
 }
 
 func TestIPCSchemaDefinesStorageFilePayloads(t *testing.T) {
@@ -1148,7 +1245,11 @@ func TestIPCSchemaDefinesRevokeEpochAckResult(t *testing.T) {
 	}
 	for _, name := range []string{"revoke_epoch", "closed_socket_count", "closed_stream_count", "closed_storage_handle_count"} {
 		field := requireNestedObject(t, resultProps, name)
-		if field["type"] != "integer" || field["minimum"] != float64(0) {
+		minimum := float64(0)
+		if name == "revoke_epoch" {
+			minimum = 1
+		}
+		if field["type"] != "integer" || field["minimum"] != minimum {
 			t.Fatalf("revoke_epoch_ack result %s schema = %#v", name, field)
 		}
 	}

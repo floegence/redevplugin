@@ -822,12 +822,14 @@ func TestCLIDevLifecycleExportsAndImportsPluginData(t *testing.T) {
 		t.Fatal(err)
 	}
 	ctx := cliContext(context.Background())
+	resourceScope := cliTestResourceScope(t, ctx, sessionctx.ScopeUser)
 	harness, plugin, err := loadDevHarness(ctx, stateRoot)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err := harness.pluginData.WriteFile(ctx, storage.FileWriteRequest{
 		PluginInstanceID: installSummary.PluginInstanceID,
+		ResourceScope:    resourceScope,
 		StoreID:          "workspace",
 		Path:             "notes/exported.txt",
 		Data:             []byte("original data"),
@@ -882,6 +884,7 @@ func TestCLIDevLifecycleExportsAndImportsPluginData(t *testing.T) {
 	}
 	if _, err := harness.pluginData.WriteFile(ctx, storage.FileWriteRequest{
 		PluginInstanceID: installSummary.PluginInstanceID,
+		ResourceScope:    resourceScope,
 		StoreID:          "workspace",
 		Path:             "notes/exported.txt",
 		Data:             []byte("mutated data"),
@@ -923,6 +926,7 @@ func TestCLIDevLifecycleExportsAndImportsPluginData(t *testing.T) {
 	}
 	read, err := harness.pluginData.ReadFile(ctx, storage.FileReadRequest{
 		PluginInstanceID: installSummary.PluginInstanceID,
+		ResourceScope:    resourceScope,
 		StoreID:          "workspace",
 		Path:             "notes/exported.txt",
 		MaxBytes:         1024,
@@ -1292,6 +1296,7 @@ func TestCLIVerifyCompatibilityManifest(t *testing.T) {
 
 func TestCLIInspectDataReportsCatalogWithoutFileContents(t *testing.T) {
 	ctx := cliContext(context.Background())
+	resourceScope := cliTestResourceScope(t, ctx, sessionctx.ScopeUser)
 	dir := t.TempDir()
 	scaffoldDir := filepath.Join(dir, "generated")
 	stateRoot := filepath.Join(dir, "state")
@@ -1321,6 +1326,7 @@ func TestCLIInspectDataReportsCatalogWithoutFileContents(t *testing.T) {
 	}
 	if _, err := harness.pluginData.WriteFile(ctx, storage.FileWriteRequest{
 		PluginInstanceID: installed.PluginInstanceID,
+		ResourceScope:    resourceScope,
 		StoreID:          "workspace",
 		Path:             "notes/private.txt",
 		Data:             []byte("secret contents"),
@@ -1362,6 +1368,19 @@ func TestCLIInspectDataReportsCatalogWithoutFileContents(t *testing.T) {
 	if allSummary.NamespaceCount != 1 || allSummary.PluginInstanceID != "" {
 		t.Fatalf("inspect-data all summary mismatch: %#v", allSummary)
 	}
+}
+
+func cliTestResourceScope(t testing.TB, ctx context.Context, kind sessionctx.ScopeKind) sessionctx.ResourceScope {
+	t.Helper()
+	session, err := sessionctx.Require(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	scope, err := session.ResourceScope(kind)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return scope
 }
 
 func captureCLIOutput(t *testing.T, args ...string) ([]byte, error) {

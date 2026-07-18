@@ -13,6 +13,7 @@ pub const RUNTIME_LEASE_TOKEN_KIND: &str = "runtime_execution_lease";
 pub const RUNTIME_LEASE_SIGNATURE_ALGORITHM: &str = "ed25519";
 pub const WORKER_INVOCATION_TARGET_SCHEMA_VERSION: &str = "redevplugin.worker_invocation_target.v1";
 pub const MAX_RUNTIME_LEASE_MEMORY_BYTES: u64 = 256 * 1024 * 1024;
+pub const MAX_JSON_SAFE_INTEGER: u64 = (1_u64 << 53) - 1;
 pub const FRAME_TYPE_HELLO: &str = "hello";
 pub const FRAME_TYPE_HELLO_ACK: &str = "hello_ack";
 pub const FRAME_TYPE_HEARTBEAT: &str = "heartbeat";
@@ -860,9 +861,12 @@ impl ParsedWorkerInvocation {
             bridge_channel_id: invocation.bridge_channel_id.clone().unwrap_or_default(),
             operation_id: invocation.operation_id.clone().unwrap_or_default(),
             stream_id: invocation.stream_id.clone().unwrap_or_default(),
-            policy_revision: self.lease.policy_revision.unwrap_or_default(),
-            management_revision: self.lease.management_revision.unwrap_or_default(),
-            revoke_epoch: self.lease.revoke_epoch.unwrap_or_default(),
+            policy_revision: required_safe_u64(self.lease.policy_revision, "policy_revision")?,
+            management_revision: required_safe_u64(
+                self.lease.management_revision,
+                "management_revision",
+            )?,
+            revoke_epoch: required_positive_u64(self.lease.revoke_epoch, "revoke_epoch")?,
             storage_handle_grants: invocation.storage_handle_grants.clone().unwrap_or_default(),
             broker_access_json: self
                 .broker_access_json
@@ -1122,6 +1126,7 @@ pub fn parse_revoke_epoch_request(input: &str) -> IpcResult<RevokeEpochRequest> 
     if !payload.resource_scope.valid() || payload.resource_scope.kind != "environment" {
         return Err(invalid_field("revoke resource_scope"));
     }
+    validate_revoke_epoch(payload.revoke_epoch)?;
     Ok(RevokeEpochRequest {
         resource_scope: payload.resource_scope,
         plugin_instance_id: payload.plugin_instance_id,
@@ -1648,17 +1653,17 @@ fn runtime_lease_signature_payload_json(
     append_json_u64_field(
         &mut out,
         "policy_revision",
-        required_u64(lease.policy_revision, "policy_revision")?,
+        required_safe_u64(lease.policy_revision, "policy_revision")?,
     );
     append_json_u64_field(
         &mut out,
         "management_revision",
-        required_u64(lease.management_revision, "management_revision")?,
+        required_safe_u64(lease.management_revision, "management_revision")?,
     );
     append_json_u64_field(
         &mut out,
         "revoke_epoch",
-        required_u64(lease.revoke_epoch, "revoke_epoch")?,
+        required_positive_u64(lease.revoke_epoch, "revoke_epoch")?,
     );
     append_json_i64_field(&mut out, "expires_at_unix_ms", expires_at_unix_ms);
     append_json_string_field(
@@ -1713,7 +1718,7 @@ fn optional_string(value: &Option<String>) -> String {
 
 fn positive_i64(value: Option<i64>, field: &'static str) -> IpcResult<i64> {
     value.ok_or_else(|| missing_field(field)).and_then(|value| {
-        if value > 0 {
+        if value > 0 && value as u64 <= MAX_JSON_SAFE_INTEGER {
             Ok(value)
         } else {
             Err(invalid_field(field))
@@ -1723,7 +1728,7 @@ fn positive_i64(value: Option<i64>, field: &'static str) -> IpcResult<i64> {
 
 fn nonnegative_i64(value: Option<i64>, field: &'static str) -> IpcResult<i64> {
     value.ok_or_else(|| missing_field(field)).and_then(|value| {
-        if value >= 0 {
+        if value >= 0 && value as u64 <= MAX_JSON_SAFE_INTEGER {
             Ok(value)
         } else {
             Err(invalid_field(field))
@@ -1733,6 +1738,42 @@ fn nonnegative_i64(value: Option<i64>, field: &'static str) -> IpcResult<i64> {
 
 fn required_u64(value: Option<u64>, field: &'static str) -> IpcResult<u64> {
     value.ok_or_else(|| missing_field(field))
+}
+
+fn required_safe_u64(value: Option<u64>, field: &'static str) -> IpcResult<u64> {
+    validate_safe_u64(required_u64(value, field)?, field)
+}
+
+fn required_positive_u64(value: Option<u64>, field: &'static str) -> IpcResult<u64> {
+    validate_positive_u64(required_u64(value, field)?, field)
+}
+
+fn validate_positive_u64(value: u64, field: &'static str) -> IpcResult<u64> {
+    if value == 0 {
+        return Err(invalid_field(field));
+    }
+    validate_safe_u64(value, field)
+}
+
+fn validate_safe_u64(value: u64, field: &'static str) -> IpcResult<u64> {
+    if value > MAX_JSON_SAFE_INTEGER {
+        return Err(invalid_field(field));
+    }
+    Ok(value)
+}
+
+fn validate_revoke_epoch(revoke_epoch: u64) -> IpcResult<()> {
+    validate_positive_u64(revoke_epoch, "revoke_epoch").map(|_| ())
+}
+
+fn validate_revision_binding(
+    policy_revision: u64,
+    management_revision: u64,
+    revoke_epoch: u64,
+) -> IpcResult<()> {
+    validate_safe_u64(policy_revision, "policy_revision")?;
+    validate_safe_u64(management_revision, "management_revision")?;
+    validate_revoke_epoch(revoke_epoch)
 }
 
 fn append_json_string_field(out: &mut String, key: &str, value: &str, comma: bool) {
@@ -1923,6 +1964,7 @@ pub fn revoke_epoch_ack_result_json(
     if !resource_scope.valid() || resource_scope.kind != "environment" {
         return Err(invalid_field("revoke resource scope"));
     }
+    validate_revoke_epoch(revoke_epoch)?;
     let resource_scope = serde_json::to_string(resource_scope)
         .map_err(|_| encode_failed("revoke resource scope"))?;
     Ok(format!(
@@ -2727,41 +2769,97 @@ where
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HandleGrantValidationRequest {
+    pub handle_grant_token: String,
+    pub plugin_instance_id: String,
+    pub active_fingerprint: String,
+    pub runtime_instance_id: String,
+    pub runtime_generation_id: String,
+    pub runtime_shard_id: String,
+    pub owner_session_hash: String,
+    pub owner_user_hash: String,
+    pub owner_env_hash: String,
+    pub session_channel_id_hash: String,
+    pub handle_id: String,
+    pub method: String,
+    pub resource_scope: NetworkResourceScope,
+    pub policy_revision: u64,
+    pub management_revision: u64,
+    pub revoke_epoch: u64,
+}
+
 pub fn validate_handle_grant_frame(
     request_id: &str,
     runtime_generation_id: &str,
-    handle_grant_token: &str,
-    plugin_instance_id: &str,
-    active_fingerprint: &str,
-    handle_id: &str,
-    method: &str,
-    resource_scope: &NetworkResourceScope,
-    policy_revision: u64,
-    management_revision: u64,
-    revoke_epoch: u64,
+    req: &HandleGrantValidationRequest,
 ) -> IpcResult<String> {
-    if !resource_scope.valid() {
+    for (value, field) in [
+        (request_id, "request_id"),
+        (runtime_generation_id, "runtime_generation_id"),
+        (&req.handle_grant_token, "handle_grant_token"),
+        (&req.plugin_instance_id, "plugin_instance_id"),
+        (&req.active_fingerprint, "active_fingerprint"),
+        (&req.runtime_instance_id, "runtime_instance_id"),
+        (&req.runtime_generation_id, "runtime_generation_id"),
+        (&req.runtime_shard_id, "runtime_shard_id"),
+        (&req.handle_id, "handle_id"),
+        (&req.method, "method"),
+    ] {
+        if value.trim().is_empty() {
+            return Err(invalid_field(field));
+        }
+    }
+    if runtime_generation_id != req.runtime_generation_id {
+        return Err(protocol_violation(
+            "validate_handle_grant runtime_generation_id mismatch",
+        ));
+    }
+    if !req.resource_scope.valid() {
         return Err(invalid_field("handle grant resource scope"));
     }
-    let resource_scope = serde_json::to_string(resource_scope)
+    if req.owner_session_hash.trim().is_empty()
+        || req.owner_user_hash.trim().is_empty()
+        || req.owner_env_hash.trim().is_empty()
+        || req.session_channel_id_hash.trim().is_empty()
+    {
+        return Err(invalid_field("handle grant session audience"));
+    }
+    if req.resource_scope.owner_env_hash != req.owner_env_hash
+        || (req.resource_scope.kind == "user"
+            && req.resource_scope.owner_user_hash != req.owner_user_hash)
+    {
+        return Err(invalid_field("handle grant resource scope"));
+    }
+    validate_revision_binding(
+        req.policy_revision,
+        req.management_revision,
+        req.revoke_epoch,
+    )?;
+    let resource_scope = serde_json::to_string(&req.resource_scope)
         .map_err(|_| encode_failed("handle grant resource scope"))?;
     Ok(format!(
-        "{{\"ipc_version\":\"{}\",\"frame_type\":\"{}\",\"request_id\":\"{}\",\"runtime_generation_id\":\"{}\",\"payload\":{{\"handle_grant_token\":\"{}\",\"plugin_instance_id\":\"{}\",\"active_fingerprint\":\"{}\",\"runtime_generation_id\":\"{}\",\"handle_id\":\"{}\",\"method\":\"{}\",\"resource_scope\":{},\"policy_revision\":{},\"management_revision\":{},\"revoke_epoch\":{}}}}}",
+        "{{\"ipc_version\":\"{}\",\"frame_type\":\"{}\",\"request_id\":\"{}\",\"runtime_generation_id\":\"{}\",\"payload\":{{\"handle_grant_token\":\"{}\",\"plugin_instance_id\":\"{}\",\"active_fingerprint\":\"{}\",\"runtime_instance_id\":\"{}\",\"runtime_generation_id\":\"{}\",\"runtime_shard_id\":\"{}\",\"owner_session_hash\":\"{}\",\"owner_user_hash\":\"{}\",\"owner_env_hash\":\"{}\",\"session_channel_id_hash\":\"{}\",\"handle_id\":\"{}\",\"method\":\"{}\",\"resource_scope\":{},\"policy_revision\":{},\"management_revision\":{},\"revoke_epoch\":{}}}}}",
         RUST_IPC_VERSION,
         FRAME_TYPE_VALIDATE_HANDLE_GRANT,
         escape_json_string(request_id),
         escape_json_string(runtime_generation_id),
-        escape_json_string(handle_grant_token),
-        escape_json_string(plugin_instance_id),
-        escape_json_string(active_fingerprint),
-        escape_json_string(runtime_generation_id),
-        escape_json_string(handle_id),
-        escape_json_string(method),
+        escape_json_string(&req.handle_grant_token),
+        escape_json_string(&req.plugin_instance_id),
+        escape_json_string(&req.active_fingerprint),
+        escape_json_string(&req.runtime_instance_id),
+        escape_json_string(&req.runtime_generation_id),
+        escape_json_string(&req.runtime_shard_id),
+        escape_json_string(&req.owner_session_hash),
+        escape_json_string(&req.owner_user_hash),
+        escape_json_string(&req.owner_env_hash),
+        escape_json_string(&req.session_channel_id_hash),
+        escape_json_string(&req.handle_id),
+        escape_json_string(&req.method),
         resource_scope,
-        policy_revision,
-        management_revision,
-        revoke_epoch
+        req.policy_revision,
+        req.management_revision,
+        req.revoke_epoch
     ))
 }
 
@@ -2843,6 +2941,11 @@ pub fn storage_file_frame(
     if !req.resource_scope.valid() {
         return Err(invalid_field("storage file resource scope"));
     }
+    validate_revision_binding(
+        req.policy_revision,
+        req.management_revision,
+        req.revoke_epoch,
+    )?;
     let resource_scope = serde_json::to_string(&req.resource_scope)
         .map_err(|_| encode_failed("storage file resource scope"))?;
     Ok(format!(
@@ -2948,6 +3051,11 @@ pub fn storage_kv_frame(
     if !req.resource_scope.valid() {
         return Err(invalid_field("storage kv resource scope"));
     }
+    validate_revision_binding(
+        req.policy_revision,
+        req.management_revision,
+        req.revoke_epoch,
+    )?;
     let resource_scope = serde_json::to_string(&req.resource_scope)
         .map_err(|_| encode_failed("storage kv resource scope"))?;
     Ok(format!(
@@ -3054,6 +3162,11 @@ pub fn storage_sqlite_frame(
     if !req.resource_scope.valid() {
         return Err(invalid_field("storage sqlite resource scope"));
     }
+    validate_revision_binding(
+        req.policy_revision,
+        req.management_revision,
+        req.revoke_epoch,
+    )?;
     let resource_scope = serde_json::to_string(&req.resource_scope)
         .map_err(|_| encode_failed("storage sqlite resource scope"))?;
     let args_json = if req.args_json.trim().is_empty() {
@@ -3136,13 +3249,22 @@ pub struct NetworkResourceScope {
 
 impl NetworkResourceScope {
     fn valid(&self) -> bool {
-        !self.owner_env_hash.trim().is_empty()
+        valid_owner_hash(&self.owner_env_hash)
             && match self.kind.as_str() {
-                "user" => !self.owner_user_hash.trim().is_empty(),
-                "environment" => self.owner_user_hash.trim().is_empty(),
+                "user" => valid_owner_hash(&self.owner_user_hash),
+                "environment" => self.owner_user_hash.is_empty(),
                 _ => false,
             }
     }
+}
+
+fn valid_owner_hash(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    (1..=256).contains(&bytes.len())
+        && bytes[0].is_ascii_alphanumeric()
+        && bytes[1..]
+            .iter()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(*byte, b'.' | b'_' | b':' | b'-'))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -3170,6 +3292,11 @@ pub fn network_grant_frame(
     if !req.resource_scope.valid() {
         return Err(invalid_field("network resource scope"));
     }
+    validate_revision_binding(
+        req.policy_revision,
+        req.management_revision,
+        req.revoke_epoch,
+    )?;
     let resource_scope = serde_json::to_string(&req.resource_scope)
         .map_err(|_| encode_failed("network resource scope"))?;
     Ok(format!(
@@ -3221,6 +3348,11 @@ pub fn validate_network_grant_response(
     if !success.resource_scope.valid() || success.resource_scope != *expected_resource_scope {
         return Err(protocol_violation("network_grant resource scope mismatch"));
     }
+    validate_revision_binding(
+        success.policy_revision,
+        success.management_revision,
+        success.revoke_epoch,
+    )?;
     if success.runtime_generation_id != expected_runtime_generation_id {
         return Err(protocol_violation(
             "network_grant payload runtime_generation_id mismatch",
@@ -3284,6 +3416,11 @@ pub fn network_execute_frame(
     if !req.resource_scope.valid() {
         return Err(invalid_field("network resource scope"));
     }
+    validate_revision_binding(
+        req.policy_revision,
+        req.management_revision,
+        req.revoke_epoch,
+    )?;
     let query_json = if req.query_json.trim().is_empty() {
         "{}"
     } else {
@@ -3761,6 +3898,94 @@ mod tests {
         }
     }
 
+    fn handle_grant_validation_request() -> HandleGrantValidationRequest {
+        HandleGrantValidationRequest {
+            handle_grant_token: "handle_grant.secret".to_string(),
+            plugin_instance_id: "plugini_1".to_string(),
+            active_fingerprint: "sha256:active".to_string(),
+            runtime_instance_id: "runtime_1".to_string(),
+            runtime_generation_id: "g1".to_string(),
+            runtime_shard_id: "runtime_shard_1".to_string(),
+            owner_session_hash: "session_hash".to_string(),
+            owner_user_hash: "user_hash".to_string(),
+            owner_env_hash: "env_hash".to_string(),
+            session_channel_id_hash: "channel_hash".to_string(),
+            handle_id: "storage:db".to_string(),
+            method: "storage.sqlite".to_string(),
+            resource_scope: user_resource_scope(),
+            policy_revision: 1,
+            management_revision: 2,
+            revoke_epoch: 3,
+        }
+    }
+
+    #[test]
+    fn resource_scopes_match_the_closed_owner_hash_contract() {
+        let maximum_hash = format!("a{}", "b".repeat(255));
+        for valid in [
+            NetworkResourceScope {
+                kind: "user".to_string(),
+                owner_env_hash: maximum_hash.clone(),
+                owner_user_hash: "user.hash:_-1".to_string(),
+            },
+            NetworkResourceScope {
+                kind: "environment".to_string(),
+                owner_env_hash: maximum_hash,
+                owner_user_hash: String::new(),
+            },
+        ] {
+            assert!(valid.valid(), "valid resource scope rejected: {valid:?}");
+        }
+
+        for invalid in [
+            NetworkResourceScope {
+                kind: "user".to_string(),
+                owner_env_hash: String::new(),
+                owner_user_hash: "user_hash".to_string(),
+            },
+            NetworkResourceScope {
+                kind: "user".to_string(),
+                owner_env_hash: " env_hash".to_string(),
+                owner_user_hash: "user_hash".to_string(),
+            },
+            NetworkResourceScope {
+                kind: "user".to_string(),
+                owner_env_hash: "env/hash".to_string(),
+                owner_user_hash: "user_hash".to_string(),
+            },
+            NetworkResourceScope {
+                kind: "user".to_string(),
+                owner_env_hash: "env_hash".to_string(),
+                owner_user_hash: "user_hash ".to_string(),
+            },
+            NetworkResourceScope {
+                kind: "user".to_string(),
+                owner_env_hash: "env_hash".to_string(),
+                owner_user_hash: String::new(),
+            },
+            NetworkResourceScope {
+                kind: "environment".to_string(),
+                owner_env_hash: "env_hash".to_string(),
+                owner_user_hash: " ".to_string(),
+            },
+            NetworkResourceScope {
+                kind: "environment".to_string(),
+                owner_env_hash: "a".repeat(257),
+                owner_user_hash: String::new(),
+            },
+            NetworkResourceScope {
+                kind: "environment".to_string(),
+                owner_env_hash: "\u{73af}\u{5883}".to_string(),
+                owner_user_hash: String::new(),
+            },
+        ] {
+            assert!(
+                !invalid.valid(),
+                "invalid resource scope accepted: {invalid:?}"
+            );
+        }
+    }
+
     fn closed_worker_frame(lease: &str, invocation: &str) -> String {
         format!(
             r#"{{"ipc_version":"rust-ipc-v4","frame_type":"invoke_worker","request_id":"r1","runtime_generation_id":"g1","payload":{{"lease":{lease},"method":"worker.echo","invocation":{invocation}}}}}"#
@@ -4026,7 +4251,7 @@ mod tests {
     #[test]
     fn closed_worker_decoding_rejects_unknown_duplicate_and_trailing_fields() {
         let valid = closed_worker_frame(
-            r#"{"plugin_instance_id":"plugini_1","runtime_shard_id":"runtime_shard_signed","revoke_epoch":1}"#,
+            r#"{"plugin_instance_id":"plugini_1","runtime_shard_id":"runtime_shard_signed","policy_revision":1,"management_revision":2,"revoke_epoch":1}"#,
             r#"{"plugin_id":"com.example.worker","plugin_instance_id":"plugini_1","active_fingerprint":"sha256:active","runtime_instance_id":"runtime_1","runtime_generation_id":"g1","method":"worker.echo"}"#,
         );
         let context = parse_worker_invocation_context(&valid).expect("closed worker invocation");
@@ -4212,6 +4437,19 @@ mod tests {
                 "accepted lease without {field}"
             );
         }
+
+        let mut zero_revoke_epoch = lease.clone();
+        zero_revoke_epoch.insert("revoke_epoch".to_string(), serde_json::Value::from(0));
+        assert_eq!(
+            runtime_lease_signature_payload_json(
+                &worker_lease_from_object(&zero_revoke_epoch),
+                method
+            )
+            .unwrap_err(),
+            IpcError::InvalidField {
+                field: "revoke_epoch"
+            }
+        );
 
         for field in [
             "timeout_ms",
@@ -4547,6 +4785,7 @@ mod tests {
         let fixtures = [
             "valid_hello_ack.json",
             "valid_invoke_worker_result.json",
+            "valid_validate_handle_grant.json",
             "missing_required.json",
             "replay_frame.json",
             "runtime_generation_mismatch.json",
@@ -4559,6 +4798,7 @@ mod tests {
                 Some(
                     fixture_name != "valid_hello_ack.json"
                         && fixture_name != "valid_invoke_worker_result.json"
+                        && fixture_name != "valid_validate_handle_grant.json"
                 ),
                 "fixture {fixture_name} want_error mismatch"
             );
@@ -4603,6 +4843,24 @@ mod tests {
                         &result,
                     )
                     .expect("success response frame");
+                    assert_json_eq(&frame_json, &encoded, fixture_name);
+                }
+                "valid_validate_handle_grant.json" => {
+                    let encoded = validate_handle_grant_frame(
+                        fixture["request_id"].as_str().expect("request_id"),
+                        fixture["runtime_generation_id"]
+                            .as_str()
+                            .expect("runtime_generation_id"),
+                        &handle_grant_validation_request(),
+                    )
+                    .expect("validate handle grant frame");
+                    let encoded = bind_parent_request_id(
+                        &encoded,
+                        fixture["parent_request_id"]
+                            .as_str()
+                            .expect("parent_request_id"),
+                    )
+                    .expect("bind validate handle grant parent");
                     assert_json_eq(&frame_json, &encoded, fixture_name);
                 }
                 "missing_required.json" => {
@@ -4790,23 +5048,132 @@ mod tests {
 
     #[test]
     fn renders_validate_handle_grant_frame() {
-        let frame = validate_handle_grant_frame(
-            "r1:handle",
-            "g1",
-            "handle_grant.secret",
-            "plugini_1",
-            "sha256:active",
-            "storage:db",
-            "storage.sqlite",
-            &user_resource_scope(),
-            1,
-            2,
-            3,
-        )
-        .expect("valid handle grant frame");
+        let request = handle_grant_validation_request();
+        let frame = validate_handle_grant_frame("r1:handle", "g1", &request)
+            .expect("valid handle grant frame");
         assert!(frame.contains(r#""frame_type":"validate_handle_grant""#));
         assert!(frame.contains(r#""handle_id":"storage:db""#));
+        assert!(frame.contains(r#""runtime_instance_id":"runtime_1""#));
+        assert!(frame.contains(r#""runtime_shard_id":"runtime_shard_1""#));
+        assert!(frame.contains(r#""owner_session_hash":"session_hash""#));
+        assert!(frame.contains(r#""owner_user_hash":"user_hash""#));
+        assert!(frame.contains(r#""owner_env_hash":"env_hash""#));
+        assert!(frame.contains(r#""session_channel_id_hash":"channel_hash""#));
         assert!(frame.contains(r#""policy_revision":1"#));
+
+        let mut missing_session = request.clone();
+        missing_session.owner_session_hash.clear();
+        assert_eq!(
+            validate_handle_grant_frame("r1:handle", "g1", &missing_session).unwrap_err(),
+            IpcError::InvalidField {
+                field: "handle grant session audience"
+            }
+        );
+
+        let mut mismatched_scope = request.clone();
+        mismatched_scope.owner_env_hash = "env_other".to_string();
+        assert_eq!(
+            validate_handle_grant_frame("r1:handle", "g1", &mismatched_scope).unwrap_err(),
+            IpcError::InvalidField {
+                field: "handle grant resource scope"
+            }
+        );
+
+        let mut missing_token = request.clone();
+        missing_token.handle_grant_token.clear();
+        assert_eq!(
+            validate_handle_grant_frame("r1:handle", "g1", &missing_token).unwrap_err(),
+            IpcError::InvalidField {
+                field: "handle_grant_token"
+            }
+        );
+        assert_eq!(
+            validate_handle_grant_frame("", "g1", &request).unwrap_err(),
+            IpcError::InvalidField {
+                field: "request_id"
+            }
+        );
+        assert_eq!(
+            validate_handle_grant_frame("r1:handle", "g2", &request).unwrap_err(),
+            IpcError::ProtocolViolation {
+                message: "validate_handle_grant runtime_generation_id mismatch"
+            }
+        );
+        let mut unsafe_revision = request;
+        unsafe_revision.policy_revision = MAX_JSON_SAFE_INTEGER + 1;
+        assert_eq!(
+            validate_handle_grant_frame("r1:handle", "g1", &unsafe_revision).unwrap_err(),
+            IpcError::InvalidField {
+                field: "policy_revision"
+            }
+        );
+    }
+
+    #[test]
+    fn zero_revoke_epoch_returns_typed_errors() {
+        let revoke = r#"{"ipc_version":"rust-ipc-v4","frame_type":"revoke_epoch","request_id":"r1","runtime_generation_id":"g1","payload":{"resource_scope":{"kind":"environment","owner_env_hash":"env_hash"},"plugin_instance_id":"plugini_1","revoke_epoch":0}}"#;
+        assert_eq!(
+            parse_revoke_epoch_request(revoke).unwrap_err(),
+            IpcError::InvalidField {
+                field: "revoke_epoch"
+            }
+        );
+        let worker = closed_worker_frame(
+            r#"{"runtime_shard_id":"runtime_shard_signed","policy_revision":1,"management_revision":2,"revoke_epoch":0}"#,
+            r#"{"plugin_id":"com.example.worker","plugin_instance_id":"plugini_1","active_fingerprint":"sha256:active","runtime_instance_id":"runtime_1","runtime_generation_id":"g1","method":"worker.echo"}"#,
+        );
+        assert_eq!(
+            parse_worker_invocation_context(&worker).unwrap_err(),
+            IpcError::InvalidField {
+                field: "revoke_epoch"
+            }
+        );
+        assert_eq!(
+            revoke_epoch_ack_result_json(&environment_resource_scope(), "plugini_1", 0, 0, 0, 0)
+                .unwrap_err(),
+            IpcError::InvalidField {
+                field: "revoke_epoch"
+            }
+        );
+
+        let mut handle_grant = handle_grant_validation_request();
+        handle_grant.revoke_epoch = 0;
+        assert_eq!(
+            validate_handle_grant_frame("r1:handle", "g1", &handle_grant).unwrap_err(),
+            IpcError::InvalidField {
+                field: "revoke_epoch"
+            }
+        );
+
+        let mut network_grant = NetworkGrantRequest {
+            plugin_instance_id: "plugini_1".to_string(),
+            active_fingerprint: "sha256:active".to_string(),
+            resource_scope: user_resource_scope(),
+            runtime_instance_id: "runtime_1".to_string(),
+            runtime_generation_id: "g1".to_string(),
+            runtime_shard_id: "runtime_shard_1".to_string(),
+            policy_revision: 1,
+            management_revision: 2,
+            revoke_epoch: 0,
+            connector_id: "api".to_string(),
+            transport: "http".to_string(),
+            destination: "https://api.example.com".to_string(),
+            ttl_ms: 30000,
+        };
+        assert_eq!(
+            network_grant_frame("r1:network_grant", "g1", &network_grant).unwrap_err(),
+            IpcError::InvalidField {
+                field: "revoke_epoch"
+            }
+        );
+        network_grant.revoke_epoch = 1;
+        network_grant.resource_scope.owner_env_hash = " env_hash".to_string();
+        assert_eq!(
+            network_grant_frame("r1:network_grant", "g1", &network_grant).unwrap_err(),
+            IpcError::InvalidField {
+                field: "network resource scope"
+            }
+        );
     }
 
     #[test]
@@ -4841,7 +5208,7 @@ mod tests {
 
     #[test]
     fn renders_storage_file_frame() {
-        let req = StorageFileRequest {
+        let mut req = StorageFileRequest {
             handle_grant_token: "handle_grant.secret".to_string(),
             plugin_instance_id: "plugini_1".to_string(),
             active_fingerprint: "sha256:active".to_string(),
@@ -4868,6 +5235,13 @@ mod tests {
         assert!(frame.contains(r#""handle_id":"storage:workspace""#));
         assert!(frame.contains(r#""method":"storage.files""#));
         assert!(frame.contains(r#""operation":"read""#));
+        req.policy_revision = MAX_JSON_SAFE_INTEGER + 1;
+        assert_eq!(
+            storage_file_frame("r1:storage_file", "g1", &req).unwrap_err(),
+            IpcError::InvalidField {
+                field: "policy_revision"
+            }
+        );
     }
 
     #[test]
@@ -4951,7 +5325,7 @@ mod tests {
 
     #[test]
     fn renders_storage_kv_frame() {
-        let req = StorageKVRequest {
+        let mut req = StorageKVRequest {
             handle_grant_token: "handle_grant.secret".to_string(),
             plugin_instance_id: "plugini_1".to_string(),
             active_fingerprint: "sha256:active".to_string(),
@@ -4977,6 +5351,13 @@ mod tests {
         assert!(frame.contains(r#""handle_id":"storage:settings""#));
         assert!(frame.contains(r#""method":"storage.kv""#));
         assert!(frame.contains(r#""operation":"put""#));
+        req.management_revision = MAX_JSON_SAFE_INTEGER + 1;
+        assert_eq!(
+            storage_kv_frame("r1:storage_kv", "g1", &req).unwrap_err(),
+            IpcError::InvalidField {
+                field: "management_revision"
+            }
+        );
         assert!(frame.contains(r#""key":"demo/last_broker_run""#));
     }
 
@@ -5070,7 +5451,7 @@ mod tests {
 
     #[test]
     fn renders_storage_sqlite_frame() {
-        let req = StorageSQLiteRequest {
+        let mut req = StorageSQLiteRequest {
             handle_grant_token: "handle_grant.secret".to_string(),
             plugin_instance_id: "plugini_1".to_string(),
             active_fingerprint: "sha256:active".to_string(),
@@ -5099,6 +5480,13 @@ mod tests {
         assert!(frame.contains(r#""method":"storage.sqlite""#));
         assert!(frame.contains(r#""operation":"query""#));
         assert!(frame.contains(r#""args":[{"int":7}]"#));
+        req.policy_revision = MAX_JSON_SAFE_INTEGER + 1;
+        assert_eq!(
+            storage_sqlite_frame("r1:storage_sqlite", "g1", &req).unwrap_err(),
+            IpcError::InvalidField {
+                field: "policy_revision"
+            }
+        );
     }
 
     #[test]
@@ -5179,7 +5567,7 @@ mod tests {
 
     #[test]
     fn renders_network_grant_frame() {
-        let req = NetworkGrantRequest {
+        let mut req = NetworkGrantRequest {
             plugin_instance_id: "plugini_1".to_string(),
             active_fingerprint: "sha256:active".to_string(),
             resource_scope: NetworkResourceScope {
@@ -5205,6 +5593,13 @@ mod tests {
         assert!(frame.contains(r#""transport":"http""#));
         assert!(frame.contains(r#""resource_scope":{"kind":"user","owner_env_hash":"env_hash","owner_user_hash":"user_hash"}"#));
         assert!(frame.contains(r#""ttl_ms":30000"#));
+        req.management_revision = MAX_JSON_SAFE_INTEGER + 1;
+        assert_eq!(
+            network_grant_frame("r1:network_grant", "g1", &req).unwrap_err(),
+            IpcError::InvalidField {
+                field: "management_revision"
+            }
+        );
     }
 
     #[test]
@@ -5217,6 +5612,24 @@ mod tests {
         let frame = r#"{"ipc_version":"rust-ipc-v4","frame_type":"network_grant","request_id":"r1:network_grant","runtime_generation_id":"g1","payload":{"ok":true,"grant_id":"netgrant_00112233445566778899aabbccddeeff","plugin_instance_id":"plugini_1","active_fingerprint":"sha256:active","resource_scope":{"kind":"user","owner_env_hash":"env_hash","owner_user_hash":"user_hash"},"policy_revision":1,"management_revision":2,"revoke_epoch":3,"connector_id":"api","transport":"http","destination":{"transport":"http","scheme":"https","host":"api.example.com","port":443},"runtime_generation_id":"g1","target_classifier_version":"target-classifier-v2","expires_at":"2026-06-30T10:00:30Z"}}"#;
         validate_network_grant_response(frame, "r1:network_grant", "g1", "api", "http", &scope)
             .expect("valid network grant response");
+        let unsafe_revision = frame.replace(
+            r#""policy_revision":1"#,
+            r#""policy_revision":9007199254740992"#,
+        );
+        assert_eq!(
+            validate_network_grant_response(
+                &unsafe_revision,
+                "r1:network_grant",
+                "g1",
+                "api",
+                "http",
+                &scope,
+            )
+            .unwrap_err(),
+            IpcError::InvalidField {
+                field: "policy_revision"
+            }
+        );
         let failed = r#"{"ipc_version":"rust-ipc-v4","frame_type":"network_grant","request_id":"r1:network_grant","runtime_generation_id":"g1","payload":{"ok":false,"code":"NETWORK_TARGET_DENIED","message":"blocked","error_origin":"hostcall"}}"#;
         let err = validate_network_grant_response(
             failed,
@@ -5287,6 +5700,14 @@ mod tests {
         assert!(frame.contains(r#""operation":"http""#));
         assert!(frame.contains(r#""headers":{"X-Test":["ok"]}"#));
         assert!(frame.contains(r#""query":{"lang":["en"],"units":["metric"]}"#));
+        req.policy_revision = MAX_JSON_SAFE_INTEGER + 1;
+        assert_eq!(
+            network_execute_frame("r1:network_execute", "g1", &req).unwrap_err(),
+            IpcError::InvalidField {
+                field: "policy_revision"
+            }
+        );
+        req.policy_revision = 1;
         assert!(frame.contains(r#""body_base64":"e30=""#));
         assert!(frame.contains(r#""stream_id":"stream_1""#));
         assert!(frame.contains(r#""owner_session_hash":"session_hash""#));

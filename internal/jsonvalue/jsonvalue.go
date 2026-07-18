@@ -18,8 +18,17 @@ const (
 	maxEncodedBytes = 512 * 1024
 	maxDepth        = 64
 	maxNodes        = 32768
-	maxSafeInteger  = int64(1<<53 - 1)
+	MaxSafeInteger  = uint64(1<<53 - 1)
+	maxSafeInteger  = int64(MaxSafeInteger)
 )
+
+func IsSafeUnsignedInteger(value uint64) bool {
+	return value <= MaxSafeInteger
+}
+
+func IsPositiveSafeUnsignedInteger(value uint64) bool {
+	return value > 0 && IsSafeUnsignedInteger(value)
+}
 
 var (
 	errInvalidValue   = errors.New("invalid JSON value")

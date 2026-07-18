@@ -194,7 +194,7 @@ func TestBrokerAllowsIndependentNamespaceProgress(t *testing.T) {
 	releaseFiles := store.namespaceLocks.lock(scopedNamespaceCacheKey(owner, binding.GenerationID, "files"), true)
 	kvDone := make(chan error, 1)
 	go func() {
-		_, err := store.PutKV(internalTestContext(), storage.KVPutRequest{PluginInstanceID: "plugini_test", StoreID: "kv", Key: "ready", Value: []byte("yes")})
+		_, err := store.PutKV(internalTestContext(), storage.KVPutRequest{PluginInstanceID: "plugini_test", ResourceScope: internalUserScope(), StoreID: "kv", Key: "ready", Value: []byte("yes")})
 		kvDone <- err
 	}()
 	select {
@@ -207,7 +207,7 @@ func TestBrokerAllowsIndependentNamespaceProgress(t *testing.T) {
 	}
 	fileDone := make(chan error, 1)
 	go func() {
-		_, err := store.WriteFile(internalTestContext(), storage.FileWriteRequest{PluginInstanceID: "plugini_test", StoreID: "files", Path: "blocked", Data: []byte("x")})
+		_, err := store.WriteFile(internalTestContext(), storage.FileWriteRequest{PluginInstanceID: "plugini_test", ResourceScope: internalUserScope(), StoreID: "files", Path: "blocked", Data: []byte("x")})
 		fileDone <- err
 	}()
 	select {
@@ -227,11 +227,11 @@ func TestBrokerPersistsNamespaceTransactionsAcrossReopen(t *testing.T) {
 	if _, err := store.CommitEnable(ctx, CommitEnableRequest{PluginInstanceID: "plugini_test", Shape: shape, InitialSettings: map[string]json.RawMessage{}, ExpectedManagementRevision: 1}); err != nil {
 		t.Fatal(err)
 	}
-	fileWrite, err := store.WriteFile(ctx, storage.FileWriteRequest{PluginInstanceID: "plugini_test", StoreID: "files", Path: "notes/committed.txt", Data: []byte("committed")})
+	fileWrite, err := store.WriteFile(ctx, storage.FileWriteRequest{PluginInstanceID: "plugini_test", ResourceScope: internalUserScope(), StoreID: "files", Path: "notes/committed.txt", Data: []byte("committed")})
 	if err != nil || fileWrite.Usage.UsageBytes != 9 || fileWrite.Usage.UsageFiles != 2 {
 		t.Fatalf("WriteFile() = %#v, err = %v", fileWrite, err)
 	}
-	kvWrite, err := store.PutKV(ctx, storage.KVPutRequest{PluginInstanceID: "plugini_test", StoreID: "kv", Key: "committed", Value: []byte("value")})
+	kvWrite, err := store.PutKV(ctx, storage.KVPutRequest{PluginInstanceID: "plugini_test", ResourceScope: internalUserScope(), StoreID: "kv", Key: "committed", Value: []byte("value")})
 	if err != nil || kvWrite.Usage.UsageBytes != 5 || kvWrite.Usage.UsageFiles != 1 {
 		t.Fatalf("PutKV() = %#v, err = %v", kvWrite, err)
 	}
@@ -244,11 +244,11 @@ func TestBrokerPersistsNamespaceTransactionsAcrossReopen(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer reopened.Close()
-	data, err := reopened.ReadFile(ctx, storage.FileReadRequest{PluginInstanceID: "plugini_test", StoreID: "files", Path: "notes/committed.txt"})
+	data, err := reopened.ReadFile(ctx, storage.FileReadRequest{PluginInstanceID: "plugini_test", ResourceScope: internalUserScope(), StoreID: "files", Path: "notes/committed.txt"})
 	if err != nil || string(data.Data) != "committed" || data.Usage.UsageFiles != 2 {
 		t.Fatalf("ReadFile() after reopen = %#v, err = %v", data, err)
 	}
-	value, err := reopened.GetKV(ctx, storage.KVGetRequest{PluginInstanceID: "plugini_test", StoreID: "kv", Key: "committed"})
+	value, err := reopened.GetKV(ctx, storage.KVGetRequest{PluginInstanceID: "plugini_test", ResourceScope: internalUserScope(), StoreID: "kv", Key: "committed"})
 	if err != nil || string(value.Value) != "value" || value.Usage.UsageFiles != 1 {
 		t.Fatalf("GetKV() after reopen = %#v, err = %v", value, err)
 	}
@@ -315,7 +315,7 @@ func TestImportAndExportDeletionReclaimPublishedObjects(t *testing.T) {
 		t.Fatal(err)
 	}
 	oldBinding, _, _ := catalog.GetBinding(ctx, "plugini_test")
-	if _, err := store.WriteFile(ctx, storage.FileWriteRequest{PluginInstanceID: "plugini_test", StoreID: "files", Path: "data.txt", Data: []byte("data")}); err != nil {
+	if _, err := store.WriteFile(ctx, storage.FileWriteRequest{PluginInstanceID: "plugini_test", ResourceScope: internalUserScope(), StoreID: "files", Path: "data.txt", Data: []byte("data")}); err != nil {
 		t.Fatal(err)
 	}
 	exported, err := store.Export(ctx, ExportRequest{PluginInstanceID: "plugini_test"})

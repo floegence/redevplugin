@@ -33,7 +33,15 @@ type namespaceAccess struct {
 	usageKey  string
 }
 
-func (s *FileStore) withNamespace(ctx context.Context, pluginInstanceID string, storeID string, kind NamespaceKind, write bool, use func(*namespaceAccess) error) error {
+func (s *FileStore) withNamespace(ctx context.Context, pluginInstanceID string, requestScope sessionctx.ResourceScope, storeID string, kind NamespaceKind, write bool, use func(*namespaceAccess) error) error {
+	return s.withNamespaceAccess(ctx, pluginInstanceID, &requestScope, storeID, kind, write, use)
+}
+
+func (s *FileStore) withNamespaceForUsage(ctx context.Context, pluginInstanceID string, storeID string, kind NamespaceKind, use func(*namespaceAccess) error) error {
+	return s.withNamespaceAccess(ctx, pluginInstanceID, nil, storeID, kind, false, use)
+}
+
+func (s *FileStore) withNamespaceAccess(ctx context.Context, pluginInstanceID string, exactRequestScope *sessionctx.ResourceScope, storeID string, kind NamespaceKind, write bool, use func(*namespaceAccess) error) error {
 	release, err := s.begin()
 	if err != nil {
 		return err
@@ -87,6 +95,9 @@ func (s *FileStore) withNamespace(ctx context.Context, pluginInstanceID string, 
 		return err
 	}
 	if sessionctx.ScopeKind(namespace.Scope) != owner.Kind {
+		return ErrStorageScopeMismatch
+	}
+	if exactRequestScope != nil && !exactRequestScope.Matches(owner) {
 		return ErrStorageScopeMismatch
 	}
 	generationScopeKey := scopedGenerationCacheKey(owner, binding.GenerationID)
@@ -256,7 +267,7 @@ func (s *FileStore) ReadFile(ctx context.Context, req storage.FileReadRequest) (
 	if err != nil {
 		return result, err
 	}
-	err = s.withNamespace(ctx, req.PluginInstanceID, req.StoreID, NamespaceFiles, false, func(a *namespaceAccess) error {
+	err = s.withNamespace(ctx, req.PluginInstanceID, req.ResourceScope, req.StoreID, NamespaceFiles, false, func(a *namespaceAccess) error {
 		db := a.db
 		var entryType int
 		var data []byte
@@ -283,7 +294,7 @@ func (s *FileStore) WriteFile(ctx context.Context, req storage.FileWriteRequest)
 	if err != nil {
 		return result, err
 	}
-	err = s.withNamespace(ctx, req.PluginInstanceID, req.StoreID, NamespaceFiles, true, func(a *namespaceAccess) error {
+	err = s.withNamespace(ctx, req.PluginInstanceID, req.ResourceScope, req.StoreID, NamespaceFiles, true, func(a *namespaceAccess) error {
 		db := a.db
 		tx, err := db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelSerializable})
 		if err != nil {
@@ -346,7 +357,7 @@ func (s *FileStore) DeleteFile(ctx context.Context, req storage.FileDeleteReques
 	if err != nil {
 		return err
 	}
-	return s.withNamespace(ctx, req.PluginInstanceID, req.StoreID, NamespaceFiles, true, func(a *namespaceAccess) error {
+	return s.withNamespace(ctx, req.PluginInstanceID, req.ResourceScope, req.StoreID, NamespaceFiles, true, func(a *namespaceAccess) error {
 		db := a.db
 		tx, err := db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelSerializable})
 		if err != nil {
@@ -411,7 +422,7 @@ func (s *FileStore) ListFiles(ctx context.Context, req storage.FileListRequest) 
 			return result, storage.ErrInvalidFilePath
 		}
 	}
-	err = s.withNamespace(ctx, req.PluginInstanceID, req.StoreID, NamespaceFiles, false, func(a *namespaceAccess) error {
+	err = s.withNamespace(ctx, req.PluginInstanceID, req.ResourceScope, req.StoreID, NamespaceFiles, false, func(a *namespaceAccess) error {
 		db := a.db
 		if path != "." {
 			var entryType int
@@ -468,7 +479,7 @@ func (s *FileStore) GetKV(ctx context.Context, req storage.KVGetRequest) (result
 	if err != nil {
 		return result, err
 	}
-	err = s.withNamespace(ctx, req.PluginInstanceID, req.StoreID, NamespaceKV, false, func(a *namespaceAccess) error {
+	err = s.withNamespace(ctx, req.PluginInstanceID, req.ResourceScope, req.StoreID, NamespaceKV, false, func(a *namespaceAccess) error {
 		db := a.db
 		var value []byte
 		var size int64
@@ -491,7 +502,7 @@ func (s *FileStore) PutKV(ctx context.Context, req storage.KVPutRequest) (result
 	if err != nil {
 		return result, err
 	}
-	err = s.withNamespace(ctx, req.PluginInstanceID, req.StoreID, NamespaceKV, true, func(a *namespaceAccess) error {
+	err = s.withNamespace(ctx, req.PluginInstanceID, req.ResourceScope, req.StoreID, NamespaceKV, true, func(a *namespaceAccess) error {
 		db := a.db
 		tx, err := db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelSerializable})
 		if err != nil {
@@ -545,7 +556,7 @@ func (s *FileStore) DeleteKV(ctx context.Context, req storage.KVDeleteRequest) e
 	if err != nil {
 		return err
 	}
-	return s.withNamespace(ctx, req.PluginInstanceID, req.StoreID, NamespaceKV, true, func(a *namespaceAccess) error {
+	return s.withNamespace(ctx, req.PluginInstanceID, req.ResourceScope, req.StoreID, NamespaceKV, true, func(a *namespaceAccess) error {
 		db := a.db
 		tx, err := db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelSerializable})
 		if err != nil {
@@ -591,7 +602,7 @@ func (s *FileStore) ListKV(ctx context.Context, req storage.KVListRequest) (resu
 			return result, storage.ErrInvalidKVKey
 		}
 	}
-	err = s.withNamespace(ctx, req.PluginInstanceID, req.StoreID, NamespaceKV, false, func(a *namespaceAccess) error {
+	err = s.withNamespace(ctx, req.PluginInstanceID, req.ResourceScope, req.StoreID, NamespaceKV, false, func(a *namespaceAccess) error {
 		db := a.db
 		limit := req.MaxEntries
 		if limit <= 0 || limit > 1000 {
@@ -639,7 +650,7 @@ func (s *FileStore) ListKV(ctx context.Context, req storage.KVListRequest) (resu
 
 func (s *FileStore) Usage(ctx context.Context, pluginInstanceID string, storeID string) (result storage.Usage, resultErr error) {
 	for _, kind := range []NamespaceKind{NamespaceFiles, NamespaceKV, NamespaceSQLite} {
-		err := s.withNamespace(ctx, pluginInstanceID, storeID, kind, false, func(a *namespaceAccess) error {
+		err := s.withNamespaceForUsage(ctx, pluginInstanceID, storeID, kind, func(a *namespaceAccess) error {
 			result = a.resultUsage()
 			return nil
 		})

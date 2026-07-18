@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/floegence/redevplugin/internal/jsonvalue"
 	"github.com/floegence/redevplugin/pkg/sessionctx"
 	"github.com/floegence/redevplugin/pkg/version"
 )
@@ -326,18 +327,22 @@ type RuntimeExecutionLeaseResult struct {
 }
 
 type MintHandleGrantRequest struct {
-	PluginInstanceID    string                   `json:"plugin_instance_id"`
-	ActiveFingerprint   string                   `json:"active_fingerprint"`
-	RuntimeInstanceID   string                   `json:"runtime_instance_id,omitempty"`
-	RuntimeGenerationID string                   `json:"runtime_generation_id"`
-	RuntimeShardID      string                   `json:"runtime_shard_id,omitempty"`
-	HandleID            string                   `json:"handle_id"`
-	Method              string                   `json:"method"`
-	ResourceScope       sessionctx.ResourceScope `json:"-"`
-	Revision            RevisionBinding          `json:"revision"`
-	Limits              Limits                   `json:"limits,omitempty"`
-	Now                 time.Time                `json:"-"`
-	ExpiresAt           time.Time                `json:"expires_at,omitempty"`
+	PluginInstanceID     string                   `json:"plugin_instance_id"`
+	ActiveFingerprint    string                   `json:"active_fingerprint"`
+	RuntimeInstanceID    string                   `json:"runtime_instance_id,omitempty"`
+	RuntimeGenerationID  string                   `json:"runtime_generation_id"`
+	RuntimeShardID       string                   `json:"runtime_shard_id,omitempty"`
+	OwnerSessionHash     string                   `json:"-"`
+	OwnerUserHash        string                   `json:"-"`
+	OwnerEnvHash         string                   `json:"-"`
+	SessionChannelIDHash string                   `json:"-"`
+	HandleID             string                   `json:"handle_id"`
+	Method               string                   `json:"method"`
+	ResourceScope        sessionctx.ResourceScope `json:"-"`
+	Revision             RevisionBinding          `json:"revision"`
+	Limits               Limits                   `json:"limits,omitempty"`
+	Now                  time.Time                `json:"-"`
+	ExpiresAt            time.Time                `json:"expires_at,omitempty"`
 }
 
 type HandleGrantResult struct {
@@ -1123,9 +1128,17 @@ func (s *SurfaceTokenService) MintRuntimeExecutionLease(req MintRuntimeExecution
 		strings.TrimSpace(req.Method) == "" ||
 		strings.TrimSpace(req.Effect) == "" ||
 		len(normalizeStringSlice(req.TargetDescriptorHashes)) == 0 ||
-		req.Limits.MemoryBytes <= 0 ||
-		req.Revision.PolicyRevision == 0 || req.Revision.ManagementRevision == 0 {
+		req.Limits.MemoryBytes <= 0 {
 		return RuntimeExecutionLeaseResult{}, ErrMissingTokenAudience
+	}
+	if err := validateRevisionBinding(req.Revision); err != nil {
+		return RuntimeExecutionLeaseResult{}, err
+	}
+	if !validNonnegativeSafeInt64(req.Limits.TimeoutMillis) ||
+		!validNonnegativeSafeInt64(req.Limits.MaxPayloadBytes) ||
+		!validNonnegativeSafeInt64(req.Limits.MaxStreamBytesPerSecond) ||
+		uint64(req.Limits.MemoryBytes) > jsonvalue.MaxSafeInteger {
+		return RuntimeExecutionLeaseResult{}, ErrTokenLimits
 	}
 	switch strings.TrimSpace(req.Execution) {
 	case "sync":
@@ -1210,10 +1223,17 @@ func (s *SurfaceTokenService) MintHandleGrant(req MintHandleGrantRequest) (Handl
 	if strings.TrimSpace(req.PluginInstanceID) == "" ||
 		strings.TrimSpace(req.ActiveFingerprint) == "" ||
 		strings.TrimSpace(req.RuntimeGenerationID) == "" ||
+		strings.TrimSpace(req.OwnerSessionHash) == "" ||
+		strings.TrimSpace(req.OwnerUserHash) == "" ||
+		strings.TrimSpace(req.OwnerEnvHash) == "" ||
+		strings.TrimSpace(req.SessionChannelIDHash) == "" ||
 		strings.TrimSpace(req.HandleID) == "" ||
 		strings.TrimSpace(req.Method) == "" ||
 		req.ResourceScope.Validate() != nil {
 		return HandleGrantResult{}, ErrMissingTokenAudience
+	}
+	if err := validateRevisionBinding(req.Revision); err != nil {
+		return HandleGrantResult{}, err
 	}
 	now := req.Now
 	if now.IsZero() {
@@ -1229,14 +1249,18 @@ func (s *SurfaceTokenService) MintHandleGrant(req MintHandleGrantRequest) (Handl
 	minted, err := s.tokens.Mint(MintRequest{
 		Kind: TokenKindHandleGrant,
 		Audience: Audience{
-			PluginInstanceID:    req.PluginInstanceID,
-			ActiveFingerprint:   req.ActiveFingerprint,
-			RuntimeInstanceID:   req.RuntimeInstanceID,
-			RuntimeGenerationID: req.RuntimeGenerationID,
-			RuntimeShardID:      req.RuntimeShardID,
-			HandleID:            req.HandleID,
-			Method:              req.Method,
-			ResourceScope:       req.ResourceScope,
+			PluginInstanceID:     req.PluginInstanceID,
+			ActiveFingerprint:    req.ActiveFingerprint,
+			RuntimeInstanceID:    req.RuntimeInstanceID,
+			RuntimeGenerationID:  req.RuntimeGenerationID,
+			RuntimeShardID:       req.RuntimeShardID,
+			OwnerSessionHash:     req.OwnerSessionHash,
+			OwnerUserHash:        req.OwnerUserHash,
+			OwnerEnvHash:         req.OwnerEnvHash,
+			SessionChannelIDHash: req.SessionChannelIDHash,
+			HandleID:             req.HandleID,
+			Method:               req.Method,
+			ResourceScope:        req.ResourceScope,
 		},
 		Revision:  req.Revision,
 		ExpiresAt: expiresAt,
@@ -1265,6 +1289,10 @@ func (s *SurfaceTokenService) ValidateHandleGrant(req ValidateHandleGrantRequest
 	if strings.TrimSpace(req.Audience.PluginInstanceID) == "" ||
 		strings.TrimSpace(req.Audience.ActiveFingerprint) == "" ||
 		strings.TrimSpace(req.Audience.RuntimeGenerationID) == "" ||
+		strings.TrimSpace(req.Audience.OwnerSessionHash) == "" ||
+		strings.TrimSpace(req.Audience.OwnerUserHash) == "" ||
+		strings.TrimSpace(req.Audience.OwnerEnvHash) == "" ||
+		strings.TrimSpace(req.Audience.SessionChannelIDHash) == "" ||
 		strings.TrimSpace(req.Audience.HandleID) == "" ||
 		strings.TrimSpace(req.Audience.Method) == "" ||
 		req.Audience.ResourceScope.Validate() != nil {

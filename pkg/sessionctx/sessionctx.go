@@ -65,8 +65,8 @@ type Context struct {
 
 func (s Context) Valid() bool {
 	return strings.TrimSpace(s.OwnerSessionHash) != "" &&
-		strings.TrimSpace(s.OwnerUserHash) != "" &&
-		strings.TrimSpace(s.OwnerEnvHash) != "" &&
+		validOwnerHash(s.OwnerUserHash) &&
+		validOwnerHash(s.OwnerEnvHash) &&
 		strings.TrimSpace(s.SessionChannelIDHash) != ""
 }
 

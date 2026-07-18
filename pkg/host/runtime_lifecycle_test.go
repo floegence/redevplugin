@@ -391,35 +391,43 @@ func TestRuntimeHandleGrantValidatorUsesSurfaceTokens(t *testing.T) {
 	service := bridge.NewSurfaceTokenService(nil, bridge.SurfaceTokenOptions{})
 	revision := bridge.RevisionBinding{PolicyRevision: 1, ManagementRevision: 2, RevokeEpoch: 3}
 	minted, err := service.MintHandleGrant(bridge.MintHandleGrantRequest{
-		PluginInstanceID:    "plugini_1",
-		ActiveFingerprint:   "sha256:active",
-		RuntimeInstanceID:   "runtime_1",
-		RuntimeGenerationID: "runtime_gen_1",
-		RuntimeShardID:      "runtime_shard_1",
-		HandleID:            "storage:db",
-		Method:              "storage.sqlite",
-		ResourceScope:       sessionctx.ResourceScope{Kind: sessionctx.ScopeUser, OwnerEnvHash: "env_hash", OwnerUserHash: "user_hash"},
-		Revision:            revision,
-		Limits:              bridge.Limits{MaxTotalBytes: 4096},
-		Now:                 now,
+		PluginInstanceID:     "plugini_1",
+		ActiveFingerprint:    "sha256:active",
+		RuntimeInstanceID:    "runtime_1",
+		RuntimeGenerationID:  "runtime_gen_1",
+		RuntimeShardID:       "runtime_shard_1",
+		OwnerSessionHash:     "session_hash",
+		OwnerUserHash:        "user_hash",
+		OwnerEnvHash:         "env_hash",
+		SessionChannelIDHash: "channel_hash",
+		HandleID:             "storage:db",
+		Method:               "storage.sqlite",
+		ResourceScope:        sessionctx.ResourceScope{Kind: sessionctx.ScopeUser, OwnerEnvHash: "env_hash", OwnerUserHash: "user_hash"},
+		Revision:             revision,
+		Limits:               bridge.Limits{MaxTotalBytes: 4096},
+		Now:                  now,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	validator := runtimeHandleGrantValidator{tokens: service}
 	result, err := validator.ValidateHandleGrant(hostTestContext(), runtimeclient.HandleGrantValidationRequest{
-		HandleGrantToken:    minted.HandleGrantToken,
-		PluginInstanceID:    "plugini_1",
-		ActiveFingerprint:   "sha256:active",
-		RuntimeInstanceID:   "runtime_1",
-		RuntimeGenerationID: "runtime_gen_1",
-		RuntimeShardID:      "runtime_shard_1",
-		HandleID:            "storage:db",
-		Method:              "storage.sqlite",
-		ResourceScope:       sessionctx.ResourceScope{Kind: sessionctx.ScopeUser, OwnerEnvHash: "env_hash", OwnerUserHash: "user_hash"},
-		PolicyRevision:      1,
-		ManagementRevision:  2,
-		RevokeEpoch:         3,
+		HandleGrantToken:     minted.HandleGrantToken,
+		PluginInstanceID:     "plugini_1",
+		ActiveFingerprint:    "sha256:active",
+		RuntimeInstanceID:    "runtime_1",
+		RuntimeGenerationID:  "runtime_gen_1",
+		RuntimeShardID:       "runtime_shard_1",
+		OwnerSessionHash:     "session_hash",
+		OwnerUserHash:        "user_hash",
+		OwnerEnvHash:         "env_hash",
+		SessionChannelIDHash: "channel_hash",
+		HandleID:             "storage:db",
+		Method:               "storage.sqlite",
+		ResourceScope:        sessionctx.ResourceScope{Kind: sessionctx.ScopeUser, OwnerEnvHash: "env_hash", OwnerUserHash: "user_hash"},
+		PolicyRevision:       1,
+		ManagementRevision:   2,
+		RevokeEpoch:          3,
 	})
 	if err != nil {
 		t.Fatalf("ValidateHandleGrant() error = %v", err)
@@ -428,16 +436,20 @@ func TestRuntimeHandleGrantValidatorUsesSurfaceTokens(t *testing.T) {
 		t.Fatalf("handle grant result mismatch: %#v", result)
 	}
 	if _, err := validator.ValidateHandleGrant(hostTestContext(), runtimeclient.HandleGrantValidationRequest{
-		HandleGrantToken:    minted.HandleGrantToken,
-		PluginInstanceID:    "plugini_1",
-		ActiveFingerprint:   "sha256:active",
-		RuntimeGenerationID: "runtime_gen_1",
-		HandleID:            "storage:other",
-		Method:              "storage.sqlite",
-		ResourceScope:       sessionctx.ResourceScope{Kind: sessionctx.ScopeUser, OwnerEnvHash: "env_hash", OwnerUserHash: "user_hash"},
-		PolicyRevision:      1,
-		ManagementRevision:  2,
-		RevokeEpoch:         3,
+		HandleGrantToken:     minted.HandleGrantToken,
+		PluginInstanceID:     "plugini_1",
+		ActiveFingerprint:    "sha256:active",
+		RuntimeGenerationID:  "runtime_gen_1",
+		OwnerSessionHash:     "session_hash",
+		OwnerUserHash:        "user_hash",
+		OwnerEnvHash:         "env_hash",
+		SessionChannelIDHash: "channel_hash",
+		HandleID:             "storage:other",
+		Method:               "storage.sqlite",
+		ResourceScope:        sessionctx.ResourceScope{Kind: sessionctx.ScopeUser, OwnerEnvHash: "env_hash", OwnerUserHash: "user_hash"},
+		PolicyRevision:       1,
+		ManagementRevision:   2,
+		RevokeEpoch:          3,
 	}); !errors.Is(err, bridge.ErrTokenAudience) {
 		t.Fatalf("ValidateHandleGrant(wrong handle) error = %v, want ErrTokenAudience", err)
 	}

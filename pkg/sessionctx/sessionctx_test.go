@@ -73,4 +73,12 @@ func TestContextResourceScopeRejectsInvalidSession(t *testing.T) {
 	if _, err := Require(context.Background()); !errors.Is(err, ErrSessionRequired) {
 		t.Fatalf("Require() error = %v, want ErrSessionRequired", err)
 	}
+	for _, session := range []Context{
+		{OwnerSessionHash: "session_hash", OwnerUserHash: "user/hash", OwnerEnvHash: "env_hash", SessionChannelIDHash: "channel_hash"},
+		{OwnerSessionHash: "session_hash", OwnerUserHash: "user_hash", OwnerEnvHash: " env_hash", SessionChannelIDHash: "channel_hash"},
+	} {
+		if session.Valid() {
+			t.Fatalf("Context.Valid() accepted invalid owner hashes: %#v", session)
+		}
+	}
 }

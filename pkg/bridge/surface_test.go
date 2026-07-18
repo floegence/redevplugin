@@ -506,7 +506,7 @@ func TestSurfaceRevokePluginDropsSessionsAndTokens(t *testing.T) {
 	bootstrap, gateway := mintTestGatewayToken(t, service, now)
 	audience := surfaceAudienceFromBootstrap(bootstrap, "bridge_1")
 
-	if revoked, err := service.RevokePlugin(audience.OwnerEnvHash, audience.PluginInstanceID, 0, now.Add(4*time.Second)); err != nil || revoked == 0 {
+	if revoked, err := service.RevokePlugin(audience.OwnerEnvHash, audience.PluginInstanceID, 5, now.Add(4*time.Second)); err != nil || revoked == 0 {
 		t.Fatal("RevokePlugin() revoked no tokens")
 	}
 	if _, err := service.ValidateGatewayToken(gateway.GatewayToken, audience, testRevision(4), now.Add(5*time.Second)); !errors.Is(err, ErrTokenRevoked) {
@@ -953,6 +953,18 @@ func TestRuntimeExecutionLeaseRequiresGenerationAndMethod(t *testing.T) {
 	if _, err := service.MintRuntimeExecutionLease(req); !errors.Is(err, ErrMissingTokenAudience) {
 		t.Fatalf("MintRuntimeExecutionLease() missing method error = %v, want %v", err, ErrMissingTokenAudience)
 	}
+	req.Method = "worker.echo"
+	for _, revokeEpoch := range []uint64{0, 1 << 53} {
+		req.Revision.RevokeEpoch = revokeEpoch
+		if _, err := service.MintRuntimeExecutionLease(req); !errors.Is(err, ErrTokenRevision) {
+			t.Fatalf("MintRuntimeExecutionLease() revoke_epoch %d error = %v, want %v", revokeEpoch, err, ErrTokenRevision)
+		}
+	}
+	req.Revision = testRevision(8)
+	req.Limits.MaxPayloadBytes = 1 << 53
+	if _, err := service.MintRuntimeExecutionLease(req); !errors.Is(err, ErrTokenLimits) {
+		t.Fatalf("MintRuntimeExecutionLease() unsafe limit error = %v, want %v", err, ErrTokenLimits)
+	}
 }
 
 func TestRuntimeExecutionLeaseTTLIsClamped(t *testing.T) {
@@ -996,17 +1008,21 @@ func TestHandleGrantBindsRuntimeGenerationHandleAndMethod(t *testing.T) {
 	revision := testRevision(9)
 	limits := Limits{MaxBytesPerSecond: 4096, MaxTotalBytes: 32768}
 	result, err := service.MintHandleGrant(MintHandleGrantRequest{
-		PluginInstanceID:    "plugini_test",
-		ActiveFingerprint:   "sha256:package",
-		RuntimeInstanceID:   "runtime_1",
-		RuntimeGenerationID: "runtime_gen_1",
-		RuntimeShardID:      "runtime_shard_a",
-		HandleID:            "handle_network_1",
-		Method:              "network.open",
-		ResourceScope:       sessionctx.ResourceScope{Kind: sessionctx.ScopeUser, OwnerEnvHash: "env_hash", OwnerUserHash: "user_hash"},
-		Revision:            revision,
-		Limits:              limits,
-		Now:                 now,
+		PluginInstanceID:     "plugini_test",
+		ActiveFingerprint:    "sha256:package",
+		RuntimeInstanceID:    "runtime_1",
+		RuntimeGenerationID:  "runtime_gen_1",
+		RuntimeShardID:       "runtime_shard_a",
+		OwnerSessionHash:     "session_hash",
+		OwnerUserHash:        "user_hash",
+		OwnerEnvHash:         "env_hash",
+		SessionChannelIDHash: "channel_hash",
+		HandleID:             "handle_network_1",
+		Method:               "network.open",
+		ResourceScope:        sessionctx.ResourceScope{Kind: sessionctx.ScopeUser, OwnerEnvHash: "env_hash", OwnerUserHash: "user_hash"},
+		Revision:             revision,
+		Limits:               limits,
+		Now:                  now,
 	})
 	if err != nil {
 		t.Fatalf("MintHandleGrant() error = %v", err)
@@ -1020,14 +1036,18 @@ func TestHandleGrantBindsRuntimeGenerationHandleAndMethod(t *testing.T) {
 	}
 
 	audience := Audience{
-		PluginInstanceID:    "plugini_test",
-		ActiveFingerprint:   "sha256:package",
-		RuntimeInstanceID:   "runtime_1",
-		RuntimeGenerationID: "runtime_gen_1",
-		RuntimeShardID:      "runtime_shard_a",
-		HandleID:            "handle_network_1",
-		Method:              "network.open",
-		ResourceScope:       result.ResourceScope,
+		PluginInstanceID:     "plugini_test",
+		ActiveFingerprint:    "sha256:package",
+		RuntimeInstanceID:    "runtime_1",
+		RuntimeGenerationID:  "runtime_gen_1",
+		RuntimeShardID:       "runtime_shard_a",
+		OwnerSessionHash:     "session_hash",
+		OwnerUserHash:        "user_hash",
+		OwnerEnvHash:         "env_hash",
+		SessionChannelIDHash: "channel_hash",
+		HandleID:             "handle_network_1",
+		Method:               "network.open",
+		ResourceScope:        result.ResourceScope,
 	}
 	record, err := service.ValidateHandleGrant(ValidateHandleGrantRequest{
 		HandleGrantToken: result.HandleGrantToken,
@@ -1040,6 +1060,28 @@ func TestHandleGrantBindsRuntimeGenerationHandleAndMethod(t *testing.T) {
 	}
 	if record.Use != TokenUseReusable || record.Limits != limits {
 		t.Fatalf("handle grant record mismatch: %#v", record)
+	}
+	for _, test := range []struct {
+		name   string
+		mutate func(*Audience)
+	}{
+		{name: "owner session", mutate: func(a *Audience) { a.OwnerSessionHash = "session_other" }},
+		{name: "owner user", mutate: func(a *Audience) { a.OwnerUserHash = "user_other" }},
+		{name: "owner env", mutate: func(a *Audience) { a.OwnerEnvHash = "env_other" }},
+		{name: "session channel", mutate: func(a *Audience) { a.SessionChannelIDHash = "channel_other" }},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			wrongAudience := audience
+			test.mutate(&wrongAudience)
+			if _, err := service.ValidateHandleGrant(ValidateHandleGrantRequest{
+				HandleGrantToken: result.HandleGrantToken,
+				Audience:         wrongAudience,
+				Revision:         revision,
+				Now:              now.Add(2 * time.Second),
+			}); !errors.Is(err, ErrTokenAudience) {
+				t.Fatalf("ValidateHandleGrant() owner mismatch error = %v, want %v", err, ErrTokenAudience)
+			}
+		})
 	}
 
 	wrongHandle := audience
@@ -1077,14 +1119,18 @@ func TestHandleGrantBindsRuntimeGenerationHandleAndMethod(t *testing.T) {
 func TestHandleGrantRequiresRuntimeGenerationHandleAndMethod(t *testing.T) {
 	service := NewSurfaceTokenService(nil, SurfaceTokenOptions{})
 	req := MintHandleGrantRequest{
-		PluginInstanceID:    "plugini_test",
-		ActiveFingerprint:   "sha256:package",
-		RuntimeGenerationID: "runtime_gen_1",
-		HandleID:            "handle_network_1",
-		Method:              "network.open",
-		ResourceScope:       sessionctx.ResourceScope{Kind: sessionctx.ScopeUser, OwnerEnvHash: "env_hash", OwnerUserHash: "user_hash"},
-		Revision:            testRevision(9),
-		Now:                 testNow(),
+		PluginInstanceID:     "plugini_test",
+		ActiveFingerprint:    "sha256:package",
+		RuntimeGenerationID:  "runtime_gen_1",
+		OwnerSessionHash:     "session_hash",
+		OwnerUserHash:        "user_hash",
+		OwnerEnvHash:         "env_hash",
+		SessionChannelIDHash: "channel_hash",
+		HandleID:             "handle_network_1",
+		Method:               "network.open",
+		ResourceScope:        sessionctx.ResourceScope{Kind: sessionctx.ScopeUser, OwnerEnvHash: "env_hash", OwnerUserHash: "user_hash"},
+		Revision:             testRevision(9),
+		Now:                  testNow(),
 	}
 	missingGeneration := req
 	missingGeneration.RuntimeGenerationID = ""
@@ -1101,17 +1147,26 @@ func TestHandleGrantRequiresRuntimeGenerationHandleAndMethod(t *testing.T) {
 	if _, err := service.MintHandleGrant(missingMethod); !errors.Is(err, ErrMissingTokenAudience) {
 		t.Fatalf("MintHandleGrant() missing method error = %v, want %v", err, ErrMissingTokenAudience)
 	}
+	invalidRevision := req
+	invalidRevision.Revision.RevokeEpoch = 0
+	if _, err := service.MintHandleGrant(invalidRevision); !errors.Is(err, ErrTokenRevision) {
+		t.Fatalf("MintHandleGrant() zero revoke_epoch error = %v, want %v", err, ErrTokenRevision)
+	}
 
 	result, err := service.MintHandleGrant(req)
 	if err != nil {
 		t.Fatalf("MintHandleGrant() error = %v", err)
 	}
 	audience := Audience{
-		PluginInstanceID:    req.PluginInstanceID,
-		ActiveFingerprint:   req.ActiveFingerprint,
-		RuntimeGenerationID: req.RuntimeGenerationID,
-		HandleID:            req.HandleID,
-		ResourceScope:       req.ResourceScope,
+		PluginInstanceID:     req.PluginInstanceID,
+		ActiveFingerprint:    req.ActiveFingerprint,
+		RuntimeGenerationID:  req.RuntimeGenerationID,
+		OwnerSessionHash:     req.OwnerSessionHash,
+		OwnerUserHash:        req.OwnerUserHash,
+		OwnerEnvHash:         req.OwnerEnvHash,
+		SessionChannelIDHash: req.SessionChannelIDHash,
+		HandleID:             req.HandleID,
+		ResourceScope:        req.ResourceScope,
 	}
 	if _, err := service.ValidateHandleGrant(ValidateHandleGrantRequest{
 		HandleGrantToken: result.HandleGrantToken,
@@ -1127,15 +1182,19 @@ func TestHandleGrantRevisionMismatchAndTTLClamp(t *testing.T) {
 	service := NewSurfaceTokenService(nil, SurfaceTokenOptions{})
 	now := testNow()
 	result, err := service.MintHandleGrant(MintHandleGrantRequest{
-		PluginInstanceID:    "plugini_test",
-		ActiveFingerprint:   "sha256:package",
-		RuntimeGenerationID: "runtime_gen_1",
-		HandleID:            "handle_storage_1",
-		Method:              "storage.read",
-		ResourceScope:       sessionctx.ResourceScope{Kind: sessionctx.ScopeEnvironment, OwnerEnvHash: "env_hash"},
-		Revision:            testRevision(9),
-		Now:                 now,
-		ExpiresAt:           now.Add(time.Hour),
+		PluginInstanceID:     "plugini_test",
+		ActiveFingerprint:    "sha256:package",
+		RuntimeGenerationID:  "runtime_gen_1",
+		OwnerSessionHash:     "session_hash",
+		OwnerUserHash:        "user_hash",
+		OwnerEnvHash:         "env_hash",
+		SessionChannelIDHash: "channel_hash",
+		HandleID:             "handle_storage_1",
+		Method:               "storage.read",
+		ResourceScope:        sessionctx.ResourceScope{Kind: sessionctx.ScopeEnvironment, OwnerEnvHash: "env_hash"},
+		Revision:             testRevision(9),
+		Now:                  now,
+		ExpiresAt:            now.Add(time.Hour),
 	})
 	if err != nil {
 		t.Fatalf("MintHandleGrant() error = %v", err)
@@ -1145,12 +1204,16 @@ func TestHandleGrantRevisionMismatchAndTTLClamp(t *testing.T) {
 	}
 
 	audience := Audience{
-		PluginInstanceID:    "plugini_test",
-		ActiveFingerprint:   "sha256:package",
-		RuntimeGenerationID: "runtime_gen_1",
-		HandleID:            "handle_storage_1",
-		Method:              "storage.read",
-		ResourceScope:       result.ResourceScope,
+		PluginInstanceID:     "plugini_test",
+		ActiveFingerprint:    "sha256:package",
+		RuntimeGenerationID:  "runtime_gen_1",
+		OwnerSessionHash:     "session_hash",
+		OwnerUserHash:        "user_hash",
+		OwnerEnvHash:         "env_hash",
+		SessionChannelIDHash: "channel_hash",
+		HandleID:             "handle_storage_1",
+		Method:               "storage.read",
+		ResourceScope:        result.ResourceScope,
 	}
 	if _, err := service.ValidateHandleGrant(ValidateHandleGrantRequest{
 		HandleGrantToken: result.HandleGrantToken,

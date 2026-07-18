@@ -32,6 +32,19 @@ func pluginDataTestContextFor(ownerUserHash, ownerEnvHash string) context.Contex
 	})
 }
 
+func pluginDataResourceScope(t testing.TB, ctx context.Context, kind sessionctx.ScopeKind) sessionctx.ResourceScope {
+	t.Helper()
+	session, err := sessionctx.Require(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	scope, err := session.ResourceScope(kind)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return scope
+}
+
 func pluginDataWorkspacePath(root, ownerEnvHash, generationID string) string {
 	return filepath.Join(root, "workspaces", "environment", ownerEnvHash, generationID)
 }
@@ -102,56 +115,56 @@ func TestFileStoreLifecycleAndBrokers(t *testing.T) {
 				t.Fatalf("enabled = %#v", enabled)
 			}
 
-			if _, err := store.WriteFile(ctx, storage.FileWriteRequest{PluginInstanceID: record.PluginInstanceID, StoreID: "files", Path: "notes/a.txt", Data: []byte("hello")}); err != nil {
+			if _, err := store.WriteFile(ctx, storage.FileWriteRequest{PluginInstanceID: record.PluginInstanceID, ResourceScope: pluginDataResourceScope(t, ctx, sessionctx.ScopeUser), StoreID: "files", Path: "notes/a.txt", Data: []byte("hello")}); err != nil {
 				t.Fatal(err)
 			}
-			file, err := store.ReadFile(ctx, storage.FileReadRequest{PluginInstanceID: record.PluginInstanceID, StoreID: "files", Path: "notes/a.txt"})
+			file, err := store.ReadFile(ctx, storage.FileReadRequest{PluginInstanceID: record.PluginInstanceID, ResourceScope: pluginDataResourceScope(t, ctx, sessionctx.ScopeUser), StoreID: "files", Path: "notes/a.txt"})
 			if err != nil || string(file.Data) != "hello" {
 				t.Fatalf("file = %#v, err = %v", file, err)
 			}
-			if _, err := store.PutKV(ctx, storage.KVPutRequest{PluginInstanceID: record.PluginInstanceID, StoreID: "kv", Key: "theme", Value: []byte("dark")}); err != nil {
+			if _, err := store.PutKV(ctx, storage.KVPutRequest{PluginInstanceID: record.PluginInstanceID, ResourceScope: pluginDataResourceScope(t, ctx, sessionctx.ScopeUser), StoreID: "kv", Key: "theme", Value: []byte("dark")}); err != nil {
 				t.Fatal(err)
 			}
-			kv, err := store.GetKV(ctx, storage.KVGetRequest{PluginInstanceID: record.PluginInstanceID, StoreID: "kv", Key: "theme"})
+			kv, err := store.GetKV(ctx, storage.KVGetRequest{PluginInstanceID: record.PluginInstanceID, ResourceScope: pluginDataResourceScope(t, ctx, sessionctx.ScopeUser), StoreID: "kv", Key: "theme"})
 			if err != nil || string(kv.Value) != "dark" {
 				t.Fatalf("kv = %#v, err = %v", kv, err)
 			}
-			if _, err := store.ExecSQLite(ctx, storage.SQLiteExecRequest{PluginInstanceID: record.PluginInstanceID, StoreID: "db", SQL: `CREATE TABLE notes (id INTEGER PRIMARY KEY, body TEXT)`}); err != nil {
+			if _, err := store.ExecSQLite(ctx, storage.SQLiteExecRequest{PluginInstanceID: record.PluginInstanceID, ResourceScope: pluginDataResourceScope(t, ctx, sessionctx.ScopeUser), StoreID: "db", SQL: `CREATE TABLE notes (id INTEGER PRIMARY KEY, body TEXT)`}); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := store.ExecSQLite(ctx, storage.SQLiteExecRequest{PluginInstanceID: record.PluginInstanceID, StoreID: "db", SQL: `CREATE TABLE drafts (id TEXT PRIMARY KEY)`}); err != nil {
+			if _, err := store.ExecSQLite(ctx, storage.SQLiteExecRequest{PluginInstanceID: record.PluginInstanceID, ResourceScope: pluginDataResourceScope(t, ctx, sessionctx.ScopeUser), StoreID: "db", SQL: `CREATE TABLE drafts (id TEXT PRIMARY KEY)`}); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := store.ExecSQLite(ctx, storage.SQLiteExecRequest{PluginInstanceID: record.PluginInstanceID, StoreID: "db", SQL: `INSERT INTO drafts(id) VALUES ('composer')`}); err != nil {
+			if _, err := store.ExecSQLite(ctx, storage.SQLiteExecRequest{PluginInstanceID: record.PluginInstanceID, ResourceScope: pluginDataResourceScope(t, ctx, sessionctx.ScopeUser), StoreID: "db", SQL: `INSERT INTO drafts(id) VALUES ('composer')`}); err != nil {
 				t.Fatal(err)
 			}
 			triggerSQL := `CREATE TRIGGER clear_draft AFTER INSERT ON notes BEGIN DELETE FROM drafts WHERE id = 'composer'; END`
-			if _, err := store.ExecSQLite(ctx, storage.SQLiteExecRequest{PluginInstanceID: record.PluginInstanceID, StoreID: "db", SQL: triggerSQL}); err != nil {
+			if _, err := store.ExecSQLite(ctx, storage.SQLiteExecRequest{PluginInstanceID: record.PluginInstanceID, ResourceScope: pluginDataResourceScope(t, ctx, sessionctx.ScopeUser), StoreID: "db", SQL: triggerSQL}); err != nil {
 				t.Fatalf("ExecSQLite(trigger) error = %v", err)
 			}
-			if _, err := store.ExecSQLite(ctx, storage.SQLiteExecRequest{PluginInstanceID: record.PluginInstanceID, StoreID: "db", SQL: triggerSQL + `; SELECT 1`}); !errors.Is(err, storage.ErrInvalidSQLite) {
+			if _, err := store.ExecSQLite(ctx, storage.SQLiteExecRequest{PluginInstanceID: record.PluginInstanceID, ResourceScope: pluginDataResourceScope(t, ctx, sessionctx.ScopeUser), StoreID: "db", SQL: triggerSQL + `; SELECT 1`}); !errors.Is(err, storage.ErrInvalidSQLite) {
 				t.Fatalf("ExecSQLite(trigger with trailing statement) error = %v, want ErrInvalidSQLite", err)
 			}
 			body := "saved"
-			if _, err := store.ExecSQLite(ctx, storage.SQLiteExecRequest{PluginInstanceID: record.PluginInstanceID, StoreID: "db", SQL: `INSERT INTO notes(body) VALUES (?)`, Args: []storage.SQLiteValue{{Text: &body}}}); err != nil {
+			if _, err := store.ExecSQLite(ctx, storage.SQLiteExecRequest{PluginInstanceID: record.PluginInstanceID, ResourceScope: pluginDataResourceScope(t, ctx, sessionctx.ScopeUser), StoreID: "db", SQL: `INSERT INTO notes(body) VALUES (?)`, Args: []storage.SQLiteValue{{Text: &body}}}); err != nil {
 				t.Fatal(err)
 			}
-			rows, err := store.QuerySQLite(ctx, storage.SQLiteQueryRequest{PluginInstanceID: record.PluginInstanceID, StoreID: "db", SQL: `SELECT body FROM notes`})
+			rows, err := store.QuerySQLite(ctx, storage.SQLiteQueryRequest{PluginInstanceID: record.PluginInstanceID, ResourceScope: pluginDataResourceScope(t, ctx, sessionctx.ScopeUser), StoreID: "db", SQL: `SELECT body FROM notes`})
 			if err != nil || len(rows.Rows) != 1 || rows.Rows[0][0].Text == nil || *rows.Rows[0][0].Text != body {
 				t.Fatalf("rows = %#v, err = %v", rows, err)
 			}
-			if _, err := store.ExecSQLite(ctx, storage.SQLiteExecRequest{PluginInstanceID: record.PluginInstanceID, StoreID: "db", SQL: `CREATE TABLE blobs (body BLOB)`}); err != nil {
+			if _, err := store.ExecSQLite(ctx, storage.SQLiteExecRequest{PluginInstanceID: record.PluginInstanceID, ResourceScope: pluginDataResourceScope(t, ctx, sessionctx.ScopeUser), StoreID: "db", SQL: `CREATE TABLE blobs (body BLOB)`}); err != nil {
 				t.Fatal(err)
 			}
 			emptyBlob := []byte{}
-			if _, err := store.ExecSQLite(ctx, storage.SQLiteExecRequest{PluginInstanceID: record.PluginInstanceID, StoreID: "db", SQL: `INSERT INTO blobs(body) VALUES (?)`, Args: []storage.SQLiteValue{{Blob: emptyBlob}}}); err != nil {
+			if _, err := store.ExecSQLite(ctx, storage.SQLiteExecRequest{PluginInstanceID: record.PluginInstanceID, ResourceScope: pluginDataResourceScope(t, ctx, sessionctx.ScopeUser), StoreID: "db", SQL: `INSERT INTO blobs(body) VALUES (?)`, Args: []storage.SQLiteValue{{Blob: emptyBlob}}}); err != nil {
 				t.Fatal(err)
 			}
-			blobRows, err := store.QuerySQLite(ctx, storage.SQLiteQueryRequest{PluginInstanceID: record.PluginInstanceID, StoreID: "db", SQL: `SELECT body FROM blobs`})
+			blobRows, err := store.QuerySQLite(ctx, storage.SQLiteQueryRequest{PluginInstanceID: record.PluginInstanceID, ResourceScope: pluginDataResourceScope(t, ctx, sessionctx.ScopeUser), StoreID: "db", SQL: `SELECT body FROM blobs`})
 			if err != nil || len(blobRows.Rows) != 1 || blobRows.Rows[0][0].Blob == nil || len(blobRows.Rows[0][0].Blob) != 0 {
 				t.Fatalf("empty blob rows = %#v, err = %v", blobRows, err)
 			}
-			drafts, err := store.QuerySQLite(ctx, storage.SQLiteQueryRequest{PluginInstanceID: record.PluginInstanceID, StoreID: "db", SQL: `SELECT id FROM drafts`})
+			drafts, err := store.QuerySQLite(ctx, storage.SQLiteQueryRequest{PluginInstanceID: record.PluginInstanceID, ResourceScope: pluginDataResourceScope(t, ctx, sessionctx.ScopeUser), StoreID: "db", SQL: `SELECT id FROM drafts`})
 			if err != nil || len(drafts.Rows) != 0 {
 				t.Fatalf("trigger did not clear draft rows: rows=%#v err=%v", drafts, err)
 			}
@@ -160,7 +173,7 @@ func TestFileStoreLifecycleAndBrokers(t *testing.T) {
 				`WITH selected AS (SELECT 1) DELETE FROM notes`,
 				`BEGIN`,
 			} {
-				if _, err := store.QuerySQLite(ctx, storage.SQLiteQueryRequest{PluginInstanceID: record.PluginInstanceID, StoreID: "db", SQL: query}); !errors.Is(err, storage.ErrInvalidSQLite) {
+				if _, err := store.QuerySQLite(ctx, storage.SQLiteQueryRequest{PluginInstanceID: record.PluginInstanceID, ResourceScope: pluginDataResourceScope(t, ctx, sessionctx.ScopeUser), StoreID: "db", SQL: query}); !errors.Is(err, storage.ErrInvalidSQLite) {
 					t.Fatalf("QuerySQLite(%q) error = %v, want ErrInvalidSQLite", query, err)
 				}
 			}
@@ -168,11 +181,11 @@ func TestFileStoreLifecycleAndBrokers(t *testing.T) {
 			for i := range columns {
 				columns[i] = "1"
 			}
-			if _, err := store.QuerySQLite(ctx, storage.SQLiteQueryRequest{PluginInstanceID: record.PluginInstanceID, StoreID: "db", SQL: "SELECT " + strings.Join(columns, ",")}); !errors.Is(err, storage.ErrSQLiteResultTooLarge) {
+			if _, err := store.QuerySQLite(ctx, storage.SQLiteQueryRequest{PluginInstanceID: record.PluginInstanceID, ResourceScope: pluginDataResourceScope(t, ctx, sessionctx.ScopeUser), StoreID: "db", SQL: "SELECT " + strings.Join(columns, ",")}); !errors.Is(err, storage.ErrSQLiteResultTooLarge) {
 				t.Fatalf("QuerySQLite(column limit) error = %v, want ErrSQLiteResultTooLarge", err)
 			}
 			oversized := strings.Repeat("x", 1024*1024+1)
-			if _, err := store.ExecSQLite(ctx, storage.SQLiteExecRequest{PluginInstanceID: record.PluginInstanceID, StoreID: "db", SQL: `INSERT INTO notes(body) VALUES (?)`, Args: []storage.SQLiteValue{{Text: &oversized}}}); !errors.Is(err, storage.ErrInvalidSQLite) {
+			if _, err := store.ExecSQLite(ctx, storage.SQLiteExecRequest{PluginInstanceID: record.PluginInstanceID, ResourceScope: pluginDataResourceScope(t, ctx, sessionctx.ScopeUser), StoreID: "db", SQL: `INSERT INTO notes(body) VALUES (?)`, Args: []storage.SQLiteValue{{Text: &oversized}}}); !errors.Is(err, storage.ErrInvalidSQLite) {
 				t.Fatalf("ExecSQLite(argument limit) error = %v, want ErrInvalidSQLite", err)
 			}
 
@@ -207,7 +220,7 @@ func TestFileStoreExportImportAndRetainedBinding(t *testing.T) {
 			if _, err := store.CommitEnable(ctx, enableRequest(source, shape, now)); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := store.WriteFile(ctx, storage.FileWriteRequest{PluginInstanceID: source.PluginInstanceID, StoreID: "files", Path: "data.txt", Data: []byte("portable")}); err != nil {
+			if _, err := store.WriteFile(ctx, storage.FileWriteRequest{PluginInstanceID: source.PluginInstanceID, ResourceScope: pluginDataResourceScope(t, ctx, sessionctx.ScopeUser), StoreID: "files", Path: "data.txt", Data: []byte("portable")}); err != nil {
 				t.Fatal(err)
 			}
 			exported, err := store.Export(ctx, plugindata.ExportRequest{PluginInstanceID: source.PluginInstanceID})
@@ -219,7 +232,7 @@ func TestFileStoreExportImportAndRetainedBinding(t *testing.T) {
 			if _, err := store.Import(ctx, plugindata.ImportRequest{PluginInstanceID: target.PluginInstanceID, ObjectID: exported.ObjectID, ExpectedShape: shape, ExpectedManagementRevision: target.ManagementRevision, Now: now.Add(3 * time.Second)}); err != nil {
 				t.Fatal(err)
 			}
-			imported, err := store.ReadFile(ctx, storage.FileReadRequest{PluginInstanceID: target.PluginInstanceID, StoreID: "files", Path: "data.txt"})
+			imported, err := store.ReadFile(ctx, storage.FileReadRequest{PluginInstanceID: target.PluginInstanceID, ResourceScope: pluginDataResourceScope(t, ctx, sessionctx.ScopeUser), StoreID: "files", Path: "data.txt"})
 			if err != nil || string(imported.Data) != "portable" {
 				t.Fatalf("imported = %#v, err = %v", imported, err)
 			}
@@ -240,7 +253,7 @@ func TestFileStoreExportImportAndRetainedBinding(t *testing.T) {
 			if _, err := store.BindRetained(ctx, plugindata.BindRetainedRequest{SourcePluginInstanceID: source.PluginInstanceID, ExpectedSourceBindingRevision: retained[0].Revision, TargetPluginInstanceID: bindTarget.PluginInstanceID, TargetExpectedManagementRevision: bindTarget.ManagementRevision, ExpectedShape: shape, Now: now.Add(6 * time.Second)}); err != nil {
 				t.Fatal(err)
 			}
-			bound, err := store.ReadFile(ctx, storage.FileReadRequest{PluginInstanceID: bindTarget.PluginInstanceID, StoreID: "files", Path: "data.txt"})
+			bound, err := store.ReadFile(ctx, storage.FileReadRequest{PluginInstanceID: bindTarget.PluginInstanceID, ResourceScope: pluginDataResourceScope(t, ctx, sessionctx.ScopeUser), StoreID: "files", Path: "data.txt"})
 			if err != nil || string(bound.Data) != "portable" {
 				t.Fatalf("bound = %#v, err = %v", bound, err)
 			}
@@ -321,7 +334,7 @@ func TestFileStoreQuotaRootLockAndClose(t *testing.T) {
 	if _, err := store.CommitEnable(ctx, enableRequest(plugin, shape, time.Now())); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.WriteFile(ctx, storage.FileWriteRequest{PluginInstanceID: plugin.PluginInstanceID, StoreID: "files", Path: "too-large", Data: []byte("12345")}); !errors.Is(err, storage.ErrQuotaExceeded) {
+	if _, err := store.WriteFile(ctx, storage.FileWriteRequest{PluginInstanceID: plugin.PluginInstanceID, ResourceScope: pluginDataResourceScope(t, ctx, sessionctx.ScopeUser), StoreID: "files", Path: "too-large", Data: []byte("12345")}); !errors.Is(err, storage.ErrQuotaExceeded) {
 		t.Fatalf("quota error = %v", err)
 	}
 	if _, err := plugindata.Open(ctx, root, catalog); err == nil {
@@ -572,26 +585,28 @@ func TestFileStoreScopesSettingsAndStorageByAuthenticatedOwner(t *testing.T) {
 			for _, write := range []struct {
 				ctx     context.Context
 				storeID string
+				scope   sessionctx.ScopeKind
 				value   string
 			}{
-				{ctx: ctxA, storeID: "user_files", value: "a"},
-				{ctx: ctxB, storeID: "user_files", value: "b"},
-				{ctx: ctxA, storeID: "env_files", value: "shared"},
+				{ctx: ctxA, storeID: "user_files", scope: sessionctx.ScopeUser, value: "a"},
+				{ctx: ctxB, storeID: "user_files", scope: sessionctx.ScopeUser, value: "b"},
+				{ctx: ctxA, storeID: "env_files", scope: sessionctx.ScopeEnvironment, value: "shared"},
 			} {
-				if _, err := store.WriteFile(write.ctx, storage.FileWriteRequest{PluginInstanceID: record.PluginInstanceID, StoreID: write.storeID, Path: "value.txt", Data: []byte(write.value)}); err != nil {
+				if _, err := store.WriteFile(write.ctx, storage.FileWriteRequest{PluginInstanceID: record.PluginInstanceID, ResourceScope: pluginDataResourceScope(t, write.ctx, write.scope), StoreID: write.storeID, Path: "value.txt", Data: []byte(write.value)}); err != nil {
 					t.Fatal(err)
 				}
 			}
 			for _, read := range []struct {
 				ctx     context.Context
 				storeID string
+				scope   sessionctx.ScopeKind
 				want    string
 			}{
-				{ctx: ctxA, storeID: "user_files", want: "a"},
-				{ctx: ctxB, storeID: "user_files", want: "b"},
-				{ctx: ctxB, storeID: "env_files", want: "shared"},
+				{ctx: ctxA, storeID: "user_files", scope: sessionctx.ScopeUser, want: "a"},
+				{ctx: ctxB, storeID: "user_files", scope: sessionctx.ScopeUser, want: "b"},
+				{ctx: ctxB, storeID: "env_files", scope: sessionctx.ScopeEnvironment, want: "shared"},
 			} {
-				result, err := store.ReadFile(read.ctx, storage.FileReadRequest{PluginInstanceID: record.PluginInstanceID, StoreID: read.storeID, Path: "value.txt"})
+				result, err := store.ReadFile(read.ctx, storage.FileReadRequest{PluginInstanceID: record.PluginInstanceID, ResourceScope: pluginDataResourceScope(t, read.ctx, read.scope), StoreID: read.storeID, Path: "value.txt"})
 				if err != nil || string(result.Data) != read.want {
 					t.Fatalf("read %s = %q, err = %v", read.storeID, result.Data, err)
 				}
@@ -601,7 +616,7 @@ func TestFileStoreScopesSettingsAndStorageByAuthenticatedOwner(t *testing.T) {
 			if _, err := store.CommitEnable(ctxOtherEnv, plugindata.CommitEnableRequest{PluginInstanceID: otherRecord.PluginInstanceID, Shape: shape, ExpectedManagementRevision: otherRecord.ManagementRevision}); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := store.ReadFile(ctxOtherEnv, storage.FileReadRequest{PluginInstanceID: otherRecord.PluginInstanceID, StoreID: "env_files", Path: "value.txt"}); !errors.Is(err, storage.ErrFileNotFound) {
+			if _, err := store.ReadFile(ctxOtherEnv, storage.FileReadRequest{PluginInstanceID: otherRecord.PluginInstanceID, ResourceScope: pluginDataResourceScope(t, ctxOtherEnv, sessionctx.ScopeEnvironment), StoreID: "env_files", Path: "value.txt"}); !errors.Is(err, storage.ErrFileNotFound) {
 				t.Fatalf("other environment read error = %v, want ErrFileNotFound", err)
 			}
 		})
@@ -629,9 +644,9 @@ func TestFileStoreExportImportPreservesOtherUsersAndScopesObjects(t *testing.T) 
 			if _, err := store.CommitEnable(ctxA, plugindata.CommitEnableRequest{PluginInstanceID: record.PluginInstanceID, Shape: shape, ExpectedManagementRevision: record.ManagementRevision}); err != nil {
 				t.Fatal(err)
 			}
-			write := func(ctx context.Context, storeID, value string) {
+			write := func(ctx context.Context, scope sessionctx.ScopeKind, storeID, value string) {
 				t.Helper()
-				if _, err := store.WriteFile(ctx, storage.FileWriteRequest{PluginInstanceID: record.PluginInstanceID, StoreID: storeID, Path: "value.txt", Data: []byte(value)}); err != nil {
+				if _, err := store.WriteFile(ctx, storage.FileWriteRequest{PluginInstanceID: record.PluginInstanceID, ResourceScope: pluginDataResourceScope(t, ctx, scope), StoreID: storeID, Path: "value.txt", Data: []byte(value)}); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -641,9 +656,9 @@ func TestFileStoreExportImportPreservesOtherUsersAndScopesObjects(t *testing.T) 
 					t.Fatal(err)
 				}
 			}
-			write(ctxA, "user_files", "exported-a")
-			write(ctxB, "user_files", "before-b")
-			write(ctxA, "env_files", "exported-env")
+			write(ctxA, sessionctx.ScopeUser, "user_files", "exported-a")
+			write(ctxB, sessionctx.ScopeUser, "user_files", "before-b")
+			write(ctxA, sessionctx.ScopeEnvironment, "env_files", "exported-env")
 			patch(ctxA, sessionctx.ScopeUser, 1, "user_theme", "exported-a")
 			patch(ctxB, sessionctx.ScopeUser, 1, "user_theme", "before-b")
 			patch(ctxA, sessionctx.ScopeEnvironment, 1, "env_mode", "exported-env")
@@ -663,9 +678,9 @@ func TestFileStoreExportImportPreservesOtherUsersAndScopesObjects(t *testing.T) 
 				t.Fatalf("other user delete error = %v, want ErrExportNotFound", err)
 			}
 
-			write(ctxA, "user_files", "changed-a")
-			write(ctxB, "user_files", "preserved-b")
-			write(ctxA, "env_files", "changed-env")
+			write(ctxA, sessionctx.ScopeUser, "user_files", "changed-a")
+			write(ctxB, sessionctx.ScopeUser, "user_files", "preserved-b")
+			write(ctxA, sessionctx.ScopeEnvironment, "env_files", "changed-env")
 			patch(ctxA, sessionctx.ScopeUser, 2, "user_theme", "changed-a")
 			patch(ctxB, sessionctx.ScopeUser, 2, "user_theme", "preserved-b")
 			patch(ctxA, sessionctx.ScopeEnvironment, 2, "env_mode", "changed-env")
@@ -680,13 +695,14 @@ func TestFileStoreExportImportPreservesOtherUsersAndScopesObjects(t *testing.T) 
 			for _, read := range []struct {
 				ctx     context.Context
 				storeID string
+				scope   sessionctx.ScopeKind
 				want    string
 			}{
-				{ctx: ctxA, storeID: "user_files", want: "exported-a"},
-				{ctx: ctxB, storeID: "user_files", want: "preserved-b"},
-				{ctx: ctxB, storeID: "env_files", want: "exported-env"},
+				{ctx: ctxA, storeID: "user_files", scope: sessionctx.ScopeUser, want: "exported-a"},
+				{ctx: ctxB, storeID: "user_files", scope: sessionctx.ScopeUser, want: "preserved-b"},
+				{ctx: ctxB, storeID: "env_files", scope: sessionctx.ScopeEnvironment, want: "exported-env"},
 			} {
-				result, err := store.ReadFile(read.ctx, storage.FileReadRequest{PluginInstanceID: record.PluginInstanceID, StoreID: read.storeID, Path: "value.txt"})
+				result, err := store.ReadFile(read.ctx, storage.FileReadRequest{PluginInstanceID: record.PluginInstanceID, ResourceScope: pluginDataResourceScope(t, read.ctx, read.scope), StoreID: read.storeID, Path: "value.txt"})
 				if err != nil || string(result.Data) != read.want {
 					t.Fatalf("imported %s = %q, err = %v", read.storeID, result.Data, err)
 				}

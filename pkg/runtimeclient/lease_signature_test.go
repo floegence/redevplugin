@@ -69,6 +69,23 @@ func TestCanonicalRuntimeLeaseSignaturePayloadExcludesSignature(t *testing.T) {
 	}
 }
 
+func TestRuntimeLeaseSignatureRejectsUnsafeRevisionBindings(t *testing.T) {
+	base := runtimeLeaseSignatureTestLease(time.Date(2026, 7, 4, 10, 30, 0, 0, time.UTC))
+	for _, mutate := range []func(*Lease){
+		func(lease *Lease) { lease.RevokeEpoch = 0 },
+		func(lease *Lease) { lease.PolicyRevision = 1 << 53 },
+		func(lease *Lease) { lease.ManagementRevision = 1 << 53 },
+		func(lease *Lease) { lease.RevokeEpoch = 1 << 53 },
+		func(lease *Lease) { lease.ExpiresAtUnixMillis = 1 << 53 },
+	} {
+		lease := base
+		mutate(&lease)
+		if _, err := CanonicalRuntimeLeaseSignaturePayload(lease, "worker.echo"); !errors.Is(err, ErrRuntimeLeaseInvalid) {
+			t.Fatalf("CanonicalRuntimeLeaseSignaturePayload() lease %#v error = %v, want %v", lease, err, ErrRuntimeLeaseInvalid)
+		}
+	}
+}
+
 func TestRuntimeLeaseSignerRequiresClosedLeaseContract(t *testing.T) {
 	now := time.Date(2026, 7, 4, 10, 30, 0, 0, time.UTC)
 	privateKey := runtimeLeaseSignatureTestPrivateKey(7)

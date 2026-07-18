@@ -207,18 +207,22 @@ type workerNetworkBrokerAccess struct {
 }
 
 type HandleGrantValidationRequest struct {
-	HandleGrantToken    string                   `json:"handle_grant_token"`
-	PluginInstanceID    string                   `json:"plugin_instance_id"`
-	ActiveFingerprint   string                   `json:"active_fingerprint"`
-	RuntimeInstanceID   string                   `json:"runtime_instance_id,omitempty"`
-	RuntimeGenerationID string                   `json:"runtime_generation_id"`
-	RuntimeShardID      string                   `json:"runtime_shard_id,omitempty"`
-	HandleID            string                   `json:"handle_id"`
-	Method              string                   `json:"method"`
-	ResourceScope       sessionctx.ResourceScope `json:"resource_scope"`
-	PolicyRevision      uint64                   `json:"policy_revision"`
-	ManagementRevision  uint64                   `json:"management_revision"`
-	RevokeEpoch         uint64                   `json:"revoke_epoch"`
+	HandleGrantToken     string                   `json:"handle_grant_token"`
+	PluginInstanceID     string                   `json:"plugin_instance_id"`
+	ActiveFingerprint    string                   `json:"active_fingerprint"`
+	RuntimeInstanceID    string                   `json:"runtime_instance_id,omitempty"`
+	RuntimeGenerationID  string                   `json:"runtime_generation_id"`
+	RuntimeShardID       string                   `json:"runtime_shard_id,omitempty"`
+	OwnerSessionHash     string                   `json:"owner_session_hash"`
+	OwnerUserHash        string                   `json:"owner_user_hash"`
+	OwnerEnvHash         string                   `json:"owner_env_hash"`
+	SessionChannelIDHash string                   `json:"session_channel_id_hash"`
+	HandleID             string                   `json:"handle_id"`
+	Method               string                   `json:"method"`
+	ResourceScope        sessionctx.ResourceScope `json:"resource_scope"`
+	PolicyRevision       uint64                   `json:"policy_revision"`
+	ManagementRevision   uint64                   `json:"management_revision"`
+	RevokeEpoch          uint64                   `json:"revoke_epoch"`
 }
 
 type HandleGrantValidationResult struct {
@@ -2486,6 +2490,10 @@ func (s *ProcessSupervisor) respondToValidateHandleGrant(ctx context.Context, st
 	if strings.TrimSpace(req.HandleGrantToken) == "" ||
 		strings.TrimSpace(req.PluginInstanceID) == "" ||
 		strings.TrimSpace(req.ActiveFingerprint) == "" ||
+		strings.TrimSpace(req.OwnerSessionHash) == "" ||
+		strings.TrimSpace(req.OwnerUserHash) == "" ||
+		strings.TrimSpace(req.OwnerEnvHash) == "" ||
+		strings.TrimSpace(req.SessionChannelIDHash) == "" ||
 		strings.TrimSpace(req.HandleID) == "" ||
 		strings.TrimSpace(req.Method) == "" ||
 		req.ResourceScope.Validate() != nil {
@@ -2495,6 +2503,7 @@ func (s *ProcessSupervisor) respondToValidateHandleGrant(ctx context.Context, st
 			Message: "handle grant token, plugin identity, handle id, and method are required",
 		})
 	}
+	trustedScope, trustedScopeOK := allowedInvocation.identity.resourceScope(req.ResourceScope.Kind)
 	if !allowedInvocation.identity.matchesRuntimeHostcall(
 		req.PluginInstanceID,
 		req.ActiveFingerprint,
@@ -2504,11 +2513,17 @@ func (s *ProcessSupervisor) respondToValidateHandleGrant(ctx context.Context, st
 		req.PolicyRevision,
 		req.ManagementRevision,
 		req.RevokeEpoch,
-	) || !allowedInvocation.identity.matchesResourceScope(req.ResourceScope) {
+	) || !allowedInvocation.identity.matchesSessionAudience(
+		req.OwnerSessionHash,
+		req.OwnerUserHash,
+		req.OwnerEnvHash,
+		req.SessionChannelIDHash,
+	) || !trustedScopeOK || !req.ResourceScope.Matches(trustedScope) {
 		return s.writeHandleGrantValidationResponse(stdin, runtimeGenerationID, frame, handleGrantValidationResultPayload{
 			OK: false, Code: "HANDLE_GRANT_REQUEST_DENIED", Message: "handle grant request is not bound to the active worker invocation",
 		})
 	}
+	req.ResourceScope = trustedScope
 	if s.handleGrants == nil {
 		return s.writeHandleGrantValidationResponse(stdin, runtimeGenerationID, frame, handleGrantValidationResultPayload{
 			OK:      false,
@@ -2607,16 +2622,14 @@ func (s *ProcessSupervisor) respondToStorageFile(ctx context.Context, stdin io.W
 			Message: "storage file request identity is not bound to the active worker invocation",
 		})
 	}
-	if !allowedInvocation.identity.matchesResourceScope(req.ResourceScope) {
-		return s.writeStorageFileResponse(stdin, health.RuntimeGenerationID, frame, storageFileResponsePayload{
-			OK: false, Code: "STORAGE_FILE_REQUEST_DENIED", Message: "storage file resource scope is not bound to the active worker invocation",
-		})
-	}
-	if scope, ok := allowedInvocation.BrokerAccess.storageScope(req.StoreID); !ok || req.ResourceScope.Kind != scope {
+	declaredScope, ok := allowedInvocation.BrokerAccess.storageScope(req.StoreID)
+	trustedScope, trustedScopeOK := allowedInvocation.identity.resourceScope(declaredScope)
+	if !ok || !trustedScopeOK || !req.ResourceScope.Matches(trustedScope) {
 		return s.writeStorageFileResponse(stdin, health.RuntimeGenerationID, frame, storageFileResponsePayload{
 			OK: false, Code: "STORAGE_FILE_REQUEST_DENIED", Message: "storage file resource scope does not match the declared store scope",
 		})
 	}
+	req.ResourceScope = trustedScope
 	if !allowedInvocation.BrokerAccess.allowsStorage(req.StoreID, req.Operation) {
 		return s.writeStorageFileResponse(stdin, health.RuntimeGenerationID, frame, storageFileResponsePayload{
 			OK: false, Code: "STORAGE_FILE_REQUEST_DENIED", Message: "worker method is not allowed to perform this storage operation",
@@ -2639,18 +2652,22 @@ func (s *ProcessSupervisor) respondToStorageFile(ctx context.Context, stdin io.W
 	hostcallCtx, cancel := runtimeHostcallContext(ctx, 0)
 	defer cancel()
 	grant, err := s.handleGrants.ValidateHandleGrant(hostcallCtx, HandleGrantValidationRequest{
-		HandleGrantToken:    req.HandleGrantToken,
-		PluginInstanceID:    req.PluginInstanceID,
-		ActiveFingerprint:   req.ActiveFingerprint,
-		RuntimeInstanceID:   req.RuntimeInstanceID,
-		RuntimeGenerationID: req.RuntimeGenerationID,
-		RuntimeShardID:      req.RuntimeShardID,
-		HandleID:            req.HandleID,
-		Method:              req.Method,
-		ResourceScope:       req.ResourceScope,
-		PolicyRevision:      req.PolicyRevision,
-		ManagementRevision:  req.ManagementRevision,
-		RevokeEpoch:         req.RevokeEpoch,
+		HandleGrantToken:     req.HandleGrantToken,
+		PluginInstanceID:     req.PluginInstanceID,
+		ActiveFingerprint:    req.ActiveFingerprint,
+		RuntimeInstanceID:    req.RuntimeInstanceID,
+		RuntimeGenerationID:  req.RuntimeGenerationID,
+		RuntimeShardID:       req.RuntimeShardID,
+		OwnerSessionHash:     allowedInvocation.identity.OwnerSessionHash,
+		OwnerUserHash:        allowedInvocation.identity.OwnerUserHash,
+		OwnerEnvHash:         allowedInvocation.identity.OwnerEnvHash,
+		SessionChannelIDHash: allowedInvocation.identity.SessionChannelIDHash,
+		HandleID:             req.HandleID,
+		Method:               req.Method,
+		ResourceScope:        req.ResourceScope,
+		PolicyRevision:       req.PolicyRevision,
+		ManagementRevision:   req.ManagementRevision,
+		RevokeEpoch:          req.RevokeEpoch,
 	})
 	if err != nil {
 		s.emitHostcallFailure(health.RuntimeGenerationID, "storage_file", "HANDLE_GRANT_VALIDATION_FAILED", err, map[string]any{
@@ -2867,16 +2884,14 @@ func (s *ProcessSupervisor) respondToStorageKV(ctx context.Context, stdin io.Wri
 			Message: "storage kv request identity is not bound to the active worker invocation",
 		})
 	}
-	if !allowedInvocation.identity.matchesResourceScope(req.ResourceScope) {
-		return s.writeStorageKVResponse(stdin, health.RuntimeGenerationID, frame, storageKVResponsePayload{
-			OK: false, Code: "STORAGE_KV_REQUEST_DENIED", Message: "storage kv resource scope is not bound to the active worker invocation",
-		})
-	}
-	if scope, ok := allowedInvocation.BrokerAccess.storageScope(req.StoreID); !ok || req.ResourceScope.Kind != scope {
+	declaredScope, ok := allowedInvocation.BrokerAccess.storageScope(req.StoreID)
+	trustedScope, trustedScopeOK := allowedInvocation.identity.resourceScope(declaredScope)
+	if !ok || !trustedScopeOK || !req.ResourceScope.Matches(trustedScope) {
 		return s.writeStorageKVResponse(stdin, health.RuntimeGenerationID, frame, storageKVResponsePayload{
 			OK: false, Code: "STORAGE_KV_REQUEST_DENIED", Message: "storage kv resource scope does not match the declared store scope",
 		})
 	}
+	req.ResourceScope = trustedScope
 	if !allowedInvocation.BrokerAccess.allowsStorage(req.StoreID, req.Operation) {
 		return s.writeStorageKVResponse(stdin, health.RuntimeGenerationID, frame, storageKVResponsePayload{
 			OK: false, Code: "STORAGE_KV_REQUEST_DENIED", Message: "worker method is not allowed to perform this storage operation",
@@ -2899,18 +2914,22 @@ func (s *ProcessSupervisor) respondToStorageKV(ctx context.Context, stdin io.Wri
 	hostcallCtx, cancel := runtimeHostcallContext(ctx, 0)
 	defer cancel()
 	grant, err := s.handleGrants.ValidateHandleGrant(hostcallCtx, HandleGrantValidationRequest{
-		HandleGrantToken:    req.HandleGrantToken,
-		PluginInstanceID:    req.PluginInstanceID,
-		ActiveFingerprint:   req.ActiveFingerprint,
-		RuntimeInstanceID:   req.RuntimeInstanceID,
-		RuntimeGenerationID: req.RuntimeGenerationID,
-		RuntimeShardID:      req.RuntimeShardID,
-		HandleID:            req.HandleID,
-		Method:              req.Method,
-		ResourceScope:       req.ResourceScope,
-		PolicyRevision:      req.PolicyRevision,
-		ManagementRevision:  req.ManagementRevision,
-		RevokeEpoch:         req.RevokeEpoch,
+		HandleGrantToken:     req.HandleGrantToken,
+		PluginInstanceID:     req.PluginInstanceID,
+		ActiveFingerprint:    req.ActiveFingerprint,
+		RuntimeInstanceID:    req.RuntimeInstanceID,
+		RuntimeGenerationID:  req.RuntimeGenerationID,
+		RuntimeShardID:       req.RuntimeShardID,
+		OwnerSessionHash:     allowedInvocation.identity.OwnerSessionHash,
+		OwnerUserHash:        allowedInvocation.identity.OwnerUserHash,
+		OwnerEnvHash:         allowedInvocation.identity.OwnerEnvHash,
+		SessionChannelIDHash: allowedInvocation.identity.SessionChannelIDHash,
+		HandleID:             req.HandleID,
+		Method:               req.Method,
+		ResourceScope:        req.ResourceScope,
+		PolicyRevision:       req.PolicyRevision,
+		ManagementRevision:   req.ManagementRevision,
+		RevokeEpoch:          req.RevokeEpoch,
 	})
 	if err != nil {
 		s.emitHostcallFailure(health.RuntimeGenerationID, "storage_kv", "HANDLE_GRANT_VALIDATION_FAILED", err, map[string]any{
@@ -3134,16 +3153,14 @@ func (s *ProcessSupervisor) respondToStorageSQLite(ctx context.Context, stdin io
 			Message: "storage sqlite request identity is not bound to the active worker invocation",
 		})
 	}
-	if !allowedInvocation.identity.matchesResourceScope(req.ResourceScope) {
-		return s.writeStorageSQLiteResponse(stdin, health.RuntimeGenerationID, frame, storageSQLiteResponsePayload{
-			OK: false, Code: "STORAGE_SQLITE_REQUEST_DENIED", Message: "storage sqlite resource scope is not bound to the active worker invocation",
-		})
-	}
-	if scope, ok := allowedInvocation.BrokerAccess.storageScope(req.StoreID); !ok || req.ResourceScope.Kind != scope {
+	declaredScope, ok := allowedInvocation.BrokerAccess.storageScope(req.StoreID)
+	trustedScope, trustedScopeOK := allowedInvocation.identity.resourceScope(declaredScope)
+	if !ok || !trustedScopeOK || !req.ResourceScope.Matches(trustedScope) {
 		return s.writeStorageSQLiteResponse(stdin, health.RuntimeGenerationID, frame, storageSQLiteResponsePayload{
 			OK: false, Code: "STORAGE_SQLITE_REQUEST_DENIED", Message: "storage sqlite resource scope does not match the declared store scope",
 		})
 	}
+	req.ResourceScope = trustedScope
 	if !allowedInvocation.BrokerAccess.allowsStorage(req.StoreID, req.Operation) {
 		return s.writeStorageSQLiteResponse(stdin, health.RuntimeGenerationID, frame, storageSQLiteResponsePayload{
 			OK: false, Code: "STORAGE_SQLITE_REQUEST_DENIED", Message: "worker method is not allowed to perform this storage operation",
@@ -3166,18 +3183,22 @@ func (s *ProcessSupervisor) respondToStorageSQLite(ctx context.Context, stdin io
 	hostcallCtx, cancel := runtimeHostcallContext(ctx, time.Duration(req.TimeoutMillis)*time.Millisecond)
 	defer cancel()
 	grant, err := s.handleGrants.ValidateHandleGrant(hostcallCtx, HandleGrantValidationRequest{
-		HandleGrantToken:    req.HandleGrantToken,
-		PluginInstanceID:    req.PluginInstanceID,
-		ActiveFingerprint:   req.ActiveFingerprint,
-		RuntimeInstanceID:   req.RuntimeInstanceID,
-		RuntimeGenerationID: req.RuntimeGenerationID,
-		RuntimeShardID:      req.RuntimeShardID,
-		HandleID:            req.HandleID,
-		Method:              req.Method,
-		ResourceScope:       req.ResourceScope,
-		PolicyRevision:      req.PolicyRevision,
-		ManagementRevision:  req.ManagementRevision,
-		RevokeEpoch:         req.RevokeEpoch,
+		HandleGrantToken:     req.HandleGrantToken,
+		PluginInstanceID:     req.PluginInstanceID,
+		ActiveFingerprint:    req.ActiveFingerprint,
+		RuntimeInstanceID:    req.RuntimeInstanceID,
+		RuntimeGenerationID:  req.RuntimeGenerationID,
+		RuntimeShardID:       req.RuntimeShardID,
+		OwnerSessionHash:     allowedInvocation.identity.OwnerSessionHash,
+		OwnerUserHash:        allowedInvocation.identity.OwnerUserHash,
+		OwnerEnvHash:         allowedInvocation.identity.OwnerEnvHash,
+		SessionChannelIDHash: allowedInvocation.identity.SessionChannelIDHash,
+		HandleID:             req.HandleID,
+		Method:               req.Method,
+		ResourceScope:        req.ResourceScope,
+		PolicyRevision:       req.PolicyRevision,
+		ManagementRevision:   req.ManagementRevision,
+		RevokeEpoch:          req.RevokeEpoch,
 	})
 	if err != nil {
 		s.emitHostcallFailure(health.RuntimeGenerationID, "storage_sqlite", "HANDLE_GRANT_VALIDATION_FAILED", err, map[string]any{
@@ -4115,14 +4136,23 @@ func (identity workerInvocationIdentity) matchesNetworkExecute(req networkExecut
 }
 
 func (identity workerInvocationIdentity) matchesResourceScope(scope sessionctx.ResourceScope) bool {
-	expected := sessionctx.ResourceScope{
-		Kind:         scope.Kind,
-		OwnerEnvHash: identity.OwnerEnvHash,
-	}
-	if scope.Kind == sessionctx.ScopeUser {
+	expected, ok := identity.resourceScope(scope.Kind)
+	return ok && scope.Matches(expected)
+}
+
+func (identity workerInvocationIdentity) resourceScope(kind sessionctx.ScopeKind) (sessionctx.ResourceScope, bool) {
+	expected := sessionctx.ResourceScope{Kind: kind, OwnerEnvHash: identity.OwnerEnvHash}
+	if kind == sessionctx.ScopeUser {
 		expected.OwnerUserHash = identity.OwnerUserHash
 	}
-	return scope.Matches(expected)
+	return expected, expected.Valid()
+}
+
+func (identity workerInvocationIdentity) matchesSessionAudience(ownerSessionHash, ownerUserHash, ownerEnvHash, sessionChannelIDHash string) bool {
+	return ownerSessionHash == identity.OwnerSessionHash &&
+		ownerUserHash == identity.OwnerUserHash &&
+		ownerEnvHash == identity.OwnerEnvHash &&
+		sessionChannelIDHash == identity.SessionChannelIDHash
 }
 
 func workerInvocationContextFromInvocation(lease Lease, invocation json.RawMessage) (workerInvocationContext, error) {

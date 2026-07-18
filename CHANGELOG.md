@@ -16,9 +16,9 @@
 - Add fixed-seed Go fuzz gates and Rust property tests for packages, manifests,
   response normalization, strict JSON, IPC, stream state, SQLite tokenization,
   scheduler fairness, module cache limits, and target classification.
-- Add `rust-ipc-v3` invocation cancellation, Host/Rust negotiated runtime
-  limits, per-plugin fair scheduling, capacity errors, and health metrics for
-  active and queued invocations plus the compiled-module cache.
+- Add invocation cancellation, Host/Rust negotiated runtime limits, per-plugin
+  fair scheduling, capacity errors, and health metrics for active and queued
+  invocations plus the compiled-module cache.
 - Add a shared Wasmi engine and single-flight, deterministic LRU module cache
   keyed by artifact SHA-256 and WASM ABI version. Cache hits no longer read or
   transfer the worker artifact again within a runtime generation.

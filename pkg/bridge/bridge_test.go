@@ -56,6 +56,57 @@ func TestAssetTicketConsumesOnce(t *testing.T) {
 	}
 }
 
+func TestTokenMintRejectsInvalidRevisionBindings(t *testing.T) {
+	manager := NewTokenManager()
+	now := testNow()
+	base := MintRequest{
+		Kind:      TokenKindAssetTicket,
+		Audience:  testAudience(),
+		Revision:  testRevision(7),
+		ExpiresAt: now.Add(time.Minute),
+		Now:       now,
+	}
+	for _, mutate := range []func(*RevisionBinding){
+		func(revision *RevisionBinding) { revision.RevokeEpoch = 0 },
+		func(revision *RevisionBinding) { revision.PolicyRevision = 1 << 53 },
+		func(revision *RevisionBinding) { revision.ManagementRevision = 1 << 53 },
+		func(revision *RevisionBinding) { revision.RevokeEpoch = 1 << 53 },
+	} {
+		req := base
+		mutate(&req.Revision)
+		if _, err := manager.Mint(req); !errors.Is(err, ErrTokenRevision) {
+			t.Fatalf("Mint() revision %#v error = %v, want %v", req.Revision, err, ErrTokenRevision)
+		}
+	}
+	if _, err := manager.RevokePlugin("env_hash", "plugini_test", 0, now); !errors.Is(err, ErrTokenRevision) {
+		t.Fatalf("RevokePlugin() zero epoch error = %v, want %v", err, ErrTokenRevision)
+	}
+	for _, limits := range []Limits{{MaxTotalBytes: -1}, {MaxBytesPerSecond: 1 << 53}} {
+		req := base
+		req.Limits = limits
+		if _, err := manager.Mint(req); !errors.Is(err, ErrTokenLimits) {
+			t.Fatalf("Mint() limits %#v error = %v, want %v", limits, err, ErrTokenLimits)
+		}
+	}
+}
+
+func TestTokenMintRejectsNonCanonicalSessionOwnerHashes(t *testing.T) {
+	manager := NewTokenManager()
+	now := testNow()
+	for _, mutate := range []func(*Audience){
+		func(audience *Audience) { audience.OwnerEnvHash = "env/hash" },
+		func(audience *Audience) { audience.OwnerUserHash = " user_hash" },
+	} {
+		audience := testAudience()
+		mutate(&audience)
+		if _, err := manager.Mint(MintRequest{
+			Kind: TokenKindAssetTicket, Audience: audience, Revision: testRevision(7), ExpiresAt: now.Add(time.Minute), Now: now,
+		}); !errors.Is(err, ErrTokenAudience) {
+			t.Fatalf("Mint() audience %#v error = %v, want %v", audience, err, ErrTokenAudience)
+		}
+	}
+}
+
 func TestTokenExpires(t *testing.T) {
 	manager := NewTokenManager()
 	now := testNow()
@@ -381,6 +432,71 @@ func TestMintRejectsCallerOverrideOfKindSpecificUse(t *testing.T) {
 		Now:       now,
 	}); err == nil {
 		t.Fatal("Mint() accepted a reusable asset ticket")
+	}
+}
+
+func TestNonHandleTokenAudienceRejectsResourceScope(t *testing.T) {
+	manager := NewTokenManager()
+	now := testNow()
+	for _, kind := range []TokenKind{
+		TokenKindAssetTicket,
+		TokenKindAssetSession,
+		TokenKindPluginGatewayToken,
+		TokenKindConfirmationToken,
+		TokenKindStreamTicket,
+	} {
+		t.Run(string(kind), func(t *testing.T) {
+			for _, scopeCase := range []struct {
+				name  string
+				scope sessionctx.ResourceScope
+			}{
+				{name: "valid", scope: sessionctx.ResourceScope{
+					Kind:          sessionctx.ScopeUser,
+					OwnerEnvHash:  "env_injected",
+					OwnerUserHash: "user_injected",
+				}},
+				{name: "partially populated", scope: sessionctx.ResourceScope{OwnerEnvHash: "env_injected"}},
+			} {
+				t.Run(scopeCase.name, func(t *testing.T) {
+					audience := testAudienceForTokenKind(kind)
+					audience.ResourceScope = scopeCase.scope
+					if _, err := manager.Mint(MintRequest{
+						Kind:      kind,
+						Audience:  audience,
+						Revision:  testRevision(1),
+						ExpiresAt: now.Add(time.Minute),
+						Now:       now,
+					}); !errors.Is(err, ErrTokenAudience) {
+						t.Fatalf("Mint() resource scope injection error = %v, want %v", err, ErrTokenAudience)
+					}
+				})
+			}
+		})
+	}
+}
+
+func TestTokenPluginIndexKeyRejectsNonHandleResourceScopeOwnerInjection(t *testing.T) {
+	audience := testAudienceForTokenKind(TokenKindPluginGatewayToken)
+	audience.ResourceScope = sessionctx.ResourceScope{
+		Kind:          sessionctx.ScopeUser,
+		OwnerEnvHash:  "env_injected",
+		OwnerUserHash: "user_injected",
+	}
+	if _, err := tokenPluginIndexKey(TokenKindPluginGatewayToken, audience); !errors.Is(err, ErrTokenAudience) {
+		t.Fatalf("tokenPluginIndexKey() injection error = %v, want %v", err, ErrTokenAudience)
+	}
+
+	handleAudience := testAudienceForTokenKind(TokenKindHandleGrant)
+	key, err := tokenPluginIndexKey(TokenKindHandleGrant, handleAudience)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, err := ownerPluginIndexKey(handleAudience.ResourceScope.OwnerEnvHash, handleAudience.PluginInstanceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if key != want {
+		t.Fatalf("handle grant plugin index key = %q, want %q", key, want)
 	}
 }
 

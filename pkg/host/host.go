@@ -5901,7 +5901,8 @@ func connectorResourceScope(m manifest.Manifest, connectorID string, session ses
 }
 
 func (h *Host) MintNetworkHandleGrant(ctx context.Context, req MintConnectionGrantRequest) (result NetworkHandleGrantResult, retErr error) {
-	if _, err := h.authorizeManagement(ctx, ManagementActionMintNetworkHandleGrant, req.PluginInstanceID, req.ConnectorID); err != nil {
+	session, err := h.authorizeManagement(ctx, ManagementActionMintNetworkHandleGrant, req.PluginInstanceID, req.ConnectorID)
+	if err != nil {
 		return NetworkHandleGrantResult{}, err
 	}
 	if strings.TrimSpace(req.RuntimeGenerationID) == "" {
@@ -5929,14 +5930,18 @@ func (h *Host) MintNetworkHandleGrant(ctx context.Context, req MintConnectionGra
 		expiresAt = grant.ExpiresAt
 	}
 	handleGrant, err := h.surfaceTokens.MintHandleGrant(bridge.MintHandleGrantRequest{
-		PluginInstanceID:    grant.PluginInstanceID,
-		ActiveFingerprint:   grant.ActiveFingerprint,
-		RuntimeInstanceID:   req.RuntimeInstanceID,
-		RuntimeGenerationID: req.RuntimeGenerationID,
-		RuntimeShardID:      req.RuntimeShardID,
-		HandleID:            grant.GrantID,
-		Method:              "network." + string(grant.Transport),
-		ResourceScope:       grant.ResourceScope,
+		PluginInstanceID:     grant.PluginInstanceID,
+		ActiveFingerprint:    grant.ActiveFingerprint,
+		RuntimeInstanceID:    req.RuntimeInstanceID,
+		RuntimeGenerationID:  req.RuntimeGenerationID,
+		RuntimeShardID:       req.RuntimeShardID,
+		OwnerSessionHash:     session.OwnerSessionHash,
+		OwnerUserHash:        session.OwnerUserHash,
+		OwnerEnvHash:         session.OwnerEnvHash,
+		SessionChannelIDHash: session.SessionChannelIDHash,
+		HandleID:             grant.GrantID,
+		Method:               "network." + string(grant.Transport),
+		ResourceScope:        grant.ResourceScope,
 		Revision: bridge.RevisionBinding{
 			PolicyRevision:     grant.PolicyRevision,
 			ManagementRevision: grant.ManagementRevision,
@@ -5995,14 +6000,18 @@ func (h *Host) MintStorageHandleGrant(ctx context.Context, req MintStorageHandle
 		ttl = bridge.DefaultHandleGrantTTL
 	}
 	handleGrant, err := h.surfaceTokens.MintHandleGrant(bridge.MintHandleGrantRequest{
-		PluginInstanceID:    record.PluginInstanceID,
-		ActiveFingerprint:   record.ActiveFingerprint,
-		RuntimeInstanceID:   req.RuntimeInstanceID,
-		RuntimeGenerationID: req.RuntimeGenerationID,
-		RuntimeShardID:      req.RuntimeShardID,
-		HandleID:            "storage:" + namespace.StoreID,
-		Method:              "storage." + string(namespace.Kind),
-		ResourceScope:       resourceScope,
+		PluginInstanceID:     record.PluginInstanceID,
+		ActiveFingerprint:    record.ActiveFingerprint,
+		RuntimeInstanceID:    req.RuntimeInstanceID,
+		RuntimeGenerationID:  req.RuntimeGenerationID,
+		RuntimeShardID:       req.RuntimeShardID,
+		OwnerSessionHash:     session.OwnerSessionHash,
+		OwnerUserHash:        session.OwnerUserHash,
+		OwnerEnvHash:         session.OwnerEnvHash,
+		SessionChannelIDHash: session.SessionChannelIDHash,
+		HandleID:             "storage:" + namespace.StoreID,
+		Method:               "storage." + string(namespace.Kind),
+		ResourceScope:        resourceScope,
 		Revision: bridge.RevisionBinding{
 			PolicyRevision:     record.PolicyRevision,
 			ManagementRevision: record.ManagementRevision,
@@ -6676,14 +6685,18 @@ func (v runtimeHandleGrantValidator) ValidateHandleGrant(_ context.Context, req 
 	record, err := v.tokens.ValidateHandleGrant(bridge.ValidateHandleGrantRequest{
 		HandleGrantToken: req.HandleGrantToken,
 		Audience: bridge.Audience{
-			PluginInstanceID:    req.PluginInstanceID,
-			ActiveFingerprint:   req.ActiveFingerprint,
-			RuntimeInstanceID:   req.RuntimeInstanceID,
-			RuntimeGenerationID: req.RuntimeGenerationID,
-			RuntimeShardID:      req.RuntimeShardID,
-			HandleID:            req.HandleID,
-			Method:              req.Method,
-			ResourceScope:       req.ResourceScope,
+			PluginInstanceID:     req.PluginInstanceID,
+			ActiveFingerprint:    req.ActiveFingerprint,
+			RuntimeInstanceID:    req.RuntimeInstanceID,
+			RuntimeGenerationID:  req.RuntimeGenerationID,
+			RuntimeShardID:       req.RuntimeShardID,
+			OwnerSessionHash:     req.OwnerSessionHash,
+			OwnerUserHash:        req.OwnerUserHash,
+			OwnerEnvHash:         req.OwnerEnvHash,
+			SessionChannelIDHash: req.SessionChannelIDHash,
+			HandleID:             req.HandleID,
+			Method:               req.Method,
+			ResourceScope:        req.ResourceScope,
 		},
 		Revision: bridge.RevisionBinding{
 			PolicyRevision:     req.PolicyRevision,

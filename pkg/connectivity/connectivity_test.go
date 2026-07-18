@@ -72,6 +72,28 @@ func TestCompilePolicyNormalizesDeclaredTransports(t *testing.T) {
 	}
 }
 
+func TestCompilePolicyRejectsUnsafeRevisionValues(t *testing.T) {
+	base := CompileRequest{
+		PluginInstanceID:   "plugini_test",
+		PluginID:           "com.example.net",
+		ActiveFingerprint:  "sha256:fingerprint",
+		PolicyRevision:     1,
+		ManagementRevision: 2,
+		RevokeEpoch:        3,
+	}
+	for _, mutate := range []func(*CompileRequest){
+		func(req *CompileRequest) { req.PolicyRevision = 1 << 53 },
+		func(req *CompileRequest) { req.ManagementRevision = 1 << 53 },
+		func(req *CompileRequest) { req.RevokeEpoch = 1 << 53 },
+	} {
+		req := base
+		mutate(&req)
+		if _, err := CompilePolicy(req); !errors.Is(err, ErrInvalidConnector) {
+			t.Fatalf("CompilePolicy() request %#v error = %v, want %v", req, err, ErrInvalidConnector)
+		}
+	}
+}
+
 func TestCompilePolicyRejectsBlockedTargets(t *testing.T) {
 	cases := []struct {
 		name        string
@@ -89,14 +111,20 @@ func TestCompilePolicyRejectsBlockedTargets(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := CompilePolicy(CompileRequest{Manifest: manifest.Manifest{
-				NetworkAccess: &manifest.NetworkAccessSpec{Connectors: []manifest.NetworkConnectorSpec{{
+			_, err := CompilePolicy(CompileRequest{
+				PluginInstanceID:   "plugini_test",
+				PluginID:           "com.example.net",
+				ActiveFingerprint:  "sha256:fingerprint",
+				PolicyRevision:     1,
+				ManagementRevision: 2,
+				RevokeEpoch:        3,
+				Manifest: manifest.Manifest{NetworkAccess: &manifest.NetworkAccessSpec{Connectors: []manifest.NetworkConnectorSpec{{
 					ConnectorID:  "blocked",
 					Transport:    tc.transport,
 					Scope:        "user",
 					Destinations: []string{tc.destination},
-				}}},
-			}})
+				}}}},
+			})
 			if !errors.Is(err, ErrTargetDenied) {
 				t.Fatalf("CompilePolicy() error = %v, want ErrTargetDenied", err)
 			}
@@ -2061,6 +2089,22 @@ func testGrant(t *testing.T, transport Transport, rawDestination string, ttl tim
 		RuntimeGenerationID:     "runtime_gen_1",
 		TargetClassifierVersion: version.TargetClassifierVersion,
 		ExpiresAt:               time.Now().UTC().Add(ttl),
+	}
+}
+
+func TestGrantValidationRejectsInvalidRevisionBindings(t *testing.T) {
+	base := testGrant(t, TransportHTTP, "https://api.example.com", time.Minute)
+	for _, mutate := range []func(*ConnectionGrant){
+		func(grant *ConnectionGrant) { grant.RevokeEpoch = 0 },
+		func(grant *ConnectionGrant) { grant.PolicyRevision = 1 << 53 },
+		func(grant *ConnectionGrant) { grant.ManagementRevision = 1 << 53 },
+		func(grant *ConnectionGrant) { grant.RevokeEpoch = 1 << 53 },
+	} {
+		grant := base
+		mutate(&grant)
+		if err := validateGrantForTransport(grant, TransportHTTP, time.Now().UTC(), time.Now); !errors.Is(err, ErrConnectorDenied) {
+			t.Fatalf("validateGrantForTransport() grant %#v error = %v, want %v", grant, err, ErrConnectorDenied)
+		}
 	}
 }
 

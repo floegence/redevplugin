@@ -2423,14 +2423,18 @@ func TestCurrentSourcePolicyFailureRevokesStorageHandleAndRuntime(t *testing.T) 
 	if _, err := h.surfaceTokens.ValidateHandleGrant(bridge.ValidateHandleGrantRequest{
 		HandleGrantToken: handle.HandleGrant.HandleGrantToken,
 		Audience: bridge.Audience{
-			PluginInstanceID:    enabled.PluginInstanceID,
-			ActiveFingerprint:   enabled.ActiveFingerprint,
-			RuntimeInstanceID:   "runtime_1",
-			RuntimeGenerationID: "runtime_gen_1",
-			RuntimeShardID:      "runtime_shard_a",
-			HandleID:            "storage:db",
-			Method:              "storage.sqlite",
-			ResourceScope:       sessionctx.ResourceScope{Kind: sessionctx.ScopeEnvironment, OwnerEnvHash: "env_hash"},
+			PluginInstanceID:     enabled.PluginInstanceID,
+			ActiveFingerprint:    enabled.ActiveFingerprint,
+			RuntimeInstanceID:    "runtime_1",
+			RuntimeGenerationID:  "runtime_gen_1",
+			RuntimeShardID:       "runtime_shard_a",
+			OwnerSessionHash:     "session_hash",
+			OwnerUserHash:        "user_hash",
+			OwnerEnvHash:         "env_hash",
+			SessionChannelIDHash: "channel_hash",
+			HandleID:             "storage:db",
+			Method:               "storage.sqlite",
+			ResourceScope:        sessionctx.ResourceScope{Kind: sessionctx.ScopeEnvironment, OwnerEnvHash: "env_hash"},
 		},
 		Revision: bridge.RevisionBinding{
 			PolicyRevision:     enabled.PolicyRevision,
@@ -2501,14 +2505,18 @@ func TestUnsignedLocalPolicyFailureRevokesStorageHandleAndRuntime(t *testing.T) 
 	if _, err := h.surfaceTokens.ValidateHandleGrant(bridge.ValidateHandleGrantRequest{
 		HandleGrantToken: handle.HandleGrant.HandleGrantToken,
 		Audience: bridge.Audience{
-			PluginInstanceID:    enabled.PluginInstanceID,
-			ActiveFingerprint:   enabled.ActiveFingerprint,
-			RuntimeInstanceID:   "runtime_1",
-			RuntimeGenerationID: "runtime_gen_1",
-			RuntimeShardID:      "runtime_shard_a",
-			HandleID:            "storage:db",
-			Method:              "storage.sqlite",
-			ResourceScope:       sessionctx.ResourceScope{Kind: sessionctx.ScopeEnvironment, OwnerEnvHash: "env_hash"},
+			PluginInstanceID:     enabled.PluginInstanceID,
+			ActiveFingerprint:    enabled.ActiveFingerprint,
+			RuntimeInstanceID:    "runtime_1",
+			RuntimeGenerationID:  "runtime_gen_1",
+			RuntimeShardID:       "runtime_shard_a",
+			OwnerSessionHash:     "session_hash",
+			OwnerUserHash:        "user_hash",
+			OwnerEnvHash:         "env_hash",
+			SessionChannelIDHash: "channel_hash",
+			HandleID:             "storage:db",
+			Method:               "storage.sqlite",
+			ResourceScope:        sessionctx.ResourceScope{Kind: sessionctx.ScopeEnvironment, OwnerEnvHash: "env_hash"},
 		},
 		Revision: bridge.RevisionBinding{
 			PolicyRevision:     enabled.PolicyRevision,
@@ -4026,12 +4034,16 @@ func TestCallPluginMethodClosesStreamWhenTicketMintFails(t *testing.T) {
 	if _, err := manager.Mint(bridge.MintRequest{
 		Kind: bridge.TokenKindHandleGrant,
 		Audience: bridge.Audience{
-			PluginInstanceID:    installed.PluginInstanceID,
-			ActiveFingerprint:   installed.ActiveFingerprint,
-			RuntimeGenerationID: "runtime_filler",
-			HandleID:            "handle_filler",
-			Method:              "filler.reserve",
-			ResourceScope:       sessionctx.ResourceScope{Kind: sessionctx.ScopeUser, OwnerEnvHash: "env_hash", OwnerUserHash: "user_hash"},
+			PluginInstanceID:     installed.PluginInstanceID,
+			ActiveFingerprint:    installed.ActiveFingerprint,
+			RuntimeGenerationID:  "runtime_filler",
+			OwnerSessionHash:     "session_hash",
+			OwnerUserHash:        "user_hash",
+			OwnerEnvHash:         "env_hash",
+			SessionChannelIDHash: "channel_hash",
+			HandleID:             "handle_filler",
+			Method:               "filler.reserve",
+			ResourceScope:        sessionctx.ResourceScope{Kind: sessionctx.ScopeUser, OwnerEnvHash: "env_hash", OwnerUserHash: "user_hash"},
 		},
 		Revision: bridge.RevisionBinding{
 			PolicyRevision:     installed.PolicyRevision,
@@ -7583,14 +7595,18 @@ func TestMintStorageHandleGrantBindsStoreAndQuota(t *testing.T) {
 	record, err := host.surfaceTokens.ValidateHandleGrant(bridge.ValidateHandleGrantRequest{
 		HandleGrantToken: result.HandleGrant.HandleGrantToken,
 		Audience: bridge.Audience{
-			PluginInstanceID:    enabled.PluginInstanceID,
-			ActiveFingerprint:   enabled.ActiveFingerprint,
-			RuntimeInstanceID:   "runtime_1",
-			RuntimeGenerationID: "runtime_gen_1",
-			RuntimeShardID:      "runtime_shard_a",
-			HandleID:            "storage:db",
-			Method:              "storage.sqlite",
-			ResourceScope:       sessionctx.ResourceScope{Kind: sessionctx.ScopeEnvironment, OwnerEnvHash: "env_hash"},
+			PluginInstanceID:     enabled.PluginInstanceID,
+			ActiveFingerprint:    enabled.ActiveFingerprint,
+			RuntimeInstanceID:    "runtime_1",
+			RuntimeGenerationID:  "runtime_gen_1",
+			RuntimeShardID:       "runtime_shard_a",
+			OwnerSessionHash:     "session_hash",
+			OwnerUserHash:        "user_hash",
+			OwnerEnvHash:         "env_hash",
+			SessionChannelIDHash: "channel_hash",
+			HandleID:             "storage:db",
+			Method:               "storage.sqlite",
+			ResourceScope:        sessionctx.ResourceScope{Kind: sessionctx.ScopeEnvironment, OwnerEnvHash: "env_hash"},
 		},
 		Revision: bridge.RevisionBinding{
 			PolicyRevision:     enabled.PolicyRevision,
@@ -7684,14 +7700,18 @@ func TestEnableInstallsConnectivityPolicyAndMintsGrant(t *testing.T) {
 	record, err := h.surfaceTokens.ValidateHandleGrant(bridge.ValidateHandleGrantRequest{
 		HandleGrantToken: handle.HandleGrant.HandleGrantToken,
 		Audience: bridge.Audience{
-			PluginInstanceID:    installed.PluginInstanceID,
-			ActiveFingerprint:   installed.ActiveFingerprint,
-			RuntimeInstanceID:   "runtime_1",
-			RuntimeGenerationID: "runtime_gen_1",
-			RuntimeShardID:      "runtime_shard_a",
-			HandleID:            handle.ConnectionGrant.GrantID,
-			Method:              "network.tcp",
-			ResourceScope:       handle.ConnectionGrant.ResourceScope,
+			PluginInstanceID:     installed.PluginInstanceID,
+			ActiveFingerprint:    installed.ActiveFingerprint,
+			RuntimeInstanceID:    "runtime_1",
+			RuntimeGenerationID:  "runtime_gen_1",
+			RuntimeShardID:       "runtime_shard_a",
+			OwnerSessionHash:     "session_hash",
+			OwnerUserHash:        "user_hash",
+			OwnerEnvHash:         "env_hash",
+			SessionChannelIDHash: "channel_hash",
+			HandleID:             handle.ConnectionGrant.GrantID,
+			Method:               "network.tcp",
+			ResourceScope:        handle.ConnectionGrant.ResourceScope,
 		},
 		Revision: bridge.RevisionBinding{
 			PolicyRevision:     handle.ConnectionGrant.PolicyRevision,
@@ -10719,10 +10739,11 @@ func installAndEnablePlugin(t *testing.T, h *Host, packageBytes []byte) registry
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.EnablePlugin(ctx, EnableRequest{PluginInstanceID: installed.PluginInstanceID, Now: now, ExpectedManagementRevision: mustManagementRevision(t, h, installed.PluginInstanceID)}); err != nil {
+	enabled, err := h.EnablePlugin(ctx, EnableRequest{PluginInstanceID: installed.PluginInstanceID, Now: now, ExpectedManagementRevision: mustManagementRevision(t, h, installed.PluginInstanceID)})
+	if err != nil {
 		t.Fatal(err)
 	}
-	return installed
+	return enabled
 }
 
 func openSurfaceAndMintGateway(t *testing.T, h *Host, pluginInstanceID string, surfaceID string) (bridge.SurfaceBootstrap, bridge.GatewayTokenResult) {
@@ -10819,6 +10840,7 @@ func mintHostTokenCapacityFiller(t *testing.T, manager *bridge.TokenManager, ins
 		Audience: bridge.Audience{
 			PluginInstanceID: installed.PluginInstanceID, ActiveFingerprint: installed.ActiveFingerprint,
 			RuntimeGenerationID: "runtime_filler", HandleID: "handle_filler", Method: "filler.reserve",
+			OwnerSessionHash: "session_hash", OwnerUserHash: "user_hash", OwnerEnvHash: "env_hash", SessionChannelIDHash: "channel_hash",
 			ResourceScope: sessionctx.ResourceScope{Kind: sessionctx.ScopeUser, OwnerEnvHash: "env_hash", OwnerUserHash: "user_hash"},
 		},
 		Revision: bridge.RevisionBinding{

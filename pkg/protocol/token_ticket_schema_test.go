@@ -42,6 +42,30 @@ func TestTokenTicketSchemaBindsEveryTokenKind(t *testing.T) {
 		if _, ok := conditions[kind]; !ok {
 			t.Fatalf("token-ticket schema missing conditional binding for %q", kind)
 		}
+		audience := requireNestedObject(t, tokenTicketConditionByKind(t, schema, kind), "then", "properties", "audience")
+		if kind == "handle_grant" {
+			continue
+		}
+		forbidden := requireNestedObject(t, audience, "not")
+		assertStringSet(t, requireStringSlice(t, forbidden["required"], kind+" forbidden audience fields"), []string{"resource_scope"}, kind+" forbidden audience fields")
+	}
+	revision := requireNestedObject(t, defs, "revision", "properties")
+	for _, name := range []string{"policy_revision", "management_revision", "revoke_epoch"} {
+		field := requireNestedObject(t, revision, name)
+		wantMinimum := float64(0)
+		if name == "revoke_epoch" {
+			wantMinimum = 1
+		}
+		if field["minimum"] != wantMinimum || field["maximum"] != float64(9007199254740991) {
+			t.Fatalf("token-ticket %s bounds = %#v", name, field)
+		}
+	}
+	audienceProperties := requireNestedObject(t, defs, "audience", "properties")
+	for _, name := range []string{"owner_session_hash", "owner_user_hash", "owner_env_hash", "session_channel_id_hash"} {
+		field := requireNestedObject(t, audienceProperties, name)
+		if field["minLength"] == nil && field["pattern"] == nil {
+			t.Fatalf("token-ticket %s has no non-empty constraint: %#v", name, field)
+		}
 	}
 
 	assertTokenTicketCondition(t, conditions, "asset_ticket", "single_use", []string{
@@ -122,6 +146,10 @@ func TestTokenTicketSchemaBindsEveryTokenKind(t *testing.T) {
 		"plugin_instance_id",
 		"active_fingerprint",
 		"runtime_generation_id",
+		"owner_session_hash",
+		"owner_user_hash",
+		"owner_env_hash",
+		"session_channel_id_hash",
 		"handle_id",
 		"method",
 		"resource_scope",
@@ -223,6 +251,26 @@ func TestAssetTicketGoldenFixtureRejectsUnknownFields(t *testing.T) {
 	}
 }
 
+func TestAssetTicketGoldenFixtureRejectsResourceScope(t *testing.T) {
+	root := repoRoot(t)
+	raw, err := os.ReadFile(filepath.Join(root, "testdata", "contracts", "tokens", "asset-ticket-v3.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fixture map[string]any
+	if err := json.Unmarshal(raw, &fixture); err != nil {
+		t.Fatal(err)
+	}
+	audience := mapsClone(fixture["audience"].(map[string]any))
+	audience["resource_scope"] = map[string]any{
+		"kind": "user", "owner_env_hash": "owner_env_hash_injected", "owner_user_hash": "owner_user_hash_injected",
+	}
+	fixture["audience"] = audience
+	if err := compileTokenTicketSchema(t, root).Validate(fixture); err == nil {
+		t.Fatal("token-ticket-v3 accepted resource_scope on an asset ticket")
+	}
+}
+
 func TestHandleGrantGoldenFixtureBindsResourceScope(t *testing.T) {
 	root := repoRoot(t)
 	raw, err := os.ReadFile(filepath.Join(root, "testdata", "contracts", "tokens", "handle-grant-v3.json"))
@@ -259,6 +307,22 @@ func TestHandleGrantGoldenFixtureBindsResourceScope(t *testing.T) {
 	wrongScope["audience"] = audience
 	if err := compileTokenTicketSchema(t, root).Validate(wrongScope); err == nil {
 		t.Fatal("token-ticket-v3 accepted an environment scope with owner_user_hash")
+	}
+	for _, name := range []string{"owner_session_hash", "owner_user_hash", "owner_env_hash", "session_channel_id_hash"} {
+		mutated := mapsClone(fixture)
+		mutatedAudience := mapsClone(mutated["audience"].(map[string]any))
+		mutatedAudience[name] = ""
+		mutated["audience"] = mutatedAudience
+		if err := compileTokenTicketSchema(t, root).Validate(mutated); err == nil {
+			t.Fatalf("token-ticket-v3 accepted empty %s", name)
+		}
+	}
+	mutated := mapsClone(fixture)
+	mutatedRevision := mapsClone(mutated["revision"].(map[string]any))
+	mutatedRevision["revoke_epoch"] = float64(9007199254740992)
+	mutated["revision"] = mutatedRevision
+	if err := compileTokenTicketSchema(t, root).Validate(mutated); err == nil {
+		t.Fatal("token-ticket-v3 accepted an unsafe revoke_epoch")
 	}
 }
 

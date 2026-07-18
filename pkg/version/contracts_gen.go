@@ -77,7 +77,7 @@ var generatedContractArtifacts = []ContractArtifact{
 		ID:      "token-ticket-schema",
 		Path:    "spec/plugin/token-ticket-v3.schema.json",
 		Version: "token-ticket-v3",
-		SHA256:  "95c9e02ffdb755eb345e2d4e3bb9fdd9507a1552d6956ae9cbdfbc27ff944460",
+		SHA256:  "17c7f2e7c7fcaa0eb43da7ecd92e4f36a918cc8149eec031d0231191d9245f16",
 	},
 	{
 		ID:      "iframe-bridge-schema",
@@ -173,7 +173,7 @@ var generatedContractArtifacts = []ContractArtifact{
 		ID:      "rust-ipc-schema",
 		Path:    "spec/plugin/ipc-v4.schema.json",
 		Version: "rust-ipc-v4",
-		SHA256:  "0a41860c64fe51db684bb565251a1b18dea18ef877239fdba5a829d3bb4a95cf",
+		SHA256:  "05d7fe4f7b4ec6291886dd352b74d33e8eb258c1bb490798d9909c429f05c611",
 	},
 	{
 		ID:      "wasm-worker-schema",
@@ -185,7 +185,7 @@ var generatedContractArtifacts = []ContractArtifact{
 		ID:      "network-grant-schema",
 		Path:    "spec/plugin/network-grant-v2.schema.json",
 		Version: "network-grant-v2",
-		SHA256:  "37cb6f2913726f7202563238d7b322e4d539ef22498360603b8429081812382b",
+		SHA256:  "5fc1cfc3469a992e551fd392fab982abb6f95e456a1cb768ceca137f7c693abc",
 	},
 	{
 		ID:      "resource-scope-schema",

@@ -865,6 +865,7 @@ func TestCallPluginMethodWorkerStorageMemoryHostcallThroughBuiltRustRuntime(t *t
 	}
 	read, err := h.adapters.PluginData.ReadFile(ctx, storage.FileReadRequest{
 		PluginInstanceID: installed.PluginInstanceID,
+		ResourceScope:    runtimeProcessResourceScope(t, ctx, sessionctx.ScopeUser),
 		StoreID:          "workspace",
 		Path:             "notes/from-memory.txt",
 	})
@@ -954,6 +955,7 @@ func TestCallPluginMethodWorkerStorageKVMemoryHostcallThroughBuiltRustRuntime(t 
 	}
 	read, err := h.adapters.PluginData.GetKV(ctx, storage.KVGetRequest{
 		PluginInstanceID: installed.PluginInstanceID,
+		ResourceScope:    runtimeProcessResourceScope(t, ctx, sessionctx.ScopeUser),
 		StoreID:          "cache",
 		Key:              "runs/latest",
 	})
@@ -1047,6 +1049,7 @@ func TestCallPluginMethodWorkerStorageSQLiteMemoryHostcallThroughBuiltRustRuntim
 	tableName := "worker_runs"
 	query, err := h.adapters.PluginData.QuerySQLite(ctx, storage.SQLiteQueryRequest{
 		PluginInstanceID: installed.PluginInstanceID,
+		ResourceScope:    runtimeProcessResourceScope(t, ctx, sessionctx.ScopeUser),
 		StoreID:          "db",
 		Database:         "plugin.sqlite",
 		SQL:              "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?",
@@ -1061,6 +1064,19 @@ func TestCallPluginMethodWorkerStorageSQLiteMemoryHostcallThroughBuiltRustRuntim
 		t.Fatalf("sqlite table was not created through wasm hostcall: %#v", query.Rows)
 	}
 	assertRuntimeRevokeCounts(t, supervisor, installed.PluginInstanceID, installed.RevokeEpoch+1, 0, 0, 0)
+}
+
+func runtimeProcessResourceScope(t testing.TB, ctx context.Context, kind sessionctx.ScopeKind) sessionctx.ResourceScope {
+	t.Helper()
+	session, err := sessionctx.Require(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	scope, err := session.ResourceScope(kind)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return scope
 }
 
 type runtimeRevoker interface {

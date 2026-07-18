@@ -82,7 +82,7 @@ type Inspector interface {
 
 type FileReadRequest struct {
 	PluginInstanceID string                   `json:"plugin_instance_id"`
-	ResourceScope    sessionctx.ResourceScope `json:"resource_scope"`
+	ResourceScope    sessionctx.ResourceScope `json:"-"`
 	StoreID          string                   `json:"store_id"`
 	Path             string                   `json:"path"`
 	MaxBytes         int64                    `json:"max_bytes,omitempty"`
@@ -97,7 +97,7 @@ type FileReadResult struct {
 
 type FileWriteRequest struct {
 	PluginInstanceID string                   `json:"plugin_instance_id"`
-	ResourceScope    sessionctx.ResourceScope `json:"resource_scope"`
+	ResourceScope    sessionctx.ResourceScope `json:"-"`
 	StoreID          string                   `json:"store_id"`
 	Path             string                   `json:"path"`
 	Data             []byte                   `json:"-"`
@@ -111,7 +111,7 @@ type FileWriteResult struct {
 
 type FileDeleteRequest struct {
 	PluginInstanceID string                   `json:"plugin_instance_id"`
-	ResourceScope    sessionctx.ResourceScope `json:"resource_scope"`
+	ResourceScope    sessionctx.ResourceScope `json:"-"`
 	StoreID          string                   `json:"store_id"`
 	Path             string                   `json:"path"`
 	Recursive        bool                     `json:"recursive,omitempty"`
@@ -119,7 +119,7 @@ type FileDeleteRequest struct {
 
 type FileListRequest struct {
 	PluginInstanceID string                   `json:"plugin_instance_id"`
-	ResourceScope    sessionctx.ResourceScope `json:"resource_scope"`
+	ResourceScope    sessionctx.ResourceScope `json:"-"`
 	StoreID          string                   `json:"store_id"`
 	Path             string                   `json:"path,omitempty"`
 	MaxEntries       int                      `json:"max_entries,omitempty"`
@@ -142,7 +142,7 @@ type FileEntry struct {
 
 type KVGetRequest struct {
 	PluginInstanceID string                   `json:"plugin_instance_id"`
-	ResourceScope    sessionctx.ResourceScope `json:"resource_scope"`
+	ResourceScope    sessionctx.ResourceScope `json:"-"`
 	StoreID          string                   `json:"store_id"`
 	Key              string                   `json:"key"`
 	MaxBytes         int64                    `json:"max_bytes,omitempty"`
@@ -157,7 +157,7 @@ type KVGetResult struct {
 
 type KVPutRequest struct {
 	PluginInstanceID string                   `json:"plugin_instance_id"`
-	ResourceScope    sessionctx.ResourceScope `json:"resource_scope"`
+	ResourceScope    sessionctx.ResourceScope `json:"-"`
 	StoreID          string                   `json:"store_id"`
 	Key              string                   `json:"key"`
 	Value            []byte                   `json:"-"`
@@ -171,14 +171,14 @@ type KVPutResult struct {
 
 type KVDeleteRequest struct {
 	PluginInstanceID string                   `json:"plugin_instance_id"`
-	ResourceScope    sessionctx.ResourceScope `json:"resource_scope"`
+	ResourceScope    sessionctx.ResourceScope `json:"-"`
 	StoreID          string                   `json:"store_id"`
 	Key              string                   `json:"key"`
 }
 
 type KVListRequest struct {
 	PluginInstanceID string                   `json:"plugin_instance_id"`
-	ResourceScope    sessionctx.ResourceScope `json:"resource_scope"`
+	ResourceScope    sessionctx.ResourceScope `json:"-"`
 	StoreID          string                   `json:"store_id"`
 	Prefix           string                   `json:"prefix,omitempty"`
 	MaxEntries       int                      `json:"max_entries,omitempty"`
@@ -208,7 +208,7 @@ type SQLiteValue struct {
 
 type SQLiteExecRequest struct {
 	PluginInstanceID string                   `json:"plugin_instance_id"`
-	ResourceScope    sessionctx.ResourceScope `json:"resource_scope"`
+	ResourceScope    sessionctx.ResourceScope `json:"-"`
 	StoreID          string                   `json:"store_id"`
 	Database         string                   `json:"database,omitempty"`
 	SQL              string                   `json:"sql"`
@@ -225,7 +225,7 @@ type SQLiteExecResult struct {
 
 type SQLiteQueryRequest struct {
 	PluginInstanceID string                   `json:"plugin_instance_id"`
-	ResourceScope    sessionctx.ResourceScope `json:"resource_scope"`
+	ResourceScope    sessionctx.ResourceScope `json:"-"`
 	StoreID          string                   `json:"store_id"`
 	Database         string                   `json:"database,omitempty"`
 	SQL              string                   `json:"sql"`

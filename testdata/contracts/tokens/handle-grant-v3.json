@@ -5,6 +5,10 @@
   "audience": {
     "plugin_instance_id": "plugini_fixture_1",
     "active_fingerprint": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "owner_session_hash": "owner_session_hash_fixture_1",
+    "owner_user_hash": "owner_user_hash_fixture_1",
+    "owner_env_hash": "owner_env_hash_fixture_1",
+    "session_channel_id_hash": "session_channel_id_hash_fixture_1",
     "runtime_generation_id": "runtime_gen_fixture_1",
     "handle_id": "storage:settings",
     "method": "storage.kv",
