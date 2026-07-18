@@ -112,9 +112,9 @@ function verifyRequiredArtifacts(bundleDir) {
     "bin/redevplugin-runtime",
     "compatibility.json",
     "performance-evidence.json",
-    "contracts/spec/openapi/plugin-platform-v5.yaml",
+    "contracts/spec/openapi/plugin-platform-v6.yaml",
     "contracts/spec/plugin/bridge-v5.schema.json",
-    "contracts/spec/plugin/compatibility-manifest-v5.schema.json",
+    "contracts/spec/plugin/compatibility-manifest-v6.schema.json",
     "contracts/spec/plugin/error-codes-v3.schema.json",
     "contracts/spec/plugin/host-capability-contract-v1.schema.json",
     "contracts/spec/plugin/host-capability-pin-v1.schema.json",
@@ -194,7 +194,7 @@ function verifyCompatibility(bundleDir, expectedVersion, manifest, skipExecution
   const compatibility = readJSON(compatibilityPath);
   assertObject(compatibility, "compatibility.json");
   assertExactKeys(compatibility, ["schema_version", "matrix", "contracts"], "compatibility manifest");
-  assertEqual(compatibility.schema_version, "redevplugin.compatibility.v5", "compatibility schema_version");
+  assertEqual(compatibility.schema_version, "redevplugin.compatibility.v6", "compatibility schema_version");
   assertObject(compatibility.matrix, "compatibility matrix");
   for (const key of ["redevplugin_go_version", "redevplugin_ui_version", "redevplugin_runtime_version"]) {
     assertEqual(compatibility.matrix?.[key], expectedVersion, `compatibility matrix ${key}`);

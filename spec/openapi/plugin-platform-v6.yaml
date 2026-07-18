@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: ReDevPlugin Plugin Platform API
-  version: plugin-platform-v5
+  version: plugin-platform-v6
   description: Host-agnostic plugin management, bridge, operation, data, and sandbox routes. Release-ref install and update routes resolve host-controlled package artifacts server-side and do not accept requested trust_state values; local-import package install/update routes are explicit developer/import flows and also do not accept caller-supplied trust_state values.
 x-redevplugin-query-policy:
   reject_unknown_parameters: true
@@ -1609,7 +1609,7 @@ components:
           type: array
           items: { $ref: "#/components/schemas/PluginRecord" }
     PluginCompatibilityManifest:
-      $ref: "../plugin/compatibility-manifest-v5.schema.json"
+      $ref: "../plugin/compatibility-manifest-v6.schema.json"
     PluginOperationList:
       type: object
       required: [operations]

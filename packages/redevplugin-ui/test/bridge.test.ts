@@ -180,13 +180,13 @@ test("platform client reads compatibility manifest through host API", async () =
   fetch.push({
     ok: true,
     data: {
-      schema_version: "redevplugin.compatibility.v5",
+      schema_version: "redevplugin.compatibility.v6",
       matrix: {
         redevplugin_go_version: "0.0.0-dev",
         redevplugin_ui_version: "0.0.0-dev",
         redevplugin_runtime_version: "0.0.0-dev",
         plugin_ui_protocol_version: "plugin-ui-v5",
-        plugin_host_protocol_version: "plugin-host-v3",
+        plugin_host_protocol_version: "plugin-host-v4",
         rust_ipc_version: "rust-ipc-v3",
         wasm_abi_version: "redevplugin-wasm-worker-v2",
         manifest_schema_version: "manifest-v5",
@@ -200,8 +200,8 @@ test("platform client reads compatibility manifest through host API", async () =
         opaque_surface_transport_schema_version: "opaque-surface-transport-v4",
         target_classifier_version: "target-classifier-v2",
         network_grant_schema_version: "network-grant-v1",
-        plugin_platform_openapi_version: "plugin-platform-v5",
-        compatibility_schema_version: "compatibility-manifest-v5",
+        plugin_platform_openapi_version: "plugin-platform-v6",
+        compatibility_schema_version: "compatibility-manifest-v6",
         release_manifest_schema_version: "release-manifest-v3",
         worker_invocation_schema_version: "worker-invocation-v2",
         host_capability_contract_schema_version: "host-capability-contract-v1",
@@ -217,8 +217,8 @@ test("platform client reads compatibility manifest through host API", async () =
       contracts: [
         {
           id: "plugin-platform-openapi",
-          path: "spec/openapi/plugin-platform-v5.yaml",
-          version: "plugin-platform-v5",
+          path: "spec/openapi/plugin-platform-v6.yaml",
+          version: "plugin-platform-v6",
           sha256: "sha256-openapi",
         },
         {
@@ -237,8 +237,8 @@ test("platform client reads compatibility manifest through host API", async () =
 
   const compatibility = await client.getCompatibility();
 
-  assert.equal(compatibility.schema_version, "redevplugin.compatibility.v5");
-  assert.equal(compatibility.matrix.plugin_platform_openapi_version, "plugin-platform-v5");
+  assert.equal(compatibility.schema_version, "redevplugin.compatibility.v6");
+  assert.equal(compatibility.matrix.plugin_platform_openapi_version, "plugin-platform-v6");
   assert.equal(compatibility.matrix.release_metadata_schema_version, "release-metadata-v5");
   assert.equal(compatibility.matrix.source_policy_schema_version, "source-policy-v1");
   assert.equal(compatibility.matrix.source_revocations_schema_version, "source-revocations-v1");

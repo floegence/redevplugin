@@ -4,7 +4,7 @@ package version
 
 const (
 	PluginUIProtocolVersion                  = "plugin-ui-v5"
-	PluginHostProtocolVersion                = "plugin-host-v3"
+	PluginHostProtocolVersion                = "plugin-host-v4"
 	RustIPCVersion                           = "rust-ipc-v3"
 	WASMABIVersion                           = "redevplugin-wasm-worker-v2"
 	ManifestSchemaVersion                    = "manifest-v5"
@@ -18,9 +18,9 @@ const (
 	OpaqueSurfaceTransportSchemaVersion      = "opaque-surface-transport-v4"
 	TargetClassifierVersion                  = "target-classifier-v2"
 	NetworkGrantSchemaVersion                = "network-grant-v1"
-	PluginPlatformOpenAPIVersion             = "plugin-platform-v5"
-	CompatibilityManifestVersion             = "redevplugin.compatibility.v5"
-	CompatibilitySchemaVersion               = "compatibility-manifest-v5"
+	PluginPlatformOpenAPIVersion             = "plugin-platform-v6"
+	CompatibilityManifestVersion             = "redevplugin.compatibility.v6"
+	CompatibilitySchemaVersion               = "compatibility-manifest-v6"
 	ReleaseManifestSchemaVersion             = "release-manifest-v3"
 	WorkerInvocationSchemaVersion            = "worker-invocation-v2"
 	HostCapabilityContractSchemaVersion      = "host-capability-contract-v1"
@@ -38,9 +38,9 @@ const (
 var generatedContractArtifacts = []ContractArtifact{
 	{
 		ID:      "plugin-platform-openapi",
-		Path:    "spec/openapi/plugin-platform-v5.yaml",
-		Version: "plugin-platform-v5",
-		SHA256:  "af2a5d39d264fedaa488a986c8fe0c6c3d864942264f8b623a21b31ea4285a46",
+		Path:    "spec/openapi/plugin-platform-v6.yaml",
+		Version: "plugin-platform-v6",
+		SHA256:  "4390f45006c6d0af54636da74901022c6c0d1fc3ac30e500963c6280ab4659f3",
 	},
 	{
 		ID:      "manifest-schema",
@@ -98,9 +98,9 @@ var generatedContractArtifacts = []ContractArtifact{
 	},
 	{
 		ID:      "compatibility-manifest-schema",
-		Path:    "spec/plugin/compatibility-manifest-v5.schema.json",
-		Version: "compatibility-manifest-v5",
-		SHA256:  "e6587355c2629949859553165ea9cd3f14d65165a0c250d2459aef8bc2119e8d",
+		Path:    "spec/plugin/compatibility-manifest-v6.schema.json",
+		Version: "compatibility-manifest-v6",
+		SHA256:  "d83772eea04b80e7aad86bd337e75d65bf7f50941c09595e4e89ec8fc24139aa",
 	},
 	{
 		ID:      "release-manifest-schema",
@@ -196,6 +196,6 @@ var generatedContractArtifacts = []ContractArtifact{
 		ID:      "contract-registry",
 		Path:    "spec/plugin/contract-registry-v1.json",
 		Version: "contract-registry-v1",
-		SHA256:  "ea692f7849d4d7ea9ebce4fc2079abb383d5b25e457b1222884677afe0e319a8",
+		SHA256:  "0db8a1176953d5e2a367e362bddbddcdfe50f30006187274f83d19cc4654bb81",
 	},
 }

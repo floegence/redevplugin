@@ -59,15 +59,15 @@
   key/anchor structural patches, O(n log n) LIS reconciliation, copy-on-write
   validation, and atomic animation-frame DOM commits while preserving focus,
   IME, scroll, canvas, edit-revision, and first-commit behavior.
-- Advance the coordinated public contract set to `plugin-host-v3`,
-  `rust-ipc-v3`, `plugin-ui-v5`, `bridge-v5`, `plugin-platform-v5`,
+- Advance the coordinated public contract set to `plugin-host-v4`,
+  `rust-ipc-v3`, `plugin-ui-v5`, `bridge-v5`, `plugin-platform-v6`,
   `manifest-v5`, opaque document v3, opaque transport v4,
-  `release-metadata-v5`, compatibility manifest v5, and `error-codes-v3`.
+  `release-metadata-v5`, compatibility manifest v6, and `error-codes-v3`.
   WASM ABI v2, worker invocation v2, token/ticket v2, package signature v1,
   and release manifest v3 remain unchanged.
 - Regenerate the examples, scaffold, browser harness, Go DTOs, TypeScript
   contracts, Rust constants, fixtures, compatibility hashes, and release
-  verification around the v5 platform contract.
+  verification around the v6 platform contract.
 - Carry explicit mutation outcomes through trusted-parent bridge errors so a
   plugin can reconcile an unknown destructive result before enabling writes.
 - Validate worker VNode tags, attributes, input types, and render limits against

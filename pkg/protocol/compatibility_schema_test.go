@@ -10,7 +10,7 @@ import (
 
 func TestCompatibilityManifestSchemaDefinesReleasedMatrix(t *testing.T) {
 	root := repoRoot(t)
-	raw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", "compatibility-manifest-v5.schema.json"))
+	raw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", "compatibility-manifest-v6.schema.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -21,7 +21,7 @@ func TestCompatibilityManifestSchemaDefinesReleasedMatrix(t *testing.T) {
 
 	properties := requireNestedObject(t, schema, "properties")
 	schemaVersion := requireNestedObject(t, properties, "schema_version")
-	if got := schemaVersion["const"]; got != "redevplugin.compatibility.v5" {
+	if got := schemaVersion["const"]; got != "redevplugin.compatibility.v6" {
 		t.Fatalf("schema_version const = %#v", got)
 	}
 
@@ -29,7 +29,7 @@ func TestCompatibilityManifestSchemaDefinesReleasedMatrix(t *testing.T) {
 	matrixProps := requireNestedObject(t, matrix, "properties")
 	for name, want := range map[string]string{
 		"plugin_ui_protocol_version":              "plugin-ui-v5",
-		"plugin_host_protocol_version":            "plugin-host-v3",
+		"plugin_host_protocol_version":            "plugin-host-v4",
 		"rust_ipc_version":                        "rust-ipc-v3",
 		"wasm_abi_version":                        "redevplugin-wasm-worker-v2",
 		"manifest_schema_version":                 "manifest-v5",
@@ -43,8 +43,8 @@ func TestCompatibilityManifestSchemaDefinesReleasedMatrix(t *testing.T) {
 		"opaque_surface_transport_schema_version": "opaque-surface-transport-v4",
 		"target_classifier_version":               "target-classifier-v2",
 		"network_grant_schema_version":            "network-grant-v1",
-		"plugin_platform_openapi_version":         "plugin-platform-v5",
-		"compatibility_schema_version":            "compatibility-manifest-v5",
+		"plugin_platform_openapi_version":         "plugin-platform-v6",
+		"compatibility_schema_version":            "compatibility-manifest-v6",
 		"release_manifest_schema_version":         "release-manifest-v3",
 		"worker_invocation_schema_version":        "worker-invocation-v2",
 		"error_codes_schema_version":              "error-codes-v3",

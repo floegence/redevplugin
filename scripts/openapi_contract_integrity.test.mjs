@@ -7,7 +7,7 @@ import { parse as parseYAML } from "yaml";
 const root = resolve(import.meta.dirname, "..");
 
 async function readOpenAPI() {
-  return parseYAML(await readFile(join(root, "spec/openapi/plugin-platform-v5.yaml"), "utf8"));
+  return parseYAML(await readFile(join(root, "spec/openapi/plugin-platform-v6.yaml"), "utf8"));
 }
 
 test("PatchSettingsRequest requires a non-empty set or remove object", async () => {

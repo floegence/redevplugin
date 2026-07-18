@@ -1195,7 +1195,7 @@ export interface components {
         PluginCatalogResult: {
             plugins: components["schemas"]["PluginRecord"][];
         };
-        PluginCompatibilityManifest: components["schemas"]["CompatibilityManifestV5"];
+        PluginCompatibilityManifest: components["schemas"]["CompatibilityManifestV6"];
         PluginOperationList: {
             operations: components["schemas"]["OperationRecord"][];
             next_cursor?: string;
@@ -2003,9 +2003,9 @@ export interface components {
         ErrorCodesV3TypescriptClientErrorCode: "PLUGIN_INVALID_REQUEST" | "PLUGIN_MANIFEST_INVALID" | "PLUGIN_PACKAGE_INVALID" | "PLUGIN_PACKAGE_TOO_LARGE" | "PLUGIN_PACKAGE_PATH_FORBIDDEN" | "PLUGIN_SIGNATURE_INVALID" | "PLUGIN_TRUST_STATE_DENIED" | "PLUGIN_TRUST_VERIFICATION_REQUIRED" | "PLUGIN_TRUST_VERIFICATION_INVALID" | "PLUGIN_RELEASE_REF_VERIFICATION_FAILED" | "PLUGIN_RELEASE_REF_POLICY_DENIED" | "PLUGIN_DISABLED" | "PLUGIN_DISABLED_BY_POLICY" | "PLUGIN_PERMISSION_DENIED" | "PLUGIN_CONFIRMATION_REQUIRED" | "PLUGIN_CONFIRMATION_INVALID" | "PLUGIN_TOKEN_EXPIRED" | "PLUGIN_TOKEN_REPLAY" | "PLUGIN_GATEWAY_TOKEN_INVALID" | "PLUGIN_GATEWAY_TOKEN_REPLAYED" | "PLUGIN_GATEWAY_TOKEN_CHANNEL_MISMATCH" | "PLUGIN_ASSET_TICKET_INVALID" | "PLUGIN_ASSET_SESSION_INVALID" | "PLUGIN_STREAM_TICKET_INVALID" | "PLUGIN_STREAM_DELIVERY_INVALID" | "PLUGIN_STREAM_CANCELLED" | "PLUGIN_LEASE_INVALID" | "PLUGIN_LEASE_REPLAYED" | "PLUGIN_GRANT_INVALID" | "PLUGIN_STORAGE_QUOTA_EXCEEDED" | "PLUGIN_OPERATION_BLOCKED" | "PLUGIN_OPERATION_NOT_FOUND" | "PLUGIN_OPERATION_NOT_CANCELABLE" | "PLUGIN_NETWORK_TARGET_DENIED" | "PLUGIN_NETWORK_RATE_LIMITED" | "PLUGIN_RUNTIME_UNAVAILABLE" | "PLUGIN_RUNTIME_VERSION_MISMATCH" | "PLUGIN_UI_PROTOCOL_UNSUPPORTED" | "PLUGIN_UI_PROTOCOL_VIOLATION" | "PLUGIN_SURFACE_QUIESCE_TIMEOUT" | "PLUGIN_JSON_LIMIT_EXCEEDED" | "PLUGIN_CAPABILITY_ERROR" | "PLUGIN_WORKER_ERROR" | "PLUGIN_CONTRACT_MISMATCH" | "PLUGIN_MANAGEMENT_REVISION_MISMATCH" | "PLUGIN_AUTHORIZATION_REVISION_MISMATCH" | "PLUGIN_BINDING_REVISION_MISMATCH" | "PLUGIN_VALUES_REVISION_MISMATCH" | "PLUGIN_CSRF_REQUIRED" | "PLUGIN_FEATURE_NOT_CONFIGURED" | "PLUGIN_CONFIRMATION_REJECTED" | "PLUGIN_BRIDGE_TIMEOUT" | "PLUGIN_BRIDGE_DISPOSED" | "PLUGIN_BRIDGE_HANDSHAKE_FAILED" | "PLUGIN_BRIDGE_HANDSHAKE_REQUIRED" | "PLUGIN_PLATFORM_REQUEST_FAILED" | "PLUGIN_STREAM_FAILED";
         /** @enum {string} */
         ErrorCodesV3RustIpcErrorCode: "ARTIFACT_HANDLE_FAILED" | "HANDLE_GRANT_VALIDATION_FAILED" | "STORAGE_FILE_FAILED" | "STORAGE_KV_FAILED" | "STORAGE_SQLITE_FAILED" | "NETWORK_GRANT_FAILED" | "NETWORK_EXECUTE_FAILED" | "NETWORK_STREAM_STORE_UNAVAILABLE" | "NETWORK_STREAM_FAILED" | "NETWORK_STREAM_BACKPRESSURE" | "NETWORK_STREAM_INVALID" | "NETWORK_STREAM_NOT_FOUND" | "NETWORK_STREAM_CLOSED" | "WORKER_INVOCATION_INVALID" | "RUNTIME_CAPABILITY_REVOKED" | "RUNTIME_CONTROL_CHANNEL_STALE" | "RUNTIME_LEASE_INVALID" | "RUNTIME_LEASE_SIGNATURE_INVALID" | "PLUGIN_LEASE_REPLAYED" | "WASM_WORKER_INVALID" | "WASM_WORKER_FAILED" | "WASM_HOSTCALL_FAILED" | "RUNTIME_CAPACITY_EXCEEDED" | "RUNTIME_INVOCATION_CANCELED" | "UNSUPPORTED_FRAME";
-        CompatibilityManifestV5: {
+        CompatibilityManifestV6: {
             /** @constant */
-            schema_version: "redevplugin.compatibility.v5";
+            schema_version: "redevplugin.compatibility.v6";
             matrix: {
                 redevplugin_go_version: string;
                 redevplugin_ui_version: string;
@@ -2013,7 +2013,7 @@ export interface components {
                 /** @constant */
                 plugin_ui_protocol_version: "plugin-ui-v5";
                 /** @constant */
-                plugin_host_protocol_version: "plugin-host-v3";
+                plugin_host_protocol_version: "plugin-host-v4";
                 /** @constant */
                 rust_ipc_version: "rust-ipc-v3";
                 /** @constant */
@@ -2041,9 +2041,9 @@ export interface components {
                 /** @constant */
                 network_grant_schema_version: "network-grant-v1";
                 /** @constant */
-                plugin_platform_openapi_version: "plugin-platform-v5";
+                plugin_platform_openapi_version: "plugin-platform-v6";
                 /** @constant */
-                compatibility_schema_version: "compatibility-manifest-v5";
+                compatibility_schema_version: "compatibility-manifest-v6";
                 /** @constant */
                 release_manifest_schema_version: "release-manifest-v3";
                 /** @constant */
@@ -2069,9 +2069,9 @@ export interface components {
                 /** @constant */
                 contract_registry_version: "contract-registry-v1";
             };
-            contracts: components["schemas"]["CompatibilityManifestV5Contract"][];
+            contracts: components["schemas"]["CompatibilityManifestV6Contract"][];
         };
-        CompatibilityManifestV5Contract: {
+        CompatibilityManifestV6Contract: {
             id: string;
             path: string;
             version: string;
