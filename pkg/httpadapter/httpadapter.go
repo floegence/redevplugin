@@ -22,6 +22,8 @@ import (
 	"unicode/utf8"
 
 	"github.com/floegence/redevplugin/pkg/bridge"
+	"github.com/floegence/redevplugin/pkg/capability"
+	"github.com/floegence/redevplugin/pkg/capabilitycontract"
 	"github.com/floegence/redevplugin/pkg/connectivity"
 	"github.com/floegence/redevplugin/pkg/host"
 	"github.com/floegence/redevplugin/pkg/mutation"
@@ -609,6 +611,81 @@ type cancelOperationRequest struct {
 	Reason string `json:"reason,omitempty"`
 }
 
+type operationResponse struct {
+	OperationID             string                          `json:"operation_id"`
+	InvocationID            string                          `json:"invocation_id"`
+	AuditCorrelationID      string                          `json:"audit_correlation_id"`
+	StreamID                string                          `json:"stream_id,omitempty"`
+	PublisherID             string                          `json:"publisher_id"`
+	PluginID                string                          `json:"plugin_id"`
+	PluginInstanceID        string                          `json:"plugin_instance_id"`
+	PluginVersion           string                          `json:"plugin_version"`
+	ActiveFingerprint       string                          `json:"active_fingerprint"`
+	SurfaceInstanceID       string                          `json:"surface_instance_id,omitempty"`
+	BridgeChannelID         string                          `json:"bridge_channel_id,omitempty"`
+	RouteKind               capability.RouteKind            `json:"route_kind"`
+	CapabilityID            string                          `json:"capability_id"`
+	CapabilityVersion       string                          `json:"capability_version"`
+	BindingID               string                          `json:"binding_id"`
+	Contract                *capabilitycontract.Pin         `json:"contract,omitempty"`
+	Method                  string                          `json:"method"`
+	TargetMethod            string                          `json:"target_method"`
+	Effect                  capability.Effect               `json:"effect"`
+	Execution               string                          `json:"execution"`
+	Permissions             capability.PermissionEvidence   `json:"permissions"`
+	Confirmation            capability.ConfirmationEvidence `json:"confirmation"`
+	Revision                capability.RevisionEvidence     `json:"revision"`
+	Quota                   capability.QuotaGrant           `json:"quota"`
+	Target                  capability.TargetDescriptor     `json:"target"`
+	TargetDescriptorSHA256  string                          `json:"target_descriptor_sha256"`
+	StreamEventTypeName     string                          `json:"stream_event_type_name,omitempty"`
+	StreamEventSchemaSHA256 string                          `json:"stream_event_schema_sha256,omitempty"`
+	Status                  operation.Status                `json:"status"`
+	Cancelable              bool                            `json:"cancelable"`
+	CancelAckTimeoutMS      int                             `json:"cancel_ack_timeout_ms,omitempty"`
+	DisableBehavior         string                          `json:"disable_behavior,omitempty"`
+	UninstallBehavior       string                          `json:"uninstall_behavior,omitempty"`
+	FailureCode             capability.ExecutionFailureCode `json:"failure_code,omitempty"`
+	Reason                  string                          `json:"reason,omitempty"`
+	CreatedAt               time.Time                       `json:"created_at"`
+	UpdatedAt               time.Time                       `json:"updated_at"`
+	CancelRequestedAt       *time.Time                      `json:"cancel_requested_at,omitempty"`
+	OrphanedAt              *time.Time                      `json:"orphaned_at,omitempty"`
+	TerminalAt              *time.Time                      `json:"terminal_at,omitempty"`
+}
+
+type operationListResponse struct {
+	Operations []operationResponse `json:"operations"`
+	NextCursor string              `json:"next_cursor,omitempty"`
+}
+
+func publicOperationRecord(record operation.Record) operationResponse {
+	binding := record.ExecutionBinding
+	return operationResponse{
+		OperationID: record.OperationID, InvocationID: binding.InvocationID, AuditCorrelationID: binding.AuditCorrelationID,
+		StreamID: binding.StreamID, PublisherID: binding.PublisherID, PluginID: binding.PluginID,
+		PluginInstanceID: binding.PluginInstanceID, PluginVersion: binding.PluginVersion, ActiveFingerprint: binding.ActiveFingerprint,
+		SurfaceInstanceID: binding.SurfaceInstanceID, BridgeChannelID: binding.BridgeChannelID, RouteKind: binding.RouteKind,
+		CapabilityID: binding.CapabilityID, CapabilityVersion: binding.CapabilityVersion, BindingID: binding.BindingID,
+		Contract: binding.Contract, Method: binding.Method, TargetMethod: binding.TargetMethod, Effect: binding.Effect,
+		Execution: binding.Execution, Permissions: binding.Permissions, Confirmation: binding.Confirmation, Revision: binding.Revision,
+		Quota: binding.Quota, Target: binding.Target, TargetDescriptorSHA256: binding.TargetDescriptorSHA256,
+		StreamEventTypeName: binding.StreamEventTypeName, StreamEventSchemaSHA256: binding.StreamEventSchemaSHA256,
+		Status: record.Status, Cancelable: record.Cancelable, CancelAckTimeoutMS: record.CancelAckTimeoutMS,
+		DisableBehavior: record.DisableBehavior, UninstallBehavior: record.UninstallBehavior, FailureCode: record.FailureCode,
+		Reason: record.Reason, CreatedAt: record.CreatedAt, UpdatedAt: record.UpdatedAt,
+		CancelRequestedAt: record.CancelRequestedAt, OrphanedAt: record.OrphanedAt, TerminalAt: record.TerminalAt,
+	}
+}
+
+func publicOperationRecords(records []operation.Record) []operationResponse {
+	result := make([]operationResponse, len(records))
+	for index, record := range records {
+		result[index] = publicOperationRecord(record)
+	}
+	return result
+}
+
 type startRuntimeRequest struct {
 	Target host.RuntimeTarget `json:"target,omitempty"`
 }
@@ -856,7 +933,7 @@ func (h Handler) handleCancelSurfaceOperation(w http.ResponseWriter, r *http.Req
 		writeMutationError(w, httpStatusForOperationError(err), errorCodeForOperationError(err), publicPluginErrorMessage(errorCodeForOperationError(err)), errorDetails{}, mutation.ForError(err))
 		return
 	}
-	writeMutationSuccess(w, record)
+	writeMutationSuccess(w, publicOperationRecord(record))
 }
 
 func (h Handler) handleRejectSurfaceConfirmation(w http.ResponseWriter, r *http.Request) {
@@ -1609,7 +1686,10 @@ func (h Handler) handleListOperations(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, httpStatusForOperationError(err), errorResponse{OK: false, Message: h.publicFailureMessage(r.Context(), "operation.list", code, err), Code: code})
 		return
 	}
-	writeJSON(w, http.StatusOK, successResponse{OK: true, Data: result})
+	writeJSON(w, http.StatusOK, successResponse{OK: true, Data: operationListResponse{
+		Operations: publicOperationRecords(result.Operations),
+		NextCursor: result.NextCursor,
+	}})
 }
 
 func (h Handler) handleGetOperation(w http.ResponseWriter, r *http.Request) {
@@ -1624,7 +1704,7 @@ func (h Handler) handleGetOperation(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, httpStatusForOperationError(err), errorResponse{OK: false, Message: h.publicFailureMessage(r.Context(), "operation.get", code, err), Code: code})
 		return
 	}
-	writeJSON(w, http.StatusOK, successResponse{OK: true, Data: record})
+	writeJSON(w, http.StatusOK, successResponse{OK: true, Data: publicOperationRecord(record)})
 }
 
 func (h Handler) handleCancelOperation(w http.ResponseWriter, r *http.Request) {
@@ -1647,7 +1727,7 @@ func (h Handler) handleCancelOperation(w http.ResponseWriter, r *http.Request) {
 		writeMutationError(w, httpStatusForOperationError(err), code, h.publicFailureMessage(r.Context(), "operation.cancel", code, err), errorDetails{}, mutation.ForError(err))
 		return
 	}
-	writeMutationSuccess(w, record)
+	writeMutationSuccess(w, publicOperationRecord(record))
 }
 
 func (h Handler) handleStartRuntime(w http.ResponseWriter, r *http.Request) {

@@ -68,7 +68,7 @@ func TestFeaturesReturnsClosedConfiguredSet(t *testing.T) {
 		t.Fatalf("Open() error = %v", err)
 	}
 	t.Cleanup(func() { _ = h.Close() })
-	want := []string{"runtime", "secrets"}
+	want := []Feature{FeatureRuntime, FeatureSecrets}
 	got := h.Features()
 	if len(got) != len(want) {
 		t.Fatalf("Features() = %#v, want %#v", got, want)

@@ -1820,10 +1820,6 @@ export interface components {
             plugin_version: components["schemas"]["StrictSemVer"];
             active_fingerprint: string;
             surface_instance_id?: string;
-            owner_session_hash?: string;
-            owner_user_hash?: string;
-            owner_env_hash?: string;
-            session_channel_id_hash?: string;
             bridge_channel_id?: string;
             /** @enum {string} */
             route_kind: "capability" | "worker" | "core_action";
@@ -1884,10 +1880,6 @@ export interface components {
             operation_id: string;
             /** @enum {string} */
             execution?: "operation" | "subscription";
-            owner_session_hash: string;
-            owner_user_hash: string;
-            owner_env_hash: string;
-            session_channel_id_hash: string;
             cancelable: boolean;
             cancel_ack_timeout_ms?: number;
             /** @enum {string} */

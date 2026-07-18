@@ -2585,10 +2585,6 @@ components:
         plugin_version: { $ref: "#/components/schemas/StrictSemVer" }
         active_fingerprint: { type: string, minLength: 1 }
         surface_instance_id: { type: string }
-        owner_session_hash: { type: string }
-        owner_user_hash: { type: string }
-        owner_env_hash: { type: string }
-        session_channel_id_hash: { type: string }
         bridge_channel_id: { type: string }
         route_kind: { type: string, enum: [capability, worker, core_action] }
         capability_id: { type: string, minLength: 1 }
@@ -2667,17 +2663,9 @@ components:
             - cancelable
             - created_at
             - updated_at
-            - owner_session_hash
-            - owner_user_hash
-            - owner_env_hash
-            - session_channel_id_hash
           properties:
             operation_id: { type: string, minLength: 1 }
             execution: { type: string, enum: [operation, subscription] }
-            owner_session_hash: { type: string, minLength: 1 }
-            owner_user_hash: { type: string, minLength: 1 }
-            owner_env_hash: { type: string, minLength: 1 }
-            session_channel_id_hash: { type: string, minLength: 1 }
             cancelable: { type: boolean }
             cancel_ack_timeout_ms: { type: integer, minimum: 0 }
             disable_behavior: { type: string, enum: [cancel, orphan, wait] }

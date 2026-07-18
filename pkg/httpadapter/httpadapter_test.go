@@ -904,6 +904,48 @@ func TestOpenAPIConfirmationPreparationResponseBelongsToPreparationRoute(t *test
 	}
 }
 
+func TestOpenAPIOperationRecordOmitsOwnerScopeHashes(t *testing.T) {
+	spec := readOpenAPIContract(t)
+	for _, schemaName := range []string{"ExecutionBinding", "OperationRecord"} {
+		block, ok := openAPISchemaContractBlock(spec, schemaName)
+		if !ok {
+			t.Fatalf("OpenAPI schema %s is missing", schemaName)
+		}
+		for _, forbidden := range []string{"owner_session_hash", "owner_user_hash", "owner_env_hash", "session_channel_id_hash"} {
+			if strings.Contains(block, forbidden) {
+				t.Fatalf("OpenAPI schema %s exposes %s:\n%s", schemaName, forbidden, block)
+			}
+		}
+	}
+}
+
+func TestPublicOperationRecordOmitsOwnerScopeHashes(t *testing.T) {
+	record := operation.Record{
+		OperationID: "operation_public_1",
+		ExecutionBinding: capability.ExecutionBinding{
+			InvocationID: "invocation_public_1", AuditCorrelationID: "audit_public_1",
+			PluginInstanceID: "plugini_public_1", OwnerSessionHash: "session_secret",
+			OwnerUserHash: "user_secret", OwnerEnvHash: "env_secret", SessionChannelIDHash: "channel_secret",
+		},
+	}
+	raw, err := json.Marshal(publicOperationRecord(record))
+	if err != nil {
+		t.Fatalf("Marshal(publicOperationRecord()) error = %v", err)
+	}
+	var public map[string]any
+	if err := json.Unmarshal(raw, &public); err != nil {
+		t.Fatalf("Unmarshal(public operation) error = %v", err)
+	}
+	if public["operation_id"] != "operation_public_1" || public["invocation_id"] != "invocation_public_1" {
+		t.Fatalf("public operation identity = %#v", public)
+	}
+	for _, forbidden := range []string{"owner_session_hash", "owner_user_hash", "owner_env_hash", "session_channel_id_hash"} {
+		if _, present := public[forbidden]; present || strings.Contains(string(raw), "secret") {
+			t.Fatalf("public operation exposed owner scope through %s: %s", forbidden, raw)
+		}
+	}
+}
+
 func TestHandlerGenericErrorEnvelopesConformToOpenAPI(t *testing.T) {
 	handler := mustNewHandler(t, newHTTPTestHost(t), allowHTTPTestGuard())
 	tests := []struct {
@@ -2486,11 +2528,12 @@ func TestHandlerOperationManagementFlow(t *testing.T) {
 	}
 
 	listed := getJSON[struct {
-		Operations []operation.Record `json:"operations"`
+		Operations []map[string]any `json:"operations"`
 	}](t, handler, "/_redevplugin/api/plugins/operations?plugin_instance_id="+installed.PluginInstanceID)
-	if len(listed.Operations) != 1 || listed.Operations[0].OperationID != result.OperationID {
+	if len(listed.Operations) != 1 || listed.Operations[0]["operation_id"] != result.OperationID {
 		t.Fatalf("operation list mismatch: %#v", listed)
 	}
+	assertPublicOperationHasNoOwnerScope(t, listed.Operations[0])
 	invalidListRequest := httptest.NewRequest(http.MethodGet, "/_redevplugin/api/plugins/operations?limit=0", nil)
 	invalidListResponse := httptest.NewRecorder()
 	handler.ServeHTTP(invalidListResponse, invalidListRequest)
@@ -2498,17 +2541,19 @@ func TestHandlerOperationManagementFlow(t *testing.T) {
 		t.Fatalf("invalid operation list status = %d body = %s", invalidListResponse.Code, invalidListResponse.Body.String())
 	}
 
-	detail := getJSON[operation.Record](t, handler, "/_redevplugin/api/plugins/operations/"+result.OperationID)
-	if detail.Method != "documents.archive" || detail.Status != operation.StatusRunning {
+	detail := getJSON[map[string]any](t, handler, "/_redevplugin/api/plugins/operations/"+result.OperationID)
+	if detail["method"] != "documents.archive" || detail["status"] != string(operation.StatusRunning) {
 		t.Fatalf("operation detail mismatch: %#v", detail)
 	}
+	assertPublicOperationHasNoOwnerScope(t, detail)
 
-	canceled := postJSON[operation.Record](t, handler, "/_redevplugin/api/plugins/operations/"+result.OperationID+"/cancel", map[string]any{
+	canceled := postJSON[map[string]any](t, handler, "/_redevplugin/api/plugins/operations/"+result.OperationID+"/cancel", map[string]any{
 		"reason": "user",
 	})
-	if canceled.Status != operation.StatusCancelRequested || canceled.Reason != "user" {
+	if canceled["status"] != string(operation.StatusCancelRequested) || canceled["reason"] != "user" {
 		t.Fatalf("cancel response mismatch: %#v", canceled)
 	}
+	assertPublicOperationHasNoOwnerScope(t, canceled)
 	if adapter.cancelCalls != 1 ||
 		adapter.lastCancellation.OperationID != result.OperationID ||
 		adapter.lastCancellation.Execution.Method != "documents.archive" ||
@@ -2516,6 +2561,15 @@ func TestHandlerOperationManagementFlow(t *testing.T) {
 		adapter.lastCancellation.Execution.BridgeChannelID != "bridge_http_operation" ||
 		adapter.lastCancellation.Reason != "user" {
 		t.Fatalf("operation canceler request mismatch: calls=%d req=%#v", adapter.cancelCalls, adapter.lastCancellation)
+	}
+}
+
+func assertPublicOperationHasNoOwnerScope(t testing.TB, record map[string]any) {
+	t.Helper()
+	for _, forbidden := range []string{"owner_session_hash", "owner_user_hash", "owner_env_hash", "session_channel_id_hash"} {
+		if _, present := record[forbidden]; present {
+			t.Fatalf("public operation exposed %s: %#v", forbidden, record)
+		}
 	}
 }
 
@@ -2719,14 +2773,15 @@ func TestHandlerSurfaceOperationCancelRequiresMatchingBridgeScope(t *testing.T) 
 		t.Fatalf("scope mismatch reached operation canceler %d times", adapter.cancelCalls)
 	}
 
-	canceled := postJSON[operation.Record](t, handler, cancelPath, map[string]any{
+	canceled := postJSON[map[string]any](t, handler, cancelPath, map[string]any{
 		"operation_id":      result.OperationID,
 		"bridge_channel_id": "bridge_http_operation",
 		"reason":            "user",
 	})
-	if canceled.Status != operation.StatusCancelRequested || canceled.Reason != "user" {
+	if canceled["status"] != string(operation.StatusCancelRequested) || canceled["reason"] != "user" {
 		t.Fatalf("surface cancel response mismatch: %#v", canceled)
 	}
+	assertPublicOperationHasNoOwnerScope(t, canceled)
 	if adapter.cancelCalls != 1 || adapter.lastCancellation.OperationID != result.OperationID ||
 		adapter.lastCancellation.Execution.SurfaceInstanceID != "surface_http_operation" ||
 		adapter.lastCancellation.Execution.BridgeChannelID != "bridge_http_operation" {

@@ -174,7 +174,7 @@ type PackageTrustVerificationRequest struct {
 	SourcePolicySnapshot *SourcePolicySnapshot  `json:"source_policy_snapshot,omitempty"`
 	CurrentRecord        *registry.PluginRecord `json:"current_record,omitempty"`
 	PluginInstanceID     string                 `json:"plugin_instance_id,omitempty"`
-	Now                  time.Time              `json:"now,omitempty"`
+	Now                  time.Time              `json:"-"`
 }
 
 type PackageTrustVerificationResult = registry.TrustAssessment
@@ -188,7 +188,7 @@ type ReleaseMetadataVerificationRequest struct {
 	ReleaseMetadataSignature []byte                 `json:"-"`
 	CurrentRecord            *registry.PluginRecord `json:"current_record,omitempty"`
 	PluginInstanceID         string                 `json:"plugin_instance_id,omitempty"`
-	Now                      time.Time              `json:"now,omitempty"`
+	Now                      time.Time              `json:"-"`
 }
 
 type ReleaseMetadataVerificationResult struct {
@@ -202,7 +202,7 @@ type SourceRevocationEvidenceVerificationRequest struct {
 	RevocationMetadata          SourceRevocationMetadata       `json:"revocation_metadata"`
 	RevocationMetadataBytes     []byte                         `json:"-"`
 	RevocationMetadataSignature []byte                         `json:"-"`
-	Now                         time.Time                      `json:"now,omitempty"`
+	Now                         time.Time                      `json:"-"`
 }
 
 type SourceRevocationEvidenceVerificationResult struct {
@@ -503,7 +503,7 @@ type ReleaseSourcePolicyRequest struct {
 	ReleaseRef       PluginReleaseRef       `json:"release_ref"`
 	CurrentRecord    *registry.PluginRecord `json:"current_record,omitempty"`
 	PluginInstanceID string                 `json:"plugin_instance_id,omitempty"`
-	Now              time.Time              `json:"now,omitempty"`
+	Now              time.Time              `json:"-"`
 }
 
 type ReleaseArtifactResolveRequest struct {
@@ -512,7 +512,7 @@ type ReleaseArtifactResolveRequest struct {
 	SourcePolicySnapshot SourcePolicySnapshot   `json:"source_policy_snapshot"`
 	CurrentRecord        *registry.PluginRecord `json:"current_record,omitempty"`
 	PluginInstanceID     string                 `json:"plugin_instance_id,omitempty"`
-	Now                  time.Time              `json:"now,omitempty"`
+	Now                  time.Time              `json:"-"`
 }
 
 type ResolvedPackageArtifact struct {
@@ -680,31 +680,31 @@ type Host struct {
 }
 
 type ImportLocalPackageRequest struct {
-	PackageReader    io.ReaderAt
-	PackageSize      int64
-	PluginInstanceID string
-	Now              time.Time
+	PackageReader    io.ReaderAt `json:"-"`
+	PackageSize      int64       `json:"-"`
+	PluginInstanceID string      `json:"plugin_instance_id,omitempty"`
+	Now              time.Time   `json:"-"`
 }
 
 type UpdateLocalPackageRequest struct {
-	PluginInstanceID           string
-	ExpectedManagementRevision uint64
-	PackageReader              io.ReaderAt
-	PackageSize                int64
-	Now                        time.Time
+	PluginInstanceID           string      `json:"plugin_instance_id"`
+	ExpectedManagementRevision uint64      `json:"expected_management_revision"`
+	PackageReader              io.ReaderAt `json:"-"`
+	PackageSize                int64       `json:"-"`
+	Now                        time.Time   `json:"-"`
 }
 
 type InstallReleaseRefRequest struct {
-	ReleaseRef       PluginReleaseRef
-	PluginInstanceID string
-	Now              time.Time
+	ReleaseRef       PluginReleaseRef `json:"release_ref"`
+	PluginInstanceID string           `json:"plugin_instance_id,omitempty"`
+	Now              time.Time        `json:"-"`
 }
 
 type UpdateReleaseRefRequest struct {
-	PluginInstanceID           string
-	ExpectedManagementRevision uint64
-	ReleaseRef                 PluginReleaseRef
-	Now                        time.Time
+	PluginInstanceID           string           `json:"plugin_instance_id"`
+	ExpectedManagementRevision uint64           `json:"expected_management_revision"`
+	ReleaseRef                 PluginReleaseRef `json:"release_ref"`
+	Now                        time.Time        `json:"-"`
 }
 
 type packageTrustInput struct {
@@ -715,31 +715,31 @@ type packageTrustInput struct {
 }
 
 type DowngradeRequest struct {
-	PluginInstanceID           string
-	ExpectedManagementRevision uint64
-	Version                    string
-	PackageHash                string
-	Now                        time.Time
+	PluginInstanceID           string    `json:"plugin_instance_id"`
+	ExpectedManagementRevision uint64    `json:"expected_management_revision"`
+	Version                    string    `json:"version,omitempty"`
+	PackageHash                string    `json:"package_hash,omitempty"`
+	Now                        time.Time `json:"-"`
 }
 
 type EnableRequest struct {
-	PluginInstanceID           string
-	ExpectedManagementRevision uint64
-	Now                        time.Time
+	PluginInstanceID           string    `json:"plugin_instance_id"`
+	ExpectedManagementRevision uint64    `json:"expected_management_revision"`
+	Now                        time.Time `json:"-"`
 }
 
 type DisableRequest struct {
-	PluginInstanceID           string
-	ExpectedManagementRevision uint64
-	Reason                     string
-	Now                        time.Time
+	PluginInstanceID           string    `json:"plugin_instance_id"`
+	ExpectedManagementRevision uint64    `json:"expected_management_revision"`
+	Reason                     string    `json:"reason,omitempty"`
+	Now                        time.Time `json:"-"`
 }
 
 type UninstallRequest struct {
-	PluginInstanceID           string
-	ExpectedManagementRevision uint64
-	DeleteData                 bool
-	Now                        time.Time
+	PluginInstanceID           string    `json:"plugin_instance_id"`
+	ExpectedManagementRevision uint64    `json:"expected_management_revision"`
+	DeleteData                 bool      `json:"delete_data,omitempty"`
+	Now                        time.Time `json:"-"`
 }
 
 type ListRetainedDataRequest struct {
@@ -756,11 +756,11 @@ type BindRetainedDataRequest struct {
 	ExpectedSourceBindingRevision    uint64    `json:"expected_source_binding_revision"`
 	TargetPluginInstanceID           string    `json:"target_plugin_instance_id"`
 	TargetExpectedManagementRevision uint64    `json:"target_expected_management_revision"`
-	Now                              time.Time `json:"now,omitempty"`
+	Now                              time.Time `json:"-"`
 }
 
 type CleanupExpiredRetainedDataRequest struct {
-	Now time.Time `json:"now,omitempty"`
+	Now time.Time `json:"-"`
 }
 
 type RetainedDataCleanupResult struct {
@@ -768,14 +768,14 @@ type RetainedDataCleanupResult struct {
 }
 
 type ExportDataRequest struct {
-	PluginInstanceID string
+	PluginInstanceID string `json:"plugin_instance_id"`
 }
 
 type ImportDataRequest struct {
-	PluginInstanceID           string
-	BundleRef                  string
-	ExpectedManagementRevision uint64
-	Now                        time.Time
+	PluginInstanceID           string    `json:"plugin_instance_id"`
+	BundleRef                  string    `json:"bundle_ref"`
+	ExpectedManagementRevision uint64    `json:"expected_management_revision"`
+	Now                        time.Time `json:"-"`
 }
 
 type ExportDataResult struct {
@@ -794,7 +794,7 @@ type GrantPermissionRequest struct {
 	ExpectedPolicyRevision     uint64    `json:"expected_policy_revision"`
 	ExpectedManagementRevision uint64    `json:"expected_management_revision"`
 	ExpectedRevokeEpoch        uint64    `json:"expected_revoke_epoch"`
-	Now                        time.Time `json:"now,omitempty"`
+	Now                        time.Time `json:"-"`
 	ExpiresAt                  time.Time `json:"expires_at,omitempty"`
 }
 
@@ -805,7 +805,7 @@ type RevokePermissionRequest struct {
 	ExpectedManagementRevision uint64    `json:"expected_management_revision"`
 	ExpectedRevokeEpoch        uint64    `json:"expected_revoke_epoch"`
 	Reason                     string    `json:"reason,omitempty"`
-	Now                        time.Time `json:"now,omitempty"`
+	Now                        time.Time `json:"-"`
 }
 
 type ListPermissionGrantsRequest struct {
@@ -820,7 +820,7 @@ type PutSecurityPolicyRequest struct {
 	ExpectedRevokeEpoch        uint64    `json:"expected_revoke_epoch"`
 	AllowedPermissions         []string  `json:"allowed_permissions,omitempty"`
 	DeniedMethods              []string  `json:"denied_methods,omitempty"`
-	Now                        time.Time `json:"now,omitempty"`
+	Now                        time.Time `json:"-"`
 }
 
 type GetSecurityPolicyRequest struct {
@@ -832,7 +832,7 @@ type DeleteSecurityPolicyRequest struct {
 	ExpectedPolicyRevision     uint64    `json:"expected_policy_revision"`
 	ExpectedManagementRevision uint64    `json:"expected_management_revision"`
 	ExpectedRevokeEpoch        uint64    `json:"expected_revoke_epoch"`
-	Now                        time.Time `json:"now,omitempty"`
+	Now                        time.Time `json:"-"`
 }
 
 type SecurityPolicyResult struct {
@@ -883,34 +883,34 @@ type PermissionMutationResult struct {
 }
 
 type OpenSurfaceRequest struct {
-	PluginInstanceID           string
-	ExpectedManagementRevision uint64
-	SurfaceID                  string
-	SurfaceInstanceID          string
-	Now                        time.Time
+	PluginInstanceID           string    `json:"plugin_instance_id"`
+	ExpectedManagementRevision uint64    `json:"expected_management_revision"`
+	SurfaceID                  string    `json:"surface_id"`
+	SurfaceInstanceID          string    `json:"surface_instance_id"`
+	Now                        time.Time `json:"-"`
 }
 
 type ExchangeAssetTicketRequest struct {
-	SurfaceInstanceID string
-	AssetTicket       string
-	Now               time.Time
+	SurfaceInstanceID string    `json:"surface_instance_id"`
+	AssetTicket       string    `json:"asset_ticket"`
+	Now               time.Time `json:"-"`
 }
 
 type ReadSurfaceAssetRequest struct {
-	AssetSession   string
-	AssetSessionID string
-	BindingID      string
-	Now            time.Time
+	AssetSession   string    `json:"asset_session"`
+	AssetSessionID string    `json:"asset_session_id"`
+	BindingID      string    `json:"binding_id"`
+	Now            time.Time `json:"-"`
 }
 
 type DisposeSurfaceRequest struct {
-	SurfaceInstanceID string
-	BridgeNonce       string
-	Now               time.Time
+	SurfaceInstanceID string    `json:"surface_instance_id"`
+	BridgeNonce       string    `json:"bridge_nonce"`
+	Now               time.Time `json:"-"`
 }
 
 type RevokeSurfaceScopeRequest struct {
-	Now time.Time
+	Now time.Time `json:"-"`
 }
 
 type ReadSurfaceAssetResult struct {
@@ -925,11 +925,11 @@ type PrepareSurfaceResult struct {
 }
 
 type MintBridgeTokenRequest struct {
-	Handshake                 bridge.Handshake
-	BridgeChannelID           string
-	HandshakeTranscriptSHA256 string
-	PreviousGatewayToken      string
-	Now                       time.Time
+	Handshake                 bridge.Handshake `json:"handshake"`
+	BridgeChannelID           string           `json:"bridge_channel_id"`
+	HandshakeTranscriptSHA256 string           `json:"handshake_transcript_sha256"`
+	PreviousGatewayToken      string           `json:"previous_plugin_gateway_token,omitempty"`
+	Now                       time.Time        `json:"-"`
 }
 
 type CallMethodRequest struct {
@@ -940,7 +940,7 @@ type CallMethodRequest struct {
 	ConfirmationID         string         `json:"confirmation_id,omitempty"`
 	Method                 string         `json:"method"`
 	Params                 map[string]any `json:"params,omitempty"`
-	Now                    time.Time      `json:"now,omitempty"`
+	Now                    time.Time      `json:"-"`
 	session                sessionctx.Context
 	executionAuthorization methodExecutionAuthorization
 	streamTicketMinter     methodStreamTicketMinter
@@ -984,7 +984,7 @@ type InvokeIntentRequest struct {
 	PluginInstanceID string         `json:"plugin_instance_id,omitempty"`
 	IntentID         string         `json:"intent_id"`
 	Params           map[string]any `json:"params,omitempty"`
-	Now              time.Time      `json:"now,omitempty"`
+	Now              time.Time      `json:"-"`
 	session          sessionctx.Context
 }
 
@@ -1027,7 +1027,7 @@ type PrepareMethodConfirmationRequest struct {
 	GatewayToken      string         `json:"plugin_gateway_token"`
 	Method            string         `json:"method"`
 	Params            map[string]any `json:"params,omitempty"`
-	Now               time.Time      `json:"now,omitempty"`
+	Now               time.Time      `json:"-"`
 }
 
 type PrepareMethodConfirmationResult struct {
@@ -1040,12 +1040,12 @@ type PrepareMethodConfirmationResult struct {
 }
 
 type RejectMethodConfirmationRequest struct {
-	PluginInstanceID  string
-	SurfaceInstanceID string
-	BridgeChannelID   string
-	GatewayToken      string
-	ConfirmationID    string
-	Now               time.Time
+	PluginInstanceID  string    `json:"plugin_instance_id"`
+	SurfaceInstanceID string    `json:"surface_instance_id"`
+	BridgeChannelID   string    `json:"bridge_channel_id"`
+	GatewayToken      string    `json:"plugin_gateway_token"`
+	ConfirmationID    string    `json:"confirmation_id"`
+	Now               time.Time `json:"-"`
 }
 
 type RejectMethodConfirmationResult struct {
@@ -1185,17 +1185,17 @@ type ListOperationsResult struct {
 }
 
 type CancelOperationRequest struct {
-	OperationID string `json:"operation_id"`
-	Reason      string `json:"reason,omitempty"`
-	Now         time.Time
+	OperationID string    `json:"operation_id"`
+	Reason      string    `json:"reason,omitempty"`
+	Now         time.Time `json:"-"`
 }
 
 type CancelSurfaceOperationRequest struct {
-	OperationID       string
-	SurfaceInstanceID string
-	BridgeChannelID   string
-	Reason            string
-	Now               time.Time
+	OperationID       string    `json:"operation_id"`
+	SurfaceInstanceID string    `json:"surface_instance_id"`
+	BridgeChannelID   string    `json:"bridge_channel_id"`
+	Reason            string    `json:"reason,omitempty"`
+	Now               time.Time `json:"-"`
 }
 
 type ReadStreamRequest struct {
@@ -1206,7 +1206,7 @@ type ReadStreamRequest struct {
 	MaxEvents         int           `json:"max_events,omitempty"`
 	MaxBytes          int64         `json:"max_bytes,omitempty"`
 	WaitTimeout       time.Duration `json:"-"`
-	Now               time.Time
+	Now               time.Time     `json:"-"`
 }
 
 type ReadStreamResult struct {
@@ -1234,8 +1234,8 @@ type MintConnectionGrantRequest struct {
 	RuntimeInstanceID   string                 `json:"runtime_instance_id,omitempty"`
 	RuntimeGenerationID string                 `json:"runtime_generation_id,omitempty"`
 	RuntimeShardID      string                 `json:"runtime_shard_id,omitempty"`
-	Now                 time.Time              `json:"now,omitempty"`
-	TTL                 time.Duration          `json:"ttl,omitempty"`
+	Now                 time.Time              `json:"-"`
+	TTL                 time.Duration          `json:"-"`
 }
 
 type NetworkHandleGrantResult struct {
@@ -1249,8 +1249,8 @@ type MintStorageHandleGrantRequest struct {
 	RuntimeInstanceID   string        `json:"runtime_instance_id,omitempty"`
 	RuntimeGenerationID string        `json:"runtime_generation_id"`
 	RuntimeShardID      string        `json:"runtime_shard_id,omitempty"`
-	Now                 time.Time     `json:"now,omitempty"`
-	TTL                 time.Duration `json:"ttl,omitempty"`
+	Now                 time.Time     `json:"-"`
+	TTL                 time.Duration `json:"-"`
 }
 
 type StorageHandleGrantResult struct {
@@ -1381,15 +1381,15 @@ func (h *Host) Close() error {
 }
 
 // Features returns the configured optional modules in canonical order.
-func (h *Host) Features() []string {
+func (h *Host) Features() []Feature {
 	if h == nil || len(h.features) == 0 {
-		return []string{}
+		return []Feature{}
 	}
 	ordered := []Feature{FeatureRelease, FeatureRuntime, FeatureCapability, FeatureConnectivity, FeatureSecrets, FeatureCoreAction}
-	result := make([]string, 0, len(h.features))
+	result := make([]Feature, 0, len(h.features))
 	for _, feature := range ordered {
 		if _, ok := h.features[feature]; ok {
-			result = append(result, string(feature))
+			result = append(result, feature)
 		}
 	}
 	return result

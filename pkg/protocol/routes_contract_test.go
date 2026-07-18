@@ -76,7 +76,11 @@ func TestHTTPRoutesClassifyTypeScriptSDKCoverage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	sdkSource := readTypeScriptSources(t, root, "platform.ts", "surface.ts", "local-import.ts")
+	sdkSource := strings.NewReplacer(
+		", requestOptions: PluginRequestOptions = {}", "",
+		", options: PluginRequestOptions = {}", "",
+		"options: PluginRequestOptions = {}", "",
+	).Replace(readTypeScriptSources(t, root, "platform.ts", "surface.ts", "local-import.ts"))
 
 	fixtureRoutes := map[string]routeFixture{}
 	for _, route := range fixtures {

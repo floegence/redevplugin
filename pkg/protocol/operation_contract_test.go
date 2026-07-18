@@ -19,7 +19,7 @@ func TestOperationDTOCarriesCompleteExecutionEvidence(t *testing.T) {
 	}
 	for _, field := range []string{
 		"operation_id", "stream_id", "invocation_id", "audit_correlation_id", "publisher_id",
-		"plugin_version", "active_fingerprint", "owner_session_hash", "owner_user_hash", "owner_env_hash",
+		"plugin_version", "active_fingerprint",
 		"capability_id", "capability_version", "binding_id", "target_method", "permissions",
 		"confirmation", "revision", "quota", "target_descriptor_sha256",
 		"stream_event_type_name", "stream_event_schema_sha256", "cancelable", "cancel_ack_timeout_ms",
@@ -33,11 +33,6 @@ func TestOperationDTOCarriesCompleteExecutionEvidence(t *testing.T) {
 		}
 	}
 	for _, snippet := range []string{
-		"- owner_session_hash\n            - owner_user_hash\n            - owner_env_hash\n            - session_channel_id_hash",
-		"owner_session_hash: { type: string, minLength: 1 }",
-		"owner_user_hash: { type: string, minLength: 1 }",
-		"owner_env_hash: { type: string, minLength: 1 }",
-		"session_channel_id_hash: { type: string, minLength: 1 }",
 		"execution: { type: string, enum: [operation, subscription] }",
 		"enum: [adapter_failed, contract_invalid, platform_failed, quota_exceeded, runtime_failed]",
 		"required: [status, failure_code, reason]",
@@ -51,10 +46,6 @@ func TestOperationDTOCarriesCompleteExecutionEvidence(t *testing.T) {
 		}
 	}
 	for _, snippet := range []string{
-		"owner_session_hash: string;",
-		"owner_user_hash: string;",
-		"owner_env_hash: string;",
-		"session_channel_id_hash: string;",
 		"status: \"failed\";",
 		"failure_code: components[\"schemas\"][\"ExecutionFailureCode\"];",
 		"reason: \"execution failed\";",
@@ -62,6 +53,16 @@ func TestOperationDTOCarriesCompleteExecutionEvidence(t *testing.T) {
 	} {
 		if !strings.Contains(string(typescript), snippet) {
 			t.Fatalf("TypeScript operation contract is missing %q", snippet)
+		}
+	}
+	for _, forbidden := range []string{
+		"owner_session_hash", "owner_user_hash", "owner_env_hash", "session_channel_id_hash",
+	} {
+		if strings.Contains(string(openAPI), forbidden+":") {
+			t.Fatalf("OpenAPI operation contract exposes %q", forbidden)
+		}
+		if strings.Contains(string(typescript), forbidden+":") || strings.Contains(string(typescript), forbidden+"?:") {
+			t.Fatalf("TypeScript operation contract exposes %q", forbidden)
 		}
 	}
 }
