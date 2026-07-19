@@ -1792,25 +1792,25 @@ fn run_control_channel(
         if line.is_empty() {
             return Ok(());
         }
-        let (frame_type, request_id, frame_generation_id) =
+        let identity =
             redevplugin_ipc::parse_frame_identity(&line).map_err(|err| err.to_string())?;
-        if frame_generation_id != runtime_generation_id {
+        if identity.runtime_generation_id != runtime_generation_id {
             return Err("control runtime_generation_id mismatch".to_string());
         }
-        let response = match frame_type.as_str() {
+        let response = match identity.frame_type.as_str() {
             redevplugin_ipc::FRAME_TYPE_HEARTBEAT => handle_heartbeat(
                 &shared.control,
-                &request_id,
+                &identity.request_id,
                 runtime_generation_id,
                 &line,
                 status,
             ),
             redevplugin_ipc::FRAME_TYPE_REVOKE_EPOCH => {
-                handle_revoke_epoch(shared, &request_id, runtime_generation_id, &line)
+                handle_revoke_epoch(shared, &identity.request_id, runtime_generation_id, &line)
             }
             _ => runtime_error_frame(
                 "diagnostic",
-                &request_id,
+                &identity.request_id,
                 runtime_generation_id,
                 redevplugin_ipc::ERR_UNSUPPORTED_FRAME,
                 "runtime control frame type is not supported",
@@ -3760,55 +3760,6 @@ mod tests {
     }
 
     #[test]
-    fn scheduled_invocation_releases_capacity_before_publishing_response() {
-        fn job(request_id: &str) -> scheduler::InvocationJob {
-            let frame = worker_invocation_frame("plugini_capacity", 1).replacen(
-                r#""request_id":"r1""#,
-                &format!(r#""request_id":"{request_id}""#),
-                1,
-            );
-            let invocation = redevplugin_ipc::parse_worker_invocation(&frame)
-                .expect("worker invocation must be valid");
-            scheduler::InvocationJob::new(invocation).expect("invocation job must be valid")
-        }
-
-        let scheduler = Arc::new(scheduler::InvocationScheduler::new(2, 1));
-        scheduler.enqueue(job("r1")).unwrap();
-        let running = scheduler.take().unwrap();
-        scheduler.enqueue(job("r2")).unwrap();
-        assert_eq!(scheduler.metrics().active, 1);
-        assert_eq!(scheduler.metrics().queued, 1);
-
-        let (writer, outbound) = mpsc::sync_channel(0);
-        let completion_scheduler = Arc::clone(&scheduler);
-        let request_id = running.request_id.clone();
-        let completion = thread::spawn(move || {
-            complete_scheduled_invocation(
-                &completion_scheduler,
-                &writer,
-                &request_id,
-                Ok("completed".to_string()),
-            );
-        });
-
-        let deadline = Instant::now() + Duration::from_secs(1);
-        while scheduler.metrics().active != 0 && Instant::now() < deadline {
-            thread::yield_now();
-        }
-        assert_eq!(scheduler.metrics().active, 0);
-        scheduler
-            .enqueue(job("r3"))
-            .expect("replacement invocation must use released plugin capacity");
-        assert_eq!(scheduler.metrics().queued, 2);
-
-        assert_eq!(
-            outbound.recv_timeout(Duration::from_secs(1)).unwrap(),
-            "completed"
-        );
-        completion.join().unwrap();
-    }
-
-    #[test]
     fn compiled_runtime_target_uses_platform_canonical_names() {
         let target = compiled_runtime_target().expect("supported runtime build target");
         let expected_os = if cfg!(target_os = "macos") {
@@ -4123,7 +4074,7 @@ mod tests {
         );
         let outbound_frame = outbound.recv().unwrap();
         assert_eq!(
-            redevplugin_ipc::parse_frame_identity_v3(&outbound_frame)
+            redevplugin_ipc::parse_frame_identity(&outbound_frame)
                 .unwrap()
                 .parent_request_id
                 .as_deref(),

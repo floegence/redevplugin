@@ -166,7 +166,6 @@ mod property_gates {
         fn ipc_frame_parser_is_total(input in any::<String>()) {
             let parsed = std::panic::catch_unwind(|| {
                 let _ = decode_runtime_input_frame(&input);
-                let _ = parse_frame_identity_v3(&input);
                 let _ = parse_frame_identity(&input);
                 let _ = parse_hello_frame(&input);
                 let _ = validate_hello_frame(&input);
@@ -3612,16 +3611,7 @@ pub fn parse_hello_frame(input: &str) -> IpcResult<HelloFrame> {
     })
 }
 
-pub fn parse_frame_identity(input: &str) -> IpcResult<(String, String, String)> {
-    let parsed = parse_frame_identity_v3(input)?;
-    Ok((
-        parsed.frame_type,
-        parsed.request_id,
-        parsed.runtime_generation_id,
-    ))
-}
-
-pub fn parse_frame_identity_v3(input: &str) -> IpcResult<FrameIdentity> {
+pub fn parse_frame_identity(input: &str) -> IpcResult<FrameIdentity> {
     let frame: RawIPCFrame = serde_json::from_str(input).map_err(|err| {
         let message = err.to_string();
         if message.contains("missing field `ipc_version`") {
@@ -4379,9 +4369,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            parse_frame_identity_v3(&hostcall)
-                .unwrap()
-                .parent_request_id,
+            parse_frame_identity(&hostcall).unwrap().parent_request_id,
             Some("invoke-1".to_string())
         );
     }
@@ -4389,8 +4377,8 @@ mod tests {
     #[test]
     fn closed_ipc_decoding_rejects_ambiguous_or_extended_frames() {
         let valid = r#"{"ipc_version":"rust-ipc-v4","frame_type":"heartbeat","request_id":"outer","runtime_generation_id":"g1","payload":{"request_id":"nested"}}"#;
-        let (_, request_id, _) = parse_frame_identity(valid).expect("top-level frame identity");
-        assert_eq!(request_id, "outer");
+        let identity = parse_frame_identity(valid).expect("top-level frame identity");
+        assert_eq!(identity.request_id, "outer");
 
         for invalid in [
             format!("{valid}{{}}"),
@@ -5057,19 +5045,18 @@ mod tests {
                     );
                 }
                 "replay_frame.json" => {
-                    let (_, request_id, _) =
-                        parse_frame_identity(&frame_json).expect("parse replay fixture");
+                    let identity = parse_frame_identity(&frame_json).expect("parse replay fixture");
                     assert_ne!(
-                        request_id,
+                        identity.request_id,
                         fixture["request_id"].as_str().expect("expected request_id"),
                         "fixture {fixture_name} should replay a different request_id"
                     );
                 }
                 "runtime_generation_mismatch.json" => {
-                    let (_, _, runtime_generation_id) = parse_frame_identity(&frame_json)
+                    let identity = parse_frame_identity(&frame_json)
                         .expect("parse runtime generation mismatch fixture");
                     assert_ne!(
-                        runtime_generation_id,
+                        identity.runtime_generation_id,
                         fixture["runtime_generation_id"]
                             .as_str()
                             .expect("expected runtime_generation_id"),
@@ -5077,10 +5064,10 @@ mod tests {
                     );
                 }
                 "unknown_enum.json" => {
-                    let (frame_type, _, _) =
+                    let identity =
                         parse_frame_identity(&frame_json).expect("parse unknown enum fixture");
                     assert_ne!(
-                        frame_type, FRAME_TYPE_INVOKE_WORKER_RESULT,
+                        identity.frame_type, FRAME_TYPE_INVOKE_WORKER_RESULT,
                         "fixture {fixture_name} should use an unknown frame type"
                     );
                 }
