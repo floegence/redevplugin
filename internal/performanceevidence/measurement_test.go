@@ -30,3 +30,23 @@ func TestP95(t *testing.T) {
 		t.Fatalf("P95(nil) = %s, want 0", got)
 	}
 }
+
+func TestEnforceThresholdsRequiresExplicitEvidenceRun(t *testing.T) {
+	t.Setenv("REDEVPLUGIN_PERFORMANCE_GATE", "full")
+	t.Setenv("REDEVPLUGIN_PERFORMANCE_MEASUREMENTS", "")
+	if EnforceThresholds() {
+		t.Fatal("normal test run enforced environment-sensitive performance thresholds")
+	}
+	t.Setenv("REDEVPLUGIN_PERFORMANCE_MEASUREMENTS", "/tmp/measurements.ndjson")
+	if !EnforceThresholds() {
+		t.Fatal("explicit full evidence run did not enforce performance thresholds")
+	}
+	t.Setenv("REDEVPLUGIN_PERFORMANCE_GATE", "release")
+	if !EnforceThresholds() {
+		t.Fatal("explicit release evidence run did not enforce performance thresholds")
+	}
+	t.Setenv("REDEVPLUGIN_PERFORMANCE_GATE", "fast")
+	if EnforceThresholds() {
+		t.Fatal("fast evidence run enforced release performance thresholds")
+	}
+}

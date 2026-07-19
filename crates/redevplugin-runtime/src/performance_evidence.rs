@@ -63,6 +63,14 @@ pub fn gate() -> String {
         .unwrap_or_else(|| "full".to_string())
 }
 
+pub fn enforce_thresholds() -> bool {
+    let measurements = std::env::var("REDEVPLUGIN_PERFORMANCE_MEASUREMENTS")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+    measurements.is_some() && matches!(gate().as_str(), "full" | "release")
+}
+
 pub fn record(mut scenario: Value) {
     let Some(path) = std::env::var("REDEVPLUGIN_PERFORMANCE_MEASUREMENTS")
         .ok()

@@ -59,6 +59,9 @@ func Gate() string {
 }
 
 func EnforceThresholds() bool {
+	if strings.TrimSpace(os.Getenv("REDEVPLUGIN_PERFORMANCE_MEASUREMENTS")) == "" {
+		return false
+	}
 	gate := Gate()
 	return gate == "full" || gate == "release"
 }

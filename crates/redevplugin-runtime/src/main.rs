@@ -3894,10 +3894,12 @@ mod tests {
         assert_eq!(frames, IPC_WRITER_BURST_FRAME_COUNT as u64);
         assert_eq!(queue_capacity, IPC_WRITER_MAX_QUEUE_CAPACITY as u64);
         assert_eq!(blocked_at_capacity, 1);
-        assert!(
-            peak_rss_bytes <= IPC_WRITER_BURST_PEAK_RSS_LIMIT,
-            "peak RSS = {peak_rss_bytes}, want <= {IPC_WRITER_BURST_PEAK_RSS_LIMIT}"
-        );
+        if crate::performance_evidence::enforce_thresholds() {
+            assert!(
+                peak_rss_bytes <= IPC_WRITER_BURST_PEAK_RSS_LIMIT,
+                "peak RSS = {peak_rss_bytes}, want <= {IPC_WRITER_BURST_PEAK_RSS_LIMIT}"
+            );
+        }
         assert!(flushes <= 625, "flushes = {flushes}");
         crate::performance_evidence::record(serde_json::json!({
             "id": "runtime.ipc-writer-burst",
@@ -4029,7 +4031,9 @@ mod tests {
         assert!(output.flushes <= 625, "flushes = {}", output.flushes);
         let peak_rss_bytes = crate::performance_evidence::peak_rss_bytes()
             .expect("read isolated IPC writer burst peak RSS");
-        assert!(peak_rss_bytes <= IPC_WRITER_BURST_PEAK_RSS_LIMIT);
+        if crate::performance_evidence::enforce_thresholds() {
+            assert!(peak_rss_bytes <= IPC_WRITER_BURST_PEAK_RSS_LIMIT);
+        }
         std::fs::write(
             output_path,
             serde_json::to_vec(&serde_json::json!({
