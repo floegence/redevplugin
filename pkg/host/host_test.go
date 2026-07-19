@@ -8792,7 +8792,8 @@ func TestExplicitObservabilitySinksReceiveAuditAndScopedDiagnostics(t *testing.T
 func TestPublicDiagnosticDetailsExplicitlyMapAllFields(t *testing.T) {
 	internal := observability.DiagnosticDetails{
 		OperationsDeleted: 1, StreamsDeleted: 2, InvocationID: "invocation_1", Method: "method.read",
-		FailureCode: "failure_code", OperationID: "operation_1", StreamID: "stream_1",
+		FailureCode: "failure_code", RuntimeProcessFailureCode: observability.RuntimeProcessWriterWriteFailed,
+		OperationID: "operation_1", StreamID: "stream_1",
 		RuntimeInstanceID: "runtime_1", RuntimeGenerationID: "generation_1", RuntimeVersion: "0.5.0",
 		RustIPCVersion: "rust-ipc-v4", WASMABIVersion: "wasm-abi-v1", RuntimeTargetOS: "linux",
 		RuntimeTargetArch: "amd64", RuntimeArtifactSHA256: "sha256:runtime", OS: "linux", Arch: "amd64",
@@ -8803,7 +8804,8 @@ func TestPublicDiagnosticDetailsExplicitlyMapAllFields(t *testing.T) {
 	}
 	want := DiagnosticDetails{
 		OperationsDeleted: 1, StreamsDeleted: 2, InvocationID: "invocation_1", Method: "method.read",
-		FailureCode: "failure_code", OperationID: "operation_1", StreamID: "stream_1",
+		FailureCode: "failure_code", RuntimeProcessFailureCode: observability.RuntimeProcessWriterWriteFailed,
+		OperationID: "operation_1", StreamID: "stream_1",
 		RuntimeInstanceID: "runtime_1", RuntimeGenerationID: "generation_1", RuntimeVersion: "0.5.0",
 		RustIPCVersion: "rust-ipc-v4", WASMABIVersion: "wasm-abi-v1", RuntimeTargetOS: "linux",
 		RuntimeTargetArch: "amd64", RuntimeArtifactSHA256: "sha256:runtime", OS: "linux", Arch: "amd64",

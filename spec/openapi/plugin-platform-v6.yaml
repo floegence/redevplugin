@@ -1743,6 +1743,8 @@ components:
         invocation_id: { type: string }
         method: { type: string }
         failure_code: { type: string }
+        runtime_process_failure_code:
+          $ref: "../plugin/error-codes-v4.schema.json#/$defs/runtime_process_failure_code"
         operation_id: { type: string }
         stream_id: { type: string }
         runtime_instance_id: { type: string }

@@ -51,7 +51,7 @@ export const redevPluginContractArtifacts = [
     id: "plugin-platform-openapi",
     path: "spec/openapi/plugin-platform-v6.yaml",
     version: "plugin-platform-v6",
-    sha256: "0d47ee3482fe6d02bd409948dc5a9e0ac1ae67b485a3a84531f1aa0cb10a6748",
+    sha256: "7cfcf789dc6a414eb9e3a2db3fee79432c1668ad778adcff70401a0640780378",
   },
   {
     id: "manifest-schema",

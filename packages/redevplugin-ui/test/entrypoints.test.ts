@@ -4,6 +4,7 @@ import { test } from "node:test";
 import * as pluginEntrypoint from "../src/plugin.js";
 import * as rootEntrypoint from "../src/index.js";
 import * as trustedParentEntrypoint from "../src/trusted-parent.js";
+import type { RuntimeProcessFailureCode as RootRuntimeProcessFailureCode } from "../src/index.js";
 import type { PluginBridgeRequestOptions, PluginJSONObject, PluginUIVNode } from "../src/plugin.js";
 import type {
   PluginCatalogResult,
@@ -17,12 +18,15 @@ import type {
   PluginRuntimeHealth,
   PluginRuntimeLimits,
   PluginSurfaceSlot,
+  RuntimeProcessFailureCode,
 } from "../src/trusted-parent.js";
 
 // @ts-expect-error trusted parent transport must not be available to plugin workers
 import type { ReDevPluginSurfaceTransport } from "../src/plugin.js";
 // @ts-expect-error trusted parent method results must not expose stream tickets to plugin workers
 import type { PluginTrustedMethodResult } from "../src/plugin.js";
+// @ts-expect-error runtime process diagnostics belong to trusted parent orchestration
+import type { RuntimeProcessFailureCode as PluginRuntimeProcessFailureCode } from "../src/plugin.js";
 
 const pluginParams: PluginJSONObject = { ready: true };
 const pluginRequestOptions: PluginBridgeRequestOptions = { signal: new AbortController().signal };
@@ -52,7 +56,16 @@ const invalidDiagnostics: PluginDiagnosticEventList = {};
 const validDiagnosticOutcome: PluginDiagnosticMutationOutcome = "committed";
 // @ts-expect-error diagnostic outcomes are a closed contract
 const invalidDiagnosticOutcome: PluginDiagnosticMutationOutcome = "partial";
-const validDiagnosticDetails: PluginDiagnosticDetails = { operation: "runtime.start" };
+const validRuntimeProcessFailureCode: RuntimeProcessFailureCode = "IPC_WRITER_WRITE_FAILED";
+const validRootRuntimeProcessFailureCode: RootRuntimeProcessFailureCode = validRuntimeProcessFailureCode;
+// @ts-expect-error runtime process failures are a closed contract
+const invalidRuntimeProcessFailureCode: RuntimeProcessFailureCode = "IPC_WRITER_UNKNOWN";
+const validDiagnosticDetails: PluginDiagnosticDetails = {
+  operation: "runtime.start",
+  runtime_process_failure_code: validRuntimeProcessFailureCode,
+};
+// @ts-expect-error diagnostic runtime process failures reject unknown codes
+const invalidRuntimeDiagnosticDetails: PluginDiagnosticDetails = { runtime_process_failure_code: "IPC_WRITER_UNKNOWN" };
 // @ts-expect-error diagnostic details reject undeclared fields
 const invalidDiagnosticDetails: PluginDiagnosticDetails = { effective_directive: "script-src" };
 // @ts-expect-error runtime health is manager health and requires shards
@@ -75,7 +88,12 @@ void invalidPermissions;
 void invalidDiagnostics;
 void validDiagnosticOutcome;
 void invalidDiagnosticOutcome;
+void validRuntimeProcessFailureCode;
+void validRootRuntimeProcessFailureCode;
+void (null as unknown as PluginRuntimeProcessFailureCode);
+void invalidRuntimeProcessFailureCode;
 void validDiagnosticDetails;
+void invalidRuntimeDiagnosticDetails;
 void invalidDiagnosticDetails;
 void invalidRuntimeHealth;
 void validRuntimeLimits;
@@ -103,6 +121,7 @@ test("plugin worker entrypoint exposes only bridge and generated capability clie
     "PluginSurfaceHost",
     "createOpaquePluginBootstrapHTML",
     "createReDevPluginSurfaceTransport",
+    "runtimeProcessFailureCodes",
   ]) {
     assert.equal(forbidden in pluginEntrypoint, false);
   }
@@ -114,4 +133,6 @@ test("root entrypoint is the trusted parent allowlist", () => {
   assert.equal("PluginBridgeClient" in rootEntrypoint, false);
   assert.equal("PluginSurfaceHost" in rootEntrypoint, false);
   assert.equal("toPluginSurfaceHostBootstrap" in rootEntrypoint, false);
+  assert.equal("runtimeProcessFailureCodes" in rootEntrypoint, true);
+  assert.equal("runtimeProcessFailureCodes" in trustedParentEntrypoint, true);
 });

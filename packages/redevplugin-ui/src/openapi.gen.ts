@@ -1275,6 +1275,7 @@ export interface components {
             invocation_id?: string;
             method?: string;
             failure_code?: string;
+            runtime_process_failure_code?: components["schemas"]["ErrorCodesV4RuntimeProcessFailureCode"];
             operation_id?: string;
             stream_id?: string;
             runtime_instance_id?: string;

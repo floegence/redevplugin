@@ -90,6 +90,7 @@ test("diagnostic events use closed details and a dedicated mutation outcome", as
     "runtime_artifact_sha256",
     "runtime_generation_id",
     "runtime_instance_id",
+    "runtime_process_failure_code",
     "runtime_target_arch",
     "runtime_target_os",
     "runtime_version",
@@ -110,6 +111,9 @@ test("diagnostic events use closed details and a dedicated mutation outcome", as
       maximum: 9007199254740991,
     });
   }
+  assert.deepEqual(schemas.PluginDiagnosticDetails.properties.runtime_process_failure_code, {
+    $ref: "../plugin/error-codes-v4.schema.json#/$defs/runtime_process_failure_code",
+  });
   assert.deepEqual(schemas.PluginDiagnosticEvent.properties.details, {
     $ref: "#/components/schemas/PluginDiagnosticDetails",
   });

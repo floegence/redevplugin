@@ -60,19 +60,19 @@ func TestMain(m *testing.M) {
 func TestRuntimeProcessFailureCodesMapExactExitStatuses(t *testing.T) {
 	tests := []struct {
 		exitCode int
-		want     RuntimeProcessFailureCode
+		want     observability.RuntimeProcessFailureCode
 	}{
-		{exitCode: 0, want: RuntimeProcessExitUnexpected},
-		{exitCode: runtimeProcessExitGeneral, want: RuntimeProcessFailed},
-		{exitCode: runtimeProcessExitWriterCapacityOverflow, want: RuntimeProcessWriterCapacityOverflow},
-		{exitCode: runtimeProcessExitWriterCapacityLimitExceeded, want: RuntimeProcessWriterCapacityLimitExceeded},
-		{exitCode: runtimeProcessExitWriterStartFailed, want: RuntimeProcessWriterStartFailed},
-		{exitCode: runtimeProcessExitWriterClosed, want: RuntimeProcessWriterClosed},
-		{exitCode: runtimeProcessExitWriterBatchSizeOverflow, want: RuntimeProcessWriterBatchSizeOverflow},
-		{exitCode: runtimeProcessExitWriterWriteFailed, want: RuntimeProcessWriterWriteFailed},
-		{exitCode: runtimeProcessExitWriterFlushFailed, want: RuntimeProcessWriterFlushFailed},
-		{exitCode: runtimeProcessExitWriterPanicked, want: RuntimeProcessWriterPanicked},
-		{exitCode: 99, want: RuntimeProcessExitUnrecognized},
+		{exitCode: 0, want: observability.RuntimeProcessExitUnexpected},
+		{exitCode: runtimeProcessExitGeneral, want: observability.RuntimeProcessFailed},
+		{exitCode: runtimeProcessExitWriterCapacityOverflow, want: observability.RuntimeProcessWriterCapacityOverflow},
+		{exitCode: runtimeProcessExitWriterCapacityLimitExceeded, want: observability.RuntimeProcessWriterCapacityLimitExceeded},
+		{exitCode: runtimeProcessExitWriterStartFailed, want: observability.RuntimeProcessWriterStartFailed},
+		{exitCode: runtimeProcessExitWriterClosed, want: observability.RuntimeProcessWriterClosed},
+		{exitCode: runtimeProcessExitWriterBatchSizeOverflow, want: observability.RuntimeProcessWriterBatchSizeOverflow},
+		{exitCode: runtimeProcessExitWriterWriteFailed, want: observability.RuntimeProcessWriterWriteFailed},
+		{exitCode: runtimeProcessExitWriterFlushFailed, want: observability.RuntimeProcessWriterFlushFailed},
+		{exitCode: runtimeProcessExitWriterPanicked, want: observability.RuntimeProcessWriterPanicked},
+		{exitCode: 99, want: observability.RuntimeProcessExitUnrecognized},
 	}
 	for _, test := range tests {
 		cmd := exec.Command(os.Args[0], "-test.run=^$")
@@ -92,14 +92,37 @@ func TestRuntimeProcessTerminationIntentDoesNotHideWriterFailure(t *testing.T) {
 	cmd.Stdout = io.Discard
 	cmd.Stderr = io.Discard
 	err := cmd.Run()
-	if got := classifyRuntimeProcessExit(err, runtimeProcessTerminationStop); got != RuntimeProcessWriterWriteFailed {
-		t.Fatalf("writer failure with stop intent = %q, want %q", got, RuntimeProcessWriterWriteFailed)
+	if got := classifyRuntimeProcessExit(err, runtimeProcessTerminationStop); got != observability.RuntimeProcessWriterWriteFailed {
+		t.Fatalf("writer failure with stop intent = %q, want %q", got, observability.RuntimeProcessWriterWriteFailed)
 	}
-	if got := classifyRuntimeProcessExit(errors.New("unrecognized wait failure"), runtimeProcessTerminationIPCInvalidation); got != "" {
-		t.Fatalf("expected IPC invalidation exit = %q, want empty", got)
+	if got := classifyRuntimeProcessExit(errors.New("unrecognized wait failure"), runtimeProcessTerminationIPCInvalidation); got != observability.RuntimeProcessExitUnrecognized {
+		t.Fatalf("unrecognized IPC invalidation exit = %q, want %q", got, observability.RuntimeProcessExitUnrecognized)
 	}
 	if got := classifyRuntimeProcessExit(nil, runtimeProcessTerminationHandshakeCleanup); got != "" {
 		t.Fatalf("expected handshake cleanup exit = %q, want empty", got)
+	}
+}
+
+func TestRuntimeProcessTerminationIntentPreservesEveryNonzeroExit(t *testing.T) {
+	tests := append(RuntimeProcessExitFailures(), RuntimeProcessExitFailure{
+		ExitCode: 99,
+		Code:     observability.RuntimeProcessExitUnrecognized,
+	})
+	for _, test := range tests {
+		cmd := exec.Command(os.Args[0], "-test.run=^$")
+		cmd.Env = append(os.Environ(), "REDEVPLUGIN_RUNTIMECLIENT_EXIT_CODE="+strconv.Itoa(test.ExitCode))
+		cmd.Stdout = io.Discard
+		cmd.Stderr = io.Discard
+		err := cmd.Run()
+		for _, intent := range []runtimeProcessTerminationIntent{
+			runtimeProcessTerminationStop,
+			runtimeProcessTerminationHandshakeCleanup,
+			runtimeProcessTerminationIPCInvalidation,
+		} {
+			if got := classifyRuntimeProcessExit(err, intent); got != test.Code {
+				t.Fatalf("exit %d with intent %d = %q, want %q", test.ExitCode, intent, got, test.Code)
+			}
+		}
 	}
 }
 
@@ -109,6 +132,37 @@ func TestProcessExitPreservesFirstTerminationIntent(t *testing.T) {
 	exit.markTerminationIntent(runtimeProcessTerminationIPCInvalidation)
 	if got := exit.terminationIntent(); got != runtimeProcessTerminationStop {
 		t.Fatalf("termination intent = %v, want stop", got)
+	}
+}
+
+func TestReadIPCLoopClassifiesEOFSeparatelyFromActiveIPCFailure(t *testing.T) {
+	tests := []struct {
+		name   string
+		input  string
+		intent runtimeProcessTerminationIntent
+	}{
+		{name: "process exit EOF", input: "", intent: runtimeProcessTerminationNone},
+		{name: "active IPC failure", input: "not-json\n", intent: runtimeProcessTerminationIPCInvalidation},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			health := Health{RuntimeGenerationID: "generation_1", Ready: true}
+			exit := &processExit{}
+			supervisor := &ProcessSupervisor{
+				cmd:     &exec.Cmd{},
+				exit:    exit,
+				health:  health,
+				pending: map[string]*pendingIPCRequest{},
+			}
+			generation := &runtimeGeneration{id: health.RuntimeGenerationID, ctx: context.Background()}
+			supervisor.readIPCLoop(bufio.NewReader(strings.NewReader(test.input)), generation, health)
+			if got := exit.terminationIntent(); got != test.intent {
+				t.Fatalf("termination intent = %v, want %v", got, test.intent)
+			}
+			if supervisor.health.Ready {
+				t.Fatal("runtime remained ready after IPC reader termination")
+			}
+		})
 	}
 }
 
@@ -518,6 +572,38 @@ func TestProcessSupervisorLifecycleAndDiagnostics(t *testing.T) {
 	if _, err := supervisor.invokeWorkerForTest(context.Background(), Lease{}, "worker.echo", nil); !errors.Is(err, ErrRuntimeNotReady) {
 		t.Fatalf("InvokeWorker(after stop) error = %v, want ErrRuntimeNotReady", err)
 	}
+}
+
+func TestProcessSupervisorPreservesWriterExitAfterSuccessfulHandshake(t *testing.T) {
+	diagnostics := &runtimeDiagnosticSink{}
+	supervisor, err := newTestProcessSupervisor(t, ProcessSupervisorOptions{
+		Limits:                DefaultRuntimeLimits(),
+		HandshakeTimeout:      5 * time.Second,
+		HeartbeatInterval:     2 * time.Second,
+		MaxHeartbeatStaleness: 5 * time.Second,
+		RuntimePath:           os.Args[0],
+		Args:                  []string{"-test.run=TestMain"},
+		Env: append(
+			os.Environ(),
+			"REDEVPLUGIN_RUNTIMECLIENT_HELPER=1",
+			"REDEVPLUGIN_RUNTIMECLIENT_EXIT_AFTER_ACK="+strconv.Itoa(runtimeProcessExitWriterWriteFailed),
+		),
+		Diagnostics: diagnostics,
+		StreamSink:  &recordingRuntimeStreamSink{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := supervisor.Start(context.Background(), testRuntimeTarget); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	waitForDiagnostic(t, diagnostics, "plugin.runtime.process.exited")
+	events := diagnostics.list("plugin.runtime.process.exited")
+	if len(events) != 1 || events[0].Severity != observability.DiagnosticSeverityWarning ||
+		events[0].Details.RuntimeProcessFailureCode != observability.RuntimeProcessWriterWriteFailed {
+		t.Fatalf("runtime process exit diagnostic = %#v", events)
+	}
+	stopRuntimeSupervisor(t, supervisor)
 }
 
 func TestProcessSupervisorRuntimeLeaseReplayStoreRejectsDuplicateBeforeIPC(t *testing.T) {
@@ -3808,6 +3894,14 @@ func runRuntimeClientHelper() {
 		RuntimeGenerationID: frame.RuntimeGenerationID,
 		Payload:             payload,
 	})
+	if rawExitCode := os.Getenv("REDEVPLUGIN_RUNTIMECLIENT_EXIT_AFTER_ACK"); rawExitCode != "" {
+		exitCode, err := strconv.Atoi(rawExitCode)
+		if err != nil {
+			os.Exit(67)
+		}
+		time.Sleep(100 * time.Millisecond)
+		os.Exit(exitCode)
+	}
 	controlReadFD, err := strconv.Atoi(os.Getenv("REDEVPLUGIN_CONTROL_READ_FD"))
 	if err != nil || controlReadFD < 3 {
 		os.Exit(64)

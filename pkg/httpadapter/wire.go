@@ -5,6 +5,7 @@ import (
 
 	"github.com/floegence/redevplugin/pkg/bridge"
 	"github.com/floegence/redevplugin/pkg/host"
+	"github.com/floegence/redevplugin/pkg/observability"
 	"github.com/floegence/redevplugin/pkg/permissions"
 	"github.com/floegence/redevplugin/pkg/plugindata"
 	"github.com/floegence/redevplugin/pkg/registry"
@@ -664,37 +665,38 @@ type diagnosticEventResponse struct {
 }
 
 type diagnosticDetailsResponse struct {
-	OperationsDeleted     int64  `json:"operations_deleted,omitempty"`
-	StreamsDeleted        int64  `json:"streams_deleted,omitempty"`
-	InvocationID          string `json:"invocation_id,omitempty"`
-	Method                string `json:"method,omitempty"`
-	FailureCode           string `json:"failure_code,omitempty"`
-	OperationID           string `json:"operation_id,omitempty"`
-	StreamID              string `json:"stream_id,omitempty"`
-	RuntimeInstanceID     string `json:"runtime_instance_id,omitempty"`
-	RuntimeGenerationID   string `json:"runtime_generation_id,omitempty"`
-	RuntimeVersion        string `json:"runtime_version,omitempty"`
-	RustIPCVersion        string `json:"rust_ipc_version,omitempty"`
-	WASMABIVersion        string `json:"wasm_abi_version,omitempty"`
-	RuntimeTargetOS       string `json:"runtime_target_os,omitempty"`
-	RuntimeTargetArch     string `json:"runtime_target_arch,omitempty"`
-	RuntimeArtifactSHA256 string `json:"runtime_artifact_sha256,omitempty"`
-	OS                    string `json:"os,omitempty"`
-	Arch                  string `json:"arch,omitempty"`
-	Stream                string `json:"stream,omitempty"`
-	PackageHash           string `json:"package_hash,omitempty"`
-	Artifact              string `json:"artifact,omitempty"`
-	PluginInstanceID      string `json:"plugin_instance_id,omitempty"`
-	StoreID               string `json:"store_id,omitempty"`
-	Operation             string `json:"operation,omitempty"`
-	Hostcall              string `json:"hostcall,omitempty"`
-	Code                  string `json:"code,omitempty"`
-	ConnectorID           string `json:"connector_id,omitempty"`
-	Transport             string `json:"transport,omitempty"`
-	RevokeEpoch           uint64 `json:"revoke_epoch,omitempty"`
-	StageID               string `json:"stage_id,omitempty"`
-	Reason                string `json:"reason,omitempty"`
-	SurfaceInstanceID     string `json:"surface_instance_id,omitempty"`
+	OperationsDeleted         int64                                   `json:"operations_deleted,omitempty"`
+	StreamsDeleted            int64                                   `json:"streams_deleted,omitempty"`
+	InvocationID              string                                  `json:"invocation_id,omitempty"`
+	Method                    string                                  `json:"method,omitempty"`
+	FailureCode               string                                  `json:"failure_code,omitempty"`
+	RuntimeProcessFailureCode observability.RuntimeProcessFailureCode `json:"runtime_process_failure_code,omitempty"`
+	OperationID               string                                  `json:"operation_id,omitempty"`
+	StreamID                  string                                  `json:"stream_id,omitempty"`
+	RuntimeInstanceID         string                                  `json:"runtime_instance_id,omitempty"`
+	RuntimeGenerationID       string                                  `json:"runtime_generation_id,omitempty"`
+	RuntimeVersion            string                                  `json:"runtime_version,omitempty"`
+	RustIPCVersion            string                                  `json:"rust_ipc_version,omitempty"`
+	WASMABIVersion            string                                  `json:"wasm_abi_version,omitempty"`
+	RuntimeTargetOS           string                                  `json:"runtime_target_os,omitempty"`
+	RuntimeTargetArch         string                                  `json:"runtime_target_arch,omitempty"`
+	RuntimeArtifactSHA256     string                                  `json:"runtime_artifact_sha256,omitempty"`
+	OS                        string                                  `json:"os,omitempty"`
+	Arch                      string                                  `json:"arch,omitempty"`
+	Stream                    string                                  `json:"stream,omitempty"`
+	PackageHash               string                                  `json:"package_hash,omitempty"`
+	Artifact                  string                                  `json:"artifact,omitempty"`
+	PluginInstanceID          string                                  `json:"plugin_instance_id,omitempty"`
+	StoreID                   string                                  `json:"store_id,omitempty"`
+	Operation                 string                                  `json:"operation,omitempty"`
+	Hostcall                  string                                  `json:"hostcall,omitempty"`
+	Code                      string                                  `json:"code,omitempty"`
+	ConnectorID               string                                  `json:"connector_id,omitempty"`
+	Transport                 string                                  `json:"transport,omitempty"`
+	RevokeEpoch               uint64                                  `json:"revoke_epoch,omitempty"`
+	StageID                   string                                  `json:"stage_id,omitempty"`
+	Reason                    string                                  `json:"reason,omitempty"`
+	SurfaceInstanceID         string                                  `json:"surface_instance_id,omitempty"`
 }
 
 type diagnosticListResponse struct {
@@ -723,7 +725,8 @@ func publicDiagnosticDetails(details host.DiagnosticDetails) *diagnosticDetailsR
 	return &diagnosticDetailsResponse{
 		OperationsDeleted: details.OperationsDeleted, StreamsDeleted: details.StreamsDeleted,
 		InvocationID: details.InvocationID, Method: details.Method, FailureCode: details.FailureCode,
-		OperationID: details.OperationID, StreamID: details.StreamID, RuntimeInstanceID: details.RuntimeInstanceID,
+		RuntimeProcessFailureCode: details.RuntimeProcessFailureCode,
+		OperationID:               details.OperationID, StreamID: details.StreamID, RuntimeInstanceID: details.RuntimeInstanceID,
 		RuntimeGenerationID: details.RuntimeGenerationID, RuntimeVersion: details.RuntimeVersion,
 		RustIPCVersion: details.RustIPCVersion, WASMABIVersion: details.WASMABIVersion,
 		RuntimeTargetOS: details.RuntimeTargetOS, RuntimeTargetArch: details.RuntimeTargetArch,

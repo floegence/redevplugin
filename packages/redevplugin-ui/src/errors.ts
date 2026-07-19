@@ -2,16 +2,19 @@ export {
   pluginBridgeErrorCodes,
   pluginClientErrorCodes,
   pluginPlatformErrorCodes,
+  runtimeProcessFailureCodes,
 } from "./error-codes.gen.js";
 import {
   pluginBridgeErrorCodes,
   pluginClientErrorCodes,
   pluginPlatformErrorCodes,
+  runtimeProcessFailureCodes,
 } from "./error-codes.gen.js";
 
 export type PluginPlatformErrorCode = typeof pluginPlatformErrorCodes[number];
 export type PluginBridgeErrorCode = typeof pluginBridgeErrorCodes[number];
 export type PluginClientErrorCode = typeof pluginClientErrorCodes[number];
+export type RuntimeProcessFailureCode = typeof runtimeProcessFailureCodes[number];
 
 export type PluginMutationOutcome = "not_committed" | "unknown";
 

@@ -68,6 +68,52 @@ func (code FailureCode) Valid() bool {
 	}
 }
 
+type RuntimeProcessFailureCode string
+
+const (
+	RuntimeProcessFailed                      RuntimeProcessFailureCode = "RUNTIME_PROCESS_FAILED"
+	RuntimeProcessExitUnexpected              RuntimeProcessFailureCode = "RUNTIME_PROCESS_EXIT_UNEXPECTED"
+	RuntimeProcessExitUnrecognized            RuntimeProcessFailureCode = "RUNTIME_PROCESS_EXIT_UNRECOGNIZED"
+	RuntimeProcessSignalled                   RuntimeProcessFailureCode = "RUNTIME_PROCESS_SIGNALLED"
+	RuntimeProcessWriterCapacityOverflow      RuntimeProcessFailureCode = "IPC_WRITER_CAPACITY_OVERFLOW"
+	RuntimeProcessWriterCapacityLimitExceeded RuntimeProcessFailureCode = "IPC_WRITER_CAPACITY_LIMIT_EXCEEDED"
+	RuntimeProcessWriterStartFailed           RuntimeProcessFailureCode = "IPC_WRITER_START_FAILED"
+	RuntimeProcessWriterClosed                RuntimeProcessFailureCode = "IPC_WRITER_CLOSED"
+	RuntimeProcessWriterBatchSizeOverflow     RuntimeProcessFailureCode = "IPC_WRITER_BATCH_SIZE_OVERFLOW"
+	RuntimeProcessWriterWriteFailed           RuntimeProcessFailureCode = "IPC_WRITER_WRITE_FAILED"
+	RuntimeProcessWriterFlushFailed           RuntimeProcessFailureCode = "IPC_WRITER_FLUSH_FAILED"
+	RuntimeProcessWriterPanicked              RuntimeProcessFailureCode = "IPC_WRITER_PANICKED"
+)
+
+var runtimeProcessFailureCodes = [...]RuntimeProcessFailureCode{
+	RuntimeProcessFailed,
+	RuntimeProcessExitUnexpected,
+	RuntimeProcessExitUnrecognized,
+	RuntimeProcessSignalled,
+	RuntimeProcessWriterCapacityOverflow,
+	RuntimeProcessWriterCapacityLimitExceeded,
+	RuntimeProcessWriterStartFailed,
+	RuntimeProcessWriterClosed,
+	RuntimeProcessWriterBatchSizeOverflow,
+	RuntimeProcessWriterWriteFailed,
+	RuntimeProcessWriterFlushFailed,
+	RuntimeProcessWriterPanicked,
+}
+
+func (code RuntimeProcessFailureCode) Valid() bool {
+	for _, allowed := range runtimeProcessFailureCodes {
+		if code == allowed {
+			return true
+		}
+	}
+	return false
+}
+
+// RuntimeProcessFailureCodes returns an owned copy of the released diagnostic code set.
+func RuntimeProcessFailureCodes() []RuntimeProcessFailureCode {
+	return append([]RuntimeProcessFailureCode(nil), runtimeProcessFailureCodes[:]...)
+}
+
 type FailureComponent string
 
 const (
@@ -156,37 +202,38 @@ func (f Failure) Error() string {
 }
 
 type DiagnosticDetails struct {
-	OperationsDeleted     int64  `json:"operations_deleted,omitempty"`
-	StreamsDeleted        int64  `json:"streams_deleted,omitempty"`
-	InvocationID          string `json:"invocation_id,omitempty"`
-	Method                string `json:"method,omitempty"`
-	FailureCode           string `json:"failure_code,omitempty"`
-	OperationID           string `json:"operation_id,omitempty"`
-	StreamID              string `json:"stream_id,omitempty"`
-	RuntimeInstanceID     string `json:"runtime_instance_id,omitempty"`
-	RuntimeGenerationID   string `json:"runtime_generation_id,omitempty"`
-	RuntimeVersion        string `json:"runtime_version,omitempty"`
-	RustIPCVersion        string `json:"rust_ipc_version,omitempty"`
-	WASMABIVersion        string `json:"wasm_abi_version,omitempty"`
-	RuntimeTargetOS       string `json:"runtime_target_os,omitempty"`
-	RuntimeTargetArch     string `json:"runtime_target_arch,omitempty"`
-	RuntimeArtifactSHA256 string `json:"runtime_artifact_sha256,omitempty"`
-	OS                    string `json:"os,omitempty"`
-	Arch                  string `json:"arch,omitempty"`
-	Stream                string `json:"stream,omitempty"`
-	PackageHash           string `json:"package_hash,omitempty"`
-	Artifact              string `json:"artifact,omitempty"`
-	PluginInstanceID      string `json:"plugin_instance_id,omitempty"`
-	StoreID               string `json:"store_id,omitempty"`
-	Operation             string `json:"operation,omitempty"`
-	Hostcall              string `json:"hostcall,omitempty"`
-	Code                  string `json:"code,omitempty"`
-	ConnectorID           string `json:"connector_id,omitempty"`
-	Transport             string `json:"transport,omitempty"`
-	RevokeEpoch           uint64 `json:"revoke_epoch,omitempty"`
-	StageID               string `json:"stage_id,omitempty"`
-	Reason                string `json:"reason,omitempty"`
-	SurfaceInstanceID     string `json:"surface_instance_id,omitempty"`
+	OperationsDeleted         int64                     `json:"operations_deleted,omitempty"`
+	StreamsDeleted            int64                     `json:"streams_deleted,omitempty"`
+	InvocationID              string                    `json:"invocation_id,omitempty"`
+	Method                    string                    `json:"method,omitempty"`
+	FailureCode               string                    `json:"failure_code,omitempty"`
+	RuntimeProcessFailureCode RuntimeProcessFailureCode `json:"runtime_process_failure_code,omitempty"`
+	OperationID               string                    `json:"operation_id,omitempty"`
+	StreamID                  string                    `json:"stream_id,omitempty"`
+	RuntimeInstanceID         string                    `json:"runtime_instance_id,omitempty"`
+	RuntimeGenerationID       string                    `json:"runtime_generation_id,omitempty"`
+	RuntimeVersion            string                    `json:"runtime_version,omitempty"`
+	RustIPCVersion            string                    `json:"rust_ipc_version,omitempty"`
+	WASMABIVersion            string                    `json:"wasm_abi_version,omitempty"`
+	RuntimeTargetOS           string                    `json:"runtime_target_os,omitempty"`
+	RuntimeTargetArch         string                    `json:"runtime_target_arch,omitempty"`
+	RuntimeArtifactSHA256     string                    `json:"runtime_artifact_sha256,omitempty"`
+	OS                        string                    `json:"os,omitempty"`
+	Arch                      string                    `json:"arch,omitempty"`
+	Stream                    string                    `json:"stream,omitempty"`
+	PackageHash               string                    `json:"package_hash,omitempty"`
+	Artifact                  string                    `json:"artifact,omitempty"`
+	PluginInstanceID          string                    `json:"plugin_instance_id,omitempty"`
+	StoreID                   string                    `json:"store_id,omitempty"`
+	Operation                 string                    `json:"operation,omitempty"`
+	Hostcall                  string                    `json:"hostcall,omitempty"`
+	Code                      string                    `json:"code,omitempty"`
+	ConnectorID               string                    `json:"connector_id,omitempty"`
+	Transport                 string                    `json:"transport,omitempty"`
+	RevokeEpoch               uint64                    `json:"revoke_epoch,omitempty"`
+	StageID                   string                    `json:"stage_id,omitempty"`
+	Reason                    string                    `json:"reason,omitempty"`
+	SurfaceInstanceID         string                    `json:"surface_instance_id,omitempty"`
 }
 
 func (details DiagnosticDetails) Valid() bool {
@@ -208,6 +255,9 @@ func (details DiagnosticDetails) Valid() bool {
 		}
 	}
 	if details.Code != "" && !stableCodePattern.MatchString(details.Code) {
+		return false
+	}
+	if details.RuntimeProcessFailureCode != "" && !details.RuntimeProcessFailureCode.Valid() {
 		return false
 	}
 	return details.Artifact == "" || validPackageRelativePath(details.Artifact)

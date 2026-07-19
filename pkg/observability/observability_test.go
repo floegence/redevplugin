@@ -229,6 +229,58 @@ func TestMemoryStoreRejectsInvalidEvent(t *testing.T) {
 	}
 }
 
+func TestDiagnosticStoresRoundTripRuntimeProcessFailureCode(t *testing.T) {
+	type diagnosticStore interface {
+		DiagnosticsSink
+		DiagnosticLister
+	}
+	tests := []struct {
+		name string
+		open func(*testing.T) (diagnosticStore, func())
+	}{
+		{
+			name: "memory",
+			open: func(*testing.T) (diagnosticStore, func()) {
+				return NewMemoryStore(), func() {}
+			},
+		},
+		{
+			name: "sqlite",
+			open: func(t *testing.T) (diagnosticStore, func()) {
+				store, err := NewSQLiteStore(context.Background(), filepath.Join(t.TempDir(), "observability.sqlite"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				return store, func() {
+					if err := store.Close(); err != nil {
+						t.Fatal(err)
+					}
+				}
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			store, closeStore := test.open(t)
+			defer closeStore()
+			event := scopedDiagnosticEvent("plugin.runtime.process.exited")
+			event.Severity = DiagnosticSeverityWarning
+			event.Message = "runtime process exited with error"
+			event.Details.RuntimeProcessFailureCode = RuntimeProcessWriterWriteFailed
+			if err := store.AppendPluginDiagnostic(context.Background(), event); err != nil {
+				t.Fatal(err)
+			}
+			events, err := store.ListPluginDiagnostics(context.Background(), scopedDiagnosticRequest(1))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(events) != 1 || events[0].Details.RuntimeProcessFailureCode != RuntimeProcessWriterWriteFailed {
+				t.Fatalf("runtime process failure code round-trip = %#v", events)
+			}
+		})
+	}
+}
+
 func TestMemoryStoreTrimsOldestEvents(t *testing.T) {
 	store := NewMemoryStore(MemoryStoreOptions{MaxAuditEvents: 2, MaxDiagnosticEvents: 1})
 	ctx := context.Background()
@@ -650,32 +702,42 @@ func TestDiagnosticStoresNeverPersistSensitiveFailureCause(t *testing.T) {
 }
 
 func TestSQLiteStoreRejectsCorruptDiagnosticRowOnReopen(t *testing.T) {
-	ctx := context.Background()
-	path := filepath.Join(t.TempDir(), "observability.sqlite")
-	store, err := NewSQLiteStore(ctx, path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := store.AppendPluginDiagnostic(ctx, scopedDiagnosticEvent("plugin.runtime.process.started")); err != nil {
-		t.Fatal(err)
-	}
-	if err := store.Close(); err != nil {
-		t.Fatal(err)
-	}
+	for _, test := range []struct {
+		name    string
+		details string
+	}{
+		{name: "unknown field", details: `{"unknown":"https://example.com/?token=secret"}`},
+		{name: "unknown runtime process failure", details: `{"runtime_process_failure_code":"RUNTIME_PROCESS_UNKNOWN"}`},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			ctx := context.Background()
+			path := filepath.Join(t.TempDir(), "observability.sqlite")
+			store, err := NewSQLiteStore(ctx, path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := store.AppendPluginDiagnostic(ctx, scopedDiagnosticEvent("plugin.runtime.process.started")); err != nil {
+				t.Fatal(err)
+			}
+			if err := store.Close(); err != nil {
+				t.Fatal(err)
+			}
 
-	db, err := sql.Open("sqlite", path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.ExecContext(ctx, `UPDATE plugin_diagnostic_events SET details_json = ?`, []byte(`{"unknown":"https://example.com/?token=secret"}`)); err != nil {
-		db.Close()
-		t.Fatal(err)
-	}
-	if err := db.Close(); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := NewSQLiteStore(ctx, path); !errors.Is(err, ErrInvalidEvent) {
-		t.Fatalf("NewSQLiteStore(corrupt row) error = %v, want ErrInvalidEvent", err)
+			db, err := sql.Open("sqlite", path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := db.ExecContext(ctx, `UPDATE plugin_diagnostic_events SET details_json = ?`, []byte(test.details)); err != nil {
+				db.Close()
+				t.Fatal(err)
+			}
+			if err := db.Close(); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := NewSQLiteStore(ctx, path); !errors.Is(err, ErrInvalidEvent) {
+				t.Fatalf("NewSQLiteStore(corrupt row) error = %v, want ErrInvalidEvent", err)
+			}
+		})
 	}
 }
 
@@ -929,7 +991,17 @@ func invalidDiagnosticEvents() []DiagnosticEvent {
 	withUnsafeCorrelation.CorrelationID = "https://example.com/?token=secret"
 	withUnsafeCount := base
 	withUnsafeCount.Details.OperationsDeleted = int64(maxSafeInteger) + 1
-	return []DiagnosticEvent{withRawMessage, withUnsafeOperation, withAbsolutePath, withInvalidFailure, withUnsafeCorrelation, withUnsafeCount}
+	withUnknownRuntimeProcessFailure := base
+	withUnknownRuntimeProcessFailure.Details.RuntimeProcessFailureCode = "RUNTIME_PROCESS_UNKNOWN"
+	return []DiagnosticEvent{
+		withRawMessage,
+		withUnsafeOperation,
+		withAbsolutePath,
+		withInvalidFailure,
+		withUnsafeCorrelation,
+		withUnsafeCount,
+		withUnknownRuntimeProcessFailure,
+	}
 }
 
 func assertStableDiagnosticFailure(t *testing.T, events []DiagnosticEvent, sensitiveCause string) {

@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/floegence/redevplugin/pkg/observability"
 	"github.com/floegence/redevplugin/pkg/runtimeclient"
 	"github.com/floegence/redevplugin/pkg/security"
 )
@@ -105,9 +106,15 @@ func TestRuntimeProcessFailureCodesAndExitStatusesMatchContracts(t *testing.T) {
 	errorCodeSchema := readJSONMap(t, filepath.Join(root, "spec", "plugin", "error-codes-v4.schema.json"))
 	defs := requireNestedObject(t, errorCodeSchema, "$defs")
 	wantCodes := schemaEnum(t, defs, "runtime_process_failure_code")
-	gotCodes := make([]string, 0, len(runtimeclient.RuntimeProcessFailureCodes()))
-	for _, code := range runtimeclient.RuntimeProcessFailureCodes() {
+	gotCodes := make([]string, 0, len(observability.RuntimeProcessFailureCodes()))
+	for _, code := range observability.RuntimeProcessFailureCodes() {
+		if !code.Valid() {
+			t.Fatalf("runtime process failure code %q is not valid", code)
+		}
 		gotCodes = append(gotCodes, string(code))
+	}
+	if observability.RuntimeProcessFailureCode("RUNTIME_PROCESS_UNKNOWN").Valid() {
+		t.Fatal("unknown runtime process failure code is valid")
 	}
 	assertStringSlicesEqual(t, wantCodes, gotCodes, "runtime process failure codes")
 
@@ -172,8 +179,15 @@ func TestRuntimeProcessFailureCodesAndExitStatusesMatchContracts(t *testing.T) {
 			t.Fatalf("Rust runtime missing exit mapping %d -> %s", failure.ExitCode, failure.Code)
 		}
 	}
-	if strings.Contains(string(rustSource), "parse_frame_identity_v3") {
+	ipcSource, err := os.ReadFile(filepath.Join(root, "crates", "redevplugin-ipc", "src", "lib.rs"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(ipcSource), "parse_frame_identity_v3") {
 		t.Fatal("Rust IPC exposes obsolete parse_frame_identity_v3")
+	}
+	if !strings.Contains(string(ipcSource), "pub fn parse_frame_identity(input: &str) -> IpcResult<FrameIdentity>") {
+		t.Fatal("Rust IPC does not expose the unique typed parse_frame_identity API")
 	}
 }
 
