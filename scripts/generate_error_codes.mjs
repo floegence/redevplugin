@@ -16,6 +16,7 @@ const groups = [
   ["pluginPlatformErrorCodes", "platform_error_code"],
   ["pluginBridgeErrorCodes", "bridge_error_code"],
   ["pluginClientErrorCodes", "typescript_client_error_code"],
+  ["runtimeProcessFailureCodes", "runtime_process_failure_code"],
 ];
 
 let contents = "// Generated from spec/plugin/error-codes-v4.schema.json. Do not edit.\n\n";

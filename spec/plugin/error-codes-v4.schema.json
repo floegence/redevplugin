@@ -234,6 +234,108 @@
         "RUNTIME_INVOCATION_CANCELED",
         "UNSUPPORTED_FRAME"
       ]
+    },
+    "runtime_process_failure_code": {
+      "type": "string",
+      "enum": [
+        "RUNTIME_PROCESS_FAILED",
+        "RUNTIME_PROCESS_EXIT_UNEXPECTED",
+        "RUNTIME_PROCESS_EXIT_UNRECOGNIZED",
+        "RUNTIME_PROCESS_SIGNALLED",
+        "IPC_WRITER_CAPACITY_OVERFLOW",
+        "IPC_WRITER_CAPACITY_LIMIT_EXCEEDED",
+        "IPC_WRITER_START_FAILED",
+        "IPC_WRITER_CLOSED",
+        "IPC_WRITER_BATCH_SIZE_OVERFLOW",
+        "IPC_WRITER_WRITE_FAILED",
+        "IPC_WRITER_FLUSH_FAILED",
+        "IPC_WRITER_PANICKED"
+      ]
+    },
+    "runtime_process_exit_failure": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["exit_code", "code"],
+          "additionalProperties": false,
+          "properties": {
+            "exit_code": { "const": 1 },
+            "code": { "const": "RUNTIME_PROCESS_FAILED" }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["exit_code", "code"],
+          "additionalProperties": false,
+          "properties": {
+            "exit_code": { "const": 80 },
+            "code": { "const": "IPC_WRITER_CAPACITY_OVERFLOW" }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["exit_code", "code"],
+          "additionalProperties": false,
+          "properties": {
+            "exit_code": { "const": 81 },
+            "code": { "const": "IPC_WRITER_CAPACITY_LIMIT_EXCEEDED" }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["exit_code", "code"],
+          "additionalProperties": false,
+          "properties": {
+            "exit_code": { "const": 82 },
+            "code": { "const": "IPC_WRITER_START_FAILED" }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["exit_code", "code"],
+          "additionalProperties": false,
+          "properties": {
+            "exit_code": { "const": 83 },
+            "code": { "const": "IPC_WRITER_CLOSED" }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["exit_code", "code"],
+          "additionalProperties": false,
+          "properties": {
+            "exit_code": { "const": 84 },
+            "code": { "const": "IPC_WRITER_BATCH_SIZE_OVERFLOW" }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["exit_code", "code"],
+          "additionalProperties": false,
+          "properties": {
+            "exit_code": { "const": 85 },
+            "code": { "const": "IPC_WRITER_WRITE_FAILED" }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["exit_code", "code"],
+          "additionalProperties": false,
+          "properties": {
+            "exit_code": { "const": 86 },
+            "code": { "const": "IPC_WRITER_FLUSH_FAILED" }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["exit_code", "code"],
+          "additionalProperties": false,
+          "properties": {
+            "exit_code": { "const": 87 },
+            "code": { "const": "IPC_WRITER_PANICKED" }
+          }
+        }
+      ]
     }
   }
 }

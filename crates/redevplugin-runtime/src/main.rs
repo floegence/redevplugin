@@ -30,19 +30,28 @@ const IPC_WRITER_CAPACITY_OVERHEAD: usize = 8;
 const IPC_WRITER_MAX_QUEUE_CAPACITY: usize = 136;
 const IPC_WRITER_MAX_BATCH_FRAMES: usize = 64;
 const IPC_WRITER_MAX_BATCH_BYTES: usize = 256 * 1024;
+const RUNTIME_PROCESS_EXIT_GENERAL: i32 = 1;
+const RUNTIME_PROCESS_EXIT_WRITER_CAPACITY_OVERFLOW: i32 = 80;
+const RUNTIME_PROCESS_EXIT_WRITER_CAPACITY_LIMIT_EXCEEDED: i32 = 81;
+const RUNTIME_PROCESS_EXIT_WRITER_START_FAILED: i32 = 82;
+const RUNTIME_PROCESS_EXIT_WRITER_CLOSED: i32 = 83;
+const RUNTIME_PROCESS_EXIT_WRITER_BATCH_SIZE_OVERFLOW: i32 = 84;
+const RUNTIME_PROCESS_EXIT_WRITER_WRITE_FAILED: i32 = 85;
+const RUNTIME_PROCESS_EXIT_WRITER_FLUSH_FAILED: i32 = 86;
+const RUNTIME_PROCESS_EXIT_WRITER_PANICKED: i32 = 87;
 
 fn main() {
     if let Err(err) = run() {
-        eprintln!("redevplugin-runtime startup error: {err}");
-        std::process::exit(1);
+        eprintln!("redevplugin-runtime error: {err}");
+        std::process::exit(err.exit_code());
     }
 }
 
-fn run() -> Result<(), String> {
+fn run() -> Result<(), RuntimeProcessError> {
     let mut reader = io::BufReader::new(io::stdin());
     let line = read_bounded_line(&mut reader, MAX_IPC_FRAME_BYTES, "hello frame")?;
     if line.is_empty() {
-        return Err("hello frame is empty".to_string());
+        return Err("hello frame is empty".to_string().into());
     }
     let hello = redevplugin_ipc::parse_hello_frame(&line).map_err(ipc_contract_error)?;
     let (events_sender, events) = mpsc::sync_channel(1);
@@ -157,7 +166,7 @@ fn run() -> Result<(), String> {
     drop(input_thread);
     match writer_result {
         Err(err) => Err(err.into()),
-        Ok(()) => runtime_result.map_err(String::from),
+        Ok(()) => runtime_result.map_err(RuntimeProcessError::from),
     }
 }
 
@@ -424,9 +433,74 @@ impl From<IpcWriterError> for RuntimeLoopError {
     }
 }
 
-impl From<RuntimeLoopError> for String {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RuntimeProcessError {
+    General,
+    Writer(IpcWriterError),
+}
+
+impl RuntimeProcessError {
+    fn code(self) -> &'static str {
+        match self {
+            Self::General => "RUNTIME_PROCESS_FAILED",
+            Self::Writer(error) => error.code(),
+        }
+    }
+
+    fn exit_code(self) -> i32 {
+        match self {
+            Self::General => RUNTIME_PROCESS_EXIT_GENERAL,
+            Self::Writer(IpcWriterError::CapacityOverflow) => {
+                RUNTIME_PROCESS_EXIT_WRITER_CAPACITY_OVERFLOW
+            }
+            Self::Writer(IpcWriterError::CapacityLimitExceeded) => {
+                RUNTIME_PROCESS_EXIT_WRITER_CAPACITY_LIMIT_EXCEEDED
+            }
+            Self::Writer(IpcWriterError::StartFailed) => RUNTIME_PROCESS_EXIT_WRITER_START_FAILED,
+            Self::Writer(IpcWriterError::Closed) => RUNTIME_PROCESS_EXIT_WRITER_CLOSED,
+            Self::Writer(IpcWriterError::BatchSizeOverflow) => {
+                RUNTIME_PROCESS_EXIT_WRITER_BATCH_SIZE_OVERFLOW
+            }
+            Self::Writer(IpcWriterError::WriteFailed) => RUNTIME_PROCESS_EXIT_WRITER_WRITE_FAILED,
+            Self::Writer(IpcWriterError::FlushFailed) => RUNTIME_PROCESS_EXIT_WRITER_FLUSH_FAILED,
+            Self::Writer(IpcWriterError::Panicked) => RUNTIME_PROCESS_EXIT_WRITER_PANICKED,
+        }
+    }
+}
+
+impl std::fmt::Display for RuntimeProcessError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::General => write!(
+                formatter,
+                "{}: runtime process failed",
+                RuntimeProcessError::General.code()
+            ),
+            Self::Writer(error) => error.fmt(formatter),
+        }
+    }
+}
+
+impl std::error::Error for RuntimeProcessError {}
+
+impl From<String> for RuntimeProcessError {
+    fn from(_: String) -> Self {
+        Self::General
+    }
+}
+
+impl From<IpcWriterError> for RuntimeProcessError {
+    fn from(error: IpcWriterError) -> Self {
+        Self::Writer(error)
+    }
+}
+
+impl From<RuntimeLoopError> for RuntimeProcessError {
     fn from(error: RuntimeLoopError) -> Self {
-        error.to_string()
+        match error {
+            RuntimeLoopError::Runtime(_) => Self::General,
+            RuntimeLoopError::Writer(error) => Self::Writer(error),
+        }
     }
 }
 
@@ -435,7 +509,6 @@ enum IpcWriterError {
     CapacityOverflow,
     CapacityLimitExceeded,
     StartFailed,
-    QueueFull,
     Closed,
     BatchSizeOverflow,
     WriteFailed,
@@ -449,7 +522,6 @@ impl IpcWriterError {
             Self::CapacityOverflow => "IPC_WRITER_CAPACITY_OVERFLOW",
             Self::CapacityLimitExceeded => "IPC_WRITER_CAPACITY_LIMIT_EXCEEDED",
             Self::StartFailed => "IPC_WRITER_START_FAILED",
-            Self::QueueFull => "IPC_WRITER_QUEUE_FULL",
             Self::Closed => "IPC_WRITER_CLOSED",
             Self::BatchSizeOverflow => "IPC_WRITER_BATCH_SIZE_OVERFLOW",
             Self::WriteFailed => "IPC_WRITER_WRITE_FAILED",
@@ -465,7 +537,6 @@ impl std::fmt::Display for IpcWriterError {
             Self::CapacityOverflow => "runtime IPC writer capacity is invalid",
             Self::CapacityLimitExceeded => "runtime IPC writer capacity exceeds the limit",
             Self::StartFailed => "runtime IPC writer could not start",
-            Self::QueueFull => "runtime IPC writer queue is full",
             Self::Closed => "runtime IPC writer is closed",
             Self::BatchSizeOverflow => "runtime IPC writer batch size is invalid",
             Self::WriteFailed => "runtime IPC writer could not write a frame",
@@ -539,21 +610,11 @@ impl FrameSender {
     }
 
     fn send(&self, frame: String) -> Result<(), IpcWriterError> {
-        self.send_inner(frame, true)
-    }
-
-    #[cfg(test)]
-    fn try_send(&self, frame: String) -> Result<(), IpcWriterError> {
-        self.send_inner(frame, false)
-    }
-
-    fn send_inner(&self, frame: String, block_when_full: bool) -> Result<(), IpcWriterError> {
         let result = match self.sender.try_send(frame) {
             Ok(()) => Ok(()),
-            Err(TrySendError::Full(frame)) if block_when_full => {
+            Err(TrySendError::Full(frame)) => {
                 self.sender.send(frame).map_err(|_| IpcWriterError::Closed)
             }
-            Err(TrySendError::Full(_)) => Err(IpcWriterError::QueueFull),
             Err(TrySendError::Disconnected(_)) => Err(IpcWriterError::Closed),
         };
         if matches!(result, Err(IpcWriterError::Closed)) {
@@ -561,6 +622,26 @@ impl FrameSender {
         }
         result
     }
+
+    #[cfg(test)]
+    fn try_send(&self, frame: String) -> Result<(), FrameTrySendError> {
+        let result = match self.sender.try_send(frame) {
+            Ok(()) => Ok(()),
+            Err(TrySendError::Full(_)) => Err(FrameTrySendError::WouldBlock),
+            Err(TrySendError::Disconnected(_)) => Err(FrameTrySendError::Closed),
+        };
+        if matches!(result, Err(FrameTrySendError::Closed)) {
+            self.failures.publish(IpcWriterError::Closed);
+        }
+        result
+    }
+}
+
+#[cfg(test)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FrameTrySendError {
+    WouldBlock,
+    Closed,
 }
 
 struct RuntimeStatus {
@@ -3435,11 +3516,6 @@ mod tests {
                 "runtime IPC writer could not start",
             ),
             (
-                IpcWriterError::QueueFull,
-                "IPC_WRITER_QUEUE_FULL",
-                "runtime IPC writer queue is full",
-            ),
-            (
                 IpcWriterError::Closed,
                 "IPC_WRITER_CLOSED",
                 "runtime IPC writer is closed",
@@ -3469,6 +3545,76 @@ mod tests {
             assert_eq!(error.code(), code);
             assert_eq!(error.to_string(), format!("{code}: {message}"));
         }
+    }
+
+    #[test]
+    fn runtime_process_errors_have_unique_stable_exit_codes() {
+        let cases = [
+            (
+                RuntimeProcessError::General,
+                "RUNTIME_PROCESS_FAILED",
+                RUNTIME_PROCESS_EXIT_GENERAL,
+            ),
+            (
+                RuntimeProcessError::Writer(IpcWriterError::CapacityOverflow),
+                "IPC_WRITER_CAPACITY_OVERFLOW",
+                RUNTIME_PROCESS_EXIT_WRITER_CAPACITY_OVERFLOW,
+            ),
+            (
+                RuntimeProcessError::Writer(IpcWriterError::CapacityLimitExceeded),
+                "IPC_WRITER_CAPACITY_LIMIT_EXCEEDED",
+                RUNTIME_PROCESS_EXIT_WRITER_CAPACITY_LIMIT_EXCEEDED,
+            ),
+            (
+                RuntimeProcessError::Writer(IpcWriterError::StartFailed),
+                "IPC_WRITER_START_FAILED",
+                RUNTIME_PROCESS_EXIT_WRITER_START_FAILED,
+            ),
+            (
+                RuntimeProcessError::Writer(IpcWriterError::Closed),
+                "IPC_WRITER_CLOSED",
+                RUNTIME_PROCESS_EXIT_WRITER_CLOSED,
+            ),
+            (
+                RuntimeProcessError::Writer(IpcWriterError::BatchSizeOverflow),
+                "IPC_WRITER_BATCH_SIZE_OVERFLOW",
+                RUNTIME_PROCESS_EXIT_WRITER_BATCH_SIZE_OVERFLOW,
+            ),
+            (
+                RuntimeProcessError::Writer(IpcWriterError::WriteFailed),
+                "IPC_WRITER_WRITE_FAILED",
+                RUNTIME_PROCESS_EXIT_WRITER_WRITE_FAILED,
+            ),
+            (
+                RuntimeProcessError::Writer(IpcWriterError::FlushFailed),
+                "IPC_WRITER_FLUSH_FAILED",
+                RUNTIME_PROCESS_EXIT_WRITER_FLUSH_FAILED,
+            ),
+            (
+                RuntimeProcessError::Writer(IpcWriterError::Panicked),
+                "IPC_WRITER_PANICKED",
+                RUNTIME_PROCESS_EXIT_WRITER_PANICKED,
+            ),
+        ];
+        let mut exits = Vec::with_capacity(cases.len());
+        for (error, code, exit_code) in cases {
+            assert_eq!(error.code(), code);
+            assert_eq!(error.exit_code(), exit_code);
+            assert!((1..128).contains(&exit_code));
+            exits.push(exit_code);
+        }
+        exits.sort_unstable();
+        exits.dedup();
+        assert_eq!(exits.len(), cases.len());
+
+        let general = RuntimeProcessError::from(
+            "bearer token and /private/absolute/path must not escape".to_string(),
+        );
+        assert_eq!(general, RuntimeProcessError::General);
+        assert_eq!(
+            general.to_string(),
+            "RUNTIME_PROCESS_FAILED: runtime process failed"
+        );
     }
 
     #[test]
@@ -3669,7 +3815,7 @@ mod tests {
         sender.send("first".to_string()).unwrap();
         assert_eq!(
             sender.try_send("second".to_string()),
-            Err(IpcWriterError::QueueFull)
+            Err(FrameTrySendError::WouldBlock)
         );
         assert_eq!(receiver.recv().unwrap(), "first");
     }

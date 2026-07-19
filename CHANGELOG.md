@@ -42,6 +42,11 @@
 
 ### Changed
 
+- Bound the runtime IPC writer to an explicit 136-frame maximum derived from
+  validated limits, batch at most 64 frames or 256 KiB per flush, propagate
+  closed/write/flush/panic failures through stable process exit codes, and map
+  those codes without stderr parsing in the Go supervisor. Rust IPC now exposes
+  one typed `parse_frame_identity` API without a versioned alias.
 - Make namespace usage cache misses share lifecycle-owned loaders whose database
   leases are released before completion is published, so waiter cancellation
   cannot cancel shared work and lifecycle mutations cannot observe stale

@@ -35,6 +35,14 @@ import (
 )
 
 func TestMain(m *testing.M) {
+	if rawExitCode := os.Getenv("REDEVPLUGIN_RUNTIMECLIENT_EXIT_CODE"); rawExitCode != "" {
+		exitCode, err := strconv.Atoi(rawExitCode)
+		if err != nil {
+			os.Exit(255)
+		}
+		_, _ = os.Stderr.WriteString("IPC_WRITER_WRITE_FAILED bearer token must be ignored\n")
+		os.Exit(exitCode)
+	}
 	if os.Getenv("REDEVPLUGIN_RUNTIMECLIENT_HELPER") == "1" {
 		writeRuntimeHelperStartMarker()
 		runRuntimeClientHelper()
@@ -47,6 +55,61 @@ func TestMain(m *testing.M) {
 		return
 	}
 	os.Exit(m.Run())
+}
+
+func TestRuntimeProcessFailureCodesMapExactExitStatuses(t *testing.T) {
+	tests := []struct {
+		exitCode int
+		want     RuntimeProcessFailureCode
+	}{
+		{exitCode: 0, want: RuntimeProcessExitUnexpected},
+		{exitCode: runtimeProcessExitGeneral, want: RuntimeProcessFailed},
+		{exitCode: runtimeProcessExitWriterCapacityOverflow, want: RuntimeProcessWriterCapacityOverflow},
+		{exitCode: runtimeProcessExitWriterCapacityLimitExceeded, want: RuntimeProcessWriterCapacityLimitExceeded},
+		{exitCode: runtimeProcessExitWriterStartFailed, want: RuntimeProcessWriterStartFailed},
+		{exitCode: runtimeProcessExitWriterClosed, want: RuntimeProcessWriterClosed},
+		{exitCode: runtimeProcessExitWriterBatchSizeOverflow, want: RuntimeProcessWriterBatchSizeOverflow},
+		{exitCode: runtimeProcessExitWriterWriteFailed, want: RuntimeProcessWriterWriteFailed},
+		{exitCode: runtimeProcessExitWriterFlushFailed, want: RuntimeProcessWriterFlushFailed},
+		{exitCode: runtimeProcessExitWriterPanicked, want: RuntimeProcessWriterPanicked},
+		{exitCode: 99, want: RuntimeProcessExitUnrecognized},
+	}
+	for _, test := range tests {
+		cmd := exec.Command(os.Args[0], "-test.run=^$")
+		cmd.Env = append(os.Environ(), "REDEVPLUGIN_RUNTIMECLIENT_EXIT_CODE="+strconv.Itoa(test.exitCode))
+		cmd.Stdout = io.Discard
+		cmd.Stderr = io.Discard
+		err := cmd.Run()
+		if got := runtimeProcessFailureCodeFromWaitError(err); got != test.want {
+			t.Fatalf("exit code %d mapped to %q, want %q", test.exitCode, got, test.want)
+		}
+	}
+}
+
+func TestRuntimeProcessTerminationIntentDoesNotHideWriterFailure(t *testing.T) {
+	cmd := exec.Command(os.Args[0], "-test.run=^$")
+	cmd.Env = append(os.Environ(), "REDEVPLUGIN_RUNTIMECLIENT_EXIT_CODE="+strconv.Itoa(runtimeProcessExitWriterWriteFailed))
+	cmd.Stdout = io.Discard
+	cmd.Stderr = io.Discard
+	err := cmd.Run()
+	if got := classifyRuntimeProcessExit(err, runtimeProcessTerminationStop); got != RuntimeProcessWriterWriteFailed {
+		t.Fatalf("writer failure with stop intent = %q, want %q", got, RuntimeProcessWriterWriteFailed)
+	}
+	if got := classifyRuntimeProcessExit(errors.New("unrecognized wait failure"), runtimeProcessTerminationIPCInvalidation); got != "" {
+		t.Fatalf("expected IPC invalidation exit = %q, want empty", got)
+	}
+	if got := classifyRuntimeProcessExit(nil, runtimeProcessTerminationHandshakeCleanup); got != "" {
+		t.Fatalf("expected handshake cleanup exit = %q, want empty", got)
+	}
+}
+
+func TestProcessExitPreservesFirstTerminationIntent(t *testing.T) {
+	exit := &processExit{}
+	exit.markTerminationIntent(runtimeProcessTerminationStop)
+	exit.markTerminationIntent(runtimeProcessTerminationIPCInvalidation)
+	if got := exit.terminationIntent(); got != runtimeProcessTerminationStop {
+		t.Fatalf("termination intent = %v, want stop", got)
+	}
 }
 
 func writeRuntimeHelperStartMarker() {

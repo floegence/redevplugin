@@ -98,6 +98,90 @@ type RuntimeLimits struct {
 	ModuleCacheSourceBytes int64 `json:"module_cache_source_bytes"`
 }
 
+// RuntimeProcessFailureCode is the closed diagnostic code emitted when a
+// runtime process exits without an expected platform termination intent.
+type RuntimeProcessFailureCode string
+
+const (
+	RuntimeProcessFailed                      RuntimeProcessFailureCode = "RUNTIME_PROCESS_FAILED"
+	RuntimeProcessExitUnexpected              RuntimeProcessFailureCode = "RUNTIME_PROCESS_EXIT_UNEXPECTED"
+	RuntimeProcessExitUnrecognized            RuntimeProcessFailureCode = "RUNTIME_PROCESS_EXIT_UNRECOGNIZED"
+	RuntimeProcessSignalled                   RuntimeProcessFailureCode = "RUNTIME_PROCESS_SIGNALLED"
+	RuntimeProcessWriterCapacityOverflow      RuntimeProcessFailureCode = "IPC_WRITER_CAPACITY_OVERFLOW"
+	RuntimeProcessWriterCapacityLimitExceeded RuntimeProcessFailureCode = "IPC_WRITER_CAPACITY_LIMIT_EXCEEDED"
+	RuntimeProcessWriterStartFailed           RuntimeProcessFailureCode = "IPC_WRITER_START_FAILED"
+	RuntimeProcessWriterClosed                RuntimeProcessFailureCode = "IPC_WRITER_CLOSED"
+	RuntimeProcessWriterBatchSizeOverflow     RuntimeProcessFailureCode = "IPC_WRITER_BATCH_SIZE_OVERFLOW"
+	RuntimeProcessWriterWriteFailed           RuntimeProcessFailureCode = "IPC_WRITER_WRITE_FAILED"
+	RuntimeProcessWriterFlushFailed           RuntimeProcessFailureCode = "IPC_WRITER_FLUSH_FAILED"
+	RuntimeProcessWriterPanicked              RuntimeProcessFailureCode = "IPC_WRITER_PANICKED"
+)
+
+// Valid reports whether code belongs to the released runtime process failure set.
+func (code RuntimeProcessFailureCode) Valid() bool {
+	switch code {
+	case RuntimeProcessFailed, RuntimeProcessExitUnexpected, RuntimeProcessExitUnrecognized,
+		RuntimeProcessSignalled, RuntimeProcessWriterCapacityOverflow,
+		RuntimeProcessWriterCapacityLimitExceeded, RuntimeProcessWriterStartFailed,
+		RuntimeProcessWriterClosed, RuntimeProcessWriterBatchSizeOverflow,
+		RuntimeProcessWriterWriteFailed, RuntimeProcessWriterFlushFailed,
+		RuntimeProcessWriterPanicked:
+		return true
+	default:
+		return false
+	}
+}
+
+// RuntimeProcessExitFailure binds one released runtime process exit status to
+// the stable diagnostic code reported by ProcessSupervisor.
+type RuntimeProcessExitFailure struct {
+	ExitCode int
+	Code     RuntimeProcessFailureCode
+}
+
+const (
+	runtimeProcessExitGeneral                     = 1
+	runtimeProcessExitWriterCapacityOverflow      = 80
+	runtimeProcessExitWriterCapacityLimitExceeded = 81
+	runtimeProcessExitWriterStartFailed           = 82
+	runtimeProcessExitWriterClosed                = 83
+	runtimeProcessExitWriterBatchSizeOverflow     = 84
+	runtimeProcessExitWriterWriteFailed           = 85
+	runtimeProcessExitWriterFlushFailed           = 86
+	runtimeProcessExitWriterPanicked              = 87
+)
+
+var runtimeProcessExitFailureContract = [...]RuntimeProcessExitFailure{
+	{ExitCode: runtimeProcessExitGeneral, Code: RuntimeProcessFailed},
+	{ExitCode: runtimeProcessExitWriterCapacityOverflow, Code: RuntimeProcessWriterCapacityOverflow},
+	{ExitCode: runtimeProcessExitWriterCapacityLimitExceeded, Code: RuntimeProcessWriterCapacityLimitExceeded},
+	{ExitCode: runtimeProcessExitWriterStartFailed, Code: RuntimeProcessWriterStartFailed},
+	{ExitCode: runtimeProcessExitWriterClosed, Code: RuntimeProcessWriterClosed},
+	{ExitCode: runtimeProcessExitWriterBatchSizeOverflow, Code: RuntimeProcessWriterBatchSizeOverflow},
+	{ExitCode: runtimeProcessExitWriterWriteFailed, Code: RuntimeProcessWriterWriteFailed},
+	{ExitCode: runtimeProcessExitWriterFlushFailed, Code: RuntimeProcessWriterFlushFailed},
+	{ExitCode: runtimeProcessExitWriterPanicked, Code: RuntimeProcessWriterPanicked},
+}
+
+// RuntimeProcessFailureCodes returns an owned copy of the released failure set.
+func RuntimeProcessFailureCodes() []RuntimeProcessFailureCode {
+	codes := []RuntimeProcessFailureCode{
+		RuntimeProcessFailed,
+		RuntimeProcessExitUnexpected,
+		RuntimeProcessExitUnrecognized,
+		RuntimeProcessSignalled,
+	}
+	for _, failure := range runtimeProcessExitFailureContract[1:] {
+		codes = append(codes, failure.Code)
+	}
+	return codes
+}
+
+// RuntimeProcessExitFailures returns an owned copy of the fixed exit mapping.
+func RuntimeProcessExitFailures() []RuntimeProcessExitFailure {
+	return append([]RuntimeProcessExitFailure(nil), runtimeProcessExitFailureContract[:]...)
+}
+
 const (
 	RuntimeWorkerCountMin            = 1
 	RuntimeWorkerCountMax            = 64
@@ -371,16 +455,25 @@ type ProcessSupervisor struct {
 	controlOutCloser io.Closer
 	generation       *runtimeGeneration
 	health           Health
-	exitError        error
 }
 
 type processExit struct {
 	done              chan struct{}
 	ipcReaderDone     chan struct{}
 	ipcReaderDoneOnce sync.Once
-	err               error
 	stopEvent         sync.Once
+	intentMu          sync.Mutex
+	intent            runtimeProcessTerminationIntent
 }
+
+type runtimeProcessTerminationIntent uint8
+
+const (
+	runtimeProcessTerminationNone runtimeProcessTerminationIntent = iota
+	runtimeProcessTerminationStop
+	runtimeProcessTerminationHandshakeCleanup
+	runtimeProcessTerminationIPCInvalidation
+)
 
 type pendingIPCRequest struct {
 	ctx               context.Context
@@ -411,6 +504,26 @@ func (e *processExit) finishIPCReader() {
 		return
 	}
 	e.ipcReaderDoneOnce.Do(func() { close(e.ipcReaderDone) })
+}
+
+func (e *processExit) markTerminationIntent(intent runtimeProcessTerminationIntent) {
+	if e == nil || intent == runtimeProcessTerminationNone {
+		return
+	}
+	e.intentMu.Lock()
+	defer e.intentMu.Unlock()
+	if e.intent == runtimeProcessTerminationNone {
+		e.intent = intent
+	}
+}
+
+func (e *processExit) terminationIntent() runtimeProcessTerminationIntent {
+	if e == nil {
+		return runtimeProcessTerminationNone
+	}
+	e.intentMu.Lock()
+	defer e.intentMu.Unlock()
+	return e.intent
 }
 
 type ipcCallResult struct {
@@ -674,7 +787,6 @@ func (s *ProcessSupervisor) Start(ctx context.Context, target runtimetarget.Targ
 	s.controlOutCloser = controlHostRead
 	s.generation = generation
 	s.health = health
-	s.exitError = nil
 	s.mu.Unlock()
 
 	s.emit("plugin.runtime.process.started", "info", "runtime process started", observability.DiagnosticDetails{
@@ -688,6 +800,7 @@ func (s *ProcessSupervisor) Start(ctx context.Context, target runtimetarget.Targ
 
 	ack, err := s.performHandshake(ctx, serializedStdin, stdoutReader, health, target)
 	if err != nil {
+		exit.markTerminationIntent(runtimeProcessTerminationHandshakeCleanup)
 		exit.finishIPCReader()
 		cancel()
 		s.mu.Lock()
@@ -871,6 +984,7 @@ func (s *ProcessSupervisor) Stop(ctx context.Context) error {
 		return nil
 	}
 	s.health.Ready = false
+	exit.markTerminationIntent(runtimeProcessTerminationStop)
 	cancel()
 	s.mu.Unlock()
 
@@ -881,16 +995,7 @@ func (s *ProcessSupervisor) Stop(ctx context.Context) error {
 				RuntimeInstanceID:   health.RuntimeInstanceID,
 				RuntimeGenerationID: health.RuntimeGenerationID,
 			}
-			var failure observability.Failure
-			if exit.err != nil && ctx.Err() == nil {
-				failure = observability.FailureFromError(
-					observability.FailureAction,
-					observability.FailureComponentRuntime,
-					observability.FailureOperationRuntimeProcessStop,
-					exit.err,
-				)
-			}
-			s.emitInternal("plugin.runtime.process.stopped", observability.DiagnosticSeverityInfo, "runtime process stopped", details, failure)
+			s.emitInternal("plugin.runtime.process.stopped", observability.DiagnosticSeverityInfo, "runtime process stopped", details, observability.Failure{})
 		})
 		return nil
 	case <-ctx.Done():
@@ -1228,7 +1333,6 @@ func (s *ProcessSupervisor) wait(cmd *exec.Cmd, exit *processExit, cancel contex
 	s.mu.Lock()
 	if s.cmd == cmd {
 		s.health.Ready = false
-		s.exitError = err
 		s.cancel = nil
 		s.exit = nil
 		s.cmd = nil
@@ -1251,6 +1355,7 @@ func (s *ProcessSupervisor) wait(cmd *exec.Cmd, exit *processExit, cancel contex
 	if controlOut != nil {
 		_ = controlOut.Close()
 	}
+	failureCode := classifyRuntimeProcessExit(err, exit.terminationIntent())
 	severity := observability.DiagnosticSeverityInfo
 	message := "runtime process exited"
 	details := observability.DiagnosticDetails{
@@ -1258,19 +1363,61 @@ func (s *ProcessSupervisor) wait(cmd *exec.Cmd, exit *processExit, cancel contex
 		RuntimeGenerationID: health.RuntimeGenerationID,
 	}
 	var failure observability.Failure
-	if err != nil {
+	if failureCode != "" {
 		severity = observability.DiagnosticSeverityWarning
 		message = "runtime process exited with error"
-		failure = observability.FailureFromError(
-			observability.FailureAction,
-			observability.FailureComponentRuntime,
-			observability.FailureOperationRuntimeProcessExit,
-			err,
-		)
+		details.Code = string(failureCode)
+		failure = observability.Failure{
+			Code:      observability.FailureAction,
+			Component: observability.FailureComponentRuntime,
+			Operation: observability.FailureOperationRuntimeProcessExit,
+		}
 	}
 	s.emitInternal("plugin.runtime.process.exited", severity, message, details, failure)
-	exit.err = err
 	close(exit.done)
+}
+
+func classifyRuntimeProcessExit(err error, intent runtimeProcessTerminationIntent) RuntimeProcessFailureCode {
+	code := runtimeProcessFailureCodeFromWaitError(err)
+	if isRuntimeWriterProcessFailure(code) {
+		return code
+	}
+	if intent != runtimeProcessTerminationNone {
+		return ""
+	}
+	return code
+}
+
+func runtimeProcessFailureCodeFromWaitError(err error) RuntimeProcessFailureCode {
+	if err == nil {
+		return RuntimeProcessExitUnexpected
+	}
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) {
+		return RuntimeProcessExitUnrecognized
+	}
+	exitCode := exitErr.ExitCode()
+	if exitCode == -1 {
+		return RuntimeProcessSignalled
+	}
+	for _, failure := range runtimeProcessExitFailureContract {
+		if failure.ExitCode == exitCode {
+			return failure.Code
+		}
+	}
+	return RuntimeProcessExitUnrecognized
+}
+
+func isRuntimeWriterProcessFailure(code RuntimeProcessFailureCode) bool {
+	switch code {
+	case RuntimeProcessWriterCapacityOverflow, RuntimeProcessWriterCapacityLimitExceeded,
+		RuntimeProcessWriterStartFailed, RuntimeProcessWriterClosed,
+		RuntimeProcessWriterBatchSizeOverflow, RuntimeProcessWriterWriteFailed,
+		RuntimeProcessWriterFlushFailed, RuntimeProcessWriterPanicked:
+		return true
+	default:
+		return false
+	}
 }
 
 func (s *ProcessSupervisor) heartbeatLoop(ctx context.Context, health Health) {
@@ -2373,7 +2520,9 @@ func (s *ProcessSupervisor) invalidateRuntimeAfterIPCFailure(health Health, err 
 	}
 	cancel := s.cancel
 	cmd := s.cmd
+	exit := s.exit
 	s.health.Ready = false
+	exit.markTerminationIntent(runtimeProcessTerminationIPCInvalidation)
 	s.mu.Unlock()
 	if cancel != nil {
 		cancel()

@@ -2,6 +2,7 @@ package protocol
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -9,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/floegence/redevplugin/pkg/runtimeclient"
 	"github.com/floegence/redevplugin/pkg/security"
 )
 
@@ -96,6 +98,83 @@ func TestRustIPCErrorCodesMatchSchemaAndSource(t *testing.T) {
 	}
 	got := readRustIPCErrorCodeConstants(string(source))
 	assertStringSlicesEqual(t, got, want, "Rust IPC error code constants")
+}
+
+func TestRuntimeProcessFailureCodesAndExitStatusesMatchContracts(t *testing.T) {
+	root := repoRoot(t)
+	errorCodeSchema := readJSONMap(t, filepath.Join(root, "spec", "plugin", "error-codes-v4.schema.json"))
+	defs := requireNestedObject(t, errorCodeSchema, "$defs")
+	wantCodes := schemaEnum(t, defs, "runtime_process_failure_code")
+	gotCodes := make([]string, 0, len(runtimeclient.RuntimeProcessFailureCodes()))
+	for _, code := range runtimeclient.RuntimeProcessFailureCodes() {
+		gotCodes = append(gotCodes, string(code))
+	}
+	assertStringSlicesEqual(t, wantCodes, gotCodes, "runtime process failure codes")
+
+	exitDefinition := requireNestedObject(t, defs, "runtime_process_exit_failure")
+	variants, ok := exitDefinition["oneOf"].([]any)
+	if !ok || len(variants) == 0 {
+		t.Fatalf("runtime_process_exit_failure oneOf = %#v", exitDefinition["oneOf"])
+	}
+	type exitFailure struct {
+		ExitCode int
+		Code     string
+	}
+	wantFailures := make([]exitFailure, 0, len(variants))
+	for index, rawVariant := range variants {
+		variant, ok := rawVariant.(map[string]any)
+		if !ok {
+			t.Fatalf("runtime process exit variant %d = %#v", index, rawVariant)
+		}
+		properties := requireNestedObject(t, variant, "properties")
+		exitCode, ok := requireNestedObject(t, properties, "exit_code")["const"].(float64)
+		if !ok || exitCode != float64(int(exitCode)) {
+			t.Fatalf("runtime process exit variant %d exit_code = %#v", index, requireNestedObject(t, properties, "exit_code")["const"])
+		}
+		code, ok := requireNestedObject(t, properties, "code")["const"].(string)
+		if !ok {
+			t.Fatalf("runtime process exit variant %d code = %#v", index, requireNestedObject(t, properties, "code")["const"])
+		}
+		wantFailures = append(wantFailures, exitFailure{ExitCode: int(exitCode), Code: code})
+	}
+	gotFailures := make([]exitFailure, 0, len(runtimeclient.RuntimeProcessExitFailures()))
+	for _, failure := range runtimeclient.RuntimeProcessExitFailures() {
+		gotFailures = append(gotFailures, exitFailure{ExitCode: failure.ExitCode, Code: string(failure.Code)})
+	}
+	if !reflect.DeepEqual(gotFailures, wantFailures) {
+		t.Fatalf("runtime process exit failures = %#v, want %#v", gotFailures, wantFailures)
+	}
+
+	tsSource, err := os.ReadFile(filepath.Join(root, "packages", "redevplugin-ui", "src", "error-codes.gen.ts"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertStringSlicesEqual(t, readTypeScriptLiteralArray(t, string(tsSource), "runtimeProcessFailureCodes"), wantCodes, "TypeScript runtime process failure codes")
+
+	rustSource, err := os.ReadFile(filepath.Join(root, "crates", "redevplugin-runtime", "src", "main.rs"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	rustConstants := map[string]string{
+		"RUNTIME_PROCESS_FAILED":             "RUNTIME_PROCESS_EXIT_GENERAL",
+		"IPC_WRITER_CAPACITY_OVERFLOW":       "RUNTIME_PROCESS_EXIT_WRITER_CAPACITY_OVERFLOW",
+		"IPC_WRITER_CAPACITY_LIMIT_EXCEEDED": "RUNTIME_PROCESS_EXIT_WRITER_CAPACITY_LIMIT_EXCEEDED",
+		"IPC_WRITER_START_FAILED":            "RUNTIME_PROCESS_EXIT_WRITER_START_FAILED",
+		"IPC_WRITER_CLOSED":                  "RUNTIME_PROCESS_EXIT_WRITER_CLOSED",
+		"IPC_WRITER_BATCH_SIZE_OVERFLOW":     "RUNTIME_PROCESS_EXIT_WRITER_BATCH_SIZE_OVERFLOW",
+		"IPC_WRITER_WRITE_FAILED":            "RUNTIME_PROCESS_EXIT_WRITER_WRITE_FAILED",
+		"IPC_WRITER_FLUSH_FAILED":            "RUNTIME_PROCESS_EXIT_WRITER_FLUSH_FAILED",
+		"IPC_WRITER_PANICKED":                "RUNTIME_PROCESS_EXIT_WRITER_PANICKED",
+	}
+	for _, failure := range wantFailures {
+		constant := rustConstants[failure.Code]
+		if constant == "" || !strings.Contains(string(rustSource), fmt.Sprintf("const %s: i32 = %d;", constant, failure.ExitCode)) {
+			t.Fatalf("Rust runtime missing exit mapping %d -> %s", failure.ExitCode, failure.Code)
+		}
+	}
+	if strings.Contains(string(rustSource), "parse_frame_identity_v3") {
+		t.Fatal("Rust IPC exposes obsolete parse_frame_identity_v3")
+	}
 }
 
 func readJSONMap(t *testing.T, path string) map[string]any {

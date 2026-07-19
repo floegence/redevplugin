@@ -155,7 +155,7 @@ var generatedContractArtifacts = []ContractArtifact{
 		ID:      "error-codes-schema",
 		Path:    "spec/plugin/error-codes-v4.schema.json",
 		Version: "error-codes-v4",
-		SHA256:  "21afd88cfbdc62496f79a08011914f011f7df9c130c56fc3dd5a94e8910f5317",
+		SHA256:  "97149dc2f24fcd5ce337e6b4032a90edc2f0f945dc3c575b4310950372a5dd07",
 	},
 	{
 		ID:      "performance-contract",

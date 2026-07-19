@@ -91,6 +91,8 @@ export GOWORK=off
   grep -q '"RUNTIME_CAPACITY_EXCEEDED"' spec/plugin/error-codes-v4.schema.json
   grep -q '"RUNTIME_INVOCATION_CANCELED"' spec/plugin/error-codes-v4.schema.json
   grep -q '"UNSUPPORTED_FRAME"' spec/plugin/error-codes-v4.schema.json
+  grep -q '"RUNTIME_PROCESS_EXIT_UNRECOGNIZED"' spec/plugin/error-codes-v4.schema.json
+  grep -q '"IPC_WRITER_WRITE_FAILED"' spec/plugin/error-codes-v4.schema.json
   grep -q '"title": "ReDevPlugin persistent resource scope v1"' spec/plugin/resource-scope-v1.schema.json
   grep -q '"enum": \["user", "environment"\]' spec/plugin/resource-scope-v1.schema.json
   ! grep -q 'owner_session_hash\|session_channel_id_hash' spec/plugin/resource-scope-v1.schema.json
