@@ -67,6 +67,7 @@ bridge.onAction("restart-game", () => {
   syncCanvasAccessibility(true);
 });
 bridge.onCanvasInput("playfield", handleInput);
+const initialization = initialize();
 bridge.onLifecycle(async (event) => {
   if (event.type === "visible") {
     surfaceVisible = true;
@@ -84,6 +85,7 @@ bridge.onLifecycle(async (event) => {
   if (event.type === "dispose") {
     disposed = true;
     surfaceVisible = false;
+    await initialization.catch(() => undefined);
     gameReady = false;
     stopFrameLoop();
     clearScorePersistTimer();
@@ -92,7 +94,7 @@ bridge.onLifecycle(async (event) => {
   }
 });
 
-void initialize().catch((error) => void showFatalError(error));
+void initialization.catch((error) => void showFatalError(error));
 
 async function initialize(): Promise<void> {
   await bridge.ready();

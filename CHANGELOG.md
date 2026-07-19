@@ -1,5 +1,26 @@
 # Changelog
 
+## v0.6.0
+
+### Changed
+
+- Replace browser-facing GET reads with closed POST query requests that require
+  exact Origin, CSRF, route action, and explicit query-effect authorization.
+  Query cancellation remains safely retryable and never reports a mutation
+  outcome.
+- Remove URL query strings from the platform API. Local package install and
+  update now share one plugin-instance path; updates carry one canonical
+  management revision header before package bytes are staged.
+- Advance the public route contracts to `plugin-host-v5`,
+  `plugin-platform-v7`, and `compatibility-manifest-v7`, with generated route
+  fixtures carrying the closed `query|mutation` effect.
+- Advance the immutable performance contract to `performance-contract-v2` and
+  pin the v0.5.1 route-authorization comparison probe used for 1/100/1000
+  authenticated request regression evidence.
+- Advance performance evidence to `performance-evidence-v2`, embedding the
+  baseline and candidate profiles so release verification can recompute every
+  route-authorization regression metric from signed provenance.
+
 ## v0.5.1
 
 ### Fixed

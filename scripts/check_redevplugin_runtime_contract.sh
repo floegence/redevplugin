@@ -66,17 +66,17 @@ export GOWORK=off
   ! grep -q '"type": { "const": "redevplugin.ui.render" }' spec/plugin/bridge-v5.schema.json
   grep -q '"x-redevplugin-render-policy"' spec/plugin/bridge-v5.schema.json
   grep -q '"safe_input_types"' spec/plugin/bridge-v5.schema.json
-  grep -q 'handshake_transcript_sha256' spec/openapi/plugin-platform-v6.yaml
-  grep -q 'previous_plugin_gateway_token' spec/openapi/plugin-platform-v6.yaml
-  grep -q '/_redevplugin/api/plugins/surfaces/revoke-scope' spec/openapi/plugin-platform-v6.yaml
-  grep -q '/_redevplugin/api/plugins/surfaces/{surface_instance_id}/prepare' spec/openapi/plugin-platform-v6.yaml
-  grep -q '/_redevplugin/api/plugins/surfaces/{surface_instance_id}/assets/read' spec/openapi/plugin-platform-v6.yaml
-  grep -q '"schema_version": { "const": "redevplugin.compatibility.v6" }' spec/plugin/compatibility-manifest-v6.schema.json
-  grep -q '"bridge_schema_version": { "const": "bridge-v5" }' spec/plugin/compatibility-manifest-v6.schema.json
-  grep -q '"release_metadata_schema_version": { "const": "release-metadata-v5" }' spec/plugin/compatibility-manifest-v6.schema.json
-  grep -q '"opaque_surface_document_schema_version"' spec/plugin/compatibility-manifest-v6.schema.json
-  grep -q '"opaque_surface_transport_schema_version"' spec/plugin/compatibility-manifest-v6.schema.json
-  grep -q '"resource_scope_schema_version": { "const": "resource-scope-v1" }' spec/plugin/compatibility-manifest-v6.schema.json
+  grep -q 'handshake_transcript_sha256' spec/openapi/plugin-platform-v7.yaml
+  grep -q 'previous_plugin_gateway_token' spec/openapi/plugin-platform-v7.yaml
+  grep -q '/_redevplugin/api/plugins/surfaces/revoke-scope' spec/openapi/plugin-platform-v7.yaml
+  grep -q '/_redevplugin/api/plugins/surfaces/{surface_instance_id}/prepare' spec/openapi/plugin-platform-v7.yaml
+  grep -q '/_redevplugin/api/plugins/surfaces/{surface_instance_id}/assets/read' spec/openapi/plugin-platform-v7.yaml
+  grep -q '"schema_version": { "const": "redevplugin.compatibility.v7" }' spec/plugin/compatibility-manifest-v7.schema.json
+  grep -q '"bridge_schema_version": { "const": "bridge-v5" }' spec/plugin/compatibility-manifest-v7.schema.json
+  grep -q '"release_metadata_schema_version": { "const": "release-metadata-v5" }' spec/plugin/compatibility-manifest-v7.schema.json
+  grep -q '"opaque_surface_document_schema_version"' spec/plugin/compatibility-manifest-v7.schema.json
+  grep -q '"opaque_surface_transport_schema_version"' spec/plugin/compatibility-manifest-v7.schema.json
+  grep -q '"resource_scope_schema_version": { "const": "resource-scope-v1" }' spec/plugin/compatibility-manifest-v7.schema.json
   grep -q '"title": "ReDevPlugin stable error codes v4"' spec/plugin/error-codes-v4.schema.json
   grep -q '"PLUGIN_ORIGIN_DENIED"' spec/plugin/error-codes-v4.schema.json
   grep -q '"PLUGIN_ACTION_DENIED"' spec/plugin/error-codes-v4.schema.json
@@ -435,12 +435,15 @@ NODE
   grep -q 'verifyNoticeEvidence' scripts/verify_redevplugin_release_bundle.mjs
   grep -q 'verifyHostCapabilitySample' scripts/verify_redevplugin_release_bundle.mjs
   grep -q 'npm run scaffold:check' scripts/build_redevplugin_release.sh
-  test -f spec/plugin/performance-contract-v1.json
+  test -f spec/plugin/performance-contract-v2.json
+  test -f spec/plugin/performance-evidence-v2.schema.json
+  test ! -f spec/plugin/performance-contract-v1.json
+  test ! -f spec/plugin/performance-evidence-v1.schema.json
   grep -q '"id": "performance-contract"' spec/plugin/contract-registry-v1.json
-  grep -q '"performance_contract_version": "performance-contract-v1"' spec/plugin/contract-registry-v1.json
+  grep -q '"performance_contract_version": "performance-contract-v2"' spec/plugin/contract-registry-v1.json
   grep -q 'readPerformanceContract' scripts/generate_redevplugin_performance_evidence.mjs
   grep -q 'readPerformanceContract' scripts/verify_redevplugin_release_bundle.mjs
-  go run ./cmd/redevplugin version | grep -q '"schema_version": "redevplugin.compatibility.v6"'
+  go run ./cmd/redevplugin version | grep -q '"schema_version": "redevplugin.compatibility.v7"'
   go run ./cmd/redevplugin version | grep -q '"id": "compatibility-manifest-schema"'
   go run ./cmd/redevplugin version | grep -q '"id": "release-manifest-schema"'
   go run ./cmd/redevplugin version | grep -q '"id": "release-metadata-schema"'

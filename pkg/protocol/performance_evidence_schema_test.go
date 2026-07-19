@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	jsonschema "github.com/santhosh-tekuri/jsonschema/v5"
@@ -26,6 +27,26 @@ func TestPerformanceEvidenceSchemaValidatesReleaseEvidence(t *testing.T) {
 			name: "failed scenario",
 			mutate: func(document map[string]any) {
 				document["scenarios"].([]any)[0].(map[string]any)["status"] = "fail"
+			},
+		},
+		{
+			name: "missing comparison provenance",
+			mutate: func(document map[string]any) {
+				delete(document, "comparisons")
+			},
+		},
+		{
+			name: "missing comparison run",
+			mutate: func(document map[string]any) {
+				comparison := document["comparisons"].([]any)[0].(map[string]any)
+				comparison["runs"] = comparison["runs"].([]any)[:2]
+			},
+		},
+		{
+			name: "unknown comparison run field",
+			mutate: func(document map[string]any) {
+				comparison := document["comparisons"].([]any)[0].(map[string]any)
+				comparison["runs"].([]any)[0].(map[string]any)["fallback"] = true
 			},
 		},
 		{
@@ -67,14 +88,14 @@ func TestPerformanceEvidenceSchemaValidatesReleaseEvidence(t *testing.T) {
 func compilePerformanceEvidenceSchema(t testing.TB) *jsonschema.Schema {
 	t.Helper()
 	root := hostCapabilityRepositoryRoot(t)
-	raw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", "performance-evidence-v1.schema.json"))
+	raw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", "performance-evidence-v2.schema.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	compiler := jsonschema.NewCompiler()
 	compiler.Draft = jsonschema.Draft2020
 	compiler.AssertFormat = true
-	const resource = "urn:redevplugin:test:performance-evidence-v1"
+	const resource = "urn:redevplugin:test:performance-evidence-v2"
 	if err := compiler.AddResource(resource, bytes.NewReader(raw)); err != nil {
 		t.Fatal(err)
 	}
@@ -87,7 +108,7 @@ func compilePerformanceEvidenceSchema(t testing.TB) *jsonschema.Schema {
 
 func validPerformanceEvidence() map[string]any {
 	return map[string]any{
-		"schema_version":  "redevplugin.performance_evidence.v1",
+		"schema_version":  "redevplugin.performance_evidence.v2",
 		"release_version": "0.5.0",
 		"source_commit":   "0123456789abcdef0123456789abcdef01234567",
 		"generated_at":    "2026-07-16T08:00:00Z",
@@ -117,11 +138,67 @@ func validPerformanceEvidence() map[string]any {
 				},
 			},
 		},
+		"comparisons": []any{
+			map[string]any{
+				"id":               "httpadapter.route-authorization-v051",
+				"baseline_release": "0.5.1",
+				"baseline_commit":  "3febcc59bbdb2118a4f105781b4c743bc11ba09f",
+				"candidate_commit": "0123456789abcdef0123456789abcdef01234567",
+				"runs": []any{
+					validRouteAuthorizationRun("1", "2"),
+					validRouteAuthorizationRun("3", "4"),
+					validRouteAuthorizationRun("5", "6"),
+				},
+			},
+		},
 		"contract_hashes": []any{
 			map[string]any{
 				"id":     "rust-ipc-schema",
 				"sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
 			},
+		},
+	}
+}
+
+func validRouteAuthorizationRun(baselineHashPrefix, candidateHashPrefix string) map[string]any {
+	return map[string]any{
+		"baseline_profile_sha256":  baselineHashPrefix + strings.Repeat("0", 63),
+		"candidate_profile_sha256": candidateHashPrefix + strings.Repeat("0", 63),
+		"baseline_profile":         validRouteAuthorizationProfile("v0.5.1", "3febcc59bbdb2118a4f105781b4c743bc11ba09f"),
+		"candidate_profile":        validRouteAuthorizationProfile("v0.6.0", "0123456789abcdef0123456789abcdef01234567"),
+	}
+}
+
+func validRouteAuthorizationProfile(variant, commit string) map[string]any {
+	measurement := func(concurrency, batches, samples int) map[string]any {
+		return map[string]any{
+			"concurrency":             concurrency,
+			"batch_count":             batches,
+			"sample_count":            samples,
+			"median_nanoseconds":      100,
+			"p95_nanoseconds":         120,
+			"p99_nanoseconds":         140,
+			"allocations_per_request": 7.0,
+			"bytes_per_request":       1024.0,
+		}
+	}
+	return map[string]any{
+		"schema_version": "redevplugin.route_authorization_performance.v1",
+		"variant":        variant,
+		"commit":         commit,
+		"environment": map[string]any{
+			"os":           "linux",
+			"arch":         "amd64",
+			"logical_cpus": 8,
+			"gomaxprocs":   8,
+			"go_version":   "go1.26.0",
+		},
+		"warmup_count":        8,
+		"requests_per_sample": 32,
+		"measurements": []any{
+			measurement(1, 1000, 32000),
+			measurement(100, 64, 204800),
+			measurement(1000, 64, 2048000),
 		},
 	}
 }

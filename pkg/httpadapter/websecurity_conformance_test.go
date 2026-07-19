@@ -54,6 +54,25 @@ func TestHandlerWebSecurityConformanceCoversEveryRoute(t *testing.T) {
 			wantStage: "origin",
 		},
 		{
+			name: "duplicate origin",
+			configure: func(r *http.Request) {
+				r.Header.Add("Origin", conformanceTrustedOrigin)
+				r.Header.Add("Origin", conformanceTrustedOrigin)
+				setConformanceCSRF(r)
+			},
+			wantCode:  security.ErrOriginDenied,
+			wantStage: "origin",
+		},
+		{
+			name: "origin with surrounding whitespace",
+			configure: func(r *http.Request) {
+				r.Header.Set("Origin", " "+conformanceTrustedOrigin+" ")
+				setConformanceCSRF(r)
+			},
+			wantCode:  security.ErrOriginDenied,
+			wantStage: "origin",
+		},
+		{
 			name: "missing csrf",
 			configure: func(r *http.Request) {
 				r.Header.Set("Origin", conformanceTrustedOrigin)
@@ -66,6 +85,25 @@ func TestHandlerWebSecurityConformanceCoversEveryRoute(t *testing.T) {
 			configure: func(r *http.Request) {
 				r.Header.Set("Origin", conformanceTrustedOrigin)
 				r.Header.Set(conformanceCSRFHeader, "invalid-token")
+			},
+			wantCode:  security.ErrCSRFInvalid,
+			wantStage: "csrf",
+		},
+		{
+			name: "duplicate csrf",
+			configure: func(r *http.Request) {
+				r.Header.Set("Origin", conformanceTrustedOrigin)
+				r.Header.Add(conformanceCSRFHeader, conformanceCSRFToken)
+				r.Header.Add(conformanceCSRFHeader, conformanceCSRFToken)
+			},
+			wantCode:  security.ErrCSRFInvalid,
+			wantStage: "csrf",
+		},
+		{
+			name: "csrf with surrounding whitespace",
+			configure: func(r *http.Request) {
+				r.Header.Set("Origin", conformanceTrustedOrigin)
+				r.Header.Set(conformanceCSRFHeader, " "+conformanceCSRFToken+" ")
 			},
 			wantCode:  security.ErrCSRFInvalid,
 			wantStage: "csrf",
@@ -93,14 +131,6 @@ func TestHandlerWebSecurityConformanceCoversEveryRoute(t *testing.T) {
 					rec := httptest.NewRecorder()
 
 					handler.ServeHTTP(rec, req)
-
-					if testCase.wantStage == "csrf" && route.csrfPolicy == websecurity.CSRFPolicyNotRequired {
-						assertConformanceGuardCalls(t, guard, 1, 1, 1, 1)
-						if guard.lastAction != route.action {
-							t.Fatalf("authorized action = %q, want %q", guard.lastAction, route.action)
-						}
-						return
-					}
 
 					assertConformanceError(t, rec, testCase.wantCode)
 					switch testCase.wantStage {
@@ -135,8 +165,8 @@ func TestHandlerWebSecurityConformanceDeniesEveryClosedRouteAction(t *testing.T)
 
 			assertConformanceError(t, rec, security.ErrActionDenied)
 			assertConformanceGuardCalls(t, guard, 1, 1, 1, 1)
-			if guard.lastAction != route.action || !guard.lastAction.Valid() {
-				t.Fatalf("denied action = %q, want closed action %q", guard.lastAction, route.action)
+			if guard.lastAction != route.action || !guard.lastAction.Valid() || guard.lastEffect != route.Effect {
+				t.Fatalf("denied route = {%q %q}, want {%q %q}", guard.lastAction, guard.lastEffect, route.action, route.Effect)
 			}
 		})
 	}
@@ -147,6 +177,38 @@ func TestRouteSecurityContractRejectsUnknownAction(t *testing.T) {
 	route.action = websecurity.RouteAction("plugin.unknown")
 	if err := route.validate(); !errors.Is(err, websecurity.ErrRouteActionInvalid) {
 		t.Fatalf("route.validate() error = %v, want %v", err, websecurity.ErrRouteActionInvalid)
+	}
+}
+
+func TestRouteSecurityContractRejectsUnknownEffect(t *testing.T) {
+	route := routes[0]
+	route.Effect = websecurity.RouteEffect("unknown")
+	if err := route.validate(); !errors.Is(err, websecurity.ErrRouteEffectInvalid) {
+		t.Fatalf("route.validate() error = %v, want %v", err, websecurity.ErrRouteEffectInvalid)
+	}
+}
+
+func TestRouteSecurityContractRejectsMethodsOutsideEachEffect(t *testing.T) {
+	tests := []struct {
+		name   string
+		effect websecurity.RouteEffect
+		method string
+	}{
+		{name: "query get", effect: websecurity.RouteEffectQuery, method: http.MethodGet},
+		{name: "mutation get", effect: websecurity.RouteEffectMutation, method: http.MethodGet},
+		{name: "mutation head", effect: websecurity.RouteEffectMutation, method: http.MethodHead},
+		{name: "mutation options", effect: websecurity.RouteEffectMutation, method: http.MethodOptions},
+		{name: "mutation custom", effect: websecurity.RouteEffectMutation, method: "INVOKE"},
+	}
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			route := routes[0]
+			route.Effect = testCase.effect
+			route.Method = testCase.method
+			if err := route.validate(); err == nil {
+				t.Fatalf("route.validate() accepted %s method %s", testCase.effect, testCase.method)
+			}
+		})
 	}
 }
 
@@ -193,6 +255,7 @@ type routeSecurityConformanceGuard struct {
 	csrfCount         int
 	authorizeCount    int
 	lastAction        websecurity.RouteAction
+	lastEffect        websecurity.RouteEffect
 }
 
 func (g *routeSecurityConformanceGuard) Authenticate(*http.Request) (sessionctx.Context, error) {
@@ -211,7 +274,7 @@ func (g *routeSecurityConformanceGuard) ValidateOrigin(r *http.Request, _ sessio
 		return websecurity.ErrOriginPolicyInvalid
 	}
 	values := r.Header.Values("Origin")
-	if len(values) != 1 || strings.TrimSpace(values[0]) != conformanceTrustedOrigin {
+	if len(values) != 1 || values[0] != conformanceTrustedOrigin || strings.Contains(values[0], ",") {
 		return websecurity.ErrOriginDenied
 	}
 	return nil
@@ -235,11 +298,15 @@ func (g *routeSecurityConformanceGuard) ValidateCSRF(r *http.Request, _ sessionc
 	return nil
 }
 
-func (g *routeSecurityConformanceGuard) AuthorizeRoute(_ *http.Request, _ sessionctx.Context, action websecurity.RouteAction) error {
+func (g *routeSecurityConformanceGuard) AuthorizeRoute(_ *http.Request, _ sessionctx.Context, action websecurity.RouteAction, effect websecurity.RouteEffect) error {
 	g.authorizeCount++
 	g.lastAction = action
+	g.lastEffect = effect
 	if !action.Valid() {
 		return websecurity.ErrRouteActionInvalid
+	}
+	if !effect.Valid() {
+		return websecurity.ErrRouteEffectInvalid
 	}
 	if g.denyAction {
 		return errors.New("route action denied")

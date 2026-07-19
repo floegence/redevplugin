@@ -32,7 +32,7 @@
     "test:browser-harness": "npm run browser-harness:check && node --test internal/browserharness/*.test.mjs",
     "test:browser-harness:smoke": "npm run build && node internal/browserharness/opaque-surface-smoke.mjs && REDEVPLUGIN_RUN_BROWSER_SMOKE=1 GOWORK=off go test ./cmd/redevplugin -run '^TestExamplesServerBrowserSmoke$' -count=1",
     "performance:fast": "./scripts/check_redevplugin_performance.sh --fast",
-    "performance-contract:test": "node --test scripts/performance_contract.test.mjs scripts/performance_evidence_source_state.test.mjs",
+    "performance-contract:test": "node --test scripts/performance_contract.test.mjs scripts/performance_evidence_source_state.test.mjs scripts/measure_http_route_authorization_performance.test.mjs scripts/published_release_verifier_dependencies.test.mjs scripts/published_release_verifier_fixture.test.mjs",
     "performance:full": "./scripts/check_redevplugin_performance.sh --full",
     "performance:release": "./scripts/check_redevplugin_performance.sh --release",
     "property-gates": "./scripts/check_redevplugin_property_gates.sh --fast",

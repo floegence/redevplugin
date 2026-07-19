@@ -1,5 +1,40 @@
 {
-  "schema_version": "redevplugin.performance_contract.v1",
+  "schema_version": "redevplugin.performance_contract.v2",
+  "comparison_probes": [
+    {
+      "id": "httpadapter.route-authorization-v051",
+      "baseline_release": "0.5.1",
+      "baseline_commit": "3febcc59bbdb2118a4f105781b4c743bc11ba09f",
+      "repetitions": 3,
+      "warmup_batches": 8,
+      "requests_per_sample": 32,
+      "measured_batches": [
+        { "concurrency": 1, "batches": 1000, "samples": 32000 },
+        { "concurrency": 100, "batches": 64, "samples": 204800 },
+        { "concurrency": 1000, "batches": 64, "samples": 2048000 }
+      ],
+      "runner": {
+        "path": "scripts/measure_http_route_authorization_performance.mjs",
+        "sha256": "9e7700cd43fa3a966ef79a08b57ac33c87f8ac896b23c466a2b24a7ae188ad01"
+      },
+      "comparison_logic": {
+        "path": "scripts/route_authorization_comparison.mjs",
+        "sha256": "c301f8368b5346a0e231f503784f78447e3c5d2c610e58cb1ef71d84c9c17db4"
+      },
+      "baseline_probe": {
+        "path": "testdata/performance/httpadapter-v051/route_authorization_performance_test.go",
+        "sha256": "2a8891b9c2e962ba3660aadb25bdf9e2cca45565ad8dea6d7b59c08fc787c18f"
+      },
+      "candidate_probe": {
+        "path": "pkg/httpadapter/route_authorization_performance_test.go",
+        "sha256": "113eb3f0cf1d7383a6f14b8d7406e42c655c018c1455b47f0afd44869a354ff3"
+      },
+      "shared_probe": {
+        "path": "internal/performanceevidence/route_authorization.go",
+        "sha256": "5a2dd9f235eb80d2f7c6a2ddb5870e1d5aa9f9132b6a8abff51ce20b0f037910"
+      }
+    }
+  ],
   "scenarios": [
     {
       "id": "runtime.blocked-hostcall-isolation",
@@ -68,6 +103,36 @@
       "metrics": [
         { "name": "index_pops_per_eviction", "unit": "basis_points", "comparator": "eq", "limit": 10000 },
         { "name": "remaining_entries", "unit": "count", "comparator": "eq", "limit": 128 }
+      ]
+    },
+    {
+      "id": "httpadapter.route-authorization-c1",
+      "sample_count": 32000,
+      "metrics": [
+        { "name": "p95_relative", "unit": "basis_points", "comparator": "lte", "limit": 11000 },
+        { "name": "p99_relative", "unit": "basis_points", "comparator": "lte", "limit": 11500 },
+        { "name": "allocations_increase", "unit": "count", "comparator": "lte", "limit": 1 },
+        { "name": "allocated_bytes_relative", "unit": "basis_points", "comparator": "lte", "limit": 10500 }
+      ]
+    },
+    {
+      "id": "httpadapter.route-authorization-c100",
+      "sample_count": 204800,
+      "metrics": [
+        { "name": "p95_relative", "unit": "basis_points", "comparator": "lte", "limit": 11000 },
+        { "name": "p99_relative", "unit": "basis_points", "comparator": "lte", "limit": 11500 },
+        { "name": "allocations_increase", "unit": "count", "comparator": "lte", "limit": 1 },
+        { "name": "allocated_bytes_relative", "unit": "basis_points", "comparator": "lte", "limit": 10500 }
+      ]
+    },
+    {
+      "id": "httpadapter.route-authorization-c1000",
+      "sample_count": 2048000,
+      "metrics": [
+        { "name": "p95_relative", "unit": "basis_points", "comparator": "lte", "limit": 11000 },
+        { "name": "p99_relative", "unit": "basis_points", "comparator": "lte", "limit": 11500 },
+        { "name": "allocations_increase", "unit": "count", "comparator": "lte", "limit": 1 },
+        { "name": "allocated_bytes_relative", "unit": "basis_points", "comparator": "lte", "limit": 10500 }
       ]
     },
     {

@@ -1,214 +1,267 @@
 [
   {
-    "method": "PUT",
-    "path": "/_redevplugin/api/plugins/{plugin_instance_id}/local-import"
+    "method": "POST",
+    "path": "/_redevplugin/api/plugins/{plugin_instance_id}/local-import",
+    "effect": "mutation"
   },
   {
-    "method": "GET",
-    "path": "/_redevplugin/api/plugins/{plugin_instance_id}/settings"
+    "method": "PUT",
+    "path": "/_redevplugin/api/plugins/{plugin_instance_id}/local-import",
+    "effect": "mutation"
   },
   {
     "method": "PATCH",
-    "path": "/_redevplugin/api/plugins/{plugin_instance_id}/settings"
-  },
-  {
-    "method": "GET",
-    "path": "/_redevplugin/api/plugins/{plugin_instance_id}/settings/schema"
-  },
-  {
-    "method": "GET",
-    "path": "/_redevplugin/api/plugins/catalog"
+    "path": "/_redevplugin/api/plugins/{plugin_instance_id}/settings",
+    "effect": "mutation"
   },
   {
     "method": "POST",
-    "path": "/_redevplugin/api/plugins/confirmations/prepare"
+    "path": "/_redevplugin/api/plugins/{plugin_instance_id}/settings/query",
+    "effect": "query"
   },
   {
     "method": "POST",
-    "path": "/_redevplugin/api/plugins/data/export"
+    "path": "/_redevplugin/api/plugins/{plugin_instance_id}/settings/schema/query",
+    "effect": "query"
   },
   {
     "method": "POST",
-    "path": "/_redevplugin/api/plugins/data/export/delete"
+    "path": "/_redevplugin/api/plugins/catalog/query",
+    "effect": "query"
   },
   {
     "method": "POST",
-    "path": "/_redevplugin/api/plugins/data/import"
-  },
-  {
-    "method": "GET",
-    "path": "/_redevplugin/api/plugins/diagnostics"
+    "path": "/_redevplugin/api/plugins/confirmations/prepare",
+    "effect": "mutation"
   },
   {
     "method": "POST",
-    "path": "/_redevplugin/api/plugins/disable"
+    "path": "/_redevplugin/api/plugins/data/export",
+    "effect": "mutation"
   },
   {
     "method": "POST",
-    "path": "/_redevplugin/api/plugins/downgrade"
+    "path": "/_redevplugin/api/plugins/data/export/delete",
+    "effect": "mutation"
   },
   {
     "method": "POST",
-    "path": "/_redevplugin/api/plugins/enable"
-  },
-  {
-    "method": "GET",
-    "path": "/_redevplugin/api/plugins/features"
+    "path": "/_redevplugin/api/plugins/data/import",
+    "effect": "mutation"
   },
   {
     "method": "POST",
-    "path": "/_redevplugin/api/plugins/install-release-ref"
-  },
-  {
-    "method": "GET",
-    "path": "/_redevplugin/api/plugins/intents"
+    "path": "/_redevplugin/api/plugins/diagnostics/query",
+    "effect": "query"
   },
   {
     "method": "POST",
-    "path": "/_redevplugin/api/plugins/intents/invoke"
+    "path": "/_redevplugin/api/plugins/disable",
+    "effect": "mutation"
   },
   {
     "method": "POST",
-    "path": "/_redevplugin/api/plugins/local-imports"
-  },
-  {
-    "method": "GET",
-    "path": "/_redevplugin/api/plugins/operations"
-  },
-  {
-    "method": "GET",
-    "path": "/_redevplugin/api/plugins/operations/{operation_id}"
+    "path": "/_redevplugin/api/plugins/downgrade",
+    "effect": "mutation"
   },
   {
     "method": "POST",
-    "path": "/_redevplugin/api/plugins/operations/{operation_id}/cancel"
-  },
-  {
-    "method": "GET",
-    "path": "/_redevplugin/api/plugins/permissions"
+    "path": "/_redevplugin/api/plugins/enable",
+    "effect": "mutation"
   },
   {
     "method": "POST",
-    "path": "/_redevplugin/api/plugins/permissions/grant"
+    "path": "/_redevplugin/api/plugins/features/query",
+    "effect": "query"
   },
   {
     "method": "POST",
-    "path": "/_redevplugin/api/plugins/permissions/revoke"
-  },
-  {
-    "method": "GET",
-    "path": "/_redevplugin/api/plugins/platform/compatibility"
-  },
-  {
-    "method": "GET",
-    "path": "/_redevplugin/api/plugins/retained-data"
+    "path": "/_redevplugin/api/plugins/install-release-ref",
+    "effect": "mutation"
   },
   {
     "method": "POST",
-    "path": "/_redevplugin/api/plugins/retained-data/bind"
+    "path": "/_redevplugin/api/plugins/intents/invoke",
+    "effect": "mutation"
   },
   {
     "method": "POST",
-    "path": "/_redevplugin/api/plugins/retained-data/cleanup-expired"
+    "path": "/_redevplugin/api/plugins/intents/query",
+    "effect": "query"
   },
   {
     "method": "POST",
-    "path": "/_redevplugin/api/plugins/retained-data/delete"
+    "path": "/_redevplugin/api/plugins/operations/{operation_id}/cancel",
+    "effect": "mutation"
   },
   {
     "method": "POST",
-    "path": "/_redevplugin/api/plugins/rpc"
-  },
-  {
-    "method": "GET",
-    "path": "/_redevplugin/api/plugins/runtime/health"
+    "path": "/_redevplugin/api/plugins/operations/{operation_id}/query",
+    "effect": "query"
   },
   {
     "method": "POST",
-    "path": "/_redevplugin/api/plugins/runtime/refresh-enabled"
+    "path": "/_redevplugin/api/plugins/operations/query",
+    "effect": "query"
   },
   {
     "method": "POST",
-    "path": "/_redevplugin/api/plugins/runtime/start"
+    "path": "/_redevplugin/api/plugins/permissions/grant",
+    "effect": "mutation"
   },
   {
     "method": "POST",
-    "path": "/_redevplugin/api/plugins/runtime/stop"
+    "path": "/_redevplugin/api/plugins/permissions/query",
+    "effect": "query"
   },
   {
     "method": "POST",
-    "path": "/_redevplugin/api/plugins/secrets/bind"
+    "path": "/_redevplugin/api/plugins/permissions/revoke",
+    "effect": "mutation"
   },
   {
     "method": "POST",
-    "path": "/_redevplugin/api/plugins/secrets/delete"
+    "path": "/_redevplugin/api/plugins/platform/compatibility/query",
+    "effect": "query"
   },
   {
     "method": "POST",
-    "path": "/_redevplugin/api/plugins/secrets/test"
+    "path": "/_redevplugin/api/plugins/retained-data/bind",
+    "effect": "mutation"
   },
   {
-    "method": "GET",
-    "path": "/_redevplugin/api/plugins/security-policies"
+    "method": "POST",
+    "path": "/_redevplugin/api/plugins/retained-data/cleanup-expired",
+    "effect": "mutation"
+  },
+  {
+    "method": "POST",
+    "path": "/_redevplugin/api/plugins/retained-data/delete",
+    "effect": "mutation"
+  },
+  {
+    "method": "POST",
+    "path": "/_redevplugin/api/plugins/retained-data/query",
+    "effect": "query"
+  },
+  {
+    "method": "POST",
+    "path": "/_redevplugin/api/plugins/rpc",
+    "effect": "mutation"
+  },
+  {
+    "method": "POST",
+    "path": "/_redevplugin/api/plugins/runtime/health/query",
+    "effect": "query"
+  },
+  {
+    "method": "POST",
+    "path": "/_redevplugin/api/plugins/runtime/refresh-enabled",
+    "effect": "mutation"
+  },
+  {
+    "method": "POST",
+    "path": "/_redevplugin/api/plugins/runtime/start",
+    "effect": "mutation"
+  },
+  {
+    "method": "POST",
+    "path": "/_redevplugin/api/plugins/runtime/stop",
+    "effect": "mutation"
+  },
+  {
+    "method": "POST",
+    "path": "/_redevplugin/api/plugins/secrets/bind",
+    "effect": "mutation"
+  },
+  {
+    "method": "POST",
+    "path": "/_redevplugin/api/plugins/secrets/delete",
+    "effect": "mutation"
+  },
+  {
+    "method": "POST",
+    "path": "/_redevplugin/api/plugins/secrets/test",
+    "effect": "mutation"
   },
   {
     "method": "DELETE",
-    "path": "/_redevplugin/api/plugins/security-policies/{plugin_instance_id}"
-  },
-  {
-    "method": "GET",
-    "path": "/_redevplugin/api/plugins/security-policies/{plugin_instance_id}"
+    "path": "/_redevplugin/api/plugins/security-policies/{plugin_instance_id}",
+    "effect": "mutation"
   },
   {
     "method": "PUT",
-    "path": "/_redevplugin/api/plugins/security-policies/{plugin_instance_id}"
+    "path": "/_redevplugin/api/plugins/security-policies/{plugin_instance_id}",
+    "effect": "mutation"
   },
   {
     "method": "POST",
-    "path": "/_redevplugin/api/plugins/surfaces/{surface_instance_id}/assets/read"
+    "path": "/_redevplugin/api/plugins/security-policies/{plugin_instance_id}/query",
+    "effect": "query"
   },
   {
     "method": "POST",
-    "path": "/_redevplugin/api/plugins/surfaces/{surface_instance_id}/bridge-token"
+    "path": "/_redevplugin/api/plugins/security-policies/query",
+    "effect": "query"
   },
   {
     "method": "POST",
-    "path": "/_redevplugin/api/plugins/surfaces/{surface_instance_id}/confirmations/reject"
+    "path": "/_redevplugin/api/plugins/surfaces/{surface_instance_id}/assets/read",
+    "effect": "query"
   },
   {
     "method": "POST",
-    "path": "/_redevplugin/api/plugins/surfaces/{surface_instance_id}/dispose"
+    "path": "/_redevplugin/api/plugins/surfaces/{surface_instance_id}/bridge-token",
+    "effect": "mutation"
   },
   {
     "method": "POST",
-    "path": "/_redevplugin/api/plugins/surfaces/{surface_instance_id}/operations/cancel"
+    "path": "/_redevplugin/api/plugins/surfaces/{surface_instance_id}/confirmations/reject",
+    "effect": "mutation"
   },
   {
     "method": "POST",
-    "path": "/_redevplugin/api/plugins/surfaces/{surface_instance_id}/prepare"
+    "path": "/_redevplugin/api/plugins/surfaces/{surface_instance_id}/dispose",
+    "effect": "mutation"
   },
   {
     "method": "POST",
-    "path": "/_redevplugin/api/plugins/surfaces/{surface_instance_id}/streams/ack"
+    "path": "/_redevplugin/api/plugins/surfaces/{surface_instance_id}/operations/cancel",
+    "effect": "mutation"
   },
   {
     "method": "POST",
-    "path": "/_redevplugin/api/plugins/surfaces/{surface_instance_id}/streams/read"
+    "path": "/_redevplugin/api/plugins/surfaces/{surface_instance_id}/prepare",
+    "effect": "mutation"
   },
   {
     "method": "POST",
-    "path": "/_redevplugin/api/plugins/surfaces/open"
+    "path": "/_redevplugin/api/plugins/surfaces/{surface_instance_id}/streams/ack",
+    "effect": "mutation"
   },
   {
     "method": "POST",
-    "path": "/_redevplugin/api/plugins/surfaces/revoke-scope"
+    "path": "/_redevplugin/api/plugins/surfaces/{surface_instance_id}/streams/read",
+    "effect": "query"
   },
   {
     "method": "POST",
-    "path": "/_redevplugin/api/plugins/uninstall"
+    "path": "/_redevplugin/api/plugins/surfaces/open",
+    "effect": "mutation"
   },
   {
     "method": "POST",
-    "path": "/_redevplugin/api/plugins/update-release-ref"
+    "path": "/_redevplugin/api/plugins/surfaces/revoke-scope",
+    "effect": "mutation"
+  },
+  {
+    "method": "POST",
+    "path": "/_redevplugin/api/plugins/uninstall",
+    "effect": "mutation"
+  },
+  {
+    "method": "POST",
+    "path": "/_redevplugin/api/plugins/update-release-ref",
+    "effect": "mutation"
   }
 ]

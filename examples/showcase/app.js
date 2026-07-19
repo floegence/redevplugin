@@ -201,6 +201,25 @@
       "not_committed"
     );
   }
+  async function dispatchQueryRequest(fetch2, input, init, operation) {
+    if (init.signal?.aborted) {
+      throw new PluginTransportError(
+        `Plugin platform query was aborted before dispatch for ${operation}`,
+        init.signal.reason
+      );
+    }
+    let pending;
+    try {
+      pending = fetch2(input, init);
+    } catch (cause) {
+      throw new PluginTransportError(`Plugin platform query failed before dispatch for ${operation}`, cause);
+    }
+    try {
+      return await pending;
+    } catch (cause) {
+      throw new PluginTransportError(`Plugin platform query failed after dispatch for ${operation}`, cause);
+    }
+  }
   async function dispatchMutationRequest(fetch2, input, init, operation) {
     assertMutationDispatchable(init.signal, operation);
     let pending;
@@ -4109,13 +4128,13 @@
       this.#onMutationOutcomeUnknown = options.onMutationOutcomeUnknown;
     }
     catalog(options = {}) {
-      return this.#getJSON("/_redevplugin/api/plugins/catalog", options);
+      return this.#requestQuery("/_redevplugin/api/plugins/catalog/query", {}, options);
     }
     features(options = {}) {
-      return this.#getJSON("/_redevplugin/api/plugins/features", options);
+      return this.#requestQuery("/_redevplugin/api/plugins/features/query", {}, options);
     }
     getCompatibility(options = {}) {
-      return this.#getJSON("/_redevplugin/api/plugins/platform/compatibility", options);
+      return this.#requestQuery("/_redevplugin/api/plugins/platform/compatibility/query", {}, options);
     }
     installReleaseRef(request2, options = {}) {
       return this.#requestMutation("POST", "/_redevplugin/api/plugins/install-release-ref", request2, options);
@@ -4200,37 +4219,28 @@
       return this.#requestMutation("POST", "/_redevplugin/api/plugins/runtime/refresh-enabled", {}, options);
     }
     runtimeHealth(options = {}) {
-      return this.#getJSON("/_redevplugin/api/plugins/runtime/health", options);
+      return this.#requestQuery("/_redevplugin/api/plugins/runtime/health/query", {}, options);
     }
     getSettingsSchema(pluginInstanceId, scope, options = {}) {
-      return this.#getJSON(`/_redevplugin/api/plugins/${encodeURIComponent(pluginInstanceId)}/settings/schema?scope=${encodeURIComponent(scope)}`, options);
+      return this.#requestQuery(`/_redevplugin/api/plugins/${encodeURIComponent(pluginInstanceId)}/settings/schema/query`, { scope }, options);
     }
     getSettings(pluginInstanceId, scope, options = {}) {
-      return this.#getJSON(`/_redevplugin/api/plugins/${encodeURIComponent(pluginInstanceId)}/settings?scope=${encodeURIComponent(scope)}`, options);
+      return this.#requestQuery(`/_redevplugin/api/plugins/${encodeURIComponent(pluginInstanceId)}/settings/query`, { scope }, options);
     }
     patchSettings(pluginInstanceId, request2, options = {}) {
       return this.#mutatePluginAt("PATCH", `/_redevplugin/api/plugins/${encodeURIComponent(pluginInstanceId)}/settings`, pluginInstanceId, request2, options);
     }
     listOperations(options = {}, requestOptions = {}) {
-      const params = new URLSearchParams();
-      if (options.plugin_instance_id) params.set("plugin_instance_id", options.plugin_instance_id);
-      if (options.cursor) params.set("cursor", options.cursor);
-      if (options.limit !== void 0) params.set("limit", String(options.limit));
-      const query = params.toString();
-      return this.#getJSON(`/_redevplugin/api/plugins/operations${query ? `?${query}` : ""}`, requestOptions);
+      return this.#requestQuery("/_redevplugin/api/plugins/operations/query", options, requestOptions);
     }
     getOperation(operationId, options = {}) {
-      return this.#getJSON(`/_redevplugin/api/plugins/operations/${encodeURIComponent(operationId)}`, options);
+      return this.#requestQuery(`/_redevplugin/api/plugins/operations/${encodeURIComponent(operationId)}/query`, {}, options);
     }
     cancelOperation(operationId, reason, options = {}) {
       return this.#requestMutation("POST", `/_redevplugin/api/plugins/operations/${encodeURIComponent(operationId)}/cancel`, reason ? { reason } : {}, options);
     }
     listIntents(options = {}, requestOptions = {}) {
-      const params = new URLSearchParams();
-      if (options.intent_id !== void 0) params.set("intent_id", options.intent_id);
-      if (options.plugin_instance_id !== void 0) params.set("plugin_instance_id", options.plugin_instance_id);
-      const query = params.toString();
-      return this.#getJSON(`/_redevplugin/api/plugins/intents${query ? `?${query}` : ""}`, requestOptions);
+      return this.#requestQuery("/_redevplugin/api/plugins/intents/query", options, requestOptions);
     }
     invokeIntent(request2, options = {}) {
       return this.#requestMutation("POST", "/_redevplugin/api/plugins/intents/invoke", request2, options);
@@ -4245,10 +4255,7 @@
       return this.#mutatePluginAt("POST", "/_redevplugin/api/plugins/data/import", request2.plugin_instance_id, request2, options);
     }
     listRetainedData(options = {}, requestOptions = {}) {
-      const params = new URLSearchParams();
-      if (options.plugin_instance_id) params.set("plugin_instance_id", options.plugin_instance_id);
-      const query = params.toString();
-      return this.#getJSON(`/_redevplugin/api/plugins/retained-data${query ? `?${query}` : ""}`, requestOptions);
+      return this.#requestQuery("/_redevplugin/api/plugins/retained-data/query", options, requestOptions);
     }
     deleteRetainedData(request2, options = {}) {
       return this.#requestMutation("POST", "/_redevplugin/api/plugins/retained-data/delete", request2, options);
@@ -4260,11 +4267,7 @@
       return this.#requestMutation("POST", "/_redevplugin/api/plugins/retained-data/cleanup-expired", request2, options);
     }
     listPermissions(options = {}, requestOptions = {}) {
-      const params = new URLSearchParams();
-      if (options.plugin_instance_id !== void 0) params.set("plugin_instance_id", options.plugin_instance_id);
-      if (options.active_only !== void 0) params.set("active_only", options.active_only ? "true" : "false");
-      const query = params.toString();
-      return this.#getJSON(`/_redevplugin/api/plugins/permissions${query ? `?${query}` : ""}`, requestOptions);
+      return this.#requestQuery("/_redevplugin/api/plugins/permissions/query", options, requestOptions);
     }
     grantPermission(request2, options = {}) {
       return this.#mutatePlugin("/_redevplugin/api/plugins/permissions/grant", request2, options);
@@ -4273,10 +4276,10 @@
       return this.#mutatePlugin("/_redevplugin/api/plugins/permissions/revoke", request2, options);
     }
     listSecurityPolicies(options = {}) {
-      return this.#getJSON("/_redevplugin/api/plugins/security-policies", options);
+      return this.#requestQuery("/_redevplugin/api/plugins/security-policies/query", {}, options);
     }
     getSecurityPolicy(pluginInstanceId, options = {}) {
-      return this.#getJSON(`/_redevplugin/api/plugins/security-policies/${encodeURIComponent(pluginInstanceId)}`, options);
+      return this.#requestQuery(`/_redevplugin/api/plugins/security-policies/${encodeURIComponent(pluginInstanceId)}/query`, {}, options);
     }
     putSecurityPolicy(pluginInstanceId, request2, options = {}) {
       return this.#mutatePluginAt("PUT", `/_redevplugin/api/plugins/security-policies/${encodeURIComponent(pluginInstanceId)}`, pluginInstanceId, request2, options);
@@ -4294,10 +4297,7 @@
       return this.#requestMutation("POST", "/_redevplugin/api/plugins/secrets/delete", request2, options);
     }
     listDiagnosticEvents(options = {}, requestOptions = {}) {
-      return this.#getJSON(`/_redevplugin/api/plugins/diagnostics${queryString(options)}`, requestOptions);
-    }
-    #getJSON(path, options) {
-      return this.#requestJSON("GET", path, options);
+      return this.#requestQuery("/_redevplugin/api/plugins/diagnostics/query", options, requestOptions);
     }
     #mutatePlugin(path, request2, options) {
       return this.#mutatePluginAt("POST", path, request2.plugin_instance_id, request2, options);
@@ -4328,18 +4328,21 @@
       }
       if (lifecycleErrors.length > 0) throw new PluginMutationLifecycleError(message, error, lifecycleErrors);
     }
-    async #requestJSON(method, path, options) {
-      let response;
+    async #requestQuery(path, body, options) {
+      const operation = `POST ${path}`;
+      let encodedBody;
       try {
-        response = await this.#fetch(this.#apiBaseURL + path, {
-          method,
-          headers: { "Accept": "application/json" },
-          credentials: "same-origin",
-          signal: options.signal
-        });
+        encodedBody = JSON.stringify(body);
       } catch (cause) {
-        throw new PluginTransportError(`Plugin platform request failed for ${method} ${path}`, cause);
+        throw new PluginTransportError(`Plugin platform query body serialization failed for ${operation}`, cause);
       }
+      const response = await dispatchQueryRequest(this.#fetch, this.#apiBaseURL + path, {
+        method: "POST",
+        headers: { "Accept": "application/json", "Content-Type": "application/json" },
+        body: encodedBody,
+        credentials: "same-origin",
+        signal: options.signal
+      }, operation);
       return readPlatformResponse(response);
     }
     async #requestMutation(method, path, body, options) {
@@ -4365,14 +4368,6 @@
       return readMutationPlatformResponse(response);
     }
   };
-  function queryString(values) {
-    const params = new URLSearchParams();
-    for (const [key, value] of Object.entries(values)) {
-      if (value !== void 0) params.set(key, String(value));
-    }
-    const query = params.toString();
-    return query ? `?${query}` : "";
-  }
   function surfaceTransportAPIBaseURL(value) {
     if (!value || value.startsWith("/")) return value;
     const parsed = new URL(value);
@@ -4416,8 +4411,12 @@
   var activePlugin;
   var surfaceHost;
   var surfaceScope = createPluginSurfaceScope();
-  var surfaceTransport = createReDevPluginSurfaceTransport();
-  var platformClient = new PluginPlatformClient({ surfaceScope, surfaceTransport });
+  var authenticatedFetch = (input, init) => fetch(input, {
+    ...init,
+    headers: { ...init.headers, "X-ReDevPlugin-CSRF": "examples-browser-csrf-v1" }
+  });
+  var surfaceTransport = createReDevPluginSurfaceTransport({ fetch: authenticatedFetch });
+  var platformClient = new PluginPlatformClient({ fetch: authenticatedFetch, surfaceScope, surfaceTransport });
   var surfaceSlot = PluginSurfaceSlot.create({ stage: elements.stage });
   var openSequence = 0;
   var inspectorReturnFocus;
@@ -4445,7 +4444,11 @@
   void initialize();
   async function initialize() {
     try {
-      const [plugins] = await Promise.all([request("/api/catalog"), checkHealth()]);
+      const [plugins] = await Promise.all([
+        request("/api/catalog"),
+        checkHealth(),
+        platformClient.catalog()
+      ]);
       catalog = plugins;
       renderNavigation();
       const first = catalog[0];

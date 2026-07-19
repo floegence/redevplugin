@@ -4,12 +4,13 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
 func TestFeaturesRouteReturnsConfiguredModules(t *testing.T) {
 	handler := mustNewHandler(t, newHTTPTestHost(t), allowHTTPTestGuard())
-	req := httptest.NewRequest(http.MethodGet, "/_redevplugin/api/plugins/features", nil)
+	req := newJSONHTTPRequest(http.MethodPost, "/_redevplugin/api/plugins/features/query", strings.NewReader(`{}`))
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {

@@ -28,7 +28,7 @@ func TestStableErrorCodeCatalogsMatchContracts(t *testing.T) {
 	assertStringSlicesEqual(t, schemaEnum(t, defs, "bridge_error_code"), bridgeCodes, "error-codes schema bridge_error_code")
 	assertStringSlicesEqual(t, schemaEnum(t, defs, "typescript_client_error_code"), clientCodes, "error-codes schema typescript_client_error_code")
 
-	openAPIRaw, err := os.ReadFile(filepath.Join(root, "spec", "openapi", "plugin-platform-v6.yaml"))
+	openAPIRaw, err := os.ReadFile(filepath.Join(root, "spec", "openapi", "plugin-platform-v7.yaml"))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -1503,10 +1503,14 @@
   bridge.onAction("remove-location", (event) => void removeLocation(event.value));
   bridge.onAction("retry-weather", () => void retryWeather());
   bridge.onAction("dismiss-results", () => dismissResults());
-  bridge.onLifecycle((event) => {
-    if (event.type === "dispose") disposed = true;
+  var initialization = initialize();
+  bridge.onLifecycle(async (event) => {
+    if (event.type === "dispose") {
+      disposed = true;
+      await initialization.catch(() => void 0);
+    }
   });
-  void initialize().catch(reportUnhandledFailure);
+  void initialization.catch(reportUnhandledFailure);
   async function initialize() {
     await bridge.ready();
     await run(async () => {

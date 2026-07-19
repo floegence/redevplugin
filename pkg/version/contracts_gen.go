@@ -4,7 +4,7 @@ package version
 
 const (
 	PluginUIProtocolVersion                  = "plugin-ui-v5"
-	PluginHostProtocolVersion                = "plugin-host-v4"
+	PluginHostProtocolVersion                = "plugin-host-v5"
 	RustIPCVersion                           = "rust-ipc-v4"
 	WASMABIVersion                           = "redevplugin-wasm-worker-v2"
 	ManifestSchemaVersion                    = "manifest-v5"
@@ -19,9 +19,9 @@ const (
 	TargetClassifierVersion                  = "target-classifier-v2"
 	NetworkGrantSchemaVersion                = "network-grant-v2"
 	ResourceScopeSchemaVersion               = "resource-scope-v1"
-	PluginPlatformOpenAPIVersion             = "plugin-platform-v6"
-	CompatibilityManifestVersion             = "redevplugin.compatibility.v6"
-	CompatibilitySchemaVersion               = "compatibility-manifest-v6"
+	PluginPlatformOpenAPIVersion             = "plugin-platform-v7"
+	CompatibilityManifestVersion             = "redevplugin.compatibility.v7"
+	CompatibilitySchemaVersion               = "compatibility-manifest-v7"
 	ReleaseManifestSchemaVersion             = "release-manifest-v4"
 	WorkerInvocationSchemaVersion            = "worker-invocation-v3"
 	HostCapabilityContractSchemaVersion      = "host-capability-contract-v1"
@@ -31,17 +31,17 @@ const (
 	HostCapabilitySignatureSchemaVersion     = "host-capability-signature-v1"
 	HostCapabilityNoticesSchemaVersion       = "host-capability-notices-v1"
 	ErrorCodesSchemaVersion                  = "error-codes-v4"
-	PerformanceContractVersion               = "performance-contract-v1"
-	PerformanceEvidenceSchemaVersion         = "performance-evidence-v1"
+	PerformanceContractVersion               = "performance-contract-v2"
+	PerformanceEvidenceSchemaVersion         = "performance-evidence-v2"
 	ContractRegistryVersion                  = "contract-registry-v1"
 )
 
 var generatedContractArtifacts = []ContractArtifact{
 	{
 		ID:      "plugin-platform-openapi",
-		Path:    "spec/openapi/plugin-platform-v6.yaml",
-		Version: "plugin-platform-v6",
-		SHA256:  "7cfcf789dc6a414eb9e3a2db3fee79432c1668ad778adcff70401a0640780378",
+		Path:    "spec/openapi/plugin-platform-v7.yaml",
+		Version: "plugin-platform-v7",
+		SHA256:  "b66a2c586088aa18c9cfcd5671a8778740bbe0a85614e3aed277d5606e884d34",
 	},
 	{
 		ID:      "manifest-schema",
@@ -99,9 +99,9 @@ var generatedContractArtifacts = []ContractArtifact{
 	},
 	{
 		ID:      "compatibility-manifest-schema",
-		Path:    "spec/plugin/compatibility-manifest-v6.schema.json",
-		Version: "compatibility-manifest-v6",
-		SHA256:  "4f9e2a42c5a4893afad4027a5f29e4fc37843f450451dc5db26ac7919166a0db",
+		Path:    "spec/plugin/compatibility-manifest-v7.schema.json",
+		Version: "compatibility-manifest-v7",
+		SHA256:  "b32a605b848383e99e7f465898ab15b0417740bc97cced76b65c4d7c65c5652e",
 	},
 	{
 		ID:      "release-manifest-schema",
@@ -159,15 +159,15 @@ var generatedContractArtifacts = []ContractArtifact{
 	},
 	{
 		ID:      "performance-contract",
-		Path:    "spec/plugin/performance-contract-v1.json",
-		Version: "performance-contract-v1",
-		SHA256:  "93f54632e327c62a83947b30fd073ebf7640293ca9953872be1c22f2642e68d8",
+		Path:    "spec/plugin/performance-contract-v2.json",
+		Version: "performance-contract-v2",
+		SHA256:  "ffbad3bdf3f88a77aa70bee4559f0da0dc7b4b5bcd1e89b8323de5e466683520",
 	},
 	{
 		ID:      "performance-evidence-schema",
-		Path:    "spec/plugin/performance-evidence-v1.schema.json",
-		Version: "performance-evidence-v1",
-		SHA256:  "99bd635c97886f382090d4d8cac13ac499e81c7b236338b53a96dc94e9063a59",
+		Path:    "spec/plugin/performance-evidence-v2.schema.json",
+		Version: "performance-evidence-v2",
+		SHA256:  "c774a3e1a6a60cb6ea00e7cfc1b7fc6da94687b7982715da2578ed175ee201d0",
 	},
 	{
 		ID:      "rust-ipc-schema",
@@ -203,6 +203,6 @@ var generatedContractArtifacts = []ContractArtifact{
 		ID:      "contract-registry",
 		Path:    "spec/plugin/contract-registry-v1.json",
 		Version: "contract-registry-v1",
-		SHA256:  "86cc5ccce02ef00b6cf8b44af07ad3a82867ee039d8d82ffc704194ee2c62547",
+		SHA256:  "3aee6f4673b7e2f2a53197a7ade3bcc507ae89cf626ed46fb5b980626eca374f",
 	},
 }

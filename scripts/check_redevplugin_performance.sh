@@ -74,6 +74,7 @@ mkdir -p "$(dirname -- "$OUTPUT")"
 TMP_DIR=$(mktemp -d "${TMPDIR:-/tmp}/redevplugin-performance.XXXXXX")
 trap 'rm -rf "$TMP_DIR"' EXIT
 MEASUREMENTS="$TMP_DIR/measurements.ndjson"
+COMPARISONS="$TMP_DIR/comparisons.ndjson"
 COMPATIBILITY="$TMP_DIR/compatibility.json"
 
 npm run contracts:check
@@ -107,6 +108,10 @@ GOWORK=off REDEVPLUGIN_PERFORMANCE_MEASUREMENTS="$MEASUREMENTS" REDEVPLUGIN_PERF
   go test ./pkg/operation -run '^TestPerformance' -count=1
 GOWORK=off REDEVPLUGIN_PERFORMANCE_MEASUREMENTS="$MEASUREMENTS" REDEVPLUGIN_PERFORMANCE_GATE="$MODE" \
   go test ./pkg/stream -run '^TestPerformance' -count=1
+node scripts/measure_http_route_authorization_performance.mjs \
+  --output "$MEASUREMENTS" \
+  --comparison-output "$COMPARISONS" \
+  --gate "$MODE"
 node scripts/measure_redevplugin_ui_performance.mjs --output "$MEASUREMENTS" --gate "$MODE"
 node scripts/measure_redevplugin_renderer_performance.mjs --output "$MEASUREMENTS" --gate "$MODE"
 GOWORK=off go run ./cmd/redevplugin version >"$COMPATIBILITY"
@@ -114,6 +119,7 @@ GOWORK=off go run ./cmd/redevplugin version >"$COMPATIBILITY"
 ARGS=(
   --output "$OUTPUT"
   --measurements "$MEASUREMENTS"
+  --comparisons "$COMPARISONS"
   --compatibility "$COMPATIBILITY"
   --version "$VERSION"
   --source-commit "$SOURCE_COMMIT"

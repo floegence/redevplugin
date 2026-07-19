@@ -4,6 +4,7 @@ import {
   createReDevPluginSurfaceTransport,
   createPluginSurfaceScope,
   type PluginConfirmationIntent,
+  type FetchLike,
   type PluginSurfaceHost,
 } from "../../packages/redevplugin-ui/src/trusted-parent.js";
 
@@ -54,8 +55,12 @@ let catalog: CatalogPlugin[] = [];
 let activePlugin: CatalogPlugin | undefined;
 let surfaceHost: PluginSurfaceHost | undefined;
 const surfaceScope = createPluginSurfaceScope();
-const surfaceTransport = createReDevPluginSurfaceTransport();
-const platformClient = new PluginPlatformClient({ surfaceScope, surfaceTransport });
+const authenticatedFetch: FetchLike = (input, init) => fetch(input, {
+  ...init,
+  headers: { ...init.headers, "X-ReDevPlugin-CSRF": "examples-browser-csrf-v1" },
+});
+const surfaceTransport = createReDevPluginSurfaceTransport({ fetch: authenticatedFetch });
+const platformClient = new PluginPlatformClient({ fetch: authenticatedFetch, surfaceScope, surfaceTransport });
 const surfaceSlot = PluginSurfaceSlot.create({ stage: elements.stage });
 let openSequence = 0;
 let inspectorReturnFocus: HTMLButtonElement | undefined;
@@ -85,7 +90,11 @@ void initialize();
 
 async function initialize(): Promise<void> {
   try {
-    const [plugins] = await Promise.all([request<CatalogPlugin[]>("/api/catalog"), checkHealth()]);
+    const [plugins] = await Promise.all([
+      request<CatalogPlugin[]>("/api/catalog"),
+      checkHealth(),
+      platformClient.catalog(),
+    ]);
     catalog = plugins;
     renderNavigation();
     const first = catalog[0];

@@ -50,3 +50,42 @@ func TestEnforceThresholdsRequiresExplicitEvidenceRun(t *testing.T) {
 		t.Fatal("fast evidence run enforced release performance thresholds")
 	}
 }
+
+func TestRouteAuthorizationProfileRequiresStableRequestSamples(t *testing.T) {
+	profile := RouteAuthorizationProfile{
+		SchemaVersion: "redevplugin.route_authorization_performance.v1",
+		Variant:       "v0.6.0",
+		Commit:        "0123456789abcdef0123456789abcdef01234567",
+		Environment: RouteAuthorizationEnvironment{
+			OS:          "linux",
+			Arch:        "amd64",
+			LogicalCPUs: 8,
+			GOMAXPROCS:  8,
+			GoVersion:   "go1.26.0",
+		},
+		WarmupCount:       RouteAuthorizationWarmupCount,
+		RequestsPerSample: RouteAuthorizationRequestsPerSample,
+		Measurements: []RouteAuthorizationMeasurement{
+			{Concurrency: 1, BatchCount: 1000, SampleCount: 32000, MedianNanoseconds: 10, P95Nanoseconds: 12, P99Nanoseconds: 14},
+			{Concurrency: 100, BatchCount: 64, SampleCount: 204800, MedianNanoseconds: 10, P95Nanoseconds: 12, P99Nanoseconds: 14},
+			{Concurrency: 1000, BatchCount: 64, SampleCount: 2048000, MedianNanoseconds: 10, P95Nanoseconds: 12, P99Nanoseconds: 14},
+		},
+	}
+	if err := ValidateRouteAuthorizationProfile(profile); err != nil {
+		t.Fatalf("valid route authorization profile was rejected: %v", err)
+	}
+	profile.Measurements[0].BatchCount = RouteAuthorizationMinBatchCount
+	if err := ValidateRouteAuthorizationProfile(profile); err == nil {
+		t.Fatal("route authorization profile accepted an unstable c1 sample count")
+	}
+}
+
+func TestRouteAuthorizationPercentileUsesRequestSamples(t *testing.T) {
+	values := make([]time.Duration, 1000)
+	for index := range values {
+		values[index] = time.Duration(index+1) * time.Nanosecond
+	}
+	if got := routeAuthorizationPercentile(values, 99); got != 990*time.Nanosecond {
+		t.Fatalf("routeAuthorizationPercentile(..., 99) = %s, want 990ns", got)
+	}
+}

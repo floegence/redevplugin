@@ -7,6 +7,10 @@ import { basename, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { gzipSync } from "node:zlib";
 
+import {
+  preparePublishedReleasePerformanceFixture,
+  rebindPublishedReleasePerformanceSourceCommit,
+} from "./published_release_verifier_fixture.mjs";
 import { runtimeTargets } from "./runtime_targets.mjs";
 
 const [rawSourceBundle, version, sourceCommit] = process.argv.slice(2);
@@ -35,6 +39,7 @@ try {
   cpSync(join(root, "scripts", "verify_redevplugin_release_bundle.mjs"), bundleVerifier);
   cpSync(join(root, "scripts", "archive_contract.mjs"), join(verifierScripts, "archive_contract.mjs"));
   cpSync(join(root, "scripts", "performance_contract.mjs"), join(verifierScripts, "performance_contract.mjs"));
+  cpSync(join(root, "scripts", "route_authorization_comparison.mjs"), join(verifierScripts, "route_authorization_comparison.mjs"));
   cpSync(join(root, "scripts", "rfc3339.mjs"), join(verifierScripts, "rfc3339.mjs"));
   cpSync(join(root, "scripts", "runtime_targets.mjs"), join(verifierScripts, "runtime_targets.mjs"));
   const bundles = [];
@@ -260,8 +265,8 @@ try {
     : "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
   const performanceEvidencePath = join(provenanceNegative.bundleRoot, "performance-evidence.json");
   const performanceEvidence = JSON.parse(readFileSync(performanceEvidencePath, "utf8"));
-  performanceEvidence.source_commit = alternateSourceCommit;
-  writeFileSync(performanceEvidencePath, JSON.stringify(performanceEvidence, null, 2) + "\n");
+  const reboundPerformanceEvidence = rebindPublishedReleasePerformanceSourceCommit(performanceEvidence, alternateSourceCommit);
+  writeFileSync(performanceEvidencePath, JSON.stringify(reboundPerformanceEvidence, null, 2) + "\n");
   refreshReleaseManifest(provenanceNegative.bundleRoot, provenanceNegative.target.platformTarget);
   const refreshedProvenanceManifest = JSON.parse(readFileSync(provenanceManifestPath, "utf8"));
   refreshedProvenanceManifest.source_commit = alternateSourceCommit;
@@ -287,13 +292,8 @@ function prepareStructuralFixture(bundleRoot, target) {
 function prepareReleasePerformanceFixture(bundleRoot) {
   const path = join(bundleRoot, "performance-evidence.json");
   const evidence = JSON.parse(readFileSync(path, "utf8"));
-  for (const scenario of evidence.scenarios) {
-    scenario.gate = "release";
-    for (const metric of scenario.metrics) {
-      metric.observed = metric.comparator === "eq" ? metric.limit : Math.min(metric.observed, metric.limit);
-    }
-  }
-  writeFileSync(path, JSON.stringify(evidence, null, 2) + "\n");
+  const prepared = preparePublishedReleasePerformanceFixture(evidence);
+  writeFileSync(path, JSON.stringify(prepared, null, 2) + "\n");
 }
 
 function archiveBundle(bundle) {

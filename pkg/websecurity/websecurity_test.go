@@ -42,4 +42,7 @@ func TestSecurityPolicyTypesRejectUnknownValues(t *testing.T) {
 	if !CSRFPolicyNotRequired.Valid() || !CSRFPolicyRequired.Valid() || CSRFPolicy("optional").Valid() {
 		t.Fatal("csrf policy validity is not closed")
 	}
+	if !RouteEffectQuery.Valid() || !RouteEffectMutation.Valid() || RouteEffect("read").Valid() {
+		t.Fatal("route effect validity is not closed")
+	}
 }

@@ -985,7 +985,7 @@ func (stressWebSecurityGuard) ValidateCSRF(_ *http.Request, _ sessionctx.Context
 	return nil
 }
 
-func (stressWebSecurityGuard) AuthorizeRoute(_ *http.Request, _ sessionctx.Context, action websecurity.RouteAction) error {
+func (stressWebSecurityGuard) AuthorizeRoute(_ *http.Request, _ sessionctx.Context, action websecurity.RouteAction, _ websecurity.RouteEffect) error {
 	if !action.Valid() {
 		return websecurity.ErrRouteActionInvalid
 	}

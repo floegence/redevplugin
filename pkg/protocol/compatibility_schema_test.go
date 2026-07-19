@@ -10,7 +10,7 @@ import (
 
 func TestCompatibilityManifestSchemaDefinesReleasedMatrix(t *testing.T) {
 	root := repoRoot(t)
-	raw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", "compatibility-manifest-v6.schema.json"))
+	raw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", "compatibility-manifest-v7.schema.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -21,7 +21,7 @@ func TestCompatibilityManifestSchemaDefinesReleasedMatrix(t *testing.T) {
 
 	properties := requireNestedObject(t, schema, "properties")
 	schemaVersion := requireNestedObject(t, properties, "schema_version")
-	if got := schemaVersion["const"]; got != "redevplugin.compatibility.v6" {
+	if got := schemaVersion["const"]; got != "redevplugin.compatibility.v7" {
 		t.Fatalf("schema_version const = %#v", got)
 	}
 
@@ -29,7 +29,7 @@ func TestCompatibilityManifestSchemaDefinesReleasedMatrix(t *testing.T) {
 	matrixProps := requireNestedObject(t, matrix, "properties")
 	for name, want := range map[string]string{
 		"plugin_ui_protocol_version":              "plugin-ui-v5",
-		"plugin_host_protocol_version":            "plugin-host-v4",
+		"plugin_host_protocol_version":            "plugin-host-v5",
 		"rust_ipc_version":                        "rust-ipc-v4",
 		"wasm_abi_version":                        "redevplugin-wasm-worker-v2",
 		"manifest_schema_version":                 "manifest-v5",
@@ -44,13 +44,13 @@ func TestCompatibilityManifestSchemaDefinesReleasedMatrix(t *testing.T) {
 		"target_classifier_version":               "target-classifier-v2",
 		"network_grant_schema_version":            "network-grant-v2",
 		"resource_scope_schema_version":           "resource-scope-v1",
-		"plugin_platform_openapi_version":         "plugin-platform-v6",
-		"compatibility_schema_version":            "compatibility-manifest-v6",
+		"plugin_platform_openapi_version":         "plugin-platform-v7",
+		"compatibility_schema_version":            "compatibility-manifest-v7",
 		"release_manifest_schema_version":         "release-manifest-v4",
 		"worker_invocation_schema_version":        "worker-invocation-v3",
 		"error_codes_schema_version":              "error-codes-v4",
-		"performance_contract_version":            "performance-contract-v1",
-		"performance_evidence_schema_version":     "performance-evidence-v1",
+		"performance_contract_version":            "performance-contract-v2",
+		"performance_evidence_schema_version":     "performance-evidence-v2",
 		"contract_registry_version":               "contract-registry-v1",
 	} {
 		property := requireNestedObject(t, matrixProps, name)

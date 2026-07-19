@@ -182,13 +182,13 @@ test("platform client reads compatibility manifest through host API", async () =
   fetch.push({
     ok: true,
     data: {
-      schema_version: "redevplugin.compatibility.v6",
+      schema_version: "redevplugin.compatibility.v7",
       matrix: {
         redevplugin_go_version: "0.0.0-dev",
         redevplugin_ui_version: "0.0.0-dev",
         redevplugin_runtime_version: "0.0.0-dev",
         plugin_ui_protocol_version: "plugin-ui-v5",
-        plugin_host_protocol_version: "plugin-host-v4",
+        plugin_host_protocol_version: "plugin-host-v5",
         rust_ipc_version: "rust-ipc-v4",
         wasm_abi_version: "redevplugin-wasm-worker-v2",
         manifest_schema_version: "manifest-v5",
@@ -203,8 +203,8 @@ test("platform client reads compatibility manifest through host API", async () =
         target_classifier_version: "target-classifier-v2",
         network_grant_schema_version: "network-grant-v2",
         resource_scope_schema_version: "resource-scope-v1",
-        plugin_platform_openapi_version: "plugin-platform-v6",
-        compatibility_schema_version: "compatibility-manifest-v6",
+        plugin_platform_openapi_version: "plugin-platform-v7",
+        compatibility_schema_version: "compatibility-manifest-v7",
         release_manifest_schema_version: "release-manifest-v4",
         worker_invocation_schema_version: "worker-invocation-v3",
         host_capability_contract_schema_version: "host-capability-contract-v1",
@@ -214,14 +214,14 @@ test("platform client reads compatibility manifest through host API", async () =
         host_capability_signature_schema_version: "host-capability-signature-v1",
         host_capability_notices_schema_version: "host-capability-notices-v1",
         error_codes_schema_version: "error-codes-v4",
-        performance_evidence_schema_version: "performance-evidence-v1",
+        performance_evidence_schema_version: "performance-evidence-v2",
         contract_registry_version: "contract-registry-v1",
       },
       contracts: [
         {
           id: "plugin-platform-openapi",
-          path: "spec/openapi/plugin-platform-v6.yaml",
-          version: "plugin-platform-v6",
+          path: "spec/openapi/plugin-platform-v7.yaml",
+          version: "plugin-platform-v7",
           sha256: "sha256-openapi",
         },
         {
@@ -240,8 +240,8 @@ test("platform client reads compatibility manifest through host API", async () =
 
   const compatibility = await client.getCompatibility();
 
-  assert.equal(compatibility.schema_version, "redevplugin.compatibility.v6");
-  assert.equal(compatibility.matrix.plugin_platform_openapi_version, "plugin-platform-v6");
+  assert.equal(compatibility.schema_version, "redevplugin.compatibility.v7");
+  assert.equal(compatibility.matrix.plugin_platform_openapi_version, "plugin-platform-v7");
   assert.equal(compatibility.matrix.release_metadata_schema_version, "release-metadata-v5");
   assert.equal(compatibility.matrix.source_policy_schema_version, "source-policy-v1");
   assert.equal(compatibility.matrix.source_revocations_schema_version, "source-revocations-v1");
@@ -255,11 +255,11 @@ test("platform client reads compatibility manifest through host API", async () =
   assert.deepEqual(compatibility.contracts.map((contract) => contract.id), ["plugin-platform-openapi", "rust-ipc-schema"]);
   assert.equal(compatibility.contracts[0]?.sha256, "sha256-openapi");
   assert.equal(fetch.calls.length, 1);
-  assert.equal(fetch.calls[0]?.input, "https://host.example/_redevplugin/api/plugins/platform/compatibility");
-  assert.equal(fetch.calls[0]?.init.method, "GET");
-  assert.equal(fetch.calls[0]?.init.body, undefined);
+  assert.equal(fetch.calls[0]?.input, "https://host.example/_redevplugin/api/plugins/platform/compatibility/query");
+  assert.equal(fetch.calls[0]?.init.method, "POST");
+  assert.deepEqual(JSON.parse(fetch.calls[0]?.init.body ?? ""), {});
   assert.equal(fetch.calls[0]?.init.headers["Accept"], "application/json");
-  assert.equal(fetch.calls[0]?.init.headers["Content-Type"], undefined);
+  assert.equal(fetch.calls[0]?.init.headers["Content-Type"], "application/json");
   assert.equal(fetch.calls[0]?.init.headers["X-ReDevPlugin-Owner-Session-Hash"], undefined);
 });
 
@@ -276,10 +276,120 @@ test("platform client forwards per-call abort signals without changing absolute 
   await client.catalog({ signal: controller.signal });
   await client.enablePlugin({ plugin_instance_id: "plugin_instance_1", expected_management_revision: 3 }, { signal: controller.signal });
 
-  assert.equal(fetch.calls[0]?.input, "https://host.example/plugin-api/_redevplugin/api/plugins/catalog");
+  assert.equal(fetch.calls[0]?.input, "https://host.example/plugin-api/_redevplugin/api/plugins/catalog/query");
   assert.equal(fetch.calls[1]?.input, "https://host.example/plugin-api/_redevplugin/api/plugins/enable");
   assert.equal(fetch.calls[0]?.init.signal, controller.signal);
   assert.equal(fetch.calls[1]?.init.signal, controller.signal);
+});
+
+test("platform client sends reads through closed POST query bodies", async () => {
+  const fetch = new FakeFetch();
+  fetch.push({ ok: true, data: { plugins: [] } });
+  fetch.push({ ok: true, data: ["release"] });
+  fetch.push({ ok: true, data: { operations: [] } });
+  fetch.push({ ok: true, data: { operation_id: "operation_1" } });
+  fetch.push({ ok: true, data: {
+    plugin_instance_id: "plugin_instance_1",
+    scope: "user",
+    schema_version: 1,
+    values_revision: 1,
+    values: {},
+    secret_metadata: [],
+  } });
+  const client = new PluginPlatformClient({ fetch: fetch.fetch });
+  const controller = new AbortController();
+
+  await client.catalog();
+  await client.features({ signal: controller.signal });
+  await client.listOperations({ plugin_instance_id: "plugin_instance_1", limit: 25 });
+  await client.getOperation("operation/1", { signal: controller.signal });
+  await client.getSettings("plugin instance/1", "user");
+
+  assert.deepEqual(fetch.calls.map((call) => ({
+    input: call.input,
+    method: call.init.method,
+    contentType: call.init.headers["Content-Type"],
+    body: JSON.parse(call.init.body ?? "null"),
+  })), [
+    {
+      input: "/_redevplugin/api/plugins/catalog/query",
+      method: "POST",
+      contentType: "application/json",
+      body: {},
+    },
+    {
+      input: "/_redevplugin/api/plugins/features/query",
+      method: "POST",
+      contentType: "application/json",
+      body: {},
+    },
+    {
+      input: "/_redevplugin/api/plugins/operations/query",
+      method: "POST",
+      contentType: "application/json",
+      body: { plugin_instance_id: "plugin_instance_1", limit: 25 },
+    },
+    {
+      input: "/_redevplugin/api/plugins/operations/operation%2F1/query",
+      method: "POST",
+      contentType: "application/json",
+      body: {},
+    },
+    {
+      input: "/_redevplugin/api/plugins/plugin%20instance%2F1/settings/query",
+      method: "POST",
+      contentType: "application/json",
+      body: { scope: "user" },
+    },
+  ]);
+  assert.equal(fetch.calls[1]?.init.signal, controller.signal);
+  assert.equal(fetch.calls[3]?.init.signal, controller.signal);
+});
+
+test("pre-aborted platform queries do not dispatch or report mutation outcome", async () => {
+  const calls: FetchCall[] = [];
+  const fetch: FetchLike = async (input, init) => {
+    calls.push({ input, init });
+    throw init.signal?.reason ?? new Error("aborted");
+  };
+  const controller = new AbortController();
+  controller.abort("cancel query");
+  const client = new PluginPlatformClient({ fetch });
+
+  await assert.rejects(
+    client.catalog({ signal: controller.signal }),
+    (error) => error instanceof PluginTransportError && error.mutationOutcome === undefined,
+  );
+  assert.equal(calls.length, 0);
+});
+
+test("in-flight platform query abort remains safe and preserves surface scope", async () => {
+  const calls: FetchCall[] = [];
+  const fetch: FetchLike = (input, init) => new Promise((_resolve, reject) => {
+    calls.push({ input, init });
+    init.signal?.addEventListener("abort", () => reject(init.signal?.reason), { once: true });
+  });
+  const scope = createPluginSurfaceScope();
+  let disposed = 0;
+  let unknownOutcomes = 0;
+  const unregister = registerPluginSurface(scope, "plugin_instance_1", () => { disposed += 1; });
+  const client = new PluginPlatformClient({
+    fetch,
+    surfaceScope: scope,
+    onMutationOutcomeUnknown: () => { unknownOutcomes += 1; },
+  });
+  const controller = new AbortController();
+  const pending = client.catalog({ signal: controller.signal });
+  controller.abort("cancel in-flight query");
+
+  await assert.rejects(
+    pending,
+    (error) => error instanceof PluginTransportError && error.mutationOutcome === undefined,
+  );
+  assert.equal(calls.length, 1);
+  assert.equal(disposed, 0);
+  assert.equal(unknownOutcomes, 0);
+  unregister();
 });
 
 test("platform client reads and patches plugin settings through host API", async () => {
@@ -333,13 +443,15 @@ test("platform client reads and patches plugin settings through host API", async
   assert.equal(schema.fields[0]?.key, "default_engine");
   assert.equal(snapshot.scope, "environment");
   assert.equal(patched.values.default_engine, "podman");
-  assert.equal(fetch.calls[0]?.input, "https://host.example/_redevplugin/api/plugins/plugin%20instance%2F1/settings/schema?scope=user");
-  assert.equal(fetch.calls[0]?.init.method, "GET");
+  assert.equal(fetch.calls[0]?.input, "https://host.example/_redevplugin/api/plugins/plugin%20instance%2F1/settings/schema/query");
+  assert.equal(fetch.calls[0]?.init.method, "POST");
   assert.equal(fetch.calls[0]?.init.headers["Accept"], "application/json");
-  assert.equal(fetch.calls[0]?.init.headers["Content-Type"], undefined);
+  assert.equal(fetch.calls[0]?.init.headers["Content-Type"], "application/json");
+  assert.deepEqual(JSON.parse(fetch.calls[0]?.init.body ?? ""), { scope: "user" });
   assert.equal(fetch.calls[0]?.init.headers["X-ReDevPlugin-Owner-Session-Hash"], undefined);
-  assert.equal(fetch.calls[1]?.input, "https://host.example/_redevplugin/api/plugins/plugin%20instance%2F1/settings?scope=environment");
-  assert.equal(fetch.calls[1]?.init.method, "GET");
+  assert.equal(fetch.calls[1]?.input, "https://host.example/_redevplugin/api/plugins/plugin%20instance%2F1/settings/query");
+  assert.equal(fetch.calls[1]?.init.method, "POST");
+  assert.deepEqual(JSON.parse(fetch.calls[1]?.init.body ?? ""), { scope: "environment" });
   assert.equal(fetch.calls[2]?.input, "https://host.example/_redevplugin/api/plugins/plugin%20instance%2F1/settings");
   assert.equal(fetch.calls[2]?.init.method, "PATCH");
   assert.equal(fetch.calls[2]?.init.headers["Content-Type"], "application/json");
@@ -381,12 +493,14 @@ test("platform client manages plugin lifecycle routes", async () => {
   assert.equal(enabled.enable_state, "enabled");
   assert.equal(disabled.disabled_reason, "admin");
   assert.equal(uninstalled.enable_state, "disabled");
-  assert.equal(fetch.calls[0]?.input, "/_redevplugin/api/plugins/local-imports?plugin_instance_id=plugin_instance_1");
+  assert.equal(fetch.calls[0]?.input, "/_redevplugin/api/plugins/plugin_instance_1/local-import");
   assert.equal(fetch.calls[0]?.init.body instanceof Blob, true);
   assert.equal(fetch.calls[0]?.init.signal, uploadController.signal);
   assert.equal(fetch.calls[0]?.init.headers["Content-Type"], "application/vnd.redevplugin.package+zip");
-  assert.equal(fetch.calls[1]?.input, "/_redevplugin/api/plugins/plugin_instance_1/local-import?expected_management_revision=1");
+  assert.equal(fetch.calls[0]?.init.headers["X-ReDevPlugin-Expected-Management-Revision"], undefined);
+  assert.equal(fetch.calls[1]?.input, "/_redevplugin/api/plugins/plugin_instance_1/local-import");
   assert.equal(fetch.calls[1]?.init.body instanceof Blob, true);
+  assert.equal(fetch.calls[1]?.init.headers["X-ReDevPlugin-Expected-Management-Revision"], "1");
   assert.equal(fetch.calls[2]?.input, "/_redevplugin/api/plugins/downgrade");
   assert.deepEqual(JSON.parse(fetch.calls[2]?.init.body ?? ""), { plugin_instance_id: "plugin_instance_1", version: "1.0.0", expected_management_revision: 2 });
   assert.equal(fetch.calls[3]?.input, "/_redevplugin/api/plugins/enable");
@@ -407,11 +521,20 @@ test("local import update canonicalizes identity for transport and teardown", as
 
   await client.updateLocalPackage("  plugin_instance_1  ", 7, new Blob(["pkg"]));
 
-  assert.equal(fetch.calls[0]?.input, "/_redevplugin/api/plugins/plugin_instance_1/local-import?expected_management_revision=7");
+  assert.equal(fetch.calls[0]?.input, "/_redevplugin/api/plugins/plugin_instance_1/local-import");
+  assert.equal(fetch.calls[0]?.init.headers["X-ReDevPlugin-Expected-Management-Revision"], "7");
   assert.equal(disposed, 1);
   await assert.rejects(
     client.updateLocalPackage("   ", 7, new Blob(["pkg"])),
     (error: unknown) => error instanceof TypeError && error.message === "pluginInstanceId is required",
+  );
+  await assert.rejects(
+    client.updateLocalPackage("plugin_instance_1", 0, new Blob(["pkg"])),
+    (error: unknown) => error instanceof TypeError && error.message === "expectedManagementRevision must be a positive safe integer",
+  );
+  await assert.rejects(
+    client.updateLocalPackage("plugin_instance_1", Number.MAX_SAFE_INTEGER + 1, new Blob(["pkg"])),
+    (error: unknown) => error instanceof TypeError && error.message === "expectedManagementRevision must be a positive safe integer",
   );
   assert.equal(fetch.calls.length, 1);
 
@@ -702,8 +825,9 @@ test("platform client manages runtime lifecycle routes", async () => {
   assert.equal(stopped.stopped, true);
   assert.equal(fetch.calls[0]?.input, "/_redevplugin/api/plugins/runtime/start");
   assert.deepEqual(JSON.parse(fetch.calls[0]?.init.body ?? ""), { target: { os: "darwin", arch: "arm64" } });
-  assert.equal(fetch.calls[1]?.input, "/_redevplugin/api/plugins/runtime/health");
-  assert.equal(fetch.calls[1]?.init.method, "GET");
+  assert.equal(fetch.calls[1]?.input, "/_redevplugin/api/plugins/runtime/health/query");
+  assert.equal(fetch.calls[1]?.init.method, "POST");
+  assert.deepEqual(JSON.parse(fetch.calls[1]?.init.body ?? ""), {});
   assert.equal(fetch.calls[2]?.input, "/_redevplugin/api/plugins/runtime/refresh-enabled");
   assert.deepEqual(JSON.parse(fetch.calls[2]?.init.body ?? ""), {});
   assert.equal(fetch.calls[3]?.input, "/_redevplugin/api/plugins/runtime/stop");
@@ -787,7 +911,8 @@ test("platform client covers operation and data lifecycle routes", async () => {
   assert.equal(deleted.revision, 3);
   assert.equal(bound.plugin_instance_id, "plugin_instance_2");
   assert.equal(cleanup.deleted[0]?.generation_id, "generation_3");
-  assert.equal(fetch.calls[0]?.input, "/_redevplugin/api/plugins/operations?plugin_instance_id=plugin_instance_1&cursor=cursor_1&limit=25");
+  assert.equal(fetch.calls[0]?.input, "/_redevplugin/api/plugins/operations/query");
+  assert.deepEqual(JSON.parse(fetch.calls[0]?.init.body ?? ""), { plugin_instance_id: "plugin_instance_1", cursor: "cursor_1", limit: 25 });
   assert.equal(fetch.calls[1]?.input, "/_redevplugin/api/plugins/operations/op%201/cancel");
   assert.deepEqual(JSON.parse(fetch.calls[1]?.init.body ?? ""), { reason: "user canceled" });
   assert.equal(fetch.calls[2]?.input, "/_redevplugin/api/plugins/data/export");
@@ -803,7 +928,8 @@ test("platform client covers operation and data lifecycle routes", async () => {
     bundle_ref: "bundle_ref_1",
     expected_management_revision: 7,
   });
-  assert.equal(fetch.calls[5]?.input, "/_redevplugin/api/plugins/retained-data?plugin_instance_id=plugin_instance_1");
+  assert.equal(fetch.calls[5]?.input, "/_redevplugin/api/plugins/retained-data/query");
+  assert.deepEqual(JSON.parse(fetch.calls[5]?.init.body ?? ""), { plugin_instance_id: "plugin_instance_1" });
   assert.equal(fetch.calls[6]?.input, "/_redevplugin/api/plugins/retained-data/delete");
   assert.deepEqual(JSON.parse(fetch.calls[6]?.init.body ?? ""), { plugin_instance_id: "plugin_instance_1", expected_binding_revision: 3 });
   assert.equal(fetch.calls[7]?.input, "/_redevplugin/api/plugins/retained-data/bind");
@@ -849,8 +975,9 @@ test("platform client lists and invokes host-mediated intents", async () => {
 
   assert.equal(listed.intents?.[0]?.method, "echo.ping");
   assert.equal(result.data?.ok, true);
-  assert.equal(fetch.calls[0]?.input, "/_redevplugin/api/plugins/intents?intent_id=example.echo&plugin_instance_id=plugin_instance_1");
-  assert.equal(fetch.calls[0]?.init.method, "GET");
+  assert.equal(fetch.calls[0]?.input, "/_redevplugin/api/plugins/intents/query");
+  assert.equal(fetch.calls[0]?.init.method, "POST");
+  assert.deepEqual(JSON.parse(fetch.calls[0]?.init.body ?? ""), { intent_id: "example.echo", plugin_instance_id: "plugin_instance_1" });
   assert.equal(fetch.calls[0]?.init.headers["X-ReDevPlugin-Owner-Session-Hash"], undefined);
   assert.equal(fetch.calls[1]?.input, "/_redevplugin/api/plugins/intents/invoke");
   assert.equal(fetch.calls[1]?.init.method, "POST");
@@ -1049,7 +1176,8 @@ test("platform client manages permissions and secret refs without exposing local
   assert.equal(bound.bound, true);
   assert.equal(tested.tested, true);
   assert.equal(deleted.deleted, true);
-  assert.equal(fetch.calls[0]?.input, "/_redevplugin/api/plugins/permissions?plugin_instance_id=plugin_instance_1&active_only=true");
+  assert.equal(fetch.calls[0]?.input, "/_redevplugin/api/plugins/permissions/query");
+  assert.deepEqual(JSON.parse(fetch.calls[0]?.init.body ?? ""), { plugin_instance_id: "plugin_instance_1", active_only: true });
   assert.equal(fetch.calls[1]?.input, "/_redevplugin/api/plugins/permissions/grant");
   assert.deepEqual(JSON.parse(fetch.calls[1]?.init.body ?? ""), {
     plugin_instance_id: "plugin_instance_1",
@@ -1137,10 +1265,12 @@ test("platform client manages security policies through the current REST contrac
   assert.equal(updated.policy_revision, 4);
   assert.equal(deleted.deleted, true);
   assert.equal(deleted.revoke_epoch, 4);
-  assert.equal(fetch.calls[0]?.input, "/_redevplugin/api/plugins/security-policies");
-  assert.equal(fetch.calls[0]?.init.method, "GET");
-  assert.equal(fetch.calls[1]?.input, "/_redevplugin/api/plugins/security-policies/plugin_instance_1");
-  assert.equal(fetch.calls[1]?.init.method, "GET");
+  assert.equal(fetch.calls[0]?.input, "/_redevplugin/api/plugins/security-policies/query");
+  assert.equal(fetch.calls[0]?.init.method, "POST");
+  assert.deepEqual(JSON.parse(fetch.calls[0]?.init.body ?? ""), {});
+  assert.equal(fetch.calls[1]?.input, "/_redevplugin/api/plugins/security-policies/plugin_instance_1/query");
+  assert.equal(fetch.calls[1]?.init.method, "POST");
+  assert.deepEqual(JSON.parse(fetch.calls[1]?.init.body ?? ""), {});
   assert.equal(fetch.calls[2]?.input, "/_redevplugin/api/plugins/security-policies/plugin_instance_1");
   assert.equal(fetch.calls[2]?.init.method, "PUT");
   assert.deepEqual(JSON.parse(fetch.calls[2]?.init.body ?? ""), putRequest);
@@ -1210,7 +1340,8 @@ test("platform client reads owner-scoped diagnostic events", async () => {
   assert.equal(diagnostics.diagnostic_events?.[0]?.correlation_id, "correlation_1");
   assert.equal(diagnostics.diagnostic_events?.[0]?.mutation_outcome, "unknown");
   assert.equal(diagnostics.diagnostic_events?.[0]?.details?.operation, "runtime.start");
-  assert.equal(fetch.calls[0]?.input, "/_redevplugin/api/plugins/diagnostics?plugin_id=com.example.intent&severity=warning&limit=10");
+  assert.equal(fetch.calls[0]?.input, "/_redevplugin/api/plugins/diagnostics/query");
+  assert.deepEqual(JSON.parse(fetch.calls[0]?.init.body ?? ""), { plugin_id: "com.example.intent", severity: "warning", limit: 10 });
 });
 
 test("platform client maps management envelope errors", async () => {

@@ -153,17 +153,19 @@ bridge.onAction("confirm-delete", () => void confirmDelete());
 bridge.onAction("retry-sync", () => void reconcileUnknownMutationOutcome());
 bridge.onAction("toggle-task", (event) => void toggleTask(event));
 bridge.onAction("toggle-expanded", (event) => void toggleExpanded(event.value));
+const initialization = initialize();
 bridge.onLifecycle(async (event) => {
   if (event.type === "dispose") {
     disposed = true;
     clearTimers();
+    await initialization.catch(() => undefined);
     await Promise.all([flushComposer(), flushEdit()]);
   } else if (event.type === "hidden") {
     await Promise.all([flushComposer(), flushEdit()]);
   }
 });
 
-void initialize().catch(reportUnhandledFailure);
+void initialization.catch(reportUnhandledFailure);
 
 async function initialize(): Promise<void> {
   await bridge.ready();

@@ -58,6 +58,31 @@ export function assertMutationDispatchable(signal: AbortSignal | undefined, oper
   );
 }
 
+export async function dispatchQueryRequest(
+  fetch: FetchLike,
+  input: string,
+  init: FetchInitLike,
+  operation: string,
+): Promise<FetchResponseLike> {
+  if (init.signal?.aborted) {
+    throw new PluginTransportError(
+      `Plugin platform query was aborted before dispatch for ${operation}`,
+      init.signal.reason,
+    );
+  }
+  let pending: Promise<FetchResponseLike>;
+  try {
+    pending = fetch(input, init);
+  } catch (cause) {
+    throw new PluginTransportError(`Plugin platform query failed before dispatch for ${operation}`, cause);
+  }
+  try {
+    return await pending;
+  } catch (cause) {
+    throw new PluginTransportError(`Plugin platform query failed after dispatch for ${operation}`, cause);
+  }
+}
+
 export async function dispatchMutationRequest(
   fetch: FetchLike,
   input: string,

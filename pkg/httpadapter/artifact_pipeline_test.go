@@ -8,7 +8,7 @@ func TestLocalImportRoutesUseBoundedBinaryEndpoints(t *testing.T) {
 		routes[route.Method+" "+route.Path] = true
 	}
 	for _, route := range []string{
-		"POST /_redevplugin/api/plugins/local-imports",
+		"POST /_redevplugin/api/plugins/{plugin_instance_id}/local-import",
 		"PUT /_redevplugin/api/plugins/{plugin_instance_id}/local-import",
 	} {
 		if !routes[route] {

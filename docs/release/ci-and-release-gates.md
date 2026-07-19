@@ -178,10 +178,13 @@ sink boundary.
 and full measurements. Release evidence rejects that override and always builds
 `redevplugin-runtime` from the clean checked-out HEAD bound to `source_commit`.
 
-`performance-contract-v1.json` is the single machine-readable definition of the
-22 required scenarios and each scenario's sample count, metric name, unit,
+`performance-contract-v2.json` is the single machine-readable definition of the
+25 required scenarios and each scenario's sample count, metric name, unit,
 comparator, and limit. The generator and bundle verifier both consume that
-contract and reject any missing, extra, duplicate, or drifted metric. The
+contract and reject any missing, extra, duplicate, or drifted metric. Route
+authorization evidence also embeds the pinned v0.5.1 and candidate profiles;
+the verifier checks their canonical hashes and recomputes all comparison
+metrics before accepting the bundle. The
 release workflow generates immutable release evidence once on `ubuntu-24.04`;
 all runtime bundles validate and copy those exact bytes through
 `--performance-evidence`. `--skip-execution` and `--allow-smoke` are independent

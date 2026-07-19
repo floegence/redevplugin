@@ -1529,6 +1529,7 @@
     syncCanvasAccessibility(true);
   });
   bridge.onCanvasInput("playfield", handleInput);
+  var initialization = initialize();
   bridge.onLifecycle(async (event) => {
     if (event.type === "visible") {
       surfaceVisible = true;
@@ -1546,6 +1547,7 @@
     if (event.type === "dispose") {
       disposed = true;
       surfaceVisible = false;
+      await initialization.catch(() => void 0);
       gameReady = false;
       stopFrameLoop();
       clearScorePersistTimer();
@@ -1553,7 +1555,7 @@
       for (const image of images.values()) image.close();
     }
   });
-  void initialize().catch((error) => void showFatalError(error));
+  void initialization.catch((error) => void showFatalError(error));
   async function initialize() {
     await bridge.ready();
     await bridge.render(gameSurface(false));

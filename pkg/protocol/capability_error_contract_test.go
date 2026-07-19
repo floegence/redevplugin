@@ -68,7 +68,7 @@ func TestBridgeCapabilityBusinessErrorDetailsAreClosedAndMatchFixture(t *testing
 func TestOpenAPICapabilityErrorsAndSubscriptionResultsMatchBridgeContract(t *testing.T) {
 	t.Parallel()
 	root := repoRoot(t)
-	raw, err := os.ReadFile(filepath.Join(root, "spec", "openapi", "plugin-platform-v6.yaml"))
+	raw, err := os.ReadFile(filepath.Join(root, "spec", "openapi", "plugin-platform-v7.yaml"))
 	if err != nil {
 		t.Fatal(err)
 	}

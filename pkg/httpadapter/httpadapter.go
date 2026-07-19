@@ -11,7 +11,6 @@ import (
 	"math/big"
 	"mime"
 	"net/http"
-	"net/url"
 	"os"
 	"reflect"
 	"regexp"
@@ -334,12 +333,14 @@ func (d errorDetails) MarshalJSON() ([]byte, error) {
 type Route struct {
 	Method string
 	Path   string
+	Effect websecurity.RouteEffect
 }
 
 type Handler struct {
-	host  *host.Host
-	guard websecurity.Guard
-	mux   *http.ServeMux
+	host        *host.Host
+	guard       websecurity.Guard
+	mux         *http.ServeMux
+	routeEffect websecurity.RouteEffect
 }
 
 type Dependencies struct {
@@ -355,27 +356,32 @@ type routeSpec struct {
 	originPolicy websecurity.OriginPolicy
 	csrfPolicy   websecurity.CSRFPolicy
 	bind         func(*Handler) http.HandlerFunc
-	queryKeys    []string
 }
 
-func apiRoute(method, path string, action websecurity.RouteAction, bind func(*Handler) http.HandlerFunc, queryKeys ...string) routeSpec {
-	csrfPolicy := websecurity.CSRFPolicyRequired
-	if method == http.MethodGet || method == http.MethodHead || method == http.MethodOptions {
-		csrfPolicy = websecurity.CSRFPolicyNotRequired
-	}
+func apiRoute(effect websecurity.RouteEffect, method, path string, action websecurity.RouteAction, bind func(*Handler) http.HandlerFunc) routeSpec {
 	return routeSpec{
-		Route:        Route{Method: method, Path: path},
+		Route:        Route{Method: method, Path: path, Effect: effect},
 		action:       action,
 		originPolicy: websecurity.OriginPolicyTrustedHost,
-		csrfPolicy:   csrfPolicy,
+		csrfPolicy:   websecurity.CSRFPolicyRequired,
 		bind:         bind,
-		queryKeys:    queryKeys,
 	}
+}
+
+func queryRoute(path string, action websecurity.RouteAction, bind func(*Handler) http.HandlerFunc) routeSpec {
+	return apiRoute(websecurity.RouteEffectQuery, http.MethodPost, path, action, bind)
+}
+
+func mutationRoute(method, path string, action websecurity.RouteAction, bind func(*Handler) http.HandlerFunc) routeSpec {
+	return apiRoute(websecurity.RouteEffectMutation, method, path, action, bind)
 }
 
 func (route routeSpec) validate() error {
 	if !route.action.Valid() {
 		return fmt.Errorf("%w: %q", websecurity.ErrRouteActionInvalid, route.action)
+	}
+	if !route.Effect.Valid() {
+		return fmt.Errorf("%w: %q", websecurity.ErrRouteEffectInvalid, route.Effect)
 	}
 	hostAction := host.ManagementAction(route.action)
 	if !hostAction.Valid() {
@@ -387,12 +393,20 @@ func (route routeSpec) validate() error {
 	if !route.csrfPolicy.Valid() {
 		return fmt.Errorf("%w: %q", websecurity.ErrCSRFPolicyInvalid, route.csrfPolicy)
 	}
-	wantCSRF := websecurity.CSRFPolicyRequired
-	if route.Method == http.MethodGet || route.Method == http.MethodHead || route.Method == http.MethodOptions {
-		wantCSRF = websecurity.CSRFPolicyNotRequired
+	if route.csrfPolicy != websecurity.CSRFPolicyRequired {
+		return fmt.Errorf("route %s %s has csrf policy %q, want %q", route.Method, route.Path, route.csrfPolicy, websecurity.CSRFPolicyRequired)
 	}
-	if route.csrfPolicy != wantCSRF {
-		return fmt.Errorf("route %s %s has csrf policy %q, want %q", route.Method, route.Path, route.csrfPolicy, wantCSRF)
+	switch route.Effect {
+	case websecurity.RouteEffectQuery:
+		if route.Method != http.MethodPost {
+			return fmt.Errorf("route %s %s has query effect but is not POST", route.Method, route.Path)
+		}
+	case websecurity.RouteEffectMutation:
+		switch route.Method {
+		case http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete:
+		default:
+			return fmt.Errorf("route %s %s has mutation effect with an unsupported method", route.Method, route.Path)
+		}
 	}
 	return nil
 }
@@ -818,6 +832,113 @@ func (*emptyRequest) UnmarshalJSON(raw []byte) error {
 	return nil
 }
 
+type optionalQueryString struct {
+	value string
+	set   bool
+}
+
+func (value *optionalQueryString) UnmarshalJSON(raw []byte) error {
+	if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+		return errors.New("query string field must not be null")
+	}
+	var decoded string
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		return errors.New("query string field must be a string")
+	}
+	if decoded == "" || strings.TrimSpace(decoded) != decoded {
+		return errors.New("query string field must be non-empty without surrounding whitespace")
+	}
+	value.value = decoded
+	value.set = true
+	return nil
+}
+
+func (value optionalQueryString) get() string {
+	if !value.set {
+		return ""
+	}
+	return value.value
+}
+
+type optionalQueryBool struct {
+	value bool
+	set   bool
+}
+
+func (value *optionalQueryBool) UnmarshalJSON(raw []byte) error {
+	if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+		return errors.New("query boolean field must not be null")
+	}
+	if err := json.Unmarshal(raw, &value.value); err != nil {
+		return errors.New("query boolean field must be a boolean")
+	}
+	value.set = true
+	return nil
+}
+
+func (value optionalQueryBool) get() bool {
+	return value.set && value.value
+}
+
+type optionalQueryInteger struct {
+	value int
+	set   bool
+}
+
+func (value *optionalQueryInteger) UnmarshalJSON(raw []byte) error {
+	if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+		return errors.New("query integer field must not be null")
+	}
+	if err := json.Unmarshal(raw, &value.value); err != nil {
+		return errors.New("query integer field must be an integer")
+	}
+	value.set = true
+	return nil
+}
+
+func (value optionalQueryInteger) bounded(field string, minimum, maximum int) (int, error) {
+	if !value.set {
+		return 0, nil
+	}
+	if value.value < minimum || value.value > maximum {
+		return 0, fmt.Errorf("%s must be between %d and %d", field, minimum, maximum)
+	}
+	return value.value, nil
+}
+
+type listIntentsQueryRequest struct {
+	IntentID         optionalQueryString `json:"intent_id"`
+	PluginInstanceID optionalQueryString `json:"plugin_instance_id"`
+}
+
+type listOperationsQueryRequest struct {
+	PluginInstanceID optionalQueryString  `json:"plugin_instance_id"`
+	Cursor           optionalQueryString  `json:"cursor"`
+	Limit            optionalQueryInteger `json:"limit"`
+}
+
+type listRetainedDataQueryRequest struct {
+	PluginInstanceID optionalQueryString `json:"plugin_instance_id"`
+}
+
+type listPermissionsQueryRequest struct {
+	PluginInstanceID optionalQueryString `json:"plugin_instance_id"`
+	ActiveOnly       optionalQueryBool   `json:"active_only"`
+}
+
+type listDiagnosticsQueryRequest struct {
+	PluginID          optionalQueryString  `json:"plugin_id"`
+	PluginInstanceID  optionalQueryString  `json:"plugin_instance_id"`
+	SurfaceInstanceID optionalQueryString  `json:"surface_instance_id"`
+	Type              optionalQueryString  `json:"type"`
+	Severity          optionalQueryString  `json:"severity"`
+	Limit             optionalQueryInteger `json:"limit"`
+}
+
+type settingsQueryRequest struct {
+	Scope sessionctx.ScopeKind `json:"scope"`
+}
+
 const pluginBridgeHandshakeType = "redevplugin.bridge.handshake"
 const defaultStreamReadMaxEvents = 256
 const defaultStreamReadMaxBytes = 1 << 20
@@ -865,59 +986,59 @@ func (e *jsonLimitError) status() int {
 }
 
 var routes = []routeSpec{
-	apiRoute(http.MethodPost, "/_redevplugin/api/plugins/local-imports", websecurity.RouteActionImportLocalPackage, func(h *Handler) http.HandlerFunc { return h.handleImportLocalPackageUpload }, "plugin_instance_id"),
-	apiRoute(http.MethodPost, "/_redevplugin/api/plugins/install-release-ref", websecurity.RouteActionInstallReleaseRef, func(h *Handler) http.HandlerFunc { return h.handleInstallReleaseRef }),
-	apiRoute(http.MethodPost, "/_redevplugin/api/plugins/enable", websecurity.RouteActionEnablePlugin, func(h *Handler) http.HandlerFunc { return h.handleEnable }),
-	apiRoute(http.MethodPost, "/_redevplugin/api/plugins/disable", websecurity.RouteActionDisablePlugin, func(h *Handler) http.HandlerFunc { return h.handleDisable }),
-	apiRoute(http.MethodPost, "/_redevplugin/api/plugins/uninstall", websecurity.RouteActionUninstallPlugin, func(h *Handler) http.HandlerFunc { return h.handleUninstall }),
-	apiRoute(http.MethodPut, "/_redevplugin/api/plugins/{plugin_instance_id}/local-import", websecurity.RouteActionUpdateLocalPackage, func(h *Handler) http.HandlerFunc { return h.handleUpdateLocalPackageUpload }, "expected_management_revision"),
-	apiRoute(http.MethodPost, "/_redevplugin/api/plugins/update-release-ref", websecurity.RouteActionUpdateReleaseRef, func(h *Handler) http.HandlerFunc { return h.handleUpdateReleaseRef }),
-	apiRoute(http.MethodPost, "/_redevplugin/api/plugins/downgrade", websecurity.RouteActionDowngradePlugin, func(h *Handler) http.HandlerFunc { return h.handleDowngrade }),
-	apiRoute(http.MethodGet, "/_redevplugin/api/plugins/catalog", websecurity.RouteActionListPlugins, func(h *Handler) http.HandlerFunc { return h.handleCatalog }),
-	apiRoute(http.MethodGet, "/_redevplugin/api/plugins/features", websecurity.RouteActionListFeatures, func(h *Handler) http.HandlerFunc { return h.handleFeatures }),
-	apiRoute(http.MethodGet, "/_redevplugin/api/plugins/platform/compatibility", websecurity.RouteActionGetCompatibility, func(h *Handler) http.HandlerFunc { return h.handleCompatibility }),
-	apiRoute(http.MethodPost, "/_redevplugin/api/plugins/surfaces/open", websecurity.RouteActionOpenSurface, func(h *Handler) http.HandlerFunc { return h.handleOpenSurface }),
-	apiRoute(http.MethodPost, "/_redevplugin/api/plugins/surfaces/revoke-scope", websecurity.RouteActionRevokeSurfaceScope, func(h *Handler) http.HandlerFunc { return h.handleRevokeSurfaceScope }),
-	apiRoute(http.MethodPost, "/_redevplugin/api/plugins/surfaces/{surface_instance_id}/prepare", websecurity.RouteActionPrepareSurface, func(h *Handler) http.HandlerFunc { return h.handlePrepareSurface }),
-	apiRoute(http.MethodPost, "/_redevplugin/api/plugins/surfaces/{surface_instance_id}/bridge-token", websecurity.RouteActionMintBridgeToken, func(h *Handler) http.HandlerFunc { return h.handleBridgeToken }),
-	apiRoute(http.MethodPost, "/_redevplugin/api/plugins/surfaces/{surface_instance_id}/assets/read", websecurity.RouteActionReadSurfaceAsset, func(h *Handler) http.HandlerFunc { return h.handleReadSurfaceAsset }),
-	apiRoute(http.MethodPost, "/_redevplugin/api/plugins/surfaces/{surface_instance_id}/streams/read", websecurity.RouteActionReadSurfaceStream, func(h *Handler) http.HandlerFunc { return h.handleReadSurfaceStream }),
-	apiRoute(http.MethodPost, "/_redevplugin/api/plugins/surfaces/{surface_instance_id}/streams/ack", websecurity.RouteActionAcknowledgeSurfaceStream, func(h *Handler) http.HandlerFunc { return h.handleAcknowledgeSurfaceStream }),
-	apiRoute(http.MethodPost, "/_redevplugin/api/plugins/surfaces/{surface_instance_id}/operations/cancel", websecurity.RouteActionCancelSurfaceOperation, func(h *Handler) http.HandlerFunc { return h.handleCancelSurfaceOperation }),
-	apiRoute(http.MethodPost, "/_redevplugin/api/plugins/surfaces/{surface_instance_id}/confirmations/reject", websecurity.RouteActionRejectSurfaceConfirmation, func(h *Handler) http.HandlerFunc { return h.handleRejectSurfaceConfirmation }),
-	apiRoute(http.MethodPost, "/_redevplugin/api/plugins/surfaces/{surface_instance_id}/dispose", websecurity.RouteActionDisposeSurface, func(h *Handler) http.HandlerFunc { return h.handleDisposeSurface }),
-	apiRoute(http.MethodPost, "/_redevplugin/api/plugins/rpc", websecurity.RouteActionCallPluginMethod, func(h *Handler) http.HandlerFunc { return h.handleRPC }),
-	apiRoute(http.MethodPost, "/_redevplugin/api/plugins/confirmations/prepare", websecurity.RouteActionPrepareMethodConfirmation, func(h *Handler) http.HandlerFunc { return h.handlePrepareMethodConfirmation }),
-	apiRoute(http.MethodGet, "/_redevplugin/api/plugins/intents", websecurity.RouteActionListIntents, func(h *Handler) http.HandlerFunc { return h.handleListIntents }, "intent_id", "plugin_instance_id"),
-	apiRoute(http.MethodPost, "/_redevplugin/api/plugins/intents/invoke", websecurity.RouteActionInvokeIntent, func(h *Handler) http.HandlerFunc { return h.handleInvokeIntent }),
-	apiRoute(http.MethodGet, "/_redevplugin/api/plugins/operations", websecurity.RouteActionListOperations, func(h *Handler) http.HandlerFunc { return h.handleListOperations }, "plugin_instance_id", "cursor", "limit"),
-	apiRoute(http.MethodGet, "/_redevplugin/api/plugins/operations/{operation_id}", websecurity.RouteActionGetOperation, func(h *Handler) http.HandlerFunc { return h.handleGetOperation }),
-	apiRoute(http.MethodPost, "/_redevplugin/api/plugins/operations/{operation_id}/cancel", websecurity.RouteActionCancelOperation, func(h *Handler) http.HandlerFunc { return h.handleCancelOperation }),
-	apiRoute(http.MethodPost, "/_redevplugin/api/plugins/runtime/start", websecurity.RouteActionStartRuntime, func(h *Handler) http.HandlerFunc { return h.handleStartRuntime }),
-	apiRoute(http.MethodPost, "/_redevplugin/api/plugins/runtime/stop", websecurity.RouteActionStopRuntime, func(h *Handler) http.HandlerFunc { return h.handleStopRuntime }),
-	apiRoute(http.MethodPost, "/_redevplugin/api/plugins/runtime/refresh-enabled", websecurity.RouteActionRefreshEnabledRuntimeState, func(h *Handler) http.HandlerFunc { return h.handleRefreshEnabledRuntimeState }),
-	apiRoute(http.MethodGet, "/_redevplugin/api/plugins/runtime/health", websecurity.RouteActionGetRuntimeHealth, func(h *Handler) http.HandlerFunc { return h.handleRuntimeHealth }),
-	apiRoute(http.MethodPost, "/_redevplugin/api/plugins/data/export", websecurity.RouteActionExportData, func(h *Handler) http.HandlerFunc { return h.handleExportData }),
-	apiRoute(http.MethodPost, "/_redevplugin/api/plugins/data/export/delete", websecurity.RouteActionDeleteDataExport, func(h *Handler) http.HandlerFunc { return h.handleDeleteDataExport }),
-	apiRoute(http.MethodPost, "/_redevplugin/api/plugins/data/import", websecurity.RouteActionImportData, func(h *Handler) http.HandlerFunc { return h.handleImportData }),
-	apiRoute(http.MethodGet, "/_redevplugin/api/plugins/retained-data", websecurity.RouteActionListRetainedData, func(h *Handler) http.HandlerFunc { return h.handleListRetainedData }, "plugin_instance_id"),
-	apiRoute(http.MethodPost, "/_redevplugin/api/plugins/retained-data/delete", websecurity.RouteActionDeleteRetainedData, func(h *Handler) http.HandlerFunc { return h.handleDeleteRetainedData }),
-	apiRoute(http.MethodPost, "/_redevplugin/api/plugins/retained-data/bind", websecurity.RouteActionBindRetainedData, func(h *Handler) http.HandlerFunc { return h.handleBindRetainedData }),
-	apiRoute(http.MethodPost, "/_redevplugin/api/plugins/retained-data/cleanup-expired", websecurity.RouteActionCleanupExpiredRetainedData, func(h *Handler) http.HandlerFunc { return h.handleCleanupExpiredRetainedData }),
-	apiRoute(http.MethodGet, "/_redevplugin/api/plugins/permissions", websecurity.RouteActionListPermissions, func(h *Handler) http.HandlerFunc { return h.handleListPermissions }, "plugin_instance_id", "active_only"),
-	apiRoute(http.MethodPost, "/_redevplugin/api/plugins/permissions/grant", websecurity.RouteActionGrantPermission, func(h *Handler) http.HandlerFunc { return h.handleGrantPermission }),
-	apiRoute(http.MethodPost, "/_redevplugin/api/plugins/permissions/revoke", websecurity.RouteActionRevokePermission, func(h *Handler) http.HandlerFunc { return h.handleRevokePermission }),
-	apiRoute(http.MethodGet, "/_redevplugin/api/plugins/security-policies", websecurity.RouteActionListSecurityPolicies, func(h *Handler) http.HandlerFunc { return h.handleListSecurityPolicies }),
-	apiRoute(http.MethodGet, "/_redevplugin/api/plugins/security-policies/{plugin_instance_id}", websecurity.RouteActionGetSecurityPolicy, func(h *Handler) http.HandlerFunc { return h.handleGetSecurityPolicy }),
-	apiRoute(http.MethodPut, "/_redevplugin/api/plugins/security-policies/{plugin_instance_id}", websecurity.RouteActionPutSecurityPolicy, func(h *Handler) http.HandlerFunc { return h.handlePutSecurityPolicy }),
-	apiRoute(http.MethodDelete, "/_redevplugin/api/plugins/security-policies/{plugin_instance_id}", websecurity.RouteActionDeleteSecurityPolicy, func(h *Handler) http.HandlerFunc { return h.handleDeleteSecurityPolicy }),
-	apiRoute(http.MethodGet, "/_redevplugin/api/plugins/diagnostics", websecurity.RouteActionListDiagnostics, func(h *Handler) http.HandlerFunc { return h.handleListDiagnostics }, "plugin_id", "plugin_instance_id", "surface_instance_id", "type", "severity", "limit"),
-	apiRoute(http.MethodPost, "/_redevplugin/api/plugins/secrets/bind", websecurity.RouteActionBindSecret, func(h *Handler) http.HandlerFunc { return h.handleBindSecret }),
-	apiRoute(http.MethodPost, "/_redevplugin/api/plugins/secrets/test", websecurity.RouteActionTestSecret, func(h *Handler) http.HandlerFunc { return h.handleTestSecret }),
-	apiRoute(http.MethodPost, "/_redevplugin/api/plugins/secrets/delete", websecurity.RouteActionDeleteSecret, func(h *Handler) http.HandlerFunc { return h.handleDeleteSecret }),
-	apiRoute(http.MethodGet, "/_redevplugin/api/plugins/{plugin_instance_id}/settings/schema", websecurity.RouteActionGetSettingsSchema, func(h *Handler) http.HandlerFunc { return h.handleGetSettingsSchema }, "scope"),
-	apiRoute(http.MethodGet, "/_redevplugin/api/plugins/{plugin_instance_id}/settings", websecurity.RouteActionGetSettings, func(h *Handler) http.HandlerFunc { return h.handleGetSettings }, "scope"),
-	apiRoute(http.MethodPatch, "/_redevplugin/api/plugins/{plugin_instance_id}/settings", websecurity.RouteActionPatchSettings, func(h *Handler) http.HandlerFunc { return h.handlePatchSettings }),
+	mutationRoute(http.MethodPost, "/_redevplugin/api/plugins/{plugin_instance_id}/local-import", websecurity.RouteActionImportLocalPackage, func(h *Handler) http.HandlerFunc { return h.handleImportLocalPackageUpload }),
+	mutationRoute(http.MethodPost, "/_redevplugin/api/plugins/install-release-ref", websecurity.RouteActionInstallReleaseRef, func(h *Handler) http.HandlerFunc { return h.handleInstallReleaseRef }),
+	mutationRoute(http.MethodPost, "/_redevplugin/api/plugins/enable", websecurity.RouteActionEnablePlugin, func(h *Handler) http.HandlerFunc { return h.handleEnable }),
+	mutationRoute(http.MethodPost, "/_redevplugin/api/plugins/disable", websecurity.RouteActionDisablePlugin, func(h *Handler) http.HandlerFunc { return h.handleDisable }),
+	mutationRoute(http.MethodPost, "/_redevplugin/api/plugins/uninstall", websecurity.RouteActionUninstallPlugin, func(h *Handler) http.HandlerFunc { return h.handleUninstall }),
+	mutationRoute(http.MethodPut, "/_redevplugin/api/plugins/{plugin_instance_id}/local-import", websecurity.RouteActionUpdateLocalPackage, func(h *Handler) http.HandlerFunc { return h.handleUpdateLocalPackageUpload }),
+	mutationRoute(http.MethodPost, "/_redevplugin/api/plugins/update-release-ref", websecurity.RouteActionUpdateReleaseRef, func(h *Handler) http.HandlerFunc { return h.handleUpdateReleaseRef }),
+	mutationRoute(http.MethodPost, "/_redevplugin/api/plugins/downgrade", websecurity.RouteActionDowngradePlugin, func(h *Handler) http.HandlerFunc { return h.handleDowngrade }),
+	queryRoute("/_redevplugin/api/plugins/catalog/query", websecurity.RouteActionListPlugins, func(h *Handler) http.HandlerFunc { return h.handleCatalog }),
+	queryRoute("/_redevplugin/api/plugins/features/query", websecurity.RouteActionListFeatures, func(h *Handler) http.HandlerFunc { return h.handleFeatures }),
+	queryRoute("/_redevplugin/api/plugins/platform/compatibility/query", websecurity.RouteActionGetCompatibility, func(h *Handler) http.HandlerFunc { return h.handleCompatibility }),
+	mutationRoute(http.MethodPost, "/_redevplugin/api/plugins/surfaces/open", websecurity.RouteActionOpenSurface, func(h *Handler) http.HandlerFunc { return h.handleOpenSurface }),
+	mutationRoute(http.MethodPost, "/_redevplugin/api/plugins/surfaces/revoke-scope", websecurity.RouteActionRevokeSurfaceScope, func(h *Handler) http.HandlerFunc { return h.handleRevokeSurfaceScope }),
+	mutationRoute(http.MethodPost, "/_redevplugin/api/plugins/surfaces/{surface_instance_id}/prepare", websecurity.RouteActionPrepareSurface, func(h *Handler) http.HandlerFunc { return h.handlePrepareSurface }),
+	mutationRoute(http.MethodPost, "/_redevplugin/api/plugins/surfaces/{surface_instance_id}/bridge-token", websecurity.RouteActionMintBridgeToken, func(h *Handler) http.HandlerFunc { return h.handleBridgeToken }),
+	queryRoute("/_redevplugin/api/plugins/surfaces/{surface_instance_id}/assets/read", websecurity.RouteActionReadSurfaceAsset, func(h *Handler) http.HandlerFunc { return h.handleReadSurfaceAsset }),
+	queryRoute("/_redevplugin/api/plugins/surfaces/{surface_instance_id}/streams/read", websecurity.RouteActionReadSurfaceStream, func(h *Handler) http.HandlerFunc { return h.handleReadSurfaceStream }),
+	mutationRoute(http.MethodPost, "/_redevplugin/api/plugins/surfaces/{surface_instance_id}/streams/ack", websecurity.RouteActionAcknowledgeSurfaceStream, func(h *Handler) http.HandlerFunc { return h.handleAcknowledgeSurfaceStream }),
+	mutationRoute(http.MethodPost, "/_redevplugin/api/plugins/surfaces/{surface_instance_id}/operations/cancel", websecurity.RouteActionCancelSurfaceOperation, func(h *Handler) http.HandlerFunc { return h.handleCancelSurfaceOperation }),
+	mutationRoute(http.MethodPost, "/_redevplugin/api/plugins/surfaces/{surface_instance_id}/confirmations/reject", websecurity.RouteActionRejectSurfaceConfirmation, func(h *Handler) http.HandlerFunc { return h.handleRejectSurfaceConfirmation }),
+	mutationRoute(http.MethodPost, "/_redevplugin/api/plugins/surfaces/{surface_instance_id}/dispose", websecurity.RouteActionDisposeSurface, func(h *Handler) http.HandlerFunc { return h.handleDisposeSurface }),
+	mutationRoute(http.MethodPost, "/_redevplugin/api/plugins/rpc", websecurity.RouteActionCallPluginMethod, func(h *Handler) http.HandlerFunc { return h.handleRPC }),
+	mutationRoute(http.MethodPost, "/_redevplugin/api/plugins/confirmations/prepare", websecurity.RouteActionPrepareMethodConfirmation, func(h *Handler) http.HandlerFunc { return h.handlePrepareMethodConfirmation }),
+	queryRoute("/_redevplugin/api/plugins/intents/query", websecurity.RouteActionListIntents, func(h *Handler) http.HandlerFunc { return h.handleListIntents }),
+	mutationRoute(http.MethodPost, "/_redevplugin/api/plugins/intents/invoke", websecurity.RouteActionInvokeIntent, func(h *Handler) http.HandlerFunc { return h.handleInvokeIntent }),
+	queryRoute("/_redevplugin/api/plugins/operations/query", websecurity.RouteActionListOperations, func(h *Handler) http.HandlerFunc { return h.handleListOperations }),
+	queryRoute("/_redevplugin/api/plugins/operations/{operation_id}/query", websecurity.RouteActionGetOperation, func(h *Handler) http.HandlerFunc { return h.handleGetOperation }),
+	mutationRoute(http.MethodPost, "/_redevplugin/api/plugins/operations/{operation_id}/cancel", websecurity.RouteActionCancelOperation, func(h *Handler) http.HandlerFunc { return h.handleCancelOperation }),
+	mutationRoute(http.MethodPost, "/_redevplugin/api/plugins/runtime/start", websecurity.RouteActionStartRuntime, func(h *Handler) http.HandlerFunc { return h.handleStartRuntime }),
+	mutationRoute(http.MethodPost, "/_redevplugin/api/plugins/runtime/stop", websecurity.RouteActionStopRuntime, func(h *Handler) http.HandlerFunc { return h.handleStopRuntime }),
+	mutationRoute(http.MethodPost, "/_redevplugin/api/plugins/runtime/refresh-enabled", websecurity.RouteActionRefreshEnabledRuntimeState, func(h *Handler) http.HandlerFunc { return h.handleRefreshEnabledRuntimeState }),
+	queryRoute("/_redevplugin/api/plugins/runtime/health/query", websecurity.RouteActionGetRuntimeHealth, func(h *Handler) http.HandlerFunc { return h.handleRuntimeHealth }),
+	mutationRoute(http.MethodPost, "/_redevplugin/api/plugins/data/export", websecurity.RouteActionExportData, func(h *Handler) http.HandlerFunc { return h.handleExportData }),
+	mutationRoute(http.MethodPost, "/_redevplugin/api/plugins/data/export/delete", websecurity.RouteActionDeleteDataExport, func(h *Handler) http.HandlerFunc { return h.handleDeleteDataExport }),
+	mutationRoute(http.MethodPost, "/_redevplugin/api/plugins/data/import", websecurity.RouteActionImportData, func(h *Handler) http.HandlerFunc { return h.handleImportData }),
+	queryRoute("/_redevplugin/api/plugins/retained-data/query", websecurity.RouteActionListRetainedData, func(h *Handler) http.HandlerFunc { return h.handleListRetainedData }),
+	mutationRoute(http.MethodPost, "/_redevplugin/api/plugins/retained-data/delete", websecurity.RouteActionDeleteRetainedData, func(h *Handler) http.HandlerFunc { return h.handleDeleteRetainedData }),
+	mutationRoute(http.MethodPost, "/_redevplugin/api/plugins/retained-data/bind", websecurity.RouteActionBindRetainedData, func(h *Handler) http.HandlerFunc { return h.handleBindRetainedData }),
+	mutationRoute(http.MethodPost, "/_redevplugin/api/plugins/retained-data/cleanup-expired", websecurity.RouteActionCleanupExpiredRetainedData, func(h *Handler) http.HandlerFunc { return h.handleCleanupExpiredRetainedData }),
+	queryRoute("/_redevplugin/api/plugins/permissions/query", websecurity.RouteActionListPermissions, func(h *Handler) http.HandlerFunc { return h.handleListPermissions }),
+	mutationRoute(http.MethodPost, "/_redevplugin/api/plugins/permissions/grant", websecurity.RouteActionGrantPermission, func(h *Handler) http.HandlerFunc { return h.handleGrantPermission }),
+	mutationRoute(http.MethodPost, "/_redevplugin/api/plugins/permissions/revoke", websecurity.RouteActionRevokePermission, func(h *Handler) http.HandlerFunc { return h.handleRevokePermission }),
+	queryRoute("/_redevplugin/api/plugins/security-policies/query", websecurity.RouteActionListSecurityPolicies, func(h *Handler) http.HandlerFunc { return h.handleListSecurityPolicies }),
+	queryRoute("/_redevplugin/api/plugins/security-policies/{plugin_instance_id}/query", websecurity.RouteActionGetSecurityPolicy, func(h *Handler) http.HandlerFunc { return h.handleGetSecurityPolicy }),
+	mutationRoute(http.MethodPut, "/_redevplugin/api/plugins/security-policies/{plugin_instance_id}", websecurity.RouteActionPutSecurityPolicy, func(h *Handler) http.HandlerFunc { return h.handlePutSecurityPolicy }),
+	mutationRoute(http.MethodDelete, "/_redevplugin/api/plugins/security-policies/{plugin_instance_id}", websecurity.RouteActionDeleteSecurityPolicy, func(h *Handler) http.HandlerFunc { return h.handleDeleteSecurityPolicy }),
+	queryRoute("/_redevplugin/api/plugins/diagnostics/query", websecurity.RouteActionListDiagnostics, func(h *Handler) http.HandlerFunc { return h.handleListDiagnostics }),
+	mutationRoute(http.MethodPost, "/_redevplugin/api/plugins/secrets/bind", websecurity.RouteActionBindSecret, func(h *Handler) http.HandlerFunc { return h.handleBindSecret }),
+	mutationRoute(http.MethodPost, "/_redevplugin/api/plugins/secrets/test", websecurity.RouteActionTestSecret, func(h *Handler) http.HandlerFunc { return h.handleTestSecret }),
+	mutationRoute(http.MethodPost, "/_redevplugin/api/plugins/secrets/delete", websecurity.RouteActionDeleteSecret, func(h *Handler) http.HandlerFunc { return h.handleDeleteSecret }),
+	queryRoute("/_redevplugin/api/plugins/{plugin_instance_id}/settings/schema/query", websecurity.RouteActionGetSettingsSchema, func(h *Handler) http.HandlerFunc { return h.handleGetSettingsSchema }),
+	queryRoute("/_redevplugin/api/plugins/{plugin_instance_id}/settings/query", websecurity.RouteActionGetSettings, func(h *Handler) http.HandlerFunc { return h.handleGetSettings }),
+	mutationRoute(http.MethodPatch, "/_redevplugin/api/plugins/{plugin_instance_id}/settings", websecurity.RouteActionPatchSettings, func(h *Handler) http.HandlerFunc { return h.handlePatchSettings }),
 }
 
 func NewHandler(deps Dependencies) (*Handler, error) {
@@ -970,15 +1091,18 @@ func isNilInterfaceValue(value any) bool {
 }
 
 func (h *Handler) bindRoute(route routeSpec) http.HandlerFunc {
-	handler := route.bind(h)
+	routeHandler := *h
+	routeHandler.routeEffect = route.Effect
+	handler := route.bind(&routeHandler)
 	return func(w http.ResponseWriter, r *http.Request) {
 		session, ok := h.authorizeRouteRequest(w, r, route)
 		if !ok {
 			return
 		}
 		r = r.WithContext(sessionctx.WithContext(r.Context(), session))
-		if _, err := parseQueryParameters(r, route.queryKeys...); err != nil {
-			if requestIsMutation(r) {
+		if r.URL.RawQuery != "" || r.URL.ForceQuery {
+			err := errors.New("URL query parameters are not allowed")
+			if route.Effect == websecurity.RouteEffectMutation {
 				writeMutationInvalidRequestError(w, err)
 			} else {
 				writeInvalidRequestError(w, err)
@@ -992,15 +1116,15 @@ func (h *Handler) bindRoute(route routeSpec) http.HandlerFunc {
 func (h *Handler) authorizeRouteRequest(w http.ResponseWriter, r *http.Request, route routeSpec) (sessionctx.Context, bool) {
 	session, err := h.guard.Authenticate(r)
 	if err != nil {
-		h.rejectGuardRequest(w, r, "authenticate", security.ErrPermissionDenied, err)
+		h.rejectGuardRequest(w, r, route.Effect, "authenticate", security.ErrPermissionDenied, err)
 		return sessionctx.Context{}, false
 	}
 	if !session.Valid() {
-		h.rejectGuardRequest(w, r, "authenticate", security.ErrPermissionDenied, sessionctx.ErrSessionRequired)
+		h.rejectGuardRequest(w, r, route.Effect, "authenticate", security.ErrPermissionDenied, sessionctx.ErrSessionRequired)
 		return sessionctx.Context{}, false
 	}
 	if err := h.guard.ValidateOrigin(r, session, route.originPolicy); err != nil {
-		h.rejectGuardRequest(w, r, "validate_origin", security.ErrOriginDenied, err)
+		h.rejectGuardRequest(w, r, route.Effect, "validate_origin", security.ErrOriginDenied, err)
 		return sessionctx.Context{}, false
 	}
 	if err := h.guard.ValidateCSRF(r, session, route.csrfPolicy); err != nil {
@@ -1008,19 +1132,19 @@ func (h *Handler) authorizeRouteRequest(w http.ResponseWriter, r *http.Request, 
 		if errors.Is(err, websecurity.ErrCSRFInvalid) {
 			code = security.ErrCSRFInvalid
 		}
-		h.rejectGuardRequest(w, r, "validate_csrf", code, err)
+		h.rejectGuardRequest(w, r, route.Effect, "validate_csrf", code, err)
 		return sessionctx.Context{}, false
 	}
-	if err := h.guard.AuthorizeRoute(r, session, route.action); err != nil {
-		h.rejectGuardRequest(w, r, "authorize_route", security.ErrActionDenied, err)
+	if err := h.guard.AuthorizeRoute(r, session, route.action, route.Effect); err != nil {
+		h.rejectGuardRequest(w, r, route.Effect, "authorize_route", security.ErrActionDenied, err)
 		return sessionctx.Context{}, false
 	}
 	return session, true
 }
 
-func (h *Handler) rejectGuardRequest(w http.ResponseWriter, r *http.Request, operation string, code security.ErrorCode, err error) {
+func (h *Handler) rejectGuardRequest(w http.ResponseWriter, r *http.Request, effect websecurity.RouteEffect, operation string, code security.ErrorCode, err error) {
 	h.host.ReportHTTPAdapterFailure(r.Context(), operation, code, err)
-	writeRequestError(w, r, http.StatusForbidden, code, publicPluginErrorMessage(code), errorDetails{})
+	writeRequestErrorForEffect(w, effect, http.StatusForbidden, code, publicPluginErrorMessage(code), errorDetails{})
 }
 
 func routePathMatches(pattern, requestPath string) bool {
@@ -1052,24 +1176,16 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	h.mux.ServeHTTP(w, r)
 }
 
-func writeRequestError(w http.ResponseWriter, r *http.Request, status int, code security.ErrorCode, message string, details errorDetails) {
-	if requestIsMutation(r) {
+func writeRequestErrorForEffect(w http.ResponseWriter, effect websecurity.RouteEffect, status int, code security.ErrorCode, message string, details errorDetails) {
+	if effect != websecurity.RouteEffectQuery {
 		writeMutationError(w, status, code, message, details, mutation.OutcomeNotCommitted)
 		return
 	}
 	writeError(w, status, code, message, details)
 }
 
-func requestIsMutation(r *http.Request) bool {
-	if r == nil || r.Method == http.MethodGet {
-		return false
-	}
-	for _, readPathSuffix := range []string{"/assets/read", "/streams/read"} {
-		if strings.HasSuffix(r.URL.Path, readPathSuffix) {
-			return false
-		}
-	}
-	return r.Method == http.MethodPost || r.Method == http.MethodPut || r.Method == http.MethodPatch || r.Method == http.MethodDelete
+func (h Handler) hasMutationEffect() bool {
+	return h.routeEffect != websecurity.RouteEffectQuery
 }
 
 func (h Handler) handleCancelSurfaceOperation(w http.ResponseWriter, r *http.Request) {
@@ -1201,7 +1317,7 @@ func writeMutationSuccess(w http.ResponseWriter, data any) {
 
 func (h Handler) writeProjectionError(w http.ResponseWriter, r *http.Request, operation string, err error) {
 	message := h.publicFailureMessage(r.Context(), operation, security.ErrAdapterFailure, err)
-	if requestIsMutation(r) {
+	if h.hasMutationEffect() {
 		writeMutationError(w, http.StatusBadGateway, security.ErrAdapterFailure, message, errorDetails{}, mutation.OutcomeUnknown)
 		return
 	}
@@ -1267,12 +1383,17 @@ func requiredRevision(value *uint64, field string) (uint64, error) {
 }
 
 const localImportContentType = "application/vnd.redevplugin.package+zip"
+const localImportRevisionHeader = "X-ReDevPlugin-Expected-Management-Revision"
 const maxLocalImportBytes int64 = 256 << 20
 
 func (h Handler) handleImportLocalPackageUpload(w http.ResponseWriter, r *http.Request) {
-	pluginInstanceID := strings.TrimSpace(r.URL.Query().Get("plugin_instance_id"))
-	if pluginInstanceID == "" {
-		writeMutationInvalidRequestError(w, errors.New("plugin_instance_id is required"))
+	pluginInstanceID, ok := pluginInstanceIDFromPath(r.URL.Path, "/local-import")
+	if !ok {
+		writeMutationError(w, http.StatusNotFound, security.ErrInvalidRequest, "route not found", errorDetails{}, mutation.OutcomeNotCommitted)
+		return
+	}
+	if len(r.Header.Values(localImportRevisionHeader)) != 0 {
+		writeMutationInvalidRequestError(w, errors.New("expected management revision is not allowed for an install"))
 		return
 	}
 	if err := requirePackageContentType(r); err != nil {
@@ -1382,13 +1503,18 @@ func (h Handler) handleUninstall(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h Handler) handleUpdateLocalPackageUpload(w http.ResponseWriter, r *http.Request) {
-	if err := requirePackageContentType(r); err != nil {
-		writeMutationError(w, http.StatusUnsupportedMediaType, security.ErrInvalidRequest, err.Error(), errorDetails{}, mutation.OutcomeNotCommitted)
+	pluginInstanceID, ok := pluginInstanceIDFromPath(r.URL.Path, "/local-import")
+	if !ok {
+		writeMutationError(w, http.StatusNotFound, security.ErrInvalidRequest, "route not found", errorDetails{}, mutation.OutcomeNotCommitted)
 		return
 	}
-	revision, err := strconv.ParseUint(r.URL.Query().Get("expected_management_revision"), 10, 64)
-	if err != nil || revision == 0 || revision > uint64(maxJSONSafeInteger) {
-		writeMutationError(w, http.StatusBadRequest, security.ErrInvalidRequest, "expected_management_revision must be a positive safe integer", errorDetails{}, mutation.OutcomeNotCommitted)
+	revision, err := requiredLocalImportRevision(r.Header)
+	if err != nil {
+		writeMutationInvalidRequestError(w, err)
+		return
+	}
+	if err := requirePackageContentType(r); err != nil {
+		writeMutationError(w, http.StatusUnsupportedMediaType, security.ErrInvalidRequest, err.Error(), errorDetails{}, mutation.OutcomeNotCommitted)
 		return
 	}
 	file, size, cleanup, err := stagePackageUpload(r)
@@ -1402,7 +1528,7 @@ func (h Handler) handleUpdateLocalPackageUpload(w http.ResponseWriter, r *http.R
 	}
 	defer cleanup()
 	record, err := h.host.UpdateLocalPackage(r.Context(), host.UpdateLocalPackageRequest{
-		PluginInstanceID:           routeParameter(r.URL.Path, "/_redevplugin/api/plugins/{plugin_instance_id}/local-import", "plugin_instance_id"),
+		PluginInstanceID:           pluginInstanceID,
 		ExpectedManagementRevision: revision, PackageReader: file, PackageSize: size,
 	})
 	if err != nil {
@@ -1411,6 +1537,22 @@ func (h Handler) handleUpdateLocalPackageUpload(w http.ResponseWriter, r *http.R
 		return
 	}
 	h.writePluginMutationSuccess(w, r, "local-import.update.response", record)
+}
+
+func requiredLocalImportRevision(header http.Header) (uint64, error) {
+	values := header.Values(localImportRevisionHeader)
+	if len(values) != 1 {
+		return 0, errors.New("expected management revision header must be provided exactly once")
+	}
+	value := values[0]
+	if value == "" || strings.TrimSpace(value) != value || strings.Contains(value, ",") {
+		return 0, errors.New("expected management revision header must be one canonical decimal value")
+	}
+	revision, err := strconv.ParseUint(value, 10, 64)
+	if err != nil || revision == 0 || revision > uint64(maxJSONSafeInteger) || strconv.FormatUint(revision, 10) != value {
+		return 0, errors.New("expected management revision header must be a positive safe integer")
+	}
+	return revision, nil
 }
 
 var errPackageUploadTooLarge = errors.New("package upload exceeds the maximum compressed size")
@@ -1477,20 +1619,6 @@ func stagePackageUpload(r *http.Request) (*os.File, int64, func(), error) {
 	return tmp, total, cleanup, nil
 }
 
-func routeParameter(requestPath, pattern, name string) string {
-	patternParts := strings.Split(strings.Trim(pattern, "/"), "/")
-	requestParts := strings.Split(strings.Trim(requestPath, "/"), "/")
-	for i, part := range patternParts {
-		if part == "{"+name+"}" && i < len(requestParts) {
-			value, err := url.PathUnescape(requestParts[i])
-			if err == nil {
-				return value
-			}
-		}
-	}
-	return ""
-}
-
 func (h Handler) handleUpdateReleaseRef(w http.ResponseWriter, r *http.Request) {
 	var req updateReleaseRefRequest
 	if err := decodeJSON(r, &req); err != nil {
@@ -1539,6 +1667,11 @@ func (h Handler) handleDowngrade(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h Handler) handleCatalog(w http.ResponseWriter, r *http.Request) {
+	var req emptyRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeInvalidRequestError(w, err)
+		return
+	}
 	records, err := h.host.ListPlugins(r.Context())
 	if err != nil {
 		code := errorCodeForManagementError(err)
@@ -1554,6 +1687,11 @@ func (h Handler) handleCatalog(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h Handler) handleFeatures(w http.ResponseWriter, r *http.Request) {
+	var req emptyRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeInvalidRequestError(w, err)
+		return
+	}
 	features, err := h.host.Features(r.Context())
 	if err != nil {
 		code := errorCodeForManagementError(err)
@@ -1564,6 +1702,11 @@ func (h Handler) handleFeatures(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h Handler) handleCompatibility(w http.ResponseWriter, r *http.Request) {
+	var req emptyRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeInvalidRequestError(w, err)
+		return
+	}
 	compatibility, err := h.host.GetCompatibility(r.Context())
 	if err != nil {
 		code := errorCodeForManagementError(err)
@@ -1847,14 +1990,14 @@ func (h Handler) handlePrepareMethodConfirmation(w http.ResponseWriter, r *http.
 }
 
 func (h Handler) handleListIntents(w http.ResponseWriter, r *http.Request) {
-	query, err := parseQueryParameters(r, "intent_id", "plugin_instance_id")
-	if err != nil {
+	var req listIntentsQueryRequest
+	if err := decodeJSON(r, &req); err != nil {
 		writeInvalidRequestError(w, err)
 		return
 	}
 	records, err := h.host.ListIntents(r.Context(), host.ListIntentsRequest{
-		IntentID:         query["intent_id"],
-		PluginInstanceID: query["plugin_instance_id"],
+		IntentID:         req.IntentID.get(),
+		PluginInstanceID: req.PluginInstanceID.get(),
 	})
 	if err != nil {
 		code := errorCodeForIntentError(err)
@@ -1894,19 +2037,19 @@ func (h Handler) handleInvokeIntent(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h Handler) handleListOperations(w http.ResponseWriter, r *http.Request) {
-	query, err := parseQueryParameters(r, "plugin_instance_id", "cursor", "limit")
-	if err != nil {
+	var req listOperationsQueryRequest
+	if err := decodeJSON(r, &req); err != nil {
 		writeInvalidRequestError(w, err)
 		return
 	}
-	limit, err := optionalIntegerQueryParameter(query, "limit", 1, operation.MaxListLimit)
+	limit, err := req.Limit.bounded("limit", 1, operation.MaxListLimit)
 	if err != nil {
 		writeInvalidRequestError(w, err)
 		return
 	}
 	result, err := h.host.ListOperations(r.Context(), host.ListOperationsRequest{
-		PluginInstanceID: query["plugin_instance_id"],
-		Cursor:           query["cursor"],
+		PluginInstanceID: req.PluginInstanceID.get(),
+		Cursor:           req.Cursor.get(),
 		Limit:            limit,
 	})
 	if err != nil {
@@ -1926,7 +2069,12 @@ func (h Handler) handleListOperations(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h Handler) handleGetOperation(w http.ResponseWriter, r *http.Request) {
-	operationID, ok := operationIDFromPath(r.URL.Path, "")
+	var req emptyRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeInvalidRequestError(w, err)
+		return
+	}
+	operationID, ok := operationIDFromPath(r.URL.Path, "/query")
 	if !ok {
 		writeJSON(w, http.StatusNotFound, errorResponse{OK: false, Message: "route not found", Code: security.ErrInvalidRequest})
 		return
@@ -2008,6 +2156,11 @@ func (h Handler) handleStopRuntime(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h Handler) handleRuntimeHealth(w http.ResponseWriter, r *http.Request) {
+	var req emptyRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeInvalidRequestError(w, err)
+		return
+	}
 	health, err := h.host.RuntimeHealth(r.Context())
 	if err != nil {
 		code, status := runtimeManagementError(err)
@@ -2088,13 +2241,13 @@ func (h Handler) handleImportData(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h Handler) handleListRetainedData(w http.ResponseWriter, r *http.Request) {
-	query, err := parseQueryParameters(r, "plugin_instance_id")
-	if err != nil {
+	var req listRetainedDataQueryRequest
+	if err := decodeJSON(r, &req); err != nil {
 		writeInvalidRequestError(w, err)
 		return
 	}
 	records, err := h.host.ListRetainedData(r.Context(), host.ListRetainedDataRequest{
-		PluginInstanceID: query["plugin_instance_id"],
+		PluginInstanceID: req.PluginInstanceID.get(),
 	})
 	if err != nil {
 		code := errorCodeForDataLifecycleError(err)
@@ -2175,19 +2328,14 @@ func (h Handler) handleCleanupExpiredRetainedData(w http.ResponseWriter, r *http
 }
 
 func (h Handler) handleListPermissions(w http.ResponseWriter, r *http.Request) {
-	query, err := parseQueryParameters(r, "plugin_instance_id", "active_only")
-	if err != nil {
-		writeInvalidRequestError(w, err)
-		return
-	}
-	activeOnly, err := optionalBooleanQueryParameter(query, "active_only")
-	if err != nil {
+	var req listPermissionsQueryRequest
+	if err := decodeJSON(r, &req); err != nil {
 		writeInvalidRequestError(w, err)
 		return
 	}
 	records, err := h.host.ListPermissionGrants(r.Context(), host.ListPermissionGrantsRequest{
-		PluginInstanceID: query["plugin_instance_id"],
-		ActiveOnly:       activeOnly,
+		PluginInstanceID: req.PluginInstanceID.get(),
+		ActiveOnly:       req.ActiveOnly.get(),
 	})
 	if err != nil {
 		code := errorCodeForPermissionError(err)
@@ -2242,6 +2390,11 @@ func (h Handler) handleRevokePermission(w http.ResponseWriter, r *http.Request) 
 }
 
 func (h Handler) handleListSecurityPolicies(w http.ResponseWriter, r *http.Request) {
+	var req emptyRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeInvalidRequestError(w, err)
+		return
+	}
 	records, err := h.host.ListSecurityPolicies(r.Context())
 	if err != nil {
 		code := errorCodeForSecurityPolicyError(err)
@@ -2256,7 +2409,12 @@ func (h Handler) handleListSecurityPolicies(w http.ResponseWriter, r *http.Reque
 }
 
 func (h Handler) handleGetSecurityPolicy(w http.ResponseWriter, r *http.Request) {
-	pluginInstanceID, ok := pluginInstanceIDFromSecurityPolicyPath(r.URL.Path)
+	var req emptyRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeInvalidRequestError(w, err)
+		return
+	}
+	pluginInstanceID, ok := pluginInstanceIDFromSecurityPolicyPath(r.URL.Path, "/query")
 	if !ok {
 		writeError(w, http.StatusNotFound, security.ErrInvalidRequest, "route not found", errorDetails{})
 		return
@@ -2271,7 +2429,7 @@ func (h Handler) handleGetSecurityPolicy(w http.ResponseWriter, r *http.Request)
 }
 
 func (h Handler) handlePutSecurityPolicy(w http.ResponseWriter, r *http.Request) {
-	pluginInstanceID, ok := pluginInstanceIDFromSecurityPolicyPath(r.URL.Path)
+	pluginInstanceID, ok := pluginInstanceIDFromSecurityPolicyPath(r.URL.Path, "")
 	if !ok {
 		writeMutationError(w, http.StatusNotFound, security.ErrInvalidRequest, "route not found", errorDetails{}, mutation.OutcomeNotCommitted)
 		return
@@ -2310,7 +2468,7 @@ func (h Handler) handlePutSecurityPolicy(w http.ResponseWriter, r *http.Request)
 }
 
 func (h Handler) handleDeleteSecurityPolicy(w http.ResponseWriter, r *http.Request) {
-	pluginInstanceID, ok := pluginInstanceIDFromSecurityPolicyPath(r.URL.Path)
+	pluginInstanceID, ok := pluginInstanceIDFromSecurityPolicyPath(r.URL.Path, "")
 	if !ok {
 		writeMutationError(w, http.StatusNotFound, security.ErrInvalidRequest, "route not found", errorDetails{}, mutation.OutcomeNotCommitted)
 		return
@@ -2370,26 +2528,28 @@ func securityPolicyResponseFromRecord(result host.SecurityPolicyResult) security
 }
 
 func (h Handler) handleListDiagnostics(w http.ResponseWriter, r *http.Request) {
-	query, err := parseQueryParameters(r, "plugin_id", "plugin_instance_id", "surface_instance_id", "type", "severity", "limit")
+	var req listDiagnosticsQueryRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeInvalidRequestError(w, err)
+		return
+	}
+	limit, err := req.Limit.bounded("limit", 1, 1000)
 	if err != nil {
 		writeInvalidRequestError(w, err)
 		return
 	}
-	limit, err := optionalIntegerQueryParameter(query, "limit", 1, 1000)
-	if err != nil {
-		writeInvalidRequestError(w, err)
-		return
-	}
-	if err := validateOptionalEnumQueryParameter(query, "severity", string(observability.DiagnosticSeverityInfo), string(observability.DiagnosticSeverityWarning)); err != nil {
+	severity := req.Severity.get()
+	if severity != "" && severity != string(observability.DiagnosticSeverityInfo) && severity != string(observability.DiagnosticSeverityWarning) {
+		err := errors.New("severity must be info or warning")
 		writeInvalidRequestError(w, err)
 		return
 	}
 	events, err := h.host.ListDiagnosticEvents(r.Context(), host.ListDiagnosticEventsRequest{
-		PluginID:          query["plugin_id"],
-		PluginInstanceID:  query["plugin_instance_id"],
-		SurfaceInstanceID: query["surface_instance_id"],
-		Type:              query["type"],
-		Severity:          observability.DiagnosticSeverity(query["severity"]),
+		PluginID:          req.PluginID.get(),
+		PluginInstanceID:  req.PluginInstanceID.get(),
+		SurfaceInstanceID: req.SurfaceInstanceID.get(),
+		Type:              req.Type.get(),
+		Severity:          observability.DiagnosticSeverity(severity),
 		Limit:             limit,
 	})
 	if err != nil {
@@ -2456,12 +2616,17 @@ func (h Handler) handleDeleteSecret(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h Handler) handleGetSettingsSchema(w http.ResponseWriter, r *http.Request) {
-	pluginInstanceID, ok := pluginInstanceIDFromSettingsPath(r.URL.Path, "/settings/schema")
+	pluginInstanceID, ok := pluginInstanceIDFromPath(r.URL.Path, "/settings/schema/query")
 	if !ok {
 		writeJSON(w, http.StatusNotFound, errorResponse{OK: false, Message: "route not found", Code: security.ErrInvalidRequest})
 		return
 	}
-	scope, err := requiredSettingsScope(r)
+	var req settingsQueryRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeInvalidRequestError(w, err)
+		return
+	}
+	scope, err := requiredScopeKind(req.Scope)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, errorResponse{OK: false, Message: "settings scope is required", Code: security.ErrInvalidRequest})
 		return
@@ -2481,12 +2646,17 @@ func (h Handler) handleGetSettingsSchema(w http.ResponseWriter, r *http.Request)
 }
 
 func (h Handler) handleGetSettings(w http.ResponseWriter, r *http.Request) {
-	pluginInstanceID, ok := pluginInstanceIDFromSettingsPath(r.URL.Path, "/settings")
+	pluginInstanceID, ok := pluginInstanceIDFromPath(r.URL.Path, "/settings/query")
 	if !ok {
 		writeJSON(w, http.StatusNotFound, errorResponse{OK: false, Message: "route not found", Code: security.ErrInvalidRequest})
 		return
 	}
-	scope, err := requiredSettingsScope(r)
+	var req settingsQueryRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeInvalidRequestError(w, err)
+		return
+	}
+	scope, err := requiredScopeKind(req.Scope)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, errorResponse{OK: false, Message: "settings scope is required", Code: security.ErrInvalidRequest})
 		return
@@ -2506,7 +2676,7 @@ func (h Handler) handleGetSettings(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h Handler) handlePatchSettings(w http.ResponseWriter, r *http.Request) {
-	pluginInstanceID, ok := pluginInstanceIDFromSettingsPath(r.URL.Path, "/settings")
+	pluginInstanceID, ok := pluginInstanceIDFromPath(r.URL.Path, "/settings")
 	if !ok {
 		writeMutationError(w, http.StatusNotFound, security.ErrInvalidRequest, "route not found", errorDetails{}, mutation.OutcomeNotCommitted)
 		return
@@ -2800,70 +2970,33 @@ func operationIDFromPath(path string, suffix string) (string, bool) {
 	return operationID, true
 }
 
-func pluginInstanceIDFromSettingsPath(requestPath string, suffix string) (string, bool) {
+func pluginInstanceIDFromPath(requestPath string, suffix string) (string, bool) {
 	const prefix = "/_redevplugin/api/plugins/"
 	if !strings.HasPrefix(requestPath, prefix) || !strings.HasSuffix(requestPath, suffix) {
 		return "", false
 	}
 	pluginInstanceID := strings.TrimSuffix(strings.TrimPrefix(requestPath, prefix), suffix)
 	pluginInstanceID = strings.Trim(pluginInstanceID, "/")
-	if pluginInstanceID == "" || strings.Contains(pluginInstanceID, "/") || strings.HasPrefix(pluginInstanceID, ".") {
+	if pluginInstanceID == "" || strings.TrimSpace(pluginInstanceID) != pluginInstanceID || strings.Contains(pluginInstanceID, "/") || strings.HasPrefix(pluginInstanceID, ".") {
 		return "", false
 	}
 	return pluginInstanceID, true
 }
 
-func pluginInstanceIDFromSecurityPolicyPath(requestPath string) (string, bool) {
+func pluginInstanceIDFromSecurityPolicyPath(requestPath, suffix string) (string, bool) {
 	const prefix = "/_redevplugin/api/plugins/security-policies/"
-	if !strings.HasPrefix(requestPath, prefix) {
+	if !strings.HasPrefix(requestPath, prefix) || (suffix != "" && !strings.HasSuffix(requestPath, suffix)) {
 		return "", false
 	}
-	pluginInstanceID := strings.Trim(strings.TrimPrefix(requestPath, prefix), "/")
+	pluginInstanceID := strings.TrimPrefix(requestPath, prefix)
+	if suffix != "" {
+		pluginInstanceID = strings.TrimSuffix(pluginInstanceID, suffix)
+	}
+	pluginInstanceID = strings.Trim(pluginInstanceID, "/")
 	if pluginInstanceID == "" || strings.Contains(pluginInstanceID, "/") || strings.HasPrefix(pluginInstanceID, ".") {
 		return "", false
 	}
 	return pluginInstanceID, true
-}
-
-func parseQueryParameters(r *http.Request, allowedKeys ...string) (map[string]string, error) {
-	values, err := url.ParseQuery(r.URL.RawQuery)
-	if err != nil {
-		return nil, errors.New("query string is invalid")
-	}
-	allowed := make(map[string]struct{}, len(allowedKeys))
-	for _, key := range allowedKeys {
-		allowed[key] = struct{}{}
-	}
-	result := make(map[string]string, len(values))
-	for key, entries := range values {
-		if _, ok := allowed[key]; !ok {
-			return nil, fmt.Errorf("unknown query parameter %q", key)
-		}
-		if len(entries) != 1 {
-			return nil, fmt.Errorf("query parameter %q must be provided exactly once", key)
-		}
-		value := entries[0]
-		if value == "" {
-			return nil, fmt.Errorf("query parameter %q must not be empty", key)
-		}
-		if strings.TrimSpace(value) != value {
-			return nil, fmt.Errorf("query parameter %q must not contain surrounding whitespace", key)
-		}
-		result[key] = value
-	}
-	return result, nil
-}
-
-func requiredSettingsScope(r *http.Request) (sessionctx.ScopeKind, error) {
-	query, err := parseQueryParameters(r, "scope")
-	if err != nil {
-		return "", err
-	}
-	value, ok := query["scope"]
-	if !ok {
-		return "", errors.New("query parameter \"scope\" is required")
-	}
-	return requiredScopeKind(sessionctx.ScopeKind(value))
 }
 
 func requiredScopeKind(scope sessionctx.ScopeKind) (sessionctx.ScopeKind, error) {
@@ -2873,51 +3006,6 @@ func requiredScopeKind(scope sessionctx.ScopeKind) (sessionctx.ScopeKind, error)
 	default:
 		return "", errors.New("scope must be user or environment")
 	}
-}
-
-func optionalBooleanQueryParameter(query map[string]string, key string) (bool, error) {
-	value, ok := query[key]
-	if !ok {
-		return false, nil
-	}
-	switch value {
-	case "true":
-		return true, nil
-	case "false":
-		return false, nil
-	default:
-		return false, fmt.Errorf("query parameter %q must be true or false", key)
-	}
-}
-
-func optionalIntegerQueryParameter(query map[string]string, key string, minimum, maximum int) (int, error) {
-	value, ok := query[key]
-	if !ok {
-		return 0, nil
-	}
-	for _, digit := range value {
-		if digit < '0' || digit > '9' {
-			return 0, fmt.Errorf("query parameter %q must be an integer between %d and %d", key, minimum, maximum)
-		}
-	}
-	parsed, err := strconv.Atoi(value)
-	if err != nil || parsed < minimum || parsed > maximum {
-		return 0, fmt.Errorf("query parameter %q must be an integer between %d and %d", key, minimum, maximum)
-	}
-	return parsed, nil
-}
-
-func validateOptionalEnumQueryParameter(query map[string]string, key string, allowedValues ...string) error {
-	value, ok := query[key]
-	if !ok {
-		return nil
-	}
-	for _, allowed := range allowedValues {
-		if value == allowed {
-			return nil
-		}
-	}
-	return fmt.Errorf("query parameter %q must be one of %s", key, strings.Join(allowedValues, ", "))
 }
 
 func errorCodeForBridgeError(err error) security.ErrorCode {

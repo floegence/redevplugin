@@ -280,9 +280,14 @@ async function renderRoutes(registry) {
     for (const method of ["delete", "get", "patch", "post", "put"]) {
       const operation = pathItem[method];
       if (!isRecord(operation)) continue;
+      const effect = operation["x-redevplugin-route-effect"];
+      if (effect !== "query" && effect !== "mutation") {
+        throw new Error(`OpenAPI route ${method.toUpperCase()} ${path} has invalid or missing x-redevplugin-route-effect`);
+      }
       routes.push({
         method: method.toUpperCase(),
         path,
+        effect,
       });
     }
   }

@@ -5,7 +5,7 @@ import { spawnSync } from "node:child_process";
 import { parse as parseYAML, stringify as stringifyYAML } from "yaml";
 
 const root = resolve(import.meta.dirname, "..");
-const source = join(root, "spec/openapi/plugin-platform-v6.yaml");
+const source = join(root, "spec/openapi/plugin-platform-v7.yaml");
 const output = join(root, "packages/redevplugin-ui/src/openapi.gen.ts");
 const check = process.argv.includes("--check");
 const generated = check

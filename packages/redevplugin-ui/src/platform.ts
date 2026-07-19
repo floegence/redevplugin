@@ -2,6 +2,7 @@ import {
   assertMutationDispatchable,
   defaultFetch,
   dispatchMutationRequest,
+  dispatchQueryRequest,
   readMutationPlatformResponse,
   readPlatformResponse,
   trimTrailingSlash,
@@ -13,7 +14,7 @@ import {
   PluginTransportError,
   pluginMutationOutcome,
 } from "./errors.js";
-import type { components, operations } from "./openapi.gen.js";
+import type { components } from "./openapi.gen.js";
 import {
   createReDevPluginSurfaceTransport,
   openPluginSurfaceInSlot,
@@ -126,17 +127,17 @@ export type PluginCapabilityContractPin = PlatformSchemas["HostCapabilityPinV1"]
 export type PluginPublicOperationBinding = PlatformSchemas["PublicOperationBinding"];
 export type PluginOperationRecord = PlatformSchemas["OperationRecord"];
 export type PluginOperationList = PlatformSchemas["PluginOperationList"];
-export type PluginOperationListOptions = NonNullable<operations["listPluginOperations"]["parameters"]["query"]>;
+export type PluginOperationListOptions = PlatformSchemas["ListOperationsQueryRequest"];
 
 export type PluginIntentRecord = PlatformSchemas["PluginIntentRecord"];
 export type PluginIntentList = PlatformSchemas["PluginIntentList"];
-export type PluginIntentListOptions = NonNullable<operations["listPluginIntents"]["parameters"]["query"]>;
+export type PluginIntentListOptions = PlatformSchemas["ListIntentsQueryRequest"];
 export type PluginIntentInvokeRequest = PlatformSchemas["InvokeIntentRequest"];
 
 export type PluginPermissionGrant = PlatformSchemas["PluginPermissionGrant"];
 export type PluginPermissionMutationResult = PlatformSchemas["PluginPermissionMutationResult"];
 export type PluginPermissionList = PlatformSchemas["PluginPermissionList"];
-export type PluginPermissionListOptions = NonNullable<operations["listPluginPermissionGrants"]["parameters"]["query"]>;
+export type PluginPermissionListOptions = PlatformSchemas["ListPermissionsQueryRequest"];
 export type PluginPermissionGrantRequest = PlatformSchemas["GrantPermissionRequest"];
 export type PluginPermissionRevokeRequest = PlatformSchemas["RevokePermissionRequest"];
 export type PluginSecurityPolicy = PlatformSchemas["PluginSecurityPolicy"];
@@ -151,7 +152,7 @@ export type PluginDataExportDeleteRequest = PlatformSchemas["DeleteDataExportReq
 export type PluginDataExportDeleteResult = PlatformSchemas["PluginDataExportDeleteResult"];
 export type PluginDataImportRequest = PlatformSchemas["ImportDataRequest"];
 export type PluginDataBinding = PlatformSchemas["PluginDataBinding"];
-export type PluginRetainedDataListOptions = NonNullable<operations["listPluginRetainedData"]["parameters"]["query"]>;
+export type PluginRetainedDataListOptions = PlatformSchemas["ListRetainedDataQueryRequest"];
 export type PluginRetainedDataList = PlatformSchemas["RetainedDataList"];
 export type PluginRetainedDataDeleteRequest = PlatformSchemas["DeleteRetainedDataRequest"];
 export type PluginRetainedDataBindRequest = PlatformSchemas["BindRetainedDataRequest"];
@@ -167,7 +168,7 @@ export type PluginDiagnosticEvent = PlatformSchemas["PluginDiagnosticEvent"];
 export type PluginDiagnosticEventList = PlatformSchemas["PluginDiagnosticEventList"];
 export type PluginDiagnosticDetails = PlatformSchemas["PluginDiagnosticDetails"];
 export type PluginDiagnosticMutationOutcome = PlatformSchemas["DiagnosticMutationOutcome"];
-export type PluginDiagnosticListOptions = NonNullable<operations["listPluginDiagnosticEvents"]["parameters"]["query"]>;
+export type PluginDiagnosticListOptions = PlatformSchemas["ListDiagnosticsQueryRequest"];
 export type PluginDiagnosticSeverity = NonNullable<PluginDiagnosticListOptions["severity"]>;
 
 export class PluginPlatformClient {
@@ -185,9 +186,9 @@ export class PluginPlatformClient {
     this.#onMutationOutcomeUnknown = options.onMutationOutcomeUnknown;
   }
 
-  catalog(options: PluginRequestOptions = {}): Promise<PluginCatalogResult> { return this.#getJSON("/_redevplugin/api/plugins/catalog", options); }
-  features(options: PluginRequestOptions = {}): Promise<PluginFeatures> { return this.#getJSON("/_redevplugin/api/plugins/features", options); }
-  getCompatibility(options: PluginRequestOptions = {}): Promise<PluginCompatibilityManifest> { return this.#getJSON("/_redevplugin/api/plugins/platform/compatibility", options); }
+  catalog(options: PluginRequestOptions = {}): Promise<PluginCatalogResult> { return this.#requestQuery("/_redevplugin/api/plugins/catalog/query", {}, options); }
+  features(options: PluginRequestOptions = {}): Promise<PluginFeatures> { return this.#requestQuery("/_redevplugin/api/plugins/features/query", {}, options); }
+  getCompatibility(options: PluginRequestOptions = {}): Promise<PluginCompatibilityManifest> { return this.#requestQuery("/_redevplugin/api/plugins/platform/compatibility/query", {}, options); }
   installReleaseRef(request: PluginInstallReleaseRefRequest, options: PluginRequestOptions = {}): Promise<PluginRecord> {
     return this.#requestMutation("POST", "/_redevplugin/api/plugins/install-release-ref", request, options);
   }
@@ -276,37 +277,28 @@ export class PluginPlatformClient {
   refreshEnabledRuntimeState(options: PluginRequestOptions = {}): Promise<PluginRuntimeRefreshResult> {
     return this.#requestMutation("POST", "/_redevplugin/api/plugins/runtime/refresh-enabled", {}, options);
   }
-  runtimeHealth(options: PluginRequestOptions = {}): Promise<PluginRuntimeHealth> { return this.#getJSON("/_redevplugin/api/plugins/runtime/health", options); }
+  runtimeHealth(options: PluginRequestOptions = {}): Promise<PluginRuntimeHealth> { return this.#requestQuery("/_redevplugin/api/plugins/runtime/health/query", {}, options); }
   getSettingsSchema(pluginInstanceId: string, scope: PluginResourceScopeKind, options: PluginRequestOptions = {}): Promise<PluginSettingsSchema> {
-    return this.#getJSON(`/_redevplugin/api/plugins/${encodeURIComponent(pluginInstanceId)}/settings/schema?scope=${encodeURIComponent(scope)}`, options);
+    return this.#requestQuery(`/_redevplugin/api/plugins/${encodeURIComponent(pluginInstanceId)}/settings/schema/query`, { scope }, options);
   }
   getSettings(pluginInstanceId: string, scope: PluginResourceScopeKind, options: PluginRequestOptions = {}): Promise<PluginSettingsSnapshot> {
-    return this.#getJSON(`/_redevplugin/api/plugins/${encodeURIComponent(pluginInstanceId)}/settings?scope=${encodeURIComponent(scope)}`, options);
+    return this.#requestQuery(`/_redevplugin/api/plugins/${encodeURIComponent(pluginInstanceId)}/settings/query`, { scope }, options);
   }
   patchSettings(pluginInstanceId: string, request: PluginSettingsPatchRequest, options: PluginRequestOptions = {}): Promise<PluginSettingsSnapshot> {
     return this.#mutatePluginAt("PATCH", `/_redevplugin/api/plugins/${encodeURIComponent(pluginInstanceId)}/settings`, pluginInstanceId, request, options);
   }
   listOperations(options: PluginOperationListOptions = {}, requestOptions: PluginRequestOptions = {}): Promise<PluginOperationList> {
-    const params = new URLSearchParams();
-    if (options.plugin_instance_id) params.set("plugin_instance_id", options.plugin_instance_id);
-    if (options.cursor) params.set("cursor", options.cursor);
-    if (options.limit !== undefined) params.set("limit", String(options.limit));
-    const query = params.toString();
-    return this.#getJSON(`/_redevplugin/api/plugins/operations${query ? `?${query}` : ""}`, requestOptions);
+    return this.#requestQuery("/_redevplugin/api/plugins/operations/query", options, requestOptions);
   }
   getOperation(operationId: string, options: PluginRequestOptions = {}): Promise<PluginOperationRecord> {
-    return this.#getJSON(`/_redevplugin/api/plugins/operations/${encodeURIComponent(operationId)}`, options);
+    return this.#requestQuery(`/_redevplugin/api/plugins/operations/${encodeURIComponent(operationId)}/query`, {}, options);
   }
   cancelOperation(operationId: string, reason?: string, options: PluginRequestOptions = {}): Promise<PluginOperationRecord> {
     return this.#requestMutation("POST", `/_redevplugin/api/plugins/operations/${encodeURIComponent(operationId)}/cancel`, reason ? { reason } : {}, options);
   }
 
   listIntents(options: PluginIntentListOptions = {}, requestOptions: PluginRequestOptions = {}): Promise<PluginIntentList> {
-    const params = new URLSearchParams();
-    if (options.intent_id !== undefined) params.set("intent_id", options.intent_id);
-    if (options.plugin_instance_id !== undefined) params.set("plugin_instance_id", options.plugin_instance_id);
-    const query = params.toString();
-    return this.#getJSON(`/_redevplugin/api/plugins/intents${query ? `?${query}` : ""}`, requestOptions);
+    return this.#requestQuery("/_redevplugin/api/plugins/intents/query", options, requestOptions);
   }
 
   invokeIntent<T = unknown>(request: PluginIntentInvokeRequest, options: PluginRequestOptions = {}): Promise<PluginTrustedMethodResult<T>> {
@@ -324,10 +316,7 @@ export class PluginPlatformClient {
   }
 
   listRetainedData(options: PluginRetainedDataListOptions = {}, requestOptions: PluginRequestOptions = {}): Promise<PluginRetainedDataList> {
-    const params = new URLSearchParams();
-    if (options.plugin_instance_id) params.set("plugin_instance_id", options.plugin_instance_id);
-    const query = params.toString();
-    return this.#getJSON(`/_redevplugin/api/plugins/retained-data${query ? `?${query}` : ""}`, requestOptions);
+    return this.#requestQuery("/_redevplugin/api/plugins/retained-data/query", options, requestOptions);
   }
 
   deleteRetainedData(request: PluginRetainedDataDeleteRequest, options: PluginRequestOptions = {}): Promise<PluginDataBinding> {
@@ -341,11 +330,7 @@ export class PluginPlatformClient {
   }
 
   listPermissions(options: PluginPermissionListOptions = {}, requestOptions: PluginRequestOptions = {}): Promise<PluginPermissionList> {
-    const params = new URLSearchParams();
-    if (options.plugin_instance_id !== undefined) params.set("plugin_instance_id", options.plugin_instance_id);
-    if (options.active_only !== undefined) params.set("active_only", options.active_only ? "true" : "false");
-    const query = params.toString();
-    return this.#getJSON(`/_redevplugin/api/plugins/permissions${query ? `?${query}` : ""}`, requestOptions);
+    return this.#requestQuery("/_redevplugin/api/plugins/permissions/query", options, requestOptions);
   }
 
   grantPermission(request: PluginPermissionGrantRequest, options: PluginRequestOptions = {}): Promise<PluginPermissionMutationResult> {
@@ -355,10 +340,10 @@ export class PluginPlatformClient {
     return this.#mutatePlugin("/_redevplugin/api/plugins/permissions/revoke", request, options);
   }
   listSecurityPolicies(options: PluginRequestOptions = {}): Promise<PluginSecurityPolicyList> {
-    return this.#getJSON("/_redevplugin/api/plugins/security-policies", options);
+    return this.#requestQuery("/_redevplugin/api/plugins/security-policies/query", {}, options);
   }
   getSecurityPolicy(pluginInstanceId: string, options: PluginRequestOptions = {}): Promise<PluginSecurityPolicy> {
-    return this.#getJSON(`/_redevplugin/api/plugins/security-policies/${encodeURIComponent(pluginInstanceId)}`, options);
+    return this.#requestQuery(`/_redevplugin/api/plugins/security-policies/${encodeURIComponent(pluginInstanceId)}/query`, {}, options);
   }
   putSecurityPolicy(pluginInstanceId: string, request: PluginSecurityPolicyPutRequest, options: PluginRequestOptions = {}): Promise<PluginSecurityPolicy> {
     return this.#mutatePluginAt("PUT", `/_redevplugin/api/plugins/security-policies/${encodeURIComponent(pluginInstanceId)}`, pluginInstanceId, request, options);
@@ -376,12 +361,9 @@ export class PluginPlatformClient {
     return this.#requestMutation("POST", "/_redevplugin/api/plugins/secrets/delete", request, options);
   }
   listDiagnosticEvents(options: PluginDiagnosticListOptions = {}, requestOptions: PluginRequestOptions = {}): Promise<PluginDiagnosticEventList> {
-    return this.#getJSON(`/_redevplugin/api/plugins/diagnostics${queryString(options)}`, requestOptions);
+    return this.#requestQuery("/_redevplugin/api/plugins/diagnostics/query", options, requestOptions);
   }
 
-  #getJSON<T>(path: string, options: PluginRequestOptions): Promise<T> {
-    return this.#requestJSON<T>("GET", path, options);
-  }
   #mutatePlugin<Result>(
     path: string,
     request: { plugin_instance_id: string } & Record<string, unknown>,
@@ -424,18 +406,21 @@ export class PluginPlatformClient {
     if (lifecycleErrors.length > 0) throw new PluginMutationLifecycleError(message, error, lifecycleErrors);
   }
 
-  async #requestJSON<T>(method: string, path: string, options: PluginRequestOptions): Promise<T> {
-    let response;
+  async #requestQuery<T>(path: string, body: unknown, options: PluginRequestOptions): Promise<T> {
+    const operation = `POST ${path}`;
+    let encodedBody: string;
     try {
-      response = await this.#fetch(this.#apiBaseURL + path, {
-        method,
-        headers: { "Accept": "application/json" },
-        credentials: "same-origin",
-        signal: options.signal,
-      });
+      encodedBody = JSON.stringify(body);
     } catch (cause) {
-      throw new PluginTransportError(`Plugin platform request failed for ${method} ${path}`, cause);
+      throw new PluginTransportError(`Plugin platform query body serialization failed for ${operation}`, cause);
     }
+    const response = await dispatchQueryRequest(this.#fetch, this.#apiBaseURL + path, {
+      method: "POST",
+      headers: { "Accept": "application/json", "Content-Type": "application/json" },
+      body: encodedBody,
+      credentials: "same-origin",
+      signal: options.signal,
+    }, operation);
     return readPlatformResponse<T>(response);
   }
 
@@ -466,15 +451,6 @@ export class PluginPlatformClient {
     }, operation);
     return readMutationPlatformResponse<T>(response);
   }
-}
-
-function queryString(values: Record<string, string | number | boolean | undefined>): string {
-  const params = new URLSearchParams();
-  for (const [key, value] of Object.entries(values)) {
-    if (value !== undefined) params.set(key, String(value));
-  }
-  const query = params.toString();
-  return query ? `?${query}` : "";
 }
 
 function surfaceTransportAPIBaseURL(value: string): string {

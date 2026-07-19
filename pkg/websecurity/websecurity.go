@@ -12,6 +12,7 @@ var (
 	ErrCSRFRequired        = errors.New("csrf token is required")
 	ErrCSRFInvalid         = errors.New("csrf token is invalid")
 	ErrRouteActionInvalid  = errors.New("route action is invalid")
+	ErrRouteEffectInvalid  = errors.New("route effect is invalid")
 	ErrOriginPolicyInvalid = errors.New("origin policy is invalid")
 	ErrCSRFPolicyInvalid   = errors.New("csrf policy is invalid")
 )
@@ -103,6 +104,19 @@ func (action RouteAction) Valid() bool {
 	}
 }
 
+// RouteEffect defines whether cancellation can leave a request outcome
+// unknown. It is trusted route metadata and is never supplied by a caller.
+type RouteEffect string
+
+const (
+	RouteEffectQuery    RouteEffect = "query"
+	RouteEffectMutation RouteEffect = "mutation"
+)
+
+func (effect RouteEffect) Valid() bool {
+	return effect == RouteEffectQuery || effect == RouteEffectMutation
+}
+
 type OriginPolicy string
 
 const OriginPolicyTrustedHost OriginPolicy = "trusted_host"
@@ -126,5 +140,5 @@ type Guard interface {
 	Authenticate(r *http.Request) (sessionctx.Context, error)
 	ValidateOrigin(r *http.Request, session sessionctx.Context, policy OriginPolicy) error
 	ValidateCSRF(r *http.Request, session sessionctx.Context, policy CSRFPolicy) error
-	AuthorizeRoute(r *http.Request, session sessionctx.Context, action RouteAction) error
+	AuthorizeRoute(r *http.Request, session sessionctx.Context, action RouteAction, effect RouteEffect) error
 }

@@ -11,11 +11,12 @@ import { readPerformanceContract, validatePerformanceEvidence } from "./performa
 const options = parseArgs(process.argv.slice(2));
 assertEvidenceSourceState(options.sourceCommit);
 const compatibility = JSON.parse(readFileSync(resolve(options.compatibility), "utf8"));
-const performanceContract = readPerformanceContract(join(import.meta.dirname, "../spec/plugin/performance-contract-v1.json"));
+const performanceContract = readPerformanceContract(join(import.meta.dirname, "../spec/plugin/performance-contract-v2.json"));
 const scenarios = readMeasurements(resolve(options.measurements));
+const comparisons = readMeasurements(resolve(options.comparisons));
 const chromiumVersion = execFileSync(chromium.executablePath(), ["--version"], { encoding: "utf8" }).trim();
 const evidence = {
-  schema_version: "redevplugin.performance_evidence.v1",
+  schema_version: "redevplugin.performance_evidence.v2",
   release_version: options.version,
   source_commit: options.sourceCommit,
   generated_at: options.generatedAt || new Date(Math.floor(Date.now() / 1000) * 1000).toISOString().replace(".000Z", "Z"),
@@ -29,6 +30,7 @@ const evidence = {
     chromium_version: chromiumVersion,
   },
   scenarios: scenarios.sort((left, right) => left.id.localeCompare(right.id)),
+  comparisons: comparisons.sort((left, right) => left.id.localeCompare(right.id)),
   contract_hashes: compatibility.contracts
     .map((contract) => ({ id: contract.id, sha256: contract.sha256 }))
     .sort((left, right) => left.id.localeCompare(right.id)),
@@ -99,11 +101,12 @@ function readMeasurements(path) {
 }
 
 function parseArgs(args) {
-  const options = { output: "", measurements: "", compatibility: "", version: "", sourceCommit: "", generatedAt: "", gate: "" };
+  const options = { output: "", measurements: "", comparisons: "", compatibility: "", version: "", sourceCommit: "", generatedAt: "", gate: "" };
   for (let index = 0; index < args.length; index += 1) {
     const value = args[++index] ?? "";
     if (args[index - 1] === "--output") options.output = value;
     else if (args[index - 1] === "--measurements") options.measurements = value;
+    else if (args[index - 1] === "--comparisons") options.comparisons = value;
     else if (args[index - 1] === "--compatibility") options.compatibility = value;
     else if (args[index - 1] === "--version") options.version = value;
     else if (args[index - 1] === "--source-commit") options.sourceCommit = value;
@@ -111,7 +114,7 @@ function parseArgs(args) {
     else if (args[index - 1] === "--gate") options.gate = value;
     else throw new Error(`unknown argument: ${args[index - 1]}`);
   }
-  for (const key of ["output", "measurements", "compatibility", "version", "sourceCommit", "gate"]) {
+  for (const key of ["output", "measurements", "comparisons", "compatibility", "version", "sourceCommit", "gate"]) {
     if (!options[key]) throw new Error(`--${key.replaceAll(/[A-Z]/g, (match) => `-${match.toLowerCase()}`)} is required`);
   }
   if (!["smoke", "full", "release"].includes(options.gate)) throw new Error(`invalid performance evidence gate ${options.gate}`);

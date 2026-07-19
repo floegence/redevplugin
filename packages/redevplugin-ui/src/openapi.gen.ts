@@ -4,7 +4,7 @@
  */
 
 export interface paths {
-    "/_redevplugin/api/plugins/local-imports": {
+    "/_redevplugin/api/plugins/{plugin_instance_id}/local-import": {
         parameters: {
             query?: never;
             header?: never;
@@ -12,7 +12,7 @@ export interface paths {
             cookie?: never;
         };
         get?: never;
-        put?: never;
+        put: operations["updateLocalPackage"];
         post: operations["importLocalPackage"];
         delete?: never;
         options?: never;
@@ -84,22 +84,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/_redevplugin/api/plugins/{plugin_instance_id}/local-import": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put: operations["updateLocalPackage"];
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/_redevplugin/api/plugins/update-release-ref": {
         parameters: {
             query?: never;
@@ -132,49 +116,49 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/_redevplugin/api/plugins/catalog": {
+    "/_redevplugin/api/plugins/catalog/query": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        get: operations["listPlugins"];
+        get?: never;
         put?: never;
-        post?: never;
+        post: operations["listPlugins"];
         delete?: never;
         options?: never;
         head?: never;
         patch?: never;
         trace?: never;
     };
-    "/_redevplugin/api/plugins/features": {
+    "/_redevplugin/api/plugins/features/query": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        get: operations["getPluginFeatures"];
+        get?: never;
         put?: never;
-        post?: never;
+        post: operations["getPluginFeatures"];
         delete?: never;
         options?: never;
         head?: never;
         patch?: never;
         trace?: never;
     };
-    "/_redevplugin/api/plugins/platform/compatibility": {
+    "/_redevplugin/api/plugins/platform/compatibility/query": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
+        get?: never;
+        put?: never;
         /** @description Returns the host-consumable ReDevPlugin compatibility manifest for the mounted platform artifact set. */
-        get: operations["getPluginPlatformCompatibility"];
-        put?: never;
-        post?: never;
+        post: operations["getPluginPlatformCompatibility"];
         delete?: never;
         options?: never;
         head?: never;
@@ -376,17 +360,17 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/_redevplugin/api/plugins/intents": {
+    "/_redevplugin/api/plugins/intents/query": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        /** @description Lists enabled, runnable plugin intents available to host-mediated interop. The response data is `{ "intents": [...] }`. */
-        get: operations["listPluginIntents"];
+        get?: never;
         put?: never;
-        post?: never;
+        /** @description Lists enabled, runnable plugin intents available to host-mediated interop. The response data is `{ "intents": [...] }`. */
+        post: operations["listPluginIntents"];
         delete?: never;
         options?: never;
         head?: never;
@@ -410,32 +394,32 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/_redevplugin/api/plugins/operations": {
+    "/_redevplugin/api/plugins/operations/query": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        get: operations["listPluginOperations"];
+        get?: never;
         put?: never;
-        post?: never;
+        post: operations["listPluginOperations"];
         delete?: never;
         options?: never;
         head?: never;
         patch?: never;
         trace?: never;
     };
-    "/_redevplugin/api/plugins/operations/{operation_id}": {
+    "/_redevplugin/api/plugins/operations/{operation_id}/query": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        get: operations["getPluginOperation"];
+        get?: never;
         put?: never;
-        post?: never;
+        post: operations["getPluginOperation"];
         delete?: never;
         options?: never;
         head?: never;
@@ -507,16 +491,16 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/_redevplugin/api/plugins/runtime/health": {
+    "/_redevplugin/api/plugins/runtime/health/query": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        get: operations["getPluginRuntimeHealth"];
+        get?: never;
         put?: never;
-        post?: never;
+        post: operations["getPluginRuntimeHealth"];
         delete?: never;
         options?: never;
         head?: never;
@@ -571,16 +555,16 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/_redevplugin/api/plugins/retained-data": {
+    "/_redevplugin/api/plugins/retained-data/query": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        get: operations["listPluginRetainedData"];
+        get?: never;
         put?: never;
-        post?: never;
+        post: operations["listPluginRetainedData"];
         delete?: never;
         options?: never;
         head?: never;
@@ -635,16 +619,16 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/_redevplugin/api/plugins/permissions": {
+    "/_redevplugin/api/plugins/permissions/query": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        get: operations["listPluginPermissionGrants"];
+        get?: never;
         put?: never;
-        post?: never;
+        post: operations["listPluginPermissionGrants"];
         delete?: never;
         options?: never;
         head?: never;
@@ -683,16 +667,32 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/_redevplugin/api/plugins/security-policies": {
+    "/_redevplugin/api/plugins/security-policies/query": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        get: operations["listPluginSecurityPolicies"];
+        get?: never;
         put?: never;
-        post?: never;
+        post: operations["listPluginSecurityPolicies"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/_redevplugin/api/plugins/security-policies/{plugin_instance_id}/query": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["getPluginSecurityPolicy"];
         delete?: never;
         options?: never;
         head?: never;
@@ -706,7 +706,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        get: operations["getPluginSecurityPolicy"];
+        get?: never;
         put: operations["putPluginSecurityPolicy"];
         post?: never;
         delete: operations["deletePluginSecurityPolicy"];
@@ -715,16 +715,16 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/_redevplugin/api/plugins/diagnostics": {
+    "/_redevplugin/api/plugins/diagnostics/query": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        get: operations["listPluginDiagnosticEvents"];
+        get?: never;
         put?: never;
-        post?: never;
+        post: operations["listPluginDiagnosticEvents"];
         delete?: never;
         options?: never;
         head?: never;
@@ -779,16 +779,32 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/_redevplugin/api/plugins/{plugin_instance_id}/settings/schema": {
+    "/_redevplugin/api/plugins/{plugin_instance_id}/settings/schema/query": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        get: operations["getPluginSettingsSchema"];
+        get?: never;
         put?: never;
-        post?: never;
+        post: operations["getPluginSettingsSchema"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/_redevplugin/api/plugins/{plugin_instance_id}/settings/query": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["getPluginSettings"];
         delete?: never;
         options?: never;
         head?: never;
@@ -802,7 +818,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        get: operations["getPluginSettings"];
+        get?: never;
         put?: never;
         post?: never;
         delete?: never;
@@ -1195,7 +1211,7 @@ export interface components {
         PluginCatalogResult: {
             plugins: components["schemas"]["PluginRecord"][];
         };
-        PluginCompatibilityManifest: components["schemas"]["CompatibilityManifestV6"];
+        PluginCompatibilityManifest: components["schemas"]["CompatibilityManifestV7"];
         PluginOperationList: {
             operations: components["schemas"]["OperationRecord"][];
             next_cursor?: string;
@@ -1640,6 +1656,35 @@ export interface components {
         };
         RevokeSurfaceScopeRequest: Record<string, never>;
         EmptyRequest: Record<string, never>;
+        EmptyQueryRequest: Record<string, never>;
+        ListIntentsQueryRequest: {
+            intent_id?: string;
+            plugin_instance_id?: string;
+        };
+        ListOperationsQueryRequest: {
+            plugin_instance_id?: string;
+            cursor?: string;
+            limit?: number;
+        };
+        ListRetainedDataQueryRequest: {
+            plugin_instance_id?: string;
+        };
+        ListPermissionsQueryRequest: {
+            plugin_instance_id?: string;
+            active_only?: boolean;
+        };
+        ListDiagnosticsQueryRequest: {
+            plugin_id?: string;
+            plugin_instance_id?: string;
+            surface_instance_id?: string;
+            type?: string;
+            /** @enum {string} */
+            severity?: "info" | "warning";
+            limit?: number;
+        };
+        SettingsQueryRequest: {
+            scope: components["schemas"]["ResourceScopeKind"];
+        };
         SurfaceBootstrap: {
             plugin_id: string;
             plugin_instance_id: string;
@@ -2115,9 +2160,9 @@ export interface components {
             /** @constant */
             code: "IPC_WRITER_PANICKED";
         };
-        CompatibilityManifestV6: {
+        CompatibilityManifestV7: {
             /** @constant */
-            schema_version: "redevplugin.compatibility.v6";
+            schema_version: "redevplugin.compatibility.v7";
             matrix: {
                 redevplugin_go_version: string;
                 redevplugin_ui_version: string;
@@ -2125,7 +2170,7 @@ export interface components {
                 /** @constant */
                 plugin_ui_protocol_version: "plugin-ui-v5";
                 /** @constant */
-                plugin_host_protocol_version: "plugin-host-v4";
+                plugin_host_protocol_version: "plugin-host-v5";
                 /** @constant */
                 rust_ipc_version: "rust-ipc-v4";
                 /** @constant */
@@ -2155,9 +2200,9 @@ export interface components {
                 /** @constant */
                 resource_scope_schema_version: "resource-scope-v1";
                 /** @constant */
-                plugin_platform_openapi_version: "plugin-platform-v6";
+                plugin_platform_openapi_version: "plugin-platform-v7";
                 /** @constant */
-                compatibility_schema_version: "compatibility-manifest-v6";
+                compatibility_schema_version: "compatibility-manifest-v7";
                 /** @constant */
                 release_manifest_schema_version: "release-manifest-v4";
                 /** @constant */
@@ -2177,15 +2222,15 @@ export interface components {
                 /** @constant */
                 error_codes_schema_version: "error-codes-v4";
                 /** @constant */
-                performance_contract_version: "performance-contract-v1";
+                performance_contract_version: "performance-contract-v2";
                 /** @constant */
-                performance_evidence_schema_version: "performance-evidence-v1";
+                performance_evidence_schema_version: "performance-evidence-v2";
                 /** @constant */
                 contract_registry_version: "contract-registry-v1";
             };
-            contracts: components["schemas"]["CompatibilityManifestV6Contract"][];
+            contracts: components["schemas"]["CompatibilityManifestV7Contract"][];
         };
-        CompatibilityManifestV6Contract: {
+        CompatibilityManifestV7Contract: {
             id: string;
             path: string;
             version: string;
@@ -2805,7 +2850,6 @@ export interface components {
     parameters: {
         OperationID: string;
         PluginInstanceID: string;
-        SettingsScope: components["schemas"]["ResourceScopeKind"];
         SurfaceInstanceID: string;
     };
     requestBodies: {
@@ -2852,6 +2896,41 @@ export interface components {
         EmptyRequest: {
             content: {
                 "application/json": components["schemas"]["EmptyRequest"];
+            };
+        };
+        EmptyQueryRequest: {
+            content: {
+                "application/json": components["schemas"]["EmptyQueryRequest"];
+            };
+        };
+        ListIntentsQueryRequest: {
+            content: {
+                "application/json": components["schemas"]["ListIntentsQueryRequest"];
+            };
+        };
+        ListOperationsQueryRequest: {
+            content: {
+                "application/json": components["schemas"]["ListOperationsQueryRequest"];
+            };
+        };
+        ListRetainedDataQueryRequest: {
+            content: {
+                "application/json": components["schemas"]["ListRetainedDataQueryRequest"];
+            };
+        };
+        ListPermissionsQueryRequest: {
+            content: {
+                "application/json": components["schemas"]["ListPermissionsQueryRequest"];
+            };
+        };
+        ListDiagnosticsQueryRequest: {
+            content: {
+                "application/json": components["schemas"]["ListDiagnosticsQueryRequest"];
+            };
+        };
+        SettingsQueryRequest: {
+            content: {
+                "application/json": components["schemas"]["SettingsQueryRequest"];
             };
         };
         PrepareSurfaceRequest: {
@@ -2985,13 +3064,35 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
+    updateLocalPackage: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Canonical decimal management revision. Duplicate, combined, empty, or whitespace-padded values are rejected. */
+                "X-ReDevPlugin-Expected-Management-Revision": number;
+            };
+            path: {
+                plugin_instance_id: components["parameters"]["PluginInstanceID"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/vnd.redevplugin.package+zip": string;
+            };
+        };
+        responses: {
+            200: components["responses"]["PluginRecordResponse"];
+            default: components["responses"]["MutationPlatformErrorResponse"];
+        };
+    };
     importLocalPackage: {
         parameters: {
-            query: {
-                plugin_instance_id: string;
-            };
+            query?: never;
             header?: never;
-            path?: never;
+            path: {
+                plugin_instance_id: components["parameters"]["PluginInstanceID"];
+            };
             cookie?: never;
         };
         requestBody: {
@@ -3056,27 +3157,6 @@ export interface operations {
             default: components["responses"]["MutationPlatformErrorResponse"];
         };
     };
-    updateLocalPackage: {
-        parameters: {
-            query: {
-                expected_management_revision: number;
-            };
-            header?: never;
-            path: {
-                plugin_instance_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/vnd.redevplugin.package+zip": string;
-            };
-        };
-        responses: {
-            200: components["responses"]["PluginRecordResponse"];
-            default: components["responses"]["MutationPlatformErrorResponse"];
-        };
-    };
     updateReleaseRef: {
         parameters: {
             query?: never;
@@ -3110,7 +3190,7 @@ export interface operations {
             path?: never;
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody: components["requestBodies"]["EmptyQueryRequest"];
         responses: {
             200: components["responses"]["PluginCatalogResponse"];
             default: components["responses"]["PlatformErrorResponse"];
@@ -3123,7 +3203,7 @@ export interface operations {
             path?: never;
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody: components["requestBodies"]["EmptyQueryRequest"];
         responses: {
             200: components["responses"]["PluginFeaturesResponse"];
             default: components["responses"]["PlatformErrorResponse"];
@@ -3136,7 +3216,7 @@ export interface operations {
             path?: never;
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody: components["requestBodies"]["EmptyQueryRequest"];
         responses: {
             200: components["responses"]["CompatibilityResponse"];
             default: components["responses"]["PlatformErrorResponse"];
@@ -3316,15 +3396,12 @@ export interface operations {
     };
     listPluginIntents: {
         parameters: {
-            query?: {
-                intent_id?: string;
-                plugin_instance_id?: string;
-            };
+            query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody: components["requestBodies"]["ListIntentsQueryRequest"];
         responses: {
             200: components["responses"]["IntentListResponse"];
             default: components["responses"]["PlatformErrorResponse"];
@@ -3345,16 +3422,12 @@ export interface operations {
     };
     listPluginOperations: {
         parameters: {
-            query?: {
-                plugin_instance_id?: string;
-                cursor?: string;
-                limit?: number;
-            };
+            query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody: components["requestBodies"]["ListOperationsQueryRequest"];
         responses: {
             200: components["responses"]["OperationListResponse"];
             default: components["responses"]["PlatformErrorResponse"];
@@ -3369,7 +3442,7 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody: components["requestBodies"]["EmptyQueryRequest"];
         responses: {
             200: components["responses"]["OperationRecordResponse"];
             default: components["responses"]["PlatformErrorResponse"];
@@ -3436,7 +3509,7 @@ export interface operations {
             path?: never;
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody: components["requestBodies"]["EmptyQueryRequest"];
         responses: {
             200: components["responses"]["RuntimeHealthResponse"];
             default: components["responses"]["PlatformErrorResponse"];
@@ -3483,14 +3556,12 @@ export interface operations {
     };
     listPluginRetainedData: {
         parameters: {
-            query?: {
-                plugin_instance_id?: string;
-            };
+            query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody: components["requestBodies"]["ListRetainedDataQueryRequest"];
         responses: {
             200: components["responses"]["RetainedDataListResponse"];
             default: components["responses"]["PlatformErrorResponse"];
@@ -3537,15 +3608,12 @@ export interface operations {
     };
     listPluginPermissionGrants: {
         parameters: {
-            query?: {
-                plugin_instance_id?: string;
-                active_only?: boolean;
-            };
+            query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody: components["requestBodies"]["ListPermissionsQueryRequest"];
         responses: {
             200: components["responses"]["PermissionListResponse"];
             default: components["responses"]["PlatformErrorResponse"];
@@ -3584,7 +3652,7 @@ export interface operations {
             path?: never;
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody: components["requestBodies"]["EmptyQueryRequest"];
         responses: {
             200: components["responses"]["SecurityPolicyListResponse"];
             default: components["responses"]["PlatformErrorResponse"];
@@ -3599,7 +3667,7 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody: components["requestBodies"]["EmptyQueryRequest"];
         responses: {
             200: components["responses"]["SecurityPolicyRecordResponse"];
             default: components["responses"]["PlatformErrorResponse"];
@@ -3637,19 +3705,12 @@ export interface operations {
     };
     listPluginDiagnosticEvents: {
         parameters: {
-            query?: {
-                plugin_id?: string;
-                plugin_instance_id?: string;
-                surface_instance_id?: string;
-                type?: string;
-                severity?: "info" | "warning";
-                limit?: number;
-            };
+            query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody: components["requestBodies"]["ListDiagnosticsQueryRequest"];
         responses: {
             200: components["responses"]["DiagnosticEventListResponse"];
             default: components["responses"]["PlatformErrorResponse"];
@@ -3696,16 +3757,14 @@ export interface operations {
     };
     getPluginSettingsSchema: {
         parameters: {
-            query: {
-                scope: components["parameters"]["SettingsScope"];
-            };
+            query?: never;
             header?: never;
             path: {
                 plugin_instance_id: components["parameters"]["PluginInstanceID"];
             };
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody: components["requestBodies"]["SettingsQueryRequest"];
         responses: {
             200: components["responses"]["SettingsSchemaResponse"];
             default: components["responses"]["PlatformErrorResponse"];
@@ -3713,16 +3772,14 @@ export interface operations {
     };
     getPluginSettings: {
         parameters: {
-            query: {
-                scope: components["parameters"]["SettingsScope"];
-            };
+            query?: never;
             header?: never;
             path: {
                 plugin_instance_id: components["parameters"]["PluginInstanceID"];
             };
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody: components["requestBodies"]["SettingsQueryRequest"];
         responses: {
             200: components["responses"]["SettingsSnapshotResponse"];
             default: components["responses"]["PlatformErrorResponse"];

@@ -4,7 +4,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { inflateSync } from "node:zlib";
 import { chromium } from "playwright";
-import { isExpectedSandboxConsoleLine } from "./smoke-console-policy.mjs";
+import { observePageFailures } from "./examples-page-failures.mjs";
 
 const baseURL = process.env.REDEVPLUGIN_EXAMPLES_URL;
 if (!baseURL) throw new Error("REDEVPLUGIN_EXAMPLES_URL is required");
@@ -16,11 +16,18 @@ const desktop = await browser.newPage({ viewport: { width: 1280, height: 800 }, 
 const desktopFailures = observePageFailures(desktop, baseURL);
 const methodCalls = [];
 const methodResults = [];
+const catalogQueryRequests = [];
+const catalogQueryResponses = [];
+const legacyCatalogRequests = [];
 desktop.on("request", (request) => {
+  const url = new URL(request.url());
+  if (url.pathname === "/_redevplugin/api/plugins/catalog/query") catalogQueryRequests.push(request);
+  if (url.pathname === "/_redevplugin/api/plugins/catalog") legacyCatalogRequests.push(request);
   if (!request.url().includes("/_redevplugin/api/plugins/rpc")) return;
   methodCalls.push(request.postData() || "");
 });
 desktop.on("response", (response) => {
+  if (new URL(response.url()).pathname === "/_redevplugin/api/plugins/catalog/query") catalogQueryResponses.push(response);
   if (response.url().includes("/_redevplugin/api/plugins/rpc")) {
     const method = response.request().postDataJSON()?.method;
     methodResults.push(response.json().then((body) => ({ method, body })).catch(() => ({ method, body: undefined })));
@@ -31,6 +38,29 @@ try {
   await desktop.goto(baseURL, { waitUntil: "domcontentloaded" });
   assert.equal(await desktop.title(), "ReDevPlugin Examples");
   await desktop.locator(".runtime-status[data-ready=\"true\"]").waitFor({ state: "attached", timeout: 30_000 });
+  await waitFor(() => catalogQueryRequests.length === 1 && catalogQueryResponses.length === 1, 5_000, "authenticated catalog query");
+  const catalogRequest = catalogQueryRequests[0];
+  const catalogHeaders = await catalogRequest.headersArray();
+  const headerValues = (name) => catalogHeaders
+    .filter((header) => header.name.toLowerCase() === name.toLowerCase())
+    .map((header) => header.value);
+  assert.equal(catalogRequest.method(), "POST");
+  assert.equal(new URL(catalogRequest.url()).search, "");
+  assert.deepEqual(catalogRequest.postDataJSON(), {});
+  assert.deepEqual(headerValues("Origin"), [new URL(baseURL).origin]);
+  assert.deepEqual(headerValues("X-ReDevPlugin-CSRF"), ["examples-browser-csrf-v1"]);
+  assert.deepEqual(headerValues("Content-Type"), ["application/json"]);
+  assert.equal(catalogQueryResponses[0].status(), 200);
+  assert.equal(await catalogQueryResponses[0].headerValue("cache-control"), "no-store");
+
+  desktopFailures.expectResourceFailure(404, "Not Found", new URL("/_redevplugin/api/plugins/catalog", baseURL).href);
+  const legacyStatus = await desktop.evaluate(async () => (await fetch("/_redevplugin/api/plugins/catalog", {
+    credentials: "same-origin",
+  })).status);
+  assert.equal(legacyStatus, 404, "the browser GET contract must be retired without an alias");
+  assert.equal(legacyCatalogRequests.length, 1);
+  const legacyHeaders = await legacyCatalogRequests[0].headersArray();
+  assert.equal(legacyHeaders.some((header) => header.name.toLowerCase() === "origin"), false, "same-origin GET omits Origin and cannot satisfy the v0.6 provenance contract");
   assert.equal(await desktop.locator(".workspace > .surface-stage").count(), 1, "the Showcase must expose one uninterrupted app surface");
   assert.equal(await desktop.locator(".workspace > header").count(), 0, "the Showcase must not add a top-level app header");
   const showcaseIcons = await desktop.locator("#plugin-list .plugin-nav img").evaluateAll((images) => images.map((image) => ({
@@ -69,10 +99,9 @@ try {
   await memos.getByText("Draft pending", { exact: true }).waitFor();
   await memos.getByText("Draft protected", { exact: true }).waitFor({ timeout: 10_000 });
 
-  await desktop.reload({ waitUntil: "domcontentloaded" });
-  memos = await pluginFrame(desktop, "Memos");
+  memos = await reloadPluginSurface(desktop, "Memos");
   await memos.getByText("Draft protected", { exact: true }).waitFor({ timeout: 10_000 });
-  assert.equal(await memos.getByPlaceholder("What's on your mind?").inputValue(), "# Smoke timeline memo\n\n- [ ] verify task writeback\n\n#smoke", "safe draft must survive a full reload");
+  assert.equal(await memos.getByPlaceholder("What's on your mind?").inputValue(), "# Smoke timeline memo\n\n- [ ] verify task writeback\n\n#smoke", "safe draft must survive a fresh surface instance");
   let committedPublishWithLostResponse = 0;
   const publishLostResponseRoute = async (route) => {
     const requestBody = route.request().postDataJSON();
@@ -273,10 +302,9 @@ try {
   await memos.getByRole("button", { name: "Archived 0", exact: true }).waitFor();
   await desktop.unroute("**/_redevplugin/api/plugins/rpc");
   await memos.locator(".memos-toast").waitFor({ state: "detached", timeout: 5_000 });
-  await desktop.reload({ waitUntil: "domcontentloaded" });
-  memos = await pluginFrame(desktop, "Memos");
+  memos = await reloadPluginSurface(desktop, "Memos");
   await editedCard().waitFor();
-  assert.equal(await lifecycleCard().count(), 0, "the deleted memo must remain absent after a full reload");
+  assert.equal(await lifecycleCard().count(), 0, "the deleted memo must remain absent in a fresh surface instance");
   await memos.getByRole("button", { name: "All memos 1", exact: true }).waitFor();
 
   const editedMenuButton = editedCard().getByRole("button", { name: "More memo actions" });
@@ -369,8 +397,7 @@ try {
   await weather.getByRole("heading", { name: "Berlin" }).waitFor({ timeout: 20_000 });
   await desktop.screenshot({ path: resolve(evidenceDir, "examples-weather-desktop.png"), fullPage: false });
 
-  await desktop.reload({ waitUntil: "domcontentloaded" });
-  weather = await pluginFrame(desktop, "Weather");
+  weather = await reloadPluginSurface(desktop, "Weather");
   await weather.locator(".saved-strip").getByText("Paris", { exact: true }).waitFor({ timeout: 20_000 });
 
   const pluginSwitchSamplesMs = [];
@@ -436,8 +463,7 @@ try {
   const restartedFrame = await canvas.screenshot();
   assert.notEqual(sha256(restartedFrame), sha256(pausedFrame), "restart must return to a fresh mission state");
   const loadResultsBeforeReload = (await Promise.all(methodResults)).filter((result) => result.method === "game.highScore.load").length;
-  await desktop.reload({ waitUntil: "domcontentloaded" });
-  const reloadedGame = await pluginFrame(desktop, "Sky Strike");
+  const reloadedGame = await reloadPluginSurface(desktop, "Sky Strike");
   await reloadedGame.locator("canvas").waitFor({ state: "visible", timeout: 20_000 });
   await waitFor(async () => {
     const results = (await Promise.all(methodResults)).filter((result) => result.method === "game.highScore.load");
@@ -530,13 +556,13 @@ try {
   await compactEditCard.getByRole("button", { name: "Done" }).click();
   await compactMemos.locator(".memo-card").filter({ hasText: "Protected timeline edit" }).waitFor();
   await compact.screenshot({ path: resolve(evidenceDir, "examples-memos-compact.png"), fullPage: false });
-  await compact.goto(`${baseURL}?plugin=weather`, { waitUntil: "domcontentloaded" });
+  await compact.locator('#mobile-plugin-list button[data-slug="weather"]').click();
   const compactWeather = await pluginFrame(compact, "Weather");
   await compactWeather.getByRole("heading", { name: "Paris" }).waitFor({ timeout: 20_000 });
   await assertMinimumTouchSize(compactWeather.getByRole("button", { name: "Search weather" }), 44);
   await assertNoHorizontalOverflow(compact);
   await assertNoHorizontalOverflow(compact.frameLocator('iframe[title="Weather plugin"]'));
-  await compact.goto(`${baseURL}?plugin=sky-strike`, { waitUntil: "domcontentloaded" });
+  await compact.locator('#mobile-plugin-list button[data-slug="sky-strike"]').click();
   const compactGame = await pluginFrame(compact, "Sky Strike");
   const compactGameCanvas = compactGame.locator("canvas");
   await compactGameCanvas.waitFor({ state: "visible", timeout: 20_000 });
@@ -598,116 +624,24 @@ try {
   await browser.close();
 }
 
-function observePageFailures(page, applicationBaseURL) {
-  const consoleLines = [];
-  const pageErrors = [];
-  const apiFailureReads = [];
-  const expectedRPCFaultLabels = [];
-  const observedRPCFaultLabels = [];
-  const expectedRPCTransportFaults = [];
-  const observedRPCTransportFaultLabels = [];
-  const unexpectedRequestFailures = [];
-  page.on("console", (message) => consoleLines.push(`${message.type()}: ${message.text()}`));
-  page.on("pageerror", (error) => pageErrors.push(error.message));
-  page.on("response", (response) => {
-    if (!response.url().startsWith(applicationBaseURL) || response.status() < 500) return;
-    apiFailureReads.push(Promise.all([
-      response.headerValue("x-redevplugin-smoke-fault"),
-      response.text().catch(() => ""),
-    ]).then(([faultLabel, body]) => {
-      if (faultLabel) {
-        observedRPCFaultLabels.push(faultLabel);
-        return "";
-      }
-      return `${response.status()} ${response.url()}${body ? ` ${body}` : ""}`;
-    }));
-  });
-  page.on("requestfailed", (request) => {
-    if (!request.url().startsWith(applicationBaseURL) || !request.url().includes("/_redevplugin/api/plugins/rpc")) return;
-    const method = request.postDataJSON()?.method;
-    const expected = expectedRPCTransportFaults.find((fault) => fault.method === method && !observedRPCTransportFaultLabels.includes(fault.label));
-    if (expected) {
-      observedRPCTransportFaultLabels.push(expected.label);
-      return;
-    }
-    const errorText = request.failure()?.errorText || "request failed";
-    if (errorText === "net::ERR_ABORTED") return;
-    unexpectedRequestFailures.push(`${method || "unknown"}: ${errorText}`);
-  });
-
-  return {
-    consoleLines,
-    pageErrors,
-    async fulfillRPCFault(route, label, message, mutationOutcome) {
-      assert.equal(expectedRPCFaultLabels.includes(label), false, `duplicate expected RPC fault label ${label}`);
-      assert.equal(
-        mutationOutcome === "not_committed" || mutationOutcome === "unknown",
-        true,
-        `RPC fault ${label} must declare a mutation outcome`,
-      );
-      expectedRPCFaultLabels.push(label);
-      await route.fulfill({
-        status: 503,
-        contentType: "application/json",
-        headers: { "x-redevplugin-smoke-fault": label },
-        body: JSON.stringify({
-          ok: false,
-          error: {
-            code: "PLUGIN_RUNTIME_UNAVAILABLE",
-            message,
-            details: {},
-            mutation_outcome: mutationOutcome,
-          },
-        }),
-      });
-    },
-    async abortRPCResponse(route, label, method) {
-      assert.equal(expectedRPCTransportFaults.some((fault) => fault.label === label), false, `duplicate expected RPC transport fault label ${label}`);
-      expectedRPCTransportFaults.push({ label, method });
-      await route.abort("connectionfailed");
-    },
-    async read() {
-      const expectedFailureConsoleLine = "error: Failed to load resource: the server responded with a status of 503 (Service Unavailable)";
-      const transportFailureConsoleLines = consoleLines.filter((line) => line.startsWith("error: Failed to load resource: net::ERR_"));
-      return {
-        consoleLines: [...consoleLines],
-        pageErrors: [...pageErrors],
-        apiFailures: (await Promise.all(apiFailureReads)).filter(Boolean),
-        expectedRPCFaultLabels: [...expectedRPCFaultLabels].sort(),
-        observedRPCFaultLabels: [...observedRPCFaultLabels].sort(),
-        expectedRPCTransportFaultLabels: expectedRPCTransportFaults.map((fault) => fault.label).sort(),
-        observedRPCTransportFaultLabels: [...observedRPCTransportFaultLabels].sort(),
-        unexpectedRequestFailures: [...unexpectedRequestFailures],
-        expectedFailureConsoleCount: consoleLines.filter((line) => line === expectedFailureConsoleLine).length,
-        transportFailureConsoleLines,
-        unexpectedConsole: consoleLines.filter((line) =>
-          line !== expectedFailureConsoleLine &&
-          !transportFailureConsoleLines.includes(line) &&
-          !isExpectedSandboxConsoleLine(line)
-        ),
-      };
-    },
-    async assertClean() {
-      const summary = await this.read();
-      assert.deepEqual(summary.pageErrors, []);
-      assert.deepEqual(summary.observedRPCFaultLabels, summary.expectedRPCFaultLabels, "every expected RPC fault must produce exactly one labeled response");
-      assert.deepEqual(summary.observedRPCTransportFaultLabels, summary.expectedRPCTransportFaultLabels, "every expected RPC transport fault must abort exactly one request");
-      assert.deepEqual(summary.unexpectedRequestFailures, []);
-      assert.equal(summary.expectedFailureConsoleCount, summary.expectedRPCFaultLabels.length, "every expected RPC fault must produce exactly one browser network error");
-      assert.equal(summary.transportFailureConsoleLines.length <= summary.expectedRPCTransportFaultLabels.length, true, "transport failure console noise must remain bounded");
-      assert.deepEqual(summary.apiFailures, []);
-      assert.deepEqual(summary.unexpectedConsole, []);
-      return summary;
-    },
-  };
-}
-
 async function pluginFrame(page, name) {
   const iframe = page.locator(`iframe[title="${name} plugin"]`);
   await iframe.waitFor({ state: "visible", timeout: 30_000 });
   const frame = page.frameLocator(`iframe[title="${name} plugin"]`);
   await frame.locator("body").waitFor({ state: "visible", timeout: 30_000 });
   return frame;
+}
+
+async function reloadPluginSurface(page, name) {
+  const previous = await page.locator(`iframe[title="${name} plugin"]`).elementHandle();
+  assert.notEqual(previous, null, `${name} surface must exist before reload`);
+  await page.locator("#reload-plugin").evaluate((button) => button.click());
+  await waitFor(
+    async () => await previous.evaluate((element) => !element.isConnected).catch(() => true),
+    10_000,
+    `${name} previous surface retirement`,
+  );
+  return pluginFrame(page, name);
 }
 
 async function assertNoHorizontalOverflow(scope) {

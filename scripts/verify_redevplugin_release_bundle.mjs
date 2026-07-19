@@ -113,9 +113,9 @@ function verifyRequiredArtifacts(bundleDir) {
     "bin/redevplugin-runtime",
     "compatibility.json",
     "performance-evidence.json",
-    "contracts/spec/openapi/plugin-platform-v6.yaml",
+    "contracts/spec/openapi/plugin-platform-v7.yaml",
     "contracts/spec/plugin/bridge-v5.schema.json",
-    "contracts/spec/plugin/compatibility-manifest-v6.schema.json",
+    "contracts/spec/plugin/compatibility-manifest-v7.schema.json",
     "contracts/spec/plugin/error-codes-v4.schema.json",
     "contracts/spec/plugin/host-capability-contract-v1.schema.json",
     "contracts/spec/plugin/host-capability-pin-v1.schema.json",
@@ -127,8 +127,8 @@ function verifyRequiredArtifacts(bundleDir) {
     "contracts/spec/plugin/manifest-v5.schema.json",
     "contracts/spec/plugin/opaque-surface-document-v3.schema.json",
     "contracts/spec/plugin/opaque-surface-transport-v4.schema.json",
-    "contracts/spec/plugin/performance-contract-v1.json",
-    "contracts/spec/plugin/performance-evidence-v1.schema.json",
+    "contracts/spec/plugin/performance-contract-v2.json",
+    "contracts/spec/plugin/performance-evidence-v2.schema.json",
     "contracts/spec/plugin/release-metadata-v5.schema.json",
     "contracts/spec/plugin/release-manifest-v4.schema.json",
     "contracts/spec/plugin/resource-scope-v1.schema.json",
@@ -196,7 +196,7 @@ function verifyCompatibility(bundleDir, expectedVersion, manifest, skipExecution
   const compatibility = readJSON(compatibilityPath);
   assertObject(compatibility, "compatibility.json");
   assertExactKeys(compatibility, ["schema_version", "matrix", "contracts"], "compatibility manifest");
-  assertEqual(compatibility.schema_version, "redevplugin.compatibility.v6", "compatibility schema_version");
+  assertEqual(compatibility.schema_version, "redevplugin.compatibility.v7", "compatibility schema_version");
   assertObject(compatibility.matrix, "compatibility matrix");
   for (const key of ["redevplugin_go_version", "redevplugin_ui_version", "redevplugin_runtime_version"]) {
     assertEqual(compatibility.matrix?.[key], expectedVersion, `compatibility matrix ${key}`);
@@ -317,7 +317,7 @@ function verifyPerformanceEvidence(bundleDir, expectedVersion, manifest, allowSm
   const path = join(bundleDir, "performance-evidence.json");
   const evidence = readJSON(path);
   const compatibility = readJSON(join(bundleDir, "compatibility.json"));
-  const contractPath = join(bundleDir, "contracts/spec/plugin/performance-contract-v1.json");
+  const contractPath = join(bundleDir, "contracts/spec/plugin/performance-contract-v2.json");
   try {
     validatePerformanceEvidence(evidence, readPerformanceContract(contractPath), {
       allowSmoke,

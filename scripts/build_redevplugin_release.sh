@@ -236,7 +236,7 @@ if [[ -n "$PERFORMANCE_EVIDENCE" ]]; then
   node "$ROOT_DIR/scripts/copy_redevplugin_performance_evidence.mjs" \
     --input "$PERFORMANCE_EVIDENCE" \
     --output "$OUT_DIR/performance-evidence.json" \
-    --contract "$OUT_DIR/contracts/spec/plugin/performance-contract-v1.json" \
+    --contract "$OUT_DIR/contracts/spec/plugin/performance-contract-v2.json" \
     --compatibility "$OUT_DIR/compatibility.json" \
     --version "$VERSION" \
     --source-commit "$SOURCE_COMMIT" \

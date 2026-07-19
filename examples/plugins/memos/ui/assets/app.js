@@ -3176,17 +3176,19 @@ Please report this to https://github.com/markedjs/marked.`, e) {
     bridge.onAction("retry-sync", () => void reconcileUnknownMutationOutcome());
     bridge.onAction("toggle-task", (event) => void toggleTask(event));
     bridge.onAction("toggle-expanded", (event) => void toggleExpanded(event.value));
+    var initialization = initialize();
     bridge.onLifecycle(async (event) => {
         if (event.type === "dispose") {
             disposed = true;
             clearTimers();
+            await initialization.catch(() => void 0);
             await Promise.all([flushComposer(), flushEdit()]);
         }
         else if (event.type === "hidden") {
             await Promise.all([flushComposer(), flushEdit()]);
         }
     });
-    void initialize().catch(reportUnhandledFailure);
+    void initialization.catch(reportUnhandledFailure);
     async function initialize() {
         await bridge.ready();
         state.ui.busy = true;

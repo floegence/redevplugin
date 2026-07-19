@@ -9,7 +9,7 @@ import (
 
 func TestOperationDTOCarriesCompleteExecutionEvidence(t *testing.T) {
 	root := repoRoot(t)
-	openAPI, err := os.ReadFile(filepath.Join(root, "spec", "openapi", "plugin-platform-v6.yaml"))
+	openAPI, err := os.ReadFile(filepath.Join(root, "spec", "openapi", "plugin-platform-v7.yaml"))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -52,6 +52,7 @@ for (const testCase of [
       join(fixture.repo, "scripts/generate_redevplugin_performance_evidence.mjs"),
       "--output", fixture.output,
       "--measurements", join(fixture.base, "missing-measurements.ndjson"),
+      "--comparisons", join(fixture.base, "missing-comparisons.ndjson"),
       "--compatibility", join(fixture.base, "missing-compatibility.json"),
       "--version", "0.5.0",
       "--source-commit", sourceCommit,
@@ -99,6 +100,10 @@ async function createFixture(t) {
   await copyFile(
     join(root, "scripts/performance_contract.mjs"),
     join(repo, "scripts/performance_contract.mjs"),
+  );
+  await copyFile(
+    join(root, "scripts/route_authorization_comparison.mjs"),
+    join(repo, "scripts/route_authorization_comparison.mjs"),
   );
   await copyFile(
     join(root, "scripts/rfc3339.mjs"),

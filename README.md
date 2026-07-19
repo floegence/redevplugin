@@ -21,10 +21,10 @@ capabilities.
   WASM ABI schema, worker invocation payload schema, stable error-code schema,
   persistent resource-scope schema, performance-evidence schema, and target
   classifier fixture
-- Active coordinated contracts are `plugin-host-v4`, `rust-ipc-v4`,
-  `plugin-ui-v5`, `bridge-v5`, `plugin-platform-v6`, `manifest-v5`, opaque
+- Active coordinated contracts are `plugin-host-v5`, `rust-ipc-v4`,
+  `plugin-ui-v5`, `bridge-v5`, `plugin-platform-v7`, `manifest-v5`, opaque
   document v3, opaque transport v4, release metadata v5, compatibility manifest
-  v6, error codes v4, resource scope v1, token/ticket v3, and release manifest
+  v7, error codes v4, resource scope v1, token/ticket v3, and release manifest
   v4. WASM ABI v2, worker invocation v3, and package signature v1 remain
   unchanged.
 - Host-neutral Go package boundaries for manifest validation, package IO,
@@ -408,8 +408,9 @@ capabilities.
   exact Rust worker SDK crate identity, sorted file list, lowercase SHA-256
   hashes and byte sizes, excludes itself and `SHA256SUMS`, rejects unsafe paths,
   and drives generated checksums.
-- Mounted hosts can also expose the same compatibility manifest through
-  `GET /_redevplugin/api/plugins/platform/compatibility`, allowing a product to
+- Mounted hosts can also expose the same compatibility manifest through the
+  closed `POST /_redevplugin/api/plugins/platform/compatibility/query` request,
+  allowing a product to
   verify the loaded platform artifact set without shelling out to the CLI; the
   TypeScript `PluginPlatformClient.getCompatibility()` helper reads the same
   endpoint for browser-hosted product shells.
@@ -508,7 +509,12 @@ capabilities.
 - `redevplugin examples-server <state-root> <runtime-path>` starts the
   user-facing Examples Showcase with Memos, Weather, and Sky Strike. Every
   example uses the Go Host, HTTP adapter, real Rust runtime, installable plugin
-  package, and persisted plugin storage. Memos is a complete private Markdown
+  package, and persisted plugin storage. The examples server is a local
+  conformance harness, not a production authentication or authorization
+  implementation: it injects one synthetic session and accepts every valid
+  platform action. An embedding product must provide its own authenticated
+  session, origin, CSRF, and route-authorization guard. Memos is a complete
+  private Markdown
   timeline: its always-available composer persists a safe draft before explicit
   publication, the feed renders controlled Markdown VNodes without admitting
   raw HTML, images, or arbitrary navigation, and search invalidates stale

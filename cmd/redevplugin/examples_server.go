@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -91,7 +92,13 @@ var examplePluginSpecs = []examplePluginSpec{
 	},
 }
 
-type examplesWebSecurityGuard struct{ origin string }
+const examplesCSRFHeader = "X-ReDevPlugin-CSRF"
+const examplesCSRFToken = "examples-browser-csrf-v1"
+
+type examplesWebSecurityGuard struct {
+	origin    string
+	csrfToken string
+}
 
 func (guard examplesWebSecurityGuard) Authenticate(r *http.Request) (sessionctx.Context, error) {
 	return examplesSession(), nil
@@ -101,25 +108,28 @@ func (guard examplesWebSecurityGuard) ValidateOrigin(r *http.Request, _ sessionc
 	if policy != websecurity.OriginPolicyTrustedHost {
 		return websecurity.ErrOriginPolicyInvalid
 	}
-	origin := strings.TrimSpace(r.Header.Get("Origin"))
-	unsafeMethod := r.Method != http.MethodGet && r.Method != http.MethodHead && r.Method != http.MethodOptions
-	if origin != guard.origin && (origin != "" || unsafeMethod) {
+	values := r.Header.Values("Origin")
+	if len(values) != 1 || values[0] != guard.origin || strings.Contains(values[0], ",") {
 		return websecurity.ErrOriginDenied
 	}
 	return nil
 }
 
 func (guard examplesWebSecurityGuard) ValidateCSRF(r *http.Request, _ sessionctx.Context, policy websecurity.CSRFPolicy) error {
-	if !policy.Valid() {
+	if policy != websecurity.CSRFPolicyRequired {
 		return websecurity.ErrCSRFPolicyInvalid
 	}
-	if policy == websecurity.CSRFPolicyRequired && strings.TrimSpace(r.Header.Get("Origin")) != guard.origin {
+	values := r.Header.Values(examplesCSRFHeader)
+	if len(values) == 0 {
 		return websecurity.ErrCSRFRequired
+	}
+	if len(values) != 1 || strings.Contains(values[0], ",") || subtle.ConstantTimeCompare([]byte(values[0]), []byte(guard.csrfToken)) != 1 {
+		return websecurity.ErrCSRFInvalid
 	}
 	return nil
 }
 
-func (examplesWebSecurityGuard) AuthorizeRoute(_ *http.Request, _ sessionctx.Context, action websecurity.RouteAction) error {
+func (examplesWebSecurityGuard) AuthorizeRoute(_ *http.Request, _ sessionctx.Context, action websecurity.RouteAction, _ websecurity.RouteEffect) error {
 	if !action.Valid() {
 		return websecurity.ErrRouteActionInvalid
 	}
@@ -362,7 +372,7 @@ func examplesServerWithOptions(ctx context.Context, stateRoot string, runtimePat
 	origin := "http://" + listener.Addr().String()
 	platformHandler, err := httpadapter.NewHandler(httpadapter.Dependencies{
 		Host:  pluginHost,
-		Guard: examplesWebSecurityGuard{origin: origin},
+		Guard: examplesWebSecurityGuard{origin: origin, csrfToken: examplesCSRFToken},
 	})
 	if err != nil {
 		return err

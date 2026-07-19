@@ -299,29 +299,29 @@ func TestRouteSetHasManagementAndSandboxRoutes(t *testing.T) {
 		"POST /_redevplugin/api/plugins/surfaces/{surface_instance_id}/dispose":           false,
 		"POST /_redevplugin/api/plugins/rpc":                                              false,
 		"POST /_redevplugin/api/plugins/data/export":                                      false,
-		"GET /_redevplugin/api/plugins/retained-data":                                     false,
+		"POST /_redevplugin/api/plugins/retained-data/query":                              false,
 		"POST /_redevplugin/api/plugins/retained-data/delete":                             false,
 		"POST /_redevplugin/api/plugins/retained-data/cleanup-expired":                    false,
-		"GET /_redevplugin/api/plugins/intents":                                           false,
+		"POST /_redevplugin/api/plugins/intents/query":                                    false,
 		"POST /_redevplugin/api/plugins/intents/invoke":                                   false,
-		"GET /_redevplugin/api/plugins/platform/compatibility":                            false,
+		"POST /_redevplugin/api/plugins/platform/compatibility/query":                     false,
 		"POST /_redevplugin/api/plugins/update-release-ref":                               false,
-		"GET /_redevplugin/api/plugins/permissions":                                       false,
+		"POST /_redevplugin/api/plugins/permissions/query":                                false,
 		"POST /_redevplugin/api/plugins/permissions/grant":                                false,
 		"POST /_redevplugin/api/plugins/permissions/revoke":                               false,
-		"GET /_redevplugin/api/plugins/security-policies":                                 false,
-		"GET /_redevplugin/api/plugins/security-policies/{plugin_instance_id}":            false,
+		"POST /_redevplugin/api/plugins/security-policies/query":                          false,
+		"POST /_redevplugin/api/plugins/security-policies/{plugin_instance_id}/query":     false,
 		"PUT /_redevplugin/api/plugins/security-policies/{plugin_instance_id}":            false,
 		"DELETE /_redevplugin/api/plugins/security-policies/{plugin_instance_id}":         false,
-		"GET /_redevplugin/api/plugins/diagnostics":                                       false,
-		"GET /_redevplugin/api/plugins/runtime/health":                                    false,
+		"POST /_redevplugin/api/plugins/diagnostics/query":                                false,
+		"POST /_redevplugin/api/plugins/runtime/health/query":                             false,
 		"POST /_redevplugin/api/plugins/runtime/refresh-enabled":                          false,
 		"POST /_redevplugin/api/plugins/data/export/delete":                               false,
 		"POST /_redevplugin/api/plugins/runtime/start":                                    false,
 		"POST /_redevplugin/api/plugins/runtime/stop":                                     false,
-		"GET /_redevplugin/api/plugins/{plugin_instance_id}/settings":                     false,
+		"POST /_redevplugin/api/plugins/{plugin_instance_id}/settings/query":              false,
 		"PATCH /_redevplugin/api/plugins/{plugin_instance_id}/settings":                   false,
-		"GET /_redevplugin/api/plugins/{plugin_instance_id}/settings/schema":              false,
+		"POST /_redevplugin/api/plugins/{plugin_instance_id}/settings/schema/query":       false,
 	}
 	for _, route := range routes {
 		key := route.Method + " " + route.Path
@@ -338,8 +338,8 @@ func TestRouteSetHasManagementAndSandboxRoutes(t *testing.T) {
 
 func TestRouteSetIncludesLocalImportRoutes(t *testing.T) {
 	want := map[string]bool{
-		"POST /_redevplugin/api/plugins/local-imports":                    false,
-		"PUT /_redevplugin/api/plugins/{plugin_instance_id}/local-import": false,
+		"POST /_redevplugin/api/plugins/{plugin_instance_id}/local-import": false,
+		"PUT /_redevplugin/api/plugins/{plugin_instance_id}/local-import":  false,
 	}
 	for _, route := range RouteSet() {
 		key := route.Method + " " + route.Path
@@ -351,6 +351,266 @@ func TestRouteSetIncludesLocalImportRoutes(t *testing.T) {
 		if !found {
 			t.Fatalf("RouteSet() missing %s", key)
 		}
+	}
+	for _, route := range RouteSet() {
+		if route.Path == "/_redevplugin/api/plugins/local-imports" {
+			t.Fatalf("RouteSet() retained retired local import route %s %s", route.Method, route.Path)
+		}
+	}
+}
+
+func TestRouteSetUsesClosedPostQueryRoutes(t *testing.T) {
+	want := map[string]bool{
+		"POST /_redevplugin/api/plugins/catalog/query":                                false,
+		"POST /_redevplugin/api/plugins/features/query":                               false,
+		"POST /_redevplugin/api/plugins/platform/compatibility/query":                 false,
+		"POST /_redevplugin/api/plugins/intents/query":                                false,
+		"POST /_redevplugin/api/plugins/operations/query":                             false,
+		"POST /_redevplugin/api/plugins/operations/{operation_id}/query":              false,
+		"POST /_redevplugin/api/plugins/runtime/health/query":                         false,
+		"POST /_redevplugin/api/plugins/retained-data/query":                          false,
+		"POST /_redevplugin/api/plugins/permissions/query":                            false,
+		"POST /_redevplugin/api/plugins/security-policies/query":                      false,
+		"POST /_redevplugin/api/plugins/security-policies/{plugin_instance_id}/query": false,
+		"POST /_redevplugin/api/plugins/diagnostics/query":                            false,
+		"POST /_redevplugin/api/plugins/{plugin_instance_id}/settings/schema/query":   false,
+		"POST /_redevplugin/api/plugins/{plugin_instance_id}/settings/query":          false,
+	}
+	retired := map[string]struct{}{
+		"GET /_redevplugin/api/plugins/catalog":                                {},
+		"GET /_redevplugin/api/plugins/features":                               {},
+		"GET /_redevplugin/api/plugins/platform/compatibility":                 {},
+		"GET /_redevplugin/api/plugins/intents":                                {},
+		"GET /_redevplugin/api/plugins/operations":                             {},
+		"GET /_redevplugin/api/plugins/operations/{operation_id}":              {},
+		"GET /_redevplugin/api/plugins/runtime/health":                         {},
+		"GET /_redevplugin/api/plugins/retained-data":                          {},
+		"GET /_redevplugin/api/plugins/permissions":                            {},
+		"GET /_redevplugin/api/plugins/security-policies":                      {},
+		"GET /_redevplugin/api/plugins/security-policies/{plugin_instance_id}": {},
+		"GET /_redevplugin/api/plugins/diagnostics":                            {},
+		"GET /_redevplugin/api/plugins/{plugin_instance_id}/settings/schema":   {},
+		"GET /_redevplugin/api/plugins/{plugin_instance_id}/settings":          {},
+	}
+	for _, route := range RouteSet() {
+		key := route.Method + " " + route.Path
+		if _, ok := retired[key]; ok {
+			t.Fatalf("RouteSet() retained retired route %s", key)
+		}
+		if _, ok := want[key]; ok {
+			if route.Effect != websecurity.RouteEffectQuery {
+				t.Fatalf("RouteSet() route %s effect = %q, want query", key, route.Effect)
+			}
+			want[key] = true
+		}
+	}
+	for key, found := range want {
+		if !found {
+			t.Fatalf("RouteSet() missing %s", key)
+		}
+	}
+}
+
+func TestAllRoutesDeclareClosedEffectsAndRequireCSRF(t *testing.T) {
+	for _, route := range routes {
+		if !route.Effect.Valid() {
+			t.Fatalf("route %s %s effect = %q", route.Method, route.Path, route.Effect)
+		}
+		if route.csrfPolicy != websecurity.CSRFPolicyRequired {
+			t.Fatalf("route %s %s csrf policy = %q, want required", route.Method, route.Path, route.csrfPolicy)
+		}
+	}
+}
+
+func TestRetiredGetQueryRoutesReturnNotFound(t *testing.T) {
+	handler := mustNewHandler(t, newHTTPTestHost(t), allowHTTPTestGuard())
+	for _, path := range []string{
+		"/_redevplugin/api/plugins/catalog",
+		"/_redevplugin/api/plugins/features",
+		"/_redevplugin/api/plugins/platform/compatibility",
+		"/_redevplugin/api/plugins/intents",
+		"/_redevplugin/api/plugins/operations",
+		"/_redevplugin/api/plugins/operations/operation_1",
+		"/_redevplugin/api/plugins/runtime/health",
+		"/_redevplugin/api/plugins/retained-data",
+		"/_redevplugin/api/plugins/permissions",
+		"/_redevplugin/api/plugins/security-policies",
+		"/_redevplugin/api/plugins/security-policies/plugin_instance_1",
+		"/_redevplugin/api/plugins/diagnostics",
+		"/_redevplugin/api/plugins/plugin_instance_1/settings/schema",
+		"/_redevplugin/api/plugins/plugin_instance_1/settings",
+	} {
+		t.Run(path, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
+			if rec.Code != http.StatusNotFound {
+				t.Fatalf("status = %d, want 404 body = %s", rec.Code, rec.Body.String())
+			}
+		})
+	}
+}
+
+func TestPostQueryRoutesRejectUnknownBodyAndQueryParameters(t *testing.T) {
+	handler := mustNewHandler(t, newHTTPTestHost(t), allowHTTPTestGuard())
+	paths := []string{
+		"/_redevplugin/api/plugins/catalog/query",
+		"/_redevplugin/api/plugins/features/query",
+		"/_redevplugin/api/plugins/platform/compatibility/query",
+		"/_redevplugin/api/plugins/intents/query",
+		"/_redevplugin/api/plugins/operations/query",
+		"/_redevplugin/api/plugins/operations/operation_1/query",
+		"/_redevplugin/api/plugins/runtime/health/query",
+		"/_redevplugin/api/plugins/retained-data/query",
+		"/_redevplugin/api/plugins/permissions/query",
+		"/_redevplugin/api/plugins/security-policies/query",
+		"/_redevplugin/api/plugins/security-policies/plugin_instance_1/query",
+		"/_redevplugin/api/plugins/diagnostics/query",
+		"/_redevplugin/api/plugins/plugin_instance_1/settings/schema/query",
+		"/_redevplugin/api/plugins/plugin_instance_1/settings/query",
+	}
+	for _, path := range paths {
+		rawURL := path + "?owner_env_hash=forbidden"
+		t.Run(rawURL, func(t *testing.T) {
+			req := newJSONHTTPRequest(http.MethodPost, rawURL, bytes.NewBufferString(`{}`))
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("query status = %d, want 400 body = %s", rec.Code, rec.Body.String())
+			}
+			var envelope decodedErrorResponse
+			if err := json.Unmarshal(rec.Body.Bytes(), &envelope); err != nil {
+				t.Fatal(err)
+			}
+			if envelope.MutationOutcome != "" {
+				t.Fatalf("query error mutation_outcome = %q", envelope.MutationOutcome)
+			}
+		})
+	}
+
+	for _, path := range paths {
+		t.Run(path+" unknown body", func(t *testing.T) {
+			req := newJSONHTTPRequest(http.MethodPost, path, bytes.NewBufferString(`{"owner_env_hash":"forbidden"}`))
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("unknown body status = %d, want 400 body = %s", rec.Code, rec.Body.String())
+			}
+			var envelope decodedErrorResponse
+			if err := json.Unmarshal(rec.Body.Bytes(), &envelope); err != nil {
+				t.Fatal(err)
+			}
+			if envelope.MutationOutcome != "" {
+				t.Fatalf("query error mutation_outcome = %q", envelope.MutationOutcome)
+			}
+		})
+	}
+}
+
+func TestAllBrowserRoutesRejectQueryStrings(t *testing.T) {
+	handler := mustNewHandler(t, newHTTPTestHost(t), allowHTTPTestGuard())
+	for _, route := range RouteSet() {
+		path := samplePathForRoute(route.Path)
+		req := httptest.NewRequest(route.Method, path+"?unexpected=value", bytes.NewBufferString(`{}`))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("%s %s query status = %d, want 400 body = %s", route.Method, route.Path, rec.Code, rec.Body.String())
+		}
+	}
+}
+
+func TestLocalImportMetadataUsesClosedHeaders(t *testing.T) {
+	handler := mustNewHandler(t, newHTTPTestHost(t), allowHTTPTestGuard())
+
+	install := httptest.NewRequest(http.MethodPost, "/_redevplugin/api/plugins/plugin_instance_1/local-import", bytes.NewReader([]byte("not-a-package")))
+	install.Header.Set("Content-Type", localImportContentType)
+	installRec := httptest.NewRecorder()
+	handler.ServeHTTP(installRec, install)
+	if installRec.Code == http.StatusNotFound {
+		t.Fatalf("install path was not mounted: %s", installRec.Body.String())
+	}
+
+	update := httptest.NewRequest(http.MethodPut, "/_redevplugin/api/plugins/plugin_instance_1/local-import", bytes.NewReader([]byte("not-a-package")))
+	update.Header.Set("Content-Type", localImportContentType)
+	update.Header.Set("X-ReDevPlugin-Expected-Management-Revision", "7")
+	updateRec := httptest.NewRecorder()
+	handler.ServeHTTP(updateRec, update)
+	if updateRec.Code == http.StatusBadRequest && strings.Contains(updateRec.Body.String(), "expected_management_revision must be") {
+		t.Fatalf("update ignored closed revision header: %s", updateRec.Body.String())
+	}
+
+	for _, tt := range []struct {
+		name   string
+		method string
+		path   string
+		header string
+		value  string
+	}{
+		{name: "missing update revision", method: http.MethodPut, path: "/_redevplugin/api/plugins/plugin_instance_1/local-import", header: "", value: ""},
+		{name: "duplicate update revision", method: http.MethodPut, path: "/_redevplugin/api/plugins/plugin_instance_1/local-import", header: "X-ReDevPlugin-Expected-Management-Revision", value: "7"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(tt.method, tt.path, bytes.NewReader([]byte("not-a-package")))
+			req.Header.Set("Content-Type", localImportContentType)
+			if tt.header != "" {
+				req.Header.Add(tt.header, tt.value)
+				req.Header.Add(tt.header, tt.value)
+			}
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want 400 body = %s", rec.Code, rec.Body.String())
+			}
+		})
+	}
+}
+
+func TestLocalImportRevisionHeaderFailsClosedBeforeReadingPackage(t *testing.T) {
+	handler := mustNewHandler(t, newHTTPTestHost(t), allowHTTPTestGuard())
+	tests := []struct {
+		name   string
+		values []string
+	}{
+		{name: "missing"},
+		{name: "duplicate", values: []string{"7", "7"}},
+		{name: "combined", values: []string{"7, 8"}},
+		{name: "surrounding whitespace", values: []string{" 7 "}},
+		{name: "leading zero", values: []string{"07"}},
+		{name: "plus prefix", values: []string{"+7"}},
+		{name: "zero", values: []string{"0"}},
+		{name: "unsafe integer", values: []string{"9007199254740992"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			body := &httpReadProbe{reader: strings.NewReader("not-a-package")}
+			req := httptest.NewRequest(http.MethodPut, "/_redevplugin/api/plugins/plugin_instance_1/local-import", body)
+			req.Header.Set("Content-Type", localImportContentType)
+			for _, value := range tt.values {
+				req.Header.Add(localImportRevisionHeader, value)
+			}
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want 400 body = %s", rec.Code, rec.Body.String())
+			}
+			if body.calls != 0 {
+				t.Fatalf("invalid revision consumed package body %d times", body.calls)
+			}
+		})
+	}
+}
+
+func TestLocalImportInstallRejectsRevisionBeforeReadingPackage(t *testing.T) {
+	handler := mustNewHandler(t, newHTTPTestHost(t), allowHTTPTestGuard())
+	body := &httpReadProbe{reader: strings.NewReader("not-a-package")}
+	req := httptest.NewRequest(http.MethodPost, "/_redevplugin/api/plugins/plugin_instance_1/local-import", body)
+	req.Header.Set("Content-Type", localImportContentType)
+	req.Header.Set(localImportRevisionHeader, "7")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest || body.calls != 0 {
+		t.Fatalf("install revision rejection = status:%d reads:%d body:%s", rec.Code, body.calls, rec.Body.String())
 	}
 }
 
@@ -376,22 +636,21 @@ func TestRouteSetRoutesAreHandled(t *testing.T) {
 	}
 }
 
-func TestRequestIsMutationClassifiesPutAndDelete(t *testing.T) {
+func TestRequestEnvelopeClassificationUsesClosedRouteEffect(t *testing.T) {
 	tests := []struct {
-		method string
-		path   string
+		effect websecurity.RouteEffect
 		want   bool
 	}{
-		{method: http.MethodGet, path: "/_redevplugin/api/plugins/security-policies", want: false},
-		{method: http.MethodPut, path: "/_redevplugin/api/plugins/security-policies/plugini_test", want: true},
-		{method: http.MethodDelete, path: "/_redevplugin/api/plugins/security-policies/plugini_test", want: true},
-		{method: http.MethodPost, path: "/_redevplugin/api/plugins/surfaces/surface_test/streams/read", want: false},
+		{effect: websecurity.RouteEffectQuery, want: false},
+		{effect: websecurity.RouteEffectMutation, want: true},
+		{effect: websecurity.RouteEffect("unknown"), want: true},
+		{effect: "", want: true},
 	}
 	for _, tt := range tests {
-		t.Run(tt.method+" "+tt.path, func(t *testing.T) {
-			req := httptest.NewRequest(tt.method, tt.path, nil)
-			if got := requestIsMutation(req); got != tt.want {
-				t.Fatalf("requestIsMutation(%s %s) = %t, want %t", tt.method, tt.path, got, tt.want)
+		t.Run(string(tt.effect), func(t *testing.T) {
+			handler := Handler{routeEffect: tt.effect}
+			if got := handler.hasMutationEffect(); got != tt.want {
+				t.Fatalf("hasMutationEffect(%q) = %t, want %t", tt.effect, got, tt.want)
 			}
 		})
 	}
@@ -407,13 +666,13 @@ func TestHandlerLocalImportRoutesAreAlwaysMounted(t *testing.T) {
 		{
 			name:   "install",
 			method: http.MethodPost,
-			path:   "/_redevplugin/api/plugins/local-imports",
+			path:   "/_redevplugin/api/plugins/plugini_test/local-import",
 			body:   []byte("not-a-zip"),
 		},
 		{
 			name:   "update",
 			method: http.MethodPut,
-			path:   "/_redevplugin/api/plugins/plugini_test/local-import?expected_management_revision=1",
+			path:   "/_redevplugin/api/plugins/plugini_test/local-import",
 			body:   []byte("not-a-zip"),
 		},
 	}
@@ -422,6 +681,9 @@ func TestHandlerLocalImportRoutesAreAlwaysMounted(t *testing.T) {
 			handler := mustNewHandler(t, newHTTPTestHost(t), allowHTTPTestGuard())
 			req := httptest.NewRequest(tt.method, tt.path, bytes.NewReader(tt.body))
 			req.Header.Set("Content-Type", localImportContentType)
+			if tt.method == http.MethodPut {
+				req.Header.Set(localImportRevisionHeader, "1")
+			}
 			rec := httptest.NewRecorder()
 
 			handler.ServeHTTP(rec, req)
@@ -435,7 +697,7 @@ func TestHandlerLocalImportRoutesAreAlwaysMounted(t *testing.T) {
 
 func TestHandlerCompatibilityManifest(t *testing.T) {
 	handler := mustNewHandler(t, newHTTPTestHost(t), allowHTTPTestGuard())
-	got := getJSON[struct {
+	got := postJSON[struct {
 		SchemaVersion string `json:"schema_version"`
 		Matrix        struct {
 			PluginHostProtocolVersion string `json:"plugin_host_protocol_version"`
@@ -446,12 +708,12 @@ func TestHandlerCompatibilityManifest(t *testing.T) {
 			Path   string `json:"path"`
 			SHA256 string `json:"sha256"`
 		} `json:"contracts"`
-	}](t, handler, "/_redevplugin/api/plugins/platform/compatibility")
+	}](t, handler, "/_redevplugin/api/plugins/platform/compatibility/query", map[string]any{})
 
-	if got.SchemaVersion != "redevplugin.compatibility.v6" {
+	if got.SchemaVersion != "redevplugin.compatibility.v7" {
 		t.Fatalf("schema_version = %q", got.SchemaVersion)
 	}
-	if got.Matrix.PluginHostProtocolVersion != "plugin-host-v4" || got.Matrix.PluginPlatformOpenAPI != "plugin-platform-v6" {
+	if got.Matrix.PluginHostProtocolVersion != "plugin-host-v5" || got.Matrix.PluginPlatformOpenAPI != "plugin-platform-v7" {
 		t.Fatalf("matrix mismatch: %#v", got.Matrix)
 	}
 	contracts := map[string]struct {
@@ -468,7 +730,7 @@ func TestHandlerCompatibilityManifest(t *testing.T) {
 	if !ok {
 		t.Fatalf("compatibility manifest missing plugin-platform-openapi: %#v", got.Contracts)
 	}
-	if openapi.Path != "spec/openapi/plugin-platform-v6.yaml" || openapi.SHA256 == "" {
+	if openapi.Path != "spec/openapi/plugin-platform-v7.yaml" || openapi.SHA256 == "" {
 		t.Fatalf("plugin-platform-openapi contract mismatch: %#v", openapi)
 	}
 }
@@ -714,7 +976,7 @@ func TestHandlerRejectsQueryParametersOutsideRouteContract(t *testing.T) {
 				t.Fatal(err)
 			}
 			wantOutcome := ""
-			if requestIsMutation(req) {
+			if route.Effect == websecurity.RouteEffectMutation {
 				wantOutcome = string(mutation.OutcomeNotCommitted)
 			}
 			if envelope.OK || envelope.Code != string(security.ErrInvalidRequest) || envelope.MutationOutcome != wantOutcome {
@@ -727,13 +989,9 @@ func TestHandlerRejectsQueryParametersOutsideRouteContract(t *testing.T) {
 func TestHandlerRejectsDuplicateQueryParameters(t *testing.T) {
 	handler := mustNewHandler(t, newHTTPTestHost(t), allowHTTPTestGuard())
 	for _, route := range routes {
-		if len(route.queryKeys) == 0 {
-			continue
-		}
 		route := route
 		t.Run(route.Method+" "+route.Path, func(t *testing.T) {
-			key := route.queryKeys[0]
-			req := httptest.NewRequest(route.Method, samplePathForRoute(route.Path)+"?"+key+"=first&"+key+"=second", nil)
+			req := httptest.NewRequest(route.Method, samplePathForRoute(route.Path)+"?unexpected=first&unexpected=second", nil)
 			rec := httptest.NewRecorder()
 			handler.ServeHTTP(rec, req)
 			if rec.Code != http.StatusBadRequest {
@@ -744,7 +1002,7 @@ func TestHandlerRejectsDuplicateQueryParameters(t *testing.T) {
 				t.Fatal(err)
 			}
 			wantOutcome := ""
-			if requestIsMutation(req) {
+			if route.Effect == websecurity.RouteEffectMutation {
 				wantOutcome = string(mutation.OutcomeNotCommitted)
 			}
 			if envelope.OK || envelope.Code != string(security.ErrInvalidRequest) || envelope.MutationOutcome != wantOutcome {
@@ -757,7 +1015,7 @@ func TestHandlerRejectsDuplicateQueryParameters(t *testing.T) {
 func TestHandlerWebSecurityRejectsDeniedOrigin(t *testing.T) {
 	guard := &httpTestWebSecurityGuard{decision: "deny"}
 	handler := mustNewHandler(t, newHTTPTestHost(t), guard)
-	req := httptest.NewRequest(http.MethodGet, "/_redevplugin/api/plugins/catalog", nil)
+	req := newJSONHTTPRequest(http.MethodPost, "/_redevplugin/api/plugins/catalog/query", bytes.NewBufferString(`{}`))
 	rec := httptest.NewRecorder()
 
 	handler.ServeHTTP(rec, req)
@@ -785,7 +1043,7 @@ func TestHandlerWebSecurityRejectsHostSpecificOriginDecision(t *testing.T) {
 	handler := mustNewHandler(t, newHTTPTestHost(t), guard)
 	for _, path := range []string{
 		"/_redevplugin/api/plugins/install-release-ref",
-		"/_redevplugin/api/plugins/local-imports",
+		"/_redevplugin/api/plugins/plugin_test/local-import",
 		"/_redevplugin/api/plugins/enable",
 		"/_redevplugin/api/plugins/surfaces/surface_test/prepare",
 	} {
@@ -832,7 +1090,7 @@ func TestHandlerWebSecurityFailsClosedWithTypedNilGuard(t *testing.T) {
 func TestHandlerWebSecurityRejectsIncompleteTrustedScope(t *testing.T) {
 	guard := &httpTestWebSecurityGuard{scope: sessionctx.Context{OwnerSessionHash: "session_hash"}}
 	handler := mustNewHandler(t, newHTTPTestHost(t), guard)
-	req := httptest.NewRequest(http.MethodGet, "/_redevplugin/api/plugins/catalog", nil)
+	req := newJSONHTTPRequest(http.MethodPost, "/_redevplugin/api/plugins/catalog/query", bytes.NewBufferString(`{}`))
 	rec := httptest.NewRecorder()
 
 	handler.ServeHTTP(rec, req)
@@ -873,24 +1131,24 @@ func TestHandlerWebSecurityRequiresCSRFForUnsafeProxyRoutes(t *testing.T) {
 	}
 }
 
-func TestHandlerWebSecurityAllowsSafeProxyRouteWithoutCSRF(t *testing.T) {
+func TestHandlerWebSecurityRequiresCSRFForQueryRoutes(t *testing.T) {
 	guard := &httpTestWebSecurityGuard{decision: "trusted", csrfErr: websecurity.ErrCSRFRequired}
 	handler := mustNewHandler(t, newHTTPTestHost(t), guard)
-	req := httptest.NewRequest(http.MethodGet, "/_redevplugin/api/plugins/catalog", nil)
+	req := newJSONHTTPRequest(http.MethodPost, "/_redevplugin/api/plugins/catalog/query", bytes.NewBufferString(`{}`))
 	rec := httptest.NewRecorder()
 
 	handler.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusOK {
+	if rec.Code != http.StatusForbidden {
 		t.Fatalf("catalog status = %d body = %s", rec.Code, rec.Body.String())
 	}
-	if guard.authenticateCount != 1 || guard.originCount != 1 || guard.csrfCount != 1 || guard.authorizeCount != 1 {
+	if guard.authenticateCount != 1 || guard.originCount != 1 || guard.csrfCount != 1 || guard.authorizeCount != 0 {
 		t.Fatalf("guard calls = authenticate:%d origin:%d csrf:%d authorize:%d", guard.authenticateCount, guard.originCount, guard.csrfCount, guard.authorizeCount)
 	}
-	if guard.lastCSRFPolicy != websecurity.CSRFPolicyNotRequired || guard.lastAction != websecurity.RouteActionListPlugins {
+	if guard.lastCSRFPolicy != websecurity.CSRFPolicyRequired {
 		t.Fatalf("safe route contract = csrf:%q action:%q", guard.lastCSRFPolicy, guard.lastAction)
 	}
-	if got := strings.Join(guard.callOrder, ","); got != "authenticate,origin,csrf,authorize" {
+	if got := strings.Join(guard.callOrder, ","); got != "authenticate,origin,csrf" {
 		t.Fatalf("guard call order = %q", got)
 	}
 }
@@ -898,7 +1156,7 @@ func TestHandlerWebSecurityAllowsSafeProxyRouteWithoutCSRF(t *testing.T) {
 func TestHandlerWebSecurityRejectsUnauthorizedRouteAction(t *testing.T) {
 	guard := &httpTestWebSecurityGuard{authorizeErr: errors.New("route denied")}
 	handler := mustNewHandler(t, newHTTPTestHost(t), guard)
-	req := httptest.NewRequest(http.MethodGet, "/_redevplugin/api/plugins/catalog", nil)
+	req := newJSONHTTPRequest(http.MethodPost, "/_redevplugin/api/plugins/catalog/query", bytes.NewBufferString(`{}`))
 	rec := httptest.NewRecorder()
 
 	handler.ServeHTTP(rec, req)
@@ -921,7 +1179,7 @@ func TestHandlerWebSecurityRejectsUnauthorizedRouteAction(t *testing.T) {
 func TestHandlerMapsHostDirectAuthorizationDenialToStableActionCode(t *testing.T) {
 	h := newHTTPTestHostWithOptions(t, httpTestHostOptions{authorization: httpDenyAuthorization{}})
 	handler := mustNewHandler(t, h, allowHTTPTestGuard())
-	req := httptest.NewRequest(http.MethodGet, "/_redevplugin/api/plugins/catalog", nil)
+	req := newJSONHTTPRequest(http.MethodPost, "/_redevplugin/api/plugins/catalog/query", bytes.NewBufferString(`{}`))
 	rec := httptest.NewRecorder()
 
 	handler.ServeHTTP(rec, req)
@@ -938,7 +1196,7 @@ func TestHandlerMapsHostDirectAuthorizationDenialToStableActionCode(t *testing.T
 func TestHandlerMapsHostAuthorizationAdapterFailureWithoutLeakingDetails(t *testing.T) {
 	h := newHTTPTestHostWithOptions(t, httpTestHostOptions{authorization: httpFailAuthorization{}})
 	handler := mustNewHandler(t, h, allowHTTPTestGuard())
-	req := httptest.NewRequest(http.MethodGet, "/_redevplugin/api/plugins/catalog", nil)
+	req := newJSONHTTPRequest(http.MethodPost, "/_redevplugin/api/plugins/catalog/query", bytes.NewBufferString(`{}`))
 	rec := httptest.NewRecorder()
 
 	handler.ServeHTTP(rec, req)
@@ -959,7 +1217,7 @@ func TestHandlerRouteAndHostAuthorizationShareOneClosedAction(t *testing.T) {
 	authorization := &httpRecordingAuthorization{}
 	guard := allowHTTPTestGuard()
 	handler := mustNewHandler(t, newHTTPTestHostWithOptions(t, httpTestHostOptions{authorization: authorization}), guard)
-	req := httptest.NewRequest(http.MethodGet, "/_redevplugin/api/plugins/catalog", nil)
+	req := newJSONHTTPRequest(http.MethodPost, "/_redevplugin/api/plugins/catalog/query", bytes.NewBufferString(`{}`))
 	rec := httptest.NewRecorder()
 
 	handler.ServeHTTP(rec, req)
@@ -971,7 +1229,7 @@ func TestHandlerRouteAndHostAuthorizationShareOneClosedAction(t *testing.T) {
 		t.Fatalf("authorization calls = route:%d host:%d", guard.authorizeCount, len(authorization.requests))
 	}
 	hostRequest := authorization.requests[0]
-	if string(guard.lastAction) != string(hostRequest.Action) || hostRequest.Target.Kind != host.ResourcePlugin || !hostRequest.Target.Collection || !hostRequest.Session.Valid() {
+	if string(guard.lastAction) != string(hostRequest.Action) || guard.lastEffect != websecurity.RouteEffectQuery || hostRequest.Target.Kind != host.ResourcePlugin || !hostRequest.Target.Collection || !hostRequest.Session.Valid() {
 		t.Fatalf("route action = %q host request = %#v", guard.lastAction, hostRequest)
 	}
 }
@@ -1122,8 +1380,9 @@ func TestHandlerGenericErrorEnvelopesConformToOpenAPI(t *testing.T) {
 	}{
 		{
 			name:           "read error",
-			method:         http.MethodGet,
-			path:           "/_redevplugin/api/plugins/intents?unknown=value",
+			method:         http.MethodPost,
+			path:           "/_redevplugin/api/plugins/intents/query",
+			body:           `{"unknown":"value"}`,
 			responseSchema: "PlatformErrorResponse",
 			errorSchema:    "GenericPlatformError",
 		},
@@ -1196,9 +1455,9 @@ func TestHandlerManagementLifecycleFlow(t *testing.T) {
 		t.Fatalf("enable response mismatch: %#v", enabled)
 	}
 
-	catalog := getJSON[struct {
+	catalog := postJSON[struct {
 		Plugins []registry.PluginRecord `json:"plugins"`
-	}](t, handler, "/_redevplugin/api/plugins/catalog")
+	}](t, handler, "/_redevplugin/api/plugins/catalog/query", map[string]any{})
 	if len(catalog.Plugins) != 1 || catalog.Plugins[0].PluginInstanceID != installed.PluginInstanceID {
 		t.Fatalf("catalog mismatch: %#v", catalog)
 	}
@@ -1221,9 +1480,9 @@ func TestHandlerManagementLifecycleFlow(t *testing.T) {
 		t.Fatalf("uninstall response mismatch: %#v", uninstalled)
 	}
 
-	emptyCatalog := getJSON[struct {
+	emptyCatalog := postJSON[struct {
 		Plugins []registry.PluginRecord `json:"plugins"`
-	}](t, handler, "/_redevplugin/api/plugins/catalog")
+	}](t, handler, "/_redevplugin/api/plugins/catalog/query", map[string]any{})
 	if len(emptyCatalog.Plugins) != 0 {
 		t.Fatalf("catalog after uninstall mismatch: %#v", emptyCatalog)
 	}
@@ -1276,9 +1535,9 @@ func TestHandlerManagementRevisionContractFailsClosed(t *testing.T) {
 	if envelope.Code != string(security.ErrManagementRevisionMismatch) {
 		t.Fatalf("stale enable error_code = %q, want %q", envelope.Code, security.ErrManagementRevisionMismatch)
 	}
-	catalog := getJSON[struct {
+	catalog := postJSON[struct {
 		Plugins []registry.PluginRecord `json:"plugins"`
-	}](t, handler, "/_redevplugin/api/plugins/catalog")
+	}](t, handler, "/_redevplugin/api/plugins/catalog/query", map[string]any{})
 	if len(catalog.Plugins) != 1 || catalog.Plugins[0].EnableState != registry.EnableDisabled || catalog.Plugins[0].ManagementRevision != installed.ManagementRevision {
 		t.Fatalf("failed enable mutated catalog: %#v", catalog.Plugins)
 	}
@@ -1411,7 +1670,7 @@ func TestHandlerUpdateAndDowngradeFlow(t *testing.T) {
 func TestHandlerManagementRejectsInvalidInstallAndTrustStateInput(t *testing.T) {
 	h := newHTTPTestHost(t)
 	handler := mustNewHandler(t, h, allowHTTPTestGuard())
-	req := httptest.NewRequest(http.MethodPost, "/_redevplugin/api/plugins/local-imports?plugin_instance_id="+url.QueryEscape(nextHTTPTestPluginInstanceID(t)), bytes.NewBufferString("not-a-zip"))
+	req := httptest.NewRequest(http.MethodPost, "/_redevplugin/api/plugins/"+url.PathEscape(nextHTTPTestPluginInstanceID(t))+"/local-import", bytes.NewBufferString("not-a-zip"))
 	req.Header.Set("Content-Type", localImportContentType)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
@@ -1419,7 +1678,7 @@ func TestHandlerManagementRejectsInvalidInstallAndTrustStateInput(t *testing.T) 
 		t.Fatalf("invalid install status = %d body = %s", rec.Code, rec.Body.String())
 	}
 
-	req = newJSONHTTPRequest(http.MethodPost, "/_redevplugin/api/plugins/local-imports?plugin_instance_id="+url.QueryEscape(nextHTTPTestPluginInstanceID(t)), bytes.NewBufferString(`{"unexpected":true}`))
+	req = newJSONHTTPRequest(http.MethodPost, "/_redevplugin/api/plugins/"+url.PathEscape(nextHTTPTestPluginInstanceID(t))+"/local-import", bytes.NewBufferString(`{"unexpected":true}`))
 	rec = httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusUnsupportedMediaType {
@@ -1431,7 +1690,7 @@ func TestHandlerInstallRequiresPluginInstanceIDBeforeConsumingExternalInput(t *t
 	h := newHTTPTestHost(t)
 	handler := mustNewHandler(t, h, allowHTTPTestGuard())
 	body := &httpReadProbe{reader: strings.NewReader("not-a-zip")}
-	req := httptest.NewRequest(http.MethodPost, "/_redevplugin/api/plugins/local-imports", body)
+	req := httptest.NewRequest(http.MethodPost, "/_redevplugin/api/plugins/%20/local-import", body)
 	req.Header.Set("Content-Type", localImportContentType)
 	rec := httptest.NewRecorder()
 
@@ -1441,7 +1700,7 @@ func TestHandlerInstallRequiresPluginInstanceIDBeforeConsumingExternalInput(t *t
 	if err := json.Unmarshal(rec.Body.Bytes(), &envelope); err != nil {
 		t.Fatal(err)
 	}
-	if rec.Code != http.StatusBadRequest || envelope.Code != string(security.ErrInvalidRequest) {
+	if rec.Code != http.StatusNotFound || envelope.Code != string(security.ErrInvalidRequest) {
 		t.Fatalf("missing local import ID = status:%d envelope:%#v", rec.Code, envelope)
 	}
 	if body.calls != 0 {
@@ -1495,7 +1754,7 @@ func TestHandlerInstallMapsPackageValidationErrorDetails(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			req := httptest.NewRequest(http.MethodPost, "/_redevplugin/api/plugins/local-imports?plugin_instance_id="+url.QueryEscape(nextHTTPTestPluginInstanceID(t)), bytes.NewReader(buildHTTPRawPackage(t, tt.entries)))
+			req := httptest.NewRequest(http.MethodPost, "/_redevplugin/api/plugins/"+url.PathEscape(nextHTTPTestPluginInstanceID(t))+"/local-import", bytes.NewReader(buildHTTPRawPackage(t, tt.entries)))
 			req.Header.Set("Content-Type", localImportContentType)
 			rec := httptest.NewRecorder()
 
@@ -2239,9 +2498,9 @@ func TestHandlerPermissionGrantRevokeFlow(t *testing.T) {
 	if grant.Permission.PermissionID != "read" || grant.Permission.RevokedAt != nil || grant.Revisions.PolicyRevision != expected.PolicyRevision+1 {
 		t.Fatalf("grant response mismatch: %#v", grant)
 	}
-	listed := getJSON[struct {
+	listed := postJSON[struct {
 		Permissions []map[string]any `json:"permissions"`
-	}](t, handler, "/_redevplugin/api/plugins/permissions?plugin_instance_id="+installed.PluginInstanceID+"&active_only=true")
+	}](t, handler, "/_redevplugin/api/plugins/permissions/query", map[string]any{"plugin_instance_id": installed.PluginInstanceID, "active_only": true})
 	if len(listed.Permissions) != 1 || listed.Permissions[0]["permission_id"] != "read" {
 		t.Fatalf("permissions list mismatch: %#v", listed)
 	}
@@ -2292,9 +2551,9 @@ func TestHandlerPermissionGrantRevokeFlow(t *testing.T) {
 	if revoked.Permission.RevokedAt == nil || revoked.Permission.RevokedReason != "test" || revoked.Revisions.RevokeEpoch != expected.RevokeEpoch+1 {
 		t.Fatalf("revoke response mismatch: %#v", revoked)
 	}
-	active := getJSON[struct {
+	active := postJSON[struct {
 		Permissions []permissionResponse `json:"permissions"`
-	}](t, handler, "/_redevplugin/api/plugins/permissions?plugin_instance_id="+installed.PluginInstanceID+"&active_only=true")
+	}](t, handler, "/_redevplugin/api/plugins/permissions/query", map[string]any{"plugin_instance_id": installed.PluginInstanceID, "active_only": true})
 	if len(active.Permissions) != 0 {
 		t.Fatalf("active permissions after revoke mismatch: %#v", active)
 	}
@@ -2330,13 +2589,13 @@ func TestHandlerSecurityPolicyCRUD(t *testing.T) {
 	handler := mustNewHandler(t, h, allowHTTPTestGuard())
 	policyPath := "/_redevplugin/api/plugins/security-policies/" + installed.PluginInstanceID
 
-	initialList := getJSON[struct {
+	initialList := postJSON[struct {
 		SecurityPolicies []securityPolicyResponse `json:"security_policies"`
-	}](t, handler, "/_redevplugin/api/plugins/security-policies")
+	}](t, handler, "/_redevplugin/api/plugins/security-policies/query", map[string]any{})
 	if len(initialList.SecurityPolicies) != 0 {
 		t.Fatalf("initial security policy list = %#v", initialList.SecurityPolicies)
 	}
-	missing := requestJSONError(t, handler, http.MethodGet, policyPath, nil, http.StatusNotFound)
+	missing := requestJSONError(t, handler, http.MethodPost, policyPath+"/query", map[string]any{}, http.StatusNotFound)
 	if missing.Code != string(security.ErrInvalidRequest) {
 		t.Fatalf("missing security policy error_code = %s", missing.Code)
 	}
@@ -2363,13 +2622,13 @@ func TestHandlerSecurityPolicyCRUD(t *testing.T) {
 		created.PolicyRevision <= initial.PolicyRevision || created.ManagementRevision != initial.ManagementRevision || created.RevokeEpoch <= initial.RevokeEpoch {
 		t.Fatalf("created security policy = %#v", created)
 	}
-	got := getJSON[securityPolicyResponse](t, handler, policyPath)
+	got := postJSON[securityPolicyResponse](t, handler, policyPath+"/query", map[string]any{})
 	if !reflect.DeepEqual(got, created) {
 		t.Fatalf("GET security policy = %#v, want %#v", got, created)
 	}
-	listed := getJSON[struct {
+	listed := postJSON[struct {
 		SecurityPolicies []securityPolicyResponse `json:"security_policies"`
-	}](t, handler, "/_redevplugin/api/plugins/security-policies")
+	}](t, handler, "/_redevplugin/api/plugins/security-policies/query", map[string]any{})
 	if len(listed.SecurityPolicies) != 1 || !reflect.DeepEqual(listed.SecurityPolicies[0], created) {
 		t.Fatalf("security policy list = %#v", listed.SecurityPolicies)
 	}
@@ -2406,9 +2665,9 @@ func TestHandlerSecurityPolicyCRUD(t *testing.T) {
 	if !deleted.Deleted || deleted.PluginInstanceID != installed.PluginInstanceID || deleted.PolicyRevision <= afterPut.PolicyRevision || deleted.RevokeEpoch <= afterPut.RevokeEpoch {
 		t.Fatalf("security policy delete result = %#v", deleted)
 	}
-	finalList := getJSON[struct {
+	finalList := postJSON[struct {
 		SecurityPolicies []securityPolicyResponse `json:"security_policies"`
-	}](t, handler, "/_redevplugin/api/plugins/security-policies")
+	}](t, handler, "/_redevplugin/api/plugins/security-policies/query", map[string]any{})
 	if len(finalList.SecurityPolicies) != 0 {
 		t.Fatalf("security policies after delete = %#v", finalList.SecurityPolicies)
 	}
@@ -2566,9 +2825,9 @@ func TestHandlerIntentListAndInvokeFlow(t *testing.T) {
 	grantHTTPDeclaredPermissions(t, h, installed)
 	handler := mustNewHandler(t, h, allowHTTPTestGuard())
 
-	listed := getJSON[struct {
+	listed := postJSON[struct {
 		Intents []host.IntentRecord `json:"intents"`
-	}](t, handler, "/_redevplugin/api/plugins/intents?intent_id=example.echo&plugin_instance_id="+installed.PluginInstanceID)
+	}](t, handler, "/_redevplugin/api/plugins/intents/query", map[string]any{"intent_id": "example.echo", "plugin_instance_id": installed.PluginInstanceID})
 	if len(listed.Intents) != 1 || listed.Intents[0].IntentID != "example.echo" || listed.Intents[0].Method != "echo.ping" || listed.Intents[0].PayloadSchema["type"] != "object" {
 		t.Fatalf("intent list mismatch: %#v", listed)
 	}
@@ -2588,31 +2847,32 @@ func TestHandlerListQueriesRejectNonCanonicalParameters(t *testing.T) {
 	tests := []struct {
 		name string
 		path string
+		body string
 	}{
-		{name: "intents unknown parameter", path: "/_redevplugin/api/plugins/intents?unknown=value"},
-		{name: "intents duplicate parameter", path: "/_redevplugin/api/plugins/intents?intent_id=one&intent_id=two"},
-		{name: "intents empty parameter", path: "/_redevplugin/api/plugins/intents?intent_id="},
-		{name: "intents padded parameter", path: "/_redevplugin/api/plugins/intents?intent_id=%20one%20"},
-		{name: "permissions unknown parameter", path: "/_redevplugin/api/plugins/permissions?unknown=value"},
-		{name: "permissions duplicate parameter", path: "/_redevplugin/api/plugins/permissions?active_only=true&active_only=false"},
-		{name: "permissions numeric boolean", path: "/_redevplugin/api/plugins/permissions?active_only=1"},
-		{name: "permissions noncanonical boolean", path: "/_redevplugin/api/plugins/permissions?active_only=yes"},
-		{name: "diagnostics unknown parameter", path: "/_redevplugin/api/plugins/diagnostics?unknown=value"},
-		{name: "diagnostics duplicate severity", path: "/_redevplugin/api/plugins/diagnostics?severity=info&severity=warning"},
-		{name: "diagnostics unsupported severity", path: "/_redevplugin/api/plugins/diagnostics?severity=critical"},
-		{name: "diagnostics limit below minimum", path: "/_redevplugin/api/plugins/diagnostics?limit=0"},
-		{name: "diagnostics limit above maximum", path: "/_redevplugin/api/plugins/diagnostics?limit=1001"},
-		{name: "operations unknown parameter", path: "/_redevplugin/api/plugins/operations?unknown=value"},
-		{name: "operations duplicate parameter", path: "/_redevplugin/api/plugins/operations?cursor=one&cursor=two"},
-		{name: "operations empty parameter", path: "/_redevplugin/api/plugins/operations?plugin_instance_id="},
-		{name: "operations padded parameter", path: "/_redevplugin/api/plugins/operations?cursor=%20next%20"},
-		{name: "operations limit below minimum", path: "/_redevplugin/api/plugins/operations?limit=0"},
-		{name: "operations limit above maximum", path: "/_redevplugin/api/plugins/operations?limit=501"},
-		{name: "operations noncanonical limit", path: "/_redevplugin/api/plugins/operations?limit=%2B1"},
+		{name: "intents unknown field", path: "/_redevplugin/api/plugins/intents/query", body: `{"unknown":"value"}`},
+		{name: "intents duplicate field", path: "/_redevplugin/api/plugins/intents/query", body: `{"intent_id":"one","intent_id":"two"}`},
+		{name: "intents empty field", path: "/_redevplugin/api/plugins/intents/query", body: `{"intent_id":""}`},
+		{name: "intents padded field", path: "/_redevplugin/api/plugins/intents/query", body: `{"intent_id":" one "}`},
+		{name: "permissions unknown field", path: "/_redevplugin/api/plugins/permissions/query", body: `{"unknown":"value"}`},
+		{name: "permissions duplicate field", path: "/_redevplugin/api/plugins/permissions/query", body: `{"active_only":true,"active_only":false}`},
+		{name: "permissions numeric boolean", path: "/_redevplugin/api/plugins/permissions/query", body: `{"active_only":1}`},
+		{name: "permissions string boolean", path: "/_redevplugin/api/plugins/permissions/query", body: `{"active_only":"true"}`},
+		{name: "diagnostics unknown field", path: "/_redevplugin/api/plugins/diagnostics/query", body: `{"unknown":"value"}`},
+		{name: "diagnostics duplicate severity", path: "/_redevplugin/api/plugins/diagnostics/query", body: `{"severity":"info","severity":"warning"}`},
+		{name: "diagnostics unsupported severity", path: "/_redevplugin/api/plugins/diagnostics/query", body: `{"severity":"critical"}`},
+		{name: "diagnostics limit below minimum", path: "/_redevplugin/api/plugins/diagnostics/query", body: `{"limit":0}`},
+		{name: "diagnostics limit above maximum", path: "/_redevplugin/api/plugins/diagnostics/query", body: `{"limit":1001}`},
+		{name: "operations unknown field", path: "/_redevplugin/api/plugins/operations/query", body: `{"unknown":"value"}`},
+		{name: "operations duplicate field", path: "/_redevplugin/api/plugins/operations/query", body: `{"cursor":"one","cursor":"two"}`},
+		{name: "operations empty field", path: "/_redevplugin/api/plugins/operations/query", body: `{"plugin_instance_id":""}`},
+		{name: "operations padded field", path: "/_redevplugin/api/plugins/operations/query", body: `{"cursor":" next "}`},
+		{name: "operations limit below minimum", path: "/_redevplugin/api/plugins/operations/query", body: `{"limit":0}`},
+		{name: "operations limit above maximum", path: "/_redevplugin/api/plugins/operations/query", body: `{"limit":501}`},
+		{name: "operations non-integer limit", path: "/_redevplugin/api/plugins/operations/query", body: `{"limit":1.5}`},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			req := httptest.NewRequest(http.MethodGet, tt.path, nil)
+			req := newJSONHTTPRequest(http.MethodPost, tt.path, strings.NewReader(tt.body))
 			rec := httptest.NewRecorder()
 			handler.ServeHTTP(rec, req)
 			if rec.Code != http.StatusBadRequest {
@@ -2741,21 +3001,21 @@ func TestHandlerOperationManagementFlow(t *testing.T) {
 		t.Fatalf("rpc operation result mismatch: %#v", result)
 	}
 
-	listed := getJSON[struct {
+	listed := postJSON[struct {
 		Operations []map[string]any `json:"operations"`
-	}](t, handler, "/_redevplugin/api/plugins/operations?plugin_instance_id="+installed.PluginInstanceID)
+	}](t, handler, "/_redevplugin/api/plugins/operations/query", map[string]any{"plugin_instance_id": installed.PluginInstanceID})
 	if len(listed.Operations) != 1 || listed.Operations[0]["operation_id"] != result.OperationID {
 		t.Fatalf("operation list mismatch: %#v", listed)
 	}
 	assertPublicOperationHasNoOwnerScope(t, listed.Operations[0])
-	invalidListRequest := httptest.NewRequest(http.MethodGet, "/_redevplugin/api/plugins/operations?limit=0", nil)
+	invalidListRequest := newJSONHTTPRequest(http.MethodPost, "/_redevplugin/api/plugins/operations/query", bytes.NewBufferString(`{"limit":0}`))
 	invalidListResponse := httptest.NewRecorder()
 	handler.ServeHTTP(invalidListResponse, invalidListRequest)
 	if invalidListResponse.Code != http.StatusBadRequest {
 		t.Fatalf("invalid operation list status = %d body = %s", invalidListResponse.Code, invalidListResponse.Body.String())
 	}
 
-	detail := getJSON[map[string]any](t, handler, "/_redevplugin/api/plugins/operations/"+result.OperationID)
+	detail := postJSON[map[string]any](t, handler, "/_redevplugin/api/plugins/operations/"+result.OperationID+"/query", map[string]any{})
 	if detail["method"] != "documents.archive" || detail["status"] != string(operation.StatusRunning) {
 		t.Fatalf("operation detail mismatch: %#v", detail)
 	}
@@ -2814,26 +3074,24 @@ func TestHandlerOperationManagementRejectsCrossOwnerAccess(t *testing.T) {
 	otherHandler := mustNewHandler(t, h, &httpTestWebSecurityGuard{scope: sessionctx.Context{
 		OwnerSessionHash: "session_other", OwnerUserHash: "user_other", OwnerEnvHash: "env_other", SessionChannelIDHash: "channel_other",
 	}})
-	listed := getJSON[struct {
+	listed := postJSON[struct {
 		Operations []operation.Record `json:"operations"`
-	}](t, otherHandler, "/_redevplugin/api/plugins/operations?plugin_instance_id="+installed.PluginInstanceID)
+	}](t, otherHandler, "/_redevplugin/api/plugins/operations/query", map[string]any{"plugin_instance_id": installed.PluginInstanceID})
 	if len(listed.Operations) != 0 {
 		t.Fatalf("cross-owner list exposed operations: %#v", listed.Operations)
 	}
 	for _, path := range []string{
-		"/_redevplugin/api/plugins/operations/" + result.OperationID,
+		"/_redevplugin/api/plugins/operations/" + result.OperationID + "/query",
 		"/_redevplugin/api/plugins/operations/" + result.OperationID + "/cancel",
 	} {
-		method := http.MethodGet
+		method := http.MethodPost
 		var body io.Reader
 		if strings.HasSuffix(path, "/cancel") {
-			method = http.MethodPost
 			body = bytes.NewBufferString(`{"reason":"cross-owner"}`)
+		} else {
+			body = bytes.NewBufferString(`{}`)
 		}
 		req := newJSONHTTPRequest(method, path, body)
-		if method == http.MethodGet {
-			req = httptest.NewRequest(method, path, nil)
-		}
 		rec := httptest.NewRecorder()
 		otherHandler.ServeHTTP(rec, req)
 		if rec.Code != http.StatusBadRequest {
@@ -3314,11 +3572,11 @@ func TestHandlerSettingsFlow(t *testing.T) {
 	}
 
 	settingsPath := "/_redevplugin/api/plugins/" + installed.PluginInstanceID + "/settings"
-	schema := getJSON[host.SettingsSchemaResult](t, handler, settingsPath+"/schema?scope=user")
+	schema := postJSON[host.SettingsSchemaResult](t, handler, settingsPath+"/schema/query", map[string]any{"scope": "user"})
 	if schema.Scope != sessionctx.ScopeUser || schema.SchemaVersion != 1 || len(schema.Fields) != 3 || schema.ValuesRevision == 0 {
 		t.Fatalf("settings schema mismatch: %#v", schema)
 	}
-	initial := getJSON[host.SettingsResult](t, handler, settingsPath+"?scope=user")
+	initial := postJSON[host.SettingsResult](t, handler, settingsPath+"/query", map[string]any{"scope": "user"})
 	if initial.Scope != sessionctx.ScopeUser || initial.Values["default_engine"] != "docker" {
 		t.Fatalf("settings defaults mismatch: %#v", initial)
 	}
@@ -3340,7 +3598,7 @@ func TestHandlerSettingsFlow(t *testing.T) {
 		"secret_ref":         "api_token",
 		"scope":              "user",
 	})
-	withSecret := getJSON[host.SettingsResult](t, handler, settingsPath+"?scope=user")
+	withSecret := postJSON[host.SettingsResult](t, handler, settingsPath+"/query", map[string]any{"scope": "user"})
 	if len(withSecret.SecretMetadata) != 1 || !withSecret.SecretMetadata[0].Bound || withSecret.SecretMetadata[0].SecretRef != "api_token" {
 		t.Fatalf("bound secret metadata mismatch: %#v", withSecret.SecretMetadata)
 	}
@@ -3354,11 +3612,11 @@ func TestHandlerSettingsFlow(t *testing.T) {
 		t.Fatalf("settings values revision conflict mismatch: %#v", conflict)
 	}
 
-	missingScope := requestJSONError(t, handler, http.MethodGet, settingsPath, nil, http.StatusBadRequest)
+	missingScope := requestJSONError(t, handler, http.MethodPost, settingsPath+"/query", map[string]any{}, http.StatusBadRequest)
 	if missingScope.Code != string(security.ErrInvalidRequest) {
 		t.Fatalf("missing settings scope error = %#v", missingScope)
 	}
-	invalidScope := requestJSONError(t, handler, http.MethodGet, settingsPath+"?scope=global", nil, http.StatusBadRequest)
+	invalidScope := requestJSONError(t, handler, http.MethodPost, settingsPath+"/query", map[string]any{"scope": "global"}, http.StatusBadRequest)
 	if invalidScope.Code != string(security.ErrInvalidRequest) {
 		t.Fatalf("invalid settings scope error = %#v", invalidScope)
 	}
@@ -3482,9 +3740,9 @@ func TestHandlerRetainedDataLifecycleFlow(t *testing.T) {
 		"delete_data":                  false,
 	})
 
-	listed := getJSON[struct {
+	listed := postJSON[struct {
 		RetainedData []plugindata.Binding `json:"retained_data"`
-	}](t, handler, "/_redevplugin/api/plugins/retained-data?plugin_instance_id="+installed.PluginInstanceID)
+	}](t, handler, "/_redevplugin/api/plugins/retained-data/query", map[string]any{"plugin_instance_id": installed.PluginInstanceID})
 	if len(listed.RetainedData) != 1 || listed.RetainedData[0].State != plugindata.BindingRetained {
 		t.Fatalf("retained-data list mismatch: %#v", listed.RetainedData)
 	}
@@ -3518,9 +3776,9 @@ func TestHandlerBindRetainedDataRestoresPayload(t *testing.T) {
 		"expected_management_revision": enabled.ManagementRevision,
 		"delete_data":                  false,
 	})
-	listed := getJSON[struct {
+	listed := postJSON[struct {
 		RetainedData []plugindata.Binding `json:"retained_data"`
-	}](t, handler, "/_redevplugin/api/plugins/retained-data?plugin_instance_id="+installed.PluginInstanceID)
+	}](t, handler, "/_redevplugin/api/plugins/retained-data/query", map[string]any{"plugin_instance_id": installed.PluginInstanceID})
 	target := postLocalImport[registry.PluginRecord](t, handler, "plugini_http_storage_rebind_target", packageBytes)
 
 	bound := postJSON[plugindata.Binding](t, handler, "/_redevplugin/api/plugins/retained-data/bind", map[string]any{
@@ -3834,7 +4092,7 @@ func TestHandlerSecretAdapterFailuresAfterDispatchAreUnknown(t *testing.T) {
 			if internalRaw := fmt.Sprint(internalEvent); strings.Contains(internalRaw, sensitive) || strings.Contains(internalRaw, "/Users/secret/path") {
 				t.Fatalf("secret diagnostics sink retained sensitive cause: %s", internalRaw)
 			}
-			listed := getJSON[diagnosticListResponse](t, handler, "/_redevplugin/api/plugins/diagnostics?type=plugin.secret.adapter_failed&limit=10")
+			listed := postJSON[diagnosticListResponse](t, handler, "/_redevplugin/api/plugins/diagnostics/query", map[string]any{"type": "plugin.secret.adapter_failed", "limit": 10})
 			if len(listed.DiagnosticEvents) != 1 || listed.DiagnosticEvents[0].Message != "secret adapter operation failed" ||
 				listed.DiagnosticEvents[0].MutationOutcome != string(mutation.OutcomeUnknown) || listed.DiagnosticEvents[0].Details == nil ||
 				listed.DiagnosticEvents[0].Details.Operation != test.operation {
@@ -3894,7 +4152,7 @@ func TestHandlerSecretAdapterExplicitOutcomeMatchesDiagnostic(t *testing.T) {
 	if !ok || internal.MutationOutcome != mutation.OutcomeNotCommitted || internal.Failure.Operation != observability.FailureOperationSecretsAdapter {
 		t.Fatalf("explicit secret adapter diagnostic mismatch: %#v", internal)
 	}
-	listed := getJSON[diagnosticListResponse](t, handler, "/_redevplugin/api/plugins/diagnostics?type=plugin.secret.adapter_failed&limit=10")
+	listed := postJSON[diagnosticListResponse](t, handler, "/_redevplugin/api/plugins/diagnostics/query", map[string]any{"type": "plugin.secret.adapter_failed", "limit": 10})
 	if len(listed.DiagnosticEvents) != 1 || listed.DiagnosticEvents[0].MutationOutcome != string(mutation.OutcomeNotCommitted) {
 		t.Fatalf("public explicit secret diagnostic mismatch: %#v", listed)
 	}
@@ -3933,7 +4191,7 @@ func TestHandlerDiagnosticsAreScopedToAuthenticatedOwner(t *testing.T) {
 		t.Fatal(err)
 	}
 	handler := mustNewHandler(t, h, allowHTTPTestGuard())
-	listed := getJSON[diagnosticListResponse](t, handler, "/_redevplugin/api/plugins/diagnostics?severity=warning&limit=10")
+	listed := postJSON[diagnosticListResponse](t, handler, "/_redevplugin/api/plugins/diagnostics/query", map[string]any{"severity": "warning", "limit": 10})
 	if len(listed.DiagnosticEvents) != 1 || listed.DiagnosticEvents[0].Message != "plugin runtime stop failed" {
 		t.Fatalf("owner-scoped diagnostics mismatch: %#v", listed.DiagnosticEvents)
 	}
@@ -3995,7 +4253,7 @@ func TestHandlerInternalErrorsUseStableMessagesAndOwnerScopedDiagnostics(t *test
 	if strings.Contains(string(encoded), "plugin HTTP operation failed") {
 		t.Fatalf("public response exposed diagnostic-only message: %s", encoded)
 	}
-	listed := getJSON[diagnosticListResponse](t, handler, "/_redevplugin/api/plugins/diagnostics?type=plugin.http.operation_failed&limit=10")
+	listed := postJSON[diagnosticListResponse](t, handler, "/_redevplugin/api/plugins/diagnostics/query", map[string]any{"type": "plugin.http.operation_failed", "limit": 10})
 	publicDiagnostics, err := json.Marshal(listed)
 	if err != nil {
 		t.Fatal(err)
@@ -4034,7 +4292,7 @@ func TestHandlerInternalErrorsUseStableMessagesAndOwnerScopedDiagnostics(t *test
 	if internalRaw := fmt.Sprint(internalStopEvent); strings.Contains(internalRaw, stopSensitive) || strings.Contains(internalRaw, "/Users/secret/path") {
 		t.Fatalf("runtime stop diagnostics sink retained sensitive cause: %s", internalRaw)
 	}
-	listedStop := getJSON[diagnosticListResponse](t, handler, "/_redevplugin/api/plugins/diagnostics?type=plugin.runtime.stop_failed&limit=10")
+	listedStop := postJSON[diagnosticListResponse](t, handler, "/_redevplugin/api/plugins/diagnostics/query", map[string]any{"type": "plugin.runtime.stop_failed", "limit": 10})
 	publicStopDiagnostics, err := json.Marshal(listedStop)
 	if err != nil {
 		t.Fatal(err)
@@ -4069,7 +4327,7 @@ func TestHandlerPatchSettingsReportsUnknownWhenMetadataReadFailsAfterCommit(t *t
 	}
 
 	secretStore.listErr = nil
-	snapshot := getJSON[host.SettingsResult](t, handler, "/_redevplugin/api/plugins/"+installed.PluginInstanceID+"/settings?scope=user")
+	snapshot := postJSON[host.SettingsResult](t, handler, "/_redevplugin/api/plugins/"+installed.PluginInstanceID+"/settings/query", map[string]any{"scope": "user"})
 	if snapshot.ValuesRevision != 2 || snapshot.Values["default_engine"] != "podman" {
 		t.Fatalf("committed settings snapshot mismatch: %#v", snapshot)
 	}
@@ -4089,11 +4347,11 @@ func TestHandlerRuntimeLifecycleFlow(t *testing.T) {
 	if health.Descriptor != supervisor.health.Descriptor || health.Shards[0].Descriptor != health.Descriptor {
 		t.Fatalf("runtime start descriptor mismatch: health=%#v supervisor=%#v", health, supervisor)
 	}
-	health = getJSON[runtimeclient.ManagerHealth](t, handler, "/_redevplugin/api/plugins/runtime/health")
+	health = postJSON[runtimeclient.ManagerHealth](t, handler, "/_redevplugin/api/plugins/runtime/health/query", map[string]any{})
 	if !health.Ready || len(health.Shards) != 1 || health.Shards[0].RuntimeGenerationID != "runtime_gen_http" || health.Descriptor != supervisor.health.Descriptor || health.Shards[0].Descriptor != health.Descriptor {
 		t.Fatalf("runtime health mismatch: %#v", health)
 	}
-	publicHealth := getJSON[map[string]any](t, handler, "/_redevplugin/api/plugins/runtime/health")
+	publicHealth := postJSON[map[string]any](t, handler, "/_redevplugin/api/plugins/runtime/health/query", map[string]any{})
 	shards, ok := publicHealth["shards"].([]any)
 	if !ok || len(shards) != 1 {
 		t.Fatalf("runtime health public shards = %#v", publicHealth["shards"])
@@ -4181,19 +4439,28 @@ func postJSON[T any](t *testing.T, handler http.Handler, path string, body any) 
 }
 
 func postLocalImport[T any](t *testing.T, handler http.Handler, pluginInstanceID string, packageBytes []byte) T {
-	path := "/_redevplugin/api/plugins/local-imports?plugin_instance_id=" + url.QueryEscape(pluginInstanceID)
+	path := "/_redevplugin/api/plugins/" + url.PathEscape(pluginInstanceID) + "/local-import"
 	return requestBinary[T](t, handler, http.MethodPost, path, packageBytes, http.StatusOK)
 }
 
 func putLocalImport[T any](t *testing.T, handler http.Handler, pluginInstanceID string, revision uint64, packageBytes []byte) T {
-	path := "/_redevplugin/api/plugins/" + url.PathEscape(pluginInstanceID) + "/local-import?expected_management_revision=" + strconv.FormatUint(revision, 10)
-	return requestBinary[T](t, handler, http.MethodPut, path, packageBytes, http.StatusOK)
+	path := "/_redevplugin/api/plugins/" + url.PathEscape(pluginInstanceID) + "/local-import"
+	return requestBinaryWithHeaders[T](t, handler, http.MethodPut, path, packageBytes, http.StatusOK, map[string]string{
+		localImportRevisionHeader: strconv.FormatUint(revision, 10),
+	})
 }
 
 func requestBinary[T any](t *testing.T, handler http.Handler, method, path string, body []byte, wantStatus int) T {
+	return requestBinaryWithHeaders[T](t, handler, method, path, body, wantStatus, nil)
+}
+
+func requestBinaryWithHeaders[T any](t *testing.T, handler http.Handler, method, path string, body []byte, wantStatus int, headers map[string]string) T {
 	t.Helper()
 	req := httptest.NewRequest(method, path, bytes.NewReader(body))
 	req.Header.Set("Content-Type", localImportContentType)
+	for name, value := range headers {
+		req.Header.Set(name, value)
+	}
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 	if rec.Code != wantStatus {
@@ -4332,31 +4599,6 @@ func requestJSONError(t *testing.T, handler http.Handler, method, path string, b
 	return envelope
 }
 
-func getJSON[T any](t *testing.T, handler http.Handler, path string) T {
-	t.Helper()
-	req := httptest.NewRequest(http.MethodGet, path, nil)
-	rec := httptest.NewRecorder()
-	handler.ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("GET %s status = %d body = %s", path, rec.Code, rec.Body.String())
-	}
-	var envelope struct {
-		OK   bool            `json:"ok"`
-		Data json.RawMessage `json:"data"`
-	}
-	if err := json.Unmarshal(rec.Body.Bytes(), &envelope); err != nil {
-		t.Fatal(err)
-	}
-	if !envelope.OK {
-		t.Fatalf("GET %s returned not ok: %s", path, rec.Body.String())
-	}
-	var data T
-	if err := json.Unmarshal(envelope.Data, &data); err != nil {
-		t.Fatal(err)
-	}
-	return data
-}
-
 func newJSONHTTPRequest(method string, path string, body io.Reader) *http.Request {
 	req := httptest.NewRequest(method, path, body)
 	req.Header.Set("Content-Type", "application/json")
@@ -4401,8 +4643,8 @@ func samplePathForRoute(path string) string {
 func readOpenAPIContract(t *testing.T) string {
 	t.Helper()
 	candidates := []string{
-		filepath.Join("..", "..", "spec", "openapi", "plugin-platform-v6.yaml"),
-		filepath.Join("spec", "openapi", "plugin-platform-v6.yaml"),
+		filepath.Join("..", "..", "spec", "openapi", "plugin-platform-v7.yaml"),
+		filepath.Join("spec", "openapi", "plugin-platform-v7.yaml"),
 	}
 	var lastErr error
 	for _, candidate := range candidates {
@@ -5799,6 +6041,7 @@ type httpTestWebSecurityGuard struct {
 	lastOriginPolicy  websecurity.OriginPolicy
 	lastCSRFPolicy    websecurity.CSRFPolicy
 	lastAction        websecurity.RouteAction
+	lastEffect        websecurity.RouteEffect
 	callOrder         []string
 }
 
@@ -5873,13 +6116,17 @@ func (g *httpTestWebSecurityGuard) ValidateCSRF(_ *http.Request, session session
 	return nil
 }
 
-func (g *httpTestWebSecurityGuard) AuthorizeRoute(_ *http.Request, session sessionctx.Context, action websecurity.RouteAction) error {
+func (g *httpTestWebSecurityGuard) AuthorizeRoute(_ *http.Request, session sessionctx.Context, action websecurity.RouteAction, effect websecurity.RouteEffect) error {
 	g.authorizeCount++
 	g.callOrder = append(g.callOrder, "authorize")
 	g.lastAction = action
+	g.lastEffect = effect
 	g.lastSessionHash = session.OwnerSessionHash
 	if !action.Valid() {
 		return websecurity.ErrRouteActionInvalid
+	}
+	if !effect.Valid() {
+		return websecurity.ErrRouteEffectInvalid
 	}
 	return g.authorizeErr
 }

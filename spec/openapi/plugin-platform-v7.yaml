@@ -1,20 +1,38 @@
 openapi: 3.1.0
 info:
   title: ReDevPlugin Plugin Platform API
-  version: plugin-platform-v6
+  version: plugin-platform-v7
   description: Host-agnostic plugin management, bridge, operation, data, and sandbox routes. Release-ref install and update routes resolve host-controlled package artifacts server-side and do not accept requested trust_state values; local-import package install/update routes are explicit developer/import flows and also do not accept caller-supplied trust_state values.
 x-redevplugin-query-policy:
-  reject_unknown_parameters: true
-  reject_duplicate_parameters: true
+  reject_url_query_strings: true
+  require_closed_json_bodies: true
+  require_exact_origin: true
+  require_csrf: true
 paths:
-  /_redevplugin/api/plugins/local-imports:
+  /_redevplugin/api/plugins/{plugin_instance_id}/local-import:
     post:
       operationId: importLocalPackage
+      x-redevplugin-route-effect: mutation
       parameters:
-        - name: plugin_instance_id
-          in: query
+        - $ref: "#/components/parameters/PluginInstanceID"
+      requestBody:
+        required: true
+        content:
+          application/vnd.redevplugin.package+zip:
+            schema: { type: string, format: binary }
+      responses:
+        "200": { $ref: "#/components/responses/PluginRecordResponse" }
+        default: { $ref: "#/components/responses/MutationPlatformErrorResponse" }
+    put:
+      operationId: updateLocalPackage
+      x-redevplugin-route-effect: mutation
+      parameters:
+        - $ref: "#/components/parameters/PluginInstanceID"
+        - name: X-ReDevPlugin-Expected-Management-Revision
+          in: header
           required: true
-          schema: { type: string, minLength: 1 }
+          description: Canonical decimal management revision. Duplicate, combined, empty, or whitespace-padded values are rejected.
+          schema: { type: integer, minimum: 1, maximum: 9007199254740991 }
       requestBody:
         required: true
         content:
@@ -26,6 +44,7 @@ paths:
   /_redevplugin/api/plugins/install-release-ref:
     post:
       operationId: installReleaseRef
+      x-redevplugin-route-effect: mutation
       requestBody:
         $ref: "#/components/requestBodies/InstallReleaseRefRequest"
       responses:
@@ -34,6 +53,7 @@ paths:
   /_redevplugin/api/plugins/enable:
     post:
       operationId: enablePlugin
+      x-redevplugin-route-effect: mutation
       requestBody:
         $ref: "#/components/requestBodies/EnableRequest"
       responses:
@@ -42,6 +62,7 @@ paths:
   /_redevplugin/api/plugins/disable:
     post:
       operationId: disablePlugin
+      x-redevplugin-route-effect: mutation
       requestBody:
         $ref: "#/components/requestBodies/DisableRequest"
       responses:
@@ -50,34 +71,16 @@ paths:
   /_redevplugin/api/plugins/uninstall:
     post:
       operationId: uninstallPlugin
+      x-redevplugin-route-effect: mutation
       requestBody:
         $ref: "#/components/requestBodies/UninstallRequest"
-      responses:
-        "200": { $ref: "#/components/responses/PluginRecordResponse" }
-        default: { $ref: "#/components/responses/MutationPlatformErrorResponse" }
-  /_redevplugin/api/plugins/{plugin_instance_id}/local-import:
-    put:
-      operationId: updateLocalPackage
-      parameters:
-        - name: plugin_instance_id
-          in: path
-          required: true
-          schema: { type: string, minLength: 1 }
-        - name: expected_management_revision
-          in: query
-          required: true
-          schema: { type: integer, minimum: 1, maximum: 9007199254740991 }
-      requestBody:
-        required: true
-        content:
-          application/vnd.redevplugin.package+zip:
-            schema: { type: string, format: binary }
       responses:
         "200": { $ref: "#/components/responses/PluginRecordResponse" }
         default: { $ref: "#/components/responses/MutationPlatformErrorResponse" }
   /_redevplugin/api/plugins/update-release-ref:
     post:
       operationId: updateReleaseRef
+      x-redevplugin-route-effect: mutation
       requestBody:
         $ref: "#/components/requestBodies/UpdateReleaseRefRequest"
       responses:
@@ -86,33 +89,44 @@ paths:
   /_redevplugin/api/plugins/downgrade:
     post:
       operationId: downgradePlugin
+      x-redevplugin-route-effect: mutation
       requestBody:
         $ref: "#/components/requestBodies/DowngradeRequest"
       responses:
         "200": { $ref: "#/components/responses/PluginRecordResponse" }
         default: { $ref: "#/components/responses/MutationPlatformErrorResponse" }
-  /_redevplugin/api/plugins/catalog:
-    get:
+  /_redevplugin/api/plugins/catalog/query:
+    post:
       operationId: listPlugins
+      x-redevplugin-route-effect: query
+      requestBody:
+        $ref: "#/components/requestBodies/EmptyQueryRequest"
       responses:
         "200": { $ref: "#/components/responses/PluginCatalogResponse" }
         default: { $ref: "#/components/responses/PlatformErrorResponse" }
-  /_redevplugin/api/plugins/features:
-    get:
+  /_redevplugin/api/plugins/features/query:
+    post:
       operationId: getPluginFeatures
+      x-redevplugin-route-effect: query
+      requestBody:
+        $ref: "#/components/requestBodies/EmptyQueryRequest"
       responses:
         "200": { $ref: "#/components/responses/PluginFeaturesResponse" }
         default: { $ref: "#/components/responses/PlatformErrorResponse" }
-  /_redevplugin/api/plugins/platform/compatibility:
-    get:
+  /_redevplugin/api/plugins/platform/compatibility/query:
+    post:
       operationId: getPluginPlatformCompatibility
+      x-redevplugin-route-effect: query
       description: Returns the host-consumable ReDevPlugin compatibility manifest for the mounted platform artifact set.
+      requestBody:
+        $ref: "#/components/requestBodies/EmptyQueryRequest"
       responses:
         "200": { $ref: "#/components/responses/CompatibilityResponse" }
         default: { $ref: "#/components/responses/PlatformErrorResponse" }
   /_redevplugin/api/plugins/surfaces/open:
     post:
       operationId: openPluginSurface
+      x-redevplugin-route-effect: mutation
       requestBody:
         $ref: "#/components/requestBodies/OpenSurfaceRequest"
       responses:
@@ -121,6 +135,7 @@ paths:
   /_redevplugin/api/plugins/surfaces/revoke-scope:
     post:
       operationId: revokePluginSurfaceScope
+      x-redevplugin-route-effect: mutation
       description: Revokes every active plugin surface and token bound to the authenticated owner session or session channel derived by the host.
       requestBody:
         $ref: "#/components/requestBodies/RevokeSurfaceScopeRequest"
@@ -130,6 +145,7 @@ paths:
   /_redevplugin/api/plugins/surfaces/{surface_instance_id}/prepare:
     post:
       operationId: preparePluginSurface
+      x-redevplugin-route-effect: mutation
       parameters:
         - $ref: "#/components/parameters/SurfaceInstanceID"
       requestBody:
@@ -140,6 +156,7 @@ paths:
   /_redevplugin/api/plugins/surfaces/{surface_instance_id}/bridge-token:
     post:
       operationId: createSurfaceBridgeToken
+      x-redevplugin-route-effect: mutation
       parameters:
         - $ref: "#/components/parameters/SurfaceInstanceID"
       requestBody:
@@ -150,6 +167,7 @@ paths:
   /_redevplugin/api/plugins/surfaces/{surface_instance_id}/assets/read:
     post:
       operationId: readPreparedSurfaceAsset
+      x-redevplugin-route-effect: query
       parameters:
         - $ref: "#/components/parameters/SurfaceInstanceID"
       requestBody:
@@ -160,6 +178,7 @@ paths:
   /_redevplugin/api/plugins/surfaces/{surface_instance_id}/streams/read:
     post:
       operationId: readPreparedSurfaceStream
+      x-redevplugin-route-effect: query
       parameters:
         - $ref: "#/components/parameters/SurfaceInstanceID"
       requestBody:
@@ -170,6 +189,7 @@ paths:
   /_redevplugin/api/plugins/surfaces/{surface_instance_id}/streams/ack:
     post:
       operationId: acknowledgePreparedSurfaceStream
+      x-redevplugin-route-effect: mutation
       parameters:
         - $ref: "#/components/parameters/SurfaceInstanceID"
       requestBody:
@@ -180,6 +200,7 @@ paths:
   /_redevplugin/api/plugins/surfaces/{surface_instance_id}/operations/cancel:
     post:
       operationId: cancelSurfacePluginOperation
+      x-redevplugin-route-effect: mutation
       description: Cancels an operation only when it belongs to the authenticated surface, session, and private bridge channel.
       parameters:
         - $ref: "#/components/parameters/SurfaceInstanceID"
@@ -191,6 +212,7 @@ paths:
   /_redevplugin/api/plugins/surfaces/{surface_instance_id}/confirmations/reject:
     post:
       operationId: rejectSurfacePluginConfirmation
+      x-redevplugin-route-effect: mutation
       description: Atomically rejects a pending confirmation only when it belongs to the authenticated surface, session, current plugin revision, and private bridge channel.
       parameters:
         - $ref: "#/components/parameters/SurfaceInstanceID"
@@ -202,6 +224,7 @@ paths:
   /_redevplugin/api/plugins/surfaces/{surface_instance_id}/dispose:
     post:
       operationId: disposePluginSurface
+      x-redevplugin-route-effect: mutation
       parameters:
         - $ref: "#/components/parameters/SurfaceInstanceID"
       requestBody:
@@ -212,6 +235,7 @@ paths:
   /_redevplugin/api/plugins/rpc:
     post:
       operationId: callPluginMethod
+      x-redevplugin-route-effect: mutation
       requestBody:
         $ref: "#/components/requestBodies/RPCRequest"
       responses:
@@ -220,64 +244,56 @@ paths:
   /_redevplugin/api/plugins/confirmations/prepare:
     post:
       operationId: preparePluginMethodConfirmation
+      x-redevplugin-route-effect: mutation
       requestBody:
         $ref: "#/components/requestBodies/PrepareMethodConfirmationRequest"
       responses:
         "200": { $ref: "#/components/responses/PluginMethodConfirmationPreparationResponse" }
         default: { $ref: "#/components/responses/MutationPlatformErrorResponse" }
-  /_redevplugin/api/plugins/intents:
-    get:
+  /_redevplugin/api/plugins/intents/query:
+    post:
       operationId: listPluginIntents
+      x-redevplugin-route-effect: query
       description: 'Lists enabled, runnable plugin intents available to host-mediated interop. The response data is `{ "intents": [...] }`.'
-      parameters:
-        - name: intent_id
-          in: query
-          schema: { type: string, minLength: 1 }
-        - name: plugin_instance_id
-          in: query
-          schema: { type: string, minLength: 1 }
+      requestBody:
+        $ref: "#/components/requestBodies/ListIntentsQueryRequest"
       responses:
         "200": { $ref: "#/components/responses/IntentListResponse" }
         default: { $ref: "#/components/responses/PlatformErrorResponse" }
   /_redevplugin/api/plugins/intents/invoke:
     post:
       operationId: invokePluginIntent
+      x-redevplugin-route-effect: mutation
       description: Invokes a host-mediated plugin intent without iframe gateway tokens while preserving local policy, permission grants, and dangerous-method fail-closed checks.
       requestBody:
         $ref: "#/components/requestBodies/InvokeIntentRequest"
       responses:
         "200": { $ref: "#/components/responses/RPCResponse" }
         default: { $ref: "#/components/responses/MutationPlatformErrorResponse" }
-  /_redevplugin/api/plugins/operations:
-    get:
+  /_redevplugin/api/plugins/operations/query:
+    post:
       operationId: listPluginOperations
-      parameters:
-        - name: plugin_instance_id
-          in: query
-          required: false
-          schema: { type: string, minLength: 1 }
-        - name: cursor
-          in: query
-          required: false
-          schema: { type: string, minLength: 1, maxLength: 1024 }
-        - name: limit
-          in: query
-          required: false
-          schema: { type: integer, minimum: 1, maximum: 500, default: 100 }
+      x-redevplugin-route-effect: query
+      requestBody:
+        $ref: "#/components/requestBodies/ListOperationsQueryRequest"
       responses:
         "200": { $ref: "#/components/responses/OperationListResponse" }
         default: { $ref: "#/components/responses/PlatformErrorResponse" }
-  /_redevplugin/api/plugins/operations/{operation_id}:
-    get:
+  /_redevplugin/api/plugins/operations/{operation_id}/query:
+    post:
       operationId: getPluginOperation
+      x-redevplugin-route-effect: query
       parameters:
         - $ref: "#/components/parameters/OperationID"
+      requestBody:
+        $ref: "#/components/requestBodies/EmptyQueryRequest"
       responses:
         "200": { $ref: "#/components/responses/OperationRecordResponse" }
         default: { $ref: "#/components/responses/PlatformErrorResponse" }
   /_redevplugin/api/plugins/operations/{operation_id}/cancel:
     post:
       operationId: cancelPluginOperation
+      x-redevplugin-route-effect: mutation
       parameters:
         - $ref: "#/components/parameters/OperationID"
       requestBody:
@@ -288,6 +304,7 @@ paths:
   /_redevplugin/api/plugins/runtime/start:
     post:
       operationId: startPluginRuntime
+      x-redevplugin-route-effect: mutation
       requestBody:
         $ref: "#/components/requestBodies/StartRuntimeRequest"
       responses:
@@ -296,6 +313,7 @@ paths:
   /_redevplugin/api/plugins/runtime/stop:
     post:
       operationId: stopPluginRuntime
+      x-redevplugin-route-effect: mutation
       requestBody:
         $ref: "#/components/requestBodies/EmptyRequest"
       responses:
@@ -304,21 +322,26 @@ paths:
   /_redevplugin/api/plugins/runtime/refresh-enabled:
     post:
       operationId: refreshEnabledPluginRuntimeState
+      x-redevplugin-route-effect: mutation
       description: 'Replays runtime-derived state for enabled plugins after the embedding host process restarts or reattaches adapters. The response data is `{ "results": [...] }`.'
       requestBody:
         $ref: "#/components/requestBodies/EmptyRequest"
       responses:
         "200": { $ref: "#/components/responses/RuntimeRefreshResponse" }
         default: { $ref: "#/components/responses/MutationPlatformErrorResponse" }
-  /_redevplugin/api/plugins/runtime/health:
-    get:
+  /_redevplugin/api/plugins/runtime/health/query:
+    post:
       operationId: getPluginRuntimeHealth
+      x-redevplugin-route-effect: query
+      requestBody:
+        $ref: "#/components/requestBodies/EmptyQueryRequest"
       responses:
         "200": { $ref: "#/components/responses/RuntimeHealthResponse" }
         default: { $ref: "#/components/responses/PlatformErrorResponse" }
   /_redevplugin/api/plugins/data/export:
     post:
       operationId: exportPluginData
+      x-redevplugin-route-effect: mutation
       requestBody:
         $ref: "#/components/requestBodies/ExportDataRequest"
       responses:
@@ -327,6 +350,7 @@ paths:
   /_redevplugin/api/plugins/data/export/delete:
     post:
       operationId: deletePluginDataExport
+      x-redevplugin-route-effect: mutation
       requestBody:
         $ref: "#/components/requestBodies/DeleteDataExportRequest"
       responses:
@@ -335,24 +359,25 @@ paths:
   /_redevplugin/api/plugins/data/import:
     post:
       operationId: importPluginData
+      x-redevplugin-route-effect: mutation
       requestBody:
         $ref: "#/components/requestBodies/ImportDataRequest"
       responses:
         "200": { $ref: "#/components/responses/DataImportResponse" }
         default: { $ref: "#/components/responses/MutationPlatformErrorResponse" }
-  /_redevplugin/api/plugins/retained-data:
-    get:
+  /_redevplugin/api/plugins/retained-data/query:
+    post:
       operationId: listPluginRetainedData
-      parameters:
-        - name: plugin_instance_id
-          in: query
-          schema: { type: string, minLength: 1 }
+      x-redevplugin-route-effect: query
+      requestBody:
+        $ref: "#/components/requestBodies/ListRetainedDataQueryRequest"
       responses:
         "200": { $ref: "#/components/responses/RetainedDataListResponse" }
         default: { $ref: "#/components/responses/PlatformErrorResponse" }
   /_redevplugin/api/plugins/retained-data/delete:
     post:
       operationId: deletePluginRetainedData
+      x-redevplugin-route-effect: mutation
       requestBody:
         $ref: "#/components/requestBodies/DeleteRetainedDataRequest"
       responses:
@@ -361,6 +386,7 @@ paths:
   /_redevplugin/api/plugins/retained-data/bind:
     post:
       operationId: bindPluginRetainedData
+      x-redevplugin-route-effect: mutation
       requestBody:
         $ref: "#/components/requestBodies/BindRetainedDataRequest"
       responses:
@@ -369,27 +395,25 @@ paths:
   /_redevplugin/api/plugins/retained-data/cleanup-expired:
     post:
       operationId: cleanupExpiredPluginRetainedData
+      x-redevplugin-route-effect: mutation
       requestBody:
         $ref: "#/components/requestBodies/CleanupExpiredRetainedDataRequest"
       responses:
         "200": { $ref: "#/components/responses/RetainedDataCleanupResponse" }
         default: { $ref: "#/components/responses/MutationPlatformErrorResponse" }
-  /_redevplugin/api/plugins/permissions:
-    get:
+  /_redevplugin/api/plugins/permissions/query:
+    post:
       operationId: listPluginPermissionGrants
-      parameters:
-        - name: plugin_instance_id
-          in: query
-          schema: { type: string, minLength: 1 }
-        - name: active_only
-          in: query
-          schema: { type: boolean }
+      x-redevplugin-route-effect: query
+      requestBody:
+        $ref: "#/components/requestBodies/ListPermissionsQueryRequest"
       responses:
         "200": { $ref: "#/components/responses/PermissionListResponse" }
         default: { $ref: "#/components/responses/PlatformErrorResponse" }
   /_redevplugin/api/plugins/permissions/grant:
     post:
       operationId: grantPluginPermission
+      x-redevplugin-route-effect: mutation
       requestBody:
         $ref: "#/components/requestBodies/GrantPermissionRequest"
       responses:
@@ -398,27 +422,36 @@ paths:
   /_redevplugin/api/plugins/permissions/revoke:
     post:
       operationId: revokePluginPermission
+      x-redevplugin-route-effect: mutation
       requestBody:
         $ref: "#/components/requestBodies/RevokePermissionRequest"
       responses:
         "200": { $ref: "#/components/responses/PermissionMutationResponse" }
         default: { $ref: "#/components/responses/MutationPlatformErrorResponse" }
-  /_redevplugin/api/plugins/security-policies:
-    get:
+  /_redevplugin/api/plugins/security-policies/query:
+    post:
       operationId: listPluginSecurityPolicies
+      x-redevplugin-route-effect: query
+      requestBody:
+        $ref: "#/components/requestBodies/EmptyQueryRequest"
       responses:
         "200": { $ref: "#/components/responses/SecurityPolicyListResponse" }
         default: { $ref: "#/components/responses/PlatformErrorResponse" }
-  /_redevplugin/api/plugins/security-policies/{plugin_instance_id}:
-    get:
+  /_redevplugin/api/plugins/security-policies/{plugin_instance_id}/query:
+    post:
       operationId: getPluginSecurityPolicy
+      x-redevplugin-route-effect: query
       parameters:
         - $ref: "#/components/parameters/PluginInstanceID"
+      requestBody:
+        $ref: "#/components/requestBodies/EmptyQueryRequest"
       responses:
         "200": { $ref: "#/components/responses/SecurityPolicyRecordResponse" }
         default: { $ref: "#/components/responses/PlatformErrorResponse" }
+  /_redevplugin/api/plugins/security-policies/{plugin_instance_id}:
     put:
       operationId: putPluginSecurityPolicy
+      x-redevplugin-route-effect: mutation
       parameters:
         - $ref: "#/components/parameters/PluginInstanceID"
       requestBody:
@@ -428,6 +461,7 @@ paths:
         default: { $ref: "#/components/responses/MutationPlatformErrorResponse" }
     delete:
       operationId: deletePluginSecurityPolicy
+      x-redevplugin-route-effect: mutation
       parameters:
         - $ref: "#/components/parameters/PluginInstanceID"
       requestBody:
@@ -435,34 +469,19 @@ paths:
       responses:
         "200": { $ref: "#/components/responses/SecurityPolicyDeleteResponse" }
         default: { $ref: "#/components/responses/MutationPlatformErrorResponse" }
-  /_redevplugin/api/plugins/diagnostics:
-    get:
+  /_redevplugin/api/plugins/diagnostics/query:
+    post:
       operationId: listPluginDiagnosticEvents
-      parameters:
-        - name: plugin_id
-          in: query
-          schema: { type: string, minLength: 1 }
-        - name: plugin_instance_id
-          in: query
-          schema: { type: string, minLength: 1 }
-        - name: surface_instance_id
-          in: query
-          schema: { type: string, minLength: 1 }
-        - name: type
-          in: query
-          schema: { type: string, minLength: 1 }
-        - name: severity
-          in: query
-          schema: { type: string, enum: [info, warning] }
-        - name: limit
-          in: query
-          schema: { type: integer, minimum: 1, maximum: 1000, default: 100 }
+      x-redevplugin-route-effect: query
+      requestBody:
+        $ref: "#/components/requestBodies/ListDiagnosticsQueryRequest"
       responses:
         "200": { $ref: "#/components/responses/DiagnosticEventListResponse" }
         default: { $ref: "#/components/responses/PlatformErrorResponse" }
   /_redevplugin/api/plugins/secrets/bind:
     post:
       operationId: bindPluginSecret
+      x-redevplugin-route-effect: mutation
       requestBody:
         $ref: "#/components/requestBodies/SecretRefRequest"
       responses:
@@ -471,6 +490,7 @@ paths:
   /_redevplugin/api/plugins/secrets/test:
     post:
       operationId: testPluginSecret
+      x-redevplugin-route-effect: mutation
       requestBody:
         $ref: "#/components/requestBodies/SecretRefRequest"
       responses:
@@ -479,31 +499,38 @@ paths:
   /_redevplugin/api/plugins/secrets/delete:
     post:
       operationId: deletePluginSecret
+      x-redevplugin-route-effect: mutation
       requestBody:
         $ref: "#/components/requestBodies/SecretRefRequest"
       responses:
         "200": { $ref: "#/components/responses/SecretDeleteResponse" }
         default: { $ref: "#/components/responses/MutationPlatformErrorResponse" }
-  /_redevplugin/api/plugins/{plugin_instance_id}/settings/schema:
-    get:
+  /_redevplugin/api/plugins/{plugin_instance_id}/settings/schema/query:
+    post:
       operationId: getPluginSettingsSchema
+      x-redevplugin-route-effect: query
       parameters:
         - $ref: "#/components/parameters/PluginInstanceID"
-        - $ref: "#/components/parameters/SettingsScope"
+      requestBody:
+        $ref: "#/components/requestBodies/SettingsQueryRequest"
       responses:
         "200": { $ref: "#/components/responses/SettingsSchemaResponse" }
         default: { $ref: "#/components/responses/PlatformErrorResponse" }
-  /_redevplugin/api/plugins/{plugin_instance_id}/settings:
-    get:
+  /_redevplugin/api/plugins/{plugin_instance_id}/settings/query:
+    post:
       operationId: getPluginSettings
+      x-redevplugin-route-effect: query
       parameters:
         - $ref: "#/components/parameters/PluginInstanceID"
-        - $ref: "#/components/parameters/SettingsScope"
+      requestBody:
+        $ref: "#/components/requestBodies/SettingsQueryRequest"
       responses:
         "200": { $ref: "#/components/responses/SettingsSnapshotResponse" }
         default: { $ref: "#/components/responses/PlatformErrorResponse" }
+  /_redevplugin/api/plugins/{plugin_instance_id}/settings:
     patch:
       operationId: patchPluginSettings
+      x-redevplugin-route-effect: mutation
       parameters:
         - $ref: "#/components/parameters/PluginInstanceID"
       requestBody:
@@ -523,11 +550,6 @@ components:
       in: path
       required: true
       schema: { type: string }
-    SettingsScope:
-      name: scope
-      in: query
-      required: true
-      schema: { $ref: "#/components/schemas/ResourceScopeKind" }
     SurfaceInstanceID:
       name: surface_instance_id
       in: path
@@ -829,6 +851,48 @@ components:
         application/json:
           schema:
             $ref: "#/components/schemas/EmptyRequest"
+    EmptyQueryRequest:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/EmptyQueryRequest"
+    ListIntentsQueryRequest:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ListIntentsQueryRequest"
+    ListOperationsQueryRequest:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ListOperationsQueryRequest"
+    ListRetainedDataQueryRequest:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ListRetainedDataQueryRequest"
+    ListPermissionsQueryRequest:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ListPermissionsQueryRequest"
+    ListDiagnosticsQueryRequest:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ListDiagnosticsQueryRequest"
+    SettingsQueryRequest:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/SettingsQueryRequest"
     PrepareSurfaceRequest:
       required: true
       content:
@@ -1623,7 +1687,7 @@ components:
           type: array
           items: { $ref: "#/components/schemas/PluginRecord" }
     PluginCompatibilityManifest:
-      $ref: "../plugin/compatibility-manifest-v6.schema.json"
+      $ref: "../plugin/compatibility-manifest-v7.schema.json"
     PluginOperationList:
       type: object
       required: [operations]
@@ -2256,6 +2320,50 @@ components:
       type: object
       additionalProperties: false
       maxProperties: 0
+    EmptyQueryRequest:
+      type: object
+      additionalProperties: false
+      maxProperties: 0
+    ListIntentsQueryRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        intent_id: { type: string, minLength: 1 }
+        plugin_instance_id: { type: string, minLength: 1 }
+    ListOperationsQueryRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        plugin_instance_id: { type: string, minLength: 1 }
+        cursor: { type: string, minLength: 1, maxLength: 1024 }
+        limit: { type: integer, minimum: 1, maximum: 500 }
+    ListRetainedDataQueryRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        plugin_instance_id: { type: string, minLength: 1 }
+    ListPermissionsQueryRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        plugin_instance_id: { type: string, minLength: 1 }
+        active_only: { type: boolean }
+    ListDiagnosticsQueryRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        plugin_id: { type: string, minLength: 1 }
+        plugin_instance_id: { type: string, minLength: 1 }
+        surface_instance_id: { type: string, minLength: 1 }
+        type: { type: string, minLength: 1 }
+        severity: { type: string, enum: [info, warning] }
+        limit: { type: integer, minimum: 1, maximum: 1000 }
+    SettingsQueryRequest:
+      type: object
+      additionalProperties: false
+      required: [scope]
+      properties:
+        scope: { $ref: "#/components/schemas/ResourceScopeKind" }
     SurfaceBootstrap:
       type: object
       additionalProperties: false

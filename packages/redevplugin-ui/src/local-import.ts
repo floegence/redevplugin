@@ -43,7 +43,8 @@ export class PluginLocalImportClient {
       throw new TypeError("pluginInstanceId is required");
     }
     return this.#requestMutation(
-      `/_redevplugin/api/plugins/local-imports?plugin_instance_id=${encodeURIComponent(canonicalPluginInstanceId)}`,
+      "POST",
+      `/_redevplugin/api/plugins/${encodeURIComponent(canonicalPluginInstanceId)}/local-import`,
       packageBlob,
       options,
     );
@@ -54,12 +55,17 @@ export class PluginLocalImportClient {
     if (!canonicalPluginInstanceId) {
       throw new TypeError("pluginInstanceId is required");
     }
+    if (!Number.isSafeInteger(expectedManagementRevision) || expectedManagementRevision <= 0) {
+      throw new TypeError("expectedManagementRevision must be a positive safe integer");
+    }
     let plugin: PluginRecord;
     try {
       plugin = await this.#requestMutation<PluginRecord>(
-        `/_redevplugin/api/plugins/${encodeURIComponent(canonicalPluginInstanceId)}/local-import?expected_management_revision=${encodeURIComponent(String(expectedManagementRevision))}`,
+        "PUT",
+        `/_redevplugin/api/plugins/${encodeURIComponent(canonicalPluginInstanceId)}/local-import`,
         packageBlob,
         options,
+        { "X-ReDevPlugin-Expected-Management-Revision": String(expectedManagementRevision) },
       );
     } catch (error) {
       if (pluginMutationOutcome(error) !== "not_committed") {
@@ -84,11 +90,16 @@ export class PluginLocalImportClient {
     return plugin;
   }
 
-  async #requestMutation<T>(path: string, body: Blob, options: PluginLocalImportOptions): Promise<T> {
+  async #requestMutation<T>(
+    method: "POST" | "PUT",
+    path: string,
+    body: Blob,
+    options: PluginLocalImportOptions,
+    metadataHeaders: Record<string, string> = {},
+  ): Promise<T> {
     if (!(body instanceof Blob)) {
       throw new TypeError("package upload must be a Blob");
     }
-    const method = path.includes("/local-import?") ? "PUT" : "POST";
     const operation = `${method} ${path}`;
     assertMutationDispatchable(options.signal, operation);
     options.onProgress?.(0, body.size);
@@ -97,6 +108,7 @@ export class PluginLocalImportClient {
       headers: {
         "Accept": "application/json",
         "Content-Type": "application/vnd.redevplugin.package+zip",
+        ...metadataHeaders,
       },
       body,
       credentials: "same-origin",

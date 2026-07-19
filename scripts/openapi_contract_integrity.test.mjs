@@ -7,7 +7,7 @@ import { parse as parseYAML } from "yaml";
 const root = resolve(import.meta.dirname, "..");
 
 async function readOpenAPI() {
-  return parseYAML(await readFile(join(root, "spec/openapi/plugin-platform-v6.yaml"), "utf8"));
+  return parseYAML(await readFile(join(root, "spec/openapi/plugin-platform-v7.yaml"), "utf8"));
 }
 
 async function readIPCSchema() {
@@ -28,17 +28,14 @@ test("PatchSettingsRequest requires a non-empty set or remove object", async () 
 test("settings routes and responses require a closed resource scope", async () => {
   const openAPI = await readOpenAPI();
   const paths = openAPI.paths;
-  const schemaRoute = paths["/_redevplugin/api/plugins/{plugin_instance_id}/settings/schema"].get;
-  const settingsRoute = paths["/_redevplugin/api/plugins/{plugin_instance_id}/settings"].get;
+  const schemaRoute = paths["/_redevplugin/api/plugins/{plugin_instance_id}/settings/schema/query"].post;
+  const settingsRoute = paths["/_redevplugin/api/plugins/{plugin_instance_id}/settings/query"].post;
   for (const route of [schemaRoute, settingsRoute]) {
-    assert.deepEqual(route.parameters.at(-1), { $ref: "#/components/parameters/SettingsScope" });
+    assert.deepEqual(route.requestBody, { $ref: "#/components/requestBodies/SettingsQueryRequest" });
+    assert.equal(route["x-redevplugin-route-effect"], "query");
   }
-  assert.deepEqual(openAPI.components.parameters.SettingsScope, {
-    name: "scope",
-    in: "query",
-    required: true,
-    schema: { $ref: "#/components/schemas/ResourceScopeKind" },
-  });
+  assert.deepEqual(openAPI.components.schemas.SettingsQueryRequest.required, ["scope"]);
+  assert.equal(openAPI.components.schemas.SettingsQueryRequest.additionalProperties, false);
   assert.deepEqual(openAPI.components.schemas.ResourceScopeKind, {
     type: "string",
     enum: ["user", "environment"],
