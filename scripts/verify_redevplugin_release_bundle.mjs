@@ -5,7 +5,9 @@ import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, re
 import { tmpdir } from "node:os";
 import { join, relative, resolve, sep } from "node:path";
 
+import { validateTarGzipArchive } from "./archive_contract.mjs";
 import { readPerformanceContract, validatePerformanceEvidence } from "./performance_contract.mjs";
+import { isStrictRFC3339DateTime } from "./rfc3339.mjs";
 import { runtimeTargetForPlatform, runtimeTargetPayloadForPlatform } from "./runtime_targets.mjs";
 
 const args = process.argv.slice(2);
@@ -391,20 +393,12 @@ function verifyWorkerSDKCrate(bundleDir, expectedVersion, manifest) {
   assertEqual(createHash("sha256").update(crateBytes).digest("hex"), manifest.worker_sdk.sha256, "worker SDK crate sha256");
   assertEqual(crateBytes.length, manifest.worker_sdk.size, "worker SDK crate size");
 
-  const packageRoot = `redevplugin-worker-sdk-${expectedVersion}/`;
-  const entries = execFileSync("tar", ["-tzf", cratePath], { encoding: "utf8" }).trim().split("\n").filter(Boolean);
-  if (entries.length === 0 || new Set(entries).size !== entries.length) {
-    fail("worker SDK crate must contain a non-empty unique file list");
-  }
-  for (const entry of entries) {
-    if (!entry.startsWith(packageRoot) || entry.includes("\\") || entry.split("/").includes("..")) {
-      fail(`worker SDK crate contains unsafe path ${entry}`);
-    }
-  }
-  const detailedEntries = execFileSync("tar", ["-tvzf", cratePath], { encoding: "utf8" }).trim().split("\n").filter(Boolean);
-  if (detailedEntries.some((entry) => !entry.startsWith("-") && !entry.startsWith("d"))) {
-    fail("worker SDK crate must not contain links or special files");
-  }
+  const packageRootName = `redevplugin-worker-sdk-${expectedVersion}`;
+  const packageRoot = `${packageRootName}/`;
+  const entries = validateTarGzipArchive(cratePath, {
+    expectedRoot: packageRootName,
+    label: "worker SDK crate",
+  });
   for (const path of ["Cargo.lock", "Cargo.toml", "Cargo.toml.orig", "README.md", "src/lib.rs"]) {
     if (!entries.includes(packageRoot + path)) {
       fail(`worker SDK crate is missing ${path}`);
@@ -436,9 +430,9 @@ function verifyWorkerSDKCrate(bundleDir, expectedVersion, manifest) {
 
 	const unpackRoot = mkdtempSync(join(tmpdir(), "redevplugin-worker-sdk-check-"));
 	try {
-		execFileSync("tar", ["-xzf", cratePath, "-C", unpackRoot]);
-		execFileSync("cargo", ["check", "--locked", "--target", "wasm32-unknown-unknown"], {
-			cwd: join(unpackRoot, packageRoot),
+			execFileSync("tar", ["-xzf", cratePath, "-C", unpackRoot]);
+			execFileSync("cargo", ["check", "--locked", "--target", "wasm32-unknown-unknown"], {
+			cwd: join(unpackRoot, packageRootName),
 			encoding: "utf8",
 			env: { ...process.env, RUSTUP_TOOLCHAIN: rustToolchain, CARGO_TARGET_DIR: join(unpackRoot, "target") },
 		});
@@ -469,13 +463,7 @@ async function verifyNpmTarball(bundleDir, expectedVersion, manifest) {
   assertEqual(npmBytes.length, manifest.npm_package.size, "npm tarball size");
   const tmp = mkdtempSync(join(tmpdir(), "redevplugin-npm-"));
   try {
-    const archiveEntries = execFileSync("tar", ["-tzf", npmPath], { encoding: "utf8" }).trim().split("\n").filter(Boolean);
-    if (archiveEntries.length === 0) fail("npm tarball must contain package files");
-    for (const entry of archiveEntries) {
-      if (!entry.startsWith("package/") || entry.includes("\\") || entry.split("/").includes("..")) {
-        fail(`npm tarball contains unsafe path ${entry}`);
-      }
-    }
+    validateTarGzipArchive(npmPath, { expectedRoot: "package", label: "npm tarball" });
     execFileSync("tar", ["-xzf", npmPath, "-C", tmp]);
     const packageDir = join(tmp, "package");
     const pkg = readJSON(join(packageDir, "package.json"));
@@ -995,8 +983,7 @@ function assertBundlePath(value, label) {
 function assertRFC3339DateTime(value, label) {
   if (
     typeof value !== "string" ||
-    !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/.test(value) ||
-    !Number.isFinite(Date.parse(value))
+    !isStrictRFC3339DateTime(value)
   ) {
     fail(`${label} must be an RFC 3339 date-time string`);
   }

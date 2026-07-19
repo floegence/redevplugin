@@ -6,6 +6,8 @@ import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 
+import { validateTarGzipArchive } from "./archive_contract.mjs";
+
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const [version, rawOutputDirectory] = process.argv.slice(2);
 const releaseVersionPattern = /^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?$/;
@@ -107,8 +109,12 @@ try {
 
   const filename = `redevplugin-worker-sdk-${version}.crate`;
   const packagedPath = join(targetDirectory, "package", filename);
-  const archiveEntries = run("tar", ["-tzf", packagedPath]).stdout.trim().split("\n").filter(Boolean);
-  const packageRoot = `redevplugin-worker-sdk-${version}/`;
+  const packageRootName = `redevplugin-worker-sdk-${version}`;
+  const packageRoot = `${packageRootName}/`;
+  const archiveEntries = validateTarGzipArchive(packagedPath, {
+    expectedRoot: packageRootName,
+    label: "worker SDK crate",
+  });
   const requiredEntries = new Set([
     `${packageRoot}Cargo.lock`,
     `${packageRoot}Cargo.toml`,
@@ -136,7 +142,7 @@ try {
     "--target",
     "wasm32-unknown-unknown",
   ], {
-    cwd: join(unpackDirectory, `redevplugin-worker-sdk-${version}`),
+    cwd: join(unpackDirectory, packageRootName),
     env: { ...packageCargoEnvironment, CARGO_TARGET_DIR: join(tempDirectory, "unpacked-target") },
   });
 

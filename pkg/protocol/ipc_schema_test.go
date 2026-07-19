@@ -394,6 +394,7 @@ func TestIPCSchemaValidatesV4Frames(t *testing.T) {
 	root := repoRoot(t)
 	compiler := jsonschema.NewCompiler()
 	compiler.Draft = jsonschema.Draft2020
+	compiler.AssertFormat = true
 	for resource, path := range map[string]string{
 		"urn:redevplugin:ipc-v4": "ipc-v4.schema.json",
 		"https://schemas.redevplugin.dev/plugin/worker-invocation-v3.schema.json": "worker-invocation-v3.schema.json",

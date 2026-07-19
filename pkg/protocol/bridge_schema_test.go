@@ -301,6 +301,7 @@ func TestBridgeV5RejectsUnkeyedTextFixture(t *testing.T) {
 	}
 	compiler := jsonschema.NewCompiler()
 	compiler.Draft = jsonschema.Draft2020
+	compiler.AssertFormat = true
 	if err := compiler.AddResource("urn:redevplugin:bridge-v5", bytes.NewReader(schemaRaw)); err != nil {
 		t.Fatal(err)
 	}

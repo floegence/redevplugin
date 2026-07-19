@@ -108,7 +108,7 @@ WASM ABI validation. The runtime is launched by the Go Host through
 `pkg/runtimeclient`. Worker authors pin the SDK to the same immutable Git tag as
 the Host/runtime release. Every native runtime bundle embeds the exact same
 versioned `.crate` source artifact and records its SHA-256 in release manifest
-v3.
+v4.
 
 The current IPC model is supervised stdin/stdout newline JSON. The Host remains
 the authority for identity, policy, grants, quotas, revocation, storage, and
@@ -116,7 +116,7 @@ network access. The runtime validates WASM worker shape, executes the exported
 worker entrypoint with Wasmi, and performs brokered hostcalls through Host-owned
 IPC request/response frames.
 
-Rust IPC v3 uses one Go reader, one serialized pipe writer, and a pending map
+Rust IPC v4 uses one Go reader, one serialized pipe writer, and a pending map
 keyed by `request_id`; a worker invocation no longer holds a process-wide IPC
 mutex. Runtime-origin artifact, grant, storage, and network frames include
 `parent_request_id`. Grant, storage, and network frames are accepted only while

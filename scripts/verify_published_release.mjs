@@ -7,6 +7,7 @@ import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 
+import { validateTarGzipArchive } from "./archive_contract.mjs";
 import { runtimeTargetForBuildTriple, runtimeTargets } from "./runtime_targets.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -68,16 +69,21 @@ function inspectArchive(archivePath) {
   if (!buildTriple) {
     throw new Error(`${archiveName} does not identify a supported runtime build triple`);
   }
+  const expectedRoot = archiveName.slice(0, -".tar.gz".length);
+  validateTarGzipArchive(archivePath, {
+    expectedRoot,
+    label: `published runtime archive ${archiveName}`,
+  });
   const extractRoot = mkdtempSync(join(tempRoot, "bundle-"));
   const extraction = spawnSync("tar", ["-xzf", archivePath, "-C", extractRoot], { encoding: "utf8" });
   if (extraction.status !== 0) {
     throw new Error(`cannot extract ${basename(archivePath)}: ${extraction.stderr || extraction.stdout}`);
   }
-  const roots = readdirSync(extractRoot).filter((entry) => statSync(join(extractRoot, entry)).isDirectory());
-  if (roots.length !== 1) {
-    throw new Error(`${basename(archivePath)} must contain exactly one bundle root`);
+  const roots = readdirSync(extractRoot);
+  if (roots.length !== 1 || roots[0] !== expectedRoot || !statSync(join(extractRoot, roots[0])).isDirectory()) {
+    throw new Error(`${basename(archivePath)} extraction did not preserve its validated archive root`);
   }
-  const bundleRoot = join(extractRoot, roots[0]);
+  const bundleRoot = join(extractRoot, expectedRoot);
   const manifest = JSON.parse(readFileSync(join(bundleRoot, "release-manifest.json"), "utf8"));
   const expectedPlatformTarget = runtimeTargetForBuildTriple(buildTriple).platformTarget;
   if (manifest.runtime_target !== expectedPlatformTarget) {

@@ -335,6 +335,7 @@ func compileTokenTicketSchema(t testing.TB, root string) *jsonschema.Schema {
 	}
 	compiler := jsonschema.NewCompiler()
 	compiler.Draft = jsonschema.Draft2020
+	compiler.AssertFormat = true
 	resourceScopeRaw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", "resource-scope-v1.schema.json"))
 	if err != nil {
 		t.Fatal(err)

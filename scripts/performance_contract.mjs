@@ -1,5 +1,7 @@
 import { readFileSync } from "node:fs";
 
+import { isStrictRFC3339DateTime } from "./rfc3339.mjs";
+
 const scenarioIDPattern = /^[a-z][a-z0-9._-]+$/;
 const metricNamePattern = /^[a-z][a-z0-9._-]+$/;
 const metricUnits = new Set(["milliseconds", "count", "bytes", "queries", "long_tasks", "basis_points"]);
@@ -152,7 +154,7 @@ export function validatePerformanceEvidence(evidence, contract, options) {
   if (options?.sourceCommit !== undefined && evidence.source_commit !== options.sourceCommit) {
     throw new Error(`performance evidence source_commit mismatch: got ${evidence.source_commit}, want ${options.sourceCommit}`);
   }
-  if (typeof evidence.generated_at !== "string" || !Number.isFinite(Date.parse(evidence.generated_at))) {
+  if (!isStrictRFC3339DateTime(evidence.generated_at)) {
     throw new Error("performance evidence generated_at is invalid");
   }
   if (options?.generatedAt !== undefined && evidence.generated_at !== options.generatedAt) {

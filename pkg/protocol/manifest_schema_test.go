@@ -175,6 +175,7 @@ func TestManifestMethodSchemaMachineContractMatchesGoValidation(t *testing.T) {
 	}
 	compiler := jsonschema.NewCompiler()
 	compiler.Draft = jsonschema.Draft2020
+	compiler.AssertFormat = true
 	pinSchemaRaw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", "host-capability-pin-v1.schema.json"))
 	if err != nil {
 		t.Fatal(err)

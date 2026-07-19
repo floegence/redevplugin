@@ -5,6 +5,7 @@ import { appendFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSyn
 import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
+import { gzipSync } from "node:zlib";
 
 import { runtimeTargets } from "./runtime_targets.mjs";
 
@@ -32,7 +33,9 @@ try {
   mkdirSync(verifierScripts, { recursive: true });
   cpSync(join(root, "scripts", "verify_published_release.mjs"), publishedVerifier);
   cpSync(join(root, "scripts", "verify_redevplugin_release_bundle.mjs"), bundleVerifier);
+  cpSync(join(root, "scripts", "archive_contract.mjs"), join(verifierScripts, "archive_contract.mjs"));
   cpSync(join(root, "scripts", "performance_contract.mjs"), join(verifierScripts, "performance_contract.mjs"));
+  cpSync(join(root, "scripts", "rfc3339.mjs"), join(verifierScripts, "rfc3339.mjs"));
   cpSync(join(root, "scripts", "runtime_targets.mjs"), join(verifierScripts, "runtime_targets.mjs"));
   const bundles = [];
   for (const target of targets) {
@@ -64,6 +67,44 @@ try {
   renameSync(archiveIdentityPath, renamedArchiveIdentityPath);
   assertPublishedVerifierRejects("runtime archive set mismatch", "unexpected runtime archive name");
   renameSync(renamedArchiveIdentityPath, archiveIdentityPath);
+
+  const archiveRoot = basename(archiveIdentityNegative.bundleRoot);
+  for (const testCase of [
+    {
+      label: "wrong runtime archive root",
+      expected: "must contain exactly one non-symlink archive root",
+      entries: [tarDirectory("wrong-root"), tarFile("wrong-root/release-manifest.json", "{}")],
+    },
+    {
+      label: "top-level runtime archive file",
+      expected: "contains top-level file",
+      entries: [tarFile("release-manifest.json", "{}")],
+    },
+    {
+      label: "runtime archive link",
+      expected: "must contain only regular files and directories",
+      entries: [tarDirectory(archiveRoot), tarLink(`${archiveRoot}/link`, "/tmp/target")],
+    },
+    {
+      label: "duplicate runtime archive member",
+      expected: "contains duplicate archive path",
+      entries: [tarDirectory(archiveRoot), tarFile(`${archiveRoot}/duplicate`, "a"), tarFile(`${archiveRoot}/duplicate`, "b")],
+    },
+    {
+      label: "runtime archive traversal",
+      expected: "contains unsafe archive path",
+      entries: [tarDirectory(archiveRoot), tarFile(`${archiveRoot}/../escape`, "x")],
+    },
+    {
+      label: "multiple runtime archive roots",
+      expected: "must contain exactly one non-symlink archive root",
+      entries: [tarDirectory(archiveRoot), tarDirectory("second-root")],
+    },
+  ]) {
+    writeTarGzipFixture(archiveIdentityPath, testCase.entries);
+    assertPublishedVerifierRejects(testCase.expected, testCase.label);
+  }
+  archiveBundle(archiveIdentityNegative);
 
   const targetIdentityNegative = bundles[0];
   refreshReleaseManifest(targetIdentityNegative.bundleRoot, targets[1].platformTarget);
@@ -97,6 +138,9 @@ try {
   manifestFiles.generated_at = "2026-07-19";
   writeFileSync(manifestFilesPath, JSON.stringify(manifestFiles, null, 2) + "\n");
   assertBundleVerifierRejects(manifestFilesNegative.bundleRoot, "must be an RFC 3339 date-time string", "date-only generated_at");
+  manifestFiles.generated_at = "2026-02-30T00:00:00Z";
+  writeFileSync(manifestFilesPath, JSON.stringify(manifestFiles, null, 2) + "\n");
+  assertBundleVerifierRejects(manifestFilesNegative.bundleRoot, "must be an RFC 3339 date-time string", "invalid calendar generated_at");
   manifestFiles.generated_at = originalGeneratedAt;
   manifestFiles.files[0].unexpected = true;
   writeFileSync(manifestFilesPath, JSON.stringify(manifestFiles, null, 2) + "\n");
@@ -332,4 +376,58 @@ function run(command, args, label, options = {}) {
     throw new Error(`${label} failed: ${result.stderr || result.stdout || result.error}`);
   }
   return result.stdout;
+}
+
+function tarDirectory(name) {
+  return { name: `${name}/`, type: "5", body: Buffer.alloc(0) };
+}
+
+function tarFile(name, body) {
+  return { name, type: "0", body: Buffer.from(body) };
+}
+
+function tarLink(name, target) {
+  return { name, type: "2", linkName: target, body: Buffer.alloc(0) };
+}
+
+function writeTarGzipFixture(path, entries) {
+  const blocks = [];
+  for (const entry of entries) {
+    const body = entry.body ?? Buffer.alloc(0);
+    const header = Buffer.alloc(512);
+    writeTarText(header, 0, 100, entry.name);
+    writeTarOctal(header, 100, 8, entry.type === "5" ? 0o755 : 0o644);
+    writeTarOctal(header, 108, 8, 0);
+    writeTarOctal(header, 116, 8, 0);
+    writeTarOctal(header, 124, 12, body.length);
+    writeTarOctal(header, 136, 12, 0);
+    header.fill(0x20, 148, 156);
+    header[156] = entry.type.charCodeAt(0);
+    writeTarText(header, 157, 100, entry.linkName ?? "");
+    writeTarText(header, 257, 6, "ustar\0");
+    writeTarText(header, 263, 2, "00");
+    const checksum = header.reduce((sum, byte) => sum + byte, 0);
+    writeTarChecksum(header, checksum);
+    blocks.push(header, body);
+    const padding = body.length % 512;
+    if (padding !== 0) blocks.push(Buffer.alloc(512 - padding));
+  }
+  blocks.push(Buffer.alloc(1024));
+  writeFileSync(path, gzipSync(Buffer.concat(blocks)));
+}
+
+function writeTarText(buffer, offset, width, value) {
+  const bytes = Buffer.from(value);
+  if (bytes.length > width) throw new Error(`tar fixture field exceeds ${width} bytes`);
+  bytes.copy(buffer, offset);
+}
+
+function writeTarOctal(buffer, offset, width, value) {
+  const text = value.toString(8).padStart(width - 1, "0") + "\0";
+  writeTarText(buffer, offset, width, text);
+}
+
+function writeTarChecksum(buffer, checksum) {
+  const text = checksum.toString(8).padStart(6, "0") + "\0 ";
+  writeTarText(buffer, 148, 8, text);
 }

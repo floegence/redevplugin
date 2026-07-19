@@ -77,6 +77,20 @@ test("performance evidence metadata and contract hashes are closed and immutable
     contractHashes,
   };
   assert.doesNotThrow(() => validatePerformanceEvidence(evidence, contract, options));
+  for (const generatedAt of [
+    "2026-02-30T00:00:00Z",
+    "2026-07-17T24:00:00Z",
+    "2026-07-17T00:00:00+24:00",
+    "2026-07-17T00:00:00",
+  ]) {
+    const invalid = structuredClone(evidence);
+    invalid.generated_at = generatedAt;
+    assert.throws(
+      () => validatePerformanceEvidence(invalid, contract, { ...options, generatedAt: undefined }),
+      /generated_at is invalid/,
+      generatedAt,
+    );
+  }
   for (const [label, mutate, diagnostic] of [
     ["release version", (value) => value.release_version = "0.5.1", "release_version mismatch"],
     ["source commit", (value) => value.source_commit = "c".repeat(40), "source_commit mismatch"],

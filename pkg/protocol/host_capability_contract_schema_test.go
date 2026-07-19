@@ -24,6 +24,7 @@ func TestHostCapabilityArtifactSchemasAreClosedVersionedAndValidatePublishedSamp
 	}
 	compiler := jsonschema.NewCompiler()
 	compiler.Draft = jsonschema.Draft2020
+	compiler.AssertFormat = true
 	schemaIDs := make(map[string]string, len(schemaNames))
 	for _, name := range schemaNames {
 		raw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", name))

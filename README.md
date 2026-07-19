@@ -213,7 +213,7 @@ capabilities.
 - Plugin backend authors use `redevplugin-worker-sdk` from the immutable release
   tag. Each runtime bundle contains the identical
   `sdk/redevplugin-worker-sdk-<version>.crate` source artifact, and release
-  manifest v3 records its version, SHA-256, and size for audit or offline
+  manifest v4 records its version, SHA-256, and size for audit or offline
   vendoring.
 - Rust IPC schema tests keep startup `hello` / `hello_ack` frames bound to the
   Host-issued channel nonce, runtime generation, IPC version, and WASM ABI
@@ -226,7 +226,7 @@ capabilities.
   Host/Rust IPC version mismatch, WASM ABI mismatch, missing required fields,
   replayed request IDs, unknown frame types, and runtime-generation mismatch
   fail-closed paths.
-- Rust IPC v3 multiplexes invocations over one runtime process with one reader,
+- Rust IPC v4 multiplexes invocations over one runtime process with one reader,
   one serialized writer, and a pending map keyed by `request_id`. Runtime-origin
   artifact, grant, storage, and network frames carry `parent_request_id`, which
   the Go supervisor resolves back to the signed invocation audience before Host

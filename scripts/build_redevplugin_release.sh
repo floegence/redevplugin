@@ -119,14 +119,16 @@ if [[ -n "$RUNTIME_TARGET" ]]; then
 fi
 
 if [[ -n "$PERFORMANCE_EVIDENCE" ]]; then
-  GENERATED_AT=$(node --input-type=module - "$PERFORMANCE_EVIDENCE" "$VERSION" "$SOURCE_COMMIT" <<'NODE'
+  GENERATED_AT=$(node --input-type=module - "$PERFORMANCE_EVIDENCE" "$VERSION" "$SOURCE_COMMIT" "$ROOT_DIR/scripts/rfc3339.mjs" <<'NODE'
 import { readFileSync } from "node:fs";
+import { pathToFileURL } from "node:url";
 
-const [path, version, sourceCommit] = process.argv.slice(2);
+const [path, version, sourceCommit, rfc3339Module] = process.argv.slice(2);
+const { isStrictRFC3339DateTime } = await import(pathToFileURL(rfc3339Module));
 const evidence = JSON.parse(readFileSync(path, "utf8"));
 if (evidence.release_version !== version) throw new Error("precomputed performance evidence release_version mismatch");
 if (evidence.source_commit !== sourceCommit) throw new Error("precomputed performance evidence source_commit mismatch");
-if (!Number.isFinite(Date.parse(evidence.generated_at))) throw new Error("precomputed performance evidence generated_at is invalid");
+if (!isStrictRFC3339DateTime(evidence.generated_at)) throw new Error("precomputed performance evidence generated_at is invalid");
 if (!Array.isArray(evidence.scenarios) || evidence.scenarios.some((scenario) => scenario.gate !== "release")) {
   throw new Error("precomputed performance evidence must contain only release scenarios");
 }

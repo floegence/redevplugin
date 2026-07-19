@@ -101,6 +101,10 @@ async function createFixture(t) {
     join(repo, "scripts/performance_contract.mjs"),
   );
   await copyFile(
+    join(root, "scripts/rfc3339.mjs"),
+    join(repo, "scripts/rfc3339.mjs"),
+  );
+  await copyFile(
     join(root, "scripts/check_redevplugin_performance.sh"),
     join(repo, "scripts/check_redevplugin_performance.sh"),
   );

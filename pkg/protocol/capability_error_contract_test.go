@@ -47,6 +47,7 @@ func TestBridgeCapabilityBusinessErrorDetailsAreClosedAndMatchFixture(t *testing
 	}
 	compiler := jsonschema.NewCompiler()
 	compiler.Draft = jsonschema.Draft2020
+	compiler.AssertFormat = true
 	const resource = "urn:redevplugin:test:capability-business-error-details"
 	if err := compiler.AddResource(resource, bytes.NewReader(detailsRaw)); err != nil {
 		t.Fatal(err)

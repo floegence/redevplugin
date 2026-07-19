@@ -46,6 +46,12 @@ func TestPerformanceEvidenceSchemaValidatesReleaseEvidence(t *testing.T) {
 				delete(document["environment"].(map[string]any), "chromium_version")
 			},
 		},
+		{
+			name: "invalid generated at",
+			mutate: func(document map[string]any) {
+				document["generated_at"] = "2026-02-30T08:00:00Z"
+			},
+		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -67,6 +73,7 @@ func compilePerformanceEvidenceSchema(t testing.TB) *jsonschema.Schema {
 	}
 	compiler := jsonschema.NewCompiler()
 	compiler.Draft = jsonschema.Draft2020
+	compiler.AssertFormat = true
 	const resource = "urn:redevplugin:test:performance-evidence-v1"
 	if err := compiler.AddResource(resource, bytes.NewReader(raw)); err != nil {
 		t.Fatal(err)

@@ -222,7 +222,7 @@ The release workflow builds the npm tarball and Rust Worker SDK crate once and
 passes those immutable files to every runtime matrix build through
 `--npm-package` and `--worker-sdk-package`. The build stamps one release version
 into the Go compatibility matrix, npm package, Worker SDK crate, and Rust
-runtime hello handshake. Release manifest v3 records the source commit,
+runtime hello handshake. Release manifest v4 records the source commit,
 compatibility digest, npm tarball path/SHA-256/SRI/size, and Worker SDK
 path/SHA-256/size. The bundle verifier
 checks compatibility, performance evidence, release manifest hashes,

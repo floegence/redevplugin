@@ -685,6 +685,7 @@ func TestMachineSchemaMatchesRuntimeRestrictedSchema(t *testing.T) {
 	}
 	compiler := jsonschema.NewCompiler()
 	compiler.Draft = jsonschema.Draft2020
+	compiler.AssertFormat = true
 	if err := compiler.AddResource("urn:redevplugin:host-capability-contract", bytes.NewReader(schemaBytes)); err != nil {
 		t.Fatal(err)
 	}
@@ -771,6 +772,7 @@ func TestContractValidationRejectsNonCanonicalSemverAndStringSets(t *testing.T) 
 	}
 	compiler := jsonschema.NewCompiler()
 	compiler.Draft = jsonschema.Draft2020
+	compiler.AssertFormat = true
 	if err := compiler.AddResource("urn:redevplugin:host-capability-contract:canonical", bytes.NewReader(schemaBytes)); err != nil {
 		t.Fatal(err)
 	}
@@ -820,6 +822,7 @@ func TestContractValidationRejectsGeneratedTypeNamesReservedByTheSDK(t *testing.
 	}
 	compiler := jsonschema.NewCompiler()
 	compiler.Draft = jsonschema.Draft2020
+	compiler.AssertFormat = true
 	if err := compiler.AddResource("urn:redevplugin:host-capability-contract:sdk-names", bytes.NewReader(schemaBytes)); err != nil {
 		t.Fatal(err)
 	}

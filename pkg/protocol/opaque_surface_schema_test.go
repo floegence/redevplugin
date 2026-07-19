@@ -162,6 +162,7 @@ func TestOpaqueSurfaceSchemasCompileAndRejectUnsafePackagePaths(t *testing.T) {
 	root := repoRoot(t)
 	compiler := jsonschema.NewCompiler()
 	compiler.Draft = jsonschema.Draft2020
+	compiler.AssertFormat = true
 	for resource, path := range map[string]string{
 		"https://schemas.redevplugin.dev/plugin/opaque-surface-document-v3.schema.json": "opaque-surface-document-v3.schema.json",
 		"urn:redevplugin:opaque-surface-transport-v4":                                   "opaque-surface-transport-v4.schema.json",

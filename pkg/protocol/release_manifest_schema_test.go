@@ -1,12 +1,15 @@
 package protocol
 
 import (
+	"bytes"
 	"encoding/json"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
+
+	jsonschema "github.com/santhosh-tekuri/jsonschema/v5"
 )
 
 const releaseManifestSchemaVersion = "redevplugin.release_manifest.v4"
@@ -121,6 +124,60 @@ func TestReleaseManifestSchemaMatchesBundleVerifierContract(t *testing.T) {
 	assertWorkerSDKPackagerContract(t, filepath.Join(root, "scripts", "build_redevplugin_worker_sdk_package.mjs"))
 	assertReleaseManifestVerifierContract(t, filepath.Join(root, "scripts", "verify_redevplugin_release_bundle.mjs"))
 	assertReleaseWorkflowContract(t, filepath.Join(root, ".github", "workflows", "release.yml"))
+}
+
+func TestReleaseManifestSchemaAssertsDateTimeFormat(t *testing.T) {
+	root := repoRoot(t)
+	raw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", "release-manifest-v4.schema.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	compiler := jsonschema.NewCompiler()
+	compiler.Draft = jsonschema.Draft2020
+	compiler.AssertFormat = true
+	const resource = "urn:redevplugin:test:release-manifest-v4"
+	if err := compiler.AddResource(resource, bytes.NewReader(raw)); err != nil {
+		t.Fatal(err)
+	}
+	schema, err := compiler.Compile(resource)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest := map[string]any{
+		"schema_version":       releaseManifestSchemaVersion,
+		"version":              "0.5.0",
+		"source_commit":        strings.Repeat("a", 40),
+		"runtime_target":       "linux/amd64",
+		"generated_at":         "2026-07-19T12:34:56Z",
+		"compatibility_sha256": strings.Repeat("b", 64),
+		"npm_package": map[string]any{
+			"name":      "@floegence/redevplugin-ui",
+			"version":   "0.5.0",
+			"path":      "npm/floegence-redevplugin-ui-0.5.0.tgz",
+			"sha256":    strings.Repeat("c", 64),
+			"integrity": "sha512-AA==",
+			"size":      1,
+		},
+		"worker_sdk": map[string]any{
+			"name":    "redevplugin-worker-sdk",
+			"version": "0.5.0",
+			"path":    "sdk/redevplugin-worker-sdk-0.5.0.crate",
+			"sha256":  strings.Repeat("d", 64),
+			"size":    1,
+		},
+		"files": []any{map[string]any{
+			"path":   "README.md",
+			"sha256": strings.Repeat("e", 64),
+			"size":   1,
+		}},
+	}
+	if err := schema.Validate(manifest); err != nil {
+		t.Fatalf("valid release manifest was rejected: %v", err)
+	}
+	manifest["generated_at"] = "2026-02-30T12:34:56Z"
+	if err := schema.Validate(manifest); err == nil {
+		t.Fatal("release manifest schema accepted invalid date-time text")
+	}
 }
 
 func assertWorkerSDKPackagerContract(t *testing.T, path string) {

@@ -29,6 +29,7 @@ func TestResourceScopeSchemaMatchesSessionContextContract(t *testing.T) {
 	}
 	compiler := jsonschema.NewCompiler()
 	compiler.Draft = jsonschema.Draft2020
+	compiler.AssertFormat = true
 	if err := compiler.AddResource("urn:redevplugin:resource-scope-v1", bytes.NewReader(raw)); err != nil {
 		t.Fatal(err)
 	}
