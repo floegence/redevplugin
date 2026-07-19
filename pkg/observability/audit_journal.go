@@ -2,7 +2,6 @@ package observability
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"reflect"
@@ -10,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/floegence/redevplugin/internal/jsonvalue"
 	"github.com/floegence/redevplugin/pkg/mutation"
 )
 
@@ -107,8 +107,22 @@ func (j *MemorySecurityAuditJournal) BeginSecurityAudit(_ context.Context, event
 	defer j.mu.Unlock()
 	if event.EventID != "" {
 		if existing, ok := j.findLocked(event.EventID); ok {
-			return cloneSecurityAuditRecord(existing), nil
+			return cloneSecurityAuditRecord(existing)
 		}
+	}
+	nextSeq := j.nextSeq + 1
+	if event.EventID == "" {
+		event.EventID = eventID("audit", nextSeq)
+	}
+	record := SecurityAuditRecord{
+		EventID:   event.EventID,
+		Event:     event,
+		State:     SecurityAuditPending,
+		CreatedAt: event.OccurredAt,
+	}
+	snapshot, err := cloneSecurityAuditRecord(record)
+	if err != nil {
+		return SecurityAuditRecord{}, err
 	}
 	if j.count == j.maxEntries {
 		exportedIndex := -1
@@ -123,20 +137,11 @@ func (j *MemorySecurityAuditJournal) BeginSecurityAudit(_ context.Context, event
 		}
 		j.removeLocked(exportedIndex)
 	}
-	j.nextSeq++
-	if event.EventID == "" {
-		event.EventID = eventID("audit", j.nextSeq)
-	}
-	record := SecurityAuditRecord{
-		EventID:   event.EventID,
-		Event:     cloneAuditEvent(event),
-		State:     SecurityAuditPending,
-		CreatedAt: event.OccurredAt,
-	}
+	j.nextSeq = nextSeq
 	index := (j.start + j.count) % j.maxEntries
 	j.entries[index] = record
 	j.count++
-	return cloneSecurityAuditRecord(record), nil
+	return snapshot, nil
 }
 
 func (j *MemorySecurityAuditJournal) CompleteSecurityAudit(_ context.Context, eventID string, outcome mutation.Outcome, details map[string]any) error {
@@ -146,10 +151,7 @@ func (j *MemorySecurityAuditJournal) CompleteSecurityAudit(_ context.Context, ev
 	if !validMutationOutcome(outcome) {
 		return ErrInvalidMutationOutcome
 	}
-	if !validAuditDetails(details) {
-		return ErrInvalidAuditDetails
-	}
-	clonedDetails, err := cloneJSONMap(details)
+	clonedDetails, err := cloneAuditDetails(details)
 	if err != nil {
 		return err
 	}
@@ -175,23 +177,11 @@ func (j *MemorySecurityAuditJournal) CompleteSecurityAudit(_ context.Context, ev
 }
 
 func (j *MemorySecurityAuditJournal) ListPendingSecurityAudits(_ context.Context) ([]SecurityAuditRecord, error) {
-	return j.listByState(SecurityAuditPending, false), nil
+	return j.listByState(SecurityAuditPending)
 }
 
 func (j *MemorySecurityAuditJournal) ListUnexportedSecurityAudits(_ context.Context) ([]SecurityAuditRecord, error) {
-	if j == nil {
-		return nil, errors.New("security audit journal is nil")
-	}
-	j.mu.RLock()
-	defer j.mu.RUnlock()
-	result := make([]SecurityAuditRecord, 0, j.count)
-	for index := 0; index < j.count; index++ {
-		record := j.entries[(j.start+index)%j.maxEntries]
-		if record.State == SecurityAuditCompleted && record.ExportedAt == nil {
-			result = append(result, cloneSecurityAuditRecord(record))
-		}
-	}
-	return result, nil
+	return j.listByState(SecurityAuditCompleted)
 }
 
 func (j *MemorySecurityAuditJournal) MarkSecurityAuditExported(_ context.Context, eventID string) error {
@@ -233,20 +223,24 @@ func (j *MemorySecurityAuditJournal) ReconcilePendingSecurityAudits(_ context.Co
 	return nil
 }
 
-func (j *MemorySecurityAuditJournal) listByState(state SecurityAuditState, exported bool) []SecurityAuditRecord {
+func (j *MemorySecurityAuditJournal) listByState(state SecurityAuditState) ([]SecurityAuditRecord, error) {
 	if j == nil {
-		return nil
+		return nil, errors.New("security audit journal is nil")
 	}
 	j.mu.RLock()
 	defer j.mu.RUnlock()
 	result := make([]SecurityAuditRecord, 0, j.count)
 	for index := 0; index < j.count; index++ {
 		record := j.entries[(j.start+index)%j.maxEntries]
-		if record.State == state && (exported || record.ExportedAt == nil) {
-			result = append(result, cloneSecurityAuditRecord(record))
+		if record.State == state && record.ExportedAt == nil {
+			cloned, err := cloneSecurityAuditRecord(record)
+			if err != nil {
+				return nil, err
+			}
+			result = append(result, cloned)
 		}
 	}
-	return result
+	return result, nil
 }
 
 func (j *MemorySecurityAuditJournal) findIndexLocked(eventID string) (int, bool) {
@@ -298,6 +292,10 @@ func (e *SecurityAuditExporter) Export(ctx context.Context) error {
 		return err
 	}
 	for _, record := range records {
+		record, err = cloneSecurityAuditRecord(record)
+		if err != nil {
+			return errors.Join(ErrInvalidEvent, err)
+		}
 		if record.State != SecurityAuditCompleted || !validMutationOutcome(record.Outcome) || record.EventID != record.Event.EventID {
 			return ErrInvalidEvent
 		}
@@ -305,14 +303,7 @@ func (e *SecurityAuditExporter) Export(ctx context.Context) error {
 			return ErrInvalidEvent
 		}
 		event := record.Event
-		event.Details, err = cloneJSONMap(record.Event.Details)
-		if err != nil {
-			return err
-		}
-		completionDetails, err := cloneJSONMap(record.CompletionDetails)
-		if err != nil {
-			return err
-		}
+		completionDetails := record.CompletionDetails
 		if event.Details == nil {
 			event.Details = map[string]any{}
 		}
@@ -351,16 +342,27 @@ func validMutationOutcome(outcome mutation.Outcome) bool {
 	return outcome == mutation.OutcomeCommitted || outcome == mutation.OutcomeNotCommitted || outcome == mutation.OutcomeUnknown
 }
 
-func cloneAuditEvent(event AuditEvent) AuditEvent {
+func cloneAuditEvent(event AuditEvent) (AuditEvent, error) {
 	cloned := event
-	cloned.Details, _ = cloneJSONMap(event.Details)
-	return cloned
+	var err error
+	cloned.Details, err = cloneAuditDetails(event.Details)
+	if err != nil {
+		return AuditEvent{}, err
+	}
+	return cloned, nil
 }
 
-func cloneSecurityAuditRecord(record SecurityAuditRecord) SecurityAuditRecord {
+func cloneSecurityAuditRecord(record SecurityAuditRecord) (SecurityAuditRecord, error) {
 	cloned := record
-	cloned.Event = cloneAuditEvent(record.Event)
-	cloned.CompletionDetails, _ = cloneJSONMap(record.CompletionDetails)
+	var err error
+	cloned.Event, err = cloneAuditEvent(record.Event)
+	if err != nil {
+		return SecurityAuditRecord{}, err
+	}
+	cloned.CompletionDetails, err = cloneAuditDetails(record.CompletionDetails)
+	if err != nil {
+		return SecurityAuditRecord{}, err
+	}
 	if record.CompletedAt != nil {
 		value := *record.CompletedAt
 		cloned.CompletedAt = &value
@@ -369,22 +371,172 @@ func cloneSecurityAuditRecord(record SecurityAuditRecord) SecurityAuditRecord {
 		value := *record.ExportedAt
 		cloned.ExportedAt = &value
 	}
-	return cloned
+	return cloned, nil
 }
 
-func cloneJSONMap(values map[string]any) (map[string]any, error) {
+func cloneAuditDetails(values map[string]any) (map[string]any, error) {
 	if values == nil {
 		return nil, nil
 	}
-	raw, err := json.Marshal(values)
-	if err != nil {
-		return nil, fmt.Errorf("security audit details must be JSON: %w", err)
+	if hashes, ok := values["target_descriptor_hashes"]; ok {
+		switch typed := hashes.(type) {
+		case []string:
+			if len(typed) > jsonvalue.MaxCanonicalNodes {
+				return nil, ErrInvalidAuditDetails
+			}
+		case []any:
+			if len(typed) > jsonvalue.MaxCanonicalNodes {
+				return nil, ErrInvalidAuditDetails
+			}
+		}
 	}
-	var cloned map[string]any
-	if err := json.Unmarshal(raw, &cloned); err != nil {
-		return nil, fmt.Errorf("decode security audit details: %w", err)
+	if !validAuditDetails(values) {
+		return nil, ErrInvalidAuditDetails
+	}
+	cloned := make(map[string]any, len(values))
+	for key, value := range values {
+		clonedValue, err := cloneAuditDetail(key, value)
+		if err != nil {
+			return nil, err
+		}
+		cloned[key] = clonedValue
+	}
+	if !validAuditDetails(cloned) {
+		return nil, ErrInvalidAuditDetails
+	}
+	if err := jsonvalue.ValidateCanonical(cloned); err != nil {
+		return nil, ErrInvalidAuditDetails
 	}
 	return cloned, nil
+}
+
+func cloneAuditDetail(key string, value any) (any, error) {
+	switch key {
+	case "audit_correlation_id", "effect", "execution", "intent_id", "invocation_id", "method", "operation_id",
+		"plan_hash", "preflight_method", "route_kind", "runtime_generation_id", "runtime_instance_id",
+		"source_plugin_instance_id", "status", "stream_id", "target_descriptor_sha256", "capability_contract_artifact",
+		"reason", "mutation_outcome":
+		text, ok := auditString(value)
+		if !ok {
+			return nil, ErrInvalidAuditDetails
+		}
+		return text, nil
+	case "channel_scoped", "delete_data", "runtime_revoked", "runtime_stopped":
+		flag, ok := value.(bool)
+		if !ok {
+			return nil, ErrInvalidAuditDetails
+		}
+		return flag, nil
+	case "closed_socket_count", "closed_storage_handle_count", "closed_stream_count", "confirmation_count",
+		"execution_count", "expires_at_unix_ms", "management_revision", "policy_revision", "revoke_epoch",
+		"revoked_surface_count", "surface_count", "token_count":
+		number, ok := auditIntegerFloat64(value)
+		if !ok {
+			return nil, ErrInvalidAuditDetails
+		}
+		return number, nil
+	case "target_descriptor_hashes":
+		return cloneAuditStringArray(value)
+	case "failure":
+		return clonePersistedFailure(value)
+	default:
+		return nil, ErrInvalidAuditDetails
+	}
+}
+
+func auditIntegerFloat64(value any) (float64, bool) {
+	if !validAuditInteger(value) {
+		return 0, false
+	}
+	switch number := value.(type) {
+	case int:
+		return float64(number), true
+	case int8:
+		return float64(number), true
+	case int16:
+		return float64(number), true
+	case int32:
+		return float64(number), true
+	case int64:
+		return float64(number), true
+	case uint:
+		return float64(number), true
+	case uint8:
+		return float64(number), true
+	case uint16:
+		return float64(number), true
+	case uint32:
+		return float64(number), true
+	case uint64:
+		return float64(number), true
+	case float32:
+		return float64(number), true
+	case float64:
+		return number, true
+	default:
+		return 0, false
+	}
+}
+
+func cloneAuditStringArray(value any) ([]any, error) {
+	switch values := value.(type) {
+	case []string:
+		if values == nil {
+			return []any{}, nil
+		}
+		cloned := make([]any, len(values))
+		for index, item := range values {
+			cloned[index] = item
+		}
+		return cloned, nil
+	case []any:
+		if values == nil {
+			return []any{}, nil
+		}
+		cloned := make([]any, len(values))
+		for index, item := range values {
+			text, ok := item.(string)
+			if !ok {
+				return nil, ErrInvalidAuditDetails
+			}
+			cloned[index] = text
+		}
+		return cloned, nil
+	default:
+		return nil, ErrInvalidAuditDetails
+	}
+}
+
+func clonePersistedFailure(value any) (map[string]any, error) {
+	var failure Failure
+	switch typed := value.(type) {
+	case Failure:
+		failure = typed
+	case *Failure:
+		if typed == nil {
+			return nil, ErrInvalidAuditDetails
+		}
+		failure = *typed
+	case map[string]any:
+		if len(typed) != 3 {
+			return nil, ErrInvalidAuditDetails
+		}
+		code, codeOK := typed["code"].(string)
+		component, componentOK := typed["component"].(string)
+		operation, operationOK := typed["operation"].(string)
+		if !codeOK || !componentOK || !operationOK {
+			return nil, ErrInvalidAuditDetails
+		}
+		failure = Failure{Code: FailureCode(code), Component: FailureComponent(component), Operation: FailureOperation(operation)}
+	default:
+		return nil, ErrInvalidAuditDetails
+	}
+	if !failure.Valid() {
+		return nil, ErrInvalidAuditDetails
+	}
+	return map[string]any{
+		"code": string(failure.Code), "component": string(failure.Component), "operation": string(failure.Operation),
+	}, nil
 }
 
 var _ SecurityAuditJournal = (*MemorySecurityAuditJournal)(nil)

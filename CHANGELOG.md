@@ -164,6 +164,9 @@
 
 - Persist only closed diagnostic and audit fields with typed failure code,
   component, operation, request/correlation identity, and mutation outcome.
+  Public Host, HTTP, OpenAPI, and TypeScript diagnostic projections use closed
+  typed details plus a dedicated committed/not-committed/unknown outcome enum;
+  internal failure metadata and owner/session hashes never enter the response.
   Adapter and runtime causes, bearer/cookie values, URL queries, secret
   references, private runtime identifiers, and absolute paths are rejected at
   memory and SQLite sink boundaries; invalid persisted rows fail reopen.

@@ -1015,7 +1015,7 @@ func (h *Host) maintainTerminalExecutionRecords(_ context.Context, now time.Time
 				Failure: observability.FailureFromError(
 					observability.FailureAdapter,
 					observability.FailureComponentExecution,
-					"execution.retention_prune",
+					observability.FailureOperationExecutionRetentionPrune,
 					err,
 				),
 			})
@@ -1332,7 +1332,7 @@ func (h *Host) reportExecutionFailure(ctx context.Context, binding capability.Ex
 		Failure: observability.FailureFromError(
 			observability.FailureAction,
 			observability.FailureComponentExecution,
-			"execution.fail",
+			observability.FailureOperationExecutionFail,
 			cause,
 		),
 	})
@@ -1802,7 +1802,7 @@ func (l *executionLease) armTimeout(host *Host) {
 					Failure: observability.FailureFromError(
 						observability.FailureAdapter,
 						observability.FailureComponentExecution,
-						"execution.duration_terminal",
+						observability.FailureOperationExecutionDurationPersist,
 						err,
 					),
 				})

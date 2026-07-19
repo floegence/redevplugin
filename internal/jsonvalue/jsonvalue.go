@@ -15,11 +15,12 @@ import (
 )
 
 const (
-	maxEncodedBytes = 512 * 1024
-	maxDepth        = 64
-	maxNodes        = 32768
-	MaxSafeInteger  = uint64(1<<53 - 1)
-	maxSafeInteger  = int64(MaxSafeInteger)
+	maxEncodedBytes   = 512 * 1024
+	maxDepth          = 64
+	MaxCanonicalNodes = 32768
+	maxNodes          = MaxCanonicalNodes
+	MaxSafeInteger    = uint64(1<<53 - 1)
+	maxSafeInteger    = int64(MaxSafeInteger)
 )
 
 func IsSafeUnsignedInteger(value uint64) bool {

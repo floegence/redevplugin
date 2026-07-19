@@ -91,8 +91,40 @@ func (component FailureComponent) Valid() bool {
 
 type FailureOperation string
 
+const (
+	FailureOperationExecutionRetentionPrune  FailureOperation = "execution.retention_prune"
+	FailureOperationExecutionFail            FailureOperation = "execution.fail"
+	FailureOperationExecutionDurationPersist FailureOperation = "execution.duration_persist"
+	FailureOperationHTTPAdapter              FailureOperation = "http.adapter"
+	FailureOperationLifecycle                FailureOperation = "lifecycle.operation"
+	FailureOperationRuntimeStop              FailureOperation = "runtime.stop"
+	FailureOperationRuntimeRevoke            FailureOperation = "runtime.revoke"
+	FailureOperationRuntimeProcessStop       FailureOperation = "runtime.process.stop"
+	FailureOperationRuntimeProcessExit       FailureOperation = "runtime.process.exit"
+	FailureOperationRuntimeProcessOutput     FailureOperation = "runtime.process.output"
+	FailureOperationRuntimeHostcall          FailureOperation = "runtime.hostcall"
+	FailureOperationRuntimeIPCInvalidate     FailureOperation = "runtime.ipc.invalidate"
+	FailureOperationSecretsAdapter           FailureOperation = "secrets.adapter"
+	FailureOperationSecurityEventPersist     FailureOperation = "security_event.persist"
+	FailureOperationSecurityMutationComplete FailureOperation = "security_mutation.complete"
+	FailureOperationSecurityAuditExport      FailureOperation = "security_audit.export"
+	FailureOperationMethodReject             FailureOperation = "method.reject"
+)
+
 func (operation FailureOperation) Valid() bool {
-	return validStableValue(string(operation))
+	switch operation {
+	case FailureOperationExecutionRetentionPrune, FailureOperationExecutionFail,
+		FailureOperationExecutionDurationPersist, FailureOperationHTTPAdapter,
+		FailureOperationLifecycle, FailureOperationRuntimeStop, FailureOperationRuntimeRevoke,
+		FailureOperationRuntimeProcessStop, FailureOperationRuntimeProcessExit,
+		FailureOperationRuntimeProcessOutput, FailureOperationRuntimeHostcall,
+		FailureOperationRuntimeIPCInvalidate, FailureOperationSecretsAdapter,
+		FailureOperationSecurityEventPersist, FailureOperationSecurityMutationComplete,
+		FailureOperationSecurityAuditExport, FailureOperationMethodReject:
+		return true
+	default:
+		return false
+	}
 }
 
 // Failure is a stable diagnostic description that intentionally excludes the
@@ -179,51 +211,6 @@ func (details DiagnosticDetails) Valid() bool {
 		return false
 	}
 	return details.Artifact == "" || validPackageRelativePath(details.Artifact)
-}
-
-func (details DiagnosticDetails) PublicMap() map[string]any {
-	result := map[string]any{}
-	putDiagnosticString(result, "invocation_id", details.InvocationID)
-	putDiagnosticString(result, "method", details.Method)
-	putDiagnosticString(result, "failure_code", details.FailureCode)
-	putDiagnosticString(result, "operation_id", details.OperationID)
-	putDiagnosticString(result, "stream_id", details.StreamID)
-	putDiagnosticString(result, "runtime_instance_id", details.RuntimeInstanceID)
-	putDiagnosticString(result, "runtime_generation_id", details.RuntimeGenerationID)
-	putDiagnosticString(result, "runtime_version", details.RuntimeVersion)
-	putDiagnosticString(result, "rust_ipc_version", details.RustIPCVersion)
-	putDiagnosticString(result, "wasm_abi_version", details.WASMABIVersion)
-	putDiagnosticString(result, "runtime_target_os", details.RuntimeTargetOS)
-	putDiagnosticString(result, "runtime_target_arch", details.RuntimeTargetArch)
-	putDiagnosticString(result, "runtime_artifact_sha256", details.RuntimeArtifactSHA256)
-	putDiagnosticString(result, "os", details.OS)
-	putDiagnosticString(result, "arch", details.Arch)
-	putDiagnosticString(result, "stream", details.Stream)
-	putDiagnosticString(result, "package_hash", details.PackageHash)
-	putDiagnosticString(result, "artifact", details.Artifact)
-	putDiagnosticString(result, "plugin_instance_id", details.PluginInstanceID)
-	putDiagnosticString(result, "store_id", details.StoreID)
-	putDiagnosticString(result, "operation", details.Operation)
-	putDiagnosticString(result, "hostcall", details.Hostcall)
-	putDiagnosticString(result, "code", details.Code)
-	putDiagnosticString(result, "connector_id", details.ConnectorID)
-	putDiagnosticString(result, "transport", details.Transport)
-	putDiagnosticString(result, "stage_id", details.StageID)
-	putDiagnosticString(result, "reason", details.Reason)
-	putDiagnosticString(result, "surface_instance_id", details.SurfaceInstanceID)
-	if details.OperationsDeleted != 0 {
-		result["operations_deleted"] = float64(details.OperationsDeleted)
-	}
-	if details.StreamsDeleted != 0 {
-		result["streams_deleted"] = float64(details.StreamsDeleted)
-	}
-	if details.RevokeEpoch != 0 {
-		result["revoke_epoch"] = float64(details.RevokeEpoch)
-	}
-	if len(result) == 0 {
-		return nil
-	}
-	return result
 }
 
 type AuditSink interface {
@@ -553,10 +540,7 @@ func normalizeAuditEvent(event AuditEvent, now func() time.Time) (AuditEvent, er
 	} else {
 		event.OccurredAt = event.OccurredAt.UTC()
 	}
-	if !validAuditDetails(event.Details) {
-		return AuditEvent{}, ErrInvalidAuditDetails
-	}
-	cloned, err := cloneJSONMap(event.Details)
+	cloned, err := cloneAuditDetails(event.Details)
 	if err != nil {
 		return AuditEvent{}, err
 	}
@@ -859,12 +843,6 @@ func validPackageRelativePath(value string) bool {
 	}
 	cleaned := path.Clean(value)
 	return cleaned == value && cleaned != "." && cleaned != ".." && !strings.HasPrefix(cleaned, "../")
-}
-
-func putDiagnosticString(values map[string]any, key, value string) {
-	if value != "" {
-		values[key] = value
-	}
 }
 
 func minInt(a int, b int) int {

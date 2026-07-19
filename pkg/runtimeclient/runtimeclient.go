@@ -886,7 +886,7 @@ func (s *ProcessSupervisor) Stop(ctx context.Context) error {
 				failure = observability.FailureFromError(
 					observability.FailureAction,
 					observability.FailureComponentRuntime,
-					"runtime.process.stop",
+					observability.FailureOperationRuntimeProcessStop,
 					exit.err,
 				)
 			}
@@ -1264,7 +1264,7 @@ func (s *ProcessSupervisor) wait(cmd *exec.Cmd, exit *processExit, cancel contex
 		failure = observability.FailureFromError(
 			observability.FailureAction,
 			observability.FailureComponentRuntime,
-			"runtime.process.exit",
+			observability.FailureOperationRuntimeProcessExit,
 			err,
 		)
 	}
@@ -1337,7 +1337,7 @@ func (s *ProcessSupervisor) scanPipe(reader io.Reader, streamName string) {
 			observability.FailureFromError(
 				observability.FailureAction,
 				observability.FailureComponentRuntime,
-				"runtime.process.output",
+				observability.FailureOperationRuntimeProcessOutput,
 				err,
 			),
 		)
@@ -1383,7 +1383,7 @@ func (s *ProcessSupervisor) emitHostcallFailure(requestID, correlationID, runtim
 		Failure: observability.FailureFromError(
 			observability.FailureAction,
 			observability.FailureComponentRuntime,
-			"runtime.hostcall",
+			observability.FailureOperationRuntimeHostcall,
 			err,
 		),
 	})
@@ -2390,7 +2390,7 @@ func (s *ProcessSupervisor) invalidateRuntimeAfterIPCFailure(health Health, err 
 		failure = observability.FailureFromError(
 			observability.FailureAction,
 			observability.FailureComponentRuntime,
-			"runtime.ipc.invalidate",
+			observability.FailureOperationRuntimeIPCInvalidate,
 			err,
 		)
 	}

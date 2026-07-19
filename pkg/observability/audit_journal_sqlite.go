@@ -54,7 +54,7 @@ func (s *SQLiteStore) BeginSecurityAudit(ctx context.Context, event AuditEvent) 
 	if err := tx.Commit(); err != nil {
 		return SecurityAuditRecord{}, err
 	}
-	return SecurityAuditRecord{EventID: event.EventID, Event: cloneAuditEvent(event), State: SecurityAuditPending, CreatedAt: event.OccurredAt.UTC()}, nil
+	return SecurityAuditRecord{EventID: event.EventID, Event: event, State: SecurityAuditPending, CreatedAt: event.OccurredAt.UTC()}, nil
 }
 
 func (s *SQLiteStore) CompleteSecurityAudit(ctx context.Context, eventID string, outcome mutation.Outcome, details map[string]any) error {
@@ -68,15 +68,9 @@ func (s *SQLiteStore) CompleteSecurityAudit(ctx context.Context, eventID string,
 	if eventID == "" {
 		return ErrSecurityAuditNotFound
 	}
-	if !validAuditDetails(details) {
-		return ErrInvalidAuditDetails
-	}
-	clonedDetails, err := cloneJSONMap(details)
+	clonedDetails, err := cloneAuditDetails(details)
 	if err != nil {
 		return err
-	}
-	if !validAuditDetails(clonedDetails) {
-		return ErrInvalidAuditDetails
 	}
 	rawDetails, err := marshalDetails(clonedDetails)
 	if err != nil {

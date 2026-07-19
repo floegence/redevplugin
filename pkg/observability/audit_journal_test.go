@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/floegence/redevplugin/internal/jsonvalue"
 	"github.com/floegence/redevplugin/pkg/mutation"
 )
 
@@ -94,6 +95,197 @@ func TestSecurityAuditJournalRejectsInvalidCompletionAndPreservesInput(t *testin
 	}
 	if got := completed[0].Event.Details["target_descriptor_hashes"].([]any)[0]; got != "sha256:before" {
 		t.Fatalf("journal details mutated by caller: %#v", completed[0].Event.Details)
+	}
+}
+
+type hostileAuditString string
+
+func (hostileAuditString) MarshalJSON() ([]byte, error) {
+	panic("audit cloning invoked caller MarshalJSON")
+}
+
+func TestSecurityAuditJournalsDoNotInvokeCallerJSONMarshalers(t *testing.T) {
+	ctx := context.Background()
+	tests := []struct {
+		name    string
+		journal func(*testing.T) SecurityAuditJournal
+	}{
+		{name: "memory", journal: func(*testing.T) SecurityAuditJournal { return NewMemorySecurityAuditJournal() }},
+		{name: "sqlite", journal: func(t *testing.T) SecurityAuditJournal {
+			store, err := NewSQLiteStore(ctx, filepath.Join(t.TempDir(), "audit.sqlite"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = store.Close() })
+			return store
+		}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			journal := test.journal(t)
+			record, err := journal.BeginSecurityAudit(ctx, AuditEvent{
+				Type: "plugin.enabled",
+				Details: map[string]any{
+					"method": hostileAuditString("runtime.start"),
+				},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := journal.CompleteSecurityAudit(ctx, record.EventID, mutation.OutcomeCommitted, map[string]any{
+				"status": hostileAuditString("completed"),
+			}); err != nil {
+				t.Fatal(err)
+			}
+			completed, err := journal.ListUnexportedSecurityAudits(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(completed) != 1 {
+				t.Fatalf("completed records = %#v", completed)
+			}
+			if got, ok := completed[0].Event.Details["method"].(string); !ok || got != "runtime.start" {
+				t.Fatalf("event method = %#v, want owned string", completed[0].Event.Details["method"])
+			}
+			if got, ok := completed[0].CompletionDetails["status"].(string); !ok || got != "completed" {
+				t.Fatalf("completion status = %#v, want owned string", completed[0].CompletionDetails["status"])
+			}
+		})
+	}
+}
+
+func TestSecurityAuditJournalsRejectCanonicalLimitWithoutMutation(t *testing.T) {
+	ctx := context.Background()
+	tests := []struct {
+		name    string
+		journal func(*testing.T) SecurityAuditJournal
+	}{
+		{name: "memory", journal: func(*testing.T) SecurityAuditJournal { return NewMemorySecurityAuditJournal() }},
+		{name: "sqlite", journal: func(t *testing.T) SecurityAuditJournal {
+			store, err := NewSQLiteStore(ctx, filepath.Join(t.TempDir(), "audit.sqlite"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = store.Close() })
+			return store
+		}},
+	}
+	hashes := make([]string, jsonvalue.MaxCanonicalNodes+1)
+	for index := range hashes {
+		hashes[index] = "a"
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			journal := test.journal(t)
+			record, err := journal.BeginSecurityAudit(ctx, AuditEvent{Type: "plugin.enabled"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := journal.CompleteSecurityAudit(ctx, record.EventID, mutation.OutcomeCommitted, map[string]any{
+				"target_descriptor_hashes": hashes,
+			}); !errors.Is(err, ErrInvalidAuditDetails) {
+				t.Fatalf("CompleteSecurityAudit() error = %v, want ErrInvalidAuditDetails", err)
+			}
+			pending, err := journal.ListPendingSecurityAudits(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(pending) != 1 || pending[0].EventID != record.EventID {
+				t.Fatalf("failed completion changed journal state: %#v", pending)
+			}
+		})
+	}
+}
+
+func TestSecurityAuditJournalsNormalizeNilTargetHashArrays(t *testing.T) {
+	ctx := context.Background()
+	assertRecord := func(t *testing.T, record SecurityAuditRecord) {
+		t.Helper()
+		for name, details := range map[string]map[string]any{
+			"event":      record.Event.Details,
+			"completion": record.CompletionDetails,
+		} {
+			hashes, ok := details["target_descriptor_hashes"].([]any)
+			if !ok || hashes == nil || len(hashes) != 0 {
+				t.Fatalf("%s target hashes = %#v, want non-nil empty []any", name, details["target_descriptor_hashes"])
+			}
+		}
+	}
+
+	t.Run("memory", func(t *testing.T) {
+		journal := NewMemorySecurityAuditJournal()
+		record, err := journal.BeginSecurityAudit(ctx, AuditEvent{
+			Type: "plugin.updated", Details: map[string]any{"target_descriptor_hashes": []string(nil)},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := journal.CompleteSecurityAudit(ctx, record.EventID, mutation.OutcomeCommitted, map[string]any{
+			"target_descriptor_hashes": []any(nil),
+		}); err != nil {
+			t.Fatal(err)
+		}
+		listed, err := journal.ListUnexportedSecurityAudits(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		assertRecord(t, listed[0])
+	})
+
+	t.Run("sqlite reopen", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "audit.sqlite")
+		store, err := NewSQLiteStore(ctx, path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		record, err := store.BeginSecurityAudit(ctx, AuditEvent{
+			Type: "plugin.updated", Details: map[string]any{"target_descriptor_hashes": []string(nil)},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := store.CompleteSecurityAudit(ctx, record.EventID, mutation.OutcomeCommitted, map[string]any{
+			"target_descriptor_hashes": []any(nil),
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if err := store.Close(); err != nil {
+			t.Fatal(err)
+		}
+		store, err = NewSQLiteStore(ctx, path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer store.Close()
+		listed, err := store.ListUnexportedSecurityAudits(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		assertRecord(t, listed[0])
+	})
+}
+
+func TestMemorySecurityAuditJournalPropagatesSnapshotCloneFailures(t *testing.T) {
+	ctx := context.Background()
+	journal := NewMemorySecurityAuditJournal()
+	record, err := journal.BeginSecurityAudit(ctx, AuditEvent{EventID: "audit_corrupt", Type: "plugin.enabled"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	journal.entries[journal.start].Event.Details = map[string]any{"unknown": "sensitive"}
+	if _, err := journal.BeginSecurityAudit(ctx, AuditEvent{EventID: record.EventID, Type: "plugin.enabled"}); !errors.Is(err, ErrInvalidAuditDetails) {
+		t.Fatalf("duplicate BeginSecurityAudit() error = %v, want ErrInvalidAuditDetails", err)
+	}
+	if records, err := journal.ListPendingSecurityAudits(ctx); !errors.Is(err, ErrInvalidAuditDetails) || records != nil {
+		t.Fatalf("ListPendingSecurityAudits() = %#v, %v", records, err)
+	}
+
+	journal.entries[journal.start].Event.Details = nil
+	journal.entries[journal.start].State = SecurityAuditCompleted
+	journal.entries[journal.start].Outcome = mutation.OutcomeCommitted
+	journal.entries[journal.start].CompletionDetails = map[string]any{"unknown": "sensitive"}
+	if records, err := journal.ListUnexportedSecurityAudits(ctx); !errors.Is(err, ErrInvalidAuditDetails) || records != nil {
+		t.Fatalf("ListUnexportedSecurityAudits() = %#v, %v", records, err)
 	}
 }
 
@@ -353,11 +545,14 @@ func TestSecurityAuditExporterRejectsTypedNilAndInvalidJournalRecords(t *testing
 			State: SecurityAuditCompleted, Outcome: mutation.OutcomeCommitted,
 		}},
 	}
-	if err := NewSecurityAuditExporter(journal, sink).Export(ctx); !errors.Is(err, ErrInvalidEvent) {
-		t.Fatalf("Export(invalid record) error = %v, want ErrInvalidEvent", err)
+	if err := NewSecurityAuditExporter(journal, sink).Export(ctx); !errors.Is(err, ErrInvalidEvent) || !errors.Is(err, ErrInvalidAuditDetails) {
+		t.Fatalf("Export(invalid record) error = %v, want ErrInvalidEvent and ErrInvalidAuditDetails", err)
 	}
 	if len(sink.events) != 0 {
 		t.Fatalf("invalid journal record reached sink: %#v", sink.events)
+	}
+	if journal.markCalls != 0 {
+		t.Fatalf("invalid journal record was marked exported %d times", journal.markCalls)
 	}
 }
 
@@ -384,7 +579,7 @@ func TestSQLiteSecurityAuditJournalRejectsSensitiveCompletionWithoutPersistence(
 		t.Fatalf("sensitive completion changed journal state: %#v", pending)
 	}
 	if err := store.CompleteSecurityAudit(ctx, record.EventID, mutation.OutcomeUnknown, map[string]any{
-		"failure": FailureFromError(FailureAdapter, FailureComponentSecurity, "security_mutation.complete", errors.New(sensitive)),
+		"failure": FailureFromError(FailureAdapter, FailureComponentSecurity, FailureOperationSecurityMutationComplete, errors.New(sensitive)),
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -418,11 +613,17 @@ type failFirstMarkSecurityAuditJournal struct {
 
 type invalidListingSecurityAuditJournal struct {
 	SecurityAuditJournal
-	records []SecurityAuditRecord
+	records   []SecurityAuditRecord
+	markCalls int
 }
 
 func (j *invalidListingSecurityAuditJournal) ListUnexportedSecurityAudits(context.Context) ([]SecurityAuditRecord, error) {
 	return append([]SecurityAuditRecord(nil), j.records...), nil
+}
+
+func (j *invalidListingSecurityAuditJournal) MarkSecurityAuditExported(context.Context, string) error {
+	j.markCalls++
+	return nil
 }
 
 func (j *failFirstMarkSecurityAuditJournal) MarkSecurityAuditExported(ctx context.Context, eventID string) error {

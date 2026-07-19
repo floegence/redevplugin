@@ -647,39 +647,93 @@ func publicRetainedDataCleanup(result host.RetainedDataCleanupResult) retainedDa
 }
 
 type diagnosticEventResponse struct {
-	EventID           string         `json:"event_id,omitempty"`
-	Type              string         `json:"type"`
-	Severity          string         `json:"severity"`
-	Message           string         `json:"message"`
-	PluginID          string         `json:"plugin_id,omitempty"`
-	PluginInstanceID  string         `json:"plugin_instance_id,omitempty"`
-	SurfaceID         string         `json:"surface_id,omitempty"`
-	SurfaceInstanceID string         `json:"surface_instance_id,omitempty"`
-	ActiveFingerprint string         `json:"active_fingerprint,omitempty"`
-	RequestID         string         `json:"request_id,omitempty"`
-	OccurredAt        time.Time      `json:"occurred_at,omitempty"`
-	Details           map[string]any `json:"details,omitempty"`
+	EventID           string                     `json:"event_id,omitempty"`
+	Type              string                     `json:"type"`
+	Severity          string                     `json:"severity"`
+	Message           string                     `json:"message"`
+	PluginID          string                     `json:"plugin_id,omitempty"`
+	PluginInstanceID  string                     `json:"plugin_instance_id,omitempty"`
+	SurfaceID         string                     `json:"surface_id,omitempty"`
+	SurfaceInstanceID string                     `json:"surface_instance_id,omitempty"`
+	ActiveFingerprint string                     `json:"active_fingerprint,omitempty"`
+	RequestID         string                     `json:"request_id,omitempty"`
+	CorrelationID     string                     `json:"correlation_id,omitempty"`
+	MutationOutcome   string                     `json:"mutation_outcome,omitempty"`
+	OccurredAt        time.Time                  `json:"occurred_at,omitempty"`
+	Details           *diagnosticDetailsResponse `json:"details,omitempty"`
+}
+
+type diagnosticDetailsResponse struct {
+	OperationsDeleted     int64  `json:"operations_deleted,omitempty"`
+	StreamsDeleted        int64  `json:"streams_deleted,omitempty"`
+	InvocationID          string `json:"invocation_id,omitempty"`
+	Method                string `json:"method,omitempty"`
+	FailureCode           string `json:"failure_code,omitempty"`
+	OperationID           string `json:"operation_id,omitempty"`
+	StreamID              string `json:"stream_id,omitempty"`
+	RuntimeInstanceID     string `json:"runtime_instance_id,omitempty"`
+	RuntimeGenerationID   string `json:"runtime_generation_id,omitempty"`
+	RuntimeVersion        string `json:"runtime_version,omitempty"`
+	RustIPCVersion        string `json:"rust_ipc_version,omitempty"`
+	WASMABIVersion        string `json:"wasm_abi_version,omitempty"`
+	RuntimeTargetOS       string `json:"runtime_target_os,omitempty"`
+	RuntimeTargetArch     string `json:"runtime_target_arch,omitempty"`
+	RuntimeArtifactSHA256 string `json:"runtime_artifact_sha256,omitempty"`
+	OS                    string `json:"os,omitempty"`
+	Arch                  string `json:"arch,omitempty"`
+	Stream                string `json:"stream,omitempty"`
+	PackageHash           string `json:"package_hash,omitempty"`
+	Artifact              string `json:"artifact,omitempty"`
+	PluginInstanceID      string `json:"plugin_instance_id,omitempty"`
+	StoreID               string `json:"store_id,omitempty"`
+	Operation             string `json:"operation,omitempty"`
+	Hostcall              string `json:"hostcall,omitempty"`
+	Code                  string `json:"code,omitempty"`
+	ConnectorID           string `json:"connector_id,omitempty"`
+	Transport             string `json:"transport,omitempty"`
+	RevokeEpoch           uint64 `json:"revoke_epoch,omitempty"`
+	StageID               string `json:"stage_id,omitempty"`
+	Reason                string `json:"reason,omitempty"`
+	SurfaceInstanceID     string `json:"surface_instance_id,omitempty"`
 }
 
 type diagnosticListResponse struct {
 	DiagnosticEvents []diagnosticEventResponse `json:"diagnostic_events"`
 }
 
-func publicDiagnostics(events []host.DiagnosticEvent) (diagnosticListResponse, error) {
+func publicDiagnostics(events []host.DiagnosticEvent) diagnosticListResponse {
 	responses := make([]diagnosticEventResponse, len(events))
 	for index, event := range events {
-		details, err := cloneWireJSONMap(event.Details)
-		if err != nil {
-			return diagnosticListResponse{}, err
-		}
 		responses[index] = diagnosticEventResponse{
 			EventID: event.EventID, Type: event.Type, Severity: string(event.Severity), Message: event.Message,
 			PluginID: event.PluginID, PluginInstanceID: event.PluginInstanceID, SurfaceID: event.SurfaceID,
 			SurfaceInstanceID: event.SurfaceInstanceID, ActiveFingerprint: event.ActiveFingerprint,
-			RequestID: event.RequestID, OccurredAt: event.OccurredAt, Details: details,
+			RequestID: event.RequestID, CorrelationID: event.CorrelationID,
+			MutationOutcome: string(event.MutationOutcome), OccurredAt: event.OccurredAt,
+			Details: publicDiagnosticDetails(event.Details),
 		}
 	}
-	return diagnosticListResponse{DiagnosticEvents: responses}, nil
+	return diagnosticListResponse{DiagnosticEvents: responses}
+}
+
+func publicDiagnosticDetails(details host.DiagnosticDetails) *diagnosticDetailsResponse {
+	if details == (host.DiagnosticDetails{}) {
+		return nil
+	}
+	return &diagnosticDetailsResponse{
+		OperationsDeleted: details.OperationsDeleted, StreamsDeleted: details.StreamsDeleted,
+		InvocationID: details.InvocationID, Method: details.Method, FailureCode: details.FailureCode,
+		OperationID: details.OperationID, StreamID: details.StreamID, RuntimeInstanceID: details.RuntimeInstanceID,
+		RuntimeGenerationID: details.RuntimeGenerationID, RuntimeVersion: details.RuntimeVersion,
+		RustIPCVersion: details.RustIPCVersion, WASMABIVersion: details.WASMABIVersion,
+		RuntimeTargetOS: details.RuntimeTargetOS, RuntimeTargetArch: details.RuntimeTargetArch,
+		RuntimeArtifactSHA256: details.RuntimeArtifactSHA256, OS: details.OS, Arch: details.Arch,
+		Stream: details.Stream, PackageHash: details.PackageHash, Artifact: details.Artifact,
+		PluginInstanceID: details.PluginInstanceID, StoreID: details.StoreID, Operation: details.Operation,
+		Hostcall: details.Hostcall, Code: details.Code, ConnectorID: details.ConnectorID,
+		Transport: details.Transport, RevokeEpoch: details.RevokeEpoch, StageID: details.StageID,
+		Reason: details.Reason, SurfaceInstanceID: details.SurfaceInstanceID,
+	}
 }
 
 type surfaceAssetResponse struct {

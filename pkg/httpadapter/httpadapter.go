@@ -2401,12 +2401,7 @@ func (h Handler) handleListDiagnostics(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	response, err := publicDiagnostics(events)
-	if err != nil {
-		h.writeProjectionError(w, r, "diagnostic.list.response", err)
-		return
-	}
-	writeJSON(w, http.StatusOK, successResponse{OK: true, Data: response})
+	writeJSON(w, http.StatusOK, successResponse{OK: true, Data: publicDiagnostics(events)})
 }
 
 func (h Handler) handleBindSecret(w http.ResponseWriter, r *http.Request) {

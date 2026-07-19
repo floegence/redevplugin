@@ -54,8 +54,8 @@ func TestFailureFromErrorRedactsCause(t *testing.T) {
 		errors.New("secret_ref=vault-production-token"),
 	}
 	for _, cause := range causes {
-		failure := FailureFromError(FailureAdapter, FailureComponentSecrets, "secrets.bind", cause)
-		if !failure.Valid() || failure.Code != FailureAdapter || failure.Component != FailureComponentSecrets || failure.Operation != "secrets.bind" {
+		failure := FailureFromError(FailureAdapter, FailureComponentSecrets, FailureOperationSecretsAdapter, cause)
+		if !failure.Valid() || failure.Code != FailureAdapter || failure.Component != FailureComponentSecrets || failure.Operation != FailureOperationSecretsAdapter {
 			t.Fatalf("FailureFromError() = %#v", failure)
 		}
 		encoded, err := json.Marshal(failure)
@@ -78,12 +78,15 @@ func TestFailureFromErrorRedactsCause(t *testing.T) {
 }
 
 func TestFailureFromErrorRejectsUntrustedMetadata(t *testing.T) {
-	failure := FailureFromError("unknown", FailureComponentRuntime, "runtime.start?token=secret", errors.New("secret"))
+	failure := FailureFromError("unknown", FailureComponentRuntime, FailureOperation("runtime.start?token=secret"), errors.New("secret"))
 	if failure.Valid() || failure.Error() != "invalid_diagnostic_failure" {
 		t.Fatalf("FailureFromError() = %#v, error = %q", failure, failure.Error())
 	}
-	if failure := FailureFromError(FailureAdapter, FailureComponentSecrets, "secrets.bind", nil); failure != (Failure{}) {
+	if failure := FailureFromError(FailureAdapter, FailureComponentSecrets, FailureOperationSecretsAdapter, nil); failure != (Failure{}) {
 		t.Fatalf("FailureFromError(nil) = %#v", failure)
+	}
+	if failure := FailureFromError(FailureAdapter, FailureComponentRuntime, FailureOperation("runtime.start"), errors.New("secret")); failure.Valid() {
+		t.Fatalf("FailureFromError() accepted undeclared operation: %#v", failure)
 	}
 }
 
@@ -126,7 +129,7 @@ func TestMemoryStoreDiagnosticsListFiltersAndDefaults(t *testing.T) {
 		Failure: FailureFromError(
 			FailureAction,
 			FailureComponentRuntime,
-			"runtime.hostcall",
+			FailureOperationRuntimeHostcall,
 			errors.New("internal-memory-cause"),
 		),
 	}); err != nil {
@@ -292,7 +295,7 @@ func TestSQLiteStorePersistsAuditAndDiagnosticsAcrossOpen(t *testing.T) {
 		Failure: FailureFromError(
 			FailureAdapter,
 			FailureComponentRuntime,
-			"runtime.hostcall",
+			FailureOperationRuntimeHostcall,
 			errors.New("private sqlite path /Users/secret/plugin.sqlite"),
 		),
 	}); err != nil {
@@ -588,7 +591,7 @@ func TestDiagnosticStoresNeverPersistSensitiveFailureCause(t *testing.T) {
 		Failure: FailureFromError(
 			FailureAdapter,
 			FailureComponentSecrets,
-			"secrets.bind",
+			FailureOperationSecretsAdapter,
 			errors.New(sensitiveCause),
 		),
 	}
@@ -624,7 +627,7 @@ func TestDiagnosticStoresNeverPersistSensitiveFailureCause(t *testing.T) {
 			if err := store.db.QueryRow(`SELECT failure_code, failure_component, failure_operation FROM plugin_diagnostic_events`).Scan(&failureCode, &failureComponent, &failureOperation); err != nil {
 				t.Fatal(err)
 			}
-			if failureCode != string(FailureAdapter) || failureComponent != string(FailureComponentSecrets) || failureOperation != "secrets.bind" {
+			if failureCode != string(FailureAdapter) || failureComponent != string(FailureComponentSecrets) || failureOperation != string(FailureOperationSecretsAdapter) {
 				t.Fatalf("persisted failure = %q/%q/%q", failureCode, failureComponent, failureOperation)
 			}
 			listed, err := store.ListPluginDiagnostics(context.Background(), scopedDiagnosticRequest(10))
@@ -686,7 +689,7 @@ func TestAuditStoresPersistOnlyStableFailureMetadata(t *testing.T) {
 			"failure": FailureFromError(
 				FailureAdapter,
 				FailureComponentSecurity,
-				"security_mutation.complete",
+				FailureOperationSecurityMutationComplete,
 				errors.New(sensitiveCause),
 			),
 		},
@@ -931,7 +934,7 @@ func invalidDiagnosticEvents() []DiagnosticEvent {
 
 func assertStableDiagnosticFailure(t *testing.T, events []DiagnosticEvent, sensitiveCause string) {
 	t.Helper()
-	if len(events) != 1 || events[0].Failure != (Failure{Code: FailureAdapter, Component: FailureComponentSecrets, Operation: "secrets.bind"}) {
+	if len(events) != 1 || events[0].Failure != (Failure{Code: FailureAdapter, Component: FailureComponentSecrets, Operation: FailureOperationSecretsAdapter}) {
 		t.Fatalf("stored diagnostic failure = %#v", events)
 	}
 	assertSensitiveValuesAbsent(t, fmt.Sprint(events), sensitiveCause)

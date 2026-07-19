@@ -54,6 +54,40 @@ type DiagnosticLister = observability.DiagnosticLister
 
 type AuditEvent = observability.AuditEvent
 
+type DiagnosticDetails struct {
+	OperationsDeleted     int64  `json:"operations_deleted,omitempty"`
+	StreamsDeleted        int64  `json:"streams_deleted,omitempty"`
+	InvocationID          string `json:"invocation_id,omitempty"`
+	Method                string `json:"method,omitempty"`
+	FailureCode           string `json:"failure_code,omitempty"`
+	OperationID           string `json:"operation_id,omitempty"`
+	StreamID              string `json:"stream_id,omitempty"`
+	RuntimeInstanceID     string `json:"runtime_instance_id,omitempty"`
+	RuntimeGenerationID   string `json:"runtime_generation_id,omitempty"`
+	RuntimeVersion        string `json:"runtime_version,omitempty"`
+	RustIPCVersion        string `json:"rust_ipc_version,omitempty"`
+	WASMABIVersion        string `json:"wasm_abi_version,omitempty"`
+	RuntimeTargetOS       string `json:"runtime_target_os,omitempty"`
+	RuntimeTargetArch     string `json:"runtime_target_arch,omitempty"`
+	RuntimeArtifactSHA256 string `json:"runtime_artifact_sha256,omitempty"`
+	OS                    string `json:"os,omitempty"`
+	Arch                  string `json:"arch,omitempty"`
+	Stream                string `json:"stream,omitempty"`
+	PackageHash           string `json:"package_hash,omitempty"`
+	Artifact              string `json:"artifact,omitempty"`
+	PluginInstanceID      string `json:"plugin_instance_id,omitempty"`
+	StoreID               string `json:"store_id,omitempty"`
+	Operation             string `json:"operation,omitempty"`
+	Hostcall              string `json:"hostcall,omitempty"`
+	Code                  string `json:"code,omitempty"`
+	ConnectorID           string `json:"connector_id,omitempty"`
+	Transport             string `json:"transport,omitempty"`
+	RevokeEpoch           uint64 `json:"revoke_epoch,omitempty"`
+	StageID               string `json:"stage_id,omitempty"`
+	Reason                string `json:"reason,omitempty"`
+	SurfaceInstanceID     string `json:"surface_instance_id,omitempty"`
+}
+
 type DiagnosticEvent struct {
 	EventID           string                           `json:"event_id,omitempty"`
 	Type              string                           `json:"type"`
@@ -65,8 +99,10 @@ type DiagnosticEvent struct {
 	SurfaceInstanceID string                           `json:"surface_instance_id,omitempty"`
 	ActiveFingerprint string                           `json:"active_fingerprint,omitempty"`
 	RequestID         string                           `json:"request_id,omitempty"`
+	CorrelationID     string                           `json:"correlation_id,omitempty"`
+	MutationOutcome   mutation.Outcome                 `json:"mutation_outcome,omitempty"`
 	OccurredAt        time.Time                        `json:"occurred_at,omitempty"`
-	Details           map[string]any                   `json:"details,omitempty"`
+	Details           DiagnosticDetails                `json:"details,omitzero"`
 }
 
 type ListDiagnosticEventsRequest struct {
@@ -5479,8 +5515,10 @@ func (h *Host) ListDiagnosticEvents(ctx context.Context, req ListDiagnosticEvent
 			SurfaceInstanceID: event.SurfaceInstanceID,
 			ActiveFingerprint: event.ActiveFingerprint,
 			RequestID:         event.RequestID,
+			CorrelationID:     event.CorrelationID,
+			MutationOutcome:   event.MutationOutcome,
 			OccurredAt:        event.OccurredAt,
-			Details:           event.Details.PublicMap(),
+			Details:           publicDiagnosticDetails(event.Details),
 		})
 	}
 	sort.Slice(filtered, func(i, j int) bool {
@@ -5493,6 +5531,23 @@ func (h *Host) ListDiagnosticEvents(ctx context.Context, req ListDiagnosticEvent
 		filtered = filtered[:limit]
 	}
 	return filtered, nil
+}
+
+func publicDiagnosticDetails(details observability.DiagnosticDetails) DiagnosticDetails {
+	return DiagnosticDetails{
+		OperationsDeleted: details.OperationsDeleted, StreamsDeleted: details.StreamsDeleted,
+		InvocationID: details.InvocationID, Method: details.Method, FailureCode: details.FailureCode,
+		OperationID: details.OperationID, StreamID: details.StreamID, RuntimeInstanceID: details.RuntimeInstanceID,
+		RuntimeGenerationID: details.RuntimeGenerationID, RuntimeVersion: details.RuntimeVersion,
+		RustIPCVersion: details.RustIPCVersion, WASMABIVersion: details.WASMABIVersion,
+		RuntimeTargetOS: details.RuntimeTargetOS, RuntimeTargetArch: details.RuntimeTargetArch,
+		RuntimeArtifactSHA256: details.RuntimeArtifactSHA256, OS: details.OS, Arch: details.Arch,
+		Stream: details.Stream, PackageHash: details.PackageHash, Artifact: details.Artifact,
+		PluginInstanceID: details.PluginInstanceID, StoreID: details.StoreID, Operation: details.Operation,
+		Hostcall: details.Hostcall, Code: details.Code, ConnectorID: details.ConnectorID,
+		Transport: details.Transport, RevokeEpoch: details.RevokeEpoch, StageID: details.StageID,
+		Reason: details.Reason, SurfaceInstanceID: details.SurfaceInstanceID,
+	}
 }
 
 func (h *Host) ListOperations(ctx context.Context, req ListOperationsRequest) (ListOperationsResult, error) {
@@ -5611,7 +5666,7 @@ func (h *Host) StopRuntime(ctx context.Context) (retErr error) {
 			Failure: observability.FailureFromError(
 				observability.FailureAdapter,
 				observability.FailureComponentRuntime,
-				"runtime.stop",
+				observability.FailureOperationRuntimeStop,
 				stopErr,
 			),
 		})
@@ -5839,7 +5894,7 @@ func (h *Host) armDetachedOperationCancelAckTimeout(record operation.Record) {
 					Failure: observability.FailureFromError(
 						observability.FailureAdapter,
 						observability.FailureComponentSecurity,
-						"security_event.persist",
+						observability.FailureOperationSecurityEventPersist,
 						auditErr,
 					),
 				})
@@ -6868,8 +6923,9 @@ func (h *Host) BindSecretRef(ctx context.Context, req SecretBindRequest) (retErr
 	}
 	defer func() { retErr = auditMutation.complete(context.WithoutCancel(ctx), retErr) }()
 	if err := h.adapters.Secrets.BindSecretRef(ctx, normalized); err != nil {
-		h.reportSecretAdapterFailure(ctx, record, "bind", err)
-		return secretAdapterFailure("bind", err)
+		effectiveErr := secretAdapterFailure("bind", err)
+		h.reportSecretAdapterFailure(ctx, record, "bind", effectiveErr)
+		return effectiveErr
 	}
 	return nil
 }
@@ -6898,8 +6954,9 @@ func (h *Host) TestSecretRef(ctx context.Context, req SecretTestRequest) (retErr
 	}
 	defer func() { retErr = auditMutation.complete(context.WithoutCancel(ctx), retErr) }()
 	if err := h.adapters.Secrets.TestSecretRef(ctx, SecretTestRequest(normalized)); err != nil {
-		h.reportSecretAdapterFailure(ctx, record, "test", err)
-		return secretAdapterFailure("test", err)
+		effectiveErr := secretAdapterFailure("test", err)
+		h.reportSecretAdapterFailure(ctx, record, "test", effectiveErr)
+		return effectiveErr
 	}
 	return nil
 }
@@ -6928,8 +6985,9 @@ func (h *Host) DeleteSecretRef(ctx context.Context, req SecretDeleteRequest) (re
 	}
 	defer func() { retErr = auditMutation.complete(context.WithoutCancel(ctx), retErr) }()
 	if err := h.adapters.Secrets.DeleteSecretRef(ctx, SecretDeleteRequest(normalized)); err != nil {
-		h.reportSecretAdapterFailure(ctx, record, "delete", err)
-		return secretAdapterFailure("delete", err)
+		effectiveErr := secretAdapterFailure("delete", err)
+		h.reportSecretAdapterFailure(ctx, record, "delete", effectiveErr)
+		return effectiveErr
 	}
 	return nil
 }
@@ -6952,7 +7010,7 @@ func (h *Host) reportSecretAdapterFailure(ctx context.Context, record registry.P
 		Failure: observability.FailureFromError(
 			observability.FailureAdapter,
 			observability.FailureComponentSecrets,
-			observability.FailureOperation("secrets."+operation),
+			observability.FailureOperationSecretsAdapter,
 			err,
 		),
 	})
@@ -8274,13 +8332,13 @@ func (h *Host) revokePluginRuntimeCapabilities(ctx context.Context, record regis
 	}
 	var auditDetails map[string]any
 	defer func() { retErr = auditMutation.completeWithDetails(context.WithoutCancel(ctx), retErr, auditDetails) }()
-	revokedExecutionLeases := h.executions.cancelPlugin(record.PluginInstanceID, capability.ErrExecutionRevoked)
-	var resultErr error
-	revokedTokens := 0
 	ownerEnvHash := strings.TrimSpace(record.OwnerEnvHash)
 	if ownerEnvHash == "" {
 		return fmt.Errorf("%w: plugin owner environment is missing", ErrOwnerScopeMismatch)
 	}
+	revokedExecutionLeases := h.executions.cancelPlugin(record.PluginInstanceID, capability.ErrExecutionRevoked)
+	var resultErr error
+	revokedTokens := 0
 	if h.surfaceTokens != nil {
 		var err error
 		revokedTokens, err = h.surfaceTokens.RevokePlugin(ownerEnvHash, record.PluginInstanceID, record.RevokeEpoch, now)
@@ -8307,26 +8365,7 @@ func (h *Host) revokePluginRuntimeCapabilities(ctx context.Context, record regis
 			PluginInstanceID: record.PluginInstanceID,
 			RevokeEpoch:      record.RevokeEpoch,
 		})
-		if err != nil {
-			h.diagnostic(ctx, observability.DiagnosticEvent{
-				Type:              "plugin.runtime_capabilities.revoke_failed",
-				Severity:          "warning",
-				Message:           "plugin runtime capability revocation failed",
-				PluginID:          record.PluginID,
-				PluginInstanceID:  record.PluginInstanceID,
-				ActiveFingerprint: record.ActiveFingerprint,
-				MutationOutcome:   mutation.ForError(err),
-				Details: observability.DiagnosticDetails{
-					RevokeEpoch: record.RevokeEpoch,
-				},
-				Failure: observability.FailureFromError(
-					observability.FailureAdapter,
-					observability.FailureComponentRuntime,
-					"runtime.revoke",
-					err,
-				),
-			})
-		} else {
+		if err == nil {
 			runtimeRevokeResult = result
 			runtimeRevoked = true
 		}
@@ -8355,7 +8394,29 @@ func (h *Host) revokePluginRuntimeCapabilities(ctx context.Context, record regis
 			auditDetails["runtime_stopped"] = runtimeRevokeResult.RuntimeStopped
 		}
 	}
-	return errors.Join(resultErr, runtimeErr)
+	effectiveErr := errors.Join(resultErr, runtimeErr)
+	if effectiveErr != nil {
+		effectiveErr = &mutation.Error{Outcome: mutation.OutcomeUnknown, Err: effectiveErr}
+		h.diagnostic(ctx, observability.DiagnosticEvent{
+			Type:              "plugin.runtime_capabilities.revoke_failed",
+			Severity:          "warning",
+			Message:           "plugin runtime capability revocation failed",
+			PluginID:          record.PluginID,
+			PluginInstanceID:  record.PluginInstanceID,
+			ActiveFingerprint: record.ActiveFingerprint,
+			MutationOutcome:   mutation.OutcomeUnknown,
+			Details: observability.DiagnosticDetails{
+				RevokeEpoch: record.RevokeEpoch,
+			},
+			Failure: observability.FailureFromError(
+				observability.FailureAdapter,
+				observability.FailureComponentRuntime,
+				observability.FailureOperationRuntimeRevoke,
+				effectiveErr,
+			),
+		})
+	}
+	return effectiveErr
 }
 
 func (h *Host) diagnostic(ctx context.Context, event observability.DiagnosticEvent) {
@@ -8394,7 +8455,7 @@ func (h *Host) ReportHTTPAdapterFailure(ctx context.Context, operation string, c
 		Failure: observability.FailureFromError(
 			observability.FailureAction,
 			observability.FailureComponentHTTP,
-			observability.FailureOperation(operation),
+			observability.FailureOperationHTTPAdapter,
 			err,
 		),
 	})
@@ -8643,7 +8704,7 @@ func (h *Host) reportLifecycleDiagnostic(ctx context.Context, record registry.Pl
 		Failure: observability.FailureFromError(
 			observability.FailureAction,
 			observability.FailureComponentLifecycle,
-			observability.FailureOperation(eventType),
+			observability.FailureOperationLifecycle,
 			err,
 		),
 	})
@@ -8677,11 +8738,18 @@ func (h *Host) reportMethodRejection(ctx context.Context, record registry.Plugin
 			PluginInstanceID:  record.PluginInstanceID,
 			SurfaceInstanceID: surfaceInstanceID,
 			ActiveFingerprint: record.ActiveFingerprint,
+			MutationOutcome:   mutation.ForError(err),
 			Details: observability.DiagnosticDetails{
 				Method:            method,
 				Reason:            reason,
 				SurfaceInstanceID: surfaceInstanceID,
 			},
+			Failure: observability.FailureFromError(
+				observability.FailureAction,
+				observability.FailureComponentSecurity,
+				observability.FailureOperationMethodReject,
+				err,
+			),
 		}); diagnosticErr != nil {
 			persistenceErr = errors.Join(persistenceErr, fmt.Errorf("%w: diagnostic append failed", ErrSecurityEventPersistence))
 		}

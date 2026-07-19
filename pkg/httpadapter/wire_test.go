@@ -17,6 +17,8 @@ import (
 	"github.com/floegence/redevplugin/pkg/host"
 	"github.com/floegence/redevplugin/pkg/installstage"
 	"github.com/floegence/redevplugin/pkg/manifest"
+	"github.com/floegence/redevplugin/pkg/mutation"
+	"github.com/floegence/redevplugin/pkg/observability"
 	"github.com/floegence/redevplugin/pkg/operation"
 	"github.com/floegence/redevplugin/pkg/permissions"
 	"github.com/floegence/redevplugin/pkg/plugindata"
@@ -299,7 +301,7 @@ func TestHTTPWireDTOJSONTagsAreSnakeCase(t *testing.T) {
 		runtimeRefreshResponse{}, surfacePreparationResponse{}, bridgeTokenResponse{}, callMethodResponse{},
 		confirmationPreparationResponse{}, confirmationRejectionResponse{}, intentResponse{}, intentListResponse{},
 		pluginDataBindingResponse{}, retainedDataListResponse{}, retainedDataCleanupResponse{}, diagnosticEventResponse{},
-		diagnosticListResponse{}, surfaceAssetResponse{}, streamEventResponse{}, surfaceStreamResponse{},
+		diagnosticDetailsResponse{}, diagnosticListResponse{}, surfaceAssetResponse{}, streamEventResponse{}, surfaceStreamResponse{},
 		pluginCatalogResponse{}, permissionListResponse{}, dataExportResponse{}, acknowledgementResponse{},
 		surfaceDisposeResponse{}, runtimeStopResponse{}, deleteResponse{}, secretBindResponse{}, secretTestResponse{},
 		surfaceScopeRevokeResponse{}, securityPolicyDeleteResponse{}, securityPolicyListResponse{},
@@ -323,6 +325,59 @@ func TestHTTPWireDTOJSONTagsAreSnakeCase(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestPublicDiagnosticsExplicitlyMapClosedDetails(t *testing.T) {
+	now := time.Date(2026, time.July, 18, 12, 0, 0, 0, time.UTC)
+	event := host.DiagnosticEvent{
+		EventID: "diagnostic_1", Type: "plugin.http.operation_failed", Severity: "warning",
+		Message: "plugin HTTP operation failed", PluginID: "com.example", PluginInstanceID: "plugin_1",
+		SurfaceID: "surface", SurfaceInstanceID: "surface_1", ActiveFingerprint: "sha256:active",
+		RequestID: "request_1", CorrelationID: "correlation_1", MutationOutcome: mutation.OutcomeCommitted,
+		OccurredAt: now,
+		Details: host.DiagnosticDetails{
+			OperationsDeleted: 1, StreamsDeleted: 2, InvocationID: "invocation_1", Method: "method.read",
+			FailureCode: "failure_code", OperationID: "operation_1", StreamID: "stream_1",
+			RuntimeInstanceID: "runtime_1", RuntimeGenerationID: "generation_1", RuntimeVersion: "0.5.0",
+			RustIPCVersion: "rust-ipc-v4", WASMABIVersion: "wasm-abi-v1", RuntimeTargetOS: "linux",
+			RuntimeTargetArch: "amd64", RuntimeArtifactSHA256: "sha256:runtime", OS: "linux", Arch: "amd64",
+			Stream: "stderr", PackageHash: "sha256:package", Artifact: "worker.wasm", PluginInstanceID: "plugin_1",
+			StoreID: "store_1", Operation: "runtime.start", Hostcall: "storage.kv", Code: "PLUGIN_RUNTIME_UNAVAILABLE",
+			ConnectorID: "connector_1", Transport: "tcp", RevokeEpoch: 3, StageID: "stage_1",
+			Reason: "unavailable", SurfaceInstanceID: "surface_1",
+		},
+	}
+	response := publicDiagnostics([]host.DiagnosticEvent{event})
+	if len(response.DiagnosticEvents) != 1 {
+		t.Fatalf("diagnostic response = %#v", response)
+	}
+	got := response.DiagnosticEvents[0]
+	if got.EventID != event.EventID || got.CorrelationID != event.CorrelationID || got.MutationOutcome != string(mutation.OutcomeCommitted) || got.OccurredAt != now {
+		t.Fatalf("diagnostic envelope mismatch: %#v", got)
+	}
+	wantDetails := &diagnosticDetailsResponse{
+		OperationsDeleted: 1, StreamsDeleted: 2, InvocationID: "invocation_1", Method: "method.read",
+		FailureCode: "failure_code", OperationID: "operation_1", StreamID: "stream_1",
+		RuntimeInstanceID: "runtime_1", RuntimeGenerationID: "generation_1", RuntimeVersion: "0.5.0",
+		RustIPCVersion: "rust-ipc-v4", WASMABIVersion: "wasm-abi-v1", RuntimeTargetOS: "linux",
+		RuntimeTargetArch: "amd64", RuntimeArtifactSHA256: "sha256:runtime", OS: "linux", Arch: "amd64",
+		Stream: "stderr", PackageHash: "sha256:package", Artifact: "worker.wasm", PluginInstanceID: "plugin_1",
+		StoreID: "store_1", Operation: "runtime.start", Hostcall: "storage.kv", Code: "PLUGIN_RUNTIME_UNAVAILABLE",
+		ConnectorID: "connector_1", Transport: "tcp", RevokeEpoch: 3, StageID: "stage_1",
+		Reason: "unavailable", SurfaceInstanceID: "surface_1",
+	}
+	if !reflect.DeepEqual(got.Details, wantDetails) {
+		t.Fatalf("diagnostic details = %#v, want %#v", got.Details, wantDetails)
+	}
+
+	empty := publicDiagnostics([]host.DiagnosticEvent{{Type: "plugin.runtime.warning", Severity: "warning", Message: "runtime warning"}})
+	raw, err := json.Marshal(empty.DiagnosticEvents[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), `"details"`) {
+		t.Fatalf("empty diagnostic details were serialized: %s", raw)
 	}
 }
 
@@ -362,6 +417,8 @@ func TestPublicAggregateProjectionsMatchPublishedFieldSets(t *testing.T) {
 		{name: "compatibility matrix", domainType: version.Matrix{}, wireType: compatibilityMatrixResponse{}},
 		{name: "compatibility contract", domainType: version.ContractArtifact{}, wireType: compatibilityContractResponse{}},
 		{name: "compatibility manifest", domainType: version.CompatibilityManifest{}, wireType: compatibilityResponse{}},
+		{name: "internal diagnostic details", domainType: observability.DiagnosticDetails{}, wireType: host.DiagnosticDetails{}},
+		{name: "public diagnostic details", domainType: host.DiagnosticDetails{}, wireType: diagnosticDetailsResponse{}},
 	}
 	for _, pair := range pairs {
 		t.Run(pair.name, func(t *testing.T) {

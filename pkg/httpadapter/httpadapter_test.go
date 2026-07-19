@@ -3828,16 +3828,16 @@ func TestHandlerSecretAdapterFailuresAfterDispatchAreUnknown(t *testing.T) {
 			}
 			internalEvent, ok := diagnostics.last("plugin.secret.adapter_failed")
 			failure := internalEvent.Failure
-			if !ok || failure.Code != observability.FailureAdapter || failure.Component != observability.FailureComponentSecrets || failure.Operation != observability.FailureOperation("secrets."+test.operation) {
+			if !ok || failure.Code != observability.FailureAdapter || failure.Component != observability.FailureComponentSecrets || failure.Operation != observability.FailureOperationSecretsAdapter {
 				t.Fatalf("secret diagnostics sink failure mismatch: %#v", internalEvent)
 			}
 			if internalRaw := fmt.Sprint(internalEvent); strings.Contains(internalRaw, sensitive) || strings.Contains(internalRaw, "/Users/secret/path") {
 				t.Fatalf("secret diagnostics sink retained sensitive cause: %s", internalRaw)
 			}
-			listed := getJSON[struct {
-				DiagnosticEvents []host.DiagnosticEvent `json:"diagnostic_events"`
-			}](t, handler, "/_redevplugin/api/plugins/diagnostics?type=plugin.secret.adapter_failed&limit=10")
-			if len(listed.DiagnosticEvents) != 1 || listed.DiagnosticEvents[0].Message != "secret adapter operation failed" || listed.DiagnosticEvents[0].Details["operation"] != test.operation {
+			listed := getJSON[diagnosticListResponse](t, handler, "/_redevplugin/api/plugins/diagnostics?type=plugin.secret.adapter_failed&limit=10")
+			if len(listed.DiagnosticEvents) != 1 || listed.DiagnosticEvents[0].Message != "secret adapter operation failed" ||
+				listed.DiagnosticEvents[0].MutationOutcome != string(mutation.OutcomeUnknown) || listed.DiagnosticEvents[0].Details == nil ||
+				listed.DiagnosticEvents[0].Details.Operation != test.operation {
 				t.Fatalf("public secret diagnostics mismatch: %#v", listed.DiagnosticEvents)
 			}
 			publicDiagnostics, err := json.Marshal(listed)
@@ -3869,13 +3869,54 @@ func TestHandlerSecretAdapterFailuresAfterDispatchAreUnknown(t *testing.T) {
 	}
 }
 
+func TestHandlerSecretAdapterExplicitOutcomeMatchesDiagnostic(t *testing.T) {
+	const sensitive = "vault token sk-live-explicit at /Users/secret/path"
+	secretStore := &httpRecordingSecretStore{bindErr: &mutation.Error{
+		Outcome: mutation.OutcomeNotCommitted,
+		Err:     errors.New(sensitive),
+	}}
+	diagnostics := newHTTPRecordingDiagnostics()
+	h := newHTTPTestHostWithOptions(t, httpTestHostOptions{secrets: secretStore, diagnostics: diagnostics})
+	installed, err := host.ImportLocalPackageBytes(httpTestContext(), h, nextHTTPTestPluginInstanceID(t), buildHTTPSettingsFixturePackage(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := mustNewHandler(t, h, allowHTTPTestGuard())
+	envelope := postJSONError(t, handler, "/_redevplugin/api/plugins/secrets/bind", map[string]any{
+		"plugin_instance_id": installed.PluginInstanceID,
+		"secret_ref":         "api_token",
+		"scope":              "user",
+	}, http.StatusBadGateway)
+	if envelope.MutationOutcome != string(mutation.OutcomeNotCommitted) || envelope.Code != string(security.ErrAdapterFailure) {
+		t.Fatalf("explicit secret adapter response mismatch: %#v", envelope)
+	}
+	internal, ok := diagnostics.last("plugin.secret.adapter_failed")
+	if !ok || internal.MutationOutcome != mutation.OutcomeNotCommitted || internal.Failure.Operation != observability.FailureOperationSecretsAdapter {
+		t.Fatalf("explicit secret adapter diagnostic mismatch: %#v", internal)
+	}
+	listed := getJSON[diagnosticListResponse](t, handler, "/_redevplugin/api/plugins/diagnostics?type=plugin.secret.adapter_failed&limit=10")
+	if len(listed.DiagnosticEvents) != 1 || listed.DiagnosticEvents[0].MutationOutcome != string(mutation.OutcomeNotCommitted) {
+		t.Fatalf("public explicit secret diagnostic mismatch: %#v", listed)
+	}
+	raw, err := json.Marshal(struct {
+		Envelope    decodedErrorResponse
+		Diagnostics diagnosticListResponse
+	}{Envelope: envelope, Diagnostics: listed})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), sensitive) || strings.Contains(string(raw), "/Users/secret/path") {
+		t.Fatalf("explicit secret adapter output leaked internal cause: %s", raw)
+	}
+}
+
 func TestHandlerDiagnosticsAreScopedToAuthenticatedOwner(t *testing.T) {
 	diagnostics := observability.NewMemoryStore()
 	h := newHTTPTestHostWithOptions(t, httpTestHostOptions{diagnostics: diagnostics})
 	if err := diagnostics.AppendPluginDiagnostic(context.Background(), observability.DiagnosticEvent{
 		Type: "plugin.runtime.hostcall.failed", Severity: "warning", Message: "runtime hostcall failed",
 		Details: observability.DiagnosticDetails{Hostcall: "storage.kv", Code: "STORAGE_FAILED"},
-		Failure: observability.FailureFromError(observability.FailureAction, observability.FailureComponentRuntime, "runtime.hostcall", errors.New("vault token at /Users/secret/path")),
+		Failure: observability.FailureFromError(observability.FailureAction, observability.FailureComponentRuntime, observability.FailureOperationRuntimeHostcall, errors.New("vault token at /Users/secret/path")),
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -3892,9 +3933,7 @@ func TestHandlerDiagnosticsAreScopedToAuthenticatedOwner(t *testing.T) {
 		t.Fatal(err)
 	}
 	handler := mustNewHandler(t, h, allowHTTPTestGuard())
-	listed := getJSON[struct {
-		DiagnosticEvents []host.DiagnosticEvent `json:"diagnostic_events"`
-	}](t, handler, "/_redevplugin/api/plugins/diagnostics?severity=warning&limit=10")
+	listed := getJSON[diagnosticListResponse](t, handler, "/_redevplugin/api/plugins/diagnostics?severity=warning&limit=10")
 	if len(listed.DiagnosticEvents) != 1 || listed.DiagnosticEvents[0].Message != "plugin runtime stop failed" {
 		t.Fatalf("owner-scoped diagnostics mismatch: %#v", listed.DiagnosticEvents)
 	}
@@ -3940,7 +3979,7 @@ func TestHandlerInternalErrorsUseStableMessagesAndOwnerScopedDiagnostics(t *test
 	}
 	internalRuntimeEvent, ok := diagnostics.last("plugin.http.operation_failed")
 	failure := internalRuntimeEvent.Failure
-	if !ok || failure.Code != observability.FailureAction || failure.Component != observability.FailureComponentHTTP || failure.Operation != "runtime.start" {
+	if !ok || failure.Code != observability.FailureAction || failure.Component != observability.FailureComponentHTTP || failure.Operation != observability.FailureOperationHTTPAdapter {
 		t.Fatalf("runtime diagnostics sink failure mismatch: %#v", internalRuntimeEvent)
 	}
 	if internalRaw := fmt.Sprint(internalRuntimeEvent); strings.Contains(internalRaw, sensitive) || strings.Contains(internalRaw, "/Users/secret/path") {
@@ -3956,14 +3995,14 @@ func TestHandlerInternalErrorsUseStableMessagesAndOwnerScopedDiagnostics(t *test
 	if strings.Contains(string(encoded), "plugin HTTP operation failed") {
 		t.Fatalf("public response exposed diagnostic-only message: %s", encoded)
 	}
-	listed := getJSON[struct {
-		DiagnosticEvents []host.DiagnosticEvent `json:"diagnostic_events"`
-	}](t, handler, "/_redevplugin/api/plugins/diagnostics?type=plugin.http.operation_failed&limit=10")
+	listed := getJSON[diagnosticListResponse](t, handler, "/_redevplugin/api/plugins/diagnostics?type=plugin.http.operation_failed&limit=10")
 	publicDiagnostics, err := json.Marshal(listed)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(listed.DiagnosticEvents) != 1 || listed.DiagnosticEvents[0].Details["operation"] != "runtime.start" || listed.DiagnosticEvents[0].Details["code"] != string(security.ErrRuntimeUnavailable) {
+	if len(listed.DiagnosticEvents) != 1 || listed.DiagnosticEvents[0].MutationOutcome != string(mutation.OutcomeNotCommitted) ||
+		listed.DiagnosticEvents[0].Details == nil || listed.DiagnosticEvents[0].Details.Operation != "runtime.start" ||
+		listed.DiagnosticEvents[0].Details.Code != string(security.ErrRuntimeUnavailable) {
 		t.Fatalf("public runtime diagnostics mismatch: %#v", listed.DiagnosticEvents)
 	}
 	for _, forbidden := range []string{sensitive, "/Users/secret/path", "vault-token-super-secret", "internal_details"} {
@@ -3989,15 +4028,13 @@ func TestHandlerInternalErrorsUseStableMessagesAndOwnerScopedDiagnostics(t *test
 	}
 	internalStopEvent, ok := diagnostics.last("plugin.runtime.stop_failed")
 	stopFailure := internalStopEvent.Failure
-	if !ok || stopFailure.Code != observability.FailureAdapter || stopFailure.Component != observability.FailureComponentRuntime || stopFailure.Operation != "runtime.stop" {
+	if !ok || stopFailure.Code != observability.FailureAdapter || stopFailure.Component != observability.FailureComponentRuntime || stopFailure.Operation != observability.FailureOperationRuntimeStop {
 		t.Fatalf("runtime stop diagnostics sink failure mismatch: %#v", internalStopEvent)
 	}
 	if internalRaw := fmt.Sprint(internalStopEvent); strings.Contains(internalRaw, stopSensitive) || strings.Contains(internalRaw, "/Users/secret/path") {
 		t.Fatalf("runtime stop diagnostics sink retained sensitive cause: %s", internalRaw)
 	}
-	listedStop := getJSON[struct {
-		DiagnosticEvents []host.DiagnosticEvent `json:"diagnostic_events"`
-	}](t, handler, "/_redevplugin/api/plugins/diagnostics?type=plugin.runtime.stop_failed&limit=10")
+	listedStop := getJSON[diagnosticListResponse](t, handler, "/_redevplugin/api/plugins/diagnostics?type=plugin.runtime.stop_failed&limit=10")
 	publicStopDiagnostics, err := json.Marshal(listedStop)
 	if err != nil {
 		t.Fatal(err)

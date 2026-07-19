@@ -64,7 +64,7 @@ func (m securityAuditMutation) completeWithDetails(ctx context.Context, operatio
 		details["failure"] = observability.FailureFromError(
 			observability.FailureAction,
 			observability.FailureComponentSecurity,
-			"security_mutation.complete",
+			observability.FailureOperationSecurityMutationComplete,
 			operationErr,
 		)
 	}
@@ -142,7 +142,7 @@ func (h *Host) startSecurityAuditExporter() {
 						Failure: observability.FailureFromError(
 							observability.FailureAdapter,
 							observability.FailureComponentSecurity,
-							"security_audit.export",
+							observability.FailureOperationSecurityAuditExport,
 							err,
 						),
 					})

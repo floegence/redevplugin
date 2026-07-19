@@ -1267,6 +1267,41 @@ export interface components {
             management_revision: number;
             revoke_epoch: number;
         };
+        /** @enum {string} */
+        DiagnosticMutationOutcome: "committed" | "not_committed" | "unknown";
+        PluginDiagnosticDetails: {
+            operations_deleted?: number;
+            streams_deleted?: number;
+            invocation_id?: string;
+            method?: string;
+            failure_code?: string;
+            operation_id?: string;
+            stream_id?: string;
+            runtime_instance_id?: string;
+            runtime_generation_id?: string;
+            runtime_version?: string;
+            rust_ipc_version?: string;
+            wasm_abi_version?: string;
+            runtime_target_os?: string;
+            runtime_target_arch?: string;
+            runtime_artifact_sha256?: string;
+            os?: string;
+            arch?: string;
+            stream?: string;
+            package_hash?: string;
+            artifact?: string;
+            plugin_instance_id?: string;
+            store_id?: string;
+            operation?: string;
+            hostcall?: string;
+            code?: string;
+            connector_id?: string;
+            transport?: string;
+            revoke_epoch?: number;
+            stage_id?: string;
+            reason?: string;
+            surface_instance_id?: string;
+        };
         PluginDiagnosticEvent: {
             event_id?: string;
             type: string;
@@ -1279,11 +1314,11 @@ export interface components {
             surface_instance_id?: string;
             active_fingerprint?: string;
             request_id?: string;
+            correlation_id?: string;
+            mutation_outcome?: components["schemas"]["DiagnosticMutationOutcome"];
             /** Format: date-time */
             occurred_at?: string;
-            details?: {
-                [key: string]: unknown;
-            };
+            details?: components["schemas"]["PluginDiagnosticDetails"];
         };
         PluginDiagnosticEventList: {
             diagnostic_events: components["schemas"]["PluginDiagnosticEvent"][];

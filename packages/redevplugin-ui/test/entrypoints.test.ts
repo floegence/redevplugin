@@ -7,7 +7,9 @@ import * as trustedParentEntrypoint from "../src/trusted-parent.js";
 import type { PluginBridgeRequestOptions, PluginJSONObject, PluginUIVNode } from "../src/plugin.js";
 import type {
   PluginCatalogResult,
+  PluginDiagnosticDetails,
   PluginDiagnosticEventList,
+  PluginDiagnosticMutationOutcome,
   PluginIntentList,
   PluginOperationList,
   PluginPermissionList,
@@ -47,6 +49,12 @@ const invalidIntents: PluginIntentList = {};
 const invalidPermissions: PluginPermissionList = {};
 // @ts-expect-error generated diagnostic lists require the diagnostic_events array
 const invalidDiagnostics: PluginDiagnosticEventList = {};
+const validDiagnosticOutcome: PluginDiagnosticMutationOutcome = "committed";
+// @ts-expect-error diagnostic outcomes are a closed contract
+const invalidDiagnosticOutcome: PluginDiagnosticMutationOutcome = "partial";
+const validDiagnosticDetails: PluginDiagnosticDetails = { operation: "runtime.start" };
+// @ts-expect-error diagnostic details reject undeclared fields
+const invalidDiagnosticDetails: PluginDiagnosticDetails = { effective_directive: "script-src" };
 // @ts-expect-error runtime health is manager health and requires shards
 const invalidRuntimeHealth: PluginRuntimeHealth = { ready: true };
 const validRuntimeLimits: PluginRuntimeLimits = {
@@ -65,6 +73,10 @@ void invalidOperations;
 void invalidIntents;
 void invalidPermissions;
 void invalidDiagnostics;
+void validDiagnosticOutcome;
+void invalidDiagnosticOutcome;
+void validDiagnosticDetails;
+void invalidDiagnosticDetails;
 void invalidRuntimeHealth;
 void validRuntimeLimits;
 void mutateRuntimeLimits;

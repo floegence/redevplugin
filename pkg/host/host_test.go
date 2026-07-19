@@ -7388,7 +7388,7 @@ func TestDisableRevokesSurfaceTokensConfirmationIntentsAndRuntime(t *testing.T) 
 func TestDisableFailsClosedWhenRuntimeRevokeFails(t *testing.T) {
 	ctx := hostTestContext()
 	runtime := newRecordingRuntimeManagerWithHealth(runtimeclient.Health{RuntimeInstanceID: "runtime_1", RuntimeGenerationID: "runtime_gen_1", IPCChannelID: "ipc_1", ConnectionNonce: "connection_nonce_1234567890", Ready: true})
-	runtime.revokeErr = errors.New("runtime pipe closed")
+	runtime.revokeErr = &mutation.Error{Outcome: mutation.OutcomeNotCommitted, Err: errors.New("runtime pipe closed")}
 	connectivityBroker := connectivity.NewMemoryBroker()
 	diagnostics := &diagnosticSink{}
 	h, surfaces, _ := newTestHostWithOptions(t, testHostOptions{
@@ -7450,7 +7450,9 @@ func TestDisableFailsClosedWhenRuntimeRevokeFails(t *testing.T) {
 	}); !errors.Is(err, connectivity.ErrConnectorDenied) {
 		t.Fatalf("MintConnectionGrant(after disable) error = %v, want %v", err, connectivity.ErrConnectorDenied)
 	}
-	if len(diagnostics.events) != 1 || diagnostics.events[0].Type != "plugin.runtime_capabilities.revoke_failed" {
+	if len(diagnostics.events) != 1 || diagnostics.events[0].Type != "plugin.runtime_capabilities.revoke_failed" ||
+		diagnostics.events[0].MutationOutcome != mutation.OutcomeUnknown ||
+		diagnostics.events[0].Failure.Operation != observability.FailureOperationRuntimeRevoke {
 		t.Fatalf("diagnostics mismatch: %#v", diagnostics.events)
 	}
 }
@@ -8755,6 +8757,9 @@ func TestExplicitObservabilitySinksReceiveAuditAndScopedDiagnostics(t *testing.T
 		PluginID:          installed.PluginID,
 		PluginInstanceID:  installed.PluginInstanceID,
 		SurfaceInstanceID: "surface_default_observability",
+		CorrelationID:     "correlation_1",
+		MutationOutcome:   mutation.OutcomeCommitted,
+		Details:           observability.DiagnosticDetails{Reason: "unavailable"},
 	})
 	if err := diagnostics.AppendPluginDiagnostic(context.Background(), observability.DiagnosticEvent{
 		Type: "plugin.runtime.hostcall.failed", Severity: "warning", Message: "runtime hostcall failed",
@@ -8770,7 +8775,9 @@ func TestExplicitObservabilitySinksReceiveAuditAndScopedDiagnostics(t *testing.T
 	if err != nil {
 		t.Fatalf("ListDiagnosticEvents() error = %v", err)
 	}
-	if len(diagnosticEvents) != 1 || diagnosticEvents[0].Type != "plugin.surface.renderer_error" || diagnosticEvents[0].Message != "plugin surface renderer failed" {
+	if len(diagnosticEvents) != 1 || diagnosticEvents[0].Type != "plugin.surface.renderer_error" ||
+		diagnosticEvents[0].Message != "plugin surface renderer failed" || diagnosticEvents[0].CorrelationID != "correlation_1" ||
+		diagnosticEvents[0].MutationOutcome != mutation.OutcomeCommitted || diagnosticEvents[0].Details.Reason != "unavailable" {
 		t.Fatalf("diagnostic events mismatch: %#v", diagnosticEvents)
 	}
 	background, err := h.ListDiagnosticEvents(hostTestContext(), ListDiagnosticEventsRequest{Type: "plugin.runtime.hostcall.failed"})
@@ -8779,6 +8786,34 @@ func TestExplicitObservabilitySinksReceiveAuditAndScopedDiagnostics(t *testing.T
 	}
 	if len(background) != 0 {
 		t.Fatalf("background diagnostics leaked into user scope: %#v", background)
+	}
+}
+
+func TestPublicDiagnosticDetailsExplicitlyMapAllFields(t *testing.T) {
+	internal := observability.DiagnosticDetails{
+		OperationsDeleted: 1, StreamsDeleted: 2, InvocationID: "invocation_1", Method: "method.read",
+		FailureCode: "failure_code", OperationID: "operation_1", StreamID: "stream_1",
+		RuntimeInstanceID: "runtime_1", RuntimeGenerationID: "generation_1", RuntimeVersion: "0.5.0",
+		RustIPCVersion: "rust-ipc-v4", WASMABIVersion: "wasm-abi-v1", RuntimeTargetOS: "linux",
+		RuntimeTargetArch: "amd64", RuntimeArtifactSHA256: "sha256:runtime", OS: "linux", Arch: "amd64",
+		Stream: "stderr", PackageHash: "sha256:package", Artifact: "worker.wasm", PluginInstanceID: "plugin_1",
+		StoreID: "store_1", Operation: "runtime.start", Hostcall: "storage.kv", Code: "PLUGIN_RUNTIME_UNAVAILABLE",
+		ConnectorID: "connector_1", Transport: "tcp", RevokeEpoch: 3, StageID: "stage_1",
+		Reason: "unavailable", SurfaceInstanceID: "surface_1",
+	}
+	want := DiagnosticDetails{
+		OperationsDeleted: 1, StreamsDeleted: 2, InvocationID: "invocation_1", Method: "method.read",
+		FailureCode: "failure_code", OperationID: "operation_1", StreamID: "stream_1",
+		RuntimeInstanceID: "runtime_1", RuntimeGenerationID: "generation_1", RuntimeVersion: "0.5.0",
+		RustIPCVersion: "rust-ipc-v4", WASMABIVersion: "wasm-abi-v1", RuntimeTargetOS: "linux",
+		RuntimeTargetArch: "amd64", RuntimeArtifactSHA256: "sha256:runtime", OS: "linux", Arch: "amd64",
+		Stream: "stderr", PackageHash: "sha256:package", Artifact: "worker.wasm", PluginInstanceID: "plugin_1",
+		StoreID: "store_1", Operation: "runtime.start", Hostcall: "storage.kv", Code: "PLUGIN_RUNTIME_UNAVAILABLE",
+		ConnectorID: "connector_1", Transport: "tcp", RevokeEpoch: 3, StageID: "stage_1",
+		Reason: "unavailable", SurfaceInstanceID: "surface_1",
+	}
+	if got := publicDiagnosticDetails(internal); !reflect.DeepEqual(got, want) {
+		t.Fatalf("public diagnostic details = %#v, want %#v", got, want)
 	}
 }
 
@@ -8810,12 +8845,12 @@ func TestUserTriggeredDiagnosticHelpersAttachScopeAndHideInternalCause(t *testin
 		}
 		if index == 0 {
 			failure := event.Failure
-			if failure.Code != observability.FailureAction || failure.Component != observability.FailureComponentLifecycle || failure.Operation != "plugin.runtime_state.refresh_failed" || strings.Contains(fmt.Sprint(event), sensitive) {
+			if failure.Code != observability.FailureAction || failure.Component != observability.FailureComponentLifecycle || failure.Operation != observability.FailureOperationLifecycle || strings.Contains(fmt.Sprint(event), sensitive) {
 				t.Fatalf("diagnostic internal cause was not redacted: %#v", event)
 			}
 		}
-		if index == 1 && !event.Failure.Empty() {
-			t.Fatalf("method rejection retained adapter error details: %#v", event)
+		if index == 1 && (event.Failure.Operation != observability.FailureOperationMethodReject || event.MutationOutcome != mutation.OutcomeNotCommitted) {
+			t.Fatalf("method rejection failure metadata mismatch: %#v", event)
 		}
 		encoded, err := json.Marshal(event)
 		if err != nil {
@@ -8831,7 +8866,7 @@ func TestUserTriggeredDiagnosticHelpersAttachScopeAndHideInternalCause(t *testin
 	diagnostics.events = append(diagnostics.events, observability.DiagnosticEvent{
 		Type: "plugin.runtime.warning", Severity: "warning", Message: "runtime warning", OccurredAt: time.Now().UTC(),
 		OwnerSessionHash: "session_other", OwnerUserHash: "user_other", OwnerEnvHash: "env_other", SessionChannelIDHash: "channel_other",
-		Failure: observability.FailureFromError(observability.FailureAction, observability.FailureComponentRuntime, "runtime.warning", errors.New(sensitive)),
+		Failure: observability.FailureFromError(observability.FailureAction, observability.FailureComponentRuntime, observability.FailureOperationRuntimeHostcall, errors.New(sensitive)),
 	})
 	listed, err := h.ListDiagnosticEvents(hostTestContext(), ListDiagnosticEventsRequest{Limit: 10})
 	if err != nil {

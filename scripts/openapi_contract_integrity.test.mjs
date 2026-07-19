@@ -64,6 +64,60 @@ test("generated OpenAPI types contain a closed capability pin and patch type", a
   assert.doesNotMatch(generated, /PatchSettingsRequest:[\s\S]{0,600}?\| unknown/);
 });
 
+test("diagnostic events use closed details and a dedicated mutation outcome", async () => {
+  const openAPI = await readOpenAPI();
+  const schemas = openAPI.components.schemas;
+  assert.deepEqual(schemas.DiagnosticMutationOutcome.enum, ["committed", "not_committed", "unknown"]);
+  assert.deepEqual(schemas.MutationOutcome.enum, ["not_committed", "unknown"]);
+  assert.equal(schemas.PluginDiagnosticDetails.additionalProperties, false);
+  assert.deepEqual(Object.keys(schemas.PluginDiagnosticDetails.properties).sort(), [
+    "arch",
+    "artifact",
+    "code",
+    "connector_id",
+    "failure_code",
+    "hostcall",
+    "invocation_id",
+    "method",
+    "operation",
+    "operation_id",
+    "operations_deleted",
+    "os",
+    "package_hash",
+    "plugin_instance_id",
+    "reason",
+    "revoke_epoch",
+    "runtime_artifact_sha256",
+    "runtime_generation_id",
+    "runtime_instance_id",
+    "runtime_target_arch",
+    "runtime_target_os",
+    "runtime_version",
+    "rust_ipc_version",
+    "stage_id",
+    "store_id",
+    "stream",
+    "stream_id",
+    "streams_deleted",
+    "surface_instance_id",
+    "transport",
+    "wasm_abi_version",
+  ]);
+  for (const field of ["operations_deleted", "streams_deleted", "revoke_epoch"]) {
+    assert.deepEqual(schemas.PluginDiagnosticDetails.properties[field], {
+      type: "integer",
+      minimum: 0,
+      maximum: 9007199254740991,
+    });
+  }
+  assert.deepEqual(schemas.PluginDiagnosticEvent.properties.details, {
+    $ref: "#/components/schemas/PluginDiagnosticDetails",
+  });
+  assert.deepEqual(schemas.PluginDiagnosticEvent.properties.mutation_outcome, {
+    $ref: "#/components/schemas/DiagnosticMutationOutcome",
+  });
+});
+
 test("OpenAPI and IPC runtime limits have identical bounds and descriptions", async () => {
   const [openAPI, ipcSchema] = await Promise.all([readOpenAPI(), readIPCSchema()]);
   const openAPILimits = openAPI.components.schemas.RuntimeLimits;

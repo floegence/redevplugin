@@ -1190,13 +1190,16 @@ test("platform client reads owner-scoped diagnostic events", async () => {
     ok: true,
     data: {
       diagnostic_events: [{
-        type: "plugin.csp.violation",
+        type: "plugin.http.operation_failed",
         severity: "warning",
+        message: "plugin HTTP operation failed",
         plugin_id: "com.example.intent",
         plugin_instance_id: "plugin_instance_1",
         surface_instance_id: "surface_1",
+        correlation_id: "correlation_1",
+        mutation_outcome: "unknown",
         occurred_at: "2026-06-30T00:00:01Z",
-        details: { effective_directive: "script-src" },
+        details: { operation: "runtime.start", code: "PLUGIN_RUNTIME_UNAVAILABLE" },
       }],
     },
   });
@@ -1204,7 +1207,9 @@ test("platform client reads owner-scoped diagnostic events", async () => {
 
   const diagnostics = await client.listDiagnosticEvents({ plugin_id: "com.example.intent", severity: "warning", limit: 10 });
 
-  assert.equal(diagnostics.diagnostic_events?.[0]?.details?.effective_directive, "script-src");
+  assert.equal(diagnostics.diagnostic_events?.[0]?.correlation_id, "correlation_1");
+  assert.equal(diagnostics.diagnostic_events?.[0]?.mutation_outcome, "unknown");
+  assert.equal(diagnostics.diagnostic_events?.[0]?.details?.operation, "runtime.start");
   assert.equal(fetch.calls[0]?.input, "/_redevplugin/api/plugins/diagnostics?plugin_id=com.example.intent&severity=warning&limit=10");
 });
 

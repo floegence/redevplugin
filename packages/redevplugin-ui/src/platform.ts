@@ -165,6 +165,8 @@ export type PluginSecretDeleteResult = PlatformSchemas["PluginSecretDeleteResult
 
 export type PluginDiagnosticEvent = PlatformSchemas["PluginDiagnosticEvent"];
 export type PluginDiagnosticEventList = PlatformSchemas["PluginDiagnosticEventList"];
+export type PluginDiagnosticDetails = PlatformSchemas["PluginDiagnosticDetails"];
+export type PluginDiagnosticMutationOutcome = PlatformSchemas["DiagnosticMutationOutcome"];
 export type PluginDiagnosticListOptions = NonNullable<operations["listPluginDiagnosticEvents"]["parameters"]["query"]>;
 export type PluginDiagnosticSeverity = NonNullable<PluginDiagnosticListOptions["severity"]>;
 
