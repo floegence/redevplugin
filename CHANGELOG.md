@@ -185,6 +185,17 @@
   version, source-commit, archive-matrix, and bundle verification as the release
   verifier. Release manifests now reject open or unordered file entries instead
   of normalizing them during verification.
+- Inspect runtime, npm, and Worker SDK archives before extraction. Release
+  verification now rejects wrong or multiple roots, top-level files, links,
+  special files, duplicate members, and traversal paths before unpacking any
+  bytes.
+- Assert JSON Schema string formats in Go contract tests and use one strict
+  RFC 3339 validator across performance evidence and release bundle tooling;
+  invalid calendar dates, times, offsets, and timezone-free values fail closed.
+- Bind environment-sensitive performance thresholds to explicit evidence runs.
+  Normal debug, race, and property suites still exercise bounded queues and
+  performance probes, while release evidence keeps the published thresholds
+  unchanged.
 - Make every HTTP route action map to an exact direct Host action, including
   surface preparation, bridge minting, asset and stream reads, RPC and
   confirmation flows, and platform metadata. Nested surface preparation and
