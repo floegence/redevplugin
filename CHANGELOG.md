@@ -7,6 +7,9 @@
 - Synchronize the exact release stress-step contract with the dedicated
   connectivity-classifier evidence step, while preserving closed-set, order,
   duplicate, and successful-status validation in the signed stress summary.
+- Enforce namespace quotas after cold usage loads and namespace listing so
+  persisted SQLite sidecar or sparse-file growth fails closed after restart,
+  and restore release evidence from the current owner-scoped generation path.
 - The `v0.5.0` tag completed the release quality, audit, and immutable
   performance gates but produced no npm package or GitHub Release because the
   stress-summary validator still expected the earlier step set. `v0.5.1` is the

@@ -167,6 +167,9 @@ func (s *FileStore) withNamespaceAccess(ctx context.Context, pluginInstanceID st
 	if err != nil {
 		return err
 	}
+	if err := enforceQuota(namespace, usage); err != nil {
+		return err
+	}
 	return use(&namespaceAccess{root: root, absRoot: absRoot, db: db, binding: binding, namespace: namespace, usage: usage, usageKey: usageKey})
 }
 
@@ -832,6 +835,9 @@ func (s *FileStore) ListNamespaces(ctx context.Context, pluginInstanceID string)
 		})
 		releaseDB()
 		if err != nil {
+			return nil, err
+		}
+		if err := enforceQuota(namespace, usage); err != nil {
 			return nil, err
 		}
 		records = append(records, storage.NamespaceRecord{Namespace: storage.Namespace{PluginInstanceID: pluginID, StoreID: namespace.ID, Kind: storage.StoreKind(namespace.Kind), Scope: namespace.Scope, QuotaBytes: namespace.QuotaBytes, QuotaFiles: namespace.QuotaFiles, SchemaVersion: namespace.SchemaVersion}, GenerationID: binding.GenerationID, UsageBytes: usage.bytes, UsageFiles: usage.files})

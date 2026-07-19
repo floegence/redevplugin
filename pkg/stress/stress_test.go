@@ -6,6 +6,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -45,6 +46,7 @@ import (
 	"github.com/floegence/redevplugin/pkg/stream"
 	"github.com/floegence/redevplugin/pkg/version"
 	"github.com/floegence/redevplugin/pkg/websecurity"
+	_ "modernc.org/sqlite"
 )
 
 type stressSummary struct {
@@ -514,7 +516,11 @@ func TestStressGateStorageQuotaExportImportUnderLoad(t *testing.T) {
 	}
 	resourceScope := stressResourceScope(t, ctx, sessionctx.ScopeKind(ns.Scope))
 	const importedPluginInstanceID = "plugini_stress_storage_imported"
-	broker, registryStore, records, shape := newStressPluginData(t, ctx, []string{ns.PluginInstanceID, importedPluginInstanceID}, ns)
+	fixture := newStressPluginData(t, ctx, []string{ns.PluginInstanceID, importedPluginInstanceID}, ns)
+	broker := fixture.broker
+	registryStore := fixture.registryStore
+	records := fixture.records
+	shape := fixture.shape
 	defer broker.Close()
 
 	value := make([]byte, 128)
@@ -605,16 +611,20 @@ func TestStressGateStorageQuotaExportImportUnderLoad(t *testing.T) {
 	logStressSummary(t, stressSummary{
 		Category: "storage_quota",
 		Counters: map[string]int{
-			"writes":                 int(writes.Load()),
-			"quota_denials":          int(quotaDenials.Load()),
-			"imported":               len(imported.Entries),
-			"usage_bytes":            int(usage.UsageBytes),
-			"file_quota_denials":     fileCounters.quotaDenials,
-			"file_usage_files":       fileCounters.usageFiles,
-			"file_quota_files":       fileCounters.quotaFiles,
-			"sqlite_quota_denials":   sqliteCounters.quotaDenials,
-			"sqlite_rollback_checks": sqliteCounters.rollbackChecks,
-			"sqlite_usage_bytes":     sqliteCounters.usageBytes,
+			"writes":                      int(writes.Load()),
+			"quota_denials":               int(quotaDenials.Load()),
+			"imported":                    len(imported.Entries),
+			"usage_bytes":                 int(usage.UsageBytes),
+			"file_quota_denials":          fileCounters.quotaDenials,
+			"file_usage_files":            fileCounters.usageFiles,
+			"file_quota_files":            fileCounters.quotaFiles,
+			"sqlite_quota_denials":        sqliteCounters.quotaDenials,
+			"sqlite_rollback_checks":      sqliteCounters.rollbackChecks,
+			"sqlite_usage_bytes":          sqliteCounters.usageBytes,
+			"sqlite_page_count":           sqliteCounters.pageCount,
+			"sqlite_sidecar_files":        sqliteCounters.sidecarFiles,
+			"sqlite_sidecar_bytes":        sqliteCounters.sidecarBytes,
+			"sqlite_sparse_logical_bytes": sqliteCounters.sparseLogicalBytes,
 		},
 	})
 }
@@ -638,7 +648,8 @@ func stressFileCountQuotaCounters(t *testing.T, ctx context.Context) fileCountQu
 		SchemaVersion:    1,
 	}
 	resourceScope := stressResourceScope(t, ctx, sessionctx.ScopeKind(ns.Scope))
-	broker, _, _, _ := newStressPluginData(t, ctx, []string{ns.PluginInstanceID}, ns)
+	fixture := newStressPluginData(t, ctx, []string{ns.PluginInstanceID}, ns)
+	broker := fixture.broker
 	defer broker.Close()
 	if _, err := broker.WriteFile(ctx, storage.FileWriteRequest{
 		PluginInstanceID: ns.PluginInstanceID,
@@ -676,9 +687,13 @@ func stressFileCountQuotaCounters(t *testing.T, ctx context.Context) fileCountQu
 }
 
 type sqliteQuotaBypassCounters struct {
-	quotaDenials   int
-	rollbackChecks int
-	usageBytes     int
+	quotaDenials       int
+	rollbackChecks     int
+	usageBytes         int
+	pageCount          int
+	sidecarFiles       int
+	sidecarBytes       int
+	sparseLogicalBytes int
 }
 
 func stressSQLiteQuotaBypassCounters(t *testing.T, ctx context.Context) sqliteQuotaBypassCounters {
@@ -693,7 +708,8 @@ func stressSQLiteQuotaBypassCounters(t *testing.T, ctx context.Context) sqliteQu
 		SchemaVersion:    1,
 	}
 	resourceScope := stressResourceScope(t, ctx, sessionctx.ScopeKind(ns.Scope))
-	broker, _, _, _ := newStressPluginData(t, ctx, []string{ns.PluginInstanceID}, ns)
+	fixture := newStressPluginData(t, ctx, []string{ns.PluginInstanceID}, ns)
+	broker := fixture.broker
 	defer broker.Close()
 	if _, err := broker.ExecSQLite(ctx, storage.SQLiteExecRequest{
 		PluginInstanceID: ns.PluginInstanceID,
@@ -736,15 +752,107 @@ func stressSQLiteQuotaBypassCounters(t *testing.T, ctx context.Context) sqliteQu
 	if rollbackChecks != 1 {
 		t.Fatalf("sqlite quota rollback mismatch: before=%#v after=%#v", before, after)
 	}
+	if err := broker.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	dataRoot := filepath.Join(
+		fixture.root,
+		"workspaces", "environment", resourceScope.OwnerEnvHash, fixture.binding.GenerationID,
+		"scopes", "users", resourceScope.OwnerUserHash,
+		"namespaces", ns.StoreID, "data",
+	)
+	pageCount := stressSQLitePageCount(t, filepath.Join(dataRoot, "plugin.sqlite"))
+	sidecarFiles := 0
+	sidecarBytes := int64(0)
+	for _, name := range []string{"plugin.sqlite-wal", "plugin.sqlite-shm", "plugin.sqlite-tmp"} {
+		path := filepath.Join(dataRoot, name)
+		if err := os.WriteFile(path, make([]byte, 512), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		info, err := os.Lstat(path)
+		if err != nil || !info.Mode().IsRegular() || info.Size() != 512 {
+			t.Fatalf("sqlite sidecar %s = %#v, err = %v", name, info, err)
+		}
+		sidecarFiles++
+		sidecarBytes += info.Size()
+	}
+	sparseLogicalBytes := ns.QuotaBytes - before.UsageBytes + 1
+	if sparseLogicalBytes <= 0 {
+		t.Fatalf("sqlite sparse logical bytes = %d", sparseLogicalBytes)
+	}
+	sparsePath := filepath.Join(dataRoot, "plugin.sqlite-hole")
+	sparseFile, err := os.OpenFile(sparsePath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := sparseFile.Truncate(sparseLogicalBytes); err != nil {
+		_ = sparseFile.Close()
+		t.Fatal(err)
+	}
+	if err := sparseFile.Close(); err != nil {
+		t.Fatal(err)
+	}
+	sparseInfo, err := os.Lstat(sparsePath)
+	if err != nil || !sparseInfo.Mode().IsRegular() || sparseInfo.Size() != sparseLogicalBytes {
+		t.Fatalf("sqlite sparse sidecar = %#v, err = %v", sparseInfo, err)
+	}
+	sidecarFiles++
+	sidecarBytes += sparseInfo.Size()
+
+	reopened, err := plugindata.Open(ctx, fixture.root, fixture.registryStore)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	if _, err := reopened.Usage(ctx, ns.PluginInstanceID, ns.StoreID); errors.Is(err, storage.ErrQuotaExceeded) {
+		quotaDenials++
+	} else {
+		t.Fatalf("Usage(sqlite sidecars) error = %v, want ErrQuotaExceeded", err)
+	}
 
 	return sqliteQuotaBypassCounters{
-		quotaDenials:   quotaDenials,
-		rollbackChecks: rollbackChecks,
-		usageBytes:     int(before.UsageBytes),
+		quotaDenials:       quotaDenials,
+		rollbackChecks:     rollbackChecks,
+		usageBytes:         int(before.UsageBytes),
+		pageCount:          pageCount,
+		sidecarFiles:       sidecarFiles,
+		sidecarBytes:       int(sidecarBytes),
+		sparseLogicalBytes: int(sparseLogicalBytes),
 	}
 }
 
-func newStressPluginData(t *testing.T, ctx context.Context, pluginInstanceIDs []string, namespace storage.Namespace) (*plugindata.FileStore, registry.Store, map[string]registry.PluginRecord, plugindata.Shape) {
+func stressSQLitePageCount(t *testing.T, path string) int {
+	t.Helper()
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var pageCount int
+	queryErr := db.QueryRow(`PRAGMA page_count`).Scan(&pageCount)
+	closeErr := db.Close()
+	if queryErr != nil {
+		t.Fatal(queryErr)
+	}
+	if closeErr != nil {
+		t.Fatal(closeErr)
+	}
+	if pageCount <= 0 {
+		t.Fatalf("sqlite page count = %d", pageCount)
+	}
+	return pageCount
+}
+
+type stressPluginData struct {
+	broker        *plugindata.FileStore
+	registryStore registry.Store
+	records       map[string]registry.PluginRecord
+	shape         plugindata.Shape
+	root          string
+	binding       plugindata.Binding
+}
+
+func newStressPluginData(t *testing.T, ctx context.Context, pluginInstanceIDs []string, namespace storage.Namespace) stressPluginData {
 	t.Helper()
 	if len(pluginInstanceIDs) == 0 {
 		t.Fatal("at least one plugin instance is required")
@@ -792,21 +900,30 @@ func newStressPluginData(t *testing.T, ctx context.Context, pluginInstanceIDs []
 		}
 		records[pluginInstanceID] = record
 	}
-	pluginData, err := plugindata.Open(ctx, filepath.Join(t.TempDir(), "plugin-data"), registryStore)
+	root := filepath.Join(t.TempDir(), "plugin-data")
+	pluginData, err := plugindata.Open(ctx, root, registryStore)
 	if err != nil {
 		t.Fatal(err)
 	}
 	source := records[pluginInstanceIDs[0]]
-	if _, err := pluginData.CommitEnable(ctx, plugindata.CommitEnableRequest{
+	dataset, err := pluginData.CommitEnable(ctx, plugindata.CommitEnableRequest{
 		PluginInstanceID:           source.PluginInstanceID,
 		Shape:                      shape,
 		InitialSettings:            map[string]json.RawMessage{},
 		ExpectedManagementRevision: source.ManagementRevision,
-	}); err != nil {
+	})
+	if err != nil {
 		_ = pluginData.Close()
 		t.Fatal(err)
 	}
-	return pluginData, registryStore, records, shape
+	return stressPluginData{
+		broker:        pluginData,
+		registryStore: registryStore,
+		records:       records,
+		shape:         shape,
+		root:          root,
+		binding:       dataset.Binding,
+	}
 }
 
 func sqliteSingleInt(t *testing.T, broker storage.SQLiteBroker, ctx context.Context, req storage.SQLiteQueryRequest) int64 {

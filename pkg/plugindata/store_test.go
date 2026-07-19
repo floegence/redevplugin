@@ -362,6 +362,99 @@ func TestFileStoreQuotaRootLockAndClose(t *testing.T) {
 	defer reopened.Close()
 }
 
+func TestFileStoreColdUsageRejectsOverQuotaSQLiteSidecars(t *testing.T) {
+	ctx := pluginDataTestContext()
+	catalog := registry.NewMemoryStore()
+	root := resolvedTempDir(t)
+	store, err := plugindata.Open(ctx, root, catalog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	quotaManifest := testManifest()
+	const quotaBytes int64 = 16 * 1024
+	for i := range quotaManifest.Storage.Stores {
+		if quotaManifest.Storage.Stores[i].StoreID == "db" {
+			quotaManifest.Storage.Stores[i].QuotaBytes = quotaBytes
+		}
+	}
+	shape, err := plugindata.ShapeFromManifest(quotaManifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plugin := putPluginWithManifest(t, catalog, "plugini_sqlite_cold_quota", time.Now(), quotaManifest)
+	dataset, err := store.CommitEnable(ctx, enableRequest(plugin, shape, time.Now()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resourceScope := pluginDataResourceScope(t, ctx, sessionctx.ScopeUser)
+	if _, err := store.ExecSQLite(ctx, storage.SQLiteExecRequest{
+		PluginInstanceID: plugin.PluginInstanceID,
+		ResourceScope:    resourceScope,
+		StoreID:          "db",
+		SQL:              "CREATE TABLE items (body TEXT)",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	before, err := store.Usage(ctx, plugin.PluginInstanceID, "db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if before.UsageBytes <= 0 || before.UsageBytes >= quotaBytes {
+		t.Fatalf("sqlite usage before sidecars = %#v", before)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	dataRoot := filepath.Join(
+		pluginDataScopeRoot(
+			pluginDataWorkspacePath(root, resourceScope.OwnerEnvHash, dataset.Binding.GenerationID),
+			resourceScope.OwnerUserHash,
+			sessionctx.ScopeUser,
+		),
+		"namespaces", "db", "data",
+	)
+	for _, name := range []string{"plugin.sqlite-wal", "plugin.sqlite-shm", "plugin.sqlite-tmp"} {
+		path := filepath.Join(dataRoot, name)
+		if err := os.WriteFile(path, make([]byte, 512), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		info, err := os.Lstat(path)
+		if err != nil || !info.Mode().IsRegular() || info.Size() != 512 {
+			t.Fatalf("sqlite sidecar %s = %#v, err = %v", name, info, err)
+		}
+	}
+	sparseLogicalBytes := quotaBytes - before.UsageBytes + 1
+	sparsePath := filepath.Join(dataRoot, "plugin.sqlite-hole")
+	sparseFile, err := os.OpenFile(sparsePath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := sparseFile.Truncate(sparseLogicalBytes); err != nil {
+		_ = sparseFile.Close()
+		t.Fatal(err)
+	}
+	if err := sparseFile.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if info, err := os.Lstat(sparsePath); err != nil || !info.Mode().IsRegular() || info.Size() != sparseLogicalBytes {
+		t.Fatalf("sqlite sparse sidecar = %#v, err = %v", info, err)
+	}
+
+	reopened, err := plugindata.Open(ctx, root, catalog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = reopened.Close() })
+	if _, err := reopened.Usage(ctx, plugin.PluginInstanceID, "db"); !errors.Is(err, storage.ErrQuotaExceeded) {
+		t.Fatalf("Usage() error = %v, want ErrQuotaExceeded", err)
+	}
+	if _, err := reopened.ListNamespaces(ctx, plugin.PluginInstanceID); !errors.Is(err, storage.ErrQuotaExceeded) {
+		t.Fatalf("ListNamespaces() error = %v, want ErrQuotaExceeded", err)
+	}
+}
+
 func TestFileStoreImportRejectsTamperedObject(t *testing.T) {
 	ctx := pluginDataTestContext()
 	catalog := registry.NewMemoryStore()
