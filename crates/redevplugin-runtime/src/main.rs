@@ -27,6 +27,7 @@ const DEFAULT_RUNTIME_LEASE_REPLAY_CAPACITY: usize = 16_384;
 const WASM_PAGE_BYTES: u64 = 64 * 1024;
 const RUNTIME_CONTROL_STALE_MESSAGE_PREFIX: &str = "runtime control channel is stale";
 const IPC_WRITER_CAPACITY_OVERHEAD: usize = 8;
+const IPC_WRITER_MAX_QUEUE_CAPACITY: usize = 136;
 const IPC_WRITER_MAX_BATCH_FRAMES: usize = 64;
 const IPC_WRITER_MAX_BATCH_BYTES: usize = 256 * 1024;
 
@@ -432,6 +433,7 @@ impl From<RuntimeLoopError> for String {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum IpcWriterError {
     CapacityOverflow,
+    CapacityLimitExceeded,
     StartFailed,
     QueueFull,
     Closed,
@@ -445,6 +447,7 @@ impl IpcWriterError {
     fn code(self) -> &'static str {
         match self {
             Self::CapacityOverflow => "IPC_WRITER_CAPACITY_OVERFLOW",
+            Self::CapacityLimitExceeded => "IPC_WRITER_CAPACITY_LIMIT_EXCEEDED",
             Self::StartFailed => "IPC_WRITER_START_FAILED",
             Self::QueueFull => "IPC_WRITER_QUEUE_FULL",
             Self::Closed => "IPC_WRITER_CLOSED",
@@ -460,6 +463,7 @@ impl std::fmt::Display for IpcWriterError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let message = match self {
             Self::CapacityOverflow => "runtime IPC writer capacity is invalid",
+            Self::CapacityLimitExceeded => "runtime IPC writer capacity exceeds the limit",
             Self::StartFailed => "runtime IPC writer could not start",
             Self::QueueFull => "runtime IPC writer queue is full",
             Self::Closed => "runtime IPC writer is closed",
@@ -940,11 +944,15 @@ fn initial_writer_failure(
 }
 
 fn ipc_writer_capacity(limits: redevplugin_ipc::RuntimeLimits) -> Result<usize, IpcWriterError> {
-    limits
+    let capacity = limits
         .worker_count
         .checked_add(limits.queue_capacity)
         .and_then(|capacity| capacity.checked_add(IPC_WRITER_CAPACITY_OVERHEAD))
-        .ok_or(IpcWriterError::CapacityOverflow)
+        .ok_or(IpcWriterError::CapacityOverflow)?;
+    if capacity > IPC_WRITER_MAX_QUEUE_CAPACITY {
+        return Err(IpcWriterError::CapacityLimitExceeded);
+    }
+    Ok(capacity)
 }
 
 fn run_ipc_writer<W: Write>(
@@ -3417,6 +3425,11 @@ mod tests {
                 "runtime IPC writer capacity is invalid",
             ),
             (
+                IpcWriterError::CapacityLimitExceeded,
+                "IPC_WRITER_CAPACITY_LIMIT_EXCEEDED",
+                "runtime IPC writer capacity exceeds the limit",
+            ),
+            (
                 IpcWriterError::StartFailed,
                 "IPC_WRITER_START_FAILED",
                 "runtime IPC writer could not start",
@@ -3460,6 +3473,12 @@ mod tests {
 
     #[test]
     fn ipc_writer_capacity_is_derived_from_validated_runtime_limits() {
+        assert_eq!(
+            redevplugin_ipc::MAX_RUNTIME_WORKER_COUNT
+                + redevplugin_ipc::MAX_RUNTIME_QUEUE_CAPACITY
+                + IPC_WRITER_CAPACITY_OVERHEAD,
+            IPC_WRITER_MAX_QUEUE_CAPACITY
+        );
         let limits = redevplugin_ipc::RuntimeLimits {
             worker_count: 64,
             queue_capacity: 64,
@@ -3482,6 +3501,20 @@ mod tests {
             })
         });
         assert_eq!(result.unwrap(), Err(IpcWriterError::CapacityOverflow));
+    }
+
+    #[test]
+    fn ipc_writer_capacity_rejects_values_above_the_explicit_limit() {
+        assert_eq!(
+            ipc_writer_capacity(redevplugin_ipc::RuntimeLimits {
+                worker_count: redevplugin_ipc::MAX_RUNTIME_WORKER_COUNT + 1,
+                queue_capacity: redevplugin_ipc::MAX_RUNTIME_QUEUE_CAPACITY,
+                per_plugin_concurrency: 1,
+                module_cache_entries: 1,
+                module_cache_source_bytes: 1,
+            }),
+            Err(IpcWriterError::CapacityLimitExceeded)
+        );
     }
 
     #[test]
