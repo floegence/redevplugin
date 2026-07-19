@@ -110,6 +110,7 @@ for (const evidence of array(summary.stress_evidence, "stress_evidence")) {
 const requiredSteps = [
   "npm_ci",
   "go_race_core",
+  "connectivity_stress_evidence",
   "stress_evidence",
   "go_all",
   "browser_harness",

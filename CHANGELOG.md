@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.5.1
+
+### Fixed
+
+- Synchronize the exact release stress-step contract with the dedicated
+  connectivity-classifier evidence step, while preserving closed-set, order,
+  duplicate, and successful-status validation in the signed stress summary.
+- The `v0.5.0` tag completed the release quality, audit, and immutable
+  performance gates but produced no npm package or GitHub Release because the
+  stress-summary validator still expected the earlier step set. `v0.5.1` is the
+  first complete release of the v5 platform contract.
+
 ## v0.5.0
 
 ### Added

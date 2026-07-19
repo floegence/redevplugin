@@ -5,7 +5,6 @@ ROOT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." >/dev/null 2>&1 && pwd)
 
 MODE="fast"
 SUMMARY_PATH=""
-RELEASE_TEST_VERSION="0.5.0"
 
 usage() {
   cat <<'USAGE'
@@ -214,11 +213,16 @@ if [[ "$MODE" != "fast" ]]; then
     write_summary
     exit "$STATUS"
   }
-  run_step release_bundle ./scripts/build_redevplugin_release.sh --performance-gate smoke --version "$RELEASE_TEST_VERSION" --out-dir "$TMP_DIR/release" || {
+  if ! release_test_version=$(node scripts/resolve_redevplugin_smoke_version.mjs stress.local); then
+    STATUS=1
+    write_summary
+    exit "$STATUS"
+  fi
+  run_step release_bundle ./scripts/build_redevplugin_release.sh --performance-gate smoke --version "$release_test_version" --out-dir "$TMP_DIR/release" || {
     write_summary
     exit "$STATUS"
   }
-  run_step published_release_verifier node scripts/test_published_release_verifier.mjs "$TMP_DIR/release" "$RELEASE_TEST_VERSION" "$(git rev-parse HEAD)" || {
+  run_step published_release_verifier node scripts/test_published_release_verifier.mjs "$TMP_DIR/release" "$release_test_version" "$(git rev-parse HEAD)" || {
     write_summary
     exit "$STATUS"
   }

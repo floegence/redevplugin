@@ -151,6 +151,7 @@ export GOWORK=off
   test -x .githooks/pre-push
   test -x scripts/test_redevplugin_pre_push_hook.sh
   node --check scripts/resolve_redevplugin_smoke_version.mjs
+  grep -q 'scripts/resolve_redevplugin_smoke_version.mjs stress.local' scripts/check_redevplugin_stress.sh
   scripts/test_redevplugin_pre_push_hook.sh
   grep -q 'Main Pre-Push Equivalent' .github/workflows/ci.yml
   grep -q './scripts/check_redevplugin_pre_push.sh --ci' .github/workflows/ci.yml
@@ -279,7 +280,7 @@ export GOWORK=off
     {"category":"runtime_revoke_ack","counters":{"attempts":1,"p95_ms":1,"max_ms":1,"threshold_ms":500,"hard_timeout_ms":2000,"closed_socket":1,"closed_stream":1,"closed_storage":1}},
     {"category":"storage_quota","counters":{"writes":1,"quota_denials":1,"imported":1,"usage_bytes":1,"file_quota_denials":1,"file_usage_files":1,"file_quota_files":1,"sqlite_quota_denials":2,"sqlite_rollback_checks":1,"sqlite_page_count":1,"sqlite_sidecar_files":4,"sqlite_sidecar_bytes":1,"sqlite_sparse_logical_bytes":1}}
   ],
-  "steps": [{"name":"npm_ci","status":0,"duration_ms":1},{"name":"go_race_core","status":0,"duration_ms":1},{"name":"stress_evidence","status":0,"duration_ms":1},{"name":"go_all","status":0,"duration_ms":1},{"name":"browser_harness","status":0,"duration_ms":1},{"name":"runtime_contract","status":0,"duration_ms":1},{"name":"release_bundle","status":0,"duration_ms":1},{"name":"published_release_verifier","status":0,"duration_ms":1}]
+  "steps": [{"name":"npm_ci","status":0,"duration_ms":1},{"name":"go_race_core","status":0,"duration_ms":1},{"name":"connectivity_stress_evidence","status":0,"duration_ms":1},{"name":"stress_evidence","status":0,"duration_ms":1},{"name":"go_all","status":0,"duration_ms":1},{"name":"browser_harness","status":0,"duration_ms":1},{"name":"runtime_contract","status":0,"duration_ms":1},{"name":"release_bundle","status":0,"duration_ms":1},{"name":"published_release_verifier","status":0,"duration_ms":1}]
 }
 JSON
   cat >"$verify_artifact_fixture/redevplugin-a2-acceptance.json" <<'JSON'
