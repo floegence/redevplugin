@@ -40,6 +40,8 @@ export GOWORK=off
   go test ./pkg/protocol ./pkg/httpadapter ./pkg/connectivity ./pkg/runtimeclient
   cargo test -p redevplugin-target-classifier
   npm run contracts:check
+  npm run platform-package-contracts:check
+  npm run platform-package-contract:test
   grep -q '"target_classifier_version": { "const": "target-classifier-v2" }' spec/plugin/network-grant-v2.schema.json
   grep -q '"fixtures":' spec/plugin/target-classifier-v2.json
   grep -q '"ipv4-mapped-shared-resolved"' spec/plugin/target-classifier-v2.json

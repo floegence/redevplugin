@@ -80,6 +80,10 @@ the same command shape.
 
 `scripts/check_redevplugin_runtime_contract.sh --ci` validates:
 
+- the still-active compatibility-v7 release manifest v4 Worker SDK identity
+  until the atomic v8 activation removes that runtime-bundle contract; the
+  staged v2 package registry excludes it and is not exposed by the current Host
+  compatibility API;
 - OpenAPI/HTTP route/TypeScript SDK binding coverage, including release-reference
   install/update routes that keep official package bytes out of trusted browser
   requests;

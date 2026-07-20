@@ -11,8 +11,11 @@
     "error-codes:check": "node scripts/generate_error_codes.mjs --check",
     "contracts:generate": "node scripts/generate_contract_registry.mjs",
     "contracts:check": "node scripts/generate_contract_registry.mjs --check",
+    "platform-package-contracts:generate": "node scripts/generate_platform_package_contracts.mjs",
+    "platform-package-contracts:check": "node scripts/generate_platform_package_contracts.mjs --check",
     "release-metadata:check": "node scripts/check_redevplugin_release_metadata.mjs --source && node scripts/test_redevplugin_release_metadata.mjs",
     "repository-boundary:test": "node --test scripts/repository_boundary.test.mjs",
+    "platform-package-contract:test": "node --test scripts/platform_package_contract.test.mjs",
     "browser-harness:generate": "node scripts/build_browser_harness.mjs",
     "browser-harness:check": "node scripts/build_browser_harness.mjs --check",
     "browser-harness:typecheck": "tsc -p testdata/browser-harness/tsconfig.json --noEmit",
@@ -38,7 +41,7 @@
     "performance:release": "./scripts/check_redevplugin_performance.sh --release",
     "property-gates": "./scripts/check_redevplugin_property_gates.sh --fast",
     "examples": "npm run examples:check && npm run build && cargo build -p redevplugin-runtime && GOWORK=off go run ./cmd/redevplugin examples-server dist/examples-state target/debug/redevplugin-runtime",
-    "check": "npm run error-codes:check && npm run openapi:check && npm run openapi-contract:test && npm run contracts:check && npm run release-metadata:check && npm run repository-boundary:test && npm run performance-contract:test && npm run lint && npm run typecheck && npm run browser-harness:typecheck && npm run scaffold:typecheck && npm run examples:typecheck && npm run canonical-wasm:test && npm run memos-markdown:test && npm run examples:check && npm run browser-harness:check && npm run build && npm run test:ui && npm run test:browser-harness && npm run test:browser-harness:smoke && npm run property-gates"
+    "check": "npm run error-codes:check && npm run openapi:check && npm run openapi-contract:test && npm run contracts:check && npm run platform-package-contracts:check && npm run release-metadata:check && npm run repository-boundary:test && npm run platform-package-contract:test && npm run performance-contract:test && npm run lint && npm run typecheck && npm run browser-harness:typecheck && npm run scaffold:typecheck && npm run examples:typecheck && npm run canonical-wasm:test && npm run memos-markdown:test && npm run examples:check && npm run browser-harness:check && npm run build && npm run test:ui && npm run test:browser-harness && npm run test:browser-harness:smoke && npm run property-gates"
   },
   "devDependencies": {
     "esbuild": "^0.25.5",

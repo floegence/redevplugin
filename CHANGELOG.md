@@ -4,6 +4,11 @@
 
 ### Changed
 
+- Stage the content-addressed `contract-registry-v2`,
+  `platform-package-set-v1`, and package-only publication schema without
+  activating the incomplete v8 compatibility surface. The staged aggregate
+  covers a synthetic registry coordinate and excludes product runtime binaries,
+  installers, signatures, and the retired runtime-bundle manifest.
 - Replace browser-facing GET reads with closed POST query requests that require
   exact Origin, CSRF, route action, and explicit query-effect authorization.
   Query cancellation remains safely retryable and never reports a mutation

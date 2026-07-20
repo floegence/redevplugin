@@ -1,0 +1,143 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.redevplugin.dev/plugin/platform-package-publication-v1.schema.json",
+  "title": "ReDevPlugin Platform Package Publication V1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "platform_version", "source_commit", "workflow", "go_module", "npm_packages", "rust_crates", "contract_set_sha256"],
+  "properties": {
+    "schema_version": {"const": "redevplugin.platform_package_publication.v1"},
+    "platform_version": {"$ref": "#/$defs/version"},
+    "source_commit": {"$ref": "#/$defs/commit"},
+    "workflow": {"$ref": "#/$defs/workflow"},
+    "go_module": {"$ref": "#/$defs/go_module"},
+    "npm_packages": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 2,
+      "uniqueItems": true,
+      "prefixItems": [
+        {"$ref": "#/$defs/npm_contracts"},
+        {"$ref": "#/$defs/npm_ui"}
+      ],
+      "items": false
+    },
+    "rust_crates": {
+      "type": "array",
+      "minItems": 6,
+      "maxItems": 6,
+      "uniqueItems": true,
+      "prefixItems": [
+        {"$ref": "#/$defs/rust_contracts"},
+        {"$ref": "#/$defs/rust_ipc"},
+        {"$ref": "#/$defs/rust_wasm_abi"},
+        {"$ref": "#/$defs/rust_target_classifier"},
+        {"$ref": "#/$defs/rust_worker_sdk"},
+        {"$ref": "#/$defs/rust_runtime"}
+      ],
+      "items": false
+    },
+    "contract_set_sha256": {"$ref": "#/$defs/sha256"}
+  },
+  "$defs": {
+    "version": {
+      "type": "string",
+      "minLength": 5,
+      "maxLength": 64,
+      "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$"
+    },
+    "commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "workflow": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repository", "path", "ref", "sha"],
+      "properties": {
+        "repository": {"const": "floegence/redevplugin"},
+        "path": {"const": ".github/workflows/release.yml"},
+        "ref": {"type": "string", "minLength": 15, "maxLength": 80, "pattern": "^refs/tags/v(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$"},
+        "sha": {"$ref": "#/$defs/commit"}
+      }
+    },
+    "go_module": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["module", "version", "h1", "go_mod_h1"],
+      "properties": {
+        "module": {"const": "github.com/floegence/redevplugin"},
+        "version": {"type": "string", "minLength": 6, "maxLength": 65, "pattern": "^v(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$"},
+        "h1": {"type": "string", "pattern": "^h1:[A-Za-z0-9+/]{43}=$"},
+        "go_mod_h1": {"type": "string", "pattern": "^h1:[A-Za-z0-9+/]{43}=$"}
+      }
+    },
+    "npm_package": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "version", "integrity", "provenance_subject_sha512"],
+      "properties": {
+        "name": {"type": "string", "minLength": 1, "maxLength": 128},
+        "version": {"$ref": "#/$defs/version"},
+        "integrity": {"type": "string", "pattern": "^sha512-[A-Za-z0-9+/]{86}==$"},
+        "provenance_subject_sha512": {"type": "string", "pattern": "^[0-9a-f]{128}$"}
+      }
+    },
+    "npm_contracts": {
+      "allOf": [
+        {"$ref": "#/$defs/npm_package"},
+        {"properties": {"name": {"const": "@floegence/redevplugin-contracts"}}}
+      ]
+    },
+    "npm_ui": {
+      "allOf": [
+        {"$ref": "#/$defs/npm_package"},
+        {"properties": {"name": {"const": "@floegence/redevplugin-ui"}}}
+      ]
+    },
+    "rust_crate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "version", "registry_checksum_sha256"],
+      "properties": {
+        "name": {"type": "string", "minLength": 1, "maxLength": 128},
+        "version": {"$ref": "#/$defs/version"},
+        "registry_checksum_sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "rust_contracts": {
+      "allOf": [
+        {"$ref": "#/$defs/rust_crate"},
+        {"properties": {"name": {"const": "redevplugin-contracts"}}}
+      ]
+    },
+    "rust_ipc": {
+      "allOf": [
+        {"$ref": "#/$defs/rust_crate"},
+        {"properties": {"name": {"const": "redevplugin-ipc"}}}
+      ]
+    },
+    "rust_wasm_abi": {
+      "allOf": [
+        {"$ref": "#/$defs/rust_crate"},
+        {"properties": {"name": {"const": "redevplugin-wasm-abi"}}}
+      ]
+    },
+    "rust_target_classifier": {
+      "allOf": [
+        {"$ref": "#/$defs/rust_crate"},
+        {"properties": {"name": {"const": "redevplugin-target-classifier"}}}
+      ]
+    },
+    "rust_worker_sdk": {
+      "allOf": [
+        {"$ref": "#/$defs/rust_crate"},
+        {"properties": {"name": {"const": "redevplugin-worker-sdk"}}}
+      ]
+    },
+    "rust_runtime": {
+      "allOf": [
+        {"$ref": "#/$defs/rust_crate"},
+        {"properties": {"name": {"const": "redevplugin-runtime"}}}
+      ]
+    }
+  }
+}

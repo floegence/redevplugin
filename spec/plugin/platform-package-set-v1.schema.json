@@ -1,0 +1,126 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.redevplugin.dev/plugin/platform-package-set-v1.schema.json",
+  "title": "ReDevPlugin Platform Package Set V1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "platform_version", "go_module", "npm_packages", "rust_crates", "contract_registry_version", "contract_set_sha256"],
+  "properties": {
+    "schema_version": {"const": "redevplugin.platform_package_set.v1"},
+    "platform_version": {"$ref": "#/$defs/version"},
+    "go_module": {"$ref": "#/$defs/go_module"},
+    "npm_packages": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 2,
+      "uniqueItems": true,
+      "prefixItems": [
+        {"$ref": "#/$defs/npm_contracts"},
+        {"$ref": "#/$defs/npm_ui"}
+      ],
+      "items": false
+    },
+    "rust_crates": {
+      "type": "array",
+      "minItems": 6,
+      "maxItems": 6,
+      "uniqueItems": true,
+      "prefixItems": [
+        {"$ref": "#/$defs/rust_contracts"},
+        {"$ref": "#/$defs/rust_ipc"},
+        {"$ref": "#/$defs/rust_wasm_abi"},
+        {"$ref": "#/$defs/rust_target_classifier"},
+        {"$ref": "#/$defs/rust_worker_sdk"},
+        {"$ref": "#/$defs/rust_runtime"}
+      ],
+      "items": false
+    },
+    "contract_registry_version": {"const": "contract-registry-v2"},
+    "contract_set_sha256": {"$ref": "#/$defs/sha256"}
+  },
+  "$defs": {
+    "version": {
+      "type": "string",
+      "minLength": 5,
+      "maxLength": 64,
+      "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$"
+    },
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "go_module": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["module", "version"],
+      "properties": {
+        "module": {"const": "github.com/floegence/redevplugin"},
+        "version": {"type": "string", "minLength": 6, "maxLength": 65, "pattern": "^v(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$"}
+      }
+    },
+    "npm_package": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "version"],
+      "properties": {
+        "name": {"type": "string", "minLength": 1, "maxLength": 128},
+        "version": {"$ref": "#/$defs/version"}
+      }
+    },
+    "npm_contracts": {
+      "allOf": [
+        {"$ref": "#/$defs/npm_package"},
+        {"properties": {"name": {"const": "@floegence/redevplugin-contracts"}}}
+      ]
+    },
+    "npm_ui": {
+      "allOf": [
+        {"$ref": "#/$defs/npm_package"},
+        {"properties": {"name": {"const": "@floegence/redevplugin-ui"}}}
+      ]
+    },
+    "rust_crate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "version", "role"],
+      "properties": {
+        "name": {"type": "string", "minLength": 1, "maxLength": 128},
+        "version": {"$ref": "#/$defs/version"},
+        "role": {"enum": ["contracts", "ipc", "wasm_abi", "target_classifier", "worker_sdk", "runtime"]}
+      }
+    },
+    "rust_contracts": {
+      "allOf": [
+        {"$ref": "#/$defs/rust_crate"},
+        {"properties": {"name": {"const": "redevplugin-contracts"}, "role": {"const": "contracts"}}}
+      ]
+    },
+    "rust_ipc": {
+      "allOf": [
+        {"$ref": "#/$defs/rust_crate"},
+        {"properties": {"name": {"const": "redevplugin-ipc"}, "role": {"const": "ipc"}}}
+      ]
+    },
+    "rust_wasm_abi": {
+      "allOf": [
+        {"$ref": "#/$defs/rust_crate"},
+        {"properties": {"name": {"const": "redevplugin-wasm-abi"}, "role": {"const": "wasm_abi"}}}
+      ]
+    },
+    "rust_target_classifier": {
+      "allOf": [
+        {"$ref": "#/$defs/rust_crate"},
+        {"properties": {"name": {"const": "redevplugin-target-classifier"}, "role": {"const": "target_classifier"}}}
+      ]
+    },
+    "rust_worker_sdk": {
+      "allOf": [
+        {"$ref": "#/$defs/rust_crate"},
+        {"properties": {"name": {"const": "redevplugin-worker-sdk"}, "role": {"const": "worker_sdk"}}}
+      ]
+    },
+    "rust_runtime": {
+      "allOf": [
+        {"$ref": "#/$defs/rust_crate"},
+        {"properties": {"name": {"const": "redevplugin-runtime"}, "role": {"const": "runtime"}}}
+      ]
+    }
+  }
+}

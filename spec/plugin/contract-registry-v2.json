@@ -1,0 +1,186 @@
+{
+  "schema_version": "redevplugin.contract_registry.v2",
+  "registry_version": "contract-registry-v2",
+  "artifacts": [
+    {
+      "id": "compatibility-manifest-schema",
+      "path": "spec/plugin/compatibility-manifest-v7.schema.json",
+      "version": "compatibility-manifest-v7",
+      "sha256": "7a636c2f9dae479d57df4bfbc0da946ed4bdc54d6ba30dfa0fce455aaed454bd"
+    },
+    {
+      "id": "contract-registry-schema",
+      "path": "spec/plugin/contract-registry-v2.schema.json",
+      "version": "contract-registry-v2",
+      "sha256": "d516b3565158ac1b0d5e9f86b91b13ac19321ab3ff54468be41951b68d7085ac"
+    },
+    {
+      "id": "error-codes-schema",
+      "path": "spec/plugin/error-codes-v5.schema.json",
+      "version": "error-codes-v5",
+      "sha256": "1cca99c26c2839f0739345cebdaea173ce7b3f8db782021ee0021b88eae2f9ea"
+    },
+    {
+      "id": "host-capability-compatibility-schema",
+      "path": "spec/plugin/host-capability-compatibility-v1.schema.json",
+      "version": "host-capability-compatibility-v1",
+      "sha256": "361ebbf7009aeb66c763ecde46427b17b6cf7d2307c01886c5987a1f4f1762de"
+    },
+    {
+      "id": "host-capability-contract-schema",
+      "path": "spec/plugin/host-capability-contract-v1.schema.json",
+      "version": "host-capability-contract-v1",
+      "sha256": "0a653e36d44104f1d16b06ee424648086c146f23c907b176bdf470ae73025485"
+    },
+    {
+      "id": "host-capability-manifest-schema",
+      "path": "spec/plugin/host-capability-manifest-v1.schema.json",
+      "version": "host-capability-manifest-v1",
+      "sha256": "5f13a8e5f918378b9cba9fdc133a9a75ba3a8311c30cb6a02ca0aba09035110e"
+    },
+    {
+      "id": "host-capability-notices-schema",
+      "path": "spec/plugin/host-capability-notices-v1.schema.json",
+      "version": "host-capability-notices-v1",
+      "sha256": "6affd5d0ae90239f6fd08cbeddae4eef393efa2838c9e4935874ba3dc0e05948"
+    },
+    {
+      "id": "host-capability-pin-schema",
+      "path": "spec/plugin/host-capability-pin-v1.schema.json",
+      "version": "host-capability-pin-v1",
+      "sha256": "20526a5934f0d85a3db7882492487266f09de5bcd176e2c7936f05d0b7fe0338"
+    },
+    {
+      "id": "host-capability-signature-schema",
+      "path": "spec/plugin/host-capability-signature-v1.schema.json",
+      "version": "host-capability-signature-v1",
+      "sha256": "88cbc1d63afb7e289ca4f8b7c76f702b8d20156f7722c1b71f3ab9138a240a5e"
+    },
+    {
+      "id": "iframe-bridge-schema",
+      "path": "spec/plugin/bridge-v5.schema.json",
+      "version": "bridge-v5",
+      "sha256": "306c46f54808af20b12b7cf4f0cf9c4181017c9421698a5d3dcc224897c5b2b0"
+    },
+    {
+      "id": "manifest-schema",
+      "path": "spec/plugin/manifest-v5.schema.json",
+      "version": "manifest-v5",
+      "sha256": "9695f6163aa539b9e3a933367c98850257c6d7bb8d61b36fd5f83b3ab61746f7"
+    },
+    {
+      "id": "network-grant-schema",
+      "path": "spec/plugin/network-grant-v2.schema.json",
+      "version": "network-grant-v2",
+      "sha256": "5fc1cfc3469a992e551fd392fab982abb6f95e456a1cb768ceca137f7c693abc"
+    },
+    {
+      "id": "opaque-surface-document-schema",
+      "path": "spec/plugin/opaque-surface-document-v3.schema.json",
+      "version": "opaque-surface-document-v3",
+      "sha256": "63419ff5b5a8890e14f97ca29aaae175b93daff61d4567c5bdff7f6e6a9e7450"
+    },
+    {
+      "id": "opaque-surface-transport-schema",
+      "path": "spec/plugin/opaque-surface-transport-v4.schema.json",
+      "version": "opaque-surface-transport-v4",
+      "sha256": "70a32dc8bf281cea2c92492c466fd477070c62156a3f593d45eb460cde62dca2"
+    },
+    {
+      "id": "package-signature-schema",
+      "path": "spec/plugin/package-signature-v1.schema.json",
+      "version": "package-signature-v1",
+      "sha256": "13951c0f6831ba28647774368c76a817868aeb7984628e2cf3dc4ad1b54f8284"
+    },
+    {
+      "id": "performance-contract",
+      "path": "spec/plugin/performance-contract-v2.json",
+      "version": "performance-contract-v2",
+      "sha256": "ffbad3bdf3f88a77aa70bee4559f0da0dc7b4b5bcd1e89b8323de5e466683520"
+    },
+    {
+      "id": "performance-evidence-schema",
+      "path": "spec/plugin/performance-evidence-v2.schema.json",
+      "version": "performance-evidence-v2",
+      "sha256": "c774a3e1a6a60cb6ea00e7cfc1b7fc6da94687b7982715da2578ed175ee201d0"
+    },
+    {
+      "id": "platform-package-publication-schema",
+      "path": "spec/plugin/platform-package-publication-v1.schema.json",
+      "version": "platform-package-publication-v1",
+      "sha256": "20450b516c34d5a122020f4064ddfa03ffcb97ffea661e0868cd09760b3f08b0"
+    },
+    {
+      "id": "platform-package-set-schema",
+      "path": "spec/plugin/platform-package-set-v1.schema.json",
+      "version": "platform-package-set-v1",
+      "sha256": "4d9979f5205ec047895b64c995312c588d998bb1c1448f6c9c559f1b7ab0d796"
+    },
+    {
+      "id": "plugin-platform-openapi",
+      "path": "spec/openapi/plugin-platform-v7.yaml",
+      "version": "plugin-platform-v7",
+      "sha256": "b8d8347724f946545be576f522f4db01950c9412373f301fc4f7e9a7f11ba96b"
+    },
+    {
+      "id": "release-metadata-schema",
+      "path": "spec/plugin/release-metadata-v5.schema.json",
+      "version": "release-metadata-v5",
+      "sha256": "255ef3deb7d2758a43e69e533a08aa28106f8edc2e7385ab0aec0d50c1ef3d7a"
+    },
+    {
+      "id": "resource-scope-schema",
+      "path": "spec/plugin/resource-scope-v1.schema.json",
+      "version": "resource-scope-v1",
+      "sha256": "e6021bd576c7220ad5536645a7ad8e57ee7aeb9901c31a89444fa6b695d8dc6f"
+    },
+    {
+      "id": "rust-ipc-schema",
+      "path": "spec/plugin/ipc-v5.schema.json",
+      "version": "rust-ipc-v5",
+      "sha256": "b3a0ffdb6dc9e7d21a83b6cec2581713ea549b9aaa59d3bfabc94d0ee7489765"
+    },
+    {
+      "id": "session-scope-schema",
+      "path": "spec/plugin/session-scope-v1.schema.json",
+      "version": "session-scope-v1",
+      "sha256": "3df0084264f0aff9fe2261c237cea439adb5cdc2534bfaaa0488d5992d4a7d2e"
+    },
+    {
+      "id": "source-policy-schema",
+      "path": "spec/plugin/source-policy-v1.schema.json",
+      "version": "source-policy-v1",
+      "sha256": "fb6a9c27e726378a28a9ff48ee47c40ede99fa95a524a308e2c762bebc4b9fe2"
+    },
+    {
+      "id": "source-revocations-schema",
+      "path": "spec/plugin/source-revocations-v1.schema.json",
+      "version": "source-revocations-v1",
+      "sha256": "4c4132879a51b31e99775c979ca3ab43c2ee4c5c885f3ff1e7b43cd5ce8bc83d"
+    },
+    {
+      "id": "target-classifier-fixture",
+      "path": "spec/plugin/target-classifier-v2.json",
+      "version": "target-classifier-v2",
+      "sha256": "ae7336cce77a2e820f96f1cc309b93f8442c932dcebec25e3890d31cd098e2d1"
+    },
+    {
+      "id": "token-ticket-schema",
+      "path": "spec/plugin/token-ticket-v4.schema.json",
+      "version": "token-ticket-v4",
+      "sha256": "5cf365b5b52a331ac0d3ad35a98be3c2ce668804ae88fdeaf9679a44db14feb1"
+    },
+    {
+      "id": "wasm-worker-schema",
+      "path": "spec/plugin/wasm-worker-v2.schema.json",
+      "version": "redevplugin-wasm-worker-v2",
+      "sha256": "00bf123f3a9ed932de4b71c180e2a5c34af0f82050defb271fedec42cf217902"
+    },
+    {
+      "id": "worker-invocation-schema",
+      "path": "spec/plugin/worker-invocation-v3.schema.json",
+      "version": "worker-invocation-v3",
+      "sha256": "f08af491cbf5e7b71d1aeafbeac9ae581ee5fc3bcb76184daec369f94bab3927"
+    }
+  ]
+}
