@@ -1,8 +1,13 @@
 [package]
 name = "redevplugin-wasm-abi"
-version = "0.0.0-dev"
-edition = "2024"
-license = "MIT"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "WASM worker ABI validation for the ReDevPlugin runtime"
+repository.workspace = true
+rust-version.workspace = true
+readme = "README.md"
+include = ["Cargo.toml", "LICENSE", "README.md", "src/**", "testdata/**"]
 
 [dependencies]
 wasmparser = "0.228"

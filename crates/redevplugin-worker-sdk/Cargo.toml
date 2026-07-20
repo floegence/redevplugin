@@ -1,14 +1,15 @@
 [package]
 name = "redevplugin-worker-sdk"
-version = "0.6.0"
-edition = "2024"
-license = "MIT"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
 description = "Rust SDK for ReDevPlugin WASM workers"
-repository = "https://github.com/floegence/redevplugin"
+repository.workspace = true
+rust-version.workspace = true
 readme = "README.md"
+include = ["Cargo.toml", "LICENSE", "README.md", "src/**"]
 keywords = ["plugin", "wasm", "sandbox"]
 categories = ["api-bindings", "wasm"]
-publish = false
 
 [dependencies]
 base64 = "0.22"

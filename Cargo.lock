@@ -481,11 +481,12 @@ dependencies = [
 
 [[package]]
 name = "redevplugin-ipc"
-version = "0.0.0-dev"
+version = "0.6.0"
 dependencies = [
  "base64",
  "ed25519-dalek",
  "proptest",
+ "redevplugin-contracts",
  "serde",
  "serde_json",
  "sha2",
@@ -493,7 +494,7 @@ dependencies = [
 
 [[package]]
 name = "redevplugin-runtime"
-version = "0.0.0-dev"
+version = "0.6.0"
 dependencies = [
  "proptest",
  "redevplugin-ipc",
@@ -514,16 +515,17 @@ dependencies = [
 
 [[package]]
 name = "redevplugin-target-classifier"
-version = "0.0.0-dev"
+version = "0.6.0"
 dependencies = [
  "proptest",
+ "redevplugin-contracts",
  "serde",
  "serde_json",
 ]
 
 [[package]]
 name = "redevplugin-wasm-abi"
-version = "0.0.0-dev"
+version = "0.6.0"
 dependencies = [
  "wasmparser 0.228.0",
  "wat",

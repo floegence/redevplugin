@@ -1,8 +1,13 @@
 [package]
 name = "redevplugin-ipc"
-version = "0.0.0-dev"
-edition = "2024"
-license = "MIT"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Closed IPC protocol types for the ReDevPlugin runtime"
+repository.workspace = true
+rust-version.workspace = true
+readme = "README.md"
+include = ["Cargo.toml", "LICENSE", "README.md", "src/**", "tests/**", "testdata/**"]
 
 [dependencies]
 base64 = "0.22"
@@ -13,3 +18,4 @@ sha2 = "0.10"
 
 [dev-dependencies]
 proptest = "1.6"
+redevplugin-contracts = { path = "../redevplugin-contracts", version = "=0.6.0" }

@@ -123,7 +123,7 @@ func hostRuntimeTestDescriptor(t *testing.T, runtimePath string) runtimeclient.R
 	}
 	runtimeVersionText := strings.TrimSpace(os.Getenv("REDEVPLUGIN_PERFORMANCE_RUNTIME_VERSION"))
 	if runtimeVersionText == "" {
-		runtimeVersionText = version.RuntimeVersion
+		runtimeVersionText = hostRuntimeExpectedVersion(t, runtimePath)
 	}
 	runtimeVersion, err := version.ParseSemVer(runtimeVersionText)
 	if err != nil {
@@ -140,6 +140,28 @@ func hostRuntimeTestDescriptor(t *testing.T, runtimePath string) runtimeclient.R
 		t.Fatalf("construct runtime descriptor: %v", err)
 	}
 	return descriptor
+}
+
+func hostRuntimeExpectedVersion(t *testing.T, runtimePath string) string {
+	t.Helper()
+	runtimeName := strings.TrimSuffix(filepath.Base(runtimePath), ".exe")
+	if runtimeName != "redevplugin-runtime" {
+		return version.RuntimeVersion
+	}
+	bytes, err := os.ReadFile(filepath.Join(findRepoRootForHostTest(t), "spec", "plugin", "platform-version.json"))
+	if err != nil {
+		t.Fatalf("read platform runtime version: %v", err)
+	}
+	var document struct {
+		PlatformVersion string `json:"platform_version"`
+	}
+	if err := json.Unmarshal(bytes, &document); err != nil {
+		t.Fatalf("decode platform runtime version: %v", err)
+	}
+	if strings.TrimSpace(document.PlatformVersion) == "" {
+		t.Fatal("platform runtime version is empty")
+	}
+	return document.PlatformVersion
 }
 
 func TestCallPluginMethodWorkerNetworkExecuteThroughRuntimeProcess(t *testing.T) {

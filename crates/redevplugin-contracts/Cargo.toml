@@ -1,10 +1,13 @@
 [package]
 name = "redevplugin-contracts"
-version = "0.6.0"
-edition = "2024"
-license = "MIT"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
 description = "Embedded machine contracts for the ReDevPlugin platform"
-repository = "https://github.com/floegence/redevplugin"
+repository.workspace = true
+rust-version.workspace = true
+readme = "README.md"
+include = ["Cargo.toml", "LICENSE", "README.md", "src/**", "tests/**"]
 
 [lib]
 path = "src/lib.rs"

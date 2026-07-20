@@ -13,6 +13,12 @@ pub use contract_set_gen::CONTRACT_SET_SHA256;
 pub const RUST_IPC_VERSION: &str = "rust-ipc-v5";
 pub const WASM_ABI_VERSION: &str = "redevplugin-wasm-worker-v2";
 pub const RUNTIME_LEASE_SIGNATURE_SCHEMA_VERSION: &str = "redevplugin.runtime_execution_lease.v1";
+
+#[cfg(test)]
+fn contract_fixture(id: redevplugin_contracts::ContractId) -> &'static str {
+    std::str::from_utf8(redevplugin_contracts::get(id).bytes())
+        .expect("generated contracts are valid UTF-8")
+}
 pub const RUNTIME_LEASE_TOKEN_KIND: &str = "runtime_execution_lease";
 pub const RUNTIME_LEASE_SIGNATURE_ALGORITHM: &str = "ed25519";
 pub const WORKER_INVOCATION_TARGET_SCHEMA_VERSION: &str = "redevplugin.worker_invocation_target.v1";
@@ -377,7 +383,10 @@ mod property_gates {
             method in "worker\\.[a-z][a-z0-9_]{0,16}",
         ) {
             let nonce = nonce.into_iter().map(|byte| format!("{byte:02x}")).collect::<String>();
-            let fixture: serde_json::Value = serde_json::from_str(include_str!("../../../testdata/contracts/runtime-lease-signature-v1.json")).unwrap();
+            let fixture: serde_json::Value = serde_json::from_str(include_str!(
+                "../testdata/runtime-lease-signature-v1.json"
+            ))
+            .unwrap();
             let mut lease = fixture.get("lease").cloned().unwrap();
             lease["lease_id"] = serde_json::Value::String(lease_id);
             lease["token_id"] = serde_json::Value::String(token_id);
@@ -4143,9 +4152,10 @@ mod tests {
 
     #[test]
     fn runtime_limit_constants_match_the_ipc_schema() {
-        let schema: Value =
-            serde_json::from_str(include_str!("../../../spec/plugin/ipc-v5.schema.json"))
-                .expect("IPC schema");
+        let schema: Value = serde_json::from_str(contract_fixture(
+            redevplugin_contracts::ContractId::RUST_IPC_SCHEMA,
+        ))
+        .expect("IPC schema");
         let properties = schema["$defs"]["runtime_limits"]["properties"]
             .as_object()
             .expect("runtime limit properties");
@@ -5025,10 +5035,9 @@ mod tests {
 
     #[test]
     fn runtime_lease_signature_shared_fixture_matches_go() {
-        let fixture: serde_json::Value = serde_json::from_str(include_str!(
-            "../../../testdata/contracts/runtime-lease-signature-v1.json"
-        ))
-        .expect("shared runtime lease fixture");
+        let fixture: serde_json::Value =
+            serde_json::from_str(include_str!("../testdata/runtime-lease-signature-v1.json"))
+                .expect("shared runtime lease fixture");
         let lease = fixture
             .get("lease")
             .and_then(|value| value.as_object())
@@ -5313,10 +5322,7 @@ mod tests {
 
     fn load_ipc_fixture(name: &str) -> Value {
         let mut path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        path.push("..");
-        path.push("..");
         path.push("testdata");
-        path.push("contracts");
         path.push("ipc");
         path.push(name);
         let raw = fs::read_to_string(&path).unwrap_or_else(|err| {
@@ -6419,7 +6425,7 @@ mod tests {
     }
 
     fn runtime_lease_invocation_fixture() -> &'static str {
-        include_str!("../../../testdata/contracts/runtime-lease-signature-v1-invocation.json")
+        include_str!("../testdata/runtime-lease-signature-v1-invocation.json")
     }
 
     fn signed_runtime_lease_invocation_for_test(

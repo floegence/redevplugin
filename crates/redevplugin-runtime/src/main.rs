@@ -5476,7 +5476,7 @@ mod tests {
     }
 
     fn signed_worker_invocation_fixture() -> &'static str {
-        include_str!("../../../testdata/contracts/runtime-lease-signature-v1-invocation.json")
+        include_str!("../testdata/runtime-lease-signature-v1-invocation.json")
     }
 
     fn execute_worker_module_for_test<'a>(
@@ -5995,7 +5995,7 @@ mod tests {
 
     #[test]
     fn executes_compiled_example_worker_with_portable_dispatch() {
-        let module = include_bytes!("../../../examples/plugins/memos/workers/memos.wasm");
+        let module = include_bytes!("../testdata/memos.wasm");
         let execution = execute_worker_module_for_test(
             module,
             br#"{"schema_version":"redevplugin.worker_request.v2","method":"memos.list","params":{"query":"","view":"all","tag":"","date":"","utc_offset_minutes":0,"limit":10}}"#,
@@ -6020,7 +6020,7 @@ mod tests {
 
     #[test]
     fn compiled_memos_worker_returns_distinct_navigation_totals() {
-        let module = include_bytes!("../../../examples/plugins/memos/workers/memos.wasm");
+        let module = include_bytes!("../testdata/memos.wasm");
         let mut hostcall_count = 0;
         let execution = execute_worker_module_for_test(
             module,
@@ -6070,7 +6070,7 @@ mod tests {
 
     #[test]
     fn executes_compiled_example_worker_publish_with_portable_dispatch() {
-        let module = include_bytes!("../../../examples/plugins/memos/workers/memos.wasm");
+        let module = include_bytes!("../testdata/memos.wasm");
         let mut hostcall_count = 0;
         let execution = execute_worker_module_for_test(
             module,
@@ -6109,7 +6109,7 @@ mod tests {
 
     #[test]
     fn compiled_memos_worker_pages_with_an_opaque_keyset_cursor() {
-        let module = include_bytes!("../../../examples/plugins/memos/workers/memos.wasm");
+        let module = include_bytes!("../testdata/memos.wasm");
         let execute_page = |cursor: Option<&str>| {
             let mut params = serde_json::json!({
                 "query": "",

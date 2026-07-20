@@ -1,12 +1,16 @@
 [package]
 name = "redevplugin-target-classifier"
-version = "0.0.0-dev"
-edition = "2024"
-license = "MIT"
-
-[dependencies]
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Network target classification for the ReDevPlugin platform"
+repository.workspace = true
+rust-version.workspace = true
+readme = "README.md"
+include = ["Cargo.toml", "LICENSE", "README.md", "src/**", "tests/**"]
 
 [dev-dependencies]
 proptest = "1.6"
+redevplugin-contracts = { path = "../redevplugin-contracts", version = "=0.6.0" }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"

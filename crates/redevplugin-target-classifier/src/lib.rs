@@ -135,7 +135,15 @@ mod tests {
     use super::*;
     use serde::Deserialize;
 
-    const CONTRACT: &str = include_str!("../../../spec/plugin/target-classifier-v2.json");
+    fn contract() -> &'static str {
+        std::str::from_utf8(
+            redevplugin_contracts::get(
+                redevplugin_contracts::ContractId::TARGET_CLASSIFIER_FIXTURE,
+            )
+            .bytes(),
+        )
+        .expect("target classifier contract is valid UTF-8")
+    }
 
     #[derive(Deserialize)]
     struct TargetClassifierContract {
@@ -209,7 +217,7 @@ mod tests {
     }
 
     fn read_contract() -> TargetClassifierContract {
-        serde_json::from_str(CONTRACT).expect("target classifier contract must decode")
+        serde_json::from_str(contract()).expect("target classifier contract must decode")
     }
 
     fn host_from_destination(destination: &str) -> &str {

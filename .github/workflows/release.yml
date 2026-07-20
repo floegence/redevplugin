@@ -90,6 +90,7 @@ jobs:
       - name: Install cargo-deny
         run: cargo install cargo-deny@0.19.9 --locked
       - run: cargo deny check
+      - run: npm run rust-source-packages:test
       - run: ./scripts/check_redevplugin_runtime_contract.sh --ci
       - run: ./scripts/check_redevplugin_platform.sh --ci
 

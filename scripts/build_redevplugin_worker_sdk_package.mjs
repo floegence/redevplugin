@@ -56,22 +56,45 @@ try {
   cpSync(join(root, "LICENSE"), join(packageDirectory, "LICENSE"));
 
   const sourceReadme = readFileSync(join(sourceDirectory, "README.md"), "utf8");
-  if (!sourceReadme.includes(`tag = "v${workerSDK.version}"`) ||
-      !sourceReadme.includes(`redevplugin-worker-sdk-${workerSDK.version}.crate`)) {
-    throw new Error("worker SDK README must document the source release version and crate artifact");
+  if (!sourceReadme.includes(`redevplugin-worker-sdk = "=${workerSDK.version}"`) ||
+      /\bgit\s*=|GitHub Release/.test(sourceReadme)) {
+    throw new Error("worker SDK source README must document only the exact registry dependency");
   }
+  const legacyReadme = `${sourceReadme.replaceAll(workerSDK.version, version)}
+
+## Legacy Release Bundle
+
+This transitional bundle is tied to the immutable source release:
+
+\`\`\`toml
+redevplugin-worker-sdk = { git = "https://github.com/floegence/redevplugin", tag = "v${version}" }
+\`\`\`
+
+The bundled source archive is \`redevplugin-worker-sdk-${version}.crate\`.
+`;
   writeFileSync(
     join(packageDirectory, "README.md"),
-    sourceReadme.replaceAll(workerSDK.version, version),
+    legacyReadme,
   );
 
   const manifestPath = join(packageDirectory, "Cargo.toml");
-  const sourceManifest = readFileSync(join(sourceDirectory, "Cargo.toml"), "utf8");
-  const sourceVersionLine = `version = "${workerSDK.version}"`;
-  if (sourceManifest.split(sourceVersionLine).length !== 2) {
-    throw new Error("worker SDK manifest must contain one canonical package version line");
+  let temporaryManifest = readFileSync(join(sourceDirectory, "Cargo.toml"), "utf8");
+  for (const [inherited, concrete] of [
+    ["version.workspace = true", `version = "${version}"\npublish = false`],
+    ["edition.workspace = true", `edition = ${JSON.stringify(workerSDK.edition)}`],
+    ["license.workspace = true", `license = ${JSON.stringify(workerSDK.license)}`],
+    ["repository.workspace = true", `repository = ${JSON.stringify(workerSDK.repository)}`],
+    ["rust-version.workspace = true", `rust-version = ${JSON.stringify(workerSDK.rust_version)}`],
+  ]) {
+    const lines = temporaryManifest.split("\n");
+    const indexes = lines.flatMap((line, index) => line === inherited ? [index] : []);
+    if (indexes.length !== 1) {
+      throw new Error(`worker SDK manifest must contain one ${inherited} entry`);
+    }
+    lines[indexes[0]] = concrete;
+    temporaryManifest = lines.join("\n");
   }
-  writeFileSync(manifestPath, sourceManifest.replace(sourceVersionLine, `version = "${version}"`));
+  writeFileSync(manifestPath, temporaryManifest);
 
   const lockPath = join(packageDirectory, "Cargo.lock");
   const sourceLock = readFileSync(join(root, "Cargo.lock"), "utf8");

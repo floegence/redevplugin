@@ -1,0 +1,37 @@
+{
+  "name": "valid validate handle grant",
+  "kind": "validate_handle_grant",
+  "request_id": "r1:handle",
+  "parent_request_id": "r1",
+  "runtime_generation_id": "g1",
+  "want_error": false,
+  "frame": {
+    "ipc_version": "rust-ipc-v5",
+    "frame_type": "validate_handle_grant",
+    "request_id": "r1:handle",
+    "parent_request_id": "r1",
+    "runtime_generation_id": "g1",
+    "payload": {
+      "handle_grant_token": "handle_grant.secret",
+      "plugin_instance_id": "plugini_1",
+      "active_fingerprint": "sha256:active",
+      "runtime_instance_id": "runtime_1",
+      "runtime_generation_id": "g1",
+      "runtime_shard_id": "runtime_shard_1",
+      "owner_session_hash": "session_hash",
+      "owner_user_hash": "user_hash",
+      "owner_env_hash": "env_hash",
+      "session_channel_id_hash": "channel_hash",
+      "handle_id": "storage:db",
+      "method": "storage.sqlite",
+      "resource_scope": {
+        "kind": "user",
+        "owner_env_hash": "env_hash",
+        "owner_user_hash": "user_hash"
+      },
+      "policy_revision": 1,
+      "management_revision": 2,
+      "revoke_epoch": 3
+    }
+  }
+}

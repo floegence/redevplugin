@@ -472,9 +472,7 @@ mod tests {
 
     #[test]
     fn rejects_shared_invalid_opcode_fixture() {
-        let module = decode_hex(include_str!(
-            "../../../testdata/contracts/wasm/invalid-final-opcode.hex"
-        ));
+        let module = decode_hex(include_str!("../testdata/wasm/invalid-final-opcode.hex"));
         let error = validate_worker_module(&module).expect_err("invalid opcode");
         assert_eq!(error.category(), ValidationErrorCategory::InvalidModule);
     }
@@ -482,7 +480,7 @@ mod tests {
     #[test]
     fn rejects_shared_table_maximum_fixture() {
         let module = decode_hex(include_str!(
-            "../../../testdata/contracts/wasm/table-maximum-exceeds-limit.hex"
+            "../testdata/wasm/table-maximum-exceeds-limit.hex"
         ));
         let error = validate_worker_module(&module).expect_err("table maximum above limit");
         assert_eq!(error.category(), ValidationErrorCategory::InvalidTable);

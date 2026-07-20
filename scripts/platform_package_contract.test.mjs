@@ -24,6 +24,16 @@ function readJSON(relativePath) {
   return JSON.parse(read(relativePath).toString("utf8"));
 }
 
+function workflowJob(relativePath, name) {
+  const source = read(relativePath).toString("utf8");
+  const marker = `  ${name}:\n`;
+  const start = source.indexOf(marker);
+  assert.notEqual(start, -1, `${relativePath} must define ${name}`);
+  const remainder = source.slice(start + marker.length);
+  const next = remainder.search(/^  [a-z0-9_-]+:\n/m);
+  return next === -1 ? remainder : remainder.slice(0, next);
+}
+
 function encode(value) {
   return Buffer.from(JSON.stringify(value), "utf8");
 }
@@ -249,6 +259,27 @@ test("platform package set binds the exact Go, npm, Rust, role, and contract coo
   assert.equal(packageSet.contract_registry_version, "contract-registry-v2");
   assert.equal(packageSet.contract_set_sha256, digest);
   assert.doesNotMatch(JSON.stringify(packageSet), /runtime_binary|runtime_archive|installer|product_signature|product_checksum/i);
+});
+
+test("Rust source packages remain wired into dedicated Rust and release gates", () => {
+  const packageJSON = readJSON("package.json");
+  assert.equal(
+    packageJSON.scripts["rust-source-packages:test"],
+    "node --test scripts/rust_source_packages.test.mjs",
+  );
+  assert.match(
+    read("scripts/check_redevplugin_pre_push.sh").toString("utf8"),
+    /cargo deny check\nnpm run rust-source-packages:test\n/,
+  );
+
+  const rustJob = workflowJob(".github/workflows/ci.yml", "rust");
+  assert.match(rustJob, /actions\/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020/);
+  assert.match(rustJob, /node-version: 24/);
+  assert.match(rustJob, /npm run rust-source-packages:test/);
+
+  const releaseQuality = workflowJob(".github/workflows/release.yml", "quality-release");
+  assert.match(releaseQuality, /cargo deny check[\s\S]*npm run rust-source-packages:test/);
+  assert.doesNotMatch(packageJSON.scripts.check, /rust-source-packages/);
 });
 
 test("platform package set rejects duplicate, mismatched, unknown, and OS artifact fields", () => {

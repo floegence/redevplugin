@@ -12,3 +12,10 @@ members = [
   "examples/workers/weather",
   "examples/workers/sky-strike",
 ]
+
+[workspace.package]
+version = "0.6.0"
+edition = "2024"
+license = "MIT"
+repository = "https://github.com/floegence/redevplugin"
+rust-version = "1.88.0"

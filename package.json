@@ -24,6 +24,7 @@
     "release-metadata:check": "node scripts/check_redevplugin_release_metadata.mjs --source && node scripts/test_redevplugin_release_metadata.mjs",
     "repository-boundary:test": "node --test scripts/repository_boundary.test.mjs",
     "platform-package-contract:test": "node --test scripts/platform_package_contract.test.mjs",
+    "rust-source-packages:test": "node --test scripts/rust_source_packages.test.mjs",
     "browser-harness:generate": "node scripts/build_browser_harness.mjs",
     "browser-harness:check": "node scripts/build_browser_harness.mjs --check",
     "browser-harness:typecheck": "tsc -p testdata/browser-harness/tsconfig.json --noEmit",
