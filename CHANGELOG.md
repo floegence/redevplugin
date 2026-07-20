@@ -46,6 +46,12 @@
   runtime containment, and terminal acknowledgements. Publish the coordinated
   `session-scope-v1`, `token-ticket-v4`, `rust-ipc-v5`, and `error-codes-v5`
   contracts without exposing owner identity in HTTP DTOs.
+- Make runtime teardown fail-safe for never-started and stopped process shards.
+  Disable, uninstall, and session-scope close now complete durable fencing and
+  token, lease, and surface cleanup with zero runtime counts without preflight,
+  artifact verification, or process startup; non-ready shards must still stop
+  successfully, while active-runtime acknowledgement failures remain durable
+  incomplete outcomes for reconciliation.
 
 ## v0.5.1
 

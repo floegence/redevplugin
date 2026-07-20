@@ -8950,6 +8950,8 @@ type testHostOptions struct {
 	runtimeManager          runtimeclient.Manager
 	runtimeManagerFactory   func(testRuntimeManagerDependencies) (runtimeclient.Manager, error)
 	withoutRuntimeManager   bool
+	sessionLifecycle        SessionLifecycleAdapter
+	sessionScopePath        string
 	secrets                 SecretStoreAdapter
 	audit                   AuditSink
 	diagnostics             DiagnosticsSink
@@ -9131,9 +9133,13 @@ func newTestHostWithOptions(t *testing.T, opts testHostOptions) (*Host, *surface
 		runtimeModule = &RuntimeModule{Manager: runtimeManager}
 	}
 	securityJournal := observability.NewMemorySecurityAuditJournal()
+	sessionScopePath := opts.sessionScopePath
+	if sessionScopePath == "" {
+		sessionScopePath = filepath.Join(t.TempDir(), "session-scopes.sqlite")
+	}
 	sessionScopeStore, err := sessionscope.NewSQLiteStore(
 		hostTestContext(),
-		filepath.Join(t.TempDir(), "session-scopes.sqlite"),
+		sessionScopePath,
 		sessionscope.StoreOptions{},
 	)
 	if err != nil {
@@ -9143,6 +9149,10 @@ func newTestHostWithOptions(t *testing.T, opts testHostOptions) (*Host, *surface
 	sessionScopes, err := sessionscope.NewCoordinator(sessionScopeStore)
 	if err != nil {
 		t.Fatal(err)
+	}
+	sessionLifecycle := opts.sessionLifecycle
+	if sessionLifecycle == nil {
+		sessionLifecycle = &testSessionLifecycleAdapter{}
 	}
 	host, err := Open(hostTestContext(), Config{
 		Core: CoreAdapters{
@@ -9165,7 +9175,7 @@ func newTestHostWithOptions(t *testing.T, opts testHostOptions) (*Host, *surface
 			Operations:           operationStore,
 			Streams:              streamStore,
 			SurfaceTokens:        surfaceTokens,
-			SessionLifecycle:     &testSessionLifecycleAdapter{},
+			SessionLifecycle:     sessionLifecycle,
 			SessionScopes:        sessionScopes,
 		},
 		Release: &ReleaseModule{

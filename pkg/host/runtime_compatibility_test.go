@@ -88,6 +88,82 @@ func TestUIOnlyDisableDoesNotRevokeRuntime(t *testing.T) {
 	}
 }
 
+func TestWorkerFailSafeLifecycleDoesNotRestartStoppedRuntime(t *testing.T) {
+	for _, action := range []string{"disable", "uninstall"} {
+		t.Run(action, func(t *testing.T) {
+			installManager := newRecordingRuntimeManager()
+			h, _, _ := newTestHostWithOptions(t, testHostOptions{
+				developerMode:  true,
+				localGenerated: true,
+				runtimeManager: installManager,
+			})
+			enabled, gateway := installEnableAndMintGateway(t, h, buildWorkerFixturePackage(t), "worker.view")
+			preflightCalls := installManager.preflightCalls
+			startCalls := installManager.startCalls
+			h.adapters.RuntimeManager = newNeverStartedProcessManagerForHost(t, h)
+
+			var err error
+			switch action {
+			case "disable":
+				_, err = h.DisablePlugin(hostTestContext(), DisableRequest{
+					PluginInstanceID: enabled.PluginInstanceID, ExpectedManagementRevision: enabled.ManagementRevision,
+				})
+			case "uninstall":
+				_, err = h.UninstallPlugin(hostTestContext(), UninstallRequest{
+					PluginInstanceID: enabled.PluginInstanceID, ExpectedManagementRevision: enabled.ManagementRevision, DeleteData: true,
+				})
+			}
+			if err != nil {
+				t.Fatalf("%s stopped worker runtime: %v", action, err)
+			}
+			if installManager.preflightCalls != preflightCalls || installManager.startCalls != startCalls {
+				t.Fatalf("runtime installation manager was reused after %s: preflight=%d start=%d", action, installManager.preflightCalls, installManager.startCalls)
+			}
+			if _, err := h.surfaceTokens.ValidateGatewayToken(gateway.GatewayToken, bridge.Audience{
+				PluginInstanceID:     enabled.PluginInstanceID,
+				ActiveFingerprint:    enabled.ActiveFingerprint,
+				SurfaceInstanceID:    "surface_rpc",
+				OwnerSessionHash:     "session_hash",
+				OwnerUserHash:        "user_hash",
+				SessionChannelIDHash: "channel_hash",
+				BridgeChannelID:      "bridge_rpc",
+			}, bridge.RevisionBinding{
+				PolicyRevision: enabled.PolicyRevision, ManagementRevision: enabled.ManagementRevision, RevokeEpoch: enabled.RevokeEpoch,
+			}, time.Now().UTC()); !errors.Is(err, bridge.ErrTokenRevoked) {
+				t.Fatalf("ValidateGatewayToken() after %s error = %v, want %v", action, err, bridge.ErrTokenRevoked)
+			}
+		})
+	}
+}
+
+func newNeverStartedProcessManager(t *testing.T) *runtimeclient.ProcessManager {
+	t.Helper()
+	manager, err := runtimeclient.NewProcessManager(runtimeclient.ProcessManagerOptions{
+		ShardCount: 1,
+		Supervisor: runtimeclient.ProcessSupervisorOptions{
+			RuntimePath:           filepath.Join(t.TempDir(), "missing-redevplugin-runtime"),
+			Descriptor:            hostTestRuntimeDescriptor(),
+			Limits:                runtimeclient.DefaultRuntimeLimits(),
+			HandshakeTimeout:      5 * time.Second,
+			HeartbeatInterval:     2 * time.Second,
+			MaxHeartbeatStaleness: 5 * time.Second,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return manager
+}
+
+func newNeverStartedProcessManagerForHost(t *testing.T, h *Host) *runtimeclient.ProcessManager {
+	t.Helper()
+	manager := newNeverStartedProcessManager(t)
+	if err := manager.BindHostServices(runtimeclient.RuntimeHostServices{StreamSink: hostRuntimeStreamSink{executions: h.executions}}); err != nil {
+		t.Fatal(err)
+	}
+	return manager
+}
+
 func TestWorkerInstallRejectsMissingRuntimeBeforeMutation(t *testing.T) {
 	h, _, _ := newTestHostWithOptions(t, testHostOptions{
 		developerMode:         true,

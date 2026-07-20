@@ -86,7 +86,12 @@ type Manager interface {
 	Health(ctx context.Context) (ManagerHealth, error)
 	BindPlugin(ctx context.Context, pluginInstanceID string) (RuntimeBinding, error)
 	InvokeWorker(ctx context.Context, binding RuntimeBinding, lease Lease, method string, payload []byte) ([]byte, error)
+	// Revoke never starts or preflights a shard. A non-ready shard is stopped
+	// idempotently and contributes zero closed-resource counts.
 	Revoke(ctx context.Context, req RevokeRequest) (RevokeResult, error)
+	// RevokeSession never starts or preflights shards. Non-ready shards are
+	// stopped idempotently, omitted from terminal acknowledgements, and
+	// contribute zero counts to the complete aggregate result.
 	RevokeSession(ctx context.Context, req SessionRevokeRequest) (SessionRevokeResult, error)
 }
 
@@ -442,10 +447,11 @@ func (m *ProcessManager) RevokeSession(ctx context.Context, req SessionRevokeReq
 	}
 
 	type shardOutcome struct {
-		index  int
-		health Health
-		result SessionRevokeShardResult
-		err    error
+		index   int
+		health  Health
+		result  SessionRevokeShardResult
+		stopped bool
+		err     error
 	}
 	outcomes := make(chan shardOutcome, len(shards))
 	for index, shard := range shards {
@@ -453,6 +459,17 @@ func (m *ProcessManager) RevokeSession(ctx context.Context, req SessionRevokeReq
 			health, err := shard.process.Health(ctx)
 			if err == nil {
 				err = validateReadyHealth(health)
+				if errors.Is(err, ErrRuntimeNotReady) {
+					stopCtx, cancel := sessionRevokeStopContext(ctx)
+					stopErr := shard.process.Stop(stopCtx)
+					cancel()
+					if stopErr != nil {
+						err = fmt.Errorf("terminate non-ready runtime shard %s: %w", shard.id, stopErr)
+					} else {
+						outcomes <- shardOutcome{index: index, health: health, stopped: true}
+						return
+					}
+				}
 			}
 			var result SessionRevokeShardResult
 			if err == nil {
@@ -469,6 +486,8 @@ func (m *ProcessManager) RevokeSession(ctx context.Context, req SessionRevokeReq
 	}
 
 	ordered := make([]SessionRevokeShardResult, len(shards))
+	included := make([]bool, len(shards))
+	runtimeStopped := false
 	var revokeErr error
 	for received := 0; received < len(shards); received++ {
 		select {
@@ -477,7 +496,12 @@ func (m *ProcessManager) RevokeSession(ctx context.Context, req SessionRevokeReq
 				revokeErr = errors.Join(revokeErr, fmt.Errorf("revoke session on runtime shard %s: %w", shards[outcome.index].id, outcome.err))
 				continue
 			}
+			if outcome.stopped {
+				runtimeStopped = true
+				continue
+			}
 			ordered[outcome.index] = outcome.result
+			included[outcome.index] = true
 		case <-ctx.Done():
 			revokeErr = errors.Join(revokeErr, ctx.Err())
 			received = len(shards)
@@ -501,9 +525,14 @@ func (m *ProcessManager) RevokeSession(ctx context.Context, req SessionRevokeReq
 	result := SessionRevokeResult{
 		SessionScope:          req.SessionScope,
 		SessionRevokeSequence: req.SessionRevokeSequence,
-		Shards:                ordered,
+		Shards:                make([]SessionRevokeShardResult, 0, len(shards)),
+		RuntimeStopped:        runtimeStopped,
 	}
-	for _, shard := range ordered {
+	for index, shard := range ordered {
+		if !included[index] {
+			continue
+		}
+		result.Shards = append(result.Shards, shard)
 		var err error
 		result.Counts, err = addSessionRevokeCounts(result.Counts, shard.Counts)
 		if err != nil {

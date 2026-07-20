@@ -3,6 +3,7 @@ package host
 import (
 	"context"
 	"errors"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -187,6 +188,68 @@ func TestRevokeSessionScopeWaitsForRuntimeTerminalAckAndPersistsCounts(t *testin
 	}
 	if result.Counts.StorageHostcalls != 3 || result.Counts.ActiveNetworkRequests != 5 || result.Counts.Sockets != 7 || result.Counts.NetworkStreams != 11 {
 		t.Fatalf("RevokeSessionScope() runtime counts = %#v", result.Counts)
+	}
+}
+
+func TestRevokeSessionScopeCompletesWithStoppedRuntimeWithoutRestart(t *testing.T) {
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{developerMode: true, localGenerated: true})
+	adapter := &recordingSessionLifecycleAdapter{}
+	h.adapters.SessionLifecycle = adapter
+	h.adapters.RuntimeManager = newNeverStartedProcessManagerForHost(t, h)
+
+	result, err := h.RevokeSessionScope(hostTestContext(), RevokeSessionScopeRequest{Now: time.Now().UTC()})
+	if err != nil {
+		t.Fatalf("RevokeSessionScope() error = %v", err)
+	}
+	if result.State != sessionscope.StateComplete || !result.Fenced || !result.Complete || result.Counts != (sessionscope.Counts{}) {
+		t.Fatalf("RevokeSessionScope() result = %#v, want complete zero-count teardown", result)
+	}
+}
+
+func TestRevokeSessionScopeResumesDurableIncompleteTeardownAfterReopenWithoutRuntimeArtifact(t *testing.T) {
+	sessionScopePath := filepath.Join(t.TempDir(), "session-scopes.sqlite")
+	lifecycle := &recordingSessionLifecycleAdapter{}
+	failingRuntime := newRecordingRuntimeManager()
+	failingRuntime.sessionRevokeErr = errors.New("terminal runtime acknowledgement lost")
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{
+		developerMode: true, localGenerated: true, runtimeManager: failingRuntime,
+		sessionLifecycle: lifecycle, sessionScopePath: sessionScopePath,
+	})
+	session, err := requireUserSession(hostTestContext())
+	if err != nil {
+		t.Fatal(err)
+	}
+	seedHostSessionScopeResources(t, h, session, time.Now().UTC())
+
+	incomplete, err := h.RevokeSessionScope(hostTestContext(), RevokeSessionScopeRequest{Now: time.Now().UTC()})
+	if !errors.Is(err, ErrSessionTeardownIncomplete) || incomplete.State != sessionscope.StateIncomplete {
+		t.Fatalf("first RevokeSessionScope() = %#v, %v", incomplete, err)
+	}
+	if incomplete.Counts.Surfaces != 1 || incomplete.Counts.AssetTickets != 1 || incomplete.Counts.Confirmations != 1 || incomplete.Counts.RuntimeExecutions != 1 {
+		t.Fatalf("durable incomplete counts = %#v", incomplete.Counts)
+	}
+	if err := h.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	reopened, _, _ := newTestHostWithOptions(t, testHostOptions{
+		developerMode: true, localGenerated: true, runtimeManager: newNeverStartedProcessManager(t),
+		sessionLifecycle: lifecycle, sessionScopePath: sessionScopePath,
+	})
+	if len(lifecycle.reconciled) != 1 || lifecycle.reconciled[0].Snapshot.State != sessionscope.StateIncomplete {
+		t.Fatalf("retained scopes after reopen = %#v", lifecycle.reconciled)
+	}
+	complete, err := reopened.RevokeSessionScope(hostTestContext(), RevokeSessionScopeRequest{
+		Identity: lifecycle.identity, Now: time.Now().UTC(),
+	})
+	if err != nil {
+		t.Fatalf("resumed RevokeSessionScope() error = %v", err)
+	}
+	if complete.State != sessionscope.StateComplete || !complete.Fenced || !complete.Complete {
+		t.Fatalf("resumed RevokeSessionScope() = %#v", complete)
+	}
+	if complete.Counts.Surfaces != 1 || complete.Counts.AssetTickets != 1 || complete.Counts.Confirmations != 1 || complete.Counts.RuntimeExecutions != 1 {
+		t.Fatalf("resumed durable counts = %#v", complete.Counts)
 	}
 }
 

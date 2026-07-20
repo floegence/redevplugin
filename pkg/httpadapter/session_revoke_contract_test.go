@@ -4,8 +4,11 @@ import (
 	"bytes"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"testing"
+	"time"
 
+	"github.com/floegence/redevplugin/pkg/runtimeclient"
 	"github.com/floegence/redevplugin/pkg/websecurity"
 )
 
@@ -62,5 +65,45 @@ func TestRetiredSurfaceRevokeRouteIsNotFound(t *testing.T) {
 	handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, want %d body = %s", rec.Code, http.StatusNotFound, rec.Body.String())
+	}
+}
+
+func TestSessionRevokeCompletesWithStoppedRuntimeWithoutRestart(t *testing.T) {
+	runtimeManager := newHTTPRecordingRuntimeManager(t)
+	runtimeManager.health.Ready = false
+	handler := mustNewHandler(t, newHTTPTestHostWithOptions(t, httpTestHostOptions{runtimeManager: runtimeManager}), allowHTTPTestGuard())
+	runtimeManager.preflightCalls = 0
+	runtimeManager.startCalls = 0
+
+	result := postJSON[sessionScopeRevokeResponse](t, handler, "/_redevplugin/api/plugins/session/revoke-scope", map[string]any{})
+	if result.State != "complete" || !result.Fenced || !result.Complete || result.Counts != (sessionScopeRevokeCountsResponse{}) {
+		t.Fatalf("session revoke response = %#v", result)
+	}
+	if runtimeManager.preflightCalls != 0 || runtimeManager.startCalls != 0 || runtimeManager.sessionRevokeCalls != 1 {
+		t.Fatalf("runtime calls: preflight=%d start=%d session_revoke=%d", runtimeManager.preflightCalls, runtimeManager.startCalls, runtimeManager.sessionRevokeCalls)
+	}
+}
+
+func TestSessionRevokeCompletesWhenRuntimeArtifactIsAbsentAndNeverStarted(t *testing.T) {
+	descriptor := newHTTPRecordingRuntimeManager(t).health.Descriptor
+	runtimeManager, err := runtimeclient.NewProcessManager(runtimeclient.ProcessManagerOptions{
+		ShardCount: 1,
+		Supervisor: runtimeclient.ProcessSupervisorOptions{
+			RuntimePath:           filepath.Join(t.TempDir(), "missing-redevplugin-runtime"),
+			Descriptor:            descriptor,
+			Limits:                runtimeclient.DefaultRuntimeLimits(),
+			HandshakeTimeout:      5 * time.Second,
+			HeartbeatInterval:     2 * time.Second,
+			MaxHeartbeatStaleness: 5 * time.Second,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := mustNewHandler(t, newHTTPTestHostWithOptions(t, httpTestHostOptions{runtimeManager: runtimeManager}), allowHTTPTestGuard())
+
+	result := postJSON[sessionScopeRevokeResponse](t, handler, "/_redevplugin/api/plugins/session/revoke-scope", map[string]any{})
+	if result.State != "complete" || !result.Fenced || !result.Complete || result.Counts != (sessionScopeRevokeCountsResponse{}) {
+		t.Fatalf("session revoke response = %#v", result)
 	}
 }

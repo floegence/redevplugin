@@ -3,6 +3,7 @@ package runtimeclient
 import (
 	"context"
 	"errors"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -328,6 +329,44 @@ func TestProcessManagerReturnsRevokeAndTerminationFailures(t *testing.T) {
 	}
 }
 
+func TestProcessManagerRevokeNeverStartedDoesNotAccessRuntimeArtifact(t *testing.T) {
+	manager, err := NewProcessManager(ProcessManagerOptions{
+		ShardCount: 1,
+		Supervisor: ProcessSupervisorOptions{
+			RuntimePath:           filepath.Join(t.TempDir(), "missing-redevplugin-runtime"),
+			Descriptor:            testRuntimeDescriptor(testRuntimeTarget, strings.Repeat("a", 64)),
+			Limits:                DefaultRuntimeLimits(),
+			HandshakeTimeout:      5 * time.Second,
+			HeartbeatInterval:     2 * time.Second,
+			MaxHeartbeatStaleness: 5 * time.Second,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.BindHostServices(RuntimeHostServices{StreamSink: &recordingRuntimeStreamSink{}}); err != nil {
+		t.Fatal(err)
+	}
+
+	revokeResult, err := manager.Revoke(context.Background(), testRevokeRequest("plugini_never_started", 4))
+	if err != nil {
+		t.Fatalf("Revoke() error = %v", err)
+	}
+	if !revokeResult.RuntimeStopped || revokeResult.ClosedSocketCount != 0 || revokeResult.ClosedStreamCount != 0 || revokeResult.ClosedStorageHandleCount != 0 {
+		t.Fatalf("Revoke() result = %#v, want stopped zero-count result", revokeResult)
+	}
+
+	sessionRequest := SessionRevokeRequest{SessionScope: testManagerSessionScope(), SessionRevokeSequence: 11}
+	sessionResult, err := manager.RevokeSession(context.Background(), sessionRequest)
+	if err != nil {
+		t.Fatalf("RevokeSession() error = %v", err)
+	}
+	if sessionResult.SessionScope != sessionRequest.SessionScope || sessionResult.SessionRevokeSequence != sessionRequest.SessionRevokeSequence ||
+		!sessionResult.RuntimeStopped || len(sessionResult.Shards) != 0 || sessionResult.Counts != (SessionRevokeCounts{}) {
+		t.Fatalf("RevokeSession() result = %#v, want stopped zero-count result", sessionResult)
+	}
+}
+
 func TestProcessManagerRejectsNonEnvironmentRevokeScopeBeforeShardAccess(t *testing.T) {
 	shard := &fakeProcessShard{health: testShardHealth("a")}
 	manager := testProcessManager(t, []*fakeProcessShard{shard})
@@ -378,6 +417,89 @@ func TestProcessManagerRevokesSessionOnEveryShardAndAggregatesTerminalCounts(t *
 		if shard.sessionRevokeCalls.Load() != 1 {
 			t.Fatalf("shard %d session revoke calls = %d, want 1", index, shard.sessionRevokeCalls.Load())
 		}
+	}
+}
+
+func TestProcessManagerRevokeSessionStopsNonReadyShardsAndCompletes(t *testing.T) {
+	shards := []*fakeProcessShard{{health: testShardHealth("a")}, {health: testShardHealth("b")}}
+	manager := testProcessManager(t, shards)
+	if _, err := manager.Start(context.Background(), testRuntimeTarget); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.Stop(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	for _, shard := range shards {
+		shard.stopCalls.Store(0)
+	}
+
+	req := SessionRevokeRequest{SessionScope: testManagerSessionScope(), SessionRevokeSequence: 10}
+	result, err := manager.RevokeSession(context.Background(), req)
+	if err != nil {
+		t.Fatalf("RevokeSession() error = %v", err)
+	}
+	if result.SessionScope != req.SessionScope || result.SessionRevokeSequence != req.SessionRevokeSequence ||
+		!result.RuntimeStopped || len(result.Shards) != 0 || result.Counts != (SessionRevokeCounts{}) {
+		t.Fatalf("RevokeSession() result = %#v, want stopped zero-count result", result)
+	}
+	for index, shard := range shards {
+		if shard.sessionRevokeCalls.Load() != 0 || shard.stopCalls.Load() != 1 {
+			t.Fatalf("shard %d calls: revoke=%d stop=%d, want revoke=0 stop=1", index, shard.sessionRevokeCalls.Load(), shard.stopCalls.Load())
+		}
+	}
+}
+
+func TestProcessManagerRevokeSessionAggregatesReadyShardsAndStopsNonReadyShards(t *testing.T) {
+	shards := []*fakeProcessShard{
+		{health: testShardHealth("a"), sessionRevokeResult: SessionRevokeShardResult{
+			RuntimeGenerationID: "generation_a", State: SessionRevokeStateComplete,
+			Counts: SessionRevokeCounts{RunningInvocations: 2, Sockets: 3},
+		}},
+		{health: testShardHealth("b")},
+	}
+	manager := testProcessManager(t, shards)
+	if _, err := manager.Start(context.Background(), testRuntimeTarget); err != nil {
+		t.Fatal(err)
+	}
+	shards[1].mu.Lock()
+	shards[1].health.Ready = false
+	shards[1].mu.Unlock()
+
+	req := SessionRevokeRequest{SessionScope: testManagerSessionScope(), SessionRevokeSequence: 12}
+	result, err := manager.RevokeSession(context.Background(), req)
+	if err != nil {
+		t.Fatalf("RevokeSession() error = %v", err)
+	}
+	if !result.RuntimeStopped || len(result.Shards) != 1 || result.Shards[0].RuntimeShardID != "runtime_shard_00" ||
+		result.Counts != (SessionRevokeCounts{RunningInvocations: 2, Sockets: 3}) {
+		t.Fatalf("RevokeSession() result = %#v", result)
+	}
+	if shards[0].sessionRevokeCalls.Load() != 1 || shards[0].stopCalls.Load() != 0 ||
+		shards[1].sessionRevokeCalls.Load() != 0 || shards[1].stopCalls.Load() != 1 {
+		t.Fatalf(
+			"shard calls: ready revoke=%d stop=%d, non-ready revoke=%d stop=%d",
+			shards[0].sessionRevokeCalls.Load(), shards[0].stopCalls.Load(),
+			shards[1].sessionRevokeCalls.Load(), shards[1].stopCalls.Load(),
+		)
+	}
+}
+
+func TestProcessManagerRevokeSessionRejectsNonReadyShardStopFailure(t *testing.T) {
+	stopFailure := errors.New("non-ready runtime termination failed")
+	shard := &fakeProcessShard{health: testShardHealth("a"), stopErr: stopFailure}
+	manager := testProcessManager(t, []*fakeProcessShard{shard})
+
+	result, err := manager.RevokeSession(context.Background(), SessionRevokeRequest{
+		SessionScope: testManagerSessionScope(), SessionRevokeSequence: 13,
+	})
+	if !errors.Is(err, stopFailure) {
+		t.Fatalf("RevokeSession() error = %v, want %v", err, stopFailure)
+	}
+	if result.RuntimeStopped {
+		t.Fatalf("RevokeSession() result = %#v, termination was not acknowledged", result)
+	}
+	if shard.sessionRevokeCalls.Load() != 0 || shard.stopCalls.Load() < 1 {
+		t.Fatalf("shard calls: revoke=%d stop=%d", shard.sessionRevokeCalls.Load(), shard.stopCalls.Load())
 	}
 }
 

@@ -1489,6 +1489,35 @@ func TestHandlerManagementLifecycleFlow(t *testing.T) {
 	}
 }
 
+func TestHandlerWorkerFailSafeLifecycleDoesNotRestartStoppedRuntime(t *testing.T) {
+	for _, action := range []string{"disable", "uninstall"} {
+		t.Run(action, func(t *testing.T) {
+			runtimeManager := newHTTPRecordingRuntimeManager(t)
+			handler := mustNewHandler(t, newHTTPTestHostWithOptions(t, httpTestHostOptions{runtimeManager: runtimeManager}), allowHTTPTestGuard())
+			installed := postLocalImport[registry.PluginRecord](t, handler, nextHTTPTestPluginInstanceID(t), buildHTTPWorkerFixturePackage(t))
+			enabled := postJSON[registry.PluginRecord](t, handler, "/_redevplugin/api/plugins/enable", map[string]any{
+				"plugin_instance_id": installed.PluginInstanceID, "expected_management_revision": installed.ManagementRevision,
+			})
+			runtimeManager.health.Ready = false
+			runtimeManager.preflightCalls = 0
+			runtimeManager.startCalls = 0
+
+			request := map[string]any{
+				"plugin_instance_id": enabled.PluginInstanceID, "expected_management_revision": enabled.ManagementRevision,
+			}
+			if action == "disable" {
+				postJSON[registry.PluginRecord](t, handler, "/_redevplugin/api/plugins/disable", request)
+			} else {
+				request["delete_data"] = true
+				postJSON[registry.PluginRecord](t, handler, "/_redevplugin/api/plugins/uninstall", request)
+			}
+			if runtimeManager.preflightCalls != 0 || runtimeManager.startCalls != 0 || runtimeManager.revokeCalls != 1 {
+				t.Fatalf("runtime calls after %s: preflight=%d start=%d revoke=%d", action, runtimeManager.preflightCalls, runtimeManager.startCalls, runtimeManager.revokeCalls)
+			}
+		})
+	}
+}
+
 func TestHandlerReportsUnknownMutationOutcomeAfterCommit(t *testing.T) {
 	h := newHTTPTestHostWithOptions(t, httpTestHostOptions{surfaceCatalog: httpFailingSurfaceCatalogSink{}})
 	handler := mustNewHandler(t, h, allowHTTPTestGuard())
@@ -6012,13 +6041,17 @@ type httpRecordingSecretStore struct {
 }
 
 type httpRecordingRuntimeManager struct {
-	health        runtimeclient.Health
-	startedTarget runtimetarget.Target
-	stopCalls     int
-	startErr      error
-	stopErr       error
-	err           error
-	hostServices  runtimeclient.RuntimeHostServices
+	health             runtimeclient.Health
+	startedTarget      runtimetarget.Target
+	preflightCalls     int
+	startCalls         int
+	stopCalls          int
+	revokeCalls        int
+	sessionRevokeCalls int
+	startErr           error
+	stopErr            error
+	err                error
+	hostServices       runtimeclient.RuntimeHostServices
 }
 
 func newHTTPRecordingRuntimeManager(t testing.TB) *httpRecordingRuntimeManager {
@@ -6342,6 +6375,7 @@ func (s *httpRecordingSecretStore) DeletePlugin(_ context.Context, pluginInstanc
 }
 
 func (s *httpRecordingRuntimeManager) Preflight(ctx context.Context, target runtimetarget.Target) (runtimeclient.RuntimeDescriptor, error) {
+	s.preflightCalls++
 	if err := ctx.Err(); err != nil {
 		return runtimeclient.RuntimeDescriptor{}, err
 	}
@@ -6356,6 +6390,7 @@ func (s *httpRecordingRuntimeManager) Preflight(ctx context.Context, target runt
 }
 
 func (s *httpRecordingRuntimeManager) Start(ctx context.Context, target runtimetarget.Target) (runtimeclient.ManagerHealth, error) {
+	s.startCalls++
 	s.startedTarget = target
 	if _, err := s.Preflight(ctx, target); err != nil {
 		return runtimeclient.ManagerHealth{}, err
@@ -6411,6 +6446,7 @@ func (s *httpRecordingRuntimeManager) InvokeWorker(context.Context, runtimeclien
 }
 
 func (s *httpRecordingRuntimeManager) Revoke(_ context.Context, req runtimeclient.RevokeRequest) (runtimeclient.RevokeResult, error) {
+	s.revokeCalls++
 	if s.err != nil {
 		return runtimeclient.RevokeResult{}, s.err
 	}
@@ -6422,6 +6458,7 @@ func (s *httpRecordingRuntimeManager) Revoke(_ context.Context, req runtimeclien
 }
 
 func (s *httpRecordingRuntimeManager) RevokeSession(_ context.Context, req runtimeclient.SessionRevokeRequest) (runtimeclient.SessionRevokeResult, error) {
+	s.sessionRevokeCalls++
 	if s.err != nil {
 		return runtimeclient.SessionRevokeResult{}, s.err
 	}

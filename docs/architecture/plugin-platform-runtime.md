@@ -229,6 +229,16 @@ leases, and Host stream-store bridge stream IDs. A
 revoke epoch removes the matching plugin resources from that registry and
 reports the actual close counts.
 
+Runtime teardown is fail-safe and never performs preflight, artifact
+verification, or process startup. Plugin and session revocation treat a
+never-started or already stopped shard as a zero-count terminal result after an
+idempotent stop succeeds. Session aggregates omit stopped shards because no IPC
+acknowledgement exists for them and set `RuntimeStopped`; a stop failure remains
+an error so Host session fencing stays durably incomplete until reconciliation.
+This keeps disable, uninstall, and session close usable when the configured
+runtime artifact is absent without weakening active-runtime acknowledgement
+checks.
+
 The runtime contract is versioned by:
 
 - `plugin_host_protocol_version`;
