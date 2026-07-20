@@ -1,0 +1,70 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.redevplugin.dev/plugin/release-revocation-pointer-v1.schema.json",
+  "title": "ReDevPlugin release revocation pointer v1",
+  "$ref": "#/$defs/pointer",
+  "$defs": {
+    "pointer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "source_id",
+        "channel",
+        "epoch",
+        "previous_epoch",
+        "previous_document_sha256",
+        "ref",
+        "document_sha256",
+        "generated_at",
+        "expires_at",
+        "key_id",
+        "signature"
+      ],
+      "properties": {
+        "schema_version": { "const": "redevplugin.release_revocation_pointer.v1" },
+        "source_id": { "$ref": "#/$defs/id" },
+        "channel": { "$ref": "#/$defs/id" },
+        "epoch": { "$ref": "#/$defs/positive_epoch" },
+        "previous_epoch": { "$ref": "#/$defs/epoch" },
+        "previous_document_sha256": { "$ref": "#/$defs/sha256" },
+        "ref": { "$ref": "#/$defs/artifact_ref" },
+        "document_sha256": { "$ref": "#/$defs/sha256" },
+        "generated_at": { "$ref": "#/$defs/canonical_time" },
+        "expires_at": { "$ref": "#/$defs/canonical_time" },
+        "key_id": { "$ref": "#/$defs/id" },
+        "signature": { "$ref": "#/$defs/signature" }
+      }
+    },
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[a-z][a-z0-9._-]*$"
+    },
+    "artifact_ref": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 1024,
+      "pattern": "^[A-Za-z0-9._@+-]+(?:/[A-Za-z0-9._@+-]+)*$",
+      "not": {
+        "anyOf": [
+          { "pattern": "^/" },
+          { "pattern": "(^|/)\\.(/|$)" },
+          { "pattern": "(^|/)\\.\\.(/|$)" },
+          { "pattern": "\\\\" },
+          { "pattern": "[?#]" }
+        ]
+      }
+    },
+    "epoch": { "type": "string", "pattern": "^(0|[1-9][0-9]*)$" },
+    "positive_epoch": { "type": "string", "pattern": "^[1-9][0-9]*$" },
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "canonical_time": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"
+    },
+    "signature": { "type": "string", "pattern": "^[A-Za-z0-9+/]{86}==$" }
+  }
+}

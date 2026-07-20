@@ -37,6 +37,14 @@ capabilities.
   and aggregate digest. It is not yet returned by the active compatibility-v7
   Host API, and importing ordinary Host or UI entrypoints does not link or load
   the raw schema bodies.
+- The staged contract libraries also expose canonical release-signing DTOs and
+  build, preimage, strict-decode, and verifier APIs for root delegation,
+  packages, release metadata, source policy and its pointer, and revocation and
+  its pointer. The seven signing usages are domain separated, timestamps are
+  explicit inputs, and pointer genesis is fixed to epoch `0` plus the all-zero
+  SHA-256 sentinel. These APIs live in `pkg/releasecontract` and the opt-in
+  contracts packages; the active `pkg/trust` and compatibility-v7 integration
+  remain transitional until v8 activation.
 - Host-neutral Go package boundaries for manifest validation, package IO,
   registry, host adapters, bridge, PluginData, runtime supervision, grants,
   capability adapters, HTTP routes, session context, and web security.

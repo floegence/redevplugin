@@ -80,6 +80,7 @@ test("Rust source package metadata matches the closed platform topology", () => 
 
 test("crate-local fixtures remain exact copies of their canonical repository inputs", () => {
   for (const [canonical, local] of [
+    ["testdata/contracts/release-signing-v1.json", "crates/redevplugin-contracts/tests/fixtures/release-signing-v1.json"],
     ["testdata/contracts/runtime-lease-signature-v1.json", "crates/redevplugin-ipc/testdata/runtime-lease-signature-v1.json"],
     ["testdata/contracts/runtime-lease-signature-v1-invocation.json", "crates/redevplugin-ipc/testdata/runtime-lease-signature-v1-invocation.json"],
     ["testdata/contracts/ipc/missing_required.json", "crates/redevplugin-ipc/testdata/ipc/missing_required.json"],

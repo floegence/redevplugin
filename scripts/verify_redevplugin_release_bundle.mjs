@@ -581,10 +581,13 @@ function verifyContractsNpmTarball(bundleDir, contractsPath, expectedVersion, tm
     .sort();
   assertDeepEqual(entries, [
     "package/LICENSE",
+    "package/README.md",
     "package/dist/contracts.gen.d.ts",
     "package/dist/contracts.gen.js",
     "package/dist/index.d.ts",
     "package/dist/index.js",
+    "package/dist/release-signing.d.ts",
+    "package/dist/release-signing.js",
     "package/package.json",
   ], "contracts npm tarball files");
   const extractionRoot = join(tmp, "contracts");
@@ -595,6 +598,7 @@ function verifyContractsNpmTarball(bundleDir, contractsPath, expectedVersion, tm
   assertExactKeys(pkg, [
     "name",
     "version",
+    "description",
     "license",
     "type",
     "repository",
@@ -616,6 +620,7 @@ function verifyContractsNpmTarball(bundleDir, contractsPath, expectedVersion, tm
   }
   assertFile(join(packageRoot, "LICENSE"), "contracts npm package LICENSE");
   assertEqual(readFileSync(join(packageRoot, "LICENSE"), "utf8"), readFileSync(join(bundleDir, "LICENSE"), "utf8"), "contracts npm package LICENSE content");
+  assertFile(join(packageRoot, "README.md"), "contracts npm package README");
 }
 
 function verifyPackedTypeScriptConsumer(bundleDir, contractsPath, npmPath, tmp, expectedVersion) {

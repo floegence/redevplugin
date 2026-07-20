@@ -25,6 +25,7 @@ try {
   mkdirSync(packageDir, { recursive: true });
   cpSync(join(sourceDir, "dist"), join(packageDir, "dist"), { recursive: true });
   cpSync(join(rootDir, "LICENSE"), join(packageDir, "LICENSE"));
+  cpSync(join(sourceDir, "README.md"), join(packageDir, "README.md"));
   const packageJSON = JSON.parse(readFileSync(join(sourceDir, "package.json"), "utf8"));
   packageJSON.version = rawVersion;
   const packageJSONPath = join(packageDir, "package.json");

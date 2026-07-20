@@ -124,22 +124,37 @@ test("contract registry v2 is closed, sorted, cycle-free, and content addressed"
   const registry = decodeContractRegistry(registryBytes);
   const activeRegistry = readJSON("spec/plugin/contract-registry-v1.json");
   const expectedIDs = activeRegistry.contracts
-    .filter(({ id }) => id !== "contract-registry" && id !== "release-manifest-schema")
+    .filter(({ id }) => ![
+      "contract-registry",
+      "release-manifest-schema",
+      "source-policy-schema",
+      "source-revocations-schema",
+    ].includes(id))
     .map(({ id }) => id)
     .concat([
       "contract-registry-schema",
       "platform-package-publication-schema",
       "platform-package-set-schema",
+      "release-revocation-pointer-schema",
+      "release-revocation-schema",
+      "release-root-delegation-schema",
+      "release-source-policy-pointer-schema",
+      "release-source-policy-schema",
     ])
     .sort(compareASCII);
 
   assert.equal(registryBytes.toString("utf8"), `${JSON.stringify(registry, null, 2)}\n`);
   assert.deepEqual(registry.artifacts.map(({ id }) => id), expectedIDs);
-  assert.equal(registry.artifacts.length, 30);
+  assert.equal(registry.artifacts.length, 33);
   assert.equal(registry.artifacts.some(({ id }) => id === "release-manifest-schema"), false);
   assert.equal(registry.artifacts.some(({ id }) => id === "release-metadata-schema"), true);
-  assert.equal(registry.artifacts.some(({ id }) => id === "source-policy-schema"), true);
-  assert.equal(registry.artifacts.some(({ id }) => id === "source-revocations-schema"), true);
+  assert.equal(registry.artifacts.some(({ id }) => id === "source-policy-schema"), false);
+  assert.equal(registry.artifacts.some(({ id }) => id === "source-revocations-schema"), false);
+  assert.equal(registry.artifacts.some(({ id }) => id === "release-root-delegation-schema"), true);
+  assert.equal(registry.artifacts.some(({ id }) => id === "release-source-policy-schema"), true);
+  assert.equal(registry.artifacts.some(({ id }) => id === "release-source-policy-pointer-schema"), true);
+  assert.equal(registry.artifacts.some(({ id }) => id === "release-revocation-schema"), true);
+  assert.equal(registry.artifacts.some(({ id }) => id === "release-revocation-pointer-schema"), true);
   assert.equal(registry.artifacts.some(({ id }) => id === "contract-registry"), false);
   assert.equal(registry.artifacts.some(({ path }) => path === "spec/plugin/contract-registry-v2.json"), false);
   assert.equal(registry.artifacts.some(({ path }) => path === "spec/plugin/platform-package-set-v1.json"), false);

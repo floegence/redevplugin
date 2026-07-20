@@ -266,6 +266,34 @@ func TestReadRejectsSignatureHashMismatch(t *testing.T) {
 	}
 }
 
+func TestParsePackageSignatureRejectsTrailingJSONDocument(t *testing.T) {
+	dir := writeFixturePackageDir(t)
+	var built bytes.Buffer
+	pkg, err := BuildFromDir(context.Background(), dir, &built, DefaultReadLimits())
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := json.Marshal(PackageSignature{
+		SchemaVersion: PackageSignatureSchemaVersion,
+		Algorithm:     PackageSignatureAlgorithmEd25519,
+		KeyID:         "test-key",
+		PublisherID:   pkg.Manifest.Publisher.PublisherID,
+		PluginID:      pkg.Manifest.PluginID(),
+		PackageHash:   pkg.PackageHash,
+		ManifestHash:  pkg.ManifestHash,
+		EntriesHash:   pkg.EntriesHash,
+		Signature:     "test-signature",
+		SignedAt:      "2026-07-20T00:00:00Z",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw = append(raw, []byte(` true`)...)
+	if _, err := parsePackageSignature(map[string][]byte{PackageSignaturePath: raw}, pkg.Manifest, pkg.ManifestHash, pkg.EntriesHash, pkg.PackageHash); err == nil {
+		t.Fatal("parsePackageSignature() accepted a trailing JSON document")
+	}
+}
+
 func TestBuildRejectsSignatureIdentityMismatch(t *testing.T) {
 	dir := writeFixturePackageDir(t)
 	var before bytes.Buffer

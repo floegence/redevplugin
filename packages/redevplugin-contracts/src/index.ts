@@ -6,6 +6,8 @@ import {
   generatedRegistryContract,
 } from "./contracts.gen.js";
 
+export * from "./release-signing.js";
+
 export type ContractID =
   | (typeof generatedContractArtifacts)[number]["id"]
   | typeof generatedRegistryContract.id;

@@ -24,7 +24,7 @@ func TestContractInventoryIncludesSyntheticRegistry(t *testing.T) {
 		t.Fatalf("registry identity = %#v", registry)
 	}
 	artifacts := contracts.Artifacts()
-	if len(artifacts) != 30 || len(registry.Artifacts) != len(artifacts) {
+	if len(artifacts) != 33 || len(registry.Artifacts) != len(artifacts) {
 		t.Fatalf("artifact counts = %d/%d, want 30", len(artifacts), len(registry.Artifacts))
 	}
 	for _, artifact := range artifacts {

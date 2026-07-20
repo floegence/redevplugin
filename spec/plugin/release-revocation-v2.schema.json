@@ -1,0 +1,91 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.redevplugin.dev/plugin/release-revocation-v2.schema.json",
+  "title": "ReDevPlugin release revocation v2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "source_id",
+    "channel",
+    "epoch",
+    "previous_epoch",
+    "previous_document_sha256",
+    "root_epoch",
+    "generated_at",
+    "expires_at",
+    "revoked_key_ids",
+    "revoked_releases",
+    "key_id",
+    "signature"
+  ],
+  "properties": {
+    "schema_version": { "const": "redevplugin.release_revocation.v2" },
+    "source_id": { "$ref": "#/$defs/id" },
+    "channel": { "$ref": "#/$defs/id" },
+    "epoch": { "$ref": "#/$defs/positive_epoch" },
+    "previous_epoch": { "$ref": "#/$defs/epoch" },
+    "previous_document_sha256": { "$ref": "#/$defs/sha256" },
+    "root_epoch": { "$ref": "#/$defs/positive_epoch" },
+    "generated_at": { "$ref": "#/$defs/canonical_time" },
+    "expires_at": { "$ref": "#/$defs/canonical_time" },
+    "revoked_key_ids": {
+      "type": "array",
+      "maxItems": 4096,
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/id" }
+    },
+    "revoked_releases": {
+      "type": "array",
+      "maxItems": 16384,
+      "items": { "$ref": "#/$defs/revoked_release" }
+    },
+    "key_id": { "$ref": "#/$defs/id" },
+    "signature": { "$ref": "#/$defs/signature" }
+  },
+  "$defs": {
+    "revoked_release": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "publisher_id",
+        "plugin_id",
+        "version",
+        "release_metadata_sha256",
+        "revoked_at"
+      ],
+      "properties": {
+        "publisher_id": { "$ref": "#/$defs/legacy_id" },
+        "plugin_id": { "$ref": "#/$defs/legacy_id" },
+        "version": { "$ref": "#/$defs/semver" },
+        "release_metadata_sha256": { "$ref": "#/$defs/sha256" },
+        "revoked_at": { "$ref": "#/$defs/canonical_time" }
+      }
+    },
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[a-z][a-z0-9._-]*$"
+    },
+    "legacy_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$"
+    },
+    "epoch": { "type": "string", "pattern": "^(0|[1-9][0-9]*)$" },
+    "positive_epoch": { "type": "string", "pattern": "^[1-9][0-9]*$" },
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "canonical_time": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"
+    },
+    "semver": {
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(?:-(?:(?:0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))*))?(?:\\+[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?$"
+    },
+    "signature": { "type": "string", "pattern": "^[A-Za-z0-9+/]{86}==$" }
+  }
+}

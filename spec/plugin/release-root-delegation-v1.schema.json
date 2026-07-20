@@ -1,0 +1,97 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.redevplugin.dev/plugin/release-root-delegation-v1.schema.json",
+  "title": "ReDevPlugin release root delegation v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "source_id",
+    "root_epoch",
+    "previous_root_epoch",
+    "previous_delegation_sha256",
+    "generated_at",
+    "expires_at",
+    "delegated_keys",
+    "key_id",
+    "signature"
+  ],
+  "properties": {
+    "schema_version": { "const": "redevplugin.release_root_delegation.v1" },
+    "source_id": { "$ref": "#/$defs/id" },
+    "root_epoch": { "$ref": "#/$defs/positive_epoch" },
+    "previous_root_epoch": { "$ref": "#/$defs/epoch" },
+    "previous_delegation_sha256": { "$ref": "#/$defs/sha256" },
+    "generated_at": { "$ref": "#/$defs/canonical_time" },
+    "expires_at": { "$ref": "#/$defs/canonical_time" },
+    "delegated_keys": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 32,
+      "items": { "$ref": "#/$defs/delegated_key" }
+    },
+    "key_id": { "$ref": "#/$defs/id" },
+    "signature": { "$ref": "#/$defs/signature" }
+  },
+  "$defs": {
+    "delegated_key": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "algorithm",
+        "key_id",
+        "public_key",
+        "usages",
+        "channels",
+        "valid_from",
+        "valid_until"
+      ],
+      "properties": {
+        "algorithm": { "const": "ed25519" },
+        "key_id": { "$ref": "#/$defs/id" },
+        "public_key": { "$ref": "#/$defs/public_key" },
+        "usages": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 6,
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "package",
+              "release_metadata",
+              "source_policy_document",
+              "source_policy_pointer",
+              "revocation_document",
+              "revocation_pointer"
+            ]
+          }
+        },
+        "channels": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 16,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/id" }
+        },
+        "valid_from": { "$ref": "#/$defs/canonical_time" },
+        "valid_until": { "$ref": "#/$defs/canonical_time" }
+      }
+    },
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[a-z][a-z0-9._-]*$"
+    },
+    "epoch": { "type": "string", "pattern": "^(0|[1-9][0-9]*)$" },
+    "positive_epoch": { "type": "string", "pattern": "^[1-9][0-9]*$" },
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "canonical_time": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"
+    },
+    "public_key": { "type": "string", "pattern": "^[A-Za-z0-9+/]{43}=$" },
+    "signature": { "type": "string", "pattern": "^[A-Za-z0-9+/]{86}==$" }
+  }
+}

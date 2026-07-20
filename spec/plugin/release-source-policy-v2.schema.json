@@ -1,0 +1,131 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.redevplugin.dev/plugin/release-source-policy-v2.schema.json",
+  "title": "ReDevPlugin release source policy v2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "source_id",
+    "channel",
+    "epoch",
+    "previous_epoch",
+    "previous_document_sha256",
+    "root_epoch",
+    "source_type",
+    "source_class",
+    "allowed_publishers",
+    "allowed_artifact_hosts",
+    "active_keys",
+    "require_signature",
+    "install_policy",
+    "unsigned_policy",
+    "downgrade_policy",
+    "minimum_revocation_epoch",
+    "limits",
+    "generated_at",
+    "expires_at",
+    "key_id",
+    "signature"
+  ],
+  "properties": {
+    "schema_version": { "const": "redevplugin.release_source_policy.v2" },
+    "source_id": { "$ref": "#/$defs/id" },
+    "channel": { "$ref": "#/$defs/id" },
+    "epoch": { "$ref": "#/$defs/positive_epoch" },
+    "previous_epoch": { "$ref": "#/$defs/epoch" },
+    "previous_document_sha256": { "$ref": "#/$defs/sha256" },
+    "root_epoch": { "$ref": "#/$defs/positive_epoch" },
+    "source_type": { "enum": ["registry", "host_artifact"] },
+    "source_class": { "enum": ["official", "curated", "community", "private"] },
+    "allowed_publishers": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 1024,
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/id" }
+    },
+    "allowed_artifact_hosts": {
+      "type": "array",
+      "maxItems": 1024,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 253,
+        "pattern": "^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?$"
+      }
+    },
+    "active_keys": { "$ref": "#/$defs/active_keys" },
+    "require_signature": { "type": "boolean" },
+    "install_policy": { "enum": ["allow", "review_required", "block"] },
+    "unsigned_policy": { "enum": ["dev_only", "review_required", "block"] },
+    "downgrade_policy": { "enum": ["review_required", "block"] },
+    "minimum_revocation_epoch": { "$ref": "#/$defs/epoch" },
+    "limits": { "$ref": "#/$defs/limits" },
+    "generated_at": { "$ref": "#/$defs/canonical_time" },
+    "expires_at": { "$ref": "#/$defs/canonical_time" },
+    "key_id": { "$ref": "#/$defs/id" },
+    "signature": { "$ref": "#/$defs/signature" }
+  },
+  "$defs": {
+    "active_keys": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "package",
+        "release_metadata",
+        "source_policy_pointer",
+        "revocation_document",
+        "revocation_pointer"
+      ],
+      "properties": {
+        "package": { "$ref": "#/$defs/key_ids" },
+        "release_metadata": { "$ref": "#/$defs/key_ids" },
+        "source_policy_pointer": { "$ref": "#/$defs/key_ids" },
+        "revocation_document": { "$ref": "#/$defs/key_ids" },
+        "revocation_pointer": { "$ref": "#/$defs/key_ids" }
+      }
+    },
+    "key_ids": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 16,
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/id" }
+    },
+    "limits": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "document_max_lifetime_seconds",
+        "future_skew_seconds",
+        "activation_lease_max_seconds",
+        "refresh_interval_max_seconds",
+        "failure_teardown_deadline_seconds"
+      ],
+      "properties": {
+        "document_max_lifetime_seconds": { "const": 86400 },
+        "future_skew_seconds": { "const": 300 },
+        "activation_lease_max_seconds": { "const": 300 },
+        "refresh_interval_max_seconds": { "const": 60 },
+        "failure_teardown_deadline_seconds": { "const": 30 }
+      }
+    },
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[a-z][a-z0-9._-]*$"
+    },
+    "epoch": { "type": "string", "pattern": "^(0|[1-9][0-9]*)$" },
+    "positive_epoch": { "type": "string", "pattern": "^[1-9][0-9]*$" },
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "canonical_time": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"
+    },
+    "signature": { "type": "string", "pattern": "^[A-Za-z0-9+/]{86}==$" }
+  }
+}

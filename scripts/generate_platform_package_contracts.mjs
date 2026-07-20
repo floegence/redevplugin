@@ -23,7 +23,12 @@ const MAX_JSON_BYTES = 64 * 1024;
 const MAX_CONTRACT_BYTES = 8 * 1024 * 1024;
 const MAX_TOTAL_CONTRACT_BYTES = 32 * 1024 * 1024;
 const MAX_FORMATTER_BYTES = MAX_TOTAL_CONTRACT_BYTES * 8 + 8 * 1024 * 1024;
-const RETIRED_SEED_IDS = new Set(["contract-registry", "release-manifest-schema"]);
+const RETIRED_SEED_IDS = new Set([
+  "contract-registry",
+  "release-manifest-schema",
+  "source-policy-schema",
+  "source-revocations-schema",
+]);
 const FORBIDDEN_ARTIFACT_PATHS = new Set([
   "spec/plugin/contract-registry-v2.json",
   "spec/plugin/platform-package-set-v1.json",
@@ -71,6 +76,31 @@ const stagedSchemaArtifacts = [
     id: "platform-package-set-schema",
     path: "spec/plugin/platform-package-set-v1.schema.json",
     version: "platform-package-set-v1",
+  },
+  {
+    id: "release-revocation-pointer-schema",
+    path: "spec/plugin/release-revocation-pointer-v1.schema.json",
+    version: "release-revocation-pointer-v1",
+  },
+  {
+    id: "release-revocation-schema",
+    path: "spec/plugin/release-revocation-v2.schema.json",
+    version: "release-revocation-v2",
+  },
+  {
+    id: "release-root-delegation-schema",
+    path: "spec/plugin/release-root-delegation-v1.schema.json",
+    version: "release-root-delegation-v1",
+  },
+  {
+    id: "release-source-policy-pointer-schema",
+    path: "spec/plugin/release-source-policy-pointer-v1.schema.json",
+    version: "release-source-policy-pointer-v1",
+  },
+  {
+    id: "release-source-policy-schema",
+    path: "spec/plugin/release-source-policy-v2.schema.json",
+    version: "release-source-policy-v2",
   },
 ];
 

@@ -129,6 +129,36 @@
       "sha256": "255ef3deb7d2758a43e69e533a08aa28106f8edc2e7385ab0aec0d50c1ef3d7a"
     },
     {
+      "id": "release-revocation-pointer-schema",
+      "path": "spec/plugin/release-revocation-pointer-v1.schema.json",
+      "version": "release-revocation-pointer-v1",
+      "sha256": "a9b7b64cb2dbf89500f0d191a6b2b9ab42eb806a452eb8338895a48ec7d7551e"
+    },
+    {
+      "id": "release-revocation-schema",
+      "path": "spec/plugin/release-revocation-v2.schema.json",
+      "version": "release-revocation-v2",
+      "sha256": "c3b40c05bc0dea422a272ee62ca45d0efb6456278b0707c5a12f39b004b84cb4"
+    },
+    {
+      "id": "release-root-delegation-schema",
+      "path": "spec/plugin/release-root-delegation-v1.schema.json",
+      "version": "release-root-delegation-v1",
+      "sha256": "ffceff8ce40baaad4e72bf2193a4c62d9ef67b3dc0391d7e2b900d8cadd624be"
+    },
+    {
+      "id": "release-source-policy-pointer-schema",
+      "path": "spec/plugin/release-source-policy-pointer-v1.schema.json",
+      "version": "release-source-policy-pointer-v1",
+      "sha256": "1a78cc3897ffbcdb605d2e9265d765207a4647d3f53fa5736aec65bf5f54e81c"
+    },
+    {
+      "id": "release-source-policy-schema",
+      "path": "spec/plugin/release-source-policy-v2.schema.json",
+      "version": "release-source-policy-v2",
+      "sha256": "4f2fa06983b75e9722cb5b89a46a0937d22298379640efdd414665e0c26eba72"
+    },
+    {
       "id": "resource-scope-schema",
       "path": "spec/plugin/resource-scope-v1.schema.json",
       "version": "resource-scope-v1",
@@ -145,18 +175,6 @@
       "path": "spec/plugin/session-scope-v1.schema.json",
       "version": "session-scope-v1",
       "sha256": "3df0084264f0aff9fe2261c237cea439adb5cdc2534bfaaa0488d5992d4a7d2e"
-    },
-    {
-      "id": "source-policy-schema",
-      "path": "spec/plugin/source-policy-v1.schema.json",
-      "version": "source-policy-v1",
-      "sha256": "fb6a9c27e726378a28a9ff48ee47c40ede99fa95a524a308e2c762bebc4b9fe2"
-    },
-    {
-      "id": "source-revocations-schema",
-      "path": "spec/plugin/source-revocations-v1.schema.json",
-      "version": "source-revocations-v1",
-      "sha256": "4c4132879a51b31e99775c979ca3ab43c2ee4c5c885f3ff1e7b43cd5ce8bc83d"
     },
     {
       "id": "target-classifier-fixture",

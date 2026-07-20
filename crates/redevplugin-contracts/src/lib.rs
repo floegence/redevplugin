@@ -4,6 +4,9 @@ use std::error::Error;
 use std::fmt;
 
 mod contracts_gen;
+mod release_signing;
+
+pub use release_signing::*;
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct ContractId(&'static str);

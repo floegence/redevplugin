@@ -1478,6 +1478,10 @@ func parsePackageSignature(signatureFiles map[string][]byte, m manifest.Manifest
 	if err := decoder.Decode(&sig); err != nil {
 		return nil, fmt.Errorf("%s: %w", PackageSignaturePath, err)
 	}
+	var trailing any
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		return nil, fmt.Errorf("%s: trailing JSON value", PackageSignaturePath)
+	}
 	if sig.SchemaVersion != PackageSignatureSchemaVersion {
 		return nil, fmt.Errorf("%s: unsupported schema_version %q", PackageSignaturePath, sig.SchemaVersion)
 	}

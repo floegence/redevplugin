@@ -53,13 +53,63 @@ test("Go, npm, and Rust projections share one contract inventory and digest", ()
   const packageSet = readJSON("spec/plugin/platform-package-set-v1.json");
 
   assert.deepEqual(Object.keys(contracts).sort(), [
+    "InvalidReleaseDocumentError",
+    "InvalidReleaseSignatureError",
     "UnknownContractError",
+    "buildPackageSignature",
+    "buildReleaseMetadata",
+    "buildRevocation",
+    "buildRevocationPointer",
+    "buildRootDelegation",
+    "buildSourcePolicy",
+    "buildSourcePolicyPointer",
+    "canonicalPackageSignature",
+    "canonicalReleaseMetadata",
+    "canonicalRevocation",
+    "canonicalRevocationPointer",
+    "canonicalRootDelegation",
+    "canonicalSourcePolicy",
+    "canonicalSourcePolicyPointer",
     "contractArtifacts",
     "contractRegistry",
     "contractSetSHA256",
+    "createEd25519Verifier",
+    "decodePackageSignature",
+    "decodeReleaseMetadata",
+    "decodeRevocation",
+    "decodeRevocationPointer",
+    "decodeRootDelegation",
+    "decodeSourcePolicy",
+    "decodeSourcePolicyPointer",
+    "defaultSourcePolicyLimits",
+    "genesisPreviousDocumentSHA256",
+    "genesisPreviousEpoch",
     "getContract",
     "packageSet",
+    "packageSignatureSchemaVersion",
+    "packageSigningPreimage",
     "registryContract",
+    "releaseMetadataSchemaVersion",
+    "releaseMetadataSigningPreimage",
+    "revocationPointerSchemaVersion",
+    "revocationPointerSigningPreimage",
+    "revocationSchemaVersion",
+    "revocationSigningPreimage",
+    "rootDelegationSchemaVersion",
+    "rootDelegationSigningPreimage",
+    "signatureAlgorithmEd25519",
+    "signingUsages",
+    "sourcePolicyPointerSchemaVersion",
+    "sourcePolicyPointerSigningPreimage",
+    "sourcePolicySchemaVersion",
+    "sourcePolicySigningPreimage",
+    "verifyPackageSignature",
+    "verifyReleaseMetadata",
+    "verifyRevocation",
+    "verifyRevocationPointer",
+    "verifyRootDelegation",
+    "verifySourcePolicy",
+    "verifySourcePolicyPointer",
   ]);
   assert.deepEqual(contracts.contractRegistry, registry);
   assert.deepEqual(contracts.packageSet, packageSet);
@@ -123,14 +173,18 @@ test("contracts package tarball has one closed browser-neutral payload", () => {
     const files = run("tar", ["-tzf", tarball]).split("\n").filter(Boolean).sort();
     assert.deepEqual(files, [
       "package/LICENSE",
+      "package/README.md",
       "package/dist/contracts.gen.d.ts",
       "package/dist/contracts.gen.js",
       "package/dist/index.d.ts",
       "package/dist/index.js",
+      "package/dist/release-signing.d.ts",
+      "package/dist/release-signing.js",
       "package/package.json",
     ]);
     const manifest = JSON.parse(run("tar", ["-xOf", tarball, "package/package.json"]));
     assert.deepEqual(Object.keys(manifest).sort(), [
+      "description",
       "exports",
       "files",
       "license",
@@ -220,7 +274,7 @@ test("packed npm packages install together offline and remain browser-neutral", 
     run(process.execPath, ["--input-type=module", "--eval", `
       await import("@floegence/redevplugin-ui");
       const contracts = await import("@floegence/redevplugin-contracts");
-      if (contracts.contractArtifacts.length !== 30) throw new Error("contracts package is incomplete");
+      if (contracts.contractArtifacts.length !== 33) throw new Error("contracts package is incomplete");
     `], { cwd: consumerDirectory });
 
     const browserBundle = await build({
