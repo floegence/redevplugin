@@ -458,12 +458,23 @@ function resolveRustToolchain() {
 
 async function verifyNpmTarball(bundleDir, expectedVersion, manifest) {
   const npmPath = join(bundleDir, manifest.npm_package.path);
+  const contractsManifestPath = `npm/floegence-redevplugin-contracts-${expectedVersion}.tgz`;
+  const npmEntries = manifest.files.filter(({ path }) => path.startsWith("npm/") && path.endsWith(".tgz"));
+  if (npmEntries.length !== 2) {
+    fail("release bundle must contain exactly two npm tarballs");
+  }
+  const contractsEntries = manifest.files.filter(({ path }) => path === contractsManifestPath);
+  if (contractsEntries.length !== 1) {
+    fail("release bundle must contain exactly one contracts npm companion tarball");
+  }
+  const contractsPath = join(bundleDir, contractsManifestPath);
   const npmBytes = readFileSync(npmPath);
   assertEqual(createHash("sha256").update(npmBytes).digest("hex"), manifest.npm_package.sha256, "npm tarball sha256");
   assertEqual(`sha512-${createHash("sha512").update(npmBytes).digest("base64")}`, manifest.npm_package.integrity, "npm tarball integrity");
   assertEqual(npmBytes.length, manifest.npm_package.size, "npm tarball size");
   const tmp = mkdtempSync(join(tmpdir(), "redevplugin-npm-"));
   try {
+    verifyContractsNpmTarball(bundleDir, contractsPath, expectedVersion, tmp);
     validateTarGzipArchive(npmPath, { expectedRoot: "package", label: "npm tarball" });
     execFileSync("tar", ["-xzf", npmPath, "-C", tmp]);
     const packageDir = join(tmp, "package");
@@ -471,6 +482,9 @@ async function verifyNpmTarball(bundleDir, expectedVersion, manifest) {
     assertEqual(pkg.name, "@floegence/redevplugin-ui", "npm package name");
     assertEqual(pkg.version, expectedVersion, "npm package version");
     assertEqual(pkg.license, "MIT", "npm package license");
+    assertDeepEqual(pkg.dependencies, {
+      "@floegence/redevplugin-contracts": expectedVersion,
+    }, "npm package contracts dependency");
     assertFile(join(packageDir, "LICENSE"), "npm package LICENSE");
     assertEqual(readFileSync(join(packageDir, "LICENSE"), "utf8"), readFileSync(join(bundleDir, "LICENSE"), "utf8"), "npm package LICENSE content");
     assertObject(pkg.exports, "npm package exports");
@@ -553,13 +567,58 @@ async function verifyNpmTarball(bundleDir, expectedVersion, manifest) {
         if (declaration.includes(forbidden)) fail(`${entrypoint} exposes raw surface API ${forbidden}`);
       }
     }
-    verifyPackedTypeScriptConsumer(bundleDir, npmPath, tmp);
+    verifyPackedTypeScriptConsumer(bundleDir, contractsPath, npmPath, tmp, expectedVersion);
   } finally {
     rmSync(tmp, { recursive: true, force: true });
   }
 }
 
-function verifyPackedTypeScriptConsumer(bundleDir, npmPath, tmp) {
+function verifyContractsNpmTarball(bundleDir, contractsPath, expectedVersion, tmp) {
+  validateTarGzipArchive(contractsPath, { expectedRoot: "package", label: "contracts npm tarball" });
+  const entries = execFileSync("tar", ["-tzf", contractsPath], { encoding: "utf8" })
+    .split("\n")
+    .filter(Boolean)
+    .sort();
+  assertDeepEqual(entries, [
+    "package/LICENSE",
+    "package/dist/contracts.gen.d.ts",
+    "package/dist/contracts.gen.js",
+    "package/dist/index.d.ts",
+    "package/dist/index.js",
+    "package/package.json",
+  ], "contracts npm tarball files");
+  const extractionRoot = join(tmp, "contracts");
+  mkdirSync(extractionRoot, { recursive: true });
+  execFileSync("tar", ["-xzf", contractsPath, "-C", extractionRoot]);
+  const packageRoot = join(extractionRoot, "package");
+  const pkg = readJSON(join(packageRoot, "package.json"));
+  assertExactKeys(pkg, [
+    "name",
+    "version",
+    "license",
+    "type",
+    "repository",
+    "main",
+    "types",
+    "exports",
+    "files",
+    "sideEffects",
+    "publishConfig",
+    "scripts",
+  ], "contracts npm package manifest");
+  assertEqual(pkg.name, "@floegence/redevplugin-contracts", "contracts npm package name");
+  assertEqual(pkg.version, expectedVersion, "contracts npm package version");
+  assertEqual(pkg.license, "MIT", "contracts npm package license");
+  assertEqual(pkg.sideEffects, false, "contracts npm package sideEffects");
+  assertDeepEqual(Object.keys(pkg.exports), ["."], "contracts npm package exports");
+  for (const forbidden of ["dependencies", "optionalDependencies", "peerDependencies", "bundledDependencies"]) {
+    if (forbidden in pkg) fail(`contracts npm package must not declare ${forbidden}`);
+  }
+  assertFile(join(packageRoot, "LICENSE"), "contracts npm package LICENSE");
+  assertEqual(readFileSync(join(packageRoot, "LICENSE"), "utf8"), readFileSync(join(bundleDir, "LICENSE"), "utf8"), "contracts npm package LICENSE content");
+}
+
+function verifyPackedTypeScriptConsumer(bundleDir, contractsPath, npmPath, tmp, expectedVersion) {
   const consumerRoot = join(tmp, "standalone-consumer");
   const sourceRoot = join(consumerRoot, "src");
   const typescriptToolchain = readBundledTypeScriptToolchain(bundleDir);
@@ -572,8 +631,20 @@ function verifyPackedTypeScriptConsumer(bundleDir, npmPath, tmp) {
       "--ignore-scripts",
       "--no-audit",
       "--no-fund",
-      "--registry=https://registry.npmjs.org",
+      "--offline",
+      contractsPath,
       npmPath,
+    ],
+    { cwd: consumerRoot, encoding: "utf8" },
+  );
+  execFileSync(
+    "npm",
+    [
+      "install",
+      "--ignore-scripts",
+      "--no-audit",
+      "--no-fund",
+      "--registry=https://registry.npmjs.org",
       `typescript@${typescriptToolchain.version}`,
     ],
     { cwd: consumerRoot, encoding: "utf8" },
@@ -592,6 +663,24 @@ function verifyPackedTypeScriptConsumer(bundleDir, npmPath, tmp) {
   }, null, 2) + "\n");
   const consumerLock = readJSON(join(consumerRoot, "package-lock.json"));
   assertObject(consumerLock.packages, "standalone consumer package-lock packages");
+  const installedContracts = consumerLock.packages["node_modules/@floegence/redevplugin-contracts"];
+  const installedUI = consumerLock.packages["node_modules/@floegence/redevplugin-ui"];
+  assertObject(installedContracts, "standalone consumer contracts lock entry");
+  assertObject(installedUI, "standalone consumer UI lock entry");
+  assertEqual(installedContracts.version, expectedVersion, "standalone consumer contracts version");
+  assertEqual(installedUI.version, expectedVersion, "standalone consumer UI version");
+  for (const [entry, filename, label] of [
+    [installedContracts, `floegence-redevplugin-contracts-${expectedVersion}.tgz`, "contracts"],
+    [installedUI, `floegence-redevplugin-ui-${expectedVersion}.tgz`, "UI"],
+  ]) {
+    if (typeof entry.resolved !== "string" || !entry.resolved.startsWith("file:") || !entry.resolved.endsWith(filename)) {
+      fail(`standalone consumer ${label} package did not resolve from its local tarball`);
+    }
+  }
+  const installedUIManifest = readJSON(join(consumerRoot, "node_modules/@floegence/redevplugin-ui/package.json"));
+  assertDeepEqual(installedUIManifest.dependencies, {
+    "@floegence/redevplugin-contracts": expectedVersion,
+  }, "standalone consumer UI contracts dependency");
   const installedToolchain = consumerLock.packages["node_modules/typescript"];
   assertObject(installedToolchain, "standalone consumer TypeScript lock entry");
   for (const key of ["version", "resolved", "integrity"]) {

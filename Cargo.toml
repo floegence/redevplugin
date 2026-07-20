@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
+  "crates/redevplugin-contracts",
   "crates/redevplugin-runtime",
   "crates/redevplugin-ipc",
   "crates/redevplugin-worker-sdk",

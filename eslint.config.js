@@ -9,6 +9,8 @@ export default tseslint.config(
     files: [
       "packages/redevplugin-ui/src/**/*.ts",
       "packages/redevplugin-ui/test/**/*.ts",
+      "packages/redevplugin-contracts/src/**/*.ts",
+      "packages/redevplugin-contracts/test/**/*.ts",
       "examples/plugin-ui/**/*.ts",
       "examples/showcase/**/*.ts",
       "internal/scaffoldtemplate/**/*.ts",

@@ -6,6 +6,10 @@ use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::sync::OnceLock;
 
+mod contract_set_gen;
+
+pub use contract_set_gen::CONTRACT_SET_SHA256;
+
 pub const RUST_IPC_VERSION: &str = "rust-ipc-v5";
 pub const WASM_ABI_VERSION: &str = "redevplugin-wasm-worker-v2";
 pub const RUNTIME_LEASE_SIGNATURE_SCHEMA_VERSION: &str = "redevplugin.runtime_execution_lease.v1";

@@ -229,7 +229,13 @@ quotas, revocation, and diagnostics contracts.
 
 ## npm Package Publishing
 
-The npm package exposes four deliberate import surfaces:
+The contracts npm package exposes one explicit root surface:
+
+- `@floegence/redevplugin-contracts` contains the immutable canonical contract
+  bodies, registry metadata, package set, synthetic registry contract, and
+  typed lookup API. It is the only npm entrypoint that loads raw schemas.
+
+The UI npm package exposes four deliberate import surfaces:
 
 - `@floegence/redevplugin-ui` is the trusted-parent default allowlist and is
   equivalent to the explicit `/trusted-parent` entrypoint.
@@ -248,8 +254,18 @@ The npm package exposes four deliberate import surfaces:
 The package verifier imports every packed entrypoint, requires this
 exact export set, checks the plugin runtime namespace, and scans the generated
 declarations for trusted-parent and bearer-token leakage. It also installs the
-packed tarball into a standalone temporary consumer and runs `tsc --noEmit` on
-the released host-capability sample without source aliases.
+packed contracts and UI tarballs into a standalone temporary consumer and runs
+`tsc --noEmit` on the released host-capability sample without source aliases.
+The UI package uses one exact contracts dependency, while its root,
+`trusted-parent`, and `plugin` bundles are verified not to load contract bodies.
+
+While the active v7 release-bundle verifier still exists, its unchanged v4
+`npm_package` field continues to describe the UI tarball. The exact-version
+contracts tarball is a bounded companion recorded by the existing closed
+`files` list and `SHA256SUMS`; the verifier validates both packages and installs
+them together offline. This is only a feature-branch transition to the v8
+package-only workflow, which removes the legacy bundle and v4 manifest rather
+than extending their wire format.
 
 Ordinary branch CI builds synthetic package bytes and validates them in isolated
 consumer directories. Only the tagged release workflow publishes the immutable

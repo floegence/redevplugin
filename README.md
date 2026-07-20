@@ -13,7 +13,9 @@ capabilities.
 ## Current Platform Snapshot
 
 - Go module: `github.com/floegence/redevplugin`
-- TypeScript package: `@floegence/redevplugin-ui`
+- TypeScript packages: the opt-in raw contract body package
+  `@floegence/redevplugin-contracts` and the sandbox/runtime SDK
+  `@floegence/redevplugin-ui`
 - Rust workspace and publication set: `redevplugin-runtime`, the public
   `redevplugin-worker-sdk`, and support source crates
 - Contracts: OpenAPI, manifest schema, package-signature schema,
@@ -30,6 +32,11 @@ capabilities.
   and release manifest
   v4. WASM ABI v2, worker invocation v3, and package
   signature v1 remain unchanged.
+- The staged v2 package registry is available through opt-in Go, npm, and Rust
+  contract libraries with identical immutable bytes, IDs, versions, hashes,
+  and aggregate digest. It is not yet returned by the active compatibility-v7
+  Host API, and importing ordinary Host or UI entrypoints does not link or load
+  the raw schema bodies.
 - Host-neutral Go package boundaries for manifest validation, package IO,
   registry, host adapters, bridge, PluginData, runtime supervision, grants,
   capability adapters, HTTP routes, session context, and web security.

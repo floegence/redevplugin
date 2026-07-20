@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 
 import { createHash } from "node:crypto";
-import { lstat, readFile, realpath, writeFile } from "node:fs/promises";
+import { spawnSync } from "node:child_process";
+import { lstat, mkdir, readFile, realpath, writeFile } from "node:fs/promises";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseDocument } from "yaml";
@@ -11,15 +12,34 @@ const registrySeedPath = join(root, "spec/plugin/contract-registry-v1.json");
 const platformVersionPath = join(root, "spec/plugin/platform-version.json");
 const registryOutputPath = join(root, "spec/plugin/contract-registry-v2.json");
 const packageSetOutputPath = join(root, "spec/plugin/platform-package-set-v1.json");
+const goContractsOutputPath = join(root, "pkg/contracts/contracts_gen.go");
+const goDigestOutputPath = join(root, "pkg/version/contract_set_gen.go");
+const typeScriptContractsOutputPath = join(root, "packages/redevplugin-contracts/src/contracts.gen.ts");
+const rustContractsOutputPath = join(root, "crates/redevplugin-contracts/src/contracts_gen.rs");
+const rustIPCDigestOutputPath = join(root, "crates/redevplugin-ipc/src/contract_set_gen.rs");
 const checkOnly = process.argv.slice(2).includes("--check");
 
 const MAX_JSON_BYTES = 64 * 1024;
 const MAX_CONTRACT_BYTES = 8 * 1024 * 1024;
 const MAX_TOTAL_CONTRACT_BYTES = 32 * 1024 * 1024;
+const MAX_FORMATTER_BYTES = MAX_TOTAL_CONTRACT_BYTES * 8 + 8 * 1024 * 1024;
 const RETIRED_SEED_IDS = new Set(["contract-registry", "release-manifest-schema"]);
 const FORBIDDEN_ARTIFACT_PATHS = new Set([
   "spec/plugin/contract-registry-v2.json",
   "spec/plugin/platform-package-set-v1.json",
+]);
+const GO_INITIALISMS = new Map([
+  ["api", "API"],
+  ["http", "HTTP"],
+  ["https", "HTTPS"],
+  ["id", "ID"],
+  ["ipc", "IPC"],
+  ["json", "JSON"],
+  ["openapi", "OpenAPI"],
+  ["uri", "URI"],
+  ["url", "URL"],
+  ["uuid", "UUID"],
+  ["wasm", "WASM"],
 ]);
 
 const npmPackages = [
@@ -61,14 +81,16 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
 async function main() {
   const outputs = await generatePlatformPackageContracts();
   for (const [filename, content] of outputs) {
+    const expected = toBuffer(content, `${relative(root, filename)} generated content`);
     if (checkOnly) {
-      const current = await readFile(filename, "utf8").catch(() => "");
-      if (current !== content) {
+      const current = await readFile(filename).catch(() => Buffer.alloc(0));
+      if (!current.equals(expected)) {
         throw new Error(`${relative(root, filename)} is stale; run npm run platform-package-contracts:generate`);
       }
       continue;
     }
-    await writeFile(filename, content);
+    await mkdir(dirname(filename), { recursive: true });
+    await writeFile(filename, expected);
   }
 }
 
@@ -96,7 +118,7 @@ export async function generatePlatformPackageContracts() {
     .sort(compareArtifactIDs);
 
   validateArtifactDeclarations(declarations);
-  const artifacts = [];
+  const embeddedArtifacts = [];
   let totalBytes = 0;
   for (const declaration of declarations) {
     const content = await readContractFile(declaration.path);
@@ -104,13 +126,15 @@ export async function generatePlatformPackageContracts() {
     if (totalBytes > MAX_TOTAL_CONTRACT_BYTES) {
       throw new Error("staged contract set exceeds the total byte limit");
     }
-    artifacts.push({
+    embeddedArtifacts.push({
       id: declaration.id,
       path: declaration.path,
       version: declaration.version,
       sha256: sha256(content),
+      body: decodeUTF8(content, `contract artifact ${declaration.id}`),
     });
   }
+  const artifacts = embeddedArtifacts.map(({ body: _body, ...artifact }) => artifact);
 
   const registry = {
     schema_version: "redevplugin.contract_registry.v2",
@@ -134,10 +158,23 @@ export async function generatePlatformPackageContracts() {
     contract_set_sha256: contractSetSHA256,
   };
   validatePlatformPackageSet(packageSet, contractSetSHA256);
+  const packageSetBytes = canonicalDocument(packageSet);
+  const registryContract = {
+    id: "contract-registry",
+    path: "spec/plugin/contract-registry-v2.json",
+    version: "contract-registry-v2",
+    sha256: sha256(registryBytes),
+    body: registryBytes.toString("utf8"),
+  };
 
   return new Map([
-    [registryOutputPath, registryBytes.toString("utf8")],
-    [packageSetOutputPath, canonicalDocument(packageSet).toString("utf8")],
+    [registryOutputPath, registryBytes],
+    [packageSetOutputPath, packageSetBytes],
+    [goContractsOutputPath, formatGo(renderGoContracts(registry, packageSet, embeddedArtifacts, registryContract))],
+    [goDigestOutputPath, formatGo(renderGoContractSetDigest(contractSetSHA256))],
+    [typeScriptContractsOutputPath, renderTypeScriptContracts(registry, packageSet, embeddedArtifacts, registryContract)],
+    [rustContractsOutputPath, formatRust(renderRustContracts(packageSet, embeddedArtifacts, registryContract))],
+    [rustIPCDigestOutputPath, formatRust(renderRustContractSetDigest(contractSetSHA256))],
   ]);
 }
 
@@ -173,6 +210,232 @@ export function computeContractSetSHA256(registryBytes, artifacts) {
   });
   coordinates.sort(compareArtifactIDs);
   return sha256(Buffer.from(JSON.stringify(coordinates), "utf8"));
+}
+
+function renderGoContracts(registry, packageSet, artifacts, registryContract) {
+  const allContracts = [...artifacts, registryContract].sort(compareArtifactIDs);
+  const constants = allContracts
+    .map((contract) => `\t${goContractIDName(contract.id)} ID = ${JSON.stringify(contract.id)}`)
+    .join("\n");
+  const artifactValues = artifacts
+    .map((contract) => `\tnewGeneratedContract(${goContractIDName(contract.id)}, ${JSON.stringify(contract.path)}, ${JSON.stringify(contract.version)}, ${JSON.stringify(contract.sha256)}, ${JSON.stringify(contract.body)}),`)
+    .join("\n");
+  const mapValues = artifacts
+    .map((contract, index) => `\t${goContractIDName(contract.id)}: generatedArtifacts[${index}],`)
+    .concat([`\tIDContractRegistry: generatedRegistryContract,`])
+    .join("\n");
+  const npmValues = packageSet.npm_packages
+    .map((coordinate) => `\t{Name: ${JSON.stringify(coordinate.name)}, Version: ${JSON.stringify(coordinate.version)}},`)
+    .join("\n");
+  const rustValues = packageSet.rust_crates
+    .map((coordinate) => `\t{Name: ${JSON.stringify(coordinate.name)}, Version: ${JSON.stringify(coordinate.version)}, Role: ${JSON.stringify(coordinate.role)}},`)
+    .join("\n");
+  return `// Code generated by scripts/generate_platform_package_contracts.mjs; DO NOT EDIT.
+
+package contracts
+
+const (
+${constants}
+)
+
+const (
+\tgeneratedRegistrySchemaVersion = ${JSON.stringify(registry.schema_version)}
+\tgeneratedRegistryVersion = ${JSON.stringify(registry.registry_version)}
+)
+
+var generatedArtifacts = []Contract{
+${artifactValues}
+}
+
+var generatedRegistryContract = newGeneratedContract(
+\tIDContractRegistry,
+\t${JSON.stringify(registryContract.path)},
+\t${JSON.stringify(registryContract.version)},
+\t${JSON.stringify(registryContract.sha256)},
+\t${JSON.stringify(registryContract.body)},
+)
+
+var generatedContractByID = map[ID]Contract{
+${mapValues}
+}
+
+var generatedPackageSet = PackageSetSnapshot{
+\tSchemaVersion: ${JSON.stringify(packageSet.schema_version)},
+\tPlatformVersion: ${JSON.stringify(packageSet.platform_version)},
+\tGoModule: GoModuleCoordinate{Module: ${JSON.stringify(packageSet.go_module.module)}, Version: ${JSON.stringify(packageSet.go_module.version)}},
+\tNPMPackages: []NPMPackageCoordinate{
+${npmValues}
+\t},
+\tRustCrates: []RustCrateCoordinate{
+${rustValues}
+\t},
+\tContractRegistryVersion: ${JSON.stringify(packageSet.contract_registry_version)},
+\tContractSetSHA256: ${JSON.stringify(packageSet.contract_set_sha256)},
+}
+`;
+}
+
+function renderGoContractSetDigest(contractSetSHA256) {
+  return `// Code generated by scripts/generate_platform_package_contracts.mjs; DO NOT EDIT.
+
+package version
+
+const ContractSetSHA256 = ${JSON.stringify(contractSetSHA256)}
+`;
+}
+
+function renderTypeScriptContracts(registry, packageSet, artifacts, registryContract) {
+  const artifactValues = artifacts.map((contract) => ({
+    id: contract.id,
+    path: contract.path,
+    version: contract.version,
+    sha256: contract.sha256,
+    body: contract.body,
+  }));
+  return `// Code generated by scripts/generate_platform_package_contracts.mjs; DO NOT EDIT.
+
+export const generatedContractArtifacts = ${JSON.stringify(artifactValues, null, 2)} as const;
+
+export const generatedRegistryContract = ${JSON.stringify(registryContract, null, 2)} as const;
+
+export const generatedContractRegistry = ${JSON.stringify(registry, null, 2)} as const;
+
+export const generatedPackageSet = ${JSON.stringify(packageSet, null, 2)} as const;
+
+export const generatedContractSetSHA256 = ${JSON.stringify(packageSet.contract_set_sha256)} as const;
+`;
+}
+
+function renderRustContracts(packageSet, artifacts, registryContract) {
+  const allContracts = [...artifacts, registryContract].sort(compareArtifactIDs);
+  const idConstants = allContracts
+    .map((contract) => `    pub const ${rustContractIDName(contract.id)}: Self = Self::from_static(${JSON.stringify(contract.id)});`)
+    .join("\n");
+  const parseArms = allContracts
+    .map((contract) => `        ${JSON.stringify(contract.id)} => Some(ContractId::${rustContractIDName(contract.id)}),`)
+    .join("\n");
+  const bodyValues = allContracts
+    .map((contract) => `static ${rustContractBodyName(contract.id)}: &[u8] = ${JSON.stringify(contract.body)}.as_bytes();`)
+    .join("\n");
+  const artifactValues = artifacts
+    .map((contract) => `    Contract::new(ContractId::${rustContractIDName(contract.id)}, ${JSON.stringify(contract.version)}, ${JSON.stringify(contract.sha256)}, ${rustContractBodyName(contract.id)}),`)
+    .join("\n");
+  const allValues = allContracts
+    .map((contract) => `    Contract::new(ContractId::${rustContractIDName(contract.id)}, ${JSON.stringify(contract.version)}, ${JSON.stringify(contract.sha256)}, ${rustContractBodyName(contract.id)}),`)
+    .join("\n");
+  const getArms = allContracts
+    .map((contract, index) => `        ContractId::${rustContractIDName(contract.id)} => &ALL[${index}],`)
+    .join("\n");
+  const registryIndex = allContracts.findIndex(({ id }) => id === "contract-registry");
+  const npmValues = packageSet.npm_packages
+    .map((coordinate) => `    NpmPackageCoordinate { name: ${JSON.stringify(coordinate.name)}, version: ${JSON.stringify(coordinate.version)} },`)
+    .join("\n");
+  const rustValues = packageSet.rust_crates
+    .map((coordinate) => `    RustCrateCoordinate { name: ${JSON.stringify(coordinate.name)}, version: ${JSON.stringify(coordinate.version)}, role: ${JSON.stringify(coordinate.role)} },`)
+    .join("\n");
+  return `// Code generated by scripts/generate_platform_package_contracts.mjs; DO NOT EDIT.
+
+use super::{Contract, ContractId, GoModuleCoordinate, NpmPackageCoordinate, PackageSet, RustCrateCoordinate};
+
+impl ContractId {
+${idConstants}
+}
+
+pub(crate) fn parse_contract_id(value: &str) -> Option<ContractId> {
+    match value {
+${parseArms}
+        _ => None,
+    }
+}
+
+${bodyValues}
+
+pub(crate) static ARTIFACTS: [Contract; ${artifacts.length}] = [
+${artifactValues}
+];
+
+pub(crate) static ALL: [Contract; ${allContracts.length}] = [
+${allValues}
+];
+
+pub(crate) const REGISTRY_CONTRACT_INDEX: usize = ${registryIndex};
+
+pub(crate) fn get(id: ContractId) -> &'static Contract {
+    match id {
+${getArms}
+        _ => unreachable!("ContractId can only contain generated values"),
+    }
+}
+
+static NPM_PACKAGES: [NpmPackageCoordinate; ${packageSet.npm_packages.length}] = [
+${npmValues}
+];
+
+static RUST_CRATES: [RustCrateCoordinate; ${packageSet.rust_crates.length}] = [
+${rustValues}
+];
+
+pub(crate) static PACKAGE_SET: PackageSet = PackageSet {
+    schema_version: ${JSON.stringify(packageSet.schema_version)},
+    platform_version: ${JSON.stringify(packageSet.platform_version)},
+    go_module: GoModuleCoordinate { module: ${JSON.stringify(packageSet.go_module.module)}, version: ${JSON.stringify(packageSet.go_module.version)} },
+    npm_packages: &NPM_PACKAGES,
+    rust_crates: &RUST_CRATES,
+    contract_registry_version: ${JSON.stringify(packageSet.contract_registry_version)},
+    contract_set_sha256: ${JSON.stringify(packageSet.contract_set_sha256)},
+};
+`;
+}
+
+function renderRustContractSetDigest(contractSetSHA256) {
+  return `// Code generated by scripts/generate_platform_package_contracts.mjs; DO NOT EDIT.
+
+pub const CONTRACT_SET_SHA256: &str = ${JSON.stringify(contractSetSHA256)};
+`;
+}
+
+function goContractIDName(id) {
+  return `ID${id.split("-").map(goNamePart).join("")}`;
+}
+
+function rustContractIDName(id) {
+  return id.replaceAll("-", "_").toUpperCase();
+}
+
+function rustContractBodyName(id) {
+  return `CONTRACT_BODY_${rustContractIDName(id)}`;
+}
+
+function goNamePart(value) {
+  return GO_INITIALISMS.get(value) ?? capitalizeASCII(value);
+}
+
+function capitalizeASCII(value) {
+  return value.length === 0 ? value : value[0].toUpperCase() + value.slice(1);
+}
+
+function formatGo(source) {
+  const result = spawnSync("gofmt", {
+    input: source,
+    encoding: "utf8",
+    maxBuffer: MAX_FORMATTER_BYTES,
+  });
+  if (result.status !== 0) {
+    throw new Error(`gofmt failed while generating Go contract outputs: ${result.stderr || result.error}`);
+  }
+  return result.stdout;
+}
+
+function formatRust(source) {
+  const result = spawnSync("rustfmt", ["--emit", "stdout", "--edition", "2024"], {
+    input: source,
+    encoding: "utf8",
+    maxBuffer: MAX_FORMATTER_BYTES,
+  });
+  if (result.status !== 0) {
+    throw new Error(`rustfmt failed while generating Rust contract outputs: ${result.stderr || result.error}`);
+  }
+  return result.stdout;
 }
 
 function validateRegistrySeed(value) {
@@ -397,7 +660,7 @@ function parseStrictJSON(raw, label) {
   if (bytes.length >= 3 && bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf) {
     throw new Error(`${label} must not contain a UTF-8 byte-order mark`);
   }
-  const text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+  const text = decodeUTF8(bytes, label);
   const document = parseDocument(text, {
     schema: "json",
     strict: true,
@@ -410,6 +673,14 @@ function parseStrictJSON(raw, label) {
     return JSON.parse(text);
   } catch (error) {
     throw new Error(`${label} is not one strict JSON document: ${error.message}`);
+  }
+}
+
+export function decodeUTF8(raw, label) {
+  try {
+    return new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(raw);
+  } catch (error) {
+    throw new Error(`${label} is not valid UTF-8: ${error.message}`);
   }
 }
 

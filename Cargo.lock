@@ -443,6 +443,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "redevplugin-contracts"
+version = "0.6.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sha2",
+]
+
+[[package]]
 name = "redevplugin-example-memos-worker"
 version = "0.1.0"
 dependencies = [

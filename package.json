@@ -3,6 +3,10 @@
   "private": true,
   "license": "MIT",
   "type": "module",
+  "workspaces": [
+    "packages/redevplugin-contracts",
+    "packages/redevplugin-ui"
+  ],
   "scripts": {
     "openapi:generate": "node scripts/generate_openapi_types.mjs",
     "openapi:check": "node scripts/generate_openapi_types.mjs --check",
@@ -13,6 +17,10 @@
     "contracts:check": "node scripts/generate_contract_registry.mjs --check",
     "platform-package-contracts:generate": "node scripts/generate_platform_package_contracts.mjs",
     "platform-package-contracts:check": "node scripts/generate_platform_package_contracts.mjs --check",
+    "contracts-package:build": "npm --workspace @floegence/redevplugin-contracts run build",
+    "contracts-package:typecheck": "npm --workspace @floegence/redevplugin-contracts run typecheck",
+    "contracts-package:test": "npm --workspace @floegence/redevplugin-contracts run test",
+    "contracts-package:cross-language": "npm run contracts-package:build && node --test scripts/cross_language_contracts.test.mjs",
     "release-metadata:check": "node scripts/check_redevplugin_release_metadata.mjs --source && node scripts/test_redevplugin_release_metadata.mjs",
     "repository-boundary:test": "node --test scripts/repository_boundary.test.mjs",
     "platform-package-contract:test": "node --test scripts/platform_package_contract.test.mjs",
@@ -25,13 +33,14 @@
     "canonical-wasm:test": "node --test scripts/canonical_wasm_builder.test.mjs",
     "memos-markdown:test": "node --test scripts/memos_markdown_identity.test.mjs",
     "scaffold:typecheck": "tsc -p internal/scaffoldtemplate/tsconfig.json --noEmit",
-    "lint": "eslint packages/redevplugin-ui/src packages/redevplugin-ui/test examples/plugin-ui examples/showcase/app.ts internal/scaffoldtemplate testdata/browser-harness/opaque-surface/*.ts",
-    "typecheck": "tsc -p packages/redevplugin-ui/tsconfig.json --noEmit",
+    "lint": "eslint packages/redevplugin-contracts/src packages/redevplugin-contracts/test packages/redevplugin-ui/src packages/redevplugin-ui/test examples/plugin-ui examples/showcase/app.ts internal/scaffoldtemplate testdata/browser-harness/opaque-surface/*.ts",
+    "typecheck": "npm run contracts-package:typecheck && tsc -p packages/redevplugin-ui/tsconfig.json --noEmit",
     "examples:generate": "node scripts/build_example_plugins.mjs",
     "examples:check": "node scripts/build_example_plugins.mjs --check",
     "examples:check:canonical": "node scripts/build_example_plugins.mjs --check --canonical",
     "examples:typecheck": "tsc -p examples/tsconfig.json --noEmit && tsc -p examples/host-capability/tsconfig.json --noEmit",
-    "build": "tsc -p packages/redevplugin-ui/tsconfig.json && npm run browser-harness:generate && npm run scaffold:check",
+    "build": "npm run contracts-package:build && tsc -p packages/redevplugin-ui/tsconfig.json && npm run browser-harness:generate && npm run scaffold:check",
+    "test:contracts": "npm run contracts-package:test && npm run contracts-package:cross-language",
     "test:ui": "npm --prefix packages/redevplugin-ui run test",
     "test:browser-harness": "npm run browser-harness:check && node --test internal/browserharness/*.test.mjs",
     "test:browser-harness:smoke": "npm run build && node internal/browserharness/opaque-surface-smoke.mjs && REDEVPLUGIN_RUN_BROWSER_SMOKE=1 GOWORK=off go test ./cmd/redevplugin -run '^TestExamplesServerBrowserSmoke$' -count=1",
@@ -41,7 +50,7 @@
     "performance:release": "./scripts/check_redevplugin_performance.sh --release",
     "property-gates": "./scripts/check_redevplugin_property_gates.sh --fast",
     "examples": "npm run examples:check && npm run build && cargo build -p redevplugin-runtime && GOWORK=off go run ./cmd/redevplugin examples-server dist/examples-state target/debug/redevplugin-runtime",
-    "check": "npm run error-codes:check && npm run openapi:check && npm run openapi-contract:test && npm run contracts:check && npm run platform-package-contracts:check && npm run release-metadata:check && npm run repository-boundary:test && npm run platform-package-contract:test && npm run performance-contract:test && npm run lint && npm run typecheck && npm run browser-harness:typecheck && npm run scaffold:typecheck && npm run examples:typecheck && npm run canonical-wasm:test && npm run memos-markdown:test && npm run examples:check && npm run browser-harness:check && npm run build && npm run test:ui && npm run test:browser-harness && npm run test:browser-harness:smoke && npm run property-gates"
+    "check": "npm run error-codes:check && npm run openapi:check && npm run openapi-contract:test && npm run contracts:check && npm run platform-package-contracts:check && npm run release-metadata:check && npm run repository-boundary:test && npm run platform-package-contract:test && npm run test:contracts && npm run performance-contract:test && npm run lint && npm run typecheck && npm run browser-harness:typecheck && npm run scaffold:typecheck && npm run examples:typecheck && npm run canonical-wasm:test && npm run memos-markdown:test && npm run examples:check && npm run browser-harness:check && npm run build && npm run test:ui && npm run test:browser-harness && npm run test:browser-harness:smoke && npm run property-gates"
   },
   "devDependencies": {
     "esbuild": "^0.25.5",

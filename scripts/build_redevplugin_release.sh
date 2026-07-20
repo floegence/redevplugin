@@ -6,6 +6,7 @@ OUT_DIR="$ROOT_DIR/dist/redevplugin-release"
 VERSION=""
 RUNTIME_TARGET=""
 NPM_PACKAGE=""
+CONTRACTS_NPM_PACKAGE=""
 WORKER_SDK_PACKAGE=""
 SOURCE_COMMIT=""
 PERFORMANCE_GATE="release"
@@ -27,6 +28,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --npm-package)
       NPM_PACKAGE="$2"
+      shift 2
+      ;;
+    --contracts-npm-package)
+      CONTRACTS_NPM_PACKAGE="$2"
       shift 2
       ;;
     --worker-sdk-package)
@@ -85,6 +90,9 @@ fi
 if [[ -n "$NPM_PACKAGE" && "$NPM_PACKAGE" != /* ]]; then
   NPM_PACKAGE="$ROOT_DIR/$NPM_PACKAGE"
 fi
+if [[ -n "$CONTRACTS_NPM_PACKAGE" && "$CONTRACTS_NPM_PACKAGE" != /* ]]; then
+  CONTRACTS_NPM_PACKAGE="$ROOT_DIR/$CONTRACTS_NPM_PACKAGE"
+fi
 if [[ -n "$WORKER_SDK_PACKAGE" && "$WORKER_SDK_PACKAGE" != /* ]]; then
   WORKER_SDK_PACKAGE="$ROOT_DIR/$WORKER_SDK_PACKAGE"
 fi
@@ -109,7 +117,7 @@ if ! command -v cargo >/dev/null 2>&1; then
   exit 1
 fi
 if ! command -v npm >/dev/null 2>&1; then
-  echo "npm is required to build @floegence/redevplugin-ui" >&2
+  echo "npm is required to build the ReDevPlugin npm packages" >&2
   exit 1
 fi
 
@@ -152,14 +160,24 @@ ldflags="-X ${go_version_pkg}.GoModuleVersion=${VERSION} -X ${go_version_pkg}.UI
   npm run scaffold:check
   GOWORK=off go build -trimpath -ldflags "$ldflags" -o "$OUT_DIR/bin/redevplugin" ./cmd/redevplugin
   "$OUT_DIR/bin/redevplugin" version >"$OUT_DIR/compatibility.json"
-  if [[ -n "$NPM_PACKAGE" ]]; then
+  if [[ -n "$NPM_PACKAGE" || -n "$CONTRACTS_NPM_PACKAGE" ]]; then
+    if [[ -z "$NPM_PACKAGE" || -z "$CONTRACTS_NPM_PACKAGE" ]]; then
+      echo "prebuilt npm input requires both --npm-package and --contracts-npm-package" >&2
+      exit 1
+    fi
     if [[ ! -f "$NPM_PACKAGE" ]]; then
       echo "prebuilt npm package not found: $NPM_PACKAGE" >&2
       exit 1
     fi
+    if [[ ! -f "$CONTRACTS_NPM_PACKAGE" ]]; then
+      echo "prebuilt contracts npm package not found: $CONTRACTS_NPM_PACKAGE" >&2
+      exit 1
+    fi
     cp "$NPM_PACKAGE" "$OUT_DIR/npm/$(basename "$NPM_PACKAGE")"
+    cp "$CONTRACTS_NPM_PACKAGE" "$OUT_DIR/npm/$(basename "$CONTRACTS_NPM_PACKAGE")"
   else
     npm run build
+    node "$ROOT_DIR/scripts/build_redevplugin_contracts_package.mjs" "$VERSION" "$OUT_DIR/npm" >/dev/null
     node "$ROOT_DIR/scripts/build_redevplugin_ui_package.mjs" "$VERSION" "$OUT_DIR/npm" >/dev/null
   fi
   if [[ -n "$WORKER_SDK_PACKAGE" ]]; then
@@ -280,10 +298,15 @@ const compatibilitySHA256 = createHash("sha256")
   .update(readFileSync(join(outDir, "compatibility.json")))
   .digest("hex");
 const npmFiles = files.filter((file) => file.path.startsWith("npm/") && file.path.endsWith(".tgz"));
-if (npmFiles.length !== 1) {
-  throw new Error(`release bundle must contain exactly one npm tarball, found ${npmFiles.length}`);
+if (npmFiles.length !== 2) {
+  throw new Error(`release bundle must contain exactly two npm tarballs, found ${npmFiles.length}`);
 }
-const npmFile = npmFiles[0];
+const uiNPMFiles = npmFiles.filter((file) => file.path === `npm/floegence-redevplugin-ui-${version}.tgz`);
+const contractsNPMFiles = npmFiles.filter((file) => file.path === `npm/floegence-redevplugin-contracts-${version}.tgz`);
+if (uiNPMFiles.length !== 1 || contractsNPMFiles.length !== 1) {
+  throw new Error("release bundle must contain exact-version UI and contracts npm tarballs");
+}
+const npmFile = uiNPMFiles[0];
 const npmBytes = readFileSync(join(outDir, npmFile.path));
 const npmPackage = {
   name: "@floegence/redevplugin-ui",

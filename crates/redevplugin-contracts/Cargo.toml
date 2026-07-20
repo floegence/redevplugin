@@ -1,0 +1,15 @@
+[package]
+name = "redevplugin-contracts"
+version = "0.6.0"
+edition = "2024"
+license = "MIT"
+description = "Embedded machine contracts for the ReDevPlugin platform"
+repository = "https://github.com/floegence/redevplugin"
+
+[lib]
+path = "src/lib.rs"
+
+[dev-dependencies]
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+sha2 = "0.10"
