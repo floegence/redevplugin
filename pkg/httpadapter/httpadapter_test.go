@@ -43,6 +43,7 @@ import (
 	"github.com/floegence/redevplugin/pkg/secrets"
 	"github.com/floegence/redevplugin/pkg/security"
 	"github.com/floegence/redevplugin/pkg/sessionctx"
+	"github.com/floegence/redevplugin/pkg/sessionscope"
 	"github.com/floegence/redevplugin/pkg/stream"
 	platformversion "github.com/floegence/redevplugin/pkg/version"
 	"github.com/floegence/redevplugin/pkg/websecurity"
@@ -290,7 +291,7 @@ func TestRouteSetHasManagementAndSandboxRoutes(t *testing.T) {
 		"POST /_redevplugin/api/plugins/install-release-ref":                              false,
 		"POST /_redevplugin/api/plugins/enable":                                           false,
 		"POST /_redevplugin/api/plugins/surfaces/open":                                    false,
-		"POST /_redevplugin/api/plugins/surfaces/revoke-scope":                            false,
+		"POST /_redevplugin/api/plugins/session/revoke-scope":                             false,
 		"POST /_redevplugin/api/plugins/surfaces/{surface_instance_id}/prepare":           false,
 		"POST /_redevplugin/api/plugins/surfaces/{surface_instance_id}/bridge-token":      false,
 		"POST /_redevplugin/api/plugins/surfaces/{surface_instance_id}/assets/read":       false,
@@ -1845,7 +1846,7 @@ func TestHandlerSurfaceBridgeFlow(t *testing.T) {
 	}
 }
 
-func TestHandlerRevokesAllSurfacesForCurrentSessionChannel(t *testing.T) {
+func TestHandlerRevokesAuthenticatedSessionScope(t *testing.T) {
 	h := newHTTPTestHost(t)
 	installed, err := host.ImportLocalPackageBytes(httpTestContext(), h, nextHTTPTestPluginInstanceID(t), buildHTTPFixturePackage(t))
 	if err != nil {
@@ -1868,17 +1869,15 @@ func TestHandlerRevokesAllSurfacesForCurrentSessionChannel(t *testing.T) {
 		"surface_instance_id":          "surface_scope_second",
 		"expected_management_revision": 2,
 	})
-	result := postJSON[struct {
-		RevokedSurfaceCount int `json:"revoked_surface_count"`
-	}](t, handler, "/_redevplugin/api/plugins/surfaces/revoke-scope", map[string]any{})
-	if result.RevokedSurfaceCount != 2 {
-		t.Fatalf("revoked_surface_count = %d, want 2", result.RevokedSurfaceCount)
+	result := postJSON[sessionScopeRevokeResponse](t, handler, "/_redevplugin/api/plugins/session/revoke-scope", map[string]any{})
+	if !result.Complete || result.State != "complete" || result.Counts.Surfaces != 2 {
+		t.Fatalf("session scope revoke = %#v", result)
 	}
 	envelope := postJSONError(t, handler, "/_redevplugin/api/plugins/surfaces/surface_scope_first/prepare", map[string]any{
 		"asset_ticket": first.AssetTicket,
-	}, http.StatusForbidden)
-	if envelope.Code != string(security.ErrAssetSessionInvalid) {
-		t.Fatalf("prepare after scope revoke error_code = %q", envelope.Code)
+	}, http.StatusGone)
+	if envelope.Code != string(security.ErrSessionRevoked) {
+		t.Fatalf("prepare after session revoke error_code = %q", envelope.Code)
 	}
 }
 
@@ -4844,6 +4843,27 @@ func newHTTPTestHostWithOptions(t *testing.T, opts httpTestHostOptions) *host.Ho
 			t.Errorf("PluginData.Close() error = %v", err)
 		}
 	})
+	sessionScopeStore, err := sessionscope.NewSQLiteStore(
+		httpTestContext(),
+		filepath.Join(t.TempDir(), "session-scopes.sqlite"),
+		sessionscope.StoreOptions{},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = sessionScopeStore.Close() })
+	sessionScopes, err := sessionscope.NewCoordinator(sessionScopeStore)
+	if err != nil {
+		t.Fatal(err)
+	}
+	proof, err := sessionscope.GenerateClosedSessionProof()
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity, err := sessionscope.NewTeardownIdentity("teardown_http_test", proof)
+	if err != nil {
+		t.Fatal(err)
+	}
 	h, err := host.Open(httpTestContext(), host.Config{
 		Core: host.CoreAdapters{
 			Policy:               httpTestPolicy{},
@@ -4861,6 +4881,8 @@ func newHTTPTestHostWithOptions(t *testing.T, opts httpTestHostOptions) *host.Ho
 			ConfirmationIntents:  security.NewMemoryConfirmationIntentStore(),
 			PluginData:           pluginData,
 			Streams:              stream.NewMemoryStore(),
+			SessionLifecycle:     httpSessionLifecycleAdapter{identity: identity},
+			SessionScopes:        sessionScopes,
 		},
 		Release: &host.ReleaseModule{
 			ReleaseMetadataVerifier:     releaseMetadataVerifier,
@@ -4881,6 +4903,40 @@ func newHTTPTestHostWithOptions(t *testing.T, opts httpTestHostOptions) *host.Ho
 		t.Fatal(err)
 	}
 	return h
+}
+
+type httpSessionLifecycleAdapter struct {
+	identity sessionscope.TeardownIdentity
+}
+
+func (httpSessionLifecycleAdapter) ReconcileRetainedSessionScopes(_ context.Context, req host.ReconcileRetainedSessionScopesRequest) error {
+	for _, retained := range req.Scopes {
+		if !retained.SessionScope.Valid() || !retained.Snapshot.Fenced {
+			return errors.New("retained session scope is invalid")
+		}
+	}
+	return nil
+}
+
+func (adapter httpSessionLifecycleAdapter) PrepareSessionScopeClose(_ context.Context, req host.PrepareSessionScopeCloseRequest) (sessionscope.TeardownIdentity, error) {
+	if !req.Session.Valid() {
+		return sessionscope.TeardownIdentity{}, errors.New("session is required")
+	}
+	return adapter.identity, nil
+}
+
+func (adapter httpSessionLifecycleAdapter) CommitSessionScopeClose(_ context.Context, req host.CommitSessionScopeCloseRequest) error {
+	if !req.Session.Valid() || !adapter.identity.Matches(req.Identity) {
+		return errors.New("prepared close identity does not match")
+	}
+	return nil
+}
+
+func (adapter httpSessionLifecycleAdapter) ValidateClosedSessionScope(_ context.Context, req host.ValidateClosedSessionScopeRequest) error {
+	if !req.Session.Valid() || !adapter.identity.Matches(req.Identity) {
+		return errors.New("closed session identity does not match")
+	}
+	return nil
 }
 
 func httpVerifiedCapabilityContract(t *testing.T) capabilitycontract.VerifiedContract {
@@ -6362,5 +6418,14 @@ func (s *httpRecordingRuntimeManager) Revoke(_ context.Context, req runtimeclien
 		ResourceScope:    req.ResourceScope,
 		PluginInstanceID: req.PluginInstanceID,
 		RevokeEpoch:      req.RevokeEpoch,
+	}, nil
+}
+
+func (s *httpRecordingRuntimeManager) RevokeSession(_ context.Context, req runtimeclient.SessionRevokeRequest) (runtimeclient.SessionRevokeResult, error) {
+	if s.err != nil {
+		return runtimeclient.SessionRevokeResult{}, s.err
+	}
+	return runtimeclient.SessionRevokeResult{
+		SessionScope: req.SessionScope, SessionRevokeSequence: req.SessionRevokeSequence,
 	}, nil
 }

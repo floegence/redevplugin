@@ -40,6 +40,7 @@ import (
 	"github.com/floegence/redevplugin/pkg/secrets"
 	"github.com/floegence/redevplugin/pkg/security"
 	"github.com/floegence/redevplugin/pkg/sessionctx"
+	"github.com/floegence/redevplugin/pkg/sessionscope"
 	"github.com/floegence/redevplugin/pkg/settings"
 	"github.com/floegence/redevplugin/pkg/storage"
 	"github.com/floegence/redevplugin/pkg/stream"
@@ -148,6 +149,8 @@ var (
 	ErrConnectivityModuleRequired    = errors.New("connectivity module is required")
 	ErrSecretsModuleRequired         = errors.New("secrets module is required")
 	ErrCoreActionModuleRequired      = errors.New("core action module is required")
+	ErrDurableSessionScopeRequired   = errors.New("durable session scope coordinator is required")
+	ErrSessionTeardownIncomplete     = errors.New("plugin session teardown is incomplete")
 )
 
 // HostConfigError identifies the module and adapter that made a host
@@ -608,6 +611,37 @@ type SurfaceCatalogSink interface {
 	PublishSurfaces(ctx context.Context, snapshot SurfaceSnapshot) error
 }
 
+type PrepareSessionScopeCloseRequest struct {
+	Session sessionctx.Context `json:"-"`
+}
+
+type CommitSessionScopeCloseRequest struct {
+	Session  sessionctx.Context            `json:"-"`
+	Identity sessionscope.TeardownIdentity `json:"-"`
+}
+
+type ValidateClosedSessionScopeRequest struct {
+	Session  sessionctx.Context            `json:"-"`
+	Identity sessionscope.TeardownIdentity `json:"-"`
+}
+
+type ReconcileRetainedSessionScopesRequest struct {
+	Scopes []sessionscope.RetainedScope `json:"-"`
+}
+
+// SessionLifecycleAdapter owns durable closed-session identities. Startup
+// reconciliation must verify that every retained platform fence still has its
+// exact host-side closed-session record. Prepare and Commit are idempotent for
+// one exact SessionScope: repeated Prepare calls return the same identity, and
+// repeated Commit calls preserve the same irreversibly closed session. The
+// identity never crosses HTTP, plugin IPC, or runtime payloads.
+type SessionLifecycleAdapter interface {
+	ReconcileRetainedSessionScopes(context.Context, ReconcileRetainedSessionScopesRequest) error
+	PrepareSessionScopeClose(context.Context, PrepareSessionScopeCloseRequest) (sessionscope.TeardownIdentity, error)
+	CommitSessionScopeClose(context.Context, CommitSessionScopeCloseRequest) error
+	ValidateClosedSessionScope(context.Context, ValidateClosedSessionScopeRequest) error
+}
+
 type SurfaceSnapshot struct {
 	PluginInstanceID  string                 `json:"plugin_instance_id"`
 	ActiveFingerprint string                 `json:"active_fingerprint"`
@@ -641,6 +675,8 @@ type CoreAdapters struct {
 	Operations           operation.Store
 	ConfirmationIntents  security.ConfirmationIntentStore
 	Streams              stream.Store
+	SessionLifecycle     SessionLifecycleAdapter
+	SessionScopes        *sessionscope.Coordinator
 }
 
 type ReleaseModule struct {
@@ -713,6 +749,8 @@ type normalizedAdapters struct {
 	Operations                  operation.Store
 	ConfirmationIntents         security.ConfirmationIntentStore
 	Streams                     stream.Store
+	SessionLifecycle            SessionLifecycleAdapter
+	SessionScopes               *sessionscope.Coordinator
 }
 
 type PluginData interface {
@@ -737,7 +775,8 @@ type Host struct {
 	lifecycleLocks      *pluginLifecycleLockRegistry
 	executions          *executionLeaseRegistry
 	streamReads         *streamReadLockRegistry
-	detachedCancelJobs  sync.Map
+	sessionScopes       *sessionscope.Coordinator
+	detachedCancelJobs  *detachedCancelJobRegistry
 	lifecycleCtx        context.Context
 	lifecycleCancel     context.CancelFunc
 	lifecycleMu         sync.RWMutex
@@ -746,6 +785,96 @@ type Host struct {
 	closed              bool
 	closeOnce           sync.Once
 	closeErr            error
+}
+
+type detachedCancelJob struct {
+	operationID string
+	scope       sessionctx.SessionScope
+	cancel      context.CancelCauseFunc
+	done        chan struct{}
+}
+
+type detachedCancelJobRegistry struct {
+	mu        sync.Mutex
+	jobs      map[string]*detachedCancelJob
+	bySession map[sessionctx.SessionScope]map[string]*detachedCancelJob
+}
+
+func newDetachedCancelJobRegistry() *detachedCancelJobRegistry {
+	return &detachedCancelJobRegistry{
+		jobs: make(map[string]*detachedCancelJob), bySession: make(map[sessionctx.SessionScope]map[string]*detachedCancelJob),
+	}
+}
+
+func (r *detachedCancelJobRegistry) register(operationID string, scope sessionctx.SessionScope, cancel context.CancelCauseFunc) (*detachedCancelJob, bool) {
+	if r == nil || strings.TrimSpace(operationID) == "" || scope.Validate() != nil || cancel == nil {
+		return nil, false
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, exists := r.jobs[operationID]; exists {
+		return nil, false
+	}
+	job := &detachedCancelJob{operationID: operationID, scope: scope, cancel: cancel, done: make(chan struct{})}
+	r.jobs[operationID] = job
+	indexed := r.bySession[scope]
+	if indexed == nil {
+		indexed = make(map[string]*detachedCancelJob)
+		r.bySession[scope] = indexed
+	}
+	indexed[operationID] = job
+	return job, true
+}
+
+func (r *detachedCancelJobRegistry) finish(job *detachedCancelJob) {
+	if r == nil || job == nil {
+		return
+	}
+	r.mu.Lock()
+	if r.jobs[job.operationID] == job {
+		delete(r.jobs, job.operationID)
+		indexed := r.bySession[job.scope]
+		delete(indexed, job.operationID)
+		if len(indexed) == 0 {
+			delete(r.bySession, job.scope)
+		}
+		close(job.done)
+	}
+	r.mu.Unlock()
+}
+
+func (r *detachedCancelJobRegistry) cancelSession(ctx context.Context, scope sessionctx.SessionScope, cause error) error {
+	if r == nil {
+		return nil
+	}
+	r.mu.Lock()
+	indexed := r.bySession[scope]
+	jobs := make([]*detachedCancelJob, 0, len(indexed))
+	for _, job := range indexed {
+		jobs = append(jobs, job)
+	}
+	r.mu.Unlock()
+	for _, job := range jobs {
+		job.cancel(cause)
+	}
+	for _, job := range jobs {
+		select {
+		case <-job.done:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	return nil
+}
+
+func (r *detachedCancelJobRegistry) Load(operationID string) (any, bool) {
+	if r == nil {
+		return nil, false
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	job, ok := r.jobs[operationID]
+	return job, ok
 }
 
 type ImportLocalPackageRequest struct {
@@ -984,8 +1113,20 @@ type DisposeSurfaceRequest struct {
 	Now               time.Time `json:"-"`
 }
 
-type RevokeSurfaceScopeRequest struct {
-	Now time.Time `json:"-"`
+type RevokeSessionScopeRequest struct {
+	Identity sessionscope.TeardownIdentity `json:"-"`
+	Now      time.Time                     `json:"-"`
+}
+
+type RevokeSessionScopeResult struct {
+	State    sessionscope.State  `json:"state"`
+	Fenced   bool                `json:"fenced"`
+	Complete bool                `json:"complete"`
+	Counts   sessionscope.Counts `json:"counts"`
+}
+
+type FinalizeSessionScopeRequest struct {
+	Identity sessionscope.TeardownIdentity `json:"-"`
 }
 
 type ReadSurfaceAssetResult struct {
@@ -1164,6 +1305,8 @@ func normalizeConfig(config Config) (normalizedAdapters, map[Feature]struct{}, e
 	adapters.Operations = core.Operations
 	adapters.ConfirmationIntents = core.ConfirmationIntents
 	adapters.Streams = core.Streams
+	adapters.SessionLifecycle = core.SessionLifecycle
+	adapters.SessionScopes = core.SessionScopes
 
 	features := make(map[Feature]struct{}, 6)
 	if module := config.Release; module != nil {
@@ -1219,11 +1362,16 @@ func validateConfig(adapters normalizedAdapters, config Config) error {
 		{"operation store", adapters.Operations},
 		{"confirmation intent store", adapters.ConfirmationIntents},
 		{"stream store", adapters.Streams},
+		{"session lifecycle adapter", adapters.SessionLifecycle},
+		{"session scope coordinator", adapters.SessionScopes},
 	}
 	for _, check := range checks {
 		if isNilInterfaceValue(check.value) {
 			return &HostConfigError{Module: "core", Adapter: check.name}
 		}
+	}
+	if !adapters.SessionScopes.Durable() && hasDurableCoreResourceStore(adapters) {
+		return &HostConfigError{Module: "core", Adapter: "session scope coordinator", Cause: ErrDurableSessionScopeRequired}
 	}
 	if adapters.SurfaceCatalog != nil && isNilInterfaceValue(adapters.SurfaceCatalog) {
 		return &HostConfigError{Module: "core", Adapter: "surface catalog sink"}
@@ -1268,6 +1416,16 @@ func validateConfig(adapters normalizedAdapters, config Config) error {
 		return &HostConfigError{Module: string(FeatureCoreAction), Adapter: "action", Cause: ErrCoreActionModuleRequired}
 	}
 	return nil
+}
+
+func hasDurableCoreResourceStore(adapters normalizedAdapters) bool {
+	return adapters.Registry.Durable() ||
+		adapters.PluginData.Durable() ||
+		adapters.Assets.Durable() ||
+		adapters.InstallStages.Durable() ||
+		adapters.Operations.Durable() ||
+		adapters.ConfirmationIntents.Durable() ||
+		adapters.Streams.Durable()
 }
 
 func isNilInterfaceValue(value any) bool {
@@ -1431,8 +1589,21 @@ func Open(ctx context.Context, config Config) (*Host, error) {
 		lifecycleLocks:      newPluginLifecycleLockRegistry(),
 		executions:          newExecutionLeaseRegistry(),
 		streamReads:         newStreamReadLockRegistry(),
+		detachedCancelJobs:  newDetachedCancelJobRegistry(),
+		sessionScopes:       adapters.SessionScopes,
 		lifecycleCtx:        lifecycleCtx,
 		lifecycleCancel:     lifecycleCancel,
+	}
+	retainedSessionScopes, err := host.sessionScopes.ListRetained(ctx)
+	if err != nil {
+		lifecycleCancel()
+		return nil, fmt.Errorf("reconcile retained session scopes: %w", err)
+	}
+	if err := host.adapters.SessionLifecycle.ReconcileRetainedSessionScopes(ctx, ReconcileRetainedSessionScopesRequest{
+		Scopes: retainedSessionScopes,
+	}); err != nil {
+		lifecycleCancel()
+		return nil, ErrAdapterFailure
 	}
 	if host.securityJournal != nil {
 		if err := host.securityJournal.ReconcilePendingSecurityAudits(ctx); err != nil {
@@ -1667,6 +1838,11 @@ func (h *Host) OpenSurface(ctx context.Context, req OpenSurfaceRequest) (result 
 	if err != nil {
 		return bridge.SurfaceBootstrap{}, err
 	}
+	ctx, releaseReservation, err := h.reserveAuthorizedAction(ctx, authorization)
+	if err != nil {
+		return bridge.SurfaceBootstrap{}, err
+	}
+	defer releaseReservation()
 	session := authorization.session
 	releaseLifecycle, err := h.lifecycleLocks.acquireRead(ctx, req.PluginInstanceID)
 	if err != nil {
@@ -1761,6 +1937,11 @@ func (h *Host) PrepareSurface(ctx context.Context, req PrepareSurfaceRequest) (r
 	if err != nil {
 		return PrepareSurfaceResult{}, err
 	}
+	ctx, releaseReservation, err := h.reserveAuthorizedAction(ctx, authorization)
+	if err != nil {
+		return PrepareSurfaceResult{}, err
+	}
+	defer releaseReservation()
 	session := authorization.session
 	assetSession, err := h.exchangeAssetTicketAuthorized(ctx, authorization, req)
 	if err != nil {
@@ -1946,6 +2127,11 @@ func (h *Host) DisposeSurface(ctx context.Context, req DisposeSurfaceRequest) er
 	if err != nil {
 		return err
 	}
+	_, releaseReservation, err := h.reserveAuthorizedAction(ctx, authorization)
+	if err != nil {
+		return err
+	}
+	defer releaseReservation()
 	session := authorization.session
 	return h.surfaceTokens.DisposeBoundSurface(bridge.DisposeSurfaceRequest{
 		SurfaceInstanceID:    req.SurfaceInstanceID,
@@ -1958,33 +2144,288 @@ func (h *Host) DisposeSurface(ctx context.Context, req DisposeSurfaceRequest) er
 	})
 }
 
-func (h *Host) RevokeSurfaceScope(ctx context.Context, req RevokeSurfaceScopeRequest) (result int, retErr error) {
-	authorization, err := h.authorizeManagement(ctx, ManagementActionRevokeSurfaceScope, authorizationCollectionTarget(ResourceSurface))
+func (h *Host) RevokeSessionScope(ctx context.Context, req RevokeSessionScopeRequest) (result RevokeSessionScopeResult, retErr error) {
+	session, err := requireUserSession(ctx)
 	if err != nil {
-		return 0, err
+		return RevokeSessionScopeResult{}, err
 	}
-	session := authorization.session
-	auditMutation, err := h.beginSecurityMutation(ctx, AuditEvent{Type: "plugin.surface_scope.revoked"})
+	if _, err := h.authorizeManagementSessionWithoutFence(
+		ctx,
+		session,
+		ManagementActionRevokeSessionScope,
+		authorizationCollectionTarget(ResourceSessionScope),
+	); err != nil {
+		return RevokeSessionScopeResult{}, err
+	}
+	scope, err := session.SessionScope()
 	if err != nil {
-		return 0, err
+		return RevokeSessionScopeResult{}, err
+	}
+	auditMutation, err := h.beginSecurityMutation(ctx, AuditEvent{Type: "plugin.session_scope.revoked"})
+	if err != nil {
+		return RevokeSessionScopeResult{}, err
 	}
 	var auditDetails map[string]any
-	defer func() { retErr = auditMutation.completeWithDetails(context.WithoutCancel(ctx), retErr, auditDetails) }()
-	revoked, err := h.surfaceTokens.RevokeSurfaceScope(bridge.RevokeSurfaceScopeRequest{
-		OwnerSessionHash:     session.OwnerSessionHash,
-		OwnerUserHash:        session.OwnerUserHash,
-		OwnerEnvHash:         session.OwnerEnvHash,
-		SessionChannelIDHash: session.SessionChannelIDHash,
-		Now:                  req.Now,
+	defer func() {
+		if auditDetails == nil && result.Fenced {
+			auditDetails = sessionRevokeAuditDetails(result)
+		}
+		completedErr := auditMutation.completeWithDetails(context.WithoutCancel(ctx), retErr, auditDetails)
+		if result.Fenced {
+			retErr = mutation.ForceCommitted(completedErr)
+		} else {
+			retErr = completedErr
+		}
+	}()
+
+	identity := req.Identity
+	var teardown *sessionscope.Teardown
+	var snapshot sessionscope.Snapshot
+	if identity.Valid() {
+		prepared, prepareErr := h.adapters.SessionLifecycle.PrepareSessionScopeClose(ctx, PrepareSessionScopeCloseRequest{Session: session})
+		if prepareErr != nil || !prepared.Matches(identity) {
+			return RevokeSessionScopeResult{}, ErrAdapterFailure
+		}
+		teardown, snapshot, err = h.sessionScopes.BeginTeardown(ctx, scope, identity, req.Now)
+		if err != nil {
+			return RevokeSessionScopeResult{}, err
+		}
+	} else {
+		if strings.TrimSpace(identity.OperationID) != "" {
+			return RevokeSessionScopeResult{}, sessionscope.ErrTeardownIdentityInvalid
+		}
+		identity, err = h.adapters.SessionLifecycle.PrepareSessionScopeClose(ctx, PrepareSessionScopeCloseRequest{Session: session})
+		if err != nil || !identity.Valid() {
+			return RevokeSessionScopeResult{}, ErrAdapterFailure
+		}
+		teardown, snapshot, err = h.sessionScopes.BeginTeardown(ctx, scope, identity, req.Now)
+		if err != nil {
+			return RevokeSessionScopeResult{}, err
+		}
+	}
+	defer teardown.Release()
+	teardownCtx, cancelTeardown := context.WithTimeout(context.WithoutCancel(ctx), sessionScopeTeardownTimeout)
+	defer cancelTeardown()
+	if h.adapters.SessionLifecycle.CommitSessionScopeClose(
+		teardownCtx,
+		CommitSessionScopeCloseRequest{Session: session, Identity: identity},
+	) != nil {
+		return h.markSessionTeardownIncomplete(ctx, teardown, snapshot, req.Now)
+	}
+	if snapshot.State == sessionscope.StateComplete {
+		result = revokeSessionScopeResult(snapshot)
+		auditDetails = sessionRevokeAuditDetails(result)
+		return result, nil
+	}
+
+	bridgePlan, err := h.surfaceTokens.PreviewSessionScopeRevocation(scope)
+	if err != nil {
+		return h.markSessionTeardownIncomplete(ctx, teardown, snapshot, req.Now)
+	}
+	snapshot, err = teardown.AccumulatePhase(teardownCtx, sessionscope.PhaseBridge, sessionscope.Counts{
+		Surfaces:            bridgePlan.Surfaces,
+		AssetTickets:        bridgePlan.Tokens.AssetTickets,
+		AssetSessions:       bridgePlan.Tokens.AssetSessions,
+		PluginGatewayTokens: bridgePlan.Tokens.PluginGatewayTokens,
+		ConfirmationTokens:  bridgePlan.Tokens.ConfirmationTokens,
+		HandleGrants:        bridgePlan.Tokens.HandleGrants,
+		StreamTickets:       bridgePlan.Tokens.StreamTickets,
 	})
 	if err != nil {
-		return 0, err
+		return h.markSessionTeardownIncomplete(ctx, teardown, snapshot, req.Now)
 	}
-	auditDetails = map[string]any{
-		"surface_count":  revoked,
-		"channel_scoped": session.SessionChannelIDHash != "",
+	bridgeResult, err := h.surfaceTokens.RevokeSessionScope(bridge.RevokeSessionScopeRequest{SessionScope: scope, Now: req.Now})
+	if err != nil || bridgeResult != bridgePlan {
+		return h.markSessionTeardownIncomplete(ctx, teardown, snapshot, req.Now)
 	}
-	return revoked, nil
+	confirmations, err := h.adapters.ConfirmationIntents.RevokeSessionConfirmationIntents(
+		teardownCtx,
+		security.RevokeSessionConfirmationIntentsRequest{
+			SessionScope: scope, TeardownOperationID: identity.OperationID, Now: req.Now,
+		},
+	)
+	if err != nil {
+		return h.markSessionTeardownIncomplete(ctx, teardown, snapshot, req.Now)
+	}
+	snapshot, err = teardown.AccumulatePhase(teardownCtx, sessionscope.PhaseConfirmation, sessionscope.Counts{Confirmations: uint64(confirmations)})
+	if err != nil {
+		return h.markSessionTeardownIncomplete(ctx, teardown, snapshot, req.Now)
+	}
+	liveExecutions := h.executions.sessionLeases(scope)
+	snapshot, err = teardown.AccumulatePhase(teardownCtx, sessionscope.PhaseExecution, sessionscope.Counts{RuntimeExecutions: uint64(len(liveExecutions))})
+	if err != nil {
+		return h.markSessionTeardownIncomplete(ctx, teardown, snapshot, req.Now)
+	}
+	for _, lease := range liveExecutions {
+		lease.requestCancel(capability.ErrExecutionRevoked)
+	}
+	runtimeCounts := runtimeclient.SessionRevokeCounts{}
+	if h.adapters.RuntimeManager != nil {
+		runtimeResult, runtimeErr := h.adapters.RuntimeManager.RevokeSession(teardownCtx, runtimeclient.SessionRevokeRequest{
+			SessionScope: scope, SessionRevokeSequence: sessionRevokeSequence(identity.OperationID),
+		})
+		if runtimeErr != nil || runtimeResult.SessionScope != scope || runtimeResult.SessionRevokeSequence != sessionRevokeSequence(identity.OperationID) {
+			return h.markSessionTeardownIncomplete(ctx, teardown, snapshot, req.Now)
+		}
+		runtimeCounts = runtimeResult.Counts
+	}
+	snapshot, err = teardown.AccumulatePhase(teardownCtx, sessionscope.PhaseRuntime, sessionscope.Counts{
+		ActiveNetworkRequests: runtimeCounts.ActiveNetworkRequests,
+		Sockets:               runtimeCounts.Sockets,
+		NetworkStreams:        runtimeCounts.NetworkStreams,
+		StorageHostcalls:      runtimeCounts.StorageHostcalls,
+	})
+	if err != nil {
+		return h.markSessionTeardownIncomplete(ctx, teardown, snapshot, req.Now)
+	}
+	if err := h.detachedCancelJobs.cancelSession(teardownCtx, scope, capability.ErrExecutionRevoked); err != nil {
+		return h.markSessionTeardownIncomplete(ctx, teardown, snapshot, req.Now)
+	}
+	operations, err := h.adapters.Operations.RevokeSessionScope(
+		teardownCtx,
+		operation.RevokeSessionScopeRequest{SessionScope: scope, Now: req.Now},
+	)
+	if err != nil {
+		return h.markSessionTeardownIncomplete(ctx, teardown, snapshot, req.Now)
+	}
+	snapshot, err = teardown.AccumulatePhase(teardownCtx, sessionscope.PhaseOperation, sessionscope.Counts{Operations: uint64(operations.Revoked)})
+	if err != nil {
+		return h.markSessionTeardownIncomplete(ctx, teardown, snapshot, req.Now)
+	}
+	streams, err := h.adapters.Streams.RevokeSessionScope(
+		teardownCtx,
+		stream.RevokeSessionScopeRequest{SessionScope: scope, Now: req.Now},
+	)
+	if err != nil {
+		return h.markSessionTeardownIncomplete(ctx, teardown, snapshot, req.Now)
+	}
+	snapshot, err = teardown.AccumulatePhase(teardownCtx, sessionscope.PhaseStream, sessionscope.Counts{Streams: uint64(streams.Revoked)})
+	if err != nil {
+		return h.markSessionTeardownIncomplete(ctx, teardown, snapshot, req.Now)
+	}
+	reconcileRevokedExecutions(teardownCtx, liveExecutions, capability.ErrExecutionRevoked)
+	for _, lease := range liveExecutions {
+		lease.finish()
+	}
+	snapshot, err = teardown.MarkComplete(teardownCtx, req.Now)
+	if err != nil {
+		return h.markSessionTeardownIncomplete(ctx, teardown, snapshot, req.Now)
+	}
+	result = revokeSessionScopeResult(snapshot)
+	auditDetails = sessionRevokeAuditDetails(result)
+	return result, nil
+}
+
+func sessionRevokeSequence(operationID string) uint64 {
+	digest := sha256.Sum256([]byte("redevplugin/session-revoke/v1\x00" + operationID))
+	sequence := binary.BigEndian.Uint64(digest[:8]) & uint64(1<<53-1)
+	if sequence == 0 {
+		return 1
+	}
+	return sequence
+}
+
+func (h *Host) FinalizeSessionScope(ctx context.Context, req FinalizeSessionScopeRequest) (retErr error) {
+	if !req.Identity.Valid() {
+		return sessionscope.ErrTeardownIdentityInvalid
+	}
+	session, err := requireUserSession(ctx)
+	if err != nil {
+		return err
+	}
+	if _, err := h.authorizeManagementSessionWithoutFence(
+		ctx,
+		session,
+		ManagementActionFinalizeSessionScope,
+		authorizationTarget(ResourceSessionScope, "closed"),
+	); err != nil {
+		return err
+	}
+	if err := h.adapters.SessionLifecycle.ValidateClosedSessionScope(ctx, ValidateClosedSessionScopeRequest{
+		Session: session, Identity: req.Identity,
+	}); err != nil {
+		return ErrAdapterFailure
+	}
+	scope, err := session.SessionScope()
+	if err != nil {
+		return err
+	}
+	snapshot, err := h.sessionScopes.Snapshot(ctx, scope)
+	if err != nil {
+		if errors.Is(err, sessionscope.ErrScopeNotFound) {
+			return sessionscope.ErrClosedSessionProofInvalid
+		}
+		return err
+	}
+	auditMutation, err := h.beginSecurityMutation(ctx, AuditEvent{Type: "plugin.session_scope.finalized"})
+	if err != nil {
+		return err
+	}
+	finalized := false
+	defer func() {
+		completedErr := auditMutation.completeWithDetails(
+			context.WithoutCancel(ctx),
+			retErr,
+			sessionRevokeAuditDetails(revokeSessionScopeResult(snapshot)),
+		)
+		if finalized {
+			retErr = mutation.ForceCommitted(completedErr)
+		} else {
+			retErr = completedErr
+		}
+	}()
+	if err := h.adapters.ConfirmationIntents.FinalizeSessionConfirmationRevocation(ctx, security.FinalizeSessionConfirmationRevocationRequest{
+		SessionScope: scope, TeardownOperationID: req.Identity.OperationID,
+	}); err != nil {
+		return ErrAdapterFailure
+	}
+	if err := h.sessionScopes.Finalize(ctx, scope, req.Identity); err != nil {
+		return err
+	}
+	finalized = true
+	return nil
+}
+
+func (h *Host) markSessionTeardownIncomplete(ctx context.Context, teardown *sessionscope.Teardown, snapshot sessionscope.Snapshot, now time.Time) (RevokeSessionScopeResult, error) {
+	if teardown != nil {
+		if marked, err := teardown.MarkIncomplete(context.WithoutCancel(ctx), now); err == nil {
+			snapshot = marked
+		}
+	}
+	result := revokeSessionScopeResult(snapshot)
+	result.State = sessionscope.StateIncomplete
+	result.Fenced = true
+	result.Complete = false
+	return result, mutation.Committed(ErrSessionTeardownIncomplete)
+}
+
+func revokeSessionScopeResult(snapshot sessionscope.Snapshot) RevokeSessionScopeResult {
+	return RevokeSessionScopeResult{
+		State: snapshot.State, Fenced: snapshot.Fenced, Complete: snapshot.Complete, Counts: snapshot.Counts,
+	}
+}
+
+func sessionRevokeAuditDetails(result RevokeSessionScopeResult) map[string]any {
+	return map[string]any{
+		"session_scope_state":          result.State,
+		"session_scope_fenced":         result.Fenced,
+		"session_scope_complete":       result.Complete,
+		"surface_count":                result.Counts.Surfaces,
+		"asset_ticket_count":           result.Counts.AssetTickets,
+		"asset_session_count":          result.Counts.AssetSessions,
+		"gateway_token_count":          result.Counts.PluginGatewayTokens,
+		"confirmation_token_count":     result.Counts.ConfirmationTokens,
+		"stream_ticket_count":          result.Counts.StreamTickets,
+		"handle_grant_count":           result.Counts.HandleGrants,
+		"confirmation_count":           result.Counts.Confirmations,
+		"operation_count":              result.Counts.Operations,
+		"stream_count":                 result.Counts.Streams,
+		"runtime_execution_count":      result.Counts.RuntimeExecutions,
+		"active_network_request_count": result.Counts.ActiveNetworkRequests,
+		"socket_count":                 result.Counts.Sockets,
+		"network_stream_count":         result.Counts.NetworkStreams,
+		"storage_hostcall_count":       result.Counts.StorageHostcalls,
+	}
 }
 
 func (h *Host) MintBridgeToken(ctx context.Context, req MintBridgeTokenRequest) (result bridge.GatewayTokenResult, retErr error) {
@@ -1997,6 +2438,11 @@ func (h *Host) MintBridgeToken(ctx context.Context, req MintBridgeTokenRequest) 
 	if err != nil {
 		return bridge.GatewayTokenResult{}, err
 	}
+	ctx, releaseReservation, err := h.reserveAuthorizedAction(ctx, authorization)
+	if err != nil {
+		return bridge.GatewayTokenResult{}, err
+	}
+	defer releaseReservation()
 	session := authorization.session
 	validation, err := h.surfaceTokens.ValidateBridgeHandshake(bridge.MintGatewayTokenRequest{
 		Handshake:                 req.Handshake,
@@ -2071,6 +2517,11 @@ func (h *Host) CallPluginMethod(ctx context.Context, req CallMethodRequest) (res
 	if err != nil {
 		return CallMethodResult{}, err
 	}
+	ctx, releaseReservation, err := h.reserveAuthorizedAction(ctx, authorization)
+	if err != nil {
+		return CallMethodResult{}, err
+	}
+	defer releaseReservation()
 	req.session = authorization.session
 	frozenParams, err := deepCloneParams(req.Params)
 	if err != nil {
@@ -2100,7 +2551,7 @@ func (h *Host) CallPluginMethod(ctx context.Context, req CallMethodRequest) (res
 		if err != nil {
 			return CallMethodResult{}, err
 		}
-		intent, consumeErr := h.consumeConfirmationIntent(ctx, req.ConfirmationID, req.Now)
+		intent, consumeErr := h.consumeConfirmationIntent(ctx, req.session, req.ConfirmationID, req.Now)
 		if err := confirmationAudit.complete(context.WithoutCancel(ctx), consumeErr); err != nil {
 			if consumeErr != nil && !errors.Is(err, ErrSecurityEventPersistence) {
 				return CallMethodResult{}, fmt.Errorf("%w: %v", ErrConfirmationInvalid, err)
@@ -2192,6 +2643,11 @@ func (h *Host) PrepareMethodConfirmation(ctx context.Context, req PrepareMethodC
 	if err != nil {
 		return PrepareMethodConfirmationResult{}, err
 	}
+	ctx, releaseReservation, err := h.reserveAuthorizedAction(ctx, authorization)
+	if err != nil {
+		return PrepareMethodConfirmationResult{}, err
+	}
+	defer releaseReservation()
 	session := authorization.session
 	frozenParams, err := deepCloneParams(req.Params)
 	if err != nil {
@@ -2322,6 +2778,11 @@ func (h *Host) RejectMethodConfirmation(ctx context.Context, req RejectMethodCon
 	if err != nil {
 		return RejectMethodConfirmationResult{}, err
 	}
+	ctx, releaseReservation, err := h.reserveAuthorizedAction(ctx, authorization)
+	if err != nil {
+		return RejectMethodConfirmationResult{}, err
+	}
+	defer releaseReservation()
 	session := authorization.session
 	if strings.TrimSpace(req.PluginInstanceID) == "" || strings.TrimSpace(req.SurfaceInstanceID) == "" ||
 		strings.TrimSpace(req.BridgeChannelID) == "" || strings.TrimSpace(req.GatewayToken) == "" ||
@@ -2461,12 +2922,18 @@ func (h *Host) InvokeIntent(ctx context.Context, req InvokeIntentRequest) (respo
 	defer func() {
 		resultErr = finalizeRPCError(ctx, resultErr)
 	}()
-	if _, err := h.authorizeManagementSession(ctx, session, ManagementActionInvokeIntent,
+	authorization, err := h.authorizeManagementSession(ctx, session, ManagementActionInvokeIntent,
 		scopedAuthorizationTarget(ResourceIntent, req.IntentID, sessionctx.ScopeEnvironment),
 		relatedAuthorizationTargets(scopedAuthorizationTarget(ResourcePlugin, req.PluginInstanceID, sessionctx.ScopeEnvironment))...,
-	); err != nil {
+	)
+	if err != nil {
 		return CallMethodResult{}, err
 	}
+	ctx, releaseReservation, err := h.reserveAuthorizedAction(ctx, authorization)
+	if err != nil {
+		return CallMethodResult{}, err
+	}
+	defer releaseReservation()
 	req.session = session
 	resolved, err := h.resolveIntentIdentity(ctx, req)
 	if err != nil {
@@ -2540,8 +3007,8 @@ type resolvedIntentCall struct {
 
 var ErrConfirmationRequired = errors.New("plugin method confirmation required")
 
-const maxPendingConfirmationIntentsPerPlugin = security.DefaultMaxPendingConfirmationIntentsPerPlugin
 const runtimeCapabilityRevokeTimeout = 2 * time.Second
+const sessionScopeTeardownTimeout = 2 * time.Second
 
 func (h *Host) resolveMethodCall(ctx context.Context, req CallMethodRequest) (result resolvedMethodCall, resultErr error) {
 	record, err := h.adapters.Registry.GetPlugin(ctx, req.PluginInstanceID)
@@ -5747,6 +6214,11 @@ func (h *Host) CancelOperation(ctx context.Context, req CancelOperationRequest) 
 	if err != nil {
 		return operation.Record{}, err
 	}
+	ctx, releaseReservation, err := h.reserveAuthorizedAction(ctx, authorization)
+	if err != nil {
+		return operation.Record{}, err
+	}
+	defer releaseReservation()
 	return h.cancelOperationAuthorized(ctx, authorization, req)
 }
 
@@ -5813,7 +6285,9 @@ func (h *Host) dispatchOperationCancellation(ctx context.Context, record operati
 		return fmt.Errorf("%w: %w", ErrOperationCancelDispatchFailed, dispatchErr)
 	}
 	if !matched {
-		h.armDetachedOperationCancelAckTimeout(record)
+		if err := h.armDetachedOperationCancelAckTimeout(ctx, record); err != nil {
+			return fmt.Errorf("%w: %w", ErrOperationCancelDispatchFailed, err)
+		}
 	}
 	return nil
 }
@@ -5830,6 +6304,11 @@ func (h *Host) CancelSurfaceOperation(ctx context.Context, req CancelSurfaceOper
 	if err != nil {
 		return operation.Record{}, err
 	}
+	ctx, releaseReservation, err := h.reserveAuthorizedAction(ctx, authorization)
+	if err != nil {
+		return operation.Record{}, err
+	}
+	defer releaseReservation()
 	session := authorization.session
 	record, err := h.adapters.Operations.Get(ctx, req.OperationID)
 	if err != nil {
@@ -5846,16 +6325,65 @@ func (h *Host) CancelSurfaceOperation(ctx context.Context, req CancelSurfaceOper
 	return h.cancelOperationAuthorized(ctx, authorization, CancelOperationRequest{OperationID: req.OperationID, Reason: req.Reason, Now: req.Now})
 }
 
-func (h *Host) armDetachedOperationCancelAckTimeout(record operation.Record) {
+func (h *Host) armDetachedOperationCancelAckTimeout(ctx context.Context, record operation.Record) error {
 	if record.CancelAckTimeoutMS <= 0 {
-		return
+		return nil
 	}
-	if _, loaded := h.detachedCancelJobs.LoadOrStore(record.OperationID, struct{}{}); loaded {
-		return
+	scope := sessionctx.SessionScope{
+		OwnerSessionHash: record.OwnerSessionHash, OwnerUserHash: record.OwnerUserHash,
+		OwnerEnvHash: record.OwnerEnvHash, SessionChannelIDHash: record.SessionChannelIDHash,
 	}
+	if err := scope.Validate(); err != nil {
+		return err
+	}
+	return h.withSessionScopeReservation(ctx, scope, func() error {
+		return h.armDetachedOperationCancelAckTimeoutReserved(record, scope)
+	})
+}
+
+func (h *Host) withSessionScopeReservation(
+	ctx context.Context,
+	scope sessionctx.SessionScope,
+	action func() error,
+) error {
+	if action == nil {
+		return errors.New("session scope action is required")
+	}
+	reservation, err := h.sessionScopes.Reserve(ctx, scope)
+	if errors.Is(err, sessionscope.ErrSessionRevoked) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	defer reservation.Release()
+	return action()
+}
+
+func (h *Host) armDetachedOperationCancelAckTimeoutReserved(
+	record operation.Record,
+	scope sessionctx.SessionScope,
+) error {
+	h.lifecycleMu.RLock()
+	if h.closed {
+		h.lifecycleMu.RUnlock()
+		return ErrHostClosed
+	}
+	jobCtx, cancel := context.WithCancelCause(h.lifecycleCtx)
+	job, registered := h.detachedCancelJobs.register(record.OperationID, scope, cancel)
+	if !registered {
+		h.lifecycleMu.RUnlock()
+		cancel(nil)
+		return nil
+	}
+	h.lifecycleWG.Add(1)
+	h.lifecycleMu.RUnlock()
 	timeout := time.Duration(record.CancelAckTimeoutMS) * time.Millisecond
-	started := h.startLifecycleJob(func(ctx context.Context) {
-		defer h.detachedCancelJobs.Delete(record.OperationID)
+	go func() {
+		defer h.lifecycleWG.Done()
+		defer h.detachedCancelJobs.finish(job)
+		defer cancel(nil)
+		ctx := jobCtx
 		if !waitForCancellationReconcile(ctx, timeout) {
 			return
 		}
@@ -5902,10 +6430,8 @@ func (h *Host) armDetachedOperationCancelAckTimeout(record operation.Record) {
 				})
 			}
 		}
-	})
-	if !started {
-		h.detachedCancelJobs.Delete(record.OperationID)
-	}
+	}()
+	return nil
 }
 
 func (h *Host) ReadStream(ctx context.Context, req ReadStreamRequest) (ReadStreamResult, error) {
@@ -5919,6 +6445,11 @@ func (h *Host) ReadStream(ctx context.Context, req ReadStreamRequest) (ReadStrea
 	if err != nil {
 		return ReadStreamResult{}, err
 	}
+	ctx, releaseReservation, err := h.reserveAuthorizedAction(ctx, authorization)
+	if err != nil {
+		return ReadStreamResult{}, err
+	}
+	defer releaseReservation()
 	session := authorization.session
 	if strings.TrimSpace(req.StreamTicket) == "" {
 		return ReadStreamResult{}, ErrStreamTicketRequired
@@ -5997,6 +6528,11 @@ func (h *Host) AcknowledgeStream(ctx context.Context, req AcknowledgeStreamReque
 	if err != nil {
 		return stream.Record{}, err
 	}
+	ctx, releaseReservation, err := h.reserveAuthorizedAction(ctx, authorization)
+	if err != nil {
+		return stream.Record{}, err
+	}
+	defer releaseReservation()
 	session := authorization.session
 	if strings.TrimSpace(req.StreamTicket) == "" {
 		return stream.Record{}, ErrStreamTicketRequired
@@ -6086,12 +6622,18 @@ func (h *Host) MintConnectionGrant(ctx context.Context, req MintConnectionGrantR
 	if err != nil {
 		return connectivity.ConnectionGrant{}, err
 	}
-	if _, err := h.authorizeManagementSession(ctx, session, ManagementActionMintConnectionGrant,
+	authorization, err := h.authorizeManagementSession(ctx, session, ManagementActionMintConnectionGrant,
 		scopedAuthorizationTarget(ResourceConnector, normalized.ConnectorID, resourceScope.Kind),
 		scopedAuthorizationTarget(ResourcePlugin, record.PluginInstanceID, sessionctx.ScopeEnvironment),
-	); err != nil {
+	)
+	if err != nil {
 		return connectivity.ConnectionGrant{}, err
 	}
+	ctx, releaseReservation, err := h.reserveAuthorizedAction(ctx, authorization)
+	if err != nil {
+		return connectivity.ConnectionGrant{}, err
+	}
+	defer releaseReservation()
 	auditMutation, err := h.beginSecurityMutation(ctx, AuditEvent{Type: "plugin.connectivity.grant_minted", PluginInstanceID: req.PluginInstanceID})
 	if err != nil {
 		return connectivity.ConnectionGrant{}, err
@@ -6174,13 +6716,18 @@ func (h *Host) MintNetworkHandleGrant(ctx context.Context, req MintConnectionGra
 	if err != nil {
 		return NetworkHandleGrantResult{}, err
 	}
-	_, err = h.authorizeManagementSession(ctx, session, ManagementActionMintNetworkHandleGrant,
+	authorization, err := h.authorizeManagementSession(ctx, session, ManagementActionMintNetworkHandleGrant,
 		scopedAuthorizationTarget(ResourceConnector, normalized.ConnectorID, resourceScope.Kind),
 		scopedAuthorizationTarget(ResourcePlugin, record.PluginInstanceID, sessionctx.ScopeEnvironment),
 	)
 	if err != nil {
 		return NetworkHandleGrantResult{}, err
 	}
+	ctx, releaseReservation, err := h.reserveAuthorizedAction(ctx, authorization)
+	if err != nil {
+		return NetworkHandleGrantResult{}, err
+	}
+	defer releaseReservation()
 	req = normalized
 	if strings.TrimSpace(req.RuntimeGenerationID) == "" {
 		return NetworkHandleGrantResult{}, bridge.ErrMissingTokenAudience
@@ -6256,13 +6803,18 @@ func (h *Host) MintStorageHandleGrant(ctx context.Context, req MintStorageHandle
 	if err != nil {
 		return StorageHandleGrantResult{}, fmt.Errorf("%w: store %q", ErrStorageScopeMismatch, namespace.StoreID)
 	}
-	_, err = h.authorizeManagementSession(ctx, session, ManagementActionMintStorageHandleGrant,
+	authorization, err := h.authorizeManagementSession(ctx, session, ManagementActionMintStorageHandleGrant,
 		scopedAuthorizationTarget(ResourceStore, namespace.StoreID, resourceScope.Kind),
 		scopedAuthorizationTarget(ResourcePlugin, record.PluginInstanceID, sessionctx.ScopeEnvironment),
 	)
 	if err != nil {
 		return StorageHandleGrantResult{}, err
 	}
+	ctx, releaseReservation, err := h.reserveAuthorizedAction(ctx, authorization)
+	if err != nil {
+		return StorageHandleGrantResult{}, err
+	}
+	defer releaseReservation()
 	if strings.TrimSpace(req.RuntimeGenerationID) == "" || strings.TrimSpace(req.StoreID) == "" {
 		return StorageHandleGrantResult{}, bridge.ErrMissingTokenAudience
 	}
@@ -8292,26 +8844,31 @@ func newConfirmationID() (string, error) {
 }
 
 func (h *Host) storeConfirmationIntent(ctx context.Context, req security.PutConfirmationIntentRequest) (security.ConfirmationIntentRecord, error) {
-	req.MaxPendingPerPlugin = maxPendingConfirmationIntentsPerPlugin
 	return h.adapters.ConfirmationIntents.PutConfirmationIntent(ctx, req)
 }
 
-func (h *Host) deleteConfirmationIntentsForPlugin(ctx context.Context, pluginInstanceID string, now time.Time) (int, error) {
+func (h *Host) deleteConfirmationIntentsForPlugin(ctx context.Context, ownerEnvHash string, pluginInstanceID string, now time.Time) (int, error) {
 	return h.adapters.ConfirmationIntents.RevokePluginConfirmationIntents(ctx, security.RevokePluginConfirmationIntentsRequest{
 		PluginInstanceID: pluginInstanceID,
+		OwnerEnvHash:     ownerEnvHash,
 		Now:              now,
 	})
 }
 
-func (h *Host) consumeConfirmationIntent(ctx context.Context, confirmationID string, now time.Time) (security.ConfirmationIntentRecord, error) {
+func (h *Host) consumeConfirmationIntent(ctx context.Context, session sessionctx.Context, confirmationID string, now time.Time) (security.ConfirmationIntentRecord, error) {
 	if strings.TrimSpace(confirmationID) == "" {
 		return security.ConfirmationIntentRecord{}, bridge.ErrMissingTokenAudience
 	}
 	if now.IsZero() {
 		now = time.Now().UTC()
 	}
+	scope, err := session.SessionScope()
+	if err != nil {
+		return security.ConfirmationIntentRecord{}, err
+	}
 	intent, err := h.adapters.ConfirmationIntents.ConsumeConfirmationIntent(ctx, security.ConsumeConfirmationIntentRequest{
 		ConfirmationID: confirmationID,
+		SessionScope:   scope,
 		Now:            now,
 	})
 	err = finalizeRPCError(ctx, err)
@@ -8348,7 +8905,7 @@ func (h *Host) revokePluginRuntimeCapabilities(ctx context.Context, record regis
 			resultErr = errors.Join(resultErr, err)
 		}
 	}
-	revokedConfirmations, err := h.deleteConfirmationIntentsForPlugin(ctx, record.PluginInstanceID, now)
+	revokedConfirmations, err := h.deleteConfirmationIntentsForPlugin(ctx, ownerEnvHash, record.PluginInstanceID, now)
 	if err != nil {
 		resultErr = errors.Join(resultErr, err)
 	}

@@ -6,9 +6,11 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/floegence/redevplugin/pkg/registry"
 	"github.com/floegence/redevplugin/pkg/sessionctx"
+	"github.com/floegence/redevplugin/pkg/sessionscope"
 )
 
 type recordingAuthorizationAdapter struct {
@@ -66,7 +68,8 @@ func TestManagementActionAndResourceContractsAreClosed(t *testing.T) {
 		ManagementActionCancelSurfaceOperation,
 		ManagementActionRejectSurfaceConfirmation,
 		ManagementActionDisposeSurface,
-		ManagementActionRevokeSurfaceScope,
+		ManagementActionRevokeSessionScope,
+		ManagementActionFinalizeSessionScope,
 		ManagementActionCallPluginMethod,
 		ManagementActionPrepareMethodConfirmation,
 		ManagementActionListIntents,
@@ -152,7 +155,8 @@ func TestDirectManagementAPIsSanitizeAuthorizationAdapterFailuresBeforeBusinessV
 		{"cancel surface operation", ManagementActionCancelSurfaceOperation, func() error { _, err := h.CancelSurfaceOperation(ctx, CancelSurfaceOperationRequest{}); return err }},
 		{"reject surface confirmation", ManagementActionRejectSurfaceConfirmation, func() error { _, err := h.RejectMethodConfirmation(ctx, RejectMethodConfirmationRequest{}); return err }},
 		{"dispose surface", ManagementActionDisposeSurface, func() error { return h.DisposeSurface(ctx, DisposeSurfaceRequest{}) }},
-		{"revoke surface scope", ManagementActionRevokeSurfaceScope, func() error { _, err := h.RevokeSurfaceScope(ctx, RevokeSurfaceScopeRequest{}); return err }},
+		{"revoke session scope", ManagementActionRevokeSessionScope, func() error { _, err := h.RevokeSessionScope(ctx, RevokeSessionScopeRequest{}); return err }},
+		{"finalize session scope", ManagementActionFinalizeSessionScope, func() error { return h.FinalizeSessionScope(ctx, FinalizeSessionScopeRequest{}) }},
 		{"call plugin method", ManagementActionCallPluginMethod, func() error { _, err := h.CallPluginMethod(ctx, CallMethodRequest{}); return err }},
 		{"prepare method confirmation", ManagementActionPrepareMethodConfirmation, func() error {
 			_, err := h.PrepareMethodConfirmation(ctx, PrepareMethodConfirmationRequest{})
@@ -249,6 +253,42 @@ func TestAuthorizeManagementRejectsUnknownActionAndInvalidOwner(t *testing.T) {
 	}
 	if len(authorization.requests) != 0 {
 		t.Fatalf("invalid owner reached adapter with requests %#v", authorization.requests)
+	}
+}
+
+func TestAuthorizationRunsBeforeSessionFenceAndFencedActionsAreRejected(t *testing.T) {
+	authorization := &recordingAuthorizationAdapter{err: ErrActionDenied}
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{authorization: authorization})
+	ctx := hostTestContext()
+	session, err := requireUserSession(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	scope, err := session.SessionScope()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.Features(ctx); !errors.Is(err, ErrActionDenied) {
+		t.Fatalf("Features(denied) error = %v, want ErrActionDenied", err)
+	}
+	if _, err := h.sessionScopes.Snapshot(ctx, scope); !errors.Is(err, sessionscope.ErrScopeNotFound) {
+		t.Fatalf("denied authorization created a session gate: %v", err)
+	}
+	identity, err := h.adapters.SessionLifecycle.PrepareSessionScopeClose(ctx, PrepareSessionScopeCloseRequest{Session: session})
+	if err != nil {
+		t.Fatal(err)
+	}
+	teardown, _, err := h.sessionScopes.BeginTeardown(ctx, scope, identity, time.Unix(1, 0).UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer teardown.Release()
+	authorization.err = nil
+	if _, err := h.Features(ctx); !errors.Is(err, sessionscope.ErrSessionRevoked) {
+		t.Fatalf("Features(fenced) error = %v, want ErrSessionRevoked", err)
+	}
+	if len(authorization.requests) != 2 {
+		t.Fatalf("authorization request count = %d, want 2", len(authorization.requests))
 	}
 }
 

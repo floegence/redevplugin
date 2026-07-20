@@ -130,7 +130,7 @@ func TestExamplesWeatherPluginFetchesLiveForecast(t *testing.T) {
 	serverResult := make(chan error, 1)
 	hostReady := make(chan *host.Host, 1)
 	go func() {
-		serverResult <- examplesServerWithOptions(ctx, t.TempDir(), runtimePath, examplesServerOptions{
+		serverResult <- examplesServerWithOptions(ctx, privateExamplesStateRoot(t), runtimePath, examplesServerOptions{
 			Listener:          listener,
 			Output:            io.Discard,
 			RepositoryRoot:    repositoryRoot,
@@ -281,7 +281,7 @@ func TestExamplesServerBrowserSmoke(t *testing.T) {
 	}
 	repositoryRoot := cliRepoRoot(t)
 	runtimePath := buildExamplesRuntime(t, repositoryRoot)
-	stateRoot := t.TempDir()
+	stateRoot := privateExamplesStateRoot(t)
 	primeExamplesPersistentState(t, stateRoot, runtimePath, repositoryRoot)
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -337,6 +337,15 @@ func TestExamplesServerBrowserSmoke(t *testing.T) {
 		diagnostics, diagnosticErr := pluginHost.ListDiagnosticEvents(examplesContext(context.Background()), host.ListDiagnosticEventsRequest{Limit: 50})
 		t.Fatalf("examples browser smoke failed: %v\n%s\nruntime health: %#v (error=%v)\ndiagnostics: %#v (error=%v)\ninternal diagnostics: %#v", err, output, health, healthErr, diagnostics, diagnosticErr, events.snapshotDiagnostics())
 	}
+}
+
+func privateExamplesStateRoot(t *testing.T) string {
+	t.Helper()
+	stateRoot := filepath.Join(t.TempDir(), "state")
+	if err := os.Mkdir(stateRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	return stateRoot
 }
 
 func primeExamplesPersistentState(t *testing.T, stateRoot string, runtimePath string, repositoryRoot string) {

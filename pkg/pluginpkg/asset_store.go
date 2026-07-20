@@ -16,6 +16,7 @@ var (
 )
 
 type AssetStore interface {
+	Durable() bool
 	// PutOwnedPackage takes ownership of pkg.Files and pkg.SignatureFiles when
 	// the call begins, including when the operation returns an error. Callers
 	// must not retain aliases to transferred byte slices.
@@ -40,6 +41,8 @@ type memoryAssetPackage struct {
 func NewMemoryAssetStore() *MemoryAssetStore {
 	return &MemoryAssetStore{packages: map[string]memoryAssetPackage{}}
 }
+
+func (*MemoryAssetStore) Durable() bool { return false }
 
 func (s *MemoryAssetStore) PutOwnedPackage(_ context.Context, pkg *Package) error {
 	if s == nil {

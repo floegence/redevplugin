@@ -22,6 +22,9 @@
         "PLUGIN_SECRET_SCOPE_MISMATCH",
         "PLUGIN_STORAGE_SCOPE_MISMATCH",
         "PLUGIN_ADAPTER_FAILURE",
+        "PLUGIN_SESSION_REVOKED",
+        "PLUGIN_SESSION_TEARDOWN_INCOMPLETE",
+        "PLUGIN_SESSION_FENCE_CAPACITY",
         "PLUGIN_CONFIRMATION_REQUIRED",
         "PLUGIN_CONFIRMATION_INVALID",
         "PLUGIN_TOKEN_EXPIRED",
@@ -319,10 +322,10 @@
     function hasAllowedKeys(value, keys) {
         return isRecord(value) && Object.keys(value).every((key) => keys.includes(key));
     }
-    var registrations = new WeakMap();
+    var scopes = new WeakMap();
     var PluginSurfaceScope = class _PluginSurfaceScope {
         constructor() {
-            registrations.set(this, new Map());
+            scopes.set(this, { invalidated: false, registrations: new Map() });
         }
         static create() {
             return new _PluginSurfaceScope();
@@ -1269,7 +1272,7 @@
             return false;
         if (value.ok === true)
             return Object.keys(value).every((key) => ["type", "id", "ok", "data"].includes(key));
-        if (value.ok !== false || typeof value.error_code !== "string" || !pluginBridgeErrorCodeSet.has(value.error_code) || typeof value.error !== "string" || value.error.length > 4096 || !Object.keys(value).every((key) => ["type", "id", "ok", "error_code", "error", "error_details", "mutation_outcome"].includes(key)) || value.mutation_outcome !== void 0 && value.mutation_outcome !== "not_committed" && value.mutation_outcome !== "unknown") {
+        if (value.ok !== false || typeof value.error_code !== "string" || !pluginBridgeErrorCodeSet.has(value.error_code) || typeof value.error !== "string" || value.error.length > 4096 || !Object.keys(value).every((key) => ["type", "id", "ok", "error_code", "error", "error_details", "mutation_outcome"].includes(key)) || value.mutation_outcome !== void 0 && value.mutation_outcome !== "committed" && value.mutation_outcome !== "not_committed" && value.mutation_outcome !== "unknown") {
             return false;
         }
         if (value.error_code === "PLUGIN_CAPABILITY_ERROR")

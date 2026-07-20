@@ -153,6 +153,7 @@ type AuthorizationStore interface {
 }
 
 type Store interface {
+	Durable() bool
 	AuthorizationStore
 	plugindata.Catalog
 	PutPlugin(ctx context.Context, record PluginRecord, opts PutOptions) (PluginRecord, error)
@@ -188,6 +189,8 @@ func NewMemoryStore() *MemoryStore {
 		dataObjects:      map[string]plugindata.Object{},
 	}
 }
+
+func (*MemoryStore) Durable() bool { return false }
 
 func (s *MemoryStore) PutPlugin(ctx context.Context, record PluginRecord, opts PutOptions) (PluginRecord, error) {
 	ownerEnvHash, err := environmentOwner(ctx)

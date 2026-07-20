@@ -313,7 +313,7 @@ func TestCLIScaffoldRunsGeneratedWorkerThroughBuiltRustRuntime(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	adapters := newEphemeralCLIAdapters(registryStore, pluginData)
+	adapters := newTestEphemeralCLIAdapters(t, ctx, dir, registryStore, pluginData)
 	runtimeManager, err := newCommandRuntimeManager(commandRuntimeDependencies{
 		Path:             runtimePath,
 		Descriptor:       mustDescribeCommandRuntime(t, runtimePath),
@@ -450,7 +450,7 @@ func TestCommandRuntimeManagerRequiresExplicitShardCount(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = pluginData.Close() })
-	adapters := newEphemeralCLIAdapters(registryStore, pluginData)
+	adapters := newTestEphemeralCLIAdapters(t, ctx, t.TempDir(), registryStore, pluginData)
 	_, err = newCommandRuntimeManager(commandRuntimeDependencies{
 		Path:            os.Args[0],
 		Descriptor:      mustDescribeCommandRuntime(t, os.Args[0]),
@@ -475,7 +475,7 @@ func TestCommandRuntimeManagerProvidesExplicitRuntimeTiming(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = pluginData.Close() })
-	adapters := newEphemeralCLIAdapters(registryStore, pluginData)
+	adapters := newTestEphemeralCLIAdapters(t, ctx, t.TempDir(), registryStore, pluginData)
 	_, err = newCommandRuntimeManager(commandRuntimeDependencies{
 		Path:             os.Args[0],
 		Descriptor:       mustDescribeCommandRuntime(t, os.Args[0]),
@@ -533,7 +533,7 @@ func TestCommandRuntimeManagerRejectsMissingDescriptor(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = pluginData.Close() })
-	adapters := newEphemeralCLIAdapters(registryStore, pluginData)
+	adapters := newTestEphemeralCLIAdapters(t, ctx, t.TempDir(), registryStore, pluginData)
 	_, err = newCommandRuntimeManager(commandRuntimeDependencies{
 		Path:             os.Args[0],
 		Diagnostics:      adapters.Core.Diagnostics,
@@ -548,6 +548,19 @@ func TestCommandRuntimeManagerRejectsMissingDescriptor(t *testing.T) {
 	if !errors.Is(err, runtimeclient.ErrRuntimeDescriptorInvalid) {
 		t.Fatalf("newCommandRuntimeManager() error = %v, want %v", err, runtimeclient.ErrRuntimeDescriptorInvalid)
 	}
+}
+
+func newTestEphemeralCLIAdapters(t *testing.T, ctx context.Context, stateRoot string, registryStore registry.Store, pluginData host.PluginData) host.Config {
+	t.Helper()
+	if err := os.Chmod(stateRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	config, sessionScopeStore, err := newEphemeralCLIAdapters(ctx, stateRoot, registryStore, pluginData)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = sessionScopeStore.Close() })
+	return config
 }
 
 func mustDescribeCommandRuntime(t *testing.T, path string) runtimeclient.RuntimeDescriptor {

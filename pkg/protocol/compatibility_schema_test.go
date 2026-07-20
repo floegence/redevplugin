@@ -30,14 +30,14 @@ func TestCompatibilityManifestSchemaDefinesReleasedMatrix(t *testing.T) {
 	for name, want := range map[string]string{
 		"plugin_ui_protocol_version":              "plugin-ui-v5",
 		"plugin_host_protocol_version":            "plugin-host-v5",
-		"rust_ipc_version":                        "rust-ipc-v4",
+		"rust_ipc_version":                        "rust-ipc-v5",
 		"wasm_abi_version":                        "redevplugin-wasm-worker-v2",
 		"manifest_schema_version":                 "manifest-v5",
 		"package_signature_schema_version":        "package-signature-v1",
 		"release_metadata_schema_version":         "release-metadata-v5",
 		"source_policy_schema_version":            "source-policy-v1",
 		"source_revocations_schema_version":       "source-revocations-v1",
-		"token_ticket_schema_version":             "token-ticket-v3",
+		"token_ticket_schema_version":             "token-ticket-v4",
 		"bridge_schema_version":                   "bridge-v5",
 		"opaque_surface_document_schema_version":  "opaque-surface-document-v3",
 		"opaque_surface_transport_schema_version": "opaque-surface-transport-v4",
@@ -48,7 +48,7 @@ func TestCompatibilityManifestSchemaDefinesReleasedMatrix(t *testing.T) {
 		"compatibility_schema_version":            "compatibility-manifest-v7",
 		"release_manifest_schema_version":         "release-manifest-v4",
 		"worker_invocation_schema_version":        "worker-invocation-v3",
-		"error_codes_schema_version":              "error-codes-v4",
+		"error_codes_schema_version":              "error-codes-v5",
 		"performance_contract_version":            "performance-contract-v2",
 		"performance_evidence_schema_version":     "performance-evidence-v2",
 		"contract_registry_version":               "contract-registry-v1",
@@ -151,7 +151,7 @@ func TestContractRegistryPublishesOnlyCurrentPlatformContracts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(errorCodeSchemas) != 1 || filepath.Base(errorCodeSchemas[0]) != "error-codes-v4.schema.json" {
-		t.Fatalf("stable error-code schemas = %#v, want only error-codes-v4.schema.json", errorCodeSchemas)
+	if len(errorCodeSchemas) != 1 || filepath.Base(errorCodeSchemas[0]) != "error-codes-v5.schema.json" {
+		t.Fatalf("stable error-code schemas = %#v, want only error-codes-v5.schema.json", errorCodeSchemas)
 	}
 }

@@ -44,6 +44,31 @@ class FakeFetch {
   };
 }
 
+function sessionScopeRevokeResult(state: "fenced" | "draining" | "incomplete" | "complete" = "complete") {
+  return {
+    state,
+    fenced: true as const,
+    complete: state === "complete",
+    counts: {
+      surfaces: 3,
+      asset_tickets: 1,
+      asset_sessions: 1,
+      plugin_gateway_tokens: 1,
+      confirmation_tokens: 0,
+      stream_tickets: 0,
+      handle_grants: 0,
+      confirmations: 0,
+      operations: 0,
+      streams: 0,
+      runtime_executions: 0,
+      active_network_requests: 0,
+      sockets: 0,
+      network_streams: 0,
+      storage_hostcalls: 0,
+    },
+  };
+}
+
 test("stable error-code exports separate platform, bridge, and client-only codes", () => {
   assert.equal(pluginPlatformErrorCodes.includes("PLUGIN_JSON_LIMIT_EXCEEDED"), true);
   assert.equal(pluginPlatformErrorCodes.includes("PLUGIN_AUTHORIZATION_REVISION_MISMATCH"), true);
@@ -66,16 +91,263 @@ test("generated contract registry exports immutable artifact hashes", () => {
   }
 });
 
-test("platform client revokes the authenticated surface scope without caller-supplied identity", async () => {
+test("platform client revokes the authenticated session scope without caller-supplied identity", async () => {
   const fetch = new FakeFetch();
-  fetch.push({ ok: true, data: { revoked_surface_count: 3 } });
+  fetch.push({ ok: true, data: sessionScopeRevokeResult() });
   const client = new PluginPlatformClient({ fetch: fetch.fetch });
 
-  const result = await client.revokeSurfaceScope();
+  const result = await client.revokeSessionScope();
 
-  assert.deepEqual(result, { revoked_surface_count: 3 });
-  assert.equal(fetch.calls[0]?.input, "/_redevplugin/api/plugins/surfaces/revoke-scope");
+  assert.equal(result.state, "complete");
+  assert.equal(result.counts.surfaces, 3);
+  assert.equal(fetch.calls[0]?.input, "/_redevplugin/api/plugins/session/revoke-scope");
   assert.deepEqual(JSON.parse(fetch.calls[0]?.init.body ?? ""), {});
+  assert.equal("revokeSurfaceScope" in client, false);
+});
+
+test("successful envelope cannot report an incomplete session revoke", async () => {
+  const fetch = new FakeFetch();
+  fetch.push({ ok: true, data: sessionScopeRevokeResult("incomplete") });
+  let invalidated = 0;
+  let unknown = 0;
+  const scope = createPluginSurfaceScope();
+  registerPluginSurface(scope, "plugin_instance_1", () => undefined, () => { invalidated += 1; });
+  const client = new PluginPlatformClient({
+    fetch: fetch.fetch,
+    surfaceScope: scope,
+    onMutationOutcomeUnknown: () => { unknown += 1; },
+  });
+
+  await assert.rejects(() => client.revokeSessionScope(), (error: unknown) => error instanceof PluginTransportError);
+  assert.equal(invalidated, 1);
+  assert.equal(unknown, 1);
+});
+
+test("committed session teardown failure invalidates locally without reporting unknown outcome", async () => {
+  const fetch = new FakeFetch();
+  fetch.push({
+    ok: false,
+    error: {
+      code: "PLUGIN_SESSION_TEARDOWN_INCOMPLETE",
+      message: "plugin session teardown is incomplete",
+      details: { session_scope: sessionScopeRevokeResult("incomplete") },
+      mutation_outcome: "committed",
+    },
+  }, 503);
+  let invalidated = 0;
+  let unknown = 0;
+  const scope = createPluginSurfaceScope();
+  registerPluginSurface(scope, "plugin_instance_1", () => undefined, () => { invalidated += 1; });
+  const client = new PluginPlatformClient({
+    fetch: fetch.fetch,
+    surfaceScope: scope,
+    onMutationOutcomeUnknown: () => { unknown += 1; },
+  });
+
+  await assert.rejects(() => client.revokeSessionScope(), (error: unknown) => {
+    assert.equal(error instanceof PluginPlatformRequestError, true);
+    assert.equal((error as PluginPlatformRequestError).mutationOutcome, "committed");
+    return true;
+  });
+  assert.equal(invalidated, 1);
+  assert.equal(unknown, 0);
+  assert.equal(fetch.calls.length, 1);
+});
+
+test("committed session teardown failure requires exact incomplete scope details", async () => {
+  const fetch = new FakeFetch();
+  fetch.push({
+    ok: false,
+    error: {
+      code: "PLUGIN_SESSION_TEARDOWN_INCOMPLETE",
+      message: "plugin session teardown is incomplete",
+      details: {},
+      mutation_outcome: "committed",
+    },
+  }, 503);
+  let invalidated = 0;
+  let unknown = 0;
+  const scope = createPluginSurfaceScope();
+  registerPluginSurface(scope, "plugin_instance_1", () => undefined, () => { invalidated += 1; });
+  const client = new PluginPlatformClient({
+    fetch: fetch.fetch,
+    surfaceScope: scope,
+    onMutationOutcomeUnknown: () => { unknown += 1; },
+  });
+
+  await assert.rejects(() => client.revokeSessionScope(), (error: unknown) =>
+    error instanceof PluginTransportError && error.mutationOutcome === "unknown"
+  );
+  assert.equal(invalidated, 1);
+  assert.equal(unknown, 1);
+});
+
+test("not-committed session revoke preserves local surfaces without unknown notification", async () => {
+  const fetch = new FakeFetch();
+  fetch.push({
+    ok: false,
+    error: {
+      code: "PLUGIN_ADAPTER_FAILURE",
+      message: "session close was rejected before commit",
+      details: {},
+      mutation_outcome: "not_committed",
+    },
+  }, 503);
+  let invalidated = 0;
+  let unknown = 0;
+  const scope = createPluginSurfaceScope();
+  const unregister = registerPluginSurface(scope, "plugin_instance_1", () => undefined, () => { invalidated += 1; });
+  const client = new PluginPlatformClient({
+    fetch: fetch.fetch,
+    surfaceScope: scope,
+    onMutationOutcomeUnknown: () => { unknown += 1; },
+  });
+
+  await assert.rejects(() => client.revokeSessionScope(), (error: unknown) =>
+    error instanceof PluginPlatformRequestError && error.mutationOutcome === "not_committed"
+  );
+  assert.equal(invalidated, 0);
+  assert.equal(unknown, 0);
+  unregister();
+});
+
+test("post-dispatch session revoke abort invalidates locally and reports unknown once", async () => {
+  const controller = new AbortController();
+  let calls = 0;
+  const fetch: FetchLike = (_input, init) => new Promise((_resolve, reject) => {
+    calls += 1;
+    init.signal?.addEventListener("abort", () => reject(init.signal?.reason), { once: true });
+  });
+  let invalidated = 0;
+  let unknown = 0;
+  const scope = createPluginSurfaceScope();
+  registerPluginSurface(scope, "plugin_instance_1", () => undefined, () => { invalidated += 1; });
+  const client = new PluginPlatformClient({
+    fetch,
+    surfaceScope: scope,
+    onMutationOutcomeUnknown: () => { unknown += 1; },
+  });
+  const revocation = client.revokeSessionScope({ signal: controller.signal });
+  assert.equal(calls, 1);
+  controller.abort("session closed while request was in flight");
+
+  await assert.rejects(revocation, (error: unknown) =>
+    error instanceof PluginTransportError && error.mutationOutcome === "unknown"
+  );
+  assert.equal(invalidated, 1);
+  assert.equal(unknown, 1);
+});
+
+test("pre-aborted session revoke remains not committed and preserves local surfaces", async () => {
+  const fetch = new FakeFetch();
+  const controller = new AbortController();
+  controller.abort("session close cancelled before dispatch");
+  let invalidated = 0;
+  let unknown = 0;
+  const scope = createPluginSurfaceScope();
+  const unregister = registerPluginSurface(scope, "plugin_instance_1", () => undefined, () => { invalidated += 1; });
+  const client = new PluginPlatformClient({
+    fetch: fetch.fetch,
+    surfaceScope: scope,
+    onMutationOutcomeUnknown: () => { unknown += 1; },
+  });
+
+  await assert.rejects(client.revokeSessionScope({ signal: controller.signal }), (error: unknown) =>
+    error instanceof PluginTransportError && error.mutationOutcome === "not_committed"
+  );
+  assert.equal(fetch.calls.length, 0);
+  assert.equal(invalidated, 0);
+  assert.equal(unknown, 0);
+  unregister();
+});
+
+test("invalid session revoke result is unknown and invalidates local surfaces", async () => {
+  const fetch = new FakeFetch();
+  fetch.push({ ok: true, data: { ...sessionScopeRevokeResult(), unexpected: true } });
+  let invalidated = 0;
+  let unknown = 0;
+  const scope = createPluginSurfaceScope();
+  registerPluginSurface(scope, "plugin_instance_1", () => undefined, () => { invalidated += 1; });
+  const client = new PluginPlatformClient({
+    fetch: fetch.fetch,
+    surfaceScope: scope,
+    onMutationOutcomeUnknown: () => { unknown += 1; },
+  });
+
+  await assert.rejects(client.revokeSessionScope(), (error: unknown) =>
+    error instanceof PluginTransportError && error.mutationOutcome === "unknown"
+  );
+  assert.equal(invalidated, 1);
+  assert.equal(unknown, 1);
+});
+
+test("session revoke result validation is exact and JavaScript-safe", async () => {
+	const withoutStreams = sessionScopeRevokeResult() as Record<string, any>;
+	const incompleteCounts = { ...withoutStreams.counts };
+	delete incompleteCounts.streams;
+  const invalidResults = [
+    { ...sessionScopeRevokeResult(), state: "active", complete: false },
+    { ...sessionScopeRevokeResult(), complete: false },
+    { ...sessionScopeRevokeResult(), counts: incompleteCounts },
+    { ...sessionScopeRevokeResult(), counts: { ...sessionScopeRevokeResult().counts, streams: -1 } },
+    { ...sessionScopeRevokeResult(), counts: { ...sessionScopeRevokeResult().counts, streams: Number.MAX_SAFE_INTEGER + 1 } },
+  ];
+
+  for (const data of invalidResults) {
+    const fetch = new FakeFetch();
+    fetch.push({ ok: true, data });
+    let invalidated = 0;
+    let unknown = 0;
+    const scope = createPluginSurfaceScope();
+    registerPluginSurface(scope, "plugin_instance_1", () => undefined, () => { invalidated += 1; });
+    const client = new PluginPlatformClient({
+      fetch: fetch.fetch,
+      surfaceScope: scope,
+      onMutationOutcomeUnknown: () => { unknown += 1; },
+    });
+
+    await assert.rejects(client.revokeSessionScope(), (error: unknown) =>
+      error instanceof PluginTransportError && error.mutationOutcome === "unknown"
+    );
+    assert.equal(invalidated, 1);
+    assert.equal(unknown, 1);
+  }
+});
+
+test("invalid session revoke envelope is unknown and invalidates local surfaces", async () => {
+  const fetch = new FakeFetch();
+  fetch.push({ ok: true, data: sessionScopeRevokeResult(), unexpected: true });
+  let invalidated = 0;
+  let unknown = 0;
+  const scope = createPluginSurfaceScope();
+  registerPluginSurface(scope, "plugin_instance_1", () => undefined, () => { invalidated += 1; });
+  const client = new PluginPlatformClient({
+    fetch: fetch.fetch,
+    surfaceScope: scope,
+    onMutationOutcomeUnknown: () => { unknown += 1; },
+  });
+
+  await assert.rejects(client.revokeSessionScope(), (error: unknown) =>
+    error instanceof PluginTransportError && error.mutationOutcome === "unknown"
+  );
+  assert.equal(invalidated, 1);
+  assert.equal(unknown, 1);
+});
+
+test("concurrent session revokes invalidate each local surface exactly once", async () => {
+  const fetch = new FakeFetch();
+  fetch.push({ ok: true, data: sessionScopeRevokeResult() });
+  fetch.push({ ok: true, data: sessionScopeRevokeResult() });
+  const invalidated: string[] = [];
+  const scope = createPluginSurfaceScope();
+  registerPluginSurface(scope, "plugin_instance_1", () => undefined, () => { invalidated.push("one"); });
+  registerPluginSurface(scope, "plugin_instance_2", () => undefined, () => { invalidated.push("two"); });
+  const client = new PluginPlatformClient({ fetch: fetch.fetch, surfaceScope: scope });
+
+  await Promise.all([client.revokeSessionScope(), client.revokeSessionScope()]);
+
+  assert.deepEqual(invalidated.sort(), ["one", "two"]);
+  assert.equal(fetch.calls.length, 2);
 });
 
 test("surface reload limiter caps consecutive automatic reloads", () => {
@@ -189,14 +461,14 @@ test("platform client reads compatibility manifest through host API", async () =
         redevplugin_runtime_version: "0.0.0-dev",
         plugin_ui_protocol_version: "plugin-ui-v5",
         plugin_host_protocol_version: "plugin-host-v5",
-        rust_ipc_version: "rust-ipc-v4",
+        rust_ipc_version: "rust-ipc-v5",
         wasm_abi_version: "redevplugin-wasm-worker-v2",
         manifest_schema_version: "manifest-v5",
         package_signature_schema_version: "package-signature-v1",
         release_metadata_schema_version: "release-metadata-v5",
         source_policy_schema_version: "source-policy-v1",
         source_revocations_schema_version: "source-revocations-v1",
-        token_ticket_schema_version: "token-ticket-v3",
+        token_ticket_schema_version: "token-ticket-v4",
         bridge_schema_version: "bridge-v5",
         opaque_surface_document_schema_version: "opaque-surface-document-v3",
         opaque_surface_transport_schema_version: "opaque-surface-transport-v4",
@@ -213,7 +485,7 @@ test("platform client reads compatibility manifest through host API", async () =
         host_capability_compatibility_schema_version: "host-capability-compatibility-v1",
         host_capability_signature_schema_version: "host-capability-signature-v1",
         host_capability_notices_schema_version: "host-capability-notices-v1",
-        error_codes_schema_version: "error-codes-v4",
+        error_codes_schema_version: "error-codes-v5",
         performance_evidence_schema_version: "performance-evidence-v2",
         contract_registry_version: "contract-registry-v1",
       },
@@ -226,8 +498,8 @@ test("platform client reads compatibility manifest through host API", async () =
         },
         {
           id: "rust-ipc-schema",
-          path: "spec/plugin/ipc-v4.schema.json",
-          version: "rust-ipc-v4",
+          path: "spec/plugin/ipc-v5.schema.json",
+          version: "rust-ipc-v5",
           sha256: "sha256-ipc",
         },
       ],
@@ -372,7 +644,7 @@ test("in-flight platform query abort remains safe and preserves surface scope", 
   const scope = createPluginSurfaceScope();
   let disposed = 0;
   let unknownOutcomes = 0;
-  const unregister = registerPluginSurface(scope, "plugin_instance_1", () => { disposed += 1; });
+  const unregister = registerPluginSurface(scope, "plugin_instance_1", () => { disposed += 1; }, () => undefined);
   const client = new PluginPlatformClient({
     fetch,
     surfaceScope: scope,
@@ -516,7 +788,7 @@ test("local import update canonicalizes identity for transport and teardown", as
   fetch.push({ ok: true, data: { plugin_instance_id: "plugin_instance_1", plugin_id: "com.example.plugin", version: "1.1.0", active_fingerprint: "sha256:b", trust_state: "verified", enable_state: "disabled" } });
   const scope = createPluginSurfaceScope();
   let disposed = 0;
-  registerPluginSurface(scope, "plugin_instance_1", () => { disposed += 1; });
+  registerPluginSurface(scope, "plugin_instance_1", () => { disposed += 1; }, () => undefined);
   const client = new PluginLocalImportClient({ fetch: fetch.fetch, surfaceScope: scope });
 
   await client.updateLocalPackage("  plugin_instance_1  ", 7, new Blob(["pkg"]));
@@ -541,7 +813,7 @@ test("local import update canonicalizes identity for transport and teardown", as
   const unknownScope = createPluginSurfaceScope();
   let unknownDisposed = 0;
   let unknownPluginInstanceId: string | undefined;
-  registerPluginSurface(unknownScope, "plugin_instance_1", () => { unknownDisposed += 1; });
+  registerPluginSurface(unknownScope, "plugin_instance_1", () => { unknownDisposed += 1; }, () => undefined);
   const failingClient = new PluginLocalImportClient({
     fetch: async () => { throw new Error("private network failure"); },
     surfaceScope: unknownScope,
@@ -560,7 +832,7 @@ test("pre-aborted platform mutations remain not committed without surface teardo
   const fetch = new FakeFetch();
   const scope = createPluginSurfaceScope();
   let disposed = 0;
-  const unregister = registerPluginSurface(scope, "plugin_instance_1", () => { disposed += 1; });
+  const unregister = registerPluginSurface(scope, "plugin_instance_1", () => { disposed += 1; }, () => undefined);
   const unknown: Array<string | undefined> = [];
   const client = new PluginPlatformClient({
     fetch: fetch.fetch,
@@ -592,7 +864,7 @@ test("synchronous mutation fetch failures remain not committed", async () => {
   }) as FetchLike;
   const scope = createPluginSurfaceScope();
   let disposed = 0;
-  const unregister = registerPluginSurface(scope, "plugin_instance_1", () => { disposed += 1; });
+  const unregister = registerPluginSurface(scope, "plugin_instance_1", () => { disposed += 1; }, () => undefined);
   let notified = false;
   const client = new PluginPlatformClient({
     fetch,
@@ -618,7 +890,7 @@ test("mutation serialization failures remain not committed", async () => {
   const fetch = new FakeFetch();
   const scope = createPluginSurfaceScope();
   let disposed = 0;
-  const unregister = registerPluginSurface(scope, "plugin_instance_1", () => { disposed += 1; });
+  const unregister = registerPluginSurface(scope, "plugin_instance_1", () => { disposed += 1; }, () => undefined);
   let notified = false;
   const client = new PluginPlatformClient({
     fetch: fetch.fetch,
@@ -646,7 +918,7 @@ test("pre-aborted local updates remain not committed without surface teardown", 
   const fetch = new FakeFetch();
   const scope = createPluginSurfaceScope();
   let disposed = 0;
-  const unregister = registerPluginSurface(scope, "plugin_instance_1", () => { disposed += 1; });
+  const unregister = registerPluginSurface(scope, "plugin_instance_1", () => { disposed += 1; }, () => undefined);
   let notified = false;
   const client = new PluginLocalImportClient({
     fetch: fetch.fetch,
@@ -688,7 +960,7 @@ test("post-dispatch local abort preserves unknown outcome through cleanup failur
   registerPluginSurface(scope, "plugin_instance_1", () => {
     disposed += 1;
     throw cleanupFailure;
-  });
+  }, () => undefined);
   let observedPluginInstanceId: string | undefined;
   const client = new PluginLocalImportClient({
     fetch,
@@ -726,7 +998,7 @@ test("platform cleanup failures preserve the original unknown mutation outcome",
   const cleanupFailure = new Error("surface cleanup failed");
   const observerFailure = new Error("unknown outcome observer failed");
   const scope = createPluginSurfaceScope();
-  registerPluginSurface(scope, "plugin_instance_1", () => { throw cleanupFailure; });
+  registerPluginSurface(scope, "plugin_instance_1", () => { throw cleanupFailure; }, () => undefined);
   const client = new PluginPlatformClient({
     fetch,
     surfaceScope: scope,
@@ -781,7 +1053,7 @@ test("platform client manages runtime lifecycle routes", async () => {
   const descriptor = {
     version: "0.5.0",
     target: { os: "darwin", arch: "arm64" },
-    ipc_version: "rust-ipc-v4",
+    ipc_version: "rust-ipc-v5",
     wasm_abi_version: "redevplugin-wasm-worker-v2",
     artifact_sha256: "a".repeat(64),
   } as const;

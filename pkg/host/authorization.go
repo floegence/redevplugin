@@ -25,7 +25,8 @@ const (
 	ManagementActionCancelSurfaceOperation     ManagementAction = "surface.cancel_operation"
 	ManagementActionRejectSurfaceConfirmation  ManagementAction = "surface.reject_confirmation"
 	ManagementActionDisposeSurface             ManagementAction = "surface.dispose"
-	ManagementActionRevokeSurfaceScope         ManagementAction = "surface.revoke_scope"
+	ManagementActionRevokeSessionScope         ManagementAction = "session.revoke_scope"
+	ManagementActionFinalizeSessionScope       ManagementAction = "session.finalize_scope"
 	ManagementActionCallPluginMethod           ManagementAction = "plugin.call_method"
 	ManagementActionPrepareMethodConfirmation  ManagementAction = "plugin.prepare_method_confirmation"
 	ManagementActionListIntents                ManagementAction = "intent.list"
@@ -82,8 +83,10 @@ func (action ManagementAction) Resource() ResourceRef {
 	switch action {
 	case ManagementActionOpenSurface, ManagementActionPrepareSurface,
 		ManagementActionMintBridgeToken, ManagementActionReadSurfaceAsset,
-		ManagementActionDisposeSurface, ManagementActionRevokeSurfaceScope:
+		ManagementActionDisposeSurface:
 		return ResourceSurface
+	case ManagementActionRevokeSessionScope, ManagementActionFinalizeSessionScope:
+		return ResourceSessionScope
 	case ManagementActionReadSurfaceStream, ManagementActionAcknowledgeSurfaceStream:
 		return ResourceStream
 	case ManagementActionCancelSurfaceOperation:
@@ -161,6 +164,7 @@ const (
 	ResourceDataExport        ResourceRef = "data_export"
 	ResourceSettings          ResourceRef = "settings"
 	ResourceSecret            ResourceRef = "secret"
+	ResourceSessionScope      ResourceRef = "session_scope"
 )
 
 func (resource ResourceRef) Valid() bool {
@@ -172,7 +176,7 @@ func (resource ResourceRef) Valid() bool {
 		ResourceSecurityPolicy, ResourceDiagnostic, ResourceOperation,
 		ResourceRuntime, ResourceConnector, ResourceStore,
 		ResourceRetainedData, ResourcePluginData, ResourceDataExport,
-		ResourceSettings, ResourceSecret:
+		ResourceSettings, ResourceSecret, ResourceSessionScope:
 		return true
 	default:
 		return false
@@ -206,6 +210,29 @@ type AuthorizationAdapter interface {
 
 type authorizedAction struct {
 	session sessionctx.Context
+}
+
+type sessionReservationContextKey struct{}
+
+type sessionReservationContext struct {
+	host  *Host
+	scope sessionctx.SessionScope
+}
+
+func (h *Host) reserveAuthorizedAction(ctx context.Context, authorization authorizedAction) (context.Context, func(), error) {
+	scope, err := authorization.session.SessionScope()
+	if err != nil {
+		return ctx, nil, err
+	}
+	if held, ok := ctx.Value(sessionReservationContextKey{}).(sessionReservationContext); ok && held.host == h && held.scope == scope {
+		return ctx, func() {}, nil
+	}
+	reservation, err := h.sessionScopes.Reserve(ctx, scope)
+	if err != nil {
+		return ctx, nil, err
+	}
+	reserved := context.WithValue(ctx, sessionReservationContextKey{}, sessionReservationContext{host: h, scope: scope})
+	return reserved, reservation.Release, nil
 }
 
 type authorizationTargetSpec struct {
@@ -275,6 +302,26 @@ func (h *Host) authorizeManagement(ctx context.Context, action ManagementAction,
 }
 
 func (h *Host) authorizeManagementSession(ctx context.Context, session sessionctx.Context, action ManagementAction, target authorizationTargetSpec, related ...authorizationTargetSpec) (authorizedAction, error) {
+	authorization, err := h.authorizeManagementSessionWithoutFence(ctx, session, action, target, related...)
+	if err != nil {
+		return authorizedAction{}, err
+	}
+	scope, err := session.SessionScope()
+	if err != nil {
+		return authorizedAction{}, err
+	}
+	if held, ok := ctx.Value(sessionReservationContextKey{}).(sessionReservationContext); ok && held.host == h && held.scope == scope {
+		return authorization, nil
+	}
+	reservation, err := h.sessionScopes.Reserve(ctx, scope)
+	if err != nil {
+		return authorizedAction{}, err
+	}
+	reservation.Release()
+	return authorization, nil
+}
+
+func (h *Host) authorizeManagementSessionWithoutFence(ctx context.Context, session sessionctx.Context, action ManagementAction, target authorizationTargetSpec, related ...authorizationTargetSpec) (authorizedAction, error) {
 	resource := action.Resource()
 	if !action.Valid() || !resource.Valid() || isNilInterfaceValue(h.adapters.Authorization) {
 		return authorizedAction{}, ActionDeniedError{Action: action, Target: AuthorizationTarget{Kind: resource}}
@@ -327,7 +374,7 @@ func canonicalAuthorizationTarget(session sessionctx.Context, spec authorization
 
 func (action ManagementAction) allowsCollectionTarget() bool {
 	switch action {
-	case ManagementActionRevokeSurfaceScope,
+	case ManagementActionRevokeSessionScope,
 		ManagementActionListIntents,
 		ManagementActionListPlugins,
 		ManagementActionRefreshEnabledPlugins,

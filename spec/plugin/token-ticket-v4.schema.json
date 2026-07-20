@@ -1,7 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://schemas.redevplugin.dev/plugin/token-ticket-v3.schema.json",
-  "title": "ReDevPlugin token and ticket v3",
+  "$id": "https://schemas.redevplugin.dev/plugin/token-ticket-v4.schema.json",
+  "title": "ReDevPlugin token and ticket v4",
+  "description": "Host-issued token records. Exact session-bound audiences participate in the session-scope-v1 revocation lifecycle.",
   "type": "object",
   "additionalProperties": false,
   "required": [

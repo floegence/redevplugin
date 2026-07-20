@@ -33,6 +33,7 @@ type compatibilityMatrixResponse struct {
 	TargetClassifierVersion        string `json:"target_classifier_version"`
 	NetworkGrantSchemaVersion      string `json:"network_grant_schema_version"`
 	ResourceScopeSchemaVersion     string `json:"resource_scope_schema_version"`
+	SessionScopeSchemaVersion      string `json:"session_scope_schema_version"`
 	PluginPlatformOpenAPIVersion   string `json:"plugin_platform_openapi_version"`
 	CompatibilitySchemaVersion     string `json:"compatibility_schema_version"`
 	ReleaseManifestSchemaVersion   string `json:"release_manifest_schema_version"`
@@ -86,6 +87,7 @@ func publicCompatibility(source version.CompatibilityManifest) compatibilityResp
 			OpaqueSurfaceTransportVersion: matrix.OpaqueSurfaceTransportVersion,
 			TargetClassifierVersion:       matrix.TargetClassifierVersion, NetworkGrantSchemaVersion: matrix.NetworkGrantSchemaVersion,
 			ResourceScopeSchemaVersion:     matrix.ResourceScopeSchemaVersion,
+			SessionScopeSchemaVersion:      matrix.SessionScopeSchemaVersion,
 			PluginPlatformOpenAPIVersion:   matrix.PluginPlatformOpenAPIVersion,
 			CompatibilitySchemaVersion:     matrix.CompatibilitySchemaVersion,
 			ReleaseManifestSchemaVersion:   matrix.ReleaseManifestSchemaVersion,

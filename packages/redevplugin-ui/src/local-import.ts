@@ -68,17 +68,20 @@ export class PluginLocalImportClient {
         { "X-ReDevPlugin-Expected-Management-Revision": String(expectedManagementRevision) },
       );
     } catch (error) {
-      if (pluginMutationOutcome(error) !== "not_committed") {
+      const outcome = pluginMutationOutcome(error);
+      if (outcome === "committed" || outcome === "unknown") {
         const lifecycleErrors: unknown[] = [];
         try {
           await disposePluginSurfaceScope(this.#surfaceScope, canonicalPluginInstanceId);
         } catch (caught) {
           lifecycleErrors.push(caught);
         }
-        try {
-          this.#onMutationOutcomeUnknown?.(canonicalPluginInstanceId);
-        } catch (caught) {
-          lifecycleErrors.push(caught);
+        if (outcome === "unknown") {
+          try {
+            this.#onMutationOutcomeUnknown?.(canonicalPluginInstanceId);
+          } catch (caught) {
+            lifecycleErrors.push(caught);
+          }
         }
         if (lifecycleErrors.length > 0) {
           throw new PluginMutationLifecycleError("Local plugin update and surface teardown failed", error, lifecycleErrors);

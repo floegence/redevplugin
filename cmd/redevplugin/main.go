@@ -28,6 +28,7 @@ import (
 	"github.com/floegence/redevplugin/pkg/secrets"
 	"github.com/floegence/redevplugin/pkg/security"
 	"github.com/floegence/redevplugin/pkg/sessionctx"
+	"github.com/floegence/redevplugin/pkg/sessionscope"
 	"github.com/floegence/redevplugin/pkg/storage"
 	"github.com/floegence/redevplugin/pkg/stream"
 	"github.com/floegence/redevplugin/pkg/trust"
@@ -949,7 +950,13 @@ func lifecycleHarness(ctx context.Context, action string, packageFile string) er
 	if err != nil {
 		return err
 	}
-	h, err := host.Open(ctx, newEphemeralCLIAdapters(registryStore, pluginData))
+	config, sessionScopeStore, err := newEphemeralCLIAdapters(ctx, root, registryStore, pluginData)
+	if err != nil {
+		_ = pluginData.Close()
+		return err
+	}
+	defer sessionScopeStore.Close()
+	h, err := host.Open(ctx, config)
 	if err != nil {
 		_ = pluginData.Close()
 		return err
@@ -1001,7 +1008,12 @@ func installVerifiedHarness(ctx context.Context, packageFile string, publicKeyFi
 	if err != nil {
 		return err
 	}
-	adapters := newEphemeralCLIAdapters(registryStore, pluginData)
+	adapters, sessionScopeStore, err := newEphemeralCLIAdapters(ctx, root, registryStore, pluginData)
+	if err != nil {
+		_ = pluginData.Close()
+		return err
+	}
+	defer sessionScopeStore.Close()
 	verifier := trust.Ed25519Verifier{
 		Keyring: trust.StaticKeyring{Keys: []trust.SigningKey{{
 			Algorithm:   publicDoc.Algorithm,
@@ -1225,9 +1237,23 @@ func cliContext(ctx context.Context) context.Context {
 	})
 }
 
-func newEphemeralCLIAdapters(registryStore registry.Store, pluginData host.PluginData) host.Config {
+func newEphemeralCLIAdapters(ctx context.Context, stateRoot string, registryStore registry.Store, pluginData host.PluginData) (host.Config, *sessionscope.SQLiteStore, error) {
 	events := observability.NewMemoryStore()
 	connectivityBroker := connectivity.NewMemoryBroker()
+	sessionScopeStore, err := sessionscope.NewSQLiteStore(ctx, filepath.Join(stateRoot, "session-scopes.sqlite"), sessionscope.StoreOptions{})
+	if err != nil {
+		return host.Config{}, nil, err
+	}
+	sessionScopes, err := sessionscope.NewCoordinator(sessionScopeStore)
+	if err != nil {
+		_ = sessionScopeStore.Close()
+		return host.Config{}, nil, err
+	}
+	sessionLifecycle, err := newCLISessionLifecycleAdapter(filepath.Join(stateRoot, "closed-sessions.json"))
+	if err != nil {
+		_ = sessionScopeStore.Close()
+		return host.Config{}, nil, err
+	}
 	return host.Config{
 		Core: host.CoreAdapters{
 			Policy:               staticPolicyAdapter{},
@@ -1244,13 +1270,15 @@ func newEphemeralCLIAdapters(registryStore registry.Store, pluginData host.Plugi
 			Operations:           operation.NewMemoryStore(),
 			ConfirmationIntents:  security.NewMemoryConfirmationIntentStore(),
 			Streams:              stream.NewMemoryStore(),
+			SessionLifecycle:     sessionLifecycle,
+			SessionScopes:        sessionScopes,
 		},
 		Connectivity: &host.ConnectivityModule{
 			Broker:          connectivityBroker,
 			NetworkExecutor: connectivity.NewExecutor(connectivity.ExecutorOptions{}),
 		},
 		Secrets: &host.SecretsModule{Store: secrets.NewMemoryStore()},
-	}
+	}, sessionScopeStore, nil
 }
 
 type staticPolicyAdapter struct{}

@@ -12,6 +12,8 @@ var ErrSessionRequired = errors.New("authenticated session is required")
 
 var ErrInvalidResourceScope = errors.New("resource owner scope is invalid")
 
+var ErrInvalidSessionScope = errors.New("session scope is invalid")
+
 const OwnerScopeMigrationRequiredCode = "owner_scope_migration_required"
 
 // ErrOwnerScopeMigrationRequired rejects persisted resources whose owner scope
@@ -63,17 +65,60 @@ func (s ResourceScope) Matches(other ResourceScope) bool {
 }
 
 type Context struct {
-	OwnerSessionHash     string `json:"owner_session_hash"`
-	OwnerUserHash        string `json:"owner_user_hash"`
-	OwnerEnvHash         string `json:"owner_env_hash"`
-	SessionChannelIDHash string `json:"session_channel_id_hash"`
+	OwnerSessionHash     string `json:"-"`
+	OwnerUserHash        string `json:"-"`
+	OwnerEnvHash         string `json:"-"`
+	SessionChannelIDHash string `json:"-"`
 }
 
 func (s Context) Valid() bool {
-	return strings.TrimSpace(s.OwnerSessionHash) != "" &&
+	return validOwnerHash(s.OwnerSessionHash) &&
 		validOwnerHash(s.OwnerUserHash) &&
 		validOwnerHash(s.OwnerEnvHash) &&
-		strings.TrimSpace(s.SessionChannelIDHash) != ""
+		validOwnerHash(s.SessionChannelIDHash)
+}
+
+// SessionScope is the exact ownership boundary for session capabilities. Its
+// fields are deliberately excluded from JSON so authenticated owner identity
+// cannot enter an HTTP or plugin-controlled payload by accident.
+type SessionScope struct {
+	OwnerSessionHash     string `json:"-"`
+	OwnerUserHash        string `json:"-"`
+	OwnerEnvHash         string `json:"-"`
+	SessionChannelIDHash string `json:"-"`
+}
+
+func (s SessionScope) Validate() error {
+	if !validOwnerHash(s.OwnerSessionHash) {
+		return fmt.Errorf("%w: owner_session_hash is invalid", ErrInvalidSessionScope)
+	}
+	if !validOwnerHash(s.OwnerUserHash) {
+		return fmt.Errorf("%w: owner_user_hash is invalid", ErrInvalidSessionScope)
+	}
+	if !validOwnerHash(s.OwnerEnvHash) {
+		return fmt.Errorf("%w: owner_env_hash is invalid", ErrInvalidSessionScope)
+	}
+	if !validOwnerHash(s.SessionChannelIDHash) {
+		return fmt.Errorf("%w: session_channel_id_hash is invalid", ErrInvalidSessionScope)
+	}
+	return nil
+}
+
+func (s SessionScope) Valid() bool { return s.Validate() == nil }
+
+func (s SessionScope) Matches(other SessionScope) bool {
+	return s.Valid() && other.Valid() && s == other
+}
+
+func (s Context) SessionScope() (SessionScope, error) {
+	if !s.Valid() {
+		return SessionScope{}, ErrSessionRequired
+	}
+	scope := SessionScope(s)
+	if err := scope.Validate(); err != nil {
+		return SessionScope{}, err
+	}
+	return scope, nil
 }
 
 func (s Context) ResourceScope(kind ScopeKind) (ResourceScope, error) {

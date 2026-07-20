@@ -44,6 +44,7 @@ const (
 	MaxTerminalRecordsPerPlugin        = 100_000
 
 	DefaultTerminalRetention = 7 * 24 * time.Hour
+	SessionRevokedReason     = "session revoked"
 )
 
 var (
@@ -131,6 +132,15 @@ type PluginTransitionRequest struct {
 	Now              time.Time                `json:"-"`
 }
 
+type RevokeSessionScopeRequest struct {
+	SessionScope sessionctx.SessionScope `json:"-"`
+	Now          time.Time               `json:"-"`
+}
+
+type RevokeSessionScopeResult struct {
+	Revoked int `json:"revoked"`
+}
+
 type PruneRequest struct {
 	Before                      time.Time `json:"before"`
 	Limit                       int       `json:"limit,omitempty"`
@@ -142,6 +152,7 @@ type PruneResult struct {
 }
 
 type Store interface {
+	Durable() bool
 	Register(ctx context.Context, req RegisterRequest) (Record, error)
 	List(ctx context.Context, req ListRequest) (Page, error)
 	Get(ctx context.Context, operationID string) (Record, error)
@@ -149,17 +160,19 @@ type Store interface {
 	Finish(ctx context.Context, req FinishRequest) (Record, error)
 	MarkPluginDisabled(ctx context.Context, req PluginTransitionRequest) ([]Record, error)
 	MarkPluginUninstalled(ctx context.Context, req PluginTransitionRequest) ([]Record, error)
+	RevokeSessionScope(ctx context.Context, req RevokeSessionScopeRequest) (RevokeSessionScopeResult, error)
 	Prune(ctx context.Context, req PruneRequest) (PruneResult, error)
 }
 
 type MemoryStore struct {
-	mu               sync.RWMutex
-	now              func() time.Time
-	records          map[string]Record
-	order            []string
-	pluginOrder      map[string][]string
-	ownerOrder       map[OwnerScope][]string
-	pluginOwnerOrder map[pluginOwnerKey][]string
+	mu                   sync.RWMutex
+	now                  func() time.Time
+	records              map[string]Record
+	order                []string
+	pluginOrder          map[string][]string
+	ownerOrder           map[OwnerScope][]string
+	pluginOwnerOrder     map[pluginOwnerKey][]string
+	sessionRevokeScanned uint64
 }
 
 func NewMemoryStore() *MemoryStore {
@@ -171,6 +184,8 @@ func NewMemoryStore() *MemoryStore {
 		pluginOwnerOrder: map[pluginOwnerKey][]string{},
 	}
 }
+
+func (*MemoryStore) Durable() bool { return false }
 
 func (s *MemoryStore) Register(_ context.Context, req RegisterRequest) (Record, error) {
 	if s == nil {
@@ -524,6 +539,48 @@ func (s *MemoryStore) MarkPluginUninstalled(_ context.Context, req PluginTransit
 		changed = append(changed, cloned)
 	}
 	return changed, nil
+}
+
+func (s *MemoryStore) RevokeSessionScope(_ context.Context, req RevokeSessionScopeRequest) (RevokeSessionScopeResult, error) {
+	if s == nil {
+		return RevokeSessionScopeResult{}, errors.New("operation store is nil")
+	}
+	if err := req.SessionScope.Validate(); err != nil {
+		return RevokeSessionScopeResult{}, ErrInvalidOperation
+	}
+	now := req.Now
+	if now.IsZero() {
+		now = s.now()
+	}
+	owner := OwnerScope{
+		OwnerSessionHash:     req.SessionScope.OwnerSessionHash,
+		OwnerUserHash:        req.SessionScope.OwnerUserHash,
+		OwnerEnvHash:         req.SessionScope.OwnerEnvHash,
+		SessionChannelIDHash: req.SessionScope.SessionChannelIDHash,
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.sessionRevokeScanned = 0
+	revoked := 0
+	for _, operationID := range s.ownerOrder[owner] {
+		s.sessionRevokeScanned++
+		record, ok := s.records[operationID]
+		if !ok {
+			continue
+		}
+		if !terminal(record.Status) {
+			record.Status = StatusCanceled
+			record.FailureCode = ""
+			record.Reason = SessionRevokedReason
+			record.UpdatedAt = now
+			record.TerminalAt = &now
+			s.records[operationID] = record
+		}
+		if record.Status == StatusCanceled && record.Reason == SessionRevokedReason {
+			revoked++
+		}
+	}
+	return RevokeSessionScopeResult{Revoked: revoked}, nil
 }
 
 func (s *MemoryStore) Prune(_ context.Context, req PruneRequest) (PruneResult, error) {

@@ -286,6 +286,7 @@ type PluginSurfaceFrameLike = {
   setAttribute(name: string, value: string): void;
   addEventListener(type: "load", listener: () => void): void;
   removeEventListener(type: "load", listener: () => void): void;
+  remove?(): void;
 };
 
 export type PluginBridgeClientOptions = {
@@ -1124,10 +1125,12 @@ type PluginSurfaceOpeningLease = {
   readonly pluginInstanceId: string;
   readonly signal?: AbortSignal;
   readonly abortError: () => Error;
-  owner: "opening" | "host" | "revoked";
+  owner: "opening" | "host" | "revoked" | "invalidated";
   cancelled: boolean;
   adopt(): void;
   cancel(): Promise<void>;
+  invalidate(): void;
+  observeInvalidation(observer: () => void): void;
   revoke(): Promise<void>;
 };
 
@@ -2903,6 +2906,7 @@ class PluginSurfaceHostImplementation implements PluginSurfaceHost {
   #closePromise?: Promise<PluginSurfaceCloseResult>;
   #revokePromise?: Promise<void>;
   #unregisterSurfaceScope?: () => void;
+  #onLocalInvalidation?: () => void;
   #opened = false;
   #ready = false;
   #disposed = false;
@@ -2950,6 +2954,7 @@ class PluginSurfaceHostImplementation implements PluginSurfaceHost {
       options.surfaceScope ?? defaultPluginSurfaceScope,
       this.bootstrap.pluginInstanceId,
       () => this.#disposeLocal(),
+      () => this.#invalidateLocal(),
     );
   }
 
@@ -3083,6 +3088,11 @@ class PluginSurfaceHostImplementation implements PluginSurfaceHost {
     return revoke;
   }
 
+  observeLocalInvalidation(observer: () => void): void {
+    this.#onLocalInvalidation = observer;
+    if (this.#disposed) observer();
+  }
+
   async #closeSurface(): Promise<PluginSurfaceCloseResult> {
     const startedAt = performance.now();
     const quiesce = await this.#quiesceSurface();
@@ -3143,6 +3153,16 @@ class PluginSurfaceHostImplementation implements PluginSurfaceHost {
       this.#port = undefined;
     }
     this.#iframe.srcdoc = "";
+  }
+
+  #invalidateLocal(): void {
+    this.#disposeLocal();
+    this.#iframe.remove?.();
+    try {
+      this.#onLocalInvalidation?.();
+    } catch {
+      // Slot state observers cannot weaken local session containment.
+    }
   }
 
   async #handlePortMessage(event: MessageEventLike): Promise<void> {
@@ -3895,6 +3915,7 @@ function createPluginSurfaceOpeningLease(request: PluginSurfaceOpeningRequest): 
   let unregister = (): void => undefined;
   let revokePromise: Promise<void> | undefined;
   let removeAbortListener = (): void => undefined;
+  let invalidationObserver = (): void => undefined;
   const lease: PluginSurfaceOpeningLease = {
     options: Promise.resolve(undefined as never),
     pluginInstanceId: request.pluginInstanceId,
@@ -3915,7 +3936,20 @@ function createPluginSurfaceOpeningLease(request: PluginSurfaceOpeningRequest): 
       if (lease.owner === "host") return Promise.resolve();
       return lease.revoke();
     },
+    invalidate() {
+      lease.cancelled = true;
+      if (lease.owner === "host" || lease.owner === "invalidated") return;
+      lease.owner = "invalidated";
+      unregister();
+      removeAbortListener();
+      invalidationObserver();
+    },
+    observeInvalidation(observer) {
+      invalidationObserver = observer;
+      if (lease.owner === "invalidated") observer();
+    },
     revoke() {
+      if (lease.owner === "invalidated") return Promise.resolve();
       if (lease.owner === "host") {
         throw new PluginBridgeError("PLUGIN_CONTRACT_MISMATCH", "Plugin surface ownership was already adopted");
       }
@@ -3934,11 +3968,23 @@ function createPluginSurfaceOpeningLease(request: PluginSurfaceOpeningRequest): 
       return revokePromise;
     },
   };
-  unregister = registerPluginSurface(request.surfaceScope, request.pluginInstanceId, () => lease.cancel());
-  try {
-    lease.options = Promise.resolve(request.open());
-  } catch (error) {
-    lease.options = Promise.reject(error);
+  unregister = registerPluginSurface(
+    request.surfaceScope,
+    request.pluginInstanceId,
+    () => lease.cancel(),
+    () => lease.invalidate(),
+  );
+  if (lease.owner === "invalidated") {
+    lease.options = Promise.reject(new PluginBridgeError(
+      "PLUGIN_BRIDGE_DISPOSED",
+      "Plugin surface scope is invalidated",
+    ));
+  } else {
+    try {
+      lease.options = Promise.resolve(request.open());
+    } catch (error) {
+      lease.options = Promise.reject(error);
+    }
   }
   void lease.options.catch(() => {
     if (lease.owner !== "opening") return;
@@ -4004,6 +4050,11 @@ export class PluginSurfaceSlot {
     const controller = new AbortController();
     this.#transitionController = controller;
     this.#setState("opening");
+    lease?.observeInvalidation(() => {
+      if (this.#transitionController !== controller) return;
+      controller.abort();
+      this.#setState("empty");
+    });
     const transition = this.#tail.then(
       () => this.#openSurface(resolvedOptions, controller, lease),
       async (error) => {
@@ -4031,8 +4082,10 @@ export class PluginSurfaceSlot {
     try {
       resolvedOptions = await options;
     } catch (error) {
-      if (!this.#disposed && this.#transitionController === controller && !controller.signal.aborted) {
+      if (!this.#disposed && this.#transitionController === controller && !this.#openingCancelled(controller, lease)) {
         this.#setState("error", toBridgeError(error, "PLUGIN_BRIDGE_HANDSHAKE_FAILED"));
+      } else {
+        this.#setCancelledState(controller);
       }
       throw error;
     }
@@ -4078,6 +4131,13 @@ export class PluginSurfaceSlot {
       }
       throw error;
     }
+    host.observeLocalInvalidation(() => {
+      if (this.#active === host) this.#active = undefined;
+      if (this.#opening === host) this.#opening = undefined;
+      if (this.#transitionController === controller) controller.abort();
+      host.element.remove();
+      if (!this.#disposed) this.#setState("empty");
+    });
     this.#adoptOpening(lease);
     this.#opening = host;
     setSurfaceInteractive(host.element, false);
@@ -4535,7 +4595,8 @@ function isBridgeResponse(value: unknown): value is PluginBridgeResponse {
   if (value.ok !== false || typeof value.error_code !== "string" || !pluginBridgeErrorCodeSet.has(value.error_code) ||
       typeof value.error !== "string" || value.error.length > 4096 ||
       !Object.keys(value).every((key) => ["type", "id", "ok", "error_code", "error", "error_details", "mutation_outcome"].includes(key)) ||
-      (value.mutation_outcome !== undefined && value.mutation_outcome !== "not_committed" && value.mutation_outcome !== "unknown")) {
+      (value.mutation_outcome !== undefined && value.mutation_outcome !== "committed" &&
+        value.mutation_outcome !== "not_committed" && value.mutation_outcome !== "unknown")) {
     return false;
   }
   if (value.error_code === "PLUGIN_CAPABILITY_ERROR") return isCapabilityBusinessErrorDetails(value.error_details);

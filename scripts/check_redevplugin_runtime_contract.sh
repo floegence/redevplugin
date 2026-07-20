@@ -53,9 +53,9 @@ export GOWORK=off
   grep -q '"unsigned_policy": { "enum": \["dev_only", "review_required", "block"\] }' spec/plugin/source-policy-v1.schema.json
   grep -q '"schema_version": { "const": "redevplugin.source_revocations.v1" }' spec/plugin/source-revocations-v1.schema.json
   grep -q '"revoked_key_ids"' spec/plugin/source-revocations-v1.schema.json
-  ! grep -q '"runtime_execution_lease"' spec/plugin/token-ticket-v3.schema.json
-  grep -q '"handle_grant"' spec/plugin/token-ticket-v3.schema.json
-  grep -q '"resource_scope"' spec/plugin/token-ticket-v3.schema.json
+  ! grep -q '"runtime_execution_lease"' spec/plugin/token-ticket-v4.schema.json
+  grep -q '"handle_grant"' spec/plugin/token-ticket-v4.schema.json
+  grep -q '"resource_scope"' spec/plugin/token-ticket-v4.schema.json
   grep -q '"schema_version": "redevplugin.runtime_execution_lease.signature_fixture.v1"' testdata/contracts/runtime-lease-signature-v1.json
   grep -q '\\"token_kind\\":\\"runtime_execution_lease\\"' testdata/contracts/runtime-lease-signature-v1.json
   ! grep -q '"type": { "const": "redevplugin.bridge.handshake" }' spec/plugin/bridge-v5.schema.json
@@ -68,7 +68,7 @@ export GOWORK=off
   grep -q '"safe_input_types"' spec/plugin/bridge-v5.schema.json
   grep -q 'handshake_transcript_sha256' spec/openapi/plugin-platform-v7.yaml
   grep -q 'previous_plugin_gateway_token' spec/openapi/plugin-platform-v7.yaml
-  grep -q '/_redevplugin/api/plugins/surfaces/revoke-scope' spec/openapi/plugin-platform-v7.yaml
+  grep -q '/_redevplugin/api/plugins/session/revoke-scope' spec/openapi/plugin-platform-v7.yaml
   grep -q '/_redevplugin/api/plugins/surfaces/{surface_instance_id}/prepare' spec/openapi/plugin-platform-v7.yaml
   grep -q '/_redevplugin/api/plugins/surfaces/{surface_instance_id}/assets/read' spec/openapi/plugin-platform-v7.yaml
   grep -q '"schema_version": { "const": "redevplugin.compatibility.v7" }' spec/plugin/compatibility-manifest-v7.schema.json
@@ -77,25 +77,35 @@ export GOWORK=off
   grep -q '"opaque_surface_document_schema_version"' spec/plugin/compatibility-manifest-v7.schema.json
   grep -q '"opaque_surface_transport_schema_version"' spec/plugin/compatibility-manifest-v7.schema.json
   grep -q '"resource_scope_schema_version": { "const": "resource-scope-v1" }' spec/plugin/compatibility-manifest-v7.schema.json
-  grep -q '"title": "ReDevPlugin stable error codes v4"' spec/plugin/error-codes-v4.schema.json
-  grep -q '"PLUGIN_ORIGIN_DENIED"' spec/plugin/error-codes-v4.schema.json
-  grep -q '"PLUGIN_ACTION_DENIED"' spec/plugin/error-codes-v4.schema.json
-  grep -q '"PLUGIN_OWNER_SCOPE_MISMATCH"' spec/plugin/error-codes-v4.schema.json
-  grep -q '"PLUGIN_SECRET_SCOPE_MISMATCH"' spec/plugin/error-codes-v4.schema.json
-  grep -q '"PLUGIN_STORAGE_SCOPE_MISMATCH"' spec/plugin/error-codes-v4.schema.json
-  grep -q '"PLUGIN_ADAPTER_FAILURE"' spec/plugin/error-codes-v4.schema.json
-  grep -q '"PLUGIN_CSRF_INVALID"' spec/plugin/error-codes-v4.schema.json
-  grep -q '"PLUGIN_JSON_LIMIT_EXCEEDED"' spec/plugin/error-codes-v4.schema.json
-  grep -q '"PLUGIN_PLATFORM_REQUEST_FAILED"' spec/plugin/error-codes-v4.schema.json
-  grep -q '"RUNTIME_LEASE_SIGNATURE_INVALID"' spec/plugin/error-codes-v4.schema.json
-  grep -q '"RUNTIME_CAPACITY_EXCEEDED"' spec/plugin/error-codes-v4.schema.json
-  grep -q '"RUNTIME_INVOCATION_CANCELED"' spec/plugin/error-codes-v4.schema.json
-  grep -q '"UNSUPPORTED_FRAME"' spec/plugin/error-codes-v4.schema.json
-  grep -q '"RUNTIME_PROCESS_EXIT_UNRECOGNIZED"' spec/plugin/error-codes-v4.schema.json
-  grep -q '"IPC_WRITER_WRITE_FAILED"' spec/plugin/error-codes-v4.schema.json
+  grep -q '"session_scope_schema_version": { "const": "session-scope-v1" }' spec/plugin/compatibility-manifest-v7.schema.json
+  grep -q '"title": "ReDevPlugin stable error codes v5"' spec/plugin/error-codes-v5.schema.json
+  grep -q '"PLUGIN_ORIGIN_DENIED"' spec/plugin/error-codes-v5.schema.json
+  grep -q '"PLUGIN_ACTION_DENIED"' spec/plugin/error-codes-v5.schema.json
+  grep -q '"PLUGIN_OWNER_SCOPE_MISMATCH"' spec/plugin/error-codes-v5.schema.json
+  grep -q '"PLUGIN_SECRET_SCOPE_MISMATCH"' spec/plugin/error-codes-v5.schema.json
+  grep -q '"PLUGIN_STORAGE_SCOPE_MISMATCH"' spec/plugin/error-codes-v5.schema.json
+  grep -q '"PLUGIN_ADAPTER_FAILURE"' spec/plugin/error-codes-v5.schema.json
+  grep -q '"PLUGIN_SESSION_REVOKED"' spec/plugin/error-codes-v5.schema.json
+  grep -q '"PLUGIN_SESSION_TEARDOWN_INCOMPLETE"' spec/plugin/error-codes-v5.schema.json
+  grep -q '"PLUGIN_SESSION_FENCE_CAPACITY"' spec/plugin/error-codes-v5.schema.json
+  grep -q '"SESSION_REVOKE_SEQUENCE_STALE"' spec/plugin/error-codes-v5.schema.json
+  grep -q '"SESSION_REVOKE_DRAIN_TIMEOUT"' spec/plugin/error-codes-v5.schema.json
+  grep -q '"PLUGIN_CSRF_INVALID"' spec/plugin/error-codes-v5.schema.json
+  grep -q '"PLUGIN_JSON_LIMIT_EXCEEDED"' spec/plugin/error-codes-v5.schema.json
+  grep -q '"PLUGIN_PLATFORM_REQUEST_FAILED"' spec/plugin/error-codes-v5.schema.json
+  grep -q '"RUNTIME_LEASE_SIGNATURE_INVALID"' spec/plugin/error-codes-v5.schema.json
+  grep -q '"RUNTIME_CAPACITY_EXCEEDED"' spec/plugin/error-codes-v5.schema.json
+  grep -q '"RUNTIME_INVOCATION_CANCELED"' spec/plugin/error-codes-v5.schema.json
+  grep -q '"UNSUPPORTED_FRAME"' spec/plugin/error-codes-v5.schema.json
+  grep -q '"RUNTIME_PROCESS_EXIT_UNRECOGNIZED"' spec/plugin/error-codes-v5.schema.json
+  grep -q '"IPC_WRITER_WRITE_FAILED"' spec/plugin/error-codes-v5.schema.json
   grep -q '"title": "ReDevPlugin persistent resource scope v1"' spec/plugin/resource-scope-v1.schema.json
   grep -q '"enum": \["user", "environment"\]' spec/plugin/resource-scope-v1.schema.json
   ! grep -q 'owner_session_hash\|session_channel_id_hash' spec/plugin/resource-scope-v1.schema.json
+  grep -q '"title": "ReDevPlugin session scope lifecycle v1"' spec/plugin/session-scope-v1.schema.json
+  grep -q '"owner_session_hash"' spec/plugin/session-scope-v1.schema.json
+  grep -q '"session_channel_id_hash"' spec/plugin/session-scope-v1.schema.json
+  ! grep -q 'operation_identity\|closed_session_proof' spec/plugin/session-scope-v1.schema.json
   grep -q '"schema_version": { "const": "redevplugin.release_manifest.v4" }' spec/plugin/release-manifest-v4.schema.json
   grep -q '"source_commit"' spec/plugin/release-manifest-v4.schema.json
   grep -q '"npm_package"' spec/plugin/release-manifest-v4.schema.json
@@ -119,7 +129,7 @@ export GOWORK=off
   test ! -e spec/plugin/error-codes-v2.schema.json
   error_code_contracts=(spec/plugin/error-codes-v*.schema.json)
   test "${#error_code_contracts[@]}" -eq 1
-  test "${error_code_contracts[0]}" = spec/plugin/error-codes-v4.schema.json
+  test "${error_code_contracts[0]}" = spec/plugin/error-codes-v5.schema.json
   test ! -e spec/plugin/bridge-v4.schema.json
   test ! -e spec/plugin/opaque-surface-document-v2.schema.json
   test ! -e spec/plugin/opaque-surface-transport-v3.schema.json
@@ -455,6 +465,8 @@ NODE
   go run ./cmd/redevplugin version | grep -q '"id": "network-grant-schema"'
   go run ./cmd/redevplugin version | grep -q '"resource_scope_schema_version": "resource-scope-v1"'
   go run ./cmd/redevplugin version | grep -q '"id": "resource-scope-schema"'
+  go run ./cmd/redevplugin version | grep -q '"session_scope_schema_version": "session-scope-v1"'
+  go run ./cmd/redevplugin version | grep -q '"id": "session-scope-schema"'
   go run ./cmd/redevplugin version | grep -q '"id": "error-codes-schema"'
   go run ./cmd/redevplugin version | grep -q '"id": "host-capability-contract-schema"'
   go run ./cmd/redevplugin version | grep -q '"id": "host-capability-pin-schema"'
@@ -468,49 +480,51 @@ NODE
   test -f testdata/contracts/ipc/missing_required.json
   test -f testdata/contracts/ipc/replay_frame.json
   test -f testdata/contracts/ipc/runtime_generation_mismatch.json
-  grep -q '"hello_ack"' spec/plugin/ipc-v4.schema.json
-  grep -q '"invoke_worker_result"' spec/plugin/ipc-v4.schema.json
-  grep -q '"cancel_invoke"' spec/plugin/ipc-v4.schema.json
-  grep -q '"cancel_invoke_ack"' spec/plugin/ipc-v4.schema.json
-  grep -q '"compile_flight_register"' spec/plugin/ipc-v4.schema.json
-  grep -q '"compile_flight_complete"' spec/plugin/ipc-v4.schema.json
-  grep -q '"compile_flight_lifecycle_payload"' spec/plugin/ipc-v4.schema.json
-  grep -q '"parent_request_id"' spec/plugin/ipc-v4.schema.json
-  grep -q '"runtime_limits"' spec/plugin/ipc-v4.schema.json
-  grep -q '"module_cache_metrics"' spec/plugin/ipc-v4.schema.json
-  grep -q '"token_id"' spec/plugin/ipc-v4.schema.json
-  grep -q '"issued_at_unix_ms"' spec/plugin/ipc-v4.schema.json
-  grep -q '"plugin_id"' spec/plugin/ipc-v4.schema.json
-  grep -q '"plugin_version"' spec/plugin/ipc-v4.schema.json
-  grep -q '"active_fingerprint"' spec/plugin/ipc-v4.schema.json
-  grep -q '"effect": { "enum": \["read", "write", "execute", "delete", "admin"\] }' spec/plugin/ipc-v4.schema.json
-  grep -q '"execution": { "enum": \["sync", "operation", "subscription"\] }' spec/plugin/ipc-v4.schema.json
-  grep -q '"limits"' spec/plugin/ipc-v4.schema.json
-  grep -q '"max_stream_bytes_per_sec"' spec/plugin/ipc-v4.schema.json
+  test -f testdata/contracts/ipc/valid_session_revoke.json
+  test -f testdata/contracts/ipc/valid_session_revoke_ack.json
+  grep -q '"hello_ack"' spec/plugin/ipc-v5.schema.json
+  grep -q '"invoke_worker_result"' spec/plugin/ipc-v5.schema.json
+  grep -q '"cancel_invoke"' spec/plugin/ipc-v5.schema.json
+  grep -q '"cancel_invoke_ack"' spec/plugin/ipc-v5.schema.json
+  grep -q '"compile_flight_register"' spec/plugin/ipc-v5.schema.json
+  grep -q '"compile_flight_complete"' spec/plugin/ipc-v5.schema.json
+  grep -q '"compile_flight_lifecycle_payload"' spec/plugin/ipc-v5.schema.json
+  grep -q '"parent_request_id"' spec/plugin/ipc-v5.schema.json
+  grep -q '"runtime_limits"' spec/plugin/ipc-v5.schema.json
+  grep -q '"module_cache_metrics"' spec/plugin/ipc-v5.schema.json
+  grep -q '"token_id"' spec/plugin/ipc-v5.schema.json
+  grep -q '"issued_at_unix_ms"' spec/plugin/ipc-v5.schema.json
+  grep -q '"plugin_id"' spec/plugin/ipc-v5.schema.json
+  grep -q '"plugin_version"' spec/plugin/ipc-v5.schema.json
+  grep -q '"active_fingerprint"' spec/plugin/ipc-v5.schema.json
+  grep -q '"effect": { "enum": \["read", "write", "execute", "delete", "admin"\] }' spec/plugin/ipc-v5.schema.json
+  grep -q '"execution": { "enum": \["sync", "operation", "subscription"\] }' spec/plugin/ipc-v5.schema.json
+  grep -q '"limits"' spec/plugin/ipc-v5.schema.json
+  grep -q '"max_stream_bytes_per_sec"' spec/plugin/ipc-v5.schema.json
   grep -q 'plugin.runtime.lease.issued' pkg/host/host.go
-  grep -q '"open_handle_request_payload"' spec/plugin/ipc-v4.schema.json
-  grep -q '"open_handle_response_payload"' spec/plugin/ipc-v4.schema.json
-  grep -q '"validate_handle_grant_request_payload"' spec/plugin/ipc-v4.schema.json
-  grep -q '"validate_handle_grant_response_payload"' spec/plugin/ipc-v4.schema.json
-  grep -q '"storage_file_request_payload"' spec/plugin/ipc-v4.schema.json
-  grep -q '"storage_file_response_payload"' spec/plugin/ipc-v4.schema.json
-  grep -q '"usage_files": { "type": "integer", "minimum": 0 }' spec/plugin/ipc-v4.schema.json
-  grep -q '"quota_files": { "type": "integer", "minimum": 0 }' spec/plugin/ipc-v4.schema.json
-  grep -q '"method": { "const": "storage.files" }' spec/plugin/ipc-v4.schema.json
-  grep -q '"storage_kv_request_payload"' spec/plugin/ipc-v4.schema.json
-  grep -q '"storage_kv_response_payload"' spec/plugin/ipc-v4.schema.json
-  grep -q '"method": { "const": "storage.kv" }' spec/plugin/ipc-v4.schema.json
-  grep -q '"storage_sqlite_request_payload"' spec/plugin/ipc-v4.schema.json
-  grep -q '"storage_sqlite_response_payload"' spec/plugin/ipc-v4.schema.json
-  grep -q '"method": { "const": "storage.sqlite" }' spec/plugin/ipc-v4.schema.json
-  grep -q '"network_grant_request_payload"' spec/plugin/ipc-v4.schema.json
-  grep -q '"network_grant_response_payload"' spec/plugin/ipc-v4.schema.json
-  grep -q '"network_execute_request_payload"' spec/plugin/ipc-v4.schema.json
-  grep -q '"network_execute_response_payload"' spec/plugin/ipc-v4.schema.json
-  grep -q '"http_stream"' spec/plugin/ipc-v4.schema.json
-  grep -q '"stream_id": { "type": "string"' spec/plugin/ipc-v4.schema.json
-  grep -q '"network_destination"' spec/plugin/ipc-v4.schema.json
-  grep -q '"ttl_ms": { "type": "integer", "minimum": 0 }' spec/plugin/ipc-v4.schema.json
+  grep -q '"open_handle_request_payload"' spec/plugin/ipc-v5.schema.json
+  grep -q '"open_handle_response_payload"' spec/plugin/ipc-v5.schema.json
+  grep -q '"validate_handle_grant_request_payload"' spec/plugin/ipc-v5.schema.json
+  grep -q '"validate_handle_grant_response_payload"' spec/plugin/ipc-v5.schema.json
+  grep -q '"storage_file_request_payload"' spec/plugin/ipc-v5.schema.json
+  grep -q '"storage_file_response_payload"' spec/plugin/ipc-v5.schema.json
+  grep -q '"usage_files": { "type": "integer", "minimum": 0 }' spec/plugin/ipc-v5.schema.json
+  grep -q '"quota_files": { "type": "integer", "minimum": 0 }' spec/plugin/ipc-v5.schema.json
+  grep -q '"method": { "const": "storage.files" }' spec/plugin/ipc-v5.schema.json
+  grep -q '"storage_kv_request_payload"' spec/plugin/ipc-v5.schema.json
+  grep -q '"storage_kv_response_payload"' spec/plugin/ipc-v5.schema.json
+  grep -q '"method": { "const": "storage.kv" }' spec/plugin/ipc-v5.schema.json
+  grep -q '"storage_sqlite_request_payload"' spec/plugin/ipc-v5.schema.json
+  grep -q '"storage_sqlite_response_payload"' spec/plugin/ipc-v5.schema.json
+  grep -q '"method": { "const": "storage.sqlite" }' spec/plugin/ipc-v5.schema.json
+  grep -q '"network_grant_request_payload"' spec/plugin/ipc-v5.schema.json
+  grep -q '"network_grant_response_payload"' spec/plugin/ipc-v5.schema.json
+  grep -q '"network_execute_request_payload"' spec/plugin/ipc-v5.schema.json
+  grep -q '"network_execute_response_payload"' spec/plugin/ipc-v5.schema.json
+  grep -q '"http_stream"' spec/plugin/ipc-v5.schema.json
+  grep -q '"stream_id": { "type": "string"' spec/plugin/ipc-v5.schema.json
+  grep -q '"network_destination"' spec/plugin/ipc-v5.schema.json
+  grep -q '"ttl_ms": { "type": "integer", "minimum": 0 }' spec/plugin/ipc-v5.schema.json
   grep -q 'FRAME_TYPE_STORAGE_FILE' crates/redevplugin-ipc/src/lib.rs
   grep -q 'ERR_STORAGE_FILE_FAILED' crates/redevplugin-ipc/src/lib.rs
   grep -q 'struct StorageFileRequest' crates/redevplugin-ipc/src/lib.rs
@@ -590,18 +604,20 @@ NODE
   grep -q 'runtime_generation_id' spec/plugin/worker-invocation-v3.schema.json
   grep -q 'owner_session_hash' spec/plugin/worker-invocation-v3.schema.json
   grep -q 'owner_user_hash' spec/plugin/worker-invocation-v3.schema.json
-  grep -q '"revoke_epoch_ack"' spec/plugin/ipc-v4.schema.json
-  grep -q '"host_ipc_version": { "const": "rust-ipc-v4" }' spec/plugin/ipc-v4.schema.json
-  grep -q '"rust_ipc_version": { "const": "rust-ipc-v4" }' spec/plugin/ipc-v4.schema.json
-  grep -q '"wasm_abi_version": { "const": "redevplugin-wasm-worker-v2" }' spec/plugin/ipc-v4.schema.json
-  grep -q '"runtime_lease_public_keys"' spec/plugin/ipc-v4.schema.json
-  grep -q '"plugin_instance_id": { "type": "string", "minLength": 1 }' spec/plugin/ipc-v4.schema.json
-  grep -q '"target_descriptor_hashes"' spec/plugin/ipc-v4.schema.json
-  grep -q '"runtime_instance_id": { "type": "string", "minLength": 1 }' spec/plugin/ipc-v4.schema.json
-  grep -q '"ipc_channel_id": { "type": "string", "minLength": 1 }' spec/plugin/ipc-v4.schema.json
-  grep -q '"signature": { "type": "string", "pattern": "^ed25519:.+" }' spec/plugin/ipc-v4.schema.json
-  grep -q '"content_base64": { "type": "string", "contentEncoding": "base64" }' spec/plugin/ipc-v4.schema.json
-  grep -q '"handle_grant_token": { "type": "string", "minLength": 1 }' spec/plugin/ipc-v4.schema.json
+  grep -q '"revoke_epoch_ack"' spec/plugin/ipc-v5.schema.json
+  grep -q '"session_revoke"' spec/plugin/ipc-v5.schema.json
+  grep -q '"session_revoke_ack"' spec/plugin/ipc-v5.schema.json
+  grep -q '"host_ipc_version": { "const": "rust-ipc-v5" }' spec/plugin/ipc-v5.schema.json
+  grep -q '"rust_ipc_version": { "const": "rust-ipc-v5" }' spec/plugin/ipc-v5.schema.json
+  grep -q '"wasm_abi_version": { "const": "redevplugin-wasm-worker-v2" }' spec/plugin/ipc-v5.schema.json
+  grep -q '"runtime_lease_public_keys"' spec/plugin/ipc-v5.schema.json
+  grep -q '"plugin_instance_id": { "type": "string", "minLength": 1 }' spec/plugin/ipc-v5.schema.json
+  grep -q '"target_descriptor_hashes"' spec/plugin/ipc-v5.schema.json
+  grep -q '"runtime_instance_id": { "type": "string", "minLength": 1 }' spec/plugin/ipc-v5.schema.json
+  grep -q '"ipc_channel_id": { "type": "string", "minLength": 1 }' spec/plugin/ipc-v5.schema.json
+  grep -q '"signature": { "type": "string", "pattern": "^ed25519:.+" }' spec/plugin/ipc-v5.schema.json
+  grep -q '"content_base64": { "type": "string", "contentEncoding": "base64" }' spec/plugin/ipc-v5.schema.json
+  grep -q '"handle_grant_token": { "type": "string", "minLength": 1 }' spec/plugin/ipc-v5.schema.json
   grep -q '"package_hash": { "$ref": "#/$defs/sha256" }' spec/plugin/worker-invocation-v3.schema.json
   grep -q '"artifact_sha256": { "$ref": "#/$defs/sha256" }' spec/plugin/worker-invocation-v3.schema.json
   grep -q '"pattern": "^sha256:\[a-f0-9\]{64}$"' spec/plugin/worker-invocation-v3.schema.json

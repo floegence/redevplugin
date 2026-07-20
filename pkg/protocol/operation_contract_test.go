@@ -64,7 +64,14 @@ func TestOperationDTOCarriesCompleteExecutionEvidence(t *testing.T) {
 		if strings.Contains(string(openAPI), forbidden+":") {
 			t.Fatalf("OpenAPI operation contract exposes %q", forbidden)
 		}
-		if strings.Contains(string(typescript), forbidden+":") || strings.Contains(string(typescript), forbidden+"?:") {
+		typescriptText := string(typescript)
+		operationStart := strings.Index(typescriptText, "        PublicOperationBinding: {")
+		operationEnd := strings.Index(typescriptText, "        ExecutionFailureCode:")
+		if operationStart < 0 || operationEnd <= operationStart {
+			t.Fatal("TypeScript generated operation contract block is missing")
+		}
+		operationContract := typescriptText[operationStart:operationEnd]
+		if strings.Contains(operationContract, forbidden+":") || strings.Contains(operationContract, forbidden+"?:") {
 			t.Fatalf("TypeScript operation contract exposes %q", forbidden)
 		}
 	}

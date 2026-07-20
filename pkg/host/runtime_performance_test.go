@@ -493,6 +493,18 @@ func (m performanceRuntimeManager) Revoke(ctx context.Context, req runtimeclient
 	return m.supervisor.Revoke(ctx, req)
 }
 
+func (m performanceRuntimeManager) RevokeSession(ctx context.Context, req runtimeclient.SessionRevokeRequest) (runtimeclient.SessionRevokeResult, error) {
+	result, err := m.supervisor.RevokeSession(ctx, req)
+	if err != nil {
+		return runtimeclient.SessionRevokeResult{}, err
+	}
+	result.RuntimeShardID = "runtime_shard_performance"
+	return runtimeclient.SessionRevokeResult{
+		SessionScope: req.SessionScope, SessionRevokeSequence: req.SessionRevokeSequence,
+		Shards: []runtimeclient.SessionRevokeShardResult{result}, Counts: result.Counts,
+	}, nil
+}
+
 func callWorkerConcurrentlyBounded(h *Host, pluginInstanceID string, gatewayToken string, count int, maxInFlight int) ([]error, []time.Duration) {
 	if count < 1 {
 		panic("performance invocation count must be positive")

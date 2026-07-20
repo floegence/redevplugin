@@ -1,14 +1,14 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://schemas.redevplugin.dev/plugin/ipc-v4.schema.json",
-  "title": "ReDevPlugin Rust IPC v4",
+  "$id": "https://schemas.redevplugin.dev/plugin/ipc-v5.schema.json",
+  "title": "ReDevPlugin Rust IPC v5",
   "type": "object",
   "additionalProperties": false,
   "required": ["ipc_version", "frame_type", "request_id"],
   "properties": {
-    "ipc_version": { "const": "rust-ipc-v4" },
+    "ipc_version": { "const": "rust-ipc-v5" },
     "frame_type": {
-      "enum": ["hello", "hello_ack", "heartbeat", "invoke_worker", "invoke_worker_result", "cancel_invoke", "cancel_invoke_ack", "compile_flight_register", "compile_flight_complete", "open_handle", "validate_handle_grant", "storage_file", "storage_kv", "storage_sqlite", "network_grant", "network_execute", "revoke_epoch", "revoke_epoch_ack", "diagnostic"]
+      "enum": ["hello", "hello_ack", "heartbeat", "invoke_worker", "invoke_worker_result", "cancel_invoke", "cancel_invoke_ack", "compile_flight_register", "compile_flight_complete", "open_handle", "validate_handle_grant", "storage_file", "storage_kv", "storage_sqlite", "network_grant", "network_execute", "revoke_epoch", "revoke_epoch_ack", "session_revoke", "session_revoke_ack", "diagnostic"]
     },
     "request_id": { "type": "string", "minLength": 1 },
     "parent_request_id": { "type": "string", "minLength": 1 },
@@ -28,7 +28,7 @@
             "properties": {
               "target": { "$ref": "#/$defs/runtime_target" },
               "host_process_id": { "type": "integer", "minimum": 1 },
-              "host_ipc_version": { "const": "rust-ipc-v4" },
+              "host_ipc_version": { "const": "rust-ipc-v5" },
               "host_wasm_abi": { "const": "redevplugin-wasm-worker-v2" },
               "started_unix_nano": { "type": "integer", "minimum": 1 },
               "channel_nonce": { "type": "string", "minLength": 16 },
@@ -65,7 +65,7 @@
             "properties": {
               "runtime_version": { "$ref": "#/$defs/semver" },
               "actual_target": { "$ref": "#/$defs/runtime_target" },
-              "rust_ipc_version": { "const": "rust-ipc-v4" },
+              "rust_ipc_version": { "const": "rust-ipc-v5" },
               "wasm_abi_version": { "const": "redevplugin-wasm-worker-v2" },
               "channel_nonce": { "type": "string", "minLength": 16 },
               "limits": { "$ref": "#/$defs/runtime_limits" }
@@ -372,6 +372,24 @@
         "required": ["runtime_generation_id", "payload"],
         "properties": {
           "payload": { "$ref": "#/$defs/revoke_epoch_ack_response_payload" }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "frame_type": { "const": "session_revoke" } }, "required": ["frame_type"] },
+      "then": {
+        "required": ["runtime_generation_id", "payload"],
+        "properties": {
+          "payload": { "$ref": "#/$defs/session_revoke_request_payload" }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "frame_type": { "const": "session_revoke_ack" } }, "required": ["frame_type"] },
+      "then": {
+        "required": ["runtime_generation_id", "payload"],
+        "properties": {
+          "payload": { "$ref": "#/$defs/session_revoke_ack_response_payload" }
         }
       }
     },
@@ -1242,6 +1260,93 @@
         "closed_stream_count": { "type": "integer", "minimum": 0 },
         "closed_storage_handle_count": { "type": "integer", "minimum": 0 }
       }
+    },
+    "session_revoke_request_payload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "session_revoke_sequence",
+        "owner_session_hash",
+        "owner_user_hash",
+        "owner_env_hash",
+        "session_channel_id_hash"
+      ],
+      "properties": {
+        "session_revoke_sequence": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 },
+        "owner_session_hash": { "$ref": "#/$defs/session_owner_hash" },
+        "owner_user_hash": { "$ref": "#/$defs/session_owner_hash" },
+        "owner_env_hash": { "$ref": "#/$defs/session_owner_hash" },
+        "session_channel_id_hash": { "$ref": "#/$defs/session_owner_hash" }
+      }
+    },
+    "session_owner_hash": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$"
+    },
+    "session_revoke_ack_response_payload": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["ok", "result"],
+          "properties": {
+            "ok": { "const": true },
+            "result": { "$ref": "#/$defs/session_revoke_ack_result" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["ok", "code", "message", "error_origin"],
+          "properties": {
+            "ok": { "const": false },
+            "code": {
+              "enum": [
+                "SESSION_REVOKE_SEQUENCE_STALE",
+                "SESSION_REVOKE_DRAIN_TIMEOUT",
+                "WORKER_INVOCATION_INVALID"
+              ]
+            },
+            "message": { "type": "string", "minLength": 1, "maxLength": 4096 },
+            "error_origin": { "const": "runtime" }
+          }
+        }
+      ]
+    },
+    "session_revoke_ack_result": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["session_revoke_sequence", "state", "counts"],
+      "properties": {
+        "session_revoke_sequence": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 },
+        "state": { "const": "complete" },
+        "counts": { "$ref": "#/$defs/session_revoke_ack_counts" }
+      }
+    },
+    "session_revoke_ack_counts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "queued_invocations",
+        "running_invocations",
+        "storage_hostcalls",
+        "active_network_requests",
+        "sockets",
+        "network_streams"
+      ],
+      "properties": {
+        "queued_invocations": { "$ref": "#/$defs/session_revoke_count" },
+        "running_invocations": { "$ref": "#/$defs/session_revoke_count" },
+        "storage_hostcalls": { "$ref": "#/$defs/session_revoke_count" },
+        "active_network_requests": { "$ref": "#/$defs/session_revoke_count" },
+        "sockets": { "$ref": "#/$defs/session_revoke_count" },
+        "network_streams": { "$ref": "#/$defs/session_revoke_count" }
+      }
+    },
+    "session_revoke_count": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
     },
     "runtime_response_frame": {
       "required": ["runtime_generation_id", "payload"],

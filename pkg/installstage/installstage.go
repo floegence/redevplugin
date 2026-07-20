@@ -99,6 +99,7 @@ type ListRequest struct {
 }
 
 type Store interface {
+	Durable() bool
 	Create(ctx context.Context, req CreateRequest) (Record, error)
 	Get(ctx context.Context, stageID string) (Record, error)
 	List(ctx context.Context, req ListRequest) ([]Record, error)
@@ -121,6 +122,8 @@ func NewMemoryStore() *MemoryStore {
 		records: map[string]Record{},
 	}
 }
+
+func (*MemoryStore) Durable() bool { return false }
 
 func NewStageID() (string, error) {
 	var buf [16]byte

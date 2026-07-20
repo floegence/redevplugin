@@ -11,6 +11,7 @@ import (
 
 	"github.com/floegence/redevplugin/pkg/capability"
 	"github.com/floegence/redevplugin/pkg/runtimetarget"
+	"github.com/floegence/redevplugin/pkg/sessionctx"
 )
 
 func TestProcessManagerStartsEveryShardAndBindsDeterministically(t *testing.T) {
@@ -344,6 +345,98 @@ func TestProcessManagerRejectsNonEnvironmentRevokeScopeBeforeShardAccess(t *test
 	}
 }
 
+func TestProcessManagerRevokesSessionOnEveryShardAndAggregatesTerminalCounts(t *testing.T) {
+	shards := []*fakeProcessShard{
+		{health: testShardHealth("a"), sessionRevokeResult: SessionRevokeShardResult{
+			RuntimeGenerationID: "generation_a", State: SessionRevokeStateComplete,
+			Counts: SessionRevokeCounts{QueuedInvocations: 2, StorageHostcalls: 3},
+		}},
+		{health: testShardHealth("b"), sessionRevokeResult: SessionRevokeShardResult{
+			RuntimeGenerationID: "generation_b", State: SessionRevokeStateComplete,
+			Counts: SessionRevokeCounts{RunningInvocations: 5, Sockets: 7},
+		}},
+	}
+	manager := testProcessManager(t, shards)
+	if _, err := manager.Start(context.Background(), testRuntimeTarget); err != nil {
+		t.Fatal(err)
+	}
+	req := SessionRevokeRequest{SessionScope: testManagerSessionScope(), SessionRevokeSequence: 9}
+	result, err := manager.RevokeSession(context.Background(), req)
+	if err != nil {
+		t.Fatalf("RevokeSession() error = %v", err)
+	}
+	if result.SessionScope != req.SessionScope || result.SessionRevokeSequence != req.SessionRevokeSequence || result.RuntimeStopped {
+		t.Fatalf("RevokeSession() identity = %#v", result)
+	}
+	if len(result.Shards) != 2 || result.Shards[0].RuntimeShardID != "runtime_shard_00" || result.Shards[1].RuntimeShardID != "runtime_shard_01" {
+		t.Fatalf("RevokeSession() shards = %#v", result.Shards)
+	}
+	if result.Counts != (SessionRevokeCounts{QueuedInvocations: 2, RunningInvocations: 5, StorageHostcalls: 3, Sockets: 7}) {
+		t.Fatalf("RevokeSession() counts = %#v", result.Counts)
+	}
+	for index, shard := range shards {
+		if shard.sessionRevokeCalls.Load() != 1 {
+			t.Fatalf("shard %d session revoke calls = %d, want 1", index, shard.sessionRevokeCalls.Load())
+		}
+	}
+}
+
+func TestProcessManagerStopsEveryShardWhenSessionTerminalAckFails(t *testing.T) {
+	revokeFailure := errors.New("terminal acknowledgement lost")
+	shards := []*fakeProcessShard{
+		{health: testShardHealth("a"), sessionRevokeResult: SessionRevokeShardResult{RuntimeGenerationID: "generation_a", State: SessionRevokeStateComplete}},
+		{health: testShardHealth("b"), sessionRevokeErr: revokeFailure},
+	}
+	manager := testProcessManager(t, shards)
+	if _, err := manager.Start(context.Background(), testRuntimeTarget); err != nil {
+		t.Fatal(err)
+	}
+	result, err := manager.RevokeSession(context.Background(), SessionRevokeRequest{
+		SessionScope: testManagerSessionScope(), SessionRevokeSequence: 3,
+	})
+	if !errors.Is(err, revokeFailure) {
+		t.Fatalf("RevokeSession() error = %v, want %v", err, revokeFailure)
+	}
+	if !result.RuntimeStopped {
+		t.Fatalf("RevokeSession() result = %#v, want fail-closed runtime stop", result)
+	}
+	for index, shard := range shards {
+		if shard.sessionRevokeCalls.Load() != 1 || shard.stopCalls.Load() != 1 {
+			t.Fatalf("shard %d calls: revoke=%d stop=%d", index, shard.sessionRevokeCalls.Load(), shard.stopCalls.Load())
+		}
+	}
+}
+
+func TestProcessManagerSessionRevokeFailureRespectsCallerHardDeadline(t *testing.T) {
+	revokeFailure := errors.New("terminal acknowledgement lost")
+	releaseStop := make(chan struct{})
+	shard := &fakeProcessShard{
+		health: testShardHealth("a"), sessionRevokeErr: revokeFailure,
+		stop: func() { <-releaseStop },
+	}
+	manager := testProcessManager(t, []*fakeProcessShard{shard})
+	if _, err := manager.Start(context.Background(), testRuntimeTarget); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	started := time.Now()
+	result, err := manager.RevokeSession(ctx, SessionRevokeRequest{
+		SessionScope: testManagerSessionScope(), SessionRevokeSequence: 4,
+	})
+	elapsed := time.Since(started)
+	close(releaseStop)
+	if !errors.Is(err, revokeFailure) || !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("RevokeSession() error = %v", err)
+	}
+	if result.RuntimeStopped {
+		t.Fatalf("RevokeSession() result = %#v, stop did not acknowledge", result)
+	}
+	if elapsed > 250*time.Millisecond {
+		t.Fatalf("RevokeSession() elapsed = %v, exceeded hard deadline allowance", elapsed)
+	}
+}
+
 func TestProcessManagerRequiresExplicitShardCount(t *testing.T) {
 	_, err := newProcessManager(ProcessManagerOptions{}, func(ProcessSupervisorOptions) (processShard, error) {
 		return &fakeProcessShard{}, nil
@@ -498,19 +591,22 @@ func leaseForBinding(pluginInstanceID string, binding RuntimeBinding) Lease {
 }
 
 type fakeProcessShard struct {
-	mu           sync.Mutex
-	health       Health
-	descriptor   RuntimeDescriptor
-	preflightErr error
-	startErr     error
-	stopErr      error
-	revokeErr    error
-	invoke       func(context.Context) ([]byte, error)
-	stop         func()
-	startCalls   atomic.Int64
-	stopCalls    atomic.Int64
-	invokeCalls  atomic.Int64
-	revokeCalls  atomic.Int64
+	mu                  sync.Mutex
+	health              Health
+	descriptor          RuntimeDescriptor
+	preflightErr        error
+	startErr            error
+	stopErr             error
+	revokeErr           error
+	sessionRevokeErr    error
+	sessionRevokeResult SessionRevokeShardResult
+	invoke              func(context.Context) ([]byte, error)
+	stop                func()
+	startCalls          atomic.Int64
+	stopCalls           atomic.Int64
+	invokeCalls         atomic.Int64
+	revokeCalls         atomic.Int64
+	sessionRevokeCalls  atomic.Int64
 }
 
 type recordingRuntimeStreamSink struct{}
@@ -579,4 +675,18 @@ func (s *fakeProcessShard) InvokeWorker(ctx context.Context, _ Lease, _ string, 
 func (s *fakeProcessShard) Revoke(context.Context, RevokeRequest) (RevokeResult, error) {
 	s.revokeCalls.Add(1)
 	return RevokeResult{}, s.revokeErr
+}
+
+func (s *fakeProcessShard) RevokeSession(context.Context, SessionRevokeRequest) (SessionRevokeShardResult, error) {
+	s.sessionRevokeCalls.Add(1)
+	return s.sessionRevokeResult, s.sessionRevokeErr
+}
+
+func testManagerSessionScope() sessionctx.SessionScope {
+	return sessionctx.SessionScope{
+		OwnerSessionHash:     "session_hash",
+		OwnerUserHash:        "user_hash",
+		OwnerEnvHash:         "env_hash",
+		SessionChannelIDHash: "channel_hash",
+	}
 }

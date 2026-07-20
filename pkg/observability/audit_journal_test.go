@@ -265,6 +265,65 @@ func TestSecurityAuditJournalsNormalizeNilTargetHashArrays(t *testing.T) {
 	})
 }
 
+func TestSecurityAuditJournalsCloneSessionScopeCompletionDetails(t *testing.T) {
+	ctx := context.Background()
+	details := map[string]any{
+		"session_scope_state":          "complete",
+		"session_scope_fenced":         true,
+		"session_scope_complete":       true,
+		"surface_count":                uint64(1),
+		"asset_ticket_count":           uint64(2),
+		"asset_session_count":          uint64(3),
+		"gateway_token_count":          uint64(4),
+		"confirmation_token_count":     uint64(5),
+		"stream_ticket_count":          uint64(6),
+		"handle_grant_count":           uint64(7),
+		"confirmation_count":           uint64(8),
+		"operation_count":              uint64(9),
+		"stream_count":                 uint64(10),
+		"runtime_execution_count":      uint64(11),
+		"active_network_request_count": uint64(12),
+		"socket_count":                 uint64(13),
+		"network_stream_count":         uint64(14),
+		"storage_hostcall_count":       uint64(15),
+	}
+	tests := []struct {
+		name    string
+		journal func(*testing.T) SecurityAuditJournal
+	}{
+		{name: "memory", journal: func(*testing.T) SecurityAuditJournal { return NewMemorySecurityAuditJournal() }},
+		{name: "sqlite", journal: func(t *testing.T) SecurityAuditJournal {
+			store, err := NewSQLiteStore(ctx, filepath.Join(t.TempDir(), "audit.sqlite"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = store.Close() })
+			return store
+		}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			journal := test.journal(t)
+			record, err := journal.BeginSecurityAudit(ctx, AuditEvent{Type: "plugin.session_scope.revoked"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := journal.CompleteSecurityAudit(ctx, record.EventID, mutation.OutcomeCommitted, details); err != nil {
+				t.Fatal(err)
+			}
+			details["surface_count"] = uint64(99)
+			completed, err := journal.ListUnexportedSecurityAudits(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(completed) != 1 || completed[0].CompletionDetails["surface_count"] != float64(1) {
+				t.Fatalf("completion details = %#v", completed)
+			}
+			details["surface_count"] = uint64(1)
+		})
+	}
+}
+
 func TestMemorySecurityAuditJournalPropagatesSnapshotCloneFailures(t *testing.T) {
 	ctx := context.Background()
 	journal := NewMemorySecurityAuditJournal()

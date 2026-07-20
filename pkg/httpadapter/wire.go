@@ -797,6 +797,51 @@ type surfaceDisposeResponse struct {
 	Disposed bool `json:"disposed"`
 }
 
+type sessionScopeRevokeCountsResponse struct {
+	Surfaces              uint64 `json:"surfaces"`
+	AssetTickets          uint64 `json:"asset_tickets"`
+	AssetSessions         uint64 `json:"asset_sessions"`
+	PluginGatewayTokens   uint64 `json:"plugin_gateway_tokens"`
+	ConfirmationTokens    uint64 `json:"confirmation_tokens"`
+	StreamTickets         uint64 `json:"stream_tickets"`
+	HandleGrants          uint64 `json:"handle_grants"`
+	Confirmations         uint64 `json:"confirmations"`
+	Operations            uint64 `json:"operations"`
+	Streams               uint64 `json:"streams"`
+	RuntimeExecutions     uint64 `json:"runtime_executions"`
+	ActiveNetworkRequests uint64 `json:"active_network_requests"`
+	Sockets               uint64 `json:"sockets"`
+	NetworkStreams        uint64 `json:"network_streams"`
+	StorageHostcalls      uint64 `json:"storage_hostcalls"`
+}
+
+type sessionScopeRevokeResponse struct {
+	State    string                           `json:"state"`
+	Fenced   bool                             `json:"fenced"`
+	Complete bool                             `json:"complete"`
+	Counts   sessionScopeRevokeCountsResponse `json:"counts"`
+}
+
+func (response sessionScopeRevokeResponse) validIncomplete() bool {
+	return response.State == "incomplete" && response.Fenced && !response.Complete
+}
+
+func publicSessionScopeRevocation(result host.RevokeSessionScopeResult) sessionScopeRevokeResponse {
+	return sessionScopeRevokeResponse{
+		State: string(result.State), Fenced: result.Fenced, Complete: result.Complete,
+		Counts: sessionScopeRevokeCountsResponse{
+			Surfaces: result.Counts.Surfaces, AssetTickets: result.Counts.AssetTickets,
+			AssetSessions: result.Counts.AssetSessions, PluginGatewayTokens: result.Counts.PluginGatewayTokens,
+			ConfirmationTokens: result.Counts.ConfirmationTokens, StreamTickets: result.Counts.StreamTickets,
+			HandleGrants: result.Counts.HandleGrants, Confirmations: result.Counts.Confirmations,
+			Operations: result.Counts.Operations, Streams: result.Counts.Streams,
+			RuntimeExecutions:     result.Counts.RuntimeExecutions,
+			ActiveNetworkRequests: result.Counts.ActiveNetworkRequests, Sockets: result.Counts.Sockets,
+			NetworkStreams: result.Counts.NetworkStreams, StorageHostcalls: result.Counts.StorageHostcalls,
+		},
+	}
+}
+
 type runtimeStopResponse struct {
 	Stopped bool `json:"stopped"`
 }
@@ -811,10 +856,6 @@ type secretBindResponse struct {
 
 type secretTestResponse struct {
 	Tested bool `json:"tested"`
-}
-
-type surfaceScopeRevokeResponse struct {
-	RevokedSurfaceCount int `json:"revoked_surface_count"`
 }
 
 type securityPolicyDeleteResponse struct {

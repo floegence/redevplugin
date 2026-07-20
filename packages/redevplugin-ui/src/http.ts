@@ -3,6 +3,7 @@ import {
   PluginTransportError,
   pluginPlatformErrorCodes,
   type PluginPlatformErrorCode,
+  type PluginMutationOutcome,
 } from "./errors.js";
 import type { components as PluginPlatformComponents } from "./openapi.gen.js";
 
@@ -34,7 +35,9 @@ export type MutationPlatformResponse<T> =
   | { ok: true; data: T }
   | {
       ok: false;
-      error: PluginPlatformComponents["schemas"]["MutationPlatformError"];
+      error: Omit<PluginPlatformComponents["schemas"]["MutationPlatformError"], "mutation_outcome"> & {
+        mutation_outcome: PluginMutationOutcome;
+      };
     };
 
 export function defaultFetch(): FetchLike {
@@ -183,7 +186,8 @@ function isPlatformResponse<T>(value: unknown, mutation: boolean): value is Plat
       typeof value.error.message !== "string" || value.error.message.trim().length === 0 ||
       Array.from(value.error.message).length > 4096 ||
       !isPlatformErrorDetails(value.error.code, value.error.details)) return false;
-  return !mutation || value.error.mutation_outcome === "not_committed" || value.error.mutation_outcome === "unknown";
+  return !mutation || value.error.mutation_outcome === "committed" ||
+    value.error.mutation_outcome === "not_committed" || value.error.mutation_outcome === "unknown";
 }
 
 const packageValidationErrorCodes = [
@@ -211,6 +215,9 @@ function isPluginPlatformErrorCode(value: unknown): value is PluginPlatformError
 }
 
 function isPlatformErrorDetails(code: PluginPlatformErrorCode, value: unknown): value is Record<string, unknown> {
+  if (code === "PLUGIN_SESSION_TEARDOWN_INCOMPLETE") {
+    return hasExactKeys(value, ["session_scope"]) && isIncompleteSessionScopeResult(value.session_scope);
+  }
   if (code === "PLUGIN_MANAGEMENT_REVISION_MISMATCH") {
     return hasExactKeys(value, ["plugin_instance_id", "expected_management_revision", "actual_management_revision"]) &&
       typeof value.plugin_instance_id === "string" && value.plugin_instance_id.length > 0 &&
@@ -275,6 +282,21 @@ function isPlatformErrorDetails(code: PluginPlatformErrorCode, value: unknown): 
       (value.pointer === undefined || typeof value.pointer === "string");
   }
   return hasExactKeys(value, []);
+}
+
+const sessionScopeCountKeys = [
+  "surfaces", "asset_tickets", "asset_sessions", "plugin_gateway_tokens", "confirmation_tokens",
+  "stream_tickets", "handle_grants", "confirmations", "operations", "streams", "runtime_executions",
+  "active_network_requests", "sockets", "network_streams", "storage_hostcalls",
+] as const;
+
+function isIncompleteSessionScopeResult(value: unknown): boolean {
+  if (!hasExactKeys(value, ["state", "fenced", "complete", "counts"]) ||
+      value.state !== "incomplete" || value.fenced !== true || value.complete !== false) return false;
+  const counts = value.counts;
+  if (!hasExactKeys(counts, sessionScopeCountKeys)) return false;
+  return sessionScopeCountKeys.every((key) =>
+    Number.isSafeInteger(counts[key]) && Number(counts[key]) >= 0);
 }
 
 function hasRequiredKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {

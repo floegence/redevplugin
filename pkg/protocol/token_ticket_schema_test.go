@@ -15,7 +15,7 @@ import (
 
 func TestTokenTicketSchemaBindsEveryTokenKind(t *testing.T) {
 	root := repoRoot(t)
-	raw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", "token-ticket-v3.schema.json"))
+	raw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", "token-ticket-v4.schema.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -185,7 +185,7 @@ func TestTokenTicketSchemaBindsEveryTokenKind(t *testing.T) {
 
 func TestAssetTicketGoldenFixtureBindsRuntimeGeneration(t *testing.T) {
 	root := repoRoot(t)
-	raw, err := os.ReadFile(filepath.Join(root, "testdata", "contracts", "tokens", "asset-ticket-v3.json"))
+	raw, err := os.ReadFile(filepath.Join(root, "testdata", "contracts", "tokens", "asset-ticket-v4.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -195,7 +195,7 @@ func TestAssetTicketGoldenFixtureBindsRuntimeGeneration(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := compiled.Validate(fixture); err != nil {
-		t.Fatalf("asset ticket fixture does not validate against token-ticket-v3 schema: %v", err)
+		t.Fatalf("asset ticket fixture does not validate against token-ticket-v4 schema: %v", err)
 	}
 	var record bridge.TokenRecord
 	decodeStrictJSON(t, raw, &record)
@@ -228,7 +228,7 @@ func TestAssetTicketGoldenFixtureBindsRuntimeGeneration(t *testing.T) {
 
 func TestAssetTicketGoldenFixtureRejectsUnknownFields(t *testing.T) {
 	root := repoRoot(t)
-	raw, err := os.ReadFile(filepath.Join(root, "testdata", "contracts", "tokens", "asset-ticket-v3.json"))
+	raw, err := os.ReadFile(filepath.Join(root, "testdata", "contracts", "tokens", "asset-ticket-v4.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -242,7 +242,7 @@ func TestAssetTicketGoldenFixtureRejectsUnknownFields(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := compileTokenTicketSchema(t, root).Validate(fixture); err == nil {
-		t.Fatal("token-ticket-v3 schema accepted an unknown top-level field")
+		t.Fatal("token-ticket-v4 schema accepted an unknown top-level field")
 	}
 	decoder := json.NewDecoder(bytes.NewReader(mutated))
 	decoder.DisallowUnknownFields()
@@ -253,7 +253,7 @@ func TestAssetTicketGoldenFixtureRejectsUnknownFields(t *testing.T) {
 
 func TestAssetTicketGoldenFixtureRejectsResourceScope(t *testing.T) {
 	root := repoRoot(t)
-	raw, err := os.ReadFile(filepath.Join(root, "testdata", "contracts", "tokens", "asset-ticket-v3.json"))
+	raw, err := os.ReadFile(filepath.Join(root, "testdata", "contracts", "tokens", "asset-ticket-v4.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -267,13 +267,13 @@ func TestAssetTicketGoldenFixtureRejectsResourceScope(t *testing.T) {
 	}
 	fixture["audience"] = audience
 	if err := compileTokenTicketSchema(t, root).Validate(fixture); err == nil {
-		t.Fatal("token-ticket-v3 accepted resource_scope on an asset ticket")
+		t.Fatal("token-ticket-v4 accepted resource_scope on an asset ticket")
 	}
 }
 
 func TestHandleGrantGoldenFixtureBindsResourceScope(t *testing.T) {
 	root := repoRoot(t)
-	raw, err := os.ReadFile(filepath.Join(root, "testdata", "contracts", "tokens", "handle-grant-v3.json"))
+	raw, err := os.ReadFile(filepath.Join(root, "testdata", "contracts", "tokens", "handle-grant-v4.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -282,7 +282,7 @@ func TestHandleGrantGoldenFixtureBindsResourceScope(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := compileTokenTicketSchema(t, root).Validate(fixture); err != nil {
-		t.Fatalf("handle grant fixture does not validate against token-ticket-v3 schema: %v", err)
+		t.Fatalf("handle grant fixture does not validate against token-ticket-v4 schema: %v", err)
 	}
 	var record bridge.TokenRecord
 	decodeStrictJSON(t, raw, &record)
@@ -306,7 +306,7 @@ func TestHandleGrantGoldenFixtureBindsResourceScope(t *testing.T) {
 	}
 	wrongScope["audience"] = audience
 	if err := compileTokenTicketSchema(t, root).Validate(wrongScope); err == nil {
-		t.Fatal("token-ticket-v3 accepted an environment scope with owner_user_hash")
+		t.Fatal("token-ticket-v4 accepted an environment scope with owner_user_hash")
 	}
 	for _, name := range []string{"owner_session_hash", "owner_user_hash", "owner_env_hash", "session_channel_id_hash"} {
 		mutated := mapsClone(fixture)
@@ -314,7 +314,7 @@ func TestHandleGrantGoldenFixtureBindsResourceScope(t *testing.T) {
 		mutatedAudience[name] = ""
 		mutated["audience"] = mutatedAudience
 		if err := compileTokenTicketSchema(t, root).Validate(mutated); err == nil {
-			t.Fatalf("token-ticket-v3 accepted empty %s", name)
+			t.Fatalf("token-ticket-v4 accepted empty %s", name)
 		}
 	}
 	mutated := mapsClone(fixture)
@@ -322,13 +322,13 @@ func TestHandleGrantGoldenFixtureBindsResourceScope(t *testing.T) {
 	mutatedRevision["revoke_epoch"] = float64(9007199254740992)
 	mutated["revision"] = mutatedRevision
 	if err := compileTokenTicketSchema(t, root).Validate(mutated); err == nil {
-		t.Fatal("token-ticket-v3 accepted an unsafe revoke_epoch")
+		t.Fatal("token-ticket-v4 accepted an unsafe revoke_epoch")
 	}
 }
 
 func compileTokenTicketSchema(t testing.TB, root string) *jsonschema.Schema {
 	t.Helper()
-	path := filepath.Join(root, "spec", "plugin", "token-ticket-v3.schema.json")
+	path := filepath.Join(root, "spec", "plugin", "token-ticket-v4.schema.json")
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
@@ -343,7 +343,7 @@ func compileTokenTicketSchema(t testing.TB, root string) *jsonschema.Schema {
 	if err := compiler.AddResource("https://schemas.redevplugin.dev/plugin/resource-scope-v1.schema.json", bytes.NewReader(resourceScopeRaw)); err != nil {
 		t.Fatal(err)
 	}
-	const resource = "urn:redevplugin:test:token-ticket-v3"
+	const resource = "urn:redevplugin:test:token-ticket-v4"
 	if err := compiler.AddResource(resource, bytes.NewReader(raw)); err != nil {
 		t.Fatal(err)
 	}

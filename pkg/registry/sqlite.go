@@ -29,6 +29,8 @@ type SQLiteStore struct {
 	commitTx func(*sql.Tx) error
 }
 
+func (*SQLiteStore) Durable() bool { return true }
+
 func NewSQLiteStore(ctx context.Context, path string) (*SQLiteStore, error) {
 	if path == "" {
 		return nil, errors.New("sqlite registry path is required")

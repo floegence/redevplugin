@@ -23,6 +23,9 @@ const (
 	ErrSecretScopeMismatch           ErrorCode = "PLUGIN_SECRET_SCOPE_MISMATCH"
 	ErrStorageScopeMismatch          ErrorCode = "PLUGIN_STORAGE_SCOPE_MISMATCH"
 	ErrAdapterFailure                ErrorCode = "PLUGIN_ADAPTER_FAILURE"
+	ErrSessionRevoked                ErrorCode = "PLUGIN_SESSION_REVOKED"
+	ErrSessionTeardownIncomplete     ErrorCode = "PLUGIN_SESSION_TEARDOWN_INCOMPLETE"
+	ErrSessionFenceCapacity          ErrorCode = "PLUGIN_SESSION_FENCE_CAPACITY"
 	ErrConfirmationRequired          ErrorCode = "PLUGIN_CONFIRMATION_REQUIRED"
 	ErrConfirmationInvalid           ErrorCode = "PLUGIN_CONFIRMATION_INVALID"
 	ErrConfirmationRejected          ErrorCode = "PLUGIN_CONFIRMATION_REJECTED"
@@ -92,6 +95,9 @@ var platformErrorCodes = []ErrorCode{
 	ErrSecretScopeMismatch,
 	ErrStorageScopeMismatch,
 	ErrAdapterFailure,
+	ErrSessionRevoked,
+	ErrSessionTeardownIncomplete,
+	ErrSessionFenceCapacity,
 	ErrConfirmationRequired,
 	ErrConfirmationInvalid,
 	ErrTokenExpired,

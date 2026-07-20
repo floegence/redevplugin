@@ -15,7 +15,7 @@ import (
 
 func TestIPCSchemaReferencesWorkerInvocationContract(t *testing.T) {
 	root := repoRoot(t)
-	raw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", "ipc-v4.schema.json"))
+	raw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", "ipc-v5.schema.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -55,7 +55,7 @@ func TestIPCSchemaReferencesWorkerInvocationContract(t *testing.T) {
 
 func TestIPCSchemaBindsHelloChannelNonce(t *testing.T) {
 	root := repoRoot(t)
-	raw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", "ipc-v4.schema.json"))
+	raw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", "ipc-v5.schema.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -121,7 +121,7 @@ func TestIPCSchemaBindsHelloChannelNonce(t *testing.T) {
 
 func TestIPCSchemaDefinesHeartbeatPayloads(t *testing.T) {
 	root := repoRoot(t)
-	raw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", "ipc-v4.schema.json"))
+	raw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", "ipc-v5.schema.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -184,7 +184,7 @@ func TestIPCSchemaDefinesHeartbeatPayloads(t *testing.T) {
 }
 
 func TestIPCSchemaNegotiatesClosedRuntimeLimits(t *testing.T) {
-	schema := readPluginSchema(t, "ipc-v4.schema.json")
+	schema := readPluginSchema(t, "ipc-v5.schema.json")
 	defs := requireNestedObject(t, schema, "$defs")
 	limits := requireNestedObject(t, defs, "runtime_limits")
 	const routeCapacityContract = "Negotiated runtime capacities. per_plugin_concurrency must not exceed worker_count. Route capacities are derived exactly from negotiated limits: active hostcall routes = worker_count, canceled hostcall retention = worker_count + queue_capacity, and compile-flight artifact routes = worker_count."
@@ -245,7 +245,7 @@ func TestIPCSchemaNegotiatesClosedRuntimeLimits(t *testing.T) {
 }
 
 func TestIPCSchemaDefinesClosedModuleCacheMetrics(t *testing.T) {
-	schema := readPluginSchema(t, "ipc-v4.schema.json")
+	schema := readPluginSchema(t, "ipc-v5.schema.json")
 	metrics := requireNestedObject(t, schema, "$defs", "module_cache_metrics")
 	if metrics["additionalProperties"] != false {
 		t.Fatalf("module cache metrics additionalProperties = %#v, want false", metrics["additionalProperties"])
@@ -263,7 +263,7 @@ func TestIPCSchemaDefinesClosedModuleCacheMetrics(t *testing.T) {
 }
 
 func TestIPCSchemaDefinesCancellationFrames(t *testing.T) {
-	schema := readPluginSchema(t, "ipc-v4.schema.json")
+	schema := readPluginSchema(t, "ipc-v5.schema.json")
 	allOf, ok := schema["allOf"].([]any)
 	if !ok {
 		t.Fatal("ipc schema missing allOf")
@@ -296,7 +296,7 @@ func TestIPCSchemaDefinesCancellationFrames(t *testing.T) {
 }
 
 func TestIPCSchemaBindsRuntimeHostcallsToParentInvocation(t *testing.T) {
-	schema := readPluginSchema(t, "ipc-v4.schema.json")
+	schema := readPluginSchema(t, "ipc-v5.schema.json")
 	parent := requireNestedObject(t, schema, "properties", "parent_request_id")
 	if parent["type"] != "string" || parent["minLength"] != float64(1) {
 		t.Fatalf("parent_request_id schema = %#v", parent)
@@ -344,7 +344,7 @@ func TestIPCSchemaBindsRuntimeHostcallsToParentInvocation(t *testing.T) {
 }
 
 func TestIPCSchemaBindsResourceScopesAcrossHandleStorageAndRevocation(t *testing.T) {
-	schema := readPluginSchema(t, "ipc-v4.schema.json")
+	schema := readPluginSchema(t, "ipc-v5.schema.json")
 	defs := requireNestedObject(t, schema, "$defs")
 
 	for _, name := range []string{
@@ -396,7 +396,7 @@ func TestIPCSchemaValidatesV4Frames(t *testing.T) {
 	compiler.Draft = jsonschema.Draft2020
 	compiler.AssertFormat = true
 	for resource, path := range map[string]string{
-		"urn:redevplugin:ipc-v4": "ipc-v4.schema.json",
+		"urn:redevplugin:ipc-v5": "ipc-v5.schema.json",
 		"https://schemas.redevplugin.dev/plugin/worker-invocation-v3.schema.json": "worker-invocation-v3.schema.json",
 	} {
 		raw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", path))
@@ -407,7 +407,7 @@ func TestIPCSchemaValidatesV4Frames(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	compiled, err := compiler.Compile("urn:redevplugin:ipc-v4")
+	compiled, err := compiler.Compile("urn:redevplugin:ipc-v5")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -431,7 +431,7 @@ func TestIPCSchemaValidatesV4Frames(t *testing.T) {
 		"hello ack":             requireNestedObject(t, helloAckFixture, "frame"),
 		"validate handle grant": requireNestedObject(t, handleGrantFixture, "frame"),
 		"heartbeat ack": {
-			"ipc_version":           "rust-ipc-v4",
+			"ipc_version":           "rust-ipc-v5",
 			"frame_type":            "heartbeat",
 			"request_id":            "heartbeat_1",
 			"runtime_generation_id": "generation_1",
@@ -458,14 +458,14 @@ func TestIPCSchemaValidatesV4Frames(t *testing.T) {
 			},
 		},
 		"cancel request": {
-			"ipc_version":           "rust-ipc-v4",
+			"ipc_version":           "rust-ipc-v5",
 			"frame_type":            "cancel_invoke",
 			"request_id":            "cancel_1",
 			"runtime_generation_id": "generation_1",
 			"payload":               map[string]any{"invocation_request_id": "invoke_1"},
 		},
 		"cancel ack": {
-			"ipc_version":           "rust-ipc-v4",
+			"ipc_version":           "rust-ipc-v5",
 			"frame_type":            "cancel_invoke_ack",
 			"request_id":            "cancel_1",
 			"runtime_generation_id": "generation_1",
@@ -475,7 +475,7 @@ func TestIPCSchemaValidatesV4Frames(t *testing.T) {
 			},
 		},
 		"hostcall request": {
-			"ipc_version":           "rust-ipc-v4",
+			"ipc_version":           "rust-ipc-v5",
 			"frame_type":            "open_handle",
 			"request_id":            "invoke_1:artifact",
 			"parent_request_id":     "invoke_1",
@@ -487,7 +487,7 @@ func TestIPCSchemaValidatesV4Frames(t *testing.T) {
 			},
 		},
 		"hostcall response": {
-			"ipc_version":           "rust-ipc-v4",
+			"ipc_version":           "rust-ipc-v5",
 			"frame_type":            "open_handle",
 			"request_id":            "invoke_1:artifact",
 			"parent_request_id":     "invoke_1",
@@ -586,7 +586,7 @@ func findIPCFrameBlock(t *testing.T, allOf []any, frameType string) map[string]a
 
 func TestIPCSchemaPublishesOnlyImplementedFrameTypes(t *testing.T) {
 	root := repoRoot(t)
-	raw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", "ipc-v4.schema.json"))
+	raw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", "ipc-v5.schema.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -614,6 +614,8 @@ func TestIPCSchemaPublishesOnlyImplementedFrameTypes(t *testing.T) {
 		"network_execute",
 		"revoke_epoch",
 		"revoke_epoch_ack",
+		"session_revoke",
+		"session_revoke_ack",
 		"diagnostic",
 	})
 
@@ -640,7 +642,7 @@ func TestIPCSchemaPublishesOnlyImplementedFrameTypes(t *testing.T) {
 }
 
 func TestIPCSchemaDefinesClosedCompileFlightLifecycleFrames(t *testing.T) {
-	schema := readPluginSchema(t, "ipc-v4.schema.json")
+	schema := readPluginSchema(t, "ipc-v5.schema.json")
 	allOf, ok := schema["allOf"].([]any)
 	if !ok {
 		t.Fatal("ipc schema missing allOf")
@@ -674,7 +676,7 @@ func TestIPCSchemaDefinesClosedCompileFlightLifecycleFrames(t *testing.T) {
 
 func TestIPCSchemaAttestsClosedErrorOrigins(t *testing.T) {
 	root := repoRoot(t)
-	raw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", "ipc-v4.schema.json"))
+	raw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", "ipc-v5.schema.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -719,7 +721,7 @@ func TestIPCSchemaAttestsClosedErrorOrigins(t *testing.T) {
 
 func TestIPCSchemaRequiresWorkerLeaseContract(t *testing.T) {
 	root := repoRoot(t)
-	raw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", "ipc-v4.schema.json"))
+	raw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", "ipc-v5.schema.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -840,7 +842,7 @@ func TestIPCSchemaRequiresWorkerLeaseContract(t *testing.T) {
 
 func TestIPCSchemaDefinesOpenHandlePayloads(t *testing.T) {
 	root := repoRoot(t)
-	raw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", "ipc-v4.schema.json"))
+	raw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", "ipc-v5.schema.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -892,7 +894,7 @@ func TestIPCSchemaDefinesOpenHandlePayloads(t *testing.T) {
 
 func TestIPCSchemaDefinesHandleGrantValidationPayloads(t *testing.T) {
 	root := repoRoot(t)
-	raw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", "ipc-v4.schema.json"))
+	raw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", "ipc-v5.schema.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -935,7 +937,7 @@ func TestIPCSchemaDefinesHandleGrantValidationPayloads(t *testing.T) {
 }
 
 func TestIPCSchemaRequiresPositiveRevokeEpochs(t *testing.T) {
-	raw, err := os.ReadFile(filepath.Join(repoRoot(t), "spec", "plugin", "ipc-v4.schema.json"))
+	raw, err := os.ReadFile(filepath.Join(repoRoot(t), "spec", "plugin", "ipc-v5.schema.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -966,12 +968,12 @@ func TestIPCSchemaRequiresPositiveRevokeEpochs(t *testing.T) {
 	}
 	visit(schema)
 	if count == 0 {
-		t.Fatal("ipc-v4 schema does not define revoke_epoch")
+		t.Fatal("ipc-v5 schema does not define revoke_epoch")
 	}
 }
 
 func TestIPCSchemaBoundsRevisionBindingsToJSONSafeIntegers(t *testing.T) {
-	raw, err := os.ReadFile(filepath.Join(repoRoot(t), "spec", "plugin", "ipc-v4.schema.json"))
+	raw, err := os.ReadFile(filepath.Join(repoRoot(t), "spec", "plugin", "ipc-v5.schema.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1003,14 +1005,14 @@ func TestIPCSchemaBoundsRevisionBindingsToJSONSafeIntegers(t *testing.T) {
 	visit(schema)
 	for key, count := range counts {
 		if count == 0 {
-			t.Fatalf("ipc-v4 schema does not define %s", key)
+			t.Fatalf("ipc-v5 schema does not define %s", key)
 		}
 	}
 }
 
 func TestIPCSchemaDefinesStorageFilePayloads(t *testing.T) {
 	root := repoRoot(t)
-	raw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", "ipc-v4.schema.json"))
+	raw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", "ipc-v5.schema.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1042,7 +1044,7 @@ func TestIPCSchemaDefinesStorageFilePayloads(t *testing.T) {
 
 func TestIPCSchemaDefinesStorageKVPayloads(t *testing.T) {
 	root := repoRoot(t)
-	raw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", "ipc-v4.schema.json"))
+	raw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", "ipc-v5.schema.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1079,7 +1081,7 @@ func TestIPCSchemaDefinesStorageKVPayloads(t *testing.T) {
 
 func TestIPCSchemaDefinesStorageSQLitePayloads(t *testing.T) {
 	root := repoRoot(t)
-	raw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", "ipc-v4.schema.json"))
+	raw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", "ipc-v5.schema.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1134,7 +1136,7 @@ func TestIPCSchemaDefinesStorageSQLitePayloads(t *testing.T) {
 
 func TestIPCSchemaDefinesStorageUsageFileQuotaFields(t *testing.T) {
 	root := repoRoot(t)
-	raw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", "ipc-v4.schema.json"))
+	raw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", "ipc-v5.schema.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1154,7 +1156,7 @@ func TestIPCSchemaDefinesStorageUsageFileQuotaFields(t *testing.T) {
 
 func TestIPCSchemaDefinesNetworkGrantPayloads(t *testing.T) {
 	root := repoRoot(t)
-	raw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", "ipc-v4.schema.json"))
+	raw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", "ipc-v5.schema.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1201,7 +1203,7 @@ func TestIPCSchemaDefinesNetworkGrantPayloads(t *testing.T) {
 
 func TestIPCSchemaDefinesNetworkExecutePayloads(t *testing.T) {
 	root := repoRoot(t)
-	raw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", "ipc-v4.schema.json"))
+	raw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", "ipc-v5.schema.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1246,7 +1248,7 @@ func TestIPCSchemaDefinesNetworkExecutePayloads(t *testing.T) {
 
 func TestIPCSchemaDefinesRevokeEpochAckResult(t *testing.T) {
 	root := repoRoot(t)
-	raw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", "ipc-v4.schema.json"))
+	raw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", "ipc-v5.schema.json"))
 	if err != nil {
 		t.Fatal(err)
 	}

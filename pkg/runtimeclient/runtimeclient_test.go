@@ -185,12 +185,12 @@ func TestReadIPCFrameRejectsNonCanonicalJSON(t *testing.T) {
 		name  string
 		frame string
 	}{
-		{name: "unknown field", frame: `{"ipc_version":"rust-ipc-v4","frame_type":"diagnostic","request_id":"r1","payload":{},"future":true}`},
-		{name: "duplicate frame type", frame: `{"ipc_version":"rust-ipc-v4","frame_type":"diagnostic","frame_type":"heartbeat","request_id":"r1","payload":{}}`},
-		{name: "case folded request id", frame: `{"ipc_version":"rust-ipc-v4","frame_type":"diagnostic","request_id":"r1","REQUEST_ID":"r2","payload":{}}`},
-		{name: "case alias only", frame: `{"ipc_version":"rust-ipc-v4","frame_type":"diagnostic","REQUEST_ID":"r1","payload":{}}`},
-		{name: "duplicate nested payload key", frame: `{"ipc_version":"rust-ipc-v4","frame_type":"diagnostic","request_id":"r1","payload":{"ok":true,"ok":false}}`},
-		{name: "trailing JSON", frame: `{"ipc_version":"rust-ipc-v4","frame_type":"diagnostic","request_id":"r1","payload":{}} {}`},
+		{name: "unknown field", frame: `{"ipc_version":"rust-ipc-v5","frame_type":"diagnostic","request_id":"r1","payload":{},"future":true}`},
+		{name: "duplicate frame type", frame: `{"ipc_version":"rust-ipc-v5","frame_type":"diagnostic","frame_type":"heartbeat","request_id":"r1","payload":{}}`},
+		{name: "case folded request id", frame: `{"ipc_version":"rust-ipc-v5","frame_type":"diagnostic","request_id":"r1","REQUEST_ID":"r2","payload":{}}`},
+		{name: "case alias only", frame: `{"ipc_version":"rust-ipc-v5","frame_type":"diagnostic","REQUEST_ID":"r1","payload":{}}`},
+		{name: "duplicate nested payload key", frame: `{"ipc_version":"rust-ipc-v5","frame_type":"diagnostic","request_id":"r1","payload":{"ok":true,"ok":false}}`},
+		{name: "trailing JSON", frame: `{"ipc_version":"rust-ipc-v5","frame_type":"diagnostic","request_id":"r1","payload":{}} {}`},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -209,11 +209,11 @@ func TestValidateHelloAckRejectsNonCanonicalPayload(t *testing.T) {
 		RuntimeGenerationID: "g1",
 	}
 	for _, payload := range []string{
-		`{"runtime_version":"1.0.0","rust_ipc_version":"rust-ipc-v4","wasm_abi_version":"redevplugin-wasm-worker-v2","channel_nonce":"nonce_1234567890123456","future":true}`,
-		`{"runtime_version":"1.0.0","runtime_version":"2.0.0","rust_ipc_version":"rust-ipc-v4","wasm_abi_version":"redevplugin-wasm-worker-v2","channel_nonce":"nonce_1234567890123456"}`,
-		`{"runtime_version":"1.0.0","RUNTIME_VERSION":"2.0.0","rust_ipc_version":"rust-ipc-v4","wasm_abi_version":"redevplugin-wasm-worker-v2","channel_nonce":"nonce_1234567890123456"}`,
-		`{"RUNTIME_VERSION":"1.0.0","rust_ipc_version":"rust-ipc-v4","wasm_abi_version":"redevplugin-wasm-worker-v2","channel_nonce":"nonce_1234567890123456"}`,
-		`{"runtime_version":"1.0.0","rust_ipc_version":"rust-ipc-v4","wasm_abi_version":"redevplugin-wasm-worker-v2","channel_nonce":"nonce_1234567890123456"} {}`,
+		`{"runtime_version":"1.0.0","rust_ipc_version":"rust-ipc-v5","wasm_abi_version":"redevplugin-wasm-worker-v2","channel_nonce":"nonce_1234567890123456","future":true}`,
+		`{"runtime_version":"1.0.0","runtime_version":"2.0.0","rust_ipc_version":"rust-ipc-v5","wasm_abi_version":"redevplugin-wasm-worker-v2","channel_nonce":"nonce_1234567890123456"}`,
+		`{"runtime_version":"1.0.0","RUNTIME_VERSION":"2.0.0","rust_ipc_version":"rust-ipc-v5","wasm_abi_version":"redevplugin-wasm-worker-v2","channel_nonce":"nonce_1234567890123456"}`,
+		`{"RUNTIME_VERSION":"1.0.0","rust_ipc_version":"rust-ipc-v5","wasm_abi_version":"redevplugin-wasm-worker-v2","channel_nonce":"nonce_1234567890123456"}`,
+		`{"runtime_version":"1.0.0","rust_ipc_version":"rust-ipc-v5","wasm_abi_version":"redevplugin-wasm-worker-v2","channel_nonce":"nonce_1234567890123456"} {}`,
 	} {
 		frame := baseFrame
 		frame.Payload = json.RawMessage(payload)
@@ -1504,6 +1504,37 @@ func TestDecodeRevokeResultRequiresStructuredCounters(t *testing.T) {
 	}
 }
 
+func TestDecodeSessionRevokeResultIsClosedAndGenerationBound(t *testing.T) {
+	request := SessionRevokeRequest{SessionScope: sessionctx.SessionScope{
+		OwnerSessionHash: "session_hash", OwnerUserHash: "user_hash", OwnerEnvHash: "env_hash", SessionChannelIDHash: "channel_hash",
+	}, SessionRevokeSequence: 7}
+	valid := json.RawMessage(`{"session_revoke_sequence":7,"state":"complete","counts":{"queued_invocations":1,"running_invocations":2,"storage_hostcalls":3,"active_network_requests":4,"sockets":5,"network_streams":6}}`)
+	result, err := decodeSessionRevokeResult(valid, "generation_1", request)
+	if err != nil {
+		t.Fatalf("decodeSessionRevokeResult() error = %v", err)
+	}
+	if result.RuntimeGenerationID != "generation_1" || result.State != SessionRevokeStateComplete || result.Counts.NetworkStreams != 6 {
+		t.Fatalf("decodeSessionRevokeResult() = %#v", result)
+	}
+	for name, raw := range map[string]json.RawMessage{
+		"missing counts":  json.RawMessage(`{"session_revoke_sequence":7,"state":"complete"}`),
+		"wrong sequence":  json.RawMessage(`{"session_revoke_sequence":8,"state":"complete","counts":{"queued_invocations":0,"running_invocations":0,"storage_hostcalls":0,"active_network_requests":0,"sockets":0,"network_streams":0}}`),
+		"unknown state":   json.RawMessage(`{"session_revoke_sequence":7,"state":"partial","counts":{"queued_invocations":0,"running_invocations":0,"storage_hostcalls":0,"active_network_requests":0,"sockets":0,"network_streams":0}}`),
+		"unknown field":   json.RawMessage(`{"session_revoke_sequence":7,"state":"complete","counts":{"queued_invocations":0,"running_invocations":0,"storage_hostcalls":0,"active_network_requests":0,"sockets":0,"network_streams":0},"future":true}`),
+		"unsafe counter":  json.RawMessage(`{"session_revoke_sequence":7,"state":"complete","counts":{"queued_invocations":9007199254740992,"running_invocations":0,"storage_hostcalls":0,"active_network_requests":0,"sockets":0,"network_streams":0}}`),
+		"unknown counter": json.RawMessage(`{"session_revoke_sequence":7,"state":"complete","counts":{"queued_invocations":0,"running_invocations":0,"storage_hostcalls":0,"active_network_requests":0,"sockets":0,"network_streams":0,"future":0}}`),
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := decodeSessionRevokeResult(raw, "generation_1", request); !errors.Is(err, ErrRuntimeRequestFailed) {
+				t.Fatalf("decodeSessionRevokeResult() error = %v, want ErrRuntimeRequestFailed", err)
+			}
+		})
+	}
+	if _, err := decodeSessionRevokeResult(valid, "", request); !errors.Is(err, ErrRuntimeRequestFailed) {
+		t.Fatalf("decodeSessionRevokeResult(missing generation) error = %v", err)
+	}
+}
+
 func TestDecodeHeartbeatResultRequiresStructuredTiming(t *testing.T) {
 	_, err := decodeHeartbeatResult(json.RawMessage(`{"runtime_generation_id":"gen_1","runtime_unix_nano":1}`), "gen_1")
 	if !errors.Is(err, ErrRuntimeRequestFailed) {
@@ -1533,6 +1564,8 @@ func TestIPCGoldenFixtures(t *testing.T) {
 		"unknown_enum.json",
 		"valid_hello_ack.json",
 		"valid_invoke_worker_result.json",
+		"valid_session_revoke.json",
+		"valid_session_revoke_ack.json",
 		"valid_validate_handle_grant.json",
 	}
 	files, err := filepath.Glob(filepath.Join("..", "..", "testdata", "contracts", "ipc", "*.json"))
@@ -1553,6 +1586,12 @@ func TestIPCGoldenFixtures(t *testing.T) {
 			raw, err := os.ReadFile(file)
 			if err != nil {
 				t.Fatalf("read fixture: %v", err)
+			}
+			if filepath.Base(file) == "valid_session_revoke.json" || filepath.Base(file) == "valid_session_revoke_ack.json" {
+				if err := validateSessionRevokeGoldenFixture(filepath.Base(file), raw); err != nil {
+					t.Fatalf("fixture error = %v", err)
+				}
+				return
 			}
 			var fixture ipcGoldenFixture
 			if err := json.Unmarshal(raw, &fixture); err != nil {
@@ -1575,6 +1614,45 @@ func TestIPCGoldenFixtures(t *testing.T) {
 				t.Fatalf("fixture error = %v", err)
 			}
 		})
+	}
+}
+
+func validateSessionRevokeGoldenFixture(name string, raw []byte) error {
+	var frame ipcFrame
+	if err := decodeStrictJSON(raw, &frame); err != nil {
+		return err
+	}
+	request := SessionRevokeRequest{SessionScope: sessionctx.SessionScope{
+		OwnerSessionHash: "owner_session_fixture_1", OwnerUserHash: "owner_user_fixture_1",
+		OwnerEnvHash: "owner_env_fixture_1", SessionChannelIDHash: "session_channel_fixture_1",
+	}, SessionRevokeSequence: 1}
+	switch name {
+	case "valid_session_revoke.json":
+		if frame.IPCVersion != version.RustIPCVersion || frame.FrameType != ipcFrameTypeSessionRevoke || frame.RequestID != "session_revoke_1" || frame.RuntimeGenerationID != "runtime_generation_fixture_1" {
+			return errors.New("session revoke request frame identity mismatch")
+		}
+		var payload sessionRevokeRequestPayload
+		if err := decodeStrictJSON(frame.Payload, &payload); err != nil {
+			return err
+		}
+		if payload.SessionRevokeSequence != request.SessionRevokeSequence || payload.OwnerSessionHash != request.SessionScope.OwnerSessionHash ||
+			payload.OwnerUserHash != request.SessionScope.OwnerUserHash || payload.OwnerEnvHash != request.SessionScope.OwnerEnvHash ||
+			payload.SessionChannelIDHash != request.SessionScope.SessionChannelIDHash {
+			return errors.New("session revoke request payload mismatch")
+		}
+		return nil
+	case "valid_session_revoke_ack.json":
+		if err := validateIPCResponse("session_revoke_1", "runtime_generation_fixture_1", ipcFrameTypeSessionRevokeAck, frame); err != nil {
+			return err
+		}
+		response, err := decodeRuntimeResponse(frame)
+		if err != nil {
+			return err
+		}
+		_, err = decodeSessionRevokeResult(response.Result, frame.RuntimeGenerationID, request)
+		return err
+	default:
+		return errors.New("unknown session revoke fixture")
 	}
 }
 

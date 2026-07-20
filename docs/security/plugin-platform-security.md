@@ -165,7 +165,7 @@ window source, frame generation, port, asset session, surface instance, bridge
 nonce, active fingerprint, owner and session hashes, management revision, and revoke
 epoch. `event.origin` is diagnostic context only.
 
-Token and ticket kinds are described in `token-ticket-v3.schema.json`. Schema
+Token and ticket kinds are described in `token-ticket-v4.schema.json`. Schema
 tests bind every token kind to its required `use`, audience fields, and
 token-id namespace:
 
@@ -256,7 +256,7 @@ revocation semantics.
 Bridge lease renewal uses the current parent-held gateway token on the same
 bridge channel. A successful renewal atomically replaces both the gateway token
 and asset session, extends the server-side surface lease, and revokes the prior
-credentials. Session teardown calls the authenticated `surfaces/revoke-scope`
+credentials. Session teardown calls the authenticated `session/revoke-scope`
 route; owner and channel identity come only from the Host request context.
 The initial lease is minted and applied before renderer initialization, so no
 plugin asset request can race the revocation of the prepared asset session.

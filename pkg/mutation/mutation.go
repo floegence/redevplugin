@@ -32,10 +32,33 @@ func (e *Error) Unwrap() error {
 func Explicit(err error) (Outcome, bool) {
 	var mutationErr *Error
 	if errors.As(err, &mutationErr) &&
-		(mutationErr.Outcome == OutcomeNotCommitted || mutationErr.Outcome == OutcomeUnknown) {
+		(mutationErr.Outcome == OutcomeCommitted || mutationErr.Outcome == OutcomeNotCommitted || mutationErr.Outcome == OutcomeUnknown) {
 		return mutationErr.Outcome, true
 	}
 	return "", false
+}
+
+func Committed(err error) error {
+	if err == nil {
+		return nil
+	}
+	if _, explicit := Explicit(err); explicit {
+		return err
+	}
+	return &Error{Outcome: OutcomeCommitted, Err: err}
+}
+
+// ForceCommitted records that the state transition is known to have crossed
+// its durable commit point even when a later reporting error already carries a
+// different mutation outcome.
+func ForceCommitted(err error) error {
+	if err == nil {
+		return nil
+	}
+	if outcome, explicit := Explicit(err); explicit && outcome == OutcomeCommitted {
+		return err
+	}
+	return &Error{Outcome: OutcomeCommitted, Err: err}
 }
 
 func ForError(err error) Outcome {

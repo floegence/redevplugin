@@ -17,7 +17,7 @@ func TestPublicRequestDTOsDeclareClosedJSONFieldNames(t *testing.T) {
 		ImportDataRequest{}, DeleteExportDataRequest{}, GrantPermissionRequest{}, RevokePermissionRequest{},
 		ListPermissionGrantsRequest{}, PutSecurityPolicyRequest{}, GetSecurityPolicyRequest{}, DeleteSecurityPolicyRequest{},
 		GetSettingsRequest{}, PatchSettingsRequest{}, OpenSurfaceRequest{}, PrepareSurfaceRequest{},
-		ReadSurfaceAssetRequest{}, DisposeSurfaceRequest{}, RevokeSurfaceScopeRequest{}, MintBridgeTokenRequest{},
+		ReadSurfaceAssetRequest{}, DisposeSurfaceRequest{}, RevokeSessionScopeRequest{}, FinalizeSessionScopeRequest{}, MintBridgeTokenRequest{},
 		CallMethodRequest{}, ListIntentsRequest{}, InvokeIntentRequest{}, PrepareMethodConfirmationRequest{},
 		RejectMethodConfirmationRequest{}, ListOperationsRequest{}, CancelOperationRequest{}, CancelSurfaceOperationRequest{},
 		ReadStreamRequest{}, AcknowledgeStreamRequest{}, MintConnectionGrantRequest{}, MintStorageHandleGrantRequest{},

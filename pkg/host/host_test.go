@@ -40,6 +40,7 @@ import (
 	"github.com/floegence/redevplugin/pkg/secrets"
 	"github.com/floegence/redevplugin/pkg/security"
 	"github.com/floegence/redevplugin/pkg/sessionctx"
+	"github.com/floegence/redevplugin/pkg/sessionscope"
 	"github.com/floegence/redevplugin/pkg/storage"
 	"github.com/floegence/redevplugin/pkg/stream"
 	"github.com/floegence/redevplugin/pkg/version"
@@ -8174,6 +8175,8 @@ func TestRefreshEnabledPluginsRestoresRuntimeState(t *testing.T) {
 			Operations:           operation.NewMemoryStore(),
 			ConfirmationIntents:  security.NewMemoryConfirmationIntentStore(),
 			Streams:              stream.NewMemoryStore(),
+			SessionLifecycle:     h.adapters.SessionLifecycle,
+			SessionScopes:        h.adapters.SessionScopes,
 		},
 		Release: &ReleaseModule{
 			ReleaseMetadataVerifier:     h.adapters.ReleaseMetadataVerifier,
@@ -8795,7 +8798,7 @@ func TestPublicDiagnosticDetailsExplicitlyMapAllFields(t *testing.T) {
 		FailureCode: "failure_code", RuntimeProcessFailureCode: observability.RuntimeProcessWriterWriteFailed,
 		OperationID: "operation_1", StreamID: "stream_1",
 		RuntimeInstanceID: "runtime_1", RuntimeGenerationID: "generation_1", RuntimeVersion: "0.5.0",
-		RustIPCVersion: "rust-ipc-v4", WASMABIVersion: "wasm-abi-v1", RuntimeTargetOS: "linux",
+		RustIPCVersion: "rust-ipc-v5", WASMABIVersion: "wasm-abi-v1", RuntimeTargetOS: "linux",
 		RuntimeTargetArch: "amd64", RuntimeArtifactSHA256: "sha256:runtime", OS: "linux", Arch: "amd64",
 		Stream: "stderr", PackageHash: "sha256:package", Artifact: "worker.wasm", PluginInstanceID: "plugin_1",
 		StoreID: "store_1", Operation: "runtime.start", Hostcall: "storage.kv", Code: "PLUGIN_RUNTIME_UNAVAILABLE",
@@ -8807,7 +8810,7 @@ func TestPublicDiagnosticDetailsExplicitlyMapAllFields(t *testing.T) {
 		FailureCode: "failure_code", RuntimeProcessFailureCode: observability.RuntimeProcessWriterWriteFailed,
 		OperationID: "operation_1", StreamID: "stream_1",
 		RuntimeInstanceID: "runtime_1", RuntimeGenerationID: "generation_1", RuntimeVersion: "0.5.0",
-		RustIPCVersion: "rust-ipc-v4", WASMABIVersion: "wasm-abi-v1", RuntimeTargetOS: "linux",
+		RustIPCVersion: "rust-ipc-v5", WASMABIVersion: "wasm-abi-v1", RuntimeTargetOS: "linux",
 		RuntimeTargetArch: "amd64", RuntimeArtifactSHA256: "sha256:runtime", OS: "linux", Arch: "amd64",
 		Stream: "stderr", PackageHash: "sha256:package", Artifact: "worker.wasm", PluginInstanceID: "plugin_1",
 		StoreID: "store_1", Operation: "runtime.start", Hostcall: "storage.kv", Code: "PLUGIN_RUNTIME_UNAVAILABLE",
@@ -8822,7 +8825,19 @@ func TestPublicDiagnosticDetailsExplicitlyMapAllFields(t *testing.T) {
 func TestUserTriggeredDiagnosticHelpersAttachScopeAndHideInternalCause(t *testing.T) {
 	const sensitive = "vault-token-super-secret at /Users/secret/path"
 	diagnostics := &listingDiagnosticSink{}
-	h := &Host{adapters: normalizedAdapters{Authorization: allowAuthorizationAdapter{}, Diagnostics: diagnostics}, securityJournal: observability.NewMemorySecurityAuditJournal()}
+	sessionScopeStore, err := sessionscope.NewMemoryStore(sessionscope.StoreOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sessionScopes, err := sessionscope.NewCoordinator(sessionScopeStore)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := &Host{
+		adapters:        normalizedAdapters{Authorization: allowAuthorizationAdapter{}, Diagnostics: diagnostics},
+		securityJournal: observability.NewMemorySecurityAuditJournal(),
+		sessionScopes:   sessionScopes,
+	}
 	record := registry.PluginRecord{
 		PluginID: "com.example.plugin", PluginInstanceID: "plugini_1", ActiveFingerprint: "sha256:active",
 	}
@@ -9116,6 +9131,19 @@ func newTestHostWithOptions(t *testing.T, opts testHostOptions) (*Host, *surface
 		runtimeModule = &RuntimeModule{Manager: runtimeManager}
 	}
 	securityJournal := observability.NewMemorySecurityAuditJournal()
+	sessionScopeStore, err := sessionscope.NewSQLiteStore(
+		hostTestContext(),
+		filepath.Join(t.TempDir(), "session-scopes.sqlite"),
+		sessionscope.StoreOptions{},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = sessionScopeStore.Close() })
+	sessionScopes, err := sessionscope.NewCoordinator(sessionScopeStore)
+	if err != nil {
+		t.Fatal(err)
+	}
 	host, err := Open(hostTestContext(), Config{
 		Core: CoreAdapters{
 			Policy: policyAdapter{
@@ -9137,6 +9165,8 @@ func newTestHostWithOptions(t *testing.T, opts testHostOptions) (*Host, *surface
 			Operations:           operationStore,
 			Streams:              streamStore,
 			SurfaceTokens:        surfaceTokens,
+			SessionLifecycle:     &testSessionLifecycleAdapter{},
+			SessionScopes:        sessionScopes,
 		},
 		Release: &ReleaseModule{
 			ReleaseMetadataVerifier:     releaseMetadataVerifier,
@@ -12043,32 +12073,36 @@ func (s *failingSecretListStore) List(context.Context, secrets.ListRequest) ([]s
 }
 
 type recordingRuntimeManager struct {
-	calls             int
-	preflightCalls    int
-	startCalls        int
-	stopCalls         int
-	revokeCalls       int
-	startedTarget     runtimetarget.Target
-	health            runtimeclient.Health
-	descriptor        runtimeclient.RuntimeDescriptor
-	bindingDescriptor runtimeclient.RuntimeDescriptor
-	result            capability.Result
-	preflightErr      error
-	healthErr         error
-	bindErr           error
-	err               error
-	startErr          error
-	stopErr           error
-	stopErrOnce       bool
-	revokeErr         error
-	revokeResult      runtimeclient.RevokeResult
-	lastLease         runtimeclient.Lease
-	lastMethod        string
-	lastPayload       []byte
-	lastRevokedPlugin string
-	lastRevokeEpoch   uint64
-	invokeContext     context.Context
-	hostServices      runtimeclient.RuntimeHostServices
+	calls               int
+	preflightCalls      int
+	startCalls          int
+	stopCalls           int
+	revokeCalls         int
+	startedTarget       runtimetarget.Target
+	health              runtimeclient.Health
+	descriptor          runtimeclient.RuntimeDescriptor
+	bindingDescriptor   runtimeclient.RuntimeDescriptor
+	result              capability.Result
+	preflightErr        error
+	healthErr           error
+	bindErr             error
+	err                 error
+	startErr            error
+	stopErr             error
+	stopErrOnce         bool
+	revokeErr           error
+	revokeResult        runtimeclient.RevokeResult
+	sessionRevokeErr    error
+	sessionRevokeResult runtimeclient.SessionRevokeResult
+	sessionRevokeCalls  int
+	lastSessionRevoke   runtimeclient.SessionRevokeRequest
+	lastLease           runtimeclient.Lease
+	lastMethod          string
+	lastPayload         []byte
+	lastRevokedPlugin   string
+	lastRevokeEpoch     uint64
+	invokeContext       context.Context
+	hostServices        runtimeclient.RuntimeHostServices
 }
 
 func newRecordingRuntimeManager() *recordingRuntimeManager {
@@ -12427,4 +12461,17 @@ func (r *recordingRuntimeManager) Revoke(_ context.Context, req runtimeclient.Re
 		result.RevokeEpoch = req.RevokeEpoch
 	}
 	return result, r.revokeErr
+}
+
+func (r *recordingRuntimeManager) RevokeSession(_ context.Context, req runtimeclient.SessionRevokeRequest) (runtimeclient.SessionRevokeResult, error) {
+	r.sessionRevokeCalls++
+	r.lastSessionRevoke = req
+	result := r.sessionRevokeResult
+	if result.SessionScope == (sessionctx.SessionScope{}) {
+		result.SessionScope = req.SessionScope
+	}
+	if result.SessionRevokeSequence == 0 {
+		result.SessionRevokeSequence = req.SessionRevokeSequence
+	}
+	return result, r.sessionRevokeErr
 }

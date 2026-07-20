@@ -20,6 +20,11 @@
 - Advance performance evidence to `performance-evidence-v2`, embedding the
   baseline and candidate profiles so release verification can recompute every
   route-authorization regression metric from signed provenance.
+- Replace surface-only revocation with an authenticated four-hash session fence,
+  durable incomplete-drain reconciliation, exact resource indexes, all-shard
+  runtime containment, and terminal acknowledgements. Publish the coordinated
+  `session-scope-v1`, `token-ticket-v4`, `rust-ipc-v5`, and `error-codes-v5`
+  contracts without exposing owner identity in HTTP DTOs.
 
 ## v0.5.1
 

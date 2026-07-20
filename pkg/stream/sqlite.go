@@ -36,6 +36,8 @@ type SQLiteStore struct {
 	writeGate          chan struct{}
 }
 
+func (*SQLiteStore) Durable() bool { return true }
+
 type sqliteQueryKind string
 
 const (
@@ -745,6 +747,95 @@ func (s *SQLiteStore) MarkPluginTransition(ctx context.Context, req PluginTransi
 	return PluginTransitionResult{Changed: int(changed)}, nil
 }
 
+func (s *SQLiteStore) RevokeSessionScope(ctx context.Context, req RevokeSessionScopeRequest) (RevokeSessionScopeResult, error) {
+	if s == nil {
+		return RevokeSessionScopeResult{}, errors.New("stream store is nil")
+	}
+	if err := req.SessionScope.Validate(); err != nil {
+		return RevokeSessionScopeResult{}, ErrInvalidStream
+	}
+	now := req.Now
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	releaseWrite, err := s.lockWrite(ctx)
+	if err != nil {
+		return RevokeSessionScopeResult{}, err
+	}
+	defer releaseWrite()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return RevokeSessionScopeResult{}, err
+	}
+	defer rollbackUnlessCommitted(tx)
+	args := []any{
+		req.SessionScope.OwnerSessionHash,
+		req.SessionScope.OwnerUserHash,
+		req.SessionScope.OwnerEnvHash,
+		req.SessionScope.SessionChannelIDHash,
+	}
+	rows, err := tx.QueryContext(ctx, `
+SELECT stream_id FROM plugin_streams
+WHERE owner_session_hash = ? AND owner_user_hash = ? AND owner_env_hash = ? AND session_channel_id_hash = ?
+ORDER BY stream_id`, args...)
+	if err != nil {
+		return RevokeSessionScopeResult{}, err
+	}
+	streamIDs := make([]string, 0)
+	for rows.Next() {
+		var streamID string
+		if err := rows.Scan(&streamID); err != nil {
+			_ = rows.Close()
+			return RevokeSessionScopeResult{}, err
+		}
+		streamIDs = append(streamIDs, streamID)
+	}
+	if err := rows.Close(); err != nil {
+		return RevokeSessionScopeResult{}, err
+	}
+	if err := rows.Err(); err != nil {
+		return RevokeSessionScopeResult{}, err
+	}
+	if _, err := tx.ExecContext(ctx, `
+DELETE FROM plugin_stream_events
+WHERE stream_id IN (
+	SELECT stream_id FROM plugin_streams
+	WHERE owner_session_hash = ? AND owner_user_hash = ? AND owner_env_hash = ? AND session_channel_id_hash = ?
+)`, args...); err != nil {
+		return RevokeSessionScopeResult{}, err
+	}
+	if _, err := tx.ExecContext(ctx, `
+UPDATE plugin_streams SET
+	status = CASE WHEN status = ? THEN ? ELSE status END,
+	failure_code = CASE WHEN status = ? THEN '' ELSE failure_code END,
+	reason = CASE WHEN status = ? THEN ? ELSE reason END,
+	updated_at = CASE WHEN status = ? THEN ? ELSE updated_at END,
+	closed_at = CASE WHEN status = ? THEN ? ELSE closed_at END,
+	buffered_bytes = 0,
+	pending_delivery_id = '', pending_read_id = '', pending_through_sequence = 0,
+	pending_done = 0, pending_terminal_status = '', last_acknowledged_delivery_id = '',
+	terminal_acknowledged = 1
+WHERE owner_session_hash = ? AND owner_user_hash = ? AND owner_env_hash = ? AND session_channel_id_hash = ?`,
+		string(StatusOpen), string(StatusCanceled),
+		string(StatusOpen), string(StatusOpen), SessionRevokedReason,
+		string(StatusOpen), now.UnixNano(), string(StatusOpen), now.UnixNano(),
+		args[0], args[1], args[2], args[3],
+	); err != nil {
+		return RevokeSessionScopeResult{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return RevokeSessionScopeResult{}, mutation.Unknown(err)
+	}
+	for _, streamID := range streamIDs {
+		s.notifyStream(streamID)
+	}
+	revoked := len(streamIDs)
+	if uint64(revoked) > uint64(^uint(0)>>1) {
+		return RevokeSessionScopeResult{}, ErrStreamInvariant
+	}
+	return RevokeSessionScopeResult{Revoked: revoked}, nil
+}
+
 func (s *SQLiteStore) Prune(ctx context.Context, req PruneRequest) (PruneResult, error) {
 	if s == nil {
 		return PruneResult{}, errors.New("stream store is nil")
@@ -943,6 +1034,9 @@ CREATE TABLE IF NOT EXISTS plugin_stream_events (
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_plugin_streams_owner_plugin_instance ON plugin_streams(owner_env_hash, plugin_instance_id, created_at, stream_id)`); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_plugin_streams_session_scope ON plugin_streams(owner_session_hash, owner_user_hash, owner_env_hash, session_channel_id_hash, stream_id)`); err != nil {
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_plugin_streams_terminal_retention ON plugin_streams(plugin_instance_id, closed_at DESC, stream_id DESC) WHERE terminal_acknowledged = 1`); err != nil {

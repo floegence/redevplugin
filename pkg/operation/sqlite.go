@@ -24,6 +24,8 @@ type SQLiteStore struct {
 	writeMu sync.Mutex
 }
 
+func (*SQLiteStore) Durable() bool { return true }
+
 func NewSQLiteStore(ctx context.Context, path string) (*SQLiteStore, error) {
 	if path == "" {
 		return nil, errors.New("sqlite operation store path is required")
@@ -300,6 +302,47 @@ WHERE operation_id IN (
 		return PruneResult{}, err
 	}
 	return PruneResult{Deleted: int(deleted)}, nil
+}
+
+func (s *SQLiteStore) RevokeSessionScope(ctx context.Context, req RevokeSessionScopeRequest) (RevokeSessionScopeResult, error) {
+	if s == nil {
+		return RevokeSessionScopeResult{}, errors.New("operation store is nil")
+	}
+	if err := req.SessionScope.Validate(); err != nil {
+		return RevokeSessionScopeResult{}, ErrInvalidOperation
+	}
+	now := req.Now
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	_, err := s.db.ExecContext(ctx, `
+UPDATE plugin_operations
+SET status = ?, failure_code = '', reason = ?, updated_at = ?, terminal_at = ?
+WHERE owner_session_hash = ? AND owner_user_hash = ? AND owner_env_hash = ? AND session_channel_id_hash = ?
+  AND status NOT IN (?, ?, ?, ?, ?)`,
+		string(StatusCanceled), SessionRevokedReason, now.UnixNano(), now.UnixNano(),
+		req.SessionScope.OwnerSessionHash, req.SessionScope.OwnerUserHash,
+		req.SessionScope.OwnerEnvHash, req.SessionScope.SessionChannelIDHash,
+		string(StatusCanceled), string(StatusCompleted), string(StatusFailed),
+		string(StatusOrphanedAfterDisable), string(StatusOrphanedAfterUninstall),
+	)
+	if err != nil {
+		return RevokeSessionScopeResult{}, err
+	}
+	var revoked int64
+	if err := s.db.QueryRowContext(ctx, `
+SELECT COUNT(*) FROM plugin_operations
+WHERE owner_session_hash = ? AND owner_user_hash = ? AND owner_env_hash = ? AND session_channel_id_hash = ?
+  AND status = ? AND reason = ?`,
+		req.SessionScope.OwnerSessionHash, req.SessionScope.OwnerUserHash,
+		req.SessionScope.OwnerEnvHash, req.SessionScope.SessionChannelIDHash,
+		string(StatusCanceled), SessionRevokedReason,
+	).Scan(&revoked); err != nil || revoked < 0 || uint64(revoked) > uint64(^uint(0)>>1) {
+		return RevokeSessionScopeResult{}, ErrInvalidOperation
+	}
+	return RevokeSessionScopeResult{Revoked: int(revoked)}, nil
 }
 
 func (s *SQLiteStore) update(ctx context.Context, operationID string, now time.Time, mutate func(Record, time.Time) (Record, error)) (Record, error) {

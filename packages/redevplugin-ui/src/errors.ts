@@ -16,7 +16,7 @@ export type PluginBridgeErrorCode = typeof pluginBridgeErrorCodes[number];
 export type PluginClientErrorCode = typeof pluginClientErrorCodes[number];
 export type RuntimeProcessFailureCode = typeof runtimeProcessFailureCodes[number];
 
-export type PluginMutationOutcome = "not_committed" | "unknown";
+export type PluginMutationOutcome = "committed" | "not_committed" | "unknown";
 
 export class PluginPlatformRequestError extends Error {
   readonly errorCode: PluginPlatformErrorCode;

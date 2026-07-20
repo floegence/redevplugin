@@ -5,6 +5,7 @@ import (
 	"errors"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"testing"
 	"time"
 )
@@ -138,6 +139,7 @@ func TestConfirmationIntentStorePutListConsumeAndRevoke(t *testing.T) {
 
 			consumed, err := store.ConsumeConfirmationIntent(ctx, ConsumeConfirmationIntentRequest{
 				ConfirmationID: "confirmation_1",
+				SessionScope:   confirmationSessionScope(record.Scope),
 				Now:            now.Add(30 * time.Second),
 			})
 			if err != nil {
@@ -146,14 +148,14 @@ func TestConfirmationIntentStorePutListConsumeAndRevoke(t *testing.T) {
 			if consumed.ConfirmationID != record.ConfirmationID || consumed.ConfirmationTokenID != record.ConfirmationTokenID {
 				t.Fatalf("consumed confirmation intent mismatch: %#v", consumed)
 			}
-			if _, err := store.ConsumeConfirmationIntent(ctx, ConsumeConfirmationIntentRequest{ConfirmationID: "confirmation_1", Now: now.Add(31 * time.Second)}); !errors.Is(err, ErrConfirmationIntentNotFound) {
+			if _, err := store.ConsumeConfirmationIntent(ctx, ConsumeConfirmationIntentRequest{ConfirmationID: "confirmation_1", SessionScope: confirmationSessionScope(record.Scope), Now: now.Add(31 * time.Second)}); !errors.Is(err, ErrConfirmationIntentNotFound) {
 				t.Fatalf("ConsumeConfirmationIntent(replay) error = %v, want ErrConfirmationIntentNotFound", err)
 			}
 
 			if _, err := store.PutConfirmationIntent(ctx, testPutConfirmationIntentRequest("confirmation_2", "plugini_confirm", now)); err != nil {
 				t.Fatalf("PutConfirmationIntent(second) error = %v", err)
 			}
-			revoked, err := store.RevokePluginConfirmationIntents(ctx, RevokePluginConfirmationIntentsRequest{PluginInstanceID: "plugini_confirm"})
+			revoked, err := store.RevokePluginConfirmationIntents(ctx, RevokePluginConfirmationIntentsRequest{OwnerEnvHash: "sha256:environment", PluginInstanceID: "plugini_confirm"})
 			if err != nil {
 				t.Fatalf("RevokePluginConfirmationIntents() error = %v", err)
 			}
@@ -189,12 +191,14 @@ func TestConfirmationIntentStoreRejectsExpiredAndInvalidRequests(t *testing.T) {
 			}
 			if _, err := store.ConsumeConfirmationIntent(ctx, ConsumeConfirmationIntentRequest{
 				ConfirmationID: "confirmation_expired",
+				SessionScope:   confirmationSessionScope(req.Scope),
 				Now:            now.Add(2 * time.Second),
 			}); !errors.Is(err, ErrConfirmationIntentExpired) {
 				t.Fatalf("ConsumeConfirmationIntent(expired) error = %v, want ErrConfirmationIntentExpired", err)
 			}
 			if _, err := store.ConsumeConfirmationIntent(ctx, ConsumeConfirmationIntentRequest{
 				ConfirmationID: "confirmation_expired",
+				SessionScope:   confirmationSessionScope(req.Scope),
 				Now:            now.Add(3 * time.Second),
 			}); !errors.Is(err, ErrConfirmationIntentNotFound) {
 				t.Fatalf("ConsumeConfirmationIntent(expired replay) error = %v, want ErrConfirmationIntentNotFound", err)
@@ -252,24 +256,33 @@ func TestConfirmationIntentStoreRejectsOnlyMatchingScope(t *testing.T) {
 	}
 }
 
-func TestConfirmationIntentStoreCapsPendingIntentsPerPlugin(t *testing.T) {
+func TestConfirmationIntentStoreRejectsCapacityWithoutEviction(t *testing.T) {
 	for _, tc := range confirmationIntentStoreCases() {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := context.Background()
 			store := tc.open(t)
 			now := time.Date(2026, 7, 4, 10, 0, 0, 0, time.UTC)
-			for i := 0; i < 3; i++ {
+			for i := 0; i < DefaultMaxPendingConfirmationIntentsPerOwnerPlugin; i++ {
 				req := testPutConfirmationIntentRequest("confirmation_cap_"+string(rune('0'+i)), "plugini_cap", now.Add(time.Duration(i)*time.Second))
-				req.MaxPendingPerPlugin = 2
+				req.Now = now
+				req.ExpiresAt = now.Add(2 * time.Hour)
+				req.Scope.OwnerSessionHash = "owner_session_" + strconv.Itoa(i)
+				req.Scope.SessionChannelIDHash = "session_channel_" + strconv.Itoa(i)
 				if _, err := store.PutConfirmationIntent(ctx, req); err != nil {
 					t.Fatalf("PutConfirmationIntent(%d) error = %v", i, err)
 				}
+			}
+			overflow := testPutConfirmationIntentRequest("confirmation_cap_overflow", "plugini_cap", now.Add(time.Hour))
+			overflow.Now = now
+			overflow.ExpiresAt = now.Add(2 * time.Hour)
+			if _, err := store.PutConfirmationIntent(ctx, overflow); !errors.Is(err, ErrConfirmationIntentCapacity) {
+				t.Fatalf("PutConfirmationIntent(overflow) error = %v, want ErrConfirmationIntentCapacity", err)
 			}
 			listed, err := store.ListConfirmationIntents(ctx, ListConfirmationIntentsRequest{PluginInstanceID: "plugini_cap"})
 			if err != nil {
 				t.Fatalf("ListConfirmationIntents() error = %v", err)
 			}
-			if len(listed) != 2 || listed[0].ConfirmationID != "confirmation_cap_1" || listed[1].ConfirmationID != "confirmation_cap_2" {
+			if len(listed) != DefaultMaxPendingConfirmationIntentsPerOwnerPlugin || listed[0].ConfirmationID != "confirmation_cap_0" {
 				t.Fatalf("pending confirmation cap mismatch: %#v", listed)
 			}
 		})
@@ -301,6 +314,7 @@ func TestSQLiteConfirmationIntentStorePersistsAcrossOpen(t *testing.T) {
 	})
 	got, err := reopened.ConsumeConfirmationIntent(ctx, ConsumeConfirmationIntentRequest{
 		ConfirmationID: "confirmation_persist",
+		SessionScope:   confirmationSessionScope(record.Scope),
 		Now:            now.Add(30 * time.Second),
 	})
 	if err != nil {

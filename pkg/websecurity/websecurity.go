@@ -35,7 +35,7 @@ const (
 	RouteActionListFeatures               RouteAction = "platform.list_features"
 	RouteActionGetCompatibility           RouteAction = "platform.get_compatibility"
 	RouteActionOpenSurface                RouteAction = "surface.open"
-	RouteActionRevokeSurfaceScope         RouteAction = "surface.revoke_scope"
+	RouteActionRevokeSessionScope         RouteAction = "session.revoke_scope"
 	RouteActionPrepareSurface             RouteAction = "surface.prepare"
 	RouteActionMintBridgeToken            RouteAction = "surface.mint_bridge_token"
 	RouteActionReadSurfaceAsset           RouteAction = "surface.read_asset"
@@ -84,7 +84,7 @@ func (action RouteAction) Valid() bool {
 		RouteActionDisablePlugin, RouteActionUninstallPlugin, RouteActionUpdateLocalPackage,
 		RouteActionUpdateReleaseRef, RouteActionDowngradePlugin, RouteActionListPlugins,
 		RouteActionListFeatures, RouteActionGetCompatibility, RouteActionOpenSurface,
-		RouteActionRevokeSurfaceScope, RouteActionPrepareSurface, RouteActionMintBridgeToken,
+		RouteActionRevokeSessionScope, RouteActionPrepareSurface, RouteActionMintBridgeToken,
 		RouteActionReadSurfaceAsset, RouteActionReadSurfaceStream, RouteActionAcknowledgeSurfaceStream,
 		RouteActionCancelSurfaceOperation, RouteActionRejectSurfaceConfirmation, RouteActionDisposeSurface,
 		RouteActionCallPluginMethod, RouteActionPrepareMethodConfirmation, RouteActionListIntents,

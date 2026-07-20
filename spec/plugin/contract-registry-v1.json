@@ -3,20 +3,21 @@
   "matrix": {
     "plugin_ui_protocol_version": "plugin-ui-v5",
     "plugin_host_protocol_version": "plugin-host-v5",
-    "rust_ipc_version": "rust-ipc-v4",
+    "rust_ipc_version": "rust-ipc-v5",
     "wasm_abi_version": "redevplugin-wasm-worker-v2",
     "manifest_schema_version": "manifest-v5",
     "package_signature_schema_version": "package-signature-v1",
     "release_metadata_schema_version": "release-metadata-v5",
     "source_policy_schema_version": "source-policy-v1",
     "source_revocations_schema_version": "source-revocations-v1",
-    "token_ticket_schema_version": "token-ticket-v3",
+    "token_ticket_schema_version": "token-ticket-v4",
     "bridge_schema_version": "bridge-v5",
     "opaque_surface_document_schema_version": "opaque-surface-document-v3",
     "opaque_surface_transport_schema_version": "opaque-surface-transport-v4",
     "target_classifier_version": "target-classifier-v2",
     "network_grant_schema_version": "network-grant-v2",
     "resource_scope_schema_version": "resource-scope-v1",
+    "session_scope_schema_version": "session-scope-v1",
     "plugin_platform_openapi_version": "plugin-platform-v7",
     "compatibility_manifest_version": "redevplugin.compatibility.v7",
     "compatibility_schema_version": "compatibility-manifest-v7",
@@ -28,7 +29,7 @@
     "host_capability_compatibility_schema_version": "host-capability-compatibility-v1",
     "host_capability_signature_schema_version": "host-capability-signature-v1",
     "host_capability_notices_schema_version": "host-capability-notices-v1",
-    "error_codes_schema_version": "error-codes-v4",
+    "error_codes_schema_version": "error-codes-v5",
     "performance_contract_version": "performance-contract-v2",
     "performance_evidence_schema_version": "performance-evidence-v2",
     "contract_registry_version": "contract-registry-v1"
@@ -66,7 +67,7 @@
     },
     {
       "id": "token-ticket-schema",
-      "path": "spec/plugin/token-ticket-v3.schema.json",
+      "path": "spec/plugin/token-ticket-v4.schema.json",
       "version_key": "token_ticket_schema_version"
     },
     {
@@ -131,7 +132,7 @@
     },
     {
       "id": "error-codes-schema",
-      "path": "spec/plugin/error-codes-v4.schema.json",
+      "path": "spec/plugin/error-codes-v5.schema.json",
       "version_key": "error_codes_schema_version"
     },
     {
@@ -146,7 +147,7 @@
     },
     {
       "id": "rust-ipc-schema",
-      "path": "spec/plugin/ipc-v4.schema.json",
+      "path": "spec/plugin/ipc-v5.schema.json",
       "version_key": "rust_ipc_version"
     },
     {
@@ -163,6 +164,11 @@
       "id": "resource-scope-schema",
       "path": "spec/plugin/resource-scope-v1.schema.json",
       "version_key": "resource_scope_schema_version"
+    },
+    {
+      "id": "session-scope-schema",
+      "path": "spec/plugin/session-scope-v1.schema.json",
+      "version_key": "session_scope_schema_version"
     },
     {
       "id": "target-classifier-fixture",

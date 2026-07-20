@@ -47,10 +47,12 @@ var (
 var requestHashPattern = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
 
 type SurfaceTokenService struct {
-	mu       sync.Mutex
-	tokens   *TokenManager
-	options  SurfaceTokenOptions
-	sessions map[string]surfaceState
+	mu                   sync.Mutex
+	tokens               *TokenManager
+	options              SurfaceTokenOptions
+	sessions             map[string]surfaceState
+	sessionIndex         map[sessionctx.SessionScope]map[string]struct{}
+	sessionRevokeScanned uint64
 }
 
 type SurfaceTokenOptions struct {
@@ -157,12 +159,14 @@ type DisposeSurfaceRequest struct {
 	Now                  time.Time `json:"-"`
 }
 
-type RevokeSurfaceScopeRequest struct {
-	OwnerSessionHash     string    `json:"-"`
-	OwnerUserHash        string    `json:"-"`
-	OwnerEnvHash         string    `json:"-"`
-	SessionChannelIDHash string    `json:"-"`
-	Now                  time.Time `json:"-"`
+type RevokeSessionScopeRequest struct {
+	SessionScope sessionctx.SessionScope `json:"-"`
+	Now          time.Time               `json:"-"`
+}
+
+type SessionScopeRevocation struct {
+	Surfaces uint64                       `json:"surfaces"`
+	Tokens   SessionTokenRevocationCounts `json:"tokens"`
 }
 
 type AssetSessionValidation struct {
@@ -469,9 +473,10 @@ func NewSurfaceTokenService(tokens *TokenManager, options SurfaceTokenOptions) *
 		options.MaxActiveSessionsPerOwner = options.MaxActiveSessions
 	}
 	return &SurfaceTokenService{
-		tokens:   tokens,
-		options:  options,
-		sessions: map[string]surfaceState{},
+		tokens:       tokens,
+		options:      options,
+		sessions:     map[string]surfaceState{},
+		sessionIndex: map[sessionctx.SessionScope]map[string]struct{}{},
 	}
 }
 
@@ -592,7 +597,7 @@ func (s *SurfaceTokenService) reserveSurfaceSession(session SurfaceSession, now 
 	s.mu.Lock()
 	for surfaceInstanceID, state := range s.sessions {
 		if !now.Before(state.session.ExpiresAt) {
-			delete(s.sessions, surfaceInstanceID)
+			s.deleteSurfaceStateLocked(surfaceInstanceID)
 			revokedSessions = append(revokedSessions, state.session)
 		}
 	}
@@ -600,7 +605,7 @@ func (s *SurfaceTokenService) reserveSurfaceSession(session SurfaceSession, now 
 	var reserveErr error
 	if existing, exists := s.sessions[session.SurfaceInstanceID]; exists {
 		if surfaceSessionCanReplaceStaleBinding(existing.session, session) {
-			delete(s.sessions, session.SurfaceInstanceID)
+			s.deleteSurfaceStateLocked(session.SurfaceInstanceID)
 			revokedSessions = append(revokedSessions, existing.session)
 		} else {
 			reserveErr = ErrSurfaceSessionAlreadyExists
@@ -618,7 +623,7 @@ func (s *SurfaceTokenService) reserveSurfaceSession(session SurfaceSession, now 
 		if ownerSessions >= s.options.MaxActiveSessionsPerOwner {
 			reserveErr = ErrSurfaceSessionLimitReached
 		} else {
-			s.sessions[session.SurfaceInstanceID] = surfaceState{session: session}
+			s.addSurfaceStateLocked(surfaceState{session: session})
 		}
 	}
 	s.mu.Unlock()
@@ -649,9 +654,35 @@ func (s *SurfaceTokenService) releaseSurfaceReservation(session SurfaceSession) 
 	s.mu.Lock()
 	state, ok := s.sessions[session.SurfaceInstanceID]
 	if ok && state == (surfaceState{session: session}) {
-		delete(s.sessions, session.SurfaceInstanceID)
+		s.deleteSurfaceStateLocked(session.SurfaceInstanceID)
 	}
 	s.mu.Unlock()
+}
+
+func (s *SurfaceTokenService) addSurfaceStateLocked(state surfaceState) {
+	s.sessions[state.session.SurfaceInstanceID] = state
+	scope := state.session.sessionScope()
+	entries := s.sessionIndex[scope]
+	if entries == nil {
+		entries = map[string]struct{}{}
+		s.sessionIndex[scope] = entries
+	}
+	entries[state.session.SurfaceInstanceID] = struct{}{}
+}
+
+func (s *SurfaceTokenService) deleteSurfaceStateLocked(surfaceInstanceID string) (surfaceState, bool) {
+	state, ok := s.sessions[surfaceInstanceID]
+	if !ok {
+		return surfaceState{}, false
+	}
+	delete(s.sessions, surfaceInstanceID)
+	scope := state.session.sessionScope()
+	entries := s.sessionIndex[scope]
+	delete(entries, surfaceInstanceID)
+	if len(entries) == 0 {
+		delete(s.sessionIndex, scope)
+	}
+	return state, true
 }
 
 func (s *SurfaceTokenService) ExchangeAssetTicket(req ExchangeAssetTicketRequest) (AssetSessionResult, error) {
@@ -782,7 +813,7 @@ func (s *SurfaceTokenService) MarkSurfacePrepared(req MarkSurfacePreparedRequest
 		return ErrSurfaceSessionNotFound
 	}
 	if !now.Before(state.session.ExpiresAt) {
-		delete(s.sessions, req.SurfaceInstanceID)
+		s.deleteSurfaceStateLocked(req.SurfaceInstanceID)
 		s.mu.Unlock()
 		s.revokeSurfaceTokens(state.session, now)
 		return ErrSurfaceSessionExpired
@@ -1584,7 +1615,7 @@ func (s *SurfaceTokenService) DisposeSurface(surfaceInstanceID string, now time.
 	s.mu.Lock()
 	state, ok := s.sessions[surfaceInstanceID]
 	if ok {
-		delete(s.sessions, surfaceInstanceID)
+		s.deleteSurfaceStateLocked(surfaceInstanceID)
 	}
 	s.mu.Unlock()
 	if !ok {
@@ -1617,7 +1648,7 @@ func (s *SurfaceTokenService) DisposeBoundSurface(req DisposeSurfaceRequest) err
 		return ErrSurfaceSessionNotFound
 	}
 	if !now.Before(state.session.ExpiresAt) {
-		delete(s.sessions, req.SurfaceInstanceID)
+		s.deleteSurfaceStateLocked(req.SurfaceInstanceID)
 		s.mu.Unlock()
 		s.revokeSurfaceTokens(state.session, now)
 		return ErrSurfaceSessionExpired
@@ -1627,7 +1658,7 @@ func (s *SurfaceTokenService) DisposeBoundSurface(req DisposeSurfaceRequest) err
 		s.mu.Unlock()
 		return ErrTokenAudience
 	}
-	delete(s.sessions, req.SurfaceInstanceID)
+	s.deleteSurfaceStateLocked(req.SurfaceInstanceID)
 	s.mu.Unlock()
 	s.revokeSurfaceTokens(state.session, now)
 	return nil
@@ -1648,41 +1679,61 @@ func (s *SurfaceTokenService) DisposeAssetSession(req ValidateAssetSessionReques
 		s.mu.Unlock()
 		return ErrTokenRevoked
 	}
-	delete(s.sessions, validation.Session.SurfaceInstanceID)
+	s.deleteSurfaceStateLocked(validation.Session.SurfaceInstanceID)
 	s.mu.Unlock()
 	s.revokeSurfaceTokens(validation.Session, now)
 	return nil
 }
 
-func (s *SurfaceTokenService) RevokeSurfaceScope(req RevokeSurfaceScopeRequest) (int, error) {
+func (s *SurfaceTokenService) RevokeSessionScope(req RevokeSessionScopeRequest) (SessionScopeRevocation, error) {
 	if s == nil {
-		return 0, errors.New("surface token service is nil")
+		return SessionScopeRevocation{}, errors.New("surface token service is nil")
 	}
-	if strings.TrimSpace(req.OwnerSessionHash) == "" || strings.TrimSpace(req.OwnerUserHash) == "" ||
-		strings.TrimSpace(req.OwnerEnvHash) == "" || strings.TrimSpace(req.SessionChannelIDHash) == "" {
-		return 0, ErrMissingTokenAudience
+	if err := req.SessionScope.Validate(); err != nil {
+		return SessionScopeRevocation{}, ErrMissingTokenAudience
 	}
 	now := req.Now
 	if now.IsZero() {
 		now = time.Now().UTC()
 	}
-	revokedSessions := make([]SurfaceSession, 0)
 	s.mu.Lock()
-	for surfaceInstanceID, state := range s.sessions {
-		if state.session.OwnerSessionHash != req.OwnerSessionHash ||
-			state.session.OwnerUserHash != req.OwnerUserHash ||
-			state.session.OwnerEnvHash != req.OwnerEnvHash ||
-			state.session.SessionChannelIDHash != req.SessionChannelIDHash {
-			continue
+	s.sessionRevokeScanned = 0
+	var surfaces uint64
+	for surfaceInstanceID := range s.sessionIndex[req.SessionScope] {
+		s.sessionRevokeScanned++
+		if _, ok := s.deleteSurfaceStateLocked(surfaceInstanceID); ok {
+			surfaces++
 		}
-		delete(s.sessions, surfaceInstanceID)
-		revokedSessions = append(revokedSessions, state.session)
+	}
+	tokens, err := s.tokens.RevokeSessionScope(req.SessionScope, now)
+	if err != nil {
+		s.mu.Unlock()
+		return SessionScopeRevocation{}, err
 	}
 	s.mu.Unlock()
-	for _, revokedSession := range revokedSessions {
-		s.revokeSurfaceTokens(revokedSession, now)
+	return SessionScopeRevocation{Surfaces: surfaces, Tokens: tokens}, nil
+}
+
+func (s *SurfaceTokenService) PreviewSessionScopeRevocation(scope sessionctx.SessionScope) (SessionScopeRevocation, error) {
+	if s == nil {
+		return SessionScopeRevocation{}, errors.New("surface token service is nil")
 	}
-	return len(revokedSessions), nil
+	if err := scope.Validate(); err != nil {
+		return SessionScopeRevocation{}, ErrMissingTokenAudience
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var surfaces uint64
+	for surfaceInstanceID := range s.sessionIndex[scope] {
+		if _, ok := s.sessions[surfaceInstanceID]; ok {
+			surfaces++
+		}
+	}
+	tokens, err := s.tokens.PreviewSessionScopeRevocation(scope)
+	if err != nil {
+		return SessionScopeRevocation{}, err
+	}
+	return SessionScopeRevocation{Surfaces: surfaces, Tokens: tokens}, nil
 }
 
 func (s *SurfaceTokenService) RevokeAllSurfaces(now time.Time) int {
@@ -1695,7 +1746,7 @@ func (s *SurfaceTokenService) RevokeAllSurfaces(now time.Time) int {
 	revokedSessions := make([]SurfaceSession, 0)
 	s.mu.Lock()
 	for surfaceInstanceID, state := range s.sessions {
-		delete(s.sessions, surfaceInstanceID)
+		s.deleteSurfaceStateLocked(surfaceInstanceID)
 		revokedSessions = append(revokedSessions, state.session)
 	}
 	s.mu.Unlock()
@@ -1720,7 +1771,7 @@ func (s *SurfaceTokenService) RevokeSurfacesExceptGeneration(preservedGeneration
 		if state.session.RuntimeGenerationID == preservedGenerationID {
 			continue
 		}
-		delete(s.sessions, surfaceInstanceID)
+		s.deleteSurfaceStateLocked(surfaceInstanceID)
 		revokedSessions = append(revokedSessions, state.session)
 	}
 	s.mu.Unlock()
@@ -1740,7 +1791,7 @@ func (s *SurfaceTokenService) RevokePlugin(ownerEnvHash string, pluginInstanceID
 	s.mu.Lock()
 	for surfaceInstanceID, state := range s.sessions {
 		if state.session.OwnerEnvHash == ownerEnvHash && state.session.PluginInstanceID == pluginInstanceID {
-			delete(s.sessions, surfaceInstanceID)
+			s.deleteSurfaceStateLocked(surfaceInstanceID)
 		}
 	}
 	s.mu.Unlock()
@@ -1759,7 +1810,7 @@ func (s *SurfaceTokenService) getState(surfaceInstanceID string, now time.Time) 
 		return surfaceState{}, ErrSurfaceSessionNotFound
 	}
 	if !now.Before(state.session.ExpiresAt) {
-		delete(s.sessions, surfaceInstanceID)
+		s.deleteSurfaceStateLocked(surfaceInstanceID)
 		s.revokeSurfaceTokens(state.session, now)
 		s.mu.Unlock()
 		return surfaceState{}, ErrSurfaceSessionExpired
@@ -1802,6 +1853,15 @@ func (s SurfaceSession) matchesScope(ownerSessionHash string, ownerUserHash stri
 		s.OwnerUserHash == ownerUserHash &&
 		s.OwnerEnvHash == ownerEnvHash &&
 		s.SessionChannelIDHash == sessionChannelIDHash
+}
+
+func (s SurfaceSession) sessionScope() sessionctx.SessionScope {
+	return sessionctx.SessionScope{
+		OwnerSessionHash:     s.OwnerSessionHash,
+		OwnerUserHash:        s.OwnerUserHash,
+		OwnerEnvHash:         s.OwnerEnvHash,
+		SessionChannelIDHash: s.SessionChannelIDHash,
+	}
 }
 
 func (s SurfaceSession) validateHandshake(handshake Handshake) error {

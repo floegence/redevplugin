@@ -30,6 +30,7 @@ import (
 	"github.com/floegence/redevplugin/pkg/secrets"
 	"github.com/floegence/redevplugin/pkg/security"
 	"github.com/floegence/redevplugin/pkg/sessionctx"
+	"github.com/floegence/redevplugin/pkg/sessionscope"
 	"github.com/floegence/redevplugin/pkg/stream"
 	"github.com/floegence/redevplugin/pkg/trust"
 	"github.com/floegence/redevplugin/pkg/websecurity"
@@ -268,6 +269,28 @@ func examplesServerWithOptions(ctx context.Context, stateRoot string, runtimePat
 	operationStore := operation.NewMemoryStore()
 	confirmationIntentStore := security.NewMemoryConfirmationIntentStore()
 	streamStore := stream.NewMemoryStore()
+	sessionScopeStore, err := sessionscope.NewSQLiteStore(ctx, filepath.Join(stateRoot, "session-scopes.sqlite"), sessionscope.StoreOptions{})
+	if err != nil {
+		_ = secretStore.Close()
+		_ = pluginData.Close()
+		_ = registryStore.Close()
+		return err
+	}
+	defer sessionScopeStore.Close()
+	sessionScopes, err := sessionscope.NewCoordinator(sessionScopeStore)
+	if err != nil {
+		_ = secretStore.Close()
+		_ = pluginData.Close()
+		_ = registryStore.Close()
+		return err
+	}
+	sessionLifecycle, err := newCLISessionLifecycleAdapter(filepath.Join(stateRoot, "closed-sessions.json"))
+	if err != nil {
+		_ = secretStore.Close()
+		_ = pluginData.Close()
+		_ = registryStore.Close()
+		return err
+	}
 	runtimeTarget, err := runtimetarget.Current()
 	if err != nil {
 		return err
@@ -307,6 +330,8 @@ func examplesServerWithOptions(ctx context.Context, stateRoot string, runtimePat
 			Operations:           operationStore,
 			ConfirmationIntents:  confirmationIntentStore,
 			Streams:              streamStore,
+			SessionLifecycle:     sessionLifecycle,
+			SessionScopes:        sessionScopes,
 		},
 		Runtime: &host.RuntimeModule{Manager: runtimeManager},
 		Connectivity: &host.ConnectivityModule{

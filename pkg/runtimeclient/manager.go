@@ -10,13 +10,15 @@ import (
 	"sync"
 	"time"
 
+	"github.com/floegence/redevplugin/internal/jsonvalue"
 	"github.com/floegence/redevplugin/pkg/runtimetarget"
 )
 
 const (
-	minProcessManagerShards       = 1
-	maxProcessManagerShards       = 16
-	processManagerRollbackTimeout = 5 * time.Second
+	minProcessManagerShards            = 1
+	maxProcessManagerShards            = 16
+	processManagerRollbackTimeout      = 5 * time.Second
+	processManagerSessionRevokeTimeout = 2 * time.Second
 )
 
 var (
@@ -85,6 +87,7 @@ type Manager interface {
 	BindPlugin(ctx context.Context, pluginInstanceID string) (RuntimeBinding, error)
 	InvokeWorker(ctx context.Context, binding RuntimeBinding, lease Lease, method string, payload []byte) ([]byte, error)
 	Revoke(ctx context.Context, req RevokeRequest) (RevokeResult, error)
+	RevokeSession(ctx context.Context, req SessionRevokeRequest) (SessionRevokeResult, error)
 }
 
 // ProcessManagerOptions configures a ProcessManager. ShardCount and all
@@ -102,6 +105,7 @@ type processShard interface {
 	Health(context.Context) (Health, error)
 	InvokeWorker(context.Context, Lease, string, []byte) ([]byte, error)
 	Revoke(context.Context, RevokeRequest) (RevokeResult, error)
+	RevokeSession(context.Context, SessionRevokeRequest) (SessionRevokeShardResult, error)
 }
 
 type processShardFactory func(ProcessSupervisorOptions) (processShard, error)
@@ -428,6 +432,116 @@ func (m *ProcessManager) Revoke(ctx context.Context, req RevokeRequest) (RevokeR
 	return RevokeResult{ResourceScope: req.ResourceScope, PluginInstanceID: req.PluginInstanceID, RevokeEpoch: req.RevokeEpoch, RuntimeStopped: true}, nil
 }
 
+func (m *ProcessManager) RevokeSession(ctx context.Context, req SessionRevokeRequest) (SessionRevokeResult, error) {
+	shards, boundErr := m.boundShards()
+	if boundErr != nil {
+		return SessionRevokeResult{}, boundErr
+	}
+	if err := validateSessionRevokeRequest(req); err != nil {
+		return SessionRevokeResult{}, err
+	}
+
+	type shardOutcome struct {
+		index  int
+		health Health
+		result SessionRevokeShardResult
+		err    error
+	}
+	outcomes := make(chan shardOutcome, len(shards))
+	for index, shard := range shards {
+		go func(index int, shard processManagerShard) {
+			health, err := shard.process.Health(ctx)
+			if err == nil {
+				err = validateReadyHealth(health)
+			}
+			var result SessionRevokeShardResult
+			if err == nil {
+				result, err = shard.process.RevokeSession(ctx, req)
+			}
+			if err == nil && result.RuntimeGenerationID != health.RuntimeGenerationID {
+				err = fmt.Errorf("%w: session revoke runtime generation changed on shard %s", ErrRuntimeRequestFailed, shard.id)
+			}
+			if err == nil {
+				result.RuntimeShardID = shard.id
+			}
+			outcomes <- shardOutcome{index: index, health: health, result: result, err: err}
+		}(index, shard)
+	}
+
+	ordered := make([]SessionRevokeShardResult, len(shards))
+	var revokeErr error
+	for received := 0; received < len(shards); received++ {
+		select {
+		case outcome := <-outcomes:
+			if outcome.err != nil {
+				revokeErr = errors.Join(revokeErr, fmt.Errorf("revoke session on runtime shard %s: %w", shards[outcome.index].id, outcome.err))
+				continue
+			}
+			ordered[outcome.index] = outcome.result
+		case <-ctx.Done():
+			revokeErr = errors.Join(revokeErr, ctx.Err())
+			received = len(shards)
+		}
+	}
+	if revokeErr != nil {
+		stopCtx, cancel := sessionRevokeStopContext(ctx)
+		defer cancel()
+		stopErr := stopProcessShards(stopCtx, shards)
+		result := SessionRevokeResult{
+			SessionScope:          req.SessionScope,
+			SessionRevokeSequence: req.SessionRevokeSequence,
+			RuntimeStopped:        stopErr == nil,
+		}
+		if stopErr != nil {
+			revokeErr = errors.Join(revokeErr, fmt.Errorf("terminate runtime shards after session revoke failure: %w", stopErr))
+		}
+		return result, revokeErr
+	}
+
+	result := SessionRevokeResult{
+		SessionScope:          req.SessionScope,
+		SessionRevokeSequence: req.SessionRevokeSequence,
+		Shards:                ordered,
+	}
+	for _, shard := range ordered {
+		var err error
+		result.Counts, err = addSessionRevokeCounts(result.Counts, shard.Counts)
+		if err != nil {
+			return SessionRevokeResult{}, err
+		}
+	}
+	return result, nil
+}
+
+func addSessionRevokeCounts(current, delta SessionRevokeCounts) (SessionRevokeCounts, error) {
+	add := func(left, right uint64) (uint64, error) {
+		if left > jsonvalue.MaxSafeInteger || right > jsonvalue.MaxSafeInteger-left {
+			return 0, fmt.Errorf("%w: session revoke aggregate count exceeds JSON safe integer", ErrRuntimeRequestFailed)
+		}
+		return left + right, nil
+	}
+	var err error
+	if current.QueuedInvocations, err = add(current.QueuedInvocations, delta.QueuedInvocations); err != nil {
+		return SessionRevokeCounts{}, err
+	}
+	if current.RunningInvocations, err = add(current.RunningInvocations, delta.RunningInvocations); err != nil {
+		return SessionRevokeCounts{}, err
+	}
+	if current.StorageHostcalls, err = add(current.StorageHostcalls, delta.StorageHostcalls); err != nil {
+		return SessionRevokeCounts{}, err
+	}
+	if current.ActiveNetworkRequests, err = add(current.ActiveNetworkRequests, delta.ActiveNetworkRequests); err != nil {
+		return SessionRevokeCounts{}, err
+	}
+	if current.Sockets, err = add(current.Sockets, delta.Sockets); err != nil {
+		return SessionRevokeCounts{}, err
+	}
+	if current.NetworkStreams, err = add(current.NetworkStreams, delta.NetworkStreams); err != nil {
+		return SessionRevokeCounts{}, err
+	}
+	return current, nil
+}
+
 func (m *ProcessManager) boundShards() ([]processManagerShard, error) {
 	if m == nil {
 		return nil, ErrRuntimeHostServicesRequired
@@ -483,19 +597,37 @@ func validateReadyHealth(health Health) error {
 }
 
 func stopProcessShards(ctx context.Context, shards []processManagerShard) error {
-	var wait sync.WaitGroup
-	errorsByIndex := make([]error, len(shards))
+	type stopResult struct {
+		index int
+		err   error
+	}
+	results := make(chan stopResult, len(shards))
 	for index, shard := range shards {
-		wait.Add(1)
 		go func(index int, shard processManagerShard) {
-			defer wait.Done()
-			if err := shard.process.Stop(ctx); err != nil {
-				errorsByIndex[index] = fmt.Errorf("stop runtime shard %s: %w", shard.id, err)
+			err := shard.process.Stop(ctx)
+			if err != nil {
+				err = fmt.Errorf("stop runtime shard %s: %w", shard.id, err)
 			}
+			results <- stopResult{index: index, err: err}
 		}(index, shard)
 	}
-	wait.Wait()
+	errorsByIndex := make([]error, len(shards))
+	for range shards {
+		select {
+		case result := <-results:
+			errorsByIndex[result.index] = result.err
+		case <-ctx.Done():
+			return errors.Join(append(errorsByIndex, ctx.Err())...)
+		}
+	}
 	return errors.Join(errorsByIndex...)
+}
+
+func sessionRevokeStopContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	if deadline, ok := ctx.Deadline(); ok {
+		return context.WithDeadline(context.Background(), deadline)
+	}
+	return context.WithTimeout(context.Background(), processManagerSessionRevokeTimeout)
 }
 
 func rollbackProcessShards(shards []processManagerShard) error {

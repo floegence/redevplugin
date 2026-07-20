@@ -3,6 +3,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Condvar, Mutex, Weak};
+use std::time::Duration;
 
 type CancellationNotifier = Arc<dyn Fn() + Send + Sync>;
 const RECENT_REQUEST_REPLAY_CAPACITY: usize = 1024;
@@ -114,6 +115,7 @@ pub enum InvocationSignal {
 pub struct InvocationJob {
     pub request_id: String,
     pub plugin_instance_id: String,
+    pub session_scope: Option<redevplugin_ipc::SessionScope>,
     pub invocation: Arc<ParsedWorkerInvocation>,
     pub cancellation: Arc<Cancellation>,
     pub signal_sender: Sender<InvocationSignal>,
@@ -136,9 +138,11 @@ impl InvocationJob {
         let (signal_sender, signals) = mpsc::channel();
         let request_id = invocation.request_id().to_string();
         let plugin_instance_id = invocation.plugin_instance_id()?.to_string();
+        let session_scope = invocation.session_scope()?;
         Ok(Self {
             request_id,
             plugin_instance_id,
+            session_scope,
             invocation: Arc::new(invocation),
             cancellation: Cancellation::new(),
             signal_sender,
@@ -160,6 +164,24 @@ pub enum EnqueueError {
     PluginCapacity,
     Duplicate,
     Shutdown,
+    SessionRevoked,
+}
+
+pub struct SessionRevokeDisposition {
+    pub queued: Vec<InvocationJob>,
+    pub running_request_ids: Vec<String>,
+}
+
+pub struct InvocationCompletion {
+    request_id: String,
+    session_scope: Option<redevplugin_ipc::SessionScope>,
+    suppress_response: bool,
+}
+
+impl InvocationCompletion {
+    pub fn suppress_response(&self) -> bool {
+        self.suppress_response
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -187,6 +209,10 @@ struct SchedulerState {
     order: VecDeque<QueueToken>,
     queued_by_request: HashMap<String, InvocationJob>,
     active: HashMap<String, ActiveInvocation>,
+    queued_by_session: HashMap<redevplugin_ipc::SessionScope, HashSet<String>>,
+    active_by_session: HashMap<redevplugin_ipc::SessionScope, HashSet<String>>,
+    publishing_by_session: HashMap<redevplugin_ipc::SessionScope, HashSet<String>>,
+    revoked_sessions: HashSet<redevplugin_ipc::SessionScope>,
     active_by_plugin: HashMap<String, usize>,
     recent_request_ids: HashSet<String>,
     recent_request_order: VecDeque<String>,
@@ -204,6 +230,10 @@ struct SchedulerState {
     cancel_plugin_compactions: u64,
     #[cfg(test)]
     cancel_order_compactions: u64,
+    #[cfg(test)]
+    session_revoke_index_lookups: u64,
+    #[cfg(test)]
+    session_revoke_affected_requests: u64,
 }
 
 struct PluginQueue {
@@ -222,6 +252,7 @@ struct ActiveInvocation {
     plugin_instance_id: String,
     cancellation: Arc<Cancellation>,
     signal_sender: Sender<InvocationSignal>,
+    session_scope: Option<redevplugin_ipc::SessionScope>,
 }
 
 impl InvocationScheduler {
@@ -242,6 +273,13 @@ impl InvocationScheduler {
         let mut state = self.state.lock().expect("scheduler mutex poisoned");
         if state.shutdown {
             return Err(EnqueueError::Shutdown);
+        }
+        if job
+            .session_scope
+            .as_ref()
+            .is_some_and(|scope| state.revoked_sessions.contains(scope))
+        {
+            return Err(EnqueueError::SessionRevoked);
         }
         if state.queued >= self.limits.queue_capacity {
             return Err(EnqueueError::Capacity);
@@ -289,6 +327,13 @@ impl InvocationScheduler {
                 plugin_instance_id,
                 generation,
             });
+        }
+        if let Some(scope) = job.session_scope.as_ref() {
+            state
+                .queued_by_session
+                .entry(scope.clone())
+                .or_default()
+                .insert(request_id.clone());
         }
         state.queued_by_request.insert(request_id, job);
         state.queued += 1;
@@ -360,6 +405,18 @@ impl InvocationScheduler {
                     });
                 }
                 state.queued -= 1;
+                Self::remove_session_request(
+                    &mut state.queued_by_session,
+                    job.session_scope.as_ref(),
+                    &job.request_id,
+                );
+                if let Some(scope) = job.session_scope.as_ref() {
+                    state
+                        .active_by_session
+                        .entry(scope.clone())
+                        .or_default()
+                        .insert(job.request_id.clone());
+                }
                 *state
                     .active_by_plugin
                     .entry(plugin_instance_id.clone())
@@ -370,6 +427,7 @@ impl InvocationScheduler {
                         plugin_instance_id,
                         cancellation: Arc::clone(&job.cancellation),
                         signal_sender: job.signal_sender.clone(),
+                        session_scope: job.session_scope.clone(),
                     },
                 );
                 return Some(job);
@@ -384,9 +442,20 @@ impl InvocationScheduler {
         }
     }
 
+    #[cfg(test)]
     pub fn finish(&self, request_id: &str) {
+        let completion = self.begin_completion(request_id);
+        self.end_completion(completion);
+    }
+
+    pub fn begin_completion(&self, request_id: &str) -> InvocationCompletion {
         let mut state = self.state.lock().expect("scheduler mutex poisoned");
-        if let Some(active) = state.active.remove(request_id) {
+        let session_scope = if let Some(active) = state.active.remove(request_id) {
+            Self::remove_session_request(
+                &mut state.active_by_session,
+                active.session_scope.as_ref(),
+                request_id,
+            );
             let count = state
                 .active_by_plugin
                 .get_mut(&active.plugin_instance_id)
@@ -395,14 +464,47 @@ impl InvocationScheduler {
             if *count == 0 {
                 state.active_by_plugin.remove(&active.plugin_instance_id);
             }
+            active.session_scope
+        } else {
+            None
+        };
+        let suppress_response = session_scope
+            .as_ref()
+            .is_some_and(|scope| state.revoked_sessions.contains(scope));
+        if let Some(scope) = session_scope.as_ref() {
+            state
+                .publishing_by_session
+                .entry(scope.clone())
+                .or_default()
+                .insert(request_id.to_string());
         }
         Self::remember_recent_request_id(&mut state, request_id);
+        self.available.notify_all();
+        InvocationCompletion {
+            request_id: request_id.to_string(),
+            session_scope,
+            suppress_response,
+        }
+    }
+
+    pub fn end_completion(&self, completion: InvocationCompletion) {
+        let mut state = self.state.lock().expect("scheduler mutex poisoned");
+        Self::remove_session_request(
+            &mut state.publishing_by_session,
+            completion.session_scope.as_ref(),
+            &completion.request_id,
+        );
         self.available.notify_all();
     }
 
     pub fn cancel(&self, request_id: &str) -> CancelDisposition {
         let mut state = self.state.lock().expect("scheduler mutex poisoned");
         if let Some(job) = Self::remove_queued_request_for_cancel(&mut state, request_id) {
+            Self::remove_session_request(
+                &mut state.queued_by_session,
+                job.session_scope.as_ref(),
+                request_id,
+            );
             let plugin_instance_id = job.plugin_instance_id.clone();
             let queue_empty = {
                 let queue = state
@@ -449,6 +551,142 @@ impl InvocationScheduler {
             state.cancel_request_index_lookups += 1;
         }
         state.queued_by_request.remove(request_id)
+    }
+
+    fn remove_session_request(
+        index: &mut HashMap<redevplugin_ipc::SessionScope, HashSet<String>>,
+        scope: Option<&redevplugin_ipc::SessionScope>,
+        request_id: &str,
+    ) {
+        let Some(scope) = scope else {
+            return;
+        };
+        let empty = index.get_mut(scope).is_some_and(|request_ids| {
+            request_ids.remove(request_id);
+            request_ids.is_empty()
+        });
+        if empty {
+            index.remove(scope);
+        }
+    }
+
+    pub fn revoke_session(
+        &self,
+        scope: &redevplugin_ipc::SessionScope,
+    ) -> SessionRevokeDisposition {
+        let mut state = self.state.lock().expect("scheduler mutex poisoned");
+        state.revoked_sessions.insert(scope.clone());
+
+        #[cfg(test)]
+        {
+            state.session_revoke_index_lookups += 1;
+        }
+
+        let queued_request_ids = state.queued_by_session.remove(scope).unwrap_or_default();
+        #[cfg(test)]
+        {
+            state.session_revoke_affected_requests += queued_request_ids.len() as u64;
+        }
+        let mut queued = Vec::with_capacity(queued_request_ids.len());
+        let mut affected_plugins = HashSet::new();
+        for request_id in queued_request_ids {
+            let Some(job) = state.queued_by_request.remove(&request_id) else {
+                continue;
+            };
+            let plugin_instance_id = job.plugin_instance_id.clone();
+            let queue = state
+                .queues
+                .get_mut(&plugin_instance_id)
+                .expect("session-indexed queued invocation references a plugin queue");
+            queue.live -= 1;
+            queue.tombstones += 1;
+            state.queued -= 1;
+            affected_plugins.insert(plugin_instance_id);
+            Self::remember_recent_request_id(&mut state, &request_id);
+            queued.push(job);
+        }
+        for plugin_instance_id in affected_plugins {
+            if state
+                .queues
+                .get(&plugin_instance_id)
+                .is_some_and(|queue| queue.live == 0)
+            {
+                state.queues.remove(&plugin_instance_id);
+                state.stale_order_tokens += 1;
+            }
+        }
+        Self::compact_order(&mut state);
+
+        let mut running_request_ids = state
+            .active_by_session
+            .get(scope)
+            .cloned()
+            .unwrap_or_default()
+            .into_iter()
+            .collect::<Vec<_>>();
+        running_request_ids.extend(
+            state
+                .publishing_by_session
+                .get(scope)
+                .into_iter()
+                .flat_map(|request_ids| request_ids.iter().cloned()),
+        );
+        let cancellations = running_request_ids
+            .iter()
+            .filter_map(|request_id| state.active.get(request_id))
+            .map(|active| {
+                (
+                    Arc::clone(&active.cancellation),
+                    active.signal_sender.clone(),
+                )
+            })
+            .collect::<Vec<_>>();
+        drop(state);
+
+        for job in &queued {
+            job.cancellation.cancel();
+        }
+        for (cancellation, signal_sender) in cancellations {
+            cancellation.cancel();
+            let _ = signal_sender.send(InvocationSignal::Canceled);
+        }
+        self.available.notify_all();
+        SessionRevokeDisposition {
+            queued,
+            running_request_ids,
+        }
+    }
+
+    pub fn wait_session_drained(
+        &self,
+        scope: &redevplugin_ipc::SessionScope,
+        timeout: Duration,
+    ) -> bool {
+        let state = self.state.lock().expect("scheduler mutex poisoned");
+        let drained = self
+            .available
+            .wait_timeout_while(state, timeout, |state| {
+                state
+                    .active_by_session
+                    .get(scope)
+                    .is_some_and(|request_ids| !request_ids.is_empty())
+                    || state
+                        .publishing_by_session
+                        .get(scope)
+                        .is_some_and(|request_ids| !request_ids.is_empty())
+            })
+            .expect("scheduler mutex poisoned while draining session");
+        let still_active = drained
+            .0
+            .active_by_session
+            .get(scope)
+            .is_some_and(|request_ids| !request_ids.is_empty());
+        let still_publishing = drained
+            .0
+            .publishing_by_session
+            .get(scope)
+            .is_some_and(|request_ids| !request_ids.is_empty());
+        !still_active && !still_publishing
     }
 
     fn compact_plugin_queue(state: &mut SchedulerState, plugin_instance_id: &str) {
@@ -555,6 +793,9 @@ impl InvocationScheduler {
             let _ = active.signal_sender.send(InvocationSignal::Canceled);
         }
         state.order.clear();
+        state.queued_by_session.clear();
+        state.active_by_session.clear();
+        state.publishing_by_session.clear();
         state.stale_order_tokens = 0;
         state.queued = 0;
         self.available.notify_all();
@@ -744,6 +985,44 @@ mod tests {
     }
 
     #[test]
+    fn session_revoke_uses_exact_index_and_fences_future_admission() {
+        let scheduler = InvocationScheduler::new(8, 2);
+        let exact = scope("session-a", "user-a", "env-a", "channel-a");
+        scheduler
+            .enqueue(session_job("exact-running", "plugin-a", &exact))
+            .unwrap();
+        let running = scheduler.take().unwrap();
+        scheduler
+            .enqueue(session_job("exact-queued", "plugin-b", &exact))
+            .unwrap();
+        let sibling = scope("session-a", "user-a", "env-a", "channel-b");
+        scheduler
+            .enqueue(session_job("sibling", "plugin-c", &sibling))
+            .unwrap();
+
+        let revoked = scheduler.revoke_session(&exact);
+        assert_eq!(revoked.queued.len(), 1);
+        assert_eq!(revoked.queued[0].request_id, "exact-queued");
+        assert_eq!(revoked.running_request_ids, ["exact-running"]);
+        assert!(running.cancellation.is_canceled());
+        assert!(matches!(
+            running.signals.recv().unwrap(),
+            InvocationSignal::Canceled
+        ));
+        assert_eq!(scheduler.take().unwrap().request_id, "sibling");
+        assert!(matches!(
+            scheduler.enqueue(session_job("future", "plugin-a", &exact)),
+            Err(EnqueueError::SessionRevoked)
+        ));
+
+        let replay = scheduler.revoke_session(&exact);
+        assert!(replay.queued.is_empty());
+        assert_eq!(replay.running_request_ids, ["exact-running"]);
+        scheduler.finish("exact-running");
+        assert!(scheduler.wait_session_drained(&exact, Duration::from_millis(1)));
+    }
+
+    #[test]
     fn queued_cancel_preserves_round_robin_order() {
         let scheduler = InvocationScheduler::new(4, 2);
         scheduler.enqueue(job("a1", "a")).unwrap();
@@ -882,6 +1161,70 @@ mod tests {
     }
 
     #[test]
+    fn indexed_session_revoke_does_not_scan_one_hundred_thousand_unrelated_jobs() {
+        const UNRELATED: usize = 100_000;
+        const AFFECTED: usize = 10_000;
+        let scheduler = InvocationScheduler::new(UNRELATED + AFFECTED, UNRELATED + AFFECTED);
+        let exact = scope("session-a", "user-a", "env-a", "channel-a");
+        let sibling = scope("session-a", "user-a", "env-a", "channel-b");
+        let template = Arc::new(
+            redevplugin_ipc::parse_worker_invocation(
+                r#"{"ipc_version":"rust-ipc-v5","frame_type":"invoke_worker","request_id":"template","runtime_generation_id":"g1","payload":{"lease":{},"method":"worker.echo","invocation":{"plugin_instance_id":"plugin","method":"worker.echo"}}}"#,
+            )
+            .unwrap(),
+        );
+        for index in 0..UNRELATED {
+            scheduler
+                .enqueue(indexed_session_job(
+                    &format!("unrelated-{index}"),
+                    &sibling,
+                    &template,
+                ))
+                .unwrap();
+        }
+        for index in 0..AFFECTED {
+            scheduler
+                .enqueue(indexed_session_job(
+                    &format!("affected-{index}"),
+                    &exact,
+                    &template,
+                ))
+                .unwrap();
+        }
+
+        let revoked = scheduler.revoke_session(&exact);
+        assert_eq!(revoked.queued.len(), AFFECTED);
+        assert_eq!(scheduler.metrics().queued, UNRELATED);
+        let state = scheduler.state.lock().unwrap();
+        assert_eq!(state.session_revoke_index_lookups, 1);
+        assert_eq!(state.session_revoke_affected_requests, AFFECTED as u64);
+        let queue = state.queues.get("plugin").unwrap();
+        assert_eq!(queue.live, UNRELATED);
+        assert_eq!(queue.tombstones, AFFECTED);
+        assert_eq!(queue.request_ids.len(), UNRELATED + AFFECTED);
+        crate::performance_evidence::record(serde_json::json!({
+            "id": "runtime.session-revoke-exact-index",
+            "sample_count": UNRELATED + AFFECTED,
+            "metrics": [
+                {
+                    "name": "index_lookups",
+                    "unit": "count",
+                    "observed": state.session_revoke_index_lookups,
+                    "limit": 1,
+                    "comparator": "eq"
+                },
+                {
+                    "name": "visited_affected_requests",
+                    "unit": "count",
+                    "observed": state.session_revoke_affected_requests,
+                    "limit": AFFECTED,
+                    "comparator": "eq"
+                }
+            ]
+        }));
+    }
+
+    #[test]
     fn shutdown_preserves_plugin_and_fifo_order_while_skipping_tombstones() {
         let scheduler = InvocationScheduler::new(8, 2);
         for (request_id, plugin_instance_id) in [("b1", "b"), ("a1", "a"), ("a2", "a"), ("b2", "b")]
@@ -904,7 +1247,7 @@ mod tests {
 
     #[test]
     fn invocation_job_builder_returns_typed_error_without_panicking() {
-        let frame = r#"{"ipc_version":"rust-ipc-v4","frame_type":"invoke_worker","request_id":"missing-plugin","runtime_generation_id":"g1","payload":{"lease":{},"method":"worker.echo","invocation":{"method":"worker.echo"}}}"#;
+        let frame = r#"{"ipc_version":"rust-ipc-v5","frame_type":"invoke_worker","request_id":"missing-plugin","runtime_generation_id":"g1","payload":{"lease":{},"method":"worker.echo","invocation":{"method":"worker.echo"}}}"#;
         let invocation = redevplugin_ipc::parse_worker_invocation(frame).unwrap();
         let result = std::panic::catch_unwind(|| InvocationJob::new(invocation));
         assert_eq!(
@@ -917,9 +1260,56 @@ mod tests {
 
     fn job(request_id: &str, plugin_instance_id: &str) -> InvocationJob {
         let frame = format!(
-            r#"{{"ipc_version":"rust-ipc-v4","frame_type":"invoke_worker","request_id":"{request_id}","runtime_generation_id":"g1","payload":{{"lease":{{}},"method":"worker.echo","invocation":{{"plugin_instance_id":"{plugin_instance_id}","method":"worker.echo"}}}}}}"#
+            r#"{{"ipc_version":"rust-ipc-v5","frame_type":"invoke_worker","request_id":"{request_id}","runtime_generation_id":"g1","payload":{{"lease":{{}},"method":"worker.echo","invocation":{{"plugin_instance_id":"{plugin_instance_id}","method":"worker.echo"}}}}}}"#
         );
         InvocationJob::new(redevplugin_ipc::parse_worker_invocation(&frame).unwrap()).unwrap()
+    }
+
+    fn scope(
+        owner_session_hash: &str,
+        owner_user_hash: &str,
+        owner_env_hash: &str,
+        session_channel_id_hash: &str,
+    ) -> redevplugin_ipc::SessionScope {
+        redevplugin_ipc::SessionScope::new(
+            owner_session_hash,
+            owner_user_hash,
+            owner_env_hash,
+            session_channel_id_hash,
+        )
+        .unwrap()
+    }
+
+    fn session_job(
+        request_id: &str,
+        plugin_instance_id: &str,
+        scope: &redevplugin_ipc::SessionScope,
+    ) -> InvocationJob {
+        let frame = format!(
+            r#"{{"ipc_version":"rust-ipc-v5","frame_type":"invoke_worker","request_id":"{request_id}","runtime_generation_id":"g1","payload":{{"lease":{{}},"method":"worker.echo","invocation":{{"plugin_instance_id":"{plugin_instance_id}","method":"worker.echo","owner_session_hash":"{}","owner_user_hash":"{}","owner_env_hash":"{}","session_channel_id_hash":"{}"}}}}}}"#,
+            scope.owner_session_hash,
+            scope.owner_user_hash,
+            scope.owner_env_hash,
+            scope.session_channel_id_hash,
+        );
+        InvocationJob::new(redevplugin_ipc::parse_worker_invocation(&frame).unwrap()).unwrap()
+    }
+
+    fn indexed_session_job(
+        request_id: &str,
+        scope: &redevplugin_ipc::SessionScope,
+        invocation: &Arc<ParsedWorkerInvocation>,
+    ) -> InvocationJob {
+        let (signal_sender, signals) = mpsc::channel();
+        InvocationJob {
+            request_id: request_id.to_string(),
+            plugin_instance_id: "plugin".to_string(),
+            session_scope: Some(scope.clone()),
+            invocation: Arc::clone(invocation),
+            cancellation: Cancellation::new(),
+            signal_sender,
+            signals,
+        }
     }
 }
 
@@ -956,11 +1346,62 @@ mod property_gates {
             let second_job = scheduler.take().unwrap();
             prop_assert_ne!(first_job.plugin_instance_id, second_job.plugin_instance_id);
         }
+
+        #[test]
+        fn session_revoke_removes_only_exact_indexed_jobs(
+            exact_membership in prop::collection::vec(any::<bool>(), 0..32),
+        ) {
+            let capacity = exact_membership.len().max(1);
+            let scheduler = InvocationScheduler::new(capacity, capacity);
+            let exact = property_scope("channel-a");
+            let sibling = property_scope("channel-b");
+            let mut expected = 0;
+            for (index, is_exact) in exact_membership.into_iter().enumerate() {
+                let scope = if is_exact { &exact } else { &sibling };
+                expected += usize::from(is_exact);
+                scheduler
+                    .enqueue(property_session_job(
+                        &format!("request-{index}"),
+                        &format!("plugin-{index}"),
+                        scope,
+                    ))
+                    .unwrap();
+            }
+            let revoked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                scheduler.revoke_session(&exact)
+            }));
+            prop_assert!(revoked.is_ok());
+            prop_assert_eq!(revoked.unwrap().queued.len(), expected);
+            prop_assert!(matches!(
+                scheduler.enqueue(property_session_job("future", "future-plugin", &exact)),
+                Err(EnqueueError::SessionRevoked)
+            ));
+        }
     }
 
     fn property_job(request_id: &str, plugin_instance_id: &str) -> InvocationJob {
         let frame = format!(
-            r#"{{"ipc_version":"rust-ipc-v4","frame_type":"invoke_worker","request_id":"{request_id}","runtime_generation_id":"g1","payload":{{"lease":{{}},"method":"worker.echo","invocation":{{"plugin_instance_id":"{plugin_instance_id}","method":"worker.echo"}}}}}}"#
+            r#"{{"ipc_version":"rust-ipc-v5","frame_type":"invoke_worker","request_id":"{request_id}","runtime_generation_id":"g1","payload":{{"lease":{{}},"method":"worker.echo","invocation":{{"plugin_instance_id":"{plugin_instance_id}","method":"worker.echo"}}}}}}"#
+        );
+        InvocationJob::new(redevplugin_ipc::parse_worker_invocation(&frame).unwrap()).unwrap()
+    }
+
+    fn property_scope(session_channel_id_hash: &str) -> redevplugin_ipc::SessionScope {
+        redevplugin_ipc::SessionScope::new("session", "user", "env", session_channel_id_hash)
+            .unwrap()
+    }
+
+    fn property_session_job(
+        request_id: &str,
+        plugin_instance_id: &str,
+        scope: &redevplugin_ipc::SessionScope,
+    ) -> InvocationJob {
+        let frame = format!(
+            r#"{{"ipc_version":"rust-ipc-v5","frame_type":"invoke_worker","request_id":"{request_id}","runtime_generation_id":"g1","payload":{{"lease":{{}},"method":"worker.echo","invocation":{{"plugin_instance_id":"{plugin_instance_id}","method":"worker.echo","owner_session_hash":"{}","owner_user_hash":"{}","owner_env_hash":"{}","session_channel_id_hash":"{}"}}}}}}"#,
+            scope.owner_session_hash,
+            scope.owner_user_hash,
+            scope.owner_env_hash,
+            scope.session_channel_id_hash,
         );
         InvocationJob::new(redevplugin_ipc::parse_worker_invocation(&frame).unwrap()).unwrap()
     }

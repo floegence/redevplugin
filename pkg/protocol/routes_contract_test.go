@@ -745,9 +745,9 @@ func typeScriptSDKRouteBindings() []typeScriptSDKRouteBinding {
 			Snippets:     []string{"openSurfaceInSlot(", "#openSurface(request: PluginOpenSurfaceRequest)", `#requestMutation("POST", "/_redevplugin/api/plugins/surfaces/open"`},
 		},
 		{
-			routeFixture: routeFixture{Method: "POST", Path: "/_redevplugin/api/plugins/surfaces/revoke-scope"},
-			Owner:        "PluginPlatformClient.revokeSurfaceScope",
-			Snippets:     []string{"revokeSurfaceScope(): Promise<PluginSurfaceScopeRevokeResult>", `#requestMutation<PluginSurfaceScopeRevokeResult>("POST", "/_redevplugin/api/plugins/surfaces/revoke-scope"`},
+			routeFixture: routeFixture{Method: "POST", Path: "/_redevplugin/api/plugins/session/revoke-scope"},
+			Owner:        "PluginPlatformClient.revokeSessionScope",
+			Snippets:     []string{"revokeSessionScope(): Promise<PluginSessionScopeRevokeResult>", `#requestMutation<unknown>("POST", "/_redevplugin/api/plugins/session/revoke-scope", {}, options)`},
 		},
 		{
 			routeFixture: routeFixture{Method: "POST", Path: "/_redevplugin/api/plugins/surfaces/{surface_instance_id}/prepare"},

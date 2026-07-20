@@ -132,15 +132,15 @@ paths:
       responses:
         "200": { $ref: "#/components/responses/SurfaceBootstrapResponse" }
         default: { $ref: "#/components/responses/MutationPlatformErrorResponse" }
-  /_redevplugin/api/plugins/surfaces/revoke-scope:
+  /_redevplugin/api/plugins/session/revoke-scope:
     post:
-      operationId: revokePluginSurfaceScope
+      operationId: revokePluginSessionScope
       x-redevplugin-route-effect: mutation
-      description: Revokes every active plugin surface and token bound to the authenticated owner session or session channel derived by the host.
+      description: Irreversibly fences the authenticated session, drains every exact-session platform and runtime resource, and returns only public cumulative counts.
       requestBody:
-        $ref: "#/components/requestBodies/RevokeSurfaceScopeRequest"
+        $ref: "#/components/requestBodies/RevokeSessionScopeRequest"
       responses:
-        "200": { $ref: "#/components/responses/SurfaceScopeRevokeResponse" }
+        "200": { $ref: "#/components/responses/SessionScopeRevokeResponse" }
         default: { $ref: "#/components/responses/MutationPlatformErrorResponse" }
   /_redevplugin/api/plugins/surfaces/{surface_instance_id}/prepare:
     post:
@@ -616,12 +616,12 @@ components:
         application/json:
           schema:
             $ref: "#/components/schemas/SurfaceDisposeSuccessResponse"
-    SurfaceScopeRevokeResponse:
-      description: Authenticated owner-session surface revocation response.
+    SessionScopeRevokeResponse:
+      description: Completed authenticated-session teardown response.
       content:
         application/json:
           schema:
-            $ref: "#/components/schemas/SurfaceScopeRevokeSuccessResponse"
+            $ref: "#/components/schemas/SessionScopeRevokeSuccessResponse"
     PluginRecordResponse:
       description: Plugin lifecycle response with typed registry trust assessment.
       content:
@@ -839,12 +839,12 @@ components:
         application/json:
           schema:
             $ref: "#/components/schemas/OpenSurfaceRequest"
-    RevokeSurfaceScopeRequest:
+    RevokeSessionScopeRequest:
       required: true
       content:
         application/json:
           schema:
-            $ref: "#/components/schemas/RevokeSurfaceScopeRequest"
+            $ref: "#/components/schemas/RevokeSessionScopeRequest"
     EmptyRequest:
       required: true
       content:
@@ -1116,13 +1116,13 @@ components:
       properties:
         ok: { const: true }
         data: { $ref: "#/components/schemas/SurfaceDisposeResult" }
-    SurfaceScopeRevokeSuccessResponse:
+    SessionScopeRevokeSuccessResponse:
       type: object
       required: [ok, data]
       additionalProperties: false
       properties:
         ok: { const: true }
-        data: { $ref: "#/components/schemas/SurfaceScopeRevokeResult" }
+        data: { $ref: "#/components/schemas/SessionScopeRevokeCompleteResult" }
     PluginRecordSuccessResponse:
       type: object
       required: [ok, data]
@@ -1346,6 +1346,7 @@ components:
         - $ref: "#/components/schemas/MutationValuesRevisionPlatformError"
         - $ref: "#/components/schemas/MutationCapabilityPlatformError"
         - $ref: "#/components/schemas/MutationWorkerPlatformError"
+        - $ref: "#/components/schemas/MutationSessionTeardownPlatformError"
     GenericPlatformError:
       type: object
       required: [code, message, details]
@@ -1505,9 +1506,18 @@ components:
         message: { $ref: "#/components/schemas/PlatformErrorMessage" }
         details: { $ref: "#/components/schemas/WorkerErrorDetails" }
         mutation_outcome: { $ref: "#/components/schemas/MutationOutcome" }
+    MutationSessionTeardownPlatformError:
+      type: object
+      required: [code, message, details, mutation_outcome]
+      additionalProperties: false
+      properties:
+        code: { const: PLUGIN_SESSION_TEARDOWN_INCOMPLETE }
+        message: { $ref: "#/components/schemas/PlatformErrorMessage" }
+        details: { $ref: "#/components/schemas/SessionTeardownIncompleteErrorDetails" }
+        mutation_outcome: { const: committed }
     MutationOutcome:
       type: string
-      enum: [not_committed, unknown]
+      enum: [committed, not_committed, unknown]
     EmptyErrorDetails:
       type: object
       additionalProperties: false
@@ -1567,6 +1577,13 @@ components:
         worker_error_origin:
           type: string
           enum: [runtime, hostcall, plugin]
+    SessionTeardownIncompleteErrorDetails:
+      type: object
+      additionalProperties: false
+      required: [session_scope]
+      properties:
+        session_scope:
+          $ref: "#/components/schemas/SessionScopeRevokeIncompleteResult"
     ManagementRevisionMismatchDetails:
       type: object
       additionalProperties: false
@@ -1611,7 +1628,7 @@ components:
         expected_values_revision: { type: integer, minimum: 1, maximum: 9007199254740991 }
         actual_values_revision: { type: integer, minimum: 1, maximum: 9007199254740991 }
     ErrorCode:
-      $ref: "../plugin/error-codes-v4.schema.json#/$defs/platform_error_code"
+      $ref: "../plugin/error-codes-v5.schema.json#/$defs/platform_error_code"
     PlatformErrorMessage:
       type: string
       minLength: 1
@@ -1636,6 +1653,9 @@ components:
         - PLUGIN_SECRET_SCOPE_MISMATCH
         - PLUGIN_STORAGE_SCOPE_MISMATCH
         - PLUGIN_ADAPTER_FAILURE
+        - PLUGIN_SESSION_REVOKED
+        - PLUGIN_SESSION_TEARDOWN_INCOMPLETE
+        - PLUGIN_SESSION_FENCE_CAPACITY
         - PLUGIN_CONFIRMATION_REQUIRED
         - PLUGIN_CONFIRMATION_INVALID
         - PLUGIN_TOKEN_EXPIRED
@@ -1672,12 +1692,14 @@ components:
       additionalProperties: false
       properties:
         disposed: { const: true }
-    SurfaceScopeRevokeResult:
-      type: object
-      required: [revoked_surface_count]
-      additionalProperties: false
-      properties:
-        revoked_surface_count: { type: integer, minimum: 0 }
+    SessionScopeRevokeCounts:
+      $ref: "../plugin/session-scope-v1.schema.json#/$defs/revoke_counts"
+    SessionScopeRevokeResult:
+      $ref: "../plugin/session-scope-v1.schema.json#/$defs/public_revoke_result"
+    SessionScopeRevokeCompleteResult:
+      $ref: "../plugin/session-scope-v1.schema.json#/$defs/complete_revoke_result"
+    SessionScopeRevokeIncompleteResult:
+      $ref: "../plugin/session-scope-v1.schema.json#/$defs/incomplete_revoke_result"
     PluginCatalogResult:
       type: object
       required: [plugins]
@@ -1808,7 +1830,7 @@ components:
         method: { type: string }
         failure_code: { type: string }
         runtime_process_failure_code:
-          $ref: "../plugin/error-codes-v4.schema.json#/$defs/runtime_process_failure_code"
+          $ref: "../plugin/error-codes-v5.schema.json#/$defs/runtime_process_failure_code"
         operation_id: { type: string }
         stream_id: { type: string }
         runtime_instance_id: { type: string }
@@ -1924,7 +1946,7 @@ components:
       properties:
         version: { $ref: "#/components/schemas/StrictSemVer" }
         target: { $ref: "#/components/schemas/RuntimeTarget" }
-        ipc_version: { const: rust-ipc-v4 }
+        ipc_version: { const: rust-ipc-v5 }
         wasm_abi_version: { const: redevplugin-wasm-worker-v2 }
         artifact_sha256: { type: string, pattern: '^[0-9a-f]{64}$' }
     RuntimeLimits:
@@ -2312,7 +2334,7 @@ components:
         surface_id: { type: string, minLength: 1 }
         surface_instance_id: { type: string }
         expected_management_revision: { type: integer, minimum: 1, maximum: 9007199254740991 }
-    RevokeSurfaceScopeRequest:
+    RevokeSessionScopeRequest:
       type: object
       additionalProperties: false
       maxProperties: 0

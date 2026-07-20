@@ -630,6 +630,11 @@ func validAuditDetails(details map[string]any) bool {
 			if !ok || !validStableValue(text) {
 				return false
 			}
+		case "session_scope_state":
+			text, ok := auditString(value)
+			if !ok || !validSessionScopeState(text) {
+				return false
+			}
 		case "capability_contract_artifact":
 			text, ok := auditString(value)
 			if !ok || !validPackageRelativePath(text) {
@@ -645,13 +650,18 @@ func validAuditDetails(details map[string]any) bool {
 			if !ok || !validMutationOutcome(mutation.Outcome(text)) {
 				return false
 			}
-		case "channel_scoped", "delete_data", "runtime_revoked", "runtime_stopped":
+		case "channel_scoped", "delete_data", "runtime_revoked", "runtime_stopped",
+			"session_scope_fenced", "session_scope_complete":
 			if _, ok := value.(bool); !ok {
 				return false
 			}
-		case "closed_socket_count", "closed_storage_handle_count", "closed_stream_count", "confirmation_count",
-			"execution_count", "expires_at_unix_ms", "management_revision", "policy_revision", "revoke_epoch",
-			"revoked_surface_count", "surface_count", "token_count":
+		case "active_network_request_count", "asset_session_count", "asset_ticket_count",
+			"closed_socket_count", "closed_storage_handle_count", "closed_stream_count", "confirmation_count",
+			"confirmation_token_count", "execution_count", "expires_at_unix_ms", "gateway_token_count",
+			"handle_grant_count", "management_revision", "network_stream_count", "operation_count",
+			"policy_revision", "revoke_epoch", "revoked_surface_count", "runtime_execution_count",
+			"socket_count", "storage_hostcall_count", "stream_count", "stream_ticket_count", "surface_count",
+			"token_count":
 			if !validAuditInteger(value) {
 				return false
 			}
@@ -682,6 +692,15 @@ func validAuditDetails(details map[string]any) bool {
 		}
 	}
 	return true
+}
+
+func validSessionScopeState(state string) bool {
+	switch state {
+	case "fenced", "draining", "incomplete", "complete":
+		return true
+	default:
+		return false
+	}
 }
 
 func auditString(value any) (string, bool) {

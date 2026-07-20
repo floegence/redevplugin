@@ -1,0 +1,13 @@
+{
+  "ipc_version": "rust-ipc-v5",
+  "frame_type": "session_revoke",
+  "request_id": "session_revoke_1",
+  "runtime_generation_id": "runtime_generation_fixture_1",
+  "payload": {
+    "session_revoke_sequence": 1,
+    "owner_session_hash": "owner_session_fixture_1",
+    "owner_user_hash": "owner_user_fixture_1",
+    "owner_env_hash": "owner_env_fixture_1",
+    "session_channel_id_hash": "session_channel_fixture_1"
+  }
+}

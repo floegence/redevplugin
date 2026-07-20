@@ -26,6 +26,8 @@ const MAX_CONTROL_FRAME_BYTES: usize = 1024 * 1024;
 const MAX_BROKER_RESPONSE_FRAME_BYTES: usize = 1024 * 1024;
 const DEFAULT_CONTROL_MAX_STALENESS: Duration = Duration::from_millis(5_000);
 const DEFAULT_RUNTIME_LEASE_REPLAY_CAPACITY: usize = 16_384;
+const MAX_RUNTIME_SESSION_REVOCATIONS: usize = 65_536;
+const SESSION_REVOKE_DRAIN_TIMEOUT: Duration = Duration::from_millis(1_500);
 const WASM_PAGE_BYTES: u64 = 64 * 1024;
 const RUNTIME_CONTROL_STALE_MESSAGE_PREFIX: &str = "runtime control channel is stale";
 const IPC_WRITER_CAPACITY_OVERHEAD: usize = 8;
@@ -94,32 +96,35 @@ fn run() -> Result<(), RuntimeProcessError> {
         limits.module_cache_entries,
         limits.module_cache_source_bytes,
     ));
+    let hostcall_routes = Arc::new(OutstandingHostcallRoutes::new(
+        limits.hostcall_active_route_capacity(),
+        limits
+            .hostcall_canceled_route_capacity()
+            .map_err(ipc_contract_error)?,
+    ));
+    let execution = Arc::new(ConcurrentExecutionState {
+        shared: Arc::clone(&shared),
+        lease_replays: Mutex::new(RuntimeLeaseReplayCache::default()),
+        runtime_lease_public_keys,
+        module_cache: Arc::clone(&module_cache),
+        clock: Arc::new(current_unix_millis),
+        writer: writer.clone(),
+        runtime_generation_id: runtime_generation_id.clone(),
+        pending_artifacts: PendingArtifactRoutes::new(limits.compile_flight_route_capacity()),
+        hostcall_routes: Arc::clone(&hostcall_routes),
+    });
     let status = Arc::new(RuntimeStatus {
         limits,
         scheduler: Arc::clone(&scheduler),
         module_cache: Arc::clone(&module_cache),
+        hostcall_routes,
+        session_revoke: SessionRevokeController::default(),
     });
     start_control_channel(
         Arc::clone(&shared),
         runtime_generation_id.clone(),
         Arc::clone(&status),
     )?;
-    let execution = Arc::new(ConcurrentExecutionState {
-        shared,
-        lease_replays: Mutex::new(RuntimeLeaseReplayCache::default()),
-        runtime_lease_public_keys,
-        module_cache,
-        clock: Arc::new(current_unix_millis),
-        writer: writer.clone(),
-        runtime_generation_id: runtime_generation_id.clone(),
-        pending_artifacts: PendingArtifactRoutes::new(limits.compile_flight_route_capacity()),
-        hostcall_routes: OutstandingHostcallRoutes::new(
-            limits.hostcall_active_route_capacity(),
-            limits
-                .hostcall_canceled_route_capacity()
-                .map_err(ipc_contract_error)?,
-        ),
-    });
     let workers = start_invocation_workers(
         limits.worker_count,
         Arc::clone(&scheduler),
@@ -290,6 +295,10 @@ fn dispatch_runtime_input(
                             scheduler::EnqueueError::Shutdown => (
                                 redevplugin_ipc::ERR_RUNTIME_INVOCATION_CANCELED,
                                 "runtime is shutting down",
+                            ),
+                            scheduler::EnqueueError::SessionRevoked => (
+                                redevplugin_ipc::ERR_SESSION_REVOKED,
+                                "runtime session scope is revoked",
                             ),
                         };
                         send_frame(
@@ -650,6 +659,144 @@ struct RuntimeStatus {
     limits: redevplugin_ipc::RuntimeLimits,
     scheduler: Arc<scheduler::InvocationScheduler>,
     module_cache: Arc<module_cache::ModuleCache>,
+    hostcall_routes: Arc<OutstandingHostcallRoutes>,
+    session_revoke: SessionRevokeController,
+}
+
+struct SessionRevokeController {
+    max_scopes: usize,
+    drain_timeout: Duration,
+    state: Mutex<SessionRevokeControlState>,
+}
+
+#[derive(Default)]
+struct SessionRevokeControlState {
+    records: HashMap<redevplugin_ipc::SessionScope, SessionRevokeRecord>,
+}
+
+struct SessionRevokeRecord {
+    sequence: u64,
+    counts: redevplugin_ipc::SessionRevokeAckCounts,
+    complete: bool,
+}
+
+#[derive(Debug)]
+struct SessionContainment {
+    counts: redevplugin_ipc::SessionRevokeAckCounts,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum SessionRevokeControlError {
+    Stale,
+    Containment(String),
+    Capacity,
+    DrainTimeout,
+}
+
+impl std::fmt::Display for SessionRevokeControlError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Stale => formatter.write_str("session revoke sequence is stale"),
+            Self::Containment(message) => formatter.write_str(message),
+            Self::Capacity => formatter.write_str("session revoke fence capacity is exhausted"),
+            Self::DrainTimeout => formatter.write_str("session revoke execution drain timed out"),
+        }
+    }
+}
+
+impl SessionRevokeController {
+    #[cfg(test)]
+    fn with_capacity(max_scopes: usize) -> Self {
+        Self {
+            max_scopes,
+            drain_timeout: SESSION_REVOKE_DRAIN_TIMEOUT,
+            state: Mutex::new(SessionRevokeControlState::default()),
+        }
+    }
+
+    #[cfg(test)]
+    fn with_capacity_and_timeout(max_scopes: usize, drain_timeout: Duration) -> Self {
+        Self {
+            max_scopes,
+            drain_timeout,
+            state: Mutex::new(SessionRevokeControlState::default()),
+        }
+    }
+
+    fn contain(
+        &self,
+        request: &redevplugin_ipc::SessionRevokeRequest,
+        shared: &RuntimeSharedState,
+        scheduler: &scheduler::InvocationScheduler,
+        hostcall_routes: &OutstandingHostcallRoutes,
+    ) -> Result<SessionContainment, SessionRevokeControlError> {
+        let mut state = self.state.lock().expect("session revoke mutex poisoned");
+        let scope = request.session_scope();
+        if let Some(record) = state.records.get(&scope) {
+            if request.session_revoke_sequence < record.sequence {
+                return Err(SessionRevokeControlError::Stale);
+            }
+            if request.session_revoke_sequence == record.sequence {
+                let counts = record.counts;
+                if !record.complete {
+                    if !scheduler.wait_session_drained(&scope, self.drain_timeout) {
+                        return Err(SessionRevokeControlError::DrainTimeout);
+                    }
+                    state
+                        .records
+                        .get_mut(&scope)
+                        .expect("session revoke record exists")
+                        .complete = true;
+                }
+                return Ok(SessionContainment { counts });
+            }
+        }
+        if !state.records.contains_key(&scope) && state.records.len() >= self.max_scopes {
+            return Err(SessionRevokeControlError::Capacity);
+        }
+
+        let hostcall_counts = hostcall_routes
+            .revoke_session(&scope)
+            .map_err(SessionRevokeControlError::Containment)?;
+        shared
+            .revocations
+            .lock()
+            .expect("runtime revocation mutex poisoned")
+            .revoke_session(&scope);
+        let disposition = scheduler.revoke_session(&scope);
+        let mut counts = hostcall_counts;
+        counts.queued_invocations = u64::try_from(disposition.queued.len())
+            .map_err(|_| SessionRevokeControlError::Containment("queued count overflow".into()))?;
+        counts.running_invocations = u64::try_from(disposition.running_request_ids.len())
+            .map_err(|_| SessionRevokeControlError::Containment("running count overflow".into()))?;
+        state.records.insert(
+            scope.clone(),
+            SessionRevokeRecord {
+                sequence: request.session_revoke_sequence,
+                counts,
+                complete: false,
+            },
+        );
+        if !scheduler.wait_session_drained(&scope, self.drain_timeout) {
+            return Err(SessionRevokeControlError::DrainTimeout);
+        }
+        state
+            .records
+            .get_mut(&scope)
+            .expect("session revoke record exists")
+            .complete = true;
+        Ok(SessionContainment { counts })
+    }
+}
+
+impl Default for SessionRevokeController {
+    fn default() -> Self {
+        Self {
+            max_scopes: MAX_RUNTIME_SESSION_REVOCATIONS,
+            drain_timeout: SESSION_REVOKE_DRAIN_TIMEOUT,
+            state: Mutex::new(SessionRevokeControlState::default()),
+        }
+    }
 }
 
 struct ConcurrentExecutionState {
@@ -661,7 +808,7 @@ struct ConcurrentExecutionState {
     writer: FrameSender,
     runtime_generation_id: String,
     pending_artifacts: PendingArtifactRoutes,
-    hostcall_routes: OutstandingHostcallRoutes,
+    hostcall_routes: Arc<OutstandingHostcallRoutes>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -670,14 +817,26 @@ enum HostcallRouteDisposition {
     DiscardCanceled,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SessionHostcallKind {
+    Storage,
+    ActiveNetworkRequest,
+    Socket,
+    NetworkStream,
+}
+
 struct OutstandingHostcallRoute {
     parent_request_id: String,
     runtime_generation_id: String,
+    session_scope: Option<redevplugin_ipc::SessionScope>,
+    kind: SessionHostcallKind,
 }
 
 struct OutstandingHostcallRouteState {
     active: HashMap<String, OutstandingHostcallRoute>,
     canceled: HashMap<String, OutstandingHostcallRoute>,
+    active_by_session: HashMap<redevplugin_ipc::SessionScope, std::collections::HashSet<String>>,
+    revoked_sessions: std::collections::HashSet<redevplugin_ipc::SessionScope>,
     shutdown: bool,
 }
 
@@ -703,16 +862,36 @@ impl OutstandingHostcallRoutes {
             state: Mutex::new(OutstandingHostcallRouteState {
                 active: HashMap::new(),
                 canceled: HashMap::new(),
+                active_by_session: HashMap::new(),
+                revoked_sessions: std::collections::HashSet::new(),
                 shutdown: false,
             }),
         }
     }
 
+    #[cfg(test)]
     fn register(
         &self,
         request_id: &str,
         parent_request_id: &str,
         runtime_generation_id: &str,
+    ) -> Result<(), String> {
+        self.register_scoped(
+            request_id,
+            parent_request_id,
+            runtime_generation_id,
+            None,
+            SessionHostcallKind::Storage,
+        )
+    }
+
+    fn register_scoped(
+        &self,
+        request_id: &str,
+        parent_request_id: &str,
+        runtime_generation_id: &str,
+        session_scope: Option<&redevplugin_ipc::SessionScope>,
+        kind: SessionHostcallKind,
     ) -> Result<(), String> {
         if request_id.trim().is_empty()
             || parent_request_id.trim().is_empty()
@@ -723,6 +902,12 @@ impl OutstandingHostcallRoutes {
         let mut state = self.state.lock().expect("hostcall route mutex poisoned");
         if state.shutdown {
             return Err("runtime is shutting down".to_string());
+        }
+        if session_scope.is_some_and(|scope| state.revoked_sessions.contains(scope)) {
+            return Err(format!(
+                "{}: runtime session scope is revoked",
+                redevplugin_ipc::ERR_SESSION_REVOKED
+            ));
         }
         if state.active.contains_key(request_id) || state.canceled.contains_key(request_id) {
             return Err("hostcall request_id is already outstanding".to_string());
@@ -735,8 +920,17 @@ impl OutstandingHostcallRoutes {
             OutstandingHostcallRoute {
                 parent_request_id: parent_request_id.to_string(),
                 runtime_generation_id: runtime_generation_id.to_string(),
+                session_scope: session_scope.cloned(),
+                kind,
             },
         );
+        if let Some(scope) = session_scope {
+            state
+                .active_by_session
+                .entry(scope.clone())
+                .or_default()
+                .insert(request_id.to_string());
+        }
         Ok(())
     }
 
@@ -747,7 +941,9 @@ impl OutstandingHostcallRoutes {
             parent_request_id,
             runtime_generation_id,
         ) {
-            state.active.remove(request_id);
+            if let Some(route) = state.active.remove(request_id) {
+                remove_hostcall_session_index(&mut state.active_by_session, request_id, &route);
+            }
         } else if hostcall_route_identity_matches(
             state.canceled.get(request_id),
             parent_request_id,
@@ -785,6 +981,7 @@ impl OutstandingHostcallRoutes {
                 .active
                 .remove(&request_id)
                 .expect("selected active hostcall route exists");
+            remove_hostcall_session_index(&mut state.active_by_session, &request_id, &route);
             state.canceled.insert(request_id, route);
         }
         Ok(())
@@ -803,7 +1000,9 @@ impl OutstandingHostcallRoutes {
             {
                 return Err("hostcall response route identity mismatch".to_string());
             }
-            state.active.remove(request_id);
+            if let Some(route) = state.active.remove(request_id) {
+                remove_hostcall_session_index(&mut state.active_by_session, request_id, &route);
+            }
             return Ok(HostcallRouteDisposition::Deliver);
         }
         if let Some(route) = state.canceled.get(request_id) {
@@ -823,6 +1022,43 @@ impl OutstandingHostcallRoutes {
         state.shutdown = true;
         state.active.clear();
         state.canceled.clear();
+        state.active_by_session.clear();
+    }
+
+    fn revoke_session(
+        &self,
+        scope: &redevplugin_ipc::SessionScope,
+    ) -> Result<redevplugin_ipc::SessionRevokeAckCounts, String> {
+        let mut state = self.state.lock().expect("hostcall route mutex poisoned");
+        let request_ids = state
+            .active_by_session
+            .get(scope)
+            .cloned()
+            .unwrap_or_default();
+        let retained = state
+            .canceled
+            .len()
+            .checked_add(request_ids.len())
+            .ok_or_else(|| "canceled hostcall route count overflows usize".to_string())?;
+        if retained > self.canceled_capacity {
+            return Err("canceled hostcall route retention capacity is exhausted".to_string());
+        }
+        state.revoked_sessions.insert(scope.clone());
+        state.active_by_session.remove(scope);
+        let mut counts = redevplugin_ipc::SessionRevokeAckCounts::default();
+        for request_id in request_ids {
+            let Some(route) = state.active.remove(&request_id) else {
+                continue;
+            };
+            match route.kind {
+                SessionHostcallKind::Storage => counts.storage_hostcalls += 1,
+                SessionHostcallKind::ActiveNetworkRequest => counts.active_network_requests += 1,
+                SessionHostcallKind::Socket => counts.sockets += 1,
+                SessionHostcallKind::NetworkStream => counts.network_streams += 1,
+            }
+            state.canceled.insert(request_id, route);
+        }
+        Ok(counts)
     }
 
     #[cfg(test)]
@@ -847,6 +1083,23 @@ impl OutstandingHostcallRoutes {
     fn len(&self) -> usize {
         let state = self.state.lock().expect("hostcall route mutex poisoned");
         state.active.len() + state.canceled.len()
+    }
+}
+
+fn remove_hostcall_session_index(
+    index: &mut HashMap<redevplugin_ipc::SessionScope, std::collections::HashSet<String>>,
+    request_id: &str,
+    route: &OutstandingHostcallRoute,
+) {
+    let Some(scope) = route.session_scope.as_ref() else {
+        return;
+    };
+    let empty = index.get_mut(scope).is_some_and(|request_ids| {
+        request_ids.remove(request_id);
+        request_ids.is_empty()
+    });
+    if empty {
+        index.remove(scope);
     }
 }
 
@@ -1240,11 +1493,14 @@ fn complete_scheduled_invocation(
     request_id: &str,
     response: Result<String, String>,
 ) -> Result<(), IpcWriterError> {
-    scheduler.finish(request_id);
-    match response {
+    let completion = scheduler.begin_completion(request_id);
+    let result = match response {
+        Ok(_) if completion.suppress_response() => Ok(()),
         Ok(response) => send_frame(writer, response),
         Err(_) => Ok(()),
-    }
+    };
+    scheduler.end_completion(completion);
+    result
 }
 
 fn wait_for_hostcall_response(
@@ -1252,6 +1508,7 @@ fn wait_for_hostcall_response(
     execution: &ConcurrentExecutionState,
     request_id: &str,
     frame: String,
+    kind: SessionHostcallKind,
 ) -> Result<String, String> {
     if job.cancellation.is_canceled() {
         return Err(format!(
@@ -1261,10 +1518,12 @@ fn wait_for_hostcall_response(
     }
     let frame = redevplugin_ipc::bind_parent_request_id(&frame, &job.request_id)
         .map_err(ipc_contract_error)?;
-    execution.hostcall_routes.register(
+    execution.hostcall_routes.register_scoped(
         request_id,
         &job.request_id,
         &execution.runtime_generation_id,
+        job.session_scope.as_ref(),
+        kind,
     )?;
     if job.cancellation.is_canceled() {
         execution.hostcall_routes.remove(
@@ -1698,6 +1957,8 @@ fn runtime_validation_code(error: &str) -> &'static str {
         redevplugin_ipc::ERR_RUNTIME_CONTROL_CHANNEL_STALE
     } else if error.starts_with(redevplugin_ipc::ERR_RUNTIME_CAPABILITY_REVOKED) {
         redevplugin_ipc::ERR_RUNTIME_CAPABILITY_REVOKED
+    } else if error.starts_with(redevplugin_ipc::ERR_SESSION_REVOKED) {
+        redevplugin_ipc::ERR_SESSION_REVOKED
     } else {
         redevplugin_ipc::ERR_RUNTIME_LEASE_INVALID
     }
@@ -1726,7 +1987,13 @@ fn perform_multiplexed_hostcall(
                 &req,
             )
             .map_err(ipc_contract_error)?;
-            let response = wait_for_hostcall_response(job, execution, &request_id, frame)?;
+            let response = wait_for_hostcall_response(
+                job,
+                execution,
+                &request_id,
+                frame,
+                SessionHostcallKind::Storage,
+            )?;
             redevplugin_ipc::validate_storage_file_response(
                 &response,
                 &request_id,
@@ -1753,7 +2020,13 @@ fn perform_multiplexed_hostcall(
                 &req,
             )
             .map_err(ipc_contract_error)?;
-            let response = wait_for_hostcall_response(job, execution, &request_id, frame)?;
+            let response = wait_for_hostcall_response(
+                job,
+                execution,
+                &request_id,
+                frame,
+                SessionHostcallKind::Storage,
+            )?;
             redevplugin_ipc::validate_storage_kv_response(
                 &response,
                 &request_id,
@@ -1780,7 +2053,13 @@ fn perform_multiplexed_hostcall(
                 &req,
             )
             .map_err(ipc_contract_error)?;
-            let response = wait_for_hostcall_response(job, execution, &request_id, frame)?;
+            let response = wait_for_hostcall_response(
+                job,
+                execution,
+                &request_id,
+                frame,
+                SessionHostcallKind::Storage,
+            )?;
             redevplugin_ipc::validate_storage_sqlite_response(
                 &response,
                 &request_id,
@@ -1812,7 +2091,12 @@ fn perform_multiplexed_hostcall(
                 &req,
             )
             .map_err(ipc_contract_error)?;
-            let response = wait_for_hostcall_response(job, execution, &request_id, frame)?;
+            let kind = match req.operation.as_str() {
+                "http_stream" => SessionHostcallKind::NetworkStream,
+                "socket" => SessionHostcallKind::Socket,
+                _ => SessionHostcallKind::ActiveNetworkRequest,
+            };
+            let response = wait_for_hostcall_response(job, execution, &request_id, frame, kind)?;
             redevplugin_ipc::validate_network_execute_response(
                 &response,
                 &request_id,
@@ -1913,6 +2197,9 @@ fn run_control_channel(
             ),
             redevplugin_ipc::FRAME_TYPE_REVOKE_EPOCH => {
                 handle_revoke_epoch(shared, &identity.request_id, runtime_generation_id, &line)
+            }
+            redevplugin_ipc::FRAME_TYPE_SESSION_REVOKE => {
+                handle_session_revoke(shared, runtime_generation_id, &line, status)
             }
             _ => runtime_error_frame(
                 "diagnostic",
@@ -2159,6 +2446,7 @@ struct RuntimeRevocationKey {
 #[derive(Default)]
 struct RuntimeRevocations {
     revoked_epoch_by_plugin: HashMap<RuntimeRevocationKey, u64>,
+    revoked_sessions: std::collections::HashSet<redevplugin_ipc::SessionScope>,
 }
 
 impl RuntimeRevocations {
@@ -2172,6 +2460,10 @@ impl RuntimeRevocations {
             .or_insert(revoke_epoch);
     }
 
+    fn revoke_session(&mut self, scope: &redevplugin_ipc::SessionScope) {
+        self.revoked_sessions.insert(scope.clone());
+    }
+
     #[cfg(test)]
     fn validate_invocation_frame(&self, frame: &str) -> Result<(), RuntimeRevocationError> {
         let invocation = redevplugin_ipc::parse_worker_invocation_context(frame)
@@ -2183,6 +2475,11 @@ impl RuntimeRevocations {
         &self,
         invocation: &redevplugin_ipc::WorkerInvocationContext,
     ) -> Result<(), RuntimeRevocationError> {
+        if let Some(scope) = invocation_session_scope(invocation)?
+            && self.revoked_sessions.contains(&scope)
+        {
+            return Err(RuntimeRevocationError::SessionRevoked);
+        }
         let plugin_instance_id = invocation.plugin_instance_id.clone();
         let owner_env_hash = invocation.owner_env_hash.clone();
         let invocation_epoch = invocation.revoke_epoch;
@@ -2341,6 +2638,7 @@ enum RuntimeRevocationError {
         invocation_epoch: u64,
         revoked_epoch: u64,
     },
+    SessionRevoked,
 }
 
 impl RuntimeRevocationError {
@@ -2348,6 +2646,7 @@ impl RuntimeRevocationError {
         match self {
             Self::InvalidInvocation => redevplugin_ipc::ERR_WORKER_INVOCATION_INVALID,
             Self::Revoked { .. } => redevplugin_ipc::ERR_RUNTIME_CAPABILITY_REVOKED,
+            Self::SessionRevoked => redevplugin_ipc::ERR_SESSION_REVOKED,
         }
     }
 }
@@ -2367,8 +2666,25 @@ impl std::fmt::Display for RuntimeRevocationError {
                 formatter,
                 "runtime capability for plugin {plugin_instance_id} was revoked at epoch {revoked_epoch}; invocation epoch {invocation_epoch} is stale"
             ),
+            Self::SessionRevoked => write!(formatter, "runtime session scope is revoked"),
         }
     }
+}
+
+fn invocation_session_scope(
+    invocation: &redevplugin_ipc::WorkerInvocationContext,
+) -> Result<Option<redevplugin_ipc::SessionScope>, RuntimeRevocationError> {
+    if invocation.owner_session_hash.is_empty() && invocation.session_channel_id_hash.is_empty() {
+        return Ok(None);
+    }
+    redevplugin_ipc::SessionScope::new(
+        invocation.owner_session_hash.clone(),
+        invocation.owner_user_hash.clone(),
+        invocation.owner_env_hash.clone(),
+        invocation.session_channel_id_hash.clone(),
+    )
+    .map(Some)
+    .map_err(|_| RuntimeRevocationError::InvalidInvocation)
 }
 
 fn handle_revoke_epoch(
@@ -2413,6 +2729,71 @@ fn handle_revoke_epoch(
         request_id,
         runtime_generation_id,
         &result_json,
+    ))
+}
+
+fn handle_session_revoke(
+    shared: &RuntimeSharedState,
+    runtime_generation_id: &str,
+    line: &str,
+    status: &RuntimeStatus,
+) -> Result<String, String> {
+    let request = match redevplugin_ipc::parse_session_revoke_request(line) {
+        Ok(request) => request,
+        Err(err) => {
+            let request_id = redevplugin_ipc::parse_frame_identity(line)
+                .map(|identity| identity.request_id)
+                .unwrap_or_else(|_| "session_revoke".to_string());
+            return runtime_error_frame(
+                redevplugin_ipc::FRAME_TYPE_SESSION_REVOKE_ACK,
+                &request_id,
+                runtime_generation_id,
+                redevplugin_ipc::ERR_WORKER_INVOCATION_INVALID,
+                err,
+            );
+        }
+    };
+    if request.runtime_generation_id != runtime_generation_id {
+        return Err("control runtime_generation_id mismatch".to_string());
+    }
+    let containment = match status.session_revoke.contain(
+        &request,
+        shared,
+        &status.scheduler,
+        &status.hostcall_routes,
+    ) {
+        Ok(containment) => containment,
+        Err(err) => {
+            let code = match err {
+                SessionRevokeControlError::Stale => {
+                    redevplugin_ipc::ERR_SESSION_REVOKE_SEQUENCE_STALE
+                }
+                SessionRevokeControlError::Containment(_) => {
+                    redevplugin_ipc::ERR_WORKER_INVOCATION_INVALID
+                }
+                SessionRevokeControlError::Capacity => {
+                    redevplugin_ipc::ERR_RUNTIME_CAPACITY_EXCEEDED
+                }
+                SessionRevokeControlError::DrainTimeout => {
+                    redevplugin_ipc::ERR_SESSION_REVOKE_DRAIN_TIMEOUT
+                }
+            };
+            return runtime_error_frame(
+                redevplugin_ipc::FRAME_TYPE_SESSION_REVOKE_ACK,
+                &request.request_id,
+                runtime_generation_id,
+                code,
+                err,
+            );
+        }
+    };
+    shared.control.refresh_without_staleness_change();
+    ipc_frame(redevplugin_ipc::session_revoke_ack_frame(
+        &request.request_id,
+        runtime_generation_id,
+        request.session_revoke_sequence,
+        redevplugin_ipc::SessionRevokeState::Complete,
+        containment.counts,
     ))
 }
 
@@ -4292,6 +4673,449 @@ mod tests {
     }
 
     #[test]
+    fn session_revoke_contains_exact_hostcalls_and_fences_admission() {
+        let routes = OutstandingHostcallRoutes::new(8, 8);
+        let exact = session_scope("channel-a");
+        let sibling = session_scope("channel-b");
+        routes
+            .register_scoped(
+                "storage-a",
+                "invoke-a",
+                "g1",
+                Some(&exact),
+                SessionHostcallKind::Storage,
+            )
+            .unwrap();
+        routes
+            .register_scoped(
+                "stream-a",
+                "invoke-a",
+                "g1",
+                Some(&exact),
+                SessionHostcallKind::NetworkStream,
+            )
+            .unwrap();
+        routes
+            .register_scoped(
+                "request-a",
+                "invoke-a",
+                "g1",
+                Some(&exact),
+                SessionHostcallKind::ActiveNetworkRequest,
+            )
+            .unwrap();
+        routes
+            .register_scoped(
+                "socket-a",
+                "invoke-a",
+                "g1",
+                Some(&exact),
+                SessionHostcallKind::Socket,
+            )
+            .unwrap();
+        routes
+            .register_scoped(
+                "storage-sibling",
+                "invoke-sibling",
+                "g1",
+                Some(&sibling),
+                SessionHostcallKind::Storage,
+            )
+            .unwrap();
+
+        let counts = routes.revoke_session(&exact).unwrap();
+        assert_eq!(counts.storage_hostcalls, 1);
+        assert_eq!(counts.network_streams, 1);
+        assert_eq!(counts.active_network_requests, 1);
+        assert_eq!(counts.sockets, 1);
+        assert!(
+            routes
+                .register_scoped(
+                    "future",
+                    "invoke-future",
+                    "g1",
+                    Some(&exact),
+                    SessionHostcallKind::Storage,
+                )
+                .is_err()
+        );
+        assert_eq!(
+            routes.consume("storage-a", "invoke-a", "g1").unwrap(),
+            HostcallRouteDisposition::DiscardCanceled
+        );
+        assert_eq!(
+            routes
+                .consume("storage-sibling", "invoke-sibling", "g1")
+                .unwrap(),
+            HostcallRouteDisposition::Deliver
+        );
+    }
+
+    #[test]
+    fn session_revoke_controller_is_idempotent_and_rejects_stale_sequence() {
+        let shared = Arc::new(RuntimeSharedState::default());
+        let scheduler = Arc::new(scheduler::InvocationScheduler::new(8, 1));
+        let routes = Arc::new(OutstandingHostcallRoutes::new(8, 8));
+        let exact = session_scope("channel_hash");
+        let exact_frame = broker_invocation_frame("plugini_exact");
+        scheduler
+            .enqueue(
+                scheduler::InvocationJob::new(
+                    redevplugin_ipc::parse_worker_invocation(&exact_frame).unwrap(),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        let running = scheduler.take().unwrap();
+        let queued_frame =
+            exact_frame.replace(r#""request_id":"r1""#, r#""request_id":"queued-exact""#);
+        scheduler
+            .enqueue(
+                scheduler::InvocationJob::new(
+                    redevplugin_ipc::parse_worker_invocation(&queued_frame).unwrap(),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        routes
+            .register_scoped(
+                "storage-exact",
+                &running.request_id,
+                "g1",
+                Some(&exact),
+                SessionHostcallKind::Storage,
+            )
+            .unwrap();
+        let controller = Arc::new(SessionRevokeController::default());
+        let request = session_revoke_request(7, &exact);
+
+        let (result_sender, result_receiver) = mpsc::channel();
+        let contain_controller = Arc::clone(&controller);
+        let contain_shared = Arc::clone(&shared);
+        let contain_scheduler = Arc::clone(&scheduler);
+        let contain_routes = Arc::clone(&routes);
+        let contain_request = request.clone();
+        thread::spawn(move || {
+            result_sender
+                .send(contain_controller.contain(
+                    &contain_request,
+                    &contain_shared,
+                    &contain_scheduler,
+                    &contain_routes,
+                ))
+                .unwrap();
+        });
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while !running.cancellation.is_canceled() && Instant::now() < deadline {
+            thread::yield_now();
+        }
+        assert!(running.cancellation.is_canceled());
+        assert!(
+            result_receiver.try_recv().is_err(),
+            "ACK must wait for drain"
+        );
+        scheduler.finish(&running.request_id);
+        let first = result_receiver
+            .recv_timeout(Duration::from_secs(1))
+            .unwrap()
+            .unwrap();
+        assert_eq!(first.counts.queued_invocations, 1);
+        assert_eq!(first.counts.running_invocations, 1);
+        assert_eq!(first.counts.storage_hostcalls, 1);
+
+        let replay = controller
+            .contain(&request, &shared, &scheduler, &routes)
+            .unwrap();
+        assert_eq!(replay.counts, first.counts);
+        let stale = session_revoke_request(6, &exact);
+        assert_eq!(
+            controller
+                .contain(&stale, &shared, &scheduler, &routes)
+                .unwrap_err(),
+            SessionRevokeControlError::Stale
+        );
+        let independent = session_revoke_request(7, &session_scope("other-channel"));
+        controller
+            .contain(&independent, &shared, &scheduler, &routes)
+            .unwrap();
+        assert!(matches!(
+            scheduler.enqueue(
+                scheduler::InvocationJob::new(
+                    redevplugin_ipc::parse_worker_invocation(&exact_frame).unwrap(),
+                )
+                .unwrap()
+            ),
+            Err(scheduler::EnqueueError::SessionRevoked)
+        ));
+        let parsed = redevplugin_ipc::parse_worker_invocation(&exact_frame).unwrap();
+        assert_eq!(
+            shared.validate_parsed_invocation(&parsed).unwrap_err(),
+            RuntimeRevocationError::SessionRevoked
+        );
+    }
+
+    #[test]
+    fn session_revoke_waits_for_completion_and_suppresses_late_result() {
+        let shared = Arc::new(RuntimeSharedState::default());
+        let scheduler = Arc::new(scheduler::InvocationScheduler::new(2, 1));
+        let routes = Arc::new(OutstandingHostcallRoutes::new(2, 2));
+        let controller = Arc::new(SessionRevokeController::with_capacity_and_timeout(
+            2,
+            Duration::from_secs(1),
+        ));
+        let exact = session_scope("channel_hash");
+        let frame = broker_invocation_frame("plugini_exact");
+        scheduler
+            .enqueue(
+                scheduler::InvocationJob::new(
+                    redevplugin_ipc::parse_worker_invocation(&frame).unwrap(),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        let running = scheduler.take().unwrap();
+        routes
+            .register_scoped(
+                "late-storage",
+                &running.request_id,
+                "g1",
+                Some(&exact),
+                SessionHostcallKind::Storage,
+            )
+            .unwrap();
+        let request = session_revoke_request(1, &exact);
+        let (result_sender, result_receiver) = mpsc::channel();
+        let contain_controller = Arc::clone(&controller);
+        let contain_shared = Arc::clone(&shared);
+        let contain_scheduler = Arc::clone(&scheduler);
+        let contain_routes = Arc::clone(&routes);
+        thread::spawn(move || {
+            result_sender
+                .send(contain_controller.contain(
+                    &request,
+                    &contain_shared,
+                    &contain_scheduler,
+                    &contain_routes,
+                ))
+                .unwrap();
+        });
+
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while !running.cancellation.is_canceled() && Instant::now() < deadline {
+            thread::yield_now();
+        }
+        assert!(running.cancellation.is_canceled());
+        assert!(result_receiver.try_recv().is_err());
+        let (writer, outbound) = frame_channel(1);
+        complete_scheduled_invocation(
+            &scheduler,
+            &writer,
+            &running.request_id,
+            Ok("late-success".to_string()),
+        )
+        .unwrap();
+        let contained = result_receiver
+            .recv_timeout(Duration::from_secs(1))
+            .unwrap()
+            .unwrap();
+        assert_eq!(contained.counts.running_invocations, 1);
+        assert_eq!(contained.counts.storage_hostcalls, 1);
+        assert!(
+            outbound.try_recv().is_err(),
+            "revoked result must be suppressed"
+        );
+        assert_eq!(
+            routes
+                .consume("late-storage", &running.request_id, "g1")
+                .unwrap(),
+            HostcallRouteDisposition::DiscardCanceled
+        );
+    }
+
+    #[test]
+    fn session_revoke_sequences_are_ordered_only_within_exact_scope() {
+        let shared = RuntimeSharedState::default();
+        let scheduler = scheduler::InvocationScheduler::new(1, 1);
+        let routes = OutstandingHostcallRoutes::new(1, 1);
+        let controller = SessionRevokeController::default();
+        let high_scope = session_scope("high-channel");
+        let low_scope = session_scope("low-channel");
+
+        controller
+            .contain(
+                &session_revoke_request(900, &high_scope),
+                &shared,
+                &scheduler,
+                &routes,
+            )
+            .unwrap();
+        controller
+            .contain(
+                &session_revoke_request(1, &low_scope),
+                &shared,
+                &scheduler,
+                &routes,
+            )
+            .expect("another exact scope does not share sequence ordering");
+        controller
+            .contain(
+                &session_revoke_request(900, &high_scope),
+                &shared,
+                &scheduler,
+                &routes,
+            )
+            .expect("same-scope duplicate is idempotent");
+        assert_eq!(
+            controller
+                .contain(
+                    &session_revoke_request(899, &high_scope),
+                    &shared,
+                    &scheduler,
+                    &routes,
+                )
+                .unwrap_err(),
+            SessionRevokeControlError::Stale
+        );
+        assert_eq!(controller.state.lock().unwrap().records.len(), 2);
+    }
+
+    #[test]
+    fn session_revoke_drain_timeout_never_returns_complete() {
+        let shared = RuntimeSharedState::default();
+        let scheduler = scheduler::InvocationScheduler::new(2, 1);
+        let routes = OutstandingHostcallRoutes::new(2, 2);
+        let controller =
+            SessionRevokeController::with_capacity_and_timeout(2, Duration::from_millis(10));
+        let exact = session_scope("channel_hash");
+        let frame = broker_invocation_frame("plugini_exact");
+        scheduler
+            .enqueue(
+                scheduler::InvocationJob::new(
+                    redevplugin_ipc::parse_worker_invocation(&frame).unwrap(),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        let running = scheduler.take().unwrap();
+        let request = session_revoke_request(1, &exact);
+
+        assert_eq!(
+            controller
+                .contain(&request, &shared, &scheduler, &routes)
+                .unwrap_err(),
+            SessionRevokeControlError::DrainTimeout
+        );
+        let state = controller.state.lock().unwrap();
+        assert!(!state.records.get(&exact).unwrap().complete);
+        drop(state);
+
+        scheduler.finish(&running.request_id);
+        let completed = controller
+            .contain(&request, &shared, &scheduler, &routes)
+            .unwrap();
+        assert_eq!(completed.counts.running_invocations, 1);
+        assert!(
+            controller
+                .state
+                .lock()
+                .unwrap()
+                .records
+                .get(&exact)
+                .unwrap()
+                .complete
+        );
+    }
+
+    #[test]
+    fn session_revoke_fence_capacity_is_bounded_and_atomic() {
+        let shared = RuntimeSharedState::default();
+        let scheduler = scheduler::InvocationScheduler::new(1, 1);
+        let routes = OutstandingHostcallRoutes::new(1, 1);
+        let controller = SessionRevokeController::with_capacity(2);
+        for (sequence, channel) in [(1, "channel-1"), (2, "channel-2")] {
+            controller
+                .contain(
+                    &session_revoke_request(sequence, &session_scope(channel)),
+                    &shared,
+                    &scheduler,
+                    &routes,
+                )
+                .unwrap();
+        }
+        let rejected_scope = session_scope("channel-3");
+        assert_eq!(
+            controller
+                .contain(
+                    &session_revoke_request(3, &rejected_scope),
+                    &shared,
+                    &scheduler,
+                    &routes,
+                )
+                .unwrap_err(),
+            SessionRevokeControlError::Capacity
+        );
+        assert!(
+            !shared
+                .revocations
+                .lock()
+                .unwrap()
+                .revoked_sessions
+                .contains(&rejected_scope)
+        );
+    }
+
+    #[test]
+    fn session_revoke_handler_emits_terminal_ack_after_containment() {
+        let shared = RuntimeSharedState::default();
+        let status = runtime_status_for_test();
+        let frame = r#"{"ipc_version":"rust-ipc-v5","frame_type":"session_revoke","request_id":"revoke-1","runtime_generation_id":"g1","payload":{"session_revoke_sequence":1,"owner_session_hash":"session_hash","owner_user_hash":"user_hash","owner_env_hash":"env_hash","session_channel_id_hash":"channel_hash"}}"#;
+        let response = handle_session_revoke(&shared, "g1", frame, &status).unwrap();
+        let response: serde_json::Value = serde_json::from_str(&response).unwrap();
+        assert_eq!(response["frame_type"], "session_revoke_ack");
+        assert_eq!(response["payload"]["ok"], true);
+        assert_eq!(response["payload"]["result"]["state"], "complete");
+        assert!(
+            shared
+                .revocations
+                .lock()
+                .unwrap()
+                .revoked_sessions
+                .contains(&session_scope("channel_hash"))
+        );
+    }
+
+    #[test]
+    fn session_revoke_handler_returns_timeout_failure_instead_of_complete_ack() {
+        let shared = RuntimeSharedState::default();
+        let mut status = runtime_status_for_test();
+        status.session_revoke =
+            SessionRevokeController::with_capacity_and_timeout(2, Duration::from_millis(10));
+        let frame = broker_invocation_frame("plugini_timeout");
+        status
+            .scheduler
+            .enqueue(
+                scheduler::InvocationJob::new(
+                    redevplugin_ipc::parse_worker_invocation(&frame).unwrap(),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        let running = status.scheduler.take().unwrap();
+        let request = r#"{"ipc_version":"rust-ipc-v5","frame_type":"session_revoke","request_id":"revoke-1","runtime_generation_id":"g1","payload":{"session_revoke_sequence":1,"owner_session_hash":"session_hash","owner_user_hash":"user_hash","owner_env_hash":"env_hash","session_channel_id_hash":"channel_hash"}}"#;
+
+        let response = handle_session_revoke(&shared, "g1", request, &status).unwrap();
+        let response: serde_json::Value = serde_json::from_str(&response).unwrap();
+        assert_eq!(response["frame_type"], "session_revoke_ack");
+        assert_eq!(response["payload"]["ok"], false);
+        assert_eq!(
+            response["payload"]["code"],
+            redevplugin_ipc::ERR_SESSION_REVOKE_DRAIN_TIMEOUT
+        );
+        assert!(response["payload"].get("result").is_none());
+        status.scheduler.finish(&running.request_id);
+    }
+
+    #[test]
     fn artifact_route_is_exact_bounded_and_wrong_identity_does_not_consume() {
         let routes = PendingArtifactRoutes::new(1);
         let (first_sender, first_receiver) = mpsc::channel();
@@ -4433,7 +5257,7 @@ mod tests {
             writer: writer.clone(),
             runtime_generation_id: "g1".to_string(),
             pending_artifacts: PendingArtifactRoutes::new(2),
-            hostcall_routes: OutstandingHostcallRoutes::new(2, 4),
+            hostcall_routes: Arc::new(OutstandingHostcallRoutes::new(2, 4)),
         };
         execution
             .hostcall_routes
@@ -4441,7 +5265,7 @@ mod tests {
             .unwrap();
 
         let cancel = redevplugin_ipc::decode_runtime_input_frame(
-            r#"{"ipc_version":"rust-ipc-v4","frame_type":"cancel_invoke","request_id":"cancel-r1","runtime_generation_id":"g1","payload":{"invocation_request_id":"r1"}}"#,
+            r#"{"ipc_version":"rust-ipc-v5","frame_type":"cancel_invoke","request_id":"cancel-r1","runtime_generation_id":"g1","payload":{"invocation_request_id":"r1"}}"#,
         )
         .unwrap();
         dispatch_runtime_input(cancel, "g1", &scheduler, &execution, &writer).unwrap();
@@ -4449,7 +5273,7 @@ mod tests {
         scheduler.finish(&running.request_id);
 
         let late_response = redevplugin_ipc::decode_runtime_input_frame(
-            r#"{"ipc_version":"rust-ipc-v4","frame_type":"storage_file","request_id":"r1:storage_file","parent_request_id":"r1","runtime_generation_id":"g1","payload":{}}"#,
+            r#"{"ipc_version":"rust-ipc-v5","frame_type":"storage_file","request_id":"r1:storage_file","parent_request_id":"r1","runtime_generation_id":"g1","payload":{}}"#,
         )
         .unwrap();
         dispatch_runtime_input(late_response, "g1", &scheduler, &execution, &writer)
@@ -4476,6 +5300,8 @@ mod tests {
                 limits.module_cache_entries,
                 limits.module_cache_source_bytes,
             )),
+            hostcall_routes: Arc::new(OutstandingHostcallRoutes::new(2, 6)),
+            session_revoke: SessionRevokeController::default(),
         }
     }
 
@@ -4499,7 +5325,7 @@ mod tests {
             writer: writer.clone(),
             runtime_generation_id: "g1".to_string(),
             pending_artifacts: PendingArtifactRoutes::new(2),
-            hostcall_routes: OutstandingHostcallRoutes::new(2, 4),
+            hostcall_routes: Arc::new(OutstandingHostcallRoutes::new(2, 4)),
         };
         job.signal_sender
             .send(scheduler::InvocationSignal::HostcallResponse(
@@ -4511,7 +5337,8 @@ mod tests {
                 &job,
                 &execution,
                 "r1:artifact",
-                r#"{"ipc_version":"rust-ipc-v4","frame_type":"open_handle","request_id":"r1:artifact","runtime_generation_id":"g1","payload":{}}"#.to_string(),
+                r#"{"ipc_version":"rust-ipc-v5","frame_type":"open_handle","request_id":"r1:artifact","runtime_generation_id":"g1","payload":{}}"#.to_string(),
+                SessionHostcallKind::Storage,
             )
             .unwrap(),
             "response"
@@ -4531,7 +5358,8 @@ mod tests {
                 &job,
                 &execution,
                 "r1:artifact-after-cancel",
-                "{}".to_string()
+                "{}".to_string(),
+                SessionHostcallKind::Storage,
             )
             .is_err()
         );
@@ -4562,10 +5390,10 @@ mod tests {
             writer: writer.clone(),
             runtime_generation_id: "g1".to_string(),
             pending_artifacts: PendingArtifactRoutes::new(2),
-            hostcall_routes: OutstandingHostcallRoutes::new(2, 4),
+            hostcall_routes: Arc::new(OutstandingHostcallRoutes::new(2, 4)),
         });
         let input = redevplugin_ipc::decode_runtime_input_frame(
-            r#"{"ipc_version":"rust-ipc-v4","frame_type":"invoke_worker","request_id":"invoke-invalid","runtime_generation_id":"g1","payload":{"method":"worker.echo","invocation":{}}}"#,
+            r#"{"ipc_version":"rust-ipc-v5","frame_type":"invoke_worker","request_id":"invoke-invalid","runtime_generation_id":"g1","payload":{"method":"worker.echo","invocation":{}}}"#,
         )
         .expect("outer IPC frame decodes");
 
@@ -4617,7 +5445,7 @@ mod tests {
             writer,
             runtime_generation_id: "rtgen_fixture_v1".to_string(),
             pending_artifacts: PendingArtifactRoutes::new(2),
-            hostcall_routes: OutstandingHostcallRoutes::new(2, 4),
+            hostcall_routes: Arc::new(OutstandingHostcallRoutes::new(2, 4)),
         });
 
         let response = handle_scheduled_worker_invocation(&job, &execution)
@@ -4934,7 +5762,7 @@ mod tests {
             &shared,
             "r1",
             "g1",
-            r#"{"ipc_version":"rust-ipc-v4","frame_type":"revoke_epoch","request_id":"r1","runtime_generation_id":"g1","payload":{"resource_scope":{"kind":"environment","owner_env_hash":"env_hash"},"plugin_instance_id":"plugini_1","revoke_epoch":7}}"#,
+            r#"{"ipc_version":"rust-ipc-v5","frame_type":"revoke_epoch","request_id":"r1","runtime_generation_id":"g1","payload":{"resource_scope":{"kind":"environment","owner_env_hash":"env_hash"},"plugin_instance_id":"plugini_1","revoke_epoch":7}}"#,
         )
         .expect("revoke epoch response");
         assert!(response.contains(r#""frame_type":"revoke_epoch_ack""#));
@@ -4978,7 +5806,7 @@ mod tests {
         let frame = redevplugin_ipc::storage_file_frame("r1:storage_file", "g1", &request)
             .expect("valid storage file frame");
         assert!(frame.contains(r#""frame_type":"storage_file""#), "{frame}");
-        let response = r#"{"ipc_version":"rust-ipc-v4","frame_type":"storage_file","request_id":"r1:storage_file","runtime_generation_id":"g1","payload":{"ok":true,"path":"notes/from-memory.txt","size_bytes":34,"usage":{"plugin_instance_id":"plugini_1","store_id":"workspace","usage_bytes":34,"quota_bytes":4096,"usage_files":1,"quota_files":64}}}"#;
+        let response = r#"{"ipc_version":"rust-ipc-v5","frame_type":"storage_file","request_id":"r1:storage_file","runtime_generation_id":"g1","payload":{"ok":true,"path":"notes/from-memory.txt","size_bytes":34,"usage":{"plugin_instance_id":"plugini_1","store_id":"workspace","usage_bytes":34,"quota_bytes":4096,"usage_files":1,"quota_files":64}}}"#;
         redevplugin_ipc::validate_storage_file_response(
             response,
             "r1:storage_file",
@@ -5078,7 +5906,7 @@ mod tests {
             &control,
             "r1",
             "g1",
-            r#"{"ipc_version":"rust-ipc-v4","frame_type":"heartbeat","request_id":"r1","runtime_generation_id":"g1","payload":{"sent_unix_nano":100,"max_staleness_ms":5000}}"#,
+            r#"{"ipc_version":"rust-ipc-v5","frame_type":"heartbeat","request_id":"r1","runtime_generation_id":"g1","payload":{"sent_unix_nano":100,"max_staleness_ms":5000}}"#,
             &status,
         )
         .expect("heartbeat response");
@@ -5100,7 +5928,7 @@ mod tests {
             &control,
             "r1",
             "g1",
-            r#"{"ipc_version":"rust-ipc-v4","frame_type":"heartbeat","request_id":"r1","runtime_generation_id":"g1","payload":{"sent_unix_nano":100}}"#,
+            r#"{"ipc_version":"rust-ipc-v5","frame_type":"heartbeat","request_id":"r1","runtime_generation_id":"g1","payload":{"sent_unix_nano":100}}"#,
             &status,
         )
         .expect("invalid heartbeat error response");
@@ -5115,7 +5943,7 @@ mod tests {
             &shared,
             "r1",
             "g1",
-            r#"{"ipc_version":"rust-ipc-v4","frame_type":"revoke_epoch","request_id":"r1","runtime_generation_id":"g1","payload":{"resource_scope":{"kind":"environment","owner_env_hash":"env_hash"},"plugin_instance_id":"plugini_1","revoke_epoch":0}}"#,
+            r#"{"ipc_version":"rust-ipc-v5","frame_type":"revoke_epoch","request_id":"r1","runtime_generation_id":"g1","payload":{"resource_scope":{"kind":"environment","owner_env_hash":"env_hash"},"plugin_instance_id":"plugini_1","revoke_epoch":0}}"#,
         )
         .expect("invalid revoke epoch error response");
         assert!(response.contains(r#""frame_type":"revoke_epoch_ack""#));
@@ -5577,7 +6405,7 @@ mod tests {
 
     #[test]
     fn network_execute_request_inherits_stream_audience_from_invocation() {
-        let invocation = r#"{"ipc_version":"rust-ipc-v4","frame_type":"invoke_worker","request_id":"r1","runtime_generation_id":"g1","payload":{"lease":{"plugin_instance_id":"plugini_1","runtime_shard_id":"runtime_shard_signed","stream_id":"stream_host_1","policy_revision":1,"management_revision":2,"revoke_epoch":3},"method":"worker.echo","invocation":{"plugin_id":"com.example.worker","plugin_instance_id":"plugini_1","active_fingerprint":"sha256:active","runtime_instance_id":"runtime_1","runtime_generation_id":"g1","policy_revision":1,"management_revision":2,"revoke_epoch":3,"broker_access":{"network":[{"connector_id":"api","transport":"http","scope":"user","operations":["http_stream"],"http_methods":["POST"]}]},"method":"worker.echo","effect":"read","execution":"subscription","stream_id":"stream_host_1","surface_instance_id":"surface_1","owner_session_hash":"session_hash","owner_user_hash":"user_hash","owner_env_hash":"env_hash","session_channel_id_hash":"channel_hash","bridge_channel_id":"bridge_1"}}}"#;
+        let invocation = r#"{"ipc_version":"rust-ipc-v5","frame_type":"invoke_worker","request_id":"r1","runtime_generation_id":"g1","payload":{"lease":{"plugin_instance_id":"plugini_1","runtime_shard_id":"runtime_shard_signed","stream_id":"stream_host_1","policy_revision":1,"management_revision":2,"revoke_epoch":3},"method":"worker.echo","invocation":{"plugin_id":"com.example.worker","plugin_instance_id":"plugini_1","active_fingerprint":"sha256:active","runtime_instance_id":"runtime_1","runtime_generation_id":"g1","policy_revision":1,"management_revision":2,"revoke_epoch":3,"broker_access":{"network":[{"connector_id":"api","transport":"http","scope":"user","operations":["http_stream"],"http_methods":["POST"]}]},"method":"worker.echo","effect":"read","execution":"subscription","stream_id":"stream_host_1","surface_instance_id":"surface_1","owner_session_hash":"session_hash","owner_user_hash":"user_hash","owner_env_hash":"env_hash","session_channel_id_hash":"channel_hash","bridge_channel_id":"bridge_1"}}}"#;
         let request = r#"{"connector_id":"api","transport":"http","destination":"https://api.example.com","operation":"http_stream","method":"POST","path":"/v1/stream","query":{"format":["json"],"timezone":["auto"]},"max_chunk_bytes":4,"max_buffered_bytes":65536,"content_type":"text/plain"}"#;
         let invocation =
             redevplugin_ipc::parse_worker_invocation(invocation).expect("typed invocation");
@@ -5605,7 +6433,7 @@ mod tests {
 
     #[test]
     fn storage_request_uses_host_only_grant_map() {
-        let invocation = r#"{"ipc_version":"rust-ipc-v4","frame_type":"invoke_worker","request_id":"r1","runtime_generation_id":"g1","payload":{"lease":{"plugin_instance_id":"plugini_1","runtime_shard_id":"runtime_shard_signed","policy_revision":1,"management_revision":2,"revoke_epoch":3},"method":"notes.list","invocation":{"plugin_id":"com.example.notes","plugin_instance_id":"plugini_1","active_fingerprint":"sha256:active","runtime_instance_id":"runtime_1","runtime_generation_id":"g1","policy_revision":1,"management_revision":2,"revoke_epoch":3,"owner_user_hash":"user_hash","owner_env_hash":"env_hash","storage_handle_grants":{"notes":"handle_grant.host-only-secret"},"broker_access":{"storage":[{"store_id":"notes","scope":"user","operations":["query"]}]},"method":"notes.list","effect":"read","execution":"sync"}}}"#;
+        let invocation = r#"{"ipc_version":"rust-ipc-v5","frame_type":"invoke_worker","request_id":"r1","runtime_generation_id":"g1","payload":{"lease":{"plugin_instance_id":"plugini_1","runtime_shard_id":"runtime_shard_signed","policy_revision":1,"management_revision":2,"revoke_epoch":3},"method":"notes.list","invocation":{"plugin_id":"com.example.notes","plugin_instance_id":"plugini_1","active_fingerprint":"sha256:active","runtime_instance_id":"runtime_1","runtime_generation_id":"g1","policy_revision":1,"management_revision":2,"revoke_epoch":3,"owner_user_hash":"user_hash","owner_env_hash":"env_hash","storage_handle_grants":{"notes":"handle_grant.host-only-secret"},"broker_access":{"storage":[{"store_id":"notes","scope":"user","operations":["query"]}]},"method":"notes.list","effect":"read","execution":"sync"}}}"#;
         let request = r#"{"store_id":"notes","operation":"query","database":"notes.sqlite","sql":"SELECT id FROM notes","args":[]}"#;
         let invocation =
             redevplugin_ipc::parse_worker_invocation(invocation).expect("typed invocation");
@@ -5622,7 +6450,7 @@ mod tests {
 
     #[test]
     fn network_execute_request_rejects_plugin_owned_audience_overrides() {
-        let invocation = r#"{"ipc_version":"rust-ipc-v4","frame_type":"invoke_worker","request_id":"r1","runtime_generation_id":"g1","payload":{"lease":{"plugin_instance_id":"plugini_1","runtime_shard_id":"runtime_shard_signed","stream_id":"stream_host_1","policy_revision":1,"management_revision":2,"revoke_epoch":3},"method":"worker.echo","invocation":{"plugin_id":"com.example.worker","plugin_instance_id":"plugini_1","active_fingerprint":"sha256:active","runtime_instance_id":"runtime_1","runtime_generation_id":"g1","policy_revision":1,"management_revision":2,"revoke_epoch":3,"method":"worker.echo","effect":"read","execution":"subscription","stream_id":"stream_host_1","surface_instance_id":"surface_1","owner_session_hash":"session_hash","owner_user_hash":"user_hash","owner_env_hash":"env_hash","session_channel_id_hash":"channel_hash","bridge_channel_id":"bridge_1"}}}"#;
+        let invocation = r#"{"ipc_version":"rust-ipc-v5","frame_type":"invoke_worker","request_id":"r1","runtime_generation_id":"g1","payload":{"lease":{"plugin_instance_id":"plugini_1","runtime_shard_id":"runtime_shard_signed","stream_id":"stream_host_1","policy_revision":1,"management_revision":2,"revoke_epoch":3},"method":"worker.echo","invocation":{"plugin_id":"com.example.worker","plugin_instance_id":"plugini_1","active_fingerprint":"sha256:active","runtime_instance_id":"runtime_1","runtime_generation_id":"g1","policy_revision":1,"management_revision":2,"revoke_epoch":3,"method":"worker.echo","effect":"read","execution":"subscription","stream_id":"stream_host_1","surface_instance_id":"surface_1","owner_session_hash":"session_hash","owner_user_hash":"user_hash","owner_env_hash":"env_hash","session_channel_id_hash":"channel_hash","bridge_channel_id":"bridge_1"}}}"#;
         let invocation =
             redevplugin_ipc::parse_worker_invocation(invocation).expect("typed invocation");
         for field in [
@@ -5650,7 +6478,7 @@ mod tests {
 
     #[test]
     fn network_execute_request_rejects_plugin_selected_stream_id() {
-        let invocation = r#"{"ipc_version":"rust-ipc-v4","frame_type":"invoke_worker","request_id":"r1","runtime_generation_id":"g1","payload":{"lease":{"plugin_instance_id":"plugini_1","runtime_shard_id":"runtime_shard_signed","stream_id":"stream_host_1","policy_revision":1,"management_revision":2,"revoke_epoch":3},"method":"worker.echo","invocation":{"plugin_id":"com.example.worker","plugin_instance_id":"plugini_1","active_fingerprint":"sha256:active","runtime_instance_id":"runtime_1","runtime_generation_id":"g1","policy_revision":1,"management_revision":2,"revoke_epoch":3,"method":"worker.echo","effect":"read","execution":"subscription","stream_id":"stream_host_1","surface_instance_id":"surface_1","owner_session_hash":"session_hash","owner_user_hash":"user_hash","owner_env_hash":"env_hash","session_channel_id_hash":"channel_hash","bridge_channel_id":"bridge_1"}}}"#;
+        let invocation = r#"{"ipc_version":"rust-ipc-v5","frame_type":"invoke_worker","request_id":"r1","runtime_generation_id":"g1","payload":{"lease":{"plugin_instance_id":"plugini_1","runtime_shard_id":"runtime_shard_signed","stream_id":"stream_host_1","policy_revision":1,"management_revision":2,"revoke_epoch":3},"method":"worker.echo","invocation":{"plugin_id":"com.example.worker","plugin_instance_id":"plugini_1","active_fingerprint":"sha256:active","runtime_instance_id":"runtime_1","runtime_generation_id":"g1","policy_revision":1,"management_revision":2,"revoke_epoch":3,"method":"worker.echo","effect":"read","execution":"subscription","stream_id":"stream_host_1","surface_instance_id":"surface_1","owner_session_hash":"session_hash","owner_user_hash":"user_hash","owner_env_hash":"env_hash","session_channel_id_hash":"channel_hash","bridge_channel_id":"bridge_1"}}}"#;
         let request = r#"{"connector_id":"api","transport":"http","destination":"https://api.example.com","operation":"http_stream","stream_id":"stream_plugin_selected"}"#;
         let invocation =
             redevplugin_ipc::parse_worker_invocation(invocation).expect("typed invocation");
@@ -5685,7 +6513,7 @@ mod tests {
 
     #[test]
     fn network_execute_request_rejects_missing_host_owned_stream_id() {
-        let invocation = r#"{"ipc_version":"rust-ipc-v4","frame_type":"invoke_worker","request_id":"r1","runtime_generation_id":"g1","payload":{"lease":{"plugin_instance_id":"plugini_1","runtime_shard_id":"runtime_shard_signed","policy_revision":1,"management_revision":2,"revoke_epoch":3},"method":"worker.echo","invocation":{"plugin_id":"com.example.worker","plugin_instance_id":"plugini_1","active_fingerprint":"sha256:active","runtime_instance_id":"runtime_1","runtime_generation_id":"g1","policy_revision":1,"management_revision":2,"revoke_epoch":3,"broker_access":{"network":[{"connector_id":"api","transport":"http","scope":"user","operations":["http_stream"],"http_methods":["GET"]}]},"method":"worker.echo","effect":"read","execution":"subscription","surface_instance_id":"surface_1","owner_session_hash":"session_hash","owner_user_hash":"user_hash","owner_env_hash":"env_hash","session_channel_id_hash":"channel_hash","bridge_channel_id":"bridge_1"}}}"#;
+        let invocation = r#"{"ipc_version":"rust-ipc-v5","frame_type":"invoke_worker","request_id":"r1","runtime_generation_id":"g1","payload":{"lease":{"plugin_instance_id":"plugini_1","runtime_shard_id":"runtime_shard_signed","policy_revision":1,"management_revision":2,"revoke_epoch":3},"method":"worker.echo","invocation":{"plugin_id":"com.example.worker","plugin_instance_id":"plugini_1","active_fingerprint":"sha256:active","runtime_instance_id":"runtime_1","runtime_generation_id":"g1","policy_revision":1,"management_revision":2,"revoke_epoch":3,"broker_access":{"network":[{"connector_id":"api","transport":"http","scope":"user","operations":["http_stream"],"http_methods":["GET"]}]},"method":"worker.echo","effect":"read","execution":"subscription","surface_instance_id":"surface_1","owner_session_hash":"session_hash","owner_user_hash":"user_hash","owner_env_hash":"env_hash","session_channel_id_hash":"channel_hash","bridge_channel_id":"bridge_1"}}}"#;
         let request = r#"{"connector_id":"api","transport":"http","destination":"https://api.example.com","operation":"http_stream"}"#;
         let invocation =
             redevplugin_ipc::parse_worker_invocation(invocation).expect("typed invocation");
@@ -5737,6 +6565,31 @@ mod tests {
         worker_invocation_frame_for_env(plugin_instance_id, revoke_epoch, "env_hash")
     }
 
+    fn session_scope(session_channel_id_hash: &str) -> redevplugin_ipc::SessionScope {
+        redevplugin_ipc::SessionScope::new(
+            "session_hash",
+            "user_hash",
+            "env_hash",
+            session_channel_id_hash,
+        )
+        .unwrap()
+    }
+
+    fn session_revoke_request(
+        sequence: u64,
+        scope: &redevplugin_ipc::SessionScope,
+    ) -> redevplugin_ipc::SessionRevokeRequest {
+        redevplugin_ipc::SessionRevokeRequest {
+            request_id: format!("revoke-{sequence}"),
+            runtime_generation_id: "g1".to_string(),
+            session_revoke_sequence: sequence,
+            owner_session_hash: scope.owner_session_hash.clone(),
+            owner_user_hash: scope.owner_user_hash.clone(),
+            owner_env_hash: scope.owner_env_hash.clone(),
+            session_channel_id_hash: scope.session_channel_id_hash.clone(),
+        }
+    }
+
     fn worker_invocation_frame_for_env(
         plugin_instance_id: &str,
         revoke_epoch: u64,
@@ -5753,7 +6606,7 @@ mod tests {
 
     fn broker_invocation_frame(plugin_instance_id: &str) -> String {
         format!(
-            r#"{{"ipc_version":"rust-ipc-v4","frame_type":"invoke_worker","request_id":"r1","runtime_generation_id":"g1","payload":{{"lease":{{"runtime_shard_id":"runtime_shard_signed","policy_revision":1,"management_revision":1,"revoke_epoch":1}},"method":"worker.echo","invocation":{{"plugin_id":"com.example.worker","plugin_instance_id":"{plugin_instance_id}","active_fingerprint":"sha256:active","runtime_instance_id":"runtime_1","runtime_generation_id":"g1","policy_revision":1,"management_revision":1,"revoke_epoch":1,"storage_handle_grants":{{"workspace":"handle_grant.secret"}},"broker_access":{{"storage":[{{"store_id":"workspace","scope":"user","operations":["read","write","delete","list"]}},{{"store_id":"notes","scope":"user","operations":["query","exec"]}}],"network":[{{"connector_id":"api","transport":"http","scope":"user","operations":["http","http_stream"],"http_methods":["GET","POST"]}}]}},"method":"worker.echo","effect":"write","execution":"subscription","stream_id":"stream_1","surface_instance_id":"surface_1","owner_session_hash":"session_hash","owner_user_hash":"user_hash","owner_env_hash":"env_hash","session_channel_id_hash":"channel_hash","bridge_channel_id":"bridge_1"}}}}}}"#
+            r#"{{"ipc_version":"rust-ipc-v5","frame_type":"invoke_worker","request_id":"r1","runtime_generation_id":"g1","payload":{{"lease":{{"runtime_shard_id":"runtime_shard_signed","policy_revision":1,"management_revision":1,"revoke_epoch":1}},"method":"worker.echo","invocation":{{"plugin_id":"com.example.worker","plugin_instance_id":"{plugin_instance_id}","active_fingerprint":"sha256:active","runtime_instance_id":"runtime_1","runtime_generation_id":"g1","policy_revision":1,"management_revision":1,"revoke_epoch":1,"storage_handle_grants":{{"workspace":"handle_grant.secret"}},"broker_access":{{"storage":[{{"store_id":"workspace","scope":"user","operations":["read","write","delete","list"]}},{{"store_id":"notes","scope":"user","operations":["query","exec"]}}],"network":[{{"connector_id":"api","transport":"http","scope":"user","operations":["http","http_stream"],"http_methods":["GET","POST"]}}]}},"method":"worker.echo","effect":"write","execution":"subscription","stream_id":"stream_1","surface_instance_id":"surface_1","owner_session_hash":"session_hash","owner_user_hash":"user_hash","owner_env_hash":"env_hash","session_channel_id_hash":"channel_hash","bridge_channel_id":"bridge_1"}}}}}}"#
         )
     }
 
@@ -5800,7 +6653,7 @@ mod tests {
         owner_env_hash: &str,
     ) -> String {
         format!(
-            r#"{{"ipc_version":"rust-ipc-v4","frame_type":"invoke_worker","request_id":"r1","runtime_generation_id":"g1","payload":{{"lease":{{"lease_id":"{lease_id}","lease_nonce":"{lease_nonce}","runtime_generation_id":"g1","runtime_shard_id":"runtime_shard_signed","plugin_instance_id":"{plugin_instance_id}","owner_user_hash":"user_hash","owner_env_hash":"{owner_env_hash}","policy_revision":1,"management_revision":1,"revoke_epoch":{revoke_epoch},"expires_at_unix_ms":{expires_at_unix_ms}}},"method":"worker.echo","invocation":{{"plugin_id":"com.example.worker","plugin_instance_id":"{plugin_instance_id}","active_fingerprint":"sha256:active","runtime_instance_id":"runtime_1","runtime_generation_id":"g1","policy_revision":1,"management_revision":1,"revoke_epoch":{revoke_epoch},"package_hash":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","worker_id":"backend","worker_mode":"job","worker_scope":"user","artifact":"workers/backend.wasm","artifact_sha256":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","abi":"redevplugin-wasm-worker-v2","method":"worker.echo","effect":"read","execution":"sync","audit_correlation_id":"audit_1","owner_user_hash":"user_hash","owner_env_hash":"{owner_env_hash}","params_sha256":"sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a","params":{{}},"broker_access":{{}},"broker_access_sha256":"sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"}}}}}}"#
+            r#"{{"ipc_version":"rust-ipc-v5","frame_type":"invoke_worker","request_id":"r1","runtime_generation_id":"g1","payload":{{"lease":{{"lease_id":"{lease_id}","lease_nonce":"{lease_nonce}","runtime_generation_id":"g1","runtime_shard_id":"runtime_shard_signed","plugin_instance_id":"{plugin_instance_id}","owner_user_hash":"user_hash","owner_env_hash":"{owner_env_hash}","policy_revision":1,"management_revision":1,"revoke_epoch":{revoke_epoch},"expires_at_unix_ms":{expires_at_unix_ms}}},"method":"worker.echo","invocation":{{"plugin_id":"com.example.worker","plugin_instance_id":"{plugin_instance_id}","active_fingerprint":"sha256:active","runtime_instance_id":"runtime_1","runtime_generation_id":"g1","policy_revision":1,"management_revision":1,"revoke_epoch":{revoke_epoch},"package_hash":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","worker_id":"backend","worker_mode":"job","worker_scope":"user","artifact":"workers/backend.wasm","artifact_sha256":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","abi":"redevplugin-wasm-worker-v2","method":"worker.echo","effect":"read","execution":"sync","audit_correlation_id":"audit_1","owner_user_hash":"user_hash","owner_env_hash":"{owner_env_hash}","params_sha256":"sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a","params":{{}},"broker_access":{{}},"broker_access_sha256":"sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"}}}}}}"#
         )
     }
 

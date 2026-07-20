@@ -11,7 +11,15 @@ async function readOpenAPI() {
 }
 
 async function readIPCSchema() {
-  return JSON.parse(await readFile(join(root, "spec/plugin/ipc-v4.schema.json"), "utf8"));
+  return JSON.parse(await readFile(join(root, "spec/plugin/ipc-v5.schema.json"), "utf8"));
+}
+
+async function readSessionScopeSchema() {
+  return JSON.parse(await readFile(join(root, "spec/plugin/session-scope-v1.schema.json"), "utf8"));
+}
+
+async function readCompatibilitySchema() {
+  return JSON.parse(await readFile(join(root, "spec/plugin/compatibility-manifest-v7.schema.json"), "utf8"));
 }
 
 test("PatchSettingsRequest requires a non-empty set or remove object", async () => {
@@ -46,6 +54,137 @@ test("settings routes and responses require a closed resource scope", async () =
   }
 });
 
+test("session revoke is one closed authenticated-session mutation contract", async () => {
+  const openAPI = await readOpenAPI();
+  const route = openAPI.paths["/_redevplugin/api/plugins/session/revoke-scope"]?.post;
+  assert.ok(route);
+  assert.equal(openAPI.paths["/_redevplugin/api/plugins/surfaces/revoke-scope"], undefined);
+  assert.equal(route.operationId, "revokePluginSessionScope");
+  assert.equal(route["x-redevplugin-route-effect"], "mutation");
+  assert.deepEqual(route.requestBody, { $ref: "#/components/requestBodies/RevokeSessionScopeRequest" });
+  assert.deepEqual(route.responses["200"], { $ref: "#/components/responses/SessionScopeRevokeResponse" });
+  assert.deepEqual(route.responses.default, { $ref: "#/components/responses/MutationPlatformErrorResponse" });
+
+  const request = openAPI.components.schemas.RevokeSessionScopeRequest;
+  assert.deepEqual(request, {
+    type: "object",
+    additionalProperties: false,
+    maxProperties: 0,
+  });
+  assert.deepEqual(
+    openAPI.components.schemas.SessionScopeRevokeSuccessResponse.properties.data,
+    { $ref: "#/components/schemas/SessionScopeRevokeCompleteResult" },
+  );
+
+  const incompleteError = openAPI.components.schemas.MutationSessionTeardownPlatformError;
+  assert.deepEqual(incompleteError.required, ["code", "message", "details", "mutation_outcome"]);
+  assert.deepEqual(incompleteError.properties.code, { const: "PLUGIN_SESSION_TEARDOWN_INCOMPLETE" });
+  assert.deepEqual(incompleteError.properties.mutation_outcome, { const: "committed" });
+  assert.deepEqual(
+    incompleteError.properties.details,
+    { $ref: "#/components/schemas/SessionTeardownIncompleteErrorDetails" },
+  );
+});
+
+test("session scope contract closes identity, phases, counts, and public result shapes", async () => {
+  const schema = await readSessionScopeSchema();
+  const defs = schema.$defs;
+  const identityFields = [
+    "owner_session_hash",
+    "owner_user_hash",
+    "owner_env_hash",
+    "session_channel_id_hash",
+  ];
+  assert.deepEqual(defs.session_scope.required, identityFields);
+  assert.equal(defs.session_scope.additionalProperties, false);
+  assert.deepEqual(Object.keys(defs.session_scope.properties), identityFields);
+  assert.deepEqual(defs.teardown_phase.enum, ["bridge", "confirmation", "execution", "operation", "stream", "runtime"]);
+
+  const countFields = [
+    "surfaces",
+    "asset_tickets",
+    "asset_sessions",
+    "plugin_gateway_tokens",
+    "confirmation_tokens",
+    "stream_tickets",
+    "handle_grants",
+    "confirmations",
+    "operations",
+    "streams",
+    "runtime_executions",
+    "active_network_requests",
+    "sockets",
+    "network_streams",
+    "storage_hostcalls",
+  ];
+  assert.deepEqual(defs.revoke_counts.required, countFields);
+  assert.equal(defs.revoke_counts.additionalProperties, false);
+  assert.deepEqual(Object.keys(defs.revoke_counts.properties), countFields);
+  for (const field of countFields) {
+    assert.deepEqual(defs.revoke_counts.properties[field], { $ref: "#/$defs/count" });
+  }
+  assert.deepEqual(defs.count, {
+    type: "integer",
+    minimum: 0,
+    maximum: Number.MAX_SAFE_INTEGER,
+  });
+
+  assert.deepEqual(defs.complete_revoke_result.required, ["state", "fenced", "complete", "counts"]);
+  assert.deepEqual(defs.complete_revoke_result.properties.state, { const: "complete" });
+  assert.deepEqual(defs.complete_revoke_result.properties.fenced, { const: true });
+  assert.deepEqual(defs.complete_revoke_result.properties.complete, { const: true });
+  assert.deepEqual(defs.incomplete_revoke_result.properties.state, { const: "incomplete" });
+  assert.deepEqual(defs.incomplete_revoke_result.properties.fenced, { const: true });
+  assert.deepEqual(defs.incomplete_revoke_result.properties.complete, { const: false });
+  for (const result of [defs.complete_revoke_result, defs.incomplete_revoke_result]) {
+    assert.equal(result.additionalProperties, false);
+    for (const privateField of [...identityFields, "operation_identity", "closed_session_proof"]) {
+      assert.equal(result.properties[privateField], undefined);
+    }
+  }
+});
+
+test("Rust IPC v5 carries closed session revoke request and acknowledgement frames", async () => {
+  const schema = await readIPCSchema();
+  assert.equal(schema.properties.ipc_version.const, "rust-ipc-v5");
+  assert.ok(schema.properties.frame_type.enum.includes("session_revoke"));
+  assert.ok(schema.properties.frame_type.enum.includes("session_revoke_ack"));
+
+  const request = schema.$defs.session_revoke_request_payload;
+  assert.equal(request.additionalProperties, false);
+  assert.deepEqual(request.required, [
+    "session_revoke_sequence",
+    "owner_session_hash",
+    "owner_user_hash",
+    "owner_env_hash",
+    "session_channel_id_hash",
+  ]);
+  assert.deepEqual(request.properties.session_revoke_sequence, {
+    type: "integer",
+    minimum: 1,
+    maximum: Number.MAX_SAFE_INTEGER,
+  });
+
+  const result = schema.$defs.session_revoke_ack_result;
+  assert.equal(result.additionalProperties, false);
+  assert.deepEqual(result.required, ["session_revoke_sequence", "state", "counts"]);
+  assert.deepEqual(result.properties.state, { const: "complete" });
+  for (const count of Object.values(schema.$defs.session_revoke_ack_counts.properties)) {
+    assert.deepEqual(count, { $ref: "#/$defs/session_revoke_count" });
+  }
+  assert.equal(schema.$defs.session_revoke_count.maximum, Number.MAX_SAFE_INTEGER);
+});
+
+test("compatibility v7 publishes the complete session revoke contract matrix", async () => {
+  const schema = await readCompatibilitySchema();
+  const matrix = schema.properties.matrix;
+  assert.ok(matrix.required.includes("session_scope_schema_version"));
+  assert.deepEqual(matrix.properties.rust_ipc_version, { const: "rust-ipc-v5" });
+  assert.deepEqual(matrix.properties.token_ticket_schema_version, { const: "token-ticket-v4" });
+  assert.deepEqual(matrix.properties.session_scope_schema_version, { const: "session-scope-v1" });
+  assert.deepEqual(matrix.properties.error_codes_schema_version, { const: "error-codes-v5" });
+});
+
 test("OpenAPI source keeps external schema references for structured bundling", async () => {
   const openAPI = await readOpenAPI();
   assert.equal(
@@ -65,7 +204,7 @@ test("diagnostic events use closed details and a dedicated mutation outcome", as
   const openAPI = await readOpenAPI();
   const schemas = openAPI.components.schemas;
   assert.deepEqual(schemas.DiagnosticMutationOutcome.enum, ["committed", "not_committed", "unknown"]);
-  assert.deepEqual(schemas.MutationOutcome.enum, ["not_committed", "unknown"]);
+  assert.deepEqual(schemas.MutationOutcome.enum, ["committed", "not_committed", "unknown"]);
   assert.equal(schemas.PluginDiagnosticDetails.additionalProperties, false);
   assert.deepEqual(Object.keys(schemas.PluginDiagnosticDetails.properties).sort(), [
     "arch",
@@ -109,7 +248,7 @@ test("diagnostic events use closed details and a dedicated mutation outcome", as
     });
   }
   assert.deepEqual(schemas.PluginDiagnosticDetails.properties.runtime_process_failure_code, {
-    $ref: "../plugin/error-codes-v4.schema.json#/$defs/runtime_process_failure_code",
+    $ref: "../plugin/error-codes-v5.schema.json#/$defs/runtime_process_failure_code",
   });
   assert.deepEqual(schemas.PluginDiagnosticEvent.properties.details, {
     $ref: "#/components/schemas/PluginDiagnosticDetails",

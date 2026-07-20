@@ -255,8 +255,10 @@ type TokenManager struct {
 	idIndex               map[string]string
 	pluginIndex           map[string]map[string]struct{}
 	surfaceIndex          map[string]map[string]struct{}
+	sessionIndex          map[sessionctx.SessionScope]map[string]struct{}
 	pluginRevokeFloors    map[string]uint64
 	revokeFloorsSaturated bool
+	sessionRevokeScanned  uint64
 }
 
 func NewTokenManager(options ...TokenManagerOptions) *TokenManager {
@@ -271,6 +273,7 @@ func NewTokenManager(options ...TokenManagerOptions) *TokenManager {
 		idIndex:            map[string]string{},
 		pluginIndex:        map[string]map[string]struct{}{},
 		surfaceIndex:       map[string]map[string]struct{}{},
+		sessionIndex:       map[sessionctx.SessionScope]map[string]struct{}{},
 		pluginRevokeFloors: map[string]uint64{},
 	}
 }
@@ -403,6 +406,8 @@ func (m *TokenManager) addRecordLocked(record TokenRecord) {
 	pluginKey, _ := tokenPluginIndexKey(record.Kind, record.Audience)
 	addTokenIndexEntry(m.pluginIndex, pluginKey, record.TokenHash)
 	addTokenIndexEntry(m.surfaceIndex, tokenSurfaceIndexKey(record.Audience), record.TokenHash)
+	scope, _ := tokenAudienceSessionScope(record.Audience)
+	addTokenSessionIndexEntry(m.sessionIndex, scope, record.TokenHash)
 }
 
 func (m *TokenManager) removeRecordLocked(tokenHash string, record TokenRecord) {
@@ -411,6 +416,87 @@ func (m *TokenManager) removeRecordLocked(tokenHash string, record TokenRecord) 
 	pluginKey, _ := tokenPluginIndexKey(record.Kind, record.Audience)
 	removeTokenIndexEntry(m.pluginIndex, pluginKey, tokenHash)
 	removeTokenIndexEntry(m.surfaceIndex, tokenSurfaceIndexKey(record.Audience), tokenHash)
+	scope, _ := tokenAudienceSessionScope(record.Audience)
+	removeTokenSessionIndexEntry(m.sessionIndex, scope, tokenHash)
+}
+
+type SessionTokenRevocationCounts struct {
+	AssetTickets        uint64 `json:"asset_tickets"`
+	AssetSessions       uint64 `json:"asset_sessions"`
+	PluginGatewayTokens uint64 `json:"plugin_gateway_tokens"`
+	ConfirmationTokens  uint64 `json:"confirmation_tokens"`
+	HandleGrants        uint64 `json:"handle_grants"`
+	StreamTickets       uint64 `json:"stream_tickets"`
+}
+
+func (counts *SessionTokenRevocationCounts) increment(kind TokenKind) {
+	switch kind {
+	case TokenKindAssetTicket:
+		counts.AssetTickets++
+	case TokenKindAssetSession:
+		counts.AssetSessions++
+	case TokenKindPluginGatewayToken:
+		counts.PluginGatewayTokens++
+	case TokenKindConfirmationToken:
+		counts.ConfirmationTokens++
+	case TokenKindHandleGrant:
+		counts.HandleGrants++
+	case TokenKindStreamTicket:
+		counts.StreamTickets++
+	}
+}
+
+func (m *TokenManager) RevokeSessionScope(scope sessionctx.SessionScope, now time.Time) (SessionTokenRevocationCounts, error) {
+	if m == nil {
+		return SessionTokenRevocationCounts{}, errors.New("token manager is nil")
+	}
+	if err := scope.Validate(); err != nil {
+		return SessionTokenRevocationCounts{}, ErrTokenAudience
+	}
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.sessionRevokeScanned = 0
+	counts := SessionTokenRevocationCounts{}
+	for tokenHash := range m.sessionIndex[scope] {
+		m.sessionRevokeScanned++
+		record, ok := m.records[tokenHash]
+		if !ok {
+			removeTokenSessionIndexEntry(m.sessionIndex, scope, tokenHash)
+			continue
+		}
+		if record.Revoked {
+			removeTokenSessionIndexEntry(m.sessionIndex, scope, tokenHash)
+			continue
+		}
+		record.Revoked = true
+		record.RevokedAt = &now
+		m.records[tokenHash] = record
+		counts.increment(record.Kind)
+		removeTokenSessionIndexEntry(m.sessionIndex, scope, tokenHash)
+	}
+	return counts, nil
+}
+
+func (m *TokenManager) PreviewSessionScopeRevocation(scope sessionctx.SessionScope) (SessionTokenRevocationCounts, error) {
+	if m == nil {
+		return SessionTokenRevocationCounts{}, errors.New("token manager is nil")
+	}
+	if err := scope.Validate(); err != nil {
+		return SessionTokenRevocationCounts{}, ErrTokenAudience
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	counts := SessionTokenRevocationCounts{}
+	for tokenHash := range m.sessionIndex[scope] {
+		record, ok := m.records[tokenHash]
+		if ok && !record.Revoked {
+			counts.increment(record.Kind)
+		}
+	}
+	return counts, nil
 }
 
 func addTokenIndexEntry(index map[string]map[string]struct{}, key string, tokenHash string) {
@@ -433,6 +519,29 @@ func removeTokenIndexEntry(index map[string]map[string]struct{}, key string, tok
 	delete(entries, tokenHash)
 	if len(entries) == 0 {
 		delete(index, key)
+	}
+}
+
+func addTokenSessionIndexEntry(index map[sessionctx.SessionScope]map[string]struct{}, scope sessionctx.SessionScope, tokenHash string) {
+	if !scope.Valid() {
+		return
+	}
+	entries := index[scope]
+	if entries == nil {
+		entries = map[string]struct{}{}
+		index[scope] = entries
+	}
+	entries[tokenHash] = struct{}{}
+}
+
+func removeTokenSessionIndexEntry(index map[sessionctx.SessionScope]map[string]struct{}, scope sessionctx.SessionScope, tokenHash string) {
+	entries := index[scope]
+	if entries == nil {
+		return
+	}
+	delete(entries, tokenHash)
+	if len(entries) == 0 {
+		delete(index, scope)
 	}
 }
 
@@ -954,6 +1063,19 @@ func tokenAudienceOwnerEnvHash(kind TokenKind, audience Audience) (string, error
 func tokenSurfaceIndexKey(audience Audience) string {
 	key, _ := ownerSurfaceIndexKey(audience.OwnerEnvHash, audience.PluginInstanceID, audience.SurfaceInstanceID)
 	return key
+}
+
+func tokenAudienceSessionScope(audience Audience) (sessionctx.SessionScope, error) {
+	scope := sessionctx.SessionScope{
+		OwnerSessionHash:     audience.OwnerSessionHash,
+		OwnerUserHash:        audience.OwnerUserHash,
+		OwnerEnvHash:         audience.OwnerEnvHash,
+		SessionChannelIDHash: audience.SessionChannelIDHash,
+	}
+	if err := scope.Validate(); err != nil {
+		return sessionctx.SessionScope{}, ErrTokenAudience
+	}
+	return scope, nil
 }
 
 func ownerPluginIndexKey(ownerEnvHash string, pluginInstanceID string) (string, error) {

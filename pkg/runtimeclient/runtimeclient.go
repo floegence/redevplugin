@@ -24,6 +24,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/floegence/redevplugin/internal/jsonvalue"
 	"github.com/floegence/redevplugin/pkg/capability"
 	"github.com/floegence/redevplugin/pkg/connectivity"
 	"github.com/floegence/redevplugin/pkg/observability"
@@ -169,6 +170,39 @@ type RevokeRequest struct {
 	ResourceScope    sessionctx.ResourceScope `json:"resource_scope"`
 	PluginInstanceID string                   `json:"plugin_instance_id"`
 	RevokeEpoch      uint64                   `json:"revoke_epoch"`
+}
+
+type SessionRevokeState string
+
+const SessionRevokeStateComplete SessionRevokeState = "complete"
+
+type SessionRevokeRequest struct {
+	SessionScope          sessionctx.SessionScope `json:"-"`
+	SessionRevokeSequence uint64                  `json:"session_revoke_sequence"`
+}
+
+type SessionRevokeCounts struct {
+	QueuedInvocations     uint64 `json:"queued_invocations"`
+	RunningInvocations    uint64 `json:"running_invocations"`
+	StorageHostcalls      uint64 `json:"storage_hostcalls"`
+	ActiveNetworkRequests uint64 `json:"active_network_requests"`
+	Sockets               uint64 `json:"sockets"`
+	NetworkStreams        uint64 `json:"network_streams"`
+}
+
+type SessionRevokeShardResult struct {
+	RuntimeShardID      string              `json:"runtime_shard_id"`
+	RuntimeGenerationID string              `json:"runtime_generation_id"`
+	State               SessionRevokeState  `json:"state"`
+	Counts              SessionRevokeCounts `json:"counts"`
+}
+
+type SessionRevokeResult struct {
+	SessionScope          sessionctx.SessionScope    `json:"-"`
+	SessionRevokeSequence uint64                     `json:"session_revoke_sequence"`
+	Shards                []SessionRevokeShardResult `json:"shards"`
+	Counts                SessionRevokeCounts        `json:"counts"`
+	RuntimeStopped        bool                       `json:"runtime_stopped,omitempty"`
 }
 
 type HeartbeatResult struct {
@@ -1134,6 +1168,48 @@ func (s *ProcessSupervisor) Revoke(ctx context.Context, req RevokeRequest) (Revo
 	return decodeRevokeResult(response.Result, req)
 }
 
+func (s *ProcessSupervisor) RevokeSession(ctx context.Context, req SessionRevokeRequest) (SessionRevokeShardResult, error) {
+	if err := ctx.Err(); err != nil {
+		return SessionRevokeShardResult{}, err
+	}
+	if s == nil || !s.isReady() {
+		return SessionRevokeShardResult{}, ErrRuntimeNotReady
+	}
+	if err := validateSessionRevokeRequest(req); err != nil {
+		return SessionRevokeShardResult{}, err
+	}
+	rawPayload, err := json.Marshal(sessionRevokeRequestPayload{
+		SessionRevokeSequence: req.SessionRevokeSequence,
+		OwnerSessionHash:      req.SessionScope.OwnerSessionHash, OwnerUserHash: req.SessionScope.OwnerUserHash,
+		OwnerEnvHash: req.SessionScope.OwnerEnvHash, SessionChannelIDHash: req.SessionScope.SessionChannelIDHash,
+	})
+	if err != nil {
+		return SessionRevokeShardResult{}, err
+	}
+	frame, err := s.callControlIPC(ctx, ipcFrameTypeSessionRevoke, ipcFrameTypeSessionRevokeAck, rawPayload)
+	if err != nil {
+		return SessionRevokeShardResult{}, err
+	}
+	response, err := decodeRuntimeResponse(frame)
+	if err != nil {
+		return SessionRevokeShardResult{}, err
+	}
+	if !response.OK {
+		return SessionRevokeShardResult{}, response.err()
+	}
+	if len(response.Result) == 0 {
+		return SessionRevokeShardResult{}, fmt.Errorf("%w: session revoke ack missing result", ErrRuntimeRequestFailed)
+	}
+	return decodeSessionRevokeResult(response.Result, frame.RuntimeGenerationID, req)
+}
+
+func validateSessionRevokeRequest(req SessionRevokeRequest) error {
+	if err := req.SessionScope.Validate(); err != nil || req.SessionRevokeSequence == 0 || req.SessionRevokeSequence > jsonvalue.MaxSafeInteger {
+		return fmt.Errorf("%w: session revoke scope and sequence are invalid", ErrRuntimeRequestFailed)
+	}
+	return nil
+}
+
 func validateRevokeRequest(req RevokeRequest) error {
 	if req.ResourceScope.Kind != sessionctx.ScopeEnvironment || req.ResourceScope.Validate() != nil {
 		return fmt.Errorf("%w: revoke resource scope must be an environment scope", ErrRuntimeRequestFailed)
@@ -1266,6 +1342,48 @@ func validateRevokeResult(result RevokeResult, request RevokeRequest) error {
 		return fmt.Errorf("%w: revoke ack close counters must be non-negative", ErrRuntimeRequestFailed)
 	}
 	return nil
+}
+
+type sessionRevokeResultPayload struct {
+	SessionRevokeSequence *uint64              `json:"session_revoke_sequence"`
+	State                 SessionRevokeState   `json:"state"`
+	Counts                *SessionRevokeCounts `json:"counts"`
+}
+
+func decodeSessionRevokeResult(raw json.RawMessage, runtimeGenerationID string, request SessionRevokeRequest) (SessionRevokeShardResult, error) {
+	var payload sessionRevokeResultPayload
+	if err := decodeStrictJSON(raw, &payload); err != nil {
+		return SessionRevokeShardResult{}, fmt.Errorf("%w: decode session revoke ack: %v", ErrRuntimeRequestFailed, err)
+	}
+	if payload.SessionRevokeSequence == nil || payload.Counts == nil || payload.State == "" {
+		return SessionRevokeShardResult{}, fmt.Errorf("%w: session revoke ack result missing required field", ErrRuntimeRequestFailed)
+	}
+	if *payload.SessionRevokeSequence != request.SessionRevokeSequence {
+		return SessionRevokeShardResult{}, fmt.Errorf("%w: session revoke ack sequence mismatch", ErrRuntimeRequestFailed)
+	}
+	if payload.State != SessionRevokeStateComplete {
+		return SessionRevokeShardResult{}, fmt.Errorf("%w: session revoke ack state is invalid", ErrRuntimeRequestFailed)
+	}
+	if strings.TrimSpace(runtimeGenerationID) == "" {
+		return SessionRevokeShardResult{}, fmt.Errorf("%w: session revoke ack runtime generation is missing", ErrRuntimeRequestFailed)
+	}
+	if !validSessionRevokeCounts(*payload.Counts) {
+		return SessionRevokeShardResult{}, fmt.Errorf("%w: session revoke ack count exceeds JSON safe integer", ErrRuntimeRequestFailed)
+	}
+	return SessionRevokeShardResult{
+		RuntimeGenerationID: runtimeGenerationID,
+		State:               payload.State,
+		Counts:              *payload.Counts,
+	}, nil
+}
+
+func validSessionRevokeCounts(counts SessionRevokeCounts) bool {
+	return counts.QueuedInvocations <= jsonvalue.MaxSafeInteger &&
+		counts.RunningInvocations <= jsonvalue.MaxSafeInteger &&
+		counts.StorageHostcalls <= jsonvalue.MaxSafeInteger &&
+		counts.ActiveNetworkRequests <= jsonvalue.MaxSafeInteger &&
+		counts.Sockets <= jsonvalue.MaxSafeInteger &&
+		counts.NetworkStreams <= jsonvalue.MaxSafeInteger
 }
 
 func (s *ProcessSupervisor) isReady() bool {
@@ -1495,6 +1613,8 @@ const (
 	ipcFrameTypeNetworkExecute        = "network_execute"
 	ipcFrameTypeRevokeEpoch           = "revoke_epoch"
 	ipcFrameTypeRevokeEpochAck        = "revoke_epoch_ack"
+	ipcFrameTypeSessionRevoke         = "session_revoke"
+	ipcFrameTypeSessionRevokeAck      = "session_revoke_ack"
 )
 
 const (
@@ -1570,6 +1690,14 @@ type revokeEpochRequestPayload struct {
 	ResourceScope    sessionctx.ResourceScope `json:"resource_scope"`
 	PluginInstanceID string                   `json:"plugin_instance_id"`
 	RevokeEpoch      uint64                   `json:"revoke_epoch"`
+}
+
+type sessionRevokeRequestPayload struct {
+	SessionRevokeSequence uint64 `json:"session_revoke_sequence"`
+	OwnerSessionHash      string `json:"owner_session_hash"`
+	OwnerUserHash         string `json:"owner_user_hash"`
+	OwnerEnvHash          string `json:"owner_env_hash"`
+	SessionChannelIDHash  string `json:"session_channel_id_hash"`
 }
 
 type runtimeResponsePayload struct {

@@ -26,6 +26,9 @@
     "PLUGIN_SECRET_SCOPE_MISMATCH",
     "PLUGIN_STORAGE_SCOPE_MISMATCH",
     "PLUGIN_ADAPTER_FAILURE",
+    "PLUGIN_SESSION_REVOKED",
+    "PLUGIN_SESSION_TEARDOWN_INCOMPLETE",
+    "PLUGIN_SESSION_FENCE_CAPACITY",
     "PLUGIN_CONFIRMATION_REQUIRED",
     "PLUGIN_CONFIRMATION_INVALID",
     "PLUGIN_TOKEN_EXPIRED",
@@ -85,6 +88,9 @@
     "PLUGIN_SECRET_SCOPE_MISMATCH",
     "PLUGIN_STORAGE_SCOPE_MISMATCH",
     "PLUGIN_ADAPTER_FAILURE",
+    "PLUGIN_SESSION_REVOKED",
+    "PLUGIN_SESSION_TEARDOWN_INCOMPLETE",
+    "PLUGIN_SESSION_FENCE_CAPACITY",
     "PLUGIN_CONFIRMATION_REQUIRED",
     "PLUGIN_CONFIRMATION_INVALID",
     "PLUGIN_TOKEN_EXPIRED",
@@ -304,7 +310,7 @@
     if (!hasExactKeys(value, ["ok", "error"]) || !isRecord(value.error)) return false;
     const errorKeys = mutation ? ["code", "message", "details", "mutation_outcome"] : ["code", "message", "details"];
     if (!hasExactKeys(value.error, errorKeys) || !isPluginPlatformErrorCode(value.error.code) || typeof value.error.message !== "string" || value.error.message.trim().length === 0 || Array.from(value.error.message).length > 4096 || !isPlatformErrorDetails(value.error.code, value.error.details)) return false;
-    return !mutation || value.error.mutation_outcome === "not_committed" || value.error.mutation_outcome === "unknown";
+    return !mutation || value.error.mutation_outcome === "committed" || value.error.mutation_outcome === "not_committed" || value.error.mutation_outcome === "unknown";
   }
   var packageValidationErrorCodes = [
     "PLUGIN_MANIFEST_INVALID",
@@ -357,6 +363,9 @@
     return typeof value === "string" && pluginPlatformErrorCodes.includes(value);
   }
   function isPlatformErrorDetails(code, value) {
+    if (code === "PLUGIN_SESSION_TEARDOWN_INCOMPLETE") {
+      return hasExactKeys(value, ["session_scope"]) && isIncompleteSessionScopeResult(value.session_scope);
+    }
     if (code === "PLUGIN_MANAGEMENT_REVISION_MISMATCH") {
       return hasExactKeys(value, ["plugin_instance_id", "expected_management_revision", "actual_management_revision"]) && typeof value.plugin_instance_id === "string" && value.plugin_instance_id.length > 0 && Number.isSafeInteger(value.expected_management_revision) && Number(value.expected_management_revision) >= 1 && Number.isSafeInteger(value.actual_management_revision) && Number(value.actual_management_revision) >= 1;
     }
@@ -390,6 +399,29 @@
       return hasAllowedKeys(value, ["reason", "path", "pointer"]) && hasRequiredKeys(value, ["reason"]) && typeof value.reason === "string" && packageValidationReasons.includes(value.reason) && (value.path === void 0 || typeof value.path === "string") && (value.pointer === void 0 || typeof value.pointer === "string");
     }
     return hasExactKeys(value, []);
+  }
+  var sessionScopeCountKeys = [
+    "surfaces",
+    "asset_tickets",
+    "asset_sessions",
+    "plugin_gateway_tokens",
+    "confirmation_tokens",
+    "stream_tickets",
+    "handle_grants",
+    "confirmations",
+    "operations",
+    "streams",
+    "runtime_executions",
+    "active_network_requests",
+    "sockets",
+    "network_streams",
+    "storage_hostcalls"
+  ];
+  function isIncompleteSessionScopeResult(value) {
+    if (!hasExactKeys(value, ["state", "fenced", "complete", "counts"]) || value.state !== "incomplete" || value.fenced !== true || value.complete !== false) return false;
+    const counts = value.counts;
+    if (!hasExactKeys(counts, sessionScopeCountKeys)) return false;
+    return sessionScopeCountKeys.every((key) => Number.isSafeInteger(counts[key]) && Number(counts[key]) >= 0);
   }
   function hasRequiredKeys(value, keys) {
     return keys.every((key) => Object.hasOwn(value, key));
@@ -626,7 +658,7 @@
   };
 
   // packages/redevplugin-ui/src/surface-scope.ts
-  var registrations = /* @__PURE__ */ new WeakMap();
+  var scopes = /* @__PURE__ */ new WeakMap();
   function canonicalPluginInstanceId(pluginInstanceId) {
     const canonical = typeof pluginInstanceId === "string" ? pluginInstanceId.trim() : "";
     if (!canonical) throw new TypeError("Plugin instance identifier must be a non-empty string");
@@ -634,7 +666,7 @@
   }
   var PluginSurfaceScope = class _PluginSurfaceScope {
     constructor() {
-      registrations.set(this, /* @__PURE__ */ new Map());
+      scopes.set(this, { invalidated: false, registrations: /* @__PURE__ */ new Map() });
     }
     static create() {
       return new _PluginSurfaceScope();
@@ -644,28 +676,48 @@
     return PluginSurfaceScope.create();
   }
   var defaultPluginSurfaceScope = createPluginSurfaceScope();
-  function registerPluginSurface(scope, pluginInstanceId, dispose) {
-    const state = registrations.get(scope);
+  function registerPluginSurface(scope, pluginInstanceId, dispose, invalidate) {
+    const state = scopes.get(scope);
     if (!state) throw new TypeError("Plugin surface scope is invalid");
     const canonicalPluginId = canonicalPluginInstanceId(pluginInstanceId);
     const registration = Symbol(canonicalPluginId);
-    state.set(registration, { pluginInstanceId: canonicalPluginId, dispose });
-    return () => state.delete(registration);
+    if (state.invalidated) {
+      try {
+        void Promise.resolve(invalidate()).catch(() => void 0);
+      } catch {
+      }
+      return () => void 0;
+    }
+    state.registrations.set(registration, { pluginInstanceId: canonicalPluginId, dispose, invalidate });
+    return () => state.registrations.delete(registration);
   }
   async function disposePluginSurfaceScope(scope, pluginInstanceId) {
-    const state = registrations.get(scope);
+    const state = scopes.get(scope);
     if (!state) throw new TypeError("Plugin surface scope is invalid");
     const canonicalPluginId = pluginInstanceId === void 0 ? void 0 : canonicalPluginInstanceId(pluginInstanceId);
-    const selected = [...state.entries()].filter(
+    const selected = [...state.registrations.entries()].filter(
       ([, registration]) => canonicalPluginId === void 0 || registration.pluginInstanceId === canonicalPluginId
     );
-    for (const [key] of selected) state.delete(key);
+    for (const [key] of selected) state.registrations.delete(key);
     const results = await Promise.allSettled(selected.map(
       ([, registration]) => Promise.resolve().then(() => registration.dispose())
     ));
     const failures = results.filter((result) => result.status === "rejected").map((result) => result.reason);
     if (failures.length === 1) throw failures[0];
     if (failures.length > 1) throw new AggregateError(failures, "Plugin surface scope teardown failed");
+  }
+  async function invalidatePluginSurfaceScope(scope) {
+    const state = scopes.get(scope);
+    if (!state) throw new TypeError("Plugin surface scope is invalid");
+    state.invalidated = true;
+    const selected = [...state.registrations.values()];
+    state.registrations.clear();
+    const results = await Promise.allSettled(selected.map(
+      (registration) => Promise.resolve().then(() => registration.invalidate())
+    ));
+    const failures = results.filter((result) => result.status === "rejected").map((result) => result.reason);
+    if (failures.length === 1) throw failures[0];
+    if (failures.length > 1) throw new AggregateError(failures, "Plugin surface scope invalidation failed");
   }
 
   // packages/redevplugin-ui/src/ui-patch-validator.ts
@@ -2456,6 +2508,7 @@
     #closePromise;
     #revokePromise;
     #unregisterSurfaceScope;
+    #onLocalInvalidation;
     #opened = false;
     #ready = false;
     #disposed = false;
@@ -2497,7 +2550,8 @@
       this.#unregisterSurfaceScope = registerPluginSurface(
         options.surfaceScope ?? defaultPluginSurfaceScope,
         this.bootstrap.pluginInstanceId,
-        () => this.#disposeLocal()
+        () => this.#disposeLocal(),
+        () => this.#invalidateLocal()
       );
     }
     async open() {
@@ -2619,6 +2673,10 @@
       this.#disposeLocal();
       return revoke;
     }
+    observeLocalInvalidation(observer) {
+      this.#onLocalInvalidation = observer;
+      if (this.#disposed) observer();
+    }
     async #closeSurface() {
       const startedAt = performance.now();
       const quiesce = await this.#quiesceSurface();
@@ -2677,6 +2735,14 @@
         this.#port = void 0;
       }
       this.#iframe.srcdoc = "";
+    }
+    #invalidateLocal() {
+      this.#disposeLocal();
+      this.#iframe.remove?.();
+      try {
+        this.#onLocalInvalidation?.();
+      } catch {
+      }
     }
     async #handlePortMessage(event) {
       if (this.#disposed || !messageWithinLimit(event.data)) return;
@@ -3337,6 +3403,7 @@
     let unregister = () => void 0;
     let revokePromise;
     let removeAbortListener = () => void 0;
+    let invalidationObserver = () => void 0;
     const lease = {
       options: Promise.resolve(void 0),
       pluginInstanceId: request2.pluginInstanceId,
@@ -3357,7 +3424,20 @@
         if (lease.owner === "host") return Promise.resolve();
         return lease.revoke();
       },
+      invalidate() {
+        lease.cancelled = true;
+        if (lease.owner === "host" || lease.owner === "invalidated") return;
+        lease.owner = "invalidated";
+        unregister();
+        removeAbortListener();
+        invalidationObserver();
+      },
+      observeInvalidation(observer) {
+        invalidationObserver = observer;
+        if (lease.owner === "invalidated") observer();
+      },
       revoke() {
+        if (lease.owner === "invalidated") return Promise.resolve();
         if (lease.owner === "host") {
           throw new PluginBridgeError("PLUGIN_CONTRACT_MISMATCH", "Plugin surface ownership was already adopted");
         }
@@ -3376,11 +3456,23 @@
         return revokePromise;
       }
     };
-    unregister = registerPluginSurface(request2.surfaceScope, request2.pluginInstanceId, () => lease.cancel());
-    try {
-      lease.options = Promise.resolve(request2.open());
-    } catch (error) {
-      lease.options = Promise.reject(error);
+    unregister = registerPluginSurface(
+      request2.surfaceScope,
+      request2.pluginInstanceId,
+      () => lease.cancel(),
+      () => lease.invalidate()
+    );
+    if (lease.owner === "invalidated") {
+      lease.options = Promise.reject(new PluginBridgeError(
+        "PLUGIN_BRIDGE_DISPOSED",
+        "Plugin surface scope is invalidated"
+      ));
+    } else {
+      try {
+        lease.options = Promise.resolve(request2.open());
+      } catch (error) {
+        lease.options = Promise.reject(error);
+      }
     }
     void lease.options.catch(() => {
       if (lease.owner !== "opening") return;
@@ -3438,6 +3530,11 @@
       const controller = new AbortController();
       this.#transitionController = controller;
       this.#setState("opening");
+      lease?.observeInvalidation(() => {
+        if (this.#transitionController !== controller) return;
+        controller.abort();
+        this.#setState("empty");
+      });
       const transition = this.#tail.then(
         () => this.#openSurface(resolvedOptions, controller, lease),
         async (error) => {
@@ -3460,8 +3557,10 @@
       try {
         resolvedOptions = await options;
       } catch (error) {
-        if (!this.#disposed && this.#transitionController === controller && !controller.signal.aborted) {
+        if (!this.#disposed && this.#transitionController === controller && !this.#openingCancelled(controller, lease)) {
           this.#setState("error", toBridgeError(error, "PLUGIN_BRIDGE_HANDSHAKE_FAILED"));
+        } else {
+          this.#setCancelledState(controller);
         }
         throw error;
       }
@@ -3502,6 +3601,13 @@
         }
         throw error;
       }
+      host.observeLocalInvalidation(() => {
+        if (this.#active === host) this.#active = void 0;
+        if (this.#opening === host) this.#opening = void 0;
+        if (this.#transitionController === controller) controller.abort();
+        host.element.remove();
+        if (!this.#disposed) this.#setState("empty");
+      });
       this.#adoptOpening(lease);
       this.#opening = host;
       setSurfaceInteractive(host.element, false);
@@ -4198,15 +4304,23 @@
         }))
       });
     }
-    async revokeSurfaceScope(options = {}) {
+    async revokeSessionScope(options = {}) {
       let result;
       try {
-        result = await this.#requestMutation("POST", "/_redevplugin/api/plugins/surfaces/revoke-scope", {}, options);
+        const raw = await this.#requestMutation("POST", "/_redevplugin/api/plugins/session/revoke-scope", {}, options);
+        if (!isPluginSessionScopeRevokeResult(raw)) {
+          throw new PluginTransportError(
+            "Plugin session scope revocation returned an invalid result",
+            new PluginBridgeError("PLUGIN_CONTRACT_MISMATCH", "Invalid session scope revocation result"),
+            "unknown"
+          );
+        }
+        result = raw;
       } catch (error) {
-        await this.#handleMutationFailure(error, void 0, "Plugin surface scope revocation and local teardown failed");
+        await this.#handleSessionRevokeFailure(error);
         throw error;
       }
-      await disposePluginSurfaceScope(this.#surfaceScope);
+      await invalidatePluginSurfaceScope(this.#surfaceScope);
       return result;
     }
     startRuntime(request2, options = {}) {
@@ -4314,19 +4428,48 @@
       return result;
     }
     async #handleMutationFailure(error, pluginInstanceId, message) {
-      if (pluginMutationOutcome(error) === "not_committed") return;
+      const outcome = pluginMutationOutcome(error);
+      if (outcome === "not_committed" || outcome === void 0) return;
       const lifecycleErrors = [];
       try {
         await disposePluginSurfaceScope(this.#surfaceScope, pluginInstanceId);
       } catch (caught) {
         lifecycleErrors.push(caught);
       }
-      try {
-        this.#onMutationOutcomeUnknown?.(pluginInstanceId);
-      } catch (caught) {
-        lifecycleErrors.push(caught);
+      if (outcome === "unknown") {
+        try {
+          this.#onMutationOutcomeUnknown?.(pluginInstanceId);
+        } catch (caught) {
+          lifecycleErrors.push(caught);
+        }
       }
       if (lifecycleErrors.length > 0) throw new PluginMutationLifecycleError(message, error, lifecycleErrors);
+    }
+    async #handleSessionRevokeFailure(error) {
+      const outcome = pluginMutationOutcome(error);
+      if (outcome === "not_committed") return;
+      const lifecycleErrors = [];
+      if (outcome === "committed" || outcome === "unknown") {
+        try {
+          await invalidatePluginSurfaceScope(this.#surfaceScope);
+        } catch (caught) {
+          lifecycleErrors.push(caught);
+        }
+      }
+      if (outcome === "unknown") {
+        try {
+          this.#onMutationOutcomeUnknown?.();
+        } catch (caught) {
+          lifecycleErrors.push(caught);
+        }
+      }
+      if (lifecycleErrors.length > 0) {
+        throw new PluginMutationLifecycleError(
+          "Plugin session scope revocation and local invalidation failed",
+          error,
+          lifecycleErrors
+        );
+      }
     }
     async #requestQuery(path, body, options) {
       const operation = `POST ${path}`;
@@ -4368,6 +4511,35 @@
       return readMutationPlatformResponse(response);
     }
   };
+  var sessionScopeCountKeys2 = [
+    "surfaces",
+    "asset_tickets",
+    "asset_sessions",
+    "plugin_gateway_tokens",
+    "confirmation_tokens",
+    "stream_tickets",
+    "handle_grants",
+    "confirmations",
+    "operations",
+    "streams",
+    "runtime_executions",
+    "active_network_requests",
+    "sockets",
+    "network_streams",
+    "storage_hostcalls"
+  ];
+  function isPluginSessionScopeRevokeResult(value) {
+    if (!isExactRecord(value, ["state", "fenced", "complete", "counts"]) || value.state !== "complete" || value.fenced !== true || value.complete !== true) return false;
+    const counts = value.counts;
+    if (!isExactRecord(counts, sessionScopeCountKeys2)) return false;
+    return sessionScopeCountKeys2.every((key) => Number.isSafeInteger(counts[key]) && Number(counts[key]) >= 0);
+  }
+  function isExactRecord(value, keys) {
+    if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+    const actual = Object.keys(value).sort();
+    const expected = [...keys].sort();
+    return actual.length === expected.length && actual.every((key, index) => key === expected[index]);
+  }
   function surfaceTransportAPIBaseURL(value) {
     if (!value || value.startsWith("/")) return value;
     const parsed = new URL(value);

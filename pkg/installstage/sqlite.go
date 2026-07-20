@@ -24,6 +24,8 @@ type SQLiteStore struct {
 	mu sync.Mutex
 }
 
+func (*SQLiteStore) Durable() bool { return true }
+
 func NewSQLiteStore(ctx context.Context, path string) (*SQLiteStore, error) {
 	if path == "" {
 		return nil, errors.New("sqlite install stage store path is required")

@@ -17,6 +17,7 @@ import (
 	"github.com/floegence/redevplugin/pkg/pluginpkg"
 	"github.com/floegence/redevplugin/pkg/registry"
 	"github.com/floegence/redevplugin/pkg/secrets"
+	"github.com/floegence/redevplugin/pkg/sessionscope"
 )
 
 const (
@@ -582,13 +583,14 @@ type devHarness struct {
 	registryStore *registry.SQLiteStore
 	pluginData    *plugindata.FileStore
 	secretStore   *secrets.SQLiteStore
+	sessionScopes *sessionscope.SQLiteStore
 }
 
 func (h devHarness) Close() error {
 	if h.host == nil {
 		return nil
 	}
-	return errors.Join(h.host.Close(), h.secretStore.Close(), h.registryStore.Close())
+	return errors.Join(h.host.Close(), h.secretStore.Close(), h.sessionScopes.Close(), h.registryStore.Close())
 }
 
 func loadDevHarness(ctx context.Context, stateRoot string) (devHarness, registry.PluginRecord, error) {
@@ -651,13 +653,20 @@ func newDevHarness(ctx context.Context, stateRoot string, loadedCapabilities []l
 		_ = registryStore.Close()
 		return devHarness{}, err
 	}
-	adapters := newEphemeralCLIAdapters(registryStore, pluginData)
+	adapters, sessionScopeStore, err := newEphemeralCLIAdapters(ctx, stateRoot, registryStore, pluginData)
+	if err != nil {
+		_ = secretStore.Close()
+		_ = pluginData.Close()
+		_ = registryStore.Close()
+		return devHarness{}, err
+	}
 	adapters.Core.Registry = registryStore
 	adapters.Core.Assets = assets
 	adapters.Secrets = &host.SecretsModule{Store: secretStore}
 	adapters.Capability = &host.CapabilityModule{Registry: capabilities}
 	h, err := host.Open(cliContext(ctx), adapters)
 	if err != nil {
+		_ = sessionScopeStore.Close()
 		_ = secretStore.Close()
 		_ = pluginData.Close()
 		_ = registryStore.Close()
@@ -669,6 +678,7 @@ func newDevHarness(ctx context.Context, stateRoot string, loadedCapabilities []l
 		registryStore: registryStore,
 		pluginData:    pluginData,
 		secretStore:   secretStore,
+		sessionScopes: sessionScopeStore,
 	}, nil
 }
 

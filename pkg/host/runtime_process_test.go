@@ -62,6 +62,18 @@ func (m testProcessManager) Health(ctx context.Context) (runtimeclient.ManagerHe
 	}, nil
 }
 
+func (m testProcessManager) RevokeSession(ctx context.Context, req runtimeclient.SessionRevokeRequest) (runtimeclient.SessionRevokeResult, error) {
+	shard, err := m.ProcessSupervisor.RevokeSession(ctx, req)
+	if err != nil {
+		return runtimeclient.SessionRevokeResult{}, err
+	}
+	shard.RuntimeShardID = "runtime_shard_00"
+	return runtimeclient.SessionRevokeResult{
+		SessionScope: req.SessionScope, SessionRevokeSequence: req.SessionRevokeSequence,
+		Shards: []runtimeclient.SessionRevokeShardResult{shard}, Counts: shard.Counts,
+	}, nil
+}
+
 func (m testProcessManager) BindPlugin(ctx context.Context, _ string) (runtimeclient.RuntimeBinding, error) {
 	health, err := m.ProcessSupervisor.Health(ctx)
 	if err != nil {
@@ -422,6 +434,66 @@ func TestCallPluginMethodWorkerHTTPStreamMemoryHostcallThroughBuiltRustRuntime(t
 	}
 	if executor.streamCalls != 1 || executor.lastStreamHTTP.Path != "/v1/worker" {
 		t.Fatalf("stream executor call mismatch: calls=%d req=%#v", executor.streamCalls, executor.lastStreamHTTP)
+	}
+}
+
+func TestProcessManagerRevokesExactSessionAcrossTwoBuiltRustRuntimeShards(t *testing.T) {
+	if _, err := exec.LookPath("cargo"); err != nil {
+		t.Skip("cargo not found; skipping built Rust runtime integration")
+	}
+	repoRoot := findRepoRootForHostTest(t)
+	build := exec.Command("cargo", "build", "-p", "redevplugin-runtime")
+	build.Dir = repoRoot
+	build.Env = append(os.Environ(), "CARGO_TERM_COLOR=never")
+	if output, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("cargo build -p redevplugin-runtime failed: %v\n%s", err, output)
+	}
+	runtimePath := filepath.Join(repoRoot, "target", "debug", "redevplugin-runtime")
+	if runtime.GOOS == "windows" {
+		runtimePath += ".exe"
+	}
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{developerMode: true, localGenerated: true, withoutRuntimeManager: true})
+	manager, err := runtimeclient.NewProcessManager(runtimeclient.ProcessManagerOptions{
+		ShardCount: 2,
+		Supervisor: runtimeclient.ProcessSupervisorOptions{
+			Limits: runtimeclient.DefaultRuntimeLimits(), HandshakeTimeout: hostRuntimeProcessHandshakeTimeout,
+			HeartbeatInterval: 2 * time.Second, MaxHeartbeatStaleness: 5 * time.Second,
+			RuntimePath: runtimePath, Descriptor: hostRuntimeTestDescriptor(t, runtimePath),
+			Diagnostics: h.adapters.Diagnostics, Artifacts: runtimeArtifactProvider{assets: h.adapters.Assets},
+			HandleGrants: runtimeHandleGrantValidator{tokens: h.surfaceTokens}, StorageFiles: h.adapters.PluginData,
+			StorageKV: h.adapters.PluginData, Connectivity: h.adapters.Connectivity,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.BindHostServices(runtimeclient.RuntimeHostServices{StreamSink: hostRuntimeStreamSink{executions: h.executions}}); err != nil {
+		t.Fatal(err)
+	}
+	target, err := runtimetarget.Current()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.Start(context.Background(), target); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = manager.Stop(context.Background()) })
+	scope := sessionctx.SessionScope{
+		OwnerSessionHash: "session_hash", OwnerUserHash: "user_hash", OwnerEnvHash: "env_hash", SessionChannelIDHash: "channel_hash",
+	}
+	result, err := manager.RevokeSession(context.Background(), runtimeclient.SessionRevokeRequest{
+		SessionScope: scope, SessionRevokeSequence: 1,
+	})
+	if err != nil {
+		t.Fatalf("RevokeSession() error = %v", err)
+	}
+	if len(result.Shards) != 2 || result.SessionScope != scope || result.SessionRevokeSequence != 1 || result.RuntimeStopped {
+		t.Fatalf("RevokeSession() result = %#v", result)
+	}
+	for index, shard := range result.Shards {
+		if shard.State != runtimeclient.SessionRevokeStateComplete || shard.RuntimeShardID == "" || shard.RuntimeGenerationID == "" {
+			t.Fatalf("RevokeSession() shard %d = %#v", index, shard)
+		}
 	}
 }
 

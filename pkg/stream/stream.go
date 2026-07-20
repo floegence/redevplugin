@@ -134,6 +134,15 @@ type PluginTransitionResult struct {
 	Changed int `json:"changed"`
 }
 
+type RevokeSessionScopeRequest struct {
+	SessionScope sessionctx.SessionScope `json:"-"`
+	Now          time.Time               `json:"-"`
+}
+
+type RevokeSessionScopeResult struct {
+	Revoked int `json:"revoked"`
+}
+
 type PruneRequest struct {
 	Before                      time.Time `json:"before"`
 	Limit                       int       `json:"limit,omitempty"`
@@ -153,6 +162,7 @@ type ListRequest struct {
 type OwnerScope = capability.ExecutionOwnerScope
 
 type Store interface {
+	Durable() bool
 	Register(ctx context.Context, req RegisterRequest) (Record, error)
 	List(ctx context.Context, req ListRequest) ([]Record, error)
 	Get(ctx context.Context, streamID string) (Record, error)
@@ -162,6 +172,7 @@ type Store interface {
 	Acknowledge(ctx context.Context, req AcknowledgeRequest) (Record, error)
 	Close(ctx context.Context, req CloseRequest) (Record, error)
 	MarkPluginTransition(ctx context.Context, req PluginTransitionRequest) (PluginTransitionResult, error)
+	RevokeSessionScope(ctx context.Context, req RevokeSessionScopeRequest) (RevokeSessionScopeResult, error)
 	Prune(ctx context.Context, req PruneRequest) (PruneResult, error)
 }
 
@@ -175,6 +186,8 @@ type MemoryStore struct {
 	pending              map[string]Delivery
 	lastAck              map[string]string
 	terminalAcknowledged map[string]bool
+	ownerIndex           map[OwnerScope]map[string]struct{}
+	sessionRevokeScanned uint64
 }
 
 type streamNotification struct {
@@ -193,8 +206,11 @@ func NewMemoryStore() *MemoryStore {
 		pending:              map[string]Delivery{},
 		lastAck:              map[string]string{},
 		terminalAcknowledged: map[string]bool{},
+		ownerIndex:           map[OwnerScope]map[string]struct{}{},
 	}
 }
+
+func (*MemoryStore) Durable() bool { return false }
 
 func (s *MemoryStore) Register(_ context.Context, req RegisterRequest) (Record, error) {
 	if s == nil {
@@ -247,6 +263,13 @@ func (s *MemoryStore) Register(_ context.Context, req RegisterRequest) (Record, 
 		UpdatedAt:        now,
 	}
 	s.records[streamID] = record
+	owner = owner.Normalized()
+	ids := s.ownerIndex[owner]
+	if ids == nil {
+		ids = map[string]struct{}{}
+		s.ownerIndex[owner] = ids
+	}
+	ids[streamID] = struct{}{}
 	return cloneRecord(record)
 }
 
@@ -560,6 +583,52 @@ func (s *MemoryStore) MarkPluginTransition(_ context.Context, req PluginTransiti
 	return PluginTransitionResult{Changed: changed}, nil
 }
 
+func (s *MemoryStore) RevokeSessionScope(_ context.Context, req RevokeSessionScopeRequest) (RevokeSessionScopeResult, error) {
+	if s == nil {
+		return RevokeSessionScopeResult{}, errors.New("stream store is nil")
+	}
+	if err := req.SessionScope.Validate(); err != nil {
+		return RevokeSessionScopeResult{}, ErrInvalidStream
+	}
+	now := req.Now
+	if now.IsZero() {
+		now = s.now()
+	}
+	owner := OwnerScope{
+		OwnerSessionHash:     req.SessionScope.OwnerSessionHash,
+		OwnerUserHash:        req.SessionScope.OwnerUserHash,
+		OwnerEnvHash:         req.SessionScope.OwnerEnvHash,
+		SessionChannelIDHash: req.SessionScope.SessionChannelIDHash,
+	}.Normalized()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.sessionRevokeScanned = 0
+	revoked := 0
+	for streamID := range s.ownerIndex[owner] {
+		s.sessionRevokeScanned++
+		record, ok := s.records[streamID]
+		if !ok {
+			continue
+		}
+		revoked++
+		if record.Status == StatusOpen {
+			record.Status = StatusCanceled
+			record.FailureCode = ""
+			record.Reason = SessionRevokedReason
+			record.UpdatedAt = now
+			record.ClosedAt = &now
+		}
+		record.BufferedBytes = 0
+		s.records[streamID] = record
+		delete(s.events, streamID)
+		delete(s.pending, streamID)
+		delete(s.lastAck, streamID)
+		s.terminalAcknowledged[streamID] = true
+		s.notifyLocked(streamID)
+	}
+	return RevokeSessionScopeResult{Revoked: revoked}, nil
+}
+
 func normalizeTerminalOutcome(status Status, failureCode capability.ExecutionFailureCode, reason string) (capability.ExecutionFailureCode, string, error) {
 	if status == StatusFailed {
 		if !failureCode.Valid() || strings.TrimSpace(reason) != "" {
@@ -623,6 +692,11 @@ func (s *MemoryStore) Prune(_ context.Context, req PruneRequest) (PruneResult, e
 	for _, record := range candidates {
 		streamID := record.StreamID
 		delete(s.records, streamID)
+		owner := record.ExecutionBinding.OwnerScope().Normalized()
+		delete(s.ownerIndex[owner], streamID)
+		if len(s.ownerIndex[owner]) == 0 {
+			delete(s.ownerIndex, owner)
+		}
 		delete(s.events, streamID)
 		delete(s.nextSeq, streamID)
 		delete(s.pending, streamID)
@@ -680,6 +754,7 @@ const (
 	DefaultMaxTerminalRecordsPerPlugin       = 1000
 	MaxTerminalRecordsPerPlugin              = 100_000
 	DefaultTerminalRetention                 = 7 * 24 * time.Hour
+	SessionRevokedReason                     = "session revoked"
 )
 
 func normalizePruneRequest(req PruneRequest) (time.Time, int, int, error) {

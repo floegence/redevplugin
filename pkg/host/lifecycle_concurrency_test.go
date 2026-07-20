@@ -326,23 +326,12 @@ func waitForConcurrencyTestSignal(t *testing.T, signal <-chan struct{}, operatio
 	}
 }
 
-type lifecycleWaitContext struct {
-	context.Context
-	doneObserved chan struct{}
-}
-
-func (c *lifecycleWaitContext) Done() <-chan struct{} {
-	c.doneObserved <- struct{}{}
-	return c.Context.Done()
-}
-
 func cancelQueuedLifecycleOperation(t *testing.T, h *Host, keys []string, operation string, run func(context.Context) error) {
 	t.Helper()
 	ctx, cancel := context.WithCancel(hostTestContext())
-	observedCtx := &lifecycleWaitContext{Context: ctx, doneObserved: make(chan struct{})}
 	done := make(chan error, 1)
-	go func() { done <- run(observedCtx) }()
-	waitForQueuedLifecycleOperation(t, h.lifecycleLocks, observedCtx.doneObserved, keys, operation)
+	go func() { done <- run(ctx) }()
+	waitForQueuedLifecycleOperation(t, h.lifecycleLocks, keys, operation)
 	cancel()
 	select {
 	case err := <-done:
@@ -355,22 +344,20 @@ func cancelQueuedLifecycleOperation(t *testing.T, h *Host, keys []string, operat
 	assertNoQueuedLifecycleOperation(t, h.lifecycleLocks, keys, operation)
 }
 
-func waitForQueuedLifecycleOperation(t *testing.T, locks *pluginLifecycleLockRegistry, doneObserved <-chan struct{}, keys []string, operation string) {
+func waitForQueuedLifecycleOperation(t *testing.T, locks *pluginLifecycleLockRegistry, keys []string, operation string) {
 	t.Helper()
-	deadline := time.NewTimer(time.Second)
-	defer deadline.Stop()
+	deadline := time.Now().Add(time.Second)
 	for {
-		select {
-		case <-doneObserved:
-			locks.mu.Lock()
-			queued := lifecycleWaiterQueued(locks.waiters, keys)
-			locks.mu.Unlock()
-			if queued {
-				return
-			}
-		case <-deadline.C:
+		locks.mu.Lock()
+		queued := lifecycleWaiterQueued(locks.waiters, keys)
+		locks.mu.Unlock()
+		if queued {
+			return
+		}
+		if time.Now().After(deadline) {
 			t.Fatalf("%s did not enter the lifecycle lock wait queue", operation)
 		}
+		time.Sleep(time.Millisecond)
 	}
 }
 

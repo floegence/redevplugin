@@ -6,7 +6,7 @@ use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::sync::OnceLock;
 
-pub const RUST_IPC_VERSION: &str = "rust-ipc-v4";
+pub const RUST_IPC_VERSION: &str = "rust-ipc-v5";
 pub const WASM_ABI_VERSION: &str = "redevplugin-wasm-worker-v2";
 pub const RUNTIME_LEASE_SIGNATURE_SCHEMA_VERSION: &str = "redevplugin.runtime_execution_lease.v1";
 pub const RUNTIME_LEASE_TOKEN_KIND: &str = "runtime_execution_lease";
@@ -42,6 +42,8 @@ pub const FRAME_TYPE_NETWORK_GRANT: &str = "network_grant";
 pub const FRAME_TYPE_NETWORK_EXECUTE: &str = "network_execute";
 pub const FRAME_TYPE_REVOKE_EPOCH: &str = "revoke_epoch";
 pub const FRAME_TYPE_REVOKE_EPOCH_ACK: &str = "revoke_epoch_ack";
+pub const FRAME_TYPE_SESSION_REVOKE: &str = "session_revoke";
+pub const FRAME_TYPE_SESSION_REVOKE_ACK: &str = "session_revoke_ack";
 pub const ERR_ARTIFACT_HANDLE_FAILED: &str = "ARTIFACT_HANDLE_FAILED";
 pub const ERR_HANDLE_GRANT_VALIDATION_FAILED: &str = "HANDLE_GRANT_VALIDATION_FAILED";
 pub const ERR_STORAGE_FILE_FAILED: &str = "STORAGE_FILE_FAILED";
@@ -66,6 +68,9 @@ pub const ERR_WASM_WORKER_FAILED: &str = "WASM_WORKER_FAILED";
 pub const ERR_WASM_HOSTCALL_FAILED: &str = "WASM_HOSTCALL_FAILED";
 pub const ERR_RUNTIME_CAPACITY_EXCEEDED: &str = "RUNTIME_CAPACITY_EXCEEDED";
 pub const ERR_RUNTIME_INVOCATION_CANCELED: &str = "RUNTIME_INVOCATION_CANCELED";
+pub const ERR_SESSION_REVOKED: &str = "PLUGIN_SESSION_REVOKED";
+pub const ERR_SESSION_REVOKE_SEQUENCE_STALE: &str = "SESSION_REVOKE_SEQUENCE_STALE";
+pub const ERR_SESSION_REVOKE_DRAIN_TIMEOUT: &str = "SESSION_REVOKE_DRAIN_TIMEOUT";
 pub const ERR_UNSUPPORTED_FRAME: &str = "UNSUPPORTED_FRAME";
 pub const ERROR_ORIGIN_RUNTIME: &str = "runtime";
 pub const ERROR_ORIGIN_HOSTCALL: &str = "hostcall";
@@ -153,6 +158,8 @@ pub enum FrameType {
     NetworkExecute,
     RevokeEpoch,
     RevokeEpochAck,
+    SessionRevoke,
+    SessionRevokeAck,
     Diagnostic,
 }
 
@@ -176,6 +183,7 @@ mod property_gates {
                 let _ = parse_worker_response_v2(&input);
                 let _ = parse_heartbeat_request(&input);
                 let _ = parse_revoke_epoch_request(&input);
+                let _ = parse_session_revoke_request(&input);
                 let _ = parse_cancel_invoke(&input);
                 let _ = parse_runtime_lease_public_keys(&input);
                 let _ = bind_parent_request_id(&input, "parent_request");
@@ -214,6 +222,37 @@ mod property_gates {
                 });
                 prop_assert!(frame.is_ok());
             }
+        }
+
+        #[test]
+        fn session_revoke_ack_builder_is_total(
+            request_id in any::<String>(),
+            runtime_generation_id in any::<String>(),
+            sequence in any::<u64>(),
+            queued_invocations in any::<u64>(),
+            running_invocations in any::<u64>(),
+            storage_hostcalls in any::<u64>(),
+            active_network_requests in any::<u64>(),
+            sockets in any::<u64>(),
+            network_streams in any::<u64>(),
+        ) {
+            let built = std::panic::catch_unwind(|| {
+                session_revoke_ack_frame(
+                    &request_id,
+                    &runtime_generation_id,
+                    sequence,
+                    SessionRevokeState::Complete,
+                    SessionRevokeAckCounts {
+                        queued_invocations,
+                        running_invocations,
+                        storage_hostcalls,
+                        active_network_requests,
+                        sockets,
+                        network_streams,
+                    },
+                )
+            });
+            prop_assert!(built.is_ok());
         }
 
         #[test]
@@ -705,6 +744,85 @@ pub struct RevokeEpochRequest {
     pub revoke_epoch: u64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct SessionScope {
+    pub owner_session_hash: String,
+    pub owner_user_hash: String,
+    pub owner_env_hash: String,
+    pub session_channel_id_hash: String,
+}
+
+impl SessionScope {
+    pub fn new(
+        owner_session_hash: impl Into<String>,
+        owner_user_hash: impl Into<String>,
+        owner_env_hash: impl Into<String>,
+        session_channel_id_hash: impl Into<String>,
+    ) -> IpcResult<Self> {
+        let scope = Self {
+            owner_session_hash: owner_session_hash.into(),
+            owner_user_hash: owner_user_hash.into(),
+            owner_env_hash: owner_env_hash.into(),
+            session_channel_id_hash: session_channel_id_hash.into(),
+        };
+        scope.validate()?;
+        Ok(scope)
+    }
+
+    fn validate(&self) -> IpcResult<()> {
+        for (value, field) in [
+            (&self.owner_session_hash, "owner_session_hash"),
+            (&self.owner_user_hash, "owner_user_hash"),
+            (&self.owner_env_hash, "owner_env_hash"),
+            (&self.session_channel_id_hash, "session_channel_id_hash"),
+        ] {
+            if value.is_empty() || value.trim() != value {
+                return Err(invalid_field(field));
+            }
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionRevokeRequest {
+    pub request_id: String,
+    pub runtime_generation_id: String,
+    pub session_revoke_sequence: u64,
+    pub owner_session_hash: String,
+    pub owner_user_hash: String,
+    pub owner_env_hash: String,
+    pub session_channel_id_hash: String,
+}
+
+impl SessionRevokeRequest {
+    pub fn session_scope(&self) -> SessionScope {
+        SessionScope {
+            owner_session_hash: self.owner_session_hash.clone(),
+            owner_user_hash: self.owner_user_hash.clone(),
+            owner_env_hash: self.owner_env_hash.clone(),
+            session_channel_id_hash: self.session_channel_id_hash.clone(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionRevokeState {
+    Complete,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct SessionRevokeAckCounts {
+    pub queued_invocations: u64,
+    pub running_invocations: u64,
+    pub storage_hostcalls: u64,
+    pub active_network_requests: u64,
+    pub sockets: u64,
+    pub network_streams: u64,
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct HeartbeatRequestPayload {
@@ -718,6 +836,16 @@ struct RevokeEpochRequestPayload {
     resource_scope: NetworkResourceScope,
     plugin_instance_id: String,
     revoke_epoch: u64,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SessionRevokeRequestPayload {
+    session_revoke_sequence: u64,
+    owner_session_hash: String,
+    owner_user_hash: String,
+    owner_env_hash: String,
+    session_channel_id_hash: String,
 }
 
 fn parse_raw_frame(input: &str) -> IpcResult<RawIPCFrame> {
@@ -842,6 +970,34 @@ impl ParsedWorkerInvocation {
             .map(str::trim)
             .filter(|value| !value.is_empty())
             .ok_or_else(|| missing_field("plugin_instance_id"))
+    }
+
+    /// Returns the exact session scope when the invocation is session-bound.
+    /// Background invocations may omit both session-specific hashes. A partial
+    /// session identity is rejected instead of being treated as unscoped.
+    pub fn session_scope(&self) -> IpcResult<Option<SessionScope>> {
+        let invocation = &self.invocation;
+        let session_present = invocation
+            .owner_session_hash
+            .as_deref()
+            .is_some_and(|value| !value.is_empty())
+            || invocation
+                .session_channel_id_hash
+                .as_deref()
+                .is_some_and(|value| !value.is_empty());
+        if !session_present {
+            return Ok(None);
+        }
+        SessionScope::new(
+            required_string(&invocation.owner_session_hash, "owner_session_hash")?,
+            required_string(&invocation.owner_user_hash, "owner_user_hash")?,
+            required_string(&invocation.owner_env_hash, "owner_env_hash")?,
+            required_string(
+                &invocation.session_channel_id_hash,
+                "session_channel_id_hash",
+            )?,
+        )
+        .map(Some)
     }
 
     pub fn context(&self) -> IpcResult<WorkerInvocationContext> {
@@ -1153,6 +1309,41 @@ pub fn parse_revoke_epoch_request(input: &str) -> IpcResult<RevokeEpochRequest> 
         resource_scope: payload.resource_scope,
         plugin_instance_id: payload.plugin_instance_id,
         revoke_epoch: payload.revoke_epoch,
+    })
+}
+
+pub fn parse_session_revoke_request(input: &str) -> IpcResult<SessionRevokeRequest> {
+    let frame = parse_raw_frame(input)?;
+    let identity = validated_frame_identity(&frame)?;
+    if identity.frame_type != FRAME_TYPE_SESSION_REVOKE {
+        return Err(protocol_violation("expected session_revoke frame"));
+    }
+    if identity.parent_request_id.is_some() {
+        return Err(protocol_violation(
+            "session_revoke must not have parent_request_id",
+        ));
+    }
+    let payload: SessionRevokeRequestPayload = serde_json::from_str(frame.payload.get())
+        .map_err(|_| decode_failed("session_revoke payload"))?;
+    if payload.session_revoke_sequence == 0
+        || payload.session_revoke_sequence > MAX_JSON_SAFE_INTEGER
+    {
+        return Err(invalid_field("session_revoke_sequence"));
+    }
+    let scope = SessionScope::new(
+        payload.owner_session_hash,
+        payload.owner_user_hash,
+        payload.owner_env_hash,
+        payload.session_channel_id_hash,
+    )?;
+    Ok(SessionRevokeRequest {
+        request_id: identity.request_id,
+        runtime_generation_id: identity.runtime_generation_id,
+        session_revoke_sequence: payload.session_revoke_sequence,
+        owner_session_hash: scope.owner_session_hash,
+        owner_user_hash: scope.owner_user_hash,
+        owner_env_hash: scope.owner_env_hash,
+        session_channel_id_hash: scope.session_channel_id_hash,
     })
 }
 
@@ -1899,6 +2090,47 @@ pub fn success_response_frame(
         runtime_generation_id,
         &payload,
     ))
+}
+
+pub fn session_revoke_ack_frame(
+    request_id: &str,
+    runtime_generation_id: &str,
+    session_revoke_sequence: u64,
+    state: SessionRevokeState,
+    counts: SessionRevokeAckCounts,
+) -> IpcResult<String> {
+    if request_id.is_empty() || request_id.trim() != request_id {
+        return Err(invalid_field("request_id"));
+    }
+    if runtime_generation_id.is_empty() || runtime_generation_id.trim() != runtime_generation_id {
+        return Err(invalid_field("runtime_generation_id"));
+    }
+    if session_revoke_sequence == 0 || session_revoke_sequence > MAX_JSON_SAFE_INTEGER {
+        return Err(invalid_field("session_revoke_sequence"));
+    }
+    for (count, field) in [
+        (counts.queued_invocations, "queued_invocations"),
+        (counts.running_invocations, "running_invocations"),
+        (counts.storage_hostcalls, "storage_hostcalls"),
+        (counts.active_network_requests, "active_network_requests"),
+        (counts.sockets, "sockets"),
+        (counts.network_streams, "network_streams"),
+    ] {
+        if count > MAX_JSON_SAFE_INTEGER {
+            return Err(invalid_field(field));
+        }
+    }
+    let result = serde_json::json!({
+        "session_revoke_sequence": session_revoke_sequence,
+        "state": state,
+        "counts": counts,
+    });
+    success_response_frame(
+        FRAME_TYPE_SESSION_REVOKE_ACK,
+        request_id,
+        runtime_generation_id,
+        &result.to_string(),
+    )
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -3908,7 +4140,7 @@ mod tests {
     #[test]
     fn runtime_limit_constants_match_the_ipc_schema() {
         let schema: Value =
-            serde_json::from_str(include_str!("../../../spec/plugin/ipc-v4.schema.json"))
+            serde_json::from_str(include_str!("../../../spec/plugin/ipc-v5.schema.json"))
                 .expect("IPC schema");
         let properties = schema["$defs"]["runtime_limits"]["properties"]
             .as_object()
@@ -4101,7 +4333,7 @@ mod tests {
 
     fn closed_worker_frame(lease: &str, invocation: &str) -> String {
         format!(
-            r#"{{"ipc_version":"rust-ipc-v4","frame_type":"invoke_worker","request_id":"r1","runtime_generation_id":"g1","payload":{{"lease":{lease},"method":"worker.echo","invocation":{invocation}}}}}"#
+            r#"{{"ipc_version":"rust-ipc-v5","frame_type":"invoke_worker","request_id":"r1","runtime_generation_id":"g1","payload":{{"lease":{lease},"method":"worker.echo","invocation":{invocation}}}}}"#
         )
     }
 
@@ -4120,13 +4352,13 @@ mod tests {
             .map(|value| format!(",\"channel_nonce\":\"{value}\""))
             .unwrap_or_default();
         format!(
-            r#"{{"ipc_version":"rust-ipc-v4","frame_type":"hello","request_id":"r1","runtime_generation_id":"g1","payload":{{"target":{{"os":"linux","arch":"amd64"}},"host_process_id":1,"host_ipc_version":"rust-ipc-v4","host_wasm_abi":"redevplugin-wasm-worker-v2","started_unix_nano":1{channel_nonce},"runtime_lease_public_keys":{public_keys},"limits":{{"worker_count":8,"queue_capacity":32,"per_plugin_concurrency":4,"module_cache_entries":64,"module_cache_source_bytes":134217728}}}}}}"#
+            r#"{{"ipc_version":"rust-ipc-v5","frame_type":"hello","request_id":"r1","runtime_generation_id":"g1","payload":{{"target":{{"os":"linux","arch":"amd64"}},"host_process_id":1,"host_ipc_version":"rust-ipc-v5","host_wasm_abi":"redevplugin-wasm-worker-v2","started_unix_nano":1{channel_nonce},"runtime_lease_public_keys":{public_keys},"limits":{{"worker_count":8,"queue_capacity":32,"per_plugin_concurrency":4,"module_cache_entries":64,"module_cache_source_bytes":134217728}}}}}}"#
         )
     }
 
     fn hostcall_response_frame(frame_type: &str, payload: &str) -> String {
         format!(
-            r#"{{"ipc_version":"rust-ipc-v4","frame_type":"{frame_type}","request_id":"r1","runtime_generation_id":"g1","payload":{payload}}}"#
+            r#"{{"ipc_version":"rust-ipc-v5","frame_type":"{frame_type}","request_id":"r1","runtime_generation_id":"g1","payload":{payload}}}"#
         )
     }
 
@@ -4310,7 +4542,7 @@ mod tests {
                 r#"[{{"algorithm":"ed25519","key_id":"host_ephemeral_key_1","public_key_base64":"{public_key}"}}]"#
             ),
         );
-        assert!(parse_hello_frame(&valid.replace("rust-ipc-v4", "rust-ipc-v2")).is_err());
+        assert!(parse_hello_frame(&valid.replace("rust-ipc-v5", "rust-ipc-v2")).is_err());
         assert!(
             parse_hello_frame(&valid.replacen("\"worker_count\":8", "\"worker_count\":0", 1))
                 .is_err()
@@ -4346,7 +4578,7 @@ mod tests {
 
     #[test]
     fn decodes_invalid_worker_input_once_into_a_typed_runtime_variant() {
-        let input = r#"{"ipc_version":"rust-ipc-v4","frame_type":"invoke_worker","request_id":"invoke-invalid","runtime_generation_id":"g1","payload":{"method":"worker.echo","invocation":{}}}"#;
+        let input = r#"{"ipc_version":"rust-ipc-v5","frame_type":"invoke_worker","request_id":"invoke-invalid","runtime_generation_id":"g1","payload":{"method":"worker.echo","invocation":{}}}"#;
         let decoded = decode_runtime_input_frame(input).expect("outer IPC frame decodes");
         let RuntimeInputFrame::InvokeWorker(worker) = decoded else {
             panic!("invoke_worker must use the typed worker variant");
@@ -4358,13 +4590,13 @@ mod tests {
 
     #[test]
     fn parses_cancel_and_binds_parent_request_id() {
-        let cancel = r#"{"ipc_version":"rust-ipc-v4","frame_type":"cancel_invoke","request_id":"cancel-1","runtime_generation_id":"g1","payload":{"invocation_request_id":"invoke-1"}}"#;
+        let cancel = r#"{"ipc_version":"rust-ipc-v5","frame_type":"cancel_invoke","request_id":"cancel-1","runtime_generation_id":"g1","payload":{"invocation_request_id":"invoke-1"}}"#;
         assert_eq!(parse_cancel_invoke(cancel).unwrap(), "invoke-1");
         let ack = cancel_invoke_ack_frame("cancel-1", "g1", "invoke-1", "running")
             .expect("cancel acknowledgement frame");
         assert!(ack.contains(r#""frame_type":"cancel_invoke_ack""#));
         let hostcall = bind_parent_request_id(
-            r#"{"ipc_version":"rust-ipc-v4","frame_type":"open_handle","request_id":"invoke-1:artifact","runtime_generation_id":"g1","payload":{}}"#,
+            r#"{"ipc_version":"rust-ipc-v5","frame_type":"open_handle","request_id":"invoke-1:artifact","runtime_generation_id":"g1","payload":{}}"#,
             "invoke-1",
         )
         .unwrap();
@@ -4376,7 +4608,7 @@ mod tests {
 
     #[test]
     fn closed_ipc_decoding_rejects_ambiguous_or_extended_frames() {
-        let valid = r#"{"ipc_version":"rust-ipc-v4","frame_type":"heartbeat","request_id":"outer","runtime_generation_id":"g1","payload":{"request_id":"nested"}}"#;
+        let valid = r#"{"ipc_version":"rust-ipc-v5","frame_type":"heartbeat","request_id":"outer","runtime_generation_id":"g1","payload":{"request_id":"nested"}}"#;
         let identity = parse_frame_identity(valid).expect("top-level frame identity");
         assert_eq!(identity.request_id, "outer");
 
@@ -4394,7 +4626,7 @@ mod tests {
 
     #[test]
     fn runtime_hostcall_response_requires_nonempty_parent_request_id() {
-        let without_parent = r#"{"ipc_version":"rust-ipc-v4","frame_type":"open_handle","request_id":"r1:artifact","runtime_generation_id":"g1","payload":{"ok":false,"code":"ARTIFACT_HANDLE_FAILED","message":"unavailable","error_origin":"hostcall"}}"#;
+        let without_parent = r#"{"ipc_version":"rust-ipc-v5","frame_type":"open_handle","request_id":"r1:artifact","runtime_generation_id":"g1","payload":{"ok":false,"code":"ARTIFACT_HANDLE_FAILED","message":"unavailable","error_origin":"hostcall"}}"#;
         assert!(decode_runtime_input_frame(without_parent).is_err());
         let empty_parent = without_parent.replace(
             r#""request_id":"r1:artifact""#,
@@ -4663,8 +4895,7 @@ mod tests {
 
     #[test]
     fn validates_worker_runtime_lease_expiry_and_execution_binding() {
-        let frame =
-            include_str!("../../../testdata/contracts/runtime-lease-signature-v1-invocation.json");
+        let frame = runtime_lease_invocation_fixture();
         validate_worker_runtime_lease(frame, 1_783_161_901_000)
             .expect("current runtime lease binding");
 
@@ -4823,7 +5054,7 @@ mod tests {
             .try_into()
             .expect("fixture public key length");
         verify_worker_runtime_lease_signature(
-            include_str!("../../../testdata/contracts/runtime-lease-signature-v1-invocation.json"),
+            runtime_lease_invocation_fixture(),
             &[RuntimeLeasePublicKey {
                 key_id: "host_ephemeral_fixture_v1".to_string(),
                 public_key,
@@ -4849,7 +5080,7 @@ mod tests {
         assert!(frame.contains(r#""request_id":"r1""#));
         assert!(frame.contains(r#""runtime_generation_id":"g1""#));
         assert!(frame.contains(r#""actual_target":{"os":"linux","arch":"amd64"}"#));
-        assert!(frame.contains(r#""rust_ipc_version":"rust-ipc-v4""#));
+        assert!(frame.contains(r#""rust_ipc_version":"rust-ipc-v5""#));
         assert!(frame.contains(r#""channel_nonce":"nonce_1""#));
         assert!(frame.contains(r#""worker_count":8"#));
         assert!(frame.contains(r#""module_cache_source_bytes":134217728"#));
@@ -4933,7 +5164,7 @@ mod tests {
             "hostcall response failed with code NETWORK_TARGET_DENIED"
         );
 
-        let failed = r#"{"ipc_version":"rust-ipc-v4","frame_type":"network_execute","request_id":"r1:network_execute","runtime_generation_id":"g1","payload":{"ok":false,"code":"NETWORK_TARGET_DENIED","message":"bearer secret-token https://api.example.com/path?token=secret /Users/private/key","error_origin":"hostcall"}}"#;
+        let failed = r#"{"ipc_version":"rust-ipc-v5","frame_type":"network_execute","request_id":"r1:network_execute","runtime_generation_id":"g1","payload":{"ok":false,"code":"NETWORK_TARGET_DENIED","message":"bearer secret-token https://api.example.com/path?token=secret /Users/private/key","error_origin":"hostcall"}}"#;
         let error =
             validate_network_execute_response(failed, "r1:network_execute", "g1", "api", "http")
                 .expect_err("hostcall failure");
@@ -5211,7 +5442,7 @@ mod tests {
                 "complete"
             };
             let expected = format!(
-                r#"{{"ipc_version":"rust-ipc-v4","frame_type":"{frame_type}","request_id":"invoke-1:artifact:{suffix}","parent_request_id":"invoke-1","runtime_generation_id":"generation-1","payload":{{"artifact_request_id":"invoke-1:artifact","package_hash":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","artifact":"workers/backend.wasm","artifact_sha256":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","wasm_abi_version":"redevplugin-wasm-worker-v2"}}}}"#
+                r#"{{"ipc_version":"rust-ipc-v5","frame_type":"{frame_type}","request_id":"invoke-1:artifact:{suffix}","parent_request_id":"invoke-1","runtime_generation_id":"generation-1","payload":{{"artifact_request_id":"invoke-1:artifact","package_hash":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","artifact":"workers/backend.wasm","artifact_sha256":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","wasm_abi_version":"redevplugin-wasm-worker-v2"}}}}"#
             );
             assert_json_eq(&actual, &expected, frame_type);
         }
@@ -5229,10 +5460,10 @@ mod tests {
             worker_id: "backend".to_string(),
             method: "worker.echo".to_string(),
         };
-        let frame = r#"{"ipc_version":"rust-ipc-v4","frame_type":"open_handle","request_id":"r1:artifact","parent_request_id":"r1","runtime_generation_id":"g1","payload":{"ok":true,"package_hash":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","artifact":"workers/backend.wasm","sha256":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","content_base64":"AAE="}}"#;
+        let frame = r#"{"ipc_version":"rust-ipc-v5","frame_type":"open_handle","request_id":"r1:artifact","parent_request_id":"r1","runtime_generation_id":"g1","payload":{"ok":true,"package_hash":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","artifact":"workers/backend.wasm","sha256":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","content_base64":"AAE="}}"#;
         validate_open_handle_response(frame, "r1:artifact", "r1", "g1", &identity)
             .expect("valid open_handle");
-        let failed = r#"{"ipc_version":"rust-ipc-v4","frame_type":"open_handle","request_id":"r1:artifact","parent_request_id":"r1","runtime_generation_id":"g1","payload":{"ok":false,"code":"ARTIFACT_HANDLE_FAILED","message":"unavailable","error_origin":"hostcall"}}"#;
+        let failed = r#"{"ipc_version":"rust-ipc-v5","frame_type":"open_handle","request_id":"r1:artifact","parent_request_id":"r1","runtime_generation_id":"g1","payload":{"ok":false,"code":"ARTIFACT_HANDLE_FAILED","message":"unavailable","error_origin":"hostcall"}}"#;
         let err = validate_open_handle_response(failed, "r1:artifact", "r1", "g1", &identity)
             .expect_err("failed open_handle response");
         assert_eq!(
@@ -5308,7 +5539,7 @@ mod tests {
 
     #[test]
     fn zero_revoke_epoch_returns_typed_errors() {
-        let revoke = r#"{"ipc_version":"rust-ipc-v4","frame_type":"revoke_epoch","request_id":"r1","runtime_generation_id":"g1","payload":{"resource_scope":{"kind":"environment","owner_env_hash":"env_hash"},"plugin_instance_id":"plugini_1","revoke_epoch":0}}"#;
+        let revoke = r#"{"ipc_version":"rust-ipc-v5","frame_type":"revoke_epoch","request_id":"r1","runtime_generation_id":"g1","payload":{"resource_scope":{"kind":"environment","owner_env_hash":"env_hash"},"plugin_instance_id":"plugini_1","revoke_epoch":0}}"#;
         assert_eq!(
             parse_revoke_epoch_request(revoke).unwrap_err(),
             IpcError::InvalidField {
@@ -5375,7 +5606,7 @@ mod tests {
 
     #[test]
     fn validates_handle_grant_response() {
-        let frame = r#"{"ipc_version":"rust-ipc-v4","frame_type":"validate_handle_grant","request_id":"r1:handle","runtime_generation_id":"g1","payload":{"ok":true,"handle_grant_id":"h1","handle_id":"storage:db","method":"storage.sqlite","runtime_generation_id":"g1","resource_scope":{"kind":"user","owner_env_hash":"env_hash","owner_user_hash":"user_hash"},"max_total_bytes":4096}}"#;
+        let frame = r#"{"ipc_version":"rust-ipc-v5","frame_type":"validate_handle_grant","request_id":"r1:handle","runtime_generation_id":"g1","payload":{"ok":true,"handle_grant_id":"h1","handle_id":"storage:db","method":"storage.sqlite","runtime_generation_id":"g1","resource_scope":{"kind":"user","owner_env_hash":"env_hash","owner_user_hash":"user_hash"},"max_total_bytes":4096}}"#;
         validate_handle_grant_response(
             frame,
             "r1:handle",
@@ -5385,7 +5616,7 @@ mod tests {
             &user_resource_scope(),
         )
         .expect("valid handle grant");
-        let failed = r#"{"ipc_version":"rust-ipc-v4","frame_type":"validate_handle_grant","request_id":"r1:handle","runtime_generation_id":"g1","payload":{"ok":false,"code":"HANDLE_GRANT_VALIDATION_FAILED","message":"denied","error_origin":"hostcall"}}"#;
+        let failed = r#"{"ipc_version":"rust-ipc-v5","frame_type":"validate_handle_grant","request_id":"r1:handle","runtime_generation_id":"g1","payload":{"ok":false,"code":"HANDLE_GRANT_VALIDATION_FAILED","message":"denied","error_origin":"hostcall"}}"#;
         let err = validate_handle_grant_response(
             failed,
             "r1:handle",
@@ -5443,7 +5674,7 @@ mod tests {
 
     #[test]
     fn validates_storage_file_response() {
-        let frame = r#"{"ipc_version":"rust-ipc-v4","frame_type":"storage_file","request_id":"r1:storage_file","runtime_generation_id":"g1","payload":{"ok":true,"path":"notes/today.txt","data_base64":"aGVsbG8=","size_bytes":5,"usage":{"plugin_instance_id":"plugini_1","store_id":"workspace","usage_bytes":5,"quota_bytes":100,"usage_files":1,"quota_files":10}}}"#;
+        let frame = r#"{"ipc_version":"rust-ipc-v5","frame_type":"storage_file","request_id":"r1:storage_file","runtime_generation_id":"g1","payload":{"ok":true,"path":"notes/today.txt","data_base64":"aGVsbG8=","size_bytes":5,"usage":{"plugin_instance_id":"plugini_1","store_id":"workspace","usage_bytes":5,"quota_bytes":100,"usage_files":1,"quota_files":10}}}"#;
         validate_storage_file_response(frame, "r1:storage_file", "g1", "read")
             .expect("valid storage file response");
         let payload = storage_file_payload_json(frame, "read").expect("storage file payload");
@@ -5459,7 +5690,7 @@ mod tests {
         assert!(validate_storage_file_response(&mixed, "r1:storage_file", "g1", "read").is_err());
         let missing = without_payload_field(frame, "data_base64");
         assert!(validate_storage_file_response(&missing, "r1:storage_file", "g1", "read").is_err());
-        let failed = r#"{"ipc_version":"rust-ipc-v4","frame_type":"storage_file","request_id":"r1:storage_file","runtime_generation_id":"g1","payload":{"ok":false,"code":"STORAGE_FILE_NOT_FOUND","message":"missing","error_origin":"hostcall"}}"#;
+        let failed = r#"{"ipc_version":"rust-ipc-v5","frame_type":"storage_file","request_id":"r1:storage_file","runtime_generation_id":"g1","payload":{"ok":false,"code":"STORAGE_FILE_NOT_FOUND","message":"missing","error_origin":"hostcall"}}"#;
         let err = validate_storage_file_response(failed, "r1:storage_file", "g1", "read")
             .expect_err("failed storage file response");
         assert_eq!(
@@ -5468,7 +5699,7 @@ mod tests {
                 code: "STORAGE_FILE_NOT_FOUND".to_string()
             }
         );
-        let missing_origin = r#"{"ipc_version":"rust-ipc-v4","frame_type":"storage_file","request_id":"r1:storage_file","runtime_generation_id":"g1","payload":{"ok":false,"code":"STORAGE_FILE_NOT_FOUND","message":"missing"}}"#;
+        let missing_origin = r#"{"ipc_version":"rust-ipc-v5","frame_type":"storage_file","request_id":"r1:storage_file","runtime_generation_id":"g1","payload":{"ok":false,"code":"STORAGE_FILE_NOT_FOUND","message":"missing"}}"#;
         let err = validate_storage_file_response(missing_origin, "r1:storage_file", "g1", "read")
             .expect_err("hostcall origin is required");
         assert_eq!(
@@ -5477,7 +5708,7 @@ mod tests {
                 context: "hostcall failure response payload"
             }
         );
-        let spoofed_origin = r#"{"ipc_version":"rust-ipc-v4","frame_type":"storage_file","request_id":"r1:storage_file","runtime_generation_id":"g1","payload":{"ok":false,"code":"STORAGE_FILE_NOT_FOUND","message":"missing","error_origin":"plugin"}}"#;
+        let spoofed_origin = r#"{"ipc_version":"rust-ipc-v5","frame_type":"storage_file","request_id":"r1:storage_file","runtime_generation_id":"g1","payload":{"ok":false,"code":"STORAGE_FILE_NOT_FOUND","message":"missing","error_origin":"plugin"}}"#;
         let err = validate_storage_file_response(spoofed_origin, "r1:storage_file", "g1", "read")
             .expect_err("hostcall origin cannot be spoofed");
         assert_eq!(
@@ -5560,7 +5791,7 @@ mod tests {
 
     #[test]
     fn validates_storage_kv_response() {
-        let frame = r#"{"ipc_version":"rust-ipc-v4","frame_type":"storage_kv","request_id":"r1:storage_kv","runtime_generation_id":"g1","payload":{"ok":true,"key":"demo/last_broker_run","value_base64":"aGVsbG8=","size_bytes":5,"usage":{"plugin_instance_id":"plugini_1","store_id":"settings","usage_bytes":5,"quota_bytes":100,"usage_files":1,"quota_files":10}}}"#;
+        let frame = r#"{"ipc_version":"rust-ipc-v5","frame_type":"storage_kv","request_id":"r1:storage_kv","runtime_generation_id":"g1","payload":{"ok":true,"key":"demo/last_broker_run","value_base64":"aGVsbG8=","size_bytes":5,"usage":{"plugin_instance_id":"plugini_1","store_id":"settings","usage_bytes":5,"quota_bytes":100,"usage_files":1,"quota_files":10}}}"#;
         validate_storage_kv_response(frame, "r1:storage_kv", "g1", "get")
             .expect("valid storage kv response");
         let payload = storage_kv_payload_json(frame, "get").expect("storage kv payload");
@@ -5575,7 +5806,7 @@ mod tests {
         assert!(validate_storage_kv_response(&mixed, "r1:storage_kv", "g1", "get").is_err());
         let missing = without_payload_field(frame, "value_base64");
         assert!(validate_storage_kv_response(&missing, "r1:storage_kv", "g1", "get").is_err());
-        let failed = r#"{"ipc_version":"rust-ipc-v4","frame_type":"storage_kv","request_id":"r1:storage_kv","runtime_generation_id":"g1","payload":{"ok":false,"code":"STORAGE_KV_NOT_FOUND","message":"missing","error_origin":"hostcall"}}"#;
+        let failed = r#"{"ipc_version":"rust-ipc-v5","frame_type":"storage_kv","request_id":"r1:storage_kv","runtime_generation_id":"g1","payload":{"ok":false,"code":"STORAGE_KV_NOT_FOUND","message":"missing","error_origin":"hostcall"}}"#;
         let err = validate_storage_kv_response(failed, "r1:storage_kv", "g1", "get")
             .expect_err("failed storage kv response");
         assert_eq!(
@@ -5688,7 +5919,7 @@ mod tests {
 
     #[test]
     fn validates_storage_sqlite_response() {
-        let frame = r#"{"ipc_version":"rust-ipc-v4","frame_type":"storage_sqlite","request_id":"r1:storage_sqlite","runtime_generation_id":"g1","payload":{"ok":true,"database":"plugin.sqlite","columns":["title"],"rows":[[{"text":"stored from wasm"}]],"usage":{"plugin_instance_id":"plugini_1","store_id":"db","usage_bytes":5,"quota_bytes":100,"usage_files":1,"quota_files":10}}}"#;
+        let frame = r#"{"ipc_version":"rust-ipc-v5","frame_type":"storage_sqlite","request_id":"r1:storage_sqlite","runtime_generation_id":"g1","payload":{"ok":true,"database":"plugin.sqlite","columns":["title"],"rows":[[{"text":"stored from wasm"}]],"usage":{"plugin_instance_id":"plugini_1","store_id":"db","usage_bytes":5,"quota_bytes":100,"usage_files":1,"quota_files":10}}}"#;
         validate_storage_sqlite_response(frame, "r1:storage_sqlite", "g1", "query")
             .expect("valid storage sqlite response");
         let payload = storage_sqlite_payload_json(frame, "query").expect("storage sqlite payload");
@@ -5722,7 +5953,7 @@ mod tests {
                 "accepted invalid SQLite value {invalid_value}"
             );
         }
-        let failed = r#"{"ipc_version":"rust-ipc-v4","frame_type":"storage_sqlite","request_id":"r1:storage_sqlite","runtime_generation_id":"g1","payload":{"ok":false,"code":"STORAGE_SQLITE_RESULT_TOO_LARGE","message":"too large","error_origin":"hostcall"}}"#;
+        let failed = r#"{"ipc_version":"rust-ipc-v5","frame_type":"storage_sqlite","request_id":"r1:storage_sqlite","runtime_generation_id":"g1","payload":{"ok":false,"code":"STORAGE_SQLITE_RESULT_TOO_LARGE","message":"too large","error_origin":"hostcall"}}"#;
         let err = validate_storage_sqlite_response(failed, "r1:storage_sqlite", "g1", "query")
             .expect_err("failed storage sqlite response");
         assert_eq!(
@@ -5806,7 +6037,7 @@ mod tests {
             owner_env_hash: "env_hash".to_string(),
             owner_user_hash: "user_hash".to_string(),
         };
-        let frame = r#"{"ipc_version":"rust-ipc-v4","frame_type":"network_grant","request_id":"r1:network_grant","runtime_generation_id":"g1","payload":{"ok":true,"grant_id":"netgrant_00112233445566778899aabbccddeeff","plugin_instance_id":"plugini_1","active_fingerprint":"sha256:active","resource_scope":{"kind":"user","owner_env_hash":"env_hash","owner_user_hash":"user_hash"},"policy_revision":1,"management_revision":2,"revoke_epoch":3,"connector_id":"api","transport":"http","destination":{"transport":"http","scheme":"https","host":"api.example.com","port":443},"runtime_generation_id":"g1","target_classifier_version":"target-classifier-v2","expires_at":"2026-06-30T10:00:30Z"}}"#;
+        let frame = r#"{"ipc_version":"rust-ipc-v5","frame_type":"network_grant","request_id":"r1:network_grant","runtime_generation_id":"g1","payload":{"ok":true,"grant_id":"netgrant_00112233445566778899aabbccddeeff","plugin_instance_id":"plugini_1","active_fingerprint":"sha256:active","resource_scope":{"kind":"user","owner_env_hash":"env_hash","owner_user_hash":"user_hash"},"policy_revision":1,"management_revision":2,"revoke_epoch":3,"connector_id":"api","transport":"http","destination":{"transport":"http","scheme":"https","host":"api.example.com","port":443},"runtime_generation_id":"g1","target_classifier_version":"target-classifier-v2","expires_at":"2026-06-30T10:00:30Z"}}"#;
         validate_network_grant_response(frame, "r1:network_grant", "g1", "api", "http", &scope)
             .expect("valid network grant response");
         let unsafe_revision = frame.replace(
@@ -5827,7 +6058,7 @@ mod tests {
                 field: "policy_revision"
             }
         );
-        let failed = r#"{"ipc_version":"rust-ipc-v4","frame_type":"network_grant","request_id":"r1:network_grant","runtime_generation_id":"g1","payload":{"ok":false,"code":"NETWORK_TARGET_DENIED","message":"blocked","error_origin":"hostcall"}}"#;
+        let failed = r#"{"ipc_version":"rust-ipc-v5","frame_type":"network_grant","request_id":"r1:network_grant","runtime_generation_id":"g1","payload":{"ok":false,"code":"NETWORK_TARGET_DENIED","message":"blocked","error_origin":"hostcall"}}"#;
         let err = validate_network_grant_response(
             failed,
             "r1:network_grant",
@@ -5938,10 +6169,10 @@ mod tests {
 
     #[test]
     fn validates_network_execute_response() {
-        let frame = r#"{"ipc_version":"rust-ipc-v4","frame_type":"network_execute","request_id":"r1:network_execute","runtime_generation_id":"g1","payload":{"ok":true,"transport":"http","destination":{"transport":"http","scheme":"https","host":"api.example.com","port":443},"status_code":201,"headers":{"X-Worker":["ok"]},"body_base64":"e30=","grant_id":"netgrant_00112233445566778899aabbccddeeff","connector_id":"api","runtime_generation_id":"g1"}}"#;
+        let frame = r#"{"ipc_version":"rust-ipc-v5","frame_type":"network_execute","request_id":"r1:network_execute","runtime_generation_id":"g1","payload":{"ok":true,"transport":"http","destination":{"transport":"http","scheme":"https","host":"api.example.com","port":443},"status_code":201,"headers":{"X-Worker":["ok"]},"body_base64":"e30=","grant_id":"netgrant_00112233445566778899aabbccddeeff","connector_id":"api","runtime_generation_id":"g1"}}"#;
         validate_network_execute_response(frame, "r1:network_execute", "g1", "api", "http")
             .expect("valid network execute response");
-        let failed = r#"{"ipc_version":"rust-ipc-v4","frame_type":"network_execute","request_id":"r1:network_execute","runtime_generation_id":"g1","payload":{"ok":false,"code":"NETWORK_RESPONSE_TOO_LARGE","message":"too large","error_origin":"hostcall"}}"#;
+        let failed = r#"{"ipc_version":"rust-ipc-v5","frame_type":"network_execute","request_id":"r1:network_execute","runtime_generation_id":"g1","payload":{"ok":false,"code":"NETWORK_RESPONSE_TOO_LARGE","message":"too large","error_origin":"hostcall"}}"#;
         let err =
             validate_network_execute_response(failed, "r1:network_execute", "g1", "api", "http")
                 .expect_err("failed network execute response");
@@ -5986,8 +6217,7 @@ mod tests {
 
     #[test]
     fn rejects_unsupported_worker_runtime_contract() {
-        let valid =
-            include_str!("../../../testdata/contracts/runtime-lease-signature-v1-invocation.json");
+        let valid = runtime_lease_invocation_fixture();
         parse_worker_invocation(valid)
             .unwrap()
             .validate_worker_contract()
@@ -6007,7 +6237,7 @@ mod tests {
 
     #[test]
     fn projects_closed_worker_request_v2() {
-        let frame = r#"{"ipc_version":"rust-ipc-v4","frame_type":"invoke_worker","request_id":"r1","runtime_generation_id":"g1","payload":{"lease":{},"method":"notes.save","invocation":{"plugin_id":"com.example.notes","plugin_instance_id":"plugini_1","storage_handle_grants":{"notes":"handle-secret"},"method":"notes.save","params":{"title":"Launch notes","body":"Ship the examples"}}}}"#;
+        let frame = r#"{"ipc_version":"rust-ipc-v5","frame_type":"invoke_worker","request_id":"r1","runtime_generation_id":"g1","payload":{"lease":{},"method":"notes.save","invocation":{"plugin_id":"com.example.notes","plugin_instance_id":"plugini_1","storage_handle_grants":{"notes":"handle-secret"},"method":"notes.save","params":{"title":"Launch notes","body":"Ship the examples"}}}}"#;
 
         let request = worker_request_json_v2(frame).expect("worker request projection");
 
@@ -6184,6 +6414,10 @@ mod tests {
         SigningKey::from_bytes(&[seed_byte; 32])
     }
 
+    fn runtime_lease_invocation_fixture() -> &'static str {
+        include_str!("../../../testdata/contracts/runtime-lease-signature-v1-invocation.json")
+    }
+
     fn signed_runtime_lease_invocation_for_test(
         signing_key: &SigningKey,
         replace: Option<(&str, &str)>,
@@ -6241,7 +6475,7 @@ mod tests {
             lease[key] = serde_json::Value::Number(parsed.into());
         }
         format!(
-            r#"{{"ipc_version":"rust-ipc-v4","frame_type":"invoke_worker","request_id":"r1","runtime_generation_id":"rtgen_1","payload":{{"lease":{},"method":"worker.echo","invocation":{{"package_hash":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","artifact":"workers/backend.wasm","artifact_sha256":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","worker_id":"backend","method":"worker.echo"}}}}}}"#,
+            r#"{{"ipc_version":"rust-ipc-v5","frame_type":"invoke_worker","request_id":"r1","runtime_generation_id":"rtgen_1","payload":{{"lease":{},"method":"worker.echo","invocation":{{"package_hash":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","artifact":"workers/backend.wasm","artifact_sha256":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","worker_id":"backend","method":"worker.echo"}}}}}}"#,
             serde_json::to_string(&lease).expect("lease json")
         )
     }

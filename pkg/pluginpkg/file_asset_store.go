@@ -32,6 +32,8 @@ type FileAssetStore struct {
 	closeError error
 }
 
+func (*FileAssetStore) Durable() bool { return true }
+
 type fileAssetManifest struct {
 	PackageHash string  `json:"package_hash"`
 	Entries     []Entry `json:"entries"`

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/floegence/redevplugin/pkg/capability"
+	"github.com/floegence/redevplugin/pkg/sessionctx"
 	"github.com/floegence/redevplugin/pkg/stream"
 )
 
@@ -147,9 +148,59 @@ func TestExecutionLeaseRegistryMaintainsQuotaAndIdentityIndexes(t *testing.T) {
 
 	registry.mu.Lock()
 	defer registry.mu.Unlock()
-	if len(registry.leases) != 0 || len(registry.leasesByPlugin) != 0 || len(registry.operations) != 0 ||
+	if len(registry.leases) != 0 || len(registry.leasesByPlugin) != 0 || len(registry.leasesBySession) != 0 || len(registry.operations) != 0 ||
 		len(registry.streams) != 0 || len(registry.activeByQuotaKey) != 0 || len(registry.setupRollbacks) != 0 || len(registry.pluginGates) != 0 {
 		t.Fatalf("finished registry retained indexes: %#v", registry)
+	}
+}
+
+func TestExecutionLeaseRegistryCancelsExactSessionWithoutScanningUnrelatedLeases(t *testing.T) {
+	registry := newExecutionLeaseRegistry()
+	targetScope := sessionctx.SessionScope{
+		OwnerSessionHash: "session_target", OwnerUserHash: "user_target",
+		OwnerEnvHash: "env_target", SessionChannelIDHash: "channel_target",
+	}
+	newBinding := func(index int, scope sessionctx.SessionScope) capability.ExecutionBinding {
+		binding := executionRegistryTestBinding(fmt.Sprintf("invoke-%d", index), fmt.Sprintf("plugin-%d", index), 0)
+		binding.OwnerSessionHash = scope.OwnerSessionHash
+		binding.OwnerUserHash = scope.OwnerUserHash
+		binding.OwnerEnvHash = scope.OwnerEnvHash
+		binding.SessionChannelIDHash = scope.SessionChannelIDHash
+		return binding
+	}
+	leases := make([]*executionLease, 0, 10_001)
+	for index := 0; index < 10_000; index++ {
+		scope := sessionctx.SessionScope{
+			OwnerSessionHash: fmt.Sprintf("session-%d", index), OwnerUserHash: fmt.Sprintf("user-%d", index),
+			OwnerEnvHash: fmt.Sprintf("env-%d", index), SessionChannelIDHash: fmt.Sprintf("channel-%d", index),
+		}
+		lease, err := registry.start(context.Background(), newBinding(index, scope), func(context.Context) error { return nil })
+		if err != nil {
+			t.Fatal(err)
+		}
+		leases = append(leases, lease)
+	}
+	target, err := registry.start(context.Background(), newBinding(10_000, targetScope), func(context.Context) error { return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	leases = append(leases, target)
+
+	revoked := registry.cancelSession(targetScope, capability.ErrExecutionRevoked)
+	if len(revoked) != 1 || revoked[0] != target {
+		t.Fatalf("cancelSession() = %#v", revoked)
+	}
+	if registry.sessionCancelScanned != 1 {
+		t.Fatalf("cancelSession scanned %d leases, want 1", registry.sessionCancelScanned)
+	}
+	if err := target.validate(context.Background()); !errors.Is(err, capability.ErrExecutionRevoked) {
+		t.Fatalf("target validation error = %v", err)
+	}
+	if err := leases[0].validate(context.Background()); err != nil {
+		t.Fatalf("unrelated lease was canceled: %v", err)
+	}
+	for _, lease := range leases {
+		lease.finish()
 	}
 }
 

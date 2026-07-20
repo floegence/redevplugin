@@ -207,6 +207,7 @@ type PatchSettingsRequest struct {
 }
 
 type Store interface {
+	Durable() bool
 	CommitEnable(ctx context.Context, req CommitEnableRequest) (Dataset, error)
 	Export(ctx context.Context, req ExportRequest) (Export, error)
 	DeleteExport(ctx context.Context, req DeleteExportRequest) error

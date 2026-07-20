@@ -50,7 +50,7 @@ func TestBridgeCommandDTOsDoNotSerializePrivateContext(t *testing.T) {
 		"validate asset session":   ValidateAssetSessionRequest{OwnerSessionHash: "session_private", OwnerUserHash: "user_private", OwnerEnvHash: "env_private", SessionChannelIDHash: "channel_private", Now: now},
 		"mark surface prepared":    MarkSurfacePreparedRequest{OwnerSessionHash: "session_private", OwnerUserHash: "user_private", OwnerEnvHash: "env_private", SessionChannelIDHash: "channel_private", Now: now},
 		"dispose surface":          DisposeSurfaceRequest{OwnerSessionHash: "session_private", OwnerUserHash: "user_private", OwnerEnvHash: "env_private", SessionChannelIDHash: "channel_private", Now: now},
-		"revoke surface scope":     RevokeSurfaceScopeRequest{OwnerSessionHash: "session_private", OwnerUserHash: "user_private", OwnerEnvHash: "env_private", SessionChannelIDHash: "channel_private", Now: now},
+		"revoke session scope":     RevokeSessionScopeRequest{SessionScope: sessionctx.SessionScope{OwnerSessionHash: "session_private", OwnerUserHash: "user_private", OwnerEnvHash: "env_private", SessionChannelIDHash: "channel_private"}, Now: now},
 		"mint gateway":             MintGatewayTokenRequest{Now: now},
 		"mint confirmation":        MintConfirmationTokenRequest{OwnerSessionHash: "session_private", OwnerUserHash: "user_private", OwnerEnvHash: "env_private", SessionChannelIDHash: "channel_private", Now: now},
 		"validate confirmation":    ValidateConfirmationTokenRequest{Audience: audience, Now: now},
@@ -514,52 +514,6 @@ func TestSurfaceRevokePluginDropsSessionsAndTokens(t *testing.T) {
 	}
 	if _, err := service.ExchangeAssetTicket(exchangeAssetTicketRequest(bootstrap, now.Add(6*time.Second))); !errors.Is(err, ErrSurfaceSessionNotFound) {
 		t.Fatalf("ExchangeAssetTicket() after plugin revoke error = %v, want %v", err, ErrSurfaceSessionNotFound)
-	}
-}
-
-func TestSurfaceScopeRevocationMatchesOwnerAndChannel(t *testing.T) {
-	service := NewSurfaceTokenService(nil, SurfaceTokenOptions{})
-	now := testNow()
-	target, err := service.OpenSurface(testOpenSurfaceRequest(now))
-	if err != nil {
-		t.Fatal(err)
-	}
-	siblingRequest := testOpenSurfaceRequest(now)
-	siblingRequest.SurfaceInstanceID = "surface_sibling"
-	siblingRequest.SessionChannelIDHash = "channel_sibling"
-	sibling, err := service.OpenSurface(siblingRequest)
-	if err != nil {
-		t.Fatal(err)
-	}
-	otherRequest := testOpenSurfaceRequest(now)
-	otherRequest.SurfaceInstanceID = "surface_other"
-	otherRequest.OwnerSessionHash = "sess_other"
-	other, err := service.OpenSurface(otherRequest)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	revoked, err := service.RevokeSurfaceScope(RevokeSurfaceScopeRequest{
-		OwnerSessionHash:     target.OwnerSessionHash,
-		OwnerUserHash:        target.OwnerUserHash,
-		OwnerEnvHash:         target.OwnerEnvHash,
-		SessionChannelIDHash: target.SessionChannelIDHash,
-		Now:                  now.Add(time.Second),
-	})
-	if err != nil || revoked != 1 {
-		t.Fatalf("RevokeSurfaceScope() = %d, %v, want 1", revoked, err)
-	}
-	if _, err := service.ExchangeAssetTicket(exchangeAssetTicketRequest(target, now.Add(2*time.Second))); !errors.Is(err, ErrSurfaceSessionNotFound) {
-		t.Fatalf("target surface remained active: %v", err)
-	}
-	if _, err := service.ExchangeAssetTicket(exchangeAssetTicketRequest(sibling, now.Add(2*time.Second))); err != nil {
-		t.Fatalf("sibling channel was revoked: %v", err)
-	}
-	if _, err := service.ExchangeAssetTicket(exchangeAssetTicketRequest(other, now.Add(2*time.Second))); err != nil {
-		t.Fatalf("other owner was revoked: %v", err)
-	}
-	if _, err := service.RevokeSurfaceScope(RevokeSurfaceScopeRequest{}); !errors.Is(err, ErrMissingTokenAudience) {
-		t.Fatalf("empty scope error = %v, want %v", err, ErrMissingTokenAudience)
 	}
 }
 

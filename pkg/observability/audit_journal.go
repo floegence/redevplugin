@@ -415,21 +415,26 @@ func cloneAuditDetail(key string, value any) (any, error) {
 	case "audit_correlation_id", "effect", "execution", "intent_id", "invocation_id", "method", "operation_id",
 		"plan_hash", "preflight_method", "route_kind", "runtime_generation_id", "runtime_instance_id",
 		"source_plugin_instance_id", "status", "stream_id", "target_descriptor_sha256", "capability_contract_artifact",
-		"reason", "mutation_outcome":
+		"reason", "mutation_outcome", "session_scope_state":
 		text, ok := auditString(value)
 		if !ok {
 			return nil, ErrInvalidAuditDetails
 		}
 		return text, nil
-	case "channel_scoped", "delete_data", "runtime_revoked", "runtime_stopped":
+	case "channel_scoped", "delete_data", "runtime_revoked", "runtime_stopped",
+		"session_scope_fenced", "session_scope_complete":
 		flag, ok := value.(bool)
 		if !ok {
 			return nil, ErrInvalidAuditDetails
 		}
 		return flag, nil
-	case "closed_socket_count", "closed_storage_handle_count", "closed_stream_count", "confirmation_count",
-		"execution_count", "expires_at_unix_ms", "management_revision", "policy_revision", "revoke_epoch",
-		"revoked_surface_count", "surface_count", "token_count":
+	case "active_network_request_count", "asset_session_count", "asset_ticket_count",
+		"closed_socket_count", "closed_storage_handle_count", "closed_stream_count", "confirmation_count",
+		"confirmation_token_count", "execution_count", "expires_at_unix_ms", "gateway_token_count",
+		"handle_grant_count", "management_revision", "network_stream_count", "operation_count",
+		"policy_revision", "revoke_epoch", "revoked_surface_count", "runtime_execution_count",
+		"socket_count", "storage_hostcall_count", "stream_count", "stream_ticket_count", "surface_count",
+		"token_count":
 		number, ok := auditIntegerFloat64(value)
 		if !ok {
 			return nil, ErrInvalidAuditDetails

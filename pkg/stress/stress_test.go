@@ -42,6 +42,7 @@ import (
 	"github.com/floegence/redevplugin/pkg/secrets"
 	"github.com/floegence/redevplugin/pkg/security"
 	"github.com/floegence/redevplugin/pkg/sessionctx"
+	"github.com/floegence/redevplugin/pkg/sessionscope"
 	"github.com/floegence/redevplugin/pkg/storage"
 	"github.com/floegence/redevplugin/pkg/stream"
 	"github.com/floegence/redevplugin/pkg/version"
@@ -253,6 +254,15 @@ func TestStressGateOperationCancelOwnershipEvidence(t *testing.T) {
 		t.Fatal(err)
 	}
 	securityJournal := observability.NewMemorySecurityAuditJournal()
+	sessionScopeStore, err := sessionscope.NewSQLiteStore(ctx, filepath.Join(t.TempDir(), "session-scopes.sqlite"), sessionscope.StoreOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sessionScopeStore.Close()
+	sessionScopes, err := sessionscope.NewCoordinator(sessionScopeStore)
+	if err != nil {
+		t.Fatal(err)
+	}
 	pluginHost, err := host.Open(ctx, host.Config{
 		Core: host.CoreAdapters{
 			Policy:               stressPolicy{},
@@ -270,6 +280,8 @@ func TestStressGateOperationCancelOwnershipEvidence(t *testing.T) {
 			Operations:           operations,
 			ConfirmationIntents:  security.NewMemoryConfirmationIntentStore(),
 			Streams:              stream.NewMemoryStore(),
+			SessionLifecycle:     newStressSessionLifecycle(),
+			SessionScopes:        sessionScopes,
 		},
 		Release: &host.ReleaseModule{
 			ReleaseMetadataVerifier:     platformAdapter,
@@ -1137,6 +1149,79 @@ func (stressPlatformAdapter) InvokeCoreAction(context.Context, capability.Invoca
 type stressPolicy struct{}
 
 type stressAuthorization struct{}
+
+type stressSessionLifecycle struct {
+	mu         sync.Mutex
+	identities map[sessionctx.SessionScope]sessionscope.TeardownIdentity
+	closed     map[sessionctx.SessionScope]bool
+}
+
+func newStressSessionLifecycle() *stressSessionLifecycle {
+	return &stressSessionLifecycle{
+		identities: make(map[sessionctx.SessionScope]sessionscope.TeardownIdentity),
+		closed:     make(map[sessionctx.SessionScope]bool),
+	}
+}
+
+func (a *stressSessionLifecycle) ReconcileRetainedSessionScopes(_ context.Context, req host.ReconcileRetainedSessionScopesRequest) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	for _, retained := range req.Scopes {
+		if !a.closed[retained.SessionScope] || !a.identities[retained.SessionScope].Valid() {
+			return errors.New("stress closed session identity is unavailable")
+		}
+	}
+	return nil
+}
+
+func (a *stressSessionLifecycle) PrepareSessionScopeClose(_ context.Context, req host.PrepareSessionScopeCloseRequest) (sessionscope.TeardownIdentity, error) {
+	scope, err := req.Session.SessionScope()
+	if err != nil {
+		return sessionscope.TeardownIdentity{}, err
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if identity := a.identities[scope]; identity.Valid() {
+		return identity, nil
+	}
+	proof, err := sessionscope.GenerateClosedSessionProof()
+	if err != nil {
+		return sessionscope.TeardownIdentity{}, err
+	}
+	identity, err := sessionscope.NewTeardownIdentity("stress_session_teardown", proof)
+	if err != nil {
+		return sessionscope.TeardownIdentity{}, err
+	}
+	a.identities[scope] = identity
+	return identity, nil
+}
+
+func (a *stressSessionLifecycle) CommitSessionScopeClose(_ context.Context, req host.CommitSessionScopeCloseRequest) error {
+	scope, err := req.Session.SessionScope()
+	if err != nil {
+		return err
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if !a.identities[scope].Matches(req.Identity) {
+		return errors.New("stress closed session identity mismatch")
+	}
+	a.closed[scope] = true
+	return nil
+}
+
+func (a *stressSessionLifecycle) ValidateClosedSessionScope(_ context.Context, req host.ValidateClosedSessionScopeRequest) error {
+	scope, err := req.Session.SessionScope()
+	if err != nil {
+		return err
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if !a.closed[scope] || !a.identities[scope].Matches(req.Identity) {
+		return errors.New("stress closed session identity mismatch")
+	}
+	return nil
+}
 
 func (stressAuthorization) Authorize(_ context.Context, req host.AuthorizationRequest) error {
 	if !req.Session.Valid() || !req.Action.Valid() || !req.Target.Kind.Valid() || req.Target.Kind != req.Action.Resource() {

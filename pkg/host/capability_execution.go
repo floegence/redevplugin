@@ -28,6 +28,7 @@ import (
 	"github.com/floegence/redevplugin/pkg/observability"
 	"github.com/floegence/redevplugin/pkg/operation"
 	"github.com/floegence/redevplugin/pkg/registry"
+	"github.com/floegence/redevplugin/pkg/sessionctx"
 	"github.com/floegence/redevplugin/pkg/stream"
 	"github.com/floegence/redevplugin/pkg/version"
 )
@@ -1342,6 +1343,7 @@ type executionLeaseRegistry struct {
 	mu                         sync.Mutex
 	leases                     map[string]*executionLease
 	leasesByPlugin             map[string]map[string]*executionLease
+	leasesBySession            map[sessionctx.SessionScope]map[string]*executionLease
 	operations                 map[string]*executionLease
 	streams                    map[string]*hostStreamSink
 	activeByQuotaKey           map[executionQuotaKey]int
@@ -1349,6 +1351,7 @@ type executionLeaseRegistry struct {
 	pluginGates                map[string]*executionPluginGate
 	terminalMaintenanceRunning bool
 	terminalMaintenanceNext    time.Time
+	sessionCancelScanned       uint64
 }
 
 const terminalExecutionMaintenanceInterval = time.Minute
@@ -1392,6 +1395,7 @@ func newExecutionLeaseRegistry() *executionLeaseRegistry {
 	return &executionLeaseRegistry{
 		leases:           map[string]*executionLease{},
 		leasesByPlugin:   map[string]map[string]*executionLease{},
+		leasesBySession:  map[sessionctx.SessionScope]map[string]*executionLease{},
 		operations:       map[string]*executionLease{},
 		streams:          map[string]*hostStreamSink{},
 		activeByQuotaKey: map[executionQuotaKey]int{},
@@ -1470,8 +1474,39 @@ func (r *executionLeaseRegistry) start(parent context.Context, binding capabilit
 		r.leasesByPlugin[binding.PluginInstanceID] = pluginLeases
 	}
 	pluginLeases[binding.InvocationID] = lease
+	if scope, ok := executionBindingSessionScope(binding); ok {
+		sessionLeases := r.leasesBySession[scope]
+		if sessionLeases == nil {
+			sessionLeases = map[string]*executionLease{}
+			r.leasesBySession[scope] = sessionLeases
+		}
+		sessionLeases[binding.InvocationID] = lease
+	}
 	r.activeByQuotaKey[quotaKey]++
 	return lease, nil
+}
+
+func (r *executionLeaseRegistry) cancelSession(scope sessionctx.SessionScope, cause error) []*executionLease {
+	leasing := r.sessionLeases(scope)
+	for _, lease := range leasing {
+		lease.requestCancel(cause)
+	}
+	return leasing
+}
+
+func (r *executionLeaseRegistry) sessionLeases(scope sessionctx.SessionScope) []*executionLease {
+	if r == nil || scope.Validate() != nil {
+		return nil
+	}
+	r.mu.Lock()
+	sessionLeases := r.leasesBySession[scope]
+	r.sessionCancelScanned = uint64(len(sessionLeases))
+	leasing := make([]*executionLease, 0, len(sessionLeases))
+	for _, lease := range sessionLeases {
+		leasing = append(leasing, lease)
+	}
+	r.mu.Unlock()
+	return leasing
 }
 
 func (r *executionLeaseRegistry) cancelPlugin(pluginInstanceID string, cause error) []*executionLease {
@@ -1591,6 +1626,14 @@ func executionQuotaKeyFor(binding capability.ExecutionBinding) executionQuotaKey
 	}
 }
 
+func executionBindingSessionScope(binding capability.ExecutionBinding) (sessionctx.SessionScope, bool) {
+	scope := sessionctx.SessionScope{
+		OwnerSessionHash: binding.OwnerSessionHash, OwnerUserHash: binding.OwnerUserHash,
+		OwnerEnvHash: binding.OwnerEnvHash, SessionChannelIDHash: binding.SessionChannelIDHash,
+	}
+	return scope, scope.Validate() == nil
+}
+
 func (r *executionLeaseRegistry) lockPlugin(pluginInstanceID string, write bool) func() {
 	pluginInstanceID = strings.TrimSpace(pluginInstanceID)
 	r.mu.Lock()
@@ -1697,6 +1740,13 @@ func (l *executionLease) finish() bool {
 			delete(pluginLeases, l.binding.InvocationID)
 			if len(pluginLeases) == 0 {
 				delete(l.registry.leasesByPlugin, l.binding.PluginInstanceID)
+			}
+			if scope, ok := executionBindingSessionScope(l.binding); ok {
+				sessionLeases := l.registry.leasesBySession[scope]
+				delete(sessionLeases, l.binding.InvocationID)
+				if len(sessionLeases) == 0 {
+					delete(l.registry.leasesBySession, scope)
+				}
 			}
 			quotaKey := executionQuotaKeyFor(l.binding)
 			if active := l.registry.activeByQuotaKey[quotaKey]; active <= 1 {

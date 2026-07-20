@@ -1,0 +1,22 @@
+{
+  "state": "complete",
+  "fenced": true,
+  "complete": true,
+  "counts": {
+    "surfaces": 1,
+    "asset_tickets": 1,
+    "asset_sessions": 1,
+    "plugin_gateway_tokens": 1,
+    "confirmation_tokens": 1,
+    "stream_tickets": 1,
+    "handle_grants": 1,
+    "confirmations": 1,
+    "operations": 1,
+    "streams": 1,
+    "runtime_executions": 1,
+    "active_network_requests": 1,
+    "sockets": 1,
+    "network_streams": 1,
+    "storage_hostcalls": 1
+  }
+}

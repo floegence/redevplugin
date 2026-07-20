@@ -143,6 +143,8 @@ type FileStore struct {
 	sqliteQueries   sync.Map
 }
 
+func (*FileStore) Durable() bool { return true }
+
 func Open(ctx context.Context, root string, catalog Catalog) (*FileStore, error) {
 	root = strings.TrimSpace(root)
 	if root == "" || catalog == nil {

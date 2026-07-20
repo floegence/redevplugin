@@ -23,6 +23,9 @@
     "PLUGIN_SECRET_SCOPE_MISMATCH",
     "PLUGIN_STORAGE_SCOPE_MISMATCH",
     "PLUGIN_ADAPTER_FAILURE",
+    "PLUGIN_SESSION_REVOKED",
+    "PLUGIN_SESSION_TEARDOWN_INCOMPLETE",
+    "PLUGIN_SESSION_FENCE_CAPACITY",
     "PLUGIN_CONFIRMATION_REQUIRED",
     "PLUGIN_CONFIRMATION_INVALID",
     "PLUGIN_TOKEN_EXPIRED",
@@ -329,10 +332,10 @@
   }
 
   // packages/redevplugin-ui/src/surface-scope.ts
-  var registrations = /* @__PURE__ */ new WeakMap();
+  var scopes = /* @__PURE__ */ new WeakMap();
   var PluginSurfaceScope = class _PluginSurfaceScope {
     constructor() {
-      registrations.set(this, /* @__PURE__ */ new Map());
+      scopes.set(this, { invalidated: false, registrations: /* @__PURE__ */ new Map() });
     }
     static create() {
       return new _PluginSurfaceScope();
@@ -1225,7 +1228,7 @@
   function isBridgeResponse(value) {
     if (!isBridgeResponseCandidate(value) || !validBridgeRequestID(value.id)) return false;
     if (value.ok === true) return Object.keys(value).every((key) => ["type", "id", "ok", "data"].includes(key));
-    if (value.ok !== false || typeof value.error_code !== "string" || !pluginBridgeErrorCodeSet.has(value.error_code) || typeof value.error !== "string" || value.error.length > 4096 || !Object.keys(value).every((key) => ["type", "id", "ok", "error_code", "error", "error_details", "mutation_outcome"].includes(key)) || value.mutation_outcome !== void 0 && value.mutation_outcome !== "not_committed" && value.mutation_outcome !== "unknown") {
+    if (value.ok !== false || typeof value.error_code !== "string" || !pluginBridgeErrorCodeSet.has(value.error_code) || typeof value.error !== "string" || value.error.length > 4096 || !Object.keys(value).every((key) => ["type", "id", "ok", "error_code", "error", "error_details", "mutation_outcome"].includes(key)) || value.mutation_outcome !== void 0 && value.mutation_outcome !== "committed" && value.mutation_outcome !== "not_committed" && value.mutation_outcome !== "unknown") {
       return false;
     }
     if (value.error_code === "PLUGIN_CAPABILITY_ERROR") return isCapabilityBusinessErrorDetails(value.error_details);

@@ -28,7 +28,7 @@ import {
 } from "../src/surface.js";
 import { PluginLocalImportClient } from "../src/local-import.js";
 import { opaqueSurfaceRenderLimits } from "../src/opaque-surface-policy.gen.js";
-import { disposePluginSurfaceScope, registerPluginSurface } from "../src/surface-scope.js";
+import { disposePluginSurfaceScope, invalidatePluginSurfaceScope, registerPluginSurface } from "../src/surface-scope.js";
 import { validatePluginUITree, type PluginUIElementVNode, type PluginUITextVNode } from "../src/ui-reconciler.js";
 
 const uiText = (key: string, text: string): PluginUITextVNode => ({ type: "text", key, text });
@@ -279,6 +279,31 @@ const hostBootstrap = {
   revokeEpoch: 3,
   runtimeGenerationId: "runtime_gen_1",
 };
+
+function sessionScopeRevokeResult() {
+  return {
+    state: "complete",
+    fenced: true,
+    complete: true,
+    counts: {
+      surfaces: 1,
+      asset_tickets: 0,
+      asset_sessions: 0,
+      plugin_gateway_tokens: 0,
+      confirmation_tokens: 0,
+      stream_tickets: 0,
+      handle_grants: 0,
+      confirmations: 0,
+      operations: 0,
+      streams: 0,
+      runtime_executions: 0,
+      active_network_requests: 0,
+      sockets: 0,
+      network_streams: 0,
+      storage_hostcalls: 0,
+    },
+  };
+}
 
 function platformSurfaceBootstrap(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
@@ -666,6 +691,29 @@ test("plugin bridge classifies cancellation before and after mutation dispatch",
   await waitFor(() => pluginPort.sent.length === 3);
   rendererPort.postMessage({ type: "redevplugin.bridge.response", id: "rpc_3", ok: true, data: { ok: true } });
   assert.deepEqual(await next, { ok: true });
+  client.dispose();
+});
+
+test("plugin bridge preserves committed mutation outcomes from the host", async () => {
+  const { port1: rendererPort, port2: pluginPort } = fakeChannel();
+  const client = new PluginBridgeClient({ port: pluginPort, surfaceHandle: "surface_12345678", timeoutMs: 1000 });
+
+  const call = client.call("documents.archive", { document_id: "doc-1" });
+  await waitFor(() => pluginPort.sent.length === 1);
+  rendererPort.postMessage({
+    type: "redevplugin.bridge.response",
+    id: "rpc_1",
+    ok: false,
+    error_code: "PLUGIN_ADAPTER_FAILURE",
+    error: "host mutation committed before the adapter failed",
+    mutation_outcome: "committed",
+  });
+
+  await assert.rejects(call, (error: unknown) =>
+    error instanceof PluginBridgeError &&
+    error.errorCode === "PLUGIN_ADAPTER_FAILURE" &&
+    error.mutationOutcome === "committed"
+  );
   client.dispose();
 });
 
@@ -1577,8 +1625,8 @@ test("surface scope teardown waits for every registration before reporting failu
   const failure = new Error("first teardown failed");
   let releaseSecond!: () => void;
   const second = new Promise<void>((resolve) => { releaseSecond = resolve; });
-  registerPluginSurface(scope, "plugin_instance_1", () => { throw failure; });
-  registerPluginSurface(scope, "plugin_instance_2", async () => { await second; });
+  registerPluginSurface(scope, "plugin_instance_1", () => { throw failure; }, () => undefined);
+  registerPluginSurface(scope, "plugin_instance_2", async () => { await second; }, () => undefined);
 
   let settled = false;
   const teardown = disposePluginSurfaceScope(scope).finally(() => { settled = true; });
@@ -1588,10 +1636,35 @@ test("surface scope teardown waits for every registration before reporting failu
   await assert.rejects(teardown, (error: unknown) => error === failure);
 });
 
+test("surface scope invalidation is local-only, durable for later registrations, and independent from disposal", async () => {
+  const scope = createPluginSurfaceScope();
+  let disposed = 0;
+  let invalidated = 0;
+  registerPluginSurface(
+    scope,
+    "plugin_instance_1",
+    () => { disposed += 1; },
+    () => { invalidated += 1; },
+  );
+
+  await invalidatePluginSurfaceScope(scope);
+  registerPluginSurface(
+    scope,
+    "plugin_instance_2",
+    () => { disposed += 1; },
+    () => { invalidated += 1; },
+  );
+  await Promise.resolve();
+  await disposePluginSurfaceScope(scope);
+
+  assert.equal(invalidated, 2);
+  assert.equal(disposed, 0);
+});
+
 test("surface scope canonicalizes plugin instance identifiers at registration and teardown", async () => {
   const scope = createPluginSurfaceScope();
   let disposed = 0;
-  registerPluginSurface(scope, "  plugin_instance_1  ", () => { disposed += 1; });
+  registerPluginSurface(scope, "  plugin_instance_1  ", () => { disposed += 1; }, () => undefined);
 
   await disposePluginSurfaceScope(scope, " plugin_instance_1 ");
 
@@ -1602,7 +1675,7 @@ test("surface scope rejects empty canonical plugin instance identifiers", async 
   const scope = createPluginSurfaceScope();
 
   assert.throws(
-    () => registerPluginSurface(scope, "   ", () => undefined),
+    () => registerPluginSurface(scope, "   ", () => undefined, () => undefined),
     (error: unknown) => error instanceof TypeError && error.message === "Plugin instance identifier must be a non-empty string",
   );
   await assert.rejects(
@@ -3097,25 +3170,123 @@ test("surface host revokes a server session when disposed before open", async ()
 	assert.deepEqual(JSON.parse(fetch.calls[0]?.init.body ?? ""), { bridge_nonce: "bridge_nonce_1" });
 });
 
-test("surface scope revoke immediately tears down every local host in the session", async () => {
+test("session scope revoke locally invalidates active hosts without per-surface HTTP", async () => {
   const frame = new FakeFrame();
   const scope = createPluginSurfaceScope();
+  const surfaceFetch = new FakeFetch();
   const host = createSurfaceHost(frame, {
     bootstrap: hostBootstrap,
     surfaceScope: scope,
-    hostTransport: createReDevPluginSurfaceTransport({ fetch: new FakeFetch().fetch }),
+    hostTransport: createReDevPluginSurfaceTransport({ fetch: surfaceFetch.fetch }),
   });
   const fetch = new FakeFetch();
-  fetch.push({ revoked_surface_count: 1 });
+  fetch.push(sessionScopeRevokeResult());
   const client = new PluginPlatformClient({ fetch: fetch.fetch, surfaceScope: scope });
 
-  assert.deepEqual(await client.revokeSurfaceScope(), { revoked_surface_count: 1 });
+  assert.equal((await client.revokeSessionScope()).state, "complete");
   assert.equal(frame.srcdoc, "");
+  assert.equal(frame.removed, true);
   assert.throws(
     () => host.sendLifecycle({ type: "hidden" }),
     (error: unknown) => error instanceof PluginBridgeError && error.errorCode === "PLUGIN_BRIDGE_DISPOSED",
   );
   assert.equal(fetch.calls.length, 1);
+  assert.equal(surfaceFetch.calls.length, 0);
+});
+
+test("session scope revoke cancels an opening slot locally without follow-up HTTP", async () => {
+  const fetch = new FakeFetch();
+  let resolveOpen!: (response: FetchResponseLike) => void;
+  fetch.pushHandler(async () => new Promise<FetchResponseLike>((resolve) => { resolveOpen = resolve; }));
+  fetch.push(sessionScopeRevokeResult());
+  const scope = createPluginSurfaceScope();
+  const stage = new FakeStage();
+  const slot = PluginSurfaceSlot.create({ stage: stage as unknown as HTMLElement });
+  const client = new PluginPlatformClient({ fetch: fetch.fetch, surfaceScope: scope });
+  const opening = client.openSurfaceInSlot(slot, {
+    plugin_instance_id: "plugin_instance_1",
+    surface_id: "example.view",
+    surface_instance_id: "surface_1",
+    expected_management_revision: 7,
+  });
+  await waitFor(() => fetch.calls.length === 1);
+
+  await client.revokeSessionScope();
+  assert.equal(stage.dataset.redevpluginSurfaceState, "empty");
+  resolveOpen({ ok: true, status: 200, json: async () => ({ ok: true, data: platformSurfaceBootstrap() }) });
+
+  await assert.rejects(opening, (error: unknown) =>
+    error instanceof PluginBridgeError && error.errorCode === "PLUGIN_BRIDGE_DISPOSED"
+  );
+  assert.equal(fetch.calls.length, 2);
+  assert.equal(fetch.calls[0]?.input, "/_redevplugin/api/plugins/surfaces/open");
+  assert.equal(fetch.calls[1]?.input, "/_redevplugin/api/plugins/session/revoke-scope");
+  assert.equal(stage.children.length, 0);
+  await slot.dispose();
+});
+
+test("an invalidated session scope rejects later surface openings before dispatch", async () => {
+  const fetch = new FakeFetch();
+  fetch.push(sessionScopeRevokeResult());
+  const scope = createPluginSurfaceScope();
+  const stage = new FakeStage();
+  const slot = PluginSurfaceSlot.create({ stage: stage as unknown as HTMLElement });
+  const client = new PluginPlatformClient({ fetch: fetch.fetch, surfaceScope: scope });
+
+  await client.revokeSessionScope();
+  await assert.rejects(client.openSurfaceInSlot(slot, {
+    plugin_instance_id: "plugin_instance_1",
+    surface_id: "example.view",
+    surface_instance_id: "surface_1",
+    expected_management_revision: 7,
+  }), (error: unknown) => error instanceof PluginBridgeError && error.errorCode === "PLUGIN_BRIDGE_DISPOSED");
+
+  assert.equal(fetch.calls.length, 1);
+  assert.equal(stage.children.length, 0);
+  assert.equal(stage.dataset.redevpluginSurfaceState, "empty");
+  await slot.dispose();
+});
+
+test("session scope revoke invalidates a ready slot and closes its local channel without follow-up HTTP", async () => {
+  const frame = new FakeFrame();
+  const channel = fakeChannel();
+  const restoreDOM = installSurfaceSlotDOM([frame], [channel]);
+  const fetch = new FakeFetch();
+  fetch.push(platformSurfaceBootstrap());
+  fetch.push(preparation());
+  fetch.push(gatewayLease());
+  fetch.push(sessionScopeRevokeResult());
+  const scope = createPluginSurfaceScope();
+  const stage = new FakeStage();
+  const slot = PluginSurfaceSlot.create({ stage: stage as unknown as HTMLElement });
+  const client = new PluginPlatformClient({ fetch: fetch.fetch, surfaceScope: scope });
+
+  try {
+    const opening = client.openSurfaceInSlot(slot, {
+      plugin_instance_id: "plugin_instance_1",
+      surface_id: "example.view",
+      surface_instance_id: "surface_1",
+      expected_management_revision: 7,
+    });
+    await waitFor(() => stage.children.length === 1);
+    frame.load();
+    await waitFor(() => frame.transferred.length === 1);
+    channel.port2.postMessage({ type: "redevplugin.surface.first_paint" });
+    channel.port2.postMessage({ type: "redevplugin.surface.worker_ready" });
+    await opening;
+
+    await client.revokeSessionScope();
+
+    assert.equal(frame.srcdoc, "");
+    assert.equal(frame.removed, true);
+    assert.equal(channel.port1.closed, true);
+    assert.equal(stage.dataset.redevpluginSurfaceState, "empty");
+    assert.equal(fetch.calls.length, 4);
+    assert.equal(fetch.calls[3]?.input, "/_redevplugin/api/plugins/session/revoke-scope");
+  } finally {
+    await slot.dispose();
+    restoreDOM();
+  }
 });
 
 test("plugin disable immediately tears down matching local surface hosts", async () => {

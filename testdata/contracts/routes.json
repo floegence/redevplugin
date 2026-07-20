@@ -206,6 +206,11 @@
   },
   {
     "method": "POST",
+    "path": "/_redevplugin/api/plugins/session/revoke-scope",
+    "effect": "mutation"
+  },
+  {
+    "method": "POST",
     "path": "/_redevplugin/api/plugins/surfaces/{surface_instance_id}/assets/read",
     "effect": "query"
   },
@@ -247,11 +252,6 @@
   {
     "method": "POST",
     "path": "/_redevplugin/api/plugins/surfaces/open",
-    "effect": "mutation"
-  },
-  {
-    "method": "POST",
-    "path": "/_redevplugin/api/plugins/surfaces/revoke-scope",
     "effect": "mutation"
   },
   {

@@ -116,14 +116,14 @@ function verifyRequiredArtifacts(bundleDir) {
     "contracts/spec/openapi/plugin-platform-v7.yaml",
     "contracts/spec/plugin/bridge-v5.schema.json",
     "contracts/spec/plugin/compatibility-manifest-v7.schema.json",
-    "contracts/spec/plugin/error-codes-v4.schema.json",
+    "contracts/spec/plugin/error-codes-v5.schema.json",
     "contracts/spec/plugin/host-capability-contract-v1.schema.json",
     "contracts/spec/plugin/host-capability-pin-v1.schema.json",
     "contracts/spec/plugin/host-capability-manifest-v1.schema.json",
     "contracts/spec/plugin/host-capability-compatibility-v1.schema.json",
     "contracts/spec/plugin/host-capability-signature-v1.schema.json",
     "contracts/spec/plugin/host-capability-notices-v1.schema.json",
-    "contracts/spec/plugin/ipc-v4.schema.json",
+    "contracts/spec/plugin/ipc-v5.schema.json",
     "contracts/spec/plugin/manifest-v5.schema.json",
     "contracts/spec/plugin/opaque-surface-document-v3.schema.json",
     "contracts/spec/plugin/opaque-surface-transport-v4.schema.json",
@@ -132,9 +132,10 @@ function verifyRequiredArtifacts(bundleDir) {
     "contracts/spec/plugin/release-metadata-v5.schema.json",
     "contracts/spec/plugin/release-manifest-v4.schema.json",
     "contracts/spec/plugin/resource-scope-v1.schema.json",
+    "contracts/spec/plugin/session-scope-v1.schema.json",
     "contracts/spec/plugin/source-policy-v1.schema.json",
     "contracts/spec/plugin/source-revocations-v1.schema.json",
-    "contracts/spec/plugin/token-ticket-v3.schema.json",
+    "contracts/spec/plugin/token-ticket-v4.schema.json",
     "contracts/spec/plugin/worker-invocation-v3.schema.json",
     "examples/host-capability/sample-documents-v1/example-documents.public.json",
     "examples/host-capability/sample-documents-v1/host-capability.pin.json",
@@ -268,14 +269,14 @@ function verifyRuntimeHello(bundleDir, expectedVersion, runtimeTarget, skipExecu
   }
   const hello =
     JSON.stringify({
-      ipc_version: "rust-ipc-v4",
+      ipc_version: "rust-ipc-v5",
       frame_type: "hello",
       request_id: "hello-1",
       runtime_generation_id: "gen-1",
       payload: {
         target: runtimeTargetPayload,
         host_process_id: process.pid,
-        host_ipc_version: "rust-ipc-v4",
+        host_ipc_version: "rust-ipc-v5",
         host_wasm_abi: "redevplugin-wasm-worker-v2",
         started_unix_nano: 1,
         channel_nonce: channelNonce,
@@ -307,7 +308,7 @@ function verifyRuntimeHello(bundleDir, expectedVersion, runtimeTarget, skipExecu
   const ack = JSON.parse(output);
   assertEqual(ack.frame_type, "hello_ack", "runtime hello frame_type");
   assertEqual(ack.payload?.runtime_version, expectedVersion, "runtime hello version");
-  assertEqual(ack.payload?.rust_ipc_version, "rust-ipc-v4", "runtime hello rust_ipc_version");
+  assertEqual(ack.payload?.rust_ipc_version, "rust-ipc-v5", "runtime hello rust_ipc_version");
   assertEqual(ack.payload?.wasm_abi_version, "redevplugin-wasm-worker-v2", "runtime hello wasm_abi_version");
   assertEqual(ack.payload?.channel_nonce, channelNonce, "runtime hello channel_nonce");
   assertDeepEqual(ack.payload?.limits, limits, "runtime hello limits");

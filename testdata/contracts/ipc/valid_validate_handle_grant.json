@@ -6,7 +6,7 @@
   "runtime_generation_id": "g1",
   "want_error": false,
   "frame": {
-    "ipc_version": "rust-ipc-v4",
+    "ipc_version": "rust-ipc-v5",
     "frame_type": "validate_handle_grant",
     "request_id": "r1:handle",
     "parent_request_id": "r1",

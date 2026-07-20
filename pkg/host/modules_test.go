@@ -14,6 +14,8 @@ import (
 	"github.com/floegence/redevplugin/pkg/pluginpkg"
 	"github.com/floegence/redevplugin/pkg/registry"
 	"github.com/floegence/redevplugin/pkg/secrets"
+	"github.com/floegence/redevplugin/pkg/sessionctx"
+	"github.com/floegence/redevplugin/pkg/sessionscope"
 )
 
 func TestConfigExposesOnlyCoreAndOptionalModules(t *testing.T) {
@@ -96,6 +98,147 @@ func TestOpenConfigRejectsTypedNilAdapters(t *testing.T) {
 			t.Fatalf("HostConfigError = %#v", configErr)
 		}
 	})
+
+	t.Run("session lifecycle", func(t *testing.T) {
+		config := modularTestConfig(t)
+		var lifecycle *testSessionLifecycleAdapter
+		config.Core.SessionLifecycle = lifecycle
+
+		_, err := Open(context.Background(), config)
+		var configErr *HostConfigError
+		if !errors.As(err, &configErr) || !errors.Is(err, ErrHostConfig) {
+			t.Fatalf("Open() error = %v, want HostConfigError", err)
+		}
+		if configErr.Module != "core" || configErr.Adapter != "session lifecycle adapter" {
+			t.Fatalf("HostConfigError = %#v", configErr)
+		}
+	})
+
+	t.Run("session coordinator", func(t *testing.T) {
+		config := modularTestConfig(t)
+		var coordinator *sessionscope.Coordinator
+		config.Core.SessionScopes = coordinator
+
+		_, err := Open(context.Background(), config)
+		var configErr *HostConfigError
+		if !errors.As(err, &configErr) || !errors.Is(err, ErrHostConfig) {
+			t.Fatalf("Open() error = %v, want HostConfigError", err)
+		}
+		if configErr.Module != "core" || configErr.Adapter != "session scope coordinator" {
+			t.Fatalf("HostConfigError = %#v", configErr)
+		}
+	})
+}
+
+func TestOpenConfigRequiresDurableFenceForDurableResources(t *testing.T) {
+	config := modularTestConfig(t)
+	memoryStore, err := sessionscope.NewMemoryStore(sessionscope.StoreOptions{})
+	if err != nil {
+		t.Fatalf("NewMemoryStore() error = %v", err)
+	}
+	config.Core.SessionScopes, err = sessionscope.NewCoordinator(memoryStore)
+	if err != nil {
+		t.Fatalf("NewCoordinator() error = %v", err)
+	}
+	_, err = Open(context.Background(), config)
+	var configErr *HostConfigError
+	if !errors.As(err, &configErr) || !errors.Is(err, ErrDurableSessionScopeRequired) {
+		t.Fatalf("Open() error = %v, want durable HostConfigError", err)
+	}
+	if configErr.Module != "core" || configErr.Adapter != "session scope coordinator" {
+		t.Fatalf("HostConfigError = %#v", configErr)
+	}
+}
+
+func TestOpenReconcilesRetainedSessionScopesBeforeServing(t *testing.T) {
+	config := modularTestConfig(t)
+	session := sessionctx.Context{
+		OwnerSessionHash: "startup_session", OwnerUserHash: "startup_user",
+		OwnerEnvHash: "startup_env", SessionChannelIDHash: "startup_channel",
+	}
+	scope, err := session.SessionScope()
+	if err != nil {
+		t.Fatal(err)
+	}
+	proof, err := sessionscope.GenerateClosedSessionProof()
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity, err := sessionscope.NewTeardownIdentity("startup_reconcile", proof)
+	if err != nil {
+		t.Fatal(err)
+	}
+	teardown, _, err := config.Core.SessionScopes.BeginTeardown(context.Background(), scope, identity, time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := teardown.MarkIncomplete(context.Background(), time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	teardown.Release()
+	lifecycle := &recordingSessionLifecycleAdapter{identity: identity}
+	config.Core.SessionLifecycle = lifecycle
+
+	h, err := Open(context.Background(), config)
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	t.Cleanup(func() { _ = h.Close() })
+	if len(lifecycle.reconciled) != 1 || lifecycle.reconciled[0].SessionScope != scope || lifecycle.reconciled[0].Snapshot.State != sessionscope.StateIncomplete {
+		t.Fatalf("reconciled retained session scopes = %#v", lifecycle.reconciled)
+	}
+}
+
+func TestOpenRejectsRetainedSessionScopeReconciliationFailure(t *testing.T) {
+	config := modularTestConfig(t)
+	adapter := &recordingSessionLifecycleAdapter{reconcileErr: errors.New("retained identity unavailable")}
+	config.Core.SessionLifecycle = adapter
+	if _, err := Open(context.Background(), config); !errors.Is(err, ErrAdapterFailure) {
+		t.Fatalf("Open() error = %v, want ErrAdapterFailure", err)
+	}
+	if adapter.reconcileCalls != 1 {
+		t.Fatal("Open() did not invoke startup session reconciliation")
+	}
+}
+
+type testSessionLifecycleAdapter struct{}
+
+func (*testSessionLifecycleAdapter) ReconcileRetainedSessionScopes(_ context.Context, req ReconcileRetainedSessionScopesRequest) error {
+	for _, retained := range req.Scopes {
+		if !retained.SessionScope.Valid() || !retained.Snapshot.Fenced {
+			return errors.New("retained session scope is invalid")
+		}
+	}
+	return nil
+}
+
+func (*testSessionLifecycleAdapter) PrepareSessionScopeClose(_ context.Context, req PrepareSessionScopeCloseRequest) (sessionscope.TeardownIdentity, error) {
+	if !req.Session.Valid() {
+		return sessionscope.TeardownIdentity{}, sessionctx.ErrSessionRequired
+	}
+	proof, err := sessionscope.GenerateClosedSessionProof()
+	if err != nil {
+		return sessionscope.TeardownIdentity{}, err
+	}
+	identity, err := sessionscope.NewTeardownIdentity("teardown_test", proof)
+	if err != nil {
+		return sessionscope.TeardownIdentity{}, err
+	}
+	return identity, nil
+}
+
+func (*testSessionLifecycleAdapter) CommitSessionScopeClose(_ context.Context, req CommitSessionScopeCloseRequest) error {
+	if !req.Session.Valid() || !req.Identity.Valid() {
+		return sessionctx.ErrSessionRequired
+	}
+	return nil
+}
+
+func (*testSessionLifecycleAdapter) ValidateClosedSessionScope(_ context.Context, req ValidateClosedSessionScopeRequest) error {
+	if !req.Session.Valid() || !req.Identity.Valid() {
+		return sessionctx.ErrSessionRequired
+	}
+	return nil
 }
 
 func TestOpenConfigRejectsIncompleteDeclaredModules(t *testing.T) {
@@ -341,5 +484,7 @@ func modularTestConfig(t *testing.T) Config {
 		Operations:           adapters.Operations,
 		ConfirmationIntents:  adapters.ConfirmationIntents,
 		Streams:              adapters.Streams,
+		SessionLifecycle:     adapters.SessionLifecycle,
+		SessionScopes:        adapters.SessionScopes,
 	}}
 }

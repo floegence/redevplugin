@@ -34,6 +34,7 @@ import (
 	"github.com/floegence/redevplugin/pkg/runtimetarget"
 	"github.com/floegence/redevplugin/pkg/security"
 	"github.com/floegence/redevplugin/pkg/sessionctx"
+	"github.com/floegence/redevplugin/pkg/sessionscope"
 	"github.com/floegence/redevplugin/pkg/settings"
 	"github.com/floegence/redevplugin/pkg/storage"
 	"github.com/floegence/redevplugin/pkg/stream"
@@ -95,28 +96,29 @@ type mutationErrorBody struct {
 }
 
 type errorDetails struct {
-	Reason                     string         `json:"reason,omitempty"`
-	Path                       string         `json:"path,omitempty"`
-	Pointer                    string         `json:"pointer,omitempty"`
-	CapabilityID               string         `json:"capability_id,omitempty"`
-	CapabilityVersion          string         `json:"capability_version,omitempty"`
-	DetailSchemaSHA256         string         `json:"detail_schema_sha256,omitempty"`
-	BusinessErrorCode          string         `json:"business_error_code,omitempty"`
-	BusinessErrorDetails       map[string]any `json:"business_error_details,omitempty"`
-	WorkerErrorCode            string         `json:"worker_error_code,omitempty"`
-	WorkerErrorMessage         string         `json:"worker_error_message,omitempty"`
-	WorkerErrorOrigin          string         `json:"worker_error_origin,omitempty"`
-	PluginInstanceID           string         `json:"plugin_instance_id,omitempty"`
-	ExpectedPolicyRevision     uint64         `json:"expected_policy_revision,omitempty"`
-	ActualPolicyRevision       uint64         `json:"actual_policy_revision,omitempty"`
-	ExpectedManagementRevision uint64         `json:"expected_management_revision,omitempty"`
-	ActualManagementRevision   uint64         `json:"actual_management_revision,omitempty"`
-	ExpectedRevokeEpoch        *uint64        `json:"expected_revoke_epoch,omitempty"`
-	ActualRevokeEpoch          *uint64        `json:"actual_revoke_epoch,omitempty"`
-	ExpectedBindingRevision    uint64         `json:"expected_binding_revision,omitempty"`
-	ActualBindingRevision      uint64         `json:"actual_binding_revision,omitempty"`
-	ExpectedValuesRevision     *uint64        `json:"expected_values_revision,omitempty"`
-	ActualValuesRevision       *uint64        `json:"actual_values_revision,omitempty"`
+	Reason                     string                      `json:"reason,omitempty"`
+	Path                       string                      `json:"path,omitempty"`
+	Pointer                    string                      `json:"pointer,omitempty"`
+	CapabilityID               string                      `json:"capability_id,omitempty"`
+	CapabilityVersion          string                      `json:"capability_version,omitempty"`
+	DetailSchemaSHA256         string                      `json:"detail_schema_sha256,omitempty"`
+	BusinessErrorCode          string                      `json:"business_error_code,omitempty"`
+	BusinessErrorDetails       map[string]any              `json:"business_error_details,omitempty"`
+	WorkerErrorCode            string                      `json:"worker_error_code,omitempty"`
+	WorkerErrorMessage         string                      `json:"worker_error_message,omitempty"`
+	WorkerErrorOrigin          string                      `json:"worker_error_origin,omitempty"`
+	PluginInstanceID           string                      `json:"plugin_instance_id,omitempty"`
+	ExpectedPolicyRevision     uint64                      `json:"expected_policy_revision,omitempty"`
+	ActualPolicyRevision       uint64                      `json:"actual_policy_revision,omitempty"`
+	ExpectedManagementRevision uint64                      `json:"expected_management_revision,omitempty"`
+	ActualManagementRevision   uint64                      `json:"actual_management_revision,omitempty"`
+	ExpectedRevokeEpoch        *uint64                     `json:"expected_revoke_epoch,omitempty"`
+	ActualRevokeEpoch          *uint64                     `json:"actual_revoke_epoch,omitempty"`
+	ExpectedBindingRevision    uint64                      `json:"expected_binding_revision,omitempty"`
+	ActualBindingRevision      uint64                      `json:"actual_binding_revision,omitempty"`
+	ExpectedValuesRevision     *uint64                     `json:"expected_values_revision,omitempty"`
+	ActualValuesRevision       *uint64                     `json:"actual_values_revision,omitempty"`
+	SessionScope               *sessionScopeRevokeResponse `json:"session_scope,omitempty"`
 }
 
 var platformErrorCodeSet = func() map[security.ErrorCode]struct{} {
@@ -175,7 +177,7 @@ func (r mutationErrorResponse) MarshalJSON() ([]byte, error) {
 	if strings.TrimSpace(r.Message) == "" || utf8.RuneCountInString(r.Message) > 4096 {
 		return nil, errors.New("platform error message is required")
 	}
-	if r.MutationOutcome != mutation.OutcomeNotCommitted && r.MutationOutcome != mutation.OutcomeUnknown {
+	if r.MutationOutcome != mutation.OutcomeCommitted && r.MutationOutcome != mutation.OutcomeNotCommitted && r.MutationOutcome != mutation.OutcomeUnknown {
 		return nil, fmt.Errorf("unsupported mutation outcome %q", r.MutationOutcome)
 	}
 	if err := r.Details.validateForCode(r.Code); err != nil {
@@ -245,6 +247,11 @@ func (d errorDetails) validateForCode(code security.ErrorCode) error {
 	case security.ErrManifestInvalid, security.ErrPackageInvalid, security.ErrPackageTooLarge, security.ErrPackagePathForbidden:
 		if _, ok := packageValidationReasonSet[d.Reason]; !ok || d.hasNonPackageDetails() {
 			return errors.New("package validation details are incomplete")
+		}
+	case security.ErrSessionTeardownIncomplete:
+		if d.SessionScope == nil || !d.SessionScope.validIncomplete() || d.hasPackageDetails() ||
+			d.hasRevisionDetails() || d.hasCapabilityDetails() || d.hasWorkerDetails() {
+			return errors.New("session teardown details are incomplete")
 		}
 	default:
 		if !d.empty() {
@@ -322,7 +329,7 @@ func (d errorDetails) hasNonPackageDetails() bool {
 }
 
 func (d errorDetails) empty() bool {
-	return !d.hasPackageDetails() && !d.hasRevisionDetails() && !d.hasCapabilityDetails() && !d.hasWorkerDetails()
+	return !d.hasPackageDetails() && !d.hasRevisionDetails() && !d.hasCapabilityDetails() && !d.hasWorkerDetails() && d.SessionScope == nil
 }
 
 func (d errorDetails) MarshalJSON() ([]byte, error) {
@@ -547,8 +554,6 @@ type rejectSurfaceConfirmationRequest struct {
 type disposeSurfaceRequest struct {
 	BridgeNonce string `json:"bridge_nonce"`
 }
-
-type revokeSurfaceScopeRequest struct{}
 
 type bridgeTokenRequest struct {
 	Handshake                 pluginBridgeHandshake `json:"handshake"`
@@ -998,7 +1003,7 @@ var routes = []routeSpec{
 	queryRoute("/_redevplugin/api/plugins/features/query", websecurity.RouteActionListFeatures, func(h *Handler) http.HandlerFunc { return h.handleFeatures }),
 	queryRoute("/_redevplugin/api/plugins/platform/compatibility/query", websecurity.RouteActionGetCompatibility, func(h *Handler) http.HandlerFunc { return h.handleCompatibility }),
 	mutationRoute(http.MethodPost, "/_redevplugin/api/plugins/surfaces/open", websecurity.RouteActionOpenSurface, func(h *Handler) http.HandlerFunc { return h.handleOpenSurface }),
-	mutationRoute(http.MethodPost, "/_redevplugin/api/plugins/surfaces/revoke-scope", websecurity.RouteActionRevokeSurfaceScope, func(h *Handler) http.HandlerFunc { return h.handleRevokeSurfaceScope }),
+	mutationRoute(http.MethodPost, "/_redevplugin/api/plugins/session/revoke-scope", websecurity.RouteActionRevokeSessionScope, func(h *Handler) http.HandlerFunc { return h.handleRevokeSessionScope }),
 	mutationRoute(http.MethodPost, "/_redevplugin/api/plugins/surfaces/{surface_instance_id}/prepare", websecurity.RouteActionPrepareSurface, func(h *Handler) http.HandlerFunc { return h.handlePrepareSurface }),
 	mutationRoute(http.MethodPost, "/_redevplugin/api/plugins/surfaces/{surface_instance_id}/bridge-token", websecurity.RouteActionMintBridgeToken, func(h *Handler) http.HandlerFunc { return h.handleBridgeToken }),
 	queryRoute("/_redevplugin/api/plugins/surfaces/{surface_instance_id}/assets/read", websecurity.RouteActionReadSurfaceAsset, func(h *Handler) http.HandlerFunc { return h.handleReadSurfaceAsset }),
@@ -1919,19 +1924,40 @@ func (h Handler) handleDisposeSurface(w http.ResponseWriter, r *http.Request) {
 	writeMutationSuccess(w, surfaceDisposeResponse{Disposed: true})
 }
 
-func (h Handler) handleRevokeSurfaceScope(w http.ResponseWriter, r *http.Request) {
-	var req revokeSurfaceScopeRequest
-	if err := decodeJSON(r, &req); err != nil {
+func (h Handler) handleRevokeSessionScope(w http.ResponseWriter, r *http.Request) {
+	if err := decodeClosedJSONObject(r); err != nil {
 		writeMutationInvalidRequestError(w, err)
 		return
 	}
-	revoked, err := h.host.RevokeSurfaceScope(r.Context(), host.RevokeSurfaceScopeRequest{})
+	result, err := h.host.RevokeSessionScope(r.Context(), host.RevokeSessionScopeRequest{})
 	if err != nil {
-		code := errorCodeForBridgeError(err)
-		writeMutationError(w, httpStatusForBridgeError(err), code, h.publicFailureMessage(r.Context(), "surface.revoke-scope", code, err), errorDetails{}, mutation.ForError(err))
+		code, status := sessionScopeRevokeError(err)
+		details := errorDetails{}
+		if code == security.ErrSessionTeardownIncomplete {
+			response := publicSessionScopeRevocation(result)
+			details.SessionScope = &response
+		}
+		writeMutationError(w, status, code, h.publicFailureMessage(r.Context(), "session.revoke_scope", code, err), details, mutation.ForError(err))
 		return
 	}
-	writeMutationSuccess(w, surfaceScopeRevokeResponse{RevokedSurfaceCount: revoked})
+	writeMutationSuccess(w, publicSessionScopeRevocation(result))
+}
+
+func sessionScopeRevokeError(err error) (security.ErrorCode, int) {
+	switch {
+	case errors.Is(err, host.ErrSessionTeardownIncomplete):
+		return security.ErrSessionTeardownIncomplete, http.StatusServiceUnavailable
+	case errors.Is(err, sessionscope.ErrFenceCapacity):
+		return security.ErrSessionFenceCapacity, http.StatusServiceUnavailable
+	case errors.Is(err, sessionscope.ErrSessionRevoked):
+		return security.ErrSessionRevoked, http.StatusGone
+	case errors.Is(err, host.ErrActionDenied):
+		return security.ErrActionDenied, http.StatusForbidden
+	case errors.Is(err, host.ErrAdapterFailure):
+		return security.ErrAdapterFailure, http.StatusBadGateway
+	default:
+		return security.ErrAdapterFailure, http.StatusInternalServerError
+	}
 }
 
 func (h Handler) handleRPC(w http.ResponseWriter, r *http.Request) {
@@ -2736,6 +2762,31 @@ func decodeJSON(r *http.Request, dst any) error {
 	return decodeStrictJSON(raw, dst)
 }
 
+func decodeClosedJSONObject(r *http.Request) error {
+	defer r.Body.Close()
+	if err := validateJSONContentType(r.Header.Values("Content-Type")); err != nil {
+		return err
+	}
+	raw, err := readLimitedJSONBody(r, defaultJSONRequestMaxBytes)
+	if err != nil {
+		return err
+	}
+	var object map[string]json.RawMessage
+	if err := validateJSONLimits(raw, defaultJSONMaxDepth, reflect.TypeOf(object)); err != nil {
+		return err
+	}
+	if err := decodeStrictJSON(raw, &object); err != nil {
+		return err
+	}
+	if object == nil {
+		return errors.New("request body must be an object")
+	}
+	if len(object) != 0 {
+		return errors.New("request body must be an empty object")
+	}
+	return nil
+}
+
 func readLimitedJSONBody(r *http.Request, maxBytes int64) ([]byte, error) {
 	raw, err := io.ReadAll(io.LimitReader(r.Body, maxBytes+1))
 	if err != nil {
@@ -3010,6 +3061,8 @@ func requiredScopeKind(scope sessionctx.ScopeKind) (sessionctx.ScopeKind, error)
 
 func errorCodeForBridgeError(err error) security.ErrorCode {
 	switch {
+	case errors.Is(err, sessionscope.ErrSessionRevoked):
+		return security.ErrSessionRevoked
 	case errors.Is(err, host.ErrAdapterFailure):
 		return security.ErrAdapterFailure
 	case errors.Is(err, host.ErrActionDenied):
@@ -3093,6 +3146,8 @@ func httpStatusForOpenSurfaceError(err error) int {
 
 func httpStatusForBridgeError(err error) int {
 	switch {
+	case errors.Is(err, sessionscope.ErrSessionRevoked):
+		return http.StatusGone
 	case errors.Is(err, host.ErrAdapterFailure):
 		return http.StatusBadGateway
 	case errors.Is(err, bridge.ErrTokenExpired), errors.Is(err, bridge.ErrTokenReplay), errors.Is(err, bridge.ErrTokenAlreadyBound), errors.Is(err, bridge.ErrTokenInvalid), errors.Is(err, bridge.ErrTokenAudience), errors.Is(err, bridge.ErrTokenRevoked), errors.Is(err, bridge.ErrTokenKind), errors.Is(err, bridge.ErrSurfaceSessionNotFound), errors.Is(err, bridge.ErrSurfaceSessionExpired), errors.Is(err, bridge.ErrAssetSessionRequired):
@@ -3247,6 +3302,12 @@ func publicPluginErrorMessage(code security.ErrorCode) string {
 		return "plugin storage scope does not match the request"
 	case security.ErrAdapterFailure:
 		return "plugin host adapter failed"
+	case security.ErrSessionRevoked:
+		return "plugin session is revoked"
+	case security.ErrSessionTeardownIncomplete:
+		return "plugin session teardown is incomplete"
+	case security.ErrSessionFenceCapacity:
+		return "plugin session fence capacity is exhausted"
 	case security.ErrCSRFRequired:
 		return "csrf token is required"
 	case security.ErrCSRFInvalid:
@@ -3833,6 +3894,8 @@ func httpStatusForSecretError(err error) int {
 
 func errorCodeForAssetError(err error) security.ErrorCode {
 	switch {
+	case errors.Is(err, sessionscope.ErrSessionRevoked):
+		return security.ErrSessionRevoked
 	case errors.Is(err, host.ErrAdapterFailure):
 		return security.ErrAdapterFailure
 	case errors.Is(err, host.ErrActionDenied):
@@ -3861,6 +3924,8 @@ func isSandboxTokenValidationError(err error) bool {
 
 func httpStatusForAssetError(err error) int {
 	switch {
+	case errors.Is(err, sessionscope.ErrSessionRevoked):
+		return http.StatusGone
 	case errors.Is(err, host.ErrAdapterFailure):
 		return http.StatusBadGateway
 	case errors.Is(err, bridge.ErrTokenExpired), errors.Is(err, bridge.ErrTokenReplay), errors.Is(err, bridge.ErrTokenInvalid), errors.Is(err, bridge.ErrTokenAudience), errors.Is(err, bridge.ErrTokenRevoked), errors.Is(err, bridge.ErrTokenKind), errors.Is(err, bridge.ErrSurfaceSessionNotFound), errors.Is(err, bridge.ErrSurfaceSessionExpired), errors.Is(err, bridge.ErrAssetSessionRequired):

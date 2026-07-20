@@ -1,0 +1,104 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.redevplugin.dev/plugin/session-scope-v1.schema.json",
+  "title": "ReDevPlugin session scope lifecycle v1",
+  "description": "Exact authenticated-session ownership, teardown phases, and public revoke results. Teardown identities and closed-session proofs are intentionally excluded from every wire shape.",
+  "$ref": "#/$defs/public_revoke_result",
+  "$defs": {
+    "owner_hash": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$"
+    },
+    "session_scope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "owner_session_hash",
+        "owner_user_hash",
+        "owner_env_hash",
+        "session_channel_id_hash"
+      ],
+      "properties": {
+        "owner_session_hash": { "$ref": "#/$defs/owner_hash" },
+        "owner_user_hash": { "$ref": "#/$defs/owner_hash" },
+        "owner_env_hash": { "$ref": "#/$defs/owner_hash" },
+        "session_channel_id_hash": { "$ref": "#/$defs/owner_hash" }
+      }
+    },
+    "teardown_phase": {
+      "type": "string",
+      "enum": ["bridge", "confirmation", "execution", "operation", "stream", "runtime"]
+    },
+    "revoke_counts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "surfaces",
+        "asset_tickets",
+        "asset_sessions",
+        "plugin_gateway_tokens",
+        "confirmation_tokens",
+        "stream_tickets",
+        "handle_grants",
+        "confirmations",
+        "operations",
+        "streams",
+        "runtime_executions",
+        "active_network_requests",
+        "sockets",
+        "network_streams",
+        "storage_hostcalls"
+      ],
+      "properties": {
+        "surfaces": { "$ref": "#/$defs/count" },
+        "asset_tickets": { "$ref": "#/$defs/count" },
+        "asset_sessions": { "$ref": "#/$defs/count" },
+        "plugin_gateway_tokens": { "$ref": "#/$defs/count" },
+        "confirmation_tokens": { "$ref": "#/$defs/count" },
+        "stream_tickets": { "$ref": "#/$defs/count" },
+        "handle_grants": { "$ref": "#/$defs/count" },
+        "confirmations": { "$ref": "#/$defs/count" },
+        "operations": { "$ref": "#/$defs/count" },
+        "streams": { "$ref": "#/$defs/count" },
+        "runtime_executions": { "$ref": "#/$defs/count" },
+        "active_network_requests": { "$ref": "#/$defs/count" },
+        "sockets": { "$ref": "#/$defs/count" },
+        "network_streams": { "$ref": "#/$defs/count" },
+        "storage_hostcalls": { "$ref": "#/$defs/count" }
+      }
+    },
+    "count": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "complete_revoke_result": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["state", "fenced", "complete", "counts"],
+      "properties": {
+        "state": { "const": "complete" },
+        "fenced": { "const": true },
+        "complete": { "const": true },
+        "counts": { "$ref": "#/$defs/revoke_counts" }
+      }
+    },
+    "incomplete_revoke_result": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["state", "fenced", "complete", "counts"],
+      "properties": {
+        "state": { "const": "incomplete" },
+        "fenced": { "const": true },
+        "complete": { "const": false },
+        "counts": { "$ref": "#/$defs/revoke_counts" }
+      }
+    },
+    "public_revoke_result": {
+      "oneOf": [
+        { "$ref": "#/$defs/complete_revoke_result" },
+        { "$ref": "#/$defs/incomplete_revoke_result" }
+      ]
+    }
+  }
+}
