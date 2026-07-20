@@ -151,6 +151,8 @@ export GOWORK=off
   test -x .githooks/pre-push
   test -x scripts/test_redevplugin_pre_push_hook.sh
   node --check scripts/resolve_redevplugin_smoke_version.mjs
+  node --test scripts/verify_ci_checkout_history.test.mjs
+  node scripts/verify_ci_checkout_history.mjs
   grep -q 'scripts/resolve_redevplugin_smoke_version.mjs stress.local' scripts/check_redevplugin_stress.sh
   scripts/test_redevplugin_pre_push_hook.sh
   grep -q 'Main Pre-Push Equivalent' .github/workflows/ci.yml
