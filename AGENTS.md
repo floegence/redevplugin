@@ -10,8 +10,9 @@ Goals:
 - preserve intentional commit history;
 - keep the Git workflow self-contained here instead of depending on another
   repository's guide for day-to-day development;
-- publish versioned Go, TypeScript, Rust runtime, and machine-contract artifacts
-  that host products such as Redeven can consume without local checkout wiring.
+- publish versioned Go modules, npm packages, Rust source crates, and
+  machine-contract artifacts that host products such as Redeven can consume
+  without local checkout wiring.
 
 ## Repository Scope
 
@@ -38,8 +39,8 @@ This repository owns:
   hashes;
 - CLI commands, plugin templates, host-neutral Flower-generation-compatible scaffolds,
   package/validate/dev-harness tools, replay fixtures, and cross-language tests;
-- release artifacts, checksums, signatures, license notices, and compatibility
-  manifests for all published platform components.
+- package publication evidence, registry checksums and provenance, license
+  notices, and compatibility manifests for all published platform components.
 
 The repository must be usable as a library/runtime product, not just as a
 collection of specifications. When a platform feature is declared supported, it
@@ -50,16 +51,17 @@ must provide the host-importable implementation surface that products need:
 - TypeScript packages that expose the sandbox surface host, bridge SDK,
   generated clients, and host-neutral helpers needed by plugin UIs and product
   shells;
-- a released Rust `redevplugin-runtime` binary plus a Go-managed supervisor
-  contract for launch, health, shutdown, restart, diagnostics, and artifact
-  resolution;
+- published Rust source crates for `redevplugin-runtime` and its support crates,
+  plus a Go-managed supervisor contract for admission, launch, health, shutdown,
+  restart, and diagnostics;
 - generated contracts, fixtures, compatibility hashes, and release metadata that
   let host products validate the exact behavior they are consuming.
 
-The Go, TypeScript, and Rust pieces are one platform contract. A host product
-must be able to import the Go library, mount the HTTP adapter, use the
-TypeScript surface/bridge package, and launch the released Rust runtime without
-copying source or inventing a host-local protocol. Keep APIs embeddable,
+The Go, TypeScript, and Rust pieces are one platform contract. ReDevPlugin
+publishes the Rust runtime as source crates. A host product must be able to
+import the Go library, mount the HTTP adapter, use the TypeScript surface/bridge
+package, and build the runtime binary from exact published Rust source crates
+without sibling wiring or a host-local protocol. Keep APIs embeddable,
 versioned, and generated where practical.
 
 ReDevPlugin must provide the full front-end and back-end platform implementation
@@ -75,10 +77,11 @@ surface that a host imports:
   validators, permission and confirmation pipeline, token/ticket issuance,
   broker contracts, operation/stream envelopes, runtime manager/supervisor,
   stable errors, audit DTOs, HTTP adapter, and adapter interfaces.
-- Plugin backend execution lives in the released Rust `redevplugin-runtime`:
-  WASM actor/job execution, IPC, hostcall contracts, storage/network hot paths,
-  target classification, stream handling, leases, quotas, revoke epochs,
-  generation IDs, and diagnostics.
+- Plugin backend execution lives in the published Rust source crates for
+  `redevplugin-runtime`: WASM actor/job execution, IPC, hostcall contracts,
+  storage/network hot paths, target classification, stream handling, leases,
+  quotas, revoke epochs, generation IDs, and diagnostics. Host products build
+  the executable bytes but do not own or fork these runtime semantics.
 - Host products provide concrete adapters and product policy. They should never
   be asked to implement a second manifest parser, lifecycle state machine,
   sandbox bridge, token issuer, storage/network broker, operation stream,
@@ -121,8 +124,9 @@ handling, audit/error shape, and generated client/contract behavior.
 The intended host integration shape is:
 
 - the host imports released ReDevPlugin Go and TypeScript packages;
-- the host selects and bundles a released `redevplugin-runtime` binary for the
-  current platform and release channel;
+- the host pins the released ReDevPlugin package set and builds the runtime
+  binary from verified published source crates with a fixed product toolchain;
+- the host verifies, signs, and bundles that product-owned runtime binary;
 - the host mounts ReDevPlugin HTTP handlers or calls the embeddable lifecycle
   APIs instead of reimplementing endpoint behavior;
 - the host registers explicit adapters for sessions, origin/CSRF policy,
@@ -213,7 +217,7 @@ Use this responsibility matrix as the default decision rule:
 | Package and trust | Package layout, canonical hashes, signing rules, manifest validation, trust state contracts, compatibility manifests | Which registries or local sources are allowed, product review UX, enterprise policy caps |
 | Lifecycle | Install, enable, open, disable, uninstall, update, downgrade, export/import, diagnostics, and data-retention APIs | Where those actions appear in product UI, who may invoke them, and how they are audited in the host product |
 | UI runtime | Sandboxed iframe bootstrap, asset ticket/session protocol, bridge SDK, opaque-origin-safe source/port-bound MessageChannel messaging, settings and intent contracts | Activity Bar, Workbench, Settings, Desktop shell, route mounting, native product chrome, and product copy |
-| Backend runtime | Rust `redevplugin-runtime`, runtime manager/supervisor, WASM actor/job model, IPC, leases, quotas, revocation, hostcall contracts, stream envelopes | Release artifact selection, process placement in the product lifecycle, and product diagnostics presentation |
+| Backend runtime | Rust `redevplugin-runtime` source crates, runtime admission and manager/supervisor, WASM actor/job model, IPC, leases, quotas, revocation, hostcall contracts, stream envelopes | Fixed package coordinates and toolchain, verified source build, product binary/SBOM/provenance/signature, process placement, and diagnostics presentation |
 | Storage, network, and secrets | Host-neutral broker contracts, request contexts, target classifiers, quotas, secret reference contracts, and stable errors | Concrete vault, filesystem root, environment policy, allowlists, proxy settings, and product-specific grant UX |
 | Business capabilities | Generic capability adapter interface, permission hooks, operation/stream envelope, and audit DTOs | Docker/Podman, files, shells, cloud services, database access, local product APIs, and any domain-specific adapter |
 | Plugin generation | Templates, validators, package builder, replay harness, generated SDK clients, and example fixtures | Flower prompt orchestration, user intent collection, environment selection, review/approval UX, and generated-plugin install flow |
@@ -255,9 +259,10 @@ Use this checklist whenever adding or reviewing ReDevPlugin code:
   container images, shell hooks, dynamic libraries, and postinstall scripts are
   not plugin backend mechanisms.
 - If runtime process lifecycle code is needed, it belongs in ReDevPlugin as a
-  host-neutral manager/supervisor with explicit adapter hooks for binary
-  resolution, logging, health reporting, and shutdown deadlines. Host products
-  may call those hooks, but should not implement a parallel supervisor.
+  host-neutral admission layer and manager/supervisor with explicit hooks for a
+  host-provided trusted directory handle, expected descriptor, logging, health
+  reporting, and shutdown deadlines. Host products build the product binary and
+  may call those hooks, but must not implement a parallel supervisor.
 - If a contract is observable by a host product or plugin author, update the
   schema, generated types, fixtures, compatibility manifest, release metadata,
   and tests in the same change.
@@ -271,7 +276,9 @@ Host products consume ReDevPlugin through published artifacts only:
 
 - Go module versions;
 - npm package versions;
-- signed `redevplugin-runtime` binaries for supported targets;
+- Rust source crate versions and registry checksums for `redevplugin-runtime`
+  and its support crates;
+- package publication evidence and the exact Cargo dependency closure;
 - released OpenAPI/schema/IPC/WASM ABI/token/classifier contract hashes.
 
 Do not require host products to use local `../redevplugin` checkouts. Do not
@@ -285,9 +292,11 @@ fixtures, compatibility manifest, release notes, and tests in the same feature
 change. Host products should be able to validate compatibility from released
 artifact versions and contract hashes without reading this repository's source.
 
-Do not publish a feature as "implemented" for a host product until the library,
-runtime binary, generated SDKs, contracts, and compatibility metadata that the
-host imports are all released together.
+Do not publish a feature as "implemented" for a host product until the Go/npm
+libraries, Rust source crates, generated SDKs, contracts, compatibility
+metadata, and package publication evidence that the host consumes are released
+together. The host-built OS runtime binary is a product artifact and is not a
+ReDevPlugin release artifact.
 
 ## Git Workflow (Worktree, Required)
 
@@ -621,11 +630,18 @@ Release-bound changes must keep these artifacts aligned:
 - Go module version for embeddable host libraries and DTOs;
 - npm package versions for UI SDKs, generated clients, bridge helpers, and
   templates;
-- signed Rust `redevplugin-runtime` binaries for supported targets;
+- Rust source crate versions, registry checksums, Cargo dependency closure, and
+  packaged-source conformance for `redevplugin-runtime` and support crates;
 - OpenAPI, JSON schema, IPC, WASM ABI, token/ticket, and classifier contract
   hashes;
-- compatibility manifest, release notes, checksums, signatures, and third-party
-  notices.
+- compatibility manifest, release notes, package publication evidence, registry
+  provenance, and third-party notices.
+
+ReDevPlugin publishes versioned source crates, not OS runtime binaries. Host
+products build the runtime binary from exact published crates, then own the
+resulting binary, SBOM, provenance, signature, installer, and product archive.
+This artifact boundary does not transfer runtime admission, supervisor, IPC,
+WASM, lease, quota, revocation, or hostcall semantics to the host product.
 
 Do not instruct Redeven or another host product to consume unreleased local
 behavior. If an integration needs a fix, land and release it here first, then
@@ -711,9 +727,11 @@ Expected gates for platform changes:
 - Contracts: OpenAPI/schema validation, generated Go/TS/Rust type sync, golden
   fixture decode/encode, token/ticket fixture validation, stable error-code
   coverage, and contract hash generation.
-- Release: runtime artifact presence, checksums, signatures, third-party notices,
-  platform matrix coverage, version matrix consistency, and host-consumable
-  compatibility manifest validation.
+- Release: registry package closure and readback, package checksums/provenance,
+  packaged-source extraction and conformance, reproducible source builds,
+  third-party notices, exact-one `platform-package-publication-v1` completion
+  evidence, version matrix consistency, and host-consumable compatibility
+  manifest validation.
 
 The complete main-push gate is:
 

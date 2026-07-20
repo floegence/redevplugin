@@ -106,9 +106,11 @@ The Rust workspace contains `redevplugin-runtime`, the public
 `redevplugin-worker-sdk`, and support crates for IPC, target classification, and
 WASM ABI validation. The runtime is launched by the Go Host through
 `pkg/runtimeclient`. Worker authors pin the SDK to the same immutable Git tag as
-the Host/runtime release. Every native runtime bundle embeds the exact same
-versioned `.crate` source artifact and records its SHA-256 in release manifest
-v4.
+the Host/runtime release. ReDevPlugin publishes versioned source crates for this
+runtime set. Host products build the runtime binary from exact published Rust
+source crates after verifying registry checksums, source identity, Cargo.lock,
+and the platform contract digest; they do not download an upstream OS binary or
+replace the platform supervisor.
 
 The current IPC model is supervised stdin/stdout newline JSON. The Host remains
 the authority for identity, policy, grants, quotas, revocation, storage, and
@@ -505,13 +507,17 @@ diagnostic evidence so repair and retry behavior remains explicit.
 A host product should:
 
 1. import published ReDevPlugin Go and TypeScript versions;
-2. select a published `redevplugin-runtime` artifact for the current platform;
-3. register session, origin, CSRF, storage-root, vault, audit, diagnostics,
-   runtime artifact, and business capability adapters;
-4. mount `pkg/httpadapter` routes or call the Go Host APIs directly;
-5. expose product UI around the host-neutral SDK instead of forking platform
+2. verify the published package set, registry integrity, and publication
+   completion evidence;
+3. build the runtime binary from verified published source crates with a fixed
+   product toolchain, then create the expected descriptor used by platform
+   admission;
+4. register session, origin, CSRF, storage-root, vault, audit, diagnostics, and
+   business capability adapters;
+5. mount `pkg/httpadapter` routes or call the Go Host APIs directly;
+6. expose product UI around the host-neutral SDK instead of forking platform
    protocols;
-6. verify compatibility and release artifacts before upgrading.
+7. verify compatibility and package publication evidence before upgrading.
 
 Local sibling path wiring, `go.work`, `replace`, `file:`, `link:`,
 `workspace:`, `portal:`, Rust path overrides, copied source trees, or hidden

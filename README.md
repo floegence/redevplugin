@@ -1,8 +1,10 @@
 # ReDevPlugin
 
 ReDevPlugin is the reusable plugin platform intended to be consumed by host
-products through published Go, TypeScript, Rust runtime, and
-machine-contract artifacts.
+products through published Go modules, npm packages, Rust source crates, and
+machine-contract artifacts. ReDevPlugin publishes versioned source crates for
+the Rust runtime; host products build the runtime binary from exact published
+Rust source crates and own the resulting product artifact.
 
 This repository owns the host-neutral plugin platform core. Host products own
 their product policy, UI shell integration, session adapters, and business
@@ -12,8 +14,8 @@ capabilities.
 
 - Go module: `github.com/floegence/redevplugin`
 - TypeScript package: `@floegence/redevplugin-ui`
-- Rust workspace: `redevplugin-runtime`, the public
-  `redevplugin-worker-sdk`, and support crates
+- Rust workspace and publication set: `redevplugin-runtime`, the public
+  `redevplugin-worker-sdk`, and support source crates
 - Contracts: OpenAPI, manifest schema, package-signature schema,
   release-metadata schema, source-policy schema, source-revocations schema,
   token/ticket schema, iframe bridge and render policy, opaque surface document
@@ -211,11 +213,10 @@ capabilities.
   store enforces the signed memory budget even when a worker calls
   `memory.grow`. The manifest platform ceiling is 256 MiB per worker; a Host
   may reject a lower value through its package trust policy.
-- Plugin backend authors use `redevplugin-worker-sdk` from the immutable release
-  tag. Each runtime bundle contains the identical
-  `sdk/redevplugin-worker-sdk-<version>.crate` source artifact, and release
-  manifest v4 records its version, SHA-256, and size for audit or offline
-  vendoring.
+- Plugin backend authors use the published `redevplugin-worker-sdk` crate at the
+  same platform version. The platform package set and publication evidence bind
+  its registry coordinate and checksum; hosts and plugin authors do not copy a
+  bundled crate or wire a sibling checkout.
 - Rust IPC schema tests keep startup `hello` / `hello_ack` frames bound to the
   Host-issued channel nonce, runtime generation, IPC version, and WASM ABI
   version, keep worker invocation leases bound to `lease_nonce` for runtime
@@ -403,12 +404,10 @@ capabilities.
 - `spec/plugin/contract-registry-v1.json` is the generated complete inventory of
   those public contract IDs, paths, versions, and SHA-256 identities; Go and
   TypeScript registries are generated from the same source set.
-- Release-manifest schema tests keep `release-manifest-v4.schema.json` aligned
-  with the release bundle build script and verifier: `release-manifest.json`
-  records the source commit, compatibility digest, exact npm tarball identity,
-  exact Rust worker SDK crate identity, sorted file list, lowercase SHA-256
-  hashes and byte sizes, excludes itself and `SHA256SUMS`, rejects unsafe paths,
-  and drives generated checksums.
+- Platform package-set and publication tests keep Go, npm, Rust registry
+  coordinates, integrity, source identity, compatibility hashes, and the
+  exact-one completion manifest aligned without an OS runtime bundle or
+  self-referential checksum set.
 - Mounted hosts can also expose the same compatibility manifest through the
   closed `POST /_redevplugin/api/plugins/platform/compatibility/query` request,
   allowing a product to
@@ -576,50 +575,33 @@ provide a local sibling integration path for host products.
 
 ## Release Integrity
 
-Tagged GitHub releases build a platform-specific release bundle for each
-supported runtime target only after release audit and stress gates pass. The UI
-package and Rust worker SDK crate are each packed once. The exact same npm
-tarball and `.crate` bytes are embedded in every runtime bundle, and the npm
-tarball is published to npm. The
-published evidence includes `redevplugin-release-stress.json`, the structured
-`redevplugin-a2-acceptance.json` report, supported/unsupported browser
-screenshots, `SHA256SUMS`, and the runtime `.tar.gz` bundles. `SHA256SUMS` covers
-all of them, and every covered artifact plus `SHA256SUMS` is signed with
-Sigstore keyless `cosign sign-blob`. Each signed artifact is uploaded with a
-detached `.sig` file and a `.bundle` transparency-log bundle. Host products
-should verify the checksum, stress counters, A2 opaque-origin/sandbox/CSP and
-credential-isolation assertions, the signed A3 host capability sample inside
-each runtime bundle, and the cosign bundle before consuming a
-ReDevPlugin runtime artifact. Use
-`scripts/verify_redevplugin_release_artifacts.sh --tag vX.Y.Z <artifact-dir>` after
-downloading a release artifact set. Release packing/publishing uses pinned
-`npm@11.18.0`, and signing/readback uses pinned `cosign v2.4.3`. The workflow
-resolves lightweight or annotated GitHub tags to the immutable source commit,
-rejects tags that are not on `origin/main`, uses a strict not-found-only
-preflight plus atomic `gh release create`, and rechecks tag identity immediately
-before npm and GitHub publication and after the non-draft Release exists. It
-verifies an already-published npm version only after downloading the registry
-tarball, recomputing SHA-512, and validating the SLSA DSSE subject, repository,
-release workflow path/ref, tag, and source commit, then performs
-public GitHub, npm, Go direct/proxy module identity,
-runtime matrix, compatibility, checksum, and cosign readback. Runtime artifacts
-execute on their native matrix runners; the aggregate readback checks foreign
-ELF/Mach-O architecture and all signed content structurally.
+ReDevPlugin publishes versioned source crates together with a matching Go
+module, npm packages, generated contracts, compatibility metadata, and package
+publication evidence. Host products build the runtime binary from the exact
+published Rust source crates after independently verifying registry checksums,
+source identity, the Cargo dependency closure, and the contract-set digest.
 
-Every release bundle also contains generated `THIRD_PARTY_NOTICES.md`, dependency
-lockfiles, `notices/THIRD_PARTY_LICENSES.json`, and the actual redistributed
-license/notice/copyright texts under `notices/licenses/`. The bundle verifier
-checks the exact legal-file set and every recorded SHA-256, so license names
-alone are not accepted as release evidence. The root MIT `LICENSE` is included
-in both runtime bundles and the packed npm package.
+Tagged publication builds every package once in unprivileged jobs, publishes in
+dependency order, and reads the packages back from the Go proxy/sumdb, npm
+registry, and crates.io. Registry-only fake-host E2E then builds the runtime from
+the downloaded crate sources and exercises the Go Host, TypeScript SDK, IPC,
+WASM, brokers, streams, revocation, and shutdown without sibling wiring. A
+partial or mismatched registry publication is fail-closed and cannot be repaired
+by overwriting an existing version.
 
-Tagged releases also publish the matching `@floegence/redevplugin-ui` npm
-package version. The release bundle still includes the npm tarball as checksum
-evidence, but host products should consume the UI SDK from the npm registry by
-semver instead of copying the bundled tarball or using a local checkout.
-Worker authors should pin `redevplugin-worker-sdk` to the same immutable Git tag;
-the bundled `.crate` is the signed source artifact for audit and offline
-vendoring, not an instruction to wire a sibling checkout.
+Only after registry readback and conformance succeed does the GitHub Release
+contain exactly one attested `platform-package-publication-v1.json` completion
+manifest. ReDevPlugin GitHub Releases do not contain OS runtime binaries,
+runtime archives, installers, or product signatures. They also do not attach npm
+tarballs, `.crate` files, product checksums, or runtime signing bundles. Registry
+integrity and provenance remain authoritative for package bytes; the completion
+manifest binds those identities to the source commit and contract-set digest.
+
+The host product owns the resulting binary, SBOM, provenance, signature,
+installer, and product archive. ReDevPlugin continues to own runtime admission,
+the Go supervisor, IPC, WASM execution, hostcalls, leases, quotas, revocation,
+and diagnostics contracts; building the product binary does not authorize a
+host-local supervisor or protocol fork.
 
 ## Local Checks
 

@@ -1,9 +1,11 @@
 # CI And Release Gates
 
-ReDevPlugin release artifacts are the only supported integration surface for
-host products. A host product should consume a matching published Go module,
-npm package, versioned Rust Worker SDK, Rust runtime bundle, compatibility
-manifest, contract hashes, and release evidence set.
+Published registries and machine contracts are the only supported ReDevPlugin
+integration surface for host products. ReDevPlugin publishes versioned source
+crates together with a matching Go module, npm packages, compatibility metadata,
+contract hashes, and package publication evidence. Host products build the
+runtime binary from exact published Rust source crates; local checkout wiring
+and upstream OS runtime downloads are not supported.
 
 ## Local And CI Gates
 
@@ -36,10 +38,9 @@ immutable Rust image digest when run elsewhere;
 `examples:check:canonical` and `scaffold:check:canonical` force that same Docker
 path for a full local reproduction of CI without accepting host-specific LLVM
 output. CI runs both paths and requires byte parity. Normal package builds only
-verify committed scaffold assets and never rewrite them implicitly. Release
-packaging also verifies the scaffold before building the CLI, including runtime
-matrix jobs that consume a prebuilt npm tarball, and the package job installs
-the pinned WASM target before that check.
+verify committed scaffold assets and never rewrite them implicitly. Package
+publication also verifies the scaffold before packing source artifacts, and the
+package job installs the pinned WASM target before that check.
 
 The authoritative local gate, also invoked by the `main` pre-push hook and the
 main-branch CI equivalent job, is:
@@ -53,9 +54,9 @@ feature worktrees, and local objects that do not match `HEAD`. It does not
 cover GitHub-only publication, hosted multi-platform execution, registry
 readback, artifact upload/download, Sigstore signing, or GitHub API checks.
 
-The tagged release workflow has one `quality-release` dependency shared by npm
-packing, native runtime packing, npm publication, and GitHub Release
-publication. It repeats the complete Go format/test/lint, TypeScript UI unit,
+The tagged release workflow has one `quality-release` dependency shared by Go,
+npm, and Rust package publication plus GitHub Release completion publication.
+It repeats the complete Go format/test/lint, TypeScript UI unit,
 Examples, browser-harness and bridge-boundary, Rust format/clippy/test/deny, runtime-contract, and
 platform-contract gates before any immutable package or public release is
 created. Release audit and release-mode stress remain independent mandatory
@@ -101,10 +102,9 @@ the same command shape.
   byte backpressure, transactional ticket commit/rotate, terminal reads at token
   capacity, failure retry, and durable operation/stream terminal reconciliation
   across SQLite reopen;
-- release artifact verifier fixture behavior, including exact four-target and
-  signed-file sets plus rejection of every extra tar or non-tar asset;
-- release manifest v4 Worker SDK identity, safe `.crate` structure, immutable
-  tag documentation, and rejection of cross-target SDK byte drift;
+- package-set/publication verifier behavior, including exact registry package
+  closure, safe `.crate` structure, immutable tag documentation, and rejection
+  of extra or mismatched packages;
 - npm registry readback mutation fixtures for tarball SHA-512, SLSA subject,
   repository, workflow path/ref, tag, and source commit;
 - Rust IPC, runtime, target classifier, and WASM ABI tests when Cargo is
@@ -134,21 +134,19 @@ and `--summary PATH`.
 
 - `--fast` runs race-sensitive Go packages and `pkg/stress`.
 - `--full` starts from a clean `npm ci`, then adds browser harness, runtime
-  contract, release bundle smoke, and a four-target published-release verifier
-  fixture.
+  contract, package extraction, isolated-registry, and packaged-source fake-host
+  fixtures.
 - `--release` adds validation of the exact generated release summary through
-  the same structured validator used for downloaded GitHub Release assets. The
-  validator requires the exact release category and step sets, including a
-  successful `published_release_verifier`; omission, duplication, unexpected
-  entries, or a non-zero required step fail closed.
+  the same structured validator used for registry readback and the completion
+  manifest. Omission, duplication, unexpected entries, or a non-zero required
+  step fail closed.
 
 The script always emits a JSON summary. `stress_evidence` contains structured
 counters for stream backpressure and scoped terminal-close checks,
 operation cancel ownership and inactive-operation non-redispatch, connectivity
 classifier/grant denials, runtime revoke ACK p95 latency, KV and SQLite storage
 quota pressure, and SQLite sidecar/sparse bypass checks. CI uploads summaries as artifacts, and tagged release workflows
-include release-mode stress evidence in the published checksum and signature
-evidence chain.
+bind release-mode stress evidence into the package publication evidence chain.
 
 Host-owned stream terminal audit behavior is verified at the scoped adapter
 sink boundary.
@@ -171,12 +169,12 @@ sink boundary.
 - `--smoke` executes every scenario and records actual measurements without
   enforcing absolute latency thresholds. It is used only by non-publishing
   bundle smoke tests.
-- `--release` runs the same acceptance set with release gate identity before a
-  bundle manifest or checksum is created.
+- `--release` runs the same acceptance set with release gate identity before
+  package publication evidence is created.
 
 `REDEVPLUGIN_PERFORMANCE_RUNTIME` may select an explicit executable for smoke
 and full measurements. Release evidence rejects that override and always builds
-`redevplugin-runtime` from the clean checked-out HEAD bound to `source_commit`.
+`redevplugin-runtime` from exact packaged source bytes bound to `source_commit`.
 
 `performance-contract-v2.json` is the single machine-readable definition of the
 25 required scenarios and each scenario's sample count, metric name, unit,
@@ -185,10 +183,8 @@ contract and reject any missing, extra, duplicate, or drifted metric. Route
 authorization evidence also embeds the pinned v0.5.1 and candidate profiles;
 the verifier checks their canonical hashes and recomputes all comparison
 metrics before accepting the bundle. The
-release workflow generates immutable release evidence once on `ubuntu-24.04`;
-all runtime bundles validate and copy those exact bytes through
-`--performance-evidence`. `--skip-execution` and `--allow-smoke` are independent
-verifier permissions, and published bundles never enable `--allow-smoke`.
+release workflow generates immutable release evidence once on the pinned Linux
+runner; registry-only conformance validates the exact evidence bytes.
 
 Relative acceptance targets use paired measurements from the same process and
 input fixture and encode the current-to-reference ratio in basis points. The
@@ -201,63 +197,31 @@ The UDP limiter combines a fixed 65,536-bucket capacity assertion with a paired
 high-cardinality P95 measurement. Release evidence is emitted only by the owning
 Go package or Rust runtime test after its behavioral assertions pass.
 
-## Release Bundle
+## Platform Package Set
 
-`scripts/build_redevplugin_release.sh` creates a release bundle containing:
+ReDevPlugin publishes one versioned platform package set:
 
-- `bin/redevplugin`;
-- `bin/redevplugin-runtime`;
-- `compatibility.json`;
-- `performance-evidence.json`;
-- contract artifacts under `contracts/`;
-- npm package tarball under `npm/`;
-- versioned Rust Worker SDK crate under `sdk/`;
-- `release-manifest.json`;
-- `SHA256SUMS`;
-- generated third-party notices and lockfile evidence;
-- the root MIT `LICENSE`;
-- `docs/release/a3-tdd-evidence.md` plus the complete signed
-  `examples/host-capability/sample-documents-v1/` artifact;
-- `notices/THIRD_PARTY_LICENSES.json` plus actual redistributed license, notice,
-  and copyright texts under `notices/licenses/`.
+- the Go module containing the Host library, adapters, HTTP integration, and
+  generated DTOs;
+- `@floegence/redevplugin-contracts` and
+  `@floegence/redevplugin-ui` on the npm registry;
+- the Rust source crates for contracts, IPC, WASM ABI, target classification,
+  Worker SDK, and `redevplugin-runtime` on crates.io;
+- generated OpenAPI, JSON schemas, compatibility metadata, contract hashes, and
+  conformance fixtures.
 
-The release workflow builds the npm tarball and Rust Worker SDK crate once and
-passes those immutable files to every runtime matrix build through
-`--npm-package` and `--worker-sdk-package`. The build stamps one release version
-into the Go compatibility matrix, npm package, Worker SDK crate, and Rust
-runtime hello handshake. Release manifest v4 records the source commit,
-compatibility digest, npm tarball path/SHA-256/SRI/size, and Worker SDK
-path/SHA-256/size. The bundle verifier
-checks compatibility, performance evidence, release manifest hashes,
-`SHA256SUMS`, executable target
-format, runtime hello, npm package version/license, every declared root and
-subpath export target, actual self-referenced imports from the unpacked package,
-the Worker SDK package name/version/license/source/README and link-free archive
-structure, required contract files, the A3 sample pin, per-file hashes, signed
-manifest, generated-client identity, host-neutral vocabulary, and generated
-license evidence. License verification checks the exact legal-file
-set and each manifest SHA-256; a dependency entry that names a license without
-redistributed legal text fails the build. Each runtime matrix runner executes
-its own Go and Rust binaries. The post-publication aggregate runner uses
-`--skip-execution` verification for foreign targets: it validates ELF/Mach-O architecture, every
-manifest and contract hash, npm identity, and compatibility content without
-attempting to execute another operating system's binary. Standalone TypeScript
-consumer verification reads the exact compiler version, registry URL, and SRI
-from each bundle's `notices/package-lock.json`, verifies the temporary
-consumer's generated lock identity, and never depends on checkout-root
-`node_modules` state. Ordinary branch release-bundle CI runs the complete
-four-target isolation regression from a copied verifier root with an invalid
-ambient npm registry. It also mutates one otherwise valid Worker SDK crate and
-requires aggregate verification to reject the cross-bundle byte drift, so the
-tag workflow is not the first place that detects an accidental checkout or
-artifact identity dependency.
+The package set contains no OS runtime binary, target archive, installer,
+product checksum, or product signature. Every Rust package is extracted into a
+clean directory and checked with exact registry dependencies. Higher-level
+crates resolve lower-level packages through an isolated registry fixture before
+formal publication and through crates.io during release readback. Path, git, and
+sibling overrides are rejected.
 
-The SDK package job installs `wasm32-unknown-unknown` before packing. The
-package builder extracts the final `.crate` into a clean directory and runs
-`cargo check --locked --target wasm32-unknown-unknown`, using one temporary
-Cargo home for dependency resolution, packaging, and verification. Publication
-cannot depend on a previous job step's Cargo cache or ship a source artifact
-that only compiles inside the repository workspace.
+Host products build the runtime binary from verified published source crates
+with their own fixed toolchain. The host product owns the resulting binary,
+SBOM, provenance, signature, installer, and product archive. ReDevPlugin still
+owns runtime admission and supervision, IPC, WASM execution, hostcalls, leases,
+quotas, revocation, and diagnostics contracts.
 
 ## npm Package Publishing
 
@@ -277,23 +241,21 @@ The npm package exposes four deliberate import surfaces:
   package import client. Official release-reference product paths must not
   import or bundle it.
 
-The release-bundle verifier imports every packed entrypoint, requires this
+The package verifier imports every packed entrypoint, requires this
 exact export set, checks the plugin runtime namespace, and scans the generated
 declarations for trusted-parent and bearer-token leakage. It also installs the
 packed tarball into a standalone temporary consumer and runs `tsc --noEmit` on
 the released host-capability sample without source aliases.
 
-Ordinary branch CI builds a synthetic `0.0.0-ci.<run-number>` bundle. Only the
-tagged release workflow builds and publishes the immutable tag-derived identity.
-The published-release verifier remains independent of ambient checkout
-dependencies and validates the final npm and Worker SDK artifacts from their
-standalone consumer directories.
+Ordinary branch CI builds synthetic package bytes and validates them in isolated
+consumer directories. Only the tagged release workflow publishes the immutable
+tag-derived identity. Registry readback remains independent of ambient checkout
+dependencies.
 
-Tagged release workflows also publish `@floegence/redevplugin-ui` to the npm
-registry with the same version as the Git tag. The publish job downloads the
-single tarball already embedded in every runtime bundle, declares job-local
-`id-token: write` permission for npm trusted publishing, and runs trusted
-publishing with provenance. If that version already exists, the job compares
+Tagged release workflows publish both npm packages with the same version as the
+Git tag. Publish jobs receive only prebuilt, digest-pinned tarballs, declare
+job-local `id-token: write` permission for trusted publishing, and run without a
+checkout or repository scripts. If a version already exists, the job compares
 registry `dist.integrity` with the built tarball, downloads `dist.tarball`,
 recomputes SHA-512, reads the npm attestation endpoint, and validates the SLSA
 DSSE subject digest, repository, release workflow path/ref, tag, and source
@@ -301,21 +263,17 @@ commit. A mismatch or missing provenance fails closed. Both immutable packing an
 run with pinned `npm@11.18.0`, so tarball identity does not depend on the runner's
 ambient npm version.
 
-## Release Manifest And Compatibility
+## Package Publication And Compatibility
 
-`release-manifest-v4.schema.json` is the machine contract for release bundle
-provenance, file lists, and checksums. Release manifests exclude themselves and
-`SHA256SUMS`, require the full source commit, compatibility digest, one npm
-tarball identity, one Rust Worker SDK crate identity, safe sorted paths,
-lowercase SHA-256 hashes, byte sizes, nullable closed platform runtime targets,
-and ISO date-time generation metadata. Release builders map the four Rust build
-triples explicitly to `darwin/amd64`, `darwin/arm64`, `linux/amd64`, or
-`linux/arm64`; build triples are not platform target aliases.
+`platform-package-set-v1` is the canonical coordinate set for Go, npm, and Rust
+packages. It does not contain registry checksums or the source commit, avoiding
+self-reference; those identities are verified from the registries and recorded
+in `platform-package-publication-v1` only after readback succeeds.
 
 The compatibility manifest includes contract artifact IDs, versions, paths, and
 hashes for released OpenAPI, plugin schemas, release metadata, source policy,
-source revocations, performance evidence, IPC/WASM contracts, release manifest
-schema, error codes,
+source revocations, performance evidence, IPC/WASM contracts, package-set and
+publication schemas, error codes,
 network grants, the host-capability contract/pin/manifest/compatibility/
 signature/notices schemas, worker invocation payloads, and target classifier
 fixtures.
@@ -325,59 +283,37 @@ trust-state enum, token/ticket schema, or bridge contract must update the
 machine-readable contract, route fixtures, SDK bindings, compatibility hash, and
 focused contract tests in the same feature change.
 
-Host products should run:
+Host products verify the package publication attestation, independently read
+back every registry package, validate the compatibility digest, and only then
+build a product runtime binary.
 
-```bash
-redevplugin verify-compatibility compatibility.json contracts
-```
+## GitHub Release Completion
 
-before consuming a dependency set.
+Tagged GitHub Releases publish exactly one machine asset:
 
-## Signed Release Artifacts
+- `platform-package-publication-v1.json`, with the fixed publication content
+  type and an OIDC artifact attestation bound to the exact release workflow and
+  source commit.
 
-Tagged GitHub Releases publish:
+ReDevPlugin GitHub Releases do not contain OS runtime binaries, runtime archives,
+installers, or product signatures. They also reject npm tarballs, `.crate`
+files, checksum collections, detached signatures, screenshots, and any second
+machine asset. Human-readable release notes are not a trust anchor.
 
-- runtime `.tar.gz` bundles;
-- `redevplugin-release-stress.json`;
-- `redevplugin-a2-acceptance.json`;
-- `redevplugin-a2-supported.png` and `redevplugin-a2-unsupported.png`;
-- outer `SHA256SUMS`;
-- Sigstore keyless `.sig` and `.bundle` files for each runtime tarball, the
-  stress summary, all three A2 evidence files, and `SHA256SUMS`.
+The release workflow defaults to `contents: read`. Build, test, pack, hash, and
+verification jobs have no publication credentials. Registry, attestation, and
+GitHub Release jobs have minimal isolated permissions, do not checkout or run
+candidate code, and consume only artifact-ID and digest-pinned verified bytes.
+A per-ref concurrency group prevents concurrent publishers. Tag identity and
+main ancestry are rechecked immediately before every mutation.
 
-`scripts/verify_redevplugin_release_artifacts.sh --tag vX.Y.Z <artifact-dir>`
-verifies the exact four runtime archives and complete signed asset set, rejecting
-any extra file. It also verifies outer checksums, required stress evidence categories, key counters and
-thresholds, including TCP mock database, WebSocket round-trip, size-denial, and
-cancelled-read evidence, A2 opaque-origin/exact sandbox/CSP/credential-isolation
-assertions from the real Go Host/HTTP adapter/Rust runtime Chromium source, PNG
-signatures for both screenshots, signature file presence, cosign bundle presence,
-and cosign keyless identity bound to the exact tag unless explicitly run with
-`--skip-cosign` for local fixtures.
-
-The release workflow defaults to `contents: read`, grants OIDC only to the npm
-and signing jobs, and grants `contents: write` only to the GitHub Release job.
-Release actions and audit tools are pinned to immutable revisions or exact
-versions; signing and public signature readback use `cosign v2.4.3`. A per-ref
-concurrency group prevents concurrent publishers. Tag preflight fetches full
-history, requires the tagged commit to be on `origin/main`, resolves lightweight
-or annotated GitHub tag objects to the expected commit, and uses a strict GitHub
-API check that distinguishes a 404 from permission, network, and server failures.
-The npm and GitHub publication jobs repeat the immutable tag check immediately
-before mutation. `gh release create` fails rather than editing an existing
-release or replacing an asset.
-
-After publication, `scripts/verify_published_release.mjs` downloads the
-immutable release and verifies all four runtime targets, source commit,
-compatibility bytes, identical embedded npm and Worker SDK bytes, bundle
-manifests, and runtime presence. The workflow downloads the npm registry tarball, verifies it
-against the exact bytes embedded in every bundle, and validates SLSA DSSE source
-identity from the npm attestation endpoint. It also downloads the Go module independently
-from VCS and `proxy.golang.org`, requires the direct origin hash/ref to match the
-release commit/tag, and compares both module `h1` and `go.mod` `h1` identities
-before declaring the release complete. The final readback independently resolves
-the public tag again and requires a published, non-draft GitHub Release for that
-same tag and commit before declaring the release complete.
+After publication, the release verifier downloads the Go module, both npm
+packages, and all Rust crates from their formal registries, verifies checksums,
+provenance, source commit, dependency closure, contract digest, and package-set
+identity, then runs the registry-only fake-host E2E offline. Only after that gate
+passes is the completion manifest generated, attested, uploaded, and read back
+by exact bytes. Partial or conflicting publication permanently fails that
+version; existing package bytes are never overwritten.
 
 ## Dependency Audit
 
@@ -395,9 +331,14 @@ let the script install the pinned `cargo-deny@0.19.9` for the run.
 Host products must not build ReDevPlugin from an unpublished sibling checkout or
 consume local path dependencies. A release-ready host integration should:
 
-1. select published Go/npm/runtime artifact versions;
-2. verify release artifact checksums and signatures;
-3. verify stress evidence counters/thresholds and third-party notice evidence;
-4. verify compatibility manifest hashes against the selected contracts;
-5. bundle the runtime artifact into the host's installer or desktop package;
-6. keep host-side release gates aligned with the consumed ReDevPlugin version.
+1. select the published Go, npm, and Rust source crate versions from one package
+   set;
+2. verify registry checksums, provenance, source identity, dependency closure,
+   publication completion evidence, and compatibility hashes;
+3. build the runtime binary from verified registry source with a fixed,
+   reproducible product toolchain and no sibling/path overrides;
+4. generate and verify the product-owned binary descriptor, SBOM, provenance,
+   and signature;
+5. bundle that product runtime into the host installer or desktop package;
+6. keep host-side release gates aligned with the consumed ReDevPlugin version
+   while continuing to use the ReDevPlugin admission and supervisor APIs.
