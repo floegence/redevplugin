@@ -367,6 +367,7 @@ func (e *WorkerExecutionError) Unwrap() error {
 // HeartbeatInterval.
 type ProcessSupervisorOptions struct {
 	RuntimePath           string
+	RuntimeExecutable     *os.File
 	Descriptor            RuntimeDescriptor
 	Args                  []string
 	Env                   []string
@@ -402,6 +403,7 @@ type ProcessSupervisor struct {
 	mu                     sync.Mutex
 	pendingMu              sync.Mutex
 	path                   string
+	executable             *os.File
 	descriptor             RuntimeDescriptor
 	args                   []string
 	env                    []string
@@ -554,6 +556,7 @@ func NewProcessSupervisor(options ProcessSupervisorOptions) (*ProcessSupervisor,
 	keyring := StaticRuntimeLeaseSigningKeyring{Keys: []RuntimeLeaseSigningKey{{KeyID: keyID, PublicKey: publicKey}}}
 	return &ProcessSupervisor{
 		path:                   path,
+		executable:             options.RuntimeExecutable,
 		descriptor:             options.Descriptor,
 		args:                   append([]string(nil), options.Args...),
 		env:                    append([]string(nil), options.Env...),
@@ -588,7 +591,7 @@ func NewProcessSupervisor(options ProcessSupervisorOptions) (*ProcessSupervisor,
 }
 
 func validateProcessSupervisorOptions(options ProcessSupervisorOptions, requireHostServices bool) error {
-	if strings.TrimSpace(options.RuntimePath) == "" {
+	if (strings.TrimSpace(options.RuntimePath) == "") == (options.RuntimeExecutable == nil) {
 		return ErrRuntimePathRequired
 	}
 	if options.Descriptor.Version().String() == "" {
@@ -676,7 +679,7 @@ func (s *ProcessSupervisor) Start(ctx context.Context, target runtimetarget.Targ
 		return ErrRuntimeNotReady
 	}
 	s.mu.Unlock()
-	verifiedPath, cleanupVerifiedPath, err := s.prepareRuntimeExecutable(ctx)
+	verifiedPath, inheritedExecutable, cleanupVerifiedPath, err := s.prepareRuntimeExecutable(ctx)
 	if err != nil {
 		return err
 	}
@@ -714,11 +717,17 @@ func (s *ProcessSupervisor) Start(ctx context.Context, target runtimetarget.Targ
 	if len(commandEnv) == 0 {
 		commandEnv = os.Environ()
 	}
+	controlReadFD := 3
+	extraFiles := make([]*os.File, 0, 3)
+	if inheritedExecutable != nil {
+		extraFiles = append(extraFiles, inheritedExecutable)
+		controlReadFD++
+	}
 	cmd.Env = append(commandEnv,
-		"REDEVPLUGIN_CONTROL_READ_FD=3",
-		"REDEVPLUGIN_CONTROL_WRITE_FD=4",
+		fmt.Sprintf("REDEVPLUGIN_CONTROL_READ_FD=%d", controlReadFD),
+		fmt.Sprintf("REDEVPLUGIN_CONTROL_WRITE_FD=%d", controlReadFD+1),
 	)
-	cmd.ExtraFiles = []*os.File{controlRuntimeRead, controlRuntimeWrite}
+	cmd.ExtraFiles = append(extraFiles, controlRuntimeRead, controlRuntimeWrite)
 	if s.dir != "" {
 		cmd.Dir = s.dir
 	}
@@ -851,7 +860,11 @@ func (s *ProcessSupervisor) Preflight(ctx context.Context, target runtimetarget.
 	if err := s.descriptor.CompatibleWithPlatform(); err != nil {
 		return RuntimeDescriptor{}, err
 	}
-	if err := verifyRuntimeExecutable(ctx, s.path, s.descriptor.ArtifactSHA256()); err != nil {
+	if s.executable != nil {
+		if err := verifyRuntimeExecutableFile(ctx, s.executable, s.descriptor.ArtifactSHA256()); err != nil {
+			return RuntimeDescriptor{}, err
+		}
+	} else if err := verifyRuntimeExecutable(ctx, s.path, s.descriptor.ArtifactSHA256()); err != nil {
 		return RuntimeDescriptor{}, err
 	}
 	return s.descriptor, nil
@@ -875,42 +888,89 @@ func verifyRuntimeExecutable(ctx context.Context, path string, expectedSHA256 st
 	return nil
 }
 
-func (s *ProcessSupervisor) prepareRuntimeExecutable(ctx context.Context) (string, func(), error) {
+func (s *ProcessSupervisor) prepareRuntimeExecutable(ctx context.Context) (string, *os.File, func(), error) {
+	if s.executable != nil {
+		if err := verifyRuntimeExecutableFile(ctx, s.executable, s.descriptor.ArtifactSHA256()); err != nil {
+			return "", nil, nil, err
+		}
+		inherited, err := duplicateRuntimeExecutableForChild(s.executable)
+		if err != nil {
+			return "", nil, nil, err
+		}
+		return "/proc/self/fd/3", inherited, func() { _ = inherited.Close() }, nil
+	}
 	source, err := openRuntimeExecutable(s.path)
 	if err != nil {
-		return "", nil, err
+		return "", nil, nil, err
 	}
 	defer source.Close()
 	directory, err := os.MkdirTemp("", "redevplugin-runtime-verified-")
 	if err != nil {
-		return "", nil, err
+		return "", nil, nil, err
 	}
 	cleanup := func() { _ = os.RemoveAll(directory) }
 	verifiedPath := filepath.Join(directory, "redevplugin-runtime")
 	destination, err := os.OpenFile(verifiedPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
 	if err != nil {
 		cleanup()
-		return "", nil, err
+		return "", nil, nil, err
 	}
 	hasher := sha256.New()
 	if err := copyBoundedRuntimeExecutable(ctx, source, io.MultiWriter(destination, hasher)); err != nil {
 		_ = destination.Close()
 		cleanup()
-		return "", nil, err
+		return "", nil, nil, err
 	}
 	if err := destination.Close(); err != nil {
 		cleanup()
-		return "", nil, err
+		return "", nil, nil, err
 	}
 	if actual := hex.EncodeToString(hasher.Sum(nil)); actual != s.descriptor.ArtifactSHA256() {
 		cleanup()
-		return "", nil, fmt.Errorf("%w: got %s want %s", ErrRuntimeArtifactDigest, actual, s.descriptor.ArtifactSHA256())
+		return "", nil, nil, fmt.Errorf("%w: got %s want %s", ErrRuntimeArtifactDigest, actual, s.descriptor.ArtifactSHA256())
 	}
 	if err := os.Chmod(verifiedPath, 0o500); err != nil {
 		cleanup()
-		return "", nil, err
+		return "", nil, nil, err
 	}
-	return verifiedPath, cleanup, nil
+	return verifiedPath, nil, cleanup, nil
+}
+
+func verifyRuntimeExecutableFile(ctx context.Context, file *os.File, expectedSHA256 string) error {
+	if file == nil {
+		return ErrRuntimePathRequired
+	}
+	info, err := file.Stat()
+	if err != nil {
+		return err
+	}
+	if !info.Mode().IsRegular() || info.Size() <= 0 || info.Size() > maxRuntimeExecutableBytes {
+		return fmt.Errorf("%w: runtime artifact must be a non-empty regular file no larger than %d bytes", ErrRuntimeArtifactDigest, maxRuntimeExecutableBytes)
+	}
+	hasher := sha256.New()
+	buffer := make([]byte, 128*1024)
+	for offset := int64(0); offset < info.Size(); {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		chunk := int64(len(buffer))
+		if remaining := info.Size() - offset; remaining < chunk {
+			chunk = remaining
+		}
+		read, err := file.ReadAt(buffer[:chunk], offset)
+		if err != nil && !errors.Is(err, io.EOF) {
+			return err
+		}
+		if read == 0 {
+			return io.ErrUnexpectedEOF
+		}
+		_, _ = hasher.Write(buffer[:read])
+		offset += int64(read)
+	}
+	if actual := hex.EncodeToString(hasher.Sum(nil)); actual != expectedSHA256 {
+		return fmt.Errorf("%w: got %s want %s", ErrRuntimeArtifactDigest, actual, expectedSHA256)
+	}
+	return nil
 }
 
 func copyBoundedRuntimeExecutable(ctx context.Context, source *os.File, destination io.Writer) error {

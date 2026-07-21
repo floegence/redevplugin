@@ -156,9 +156,10 @@ var (
 // HostConfigError identifies the module and adapter that made a host
 // configuration invalid. Cause preserves legacy module-required sentinels.
 type HostConfigError struct {
-	Module  string
-	Adapter string
-	Cause   error
+	Module                   string
+	Adapter                  string
+	Cause                    error
+	runtimeModuleDisposition RuntimeModuleDisposition
 }
 
 func (e *HostConfigError) Error() string {
@@ -180,6 +181,13 @@ func (e *HostConfigError) Unwrap() error { return ErrHostConfig }
 
 func (e *HostConfigError) Is(target error) bool {
 	return target == ErrHostConfig || (e != nil && e.Cause != nil && errors.Is(e.Cause, target))
+}
+
+func (e *HostConfigError) RuntimeModuleDisposition() RuntimeModuleDisposition {
+	if e == nil || e.runtimeModuleDisposition == "" {
+		return RuntimeModuleCallerOwned
+	}
+	return e.runtimeModuleDisposition
 }
 
 // Feature identifies an optional host integration module. The values are part
@@ -690,7 +698,11 @@ type ReleaseModule struct {
 }
 
 type RuntimeModule struct {
-	Manager runtimeclient.Manager
+	// Manager is retained for the v0.5 in-repository compatibility harness. New
+	// hosts must construct modules with NewRuntimeModule so executable ownership
+	// cannot be bypassed by a caller-supplied manager.
+	Manager    runtimeclient.Manager
+	capability *runtimeModuleCapability
 }
 
 type CapabilityModule struct {
@@ -751,6 +763,7 @@ type normalizedAdapters struct {
 	Streams                     stream.Store
 	SessionLifecycle            SessionLifecycleAdapter
 	SessionScopes               *sessionscope.Coordinator
+	RuntimeModule               *RuntimeModule
 }
 
 type PluginData interface {
@@ -785,6 +798,7 @@ type Host struct {
 	closed              bool
 	closeOnce           sync.Once
 	closeErr            error
+	runtimeModule       *RuntimeModule
 }
 
 type detachedCancelJob struct {
@@ -1320,7 +1334,11 @@ func normalizeConfig(config Config) (normalizedAdapters, map[Feature]struct{}, e
 		features[FeatureRelease] = struct{}{}
 	}
 	if module := config.Runtime; module != nil {
-		adapters.RuntimeManager = module.Manager
+		if module.capability != nil {
+			adapters.RuntimeModule = module
+		} else {
+			adapters.RuntimeManager = module.Manager
+		}
 		features[FeatureRuntime] = struct{}{}
 	}
 	if module := config.Capability; module != nil {
@@ -1395,8 +1413,18 @@ func validateConfig(adapters normalizedAdapters, config Config) error {
 			}
 		}
 	}
-	if module := config.Runtime; module != nil && isNilInterfaceValue(module.Manager) {
-		return &HostConfigError{Module: string(FeatureRuntime), Adapter: "manager", Cause: ErrRuntimeModuleRequired}
+	if module := config.Runtime; module != nil {
+		if module.capability == nil && isNilInterfaceValue(module.Manager) {
+			return &HostConfigError{Module: string(FeatureRuntime), Adapter: "manager", Cause: ErrRuntimeModuleRequired}
+		}
+		if module.capability != nil {
+			module.capability.mu.Lock()
+			valid := module.capability.state == runtimeModuleOwned && module.capability.descriptor.valid() && module.capability.executable != nil && module.capability.executionRoot != nil
+			module.capability.mu.Unlock()
+			if !valid {
+				return &HostConfigError{Module: string(FeatureRuntime), Adapter: "module", Cause: ErrRuntimeModuleClosed, runtimeModuleDisposition: RuntimeModuleAlreadyClosed}
+			}
+		}
 	}
 	if module := config.Capability; module != nil && isNilInterfaceValue(module.Registry) {
 		return &HostConfigError{Module: string(FeatureCapability), Adapter: "registry", Cause: ErrCapabilityModuleRequired}
@@ -1565,13 +1593,54 @@ func (e *ManagementRevisionMismatchError) Unwrap() error {
 	return ErrManagementRevisionMismatch
 }
 
-func Open(ctx context.Context, config Config) (*Host, error) {
+func New(config Config) (*Host, error) {
+	return Open(context.Background(), config)
+}
+
+func Open(ctx context.Context, config Config) (openedHost *Host, retErr error) {
 	if ctx == nil {
 		return nil, errors.New("context is required")
 	}
 	adapters, features, err := normalizeConfig(config)
 	if err != nil {
+		var configErr *HostConfigError
+		if config.Runtime != nil && config.Runtime.capability != nil && errors.As(err, &configErr) && configErr.runtimeModuleDisposition == "" {
+			configErr.runtimeModuleDisposition = RuntimeModuleCallerOwned
+		}
 		return nil, err
+	}
+	var transferredRuntime *RuntimeModule
+	if adapters.RuntimeModule != nil {
+		capability, claimErr := adapters.RuntimeModule.claimForHost()
+		if claimErr != nil {
+			disposition := RuntimeModuleAlreadyClosed
+			if errors.Is(claimErr, ErrRuntimeModuleConsumed) {
+				disposition = RuntimeModuleConsumedAndClosed
+			}
+			return nil, &HostConfigError{Module: string(FeatureRuntime), Adapter: "module", Cause: claimErr, runtimeModuleDisposition: disposition}
+		}
+		manager, managerErr := newRuntimeManagerFromCapability(capability, adapters)
+		if managerErr != nil {
+			_, closeErr := adapters.RuntimeModule.closeFromHost(context.Background())
+			return nil, &HostConfigError{Module: string(FeatureRuntime), Adapter: "module", Cause: errors.Join(managerErr, closeErr), runtimeModuleDisposition: RuntimeModuleConsumedAndClosed}
+		}
+		capability.mu.Lock()
+		capability.manager = manager
+		capability.mu.Unlock()
+		adapters.RuntimeManager = manager
+		transferredRuntime = adapters.RuntimeModule
+		defer func() {
+			if openedHost != nil || transferredRuntime == nil {
+				return
+			}
+			result, closeErr := transferredRuntime.closeFromHost(context.Background())
+			retErr = &HostConfigError{
+				Module:                   string(FeatureRuntime),
+				Adapter:                  "module",
+				Cause:                    errors.Join(retErr, closeErr),
+				runtimeModuleDisposition: result.Disposition,
+			}
+		}()
 	}
 	surfaceGenerationID, err := newHostSurfaceGenerationID()
 	if err != nil {
@@ -1593,6 +1662,7 @@ func Open(ctx context.Context, config Config) (*Host, error) {
 		sessionScopes:       adapters.SessionScopes,
 		lifecycleCtx:        lifecycleCtx,
 		lifecycleCancel:     lifecycleCancel,
+		runtimeModule:       transferredRuntime,
 	}
 	retainedSessionScopes, err := host.sessionScopes.ListRetained(ctx)
 	if err != nil {
@@ -1639,7 +1709,8 @@ func Open(ctx context.Context, config Config) (*Host, error) {
 		}
 	}
 	host.startSecurityAuditExporter()
-	return host, nil
+	openedHost = host
+	return openedHost, nil
 }
 
 func (h *Host) Close() error {
@@ -1662,7 +1733,17 @@ func (h *Host) Close() error {
 		h.lifecycleWG.Wait()
 		h.securityAuditWG.Wait()
 		var runtimeCloseErr error
-		if h.adapters.RuntimeManager != nil {
+		if h.runtimeModule != nil {
+			shutdownTimeout := DefaultRuntimeShutdownTimeout
+			if h.runtimeModule.capability != nil {
+				h.runtimeModule.capability.mu.Lock()
+				shutdownTimeout = h.runtimeModule.capability.shutdownTimeout
+				h.runtimeModule.capability.mu.Unlock()
+			}
+			shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
+			_, runtimeCloseErr = h.runtimeModule.closeFromHost(shutdownCtx)
+			cancel()
+		} else if h.adapters.RuntimeManager != nil {
 			shutdownCtx, cancel := context.WithTimeout(context.Background(), hostRuntimeShutdownTimeout)
 			runtimeCloseErr = h.adapters.RuntimeManager.Stop(shutdownCtx)
 			cancel()
