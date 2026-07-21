@@ -2,6 +2,7 @@ use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::error::Error;
 use std::fmt;
@@ -16,6 +17,14 @@ pub const REVOCATION_SCHEMA_VERSION: &str = "redevplugin.release_revocation.v2";
 pub const REVOCATION_POINTER_SCHEMA_VERSION: &str = "redevplugin.release_revocation_pointer.v1";
 pub const SIGNING_LEDGER_EVIDENCE_SCHEMA_VERSION: &str =
     "redevplugin.release_signing_ledger_evidence.v1";
+pub const SIGNING_SUBJECT_SCHEMA_VERSION: &str = "redevplugin.release_signing_subject.v1";
+pub const SIGNATURE_ENVELOPE_SCHEMA_VERSION: &str = "redevplugin.release_signature_envelope.v1";
+pub const SIGNING_LEDGER_SCHEMA_VERSION: &str = "redevplugin.release_signing_ledger.v1";
+pub const SIGNING_LEDGER_ENTRY_SCHEMA_VERSION: &str = "redevplugin.release_signing_ledger_entry.v1";
+pub const SIGNING_LEDGER_LOG_LEAF_SCHEMA_VERSION: &str =
+    "redevplugin.release_signing_ledger_log_leaf.v1";
+pub const SIGNING_LEDGER_RECEIPT_SCHEMA_VERSION: &str =
+    "redevplugin.release_signing_ledger_receipt.v1";
 pub const SIGNATURE_ALGORITHM_ED25519: &str = "ed25519";
 pub const GENESIS_PREVIOUS_EPOCH: &str = "0";
 pub const GENESIS_PREVIOUS_DOCUMENT_SHA256: &str =
@@ -63,6 +72,10 @@ pub enum DelegatedKeyUsage {
     Revocation,
     #[serde(rename = "revocation_pointer")]
     RevocationPointer,
+    #[serde(rename = "signing_ledger")]
+    SigningLedger,
+    #[serde(rename = "trusted_time")]
+    TrustedTime,
 }
 
 impl DelegatedKeyUsage {
@@ -74,6 +87,8 @@ impl DelegatedKeyUsage {
             Self::RevocationPointer => 3,
             Self::SourcePolicy => 4,
             Self::SourcePolicyPointer => 5,
+            Self::SigningLedger => 6,
+            Self::TrustedTime => 7,
         }
     }
 }
@@ -476,6 +491,179 @@ pub struct SigningLedgerEvidenceV1 {
     pub consistency_proof_sha256: Option<String>,
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SigningSubjectUsage {
+    RootDelegation,
+    Package,
+    ReleaseMetadata,
+    SourcePolicyDocument,
+    SourcePolicyPointer,
+    RevocationDocument,
+    RevocationPointer,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct SigningSubjectV1 {
+    pub schema_version: String,
+    pub usage: SigningSubjectUsage,
+    pub source_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub channel: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub root_epoch: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub publisher_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plugin_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub artifact_or_metadata_identity_sha256: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub epoch: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct SignatureEnvelopeV1 {
+    pub schema_version: String,
+    pub subject_identity_sha256: String,
+    pub signing_preimage_sha256: String,
+    pub algorithm: String,
+    pub key_id: String,
+    pub signature: String,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SigningLedgerEntryState {
+    Reserved,
+    Finalized,
+    TerminalFailed,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SigningLedgerFailureCode {
+    SignerRejected,
+    SubjectConflict,
+    LedgerRejected,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct SigningLedgerEntryV1 {
+    pub schema_version: String,
+    pub state: SigningLedgerEntryState,
+    pub subject: SigningSubjectV1,
+    pub subject_identity_sha256: String,
+    pub signing_preimage_sha256: String,
+    pub algorithm: String,
+    pub key_id: String,
+    pub revision: u64,
+    pub reserved_at: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signature_envelope: Option<SignatureEnvelopeV1>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signature_envelope_sha256: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub finalized_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure_code: Option<SigningLedgerFailureCode>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failed_at: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct SigningLedgerLogLeafV1 {
+    pub schema_version: String,
+    pub source_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub channel: Option<String>,
+    pub subject_identity_sha256: String,
+    pub signing_preimage_sha256: String,
+    pub signature_envelope_sha256: String,
+    pub sequence: u64,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct SigningLedgerCheckpointV1 {
+    pub schema_version: String,
+    pub kind: String,
+    pub log_id: String,
+    pub tree_size: u64,
+    pub log_root_hash: String,
+    pub latest_map_root_hash: String,
+    pub checkpoint_time: String,
+    pub key_id: String,
+    pub signature: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct SigningLedgerReceiptV1 {
+    pub schema_version: String,
+    pub log_id: String,
+    pub source_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub channel: Option<String>,
+    pub subject_identity_sha256: String,
+    pub signing_preimage_sha256: String,
+    pub signature_envelope_sha256: String,
+    pub sequence: u64,
+    pub leaf_index: u64,
+    pub tree_size: u64,
+    pub log_root_hash: String,
+    pub latest_map_root_hash: String,
+    pub checkpoint_sha256: String,
+    pub checkpoint_time: String,
+    pub key_id: String,
+    pub signature: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct SigningLedgerInclusionProofV1 {
+    pub schema_version: String,
+    pub kind: String,
+    pub log_id: String,
+    pub leaf_index: u64,
+    pub tree_size: u64,
+    pub nodes: Vec<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct SigningLedgerLatestProofV1 {
+    pub schema_version: String,
+    pub kind: String,
+    pub log_id: String,
+    pub subject_identity_sha256: String,
+    pub present: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sequence: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signing_preimage_sha256: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signature_envelope_sha256: Option<String>,
+    pub siblings: Vec<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct SigningLedgerConsistencyProofV1 {
+    pub schema_version: String,
+    pub kind: String,
+    pub log_id: String,
+    pub old_tree_size: u64,
+    pub new_tree_size: u64,
+    pub nodes: Vec<String>,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ReleaseContractError {
     InvalidDocument,
@@ -497,7 +685,7 @@ impl Error for ReleaseContractError {}
 pub struct SignatureVerificationRequest<'a> {
     pub usage: SigningUsage,
     pub key_id: &'a str,
-    pub preimage: &'a [u8],
+    pub signing_preimage_sha256: [u8; 32],
     pub signature: &'a [u8],
 }
 
@@ -928,6 +1116,77 @@ pub fn decode_signing_ledger_evidence(
     decode_canonical_document(raw, validate_signing_ledger_evidence)
 }
 
+pub fn canonical_signing_subject(
+    value: &SigningSubjectV1,
+) -> Result<Vec<u8>, ReleaseContractError> {
+    validate_signing_subject(value)?;
+    canonical_json(value)
+}
+
+pub fn decode_signing_subject(raw: &[u8]) -> Result<SigningSubjectV1, ReleaseContractError> {
+    decode_canonical_document(raw, validate_signing_subject)
+}
+
+pub fn canonical_signature_envelope(
+    value: &SignatureEnvelopeV1,
+) -> Result<Vec<u8>, ReleaseContractError> {
+    validate_signature_envelope(value)?;
+    canonical_json(value)
+}
+
+pub fn decode_signature_envelope(raw: &[u8]) -> Result<SignatureEnvelopeV1, ReleaseContractError> {
+    decode_canonical_document(raw, validate_signature_envelope)
+}
+
+pub fn canonical_signing_ledger_entry(
+    value: &SigningLedgerEntryV1,
+) -> Result<Vec<u8>, ReleaseContractError> {
+    validate_signing_ledger_entry(value)?;
+    canonical_json(value)
+}
+
+pub fn decode_signing_ledger_entry(
+    raw: &[u8],
+) -> Result<SigningLedgerEntryV1, ReleaseContractError> {
+    decode_canonical_document(raw, validate_signing_ledger_entry)
+}
+
+pub fn decode_signing_ledger_log_leaf(
+    raw: &[u8],
+) -> Result<SigningLedgerLogLeafV1, ReleaseContractError> {
+    decode_canonical_document(raw, validate_signing_ledger_log_leaf)
+}
+
+pub fn decode_signing_ledger_checkpoint(
+    raw: &[u8],
+) -> Result<SigningLedgerCheckpointV1, ReleaseContractError> {
+    decode_canonical_document(raw, validate_signing_ledger_checkpoint)
+}
+
+pub fn decode_signing_ledger_receipt(
+    raw: &[u8],
+) -> Result<SigningLedgerReceiptV1, ReleaseContractError> {
+    decode_canonical_document(raw, validate_signing_ledger_receipt)
+}
+
+pub fn decode_signing_ledger_inclusion_proof(
+    raw: &[u8],
+) -> Result<SigningLedgerInclusionProofV1, ReleaseContractError> {
+    decode_canonical_document(raw, validate_signing_ledger_inclusion_proof)
+}
+
+pub fn decode_signing_ledger_latest_proof(
+    raw: &[u8],
+) -> Result<SigningLedgerLatestProofV1, ReleaseContractError> {
+    decode_canonical_document(raw, validate_signing_ledger_latest_proof)
+}
+
+pub fn decode_signing_ledger_consistency_proof(
+    raw: &[u8],
+) -> Result<SigningLedgerConsistencyProofV1, ReleaseContractError> {
+    decode_canonical_document(raw, validate_signing_ledger_consistency_proof)
+}
+
 fn root_delegation_from_input(input: &RootDelegationInput, signature: String) -> RootDelegationV1 {
     RootDelegationV1 {
         schema_version: ROOT_DELEGATION_SCHEMA_VERSION.to_owned(),
@@ -1168,11 +1427,12 @@ fn verify_raw_signature(
     signature: &[u8],
     verifier: &impl SignatureVerifier,
 ) -> Result<(), ReleaseContractError> {
+    let signing_preimage_sha256: [u8; 32] = Sha256::digest(preimage).into();
     if signature.len() != 64
         || !verifier.verify_signature(SignatureVerificationRequest {
             usage,
             key_id,
-            preimage,
+            signing_preimage_sha256,
             signature,
         })
     {
@@ -1238,7 +1498,7 @@ fn validate_root_delegation(
         if public_key.len() != 32 || BASE64_STANDARD.encode(&public_key) != key.public_key {
             return invalid_document();
         }
-        if key.usages.is_empty() || key.usages.len() > 6 {
+        if key.usages.is_empty() || key.usages.len() > 8 {
             return invalid_document();
         }
         let mut previous_usage = None;
@@ -1249,7 +1509,27 @@ fn validate_root_delegation(
             }
             previous_usage = Some(rank);
         }
-        validate_sorted_ids(&key.channels, 1, 16, true)?;
+        let source_wide = key.usages.iter().all(|usage| {
+            matches!(
+                usage,
+                DelegatedKeyUsage::SigningLedger | DelegatedKeyUsage::TrustedTime
+            )
+        });
+        let has_source_wide = key.usages.iter().any(|usage| {
+            matches!(
+                usage,
+                DelegatedKeyUsage::SigningLedger | DelegatedKeyUsage::TrustedTime
+            )
+        });
+        if has_source_wide != source_wide {
+            return invalid_document();
+        }
+        validate_sorted_ids(
+            &key.channels,
+            if source_wide { 0 } else { 1 },
+            if source_wide { 0 } else { 16 },
+            true,
+        )?;
         let (_, valid_until) = validate_time_range(&key.valid_from, &key.valid_until, None)?;
         if valid_until > expires_at {
             return invalid_document();
@@ -1698,6 +1978,287 @@ fn validate_signing_ledger_evidence(
         return Err(ReleaseContractError::InvalidDocument);
     }
     Ok(())
+}
+
+fn validate_signing_subject(value: &SigningSubjectV1) -> Result<(), ReleaseContractError> {
+    if value.schema_version != SIGNING_SUBJECT_SCHEMA_VERSION || !valid_new_id(&value.source_id) {
+        return invalid_document();
+    }
+    let valid = match value.usage {
+        SigningSubjectUsage::RootDelegation => {
+            value
+                .root_epoch
+                .as_deref()
+                .is_some_and(valid_positive_epoch)
+                && value.channel.is_none()
+                && value.publisher_id.is_none()
+                && value.plugin_id.is_none()
+                && value.version.is_none()
+                && value.artifact_or_metadata_identity_sha256.is_none()
+                && value.epoch.is_none()
+        }
+        SigningSubjectUsage::Package | SigningSubjectUsage::ReleaseMetadata => {
+            value.channel.as_deref().is_some_and(valid_new_id)
+                && value.publisher_id.as_deref().is_some_and(valid_legacy_id)
+                && value.plugin_id.as_deref().is_some_and(valid_legacy_id)
+                && value.version.as_deref().is_some_and(valid_semver)
+                && value
+                    .artifact_or_metadata_identity_sha256
+                    .as_deref()
+                    .is_some_and(valid_sha256)
+                && value.root_epoch.is_none()
+                && value.epoch.is_none()
+        }
+        SigningSubjectUsage::SourcePolicyDocument
+        | SigningSubjectUsage::SourcePolicyPointer
+        | SigningSubjectUsage::RevocationDocument
+        | SigningSubjectUsage::RevocationPointer => {
+            value.channel.as_deref().is_some_and(valid_new_id)
+                && value.epoch.as_deref().is_some_and(valid_positive_epoch)
+                && value.root_epoch.is_none()
+                && value.publisher_id.is_none()
+                && value.plugin_id.is_none()
+                && value.version.is_none()
+                && value.artifact_or_metadata_identity_sha256.is_none()
+        }
+    };
+    if !valid {
+        return invalid_document();
+    }
+    Ok(())
+}
+
+fn validate_signature_envelope(value: &SignatureEnvelopeV1) -> Result<(), ReleaseContractError> {
+    if value.schema_version != SIGNATURE_ENVELOPE_SCHEMA_VERSION
+        || !valid_sha256(&value.subject_identity_sha256)
+        || !valid_sha256(&value.signing_preimage_sha256)
+        || value.algorithm != SIGNATURE_ALGORITHM_ED25519
+        || !valid_new_id(&value.key_id)
+        || decode_signature(&value.signature).is_err()
+    {
+        return invalid_document();
+    }
+    Ok(())
+}
+
+fn validate_signing_ledger_entry(value: &SigningLedgerEntryV1) -> Result<(), ReleaseContractError> {
+    if value.schema_version != SIGNING_LEDGER_ENTRY_SCHEMA_VERSION
+        || !valid_sha256(&value.subject_identity_sha256)
+        || !valid_sha256(&value.signing_preimage_sha256)
+        || value.algorithm != SIGNATURE_ALGORITHM_ED25519
+        || !valid_new_id(&value.key_id)
+        || !valid_json_safe_positive(value.revision)
+    {
+        return invalid_document();
+    }
+    validate_signing_subject(&value.subject)?;
+    if sha256_hex(&canonical_json(&value.subject)?) != value.subject_identity_sha256 {
+        return invalid_document();
+    }
+    let reserved_at = canonical_timestamp_seconds(&value.reserved_at)
+        .ok_or(ReleaseContractError::InvalidDocument)?;
+    match value.state {
+        SigningLedgerEntryState::Reserved => {
+            if value.signature_envelope.is_some()
+                || value.signature_envelope_sha256.is_some()
+                || value.finalized_at.is_some()
+                || value.failure_code.is_some()
+                || value.failed_at.is_some()
+            {
+                return invalid_document();
+            }
+        }
+        SigningLedgerEntryState::Finalized => {
+            let envelope = value
+                .signature_envelope
+                .as_ref()
+                .ok_or(ReleaseContractError::InvalidDocument)?;
+            validate_signature_envelope(envelope)?;
+            let envelope_digest = value
+                .signature_envelope_sha256
+                .as_deref()
+                .ok_or(ReleaseContractError::InvalidDocument)?;
+            let finalized_at = value
+                .finalized_at
+                .as_deref()
+                .and_then(canonical_timestamp_seconds)
+                .ok_or(ReleaseContractError::InvalidDocument)?;
+            if value.failure_code.is_some()
+                || value.failed_at.is_some()
+                || finalized_at < reserved_at
+                || envelope.subject_identity_sha256 != value.subject_identity_sha256
+                || envelope.signing_preimage_sha256 != value.signing_preimage_sha256
+                || envelope.algorithm != value.algorithm
+                || envelope.key_id != value.key_id
+                || !valid_sha256(envelope_digest)
+                || sha256_hex(&canonical_json(envelope)?) != envelope_digest
+            {
+                return invalid_document();
+            }
+        }
+        SigningLedgerEntryState::TerminalFailed => {
+            let failed_at = value
+                .failed_at
+                .as_deref()
+                .and_then(canonical_timestamp_seconds)
+                .ok_or(ReleaseContractError::InvalidDocument)?;
+            if value.signature_envelope.is_some()
+                || value.signature_envelope_sha256.is_some()
+                || value.finalized_at.is_some()
+                || value.failure_code.is_none()
+                || failed_at < reserved_at
+            {
+                return invalid_document();
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_signing_ledger_log_leaf(
+    value: &SigningLedgerLogLeafV1,
+) -> Result<(), ReleaseContractError> {
+    if value.schema_version != SIGNING_LEDGER_LOG_LEAF_SCHEMA_VERSION
+        || !valid_new_id(&value.source_id)
+        || value
+            .channel
+            .as_deref()
+            .is_some_and(|channel| !valid_new_id(channel))
+        || !valid_sha256(&value.subject_identity_sha256)
+        || !valid_sha256(&value.signing_preimage_sha256)
+        || !valid_sha256(&value.signature_envelope_sha256)
+        || !valid_json_safe_positive(value.sequence)
+    {
+        return invalid_document();
+    }
+    Ok(())
+}
+
+fn validate_signing_ledger_checkpoint(
+    value: &SigningLedgerCheckpointV1,
+) -> Result<(), ReleaseContractError> {
+    if value.schema_version != SIGNING_LEDGER_SCHEMA_VERSION
+        || value.kind != "checkpoint"
+        || !valid_new_id(&value.log_id)
+        || !valid_json_safe_positive(value.tree_size)
+        || !valid_sha256(&value.log_root_hash)
+        || !valid_sha256(&value.latest_map_root_hash)
+        || canonical_timestamp_seconds(&value.checkpoint_time).is_none()
+        || !valid_new_id(&value.key_id)
+        || decode_signature(&value.signature).is_err()
+    {
+        return invalid_document();
+    }
+    Ok(())
+}
+
+fn validate_signing_ledger_receipt(
+    value: &SigningLedgerReceiptV1,
+) -> Result<(), ReleaseContractError> {
+    if value.schema_version != SIGNING_LEDGER_RECEIPT_SCHEMA_VERSION
+        || !valid_new_id(&value.log_id)
+        || !valid_new_id(&value.source_id)
+        || value
+            .channel
+            .as_deref()
+            .is_some_and(|channel| !valid_new_id(channel))
+        || !valid_sha256(&value.subject_identity_sha256)
+        || !valid_sha256(&value.signing_preimage_sha256)
+        || !valid_sha256(&value.signature_envelope_sha256)
+        || !valid_json_safe_positive(value.sequence)
+        || value.leaf_index != value.sequence - 1
+        || !valid_json_safe_positive(value.tree_size)
+        || value.tree_size < value.sequence
+        || !valid_sha256(&value.log_root_hash)
+        || !valid_sha256(&value.latest_map_root_hash)
+        || !valid_sha256(&value.checkpoint_sha256)
+        || canonical_timestamp_seconds(&value.checkpoint_time).is_none()
+        || !valid_new_id(&value.key_id)
+        || decode_signature(&value.signature).is_err()
+    {
+        return invalid_document();
+    }
+    Ok(())
+}
+
+fn valid_ledger_nodes(values: &[String], expected: Option<usize>) -> bool {
+    expected.map_or(values.len() <= 64, |count| values.len() == count)
+        && values.iter().all(|node| valid_sha256(node))
+}
+
+fn validate_signing_ledger_inclusion_proof(
+    value: &SigningLedgerInclusionProofV1,
+) -> Result<(), ReleaseContractError> {
+    if value.schema_version != SIGNING_LEDGER_SCHEMA_VERSION
+        || value.kind != "inclusion_proof"
+        || !valid_new_id(&value.log_id)
+        || !valid_json_safe_positive(value.tree_size)
+        || value.leaf_index >= value.tree_size
+        || !valid_ledger_nodes(&value.nodes, None)
+    {
+        return invalid_document();
+    }
+    Ok(())
+}
+
+fn validate_signing_ledger_latest_proof(
+    value: &SigningLedgerLatestProofV1,
+) -> Result<(), ReleaseContractError> {
+    if value.schema_version != SIGNING_LEDGER_SCHEMA_VERSION
+        || value.kind != "latest_proof"
+        || !valid_new_id(&value.log_id)
+        || !valid_sha256(&value.subject_identity_sha256)
+        || !valid_ledger_nodes(&value.siblings, Some(256))
+    {
+        return invalid_document();
+    }
+    if value.present {
+        if !value.sequence.is_some_and(valid_json_safe_positive)
+            || !value
+                .signing_preimage_sha256
+                .as_deref()
+                .is_some_and(valid_sha256)
+            || !value
+                .signature_envelope_sha256
+                .as_deref()
+                .is_some_and(valid_sha256)
+        {
+            return invalid_document();
+        }
+    } else if value.sequence.is_some()
+        || value.signing_preimage_sha256.is_some()
+        || value.signature_envelope_sha256.is_some()
+    {
+        return invalid_document();
+    }
+    Ok(())
+}
+
+fn validate_signing_ledger_consistency_proof(
+    value: &SigningLedgerConsistencyProofV1,
+) -> Result<(), ReleaseContractError> {
+    if value.schema_version != SIGNING_LEDGER_SCHEMA_VERSION
+        || value.kind != "consistency_proof"
+        || !valid_new_id(&value.log_id)
+        || !valid_json_safe_positive(value.old_tree_size)
+        || value.new_tree_size < value.old_tree_size
+        || value.new_tree_size > 9_007_199_254_740_991
+        || !valid_ledger_nodes(&value.nodes, None)
+    {
+        return invalid_document();
+    }
+    Ok(())
+}
+
+fn valid_json_safe_positive(value: u64) -> bool {
+    value > 0 && value <= 9_007_199_254_740_991
+}
+
+fn sha256_hex(value: &[u8]) -> String {
+    Sha256::digest(value)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
 }
 
 fn invalid_document<T>() -> Result<T, ReleaseContractError> {

@@ -9,7 +9,10 @@ import (
 	"errors"
 	"reflect"
 	"slices"
+	"strings"
 	"testing"
+
+	"github.com/floegence/redevplugin/pkg/releasecontract"
 )
 
 func TestReleaseTrustStateDecoderEnforcesCanonicalClosedState(t *testing.T) {
@@ -65,6 +68,17 @@ func validReleaseTrustStateFixture(t *testing.T) ReleaseTrustStateV1 {
 	if err != nil {
 		t.Fatal(err)
 	}
+	ledgerCheckpoint := releasecontract.SigningLedgerCheckpointV1{
+		SchemaVersion: releasecontract.SigningLedgerSchemaVersion,
+		Kind:          releasecontract.SigningLedgerArtifactCheckpoint,
+		LogID:         "signing_log", TreeSize: 1, LogRootHash: strings.Repeat("4", 64),
+		LatestMapRootHash: strings.Repeat("5", 64), CheckpointTime: "2026-07-21T01:00:00Z",
+		KeyID: "signing_ledger_key", Signature: base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{6}, 64)),
+	}
+	ledgerBytes, err := releasecontract.CanonicalSigningLedgerCheckpoint(ledgerCheckpoint)
+	if err != nil {
+		t.Fatal(err)
+	}
 	documentHead := func(channel string) *ReleaseTrustDocumentHeadV1 {
 		return &ReleaseTrustDocumentHeadV1{
 			PointerLocator: channel + "/pointer.json", PointerTransportToken: "pointer-etag", PointerEpoch: "1",
@@ -78,6 +92,7 @@ func validReleaseTrustStateFixture(t *testing.T) ReleaseTrustStateV1 {
 		TrustedTime: ReleaseTrustedTimeStateV1{
 			Floor: checkpoint.CheckpointTime, CheckpointSHA256: digestHex(checkpointBytes), Checkpoint: checkpoint,
 		},
+		SigningLedger: &ReleaseSigningLedgerStateV1{CheckpointSHA256: digestHex(ledgerBytes), Checkpoint: ledgerCheckpoint},
 		Channels: []ReleaseTrustChannelStateV1{
 			{Channel: "beta", Policy: documentHead("beta")},
 			{Channel: "stable", Policy: documentHead("stable")},

@@ -9,6 +9,12 @@ const (
 	RevocationSchemaVersion            = "redevplugin.release_revocation.v2"
 	RevocationPointerSchemaVersion     = "redevplugin.release_revocation_pointer.v1"
 	SigningLedgerEvidenceSchemaVersion = "redevplugin.release_signing_ledger_evidence.v1"
+	SigningLedgerSchemaVersion         = "redevplugin.release_signing_ledger.v1"
+	SigningLedgerEntrySchemaVersion    = "redevplugin.release_signing_ledger_entry.v1"
+	SigningLedgerLogLeafSchemaVersion  = "redevplugin.release_signing_ledger_log_leaf.v1"
+	SigningSubjectSchemaVersion        = "redevplugin.release_signing_subject.v1"
+	SigningEnvelopeSchemaVersion       = "redevplugin.release_signature_envelope.v1"
+	SigningLedgerReceiptSchemaVersion  = "redevplugin.release_signing_ledger_receipt.v1"
 
 	SignatureAlgorithmEd25519 = "ed25519"
 
@@ -45,7 +51,158 @@ const (
 	SigningUsageSourcePolicyPointer SigningUsage = "redevplugin.release-signing.source-policy-pointer.v1"
 	SigningUsageRevocation          SigningUsage = "redevplugin.release-signing.revocation-document.v1"
 	SigningUsageRevocationPointer   SigningUsage = "redevplugin.release-signing.revocation-pointer.v1"
+	SigningUsageLedgerCheckpoint    SigningUsage = "redevplugin.release-signing.ledger-checkpoint.v1"
+	SigningUsageLedgerReceipt       SigningUsage = "redevplugin.release-signing.ledger-receipt.v1"
 )
+
+type SigningSubjectUsage string
+
+const (
+	SigningSubjectUsageRootDelegation      SigningSubjectUsage = "root_delegation"
+	SigningSubjectUsagePackage             SigningSubjectUsage = "package"
+	SigningSubjectUsageReleaseMetadata     SigningSubjectUsage = "release_metadata"
+	SigningSubjectUsageSourcePolicy        SigningSubjectUsage = "source_policy_document"
+	SigningSubjectUsageSourcePolicyPointer SigningSubjectUsage = "source_policy_pointer"
+	SigningSubjectUsageRevocation          SigningSubjectUsage = "revocation_document"
+	SigningSubjectUsageRevocationPointer   SigningSubjectUsage = "revocation_pointer"
+)
+
+type SigningSubjectV1 struct {
+	SchemaVersion          string              `json:"schema_version"`
+	Usage                  SigningSubjectUsage `json:"usage"`
+	SourceID               string              `json:"source_id"`
+	Channel                string              `json:"channel,omitempty"`
+	RootEpoch              string              `json:"root_epoch,omitempty"`
+	PublisherID            string              `json:"publisher_id,omitempty"`
+	PluginID               string              `json:"plugin_id,omitempty"`
+	Version                string              `json:"version,omitempty"`
+	ArtifactIdentitySHA256 string              `json:"artifact_or_metadata_identity_sha256,omitempty"`
+	Epoch                  string              `json:"epoch,omitempty"`
+}
+
+type SignatureEnvelopeV1 struct {
+	SchemaVersion         string `json:"schema_version"`
+	SubjectIdentitySHA256 string `json:"subject_identity_sha256"`
+	SigningPreimageSHA256 string `json:"signing_preimage_sha256"`
+	Algorithm             string `json:"algorithm"`
+	KeyID                 string `json:"key_id"`
+	Signature             string `json:"signature"`
+}
+
+type SigningLedgerEntryState string
+
+const (
+	SigningLedgerEntryReserved       SigningLedgerEntryState = "reserved"
+	SigningLedgerEntryFinalized      SigningLedgerEntryState = "finalized"
+	SigningLedgerEntryTerminalFailed SigningLedgerEntryState = "terminal_failed"
+)
+
+type SigningLedgerFailureCode string
+
+const (
+	SigningLedgerFailureSignerRejected  SigningLedgerFailureCode = "signer_rejected"
+	SigningLedgerFailureSubjectConflict SigningLedgerFailureCode = "subject_conflict"
+	SigningLedgerFailureLedgerRejected  SigningLedgerFailureCode = "ledger_rejected"
+)
+
+type SigningLedgerEntryV1 struct {
+	SchemaVersion           string                   `json:"schema_version"`
+	State                   SigningLedgerEntryState  `json:"state"`
+	Subject                 SigningSubjectV1         `json:"subject"`
+	SubjectIdentitySHA256   string                   `json:"subject_identity_sha256"`
+	SigningPreimageSHA256   string                   `json:"signing_preimage_sha256"`
+	Algorithm               string                   `json:"algorithm"`
+	KeyID                   string                   `json:"key_id"`
+	Revision                uint64                   `json:"revision"`
+	ReservedAt              string                   `json:"reserved_at"`
+	SignatureEnvelope       *SignatureEnvelopeV1     `json:"signature_envelope,omitempty"`
+	SignatureEnvelopeSHA256 string                   `json:"signature_envelope_sha256,omitempty"`
+	FinalizedAt             string                   `json:"finalized_at,omitempty"`
+	FailureCode             SigningLedgerFailureCode `json:"failure_code,omitempty"`
+	FailedAt                string                   `json:"failed_at,omitempty"`
+}
+
+type SigningLedgerArtifactKind string
+
+const (
+	SigningLedgerArtifactCheckpoint       SigningLedgerArtifactKind = "checkpoint"
+	SigningLedgerArtifactInclusionProof   SigningLedgerArtifactKind = "inclusion_proof"
+	SigningLedgerArtifactLatestProof      SigningLedgerArtifactKind = "latest_proof"
+	SigningLedgerArtifactConsistencyProof SigningLedgerArtifactKind = "consistency_proof"
+)
+
+const SigningLedgerLatestProofDepth = 256
+
+type SigningLedgerCheckpointV1 struct {
+	SchemaVersion     string                    `json:"schema_version"`
+	Kind              SigningLedgerArtifactKind `json:"kind"`
+	LogID             string                    `json:"log_id"`
+	TreeSize          uint64                    `json:"tree_size"`
+	LogRootHash       string                    `json:"log_root_hash"`
+	LatestMapRootHash string                    `json:"latest_map_root_hash"`
+	CheckpointTime    string                    `json:"checkpoint_time"`
+	KeyID             string                    `json:"key_id"`
+	Signature         string                    `json:"signature"`
+}
+
+type SigningLedgerReceiptV1 struct {
+	SchemaVersion           string `json:"schema_version"`
+	LogID                   string `json:"log_id"`
+	SourceID                string `json:"source_id"`
+	Channel                 string `json:"channel,omitempty"`
+	SubjectIdentitySHA256   string `json:"subject_identity_sha256"`
+	SigningPreimageSHA256   string `json:"signing_preimage_sha256"`
+	SignatureEnvelopeSHA256 string `json:"signature_envelope_sha256"`
+	Sequence                uint64 `json:"sequence"`
+	LeafIndex               uint64 `json:"leaf_index"`
+	TreeSize                uint64 `json:"tree_size"`
+	LogRootHash             string `json:"log_root_hash"`
+	LatestMapRootHash       string `json:"latest_map_root_hash"`
+	CheckpointSHA256        string `json:"checkpoint_sha256"`
+	CheckpointTime          string `json:"checkpoint_time"`
+	KeyID                   string `json:"key_id"`
+	Signature               string `json:"signature"`
+}
+
+type SigningLedgerLogLeafV1 struct {
+	SchemaVersion           string `json:"schema_version"`
+	SourceID                string `json:"source_id"`
+	Channel                 string `json:"channel,omitempty"`
+	SubjectIdentitySHA256   string `json:"subject_identity_sha256"`
+	SigningPreimageSHA256   string `json:"signing_preimage_sha256"`
+	SignatureEnvelopeSHA256 string `json:"signature_envelope_sha256"`
+	Sequence                uint64 `json:"sequence"`
+}
+
+type SigningLedgerInclusionProofV1 struct {
+	SchemaVersion string                    `json:"schema_version"`
+	Kind          SigningLedgerArtifactKind `json:"kind"`
+	LogID         string                    `json:"log_id"`
+	LeafIndex     uint64                    `json:"leaf_index"`
+	TreeSize      uint64                    `json:"tree_size"`
+	Nodes         []string                  `json:"nodes"`
+}
+
+type SigningLedgerLatestProofV1 struct {
+	SchemaVersion           string                    `json:"schema_version"`
+	Kind                    SigningLedgerArtifactKind `json:"kind"`
+	LogID                   string                    `json:"log_id"`
+	SubjectIdentitySHA256   string                    `json:"subject_identity_sha256"`
+	Present                 bool                      `json:"present"`
+	Sequence                uint64                    `json:"sequence,omitempty"`
+	SigningPreimageSHA256   string                    `json:"signing_preimage_sha256,omitempty"`
+	SignatureEnvelopeSHA256 string                    `json:"signature_envelope_sha256,omitempty"`
+	Siblings                []string                  `json:"siblings"`
+}
+
+type SigningLedgerConsistencyProofV1 struct {
+	SchemaVersion string                    `json:"schema_version"`
+	Kind          SigningLedgerArtifactKind `json:"kind"`
+	LogID         string                    `json:"log_id"`
+	OldTreeSize   uint64                    `json:"old_tree_size"`
+	NewTreeSize   uint64                    `json:"new_tree_size"`
+	Nodes         []string                  `json:"nodes"`
+}
 
 type DelegatedKeyUsage string
 
@@ -56,6 +213,8 @@ const (
 	DelegatedKeyUsageSourcePolicyPointer DelegatedKeyUsage = "source_policy_pointer"
 	DelegatedKeyUsageRevocation          DelegatedKeyUsage = "revocation_document"
 	DelegatedKeyUsageRevocationPointer   DelegatedKeyUsage = "revocation_pointer"
+	DelegatedKeyUsageSigningLedger       DelegatedKeyUsage = "signing_ledger"
+	DelegatedKeyUsageTrustedTime         DelegatedKeyUsage = "trusted_time"
 )
 
 type RootDelegatedKey struct {

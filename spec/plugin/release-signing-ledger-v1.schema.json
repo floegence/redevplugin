@@ -1,0 +1,176 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.redevplugin.dev/plugin/release-signing-ledger-v1.schema.json",
+  "title": "ReDevPlugin release signing ledger v1",
+  "oneOf": [
+    { "$ref": "#/$defs/entry" },
+    { "$ref": "#/$defs/log_leaf" },
+    { "$ref": "#/$defs/checkpoint" },
+    { "$ref": "#/$defs/inclusion_proof" },
+    { "$ref": "#/$defs/latest_proof" },
+    { "$ref": "#/$defs/consistency_proof" }
+  ],
+  "$defs": {
+	"log_leaf": {
+	  "type": "object",
+	  "additionalProperties": false,
+	  "required": [
+		"schema_version", "source_id", "subject_identity_sha256", "signing_preimage_sha256",
+		"signature_envelope_sha256", "sequence"
+	  ],
+	  "properties": {
+		"schema_version": { "const": "redevplugin.release_signing_ledger_log_leaf.v1" },
+		"source_id": { "$ref": "#/$defs/id" },
+		"channel": { "$ref": "#/$defs/id" },
+		"subject_identity_sha256": { "$ref": "#/$defs/sha256" },
+		"signing_preimage_sha256": { "$ref": "#/$defs/sha256" },
+		"signature_envelope_sha256": { "$ref": "#/$defs/sha256" },
+		"sequence": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 }
+	  }
+	},
+    "entry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version", "state", "subject", "subject_identity_sha256", "signing_preimage_sha256",
+        "algorithm", "key_id", "revision", "reserved_at"
+      ],
+      "properties": {
+        "schema_version": { "const": "redevplugin.release_signing_ledger_entry.v1" },
+        "state": { "enum": ["reserved", "finalized", "terminal_failed"] },
+        "subject": { "$ref": "https://schemas.redevplugin.dev/plugin/release-signing-subject-v1.schema.json" },
+        "subject_identity_sha256": { "$ref": "#/$defs/sha256" },
+        "signing_preimage_sha256": { "$ref": "#/$defs/sha256" },
+        "algorithm": { "const": "ed25519" },
+        "key_id": { "$ref": "#/$defs/id" },
+        "revision": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 },
+        "reserved_at": { "$ref": "#/$defs/time" },
+        "signature_envelope": { "$ref": "https://schemas.redevplugin.dev/plugin/release-signature-envelope-v1.schema.json" },
+        "signature_envelope_sha256": { "$ref": "#/$defs/sha256" },
+        "finalized_at": { "$ref": "#/$defs/time" },
+        "failure_code": { "enum": ["signer_rejected", "subject_conflict", "ledger_rejected"] },
+        "failed_at": { "$ref": "#/$defs/time" }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "state": { "const": "reserved" } }, "required": ["state"] },
+          "then": {
+            "not": {
+              "anyOf": [
+                { "required": ["signature_envelope"] }, { "required": ["signature_envelope_sha256"] },
+                { "required": ["finalized_at"] }, { "required": ["failure_code"] }, { "required": ["failed_at"] }
+              ]
+            }
+          }
+        },
+        {
+          "if": { "properties": { "state": { "const": "finalized" } }, "required": ["state"] },
+          "then": { "required": ["signature_envelope", "signature_envelope_sha256", "finalized_at"] },
+          "else": {
+            "not": {
+              "anyOf": [
+                { "required": ["signature_envelope"] }, { "required": ["signature_envelope_sha256"] },
+                { "required": ["finalized_at"] }
+              ]
+            }
+          }
+        },
+        {
+          "if": { "properties": { "state": { "const": "terminal_failed" } }, "required": ["state"] },
+          "then": { "required": ["failure_code", "failed_at"] },
+          "else": {
+            "not": { "anyOf": [{ "required": ["failure_code"] }, { "required": ["failed_at"] }] }
+          }
+        }
+      ]
+    },
+    "checkpoint": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version", "kind", "log_id", "tree_size", "log_root_hash", "latest_map_root_hash",
+        "checkpoint_time", "key_id", "signature"
+      ],
+      "properties": {
+        "schema_version": { "const": "redevplugin.release_signing_ledger.v1" },
+        "kind": { "const": "checkpoint" },
+        "log_id": { "$ref": "#/$defs/id" },
+        "tree_size": { "$ref": "#/$defs/tree_size" },
+        "log_root_hash": { "$ref": "#/$defs/sha256" },
+        "latest_map_root_hash": { "$ref": "#/$defs/sha256" },
+        "checkpoint_time": { "$ref": "#/$defs/time" },
+        "key_id": { "$ref": "#/$defs/id" },
+        "signature": { "$ref": "#/$defs/signature" }
+      }
+    },
+    "inclusion_proof": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version", "kind", "log_id", "leaf_index", "tree_size", "nodes"],
+      "properties": {
+        "schema_version": { "const": "redevplugin.release_signing_ledger.v1" },
+        "kind": { "const": "inclusion_proof" },
+        "log_id": { "$ref": "#/$defs/id" },
+        "leaf_index": { "type": "integer", "minimum": 0, "maximum": 9007199254740990 },
+        "tree_size": { "$ref": "#/$defs/tree_size" },
+        "nodes": { "$ref": "#/$defs/log_proof" }
+      }
+    },
+    "latest_proof": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version", "kind", "log_id", "subject_identity_sha256", "present", "siblings"],
+      "properties": {
+        "schema_version": { "const": "redevplugin.release_signing_ledger.v1" },
+        "kind": { "const": "latest_proof" },
+        "log_id": { "$ref": "#/$defs/id" },
+        "subject_identity_sha256": { "$ref": "#/$defs/sha256" },
+        "present": { "type": "boolean" },
+        "sequence": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 },
+        "signing_preimage_sha256": { "$ref": "#/$defs/sha256" },
+        "signature_envelope_sha256": { "$ref": "#/$defs/sha256" },
+        "siblings": {
+          "type": "array", "minItems": 256, "maxItems": 256,
+          "items": { "$ref": "#/$defs/sha256" }
+        }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "present": { "const": true } }, "required": ["present"] },
+          "then": { "required": ["sequence", "signing_preimage_sha256", "signature_envelope_sha256"] },
+          "else": {
+            "not": {
+              "anyOf": [
+                { "required": ["sequence"] },
+                { "required": ["signing_preimage_sha256"] },
+                { "required": ["signature_envelope_sha256"] }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "consistency_proof": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version", "kind", "log_id", "old_tree_size", "new_tree_size", "nodes"],
+      "properties": {
+        "schema_version": { "const": "redevplugin.release_signing_ledger.v1" },
+        "kind": { "const": "consistency_proof" },
+        "log_id": { "$ref": "#/$defs/id" },
+        "old_tree_size": { "$ref": "#/$defs/tree_size" },
+        "new_tree_size": { "$ref": "#/$defs/tree_size" },
+        "nodes": { "$ref": "#/$defs/log_proof" }
+      }
+    },
+    "id": { "type": "string", "pattern": "^[a-z][a-z0-9._-]{0,127}$" },
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "tree_size": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 },
+    "time": { "type": "string", "format": "date-time", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$" },
+    "signature": { "type": "string", "pattern": "^[A-Za-z0-9+/]{86}==$" },
+    "log_proof": {
+      "type": "array", "maxItems": 64,
+      "items": { "$ref": "#/$defs/sha256" }
+    }
+  }
+}

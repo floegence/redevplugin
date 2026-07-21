@@ -1,0 +1,40 @@
+{
+  "envelope": {
+    "algorithm": "ed25519",
+    "key_id": "package_key",
+    "schema_version": "redevplugin.release_signature_envelope.v1",
+    "signature": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==",
+    "signing_preimage_sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+    "subject_identity_sha256": "e93320fe942d7640efa4731f0d97412ad93dd31f7310d1e8b19ac4d0bb1413b1"
+  },
+  "reserved_entry": {
+    "algorithm": "ed25519",
+    "key_id": "package_key",
+    "reserved_at": "2026-07-21T02:00:00Z",
+    "revision": 1,
+    "schema_version": "redevplugin.release_signing_ledger_entry.v1",
+    "signing_preimage_sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+    "state": "reserved",
+    "subject": {
+      "artifact_or_metadata_identity_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+      "channel": "stable",
+      "plugin_id": "example.plugin",
+      "publisher_id": "example.publisher",
+      "schema_version": "redevplugin.release_signing_subject.v1",
+      "source_id": "example_source",
+      "usage": "package",
+      "version": "1.2.3"
+    },
+    "subject_identity_sha256": "e93320fe942d7640efa4731f0d97412ad93dd31f7310d1e8b19ac4d0bb1413b1"
+  },
+  "subject": {
+    "artifact_or_metadata_identity_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+    "channel": "stable",
+    "plugin_id": "example.plugin",
+    "publisher_id": "example.publisher",
+    "schema_version": "redevplugin.release_signing_subject.v1",
+    "source_id": "example_source",
+    "usage": "package",
+    "version": "1.2.3"
+  }
+}

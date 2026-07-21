@@ -3,6 +3,7 @@ use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use redevplugin_contracts::*;
 use serde::Deserialize;
+use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 
 #[derive(Deserialize)]
@@ -49,7 +50,9 @@ impl SignatureVerifier for TestVerifier {
         let Ok(signature) = Signature::try_from(request.signature) else {
             return false;
         };
-        self.0.verify(request.preimage, &signature).is_ok()
+        self.0
+            .verify(&request.signing_preimage_sha256, &signature)
+            .is_ok()
     }
 }
 
@@ -93,7 +96,7 @@ fn release_signing_projection_verifies_all_domains_and_rejects_the_7x6_matrix() 
             let valid = verifier.verify_signature(SignatureVerificationRequest {
                 usage: verified_usage,
                 key_id: "test_signing_key",
-                preimage: &preimages[&verified_usage],
+                signing_preimage_sha256: Sha256::digest(&preimages[&verified_usage]).into(),
                 signature: &decode_base64(&fixture.signatures[signed_usage.as_str()]),
             });
             assert_eq!(
@@ -211,6 +214,34 @@ fn release_signing_builders_and_closed_decoders_preserve_canonical_documents() {
             );
         }
     }
+}
+
+#[test]
+fn root_delegation_keeps_source_wide_and_channel_scoped_usages_disjoint() {
+    let fixture = fixture();
+    let mut source_wide = fixture.documents.root_delegation.clone();
+    source_wide.delegated_keys[0].usages = vec![
+        DelegatedKeyUsage::SigningLedger,
+        DelegatedKeyUsage::TrustedTime,
+    ];
+    source_wide.delegated_keys[0].channels.clear();
+    canonical_root_delegation(&source_wide).unwrap();
+
+    let mut with_channel = source_wide.clone();
+    with_channel.delegated_keys[0].channels = vec!["stable".to_owned()];
+    assert_eq!(
+        canonical_root_delegation(&with_channel),
+        Err(ReleaseContractError::InvalidDocument)
+    );
+
+    let mut mixed = source_wide;
+    mixed.delegated_keys[0].usages =
+        vec![DelegatedKeyUsage::Package, DelegatedKeyUsage::SigningLedger];
+    mixed.delegated_keys[0].channels = vec!["stable".to_owned()];
+    assert_eq!(
+        canonical_root_delegation(&mixed),
+        Err(ReleaseContractError::InvalidDocument)
+    );
 }
 
 #[test]

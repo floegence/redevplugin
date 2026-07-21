@@ -97,7 +97,12 @@ func validateRootDelegation(value RootDelegationV1, requireSignature bool) error
 		if err := validateUsageList(key.Usages); err != nil {
 			return err
 		}
-		if err := validateSortedIDs(key.Channels, 1, 16, true); err != nil {
+		minimumChannels := 1
+		if sourceWideDelegatedUsages(key.Usages) {
+			minimumChannels = 0
+		}
+		if err := validateSortedIDs(key.Channels, minimumChannels, 16, true); err != nil ||
+			(minimumChannels == 0 && len(key.Channels) != 0) {
 			return invalid("root delegation delegated key channels")
 		}
 		validFrom, validUntil, err := validateTimeRange(key.ValidFrom, key.ValidUntil, 0)
@@ -110,18 +115,32 @@ func validateRootDelegation(value RootDelegationV1, requireSignature bool) error
 }
 
 func validateUsageList(usages []DelegatedKeyUsage) error {
-	if len(usages) < 1 || len(usages) > 6 {
+	if len(usages) < 1 || len(usages) > 8 {
 		return invalid("root delegation delegated key usages")
 	}
 	previous := -1
+	sourceWide := false
+	channelScoped := false
 	for _, usage := range usages {
 		rank := delegatedUsageRank(usage)
 		if rank < 0 || rank <= previous {
 			return invalid("root delegation delegated key usage order")
 		}
+		if usage == DelegatedKeyUsageSigningLedger || usage == DelegatedKeyUsageTrustedTime {
+			sourceWide = true
+		} else {
+			channelScoped = true
+		}
 		previous = rank
 	}
+	if sourceWide && channelScoped {
+		return invalid("root delegation delegated key usage scope")
+	}
 	return nil
+}
+
+func sourceWideDelegatedUsages(usages []DelegatedKeyUsage) bool {
+	return len(usages) > 0 && (usages[0] == DelegatedKeyUsageSigningLedger || usages[0] == DelegatedKeyUsageTrustedTime)
 }
 
 func delegatedUsageRank(usage DelegatedKeyUsage) int {
@@ -138,6 +157,10 @@ func delegatedUsageRank(usage DelegatedKeyUsage) int {
 		return 4
 	case DelegatedKeyUsageSourcePolicyPointer:
 		return 5
+	case DelegatedKeyUsageSigningLedger:
+		return 6
+	case DelegatedKeyUsageTrustedTime:
+		return 7
 	default:
 		return -1
 	}

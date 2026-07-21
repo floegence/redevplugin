@@ -133,6 +133,26 @@ const stagedSchemaArtifacts = [
     version: "release-signing-ledger-evidence-v1",
   },
   {
+    id: "release-signature-envelope-schema",
+    path: "spec/plugin/release-signature-envelope-v1.schema.json",
+    version: "release-signature-envelope-v1",
+  },
+  {
+    id: "release-signing-ledger-receipt-schema",
+    path: "spec/plugin/release-signing-ledger-receipt-v1.schema.json",
+    version: "release-signing-ledger-receipt-v1",
+  },
+  {
+    id: "release-signing-ledger-schema",
+    path: "spec/plugin/release-signing-ledger-v1.schema.json",
+    version: "release-signing-ledger-v1",
+  },
+  {
+    id: "release-signing-subject-schema",
+    path: "spec/plugin/release-signing-subject-v1.schema.json",
+    version: "release-signing-subject-v1",
+  },
+  {
     id: "release-source-policy-pointer-schema",
     path: "spec/plugin/release-source-policy-pointer-v1.schema.json",
     version: "release-source-policy-pointer-v1",

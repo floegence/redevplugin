@@ -12,6 +12,7 @@
     "external_counter": { "$ref": "#/$defs/counter" },
     "root": { "$ref": "#/$defs/root_head" },
     "trusted_time": { "$ref": "#/$defs/trusted_time" },
+	"signing_ledger": { "$ref": "#/$defs/signing_ledger" },
     "channels": {
       "type": "array",
       "maxItems": 16,
@@ -68,6 +69,20 @@
         "checkpoint": { "$ref": "#/$defs/checkpoint" }
       }
     },
+	"signing_ledger": {
+	  "type": "object",
+	  "additionalProperties": false,
+	  "required": ["checkpoint_sha256", "checkpoint"],
+	  "properties": {
+		"checkpoint_sha256": { "$ref": "#/$defs/sha256" },
+		"checkpoint": {
+		  "allOf": [
+			{ "$ref": "https://schemas.redevplugin.dev/plugin/release-signing-ledger-v1.schema.json" },
+			{ "properties": { "kind": { "const": "checkpoint" } }, "required": ["kind"] }
+		  ]
+		}
+	  }
+	},
     "document_head": {
       "type": "object",
       "additionalProperties": false,

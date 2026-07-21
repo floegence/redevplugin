@@ -1,0 +1,63 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.redevplugin.dev/plugin/release-signing-subject-v1.schema.json",
+  "title": "ReDevPlugin release signing subject v1",
+  "oneOf": [
+    { "$ref": "#/$defs/root_subject" },
+    { "$ref": "#/$defs/release_subject" },
+    { "$ref": "#/$defs/epoch_subject" }
+  ],
+  "$defs": {
+    "root_subject": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version", "usage", "source_id", "root_epoch"],
+      "properties": {
+        "schema_version": { "const": "redevplugin.release_signing_subject.v1" },
+        "usage": { "const": "root_delegation" },
+        "source_id": { "$ref": "#/$defs/id" },
+        "root_epoch": { "$ref": "#/$defs/positive_epoch" }
+      }
+    },
+    "release_subject": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version", "usage", "source_id", "channel", "publisher_id",
+        "plugin_id", "version", "artifact_or_metadata_identity_sha256"
+      ],
+      "properties": {
+        "schema_version": { "const": "redevplugin.release_signing_subject.v1" },
+        "usage": { "enum": ["package", "release_metadata"] },
+        "source_id": { "$ref": "#/$defs/id" },
+        "channel": { "$ref": "#/$defs/id" },
+        "publisher_id": { "$ref": "#/$defs/legacy_id" },
+        "plugin_id": { "$ref": "#/$defs/legacy_id" },
+        "version": { "$ref": "#/$defs/semver" },
+        "artifact_or_metadata_identity_sha256": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "epoch_subject": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version", "usage", "source_id", "channel", "epoch"],
+      "properties": {
+        "schema_version": { "const": "redevplugin.release_signing_subject.v1" },
+        "usage": {
+          "enum": ["source_policy_document", "source_policy_pointer", "revocation_document", "revocation_pointer"]
+        },
+        "source_id": { "$ref": "#/$defs/id" },
+        "channel": { "$ref": "#/$defs/id" },
+        "epoch": { "$ref": "#/$defs/positive_epoch" }
+      }
+    },
+    "id": { "type": "string", "pattern": "^[a-z][a-z0-9._-]{0,127}$" },
+    "legacy_id": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$" },
+    "positive_epoch": { "type": "string", "pattern": "^[1-9][0-9]*$" },
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "semver": {
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(?:-(?:(?:0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))*))?(?:\\+[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?$"
+    }
+  }
+}

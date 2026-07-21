@@ -172,7 +172,7 @@ func verifyTrustedTimeObservation(
 	}
 	if evidence.Leaf.SourceID != request.key.sourceID || evidence.Leaf.Channel != request.key.channel || evidence.Leaf.Nonce != request.nonce ||
 		evidence.Leaf.MinimumTime != request.minimumTime || evidence.Leaf.RequestSHA256 != request.requestSHA256 || evidence.Leaf.LogID != request.logID ||
-		evidence.Checkpoint.LogID != request.logID || evidence.Checkpoint.KeyID != root.anchor.keyID {
+		evidence.Checkpoint.LogID != request.logID || evidence.Checkpoint.KeyID != root.pinnedAnchor.keyID {
 		return VerifiedTrustedTime{}, ErrInvalidTrustedTimeEvidence
 	}
 	leafBytes, _ := json.Marshal(evidence.Leaf)
@@ -189,7 +189,7 @@ func verifyTrustedTimeObservation(
 		Domain: "redevplugin.trusted-time.set.v1", LeafSHA256: evidence.LeafSHA256, IntegratedTime: evidence.IntegratedTime, LogID: request.logID,
 	})
 	setSignature, err := decodeSignature(evidence.SignedEntryTimestamp)
-	if err != nil || !ed25519.Verify(root.anchor.publicKey, setPreimage, setSignature) {
+	if err != nil || !ed25519.Verify(root.pinnedAnchor.publicKey, setPreimage, setSignature) {
 		return VerifiedTrustedTime{}, ErrInvalidTrustedTimeEvidence
 	}
 	checkpointPreimage, _ := json.Marshal(checkpointPreimageFromEvidence(evidence.Checkpoint))
@@ -197,7 +197,7 @@ func verifyTrustedTimeObservation(
 		return VerifiedTrustedTime{}, ErrInvalidTrustedTimeEvidence
 	}
 	checkpointSignature, err := decodeSignature(evidence.Checkpoint.Signature)
-	if err != nil || !ed25519.Verify(root.anchor.publicKey, checkpointPreimage, checkpointSignature) {
+	if err != nil || !ed25519.Verify(root.pinnedAnchor.publicKey, checkpointPreimage, checkpointSignature) {
 		return VerifiedTrustedTime{}, ErrInvalidTrustedTimeEvidence
 	}
 	rootHash, _ := hex.DecodeString(evidence.Checkpoint.RootHash)

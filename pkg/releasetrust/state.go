@@ -6,6 +6,8 @@ import (
 	"errors"
 	"regexp"
 	"slices"
+
+	"github.com/floegence/redevplugin/pkg/releasecontract"
 )
 
 const (
@@ -39,6 +41,11 @@ type ReleaseTrustedTimeStateV1 struct {
 	Checkpoint       TrustedTimeCheckpointV1 `json:"checkpoint"`
 }
 
+type ReleaseSigningLedgerStateV1 struct {
+	CheckpointSHA256 string                                    `json:"checkpoint_sha256"`
+	Checkpoint       releasecontract.SigningLedgerCheckpointV1 `json:"checkpoint"`
+}
+
 type ReleaseTrustDocumentHeadV1 struct {
 	PointerLocator         string `json:"pointer_locator"`
 	PointerTransportToken  string `json:"pointer_transport_token"`
@@ -65,6 +72,7 @@ type ReleaseTrustStateV1 struct {
 	ExternalCounter uint64                       `json:"external_counter"`
 	Root            *ReleaseTrustRootHeadV1      `json:"root,omitempty"`
 	TrustedTime     ReleaseTrustedTimeStateV1    `json:"trusted_time"`
+	SigningLedger   *ReleaseSigningLedgerStateV1 `json:"signing_ledger,omitempty"`
 	Channels        []ReleaseTrustChannelStateV1 `json:"channels"`
 }
 
@@ -113,6 +121,9 @@ func validateReleaseTrustState(state ReleaseTrustStateV1) error {
 	if state.Root != nil && !validRootHead(*state.Root) {
 		return ErrInvalidReleaseTrustState
 	}
+	if state.SigningLedger != nil && !validSigningLedgerState(*state.SigningLedger) {
+		return ErrInvalidReleaseTrustState
+	}
 	for index, channel := range state.Channels {
 		if !contractIDPattern.MatchString(channel.Channel) || (index > 0 && state.Channels[index-1].Channel >= channel.Channel) ||
 			(channel.Policy != nil && !validDocumentHead(*channel.Policy)) || (channel.Revocation != nil && !validDocumentHead(*channel.Revocation)) {
@@ -120,6 +131,11 @@ func validateReleaseTrustState(state ReleaseTrustStateV1) error {
 		}
 	}
 	return nil
+}
+
+func validSigningLedgerState(state ReleaseSigningLedgerStateV1) bool {
+	checkpointBytes, err := releasecontract.CanonicalSigningLedgerCheckpoint(state.Checkpoint)
+	return err == nil && sha256Pattern.MatchString(state.CheckpointSHA256) && digestHex(checkpointBytes) == state.CheckpointSHA256
 }
 
 func validateTrustedTimeState(state ReleaseTrustedTimeStateV1) error {
@@ -181,6 +197,10 @@ func cloneReleaseTrustState(state ReleaseTrustStateV1) ReleaseTrustStateV1 {
 	if state.Root != nil {
 		root := *state.Root
 		state.Root = &root
+	}
+	if state.SigningLedger != nil {
+		ledger := *state.SigningLedger
+		state.SigningLedger = &ledger
 	}
 	channels := state.Channels
 	state.Channels = make([]ReleaseTrustChannelStateV1, len(channels))

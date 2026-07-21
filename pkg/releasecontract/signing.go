@@ -2,6 +2,7 @@ package releasecontract
 
 import (
 	"crypto/ed25519"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -9,10 +10,10 @@ import (
 )
 
 type SignatureVerificationRequest struct {
-	Usage     SigningUsage
-	KeyID     string
-	Preimage  []byte
-	Signature []byte
+	Usage                 SigningUsage
+	KeyID                 string
+	SigningPreimageSHA256 [sha256.Size]byte
+	Signature             []byte
 }
 
 type SignatureVerifier interface {
@@ -33,7 +34,7 @@ type Ed25519PublicKeyVerifier map[string]ed25519.PublicKey
 func (keys Ed25519PublicKeyVerifier) VerifySignature(request SignatureVerificationRequest) error {
 	key := keys[request.KeyID]
 	if len(key) != ed25519.PublicKeySize || len(request.Signature) != ed25519.SignatureSize ||
-		!ed25519.Verify(key, request.Preimage, request.Signature) {
+		!ed25519.Verify(key, request.SigningPreimageSHA256[:], request.Signature) {
 		return ErrInvalidSignature
 	}
 	return nil
@@ -534,11 +535,12 @@ func verifySignature(usage SigningUsage, keyID string, preimage []byte, signatur
 	if verifier == nil {
 		return ErrVerifierRequired
 	}
+	digest := sha256.Sum256(preimage)
 	request := SignatureVerificationRequest{
-		Usage:     usage,
-		KeyID:     keyID,
-		Preimage:  slices.Clone(preimage),
-		Signature: slices.Clone(signature),
+		Usage:                 usage,
+		KeyID:                 keyID,
+		SigningPreimageSHA256: digest,
+		Signature:             slices.Clone(signature),
 	}
 	if err := verifier.VerifySignature(request); err != nil {
 		return ErrInvalidSignature

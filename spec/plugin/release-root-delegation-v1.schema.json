@@ -53,7 +53,7 @@
         "usages": {
           "type": "array",
           "minItems": 1,
-          "maxItems": 6,
+          "maxItems": 8,
           "uniqueItems": true,
           "items": {
             "enum": [
@@ -62,20 +62,51 @@
               "source_policy_document",
               "source_policy_pointer",
               "revocation_document",
-              "revocation_pointer"
+              "revocation_pointer",
+              "signing_ledger",
+              "trusted_time"
             ]
           }
         },
         "channels": {
           "type": "array",
-          "minItems": 1,
+          "minItems": 0,
           "maxItems": 16,
           "uniqueItems": true,
           "items": { "$ref": "#/$defs/id" }
         },
         "valid_from": { "$ref": "#/$defs/canonical_time" },
         "valid_until": { "$ref": "#/$defs/canonical_time" }
-      }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "usages": { "contains": { "enum": ["signing_ledger", "trusted_time"] } }
+            },
+            "required": ["usages"]
+          },
+          "then": {
+            "properties": {
+              "usages": { "items": { "enum": ["signing_ledger", "trusted_time"] } },
+              "channels": { "maxItems": 0 }
+            }
+          },
+          "else": {
+            "properties": {
+              "channels": { "minItems": 1 },
+              "usages": {
+                "items": {
+                  "enum": [
+                    "package", "release_metadata", "source_policy_document", "source_policy_pointer",
+                    "revocation_document", "revocation_pointer"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      ]
     },
     "id": {
       "type": "string",

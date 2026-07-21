@@ -168,13 +168,37 @@
       "id": "release-root-delegation-schema",
       "path": "spec/plugin/release-root-delegation-v1.schema.json",
       "version": "release-root-delegation-v1",
-      "sha256": "ffceff8ce40baaad4e72bf2193a4c62d9ef67b3dc0391d7e2b900d8cadd624be"
+      "sha256": "19183ab24b61200daa0e2ae364cf8bcb72bd62b5004a7e91ca5a448999d5d085"
+    },
+    {
+      "id": "release-signature-envelope-schema",
+      "path": "spec/plugin/release-signature-envelope-v1.schema.json",
+      "version": "release-signature-envelope-v1",
+      "sha256": "7df9afd22bfdebfa89dc3bdb46ecdbe22a91ecce35fa46c492dd9795c66fae29"
     },
     {
       "id": "release-signing-ledger-evidence-schema",
       "path": "spec/plugin/release-signing-ledger-evidence-v1.schema.json",
       "version": "release-signing-ledger-evidence-v1",
       "sha256": "9ab8b7f65dedcd119d578debb4f6ff97fc35f4c7ac95c0e5435f8b0959bc1a5c"
+    },
+    {
+      "id": "release-signing-ledger-receipt-schema",
+      "path": "spec/plugin/release-signing-ledger-receipt-v1.schema.json",
+      "version": "release-signing-ledger-receipt-v1",
+      "sha256": "29210cfefd967017c5c74bcf8489bd50511c5c9f36d17b0200056ccb90c30561"
+    },
+    {
+      "id": "release-signing-ledger-schema",
+      "path": "spec/plugin/release-signing-ledger-v1.schema.json",
+      "version": "release-signing-ledger-v1",
+      "sha256": "0c72b30bfd6b857b9809e48e1b7eaaeb7134d5afd6a935aa8373465054403765"
+    },
+    {
+      "id": "release-signing-subject-schema",
+      "path": "spec/plugin/release-signing-subject-v1.schema.json",
+      "version": "release-signing-subject-v1",
+      "sha256": "876b1459824f90042bd141e96bfea4633333bdf2a227e15b6e25c72db1179c8e"
     },
     {
       "id": "release-source-policy-pointer-schema",
@@ -192,7 +216,7 @@
       "id": "release-trust-state-schema",
       "path": "spec/plugin/release-trust-state-v1.schema.json",
       "version": "release-trust-state-v1",
-      "sha256": "a87ca7b933d50747ea2bd038d9b429692297ed1ff13195dc3294d7eebd69ad25"
+      "sha256": "28809d8f1e4d35ecd07abf2468e825d7f9f8e9f2c56eb9f91c00bfc5f721e9ba"
     },
     {
       "id": "resource-scope-schema",

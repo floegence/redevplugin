@@ -68,6 +68,9 @@ test("Go, npm, and Rust projections share one contract inventory and digest", ()
     "canonicalRevocation",
     "canonicalRevocationPointer",
     "canonicalRootDelegation",
+	"canonicalSignatureEnvelope",
+	"canonicalSigningLedgerEntry",
+	"canonicalSigningSubject",
     "canonicalSourcePolicy",
     "canonicalSourcePolicyPointer",
     "contractArtifacts",
@@ -79,7 +82,16 @@ test("Go, npm, and Rust projections share one contract inventory and digest", ()
     "decodeRevocation",
     "decodeRevocationPointer",
     "decodeRootDelegation",
+	"decodeSignatureEnvelope",
+	"decodeSigningLedgerCheckpoint",
+	"decodeSigningLedgerConsistencyProof",
+	"decodeSigningLedgerEntry",
     "decodeSigningLedgerEvidence",
+	"decodeSigningLedgerInclusionProof",
+	"decodeSigningLedgerLatestProof",
+	"decodeSigningLedgerLogLeaf",
+	"decodeSigningLedgerReceipt",
+	"decodeSigningSubject",
     "decodeSourcePolicy",
     "decodeSourcePolicyPointer",
     "defaultSourcePolicyLimits",
@@ -100,6 +112,12 @@ test("Go, npm, and Rust projections share one contract inventory and digest", ()
     "rootDelegationSchemaVersion",
     "rootDelegationSigningPreimage",
     "signatureAlgorithmEd25519",
+    "signatureEnvelopeSchemaVersion",
+    "signingLedgerEntrySchemaVersion",
+    "signingLedgerLogLeafSchemaVersion",
+    "signingLedgerReceiptSchemaVersion",
+    "signingLedgerSchemaVersion",
+    "signingSubjectSchemaVersion",
     "signingUsages",
     "sourcePolicyPointerSchemaVersion",
     "sourcePolicyPointerSigningPreimage",
@@ -110,6 +128,7 @@ test("Go, npm, and Rust projections share one contract inventory and digest", ()
     "verifyRevocation",
     "verifyRevocationPointer",
     "verifyRootDelegation",
+    "verifySigningLedgerEntryBindings",
     "verifySourcePolicy",
     "verifySourcePolicyPointer",
   ]);
@@ -276,7 +295,7 @@ test("packed npm packages install together offline and remain browser-neutral", 
     run(process.execPath, ["--input-type=module", "--eval", `
       await import("@floegence/redevplugin-ui");
       const contracts = await import("@floegence/redevplugin-contracts");
-      if (contracts.contractArtifacts.length !== 41) throw new Error("contracts package is incomplete");
+      if (contracts.contractArtifacts.length !== 45) throw new Error("contracts package is incomplete");
     `], { cwd: consumerDirectory });
 
     const browserBundle = await build({

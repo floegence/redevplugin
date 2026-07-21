@@ -8,6 +8,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/floegence/redevplugin/pkg/releasecontract"
 )
 
 func TestSourceConfigurationProducesOnlyConfiguredTrustKeys(t *testing.T) {
@@ -74,6 +76,10 @@ func TestReleaseTrustOptionsAreClosedValidatedAndOwned(t *testing.T) {
 	transparency, err := NewTransparencyRoot("time_log", transparencyAnchor)
 	if err != nil {
 		t.Fatal(err)
+	}
+	delegatedTransparency, err := NewDelegatedTransparencyRoot("time_log_delegated", "time_key")
+	if err != nil || delegatedTransparency.Mode() != TransparencyRootRootDelegated || delegatedTransparency.DelegatedKeyID() != "time_key" {
+		t.Fatalf("delegated transparency root = %#v, %v", delegatedTransparency, err)
 	}
 	ledgerKey := make([]byte, ed25519.PublicKeySize)
 	ledgerKey[0] = 3
@@ -194,19 +200,29 @@ func TestSourceRelativeLocatorPolicyBuildsFixedBoundedRequests(t *testing.T) {
 	subjectDigest := strings.Repeat("1", 64)
 	previousCheckpoint := strings.Repeat("2", 64)
 	currentCheckpoint := strings.Repeat("3", 64)
+	packageScope, err := newSigningLedgerSubjectScope(configuration, releasecontract.SigningSubjectV1{
+		SchemaVersion: releasecontract.SigningSubjectSchemaVersion,
+		Usage:         releasecontract.SigningSubjectUsagePackage,
+		SourceID:      "example_source", Channel: "stable", PublisherID: "example.publisher", PluginID: "example.plugin",
+		Version: "1.2.3", ArtifactIdentitySHA256: subjectDigest,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	ledgerCases := []struct {
 		kind SigningLedgerArtifactKind
 		want string
 		max  int64
 	}{
 		{SigningLedgerCheckpoint, "sources/example_source/signing-ledger/checkpoints/current.json", MaxSigningLedgerCheckpointBytes},
+		{SigningLedgerEvidence, "sources/example_source/signing-ledger/evidence/" + subjectDigest + ".json", MaxSigningLedgerEvidenceBytes},
 		{SigningLedgerReceipt, "sources/example_source/signing-ledger/receipts/" + subjectDigest + ".json", MaxSigningLedgerEvidenceBytes},
 		{SigningLedgerInclusionProof, "sources/example_source/signing-ledger/proofs/inclusion/" + subjectDigest + ".json", MaxSigningLedgerEvidenceBytes},
 		{SigningLedgerLatestProof, "sources/example_source/signing-ledger/proofs/latest/" + subjectDigest + ".json", MaxSigningLedgerEvidenceBytes},
 		{SigningLedgerConsistencyProof, "sources/example_source/signing-ledger/proofs/consistency/" + previousCheckpoint + "/" + currentCheckpoint + ".json", MaxSigningLedgerEvidenceBytes},
 	}
 	for _, testCase := range ledgerCases {
-		request, err := fixedSigningLedgerRequest(configuration, key, testCase.kind, subjectDigest, previousCheckpoint, currentCheckpoint)
+		request, err := fixedSigningLedgerRequest(configuration, packageScope, testCase.kind, subjectDigest, previousCheckpoint, currentCheckpoint)
 		if err != nil {
 			t.Fatalf("fixedSigningLedgerRequest(%s) error = %v", testCase.kind, err)
 		}
@@ -219,8 +235,19 @@ func TestSourceRelativeLocatorPolicyBuildsFixedBoundedRequests(t *testing.T) {
 		}
 		assertSafeRelativeLocator(t, request.Locator())
 	}
-	if _, err := fixedSigningLedgerRequest(configuration, key, SigningLedgerReceipt, "https://example.invalid", previousCheckpoint, currentCheckpoint); !errors.Is(err, ErrInvalidLocator) {
+	if _, err := fixedSigningLedgerRequest(configuration, packageScope, SigningLedgerReceipt, "https://example.invalid", previousCheckpoint, currentCheckpoint); !errors.Is(err, ErrInvalidLocator) {
 		t.Fatalf("caller locator override error = %v", err)
+	}
+	rootScope, err := newSigningLedgerSubjectScope(configuration, releasecontract.SigningSubjectV1{
+		SchemaVersion: releasecontract.SigningSubjectSchemaVersion, Usage: releasecontract.SigningSubjectUsageRootDelegation,
+		SourceID: "example_source", RootEpoch: "1",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request, err := fixedSigningLedgerRequest(configuration, rootScope, SigningLedgerReceipt, subjectDigest, "", "")
+	if err != nil || request.Channel() != "" {
+		t.Fatalf("source-wide receipt request = %#v, %v", request, err)
 	}
 }
 
@@ -283,7 +310,7 @@ func TestTransportResultsAreBoundedAndOwned(t *testing.T) {
 		t.Fatal(err)
 	}
 	documentBytes := []byte("document")
-	document, err := NewReleaseDocumentResult(documentRequest, documentBytes)
+	document, err := NewReleaseDocumentResult(documentRequest, "etag-v1", documentBytes)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -294,6 +321,9 @@ func TestTransportResultsAreBoundedAndOwned(t *testing.T) {
 	}
 	if string(gotDocument) != "document" {
 		t.Fatalf("document bytes = %q", gotDocument)
+	}
+	if token, err := document.transportTokenFor(documentRequest); err != nil || token != "etag-v1" {
+		t.Fatalf("document transport token = %q, %v", token, err)
 	}
 	gotDocument[0] = 'x'
 	freshDocument, err := document.bytesFor(documentRequest)
@@ -310,11 +340,15 @@ func TestTransportResultsAreBoundedAndOwned(t *testing.T) {
 	if _, err := document.bytesFor(otherDocumentRequest); !errors.Is(err, ErrInvalidTransportPayload) {
 		t.Fatalf("cross-request document result error = %v", err)
 	}
-	if _, err := NewReleaseDocumentResult(documentRequest, make([]byte, MaxReleasePointerBytes+1)); !errors.Is(err, ErrInvalidTransportPayload) {
+	if _, err := NewReleaseDocumentResult(documentRequest, "etag-v1", make([]byte, MaxReleasePointerBytes+1)); !errors.Is(err, ErrInvalidTransportPayload) {
 		t.Fatalf("oversized document error = %v", err)
 	}
+	if _, err := NewReleaseDocumentResult(documentRequest, "", []byte("document")); !errors.Is(err, ErrInvalidTransportPayload) {
+		t.Fatalf("missing document transport token error = %v", err)
+	}
 
-	ledgerRequest, err := fixedSigningLedgerRequest(configuration, key, SigningLedgerCheckpoint, "", "", "")
+	ledgerScope := signingLedgerSubjectScope{sourceID: key.sourceID, channel: key.channel}
+	ledgerRequest, err := fixedSigningLedgerRequest(configuration, ledgerScope, SigningLedgerCheckpoint, "", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -331,7 +365,7 @@ func TestTransportResultsAreBoundedAndOwned(t *testing.T) {
 	if string(gotLedger) != "checkpoint" {
 		t.Fatal("SigningLedgerResult retained caller-mutable bytes")
 	}
-	receiptRequest, err := fixedSigningLedgerRequest(configuration, key, SigningLedgerReceipt, strings.Repeat("4", 64), "", "")
+	receiptRequest, err := fixedSigningLedgerRequest(configuration, ledgerScope, SigningLedgerReceipt, strings.Repeat("4", 64), "", "")
 	if err != nil {
 		t.Fatal(err)
 	}

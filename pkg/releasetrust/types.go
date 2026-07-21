@@ -131,24 +131,50 @@ func allZero(value []byte) bool {
 	return true
 }
 
-// TransparencyRoot identifies one trusted transparency log verification key.
+type TransparencyRootMode string
+
+const (
+	TransparencyRootPinned        TransparencyRootMode = "pinned"
+	TransparencyRootRootDelegated TransparencyRootMode = "root_delegated"
+)
+
+// TransparencyRoot is a closed choice between a pinned transparency key and
+// a trusted-time key selected from a verified release-root delegation.
 type TransparencyRoot struct {
-	logID  string
-	anchor TrustAnchor
+	mode           TransparencyRootMode
+	logID          string
+	pinnedAnchor   TrustAnchor
+	delegatedKeyID string
 }
 
 func NewTransparencyRoot(logID string, anchor TrustAnchor) (TransparencyRoot, error) {
 	if !contractIDPattern.MatchString(logID) || !anchor.valid() {
 		return TransparencyRoot{}, ErrInvalidTrustAnchor
 	}
-	return TransparencyRoot{logID: logID, anchor: cloneTrustAnchor(anchor)}, nil
+	return TransparencyRoot{mode: TransparencyRootPinned, logID: logID, pinnedAnchor: cloneTrustAnchor(anchor)}, nil
 }
 
-func (root TransparencyRoot) LogID() string       { return root.logID }
-func (root TransparencyRoot) Anchor() TrustAnchor { return cloneTrustAnchor(root.anchor) }
+func NewDelegatedTransparencyRoot(logID, delegatedKeyID string) (TransparencyRoot, error) {
+	if !contractIDPattern.MatchString(logID) || !contractIDPattern.MatchString(delegatedKeyID) {
+		return TransparencyRoot{}, ErrInvalidTrustAnchor
+	}
+	return TransparencyRoot{mode: TransparencyRootRootDelegated, logID: logID, delegatedKeyID: delegatedKeyID}, nil
+}
+
+func (root TransparencyRoot) Mode() TransparencyRootMode { return root.mode }
+func (root TransparencyRoot) LogID() string              { return root.logID }
+func (root TransparencyRoot) Anchor() TrustAnchor        { return cloneTrustAnchor(root.pinnedAnchor) }
+func (root TransparencyRoot) DelegatedKeyID() string     { return root.delegatedKeyID }
 
 func (root TransparencyRoot) valid() bool {
-	return contractIDPattern.MatchString(root.logID) && root.anchor.valid()
+	switch root.mode {
+	case TransparencyRootPinned:
+		return contractIDPattern.MatchString(root.logID) && root.pinnedAnchor.valid() && root.delegatedKeyID == ""
+	case TransparencyRootRootDelegated:
+		return contractIDPattern.MatchString(root.logID) && contractIDPattern.MatchString(root.delegatedKeyID) && !root.pinnedAnchor.valid()
+	default:
+		return false
+	}
 }
 
 type SigningLedgerRootMode string
@@ -245,7 +271,7 @@ func NewReleaseTrustOptions(
 			return ReleaseTrustOptions{}, ErrInvalidReleaseTrustOptions
 		}
 		seen[root.logID] = struct{}{}
-		roots[index] = TransparencyRoot{logID: root.logID, anchor: cloneTrustAnchor(root.anchor)}
+		roots[index] = cloneTransparencyRoot(root)
 	}
 	slices.SortFunc(roots, func(left, right TransparencyRoot) int {
 		if left.logID < right.logID {
@@ -276,7 +302,7 @@ func (options ReleaseTrustOptions) RootAnchor() TrustAnchor {
 func (options ReleaseTrustOptions) TransparencyRoots() []TransparencyRoot {
 	roots := make([]TransparencyRoot, len(options.transparencyRoots))
 	for index, root := range options.transparencyRoots {
-		roots[index] = TransparencyRoot{logID: root.logID, anchor: cloneTrustAnchor(root.anchor)}
+		roots[index] = cloneTransparencyRoot(root)
 	}
 	return roots
 }
@@ -288,6 +314,11 @@ func (options ReleaseTrustOptions) SigningLedgerRoot() SigningLedgerRoot {
 func (options ReleaseTrustOptions) LocatorPolicy() LocatorPolicy { return options.locatorPolicy }
 
 func cloneSigningLedgerRoot(root SigningLedgerRoot) SigningLedgerRoot {
+	root.pinnedAnchor = cloneTrustAnchor(root.pinnedAnchor)
+	return root
+}
+
+func cloneTransparencyRoot(root TransparencyRoot) TransparencyRoot {
 	root.pinnedAnchor = cloneTrustAnchor(root.pinnedAnchor)
 	return root
 }

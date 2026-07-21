@@ -6,6 +6,12 @@ export const sourcePolicyPointerSchemaVersion = "redevplugin.release_source_poli
 export const revocationSchemaVersion = "redevplugin.release_revocation.v2" as const;
 export const revocationPointerSchemaVersion = "redevplugin.release_revocation_pointer.v1" as const;
 export const releaseSigningLedgerEvidenceSchemaVersion = "redevplugin.release_signing_ledger_evidence.v1" as const;
+export const signingSubjectSchemaVersion = "redevplugin.release_signing_subject.v1" as const;
+export const signatureEnvelopeSchemaVersion = "redevplugin.release_signature_envelope.v1" as const;
+export const signingLedgerSchemaVersion = "redevplugin.release_signing_ledger.v1" as const;
+export const signingLedgerEntrySchemaVersion = "redevplugin.release_signing_ledger_entry.v1" as const;
+export const signingLedgerLogLeafSchemaVersion = "redevplugin.release_signing_ledger_log_leaf.v1" as const;
+export const signingLedgerReceiptSchemaVersion = "redevplugin.release_signing_ledger_receipt.v1" as const;
 export const signatureAlgorithmEd25519 = "ed25519" as const;
 export const genesisPreviousEpoch = "0" as const;
 export const genesisPreviousDocumentSHA256 = "0".repeat(64);
@@ -27,7 +33,9 @@ export type DelegatedKeyUsage =
   | "source_policy_document"
   | "source_policy_pointer"
   | "revocation_document"
-  | "revocation_pointer";
+  | "revocation_pointer"
+  | "signing_ledger"
+  | "trusted_time";
 
 export type RootDelegatedKey = Readonly<{
   algorithm: typeof signatureAlgorithmEd25519;
@@ -296,10 +304,132 @@ export type SigningLedgerEvidenceV1 = Readonly<{
   consistency_proof_sha256?: string;
 }>;
 
+export type SigningSubjectUsage =
+  | "root_delegation"
+  | "package"
+  | "release_metadata"
+  | "source_policy_document"
+  | "source_policy_pointer"
+  | "revocation_document"
+  | "revocation_pointer";
+
+export type SigningSubjectV1 = Readonly<{
+  schema_version: typeof signingSubjectSchemaVersion;
+  usage: SigningSubjectUsage;
+  source_id: string;
+  channel?: string;
+  root_epoch?: string;
+  publisher_id?: string;
+  plugin_id?: string;
+  version?: string;
+  artifact_or_metadata_identity_sha256?: string;
+  epoch?: string;
+}>;
+
+export type SignatureEnvelopeV1 = Readonly<{
+  schema_version: typeof signatureEnvelopeSchemaVersion;
+  subject_identity_sha256: string;
+  signing_preimage_sha256: string;
+  algorithm: typeof signatureAlgorithmEd25519;
+  key_id: string;
+  signature: string;
+}>;
+
+export type SigningLedgerEntryState = "reserved" | "finalized" | "terminal_failed";
+export type SigningLedgerFailureCode = "signer_rejected" | "subject_conflict" | "ledger_rejected";
+
+export type SigningLedgerEntryV1 = Readonly<{
+  schema_version: typeof signingLedgerEntrySchemaVersion;
+  state: SigningLedgerEntryState;
+  subject: SigningSubjectV1;
+  subject_identity_sha256: string;
+  signing_preimage_sha256: string;
+  algorithm: typeof signatureAlgorithmEd25519;
+  key_id: string;
+  revision: number;
+  reserved_at: string;
+  signature_envelope?: SignatureEnvelopeV1;
+  signature_envelope_sha256?: string;
+  finalized_at?: string;
+  failure_code?: SigningLedgerFailureCode;
+  failed_at?: string;
+}>;
+
+export type SigningLedgerLogLeafV1 = Readonly<{
+  schema_version: typeof signingLedgerLogLeafSchemaVersion;
+  source_id: string;
+  channel?: string;
+  subject_identity_sha256: string;
+  signing_preimage_sha256: string;
+  signature_envelope_sha256: string;
+  sequence: number;
+}>;
+
+export type SigningLedgerCheckpointV1 = Readonly<{
+  schema_version: typeof signingLedgerSchemaVersion;
+  kind: "checkpoint";
+  log_id: string;
+  tree_size: number;
+  log_root_hash: string;
+  latest_map_root_hash: string;
+  checkpoint_time: string;
+  key_id: string;
+  signature: string;
+}>;
+
+export type SigningLedgerReceiptV1 = Readonly<{
+  schema_version: typeof signingLedgerReceiptSchemaVersion;
+  log_id: string;
+  source_id: string;
+  channel?: string;
+  subject_identity_sha256: string;
+  signing_preimage_sha256: string;
+  signature_envelope_sha256: string;
+  sequence: number;
+  leaf_index: number;
+  tree_size: number;
+  log_root_hash: string;
+  latest_map_root_hash: string;
+  checkpoint_sha256: string;
+  checkpoint_time: string;
+  key_id: string;
+  signature: string;
+}>;
+
+export type SigningLedgerInclusionProofV1 = Readonly<{
+  schema_version: typeof signingLedgerSchemaVersion;
+  kind: "inclusion_proof";
+  log_id: string;
+  leaf_index: number;
+  tree_size: number;
+  nodes: readonly string[];
+}>;
+
+export type SigningLedgerLatestProofV1 = Readonly<{
+  schema_version: typeof signingLedgerSchemaVersion;
+  kind: "latest_proof";
+  log_id: string;
+  subject_identity_sha256: string;
+  present: boolean;
+  sequence?: number;
+  signing_preimage_sha256?: string;
+  signature_envelope_sha256?: string;
+  siblings: readonly string[];
+}>;
+
+export type SigningLedgerConsistencyProofV1 = Readonly<{
+  schema_version: typeof signingLedgerSchemaVersion;
+  kind: "consistency_proof";
+  log_id: string;
+  old_tree_size: number;
+  new_tree_size: number;
+  nodes: readonly string[];
+}>;
+
 export type SignatureVerificationRequest = Readonly<{
   usage: SigningUsage;
   keyID: string;
-  preimage: Uint8Array;
+  signingPreimageSHA256: Uint8Array;
   signature: Uint8Array;
 }>;
 
@@ -345,6 +475,8 @@ const delegatedUsageOrder: readonly DelegatedKeyUsage[] = [
   "revocation_pointer",
   "source_policy_document",
   "source_policy_pointer",
+  "signing_ledger",
+  "trusted_time",
 ];
 
 function invalidDocument(): never {
@@ -541,14 +673,17 @@ function validateRootDelegation(value: RootDelegationV1, requireSignature: boole
   for (const key of value.delegated_keys) {
     if (key.algorithm !== signatureAlgorithmEd25519 || !matchesPattern(newIDPattern, key.key_id) || compareUTF8(key.key_id, previous) <= 0) invalidDocument();
     decodeBase64(key.public_key, 32);
-    if (!Array.isArray(key.usages) || key.usages.length < 1 || key.usages.length > 6) invalidDocument();
+    if (!Array.isArray(key.usages) || key.usages.length < 1 || key.usages.length > 8) invalidDocument();
     let previousUsage = -1;
     for (const usage of key.usages) {
       const rank = delegatedUsageOrder.indexOf(usage);
       if (rank < 0 || rank <= previousUsage) invalidDocument();
       previousUsage = rank;
     }
-    validateSortedIDs(key.channels, 1, 16);
+    const sourceWide = key.usages.every((usage: DelegatedKeyUsage) => usage === "signing_ledger" || usage === "trusted_time");
+    const hasSourceWide = key.usages.some((usage: DelegatedKeyUsage) => usage === "signing_ledger" || usage === "trusted_time");
+    if (hasSourceWide !== sourceWide) invalidDocument();
+    validateSortedIDs(key.channels, sourceWide ? 0 : 1, sourceWide ? 0 : 16);
     validateTimeRange(key.valid_from, key.valid_until);
     if (parseCanonicalTime(key.valid_until) > parseCanonicalTime(value.expires_at)) invalidDocument();
     previous = key.key_id;
@@ -744,6 +879,139 @@ function validateSigningLedgerEvidence(value: SigningLedgerEvidenceV1): void {
   if (value.consistency_proof_ref !== undefined && (!validArtifactRef(value.consistency_proof_ref) || !sha256Pattern.test(value.consistency_proof_sha256!))) invalidDocument();
 }
 
+function validateSigningSubject(value: SigningSubjectV1): void {
+  assertRecord(value);
+  closeSigningSubject(value);
+  if (value.schema_version !== signingSubjectSchemaVersion || !matchesPattern(newIDPattern, value.source_id)) invalidDocument();
+  if (value.usage === "root_delegation") {
+    if (!matchesPattern(positiveEpochPattern, value.root_epoch)) invalidDocument();
+    return;
+  }
+  if (value.usage === "package" || value.usage === "release_metadata") {
+    if (!matchesPattern(newIDPattern, value.channel) || !matchesPattern(legacyIDPattern, value.publisher_id) ||
+      !matchesPattern(legacyIDPattern, value.plugin_id) || !matchesPattern(semverPattern, value.version) ||
+      !matchesPattern(sha256Pattern, value.artifact_or_metadata_identity_sha256)) invalidDocument();
+    return;
+  }
+  if (["source_policy_document", "source_policy_pointer", "revocation_document", "revocation_pointer"].includes(value.usage)) {
+    if (!matchesPattern(newIDPattern, value.channel) || !matchesPattern(positiveEpochPattern, value.epoch)) invalidDocument();
+    return;
+  }
+  invalidDocument();
+}
+
+function validateSignatureEnvelope(value: SignatureEnvelopeV1): void {
+  assertRecord(value);
+  closeSignatureEnvelope(value);
+  if (value.schema_version !== signatureEnvelopeSchemaVersion || !matchesPattern(sha256Pattern, value.subject_identity_sha256) ||
+    !matchesPattern(sha256Pattern, value.signing_preimage_sha256) || value.algorithm !== signatureAlgorithmEd25519 ||
+    !matchesPattern(newIDPattern, value.key_id)) invalidDocument();
+  decodeBase64(value.signature, 64);
+}
+
+function validateSigningLedgerEntry(value: SigningLedgerEntryV1): void {
+  assertRecord(value);
+  closeSigningLedgerEntry(value);
+  if (value.schema_version !== signingLedgerEntrySchemaVersion || !matchesPattern(sha256Pattern, value.subject_identity_sha256) ||
+    !matchesPattern(sha256Pattern, value.signing_preimage_sha256) || value.algorithm !== signatureAlgorithmEd25519 ||
+    !matchesPattern(newIDPattern, value.key_id) || !Number.isSafeInteger(value.revision) || value.revision < 1) invalidDocument();
+  validateSigningSubject(value.subject);
+  const reservedAt = parseCanonicalTime(value.reserved_at);
+  if (value.state === "reserved") {
+    if (value.signature_envelope !== undefined || value.signature_envelope_sha256 !== undefined || value.finalized_at !== undefined ||
+      value.failure_code !== undefined || value.failed_at !== undefined) invalidDocument();
+    return;
+  }
+  if (value.state === "finalized") {
+    if (value.signature_envelope === undefined || !matchesPattern(sha256Pattern, value.signature_envelope_sha256) ||
+      value.finalized_at === undefined || value.failure_code !== undefined || value.failed_at !== undefined) invalidDocument();
+    validateSignatureEnvelope(value.signature_envelope);
+    if (value.signature_envelope.subject_identity_sha256 !== value.subject_identity_sha256 ||
+      value.signature_envelope.signing_preimage_sha256 !== value.signing_preimage_sha256 ||
+      value.signature_envelope.algorithm !== value.algorithm || value.signature_envelope.key_id !== value.key_id ||
+      parseCanonicalTime(value.finalized_at) < reservedAt) invalidDocument();
+    return;
+  }
+  if (value.state === "terminal_failed") {
+    if (value.signature_envelope !== undefined || value.signature_envelope_sha256 !== undefined || value.finalized_at !== undefined ||
+      value.failure_code === undefined || !["signer_rejected", "subject_conflict", "ledger_rejected"].includes(value.failure_code) ||
+      value.failed_at === undefined || parseCanonicalTime(value.failed_at) < reservedAt) invalidDocument();
+    return;
+  }
+  invalidDocument();
+}
+
+function validateSigningLedgerLogLeaf(value: SigningLedgerLogLeafV1): void {
+  assertRecord(value);
+  closeSigningLedgerLogLeaf(value);
+  if (value.schema_version !== signingLedgerLogLeafSchemaVersion || !matchesPattern(newIDPattern, value.source_id) ||
+    (value.channel !== undefined && !matchesPattern(newIDPattern, value.channel)) ||
+    !matchesPattern(sha256Pattern, value.subject_identity_sha256) || !matchesPattern(sha256Pattern, value.signing_preimage_sha256) ||
+    !matchesPattern(sha256Pattern, value.signature_envelope_sha256) || !Number.isSafeInteger(value.sequence) || value.sequence < 1) invalidDocument();
+}
+
+function validateSigningLedgerCheckpoint(value: SigningLedgerCheckpointV1): void {
+  assertRecord(value);
+  closeSigningLedgerCheckpoint(value);
+  if (value.schema_version !== signingLedgerSchemaVersion || value.kind !== "checkpoint" || !matchesPattern(newIDPattern, value.log_id) ||
+    !Number.isSafeInteger(value.tree_size) || value.tree_size < 1 || !matchesPattern(sha256Pattern, value.log_root_hash) ||
+    !matchesPattern(sha256Pattern, value.latest_map_root_hash) || !matchesPattern(newIDPattern, value.key_id)) invalidDocument();
+  parseCanonicalTime(value.checkpoint_time);
+  decodeBase64(value.signature, 64);
+}
+
+function validateSigningLedgerReceipt(value: SigningLedgerReceiptV1): void {
+  assertRecord(value);
+  closeSigningLedgerReceipt(value);
+  if (value.schema_version !== signingLedgerReceiptSchemaVersion || !matchesPattern(newIDPattern, value.log_id) ||
+    !matchesPattern(newIDPattern, value.source_id) || (value.channel !== undefined && !matchesPattern(newIDPattern, value.channel)) ||
+    !matchesPattern(sha256Pattern, value.subject_identity_sha256) || !matchesPattern(sha256Pattern, value.signing_preimage_sha256) ||
+    !matchesPattern(sha256Pattern, value.signature_envelope_sha256) || !Number.isSafeInteger(value.sequence) || value.sequence < 1 ||
+    !Number.isSafeInteger(value.leaf_index) || value.leaf_index !== value.sequence - 1 || !Number.isSafeInteger(value.tree_size) ||
+    value.tree_size < value.sequence || !matchesPattern(sha256Pattern, value.log_root_hash) ||
+    !matchesPattern(sha256Pattern, value.latest_map_root_hash) || !matchesPattern(sha256Pattern, value.checkpoint_sha256) ||
+    !matchesPattern(newIDPattern, value.key_id)) invalidDocument();
+  parseCanonicalTime(value.checkpoint_time);
+  decodeBase64(value.signature, 64);
+}
+
+function validateLedgerNodes(value: readonly string[], exact?: number): void {
+  if (!Array.isArray(value) || (exact === undefined ? value.length > 64 : value.length !== exact) ||
+    value.some((node) => !matchesPattern(sha256Pattern, node))) invalidDocument();
+}
+
+function validateSigningLedgerInclusionProof(value: SigningLedgerInclusionProofV1): void {
+  assertRecord(value);
+  closeSigningLedgerInclusionProof(value);
+  if (value.schema_version !== signingLedgerSchemaVersion || value.kind !== "inclusion_proof" || !matchesPattern(newIDPattern, value.log_id) ||
+    !Number.isSafeInteger(value.leaf_index) || value.leaf_index < 0 || !Number.isSafeInteger(value.tree_size) ||
+    value.tree_size < 1 || value.leaf_index >= value.tree_size) invalidDocument();
+  validateLedgerNodes(value.nodes);
+}
+
+function validateSigningLedgerLatestProof(value: SigningLedgerLatestProofV1): void {
+  assertRecord(value);
+  closeSigningLedgerLatestProof(value);
+  if (value.schema_version !== signingLedgerSchemaVersion || value.kind !== "latest_proof" || !matchesPattern(newIDPattern, value.log_id) ||
+    !matchesPattern(sha256Pattern, value.subject_identity_sha256) || typeof value.present !== "boolean") invalidDocument();
+  validateLedgerNodes(value.siblings, 256);
+  if (value.present) {
+    if (!Number.isSafeInteger(value.sequence) || value.sequence! < 1 || !matchesPattern(sha256Pattern, value.signing_preimage_sha256) ||
+      !matchesPattern(sha256Pattern, value.signature_envelope_sha256)) invalidDocument();
+  } else if (value.sequence !== undefined || value.signing_preimage_sha256 !== undefined || value.signature_envelope_sha256 !== undefined) {
+    invalidDocument();
+  }
+}
+
+function validateSigningLedgerConsistencyProof(value: SigningLedgerConsistencyProofV1): void {
+  assertRecord(value);
+  closeSigningLedgerConsistencyProof(value);
+  if (value.schema_version !== signingLedgerSchemaVersion || value.kind !== "consistency_proof" || !matchesPattern(newIDPattern, value.log_id) ||
+    !Number.isSafeInteger(value.old_tree_size) || value.old_tree_size < 1 || !Number.isSafeInteger(value.new_tree_size) ||
+    value.new_tree_size < value.old_tree_size) invalidDocument();
+  validateLedgerNodes(value.nodes);
+}
+
 function decodeCanonicalDocument<T>(
   raw: Uint8Array | string,
   close: (value: Record<string, unknown>) => void,
@@ -860,6 +1128,67 @@ function closeSigningLedgerEvidence(value: Record<string, unknown>): void {
     ],
     ["channel", "consistency_proof_ref", "consistency_proof_sha256"],
   );
+}
+
+function closeSigningSubject(value: Record<string, unknown>): void {
+  if (value.usage === "root_delegation") {
+    exactKeys(value, ["schema_version", "usage", "source_id", "root_epoch"]);
+  } else if (value.usage === "package" || value.usage === "release_metadata") {
+    exactKeys(value, ["schema_version", "usage", "source_id", "channel", "publisher_id", "plugin_id", "version", "artifact_or_metadata_identity_sha256"]);
+  } else {
+    exactKeys(value, ["schema_version", "usage", "source_id", "channel", "epoch"]);
+  }
+}
+
+function closeSignatureEnvelope(value: Record<string, unknown>): void {
+  exactKeys(value, ["schema_version", "subject_identity_sha256", "signing_preimage_sha256", "algorithm", "key_id", "signature"]);
+}
+
+function closeSigningLedgerEntry(value: Record<string, unknown>): void {
+  exactOptionalKeys(value, [
+    "schema_version", "state", "subject", "subject_identity_sha256", "signing_preimage_sha256",
+    "algorithm", "key_id", "revision", "reserved_at",
+  ], ["signature_envelope", "signature_envelope_sha256", "finalized_at", "failure_code", "failed_at"]);
+  assertRecord(value.subject);
+  closeSigningSubject(value.subject);
+  if (value.signature_envelope !== undefined) {
+    assertRecord(value.signature_envelope);
+    closeSignatureEnvelope(value.signature_envelope);
+  }
+}
+
+function closeSigningLedgerLogLeaf(value: Record<string, unknown>): void {
+  exactOptionalKeys(value, [
+    "schema_version", "source_id", "subject_identity_sha256", "signing_preimage_sha256", "signature_envelope_sha256", "sequence",
+  ], ["channel"]);
+}
+
+function closeSigningLedgerCheckpoint(value: Record<string, unknown>): void {
+  exactKeys(value, [
+    "schema_version", "kind", "log_id", "tree_size", "log_root_hash", "latest_map_root_hash", "checkpoint_time", "key_id", "signature",
+  ]);
+}
+
+function closeSigningLedgerReceipt(value: Record<string, unknown>): void {
+  exactOptionalKeys(value, [
+    "schema_version", "log_id", "source_id", "subject_identity_sha256", "signing_preimage_sha256",
+    "signature_envelope_sha256", "sequence", "leaf_index", "tree_size", "log_root_hash", "latest_map_root_hash",
+    "checkpoint_sha256", "checkpoint_time", "key_id", "signature",
+  ], ["channel"]);
+}
+
+function closeSigningLedgerInclusionProof(value: Record<string, unknown>): void {
+  exactKeys(value, ["schema_version", "kind", "log_id", "leaf_index", "tree_size", "nodes"]);
+}
+
+function closeSigningLedgerLatestProof(value: Record<string, unknown>): void {
+  exactOptionalKeys(value, ["schema_version", "kind", "log_id", "subject_identity_sha256", "present", "siblings"], [
+    "sequence", "signing_preimage_sha256", "signature_envelope_sha256",
+  ]);
+}
+
+function closeSigningLedgerConsistencyProof(value: Record<string, unknown>): void {
+  exactKeys(value, ["schema_version", "kind", "log_id", "old_tree_size", "new_tree_size", "nodes"]);
 }
 
 export function buildRootDelegation(input: RootDelegationInput, signature: Uint8Array): RootDelegationV1 {
@@ -1108,6 +1437,66 @@ export function decodeSigningLedgerEvidence(raw: Uint8Array | string): SigningLe
   return decodeCanonicalDocument(bytes, closeSigningLedgerEvidence, validateSigningLedgerEvidence);
 }
 
+export function canonicalSigningSubject(value: SigningSubjectV1): Uint8Array {
+  validateSigningSubject(value);
+  return canonicalJSON(value);
+}
+
+export function decodeSigningSubject(raw: Uint8Array | string): SigningSubjectV1 {
+  return decodeCanonicalDocument(raw, closeSigningSubject, validateSigningSubject);
+}
+
+export function canonicalSignatureEnvelope(value: SignatureEnvelopeV1): Uint8Array {
+  validateSignatureEnvelope(value);
+  return canonicalJSON(value);
+}
+
+export function decodeSignatureEnvelope(raw: Uint8Array | string): SignatureEnvelopeV1 {
+  return decodeCanonicalDocument(raw, closeSignatureEnvelope, validateSignatureEnvelope);
+}
+
+export function canonicalSigningLedgerEntry(value: SigningLedgerEntryV1): Uint8Array {
+  validateSigningLedgerEntry(value);
+  return canonicalJSON(value);
+}
+
+export function decodeSigningLedgerEntry(raw: Uint8Array | string): SigningLedgerEntryV1 {
+  return decodeCanonicalDocument(raw, closeSigningLedgerEntry, validateSigningLedgerEntry);
+}
+
+export async function verifySigningLedgerEntryBindings(value: SigningLedgerEntryV1): Promise<void> {
+  validateSigningLedgerEntry(value);
+  if (await sha256Hex(canonicalSigningSubject(value.subject)) !== value.subject_identity_sha256) invalidDocument();
+  if (value.state === "finalized") {
+    if (value.signature_envelope === undefined || value.signature_envelope_sha256 === undefined ||
+      await sha256Hex(canonicalSignatureEnvelope(value.signature_envelope)) !== value.signature_envelope_sha256) invalidDocument();
+  }
+}
+
+export function decodeSigningLedgerLogLeaf(raw: Uint8Array | string): SigningLedgerLogLeafV1 {
+  return decodeCanonicalDocument(raw, closeSigningLedgerLogLeaf, validateSigningLedgerLogLeaf);
+}
+
+export function decodeSigningLedgerCheckpoint(raw: Uint8Array | string): SigningLedgerCheckpointV1 {
+  return decodeCanonicalDocument(raw, closeSigningLedgerCheckpoint, validateSigningLedgerCheckpoint);
+}
+
+export function decodeSigningLedgerReceipt(raw: Uint8Array | string): SigningLedgerReceiptV1 {
+  return decodeCanonicalDocument(raw, closeSigningLedgerReceipt, validateSigningLedgerReceipt);
+}
+
+export function decodeSigningLedgerInclusionProof(raw: Uint8Array | string): SigningLedgerInclusionProofV1 {
+  return decodeCanonicalDocument(raw, closeSigningLedgerInclusionProof, validateSigningLedgerInclusionProof);
+}
+
+export function decodeSigningLedgerLatestProof(raw: Uint8Array | string): SigningLedgerLatestProofV1 {
+  return decodeCanonicalDocument(raw, closeSigningLedgerLatestProof, validateSigningLedgerLatestProof);
+}
+
+export function decodeSigningLedgerConsistencyProof(raw: Uint8Array | string): SigningLedgerConsistencyProofV1 {
+  return decodeCanonicalDocument(raw, closeSigningLedgerConsistencyProof, validateSigningLedgerConsistencyProof);
+}
+
 export function createEd25519Verifier(
   publicKeys: Readonly<Record<string, Uint8Array>>,
   subtle?: SubtleCrypto,
@@ -1118,7 +1507,7 @@ export function createEd25519Verifier(
     if (selectedSubtle === undefined || publicKey === undefined || publicKey.length !== 32) return false;
     try {
       const key = await selectedSubtle.importKey("raw", toArrayBuffer(publicKey), { name: "Ed25519" }, false, ["verify"]);
-      return await selectedSubtle.verify({ name: "Ed25519" }, key, toArrayBuffer(request.signature), toArrayBuffer(request.preimage));
+      return await selectedSubtle.verify({ name: "Ed25519" }, key, toArrayBuffer(request.signature), toArrayBuffer(request.signingPreimageSHA256));
     } catch {
       return false;
     }
@@ -1150,10 +1539,13 @@ async function verifyRaw(
 ): Promise<void> {
   let valid = false;
   try {
+	const subtle = globalThis.crypto?.subtle;
+	if (subtle === undefined) throw new Error("Web Crypto SHA-256 is unavailable");
+	const digest = new Uint8Array(await subtle.digest("SHA-256", toArrayBuffer(preimage)));
     valid = await verifier({
       usage,
       keyID,
-      preimage: preimage.slice(),
+	  signingPreimageSHA256: digest,
       signature: signature.slice(),
     });
   } catch {
@@ -1164,6 +1556,13 @@ async function verifyRaw(
 
 function toArrayBuffer(value: Uint8Array): ArrayBuffer {
   return Uint8Array.from(value).buffer;
+}
+
+async function sha256Hex(value: Uint8Array): Promise<string> {
+  const subtle = globalThis.crypto?.subtle;
+  if (subtle === undefined) invalidDocument();
+  const digest = new Uint8Array(await subtle.digest("SHA-256", toArrayBuffer(value)));
+  return Array.from(digest, (byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
 function unsignedDocument<T>(value: Readonly<{ schema_version: string; signature: string }>): T {

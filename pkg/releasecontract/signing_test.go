@@ -73,7 +73,8 @@ func TestReleaseSigningDomainsAreCanonicalAndSeparated(t *testing.T) {
 	}
 	for _, signedUsage := range usages {
 		for _, verifiedUsage := range usages {
-			valid := ed25519.Verify(fixture.PublicKey, fixture.Preimages[verifiedUsage], fixture.Signatures[signedUsage])
+			digest := sha256.Sum256(fixture.Preimages[verifiedUsage])
+			valid := ed25519.Verify(fixture.PublicKey, digest[:], fixture.Signatures[signedUsage])
 			if signedUsage == verifiedUsage && !valid {
 				t.Fatalf("signature for %s rejected by its own preimage", signedUsage)
 			}
@@ -81,6 +82,47 @@ func TestReleaseSigningDomainsAreCanonicalAndSeparated(t *testing.T) {
 				t.Fatalf("signature for %s accepted as %s", signedUsage, verifiedUsage)
 			}
 		}
+	}
+}
+
+func TestRootDelegationSeparatesChannelAndSourceWideKeyScopes(t *testing.T) {
+	fixture := newReleaseSigningFixture(t)
+	document := fixture.Root
+	document.DelegatedKeys = []RootDelegatedKey{{
+		Algorithm: SignatureAlgorithmEd25519,
+		KeyID:     "source_wide_key",
+		PublicKey: base64.StdEncoding.EncodeToString(fixture.PublicKey),
+		Usages:    []DelegatedKeyUsage{DelegatedKeyUsageSigningLedger, DelegatedKeyUsageTrustedTime},
+		Channels:  []string{},
+		ValidFrom: "2026-07-20T00:00:00Z", ValidUntil: "2027-07-20T00:00:00Z",
+	}}
+	if _, err := CanonicalRootDelegation(document); err != nil {
+		t.Fatalf("source-wide delegation rejected: %v", err)
+	}
+
+	withChannel := document
+	withChannel.DelegatedKeys = cloneDelegatedKeys(document.DelegatedKeys)
+	withChannel.DelegatedKeys[0].Channels = []string{"stable"}
+	if _, err := CanonicalRootDelegation(withChannel); !errors.Is(err, ErrInvalidDocument) {
+		t.Fatalf("source-wide delegation with channel error = %v", err)
+	}
+
+	mixed := document
+	mixed.DelegatedKeys = cloneDelegatedKeys(document.DelegatedKeys)
+	mixed.DelegatedKeys[0].Usages = []DelegatedKeyUsage{DelegatedKeyUsagePackage, DelegatedKeyUsageSigningLedger}
+	mixed.DelegatedKeys[0].Channels = []string{"stable"}
+	if _, err := CanonicalRootDelegation(mixed); !errors.Is(err, ErrInvalidDocument) {
+		t.Fatalf("mixed delegation scope error = %v", err)
+	}
+}
+
+func TestReleaseSignaturesRejectRawPreimageSigning(t *testing.T) {
+	fixture := newReleaseSigningFixture(t)
+	rawSignature := ed25519.Sign(ed25519.NewKeyFromSeed(releaseSigningFixtureSeed()), fixture.Preimages[SigningUsageRootDelegation])
+	document := fixture.Root
+	document.Signature = base64.StdEncoding.EncodeToString(rawSignature)
+	if err := VerifyRootDelegation(document, fixture.Verifier); !errors.Is(err, ErrInvalidSignature) {
+		t.Fatalf("raw-preimage signature error = %v", err)
 	}
 }
 
@@ -230,10 +272,7 @@ func TestCanonicalAPIsDoNotReadSystemTime(t *testing.T) {
 
 func newReleaseSigningFixture(t testing.TB) releaseSigningFixture {
 	t.Helper()
-	seed := make([]byte, ed25519.SeedSize)
-	for index := range seed {
-		seed[index] = byte(index + 1)
-	}
+	seed := releaseSigningFixtureSeed()
 	privateKey := ed25519.NewKeyFromSeed(seed)
 	publicKey := privateKey.Public().(ed25519.PublicKey)
 	keyID := "test_signing_key"
@@ -265,7 +304,7 @@ func newReleaseSigningFixture(t testing.TB) releaseSigningFixture {
 		KeyID: keyID,
 	}
 	rootPreimage := mustPreimage(t, func() ([]byte, error) { return RootDelegationSigningPreimage(rootInput) })
-	rootSignature := ed25519.Sign(privateKey, rootPreimage)
+	rootSignature := signReleasePreimage(privateKey, rootPreimage)
 	root := mustBuild(t, func() (RootDelegationV1, error) { return BuildRootDelegation(rootInput, rootSignature) })
 
 	packageInput := PackageSigningInput{
@@ -282,7 +321,7 @@ func newReleaseSigningFixture(t testing.TB) releaseSigningFixture {
 		SignedAt:     "2026-07-20T00:00:00Z",
 	}
 	packagePreimage := mustPreimage(t, func() ([]byte, error) { return PackageSigningPreimage(packageInput) })
-	packageSignature := ed25519.Sign(privateKey, packagePreimage)
+	packageSignature := signReleasePreimage(privateKey, packagePreimage)
 	packageDocument := mustBuild(t, func() (PackageSignatureV1, error) { return BuildPackageSignature(packageInput, packageSignature) })
 	packageContext := PackageVerificationContext{SourceID: packageInput.SourceID, Channel: packageInput.Channel, Version: packageInput.Version}
 
@@ -336,7 +375,7 @@ func newReleaseSigningFixture(t testing.TB) releaseSigningFixture {
 	}
 	metadata = mustBuild(t, func() (ReleaseMetadataV5, error) { return BuildReleaseMetadata(metadata) })
 	metadataPreimage := mustPreimage(t, func() ([]byte, error) { return ReleaseMetadataSigningPreimage("stable", metadata) })
-	metadataSignature := ed25519.Sign(privateKey, metadataPreimage)
+	metadataSignature := signReleasePreimage(privateKey, metadataPreimage)
 
 	policyInput := SourcePolicyInput{
 		SourceID:               "example_source",
@@ -367,7 +406,7 @@ func newReleaseSigningFixture(t testing.TB) releaseSigningFixture {
 		KeyID:                  keyID,
 	}
 	policyPreimage := mustPreimage(t, func() ([]byte, error) { return SourcePolicySigningPreimage(policyInput) })
-	policySignature := ed25519.Sign(privateKey, policyPreimage)
+	policySignature := signReleasePreimage(privateKey, policyPreimage)
 	policy := mustBuild(t, func() (SourcePolicyV2, error) { return BuildSourcePolicy(policyInput, policySignature) })
 	policyBytes := mustPreimage(t, func() ([]byte, error) { return CanonicalSourcePolicy(policy) })
 	policyDigest := sha256.Sum256(policyBytes)
@@ -385,7 +424,7 @@ func newReleaseSigningFixture(t testing.TB) releaseSigningFixture {
 		KeyID:                  keyID,
 	}
 	policyPointerPreimage := mustPreimage(t, func() ([]byte, error) { return SourcePolicyPointerSigningPreimage(policyPointerInput) })
-	policyPointerSignature := ed25519.Sign(privateKey, policyPointerPreimage)
+	policyPointerSignature := signReleasePreimage(privateKey, policyPointerPreimage)
 	policyPointer := mustBuild(t, func() (SourcePolicyPointerV1, error) {
 		return BuildSourcePolicyPointer(policyPointerInput, policyPointerSignature)
 	})
@@ -410,7 +449,7 @@ func newReleaseSigningFixture(t testing.TB) releaseSigningFixture {
 		KeyID: keyID,
 	}
 	revocationPreimage := mustPreimage(t, func() ([]byte, error) { return RevocationSigningPreimage(revocationInput) })
-	revocationSignature := ed25519.Sign(privateKey, revocationPreimage)
+	revocationSignature := signReleasePreimage(privateKey, revocationPreimage)
 	revocation := mustBuild(t, func() (RevocationV2, error) { return BuildRevocation(revocationInput, revocationSignature) })
 	revocationBytes := mustPreimage(t, func() ([]byte, error) { return CanonicalRevocation(revocation) })
 	revocationDigest := sha256.Sum256(revocationBytes)
@@ -428,7 +467,7 @@ func newReleaseSigningFixture(t testing.TB) releaseSigningFixture {
 		KeyID:                  keyID,
 	}
 	revocationPointerPreimage := mustPreimage(t, func() ([]byte, error) { return RevocationPointerSigningPreimage(revocationPointerInput) })
-	revocationPointerSignature := ed25519.Sign(privateKey, revocationPointerPreimage)
+	revocationPointerSignature := signReleasePreimage(privateKey, revocationPointerPreimage)
 	revocationPointer := mustBuild(t, func() (RevocationPointerV1, error) {
 		return BuildRevocationPointer(revocationPointerInput, revocationPointerSignature)
 	})
@@ -471,6 +510,19 @@ func newReleaseSigningFixture(t testing.TB) releaseSigningFixture {
 			SigningUsageRevocationPointer:   revocationPointerSignature,
 		},
 	}
+}
+
+func releaseSigningFixtureSeed() []byte {
+	seed := make([]byte, ed25519.SeedSize)
+	for index := range seed {
+		seed[index] = byte(index + 1)
+	}
+	return seed
+}
+
+func signReleasePreimage(privateKey ed25519.PrivateKey, preimage []byte) []byte {
+	digest := sha256.Sum256(preimage)
+	return ed25519.Sign(privateKey, digest[:])
 }
 
 func mustPreimage(t testing.TB, build func() ([]byte, error)) []byte {

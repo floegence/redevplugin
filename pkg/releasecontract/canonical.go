@@ -168,7 +168,9 @@ func validSigningUsage(usage SigningUsage) bool {
 		SigningUsageSourcePolicy,
 		SigningUsageSourcePolicyPointer,
 		SigningUsageRevocation,
-		SigningUsageRevocationPointer:
+		SigningUsageRevocationPointer,
+		SigningUsageLedgerCheckpoint,
+		SigningUsageLedgerReceipt:
 		return true
 	default:
 		return false

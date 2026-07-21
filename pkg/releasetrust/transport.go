@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+
+	"github.com/floegence/redevplugin/pkg/releasecontract"
 )
 
 var (
@@ -72,15 +74,16 @@ type ReleaseDocumentTransport interface {
 }
 
 type ReleaseDocumentResult struct {
-	request ReleaseDocumentRequest
-	bytes   []byte
+	request        ReleaseDocumentRequest
+	transportToken string
+	bytes          []byte
 }
 
-func NewReleaseDocumentResult(request ReleaseDocumentRequest, value []byte) (ReleaseDocumentResult, error) {
-	if !request.valid() || len(value) == 0 || int64(len(value)) > request.maxBytes {
+func NewReleaseDocumentResult(request ReleaseDocumentRequest, transportToken string, value []byte) (ReleaseDocumentResult, error) {
+	if !request.valid() || !transportTokenPattern.MatchString(transportToken) || len(value) == 0 || int64(len(value)) > request.maxBytes {
 		return ReleaseDocumentResult{}, ErrInvalidTransportPayload
 	}
-	return ReleaseDocumentResult{request: request, bytes: append([]byte(nil), value...)}, nil
+	return ReleaseDocumentResult{request: request, transportToken: transportToken, bytes: append([]byte(nil), value...)}, nil
 }
 
 func (result ReleaseDocumentResult) bytesFor(request ReleaseDocumentRequest) ([]byte, error) {
@@ -88,6 +91,13 @@ func (result ReleaseDocumentResult) bytesFor(request ReleaseDocumentRequest) ([]
 		return nil, ErrInvalidTransportPayload
 	}
 	return append([]byte(nil), result.bytes...), nil
+}
+
+func (result ReleaseDocumentResult) transportTokenFor(request ReleaseDocumentRequest) (string, error) {
+	if result.request != request || !transportTokenPattern.MatchString(result.transportToken) {
+		return "", ErrInvalidTransportPayload
+	}
+	return result.transportToken, nil
 }
 
 func (request ReleaseDocumentRequest) valid() bool {
@@ -160,6 +170,7 @@ type SigningLedgerArtifactKind string
 
 const (
 	SigningLedgerCheckpoint       SigningLedgerArtifactKind = "checkpoint"
+	SigningLedgerEvidence         SigningLedgerArtifactKind = "evidence"
 	SigningLedgerReceipt          SigningLedgerArtifactKind = "receipt"
 	SigningLedgerInclusionProof   SigningLedgerArtifactKind = "inclusion_proof"
 	SigningLedgerLatestProof      SigningLedgerArtifactKind = "latest_proof"
@@ -172,6 +183,28 @@ type SigningLedgerRequest struct {
 	kind     SigningLedgerArtifactKind
 	locator  SourceRelativeLocator
 	maxBytes int64
+}
+
+type signingLedgerSubjectScope struct {
+	sourceID string
+	channel  string
+}
+
+func newSigningLedgerSubjectScope(configuration SourceConfiguration, subject releasecontract.SigningSubjectV1) (signingLedgerSubjectScope, error) {
+	if _, err := releasecontract.CanonicalSigningSubject(subject); err != nil || !configuration.valid() ||
+		subject.SourceID != configuration.sourceID {
+		return signingLedgerSubjectScope{}, ErrInvalidSourceConfiguration
+	}
+	if subject.Channel == "" {
+		if subject.Usage != releasecontract.SigningSubjectUsageRootDelegation {
+			return signingLedgerSubjectScope{}, ErrInvalidSourceConfiguration
+		}
+		return signingLedgerSubjectScope{sourceID: subject.SourceID}, nil
+	}
+	if _, err := configuration.TrustKey(subject.Channel); err != nil {
+		return signingLedgerSubjectScope{}, ErrInvalidSourceConfiguration
+	}
+	return signingLedgerSubjectScope{sourceID: subject.SourceID, channel: subject.Channel}, nil
 }
 
 func (request SigningLedgerRequest) SourceID() string                { return request.sourceID }
@@ -212,8 +245,8 @@ func (request SigningLedgerRequest) valid() bool {
 		return request.channel == "" && request.maxBytes == MaxSigningLedgerCheckpointBytes
 	case SigningLedgerConsistencyProof:
 		return request.channel == "" && request.maxBytes == MaxSigningLedgerEvidenceBytes
-	case SigningLedgerReceipt, SigningLedgerInclusionProof, SigningLedgerLatestProof:
-		return contractIDPattern.MatchString(request.channel) && request.maxBytes == MaxSigningLedgerEvidenceBytes
+	case SigningLedgerEvidence, SigningLedgerReceipt, SigningLedgerInclusionProof, SigningLedgerLatestProof:
+		return (request.channel == "" || contractIDPattern.MatchString(request.channel)) && request.maxBytes == MaxSigningLedgerEvidenceBytes
 	default:
 		return false
 	}
@@ -221,22 +254,29 @@ func (request SigningLedgerRequest) valid() bool {
 
 func fixedSigningLedgerRequest(
 	configuration SourceConfiguration,
-	key SourceTrustKey,
+	scope signingLedgerSubjectScope,
 	kind SigningLedgerArtifactKind,
 	subjectIdentitySHA256 string,
 	previousCheckpointSHA256 string,
 	currentCheckpointSHA256 string,
 ) (SigningLedgerRequest, error) {
-	if !sourceConfigurationContainsKey(configuration, key) {
+	if !configuration.valid() || scope.sourceID != configuration.sourceID ||
+		(scope.channel != "" && !sourceConfigurationContainsKey(configuration, SourceTrustKey{sourceID: scope.sourceID, channel: scope.channel})) {
 		return SigningLedgerRequest{}, ErrInvalidSourceConfiguration
 	}
-	base := fmt.Sprintf("sources/%s/signing-ledger", key.sourceID)
+	base := fmt.Sprintf("sources/%s/signing-ledger", scope.sourceID)
 	var value string
 	var maxBytes int64
 	switch kind {
 	case SigningLedgerCheckpoint:
 		value = base + "/checkpoints/current.json"
 		maxBytes = MaxSigningLedgerCheckpointBytes
+	case SigningLedgerEvidence:
+		if !sha256Pattern.MatchString(subjectIdentitySHA256) {
+			return SigningLedgerRequest{}, ErrInvalidLocator
+		}
+		value = base + "/evidence/" + subjectIdentitySHA256 + ".json"
+		maxBytes = MaxSigningLedgerEvidenceBytes
 	case SigningLedgerReceipt:
 		if !sha256Pattern.MatchString(subjectIdentitySHA256) {
 			return SigningLedgerRequest{}, ErrInvalidLocator
@@ -268,12 +308,12 @@ func fixedSigningLedgerRequest(
 	if err != nil {
 		return SigningLedgerRequest{}, err
 	}
-	channel := key.channel
+	channel := scope.channel
 	if kind == SigningLedgerCheckpoint || kind == SigningLedgerConsistencyProof {
 		channel = ""
 	}
 	return SigningLedgerRequest{
-		sourceID: key.sourceID,
+		sourceID: scope.sourceID,
 		channel:  channel,
 		kind:     kind,
 		locator:  locator,

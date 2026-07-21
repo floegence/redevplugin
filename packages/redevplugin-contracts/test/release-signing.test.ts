@@ -128,7 +128,10 @@ test("release signing projection verifies all domains and rejects the 7x6 substi
       const valid = await verifier({
         usage: verifiedUsage,
         keyID: "test_signing_key",
-        preimage: decodeBase64(fixture.preimages[verifiedUsage]),
+        signingPreimageSHA256: new Uint8Array(await globalThis.crypto.subtle.digest(
+          "SHA-256",
+          Uint8Array.from(decodeBase64(fixture.preimages[verifiedUsage])).buffer,
+        )),
         signature: decodeBase64(fixture.signatures[signedUsage]),
       });
       assert.equal(valid, signedUsage === verifiedUsage, `${signedUsage} as ${verifiedUsage}`);
@@ -179,6 +182,26 @@ test("release signing builders and strict decoders preserve canonical documents"
       assert.throws(() => decode(invalid), InvalidReleaseDocumentError);
     }
   }
+});
+
+test("root delegation keeps source-wide and channel-scoped usages disjoint", () => {
+  const key = fixture.documents.root_delegation.delegated_keys[0]!;
+  const sourceWide: RootDelegationV1 = {
+    ...fixture.documents.root_delegation,
+    delegated_keys: [{ ...key, usages: ["signing_ledger", "trusted_time"], channels: [] }],
+  };
+  canonicalRootDelegation(sourceWide);
+  assert.throws(
+    () => canonicalRootDelegation({ ...sourceWide, delegated_keys: [{ ...sourceWide.delegated_keys[0]!, channels: ["stable"] }] }),
+    InvalidReleaseDocumentError,
+  );
+  assert.throws(
+    () => canonicalRootDelegation({
+      ...sourceWide,
+      delegated_keys: [{ ...sourceWide.delegated_keys[0]!, usages: ["package", "signing_ledger"], channels: ["stable"] }],
+    }),
+    InvalidReleaseDocumentError,
+  );
 });
 
 test("release signing APIs reject runtime shape coercion and schema limit drift", () => {

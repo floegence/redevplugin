@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.redevplugin.dev/plugin/release-signature-envelope-v1.schema.json",
+  "title": "ReDevPlugin release signature envelope v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "subject_identity_sha256", "signing_preimage_sha256",
+    "algorithm", "key_id", "signature"
+  ],
+  "properties": {
+    "schema_version": { "const": "redevplugin.release_signature_envelope.v1" },
+    "subject_identity_sha256": { "$ref": "#/$defs/sha256" },
+    "signing_preimage_sha256": { "$ref": "#/$defs/sha256" },
+    "algorithm": { "const": "ed25519" },
+    "key_id": { "$ref": "#/$defs/id" },
+    "signature": { "type": "string", "pattern": "^[A-Za-z0-9+/]{86}==$" }
+  },
+  "$defs": {
+    "id": { "type": "string", "pattern": "^[a-z][a-z0-9._-]{0,127}$" },
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+  }
+}
