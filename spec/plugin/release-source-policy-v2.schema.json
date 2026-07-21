@@ -17,6 +17,7 @@
     "allowed_publishers",
     "allowed_artifact_hosts",
     "active_keys",
+    "capability_publisher_scopes",
     "require_signature",
     "install_policy",
     "unsigned_policy",
@@ -57,6 +58,7 @@
       }
     },
     "active_keys": { "$ref": "#/$defs/active_keys" },
+    "capability_publisher_scopes": { "$ref": "#/$defs/capability_publisher_scopes" },
     "require_signature": { "type": "boolean" },
     "install_policy": { "enum": ["allow", "review_required", "block"] },
     "unsigned_policy": { "enum": ["dev_only", "review_required", "block"] },
@@ -75,6 +77,7 @@
       "required": [
         "package",
         "release_metadata",
+        "host_capability_contract",
         "source_policy_pointer",
         "revocation_document",
         "revocation_pointer"
@@ -82,6 +85,7 @@
       "properties": {
         "package": { "$ref": "#/$defs/key_ids" },
         "release_metadata": { "$ref": "#/$defs/key_ids" },
+        "host_capability_contract": { "$ref": "#/$defs/optional_key_ids" },
         "source_policy_pointer": { "$ref": "#/$defs/key_ids" },
         "revocation_document": { "$ref": "#/$defs/key_ids" },
         "revocation_pointer": { "$ref": "#/$defs/key_ids" }
@@ -93,6 +97,32 @@
       "maxItems": 16,
       "uniqueItems": true,
       "items": { "$ref": "#/$defs/id" }
+    },
+    "optional_key_ids": {
+      "type": "array",
+      "maxItems": 16,
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/id" }
+    },
+    "capability_publisher_scopes": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/capability_publisher_scope" }
+    },
+    "capability_publisher_scope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["key_id", "allowed_publishers"],
+      "properties": {
+        "key_id": { "$ref": "#/$defs/id" },
+        "allowed_publishers": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 1024,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/legacy_id" }
+        }
+      }
     },
     "limits": {
       "type": "object",
@@ -117,6 +147,12 @@
       "minLength": 1,
       "maxLength": 128,
       "pattern": "^[a-z][a-z0-9._-]*$"
+    },
+    "legacy_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$"
     },
     "epoch": { "type": "string", "pattern": "^(0|[1-9][0-9]*)$" },
     "positive_epoch": { "type": "string", "pattern": "^[1-9][0-9]*$" },

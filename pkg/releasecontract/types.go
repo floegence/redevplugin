@@ -207,14 +207,15 @@ type SigningLedgerConsistencyProofV1 struct {
 type DelegatedKeyUsage string
 
 const (
-	DelegatedKeyUsagePackage             DelegatedKeyUsage = "package"
-	DelegatedKeyUsageReleaseMetadata     DelegatedKeyUsage = "release_metadata"
-	DelegatedKeyUsageSourcePolicy        DelegatedKeyUsage = "source_policy_document"
-	DelegatedKeyUsageSourcePolicyPointer DelegatedKeyUsage = "source_policy_pointer"
-	DelegatedKeyUsageRevocation          DelegatedKeyUsage = "revocation_document"
-	DelegatedKeyUsageRevocationPointer   DelegatedKeyUsage = "revocation_pointer"
-	DelegatedKeyUsageSigningLedger       DelegatedKeyUsage = "signing_ledger"
-	DelegatedKeyUsageTrustedTime         DelegatedKeyUsage = "trusted_time"
+	DelegatedKeyUsagePackage                DelegatedKeyUsage = "package"
+	DelegatedKeyUsageReleaseMetadata        DelegatedKeyUsage = "release_metadata"
+	DelegatedKeyUsageHostCapabilityContract DelegatedKeyUsage = "host_capability_contract"
+	DelegatedKeyUsageSourcePolicy           DelegatedKeyUsage = "source_policy_document"
+	DelegatedKeyUsageSourcePolicyPointer    DelegatedKeyUsage = "source_policy_pointer"
+	DelegatedKeyUsageRevocation             DelegatedKeyUsage = "revocation_document"
+	DelegatedKeyUsageRevocationPointer      DelegatedKeyUsage = "revocation_pointer"
+	DelegatedKeyUsageSigningLedger          DelegatedKeyUsage = "signing_ledger"
+	DelegatedKeyUsageTrustedTime            DelegatedKeyUsage = "trusted_time"
 )
 
 type RootDelegatedKey struct {
@@ -393,59 +394,67 @@ func DefaultSourcePolicyLimits() SourcePolicyLimits {
 }
 
 type SourcePolicyActiveKeys struct {
-	Package             []string `json:"package"`
-	ReleaseMetadata     []string `json:"release_metadata"`
-	SourcePolicyPointer []string `json:"source_policy_pointer"`
-	Revocation          []string `json:"revocation_document"`
-	RevocationPointer   []string `json:"revocation_pointer"`
+	Package                []string `json:"package"`
+	ReleaseMetadata        []string `json:"release_metadata"`
+	HostCapabilityContract []string `json:"host_capability_contract"`
+	SourcePolicyPointer    []string `json:"source_policy_pointer"`
+	Revocation             []string `json:"revocation_document"`
+	RevocationPointer      []string `json:"revocation_pointer"`
+}
+
+type SourcePolicyCapabilityPublisherScope struct {
+	KeyID             string   `json:"key_id"`
+	AllowedPublishers []string `json:"allowed_publishers"`
 }
 
 type SourcePolicyInput struct {
-	SourceID               string
-	Channel                string
-	Epoch                  string
-	PreviousEpoch          string
-	PreviousDocumentSHA256 string
-	RootEpoch              string
-	SourceType             string
-	SourceClass            string
-	AllowedPublishers      []string
-	AllowedArtifactHosts   []string
-	ActiveKeys             SourcePolicyActiveKeys
-	RequireSignature       bool
-	InstallPolicy          string
-	UnsignedPolicy         string
-	DowngradePolicy        string
-	MinimumRevocationEpoch string
-	Limits                 SourcePolicyLimits
-	GeneratedAt            string
-	ExpiresAt              string
-	KeyID                  string
+	SourceID                  string
+	Channel                   string
+	Epoch                     string
+	PreviousEpoch             string
+	PreviousDocumentSHA256    string
+	RootEpoch                 string
+	SourceType                string
+	SourceClass               string
+	AllowedPublishers         []string
+	AllowedArtifactHosts      []string
+	ActiveKeys                SourcePolicyActiveKeys
+	CapabilityPublisherScopes []SourcePolicyCapabilityPublisherScope
+	RequireSignature          bool
+	InstallPolicy             string
+	UnsignedPolicy            string
+	DowngradePolicy           string
+	MinimumRevocationEpoch    string
+	Limits                    SourcePolicyLimits
+	GeneratedAt               string
+	ExpiresAt                 string
+	KeyID                     string
 }
 
 type SourcePolicyV2 struct {
-	SchemaVersion          string                 `json:"schema_version"`
-	SourceID               string                 `json:"source_id"`
-	Channel                string                 `json:"channel"`
-	Epoch                  string                 `json:"epoch"`
-	PreviousEpoch          string                 `json:"previous_epoch"`
-	PreviousDocumentSHA256 string                 `json:"previous_document_sha256"`
-	RootEpoch              string                 `json:"root_epoch"`
-	SourceType             string                 `json:"source_type"`
-	SourceClass            string                 `json:"source_class"`
-	AllowedPublishers      []string               `json:"allowed_publishers"`
-	AllowedArtifactHosts   []string               `json:"allowed_artifact_hosts"`
-	ActiveKeys             SourcePolicyActiveKeys `json:"active_keys"`
-	RequireSignature       bool                   `json:"require_signature"`
-	InstallPolicy          string                 `json:"install_policy"`
-	UnsignedPolicy         string                 `json:"unsigned_policy"`
-	DowngradePolicy        string                 `json:"downgrade_policy"`
-	MinimumRevocationEpoch string                 `json:"minimum_revocation_epoch"`
-	Limits                 SourcePolicyLimits     `json:"limits"`
-	GeneratedAt            string                 `json:"generated_at"`
-	ExpiresAt              string                 `json:"expires_at"`
-	KeyID                  string                 `json:"key_id"`
-	Signature              string                 `json:"signature"`
+	SchemaVersion             string                                 `json:"schema_version"`
+	SourceID                  string                                 `json:"source_id"`
+	Channel                   string                                 `json:"channel"`
+	Epoch                     string                                 `json:"epoch"`
+	PreviousEpoch             string                                 `json:"previous_epoch"`
+	PreviousDocumentSHA256    string                                 `json:"previous_document_sha256"`
+	RootEpoch                 string                                 `json:"root_epoch"`
+	SourceType                string                                 `json:"source_type"`
+	SourceClass               string                                 `json:"source_class"`
+	AllowedPublishers         []string                               `json:"allowed_publishers"`
+	AllowedArtifactHosts      []string                               `json:"allowed_artifact_hosts"`
+	ActiveKeys                SourcePolicyActiveKeys                 `json:"active_keys"`
+	CapabilityPublisherScopes []SourcePolicyCapabilityPublisherScope `json:"capability_publisher_scopes"`
+	RequireSignature          bool                                   `json:"require_signature"`
+	InstallPolicy             string                                 `json:"install_policy"`
+	UnsignedPolicy            string                                 `json:"unsigned_policy"`
+	DowngradePolicy           string                                 `json:"downgrade_policy"`
+	MinimumRevocationEpoch    string                                 `json:"minimum_revocation_epoch"`
+	Limits                    SourcePolicyLimits                     `json:"limits"`
+	GeneratedAt               string                                 `json:"generated_at"`
+	ExpiresAt                 string                                 `json:"expires_at"`
+	KeyID                     string                                 `json:"key_id"`
+	Signature                 string                                 `json:"signature"`
 }
 
 type ReleasePointerInput struct {

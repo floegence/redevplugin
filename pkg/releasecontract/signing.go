@@ -223,26 +223,27 @@ func CanonicalSourcePolicy(document SourcePolicyV2) ([]byte, error) {
 
 func VerifySourcePolicy(document SourcePolicyV2, verifier SignatureVerifier) error {
 	input := SourcePolicyInput{
-		SourceID:               document.SourceID,
-		Channel:                document.Channel,
-		Epoch:                  document.Epoch,
-		PreviousEpoch:          document.PreviousEpoch,
-		PreviousDocumentSHA256: document.PreviousDocumentSHA256,
-		RootEpoch:              document.RootEpoch,
-		SourceType:             document.SourceType,
-		SourceClass:            document.SourceClass,
-		AllowedPublishers:      slices.Clone(document.AllowedPublishers),
-		AllowedArtifactHosts:   slices.Clone(document.AllowedArtifactHosts),
-		ActiveKeys:             cloneActiveKeys(document.ActiveKeys),
-		RequireSignature:       document.RequireSignature,
-		InstallPolicy:          document.InstallPolicy,
-		UnsignedPolicy:         document.UnsignedPolicy,
-		DowngradePolicy:        document.DowngradePolicy,
-		MinimumRevocationEpoch: document.MinimumRevocationEpoch,
-		Limits:                 document.Limits,
-		GeneratedAt:            document.GeneratedAt,
-		ExpiresAt:              document.ExpiresAt,
-		KeyID:                  document.KeyID,
+		SourceID:                  document.SourceID,
+		Channel:                   document.Channel,
+		Epoch:                     document.Epoch,
+		PreviousEpoch:             document.PreviousEpoch,
+		PreviousDocumentSHA256:    document.PreviousDocumentSHA256,
+		RootEpoch:                 document.RootEpoch,
+		SourceType:                document.SourceType,
+		SourceClass:               document.SourceClass,
+		AllowedPublishers:         slices.Clone(document.AllowedPublishers),
+		AllowedArtifactHosts:      slices.Clone(document.AllowedArtifactHosts),
+		ActiveKeys:                cloneActiveKeys(document.ActiveKeys),
+		CapabilityPublisherScopes: cloneCapabilityPublisherScopes(document.CapabilityPublisherScopes),
+		RequireSignature:          document.RequireSignature,
+		InstallPolicy:             document.InstallPolicy,
+		UnsignedPolicy:            document.UnsignedPolicy,
+		DowngradePolicy:           document.DowngradePolicy,
+		MinimumRevocationEpoch:    document.MinimumRevocationEpoch,
+		Limits:                    document.Limits,
+		GeneratedAt:               document.GeneratedAt,
+		ExpiresAt:                 document.ExpiresAt,
+		KeyID:                     document.KeyID,
 	}
 	preimage, err := SourcePolicySigningPreimage(input)
 	if err != nil {
@@ -402,28 +403,29 @@ func rootDelegationFromInput(input RootDelegationInput, signature string) RootDe
 
 func sourcePolicyFromInput(input SourcePolicyInput, signature string) SourcePolicyV2 {
 	return SourcePolicyV2{
-		SchemaVersion:          SourcePolicySchemaVersion,
-		SourceID:               input.SourceID,
-		Channel:                input.Channel,
-		Epoch:                  input.Epoch,
-		PreviousEpoch:          input.PreviousEpoch,
-		PreviousDocumentSHA256: input.PreviousDocumentSHA256,
-		RootEpoch:              input.RootEpoch,
-		SourceType:             input.SourceType,
-		SourceClass:            input.SourceClass,
-		AllowedPublishers:      slices.Clone(input.AllowedPublishers),
-		AllowedArtifactHosts:   slices.Clone(input.AllowedArtifactHosts),
-		ActiveKeys:             cloneActiveKeys(input.ActiveKeys),
-		RequireSignature:       input.RequireSignature,
-		InstallPolicy:          input.InstallPolicy,
-		UnsignedPolicy:         input.UnsignedPolicy,
-		DowngradePolicy:        input.DowngradePolicy,
-		MinimumRevocationEpoch: input.MinimumRevocationEpoch,
-		Limits:                 input.Limits,
-		GeneratedAt:            input.GeneratedAt,
-		ExpiresAt:              input.ExpiresAt,
-		KeyID:                  input.KeyID,
-		Signature:              signature,
+		SchemaVersion:             SourcePolicySchemaVersion,
+		SourceID:                  input.SourceID,
+		Channel:                   input.Channel,
+		Epoch:                     input.Epoch,
+		PreviousEpoch:             input.PreviousEpoch,
+		PreviousDocumentSHA256:    input.PreviousDocumentSHA256,
+		RootEpoch:                 input.RootEpoch,
+		SourceType:                input.SourceType,
+		SourceClass:               input.SourceClass,
+		AllowedPublishers:         slices.Clone(input.AllowedPublishers),
+		AllowedArtifactHosts:      slices.Clone(input.AllowedArtifactHosts),
+		ActiveKeys:                cloneActiveKeys(input.ActiveKeys),
+		CapabilityPublisherScopes: cloneCapabilityPublisherScopes(input.CapabilityPublisherScopes),
+		RequireSignature:          input.RequireSignature,
+		InstallPolicy:             input.InstallPolicy,
+		UnsignedPolicy:            input.UnsignedPolicy,
+		DowngradePolicy:           input.DowngradePolicy,
+		MinimumRevocationEpoch:    input.MinimumRevocationEpoch,
+		Limits:                    input.Limits,
+		GeneratedAt:               input.GeneratedAt,
+		ExpiresAt:                 input.ExpiresAt,
+		KeyID:                     input.KeyID,
+		Signature:                 signature,
 	}
 }
 
@@ -570,12 +572,25 @@ func cloneDelegatedKeys(values []RootDelegatedKey) []RootDelegatedKey {
 
 func cloneActiveKeys(value SourcePolicyActiveKeys) SourcePolicyActiveKeys {
 	return SourcePolicyActiveKeys{
-		Package:             slices.Clone(value.Package),
-		ReleaseMetadata:     slices.Clone(value.ReleaseMetadata),
-		SourcePolicyPointer: slices.Clone(value.SourcePolicyPointer),
-		Revocation:          slices.Clone(value.Revocation),
-		RevocationPointer:   slices.Clone(value.RevocationPointer),
+		Package:                slices.Clone(value.Package),
+		ReleaseMetadata:        slices.Clone(value.ReleaseMetadata),
+		HostCapabilityContract: slices.Clone(value.HostCapabilityContract),
+		SourcePolicyPointer:    slices.Clone(value.SourcePolicyPointer),
+		Revocation:             slices.Clone(value.Revocation),
+		RevocationPointer:      slices.Clone(value.RevocationPointer),
 	}
+}
+
+func cloneCapabilityPublisherScopes(values []SourcePolicyCapabilityPublisherScope) []SourcePolicyCapabilityPublisherScope {
+	if values == nil {
+		return nil
+	}
+	cloned := make([]SourcePolicyCapabilityPublisherScope, len(values))
+	for index, value := range values {
+		value.AllowedPublishers = slices.Clone(value.AllowedPublishers)
+		cloned[index] = value
+	}
+	return cloned
 }
 
 func cloneReleaseMetadata(value ReleaseMetadataV5) ReleaseMetadataV5 {

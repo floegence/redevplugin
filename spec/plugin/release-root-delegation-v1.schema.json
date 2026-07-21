@@ -53,12 +53,13 @@
         "usages": {
           "type": "array",
           "minItems": 1,
-          "maxItems": 8,
+          "maxItems": 9,
           "uniqueItems": true,
           "items": {
             "enum": [
               "package",
               "release_metadata",
+              "host_capability_contract",
               "source_policy_document",
               "source_policy_pointer",
               "revocation_document",
@@ -98,7 +99,7 @@
               "usages": {
                 "items": {
                   "enum": [
-                    "package", "release_metadata", "source_policy_document", "source_policy_pointer",
+                    "package", "release_metadata", "host_capability_contract", "source_policy_document", "source_policy_pointer",
                     "revocation_document", "revocation_pointer"
                   ]
                 }

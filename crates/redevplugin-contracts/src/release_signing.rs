@@ -64,6 +64,8 @@ pub enum DelegatedKeyUsage {
     Package,
     #[serde(rename = "release_metadata")]
     ReleaseMetadata,
+    #[serde(rename = "host_capability_contract")]
+    HostCapabilityContract,
     #[serde(rename = "source_policy_document")]
     SourcePolicy,
     #[serde(rename = "source_policy_pointer")]
@@ -83,12 +85,13 @@ impl DelegatedKeyUsage {
         match self {
             Self::Package => 0,
             Self::ReleaseMetadata => 1,
-            Self::Revocation => 2,
-            Self::RevocationPointer => 3,
-            Self::SourcePolicy => 4,
-            Self::SourcePolicyPointer => 5,
-            Self::SigningLedger => 6,
-            Self::TrustedTime => 7,
+            Self::HostCapabilityContract => 2,
+            Self::Revocation => 3,
+            Self::RevocationPointer => 4,
+            Self::SourcePolicy => 5,
+            Self::SourcePolicyPointer => 6,
+            Self::SigningLedger => 7,
+            Self::TrustedTime => 8,
         }
     }
 }
@@ -318,9 +321,17 @@ impl Default for SourcePolicyLimits {
 pub struct SourcePolicyActiveKeys {
     pub package: Vec<String>,
     pub release_metadata: Vec<String>,
+    pub host_capability_contract: Vec<String>,
     pub source_policy_pointer: Vec<String>,
     pub revocation_document: Vec<String>,
     pub revocation_pointer: Vec<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct SourcePolicyCapabilityPublisherScope {
+    pub key_id: String,
+    pub allowed_publishers: Vec<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -336,6 +347,7 @@ pub struct SourcePolicyInput {
     pub allowed_publishers: Vec<String>,
     pub allowed_artifact_hosts: Vec<String>,
     pub active_keys: SourcePolicyActiveKeys,
+    pub capability_publisher_scopes: Vec<SourcePolicyCapabilityPublisherScope>,
     pub require_signature: bool,
     pub install_policy: String,
     pub unsigned_policy: String,
@@ -362,6 +374,7 @@ pub struct SourcePolicyV2 {
     pub allowed_publishers: Vec<String>,
     pub allowed_artifact_hosts: Vec<String>,
     pub active_keys: SourcePolicyActiveKeys,
+    pub capability_publisher_scopes: Vec<SourcePolicyCapabilityPublisherScope>,
     pub require_signature: bool,
     pub install_policy: String,
     pub unsigned_policy: String,
@@ -1216,6 +1229,7 @@ fn source_policy_from_input(input: &SourcePolicyInput, signature: String) -> Sou
         allowed_publishers: input.allowed_publishers.clone(),
         allowed_artifact_hosts: input.allowed_artifact_hosts.clone(),
         active_keys: input.active_keys.clone(),
+        capability_publisher_scopes: input.capability_publisher_scopes.clone(),
         require_signature: input.require_signature,
         install_policy: input.install_policy.clone(),
         unsigned_policy: input.unsigned_policy.clone(),
@@ -1288,6 +1302,7 @@ fn source_policy_input_from_document(document: &SourcePolicyV2) -> SourcePolicyI
         allowed_publishers: document.allowed_publishers.clone(),
         allowed_artifact_hosts: document.allowed_artifact_hosts.clone(),
         active_keys: document.active_keys.clone(),
+        capability_publisher_scopes: document.capability_publisher_scopes.clone(),
         require_signature: document.require_signature,
         install_policy: document.install_policy.clone(),
         unsigned_policy: document.unsigned_policy.clone(),
@@ -1498,7 +1513,7 @@ fn validate_root_delegation(
         if public_key.len() != 32 || BASE64_STANDARD.encode(&public_key) != key.public_key {
             return invalid_document();
         }
-        if key.usages.is_empty() || key.usages.len() > 8 {
+        if key.usages.is_empty() || key.usages.len() > 9 {
             return invalid_document();
         }
         let mut previous_usage = None;
@@ -1787,6 +1802,23 @@ fn validate_source_policy(
         &value.active_keys.revocation_pointer,
     ] {
         validate_sorted_ids(keys, 1, 16, true)?;
+    }
+    validate_sorted_ids(
+        &value.active_keys.host_capability_contract,
+        0,
+        16,
+        true,
+    )?;
+    if value.capability_publisher_scopes.len()
+        != value.active_keys.host_capability_contract.len()
+    {
+        return invalid_document();
+    }
+    for (index, scope) in value.capability_publisher_scopes.iter().enumerate() {
+        if scope.key_id != value.active_keys.host_capability_contract[index] {
+            return invalid_document();
+        }
+        validate_sorted_ids(&scope.allowed_publishers, 1, 1024, false)?;
     }
     if !matches!(
         value.install_policy.as_str(),

@@ -168,7 +168,7 @@
       "id": "release-root-delegation-schema",
       "path": "spec/plugin/release-root-delegation-v1.schema.json",
       "version": "release-root-delegation-v1",
-      "sha256": "19183ab24b61200daa0e2ae364cf8bcb72bd62b5004a7e91ca5a448999d5d085"
+      "sha256": "c1adbb13eaeeca145d5ee787ff43777e60a5f329e460d20b8db358e4f5fc4825"
     },
     {
       "id": "release-signature-envelope-schema",
@@ -210,7 +210,7 @@
       "id": "release-source-policy-schema",
       "path": "spec/plugin/release-source-policy-v2.schema.json",
       "version": "release-source-policy-v2",
-      "sha256": "4f2fa06983b75e9722cb5b89a46a0937d22298379640efdd414665e0c26eba72"
+      "sha256": "6a5a5eab317a86beea925a611ca8a7a2d937547c039ce147b5993f69a5611237"
     },
     {
       "id": "release-trust-state-schema",

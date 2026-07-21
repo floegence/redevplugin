@@ -705,7 +705,7 @@ func mustPolicyPreimage(value releasecontract.SourcePolicyV2) []byte {
 		SourceID: value.SourceID, Channel: value.Channel, Epoch: value.Epoch, PreviousEpoch: value.PreviousEpoch,
 		PreviousDocumentSHA256: value.PreviousDocumentSHA256, RootEpoch: value.RootEpoch, SourceType: value.SourceType,
 		SourceClass: value.SourceClass, AllowedPublishers: slices.Clone(value.AllowedPublishers), AllowedArtifactHosts: slices.Clone(value.AllowedArtifactHosts),
-		ActiveKeys: value.ActiveKeys, RequireSignature: value.RequireSignature, InstallPolicy: value.InstallPolicy,
+		ActiveKeys: value.ActiveKeys, CapabilityPublisherScopes: slices.Clone(value.CapabilityPublisherScopes), RequireSignature: value.RequireSignature, InstallPolicy: value.InstallPolicy,
 		UnsignedPolicy: value.UnsignedPolicy, DowngradePolicy: value.DowngradePolicy, MinimumRevocationEpoch: value.MinimumRevocationEpoch,
 		Limits: value.Limits, GeneratedAt: value.GeneratedAt, ExpiresAt: value.ExpiresAt, KeyID: value.KeyID,
 	})

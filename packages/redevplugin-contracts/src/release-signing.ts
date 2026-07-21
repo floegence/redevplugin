@@ -30,6 +30,7 @@ export type SigningUsage = (typeof signingUsages)[keyof typeof signingUsages];
 export type DelegatedKeyUsage =
   | "package"
   | "release_metadata"
+  | "host_capability_contract"
   | "source_policy_document"
   | "source_policy_pointer"
   | "revocation_document"
@@ -204,9 +205,15 @@ export const defaultSourcePolicyLimits: SourcePolicyLimits = Object.freeze({
 export type SourcePolicyActiveKeys = Readonly<{
   package: readonly string[];
   release_metadata: readonly string[];
+  host_capability_contract: readonly string[];
   source_policy_pointer: readonly string[];
   revocation_document: readonly string[];
   revocation_pointer: readonly string[];
+}>;
+
+export type SourcePolicyCapabilityPublisherScope = Readonly<{
+  key_id: string;
+  allowed_publishers: readonly string[];
 }>;
 
 export type SourcePolicyV2 = Readonly<{
@@ -222,6 +229,7 @@ export type SourcePolicyV2 = Readonly<{
   allowed_publishers: readonly string[];
   allowed_artifact_hosts: readonly string[];
   active_keys: SourcePolicyActiveKeys;
+  capability_publisher_scopes: readonly SourcePolicyCapabilityPublisherScope[];
   require_signature: boolean;
   install_policy: "allow" | "review_required" | "block";
   unsigned_policy: "dev_only" | "review_required" | "block";
@@ -471,6 +479,7 @@ const signaturePattern = /^[A-Za-z0-9+/]{86}==$/;
 const delegatedUsageOrder: readonly DelegatedKeyUsage[] = [
   "package",
   "release_metadata",
+  "host_capability_contract",
   "revocation_document",
   "revocation_pointer",
   "source_policy_document",
@@ -806,6 +815,15 @@ function validateSourcePolicy(value: SourcePolicyV2, requireSignature: boolean):
     value.active_keys.revocation_document,
     value.active_keys.revocation_pointer,
   ]) validateSortedIDs(keys, 1, 16);
+  validateSortedIDs(value.active_keys.host_capability_contract, 0, 16);
+  if (!Array.isArray(value.capability_publisher_scopes) || value.capability_publisher_scopes.length !== value.active_keys.host_capability_contract.length) invalidDocument();
+  for (let index = 0; index < value.capability_publisher_scopes.length; index += 1) {
+    const scope = value.capability_publisher_scopes[index];
+    assertRecord(scope);
+    exactKeys(scope, ["key_id", "allowed_publishers"]);
+    if (scope.key_id !== value.active_keys.host_capability_contract[index]) invalidDocument();
+    validateSortedIDs(scope.allowed_publishers, 1, 1024, false);
+  }
   if (!new Set(["allow", "review_required", "block"]).has(value.install_policy)) invalidDocument();
   if (!new Set(["dev_only", "review_required", "block"]).has(value.unsigned_policy)) invalidDocument();
   if (!new Set(["review_required", "block"]).has(value.downgrade_policy)) invalidDocument();
@@ -1088,9 +1106,9 @@ function closeReleaseMetadata(value: Record<string, unknown>): void {
 }
 
 function closeSourcePolicy(value: Record<string, unknown>): void {
-  exactKeys(value, ["schema_version", "source_id", "channel", "epoch", "previous_epoch", "previous_document_sha256", "root_epoch", "source_type", "source_class", "allowed_publishers", "allowed_artifact_hosts", "active_keys", "require_signature", "install_policy", "unsigned_policy", "downgrade_policy", "minimum_revocation_epoch", "limits", "generated_at", "expires_at", "key_id", "signature"]);
+  exactKeys(value, ["schema_version", "source_id", "channel", "epoch", "previous_epoch", "previous_document_sha256", "root_epoch", "source_type", "source_class", "allowed_publishers", "allowed_artifact_hosts", "active_keys", "capability_publisher_scopes", "require_signature", "install_policy", "unsigned_policy", "downgrade_policy", "minimum_revocation_epoch", "limits", "generated_at", "expires_at", "key_id", "signature"]);
   assertRecord(value.active_keys);
-  exactKeys(value.active_keys, ["package", "release_metadata", "source_policy_pointer", "revocation_document", "revocation_pointer"]);
+  exactKeys(value.active_keys, ["package", "release_metadata", "host_capability_contract", "source_policy_pointer", "revocation_document", "revocation_pointer"]);
   assertRecord(value.limits);
   exactKeys(value.limits, ["document_max_lifetime_seconds", "future_skew_seconds", "activation_lease_max_seconds", "refresh_interval_max_seconds", "failure_teardown_deadline_seconds"]);
 }

@@ -683,6 +683,7 @@ func newFullRefreshFixture(t *testing.T) fullRefreshFixture {
 			Usages: []releasecontract.DelegatedKeyUsage{
 				releasecontract.DelegatedKeyUsagePackage,
 				releasecontract.DelegatedKeyUsageReleaseMetadata,
+				releasecontract.DelegatedKeyUsageHostCapabilityContract,
 				releasecontract.DelegatedKeyUsageRevocation,
 				releasecontract.DelegatedKeyUsageRevocationPointer,
 				releasecontract.DelegatedKeyUsageSourcePolicy,
@@ -706,9 +707,11 @@ func newFullRefreshFixture(t *testing.T) fullRefreshFixture {
 		AllowedArtifactHosts: []string{"packages.example.com"},
 		ActiveKeys: releasecontract.SourcePolicyActiveKeys{
 			Package: []string{"signing_key"}, ReleaseMetadata: []string{"signing_key"},
-			SourcePolicyPointer: []string{"signing_key"}, Revocation: []string{"signing_key"}, RevocationPointer: []string{"signing_key"},
+			HostCapabilityContract: []string{"signing_key"},
+			SourcePolicyPointer:    []string{"signing_key"}, Revocation: []string{"signing_key"}, RevocationPointer: []string{"signing_key"},
 		},
-		RequireSignature: true, InstallPolicy: "allow", UnsignedPolicy: "block", DowngradePolicy: "block",
+		CapabilityPublisherScopes: []releasecontract.SourcePolicyCapabilityPublisherScope{{KeyID: "signing_key", AllowedPublishers: []string{"example.capability"}}},
+		RequireSignature:          true, InstallPolicy: "allow", UnsignedPolicy: "block", DowngradePolicy: "block",
 		MinimumRevocationEpoch: "1", Limits: releasecontract.DefaultSourcePolicyLimits(),
 		GeneratedAt: generatedAt, ExpiresAt: expiresAt, KeyID: "signing_key",
 	}

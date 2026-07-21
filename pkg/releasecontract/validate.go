@@ -115,7 +115,7 @@ func validateRootDelegation(value RootDelegationV1, requireSignature bool) error
 }
 
 func validateUsageList(usages []DelegatedKeyUsage) error {
-	if len(usages) < 1 || len(usages) > 8 {
+	if len(usages) < 1 || len(usages) > 9 {
 		return invalid("root delegation delegated key usages")
 	}
 	previous := -1
@@ -149,18 +149,20 @@ func delegatedUsageRank(usage DelegatedKeyUsage) int {
 		return 0
 	case DelegatedKeyUsageReleaseMetadata:
 		return 1
-	case DelegatedKeyUsageRevocation:
+	case DelegatedKeyUsageHostCapabilityContract:
 		return 2
-	case DelegatedKeyUsageRevocationPointer:
+	case DelegatedKeyUsageRevocation:
 		return 3
-	case DelegatedKeyUsageSourcePolicy:
+	case DelegatedKeyUsageRevocationPointer:
 		return 4
-	case DelegatedKeyUsageSourcePolicyPointer:
+	case DelegatedKeyUsageSourcePolicy:
 		return 5
-	case DelegatedKeyUsageSigningLedger:
+	case DelegatedKeyUsageSourcePolicyPointer:
 		return 6
-	case DelegatedKeyUsageTrustedTime:
+	case DelegatedKeyUsageSigningLedger:
 		return 7
+	case DelegatedKeyUsageTrustedTime:
+		return 8
 	default:
 		return -1
 	}
@@ -381,6 +383,15 @@ func validateSourcePolicy(value SourcePolicyV2, requireSignature bool) error {
 			return invalid("source policy active_keys")
 		}
 	}
+	if value.ActiveKeys.HostCapabilityContract == nil || value.CapabilityPublisherScopes == nil {
+		return invalid("source policy capability publisher scopes")
+	}
+	if err := validateSortedIDs(value.ActiveKeys.HostCapabilityContract, 0, 16, true); err != nil {
+		return invalid("source policy active_keys")
+	}
+	if err := validateCapabilityPublisherScopes(value.ActiveKeys.HostCapabilityContract, value.CapabilityPublisherScopes); err != nil {
+		return err
+	}
 	if value.InstallPolicy != "allow" && value.InstallPolicy != "review_required" && value.InstallPolicy != "block" {
 		return invalid("source policy install_policy")
 	}
@@ -397,6 +408,21 @@ func validateSourcePolicy(value SourcePolicyV2, requireSignature bool) error {
 		return err
 	}
 	return validateSignatureString(value.Signature, requireSignature)
+}
+
+func validateCapabilityPublisherScopes(activeKeys []string, scopes []SourcePolicyCapabilityPublisherScope) error {
+	if len(scopes) != len(activeKeys) {
+		return invalid("source policy capability publisher scopes")
+	}
+	for index, scope := range scopes {
+		if scope.KeyID != activeKeys[index] {
+			return invalid("source policy capability publisher scope order")
+		}
+		if err := validateSortedIDs(scope.AllowedPublishers, 1, 1024, false); err != nil {
+			return invalid("source policy capability publisher scope publishers")
+		}
+	}
+	return nil
 }
 
 func validatePointer(schemaVersion string, expectedSchemaVersion string, sourceID string, channel string, epoch string, previousEpoch string, previousDigest string, ref string, documentDigest string, generatedAt string, expiresAt string, keyID string, signature string, requireSignature bool) error {

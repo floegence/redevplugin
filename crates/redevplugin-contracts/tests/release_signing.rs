@@ -375,6 +375,7 @@ fn source_policy_input(value: &SourcePolicyV2) -> SourcePolicyInput {
         allowed_publishers: value.allowed_publishers.clone(),
         allowed_artifact_hosts: value.allowed_artifact_hosts.clone(),
         active_keys: value.active_keys.clone(),
+        capability_publisher_scopes: value.capability_publisher_scopes.clone(),
         require_signature: value.require_signature,
         install_policy: value.install_policy.clone(),
         unsigned_policy: value.unsigned_policy.clone(),
