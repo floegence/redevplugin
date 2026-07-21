@@ -291,3 +291,16 @@ func cloneSigningLedgerRoot(root SigningLedgerRoot) SigningLedgerRoot {
 	root.pinnedAnchor = cloneTrustAnchor(root.pinnedAnchor)
 	return root
 }
+
+func (options ReleaseTrustOptions) valid() bool {
+	if !options.sourceConfiguration.valid() || !options.rootAnchor.valid() || len(options.transparencyRoots) == 0 || len(options.transparencyRoots) > 16 ||
+		!options.signingLedgerRoot.valid() || options.locatorPolicy != SourceRelativeLocatorPolicyV1 {
+		return false
+	}
+	for index, root := range options.transparencyRoots {
+		if !root.valid() || (index > 0 && options.transparencyRoots[index-1].logID >= root.logID) {
+			return false
+		}
+	}
+	return true
+}

@@ -234,6 +234,17 @@ func TestTransportCapabilitiesExposeNoCallerWritableRequestFields(t *testing.T) 
 		ReleaseDocumentResult{},
 		SigningLedgerResult{},
 		ReleaseTrustOptions{},
+		TrustedTimeRequest{},
+		TrustedTimeObservation{},
+		VerifiedTrustedTime{},
+		TrustedTimeStatus{},
+		SourceTrustStateLoadRequest{},
+		SourceTrustStateLoadResult{},
+		SourceTrustStatePrepareRequest{},
+		SourceTrustStateCommitRequest{},
+		MonotonicStateReadRequest{},
+		MonotonicStateReadResult{},
+		MonotonicStateCASRequest{},
 	} {
 		typeOf := reflect.TypeOf(value)
 		for index := 0; index < typeOf.NumField(); index++ {

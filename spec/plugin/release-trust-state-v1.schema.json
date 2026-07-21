@@ -1,0 +1,110 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.redevplugin.dev/plugin/release-trust-state-v1.schema.json",
+  "title": "ReDevPlugin release trust state v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "source_id", "revision", "external_counter", "trusted_time", "channels"],
+  "properties": {
+    "schema_version": { "const": "redevplugin.release_trust_state.v1" },
+    "source_id": { "$ref": "#/$defs/id" },
+    "revision": { "$ref": "#/$defs/revision" },
+    "external_counter": { "$ref": "#/$defs/counter" },
+    "root": { "$ref": "#/$defs/root_head" },
+    "trusted_time": { "$ref": "#/$defs/trusted_time" },
+    "channels": {
+      "type": "array",
+      "maxItems": 16,
+      "items": { "$ref": "#/$defs/channel" }
+    }
+  },
+  "$defs": {
+    "id": { "type": "string", "pattern": "^[a-z][a-z0-9._-]{0,127}$" },
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "counter": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
+    "revision": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 },
+    "epoch": { "type": "string", "pattern": "^(0|[1-9][0-9]{0,19})$" },
+    "time": { "type": "string", "format": "date-time", "maxLength": 35 },
+    "locator": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 1024,
+      "pattern": "^(?:[A-Za-z0-9_@+-][A-Za-z0-9._@+-]*|\\.[A-Za-z0-9_@+-][A-Za-z0-9._@+-]*|\\.{2}[A-Za-z0-9_@+-][A-Za-z0-9._@+-]*|\\.{3,}[A-Za-z0-9._@+-]*)(?:/(?:[A-Za-z0-9_@+-][A-Za-z0-9._@+-]*|\\.[A-Za-z0-9_@+-][A-Za-z0-9._@+-]*|\\.{2}[A-Za-z0-9_@+-][A-Za-z0-9._@+-]*|\\.{3,}[A-Za-z0-9._@+-]*))*$"
+    },
+    "transport_token": { "type": "string", "minLength": 1, "maxLength": 512, "pattern": "^[A-Za-z0-9._:@+-]+$" },
+    "root_head": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["epoch", "document_sha256", "generated_at", "expires_at", "key_id"],
+      "properties": {
+        "epoch": { "$ref": "#/$defs/epoch" },
+        "document_sha256": { "$ref": "#/$defs/sha256" },
+        "generated_at": { "$ref": "#/$defs/time" },
+        "expires_at": { "$ref": "#/$defs/time" },
+        "key_id": { "$ref": "#/$defs/id" }
+      }
+    },
+    "checkpoint": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version", "log_id", "tree_size", "root_hash", "checkpoint_time", "key_id", "signature"],
+      "properties": {
+        "schema_version": { "const": "redevplugin.trusted_time_checkpoint.v1" },
+        "log_id": { "$ref": "#/$defs/id" },
+        "tree_size": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 },
+        "root_hash": { "$ref": "#/$defs/sha256" },
+        "checkpoint_time": { "$ref": "#/$defs/time" },
+        "key_id": { "$ref": "#/$defs/id" },
+        "signature": { "type": "string", "pattern": "^[A-Za-z0-9+/]{86}==$" }
+      }
+    },
+    "trusted_time": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["floor", "checkpoint_sha256", "checkpoint"],
+      "properties": {
+        "floor": { "$ref": "#/$defs/time" },
+        "checkpoint_sha256": { "$ref": "#/$defs/sha256" },
+        "checkpoint": { "$ref": "#/$defs/checkpoint" }
+      }
+    },
+    "document_head": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "pointer_locator",
+        "pointer_transport_token",
+        "pointer_epoch",
+        "pointer_sha256",
+        "document_locator",
+        "document_transport_token",
+        "document_sha256",
+        "generated_at",
+        "expires_at",
+        "key_id"
+      ],
+      "properties": {
+        "pointer_locator": { "$ref": "#/$defs/locator" },
+        "pointer_transport_token": { "$ref": "#/$defs/transport_token" },
+        "pointer_epoch": { "$ref": "#/$defs/epoch" },
+        "pointer_sha256": { "$ref": "#/$defs/sha256" },
+        "document_locator": { "$ref": "#/$defs/locator" },
+        "document_transport_token": { "$ref": "#/$defs/transport_token" },
+        "document_sha256": { "$ref": "#/$defs/sha256" },
+        "generated_at": { "$ref": "#/$defs/time" },
+        "expires_at": { "$ref": "#/$defs/time" },
+        "key_id": { "$ref": "#/$defs/id" }
+      }
+    },
+    "channel": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["channel"],
+      "properties": {
+        "channel": { "$ref": "#/$defs/id" },
+        "policy": { "$ref": "#/$defs/document_head" },
+        "revocation": { "$ref": "#/$defs/document_head" }
+      }
+    }
+  }
+}

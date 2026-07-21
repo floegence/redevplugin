@@ -189,6 +189,12 @@
       "sha256": "4f2fa06983b75e9722cb5b89a46a0937d22298379640efdd414665e0c26eba72"
     },
     {
+      "id": "release-trust-state-schema",
+      "path": "spec/plugin/release-trust-state-v1.schema.json",
+      "version": "release-trust-state-v1",
+      "sha256": "a87ca7b933d50747ea2bd038d9b429692297ed1ff13195dc3294d7eebd69ad25"
+    },
+    {
       "id": "resource-scope-schema",
       "path": "spec/plugin/resource-scope-v1.schema.json",
       "version": "resource-scope-v1",
@@ -217,6 +223,18 @@
       "path": "spec/plugin/token-ticket-v4.schema.json",
       "version": "token-ticket-v4",
       "sha256": "5cf365b5b52a331ac0d3ad35a98be3c2ce668804ae88fdeaf9679a44db14feb1"
+    },
+    {
+      "id": "trusted-time-evidence-schema",
+      "path": "spec/plugin/trusted-time-evidence-v1.schema.json",
+      "version": "trusted-time-evidence-v1",
+      "sha256": "4398cbd2a3eea42a85008ee16a69d7adb265673e6749b1f13a4f1610f36e5e38"
+    },
+    {
+      "id": "trusted-time-leaf-schema",
+      "path": "spec/plugin/trusted-time-leaf-v1.schema.json",
+      "version": "trusted-time-leaf-v1",
+      "sha256": "1c25eb0040800eef145aa2bb4c0e1ae197ae584d365e9595ab89037e26fe5ddb"
     },
     {
       "id": "wasm-worker-schema",

@@ -93,6 +93,16 @@ const stagedSchemaArtifacts = [
     version: "platform-package-set-v1",
   },
   {
+    id: "trusted-time-evidence-schema",
+    path: "spec/plugin/trusted-time-evidence-v1.schema.json",
+    version: "trusted-time-evidence-v1",
+  },
+  {
+    id: "trusted-time-leaf-schema",
+    path: "spec/plugin/trusted-time-leaf-v1.schema.json",
+    version: "trusted-time-leaf-v1",
+  },
+  {
     id: "quarantine-cleanup-schema",
     path: "spec/plugin/quarantine-cleanup-v1.schema.json",
     version: "quarantine-cleanup-v1",
@@ -106,6 +116,11 @@ const stagedSchemaArtifacts = [
     id: "release-revocation-schema",
     path: "spec/plugin/release-revocation-v2.schema.json",
     version: "release-revocation-v2",
+  },
+  {
+    id: "release-trust-state-schema",
+    path: "spec/plugin/release-trust-state-v1.schema.json",
+    version: "release-trust-state-v1",
   },
   {
     id: "release-root-delegation-schema",

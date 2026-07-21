@@ -13,7 +13,7 @@ import {
 } from "../src/index.js";
 
 test("contracts package exposes the complete immutable lookup inventory", () => {
-  assert.equal(contractArtifacts.length, 38);
+  assert.equal(contractArtifacts.length, 41);
   assert.equal(contractArtifacts.some(({ id }) => id === "contract-registry"), false);
   assert.equal(registryContract.id, "contract-registry");
   assert.equal(getContract("contract-registry"), registryContract);

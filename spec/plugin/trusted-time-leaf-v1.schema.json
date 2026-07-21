@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.redevplugin.dev/plugin/trusted-time-leaf-v1.schema.json",
+  "title": "ReDevPlugin trusted time leaf v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "source_id", "channel", "nonce", "minimum_time", "claimed_time", "request_sha256", "log_id"],
+  "properties": {
+    "schema_version": { "const": "redevplugin.trusted_time_leaf.v1" },
+    "source_id": { "$ref": "#/$defs/id" },
+    "channel": { "$ref": "#/$defs/id" },
+    "nonce": { "type": "string", "pattern": "^[A-Za-z0-9_-]{43}$" },
+    "minimum_time": { "type": "string", "format": "date-time", "maxLength": 35 },
+    "claimed_time": { "type": "string", "format": "date-time", "maxLength": 35 },
+    "request_sha256": { "$ref": "#/$defs/sha256" },
+    "log_id": { "$ref": "#/$defs/id" }
+  },
+  "$defs": {
+    "id": { "type": "string", "pattern": "^[a-z][a-z0-9._-]{0,127}$" },
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+  }
+}
