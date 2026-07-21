@@ -138,6 +138,7 @@ test("contract registry v2 is closed, sorted, cycle-free, and content addressed"
       "release-revocation-pointer-schema",
       "release-revocation-schema",
       "release-root-delegation-schema",
+      "release-signing-ledger-evidence-schema",
       "release-source-policy-pointer-schema",
       "release-source-policy-schema",
     ])
@@ -145,12 +146,13 @@ test("contract registry v2 is closed, sorted, cycle-free, and content addressed"
 
   assert.equal(registryBytes.toString("utf8"), `${JSON.stringify(registry, null, 2)}\n`);
   assert.deepEqual(registry.artifacts.map(({ id }) => id), expectedIDs);
-  assert.equal(registry.artifacts.length, 33);
+  assert.equal(registry.artifacts.length, 34);
   assert.equal(registry.artifacts.some(({ id }) => id === "release-manifest-schema"), false);
   assert.equal(registry.artifacts.some(({ id }) => id === "release-metadata-schema"), true);
   assert.equal(registry.artifacts.some(({ id }) => id === "source-policy-schema"), false);
   assert.equal(registry.artifacts.some(({ id }) => id === "source-revocations-schema"), false);
   assert.equal(registry.artifacts.some(({ id }) => id === "release-root-delegation-schema"), true);
+  assert.equal(registry.artifacts.some(({ id }) => id === "release-signing-ledger-evidence-schema"), true);
   assert.equal(registry.artifacts.some(({ id }) => id === "release-source-policy-schema"), true);
   assert.equal(registry.artifacts.some(({ id }) => id === "release-source-policy-pointer-schema"), true);
   assert.equal(registry.artifacts.some(({ id }) => id === "release-revocation-schema"), true);

@@ -1,5 +1,18 @@
 package releasecontract
 
+func DecodeSigningLedgerEvidence(raw []byte) (SigningLedgerEvidenceV1, error) {
+	if len(raw) > 64<<10 {
+		return SigningLedgerEvidenceV1{}, invalid("signing ledger evidence size")
+	}
+	var evidence SigningLedgerEvidenceV1
+	if err := decodeCanonicalDocument(raw, &evidence, func() error {
+		return validateSigningLedgerEvidence(evidence)
+	}); err != nil {
+		return SigningLedgerEvidenceV1{}, err
+	}
+	return evidence, nil
+}
+
 func DecodeRootDelegation(raw []byte) (RootDelegationV1, error) {
 	var document RootDelegationV1
 	if err := decodeCanonicalDocument(raw, &document, func() error {

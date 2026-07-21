@@ -5,6 +5,7 @@ export const sourcePolicySchemaVersion = "redevplugin.release_source_policy.v2" 
 export const sourcePolicyPointerSchemaVersion = "redevplugin.release_source_policy_pointer.v1" as const;
 export const revocationSchemaVersion = "redevplugin.release_revocation.v2" as const;
 export const revocationPointerSchemaVersion = "redevplugin.release_revocation_pointer.v1" as const;
+export const releaseSigningLedgerEvidenceSchemaVersion = "redevplugin.release_signing_ledger_evidence.v1" as const;
 export const signatureAlgorithmEd25519 = "ed25519" as const;
 export const genesisPreviousEpoch = "0" as const;
 export const genesisPreviousDocumentSHA256 = "0".repeat(64);
@@ -274,6 +275,25 @@ export type RevocationInput = Omit<RevocationV2, "schema_version" | "signature">
 export type RevocationPointerV1 = Readonly<ReleasePointerInput & {
   schema_version: typeof revocationPointerSchemaVersion;
   signature: string;
+}>;
+
+export type SigningLedgerEvidenceV1 = Readonly<{
+  schema_version: typeof releaseSigningLedgerEvidenceSchemaVersion;
+  source_id: string;
+  channel?: string;
+  subject_identity_sha256: string;
+  signing_preimage_sha256: string;
+  signature_envelope_sha256: string;
+  receipt_ref: string;
+  receipt_sha256: string;
+  checkpoint_ref: string;
+  checkpoint_sha256: string;
+  inclusion_proof_ref: string;
+  inclusion_proof_sha256: string;
+  latest_proof_ref: string;
+  latest_proof_sha256: string;
+  consistency_proof_ref?: string;
+  consistency_proof_sha256?: string;
 }>;
 
 export type SignatureVerificationRequest = Readonly<{
@@ -696,6 +716,34 @@ function validateRevocation(value: RevocationV2, requireSignature: boolean): voi
   else if (value.signature !== "") invalidDocument();
 }
 
+function validateSigningLedgerEvidence(value: SigningLedgerEvidenceV1): void {
+  assertRecord(value);
+  closeSigningLedgerEvidence(value);
+  if (value.schema_version !== releaseSigningLedgerEvidenceSchemaVersion || !matchesPattern(newIDPattern, value.source_id)) invalidDocument();
+  if (value.channel !== undefined && !matchesPattern(newIDPattern, value.channel)) invalidDocument();
+  for (const digest of [
+    value.subject_identity_sha256,
+    value.signing_preimage_sha256,
+    value.signature_envelope_sha256,
+    value.receipt_sha256,
+    value.checkpoint_sha256,
+    value.inclusion_proof_sha256,
+    value.latest_proof_sha256,
+  ]) {
+    if (!sha256Pattern.test(digest)) invalidDocument();
+  }
+  for (const reference of [
+    value.receipt_ref,
+    value.checkpoint_ref,
+    value.inclusion_proof_ref,
+    value.latest_proof_ref,
+  ]) {
+    if (!validArtifactRef(reference)) invalidDocument();
+  }
+  if ((value.consistency_proof_ref === undefined) !== (value.consistency_proof_sha256 === undefined)) invalidDocument();
+  if (value.consistency_proof_ref !== undefined && (!validArtifactRef(value.consistency_proof_ref) || !sha256Pattern.test(value.consistency_proof_sha256!))) invalidDocument();
+}
+
 function decodeCanonicalDocument<T>(
   raw: Uint8Array | string,
   close: (value: Record<string, unknown>) => void,
@@ -790,6 +838,28 @@ function closeRevocation(value: Record<string, unknown>): void {
     assertRecord(item);
     exactKeys(item, ["publisher_id", "plugin_id", "version", "release_metadata_sha256", "revoked_at"]);
   }
+}
+
+function closeSigningLedgerEvidence(value: Record<string, unknown>): void {
+  exactOptionalKeys(
+    value,
+    [
+      "schema_version",
+      "source_id",
+      "subject_identity_sha256",
+      "signing_preimage_sha256",
+      "signature_envelope_sha256",
+      "receipt_ref",
+      "receipt_sha256",
+      "checkpoint_ref",
+      "checkpoint_sha256",
+      "inclusion_proof_ref",
+      "inclusion_proof_sha256",
+      "latest_proof_ref",
+      "latest_proof_sha256",
+    ],
+    ["channel", "consistency_proof_ref", "consistency_proof_sha256"],
+  );
 }
 
 export function buildRootDelegation(input: RootDelegationInput, signature: Uint8Array): RootDelegationV1 {
@@ -1030,6 +1100,12 @@ export function decodeRevocation(raw: Uint8Array | string): RevocationV2 {
 
 export function decodeRevocationPointer(raw: Uint8Array | string): RevocationPointerV1 {
   return decodeCanonicalDocument(raw, closePointer, (value) => validatePointer(value, revocationPointerSchemaVersion, true));
+}
+
+export function decodeSigningLedgerEvidence(raw: Uint8Array | string): SigningLedgerEvidenceV1 {
+  const bytes = typeof raw === "string" ? textEncoder.encode(raw) : raw;
+  if (!(bytes instanceof Uint8Array) || bytes.length > 64 * 1024) invalidDocument();
+  return decodeCanonicalDocument(bytes, closeSigningLedgerEvidence, validateSigningLedgerEvidence);
 }
 
 export function createEd25519Verifier(

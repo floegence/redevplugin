@@ -147,6 +147,12 @@
       "sha256": "ffceff8ce40baaad4e72bf2193a4c62d9ef67b3dc0391d7e2b900d8cadd624be"
     },
     {
+      "id": "release-signing-ledger-evidence-schema",
+      "path": "spec/plugin/release-signing-ledger-evidence-v1.schema.json",
+      "version": "release-signing-ledger-evidence-v1",
+      "sha256": "9ab8b7f65dedcd119d578debb4f6ff97fc35f4c7ac95c0e5435f8b0959bc1a5c"
+    },
+    {
       "id": "release-source-policy-pointer-schema",
       "path": "spec/plugin/release-source-policy-pointer-v1.schema.json",
       "version": "release-source-policy-pointer-v1",

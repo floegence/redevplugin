@@ -93,6 +93,11 @@ const stagedSchemaArtifacts = [
     version: "release-root-delegation-v1",
   },
   {
+    id: "release-signing-ledger-evidence-schema",
+    path: "spec/plugin/release-signing-ledger-evidence-v1.schema.json",
+    version: "release-signing-ledger-evidence-v1",
+  },
+  {
     id: "release-source-policy-pointer-schema",
     path: "spec/plugin/release-source-policy-pointer-v1.schema.json",
     version: "release-source-policy-pointer-v1",

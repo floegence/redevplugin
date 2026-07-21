@@ -1,0 +1,68 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.redevplugin.dev/plugin/release-signing-ledger-evidence-v1.schema.json",
+  "title": "ReDevPlugin release signing ledger evidence v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "source_id",
+    "subject_identity_sha256",
+    "signing_preimage_sha256",
+    "signature_envelope_sha256",
+    "receipt_ref",
+    "receipt_sha256",
+    "checkpoint_ref",
+    "checkpoint_sha256",
+    "inclusion_proof_ref",
+    "inclusion_proof_sha256",
+    "latest_proof_ref",
+    "latest_proof_sha256"
+  ],
+  "dependentRequired": {
+    "consistency_proof_ref": ["consistency_proof_sha256"],
+    "consistency_proof_sha256": ["consistency_proof_ref"]
+  },
+  "properties": {
+    "schema_version": { "const": "redevplugin.release_signing_ledger_evidence.v1" },
+    "source_id": { "$ref": "#/$defs/id" },
+    "channel": { "$ref": "#/$defs/id" },
+    "subject_identity_sha256": { "$ref": "#/$defs/sha256" },
+    "signing_preimage_sha256": { "$ref": "#/$defs/sha256" },
+    "signature_envelope_sha256": { "$ref": "#/$defs/sha256" },
+    "receipt_ref": { "$ref": "#/$defs/artifact_ref" },
+    "receipt_sha256": { "$ref": "#/$defs/sha256" },
+    "checkpoint_ref": { "$ref": "#/$defs/artifact_ref" },
+    "checkpoint_sha256": { "$ref": "#/$defs/sha256" },
+    "inclusion_proof_ref": { "$ref": "#/$defs/artifact_ref" },
+    "inclusion_proof_sha256": { "$ref": "#/$defs/sha256" },
+    "latest_proof_ref": { "$ref": "#/$defs/artifact_ref" },
+    "latest_proof_sha256": { "$ref": "#/$defs/sha256" },
+    "consistency_proof_ref": { "$ref": "#/$defs/artifact_ref" },
+    "consistency_proof_sha256": { "$ref": "#/$defs/sha256" }
+  },
+  "$defs": {
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[a-z][a-z0-9._-]*$"
+    },
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "artifact_ref": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 1024,
+      "pattern": "^[A-Za-z0-9._@+-]+(?:/[A-Za-z0-9._@+-]+)*$",
+      "not": {
+        "anyOf": [
+          { "pattern": "^/" },
+          { "pattern": "(^|/)\\.(/|$)" },
+          { "pattern": "(^|/)\\.\\.(/|$)" },
+          { "pattern": "\\\\" },
+          { "pattern": "[?#]" }
+        ]
+      }
+    }
+  }
+}

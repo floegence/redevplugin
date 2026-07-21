@@ -1,19 +1,39 @@
 package releasecontract
 
 const (
-	RootDelegationSchemaVersion      = "redevplugin.release_root_delegation.v1"
-	PackageSignatureSchemaVersion    = "redevplugin.package_signature.v1"
-	ReleaseMetadataSchemaVersion     = "redevplugin.release_metadata.v5"
-	SourcePolicySchemaVersion        = "redevplugin.release_source_policy.v2"
-	SourcePolicyPointerSchemaVersion = "redevplugin.release_source_policy_pointer.v1"
-	RevocationSchemaVersion          = "redevplugin.release_revocation.v2"
-	RevocationPointerSchemaVersion   = "redevplugin.release_revocation_pointer.v1"
+	RootDelegationSchemaVersion        = "redevplugin.release_root_delegation.v1"
+	PackageSignatureSchemaVersion      = "redevplugin.package_signature.v1"
+	ReleaseMetadataSchemaVersion       = "redevplugin.release_metadata.v5"
+	SourcePolicySchemaVersion          = "redevplugin.release_source_policy.v2"
+	SourcePolicyPointerSchemaVersion   = "redevplugin.release_source_policy_pointer.v1"
+	RevocationSchemaVersion            = "redevplugin.release_revocation.v2"
+	RevocationPointerSchemaVersion     = "redevplugin.release_revocation_pointer.v1"
+	SigningLedgerEvidenceSchemaVersion = "redevplugin.release_signing_ledger_evidence.v1"
 
 	SignatureAlgorithmEd25519 = "ed25519"
 
 	GenesisPreviousEpoch          = "0"
 	GenesisPreviousDocumentSHA256 = "0000000000000000000000000000000000000000000000000000000000000000"
 )
+
+type SigningLedgerEvidenceV1 struct {
+	SchemaVersion           string `json:"schema_version"`
+	SourceID                string `json:"source_id"`
+	Channel                 string `json:"channel,omitempty"`
+	SubjectIdentitySHA256   string `json:"subject_identity_sha256"`
+	SigningPreimageSHA256   string `json:"signing_preimage_sha256"`
+	SignatureEnvelopeSHA256 string `json:"signature_envelope_sha256"`
+	ReceiptRef              string `json:"receipt_ref"`
+	ReceiptSHA256           string `json:"receipt_sha256"`
+	CheckpointRef           string `json:"checkpoint_ref"`
+	CheckpointSHA256        string `json:"checkpoint_sha256"`
+	InclusionProofRef       string `json:"inclusion_proof_ref"`
+	InclusionProofSHA256    string `json:"inclusion_proof_sha256"`
+	LatestProofRef          string `json:"latest_proof_ref"`
+	LatestProofSHA256       string `json:"latest_proof_sha256"`
+	ConsistencyProofRef     string `json:"consistency_proof_ref,omitempty"`
+	ConsistencyProofSHA256  string `json:"consistency_proof_sha256,omitempty"`
+}
 
 type SigningUsage string
 

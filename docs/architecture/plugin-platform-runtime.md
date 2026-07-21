@@ -79,6 +79,19 @@ and marked that exact asset session prepared.
   surface opening and final stream commits take the read lock. Release
   resolution and package validation occur outside the lock and commit only after
   the registry revision is revalidated.
+- `pkg/releasetrust` stages the host-neutral release-trust capability boundary.
+  A validated, immutable source configuration is the only constructor for a
+  channel-scoped `SourceTrustKey`; release-root, trusted-time transparency, and
+  signing-ledger anchors are copied into closed `ReleaseTrustOptions` values.
+  Host transports receive sealed requests containing only platform-generated
+  source-relative locators and fixed byte ceilings, and must return owned
+  bounded result capabilities instead of raw caller-controlled buffers. Root
+  documents and signing-ledger checkpoints/consistency proofs remain
+  source-wide, while policy, revocation, receipts, inclusion proofs, and latest
+  proofs retain their validated channel scope. This package is not yet wired
+  into `pkg/host`; the existing release resolver/verifier adapters remain active
+  until the full durable trust, trusted-time, lease, fence, and reconciliation
+  state machine is complete.
 - `pkg/httpadapter` provides mountable host-neutral HTTP routes for platform
   management, surface prepare/token/dispose, parent-only POST asset and stream
   reads, compatibility, and diagnostics.
@@ -95,6 +108,15 @@ and marked that exact asset session prepared.
   host-neutral contracts and durable state.
 - `pkg/protocol` tests keep OpenAPI, schemas, route fixtures, Go DTOs,
   TypeScript SDK bindings, Rust IPC, WASM ABI, and compatibility hashes aligned.
+
+The staged `release-signing-ledger-evidence-v1` contract is a detached closed
+envelope. It binds the source, optional channel, subject identity digest,
+signing-preimage digest, signature-envelope digest, and receipt, checkpoint,
+inclusion, latest, and optional consistency proof locator/digest pairs. Evidence
+bytes never alter policy, revocation, or pointer canonical signing preimages.
+Go, TypeScript, and Rust decoders enforce canonical JSON, safe relative refs,
+paired consistency fields, lowercase SHA-256 values, and the 64 KiB evidence
+ceiling.
 
 The Host library must remain host-neutral. It must not import a host product,
 know product navigation, or assume a particular vault, filesystem root,

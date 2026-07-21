@@ -29,6 +29,45 @@ func invalid(field string) error {
 	return fmt.Errorf("%w: %s", ErrInvalidDocument, field)
 }
 
+func validateSigningLedgerEvidence(value SigningLedgerEvidenceV1) error {
+	if value.SchemaVersion != SigningLedgerEvidenceSchemaVersion || !newContractIDPattern.MatchString(value.SourceID) {
+		return invalid("signing ledger evidence identity")
+	}
+	if value.Channel != "" && !newContractIDPattern.MatchString(value.Channel) {
+		return invalid("signing ledger evidence channel")
+	}
+	for _, digest := range []string{
+		value.SubjectIdentitySHA256,
+		value.SigningPreimageSHA256,
+		value.SignatureEnvelopeSHA256,
+		value.ReceiptSHA256,
+		value.CheckpointSHA256,
+		value.InclusionProofSHA256,
+		value.LatestProofSHA256,
+	} {
+		if !sha256Pattern.MatchString(digest) {
+			return invalid("signing ledger evidence digest")
+		}
+	}
+	for _, ref := range []string{
+		value.ReceiptRef,
+		value.CheckpointRef,
+		value.InclusionProofRef,
+		value.LatestProofRef,
+	} {
+		if !validArtifactRef(ref) {
+			return invalid("signing ledger evidence ref")
+		}
+	}
+	if (value.ConsistencyProofRef == "") != (value.ConsistencyProofSHA256 == "") {
+		return invalid("signing ledger evidence consistency pair")
+	}
+	if value.ConsistencyProofRef != "" && (!validArtifactRef(value.ConsistencyProofRef) || !sha256Pattern.MatchString(value.ConsistencyProofSHA256)) {
+		return invalid("signing ledger evidence consistency proof")
+	}
+	return nil
+}
+
 func validateRootDelegation(value RootDelegationV1, requireSignature bool) error {
 	if value.SchemaVersion != RootDelegationSchemaVersion {
 		return invalid("root delegation schema_version")

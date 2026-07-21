@@ -10,7 +10,7 @@
   covers a synthetic registry coordinate and excludes product runtime binaries,
   installers, signatures, and the retired runtime-bundle manifest.
 - Add opt-in Go, npm, and Rust contract libraries generated from the same staged
-  registry bytes. Their immutable lookup APIs expose 33 ordinary artifacts plus
+  registry bytes. Their immutable lookup APIs expose 34 ordinary artifacts plus
   one synthetic registry contract, while the Host and UI entrypoints retain
   body-free dependency graphs until the atomic v8 activation. The temporary v7
   bundle gate validates exact-version local contracts and UI tarballs together
@@ -25,6 +25,16 @@
   and one shared cross-language fixture proves every 7x6 substitution fails.
   The active v1 registry and compatibility-v7 surface remain unchanged until the
   atomic v8 activation.
+- Add the first host-neutral `ReleaseTrustService` foundation without changing
+  the active Host lifecycle. Sealed source configuration and trust-key values,
+  closed release-trust options, owned Ed25519 anchors, fixed source-relative
+  document and signing-ledger locators, and bounded owned transport results
+  prevent host or HTTP callers from supplying arbitrary URLs, channels, or
+  unbounded response bytes. Publish the closed
+  `release-signing-ledger-evidence-v1` envelope and matching Go, TypeScript, and
+  Rust strict decoders through the staged v2 contract registry; the existing
+  Host release-policy and metadata-verifier adapters remain in place until the
+  complete trust state machine can replace them atomically.
 - Replace browser-facing GET reads with closed POST query requests that require
   exact Origin, CSRF, route action, and explicit query-effect authorization.
   Query cancellation remains safely retryable and never reports a mutation

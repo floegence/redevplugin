@@ -14,6 +14,8 @@ pub const SOURCE_POLICY_POINTER_SCHEMA_VERSION: &str =
     "redevplugin.release_source_policy_pointer.v1";
 pub const REVOCATION_SCHEMA_VERSION: &str = "redevplugin.release_revocation.v2";
 pub const REVOCATION_POINTER_SCHEMA_VERSION: &str = "redevplugin.release_revocation_pointer.v1";
+pub const SIGNING_LEDGER_EVIDENCE_SCHEMA_VERSION: &str =
+    "redevplugin.release_signing_ledger_evidence.v1";
 pub const SIGNATURE_ALGORITHM_ED25519: &str = "ed25519";
 pub const GENESIS_PREVIOUS_EPOCH: &str = "0";
 pub const GENESIS_PREVIOUS_DOCUMENT_SHA256: &str =
@@ -448,6 +450,30 @@ pub struct RevocationPointerV1 {
     pub expires_at: String,
     pub key_id: String,
     pub signature: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct SigningLedgerEvidenceV1 {
+    pub schema_version: String,
+    pub source_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub channel: Option<String>,
+    pub subject_identity_sha256: String,
+    pub signing_preimage_sha256: String,
+    pub signature_envelope_sha256: String,
+    pub receipt_ref: String,
+    pub receipt_sha256: String,
+    pub checkpoint_ref: String,
+    pub checkpoint_sha256: String,
+    pub inclusion_proof_ref: String,
+    pub inclusion_proof_sha256: String,
+    pub latest_proof_ref: String,
+    pub latest_proof_sha256: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub consistency_proof_ref: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub consistency_proof_sha256: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -891,6 +917,15 @@ pub fn decode_revocation(raw: &[u8]) -> Result<RevocationV2, ReleaseContractErro
 
 pub fn decode_revocation_pointer(raw: &[u8]) -> Result<RevocationPointerV1, ReleaseContractError> {
     decode_canonical_document(raw, |value| validate_revocation_pointer(value, true))
+}
+
+pub fn decode_signing_ledger_evidence(
+    raw: &[u8],
+) -> Result<SigningLedgerEvidenceV1, ReleaseContractError> {
+    if raw.len() > 64 * 1024 {
+        return Err(ReleaseContractError::InvalidDocument);
+    }
+    decode_canonical_document(raw, validate_signing_ledger_evidence)
 }
 
 fn root_delegation_from_input(input: &RootDelegationInput, signature: String) -> RootDelegationV1 {
@@ -1615,6 +1650,54 @@ fn validate_revocation(
         previous = identity;
     }
     validate_signature_field(&value.signature, require_signature)
+}
+
+fn validate_signing_ledger_evidence(
+    value: &SigningLedgerEvidenceV1,
+) -> Result<(), ReleaseContractError> {
+    if value.schema_version != SIGNING_LEDGER_EVIDENCE_SCHEMA_VERSION
+        || !valid_new_id(&value.source_id)
+        || value
+            .channel
+            .as_deref()
+            .is_some_and(|item| !valid_new_id(item))
+    {
+        return Err(ReleaseContractError::InvalidDocument);
+    }
+    for digest in [
+        &value.subject_identity_sha256,
+        &value.signing_preimage_sha256,
+        &value.signature_envelope_sha256,
+        &value.receipt_sha256,
+        &value.checkpoint_sha256,
+        &value.inclusion_proof_sha256,
+        &value.latest_proof_sha256,
+    ] {
+        if !valid_sha256(digest) {
+            return Err(ReleaseContractError::InvalidDocument);
+        }
+    }
+    for reference in [
+        &value.receipt_ref,
+        &value.checkpoint_ref,
+        &value.inclusion_proof_ref,
+        &value.latest_proof_ref,
+    ] {
+        if !valid_artifact_ref(reference) {
+            return Err(ReleaseContractError::InvalidDocument);
+        }
+    }
+    if value.consistency_proof_ref.is_some() != value.consistency_proof_sha256.is_some() {
+        return Err(ReleaseContractError::InvalidDocument);
+    }
+    if let (Some(reference), Some(digest)) = (
+        value.consistency_proof_ref.as_deref(),
+        value.consistency_proof_sha256.as_deref(),
+    ) && (!valid_artifact_ref(reference) || !valid_sha256(digest))
+    {
+        return Err(ReleaseContractError::InvalidDocument);
+    }
+    Ok(())
 }
 
 fn invalid_document<T>() -> Result<T, ReleaseContractError> {

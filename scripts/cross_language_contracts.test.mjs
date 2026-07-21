@@ -79,6 +79,7 @@ test("Go, npm, and Rust projections share one contract inventory and digest", ()
     "decodeRevocation",
     "decodeRevocationPointer",
     "decodeRootDelegation",
+    "decodeSigningLedgerEvidence",
     "decodeSourcePolicy",
     "decodeSourcePolicyPointer",
     "defaultSourcePolicyLimits",
@@ -91,6 +92,7 @@ test("Go, npm, and Rust projections share one contract inventory and digest", ()
     "registryContract",
     "releaseMetadataSchemaVersion",
     "releaseMetadataSigningPreimage",
+    "releaseSigningLedgerEvidenceSchemaVersion",
     "revocationPointerSchemaVersion",
     "revocationPointerSigningPreimage",
     "revocationSchemaVersion",
@@ -274,7 +276,7 @@ test("packed npm packages install together offline and remain browser-neutral", 
     run(process.execPath, ["--input-type=module", "--eval", `
       await import("@floegence/redevplugin-ui");
       const contracts = await import("@floegence/redevplugin-contracts");
-      if (contracts.contractArtifacts.length !== 33) throw new Error("contracts package is incomplete");
+      if (contracts.contractArtifacts.length !== 34) throw new Error("contracts package is incomplete");
     `], { cwd: consumerDirectory });
 
     const browserBundle = await build({

@@ -43,6 +43,13 @@ func canonicalJSON(value any) ([]byte, error) {
 	return out, nil
 }
 
+func CanonicalSigningLedgerEvidence(evidence SigningLedgerEvidenceV1) ([]byte, error) {
+	if err := validateSigningLedgerEvidence(evidence); err != nil {
+		return nil, err
+	}
+	return canonicalJSON(evidence)
+}
+
 func appendCanonicalJSON(out []byte, value any, depth int) ([]byte, error) {
 	if depth > maxJSONDepth {
 		return nil, fmt.Errorf("%w: JSON nesting limit exceeded", ErrInvalidDocument)
