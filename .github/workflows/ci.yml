@@ -121,18 +121,25 @@ jobs:
           go-version-file: go.mod
       - run: rustup show
       - name: Build static PIE runtime from source crates
-        env:
-          RUSTFLAGS: -C target-feature=+crt-static -C relocation-model=pic -C link-arg=-static-pie
-        run: cargo build --locked --release -p redevplugin-runtime
+        id: build-runtime
+        run: |
+          target="$(rustc -vV | sed -n 's/^host: //p')"
+          test -n "$target"
+          rustflags_key="CARGO_TARGET_${target^^}_RUSTFLAGS"
+          rustflags_key="${rustflags_key//-/_}"
+          env "$rustflags_key=-C target-feature=+crt-static -C relocation-model=pic -C linker=${{ github.workspace }}/scripts/link_redevplugin_runtime_static_pie.sh" \
+            cargo build --locked --release --target "$target" -p redevplugin-runtime
+          echo "path=target/$target/release/redevplugin-runtime" >> "$GITHUB_OUTPUT"
       - name: Verify closed ELF profile
         run: |
-          file target/release/redevplugin-runtime | grep -q 'static-pie linked'
-          ! readelf -l target/release/redevplugin-runtime | grep -q INTERP
-          ! readelf -d target/release/redevplugin-runtime | grep -q NEEDED
+          runtime="${{ steps.build-runtime.outputs.path }}"
+          file "$runtime" | grep -q 'static-pie linked'
+          ! readelf -l "$runtime" | grep -q INTERP
+          ! readelf -d "$runtime" | grep -q NEEDED
       - name: Exercise sealed memfd, clone3 PIDFD, and seccomp handshake
         env:
           GOWORK: "off"
-          REDEVPLUGIN_CONTAINMENT_RUNTIME_PATH: ${{ github.workspace }}/target/release/redevplugin-runtime
+          REDEVPLUGIN_CONTAINMENT_RUNTIME_PATH: ${{ github.workspace }}/${{ steps.build-runtime.outputs.path }}
         run: go test ./internal/runtimeclient -run TestContainedRuntimeProcessExecutesSealedRuntimeAndValidatesAcknowledgement -count=1 -v
 
   release-audit:
@@ -171,6 +178,7 @@ jobs:
           bash -n scripts/check_redevplugin_ui_bridge.sh
           bash -n scripts/check_redevplugin_performance.sh
           bash -n scripts/check_redevplugin_property_gates.sh
+          bash -n scripts/link_redevplugin_runtime_static_pie.sh
           bash -n scripts/assert_github_release_absent.sh
           bash -n scripts/verify_github_release_identity.sh
           node --check scripts/check_redevplugin_release_metadata.mjs

@@ -9,7 +9,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	goruntime "runtime"
 	"strings"
@@ -276,24 +275,8 @@ func TestCLIScaffoldRunsGeneratedWorkerThroughBuiltRustRuntime(t *testing.T) {
 	if goruntime.GOOS != "linux" {
 		t.Skip("the v0.6 runtime admission contract supports Linux targets only")
 	}
-	if _, err := exec.LookPath("cargo"); err != nil {
-		t.Skip("cargo not found; skipping scaffold Rust runtime integration")
-	}
 	repoRoot := cliRepoRoot(t)
-	cargoTargetDir := filepath.Join(t.TempDir(), "cargo-target")
-	build := exec.Command("cargo", "build", "-p", "redevplugin-runtime")
-	build.Dir = repoRoot
-	oldRuntimeVersion := version.RuntimeVersion
-	version.RuntimeVersion = version.CurrentCompatibilityVersion()
-	t.Cleanup(func() { version.RuntimeVersion = oldRuntimeVersion })
-	build.Env = append(os.Environ(), "CARGO_TARGET_DIR="+cargoTargetDir, "CARGO_TERM_COLOR=never")
-	if output, err := build.CombinedOutput(); err != nil {
-		t.Fatalf("cargo build -p redevplugin-runtime failed: %v\n%s", err, output)
-	}
-	runtimePath := filepath.Join(cargoTargetDir, "debug", "redevplugin-runtime")
-	if goruntime.GOOS == "windows" {
-		runtimePath += ".exe"
-	}
+	runtimePath := buildExamplesRuntime(t, repoRoot)
 
 	dir := t.TempDir()
 	scaffoldDir := filepath.Join(dir, "generated-runtime")

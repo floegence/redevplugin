@@ -79,6 +79,7 @@ func TestContainedRuntimeProcessExecutesSealedRuntimeAndValidatesAcknowledgement
 		t.Fatal(err)
 	}
 	defer executionRoot.Close()
+	diagnostics := &runtimeDiagnosticSink{}
 	supervisor, err := NewProcessSupervisor(ProcessSupervisorOptions{
 		RuntimeExecutable:     executable,
 		RuntimeExecutionRoot:  executionRoot,
@@ -88,6 +89,7 @@ func TestContainedRuntimeProcessExecutesSealedRuntimeAndValidatesAcknowledgement
 		HeartbeatInterval:     500 * time.Millisecond,
 		MaxHeartbeatStaleness: 2 * time.Second,
 		Limits:                DefaultRuntimeLimits(),
+		Diagnostics:           diagnostics,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -95,7 +97,7 @@ func TestContainedRuntimeProcessExecutesSealedRuntimeAndValidatesAcknowledgement
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	if err := supervisor.Start(ctx, target); err != nil {
-		t.Fatalf("start contained runtime: %v", err)
+		t.Fatalf("start contained runtime: %v; diagnostics=%#v", err, diagnostics.list(""))
 	}
 	health, err := supervisor.Health(ctx)
 	if err != nil {

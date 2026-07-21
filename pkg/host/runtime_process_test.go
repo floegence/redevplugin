@@ -147,7 +147,7 @@ func hostRuntimeExpectedVersion(t *testing.T, runtimePath string) string {
 	t.Helper()
 	runtimeName := strings.TrimSuffix(filepath.Base(runtimePath), ".exe")
 	if runtimeName != "redevplugin-runtime" {
-		return version.RuntimeVersion
+		return version.CurrentCompatibilityVersion()
 	}
 	bytes, err := os.ReadFile(filepath.Join(findRepoRootForHostTest(t), "spec", "plugin", "platform-version.json"))
 	if err != nil {
@@ -1210,17 +1210,13 @@ type hostRuntimeIPCFrame struct {
 }
 
 type hostRuntimeHelloAckPayload struct {
-	RuntimeVersion string                      `json:"runtime_version"`
-	RustIPCVersion string                      `json:"rust_ipc_version"`
-	WASMABIVersion string                      `json:"wasm_abi_version"`
-	ActualTarget   hostRuntimeTargetWire       `json:"actual_target"`
-	ChannelNonce   string                      `json:"channel_nonce"`
-	Limits         runtimeclient.RuntimeLimits `json:"limits"`
-}
-
-type hostRuntimeTargetWire struct {
-	OS   string `json:"os"`
-	Arch string `json:"arch"`
+	RuntimeVersion    string                      `json:"runtime_version"`
+	RustIPCVersion    string                      `json:"rust_ipc_version"`
+	WASMABIVersion    string                      `json:"wasm_abi_version"`
+	ActualTarget      string                      `json:"actual_target"`
+	ContractSetSHA256 string                      `json:"contract_set_sha256"`
+	ChannelNonce      string                      `json:"channel_nonce"`
+	Limits            runtimeclient.RuntimeLimits `json:"limits"`
 }
 
 type hostRuntimeHelloPayload struct {
@@ -1319,12 +1315,13 @@ func runHostRuntimeProcessHelper() {
 				os.Exit(21)
 			}
 			raw, _ := json.Marshal(hostRuntimeHelloAckPayload{
-				RuntimeVersion: version.RuntimeVersion,
-				RustIPCVersion: version.RustIPCVersion,
-				WASMABIVersion: version.WASMABIVersion,
-				ActualTarget:   hostRuntimeTargetWire{OS: runtime.GOOS, Arch: runtime.GOARCH},
-				ChannelNonce:   hello.ChannelNonce,
-				Limits:         hello.Limits,
+				RuntimeVersion:    version.CurrentCompatibilityVersion(),
+				RustIPCVersion:    version.RustIPCVersion,
+				WASMABIVersion:    version.WASMABIVersion,
+				ActualTarget:      runtime.GOOS + "/" + runtime.GOARCH,
+				ContractSetSHA256: version.ContractSetSHA256,
+				ChannelNonce:      hello.ChannelNonce,
+				Limits:            hello.Limits,
 			})
 			_ = encoder.Encode(hostRuntimeIPCFrame{
 				IPCVersion:          version.RustIPCVersion,

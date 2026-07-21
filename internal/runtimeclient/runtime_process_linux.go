@@ -114,7 +114,7 @@ func launchFixedPathRuntimeProcess(options runtimeProcessLaunchOptions) (*runtim
 		pid:                 cmd.Process.Pid,
 		pidfd:               pidfd,
 		containmentRequired: true,
-		containmentIdentity: fmt.Sprintf("%s:pid=%d:pidfd=%d", runtimeContainmentProfile, cmd.Process.Pid, pidfd),
+		containmentIdentity: fmt.Sprintf("%s:pid-%d:pidfd-%d", runtimeContainmentProfile, cmd.Process.Pid, pidfd),
 		ipcIn:               pipes.ipcHostWrite,
 		ipcOut:              pipes.ipcHostRead,
 		diagnosticOut:       pipes.diagnosticRead,
@@ -267,7 +267,7 @@ func launchContainedRuntimeProcess(options runtimeProcessLaunchOptions) (_ *runt
 		return nil, err
 	}
 	identity := fmt.Sprintf(
-		"%s:pid=%d:pidfd=%d:dev=%d:ino=%d:seals=%x",
+		"%s:pid-%d:pidfd-%d:dev-%d:ino-%d:seals-%x",
 		runtimeContainmentProfile,
 		pid,
 		pidfd,

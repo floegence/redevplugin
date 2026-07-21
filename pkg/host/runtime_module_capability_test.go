@@ -123,7 +123,7 @@ func TestRuntimeModuleHostStopFailureRequiresJournalReconciliation(t *testing.T)
 	manager := newRecordingRuntimeManager()
 	manager.stopErr = stopFailure
 	capability.manager = manager
-	const containmentID = "linux-runtime-v1:pid=42:pidfd=7"
+	const containmentID = "linux-runtime-v1:pid-42:pidfd-7"
 	if err := module.transitionRuntimeJournal(runtimeExecJournalRunning, containmentID, mutation.OutcomeCommitted); err != nil {
 		t.Fatal(err)
 	}

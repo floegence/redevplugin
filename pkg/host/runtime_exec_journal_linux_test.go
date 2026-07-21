@@ -22,7 +22,7 @@ func TestRuntimeExecJournalDurablyTransitionsAndReconciles(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := journal.transition(runtimeExecJournalRunning, "linux-runtime-v1:pid=42:pidfd=7", mutation.OutcomeCommitted); err != nil {
+	if err := journal.transition(runtimeExecJournalRunning, "linux-runtime-v1:pid-42:pidfd-7", mutation.OutcomeCommitted); err != nil {
 		t.Fatal(err)
 	}
 	if err := journal.close(); err != nil {

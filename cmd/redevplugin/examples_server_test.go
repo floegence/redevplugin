@@ -391,8 +391,15 @@ func primeExamplesPersistentState(t *testing.T, stateRoot string, runtimePath st
 
 func buildExamplesRuntime(t *testing.T, repositoryRoot string) string {
 	t.Helper()
+	if runtime.GOOS != "linux" {
+		t.Skip("the v0.6 runtime admission contract supports Linux targets only")
+	}
+	repositoryRoot, err := filepath.Abs(repositoryRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
 	cargo := "cargo"
-	if _, err := exec.LookPath(cargo); err != nil {
+	if _, err = exec.LookPath(cargo); err != nil {
 		home, homeErr := os.UserHomeDir()
 		if homeErr != nil {
 			t.Fatal(homeErr)
@@ -402,16 +409,44 @@ func buildExamplesRuntime(t *testing.T, repositoryRoot string) string {
 			t.Fatalf("cargo is unavailable: %v", err)
 		}
 	}
-	cargoTargetDir := filepath.Join(t.TempDir(), "cargo-target")
-	command := exec.Command(cargo, "build", "-p", "redevplugin-runtime")
-	command.Dir = repositoryRoot
-	command.Env = append(os.Environ(), "CARGO_TARGET_DIR="+cargoTargetDir, "CARGO_TERM_COLOR=never")
-	if output, err := command.CombinedOutput(); err != nil {
-		t.Fatalf("cargo build -p redevplugin-runtime failed: %v\n%s", err, output)
+	var target string
+	switch runtime.GOARCH {
+	case "amd64":
+		target = "x86_64-unknown-linux-gnu"
+	case "arm64":
+		target = "aarch64-unknown-linux-gnu"
+	default:
+		t.Skipf("the v0.6 runtime admission contract does not support Linux/%s", runtime.GOARCH)
 	}
-	runtimePath := filepath.Join(cargoTargetDir, "debug", "redevplugin-runtime")
-	if runtime.GOOS == "windows" {
-		runtimePath += ".exe"
+	cargoTargetDir := filepath.Join(t.TempDir(), "cargo-target")
+	command := exec.Command(cargo, "build", "--locked", "--target", target, "-p", "redevplugin-runtime")
+	command.Dir = repositoryRoot
+	rustflagsKey := "CARGO_TARGET_" + strings.ToUpper(strings.ReplaceAll(target, "-", "_")) + "_RUSTFLAGS"
+	command.Env = append(os.Environ(),
+		"CARGO_TARGET_DIR="+cargoTargetDir,
+		"CARGO_TERM_COLOR=never",
+		rustflagsKey+"=-C target-feature=+crt-static -C relocation-model=pic -C linker="+filepath.Join(repositoryRoot, "scripts", "link_redevplugin_runtime_static_pie.sh"),
+	)
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("cargo build static PIE redevplugin-runtime failed: %v\n%s", err, output)
+	}
+	builtPath := filepath.Join(cargoTargetDir, target, "debug", "redevplugin-runtime")
+	source, err := os.Open(builtPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer source.Close()
+	runtimePath := filepath.Join(t.TempDir(), "redevplugin-runtime")
+	destination, err := os.OpenFile(runtimePath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o500)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := io.Copy(destination, source); err != nil {
+		_ = destination.Close()
+		t.Fatal(err)
+	}
+	if err := destination.Close(); err != nil {
+		t.Fatal(err)
 	}
 	return runtimePath
 }

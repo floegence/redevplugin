@@ -32,7 +32,7 @@ done
 cd "$ROOT_DIR"
 export GOWORK=off
 
-for command_name in cargo go node npm rg; do
+for command_name in cargo go node npm grep; do
   if ! command -v "$command_name" >/dev/null 2>&1; then
     echo "$command_name is required for the runtime contract gate" >&2
     exit 1
@@ -120,22 +120,22 @@ cargo test -p redevplugin-contracts -p redevplugin-ipc -p redevplugin-runtime
 
 echo "==> package-only workflow policy"
 release_workflow=.github/workflows/release.yml
-rg -q 'platform-package-publication-v1\.json' "$release_workflow"
-rg -q 'platform_package_build\.mjs' "$release_workflow"
-rg -q 'verify_rust_registry_release\.mjs' "$release_workflow"
-rg -q 'verify_npm_registry_release\.mjs' "$release_workflow"
-rg -q 'verify_go_module_readback\.mjs' "$release_workflow"
+grep -Eq 'platform-package-publication-v1\.json' "$release_workflow"
+grep -Eq 'platform_package_build\.mjs' "$release_workflow"
+grep -Eq 'verify_rust_registry_release\.mjs' "$release_workflow"
+grep -Eq 'verify_npm_registry_release\.mjs' "$release_workflow"
+grep -Eq 'verify_go_module_readback\.mjs' "$release_workflow"
 
-if rg -ni 'macos|darwin|cosign|sha256sums|runtime-target|runtime archive|runtime bundle|\.tar\.gz|build_redevplugin_release|verify_published_release|verify_redevplugin_release_artifacts' "$release_workflow"; then
+if grep -Eni 'macos|darwin|cosign|sha256sums|runtime-target|runtime archive|runtime bundle|\.tar\.gz|build_redevplugin_release|verify_published_release|verify_redevplugin_release_artifacts' "$release_workflow"; then
   echo "release workflow retains an OS runtime artifact path" >&2
   exit 1
 fi
 
-if [[ $(rg -c 'gh release create' "$release_workflow") -ne 1 ]]; then
+if [[ $(grep -Ec 'gh release create' "$release_workflow") -ne 1 ]]; then
   echo "release workflow must contain exactly one GitHub Release creation step" >&2
   exit 1
 fi
-if [[ $(rg -c 'dist/publication/platform-package-publication-v1\.json' "$release_workflow") -lt 1 ]]; then
+if [[ $(grep -Ec 'dist/publication/platform-package-publication-v1\.json' "$release_workflow") -lt 1 ]]; then
   echo "release workflow does not upload the canonical completion asset" >&2
   exit 1
 fi

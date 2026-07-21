@@ -1215,14 +1215,9 @@ type stressIPCFrame struct {
 }
 
 type stressHelloPayload struct {
-	Target       stressRuntimeTargetWire     `json:"target"`
+	Target       string                      `json:"target"`
 	ChannelNonce string                      `json:"channel_nonce"`
 	Limits       runtimeclient.RuntimeLimits `json:"limits"`
-}
-
-type stressRuntimeTargetWire struct {
-	OS   string `json:"os"`
-	Arch string `json:"arch"`
 }
 
 type stressHeartbeatPayload struct {
@@ -1270,12 +1265,13 @@ func runStressRuntimeHelper() {
 		RequestID:           frame.RequestID,
 		RuntimeGenerationID: frame.RuntimeGenerationID,
 		Payload: stressRawJSON(map[string]any{
-			"runtime_version":  version.RuntimeVersion,
-			"actual_target":    hello.Target,
-			"rust_ipc_version": version.RustIPCVersion,
-			"wasm_abi_version": version.WASMABIVersion,
-			"channel_nonce":    hello.ChannelNonce,
-			"limits":           hello.Limits,
+			"runtime_version":     version.CurrentCompatibilityVersion(),
+			"actual_target":       hello.Target,
+			"rust_ipc_version":    version.RustIPCVersion,
+			"wasm_abi_version":    version.WASMABIVersion,
+			"contract_set_sha256": version.ContractSetSHA256,
+			"channel_nonce":       hello.ChannelNonce,
+			"limits":              hello.Limits,
 		}),
 	}); err != nil {
 		os.Exit(6)
@@ -1378,7 +1374,7 @@ func stressRuntimeDescriptor(t *testing.T, path string, target runtimetarget.Tar
 	if _, err := io.Copy(hasher, file); err != nil {
 		t.Fatal(err)
 	}
-	runtimeVersion, err := version.ParseSemVer(version.RuntimeVersion)
+	runtimeVersion, err := version.ParseSemVer(version.CurrentCompatibilityVersion())
 	if err != nil {
 		t.Fatal(err)
 	}
