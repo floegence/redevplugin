@@ -392,6 +392,48 @@ func TestServiceSetVerifiesReleaseMetadataAndPackageAgainstPreparedSnapshot(t *t
 	}
 }
 
+func TestServiceSetBindsOneFenceCoordinatorBeforeActivation(t *testing.T) {
+	fixture := newFullRefreshFixture(t)
+	adapters := fixture.service.adapters
+	adapters.Fence = nil
+	service, err := NewReleaseTrustService(fixture.service.options, adapters)
+	if err != nil {
+		t.Fatal(err)
+	}
+	services, err := NewServiceSet(service)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prepared, err := services.PrepareRelease(context.Background(), fixture.identity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	metadata, err := services.VerifyReleaseMetadata(context.Background(), prepared, fixture.metadataBytes, fixture.metadataSignature)
+	if err != nil {
+		t.Fatal(err)
+	}
+	verified, err := services.VerifyPackage(context.Background(), metadata, fixture.packageSignature)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := verified.AuthorizeActivation(); !errors.Is(err, ErrActivationLeaseInvalid) {
+		t.Fatalf("activation before fence bind error = %v", err)
+	}
+	if err := services.BindFenceCoordinator(fixture.fence); err != nil {
+		t.Fatal(err)
+	}
+	lease, err := verified.AuthorizeActivation()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := services.ValidateActivationLease(lease); err != nil {
+		t.Fatal(err)
+	}
+	if err := services.BindFenceCoordinator(fixture.fence); !errors.Is(err, ErrServiceSetFenceBound) {
+		t.Fatalf("second fence bind error = %v", err)
+	}
+}
+
 func TestServiceSetRejectsMetadataAndPackageSubstitution(t *testing.T) {
 	fixture := newFullRefreshFixture(t)
 	services, err := NewServiceSet(fixture.service)

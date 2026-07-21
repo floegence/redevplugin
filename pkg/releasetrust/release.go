@@ -6,6 +6,7 @@ import (
 	"errors"
 	"slices"
 	"strings"
+	"sync"
 
 	"github.com/floegence/redevplugin/pkg/releasecontract"
 )
@@ -13,6 +14,7 @@ import (
 var (
 	ErrInvalidReleaseIdentity = errors.New("release trust release identity is invalid")
 	ErrReleasePolicyDenied    = errors.New("release trust source policy denied the release")
+	ErrServiceSetFenceBound   = errors.New("release trust service set fence coordinator is already bound")
 )
 
 type ReleaseIdentity struct {
@@ -66,6 +68,8 @@ func (verified VerifiedPackage) PackageSignature() releasecontract.PackageSignat
 }
 
 type ServiceSet struct {
+	mu       sync.Mutex
+	bound    bool
 	services map[string]*ReleaseTrustService
 }
 
@@ -74,6 +78,7 @@ func NewServiceSet(services ...*ReleaseTrustService) (*ServiceSet, error) {
 		return nil, ErrInvalidReleaseTrustOptions
 	}
 	result := &ServiceSet{services: make(map[string]*ReleaseTrustService, len(services))}
+	var fenceConfigured *bool
 	for _, service := range services {
 		if service == nil || !service.options.valid() {
 			return nil, ErrInvalidReleaseTrustOptions
@@ -82,9 +87,63 @@ func NewServiceSet(services ...*ReleaseTrustService) (*ServiceSet, error) {
 		if _, exists := result.services[sourceID]; exists {
 			return nil, ErrInvalidReleaseTrustOptions
 		}
+		configured := service.adapters.Fence != nil
+		if fenceConfigured != nil && *fenceConfigured != configured {
+			return nil, ErrInvalidReleaseTrustOptions
+		}
+		if fenceConfigured == nil {
+			fenceConfigured = new(bool)
+			*fenceConfigured = configured
+		}
 		result.services[sourceID] = service
 	}
+	result.bound = fenceConfigured != nil && *fenceConfigured
 	return result, nil
+}
+
+func (set *ServiceSet) BindFenceCoordinator(coordinator SourceFenceCoordinator) error {
+	if set == nil || isNilInterface(coordinator) {
+		return ErrInvalidReleaseTrustOptions
+	}
+	set.mu.Lock()
+	defer set.mu.Unlock()
+	if set.bound {
+		return ErrServiceSetFenceBound
+	}
+	for _, service := range set.services {
+		service.refreshMu.Lock()
+		service.adapters.Fence = coordinator
+		service.refreshMu.Unlock()
+	}
+	set.bound = true
+	return nil
+}
+
+func (set *ServiceSet) ValidateActivationLease(lease ActivationLease) error {
+	service := set.serviceForKey(lease.key)
+	if service == nil {
+		return ErrActivationLeaseInvalid
+	}
+	return service.ValidateActivationLease(lease)
+}
+
+func (set *ServiceSet) RefreshActivationLease(ctx context.Context, lease ActivationLease) (ActivationLease, error) {
+	service := set.serviceForKey(lease.key)
+	if service == nil {
+		return ActivationLease{}, ErrActivationLeaseInvalid
+	}
+	return service.RefreshActivationLease(ctx, lease)
+}
+
+func (set *ServiceSet) serviceForKey(key SourceTrustKey) *ReleaseTrustService {
+	if set == nil || !key.valid() {
+		return nil
+	}
+	service := set.services[key.sourceID]
+	if service == nil || !sourceConfigurationContainsKey(service.options.sourceConfiguration, key) {
+		return nil
+	}
+	return service
 }
 
 func (set *ServiceSet) PrepareRelease(ctx context.Context, identity ReleaseIdentity) (PreparedRelease, error) {
