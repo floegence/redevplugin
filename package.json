@@ -62,5 +62,10 @@
     "typescript": "^5.9.3",
     "typescript-eslint": "8.63.0",
     "yaml": "^2.8.1"
+  },
+  "overrides": {
+    "@redocly/openapi-core": {
+      "js-yaml": "4.3.0"
+    }
   }
 }

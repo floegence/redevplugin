@@ -4,6 +4,11 @@
 
 ### Changed
 
+- Override Redocly's exact transitive OpenAPI parser pin with the API-compatible
+  `js-yaml` 4.3.0 security patch so the release audit rejects the quadratic
+  merge-key denial-of-service vulnerability reported as
+  `GHSA-52cp-r559-cp3m`, while retaining byte-identical generated OpenAPI and
+  TypeScript contracts.
 - Stage the content-addressed `contract-registry-v2`,
   `platform-package-set-v1`, and package-only publication schema without
   activating the incomplete v8 compatibility surface. The staged aggregate
