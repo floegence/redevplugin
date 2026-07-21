@@ -3336,6 +3336,7 @@ const lifecyclePluginRecord = {
 
 const releaseRef = {
   source_id: "official",
+  channel: "stable",
   release_metadata_ref: "plugins/com.example/com.example.plugin/1.1.0/release.json",
   release_metadata_sha256: digest("4"),
   publisher_id: "com.example",

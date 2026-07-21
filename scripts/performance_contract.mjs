@@ -21,7 +21,7 @@ export function readPerformanceContract(path) {
 export function validatePerformanceContract(contract) {
   assertRecord(contract, "performance contract");
   assertExactKeys(contract, ["schema_version", "comparison_probes", "scenarios"], "performance contract");
-  if (contract.schema_version !== "redevplugin.performance_contract.v2") {
+  if (contract.schema_version !== "redevplugin.performance_contract.v3") {
     throw new Error(`unsupported performance contract schema_version ${JSON.stringify(contract.schema_version)}`);
   }
   validateComparisonProbes(contract.comparison_probes);
@@ -215,7 +215,7 @@ export function validatePerformanceEvidence(evidence, contract, options) {
     "comparisons",
     "contract_hashes",
   ], "performance evidence");
-  if (evidence.schema_version !== "redevplugin.performance_evidence.v2") {
+  if (evidence.schema_version !== "redevplugin.performance_evidence.v3") {
     throw new Error(`performance evidence schema_version mismatch: ${JSON.stringify(evidence.schema_version)}`);
   }
   if (typeof evidence.release_version !== "string" || !semanticVersionPattern.test(evidence.release_version)) {

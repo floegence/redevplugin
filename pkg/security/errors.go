@@ -50,6 +50,7 @@ const (
 	ErrNetworkRateLimited            ErrorCode = "PLUGIN_NETWORK_RATE_LIMITED"
 	ErrRuntimeUnavailable            ErrorCode = "PLUGIN_RUNTIME_UNAVAILABLE"
 	ErrRuntimeVersionMismatch        ErrorCode = "PLUGIN_RUNTIME_VERSION_MISMATCH"
+	ErrRuntimeContractMismatch       ErrorCode = "PLUGIN_RUNTIME_CONTRACT_MISMATCH"
 	ErrUIProtocolUnsupported         ErrorCode = "PLUGIN_UI_PROTOCOL_UNSUPPORTED"
 	ErrUIProtocolViolation           ErrorCode = "PLUGIN_UI_PROTOCOL_VIOLATION"
 	ErrSurfaceQuiesceTimeout         ErrorCode = "PLUGIN_SURFACE_QUIESCE_TIMEOUT"
@@ -121,6 +122,7 @@ var platformErrorCodes = []ErrorCode{
 	ErrNetworkRateLimited,
 	ErrRuntimeUnavailable,
 	ErrRuntimeVersionMismatch,
+	ErrRuntimeContractMismatch,
 	ErrUIProtocolUnsupported,
 	ErrUIProtocolViolation,
 	ErrSurfaceQuiesceTimeout,

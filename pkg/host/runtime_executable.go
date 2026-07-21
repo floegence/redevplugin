@@ -9,8 +9,6 @@ import (
 	"github.com/floegence/redevplugin/pkg/mutation"
 )
 
-const maxRuntimeExecutableBytes int64 = 256 << 20
-
 var (
 	ErrRuntimeAdmissionUnsupported = errors.New("runtime admission is unsupported on this platform")
 	ErrRuntimeAdmissionInvalid     = errors.New("runtime executable admission failed")
@@ -48,6 +46,7 @@ type VerifiedExecutable struct {
 	descriptor    RuntimeDescriptor
 	executable    *os.File
 	executionRoot *os.File
+	journal       runtimeExecJournal
 }
 
 func OpenVerifiedExecutable(ctx context.Context, options VerifiedExecutableOptions) (*VerifiedExecutable, error) {
@@ -85,9 +84,14 @@ func (executable *VerifiedExecutable) Close() (MutationOutcome, error) {
 		return MutationOutcomeNotCommitted, nil
 	}
 	executable.state = verifiedExecutableClosed
-	err := errors.Join(closeRuntimeFile(executable.executable), closeRuntimeFile(executable.executionRoot))
+	err := finalizeRuntimeExecJournal(
+		executable.journal,
+		runtimeExecContainmentPending,
+		errors.Join(closeRuntimeFile(executable.executable), closeRuntimeFile(executable.executionRoot)),
+	)
 	executable.executable = nil
 	executable.executionRoot = nil
+	executable.journal = nil
 	if err != nil {
 		return MutationOutcomeUnknown, err
 	}

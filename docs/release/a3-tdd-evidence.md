@@ -6,10 +6,10 @@ artifact verification, exact contract pins, generated plugin-side clients,
 typed invocation bindings, Host-owned operation and stream handles, execution
 leases, cancellation ownership, and negative audit/diagnostic behavior.
 
-The `v0.3.2` release is the complete cross-artifact coordinate intended for host
-consumption. Its evidence covers the immutable npm package, signed GitHub
-Release, four runtime bundles, exact generated stress summary, self-contained
-TypeScript dependency verification, and registry readback.
+The `v0.3.2` release was the complete cross-artifact coordinate intended for host
+consumption at that time. ReDevPlugin v0.6.0 replaces the historical OS runtime
+artifact train with versioned Go, npm, and Rust source packages plus exact
+registry readback and package-publication completion evidence.
 
 A3 is host-neutral. Its published sample uses an `example.documents.v1`
 contract and contains no Redeven, container-engine, product-shell, or local
@@ -37,11 +37,11 @@ completed, and the same focused commands now pass.
 | Stream ticket commit | A drained terminal stream still performed next-ticket capacity checks and failed with `ErrTokenCapacity`; byte-only drain detection also dropped a next ticket while zero-payload events remained | `GOWORK=off go test ./pkg/bridge ./pkg/host -run 'TestCommitSingleUseDoesNotReserveReplacementCapacity|TestReadTerminalStreamDoesNotRequireNextTicketCapacity|TestReadTerminalStreamKeepsTicketUntilZeroPayloadEventsAreDrained|TestReadStreamFailureKeepsCurrentTicketAndEvents|TestReadStreamSerializesConcurrentUseOfOneTicket|TestReadStreamLongPollRevalidatesPluginRevision' -count=1` proves terminal commit does not reserve a replacement, event-count pagination retains a next ticket, failed reads remain retryable, concurrent reads serialize, and post-wait authorization is current |
 | Durable terminal reconciliation | Operation and stream terminal states could be written independently, leaving a partial pair after a store failure or process restart | `GOWORK=off go test ./pkg/host ./pkg/operation ./pkg/stream -run 'Terminal|Reconcile|SQLite' -count=1` proves either terminal side repairs the other on construction and before later execution, including after closing and reopening SQLite stores |
 | Runtime lease self-defense | Rust verified the Ed25519 signature but did not bind the actual worker parameters or complete invocation target, and its replay cache was unbounded | `cargo test -p redevplugin-ipc validates_worker_runtime_lease_expiry_and_execution_binding` and `cargo test -p redevplugin-runtime 'worker_invocation_rejects_|runtime_lease_replay_cache_'` prove exact `params_sha256`, fixed-order invocation target binding, expiry-aware replay pruning, hard capacity, and audience mismatches fail before artifact open |
-| npm release surface | The release verifier checked runtime imports but did not compile a standalone consumer against the packed declarations | `./scripts/build_redevplugin_release.sh --version 0.3.2` proves the immutable npm tarball exposes exactly `PluginBridgeClient`, `PluginBridgeError`, the three typed capability calls, and the business-error guard, then installs that tarball and compiles the published sample without source aliases |
-| Release provenance timestamp | The first dynamic signed sample used the release manifest's millisecond timestamp while capability artifact canonicalization emitted second precision | `./scripts/build_redevplugin_release.sh --version 0.3.2` and `node scripts/test_published_release_verifier.mjs ./dist/redevplugin-release 0.3.2 "$(git rev-parse HEAD)"` prove the outer manifest and signed sample share one canonical `generated_at` and that provenance mismatch mutations fail closed |
+| npm release surface | The historical package verifier did not compile a standalone consumer against the packed declarations | `npm run platform-package-build:test` verifies both npm tarballs as closed, content-addressed artifacts and requires the UI package to pin the exact contracts package version |
+| Release provenance | Registry publication needed a source-identity contract shared by every package family | `npm run platform-package-publication:test` verifies exact Go, npm, and Rust readback records and rejects source-commit, provenance, checksum, workflow, or package-coordinate substitution |
 | Release smoke identity | Ordinary CI reused a formal release identity even though no tag was being released | The CI bundle smoke builds `0.0.0-ci.<run-number>` while tagged release jobs alone own the tag-derived immutable identity; both keep signed sample compatibility and full bundle verification enabled |
-| Release evidence contract | The `v0.3.0` workflow signed a stress summary whose counter set differed from the verifier fixture | `./scripts/check_redevplugin_stress.sh --release --summary dist/redevplugin-release-stress.json` starts from `npm ci` and validates the exact required category and step sets through `scripts/verify_redevplugin_release_stress.mjs`; omission and failed-status fixtures prove `published_release_verifier` cannot disappear from signed evidence, and `GOWORK=off go test ./pkg/host -run TestCallPluginMethodRegistersStream -count=1` proves the scoped Host stream sink emits `plugin.stream.closed` |
-| Published verifier isolation | The `v0.3.1` final readback job verified signatures and checksums, then failed because standalone TypeScript compilation resolved `node_modules/typescript` from the checkout root even though that job intentionally did not run `npm ci` | Normal branch release-bundle CI and `node scripts/test_published_release_verifier.mjs ./dist/redevplugin-release 0.3.2 "$(git rev-parse HEAD)"` copy both verifier scripts into an isolated temporary root with no `node_modules`, poison the ambient registry, install the exact compiler recorded in each bundle's `notices/package-lock.json` inside the temporary consumer, compile the sample, and reject version ranges, malformed SemVer, non-official registry URLs, invalid or mismatched SRI, and missing toolchain entries |
+| Release evidence contract | The stress summary previously named artifact-bundle steps that no longer exist | `./scripts/check_redevplugin_stress.sh --release --summary dist/redevplugin-release-stress.json` now requires `platform_package_build` and `platform_publication_verifier` and rejects omitted, reordered, or failed steps |
+| Publication verifier isolation | Public completion must not trust a checkout-local artifact | `node --test scripts/platform_package_publication.test.mjs scripts/verify_rust_registry_release.test.mjs` verifies exact-one GitHub Release inventory, strict registry coordinates, crate checksum/VCS identity, and closed publication bytes |
 | Confirmation TOCTOU | Confirmation did not have a focused test for a trusted target descriptor changing after approval | `GOWORK=off go test ./pkg/host -run 'TestConfirmationIntentRejectsChangedResolvedTargetAndCannotReplay' -count=1` proves the re-resolved descriptor hash must match and the consumed confirmation cannot be replayed |
 | Confirmation rejection | Parent UI rejection only returned `PLUGIN_CONFIRMATION_REJECTED` to plugin code; the Host did not atomically consume the pending intent or record the negative decision | `GOWORK=off go test ./pkg/security ./pkg/host ./pkg/httpadapter -run 'TestConfirmationIntentStoreRejectsOnlyMatchingScope|TestRejectMethodConfirmationConsumesIntentWithoutDispatch|TestHandlerRPCConfirmationRejectionFlow' -count=1` plus `npm --prefix packages/redevplugin-ui test` prove wrong-scope rejection preserves the intent, valid rejection consumes it once, records `confirmation_rejected`, and reaches no business adapter |
 | Quota and ticket cleanup | Concurrent quota and stream-ticket mint failure did not have handle-closure regressions | `GOWORK=off go test ./pkg/host -run 'TestCapabilityExecutionEnforcesConcurrentAndDurationQuota|TestCallPluginMethodClosesStreamWhenTicketMintFails' -count=1` proves adapter zero-call on concurrency denial, timeout fencing, and deterministic stream failure when ticket minting fails |
@@ -65,7 +65,7 @@ under the generated contract registry:
 - `host-capability-signature-v1.schema.json`;
 - `host-capability-notices-v1.schema.json`.
 
-The release bundle also contains the complete published-style sample at
+The repository contains the complete published-style sample at
 `examples/host-capability/sample-documents-v1/`:
 
 - exact `host-capability.pin.json`;
@@ -73,11 +73,11 @@ The release bundle also contains the complete published-style sample at
   client, notices, signed manifest, and Ed25519 signature envelope;
 - the public verification key only; no private key is distributed.
 
-`scripts/verify_redevplugin_release_bundle.mjs` recomputes every pinned SHA-256,
-verifies the signed manifest with the sample public key, scans the sample for
-host-product terminology, runs `redevplugin host-capability verify`, and runs
-`redevplugin host-capability generate-client ... --check` with the binary from
-the bundle.
+The platform and host-capability gates recompute every pinned SHA-256, verify the
+signed manifest with the sample public key, scan the sample for host-product
+terminology, and run the verification and generated-client freshness checks
+from repository source. Package consumers receive the same contracts through
+the published Go and npm packages rather than a GitHub runtime archive.
 
 ## Invocation And Ownership Result
 
@@ -121,14 +121,14 @@ the bundle.
 
 ## Release Gate
 
-The repository gate for A3 is the same immutable release train used by the Go
-module, npm package, Rust runtime, schemas, compatibility manifest, and runtime
-bundles:
+The repository gate for A3 remains part of the package release train used by the
+Go module, npm packages, Rust source crates, schemas, and compatibility
+manifest:
 
 ```text
 GOWORK=off go list ./cmd/... ./examples/... ./pkg/...
 GOWORK=off go test ./cmd/... ./examples/... ./pkg/...
-GOWORK=off go test -race ./pkg/bridge ./pkg/connectivity ./pkg/host ./pkg/httpadapter ./pkg/operation ./pkg/registry ./pkg/runtimeclient ./pkg/storage ./pkg/stream ./pkg/stress
+GOWORK=off go test -race ./pkg/bridge ./pkg/connectivity ./pkg/host ./pkg/httpadapter ./pkg/operation ./pkg/registry ./internal/runtimeclient ./pkg/storage ./pkg/stream ./pkg/stress
 npm ci
 npm run check
 cargo fmt --check
@@ -138,9 +138,11 @@ cargo deny check
 ./scripts/check_redevplugin_runtime_contract.sh --ci
 ./scripts/check_redevplugin_platform.sh --ci
 ./scripts/check_redevplugin_stress.sh --release --summary dist/redevplugin-release-stress.json
-./scripts/build_redevplugin_release.sh --version 0.3.2
+npm run platform-package-build:test
+npm run platform-package-publication:test
 ```
 
-The tagged workflow repeats the complete quality, audit, stress, native runtime
-matrix, npm provenance, signed GitHub Release, Go module, and public readback
-gates before v0.3.2 is consumable by a host product.
+The tagged workflow repeats the complete quality, audit, stress, package build,
+registry provenance, Go module, and public readback gates. Its GitHub Release
+contains only the attested `platform-package-publication-v1.json` completion
+asset; host products build and sign their runtime binary from published crates.

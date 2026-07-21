@@ -2,7 +2,7 @@
 
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { lstatSync, readFileSync, realpathSync } from "node:fs";
+import { existsSync, lstatSync, readFileSync, realpathSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
@@ -102,62 +102,31 @@ function validPublication(packageSet) {
   };
 }
 
-test("R1b keeps the public compatibility surface on v7 and stages v2 beside it", () => {
-  const activeRegistry = readJSON("spec/plugin/contract-registry-v1.json");
-  const compatibilitySchema = readJSON("spec/plugin/compatibility-manifest-v7.schema.json");
+test("the active compatibility surface is the atomic v8 contract set", () => {
+  const activeRegistry = readJSON("spec/plugin/contract-registry-v2.json");
+  const compatibilitySchema = readJSON("spec/plugin/compatibility-manifest-v8.schema.json");
   const generatedGo = read("pkg/version/contracts_gen.go").toString("utf8");
   const generatedTypeScript = read("packages/redevplugin-ui/src/contracts.gen.ts").toString("utf8");
 
-  assert.equal(activeRegistry.schema_version, "redevplugin.contract_registry.v1");
-  assert.equal(activeRegistry.matrix.contract_registry_version, "contract-registry-v1");
-  assert.equal(activeRegistry.matrix.compatibility_schema_version, "compatibility-manifest-v7");
-  assert.equal(compatibilitySchema.properties.schema_version.const, "redevplugin.compatibility.v7");
-  assert.match(generatedGo, /ContractRegistryVersion\s+= "contract-registry-v1"/);
-  assert.match(generatedTypeScript, /"contract_registry_version": "contract-registry-v1"/);
-  assert.ok(activeRegistry.contracts.some(({ id }) => id === "release-manifest-schema"));
-  assert.equal(activeRegistry.contracts.some(({ path }) => path.endsWith("contract-registry-v2.json")), false);
-  assert.equal(activeRegistry.contracts.some(({ path }) => path.endsWith("platform-package-set-v1.json")), false);
+  assert.equal(activeRegistry.schema_version, "redevplugin.contract_registry.v2");
+  assert.equal(activeRegistry.registry_version, "contract-registry-v2");
+  assert.equal(compatibilitySchema.properties.schema_version.const, "redevplugin.compatibility.v8");
+  assert.match(generatedGo, /ContractRegistryVersion\s+= "contract-registry-v2"/);
+  assert.match(generatedTypeScript, /"contract_registry_version": "contract-registry-v2"/);
+  assert.equal(activeRegistry.artifacts.some(({ id }) => id === "release-manifest-schema"), false);
+  assert.equal(existsSync(join(root, "spec/plugin/contract-registry-v1.json")), false);
+  assert.equal(existsSync(join(root, "spec/plugin/release-manifest-v4.schema.json")), false);
 });
 
 test("contract registry v2 is closed, sorted, cycle-free, and content addressed", () => {
   const registryBytes = read("spec/plugin/contract-registry-v2.json");
   const registry = decodeContractRegistry(registryBytes);
-  const activeRegistry = readJSON("spec/plugin/contract-registry-v1.json");
-  const expectedIDs = activeRegistry.contracts
-    .filter(({ id }) => ![
-      "contract-registry",
-      "release-manifest-schema",
-      "source-policy-schema",
-      "source-revocations-schema",
-    ].includes(id))
-    .map(({ id }) => id)
-    .concat([
-      "contract-registry-schema",
-      "owner-scope-inventory-registry",
-      "owner-scope-inventory-schema",
-      "owner-scope-migration-schema",
-      "platform-package-publication-schema",
-      "platform-package-set-schema",
-      "quarantine-cleanup-schema",
-      "trusted-time-evidence-schema",
-      "trusted-time-leaf-schema",
-      "release-revocation-pointer-schema",
-      "release-revocation-schema",
-      "release-trust-state-schema",
-      "release-root-delegation-schema",
-      "release-signing-ledger-evidence-schema",
-      "release-signature-envelope-schema",
-      "release-signing-ledger-receipt-schema",
-      "release-signing-ledger-schema",
-      "release-signing-subject-schema",
-      "release-source-policy-pointer-schema",
-      "release-source-policy-schema",
-    ])
-    .sort(compareASCII);
+  const source = readJSON("internal/contracts/active-contracts.json");
+  const expectedIDs = source.artifacts.map(({ id }) => id).sort(compareASCII);
 
   assert.equal(registryBytes.toString("utf8"), `${JSON.stringify(registry, null, 2)}\n`);
   assert.deepEqual(registry.artifacts.map(({ id }) => id), expectedIDs);
-  assert.equal(registry.artifacts.length, 45);
+  assert.equal(registry.artifacts.length, 49);
   assert.equal(registry.artifacts.some(({ id }) => id === "release-manifest-schema"), false);
   assert.equal(registry.artifacts.some(({ id }) => id === "release-metadata-schema"), true);
   assert.equal(registry.artifacts.some(({ id }) => id === "source-policy-schema"), false);
@@ -305,8 +274,12 @@ test("Rust source packages remain wired into dedicated Rust and release gates", 
   assert.match(rustJob, /node-version: 24/);
   assert.match(rustJob, /npm run rust-source-packages:test/);
 
-  const releaseQuality = workflowJob(".github/workflows/release.yml", "quality-release");
-  assert.match(releaseQuality, /cargo deny check[\s\S]*npm run rust-source-packages:test/);
+  const releaseQuality = workflowJob(".github/workflows/release.yml", "quality");
+  assert.match(releaseQuality, /\.\/scripts\/check_redevplugin_pre_push\.sh --ci/);
+  const packageBuild = workflowJob(".github/workflows/release.yml", "package-build");
+  assert.match(packageBuild, /scripts\/platform_package_build\.mjs build/);
+  assert.match(packageBuild, /scripts\/platform_package_build\.mjs verify/);
+  assert.doesNotMatch(read(".github/workflows/release.yml").toString("utf8"), /build_redevplugin_release|runtime-target|\.tar\.gz/);
   assert.doesNotMatch(packageJSON.scripts.check, /rust-source-packages/);
 });
 

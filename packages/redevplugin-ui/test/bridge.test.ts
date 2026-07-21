@@ -10,6 +10,7 @@ import {
   PluginPlatformRequestError,
   PluginSurfaceReloadLimiter,
   redevPluginContractArtifacts,
+  redevPluginContractVersions,
   type FetchInitLike,
   type FetchLike,
   type FetchResponseLike,
@@ -451,55 +452,45 @@ test("surface reload limiter rejects invalid timing options", () => {
 
 test("platform client reads compatibility manifest through host API", async () => {
   const fetch = new FakeFetch();
+  const matrix: Record<string, unknown> = { ...redevPluginContractVersions };
+  delete matrix.compatibility_manifest_version;
+  const contractSetSHA256 = "a".repeat(64);
   fetch.push({
     ok: true,
     data: {
-      schema_version: "redevplugin.compatibility.v7",
-      matrix: {
-        redevplugin_go_version: "0.0.0-dev",
-        redevplugin_ui_version: "0.0.0-dev",
-        redevplugin_runtime_version: "0.0.0-dev",
-        plugin_ui_protocol_version: "plugin-ui-v5",
-        plugin_host_protocol_version: "plugin-host-v5",
-        rust_ipc_version: "rust-ipc-v5",
-        wasm_abi_version: "redevplugin-wasm-worker-v2",
-        manifest_schema_version: "manifest-v5",
-        package_signature_schema_version: "package-signature-v1",
-        release_metadata_schema_version: "release-metadata-v5",
-        source_policy_schema_version: "source-policy-v1",
-        source_revocations_schema_version: "source-revocations-v1",
-        token_ticket_schema_version: "token-ticket-v4",
-        bridge_schema_version: "bridge-v5",
-        opaque_surface_document_schema_version: "opaque-surface-document-v3",
-        opaque_surface_transport_schema_version: "opaque-surface-transport-v4",
-        target_classifier_version: "target-classifier-v2",
-        network_grant_schema_version: "network-grant-v2",
-        resource_scope_schema_version: "resource-scope-v1",
-        plugin_platform_openapi_version: "plugin-platform-v7",
-        compatibility_schema_version: "compatibility-manifest-v7",
-        release_manifest_schema_version: "release-manifest-v4",
-        worker_invocation_schema_version: "worker-invocation-v3",
-        host_capability_contract_schema_version: "host-capability-contract-v1",
-        host_capability_pin_schema_version: "host-capability-pin-v1",
-        host_capability_manifest_schema_version: "host-capability-manifest-v1",
-        host_capability_compatibility_schema_version: "host-capability-compatibility-v1",
-        host_capability_signature_schema_version: "host-capability-signature-v1",
-        host_capability_notices_schema_version: "host-capability-notices-v1",
-        error_codes_schema_version: "error-codes-v5",
-        performance_evidence_schema_version: "performance-evidence-v2",
-        contract_registry_version: "contract-registry-v1",
+      schema_version: "redevplugin.compatibility.v8",
+      package_set: {
+        schema_version: "redevplugin.platform_package_set.v1",
+        platform_version: "0.6.0",
+        go_module: { module: "github.com/floegence/redevplugin", version: "v0.6.0" },
+        npm_packages: [
+          { name: "@floegence/redevplugin-contracts", version: "0.6.0" },
+          { name: "@floegence/redevplugin-ui", version: "0.6.0" },
+        ],
+        rust_crates: [
+          { name: "redevplugin-contracts", version: "0.6.0", role: "contracts" },
+          { name: "redevplugin-ipc", version: "0.6.0", role: "ipc" },
+          { name: "redevplugin-wasm-abi", version: "0.6.0", role: "wasm_abi" },
+          { name: "redevplugin-target-classifier", version: "0.6.0", role: "target_classifier" },
+          { name: "redevplugin-worker-sdk", version: "0.6.0", role: "worker_sdk" },
+          { name: "redevplugin-runtime", version: "0.6.0", role: "runtime" },
+        ],
+        contract_registry_version: "contract-registry-v2",
+        contract_set_sha256: contractSetSHA256,
       },
+      matrix,
+      contract_set_sha256: contractSetSHA256,
       contracts: [
         {
           id: "plugin-platform-openapi",
-          path: "spec/openapi/plugin-platform-v7.yaml",
-          version: "plugin-platform-v7",
+          path: "spec/openapi/plugin-platform-v8.yaml",
+          version: "plugin-platform-v8",
           sha256: "sha256-openapi",
         },
         {
           id: "rust-ipc-schema",
-          path: "spec/plugin/ipc-v5.schema.json",
-          version: "rust-ipc-v5",
+          path: "spec/plugin/ipc-v6.schema.json",
+          version: "rust-ipc-v6",
           sha256: "sha256-ipc",
         },
       ],
@@ -512,11 +503,11 @@ test("platform client reads compatibility manifest through host API", async () =
 
   const compatibility = await client.getCompatibility();
 
-  assert.equal(compatibility.schema_version, "redevplugin.compatibility.v7");
-  assert.equal(compatibility.matrix.plugin_platform_openapi_version, "plugin-platform-v7");
+  assert.equal(compatibility.schema_version, "redevplugin.compatibility.v8");
+  assert.equal(compatibility.matrix.plugin_platform_openapi_version, "plugin-platform-v8");
   assert.equal(compatibility.matrix.release_metadata_schema_version, "release-metadata-v5");
-  assert.equal(compatibility.matrix.source_policy_schema_version, "source-policy-v1");
-  assert.equal(compatibility.matrix.source_revocations_schema_version, "source-revocations-v1");
+  assert.equal(compatibility.matrix.release_source_policy_schema_version, "release-source-policy-v2");
+  assert.equal(compatibility.matrix.release_revocation_schema_version, "release-revocation-v2");
   assert.equal(compatibility.matrix.resource_scope_schema_version, "resource-scope-v1");
   assert.equal(compatibility.matrix.host_capability_contract_schema_version, "host-capability-contract-v1");
   assert.equal(compatibility.matrix.host_capability_pin_schema_version, "host-capability-pin-v1");
@@ -1027,6 +1018,7 @@ test("platform client installs and updates plugin release refs without package b
   const client = new PluginPlatformClient({ fetch: fetch.fetch });
   const releaseRef = {
     source_id: "official",
+    channel: "stable",
     release_metadata_ref: "plugins/com.example/com.example.plugin/1.0.0/release.json",
     release_metadata_sha256: "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
     publisher_id: "com.example",
@@ -1051,11 +1043,13 @@ test("platform client installs and updates plugin release refs without package b
 test("platform client manages runtime lifecycle routes", async () => {
   const fetch = new FakeFetch();
   const descriptor = {
-    version: "0.5.0",
-    target: { os: "darwin", arch: "arm64" },
-    ipc_version: "rust-ipc-v5",
+    schema_version: "runtime-descriptor-v2",
+    platform_version: "0.6.0",
+    target: "linux/arm64",
+    rust_ipc_version: "rust-ipc-v6",
     wasm_abi_version: "redevplugin-wasm-worker-v2",
-    artifact_sha256: "a".repeat(64),
+    contract_set_sha256: "b".repeat(64),
+    binary_sha256: "a".repeat(64),
   } as const;
   const runtimeHealth = {
     ready: true,
@@ -1081,7 +1075,7 @@ test("platform client manages runtime lifecycle routes", async () => {
   fetch.push({ ok: true, data: { stopped: true } });
   const client = new PluginPlatformClient({ fetch: fetch.fetch });
 
-  const started = await client.startRuntime({ target: { os: "darwin", arch: "arm64" } });
+  const started = await client.startRuntime({ target: { os: "linux", arch: "arm64" } });
   const health = await client.runtimeHealth();
   const refreshed = await client.refreshEnabledRuntimeState();
   const stopped = await client.stopRuntime();
@@ -1096,7 +1090,7 @@ test("platform client manages runtime lifecycle routes", async () => {
   assert.deepEqual(failedRefresh.error, { code: "PLUGIN_RUNTIME_UNAVAILABLE", message: "Plugin runtime state could not be refreshed" });
   assert.equal(stopped.stopped, true);
   assert.equal(fetch.calls[0]?.input, "/_redevplugin/api/plugins/runtime/start");
-  assert.deepEqual(JSON.parse(fetch.calls[0]?.init.body ?? ""), { target: { os: "darwin", arch: "arm64" } });
+  assert.deepEqual(JSON.parse(fetch.calls[0]?.init.body ?? ""), { target: { os: "linux", arch: "arm64" } });
   assert.equal(fetch.calls[1]?.input, "/_redevplugin/api/plugins/runtime/health/query");
   assert.equal(fetch.calls[1]?.init.method, "POST");
   assert.deepEqual(JSON.parse(fetch.calls[1]?.init.body ?? ""), {});

@@ -15,6 +15,10 @@ import (
 	"golang.org/x/sys/unix"
 )
 
+const maxRuntimeExecutableBytes int64 = 256 << 20
+
+func (name RuntimeBinaryName) valid() bool { return name.value == "redevplugin-runtime" }
+
 const requiredRuntimeMemfdSeals = unix.F_SEAL_FUTURE_WRITE | unix.F_SEAL_WRITE | unix.F_SEAL_GROW | unix.F_SEAL_SHRINK | unix.F_SEAL_SEAL
 
 func openVerifiedExecutable(ctx context.Context, options VerifiedExecutableOptions) (*VerifiedExecutable, error) {
@@ -123,6 +127,10 @@ func openVerifiedExecutable(ctx context.Context, options VerifiedExecutableOptio
 		return nil, fmt.Errorf("%w: sealed executable digest mismatch", ErrRuntimeAdmissionInvalid)
 	}
 
+	journal, err := newRuntimeExecJournal(executionRoot, options.ExpectedDescriptor)
+	if err != nil {
+		return nil, err
+	}
 	closeSealed = false
 	closeExecutionRoot = false
 	return &VerifiedExecutable{
@@ -130,6 +138,7 @@ func openVerifiedExecutable(ctx context.Context, options VerifiedExecutableOptio
 		descriptor:    options.ExpectedDescriptor,
 		executable:    sealed,
 		executionRoot: executionRoot,
+		journal:       journal,
 	}, nil
 }
 

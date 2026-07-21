@@ -47,19 +47,19 @@
 - Remove URL query strings from the platform API. Local package install and
   update now share one plugin-instance path; updates carry one canonical
   management revision header before package bytes are staged.
-- Advance the public route contracts to `plugin-host-v5`,
-  `plugin-platform-v7`, and `compatibility-manifest-v7`, with generated route
+- Advance the public route contracts to `plugin-host-v6`,
+  `plugin-platform-v8`, and `compatibility-manifest-v8`, with generated route
   fixtures carrying the closed `query|mutation` effect.
-- Advance the immutable performance contract to `performance-contract-v2` and
+- Advance the immutable performance contract to `performance-contract-v3` and
   pin the v0.5.1 route-authorization comparison probe used for 1/100/1000
   authenticated request regression evidence.
-- Advance performance evidence to `performance-evidence-v2`, embedding the
+- Advance performance evidence to `performance-evidence-v3`, embedding the
   baseline and candidate profiles so release verification can recompute every
   route-authorization regression metric from signed provenance.
 - Replace surface-only revocation with an authenticated four-hash session fence,
   durable incomplete-drain reconciliation, exact resource indexes, all-shard
   runtime containment, and terminal acknowledgements. Publish the coordinated
-  `session-scope-v1`, `token-ticket-v4`, `rust-ipc-v5`, and `error-codes-v5`
+  `session-scope-v1`, `token-ticket-v4`, `rust-ipc-v6`, and `error-codes-v6`
   contracts without exposing owner identity in HTTP DTOs.
 - Make runtime teardown fail-safe for never-started and stopped process shards.
   Disable, uninstall, and session-scope close now complete durable fencing and

@@ -7,11 +7,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/floegence/redevplugin/internal/runtimeclient"
 	"github.com/floegence/redevplugin/pkg/bridge"
 	"github.com/floegence/redevplugin/pkg/capability"
 	"github.com/floegence/redevplugin/pkg/mutation"
 	"github.com/floegence/redevplugin/pkg/operation"
-	"github.com/floegence/redevplugin/pkg/runtimeclient"
 	"github.com/floegence/redevplugin/pkg/security"
 	"github.com/floegence/redevplugin/pkg/sessionctx"
 	"github.com/floegence/redevplugin/pkg/sessionscope"

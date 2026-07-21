@@ -28,7 +28,7 @@ const platformVersion = JSON.parse(
 const rustToolchainSource = readFileSync(join(root, "rust-toolchain.toml"), "utf8");
 const rustToolchainMatch = rustToolchainSource.match(/^channel\s*=\s*"([0-9]+\.[0-9]+\.[0-9]+)"$/m);
 if (!rustToolchainMatch) throw new Error("rust-toolchain.toml must pin an exact stable Rust version");
-const rustToolchain = rustToolchainMatch[1];
+export const rustToolchain = rustToolchainMatch[1];
 const OFFICIAL_REGISTRY_SOURCE = "registry+https://github.com/rust-lang/crates.io-index";
 
 export const rustSourcePackages = Object.freeze([

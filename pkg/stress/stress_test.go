@@ -16,6 +16,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -24,6 +25,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/floegence/redevplugin/internal/runtimeclient"
 	"github.com/floegence/redevplugin/pkg/bridge"
 	"github.com/floegence/redevplugin/pkg/capability"
 	"github.com/floegence/redevplugin/pkg/capabilitycontract"
@@ -37,7 +39,6 @@ import (
 	"github.com/floegence/redevplugin/pkg/plugindata"
 	"github.com/floegence/redevplugin/pkg/pluginpkg"
 	"github.com/floegence/redevplugin/pkg/registry"
-	"github.com/floegence/redevplugin/pkg/runtimeclient"
 	"github.com/floegence/redevplugin/pkg/runtimetarget"
 	"github.com/floegence/redevplugin/pkg/secrets"
 	"github.com/floegence/redevplugin/pkg/security"
@@ -410,6 +411,9 @@ func TestStressGateOperationCancelOwnershipEvidence(t *testing.T) {
 }
 
 func TestStressGateRuntimeRevokeACKP95(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("the v0.6 runtime admission contract supports Linux targets only")
+	}
 	ctx, cancel := context.WithTimeout(stressTestContext(), 15*time.Second)
 	defer cancel()
 
@@ -1378,13 +1382,14 @@ func stressRuntimeDescriptor(t *testing.T, path string, target runtimetarget.Tar
 	if err != nil {
 		t.Fatal(err)
 	}
-	descriptor, err := runtimeclient.NewRuntimeDescriptor(
-		runtimeVersion,
-		target,
-		version.RustIPCVersion,
-		version.WASMABIVersion,
-		hex.EncodeToString(hasher.Sum(nil)),
-	)
+	descriptor, err := runtimeclient.NewRuntimeDescriptor(runtimeclient.RuntimeDescriptorOptions{
+		PlatformVersion:   runtimeVersion,
+		Target:            target,
+		RustIPCVersion:    version.RustIPCVersion,
+		WASMABIVersion:    version.WASMABIVersion,
+		ContractSetSHA256: version.ContractSetSHA256,
+		BinarySHA256:      hex.EncodeToString(hasher.Sum(nil)),
+	})
 	if err != nil {
 		t.Fatal(err)
 	}

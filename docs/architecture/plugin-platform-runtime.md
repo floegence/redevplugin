@@ -95,7 +95,7 @@ and marked that exact asset session prepared.
 - `pkg/httpadapter` provides mountable host-neutral HTTP routes for platform
   management, surface prepare/token/dispose, parent-only POST asset and stream
   reads, compatibility, and diagnostics.
-- `pkg/runtimeclient` manages the Rust runtime subprocess, negotiated capacity,
+- `internal/runtimeclient` manages the Rust runtime subprocess, negotiated capacity,
   multiplexed newline-delimited JSON IPC, invocation cancellation, and runtime
   health/cache metrics. A `Manager` must bind its required `RuntimeHostServices`
   exactly once before it can create or start shards; Host supplies the runtime
@@ -127,7 +127,7 @@ business resource, desktop shell, or UI surface.
 The Rust workspace contains `redevplugin-runtime`, the public
 `redevplugin-worker-sdk`, and support crates for IPC, target classification, and
 WASM ABI validation. The runtime is launched by the Go Host through
-`pkg/runtimeclient`. Worker authors pin the SDK to the same immutable Git tag as
+`internal/runtimeclient`. Worker authors pin the SDK to the same immutable Git tag as
 the Host/runtime release. ReDevPlugin publishes versioned source crates for this
 runtime set. Host products build the runtime binary from exact published Rust
 source crates after verifying registry checksums, source identity, Cargo.lock,
@@ -357,29 +357,40 @@ renderer.
 
 Machine-readable contracts are first-class platform artifacts:
 
-- `spec/openapi/plugin-platform-v7.yaml`;
+- `spec/openapi/plugin-platform-v8.yaml`;
 - `spec/plugin/manifest-v5.schema.json`;
 - `spec/plugin/package-signature-v1.schema.json`;
 - `spec/plugin/release-metadata-v5.schema.json`;
-- `spec/plugin/source-policy-v1.schema.json`;
-- `spec/plugin/source-revocations-v1.schema.json`;
+- `spec/plugin/release-root-delegation-v1.schema.json`;
+- `spec/plugin/release-source-policy-v2.schema.json`;
+- `spec/plugin/release-source-policy-pointer-v1.schema.json`;
+- `spec/plugin/release-revocation-v2.schema.json`;
+- `spec/plugin/release-revocation-pointer-v1.schema.json`;
+- `spec/plugin/release-trust-state-v1.schema.json`;
+- `spec/plugin/trusted-time-evidence-v1.schema.json`;
+- `spec/plugin/trusted-time-leaf-v1.schema.json`;
 - `spec/plugin/token-ticket-v4.schema.json`;
 - `spec/plugin/bridge-v5.schema.json`;
 - `spec/plugin/opaque-surface-document-v3.schema.json`;
 - `spec/plugin/opaque-surface-transport-v4.schema.json`;
-- `spec/plugin/compatibility-manifest-v7.schema.json`;
-- `spec/plugin/release-manifest-v4.schema.json`;
-- `spec/plugin/performance-contract-v2.json`;
-- `spec/plugin/performance-evidence-v2.schema.json`;
-- `spec/plugin/ipc-v5.schema.json`;
+- `spec/plugin/compatibility-manifest-v8.schema.json`;
+- `spec/plugin/platform-package-set-v1.schema.json`;
+- `spec/plugin/platform-package-publication-v1.schema.json`;
+- `spec/plugin/runtime-admission-v1.schema.json`;
+- `spec/plugin/runtime-descriptor-v2.schema.json`;
+- `spec/plugin/process-containment-v1.schema.json`;
+- `spec/plugin/runtime-exec-journal-v1.schema.json`;
+- `spec/plugin/performance-contract-v3.json`;
+- `spec/plugin/performance-evidence-v3.schema.json`;
+- `spec/plugin/ipc-v6.schema.json`;
 - `spec/plugin/wasm-worker-v2.schema.json`;
 - `spec/plugin/worker-invocation-v3.schema.json`;
 - `spec/plugin/network-grant-v2.schema.json`;
 - `spec/plugin/resource-scope-v1.schema.json`;
 - `spec/plugin/session-scope-v1.schema.json`;
-- `spec/plugin/error-codes-v5.schema.json`;
+- `spec/plugin/error-codes-v6.schema.json`;
 - `spec/plugin/target-classifier-v2.json`;
-- `spec/plugin/contract-registry-v1.json`, the generated inventory and SHA-256
+- `spec/plugin/contract-registry-v2.json`, the generated inventory and SHA-256
   identity for every public contract above.
 
 `redevplugin version` emits the compatibility manifest for the current artifact

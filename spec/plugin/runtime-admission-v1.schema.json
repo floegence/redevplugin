@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.redevplugin.dev/plugin/runtime-admission-v1.schema.json",
+  "title": "ReDevPlugin runtime admission v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "target", "binary_name", "binary_sha256"],
+  "properties": {
+    "schema_version": {"const": "redevplugin.runtime_admission.v1"},
+    "target": {"$ref": "#/$defs/target"},
+    "binary_name": {"const": "redevplugin-runtime"},
+    "binary_sha256": {"$ref": "#/$defs/sha256"}
+  },
+  "$defs": {
+    "target": {"type": "string", "enum": ["linux/amd64", "linux/arm64"]},
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+  }
+}

@@ -7,7 +7,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/floegence/redevplugin/pkg/runtimeclient"
+	"github.com/floegence/redevplugin/internal/runtimeclient"
+	"github.com/floegence/redevplugin/pkg/mutation"
 )
 
 const (
@@ -61,6 +62,8 @@ type runtimeModuleCapability struct {
 	executionRoot   *os.File
 	executableOwner *VerifiedExecutable
 	manager         runtimeclient.Manager
+	journal         runtimeExecJournal
+	containmentID   string
 	limits          RuntimeLimits
 	startupTimeout  time.Duration
 	shutdownTimeout time.Duration
@@ -79,12 +82,19 @@ func NewRuntimeModule(executable *VerifiedExecutable, options RuntimeModuleOptio
 	if executable.state != verifiedExecutableOwned || executable.executable == nil || executable.executionRoot == nil || !executable.descriptor.valid() {
 		return nil, ErrVerifiedExecutableClosed
 	}
+	if executable.journal != nil {
+		if err := executable.journal.transition(runtimeExecJournalConsumed, runtimeExecContainmentPending, mutation.OutcomeCommitted); err != nil {
+			return nil, err
+		}
+	}
 	executable.state = verifiedExecutableModuleOwned
 	return &RuntimeModule{capability: &runtimeModuleCapability{
 		state:           runtimeModuleOwned,
 		descriptor:      executable.descriptor,
 		executable:      executable.executable,
 		executionRoot:   executable.executionRoot,
+		journal:         executable.journal,
+		containmentID:   runtimeExecContainmentPending,
 		executableOwner: executable,
 		limits:          options.Limits,
 		startupTimeout:  options.StartupTimeout,
@@ -133,6 +143,11 @@ func (module *RuntimeModule) claimForHost() (*runtimeModuleCapability, error) {
 	defer capability.mu.Unlock()
 	switch capability.state {
 	case runtimeModuleOwned:
+		if capability.journal != nil {
+			if err := capability.journal.transition(runtimeExecJournalBound, runtimeExecContainmentPending, mutation.OutcomeCommitted); err != nil {
+				return nil, err
+			}
+		}
 		capability.state = runtimeModuleTransferred
 		return capability, nil
 	case runtimeModuleTransferred:
@@ -147,14 +162,14 @@ func (module *RuntimeModule) Close(ctx context.Context) (RuntimeModuleCloseResul
 		return RuntimeModuleCloseResult{Disposition: RuntimeModuleAlreadyClosed, Outcome: MutationOutcomeNotCommitted}, nil
 	}
 	if module.capability == nil {
-		if module.Manager == nil {
+		if module.manager == nil {
 			return RuntimeModuleCloseResult{Disposition: RuntimeModuleAlreadyClosed, Outcome: MutationOutcomeNotCommitted}, nil
 		}
 		if ctx == nil {
 			ctx = context.Background()
 		}
-		err := module.Manager.Stop(ctx)
-		module.Manager = nil
+		err := module.manager.Stop(ctx)
+		module.manager = nil
 		if err != nil {
 			return RuntimeModuleCloseResult{Disposition: RuntimeModuleAlreadyClosed, Outcome: MutationOutcomeUnknown}, err
 		}
@@ -170,7 +185,8 @@ func (module *RuntimeModule) Close(ctx context.Context) (RuntimeModuleCloseResul
 		return RuntimeModuleCloseResult{Disposition: RuntimeModuleAlreadyClosed, Outcome: MutationOutcomeNotCommitted}, nil
 	case runtimeModuleOwned:
 		capability.state = runtimeModuleClosed
-		err := closeRuntimeModuleFiles(capability)
+		err := finalizeRuntimeExecJournal(capability.journal, runtimeModuleContainmentIdentity(capability), closeRuntimeModuleFiles(capability))
+		capability.journal = nil
 		if err != nil {
 			return RuntimeModuleCloseResult{Disposition: RuntimeModuleAlreadyClosed, Outcome: MutationOutcomeUnknown}, err
 		}
@@ -203,7 +219,9 @@ func (module *RuntimeModule) closeFromHost(ctx context.Context) (RuntimeModuleCl
 		capability.manager = nil
 	}
 	closeErr := closeRuntimeModuleFiles(capability)
-	if err := errors.Join(stopErr, closeErr); err != nil {
+	err := finalizeRuntimeExecJournal(capability.journal, runtimeModuleContainmentIdentity(capability), errors.Join(stopErr, closeErr))
+	capability.journal = nil
+	if err != nil {
 		return RuntimeModuleCloseResult{Disposition: RuntimeModuleConsumedAndClosed, Outcome: MutationOutcomeUnknown}, err
 	}
 	return RuntimeModuleCloseResult{Disposition: RuntimeModuleConsumedAndClosed, Outcome: MutationOutcomeCommitted}, nil
@@ -227,6 +245,31 @@ func closeRuntimeModuleFiles(capability *runtimeModuleCapability) error {
 	return err
 }
 
+func (module *RuntimeModule) transitionRuntimeJournal(state, identity string, outcome mutation.Outcome) error {
+	if module == nil || module.capability == nil {
+		return nil
+	}
+	module.capability.mu.Lock()
+	defer module.capability.mu.Unlock()
+	if module.capability.journal == nil {
+		return nil
+	}
+	if err := module.capability.journal.transition(state, identity, outcome); err != nil {
+		return err
+	}
+	if identity != runtimeExecContainmentPending {
+		module.capability.containmentID = identity
+	}
+	return nil
+}
+
+func runtimeModuleContainmentIdentity(capability *runtimeModuleCapability) string {
+	if capability == nil || capability.containmentID == "" {
+		return runtimeExecContainmentPending
+	}
+	return capability.containmentID
+}
+
 func newRuntimeManagerFromCapability(capability *runtimeModuleCapability, adapters normalizedAdapters) (runtimeclient.Manager, error) {
 	if capability == nil {
 		return nil, ErrRuntimeModuleRequired
@@ -242,13 +285,14 @@ func newRuntimeManagerFromCapability(capability *runtimeModuleCapability, adapte
 	startupTimeout := capability.startupTimeout
 	capability.mu.Unlock()
 
-	internalDescriptor, err := runtimeclient.NewRuntimeDescriptor(
-		descriptor.PlatformVersion(),
-		descriptor.Target().classifierTarget(),
-		descriptor.RustIPCVersion().String(),
-		descriptor.WASMABIVersion().String(),
-		descriptor.BinarySHA256().String(),
-	)
+	internalDescriptor, err := runtimeclient.NewRuntimeDescriptor(runtimeclient.RuntimeDescriptorOptions{
+		PlatformVersion:   descriptor.PlatformVersion(),
+		Target:            descriptor.Target().classifierTarget(),
+		RustIPCVersion:    descriptor.RustIPCVersion().String(),
+		WASMABIVersion:    descriptor.WASMABIVersion().String(),
+		ContractSetSHA256: descriptor.ContractSetSHA256().String(),
+		BinarySHA256:      descriptor.BinarySHA256().String(),
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -256,6 +300,7 @@ func newRuntimeManagerFromCapability(capability *runtimeModuleCapability, adapte
 		ShardCount: 1,
 		Supervisor: runtimeclient.ProcessSupervisorOptions{
 			RuntimeExecutable:     executable,
+			RuntimeExecutionRoot:  capability.executionRoot,
 			Descriptor:            internalDescriptor,
 			Diagnostics:           adapters.Diagnostics,
 			Artifacts:             runtimeArtifactProvider{assets: adapters.Assets},

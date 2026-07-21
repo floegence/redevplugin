@@ -4,7 +4,6 @@ on:
   push:
     tags:
       - "v*"
-  workflow_dispatch:
 
 permissions:
   contents: read
@@ -19,138 +18,31 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.metadata.outputs.version }}
-      label: ${{ steps.metadata.outputs.label }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           fetch-depth: 0
-      - name: Resolve release metadata
+      - name: Verify immutable release coordinate
         id: metadata
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
-            tag="$GITHUB_REF_NAME"
-            version="${tag#v}"
-            git fetch origin main --tags --force
-            test "$(git rev-list -n 1 "$tag")" = "$GITHUB_SHA"
-            git merge-base --is-ancestor "$GITHUB_SHA" origin/main
-            ./scripts/assert_github_release_absent.sh "$GITHUB_REPOSITORY" "$tag"
-            label="$tag"
-          else
-            version="0.0.0-manual.${GITHUB_RUN_NUMBER:-0}"
-            label="manual-${GITHUB_RUN_NUMBER:-0}"
-          fi
-          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
-            node scripts/check_redevplugin_release_metadata.mjs "$version"
-          fi
+          test "$GITHUB_REF" = "refs/tags/$GITHUB_REF_NAME"
+          case "$GITHUB_REF_NAME" in
+            v*) version="${GITHUB_REF_NAME#v}" ;;
+            *) echo "release tag must start with v" >&2; exit 1 ;;
+          esac
+          git fetch origin main --tags --force
+          test "$(git rev-list -n 1 "$GITHUB_REF_NAME")" = "$GITHUB_SHA"
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main
+          node scripts/check_redevplugin_release_metadata.mjs "$version"
+          ./scripts/assert_github_release_absent.sh "$GITHUB_REPOSITORY" "$GITHUB_REF_NAME"
           echo "version=$version" >> "$GITHUB_OUTPUT"
-          echo "label=$label" >> "$GITHUB_OUTPUT"
 
-  quality-release:
+  quality:
     name: Complete Release Quality Gate
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-        with:
-          fetch-depth: 0
-      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
-        with:
-          go-version-file: go.mod
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
-        with:
-          node-version: 24
-          cache: npm
-      - run: npm ci
-      - run: npx playwright install --with-deps chromium
-      - run: rustup show
-      - run: rustup target add wasm32-unknown-unknown
-      - name: Property and regression corpus gate
-        run: ./scripts/check_redevplugin_property_gates.sh --release
-      - name: Go formatting
-        run: test -z "$(gofmt -l .)"
-      - run: GOWORK=off go list ./cmd/... ./examples/... ./pkg/...
-      - run: GOWORK=off go test -p=1 ./cmd/... ./examples/... ./pkg/...
-      - name: Install golangci-lint
-        run: GOWORK=off go install github.com/golangci/golangci-lint/cmd/golangci-lint@v1.64.5
-      - name: Go lint
-        run: GOWORK=off golangci-lint run ./cmd/... ./examples/... ./pkg/...
-      - name: TypeScript, Examples, and browser-harness checks
-        run: npm run check
-        env:
-          REDEVPLUGIN_A2_EVIDENCE_DIR: dist/a2-quality
-      - name: Canonical WASM native and Docker parity
-        run: npm run examples:check:canonical && npm run scaffold:check:canonical
-      - name: Bridge boundary checks
-        run: ./scripts/check_redevplugin_ui_bridge.sh
-      - run: cargo fmt --check
-      - run: cargo clippy --workspace --all-targets -- -D warnings
-      - run: cargo test --workspace
-      - name: Install cargo-deny
-        run: cargo install cargo-deny@0.19.9 --locked
-      - run: cargo deny check
-      - run: npm run rust-source-packages:test
-      - run: ./scripts/check_redevplugin_runtime_contract.sh --ci
-      - run: ./scripts/check_redevplugin_platform.sh --ci
-
-  audit-release:
-    name: Release Audit
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-        with:
-          fetch-depth: 0
-      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
-        with:
-          go-version-file: go.mod
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
-        with:
-          node-version: 24
-          cache: npm
-      - run: npm ci
-      - run: rustup show
-      - run: ./scripts/check_redevplugin_release_audit.sh
-        env:
-          REDEVPLUGIN_INSTALL_AUDIT_TOOLS: "1"
-
-  stress-release:
-    name: Release Stress Gate
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-        with:
-          fetch-depth: 0
-      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
-        with:
-          go-version-file: go.mod
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
-        with:
-          node-version: 24
-          cache: npm
-      - run: npm ci
-      - run: npx playwright install --with-deps chromium
-      - run: rustup show
-      - run: rustup target add wasm32-unknown-unknown
-      - run: ./scripts/check_redevplugin_stress.sh --release --summary dist/redevplugin-release-stress.json
-        env:
-          REDEVPLUGIN_A2_EVIDENCE_DIR: dist
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        if: always()
-        with:
-          name: redevplugin-release-stress
-          path: |
-            dist/redevplugin-release-stress.json
-            dist/redevplugin-a2-acceptance.json
-            dist/redevplugin-a2-supported.png
-            dist/redevplugin-a2-unsupported.png
-          if-no-files-found: error
-
-  performance-release:
-    name: Immutable Release Performance Evidence
-    needs:
-      - preflight
-      - quality-release
+    needs: preflight
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
@@ -163,31 +55,25 @@ jobs:
         with:
           node-version: 24
           cache: npm
-      - run: npm ci
-      - run: npx playwright install --with-deps chromium
       - run: rustup show
-      - run: rustup target add wasm32-unknown-unknown
-      - name: Generate immutable release performance evidence
-        run: |
-          ./scripts/check_redevplugin_performance.sh \
-            --release \
-            --output dist/performance-evidence-release.json \
-            --version "${{ needs.preflight.outputs.version }}" \
-            --source-commit "$GITHUB_SHA"
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: redevplugin-performance-release
-          path: dist/performance-evidence-release.json
-          if-no-files-found: error
+      - run: ./scripts/check_redevplugin_pre_push.sh --ci
+        env:
+          REDEVPLUGIN_INSTALL_AUDIT_TOOLS: "1"
+      - run: ./scripts/check_redevplugin_property_gates.sh --release
+      - run: ./scripts/check_redevplugin_stress.sh --release --summary dist/redevplugin-release-stress.json
+        env:
+          REDEVPLUGIN_A2_EVIDENCE_DIR: dist
+      - run: ./scripts/check_redevplugin_performance.sh --release --output dist/performance-evidence-release.json --version "${{ needs.preflight.outputs.version }}" --source-commit "$GITHUB_SHA"
 
-  package-ui:
-    name: Build SDK Packages Once
+  package-build:
+    name: Build Platform Packages Once
     needs:
       - preflight
-      - quality-release
-      - audit-release
-      - stress-release
+      - quality
     runs-on: ubuntu-latest
+    outputs:
+      artifact-id: ${{ steps.upload.outputs.artifact-id }}
+      artifact-digest: ${{ steps.upload.outputs.artifact-digest }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
@@ -196,47 +82,544 @@ jobs:
         with:
           node-version: 24
           cache: npm
-      - name: Pin npm used for immutable packing
-        run: npm i -g npm@11.18.0
       - run: npm ci
       - run: rustup show
-      - run: rustup target add wasm32-unknown-unknown
-      - run: npm run build
-      - name: Build immutable npm tarball
-        run: node scripts/build_redevplugin_ui_package.mjs "${{ needs.preflight.outputs.version }}" dist/npm-package
-      - name: Build immutable Rust worker SDK crate
-        run: node scripts/build_redevplugin_worker_sdk_package.mjs "${{ needs.preflight.outputs.version }}" dist/worker-sdk-package
+      - name: Build and verify two npm packages and six source crates
+        run: |
+          node scripts/platform_package_build.mjs build \
+            --out-dir dist/platform-packages \
+            --version "${{ needs.preflight.outputs.version }}" \
+            --source-commit "$GITHUB_SHA" \
+            --require-clean
+          node scripts/platform_package_build.mjs verify dist/platform-packages/platform-package-build-v1.json
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        id: upload
         with:
-          name: redevplugin-ui-package
-          path: dist/npm-package/*.tgz
+          name: platform-packages-${{ github.sha }}
+          path: dist/platform-packages
           if-no-files-found: error
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: redevplugin-worker-sdk-package
-          path: dist/worker-sdk-package/*.crate
-          if-no-files-found: error
+          retention-days: 7
 
-  runtime:
-    name: Runtime ${{ matrix.target }}
+  publish-rust:
+    name: Publish Rust Source Crates
     needs:
       - preflight
-      - quality-release
-      - package-ui
-      - performance-release
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
-          - os: ubuntu-24.04-arm
-            target: aarch64-unknown-linux-gnu
-          - os: macos-15-intel
-            target: x86_64-apple-darwin
-          - os: macos-14
-            target: aarch64-apple-darwin
-    runs-on: ${{ matrix.os }}
+      - package-build
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          artifact-ids: ${{ needs.package-build.outputs.artifact-id }}
+          path: dist/platform-packages
+      - name: Verify immutable package artifact
+        env:
+          EXPECTED_ARTIFACT_DIGEST: ${{ needs.package-build.outputs.artifact-digest }}
+          VERSION: ${{ needs.preflight.outputs.version }}
+        run: |
+          test -n "$EXPECTED_ARTIFACT_DIGEST"
+          python3 - "$VERSION" "$GITHUB_SHA" <<'PY'
+          import base64
+          import hashlib
+          import json
+          import os
+          import pathlib
+          import re
+          import stat
+          import sys
+          import tarfile
+          import tomllib
+
+          version, source_commit = sys.argv[1:]
+          root = pathlib.Path("dist/platform-packages").resolve()
+
+          def reject_duplicate_keys(pairs):
+              result = {}
+              for key, value in pairs:
+                  if key in result:
+                      raise SystemExit(f"duplicate JSON field {key}")
+                  result[key] = value
+              return result
+
+          def load_json_bytes(raw, label, maximum):
+              if not raw or len(raw) > maximum:
+                  raise SystemExit(f"{label} exceeds its closed size limit")
+              try:
+                  return json.loads(raw.decode("utf-8"), object_pairs_hook=reject_duplicate_keys)
+              except (UnicodeDecodeError, json.JSONDecodeError) as error:
+                  raise SystemExit(f"{label} is invalid: {error}") from error
+
+          def load_json(path, label, maximum):
+              info = path.lstat()
+              if not stat.S_ISREG(info.st_mode) or path.is_symlink():
+                  raise SystemExit(f"{label} must be a regular file")
+              return load_json_bytes(path.read_bytes(), label, maximum)
+
+          def exact_keys(value, expected, label):
+              if not isinstance(value, dict) or set(value) != set(expected):
+                  raise SystemExit(f"{label} fields are invalid")
+
+          def safe_file(relative_path, expected_size, expected_sha256):
+              if not isinstance(relative_path, str) or "\\" in relative_path:
+                  raise SystemExit("package artifact path is invalid")
+              path = (root / relative_path).resolve()
+              try:
+                  path.relative_to(root)
+              except ValueError as error:
+                  raise SystemExit("package artifact escapes its download root") from error
+              info = path.lstat()
+              if not stat.S_ISREG(info.st_mode) or path.is_symlink() or info.st_size != expected_size:
+                  raise SystemExit("package artifact is not the declared regular file")
+              raw = path.read_bytes()
+              if hashlib.sha256(raw).hexdigest() != expected_sha256:
+                  raise SystemExit("package artifact digest mismatch")
+              return path, raw
+
+          def normalized_requirement(requirement):
+              if re.fullmatch(r"[0-9]+(?:\.[0-9]+)*(?:-[0-9A-Za-z.-]+)?", requirement):
+                  return f"^{requirement}"
+              return requirement
+
+          def manifest_dependencies(cargo_manifest):
+              result = []
+
+              def append_table(table, kind, target):
+                  if table is None:
+                      return
+                  if not isinstance(table, dict):
+                      raise SystemExit("packaged Cargo dependency table is invalid")
+                  for declared_name, specification in table.items():
+                      if isinstance(specification, str):
+                          specification = {"version": specification}
+                      if not isinstance(specification, dict) or "version" not in specification:
+                          raise SystemExit("packaged Cargo dependency is invalid")
+                      if any(key in specification for key in ("path", "git", "registry")):
+                          raise SystemExit("packaged Cargo dependency uses a forbidden source")
+                      package_name = specification.get("package", declared_name)
+                      explicit_name = declared_name if "package" in specification else None
+                      result.append({
+                          "name": package_name,
+                          "version_req": normalized_requirement(specification["version"]),
+                          "features": sorted(specification.get("features", [])),
+                          "optional": specification.get("optional", False),
+                          "default_features": specification.get("default-features", True),
+                          "target": target,
+                          "kind": kind,
+                          "registry": None,
+                          "explicit_name_in_toml": explicit_name,
+                      })
+
+              append_table(cargo_manifest.get("dependencies"), "normal", None)
+              append_table(cargo_manifest.get("dev-dependencies"), "dev", None)
+              append_table(cargo_manifest.get("build-dependencies"), "build", None)
+              for target, target_manifest in cargo_manifest.get("target", {}).items():
+                  append_table(target_manifest.get("dependencies"), "normal", target)
+                  append_table(target_manifest.get("dev-dependencies"), "dev", target)
+                  append_table(target_manifest.get("build-dependencies"), "build", target)
+              return sorted(result, key=lambda value: json.dumps(value, sort_keys=True, separators=(",", ":")))
+
+          manifest_path = root / "platform-package-build-v1.json"
+          manifest = load_json(manifest_path, "package build manifest", 256 * 1024)
+          exact_keys(manifest, ["schema_version", "platform_version", "source_commit", "contract_set_sha256", "artifacts"], "package build manifest")
+          if manifest["schema_version"] != "redevplugin.platform_package_build.v1" or manifest["source_commit"] != source_commit:
+              raise SystemExit("package artifact source identity mismatch")
+          if manifest["platform_version"] != version or not re.fullmatch(r"[0-9a-f]{64}", manifest["contract_set_sha256"]):
+              raise SystemExit("package artifact platform identity mismatch")
+          if not isinstance(manifest["artifacts"], list) or len(manifest["artifacts"]) != 8:
+              raise SystemExit("package artifact manifest is incomplete")
+          expected_rust = {
+              "redevplugin-contracts", "redevplugin-ipc", "redevplugin-wasm-abi",
+              "redevplugin-target-classifier", "redevplugin-worker-sdk", "redevplugin-runtime",
+          }
+          expected_paths = {
+              ("npm", "@floegence/redevplugin-contracts"): f"npm/floegence-redevplugin-contracts-{version}.tgz",
+              ("npm", "@floegence/redevplugin-ui"): f"npm/floegence-redevplugin-ui-{version}.tgz",
+              **{("rust", name): f"rust/{name}-{version}.crate" for name in expected_rust},
+          }
+          seen = set()
+          artifact_keys = []
+          cargo_packages = {}
+          for artifact in manifest["artifacts"]:
+              kind = artifact.get("kind") if isinstance(artifact, dict) else None
+              exact_keys(artifact, ["kind", "name", "version", "path", "size", "sha256", "integrity", "sha512"] if kind == "npm" else ["kind", "name", "version", "path", "size", "sha256"], "package artifact")
+              name = artifact["name"]
+              key = (kind, name)
+              if key in seen or key not in expected_paths or artifact["version"] != version or artifact["path"] != expected_paths[key]:
+                  raise SystemExit("unexpected package artifact coordinate")
+              if not isinstance(artifact["size"], int) or artifact["size"] < 1 or artifact["size"] > 32 * 1024 * 1024 or not re.fullmatch(r"[0-9a-f]{64}", artifact["sha256"]):
+                  raise SystemExit("package artifact integrity fields are invalid")
+              seen.add(key)
+              artifact_keys.append(f"{kind}:{name}")
+              path, raw = safe_file(artifact["path"], artifact["size"], artifact["sha256"])
+              if kind == "npm":
+                  sha512 = hashlib.sha512(raw).hexdigest()
+                  integrity = "sha512-" + base64.b64encode(bytes.fromhex(sha512)).decode("ascii")
+                  if artifact["sha512"] != sha512 or artifact["integrity"] != integrity:
+                      raise SystemExit("npm package integrity mismatch")
+                  continue
+
+              archive_root = f"{name}-{version}"
+              with tarfile.open(path, mode="r:gz") as archive:
+                  members = archive.getmembers()
+                  if not members or len(members) > 4096:
+                      raise SystemExit("Rust package archive entry count is invalid")
+                  member_names = set()
+                  total_size = 0
+                  for member in members:
+                      relative = pathlib.PurePosixPath(member.name)
+                      if member.name in member_names or relative.is_absolute() or ".." in relative.parts or relative.parts[0] != archive_root:
+                          raise SystemExit("Rust package archive path is invalid")
+                      member_names.add(member.name)
+                      if not (member.isfile() or member.isdir()) or member.size < 0 or member.size > 8 * 1024 * 1024:
+                          raise SystemExit("Rust package archive member is invalid")
+                      total_size += member.size
+                  if total_size > 32 * 1024 * 1024:
+                      raise SystemExit("Rust package archive is too large")
+                  cargo_member = archive.getmember(f"{archive_root}/Cargo.toml")
+                  vcs_member = archive.getmember(f"{archive_root}/.cargo_vcs_info.json")
+                  readme_member = archive.getmember(f"{archive_root}/README.md")
+                  cargo_raw = archive.extractfile(cargo_member).read()
+                  vcs = load_json_bytes(archive.extractfile(vcs_member).read(), "Cargo VCS info", 64 * 1024)
+                  readme = archive.extractfile(readme_member).read().decode("utf-8")
+              exact_keys(vcs, ["git", "path_in_vcs"], "Cargo VCS info")
+              exact_keys(vcs["git"], ["sha1", "dirty"], "Cargo VCS git info")
+              if vcs["git"] != {"sha1": source_commit, "dirty": False} or vcs["path_in_vcs"] != f"crates/{name}":
+                  raise SystemExit("Cargo VCS source identity mismatch")
+              try:
+                  cargo = tomllib.loads(cargo_raw.decode("utf-8"))
+              except (UnicodeDecodeError, tomllib.TOMLDecodeError) as error:
+                  raise SystemExit(f"packaged Cargo manifest is invalid: {error}") from error
+              if "patch" in cargo or "replace" in cargo:
+                  raise SystemExit("packaged Cargo manifest contains source replacement")
+              package = cargo.get("package", {})
+              if package.get("name") != name or package.get("version") != version:
+                  raise SystemExit("packaged Cargo identity mismatch")
+              cargo_packages[name] = (package, cargo, readme)
+          if seen != set(expected_paths) or artifact_keys != sorted(artifact_keys):
+              raise SystemExit("package artifact set or ordering is invalid")
+
+          metadata = root / "rust" / "rust-publish-metadata-v1.json"
+          metadata = load_json(metadata, "Rust publication metadata", 128 * 1024)
+          exact_keys(metadata, ["schema_version", "source_commit", "packages"], "Rust publication metadata")
+          if metadata["schema_version"] != "redevplugin.rust_publish_metadata.v1" or metadata["source_commit"] != source_commit:
+              raise SystemExit("Rust publication metadata identity mismatch")
+          package_order = ["redevplugin-contracts", "redevplugin-ipc", "redevplugin-wasm-abi", "redevplugin-target-classifier", "redevplugin-worker-sdk", "redevplugin-runtime"]
+          if not isinstance(metadata["packages"], list) or [item.get("name") for item in metadata["packages"]] != package_order:
+              raise SystemExit("Rust publication metadata package set mismatch")
+          package_fields = ["name", "vers", "deps", "features", "authors", "description", "documentation", "homepage", "readme", "readme_file", "keywords", "categories", "license", "license_file", "repository", "badges", "links", "rust_version"]
+          dependency_fields = ["name", "version_req", "features", "optional", "default_features", "target", "kind", "registry", "explicit_name_in_toml"]
+          for item in metadata["packages"]:
+              exact_keys(item, package_fields, "Rust publication package")
+              name = item["name"]
+              package, cargo, readme = cargo_packages[name]
+              expected_values = {
+                  "vers": version,
+                  "features": cargo.get("features", {}),
+                  "authors": package.get("authors", []),
+                  "description": package.get("description"),
+                  "documentation": package.get("documentation"),
+                  "homepage": package.get("homepage"),
+                  "readme": readme,
+                  "readme_file": package.get("readme"),
+                  "keywords": package.get("keywords", []),
+                  "categories": package.get("categories", []),
+                  "license": package.get("license"),
+                  "license_file": package.get("license-file"),
+                  "repository": package.get("repository"),
+                  "badges": {},
+                  "links": package.get("links"),
+                  "rust_version": package.get("rust-version"),
+              }
+              if any(item[field] != value for field, value in expected_values.items()):
+                  raise SystemExit(f"Rust publication package metadata mismatch for {name}")
+              if not isinstance(item["deps"], list):
+                  raise SystemExit("Rust publication dependency list is invalid")
+              for dependency in item["deps"]:
+                  exact_keys(dependency, dependency_fields, "Rust publication dependency")
+              actual_dependencies = sorted(item["deps"], key=lambda value: json.dumps(value, sort_keys=True, separators=(",", ":")))
+              if actual_dependencies != manifest_dependencies(cargo):
+                  raise SystemExit(f"Rust publication dependency metadata mismatch for {name}")
+          print("verified immutable Rust package bytes")
+          PY
+      - uses: rust-lang/crates-io-auth-action@275b31c2bd0ae2dc5fc5b03747ab8c88d6e3b1c6 # main
+        id: crates-auth
+      - name: Publish exact crate graph in dependency order
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.crates-auth.outputs.token }}
+          VERSION: ${{ needs.preflight.outputs.version }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import pathlib
+          import struct
+          import sys
+          import time
+          import urllib.error
+          import urllib.request
+
+          root = pathlib.Path("dist/platform-packages").resolve()
+          version = os.environ["VERSION"]
+          token = os.environ["CARGO_REGISTRY_TOKEN"]
+          manifest = json.loads((root / "platform-package-build-v1.json").read_text())
+          metadata = json.loads((root / "rust" / "rust-publish-metadata-v1.json").read_text())
+          if metadata.get("schema_version") != "redevplugin.rust_publish_metadata.v1" or metadata.get("source_commit") != os.environ["GITHUB_SHA"]:
+              raise SystemExit("unsupported Rust publication metadata")
+          packages = {item["name"]: item for item in metadata["packages"]}
+          manifest_packages = {item["name"]: item for item in manifest["artifacts"] if item["kind"] == "rust"}
+          order = ["redevplugin-contracts", "redevplugin-wasm-abi", "redevplugin-worker-sdk", "redevplugin-ipc", "redevplugin-target-classifier", "redevplugin-runtime"]
+          if set(packages) != set(order) or set(manifest_packages) != set(order):
+              raise SystemExit("Rust publication package set mismatch")
+
+          def get_remote(name):
+              request = urllib.request.Request(f"https://crates.io/api/v1/crates/{name}/{version}", headers={"Accept": "application/json"})
+              try:
+                  with urllib.request.urlopen(request, timeout=20) as response:
+                      return json.load(response)["version"]["checksum"]
+              except urllib.error.HTTPError as error:
+                  if error.code == 404:
+                      return None
+                  if error.code == 429 or error.code >= 500:
+                      return "retry"
+                  raise
+
+          for name in order:
+              metadata_entry = packages[name]
+              manifest_entry = manifest_packages[name]
+              if metadata_entry["vers"] != version or manifest_entry["version"] != version:
+                  raise SystemExit(f"{name} version mismatch")
+              crate_path = (root / manifest_entry["path"]).resolve()
+              crate_bytes = crate_path.read_bytes()
+              expected = manifest_entry["sha256"]
+              if __import__("hashlib").sha256(crate_bytes).hexdigest() != expected:
+                  raise SystemExit(f"{name} package digest mismatch")
+              for attempt in range(20):
+                  remote = get_remote(name)
+                  if remote == expected:
+                      break
+                  if remote == "retry":
+                      time.sleep(6)
+                      continue
+                  if remote is not None:
+                      raise SystemExit(f"{name}@{version} already exists with different bytes")
+                  metadata_bytes = json.dumps(metadata_entry, separators=(",", ":"), ensure_ascii=False).encode()
+                  body = struct.pack("<I", len(metadata_bytes)) + metadata_bytes + struct.pack("<I", len(crate_bytes)) + crate_bytes
+                  request = urllib.request.Request(
+                      "https://crates.io/api/v1/crates/new",
+                      data=body,
+                      method="PUT",
+                      headers={"Authorization": token, "Content-Type": "application/octet-stream", "Accept": "application/json"},
+                  )
+                  try:
+                      with urllib.request.urlopen(request, timeout=60) as response:
+                          if response.status not in (200, 201):
+                              raise SystemExit(f"{name} upload returned HTTP {response.status}")
+                  except urllib.error.HTTPError as error:
+                      if error.code == 429 or error.code >= 500:
+                          time.sleep(6)
+                          continue
+                      raise
+                  time.sleep(6)
+              else:
+                  raise SystemExit(f"crates.io did not expose exact {name}@{version} bytes")
+              print(f"published or reconciled {name}@{version}")
+          PY
+
+  verify-rust:
+    name: Verify Rust Registry Readback
+    needs:
+      - preflight
+      - publish-rust
+    runs-on: ubuntu-latest
+    outputs:
+      artifact-id: ${{ steps.upload.outputs.artifact-id }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0
+      - name: Read back crate checksums and source identity
+        run: node scripts/verify_rust_registry_release.mjs "${{ needs.preflight.outputs.version }}" "$GITHUB_SHA" dist/rust-readback.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        id: upload
+        with:
+          name: rust-readback-${{ github.sha }}
+          path: dist/rust-readback.json
+          if-no-files-found: error
+          retention-days: 7
+
+  publish-npm-contracts:
+    name: Publish npm Contracts
+    needs:
+      - preflight
+      - package-build
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          artifact-ids: ${{ needs.package-build.outputs.artifact-id }}
+          path: dist/platform-packages
+      - name: Publish or reconcile exact contracts package
+        env:
+          VERSION: ${{ needs.preflight.outputs.version }}
+        run: |
+          set -euo pipefail
+          package="dist/platform-packages/npm/floegence-redevplugin-contracts-${VERSION}.tgz"
+          expected=$(node --input-type=module - "$package" <<'NODE'
+          import { createHash } from "node:crypto";
+          import { readFileSync } from "node:fs";
+          process.stdout.write(`sha512-${createHash("sha512").update(readFileSync(process.argv[2])).digest("base64")}`);
+          NODE
+          )
+          if remote=$(npm view "@floegence/redevplugin-contracts@${VERSION}" dist.integrity 2>/dev/null); then
+            test "$remote" = "$expected"
+          else
+            npm publish "$package" --access public --provenance --ignore-scripts
+          fi
+
+  verify-npm-contracts:
+    name: Verify npm Contracts Readback
+    needs:
+      - preflight
+      - package-build
+      - publish-npm-contracts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          artifact-ids: ${{ needs.package-build.outputs.artifact-id }}
+          path: dist/platform-packages
+      - name: Verify contracts tarball and provenance
+        env:
+          VERSION: ${{ needs.preflight.outputs.version }}
+        run: |
+          set -euo pipefail
+          integrity=$(node --input-type=module <<'NODE'
+          import { readFileSync } from "node:fs";
+          const manifest = JSON.parse(readFileSync("dist/platform-packages/platform-package-build-v1.json", "utf8"));
+          process.stdout.write(manifest.artifacts.find((item) => item.name === "@floegence/redevplugin-contracts").integrity);
+          NODE
+          )
+          for attempt in $(seq 1 20); do
+            if node scripts/verify_npm_registry_release.mjs \
+              @floegence/redevplugin-contracts "$VERSION" "$GITHUB_SHA" "$integrity"; then
+              exit 0
+            fi
+            sleep 6
+          done
+          exit 1
+
+  publish-npm-ui:
+    name: Publish npm UI
+    needs:
+      - preflight
+      - package-build
+      - verify-npm-contracts
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          artifact-ids: ${{ needs.package-build.outputs.artifact-id }}
+          path: dist/platform-packages
+      - name: Publish or reconcile exact UI package
+        env:
+          VERSION: ${{ needs.preflight.outputs.version }}
+        run: |
+          set -euo pipefail
+          package="dist/platform-packages/npm/floegence-redevplugin-ui-${VERSION}.tgz"
+          expected=$(node --input-type=module - "$package" <<'NODE'
+          import { createHash } from "node:crypto";
+          import { readFileSync } from "node:fs";
+          process.stdout.write(`sha512-${createHash("sha512").update(readFileSync(process.argv[2])).digest("base64")}`);
+          NODE
+          )
+          if remote=$(npm view "@floegence/redevplugin-ui@${VERSION}" dist.integrity 2>/dev/null); then
+            test "$remote" = "$expected"
+          else
+            npm publish "$package" --access public --provenance --ignore-scripts
+          fi
+
+  verify-npm:
+    name: Verify npm Registry Readback
+    needs:
+      - preflight
+      - package-build
+      - publish-npm-ui
+    runs-on: ubuntu-latest
+    outputs:
+      artifact-id: ${{ steps.upload.outputs.artifact-id }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          artifact-ids: ${{ needs.package-build.outputs.artifact-id }}
+          path: dist/platform-packages
+      - name: Read back both npm packages and provenance
+        env:
+          VERSION: ${{ needs.preflight.outputs.version }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist/npm-readback
+          for package_name in @floegence/redevplugin-contracts @floegence/redevplugin-ui; do
+            short_name=${package_name##*/}
+            integrity=$(node --input-type=module - "$package_name" <<'NODE'
+          import { readFileSync } from "node:fs";
+          const name = process.argv[2];
+          const manifest = JSON.parse(readFileSync("dist/platform-packages/platform-package-build-v1.json", "utf8"));
+          process.stdout.write(manifest.artifacts.find((item) => item.name === name).integrity);
+          NODE
+            )
+            for attempt in $(seq 1 20); do
+              if node scripts/verify_npm_registry_release.mjs \
+                "$package_name" "$VERSION" "$GITHUB_SHA" "$integrity" "dist/npm-readback/${short_name}.json"; then
+                break
+              fi
+              rm -f "dist/npm-readback/${short_name}.json"
+              if [[ "$attempt" = 20 ]]; then exit 1; fi
+              sleep 6
+            done
+          done
+          node --input-type=module <<'NODE'
+          import { readFileSync, writeFileSync } from "node:fs";
+          const names = ["redevplugin-contracts", "redevplugin-ui"];
+          writeFileSync("dist/npm-readback.json", `${JSON.stringify(names.map((name) => JSON.parse(readFileSync(`dist/npm-readback/${name}.json`, "utf8"))), null, 2)}\n`);
+          NODE
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        id: upload
+        with:
+          name: npm-readback-${{ github.sha }}
+          path: dist/npm-readback.json
+          if-no-files-found: error
+          retention-days: 7
+
+  verify-go:
+    name: Verify Go Proxy And SumDB
+    needs:
+      - preflight
+      - publish-rust
+      - publish-npm-ui
+    runs-on: ubuntu-latest
+    outputs:
+      artifact-id: ${{ steps.upload.outputs.artifact-id }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
@@ -244,205 +627,117 @@ jobs:
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version-file: go.mod
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
-        with:
-          node-version: 24
-          cache: npm
-      - run: npm ci
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        with:
-          name: redevplugin-ui-package
-          path: dist/npm-package
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        with:
-          name: redevplugin-worker-sdk-package
-          path: dist/worker-sdk-package
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        with:
-          name: redevplugin-performance-release
-          path: dist/performance-release
-      - name: Build release bundle from immutable SDK artifacts
-        run: |
-          set -euo pipefail
-          npm_package=$(find dist/npm-package -maxdepth 1 -type f -name '*.tgz' -print -quit)
-          worker_sdk_package=$(find dist/worker-sdk-package -maxdepth 1 -type f -name '*.crate' -print -quit)
-          performance_evidence=$(find dist/performance-release -maxdepth 1 -type f -name 'performance-evidence-release.json' -print -quit)
-          test -n "$npm_package"
-          test -n "$worker_sdk_package"
-          test -n "$performance_evidence"
-          ./scripts/build_redevplugin_release.sh \
-            --version "${{ needs.preflight.outputs.version }}" \
-            --runtime-target "${{ matrix.target }}" \
-            --npm-package "$npm_package" \
-            --worker-sdk-package "$worker_sdk_package" \
-            --performance-gate release \
-            --performance-evidence "$performance_evidence" \
-            --source-commit "$GITHUB_SHA" \
-            --out-dir "dist/redevplugin-${{ needs.preflight.outputs.label }}-${{ matrix.target }}"
-      - name: Archive release bundle
-        run: tar -C dist -czf "dist/redevplugin-${{ needs.preflight.outputs.label }}-${{ matrix.target }}.tar.gz" "redevplugin-${{ needs.preflight.outputs.label }}-${{ matrix.target }}"
+      - name: Read back module source and sums
+        run: node scripts/verify_go_module_readback.mjs "${{ needs.preflight.outputs.version }}" "$GITHUB_SHA" dist/go-readback.json
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        id: upload
         with:
-          name: redevplugin-${{ needs.preflight.outputs.label }}-${{ matrix.target }}
-          path: dist/redevplugin-${{ needs.preflight.outputs.label }}-${{ matrix.target }}.tar.gz
+          name: go-readback-${{ github.sha }}
+          path: dist/go-readback.json
           if-no-files-found: error
+          retention-days: 7
 
-  publish-npm:
-    name: Publish npm Package
-    if: startsWith(github.ref, 'refs/tags/v')
+  create-publication:
+    name: Create Completion Manifest
     needs:
       - preflight
-      - quality-release
-      - package-ui
-      - runtime
+      - verify-go
+      - verify-npm
+      - verify-rust
     runs-on: ubuntu-latest
+    outputs:
+      artifact-id: ${{ steps.upload.outputs.artifact-id }}
+      artifact-digest: ${{ steps.upload.outputs.artifact-digest }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          artifact-ids: ${{ needs.verify-go.outputs.artifact-id }},${{ needs.verify-npm.outputs.artifact-id }},${{ needs.verify-rust.outputs.artifact-id }}
+          path: dist/readbacks
+          merge-multiple: true
+      - name: Build canonical publication from registry readbacks
+        run: |
+          mkdir -p dist/publication
+          node scripts/platform_package_publication.mjs create \
+            --out dist/publication/platform-package-publication-v1.json \
+            --source-commit "$GITHUB_SHA" \
+            --go-readback dist/readbacks/go-readback.json \
+            --npm-readback dist/readbacks/npm-readback.json \
+            --rust-readback dist/readbacks/rust-readback.json
+          node scripts/platform_package_publication.mjs verify \
+            dist/publication/platform-package-publication-v1.json \
+            "${{ needs.preflight.outputs.version }}" \
+            "$GITHUB_SHA"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        id: upload
+        with:
+          name: platform-publication-${{ github.sha }}
+          path: dist/publication/platform-package-publication-v1.json
+          if-no-files-found: error
+          retention-days: 7
+
+  attest-publication:
+    name: Attest Completion Manifest
+    needs: create-publication
+    runs-on: ubuntu-latest
+    environment: release
     permissions:
       contents: read
       id-token: write
+      attestations: write
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-        with:
-          fetch-depth: 0
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
-        with:
-          node-version: 24
-          registry-url: https://registry.npmjs.org
-      - name: Ensure npm supports trusted publishing
-        run: npm i -g npm@11.18.0
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
-          name: redevplugin-ui-package
-          path: dist/npm-package
-      - name: Recheck immutable public tag before npm publication
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: ./scripts/verify_github_release_identity.sh "$GITHUB_REPOSITORY" "$GITHUB_REF_NAME" "$GITHUB_SHA"
-      - name: Publish or verify identical npm bytes
-        run: |
-          set -euo pipefail
-          version="${{ needs.preflight.outputs.version }}"
-          package=$(find dist/npm-package -maxdepth 1 -type f -name '*.tgz' -print -quit)
-          test -n "$package"
-          expected_integrity=$(node --input-type=module - "$package" <<'NODE'
-          import { createHash } from "node:crypto";
-          import { readFileSync } from "node:fs";
-          const bytes = readFileSync(process.argv[2]);
-          console.log(`sha512-${createHash("sha512").update(bytes).digest("base64")}`);
-          NODE
-          )
-          if published_integrity=$(npm view "@floegence/redevplugin-ui@${version}" dist.integrity 2>/dev/null); then
-            if [[ "$published_integrity" != "$expected_integrity" ]]; then
-              echo "published npm integrity does not match the immutable package bytes" >&2
-              exit 1
-            fi
-          else
-            npm publish "$package" --access public --provenance
-          fi
-          for attempt in $(seq 1 20); do
-            if node scripts/verify_npm_registry_release.mjs "$version" "$GITHUB_SHA" "$expected_integrity"; then
-              exit 0
-            fi
-            sleep 6
-          done
-          echo "npm registry did not return the expected tarball and SLSA provenance" >&2
-          exit 1
+          artifact-ids: ${{ needs.create-publication.outputs.artifact-id }}
+          path: dist/publication
+      - uses: actions/attest-build-provenance@43d14bc2b83dec42d39ecae14e916627a18bb661 # v3
+        with:
+          subject-path: dist/publication/platform-package-publication-v1.json
 
-  publish:
-    name: Publish GitHub Release
-    if: startsWith(github.ref, 'refs/tags/v')
+  publish-release:
+    name: Publish Exact-One GitHub Release Asset
     needs:
       - preflight
-      - quality-release
-      - runtime
-      - publish-npm
+      - create-publication
+      - attest-publication
     runs-on: ubuntu-latest
+    environment: release
     permissions:
       contents: write
-      id-token: write
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-        with:
-          fetch-depth: 0
-      - name: Recheck immutable release coordinate
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          ./scripts/verify_github_release_identity.sh "$GITHUB_REPOSITORY" "$GITHUB_REF_NAME" "$GITHUB_SHA"
-          ./scripts/assert_github_release_absent.sh "$GITHUB_REPOSITORY" "$GITHUB_REF_NAME"
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
-          pattern: redevplugin-${{ needs.preflight.outputs.label }}-*
-          path: dist/artifacts
-          merge-multiple: true
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        with:
-          name: redevplugin-release-stress
-          path: dist/artifacts
-      - name: Checksums
-        run: |
-          cd dist/artifacts
-          sha256sum \
-            *.tar.gz \
-            redevplugin-release-stress.json \
-            redevplugin-a2-acceptance.json \
-            redevplugin-a2-supported.png \
-            redevplugin-a2-unsupported.png \
-            > SHA256SUMS
-      - uses: sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac # v3
-        with:
-          cosign-release: v2.4.3
-      - name: Sign release artifacts
-        run: |
-          cd dist/artifacts
-          for file in \
-            *.tar.gz \
-            redevplugin-release-stress.json \
-            redevplugin-a2-acceptance.json \
-            redevplugin-a2-supported.png \
-            redevplugin-a2-unsupported.png \
-            SHA256SUMS; do
-            cosign sign-blob --yes \
-              --bundle "${file}.bundle" \
-              --output-signature "${file}.sig" \
-              "$file"
-          done
-      - name: Verify signed release artifacts
-        run: ./scripts/verify_redevplugin_release_artifacts.sh --tag "$GITHUB_REF_NAME" dist/artifacts
-      - name: Create immutable GitHub Release
+          artifact-ids: ${{ needs.create-publication.outputs.artifact-id }}
+          path: dist/publication
+      - name: Create release and upload only the completion manifest
         env:
           GH_TOKEN: ${{ github.token }}
+          CONTENT_TYPE: application/vnd.floegence.redevplugin-platform-publication.v1+json
         run: |
           set -euo pipefail
           gh release create "$GITHUB_REF_NAME" \
             --repo "$GITHUB_REPOSITORY" \
             --verify-tag \
             --generate-notes \
-            --latest \
-            dist/artifacts/*.tar.gz \
-            dist/artifacts/*.tar.gz.sig \
-            dist/artifacts/*.tar.gz.bundle \
-            dist/artifacts/redevplugin-release-stress.json \
-            dist/artifacts/redevplugin-release-stress.json.sig \
-            dist/artifacts/redevplugin-release-stress.json.bundle \
-            dist/artifacts/redevplugin-a2-acceptance.json \
-            dist/artifacts/redevplugin-a2-acceptance.json.sig \
-            dist/artifacts/redevplugin-a2-acceptance.json.bundle \
-            dist/artifacts/redevplugin-a2-supported.png \
-            dist/artifacts/redevplugin-a2-supported.png.sig \
-            dist/artifacts/redevplugin-a2-supported.png.bundle \
-            dist/artifacts/redevplugin-a2-unsupported.png \
-            dist/artifacts/redevplugin-a2-unsupported.png.sig \
-            dist/artifacts/redevplugin-a2-unsupported.png.bundle \
-            dist/artifacts/SHA256SUMS \
-            dist/artifacts/SHA256SUMS.sig \
-            dist/artifacts/SHA256SUMS.bundle
+            --latest
+          release_id=$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${GITHUB_REF_NAME}" --jq .id)
+          curl --fail --silent --show-error \
+            -X POST \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Content-Type: $CONTENT_TYPE" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            --data-binary @dist/publication/platform-package-publication-v1.json \
+            "https://uploads.github.com/repos/${GITHUB_REPOSITORY}/releases/${release_id}/assets?name=platform-package-publication-v1.json" \
+            > dist/publication/upload-response.json
+          test "$(gh api "repos/${GITHUB_REPOSITORY}/releases/${release_id}/assets" --jq length)" = 1
+          test "$(gh api "repos/${GITHUB_REPOSITORY}/releases/${release_id}/assets" --jq '.[0].name')" = platform-package-publication-v1.json
+          test "$(gh api "repos/${GITHUB_REPOSITORY}/releases/${release_id}/assets" --jq '.[0].content_type')" = "$CONTENT_TYPE"
 
-  verify-published-release:
-    name: Verify Published Release
-    if: startsWith(github.ref, 'refs/tags/v')
+  verify-release:
+    name: Verify Public Completion
     needs:
       - preflight
-      - publish
+      - publish-release
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -450,58 +745,18 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           fetch-depth: 0
-      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
-        with:
-          go-version-file: go.mod
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
-        with:
-          node-version: 24
-          registry-url: https://registry.npmjs.org
-      - run: rustup target add wasm32-unknown-unknown
-      - uses: sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac # v3
-        with:
-          cosign-release: v2.4.3
-      - name: Verify public tag and GitHub Release identity
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: ./scripts/verify_github_release_identity.sh --require-release "$GITHUB_REPOSITORY" "$GITHUB_REF_NAME" "$GITHUB_SHA"
-      - name: Download immutable GitHub Release assets
+      - name: Download and verify exact public bytes
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          set -euo pipefail
+          ./scripts/verify_github_release_identity.sh --require-release "$GITHUB_REPOSITORY" "$GITHUB_REF_NAME" "$GITHUB_SHA"
           mkdir -p dist/published
           gh release download "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --dir dist/published
-      - name: Verify signatures, checksums, compatibility, runtime matrix, and npm identity
-        id: published-release
-        run: |
-          set -euo pipefail
-          ./scripts/verify_redevplugin_release_artifacts.sh --tag "$GITHUB_REF_NAME" dist/published
-          npm_integrity=$(node scripts/verify_published_release.mjs \
-            --npm-integrity \
+          node scripts/platform_package_publication.mjs verify \
             dist/published \
             "${{ needs.preflight.outputs.version }}" \
-            "$GITHUB_SHA")
-          echo "npm_integrity=$npm_integrity" >> "$GITHUB_OUTPUT"
-      - name: Verify npm and Go module registry readback
-        run: |
-          set -euo pipefail
-          version="${{ needs.preflight.outputs.version }}"
-          expected_integrity="${{ steps.published-release.outputs.npm_integrity }}"
-          for attempt in $(seq 1 20); do
-            if node scripts/verify_npm_registry_release.mjs "$version" "$GITHUB_SHA" "$expected_integrity"; then
-              break
-            fi
-            if [[ "$attempt" = 20 ]]; then
-              echo "npm tarball or SLSA provenance readback mismatch" >&2
-              exit 1
-            fi
-            sleep 6
-          done
-          for attempt in $(seq 1 20); do
-            if node scripts/verify_go_module_readback.mjs "$version" "$GITHUB_SHA"; then
-              exit 0
-            fi
-            sleep 15
-          done
-          echo "Go module proxy did not expose the expected v${version} identity" >&2
-          exit 1
+            "$GITHUB_SHA"
+          gh attestation verify \
+            dist/published/platform-package-publication-v1.json \
+            --repo "$GITHUB_REPOSITORY"

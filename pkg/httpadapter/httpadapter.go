@@ -30,7 +30,6 @@ import (
 	"github.com/floegence/redevplugin/pkg/plugindata"
 	"github.com/floegence/redevplugin/pkg/pluginpkg"
 	"github.com/floegence/redevplugin/pkg/registry"
-	"github.com/floegence/redevplugin/pkg/runtimeclient"
 	"github.com/floegence/redevplugin/pkg/runtimetarget"
 	"github.com/floegence/redevplugin/pkg/security"
 	"github.com/floegence/redevplugin/pkg/sessionctx"
@@ -235,9 +234,9 @@ func (d errorDetails) validateForCode(code security.ErrorCode) error {
 		}
 	case security.ErrWorkerError:
 		if !platformDetailCodePattern.MatchString(d.WorkerErrorCode) || d.WorkerErrorMessage == "" || utf8.RuneCountInString(d.WorkerErrorMessage) > 4096 ||
-			(d.WorkerErrorOrigin != string(runtimeclient.WorkerErrorOriginRuntime) &&
-				d.WorkerErrorOrigin != string(runtimeclient.WorkerErrorOriginHostcall) &&
-				d.WorkerErrorOrigin != string(runtimeclient.WorkerErrorOriginPlugin)) || d.hasNonWorkerDetails() {
+			(d.WorkerErrorOrigin != string(host.WorkerErrorOriginRuntime) &&
+				d.WorkerErrorOrigin != string(host.WorkerErrorOriginHostcall) &&
+				d.WorkerErrorOrigin != string(host.WorkerErrorOriginPlugin)) || d.hasNonWorkerDetails() {
 			return errors.New("worker error details are incomplete")
 		}
 	case security.ErrJSONLimitExceeded:
@@ -3187,7 +3186,7 @@ func errorCodeForRPCError(err error) security.ErrorCode {
 		return security.ErrTokenExpired
 	case isGatewayTokenValidationError(err):
 		return errorCodeForGatewayTokenError(err)
-	case errors.Is(err, host.ErrPluginRuntimeNotConfigured), errors.Is(err, runtimeclient.ErrRuntimeNotReady), errors.Is(err, runtimeclient.ErrRuntimeIPCUnavailable), errors.Is(err, runtimeclient.ErrRuntimeRequestFailed), errors.Is(err, runtimeclient.ErrRuntimeHandshake):
+	case errors.Is(err, host.ErrPluginRuntimeNotConfigured), errors.Is(err, host.ErrRuntimeNotReady), errors.Is(err, host.ErrRuntimeIPCUnavailable), errors.Is(err, host.ErrRuntimeRequestFailed), errors.Is(err, host.ErrRuntimeHandshake):
 		return security.ErrRuntimeUnavailable
 	case errors.Is(err, host.ErrPluginRuntimeIncompatible):
 		return security.ErrRuntimeVersionMismatch
@@ -3547,7 +3546,7 @@ func httpStatusForRPCError(err error) int {
 		return http.StatusForbidden
 	case errors.Is(err, bridge.ErrTokenExpired), errors.Is(err, bridge.ErrTokenReplay), errors.Is(err, bridge.ErrTokenAlreadyBound), errors.Is(err, bridge.ErrTokenInvalid), errors.Is(err, bridge.ErrTokenAudience), errors.Is(err, bridge.ErrTokenRevoked), errors.Is(err, bridge.ErrTokenKind):
 		return http.StatusForbidden
-	case errors.Is(err, runtimeclient.ErrRuntimeNotReady), errors.Is(err, runtimeclient.ErrRuntimeIPCUnavailable), errors.Is(err, runtimeclient.ErrRuntimeRequestFailed), errors.Is(err, runtimeclient.ErrRuntimeHandshake):
+	case errors.Is(err, host.ErrRuntimeNotReady), errors.Is(err, host.ErrRuntimeIPCUnavailable), errors.Is(err, host.ErrRuntimeRequestFailed), errors.Is(err, host.ErrRuntimeHandshake):
 		return http.StatusServiceUnavailable
 	default:
 		return http.StatusForbidden
@@ -3580,7 +3579,7 @@ func errorCodeForIntentError(err error) security.ErrorCode {
 		return security.ErrPermissionDenied
 	case errors.Is(err, registry.ErrNotFound):
 		return security.ErrInvalidRequest
-	case errors.Is(err, runtimeclient.ErrRuntimeNotReady), errors.Is(err, runtimeclient.ErrRuntimeIPCUnavailable), errors.Is(err, runtimeclient.ErrRuntimeRequestFailed), errors.Is(err, runtimeclient.ErrRuntimeHandshake):
+	case errors.Is(err, host.ErrRuntimeNotReady), errors.Is(err, host.ErrRuntimeIPCUnavailable), errors.Is(err, host.ErrRuntimeRequestFailed), errors.Is(err, host.ErrRuntimeHandshake):
 		return security.ErrRuntimeUnavailable
 	default:
 		return security.ErrInvalidRequest
@@ -3636,11 +3635,11 @@ func errorCodeForWorkerExecutionError(err error) security.ErrorCode {
 	return errorCodeForWorkerExecutionErrorValue(workerError)
 }
 
-func errorCodeForWorkerExecutionErrorValue(workerError runtimeclient.WorkerExecutionError) security.ErrorCode {
-	if workerError.Origin == runtimeclient.WorkerErrorOriginPlugin {
+func errorCodeForWorkerExecutionErrorValue(workerError host.WorkerExecutionError) security.ErrorCode {
+	if workerError.Origin == host.WorkerErrorOriginPlugin {
 		return security.ErrWorkerError
 	}
-	if workerError.Origin != runtimeclient.WorkerErrorOriginRuntime && workerError.Origin != runtimeclient.WorkerErrorOriginHostcall {
+	if workerError.Origin != host.WorkerErrorOriginRuntime && workerError.Origin != host.WorkerErrorOriginHostcall {
 		return security.ErrRuntimeUnavailable
 	}
 	switch workerError.Code {
@@ -3724,7 +3723,7 @@ func httpStatusForIntentError(err error) int {
 		return http.StatusForbidden
 	case errors.Is(err, registry.ErrNotFound):
 		return http.StatusBadRequest
-	case errors.Is(err, runtimeclient.ErrRuntimeNotReady), errors.Is(err, runtimeclient.ErrRuntimeIPCUnavailable), errors.Is(err, runtimeclient.ErrRuntimeRequestFailed), errors.Is(err, runtimeclient.ErrRuntimeHandshake):
+	case errors.Is(err, host.ErrRuntimeNotReady), errors.Is(err, host.ErrRuntimeIPCUnavailable), errors.Is(err, host.ErrRuntimeRequestFailed), errors.Is(err, host.ErrRuntimeHandshake):
 		return http.StatusServiceUnavailable
 	default:
 		return http.StatusBadRequest

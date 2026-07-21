@@ -123,28 +123,8 @@ echo "==> runtime and platform contracts"
 ./scripts/check_redevplugin_runtime_contract.sh --ci
 ./scripts/check_redevplugin_platform.sh --ci
 
-echo "==> release bundle smoke and published verifier"
-SMOKE_VERSION=$(node scripts/resolve_redevplugin_smoke_version.mjs ci.local)
-SMOKE_DIR=$(mktemp -d "${TMPDIR:-/tmp}/redevplugin-pre-push-release.XXXXXX")
-cleanup() {
-  rm -rf "$SMOKE_DIR"
-}
-trap cleanup EXIT
-./scripts/build_redevplugin_release.sh \
-  --performance-gate smoke \
-  --version "$SMOKE_VERSION" \
-  --out-dir "$SMOKE_DIR/release"
-"$SMOKE_DIR/release/bin/redevplugin" verify-compatibility \
-  "$SMOKE_DIR/release/compatibility.json" \
-  "$SMOKE_DIR/release/contracts"
-node scripts/verify_redevplugin_release_bundle.mjs \
-  --skip-execution \
-  --allow-smoke \
-  "$SMOKE_DIR/release" \
-  "$SMOKE_VERSION"
-node scripts/test_published_release_verifier.mjs \
-  "$SMOKE_DIR/release" \
-  "$SMOKE_VERSION" \
-  "$(git rev-parse HEAD)"
+echo "==> platform package build and publication verifier fixtures"
+npm run platform-package-build:test
+npm run platform-package-publication:test
 
 echo "ReDevPlugin pre-push gate passed"

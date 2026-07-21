@@ -321,5 +321,3 @@ func NewRuntimeBinaryName(value string) (RuntimeBinaryName, error) {
 }
 
 func (name RuntimeBinaryName) String() string { return name.value }
-
-func (name RuntimeBinaryName) valid() bool { return name.value == "redevplugin-runtime" }

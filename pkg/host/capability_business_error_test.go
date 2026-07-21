@@ -6,9 +6,9 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/floegence/redevplugin/internal/runtimeclient"
 	"github.com/floegence/redevplugin/pkg/capability"
 	"github.com/floegence/redevplugin/pkg/mutation"
-	"github.com/floegence/redevplugin/pkg/runtimeclient"
 )
 
 func testRPCErrorContext() context.Context {

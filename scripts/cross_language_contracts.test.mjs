@@ -295,7 +295,7 @@ test("packed npm packages install together offline and remain browser-neutral", 
     run(process.execPath, ["--input-type=module", "--eval", `
       await import("@floegence/redevplugin-ui");
       const contracts = await import("@floegence/redevplugin-contracts");
-      if (contracts.contractArtifacts.length !== 45) throw new Error("contracts package is incomplete");
+      if (contracts.contractArtifacts.length !== 49) throw new Error("contracts package is incomplete");
     `], { cwd: consumerDirectory });
 
     const browserBundle = await build({

@@ -412,9 +412,3 @@ func releaseRefFromBinding(binding registry.ReleaseTrustBinding, record registry
 		},
 	}
 }
-
-func isReleaseLeaseFailure(err error) bool {
-	return errors.Is(err, releasetrust.ErrActivationLeaseInvalid) ||
-		errors.Is(err, releasetrust.ErrReleaseTrustExpired) ||
-		errors.Is(err, releasetrust.ErrReleaseTrustRevoked)
-}

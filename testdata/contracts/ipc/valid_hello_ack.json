@@ -6,18 +6,16 @@
   "channel_nonce": "nonce_fixture_1234",
   "want_error": false,
   "frame": {
-    "ipc_version": "rust-ipc-v5",
+    "ipc_version": "rust-ipc-v6",
     "frame_type": "hello_ack",
     "request_id": "runtime_gen_fixture:hello",
     "runtime_generation_id": "runtime_gen_fixture",
     "payload": {
       "runtime_version": "0.0.0-dev",
-      "actual_target": {
-        "os": "linux",
-        "arch": "amd64"
-      },
-      "rust_ipc_version": "rust-ipc-v5",
+      "actual_target": "linux/amd64",
+      "rust_ipc_version": "rust-ipc-v6",
       "wasm_abi_version": "redevplugin-wasm-worker-v2",
+      "contract_set_sha256": "c914569cbd2227c1401ed1fd320fdec044f1540af74a096d742d6831919fc6ad",
       "channel_nonce": "nonce_fixture_1234",
       "limits": {
         "worker_count": 8,
@@ -25,6 +23,16 @@
         "per_plugin_concurrency": 4,
         "module_cache_entries": 64,
         "module_cache_source_bytes": 134217728
+      },
+      "process_containment": {
+        "schema_version": "redevplugin.process_containment.v1",
+        "profile": "linux-runtime-v1",
+        "seccomp_policy_sha256": "6305735925c1fbacaf4950df2e535d3a11cebec8ab7aa16ce37fca3c31745543",
+        "no_new_privs": true,
+        "seccomp_tsync": true,
+        "process_creation_denied": true,
+        "reexec_denied": true,
+        "active": true
       }
     }
   }

@@ -16,10 +16,10 @@ import (
 	"time"
 
 	"github.com/floegence/redevplugin/internal/performanceevidence"
+	"github.com/floegence/redevplugin/internal/runtimeclient"
 	"github.com/floegence/redevplugin/pkg/connectivity"
 	"github.com/floegence/redevplugin/pkg/observability"
 	"github.com/floegence/redevplugin/pkg/pluginpkg"
-	"github.com/floegence/redevplugin/pkg/runtimeclient"
 	"github.com/floegence/redevplugin/pkg/runtimetarget"
 	"github.com/floegence/redevplugin/pkg/version"
 )

@@ -18,8 +18,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/floegence/redevplugin/internal/runtimeclient"
 	"github.com/floegence/redevplugin/pkg/connectivity"
-	"github.com/floegence/redevplugin/pkg/runtimeclient"
 	"github.com/floegence/redevplugin/pkg/runtimetarget"
 	"github.com/floegence/redevplugin/pkg/sessionctx"
 	"github.com/floegence/redevplugin/pkg/storage"
@@ -107,6 +107,9 @@ func hostRuntimeTestTarget(t *testing.T) runtimetarget.Target {
 	if err != nil {
 		t.Fatalf("test runtime target: %v", err)
 	}
+	if target != runtimetarget.LinuxAMD64 && target != runtimetarget.LinuxARM64 {
+		t.Skip("the v0.6 runtime admission contract supports Linux targets only")
+	}
 	return target
 }
 
@@ -129,13 +132,11 @@ func hostRuntimeTestDescriptor(t *testing.T, runtimePath string) runtimeclient.R
 	if err != nil {
 		t.Fatalf("parse runtime version: %v", err)
 	}
-	descriptor, err := runtimeclient.NewRuntimeDescriptor(
-		runtimeVersion,
-		hostRuntimeTestTarget(t),
-		version.RustIPCVersion,
-		version.WASMABIVersion,
-		hex.EncodeToString(hasher.Sum(nil)),
-	)
+	descriptor, err := runtimeclient.NewRuntimeDescriptor(runtimeclient.RuntimeDescriptorOptions{
+		PlatformVersion: runtimeVersion, Target: hostRuntimeTestTarget(t),
+		RustIPCVersion: version.RustIPCVersion, WASMABIVersion: version.WASMABIVersion,
+		ContractSetSHA256: version.ContractSetSHA256, BinarySHA256: hex.EncodeToString(hasher.Sum(nil)),
+	})
 	if err != nil {
 		t.Fatalf("construct runtime descriptor: %v", err)
 	}

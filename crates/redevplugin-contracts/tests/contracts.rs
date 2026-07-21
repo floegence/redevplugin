@@ -6,8 +6,8 @@ use sha2::{Digest, Sha256};
 
 #[test]
 fn inventory_includes_one_separate_synthetic_registry_contract() {
-    assert_eq!(artifacts().len(), 45);
-    assert_eq!(all().len(), 46);
+    assert_eq!(artifacts().len(), 49);
+    assert_eq!(all().len(), 50);
     assert!(
         artifacts()
             .iter()

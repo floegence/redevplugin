@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.redevplugin.dev/plugin/process-containment-v1.schema.json",
+  "title": "ReDevPlugin runtime process containment evidence v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "profile", "seccomp_policy_sha256", "no_new_privs", "seccomp_tsync", "process_creation_denied", "reexec_denied", "active"],
+  "properties": {
+    "schema_version": {"const": "redevplugin.process_containment.v1"},
+    "profile": {"const": "linux-runtime-v1"},
+    "seccomp_policy_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "no_new_privs": {"const": true},
+    "seccomp_tsync": {"const": true},
+    "process_creation_denied": {"const": true},
+    "reexec_denied": {"const": true},
+    "active": {"const": true}
+  }
+}

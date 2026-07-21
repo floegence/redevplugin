@@ -22,6 +22,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/floegence/redevplugin/internal/runtimeclient"
 	"github.com/floegence/redevplugin/pkg/bridge"
 	"github.com/floegence/redevplugin/pkg/capability"
 	"github.com/floegence/redevplugin/pkg/capabilitycontract"
@@ -37,7 +38,6 @@ import (
 	"github.com/floegence/redevplugin/pkg/registry"
 	"github.com/floegence/redevplugin/pkg/releasecontract"
 	"github.com/floegence/redevplugin/pkg/releasetrust"
-	"github.com/floegence/redevplugin/pkg/runtimeclient"
 	"github.com/floegence/redevplugin/pkg/runtimetarget"
 	"github.com/floegence/redevplugin/pkg/secrets"
 	"github.com/floegence/redevplugin/pkg/security"
@@ -71,9 +71,10 @@ type DiagnosticDetails struct {
 	RuntimeVersion            string                                  `json:"runtime_version,omitempty"`
 	RustIPCVersion            string                                  `json:"rust_ipc_version,omitempty"`
 	WASMABIVersion            string                                  `json:"wasm_abi_version,omitempty"`
+	ContractSetSHA256         string                                  `json:"contract_set_sha256,omitempty"`
 	RuntimeTargetOS           string                                  `json:"runtime_target_os,omitempty"`
 	RuntimeTargetArch         string                                  `json:"runtime_target_arch,omitempty"`
-	RuntimeArtifactSHA256     string                                  `json:"runtime_artifact_sha256,omitempty"`
+	RuntimeBinarySHA256       string                                  `json:"runtime_binary_sha256,omitempty"`
 	OS                        string                                  `json:"os,omitempty"`
 	Arch                      string                                  `json:"arch,omitempty"`
 	Stream                    string                                  `json:"stream,omitempty"`
@@ -528,10 +529,10 @@ type ReleaseModule struct {
 }
 
 type RuntimeModule struct {
-	// Manager is retained for the v0.5 in-repository compatibility harness. New
-	// hosts must construct modules with NewRuntimeModule so executable ownership
-	// cannot be bypassed by a caller-supplied manager.
-	Manager    runtimeclient.Manager
+	// manager is intentionally unexported. It exists only for in-package fake
+	// host tests; production callers must use OpenVerifiedExecutable followed by
+	// NewRuntimeModule so runtime ownership cannot be bypassed by injection.
+	manager    runtimeclient.Manager
 	capability *runtimeModuleCapability
 }
 
@@ -1165,7 +1166,7 @@ func normalizeConfig(config Config) (normalizedAdapters, map[Feature]struct{}, e
 		if module.capability != nil {
 			adapters.RuntimeModule = module
 		} else {
-			adapters.RuntimeManager = module.Manager
+			adapters.RuntimeManager = module.manager
 		}
 		features[FeatureRuntime] = struct{}{}
 	}
@@ -1239,7 +1240,7 @@ func validateConfig(adapters normalizedAdapters, config Config) error {
 		}
 	}
 	if module := config.Runtime; module != nil {
-		if module.capability == nil && isNilInterfaceValue(module.Manager) {
+		if module.capability == nil && isNilInterfaceValue(module.manager) {
 			return &HostConfigError{Module: string(FeatureRuntime), Adapter: "manager", Cause: ErrRuntimeModuleRequired}
 		}
 		if module.capability != nil {
@@ -4563,11 +4564,11 @@ func validateWorkerRuntimeDescriptor(record registry.PluginRecord, descriptor ru
 			expectedTarget.String(),
 		)
 	}
-	if descriptor.Version().Compare(minimumVersion) < 0 {
+	if descriptor.PlatformVersion().Compare(minimumVersion) < 0 {
 		return fmt.Errorf(
 			"%w: runtime %s is below required %s",
 			ErrPluginRuntimeIncompatible,
-			descriptor.Version().String(),
+			descriptor.PlatformVersion().String(),
 			minimumVersion.String(),
 		)
 	}
@@ -4605,10 +4606,11 @@ func (h *Host) preflightWorkerRuntime(ctx context.Context, record registry.Plugi
 	if h.adapters.RuntimeManager == nil {
 		return ErrPluginRuntimeNotConfigured
 	}
-	target, err := runtimetarget.Current()
-	if err != nil {
-		return fmt.Errorf("%w: %v", ErrPluginRuntimeIncompatible, err)
+	health, healthErr := h.adapters.RuntimeManager.Health(ctx)
+	if healthErr != nil {
+		return fmt.Errorf("%w: %v", ErrPluginRuntimeIncompatible, healthErr)
 	}
+	target := health.Descriptor.Target()
 	descriptor, err := h.adapters.RuntimeManager.Preflight(ctx, target)
 	if err != nil {
 		return fmt.Errorf("%w: %v", ErrPluginRuntimeIncompatible, err)
@@ -4633,10 +4635,7 @@ func (h *Host) bindCompatibleWorkerRuntime(ctx context.Context, record registry.
 	if err := validateRuntimeManagerHealth(health, health.Descriptor); err != nil {
 		return runtimeclient.RuntimeBinding{}, err
 	}
-	target, err := runtimetarget.Current()
-	if err != nil {
-		return runtimeclient.RuntimeBinding{}, fmt.Errorf("%w: %v", ErrPluginRuntimeIncompatible, err)
-	}
+	target := health.Descriptor.Target()
 	if err := validateWorkerRuntimeDescriptor(record, health.Descriptor, target); err != nil {
 		return runtimeclient.RuntimeBinding{}, err
 	}
@@ -4817,21 +4816,6 @@ func cloneStringMap(values map[string]string) map[string]string {
 	cloned := make(map[string]string, len(values))
 	for key, value := range values {
 		cloned[key] = value
-	}
-	return cloned
-}
-
-func cloneAnyMap(values map[string]any) map[string]any {
-	if values == nil {
-		return nil
-	}
-	raw, err := json.Marshal(values)
-	if err != nil {
-		return nil
-	}
-	var cloned map[string]any
-	if err := json.Unmarshal(raw, &cloned); err != nil {
-		return nil
 	}
 	return cloned
 }
@@ -5317,8 +5301,9 @@ func publicDiagnosticDetails(details observability.DiagnosticDetails) Diagnostic
 		OperationID:               details.OperationID, StreamID: details.StreamID, RuntimeInstanceID: details.RuntimeInstanceID,
 		RuntimeGenerationID: details.RuntimeGenerationID, RuntimeVersion: details.RuntimeVersion,
 		RustIPCVersion: details.RustIPCVersion, WASMABIVersion: details.WASMABIVersion,
-		RuntimeTargetOS: details.RuntimeTargetOS, RuntimeTargetArch: details.RuntimeTargetArch,
-		RuntimeArtifactSHA256: details.RuntimeArtifactSHA256, OS: details.OS, Arch: details.Arch,
+		ContractSetSHA256: details.ContractSetSHA256,
+		RuntimeTargetOS:   details.RuntimeTargetOS, RuntimeTargetArch: details.RuntimeTargetArch,
+		RuntimeBinarySHA256: details.RuntimeBinarySHA256, OS: details.OS, Arch: details.Arch,
 		Stream: details.Stream, PackageHash: details.PackageHash, Artifact: details.Artifact,
 		PluginInstanceID: details.PluginInstanceID, StoreID: details.StoreID, Operation: details.Operation,
 		Hostcall: details.Hostcall, Code: details.Code, ConnectorID: details.ConnectorID,
@@ -5357,57 +5342,87 @@ func (h *Host) ListOperations(ctx context.Context, req ListOperationsRequest) (L
 	return ListOperationsResult{Operations: page.Records, NextCursor: nextCursor}, nil
 }
 
-func (h *Host) StartRuntime(ctx context.Context, req StartRuntimeRequest) (result runtimeclient.ManagerHealth, retErr error) {
+func (h *Host) StartRuntime(ctx context.Context, req StartRuntimeRequest) (result RuntimeHealth, retErr error) {
 	if _, err := h.authorizeManagement(ctx, ManagementActionStartRuntime, authorizationTarget(ResourceRuntime, "runtime")); err != nil {
-		return runtimeclient.ManagerHealth{}, err
+		return RuntimeHealth{}, err
 	}
 	releaseOpen, err := h.ensureOpen()
 	if err != nil {
-		return runtimeclient.ManagerHealth{}, err
+		return RuntimeHealth{}, err
 	}
 	defer releaseOpen()
 	if err := h.requireFeature(FeatureRuntime); err != nil {
-		return runtimeclient.ManagerHealth{}, err
+		return RuntimeHealth{}, err
 	}
 	if h.adapters.RuntimeManager == nil {
-		return runtimeclient.ManagerHealth{}, ErrPluginRuntimeNotConfigured
+		return RuntimeHealth{}, ErrPluginRuntimeNotConfigured
 	}
 	target := req.Target
 	if err := runtimetarget.Validate(target); err != nil {
-		return runtimeclient.ManagerHealth{}, err
+		return RuntimeHealth{}, err
 	}
 	descriptor, err := h.adapters.RuntimeManager.Preflight(ctx, target)
 	if err != nil {
-		return runtimeclient.ManagerHealth{}, err
+		return RuntimeHealth{}, err
 	}
 	records, err := h.adapters.Registry.ListPlugins(ctx)
 	if err != nil {
-		return runtimeclient.ManagerHealth{}, err
+		return RuntimeHealth{}, err
 	}
 	for _, record := range records {
 		if record.EnableState != registry.EnableEnabled || !pluginHasWorkers(record.Manifest) {
 			continue
 		}
 		if err := validateWorkerRuntimeDescriptor(record, descriptor, target); err != nil {
-			return runtimeclient.ManagerHealth{}, fmt.Errorf("plugin %q: %w", record.PluginInstanceID, err)
+			return RuntimeHealth{}, fmt.Errorf("plugin %q: %w", record.PluginInstanceID, err)
 		}
 	}
 	auditMutation, err := h.beginSecurityMutation(ctx, AuditEvent{Type: "plugin.runtime.started"})
 	if err != nil {
-		return runtimeclient.ManagerHealth{}, err
+		return RuntimeHealth{}, err
 	}
 	defer func() { retErr = auditMutation.complete(context.WithoutCancel(ctx), retErr) }()
 	health, err := h.adapters.RuntimeManager.Start(ctx, target)
 	if err != nil {
-		if errors.Is(err, runtimeclient.ErrManagerLifecycleOutcomeUnknown) {
-			return runtimeclient.ManagerHealth{}, mutation.Unknown(err)
+		if h.runtimeModule != nil {
+			_ = h.runtimeModule.transitionRuntimeJournal(runtimeExecJournalReconcileRequired, runtimeExecContainmentPending, mutation.OutcomeUnknown)
 		}
-		return runtimeclient.ManagerHealth{}, err
+		if errors.Is(err, runtimeclient.ErrManagerLifecycleOutcomeUnknown) {
+			return RuntimeHealth{}, mutation.Unknown(err)
+		}
+		return RuntimeHealth{}, err
 	}
 	if err := validateRuntimeManagerHealth(health, descriptor); err != nil {
-		return runtimeclient.ManagerHealth{}, fmt.Errorf("%w: started runtime health: %v", ErrPluginRuntimeIncompatible, err)
+		shutdownTimeout := hostRuntimeShutdownTimeout
+		if h.runtimeModule != nil && h.runtimeModule.capability != nil {
+			h.runtimeModule.capability.mu.Lock()
+			shutdownTimeout = h.runtimeModule.capability.shutdownTimeout
+			h.runtimeModule.capability.mu.Unlock()
+		}
+		shutdownCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), shutdownTimeout)
+		stopErr := h.adapters.RuntimeManager.Stop(shutdownCtx)
+		cancel()
+		if h.runtimeModule != nil {
+			_ = h.runtimeModule.transitionRuntimeJournal(runtimeExecJournalReconcileRequired, runtimeExecContainmentPending, mutation.OutcomeUnknown)
+		}
+		incompatibleErr := fmt.Errorf("%w: started runtime health: %v", ErrPluginRuntimeIncompatible, err)
+		if stopErr != nil {
+			return RuntimeHealth{}, mutation.Unknown(errors.Join(incompatibleErr, stopErr))
+		}
+		return RuntimeHealth{}, incompatibleErr
 	}
-	return health, nil
+	if h.runtimeModule != nil {
+		identity := runtimeExecContainmentPending
+		if len(health.Shards) == 1 && health.Shards[0].ContainmentIdentity != "" {
+			identity = health.Shards[0].ContainmentIdentity
+		}
+		if err := h.runtimeModule.transitionRuntimeJournal(runtimeExecJournalRunning, identity, mutation.OutcomeCommitted); err != nil {
+			_ = h.adapters.RuntimeManager.Stop(context.WithoutCancel(ctx))
+			_ = h.runtimeModule.transitionRuntimeJournal(runtimeExecJournalReconcileRequired, identity, mutation.OutcomeUnknown)
+			return RuntimeHealth{}, mutation.Unknown(err)
+		}
+	}
+	return publicRuntimeHealth(health), nil
 }
 
 func (h *Host) StopRuntime(ctx context.Context) (retErr error) {
@@ -5429,8 +5444,16 @@ func (h *Host) StopRuntime(ctx context.Context) (retErr error) {
 	var auditDetails map[string]any
 	defer func() { retErr = auditMutation.completeWithDetails(context.WithoutCancel(ctx), retErr, auditDetails) }()
 	var stopErr error
+	if h.runtimeModule != nil {
+		if journalErr := h.runtimeModule.transitionRuntimeJournal(runtimeExecJournalStopping, runtimeExecContainmentPending, mutation.OutcomeUnknown); journalErr != nil {
+			stopErr = journalErr
+		}
+	}
 	if h.adapters.RuntimeManager != nil {
-		stopErr = h.adapters.RuntimeManager.Stop(ctx)
+		stopErr = errors.Join(stopErr, h.adapters.RuntimeManager.Stop(ctx))
+	}
+	if h.runtimeModule != nil && stopErr == nil {
+		stopErr = h.runtimeModule.transitionRuntimeJournal(runtimeExecJournalBound, runtimeExecContainmentPending, mutation.OutcomeCommitted)
 	}
 	revokedSurfaces := h.surfaceTokens.RevokeSurfacesExceptGeneration(h.surfaceGenerationID, time.Time{})
 	auditDetails = map[string]any{"revoked_surface_count": revokedSurfaces}
@@ -5454,29 +5477,29 @@ func (h *Host) StopRuntime(ctx context.Context) (retErr error) {
 	return nil
 }
 
-func (h *Host) RuntimeHealth(ctx context.Context) (runtimeclient.ManagerHealth, error) {
+func (h *Host) RuntimeHealth(ctx context.Context) (RuntimeHealth, error) {
 	if _, err := h.authorizeManagement(ctx, ManagementActionGetRuntimeHealth, authorizationTarget(ResourceRuntime, "runtime")); err != nil {
-		return runtimeclient.ManagerHealth{}, err
+		return RuntimeHealth{}, err
 	}
 	releaseOpen, err := h.ensureOpen()
 	if err != nil {
-		return runtimeclient.ManagerHealth{}, err
+		return RuntimeHealth{}, err
 	}
 	defer releaseOpen()
 	if err := h.requireFeature(FeatureRuntime); err != nil {
-		return runtimeclient.ManagerHealth{}, err
+		return RuntimeHealth{}, err
 	}
 	if h.adapters.RuntimeManager == nil {
-		return runtimeclient.ManagerHealth{}, ErrPluginRuntimeNotConfigured
+		return RuntimeHealth{}, ErrPluginRuntimeNotConfigured
 	}
 	health, err := h.adapters.RuntimeManager.Health(ctx)
 	if err != nil || !health.Ready {
-		return health, err
+		return publicRuntimeHealth(health), err
 	}
 	if err := validateRuntimeManagerHealth(health, health.Descriptor); err != nil {
-		return runtimeclient.ManagerHealth{}, err
+		return RuntimeHealth{}, err
 	}
-	return health, nil
+	return publicRuntimeHealth(health), nil
 }
 
 func (h *Host) requireSurfaceRuntimeGeneration(ctx context.Context, pluginInstanceID, surfaceInstanceID, boundGenerationID string, now time.Time) error {
@@ -8387,13 +8410,6 @@ func (h *Host) disablePluginForPolicyFailure(ctx context.Context, record registr
 		return err
 	}
 	return h.revokePluginRuntimeCapabilities(ctx, disabled, now)
-}
-
-func releaseRefFromRecord(record registry.PluginRecord) (PluginReleaseRef, error) {
-	if record.ReleaseTrustBinding == nil {
-		return PluginReleaseRef{}, fmt.Errorf("%w: installed release source metadata is incomplete", ErrReleaseRefVerificationFailed)
-	}
-	return releaseRefFromBinding(*record.ReleaseTrustBinding, record), nil
 }
 
 func compileConnectivityPolicy(record registry.PluginRecord) (connectivity.PolicySet, bool, error) {

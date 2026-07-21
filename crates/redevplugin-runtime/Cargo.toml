@@ -10,6 +10,7 @@ readme = "README.md"
 include = ["Cargo.toml", "LICENSE", "README.md", "src/**", "testdata/**"]
 
 [dependencies]
+libc = "0.2"
 redevplugin-ipc = { path = "../redevplugin-ipc", version = "=0.6.0" }
 redevplugin-wasm-abi = { path = "../redevplugin-wasm-abi", version = "=0.6.0" }
 serde = { version = "1.0", features = ["derive"] }

@@ -88,14 +88,14 @@ func TestPerformanceEvidenceSchemaValidatesReleaseEvidence(t *testing.T) {
 func compilePerformanceEvidenceSchema(t testing.TB) *jsonschema.Schema {
 	t.Helper()
 	root := hostCapabilityRepositoryRoot(t)
-	raw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", "performance-evidence-v2.schema.json"))
+	raw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", "performance-evidence-v3.schema.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	compiler := jsonschema.NewCompiler()
 	compiler.Draft = jsonschema.Draft2020
 	compiler.AssertFormat = true
-	const resource = "urn:redevplugin:test:performance-evidence-v2"
+	const resource = "urn:redevplugin:test:performance-evidence-v3"
 	if err := compiler.AddResource(resource, bytes.NewReader(raw)); err != nil {
 		t.Fatal(err)
 	}
@@ -108,7 +108,7 @@ func compilePerformanceEvidenceSchema(t testing.TB) *jsonschema.Schema {
 
 func validPerformanceEvidence() map[string]any {
 	return map[string]any{
-		"schema_version":  "redevplugin.performance_evidence.v2",
+		"schema_version":  "redevplugin.performance_evidence.v3",
 		"release_version": "0.5.0",
 		"source_commit":   "0123456789abcdef0123456789abcdef01234567",
 		"generated_at":    "2026-07-16T08:00:00Z",

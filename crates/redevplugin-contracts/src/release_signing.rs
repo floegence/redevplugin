@@ -1803,15 +1803,8 @@ fn validate_source_policy(
     ] {
         validate_sorted_ids(keys, 1, 16, true)?;
     }
-    validate_sorted_ids(
-        &value.active_keys.host_capability_contract,
-        0,
-        16,
-        true,
-    )?;
-    if value.capability_publisher_scopes.len()
-        != value.active_keys.host_capability_contract.len()
-    {
+    validate_sorted_ids(&value.active_keys.host_capability_contract, 0, 16, true)?;
+    if value.capability_publisher_scopes.len() != value.active_keys.host_capability_contract.len() {
         return invalid_document();
     }
     for (index, scope) in value.capability_publisher_scopes.iter().enumerate() {

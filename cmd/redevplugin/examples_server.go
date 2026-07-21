@@ -25,7 +25,6 @@ import (
 	"github.com/floegence/redevplugin/pkg/plugindata"
 	"github.com/floegence/redevplugin/pkg/pluginpkg"
 	"github.com/floegence/redevplugin/pkg/registry"
-	"github.com/floegence/redevplugin/pkg/runtimeclient"
 	"github.com/floegence/redevplugin/pkg/runtimetarget"
 	"github.com/floegence/redevplugin/pkg/secrets"
 	"github.com/floegence/redevplugin/pkg/security"
@@ -186,7 +185,7 @@ type examplePlatformError struct {
 }
 
 type examplesRuntimeHealthReader interface {
-	RuntimeHealth(ctx context.Context) (runtimeclient.ManagerHealth, error)
+	RuntimeHealth(ctx context.Context) (host.RuntimeHealth, error)
 }
 
 type examplesEventStore interface {
@@ -299,18 +298,7 @@ func examplesServerWithOptions(ctx context.Context, stateRoot string, runtimePat
 	if err != nil {
 		return err
 	}
-	runtimeManager, err := newCommandRuntimeManager(commandRuntimeDependencies{
-		Path:             runtimePath,
-		Descriptor:       runtimeDescriptor,
-		Diagnostics:      events,
-		Assets:           assetStore,
-		SurfaceTokens:    surfaceTokens,
-		PluginData:       pluginData,
-		Connectivity:     connectivityBroker,
-		NetworkExecutor:  networkExecutor,
-		ShardCount:       options.RuntimeShardCount,
-		HandshakeTimeout: 15 * time.Second,
-	})
+	runtimeModule, err := newCommandRuntimeModule(ctx, runtimePath, stateRoot, runtimeDescriptor, 15*time.Second)
 	if err != nil {
 		return err
 	}
@@ -333,7 +321,7 @@ func examplesServerWithOptions(ctx context.Context, stateRoot string, runtimePat
 			SessionLifecycle:     sessionLifecycle,
 			SessionScopes:        sessionScopes,
 		},
-		Runtime: &host.RuntimeModule{Manager: runtimeManager},
+		Runtime: runtimeModule,
 		Connectivity: &host.ConnectivityModule{
 			Broker:          connectivityBroker,
 			NetworkExecutor: networkExecutor,
@@ -341,6 +329,7 @@ func examplesServerWithOptions(ctx context.Context, stateRoot string, runtimePat
 		Secrets: &host.SecretsModule{Store: secretStore},
 	})
 	if err != nil {
+		_, _ = runtimeModule.Close(context.Background())
 		_ = secretStore.Close()
 		_ = pluginData.Close()
 		_ = registryStore.Close()

@@ -351,7 +351,7 @@ func TestTransportResultsAreBoundedAndOwned(t *testing.T) {
 		t.Fatalf("missing document transport token error = %v", err)
 	}
 
-	ledgerScope := signingLedgerSubjectScope{sourceID: key.sourceID, channel: key.channel}
+	ledgerScope := signingLedgerSubjectScope(key)
 	ledgerRequest, err := fixedSigningLedgerRequest(configuration, ledgerScope, SigningLedgerCheckpoint, "", "", "")
 	if err != nil {
 		t.Fatal(err)

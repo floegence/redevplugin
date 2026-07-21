@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/floegence/redevplugin/internal/runtimeclient"
 	"github.com/floegence/redevplugin/pkg/capability"
 	"github.com/floegence/redevplugin/pkg/capabilitycontract"
 	"github.com/floegence/redevplugin/pkg/connectivity"
@@ -24,7 +25,6 @@ import (
 	"github.com/floegence/redevplugin/pkg/plugindata"
 	"github.com/floegence/redevplugin/pkg/pluginpkg"
 	"github.com/floegence/redevplugin/pkg/registry"
-	"github.com/floegence/redevplugin/pkg/runtimeclient"
 	"github.com/floegence/redevplugin/pkg/security"
 	"github.com/floegence/redevplugin/pkg/sessionctx"
 	"github.com/floegence/redevplugin/pkg/stream"
@@ -64,10 +64,10 @@ func TestPublicWireProjectionsExcludeInternalIdentity(t *testing.T) {
 			SessionChannelIDHash: "session_channel_private",
 		},
 	})
-	runtimeHealth := publicRuntimeHealth(runtimeclient.ManagerHealth{
-		Shards: []runtimeclient.ShardHealth{{
+	runtimeHealth := publicRuntimeHealth(host.RuntimeHealth{
+		Shards: []host.RuntimeShardHealth{{
 			RuntimeShardID: "runtime_shard_public",
-			Health: runtimeclient.Health{
+			RuntimeProcessHealth: host.RuntimeProcessHealth{
 				RuntimeInstanceID:   "runtime_instance_public",
 				RuntimeGenerationID: "runtime_generation_public",
 				IPCChannelID:        "ipc_channel_private",
@@ -296,7 +296,7 @@ func TestHTTPWireDTOJSONTagsAreSnakeCase(t *testing.T) {
 		opaqueSurfaceWorkerResponse{}, opaqueSurfaceAssetResponse{}, opaqueSurfaceDocumentResponse{},
 		pluginRecordResponse{}, permissionResponse{}, authorizationRevisionsResponse{}, permissionMutationResponse{},
 		settingsFieldResponse{}, settingsSchemaResponse{}, settingsSecretMetadataResponse{}, settingsSnapshotResponse{},
-		runtimeTargetResponse{}, runtimeDescriptorResponse{}, runtimeLimitsResponse{}, runtimeModuleCacheResponse{},
+		runtimeDescriptorResponse{}, runtimeLimitsResponse{}, runtimeModuleCacheResponse{},
 		runtimeShardHealthResponse{}, runtimeHealthResponse{}, runtimeRefreshErrorResponse{}, runtimeRefreshEntryResponse{},
 		runtimeRefreshResponse{}, surfacePreparationResponse{}, bridgeTokenResponse{}, callMethodResponse{},
 		confirmationPreparationResponse{}, confirmationRejectionResponse{}, intentResponse{}, intentListResponse{},
@@ -341,8 +341,8 @@ func TestPublicDiagnosticsExplicitlyMapClosedDetails(t *testing.T) {
 			FailureCode: "failure_code", RuntimeProcessFailureCode: observability.RuntimeProcessWriterWriteFailed,
 			OperationID: "operation_1", StreamID: "stream_1",
 			RuntimeInstanceID: "runtime_1", RuntimeGenerationID: "generation_1", RuntimeVersion: "0.5.0",
-			RustIPCVersion: "rust-ipc-v5", WASMABIVersion: "wasm-abi-v1", RuntimeTargetOS: "linux",
-			RuntimeTargetArch: "amd64", RuntimeArtifactSHA256: "sha256:runtime", OS: "linux", Arch: "amd64",
+			RustIPCVersion: "rust-ipc-v6", WASMABIVersion: "wasm-abi-v1", ContractSetSHA256: version.ContractSetSHA256, RuntimeTargetOS: "linux",
+			RuntimeTargetArch: "amd64", RuntimeBinarySHA256: strings.Repeat("a", 64), OS: "linux", Arch: "amd64",
 			Stream: "stderr", PackageHash: "sha256:package", Artifact: "worker.wasm", PluginInstanceID: "plugin_1",
 			StoreID: "store_1", Operation: "runtime.start", Hostcall: "storage.kv", Code: "PLUGIN_RUNTIME_UNAVAILABLE",
 			ConnectorID: "connector_1", Transport: "tcp", RevokeEpoch: 3, StageID: "stage_1",
@@ -362,8 +362,8 @@ func TestPublicDiagnosticsExplicitlyMapClosedDetails(t *testing.T) {
 		FailureCode: "failure_code", RuntimeProcessFailureCode: observability.RuntimeProcessWriterWriteFailed,
 		OperationID: "operation_1", StreamID: "stream_1",
 		RuntimeInstanceID: "runtime_1", RuntimeGenerationID: "generation_1", RuntimeVersion: "0.5.0",
-		RustIPCVersion: "rust-ipc-v5", WASMABIVersion: "wasm-abi-v1", RuntimeTargetOS: "linux",
-		RuntimeTargetArch: "amd64", RuntimeArtifactSHA256: "sha256:runtime", OS: "linux", Arch: "amd64",
+		RustIPCVersion: "rust-ipc-v6", WASMABIVersion: "wasm-abi-v1", ContractSetSHA256: version.ContractSetSHA256, RuntimeTargetOS: "linux",
+		RuntimeTargetArch: "amd64", RuntimeBinarySHA256: strings.Repeat("a", 64), OS: "linux", Arch: "amd64",
 		Stream: "stderr", PackageHash: "sha256:package", Artifact: "worker.wasm", PluginInstanceID: "plugin_1",
 		StoreID: "store_1", Operation: "runtime.start", Hostcall: "storage.kv", Code: "PLUGIN_RUNTIME_UNAVAILABLE",
 		ConnectorID: "connector_1", Transport: "tcp", RevokeEpoch: 3, StageID: "stage_1",

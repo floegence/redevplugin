@@ -215,9 +215,10 @@ type DiagnosticDetails struct {
 	RuntimeVersion            string                    `json:"runtime_version,omitempty"`
 	RustIPCVersion            string                    `json:"rust_ipc_version,omitempty"`
 	WASMABIVersion            string                    `json:"wasm_abi_version,omitempty"`
+	ContractSetSHA256         string                    `json:"contract_set_sha256,omitempty"`
 	RuntimeTargetOS           string                    `json:"runtime_target_os,omitempty"`
 	RuntimeTargetArch         string                    `json:"runtime_target_arch,omitempty"`
-	RuntimeArtifactSHA256     string                    `json:"runtime_artifact_sha256,omitempty"`
+	RuntimeBinarySHA256       string                    `json:"runtime_binary_sha256,omitempty"`
 	OS                        string                    `json:"os,omitempty"`
 	Arch                      string                    `json:"arch,omitempty"`
 	Stream                    string                    `json:"stream,omitempty"`
@@ -245,7 +246,7 @@ func (details DiagnosticDetails) Valid() bool {
 	for _, value := range []string{
 		details.InvocationID, details.Method, details.FailureCode, details.OperationID, details.StreamID,
 		details.RuntimeInstanceID, details.RuntimeGenerationID, details.RuntimeVersion, details.RustIPCVersion,
-		details.WASMABIVersion, details.RuntimeTargetOS, details.RuntimeTargetArch, details.RuntimeArtifactSHA256,
+		details.WASMABIVersion, details.ContractSetSHA256, details.RuntimeTargetOS, details.RuntimeTargetArch, details.RuntimeBinarySHA256,
 		details.OS, details.Arch, details.Stream, details.PackageHash, details.PluginInstanceID, details.StoreID,
 		details.Operation, details.Hostcall, details.ConnectorID, details.Transport, details.StageID, details.Reason,
 		details.SurfaceInstanceID,

@@ -18,7 +18,7 @@ import {
   canonicalProfileSHA256,
 } from "./route_authorization_comparison.mjs";
 
-const contractPath = resolve(import.meta.dirname, "../spec/plugin/performance-contract-v2.json");
+const contractPath = resolve(import.meta.dirname, "../spec/plugin/performance-contract-v3.json");
 
 test("performance contract accepts its exact scenario and metric shape", () => {
   const contract = readPerformanceContract(contractPath);
@@ -60,7 +60,7 @@ test("performance evidence metadata and contract hashes are closed and immutable
   const contract = readPerformanceContract(contractPath);
   const contractHashes = [{ id: "performance-contract", sha256: "a".repeat(64) }];
   const evidence = {
-    schema_version: "redevplugin.performance_evidence.v2",
+    schema_version: "redevplugin.performance_evidence.v3",
     release_version: "0.6.0",
     source_commit: "b".repeat(40),
     generated_at: "2026-07-17T00:00:00Z",
@@ -114,7 +114,7 @@ test("performance evidence metadata and contract hashes are closed and immutable
 test("performance evidence requires provenance for every pinned comparison probe", () => {
   const contract = readPerformanceContract(contractPath);
   const evidence = {
-    schema_version: "redevplugin.performance_evidence.v2",
+    schema_version: "redevplugin.performance_evidence.v3",
     release_version: "0.6.0",
     source_commit: "b".repeat(40),
     generated_at: "2026-07-20T00:00:00Z",
@@ -146,7 +146,7 @@ test("performance evidence rejects malformed raw route authorization profiles", 
   const contract = readPerformanceContract(contractPath);
   const contractHashes = [{ id: "performance-contract", sha256: "a".repeat(64) }];
   const evidence = {
-    schema_version: "redevplugin.performance_evidence.v2",
+    schema_version: "redevplugin.performance_evidence.v3",
     release_version: "0.6.0",
     source_commit: "b".repeat(40),
     generated_at: "2026-07-20T00:00:00Z",
@@ -190,7 +190,7 @@ test("performance evidence rejects malformed raw route authorization profiles", 
 test("performance contract is a closed unique machine contract", () => {
   const raw = JSON.parse(readFileSync(contractPath, "utf8"));
   assert.deepEqual(Object.keys(raw).sort(), ["comparison_probes", "scenarios", "schema_version"]);
-  assert.equal(raw.schema_version, "redevplugin.performance_contract.v2");
+  assert.equal(raw.schema_version, "redevplugin.performance_contract.v3");
   assert.equal(raw.scenarios.length, 25);
   assert.equal(new Set(raw.scenarios.map((scenario) => scenario.id)).size, 25);
 });

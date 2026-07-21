@@ -22,6 +22,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/floegence/redevplugin/internal/runtimeclient"
 	"github.com/floegence/redevplugin/pkg/bridge"
 	"github.com/floegence/redevplugin/pkg/capability"
 	"github.com/floegence/redevplugin/pkg/capabilitycontract"
@@ -36,7 +37,6 @@ import (
 	"github.com/floegence/redevplugin/pkg/pluginpkg"
 	"github.com/floegence/redevplugin/pkg/registry"
 	"github.com/floegence/redevplugin/pkg/releasetrust"
-	"github.com/floegence/redevplugin/pkg/runtimeclient"
 	"github.com/floegence/redevplugin/pkg/runtimetarget"
 	"github.com/floegence/redevplugin/pkg/secrets"
 	"github.com/floegence/redevplugin/pkg/security"
@@ -6515,7 +6515,7 @@ func TestRefreshEnabledPluginsRestoresRuntimeState(t *testing.T) {
 			SessionLifecycle:     h.adapters.SessionLifecycle,
 			SessionScopes:        h.adapters.SessionScopes,
 		},
-		Runtime:      &RuntimeModule{Manager: newRecordingRuntimeManager()},
+		Runtime:      &RuntimeModule{manager: newRecordingRuntimeManager()},
 		Capability:   &CapabilityModule{Registry: capability.NewRegistry()},
 		Connectivity: &ConnectivityModule{Broker: restartedBroker, NetworkExecutor: connectivity.NewExecutor(connectivity.ExecutorOptions{})},
 		Secrets:      &SecretsModule{Store: secrets.NewMemoryStore()},
@@ -7126,8 +7126,8 @@ func TestPublicDiagnosticDetailsExplicitlyMapAllFields(t *testing.T) {
 		FailureCode: "failure_code", RuntimeProcessFailureCode: observability.RuntimeProcessWriterWriteFailed,
 		OperationID: "operation_1", StreamID: "stream_1",
 		RuntimeInstanceID: "runtime_1", RuntimeGenerationID: "generation_1", RuntimeVersion: "0.5.0",
-		RustIPCVersion: "rust-ipc-v5", WASMABIVersion: "wasm-abi-v1", RuntimeTargetOS: "linux",
-		RuntimeTargetArch: "amd64", RuntimeArtifactSHA256: "sha256:runtime", OS: "linux", Arch: "amd64",
+		RustIPCVersion: "rust-ipc-v6", WASMABIVersion: "wasm-abi-v1", ContractSetSHA256: version.ContractSetSHA256, RuntimeTargetOS: "linux",
+		RuntimeTargetArch: "amd64", RuntimeBinarySHA256: strings.Repeat("a", 64), OS: "linux", Arch: "amd64",
 		Stream: "stderr", PackageHash: "sha256:package", Artifact: "worker.wasm", PluginInstanceID: "plugin_1",
 		StoreID: "store_1", Operation: "runtime.start", Hostcall: "storage.kv", Code: "PLUGIN_RUNTIME_UNAVAILABLE",
 		ConnectorID: "connector_1", Transport: "tcp", RevokeEpoch: 3, StageID: "stage_1",
@@ -7138,8 +7138,8 @@ func TestPublicDiagnosticDetailsExplicitlyMapAllFields(t *testing.T) {
 		FailureCode: "failure_code", RuntimeProcessFailureCode: observability.RuntimeProcessWriterWriteFailed,
 		OperationID: "operation_1", StreamID: "stream_1",
 		RuntimeInstanceID: "runtime_1", RuntimeGenerationID: "generation_1", RuntimeVersion: "0.5.0",
-		RustIPCVersion: "rust-ipc-v5", WASMABIVersion: "wasm-abi-v1", RuntimeTargetOS: "linux",
-		RuntimeTargetArch: "amd64", RuntimeArtifactSHA256: "sha256:runtime", OS: "linux", Arch: "amd64",
+		RustIPCVersion: "rust-ipc-v6", WASMABIVersion: "wasm-abi-v1", ContractSetSHA256: version.ContractSetSHA256, RuntimeTargetOS: "linux",
+		RuntimeTargetArch: "amd64", RuntimeBinarySHA256: strings.Repeat("a", 64), OS: "linux", Arch: "amd64",
 		Stream: "stderr", PackageHash: "sha256:package", Artifact: "worker.wasm", PluginInstanceID: "plugin_1",
 		StoreID: "store_1", Operation: "runtime.start", Hostcall: "storage.kv", Code: "PLUGIN_RUNTIME_UNAVAILABLE",
 		ConnectorID: "connector_1", Transport: "tcp", RevokeEpoch: 3, StageID: "stage_1",
@@ -7447,7 +7447,7 @@ func newTestHostWithOptions(t *testing.T, opts testHostOptions) (*Host, *surface
 	}
 	var runtimeModule *RuntimeModule
 	if runtimeManager != nil {
-		runtimeModule = &RuntimeModule{Manager: runtimeManager}
+		runtimeModule = &RuntimeModule{manager: runtimeManager}
 	}
 	securityJournal := observability.NewMemorySecurityAuditJournal()
 	sessionScopePath := opts.sessionScopePath
@@ -9520,11 +9520,6 @@ type recordingReleaseArtifactResolver struct {
 	calls    int
 }
 
-func artifactSHA256(data []byte) string {
-	sum := sha256.Sum256(data)
-	return hex.EncodeToString(sum[:])
-}
-
 type recordingCapabilityContractArtifactResolver struct {
 	result ResolvedCapabilityContractArtifact
 	err    error
@@ -10136,21 +10131,15 @@ func newRecordingRuntimeManagerWithHealth(health runtimeclient.Health) *recordin
 }
 
 func hostTestRuntimeDescriptor() runtimeclient.RuntimeDescriptor {
-	runtimeVersion, err := version.ParseSemVer(version.RuntimeVersion)
+	runtimeVersion, err := version.ParseSemVer(version.CurrentCompatibilityVersion())
 	if err != nil {
 		panic(err)
 	}
-	target, err := runtimetarget.Current()
-	if err != nil {
-		panic(err)
-	}
-	descriptor, err := runtimeclient.NewRuntimeDescriptor(
-		runtimeVersion,
-		target,
-		version.RustIPCVersion,
-		version.WASMABIVersion,
-		strings.Repeat("a", 64),
-	)
+	descriptor, err := runtimeclient.NewRuntimeDescriptor(runtimeclient.RuntimeDescriptorOptions{
+		PlatformVersion: runtimeVersion, Target: runtimetarget.LinuxAMD64,
+		RustIPCVersion: version.RustIPCVersion, WASMABIVersion: version.WASMABIVersion,
+		ContractSetSHA256: version.ContractSetSHA256, BinarySHA256: strings.Repeat("a", 64),
+	})
 	if err != nil {
 		panic(err)
 	}
@@ -10383,7 +10372,7 @@ func (r *recordingRuntimeManager) Preflight(_ context.Context, target runtimetar
 	if r.preflightErr != nil {
 		return runtimeclient.RuntimeDescriptor{}, r.preflightErr
 	}
-	if r.descriptor.Version().String() == "" {
+	if r.descriptor.PlatformVersion().String() == "" {
 		return runtimeclient.RuntimeDescriptor{}, runtimeclient.ErrRuntimeDescriptorInvalid
 	}
 	if r.descriptor.Target() != target {
@@ -10396,7 +10385,7 @@ func (r *recordingRuntimeManager) BindHostServices(services runtimeclient.Runtim
 	if services.StreamSink == nil {
 		return runtimeclient.ErrRuntimeHostServicesInvalid
 	}
-	if r.descriptor.Version().String() == "" || r.health.Descriptor != r.descriptor {
+	if r.descriptor.PlatformVersion().String() == "" || r.health.Descriptor != r.descriptor {
 		return runtimeclient.ErrRuntimeDescriptorInvalid
 	}
 	r.hostServices = services
@@ -10429,7 +10418,7 @@ func (r *recordingRuntimeManager) BindPlugin(context.Context, string) (runtimecl
 		return runtimeclient.RuntimeBinding{}, r.bindErr
 	}
 	descriptor := r.health.Descriptor
-	if r.bindingDescriptor.Version().String() != "" {
+	if r.bindingDescriptor.PlatformVersion().String() != "" {
 		descriptor = r.bindingDescriptor
 	}
 	return runtimeclient.RuntimeBinding{

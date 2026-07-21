@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.redevplugin.dev/plugin/runtime-exec-journal-v1.schema.json",
+  "title": "ReDevPlugin runtime execution journal v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "module_id", "descriptor_digest", "state", "containment_identity", "mutation_outcome"],
+  "properties": {
+    "schema_version": {"const": "redevplugin.runtime_exec_journal.v1"},
+    "module_id": {"type": "string", "pattern": "^[A-Za-z0-9._-]{16,128}$"},
+    "descriptor_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "state": {"enum": ["opened", "consumed", "bound", "running", "stopping", "closed", "reconcile_required"]},
+    "containment_identity": {"type": "string", "pattern": "^[A-Za-z0-9._:-]{1,256}$"},
+    "mutation_outcome": {"enum": ["committed", "not_committed", "unknown"]}
+  }
+}

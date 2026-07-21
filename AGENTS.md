@@ -703,7 +703,8 @@ local equivalent of every CI check that does not require GitHub credentials,
 artifact storage, tag/ref identity, registry readback, Sigstore signing, or a
 hosted multi-platform runner. It includes Go, TypeScript, browser, canonical
 WASM, bridge, performance, Rust, audit, stress, property, contract, platform,
-and release-bundle smoke gates. The hook behavior itself is covered by
+and platform-package publication smoke gates. The hook behavior itself is
+covered by
 `scripts/test_redevplugin_pre_push_hook.sh`. The main-branch CI workflow
 invokes the same gate in its `Main Pre-Push Equivalent` job. Do not add a
 repository gate to a workflow without adding it to this script and running it

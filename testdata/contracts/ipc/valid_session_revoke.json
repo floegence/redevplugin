@@ -1,5 +1,5 @@
 {
-  "ipc_version": "rust-ipc-v5",
+  "ipc_version": "rust-ipc-v6",
   "frame_type": "session_revoke",
   "request_id": "session_revoke_1",
   "runtime_generation_id": "runtime_generation_fixture_1",

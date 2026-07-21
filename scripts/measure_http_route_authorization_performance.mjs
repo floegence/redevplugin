@@ -15,7 +15,7 @@ import {
 } from "./route_authorization_comparison.mjs";
 
 const root = resolve(import.meta.dirname, "..");
-const contractPath = join(root, "spec/plugin/performance-contract-v2.json");
+const contractPath = join(root, "spec/plugin/performance-contract-v3.json");
 const probeID = "httpadapter.route-authorization-v051";
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

@@ -9,7 +9,6 @@ import (
 	"github.com/floegence/redevplugin/pkg/permissions"
 	"github.com/floegence/redevplugin/pkg/plugindata"
 	"github.com/floegence/redevplugin/pkg/registry"
-	"github.com/floegence/redevplugin/pkg/runtimeclient"
 )
 
 // HTTP wire DTOs are deliberately separate from Host and persistence DTOs.
@@ -383,17 +382,14 @@ func publicSettingsSnapshot(result host.SettingsResult) (settingsSnapshotRespons
 	}, nil
 }
 
-type runtimeTargetResponse struct {
-	OS   string `json:"os"`
-	Arch string `json:"arch"`
-}
-
 type runtimeDescriptorResponse struct {
-	Version        string                `json:"version"`
-	Target         runtimeTargetResponse `json:"target"`
-	IPCVersion     string                `json:"ipc_version"`
-	WASMABIVersion string                `json:"wasm_abi_version"`
-	ArtifactSHA256 string                `json:"artifact_sha256"`
+	SchemaVersion     string `json:"schema_version"`
+	PlatformVersion   string `json:"platform_version"`
+	Target            string `json:"target"`
+	RustIPCVersion    string `json:"rust_ipc_version"`
+	WASMABIVersion    string `json:"wasm_abi_version"`
+	ContractSetSHA256 string `json:"contract_set_sha256"`
+	BinarySHA256      string `json:"binary_sha256"`
 }
 
 type runtimeLimitsResponse struct {
@@ -430,7 +426,7 @@ type runtimeHealthResponse struct {
 	Shards     []runtimeShardHealthResponse `json:"shards"`
 }
 
-func publicRuntimeHealth(health runtimeclient.ManagerHealth) runtimeHealthResponse {
+func publicRuntimeHealth(health host.RuntimeHealth) runtimeHealthResponse {
 	shards := make([]runtimeShardHealthResponse, len(health.Shards))
 	for index, shard := range health.Shards {
 		shards[index] = runtimeShardHealthResponse{
@@ -443,15 +439,16 @@ func publicRuntimeHealth(health runtimeclient.ManagerHealth) runtimeHealthRespon
 	return runtimeHealthResponse{Ready: health.Ready, Descriptor: publicRuntimeDescriptor(health.Descriptor), Shards: shards}
 }
 
-func publicRuntimeDescriptor(descriptor runtimeclient.RuntimeDescriptor) runtimeDescriptorResponse {
-	target := descriptor.Target()
+func publicRuntimeDescriptor(descriptor host.RuntimeDescriptor) runtimeDescriptorResponse {
+	target := descriptor.Target().String()
 	return runtimeDescriptorResponse{
-		Version: descriptor.Version().String(), Target: runtimeTargetResponse{OS: target.OS(), Arch: target.Arch()},
-		IPCVersion: descriptor.IPCVersion(), WASMABIVersion: descriptor.WASMABIVersion(), ArtifactSHA256: descriptor.ArtifactSHA256(),
+		SchemaVersion: "runtime-descriptor-v2", PlatformVersion: descriptor.PlatformVersion().String(), Target: target,
+		RustIPCVersion: descriptor.RustIPCVersion().String(), WASMABIVersion: descriptor.WASMABIVersion().String(),
+		ContractSetSHA256: descriptor.ContractSetSHA256().String(), BinarySHA256: descriptor.BinarySHA256().String(),
 	}
 }
 
-func publicRuntimeLimits(limits runtimeclient.RuntimeLimits) runtimeLimitsResponse {
+func publicRuntimeLimits(limits host.RuntimeLimits) runtimeLimitsResponse {
 	return runtimeLimitsResponse{
 		WorkerCount: limits.WorkerCount, QueueCapacity: limits.QueueCapacity,
 		PerPluginConcurrency: limits.PerPluginConcurrency, ModuleCacheEntries: limits.ModuleCacheEntries,
@@ -459,7 +456,7 @@ func publicRuntimeLimits(limits runtimeclient.RuntimeLimits) runtimeLimitsRespon
 	}
 }
 
-func publicRuntimeModuleCache(metrics runtimeclient.ModuleCacheMetrics) runtimeModuleCacheResponse {
+func publicRuntimeModuleCache(metrics host.RuntimeModuleCacheMetrics) runtimeModuleCacheResponse {
 	return runtimeModuleCacheResponse{
 		Hits: metrics.Hits, Misses: metrics.Misses, Compiles: metrics.Compiles,
 		Entries: metrics.Entries, SourceBytes: metrics.SourceBytes,
@@ -697,9 +694,10 @@ type diagnosticDetailsResponse struct {
 	RuntimeVersion            string                                  `json:"runtime_version,omitempty"`
 	RustIPCVersion            string                                  `json:"rust_ipc_version,omitempty"`
 	WASMABIVersion            string                                  `json:"wasm_abi_version,omitempty"`
+	ContractSetSHA256         string                                  `json:"contract_set_sha256,omitempty"`
 	RuntimeTargetOS           string                                  `json:"runtime_target_os,omitempty"`
 	RuntimeTargetArch         string                                  `json:"runtime_target_arch,omitempty"`
-	RuntimeArtifactSHA256     string                                  `json:"runtime_artifact_sha256,omitempty"`
+	RuntimeBinarySHA256       string                                  `json:"runtime_binary_sha256,omitempty"`
 	OS                        string                                  `json:"os,omitempty"`
 	Arch                      string                                  `json:"arch,omitempty"`
 	Stream                    string                                  `json:"stream,omitempty"`
@@ -748,8 +746,9 @@ func publicDiagnosticDetails(details host.DiagnosticDetails) *diagnosticDetailsR
 		OperationID:               details.OperationID, StreamID: details.StreamID, RuntimeInstanceID: details.RuntimeInstanceID,
 		RuntimeGenerationID: details.RuntimeGenerationID, RuntimeVersion: details.RuntimeVersion,
 		RustIPCVersion: details.RustIPCVersion, WASMABIVersion: details.WASMABIVersion,
-		RuntimeTargetOS: details.RuntimeTargetOS, RuntimeTargetArch: details.RuntimeTargetArch,
-		RuntimeArtifactSHA256: details.RuntimeArtifactSHA256, OS: details.OS, Arch: details.Arch,
+		ContractSetSHA256: details.ContractSetSHA256,
+		RuntimeTargetOS:   details.RuntimeTargetOS, RuntimeTargetArch: details.RuntimeTargetArch,
+		RuntimeBinarySHA256: details.RuntimeBinarySHA256, OS: details.OS, Arch: details.Arch,
 		Stream: details.Stream, PackageHash: details.PackageHash, Artifact: details.Artifact,
 		PluginInstanceID: details.PluginInstanceID, StoreID: details.StoreID, Operation: details.Operation,
 		Hostcall: details.Hostcall, Code: details.Code, ConnectorID: details.ConnectorID,

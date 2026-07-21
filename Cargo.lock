@@ -499,6 +499,7 @@ dependencies = [
 name = "redevplugin-runtime"
 version = "0.6.0"
 dependencies = [
+ "libc",
  "proptest",
  "redevplugin-ipc",
  "redevplugin-wasm-abi",

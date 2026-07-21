@@ -24,7 +24,6 @@ import (
 	"github.com/floegence/redevplugin/pkg/plugindata"
 	"github.com/floegence/redevplugin/pkg/pluginpkg"
 	"github.com/floegence/redevplugin/pkg/registry"
-	"github.com/floegence/redevplugin/pkg/runtimeclient"
 	"github.com/floegence/redevplugin/pkg/runtimetarget"
 	"github.com/floegence/redevplugin/pkg/secrets"
 	"github.com/floegence/redevplugin/pkg/sessionctx"
@@ -274,6 +273,9 @@ func TestCLIScaffoldProducesPackageablePlugin(t *testing.T) {
 }
 
 func TestCLIScaffoldRunsGeneratedWorkerThroughBuiltRustRuntime(t *testing.T) {
+	if goruntime.GOOS != "linux" {
+		t.Skip("the v0.6 runtime admission contract supports Linux targets only")
+	}
 	if _, err := exec.LookPath("cargo"); err != nil {
 		t.Skip("cargo not found; skipping scaffold Rust runtime integration")
 	}
@@ -282,9 +284,9 @@ func TestCLIScaffoldRunsGeneratedWorkerThroughBuiltRustRuntime(t *testing.T) {
 	build := exec.Command("cargo", "build", "-p", "redevplugin-runtime")
 	build.Dir = repoRoot
 	oldRuntimeVersion := version.RuntimeVersion
-	version.RuntimeVersion = "0.5.0"
+	version.RuntimeVersion = version.CurrentCompatibilityVersion()
 	t.Cleanup(func() { version.RuntimeVersion = oldRuntimeVersion })
-	build.Env = append(os.Environ(), "CARGO_TARGET_DIR="+cargoTargetDir, "CARGO_TERM_COLOR=never", "REDEVPLUGIN_RUNTIME_VERSION="+version.RuntimeVersion)
+	build.Env = append(os.Environ(), "CARGO_TARGET_DIR="+cargoTargetDir, "CARGO_TERM_COLOR=never")
 	if output, err := build.CombinedOutput(); err != nil {
 		t.Fatalf("cargo build -p redevplugin-runtime failed: %v\n%s", err, output)
 	}
@@ -314,22 +316,17 @@ func TestCLIScaffoldRunsGeneratedWorkerThroughBuiltRustRuntime(t *testing.T) {
 		t.Fatal(err)
 	}
 	adapters := newTestEphemeralCLIAdapters(t, ctx, dir, registryStore, pluginData)
-	runtimeManager, err := newCommandRuntimeManager(commandRuntimeDependencies{
-		Path:             runtimePath,
-		Descriptor:       mustDescribeCommandRuntime(t, runtimePath),
-		Diagnostics:      adapters.Core.Diagnostics,
-		Assets:           adapters.Core.Assets,
-		SurfaceTokens:    adapters.Core.SurfaceTokens,
-		PluginData:       pluginData,
-		Connectivity:     adapters.Connectivity.Broker,
-		NetworkExecutor:  adapters.Connectivity.NetworkExecutor,
-		ShardCount:       1,
-		HandshakeTimeout: 15 * time.Second,
-	})
+	runtimeModule, err := newCommandRuntimeModule(
+		ctx,
+		runtimePath,
+		dir,
+		mustDescribeCommandRuntime(t, runtimePath),
+		15*time.Second,
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
-	adapters.Runtime = &host.RuntimeModule{Manager: runtimeManager}
+	adapters.Runtime = runtimeModule
 	h, err := host.Open(ctx, adapters)
 	if err != nil {
 		_ = pluginData.Close()
@@ -442,57 +439,6 @@ func TestCLIScaffoldRunsGeneratedWorkerThroughBuiltRustRuntime(t *testing.T) {
 
 }
 
-func TestCommandRuntimeManagerRequiresExplicitShardCount(t *testing.T) {
-	ctx := cliContext(context.Background())
-	registryStore := registry.NewMemoryStore()
-	pluginData, err := plugindata.Open(ctx, t.TempDir(), registryStore)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = pluginData.Close() })
-	adapters := newTestEphemeralCLIAdapters(t, ctx, t.TempDir(), registryStore, pluginData)
-	_, err = newCommandRuntimeManager(commandRuntimeDependencies{
-		Path:            os.Args[0],
-		Descriptor:      mustDescribeCommandRuntime(t, os.Args[0]),
-		Diagnostics:     adapters.Core.Diagnostics,
-		Assets:          adapters.Core.Assets,
-		SurfaceTokens:   adapters.Core.SurfaceTokens,
-		PluginData:      pluginData,
-		Connectivity:    adapters.Connectivity.Broker,
-		NetworkExecutor: adapters.Connectivity.NetworkExecutor,
-		ShardCount:      0,
-	})
-	if !errors.Is(err, runtimeclient.ErrRuntimeShardCount) {
-		t.Fatalf("newCommandRuntimeManager() error = %v, want %v", err, runtimeclient.ErrRuntimeShardCount)
-	}
-}
-
-func TestCommandRuntimeManagerProvidesExplicitRuntimeTiming(t *testing.T) {
-	ctx := cliContext(context.Background())
-	registryStore := registry.NewMemoryStore()
-	pluginData, err := plugindata.Open(ctx, t.TempDir(), registryStore)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = pluginData.Close() })
-	adapters := newTestEphemeralCLIAdapters(t, ctx, t.TempDir(), registryStore, pluginData)
-	_, err = newCommandRuntimeManager(commandRuntimeDependencies{
-		Path:             os.Args[0],
-		Descriptor:       mustDescribeCommandRuntime(t, os.Args[0]),
-		Diagnostics:      adapters.Core.Diagnostics,
-		Assets:           adapters.Core.Assets,
-		SurfaceTokens:    adapters.Core.SurfaceTokens,
-		PluginData:       pluginData,
-		Connectivity:     adapters.Connectivity.Broker,
-		NetworkExecutor:  adapters.Connectivity.NetworkExecutor,
-		ShardCount:       1,
-		HandshakeTimeout: 15 * time.Second,
-	})
-	if err != nil {
-		t.Fatalf("newCommandRuntimeManager() error = %v", err)
-	}
-}
-
 func TestDescribeCommandRuntimeUsesExactArtifactAndPlatformContract(t *testing.T) {
 	runtimePath := filepath.Join(t.TempDir(), "redevplugin-runtime")
 	content := []byte("runtime artifact\n")
@@ -505,48 +451,20 @@ func TestDescribeCommandRuntimeUsesExactArtifactAndPlatformContract(t *testing.T
 		t.Fatalf("describeCommandRuntime() error = %v", err)
 	}
 	sum := sha256.Sum256(content)
-	if descriptor.Version().String() != version.RuntimeVersion ||
-		descriptor.Target() != target ||
-		descriptor.IPCVersion() != version.RustIPCVersion ||
-		descriptor.WASMABIVersion() != version.WASMABIVersion ||
-		descriptor.ArtifactSHA256() != fmt.Sprintf("%x", sum) {
+	if descriptor.PlatformVersion().String() != version.CurrentCompatibilityVersion() ||
+		descriptor.Target().String() != target.String() ||
+		descriptor.RustIPCVersion().String() != version.RustIPCVersion ||
+		descriptor.WASMABIVersion().String() != version.WASMABIVersion ||
+		descriptor.ContractSetSHA256().String() != version.ContractSetSHA256 ||
+		descriptor.BinarySHA256().String() != fmt.Sprintf("%x", sum) {
 		t.Fatalf("runtime descriptor mismatch: %#v", descriptor)
 	}
 }
 
-func TestDescribeCommandRuntimeRejectsNonCanonicalRuntimeVersion(t *testing.T) {
-	original := version.RuntimeVersion
-	version.RuntimeVersion = "v0.5.0"
-	t.Cleanup(func() { version.RuntimeVersion = original })
-
-	_, err := describeCommandRuntime(filepath.Join(t.TempDir(), "missing-runtime"), mustCurrentCommandRuntimeTarget(t))
-	if !errors.Is(err, version.ErrInvalidSemVer) {
-		t.Fatalf("describeCommandRuntime() error = %v, want %v", err, version.ErrInvalidSemVer)
-	}
-}
-
-func TestCommandRuntimeManagerRejectsMissingDescriptor(t *testing.T) {
-	ctx := cliContext(context.Background())
-	registryStore := registry.NewMemoryStore()
-	pluginData, err := plugindata.Open(ctx, t.TempDir(), registryStore)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = pluginData.Close() })
-	adapters := newTestEphemeralCLIAdapters(t, ctx, t.TempDir(), registryStore, pluginData)
-	_, err = newCommandRuntimeManager(commandRuntimeDependencies{
-		Path:             os.Args[0],
-		Diagnostics:      adapters.Core.Diagnostics,
-		Assets:           adapters.Core.Assets,
-		SurfaceTokens:    adapters.Core.SurfaceTokens,
-		PluginData:       pluginData,
-		Connectivity:     adapters.Connectivity.Broker,
-		NetworkExecutor:  adapters.Connectivity.NetworkExecutor,
-		ShardCount:       1,
-		HandshakeTimeout: 15 * time.Second,
-	})
-	if !errors.Is(err, runtimeclient.ErrRuntimeDescriptorInvalid) {
-		t.Fatalf("newCommandRuntimeManager() error = %v, want %v", err, runtimeclient.ErrRuntimeDescriptorInvalid)
+func TestDescribeCommandRuntimeRejectsNonLinuxAdmissionTargetBeforeOpeningBinary(t *testing.T) {
+	_, err := describeCommandRuntime(filepath.Join(t.TempDir(), "missing-runtime"), runtimetarget.DarwinARM64)
+	if !errors.Is(err, host.ErrRuntimeAdmissionTargetInvalid) {
+		t.Fatalf("describeCommandRuntime() error = %v, want %v", err, host.ErrRuntimeAdmissionTargetInvalid)
 	}
 }
 
@@ -563,7 +481,7 @@ func newTestEphemeralCLIAdapters(t *testing.T, ctx context.Context, stateRoot st
 	return config
 }
 
-func mustDescribeCommandRuntime(t *testing.T, path string) runtimeclient.RuntimeDescriptor {
+func mustDescribeCommandRuntime(t *testing.T, path string) host.RuntimeDescriptor {
 	t.Helper()
 	descriptor, err := describeCommandRuntime(path, mustCurrentCommandRuntimeTarget(t))
 	if err != nil {
@@ -574,7 +492,7 @@ func mustDescribeCommandRuntime(t *testing.T, path string) runtimeclient.Runtime
 
 func mustCurrentCommandRuntimeTarget(t *testing.T) runtimetarget.Target {
 	t.Helper()
-	target, err := runtimetarget.Current()
+	target, err := runtimetarget.FromParts("linux", goruntime.GOARCH)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1268,8 +1186,8 @@ func TestCLIVersionPrintsCompatibilityManifest(t *testing.T) {
 		version string
 	}{
 		{id: "release-metadata-schema", path: "spec/plugin/release-metadata-v5.schema.json", version: version.ReleaseMetadataSchemaVersion},
-		{id: "source-policy-schema", path: "spec/plugin/source-policy-v1.schema.json", version: version.SourcePolicySchemaVersion},
-		{id: "source-revocations-schema", path: "spec/plugin/source-revocations-v1.schema.json", version: version.SourceRevocationsSchemaVersion},
+		{id: "release-source-policy-schema", path: "spec/plugin/release-source-policy-v2.schema.json", version: version.ReleaseSourcePolicySchemaVersion},
+		{id: "release-revocation-schema", path: "spec/plugin/release-revocation-v2.schema.json", version: version.ReleaseRevocationSchemaVersion},
 	} {
 		got := contracts[contract.id]
 		if got.Path != contract.path || got.Version != contract.version || got.SHA256 == "" {
@@ -1628,7 +1546,7 @@ func buildCLITestCapabilityArtifact(t *testing.T, root, manifestFile string) (st
 		ArtifactBaseRef:          "capabilities/example/demo/v1.0.0",
 		GeneratedAt:              "2026-07-13T00:00:00Z",
 		SourceCommit:             strings.Repeat("a", 40),
-		MinReDevPluginVersion:    version.CurrentMatrix().GoModuleVersion,
+		MinReDevPluginVersion:    version.CurrentCompatibilityVersion(),
 		SignaturePolicyEpoch:     "1",
 		SignatureRevocationEpoch: "1",
 	}, 0o644); err != nil {

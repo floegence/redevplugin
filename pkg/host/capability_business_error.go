@@ -7,13 +7,13 @@ import (
 	"reflect"
 	"strings"
 
+	"github.com/floegence/redevplugin/internal/runtimeclient"
 	"github.com/floegence/redevplugin/pkg/bridge"
 	"github.com/floegence/redevplugin/pkg/capability"
 	"github.com/floegence/redevplugin/pkg/mutation"
 	"github.com/floegence/redevplugin/pkg/operation"
 	"github.com/floegence/redevplugin/pkg/permissions"
 	"github.com/floegence/redevplugin/pkg/registry"
-	"github.com/floegence/redevplugin/pkg/runtimeclient"
 	"github.com/floegence/redevplugin/pkg/security"
 	"github.com/floegence/redevplugin/pkg/stream"
 )
@@ -119,7 +119,7 @@ func AsValidatedCapabilityBusinessError(err error) (capability.BusinessError, bo
 }
 
 // AsValidatedWorkerExecutionError returns a copy of a worker failure attested by Host.
-func AsValidatedWorkerExecutionError(err error) (runtimeclient.WorkerExecutionError, bool) {
+func AsValidatedWorkerExecutionError(err error) (WorkerExecutionError, bool) {
 	failure, _, _, ok := closedRPCFailure(err)
 	if !ok || failure.workerError == nil {
 		return runtimeclient.WorkerExecutionError{}, false

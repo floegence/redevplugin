@@ -8,11 +8,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/floegence/redevplugin/internal/runtimeclient"
 	"github.com/floegence/redevplugin/pkg/bridge"
 	"github.com/floegence/redevplugin/pkg/manifest"
 	"github.com/floegence/redevplugin/pkg/pluginpkg"
 	"github.com/floegence/redevplugin/pkg/registry"
-	"github.com/floegence/redevplugin/pkg/runtimeclient"
 	"github.com/floegence/redevplugin/pkg/runtimetarget"
 	"github.com/floegence/redevplugin/pkg/version"
 )
@@ -197,13 +197,11 @@ func TestWorkerInstallRejectsIncompatibleRuntimeVersionBeforeMutation(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	descriptor, err := runtimeclient.NewRuntimeDescriptor(
-		runtimeVersion,
-		hostTestRuntimeDescriptor().Target(),
-		version.RustIPCVersion,
-		version.WASMABIVersion,
-		strings.Repeat("b", 64),
-	)
+	descriptor, err := runtimeclient.NewRuntimeDescriptor(runtimeclient.RuntimeDescriptorOptions{
+		PlatformVersion: runtimeVersion, Target: hostTestRuntimeDescriptor().Target(),
+		RustIPCVersion: version.RustIPCVersion, WASMABIVersion: version.WASMABIVersion,
+		ContractSetSHA256: version.ContractSetSHA256, BinarySHA256: strings.Repeat("b", 64),
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -248,7 +246,7 @@ func TestValidateWorkerRuntimeDescriptorRejectsUnexpectedTarget(t *testing.T) {
 	record := registry.PluginRecord{
 		Manifest: manifest.Manifest{Workers: []manifest.WorkerSpec{{WorkerID: "worker", ABI: version.WASMABIVersion}}},
 		RuntimeRequirement: &registry.RuntimeRequirement{
-			MinVersion: descriptor.Version().String(),
+			MinVersion: descriptor.PlatformVersion().String(),
 		},
 	}
 	if err := validateWorkerRuntimeDescriptor(record, descriptor, expectedTarget); !errors.Is(err, ErrPluginRuntimeIncompatible) {
@@ -372,13 +370,11 @@ func TestWorkerInvocationRejectsStaleBindingDescriptorBeforeDispatch(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	manager.bindingDescriptor, err = runtimeclient.NewRuntimeDescriptor(
-		staleVersion,
-		manager.descriptor.Target(),
-		manager.descriptor.IPCVersion(),
-		manager.descriptor.WASMABIVersion(),
-		strings.Repeat("c", 64),
-	)
+	manager.bindingDescriptor, err = runtimeclient.NewRuntimeDescriptor(runtimeclient.RuntimeDescriptorOptions{
+		PlatformVersion: staleVersion, Target: manager.descriptor.Target(),
+		RustIPCVersion: manager.descriptor.RustIPCVersion(), WASMABIVersion: manager.descriptor.WASMABIVersion(),
+		ContractSetSHA256: manager.descriptor.ContractSetSHA256(), BinarySHA256: strings.Repeat("c", 64),
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -418,13 +414,11 @@ func TestWorkerOpenSurfaceRejectsIncompatibleRuntimeHealth(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	manager.health.Descriptor, err = runtimeclient.NewRuntimeDescriptor(
-		staleVersion,
-		manager.descriptor.Target(),
-		manager.descriptor.IPCVersion(),
-		manager.descriptor.WASMABIVersion(),
-		strings.Repeat("d", 64),
-	)
+	manager.health.Descriptor, err = runtimeclient.NewRuntimeDescriptor(runtimeclient.RuntimeDescriptorOptions{
+		PlatformVersion: staleVersion, Target: manager.descriptor.Target(),
+		RustIPCVersion: manager.descriptor.RustIPCVersion(), WASMABIVersion: manager.descriptor.WASMABIVersion(),
+		ContractSetSHA256: manager.descriptor.ContractSetSHA256(), BinarySHA256: strings.Repeat("d", 64),
+	})
 	if err != nil {
 		t.Fatal(err)
 	}

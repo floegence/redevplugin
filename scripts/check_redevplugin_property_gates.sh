@@ -40,7 +40,7 @@ GO_FUZZ_PACKAGES=(
   ./pkg/releasecontract
   ./pkg/manifest
   ./pkg/capability
-  ./pkg/runtimeclient
+  ./internal/runtimeclient
   ./pkg/stream
   ./pkg/plugindata
 )

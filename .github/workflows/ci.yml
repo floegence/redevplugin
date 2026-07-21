@@ -103,6 +103,38 @@ jobs:
           cargo deny check
       - run: npm run rust-source-packages:test
 
+  runtime-containment:
+    name: Runtime Containment (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            arch: amd64
+          - runner: ubuntu-24.04-arm
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: go.mod
+      - run: rustup show
+      - name: Build static PIE runtime from source crates
+        env:
+          RUSTFLAGS: -C target-feature=+crt-static -C relocation-model=pic -C link-arg=-static-pie
+        run: cargo build --locked --release -p redevplugin-runtime
+      - name: Verify closed ELF profile
+        run: |
+          file target/release/redevplugin-runtime | grep -q 'static-pie linked'
+          ! readelf -l target/release/redevplugin-runtime | grep -q INTERP
+          ! readelf -d target/release/redevplugin-runtime | grep -q NEEDED
+      - name: Exercise sealed memfd, clone3 PIDFD, and seccomp handshake
+        env:
+          GOWORK: "off"
+          REDEVPLUGIN_CONTAINMENT_RUNTIME_PATH: ${{ github.workspace }}/target/release/redevplugin-runtime
+        run: go test ./internal/runtimeclient -run TestContainedRuntimeProcessExecutesSealedRuntimeAndValidatesAcknowledgement -count=1 -v
+
   release-audit:
     name: Release Audit
     runs-on: ubuntu-latest
@@ -135,24 +167,21 @@ jobs:
           bash -n scripts/check_redevplugin_platform.sh
           bash -n scripts/check_redevplugin_runtime_contract.sh
           bash -n scripts/check_redevplugin_release_audit.sh
-          bash -n scripts/verify_redevplugin_release_artifacts.sh
           bash -n scripts/check_redevplugin_stress.sh
           bash -n scripts/check_redevplugin_ui_bridge.sh
           bash -n scripts/check_redevplugin_performance.sh
           bash -n scripts/check_redevplugin_property_gates.sh
-          bash -n scripts/build_redevplugin_release.sh
           bash -n scripts/assert_github_release_absent.sh
           bash -n scripts/verify_github_release_identity.sh
-          node --check scripts/build_redevplugin_worker_sdk_package.mjs
           node --check scripts/check_redevplugin_release_metadata.mjs
           node --check scripts/test_redevplugin_release_metadata.mjs
-          node --check scripts/verify_redevplugin_release_bundle.mjs
-          node --check scripts/verify_published_release.mjs
           node --check scripts/runtime_targets.mjs
           node --check scripts/verify_npm_registry_release.mjs
           node --check scripts/verify_go_module_readback.mjs
+          node --check scripts/verify_rust_registry_release.mjs
+          node --check scripts/platform_package_build.mjs
+          node --check scripts/platform_package_publication.mjs
           node --check scripts/verify_redevplugin_release_stress.mjs
-          node --check scripts/test_published_release_verifier.mjs
           node --check scripts/test_npm_registry_release_verifier.mjs
           node --check scripts/performance_contract.mjs
           node --check scripts/copy_redevplugin_performance_evidence.mjs
@@ -187,8 +216,8 @@ jobs:
       - run: ./scripts/check_redevplugin_runtime_contract.sh
       - run: ./scripts/check_redevplugin_platform.sh
 
-  release-bundle-smoke:
-    name: Release Bundle Smoke
+  platform-package-smoke:
+    name: Platform Package Publication Smoke
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
@@ -203,10 +232,5 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npx playwright install --with-deps chromium
-      - id: smoke-version
-        run: echo "version=$(node scripts/resolve_redevplugin_smoke_version.mjs ci.${GITHUB_RUN_NUMBER})" >> "$GITHUB_OUTPUT"
-      - run: ./scripts/build_redevplugin_release.sh --performance-gate smoke --version "${{ steps.smoke-version.outputs.version }}"
-      - run: ./dist/redevplugin-release/bin/redevplugin verify-compatibility ./dist/redevplugin-release/compatibility.json ./dist/redevplugin-release/contracts
-      - run: node scripts/verify_redevplugin_release_bundle.mjs --skip-execution --allow-smoke ./dist/redevplugin-release "${{ steps.smoke-version.outputs.version }}"
-      - name: Verify standalone published-release toolchain isolation
-        run: node scripts/test_published_release_verifier.mjs ./dist/redevplugin-release "${{ steps.smoke-version.outputs.version }}" "$GITHUB_SHA"
+      - run: npm run platform-package-build:test
+      - run: npm run platform-package-publication:test

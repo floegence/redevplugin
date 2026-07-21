@@ -4,9 +4,9 @@
   "artifacts": [
     {
       "id": "compatibility-manifest-schema",
-      "path": "spec/plugin/compatibility-manifest-v7.schema.json",
-      "version": "compatibility-manifest-v7",
-      "sha256": "7a636c2f9dae479d57df4bfbc0da946ed4bdc54d6ba30dfa0fce455aaed454bd"
+      "path": "spec/plugin/compatibility-manifest-v8.schema.json",
+      "version": "compatibility-manifest-v8",
+      "sha256": "a1831e0ae9a1b47d92e7ad9879b1ca4e3510ebc212b87360595b672e8b87bc79"
     },
     {
       "id": "contract-registry-schema",
@@ -16,9 +16,9 @@
     },
     {
       "id": "error-codes-schema",
-      "path": "spec/plugin/error-codes-v5.schema.json",
-      "version": "error-codes-v5",
-      "sha256": "1cca99c26c2839f0739345cebdaea173ce7b3f8db782021ee0021b88eae2f9ea"
+      "path": "spec/plugin/error-codes-v6.schema.json",
+      "version": "error-codes-v6",
+      "sha256": "094cb980156c17af4866942b51e6a1032ea7d1ae0675b329d59a765223ccda28"
     },
     {
       "id": "host-capability-compatibility-schema",
@@ -60,7 +60,7 @@
       "id": "iframe-bridge-schema",
       "path": "spec/plugin/bridge-v5.schema.json",
       "version": "bridge-v5",
-      "sha256": "306c46f54808af20b12b7cf4f0cf9c4181017c9421698a5d3dcc224897c5b2b0"
+      "sha256": "ad8ccc7e1900ecb871432f07296dd681ae6faea9377e52f5ddca90300c04f4da"
     },
     {
       "id": "manifest-schema",
@@ -112,15 +112,15 @@
     },
     {
       "id": "performance-contract",
-      "path": "spec/plugin/performance-contract-v2.json",
-      "version": "performance-contract-v2",
-      "sha256": "ffbad3bdf3f88a77aa70bee4559f0da0dc7b4b5bcd1e89b8323de5e466683520"
+      "path": "spec/plugin/performance-contract-v3.json",
+      "version": "performance-contract-v3",
+      "sha256": "b28ca39eb1919a655cd5edef6f236db23188cf2e9ff0965c4c69cb7f3092b071"
     },
     {
       "id": "performance-evidence-schema",
-      "path": "spec/plugin/performance-evidence-v2.schema.json",
-      "version": "performance-evidence-v2",
-      "sha256": "c774a3e1a6a60cb6ea00e7cfc1b7fc6da94687b7982715da2578ed175ee201d0"
+      "path": "spec/plugin/performance-evidence-v3.schema.json",
+      "version": "performance-evidence-v3",
+      "sha256": "a2f5e94071bb09a9327fc55ad3f6c39052b01c3e54cceb8b974dc244667a0326"
     },
     {
       "id": "platform-package-publication-schema",
@@ -136,9 +136,15 @@
     },
     {
       "id": "plugin-platform-openapi",
-      "path": "spec/openapi/plugin-platform-v7.yaml",
-      "version": "plugin-platform-v7",
-      "sha256": "409cfeaea80c97842a96b0ff216e2b6a6ccc13a3d65ae624cd21918be8af0ba0"
+      "path": "spec/openapi/plugin-platform-v8.yaml",
+      "version": "plugin-platform-v8",
+      "sha256": "290883ff79b74badbf9f6feddb4dfbef820a4ef4622a7e3fca815e3abb2c4eac"
+    },
+    {
+      "id": "process-containment-schema",
+      "path": "spec/plugin/process-containment-v1.schema.json",
+      "version": "process-containment-v1",
+      "sha256": "930ea44b1f62361706e994649e84f62af0a6418b77a661ae9bf9c10f1398e3fc"
     },
     {
       "id": "quarantine-cleanup-schema",
@@ -225,10 +231,28 @@
       "sha256": "e6021bd576c7220ad5536645a7ad8e57ee7aeb9901c31a89444fa6b695d8dc6f"
     },
     {
+      "id": "runtime-admission-schema",
+      "path": "spec/plugin/runtime-admission-v1.schema.json",
+      "version": "runtime-admission-v1",
+      "sha256": "bee7b149876447d663a4099dbd71e71fa97f8ff80ddf4e12cbfba951a47c4beb"
+    },
+    {
+      "id": "runtime-descriptor-schema",
+      "path": "spec/plugin/runtime-descriptor-v2.schema.json",
+      "version": "runtime-descriptor-v2",
+      "sha256": "2ba59f6fb70d4ad757f60aca5541f4a44886542525e5bf76c393cd2368188351"
+    },
+    {
+      "id": "runtime-exec-journal-schema",
+      "path": "spec/plugin/runtime-exec-journal-v1.schema.json",
+      "version": "runtime-exec-journal-v1",
+      "sha256": "2bddbba383843b8ebc1554009909f0bb25e98616be763826a697cb0f408870d2"
+    },
+    {
       "id": "rust-ipc-schema",
-      "path": "spec/plugin/ipc-v5.schema.json",
-      "version": "rust-ipc-v5",
-      "sha256": "b3a0ffdb6dc9e7d21a83b6cec2581713ea549b9aaa59d3bfabc94d0ee7489765"
+      "path": "spec/plugin/ipc-v6.schema.json",
+      "version": "rust-ipc-v6",
+      "sha256": "9814ca091ac2e4e8435c1ab553e248e9d2e792de93ce9fd27bd030486774837f"
     },
     {
       "id": "session-scope-schema",

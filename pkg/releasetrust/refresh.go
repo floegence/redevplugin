@@ -80,7 +80,7 @@ func (service *ReleaseTrustService) commitVerifiedDocumentSetLocked(
 	}
 	next := nextReleaseTrustState(current, key, documents)
 	evidenceSHA256 := digestRefreshEvidence(documents)
-	next, nextSHA256, err := service.commitState(ctx, current, currentSHA256, next, evidenceSHA256)
+	_, nextSHA256, err := service.commitState(ctx, current, currentSHA256, next, evidenceSHA256)
 	if err != nil {
 		return VerifiedSourceSnapshot{}, err
 	}

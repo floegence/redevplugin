@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 import { parseDocument } from "yaml";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const registrySeedPath = join(root, "spec/plugin/contract-registry-v1.json");
+const contractSourcePath = join(root, "internal/contracts/active-contracts.json");
 const platformVersionPath = join(root, "spec/plugin/platform-version.json");
 const registryOutputPath = join(root, "spec/plugin/contract-registry-v2.json");
 const packageSetOutputPath = join(root, "spec/plugin/platform-package-set-v1.json");
@@ -23,12 +23,6 @@ const MAX_JSON_BYTES = 64 * 1024;
 const MAX_CONTRACT_BYTES = 8 * 1024 * 1024;
 const MAX_TOTAL_CONTRACT_BYTES = 32 * 1024 * 1024;
 const MAX_FORMATTER_BYTES = MAX_TOTAL_CONTRACT_BYTES * 8 + 8 * 1024 * 1024;
-const RETIRED_SEED_IDS = new Set([
-  "contract-registry",
-  "release-manifest-schema",
-  "source-policy-schema",
-  "source-revocations-schema",
-]);
 const FORBIDDEN_ARTIFACT_PATHS = new Set([
   "spec/plugin/contract-registry-v2.json",
   "spec/plugin/platform-package-set-v1.json",
@@ -59,109 +53,6 @@ const rustCrates = [
   ["redevplugin-target-classifier", "target_classifier"],
   ["redevplugin-worker-sdk", "worker_sdk"],
   ["redevplugin-runtime", "runtime"],
-];
-
-const stagedSchemaArtifacts = [
-  {
-    id: "contract-registry-schema",
-    path: "spec/plugin/contract-registry-v2.schema.json",
-    version: "contract-registry-v2",
-  },
-  {
-    id: "owner-scope-inventory-registry",
-    path: "spec/plugin/owner-scope-inventories-v1.json",
-    version: "owner-scope-inventory-registry-v1",
-  },
-  {
-    id: "owner-scope-inventory-schema",
-    path: "spec/plugin/owner-scope-inventory-v1.schema.json",
-    version: "owner-scope-inventory-v1",
-  },
-  {
-    id: "owner-scope-migration-schema",
-    path: "spec/plugin/owner-scope-migration-v1.schema.json",
-    version: "owner-scope-migration-v1",
-  },
-  {
-    id: "platform-package-publication-schema",
-    path: "spec/plugin/platform-package-publication-v1.schema.json",
-    version: "platform-package-publication-v1",
-  },
-  {
-    id: "platform-package-set-schema",
-    path: "spec/plugin/platform-package-set-v1.schema.json",
-    version: "platform-package-set-v1",
-  },
-  {
-    id: "trusted-time-evidence-schema",
-    path: "spec/plugin/trusted-time-evidence-v1.schema.json",
-    version: "trusted-time-evidence-v1",
-  },
-  {
-    id: "trusted-time-leaf-schema",
-    path: "spec/plugin/trusted-time-leaf-v1.schema.json",
-    version: "trusted-time-leaf-v1",
-  },
-  {
-    id: "quarantine-cleanup-schema",
-    path: "spec/plugin/quarantine-cleanup-v1.schema.json",
-    version: "quarantine-cleanup-v1",
-  },
-  {
-    id: "release-revocation-pointer-schema",
-    path: "spec/plugin/release-revocation-pointer-v1.schema.json",
-    version: "release-revocation-pointer-v1",
-  },
-  {
-    id: "release-revocation-schema",
-    path: "spec/plugin/release-revocation-v2.schema.json",
-    version: "release-revocation-v2",
-  },
-  {
-    id: "release-trust-state-schema",
-    path: "spec/plugin/release-trust-state-v1.schema.json",
-    version: "release-trust-state-v1",
-  },
-  {
-    id: "release-root-delegation-schema",
-    path: "spec/plugin/release-root-delegation-v1.schema.json",
-    version: "release-root-delegation-v1",
-  },
-  {
-    id: "release-signing-ledger-evidence-schema",
-    path: "spec/plugin/release-signing-ledger-evidence-v1.schema.json",
-    version: "release-signing-ledger-evidence-v1",
-  },
-  {
-    id: "release-signature-envelope-schema",
-    path: "spec/plugin/release-signature-envelope-v1.schema.json",
-    version: "release-signature-envelope-v1",
-  },
-  {
-    id: "release-signing-ledger-receipt-schema",
-    path: "spec/plugin/release-signing-ledger-receipt-v1.schema.json",
-    version: "release-signing-ledger-receipt-v1",
-  },
-  {
-    id: "release-signing-ledger-schema",
-    path: "spec/plugin/release-signing-ledger-v1.schema.json",
-    version: "release-signing-ledger-v1",
-  },
-  {
-    id: "release-signing-subject-schema",
-    path: "spec/plugin/release-signing-subject-v1.schema.json",
-    version: "release-signing-subject-v1",
-  },
-  {
-    id: "release-source-policy-pointer-schema",
-    path: "spec/plugin/release-source-policy-pointer-v1.schema.json",
-    version: "release-source-policy-pointer-v1",
-  },
-  {
-    id: "release-source-policy-schema",
-    path: "spec/plugin/release-source-policy-v2.schema.json",
-    version: "release-source-policy-v2",
-  },
 ];
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
@@ -195,17 +86,9 @@ export async function generatePlatformPackageContracts() {
   }
   assertStableVersion(platformVersionSource.platform_version, "platform version");
 
-  const seed = parseStrictJSON(await readFile(registrySeedPath), "active contract registry seed");
-  validateRegistrySeed(seed);
-  const declarations = seed.contracts
-    .filter(({ id }) => !RETIRED_SEED_IDS.has(id))
-    .map((contract) => ({
-      id: contract.id,
-      path: contract.path,
-      version: seed.matrix[contract.version_key],
-    }))
-    .concat(stagedSchemaArtifacts)
-    .sort(compareArtifactIDs);
+  const source = parseStrictJSON(await readFile(contractSourcePath), "active contract source");
+  validateContractSource(source);
+  const declarations = source.artifacts.map((artifact) => ({...artifact}));
 
   validateArtifactDeclarations(declarations);
   const embeddedArtifacts = [];
@@ -528,33 +411,19 @@ function formatRust(source) {
   return result.stdout;
 }
 
-function validateRegistrySeed(value) {
-  exactKeys(value, ["schema_version", "matrix", "contracts"], "active contract registry seed");
-  if (value.schema_version !== "redevplugin.contract_registry.v1") {
-    throw new Error("R1b must derive from the still-active contract-registry-v1 seed");
+function validateContractSource(value) {
+  exactKeys(value, ["schema_version", "matrix", "artifacts"], "active contract source");
+  if (value.schema_version !== "redevplugin.contract_source.v1") {
+    throw new Error("unsupported active contract source schema");
   }
   if (!isRecord(value.matrix) || Object.keys(value.matrix).length === 0) {
-    throw new Error("active contract registry matrix is required");
+    throw new Error("active contract source matrix is required");
   }
-  if (!Array.isArray(value.contracts) || value.contracts.length === 0) {
-    throw new Error("active contract registry contracts are required");
+  for (const [key, version] of Object.entries(value.matrix)) {
+    if (!/^[a-z][a-z0-9_]+$/.test(key)) throw new Error(`invalid matrix key: ${key}`);
+    assertVersionLabel(version, `active contract matrix ${key}`);
   }
-  const ids = new Set();
-  const paths = new Set();
-  for (const contract of value.contracts) {
-    exactKeys(contract, ["id", "path", "version_key"], "active contract registry entry");
-    assertID(contract.id, "active contract id");
-    assertSafeContractPath(contract.path);
-    if (ids.has(contract.id) || paths.has(contract.path)) {
-      throw new Error(`duplicate active contract declaration: ${contract.id}`);
-    }
-    if (typeof contract.version_key !== "string" || !(contract.version_key in value.matrix)) {
-      throw new Error(`unknown active contract version key: ${contract.version_key}`);
-    }
-    assertVersionLabel(value.matrix[contract.version_key], `active contract ${contract.id} version`);
-    ids.add(contract.id);
-    paths.add(contract.path);
-  }
+  validateArtifactDeclarations(value.artifacts);
 }
 
 function validateArtifactDeclarations(artifacts) {

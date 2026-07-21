@@ -61,7 +61,7 @@ func TestOpenAPIRouteSetMatchesFixture(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	got, err := readOpenAPIRoutes(filepath.Join(root, "spec", "openapi", "plugin-platform-v7.yaml"))
+	got, err := readOpenAPIRoutes(filepath.Join(root, "spec", "openapi", "plugin-platform-v8.yaml"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -163,7 +163,7 @@ func TestLocalImportRoutesUseDedicatedTypeScriptEntrypoint(t *testing.T) {
 
 func TestOpenAPIDefinesJSONRequestBodies(t *testing.T) {
 	root := repoRoot(t)
-	path := filepath.Join(root, "spec", "openapi", "plugin-platform-v7.yaml")
+	path := filepath.Join(root, "spec", "openapi", "plugin-platform-v8.yaml")
 	requestBodies, err := readOpenAPIRequestBodyRoutes(path)
 	if err != nil {
 		t.Fatal(err)
@@ -192,7 +192,7 @@ func TestOpenAPIDefinesJSONRequestBodies(t *testing.T) {
 }
 
 func TestOpenAPIDefinesBoundedPackageUploadBodies(t *testing.T) {
-	raw, err := os.ReadFile(filepath.Join(repoRoot(t), "spec", "openapi", "plugin-platform-v7.yaml"))
+	raw, err := os.ReadFile(filepath.Join(repoRoot(t), "spec", "openapi", "plugin-platform-v8.yaml"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -211,7 +211,7 @@ func TestOpenAPIDefinesBoundedPackageUploadBodies(t *testing.T) {
 
 func TestOpenAPIRequestSchemasDefineCriticalFields(t *testing.T) {
 	root := repoRoot(t)
-	raw, err := os.ReadFile(filepath.Join(root, "spec", "openapi", "plugin-platform-v7.yaml"))
+	raw, err := os.ReadFile(filepath.Join(root, "spec", "openapi", "plugin-platform-v8.yaml"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -264,7 +264,7 @@ func TestOpenAPIRequestSchemasDefineCriticalFields(t *testing.T) {
 
 func TestOpenAPIRoutesSeparateClosedSuccessAndErrorResponses(t *testing.T) {
 	root := repoRoot(t)
-	raw, err := os.ReadFile(filepath.Join(root, "spec", "openapi", "plugin-platform-v7.yaml"))
+	raw, err := os.ReadFile(filepath.Join(root, "spec", "openapi", "plugin-platform-v8.yaml"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -318,7 +318,7 @@ func TestOpenAPIRoutesSeparateClosedSuccessAndErrorResponses(t *testing.T) {
 
 func TestOpenAPIListQueryContractsAreStrictAndComplete(t *testing.T) {
 	root := repoRoot(t)
-	raw, err := os.ReadFile(filepath.Join(root, "spec", "openapi", "plugin-platform-v7.yaml"))
+	raw, err := os.ReadFile(filepath.Join(root, "spec", "openapi", "plugin-platform-v8.yaml"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -378,7 +378,7 @@ func TestOpenAPIListQueryContractsAreStrictAndComplete(t *testing.T) {
 
 func TestOpenAPIRuntimeAndSecretMutationContractsAreClosed(t *testing.T) {
 	root := repoRoot(t)
-	raw, err := os.ReadFile(filepath.Join(root, "spec", "openapi", "plugin-platform-v7.yaml"))
+	raw, err := os.ReadFile(filepath.Join(root, "spec", "openapi", "plugin-platform-v8.yaml"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -420,7 +420,7 @@ func TestOpenAPIRuntimeAndSecretMutationContractsAreClosed(t *testing.T) {
 
 func TestOpenAPITrustedScopeAndRetainedDataMatchClosedGoDTOs(t *testing.T) {
 	root := repoRoot(t)
-	raw, err := os.ReadFile(filepath.Join(root, "spec", "openapi", "plugin-platform-v7.yaml"))
+	raw, err := os.ReadFile(filepath.Join(root, "spec", "openapi", "plugin-platform-v8.yaml"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -467,7 +467,7 @@ func openAPISchemaBlock(t *testing.T, source string, schemaName string) string {
 	return strings.Join(lines[:end], "\n")
 }
 
-func TestReleaseRefMetadataSchemasDefineClosedContracts(t *testing.T) {
+func TestReleaseRefTrustSchemasDefineClosedContracts(t *testing.T) {
 	root := repoRoot(t)
 	schemas := []struct {
 		path     string
@@ -486,22 +486,48 @@ func TestReleaseRefMetadataSchemasDefineClosedContracts(t *testing.T) {
 			},
 		},
 		{
-			path: "source-policy-v1.schema.json",
+			path: "release-root-delegation-v1.schema.json",
 			snippets: []string{
 				`"additionalProperties": false`,
-				`"schema_version": { "const": "redevplugin.source_policy.v1" }`,
-				`"unsigned_policy": { "enum": ["dev_only", "review_required", "block"] }`,
-				`"revocation_evidence": { "$ref": "#/$defs/revocation_evidence" }`,
-				`"revocation_epoch": { "$ref": "#/$defs/decimal_epoch" }`,
+				`"schema_version": { "const": "redevplugin.release_root_delegation.v1" }`,
+				`"delegated_keys":`,
+				`"signing_ledger"`,
+				`"trusted_time"`,
 			},
 		},
 		{
-			path: "source-revocations-v1.schema.json",
+			path: "release-source-policy-v2.schema.json",
 			snippets: []string{
 				`"additionalProperties": false`,
-				`"schema_version": { "const": "redevplugin.source_revocations.v1" }`,
-				`"highest_seen_epoch": { "$ref": "#/$defs/decimal_epoch" }`,
+				`"schema_version": { "const": "redevplugin.release_source_policy.v2" }`,
+				`"unsigned_policy": { "enum": ["dev_only", "review_required", "block"] }`,
+				`"minimum_revocation_epoch": { "$ref": "#/$defs/epoch" }`,
+				`"source_policy_pointer"`,
+			},
+		},
+		{
+			path: "release-source-policy-pointer-v1.schema.json",
+			snippets: []string{
+				`"additionalProperties": false`,
+				`"schema_version": { "const": "redevplugin.release_source_policy_pointer.v1" }`,
+				`"document_sha256": { "$ref": "#/$defs/sha256" }`,
+			},
+		},
+		{
+			path: "release-revocation-v2.schema.json",
+			snippets: []string{
+				`"additionalProperties": false`,
+				`"schema_version": { "const": "redevplugin.release_revocation.v2" }`,
 				`"revoked_key_ids":`,
+				`"revoked_releases":`,
+			},
+		},
+		{
+			path: "release-revocation-pointer-v1.schema.json",
+			snippets: []string{
+				`"additionalProperties": false`,
+				`"schema_version": { "const": "redevplugin.release_revocation_pointer.v1" }`,
+				`"document_sha256": { "$ref": "#/$defs/sha256" }`,
 			},
 		},
 	}

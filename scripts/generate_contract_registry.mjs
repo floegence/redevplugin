@@ -9,7 +9,7 @@ import { parse as parseYAML } from "yaml";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const checkOnly = process.argv.slice(2).includes("--check");
-const registryPath = join(root, "spec/plugin/contract-registry-v1.json");
+const registryPath = join(root, "internal/contracts/active-contracts.json");
 const goOutputPath = join(root, "pkg/version/contracts_gen.go");
 const tsOutputPath = join(root, "packages/redevplugin-ui/src/contracts.gen.ts");
 const goRenderPolicyOutputPath = join(root, "pkg/pluginpkg/opaque_surface_policy_gen.go");
@@ -21,7 +21,7 @@ validateRegistry(registry);
 const renderPolicy = await readRenderPolicy(registry);
 
 const contracts = [];
-for (const contract of registry.contracts) {
+for (const contract of registry.artifacts) {
   const absolutePath = resolve(root, contract.path);
   if (!isWithinRoot(absolutePath)) {
     throw new Error(`contract path escapes repository root: ${contract.path}`);
@@ -30,7 +30,7 @@ for (const contract of registry.contracts) {
   contracts.push({
     id: contract.id,
     path: contract.path,
-    version: registry.matrix[contract.version_key],
+    version: contract.version,
     sha256: createHash("sha256").update(content).digest("hex"),
   });
 }
@@ -55,11 +55,11 @@ for (const [filename, content] of outputs) {
 }
 
 function validateRegistry(value) {
-  if (!isRecord(value) || !hasExactKeys(value, ["schema_version", "matrix", "contracts"])) {
-    throw new Error("contract registry must be a closed object");
+  if (!isRecord(value) || !hasExactKeys(value, ["schema_version", "matrix", "artifacts"])) {
+    throw new Error("contract source must be a closed object");
   }
-  if (value.schema_version !== "redevplugin.contract_registry.v1") {
-    throw new Error(`unsupported contract registry schema_version: ${value.schema_version}`);
+  if (value.schema_version !== "redevplugin.contract_source.v1") {
+    throw new Error(`unsupported contract source schema_version: ${value.schema_version}`);
   }
   if (!isRecord(value.matrix) || Object.keys(value.matrix).length === 0) {
     throw new Error("contract registry matrix is required");
@@ -69,14 +69,14 @@ function validateRegistry(value) {
       throw new Error(`invalid contract matrix entry: ${key}`);
     }
   }
-  if (!Array.isArray(value.contracts) || value.contracts.length === 0) {
-    throw new Error("contract registry contracts are required");
+  if (!Array.isArray(value.artifacts) || value.artifacts.length === 0) {
+    throw new Error("contract source artifacts are required");
   }
   const ids = new Set();
   const paths = new Set();
-  for (const contract of value.contracts) {
-    if (!isRecord(contract) || !hasExactKeys(contract, ["id", "path", "version_key"])) {
-      throw new Error("contract registry entries must be closed objects");
+  for (const contract of value.artifacts) {
+    if (!isRecord(contract) || !hasExactKeys(contract, ["id", "path", "version"])) {
+      throw new Error("contract source entries must be closed objects");
     }
     if (!/^[a-z][a-z0-9-]+$/.test(contract.id) || ids.has(contract.id)) {
       throw new Error(`invalid or duplicate contract id: ${contract.id}`);
@@ -87,8 +87,8 @@ function validateRegistry(value) {
     if (contract.path.includes("..") || contract.path.includes("\\")) {
       throw new Error(`unsafe contract path: ${contract.path}`);
     }
-    if (!(contract.version_key in value.matrix)) {
-      throw new Error(`unknown version_key ${contract.version_key} for ${contract.id}`);
+    if (typeof contract.version !== "string" || contract.version.length === 0) {
+      throw new Error(`invalid contract version for ${contract.id}`);
     }
     ids.add(contract.id);
     paths.add(contract.path);
@@ -104,8 +104,19 @@ function renderGo(matrix, contracts) {
     ["ManifestSchemaVersion", "manifest_schema_version"],
     ["PackageSignatureSchemaVersion", "package_signature_schema_version"],
     ["ReleaseMetadataSchemaVersion", "release_metadata_schema_version"],
-    ["SourcePolicySchemaVersion", "source_policy_schema_version"],
-    ["SourceRevocationsSchemaVersion", "source_revocations_schema_version"],
+    ["ReleaseRootDelegationSchemaVersion", "release_root_delegation_schema_version"],
+    ["ReleaseSourcePolicySchemaVersion", "release_source_policy_schema_version"],
+    ["ReleaseSourcePolicyPointerSchemaVersion", "release_source_policy_pointer_schema_version"],
+    ["ReleaseRevocationSchemaVersion", "release_revocation_schema_version"],
+    ["ReleaseRevocationPointerSchemaVersion", "release_revocation_pointer_schema_version"],
+    ["ReleaseTrustStateSchemaVersion", "release_trust_state_schema_version"],
+    ["TrustedTimeEvidenceSchemaVersion", "trusted_time_evidence_schema_version"],
+    ["TrustedTimeLeafSchemaVersion", "trusted_time_leaf_schema_version"],
+    ["ReleaseSigningLedgerSchemaVersion", "release_signing_ledger_schema_version"],
+    ["ReleaseSigningSubjectSchemaVersion", "release_signing_subject_schema_version"],
+    ["ReleaseSignatureEnvelopeSchemaVersion", "release_signature_envelope_schema_version"],
+    ["ReleaseSigningLedgerReceiptSchemaVersion", "release_signing_ledger_receipt_schema_version"],
+    ["ReleaseSigningLedgerEvidenceSchemaVersion", "release_signing_ledger_evidence_schema_version"],
     ["TokenTicketSchemaVersion", "token_ticket_schema_version"],
     ["BridgeSchemaVersion", "bridge_schema_version"],
     ["OpaqueSurfaceDocumentSchemaVersion", "opaque_surface_document_schema_version"],
@@ -117,7 +128,6 @@ function renderGo(matrix, contracts) {
     ["PluginPlatformOpenAPIVersion", "plugin_platform_openapi_version"],
     ["CompatibilityManifestVersion", "compatibility_manifest_version"],
     ["CompatibilitySchemaVersion", "compatibility_schema_version"],
-    ["ReleaseManifestSchemaVersion", "release_manifest_schema_version"],
     ["WorkerInvocationSchemaVersion", "worker_invocation_schema_version"],
     ["HostCapabilityContractSchemaVersion", "host_capability_contract_schema_version"],
     ["HostCapabilityPinSchemaVersion", "host_capability_pin_schema_version"],
@@ -129,6 +139,16 @@ function renderGo(matrix, contracts) {
     ["PerformanceContractVersion", "performance_contract_version"],
     ["PerformanceEvidenceSchemaVersion", "performance_evidence_schema_version"],
     ["ContractRegistryVersion", "contract_registry_version"],
+    ["PlatformPackageSetSchemaVersion", "platform_package_set_schema_version"],
+    ["PlatformPackagePublicationSchemaVersion", "platform_package_publication_schema_version"],
+    ["RuntimeAdmissionSchemaVersion", "runtime_admission_schema_version"],
+    ["RuntimeDescriptorSchemaVersion", "runtime_descriptor_schema_version"],
+    ["OwnerScopeInventoryRegistryVersion", "owner_scope_inventory_registry_version"],
+    ["OwnerScopeInventorySchemaVersion", "owner_scope_inventory_schema_version"],
+    ["OwnerScopeMigrationSchemaVersion", "owner_scope_migration_schema_version"],
+    ["ProcessContainmentSchemaVersion", "process_containment_schema_version"],
+    ["RuntimeExecJournalSchemaVersion", "runtime_exec_journal_schema_version"],
+    ["QuarantineCleanupSchemaVersion", "quarantine_cleanup_schema_version"],
   ];
   const constantLines = constants.map(([name, key]) => `\t${name} = ${JSON.stringify(matrix[key])}`).join("\n");
   const contractLines = contracts.map((contract) => [
@@ -166,7 +186,7 @@ function renderTypeScript(matrix, contracts) {
 }
 
 async function readRenderPolicy(registry) {
-  const bridgeContract = registry.contracts.find((contract) => contract.id === "iframe-bridge-schema");
+  const bridgeContract = registry.artifacts.find((contract) => contract.id === "iframe-bridge-schema");
   if (!bridgeContract) {
     throw new Error("iframe-bridge-schema contract is missing");
   }
@@ -267,7 +287,7 @@ function renderTypeScriptRenderPolicy(policy) {
 }
 
 async function renderRoutes(registry) {
-  const openAPIContract = registry.contracts.find((contract) => contract.id === "plugin-platform-openapi");
+  const openAPIContract = registry.artifacts.find((contract) => contract.id === "plugin-platform-openapi");
   if (!openAPIContract) {
     throw new Error("plugin-platform-openapi contract is missing");
   }

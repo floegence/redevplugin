@@ -256,7 +256,7 @@ func TestOpenConfigRejectsIncompleteDeclaredModules(t *testing.T) {
 
 func TestFeaturesReturnsClosedConfiguredSet(t *testing.T) {
 	config := modularTestConfig(t)
-	config.Runtime = &RuntimeModule{Manager: newRecordingRuntimeManager()}
+	config.Runtime = &RuntimeModule{manager: newRecordingRuntimeManager()}
 	config.Secrets = &SecretsModule{Store: secrets.NewMemoryStore()}
 	h, err := Open(context.Background(), config)
 	if err != nil {

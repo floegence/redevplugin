@@ -25,10 +25,10 @@ capabilities.
   WASM ABI schema, worker invocation payload schema, stable error-code schema,
   persistent resource-scope schema, performance-evidence schema, and target
   classifier fixture
-- Active coordinated contracts are `plugin-host-v5`, `rust-ipc-v5`,
-  `plugin-ui-v5`, `bridge-v5`, `plugin-platform-v7`, `manifest-v5`, opaque
+- Active coordinated contracts are `plugin-host-v6`, `rust-ipc-v6`,
+  `plugin-ui-v5`, `bridge-v5`, `plugin-platform-v8`, `manifest-v5`, opaque
   document v3, opaque transport v4, release metadata v5, compatibility manifest
-  v7, error codes v5, resource scope v1, session scope v1, token/ticket v4,
+  v7, error codes v6, resource scope v1, session scope v1, token/ticket v4,
   and release manifest
   v4. WASM ABI v2, worker invocation v3, and package
   signature v1 remain unchanged.

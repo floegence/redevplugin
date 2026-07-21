@@ -22,7 +22,6 @@ import (
 	"github.com/floegence/redevplugin/pkg/connectivity"
 	"github.com/floegence/redevplugin/pkg/host"
 	"github.com/floegence/redevplugin/pkg/observability"
-	"github.com/floegence/redevplugin/pkg/runtimeclient"
 	"github.com/floegence/redevplugin/pkg/sessionctx"
 	"github.com/floegence/redevplugin/pkg/version"
 	"golang.org/x/net/dns/dnsmessage"
@@ -244,12 +243,12 @@ type hostPluginRecord struct {
 
 func TestExamplesHealthHandlerReadsLiveRuntimeHealth(t *testing.T) {
 	descriptor := mustDescribeCommandRuntime(t, os.Args[0])
-	runtimeHealth := &examplesRuntimeHealthStub{health: runtimeclient.ManagerHealth{
+	runtimeHealth := &examplesRuntimeHealthStub{health: host.RuntimeHealth{
 		Ready:      true,
 		Descriptor: descriptor,
-		Shards: []runtimeclient.ShardHealth{{
+		Shards: []host.RuntimeShardHealth{{
 			RuntimeShardID: "runtime_shard_00",
-			Health: runtimeclient.Health{
+			RuntimeProcessHealth: host.RuntimeProcessHealth{
 				Ready:               true,
 				RuntimeGenerationID: "runtime_generation_1",
 				Descriptor:          descriptor,
@@ -278,6 +277,9 @@ func TestExamplesHealthHandlerReadsLiveRuntimeHealth(t *testing.T) {
 func TestExamplesServerBrowserSmoke(t *testing.T) {
 	if os.Getenv("REDEVPLUGIN_RUN_BROWSER_SMOKE") != "1" {
 		t.Skip("set REDEVPLUGIN_RUN_BROWSER_SMOKE=1 to run the browser acceptance suite")
+	}
+	if runtime.GOOS != "linux" {
+		t.Skip("the v0.6 runtime admission contract supports Linux targets only")
 	}
 	repositoryRoot := cliRepoRoot(t)
 	runtimePath := buildExamplesRuntime(t, repositoryRoot)
@@ -389,11 +391,6 @@ func primeExamplesPersistentState(t *testing.T, stateRoot string, runtimePath st
 
 func buildExamplesRuntime(t *testing.T, repositoryRoot string) string {
 	t.Helper()
-	const runtimeVersion = "0.5.0"
-	previousRuntimeVersion := version.RuntimeVersion
-	version.RuntimeVersion = runtimeVersion
-	t.Cleanup(func() { version.RuntimeVersion = previousRuntimeVersion })
-
 	cargo := "cargo"
 	if _, err := exec.LookPath(cargo); err != nil {
 		home, homeErr := os.UserHomeDir()
@@ -408,7 +405,7 @@ func buildExamplesRuntime(t *testing.T, repositoryRoot string) string {
 	cargoTargetDir := filepath.Join(t.TempDir(), "cargo-target")
 	command := exec.Command(cargo, "build", "-p", "redevplugin-runtime")
 	command.Dir = repositoryRoot
-	command.Env = append(os.Environ(), "CARGO_TARGET_DIR="+cargoTargetDir, "CARGO_TERM_COLOR=never", "REDEVPLUGIN_RUNTIME_VERSION="+runtimeVersion)
+	command.Env = append(os.Environ(), "CARGO_TARGET_DIR="+cargoTargetDir, "CARGO_TERM_COLOR=never")
 	if output, err := command.CombinedOutput(); err != nil {
 		t.Fatalf("cargo build -p redevplugin-runtime failed: %v\n%s", err, output)
 	}
@@ -443,12 +440,12 @@ func waitForExamplesHealth(t *testing.T, origin string) {
 type examplesFixtureNetworkExecutor struct{}
 
 type examplesRuntimeHealthStub struct {
-	health  runtimeclient.ManagerHealth
+	health  host.RuntimeHealth
 	err     error
 	session sessionctx.Context
 }
 
-func (s *examplesRuntimeHealthStub) RuntimeHealth(ctx context.Context) (runtimeclient.ManagerHealth, error) {
+func (s *examplesRuntimeHealthStub) RuntimeHealth(ctx context.Context) (host.RuntimeHealth, error) {
 	s.session, _ = sessionctx.FromContext(ctx)
 	return s.health, s.err
 }

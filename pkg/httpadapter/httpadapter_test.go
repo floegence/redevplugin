@@ -18,13 +18,13 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
-	"runtime"
 	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/floegence/redevplugin/internal/runtimeclient"
 	"github.com/floegence/redevplugin/internal/testsupport/releasetrustfixture"
 	"github.com/floegence/redevplugin/pkg/bridge"
 	"github.com/floegence/redevplugin/pkg/capability"
@@ -40,14 +40,11 @@ import (
 	"github.com/floegence/redevplugin/pkg/pluginpkg"
 	"github.com/floegence/redevplugin/pkg/registry"
 	"github.com/floegence/redevplugin/pkg/releasetrust"
-	"github.com/floegence/redevplugin/pkg/runtimeclient"
-	"github.com/floegence/redevplugin/pkg/runtimetarget"
 	"github.com/floegence/redevplugin/pkg/secrets"
 	"github.com/floegence/redevplugin/pkg/security"
 	"github.com/floegence/redevplugin/pkg/sessionctx"
 	"github.com/floegence/redevplugin/pkg/sessionscope"
 	"github.com/floegence/redevplugin/pkg/stream"
-	platformversion "github.com/floegence/redevplugin/pkg/version"
 	"github.com/floegence/redevplugin/pkg/websecurity"
 )
 
@@ -713,10 +710,10 @@ func TestHandlerCompatibilityManifest(t *testing.T) {
 		} `json:"contracts"`
 	}](t, handler, "/_redevplugin/api/plugins/platform/compatibility/query", map[string]any{})
 
-	if got.SchemaVersion != "redevplugin.compatibility.v7" {
+	if got.SchemaVersion != "redevplugin.compatibility.v8" {
 		t.Fatalf("schema_version = %q", got.SchemaVersion)
 	}
-	if got.Matrix.PluginHostProtocolVersion != "plugin-host-v5" || got.Matrix.PluginPlatformOpenAPI != "plugin-platform-v7" {
+	if got.Matrix.PluginHostProtocolVersion != "plugin-host-v6" || got.Matrix.PluginPlatformOpenAPI != "plugin-platform-v8" {
 		t.Fatalf("matrix mismatch: %#v", got.Matrix)
 	}
 	contracts := map[string]struct {
@@ -733,7 +730,7 @@ func TestHandlerCompatibilityManifest(t *testing.T) {
 	if !ok {
 		t.Fatalf("compatibility manifest missing plugin-platform-openapi: %#v", got.Contracts)
 	}
-	if openapi.Path != "spec/openapi/plugin-platform-v7.yaml" || openapi.SHA256 == "" {
+	if openapi.Path != "spec/openapi/plugin-platform-v8.yaml" || openapi.SHA256 == "" {
 		t.Fatalf("plugin-platform-openapi contract mismatch: %#v", openapi)
 	}
 }
@@ -1488,35 +1485,6 @@ func TestHandlerManagementLifecycleFlow(t *testing.T) {
 	}](t, handler, "/_redevplugin/api/plugins/catalog/query", map[string]any{})
 	if len(emptyCatalog.Plugins) != 0 {
 		t.Fatalf("catalog after uninstall mismatch: %#v", emptyCatalog)
-	}
-}
-
-func TestHandlerWorkerFailSafeLifecycleDoesNotRestartStoppedRuntime(t *testing.T) {
-	for _, action := range []string{"disable", "uninstall"} {
-		t.Run(action, func(t *testing.T) {
-			runtimeManager := newHTTPRecordingRuntimeManager(t)
-			handler := mustNewHandler(t, newHTTPTestHostWithOptions(t, httpTestHostOptions{runtimeManager: runtimeManager}), allowHTTPTestGuard())
-			installed := postLocalImport[registry.PluginRecord](t, handler, nextHTTPTestPluginInstanceID(t), buildHTTPWorkerFixturePackage(t))
-			enabled := postJSON[registry.PluginRecord](t, handler, "/_redevplugin/api/plugins/enable", map[string]any{
-				"plugin_instance_id": installed.PluginInstanceID, "expected_management_revision": installed.ManagementRevision,
-			})
-			runtimeManager.health.Ready = false
-			runtimeManager.preflightCalls = 0
-			runtimeManager.startCalls = 0
-
-			request := map[string]any{
-				"plugin_instance_id": enabled.PluginInstanceID, "expected_management_revision": enabled.ManagementRevision,
-			}
-			if action == "disable" {
-				postJSON[registry.PluginRecord](t, handler, "/_redevplugin/api/plugins/disable", request)
-			} else {
-				request["delete_data"] = true
-				postJSON[registry.PluginRecord](t, handler, "/_redevplugin/api/plugins/uninstall", request)
-			}
-			if runtimeManager.preflightCalls != 0 || runtimeManager.startCalls != 0 || runtimeManager.revokeCalls != 1 {
-				t.Fatalf("runtime calls after %s: preflight=%d start=%d revoke=%d", action, runtimeManager.preflightCalls, runtimeManager.startCalls, runtimeManager.revokeCalls)
-			}
-		})
 	}
 }
 
@@ -3452,89 +3420,6 @@ func TestHandlerCoreActionCannotForgeCapabilityErrorDetails(t *testing.T) {
 	}
 }
 
-func TestHandlerWorkerRuntimeErrorMapsToRuntimeUnavailable(t *testing.T) {
-	runtime := newHTTPRecordingRuntimeManager(t)
-	runtime.err = runtimeclient.ErrRuntimeRequestFailed
-	h := newHTTPTestHostWithOptions(t, httpTestHostOptions{runtimeManager: runtime})
-	installed, err := host.ImportLocalPackageBytes(httpTestContext(), h, nextHTTPTestPluginInstanceID(t), buildHTTPWorkerFixturePackage(t))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := h.EnablePlugin(httpTestContext(), host.EnableRequest{PluginInstanceID: installed.PluginInstanceID, ExpectedManagementRevision: mustManagementRevision(t, h, installed.PluginInstanceID)}); err != nil {
-		t.Fatal(err)
-	}
-	handler := mustNewHandler(t, h, allowHTTPTestGuard())
-	bridgeResp := openHTTPBridge(t, handler, installed.PluginInstanceID, "http.worker.view", "surface_http_worker", "bridge_http_worker")
-
-	raw, err := json.Marshal(map[string]any{
-		"plugin_instance_id":   installed.PluginInstanceID,
-		"surface_instance_id":  "surface_http_worker",
-		"bridge_channel_id":    "bridge_http_worker",
-		"plugin_gateway_token": bridgeResp.GatewayToken,
-		"method":               "worker.echo",
-		"params":               map[string]any{"message": "hello"},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	req := newJSONHTTPRequest(http.MethodPost, "/_redevplugin/api/plugins/rpc", bytes.NewReader(raw))
-	rec := httptest.NewRecorder()
-	handler.ServeHTTP(rec, req)
-	if rec.Code != http.StatusServiceUnavailable {
-		t.Fatalf("worker runtime error status = %d body = %s", rec.Code, rec.Body.String())
-	}
-	var envelope decodedErrorResponse
-	if err := json.Unmarshal(rec.Body.Bytes(), &envelope); err != nil {
-		t.Fatal(err)
-	}
-	if envelope.Code != string(security.ErrRuntimeUnavailable) {
-		t.Fatalf("worker runtime error code = %s body = %s", envelope.Code, rec.Body.String())
-	}
-}
-
-func TestHandlerWorkerBusinessErrorPreservesWorkerCode(t *testing.T) {
-	runtime := newHTTPRecordingRuntimeManager(t)
-	runtime.err = &runtimeclient.WorkerExecutionError{Code: "NOTE_NOT_FOUND", Message: "note was not found", Origin: runtimeclient.WorkerErrorOriginPlugin}
-	h := newHTTPTestHostWithOptions(t, httpTestHostOptions{runtimeManager: runtime})
-	installed, err := host.ImportLocalPackageBytes(httpTestContext(), h, nextHTTPTestPluginInstanceID(t), buildHTTPWorkerFixturePackage(t))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := h.EnablePlugin(httpTestContext(), host.EnableRequest{PluginInstanceID: installed.PluginInstanceID, ExpectedManagementRevision: mustManagementRevision(t, h, installed.PluginInstanceID)}); err != nil {
-		t.Fatal(err)
-	}
-	handler := mustNewHandler(t, h, allowHTTPTestGuard())
-	bridgeResp := openHTTPBridge(t, handler, installed.PluginInstanceID, "http.worker.view", "surface_http_worker_error", "bridge_http_worker_error")
-
-	raw, err := json.Marshal(map[string]any{
-		"plugin_instance_id":   installed.PluginInstanceID,
-		"surface_instance_id":  "surface_http_worker_error",
-		"bridge_channel_id":    "bridge_http_worker_error",
-		"plugin_gateway_token": bridgeResp.GatewayToken,
-		"method":               "worker.echo",
-		"params":               map[string]any{"message": "hello"},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	req := newJSONHTTPRequest(http.MethodPost, "/_redevplugin/api/plugins/rpc", bytes.NewReader(raw))
-	rec := httptest.NewRecorder()
-	handler.ServeHTTP(rec, req)
-	if rec.Code != http.StatusUnprocessableEntity {
-		t.Fatalf("worker business error status = %d body = %s", rec.Code, rec.Body.String())
-	}
-	var envelope decodedErrorResponse
-	if err := json.Unmarshal(rec.Body.Bytes(), &envelope); err != nil {
-		t.Fatal(err)
-	}
-	if envelope.Code != string(security.ErrWorkerError) || envelope.Message != "plugin operation failed" {
-		t.Fatalf("worker business error envelope = %#v", envelope)
-	}
-	if envelope.Details["worker_error_code"] != "NOTE_NOT_FOUND" || envelope.Details["worker_error_message"] != "note was not found" || envelope.Details["worker_error_origin"] != "plugin" {
-		t.Fatalf("worker business error details = %#v", envelope.Details)
-	}
-}
-
 func TestWorkerExecutionErrorsSeparatePlatformFailuresFromPluginDomainErrors(t *testing.T) {
 	tests := []struct {
 		name       string
@@ -4231,25 +4116,15 @@ func TestHandlerDiagnosticsAreScopedToAuthenticatedOwner(t *testing.T) {
 	}
 }
 
-func TestHandlerInternalErrorsUseStableMessagesAndOwnerScopedDiagnostics(t *testing.T) {
-	const sensitive = "launch /Users/secret/path/redevplugin-runtime with vault-token-super-secret"
+func TestHandlerRuntimeModuleAbsenceUsesStableUnavailableResponse(t *testing.T) {
 	diagnostics := newHTTPRecordingDiagnostics()
-	runtimeManager := newHTTPRecordingRuntimeManager(t)
-	runtimeManager.startErr = errors.New(sensitive)
-	h := newHTTPTestHostWithOptions(t, httpTestHostOptions{diagnostics: diagnostics, runtimeManager: runtimeManager})
+	h := newHTTPTestHostWithOptions(t, httpTestHostOptions{diagnostics: diagnostics})
 	handler := mustNewHandler(t, h, allowHTTPTestGuard())
 	envelope := postJSONError(t, handler, "/_redevplugin/api/plugins/runtime/start", map[string]any{
-		"target": map[string]any{"os": runtime.GOOS, "arch": runtime.GOARCH},
+		"target": map[string]any{"os": "linux", "arch": "amd64"},
 	}, http.StatusServiceUnavailable)
 	if envelope.Code != string(security.ErrRuntimeUnavailable) || envelope.Message != "plugin runtime is unavailable" || envelope.MutationOutcome != string(mutation.OutcomeNotCommitted) {
 		t.Fatalf("runtime public error mismatch: %#v", envelope)
-	}
-	encoded, err := json.Marshal(envelope)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(string(encoded), sensitive) || strings.Contains(string(encoded), "/Users/secret/path") || strings.Contains(string(encoded), "vault-token-super-secret") {
-		t.Fatalf("runtime response leaked internal error: %s", encoded)
 	}
 	events, err := diagnostics.ListPluginDiagnostics(context.Background(), observability.ListDiagnosticRequest{
 		Type: "plugin.http.operation_failed", OwnerSessionHash: "session_hash", OwnerUserHash: "user_hash", OwnerEnvHash: "env_hash", SessionChannelIDHash: "channel_hash", Limit: 10,
@@ -4265,18 +4140,12 @@ func TestHandlerInternalErrorsUseStableMessagesAndOwnerScopedDiagnostics(t *test
 	if !ok || failure.Code != observability.FailureAction || failure.Component != observability.FailureComponentHTTP || failure.Operation != observability.FailureOperationHTTPAdapter {
 		t.Fatalf("runtime diagnostics sink failure mismatch: %#v", internalRuntimeEvent)
 	}
-	if internalRaw := fmt.Sprint(internalRuntimeEvent); strings.Contains(internalRaw, sensitive) || strings.Contains(internalRaw, "/Users/secret/path") {
-		t.Fatalf("runtime diagnostics sink retained sensitive cause: %s", internalRaw)
-	}
 	rawEvent, err := json.Marshal(events[0])
 	if err != nil {
 		t.Fatal(err)
 	}
 	if strings.Contains(string(rawEvent), "owner_session_hash") || strings.Contains(string(rawEvent), "owner_user_hash") || strings.Contains(string(rawEvent), "owner_env_hash") || strings.Contains(string(rawEvent), "session_channel_id_hash") {
 		t.Fatalf("diagnostic owner scope was serialized: %s", rawEvent)
-	}
-	if strings.Contains(string(encoded), "plugin HTTP operation failed") {
-		t.Fatalf("public response exposed diagnostic-only message: %s", encoded)
 	}
 	listed := postJSON[diagnosticListResponse](t, handler, "/_redevplugin/api/plugins/diagnostics/query", map[string]any{"type": "plugin.http.operation_failed", "limit": 10})
 	publicDiagnostics, err := json.Marshal(listed)
@@ -4288,42 +4157,10 @@ func TestHandlerInternalErrorsUseStableMessagesAndOwnerScopedDiagnostics(t *test
 		listed.DiagnosticEvents[0].Details.Code != string(security.ErrRuntimeUnavailable) {
 		t.Fatalf("public runtime diagnostics mismatch: %#v", listed.DiagnosticEvents)
 	}
-	for _, forbidden := range []string{sensitive, "/Users/secret/path", "vault-token-super-secret", "internal_details"} {
+	for _, forbidden := range []string{"owner_session_hash", "owner_user_hash", "owner_env_hash", "session_channel_id_hash", "internal_details"} {
 		if strings.Contains(string(publicDiagnostics), forbidden) {
 			t.Fatalf("public runtime diagnostics leaked %q: %s", forbidden, publicDiagnostics)
 		}
-	}
-
-	stopSensitive := "stop /Users/secret/path/redevplugin-runtime with vault-token-stop-secret"
-	runtimeManager.stopErr = errors.New(stopSensitive)
-	stopEnvelope := postJSONError(t, handler, "/_redevplugin/api/plugins/runtime/stop", map[string]any{}, http.StatusServiceUnavailable)
-	if stopEnvelope.Code != string(security.ErrRuntimeUnavailable) || stopEnvelope.Message != "plugin runtime is unavailable" || stopEnvelope.MutationOutcome != string(mutation.OutcomeUnknown) {
-		t.Fatalf("runtime stop public error mismatch: %#v", stopEnvelope)
-	}
-	stopEvents, err := diagnostics.ListPluginDiagnostics(context.Background(), observability.ListDiagnosticRequest{
-		Type: "plugin.runtime.stop_failed", OwnerSessionHash: "session_hash", OwnerUserHash: "user_hash", OwnerEnvHash: "env_hash", SessionChannelIDHash: "channel_hash", Limit: 10,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(stopEvents) != 1 || !stopEvents[0].Failure.Empty() {
-		t.Fatalf("runtime stop internal diagnostic mismatch: %#v", stopEvents)
-	}
-	internalStopEvent, ok := diagnostics.last("plugin.runtime.stop_failed")
-	stopFailure := internalStopEvent.Failure
-	if !ok || stopFailure.Code != observability.FailureAdapter || stopFailure.Component != observability.FailureComponentRuntime || stopFailure.Operation != observability.FailureOperationRuntimeStop {
-		t.Fatalf("runtime stop diagnostics sink failure mismatch: %#v", internalStopEvent)
-	}
-	if internalRaw := fmt.Sprint(internalStopEvent); strings.Contains(internalRaw, stopSensitive) || strings.Contains(internalRaw, "/Users/secret/path") {
-		t.Fatalf("runtime stop diagnostics sink retained sensitive cause: %s", internalRaw)
-	}
-	listedStop := postJSON[diagnosticListResponse](t, handler, "/_redevplugin/api/plugins/diagnostics/query", map[string]any{"type": "plugin.runtime.stop_failed", "limit": 10})
-	publicStopDiagnostics, err := json.Marshal(listedStop)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(listedStop.DiagnosticEvents) != 1 || listedStop.DiagnosticEvents[0].Message != "plugin runtime stop failed" || strings.Contains(string(publicStopDiagnostics), stopSensitive) || strings.Contains(string(publicStopDiagnostics), "/Users/secret/path") {
-		t.Fatalf("public runtime stop diagnostics leaked internal cause: %s", publicStopDiagnostics)
 	}
 }
 
@@ -4358,47 +4195,8 @@ func TestHandlerPatchSettingsReportsUnknownWhenMetadataReadFailsAfterCommit(t *t
 	}
 }
 
-func TestHandlerRuntimeLifecycleFlow(t *testing.T) {
-	supervisor := newHTTPRecordingRuntimeManager(t)
-	h := newHTTPTestHostWithOptions(t, httpTestHostOptions{runtimeManager: supervisor})
-	handler := mustNewHandler(t, h, allowHTTPTestGuard())
-
-	health := postJSON[runtimeclient.ManagerHealth](t, handler, "/_redevplugin/api/plugins/runtime/start", map[string]any{
-		"target": map[string]any{"os": runtime.GOOS, "arch": runtime.GOARCH},
-	})
-	if !health.Ready || len(health.Shards) != 1 || health.Shards[0].RuntimeInstanceID != "runtime_http" || supervisor.startedTarget != supervisor.health.Descriptor.Target() {
-		t.Fatalf("runtime start mismatch: health=%#v supervisor=%#v", health, supervisor)
-	}
-	if health.Descriptor != supervisor.health.Descriptor || health.Shards[0].Descriptor != health.Descriptor {
-		t.Fatalf("runtime start descriptor mismatch: health=%#v supervisor=%#v", health, supervisor)
-	}
-	health = postJSON[runtimeclient.ManagerHealth](t, handler, "/_redevplugin/api/plugins/runtime/health/query", map[string]any{})
-	if !health.Ready || len(health.Shards) != 1 || health.Shards[0].RuntimeGenerationID != "runtime_gen_http" || health.Descriptor != supervisor.health.Descriptor || health.Shards[0].Descriptor != health.Descriptor {
-		t.Fatalf("runtime health mismatch: %#v", health)
-	}
-	publicHealth := postJSON[map[string]any](t, handler, "/_redevplugin/api/plugins/runtime/health/query", map[string]any{})
-	shards, ok := publicHealth["shards"].([]any)
-	if !ok || len(shards) != 1 {
-		t.Fatalf("runtime health public shards = %#v", publicHealth["shards"])
-	}
-	shard, ok := shards[0].(map[string]any)
-	if !ok {
-		t.Fatalf("runtime health public shard = %#v", shards[0])
-	}
-	for _, forbidden := range []string{"ipc_channel_id", "connection_nonce"} {
-		if _, present := shard[forbidden]; present {
-			t.Fatalf("runtime health exposed %s: %#v", forbidden, shard)
-		}
-	}
-	postJSON[map[string]bool](t, handler, "/_redevplugin/api/plugins/runtime/stop", map[string]any{})
-	if supervisor.stopCalls != 1 {
-		t.Fatalf("Stop calls = %d, want 1", supervisor.stopCalls)
-	}
-}
-
 func TestHandlerRuntimeStartRejectsUnknownTargetsBeforeHostDispatch(t *testing.T) {
-	supervisor := newHTTPRecordingRuntimeManager(t)
-	h := newHTTPTestHostWithOptions(t, httpTestHostOptions{runtimeManager: supervisor})
+	h := newHTTPTestHost(t)
 	handler := mustNewHandler(t, h, allowHTTPTestGuard())
 
 	for _, body := range []map[string]any{
@@ -4411,9 +4209,6 @@ func TestHandlerRuntimeStartRejectsUnknownTargetsBeforeHostDispatch(t *testing.T
 		if envelope.Code != string(security.ErrInvalidRequest) || envelope.MutationOutcome != string(mutation.OutcomeNotCommitted) {
 			t.Fatalf("runtime target error = %#v", envelope)
 		}
-	}
-	if supervisor.startedTarget != 0 {
-		t.Fatalf("invalid runtime target reached manager: %v", supervisor.startedTarget)
 	}
 }
 
@@ -4668,8 +4463,8 @@ func samplePathForRoute(path string) string {
 func readOpenAPIContract(t *testing.T) string {
 	t.Helper()
 	candidates := []string{
-		filepath.Join("..", "..", "spec", "openapi", "plugin-platform-v7.yaml"),
-		filepath.Join("spec", "openapi", "plugin-platform-v7.yaml"),
+		filepath.Join("..", "..", "spec", "openapi", "plugin-platform-v8.yaml"),
+		filepath.Join("spec", "openapi", "plugin-platform-v8.yaml"),
 	}
 	var lastErr error
 	for _, candidate := range candidates {
@@ -4799,7 +4594,6 @@ type httpTestHostOptions struct {
 	authorization           host.AuthorizationAdapter
 	secrets                 host.SecretStoreAdapter
 	diagnostics             host.DiagnosticsSink
-	runtimeManager          runtimeclient.Manager
 	surfaceCatalog          host.SurfaceCatalogSink
 	releaseTrust            *releasetrust.ServiceSet
 	releaseArtifactResolver host.ReleaseArtifactResolver
@@ -4832,10 +4626,6 @@ func newHTTPTestHostWithOptions(t *testing.T, opts httpTestHostOptions) *host.Ho
 	secretStore := opts.secrets
 	if secretStore == nil {
 		secretStore = secrets.NewMemoryStore()
-	}
-	runtimeManager := opts.runtimeManager
-	if runtimeManager == nil {
-		runtimeManager = newHTTPRecordingRuntimeManager(t)
 	}
 	coreActions := opts.coreActions
 	if coreActions == nil {
@@ -4906,7 +4696,6 @@ func newHTTPTestHostWithOptions(t *testing.T, opts httpTestHostOptions) *host.Ho
 			SessionScopes:        sessionScopes,
 		},
 		Release:      releaseModule,
-		Runtime:      &host.RuntimeModule{Manager: runtimeManager},
 		Capability:   &host.CapabilityModule{Registry: capabilities},
 		Connectivity: &host.ConnectivityModule{Broker: connectivity.NewMemoryBroker(), NetworkExecutor: connectivity.NewExecutor(connectivity.ExecutorOptions{})},
 		Secrets:      &host.SecretsModule{Store: secretStore},
@@ -5209,19 +4998,6 @@ func buildHTTPCoreActionFixturePackage(t *testing.T) []byte {
 	return buf.Bytes()
 }
 
-func buildHTTPWorkerFixturePackage(t *testing.T) []byte {
-	t.Helper()
-	dir := t.TempDir()
-	writeHTTPFile(t, filepath.Join(dir, "manifest.json"), httpWorkerFixtureManifestJSON())
-	writeHTTPFile(t, filepath.Join(dir, "ui", "index.html"), "<!doctype html><title>HTTP Worker</title>")
-	writeHTTPBytes(t, filepath.Join(dir, "workers", "echo.wasm"), minimalHTTPWorkerWASMForTest("redevplugin_worker_invoke"))
-	var buf bytes.Buffer
-	if _, err := pluginpkg.BuildFromDir(httpTestContext(), dir, &buf, pluginpkg.DefaultReadLimits()); err != nil {
-		t.Fatal(err)
-	}
-	return buf.Bytes()
-}
-
 func buildHTTPSettingsFixturePackage(t *testing.T) []byte {
 	t.Helper()
 	dir := t.TempDir()
@@ -5272,43 +5048,6 @@ func writeHTTPBytes(t *testing.T, filename string, content []byte) {
 	if err := os.WriteFile(filename, content, 0o644); err != nil {
 		t.Fatal(err)
 	}
-}
-
-func minimalHTTPWorkerWASMForTest(exportName string) []byte {
-	module := []byte{
-		0x00, 0x61, 0x73, 0x6d,
-		0x01, 0x00, 0x00, 0x00,
-		0x01, 0x11, 0x03,
-		0x60, 0x01, 0x7f, 0x01, 0x7f,
-		0x60, 0x02, 0x7f, 0x7f, 0x00,
-		0x60, 0x02, 0x7f, 0x7f, 0x01, 0x7e,
-		0x03, 0x04, 0x03, 0x00, 0x01, 0x02,
-		0x05, 0x03, 0x01, 0x00, 0x01,
-	}
-	exportPayload := []byte{0x04}
-	for _, export := range []struct {
-		name  string
-		kind  byte
-		index byte
-	}{
-		{name: "memory", kind: 0x02, index: 0x00},
-		{name: "redevplugin_worker_alloc", kind: 0x00, index: 0x00},
-		{name: "redevplugin_worker_dealloc", kind: 0x00, index: 0x01},
-		{name: exportName, kind: 0x00, index: 0x02},
-	} {
-		exportPayload = append(exportPayload, byte(len(export.name)))
-		exportPayload = append(exportPayload, export.name...)
-		exportPayload = append(exportPayload, export.kind, export.index)
-	}
-	module = append(module, 0x07, byte(len(exportPayload)))
-	module = append(module, exportPayload...)
-	module = append(module,
-		0x0a, 0x0f, 0x03,
-		0x05, 0x00, 0x41, 0x80, 0x08, 0x0b,
-		0x02, 0x00, 0x0b,
-		0x04, 0x00, 0x42, 0x00, 0x0b,
-	)
-	return module
 }
 
 func httpFixtureManifestJSON() string {
@@ -5504,41 +5243,6 @@ func httpCoreActionFixtureManifestJSON() string {
 					"properties": {"opened": {"type": "boolean"}}
 				},
 				"route": {"kind": "core_action", "action_id": "example.open_settings"}
-			}
-		]
-	}`
-}
-
-func httpWorkerFixtureManifestJSON() string {
-	return `{
-		"schema_version": "redevplugin.manifest.v5",
-		"publisher": {"publisher_id": "example", "display_name": "Example"},
-		"plugin": {
-			"plugin_id": "com.example.http.worker",
-			"display_name": "HTTP Worker",
-			"version": "1.0.0",
-			"api_version": "plugin-v1",
-			"min_runtime_version": "0.1.0",
-			"ui_protocol_version": "plugin-ui-v5"
-		},
-		"surfaces": [
-			{"surface_id": "http.worker.view", "kind": "view", "label": "HTTP Worker", "entry": "ui/index.html"}
-		],
-		"workers": [
-			{"worker_id": "echo_worker", "mode": "job", "artifact": "workers/echo.wasm", "abi": "redevplugin-wasm-worker-v2", "scope": "user", "memory_limit_bytes": 1048576}
-		],
-		"methods": [
-			{
-				"method": "worker.echo",
-				"effect": "read",
-				"execution": "sync",
-				"request_schema": {
-					"type": "object",
-					"additionalProperties": false,
-					"properties": {"message": {"type": "string"}}
-				},
-				"response_schema": {"type": "object", "additionalProperties": false},
-				"route": {"kind": "worker", "worker_id": "echo_worker"}
 			}
 		]
 	}`
@@ -5816,55 +5520,6 @@ type httpRecordingSecretStore struct {
 	testErr   error
 	deleteErr error
 	listErr   error
-}
-
-type httpRecordingRuntimeManager struct {
-	health             runtimeclient.Health
-	startedTarget      runtimetarget.Target
-	preflightCalls     int
-	startCalls         int
-	stopCalls          int
-	revokeCalls        int
-	sessionRevokeCalls int
-	startErr           error
-	stopErr            error
-	err                error
-	hostServices       runtimeclient.RuntimeHostServices
-}
-
-func newHTTPRecordingRuntimeManager(t testing.TB) *httpRecordingRuntimeManager {
-	t.Helper()
-	runtimeVersion, err := platformversion.ParseSemVer("0.5.0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	descriptor, err := runtimeclient.NewRuntimeDescriptor(
-		runtimeVersion,
-		mustCurrentHTTPRuntimeTarget(t),
-		platformversion.RustIPCVersion,
-		platformversion.WASMABIVersion,
-		strings.Repeat("a", 64),
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return &httpRecordingRuntimeManager{health: runtimeclient.Health{
-		RuntimeInstanceID:   "runtime_http",
-		RuntimeGenerationID: "runtime_gen_http",
-		IPCChannelID:        "ipc_http",
-		ConnectionNonce:     "connection_nonce_http_1234567890",
-		Descriptor:          descriptor,
-		Ready:               true,
-	}}
-}
-
-func mustCurrentHTTPRuntimeTarget(t testing.TB) runtimetarget.Target {
-	t.Helper()
-	target, err := runtimetarget.Current()
-	if err != nil {
-		t.Fatal(err)
-	}
-	return target
 }
 
 type httpRecordingDiagnostics struct {
@@ -6150,97 +5805,4 @@ func (s *httpRecordingSecretStore) DeletePlugin(_ context.Context, pluginInstanc
 		s.bound = false
 	}
 	return nil
-}
-
-func (s *httpRecordingRuntimeManager) Preflight(ctx context.Context, target runtimetarget.Target) (runtimeclient.RuntimeDescriptor, error) {
-	s.preflightCalls++
-	if err := ctx.Err(); err != nil {
-		return runtimeclient.RuntimeDescriptor{}, err
-	}
-	descriptor := s.health.Descriptor
-	if descriptor.Version().String() == "" {
-		return runtimeclient.RuntimeDescriptor{}, runtimeclient.ErrRuntimeDescriptorInvalid
-	}
-	if target != descriptor.Target() {
-		return runtimeclient.RuntimeDescriptor{}, runtimeclient.ErrRuntimeDescriptorMismatch
-	}
-	return descriptor, nil
-}
-
-func (s *httpRecordingRuntimeManager) Start(ctx context.Context, target runtimetarget.Target) (runtimeclient.ManagerHealth, error) {
-	s.startCalls++
-	s.startedTarget = target
-	if _, err := s.Preflight(ctx, target); err != nil {
-		return runtimeclient.ManagerHealth{}, err
-	}
-	if s.startErr != nil {
-		return runtimeclient.ManagerHealth{}, s.startErr
-	}
-	return s.managerHealth(), nil
-}
-
-func (s *httpRecordingRuntimeManager) BindHostServices(services runtimeclient.RuntimeHostServices) error {
-	if services.StreamSink == nil {
-		return runtimeclient.ErrRuntimeHostServicesInvalid
-	}
-	s.hostServices = services
-	return nil
-}
-
-func (s *httpRecordingRuntimeManager) Stop(context.Context) error {
-	s.stopCalls++
-	s.health.Ready = false
-	return s.stopErr
-}
-
-func (s *httpRecordingRuntimeManager) Health(context.Context) (runtimeclient.ManagerHealth, error) {
-	return s.managerHealth(), nil
-}
-
-func (s *httpRecordingRuntimeManager) managerHealth() runtimeclient.ManagerHealth {
-	return runtimeclient.ManagerHealth{
-		Ready:      s.health.Ready,
-		Descriptor: s.health.Descriptor,
-		Shards:     []runtimeclient.ShardHealth{{RuntimeShardID: "runtime_shard_00", Health: s.health}},
-	}
-}
-
-func (s *httpRecordingRuntimeManager) BindPlugin(context.Context, string) (runtimeclient.RuntimeBinding, error) {
-	return runtimeclient.RuntimeBinding{
-		RuntimeShardID:      "runtime_shard_00",
-		RuntimeInstanceID:   s.health.RuntimeInstanceID,
-		RuntimeGenerationID: s.health.RuntimeGenerationID,
-		IPCChannelID:        s.health.IPCChannelID,
-		ConnectionNonce:     s.health.ConnectionNonce,
-		Descriptor:          s.health.Descriptor,
-	}, nil
-}
-
-func (s *httpRecordingRuntimeManager) InvokeWorker(context.Context, runtimeclient.RuntimeBinding, runtimeclient.Lease, string, []byte) ([]byte, error) {
-	if s.err != nil {
-		return nil, s.err
-	}
-	return nil, runtimeclient.ErrRuntimeIPCUnavailable
-}
-
-func (s *httpRecordingRuntimeManager) Revoke(_ context.Context, req runtimeclient.RevokeRequest) (runtimeclient.RevokeResult, error) {
-	s.revokeCalls++
-	if s.err != nil {
-		return runtimeclient.RevokeResult{}, s.err
-	}
-	return runtimeclient.RevokeResult{
-		ResourceScope:    req.ResourceScope,
-		PluginInstanceID: req.PluginInstanceID,
-		RevokeEpoch:      req.RevokeEpoch,
-	}, nil
-}
-
-func (s *httpRecordingRuntimeManager) RevokeSession(_ context.Context, req runtimeclient.SessionRevokeRequest) (runtimeclient.SessionRevokeResult, error) {
-	s.sessionRevokeCalls++
-	if s.err != nil {
-		return runtimeclient.SessionRevokeResult{}, s.err
-	}
-	return runtimeclient.SessionRevokeResult{
-		SessionScope: req.SessionScope, SessionRevokeSequence: req.SessionRevokeSequence,
-	}, nil
 }

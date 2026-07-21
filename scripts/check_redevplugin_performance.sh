@@ -39,7 +39,7 @@ done
 
 cd "$ROOT_DIR"
 if [[ "$MODE" == "fast" ]]; then
-  GOWORK=off REDEVPLUGIN_PERFORMANCE_GATE=fast go test ./pkg/runtimeclient -run '^(TestRuntimeLimitsMustBeExplicitAndValid|TestRuntimeAdmissionCancellationDoesNotConsumeCapacity|TestRuntimeAdmissionPreservesQueueCapacityForOtherPlugins|TestProcessSupervisorMultiplexesSameShardInvocations|TestProcessSupervisorControlIPCRemainsAvailableWhenInvocationAdmissionIsFull|TestProcessSupervisorDrainsCanceledInvocationWithoutInvalidatingRuntime)$' -count=1
+  GOWORK=off REDEVPLUGIN_PERFORMANCE_GATE=fast go test ./internal/runtimeclient -run '^(TestRuntimeLimitsMustBeExplicitAndValid|TestRuntimeAdmissionCancellationDoesNotConsumeCapacity|TestRuntimeAdmissionPreservesQueueCapacityForOtherPlugins|TestProcessSupervisorMultiplexesSameShardInvocations|TestProcessSupervisorControlIPCRemainsAvailableWhenInvocationAdmissionIsFull|TestProcessSupervisorDrainsCanceledInvocationWithoutInvalidatingRuntime)$' -count=1
   GOWORK=off REDEVPLUGIN_PERFORMANCE_GATE=fast go test ./pkg/stream -run '^(TestPerformanceStreamWaitersAndBackpressure|TestSQLiteEmptyObservationDoesNotAcquireWriteGate|TestPerformanceSQLiteStreamBatchDelivery)$' -count=1
   npm run typecheck
   npm run test:ui
@@ -80,7 +80,7 @@ COMPATIBILITY="$TMP_DIR/compatibility.json"
 npm run contracts:check
 npm --prefix packages/redevplugin-ui run build
 if [[ -z "$RUNTIME_PATH" ]]; then
-  REDEVPLUGIN_RUNTIME_VERSION="$VERSION" cargo build --release -p redevplugin-runtime
+  cargo build --release -p redevplugin-runtime
   RUNTIME_PATH="$ROOT_DIR/target/release/redevplugin-runtime"
 elif [[ ! -x "$RUNTIME_PATH" ]]; then
   echo "configured performance runtime is not executable: $RUNTIME_PATH" >&2
@@ -88,14 +88,13 @@ elif [[ ! -x "$RUNTIME_PATH" ]]; then
 fi
 GOWORK=off REDEVPLUGIN_PERFORMANCE_RUNTIME="$RUNTIME_PATH" REDEVPLUGIN_PERFORMANCE_RUNTIME_VERSION="$VERSION" REDEVPLUGIN_PERFORMANCE_MEASUREMENTS="$MEASUREMENTS" REDEVPLUGIN_PERFORMANCE_GATE="$MODE" \
   go test ./pkg/host -run '^TestPerformanceRuntime' -count=1
-REDEVPLUGIN_RUNTIME_VERSION="$VERSION" REDEVPLUGIN_PERFORMANCE_MEASUREMENTS="$MEASUREMENTS" REDEVPLUGIN_PERFORMANCE_GATE="$MODE" \
+REDEVPLUGIN_PERFORMANCE_MEASUREMENTS="$MEASUREMENTS" REDEVPLUGIN_PERFORMANCE_GATE="$MODE" \
   cargo test --release -p redevplugin-runtime ipc_writer_burst_performance_evidence -- --nocapture
-REDEVPLUGIN_RUNTIME_VERSION="$VERSION" REDEVPLUGIN_PERFORMANCE_MEASUREMENTS="$MEASUREMENTS" REDEVPLUGIN_PERFORMANCE_GATE="$MODE" \
+REDEVPLUGIN_PERFORMANCE_MEASUREMENTS="$MEASUREMENTS" REDEVPLUGIN_PERFORMANCE_GATE="$MODE" \
   cargo test --release -p redevplugin-runtime indexed_cancel_performance_evidence -- --nocapture
-REDEVPLUGIN_RUNTIME_VERSION="$VERSION" REDEVPLUGIN_PERFORMANCE_MEASUREMENTS="$MEASUREMENTS" REDEVPLUGIN_PERFORMANCE_GATE="$MODE" \
+REDEVPLUGIN_PERFORMANCE_MEASUREMENTS="$MEASUREMENTS" REDEVPLUGIN_PERFORMANCE_GATE="$MODE" \
   cargo test --release -p redevplugin-runtime indexed_eviction_performance_evidence -- --nocapture
-REDEVPLUGIN_RUNTIME_VERSION="$VERSION" \
-  cargo test --release -p redevplugin-runtime module_cache::tests::recency_index_matches_cached_entries_after_hits_and_evictions -- --exact
+cargo test --release -p redevplugin-runtime module_cache::tests::recency_index_matches_cached_entries_after_hits_and_evictions -- --exact
 GOWORK=off REDEVPLUGIN_PERFORMANCE_MEASUREMENTS="$MEASUREMENTS" REDEVPLUGIN_PERFORMANCE_GATE="$MODE" \
   go test ./pkg/connectivity -run '^TestPerformance' -count=1
 GOWORK=off REDEVPLUGIN_PERFORMANCE_MEASUREMENTS="$MEASUREMENTS" REDEVPLUGIN_PERFORMANCE_GATE="$MODE" \

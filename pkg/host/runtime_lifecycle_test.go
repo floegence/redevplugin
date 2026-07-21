@@ -13,13 +13,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/floegence/redevplugin/internal/runtimeclient"
 	"github.com/floegence/redevplugin/pkg/bridge"
 	"github.com/floegence/redevplugin/pkg/capability"
 	"github.com/floegence/redevplugin/pkg/connectivity"
 	"github.com/floegence/redevplugin/pkg/mutation"
 	"github.com/floegence/redevplugin/pkg/observability"
 	"github.com/floegence/redevplugin/pkg/pluginpkg"
-	"github.com/floegence/redevplugin/pkg/runtimeclient"
 	"github.com/floegence/redevplugin/pkg/sessionctx"
 )
 
@@ -48,6 +48,19 @@ func TestRuntimeLifecycleUsesInjectedSupervisor(t *testing.T) {
 	}
 	if supervisor.stopCalls != 1 || !audits.hasEvent("plugin.runtime.stopped") {
 		t.Fatalf("runtime stop mismatch: stopCalls=%d audits=%#v", supervisor.stopCalls, audits.events)
+	}
+}
+
+func TestStartRuntimeStopsManagerWhenStartedHealthIsInvalid(t *testing.T) {
+	manager := newRecordingRuntimeManager()
+	manager.health.Ready = false
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{runtimeManager: manager})
+
+	if _, err := h.StartRuntime(hostTestContext(), StartRuntimeRequest{Target: hostTestRuntimeDescriptor().Target()}); !errors.Is(err, ErrPluginRuntimeIncompatible) {
+		t.Fatalf("StartRuntime() error = %v, want %v", err, ErrPluginRuntimeIncompatible)
+	}
+	if manager.startCalls != 1 || manager.stopCalls != 1 {
+		t.Fatalf("invalid started runtime lifecycle calls = start %d stop %d, want 1 each", manager.startCalls, manager.stopCalls)
 	}
 }
 

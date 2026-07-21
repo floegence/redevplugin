@@ -77,8 +77,8 @@ const requiredCategories = [
   "storage_quota",
   "browser_harness",
   "runtime_contract",
-  "release_bundle",
-  "published_release_verifier",
+  "platform_package_build",
+  "platform_publication_verifier",
 ];
 const stressCategoryList = array(summary.stress_categories, "stress_categories");
 const stressCategories = new Set(stressCategoryList);
@@ -115,8 +115,8 @@ const requiredSteps = [
   "go_all",
   "browser_harness",
   "runtime_contract",
-  "release_bundle",
-  "published_release_verifier",
+  "platform_package_build",
+  "platform_publication_verifier",
 ];
 const stepsByName = new Map();
 const stepNames = [];

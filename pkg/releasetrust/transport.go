@@ -261,7 +261,7 @@ func fixedSigningLedgerRequest(
 	currentCheckpointSHA256 string,
 ) (SigningLedgerRequest, error) {
 	if !configuration.valid() || scope.sourceID != configuration.sourceID ||
-		(scope.channel != "" && !sourceConfigurationContainsKey(configuration, SourceTrustKey{sourceID: scope.sourceID, channel: scope.channel})) {
+		(scope.channel != "" && !sourceConfigurationContainsKey(configuration, SourceTrustKey(scope))) {
 		return SigningLedgerRequest{}, ErrInvalidSourceConfiguration
 	}
 	base := fmt.Sprintf("sources/%s/signing-ledger", scope.sourceID)

@@ -14,7 +14,7 @@ Runs the host-neutral ReDevPlugin stress gate.
 
 Modes:
   --fast      Race-sensitive broker/lifecycle packages plus pkg/stress tests.
-  --full      Fast gate plus platform/browser/runtime-contract/release-bundle smoke.
+  --full      Fast gate plus platform/browser/runtime-contract/package-publication smoke.
   --release   Full gate plus validation of the exact release stress summary.
 
 The script always writes a JSON summary with structured stress_evidence counters
@@ -112,7 +112,7 @@ render_summary() {
   fi
   categories='["go_race","stream_backpressure","operation_cancel_ownership","connectivity_classifier","runtime_revoke_ack","storage_quota"]'
   if [[ "$MODE" != "fast" ]]; then
-    categories='["go_race","stream_backpressure","operation_cancel_ownership","connectivity_classifier","runtime_revoke_ack","storage_quota","browser_harness","runtime_contract","release_bundle","published_release_verifier"]'
+    categories='["go_race","stream_backpressure","operation_cancel_ownership","connectivity_classifier","runtime_revoke_ack","storage_quota","browser_harness","runtime_contract","platform_package_build","platform_publication_verifier"]'
   fi
   steps_json=$(IFS=,; echo "${STEPS[*]}")
   evidence_json=$(stress_evidence_json)
@@ -185,7 +185,7 @@ if [[ "$MODE" != "fast" ]]; then
   }
 fi
 
-run_step go_race_core env GOWORK=off go test -p=1 -race ./pkg/bridge ./pkg/connectivity ./pkg/host ./pkg/httpadapter ./pkg/operation ./pkg/registry ./pkg/runtimeclient ./pkg/storage ./pkg/stream ./pkg/stress || {
+run_step go_race_core env GOWORK=off go test -p=1 -race ./pkg/bridge ./pkg/connectivity ./pkg/host ./pkg/httpadapter ./pkg/operation ./pkg/registry ./internal/runtimeclient ./pkg/storage ./pkg/stream ./pkg/stress || {
   write_summary
   exit "$STATUS"
 }
@@ -213,16 +213,11 @@ if [[ "$MODE" != "fast" ]]; then
     write_summary
     exit "$STATUS"
   }
-  if ! release_test_version=$(node scripts/resolve_redevplugin_smoke_version.mjs stress.local); then
-    STATUS=1
-    write_summary
-    exit "$STATUS"
-  fi
-  run_step release_bundle ./scripts/build_redevplugin_release.sh --performance-gate smoke --version "$release_test_version" --out-dir "$TMP_DIR/release" || {
+  run_step platform_package_build node --test scripts/platform_package_build.test.mjs || {
     write_summary
     exit "$STATUS"
   }
-  run_step published_release_verifier node scripts/test_published_release_verifier.mjs "$TMP_DIR/release" "$release_test_version" "$(git rev-parse HEAD)" || {
+  run_step platform_publication_verifier node --test scripts/platform_package_publication.test.mjs scripts/verify_rust_registry_release.test.mjs || {
     write_summary
     exit "$STATUS"
   }

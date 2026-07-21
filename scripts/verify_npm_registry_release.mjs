@@ -1,27 +1,41 @@
 #!/usr/bin/env node
 
 import { createHash } from "node:crypto";
+import { writeFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 
-const packageName = "@floegence/redevplugin-ui";
-const packagePath = "@floegence/redevplugin-ui";
-const encodedPackageName = "@floegence%2fredevplugin-ui";
 const repositoryURL = "https://github.com/floegence/redevplugin";
 const workflowPath = ".github/workflows/release.yml";
 const slsaPredicateType = "https://slsa.dev/provenance/v1";
 const workflowBuildType = "https://slsa-framework.github.io/github-actions-buildtypes/workflow/v1";
+const packages = Object.freeze({
+  "@floegence/redevplugin-contracts": Object.freeze({
+    encodedName: "@floegence%2fredevplugin-contracts",
+    repositoryDirectory: "packages/redevplugin-contracts",
+    tarballFilename: "redevplugin-contracts",
+    purlName: "%40floegence/redevplugin-contracts",
+  }),
+  "@floegence/redevplugin-ui": Object.freeze({
+    encodedName: "@floegence%2fredevplugin-ui",
+    repositoryDirectory: "packages/redevplugin-ui",
+    tarballFilename: "redevplugin-ui",
+    purlName: "%40floegence/redevplugin-ui",
+  }),
+});
 
 export async function verifyNpmRegistryRelease({
+  packageName = "@floegence/redevplugin-ui",
   version,
   sourceCommit,
   expectedIntegrity,
   registryBaseURL = "https://registry.npmjs.org",
   fetchImpl = globalThis.fetch,
 }) {
-  validateInputs(version, sourceCommit, expectedIntegrity, registryBaseURL, fetchImpl);
+  validateInputs(packageName, version, sourceCommit, expectedIntegrity, registryBaseURL, fetchImpl);
+  const packageConfig = packages[packageName];
   const registry = new URL(registryBaseURL);
   const registryOrigin = registry.origin;
-  const packageMetadataURL = new URL(`/${encodedPackageName}/${version}`, registryOrigin);
+  const packageMetadataURL = new URL(`/${packageConfig.encodedName}/${version}`, registryOrigin);
   const metadata = await fetchJSON(fetchImpl, packageMetadataURL, "npm package metadata");
 
   assertRecord(metadata, "npm package metadata");
@@ -33,7 +47,7 @@ export async function verifyNpmRegistryRelease({
   assertRecord(metadata.repository, "npm repository metadata");
   assertEqual(metadata.repository.type, "git", "npm repository type");
   assertEqual(metadata.repository.url, `git+${repositoryURL}.git`, "npm repository URL");
-  assertEqual(metadata.repository.directory, "packages/redevplugin-ui", "npm repository directory");
+  assertEqual(metadata.repository.directory, packageConfig.repositoryDirectory, "npm repository directory");
 
   const dist = metadata.dist;
   assertRecord(dist, "npm dist metadata");
@@ -41,7 +55,7 @@ export async function verifyNpmRegistryRelease({
   const tarballURL = assertRegistryURL(
     dist.tarball,
     registryOrigin,
-    `/${packagePath}/-/redevplugin-ui-${version}.tgz`,
+    `/${packageName}/-/${packageConfig.tarballFilename}-${version}.tgz`,
     "npm tarball URL",
   );
   const tarballBytes = await fetchBytes(fetchImpl, tarballURL, "npm tarball");
@@ -55,16 +69,16 @@ export async function verifyNpmRegistryRelease({
   const attestationURL = assertRegistryURL(
     dist.attestations.url,
     registryOrigin,
-    `/-/npm/v1/attestations/${packagePath}@${version}`,
+    `/-/npm/v1/attestations/${packageName}@${version}`,
     "npm attestation URL",
   );
   const attestationResponse = await fetchJSON(fetchImpl, attestationURL, "npm attestations");
-  verifySLSAAttestation(attestationResponse, { version, sourceCommit, tarballSHA512 });
+  verifySLSAAttestation(attestationResponse, { packageName, packageConfig, version, sourceCommit, tarballSHA512 });
 
   return { packageName, version, sourceCommit, integrity: actualIntegrity, tarballSHA512 };
 }
 
-function verifySLSAAttestation(response, { version, sourceCommit, tarballSHA512 }) {
+function verifySLSAAttestation(response, { packageName, packageConfig, version, sourceCommit, tarballSHA512 }) {
   assertRecord(response, "npm attestation response");
   assertArray(response.attestations, "npm attestations");
   const matching = response.attestations.filter((entry) => entry?.predicateType === slsaPredicateType);
@@ -101,7 +115,7 @@ function verifySLSAAttestation(response, { version, sourceCommit, tarballSHA512 
   const subject = statement.subject[0];
   assertRecord(subject, "npm SLSA subject");
   assertExactKeys(subject, ["name", "digest"], "npm SLSA subject");
-  assertEqual(subject.name, `pkg:npm/%40floegence/redevplugin-ui@${version}`, "npm SLSA subject name");
+  assertEqual(subject.name, `pkg:npm/${packageConfig.purlName}@${version}`, "npm SLSA subject name");
   assertRecord(subject.digest, "npm SLSA subject digest");
   assertExactKeys(subject.digest, ["sha512"], "npm SLSA subject digest");
   assertEqual(subject.digest.sha512, tarballSHA512, "npm SLSA subject sha512");
@@ -191,7 +205,8 @@ function decodeBase64JSON(value, label) {
   }
 }
 
-function validateInputs(version, sourceCommit, expectedIntegrity, registryBaseURL, fetchImpl) {
+function validateInputs(packageName, version, sourceCommit, expectedIntegrity, registryBaseURL, fetchImpl) {
+  if (!Object.hasOwn(packages, packageName)) fail("npm package name is outside the platform package set");
   if (typeof version !== "string" || !/^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-[0-9A-Za-z.-]+)?$/.test(version)) {
     fail("version must be a semantic version without a leading v");
   }
@@ -237,12 +252,21 @@ function fail(message) {
 }
 
 async function main() {
-  const [version, sourceCommit, expectedIntegrity] = process.argv.slice(2);
-  if (!version || !sourceCommit || !expectedIntegrity || process.argv.length !== 5) {
-    console.error("usage: verify_npm_registry_release.mjs <version> <source-commit> <expected-integrity>");
+  const [packageName, version, sourceCommit, expectedIntegrity, outputPath] = process.argv.slice(2);
+  if (!packageName || !version || !sourceCommit || !expectedIntegrity || process.argv.length < 6 || process.argv.length > 7) {
+    console.error("usage: verify_npm_registry_release.mjs <package-name> <version> <source-commit> <expected-integrity> [output-json]");
     process.exit(2);
   }
-  const result = await verifyNpmRegistryRelease({ version, sourceCommit, expectedIntegrity });
+  const result = await verifyNpmRegistryRelease({ packageName, version, sourceCommit, expectedIntegrity });
+  if (outputPath) {
+    writeFileSync(outputPath, `${JSON.stringify({
+      name: result.packageName,
+      version: result.version,
+      integrity: result.integrity,
+      provenance_subject_sha512: result.tarballSHA512,
+      source_commit: result.sourceCommit,
+    }, null, 2)}\n`, { flag: "wx" });
+  }
   console.log(`npm registry release verified: ${result.packageName}@${result.version} (${result.sourceCommit})`);
 }
 

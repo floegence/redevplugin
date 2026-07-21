@@ -1,13 +1,15 @@
 #!/usr/bin/env node
 
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 
-const [version, expectedSourceCommit] = process.argv.slice(2);
-if (!/^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.test(version ?? "") || !/^[0-9a-f]{40}$/.test(expectedSourceCommit ?? "")) {
-  console.error("usage: verify_go_module_readback.mjs <version> <source-commit>");
+const [version, expectedSourceCommit, outputPath] = process.argv.slice(2);
+if (!/^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.test(version ?? "")
+    || !/^[0-9a-f]{40}$/.test(expectedSourceCommit ?? "")
+    || process.argv.length < 4 || process.argv.length > 5) {
+  console.error("usage: verify_go_module_readback.mjs <version> <source-commit> [output-json]");
   process.exit(2);
 }
 
@@ -30,6 +32,16 @@ try {
   }
   if (direct.Sum !== proxy.Sum || direct.GoModSum !== proxy.GoModSum) {
     throw new Error(`Go proxy module identity mismatch: direct ${direct.Sum}/${direct.GoModSum}, proxy ${proxy.Sum}/${proxy.GoModSum}`);
+  }
+  const result = {
+    module: modulePath,
+    version: moduleVersion,
+    h1: proxy.Sum,
+    go_mod_h1: proxy.GoModSum,
+    source_commit: expectedSourceCommit,
+  };
+  if (outputPath) {
+    writeFileSync(outputPath, `${JSON.stringify(result, null, 2)}\n`, { flag: "wx" });
   }
   console.log(`Go module ${modulePath}@${moduleVersion} verified at ${expectedSourceCommit} (${proxy.Sum})`);
 } finally {

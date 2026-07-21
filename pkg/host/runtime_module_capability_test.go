@@ -8,7 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/floegence/redevplugin/pkg/runtimeclient"
+	"github.com/floegence/redevplugin/internal/runtimeclient"
+	"github.com/floegence/redevplugin/pkg/mutation"
 )
 
 func TestNewRuntimeModuleConsumesExecutableOnlyAfterValidation(t *testing.T) {
@@ -72,6 +73,68 @@ func TestRuntimeModuleCallerCloseWinsBeforeHostTransfer(t *testing.T) {
 	}
 }
 
+func TestVerifiedExecutableCloseFailureRequiresJournalReconciliation(t *testing.T) {
+	executable := newRuntimeModuleTestExecutable(t)
+	journal := &recordingRuntimeExecJournal{}
+	executable.journal = journal
+	if err := executable.executable.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	outcome, err := executable.Close()
+	if err == nil || outcome != MutationOutcomeUnknown {
+		t.Fatalf("executable.Close() = %q, %v, want unknown failure", outcome, err)
+	}
+	journal.assertFinal(t, runtimeExecJournalReconcileRequired, runtimeExecContainmentPending, mutation.OutcomeUnknown)
+}
+
+func TestRuntimeModuleCloseFailureRequiresJournalReconciliation(t *testing.T) {
+	executable := newRuntimeModuleTestExecutable(t)
+	journal := &recordingRuntimeExecJournal{}
+	executable.journal = journal
+	module, err := NewRuntimeModule(executable, RuntimeModuleOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := executable.executable.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := module.Close(context.Background())
+	if err == nil || result.Outcome != MutationOutcomeUnknown {
+		t.Fatalf("module.Close() = %#v, %v, want unknown failure", result, err)
+	}
+	journal.assertFinal(t, runtimeExecJournalReconcileRequired, runtimeExecContainmentPending, mutation.OutcomeUnknown)
+}
+
+func TestRuntimeModuleHostStopFailureRequiresJournalReconciliation(t *testing.T) {
+	executable := newRuntimeModuleTestExecutable(t)
+	journal := &recordingRuntimeExecJournal{}
+	executable.journal = journal
+	module, err := NewRuntimeModule(executable, RuntimeModuleOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	capability, err := module.claimForHost()
+	if err != nil {
+		t.Fatal(err)
+	}
+	stopFailure := errors.New("runtime stop failed")
+	manager := newRecordingRuntimeManager()
+	manager.stopErr = stopFailure
+	capability.manager = manager
+	const containmentID = "linux-runtime-v1:pid=42:pidfd=7"
+	if err := module.transitionRuntimeJournal(runtimeExecJournalRunning, containmentID, mutation.OutcomeCommitted); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := module.closeFromHost(context.Background())
+	if !errors.Is(err, stopFailure) || result.Outcome != MutationOutcomeUnknown {
+		t.Fatalf("closeFromHost() = %#v, %v, want unknown stop failure", result, err)
+	}
+	journal.assertFinal(t, runtimeExecJournalReconcileRequired, containmentID, mutation.OutcomeUnknown)
+}
+
 func TestHostValidationFailureLeavesRuntimeModuleCallerOwned(t *testing.T) {
 	module, err := NewRuntimeModule(newRuntimeModuleTestExecutable(t), RuntimeModuleOptions{})
 	if err != nil {
@@ -128,5 +191,37 @@ func newRuntimeModuleTestExecutable(t *testing.T) *VerifiedExecutable {
 		descriptor:    testPublicRuntimeDescriptor(t, "linux/amd64", strings.Repeat("c", 64)),
 		executable:    executable,
 		executionRoot: executionRoot,
+	}
+}
+
+type runtimeExecJournalTransition struct {
+	state         string
+	containmentID string
+	outcome       mutation.Outcome
+}
+
+type recordingRuntimeExecJournal struct {
+	transitions []runtimeExecJournalTransition
+	closed      bool
+}
+
+func (journal *recordingRuntimeExecJournal) transition(state, containmentID string, outcome mutation.Outcome) error {
+	journal.transitions = append(journal.transitions, runtimeExecJournalTransition{state: state, containmentID: containmentID, outcome: outcome})
+	return nil
+}
+
+func (journal *recordingRuntimeExecJournal) close() error {
+	journal.closed = true
+	return nil
+}
+
+func (journal *recordingRuntimeExecJournal) assertFinal(t *testing.T, state, containmentID string, outcome mutation.Outcome) {
+	t.Helper()
+	if len(journal.transitions) == 0 {
+		t.Fatal("runtime execution journal has no transitions")
+	}
+	last := journal.transitions[len(journal.transitions)-1]
+	if last.state != state || last.containmentID != containmentID || last.outcome != outcome || !journal.closed {
+		t.Fatalf("final runtime execution journal transition = %#v, closed=%t", last, journal.closed)
 	}
 }

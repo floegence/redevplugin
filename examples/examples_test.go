@@ -90,11 +90,11 @@ func TestExampleWorkerArtifactsUseCanonicalLinuxBuildAndSourceLock(t *testing.T)
 	}
 	ci := string(ciRaw)
 	contractsStart := strings.Index(ci, "  contracts:\n")
-	releaseSmokeStart := strings.Index(ci, "  release-bundle-smoke:\n")
-	if contractsStart < 0 || releaseSmokeStart <= contractsStart {
-		t.Fatal("CI workflow is missing the Platform Contracts job boundary")
+	packageSmokeStart := strings.Index(ci, "  platform-package-smoke:\n")
+	if contractsStart < 0 || packageSmokeStart <= contractsStart {
+		t.Fatal("CI workflow is missing the Platform Contracts or package publication smoke job boundary")
 	}
-	contractsJob := ci[contractsStart:releaseSmokeStart]
+	contractsJob := ci[contractsStart:packageSmokeStart]
 	if !strings.Contains(contractsJob, "rustup target add wasm32-unknown-unknown") {
 		t.Fatal("Platform Contracts must install wasm32-unknown-unknown before platform checks")
 	}

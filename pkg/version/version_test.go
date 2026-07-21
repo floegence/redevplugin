@@ -47,14 +47,17 @@ func TestCompatibilityManifestHashesMatchContractFiles(t *testing.T) {
 		"manifest-schema",
 		"package-signature-schema",
 		"release-metadata-schema",
-		"source-policy-schema",
-		"source-revocations-schema",
+		"release-source-policy-schema",
+		"release-revocation-schema",
 		"token-ticket-schema",
 		"iframe-bridge-schema",
 		"opaque-surface-document-schema",
 		"opaque-surface-transport-schema",
 		"compatibility-manifest-schema",
-		"release-manifest-schema",
+		"runtime-admission-schema",
+		"runtime-descriptor-schema",
+		"process-containment-schema",
+		"runtime-exec-journal-schema",
 		"worker-invocation-schema",
 		"host-capability-contract-schema",
 		"host-capability-pin-schema",
@@ -68,7 +71,6 @@ func TestCompatibilityManifestHashesMatchContractFiles(t *testing.T) {
 		"network-grant-schema",
 		"resource-scope-schema",
 		"target-classifier-fixture",
-		"contract-registry",
 	} {
 		if !seen[id] {
 			t.Fatalf("compatibility manifest missing contract id %q", id)
@@ -223,39 +225,40 @@ func TestVerifyCompatibilityManifestRejectsPathTraversalEvenIfExpected(t *testin
 	}
 }
 
-func TestCurrentMatrixUsesInjectedReleaseVersions(t *testing.T) {
+func TestCurrentCompatibilityManifestUsesOnePlatformVersion(t *testing.T) {
 	restore := replaceReleaseVersions("1.2.3", "1.2.4", "1.2.5")
 	defer restore()
 	restoreDetector := replaceBuildInfoDetector("9.9.9")
 	defer restoreDetector()
 
-	matrix := CurrentMatrix()
-	if matrix.GoModuleVersion != "1.2.3" || matrix.UIPackageVersion != "1.2.4" || matrix.RuntimeVersion != "1.2.5" {
-		t.Fatalf("matrix versions = %#v", matrix)
+	manifest := CurrentCompatibilityManifest()
+	if manifest.PackageSet.PlatformVersion != "1.2.3" || manifest.PackageSet.GoModule.Version != "v1.2.3" ||
+		manifest.PackageSet.NPMPackages[0].Version != "1.2.3" || manifest.PackageSet.RustCrates[0].Version != "1.2.3" {
+		t.Fatalf("package set versions = %#v", manifest.PackageSet)
 	}
 }
 
-func TestCurrentMatrixFallsBackToBuildInfoVersion(t *testing.T) {
+func TestCurrentPackageSetFallsBackToBuildInfoVersion(t *testing.T) {
 	restore := replaceReleaseVersions(devVersion, devVersion, devVersion)
 	defer restore()
 	restoreDetector := replaceBuildInfoDetector("0.7.0")
 	defer restoreDetector()
 
-	matrix := CurrentMatrix()
-	if matrix.GoModuleVersion != "0.7.0" || matrix.UIPackageVersion != devVersion || matrix.RuntimeVersion != devVersion {
-		t.Fatalf("matrix versions = %#v", matrix)
+	packageSet := CurrentCompatibilityManifest().PackageSet
+	if packageSet.PlatformVersion != "0.7.0" || packageSet.ContractSetSHA256 != ContractSetSHA256 {
+		t.Fatalf("package set = %#v", packageSet)
 	}
 }
 
-func TestCurrentMatrixFallsBackToDevVersionWhenUnstamped(t *testing.T) {
+func TestCurrentPackageSetUsesDevelopmentCompatibilityFloorWhenUnstamped(t *testing.T) {
 	restore := replaceReleaseVersions("", "", "")
 	defer restore()
 	restoreDetector := replaceBuildInfoDetector("")
 	defer restoreDetector()
 
-	matrix := CurrentMatrix()
-	if matrix.GoModuleVersion != devVersion || matrix.UIPackageVersion != devVersion || matrix.RuntimeVersion != devVersion {
-		t.Fatalf("matrix versions = %#v", matrix)
+	packageSet := CurrentCompatibilityManifest().PackageSet
+	if packageSet.PlatformVersion != developmentCompatibilityVersion {
+		t.Fatalf("package set = %#v", packageSet)
 	}
 }
 

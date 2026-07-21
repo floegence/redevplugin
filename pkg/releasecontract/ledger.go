@@ -2,11 +2,9 @@ package releasecontract
 
 import (
 	"crypto/sha256"
-	"encoding/base64"
 	"encoding/binary"
 	"encoding/hex"
 	"errors"
-	"fmt"
 	"slices"
 )
 
@@ -675,12 +673,4 @@ func SignatureEnvelopeSHA256(envelope SignatureEnvelopeV1) (string, error) {
 	}
 	digest := sha256.Sum256(raw)
 	return hex.EncodeToString(digest[:]), nil
-}
-
-func decodeLedgerSignature(value string) ([]byte, error) {
-	decoded, err := base64.StdEncoding.Strict().DecodeString(value)
-	if err != nil || len(decoded) != 64 {
-		return nil, fmt.Errorf("%w: ledger signature", ErrInvalidDocument)
-	}
-	return decoded, nil
 }
