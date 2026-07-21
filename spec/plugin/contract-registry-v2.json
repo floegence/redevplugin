@@ -216,7 +216,7 @@
       "id": "release-trust-state-schema",
       "path": "spec/plugin/release-trust-state-v1.schema.json",
       "version": "release-trust-state-v1",
-      "sha256": "28809d8f1e4d35ecd07abf2468e825d7f9f8e9f2c56eb9f91c00bfc5f721e9ba"
+      "sha256": "19ffa182932a22401a33ee4c9921e957c67895c2d8b041c9a27ee3530bdfb2d2"
     },
     {
       "id": "resource-scope-schema",

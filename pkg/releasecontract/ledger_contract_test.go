@@ -186,12 +186,31 @@ func TestSigningLedgerReceiptAndProofsBindOneCheckpoint(t *testing.T) {
 	}
 }
 
+func TestSigningLedgerConsistencyRejectsSameSizeFork(t *testing.T) {
+	fixture := newSigningLedgerFixture(t)
+	current := fixture.checkpoint
+	current.LogRootHash = hex.EncodeToString(bytes.Repeat([]byte{8}, sha256.Size))
+	preimage, err := SigningLedgerCheckpointSigningPreimage(current)
+	if err != nil {
+		t.Fatal(err)
+	}
+	current.Signature = base64.StdEncoding.EncodeToString(signReleasePreimage(fixture.privateKey, preimage))
+	proof := SigningLedgerConsistencyProofV1{
+		SchemaVersion: SigningLedgerSchemaVersion, Kind: SigningLedgerArtifactConsistencyProof,
+		LogID: fixture.checkpoint.LogID, OldTreeSize: fixture.checkpoint.TreeSize, NewTreeSize: current.TreeSize, Nodes: []string{},
+	}
+	if err := VerifySigningLedgerConsistency(fixture.checkpoint, current, proof, fixture.verifier); !errors.Is(err, ErrInvalidLedgerProof) {
+		t.Fatalf("same-size checkpoint fork error = %v", err)
+	}
+}
+
 type signingLedgerFixture struct {
 	checkpoint SigningLedgerCheckpointV1
 	receipt    SigningLedgerReceiptV1
 	inclusion  SigningLedgerInclusionProofV1
 	latest     SigningLedgerLatestProofV1
 	verifier   Ed25519PublicKeyVerifier
+	privateKey ed25519.PrivateKey
 }
 
 func newSigningLedgerFixture(t *testing.T) signingLedgerFixture {
@@ -254,5 +273,7 @@ func newSigningLedgerFixture(t *testing.T) signingLedgerFixture {
 		SchemaVersion: SigningLedgerSchemaVersion, Kind: SigningLedgerArtifactInclusionProof,
 		LogID: receipt.LogID, LeafIndex: 0, TreeSize: 1, Nodes: []string{},
 	}
-	return signingLedgerFixture{checkpoint: checkpoint, receipt: receipt, inclusion: inclusion, latest: latest, verifier: verifier}
+	return signingLedgerFixture{
+		checkpoint: checkpoint, receipt: receipt, inclusion: inclusion, latest: latest, verifier: verifier, privateKey: privateKey,
+	}
 }

@@ -60,9 +60,17 @@ type ReleaseTrustDocumentHeadV1 struct {
 }
 
 type ReleaseTrustChannelStateV1 struct {
-	Channel    string                      `json:"channel"`
-	Policy     *ReleaseTrustDocumentHeadV1 `json:"policy,omitempty"`
-	Revocation *ReleaseTrustDocumentHeadV1 `json:"revocation,omitempty"`
+	Channel         string                      `json:"channel"`
+	Policy          *ReleaseTrustDocumentHeadV1 `json:"policy,omitempty"`
+	Revocation      *ReleaseTrustDocumentHeadV1 `json:"revocation,omitempty"`
+	FenceGeneration uint64                      `json:"fence_generation,omitempty"`
+	Fence           *ReleaseTrustFenceV1        `json:"fence,omitempty"`
+}
+
+type ReleaseTrustFenceV1 struct {
+	Generation uint64            `json:"generation"`
+	Reason     SourceFenceReason `json:"reason"`
+	FencedAt   string            `json:"fenced_at"`
 }
 
 type ReleaseTrustStateV1 struct {
@@ -126,11 +134,25 @@ func validateReleaseTrustState(state ReleaseTrustStateV1) error {
 	}
 	for index, channel := range state.Channels {
 		if !contractIDPattern.MatchString(channel.Channel) || (index > 0 && state.Channels[index-1].Channel >= channel.Channel) ||
-			(channel.Policy != nil && !validDocumentHead(*channel.Policy)) || (channel.Revocation != nil && !validDocumentHead(*channel.Revocation)) {
+			channel.FenceGeneration > maxJSONSafeInteger ||
+			(channel.Policy != nil && !validDocumentHead(*channel.Policy)) || (channel.Revocation != nil && !validDocumentHead(*channel.Revocation)) ||
+			(channel.Fence != nil && (!validReleaseTrustFence(*channel.Fence) || channel.Fence.Generation != channel.FenceGeneration)) {
 			return ErrInvalidReleaseTrustState
 		}
 	}
 	return nil
+}
+
+func validReleaseTrustFence(fence ReleaseTrustFenceV1) bool {
+	if fence.Generation == 0 || fence.Generation > maxJSONSafeInteger || !validCanonicalTime(fence.FencedAt) {
+		return false
+	}
+	switch fence.Reason {
+	case "refresh_failed", "expired", "trust_advanced", "restart_recovery":
+		return true
+	default:
+		return false
+	}
 }
 
 func validSigningLedgerState(state ReleaseSigningLedgerStateV1) bool {
@@ -213,6 +235,10 @@ func cloneReleaseTrustState(state ReleaseTrustStateV1) ReleaseTrustStateV1 {
 		if channel.Revocation != nil {
 			revocation := *channel.Revocation
 			state.Channels[index].Revocation = &revocation
+		}
+		if channel.Fence != nil {
+			fence := *channel.Fence
+			state.Channels[index].Fence = &fence
 		}
 	}
 	return state

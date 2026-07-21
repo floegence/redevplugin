@@ -270,6 +270,12 @@ func fixedSigningLedgerRequest(
 	switch kind {
 	case SigningLedgerCheckpoint:
 		value = base + "/checkpoints/current.json"
+		if currentCheckpointSHA256 != "" {
+			if !sha256Pattern.MatchString(currentCheckpointSHA256) {
+				return SigningLedgerRequest{}, ErrInvalidLocator
+			}
+			value = base + "/checkpoints/" + currentCheckpointSHA256 + ".json"
+		}
 		maxBytes = MaxSigningLedgerCheckpointBytes
 	case SigningLedgerEvidence:
 		if !sha256Pattern.MatchString(subjectIdentitySHA256) {

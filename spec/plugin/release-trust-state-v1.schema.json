@@ -118,8 +118,20 @@
       "properties": {
         "channel": { "$ref": "#/$defs/id" },
         "policy": { "$ref": "#/$defs/document_head" },
-        "revocation": { "$ref": "#/$defs/document_head" }
+        "revocation": { "$ref": "#/$defs/document_head" },
+		"fence_generation": { "$ref": "#/$defs/counter" },
+		"fence": { "$ref": "#/$defs/fence" }
       }
+    },
+	"fence": {
+	  "type": "object",
+	  "additionalProperties": false,
+	  "required": ["generation", "reason", "fenced_at"],
+	  "properties": {
+		"generation": { "$ref": "#/$defs/revision" },
+		"reason": { "enum": ["refresh_failed", "expired", "trust_advanced", "restart_recovery"] },
+		"fenced_at": { "$ref": "#/$defs/time" }
+	  }
     }
   }
 }

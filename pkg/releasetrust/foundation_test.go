@@ -214,12 +214,16 @@ func TestSourceRelativeLocatorPolicyBuildsFixedBoundedRequests(t *testing.T) {
 		want string
 		max  int64
 	}{
-		{SigningLedgerCheckpoint, "sources/example_source/signing-ledger/checkpoints/current.json", MaxSigningLedgerCheckpointBytes},
+		{SigningLedgerCheckpoint, "sources/example_source/signing-ledger/checkpoints/" + currentCheckpoint + ".json", MaxSigningLedgerCheckpointBytes},
 		{SigningLedgerEvidence, "sources/example_source/signing-ledger/evidence/" + subjectDigest + ".json", MaxSigningLedgerEvidenceBytes},
 		{SigningLedgerReceipt, "sources/example_source/signing-ledger/receipts/" + subjectDigest + ".json", MaxSigningLedgerEvidenceBytes},
 		{SigningLedgerInclusionProof, "sources/example_source/signing-ledger/proofs/inclusion/" + subjectDigest + ".json", MaxSigningLedgerEvidenceBytes},
 		{SigningLedgerLatestProof, "sources/example_source/signing-ledger/proofs/latest/" + subjectDigest + ".json", MaxSigningLedgerEvidenceBytes},
 		{SigningLedgerConsistencyProof, "sources/example_source/signing-ledger/proofs/consistency/" + previousCheckpoint + "/" + currentCheckpoint + ".json", MaxSigningLedgerEvidenceBytes},
+	}
+	currentRequest, err := fixedSigningLedgerRequest(configuration, packageScope, SigningLedgerCheckpoint, "", "", "")
+	if err != nil || currentRequest.Locator().String() != "sources/example_source/signing-ledger/checkpoints/current.json" {
+		t.Fatalf("current checkpoint request = %#v, %v", currentRequest, err)
 	}
 	for _, testCase := range ledgerCases {
 		request, err := fixedSigningLedgerRequest(configuration, packageScope, testCase.kind, subjectDigest, previousCheckpoint, currentCheckpoint)

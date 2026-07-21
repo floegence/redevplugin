@@ -6,6 +6,7 @@ import (
 	"crypto/ed25519"
 	"errors"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -154,6 +155,57 @@ func TestReleaseTrustServiceRejectsTypedNilAdapters(t *testing.T) {
 	}
 }
 
+func TestReleaseTrustServiceMergesIndependentChannelCASConflict(t *testing.T) {
+	fixture := newReleaseTrustServiceFixture(t, false)
+	base := validReleaseTrustStateFixture(t)
+	base.Revision = 1
+	baseBytes, err := canonicalReleaseTrustState(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	proposed := cloneReleaseTrustState(base)
+	proposed.Revision = 2
+	proposed.Channels[1].Policy.PointerTransportToken = "stable-v2"
+	latest := cloneReleaseTrustState(base)
+	latest.Revision = 2
+	latest.Channels[0].Policy.PointerTransportToken = "beta-v2"
+	latestBytes, err := canonicalReleaseTrustState(latest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fixture.state.committed = latestBytes
+
+	merged, _, err := fixture.service.commitState(
+		context.Background(), base, digestHex(baseBytes), proposed, strings.Repeat("a", 64),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if merged.Revision != 3 || merged.Channels[0].Policy.PointerTransportToken != "beta-v2" ||
+		merged.Channels[1].Policy.PointerTransportToken != "stable-v2" {
+		t.Fatalf("merged state = %#v", merged)
+	}
+}
+
+func TestReleaseTrustStateMergeRejectsSameChannelAndSourceWideConflicts(t *testing.T) {
+	base := validReleaseTrustStateFixture(t)
+	proposed := cloneReleaseTrustState(base)
+	proposed.Channels[1].Policy.PointerTransportToken = "stable-proposed"
+	latest := cloneReleaseTrustState(base)
+	latest.Channels[1].Policy.PointerTransportToken = "stable-latest"
+	if _, err := mergeReleaseTrustStates(base, proposed, latest); !errors.Is(err, ErrReleaseTrustStateConflict) {
+		t.Fatalf("same-channel merge error = %v", err)
+	}
+
+	proposed = cloneReleaseTrustState(base)
+	latest = cloneReleaseTrustState(base)
+	proposed.TrustedTime.CheckpointSHA256 = strings.Repeat("a", 64)
+	latest.TrustedTime.CheckpointSHA256 = strings.Repeat("b", 64)
+	if _, err := mergeReleaseTrustStates(base, proposed, latest); !errors.Is(err, ErrReleaseTrustStateConflict) {
+		t.Fatalf("source-wide merge error = %v", err)
+	}
+}
+
 type releaseTrustServiceFixture struct {
 	options     ReleaseTrustOptions
 	key         SourceTrustKey
@@ -231,6 +283,9 @@ type memorySourceTrustStateStore struct {
 	mu                      sync.Mutex
 	committed               []byte
 	pending                 []byte
+	loadCalls               int
+	prepareCalls            int
+	commitCalls             int
 	prepareOutcome          StateMutationOutcome
 	prepareUnknownApplied   bool
 	prepareUnknownCommitted bool
@@ -242,12 +297,14 @@ type memorySourceTrustStateStore struct {
 func (store *memorySourceTrustStateStore) LoadSourceTrustState(_ context.Context, request SourceTrustStateLoadRequest) (SourceTrustStateLoadResult, error) {
 	store.mu.Lock()
 	defer store.mu.Unlock()
+	store.loadCalls++
 	return NewSourceTrustStateLoadResult(request, store.committed, store.pending)
 }
 
 func (store *memorySourceTrustStateStore) PrepareSourceTrustState(_ context.Context, request SourceTrustStatePrepareRequest) (StateMutationOutcome, error) {
 	store.mu.Lock()
 	defer store.mu.Unlock()
+	store.prepareCalls++
 	if digestOrEmpty(store.committed) != request.ExpectedCommittedSHA256() {
 		return StateMutationConflict, nil
 	}
@@ -278,6 +335,7 @@ func (store *memorySourceTrustStateStore) PrepareSourceTrustState(_ context.Cont
 func (store *memorySourceTrustStateStore) CommitSourceTrustState(_ context.Context, request SourceTrustStateCommitRequest) (StateMutationOutcome, error) {
 	store.mu.Lock()
 	defer store.mu.Unlock()
+	store.commitCalls++
 	if store.commitErrOnce != nil {
 		err := store.commitErrOnce
 		store.commitErrOnce = nil

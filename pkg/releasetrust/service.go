@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -21,6 +22,7 @@ type ReleaseTrustAdapters struct {
 	State       SourceTrustStateStore
 	TrustedTime TrustedTimeAdapter
 	Monotonic   MonotonicStateAdapter
+	Fence       SourceFenceCoordinator
 }
 
 type releaseTrustLiveAnchor struct {
@@ -31,26 +33,35 @@ type releaseTrustLiveAnchor struct {
 }
 
 type ReleaseTrustService struct {
-	mu                sync.Mutex
+	mu                sync.RWMutex
+	refreshMu         sync.Mutex
 	options           ReleaseTrustOptions
 	adapters          ReleaseTrustAdapters
 	processInstanceID string
 	now               func() time.Time
+	elapsedNow        func() time.Duration
 	live              map[SourceTrustKey]releaseTrustLiveAnchor
+	verified          map[SourceTrustKey]VerifiedSourceSnapshot
+	leases            map[SourceTrustKey]activationLeaseState
 }
 
 func NewReleaseTrustService(options ReleaseTrustOptions, adapters ReleaseTrustAdapters) (*ReleaseTrustService, error) {
 	if !options.valid() || isNilInterface(adapters.Documents) || isNilInterface(adapters.Ledger) || isNilInterface(adapters.State) ||
-		isNilInterface(adapters.TrustedTime) || (adapters.Monotonic != nil && isNilInterface(adapters.Monotonic)) {
+		isNilInterface(adapters.TrustedTime) || (adapters.Monotonic != nil && isNilInterface(adapters.Monotonic)) ||
+		(adapters.Fence != nil && isNilInterface(adapters.Fence)) {
 		return nil, ErrInvalidReleaseTrustOptions
 	}
 	processID, err := newTrustTransactionID("process")
 	if err != nil {
 		return nil, err
 	}
+	startedAt := time.Now()
 	return &ReleaseTrustService{
 		options: options, adapters: adapters, processInstanceID: processID, now: time.Now,
-		live: make(map[SourceTrustKey]releaseTrustLiveAnchor),
+		elapsedNow: func() time.Duration { return time.Since(startedAt) },
+		live:       make(map[SourceTrustKey]releaseTrustLiveAnchor),
+		verified:   make(map[SourceTrustKey]VerifiedSourceSnapshot),
+		leases:     make(map[SourceTrustKey]activationLeaseState),
 	}, nil
 }
 
@@ -72,8 +83,8 @@ func (service *ReleaseTrustService) RefreshTrustedTime(ctx context.Context, key 
 	if service == nil || ctx == nil || !sourceConfigurationContainsKey(service.options.sourceConfiguration, key) {
 		return TrustedTimeStatus{}, ErrInvalidSourceConfiguration
 	}
-	service.mu.Lock()
-	defer service.mu.Unlock()
+	service.refreshMu.Lock()
+	defer service.refreshMu.Unlock()
 	if err := ctx.Err(); err != nil {
 		return TrustedTimeStatus{}, err
 	}
@@ -117,9 +128,11 @@ func (service *ReleaseTrustService) RefreshTrustedTime(ctx context.Context, key 
 		return TrustedTimeStatus{}, err
 	}
 	observedAt := service.now()
+	service.mu.Lock()
 	service.live[key] = releaseTrustLiveAnchor{
 		processInstanceID: service.processInstanceID, stateSHA256: nextSHA256, floor: verified.floor, observedAt: observedAt,
 	}
+	service.mu.Unlock()
 	return TrustedTimeStatus{
 		key: key, floor: verified.floor, checkpointSHA256: next.TrustedTime.CheckpointSHA256, stateSHA256: nextSHA256, processInstanceID: service.processInstanceID,
 	}, nil
@@ -273,6 +286,17 @@ func (service *ReleaseTrustService) commitState(
 	next ReleaseTrustStateV1,
 	evidenceSHA256 string,
 ) (ReleaseTrustStateV1, string, error) {
+	return service.commitStateAttempt(ctx, current, currentSHA256, next, evidenceSHA256, 0)
+}
+
+func (service *ReleaseTrustService) commitStateAttempt(
+	ctx context.Context,
+	current ReleaseTrustStateV1,
+	currentSHA256 string,
+	next ReleaseTrustStateV1,
+	evidenceSHA256 string,
+	attempt int,
+) (ReleaseTrustStateV1, string, error) {
 	expectedCounter := uint64(0)
 	if current.SchemaVersion != "" {
 		expectedCounter = current.ExternalCounter
@@ -313,7 +337,18 @@ func (service *ReleaseTrustService) commitState(
 	}
 	switch outcome {
 	case StateMutationConflict:
-		return ReleaseTrustStateV1{}, "", ErrReleaseTrustStateConflict
+		if attempt >= 3 {
+			return ReleaseTrustStateV1{}, "", ErrReleaseTrustStateConflict
+		}
+		latest, latestSHA256, loadErr := service.loadAndRecover(ctx)
+		if loadErr != nil {
+			return ReleaseTrustStateV1{}, "", loadErr
+		}
+		merged, mergeErr := mergeReleaseTrustStates(current, next, latest)
+		if mergeErr != nil {
+			return ReleaseTrustStateV1{}, "", mergeErr
+		}
+		return service.commitStateAttempt(ctx, latest, latestSHA256, merged, evidenceSHA256, attempt+1)
 	case StateMutationUnknown:
 		committedBytes, observedPending, loadErr := service.loadStateBytes(ctx)
 		if loadErr != nil {
@@ -338,6 +373,98 @@ func (service *ReleaseTrustService) commitState(
 		return ReleaseTrustStateV1{}, "", err
 	}
 	return cloneReleaseTrustState(next), nextSHA256, nil
+}
+
+func mergeReleaseTrustStates(base, proposed, latest ReleaseTrustStateV1) (ReleaseTrustStateV1, error) {
+	if base.SchemaVersion == "" || proposed.SchemaVersion != ReleaseTrustStateSchemaVersion || latest.SchemaVersion != ReleaseTrustStateSchemaVersion ||
+		base.SourceID != proposed.SourceID || base.SourceID != latest.SourceID {
+		return ReleaseTrustStateV1{}, ErrReleaseTrustStateConflict
+	}
+	merged := cloneReleaseTrustState(latest)
+	if err := mergeTrustField(base.Root, proposed.Root, latest.Root, func() {
+		if proposed.Root == nil {
+			merged.Root = nil
+		} else {
+			value := *proposed.Root
+			merged.Root = &value
+		}
+	}); err != nil {
+		return ReleaseTrustStateV1{}, err
+	}
+	if err := mergeTrustField(base.TrustedTime, proposed.TrustedTime, latest.TrustedTime, func() {
+		merged.TrustedTime = proposed.TrustedTime
+	}); err != nil {
+		return ReleaseTrustStateV1{}, err
+	}
+	if err := mergeTrustField(base.SigningLedger, proposed.SigningLedger, latest.SigningLedger, func() {
+		if proposed.SigningLedger == nil {
+			merged.SigningLedger = nil
+		} else {
+			value := *proposed.SigningLedger
+			merged.SigningLedger = &value
+		}
+	}); err != nil {
+		return ReleaseTrustStateV1{}, err
+	}
+
+	baseChannels := channelStateMap(base.Channels)
+	proposedChannels := channelStateMap(proposed.Channels)
+	latestChannels := channelStateMap(latest.Channels)
+	for channel, proposedValue := range proposedChannels {
+		baseValue, baseExists := baseChannels[channel]
+		if baseExists && reflect.DeepEqual(baseValue, proposedValue) {
+			continue
+		}
+		latestValue, latestExists := latestChannels[channel]
+		if latestExists != baseExists || latestExists && !reflect.DeepEqual(latestValue, baseValue) {
+			if !latestExists || !reflect.DeepEqual(latestValue, proposedValue) {
+				return ReleaseTrustStateV1{}, ErrReleaseTrustStateConflict
+			}
+		}
+		latestChannels[channel] = proposedValue
+	}
+	for channel := range baseChannels {
+		if _, retained := proposedChannels[channel]; retained {
+			continue
+		}
+		latestValue, latestExists := latestChannels[channel]
+		if !latestExists || !reflect.DeepEqual(latestValue, baseChannels[channel]) {
+			return ReleaseTrustStateV1{}, ErrReleaseTrustStateConflict
+		}
+		delete(latestChannels, channel)
+	}
+	merged.Channels = make([]ReleaseTrustChannelStateV1, 0, len(latestChannels))
+	for _, value := range latestChannels {
+		merged.Channels = append(merged.Channels, value)
+	}
+	slices.SortFunc(merged.Channels, func(left, right ReleaseTrustChannelStateV1) int {
+		return strings.Compare(left.Channel, right.Channel)
+	})
+	if latest.Revision == maxJSONSafeInteger {
+		return ReleaseTrustStateV1{}, ErrInvalidReleaseTrustState
+	}
+	merged.Revision = latest.Revision + 1
+	return merged, nil
+}
+
+func mergeTrustField[T any](base, proposed, latest T, apply func()) error {
+	if reflect.DeepEqual(base, proposed) {
+		return nil
+	}
+	if !reflect.DeepEqual(latest, base) && !reflect.DeepEqual(latest, proposed) {
+		return ErrReleaseTrustStateConflict
+	}
+	apply()
+	return nil
+}
+
+func channelStateMap(values []ReleaseTrustChannelStateV1) map[string]ReleaseTrustChannelStateV1 {
+	result := make(map[string]ReleaseTrustChannelStateV1, len(values))
+	for _, value := range values {
+		cloned := cloneReleaseTrustState(ReleaseTrustStateV1{Channels: []ReleaseTrustChannelStateV1{value}})
+		result[value.Channel] = cloned.Channels[0]
+	}
+	return result
 }
 
 func (service *ReleaseTrustService) ensureMonotonicApplied(ctx context.Context, pending sourceTrustPendingV1) error {
