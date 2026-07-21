@@ -1,0 +1,2773 @@
+{
+  "schema_version": "owner-scope-inventory-v1",
+  "inventories": [
+    {
+      "id": "redeven-redevplugin-v0.1.0-v0.1.5-layout-v1",
+      "platform_versions": [
+        "0.1.0",
+        "0.1.1",
+        "0.1.2",
+        "0.1.3",
+        "0.1.4",
+        "0.1.5"
+      ],
+      "root_entries": [
+        {
+          "path": "assets",
+          "kind": "directory",
+          "scope": "durable",
+          "disposition": "quarantine"
+        },
+        {
+          "path": "db",
+          "kind": "directory",
+          "scope": "durable",
+          "disposition": "quarantine"
+        },
+        {
+          "path": "storage",
+          "kind": "directory",
+          "scope": "durable",
+          "disposition": "quarantine"
+        }
+      ],
+      "sqlite_databases": [
+        {
+          "path": "db/browser_site.sqlite",
+          "application_id": 0,
+          "user_version": 0,
+          "migration_versions": [
+            {
+              "table": "plugin_browser_site_schema_migrations",
+              "versions": [
+                1
+              ]
+            }
+          ],
+          "schema_objects": [
+            {
+              "type": "index",
+              "name": "idx_plugin_browser_site_plugin_instance",
+              "table_name": "plugin_browser_site_origins",
+              "sql": "CREATE INDEX idx_plugin_browser_site_plugin_instance ON plugin_browser_site_origins(plugin_instance_id, state, origin)"
+            },
+            {
+              "type": "index",
+              "name": "idx_plugin_browser_site_state",
+              "table_name": "plugin_browser_site_origins",
+              "sql": "CREATE INDEX idx_plugin_browser_site_state ON plugin_browser_site_origins(state, updated_at)"
+            },
+            {
+              "type": "table",
+              "name": "plugin_browser_site_origins",
+              "table_name": "plugin_browser_site_origins",
+              "sql": "CREATE TABLE plugin_browser_site_origins ( origin_key TEXT PRIMARY KEY, plugin_instance_id TEXT NOT NULL, plugin_id TEXT NOT NULL, active_fingerprint TEXT NOT NULL, surface_id TEXT NOT NULL, surface_instance_id TEXT NOT NULL, origin TEXT NOT NULL, owner_session_hash TEXT NOT NULL, owner_user_hash TEXT NOT NULL, state TEXT NOT NULL, cleanup_reason TEXT NOT NULL, cleanup_error TEXT NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, last_seen_at INTEGER NOT NULL, cleanup_requested_at INTEGER, cleaned_at INTEGER, retained_at INTEGER )"
+            },
+            {
+              "type": "table",
+              "name": "plugin_browser_site_schema_migrations",
+              "table_name": "plugin_browser_site_schema_migrations",
+              "sql": "CREATE TABLE plugin_browser_site_schema_migrations ( version INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL )"
+            }
+          ],
+          "schema_sha256": "a7767aacbc70799ee6f847077e27727cac70ae2fdbb84cae2e0fae2d9ab5bffa"
+        },
+        {
+          "path": "db/cleanup.sqlite",
+          "application_id": 0,
+          "user_version": 0,
+          "migration_versions": [
+            {
+              "table": "plugin_cleanup_schema_migrations",
+              "versions": [
+                1
+              ]
+            }
+          ],
+          "schema_objects": [
+            {
+              "type": "index",
+              "name": "idx_plugin_cleanup_operations_plugin",
+              "table_name": "plugin_cleanup_operations",
+              "sql": "CREATE INDEX idx_plugin_cleanup_operations_plugin ON plugin_cleanup_operations(plugin_instance_id, id)"
+            },
+            {
+              "type": "table",
+              "name": "plugin_cleanup_operations",
+              "table_name": "plugin_cleanup_operations",
+              "sql": "CREATE TABLE plugin_cleanup_operations ( id INTEGER PRIMARY KEY AUTOINCREMENT, plugin_instance_id TEXT NOT NULL, delete_data INTEGER NOT NULL, phase TEXT NOT NULL, executed_at INTEGER NOT NULL )"
+            },
+            {
+              "type": "table",
+              "name": "plugin_cleanup_schema_migrations",
+              "table_name": "plugin_cleanup_schema_migrations",
+              "sql": "CREATE TABLE plugin_cleanup_schema_migrations ( version INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL )"
+            }
+          ],
+          "schema_sha256": "492e855ac577c347fd5c4a916b4be060d08e9703d9deec197bcb1a75a0de9dcc"
+        },
+        {
+          "path": "db/confirmation_intents.sqlite",
+          "application_id": 0,
+          "user_version": 0,
+          "migration_versions": [
+            {
+              "table": "plugin_confirmation_intent_schema_migrations",
+              "versions": [
+                1
+              ]
+            }
+          ],
+          "schema_objects": [
+            {
+              "type": "index",
+              "name": "idx_plugin_confirmation_intents_expires_at",
+              "table_name": "plugin_confirmation_intents",
+              "sql": "CREATE INDEX idx_plugin_confirmation_intents_expires_at ON plugin_confirmation_intents(expires_at)"
+            },
+            {
+              "type": "index",
+              "name": "idx_plugin_confirmation_intents_plugin_instance",
+              "table_name": "plugin_confirmation_intents",
+              "sql": "CREATE INDEX idx_plugin_confirmation_intents_plugin_instance ON plugin_confirmation_intents(plugin_instance_id, issued_at, confirmation_id)"
+            },
+            {
+              "type": "table",
+              "name": "plugin_confirmation_intent_schema_migrations",
+              "table_name": "plugin_confirmation_intent_schema_migrations",
+              "sql": "CREATE TABLE plugin_confirmation_intent_schema_migrations ( version INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL )"
+            },
+            {
+              "type": "table",
+              "name": "plugin_confirmation_intents",
+              "table_name": "plugin_confirmation_intents",
+              "sql": "CREATE TABLE plugin_confirmation_intents ( confirmation_id TEXT PRIMARY KEY, confirmation_token_id TEXT NOT NULL, plugin_id TEXT NOT NULL, plugin_instance_id TEXT NOT NULL, surface_instance_id TEXT NOT NULL, bridge_channel_id TEXT NOT NULL, method TEXT NOT NULL, request_hash TEXT NOT NULL, plan_hash TEXT NOT NULL, issued_at INTEGER NOT NULL, expires_at INTEGER NOT NULL )"
+            }
+          ],
+          "schema_sha256": "dac56fde008efc7d6a21154c5bfbbd43183a8411e0fad20946e88a7550287781"
+        },
+        {
+          "path": "db/install_stage.sqlite",
+          "application_id": 0,
+          "user_version": 0,
+          "migration_versions": [
+            {
+              "table": "plugin_install_stage_schema_migrations",
+              "versions": [
+                1
+              ]
+            }
+          ],
+          "schema_objects": [
+            {
+              "type": "index",
+              "name": "idx_plugin_install_stages_plugin",
+              "table_name": "plugin_install_stages",
+              "sql": "CREATE INDEX idx_plugin_install_stages_plugin ON plugin_install_stages(plugin_instance_id, created_at)"
+            },
+            {
+              "type": "index",
+              "name": "idx_plugin_install_stages_status_expiry",
+              "table_name": "plugin_install_stages",
+              "sql": "CREATE INDEX idx_plugin_install_stages_status_expiry ON plugin_install_stages(status, expires_at)"
+            },
+            {
+              "type": "table",
+              "name": "plugin_install_stage_schema_migrations",
+              "table_name": "plugin_install_stage_schema_migrations",
+              "sql": "CREATE TABLE plugin_install_stage_schema_migrations ( version INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL )"
+            },
+            {
+              "type": "table",
+              "name": "plugin_install_stages",
+              "table_name": "plugin_install_stages",
+              "sql": "CREATE TABLE plugin_install_stages ( stage_id TEXT PRIMARY KEY, action TEXT NOT NULL, status TEXT NOT NULL, plugin_instance_id TEXT NOT NULL, publisher_id TEXT NOT NULL, plugin_id TEXT NOT NULL, version TEXT NOT NULL, package_hash TEXT NOT NULL, manifest_hash TEXT NOT NULL, entries_hash TEXT NOT NULL, requested_trust TEXT NOT NULL, resolved_trust TEXT NOT NULL, validation_summary_json TEXT NOT NULL, error_code TEXT NOT NULL, error_message TEXT NOT NULL, expires_at INTEGER NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, finished_at INTEGER )"
+            }
+          ],
+          "schema_sha256": "ee0192641f33bba6c7fc5994d73e2a64e77c129406bd3c2ccfc840780c3cef6a"
+        },
+        {
+          "path": "db/observability.sqlite",
+          "application_id": 0,
+          "user_version": 0,
+          "migration_versions": [
+            {
+              "table": "plugin_observability_schema_migrations",
+              "versions": [
+                1
+              ]
+            }
+          ],
+          "schema_objects": [
+            {
+              "type": "index",
+              "name": "idx_plugin_audit_plugin",
+              "table_name": "plugin_audit_events",
+              "sql": "CREATE INDEX idx_plugin_audit_plugin ON plugin_audit_events(plugin_id, type, occurred_at)"
+            },
+            {
+              "type": "index",
+              "name": "idx_plugin_audit_plugin_instance",
+              "table_name": "plugin_audit_events",
+              "sql": "CREATE INDEX idx_plugin_audit_plugin_instance ON plugin_audit_events(plugin_instance_id, type, occurred_at)"
+            },
+            {
+              "type": "index",
+              "name": "idx_plugin_diagnostics_plugin_instance",
+              "table_name": "plugin_diagnostic_events",
+              "sql": "CREATE INDEX idx_plugin_diagnostics_plugin_instance ON plugin_diagnostic_events(plugin_instance_id, type, severity, occurred_at)"
+            },
+            {
+              "type": "index",
+              "name": "idx_plugin_diagnostics_surface",
+              "table_name": "plugin_diagnostic_events",
+              "sql": "CREATE INDEX idx_plugin_diagnostics_surface ON plugin_diagnostic_events(surface_instance_id, severity, occurred_at)"
+            },
+            {
+              "type": "table",
+              "name": "plugin_audit_events",
+              "table_name": "plugin_audit_events",
+              "sql": "CREATE TABLE plugin_audit_events ( seq INTEGER PRIMARY KEY, event_id TEXT NOT NULL, type TEXT NOT NULL, plugin_id TEXT NOT NULL, plugin_instance_id TEXT NOT NULL, surface_id TEXT NOT NULL, surface_instance_id TEXT NOT NULL, request_id TEXT NOT NULL, actor TEXT NOT NULL, occurred_at INTEGER NOT NULL, details_json BLOB NOT NULL )"
+            },
+            {
+              "type": "table",
+              "name": "plugin_diagnostic_events",
+              "table_name": "plugin_diagnostic_events",
+              "sql": "CREATE TABLE plugin_diagnostic_events ( seq INTEGER PRIMARY KEY, event_id TEXT NOT NULL, type TEXT NOT NULL, severity TEXT NOT NULL, message TEXT NOT NULL, plugin_id TEXT NOT NULL, plugin_instance_id TEXT NOT NULL, surface_id TEXT NOT NULL, surface_instance_id TEXT NOT NULL, active_fingerprint TEXT NOT NULL, request_id TEXT NOT NULL, occurred_at INTEGER NOT NULL, details_json BLOB NOT NULL )"
+            },
+            {
+              "type": "table",
+              "name": "plugin_observability_meta",
+              "table_name": "plugin_observability_meta",
+              "sql": "CREATE TABLE plugin_observability_meta ( id INTEGER PRIMARY KEY CHECK(id = 1), audit_seq INTEGER NOT NULL, diagnostic_seq INTEGER NOT NULL )"
+            },
+            {
+              "type": "table",
+              "name": "plugin_observability_schema_migrations",
+              "table_name": "plugin_observability_schema_migrations",
+              "sql": "CREATE TABLE plugin_observability_schema_migrations ( version INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL )"
+            }
+          ],
+          "schema_sha256": "00e4363c85aaab3cb78d9b357e835490f82975233ee44643a3e238d337da4784"
+        },
+        {
+          "path": "db/operations.sqlite",
+          "application_id": 0,
+          "user_version": 0,
+          "migration_versions": [
+            {
+              "table": "plugin_operation_schema_migrations",
+              "versions": [
+                1
+              ]
+            }
+          ],
+          "schema_objects": [
+            {
+              "type": "index",
+              "name": "idx_plugin_operations_plugin_instance",
+              "table_name": "plugin_operations",
+              "sql": "CREATE INDEX idx_plugin_operations_plugin_instance ON plugin_operations(plugin_instance_id, created_at, operation_id)"
+            },
+            {
+              "type": "index",
+              "name": "idx_plugin_operations_status",
+              "table_name": "plugin_operations",
+              "sql": "CREATE INDEX idx_plugin_operations_status ON plugin_operations(status)"
+            },
+            {
+              "type": "table",
+              "name": "plugin_operation_schema_migrations",
+              "table_name": "plugin_operation_schema_migrations",
+              "sql": "CREATE TABLE plugin_operation_schema_migrations ( version INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL )"
+            },
+            {
+              "type": "table",
+              "name": "plugin_operations",
+              "table_name": "plugin_operations",
+              "sql": "CREATE TABLE plugin_operations ( operation_id TEXT PRIMARY KEY, plugin_id TEXT NOT NULL, plugin_instance_id TEXT NOT NULL, method TEXT NOT NULL, effect TEXT NOT NULL, execution TEXT NOT NULL, surface_instance_id TEXT NOT NULL, session_channel_id_hash TEXT NOT NULL, bridge_channel_id TEXT NOT NULL, status TEXT NOT NULL, disable_behavior TEXT NOT NULL, uninstall_behavior TEXT NOT NULL, reason TEXT NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, cancel_requested_at INTEGER, orphaned_at INTEGER )"
+            }
+          ],
+          "schema_sha256": "6b89150e03769f618c994f6906f4b588cfaf95159bfd111bd44cfde37b7ff681"
+        },
+        {
+          "path": "db/permissions.sqlite",
+          "application_id": 0,
+          "user_version": 0,
+          "migration_versions": [
+            {
+              "table": "plugin_permission_schema_migrations",
+              "versions": [
+                1
+              ]
+            }
+          ],
+          "schema_objects": [
+            {
+              "type": "index",
+              "name": "idx_plugin_permission_grants_plugin",
+              "table_name": "plugin_permission_grants",
+              "sql": "CREATE INDEX idx_plugin_permission_grants_plugin ON plugin_permission_grants(plugin_instance_id, permission_id)"
+            },
+            {
+              "type": "index",
+              "name": "idx_plugin_permission_grants_revoked",
+              "table_name": "plugin_permission_grants",
+              "sql": "CREATE INDEX idx_plugin_permission_grants_revoked ON plugin_permission_grants(plugin_instance_id, revoked_at, expires_at)"
+            },
+            {
+              "type": "table",
+              "name": "plugin_permission_grants",
+              "table_name": "plugin_permission_grants",
+              "sql": "CREATE TABLE plugin_permission_grants ( plugin_instance_id TEXT NOT NULL, permission_id TEXT NOT NULL, effect TEXT NOT NULL, granted_by TEXT NOT NULL, granted_at INTEGER NOT NULL, expires_at INTEGER, revoked_at INTEGER, revoked_by TEXT NOT NULL, revoked_reason TEXT NOT NULL, PRIMARY KEY(plugin_instance_id, permission_id) )"
+            },
+            {
+              "type": "table",
+              "name": "plugin_permission_schema_migrations",
+              "table_name": "plugin_permission_schema_migrations",
+              "sql": "CREATE TABLE plugin_permission_schema_migrations ( version INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL )"
+            }
+          ],
+          "schema_sha256": "d0b89affc5139c3ae28f0bd178094ceef0046f25b9b27f9b4e1b231624436f46"
+        },
+        {
+          "path": "db/registry.sqlite",
+          "application_id": 0,
+          "user_version": 1,
+          "migration_versions": [
+            {
+              "table": "plugin_registry_schema_migrations",
+              "versions": [
+                1
+              ]
+            }
+          ],
+          "schema_objects": [
+            {
+              "type": "index",
+              "name": "idx_plugin_records_deleted_at",
+              "table_name": "plugin_records",
+              "sql": "CREATE INDEX idx_plugin_records_deleted_at ON plugin_records(deleted_at)"
+            },
+            {
+              "type": "index",
+              "name": "idx_plugin_records_plugin_id",
+              "table_name": "plugin_records",
+              "sql": "CREATE INDEX idx_plugin_records_plugin_id ON plugin_records(plugin_id)"
+            },
+            {
+              "type": "table",
+              "name": "plugin_records",
+              "table_name": "plugin_records",
+              "sql": "CREATE TABLE plugin_records ( plugin_instance_id TEXT PRIMARY KEY, publisher_id TEXT NOT NULL, plugin_id TEXT NOT NULL, version TEXT NOT NULL, active_fingerprint TEXT NOT NULL, package_hash TEXT NOT NULL, manifest_hash TEXT NOT NULL, entries_hash TEXT NOT NULL, trust_state TEXT NOT NULL, enable_state TEXT NOT NULL, disabled_reason TEXT NOT NULL, retained_data_state TEXT NOT NULL, policy_revision INTEGER NOT NULL, management_revision INTEGER NOT NULL, revoke_epoch INTEGER NOT NULL, manifest_json TEXT NOT NULL, package_entries_json TEXT NOT NULL, version_history_json TEXT NOT NULL, installed_at INTEGER NOT NULL, enabled_at INTEGER, updated_at INTEGER NOT NULL, deleted_at INTEGER, metadata_json TEXT NOT NULL )"
+            },
+            {
+              "type": "table",
+              "name": "plugin_registry_schema_migrations",
+              "table_name": "plugin_registry_schema_migrations",
+              "sql": "CREATE TABLE plugin_registry_schema_migrations ( version INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL )"
+            }
+          ],
+          "schema_sha256": "70b12092bd87a03c8506b174f3a4528ef74a5f953f813b1829b586cdef108cda"
+        },
+        {
+          "path": "db/retained_data.sqlite",
+          "application_id": 0,
+          "user_version": 0,
+          "migration_versions": [
+            {
+              "table": "plugin_retained_data_schema_migrations",
+              "versions": [
+                1
+              ]
+            }
+          ],
+          "schema_objects": [
+            {
+              "type": "index",
+              "name": "idx_plugin_retained_data_expiry",
+              "table_name": "plugin_retained_data_records",
+              "sql": "CREATE INDEX idx_plugin_retained_data_expiry ON plugin_retained_data_records(state, delete_after)"
+            },
+            {
+              "type": "index",
+              "name": "idx_plugin_retained_data_identity",
+              "table_name": "plugin_retained_data_records",
+              "sql": "CREATE INDEX idx_plugin_retained_data_identity ON plugin_retained_data_records(publisher_id, plugin_id, state)"
+            },
+            {
+              "type": "index",
+              "name": "idx_plugin_retained_data_source",
+              "table_name": "plugin_retained_data_records",
+              "sql": "CREATE INDEX idx_plugin_retained_data_source ON plugin_retained_data_records(source_plugin_instance_id)"
+            },
+            {
+              "type": "table",
+              "name": "plugin_retained_data_records",
+              "table_name": "plugin_retained_data_records",
+              "sql": "CREATE TABLE plugin_retained_data_records ( retained_id TEXT PRIMARY KEY, source_plugin_instance_id TEXT NOT NULL, bound_plugin_instance_id TEXT NOT NULL, publisher_id TEXT NOT NULL, plugin_id TEXT NOT NULL, version TEXT NOT NULL, package_hash TEXT NOT NULL, manifest_hash TEXT NOT NULL, state TEXT NOT NULL, storage_retained INTEGER NOT NULL, settings_retained INTEGER NOT NULL, browser_site_retained INTEGER NOT NULL, usage_bytes INTEGER NOT NULL, delete_after INTEGER, delete_error TEXT NOT NULL, metadata_json TEXT NOT NULL, retained_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, bound_at INTEGER, deleted_at INTEGER, last_accessed_at INTEGER )"
+            },
+            {
+              "type": "table",
+              "name": "plugin_retained_data_schema_migrations",
+              "table_name": "plugin_retained_data_schema_migrations",
+              "sql": "CREATE TABLE plugin_retained_data_schema_migrations ( version INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL )"
+            }
+          ],
+          "schema_sha256": "1cdb02a3c5cb5870aadd332de06582df4fcddad098a0b731271beddbc38237b7"
+        },
+        {
+          "path": "db/secrets.sqlite",
+          "application_id": 0,
+          "user_version": 0,
+          "migration_versions": [
+            {
+              "table": "plugin_secret_schema_migrations",
+              "versions": [
+                1
+              ]
+            }
+          ],
+          "schema_objects": [
+            {
+              "type": "index",
+              "name": "idx_plugin_secret_bindings_plugin",
+              "table_name": "plugin_secret_bindings",
+              "sql": "CREATE INDEX idx_plugin_secret_bindings_plugin ON plugin_secret_bindings(plugin_instance_id, bound, updated_at)"
+            },
+            {
+              "type": "table",
+              "name": "plugin_secret_bindings",
+              "table_name": "plugin_secret_bindings",
+              "sql": "CREATE TABLE plugin_secret_bindings ( plugin_instance_id TEXT NOT NULL, secret_ref TEXT NOT NULL, scope TEXT NOT NULL, bound INTEGER NOT NULL, last_test_status TEXT NOT NULL, bound_at INTEGER, tested_at INTEGER, deleted_at INTEGER, updated_at INTEGER NOT NULL, PRIMARY KEY(plugin_instance_id, scope, secret_ref) )"
+            },
+            {
+              "type": "table",
+              "name": "plugin_secret_schema_migrations",
+              "table_name": "plugin_secret_schema_migrations",
+              "sql": "CREATE TABLE plugin_secret_schema_migrations ( version INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL )"
+            }
+          ],
+          "schema_sha256": "82a9d6ab404b4d3dc485ef1ea9c95530af4460a48506e47ced81953c4b12dd50"
+        },
+        {
+          "path": "db/security_policy.sqlite",
+          "application_id": 0,
+          "user_version": 0,
+          "migration_versions": [
+            {
+              "table": "plugin_security_policy_schema_migrations",
+              "versions": [
+                1
+              ]
+            }
+          ],
+          "schema_objects": [
+            {
+              "type": "table",
+              "name": "plugin_security_policies",
+              "table_name": "plugin_security_policies",
+              "sql": "CREATE TABLE plugin_security_policies ( plugin_instance_id TEXT PRIMARY KEY, updated_at INTEGER NOT NULL )"
+            },
+            {
+              "type": "table",
+              "name": "plugin_security_policy_allowed_permissions",
+              "table_name": "plugin_security_policy_allowed_permissions",
+              "sql": "CREATE TABLE plugin_security_policy_allowed_permissions ( plugin_instance_id TEXT NOT NULL, permission_id TEXT NOT NULL, updated_at INTEGER NOT NULL, PRIMARY KEY(plugin_instance_id, permission_id), FOREIGN KEY(plugin_instance_id) REFERENCES plugin_security_policies(plugin_instance_id) ON DELETE CASCADE )"
+            },
+            {
+              "type": "table",
+              "name": "plugin_security_policy_denied_methods",
+              "table_name": "plugin_security_policy_denied_methods",
+              "sql": "CREATE TABLE plugin_security_policy_denied_methods ( plugin_instance_id TEXT NOT NULL, method TEXT NOT NULL, updated_at INTEGER NOT NULL, PRIMARY KEY(plugin_instance_id, method), FOREIGN KEY(plugin_instance_id) REFERENCES plugin_security_policies(plugin_instance_id) ON DELETE CASCADE )"
+            },
+            {
+              "type": "table",
+              "name": "plugin_security_policy_schema_migrations",
+              "table_name": "plugin_security_policy_schema_migrations",
+              "sql": "CREATE TABLE plugin_security_policy_schema_migrations ( version INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL )"
+            }
+          ],
+          "schema_sha256": "8718fac16ca2cf37e84edd53f6d1c646f2d42e028af2dcc7aee05bdd9bc22dd6"
+        },
+        {
+          "path": "db/settings.sqlite",
+          "application_id": 0,
+          "user_version": 0,
+          "migration_versions": [
+            {
+              "table": "plugin_settings_schema_migrations",
+              "versions": [
+                1
+              ]
+            }
+          ],
+          "schema_objects": [
+            {
+              "type": "index",
+              "name": "idx_plugin_settings_archives_source",
+              "table_name": "plugin_settings_archives",
+              "sql": "CREATE INDEX idx_plugin_settings_archives_source ON plugin_settings_archives(source_plugin_instance_id, created_at)"
+            },
+            {
+              "type": "index",
+              "name": "idx_plugin_settings_records_state",
+              "table_name": "plugin_settings_records",
+              "sql": "CREATE INDEX idx_plugin_settings_records_state ON plugin_settings_records(state, retained_at)"
+            },
+            {
+              "type": "table",
+              "name": "plugin_settings_archives",
+              "table_name": "plugin_settings_archives",
+              "sql": "CREATE TABLE plugin_settings_archives ( archive_ref TEXT PRIMARY KEY, source_plugin_instance_id TEXT NOT NULL, include_secrets INTEGER NOT NULL, schema_version INTEGER NOT NULL, settings_revision INTEGER NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, payload_json BLOB NOT NULL )"
+            },
+            {
+              "type": "table",
+              "name": "plugin_settings_meta",
+              "table_name": "plugin_settings_meta",
+              "sql": "CREATE TABLE plugin_settings_meta ( id INTEGER PRIMARY KEY CHECK(id = 1), next_export INTEGER NOT NULL )"
+            },
+            {
+              "type": "table",
+              "name": "plugin_settings_records",
+              "table_name": "plugin_settings_records",
+              "sql": "CREATE TABLE plugin_settings_records ( plugin_instance_id TEXT PRIMARY KEY, state TEXT NOT NULL, schema_version INTEGER NOT NULL, settings_revision INTEGER NOT NULL, updated_at INTEGER NOT NULL, retained_at INTEGER, payload_json BLOB NOT NULL )"
+            },
+            {
+              "type": "table",
+              "name": "plugin_settings_schema_migrations",
+              "table_name": "plugin_settings_schema_migrations",
+              "sql": "CREATE TABLE plugin_settings_schema_migrations ( version INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL )"
+            }
+          ],
+          "schema_sha256": "dba0083a1fa88135d6ab50cd0176063688134e684577563022200906a0d5702a"
+        },
+        {
+          "path": "db/streams.sqlite",
+          "application_id": 0,
+          "user_version": 0,
+          "migration_versions": [
+            {
+              "table": "plugin_stream_schema_migrations",
+              "versions": [
+                1
+              ]
+            }
+          ],
+          "schema_objects": [
+            {
+              "type": "index",
+              "name": "idx_plugin_stream_events_stream_sequence",
+              "table_name": "plugin_stream_events",
+              "sql": "CREATE INDEX idx_plugin_stream_events_stream_sequence ON plugin_stream_events(stream_id, sequence)"
+            },
+            {
+              "type": "index",
+              "name": "idx_plugin_streams_plugin_instance",
+              "table_name": "plugin_streams",
+              "sql": "CREATE INDEX idx_plugin_streams_plugin_instance ON plugin_streams(plugin_instance_id, created_at, stream_id)"
+            },
+            {
+              "type": "index",
+              "name": "idx_plugin_streams_status",
+              "table_name": "plugin_streams",
+              "sql": "CREATE INDEX idx_plugin_streams_status ON plugin_streams(status)"
+            },
+            {
+              "type": "table",
+              "name": "plugin_stream_events",
+              "table_name": "plugin_stream_events",
+              "sql": "CREATE TABLE plugin_stream_events ( stream_id TEXT NOT NULL, sequence INTEGER NOT NULL, kind TEXT NOT NULL, data BLOB, error TEXT NOT NULL, at INTEGER NOT NULL, PRIMARY KEY(stream_id, sequence), FOREIGN KEY(stream_id) REFERENCES plugin_streams(stream_id) ON DELETE CASCADE )"
+            },
+            {
+              "type": "table",
+              "name": "plugin_stream_schema_migrations",
+              "table_name": "plugin_stream_schema_migrations",
+              "sql": "CREATE TABLE plugin_stream_schema_migrations ( version INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL )"
+            },
+            {
+              "type": "table",
+              "name": "plugin_streams",
+              "table_name": "plugin_streams",
+              "sql": "CREATE TABLE plugin_streams ( stream_id TEXT PRIMARY KEY, plugin_id TEXT NOT NULL, plugin_instance_id TEXT NOT NULL, method TEXT NOT NULL, effect TEXT NOT NULL, execution TEXT NOT NULL, surface_instance_id TEXT NOT NULL, owner_session_hash TEXT NOT NULL, owner_user_hash TEXT NOT NULL, session_channel_id_hash TEXT NOT NULL, bridge_channel_id TEXT NOT NULL, direction TEXT NOT NULL, status TEXT NOT NULL, content_type TEXT NOT NULL, max_buffered_bytes INTEGER NOT NULL, buffered_bytes INTEGER NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, closed_at INTEGER )"
+            }
+          ],
+          "schema_sha256": "7d2200868c7bd271be8a78cd42aea861bdc2fe46dbc714b08bb4d6251c7510d9"
+        }
+      ],
+      "tree_rules": {
+        "allowed_kinds": [
+          "directory",
+          "file"
+        ],
+        "allow_sqlite_wal_shm": true,
+        "reject_hardlinks": true,
+        "reject_symlinks": true,
+        "variable_trees": [
+          "assets",
+          "storage"
+        ]
+      }
+    },
+    {
+      "id": "redeven-redevplugin-v0.1.6-layout-v1",
+      "platform_versions": [
+        "0.1.6"
+      ],
+      "root_entries": [
+        {
+          "path": "assets",
+          "kind": "directory",
+          "scope": "durable",
+          "disposition": "quarantine"
+        },
+        {
+          "path": "db",
+          "kind": "directory",
+          "scope": "durable",
+          "disposition": "quarantine"
+        },
+        {
+          "path": "storage",
+          "kind": "directory",
+          "scope": "durable",
+          "disposition": "quarantine"
+        }
+      ],
+      "sqlite_databases": [
+        {
+          "path": "db/browser_site.sqlite",
+          "application_id": 0,
+          "user_version": 0,
+          "migration_versions": [
+            {
+              "table": "plugin_browser_site_schema_migrations",
+              "versions": [
+                1
+              ]
+            }
+          ],
+          "schema_objects": [
+            {
+              "type": "index",
+              "name": "idx_plugin_browser_site_plugin_instance",
+              "table_name": "plugin_browser_site_origins",
+              "sql": "CREATE INDEX idx_plugin_browser_site_plugin_instance ON plugin_browser_site_origins(plugin_instance_id, state, origin)"
+            },
+            {
+              "type": "index",
+              "name": "idx_plugin_browser_site_state",
+              "table_name": "plugin_browser_site_origins",
+              "sql": "CREATE INDEX idx_plugin_browser_site_state ON plugin_browser_site_origins(state, updated_at)"
+            },
+            {
+              "type": "table",
+              "name": "plugin_browser_site_origins",
+              "table_name": "plugin_browser_site_origins",
+              "sql": "CREATE TABLE plugin_browser_site_origins ( origin_key TEXT PRIMARY KEY, plugin_instance_id TEXT NOT NULL, plugin_id TEXT NOT NULL, active_fingerprint TEXT NOT NULL, surface_id TEXT NOT NULL, surface_instance_id TEXT NOT NULL, origin TEXT NOT NULL, owner_session_hash TEXT NOT NULL, owner_user_hash TEXT NOT NULL, state TEXT NOT NULL, cleanup_reason TEXT NOT NULL, cleanup_error TEXT NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, last_seen_at INTEGER NOT NULL, cleanup_requested_at INTEGER, cleaned_at INTEGER, retained_at INTEGER )"
+            },
+            {
+              "type": "table",
+              "name": "plugin_browser_site_schema_migrations",
+              "table_name": "plugin_browser_site_schema_migrations",
+              "sql": "CREATE TABLE plugin_browser_site_schema_migrations ( version INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL )"
+            }
+          ],
+          "schema_sha256": "a7767aacbc70799ee6f847077e27727cac70ae2fdbb84cae2e0fae2d9ab5bffa"
+        },
+        {
+          "path": "db/cleanup.sqlite",
+          "application_id": 0,
+          "user_version": 0,
+          "migration_versions": [
+            {
+              "table": "plugin_cleanup_schema_migrations",
+              "versions": [
+                1
+              ]
+            }
+          ],
+          "schema_objects": [
+            {
+              "type": "index",
+              "name": "idx_plugin_cleanup_operations_plugin",
+              "table_name": "plugin_cleanup_operations",
+              "sql": "CREATE INDEX idx_plugin_cleanup_operations_plugin ON plugin_cleanup_operations(plugin_instance_id, id)"
+            },
+            {
+              "type": "table",
+              "name": "plugin_cleanup_operations",
+              "table_name": "plugin_cleanup_operations",
+              "sql": "CREATE TABLE plugin_cleanup_operations ( id INTEGER PRIMARY KEY AUTOINCREMENT, plugin_instance_id TEXT NOT NULL, delete_data INTEGER NOT NULL, phase TEXT NOT NULL, executed_at INTEGER NOT NULL )"
+            },
+            {
+              "type": "table",
+              "name": "plugin_cleanup_schema_migrations",
+              "table_name": "plugin_cleanup_schema_migrations",
+              "sql": "CREATE TABLE plugin_cleanup_schema_migrations ( version INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL )"
+            }
+          ],
+          "schema_sha256": "492e855ac577c347fd5c4a916b4be060d08e9703d9deec197bcb1a75a0de9dcc"
+        },
+        {
+          "path": "db/confirmation_intents.sqlite",
+          "application_id": 0,
+          "user_version": 0,
+          "migration_versions": [
+            {
+              "table": "plugin_confirmation_intent_schema_migrations",
+              "versions": [
+                1
+              ]
+            }
+          ],
+          "schema_objects": [
+            {
+              "type": "index",
+              "name": "idx_plugin_confirmation_intents_expires_at",
+              "table_name": "plugin_confirmation_intents",
+              "sql": "CREATE INDEX idx_plugin_confirmation_intents_expires_at ON plugin_confirmation_intents(expires_at)"
+            },
+            {
+              "type": "index",
+              "name": "idx_plugin_confirmation_intents_plugin_instance",
+              "table_name": "plugin_confirmation_intents",
+              "sql": "CREATE INDEX idx_plugin_confirmation_intents_plugin_instance ON plugin_confirmation_intents(plugin_instance_id, issued_at, confirmation_id)"
+            },
+            {
+              "type": "table",
+              "name": "plugin_confirmation_intent_schema_migrations",
+              "table_name": "plugin_confirmation_intent_schema_migrations",
+              "sql": "CREATE TABLE plugin_confirmation_intent_schema_migrations ( version INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL )"
+            },
+            {
+              "type": "table",
+              "name": "plugin_confirmation_intents",
+              "table_name": "plugin_confirmation_intents",
+              "sql": "CREATE TABLE plugin_confirmation_intents ( confirmation_id TEXT PRIMARY KEY, confirmation_token_id TEXT NOT NULL, plugin_id TEXT NOT NULL, plugin_instance_id TEXT NOT NULL, surface_instance_id TEXT NOT NULL, bridge_channel_id TEXT NOT NULL, method TEXT NOT NULL, request_hash TEXT NOT NULL, plan_hash TEXT NOT NULL, issued_at INTEGER NOT NULL, expires_at INTEGER NOT NULL )"
+            }
+          ],
+          "schema_sha256": "dac56fde008efc7d6a21154c5bfbbd43183a8411e0fad20946e88a7550287781"
+        },
+        {
+          "path": "db/install_stage.sqlite",
+          "application_id": 0,
+          "user_version": 0,
+          "migration_versions": [
+            {
+              "table": "plugin_install_stage_schema_migrations",
+              "versions": [
+                1
+              ]
+            }
+          ],
+          "schema_objects": [
+            {
+              "type": "index",
+              "name": "idx_plugin_install_stages_plugin",
+              "table_name": "plugin_install_stages",
+              "sql": "CREATE INDEX idx_plugin_install_stages_plugin ON plugin_install_stages(plugin_instance_id, created_at)"
+            },
+            {
+              "type": "index",
+              "name": "idx_plugin_install_stages_status_expiry",
+              "table_name": "plugin_install_stages",
+              "sql": "CREATE INDEX idx_plugin_install_stages_status_expiry ON plugin_install_stages(status, expires_at)"
+            },
+            {
+              "type": "table",
+              "name": "plugin_install_stage_schema_migrations",
+              "table_name": "plugin_install_stage_schema_migrations",
+              "sql": "CREATE TABLE plugin_install_stage_schema_migrations ( version INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL )"
+            },
+            {
+              "type": "table",
+              "name": "plugin_install_stages",
+              "table_name": "plugin_install_stages",
+              "sql": "CREATE TABLE plugin_install_stages ( stage_id TEXT PRIMARY KEY, action TEXT NOT NULL, status TEXT NOT NULL, plugin_instance_id TEXT NOT NULL, publisher_id TEXT NOT NULL, plugin_id TEXT NOT NULL, version TEXT NOT NULL, package_hash TEXT NOT NULL, manifest_hash TEXT NOT NULL, entries_hash TEXT NOT NULL, requested_trust TEXT NOT NULL, resolved_trust TEXT NOT NULL, validation_summary_json TEXT NOT NULL, error_code TEXT NOT NULL, error_message TEXT NOT NULL, expires_at INTEGER NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, finished_at INTEGER )"
+            }
+          ],
+          "schema_sha256": "ee0192641f33bba6c7fc5994d73e2a64e77c129406bd3c2ccfc840780c3cef6a"
+        },
+        {
+          "path": "db/observability.sqlite",
+          "application_id": 0,
+          "user_version": 0,
+          "migration_versions": [
+            {
+              "table": "plugin_observability_schema_migrations",
+              "versions": [
+                1
+              ]
+            }
+          ],
+          "schema_objects": [
+            {
+              "type": "index",
+              "name": "idx_plugin_audit_plugin",
+              "table_name": "plugin_audit_events",
+              "sql": "CREATE INDEX idx_plugin_audit_plugin ON plugin_audit_events(plugin_id, type, occurred_at)"
+            },
+            {
+              "type": "index",
+              "name": "idx_plugin_audit_plugin_instance",
+              "table_name": "plugin_audit_events",
+              "sql": "CREATE INDEX idx_plugin_audit_plugin_instance ON plugin_audit_events(plugin_instance_id, type, occurred_at)"
+            },
+            {
+              "type": "index",
+              "name": "idx_plugin_diagnostics_plugin_instance",
+              "table_name": "plugin_diagnostic_events",
+              "sql": "CREATE INDEX idx_plugin_diagnostics_plugin_instance ON plugin_diagnostic_events(plugin_instance_id, type, severity, occurred_at)"
+            },
+            {
+              "type": "index",
+              "name": "idx_plugin_diagnostics_surface",
+              "table_name": "plugin_diagnostic_events",
+              "sql": "CREATE INDEX idx_plugin_diagnostics_surface ON plugin_diagnostic_events(surface_instance_id, severity, occurred_at)"
+            },
+            {
+              "type": "table",
+              "name": "plugin_audit_events",
+              "table_name": "plugin_audit_events",
+              "sql": "CREATE TABLE plugin_audit_events ( seq INTEGER PRIMARY KEY, event_id TEXT NOT NULL, type TEXT NOT NULL, plugin_id TEXT NOT NULL, plugin_instance_id TEXT NOT NULL, surface_id TEXT NOT NULL, surface_instance_id TEXT NOT NULL, request_id TEXT NOT NULL, actor TEXT NOT NULL, occurred_at INTEGER NOT NULL, details_json BLOB NOT NULL )"
+            },
+            {
+              "type": "table",
+              "name": "plugin_diagnostic_events",
+              "table_name": "plugin_diagnostic_events",
+              "sql": "CREATE TABLE plugin_diagnostic_events ( seq INTEGER PRIMARY KEY, event_id TEXT NOT NULL, type TEXT NOT NULL, severity TEXT NOT NULL, message TEXT NOT NULL, plugin_id TEXT NOT NULL, plugin_instance_id TEXT NOT NULL, surface_id TEXT NOT NULL, surface_instance_id TEXT NOT NULL, active_fingerprint TEXT NOT NULL, request_id TEXT NOT NULL, occurred_at INTEGER NOT NULL, details_json BLOB NOT NULL )"
+            },
+            {
+              "type": "table",
+              "name": "plugin_observability_meta",
+              "table_name": "plugin_observability_meta",
+              "sql": "CREATE TABLE plugin_observability_meta ( id INTEGER PRIMARY KEY CHECK(id = 1), audit_seq INTEGER NOT NULL, diagnostic_seq INTEGER NOT NULL )"
+            },
+            {
+              "type": "table",
+              "name": "plugin_observability_schema_migrations",
+              "table_name": "plugin_observability_schema_migrations",
+              "sql": "CREATE TABLE plugin_observability_schema_migrations ( version INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL )"
+            }
+          ],
+          "schema_sha256": "00e4363c85aaab3cb78d9b357e835490f82975233ee44643a3e238d337da4784"
+        },
+        {
+          "path": "db/operations.sqlite",
+          "application_id": 0,
+          "user_version": 0,
+          "migration_versions": [
+            {
+              "table": "plugin_operation_schema_migrations",
+              "versions": [
+                1
+              ]
+            }
+          ],
+          "schema_objects": [
+            {
+              "type": "index",
+              "name": "idx_plugin_operations_plugin_instance",
+              "table_name": "plugin_operations",
+              "sql": "CREATE INDEX idx_plugin_operations_plugin_instance ON plugin_operations(plugin_instance_id, created_at, operation_id)"
+            },
+            {
+              "type": "index",
+              "name": "idx_plugin_operations_status",
+              "table_name": "plugin_operations",
+              "sql": "CREATE INDEX idx_plugin_operations_status ON plugin_operations(status)"
+            },
+            {
+              "type": "table",
+              "name": "plugin_operation_schema_migrations",
+              "table_name": "plugin_operation_schema_migrations",
+              "sql": "CREATE TABLE plugin_operation_schema_migrations ( version INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL )"
+            },
+            {
+              "type": "table",
+              "name": "plugin_operations",
+              "table_name": "plugin_operations",
+              "sql": "CREATE TABLE plugin_operations ( operation_id TEXT PRIMARY KEY, plugin_id TEXT NOT NULL, plugin_instance_id TEXT NOT NULL, method TEXT NOT NULL, effect TEXT NOT NULL, execution TEXT NOT NULL, surface_instance_id TEXT NOT NULL, session_channel_id_hash TEXT NOT NULL, bridge_channel_id TEXT NOT NULL, status TEXT NOT NULL, disable_behavior TEXT NOT NULL, uninstall_behavior TEXT NOT NULL, reason TEXT NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, cancel_requested_at INTEGER, orphaned_at INTEGER )"
+            }
+          ],
+          "schema_sha256": "6b89150e03769f618c994f6906f4b588cfaf95159bfd111bd44cfde37b7ff681"
+        },
+        {
+          "path": "db/permissions.sqlite",
+          "application_id": 0,
+          "user_version": 0,
+          "migration_versions": [
+            {
+              "table": "plugin_permission_schema_migrations",
+              "versions": [
+                1
+              ]
+            }
+          ],
+          "schema_objects": [
+            {
+              "type": "index",
+              "name": "idx_plugin_permission_grants_plugin",
+              "table_name": "plugin_permission_grants",
+              "sql": "CREATE INDEX idx_plugin_permission_grants_plugin ON plugin_permission_grants(plugin_instance_id, permission_id)"
+            },
+            {
+              "type": "index",
+              "name": "idx_plugin_permission_grants_revoked",
+              "table_name": "plugin_permission_grants",
+              "sql": "CREATE INDEX idx_plugin_permission_grants_revoked ON plugin_permission_grants(plugin_instance_id, revoked_at, expires_at)"
+            },
+            {
+              "type": "table",
+              "name": "plugin_permission_grants",
+              "table_name": "plugin_permission_grants",
+              "sql": "CREATE TABLE plugin_permission_grants ( plugin_instance_id TEXT NOT NULL, permission_id TEXT NOT NULL, effect TEXT NOT NULL, granted_by TEXT NOT NULL, granted_at INTEGER NOT NULL, expires_at INTEGER, revoked_at INTEGER, revoked_by TEXT NOT NULL, revoked_reason TEXT NOT NULL, PRIMARY KEY(plugin_instance_id, permission_id) )"
+            },
+            {
+              "type": "table",
+              "name": "plugin_permission_schema_migrations",
+              "table_name": "plugin_permission_schema_migrations",
+              "sql": "CREATE TABLE plugin_permission_schema_migrations ( version INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL )"
+            }
+          ],
+          "schema_sha256": "d0b89affc5139c3ae28f0bd178094ceef0046f25b9b27f9b4e1b231624436f46"
+        },
+        {
+          "path": "db/registry.sqlite",
+          "application_id": 0,
+          "user_version": 5,
+          "migration_versions": [
+            {
+              "table": "plugin_registry_schema_migrations",
+              "versions": [
+                1,
+                2,
+                3,
+                4,
+                5
+              ]
+            }
+          ],
+          "schema_objects": [
+            {
+              "type": "index",
+              "name": "idx_plugin_records_deleted_at",
+              "table_name": "plugin_records",
+              "sql": "CREATE INDEX idx_plugin_records_deleted_at ON plugin_records(deleted_at)"
+            },
+            {
+              "type": "index",
+              "name": "idx_plugin_records_plugin_id",
+              "table_name": "plugin_records",
+              "sql": "CREATE INDEX idx_plugin_records_plugin_id ON plugin_records(plugin_id)"
+            },
+            {
+              "type": "table",
+              "name": "plugin_records",
+              "table_name": "plugin_records",
+              "sql": "CREATE TABLE plugin_records ( plugin_instance_id TEXT PRIMARY KEY, publisher_id TEXT NOT NULL, plugin_id TEXT NOT NULL, version TEXT NOT NULL, active_fingerprint TEXT NOT NULL, package_hash TEXT NOT NULL, manifest_hash TEXT NOT NULL, entries_hash TEXT NOT NULL, trust_state TEXT NOT NULL, trust_assessment_json TEXT NOT NULL DEFAULT '{}', source_policy_snapshot_hash TEXT NOT NULL DEFAULT '', source_policy_snapshot_json TEXT NOT NULL DEFAULT '{}', local_import_provenance_json TEXT NOT NULL DEFAULT '{}', enable_state TEXT NOT NULL, disabled_reason TEXT NOT NULL, retained_data_state TEXT NOT NULL, policy_revision INTEGER NOT NULL, management_revision INTEGER NOT NULL, revoke_epoch INTEGER NOT NULL, manifest_json TEXT NOT NULL, package_entries_json TEXT NOT NULL, version_history_json TEXT NOT NULL, installed_at INTEGER NOT NULL, enabled_at INTEGER, updated_at INTEGER NOT NULL, deleted_at INTEGER, metadata_json TEXT NOT NULL )"
+            },
+            {
+              "type": "table",
+              "name": "plugin_registry_schema_migrations",
+              "table_name": "plugin_registry_schema_migrations",
+              "sql": "CREATE TABLE plugin_registry_schema_migrations ( version INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL )"
+            },
+            {
+              "type": "table",
+              "name": "plugin_source_security_floors",
+              "table_name": "plugin_source_security_floors",
+              "sql": "CREATE TABLE plugin_source_security_floors ( source_id TEXT PRIMARY KEY, policy_epoch TEXT NOT NULL, key_rotation_epoch TEXT NOT NULL, revocation_epoch TEXT NOT NULL, source_policy_snapshot_hash TEXT NOT NULL, revocation_metadata_sha256 TEXT NOT NULL, updated_at INTEGER NOT NULL )"
+            }
+          ],
+          "schema_sha256": "e04fe43561aa4e42626060f74912c0fae5dca60a23f32b95e2c219a37b722a3f"
+        },
+        {
+          "path": "db/retained_data.sqlite",
+          "application_id": 0,
+          "user_version": 0,
+          "migration_versions": [
+            {
+              "table": "plugin_retained_data_schema_migrations",
+              "versions": [
+                1
+              ]
+            }
+          ],
+          "schema_objects": [
+            {
+              "type": "index",
+              "name": "idx_plugin_retained_data_expiry",
+              "table_name": "plugin_retained_data_records",
+              "sql": "CREATE INDEX idx_plugin_retained_data_expiry ON plugin_retained_data_records(state, delete_after)"
+            },
+            {
+              "type": "index",
+              "name": "idx_plugin_retained_data_identity",
+              "table_name": "plugin_retained_data_records",
+              "sql": "CREATE INDEX idx_plugin_retained_data_identity ON plugin_retained_data_records(publisher_id, plugin_id, state)"
+            },
+            {
+              "type": "index",
+              "name": "idx_plugin_retained_data_source",
+              "table_name": "plugin_retained_data_records",
+              "sql": "CREATE INDEX idx_plugin_retained_data_source ON plugin_retained_data_records(source_plugin_instance_id)"
+            },
+            {
+              "type": "table",
+              "name": "plugin_retained_data_records",
+              "table_name": "plugin_retained_data_records",
+              "sql": "CREATE TABLE plugin_retained_data_records ( retained_id TEXT PRIMARY KEY, source_plugin_instance_id TEXT NOT NULL, bound_plugin_instance_id TEXT NOT NULL, publisher_id TEXT NOT NULL, plugin_id TEXT NOT NULL, version TEXT NOT NULL, package_hash TEXT NOT NULL, manifest_hash TEXT NOT NULL, state TEXT NOT NULL, storage_retained INTEGER NOT NULL, settings_retained INTEGER NOT NULL, browser_site_retained INTEGER NOT NULL, usage_bytes INTEGER NOT NULL, delete_after INTEGER, delete_error TEXT NOT NULL, metadata_json TEXT NOT NULL, retained_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, bound_at INTEGER, deleted_at INTEGER, last_accessed_at INTEGER )"
+            },
+            {
+              "type": "table",
+              "name": "plugin_retained_data_schema_migrations",
+              "table_name": "plugin_retained_data_schema_migrations",
+              "sql": "CREATE TABLE plugin_retained_data_schema_migrations ( version INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL )"
+            }
+          ],
+          "schema_sha256": "1cdb02a3c5cb5870aadd332de06582df4fcddad098a0b731271beddbc38237b7"
+        },
+        {
+          "path": "db/secrets.sqlite",
+          "application_id": 0,
+          "user_version": 0,
+          "migration_versions": [
+            {
+              "table": "plugin_secret_schema_migrations",
+              "versions": [
+                1
+              ]
+            }
+          ],
+          "schema_objects": [
+            {
+              "type": "index",
+              "name": "idx_plugin_secret_bindings_plugin",
+              "table_name": "plugin_secret_bindings",
+              "sql": "CREATE INDEX idx_plugin_secret_bindings_plugin ON plugin_secret_bindings(plugin_instance_id, bound, updated_at)"
+            },
+            {
+              "type": "table",
+              "name": "plugin_secret_bindings",
+              "table_name": "plugin_secret_bindings",
+              "sql": "CREATE TABLE plugin_secret_bindings ( plugin_instance_id TEXT NOT NULL, secret_ref TEXT NOT NULL, scope TEXT NOT NULL, bound INTEGER NOT NULL, last_test_status TEXT NOT NULL, bound_at INTEGER, tested_at INTEGER, deleted_at INTEGER, updated_at INTEGER NOT NULL, PRIMARY KEY(plugin_instance_id, scope, secret_ref) )"
+            },
+            {
+              "type": "table",
+              "name": "plugin_secret_schema_migrations",
+              "table_name": "plugin_secret_schema_migrations",
+              "sql": "CREATE TABLE plugin_secret_schema_migrations ( version INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL )"
+            }
+          ],
+          "schema_sha256": "82a9d6ab404b4d3dc485ef1ea9c95530af4460a48506e47ced81953c4b12dd50"
+        },
+        {
+          "path": "db/security_policy.sqlite",
+          "application_id": 0,
+          "user_version": 0,
+          "migration_versions": [
+            {
+              "table": "plugin_security_policy_schema_migrations",
+              "versions": [
+                1
+              ]
+            }
+          ],
+          "schema_objects": [
+            {
+              "type": "table",
+              "name": "plugin_security_policies",
+              "table_name": "plugin_security_policies",
+              "sql": "CREATE TABLE plugin_security_policies ( plugin_instance_id TEXT PRIMARY KEY, updated_at INTEGER NOT NULL )"
+            },
+            {
+              "type": "table",
+              "name": "plugin_security_policy_allowed_permissions",
+              "table_name": "plugin_security_policy_allowed_permissions",
+              "sql": "CREATE TABLE plugin_security_policy_allowed_permissions ( plugin_instance_id TEXT NOT NULL, permission_id TEXT NOT NULL, updated_at INTEGER NOT NULL, PRIMARY KEY(plugin_instance_id, permission_id), FOREIGN KEY(plugin_instance_id) REFERENCES plugin_security_policies(plugin_instance_id) ON DELETE CASCADE )"
+            },
+            {
+              "type": "table",
+              "name": "plugin_security_policy_denied_methods",
+              "table_name": "plugin_security_policy_denied_methods",
+              "sql": "CREATE TABLE plugin_security_policy_denied_methods ( plugin_instance_id TEXT NOT NULL, method TEXT NOT NULL, updated_at INTEGER NOT NULL, PRIMARY KEY(plugin_instance_id, method), FOREIGN KEY(plugin_instance_id) REFERENCES plugin_security_policies(plugin_instance_id) ON DELETE CASCADE )"
+            },
+            {
+              "type": "table",
+              "name": "plugin_security_policy_schema_migrations",
+              "table_name": "plugin_security_policy_schema_migrations",
+              "sql": "CREATE TABLE plugin_security_policy_schema_migrations ( version INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL )"
+            }
+          ],
+          "schema_sha256": "8718fac16ca2cf37e84edd53f6d1c646f2d42e028af2dcc7aee05bdd9bc22dd6"
+        },
+        {
+          "path": "db/settings.sqlite",
+          "application_id": 0,
+          "user_version": 0,
+          "migration_versions": [
+            {
+              "table": "plugin_settings_schema_migrations",
+              "versions": [
+                1
+              ]
+            }
+          ],
+          "schema_objects": [
+            {
+              "type": "index",
+              "name": "idx_plugin_settings_archives_source",
+              "table_name": "plugin_settings_archives",
+              "sql": "CREATE INDEX idx_plugin_settings_archives_source ON plugin_settings_archives(source_plugin_instance_id, created_at)"
+            },
+            {
+              "type": "index",
+              "name": "idx_plugin_settings_records_state",
+              "table_name": "plugin_settings_records",
+              "sql": "CREATE INDEX idx_plugin_settings_records_state ON plugin_settings_records(state, retained_at)"
+            },
+            {
+              "type": "table",
+              "name": "plugin_settings_archives",
+              "table_name": "plugin_settings_archives",
+              "sql": "CREATE TABLE plugin_settings_archives ( archive_ref TEXT PRIMARY KEY, source_plugin_instance_id TEXT NOT NULL, include_secrets INTEGER NOT NULL, schema_version INTEGER NOT NULL, settings_revision INTEGER NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, payload_json BLOB NOT NULL )"
+            },
+            {
+              "type": "table",
+              "name": "plugin_settings_meta",
+              "table_name": "plugin_settings_meta",
+              "sql": "CREATE TABLE plugin_settings_meta ( id INTEGER PRIMARY KEY CHECK(id = 1), next_export INTEGER NOT NULL )"
+            },
+            {
+              "type": "table",
+              "name": "plugin_settings_records",
+              "table_name": "plugin_settings_records",
+              "sql": "CREATE TABLE plugin_settings_records ( plugin_instance_id TEXT PRIMARY KEY, state TEXT NOT NULL, schema_version INTEGER NOT NULL, settings_revision INTEGER NOT NULL, updated_at INTEGER NOT NULL, retained_at INTEGER, payload_json BLOB NOT NULL )"
+            },
+            {
+              "type": "table",
+              "name": "plugin_settings_schema_migrations",
+              "table_name": "plugin_settings_schema_migrations",
+              "sql": "CREATE TABLE plugin_settings_schema_migrations ( version INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL )"
+            }
+          ],
+          "schema_sha256": "dba0083a1fa88135d6ab50cd0176063688134e684577563022200906a0d5702a"
+        },
+        {
+          "path": "db/streams.sqlite",
+          "application_id": 0,
+          "user_version": 0,
+          "migration_versions": [
+            {
+              "table": "plugin_stream_schema_migrations",
+              "versions": [
+                1
+              ]
+            }
+          ],
+          "schema_objects": [
+            {
+              "type": "index",
+              "name": "idx_plugin_stream_events_stream_sequence",
+              "table_name": "plugin_stream_events",
+              "sql": "CREATE INDEX idx_plugin_stream_events_stream_sequence ON plugin_stream_events(stream_id, sequence)"
+            },
+            {
+              "type": "index",
+              "name": "idx_plugin_streams_plugin_instance",
+              "table_name": "plugin_streams",
+              "sql": "CREATE INDEX idx_plugin_streams_plugin_instance ON plugin_streams(plugin_instance_id, created_at, stream_id)"
+            },
+            {
+              "type": "index",
+              "name": "idx_plugin_streams_status",
+              "table_name": "plugin_streams",
+              "sql": "CREATE INDEX idx_plugin_streams_status ON plugin_streams(status)"
+            },
+            {
+              "type": "table",
+              "name": "plugin_stream_events",
+              "table_name": "plugin_stream_events",
+              "sql": "CREATE TABLE plugin_stream_events ( stream_id TEXT NOT NULL, sequence INTEGER NOT NULL, kind TEXT NOT NULL, data BLOB, error TEXT NOT NULL, at INTEGER NOT NULL, PRIMARY KEY(stream_id, sequence), FOREIGN KEY(stream_id) REFERENCES plugin_streams(stream_id) ON DELETE CASCADE )"
+            },
+            {
+              "type": "table",
+              "name": "plugin_stream_schema_migrations",
+              "table_name": "plugin_stream_schema_migrations",
+              "sql": "CREATE TABLE plugin_stream_schema_migrations ( version INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL )"
+            },
+            {
+              "type": "table",
+              "name": "plugin_streams",
+              "table_name": "plugin_streams",
+              "sql": "CREATE TABLE plugin_streams ( stream_id TEXT PRIMARY KEY, plugin_id TEXT NOT NULL, plugin_instance_id TEXT NOT NULL, method TEXT NOT NULL, effect TEXT NOT NULL, execution TEXT NOT NULL, surface_instance_id TEXT NOT NULL, owner_session_hash TEXT NOT NULL, owner_user_hash TEXT NOT NULL, session_channel_id_hash TEXT NOT NULL, bridge_channel_id TEXT NOT NULL, direction TEXT NOT NULL, status TEXT NOT NULL, content_type TEXT NOT NULL, max_buffered_bytes INTEGER NOT NULL, buffered_bytes INTEGER NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, closed_at INTEGER )"
+            }
+          ],
+          "schema_sha256": "7d2200868c7bd271be8a78cd42aea861bdc2fe46dbc714b08bb4d6251c7510d9"
+        }
+      ],
+      "tree_rules": {
+        "allowed_kinds": [
+          "directory",
+          "file"
+        ],
+        "allow_sqlite_wal_shm": true,
+        "reject_hardlinks": true,
+        "reject_symlinks": true,
+        "variable_trees": [
+          "assets",
+          "storage"
+        ]
+      }
+    },
+    {
+      "id": "redeven-redevplugin-v0.2.x-layout-v1",
+      "platform_versions": [
+        "0.2.0",
+        "0.2.1",
+        "0.2.2"
+      ],
+      "root_entries": [
+        {
+          "path": "assets",
+          "kind": "directory",
+          "scope": "durable",
+          "disposition": "quarantine"
+        },
+        {
+          "path": "db",
+          "kind": "directory",
+          "scope": "durable",
+          "disposition": "quarantine"
+        },
+        {
+          "path": "storage",
+          "kind": "directory",
+          "scope": "durable",
+          "disposition": "quarantine"
+        }
+      ],
+      "sqlite_databases": [
+        {
+          "path": "db/cleanup.sqlite",
+          "application_id": 0,
+          "user_version": 0,
+          "migration_versions": [
+            {
+              "table": "plugin_cleanup_schema_migrations",
+              "versions": [
+                1
+              ]
+            }
+          ],
+          "schema_objects": [
+            {
+              "type": "index",
+              "name": "idx_plugin_cleanup_operations_plugin",
+              "table_name": "plugin_cleanup_operations",
+              "sql": "CREATE INDEX idx_plugin_cleanup_operations_plugin ON plugin_cleanup_operations(plugin_instance_id, id)"
+            },
+            {
+              "type": "table",
+              "name": "plugin_cleanup_operations",
+              "table_name": "plugin_cleanup_operations",
+              "sql": "CREATE TABLE plugin_cleanup_operations ( id INTEGER PRIMARY KEY AUTOINCREMENT, plugin_instance_id TEXT NOT NULL, delete_data INTEGER NOT NULL, phase TEXT NOT NULL, executed_at INTEGER NOT NULL )"
+            },
+            {
+              "type": "table",
+              "name": "plugin_cleanup_schema_migrations",
+              "table_name": "plugin_cleanup_schema_migrations",
+              "sql": "CREATE TABLE plugin_cleanup_schema_migrations ( version INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL )"
+            }
+          ],
+          "schema_sha256": "492e855ac577c347fd5c4a916b4be060d08e9703d9deec197bcb1a75a0de9dcc"
+        },
+        {
+          "path": "db/confirmation_intents.sqlite",
+          "application_id": 0,
+          "user_version": 0,
+          "migration_versions": [
+            {
+              "table": "plugin_confirmation_intent_schema_migrations",
+              "versions": [
+                1
+              ]
+            }
+          ],
+          "schema_objects": [
+            {
+              "type": "index",
+              "name": "idx_plugin_confirmation_intents_expires_at",
+              "table_name": "plugin_confirmation_intents",
+              "sql": "CREATE INDEX idx_plugin_confirmation_intents_expires_at ON plugin_confirmation_intents(expires_at)"
+            },
+            {
+              "type": "index",
+              "name": "idx_plugin_confirmation_intents_plugin_instance",
+              "table_name": "plugin_confirmation_intents",
+              "sql": "CREATE INDEX idx_plugin_confirmation_intents_plugin_instance ON plugin_confirmation_intents(plugin_instance_id, issued_at, confirmation_id)"
+            },
+            {
+              "type": "table",
+              "name": "plugin_confirmation_intent_schema_migrations",
+              "table_name": "plugin_confirmation_intent_schema_migrations",
+              "sql": "CREATE TABLE plugin_confirmation_intent_schema_migrations ( version INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL )"
+            },
+            {
+              "type": "table",
+              "name": "plugin_confirmation_intents",
+              "table_name": "plugin_confirmation_intents",
+              "sql": "CREATE TABLE plugin_confirmation_intents ( confirmation_id TEXT PRIMARY KEY, confirmation_token_id TEXT NOT NULL, plugin_id TEXT NOT NULL, plugin_instance_id TEXT NOT NULL, surface_instance_id TEXT NOT NULL, bridge_channel_id TEXT NOT NULL, method TEXT NOT NULL, request_hash TEXT NOT NULL, plan_hash TEXT NOT NULL, issued_at INTEGER NOT NULL, expires_at INTEGER NOT NULL )"
+            }
+          ],
+          "schema_sha256": "dac56fde008efc7d6a21154c5bfbbd43183a8411e0fad20946e88a7550287781"
+        },
+        {
+          "path": "db/install_stage.sqlite",
+          "application_id": 0,
+          "user_version": 0,
+          "migration_versions": [
+            {
+              "table": "plugin_install_stage_schema_migrations",
+              "versions": [
+                1
+              ]
+            }
+          ],
+          "schema_objects": [
+            {
+              "type": "index",
+              "name": "idx_plugin_install_stages_plugin",
+              "table_name": "plugin_install_stages",
+              "sql": "CREATE INDEX idx_plugin_install_stages_plugin ON plugin_install_stages(plugin_instance_id, created_at)"
+            },
+            {
+              "type": "index",
+              "name": "idx_plugin_install_stages_status_expiry",
+              "table_name": "plugin_install_stages",
+              "sql": "CREATE INDEX idx_plugin_install_stages_status_expiry ON plugin_install_stages(status, expires_at)"
+            },
+            {
+              "type": "table",
+              "name": "plugin_install_stage_schema_migrations",
+              "table_name": "plugin_install_stage_schema_migrations",
+              "sql": "CREATE TABLE plugin_install_stage_schema_migrations ( version INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL )"
+            },
+            {
+              "type": "table",
+              "name": "plugin_install_stages",
+              "table_name": "plugin_install_stages",
+              "sql": "CREATE TABLE plugin_install_stages ( stage_id TEXT PRIMARY KEY, action TEXT NOT NULL, status TEXT NOT NULL, plugin_instance_id TEXT NOT NULL, publisher_id TEXT NOT NULL, plugin_id TEXT NOT NULL, version TEXT NOT NULL, package_hash TEXT NOT NULL, manifest_hash TEXT NOT NULL, entries_hash TEXT NOT NULL, requested_trust TEXT NOT NULL, resolved_trust TEXT NOT NULL, validation_summary_json TEXT NOT NULL, error_code TEXT NOT NULL, error_message TEXT NOT NULL, expires_at INTEGER NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, finished_at INTEGER )"
+            }
+          ],
+          "schema_sha256": "ee0192641f33bba6c7fc5994d73e2a64e77c129406bd3c2ccfc840780c3cef6a"
+        },
+        {
+          "path": "db/observability.sqlite",
+          "application_id": 0,
+          "user_version": 0,
+          "migration_versions": [
+            {
+              "table": "plugin_observability_schema_migrations",
+              "versions": [
+                1
+              ]
+            }
+          ],
+          "schema_objects": [
+            {
+              "type": "index",
+              "name": "idx_plugin_audit_plugin",
+              "table_name": "plugin_audit_events",
+              "sql": "CREATE INDEX idx_plugin_audit_plugin ON plugin_audit_events(plugin_id, type, occurred_at)"
+            },
+            {
+              "type": "index",
+              "name": "idx_plugin_audit_plugin_instance",
+              "table_name": "plugin_audit_events",
+              "sql": "CREATE INDEX idx_plugin_audit_plugin_instance ON plugin_audit_events(plugin_instance_id, type, occurred_at)"
+            },
+            {
+              "type": "index",
+              "name": "idx_plugin_diagnostics_plugin_instance",
+              "table_name": "plugin_diagnostic_events",
+              "sql": "CREATE INDEX idx_plugin_diagnostics_plugin_instance ON plugin_diagnostic_events(plugin_instance_id, type, severity, occurred_at)"
+            },
+            {
+              "type": "index",
+              "name": "idx_plugin_diagnostics_surface",
+              "table_name": "plugin_diagnostic_events",
+              "sql": "CREATE INDEX idx_plugin_diagnostics_surface ON plugin_diagnostic_events(surface_instance_id, severity, occurred_at)"
+            },
+            {
+              "type": "table",
+              "name": "plugin_audit_events",
+              "table_name": "plugin_audit_events",
+              "sql": "CREATE TABLE plugin_audit_events ( seq INTEGER PRIMARY KEY, event_id TEXT NOT NULL, type TEXT NOT NULL, plugin_id TEXT NOT NULL, plugin_instance_id TEXT NOT NULL, surface_id TEXT NOT NULL, surface_instance_id TEXT NOT NULL, request_id TEXT NOT NULL, actor TEXT NOT NULL, occurred_at INTEGER NOT NULL, details_json BLOB NOT NULL )"
+            },
+            {
+              "type": "table",
+              "name": "plugin_diagnostic_events",
+              "table_name": "plugin_diagnostic_events",
+              "sql": "CREATE TABLE plugin_diagnostic_events ( seq INTEGER PRIMARY KEY, event_id TEXT NOT NULL, type TEXT NOT NULL, severity TEXT NOT NULL, message TEXT NOT NULL, plugin_id TEXT NOT NULL, plugin_instance_id TEXT NOT NULL, surface_id TEXT NOT NULL, surface_instance_id TEXT NOT NULL, active_fingerprint TEXT NOT NULL, request_id TEXT NOT NULL, occurred_at INTEGER NOT NULL, details_json BLOB NOT NULL )"
+            },
+            {
+              "type": "table",
+              "name": "plugin_observability_meta",
+              "table_name": "plugin_observability_meta",
+              "sql": "CREATE TABLE plugin_observability_meta ( id INTEGER PRIMARY KEY CHECK(id = 1), audit_seq INTEGER NOT NULL, diagnostic_seq INTEGER NOT NULL )"
+            },
+            {
+              "type": "table",
+              "name": "plugin_observability_schema_migrations",
+              "table_name": "plugin_observability_schema_migrations",
+              "sql": "CREATE TABLE plugin_observability_schema_migrations ( version INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL )"
+            }
+          ],
+          "schema_sha256": "00e4363c85aaab3cb78d9b357e835490f82975233ee44643a3e238d337da4784"
+        },
+        {
+          "path": "db/operations.sqlite",
+          "application_id": 0,
+          "user_version": 0,
+          "migration_versions": [
+            {
+              "table": "plugin_operation_schema_migrations",
+              "versions": [
+                1
+              ]
+            }
+          ],
+          "schema_objects": [
+            {
+              "type": "index",
+              "name": "idx_plugin_operations_plugin_instance",
+              "table_name": "plugin_operations",
+              "sql": "CREATE INDEX idx_plugin_operations_plugin_instance ON plugin_operations(plugin_instance_id, created_at, operation_id)"
+            },
+            {
+              "type": "index",
+              "name": "idx_plugin_operations_status",
+              "table_name": "plugin_operations",
+              "sql": "CREATE INDEX idx_plugin_operations_status ON plugin_operations(status)"
+            },
+            {
+              "type": "table",
+              "name": "plugin_operation_schema_migrations",
+              "table_name": "plugin_operation_schema_migrations",
+              "sql": "CREATE TABLE plugin_operation_schema_migrations ( version INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL )"
+            },
+            {
+              "type": "table",
+              "name": "plugin_operations",
+              "table_name": "plugin_operations",
+              "sql": "CREATE TABLE plugin_operations ( operation_id TEXT PRIMARY KEY, plugin_id TEXT NOT NULL, plugin_instance_id TEXT NOT NULL, method TEXT NOT NULL, effect TEXT NOT NULL, execution TEXT NOT NULL, surface_instance_id TEXT NOT NULL, session_channel_id_hash TEXT NOT NULL, bridge_channel_id TEXT NOT NULL, status TEXT NOT NULL, disable_behavior TEXT NOT NULL, uninstall_behavior TEXT NOT NULL, reason TEXT NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, cancel_requested_at INTEGER, orphaned_at INTEGER )"
+            }
+          ],
+          "schema_sha256": "6b89150e03769f618c994f6906f4b588cfaf95159bfd111bd44cfde37b7ff681"
+        },
+        {
+          "path": "db/permissions.sqlite",
+          "application_id": 0,
+          "user_version": 0,
+          "migration_versions": [
+            {
+              "table": "plugin_permission_schema_migrations",
+              "versions": [
+                1
+              ]
+            }
+          ],
+          "schema_objects": [
+            {
+              "type": "index",
+              "name": "idx_plugin_permission_grants_plugin",
+              "table_name": "plugin_permission_grants",
+              "sql": "CREATE INDEX idx_plugin_permission_grants_plugin ON plugin_permission_grants(plugin_instance_id, permission_id)"
+            },
+            {
+              "type": "index",
+              "name": "idx_plugin_permission_grants_revoked",
+              "table_name": "plugin_permission_grants",
+              "sql": "CREATE INDEX idx_plugin_permission_grants_revoked ON plugin_permission_grants(plugin_instance_id, revoked_at, expires_at)"
+            },
+            {
+              "type": "table",
+              "name": "plugin_permission_grants",
+              "table_name": "plugin_permission_grants",
+              "sql": "CREATE TABLE plugin_permission_grants ( plugin_instance_id TEXT NOT NULL, permission_id TEXT NOT NULL, effect TEXT NOT NULL, granted_by TEXT NOT NULL, granted_at INTEGER NOT NULL, expires_at INTEGER, revoked_at INTEGER, revoked_by TEXT NOT NULL, revoked_reason TEXT NOT NULL, PRIMARY KEY(plugin_instance_id, permission_id) )"
+            },
+            {
+              "type": "table",
+              "name": "plugin_permission_schema_migrations",
+              "table_name": "plugin_permission_schema_migrations",
+              "sql": "CREATE TABLE plugin_permission_schema_migrations ( version INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL )"
+            }
+          ],
+          "schema_sha256": "d0b89affc5139c3ae28f0bd178094ceef0046f25b9b27f9b4e1b231624436f46"
+        },
+        {
+          "path": "db/registry.sqlite",
+          "application_id": 0,
+          "user_version": 5,
+          "migration_versions": [
+            {
+              "table": "plugin_registry_schema_migrations",
+              "versions": [
+                1,
+                2,
+                3,
+                4,
+                5
+              ]
+            }
+          ],
+          "schema_objects": [
+            {
+              "type": "index",
+              "name": "idx_plugin_records_deleted_at",
+              "table_name": "plugin_records",
+              "sql": "CREATE INDEX idx_plugin_records_deleted_at ON plugin_records(deleted_at)"
+            },
+            {
+              "type": "index",
+              "name": "idx_plugin_records_plugin_id",
+              "table_name": "plugin_records",
+              "sql": "CREATE INDEX idx_plugin_records_plugin_id ON plugin_records(plugin_id)"
+            },
+            {
+              "type": "table",
+              "name": "plugin_records",
+              "table_name": "plugin_records",
+              "sql": "CREATE TABLE plugin_records ( plugin_instance_id TEXT PRIMARY KEY, publisher_id TEXT NOT NULL, plugin_id TEXT NOT NULL, version TEXT NOT NULL, active_fingerprint TEXT NOT NULL, package_hash TEXT NOT NULL, manifest_hash TEXT NOT NULL, entries_hash TEXT NOT NULL, trust_state TEXT NOT NULL, trust_assessment_json TEXT NOT NULL DEFAULT '{}', source_policy_snapshot_hash TEXT NOT NULL DEFAULT '', source_policy_snapshot_json TEXT NOT NULL DEFAULT '{}', local_import_provenance_json TEXT NOT NULL DEFAULT '{}', enable_state TEXT NOT NULL, disabled_reason TEXT NOT NULL, retained_data_state TEXT NOT NULL, policy_revision INTEGER NOT NULL, management_revision INTEGER NOT NULL, revoke_epoch INTEGER NOT NULL, manifest_json TEXT NOT NULL, package_entries_json TEXT NOT NULL, version_history_json TEXT NOT NULL, installed_at INTEGER NOT NULL, enabled_at INTEGER, updated_at INTEGER NOT NULL, deleted_at INTEGER, metadata_json TEXT NOT NULL )"
+            },
+            {
+              "type": "table",
+              "name": "plugin_registry_schema_migrations",
+              "table_name": "plugin_registry_schema_migrations",
+              "sql": "CREATE TABLE plugin_registry_schema_migrations ( version INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL )"
+            },
+            {
+              "type": "table",
+              "name": "plugin_source_security_floors",
+              "table_name": "plugin_source_security_floors",
+              "sql": "CREATE TABLE plugin_source_security_floors ( source_id TEXT PRIMARY KEY, policy_epoch TEXT NOT NULL, key_rotation_epoch TEXT NOT NULL, revocation_epoch TEXT NOT NULL, source_policy_snapshot_hash TEXT NOT NULL, revocation_metadata_sha256 TEXT NOT NULL, updated_at INTEGER NOT NULL )"
+            }
+          ],
+          "schema_sha256": "e04fe43561aa4e42626060f74912c0fae5dca60a23f32b95e2c219a37b722a3f"
+        },
+        {
+          "path": "db/retained_data.sqlite",
+          "application_id": 0,
+          "user_version": 0,
+          "migration_versions": [
+            {
+              "table": "plugin_retained_data_schema_migrations",
+              "versions": [
+                2
+              ]
+            }
+          ],
+          "schema_objects": [
+            {
+              "type": "index",
+              "name": "idx_plugin_retained_data_expiry",
+              "table_name": "plugin_retained_data_records",
+              "sql": "CREATE INDEX idx_plugin_retained_data_expiry ON plugin_retained_data_records(state, delete_after)"
+            },
+            {
+              "type": "index",
+              "name": "idx_plugin_retained_data_identity",
+              "table_name": "plugin_retained_data_records",
+              "sql": "CREATE INDEX idx_plugin_retained_data_identity ON plugin_retained_data_records(publisher_id, plugin_id, state)"
+            },
+            {
+              "type": "index",
+              "name": "idx_plugin_retained_data_source",
+              "table_name": "plugin_retained_data_records",
+              "sql": "CREATE INDEX idx_plugin_retained_data_source ON plugin_retained_data_records(source_plugin_instance_id)"
+            },
+            {
+              "type": "table",
+              "name": "plugin_retained_data_records",
+              "table_name": "plugin_retained_data_records",
+              "sql": "CREATE TABLE plugin_retained_data_records ( retained_id TEXT PRIMARY KEY, source_plugin_instance_id TEXT NOT NULL, bound_plugin_instance_id TEXT NOT NULL, publisher_id TEXT NOT NULL, plugin_id TEXT NOT NULL, version TEXT NOT NULL, package_hash TEXT NOT NULL, manifest_hash TEXT NOT NULL, state TEXT NOT NULL, storage_retained INTEGER NOT NULL, settings_retained INTEGER NOT NULL, usage_bytes INTEGER NOT NULL, delete_after INTEGER, delete_error TEXT NOT NULL, metadata_json TEXT NOT NULL, retained_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, bound_at INTEGER, deleted_at INTEGER, last_accessed_at INTEGER )"
+            },
+            {
+              "type": "table",
+              "name": "plugin_retained_data_schema_migrations",
+              "table_name": "plugin_retained_data_schema_migrations",
+              "sql": "CREATE TABLE plugin_retained_data_schema_migrations ( version INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL )"
+            }
+          ],
+          "schema_sha256": "b89b7188f7e7d96827750396b1fbf807b607695d342e87a5d5c5aefb832cb1d6"
+        },
+        {
+          "path": "db/secrets.sqlite",
+          "application_id": 0,
+          "user_version": 0,
+          "migration_versions": [
+            {
+              "table": "plugin_secret_schema_migrations",
+              "versions": [
+                1
+              ]
+            }
+          ],
+          "schema_objects": [
+            {
+              "type": "index",
+              "name": "idx_plugin_secret_bindings_plugin",
+              "table_name": "plugin_secret_bindings",
+              "sql": "CREATE INDEX idx_plugin_secret_bindings_plugin ON plugin_secret_bindings(plugin_instance_id, bound, updated_at)"
+            },
+            {
+              "type": "table",
+              "name": "plugin_secret_bindings",
+              "table_name": "plugin_secret_bindings",
+              "sql": "CREATE TABLE plugin_secret_bindings ( plugin_instance_id TEXT NOT NULL, secret_ref TEXT NOT NULL, scope TEXT NOT NULL, bound INTEGER NOT NULL, last_test_status TEXT NOT NULL, bound_at INTEGER, tested_at INTEGER, deleted_at INTEGER, updated_at INTEGER NOT NULL, PRIMARY KEY(plugin_instance_id, scope, secret_ref) )"
+            },
+            {
+              "type": "table",
+              "name": "plugin_secret_schema_migrations",
+              "table_name": "plugin_secret_schema_migrations",
+              "sql": "CREATE TABLE plugin_secret_schema_migrations ( version INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL )"
+            }
+          ],
+          "schema_sha256": "82a9d6ab404b4d3dc485ef1ea9c95530af4460a48506e47ced81953c4b12dd50"
+        },
+        {
+          "path": "db/security_policy.sqlite",
+          "application_id": 0,
+          "user_version": 0,
+          "migration_versions": [
+            {
+              "table": "plugin_security_policy_schema_migrations",
+              "versions": [
+                1
+              ]
+            }
+          ],
+          "schema_objects": [
+            {
+              "type": "table",
+              "name": "plugin_security_policies",
+              "table_name": "plugin_security_policies",
+              "sql": "CREATE TABLE plugin_security_policies ( plugin_instance_id TEXT PRIMARY KEY, updated_at INTEGER NOT NULL )"
+            },
+            {
+              "type": "table",
+              "name": "plugin_security_policy_allowed_permissions",
+              "table_name": "plugin_security_policy_allowed_permissions",
+              "sql": "CREATE TABLE plugin_security_policy_allowed_permissions ( plugin_instance_id TEXT NOT NULL, permission_id TEXT NOT NULL, updated_at INTEGER NOT NULL, PRIMARY KEY(plugin_instance_id, permission_id), FOREIGN KEY(plugin_instance_id) REFERENCES plugin_security_policies(plugin_instance_id) ON DELETE CASCADE )"
+            },
+            {
+              "type": "table",
+              "name": "plugin_security_policy_denied_methods",
+              "table_name": "plugin_security_policy_denied_methods",
+              "sql": "CREATE TABLE plugin_security_policy_denied_methods ( plugin_instance_id TEXT NOT NULL, method TEXT NOT NULL, updated_at INTEGER NOT NULL, PRIMARY KEY(plugin_instance_id, method), FOREIGN KEY(plugin_instance_id) REFERENCES plugin_security_policies(plugin_instance_id) ON DELETE CASCADE )"
+            },
+            {
+              "type": "table",
+              "name": "plugin_security_policy_schema_migrations",
+              "table_name": "plugin_security_policy_schema_migrations",
+              "sql": "CREATE TABLE plugin_security_policy_schema_migrations ( version INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL )"
+            }
+          ],
+          "schema_sha256": "8718fac16ca2cf37e84edd53f6d1c646f2d42e028af2dcc7aee05bdd9bc22dd6"
+        },
+        {
+          "path": "db/settings.sqlite",
+          "application_id": 0,
+          "user_version": 0,
+          "migration_versions": [
+            {
+              "table": "plugin_settings_schema_migrations",
+              "versions": [
+                1
+              ]
+            }
+          ],
+          "schema_objects": [
+            {
+              "type": "index",
+              "name": "idx_plugin_settings_archives_source",
+              "table_name": "plugin_settings_archives",
+              "sql": "CREATE INDEX idx_plugin_settings_archives_source ON plugin_settings_archives(source_plugin_instance_id, created_at)"
+            },
+            {
+              "type": "index",
+              "name": "idx_plugin_settings_records_state",
+              "table_name": "plugin_settings_records",
+              "sql": "CREATE INDEX idx_plugin_settings_records_state ON plugin_settings_records(state, retained_at)"
+            },
+            {
+              "type": "table",
+              "name": "plugin_settings_archives",
+              "table_name": "plugin_settings_archives",
+              "sql": "CREATE TABLE plugin_settings_archives ( archive_ref TEXT PRIMARY KEY, source_plugin_instance_id TEXT NOT NULL, include_secrets INTEGER NOT NULL, schema_version INTEGER NOT NULL, settings_revision INTEGER NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, payload_json BLOB NOT NULL )"
+            },
+            {
+              "type": "table",
+              "name": "plugin_settings_meta",
+              "table_name": "plugin_settings_meta",
+              "sql": "CREATE TABLE plugin_settings_meta ( id INTEGER PRIMARY KEY CHECK(id = 1), next_export INTEGER NOT NULL )"
+            },
+            {
+              "type": "table",
+              "name": "plugin_settings_records",
+              "table_name": "plugin_settings_records",
+              "sql": "CREATE TABLE plugin_settings_records ( plugin_instance_id TEXT PRIMARY KEY, state TEXT NOT NULL, schema_version INTEGER NOT NULL, settings_revision INTEGER NOT NULL, updated_at INTEGER NOT NULL, retained_at INTEGER, payload_json BLOB NOT NULL )"
+            },
+            {
+              "type": "table",
+              "name": "plugin_settings_schema_migrations",
+              "table_name": "plugin_settings_schema_migrations",
+              "sql": "CREATE TABLE plugin_settings_schema_migrations ( version INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL )"
+            }
+          ],
+          "schema_sha256": "dba0083a1fa88135d6ab50cd0176063688134e684577563022200906a0d5702a"
+        },
+        {
+          "path": "db/streams.sqlite",
+          "application_id": 0,
+          "user_version": 0,
+          "migration_versions": [
+            {
+              "table": "plugin_stream_schema_migrations",
+              "versions": [
+                1
+              ]
+            }
+          ],
+          "schema_objects": [
+            {
+              "type": "index",
+              "name": "idx_plugin_stream_events_stream_sequence",
+              "table_name": "plugin_stream_events",
+              "sql": "CREATE INDEX idx_plugin_stream_events_stream_sequence ON plugin_stream_events(stream_id, sequence)"
+            },
+            {
+              "type": "index",
+              "name": "idx_plugin_streams_plugin_instance",
+              "table_name": "plugin_streams",
+              "sql": "CREATE INDEX idx_plugin_streams_plugin_instance ON plugin_streams(plugin_instance_id, created_at, stream_id)"
+            },
+            {
+              "type": "index",
+              "name": "idx_plugin_streams_status",
+              "table_name": "plugin_streams",
+              "sql": "CREATE INDEX idx_plugin_streams_status ON plugin_streams(status)"
+            },
+            {
+              "type": "table",
+              "name": "plugin_stream_events",
+              "table_name": "plugin_stream_events",
+              "sql": "CREATE TABLE plugin_stream_events ( stream_id TEXT NOT NULL, sequence INTEGER NOT NULL, kind TEXT NOT NULL, data BLOB, error TEXT NOT NULL, at INTEGER NOT NULL, PRIMARY KEY(stream_id, sequence), FOREIGN KEY(stream_id) REFERENCES plugin_streams(stream_id) ON DELETE CASCADE )"
+            },
+            {
+              "type": "table",
+              "name": "plugin_stream_schema_migrations",
+              "table_name": "plugin_stream_schema_migrations",
+              "sql": "CREATE TABLE plugin_stream_schema_migrations ( version INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL )"
+            },
+            {
+              "type": "table",
+              "name": "plugin_streams",
+              "table_name": "plugin_streams",
+              "sql": "CREATE TABLE plugin_streams ( stream_id TEXT PRIMARY KEY, plugin_id TEXT NOT NULL, plugin_instance_id TEXT NOT NULL, method TEXT NOT NULL, effect TEXT NOT NULL, execution TEXT NOT NULL, surface_instance_id TEXT NOT NULL, owner_session_hash TEXT NOT NULL, owner_user_hash TEXT NOT NULL, session_channel_id_hash TEXT NOT NULL, bridge_channel_id TEXT NOT NULL, direction TEXT NOT NULL, status TEXT NOT NULL, content_type TEXT NOT NULL, max_buffered_bytes INTEGER NOT NULL, buffered_bytes INTEGER NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, closed_at INTEGER )"
+            }
+          ],
+          "schema_sha256": "7d2200868c7bd271be8a78cd42aea861bdc2fe46dbc714b08bb4d6251c7510d9"
+        }
+      ],
+      "tree_rules": {
+        "allowed_kinds": [
+          "directory",
+          "file"
+        ],
+        "allow_sqlite_wal_shm": true,
+        "reject_hardlinks": true,
+        "reject_symlinks": true,
+        "variable_trees": [
+          "assets",
+          "storage"
+        ]
+      }
+    },
+    {
+      "id": "redeven-redevplugin-v0.3.x-v0.4.x-layout-v1",
+      "platform_versions": [
+        "0.3.0",
+        "0.3.1",
+        "0.3.2",
+        "0.4.0",
+        "0.4.1",
+        "0.4.2",
+        "0.4.3"
+      ],
+      "root_entries": [
+        {
+          "path": "assets",
+          "kind": "directory",
+          "scope": "durable",
+          "disposition": "quarantine"
+        },
+        {
+          "path": "db",
+          "kind": "directory",
+          "scope": "durable",
+          "disposition": "quarantine"
+        },
+        {
+          "path": "storage",
+          "kind": "directory",
+          "scope": "durable",
+          "disposition": "quarantine"
+        }
+      ],
+      "sqlite_databases": [
+        {
+          "path": "db/cleanup.sqlite",
+          "application_id": 0,
+          "user_version": 0,
+          "migration_versions": [
+            {
+              "table": "plugin_cleanup_schema_migrations",
+              "versions": [
+                1
+              ]
+            }
+          ],
+          "schema_objects": [
+            {
+              "type": "index",
+              "name": "idx_plugin_cleanup_operations_plugin",
+              "table_name": "plugin_cleanup_operations",
+              "sql": "CREATE INDEX idx_plugin_cleanup_operations_plugin ON plugin_cleanup_operations(plugin_instance_id, id)"
+            },
+            {
+              "type": "table",
+              "name": "plugin_cleanup_operations",
+              "table_name": "plugin_cleanup_operations",
+              "sql": "CREATE TABLE plugin_cleanup_operations ( id INTEGER PRIMARY KEY AUTOINCREMENT, plugin_instance_id TEXT NOT NULL, delete_data INTEGER NOT NULL, phase TEXT NOT NULL, executed_at INTEGER NOT NULL )"
+            },
+            {
+              "type": "table",
+              "name": "plugin_cleanup_schema_migrations",
+              "table_name": "plugin_cleanup_schema_migrations",
+              "sql": "CREATE TABLE plugin_cleanup_schema_migrations ( version INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL )"
+            }
+          ],
+          "schema_sha256": "492e855ac577c347fd5c4a916b4be060d08e9703d9deec197bcb1a75a0de9dcc"
+        },
+        {
+          "path": "db/confirmation_intents.sqlite",
+          "application_id": 0,
+          "user_version": 0,
+          "migration_versions": [
+            {
+              "table": "plugin_confirmation_intent_schema_migrations",
+              "versions": [
+                2
+              ]
+            }
+          ],
+          "schema_objects": [
+            {
+              "type": "index",
+              "name": "idx_plugin_confirmation_intents_expires_at",
+              "table_name": "plugin_confirmation_intents",
+              "sql": "CREATE INDEX idx_plugin_confirmation_intents_expires_at ON plugin_confirmation_intents(expires_at)"
+            },
+            {
+              "type": "index",
+              "name": "idx_plugin_confirmation_intents_plugin_instance",
+              "table_name": "plugin_confirmation_intents",
+              "sql": "CREATE INDEX idx_plugin_confirmation_intents_plugin_instance ON plugin_confirmation_intents(plugin_instance_id, issued_at, confirmation_id)"
+            },
+            {
+              "type": "table",
+              "name": "plugin_confirmation_intent_schema_migrations",
+              "table_name": "plugin_confirmation_intent_schema_migrations",
+              "sql": "CREATE TABLE plugin_confirmation_intent_schema_migrations ( version INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL )"
+            },
+            {
+              "type": "table",
+              "name": "plugin_confirmation_intents",
+              "table_name": "plugin_confirmation_intents",
+              "sql": "CREATE TABLE plugin_confirmation_intents ( confirmation_id TEXT PRIMARY KEY, confirmation_token_id TEXT NOT NULL, plugin_id TEXT NOT NULL, plugin_instance_id TEXT NOT NULL, surface_instance_id TEXT NOT NULL, bridge_channel_id TEXT NOT NULL, method TEXT NOT NULL, request_hash TEXT NOT NULL, plan_hash TEXT NOT NULL, scope_json TEXT NOT NULL DEFAULT '{}', issued_at INTEGER NOT NULL, expires_at INTEGER NOT NULL )"
+            }
+          ],
+          "schema_sha256": "dcf763fdc6333835180e6f38565d3d07b8b769100cdcfbec265d1a3d474ab479"
+        },
+        {
+          "path": "db/install_stage.sqlite",
+          "application_id": 0,
+          "user_version": 0,
+          "migration_versions": [
+            {
+              "table": "plugin_install_stage_schema_migrations",
+              "versions": [
+                1
+              ]
+            }
+          ],
+          "schema_objects": [
+            {
+              "type": "index",
+              "name": "idx_plugin_install_stages_plugin",
+              "table_name": "plugin_install_stages",
+              "sql": "CREATE INDEX idx_plugin_install_stages_plugin ON plugin_install_stages(plugin_instance_id, created_at)"
+            },
+            {
+              "type": "index",
+              "name": "idx_plugin_install_stages_status_expiry",
+              "table_name": "plugin_install_stages",
+              "sql": "CREATE INDEX idx_plugin_install_stages_status_expiry ON plugin_install_stages(status, expires_at)"
+            },
+            {
+              "type": "table",
+              "name": "plugin_install_stage_schema_migrations",
+              "table_name": "plugin_install_stage_schema_migrations",
+              "sql": "CREATE TABLE plugin_install_stage_schema_migrations ( version INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL )"
+            },
+            {
+              "type": "table",
+              "name": "plugin_install_stages",
+              "table_name": "plugin_install_stages",
+              "sql": "CREATE TABLE plugin_install_stages ( stage_id TEXT PRIMARY KEY, action TEXT NOT NULL, status TEXT NOT NULL, plugin_instance_id TEXT NOT NULL, publisher_id TEXT NOT NULL, plugin_id TEXT NOT NULL, version TEXT NOT NULL, package_hash TEXT NOT NULL, manifest_hash TEXT NOT NULL, entries_hash TEXT NOT NULL, requested_trust TEXT NOT NULL, resolved_trust TEXT NOT NULL, validation_summary_json TEXT NOT NULL, error_code TEXT NOT NULL, error_message TEXT NOT NULL, expires_at INTEGER NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, finished_at INTEGER )"
+            }
+          ],
+          "schema_sha256": "ee0192641f33bba6c7fc5994d73e2a64e77c129406bd3c2ccfc840780c3cef6a"
+        },
+        {
+          "path": "db/observability.sqlite",
+          "application_id": 0,
+          "user_version": 0,
+          "migration_versions": [
+            {
+              "table": "plugin_observability_schema_migrations",
+              "versions": [
+                1
+              ]
+            }
+          ],
+          "schema_objects": [
+            {
+              "type": "index",
+              "name": "idx_plugin_audit_plugin",
+              "table_name": "plugin_audit_events",
+              "sql": "CREATE INDEX idx_plugin_audit_plugin ON plugin_audit_events(plugin_id, type, occurred_at)"
+            },
+            {
+              "type": "index",
+              "name": "idx_plugin_audit_plugin_instance",
+              "table_name": "plugin_audit_events",
+              "sql": "CREATE INDEX idx_plugin_audit_plugin_instance ON plugin_audit_events(plugin_instance_id, type, occurred_at)"
+            },
+            {
+              "type": "index",
+              "name": "idx_plugin_diagnostics_plugin_instance",
+              "table_name": "plugin_diagnostic_events",
+              "sql": "CREATE INDEX idx_plugin_diagnostics_plugin_instance ON plugin_diagnostic_events(plugin_instance_id, type, severity, occurred_at)"
+            },
+            {
+              "type": "index",
+              "name": "idx_plugin_diagnostics_surface",
+              "table_name": "plugin_diagnostic_events",
+              "sql": "CREATE INDEX idx_plugin_diagnostics_surface ON plugin_diagnostic_events(surface_instance_id, severity, occurred_at)"
+            },
+            {
+              "type": "table",
+              "name": "plugin_audit_events",
+              "table_name": "plugin_audit_events",
+              "sql": "CREATE TABLE plugin_audit_events ( seq INTEGER PRIMARY KEY, event_id TEXT NOT NULL, type TEXT NOT NULL, plugin_id TEXT NOT NULL, plugin_instance_id TEXT NOT NULL, surface_id TEXT NOT NULL, surface_instance_id TEXT NOT NULL, request_id TEXT NOT NULL, actor TEXT NOT NULL, occurred_at INTEGER NOT NULL, details_json BLOB NOT NULL )"
+            },
+            {
+              "type": "table",
+              "name": "plugin_diagnostic_events",
+              "table_name": "plugin_diagnostic_events",
+              "sql": "CREATE TABLE plugin_diagnostic_events ( seq INTEGER PRIMARY KEY, event_id TEXT NOT NULL, type TEXT NOT NULL, severity TEXT NOT NULL, message TEXT NOT NULL, plugin_id TEXT NOT NULL, plugin_instance_id TEXT NOT NULL, surface_id TEXT NOT NULL, surface_instance_id TEXT NOT NULL, active_fingerprint TEXT NOT NULL, request_id TEXT NOT NULL, occurred_at INTEGER NOT NULL, details_json BLOB NOT NULL )"
+            },
+            {
+              "type": "table",
+              "name": "plugin_observability_meta",
+              "table_name": "plugin_observability_meta",
+              "sql": "CREATE TABLE plugin_observability_meta ( id INTEGER PRIMARY KEY CHECK(id = 1), audit_seq INTEGER NOT NULL, diagnostic_seq INTEGER NOT NULL )"
+            },
+            {
+              "type": "table",
+              "name": "plugin_observability_schema_migrations",
+              "table_name": "plugin_observability_schema_migrations",
+              "sql": "CREATE TABLE plugin_observability_schema_migrations ( version INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL )"
+            }
+          ],
+          "schema_sha256": "00e4363c85aaab3cb78d9b357e835490f82975233ee44643a3e238d337da4784"
+        },
+        {
+          "path": "db/operations.sqlite",
+          "application_id": 0,
+          "user_version": 0,
+          "migration_versions": [
+            {
+              "table": "plugin_operation_schema_migrations",
+              "versions": [
+                2,
+                3
+              ]
+            }
+          ],
+          "schema_objects": [
+            {
+              "type": "index",
+              "name": "idx_plugin_operations_plugin_instance",
+              "table_name": "plugin_operations",
+              "sql": "CREATE INDEX idx_plugin_operations_plugin_instance ON plugin_operations(plugin_instance_id, created_at, operation_id)"
+            },
+            {
+              "type": "index",
+              "name": "idx_plugin_operations_status",
+              "table_name": "plugin_operations",
+              "sql": "CREATE INDEX idx_plugin_operations_status ON plugin_operations(status)"
+            },
+            {
+              "type": "table",
+              "name": "plugin_operation_schema_migrations",
+              "table_name": "plugin_operation_schema_migrations",
+              "sql": "CREATE TABLE plugin_operation_schema_migrations ( version INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL )"
+            },
+            {
+              "type": "table",
+              "name": "plugin_operations",
+              "table_name": "plugin_operations",
+              "sql": "CREATE TABLE plugin_operations ( operation_id TEXT PRIMARY KEY, plugin_id TEXT NOT NULL, plugin_instance_id TEXT NOT NULL, method TEXT NOT NULL, effect TEXT NOT NULL, execution TEXT NOT NULL, surface_instance_id TEXT NOT NULL, session_channel_id_hash TEXT NOT NULL, bridge_channel_id TEXT NOT NULL, execution_binding_json TEXT NOT NULL DEFAULT '{}', status TEXT NOT NULL, cancelable INTEGER NOT NULL DEFAULT 1, cancel_ack_timeout_ms INTEGER NOT NULL DEFAULT 0, disable_behavior TEXT NOT NULL, uninstall_behavior TEXT NOT NULL, reason TEXT NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, cancel_requested_at INTEGER, orphaned_at INTEGER )"
+            }
+          ],
+          "schema_sha256": "7d5d2e372f7a8ded7678f87bbc115d4c2b69d07de7b8b6eb929bad94b516ac1c"
+        },
+        {
+          "path": "db/permissions.sqlite",
+          "application_id": 0,
+          "user_version": 0,
+          "migration_versions": [
+            {
+              "table": "plugin_permission_schema_migrations",
+              "versions": [
+                1
+              ]
+            }
+          ],
+          "schema_objects": [
+            {
+              "type": "index",
+              "name": "idx_plugin_permission_grants_plugin",
+              "table_name": "plugin_permission_grants",
+              "sql": "CREATE INDEX idx_plugin_permission_grants_plugin ON plugin_permission_grants(plugin_instance_id, permission_id)"
+            },
+            {
+              "type": "index",
+              "name": "idx_plugin_permission_grants_revoked",
+              "table_name": "plugin_permission_grants",
+              "sql": "CREATE INDEX idx_plugin_permission_grants_revoked ON plugin_permission_grants(plugin_instance_id, revoked_at, expires_at)"
+            },
+            {
+              "type": "table",
+              "name": "plugin_permission_grants",
+              "table_name": "plugin_permission_grants",
+              "sql": "CREATE TABLE plugin_permission_grants ( plugin_instance_id TEXT NOT NULL, permission_id TEXT NOT NULL, effect TEXT NOT NULL, granted_by TEXT NOT NULL, granted_at INTEGER NOT NULL, expires_at INTEGER, revoked_at INTEGER, revoked_by TEXT NOT NULL, revoked_reason TEXT NOT NULL, PRIMARY KEY(plugin_instance_id, permission_id) )"
+            },
+            {
+              "type": "table",
+              "name": "plugin_permission_schema_migrations",
+              "table_name": "plugin_permission_schema_migrations",
+              "sql": "CREATE TABLE plugin_permission_schema_migrations ( version INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL )"
+            }
+          ],
+          "schema_sha256": "d0b89affc5139c3ae28f0bd178094ceef0046f25b9b27f9b4e1b231624436f46"
+        },
+        {
+          "path": "db/registry.sqlite",
+          "application_id": 0,
+          "user_version": 6,
+          "migration_versions": [
+            {
+              "table": "plugin_registry_schema_migrations",
+              "versions": [
+                1,
+                2,
+                3,
+                4,
+                5,
+                6
+              ]
+            }
+          ],
+          "schema_objects": [
+            {
+              "type": "index",
+              "name": "idx_plugin_records_deleted_at",
+              "table_name": "plugin_records",
+              "sql": "CREATE INDEX idx_plugin_records_deleted_at ON plugin_records(deleted_at)"
+            },
+            {
+              "type": "index",
+              "name": "idx_plugin_records_plugin_id",
+              "table_name": "plugin_records",
+              "sql": "CREATE INDEX idx_plugin_records_plugin_id ON plugin_records(plugin_id)"
+            },
+            {
+              "type": "table",
+              "name": "plugin_records",
+              "table_name": "plugin_records",
+              "sql": "CREATE TABLE plugin_records ( plugin_instance_id TEXT PRIMARY KEY, publisher_id TEXT NOT NULL, plugin_id TEXT NOT NULL, version TEXT NOT NULL, active_fingerprint TEXT NOT NULL, package_hash TEXT NOT NULL, manifest_hash TEXT NOT NULL, entries_hash TEXT NOT NULL, trust_state TEXT NOT NULL, trust_assessment_json TEXT NOT NULL DEFAULT '{}', source_policy_snapshot_hash TEXT NOT NULL DEFAULT '', source_policy_snapshot_json TEXT NOT NULL DEFAULT '{}', local_import_provenance_json TEXT NOT NULL DEFAULT '{}', capability_contracts_json TEXT NOT NULL DEFAULT '[]', enable_state TEXT NOT NULL, disabled_reason TEXT NOT NULL, retained_data_state TEXT NOT NULL, policy_revision INTEGER NOT NULL, management_revision INTEGER NOT NULL, revoke_epoch INTEGER NOT NULL, manifest_json TEXT NOT NULL, package_entries_json TEXT NOT NULL, version_history_json TEXT NOT NULL, installed_at INTEGER NOT NULL, enabled_at INTEGER, updated_at INTEGER NOT NULL, deleted_at INTEGER, metadata_json TEXT NOT NULL )"
+            },
+            {
+              "type": "table",
+              "name": "plugin_registry_schema_migrations",
+              "table_name": "plugin_registry_schema_migrations",
+              "sql": "CREATE TABLE plugin_registry_schema_migrations ( version INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL )"
+            },
+            {
+              "type": "table",
+              "name": "plugin_source_security_floors",
+              "table_name": "plugin_source_security_floors",
+              "sql": "CREATE TABLE plugin_source_security_floors ( source_id TEXT PRIMARY KEY, policy_epoch TEXT NOT NULL, key_rotation_epoch TEXT NOT NULL, revocation_epoch TEXT NOT NULL, source_policy_snapshot_hash TEXT NOT NULL, revocation_metadata_sha256 TEXT NOT NULL, updated_at INTEGER NOT NULL )"
+            }
+          ],
+          "schema_sha256": "84f9a634f65a3efa7c3bc42b2625e77a26d854153f6d9ae6031f7b172a430b1e"
+        },
+        {
+          "path": "db/retained_data.sqlite",
+          "application_id": 0,
+          "user_version": 0,
+          "migration_versions": [
+            {
+              "table": "plugin_retained_data_schema_migrations",
+              "versions": [
+                2
+              ]
+            }
+          ],
+          "schema_objects": [
+            {
+              "type": "index",
+              "name": "idx_plugin_retained_data_expiry",
+              "table_name": "plugin_retained_data_records",
+              "sql": "CREATE INDEX idx_plugin_retained_data_expiry ON plugin_retained_data_records(state, delete_after)"
+            },
+            {
+              "type": "index",
+              "name": "idx_plugin_retained_data_identity",
+              "table_name": "plugin_retained_data_records",
+              "sql": "CREATE INDEX idx_plugin_retained_data_identity ON plugin_retained_data_records(publisher_id, plugin_id, state)"
+            },
+            {
+              "type": "index",
+              "name": "idx_plugin_retained_data_source",
+              "table_name": "plugin_retained_data_records",
+              "sql": "CREATE INDEX idx_plugin_retained_data_source ON plugin_retained_data_records(source_plugin_instance_id)"
+            },
+            {
+              "type": "table",
+              "name": "plugin_retained_data_records",
+              "table_name": "plugin_retained_data_records",
+              "sql": "CREATE TABLE plugin_retained_data_records ( retained_id TEXT PRIMARY KEY, source_plugin_instance_id TEXT NOT NULL, bound_plugin_instance_id TEXT NOT NULL, publisher_id TEXT NOT NULL, plugin_id TEXT NOT NULL, version TEXT NOT NULL, package_hash TEXT NOT NULL, manifest_hash TEXT NOT NULL, state TEXT NOT NULL, storage_retained INTEGER NOT NULL, settings_retained INTEGER NOT NULL, usage_bytes INTEGER NOT NULL, delete_after INTEGER, delete_error TEXT NOT NULL, metadata_json TEXT NOT NULL, retained_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, bound_at INTEGER, deleted_at INTEGER, last_accessed_at INTEGER )"
+            },
+            {
+              "type": "table",
+              "name": "plugin_retained_data_schema_migrations",
+              "table_name": "plugin_retained_data_schema_migrations",
+              "sql": "CREATE TABLE plugin_retained_data_schema_migrations ( version INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL )"
+            }
+          ],
+          "schema_sha256": "b89b7188f7e7d96827750396b1fbf807b607695d342e87a5d5c5aefb832cb1d6"
+        },
+        {
+          "path": "db/secrets.sqlite",
+          "application_id": 0,
+          "user_version": 0,
+          "migration_versions": [
+            {
+              "table": "plugin_secret_schema_migrations",
+              "versions": [
+                1
+              ]
+            }
+          ],
+          "schema_objects": [
+            {
+              "type": "index",
+              "name": "idx_plugin_secret_bindings_plugin",
+              "table_name": "plugin_secret_bindings",
+              "sql": "CREATE INDEX idx_plugin_secret_bindings_plugin ON plugin_secret_bindings(plugin_instance_id, bound, updated_at)"
+            },
+            {
+              "type": "table",
+              "name": "plugin_secret_bindings",
+              "table_name": "plugin_secret_bindings",
+              "sql": "CREATE TABLE plugin_secret_bindings ( plugin_instance_id TEXT NOT NULL, secret_ref TEXT NOT NULL, scope TEXT NOT NULL, bound INTEGER NOT NULL, last_test_status TEXT NOT NULL, bound_at INTEGER, tested_at INTEGER, deleted_at INTEGER, updated_at INTEGER NOT NULL, PRIMARY KEY(plugin_instance_id, scope, secret_ref) )"
+            },
+            {
+              "type": "table",
+              "name": "plugin_secret_schema_migrations",
+              "table_name": "plugin_secret_schema_migrations",
+              "sql": "CREATE TABLE plugin_secret_schema_migrations ( version INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL )"
+            }
+          ],
+          "schema_sha256": "82a9d6ab404b4d3dc485ef1ea9c95530af4460a48506e47ced81953c4b12dd50"
+        },
+        {
+          "path": "db/security_policy.sqlite",
+          "application_id": 0,
+          "user_version": 0,
+          "migration_versions": [
+            {
+              "table": "plugin_security_policy_schema_migrations",
+              "versions": [
+                1
+              ]
+            }
+          ],
+          "schema_objects": [
+            {
+              "type": "table",
+              "name": "plugin_security_policies",
+              "table_name": "plugin_security_policies",
+              "sql": "CREATE TABLE plugin_security_policies ( plugin_instance_id TEXT PRIMARY KEY, updated_at INTEGER NOT NULL )"
+            },
+            {
+              "type": "table",
+              "name": "plugin_security_policy_allowed_permissions",
+              "table_name": "plugin_security_policy_allowed_permissions",
+              "sql": "CREATE TABLE plugin_security_policy_allowed_permissions ( plugin_instance_id TEXT NOT NULL, permission_id TEXT NOT NULL, updated_at INTEGER NOT NULL, PRIMARY KEY(plugin_instance_id, permission_id), FOREIGN KEY(plugin_instance_id) REFERENCES plugin_security_policies(plugin_instance_id) ON DELETE CASCADE )"
+            },
+            {
+              "type": "table",
+              "name": "plugin_security_policy_denied_methods",
+              "table_name": "plugin_security_policy_denied_methods",
+              "sql": "CREATE TABLE plugin_security_policy_denied_methods ( plugin_instance_id TEXT NOT NULL, method TEXT NOT NULL, updated_at INTEGER NOT NULL, PRIMARY KEY(plugin_instance_id, method), FOREIGN KEY(plugin_instance_id) REFERENCES plugin_security_policies(plugin_instance_id) ON DELETE CASCADE )"
+            },
+            {
+              "type": "table",
+              "name": "plugin_security_policy_schema_migrations",
+              "table_name": "plugin_security_policy_schema_migrations",
+              "sql": "CREATE TABLE plugin_security_policy_schema_migrations ( version INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL )"
+            }
+          ],
+          "schema_sha256": "8718fac16ca2cf37e84edd53f6d1c646f2d42e028af2dcc7aee05bdd9bc22dd6"
+        },
+        {
+          "path": "db/settings.sqlite",
+          "application_id": 0,
+          "user_version": 0,
+          "migration_versions": [
+            {
+              "table": "plugin_settings_schema_migrations",
+              "versions": [
+                1
+              ]
+            }
+          ],
+          "schema_objects": [
+            {
+              "type": "index",
+              "name": "idx_plugin_settings_archives_source",
+              "table_name": "plugin_settings_archives",
+              "sql": "CREATE INDEX idx_plugin_settings_archives_source ON plugin_settings_archives(source_plugin_instance_id, created_at)"
+            },
+            {
+              "type": "index",
+              "name": "idx_plugin_settings_records_state",
+              "table_name": "plugin_settings_records",
+              "sql": "CREATE INDEX idx_plugin_settings_records_state ON plugin_settings_records(state, retained_at)"
+            },
+            {
+              "type": "table",
+              "name": "plugin_settings_archives",
+              "table_name": "plugin_settings_archives",
+              "sql": "CREATE TABLE plugin_settings_archives ( archive_ref TEXT PRIMARY KEY, source_plugin_instance_id TEXT NOT NULL, include_secrets INTEGER NOT NULL, schema_version INTEGER NOT NULL, settings_revision INTEGER NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, payload_json BLOB NOT NULL )"
+            },
+            {
+              "type": "table",
+              "name": "plugin_settings_meta",
+              "table_name": "plugin_settings_meta",
+              "sql": "CREATE TABLE plugin_settings_meta ( id INTEGER PRIMARY KEY CHECK(id = 1), next_export INTEGER NOT NULL )"
+            },
+            {
+              "type": "table",
+              "name": "plugin_settings_records",
+              "table_name": "plugin_settings_records",
+              "sql": "CREATE TABLE plugin_settings_records ( plugin_instance_id TEXT PRIMARY KEY, state TEXT NOT NULL, schema_version INTEGER NOT NULL, settings_revision INTEGER NOT NULL, updated_at INTEGER NOT NULL, retained_at INTEGER, payload_json BLOB NOT NULL )"
+            },
+            {
+              "type": "table",
+              "name": "plugin_settings_schema_migrations",
+              "table_name": "plugin_settings_schema_migrations",
+              "sql": "CREATE TABLE plugin_settings_schema_migrations ( version INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL )"
+            }
+          ],
+          "schema_sha256": "dba0083a1fa88135d6ab50cd0176063688134e684577563022200906a0d5702a"
+        },
+        {
+          "path": "db/streams.sqlite",
+          "application_id": 0,
+          "user_version": 0,
+          "migration_versions": [
+            {
+              "table": "plugin_stream_schema_migrations",
+              "versions": [
+                2,
+                3
+              ]
+            }
+          ],
+          "schema_objects": [
+            {
+              "type": "index",
+              "name": "idx_plugin_stream_events_stream_sequence",
+              "table_name": "plugin_stream_events",
+              "sql": "CREATE INDEX idx_plugin_stream_events_stream_sequence ON plugin_stream_events(stream_id, sequence)"
+            },
+            {
+              "type": "index",
+              "name": "idx_plugin_streams_plugin_instance",
+              "table_name": "plugin_streams",
+              "sql": "CREATE INDEX idx_plugin_streams_plugin_instance ON plugin_streams(plugin_instance_id, created_at, stream_id)"
+            },
+            {
+              "type": "index",
+              "name": "idx_plugin_streams_status",
+              "table_name": "plugin_streams",
+              "sql": "CREATE INDEX idx_plugin_streams_status ON plugin_streams(status)"
+            },
+            {
+              "type": "table",
+              "name": "plugin_stream_events",
+              "table_name": "plugin_stream_events",
+              "sql": "CREATE TABLE plugin_stream_events ( stream_id TEXT NOT NULL, sequence INTEGER NOT NULL, kind TEXT NOT NULL, data BLOB, error TEXT NOT NULL, at INTEGER NOT NULL, PRIMARY KEY(stream_id, sequence), FOREIGN KEY(stream_id) REFERENCES plugin_streams(stream_id) ON DELETE CASCADE )"
+            },
+            {
+              "type": "table",
+              "name": "plugin_stream_schema_migrations",
+              "table_name": "plugin_stream_schema_migrations",
+              "sql": "CREATE TABLE plugin_stream_schema_migrations ( version INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL )"
+            },
+            {
+              "type": "table",
+              "name": "plugin_streams",
+              "table_name": "plugin_streams",
+              "sql": "CREATE TABLE plugin_streams ( stream_id TEXT PRIMARY KEY, plugin_id TEXT NOT NULL, plugin_instance_id TEXT NOT NULL, method TEXT NOT NULL, effect TEXT NOT NULL, execution TEXT NOT NULL, surface_instance_id TEXT NOT NULL, owner_session_hash TEXT NOT NULL, owner_user_hash TEXT NOT NULL, session_channel_id_hash TEXT NOT NULL, bridge_channel_id TEXT NOT NULL, execution_binding_json TEXT NOT NULL DEFAULT '{}', direction TEXT NOT NULL, status TEXT NOT NULL, reason TEXT NOT NULL DEFAULT '', content_type TEXT NOT NULL, max_buffered_bytes INTEGER NOT NULL, buffered_bytes INTEGER NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, closed_at INTEGER )"
+            }
+          ],
+          "schema_sha256": "955856942aa0c74f96a1f1e02f7b406f71007d4eff40e7d6836d45ba85459690"
+        }
+      ],
+      "tree_rules": {
+        "allowed_kinds": [
+          "directory",
+          "file"
+        ],
+        "allow_sqlite_wal_shm": true,
+        "reject_hardlinks": true,
+        "reject_symlinks": true,
+        "variable_trees": [
+          "assets",
+          "storage"
+        ]
+      }
+    },
+    {
+      "id": "redeven-redevplugin-v0.5.x-layout-v1",
+      "platform_versions": [
+        "0.5.0",
+        "0.5.1"
+      ],
+      "root_entries": [
+        {
+          "path": "assets",
+          "kind": "directory",
+          "scope": "durable",
+          "disposition": "quarantine"
+        },
+        {
+          "path": "db",
+          "kind": "directory",
+          "scope": "durable",
+          "disposition": "quarantine"
+        },
+        {
+          "path": "storage",
+          "kind": "directory",
+          "scope": "durable",
+          "disposition": "quarantine"
+        }
+      ],
+      "sqlite_databases": [
+        {
+          "path": "db/confirmation_intents.sqlite",
+          "application_id": 0,
+          "user_version": 0,
+          "migration_versions": [],
+          "schema_objects": [
+            {
+              "type": "index",
+              "name": "idx_plugin_confirmation_intents_expires_at",
+              "table_name": "plugin_confirmation_intents",
+              "sql": "CREATE INDEX idx_plugin_confirmation_intents_expires_at ON plugin_confirmation_intents(expires_at)"
+            },
+            {
+              "type": "index",
+              "name": "idx_plugin_confirmation_intents_plugin_instance",
+              "table_name": "plugin_confirmation_intents",
+              "sql": "CREATE INDEX idx_plugin_confirmation_intents_plugin_instance ON plugin_confirmation_intents(plugin_instance_id, issued_at, confirmation_id)"
+            },
+            {
+              "type": "table",
+              "name": "plugin_confirmation_intents",
+              "table_name": "plugin_confirmation_intents",
+              "sql": "CREATE TABLE plugin_confirmation_intents ( confirmation_id TEXT PRIMARY KEY, confirmation_token_id TEXT NOT NULL, plugin_id TEXT NOT NULL, plugin_instance_id TEXT NOT NULL, surface_instance_id TEXT NOT NULL, bridge_channel_id TEXT NOT NULL, method TEXT NOT NULL, request_hash TEXT NOT NULL, plan_hash TEXT NOT NULL, scope_json TEXT NOT NULL DEFAULT '{}', issued_at INTEGER NOT NULL, expires_at INTEGER NOT NULL )"
+            }
+          ],
+          "schema_sha256": "7eb520796c80550cceab8b71f8394f831122baaa1ac7a098420be86a4ad53cc9"
+        },
+        {
+          "path": "db/install_stage.sqlite",
+          "application_id": 0,
+          "user_version": 0,
+          "migration_versions": [],
+          "schema_objects": [
+            {
+              "type": "index",
+              "name": "idx_plugin_install_stages_plugin",
+              "table_name": "plugin_install_stages",
+              "sql": "CREATE INDEX idx_plugin_install_stages_plugin ON plugin_install_stages(owner_env_hash, plugin_instance_id, created_at)"
+            },
+            {
+              "type": "index",
+              "name": "idx_plugin_install_stages_status_expiry",
+              "table_name": "plugin_install_stages",
+              "sql": "CREATE INDEX idx_plugin_install_stages_status_expiry ON plugin_install_stages(owner_env_hash, status, expires_at)"
+            },
+            {
+              "type": "table",
+              "name": "plugin_install_stages",
+              "table_name": "plugin_install_stages",
+              "sql": "CREATE TABLE plugin_install_stages ( owner_env_hash TEXT NOT NULL, stage_id TEXT NOT NULL, action TEXT NOT NULL, status TEXT NOT NULL, plugin_instance_id TEXT NOT NULL, publisher_id TEXT NOT NULL, plugin_id TEXT NOT NULL, version TEXT NOT NULL, package_hash TEXT NOT NULL, manifest_hash TEXT NOT NULL, entries_hash TEXT NOT NULL, requested_trust TEXT NOT NULL, resolved_trust TEXT NOT NULL, validation_summary_json TEXT NOT NULL, error_code TEXT NOT NULL, error_message TEXT NOT NULL, expires_at INTEGER NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, finished_at INTEGER, PRIMARY KEY(owner_env_hash, stage_id) )"
+            }
+          ],
+          "schema_sha256": "aa45772cf36b9005142d210fb2e1a2b2b23a9012ed25cd587ad8d89235f2134b"
+        },
+        {
+          "path": "db/observability.sqlite",
+          "application_id": 0,
+          "user_version": 0,
+          "migration_versions": [],
+          "schema_objects": [
+            {
+              "type": "index",
+              "name": "idx_plugin_audit_event_id",
+              "table_name": "plugin_audit_events",
+              "sql": "CREATE UNIQUE INDEX idx_plugin_audit_event_id ON plugin_audit_events(event_id)"
+            },
+            {
+              "type": "index",
+              "name": "idx_plugin_diagnostics_owner",
+              "table_name": "plugin_diagnostic_events",
+              "sql": "CREATE INDEX idx_plugin_diagnostics_owner ON plugin_diagnostic_events(owner_session_hash, owner_user_hash, owner_env_hash, session_channel_id_hash, occurred_at)"
+            },
+            {
+              "type": "index",
+              "name": "idx_plugin_diagnostics_plugin_instance",
+              "table_name": "plugin_diagnostic_events",
+              "sql": "CREATE INDEX idx_plugin_diagnostics_plugin_instance ON plugin_diagnostic_events(plugin_instance_id, type, severity, occurred_at)"
+            },
+            {
+              "type": "index",
+              "name": "idx_plugin_diagnostics_surface",
+              "table_name": "plugin_diagnostic_events",
+              "sql": "CREATE INDEX idx_plugin_diagnostics_surface ON plugin_diagnostic_events(surface_instance_id, severity, occurred_at)"
+            },
+            {
+              "type": "index",
+              "name": "idx_plugin_security_audit_journal_exported",
+              "table_name": "plugin_security_audit_journal",
+              "sql": "CREATE INDEX idx_plugin_security_audit_journal_exported ON plugin_security_audit_journal(seq) WHERE exported_at IS NOT NULL"
+            },
+            {
+              "type": "index",
+              "name": "idx_plugin_security_audit_journal_state",
+              "table_name": "plugin_security_audit_journal",
+              "sql": "CREATE INDEX idx_plugin_security_audit_journal_state ON plugin_security_audit_journal(state, exported_at, seq)"
+            },
+            {
+              "type": "table",
+              "name": "plugin_audit_events",
+              "table_name": "plugin_audit_events",
+              "sql": "CREATE TABLE plugin_audit_events ( seq INTEGER PRIMARY KEY, event_id TEXT NOT NULL, type TEXT NOT NULL, plugin_id TEXT NOT NULL, plugin_instance_id TEXT NOT NULL, surface_id TEXT NOT NULL, surface_instance_id TEXT NOT NULL, request_id TEXT NOT NULL, actor TEXT NOT NULL, occurred_at INTEGER NOT NULL, details_json BLOB NOT NULL )"
+            },
+            {
+              "type": "table",
+              "name": "plugin_diagnostic_events",
+              "table_name": "plugin_diagnostic_events",
+              "sql": "CREATE TABLE plugin_diagnostic_events ( seq INTEGER PRIMARY KEY, event_id TEXT NOT NULL, type TEXT NOT NULL, severity TEXT NOT NULL, message TEXT NOT NULL, plugin_id TEXT NOT NULL, plugin_instance_id TEXT NOT NULL, surface_id TEXT NOT NULL, surface_instance_id TEXT NOT NULL, active_fingerprint TEXT NOT NULL, request_id TEXT NOT NULL, correlation_id TEXT NOT NULL DEFAULT '', mutation_outcome TEXT NOT NULL DEFAULT '' CHECK(mutation_outcome IN ('', 'committed', 'not_committed', 'unknown')), owner_session_hash TEXT NOT NULL, owner_user_hash TEXT NOT NULL, owner_env_hash TEXT NOT NULL, session_channel_id_hash TEXT NOT NULL, occurred_at INTEGER NOT NULL, details_json BLOB NOT NULL, failure_code TEXT NOT NULL DEFAULT '', failure_component TEXT NOT NULL DEFAULT '', failure_operation TEXT NOT NULL DEFAULT '' )"
+            },
+            {
+              "type": "table",
+              "name": "plugin_observability_meta",
+              "table_name": "plugin_observability_meta",
+              "sql": "CREATE TABLE plugin_observability_meta ( id INTEGER PRIMARY KEY CHECK(id = 1), audit_seq INTEGER NOT NULL, diagnostic_seq INTEGER NOT NULL )"
+            },
+            {
+              "type": "table",
+              "name": "plugin_security_audit_journal",
+              "table_name": "plugin_security_audit_journal",
+              "sql": "CREATE TABLE plugin_security_audit_journal ( seq INTEGER PRIMARY KEY, event_id TEXT NOT NULL UNIQUE, type TEXT NOT NULL, plugin_id TEXT NOT NULL, plugin_instance_id TEXT NOT NULL, surface_id TEXT NOT NULL, surface_instance_id TEXT NOT NULL, request_id TEXT NOT NULL, actor TEXT NOT NULL, occurred_at INTEGER NOT NULL, details_json BLOB NOT NULL, state TEXT NOT NULL CHECK(state IN ('pending', 'completed')), mutation_outcome TEXT NOT NULL, completion_details_json BLOB NOT NULL, created_at INTEGER NOT NULL, completed_at INTEGER, exported_at INTEGER )"
+            },
+            {
+              "type": "table",
+              "name": "plugin_security_audit_meta",
+              "table_name": "plugin_security_audit_meta",
+              "sql": "CREATE TABLE plugin_security_audit_meta ( id INTEGER PRIMARY KEY CHECK(id = 1), seq INTEGER NOT NULL )"
+            }
+          ],
+          "schema_sha256": "230d789557736cc47b4c0d760d46a4c58ce7575f57e4779e010db5539865c666"
+        },
+        {
+          "path": "db/operations.sqlite",
+          "application_id": 0,
+          "user_version": 0,
+          "migration_versions": [],
+          "schema_objects": [
+            {
+              "type": "index",
+              "name": "idx_plugin_operations_created",
+              "table_name": "plugin_operations",
+              "sql": "CREATE INDEX idx_plugin_operations_created ON plugin_operations(created_at DESC, operation_id DESC)"
+            },
+            {
+              "type": "index",
+              "name": "idx_plugin_operations_owner",
+              "table_name": "plugin_operations",
+              "sql": "CREATE INDEX idx_plugin_operations_owner ON plugin_operations(owner_session_hash, owner_user_hash, owner_env_hash, session_channel_id_hash, created_at DESC, operation_id DESC)"
+            },
+            {
+              "type": "index",
+              "name": "idx_plugin_operations_owner_plugin_instance",
+              "table_name": "plugin_operations",
+              "sql": "CREATE INDEX idx_plugin_operations_owner_plugin_instance ON plugin_operations(owner_env_hash, plugin_instance_id, created_at DESC, operation_id DESC)"
+            },
+            {
+              "type": "index",
+              "name": "idx_plugin_operations_owner_plugin_session",
+              "table_name": "plugin_operations",
+              "sql": "CREATE INDEX idx_plugin_operations_owner_plugin_session ON plugin_operations(owner_env_hash, plugin_instance_id, owner_session_hash, owner_user_hash, session_channel_id_hash, created_at DESC, operation_id DESC)"
+            },
+            {
+              "type": "index",
+              "name": "idx_plugin_operations_owner_terminal_retention",
+              "table_name": "plugin_operations",
+              "sql": "CREATE INDEX idx_plugin_operations_owner_terminal_retention ON plugin_operations(owner_env_hash, plugin_instance_id, terminal_at DESC, operation_id DESC) WHERE terminal_at IS NOT NULL"
+            },
+            {
+              "type": "index",
+              "name": "idx_plugin_operations_plugin_instance",
+              "table_name": "plugin_operations",
+              "sql": "CREATE INDEX idx_plugin_operations_plugin_instance ON plugin_operations(plugin_instance_id, created_at DESC, operation_id DESC)"
+            },
+            {
+              "type": "index",
+              "name": "idx_plugin_operations_plugin_owner",
+              "table_name": "plugin_operations",
+              "sql": "CREATE INDEX idx_plugin_operations_plugin_owner ON plugin_operations(plugin_instance_id, owner_session_hash, owner_user_hash, owner_env_hash, session_channel_id_hash, created_at DESC, operation_id DESC)"
+            },
+            {
+              "type": "index",
+              "name": "idx_plugin_operations_terminal_retention",
+              "table_name": "plugin_operations",
+              "sql": "CREATE INDEX idx_plugin_operations_terminal_retention ON plugin_operations(plugin_instance_id, terminal_at DESC, operation_id DESC) WHERE terminal_at IS NOT NULL"
+            },
+            {
+              "type": "table",
+              "name": "plugin_operations",
+              "table_name": "plugin_operations",
+              "sql": "CREATE TABLE plugin_operations ( operation_id TEXT PRIMARY KEY, plugin_id TEXT NOT NULL, plugin_instance_id TEXT NOT NULL, method TEXT NOT NULL, effect TEXT NOT NULL, execution TEXT NOT NULL, surface_instance_id TEXT NOT NULL, owner_session_hash TEXT NOT NULL, owner_user_hash TEXT NOT NULL, owner_env_hash TEXT NOT NULL, session_channel_id_hash TEXT NOT NULL, bridge_channel_id TEXT NOT NULL, execution_binding_json TEXT NOT NULL DEFAULT '{}', status TEXT NOT NULL, cancelable INTEGER NOT NULL DEFAULT 1, cancel_ack_timeout_ms INTEGER NOT NULL DEFAULT 0, disable_behavior TEXT NOT NULL, uninstall_behavior TEXT NOT NULL, failure_code TEXT NOT NULL, reason TEXT NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, cancel_requested_at INTEGER, orphaned_at INTEGER, terminal_at INTEGER )"
+            }
+          ],
+          "schema_sha256": "6cb266bb6e06d4e9926bfd1513c3acdbcd6b2f7e8e988758baa29b497c1f3eba"
+        },
+        {
+          "path": "db/registry.sqlite",
+          "application_id": 0,
+          "user_version": 0,
+          "migration_versions": [],
+          "schema_objects": [
+            {
+              "type": "index",
+              "name": "idx_plugin_records_deleted_at",
+              "table_name": "plugin_records",
+              "sql": "CREATE INDEX idx_plugin_records_deleted_at ON plugin_records(owner_env_hash, deleted_at)"
+            },
+            {
+              "type": "index",
+              "name": "idx_plugin_records_plugin_id",
+              "table_name": "plugin_records",
+              "sql": "CREATE INDEX idx_plugin_records_plugin_id ON plugin_records(owner_env_hash, plugin_id)"
+            },
+            {
+              "type": "table",
+              "name": "plugin_data_bindings",
+              "table_name": "plugin_data_bindings",
+              "sql": "CREATE TABLE plugin_data_bindings ( owner_env_hash TEXT NOT NULL, plugin_instance_id TEXT NOT NULL, generation_id TEXT NOT NULL, state TEXT NOT NULL, revision INTEGER NOT NULL, shape_hash TEXT NOT NULL, retained_at INTEGER, expires_at INTEGER, PRIMARY KEY(owner_env_hash, plugin_instance_id), FOREIGN KEY(owner_env_hash, plugin_instance_id) REFERENCES plugin_records(owner_env_hash, plugin_instance_id) ON DELETE CASCADE )"
+            },
+            {
+              "type": "table",
+              "name": "plugin_data_objects",
+              "table_name": "plugin_data_objects",
+              "sql": "CREATE TABLE plugin_data_objects ( scope_kind TEXT NOT NULL, owner_env_hash TEXT NOT NULL, owner_user_hash TEXT NOT NULL, plugin_instance_id TEXT NOT NULL, object_id TEXT NOT NULL, content_hash TEXT NOT NULL, shape_hash TEXT NOT NULL, size_bytes INTEGER NOT NULL, created_at INTEGER NOT NULL, PRIMARY KEY(scope_kind, owner_env_hash, owner_user_hash, plugin_instance_id, object_id) )"
+            },
+            {
+              "type": "table",
+              "name": "plugin_permission_grants",
+              "table_name": "plugin_permission_grants",
+              "sql": "CREATE TABLE plugin_permission_grants ( owner_env_hash TEXT NOT NULL, plugin_instance_id TEXT NOT NULL, permission_id TEXT NOT NULL, effect TEXT NOT NULL, granted_by TEXT NOT NULL, granted_at INTEGER NOT NULL, expires_at INTEGER, revoked_at INTEGER, revoked_by TEXT NOT NULL, revoked_reason TEXT NOT NULL, PRIMARY KEY(owner_env_hash, plugin_instance_id, permission_id), FOREIGN KEY(owner_env_hash, plugin_instance_id) REFERENCES plugin_records(owner_env_hash, plugin_instance_id) ON DELETE CASCADE )"
+            },
+            {
+              "type": "table",
+              "name": "plugin_records",
+              "table_name": "plugin_records",
+              "sql": "CREATE TABLE plugin_records ( owner_env_hash TEXT NOT NULL, plugin_instance_id TEXT NOT NULL, publisher_id TEXT NOT NULL, plugin_id TEXT NOT NULL, version TEXT NOT NULL, active_fingerprint TEXT NOT NULL, package_hash TEXT NOT NULL, manifest_hash TEXT NOT NULL, entries_hash TEXT NOT NULL, trust_state TEXT NOT NULL, trust_assessment_json TEXT NOT NULL DEFAULT '{}', source_policy_snapshot_hash TEXT NOT NULL DEFAULT '', source_policy_snapshot_json TEXT NOT NULL DEFAULT '{}', local_import_provenance_json TEXT NOT NULL DEFAULT '{}', capability_contracts_json TEXT NOT NULL DEFAULT '[]', enable_state TEXT NOT NULL, disabled_reason TEXT NOT NULL, policy_revision INTEGER NOT NULL, management_revision INTEGER NOT NULL, revoke_epoch INTEGER NOT NULL, manifest_json TEXT NOT NULL, package_entries_json TEXT NOT NULL, version_history_json TEXT NOT NULL, runtime_requirement_json TEXT NOT NULL DEFAULT 'null', installed_at INTEGER NOT NULL, enabled_at INTEGER, updated_at INTEGER NOT NULL, deleted_at INTEGER, metadata_json TEXT NOT NULL, PRIMARY KEY(owner_env_hash, plugin_instance_id) )"
+            },
+            {
+              "type": "table",
+              "name": "plugin_security_policies",
+              "table_name": "plugin_security_policies",
+              "sql": "CREATE TABLE plugin_security_policies ( owner_env_hash TEXT NOT NULL, plugin_instance_id TEXT NOT NULL, allowed_permissions_json TEXT NOT NULL, denied_methods_json TEXT NOT NULL, updated_at INTEGER NOT NULL, PRIMARY KEY(owner_env_hash, plugin_instance_id), FOREIGN KEY(owner_env_hash, plugin_instance_id) REFERENCES plugin_records(owner_env_hash, plugin_instance_id) ON DELETE CASCADE )"
+            },
+            {
+              "type": "table",
+              "name": "plugin_security_policy_allowed_permissions",
+              "table_name": "plugin_security_policy_allowed_permissions",
+              "sql": "CREATE TABLE plugin_security_policy_allowed_permissions ( owner_env_hash TEXT NOT NULL, plugin_instance_id TEXT NOT NULL, permission_id TEXT NOT NULL, PRIMARY KEY(owner_env_hash, plugin_instance_id, permission_id), FOREIGN KEY(owner_env_hash, plugin_instance_id) REFERENCES plugin_security_policies(owner_env_hash, plugin_instance_id) ON DELETE CASCADE )"
+            },
+            {
+              "type": "table",
+              "name": "plugin_security_policy_denied_methods",
+              "table_name": "plugin_security_policy_denied_methods",
+              "sql": "CREATE TABLE plugin_security_policy_denied_methods ( owner_env_hash TEXT NOT NULL, plugin_instance_id TEXT NOT NULL, method TEXT NOT NULL, PRIMARY KEY(owner_env_hash, plugin_instance_id, method), FOREIGN KEY(owner_env_hash, plugin_instance_id) REFERENCES plugin_security_policies(owner_env_hash, plugin_instance_id) ON DELETE CASCADE )"
+            },
+            {
+              "type": "table",
+              "name": "plugin_source_security_floors",
+              "table_name": "plugin_source_security_floors",
+              "sql": "CREATE TABLE plugin_source_security_floors ( source_id TEXT PRIMARY KEY, policy_epoch TEXT NOT NULL, key_rotation_epoch TEXT NOT NULL, revocation_epoch TEXT NOT NULL, source_policy_snapshot_hash TEXT NOT NULL, revocation_metadata_sha256 TEXT NOT NULL, updated_at INTEGER NOT NULL )"
+            }
+          ],
+          "schema_sha256": "fb1d3c89eccea640d8f11261bcdd5e09a297a4253f5ca13ae0bc953ff3e189a9"
+        },
+        {
+          "path": "db/runtime_lease_replays.sqlite",
+          "application_id": 0,
+          "user_version": 0,
+          "migration_versions": [],
+          "schema_objects": [
+            {
+              "type": "index",
+              "name": "idx_runtime_lease_replays_plugin",
+              "table_name": "plugin_runtime_lease_replays",
+              "sql": "CREATE INDEX idx_runtime_lease_replays_plugin ON plugin_runtime_lease_replays(plugin_instance_id, consumed_at)"
+            },
+            {
+              "type": "table",
+              "name": "plugin_runtime_lease_replays",
+              "table_name": "plugin_runtime_lease_replays",
+              "sql": "CREATE TABLE plugin_runtime_lease_replays ( lease_nonce_hash TEXT PRIMARY KEY, lease_id TEXT NOT NULL, plugin_instance_id TEXT NOT NULL, runtime_generation_id TEXT NOT NULL, method TEXT NOT NULL, policy_revision INTEGER NOT NULL, management_revision INTEGER NOT NULL, revoke_epoch INTEGER NOT NULL, consumed_at INTEGER NOT NULL, expires_at INTEGER NOT NULL )"
+            }
+          ],
+          "schema_sha256": "a4428fbd7cb8614384b539b583e0653460b8bafa24238dc23b9e916d447393a9"
+        },
+        {
+          "path": "db/secrets.sqlite",
+          "application_id": 0,
+          "user_version": 0,
+          "migration_versions": [],
+          "schema_objects": [
+            {
+              "type": "index",
+              "name": "idx_plugin_secret_bindings_plugin",
+              "table_name": "plugin_secret_bindings",
+              "sql": "CREATE INDEX idx_plugin_secret_bindings_plugin ON plugin_secret_bindings(owner_env_hash, plugin_instance_id, scope, owner_user_hash, bound, updated_at)"
+            },
+            {
+              "type": "table",
+              "name": "plugin_secret_bindings",
+              "table_name": "plugin_secret_bindings",
+              "sql": "CREATE TABLE plugin_secret_bindings ( owner_env_hash TEXT NOT NULL, owner_user_hash TEXT NOT NULL, plugin_instance_id TEXT NOT NULL, secret_ref TEXT NOT NULL, scope TEXT NOT NULL, bound INTEGER NOT NULL, last_test_status TEXT NOT NULL, bound_at INTEGER, tested_at INTEGER, deleted_at INTEGER, updated_at INTEGER NOT NULL, PRIMARY KEY(owner_env_hash, owner_user_hash, plugin_instance_id, scope, secret_ref), CHECK((scope = 'environment' AND owner_user_hash = '') OR (scope = 'user' AND owner_user_hash <> '')) )"
+            }
+          ],
+          "schema_sha256": "4f5f0abf69b4c9ab1558f349640ffa2de6755b60d5e121886fa402e8c7eaa27b"
+        },
+        {
+          "path": "db/streams.sqlite",
+          "application_id": 0,
+          "user_version": 0,
+          "migration_versions": [],
+          "schema_objects": [
+            {
+              "type": "index",
+              "name": "idx_plugin_streams_owner_plugin_instance",
+              "table_name": "plugin_streams",
+              "sql": "CREATE INDEX idx_plugin_streams_owner_plugin_instance ON plugin_streams(owner_env_hash, plugin_instance_id, created_at, stream_id)"
+            },
+            {
+              "type": "index",
+              "name": "idx_plugin_streams_owner_terminal_retention",
+              "table_name": "plugin_streams",
+              "sql": "CREATE INDEX idx_plugin_streams_owner_terminal_retention ON plugin_streams(owner_env_hash, plugin_instance_id, closed_at DESC, stream_id DESC) WHERE terminal_acknowledged = 1"
+            },
+            {
+              "type": "index",
+              "name": "idx_plugin_streams_plugin_instance",
+              "table_name": "plugin_streams",
+              "sql": "CREATE INDEX idx_plugin_streams_plugin_instance ON plugin_streams(plugin_instance_id, created_at, stream_id)"
+            },
+            {
+              "type": "index",
+              "name": "idx_plugin_streams_terminal_retention",
+              "table_name": "plugin_streams",
+              "sql": "CREATE INDEX idx_plugin_streams_terminal_retention ON plugin_streams(plugin_instance_id, closed_at DESC, stream_id DESC) WHERE terminal_acknowledged = 1"
+            },
+            {
+              "type": "table",
+              "name": "plugin_stream_events",
+              "table_name": "plugin_stream_events",
+              "sql": "CREATE TABLE plugin_stream_events ( stream_id TEXT NOT NULL, sequence INTEGER NOT NULL, kind TEXT NOT NULL, data BLOB, error TEXT NOT NULL, at INTEGER NOT NULL, PRIMARY KEY(stream_id, sequence), FOREIGN KEY(stream_id) REFERENCES plugin_streams(stream_id) ON DELETE CASCADE )"
+            },
+            {
+              "type": "table",
+              "name": "plugin_streams",
+              "table_name": "plugin_streams",
+              "sql": "CREATE TABLE plugin_streams ( stream_id TEXT PRIMARY KEY, plugin_id TEXT NOT NULL, plugin_instance_id TEXT NOT NULL, method TEXT NOT NULL, effect TEXT NOT NULL, execution TEXT NOT NULL, surface_instance_id TEXT NOT NULL, owner_session_hash TEXT NOT NULL, owner_user_hash TEXT NOT NULL, owner_env_hash TEXT NOT NULL, session_channel_id_hash TEXT NOT NULL, bridge_channel_id TEXT NOT NULL, execution_binding_json TEXT NOT NULL DEFAULT '{}', direction TEXT NOT NULL, status TEXT NOT NULL, failure_code TEXT NOT NULL, reason TEXT NOT NULL DEFAULT '', content_type TEXT NOT NULL, max_buffered_bytes INTEGER NOT NULL, buffered_bytes INTEGER NOT NULL, next_sequence INTEGER NOT NULL, pending_delivery_id TEXT NOT NULL, pending_read_id TEXT NOT NULL, pending_through_sequence INTEGER NOT NULL, pending_done INTEGER NOT NULL, pending_terminal_status TEXT NOT NULL, last_acknowledged_delivery_id TEXT NOT NULL, terminal_acknowledged INTEGER NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, closed_at INTEGER )"
+            }
+          ],
+          "schema_sha256": "12a5810b5112819cb046f40491d8a014856c8209185ce471706158c1a816b2a3"
+        }
+      ],
+      "tree_rules": {
+        "allowed_kinds": [
+          "directory",
+          "file"
+        ],
+        "allow_sqlite_wal_shm": true,
+        "reject_hardlinks": true,
+        "reject_symlinks": true,
+        "variable_trees": [
+          "assets",
+          "storage"
+        ]
+      }
+    }
+  ]
+}

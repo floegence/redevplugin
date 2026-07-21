@@ -1,0 +1,117 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.redevplugin.dev/plugin/owner-scope-inventory-v1.schema.json",
+  "title": "ReDevPlugin owner scope inventory registry v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "inventories"],
+  "properties": {
+    "schema_version": { "const": "owner-scope-inventory-v1" },
+    "inventories": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 32,
+      "items": { "$ref": "#/$defs/inventory" }
+    }
+  },
+  "$defs": {
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "identifier": { "type": "string", "pattern": "^[a-z][a-z0-9._-]{0,127}$" },
+    "relative_path": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4096,
+      "pattern": "^[a-z][a-z0-9._-]*(?:/[a-z][a-z0-9._-]*)*$"
+    },
+    "inventory": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "platform_versions", "root_entries", "sqlite_databases", "tree_rules"],
+      "properties": {
+        "id": { "$ref": "#/$defs/identifier" },
+        "platform_versions": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 32,
+          "uniqueItems": true,
+          "items": { "type": "string", "pattern": "^0\\.[1-5]\\.[0-9]+$" }
+        },
+        "root_entries": {
+          "const": [
+            { "path": "assets", "kind": "directory", "scope": "durable", "disposition": "quarantine" },
+            { "path": "db", "kind": "directory", "scope": "durable", "disposition": "quarantine" },
+            { "path": "storage", "kind": "directory", "scope": "durable", "disposition": "quarantine" }
+          ]
+        },
+        "sqlite_databases": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 64,
+          "items": { "$ref": "#/$defs/sqlite_database" }
+        },
+        "tree_rules": {
+          "const": {
+            "allowed_kinds": ["directory", "file"],
+            "allow_sqlite_wal_shm": true,
+            "reject_hardlinks": true,
+            "reject_symlinks": true,
+            "variable_trees": ["assets", "storage"]
+          }
+        }
+      }
+    },
+    "sqlite_database": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "application_id",
+        "user_version",
+        "migration_versions",
+        "schema_objects",
+        "schema_sha256"
+      ],
+      "properties": {
+        "path": { "$ref": "#/$defs/relative_path" },
+        "application_id": { "type": "integer", "minimum": 0, "maximum": 4294967295 },
+        "user_version": { "type": "integer", "minimum": 0, "maximum": 2147483647 },
+        "migration_versions": {
+          "type": "array",
+          "maxItems": 16,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["table", "versions"],
+            "properties": {
+              "table": { "$ref": "#/$defs/identifier" },
+              "versions": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 64,
+                "uniqueItems": true,
+                "items": { "type": "integer", "minimum": 0, "maximum": 2147483647 }
+              }
+            }
+          }
+        },
+        "schema_objects": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 128,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["type", "name", "table_name", "sql"],
+            "properties": {
+              "type": { "enum": ["index", "table"] },
+              "name": { "$ref": "#/$defs/identifier" },
+              "table_name": { "$ref": "#/$defs/identifier" },
+              "sql": { "type": "string", "minLength": 1, "maxLength": 16384 }
+            }
+          }
+        },
+        "schema_sha256": { "$ref": "#/$defs/sha256" }
+      }
+    }
+  }
+}

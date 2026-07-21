@@ -17,6 +17,9 @@
     "contracts:check": "node scripts/generate_contract_registry.mjs --check",
     "platform-package-contracts:generate": "node scripts/generate_platform_package_contracts.mjs",
     "platform-package-contracts:check": "node scripts/generate_platform_package_contracts.mjs --check",
+    "owner-scope-inventories:generate": "node scripts/generate_owner_scope_inventories.mjs",
+    "owner-scope-inventories:check": "node scripts/generate_owner_scope_inventories.mjs --check",
+    "owner-scope-inventories:test": "node --test scripts/owner_scope_inventory.test.mjs",
     "contracts-package:build": "npm --workspace @floegence/redevplugin-contracts run build",
     "contracts-package:typecheck": "npm --workspace @floegence/redevplugin-contracts run typecheck",
     "contracts-package:test": "npm --workspace @floegence/redevplugin-contracts run test",
@@ -51,7 +54,7 @@
     "performance:release": "./scripts/check_redevplugin_performance.sh --release",
     "property-gates": "./scripts/check_redevplugin_property_gates.sh --fast",
     "examples": "npm run examples:check && npm run build && cargo build -p redevplugin-runtime && GOWORK=off go run ./cmd/redevplugin examples-server dist/examples-state target/debug/redevplugin-runtime",
-    "check": "npm run error-codes:check && npm run openapi:check && npm run openapi-contract:test && npm run contracts:check && npm run platform-package-contracts:check && npm run release-metadata:check && npm run repository-boundary:test && npm run platform-package-contract:test && npm run test:contracts && npm run performance-contract:test && npm run lint && npm run typecheck && npm run browser-harness:typecheck && npm run scaffold:typecheck && npm run examples:typecheck && npm run canonical-wasm:test && npm run memos-markdown:test && npm run examples:check && npm run browser-harness:check && npm run build && npm run test:ui && npm run test:browser-harness && npm run test:browser-harness:smoke && npm run property-gates"
+    "check": "npm run error-codes:check && npm run openapi:check && npm run openapi-contract:test && npm run contracts:check && npm run platform-package-contracts:check && npm run owner-scope-inventories:check && npm run owner-scope-inventories:test && npm run release-metadata:check && npm run repository-boundary:test && npm run platform-package-contract:test && npm run test:contracts && npm run performance-contract:test && npm run lint && npm run typecheck && npm run browser-harness:typecheck && npm run scaffold:typecheck && npm run examples:typecheck && npm run canonical-wasm:test && npm run memos-markdown:test && npm run examples:check && npm run browser-harness:check && npm run build && npm run test:ui && npm run test:browser-harness && npm run test:browser-harness:smoke && npm run property-gates"
   },
   "devDependencies": {
     "esbuild": "^0.25.5",

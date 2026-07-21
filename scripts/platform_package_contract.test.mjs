@@ -133,8 +133,12 @@ test("contract registry v2 is closed, sorted, cycle-free, and content addressed"
     .map(({ id }) => id)
     .concat([
       "contract-registry-schema",
+      "owner-scope-inventory-registry",
+      "owner-scope-inventory-schema",
+      "owner-scope-migration-schema",
       "platform-package-publication-schema",
       "platform-package-set-schema",
+      "quarantine-cleanup-schema",
       "release-revocation-pointer-schema",
       "release-revocation-schema",
       "release-root-delegation-schema",
@@ -146,7 +150,7 @@ test("contract registry v2 is closed, sorted, cycle-free, and content addressed"
 
   assert.equal(registryBytes.toString("utf8"), `${JSON.stringify(registry, null, 2)}\n`);
   assert.deepEqual(registry.artifacts.map(({ id }) => id), expectedIDs);
-  assert.equal(registry.artifacts.length, 34);
+  assert.equal(registry.artifacts.length, 38);
   assert.equal(registry.artifacts.some(({ id }) => id === "release-manifest-schema"), false);
   assert.equal(registry.artifacts.some(({ id }) => id === "release-metadata-schema"), true);
   assert.equal(registry.artifacts.some(({ id }) => id === "source-policy-schema"), false);

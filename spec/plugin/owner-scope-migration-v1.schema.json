@@ -1,0 +1,64 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.redevplugin.dev/plugin/owner-scope-migration-v1.schema.json",
+  "title": "ReDevPlugin owner scope migration journal v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "migration_id",
+    "root_identity_sha256",
+    "legacy_snapshot_sha256",
+    "inventory_id",
+    "inventory_sha256",
+    "state",
+    "quarantine_id",
+    "quarantine_sha256",
+    "fresh_generation_id",
+    "fresh_generation_sha256",
+    "stores"
+  ],
+  "properties": {
+    "schema_version": { "const": "owner-scope-migration-v1" },
+    "migration_id": { "$ref": "#/$defs/opaque_id" },
+    "root_identity_sha256": { "$ref": "#/$defs/sha256" },
+    "legacy_snapshot_sha256": { "$ref": "#/$defs/sha256" },
+    "inventory_id": { "type": "string", "maxLength": 128, "pattern": "^$|^[a-z][a-z0-9._-]+$" },
+    "inventory_sha256": { "type": "string", "pattern": "^$|^[0-9a-f]{64}$" },
+    "state": {
+      "enum": [
+        "prepared",
+        "quarantine_writing",
+        "quarantine_committed",
+        "fresh_prepared",
+        "fresh_committed",
+        "reconcile_required",
+        "failed"
+      ]
+    },
+    "quarantine_id": { "type": "string", "maxLength": 128, "pattern": "^$|^quarantine_[0-9a-f]{32}$" },
+    "quarantine_sha256": { "type": "string", "pattern": "^$|^[0-9a-f]{64}$" },
+    "fresh_generation_id": { "type": "string", "maxLength": 128, "pattern": "^$|^generation_[0-9a-f]{32}$" },
+    "fresh_generation_sha256": { "type": "string", "pattern": "^$|^[0-9a-f]{64}$" },
+    "stores": {
+      "type": "array",
+      "maxItems": 64,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "scope", "disposition", "generation", "outcome"],
+        "properties": {
+          "id": { "type": "string", "pattern": "^[a-z][a-z0-9._-]{0,127}$" },
+          "scope": { "enum": ["durable", "session", "transient"] },
+          "disposition": { "enum": ["quarantine", "terminate"] },
+          "generation": { "type": "string", "maxLength": 128 },
+          "outcome": { "type": "string", "maxLength": 128 }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "opaque_id": { "type": "string", "pattern": "^migration_[0-9a-f]{32}$" },
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+  }
+}

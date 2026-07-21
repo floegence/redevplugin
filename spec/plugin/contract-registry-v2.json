@@ -87,6 +87,24 @@
       "sha256": "70a32dc8bf281cea2c92492c466fd477070c62156a3f593d45eb460cde62dca2"
     },
     {
+      "id": "owner-scope-inventory-registry",
+      "path": "spec/plugin/owner-scope-inventories-v1.json",
+      "version": "owner-scope-inventory-registry-v1",
+      "sha256": "92a2d6ed3a9038e95285faa108e2186cf9d0df343854741c551f8c4039f91217"
+    },
+    {
+      "id": "owner-scope-inventory-schema",
+      "path": "spec/plugin/owner-scope-inventory-v1.schema.json",
+      "version": "owner-scope-inventory-v1",
+      "sha256": "972e4fe3cc74339c211ba8a50951ad0f4ae4265d3d34b20f03d0e4888638e254"
+    },
+    {
+      "id": "owner-scope-migration-schema",
+      "path": "spec/plugin/owner-scope-migration-v1.schema.json",
+      "version": "owner-scope-migration-v1",
+      "sha256": "e73443813e19e4cfb05748eb75d5cf04f43db3bed9d2be0c893c13bda88a5993"
+    },
+    {
       "id": "package-signature-schema",
       "path": "spec/plugin/package-signature-v1.schema.json",
       "version": "package-signature-v1",
@@ -121,6 +139,12 @@
       "path": "spec/openapi/plugin-platform-v7.yaml",
       "version": "plugin-platform-v7",
       "sha256": "b8d8347724f946545be576f522f4db01950c9412373f301fc4f7e9a7f11ba96b"
+    },
+    {
+      "id": "quarantine-cleanup-schema",
+      "path": "spec/plugin/quarantine-cleanup-v1.schema.json",
+      "version": "quarantine-cleanup-v1",
+      "sha256": "0aced01a8d409953d5075a799ac273cae79e285ac82debe93ac4d8b706571ad1"
     },
     {
       "id": "release-metadata-schema",

@@ -68,6 +68,21 @@ const stagedSchemaArtifacts = [
     version: "contract-registry-v2",
   },
   {
+    id: "owner-scope-inventory-registry",
+    path: "spec/plugin/owner-scope-inventories-v1.json",
+    version: "owner-scope-inventory-registry-v1",
+  },
+  {
+    id: "owner-scope-inventory-schema",
+    path: "spec/plugin/owner-scope-inventory-v1.schema.json",
+    version: "owner-scope-inventory-v1",
+  },
+  {
+    id: "owner-scope-migration-schema",
+    path: "spec/plugin/owner-scope-migration-v1.schema.json",
+    version: "owner-scope-migration-v1",
+  },
+  {
     id: "platform-package-publication-schema",
     path: "spec/plugin/platform-package-publication-v1.schema.json",
     version: "platform-package-publication-v1",
@@ -76,6 +91,11 @@ const stagedSchemaArtifacts = [
     id: "platform-package-set-schema",
     path: "spec/plugin/platform-package-set-v1.schema.json",
     version: "platform-package-set-v1",
+  },
+  {
+    id: "quarantine-cleanup-schema",
+    path: "spec/plugin/quarantine-cleanup-v1.schema.json",
+    version: "quarantine-cleanup-v1",
   },
   {
     id: "release-revocation-pointer-schema",
@@ -687,10 +707,10 @@ async function readContractFile(path) {
   return readFile(absolutePath);
 }
 
-function parseStrictJSON(raw, label) {
+export function parseStrictJSON(raw, label, maxBytes = MAX_JSON_BYTES) {
   const bytes = toBuffer(raw, label);
-  if (bytes.length === 0 || bytes.length > MAX_JSON_BYTES) {
-    throw new Error(`${label} must contain 1..${MAX_JSON_BYTES} bytes`);
+  if (!Number.isSafeInteger(maxBytes) || maxBytes < 1 || bytes.length === 0 || bytes.length > maxBytes) {
+    throw new Error(`${label} must contain 1..${maxBytes} bytes`);
   }
   if (bytes.length >= 3 && bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf) {
     throw new Error(`${label} must not contain a UTF-8 byte-order mark`);
