@@ -3,13 +3,10 @@ package trust
 import (
 	"context"
 	"crypto/ed25519"
-	"crypto/sha256"
 	"encoding/base64"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/floegence/redevplugin/pkg/host"
@@ -96,9 +93,6 @@ func (v Ed25519Verifier) VerifyPackageTrust(ctx context.Context, req host.Packag
 	if sig.Algorithm != AlgorithmEd25519 {
 		return host.PackageTrustVerificationResult{}, fmt.Errorf("%w: %s", ErrUnsupportedAlgorithm, sig.Algorithm)
 	}
-	if !sourcePolicyAllowsKey(req.SourcePolicySnapshot, sig.KeyID) {
-		return host.PackageTrustVerificationResult{}, ErrKeyNotFound
-	}
 	if err := validateSignatureHashes(req.Package, *sig); err != nil {
 		return host.PackageTrustVerificationResult{}, err
 	}
@@ -116,9 +110,6 @@ func (v Ed25519Verifier) VerifyPackageTrust(ctx context.Context, req host.Packag
 	}
 	if len(key.PublicKey) != ed25519.PublicKeySize {
 		return host.PackageTrustVerificationResult{}, ErrPublicKeyInvalid
-	}
-	if err := validateSourcePolicyPublicKey(req.SourcePolicySnapshot, sig.KeyID, key.PublicKey); err != nil {
-		return host.PackageTrustVerificationResult{}, err
 	}
 	payload, err := CanonicalPackageSignaturePayload(*sig)
 	if err != nil {
@@ -138,99 +129,6 @@ func (v Ed25519Verifier) VerifyPackageTrust(ctx context.Context, req host.Packag
 	}, nil
 }
 
-func (v Ed25519Verifier) VerifyReleaseMetadata(ctx context.Context, req host.ReleaseMetadataVerificationRequest) (host.ReleaseMetadataVerificationResult, error) {
-	sig := req.Release.ReleaseMetadataSignature
-	if sig == nil {
-		return host.ReleaseMetadataVerificationResult{}, ErrSignatureRequired
-	}
-	if sig.Algorithm != AlgorithmEd25519 {
-		return host.ReleaseMetadataVerificationResult{}, fmt.Errorf("%w: %s", ErrUnsupportedAlgorithm, sig.Algorithm)
-	}
-	if !sourcePolicyAllowsKey(&req.SourcePolicySnapshot, sig.KeyID) {
-		return host.ReleaseMetadataVerificationResult{}, ErrKeyNotFound
-	}
-	if len(req.ReleaseMetadataBytes) == 0 {
-		return host.ReleaseMetadataVerificationResult{}, ErrSignatureInvalid
-	}
-	if len(req.ReleaseMetadataSignature) != ed25519.SignatureSize {
-		return host.ReleaseMetadataVerificationResult{}, ErrSignatureInvalid
-	}
-	if v.Keyring == nil {
-		return host.ReleaseMetadataVerificationResult{}, ErrKeyringRequired
-	}
-	key, err := v.Keyring.LookupPackageSigningKey(ctx, KeyLookupRequest{
-		Algorithm:   sig.Algorithm,
-		KeyID:       sig.KeyID,
-		PublisherID: req.Release.PublisherID,
-		PluginID:    req.Release.PluginID,
-	})
-	if err != nil {
-		return host.ReleaseMetadataVerificationResult{}, err
-	}
-	if key.Revoked {
-		return host.ReleaseMetadataVerificationResult{}, ErrKeyRevoked
-	}
-	if len(key.PublicKey) != ed25519.PublicKeySize {
-		return host.ReleaseMetadataVerificationResult{}, ErrPublicKeyInvalid
-	}
-	if err := validateSourcePolicyPublicKey(&req.SourcePolicySnapshot, sig.KeyID, key.PublicKey); err != nil {
-		return host.ReleaseMetadataVerificationResult{}, err
-	}
-	if !ed25519.Verify(key.PublicKey, req.ReleaseMetadataBytes, req.ReleaseMetadataSignature) {
-		return host.ReleaseMetadataVerificationResult{}, ErrSignatureInvalid
-	}
-	return host.ReleaseMetadataVerificationResult{
-		Metadata: map[string]string{
-			"algorithm":   sig.Algorithm,
-			"key_id":      sig.KeyID,
-			"verified_at": v.now().Format(time.RFC3339),
-		},
-	}, nil
-}
-
-func (v Ed25519Verifier) VerifySourceRevocationEvidence(ctx context.Context, req host.SourceRevocationEvidenceVerificationRequest) (host.SourceRevocationEvidenceVerificationResult, error) {
-	evidence := req.RevocationEvidence
-	if evidence.SignatureKeyID == "" {
-		return host.SourceRevocationEvidenceVerificationResult{}, ErrSignatureRequired
-	}
-	if !sourcePolicyAllowsKey(&req.SourcePolicySnapshot, evidence.SignatureKeyID) {
-		return host.SourceRevocationEvidenceVerificationResult{}, ErrKeyNotFound
-	}
-	if len(req.RevocationMetadataBytes) == 0 || len(req.RevocationMetadataSignature) != ed25519.SignatureSize {
-		return host.SourceRevocationEvidenceVerificationResult{}, ErrSignatureInvalid
-	}
-	if v.Keyring == nil {
-		return host.SourceRevocationEvidenceVerificationResult{}, ErrKeyringRequired
-	}
-	key, err := v.Keyring.LookupPackageSigningKey(ctx, KeyLookupRequest{
-		Algorithm: AlgorithmEd25519,
-		KeyID:     evidence.SignatureKeyID,
-	})
-	if err != nil {
-		return host.SourceRevocationEvidenceVerificationResult{}, err
-	}
-	if key.Revoked {
-		return host.SourceRevocationEvidenceVerificationResult{}, ErrKeyRevoked
-	}
-	if len(key.PublicKey) != ed25519.PublicKeySize {
-		return host.SourceRevocationEvidenceVerificationResult{}, ErrPublicKeyInvalid
-	}
-	if err := validateSourcePolicyPublicKey(&req.SourcePolicySnapshot, evidence.SignatureKeyID, key.PublicKey); err != nil {
-		return host.SourceRevocationEvidenceVerificationResult{}, err
-	}
-	if !ed25519.Verify(key.PublicKey, req.RevocationMetadataBytes, req.RevocationMetadataSignature) {
-		return host.SourceRevocationEvidenceVerificationResult{}, ErrSignatureInvalid
-	}
-	return host.SourceRevocationEvidenceVerificationResult{
-		Metadata: map[string]string{
-			"algorithm":          AlgorithmEd25519,
-			"key_id":             evidence.SignatureKeyID,
-			"highest_seen_epoch": req.RevocationMetadata.HighestSeenEpoch,
-			"verified_at":        v.now().Format(time.RFC3339),
-		},
-	}, nil
-}
-
 func trustRequestFromPolicy(req host.PackageTrustVerificationRequest) (registry.TrustState, bool, error) {
 	if req.LocalImport {
 		if req.Package.PackageSignature != nil {
@@ -238,61 +136,10 @@ func trustRequestFromPolicy(req host.PackageTrustVerificationRequest) (registry.
 		}
 		return registry.TrustUnsignedLocal, false, nil
 	}
-	if req.SourcePolicySnapshot == nil {
+	if req.Package.PackageSignature == nil {
 		return registry.TrustUntrusted, false, nil
 	}
-	policy := req.SourcePolicySnapshot
-	if policy.RequireSignature {
-		return registry.TrustVerified, true, nil
-	}
-	switch policy.UnsignedPolicy {
-	case host.PackageUnsignedDevOnly:
-		return "", false, ErrSignatureRequired
-	case host.PackageUnsignedReviewRequired:
-		return registry.TrustNeedsReview, false, nil
-	case host.PackageUnsignedBlock, "":
-		return "", false, ErrSignatureRequired
-	default:
-		return "", false, ErrSignatureRequired
-	}
-}
-
-func sourcePolicyAllowsKey(policy *host.SourcePolicySnapshot, keyID string) bool {
-	if policy == nil || (len(policy.TrustedKeyIDs) == 0 && len(policy.TrustedKeys) == 0) {
-		return true
-	}
-	for _, trustedKeyID := range policy.TrustedKeyIDs {
-		if trustedKeyID == keyID {
-			return true
-		}
-	}
-	for _, trustedKey := range policy.TrustedKeys {
-		if trustedKey.KeyID == keyID {
-			return true
-		}
-	}
-	return false
-}
-
-func validateSourcePolicyPublicKey(policy *host.SourcePolicySnapshot, keyID string, publicKey ed25519.PublicKey) error {
-	if policy == nil {
-		return nil
-	}
-	for _, trustedKey := range policy.TrustedKeys {
-		if trustedKey.KeyID != keyID {
-			continue
-		}
-		expected := strings.TrimPrefix(strings.ToLower(strings.TrimSpace(trustedKey.PublicKeySHA256)), "sha256:")
-		if expected == "" {
-			return ErrPublicKeyInvalid
-		}
-		sum := sha256.Sum256(publicKey)
-		if hex.EncodeToString(sum[:]) != expected {
-			return ErrPublicKeyInvalid
-		}
-		return nil
-	}
-	return nil
+	return registry.TrustVerified, true, nil
 }
 
 type packageSignaturePayload struct {

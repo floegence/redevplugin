@@ -3382,13 +3382,7 @@ func errorCodeForManagementError(err error) security.ErrorCode {
 		return security.ErrTrustVerificationInvalid
 	case errors.Is(err, host.ErrPackageTrustVerifierRequired):
 		return security.ErrTrustVerificationRequired
-	case errors.Is(err, host.ErrReleaseMetadataVerifierRequired):
-		return security.ErrTrustVerificationRequired
 	case errors.Is(err, host.ErrReleaseArtifactResolverRequired):
-		return security.ErrTrustVerificationRequired
-	case errors.Is(err, host.ErrSourceRevocationVerifierRequired):
-		return security.ErrTrustVerificationRequired
-	case errors.Is(err, host.ErrReleaseSourcePolicyRequired):
 		return security.ErrTrustVerificationRequired
 	case errors.Is(err, host.ErrReleaseRefVerificationFailed):
 		return security.ErrReleaseRefVerificationFailed
@@ -3446,13 +3440,7 @@ func httpStatusForManagementError(err error) int {
 		return http.StatusBadRequest
 	case errors.Is(err, host.ErrPackageTrustVerifierRequired):
 		return http.StatusForbidden
-	case errors.Is(err, host.ErrReleaseMetadataVerifierRequired):
-		return http.StatusForbidden
 	case errors.Is(err, host.ErrReleaseArtifactResolverRequired):
-		return http.StatusForbidden
-	case errors.Is(err, host.ErrSourceRevocationVerifierRequired):
-		return http.StatusForbidden
-	case errors.Is(err, host.ErrReleaseSourcePolicyRequired):
 		return http.StatusForbidden
 	case errors.Is(err, host.ErrReleaseRefVerificationFailed):
 		return http.StatusBadRequest

@@ -6,8 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"sort"
-	"strconv"
-	"strings"
 	"sync"
 	"time"
 
@@ -62,55 +60,67 @@ type TrustAssessment struct {
 	Metadata             map[string]string  `json:"metadata,omitempty"`
 }
 
+type ReleaseTrustBinding struct {
+	SourceID              string `json:"source_id"`
+	Channel               string `json:"channel"`
+	ReleaseMetadataRef    string `json:"release_metadata_ref"`
+	ReleaseMetadataSHA256 string `json:"release_metadata_sha256"`
+	PublisherID           string `json:"publisher_id"`
+	PluginID              string `json:"plugin_id"`
+	Version               string `json:"version"`
+	VerifiedStateSHA256   string `json:"verified_state_sha256"`
+	RootEpoch             string `json:"root_epoch"`
+	PolicyEpoch           string `json:"policy_epoch"`
+	RevocationEpoch       string `json:"revocation_epoch"`
+}
+
 type PluginRecord struct {
-	OwnerEnvHash             string                   `json:"-"`
-	PluginInstanceID         string                   `json:"plugin_instance_id"`
-	PublisherID              string                   `json:"publisher_id"`
-	PluginID                 string                   `json:"plugin_id"`
-	Version                  string                   `json:"version"`
-	ActiveFingerprint        string                   `json:"active_fingerprint"`
-	PackageHash              string                   `json:"package_hash"`
-	ManifestHash             string                   `json:"manifest_hash"`
-	EntriesHash              string                   `json:"entries_hash"`
-	TrustState               TrustState               `json:"trust_state"`
-	TrustAssessment          TrustAssessment          `json:"trust_assessment"`
-	SourcePolicySnapshotHash string                   `json:"source_policy_snapshot_hash,omitempty"`
-	SourcePolicySnapshot     map[string]any           `json:"source_policy_snapshot,omitempty"`
-	LocalImportProvenance    *LocalImportProvenance   `json:"local_import_provenance,omitempty"`
-	CapabilityContracts      []capabilitycontract.Pin `json:"capability_contracts,omitempty"`
-	EnableState              EnableState              `json:"enable_state"`
-	DisabledReason           string                   `json:"disabled_reason,omitempty"`
-	PolicyRevision           uint64                   `json:"policy_revision"`
-	ManagementRevision       uint64                   `json:"management_revision"`
-	RevokeEpoch              uint64                   `json:"revoke_epoch"`
-	Manifest                 manifest.Manifest        `json:"manifest"`
-	PackageEntries           []pluginpkg.Entry        `json:"package_entries"`
-	RuntimeRequirement       *RuntimeRequirement      `json:"runtime_requirement,omitempty"`
-	VersionHistory           []PluginVersion          `json:"version_history,omitempty"`
-	InstalledAt              time.Time                `json:"installed_at"`
-	EnabledAt                *time.Time               `json:"enabled_at,omitempty"`
-	UpdatedAt                time.Time                `json:"updated_at"`
-	DeletedAt                *time.Time               `json:"deleted_at,omitempty"`
-	Metadata                 map[string]string        `json:"metadata,omitempty"`
+	OwnerEnvHash          string                   `json:"-"`
+	PluginInstanceID      string                   `json:"plugin_instance_id"`
+	PublisherID           string                   `json:"publisher_id"`
+	PluginID              string                   `json:"plugin_id"`
+	Version               string                   `json:"version"`
+	ActiveFingerprint     string                   `json:"active_fingerprint"`
+	PackageHash           string                   `json:"package_hash"`
+	ManifestHash          string                   `json:"manifest_hash"`
+	EntriesHash           string                   `json:"entries_hash"`
+	TrustState            TrustState               `json:"trust_state"`
+	TrustAssessment       TrustAssessment          `json:"trust_assessment"`
+	ReleaseTrustBinding   *ReleaseTrustBinding     `json:"release_trust_binding,omitempty"`
+	LocalImportProvenance *LocalImportProvenance   `json:"local_import_provenance,omitempty"`
+	CapabilityContracts   []capabilitycontract.Pin `json:"capability_contracts,omitempty"`
+	EnableState           EnableState              `json:"enable_state"`
+	DisabledReason        string                   `json:"disabled_reason,omitempty"`
+	PolicyRevision        uint64                   `json:"policy_revision"`
+	ManagementRevision    uint64                   `json:"management_revision"`
+	RevokeEpoch           uint64                   `json:"revoke_epoch"`
+	Manifest              manifest.Manifest        `json:"manifest"`
+	PackageEntries        []pluginpkg.Entry        `json:"package_entries"`
+	RuntimeRequirement    *RuntimeRequirement      `json:"runtime_requirement,omitempty"`
+	VersionHistory        []PluginVersion          `json:"version_history,omitempty"`
+	InstalledAt           time.Time                `json:"installed_at"`
+	EnabledAt             *time.Time               `json:"enabled_at,omitempty"`
+	UpdatedAt             time.Time                `json:"updated_at"`
+	DeletedAt             *time.Time               `json:"deleted_at,omitempty"`
+	Metadata              map[string]string        `json:"metadata,omitempty"`
 }
 
 type PluginVersion struct {
-	Version                  string                   `json:"version"`
-	ActiveFingerprint        string                   `json:"active_fingerprint"`
-	PackageHash              string                   `json:"package_hash"`
-	ManifestHash             string                   `json:"manifest_hash"`
-	EntriesHash              string                   `json:"entries_hash"`
-	TrustState               TrustState               `json:"trust_state"`
-	TrustAssessment          TrustAssessment          `json:"trust_assessment"`
-	SourcePolicySnapshotHash string                   `json:"source_policy_snapshot_hash,omitempty"`
-	SourcePolicySnapshot     map[string]any           `json:"source_policy_snapshot,omitempty"`
-	LocalImportProvenance    *LocalImportProvenance   `json:"local_import_provenance,omitempty"`
-	CapabilityContracts      []capabilitycontract.Pin `json:"capability_contracts,omitempty"`
-	Manifest                 manifest.Manifest        `json:"manifest"`
-	PackageEntries           []pluginpkg.Entry        `json:"package_entries"`
-	RuntimeRequirement       *RuntimeRequirement      `json:"runtime_requirement,omitempty"`
-	ActivatedAt              time.Time                `json:"activated_at"`
-	Metadata                 map[string]string        `json:"metadata,omitempty"`
+	Version               string                   `json:"version"`
+	ActiveFingerprint     string                   `json:"active_fingerprint"`
+	PackageHash           string                   `json:"package_hash"`
+	ManifestHash          string                   `json:"manifest_hash"`
+	EntriesHash           string                   `json:"entries_hash"`
+	TrustState            TrustState               `json:"trust_state"`
+	TrustAssessment       TrustAssessment          `json:"trust_assessment"`
+	ReleaseTrustBinding   *ReleaseTrustBinding     `json:"release_trust_binding,omitempty"`
+	LocalImportProvenance *LocalImportProvenance   `json:"local_import_provenance,omitempty"`
+	CapabilityContracts   []capabilitycontract.Pin `json:"capability_contracts,omitempty"`
+	Manifest              manifest.Manifest        `json:"manifest"`
+	PackageEntries        []pluginpkg.Entry        `json:"package_entries"`
+	RuntimeRequirement    *RuntimeRequirement      `json:"runtime_requirement,omitempty"`
+	ActivatedAt           time.Time                `json:"activated_at"`
+	Metadata              map[string]string        `json:"metadata,omitempty"`
 }
 
 // RuntimeRequirement is the exact worker-runtime compatibility contract that
@@ -126,16 +136,6 @@ type LocalImportProvenance struct {
 	PolicyEpoch    string `json:"policy_epoch"`
 	UnsignedPolicy string `json:"unsigned_policy"`
 	AssessedAt     string `json:"assessed_at"`
-}
-
-type SourceSecurityFloor struct {
-	SourceID                 string    `json:"source_id"`
-	PolicyEpoch              string    `json:"policy_epoch"`
-	KeyRotationEpoch         string    `json:"key_rotation_epoch"`
-	RevocationEpoch          string    `json:"revocation_epoch"`
-	SourcePolicySnapshotHash string    `json:"source_policy_snapshot_hash"`
-	RevocationMetadataSHA256 string    `json:"revocation_metadata_sha256"`
-	UpdatedAt                time.Time `json:"updated_at"`
 }
 
 type PutOptions struct {
@@ -162,17 +162,13 @@ type Store interface {
 	SetEnableState(ctx context.Context, pluginInstanceID string, state EnableState, reason string, now time.Time) (PluginRecord, error)
 	CommitUninstall(ctx context.Context, req plugindata.CommitUninstallRequest) (plugindata.CommitUninstallResult, error)
 	AbortInstall(ctx context.Context, pluginInstanceID string) error
-	PutSourceSecurityFloor(ctx context.Context, floor SourceSecurityFloor, opts PutOptions) (SourceSecurityFloor, error)
-	GetSourceSecurityFloor(ctx context.Context, sourceID string) (SourceSecurityFloor, error)
 }
 
 var ErrNotFound = errors.New("plugin record not found")
-var ErrSourceSecurityFloorRollback = errors.New("source security floor rollback")
 
 type MemoryStore struct {
 	mu               sync.RWMutex
 	records          map[string]PluginRecord
-	sourceFloors     map[string]SourceSecurityFloor
 	permissionGrants map[string]map[string]permissions.Record
 	securityPolicies map[string]security.PolicyRecord
 	dataBindings     map[string]plugindata.Binding
@@ -182,7 +178,6 @@ type MemoryStore struct {
 func NewMemoryStore() *MemoryStore {
 	return &MemoryStore{
 		records:          map[string]PluginRecord{},
-		sourceFloors:     map[string]SourceSecurityFloor{},
 		permissionGrants: map[string]map[string]permissions.Record{},
 		securityPolicies: map[string]security.PolicyRecord{},
 		dataBindings:     map[string]plugindata.Binding{},
@@ -374,38 +369,6 @@ func (s *MemoryStore) AbortInstall(ctx context.Context, pluginInstanceID string)
 	return nil
 }
 
-func (s *MemoryStore) PutSourceSecurityFloor(_ context.Context, floor SourceSecurityFloor, opts PutOptions) (SourceSecurityFloor, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	now := opts.Now
-	if now.IsZero() {
-		now = time.Now().UTC()
-	}
-	floor.UpdatedAt = now
-	if err := validateSourceSecurityFloor(floor); err != nil {
-		return SourceSecurityFloor{}, err
-	}
-	if existing, ok := s.sourceFloors[floor.SourceID]; ok {
-		if err := ensureSourceSecurityFloorMonotonic(existing, floor); err != nil {
-			return SourceSecurityFloor{}, err
-		}
-	}
-	s.sourceFloors[floor.SourceID] = floor
-	return floor, nil
-}
-
-func (s *MemoryStore) GetSourceSecurityFloor(_ context.Context, sourceID string) (SourceSecurityFloor, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	floor, ok := s.sourceFloors[sourceID]
-	if !ok {
-		return SourceSecurityFloor{}, ErrNotFound
-	}
-	return floor, nil
-}
-
 func normalizeTrustAssessment(record PluginRecord) PluginRecord {
 	if record.TrustAssessment.TrustState == "" {
 		record.TrustAssessment.TrustState = record.TrustState
@@ -437,118 +400,6 @@ func clonePluginRecord(record PluginRecord) (PluginRecord, error) {
 	}
 	cloned.OwnerEnvHash = ownerEnvHash
 	return cloned, nil
-}
-
-func validateSourceSecurityFloor(floor SourceSecurityFloor) error {
-	if floor.SourceID == "" {
-		return errors.New("source_id is required")
-	}
-	for _, item := range []struct {
-		name  string
-		value string
-	}{
-		{name: "policy_epoch", value: floor.PolicyEpoch},
-		{name: "key_rotation_epoch", value: floor.KeyRotationEpoch},
-		{name: "revocation_epoch", value: floor.RevocationEpoch},
-	} {
-		if _, err := parseSourceSecurityEpoch(item.value); err != nil {
-			return fmt.Errorf("%s is invalid: %w", item.name, err)
-		}
-	}
-	if floor.SourcePolicySnapshotHash == "" {
-		return errors.New("source_policy_snapshot_hash is required")
-	}
-	if floor.RevocationMetadataSHA256 == "" {
-		return errors.New("revocation_metadata_sha256 is required")
-	}
-	return nil
-}
-
-func ensureSourceSecurityFloorMonotonic(existing SourceSecurityFloor, next SourceSecurityFloor) error {
-	for _, item := range []struct {
-		name     string
-		existing string
-		next     string
-	}{
-		{name: "policy_epoch", existing: existing.PolicyEpoch, next: next.PolicyEpoch},
-		{name: "key_rotation_epoch", existing: existing.KeyRotationEpoch, next: next.KeyRotationEpoch},
-		{name: "revocation_epoch", existing: existing.RevocationEpoch, next: next.RevocationEpoch},
-	} {
-		cmp, err := compareSourceSecurityEpoch(item.next, item.existing)
-		if err != nil {
-			return err
-		}
-		if cmp < 0 {
-			return fmt.Errorf("%w: %s moved from %s to %s", ErrSourceSecurityFloorRollback, item.name, item.existing, item.next)
-		}
-	}
-	cmp, err := compareSourceSecurityEpoch(next.RevocationEpoch, existing.RevocationEpoch)
-	if err != nil {
-		return err
-	}
-	if cmp == 0 && next.RevocationMetadataSHA256 != existing.RevocationMetadataSHA256 {
-		return fmt.Errorf("%w: revocation_metadata_sha256 changed for epoch %s", ErrSourceSecurityFloorRollback, existing.RevocationEpoch)
-	}
-	cmp, err = compareSourceSecurityEpoch(next.PolicyEpoch, existing.PolicyEpoch)
-	if err != nil {
-		return err
-	}
-	if cmp == 0 && next.SourcePolicySnapshotHash != existing.SourcePolicySnapshotHash {
-		return fmt.Errorf("%w: source_policy_snapshot_hash changed for epoch %s", ErrSourceSecurityFloorRollback, existing.PolicyEpoch)
-	}
-	return nil
-}
-
-// ValidateSourceSecurityFloorTransition checks a candidate floor without
-// mutating the registry. Callers that need to stage other work before the
-// floor is persisted can use this read-only preflight; PutSourceSecurityFloor
-// remains the final atomic validation boundary.
-func ValidateSourceSecurityFloorTransition(existing SourceSecurityFloor, next SourceSecurityFloor) error {
-	if err := validateSourceSecurityFloor(next); err != nil {
-		return err
-	}
-	return ensureSourceSecurityFloorMonotonic(existing, next)
-}
-
-func compareSourceSecurityEpoch(left string, right string) (int, error) {
-	leftValue, err := parseSourceSecurityEpoch(left)
-	if err != nil {
-		return 0, err
-	}
-	rightValue, err := parseSourceSecurityEpoch(right)
-	if err != nil {
-		return 0, err
-	}
-	switch {
-	case leftValue < rightValue:
-		return -1, nil
-	case leftValue > rightValue:
-		return 1, nil
-	default:
-		return 0, nil
-	}
-}
-
-func parseSourceSecurityEpoch(value string) (uint64, error) {
-	if value == "" {
-		return 0, errors.New("epoch is required")
-	}
-	if strings.TrimSpace(value) != value {
-		return 0, errors.New("epoch must be canonical decimal")
-	}
-	if len(value) > 1 && value[0] == '0' {
-		return 0, errors.New("epoch must be canonical decimal")
-	}
-	for _, r := range value {
-		if r < '0' || r > '9' {
-			return 0, errors.New("epoch must be canonical decimal")
-		}
-	}
-	parsed, err := strconv.ParseUint(value, 10, 64)
-	if err != nil {
-		return 0, err
-	}
-	return parsed, nil
 }
 
 func RunnableTrustState(state TrustState) bool {

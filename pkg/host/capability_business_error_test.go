@@ -273,10 +273,9 @@ func TestFinalizeRPCErrorAcceptsSharedSentinelDAG(t *testing.T) {
 
 func TestFinalizeRPCErrorPreservesReachableReleasePolicySentinels(t *testing.T) {
 	for _, sentinel := range []error{
-		ErrReleaseSourcePolicyRequired,
+		ErrReleaseArtifactResolverRequired,
+		ErrReleaseRefVerificationFailed,
 		ErrReleaseRefPolicyDenied,
-		ErrSourceRevocationVerifierRequired,
-		ErrReleaseMetadataVerifierRequired,
 	} {
 		if finalized := finalizeRPCError(testRPCErrorContext(), sentinel); !errors.Is(finalized, sentinel) {
 			t.Fatalf("finalizeRPCError(%v) lost stable sentinel: %v", sentinel, finalized)

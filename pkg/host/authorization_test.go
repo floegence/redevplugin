@@ -456,12 +456,10 @@ func TestAuthorizationCanonicalizesTargetsBeforeAdapterDispatch(t *testing.T) {
 
 func TestInstallEntryPointsRejectMissingPluginInstanceIDBeforeExternalInput(t *testing.T) {
 	authorization := &recordingAuthorizationAdapter{}
-	resolver := &recordingReleaseArtifactResolver{}
 	h, _, _ := newTestHostWithOptions(t, testHostOptions{
-		authorization:           authorization,
-		developerMode:           true,
-		localGenerated:          true,
-		releaseArtifactResolver: resolver,
+		authorization:  authorization,
+		developerMode:  true,
+		localGenerated: true,
 	})
 	reader := &readAtProbe{reader: bytes.NewReader(buildFixturePackage(t))}
 
@@ -477,9 +475,6 @@ func TestInstallEntryPointsRejectMissingPluginInstanceIDBeforeExternalInput(t *t
 
 	if _, err := h.InstallReleaseRef(hostTestContext(), InstallReleaseRefRequest{}); !errors.Is(err, ErrActionDenied) {
 		t.Fatalf("InstallReleaseRef() error = %v, want ErrActionDenied", err)
-	}
-	if resolver.calls != 0 {
-		t.Fatalf("missing plugin_instance_id resolved release %d times", resolver.calls)
 	}
 	if len(authorization.requests) != 0 {
 		t.Fatalf("invalid install target reached authorization adapter: %#v", authorization.requests)
@@ -503,12 +498,9 @@ func TestAuthorizationAdapterOperationalFailureIsSanitized(t *testing.T) {
 func TestReleaseUpdateAndIntentAuthorizationPrecedeDiscovery(t *testing.T) {
 	t.Run("release update", func(t *testing.T) {
 		authorization := &recordingAuthorizationAdapter{err: ErrActionDenied}
-		sourceResolver := &recordingReleaseSourcePolicyResolver{}
 		artifactResolver := &recordingReleaseArtifactResolver{}
 		h, _, _ := newTestHostWithOptions(t, testHostOptions{
-			authorization:           authorization,
-			releaseSourcePolicy:     sourceResolver,
-			releaseArtifactResolver: artifactResolver,
+			authorization: authorization,
 		})
 		registryProbe := &authorizationProbeRegistry{Store: h.adapters.Registry}
 		h.adapters.Registry = registryProbe
@@ -519,8 +511,8 @@ func TestReleaseUpdateAndIntentAuthorizationPrecedeDiscovery(t *testing.T) {
 		if !errors.Is(err, ErrActionDenied) {
 			t.Fatalf("UpdateReleaseRef() error = %v, want ErrActionDenied", err)
 		}
-		if registryProbe.getCalls != 0 || registryProbe.listCalls != 0 || sourceResolver.calls != 0 || artifactResolver.calls != 0 {
-			t.Fatalf("authorization denial reached discovery: registry get=%d list=%d source=%d artifact=%d", registryProbe.getCalls, registryProbe.listCalls, sourceResolver.calls, artifactResolver.calls)
+		if registryProbe.getCalls != 0 || registryProbe.listCalls != 0 || artifactResolver.calls != 0 {
+			t.Fatalf("authorization denial reached discovery: registry get=%d list=%d artifact=%d", registryProbe.getCalls, registryProbe.listCalls, artifactResolver.calls)
 		}
 		wantScope := sessionctx.ResourceScope{Kind: sessionctx.ScopeEnvironment, OwnerEnvHash: "env_hash"}
 		if len(authorization.requests) != 1 || !authorizationTargetsEqual(authorization.requests[0].Target, AuthorizationTarget{Kind: ResourcePlugin, ID: "plugini_update_auth", Scope: &wantScope}) {

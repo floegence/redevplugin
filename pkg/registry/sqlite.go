@@ -293,56 +293,6 @@ func (s *SQLiteStore) AbortInstall(ctx context.Context, pluginInstanceID string)
 	return nil
 }
 
-func (s *SQLiteStore) PutSourceSecurityFloor(ctx context.Context, floor SourceSecurityFloor, opts PutOptions) (SourceSecurityFloor, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	now := opts.Now
-	if now.IsZero() {
-		now = time.Now().UTC()
-	}
-	floor.UpdatedAt = now
-	if err := validateSourceSecurityFloor(floor); err != nil {
-		return SourceSecurityFloor{}, err
-	}
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return SourceSecurityFloor{}, err
-	}
-	defer rollbackUnlessCommitted(tx)
-
-	existing, exists, err := getSQLiteSourceSecurityFloor(ctx, tx, floor.SourceID)
-	if err != nil {
-		return SourceSecurityFloor{}, err
-	}
-	if exists {
-		if err := ensureSourceSecurityFloorMonotonic(existing, floor); err != nil {
-			return SourceSecurityFloor{}, err
-		}
-	}
-	if err := upsertSQLiteSourceSecurityFloor(ctx, tx, floor); err != nil {
-		return SourceSecurityFloor{}, err
-	}
-	if err := tx.Commit(); err != nil {
-		return SourceSecurityFloor{}, err
-	}
-	return floor, nil
-}
-
-func (s *SQLiteStore) GetSourceSecurityFloor(ctx context.Context, sourceID string) (SourceSecurityFloor, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	floor, exists, err := getSQLiteSourceSecurityFloor(ctx, s.db, sourceID)
-	if err != nil {
-		return SourceSecurityFloor{}, err
-	}
-	if !exists {
-		return SourceSecurityFloor{}, ErrNotFound
-	}
-	return floor, nil
-}
-
 func (s *SQLiteStore) updatePlugin(ctx context.Context, pluginInstanceID string, now time.Time, mutate func(PluginRecord, time.Time) PluginRecord) (PluginRecord, error) {
 	ownerEnvHash, err := environmentOwner(ctx)
 	if err != nil {
@@ -550,18 +500,6 @@ func (s *SQLiteStore) initializeSchema(ctx context.Context) error {
 		created_at INTEGER NOT NULL,
 		PRIMARY KEY(scope_kind, owner_env_hash, owner_user_hash, plugin_instance_id, object_id)
 	)`); err != nil {
-		return err
-	}
-	if _, err := tx.ExecContext(ctx, `
-CREATE TABLE IF NOT EXISTS plugin_source_security_floors (
-	source_id TEXT PRIMARY KEY,
-	policy_epoch TEXT NOT NULL,
-	key_rotation_epoch TEXT NOT NULL,
-	revocation_epoch TEXT NOT NULL,
-	source_policy_snapshot_hash TEXT NOT NULL,
-	revocation_metadata_sha256 TEXT NOT NULL,
-	updated_at INTEGER NOT NULL
-)`); err != nil {
 		return err
 	}
 	if err := validateSQLiteAuthorizationData(ctx, tx); err != nil {
@@ -943,7 +881,7 @@ func upsertSQLitePlugin(ctx context.Context, tx *sql.Tx, record PluginRecord) er
 	if err != nil {
 		return err
 	}
-	sourcePolicySnapshotJSON, err := encodeRegistryJSON(record.SourcePolicySnapshot)
+	releaseTrustBindingJSON, err := encodeRegistryJSON(record.ReleaseTrustBinding)
 	if err != nil {
 		return err
 	}
@@ -1003,8 +941,8 @@ func upsertSQLitePlugin(ctx context.Context, tx *sql.Tx, record PluginRecord) er
 		record.EntriesHash,
 		string(record.TrustState),
 		trustAssessmentJSON,
-		record.SourcePolicySnapshotHash,
-		sourcePolicySnapshotJSON,
+		releaseTrustBindingStateSHA256(record.ReleaseTrustBinding),
+		releaseTrustBindingJSON,
 		localImportProvenanceJSON,
 		capabilityContractsJSON,
 		string(record.EnableState),
@@ -1037,7 +975,8 @@ func scanSQLitePlugin(scanner sqlitePluginScanner) (PluginRecord, error) {
 	var record PluginRecord
 	var trustState string
 	var trustAssessmentJSON string
-	var sourcePolicySnapshotJSON string
+	var releaseTrustBindingStateSHA256 string
+	var releaseTrustBindingJSON string
 	var localImportProvenanceJSON string
 	var capabilityContractsJSON string
 	var enableState string
@@ -1062,8 +1001,8 @@ func scanSQLitePlugin(scanner sqlitePluginScanner) (PluginRecord, error) {
 		&record.EntriesHash,
 		&trustState,
 		&trustAssessmentJSON,
-		&record.SourcePolicySnapshotHash,
-		&sourcePolicySnapshotJSON,
+		&releaseTrustBindingStateSHA256,
+		&releaseTrustBindingJSON,
 		&localImportProvenanceJSON,
 		&capabilityContractsJSON,
 		&enableState,
@@ -1109,10 +1048,15 @@ func scanSQLitePlugin(scanner sqlitePluginScanner) (PluginRecord, error) {
 			return PluginRecord{}, err
 		}
 	}
-	if strings.TrimSpace(sourcePolicySnapshotJSON) != "" && strings.TrimSpace(sourcePolicySnapshotJSON) != "{}" {
-		if err := decodeRegistryJSON(sourcePolicySnapshotJSON, &record.SourcePolicySnapshot); err != nil {
+	if strings.TrimSpace(releaseTrustBindingJSON) != "" && strings.TrimSpace(releaseTrustBindingJSON) != "{}" && strings.TrimSpace(releaseTrustBindingJSON) != "null" {
+		var binding ReleaseTrustBinding
+		if err := decodeRegistryJSON(releaseTrustBindingJSON, &binding); err != nil {
 			return PluginRecord{}, err
 		}
+		if binding.VerifiedStateSHA256 != releaseTrustBindingStateSHA256 {
+			return PluginRecord{}, errors.New("release trust binding state digest mismatch")
+		}
+		record.ReleaseTrustBinding = &binding
 	}
 	if strings.TrimSpace(localImportProvenanceJSON) != "" && strings.TrimSpace(localImportProvenanceJSON) != "{}" && strings.TrimSpace(localImportProvenanceJSON) != "null" {
 		var provenance LocalImportProvenance
@@ -1133,54 +1077,11 @@ func scanSQLitePlugin(scanner sqlitePluginScanner) (PluginRecord, error) {
 	return normalizeTrustAssessment(record), nil
 }
 
-func getSQLiteSourceSecurityFloor(ctx context.Context, q sqliteQuerier, sourceID string) (SourceSecurityFloor, bool, error) {
-	row := q.QueryRowContext(ctx, `
-SELECT
-	source_id, policy_epoch, key_rotation_epoch, revocation_epoch,
-	source_policy_snapshot_hash, revocation_metadata_sha256, updated_at
-FROM plugin_source_security_floors
-WHERE source_id = ?`, sourceID)
-	var floor SourceSecurityFloor
-	var updatedAt int64
-	if err := row.Scan(
-		&floor.SourceID,
-		&floor.PolicyEpoch,
-		&floor.KeyRotationEpoch,
-		&floor.RevocationEpoch,
-		&floor.SourcePolicySnapshotHash,
-		&floor.RevocationMetadataSHA256,
-		&updatedAt,
-	); errors.Is(err, sql.ErrNoRows) {
-		return SourceSecurityFloor{}, false, nil
-	} else if err != nil {
-		return SourceSecurityFloor{}, false, err
+func releaseTrustBindingStateSHA256(binding *ReleaseTrustBinding) string {
+	if binding == nil {
+		return ""
 	}
-	floor.UpdatedAt = unixToTime(updatedAt)
-	return floor, true, nil
-}
-
-func upsertSQLiteSourceSecurityFloor(ctx context.Context, tx *sql.Tx, floor SourceSecurityFloor) error {
-	_, err := tx.ExecContext(ctx, `
-INSERT INTO plugin_source_security_floors (
-	source_id, policy_epoch, key_rotation_epoch, revocation_epoch,
-	source_policy_snapshot_hash, revocation_metadata_sha256, updated_at
-) VALUES (?, ?, ?, ?, ?, ?, ?)
-ON CONFLICT(source_id) DO UPDATE SET
-	policy_epoch = excluded.policy_epoch,
-	key_rotation_epoch = excluded.key_rotation_epoch,
-	revocation_epoch = excluded.revocation_epoch,
-	source_policy_snapshot_hash = excluded.source_policy_snapshot_hash,
-	revocation_metadata_sha256 = excluded.revocation_metadata_sha256,
-	updated_at = excluded.updated_at`,
-		floor.SourceID,
-		floor.PolicyEpoch,
-		floor.KeyRotationEpoch,
-		floor.RevocationEpoch,
-		floor.SourcePolicySnapshotHash,
-		floor.RevocationMetadataSHA256,
-		timeToNullableUnix(floor.UpdatedAt),
-	)
-	return err
+	return binding.VerifiedStateSHA256
 }
 
 func encodeRegistryJSON(value any) (string, error) {

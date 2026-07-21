@@ -28,9 +28,10 @@ import (
 	"github.com/floegence/redevplugin/pkg/observability"
 	"github.com/floegence/redevplugin/pkg/operation"
 	"github.com/floegence/redevplugin/pkg/registry"
+	"github.com/floegence/redevplugin/pkg/releasecontract"
+	"github.com/floegence/redevplugin/pkg/releasetrust"
 	"github.com/floegence/redevplugin/pkg/sessionctx"
 	"github.com/floegence/redevplugin/pkg/stream"
-	"github.com/floegence/redevplugin/pkg/version"
 )
 
 type resolvedCapabilityMethod struct {
@@ -50,7 +51,12 @@ type methodExecutionAuthorization struct {
 func (h *Host) resolvePackageCapabilityPins(ctx context.Context, pkg manifest.Manifest, trustInput packageTrustInput) ([]capabilitycontract.Pin, error) {
 	var pins []capabilitycontract.Pin
 	if trustInput.Release != nil {
-		resolved, err := h.ensureReleaseCapabilityContracts(ctx, *trustInput.Release, *trustInput.SourcePolicySnapshot)
+		if trustInput.SourcePolicy == nil || trustInput.VerifiedRelease == nil {
+			return nil, ErrReleaseRefVerificationFailed
+		}
+		resolved, err := h.ensureReleaseCapabilityContracts(
+			ctx, *trustInput.Release, trustInput.VerifiedRelease.ReleaseMetadata(), *trustInput.SourcePolicy,
+		)
 		if err != nil {
 			return nil, err
 		}
@@ -83,7 +89,7 @@ func (h *Host) resolvePackageCapabilityPins(ctx context.Context, pkg manifest.Ma
 	return pins, nil
 }
 
-func (h *Host) ensureReleaseCapabilityContracts(ctx context.Context, release PluginPackageRelease, sourcePolicy SourcePolicySnapshot) ([]capabilitycontract.Pin, error) {
+func (h *Host) ensureReleaseCapabilityContracts(ctx context.Context, release PluginPackageRelease, metadata releasetrust.VerifiedReleaseMetadata, sourcePolicy releasecontract.SourcePolicyV2) ([]capabilitycontract.Pin, error) {
 	requirement, err := h.selectHostRequirement(ctx, release)
 	if err != nil {
 		return nil, err
@@ -93,21 +99,12 @@ func (h *Host) ensureReleaseCapabilityContracts(ctx context.Context, release Plu
 	}
 	pins := make([]capabilitycontract.Pin, 0, len(requirement.RequiredCapabilityContracts))
 	for _, required := range requirement.RequiredCapabilityContracts {
-		trusted, err := validateCapabilityContractSigningKey(sourcePolicy, required.Contract, time.Now().UTC())
+		verified, err := h.resolveAndVerifyCapabilityContract(ctx, release, metadata, sourcePolicy, required)
 		if err != nil {
 			return nil, err
 		}
-		verified, err := h.adapters.Capabilities.RequireContract(required.Contract)
-		if err != nil {
-			verified, err = h.resolveAndVerifyCapabilityContract(ctx, release, sourcePolicy, required)
-			if err != nil {
-				return nil, err
-			}
-			if err := h.adapters.Capabilities.AddContract(verified); err != nil {
-				return nil, err
-			}
-		} else if !hashEqual(verified.PublicKeySHA256(), trusted.PublicKeySHA256) {
-			return nil, fmt.Errorf("%w: cached capability contract signing key does not match current source policy", ErrReleaseRefVerificationFailed)
+		if err := h.adapters.Capabilities.AddContract(verified); err != nil {
+			return nil, err
 		}
 		if verified.Contract.CapabilityID != required.CapabilityID || verified.Contract.CapabilityVersion != required.CapabilityVersion {
 			return nil, fmt.Errorf("%w: capability requirement identity does not match the verified contract", ErrReleaseRefVerificationFailed)
@@ -117,19 +114,12 @@ func (h *Host) ensureReleaseCapabilityContracts(ctx context.Context, release Plu
 	return pins, nil
 }
 
-func (h *Host) resolveAndVerifyCapabilityContract(ctx context.Context, release PluginPackageRelease, sourcePolicy SourcePolicySnapshot, required HostCapabilityRequirement) (capabilitycontract.VerifiedContract, error) {
-	if h.adapters.CapabilityContractArtifacts == nil || h.adapters.CapabilityContractKeys == nil {
-		return capabilitycontract.VerifiedContract{}, fmt.Errorf("%w: capability contract resolver and key resolver are required", ErrReleaseRefVerificationFailed)
-	}
-	trusted, err := validateCapabilityContractSigningKey(sourcePolicy, required.Contract, time.Now().UTC())
-	if err != nil {
-		return capabilitycontract.VerifiedContract{}, err
+func (h *Host) resolveAndVerifyCapabilityContract(ctx context.Context, release PluginPackageRelease, metadata releasetrust.VerifiedReleaseMetadata, sourcePolicy releasecontract.SourcePolicyV2, required HostCapabilityRequirement) (capabilitycontract.VerifiedContract, error) {
+	if h.adapters.CapabilityContractArtifacts == nil || h.adapters.ReleaseTrust == nil {
+		return capabilitycontract.VerifiedContract{}, fmt.Errorf("%w: capability contract resolver and trust service are required", ErrReleaseRefVerificationFailed)
 	}
 	resolved, err := h.adapters.CapabilityContractArtifacts.ResolveCapabilityContract(ctx, CapabilityContractResolveRequest{
-		SourceID:             release.SourceID,
-		PluginPublisherID:    release.PublisherID,
-		Pin:                  required.Contract,
-		SourcePolicySnapshot: sourcePolicy,
+		SourceID: release.SourceID, PluginPublisherID: release.PublisherID, Pin: required.Contract, SourcePolicy: sourcePolicy,
 	})
 	if err != nil {
 		return capabilitycontract.VerifiedContract{}, err
@@ -138,31 +128,7 @@ func (h *Host) resolveAndVerifyCapabilityContract(ctx context.Context, release P
 	if err != nil {
 		return capabilitycontract.VerifiedContract{}, err
 	}
-	publicKey, err := h.adapters.CapabilityContractKeys.ResolveCapabilityContractKey(ctx, CapabilityContractKeyRequest{
-		SourceID:             release.SourceID,
-		PublisherID:          required.Contract.PublisherID,
-		KeyID:                required.Contract.SignatureKeyID,
-		SourcePolicySnapshot: sourcePolicy,
-	})
-	if err != nil {
-		return capabilitycontract.VerifiedContract{}, err
-	}
-	keyHash := sha256.Sum256(publicKey)
-	if !hashEqual(hex.EncodeToString(keyHash[:]), trusted.PublicKeySHA256) {
-		return capabilitycontract.VerifiedContract{}, fmt.Errorf("%w: capability contract public key hash mismatch", ErrReleaseRefVerificationFailed)
-	}
-	verified, err := capabilitycontract.Verify(capabilitycontract.VerifyRequest{
-		Bundle:      bundle,
-		ExpectedPin: required.Contract,
-		TrustedKey: capabilitycontract.TrustedKey{
-			PublisherID:     required.Contract.PublisherID,
-			KeyID:           required.Contract.SignatureKeyID,
-			PublicKey:       publicKey,
-			PolicyEpoch:     required.Contract.SignaturePolicyEpoch,
-			RevocationEpoch: required.Contract.SignatureRevocationEpoch,
-		},
-		CurrentReDevPluginVersion: version.CurrentCompatibilityVersion(),
-	})
+	verified, err := h.adapters.ReleaseTrust.VerifyCapabilityContract(metadata, bundle, required.Contract)
 	if err != nil {
 		return capabilitycontract.VerifiedContract{}, fmt.Errorf("%w: %v", ErrReleaseRefVerificationFailed, err)
 	}
@@ -177,7 +143,7 @@ const (
 	maxCapabilityArtifactFetchHops = 5
 )
 
-func loadCapabilityContractBundle(ctx context.Context, pin capabilitycontract.Pin, sourcePolicy SourcePolicySnapshot, resolved ResolvedCapabilityContractArtifact) (capabilitycontract.Bundle, error) {
+func loadCapabilityContractBundle(ctx context.Context, pin capabilitycontract.Pin, sourcePolicy releasecontract.SourcePolicyV2, resolved ResolvedCapabilityContractArtifact) (capabilitycontract.Bundle, error) {
 	if resolved.Artifacts == nil {
 		return capabilitycontract.Bundle{}, fmt.Errorf("%w: capability contract artifact set is required", ErrReleaseRefVerificationFailed)
 	}
@@ -205,7 +171,7 @@ func loadCapabilityContractBundle(ctx context.Context, pin capabilitycontract.Pi
 	return capabilitycontract.Bundle{Pin: pin, Files: files}, nil
 }
 
-func readCapabilityContractArtifact(ctx context.Context, artifacts CapabilityContractArtifactSet, sourcePolicy SourcePolicySnapshot, pin capabilitycontract.Pin, ref string) ([]byte, error) {
+func readCapabilityContractArtifact(ctx context.Context, artifacts CapabilityContractArtifactSet, sourcePolicy releasecontract.SourcePolicyV2, pin capabilitycontract.Pin, ref string) ([]byte, error) {
 	readCtx, cancel := context.WithTimeout(ctx, capabilityArtifactReadTimeout)
 	defer cancel()
 	resolved, err := artifacts.OpenCapabilityContractArtifact(readCtx, ref)
@@ -256,7 +222,7 @@ func capabilityArtifactMediaType(pin capabilitycontract.Pin, ref string) (string
 	}
 }
 
-func validateCapabilityArtifactFetch(sourcePolicy SourcePolicySnapshot, chain []CapabilityArtifactFetchHop) error {
+func validateCapabilityArtifactFetch(sourcePolicy releasecontract.SourcePolicyV2, chain []CapabilityArtifactFetchHop) error {
 	if len(sourcePolicy.AllowedArtifactHosts) == 0 {
 		return fmt.Errorf("%w: source policy allowed_artifact_hosts are required for capability contracts", ErrReleaseRefVerificationFailed)
 	}
@@ -345,20 +311,6 @@ var nonPublicArtifactPrefixes = []netip.Prefix{
 	netip.MustParsePrefix("5f00::/16"),
 	netip.MustParsePrefix("fc00::/7"),
 	netip.MustParsePrefix("fe80::/10"),
-}
-
-func validateCapabilityContractSigningKey(sourcePolicy SourcePolicySnapshot, pin capabilitycontract.Pin, now time.Time) (SourcePolicyTrustedKey, error) {
-	trusted, err := requireTrustedSourceKey(sourcePolicy, pin.SignatureKeyID, "host_capability_contract", now)
-	if err != nil {
-		return SourcePolicyTrustedKey{}, fmt.Errorf("%w: capability contract signing key is not trusted: %v", ErrReleaseRefVerificationFailed, err)
-	}
-	if err := validateReleaseSignatureEpochBinding("capability contract signature", pin.SignaturePolicyEpoch, pin.SignatureRevocationEpoch, sourcePolicy); err != nil {
-		return SourcePolicyTrustedKey{}, err
-	}
-	if !stringSliceContains(trusted.AllowedCapabilityPublishers, pin.PublisherID) {
-		return SourcePolicyTrustedKey{}, fmt.Errorf("%w: capability contract publisher %q is outside the signing key scope", ErrReleaseRefVerificationFailed, pin.PublisherID)
-	}
-	return trusted, nil
 }
 
 func (h *Host) selectHostRequirement(ctx context.Context, release PluginPackageRelease) (*HostRequirement, error) {

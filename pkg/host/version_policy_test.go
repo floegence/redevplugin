@@ -8,6 +8,7 @@ import (
 	"github.com/floegence/redevplugin/pkg/manifest"
 	"github.com/floegence/redevplugin/pkg/pluginpkg"
 	"github.com/floegence/redevplugin/pkg/registry"
+	"github.com/floegence/redevplugin/pkg/releasecontract"
 	"github.com/floegence/redevplugin/pkg/version"
 )
 
@@ -55,7 +56,7 @@ func TestValidateReleaseCompatibilityRequiresStrictSemVer(t *testing.T) {
 }
 
 func TestReleaseSourcePolicyUsesSemVerPrecedence(t *testing.T) {
-	blocked := SourcePolicySnapshot{DowngradePolicy: PackageDowngradeBlock}
+	blocked := releasecontract.SourcePolicyV2{DowngradePolicy: "block"}
 	for _, testCase := range []struct {
 		name    string
 		current string
@@ -84,7 +85,7 @@ func TestReleaseSourcePolicyRejectsInvalidSemVer(t *testing.T) {
 		PackageTrustActionUpdate,
 		&registry.PluginRecord{Version: "1.0.0"},
 		PluginReleaseRef{Version: "next"},
-		SourcePolicySnapshot{},
+		releasecontract.SourcePolicyV2{},
 	)
 	if !errors.Is(err, ErrReleaseRefVerificationFailed) {
 		t.Fatalf("enforceReleaseSourcePolicy() error = %v, want ErrReleaseRefVerificationFailed", err)
@@ -96,7 +97,7 @@ func TestReleaseSourcePolicyTreatsPrereleaseAsDowngradeFromStable(t *testing.T) 
 		PackageTrustActionUpdate,
 		&registry.PluginRecord{Version: "1.0.0"},
 		PluginReleaseRef{Version: "1.0.0-rc.1"},
-		SourcePolicySnapshot{DowngradePolicy: PackageDowngradeBlock},
+		releasecontract.SourcePolicyV2{DowngradePolicy: "block"},
 	)
 	if !errors.Is(err, ErrReleaseRefPolicyDenied) {
 		t.Fatalf("enforceReleaseSourcePolicy() error = %v, want ErrReleaseRefPolicyDenied", err)

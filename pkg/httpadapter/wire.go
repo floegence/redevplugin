@@ -84,54 +84,66 @@ type runtimeRequirementResponse struct {
 	SupportedTargets []string `json:"supported_targets,omitempty"`
 }
 
+type releaseTrustBindingResponse struct {
+	SourceID              string `json:"source_id"`
+	Channel               string `json:"channel"`
+	ReleaseMetadataRef    string `json:"release_metadata_ref"`
+	ReleaseMetadataSHA256 string `json:"release_metadata_sha256"`
+	PublisherID           string `json:"publisher_id"`
+	PluginID              string `json:"plugin_id"`
+	Version               string `json:"version"`
+	VerifiedStateSHA256   string `json:"verified_state_sha256"`
+	RootEpoch             string `json:"root_epoch"`
+	PolicyEpoch           string `json:"policy_epoch"`
+	RevocationEpoch       string `json:"revocation_epoch"`
+}
+
 type pluginVersionResponse struct {
-	Version                  string                         `json:"version"`
-	ActiveFingerprint        string                         `json:"active_fingerprint"`
-	PackageHash              string                         `json:"package_hash"`
-	ManifestHash             string                         `json:"manifest_hash"`
-	EntriesHash              string                         `json:"entries_hash"`
-	TrustState               string                         `json:"trust_state"`
-	TrustAssessment          trustAssessmentResponse        `json:"trust_assessment"`
-	SourcePolicySnapshotHash string                         `json:"source_policy_snapshot_hash,omitempty"`
-	SourcePolicySnapshot     map[string]any                 `json:"source_policy_snapshot,omitempty"`
-	LocalImportProvenance    *localImportProvenanceResponse `json:"local_import_provenance,omitempty"`
-	CapabilityContracts      []capabilityPinResponse        `json:"capability_contracts,omitempty"`
-	Manifest                 manifestResponse               `json:"manifest"`
-	PackageEntries           []packageEntryResponse         `json:"package_entries"`
-	RuntimeRequirement       *runtimeRequirementResponse    `json:"runtime_requirement,omitempty"`
-	ActivatedAt              time.Time                      `json:"activated_at"`
-	Metadata                 map[string]string              `json:"metadata,omitempty"`
+	Version               string                         `json:"version"`
+	ActiveFingerprint     string                         `json:"active_fingerprint"`
+	PackageHash           string                         `json:"package_hash"`
+	ManifestHash          string                         `json:"manifest_hash"`
+	EntriesHash           string                         `json:"entries_hash"`
+	TrustState            string                         `json:"trust_state"`
+	TrustAssessment       trustAssessmentResponse        `json:"trust_assessment"`
+	ReleaseTrustBinding   *releaseTrustBindingResponse   `json:"release_trust_binding,omitempty"`
+	LocalImportProvenance *localImportProvenanceResponse `json:"local_import_provenance,omitempty"`
+	CapabilityContracts   []capabilityPinResponse        `json:"capability_contracts,omitempty"`
+	Manifest              manifestResponse               `json:"manifest"`
+	PackageEntries        []packageEntryResponse         `json:"package_entries"`
+	RuntimeRequirement    *runtimeRequirementResponse    `json:"runtime_requirement,omitempty"`
+	ActivatedAt           time.Time                      `json:"activated_at"`
+	Metadata              map[string]string              `json:"metadata,omitempty"`
 }
 
 type pluginRecordResponse struct {
-	PluginInstanceID         string                         `json:"plugin_instance_id"`
-	PublisherID              string                         `json:"publisher_id"`
-	PluginID                 string                         `json:"plugin_id"`
-	Version                  string                         `json:"version"`
-	ActiveFingerprint        string                         `json:"active_fingerprint"`
-	PackageHash              string                         `json:"package_hash"`
-	ManifestHash             string                         `json:"manifest_hash"`
-	EntriesHash              string                         `json:"entries_hash"`
-	TrustState               string                         `json:"trust_state"`
-	TrustAssessment          trustAssessmentResponse        `json:"trust_assessment"`
-	SourcePolicySnapshotHash string                         `json:"source_policy_snapshot_hash,omitempty"`
-	SourcePolicySnapshot     map[string]any                 `json:"source_policy_snapshot,omitempty"`
-	LocalImportProvenance    *localImportProvenanceResponse `json:"local_import_provenance,omitempty"`
-	CapabilityContracts      []capabilityPinResponse        `json:"capability_contracts,omitempty"`
-	EnableState              string                         `json:"enable_state"`
-	DisabledReason           string                         `json:"disabled_reason,omitempty"`
-	PolicyRevision           uint64                         `json:"policy_revision"`
-	ManagementRevision       uint64                         `json:"management_revision"`
-	RevokeEpoch              uint64                         `json:"revoke_epoch"`
-	Manifest                 manifestResponse               `json:"manifest"`
-	PackageEntries           []packageEntryResponse         `json:"package_entries"`
-	RuntimeRequirement       *runtimeRequirementResponse    `json:"runtime_requirement,omitempty"`
-	VersionHistory           []pluginVersionResponse        `json:"version_history,omitempty"`
-	InstalledAt              time.Time                      `json:"installed_at"`
-	EnabledAt                *time.Time                     `json:"enabled_at,omitempty"`
-	UpdatedAt                time.Time                      `json:"updated_at"`
-	DeletedAt                *time.Time                     `json:"deleted_at,omitempty"`
-	Metadata                 map[string]string              `json:"metadata,omitempty"`
+	PluginInstanceID      string                         `json:"plugin_instance_id"`
+	PublisherID           string                         `json:"publisher_id"`
+	PluginID              string                         `json:"plugin_id"`
+	Version               string                         `json:"version"`
+	ActiveFingerprint     string                         `json:"active_fingerprint"`
+	PackageHash           string                         `json:"package_hash"`
+	ManifestHash          string                         `json:"manifest_hash"`
+	EntriesHash           string                         `json:"entries_hash"`
+	TrustState            string                         `json:"trust_state"`
+	TrustAssessment       trustAssessmentResponse        `json:"trust_assessment"`
+	ReleaseTrustBinding   *releaseTrustBindingResponse   `json:"release_trust_binding,omitempty"`
+	LocalImportProvenance *localImportProvenanceResponse `json:"local_import_provenance,omitempty"`
+	CapabilityContracts   []capabilityPinResponse        `json:"capability_contracts,omitempty"`
+	EnableState           string                         `json:"enable_state"`
+	DisabledReason        string                         `json:"disabled_reason,omitempty"`
+	PolicyRevision        uint64                         `json:"policy_revision"`
+	ManagementRevision    uint64                         `json:"management_revision"`
+	RevokeEpoch           uint64                         `json:"revoke_epoch"`
+	Manifest              manifestResponse               `json:"manifest"`
+	PackageEntries        []packageEntryResponse         `json:"package_entries"`
+	RuntimeRequirement    *runtimeRequirementResponse    `json:"runtime_requirement,omitempty"`
+	VersionHistory        []pluginVersionResponse        `json:"version_history,omitempty"`
+	InstalledAt           time.Time                      `json:"installed_at"`
+	EnabledAt             *time.Time                     `json:"enabled_at,omitempty"`
+	UpdatedAt             time.Time                      `json:"updated_at"`
+	DeletedAt             *time.Time                     `json:"deleted_at,omitempty"`
+	Metadata              map[string]string              `json:"metadata,omitempty"`
 }
 
 func publicPluginRecord(record registry.PluginRecord) (pluginRecordResponse, error) {
@@ -143,10 +155,6 @@ func publicPluginRecord(record registry.PluginRecord) (pluginRecordResponse, err
 		}
 		versions[index] = mapped
 	}
-	sourcePolicySnapshot, err := cloneWireJSONMap(record.SourcePolicySnapshot)
-	if err != nil {
-		return pluginRecordResponse{}, err
-	}
 	publicManifest, err := publicManifest(record.Manifest)
 	if err != nil {
 		return pluginRecordResponse{}, err
@@ -155,9 +163,9 @@ func publicPluginRecord(record registry.PluginRecord) (pluginRecordResponse, err
 		PluginInstanceID: record.PluginInstanceID, PublisherID: record.PublisherID, PluginID: record.PluginID,
 		Version: record.Version, ActiveFingerprint: record.ActiveFingerprint, PackageHash: record.PackageHash,
 		ManifestHash: record.ManifestHash, EntriesHash: record.EntriesHash, TrustState: string(record.TrustState),
-		TrustAssessment: publicTrustAssessment(record.TrustAssessment), SourcePolicySnapshotHash: record.SourcePolicySnapshotHash,
-		SourcePolicySnapshot: sourcePolicySnapshot, LocalImportProvenance: publicLocalImportProvenance(record.LocalImportProvenance),
-		CapabilityContracts: publicCapabilityPins(record.CapabilityContracts), EnableState: string(record.EnableState), DisabledReason: record.DisabledReason,
+		TrustAssessment: publicTrustAssessment(record.TrustAssessment), ReleaseTrustBinding: publicReleaseTrustBinding(record.ReleaseTrustBinding),
+		LocalImportProvenance: publicLocalImportProvenance(record.LocalImportProvenance),
+		CapabilityContracts:   publicCapabilityPins(record.CapabilityContracts), EnableState: string(record.EnableState), DisabledReason: record.DisabledReason,
 		PolicyRevision: record.PolicyRevision, ManagementRevision: record.ManagementRevision, RevokeEpoch: record.RevokeEpoch,
 		Manifest: publicManifest, PackageEntries: publicPackageEntries(record.PackageEntries), RuntimeRequirement: publicRuntimeRequirement(record.RuntimeRequirement),
 		VersionHistory: versions, InstalledAt: record.InstalledAt, EnabledAt: cloneWireTime(record.EnabledAt), UpdatedAt: record.UpdatedAt,
@@ -178,10 +186,6 @@ func publicPluginRecords(records []registry.PluginRecord) ([]pluginRecordRespons
 }
 
 func publicPluginVersion(version registry.PluginVersion) (pluginVersionResponse, error) {
-	sourcePolicySnapshot, err := cloneWireJSONMap(version.SourcePolicySnapshot)
-	if err != nil {
-		return pluginVersionResponse{}, err
-	}
 	publicManifest, err := publicManifest(version.Manifest)
 	if err != nil {
 		return pluginVersionResponse{}, err
@@ -189,12 +193,25 @@ func publicPluginVersion(version registry.PluginVersion) (pluginVersionResponse,
 	return pluginVersionResponse{
 		Version: version.Version, ActiveFingerprint: version.ActiveFingerprint, PackageHash: version.PackageHash,
 		ManifestHash: version.ManifestHash, EntriesHash: version.EntriesHash, TrustState: string(version.TrustState),
-		TrustAssessment: publicTrustAssessment(version.TrustAssessment), SourcePolicySnapshotHash: version.SourcePolicySnapshotHash,
-		SourcePolicySnapshot: sourcePolicySnapshot, LocalImportProvenance: publicLocalImportProvenance(version.LocalImportProvenance),
-		CapabilityContracts: publicCapabilityPins(version.CapabilityContracts), Manifest: publicManifest,
+		TrustAssessment: publicTrustAssessment(version.TrustAssessment), ReleaseTrustBinding: publicReleaseTrustBinding(version.ReleaseTrustBinding),
+		LocalImportProvenance: publicLocalImportProvenance(version.LocalImportProvenance),
+		CapabilityContracts:   publicCapabilityPins(version.CapabilityContracts), Manifest: publicManifest,
 		PackageEntries: publicPackageEntries(version.PackageEntries), RuntimeRequirement: publicRuntimeRequirement(version.RuntimeRequirement),
 		ActivatedAt: version.ActivatedAt, Metadata: cloneWireStringMap(version.Metadata),
 	}, nil
+}
+
+func publicReleaseTrustBinding(value *registry.ReleaseTrustBinding) *releaseTrustBindingResponse {
+	if value == nil {
+		return nil
+	}
+	return &releaseTrustBindingResponse{
+		SourceID: value.SourceID, Channel: value.Channel,
+		ReleaseMetadataRef: value.ReleaseMetadataRef, ReleaseMetadataSHA256: value.ReleaseMetadataSHA256,
+		PublisherID: value.PublisherID, PluginID: value.PluginID, Version: value.Version,
+		VerifiedStateSHA256: value.VerifiedStateSHA256, RootEpoch: value.RootEpoch,
+		PolicyEpoch: value.PolicyEpoch, RevocationEpoch: value.RevocationEpoch,
+	}
 }
 
 func publicTrustAssessment(assessment registry.TrustAssessment) trustAssessmentResponse {

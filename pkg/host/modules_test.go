@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/floegence/redevplugin/internal/testsupport/releasetrustfixture"
 	"github.com/floegence/redevplugin/pkg/capabilitycontract"
 	"github.com/floegence/redevplugin/pkg/installstage"
 	"github.com/floegence/redevplugin/pkg/manifest"
@@ -350,27 +351,52 @@ func TestDowngradePreflightRejectsMissingConnectivityBeforeRegistryMutation(t *t
 	assertModulePreflightHasNoWrites(t, registryStore, stages, assets, stageCount)
 }
 
-func TestReleaseInstallPreflightDoesNotPersistSourceFloorForMissingRuntime(t *testing.T) {
+func TestReleaseInstallPreflightRejectsMissingRuntimeBeforeRegistryMutation(t *testing.T) {
 	ctx := hostTestContext()
-	packageBytes := buildSignedReleasePackageBytes(t, buildWorkerFixturePackage(t), "official")
-	pkg := readTestPackage(t, packageBytes)
-	ref := releaseRefForPackage(t, "official", pkg)
-	registryStore := registry.NewMemoryStore()
+	fixture, err := releasetrustfixture.New(buildWorkerFixturePackage(t), releasetrustfixture.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ref := PluginReleaseRef{
+		SourceID:              fixture.Identity.SourceID,
+		Channel:               fixture.Identity.Channel,
+		ReleaseMetadataRef:    fixture.Identity.ReleaseMetadataRef,
+		ReleaseMetadataSHA256: fixture.Identity.ReleaseMetadataSHA256,
+		PublisherID:           fixture.Identity.PublisherID,
+		PluginID:              fixture.Identity.PluginID,
+		Version:               fixture.Identity.Version,
+		ExpectedHashes: PackageHashSet{
+			PackageSHA256:  fixture.Package.PackageHash,
+			ManifestSHA256: fixture.Package.ManifestHash,
+			EntriesSHA256:  fixture.Package.EntriesHash,
+		},
+	}
+	registryStore := &modulePreflightRegistry{Store: registry.NewMemoryStore()}
+	stages := installstage.NewMemoryStore()
 	h, _, _ := newTestHostWithOptions(t, testHostOptions{
-		developerMode:           true,
-		localGenerated:          true,
-		registry:                registryStore,
-		releaseMetadataVerifier: &recordingReleaseMetadataVerifier{},
-		releaseSourcePolicy:     &recordingReleaseSourcePolicyResolver{snapshot: sourcePolicyForRelease(ref)},
-		releaseArtifactResolver: &recordingReleaseArtifactResolver{artifact: resolvedArtifactForPackage(t, ref, pkg, packageBytes)},
+		developerMode:  true,
+		localGenerated: true,
+		registry:       registryStore,
+		installStages:  stages,
+		releaseTrust:   fixture.ServiceSet,
+		releaseArtifactResolver: &recordingReleaseArtifactResolver{artifact: ResolvedPackageArtifact{
+			ReleaseMetadataBytes:     fixture.MetadataBytes,
+			ReleaseMetadataSignature: fixture.MetadataSignature,
+			Reader:                   bytes.NewReader(fixture.PackageBytes),
+			Size:                     int64(len(fixture.PackageBytes)),
+			ArtifactSHA256:           fixture.ReleaseArtifactSHA256,
+		}},
 	})
+	assets := &modulePreflightAssetStore{AssetStore: h.adapters.Assets}
+	h.adapters.Assets = assets
+	stageCount := modulePreflightStageCount(t, stages)
+	registryStore.resetWrites()
+	assets.resetWrites()
 	disableModuleFeatures(h, FeatureRuntime)
 
-	_, err := h.InstallReleaseRef(ctx, InstallReleaseRefRequest{PluginInstanceID: nextTestPluginInstanceID(t), ReleaseRef: ref})
+	_, err = h.InstallReleaseRef(ctx, InstallReleaseRefRequest{PluginInstanceID: nextTestPluginInstanceID(t), ReleaseRef: ref})
 	assertMissingFeatures(t, err, FeatureRuntime)
-	if _, floorErr := registryStore.GetSourceSecurityFloor(ctx, ref.SourceID); !errors.Is(floorErr, registry.ErrNotFound) {
-		t.Fatalf("source security floor persisted before module preflight: %v", floorErr)
-	}
+	assertModulePreflightHasNoWrites(t, registryStore, stages, assets, stageCount)
 }
 
 type modulePreflightRegistry struct {
@@ -416,10 +442,10 @@ func disableModuleFeatures(h *Host, features ...Feature) {
 		delete(h.features, feature)
 		switch feature {
 		case FeatureRelease:
-			h.adapters.ReleaseMetadataVerifier = nil
-			h.adapters.RevocationVerifier = nil
-			h.adapters.ReleaseSourcePolicy = nil
+			h.adapters.ReleaseTrust = nil
 			h.adapters.ReleaseArtifactResolver = nil
+			h.adapters.HostRequirements = nil
+			h.adapters.CapabilityContractArtifacts = nil
 		case FeatureRuntime:
 			h.adapters.RuntimeManager = nil
 		case FeatureCapability:

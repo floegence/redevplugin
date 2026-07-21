@@ -145,9 +145,7 @@ func TestStoreDeepClonesNestedPluginRecords(t *testing.T) {
 					ReasonCodes: []string{"verified"},
 					Metadata:    map[string]string{"key": "original"},
 				},
-				SourcePolicySnapshot: map[string]any{
-					"nested": map[string]any{"value": "original"},
-				},
+				ReleaseTrustBinding:   &ReleaseTrustBinding{SourceID: "source.original"},
 				LocalImportProvenance: &LocalImportProvenance{ImportID: "import_original", Distribution: "local_import"},
 				CapabilityContracts: []capabilitycontract.Pin{{
 					PublisherID:              "example.publisher",
@@ -178,9 +176,9 @@ func TestStoreDeepClonesNestedPluginRecords(t *testing.T) {
 					}},
 				},
 				VersionHistory: []PluginVersion{{
-					Version:              "0.9.0",
-					SourcePolicySnapshot: map[string]any{"epoch": "previous"},
-					Metadata:             map[string]string{"history": "original"},
+					Version:             "0.9.0",
+					ReleaseTrustBinding: &ReleaseTrustBinding{SourceID: "history.original"},
+					Metadata:            map[string]string{"history": "original"},
 				}},
 				Metadata: map[string]string{"record": "original"},
 			}
@@ -189,9 +187,9 @@ func TestStoreDeepClonesNestedPluginRecords(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			record.SourcePolicySnapshot["nested"].(map[string]any)["value"] = "mutated-input"
+			record.ReleaseTrustBinding.SourceID = "source.mutated-input"
 			record.TrustAssessment.Metadata["key"] = "mutated-input"
-			stored.SourcePolicySnapshot["nested"].(map[string]any)["value"] = "mutated-return"
+			stored.ReleaseTrustBinding.SourceID = "source.mutated-return"
 			stored.Manifest.Methods[0].RequestSchema["properties"].(map[string]any)["document_id"].(map[string]any)["type"] = "number"
 			stored.VersionHistory[0].Metadata["history"] = "mutated-return"
 
@@ -199,7 +197,7 @@ func TestStoreDeepClonesNestedPluginRecords(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if got.SourcePolicySnapshot["nested"].(map[string]any)["value"] != "original" ||
+			if got.ReleaseTrustBinding.SourceID != "source.original" ||
 				got.TrustAssessment.Metadata["key"] != "original" ||
 				got.Manifest.Methods[0].RequestSchema["properties"].(map[string]any)["document_id"].(map[string]any)["type"] != "string" ||
 				got.VersionHistory[0].Metadata["history"] != "original" {
@@ -248,79 +246,6 @@ func TestStoreAbortInstall(t *testing.T) {
 			}
 			if err := store.AbortInstall(registryTestContext(), record.PluginInstanceID); !errors.Is(err, ErrNotFound) {
 				t.Fatalf("AbortInstall() after delete error = %v, want %v", err, ErrNotFound)
-			}
-		})
-	}
-}
-
-func TestStoreSourceSecurityFloorRejectsRollback(t *testing.T) {
-	for _, tc := range registryStoreCases() {
-		t.Run(tc.name, func(t *testing.T) {
-			store := tc.open(t)
-			now := time.Date(2026, 7, 7, 0, 0, 0, 0, time.UTC)
-			initial := SourceSecurityFloor{
-				SourceID:                 "official",
-				PolicyEpoch:              "10",
-				KeyRotationEpoch:         "20",
-				RevocationEpoch:          "30",
-				SourcePolicySnapshotHash: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-				RevocationMetadataSHA256: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-			}
-			stored, err := store.PutSourceSecurityFloor(registryTestContext(), initial, PutOptions{Now: now})
-			if err != nil {
-				t.Fatal(err)
-			}
-			if !stored.UpdatedAt.Equal(now) {
-				t.Fatalf("stored updated_at = %s, want %s", stored.UpdatedAt, now)
-			}
-			got, err := store.GetSourceSecurityFloor(registryTestContext(), initial.SourceID)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if got.PolicyEpoch != "10" || got.KeyRotationEpoch != "20" || got.RevocationEpoch != "30" {
-				t.Fatalf("source floor mismatch: %#v", got)
-			}
-
-			equivocated := initial
-			equivocated.SourcePolicySnapshotHash = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
-			if _, err := store.PutSourceSecurityFloor(registryTestContext(), equivocated, PutOptions{Now: now.Add(500 * time.Millisecond)}); !errors.Is(err, ErrSourceSecurityFloorRollback) {
-				t.Fatalf("PutSourceSecurityFloor(same epoch equivocation) error = %v, want %v", err, ErrSourceSecurityFloorRollback)
-			}
-
-			higher := initial
-			higher.PolicyEpoch = "11"
-			higher.KeyRotationEpoch = "21"
-			higher.RevocationEpoch = "31"
-			if _, err := store.PutSourceSecurityFloor(registryTestContext(), higher, PutOptions{Now: now.Add(time.Second)}); err != nil {
-				t.Fatalf("PutSourceSecurityFloor(higher) error = %v", err)
-			}
-
-			for _, tc := range []struct {
-				name   string
-				mutate func(SourceSecurityFloor) SourceSecurityFloor
-			}{
-				{name: "policy", mutate: func(floor SourceSecurityFloor) SourceSecurityFloor {
-					floor.PolicyEpoch = "10"
-					return floor
-				}},
-				{name: "key rotation", mutate: func(floor SourceSecurityFloor) SourceSecurityFloor {
-					floor.KeyRotationEpoch = "20"
-					return floor
-				}},
-				{name: "revocation", mutate: func(floor SourceSecurityFloor) SourceSecurityFloor {
-					floor.RevocationEpoch = "30"
-					return floor
-				}},
-				{name: "revocation metadata", mutate: func(floor SourceSecurityFloor) SourceSecurityFloor {
-					floor.RevocationMetadataSHA256 = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
-					return floor
-				}},
-			} {
-				t.Run(tc.name, func(t *testing.T) {
-					if _, err := store.PutSourceSecurityFloor(registryTestContext(), tc.mutate(higher), PutOptions{Now: now.Add(2 * time.Second)}); !errors.Is(err, ErrSourceSecurityFloorRollback) {
-						t.Fatalf("PutSourceSecurityFloor rollback error = %v, want %v", err, ErrSourceSecurityFloorRollback)
-					}
-				})
 			}
 		})
 	}

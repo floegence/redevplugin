@@ -25,6 +25,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/floegence/redevplugin/internal/testsupport/releasetrustfixture"
 	"github.com/floegence/redevplugin/pkg/bridge"
 	"github.com/floegence/redevplugin/pkg/capability"
 	"github.com/floegence/redevplugin/pkg/capabilitycontract"
@@ -38,6 +39,7 @@ import (
 	"github.com/floegence/redevplugin/pkg/plugindata"
 	"github.com/floegence/redevplugin/pkg/pluginpkg"
 	"github.com/floegence/redevplugin/pkg/registry"
+	"github.com/floegence/redevplugin/pkg/releasetrust"
 	"github.com/floegence/redevplugin/pkg/runtimeclient"
 	"github.com/floegence/redevplugin/pkg/runtimetarget"
 	"github.com/floegence/redevplugin/pkg/secrets"
@@ -1597,14 +1599,12 @@ func TestHandlerManagementRevisionContractFailsClosed(t *testing.T) {
 }
 
 func TestHandlerInstallReleaseRefUsesResolverWithoutPackageBase64(t *testing.T) {
-	packageBytes := buildHTTPSignedReleasePackageBytes(t, buildHTTPVersionedFixturePackage(t, "1.0.0", "HTTP"), "official")
-	pkg := readHTTPTestPackage(t, packageBytes)
-	ref := httpReleaseRefForPackage(t, "official", pkg)
+	fixture, ref := newHTTPReleaseTrustFixture(t, buildHTTPVersionedFixturePackage(t, "1.0.0", "HTTP"), releasetrustfixture.Options{SourceID: "official"})
 	resolver := &httpRecordingReleaseArtifactResolver{
-		artifact: httpResolvedArtifactForPackage(t, ref, pkg, packageBytes),
+		artifact: httpResolvedArtifactForFixture(fixture),
 	}
 	h := newHTTPTestHostWithOptions(t, httpTestHostOptions{
-		releaseSourcePolicy:     &httpRecordingReleaseSourcePolicyResolver{snapshot: httpSourcePolicyForRelease(ref)},
+		releaseTrust:            fixture.ServiceSet,
 		releaseArtifactResolver: resolver,
 	})
 	handler := mustNewHandler(t, h, allowHTTPTestGuard())
@@ -1614,47 +1614,44 @@ func TestHandlerInstallReleaseRefUsesResolverWithoutPackageBase64(t *testing.T) 
 		"release_ref":        ref,
 	})
 
-	if installed.PackageHash != pkg.PackageHash || installed.TrustState != registry.TrustVerified {
+	if installed.PackageHash != fixture.Package.PackageHash || installed.TrustState != registry.TrustVerified {
 		t.Fatalf("install release ref response mismatch: %#v", installed)
 	}
-	wantMetadataSignatureRef := "plugins/" + ref.PublisherID + "/" + ref.PluginID + "/" + ref.Version + "/release.json.sig"
-	wantPackageSignatureBundleRef := "plugins/" + ref.PublisherID + "/" + ref.PluginID + "/" + ref.Version + "/plugin.sigbundle"
+	wantMetadataSignatureRef := fixture.Metadata.ReleaseMetadataSignature.SignatureRef
+	wantPackageSignatureBundleRef := fixture.Metadata.PackageSignature.SignatureBundleRef
 	if installed.Metadata["source_id"] != "official" ||
-		installed.Metadata["source.type"] != string(host.PackageSourceRegistry) ||
-		installed.Metadata["source.class"] != string(host.PackageSourceClassOfficial) ||
+		installed.Metadata["source.type"] != "registry" ||
+		installed.Metadata["source.class"] != "official" ||
 		installed.Metadata["source.distribution"] != string(host.PackageDistributionRegistryRef) ||
-		installed.Metadata["source.install_policy"] != string(host.PackageInstallAllow) ||
-		installed.Metadata["source.unsigned_policy"] != string(host.PackageUnsignedBlock) ||
-		installed.Metadata["source.downgrade_policy"] != string(host.PackageDowngradeBlock) ||
+		installed.Metadata["source.install_policy"] != "allow" ||
+		installed.Metadata["source.unsigned_policy"] != "block" ||
+		installed.Metadata["source.downgrade_policy"] != "block" ||
 		installed.Metadata["source.policy_epoch"] != "1" ||
-		installed.Metadata["source.key_rotation_epoch"] != "1" ||
+		installed.Metadata["source.root_epoch"] != "1" ||
 		installed.Metadata["source.revocation_epoch"] != "1" ||
-		installed.Metadata["source.assessed_at"] != "2026-07-07T00:00:00Z" ||
 		installed.Metadata["release.metadata_signature_algorithm"] != "ed25519" ||
-		installed.Metadata["release.metadata_signature_key_id"] != "official" ||
+		installed.Metadata["release.metadata_signature_key_id"] != fixture.Metadata.ReleaseMetadataSignature.KeyID ||
 		installed.Metadata["release.metadata_signature_ref"] != wantMetadataSignatureRef ||
 		installed.Metadata["release.package_signature_algorithm"] != "ed25519" ||
-		installed.Metadata["release.package_signature_key_id"] != "official" ||
+		installed.Metadata["release.package_signature_key_id"] != fixture.Metadata.PackageSignature.KeyID ||
 		installed.Metadata["release.package_signature_bundle_ref"] != wantPackageSignatureBundleRef {
 		t.Fatalf("metadata = %#v", installed.Metadata)
 	}
-	if resolver.last.Action != host.PackageTrustActionInstall || resolver.last.ReleaseRef.PluginID != pkg.Manifest.PluginID() {
+	if resolver.last.Action != host.PackageTrustActionInstall || resolver.last.ReleaseRef.PluginID != fixture.Package.Manifest.PluginID() {
 		t.Fatalf("resolver request mismatch: %#v", resolver.last)
 	}
-	if resolver.last.SourcePolicySnapshot.SourceClass != host.PackageSourceClassOfficial || !resolver.last.SourcePolicySnapshot.RequireSignature {
-		t.Fatalf("resolver source policy mismatch: %#v", resolver.last.SourcePolicySnapshot)
+	if resolver.last.SourcePolicy.SourceClass != "official" || !resolver.last.SourcePolicy.RequireSignature {
+		t.Fatalf("resolver source policy mismatch: %#v", resolver.last.SourcePolicy)
 	}
 }
 
 func TestHandlerInstallReleaseRefPolicyDeniedUsesReleaseRefErrorCode(t *testing.T) {
-	packageBytes := buildHTTPSignedReleasePackageBytes(t, buildHTTPVersionedFixturePackage(t, "1.0.0", "HTTP"), "official")
-	pkg := readHTTPTestPackage(t, packageBytes)
-	ref := httpReleaseRefForPackage(t, "official", pkg)
-	sourcePolicy := httpSourcePolicyForRelease(ref)
-	sourcePolicy.InstallPolicy = host.PackageInstallBlock
+	fixture, ref := newHTTPReleaseTrustFixture(t, buildHTTPVersionedFixturePackage(t, "1.0.0", "HTTP"), releasetrustfixture.Options{
+		SourceID: "official", InstallPolicy: "block",
+	})
 	h := newHTTPTestHostWithOptions(t, httpTestHostOptions{
-		releaseSourcePolicy:     &httpRecordingReleaseSourcePolicyResolver{snapshot: sourcePolicy},
-		releaseArtifactResolver: &httpRecordingReleaseArtifactResolver{artifact: httpResolvedArtifactForPackage(t, ref, pkg, packageBytes)},
+		releaseTrust:            fixture.ServiceSet,
+		releaseArtifactResolver: &httpRecordingReleaseArtifactResolver{artifact: httpResolvedArtifactForFixture(fixture)},
 	})
 	handler := mustNewHandler(t, h, allowHTTPTestGuard())
 
@@ -4804,9 +4801,8 @@ type httpTestHostOptions struct {
 	diagnostics             host.DiagnosticsSink
 	runtimeManager          runtimeclient.Manager
 	surfaceCatalog          host.SurfaceCatalogSink
-	releaseSourcePolicy     host.ReleaseSourcePolicyResolver
+	releaseTrust            *releasetrust.ServiceSet
 	releaseArtifactResolver host.ReleaseArtifactResolver
-	releaseMetadataVerifier host.ReleaseMetadataVerifier
 	capabilityID            string
 	capabilityAdapter       interface {
 		capability.Adapter
@@ -4840,19 +4836,6 @@ func newHTTPTestHostWithOptions(t *testing.T, opts httpTestHostOptions) *host.Ho
 	runtimeManager := opts.runtimeManager
 	if runtimeManager == nil {
 		runtimeManager = newHTTPRecordingRuntimeManager(t)
-	}
-	releaseSourcePolicy := opts.releaseSourcePolicy
-	if releaseSourcePolicy == nil {
-		releaseSourcePolicy = &httpRecordingReleaseSourcePolicyResolver{}
-	}
-	releaseArtifactResolver := opts.releaseArtifactResolver
-	if releaseArtifactResolver == nil {
-		releaseArtifactResolver = &httpRecordingReleaseArtifactResolver{}
-	}
-	releaseMetadataVerifier := firstNonNilReleaseMetadataVerifier(opts.releaseMetadataVerifier, httpTestReleaseMetadataVerifier{})
-	revocationVerifier, ok := releaseMetadataVerifier.(host.SourceRevocationEvidenceVerifier)
-	if !ok {
-		revocationVerifier = httpTestReleaseMetadataVerifier{}
 	}
 	coreActions := opts.coreActions
 	if coreActions == nil {
@@ -4893,6 +4876,15 @@ func newHTTPTestHostWithOptions(t *testing.T, opts httpTestHostOptions) *host.Ho
 	if err != nil {
 		t.Fatal(err)
 	}
+	var releaseModule *host.ReleaseModule
+	if opts.releaseTrust != nil || opts.releaseArtifactResolver != nil {
+		releaseModule = &host.ReleaseModule{
+			Trust:                       opts.releaseTrust,
+			ReleaseArtifactResolver:     opts.releaseArtifactResolver,
+			HostRequirements:            httpHostRequirementPolicy{},
+			CapabilityContractArtifacts: httpCapabilityContractArtifactResolver{},
+		}
+	}
 	h, err := host.Open(httpTestContext(), host.Config{
 		Core: host.CoreAdapters{
 			Policy:               httpTestPolicy{},
@@ -4913,15 +4905,7 @@ func newHTTPTestHostWithOptions(t *testing.T, opts httpTestHostOptions) *host.Ho
 			SessionLifecycle:     httpSessionLifecycleAdapter{identity: identity},
 			SessionScopes:        sessionScopes,
 		},
-		Release: &host.ReleaseModule{
-			ReleaseMetadataVerifier:     releaseMetadataVerifier,
-			RevocationVerifier:          revocationVerifier,
-			ReleaseSourcePolicy:         releaseSourcePolicy,
-			ReleaseArtifactResolver:     releaseArtifactResolver,
-			HostRequirements:            httpHostRequirementPolicy{},
-			CapabilityContractArtifacts: httpCapabilityContractArtifactResolver{},
-			CapabilityContractKeys:      httpCapabilityContractKeyResolver{},
-		},
+		Release:      releaseModule,
 		Runtime:      &host.RuntimeModule{Manager: runtimeManager},
 		Capability:   &host.CapabilityModule{Registry: capabilities},
 		Connectivity: &host.ConnectivityModule{Broker: connectivity.NewMemoryBroker(), NetworkExecutor: connectivity.NewExecutor(connectivity.ExecutorOptions{})},
@@ -5726,9 +5710,6 @@ func (httpTestPackageTrustVerifier) VerifyPackageTrust(_ context.Context, req ho
 		}
 		return host.PackageTrustVerificationResult{TrustState: registry.TrustUnsignedLocal}, nil
 	}
-	if req.SourcePolicySnapshot != nil {
-		return host.PackageTrustVerificationResult{TrustState: registry.TrustVerified}, nil
-	}
 	return host.PackageTrustVerificationResult{TrustState: registry.TrustUntrusted}, nil
 }
 
@@ -5748,19 +5729,6 @@ func (r *httpReadProbe) Read(p []byte) (int, error) {
 	return r.reader.Read(p)
 }
 
-func artifactSHA256(data []byte) string {
-	sum := sha256.Sum256(data)
-	return hex.EncodeToString(sum[:])
-}
-
-type httpRecordingReleaseSourcePolicyResolver struct {
-	snapshot host.SourcePolicySnapshot
-	err      error
-	last     host.ReleaseSourcePolicyRequest
-}
-
-type httpTestReleaseMetadataVerifier struct{}
-
 type httpHostRequirementPolicy struct{}
 
 func (httpHostRequirementPolicy) SelectHostRequirement(context.Context, host.HostRequirementSelectionRequest) (host.HostRequirementSelection, error) {
@@ -5771,12 +5739,6 @@ type httpCapabilityContractArtifactResolver struct{}
 
 func (httpCapabilityContractArtifactResolver) ResolveCapabilityContract(context.Context, host.CapabilityContractResolveRequest) (host.ResolvedCapabilityContractArtifact, error) {
 	return host.ResolvedCapabilityContractArtifact{}, errors.New("capability contract artifact is not configured for this test")
-}
-
-type httpCapabilityContractKeyResolver struct{}
-
-func (httpCapabilityContractKeyResolver) ResolveCapabilityContractKey(context.Context, host.CapabilityContractKeyRequest) ([]byte, error) {
-	return nil, errors.New("capability contract key is not configured for this test")
 }
 
 type httpSurfaceCatalogSink struct{}
@@ -5791,21 +5753,6 @@ func (httpFailingSurfaceCatalogSink) PublishSurfaces(context.Context, host.Surfa
 	return errors.New("surface catalog unavailable")
 }
 
-func firstNonNilReleaseMetadataVerifier(primary host.ReleaseMetadataVerifier, defaultVerifier host.ReleaseMetadataVerifier) host.ReleaseMetadataVerifier {
-	if primary != nil {
-		return primary
-	}
-	return defaultVerifier
-}
-
-func (r *httpRecordingReleaseSourcePolicyResolver) ResolveReleaseSourcePolicy(_ context.Context, req host.ReleaseSourcePolicyRequest) (host.SourcePolicySnapshot, error) {
-	r.last = req
-	if r.err != nil {
-		return host.SourcePolicySnapshot{}, r.err
-	}
-	return r.snapshot, nil
-}
-
 func (r *httpRecordingReleaseArtifactResolver) ResolveReleaseArtifact(_ context.Context, req host.ReleaseArtifactResolveRequest) (host.ResolvedPackageArtifact, error) {
 	r.last = req
 	if r.err != nil {
@@ -5814,204 +5761,33 @@ func (r *httpRecordingReleaseArtifactResolver) ResolveReleaseArtifact(_ context.
 	return r.artifact, nil
 }
 
-func (httpTestReleaseMetadataVerifier) VerifyReleaseMetadata(_ context.Context, req host.ReleaseMetadataVerificationRequest) (host.ReleaseMetadataVerificationResult, error) {
-	if req.Release.ReleaseMetadataSignature == nil {
-		return host.ReleaseMetadataVerificationResult{}, errors.New("release metadata signature is required")
-	}
-	return host.ReleaseMetadataVerificationResult{Metadata: map[string]string{"key_id": req.Release.ReleaseMetadataSignature.KeyID}}, nil
-}
-
-func (httpTestReleaseMetadataVerifier) VerifySourceRevocationEvidence(_ context.Context, req host.SourceRevocationEvidenceVerificationRequest) (host.SourceRevocationEvidenceVerificationResult, error) {
-	return host.SourceRevocationEvidenceVerificationResult{
-		Metadata: map[string]string{"key_id": req.RevocationEvidence.SignatureKeyID},
-	}, nil
-}
-
-func httpResolvedArtifactForPackage(t *testing.T, ref host.PluginReleaseRef, pkg pluginpkg.Package, packageBytes []byte) host.ResolvedPackageArtifact {
-	t.Helper()
+func httpResolvedArtifactForFixture(fixture *releasetrustfixture.Fixture) host.ResolvedPackageArtifact {
 	return host.ResolvedPackageArtifact{
-		ReleaseMetadataBytes:     httpReleaseMetadataBytesForPackage(t, ref, pkg),
-		ReleaseMetadataSignature: []byte("release-metadata-signature"),
-		Reader:                   bytes.NewReader(packageBytes),
-		Size:                     int64(len(packageBytes)),
-		ArtifactSHA256:           artifactSHA256(packageBytes),
+		ReleaseMetadataBytes:     fixture.MetadataBytes,
+		ReleaseMetadataSignature: fixture.MetadataSignature,
+		Reader:                   bytes.NewReader(fixture.PackageBytes),
+		Size:                     int64(len(fixture.PackageBytes)),
+		ArtifactSHA256:           fixture.ReleaseArtifactSHA256,
 	}
 }
 
-func readHTTPTestPackage(t *testing.T, data []byte) pluginpkg.Package {
+func newHTTPReleaseTrustFixture(t *testing.T, packageBytes []byte, options releasetrustfixture.Options) (*releasetrustfixture.Fixture, host.PluginReleaseRef) {
 	t.Helper()
-	pkg, err := pluginpkg.Read(httpTestContext(), bytes.NewReader(data), int64(len(data)), pluginpkg.DefaultReadLimits())
+	fixture, err := releasetrustfixture.New(packageBytes, options)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return pkg
-}
-
-func buildHTTPSignedReleasePackageBytes(t *testing.T, data []byte, keyID string) []byte {
-	t.Helper()
-	pkg := readHTTPTestPackage(t, data)
-	pkg.PackageSignature = &pluginpkg.PackageSignature{
-		SchemaVersion: pluginpkg.PackageSignatureSchemaVersion,
-		Algorithm:     pluginpkg.PackageSignatureAlgorithmEd25519,
-		KeyID:         keyID,
-		PublisherID:   pkg.Manifest.Publisher.PublisherID,
-		PluginID:      pkg.Manifest.PluginID(),
-		PackageHash:   pkg.PackageHash,
-		ManifestHash:  pkg.ManifestHash,
-		EntriesHash:   pkg.EntriesHash,
-		Signature:     "test-signature",
-		SignedAt:      "2026-07-07T00:00:00Z",
-	}
-	var buf bytes.Buffer
-	if err := pluginpkg.WritePackage(httpTestContext(), &buf, pkg); err != nil {
-		t.Fatalf("WritePackage() error = %v", err)
-	}
-	return buf.Bytes()
-}
-
-func httpReleaseRefForPackage(t *testing.T, sourceID string, pkg pluginpkg.Package) host.PluginReleaseRef {
-	t.Helper()
-	releaseMetadataRef := "plugins/" + pkg.Manifest.Publisher.PublisherID + "/" + pkg.Manifest.PluginID() + "/" + pkg.Manifest.Version() + "/release.json"
-	metadataBytes := httpReleaseMetadataBytesForPackage(t, host.PluginReleaseRef{
-		SourceID:           sourceID,
-		Channel:            "stable",
-		ReleaseMetadataRef: releaseMetadataRef,
-		PublisherID:        pkg.Manifest.Publisher.PublisherID,
-		PluginID:           pkg.Manifest.PluginID(),
-		Version:            pkg.Manifest.Version(),
-	}, pkg)
-	metadataHash := sha256.Sum256(metadataBytes)
-	return host.PluginReleaseRef{
-		SourceID:              sourceID,
-		Channel:               "stable",
-		ReleaseMetadataRef:    releaseMetadataRef,
-		ReleaseMetadataSHA256: hex.EncodeToString(metadataHash[:]),
-		PublisherID:           pkg.Manifest.Publisher.PublisherID,
-		PluginID:              pkg.Manifest.PluginID(),
-		Version:               pkg.Manifest.Version(),
+	identity := fixture.Identity
+	pkg := fixture.Package
+	return fixture, host.PluginReleaseRef{
+		SourceID: identity.SourceID, Channel: identity.Channel,
+		ReleaseMetadataRef: identity.ReleaseMetadataRef, ReleaseMetadataSHA256: identity.ReleaseMetadataSHA256,
+		PublisherID: identity.PublisherID, PluginID: identity.PluginID, Version: identity.Version,
 		ExpectedHashes: host.PackageHashSet{
 			PackageSHA256:  pkg.PackageHash,
 			ManifestSHA256: pkg.ManifestHash,
 			EntriesSHA256:  pkg.EntriesHash,
 		},
-	}
-}
-
-func httpReleaseMetadataBytesForPackage(t *testing.T, ref host.PluginReleaseRef, pkg pluginpkg.Package) []byte {
-	t.Helper()
-	release := httpReleaseForPackage(ref, pkg)
-	raw, err := json.Marshal(map[string]any{
-		"schema_version":             "redevplugin.release_metadata.v5",
-		"source_id":                  release.SourceID,
-		"release_metadata_ref":       ref.ReleaseMetadataRef,
-		"publisher_id":               release.PublisherID,
-		"plugin_id":                  release.PluginID,
-		"version":                    release.Version,
-		"distribution_ref":           release.DistributionRef,
-		"hashes":                     release.Hashes,
-		"release_metadata_signature": release.ReleaseMetadataSignature,
-		"package_signature":          release.PackageSignature,
-		"compatibility":              release.Compatibility,
-		"host_requirements":          release.HostRequirements,
-		"release_evidence":           release.ReleaseEvidence,
-		"metadata":                   release.Metadata,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	return raw
-}
-
-func httpReleaseForPackage(ref host.PluginReleaseRef, pkg pluginpkg.Package) host.PluginPackageRelease {
-	return host.PluginPackageRelease{
-		SourceID:    ref.SourceID,
-		PublisherID: ref.PublisherID,
-		PluginID:    ref.PluginID,
-		Version:     ref.Version,
-		DistributionRef: host.PackageDistributionRef{
-			Distribution: host.PackageDistributionRegistryRef,
-			ArtifactRef:  "plugins/" + ref.PublisherID + "/" + ref.PluginID + "/" + ref.Version + "/plugin.redevplugin",
-		},
-		ReleaseMetadataSHA256: ref.ReleaseMetadataSHA256,
-		ReleaseMetadataSignature: &host.ReleaseMetadataSignature{
-			Algorithm:         "ed25519",
-			KeyID:             "official",
-			SignatureRef:      "plugins/" + ref.PublisherID + "/" + ref.PluginID + "/" + ref.Version + "/release.json.sig",
-			SourcePolicyEpoch: "1",
-			RevocationEpoch:   "1",
-		},
-		Hashes: host.PackageHashSet{
-			PackageSHA256:  pkg.PackageHash,
-			ManifestSHA256: pkg.ManifestHash,
-			EntriesSHA256:  pkg.EntriesHash,
-		},
-		PackageSignature: &host.PackageReleaseSignature{
-			Algorithm:          "ed25519",
-			KeyID:              "official",
-			SignatureBundleRef: "plugins/" + ref.PublisherID + "/" + ref.PluginID + "/" + ref.Version + "/plugin.sigbundle",
-			SourcePolicyEpoch:  "1",
-			RevocationEpoch:    "1",
-		},
-		Compatibility: &host.ReleaseCompatibility{
-			MinReDevPluginVersion: "0.1.0",
-			MinRuntimeVersion:     pkg.Manifest.Plugin.MinRuntimeVersion,
-			UIProtocolVersion:     string(pkg.Manifest.Plugin.UIProtocolVersion),
-		},
-	}
-}
-
-func httpRevocationMetadataBytesForSource(sourceID string, epoch string) []byte {
-	raw, err := json.Marshal(host.SourceRevocationMetadata{
-		SchemaVersion:    "redevplugin.source_revocations.v1",
-		SourceID:         sourceID,
-		HighestSeenEpoch: epoch,
-		GeneratedAt:      "2026-07-07T00:00:00Z",
-		ExpiresAt:        "2027-01-01T00:00:00Z",
-	})
-	if err != nil {
-		panic(err)
-	}
-	return raw
-}
-
-func httpSourcePolicyForRelease(ref host.PluginReleaseRef) host.SourcePolicySnapshot {
-	revocationMetadata := httpRevocationMetadataBytesForSource(ref.SourceID, "1")
-	revocationHash := sha256.Sum256(revocationMetadata)
-	return host.SourcePolicySnapshot{
-		SchemaVersion:     "redevplugin.source_policy.v1",
-		SourceID:          ref.SourceID,
-		SourceType:        host.PackageSourceRegistry,
-		SourceClass:       host.PackageSourceClassOfficial,
-		AllowedPublishers: []string{ref.PublisherID},
-		TrustedKeyIDs:     []string{"official"},
-		TrustedKeys: []host.SourcePolicyTrustedKey{{
-			Algorithm:       pluginpkg.PackageSignatureAlgorithmEd25519,
-			KeyID:           "official",
-			PublicKeySHA256: strings.Repeat("a", 64),
-			Usage:           []string{"release_metadata", "package_signature", "revocation_metadata"},
-			ValidFrom:       "2026-01-01T00:00:00Z",
-			ValidUntil:      "2027-01-01T00:00:00Z",
-			RevocationEpoch: "1",
-		}},
-		RevocationEvidence: &host.SourcePolicyRevocationEvidence{
-			MetadataRef:      "sources/" + ref.SourceID + "/revocations.json",
-			MetadataSHA256:   hex.EncodeToString(revocationHash[:]),
-			SignatureRef:     "sources/" + ref.SourceID + "/revocations.json.sig",
-			SignatureKeyID:   "official",
-			VerifiedAt:       "2026-07-07T00:00:00Z",
-			ExpiresAt:        "2027-01-01T00:00:00Z",
-			HighestSeenEpoch: "1",
-			MetadataBytes:    revocationMetadata,
-			SignatureBytes:   []byte("source-revocation-signature"),
-		},
-		RequireSignature: true,
-		InstallPolicy:    host.PackageInstallAllow,
-		UnsignedPolicy:   host.PackageUnsignedBlock,
-		DowngradePolicy:  host.PackageDowngradeBlock,
-		PolicyEpoch:      "1",
-		KeyRotationEpoch: "1",
-		RevocationEpoch:  "1",
-		AssessedAt:       "2026-07-07T00:00:00Z",
 	}
 }
 

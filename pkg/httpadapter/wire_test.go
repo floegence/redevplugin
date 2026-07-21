@@ -171,7 +171,7 @@ func TestPublicWireMappersPreservePublishedFields(t *testing.T) {
 func TestPublicWireMappersOwnNestedCollections(t *testing.T) {
 	defaultSize := &manifest.WidgetSizeSpec{Width: 640, Height: 480}
 	record := registry.PluginRecord{
-		SourcePolicySnapshot: map[string]any{"nested": map[string]any{"value": "original"}},
+		ReleaseTrustBinding: &registry.ReleaseTrustBinding{SourceID: "source.original"},
 		TrustAssessment: registry.TrustAssessment{
 			ReasonCodes: []string{"verified"},
 			Metadata:    map[string]string{"trust": "original"},
@@ -192,14 +192,14 @@ func TestPublicWireMappersOwnNestedCollections(t *testing.T) {
 		},
 		PackageEntries: []pluginpkg.Entry{{Path: "ui/original.js"}},
 		VersionHistory: []registry.PluginVersion{{
-			SourcePolicySnapshot: map[string]any{"history": map[string]any{"value": "original"}},
-			Metadata:             map[string]string{"history": "original"},
+			ReleaseTrustBinding: &registry.ReleaseTrustBinding{SourceID: "history.original"},
+			Metadata:            map[string]string{"history": "original"},
 		}},
 		Metadata: map[string]string{"record": "original"},
 	}
 	publicRecord := mustPublicPluginRecord(t, record)
 
-	record.SourcePolicySnapshot["nested"].(map[string]any)["value"] = "mutated"
+	record.ReleaseTrustBinding.SourceID = "source.mutated"
 	record.TrustAssessment.ReasonCodes[0] = "mutated"
 	record.TrustAssessment.Metadata["trust"] = "mutated"
 	record.CapabilityContracts[0].ContractID = "contract.mutated"
@@ -209,11 +209,11 @@ func TestPublicWireMappersOwnNestedCollections(t *testing.T) {
 	record.Manifest.NetworkAccess.Connectors[0].Destinations[0] = "mutated.example"
 	record.Manifest.NetworkAccess.Connectors[0].Auth["headers"].(map[string]any)["authorization"] = "mutated"
 	record.PackageEntries[0].Path = "ui/mutated.js"
-	record.VersionHistory[0].SourcePolicySnapshot["history"].(map[string]any)["value"] = "mutated"
+	record.VersionHistory[0].ReleaseTrustBinding.SourceID = "history.mutated"
 	record.VersionHistory[0].Metadata["history"] = "mutated"
 	record.Metadata["record"] = "mutated"
 
-	if publicRecord.SourcePolicySnapshot["nested"].(map[string]any)["value"] != "original" ||
+	if publicRecord.ReleaseTrustBinding.SourceID != "source.original" ||
 		publicRecord.TrustAssessment.ReasonCodes[0] != "verified" || publicRecord.TrustAssessment.Metadata["trust"] != "original" ||
 		publicRecord.CapabilityContracts[0].ContractID != "contract.original" || publicRecord.Manifest.Surfaces[0].SurfaceID != "surface.original" ||
 		publicRecord.Manifest.Surfaces[0].DefaultSize.Width != 640 ||
@@ -221,7 +221,7 @@ func TestPublicWireMappersOwnNestedCollections(t *testing.T) {
 		publicRecord.Manifest.NetworkAccess.Connectors[0].Destinations[0] != "example.com" ||
 		publicRecord.Manifest.NetworkAccess.Connectors[0].Auth["headers"].(map[string]any)["authorization"] != "declared" ||
 		publicRecord.PackageEntries[0].Path != "ui/original.js" ||
-		publicRecord.VersionHistory[0].SourcePolicySnapshot["history"].(map[string]any)["value"] != "original" ||
+		publicRecord.VersionHistory[0].ReleaseTrustBinding.SourceID != "history.original" ||
 		publicRecord.VersionHistory[0].Metadata["history"] != "original" || publicRecord.Metadata["record"] != "original" {
 		t.Fatalf("public plugin projection shares nested domain state: %#v", publicRecord)
 	}

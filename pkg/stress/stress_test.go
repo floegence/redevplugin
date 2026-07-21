@@ -283,15 +283,6 @@ func TestStressGateOperationCancelOwnershipEvidence(t *testing.T) {
 			SessionLifecycle:     newStressSessionLifecycle(),
 			SessionScopes:        sessionScopes,
 		},
-		Release: &host.ReleaseModule{
-			ReleaseMetadataVerifier:     platformAdapter,
-			RevocationVerifier:          platformAdapter,
-			ReleaseSourcePolicy:         platformAdapter,
-			ReleaseArtifactResolver:     platformAdapter,
-			HostRequirements:            platformAdapter,
-			CapabilityContractArtifacts: platformAdapter,
-			CapabilityContractKeys:      platformAdapter,
-		},
 		Capability:   &host.CapabilityModule{Registry: capabilities},
 		Connectivity: &host.ConnectivityModule{Broker: connectivityBroker, NetworkExecutor: connectivity.NewExecutor(connectivity.ExecutorOptions{})},
 		Secrets:      &host.SecretsModule{Store: secrets.NewMemoryStore()},
@@ -1101,37 +1092,6 @@ type stressPlatformAdapter struct{}
 
 func (stressPlatformAdapter) VerifyPackageTrust(context.Context, host.PackageTrustVerificationRequest) (host.PackageTrustVerificationResult, error) {
 	return host.PackageTrustVerificationResult{TrustState: registry.TrustUnsignedLocal}, nil
-}
-
-func (stressPlatformAdapter) VerifyReleaseMetadata(context.Context, host.ReleaseMetadataVerificationRequest) (host.ReleaseMetadataVerificationResult, error) {
-	return host.ReleaseMetadataVerificationResult{}, errors.New("stress host does not configure release metadata verification")
-}
-
-func (stressPlatformAdapter) VerifySourceRevocationEvidence(context.Context, host.SourceRevocationEvidenceVerificationRequest) (host.SourceRevocationEvidenceVerificationResult, error) {
-	return host.SourceRevocationEvidenceVerificationResult{}, errors.New("stress host does not configure release revocation verification")
-}
-
-func (stressPlatformAdapter) ResolveReleaseSourcePolicy(context.Context, host.ReleaseSourcePolicyRequest) (host.SourcePolicySnapshot, error) {
-	return host.SourcePolicySnapshot{}, errors.New("stress host does not configure release sources")
-}
-
-func (stressPlatformAdapter) ResolveReleaseArtifact(context.Context, host.ReleaseArtifactResolveRequest) (host.ResolvedPackageArtifact, error) {
-	return host.ResolvedPackageArtifact{}, errors.New("stress host does not configure release artifacts")
-}
-
-func (stressPlatformAdapter) SelectHostRequirement(_ context.Context, req host.HostRequirementSelectionRequest) (host.HostRequirementSelection, error) {
-	if len(req.Requirements) == 0 {
-		return host.HostRequirementSelection{}, errors.New("stress host requirement is missing")
-	}
-	return host.HostRequirementSelection{HostID: req.Requirements[0].HostID}, nil
-}
-
-func (stressPlatformAdapter) ResolveCapabilityContract(context.Context, host.CapabilityContractResolveRequest) (host.ResolvedCapabilityContractArtifact, error) {
-	return host.ResolvedCapabilityContractArtifact{}, errors.New("stress host does not configure capability artifacts")
-}
-
-func (stressPlatformAdapter) ResolveCapabilityContractKey(context.Context, host.CapabilityContractKeyRequest) ([]byte, error) {
-	return nil, errors.New("stress host does not configure capability keys")
 }
 
 func (stressPlatformAdapter) PublishSurfaces(context.Context, host.SurfaceSnapshot) error {

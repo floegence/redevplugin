@@ -8,9 +8,8 @@ import (
 
 func TestPublicRequestDTOsDeclareClosedJSONFieldNames(t *testing.T) {
 	requests := []any{
-		ListDiagnosticEventsRequest{}, PackageTrustVerificationRequest{}, ReleaseMetadataVerificationRequest{},
-		SourceRevocationEvidenceVerificationRequest{}, HostRequirementSelectionRequest{}, CapabilityContractResolveRequest{},
-		CapabilityContractKeyRequest{}, ReleaseSourcePolicyRequest{}, ReleaseArtifactResolveRequest{}, StartRuntimeRequest{},
+		ListDiagnosticEventsRequest{}, PackageTrustVerificationRequest{}, HostRequirementSelectionRequest{},
+		CapabilityContractResolveRequest{}, ReleaseArtifactResolveRequest{}, StartRuntimeRequest{},
 		ImportLocalPackageRequest{}, UpdateLocalPackageRequest{}, InstallReleaseRefRequest{}, UpdateReleaseRefRequest{},
 		DowngradeRequest{}, EnableRequest{}, DisableRequest{}, UninstallRequest{}, ListRetainedDataRequest{},
 		DeleteRetainedDataRequest{}, BindRetainedDataRequest{}, CleanupExpiredRetainedDataRequest{}, ExportDataRequest{},
@@ -25,10 +24,8 @@ func TestPublicRequestDTOsDeclareClosedJSONFieldNames(t *testing.T) {
 	}
 	internalFields := map[string]struct{}{
 		"Now": {}, "WaitTimeout": {}, "PackageReader": {}, "PackageSize": {}, "TTL": {},
-		"Session":              {},
-		"ResourceScope":        {},
-		"ReleaseMetadataBytes": {}, "ReleaseMetadataSignature": {},
-		"RevocationMetadataBytes": {}, "RevocationMetadataSignature": {},
+		"Session":       {},
+		"ResourceScope": {},
 	}
 	for _, request := range requests {
 		typeOf := reflect.TypeOf(request)
