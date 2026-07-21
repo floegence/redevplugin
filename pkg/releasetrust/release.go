@@ -8,7 +8,9 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/floegence/redevplugin/pkg/capabilitycontract"
 	"github.com/floegence/redevplugin/pkg/releasecontract"
+	"github.com/floegence/redevplugin/pkg/version"
 )
 
 var (
@@ -258,6 +260,86 @@ func (set *ServiceSet) VerifyPackage(
 		return VerifiedPackage{}, err
 	}
 	return VerifiedPackage{metadata: cloneVerifiedReleaseMetadata(metadata), signature: signature}, nil
+}
+
+func (set *ServiceSet) VerifyCapabilityContract(
+	metadata VerifiedReleaseMetadata,
+	bundle capabilitycontract.Bundle,
+	expected capabilitycontract.Pin,
+) (capabilitycontract.VerifiedContract, error) {
+	prepared := metadata.prepared
+	if set == nil || !prepared.validFor(set) || !releaseMetadataContainsCapabilityPin(metadata.document, expected) {
+		return capabilitycontract.VerifiedContract{}, ErrInvalidReleaseIdentity
+	}
+	policy := prepared.snapshot.policy
+	if !slices.Contains(policy.ActiveKeys.HostCapabilityContract, expected.SignatureKeyID) ||
+		expected.SignaturePolicyEpoch != policy.Epoch ||
+		expected.SignatureRevocationEpoch != prepared.snapshot.revocation.Epoch ||
+		slices.Contains(prepared.snapshot.revocation.RevokedKeyIDs, expected.SignatureKeyID) ||
+		!capabilityPublisherAllowed(policy, expected.SignatureKeyID, expected.PublisherID) {
+		return capabilitycontract.VerifiedContract{}, ErrReleasePolicyDenied
+	}
+	key, err := delegatedKey(
+		prepared.snapshot.root,
+		expected.SignatureKeyID,
+		releasecontract.DelegatedKeyUsageHostCapabilityContract,
+		prepared.identity.Channel,
+		prepared.snapshot.trustedFloor,
+	)
+	if err != nil {
+		return capabilitycontract.VerifiedContract{}, ErrReleaseTrustVerification
+	}
+	publicKey, err := decodeDelegatedPublicKey(key.PublicKey)
+	if err != nil {
+		return capabilitycontract.VerifiedContract{}, ErrReleaseTrustVerification
+	}
+	verified, err := capabilitycontract.Verify(capabilitycontract.VerifyRequest{
+		Bundle:      bundle,
+		ExpectedPin: expected,
+		TrustedKey: capabilitycontract.TrustedKey{
+			PublisherID: expected.PublisherID, KeyID: expected.SignatureKeyID, PublicKey: publicKey,
+			PolicyEpoch: expected.SignaturePolicyEpoch, RevocationEpoch: expected.SignatureRevocationEpoch,
+		},
+		CurrentReDevPluginVersion: version.CurrentCompatibilityVersion(),
+	})
+	if err != nil {
+		return capabilitycontract.VerifiedContract{}, ErrReleaseTrustVerification
+	}
+	return verified, nil
+}
+
+func releaseMetadataContainsCapabilityPin(document releasecontract.ReleaseMetadataV5, expected capabilitycontract.Pin) bool {
+	for _, hostRequirement := range document.HostRequirements {
+		for _, capability := range hostRequirement.RequiredCapabilityContracts {
+			if capabilityContractPinFromRef(capability.Contract) == expected {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func capabilityPublisherAllowed(policy releasecontract.SourcePolicyV2, keyID, publisherID string) bool {
+	for _, scope := range policy.CapabilityPublisherScopes {
+		if scope.KeyID == keyID {
+			return slices.Contains(scope.AllowedPublishers, publisherID)
+		}
+	}
+	return false
+}
+
+func capabilityContractPinFromRef(ref releasecontract.HostCapabilityContractRef) capabilitycontract.Pin {
+	return capabilitycontract.Pin{
+		PublisherID: ref.PublisherID, ContractID: ref.ContractID, ContractVersion: ref.ContractVersion,
+		ArtifactRef: ref.ArtifactRef, ArtifactSHA256: ref.ArtifactSHA256,
+		ManifestRef: ref.ManifestRef, ManifestSHA256: ref.ManifestSHA256,
+		SignatureRef: ref.SignatureRef, SignatureSHA256: ref.SignatureSHA256,
+		SignatureKeyID: ref.SignatureKeyID, SignaturePolicyEpoch: ref.SignaturePolicyEpoch,
+		SignatureRevocationEpoch: ref.SignatureRevocationEpoch,
+		CompatibilityRef:         ref.CompatibilityRef, CompatibilitySHA256: ref.CompatibilitySHA256,
+		GeneratedClientRef: ref.GeneratedClientRef, GeneratedClientSHA256: ref.GeneratedClientSHA256,
+		NoticesRef: ref.NoticesRef, NoticesSHA256: ref.NoticesSHA256,
+	}
 }
 
 func (verified VerifiedPackage) AuthorizeActivation() (ActivationLease, error) {

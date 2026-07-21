@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/floegence/redevplugin/pkg/capabilitycontract"
 	"github.com/floegence/redevplugin/pkg/releasecontract"
 )
 
@@ -392,6 +393,41 @@ func TestServiceSetVerifiesReleaseMetadataAndPackageAgainstPreparedSnapshot(t *t
 	}
 }
 
+func TestServiceSetVerifiesCapabilityContractAgainstPreparedSnapshot(t *testing.T) {
+	fixture := newFullRefreshFixture(t)
+	services, err := NewServiceSet(fixture.service)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prepared, err := services.PrepareRelease(context.Background(), fixture.identity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	metadata, err := services.VerifyReleaseMetadata(context.Background(), prepared, fixture.metadataBytes, fixture.metadataSignature)
+	if err != nil {
+		t.Fatal(err)
+	}
+	verified, err := services.VerifyCapabilityContract(metadata, fixture.capabilityBundle, fixture.capabilityBundle.Pin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if verified.Contract.ContractID != "example.capability.v1" {
+		t.Fatalf("verified capability contract = %#v", verified.Contract)
+	}
+
+	outsideScope := fixture.capabilityBundle.Pin
+	outsideScope.PublisherID = "other.publisher"
+	if _, err := services.VerifyCapabilityContract(metadata, fixture.capabilityBundle, outsideScope); !errors.Is(err, ErrInvalidReleaseIdentity) {
+		t.Fatalf("unreferenced capability pin error = %v", err)
+	}
+
+	prepared.snapshot.policy.CapabilityPublisherScopes[0].AllowedPublishers = []string{"other.publisher"}
+	metadata.prepared = prepared
+	if _, err := services.VerifyCapabilityContract(metadata, fixture.capabilityBundle, fixture.capabilityBundle.Pin); !errors.Is(err, ErrReleasePolicyDenied) {
+		t.Fatalf("publisher outside policy scope error = %v", err)
+	}
+}
+
 func TestServiceSetBindsOneFenceCoordinatorBeforeActivation(t *testing.T) {
 	fixture := newFullRefreshFixture(t)
 	adapters := fixture.service.adapters
@@ -552,6 +588,7 @@ type fullRefreshFixture struct {
 	metadataBytes     []byte
 	metadataSignature []byte
 	packageSignature  releasecontract.PackageSignatureV1
+	capabilityBundle  capabilitycontract.Bundle
 	signingPrivate    ed25519.PrivateKey
 	ledgerPrivate     ed25519.PrivateKey
 }
@@ -758,6 +795,22 @@ func newFullRefreshFixture(t *testing.T) fullRefreshFixture {
 		t.Fatal(err)
 	}
 	revocationPointerBytes, _ := releasecontract.CanonicalRevocationPointer(revocationPointer)
+	capabilityBundle, err := capabilitycontract.Build(capabilitycontract.BuildRequest{
+		Contract:                 releaseTrustCapabilityContract(),
+		PublisherID:              "example.capability",
+		ArtifactBaseRef:          "capabilities/example.capability/v1.0.0",
+		GeneratedAt:              time.Date(2026, 7, 21, 1, 0, 0, 0, time.UTC),
+		SourceCommit:             strings.Repeat("d", 40),
+		MinReDevPluginVersion:    "0.6.0",
+		SignatureKeyID:           "signing_key",
+		SignaturePolicyEpoch:     "1",
+		SignatureRevocationEpoch: "1",
+		PrivateKey:               signingPrivate,
+		Notices:                  []capabilitycontract.Notice{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	releaseMetadata := releasecontract.ReleaseMetadataV5{
 		SchemaVersion: releasecontract.ReleaseMetadataSchemaVersion, SourceID: "example_source",
@@ -778,6 +831,12 @@ func newFullRefreshFixture(t *testing.T) fullRefreshFixture {
 		Compatibility: releasecontract.ReleaseCompatibility{
 			MinReDevPluginVersion: "0.6.0", MinRuntimeVersion: "0.6.0", UIProtocolVersion: "plugin-ui-v5",
 		},
+		HostRequirements: []releasecontract.ReleaseHostRequirement{{
+			HostID: "example.host", RequiredCapabilityContracts: []releasecontract.HostCapabilityRequirementRef{{
+				CapabilityID: "example.capability", CapabilityVersion: "1.0.0",
+				Contract: capabilityContractRefFromPin(capabilityBundle.Pin),
+			}},
+		}},
 	}
 	releaseMetadata, err = releasecontract.BuildReleaseMetadata(releaseMetadata)
 	if err != nil {
@@ -847,7 +906,36 @@ func newFullRefreshFixture(t *testing.T) fullRefreshFixture {
 	return fullRefreshFixture{
 		service: service, key: key, state: state, documents: documents, ledger: ledger, fence: fence,
 		identity: identity, metadataBytes: metadataBytes, metadataSignature: metadataSignature, packageSignature: packageSignature,
-		signingPrivate: signingPrivate, ledgerPrivate: ledgerPrivate,
+		capabilityBundle: capabilityBundle,
+		signingPrivate:   signingPrivate, ledgerPrivate: ledgerPrivate,
+	}
+}
+
+func capabilityContractRefFromPin(pin capabilitycontract.Pin) releasecontract.HostCapabilityContractRef {
+	return releasecontract.HostCapabilityContractRef{
+		PublisherID: pin.PublisherID, ContractID: pin.ContractID, ContractVersion: pin.ContractVersion,
+		ArtifactRef: pin.ArtifactRef, ArtifactSHA256: pin.ArtifactSHA256,
+		ManifestRef: pin.ManifestRef, ManifestSHA256: pin.ManifestSHA256,
+		SignatureRef: pin.SignatureRef, SignatureSHA256: pin.SignatureSHA256,
+		SignatureKeyID: pin.SignatureKeyID, SignaturePolicyEpoch: pin.SignaturePolicyEpoch,
+		SignatureRevocationEpoch: pin.SignatureRevocationEpoch,
+		CompatibilityRef:         pin.CompatibilityRef, CompatibilitySHA256: pin.CompatibilitySHA256,
+		GeneratedClientRef: pin.GeneratedClientRef, GeneratedClientSHA256: pin.GeneratedClientSHA256,
+		NoticesRef: pin.NoticesRef, NoticesSHA256: pin.NoticesSHA256,
+	}
+}
+
+func releaseTrustCapabilityContract() capabilitycontract.Contract {
+	emptyObject := map[string]any{"type": "object", "additionalProperties": false, "properties": map[string]any{}, "required": []string{}}
+	return capabilitycontract.Contract{
+		SchemaVersion: capabilitycontract.SchemaVersion, ContractID: "example.capability.v1", ContractVersion: "1.0.0",
+		PublisherID: "example.capability", CapabilityID: "example.capability", CapabilityVersion: "1.0.0",
+		ClientName: "ExampleCapabilityClient",
+		Methods: []capabilitycontract.Method{{
+			Name: "example.read", ClientMethod: "read", Effect: "read", Execution: "sync",
+			TargetFields: []string{}, TargetSchema: emptyObject, RequestTypeName: "ExampleReadRequest",
+			ResponseTypeName: "ExampleReadResponse", RequestSchema: emptyObject, ResponseSchema: emptyObject,
+		}},
 	}
 }
 
