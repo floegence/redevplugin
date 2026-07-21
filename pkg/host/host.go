@@ -35,6 +35,7 @@ import (
 	"github.com/floegence/redevplugin/pkg/plugindata"
 	"github.com/floegence/redevplugin/pkg/pluginpkg"
 	"github.com/floegence/redevplugin/pkg/registry"
+	"github.com/floegence/redevplugin/pkg/releasetrust"
 	"github.com/floegence/redevplugin/pkg/runtimeclient"
 	"github.com/floegence/redevplugin/pkg/runtimetarget"
 	"github.com/floegence/redevplugin/pkg/secrets"
@@ -380,6 +381,7 @@ type PackageHashSet struct {
 
 type PluginReleaseRef struct {
 	SourceID              string         `json:"source_id"`
+	Channel               string         `json:"channel"`
 	ReleaseMetadataRef    string         `json:"release_metadata_ref"`
 	ReleaseMetadataSHA256 string         `json:"release_metadata_sha256"`
 	PublisherID           string         `json:"publisher_id"`
@@ -3687,6 +3689,7 @@ func (h *Host) resolveReleasePackage(ctx context.Context, action PackageTrustAct
 	distribution := release.DistributionRef.Distribution
 	metadata := map[string]string{
 		"source_id":               ref.SourceID,
+		"source.channel":          ref.Channel,
 		"source.type":             string(sourceTypeOrDefault(sourcePolicy.SourceType, distribution)),
 		"source.distribution":     string(distribution),
 		"release.artifact_ref":    release.DistributionRef.ArtifactRef,
@@ -3836,6 +3839,13 @@ func (h *Host) verifyReleaseMetadata(ctx context.Context, action PackageTrustAct
 func validateReleaseRef(ref PluginReleaseRef) error {
 	if strings.TrimSpace(ref.SourceID) == "" {
 		return fmt.Errorf("%w: source_id is required", ErrReleaseRefVerificationFailed)
+	}
+	configuration, err := releasetrust.NewSourceConfiguration(ref.SourceID, []string{ref.Channel})
+	if err != nil {
+		return fmt.Errorf("%w: channel is invalid", ErrReleaseRefVerificationFailed)
+	}
+	if _, err := configuration.TrustKey(ref.Channel); err != nil {
+		return fmt.Errorf("%w: channel is invalid", ErrReleaseRefVerificationFailed)
 	}
 	if err := validateRegistryRelativeArtifactRef(ref.ReleaseMetadataRef, "release_ref.release_metadata_ref", true); err != nil {
 		return err
@@ -9235,13 +9245,15 @@ func verifyInstalledRecordAgainstCurrentSourcePolicy(record registry.PluginRecor
 
 func releaseRefFromRecord(record registry.PluginRecord) (PluginReleaseRef, error) {
 	sourceID := strings.TrimSpace(record.Metadata["source_id"])
+	channel := strings.TrimSpace(record.Metadata["source.channel"])
 	metadataRef := strings.TrimSpace(record.Metadata["release.metadata_ref"])
 	metadataSHA := strings.TrimSpace(record.Metadata["release.metadata_sha256"])
-	if sourceID == "" || metadataRef == "" || metadataSHA == "" {
+	if sourceID == "" || channel == "" || metadataRef == "" || metadataSHA == "" {
 		return PluginReleaseRef{}, fmt.Errorf("%w: installed release source metadata is incomplete", ErrReleaseRefVerificationFailed)
 	}
 	return PluginReleaseRef{
 		SourceID:              sourceID,
+		Channel:               channel,
 		ReleaseMetadataRef:    metadataRef,
 		ReleaseMetadataSHA256: metadataSHA,
 		PublisherID:           record.PublisherID,

@@ -2265,10 +2265,11 @@ components:
         entries_sha256: { type: string, pattern: "^(sha256:)?[0-9a-f]{64}$" }
     PluginReleaseRef:
       type: object
-      required: [source_id, release_metadata_ref, release_metadata_sha256, publisher_id, plugin_id, version, expected_hashes]
+      required: [source_id, channel, release_metadata_ref, release_metadata_sha256, publisher_id, plugin_id, version, expected_hashes]
       additionalProperties: false
       properties:
         source_id: { type: string, minLength: 1 }
+        channel: { type: string, pattern: "^[a-z][a-z0-9._-]{0,127}$" }
         release_metadata_ref: { type: string, minLength: 1 }
         release_metadata_sha256: { type: string, pattern: "^(sha256:)?[0-9a-f]{64}$" }
         publisher_id: { type: string, minLength: 1 }

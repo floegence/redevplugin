@@ -23,6 +23,7 @@ type packageHashSetRequest struct {
 
 type releaseRefRequest struct {
 	SourceID              string                `json:"source_id"`
+	Channel               string                `json:"channel"`
 	ReleaseMetadataRef    string                `json:"release_metadata_ref"`
 	ReleaseMetadataSHA256 string                `json:"release_metadata_sha256"`
 	PublisherID           string                `json:"publisher_id"`
@@ -34,6 +35,7 @@ type releaseRefRequest struct {
 func (request releaseRefRequest) domain() host.PluginReleaseRef {
 	return host.PluginReleaseRef{
 		SourceID:              request.SourceID,
+		Channel:               request.Channel,
 		ReleaseMetadataRef:    request.ReleaseMetadataRef,
 		ReleaseMetadataSHA256: request.ReleaseMetadataSHA256,
 		PublisherID:           request.PublisherID,

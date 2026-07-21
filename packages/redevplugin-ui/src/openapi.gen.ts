@@ -1624,6 +1624,7 @@ export interface components {
         };
         PluginReleaseRef: {
             source_id: string;
+            channel: string;
             release_metadata_ref: string;
             release_metadata_sha256: string;
             publisher_id: string;

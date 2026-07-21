@@ -202,6 +202,7 @@ func TestSignatureForPackageProducesCanonicalPayload(t *testing.T) {
 func releaseRefFixture(pkg pluginpkg.Package) host.PluginReleaseRef {
 	return host.PluginReleaseRef{
 		SourceID:              "official",
+		Channel:               "stable",
 		ReleaseMetadataRef:    "plugins/example/com.example.trust/1.0.0/release.json",
 		ReleaseMetadataSHA256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
 		PublisherID:           pkg.Manifest.Publisher.PublisherID,

@@ -466,6 +466,7 @@ func TestReleaseRefWireRequestRejectsNestedUnknownFields(t *testing.T) {
 	raw := []byte(`{
 		"release_ref": {
 			"source_id": "source_1",
+			"channel": "stable",
 			"release_metadata_ref": "release_1",
 			"release_metadata_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
 			"publisher_id": "publisher.example",

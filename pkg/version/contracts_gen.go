@@ -42,7 +42,7 @@ var generatedContractArtifacts = []ContractArtifact{
 		ID:      "plugin-platform-openapi",
 		Path:    "spec/openapi/plugin-platform-v7.yaml",
 		Version: "plugin-platform-v7",
-		SHA256:  "b8d8347724f946545be576f522f4db01950c9412373f301fc4f7e9a7f11ba96b",
+		SHA256:  "409cfeaea80c97842a96b0ff216e2b6a6ccc13a3d65ae624cd21918be8af0ba0",
 	},
 	{
 		ID:      "manifest-schema",

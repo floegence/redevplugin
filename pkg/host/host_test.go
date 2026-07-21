@@ -11376,6 +11376,7 @@ func releaseRefForPackage(t *testing.T, sourceID string, pkg pluginpkg.Package) 
 	releaseMetadataRef := "plugins/" + pkg.Manifest.Publisher.PublisherID + "/" + pkg.Manifest.PluginID() + "/" + pkg.Manifest.Version() + "/release.json"
 	metadataBytes := releaseMetadataBytesForPackage(t, PluginReleaseRef{
 		SourceID:           sourceID,
+		Channel:            "stable",
 		ReleaseMetadataRef: releaseMetadataRef,
 		PublisherID:        pkg.Manifest.Publisher.PublisherID,
 		PluginID:           pkg.Manifest.PluginID(),
@@ -11384,6 +11385,7 @@ func releaseRefForPackage(t *testing.T, sourceID string, pkg pluginpkg.Package) 
 	metadataHash := sha256.Sum256(metadataBytes)
 	return PluginReleaseRef{
 		SourceID:              sourceID,
+		Channel:               "stable",
 		ReleaseMetadataRef:    releaseMetadataRef,
 		ReleaseMetadataSHA256: hex.EncodeToString(metadataHash[:]),
 		PublisherID:           pkg.Manifest.Publisher.PublisherID,

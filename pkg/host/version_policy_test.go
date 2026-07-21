@@ -14,6 +14,7 @@ import (
 func TestValidateReleaseRefRequiresStrictSemVer(t *testing.T) {
 	ref := PluginReleaseRef{
 		SourceID:              "official",
+		Channel:               "stable",
 		ReleaseMetadataRef:    "plugins/example/release.json",
 		ReleaseMetadataSHA256: strings.Repeat("a", 64),
 		PublisherID:           "example",
