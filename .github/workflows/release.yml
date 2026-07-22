@@ -442,8 +442,15 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           fetch-depth: 0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
       - name: Read back crate checksums and source identity
-        run: node scripts/verify_rust_registry_release.mjs "${{ needs.preflight.outputs.version }}" "$GITHUB_SHA" dist/rust-readback.json
+        run: |
+          mkdir -p dist
+          node scripts/verify_rust_registry_release.mjs "${{ needs.preflight.outputs.version }}" "$GITHUB_SHA" dist/rust-readback.json
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         id: upload
         with:
@@ -638,7 +645,9 @@ jobs:
         with:
           go-version-file: go.mod
       - name: Read back module source and sums
-        run: node scripts/verify_go_module_readback.mjs "${{ needs.preflight.outputs.version }}" "$GITHUB_SHA" dist/go-readback.json
+        run: |
+          mkdir -p dist
+          node scripts/verify_go_module_readback.mjs "${{ needs.preflight.outputs.version }}" "$GITHUB_SHA" dist/go-readback.json
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         id: upload
         with:
@@ -757,6 +766,11 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           fetch-depth: 0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
       - name: Download and verify exact public bytes
         env:
           GH_TOKEN: ${{ github.token }}

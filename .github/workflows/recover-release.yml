@@ -1,0 +1,357 @@
+name: Recover Partial Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Failed immutable release tag, for example v0.6.5
+        required: true
+        type: string
+      release_run_id:
+        description: Original failed Release workflow run ID
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: redevplugin-release-refs/tags/${{ inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  preflight:
+    name: Verify Failed Release Identity
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      version: ${{ steps.verify.outputs.version }}
+      source-commit: ${{ steps.verify.outputs.source-commit }}
+      package-artifact-id: ${{ steps.verify.outputs.package-artifact-id }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0
+      - name: Bind tag, original run, and package artifact
+        id: verify
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+          RELEASE_RUN_ID: ${{ inputs.release_run_id }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF" = refs/heads/main
+          [[ "$TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]
+          [[ "$RELEASE_RUN_ID" =~ ^[1-9][0-9]*$ ]]
+
+          git fetch origin main --tags --force
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test "$(git rev-parse origin/main)" = "$GITHUB_SHA"
+          source_commit=$(git rev-parse "refs/tags/${TAG}^{commit}")
+          git merge-base --is-ancestor "$source_commit" origin/main
+          version=${TAG#v}
+
+          run_json=$(mktemp "${RUNNER_TEMP}/redevplugin-release-run.XXXXXX")
+          artifacts_json=$(mktemp "${RUNNER_TEMP}/redevplugin-release-artifacts.XXXXXX")
+          trap 'rm -f "$run_json" "$artifacts_json"' EXIT
+          gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${RELEASE_RUN_ID}" > "$run_json"
+          gh api --paginate \
+            "repos/${GITHUB_REPOSITORY}/actions/runs/${RELEASE_RUN_ID}/artifacts?per_page=100" \
+            --slurp > "$artifacts_json"
+
+          package_artifact_id=$(python3 - "$run_json" "$artifacts_json" "$GITHUB_REPOSITORY" "$TAG" "$source_commit" "$RELEASE_RUN_ID" <<'PY'
+          import json
+          import pathlib
+          import sys
+
+          run_path, artifacts_path, repository, tag, source_commit, run_id = sys.argv[1:]
+          run = json.loads(pathlib.Path(run_path).read_text(encoding="utf-8"))
+          expected_run = {
+              "event": "push",
+              "path": ".github/workflows/release.yml",
+              "head_sha": source_commit,
+              "head_branch": tag,
+              "status": "completed",
+              "conclusion": "failure",
+          }
+          for field, expected in expected_run.items():
+              if run.get(field) != expected:
+                  raise SystemExit(f"original release run {field} mismatch")
+          if str(run.get("id")) != run_id:
+              raise SystemExit("original release run ID mismatch")
+          if run.get("repository", {}).get("full_name") != repository:
+              raise SystemExit("original release run repository mismatch")
+          if run.get("head_repository", {}).get("full_name") != repository:
+              raise SystemExit("original release run head repository mismatch")
+
+          pages = json.loads(pathlib.Path(artifacts_path).read_text(encoding="utf-8"))
+          artifacts = [artifact for page in pages for artifact in page.get("artifacts", [])]
+          expected_name = f"platform-packages-{source_commit}"
+          matches = [artifact for artifact in artifacts if artifact.get("name") == expected_name]
+          if len(matches) != 1:
+              raise SystemExit("original release must have exactly one platform package artifact")
+          artifact = matches[0]
+          workflow_run = artifact.get("workflow_run", {})
+          if artifact.get("expired") is not False or not isinstance(artifact.get("id"), int):
+              raise SystemExit("original platform package artifact is unavailable")
+          if str(workflow_run.get("id")) != run_id or workflow_run.get("head_sha") != source_commit:
+              raise SystemExit("platform package artifact workflow identity mismatch")
+          if workflow_run.get("head_branch") != tag:
+              raise SystemExit("platform package artifact tag mismatch")
+          print(artifact["id"])
+          PY
+          )
+
+          ./scripts/assert_github_release_absent.sh "$GITHUB_REPOSITORY" "$TAG"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "source-commit=$source_commit" >> "$GITHUB_OUTPUT"
+          echo "package-artifact-id=$package_artifact_id" >> "$GITHUB_OUTPUT"
+
+  reconstruct-publication:
+    name: Reconstruct Completion Manifest
+    needs: preflight
+    runs-on: ubuntu-24.04
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      artifact-id: ${{ steps.upload.outputs.artifact-id }}
+      artifact-digest: ${{ steps.upload.outputs.artifact-digest }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ needs.preflight.outputs.source-commit }}
+          fetch-depth: 0
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          artifact-ids: ${{ needs.preflight.outputs.package-artifact-id }}
+          path: dist/platform-packages
+          merge-multiple: true
+          repository: ${{ github.repository }}
+          run-id: ${{ inputs.release_run_id }}
+          github-token: ${{ github.token }}
+      - name: Verify original immutable package artifact
+        env:
+          VERSION: ${{ needs.preflight.outputs.version }}
+          SOURCE_COMMIT: ${{ needs.preflight.outputs.source-commit }}
+        run: |
+          node scripts/platform_package_build.mjs verify \
+            dist/platform-packages/platform-package-build-v1.json
+          node --input-type=module <<'NODE'
+          import { readFileSync } from "node:fs";
+          const manifest = JSON.parse(readFileSync(
+            "dist/platform-packages/platform-package-build-v1.json",
+            "utf8",
+          ));
+          if (manifest.platform_version !== process.env.VERSION
+              || manifest.source_commit !== process.env.SOURCE_COMMIT) {
+            throw new Error("original package artifact release identity mismatch");
+          }
+          NODE
+      - name: Independently read back all public registries
+        env:
+          VERSION: ${{ needs.preflight.outputs.version }}
+          SOURCE_COMMIT: ${{ needs.preflight.outputs.source-commit }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist/readbacks/npm
+          node scripts/verify_go_module_readback.mjs \
+            "$VERSION" "$SOURCE_COMMIT" dist/readbacks/go-readback.json
+          node scripts/verify_rust_registry_release.mjs \
+            "$VERSION" "$SOURCE_COMMIT" dist/readbacks/rust-readback.json
+          for package_name in @floegence/redevplugin-contracts @floegence/redevplugin-ui; do
+            short_name=${package_name##*/}
+            integrity=$(node --input-type=module - "$package_name" <<'NODE'
+          import { readFileSync } from "node:fs";
+          const name = process.argv[2];
+          const manifest = JSON.parse(readFileSync("dist/platform-packages/platform-package-build-v1.json", "utf8"));
+          const artifact = manifest.artifacts.find((item) => item.name === name);
+          if (!artifact) throw new Error(`missing immutable npm artifact ${name}`);
+          process.stdout.write(artifact.integrity);
+          NODE
+            )
+            for attempt in $(seq 1 20); do
+              if node scripts/verify_npm_registry_release.mjs \
+                "$package_name" "$VERSION" "$SOURCE_COMMIT" "$integrity" \
+                "dist/readbacks/npm/${short_name}.json"; then
+                break
+              fi
+              rm -f "dist/readbacks/npm/${short_name}.json"
+              if [[ "$attempt" = 20 ]]; then exit 1; fi
+              sleep 6
+            done
+          done
+          node --input-type=module <<'NODE'
+          import { readFileSync, writeFileSync } from "node:fs";
+          const names = ["redevplugin-contracts", "redevplugin-ui"];
+          const readbacks = names.map((name) => JSON.parse(
+            readFileSync(`dist/readbacks/npm/${name}.json`, "utf8"),
+          ));
+          writeFileSync("dist/readbacks/npm-readback.json", `${JSON.stringify(readbacks, null, 2)}\n`, { flag: "wx" });
+          NODE
+      - name: Build canonical publication from registry readbacks
+        run: |
+          mkdir -p dist/publication
+          node scripts/platform_package_publication.mjs create \
+            --out dist/publication/platform-package-publication-v1.json \
+            --source-commit "${{ needs.preflight.outputs.source-commit }}" \
+            --go-readback dist/readbacks/go-readback.json \
+            --npm-readback dist/readbacks/npm-readback.json \
+            --rust-readback dist/readbacks/rust-readback.json
+          node scripts/platform_package_publication.mjs verify \
+            dist/publication/platform-package-publication-v1.json \
+            "${{ needs.preflight.outputs.version }}" \
+            "${{ needs.preflight.outputs.source-commit }}"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        id: upload
+        with:
+          name: recovered-platform-publication-${{ needs.preflight.outputs.source-commit }}
+          path: dist/publication/platform-package-publication-v1.json
+          if-no-files-found: error
+          retention-days: 7
+
+  attest-publication:
+    name: Attest Recovered Completion Manifest
+    needs: reconstruct-publication
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      actions: read
+      attestations: write
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          artifact-ids: ${{ needs.reconstruct-publication.outputs.artifact-id }}
+          path: dist/publication
+          merge-multiple: true
+      - uses: actions/attest-build-provenance@43d14bc2b83dec42d39ecae14e916627a18bb661 # v3
+        with:
+          subject-path: dist/publication/platform-package-publication-v1.json
+
+  publish-release:
+    name: Publish Recovered Exact-One GitHub Release Asset
+    needs:
+      - preflight
+      - reconstruct-publication
+      - attest-publication
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      actions: read
+      contents: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          artifact-ids: ${{ needs.reconstruct-publication.outputs.artifact-id }}
+          path: dist/publication
+          merge-multiple: true
+      - name: Atomically publish only the completion manifest
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+          CONTENT_TYPE: application/vnd.floegence.redevplugin-platform-publication.v1+json
+        run: |
+          set -euo pipefail
+          release_check=$(mktemp "${RUNNER_TEMP}/redevplugin-release-check.XXXXXX")
+          status=$(curl \
+            --silent \
+            --show-error \
+            --location \
+            --retry 3 \
+            --retry-all-errors \
+            --connect-timeout 10 \
+            --max-time 30 \
+            --header "Accept: application/vnd.github+json" \
+            --header "Authorization: Bearer $GH_TOKEN" \
+            --header "X-GitHub-Api-Version: 2022-11-28" \
+            --output "$release_check" \
+            --write-out '%{http_code}' \
+            "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/releases/tags/$TAG")
+          test "$status" = 404
+          release_id=""
+          published=0
+          cleanup() {
+            rm -f "$release_check"
+            if [[ "$published" = 0 && -n "$release_id" ]]; then
+              gh api --method DELETE "repos/${GITHUB_REPOSITORY}/releases/${release_id}" || true
+            fi
+          }
+          trap cleanup EXIT
+
+          gh release create "$TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --verify-tag \
+            --generate-notes \
+            --draft
+          release_id=$(gh release view "$TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --json databaseId \
+            --jq .databaseId)
+          curl --fail --silent --show-error \
+            -X POST \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Content-Type: $CONTENT_TYPE" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            --data-binary @dist/publication/platform-package-publication-v1.json \
+            "https://uploads.github.com/repos/${GITHUB_REPOSITORY}/releases/${release_id}/assets?name=platform-package-publication-v1.json" \
+            > dist/publication/upload-response.json
+          test "$(gh api "repos/${GITHUB_REPOSITORY}/releases/${release_id}/assets" --jq length)" = 1
+          test "$(gh api "repos/${GITHUB_REPOSITORY}/releases/${release_id}/assets" --jq '.[0].name')" = platform-package-publication-v1.json
+          test "$(gh api "repos/${GITHUB_REPOSITORY}/releases/${release_id}/assets" --jq '.[0].content_type')" = "$CONTENT_TYPE"
+          gh api --method PATCH "repos/${GITHUB_REPOSITORY}/releases/${release_id}" \
+            -F draft=false \
+            -f make_latest=true > /dev/null
+          published=1
+
+  verify-release:
+    name: Verify Recovered Public Completion
+    needs:
+      - preflight
+      - publish-release
+    runs-on: ubuntu-latest
+    permissions:
+      attestations: read
+      contents: read
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ needs.preflight.outputs.source-commit }}
+          fetch-depth: 0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - name: Download and verify exact public bytes and attestation
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+          CONTENT_TYPE: application/vnd.floegence.redevplugin-platform-publication.v1+json
+        run: |
+          set -euo pipefail
+          ./scripts/verify_github_release_identity.sh --require-release \
+            "$GITHUB_REPOSITORY" "$TAG" "${{ needs.preflight.outputs.source-commit }}"
+          release_id=$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${TAG}" --jq .id)
+          test "$(gh api "repos/${GITHUB_REPOSITORY}/releases/${release_id}/assets" --jq length)" = 1
+          test "$(gh api "repos/${GITHUB_REPOSITORY}/releases/${release_id}/assets" --jq '.[0].content_type')" = "$CONTENT_TYPE"
+          mkdir -p dist/published
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --dir dist/published
+          node scripts/platform_package_publication.mjs verify \
+            dist/published \
+            "${{ needs.preflight.outputs.version }}" \
+            "${{ needs.preflight.outputs.source-commit }}"
+          gh attestation verify \
+            dist/published/platform-package-publication-v1.json \
+            --repo "$GITHUB_REPOSITORY"
