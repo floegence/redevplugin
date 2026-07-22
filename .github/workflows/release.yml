@@ -116,6 +116,7 @@ jobs:
         with:
           artifact-ids: ${{ needs.package-build.outputs.artifact-id }}
           path: dist/platform-packages
+          merge-multiple: true
       - name: Verify immutable package artifact
         env:
           EXPECTED_ARTIFACT_DIGEST: ${{ needs.package-build.outputs.artifact-digest }}
@@ -470,6 +471,7 @@ jobs:
         with:
           artifact-ids: ${{ needs.package-build.outputs.artifact-id }}
           path: dist/platform-packages
+          merge-multiple: true
       - name: Publish or reconcile exact contracts package
         env:
           VERSION: ${{ needs.preflight.outputs.version }}
@@ -501,6 +503,7 @@ jobs:
         with:
           artifact-ids: ${{ needs.package-build.outputs.artifact-id }}
           path: dist/platform-packages
+          merge-multiple: true
       - name: Verify contracts tarball and provenance
         env:
           VERSION: ${{ needs.preflight.outputs.version }}
@@ -541,6 +544,7 @@ jobs:
         with:
           artifact-ids: ${{ needs.package-build.outputs.artifact-id }}
           path: dist/platform-packages
+          merge-multiple: true
       - name: Publish or reconcile exact UI package
         env:
           VERSION: ${{ needs.preflight.outputs.version }}
@@ -574,6 +578,7 @@ jobs:
         with:
           artifact-ids: ${{ needs.package-build.outputs.artifact-id }}
           path: dist/platform-packages
+          merge-multiple: true
       - name: Read back both npm packages and provenance
         env:
           VERSION: ${{ needs.preflight.outputs.version }}
@@ -691,6 +696,7 @@ jobs:
         with:
           artifact-ids: ${{ needs.create-publication.outputs.artifact-id }}
           path: dist/publication
+          merge-multiple: true
       - uses: actions/attest-build-provenance@43d14bc2b83dec42d39ecae14e916627a18bb661 # v3
         with:
           subject-path: dist/publication/platform-package-publication-v1.json
@@ -710,6 +716,7 @@ jobs:
         with:
           artifact-ids: ${{ needs.create-publication.outputs.artifact-id }}
           path: dist/publication
+          merge-multiple: true
       - name: Create release and upload only the completion manifest
         env:
           GH_TOKEN: ${{ github.token }}

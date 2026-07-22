@@ -11,7 +11,7 @@ Pin the SDK to the same immutable ReDevPlugin release used by the host:
 
 ```toml
 [dependencies]
-redevplugin-worker-sdk = "=0.6.3"
+redevplugin-worker-sdk = "=0.6.4"
 serde_json = "1.0"
 ```
 

@@ -42,6 +42,17 @@ test("Rust publication is artifact-only and has no repository write permission",
   assert.match(source, /"Accept": "application\/json"/);
 });
 
+test("artifact downloads expose files at the declared release paths", () => {
+  for (const [jobName, job] of Object.entries(workflow.jobs ?? {})) {
+    const downloads = (job.steps ?? []).filter(
+      (step) => step.uses?.startsWith("actions/download-artifact@") && step.with?.["artifact-ids"] !== undefined,
+    );
+    for (const step of downloads) {
+      assert.equal(step.with["merge-multiple"], true, `${jobName} must flatten downloaded artifacts`);
+    }
+  }
+});
+
 test("inline privileged Python is syntactically valid", () => {
   for (const jobName of ["publish-rust", "publish-npm-contracts", "publish-npm-ui", "attest-publication", "publish-release"]) {
     for (const step of workflow.jobs[jobName].steps) {

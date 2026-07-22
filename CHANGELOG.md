@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.6.4
+
+### Fixed
+
+- Flatten immutable package and publication artifacts into their declared
+  download roots so npm, Rust, attestation, and GitHub Release jobs read the
+  exact files produced by their upstream build jobs.
+- Enforce the artifact download layout in the release workflow contract test.
+
 ## v0.6.3
 
 ### Fixed
