@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.6.1
+
+### Fixed
+
+- Compare repeated route-authorization profiles by the ratio of each variant's
+  independent median instead of coupling unrelated noisy runner samples. The
+  release gate keeps the existing regression budgets while remaining stable
+  across scheduler phase changes at high concurrency.
+- Give the SQLite idle-waiter performance setup enough time to register all 500
+  waiters on a loaded CI host before measuring event wake latency; the measured
+  wake budget and zero-polling query contract are unchanged.
+
 ## v0.6.0
 
 ### Changed

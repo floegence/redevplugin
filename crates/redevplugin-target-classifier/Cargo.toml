@@ -11,6 +11,6 @@ include = ["Cargo.toml", "LICENSE", "README.md", "src/**", "tests/**"]
 
 [dev-dependencies]
 proptest = "1.6"
-redevplugin-contracts = { path = "../redevplugin-contracts", version = "=0.6.0" }
+redevplugin-contracts = { path = "../redevplugin-contracts", version = "=0.6.1" }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"

@@ -19,7 +19,7 @@
       },
       "comparison_logic": {
         "path": "scripts/route_authorization_comparison.mjs",
-        "sha256": "c301f8368b5346a0e231f503784f78447e3c5d2c610e58cb1ef71d84c9c17db4"
+        "sha256": "f741b7f21ffc771c2064d7293fce9ec5138771ee6b0f62a374b80d899dc66fb6"
       },
       "baseline_probe": {
         "path": "testdata/performance/httpadapter-v051/route_authorization_performance_test.go",

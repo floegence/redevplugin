@@ -234,24 +234,24 @@ test("platform package set binds the exact Go, npm, Rust, role, and contract coo
 
   assert.deepEqual(platformVersion, {
     schema_version: "redevplugin.platform_version.v1",
-    platform_version: "0.6.0",
+    platform_version: "0.6.1",
   });
   assert.equal(packageSet.platform_version, platformVersion.platform_version);
   assert.deepEqual(packageSet.go_module, {
     module: "github.com/floegence/redevplugin",
-    version: "v0.6.0",
+    version: "v0.6.1",
   });
   assert.deepEqual(packageSet.npm_packages, [
-    { name: "@floegence/redevplugin-contracts", version: "0.6.0" },
-    { name: "@floegence/redevplugin-ui", version: "0.6.0" },
+    { name: "@floegence/redevplugin-contracts", version: "0.6.1" },
+    { name: "@floegence/redevplugin-ui", version: "0.6.1" },
   ]);
   assert.deepEqual(packageSet.rust_crates, [
-    { name: "redevplugin-contracts", version: "0.6.0", role: "contracts" },
-    { name: "redevplugin-ipc", version: "0.6.0", role: "ipc" },
-    { name: "redevplugin-wasm-abi", version: "0.6.0", role: "wasm_abi" },
-    { name: "redevplugin-target-classifier", version: "0.6.0", role: "target_classifier" },
-    { name: "redevplugin-worker-sdk", version: "0.6.0", role: "worker_sdk" },
-    { name: "redevplugin-runtime", version: "0.6.0", role: "runtime" },
+    { name: "redevplugin-contracts", version: "0.6.1", role: "contracts" },
+    { name: "redevplugin-ipc", version: "0.6.1", role: "ipc" },
+    { name: "redevplugin-wasm-abi", version: "0.6.1", role: "wasm_abi" },
+    { name: "redevplugin-target-classifier", version: "0.6.1", role: "target_classifier" },
+    { name: "redevplugin-worker-sdk", version: "0.6.1", role: "worker_sdk" },
+    { name: "redevplugin-runtime", version: "0.6.1", role: "runtime" },
   ]);
   assert.equal(packageSet.contract_registry_version, "contract-registry-v2");
   assert.equal(packageSet.contract_set_sha256, digest);
@@ -300,7 +300,7 @@ test("platform package set rejects duplicate, mismatched, unknown, and OS artifa
   invalid.push(wrongRole);
 
   const wrongVersion = clone(packageSet);
-  wrongVersion.rust_crates[5].version = "0.6.1";
+  wrongVersion.rust_crates[5].version = "0.6.0";
   invalid.push(wrongVersion);
 
   const wrongDigest = clone(packageSet);
@@ -323,8 +323,8 @@ test("platform package set rejects duplicate, mismatched, unknown, and OS artifa
   }
   assert.throws(() => decodePlatformPackageSet(Buffer.from(`${raw.toString("utf8")} null`, "utf8"), digest));
   assert.throws(() => decodePlatformPackageSet(Buffer.from(raw.toString("utf8").replace(
-    '"platform_version": "0.6.0",',
-    '"platform_version": "0.6.0",\n  "platform_version": "0.6.0",',
+    '"platform_version": "0.6.1",',
+    '"platform_version": "0.6.1",\n  "platform_version": "0.6.1",',
   ), "utf8"), digest));
   assert.throws(() => decodePlatformPackageSet(Buffer.from(raw.toString("utf8").replace(
     '"name": "@floegence/redevplugin-contracts",',
@@ -372,7 +372,7 @@ test("platform publication schema and decoder cannot describe product artifacts"
   wrongCommit.workflow.sha = "2".repeat(40);
   invalid.push(wrongCommit);
   const wrongVersion = clone(publication);
-  wrongVersion.npm_packages[0].version = "0.6.1";
+  wrongVersion.npm_packages[0].version = "0.6.0";
   invalid.push(wrongVersion);
   const duplicateCrate = clone(publication);
   duplicateCrate.rust_crates[1] = clone(duplicateCrate.rust_crates[0]);

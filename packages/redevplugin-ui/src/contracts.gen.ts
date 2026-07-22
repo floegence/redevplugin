@@ -180,7 +180,7 @@ export const redevPluginContractArtifacts = [
     id: "performance-contract",
     path: "spec/plugin/performance-contract-v3.json",
     version: "performance-contract-v3",
-    sha256: "b28ca39eb1919a655cd5edef6f236db23188cf2e9ff0965c4c69cb7f3092b071",
+    sha256: "33980738cafe8d839fa1e23ec2e17c40528f0f3adf3219e4eb59bb8a992007f6",
   },
   {
     id: "performance-evidence-schema",

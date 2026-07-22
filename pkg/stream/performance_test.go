@@ -52,7 +52,7 @@ func TestPerformanceStreamWaitersAndBackpressure(t *testing.T) {
 			t.Fatal(err)
 		}
 		go func(index int, streamID string) {
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
 			err := store.Wait(ctx, streamID)
 			results <- waiterResult{index: index, at: time.Now(), err: err}

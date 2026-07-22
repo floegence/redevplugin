@@ -53,24 +53,28 @@ test("route authorization allocation regression preserves fractional request ave
   assert.throws(() => assertRouteAuthorizationThresholds(scenarios), /allocations_increase 1.98 exceeds 1/);
 });
 
-test("route authorization comparison uses the median of three interleaved ratios", () => {
+test("route authorization comparison uses the ratio of independent profile medians", () => {
   const baselines = [
     profile("v0.5.1", 100, 10, 1000),
     profile("v0.5.1", 200, 10, 1000),
-    profile("v0.5.1", 50, 10, 1000),
+    profile("v0.5.1", 300, 10, 1000),
   ];
   const candidates = [
-    profile("v0.6.0", 105, 11, 1040),
-    profile("v0.6.0", 190, 11, 1040),
-    profile("v0.6.0", 60, 11, 1040),
+    profile("v0.6.0", 210, 11, 1040),
+    profile("v0.6.0", 300, 11, 1040),
+    profile("v0.6.0", 220, 11, 1040),
   ];
   const scenarios = buildRepeatedRouteAuthorizationScenarios(baselines, candidates, "full");
   for (const scenario of scenarios) {
-    assert.equal(scenario.metrics.find((metric) => metric.name === "p95_relative").observed, 10500);
-    assert.equal(scenario.metrics.find((metric) => metric.name === "p99_relative").observed, 10500);
+    assert.equal(scenario.metrics.find((metric) => metric.name === "p95_relative").observed, 11000);
+    assert.equal(scenario.metrics.find((metric) => metric.name === "p99_relative").observed, 11000);
     assert.equal(scenario.metrics.find((metric) => metric.name === "allocations_increase").observed, 1);
     assert.equal(scenario.metrics.find((metric) => metric.name === "allocated_bytes_relative").observed, 10400);
   }
+  assert.deepEqual(
+    buildRepeatedRouteAuthorizationScenarios(baselines, [...candidates].reverse(), "full"),
+    scenarios,
+  );
 });
 
 test("route authorization comparison provenance closes three raw profile runs", () => {

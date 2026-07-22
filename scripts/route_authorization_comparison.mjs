@@ -43,14 +43,11 @@ export function buildRepeatedRouteAuthorizationScenarios(baselineProfiles, candi
   if (!Array.isArray(baselineProfiles) || !Array.isArray(candidateProfiles) || baselineProfiles.length === 0 || baselineProfiles.length !== candidateProfiles.length) {
     throw new Error("route authorization comparison profiles are incomplete");
   }
-  const runs = baselineProfiles.map((baseline, index) => buildRouteAuthorizationScenarios(baseline, candidateProfiles[index], gate));
-  return runs[0].map((scenario, scenarioIndex) => ({
-    ...scenario,
-    metrics: scenario.metrics.map((metric, metricIndex) => ({
-      ...metric,
-      observed: median(runs.map((run) => run[scenarioIndex].metrics[metricIndex].observed)),
-    })),
-  }));
+  return buildRouteAuthorizationScenarios(
+    medianRouteAuthorizationProfile(baselineProfiles, "v0.5.1"),
+    medianRouteAuthorizationProfile(candidateProfiles, "v0.6.0"),
+    gate,
+  );
 }
 
 export function buildRouteAuthorizationScenarios(baselineProfile, candidateProfile, gate) {
@@ -231,6 +228,31 @@ function roundMetric(value) {
 function median(values) {
 	const ordered = [...values].sort((left, right) => left - right);
 	return ordered[Math.floor(ordered.length / 2)];
+}
+
+function medianRouteAuthorizationProfile(profiles, variant) {
+  const environment = profiles[0]?.environment;
+  for (const profile of profiles) {
+    validateRouteAuthorizationProfile(profile, variant);
+    if (!sameRunnerEnvironment(profile.environment, environment)) {
+      throw new Error("route authorization profiles were measured on different runner environments");
+    }
+  }
+  const first = profiles[0];
+  return {
+    ...first,
+    environment: { ...first.environment },
+    measurements: first.measurements.map((measurement, index) => ({
+      concurrency: measurement.concurrency,
+      batch_count: measurement.batch_count,
+      sample_count: measurement.sample_count,
+      median_nanoseconds: median(profiles.map((profile) => profile.measurements[index].median_nanoseconds)),
+      p95_nanoseconds: median(profiles.map((profile) => profile.measurements[index].p95_nanoseconds)),
+      p99_nanoseconds: median(profiles.map((profile) => profile.measurements[index].p99_nanoseconds)),
+      allocations_per_request: median(profiles.map((profile) => profile.measurements[index].allocations_per_request)),
+      bytes_per_request: median(profiles.map((profile) => profile.measurements[index].bytes_per_request)),
+    })),
+  };
 }
 
 function assertRecord(value, label) {
