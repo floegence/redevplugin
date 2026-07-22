@@ -96,8 +96,14 @@ function runProfile(binary, repositoryRoot, output, commit, gomaxprocs) {
 }
 
 export function buildInterleavedRunOrder(repetitions) {
-  if (repetitions !== 3) throw new Error("route authorization runner requires exactly three repetitions");
-  return ["baseline", "candidate", "candidate", "baseline", "baseline", "candidate"];
+  if (repetitions !== 5) throw new Error("route authorization runner requires exactly five repetitions");
+  return [
+    "baseline", "candidate",
+    "candidate", "baseline",
+    "baseline", "candidate",
+    "candidate", "baseline",
+    "baseline", "candidate",
+  ];
 }
 
 function readComparisonProbe(contract, id) {

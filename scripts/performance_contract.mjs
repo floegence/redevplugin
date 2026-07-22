@@ -90,8 +90,8 @@ function validateComparisonProbes(probes) {
     if (typeof probe.baseline_commit !== "string" || !gitCommitPattern.test(probe.baseline_commit)) {
       throw new Error(`${label}.baseline_commit is invalid`);
     }
-    if (probe.repetitions !== 3) {
-      throw new Error(`${label}.repetitions must be exactly 3`);
+    if (probe.repetitions !== 5) {
+      throw new Error(`${label}.repetitions must be exactly 5`);
     }
     if (!Number.isSafeInteger(probe.warmup_batches) || probe.warmup_batches < 8) {
       throw new Error(`${label}.warmup_batches must be at least 8`);

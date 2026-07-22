@@ -8,6 +8,9 @@
   use their truthful embedded provenance without fabricating an HTTPS fetch
   chain. Registry sources still require a bounded HTTPS chain, an explicitly
   allowed artifact host, and public resolved-IP evidence for every artifact.
+- Increase the route-authorization release comparison from three to five
+  independent profiles per variant while retaining the same median comparison
+  and regression budgets, reducing sensitivity to one noisy CI runner sample.
 
 ## v0.6.1
 

@@ -77,19 +77,19 @@ test("route authorization comparison uses the ratio of independent profile media
   );
 });
 
-test("route authorization comparison provenance closes three raw profile runs", () => {
+test("route authorization comparison provenance closes five raw profile runs", () => {
   const probe = {
     id: "httpadapter.route-authorization-v051",
     baseline_release: "0.5.1",
     baseline_commit: "a".repeat(40),
-    repetitions: 3,
+    repetitions: 5,
   };
   const baselines = Array.from({ length: probe.repetitions }, () => profile("v0.5.1", 100, 10, 1000));
   const candidates = Array.from({ length: probe.repetitions }, () => profile("v0.6.0", 104, 11, 1040));
   const report = buildRouteAuthorizationComparisonReport(probe, baselines, candidates);
   const scenarios = buildRepeatedRouteAuthorizationScenarios(baselines, candidates, "release");
 
-  assert.equal(report.runs.length, 3);
+  assert.equal(report.runs.length, 5);
   assert.doesNotThrow(() => validateRouteAuthorizationComparisonReport(report, probe, "b".repeat(40), scenarios));
 
   const missingRun = structuredClone(report);
@@ -123,12 +123,14 @@ test("route authorization profile hashes are independent of object key order", (
 });
 
 test("route authorization runner balances baseline and candidate process order", () => {
-  assert.deepEqual(buildInterleavedRunOrder(3), [
+  assert.deepEqual(buildInterleavedRunOrder(5), [
+    "baseline", "candidate",
+    "candidate", "baseline",
     "baseline", "candidate",
     "candidate", "baseline",
     "baseline", "candidate",
   ]);
-  assert.throws(() => buildInterleavedRunOrder(2), /exactly three repetitions/);
+  assert.throws(() => buildInterleavedRunOrder(3), /exactly five repetitions/);
 });
 
 function profile(variant, latency, allocations, bytes) {

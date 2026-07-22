@@ -5,7 +5,7 @@
       "id": "httpadapter.route-authorization-v051",
       "baseline_release": "0.5.1",
       "baseline_commit": "3febcc59bbdb2118a4f105781b4c743bc11ba09f",
-      "repetitions": 3,
+      "repetitions": 5,
       "warmup_batches": 8,
       "requests_per_sample": 32,
       "measured_batches": [
@@ -15,7 +15,7 @@
       ],
       "runner": {
         "path": "scripts/measure_http_route_authorization_performance.mjs",
-        "sha256": "1df213a82d66aef7761b9e9ebf7f1fcab5fefaef8583f15c8858760adff43b9e"
+        "sha256": "ccb704f1229b7aa41986d52d8eb473c0b6b1665594dc6094ab8072597d91e55f"
       },
       "comparison_logic": {
         "path": "scripts/route_authorization_comparison.mjs",
