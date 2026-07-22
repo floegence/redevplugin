@@ -9528,11 +9528,12 @@ type recordingCapabilityContractArtifactResolver struct {
 }
 
 type memoryCapabilityContractArtifactSet struct {
-	bundle       capabilitycontract.Bundle
-	fetchChain   []CapabilityArtifactFetchHop
-	mediaType    string
-	declaredSize *int64
-	contentByRef map[string][]byte
+	bundle         capabilitycontract.Bundle
+	fetchChain     []CapabilityArtifactFetchHop
+	omitFetchChain bool
+	mediaType      string
+	declaredSize   *int64
+	contentByRef   map[string][]byte
 }
 
 func (s *memoryCapabilityContractArtifactSet) OpenCapabilityContractArtifact(_ context.Context, ref string) (ResolvedCapabilityContractFile, error) {
@@ -9552,7 +9553,7 @@ func (s *memoryCapabilityContractArtifactSet) OpenCapabilityContractArtifact(_ c
 		}
 	}
 	chain := append([]CapabilityArtifactFetchHop(nil), s.fetchChain...)
-	if len(chain) == 0 {
+	if len(chain) == 0 && !s.omitFetchChain {
 		chain = []CapabilityArtifactFetchHop{{
 			URL: "https://artifacts.example.com/" + ref, ResolvedIP: "93.184.216.34",
 		}}

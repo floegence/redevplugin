@@ -223,6 +223,17 @@ func capabilityArtifactMediaType(pin capabilitycontract.Pin, ref string) (string
 }
 
 func validateCapabilityArtifactFetch(sourcePolicy releasecontract.SourcePolicyV2, chain []CapabilityArtifactFetchHop) error {
+	switch sourcePolicy.SourceType {
+	case "host_artifact":
+		if len(chain) != 0 {
+			return fmt.Errorf("%w: host artifact fetch chain must be empty", ErrReleaseRefVerificationFailed)
+		}
+		return nil
+	case "registry":
+		// Registry artifacts require request-bound network evidence below.
+	default:
+		return fmt.Errorf("%w: capability contract source type is invalid", ErrReleaseRefVerificationFailed)
+	}
 	if len(sourcePolicy.AllowedArtifactHosts) == 0 {
 		return fmt.Errorf("%w: source policy allowed_artifact_hosts are required for capability contracts", ErrReleaseRefVerificationFailed)
 	}

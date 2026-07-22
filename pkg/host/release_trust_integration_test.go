@@ -228,6 +228,54 @@ func TestReleaseTrustInstallVerifiesCapabilityContractBundle(t *testing.T) {
 	}
 }
 
+func TestReleaseTrustInstallVerifiesEmbeddedHostCapabilityContractBundle(t *testing.T) {
+	contract, err := fixtureCapabilityContract("example.capability.echo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	contract.PublisherID = "fixture.capability"
+	privateKey := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{12}, ed25519.SeedSize))
+	bundle, err := capabilitycontract.Build(capabilitycontract.BuildRequest{
+		Contract: contract, PublisherID: contract.PublisherID,
+		ArtifactBaseRef: "capabilities/fixture/embedded/1.0.0", GeneratedAt: time.Date(2026, 7, 21, 1, 0, 0, 0, time.UTC),
+		SourceCommit: "0123456789abcdef0123456789abcdef01234567", MinReDevPluginVersion: "0.6.0",
+		SignatureKeyID: "fixture_signing_key", SignaturePolicyEpoch: "1", SignatureRevocationEpoch: "1",
+		PrivateKey: privateKey,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fixture, err := releasetrustfixture.New(buildHostReleasePackageWithCapability(t, bundle.Pin), releasetrustfixture.Options{
+		SourceType: "host_artifact",
+		HostRequirements: []releasecontract.ReleaseHostRequirement{{
+			HostID: "test-host", MinHostVersion: "0.1.0",
+			RequiredCapabilityContracts: []releasecontract.HostCapabilityRequirementRef{{
+				CapabilityID: contract.CapabilityID, CapabilityVersion: contract.CapabilityVersion,
+				Contract: releaseCapabilityContractRef(bundle.Pin),
+			}},
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	capabilityResolver := &recordingCapabilityContractArtifactResolver{result: ResolvedCapabilityContractArtifact{
+		Artifacts: &memoryCapabilityContractArtifactSet{bundle: bundle, omitFetchChain: true},
+	}}
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{
+		releaseTrust: fixture.ServiceSet, releaseArtifactResolver: &recordingReleaseArtifactResolver{artifact: resolvedReleaseTrustFixture(fixture)},
+		capabilityArtifacts: capabilityResolver,
+	})
+	installed, err := h.InstallReleaseRef(hostTestContext(), InstallReleaseRefRequest{
+		PluginInstanceID: nextTestPluginInstanceID(t), ReleaseRef: releaseTrustFixtureRef(fixture), Now: time.Now().UTC(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if capabilityResolver.calls != 1 || len(installed.CapabilityContracts) != 1 || installed.CapabilityContracts[0] != bundle.Pin {
+		t.Fatalf("verified embedded capability contracts = %#v, resolver calls = %d", installed.CapabilityContracts, capabilityResolver.calls)
+	}
+}
+
 func TestFailedReleaseUpdateRestoresVerifiedReleaseAndLease(t *testing.T) {
 	fixture := newHostReleaseTrustFixture(t)
 	resolver := &recordingReleaseArtifactResolver{artifact: resolvedReleaseTrustFixture(fixture)}

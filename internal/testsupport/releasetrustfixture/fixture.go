@@ -37,6 +37,7 @@ const (
 type Options struct {
 	SourceID             string
 	Channel              string
+	SourceType           string
 	SourceClass          string
 	InstallPolicy        string
 	DowngradePolicy      string
@@ -192,14 +193,15 @@ func New(packageBytes []byte, options Options) (*Fixture, error) {
 		return nil, err
 	}
 
+	sourceType := valueOrDefault(options.SourceType, "registry")
 	allowedArtifactHosts := slices.Clone(options.AllowedArtifactHosts)
-	if len(allowedArtifactHosts) == 0 {
+	if sourceType == "registry" && len(allowedArtifactHosts) == 0 {
 		allowedArtifactHosts = []string{"artifacts.example.com"}
 	}
 	policyInput := releasecontract.SourcePolicyInput{
 		SourceID: sourceID, Channel: channel, Epoch: "1", PreviousEpoch: releasecontract.GenesisPreviousEpoch,
 		PreviousDocumentSHA256: releasecontract.GenesisPreviousDocumentSHA256, RootEpoch: "1",
-		SourceType: "registry", SourceClass: valueOrDefault(options.SourceClass, "official"),
+		SourceType: sourceType, SourceClass: valueOrDefault(options.SourceClass, "official"),
 		AllowedPublishers: []string{signedPackage.Manifest.Publisher.PublisherID}, AllowedArtifactHosts: allowedArtifactHosts,
 		ActiveKeys: releasecontract.SourcePolicyActiveKeys{
 			Package: []string{defaultSigningID}, ReleaseMetadata: []string{defaultSigningID}, HostCapabilityContract: []string{defaultSigningID},

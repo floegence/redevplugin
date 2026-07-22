@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.6.2
+
+### Fixed
+
+- Allow capability contract bundles from a verified `host_artifact` source to
+  use their truthful embedded provenance without fabricating an HTTPS fetch
+  chain. Registry sources still require a bounded HTTPS chain, an explicitly
+  allowed artifact host, and public resolved-IP evidence for every artifact.
+
 ## v0.6.1
 
 ### Fixed
@@ -11,7 +20,6 @@
 - Give the SQLite idle-waiter performance setup enough time to register all 500
   waiters on a loaded CI host before measuring event wake latency; the measured
   wake budget and zero-polling query contract are unchanged.
-
 ## v0.6.0
 
 ### Changed
