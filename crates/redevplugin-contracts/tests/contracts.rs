@@ -29,7 +29,7 @@ fn inventory_includes_one_separate_synthetic_registry_contract() {
 #[test]
 fn package_set_and_contract_metadata_are_static_and_complete() {
     let package_set = package_set();
-    assert_eq!(package_set.platform_version, "0.6.4");
+    assert_eq!(package_set.platform_version, "0.6.5");
     assert_eq!(
         package_set.go_module.module,
         "github.com/floegence/redevplugin"

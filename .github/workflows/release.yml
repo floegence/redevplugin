@@ -287,8 +287,8 @@ jobs:
                   vcs = load_json_bytes(archive.extractfile(vcs_member).read(), "Cargo VCS info", 64 * 1024)
                   readme = archive.extractfile(readme_member).read().decode("utf-8")
               exact_keys(vcs, ["git", "path_in_vcs"], "Cargo VCS info")
-              exact_keys(vcs["git"], ["sha1", "dirty"], "Cargo VCS git info")
-              if vcs["git"] != {"sha1": source_commit, "dirty": False} or vcs["path_in_vcs"] != f"crates/{name}":
+              exact_keys(vcs["git"], ["sha1"], "Cargo VCS git info")
+              if vcs["git"] != {"sha1": source_commit} or vcs["path_in_vcs"] != f"crates/{name}":
                   raise SystemExit("Cargo VCS source identity mismatch")
               try:
                   cargo = tomllib.loads(cargo_raw.decode("utf-8"))
@@ -467,6 +467,8 @@ jobs:
         with:
           node-version: 24
           registry-url: https://registry.npmjs.org
+      - name: Ensure npm supports trusted publishing
+        run: npm i -g npm@11.18.0
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           artifact-ids: ${{ needs.package-build.outputs.artifact-id }}
@@ -540,6 +542,8 @@ jobs:
         with:
           node-version: 24
           registry-url: https://registry.npmjs.org
+      - name: Ensure npm supports trusted publishing
+        run: npm i -g npm@11.18.0
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           artifact-ids: ${{ needs.package-build.outputs.artifact-id }}

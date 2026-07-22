@@ -81,8 +81,8 @@ export function selectIndexEntry(raw, name, version) {
 export function verifyCargoVCSInfo(raw, { sourceCommit, pathInVCS }) {
   const value = parseStrictJSON(raw, "Cargo VCS info", 64 * 1024);
   exactKeys(value, ["git", "path_in_vcs"], "Cargo VCS info");
-  exactKeys(value.git, ["sha1", "dirty"], "Cargo VCS git info");
-  if (value.git.sha1 !== sourceCommit || value.git.dirty !== false || value.path_in_vcs !== pathInVCS) {
+  exactKeys(value.git, ["sha1"], "Cargo VCS git info");
+  if (value.git.sha1 !== sourceCommit || value.path_in_vcs !== pathInVCS) {
     throw new Error("Cargo VCS source identity mismatch");
   }
   return value;

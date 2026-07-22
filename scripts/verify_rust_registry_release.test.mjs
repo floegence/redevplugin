@@ -15,9 +15,9 @@ test("Rust registry index selection is exact and rejects yanked or ambiguous ver
   assert.throws(() => selectIndexEntry(Buffer.from(`${JSON.stringify(entry).replace('"name"', '"name":"duplicate","name"')}\n`), name, version));
 });
 
-test("Cargo VCS info requires the exact clean source commit and crate path", () => {
+test("Cargo VCS info requires the exact source commit and crate path", () => {
   const value = {
-    git: { sha1: sourceCommit, dirty: false },
+    git: { sha1: sourceCommit },
     path_in_vcs: `crates/${name}`,
   };
   assert.deepEqual(verifyCargoVCSInfo(Buffer.from(JSON.stringify(value)), {
@@ -26,7 +26,7 @@ test("Cargo VCS info requires the exact clean source commit and crate path", () 
   }), value);
   for (const mutate of [
     (candidate) => { candidate.git.sha1 = "2".repeat(40); },
-    (candidate) => { candidate.git.dirty = true; },
+    (candidate) => { candidate.git.dirty = false; },
     (candidate) => { candidate.path_in_vcs = "crates/other"; },
     (candidate) => { candidate.extra = true; },
   ]) {

@@ -11,8 +11,8 @@ include = ["Cargo.toml", "LICENSE", "README.md", "src/**", "testdata/**"]
 
 [dependencies]
 libc = "0.2"
-redevplugin-ipc = { path = "../redevplugin-ipc", version = "=0.6.4" }
-redevplugin-wasm-abi = { path = "../redevplugin-wasm-abi", version = "=0.6.4" }
+redevplugin-ipc = { path = "../redevplugin-ipc", version = "=0.6.5" }
+redevplugin-wasm-abi = { path = "../redevplugin-wasm-abi", version = "=0.6.5" }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 wasmi = { version = "2.0.0-beta.7", default-features = false, features = ["portable-dispatch", "std", "validate"] }

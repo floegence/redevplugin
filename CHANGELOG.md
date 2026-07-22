@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.6.5
+
+### Fixed
+
+- Validate the exact Cargo 1.88 `.cargo_vcs_info.json` shape emitted by the
+  immutable source-package build so Rust publication accepts the verified
+  source commit while continuing to reject unknown VCS fields.
+
 ## v0.6.4
 
 ### Fixed

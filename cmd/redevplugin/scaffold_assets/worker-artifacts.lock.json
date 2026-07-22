@@ -5,11 +5,11 @@
   "canonical_builder": "linux/amd64",
   "canonical_image": "docker.io/library/rust:1.88.0-bookworm@sha256:4727898c104ecd2e22d780925832502faee9fe4e70581b8572af081370b315a0",
   "source_files": {
-    "Cargo.lock": "88081ed166e576834991fe0077aa3a1a1289268d8f25cd1c6f2cd08be5877765",
-    "Cargo.toml": "c20c61b057f7425fb0ec087ab59a87043ddcfa285277a2534d45a2a74555c035",
+    "Cargo.lock": "2a0a7517a476a6fffa2ae16a956e30e27c35f79266bcee93444a4c271f732a19",
+    "Cargo.toml": "d322582e74665c7be55ee93907c098219b1f684500e700fee6c3d37049a4aa28",
     "crates/redevplugin-worker-sdk/Cargo.toml": "04f7c3694c9f17afa76f37144d36cb71e0400555d7006e62323f3c558a673662",
     "crates/redevplugin-worker-sdk/LICENSE": "68a062bc10a32bc2478ece12a1792f878f72d0033164fb0e4a4c565bab5c8478",
-    "crates/redevplugin-worker-sdk/README.md": "0460d7f4cbfd147214227fe749d4c8a3d4a740576160d2fa072a5733de7138bf",
+    "crates/redevplugin-worker-sdk/README.md": "87cfb496231b4e6908297deab6adfc31cc0e27704e4e67537492b81fd9ba6e0a",
     "crates/redevplugin-worker-sdk/src/hostcalls.rs": "67ffaf86a27df801e13c3174d15d4536a84730c7bcd03930b1f8d64e1f4709af",
     "crates/redevplugin-worker-sdk/src/lib.rs": "15dcf96fa0ff0fe862df759edd32b21310098604aed1edb16c9c973b8abb89e6",
     "internal/scaffoldworker/Cargo.toml": "3822629b509f6490816a177bdb73be54bc128a72dbfd890ca9f971028155a5c0",
@@ -19,6 +19,6 @@
     "scripts/canonical_wasm_builder.mjs": "b97d8802d0c192a17dcdcd30a704380b89af313f73b12c6eed9174236c908d1d"
   },
   "artifacts": {
-    "cmd/redevplugin/scaffold_assets/backend.wasm": "454437153103aed83796025f62ed482006bd2fb9854005ee071a8a822c4c62eb"
+    "cmd/redevplugin/scaffold_assets/backend.wasm": "7ffd1e16cba1313ab67c5f23efb94aa835bf10c2509361d113dca0af7e5575e6"
   }
 }

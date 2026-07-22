@@ -53,6 +53,13 @@ test("artifact downloads expose files at the declared release paths", () => {
   }
 });
 
+test("npm publication jobs pin a trusted-publishing capable npm", () => {
+  for (const jobName of ["publish-npm-contracts", "publish-npm-ui"]) {
+    const source = (workflow.jobs[jobName].steps ?? []).map((step) => step.run ?? "").join("\n");
+    assert.match(source, /npm i -g npm@11\.18\.0/, `${jobName} must pin npm trusted publishing support`);
+  }
+});
+
 test("inline privileged Python is syntactically valid", () => {
   for (const jobName of ["publish-rust", "publish-npm-contracts", "publish-npm-ui", "attest-publication", "publish-release"]) {
     for (const step of workflow.jobs[jobName].steps) {
