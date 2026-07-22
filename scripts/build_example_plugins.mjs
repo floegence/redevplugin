@@ -30,6 +30,9 @@ const wasmTargets = [
   ["redevplugin-example-weather-worker", "redevplugin_example_weather_worker.wasm", "examples/plugins/weather/workers/weather.wasm"],
   ["redevplugin-example-sky-strike-worker", "redevplugin_example_sky_strike_worker.wasm", "examples/plugins/sky-strike/workers/sky-strike.wasm"],
 ];
+const wasmFixtureOutputs = new Map([
+  ["redevplugin_example_memos_worker.wasm", ["crates/redevplugin-runtime/testdata/memos.wasm"]],
+]);
 for (const [source, output] of javascriptTargets) {
   const result = await build({
     entryPoints: [resolve(root, source)],
@@ -98,7 +101,11 @@ if (!checkOnly || forceCanonical || isCanonicalBuildHost()) {
     forceDocker: forceCanonical,
   });
   for (const [, artifact, output] of wasmTargets) {
-    await verifyOrWrite(output, builtArtifacts.get(artifact));
+    const content = builtArtifacts.get(artifact);
+    await verifyOrWrite(output, content);
+    for (const fixtureOutput of wasmFixtureOutputs.get(artifact) ?? []) {
+      await verifyOrWrite(fixtureOutput, content);
+    }
   }
 }
 

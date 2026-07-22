@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.6.3
+
+### Fixed
+
+- Install the canonical `wasm32-unknown-unknown` Rust target in the immutable
+  platform-package build job before npm/scaffold verification rebuilds the
+  shipped WASM examples.
+
 ## v0.6.2
 
 ### Fixed

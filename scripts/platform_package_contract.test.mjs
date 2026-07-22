@@ -234,24 +234,24 @@ test("platform package set binds the exact Go, npm, Rust, role, and contract coo
 
   assert.deepEqual(platformVersion, {
     schema_version: "redevplugin.platform_version.v1",
-    platform_version: "0.6.2",
+    platform_version: "0.6.3",
   });
   assert.equal(packageSet.platform_version, platformVersion.platform_version);
   assert.deepEqual(packageSet.go_module, {
     module: "github.com/floegence/redevplugin",
-    version: "v0.6.2",
+    version: "v0.6.3",
   });
   assert.deepEqual(packageSet.npm_packages, [
-    { name: "@floegence/redevplugin-contracts", version: "0.6.2" },
-    { name: "@floegence/redevplugin-ui", version: "0.6.2" },
+    { name: "@floegence/redevplugin-contracts", version: "0.6.3" },
+    { name: "@floegence/redevplugin-ui", version: "0.6.3" },
   ]);
   assert.deepEqual(packageSet.rust_crates, [
-    { name: "redevplugin-contracts", version: "0.6.2", role: "contracts" },
-    { name: "redevplugin-ipc", version: "0.6.2", role: "ipc" },
-    { name: "redevplugin-wasm-abi", version: "0.6.2", role: "wasm_abi" },
-    { name: "redevplugin-target-classifier", version: "0.6.2", role: "target_classifier" },
-    { name: "redevplugin-worker-sdk", version: "0.6.2", role: "worker_sdk" },
-    { name: "redevplugin-runtime", version: "0.6.2", role: "runtime" },
+    { name: "redevplugin-contracts", version: "0.6.3", role: "contracts" },
+    { name: "redevplugin-ipc", version: "0.6.3", role: "ipc" },
+    { name: "redevplugin-wasm-abi", version: "0.6.3", role: "wasm_abi" },
+    { name: "redevplugin-target-classifier", version: "0.6.3", role: "target_classifier" },
+    { name: "redevplugin-worker-sdk", version: "0.6.3", role: "worker_sdk" },
+    { name: "redevplugin-runtime", version: "0.6.3", role: "runtime" },
   ]);
   assert.equal(packageSet.contract_registry_version, "contract-registry-v2");
   assert.equal(packageSet.contract_set_sha256, digest);
@@ -277,6 +277,7 @@ test("Rust source packages remain wired into dedicated Rust and release gates", 
   const releaseQuality = workflowJob(".github/workflows/release.yml", "quality");
   assert.match(releaseQuality, /\.\/scripts\/check_redevplugin_pre_push\.sh --ci/);
   const packageBuild = workflowJob(".github/workflows/release.yml", "package-build");
+  assert.match(packageBuild, /rustup target add wasm32-unknown-unknown/);
   assert.match(packageBuild, /scripts\/platform_package_build\.mjs build/);
   assert.match(packageBuild, /scripts\/platform_package_build\.mjs verify/);
   assert.doesNotMatch(read(".github/workflows/release.yml").toString("utf8"), /build_redevplugin_release|runtime-target|\.tar\.gz/);
@@ -323,8 +324,8 @@ test("platform package set rejects duplicate, mismatched, unknown, and OS artifa
   }
   assert.throws(() => decodePlatformPackageSet(Buffer.from(`${raw.toString("utf8")} null`, "utf8"), digest));
   assert.throws(() => decodePlatformPackageSet(Buffer.from(raw.toString("utf8").replace(
-    '"platform_version": "0.6.2",',
-    '"platform_version": "0.6.2",\n  "platform_version": "0.6.2",',
+    '"platform_version": "0.6.3",',
+    '"platform_version": "0.6.3",\n  "platform_version": "0.6.3",',
   ), "utf8"), digest));
   assert.throws(() => decodePlatformPackageSet(Buffer.from(raw.toString("utf8").replace(
     '"name": "@floegence/redevplugin-contracts",',
