@@ -343,6 +343,7 @@ func TestOpenAPIListQueryContractsAreStrictAndComplete(t *testing.T) {
 		{path: "/_redevplugin/api/plugins/operations/query", schema: "ListOperationsQueryRequest", properties: []string{"cursor", "limit", "plugin_instance_id"}, snippets: []string{"minimum: 1, maximum: 500"}},
 		{path: "/_redevplugin/api/plugins/intents/query", schema: "ListIntentsQueryRequest", properties: []string{"intent_id", "plugin_instance_id"}},
 		{path: "/_redevplugin/api/plugins/permissions/query", schema: "ListPermissionsQueryRequest", properties: []string{"active_only", "plugin_instance_id"}, snippets: []string{"active_only: { type: boolean }"}},
+		{path: "/_redevplugin/api/plugins/permissions/requirements/query", schema: "PermissionRequirementsQueryRequest", properties: []string{"plugin_instance_id"}},
 		{path: "/_redevplugin/api/plugins/diagnostics/query", schema: "ListDiagnosticsQueryRequest", properties: []string{"limit", "plugin_id", "plugin_instance_id", "severity", "surface_instance_id", "type"}, snippets: []string{"enum: [info, warning]", "minimum: 1, maximum: 1000"}},
 	}
 	for _, tt := range tests {
@@ -936,6 +937,11 @@ func typeScriptSDKRouteBindings() []typeScriptSDKRouteBinding {
 			Snippets:     []string{"listPermissions(options: PluginPermissionListOptions = {})", `#requestQuery("/_redevplugin/api/plugins/permissions/query"`},
 		},
 		{
+			routeFixture: routeFixture{Method: "POST", Path: "/_redevplugin/api/plugins/permissions/requirements/query"},
+			Owner:        "PluginPlatformClient.getPermissionRequirements",
+			Snippets:     []string{"getPermissionRequirements(request: PluginPermissionRequirementsRequest", `#requestQuery("/_redevplugin/api/plugins/permissions/requirements/query"`},
+		},
+		{
 			routeFixture: routeFixture{Method: "POST", Path: "/_redevplugin/api/plugins/permissions/grant"},
 			Owner:        "PluginPlatformClient.grantPermission",
 			Snippets:     []string{"grantPermission(request: PluginPermissionGrantRequest)", `#mutatePlugin("/_redevplugin/api/plugins/permissions/grant"`},
@@ -1046,6 +1052,7 @@ func requiredJSONRequestBodyRoutes() []routeFixture {
 		{Method: "POST", Path: "/_redevplugin/api/plugins/retained-data/bind"},
 		{Method: "POST", Path: "/_redevplugin/api/plugins/retained-data/cleanup-expired"},
 		{Method: "POST", Path: "/_redevplugin/api/plugins/permissions/query"},
+		{Method: "POST", Path: "/_redevplugin/api/plugins/permissions/requirements/query"},
 		{Method: "POST", Path: "/_redevplugin/api/plugins/permissions/grant"},
 		{Method: "POST", Path: "/_redevplugin/api/plugins/permissions/revoke"},
 		{Method: "POST", Path: "/_redevplugin/api/plugins/security-policies/query"},

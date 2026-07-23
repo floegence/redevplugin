@@ -916,7 +916,10 @@ type acknowledgementResponse struct {
 }
 
 type surfaceDisposeResponse struct {
-	Disposed bool `json:"disposed"`
+	Disposed      bool   `json:"disposed"`
+	State         string `json:"state"`
+	PreviousState string `json:"previous_state"`
+	Revoked       bool   `json:"revoked"`
 }
 
 type sessionScopeRevokeCountsResponse struct {

@@ -66,6 +66,7 @@ const (
 	RouteActionBindRetainedData           RouteAction = "retained_data.bind"
 	RouteActionCleanupExpiredRetainedData RouteAction = "retained_data.cleanup_expired"
 	RouteActionListPermissions            RouteAction = "permission.list"
+	RouteActionGetPermissionRequirements  RouteAction = "permission.requirements.get"
 	RouteActionGrantPermission            RouteAction = "permission.grant"
 	RouteActionRevokePermission           RouteAction = "permission.revoke"
 	RouteActionListSecurityPolicies       RouteAction = "security_policy.list"
@@ -98,7 +99,7 @@ func (action RouteAction) Valid() bool {
 		RouteActionRefreshEnabledRuntimeState, RouteActionGetRuntimeHealth, RouteActionExportData,
 		RouteActionDeleteDataExport, RouteActionImportData, RouteActionListRetainedData,
 		RouteActionDeleteRetainedData, RouteActionBindRetainedData, RouteActionCleanupExpiredRetainedData,
-		RouteActionListPermissions, RouteActionGrantPermission, RouteActionRevokePermission,
+		RouteActionListPermissions, RouteActionGetPermissionRequirements, RouteActionGrantPermission, RouteActionRevokePermission,
 		RouteActionListSecurityPolicies, RouteActionGetSecurityPolicy, RouteActionPutSecurityPolicy,
 		RouteActionDeleteSecurityPolicy, RouteActionListDiagnostics, RouteActionBindSecret,
 		RouteActionTestSecret, RouteActionDeleteSecret, RouteActionGetSettingsSchema,

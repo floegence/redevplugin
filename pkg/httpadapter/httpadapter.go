@@ -946,6 +946,10 @@ type listPermissionsQueryRequest struct {
 	ActiveOnly       optionalQueryBool   `json:"active_only"`
 }
 
+type permissionRequirementsQueryRequest struct {
+	PluginInstanceID string `json:"plugin_instance_id"`
+}
+
 type listDiagnosticsQueryRequest struct {
 	PluginID          optionalQueryString  `json:"plugin_id"`
 	PluginInstanceID  optionalQueryString  `json:"plugin_instance_id"`
@@ -1051,6 +1055,7 @@ var routes = []routeSpec{
 	mutationRoute(http.MethodPost, "/_redevplugin/api/plugins/retained-data/bind", websecurity.RouteActionBindRetainedData, func(h *Handler) http.HandlerFunc { return h.handleBindRetainedData }),
 	mutationRoute(http.MethodPost, "/_redevplugin/api/plugins/retained-data/cleanup-expired", websecurity.RouteActionCleanupExpiredRetainedData, func(h *Handler) http.HandlerFunc { return h.handleCleanupExpiredRetainedData }),
 	queryRoute("/_redevplugin/api/plugins/permissions/query", websecurity.RouteActionListPermissions, func(h *Handler) http.HandlerFunc { return h.handleListPermissions }),
+	queryRoute("/_redevplugin/api/plugins/permissions/requirements/query", websecurity.RouteActionGetPermissionRequirements, func(h *Handler) http.HandlerFunc { return h.handlePermissionRequirements }),
 	mutationRoute(http.MethodPost, "/_redevplugin/api/plugins/permissions/grant", websecurity.RouteActionGrantPermission, func(h *Handler) http.HandlerFunc { return h.handleGrantPermission }),
 	mutationRoute(http.MethodPost, "/_redevplugin/api/plugins/permissions/revoke", websecurity.RouteActionRevokePermission, func(h *Handler) http.HandlerFunc { return h.handleRevokePermission }),
 	queryRoute("/_redevplugin/api/plugins/security-policies/query", websecurity.RouteActionListSecurityPolicies, func(h *Handler) http.HandlerFunc { return h.handleListSecurityPolicies }),
@@ -2085,15 +2090,16 @@ func (h Handler) handleDisposeSurface(w http.ResponseWriter, r *http.Request) {
 		writeMutationInvalidRequestError(w, err)
 		return
 	}
-	if err := h.host.DisposeSurface(r.Context(), host.DisposeSurfaceRequest{
+	result, err := h.host.ReconcileSurfaceRevocation(r.Context(), host.DisposeSurfaceRequest{
 		SurfaceInstanceID: surfaceInstanceID,
 		BridgeNonce:       req.BridgeNonce,
-	}); err != nil {
+	})
+	if err != nil {
 		code := errorCodeForBridgeError(err)
 		writeMutationError(w, httpStatusForBridgeError(err), code, h.publicFailureMessage(r.Context(), "surface.dispose", code, err), errorDetails{}, mutation.ForError(err))
 		return
 	}
-	writeMutationSuccess(w, surfaceDisposeResponse{Disposed: true})
+	writeMutationSuccess(w, surfaceDisposeResponse{Disposed: true, State: string(result.State), PreviousState: string(result.PreviousState), Revoked: result.Revoked})
 }
 
 func (h Handler) handleRevokeSessionScope(w http.ResponseWriter, r *http.Request) {
@@ -2541,6 +2547,21 @@ func (h Handler) handleListPermissions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, successResponse{OK: true, Data: permissionListResponse{Permissions: publicPermissions(records)}})
+}
+
+func (h Handler) handlePermissionRequirements(w http.ResponseWriter, r *http.Request) {
+	var req permissionRequirementsQueryRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeInvalidRequestError(w, err)
+		return
+	}
+	result, err := h.host.GetPermissionRequirements(r.Context(), host.GetPermissionRequirementsRequest{PluginInstanceID: req.PluginInstanceID})
+	if err != nil {
+		code := errorCodeForPermissionError(err)
+		writeJSON(w, httpStatusForPermissionError(err), errorResponse{OK: false, Message: h.publicFailureMessage(r.Context(), "permission.requirements", code, err), Code: code})
+		return
+	}
+	writeJSON(w, http.StatusOK, successResponse{OK: true, Data: result})
 }
 
 func (h Handler) handleGrantPermission(w http.ResponseWriter, r *http.Request) {

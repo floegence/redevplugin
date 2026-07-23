@@ -356,6 +356,7 @@ const maxOpaqueSurfaceLazyAssets = 128;
 const maxOpaqueSurfaceLazyBytes = 32 * 1024 * 1024;
 const maxConcurrentAssetReads = 4;
 const maxSurfaceQuiesceMs = 1500;
+const maxSurfaceInteractionEventsPerSecond = 120;
 const pluginBridgeErrorCodeSet = new Set<string>(pluginBridgeErrorCodes);
 const hostCapabilityIDPattern = new RegExp("^[A-Za-z0-9][A-Za-z0-9._-]*$");
 const canonicalSemverPattern = new RegExp("^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(?:-(?:(?:0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))*))?(?:\\+[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?$");
@@ -1082,6 +1083,17 @@ export type PluginSurfaceOpeningProgress = {
   elapsedMs: number;
 };
 
+export type PluginSurfaceInteractionKind = "activation" | "focus" | "wheel" | "text-selection" | "action";
+
+export type PluginSurfaceInteractionEvent = {
+  kind: PluginSurfaceInteractionKind;
+  sequence: number;
+  targetKey?: string;
+  action?: string;
+  localScroll: boolean;
+  selectionActive: boolean;
+};
+
 export type PluginSurfaceHost = {
   readonly element: HTMLIFrameElement;
   readonly surfaceInstanceId: string;
@@ -1109,6 +1121,7 @@ export type PluginSurfaceHostOptions = {
   reloadLimiter?: PluginSurfaceReloadLimiter;
   confirm?: PluginConfirmationHandler;
   onOpeningProgress?: (progress: PluginSurfaceOpeningProgress) => void;
+  onInteraction?: (event: PluginSurfaceInteractionEvent) => void;
   onError?: (error: PluginBridgeError) => void;
 };
 
@@ -1176,7 +1189,7 @@ async function revokeSurfaceBootstrap(
   bootstrap: PluginSurfaceHostBootstrap,
   timeoutMs: number,
   keepalive: boolean,
-): Promise<void> {
+): Promise<PluginSurfaceRevocationReconciliation> {
   const path = `/_redevplugin/api/plugins/surfaces/${encodeURIComponent(bootstrap.surfaceInstanceId)}/dispose`;
   const controller = new AbortController();
   let timedOut = false;
@@ -1206,7 +1219,11 @@ async function revokeSurfaceBootstrap(
       }),
       timeout,
     ]);
-    await readMutationPlatformResponse<Record<string, unknown>>(response);
+    const result = await readMutationPlatformResponse<unknown>(response);
+    if (!isSurfaceRevocationReconciliation(result)) {
+      throw new PluginBridgeError("PLUGIN_CONTRACT_MISMATCH", "Plugin surface revocation reconciliation returned an invalid result", undefined, undefined, "unknown");
+    }
+    return result;
   } catch (error) {
     if (timedOut) {
       throw new PluginBridgeError(
@@ -1310,8 +1327,16 @@ export type PluginSurfaceQuiesceResult = {
 
 export type PluginSurfaceCloseResult = {
   quiesce: PluginSurfaceQuiesceResult;
+  readonly revocation?: PluginSurfaceRevocationReconciliation;
   revokeDurationMs: number;
   totalDurationMs: number;
+};
+
+export type PluginSurfaceRevocationReconciliation = {
+  disposed: true;
+  state: "closed" | "absent";
+  previous_state: "active" | "closed" | "absent";
+  revoked: boolean;
 };
 
 type Deferred<T> = {
@@ -1496,6 +1521,46 @@ export function createOpaquePluginBootstrapHTML(options: OpaquePluginBootstrapHT
   const sendParent = (message) => {
     if (parentPort && withinLimit(message)) parentPort.postMessage(message);
   };
+  let interactionSequence = 0;
+  const interactionTargetKey = (target) => {
+    const element = target instanceof Element ? target.closest("[data-redevplugin-key]") : null;
+    const key = element?.getAttribute("data-redevplugin-key");
+    return validResourceIdentifier(key) ? key : null;
+  };
+  const ownsLocalScroll = (event) => {
+    const path = typeof event.composedPath === "function" ? event.composedPath() : [event.target];
+    for (const candidate of path) {
+      if (!(candidate instanceof Element)) continue;
+      const style = getComputedStyle(candidate);
+      const vertical = /(auto|scroll|overlay)/.test(style.overflowY) && candidate.scrollHeight > candidate.clientHeight;
+      const horizontal = /(auto|scroll|overlay)/.test(style.overflowX) && candidate.scrollWidth > candidate.clientWidth;
+      if (vertical || horizontal) return true;
+    }
+    return false;
+  };
+  const sendInteraction = (kind, target, options = {}) => {
+    if (!initialized || pendingQuiesceID) return;
+    interactionSequence += 1;
+    sendParent({
+      type: "redevplugin.surface.interaction",
+      frame_generation_id: frameGenerationID,
+      surface_handle: surfaceHandle,
+      sequence: interactionSequence,
+      kind,
+      target_key: interactionTargetKey(target),
+      action: options.action || null,
+      local_scroll: options.localScroll === true,
+      selection_active: options.selectionActive === true,
+    });
+  };
+  document.addEventListener("pointerdown", (event) => sendInteraction("activation", event.target), true);
+  document.addEventListener("focusin", (event) => sendInteraction("focus", event.target), true);
+  document.addEventListener("wheel", (event) => sendInteraction("wheel", event.target, { localScroll: ownsLocalScroll(event) }), { capture: true, passive: true });
+  document.addEventListener("selectionchange", () => {
+    const selection = document.getSelection();
+    const target = selection?.anchorNode instanceof Element ? selection.anchorNode : selection?.anchorNode?.parentElement;
+    sendInteraction("text-selection", target, { selectionActive: Boolean(selection && !selection.isCollapsed) });
+  });
   const sendWorker = (message) => {
     if (workerPort && withinLimit(message)) workerPort.postMessage(message);
   };
@@ -2129,6 +2194,7 @@ export function createOpaquePluginBootstrapHTML(options: OpaquePluginBootstrapHT
     if (event.type === "submit" || (event.type === "click" && element.tagName === "BUTTON")) event.preventDefault();
     const action = element.getAttribute("data-redevplugin-action");
     if (!validIdentifier(action)) return;
+    sendInteraction("action", event.target, { action });
     sendWorker(actionPayload(event, element));
   };
   for (const eventType of ["click", "input", "change", "submit"]) document.addEventListener(eventType, handleAction, true);
@@ -2167,6 +2233,7 @@ export function createOpaquePluginBootstrapHTML(options: OpaquePluginBootstrapHT
     const targetKey = owner.getAttribute("data-redevplugin-key");
     if (!validResourceIdentifier(targetKey)) return;
     const edit = controlEdits.get(targetKey) || { revision: 0, isComposing: false };
+    sendInteraction("action", origin, { action });
     sendWorker({
       type: "redevplugin.ui.action",
       action,
@@ -2882,7 +2949,11 @@ class PluginSurfaceHostImplementation implements PluginSurfaceHost {
   #reloadLimiter: PluginSurfaceReloadLimiter;
   #confirm?: PluginConfirmationHandler;
   #onOpeningProgress?: (progress: PluginSurfaceOpeningProgress) => void;
+  #onInteraction?: (event: PluginSurfaceInteractionEvent) => void;
   #onError?: (error: PluginBridgeError) => void;
+  #lastInteractionSequence = 0;
+  #interactionWindowStartedAt = 0;
+  #interactionWindowCount = 0;
   #abortController = new AbortController();
   #gatewayToken?: string;
   #leaseExpiresAtMs = 0;
@@ -2904,7 +2975,7 @@ class PluginSurfaceHostImplementation implements PluginSurfaceHost {
   #initialFrameLoad?: Deferred<void>;
   #frameLoaded = false;
   #closePromise?: Promise<PluginSurfaceCloseResult>;
-  #revokePromise?: Promise<void>;
+  #revokePromise?: Promise<PluginSurfaceRevocationReconciliation>;
   #unregisterSurfaceScope?: () => void;
   #onLocalInvalidation?: () => void;
   #opened = false;
@@ -2948,6 +3019,7 @@ class PluginSurfaceHostImplementation implements PluginSurfaceHost {
     this.#reloadLimiter = options.reloadLimiter ?? new PluginSurfaceReloadLimiter();
     this.#confirm = options.confirm;
     this.#onOpeningProgress = options.onOpeningProgress;
+    this.#onInteraction = options.onInteraction;
     this.#onError = options.onError;
     hardenPluginSurfaceFrame(this.#iframe);
     this.#unregisterSurfaceScope = registerPluginSurface(
@@ -3070,10 +3142,11 @@ class PluginSurfaceHostImplementation implements PluginSurfaceHost {
     if (this.#disposed) {
       const result: PluginSurfaceCloseResult = {
         quiesce: { outcome: "not_ready", durationMs: 0 },
+        revocation: { disposed: true, state: "closed", previous_state: "closed", revoked: false },
         revokeDurationMs: 0,
         totalDurationMs: 0,
       };
-      return this.#revokePromise ? this.#revokePromise.then(() => result) : Promise.resolve(result);
+      return this.#revokePromise ? this.#revokePromise.then((revocation) => ({ ...result, revocation })) : Promise.resolve(result);
     }
     if (this.#closePromise) return this.#closePromise;
     this.#closePromise = this.#closeSurface();
@@ -3081,11 +3154,11 @@ class PluginSurfaceHostImplementation implements PluginSurfaceHost {
   }
 
   dispose(): Promise<void> {
-    if (this.#disposed) return this.#revokePromise ?? Promise.resolve();
+    if (this.#disposed) return this.#revokePromise?.then(() => undefined) ?? Promise.resolve();
     const revoke = this.#revokeSurface(true);
     void revoke.catch(() => undefined);
     this.#disposeLocal();
-    return revoke;
+    return revoke.then(() => undefined);
   }
 
   observeLocalInvalidation(observer: () => void): void {
@@ -3097,21 +3170,23 @@ class PluginSurfaceHostImplementation implements PluginSurfaceHost {
     const startedAt = performance.now();
     const quiesce = await this.#quiesceSurface();
     if (this.#disposed) {
-      return { quiesce, revokeDurationMs: 0, totalDurationMs: performance.now() - startedAt };
+      const revocation = this.#revokePromise ? await this.#revokePromise : { disposed: true, state: "closed", previous_state: "closed", revoked: false } as const;
+      return { quiesce, revocation, revokeDurationMs: 0, totalDurationMs: performance.now() - startedAt };
     }
     const revokeStartedAt = performance.now();
     const revoke = this.#revokeSurface(false);
     this.#disposeLocal();
     try {
-      await revoke;
+      const revocation = await revoke;
+      return {
+        quiesce,
+        revocation,
+        revokeDurationMs: performance.now() - revokeStartedAt,
+        totalDurationMs: performance.now() - startedAt,
+      };
     } catch (error) {
       throw toBridgeError(error, "PLUGIN_BRIDGE_DISPOSED");
     }
-    return {
-      quiesce,
-      revokeDurationMs: performance.now() - revokeStartedAt,
-      totalDurationMs: performance.now() - startedAt,
-    };
   }
 
   #disposeLocal(): void {
@@ -3186,6 +3261,10 @@ class PluginSurfaceHostImplementation implements PluginSurfaceHost {
         this.#openSignals?.firstCommit.resolve();
         return;
       }
+      if (isSurfaceInteractionMessage(data)) {
+        this.#handleInteraction(data);
+        return;
+      }
       if (hasExactKeys(data, ["type", "quiesce_id"]) && data.type === "redevplugin.surface.quiesce_ack" && validOpaqueHandle(data.quiesce_id, "quiesce") && data.quiesce_id === this.#quiesce?.id) {
         this.#quiesce.acknowledged.resolve();
         return;
@@ -3220,6 +3299,32 @@ class PluginSurfaceHostImplementation implements PluginSurfaceHost {
       }
     } catch (error) {
       await this.#failSurface(toBridgeError(error, "PLUGIN_CONTRACT_MISMATCH"));
+    }
+  }
+
+  #handleInteraction(message: SurfaceInteractionMessage): void {
+    if (!this.#ready || message.frame_generation_id !== this.frameGenerationId || message.surface_handle !== this.surfaceHandle) return;
+    if (message.sequence <= this.#lastInteractionSequence) return;
+    this.#lastInteractionSequence = message.sequence;
+    const now = performance.now();
+    if (now - this.#interactionWindowStartedAt >= 1000) {
+      this.#interactionWindowStartedAt = now;
+      this.#interactionWindowCount = 0;
+    }
+    this.#interactionWindowCount += 1;
+    if (this.#interactionWindowCount > maxSurfaceInteractionEventsPerSecond) return;
+    const interaction: PluginSurfaceInteractionEvent = {
+      kind: message.kind,
+      sequence: message.sequence,
+      localScroll: message.local_scroll,
+      selectionActive: message.selection_active,
+      ...(message.target_key === null ? {} : { targetKey: message.target_key }),
+      ...(message.action === null ? {} : { action: message.action }),
+    };
+    try {
+      this.#onInteraction?.(interaction);
+    } catch {
+      // Interaction observers cannot alter the surface lifecycle.
     }
   }
 
@@ -3725,7 +3830,7 @@ class PluginSurfaceHostImplementation implements PluginSurfaceHost {
     await this.#transportIdle.promise;
   }
 
-  #revokeSurface(keepalive: boolean): Promise<void> {
+  #revokeSurface(keepalive: boolean): Promise<PluginSurfaceRevocationReconciliation> {
     if (this.#revokePromise) return this.#revokePromise;
     this.#revokePromise = revokeSurfaceBootstrap(
       this.#transport,
@@ -4331,6 +4436,43 @@ type SurfaceAssetReadMessage = {
   path: string;
   sha256: string;
 };
+
+type SurfaceInteractionMessage = {
+  type: "redevplugin.surface.interaction";
+  frame_generation_id: string;
+  surface_handle: string;
+  sequence: number;
+  kind: PluginSurfaceInteractionKind;
+  target_key: string | null;
+  action: string | null;
+  local_scroll: boolean;
+  selection_active: boolean;
+};
+
+function isSurfaceInteractionMessage(value: unknown): value is SurfaceInteractionMessage {
+  if (!hasExactKeys(value, [
+    "type", "frame_generation_id", "surface_handle", "sequence", "kind", "target_key", "action", "local_scroll", "selection_active",
+  ])) return false;
+  return value.type === "redevplugin.surface.interaction" &&
+    validOpaqueHandle(value.frame_generation_id, "frame") &&
+    validOpaqueHandle(value.surface_handle, "surface") &&
+    typeof value.sequence === "number" && Number.isSafeInteger(value.sequence) && value.sequence > 0 &&
+    ["activation", "focus", "wheel", "text-selection", "action"].includes(String(value.kind)) &&
+    (value.target_key === null || validUIIdentifier(value.target_key)) &&
+    (value.action === null || validActionID(value.action)) &&
+    typeof value.local_scroll === "boolean" && typeof value.selection_active === "boolean" &&
+    (value.kind === "action" ? value.action !== null : value.action === null) &&
+    (value.kind === "wheel" || value.local_scroll === false) &&
+    (value.kind === "text-selection" || value.selection_active === false);
+}
+
+function isSurfaceRevocationReconciliation(value: unknown): value is PluginSurfaceRevocationReconciliation {
+  if (!hasExactKeys(value, ["disposed", "state", "previous_state", "revoked"])) return false;
+  return value.disposed === true && ["closed", "absent"].includes(String(value.state)) &&
+    ["active", "closed", "absent"].includes(String(value.previous_state)) &&
+    typeof value.revoked === "boolean" &&
+    (value.revoked ? value.state === "closed" && value.previous_state === "active" : true);
+}
 
 function claimOpaquePluginBridge(): { surfaceHandle: string; port: MessagePortLike } {
   const value = (globalThis as Record<string, unknown>)[opaquePluginBridgeGlobalKey];

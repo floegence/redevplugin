@@ -46,6 +46,7 @@ const (
 	ManagementActionGrantPermission            ManagementAction = "permission.grant"
 	ManagementActionRevokePermission           ManagementAction = "permission.revoke"
 	ManagementActionListPermissionGrants       ManagementAction = "permission.list"
+	ManagementActionGetPermissionRequirements ManagementAction = "permission.requirements.get"
 	ManagementActionPutSecurityPolicy          ManagementAction = "security_policy.put"
 	ManagementActionGetSecurityPolicy          ManagementAction = "security_policy.get"
 	ManagementActionListSecurityPolicies       ManagementAction = "security_policy.list"
@@ -110,7 +111,7 @@ func (action ManagementAction) Resource() ResourceRef {
 		return ResourcePlugin
 	case ManagementActionListFeatures, ManagementActionGetCompatibility:
 		return ResourcePlatform
-	case ManagementActionGrantPermission, ManagementActionRevokePermission, ManagementActionListPermissionGrants:
+	case ManagementActionGrantPermission, ManagementActionRevokePermission, ManagementActionListPermissionGrants, ManagementActionGetPermissionRequirements:
 		return ResourcePermission
 	case ManagementActionPutSecurityPolicy, ManagementActionGetSecurityPolicy,
 		ManagementActionListSecurityPolicies, ManagementActionDeleteSecurityPolicy:
@@ -385,6 +386,7 @@ func (action ManagementAction) allowsCollectionTarget() bool {
 		ManagementActionListPlugins,
 		ManagementActionRefreshEnabledPlugins,
 		ManagementActionListPermissionGrants,
+		ManagementActionGetPermissionRequirements,
 		ManagementActionListSecurityPolicies,
 		ManagementActionListDiagnosticEvents,
 		ManagementActionListOperations,

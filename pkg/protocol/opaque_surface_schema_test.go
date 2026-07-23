@@ -81,6 +81,7 @@ func TestOpaqueSurfaceTransportExposesOnlyOpaqueHandles(t *testing.T) {
 		"#/$defs/first_commit":      false,
 		"#/$defs/worker_ready":      false,
 		"#/$defs/surface_error":     false,
+		"#/$defs/interaction":       false,
 		"#/$defs/asset_read":        false,
 		"#/$defs/asset_response":    false,
 		"#/$defs/worker_initialize": false,
@@ -109,6 +110,7 @@ func TestOpaqueSurfaceTransportExposesOnlyOpaqueHandles(t *testing.T) {
 		"first_paint",
 		"worker_ready",
 		"surface_error",
+		"interaction",
 		"asset_read",
 		"asset_response",
 		"worker_initialize",
@@ -202,6 +204,28 @@ func TestOpaqueSurfaceSchemasCompileAndRejectUnsafePackagePaths(t *testing.T) {
 	}
 	if err := compiled.Validate(initialize); err != nil {
 		t.Fatalf("valid initialize frame: %v", err)
+	}
+	interactionFixture, err := os.ReadFile(filepath.Join(root, "testdata", "contracts", "opaque-surface-interaction-v1.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var interaction map[string]any
+	if err := json.Unmarshal(interactionFixture, &interaction); err != nil {
+		t.Fatal(err)
+	}
+	if err := compiled.Validate(interaction); err != nil {
+		t.Fatalf("valid interaction fixture: %v", err)
+	}
+	for name, mutate := range map[string]func(map[string]any){
+		"extra key":                    func(value map[string]any) { value["unexpected"] = true },
+		"action metadata on wheel":     func(value map[string]any) { value["action"] = ":open" },
+		"selection ownership on wheel": func(value map[string]any) { value["selection_active"] = true },
+	} {
+		invalid := cloneOpaqueObject(interaction)
+		mutate(invalid)
+		if err := compiled.Validate(invalid); err == nil {
+			t.Errorf("interaction fixture mutation %q must be rejected", name)
+		}
 	}
 	for _, path := range []string{"/ui/index.html", `ui\index.html`, "../index.html", "ui/../index.html", "ui/./index.html"} {
 		invalidDocument := cloneOpaqueObject(document)

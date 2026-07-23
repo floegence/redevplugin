@@ -1,0 +1,11 @@
+{
+  "type": "redevplugin.surface.interaction",
+  "frame_generation_id": "frame_12345678",
+  "surface_handle": "surface_12345678",
+  "sequence": 1,
+  "kind": "wheel",
+  "target_key": "container-list",
+  "action": null,
+  "local_scroll": true,
+  "selection_active": false
+}

@@ -271,6 +271,22 @@ Use this checklist whenever adding or reviewing ReDevPlugin code:
   transferred `MessagePort`, asset session, surface instance, bridge nonce,
   active fingerprint, session hash, management revision, and revoke epoch. Host UI
   chrome may surround the surface but must not replace that path.
+- Host UI interaction ownership observations must travel over that same
+  source/port-bound surface channel and remain tied to the current frame
+  generation and opaque surface handle. They may report activation, focus,
+  wheel/local-scroll, text-selection, and action intent for host placement and
+  chrome behavior only. Action names and target keys remain plugin-controlled
+  semantic metadata and must never become permission, route-authorization,
+  identity, or privilege inputs.
+- A close whose response is lost must be reconcilable through the idempotent
+  single-surface revocation contract. Reconciliation may confirm that the exact
+  bound surface is closed or authoritatively absent, but it must not widen into
+  session-scope revocation or affect sibling surfaces.
+- Permission requirement discovery must project only the active plugin
+  version's Host-verified capability contracts and bind the result to the
+  plugin instance, active fingerprint, version, management revision, contract
+  identity, and contract hash. It must not trust manifest-authored permission
+  claims or require a concrete capability adapter to be currently available.
 - If a plugin backend executes, it must execute through the Rust
   `redevplugin-runtime` WASM actor/job model. Third-party native processes,
   container images, shell hooks, dynamic libraries, and postinstall scripts are

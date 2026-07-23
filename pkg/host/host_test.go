@@ -789,6 +789,39 @@ func TestLocalInstallUsesTheManifestExactCapabilityContractPin(t *testing.T) {
 	}
 }
 
+func TestPermissionRequirementsProjectVerifiedContractWithoutCapabilityAdapter(t *testing.T) {
+	capabilities := capability.NewRegistry()
+	verified := fixtureVerifiedCapabilityContract(t, "example.capability.echo")
+	if err := capabilities.AddContract(verified); err != nil {
+		t.Fatal(err)
+	}
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{developerMode: true, localGenerated: true, capabilities: capabilities})
+	installed, err := ImportLocalPackageBytes(hostTestContext(), h, nextTestPluginInstanceID(t), buildRPCFixturePackage(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := h.GetPermissionRequirements(hostTestContext(), GetPermissionRequirementsRequest{PluginInstanceID: installed.PluginInstanceID})
+	if err != nil {
+		t.Fatalf("GetPermissionRequirements() error = %v", err)
+	}
+	if result.PluginInstanceID != installed.PluginInstanceID || result.PluginVersion != installed.Version ||
+		result.ActiveFingerprint != installed.ActiveFingerprint || result.ManagementRevision != installed.ManagementRevision {
+		t.Fatalf("permission requirements identity = %#v, want active record %#v", result, installed)
+	}
+	if len(result.Contracts) != 1 || result.Contracts[0].ContractID != verified.Contract.ContractID ||
+		result.Contracts[0].ContractSHA256 != verified.Pin.ArtifactSHA256 {
+		t.Fatalf("permission requirement contracts = %#v", result.Contracts)
+	}
+	if len(result.Contracts[0].Methods) != 1 || result.Contracts[0].Methods[0].Method != "echo.ping" ||
+		!slices.Equal(result.Contracts[0].Methods[0].RequiredPermissions, []string{"read"}) ||
+		!slices.Equal(result.RequiredPermissions, []string{"read"}) {
+		t.Fatalf("permission requirement methods = %#v; all = %#v", result.Contracts[0].Methods, result.RequiredPermissions)
+	}
+	if _, err := capabilities.Resolve(verified.Pin); !errors.Is(err, capability.ErrRegistrationMissing) {
+		t.Fatalf("test unexpectedly has a concrete capability adapter: %v", err)
+	}
+}
+
 func TestLocalInstallRejectsCapabilityMethodAliasesThatGeneratedClientsCannotCall(t *testing.T) {
 	dir := t.TempDir()
 	manifestJSON := strings.Replace(rpcFixtureManifestJSON("1.0.0", "RPC"), `"method": "echo.ping"`, `"method": "plugin.echo"`, 1)

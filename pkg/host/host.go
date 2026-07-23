@@ -876,6 +876,33 @@ type ListPermissionGrantsRequest struct {
 	ActiveOnly       bool   `json:"active_only,omitempty"`
 }
 
+type GetPermissionRequirementsRequest struct {
+	PluginInstanceID string `json:"plugin_instance_id"`
+}
+
+type PermissionRequirementMethod struct {
+	Method              string   `json:"method"`
+	RequiredPermissions []string `json:"required_permissions"`
+}
+
+type PermissionRequirementContract struct {
+	ContractID        string                        `json:"contract_id"`
+	ContractVersion   string                        `json:"contract_version"`
+	ContractSHA256    string                        `json:"contract_sha256"`
+	CapabilityID      string                        `json:"capability_id"`
+	CapabilityVersion string                        `json:"capability_version"`
+	Methods           []PermissionRequirementMethod `json:"methods"`
+}
+
+type PermissionRequirementsResult struct {
+	PluginInstanceID    string                          `json:"plugin_instance_id"`
+	PluginVersion       string                          `json:"plugin_version"`
+	ActiveFingerprint   string                          `json:"active_fingerprint"`
+	ManagementRevision  uint64                          `json:"management_revision"`
+	Contracts           []PermissionRequirementContract `json:"contracts"`
+	RequiredPermissions []string                        `json:"required_permissions"`
+}
+
 type PutSecurityPolicyRequest struct {
 	PluginInstanceID           string    `json:"plugin_instance_id"`
 	ExpectedPolicyRevision     uint64    `json:"expected_policy_revision"`
@@ -976,6 +1003,8 @@ type DisposeSurfaceRequest struct {
 	BridgeNonce       string    `json:"bridge_nonce"`
 	Now               time.Time `json:"-"`
 }
+
+type ReconcileSurfaceRevocationResult = bridge.ReconcileSurfaceRevocationResult
 
 type RevokeSessionScopeRequest struct {
 	Identity sessionscope.TeardownIdentity `json:"-"`
@@ -2102,6 +2131,25 @@ func (h *Host) DisposeSurface(ctx context.Context, req DisposeSurfaceRequest) er
 		OwnerEnvHash:         session.OwnerEnvHash,
 		SessionChannelIDHash: session.SessionChannelIDHash,
 		Now:                  req.Now,
+	})
+}
+
+func (h *Host) ReconcileSurfaceRevocation(ctx context.Context, req DisposeSurfaceRequest) (ReconcileSurfaceRevocationResult, error) {
+	req.SurfaceInstanceID = strings.TrimSpace(req.SurfaceInstanceID)
+	authorization, err := h.authorizeManagement(ctx, ManagementActionDisposeSurface, authorizationTarget(ResourceSurface, req.SurfaceInstanceID))
+	if err != nil {
+		return ReconcileSurfaceRevocationResult{}, err
+	}
+	_, releaseReservation, err := h.reserveAuthorizedAction(ctx, authorization)
+	if err != nil {
+		return ReconcileSurfaceRevocationResult{}, err
+	}
+	defer releaseReservation()
+	session := authorization.session
+	return h.surfaceTokens.ReconcileSurfaceRevocation(bridge.DisposeSurfaceRequest{
+		SurfaceInstanceID: req.SurfaceInstanceID, BridgeNonce: req.BridgeNonce,
+		OwnerSessionHash: session.OwnerSessionHash, OwnerUserHash: session.OwnerUserHash,
+		OwnerEnvHash: session.OwnerEnvHash, SessionChannelIDHash: session.SessionChannelIDHash, Now: req.Now,
 	})
 }
 
@@ -5134,6 +5182,67 @@ func (h *Host) ListPermissionGrants(ctx context.Context, req ListPermissionGrant
 		}
 	}
 	return records, nil
+}
+
+func (h *Host) GetPermissionRequirements(ctx context.Context, req GetPermissionRequirementsRequest) (PermissionRequirementsResult, error) {
+	req.PluginInstanceID = strings.TrimSpace(req.PluginInstanceID)
+	if _, err := h.authorizeManagement(ctx, ManagementActionGetPermissionRequirements,
+		scopedAuthorizationCollectionTarget(ResourcePermission, sessionctx.ScopeEnvironment),
+		relatedAuthorizationTargets(scopedAuthorizationTarget(ResourcePlugin, req.PluginInstanceID, sessionctx.ScopeEnvironment))...,
+	); err != nil {
+		return PermissionRequirementsResult{}, err
+	}
+	record, err := h.adapters.Registry.GetPlugin(ctx, req.PluginInstanceID)
+	if err != nil {
+		return PermissionRequirementsResult{}, err
+	}
+	contractsByID := map[string]*PermissionRequirementContract{}
+	allPermissions := []string{}
+	for _, declared := range record.Manifest.Methods {
+		if declared.Route.Kind != manifest.MethodRouteCapability {
+			continue
+		}
+		binding, ok := manifestBinding(record.Manifest, declared.Route.BindingID)
+		if !ok {
+			return PermissionRequirementsResult{}, fmt.Errorf("capability binding %q is not declared", declared.Route.BindingID)
+		}
+		verified, err := h.resolvePinnedCapabilityContract(record.CapabilityContracts, binding)
+		if err != nil {
+			return PermissionRequirementsResult{}, err
+		}
+		effectiveMethod, ok := contractMethod(verified.Contract, declared.Route.TargetMethod)
+		if !ok {
+			return PermissionRequirementsResult{}, fmt.Errorf("capability target method %q is not published", declared.Route.TargetMethod)
+		}
+		key := verified.Pin.ContractID + "\x00" + verified.Pin.ContractVersion + "\x00" + verified.Pin.ArtifactSHA256
+		projection := contractsByID[key]
+		if projection == nil {
+			projection = &PermissionRequirementContract{
+				ContractID: verified.Contract.ContractID, ContractVersion: verified.Contract.ContractVersion,
+				ContractSHA256: verified.Pin.ArtifactSHA256, CapabilityID: verified.Contract.CapabilityID,
+				CapabilityVersion: verified.Contract.CapabilityVersion,
+			}
+			contractsByID[key] = projection
+		}
+		required := normalizeStringSet(effectiveMethod.RequiredPermissions)
+		projection.Methods = append(projection.Methods, PermissionRequirementMethod{Method: declared.Method, RequiredPermissions: required})
+		allPermissions = append(allPermissions, required...)
+	}
+	contracts := make([]PermissionRequirementContract, 0, len(contractsByID))
+	for _, contract := range contractsByID {
+		sort.Slice(contract.Methods, func(i, j int) bool { return contract.Methods[i].Method < contract.Methods[j].Method })
+		contracts = append(contracts, *contract)
+	}
+	sort.Slice(contracts, func(i, j int) bool {
+		if contracts[i].ContractID == contracts[j].ContractID {
+			return contracts[i].ContractVersion < contracts[j].ContractVersion
+		}
+		return contracts[i].ContractID < contracts[j].ContractID
+	})
+	return PermissionRequirementsResult{
+		PluginInstanceID: record.PluginInstanceID, PluginVersion: record.Version, ActiveFingerprint: record.ActiveFingerprint,
+		ManagementRevision: record.ManagementRevision, Contracts: contracts, RequiredPermissions: normalizeStringSet(allPermissions),
+	}, nil
 }
 
 func (h *Host) PutSecurityPolicy(ctx context.Context, req PutSecurityPolicyRequest) (result SecurityPolicyResult, retErr error) {

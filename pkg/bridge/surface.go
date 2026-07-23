@@ -24,6 +24,7 @@ const (
 	MaxGatewayTokenTTL                      = 15 * time.Minute
 	DefaultMaxActiveSurfaceSessions         = 4096
 	DefaultMaxActiveSurfaceSessionsPerOwner = 64
+	DefaultSurfaceClosureTTL                = 15 * time.Minute
 	DefaultConfirmationTTL                  = 2 * time.Minute
 	MaxConfirmationTTL                      = 5 * time.Minute
 	MaxStreamTicketTTL                      = 5 * time.Minute
@@ -51,6 +52,7 @@ type SurfaceTokenService struct {
 	tokens               *TokenManager
 	options              SurfaceTokenOptions
 	sessions             map[string]surfaceState
+	closures             map[string]surfaceClosure
 	sessionIndex         map[sessionctx.SessionScope]map[string]struct{}
 	sessionRevokeScanned uint64
 }
@@ -157,6 +159,29 @@ type DisposeSurfaceRequest struct {
 	OwnerEnvHash         string    `json:"-"`
 	SessionChannelIDHash string    `json:"-"`
 	Now                  time.Time `json:"-"`
+}
+
+type SurfaceRevocationState string
+
+const (
+	SurfaceRevocationStateActive SurfaceRevocationState = "active"
+	SurfaceRevocationStateClosed SurfaceRevocationState = "closed"
+	SurfaceRevocationStateAbsent SurfaceRevocationState = "absent"
+)
+
+type ReconcileSurfaceRevocationResult struct {
+	State         SurfaceRevocationState `json:"state"`
+	PreviousState SurfaceRevocationState `json:"previous_state"`
+	Revoked       bool                   `json:"revoked"`
+}
+
+type surfaceClosure struct {
+	bridgeNonce          string
+	ownerSessionHash     string
+	ownerUserHash        string
+	ownerEnvHash         string
+	sessionChannelIDHash string
+	expiresAt            time.Time
 }
 
 type RevokeSessionScopeRequest struct {
@@ -476,6 +501,7 @@ func NewSurfaceTokenService(tokens *TokenManager, options SurfaceTokenOptions) *
 		tokens:       tokens,
 		options:      options,
 		sessions:     map[string]surfaceState{},
+		closures:     map[string]surfaceClosure{},
 		sessionIndex: map[sessionctx.SessionScope]map[string]struct{}{},
 	}
 }
@@ -1662,6 +1688,98 @@ func (s *SurfaceTokenService) DisposeBoundSurface(req DisposeSurfaceRequest) err
 	s.mu.Unlock()
 	s.revokeSurfaceTokens(state.session, now)
 	return nil
+}
+
+// ReconcileSurfaceRevocation atomically observes and revokes one bound surface.
+// A retained closure makes retries after a lost response deterministic without
+// widening the operation to the caller's session scope.
+func (s *SurfaceTokenService) ReconcileSurfaceRevocation(req DisposeSurfaceRequest) (ReconcileSurfaceRevocationResult, error) {
+	if s == nil {
+		return ReconcileSurfaceRevocationResult{}, errors.New("surface token service is nil")
+	}
+	if strings.TrimSpace(req.SurfaceInstanceID) == "" || strings.TrimSpace(req.BridgeNonce) == "" ||
+		strings.TrimSpace(req.OwnerSessionHash) == "" || strings.TrimSpace(req.OwnerUserHash) == "" ||
+		strings.TrimSpace(req.OwnerEnvHash) == "" || strings.TrimSpace(req.SessionChannelIDHash) == "" {
+		return ReconcileSurfaceRevocationResult{}, ErrMissingTokenAudience
+	}
+	now := req.Now
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	s.mu.Lock()
+	for id, closure := range s.closures {
+		if !now.Before(closure.expiresAt) {
+			delete(s.closures, id)
+		}
+	}
+	if state, ok := s.sessions[req.SurfaceInstanceID]; ok {
+		if !now.Before(state.session.ExpiresAt) {
+			s.deleteSurfaceStateLocked(req.SurfaceInstanceID)
+			s.mu.Unlock()
+			s.revokeSurfaceTokens(state.session, now)
+			return ReconcileSurfaceRevocationResult{State: SurfaceRevocationStateAbsent, PreviousState: SurfaceRevocationStateAbsent}, nil
+		}
+		if state.session.BridgeNonce != req.BridgeNonce ||
+			!state.session.matchesScope(req.OwnerSessionHash, req.OwnerUserHash, req.OwnerEnvHash, req.SessionChannelIDHash) {
+			s.mu.Unlock()
+			return ReconcileSurfaceRevocationResult{}, ErrTokenAudience
+		}
+		s.deleteSurfaceStateLocked(req.SurfaceInstanceID)
+		s.retainSurfaceClosureLocked(req.SurfaceInstanceID, surfaceClosure{
+			bridgeNonce: req.BridgeNonce, ownerSessionHash: req.OwnerSessionHash, ownerUserHash: req.OwnerUserHash,
+			ownerEnvHash: req.OwnerEnvHash, sessionChannelIDHash: req.SessionChannelIDHash, expiresAt: now.Add(DefaultSurfaceClosureTTL),
+		})
+		s.mu.Unlock()
+		s.revokeSurfaceTokens(state.session, now)
+		return ReconcileSurfaceRevocationResult{State: SurfaceRevocationStateClosed, PreviousState: SurfaceRevocationStateActive, Revoked: true}, nil
+	}
+	if closure, ok := s.closures[req.SurfaceInstanceID]; ok {
+		if closure.bridgeNonce != req.BridgeNonce || closure.ownerSessionHash != req.OwnerSessionHash ||
+			closure.ownerUserHash != req.OwnerUserHash || closure.ownerEnvHash != req.OwnerEnvHash ||
+			closure.sessionChannelIDHash != req.SessionChannelIDHash {
+			s.mu.Unlock()
+			return ReconcileSurfaceRevocationResult{}, ErrTokenAudience
+		}
+		s.mu.Unlock()
+		return ReconcileSurfaceRevocationResult{State: SurfaceRevocationStateClosed, PreviousState: SurfaceRevocationStateClosed}, nil
+	}
+	s.mu.Unlock()
+	return ReconcileSurfaceRevocationResult{State: SurfaceRevocationStateAbsent, PreviousState: SurfaceRevocationStateAbsent}, nil
+}
+
+func (s *SurfaceTokenService) retainSurfaceClosureLocked(surfaceInstanceID string, closure surfaceClosure) {
+	for {
+		ownerCount := 0
+		var oldestOwnerID string
+		var oldestOwnerExpiry time.Time
+		for id, candidate := range s.closures {
+			if candidate.ownerSessionHash != closure.ownerSessionHash {
+				continue
+			}
+			ownerCount++
+			if oldestOwnerID == "" || candidate.expiresAt.Before(oldestOwnerExpiry) {
+				oldestOwnerID, oldestOwnerExpiry = id, candidate.expiresAt
+			}
+		}
+		if ownerCount < s.options.MaxActiveSessionsPerOwner || oldestOwnerID == "" {
+			break
+		}
+		delete(s.closures, oldestOwnerID)
+	}
+	for len(s.closures) >= s.options.MaxActiveSessions {
+		var oldestID string
+		var oldestExpiry time.Time
+		for id, candidate := range s.closures {
+			if oldestID == "" || candidate.expiresAt.Before(oldestExpiry) {
+				oldestID, oldestExpiry = id, candidate.expiresAt
+			}
+		}
+		if oldestID == "" {
+			break
+		}
+		delete(s.closures, oldestID)
+	}
+	s.closures[surfaceInstanceID] = closure
 }
 
 func (s *SurfaceTokenService) DisposeAssetSession(req ValidateAssetSessionRequest) error {

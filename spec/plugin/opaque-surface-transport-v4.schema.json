@@ -11,6 +11,7 @@
     { "$ref": "#/$defs/first_commit" },
     { "$ref": "#/$defs/worker_ready" },
     { "$ref": "#/$defs/surface_error" },
+    { "$ref": "#/$defs/interaction" },
     { "$ref": "#/$defs/asset_read" },
     { "$ref": "#/$defs/asset_response" },
     { "$ref": "#/$defs/worker_initialize" }
@@ -82,6 +83,38 @@
         "type": { "const": "redevplugin.surface.error" },
         "error": { "type": "string", "maxLength": 512 }
       }
+    },
+    "interaction": {
+      "description": "Port-bound host UI ownership observation. action and target_key are plugin-controlled semantic metadata and MUST NOT be used for permission, route authorization, or privilege decisions.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "frame_generation_id", "surface_handle", "sequence", "kind", "target_key", "action", "local_scroll", "selection_active"],
+      "properties": {
+        "type": { "const": "redevplugin.surface.interaction" },
+        "frame_generation_id": { "$ref": "#/$defs/opaque_handle" },
+        "surface_handle": { "$ref": "#/$defs/opaque_handle" },
+        "sequence": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 },
+        "kind": { "type": "string", "enum": ["activation", "focus", "wheel", "text-selection", "action"] },
+        "target_key": { "type": ["string", "null"], "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$" },
+        "action": { "type": ["string", "null"], "pattern": "^[-A-Za-z0-9._:]{1,128}$" },
+        "local_scroll": { "type": "boolean" },
+        "selection_active": { "type": "boolean" }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "kind": { "const": "action" } }, "required": ["kind"] },
+          "then": { "properties": { "action": { "type": "string" } } },
+          "else": { "properties": { "action": { "const": null } } }
+        },
+        {
+          "if": { "properties": { "kind": { "const": "wheel" } }, "required": ["kind"] },
+          "else": { "properties": { "local_scroll": { "const": false } } }
+        },
+        {
+          "if": { "properties": { "kind": { "const": "text-selection" } }, "required": ["kind"] },
+          "else": { "properties": { "selection_active": { "const": false } } }
+        }
+      ]
     },
     "asset_read": {
       "type": "object",

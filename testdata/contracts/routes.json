@@ -141,6 +141,11 @@
   },
   {
     "method": "POST",
+    "path": "/_redevplugin/api/plugins/permissions/requirements/query",
+    "effect": "query"
+  },
+  {
+    "method": "POST",
     "path": "/_redevplugin/api/plugins/permissions/revoke",
     "effect": "mutation"
   },

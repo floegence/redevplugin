@@ -17,6 +17,8 @@ const goDigestOutputPath = join(root, "pkg/version/contract_set_gen.go");
 const typeScriptContractsOutputPath = join(root, "packages/redevplugin-contracts/src/contracts.gen.ts");
 const rustContractsOutputPath = join(root, "crates/redevplugin-contracts/src/contracts_gen.rs");
 const rustIPCDigestOutputPath = join(root, "crates/redevplugin-ipc/src/contract_set_gen.rs");
+const canonicalHelloAckFixturePath = join(root, "testdata/contracts/ipc/valid_hello_ack.json");
+const rustHelloAckFixturePath = join(root, "crates/redevplugin-ipc/testdata/ipc/valid_hello_ack.json");
 const checkOnly = process.argv.slice(2).includes("--check");
 
 const MAX_JSON_BYTES = 64 * 1024;
@@ -139,6 +141,10 @@ export async function generatePlatformPackageContracts() {
     sha256: sha256(registryBytes),
     body: registryBytes.toString("utf8"),
   };
+  const helloAckFixtureBytes = renderContractSetBoundHelloAckFixture(
+    parseStrictJSON(await readFile(canonicalHelloAckFixturePath), "valid hello ack fixture"),
+    contractSetSHA256,
+  );
 
   return new Map([
     [registryOutputPath, registryBytes],
@@ -148,7 +154,22 @@ export async function generatePlatformPackageContracts() {
     [typeScriptContractsOutputPath, renderTypeScriptContracts(registry, packageSet, embeddedArtifacts, registryContract)],
     [rustContractsOutputPath, formatRust(renderRustContracts(packageSet, embeddedArtifacts, registryContract))],
     [rustIPCDigestOutputPath, formatRust(renderRustContractSetDigest(contractSetSHA256))],
+    [canonicalHelloAckFixturePath, helloAckFixtureBytes],
+    [rustHelloAckFixturePath, helloAckFixtureBytes],
   ]);
+}
+
+function renderContractSetBoundHelloAckFixture(fixture, contractSetSHA256) {
+  if (!isRecord(fixture) || fixture.kind !== "hello_ack" || !isRecord(fixture.frame)
+      || fixture.frame.frame_type !== "hello_ack" || !isRecord(fixture.frame.payload)) {
+    throw new Error("valid hello ack fixture must contain one hello_ack frame payload");
+  }
+  const current = fixture.frame.payload.contract_set_sha256;
+  if (typeof current !== "string" || !/^[0-9a-f]{64}$/.test(current)) {
+    throw new Error("valid hello ack fixture contract_set_sha256 is invalid");
+  }
+  fixture.frame.payload.contract_set_sha256 = contractSetSHA256;
+  return canonicalDocument(fixture);
 }
 
 export function decodeContractRegistry(raw) {

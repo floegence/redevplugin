@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- Report source/port-bound surface interaction ownership observations for host
+  UI placement without making plugin-controlled action or target metadata an
+  authorization input.
+- Reconcile one exact surface revocation idempotently after an uncertain close
+  response while preserving every sibling surface in the authenticated
+  session.
+- Project active-version permission requirements from Host-verified capability
+  contracts, including the active fingerprint, version, management revision,
+  contract identity and hash, and normalized method permission sets.
+
 ## v0.6.8
 
 ### Added

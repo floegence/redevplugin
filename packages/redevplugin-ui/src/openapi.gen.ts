@@ -406,6 +406,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
+        /** @description Atomically observes and revokes one exact authenticated surface. An active surface becomes closed, a retained closure confirms closed, and an absent result is authoritative inactivity; transport failures remain an unknown mutation outcome. */
         post: operations["disposePluginSurface"];
         delete?: never;
         options?: never;
@@ -714,6 +715,23 @@ export interface paths {
         get?: never;
         put?: never;
         post: operations["listPluginPermissionGrants"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/_redevplugin/api/plugins/permissions/requirements/query": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** @description Projects required permissions only from the active plugin version's Host-verified capability contracts. */
+        post: operations["getPluginPermissionRequirements"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1071,6 +1089,11 @@ export interface components {
             ok: true;
             data: components["schemas"]["PluginPermissionList"];
         };
+        PermissionRequirementsSuccessResponse: {
+            /** @constant */
+            ok: true;
+            data: components["schemas"]["PluginPermissionRequirements"];
+        };
         PermissionMutationSuccessResponse: {
             /** @constant */
             ok: true;
@@ -1310,6 +1333,11 @@ export interface components {
         SurfaceDisposeResult: {
             /** @constant */
             disposed: true;
+            /** @enum {string} */
+            state: "closed" | "absent";
+            /** @enum {string} */
+            previous_state: "active" | "closed" | "absent";
+            revoked: boolean;
         };
         SessionScopeRevokeCounts: components["schemas"]["SessionScopeV1RevokeCounts"];
         SessionScopeRevokeResult: components["schemas"]["SessionScopeV1PublicRevokeResult"];
@@ -1359,6 +1387,26 @@ export interface components {
         };
         PluginPermissionList: {
             permissions: components["schemas"]["PluginPermissionGrant"][];
+        };
+        PluginPermissionRequirementMethod: {
+            method: string;
+            required_permissions: string[];
+        };
+        PluginPermissionRequirementContract: {
+            contract_id: string;
+            contract_version: string;
+            contract_sha256: string;
+            capability_id: string;
+            capability_version: string;
+            methods: components["schemas"]["PluginPermissionRequirementMethod"][];
+        };
+        PluginPermissionRequirements: {
+            plugin_instance_id: string;
+            plugin_version: string;
+            active_fingerprint: string;
+            management_revision: number;
+            contracts: components["schemas"]["PluginPermissionRequirementContract"][];
+            required_permissions: string[];
         };
         AuthorizationRevisions: {
             policy_revision: number;
@@ -2105,6 +2153,9 @@ export interface components {
         ListPermissionsQueryRequest: {
             plugin_instance_id?: string;
             active_only?: boolean;
+        };
+        PermissionRequirementsQueryRequest: {
+            plugin_instance_id: string;
         };
         ListDiagnosticsQueryRequest: {
             plugin_id?: string;
@@ -3377,6 +3428,15 @@ export interface components {
                 "application/json": components["schemas"]["PermissionListSuccessResponse"];
             };
         };
+        /** @description Active-version permission requirements derived from Host-verified capability contracts. */
+        PermissionRequirementsResponse: {
+            headers: {
+                [name: string]: unknown;
+            };
+            content: {
+                "application/json": components["schemas"]["PermissionRequirementsSuccessResponse"];
+            };
+        };
         /** @description Permission grant mutation result. */
         PermissionMutationResponse: {
             headers: {
@@ -3557,6 +3617,11 @@ export interface components {
         ListPermissionsQueryRequest: {
             content: {
                 "application/json": components["schemas"]["ListPermissionsQueryRequest"];
+            };
+        };
+        PermissionRequirementsQueryRequest: {
+            content: {
+                "application/json": components["schemas"]["PermissionRequirementsQueryRequest"];
             };
         };
         ListDiagnosticsQueryRequest: {
@@ -4330,6 +4395,19 @@ export interface operations {
         requestBody: components["requestBodies"]["ListPermissionsQueryRequest"];
         responses: {
             200: components["responses"]["PermissionListResponse"];
+            default: components["responses"]["PlatformErrorResponse"];
+        };
+    };
+    getPluginPermissionRequirements: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: components["requestBodies"]["PermissionRequirementsQueryRequest"];
+        responses: {
+            200: components["responses"]["PermissionRequirementsResponse"];
             default: components["responses"]["PlatformErrorResponse"];
         };
     };

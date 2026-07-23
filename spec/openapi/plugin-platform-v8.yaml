@@ -288,6 +288,7 @@ paths:
     post:
       operationId: disposePluginSurface
       x-redevplugin-route-effect: mutation
+      description: Atomically observes and revokes one exact authenticated surface. An active surface becomes closed, a retained closure confirms closed, and an absent result is authoritative inactivity; transport failures remain an unknown mutation outcome.
       parameters:
         - $ref: "#/components/parameters/SurfaceInstanceID"
       requestBody:
@@ -472,6 +473,16 @@ paths:
         $ref: "#/components/requestBodies/ListPermissionsQueryRequest"
       responses:
         "200": { $ref: "#/components/responses/PermissionListResponse" }
+        default: { $ref: "#/components/responses/PlatformErrorResponse" }
+  /_redevplugin/api/plugins/permissions/requirements/query:
+    post:
+      operationId: getPluginPermissionRequirements
+      x-redevplugin-route-effect: query
+      description: Projects required permissions only from the active plugin version's Host-verified capability contracts.
+      requestBody:
+        $ref: "#/components/requestBodies/PermissionRequirementsQueryRequest"
+      responses:
+        "200": { $ref: "#/components/responses/PermissionRequirementsResponse" }
         default: { $ref: "#/components/responses/PlatformErrorResponse" }
   /_redevplugin/api/plugins/permissions/grant:
     post:
@@ -814,6 +825,12 @@ components:
         application/json:
           schema:
             $ref: "#/components/schemas/PermissionListSuccessResponse"
+    PermissionRequirementsResponse:
+      description: Active-version permission requirements derived from Host-verified capability contracts.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/PermissionRequirementsSuccessResponse"
     PermissionMutationResponse:
       description: Permission grant mutation result.
       content:
@@ -977,6 +994,12 @@ components:
         application/json:
           schema:
             $ref: "#/components/schemas/ListPermissionsQueryRequest"
+    PermissionRequirementsQueryRequest:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/PermissionRequirementsQueryRequest"
     ListDiagnosticsQueryRequest:
       required: true
       content:
@@ -1364,6 +1387,13 @@ components:
       properties:
         ok: { const: true }
         data: { $ref: "#/components/schemas/PluginPermissionList" }
+    PermissionRequirementsSuccessResponse:
+      type: object
+      required: [ok, data]
+      additionalProperties: false
+      properties:
+        ok: { const: true }
+        data: { $ref: "#/components/schemas/PluginPermissionRequirements" }
     PermissionMutationSuccessResponse:
       type: object
       required: [ok, data]
@@ -1799,10 +1829,13 @@ components:
         - PLUGIN_FEATURE_NOT_CONFIGURED
     SurfaceDisposeResult:
       type: object
-      required: [disposed]
+      required: [disposed, state, previous_state, revoked]
       additionalProperties: false
       properties:
         disposed: { const: true }
+        state: { type: string, enum: [closed, absent] }
+        previous_state: { type: string, enum: [active, closed, absent] }
+        revoked: { type: boolean }
     SessionScopeRevokeCounts:
       $ref: "../plugin/session-scope-v1.schema.json#/$defs/revoke_counts"
     SessionScopeRevokeResult:
@@ -1877,6 +1910,45 @@ components:
         permissions:
           type: array
           items: { $ref: "#/components/schemas/PluginPermissionGrant" }
+    PluginPermissionRequirementMethod:
+      type: object
+      required: [method, required_permissions]
+      additionalProperties: false
+      properties:
+        method: { type: string, minLength: 1 }
+        required_permissions:
+          type: array
+          uniqueItems: true
+          items: { type: string, minLength: 1 }
+    PluginPermissionRequirementContract:
+      type: object
+      required: [contract_id, contract_version, contract_sha256, capability_id, capability_version, methods]
+      additionalProperties: false
+      properties:
+        contract_id: { type: string, minLength: 1 }
+        contract_version: { type: string, minLength: 1 }
+        contract_sha256: { type: string, pattern: '^[0-9a-f]{64}$' }
+        capability_id: { type: string, minLength: 1 }
+        capability_version: { type: string, minLength: 1 }
+        methods:
+          type: array
+          items: { $ref: "#/components/schemas/PluginPermissionRequirementMethod" }
+    PluginPermissionRequirements:
+      type: object
+      required: [plugin_instance_id, plugin_version, active_fingerprint, management_revision, contracts, required_permissions]
+      additionalProperties: false
+      properties:
+        plugin_instance_id: { type: string, minLength: 1 }
+        plugin_version: { type: string, minLength: 1 }
+        active_fingerprint: { type: string, pattern: '^sha256:[0-9a-f]{64}$' }
+        management_revision: { type: integer, minimum: 1, maximum: 9007199254740991 }
+        contracts:
+          type: array
+          items: { $ref: "#/components/schemas/PluginPermissionRequirementContract" }
+        required_permissions:
+          type: array
+          uniqueItems: true
+          items: { type: string, minLength: 1 }
     AuthorizationRevisions:
       type: object
       required: [policy_revision, management_revision, revoke_epoch]
@@ -2970,6 +3042,12 @@ components:
       properties:
         plugin_instance_id: { type: string, minLength: 1 }
         active_only: { type: boolean }
+    PermissionRequirementsQueryRequest:
+      type: object
+      required: [plugin_instance_id]
+      additionalProperties: false
+      properties:
+        plugin_instance_id: { type: string, minLength: 1 }
     ListDiagnosticsQueryRequest:
       type: object
       additionalProperties: false

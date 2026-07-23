@@ -22,6 +22,7 @@ import {
   type PluginSurfaceHost,
   type PluginSurfaceHostBootstrap,
   type PluginSurfaceOpeningProgress,
+  type PluginSurfaceInteractionEvent,
   type PluginSurfaceReloadLimiter,
   type PluginSurfaceSlot,
   type PluginTrustedMethodResult,
@@ -85,6 +86,7 @@ export type PluginOpenSurfaceInSlotOptions = PluginRequestOptions & {
   reloadLimiter?: PluginSurfaceReloadLimiter;
   confirm?: PluginConfirmationHandler;
   onOpeningProgress?: (progress: PluginSurfaceOpeningProgress) => void;
+  onInteraction?: (event: PluginSurfaceInteractionEvent) => void;
   onError?: (error: import("./errors.js").PluginBridgeError) => void;
 };
 
@@ -147,6 +149,8 @@ export type PluginPermissionGrant = PlatformSchemas["PluginPermissionGrant"];
 export type PluginPermissionMutationResult = PlatformSchemas["PluginPermissionMutationResult"];
 export type PluginPermissionList = PlatformSchemas["PluginPermissionList"];
 export type PluginPermissionListOptions = PlatformSchemas["ListPermissionsQueryRequest"];
+export type PluginPermissionRequirements = PlatformSchemas["PluginPermissionRequirements"];
+export type PluginPermissionRequirementsRequest = PlatformSchemas["PermissionRequirementsQueryRequest"];
 export type PluginPermissionGrantRequest = PlatformSchemas["GrantPermissionRequest"];
 export type PluginPermissionRevokeRequest = PlatformSchemas["RevokePermissionRequest"];
 export type PluginSecurityPolicy = PlatformSchemas["PluginSecurityPolicy"];
@@ -415,6 +419,9 @@ export class PluginPlatformClient {
 
   listPermissions(options: PluginPermissionListOptions = {}, requestOptions: PluginRequestOptions = {}): Promise<PluginPermissionList> {
     return this.#requestQuery("/_redevplugin/api/plugins/permissions/query", options, requestOptions);
+  }
+  getPermissionRequirements(request: PluginPermissionRequirementsRequest, options: PluginRequestOptions = {}): Promise<PluginPermissionRequirements> {
+    return this.#requestQuery("/_redevplugin/api/plugins/permissions/requirements/query", request, options);
   }
 
   grantPermission(request: PluginPermissionGrantRequest, options: PluginRequestOptions = {}): Promise<PluginPermissionMutationResult> {

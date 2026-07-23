@@ -140,7 +140,7 @@ var generatedContractArtifacts = []ContractArtifact{
 		ID:      "opaque-surface-transport-schema",
 		Path:    "spec/plugin/opaque-surface-transport-v4.schema.json",
 		Version: "opaque-surface-transport-v4",
-		SHA256:  "70a32dc8bf281cea2c92492c466fd477070c62156a3f593d45eb460cde62dca2",
+		SHA256:  "004da73aba882cf8c2130af0c69d3eed4c710539f21287841bc2e7e870e60f8f",
 	},
 	{
 		ID:      "owner-scope-inventory-registry",
@@ -194,7 +194,7 @@ var generatedContractArtifacts = []ContractArtifact{
 		ID:      "plugin-platform-openapi",
 		Path:    "spec/openapi/plugin-platform-v8.yaml",
 		Version: "plugin-platform-v8",
-		SHA256:  "39bcfcfb846c868945ab0d21404747b2f5f083574c7ead5aca64f65b98212b7d",
+		SHA256:  "94e0cc88cb5ad8e7773677617530028578859e0bf229a6b75997f24885eb36d2",
 	},
 	{
 		ID:      "process-containment-schema",

@@ -3,6 +3,7 @@ package bridge
 import (
 	"encoding/json"
 	"errors"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -462,6 +463,70 @@ func TestBoundSurfaceDisposeRequiresGenerationBinding(t *testing.T) {
 	})
 	if !errors.Is(err, ErrMissingTokenAudience) {
 		t.Fatalf("DisposeBoundSurface() without generation binding error = %v, want %v", err, ErrMissingTokenAudience)
+	}
+}
+
+func TestSurfaceRevocationReconciliationIsIdempotentAndSingleSurface(t *testing.T) {
+	service := NewSurfaceTokenService(nil, SurfaceTokenOptions{})
+	now := testNow()
+	firstRequest := testOpenSurfaceRequest(now)
+	first, err := service.OpenSurface(firstRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondRequest := testOpenSurfaceRequest(now)
+	secondRequest.SurfaceInstanceID = "surface_second"
+	second, err := service.OpenSurface(secondRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reconcile := func(bootstrap SurfaceBootstrap) (ReconcileSurfaceRevocationResult, error) {
+		return service.ReconcileSurfaceRevocation(DisposeSurfaceRequest{
+			SurfaceInstanceID: bootstrap.SurfaceInstanceID, BridgeNonce: bootstrap.BridgeNonce,
+			OwnerSessionHash: bootstrap.OwnerSessionHash, OwnerUserHash: bootstrap.OwnerUserHash,
+			OwnerEnvHash: bootstrap.OwnerEnvHash, SessionChannelIDHash: bootstrap.SessionChannelIDHash, Now: now.Add(time.Second),
+		})
+	}
+	firstResult, err := reconcile(first)
+	if err != nil || firstResult.State != SurfaceRevocationStateClosed || firstResult.PreviousState != SurfaceRevocationStateActive || !firstResult.Revoked {
+		t.Fatalf("first reconciliation = %#v, %v", firstResult, err)
+	}
+	retry, err := reconcile(first)
+	if err != nil || retry.State != SurfaceRevocationStateClosed || retry.PreviousState != SurfaceRevocationStateClosed || retry.Revoked {
+		t.Fatalf("retry reconciliation = %#v, %v", retry, err)
+	}
+	if _, err := service.ExchangeAssetTicket(exchangeAssetTicketRequest(second, now.Add(2*time.Second))); err != nil {
+		t.Fatalf("reconciling first surface affected second surface: %v", err)
+	}
+	absent := first
+	absent.SurfaceInstanceID = "surface_never_opened"
+	absentResult, err := reconcile(absent)
+	if err != nil || absentResult.State != SurfaceRevocationStateAbsent || absentResult.PreviousState != SurfaceRevocationStateAbsent || absentResult.Revoked {
+		t.Fatalf("absent reconciliation = %#v, %v", absentResult, err)
+	}
+}
+
+func TestSurfaceRevocationClosureChurnRemainsBounded(t *testing.T) {
+	service := NewSurfaceTokenService(nil, SurfaceTokenOptions{MaxActiveSessions: 3, MaxActiveSessionsPerOwner: 2})
+	now := testNow()
+	for index := 0; index < 20; index++ {
+		request := testOpenSurfaceRequest(now.Add(time.Duration(index) * time.Millisecond))
+		request.SurfaceInstanceID = "surface_churn_" + strconv.Itoa(index)
+		bootstrap, err := service.OpenSurface(request)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = service.ReconcileSurfaceRevocation(DisposeSurfaceRequest{
+			SurfaceInstanceID: bootstrap.SurfaceInstanceID, BridgeNonce: bootstrap.BridgeNonce,
+			OwnerSessionHash: bootstrap.OwnerSessionHash, OwnerUserHash: bootstrap.OwnerUserHash,
+			OwnerEnvHash: bootstrap.OwnerEnvHash, SessionChannelIDHash: bootstrap.SessionChannelIDHash, Now: now.Add(time.Minute),
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := len(service.closures); got > 2 {
+		t.Fatalf("closure count = %d, want at most per-owner limit 2", got)
 	}
 }
 

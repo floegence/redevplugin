@@ -18,6 +18,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -307,6 +308,7 @@ func TestRouteSetHasManagementAndSandboxRoutes(t *testing.T) {
 		"POST /_redevplugin/api/plugins/platform/compatibility/query":                     false,
 		"POST /_redevplugin/api/plugins/update-release-ref":                               false,
 		"POST /_redevplugin/api/plugins/permissions/query":                                false,
+		"POST /_redevplugin/api/plugins/permissions/requirements/query":                   false,
 		"POST /_redevplugin/api/plugins/permissions/grant":                                false,
 		"POST /_redevplugin/api/plugins/permissions/revoke":                               false,
 		"POST /_redevplugin/api/plugins/security-policies/query":                          false,
@@ -371,6 +373,7 @@ func TestRouteSetUsesClosedPostQueryRoutes(t *testing.T) {
 		"POST /_redevplugin/api/plugins/runtime/health/query":                         false,
 		"POST /_redevplugin/api/plugins/retained-data/query":                          false,
 		"POST /_redevplugin/api/plugins/permissions/query":                            false,
+		"POST /_redevplugin/api/plugins/permissions/requirements/query":               false,
 		"POST /_redevplugin/api/plugins/security-policies/query":                      false,
 		"POST /_redevplugin/api/plugins/security-policies/{plugin_instance_id}/query": false,
 		"POST /_redevplugin/api/plugins/diagnostics/query":                            false,
@@ -463,6 +466,7 @@ func TestPostQueryRoutesRejectUnknownBodyAndQueryParameters(t *testing.T) {
 		"/_redevplugin/api/plugins/runtime/health/query",
 		"/_redevplugin/api/plugins/retained-data/query",
 		"/_redevplugin/api/plugins/permissions/query",
+		"/_redevplugin/api/plugins/permissions/requirements/query",
 		"/_redevplugin/api/plugins/security-policies/query",
 		"/_redevplugin/api/plugins/security-policies/plugin_instance_1/query",
 		"/_redevplugin/api/plugins/diagnostics/query",
@@ -2447,6 +2451,14 @@ func TestHandlerPermissionGrantRevokeFlow(t *testing.T) {
 		t.Fatal(err)
 	}
 	handler := mustNewHandler(t, h, allowHTTPTestGuard())
+	requirements := postJSON[host.PermissionRequirementsResult](t, handler, "/_redevplugin/api/plugins/permissions/requirements/query", map[string]any{
+		"plugin_instance_id": installed.PluginInstanceID,
+	})
+	if requirements.PluginInstanceID != installed.PluginInstanceID || requirements.ActiveFingerprint != installed.ActiveFingerprint ||
+		len(requirements.Contracts) != 1 || requirements.Contracts[0].ContractSHA256 != installed.CapabilityContracts[0].ArtifactSHA256 ||
+		!slices.Equal(requirements.RequiredPermissions, []string{"read"}) {
+		t.Fatalf("permission requirements = %#v", requirements)
+	}
 	bridgeResp := openHTTPBridge(t, handler, installed.PluginInstanceID, "http.rpc.view", "surface_http_permissions", "bridge_http_permissions")
 	callBody := map[string]any{
 		"plugin_instance_id":   installed.PluginInstanceID,

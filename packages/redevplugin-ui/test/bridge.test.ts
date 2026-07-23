@@ -1865,6 +1865,30 @@ test("platform client manages permissions and secret refs without exposing local
   assert.equal(fetch.calls[5]?.input, "/_redevplugin/api/plugins/secrets/delete");
 });
 
+test("platform client reads active verified capability permission requirements", async () => {
+  const fetch = new FakeFetch();
+  fetch.push({ ok: true, data: {
+    plugin_instance_id: "plugin_instance_1",
+    plugin_version: "1.2.3",
+    active_fingerprint: `sha256:${"a".repeat(64)}`,
+    management_revision: 7,
+    contracts: [{
+      contract_id: "example.containers.v1",
+      contract_version: "1.0.0",
+      contract_sha256: "b".repeat(64),
+      capability_id: "example.containers",
+      capability_version: "1.0.0",
+      methods: [{ method: "containers.status", required_permissions: ["containers.read"] }],
+    }],
+    required_permissions: ["containers.read"],
+  } });
+  const client = new PluginPlatformClient({ fetch: fetch.fetch });
+  const result = await client.getPermissionRequirements({ plugin_instance_id: "plugin_instance_1" });
+  assert.equal(result.contracts[0]?.methods[0]?.required_permissions[0], "containers.read");
+  assert.equal(fetch.calls[0]?.input, "/_redevplugin/api/plugins/permissions/requirements/query");
+  assert.deepEqual(JSON.parse(fetch.calls[0]?.init.body ?? ""), { plugin_instance_id: "plugin_instance_1" });
+});
+
 test("platform client preserves the secret test mutation outcome", async () => {
   const fetch = new FakeFetch();
   fetch.push({
