@@ -1,0 +1,12 @@
+{
+  "intent": {
+    "action": "update",
+    "expected_management_revision": 7,
+    "plugin_instance_id": "plugin-instance-01"
+  },
+  "source": {
+    "kind": "github_repository",
+    "tag": "v2.0.1",
+    "url": "https://github.com/acme/redevplugin-containers"
+  }
+}

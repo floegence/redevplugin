@@ -1179,6 +1179,13 @@ func streamStatusForOperationStatus(status operation.Status) (stream.Status, boo
 }
 
 func (h *Host) validateExecutionBinding(ctx context.Context, binding capability.ExecutionBinding) error {
+	record, err := h.adapters.Registry.GetPlugin(ctx, binding.PluginInstanceID)
+	if err != nil {
+		return capability.ErrExecutionRevoked
+	}
+	if err := h.canRun(ctx, record); err != nil {
+		return capability.ErrExecutionRevoked
+	}
 	authorization, err := h.adapters.Registry.Authorize(ctx, registry.AuthorizeRequest{
 		PluginInstanceID: binding.PluginInstanceID,
 		Method:           binding.Method,
@@ -1193,7 +1200,7 @@ func (h *Host) validateExecutionBinding(ctx context.Context, binding capability.
 		return capability.ErrExecutionRevoked
 	}
 	state := authorization.State
-	if state.EnableState != registry.EnableEnabled || !registry.RunnableTrustState(state.TrustState) ||
+	if state.EnableState != registry.EnableEnabled || !registry.RunnableAuthorizationState(state) ||
 		state.ActiveFingerprint != binding.ActiveFingerprint || state.PluginVersion != binding.PluginVersion ||
 		state.Revisions.PolicyRevision != binding.Revision.PolicyRevision || state.Revisions.ManagementRevision != binding.Revision.ManagementRevision ||
 		state.Revisions.RevokeEpoch != binding.Revision.RevokeEpoch {

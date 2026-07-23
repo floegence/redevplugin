@@ -74,6 +74,10 @@ func TestSQLiteSecurityPolicyRelationMigrationSurvivesReopen(t *testing.T) {
 		_ = db.Close()
 		t.Fatal(err)
 	}
+	if _, err := db.ExecContext(ctx, `PRAGMA user_version = 0`); err != nil {
+		_ = db.Close()
+		t.Fatal(err)
+	}
 	if err := db.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -228,6 +232,10 @@ func TestSQLiteAuthorizationRemovesRedundantLegacyIndexes(t *testing.T) {
 			_ = db.Close()
 			t.Fatal(err)
 		}
+	}
+	if _, err := db.ExecContext(ctx, `PRAGMA user_version = 0`); err != nil {
+		_ = db.Close()
+		t.Fatal(err)
 	}
 	if err := db.Close(); err != nil {
 		t.Fatal(err)

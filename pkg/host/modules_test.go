@@ -29,6 +29,7 @@ func TestConfigExposesOnlyCoreAndOptionalModules(t *testing.T) {
 		"Connectivity",
 		"Secrets",
 		"CoreAction",
+		"ExternalPackage",
 	}
 	if configType.NumField() != len(want) {
 		t.Fatalf("Config has %d fields, want %d module fields", configType.NumField(), len(want))
@@ -331,6 +332,14 @@ func TestDowngradePreflightRejectsMissingConnectivityBeforeRegistryMutation(t *t
 	historic.Manifest.Plugin.Version = historic.Version
 	historic.Manifest.NetworkAccess = networkPackage.Manifest.NetworkAccess
 	historic.PackageHash = "sha256:historic-network"
+	// The fixture synthesizes a historical package without passing through the
+	// package admission path. Let Registry normalization derive package-bound
+	// security facts for that synthetic version.
+	historic.SignatureAssessment = registry.SignatureAssessment{}
+	historic.PackageSourceProvenance = registry.PackageSourceProvenance{}
+	historic.ExecutionApproval = registry.ExecutionApproval{}
+	historic.UpdateEligibility = ""
+	historic.SecurityCapabilitySummary = registry.SecurityCapabilitySummary{}
 	installed.VersionHistory = []registry.PluginVersion{versionSnapshot(historic, time.Now().UTC())}
 	installed, err = registryStore.PutPlugin(hostTestContext(), installed, registry.PutOptions{})
 	if err != nil {

@@ -1070,6 +1070,8 @@ const registryPluginSelectColumns = `
 SELECT
 	owner_env_hash, plugin_instance_id, publisher_id, plugin_id, version, active_fingerprint,
 	package_hash, manifest_hash, entries_hash, trust_state, trust_assessment_json,
+	signature_assessment_json, package_source_provenance_json, execution_approval_json,
+	update_eligibility, security_capability_summary_json,
 	source_policy_snapshot_hash, source_policy_snapshot_json, local_import_provenance_json, capability_contracts_json, enable_state,
 	disabled_reason, policy_revision, management_revision,
 	revoke_epoch, manifest_json, package_entries_json, version_history_json,

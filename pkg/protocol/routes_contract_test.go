@@ -726,6 +726,21 @@ func typeScriptSDKRouteBindings() []typeScriptSDKRouteBinding {
 			Snippets:     []string{"installReleaseRef(request: PluginInstallReleaseRefRequest)", `#requestMutation("POST", "/_redevplugin/api/plugins/install-release-ref"`},
 		},
 		{
+			routeFixture: routeFixture{Method: "POST", Path: "/_redevplugin/api/plugins/external-packages/inspect"},
+			Owner:        "PluginPlatformClient.inspectExternalPackage",
+			Snippets:     []string{"inspectExternalPackage(request: PluginInspectExternalPackageRequest", `"POST", "/_redevplugin/api/plugins/external-packages/inspect"`},
+		},
+		{
+			routeFixture: routeFixture{Method: "POST", Path: "/_redevplugin/api/plugins/external-packages/commit"},
+			Owner:        "PluginPlatformClient.commitExternalPackage",
+			Snippets:     []string{"commitExternalPackage(request: PluginCommitExternalPackageRequest", `"POST", "/_redevplugin/api/plugins/external-packages/commit"`},
+		},
+		{
+			routeFixture: routeFixture{Method: "POST", Path: "/_redevplugin/api/plugins/external-packages/commit/query", Effect: "query"},
+			Owner:        "PluginPlatformClient.queryExternalPackageCommit",
+			Snippets:     []string{"queryExternalPackageCommit(request: PluginQueryExternalPackageCommitRequest", `"/_redevplugin/api/plugins/external-packages/commit/query"`},
+		},
+		{
 			routeFixture: routeFixture{Method: "POST", Path: "/_redevplugin/api/plugins/enable"},
 			Owner:        "PluginPlatformClient.enablePlugin",
 			Snippets:     []string{"enablePlugin(request: PluginEnableRequest)", `#requestMutation("POST", "/_redevplugin/api/plugins/enable"`},

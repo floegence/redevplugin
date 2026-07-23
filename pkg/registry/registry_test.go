@@ -113,6 +113,10 @@ func TestStorePreservesVersionHistoryOnOverwrite(t *testing.T) {
 			stored.Version = "2.0.0"
 			stored.ActiveFingerprint = "sha256:v2"
 			stored.PackageHash = "sha256:v2"
+			stored.SignatureAssessment = SignatureAssessment{}
+			stored.PackageSourceProvenance = PackageSourceProvenance{}
+			stored.ExecutionApproval = ExecutionApproval{}
+			stored.UpdateEligibility = ""
 			stored.VersionHistory = []PluginVersion{{Version: "1.0.0", PackageHash: "sha256:v1"}}
 			updated, err := store.PutPlugin(registryTestContext(), stored, PutOptions{Now: now.Add(time.Second)})
 			if err != nil {
@@ -392,6 +396,9 @@ func TestSQLiteStoreMigratesRuntimeRequirementColumn(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := legacy.db.ExecContext(ctx, `ALTER TABLE plugin_records DROP COLUMN runtime_requirement_json`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := legacy.db.ExecContext(ctx, `PRAGMA user_version = 0`); err != nil {
 		t.Fatal(err)
 	}
 	if err := legacy.Close(); err != nil {

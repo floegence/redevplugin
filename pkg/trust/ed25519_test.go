@@ -82,6 +82,98 @@ func TestEd25519VerifierRejectsRevokedKey(t *testing.T) {
 	}
 }
 
+func TestEd25519ExternalAssessmentPersistsKeyEvidenceAndChecksFreshness(t *testing.T) {
+	pkg, pub, _, verifier := signedFixture(t)
+	assessment, err := verifier.AssessExternalPackageSignature(context.Background(), host.ExternalPackageSignatureAssessmentRequest{
+		Package: pkg,
+		Now:     time.Date(2026, 7, 23, 12, 0, 0, 0, time.UTC),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if assessment.Status != registry.SignatureVerified || assessment.EvidenceReference != publicKeyEvidence(pub) {
+		t.Fatalf("external signature assessment = %#v", assessment)
+	}
+	assessment.PackageSHA256 = pkg.PackageHash
+	assessment.ManifestSHA256 = pkg.ManifestHash
+	assessment.EntriesSHA256 = pkg.EntriesHash
+	assessment.AssessedHashes = registry.TrustHashSet{
+		PackageSHA256: pkg.PackageHash, ManifestSHA256: pkg.ManifestHash, EntriesSHA256: pkg.EntriesHash,
+	}
+	request := host.ExternalPackageSignatureFreshnessRequest{
+		PublisherID: pkg.Manifest.Publisher.PublisherID, PluginID: pkg.Manifest.PluginID(),
+		PackageSHA256: pkg.PackageHash, ManifestSHA256: pkg.ManifestHash, EntriesSHA256: pkg.EntriesHash,
+		Assessment: assessment,
+	}
+	fresh, err := verifier.AssessExternalPackageSignatureFreshness(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fresh.Status != registry.SignatureVerified || fresh.EvidenceReference != assessment.EvidenceReference {
+		t.Fatalf("fresh signature assessment = %#v", fresh)
+	}
+}
+
+func TestEd25519ExternalFreshnessDetectsRevocationAndKeyReplacement(t *testing.T) {
+	pkg, pub, _, verifier := signedFixture(t)
+	assessment, err := verifier.AssessExternalPackageSignature(context.Background(), host.ExternalPackageSignatureAssessmentRequest{Package: pkg})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assessment.PackageSHA256 = pkg.PackageHash
+	assessment.ManifestSHA256 = pkg.ManifestHash
+	assessment.EntriesSHA256 = pkg.EntriesHash
+	assessment.AssessedHashes = registry.TrustHashSet{
+		PackageSHA256: pkg.PackageHash, ManifestSHA256: pkg.ManifestHash, EntriesSHA256: pkg.EntriesHash,
+	}
+	request := host.ExternalPackageSignatureFreshnessRequest{
+		PublisherID: pkg.Manifest.Publisher.PublisherID, PluginID: pkg.Manifest.PluginID(),
+		PackageSHA256: pkg.PackageHash, ManifestSHA256: pkg.ManifestHash, EntriesSHA256: pkg.EntriesHash,
+		Assessment: assessment,
+	}
+
+	revokedVerifier := verifier
+	revokedVerifier.Keyring = StaticKeyring{Keys: []SigningKey{{Algorithm: AlgorithmEd25519, KeyID: "test-key", PublicKey: pub, Revoked: true}}}
+	revoked, err := revokedVerifier.AssessExternalPackageSignatureFreshness(context.Background(), request)
+	if err != nil || revoked.Status != registry.SignatureRevoked {
+		t.Fatalf("revoked freshness = %#v, %v", revoked, err)
+	}
+
+	replacement, _, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	replacedVerifier := verifier
+	replacedVerifier.Keyring = StaticKeyring{Keys: []SigningKey{{Algorithm: AlgorithmEd25519, KeyID: "test-key", PublicKey: replacement}}}
+	replaced, err := replacedVerifier.AssessExternalPackageSignatureFreshness(context.Background(), request)
+	if err != nil || replaced.Status != registry.SignatureInvalid || len(replaced.ReasonCodes) != 1 || replaced.ReasonCodes[0] != "signing_key_replaced" {
+		t.Fatalf("replaced freshness = %#v, %v", replaced, err)
+	}
+}
+
+func TestEd25519ExternalFreshnessAllowsUnavailableKeyringAsUnverified(t *testing.T) {
+	pkg, _, _, verifier := signedFixture(t)
+	assessment, err := verifier.AssessExternalPackageSignature(context.Background(), host.ExternalPackageSignatureAssessmentRequest{Package: pkg})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assessment.PackageSHA256 = pkg.PackageHash
+	assessment.ManifestSHA256 = pkg.ManifestHash
+	assessment.EntriesSHA256 = pkg.EntriesHash
+	assessment.AssessedHashes = registry.TrustHashSet{
+		PackageSHA256: pkg.PackageHash, ManifestSHA256: pkg.ManifestHash, EntriesSHA256: pkg.EntriesHash,
+	}
+	verifier.Keyring = nil
+	unavailable, err := verifier.AssessExternalPackageSignatureFreshness(context.Background(), host.ExternalPackageSignatureFreshnessRequest{
+		PublisherID: pkg.Manifest.Publisher.PublisherID, PluginID: pkg.Manifest.PluginID(),
+		PackageSHA256: pkg.PackageHash, ManifestSHA256: pkg.ManifestHash, EntriesSHA256: pkg.EntriesHash,
+		Assessment: assessment,
+	})
+	if err != nil || unavailable.Status != registry.SignatureUnavailable {
+		t.Fatalf("unavailable freshness = %#v, %v", unavailable, err)
+	}
+}
+
 func TestSignatureForPackageProducesCanonicalPayload(t *testing.T) {
 	pkg, _, priv, _ := signedFixture(t)
 	signedAt := time.Date(2026, 6, 30, 12, 0, 0, 0, time.UTC)

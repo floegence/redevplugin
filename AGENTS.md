@@ -226,6 +226,23 @@ If the right column is needed before the left column has a stable contract, add
 or fix the ReDevPlugin contract first and release it before asking a host product
 to depend on the behavior.
 
+External package admission keeps source, signature, execution approval, and
+update eligibility as independent security facts. A host may allow a user to
+inspect and explicitly install a package from any supported public HTTPS package
+URL or GitHub repository even when the package is unsigned, the signer is
+unknown, or signature assessment is temporarily unavailable. Those outcomes do
+not grant trust: the committed plugin starts disabled with no permission grants
+and remains manual-update-only. An invalid signature or a signature from a
+revoked key is an integrity failure and must block commit and execution.
+
+The platform owns the staged `inspect -> commit -> query` transaction, immutable
+package and source evidence, exact owner/session binding before commit, durable
+owner-scoped receipt, and generated SDK routes. Hosts own the product review UI,
+the decision to expose external sources, trusted keyring and revocation inputs,
+and any stricter enterprise source policy. A host must not convert a missing
+signature into an installation ban, silently grant permissions after commit, or
+make an unverified package eligible for automatic updates.
+
 Any platform bug found while integrating Redeven must be fixed in ReDevPlugin
 first, released as a versioned artifact, and then consumed by Redeven. Temporary
 Redeven-side workarounds are allowed only inside an unmerged feature branch and
@@ -738,6 +755,18 @@ Core invariants:
   authoritative in the Go Host library;
 - host products may register business capabilities, but they must not bypass the
   ReDevPlugin permission, confirmation, token, lease, audit, or lifecycle chain.
+- external package retrieval accepts only validated public HTTPS sources, checks
+  every DNS result and redirect hop, pins the validated connection target while
+  preserving TLS hostname verification, strips credentials across origins, and
+  enforces bounded identity-encoded downloads before package parsing;
+- external package commit reopens and re-verifies the exact staged artifact,
+  binds the durable approval and receipt to the authenticated environment owner,
+  and never treats an absent or unknown signature as a permission grant or an
+  automatic-update entitlement;
+- invalid or revoked signatures fail closed, while absent, unknown-signer, and
+  temporarily unavailable signature assessments may proceed only through
+  explicit user confirmation into disabled, zero-grant, manual-update-only
+  state.
 
 ## Quality Gates
 

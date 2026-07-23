@@ -508,6 +508,10 @@ func TestSQLiteOwnerScopeMigrationRebuildsEmptyLegacyTableBesideOwnedData(t *tes
 		_ = db.Close()
 		t.Fatal(err)
 	}
+	if _, err := db.Exec(`PRAGMA user_version = 0`); err != nil {
+		_ = db.Close()
+		t.Fatal(err)
+	}
 	if err := db.Close(); err != nil {
 		t.Fatal(err)
 	}

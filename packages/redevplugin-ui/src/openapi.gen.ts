@@ -20,6 +20,57 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/_redevplugin/api/plugins/external-packages/inspect": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** @description Resolves and inspects a package from a caller-selected URL or GitHub repository without installing it. Package identity, hashes, provenance, signature state, approval, and update eligibility are computed by the platform and cannot be supplied by the caller. */
+        post: operations["inspectExternalPackage"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/_redevplugin/api/plugins/external-packages/commit": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** @description Commits one unexpired inspection after the user confirms its exact server-computed digest. An absent signature does not make a package ineligible for installation; signature assessment affects trust classification and automatic-update eligibility only. */
+        post: operations["commitExternalPackage"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/_redevplugin/api/plugins/external-packages/commit/query": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** @description Reconciles the commit result for one inspection without repeating the mutation. */
+        post: operations["queryExternalPackageCommit"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/_redevplugin/api/plugins/install-release-ref": {
         parameters: {
             query?: never;
@@ -891,6 +942,16 @@ export interface components {
             ok: true;
             data: components["schemas"]["PluginRecord"];
         };
+        ExternalPackageInspectionSuccessResponse: {
+            /** @constant */
+            ok: true;
+            data: components["schemas"]["ExternalPackageInspection"];
+        };
+        ExternalPackageCommitSuccessResponse: {
+            /** @constant */
+            ok: true;
+            data: components["schemas"]["ExternalPackageCommitResult"];
+        };
         PluginCatalogSuccessResponse: {
             /** @constant */
             ok: true;
@@ -1516,6 +1577,300 @@ export interface components {
             /** Format: date-time */
             updated_at?: string;
         };
+        /** @description Closed install or update intent. Update concurrency values are supplied by the caller, while package identity is always derived from the inspected artifact. */
+        ExternalPackageIntentRequest: {
+            /** @constant */
+            action: "install";
+        } | {
+            /** @constant */
+            action: "update";
+            plugin_instance_id: string;
+            expected_management_revision: number;
+        };
+        /** @description Server-resolved install or update intent. The platform generates the install instance identifier during inspection. */
+        ExternalPackageIntent: {
+            /** @constant */
+            action: "install";
+            plugin_instance_id: string;
+        } | {
+            /** @constant */
+            action: "update";
+            plugin_instance_id: string;
+            expected_management_revision: number;
+        };
+        /** @description Caller-selected external source. Redirect resolution, package hashes, identity, and provenance are derived by the platform. */
+        ExternalPackageSource: {
+            /** @constant */
+            kind: "package_url";
+            /** Format: uri */
+            url: string;
+        } | {
+            /** @constant */
+            kind: "github_repository";
+            /** Format: uri */
+            url: string;
+            /** @description Optional exact release tag. When omitted, the resolver selects the repository's latest eligible release. */
+            tag?: string;
+        };
+        /** @description Requests server-side inspection. Trust, hashes, package identity, approval, provenance, signature assessment, and update eligibility are intentionally not caller-controlled. */
+        InspectExternalPackageRequest: {
+            intent: components["schemas"]["ExternalPackageIntentRequest"];
+            source: components["schemas"]["ExternalPackageSource"];
+        };
+        /** @description Confirms the exact immutable inspection. The digest cannot override any inspected fact. */
+        CommitExternalPackageRequest: {
+            inspection_id: string;
+            confirmation_digest: string;
+        };
+        QueryExternalPackageCommitRequest: {
+            inspection_id: string;
+            commit_id?: string;
+        };
+        /** @description Cryptographic signature fact computed over the inspected artifact. The absent state is installable and affects trust classification and automatic-update eligibility only. */
+        ExternalPackageSignatureAssessment: {
+            /** @enum {string} */
+            state: "verified" | "absent" | "unknown_signer" | "invalid" | "revoked" | "unavailable";
+            reason_codes: string[];
+            assessed_hashes: components["schemas"]["TrustHashSet"];
+            algorithm?: string;
+            key_id?: string;
+            /** Format: date-time */
+            assessed_at: string;
+            assessment_epoch?: string;
+        };
+        /** @description Credential-free redirect projection. Userinfo, query strings, and fragments are never exposed. */
+        ExternalPackageRedirectHop: {
+            /** Format: uri */
+            origin: string;
+            path: string;
+        };
+        /** @description Stable, credential-free source provenance computed after resolution. */
+        ExternalPackageSourceProvenance: {
+            /** @constant */
+            kind: "package_url";
+            /** Format: uri */
+            source_origin: string;
+            source_path: string;
+            redirect_chain: components["schemas"]["ExternalPackageRedirectHop"][];
+            package_sha256: string;
+            /** Format: date-time */
+            resolved_at: string;
+        } | {
+            /** @constant */
+            kind: "github_repository";
+            /** @description Stable GitHub repository database ID encoded as decimal text. */
+            repository_id: string;
+            /** @description Stable GitHub release database ID encoded as decimal text. */
+            release_id: string;
+            /** @description Stable GitHub release asset database ID encoded as decimal text. */
+            asset_id: string;
+            /** Format: uri */
+            repository_url: string;
+            /** @description Display-only owner login; repository_id remains authoritative across renames. */
+            owner: string;
+            /** @description Display-only repository name; repository_id remains authoritative across renames. */
+            repository: string;
+            resolved_commit_sha: string;
+            release_tag?: string;
+            asset_name?: string;
+            package_sha256: string;
+            /** Format: date-time */
+            resolved_at: string;
+        };
+        /** @description Execution decision independent from signature state. Session and owner hashes are excluded from this public projection. */
+        ExternalPackageExecutionApproval: {
+            /** @enum {string} */
+            state: "pending" | "user_approved" | "policy_approved" | "policy_blocked";
+            reason_codes: string[];
+            /** Format: date-time */
+            assessed_at: string;
+            /** Format: date-time */
+            approved_at?: string;
+        };
+        /** @description Automatic-update decision. Unsigned or otherwise unverified packages remain installable but are normally manual-only. */
+        ExternalPackageUpdateEligibility: {
+            /** @enum {string} */
+            state: "manual_only" | "automatic_eligible";
+            reason_codes: string[];
+            /** Format: date-time */
+            assessed_at: string;
+        };
+        ExternalPackagePermissionSummary: {
+            permission_id: string;
+            methods: string[];
+        };
+        ExternalPackageMethodRouteSummary: {
+            /** @enum {string} */
+            kind: "capability" | "worker" | "core_action";
+            binding_id?: string;
+            target_method?: string;
+            worker_id?: string;
+            action_id?: string;
+        };
+        ExternalPackageConfirmationSummary: {
+            /** @enum {string} */
+            mode: "none" | "required" | "risk_based";
+            preflight_method?: string;
+            request_hash_fields: string[];
+            plan_hash_required: boolean;
+        };
+        ExternalPackageCancelSummary: {
+            cancelable: boolean;
+            /** @enum {string} */
+            disable_behavior: "cancel" | "orphan" | "wait";
+            /** @enum {string} */
+            uninstall_behavior: "cancel_then_block_delete" | "force_cleanup_allowed";
+            ack_timeout_ms: number;
+        };
+        ExternalPackageMethodSummary: {
+            method: string;
+            route: components["schemas"]["ExternalPackageMethodRouteSummary"];
+            /** @enum {string} */
+            effect: "read" | "write" | "delete" | "execute" | "admin";
+            /** @enum {string} */
+            execution: "sync" | "operation" | "subscription";
+            dangerous: boolean;
+            preflight_only: boolean;
+            required_permissions: string[];
+            confirmation: components["schemas"]["ExternalPackageConfirmationSummary"];
+            cancel?: components["schemas"]["ExternalPackageCancelSummary"];
+        };
+        ExternalPackageCapabilityContractSummary: {
+            binding_id: string;
+            capability_id: string;
+            capability_version: string;
+            contract_sha256: string;
+        };
+        ExternalPackageWorkerSummary: {
+            worker_id: string;
+            artifact: string;
+            /** @constant */
+            abi: "redevplugin-wasm-worker-v2";
+            /** @constant */
+            mode: "job";
+            scope: components["schemas"]["ResourceScopeKind"];
+            memory_limit_bytes: number;
+            idle_timeout_ms: number;
+        };
+        ExternalPackageNetworkMethodAccessSummary: {
+            method: string;
+            operations: ("http" | "http_stream" | "websocket_round_trip" | "tcp_round_trip" | "udp_round_trip")[];
+            http_methods: ("GET" | "HEAD" | "POST" | "PUT" | "PATCH" | "DELETE" | "OPTIONS")[];
+        };
+        ExternalPackageNetworkSummary: {
+            connector_id: string;
+            /** @enum {string} */
+            transport: "http" | "websocket" | "tcp" | "udp";
+            scope: components["schemas"]["ResourceScopeKind"];
+            destinations: string[];
+            auth_declared: boolean;
+            tls_declared: boolean;
+            method_access: components["schemas"]["ExternalPackageNetworkMethodAccessSummary"][];
+        };
+        ExternalPackageStorageMethodAccessSummary: {
+            method: string;
+            operations: ("read" | "write" | "delete" | "list" | "get" | "put" | "query" | "exec")[];
+        };
+        ExternalPackageStorageSummary: {
+            store_id: string;
+            /** @enum {string} */
+            kind: "kv" | "files" | "sqlite";
+            scope: components["schemas"]["ResourceScopeKind"];
+            quota_bytes: number;
+            quota_files?: number;
+            schema_version: number;
+            method_access: components["schemas"]["ExternalPackageStorageMethodAccessSummary"][];
+        };
+        ExternalPackageSecretRefSummary: {
+            setting_key: string;
+            secret_ref: string;
+            scope: components["schemas"]["ResourceScopeKind"];
+        };
+        ExternalPackageCoreActionSummary: {
+            method: string;
+            action_id: string;
+            /** @enum {string} */
+            effect: "read" | "write" | "delete" | "execute" | "admin";
+        };
+        ExternalPackageIntentSummary: {
+            intent_id: string;
+            method: string;
+        };
+        ExternalPackageSurfaceSummary: {
+            surface_id: string;
+            /** @enum {string} */
+            kind: "view" | "command" | "background";
+            /** @enum {string} */
+            intent: "primary" | "secondary" | "utility";
+            label: string;
+            entry: string;
+            icon?: string;
+            default_size?: components["schemas"]["ExternalPackageSizeSummary"];
+        };
+        ExternalPackageSizeSummary: {
+            width: number;
+            height: number;
+        };
+        /** @description Closed, display-ready projection of every security-relevant declaration in the inspected manifest. */
+        ExternalPackageSecuritySummary: {
+            summary_sha256: string;
+            permissions: components["schemas"]["ExternalPackagePermissionSummary"][];
+            methods: components["schemas"]["ExternalPackageMethodSummary"][];
+            capability_contracts: components["schemas"]["ExternalPackageCapabilityContractSummary"][];
+            workers: components["schemas"]["ExternalPackageWorkerSummary"][];
+            network: components["schemas"]["ExternalPackageNetworkSummary"][];
+            storage: components["schemas"]["ExternalPackageStorageSummary"][];
+            secret_refs: components["schemas"]["ExternalPackageSecretRefSummary"][];
+            core_actions: components["schemas"]["ExternalPackageCoreActionSummary"][];
+            intents: components["schemas"]["ExternalPackageIntentSummary"][];
+            surfaces: components["schemas"]["ExternalPackageSurfaceSummary"][];
+        };
+        /** @description Immutable inspection projection. Package identity and all four trust/security facts are server-derived. */
+        ExternalPackageInspection: {
+            inspection_id: string;
+            /** Format: date-time */
+            expires_at: string;
+            intent: components["schemas"]["ExternalPackageIntent"];
+            publisher_id: string;
+            plugin_id: string;
+            version: components["schemas"]["StrictSemVer"];
+            inspected_hashes: components["schemas"]["TrustHashSet"];
+            signature_assessment: components["schemas"]["ExternalPackageSignatureAssessment"];
+            source_provenance: components["schemas"]["ExternalPackageSourceProvenance"];
+            execution_approval: components["schemas"]["ExternalPackageExecutionApproval"];
+            update_eligibility: components["schemas"]["ExternalPackageUpdateEligibility"];
+            security_summary: components["schemas"]["ExternalPackageSecuritySummary"];
+            confirmation_digest: string;
+        };
+        /** @description Immutable successful commit evidence. */
+        ExternalPackageCommitReceipt: {
+            commit_id: string;
+            inspection_id: string;
+            package_sha256: string;
+            management_revision: number;
+            /** Format: date-time */
+            committed_at: string;
+        };
+        /** @description Closed commit reconciliation union. A committed result repeats all four facts so clients never infer them from legacy trust_state alone. */
+        ExternalPackageCommitResult: {
+            /** @constant */
+            status: "committed";
+            inspection_id: string;
+            intent: components["schemas"]["ExternalPackageIntent"];
+            receipt: components["schemas"]["ExternalPackageCommitReceipt"];
+            plugin: components["schemas"]["PluginRecord"];
+            signature_assessment: components["schemas"]["ExternalPackageSignatureAssessment"];
+            source_provenance: components["schemas"]["ExternalPackageSourceProvenance"];
+            execution_approval: components["schemas"]["ExternalPackageExecutionApproval"];
+            update_eligibility: components["schemas"]["ExternalPackageUpdateEligibility"];
+            security_summary: components["schemas"]["ExternalPackageSecuritySummary"];
+        } | {
+            /** @constant */
+            status: "in_progress";
+            inspection_id: string;
+            intent: components["schemas"]["ExternalPackageIntent"];
+            retry_after_ms: number;
+        };
         /** @enum {string} */
         TrustState: "verified" | "unsigned_local" | "untrusted" | "needs_review" | "trust_unavailable" | "blocked_security";
         TrustHashSet: {
@@ -1552,6 +1907,11 @@ export interface components {
                 [key: string]: unknown;
             };
             local_import_provenance?: components["schemas"]["LocalImportProvenance"];
+            signature_assessment?: components["schemas"]["ExternalPackageSignatureAssessment"];
+            source_provenance?: components["schemas"]["ExternalPackageSourceProvenance"];
+            execution_approval?: components["schemas"]["ExternalPackageExecutionApproval"];
+            update_eligibility?: components["schemas"]["ExternalPackageUpdateEligibility"];
+            security_summary?: components["schemas"]["ExternalPackageSecuritySummary"];
             capability_contracts?: components["schemas"]["CapabilityContractPin"][];
             manifest: components["schemas"]["ManifestV5"];
             package_entries: components["schemas"]["PackageEntry"][];
@@ -1579,6 +1939,11 @@ export interface components {
                 [key: string]: unknown;
             };
             local_import_provenance?: components["schemas"]["LocalImportProvenance"];
+            signature_assessment?: components["schemas"]["ExternalPackageSignatureAssessment"];
+            source_provenance?: components["schemas"]["ExternalPackageSourceProvenance"];
+            execution_approval?: components["schemas"]["ExternalPackageExecutionApproval"];
+            update_eligibility?: components["schemas"]["ExternalPackageUpdateEligibility"];
+            security_summary?: components["schemas"]["ExternalPackageSecuritySummary"];
             capability_contracts?: components["schemas"]["CapabilityContractPin"][];
             /** @enum {string} */
             enable_state: "disabled" | "enabled" | "disabled_by_policy" | "disabled_incompatible";
@@ -2783,6 +3148,24 @@ export interface components {
                 "application/json": components["schemas"]["PluginRecordSuccessResponse"];
             };
         };
+        /** @description Immutable server-computed package inspection and confirmation boundary. */
+        ExternalPackageInspectionResponse: {
+            headers: {
+                [name: string]: unknown;
+            };
+            content: {
+                "application/json": components["schemas"]["ExternalPackageInspectionSuccessResponse"];
+            };
+        };
+        /** @description External package commit reconciliation result with explicit trust, approval, provenance, and update facts. */
+        ExternalPackageCommitResponse: {
+            headers: {
+                [name: string]: unknown;
+            };
+            content: {
+                "application/json": components["schemas"]["ExternalPackageCommitSuccessResponse"];
+            };
+        };
         /** @description Installed plugin catalog response with typed registry records. */
         PluginCatalogResponse: {
             headers: {
@@ -3042,6 +3425,21 @@ export interface components {
         SurfaceInstanceID: string;
     };
     requestBodies: {
+        InspectExternalPackageRequest: {
+            content: {
+                "application/json": components["schemas"]["InspectExternalPackageRequest"];
+            };
+        };
+        CommitExternalPackageRequest: {
+            content: {
+                "application/json": components["schemas"]["CommitExternalPackageRequest"];
+            };
+        };
+        QueryExternalPackageCommitRequest: {
+            content: {
+                "application/json": components["schemas"]["QueryExternalPackageCommitRequest"];
+            };
+        };
         InstallReleaseRefRequest: {
             content: {
                 "application/json": components["schemas"]["InstallReleaseRefRequest"];
@@ -3292,6 +3690,45 @@ export interface operations {
         responses: {
             200: components["responses"]["PluginRecordResponse"];
             default: components["responses"]["MutationPlatformErrorResponse"];
+        };
+    };
+    inspectExternalPackage: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: components["requestBodies"]["InspectExternalPackageRequest"];
+        responses: {
+            200: components["responses"]["ExternalPackageInspectionResponse"];
+            default: components["responses"]["MutationPlatformErrorResponse"];
+        };
+    };
+    commitExternalPackage: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: components["requestBodies"]["CommitExternalPackageRequest"];
+        responses: {
+            200: components["responses"]["ExternalPackageCommitResponse"];
+            default: components["responses"]["MutationPlatformErrorResponse"];
+        };
+    };
+    queryExternalPackageCommit: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: components["requestBodies"]["QueryExternalPackageCommitRequest"];
+        responses: {
+            200: components["responses"]["ExternalPackageCommitResponse"];
+            default: components["responses"]["PlatformErrorResponse"];
         };
     };
     installReleaseRef: {

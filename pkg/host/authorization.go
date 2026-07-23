@@ -33,6 +33,9 @@ const (
 	ManagementActionInvokeIntent               ManagementAction = "intent.invoke"
 	ManagementActionImportLocalPackage         ManagementAction = "plugin.import_local_package"
 	ManagementActionInstallReleaseRef          ManagementAction = "plugin.install_release_ref"
+	ManagementActionInspectExternalPackage     ManagementAction = "plugin.inspect_external_package"
+	ManagementActionCommitExternalPackage      ManagementAction = "plugin.commit_external_package"
+	ManagementActionQueryExternalPackageCommit ManagementAction = "plugin.query_external_package_commit"
 	ManagementActionUpdateLocalPackage         ManagementAction = "plugin.update_local_package"
 	ManagementActionUpdateReleaseRef           ManagementAction = "plugin.update_release_ref"
 	ManagementActionDowngradePlugin            ManagementAction = "plugin.downgrade"
@@ -98,6 +101,8 @@ func (action ManagementAction) Resource() ResourceRef {
 	case ManagementActionListIntents, ManagementActionInvokeIntent:
 		return ResourceIntent
 	case ManagementActionImportLocalPackage, ManagementActionInstallReleaseRef,
+		ManagementActionInspectExternalPackage, ManagementActionCommitExternalPackage,
+		ManagementActionQueryExternalPackageCommit,
 		ManagementActionUpdateLocalPackage, ManagementActionUpdateReleaseRef,
 		ManagementActionDowngradePlugin, ManagementActionListPlugins,
 		ManagementActionEnablePlugin,
@@ -375,6 +380,7 @@ func canonicalAuthorizationTarget(session sessionctx.Context, spec authorization
 func (action ManagementAction) allowsCollectionTarget() bool {
 	switch action {
 	case ManagementActionRevokeSessionScope,
+		ManagementActionInspectExternalPackage,
 		ManagementActionListIntents,
 		ManagementActionListPlugins,
 		ManagementActionRefreshEnabledPlugins,

@@ -131,6 +131,17 @@ capabilities.
   local-import flows carry explicit local import provenance. Runnable verified
   state requires a host-provided `PackageTrustVerifier`; unsigned local packages
   can be enabled only when host policy permits local generated plugins.
+- External package admission accepts a public HTTPS package URL or GitHub
+  repository through a staged `inspect -> commit -> query` transaction. The
+  inspection returns immutable source, hash, signature, execution-approval,
+  update-eligibility, and effective capability evidence for explicit review.
+  Signature state does not decide basic manual installation: absent,
+  unknown-signer, and temporarily unavailable assessments may be confirmed, but
+  the plugin is committed disabled with no grants and manual-only updates.
+  Invalid or revoked signatures block commit and execution. Every request and
+  durable receipt remains bound to the authenticated environment owner, and the
+  downloader revalidates public HTTPS, DNS, redirects, TLS identity, size, and
+  the exact staged bytes before commit.
 - The host-neutral `pkg/trust` package provides an Ed25519 verifier and keyring
   interface for package signatures. Hosts still decide which keys, publishers,
   registries, or enterprise policies are trusted, but they can reuse the common

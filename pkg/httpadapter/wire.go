@@ -1,6 +1,7 @@
 package httpadapter
 
 import (
+	"encoding/json"
 	"time"
 
 	"github.com/floegence/redevplugin/pkg/bridge"
@@ -98,51 +99,61 @@ type releaseTrustBindingResponse struct {
 }
 
 type pluginVersionResponse struct {
-	Version               string                         `json:"version"`
-	ActiveFingerprint     string                         `json:"active_fingerprint"`
-	PackageHash           string                         `json:"package_hash"`
-	ManifestHash          string                         `json:"manifest_hash"`
-	EntriesHash           string                         `json:"entries_hash"`
-	TrustState            string                         `json:"trust_state"`
-	TrustAssessment       trustAssessmentResponse        `json:"trust_assessment"`
-	ReleaseTrustBinding   *releaseTrustBindingResponse   `json:"release_trust_binding,omitempty"`
-	LocalImportProvenance *localImportProvenanceResponse `json:"local_import_provenance,omitempty"`
-	CapabilityContracts   []capabilityPinResponse        `json:"capability_contracts,omitempty"`
-	Manifest              manifestResponse               `json:"manifest"`
-	PackageEntries        []packageEntryResponse         `json:"package_entries"`
-	RuntimeRequirement    *runtimeRequirementResponse    `json:"runtime_requirement,omitempty"`
-	ActivatedAt           time.Time                      `json:"activated_at"`
-	Metadata              map[string]string              `json:"metadata,omitempty"`
+	Version               string                                   `json:"version"`
+	ActiveFingerprint     string                                   `json:"active_fingerprint"`
+	PackageHash           string                                   `json:"package_hash"`
+	ManifestHash          string                                   `json:"manifest_hash"`
+	EntriesHash           string                                   `json:"entries_hash"`
+	TrustState            string                                   `json:"trust_state"`
+	TrustAssessment       trustAssessmentResponse                  `json:"trust_assessment"`
+	SignatureAssessment   *host.ExternalPackageSignatureAssessment `json:"signature_assessment,omitempty"`
+	SourceProvenance      *host.ExternalPackageSourceProvenance    `json:"source_provenance,omitempty"`
+	ExecutionApproval     *host.ExternalPackageExecutionApproval   `json:"execution_approval,omitempty"`
+	UpdateEligibility     *host.ExternalPackageUpdateEligibility   `json:"update_eligibility,omitempty"`
+	SecuritySummary       *host.ExternalPackageSecuritySummary     `json:"security_summary,omitempty"`
+	ReleaseTrustBinding   *releaseTrustBindingResponse             `json:"release_trust_binding,omitempty"`
+	LocalImportProvenance *localImportProvenanceResponse           `json:"local_import_provenance,omitempty"`
+	CapabilityContracts   []capabilityPinResponse                  `json:"capability_contracts,omitempty"`
+	Manifest              manifestResponse                         `json:"manifest"`
+	PackageEntries        []packageEntryResponse                   `json:"package_entries"`
+	RuntimeRequirement    *runtimeRequirementResponse              `json:"runtime_requirement,omitempty"`
+	ActivatedAt           time.Time                                `json:"activated_at"`
+	Metadata              map[string]string                        `json:"metadata,omitempty"`
 }
 
 type pluginRecordResponse struct {
-	PluginInstanceID      string                         `json:"plugin_instance_id"`
-	PublisherID           string                         `json:"publisher_id"`
-	PluginID              string                         `json:"plugin_id"`
-	Version               string                         `json:"version"`
-	ActiveFingerprint     string                         `json:"active_fingerprint"`
-	PackageHash           string                         `json:"package_hash"`
-	ManifestHash          string                         `json:"manifest_hash"`
-	EntriesHash           string                         `json:"entries_hash"`
-	TrustState            string                         `json:"trust_state"`
-	TrustAssessment       trustAssessmentResponse        `json:"trust_assessment"`
-	ReleaseTrustBinding   *releaseTrustBindingResponse   `json:"release_trust_binding,omitempty"`
-	LocalImportProvenance *localImportProvenanceResponse `json:"local_import_provenance,omitempty"`
-	CapabilityContracts   []capabilityPinResponse        `json:"capability_contracts,omitempty"`
-	EnableState           string                         `json:"enable_state"`
-	DisabledReason        string                         `json:"disabled_reason,omitempty"`
-	PolicyRevision        uint64                         `json:"policy_revision"`
-	ManagementRevision    uint64                         `json:"management_revision"`
-	RevokeEpoch           uint64                         `json:"revoke_epoch"`
-	Manifest              manifestResponse               `json:"manifest"`
-	PackageEntries        []packageEntryResponse         `json:"package_entries"`
-	RuntimeRequirement    *runtimeRequirementResponse    `json:"runtime_requirement,omitempty"`
-	VersionHistory        []pluginVersionResponse        `json:"version_history,omitempty"`
-	InstalledAt           time.Time                      `json:"installed_at"`
-	EnabledAt             *time.Time                     `json:"enabled_at,omitempty"`
-	UpdatedAt             time.Time                      `json:"updated_at"`
-	DeletedAt             *time.Time                     `json:"deleted_at,omitempty"`
-	Metadata              map[string]string              `json:"metadata,omitempty"`
+	PluginInstanceID      string                                   `json:"plugin_instance_id"`
+	PublisherID           string                                   `json:"publisher_id"`
+	PluginID              string                                   `json:"plugin_id"`
+	Version               string                                   `json:"version"`
+	ActiveFingerprint     string                                   `json:"active_fingerprint"`
+	PackageHash           string                                   `json:"package_hash"`
+	ManifestHash          string                                   `json:"manifest_hash"`
+	EntriesHash           string                                   `json:"entries_hash"`
+	TrustState            string                                   `json:"trust_state"`
+	TrustAssessment       trustAssessmentResponse                  `json:"trust_assessment"`
+	SignatureAssessment   *host.ExternalPackageSignatureAssessment `json:"signature_assessment,omitempty"`
+	SourceProvenance      *host.ExternalPackageSourceProvenance    `json:"source_provenance,omitempty"`
+	ExecutionApproval     *host.ExternalPackageExecutionApproval   `json:"execution_approval,omitempty"`
+	UpdateEligibility     *host.ExternalPackageUpdateEligibility   `json:"update_eligibility,omitempty"`
+	SecuritySummary       *host.ExternalPackageSecuritySummary     `json:"security_summary,omitempty"`
+	ReleaseTrustBinding   *releaseTrustBindingResponse             `json:"release_trust_binding,omitempty"`
+	LocalImportProvenance *localImportProvenanceResponse           `json:"local_import_provenance,omitempty"`
+	CapabilityContracts   []capabilityPinResponse                  `json:"capability_contracts,omitempty"`
+	EnableState           string                                   `json:"enable_state"`
+	DisabledReason        string                                   `json:"disabled_reason,omitempty"`
+	PolicyRevision        uint64                                   `json:"policy_revision"`
+	ManagementRevision    uint64                                   `json:"management_revision"`
+	RevokeEpoch           uint64                                   `json:"revoke_epoch"`
+	Manifest              manifestResponse                         `json:"manifest"`
+	PackageEntries        []packageEntryResponse                   `json:"package_entries"`
+	RuntimeRequirement    *runtimeRequirementResponse              `json:"runtime_requirement,omitempty"`
+	VersionHistory        []pluginVersionResponse                  `json:"version_history,omitempty"`
+	InstalledAt           time.Time                                `json:"installed_at"`
+	EnabledAt             *time.Time                               `json:"enabled_at,omitempty"`
+	UpdatedAt             time.Time                                `json:"updated_at"`
+	DeletedAt             *time.Time                               `json:"deleted_at,omitempty"`
+	Metadata              map[string]string                        `json:"metadata,omitempty"`
 }
 
 func publicPluginRecord(record registry.PluginRecord) (pluginRecordResponse, error) {
@@ -158,11 +169,17 @@ func publicPluginRecord(record registry.PluginRecord) (pluginRecordResponse, err
 	if err != nil {
 		return pluginRecordResponse{}, err
 	}
+	signature, provenance, approval, update, summary := publicExternalPackageFacts(
+		record.SignatureAssessment, record.PackageSourceProvenance, record.ExecutionApproval,
+		record.UpdateEligibility, record.SecurityCapabilitySummary,
+	)
 	return pluginRecordResponse{
 		PluginInstanceID: record.PluginInstanceID, PublisherID: record.PublisherID, PluginID: record.PluginID,
 		Version: record.Version, ActiveFingerprint: record.ActiveFingerprint, PackageHash: record.PackageHash,
 		ManifestHash: record.ManifestHash, EntriesHash: record.EntriesHash, TrustState: string(record.TrustState),
 		TrustAssessment: publicTrustAssessment(record.TrustAssessment), ReleaseTrustBinding: publicReleaseTrustBinding(record.ReleaseTrustBinding),
+		SignatureAssessment: signature, SourceProvenance: provenance, ExecutionApproval: approval,
+		UpdateEligibility: update, SecuritySummary: summary,
 		LocalImportProvenance: publicLocalImportProvenance(record.LocalImportProvenance),
 		CapabilityContracts:   publicCapabilityPins(record.CapabilityContracts), EnableState: string(record.EnableState), DisabledReason: record.DisabledReason,
 		PolicyRevision: record.PolicyRevision, ManagementRevision: record.ManagementRevision, RevokeEpoch: record.RevokeEpoch,
@@ -170,6 +187,85 @@ func publicPluginRecord(record registry.PluginRecord) (pluginRecordResponse, err
 		VersionHistory: versions, InstalledAt: record.InstalledAt, EnabledAt: cloneWireTime(record.EnabledAt), UpdatedAt: record.UpdatedAt,
 		DeletedAt: cloneWireTime(record.DeletedAt), Metadata: cloneWireStringMap(record.Metadata),
 	}, nil
+}
+
+type externalPackageCommitResultResponse struct {
+	Status              string                                   `json:"status"`
+	InspectionID        string                                   `json:"inspection_id"`
+	Intent              host.ExternalPackageIntent               `json:"intent"`
+	Receipt             *host.ExternalPackageCommitReceipt       `json:"receipt,omitempty"`
+	Plugin              *pluginRecordResponse                    `json:"plugin,omitempty"`
+	SignatureAssessment *host.ExternalPackageSignatureAssessment `json:"signature_assessment,omitempty"`
+	SourceProvenance    *host.ExternalPackageSourceProvenance    `json:"source_provenance,omitempty"`
+	ExecutionApproval   *host.ExternalPackageExecutionApproval   `json:"execution_approval,omitempty"`
+	UpdateEligibility   *host.ExternalPackageUpdateEligibility   `json:"update_eligibility,omitempty"`
+	SecuritySummary     *host.ExternalPackageSecuritySummary     `json:"security_summary,omitempty"`
+	RetryAfterMS        int                                      `json:"retry_after_ms,omitempty"`
+}
+
+func publicExternalPackageCommitResult(result host.ExternalPackageCommitResult) (externalPackageCommitResultResponse, error) {
+	response := externalPackageCommitResultResponse{
+		Status: result.Status, InspectionID: result.InspectionID, Intent: result.Intent,
+		Receipt: result.Receipt, SignatureAssessment: result.SignatureAssessment,
+		SourceProvenance: result.SourceProvenance, ExecutionApproval: result.ExecutionApproval,
+		UpdateEligibility: result.UpdateEligibility, SecuritySummary: result.SecuritySummary,
+		RetryAfterMS: result.RetryAfterMS,
+	}
+	if result.Plugin != nil {
+		plugin, err := publicPluginRecord(*result.Plugin)
+		if err != nil {
+			return externalPackageCommitResultResponse{}, err
+		}
+		response.Plugin = &plugin
+		response.Intent.PluginInstanceID = plugin.PluginInstanceID
+	}
+	return response, nil
+}
+
+func publicExternalPackageFacts(
+	signature registry.SignatureAssessment,
+	provenance registry.PackageSourceProvenance,
+	approval registry.ExecutionApproval,
+	update registry.UpdateEligibility,
+	securitySummary registry.SecurityCapabilitySummary,
+) (*host.ExternalPackageSignatureAssessment, *host.ExternalPackageSourceProvenance, *host.ExternalPackageExecutionApproval, *host.ExternalPackageUpdateEligibility, *host.ExternalPackageSecuritySummary) {
+	if provenance.Kind != registry.PackageSourcePackageURL && provenance.Kind != registry.PackageSourceGitHubRepository {
+		return nil, nil, nil, nil, nil
+	}
+	publicSignature := host.ExternalPackageSignatureAssessment{
+		State: string(signature.Status), ReasonCodes: append([]string{}, signature.ReasonCodes...),
+		AssessedHashes: host.PackageHashSet{PackageSHA256: signature.PackageSHA256, ManifestSHA256: signature.ManifestSHA256, EntriesSHA256: signature.EntriesSHA256},
+		Algorithm:      signature.Algorithm, KeyID: signature.KeyID, AssessedAt: signature.AssessedAt, AssessmentEpoch: signature.AssessmentEpoch,
+	}
+	redirects := make([]host.ExternalPackageRedirectHop, len(provenance.RedirectChain))
+	for index, hop := range provenance.RedirectChain {
+		redirects[index] = host.ExternalPackageRedirectHop{Origin: hop.Origin, Path: hop.Path}
+	}
+	publicProvenance := host.ExternalPackageSourceProvenance{
+		Kind: string(provenance.Kind), SourceOrigin: provenance.SourceOrigin, SourcePath: provenance.SourcePath,
+		RedirectChain: redirects, RepositoryID: provenance.GitHubRepositoryID, ReleaseID: provenance.GitHubReleaseID,
+		AssetID: provenance.GitHubAssetID, RepositoryURL: provenance.RepositoryURL, Owner: provenance.GitHubOwner,
+		Repository: provenance.GitHubRepository, ResolvedCommitSHA: provenance.ResolvedRevision,
+		ReleaseTag: provenance.ReleaseTag, AssetName: provenance.AssetName,
+		PackageSHA256: provenance.PackageSHA256, ResolvedAt: provenance.RetrievedAt,
+	}
+	var approvedAt *time.Time
+	if !approval.ApprovedAt.IsZero() {
+		value := approval.ApprovedAt
+		approvedAt = &value
+	}
+	publicApproval := host.ExternalPackageExecutionApproval{
+		State: string(approval.Status), ReasonCodes: append([]string{}, approval.ReasonCodes...), AssessedAt: approval.AssessedAt, ApprovedAt: approvedAt,
+	}
+	publicUpdate := host.ExternalPackageUpdateEligibility{State: string(update), ReasonCodes: []string{"manual_confirmation_required"}, AssessedAt: signature.AssessedAt}
+	var publicSummary *host.ExternalPackageSecuritySummary
+	if securitySummary.CanonicalJSON != "" {
+		var value host.ExternalPackageSecuritySummary
+		if json.Unmarshal([]byte(securitySummary.CanonicalJSON), &value) == nil {
+			publicSummary = &value
+		}
+	}
+	return &publicSignature, &publicProvenance, &publicApproval, &publicUpdate, publicSummary
 }
 
 func publicPluginRecords(records []registry.PluginRecord) ([]pluginRecordResponse, error) {
@@ -189,10 +285,16 @@ func publicPluginVersion(version registry.PluginVersion) (pluginVersionResponse,
 	if err != nil {
 		return pluginVersionResponse{}, err
 	}
+	signature, provenance, approval, update, summary := publicExternalPackageFacts(
+		version.SignatureAssessment, version.PackageSourceProvenance, version.ExecutionApproval,
+		version.UpdateEligibility, version.SecurityCapabilitySummary,
+	)
 	return pluginVersionResponse{
 		Version: version.Version, ActiveFingerprint: version.ActiveFingerprint, PackageHash: version.PackageHash,
 		ManifestHash: version.ManifestHash, EntriesHash: version.EntriesHash, TrustState: string(version.TrustState),
 		TrustAssessment: publicTrustAssessment(version.TrustAssessment), ReleaseTrustBinding: publicReleaseTrustBinding(version.ReleaseTrustBinding),
+		SignatureAssessment: signature, SourceProvenance: provenance, ExecutionApproval: approval,
+		UpdateEligibility: update, SecuritySummary: summary,
 		LocalImportProvenance: publicLocalImportProvenance(version.LocalImportProvenance),
 		CapabilityContracts:   publicCapabilityPins(version.CapabilityContracts), Manifest: publicManifest,
 		PackageEntries: publicPackageEntries(version.PackageEntries), RuntimeRequirement: publicRuntimeRequirement(version.RuntimeRequirement),

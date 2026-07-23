@@ -152,6 +152,7 @@ var (
 	ErrConnectivityModuleRequired    = errors.New("connectivity module is required")
 	ErrSecretsModuleRequired         = errors.New("secrets module is required")
 	ErrCoreActionModuleRequired      = errors.New("core action module is required")
+	ErrExternalPackageModuleRequired = errors.New("external package module is required")
 	ErrDurableSessionScopeRequired   = errors.New("durable session scope coordinator is required")
 	ErrSessionTeardownIncomplete     = errors.New("plugin session teardown is incomplete")
 )
@@ -198,12 +199,13 @@ func (e *HostConfigError) RuntimeModuleDisposition() RuntimeModuleDisposition {
 type Feature string
 
 const (
-	FeatureRelease      Feature = "release"
-	FeatureRuntime      Feature = "runtime"
-	FeatureCapability   Feature = "capability"
-	FeatureConnectivity Feature = "connectivity"
-	FeatureSecrets      Feature = "secrets"
-	FeatureCoreAction   Feature = "core_action"
+	FeatureRelease         Feature = "release"
+	FeatureRuntime         Feature = "runtime"
+	FeatureCapability      Feature = "capability"
+	FeatureConnectivity    Feature = "connectivity"
+	FeatureSecrets         Feature = "secrets"
+	FeatureCoreAction      Feature = "core_action"
+	FeatureExternalPackage Feature = "external_package"
 )
 
 // FeatureNotConfiguredError identifies an optional module that was not
@@ -553,45 +555,60 @@ type CoreActionModule struct {
 	Adapter CoreActionAdapter
 }
 
+// ExternalPackageModule configures the host-neutral public HTTPS and GitHub
+// Release admission pipeline. Pending inspections are process-local and expire
+// on Host restart; committed receipts remain durable in the registry store.
+type ExternalPackageModule struct {
+	StageStore        ExternalPackageStageStore
+	PackageFetcher    ExternalPackageFetcher
+	GitHubResolver    ExternalPackageGitHubResolver
+	SignatureAssessor ExternalPackageSignatureAssessor
+}
+
 type Config struct {
-	Core         CoreAdapters
-	Release      *ReleaseModule
-	Runtime      *RuntimeModule
-	Capability   *CapabilityModule
-	Connectivity *ConnectivityModule
-	Secrets      *SecretsModule
-	CoreAction   *CoreActionModule
+	Core            CoreAdapters
+	Release         *ReleaseModule
+	Runtime         *RuntimeModule
+	Capability      *CapabilityModule
+	Connectivity    *ConnectivityModule
+	Secrets         *SecretsModule
+	CoreAction      *CoreActionModule
+	ExternalPackage *ExternalPackageModule
 }
 
 type normalizedAdapters struct {
-	Policy                      PolicyAdapter
-	Authorization               AuthorizationAdapter
-	PackageTrustVerifier        PackageTrustVerifier
-	ReleaseTrust                *releasetrust.ServiceSet
-	ReleaseArtifactResolver     ReleaseArtifactResolver
-	HostRequirements            HostRequirementPolicy
-	CapabilityContractArtifacts CapabilityContractArtifactResolver
-	Registry                    registry.Store
-	Audit                       AuditSink
-	SecurityAudit               observability.SecurityAuditJournal
-	Diagnostics                 DiagnosticsSink
-	Secrets                     SecretStoreAdapter
-	RuntimeManager              runtimeclient.Manager
-	SurfaceCatalog              SurfaceCatalogSink
-	Assets                      pluginpkg.AssetStore
-	InstallStages               installstage.Store
-	Capabilities                *capability.Registry
-	CoreActions                 CoreActionAdapter
-	SurfaceTokens               *bridge.SurfaceTokenService
-	PluginData                  PluginData
-	Connectivity                connectivity.Broker
-	NetworkExecutor             connectivity.NetworkExecutor
-	Operations                  operation.Store
-	ConfirmationIntents         security.ConfirmationIntentStore
-	Streams                     stream.Store
-	SessionLifecycle            SessionLifecycleAdapter
-	SessionScopes               *sessionscope.Coordinator
-	RuntimeModule               *RuntimeModule
+	Policy                           PolicyAdapter
+	Authorization                    AuthorizationAdapter
+	PackageTrustVerifier             PackageTrustVerifier
+	ReleaseTrust                     *releasetrust.ServiceSet
+	ReleaseArtifactResolver          ReleaseArtifactResolver
+	HostRequirements                 HostRequirementPolicy
+	CapabilityContractArtifacts      CapabilityContractArtifactResolver
+	Registry                         registry.Store
+	Audit                            AuditSink
+	SecurityAudit                    observability.SecurityAuditJournal
+	Diagnostics                      DiagnosticsSink
+	Secrets                          SecretStoreAdapter
+	RuntimeManager                   runtimeclient.Manager
+	SurfaceCatalog                   SurfaceCatalogSink
+	Assets                           pluginpkg.AssetStore
+	InstallStages                    installstage.Store
+	Capabilities                     *capability.Registry
+	CoreActions                      CoreActionAdapter
+	SurfaceTokens                    *bridge.SurfaceTokenService
+	PluginData                       PluginData
+	Connectivity                     connectivity.Broker
+	NetworkExecutor                  connectivity.NetworkExecutor
+	Operations                       operation.Store
+	ConfirmationIntents              security.ConfirmationIntentStore
+	Streams                          stream.Store
+	SessionLifecycle                 SessionLifecycleAdapter
+	SessionScopes                    *sessionscope.Coordinator
+	RuntimeModule                    *RuntimeModule
+	ExternalPackageStageStore        ExternalPackageStageStore
+	ExternalPackageFetcher           ExternalPackageFetcher
+	ExternalPackageGitHubResolver    ExternalPackageGitHubResolver
+	ExternalPackageSignatureAssessor ExternalPackageSignatureAssessor
 }
 
 type PluginData interface {
@@ -630,6 +647,7 @@ type Host struct {
 	closeOnce           sync.Once
 	closeErr            error
 	runtimeModule       *RuntimeModule
+	externalInspections *externalPackageInspectionStore
 }
 
 type detachedCancelJob struct {
@@ -1154,7 +1172,7 @@ func normalizeConfig(config Config) (normalizedAdapters, map[Feature]struct{}, e
 	adapters.SessionLifecycle = core.SessionLifecycle
 	adapters.SessionScopes = core.SessionScopes
 
-	features := make(map[Feature]struct{}, 6)
+	features := make(map[Feature]struct{}, 7)
 	if module := config.Release; module != nil {
 		adapters.ReleaseTrust = module.Trust
 		adapters.ReleaseArtifactResolver = module.ReleaseArtifactResolver
@@ -1186,6 +1204,13 @@ func normalizeConfig(config Config) (normalizedAdapters, map[Feature]struct{}, e
 	if module := config.CoreAction; module != nil {
 		adapters.CoreActions = module.Adapter
 		features[FeatureCoreAction] = struct{}{}
+	}
+	if module := config.ExternalPackage; module != nil {
+		adapters.ExternalPackageStageStore = module.StageStore
+		adapters.ExternalPackageFetcher = module.PackageFetcher
+		adapters.ExternalPackageGitHubResolver = module.GitHubResolver
+		adapters.ExternalPackageSignatureAssessor = module.SignatureAssessor
+		features[FeatureExternalPackage] = struct{}{}
 	}
 	return adapters, features, validateConfig(adapters, config)
 }
@@ -1268,6 +1293,24 @@ func validateConfig(adapters normalizedAdapters, config Config) error {
 	}
 	if module := config.CoreAction; module != nil && isNilInterfaceValue(module.Adapter) {
 		return &HostConfigError{Module: string(FeatureCoreAction), Adapter: "action", Cause: ErrCoreActionModuleRequired}
+	}
+	if module := config.ExternalPackage; module != nil {
+		for _, check := range []struct {
+			name  string
+			value any
+		}{
+			{"stage store", module.StageStore},
+			{"package fetcher", module.PackageFetcher},
+			{"GitHub resolver", module.GitHubResolver},
+			{"signature assessor", module.SignatureAssessor},
+		} {
+			if isNilInterfaceValue(check.value) {
+				return &HostConfigError{Module: string(FeatureExternalPackage), Adapter: check.name, Cause: ErrExternalPackageModuleRequired}
+			}
+		}
+		if _, ok := module.SignatureAssessor.(ExternalPackageSignatureFreshnessAssessor); !ok {
+			return &HostConfigError{Module: string(FeatureExternalPackage), Adapter: "signature freshness assessor", Cause: ErrExternalPackageModuleRequired}
+		}
 	}
 	return nil
 }
@@ -1489,6 +1532,7 @@ func Open(ctx context.Context, config Config) (openedHost *Host, retErr error) {
 		lifecycleCtx:        lifecycleCtx,
 		lifecycleCancel:     lifecycleCancel,
 		runtimeModule:       transferredRuntime,
+		externalInspections: newExternalPackageInspectionStore(),
 	}
 	if host.adapters.ReleaseTrust != nil {
 		if err := host.adapters.ReleaseTrust.BindFenceCoordinator(hostSourceFenceCoordinator{host: host}); err != nil {
@@ -1564,6 +1608,7 @@ func (h *Host) Close() error {
 		}
 		h.lifecycleWG.Wait()
 		h.securityAuditWG.Wait()
+		externalStageCleanupErr := h.drainExternalPackageInspectionArtifacts()
 		h.releaseLeases.clear()
 		h.verifiedReleases.clear()
 		var runtimeCloseErr error
@@ -1590,7 +1635,7 @@ func (h *Host) Close() error {
 		if h.adapters.Assets != nil {
 			assetStoreCloseErr = h.adapters.Assets.Close()
 		}
-		h.closeErr = errors.Join(runtimeCloseErr, pluginDataCloseErr, assetStoreCloseErr)
+		h.closeErr = errors.Join(runtimeCloseErr, externalStageCleanupErr, pluginDataCloseErr, assetStoreCloseErr)
 	})
 	return h.closeErr
 }
@@ -1599,7 +1644,7 @@ func (h *Host) configuredFeatures() []Feature {
 	if h == nil || len(h.features) == 0 {
 		return []Feature{}
 	}
-	ordered := []Feature{FeatureRelease, FeatureRuntime, FeatureCapability, FeatureConnectivity, FeatureSecrets, FeatureCoreAction}
+	ordered := []Feature{FeatureRelease, FeatureRuntime, FeatureCapability, FeatureConnectivity, FeatureSecrets, FeatureCoreAction, FeatureExternalPackage}
 	result := make([]Feature, 0, len(h.features))
 	for _, feature := range ordered {
 		if _, ok := h.features[feature]; ok {
@@ -1631,7 +1676,7 @@ func (h *Host) requireFeature(feature Feature) error {
 
 func (h *Host) requireFeatures(required []Feature) error {
 	missing := make([]Feature, 0, len(required))
-	for _, candidate := range []Feature{FeatureRelease, FeatureRuntime, FeatureCapability, FeatureConnectivity, FeatureSecrets, FeatureCoreAction} {
+	for _, candidate := range []Feature{FeatureRelease, FeatureRuntime, FeatureCapability, FeatureConnectivity, FeatureSecrets, FeatureCoreAction, FeatureExternalPackage} {
 		if slices.Contains(required, candidate) && !h.featureConfigured(candidate) {
 			missing = append(missing, candidate)
 		}
@@ -1663,6 +1708,9 @@ func (h *Host) featureConfigured(feature Feature) bool {
 		return h.adapters.Secrets != nil
 	case FeatureCoreAction:
 		return h.adapters.CoreActions != nil
+	case FeatureExternalPackage:
+		return h.adapters.ExternalPackageStageStore != nil && h.adapters.ExternalPackageFetcher != nil &&
+			h.adapters.ExternalPackageGitHubResolver != nil && h.adapters.ExternalPackageSignatureAssessor != nil
 	default:
 		return false
 	}
@@ -4352,21 +4400,26 @@ func versionSnapshot(record registry.PluginRecord, now time.Time) registry.Plugi
 		now = time.Now().UTC()
 	}
 	return registry.PluginVersion{
-		Version:               record.Version,
-		ActiveFingerprint:     record.ActiveFingerprint,
-		PackageHash:           record.PackageHash,
-		ManifestHash:          record.ManifestHash,
-		EntriesHash:           record.EntriesHash,
-		TrustState:            record.TrustState,
-		TrustAssessment:       record.TrustAssessment,
-		ReleaseTrustBinding:   cloneReleaseTrustBinding(record.ReleaseTrustBinding),
-		LocalImportProvenance: cloneLocalImportProvenance(record.LocalImportProvenance),
-		CapabilityContracts:   append([]capabilitycontract.Pin(nil), record.CapabilityContracts...),
-		Manifest:              record.Manifest,
-		PackageEntries:        cloneEntries(record.PackageEntries),
-		RuntimeRequirement:    cloneRuntimeRequirement(record.RuntimeRequirement),
-		ActivatedAt:           now,
-		Metadata:              cloneStringMap(record.Metadata),
+		Version:                   record.Version,
+		ActiveFingerprint:         record.ActiveFingerprint,
+		PackageHash:               record.PackageHash,
+		ManifestHash:              record.ManifestHash,
+		EntriesHash:               record.EntriesHash,
+		TrustState:                record.TrustState,
+		TrustAssessment:           record.TrustAssessment,
+		SignatureAssessment:       record.SignatureAssessment,
+		PackageSourceProvenance:   record.PackageSourceProvenance,
+		ExecutionApproval:         record.ExecutionApproval,
+		UpdateEligibility:         record.UpdateEligibility,
+		SecurityCapabilitySummary: record.SecurityCapabilitySummary,
+		ReleaseTrustBinding:       cloneReleaseTrustBinding(record.ReleaseTrustBinding),
+		LocalImportProvenance:     cloneLocalImportProvenance(record.LocalImportProvenance),
+		CapabilityContracts:       append([]capabilitycontract.Pin(nil), record.CapabilityContracts...),
+		Manifest:                  record.Manifest,
+		PackageEntries:            cloneEntries(record.PackageEntries),
+		RuntimeRequirement:        cloneRuntimeRequirement(record.RuntimeRequirement),
+		ActivatedAt:               now,
+		Metadata:                  cloneStringMap(record.Metadata),
 	}
 }
 
@@ -4379,6 +4432,11 @@ func recordFromVersionSnapshot(current registry.PluginRecord, snapshot registry.
 	next.EntriesHash = snapshot.EntriesHash
 	next.TrustState = snapshot.TrustState
 	next.TrustAssessment = snapshot.TrustAssessment
+	next.SignatureAssessment = snapshot.SignatureAssessment
+	next.PackageSourceProvenance = snapshot.PackageSourceProvenance
+	next.ExecutionApproval = snapshot.ExecutionApproval
+	next.UpdateEligibility = snapshot.UpdateEligibility
+	next.SecurityCapabilitySummary = snapshot.SecurityCapabilitySummary
 	next.ReleaseTrustBinding = cloneReleaseTrustBinding(snapshot.ReleaseTrustBinding)
 	next.LocalImportProvenance = cloneLocalImportProvenance(snapshot.LocalImportProvenance)
 	next.CapabilityContracts = append([]capabilitycontract.Pin(nil), snapshot.CapabilityContracts...)
@@ -8358,11 +8416,14 @@ func (h *Host) ReportHTTPAdapterFailure(ctx context.Context, operation string, c
 }
 
 func (h *Host) canRun(ctx context.Context, record registry.PluginRecord) error {
-	if !registry.RunnableTrustState(record.TrustState) {
-		if record.TrustState == registry.TrustUnavailable {
+	if !registry.RunnablePluginRecord(record) {
+		if record.TrustState == registry.TrustUnavailable || record.SignatureAssessment.Status == registry.SignatureUnavailable {
 			return fmt.Errorf("%w: trust_state %q", ErrPluginTrustUnavailable, record.TrustState)
 		}
 		return fmt.Errorf("%w: trust_state %q", ErrPluginTrustDenied, record.TrustState)
+	}
+	if err := h.validateExternalPackageSignatureFreshness(ctx, record); err != nil {
+		return err
 	}
 	if err := h.validateReleaseActivationLease(record); err != nil {
 		return err

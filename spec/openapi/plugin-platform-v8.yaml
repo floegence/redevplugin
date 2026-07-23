@@ -41,6 +41,36 @@ paths:
       responses:
         "200": { $ref: "#/components/responses/PluginRecordResponse" }
         default: { $ref: "#/components/responses/MutationPlatformErrorResponse" }
+  /_redevplugin/api/plugins/external-packages/inspect:
+    post:
+      operationId: inspectExternalPackage
+      x-redevplugin-route-effect: mutation
+      description: Resolves and inspects a package from a caller-selected URL or GitHub repository without installing it. Package identity, hashes, provenance, signature state, approval, and update eligibility are computed by the platform and cannot be supplied by the caller.
+      requestBody:
+        $ref: "#/components/requestBodies/InspectExternalPackageRequest"
+      responses:
+        "200": { $ref: "#/components/responses/ExternalPackageInspectionResponse" }
+        default: { $ref: "#/components/responses/MutationPlatformErrorResponse" }
+  /_redevplugin/api/plugins/external-packages/commit:
+    post:
+      operationId: commitExternalPackage
+      x-redevplugin-route-effect: mutation
+      description: Commits one unexpired inspection after the user confirms its exact server-computed digest. An absent signature does not make a package ineligible for installation; signature assessment affects trust classification and automatic-update eligibility only.
+      requestBody:
+        $ref: "#/components/requestBodies/CommitExternalPackageRequest"
+      responses:
+        "200": { $ref: "#/components/responses/ExternalPackageCommitResponse" }
+        default: { $ref: "#/components/responses/MutationPlatformErrorResponse" }
+  /_redevplugin/api/plugins/external-packages/commit/query:
+    post:
+      operationId: queryExternalPackageCommit
+      x-redevplugin-route-effect: query
+      description: Reconciles the commit result for one inspection without repeating the mutation.
+      requestBody:
+        $ref: "#/components/requestBodies/QueryExternalPackageCommitRequest"
+      responses:
+        "200": { $ref: "#/components/responses/ExternalPackageCommitResponse" }
+        default: { $ref: "#/components/responses/PlatformErrorResponse" }
   /_redevplugin/api/plugins/install-release-ref:
     post:
       operationId: installReleaseRef
@@ -628,6 +658,18 @@ components:
         application/json:
           schema:
             $ref: "#/components/schemas/PluginRecordSuccessResponse"
+    ExternalPackageInspectionResponse:
+      description: Immutable server-computed package inspection and confirmation boundary.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ExternalPackageInspectionSuccessResponse"
+    ExternalPackageCommitResponse:
+      description: External package commit reconciliation result with explicit trust, approval, provenance, and update facts.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ExternalPackageCommitSuccessResponse"
     PluginCatalogResponse:
       description: Installed plugin catalog response with typed registry records.
       content:
@@ -797,6 +839,24 @@ components:
           schema:
             $ref: "#/components/schemas/SettingsSnapshotSuccessResponse"
   requestBodies:
+    InspectExternalPackageRequest:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/InspectExternalPackageRequest"
+    CommitExternalPackageRequest:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/CommitExternalPackageRequest"
+    QueryExternalPackageCommitRequest:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/QueryExternalPackageCommitRequest"
     InstallReleaseRefRequest:
       required: true
       content:
@@ -1130,6 +1190,20 @@ components:
       properties:
         ok: { const: true }
         data: { $ref: "#/components/schemas/PluginRecord" }
+    ExternalPackageInspectionSuccessResponse:
+      type: object
+      required: [ok, data]
+      additionalProperties: false
+      properties:
+        ok: { const: true }
+        data: { $ref: "#/components/schemas/ExternalPackageInspection" }
+    ExternalPackageCommitSuccessResponse:
+      type: object
+      required: [ok, data]
+      additionalProperties: false
+      properties:
+        ok: { const: true }
+        data: { $ref: "#/components/schemas/ExternalPackageCommitResult" }
     PluginCatalogSuccessResponse:
       type: object
       required: [ok, data]
@@ -2108,6 +2182,449 @@ components:
         bound_at: { type: string, format: date-time }
         tested_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
+    ExternalPackageIntentRequest:
+      description: Closed install or update intent. Update concurrency values are supplied by the caller, while package identity is always derived from the inspected artifact.
+      oneOf:
+        - type: object
+          required: [action]
+          additionalProperties: false
+          properties:
+            action: { const: install }
+        - type: object
+          required: [action, plugin_instance_id, expected_management_revision]
+          additionalProperties: false
+          properties:
+            action: { const: update }
+            plugin_instance_id: { type: string, minLength: 1 }
+            expected_management_revision: { type: integer, minimum: 1, maximum: 9007199254740991 }
+    ExternalPackageIntent:
+      description: Server-resolved install or update intent. The platform generates the install instance identifier during inspection.
+      oneOf:
+        - type: object
+          required: [action, plugin_instance_id]
+          additionalProperties: false
+          properties:
+            action: { const: install }
+            plugin_instance_id: { type: string, minLength: 1 }
+        - type: object
+          required: [action, plugin_instance_id, expected_management_revision]
+          additionalProperties: false
+          properties:
+            action: { const: update }
+            plugin_instance_id: { type: string, minLength: 1 }
+            expected_management_revision: { type: integer, minimum: 1, maximum: 9007199254740991 }
+    ExternalPackageSource:
+      description: Caller-selected external source. Redirect resolution, package hashes, identity, and provenance are derived by the platform.
+      oneOf:
+        - type: object
+          required: [kind, url]
+          additionalProperties: false
+          properties:
+            kind: { const: package_url }
+            url: { type: string, format: uri, minLength: 1 }
+        - type: object
+          required: [kind, url]
+          additionalProperties: false
+          properties:
+            kind: { const: github_repository }
+            url: { type: string, format: uri, minLength: 1 }
+            tag:
+              type: string
+              minLength: 1
+              maxLength: 255
+              description: Optional exact release tag. When omitted, the resolver selects the repository's latest eligible release.
+    InspectExternalPackageRequest:
+      type: object
+      description: Requests server-side inspection. Trust, hashes, package identity, approval, provenance, signature assessment, and update eligibility are intentionally not caller-controlled.
+      required: [intent, source]
+      additionalProperties: false
+      properties:
+        intent: { $ref: "#/components/schemas/ExternalPackageIntentRequest" }
+        source: { $ref: "#/components/schemas/ExternalPackageSource" }
+    CommitExternalPackageRequest:
+      type: object
+      description: Confirms the exact immutable inspection. The digest cannot override any inspected fact.
+      required: [inspection_id, confirmation_digest]
+      additionalProperties: false
+      properties:
+        inspection_id: { type: string, minLength: 1 }
+        confirmation_digest: { type: string, pattern: "^sha256:[0-9a-f]{64}$" }
+    QueryExternalPackageCommitRequest:
+      type: object
+      required: [inspection_id]
+      additionalProperties: false
+      properties:
+        inspection_id: { type: string, minLength: 1 }
+        commit_id: { type: string, minLength: 1 }
+    ExternalPackageSignatureAssessment:
+      type: object
+      description: Cryptographic signature fact computed over the inspected artifact. The absent state is installable and affects trust classification and automatic-update eligibility only.
+      required: [state, reason_codes, assessed_hashes, assessed_at]
+      additionalProperties: false
+      properties:
+        state:
+          type: string
+          enum: [verified, absent, unknown_signer, invalid, revoked, unavailable]
+        reason_codes:
+          type: array
+          uniqueItems: true
+          items: { type: string, minLength: 1 }
+        assessed_hashes: { $ref: "#/components/schemas/TrustHashSet" }
+        algorithm: { type: string, minLength: 1 }
+        key_id: { type: string, minLength: 1 }
+        assessed_at: { type: string, format: date-time }
+        assessment_epoch: { type: string, minLength: 1 }
+    ExternalPackageRedirectHop:
+      type: object
+      description: Credential-free redirect projection. Userinfo, query strings, and fragments are never exposed.
+      required: [origin, path]
+      additionalProperties: false
+      properties:
+        origin: { type: string, format: uri, minLength: 1 }
+        path: { type: string, pattern: "^/" }
+    ExternalPackageSourceProvenance:
+      description: Stable, credential-free source provenance computed after resolution.
+      oneOf:
+        - type: object
+          required: [kind, source_origin, source_path, redirect_chain, package_sha256, resolved_at]
+          additionalProperties: false
+          properties:
+            kind: { const: package_url }
+            source_origin: { type: string, format: uri, minLength: 1 }
+            source_path: { type: string, pattern: "^/" }
+            redirect_chain:
+              type: array
+              items: { $ref: "#/components/schemas/ExternalPackageRedirectHop" }
+            package_sha256: { type: string, pattern: "^(sha256:)?[0-9a-f]{64}$" }
+            resolved_at: { type: string, format: date-time }
+        - type: object
+          required: [kind, repository_id, release_id, asset_id, repository_url, owner, repository, resolved_commit_sha, package_sha256, resolved_at]
+          additionalProperties: false
+          properties:
+            kind: { const: github_repository }
+            repository_id:
+              type: string
+              pattern: "^[1-9][0-9]*$"
+              description: Stable GitHub repository database ID encoded as decimal text.
+            release_id:
+              type: string
+              pattern: "^[1-9][0-9]*$"
+              description: Stable GitHub release database ID encoded as decimal text.
+            asset_id:
+              type: string
+              pattern: "^[1-9][0-9]*$"
+              description: Stable GitHub release asset database ID encoded as decimal text.
+            repository_url: { type: string, format: uri, minLength: 1 }
+            owner:
+              type: string
+              minLength: 1
+              description: Display-only owner login; repository_id remains authoritative across renames.
+            repository:
+              type: string
+              minLength: 1
+              description: Display-only repository name; repository_id remains authoritative across renames.
+            resolved_commit_sha: { type: string, pattern: "^[0-9a-f]{40}$" }
+            release_tag: { type: string, minLength: 1 }
+            asset_name: { type: string, minLength: 1 }
+            package_sha256: { type: string, pattern: "^(sha256:)?[0-9a-f]{64}$" }
+            resolved_at: { type: string, format: date-time }
+    ExternalPackageExecutionApproval:
+      type: object
+      description: Execution decision independent from signature state. Session and owner hashes are excluded from this public projection.
+      required: [state, reason_codes, assessed_at]
+      additionalProperties: false
+      properties:
+        state:
+          type: string
+          enum: [pending, user_approved, policy_approved, policy_blocked]
+        reason_codes:
+          type: array
+          uniqueItems: true
+          items: { type: string, minLength: 1 }
+        assessed_at: { type: string, format: date-time }
+        approved_at: { type: string, format: date-time }
+    ExternalPackageUpdateEligibility:
+      type: object
+      description: Automatic-update decision. Unsigned or otherwise unverified packages remain installable but are normally manual-only.
+      required: [state, reason_codes, assessed_at]
+      additionalProperties: false
+      properties:
+        state:
+          type: string
+          enum: [manual_only, automatic_eligible]
+        reason_codes:
+          type: array
+          uniqueItems: true
+          items: { type: string, minLength: 1 }
+        assessed_at: { type: string, format: date-time }
+    ExternalPackagePermissionSummary:
+      type: object
+      required: [permission_id, methods]
+      additionalProperties: false
+      properties:
+        permission_id: { type: string, minLength: 1 }
+        methods:
+          type: array
+          uniqueItems: true
+          items: { type: string, minLength: 1 }
+    ExternalPackageMethodRouteSummary:
+      type: object
+      required: [kind]
+      additionalProperties: false
+      properties:
+        kind: { type: string, enum: [capability, worker, core_action] }
+        binding_id: { type: string, minLength: 1 }
+        target_method: { type: string, minLength: 1 }
+        worker_id: { type: string, minLength: 1 }
+        action_id: { type: string, minLength: 1 }
+    ExternalPackageConfirmationSummary:
+      type: object
+      required: [mode, request_hash_fields, plan_hash_required]
+      additionalProperties: false
+      properties:
+        mode: { type: string, enum: [none, required, risk_based] }
+        preflight_method: { type: string, minLength: 1 }
+        request_hash_fields:
+          type: array
+          uniqueItems: true
+          items: { type: string, minLength: 1 }
+        plan_hash_required: { type: boolean }
+    ExternalPackageCancelSummary:
+      type: object
+      required: [cancelable, disable_behavior, uninstall_behavior, ack_timeout_ms]
+      additionalProperties: false
+      properties:
+        cancelable: { type: boolean }
+        disable_behavior: { type: string, enum: [cancel, orphan, wait] }
+        uninstall_behavior: { type: string, enum: [cancel_then_block_delete, force_cleanup_allowed] }
+        ack_timeout_ms: { type: integer, minimum: 0 }
+    ExternalPackageMethodSummary:
+      type: object
+      required: [method, route, effect, execution, dangerous, preflight_only, required_permissions, confirmation]
+      additionalProperties: false
+      properties:
+        method: { type: string, minLength: 1 }
+        route: { $ref: "#/components/schemas/ExternalPackageMethodRouteSummary" }
+        effect: { type: string, enum: [read, write, delete, execute, admin] }
+        execution: { type: string, enum: [sync, operation, subscription] }
+        dangerous: { type: boolean }
+        preflight_only: { type: boolean }
+        required_permissions:
+          type: array
+          uniqueItems: true
+          items: { type: string, minLength: 1 }
+        confirmation: { $ref: "#/components/schemas/ExternalPackageConfirmationSummary" }
+        cancel: { $ref: "#/components/schemas/ExternalPackageCancelSummary" }
+    ExternalPackageCapabilityContractSummary:
+      type: object
+      required: [binding_id, capability_id, capability_version, contract_sha256]
+      additionalProperties: false
+      properties:
+        binding_id: { type: string, minLength: 1 }
+        capability_id: { type: string, minLength: 1 }
+        capability_version: { type: string, minLength: 1 }
+        contract_sha256: { type: string, pattern: "^sha256:[0-9a-f]{64}$" }
+    ExternalPackageWorkerSummary:
+      type: object
+      required: [worker_id, artifact, abi, mode, scope, memory_limit_bytes, idle_timeout_ms]
+      additionalProperties: false
+      properties:
+        worker_id: { type: string, minLength: 1 }
+        artifact: { type: string, minLength: 1 }
+        abi: { const: redevplugin-wasm-worker-v2 }
+        mode: { const: job }
+        scope: { $ref: "#/components/schemas/ResourceScopeKind" }
+        memory_limit_bytes: { type: integer, minimum: 1, maximum: 268435456 }
+        idle_timeout_ms: { type: integer, minimum: 0 }
+    ExternalPackageNetworkMethodAccessSummary:
+      type: object
+      required: [method, operations, http_methods]
+      additionalProperties: false
+      properties:
+        method: { type: string, minLength: 1 }
+        operations:
+          type: array
+          uniqueItems: true
+          items: { type: string, enum: [http, http_stream, websocket_round_trip, tcp_round_trip, udp_round_trip] }
+        http_methods:
+          type: array
+          uniqueItems: true
+          items: { type: string, enum: [GET, HEAD, POST, PUT, PATCH, DELETE, OPTIONS] }
+    ExternalPackageNetworkSummary:
+      type: object
+      required: [connector_id, transport, scope, destinations, auth_declared, tls_declared, method_access]
+      additionalProperties: false
+      properties:
+        connector_id: { type: string, minLength: 1 }
+        transport: { type: string, enum: [http, websocket, tcp, udp] }
+        scope: { $ref: "#/components/schemas/ResourceScopeKind" }
+        destinations:
+          type: array
+          uniqueItems: true
+          items: { type: string, minLength: 1 }
+        auth_declared: { type: boolean }
+        tls_declared: { type: boolean }
+        method_access:
+          type: array
+          items: { $ref: "#/components/schemas/ExternalPackageNetworkMethodAccessSummary" }
+    ExternalPackageStorageMethodAccessSummary:
+      type: object
+      required: [method, operations]
+      additionalProperties: false
+      properties:
+        method: { type: string, minLength: 1 }
+        operations:
+          type: array
+          uniqueItems: true
+          items: { type: string, enum: [read, write, delete, list, get, put, query, exec] }
+    ExternalPackageStorageSummary:
+      type: object
+      required: [store_id, kind, scope, quota_bytes, schema_version, method_access]
+      additionalProperties: false
+      properties:
+        store_id: { type: string, minLength: 1 }
+        kind: { type: string, enum: [kv, files, sqlite] }
+        scope: { $ref: "#/components/schemas/ResourceScopeKind" }
+        quota_bytes: { type: integer, minimum: 1, maximum: 1073741824 }
+        quota_files: { type: integer, minimum: 1, maximum: 100000 }
+        schema_version: { type: integer, minimum: 1 }
+        method_access:
+          type: array
+          items: { $ref: "#/components/schemas/ExternalPackageStorageMethodAccessSummary" }
+    ExternalPackageSecretRefSummary:
+      type: object
+      required: [setting_key, secret_ref, scope]
+      additionalProperties: false
+      properties:
+        setting_key: { type: string, minLength: 1 }
+        secret_ref: { type: string, minLength: 1 }
+        scope: { $ref: "#/components/schemas/ResourceScopeKind" }
+    ExternalPackageCoreActionSummary:
+      type: object
+      required: [method, action_id, effect]
+      additionalProperties: false
+      properties:
+        method: { type: string, minLength: 1 }
+        action_id: { type: string, minLength: 1 }
+        effect: { type: string, enum: [read, write, delete, execute, admin] }
+    ExternalPackageIntentSummary:
+      type: object
+      required: [intent_id, method]
+      additionalProperties: false
+      properties:
+        intent_id: { type: string, minLength: 1 }
+        method: { type: string, minLength: 1 }
+    ExternalPackageSurfaceSummary:
+      type: object
+      required: [surface_id, kind, intent, label, entry]
+      additionalProperties: false
+      properties:
+        surface_id: { type: string, minLength: 1 }
+        kind: { type: string, enum: [view, command, background] }
+        intent: { type: string, enum: [primary, secondary, utility] }
+        label: { type: string, minLength: 1 }
+        entry: { type: string, minLength: 1 }
+        icon: { type: string, minLength: 1 }
+        default_size: { $ref: "#/components/schemas/ExternalPackageSizeSummary" }
+    ExternalPackageSizeSummary:
+      type: object
+      required: [width, height]
+      additionalProperties: false
+      properties:
+        width: { type: integer, minimum: 1 }
+        height: { type: integer, minimum: 1 }
+    ExternalPackageSecuritySummary:
+      type: object
+      description: Closed, display-ready projection of every security-relevant declaration in the inspected manifest.
+      required: [summary_sha256, permissions, methods, capability_contracts, workers, network, storage, secret_refs, core_actions, intents, surfaces]
+      additionalProperties: false
+      properties:
+        summary_sha256: { type: string, pattern: "^sha256:[0-9a-f]{64}$" }
+        permissions:
+          type: array
+          items: { $ref: "#/components/schemas/ExternalPackagePermissionSummary" }
+        methods:
+          type: array
+          items: { $ref: "#/components/schemas/ExternalPackageMethodSummary" }
+        capability_contracts:
+          type: array
+          items: { $ref: "#/components/schemas/ExternalPackageCapabilityContractSummary" }
+        workers:
+          type: array
+          items: { $ref: "#/components/schemas/ExternalPackageWorkerSummary" }
+        network:
+          type: array
+          items: { $ref: "#/components/schemas/ExternalPackageNetworkSummary" }
+        storage:
+          type: array
+          items: { $ref: "#/components/schemas/ExternalPackageStorageSummary" }
+        secret_refs:
+          type: array
+          items: { $ref: "#/components/schemas/ExternalPackageSecretRefSummary" }
+        core_actions:
+          type: array
+          items: { $ref: "#/components/schemas/ExternalPackageCoreActionSummary" }
+        intents:
+          type: array
+          items: { $ref: "#/components/schemas/ExternalPackageIntentSummary" }
+        surfaces:
+          type: array
+          items: { $ref: "#/components/schemas/ExternalPackageSurfaceSummary" }
+    ExternalPackageInspection:
+      type: object
+      description: Immutable inspection projection. Package identity and all four trust/security facts are server-derived.
+      required: [inspection_id, expires_at, intent, publisher_id, plugin_id, version, inspected_hashes, signature_assessment, source_provenance, execution_approval, update_eligibility, security_summary, confirmation_digest]
+      additionalProperties: false
+      properties:
+        inspection_id: { type: string, minLength: 1 }
+        expires_at: { type: string, format: date-time }
+        intent: { $ref: "#/components/schemas/ExternalPackageIntent" }
+        publisher_id: { type: string, minLength: 1 }
+        plugin_id: { type: string, minLength: 1 }
+        version: { $ref: "#/components/schemas/StrictSemVer" }
+        inspected_hashes: { $ref: "#/components/schemas/TrustHashSet" }
+        signature_assessment: { $ref: "#/components/schemas/ExternalPackageSignatureAssessment" }
+        source_provenance: { $ref: "#/components/schemas/ExternalPackageSourceProvenance" }
+        execution_approval: { $ref: "#/components/schemas/ExternalPackageExecutionApproval" }
+        update_eligibility: { $ref: "#/components/schemas/ExternalPackageUpdateEligibility" }
+        security_summary: { $ref: "#/components/schemas/ExternalPackageSecuritySummary" }
+        confirmation_digest: { type: string, pattern: "^sha256:[0-9a-f]{64}$" }
+    ExternalPackageCommitReceipt:
+      type: object
+      description: Immutable successful commit evidence.
+      required: [commit_id, inspection_id, package_sha256, management_revision, committed_at]
+      additionalProperties: false
+      properties:
+        commit_id: { type: string, minLength: 1 }
+        inspection_id: { type: string, minLength: 1 }
+        package_sha256: { type: string, pattern: "^(sha256:)?[0-9a-f]{64}$" }
+        management_revision: { type: integer, minimum: 1, maximum: 9007199254740991 }
+        committed_at: { type: string, format: date-time }
+    ExternalPackageCommitResult:
+      description: Closed commit reconciliation union. A committed result repeats all four facts so clients never infer them from legacy trust_state alone.
+      oneOf:
+        - type: object
+          required: [status, inspection_id, intent, receipt, plugin, signature_assessment, source_provenance, execution_approval, update_eligibility, security_summary]
+          additionalProperties: false
+          properties:
+            status: { const: committed }
+            inspection_id: { type: string, minLength: 1 }
+            intent: { $ref: "#/components/schemas/ExternalPackageIntent" }
+            receipt: { $ref: "#/components/schemas/ExternalPackageCommitReceipt" }
+            plugin: { $ref: "#/components/schemas/PluginRecord" }
+            signature_assessment: { $ref: "#/components/schemas/ExternalPackageSignatureAssessment" }
+            source_provenance: { $ref: "#/components/schemas/ExternalPackageSourceProvenance" }
+            execution_approval: { $ref: "#/components/schemas/ExternalPackageExecutionApproval" }
+            update_eligibility: { $ref: "#/components/schemas/ExternalPackageUpdateEligibility" }
+            security_summary: { $ref: "#/components/schemas/ExternalPackageSecuritySummary" }
+        - type: object
+          required: [status, inspection_id, intent, retry_after_ms]
+          additionalProperties: false
+          properties:
+            status: { const: in_progress }
+            inspection_id: { type: string, minLength: 1 }
+            intent: { $ref: "#/components/schemas/ExternalPackageIntent" }
+            retry_after_ms: { type: integer, minimum: 1, maximum: 60000 }
     TrustState:
       type: string
       enum: [verified, unsigned_local, untrusted, needs_review, trust_unavailable, blocked_security]
@@ -2166,6 +2683,16 @@ components:
           additionalProperties: true
         local_import_provenance:
           $ref: "#/components/schemas/LocalImportProvenance"
+        signature_assessment:
+          $ref: "#/components/schemas/ExternalPackageSignatureAssessment"
+        source_provenance:
+          $ref: "#/components/schemas/ExternalPackageSourceProvenance"
+        execution_approval:
+          $ref: "#/components/schemas/ExternalPackageExecutionApproval"
+        update_eligibility:
+          $ref: "#/components/schemas/ExternalPackageUpdateEligibility"
+        security_summary:
+          $ref: "#/components/schemas/ExternalPackageSecuritySummary"
         capability_contracts:
           type: array
           items: { $ref: "#/components/schemas/CapabilityContractPin" }
@@ -2203,6 +2730,16 @@ components:
           additionalProperties: true
         local_import_provenance:
           $ref: "#/components/schemas/LocalImportProvenance"
+        signature_assessment:
+          $ref: "#/components/schemas/ExternalPackageSignatureAssessment"
+        source_provenance:
+          $ref: "#/components/schemas/ExternalPackageSourceProvenance"
+        execution_approval:
+          $ref: "#/components/schemas/ExternalPackageExecutionApproval"
+        update_eligibility:
+          $ref: "#/components/schemas/ExternalPackageUpdateEligibility"
+        security_summary:
+          $ref: "#/components/schemas/ExternalPackageSecuritySummary"
         capability_contracts:
           type: array
           items: { $ref: "#/components/schemas/CapabilityContractPin" }

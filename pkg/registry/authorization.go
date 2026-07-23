@@ -33,23 +33,38 @@ type AuthorizationSnapshot struct {
 }
 
 type AuthorizationState struct {
-	PluginInstanceID  string                 `json:"plugin_instance_id"`
-	PluginVersion     string                 `json:"plugin_version"`
-	ActiveFingerprint string                 `json:"active_fingerprint"`
-	TrustState        TrustState             `json:"trust_state"`
-	EnableState       EnableState            `json:"enable_state"`
-	Revisions         AuthorizationRevisions `json:"revisions"`
+	PluginInstanceID    string                 `json:"plugin_instance_id"`
+	PluginVersion       string                 `json:"plugin_version"`
+	ActiveFingerprint   string                 `json:"active_fingerprint"`
+	TrustState          TrustState             `json:"trust_state"`
+	SignatureAssessment SignatureAssessment    `json:"signature_assessment"`
+	PackageSourceKind   PackageSourceKind      `json:"package_source_kind"`
+	ExecutionApproval   ExecutionApproval      `json:"execution_approval"`
+	EnableState         EnableState            `json:"enable_state"`
+	Revisions           AuthorizationRevisions `json:"revisions"`
 }
 
 func authorizationStateFromRecord(record PluginRecord) AuthorizationState {
 	return AuthorizationState{
-		PluginInstanceID:  record.PluginInstanceID,
-		PluginVersion:     record.Version,
-		ActiveFingerprint: record.ActiveFingerprint,
-		TrustState:        record.TrustState,
-		EnableState:       record.EnableState,
-		Revisions:         AuthorizationRevisionsFromRecord(record),
+		PluginInstanceID:    record.PluginInstanceID,
+		PluginVersion:       record.Version,
+		ActiveFingerprint:   record.ActiveFingerprint,
+		TrustState:          record.TrustState,
+		SignatureAssessment: record.SignatureAssessment,
+		PackageSourceKind:   record.PackageSourceProvenance.Kind,
+		ExecutionApproval:   record.ExecutionApproval,
+		EnableState:         record.EnableState,
+		Revisions:           AuthorizationRevisionsFromRecord(record),
 	}
+}
+
+func RunnableAuthorizationState(state AuthorizationState) bool {
+	return RunnablePluginRecord(PluginRecord{
+		TrustState:              state.TrustState,
+		SignatureAssessment:     state.SignatureAssessment,
+		PackageSourceProvenance: PackageSourceProvenance{Kind: state.PackageSourceKind},
+		ExecutionApproval:       state.ExecutionApproval,
+	})
 }
 
 type AuthorizeRequest struct {

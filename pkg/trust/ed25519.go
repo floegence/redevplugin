@@ -3,10 +3,13 @@ package trust
 import (
 	"context"
 	"crypto/ed25519"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/floegence/redevplugin/pkg/host"
@@ -127,6 +130,146 @@ func (v Ed25519Verifier) VerifyPackageTrust(ctx context.Context, req host.Packag
 		ReasonCodes: []string{"ed25519_signature_verified"},
 		Metadata:    verifiedMetadata(req.Package, *sig, key, v.now()),
 	}, nil
+}
+
+// AssessExternalPackageSignature classifies signature evidence without turning
+// optional signature verification into an installation gate. Integrity
+// failures are returned as explicit closed states; only dependency failures use
+// the unavailable state.
+func (v Ed25519Verifier) AssessExternalPackageSignature(ctx context.Context, req host.ExternalPackageSignatureAssessmentRequest) (registry.SignatureAssessment, error) {
+	pkg := req.Package
+	now := req.Now.UTC()
+	if now.IsZero() {
+		now = v.now()
+	}
+	result := registry.SignatureAssessment{AssessedAt: now}
+	if pkg.PackageSignature == nil {
+		result.Status = registry.SignatureAbsent
+		result.ReasonCodes = []string{"signature_not_present"}
+		return result, nil
+	}
+	sig := *pkg.PackageSignature
+	result.Algorithm = sig.Algorithm
+	result.KeyID = sig.KeyID
+	setStatus := func(status registry.SignatureAssessmentStatus, reason string) (registry.SignatureAssessment, error) {
+		result.Status = status
+		result.ReasonCodes = []string{reason}
+		result.AssessmentEpoch = externalAssessmentEpoch(result, pkg.PackageHash)
+		return result, nil
+	}
+	if sig.Algorithm != AlgorithmEd25519 || sig.SchemaVersion != pluginpkg.PackageSignatureSchemaVersion {
+		return setStatus(registry.SignatureInvalid, "signature_envelope_unsupported")
+	}
+	if err := validateSignatureHashes(pkg, sig); err != nil {
+		return setStatus(registry.SignatureInvalid, "signature_hash_binding_invalid")
+	}
+	if v.Keyring == nil {
+		return setStatus(registry.SignatureUnavailable, "keyring_unavailable")
+	}
+	key, err := v.Keyring.LookupPackageSigningKey(ctx, KeyLookupRequest{
+		Algorithm: sig.Algorithm, KeyID: sig.KeyID, PublisherID: sig.PublisherID, PluginID: sig.PluginID,
+	})
+	if err != nil {
+		if errors.Is(err, ErrKeyNotFound) {
+			return setStatus(registry.SignatureUnknownSigner, "signing_key_unknown")
+		}
+		return setStatus(registry.SignatureUnavailable, "keyring_lookup_unavailable")
+	}
+	if key.Revoked {
+		return setStatus(registry.SignatureRevoked, "signing_key_revoked")
+	}
+	if len(key.PublicKey) != ed25519.PublicKeySize {
+		return setStatus(registry.SignatureUnavailable, "signing_key_material_invalid")
+	}
+	payload, err := CanonicalPackageSignaturePayload(sig)
+	if err != nil {
+		return setStatus(registry.SignatureInvalid, "signature_payload_invalid")
+	}
+	signature, err := base64.StdEncoding.DecodeString(sig.Signature)
+	if err != nil || len(signature) != ed25519.SignatureSize || !ed25519.Verify(key.PublicKey, payload, signature) {
+		return setStatus(registry.SignatureInvalid, "signature_verification_failed")
+	}
+	result.Status = registry.SignatureVerified
+	result.ReasonCodes = []string{"ed25519_signature_verified"}
+	result.EvidenceReference = publicKeyEvidence(key.PublicKey)
+	result.KeyringGeneration = key.Metadata["keyring_generation"]
+	result.RevocationGeneration = key.Metadata["revocation_generation"]
+	result.AssessmentEpoch = externalAssessmentEpoch(result, pkg.PackageHash)
+	return result, nil
+}
+
+func (v Ed25519Verifier) AssessExternalPackageSignatureFreshness(ctx context.Context, req host.ExternalPackageSignatureFreshnessRequest) (registry.SignatureAssessment, error) {
+	now := req.Now.UTC()
+	if now.IsZero() {
+		now = v.now()
+	}
+	result := req.Assessment
+	result.AssessedAt = now
+	result.PackageSHA256 = req.PackageSHA256
+	result.ManifestSHA256 = req.ManifestSHA256
+	result.EntriesSHA256 = req.EntriesSHA256
+	result.AssessedHashes = registry.TrustHashSet{
+		PackageSHA256: req.PackageSHA256, ManifestSHA256: req.ManifestSHA256, EntriesSHA256: req.EntriesSHA256,
+	}
+	setStatus := func(status registry.SignatureAssessmentStatus, reason string) (registry.SignatureAssessment, error) {
+		result.Status = status
+		result.ReasonCodes = []string{reason}
+		result.AssessmentEpoch = externalAssessmentEpoch(result, req.PackageSHA256)
+		return result, nil
+	}
+	if req.Assessment.Status != registry.SignatureVerified || req.Assessment.Algorithm != AlgorithmEd25519 || strings.TrimSpace(req.Assessment.KeyID) == "" {
+		return setStatus(registry.SignatureUnavailable, "verified_signature_evidence_incomplete")
+	}
+	if req.Assessment.PackageSHA256 != req.PackageSHA256 || req.Assessment.ManifestSHA256 != req.ManifestSHA256 || req.Assessment.EntriesSHA256 != req.EntriesSHA256 {
+		return setStatus(registry.SignatureInvalid, "signature_hash_binding_changed")
+	}
+	if v.Keyring == nil {
+		return setStatus(registry.SignatureUnavailable, "keyring_unavailable")
+	}
+	key, err := v.Keyring.LookupPackageSigningKey(ctx, KeyLookupRequest{
+		Algorithm: req.Assessment.Algorithm, KeyID: req.Assessment.KeyID,
+		PublisherID: req.PublisherID, PluginID: req.PluginID,
+	})
+	if err != nil {
+		if errors.Is(err, ErrKeyNotFound) {
+			return setStatus(registry.SignatureUnknownSigner, "signing_key_unknown")
+		}
+		return setStatus(registry.SignatureUnavailable, "keyring_lookup_unavailable")
+	}
+	result.KeyringGeneration = key.Metadata["keyring_generation"]
+	result.RevocationGeneration = key.Metadata["revocation_generation"]
+	if key.Revoked {
+		return setStatus(registry.SignatureRevoked, "signing_key_revoked")
+	}
+	if len(key.PublicKey) != ed25519.PublicKeySize {
+		return setStatus(registry.SignatureUnavailable, "signing_key_material_invalid")
+	}
+	currentEvidence := publicKeyEvidence(key.PublicKey)
+	if strings.TrimSpace(req.Assessment.EvidenceReference) == "" {
+		return setStatus(registry.SignatureUnavailable, "signing_key_fingerprint_unavailable")
+	}
+	if currentEvidence != req.Assessment.EvidenceReference {
+		result.EvidenceReference = currentEvidence
+		return setStatus(registry.SignatureInvalid, "signing_key_replaced")
+	}
+	result.Status = registry.SignatureVerified
+	result.ReasonCodes = []string{"ed25519_signing_key_fresh"}
+	result.EvidenceReference = currentEvidence
+	result.AssessmentEpoch = externalAssessmentEpoch(result, req.PackageSHA256)
+	return result, nil
+}
+
+func externalAssessmentEpoch(assessment registry.SignatureAssessment, packageHash string) string {
+	digest := sha256.Sum256([]byte(strings.Join([]string{
+		string(assessment.Status), assessment.Algorithm, assessment.KeyID,
+		assessment.EvidenceReference, assessment.KeyringGeneration, assessment.RevocationGeneration, packageHash,
+	}, "\x00")))
+	return "sha256:" + hex.EncodeToString(digest[:])
+}
+
+func publicKeyEvidence(publicKey ed25519.PublicKey) string {
+	digest := sha256.Sum256(publicKey)
+	return "ed25519-public-key:sha256:" + hex.EncodeToString(digest[:])
 }
 
 func trustRequestFromPolicy(req host.PackageTrustVerificationRequest) (registry.TrustState, bool, error) {

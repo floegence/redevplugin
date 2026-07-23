@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/url"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -22,6 +23,7 @@ import (
 )
 
 const maxRegistrySQLiteConnections = 8
+const registrySQLiteSchemaVersion = 1
 
 type SQLiteStore struct {
 	db       *sql.DB
@@ -115,6 +117,10 @@ func (s *SQLiteStore) PutPlugin(ctx context.Context, record PluginRecord, opts P
 		}
 	}
 	record.UpdatedAt = now
+	record = normalizePluginSecurityFacts(record)
+	if err := validatePersistedPluginSecurityFacts(record); err != nil {
+		return PluginRecord{}, err
+	}
 	if err := upsertSQLitePlugin(ctx, tx, record); err != nil {
 		return PluginRecord{}, err
 	}
@@ -154,6 +160,8 @@ func (s *SQLiteStore) ListPlugins(ctx context.Context) ([]PluginRecord, error) {
 	SELECT
 		owner_env_hash, plugin_instance_id, publisher_id, plugin_id, version, active_fingerprint,
 		package_hash, manifest_hash, entries_hash, trust_state, trust_assessment_json,
+		signature_assessment_json, package_source_provenance_json, execution_approval_json,
+		update_eligibility, security_capability_summary_json,
 		source_policy_snapshot_hash, source_policy_snapshot_json, local_import_provenance_json, capability_contracts_json, enable_state,
 		disabled_reason, policy_revision, management_revision,
 		revoke_epoch, manifest_json, package_entries_json, version_history_json,
@@ -331,6 +339,13 @@ func (s *SQLiteStore) initializeSchema(ctx context.Context) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	var schemaVersion int
+	if err := s.db.QueryRowContext(ctx, `PRAGMA user_version`).Scan(&schemaVersion); err != nil {
+		return err
+	}
+	if schemaVersion < 0 || schemaVersion > registrySQLiteSchemaVersion {
+		return fmt.Errorf("registry sqlite schema version %d is not supported by version %d", schemaVersion, registrySQLiteSchemaVersion)
+	}
 	var journalMode string
 	if err := s.db.QueryRowContext(ctx, `PRAGMA journal_mode = WAL`).Scan(&journalMode); err != nil {
 		return err
@@ -343,7 +358,19 @@ func (s *SQLiteStore) initializeSchema(ctx context.Context) error {
 		return err
 	}
 	defer rollbackUnlessCommitted(tx)
-	if err := prepareOwnerScopedTables(ctx, tx); err != nil {
+	if schemaVersion == registrySQLiteSchemaVersion {
+		if err := validateCurrentRegistrySQLiteSchema(ctx, tx); err != nil {
+			return err
+		}
+		if err := validateSQLiteAuthorizationData(ctx, tx); err != nil {
+			return err
+		}
+		if err := validateSQLitePluginSecurityFacts(ctx, tx); err != nil {
+			return err
+		}
+		return tx.Commit()
+	}
+	if err := prepareOwnerScopedTables(ctx, tx, true); err != nil {
 		return err
 	}
 	policyPermissionRelationsExist, err := sqliteTableExists(ctx, tx, "plugin_security_policy_allowed_permissions")
@@ -372,6 +399,11 @@ func (s *SQLiteStore) initializeSchema(ctx context.Context) error {
 	entries_hash TEXT NOT NULL,
 		trust_state TEXT NOT NULL,
 		trust_assessment_json TEXT NOT NULL DEFAULT '{}',
+		signature_assessment_json TEXT NOT NULL DEFAULT '{}',
+		package_source_provenance_json TEXT NOT NULL DEFAULT '{}',
+		execution_approval_json TEXT NOT NULL DEFAULT '{}',
+		update_eligibility TEXT NOT NULL DEFAULT '',
+		security_capability_summary_json TEXT NOT NULL DEFAULT '{}',
 		source_policy_snapshot_hash TEXT NOT NULL DEFAULT '',
 		source_policy_snapshot_json TEXT NOT NULL DEFAULT '{}',
 		local_import_provenance_json TEXT NOT NULL DEFAULT '{}',
@@ -394,7 +426,11 @@ func (s *SQLiteStore) initializeSchema(ctx context.Context) error {
 	)`); err != nil {
 		return err
 	}
-	addedRuntimeRequirementColumn, err := ensureRuntimeRequirementColumn(ctx, tx)
+	addedExternalFactsColumns, err := ensureExternalPackageFactsColumns(ctx, tx, true)
+	if err != nil {
+		return err
+	}
+	addedRuntimeRequirementColumn, err := ensureRuntimeRequirementColumn(ctx, tx, true)
 	if err != nil {
 		return err
 	}
@@ -403,10 +439,41 @@ func (s *SQLiteStore) initializeSchema(ctx context.Context) error {
 			return err
 		}
 	}
+	if addedExternalFactsColumns {
+		if err := migrateLegacyExternalPackageFacts(ctx, tx); err != nil {
+			return err
+		}
+	}
 	if _, err := tx.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_plugin_records_plugin_id ON plugin_records(owner_env_hash, plugin_id)`); err != nil {
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_plugin_records_deleted_at ON plugin_records(owner_env_hash, deleted_at)`); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `
+	CREATE TABLE IF NOT EXISTS external_package_commit_receipts (
+		owner_env_hash TEXT NOT NULL,
+		inspection_id TEXT NOT NULL,
+		commit_id TEXT NOT NULL,
+		intent TEXT NOT NULL,
+		confirmation_digest TEXT NOT NULL,
+		request_sha256 TEXT NOT NULL,
+		expected_management_revision INTEGER NOT NULL,
+		intended_fingerprint TEXT NOT NULL,
+		intended_package_sha256 TEXT NOT NULL,
+		plugin_instance_id TEXT NOT NULL,
+		status TEXT NOT NULL,
+		mutation_outcome TEXT NOT NULL,
+		record_snapshot_json TEXT NOT NULL DEFAULT 'null',
+		failure_code TEXT NOT NULL DEFAULT '',
+		created_at INTEGER NOT NULL,
+		updated_at INTEGER NOT NULL,
+		PRIMARY KEY(owner_env_hash, inspection_id),
+		UNIQUE(owner_env_hash, commit_id)
+	)`); err != nil {
+		return err
+	}
+	if err := validateExternalPackageCommitReceiptSchema(ctx, tx); err != nil {
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, `
@@ -505,6 +572,15 @@ func (s *SQLiteStore) initializeSchema(ctx context.Context) error {
 	if err := validateSQLiteAuthorizationData(ctx, tx); err != nil {
 		return err
 	}
+	if err := validateCurrentRegistrySQLiteSchema(ctx, tx); err != nil {
+		return err
+	}
+	if err := validateSQLitePluginSecurityFacts(ctx, tx); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `PRAGMA user_version = `+fmt.Sprint(registrySQLiteSchemaVersion)); err != nil {
+		return err
+	}
 	return tx.Commit()
 }
 
@@ -522,9 +598,10 @@ var ownerScopedTableSpecs = []ownerScopedTableSpec{
 	{name: "plugin_security_policy_denied_methods", primaryKey: map[string]int{"owner_env_hash": 1, "plugin_instance_id": 2, "method": 3}, foreignKeyTable: "plugin_security_policies"},
 	{name: "plugin_data_bindings", primaryKey: map[string]int{"owner_env_hash": 1, "plugin_instance_id": 2}, foreignKeyTable: "plugin_records"},
 	{name: "plugin_data_objects", primaryKey: map[string]int{"scope_kind": 1, "owner_env_hash": 2, "owner_user_hash": 3, "plugin_instance_id": 4, "object_id": 5}},
+	{name: "external_package_commit_receipts", primaryKey: map[string]int{"owner_env_hash": 1, "inspection_id": 2}},
 }
 
-func prepareOwnerScopedTables(ctx context.Context, tx *sql.Tx) error {
+func prepareOwnerScopedTables(ctx context.Context, tx *sql.Tx, allowMigration bool) error {
 	type tableState struct {
 		exists     bool
 		compatible bool
@@ -548,6 +625,21 @@ func prepareOwnerScopedTables(ctx context.Context, tx *sql.Tx) error {
 			return err
 		}
 		states[spec.name] = tableState{exists: true, compatible: compatible, rowCount: rowCount}
+	}
+	if !allowMigration {
+		for _, spec := range ownerScopedTableSpecs {
+			state := states[spec.name]
+			if !state.exists {
+				if spec.name == "plugin_security_policy_allowed_permissions" || spec.name == "plugin_security_policy_denied_methods" {
+					return fmt.Errorf("%w: table %s is missing", ErrAuthorizationSchemaIncomplete, spec.name)
+				}
+				return fmt.Errorf("registry sqlite schema is incomplete: table %s is missing", spec.name)
+			}
+			if !state.compatible {
+				return fmt.Errorf("registry sqlite schema is incompatible: table %s", spec.name)
+			}
+		}
+		return nil
 	}
 	parent := states["plugin_records"]
 	if parent.exists && !parent.compatible {
@@ -694,7 +786,190 @@ func sqliteTableExists(ctx context.Context, q sqliteQuerier, table string) (bool
 	return count == 1, nil
 }
 
-func ensureRuntimeRequirementColumn(ctx context.Context, tx *sql.Tx) (bool, error) {
+type registrySQLiteColumnSpec struct {
+	typeName     string
+	notNull      int
+	defaultValue string
+	hasDefault   bool
+	primaryKey   int
+}
+
+func sqliteColumn(typeName string, notNull, primaryKey int) registrySQLiteColumnSpec {
+	return registrySQLiteColumnSpec{typeName: typeName, notNull: notNull, primaryKey: primaryKey}
+}
+
+func sqliteColumnDefault(typeName string, notNull, primaryKey int, value string) registrySQLiteColumnSpec {
+	return registrySQLiteColumnSpec{typeName: typeName, notNull: notNull, primaryKey: primaryKey, defaultValue: value, hasDefault: true}
+}
+
+func validateCurrentRegistrySQLiteSchema(ctx context.Context, tx *sql.Tx) error {
+	if err := prepareOwnerScopedTables(ctx, tx, false); err != nil {
+		return err
+	}
+	tableSpecs := map[string]map[string]registrySQLiteColumnSpec{
+		"plugin_records": {
+			"owner_env_hash": sqliteColumn("TEXT", 1, 1), "plugin_instance_id": sqliteColumn("TEXT", 1, 2),
+			"publisher_id": sqliteColumn("TEXT", 1, 0), "plugin_id": sqliteColumn("TEXT", 1, 0),
+			"version": sqliteColumn("TEXT", 1, 0), "active_fingerprint": sqliteColumn("TEXT", 1, 0),
+			"package_hash": sqliteColumn("TEXT", 1, 0), "manifest_hash": sqliteColumn("TEXT", 1, 0), "entries_hash": sqliteColumn("TEXT", 1, 0),
+			"trust_state": sqliteColumn("TEXT", 1, 0), "trust_assessment_json": sqliteColumnDefault("TEXT", 1, 0, "'{}'"),
+			"signature_assessment_json": sqliteColumnDefault("TEXT", 1, 0, "'{}'"), "package_source_provenance_json": sqliteColumnDefault("TEXT", 1, 0, "'{}'"),
+			"execution_approval_json": sqliteColumnDefault("TEXT", 1, 0, "'{}'"), "update_eligibility": sqliteColumnDefault("TEXT", 1, 0, "''"),
+			"security_capability_summary_json": sqliteColumnDefault("TEXT", 1, 0, "'{}'"),
+			"source_policy_snapshot_hash":      sqliteColumnDefault("TEXT", 1, 0, "''"), "source_policy_snapshot_json": sqliteColumnDefault("TEXT", 1, 0, "'{}'"),
+			"local_import_provenance_json": sqliteColumnDefault("TEXT", 1, 0, "'{}'"), "capability_contracts_json": sqliteColumnDefault("TEXT", 1, 0, "'[]'"),
+			"enable_state": sqliteColumn("TEXT", 1, 0), "disabled_reason": sqliteColumn("TEXT", 1, 0),
+			"policy_revision": sqliteColumn("INTEGER", 1, 0), "management_revision": sqliteColumn("INTEGER", 1, 0), "revoke_epoch": sqliteColumn("INTEGER", 1, 0),
+			"manifest_json": sqliteColumn("TEXT", 1, 0), "package_entries_json": sqliteColumn("TEXT", 1, 0), "version_history_json": sqliteColumn("TEXT", 1, 0),
+			"runtime_requirement_json": sqliteColumnDefault("TEXT", 1, 0, "'null'"), "installed_at": sqliteColumn("INTEGER", 1, 0),
+			"enabled_at": sqliteColumn("INTEGER", 0, 0), "updated_at": sqliteColumn("INTEGER", 1, 0), "deleted_at": sqliteColumn("INTEGER", 0, 0),
+			"metadata_json": sqliteColumn("TEXT", 1, 0),
+		},
+		"plugin_permission_grants": {
+			"owner_env_hash": sqliteColumn("TEXT", 1, 1), "plugin_instance_id": sqliteColumn("TEXT", 1, 2), "permission_id": sqliteColumn("TEXT", 1, 3),
+			"effect": sqliteColumn("TEXT", 1, 0), "granted_by": sqliteColumn("TEXT", 1, 0), "granted_at": sqliteColumn("INTEGER", 1, 0),
+			"expires_at": sqliteColumn("INTEGER", 0, 0), "revoked_at": sqliteColumn("INTEGER", 0, 0), "revoked_by": sqliteColumn("TEXT", 1, 0), "revoked_reason": sqliteColumn("TEXT", 1, 0),
+		},
+		"plugin_security_policies": {
+			"owner_env_hash": sqliteColumn("TEXT", 1, 1), "plugin_instance_id": sqliteColumn("TEXT", 1, 2),
+			"allowed_permissions_json": sqliteColumn("TEXT", 1, 0), "denied_methods_json": sqliteColumn("TEXT", 1, 0), "updated_at": sqliteColumn("INTEGER", 1, 0),
+		},
+		"plugin_security_policy_allowed_permissions": {
+			"owner_env_hash": sqliteColumn("TEXT", 1, 1), "plugin_instance_id": sqliteColumn("TEXT", 1, 2), "permission_id": sqliteColumn("TEXT", 1, 3),
+		},
+		"plugin_security_policy_denied_methods": {
+			"owner_env_hash": sqliteColumn("TEXT", 1, 1), "plugin_instance_id": sqliteColumn("TEXT", 1, 2), "method": sqliteColumn("TEXT", 1, 3),
+		},
+		"plugin_data_bindings": {
+			"owner_env_hash": sqliteColumn("TEXT", 1, 1), "plugin_instance_id": sqliteColumn("TEXT", 1, 2), "generation_id": sqliteColumn("TEXT", 1, 0),
+			"state": sqliteColumn("TEXT", 1, 0), "revision": sqliteColumn("INTEGER", 1, 0), "shape_hash": sqliteColumn("TEXT", 1, 0),
+			"retained_at": sqliteColumn("INTEGER", 0, 0), "expires_at": sqliteColumn("INTEGER", 0, 0),
+		},
+		"plugin_data_objects": {
+			"scope_kind": sqliteColumn("TEXT", 1, 1), "owner_env_hash": sqliteColumn("TEXT", 1, 2), "owner_user_hash": sqliteColumn("TEXT", 1, 3),
+			"plugin_instance_id": sqliteColumn("TEXT", 1, 4), "object_id": sqliteColumn("TEXT", 1, 5), "content_hash": sqliteColumn("TEXT", 1, 0),
+			"shape_hash": sqliteColumn("TEXT", 1, 0), "size_bytes": sqliteColumn("INTEGER", 1, 0), "created_at": sqliteColumn("INTEGER", 1, 0),
+		},
+	}
+	for table, expected := range tableSpecs {
+		if err := validateRegistrySQLiteTableColumns(ctx, tx, table, expected); err != nil {
+			return err
+		}
+	}
+	if err := validateExternalPackageCommitReceiptSchema(ctx, tx); err != nil {
+		return err
+	}
+	return validateCurrentRegistrySQLiteIndexes(ctx, tx)
+}
+
+func validateRegistrySQLiteTableColumns(ctx context.Context, tx *sql.Tx, table string, expected map[string]registrySQLiteColumnSpec) error {
+	rows, err := tx.QueryContext(ctx, `PRAGMA table_info(`+table+`)`)
+	if err != nil {
+		return err
+	}
+	seen := make(map[string]bool, len(expected))
+	for rows.Next() {
+		var id, notNull, primaryKey int
+		var name, typeName string
+		var defaultExpr sql.NullString
+		if err := rows.Scan(&id, &name, &typeName, &notNull, &defaultExpr, &primaryKey); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		spec, ok := expected[name]
+		if !ok || !strings.EqualFold(typeName, spec.typeName) || notNull != spec.notNull || primaryKey != spec.primaryKey || defaultExpr.Valid != spec.hasDefault || defaultExpr.String != spec.defaultValue {
+			_ = rows.Close()
+			return fmt.Errorf("registry sqlite table %s has incompatible column %s", table, name)
+		}
+		seen[name] = true
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return err
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	if len(seen) != len(expected) {
+		return fmt.Errorf("registry sqlite table %s has an incomplete schema", table)
+	}
+	return nil
+}
+
+func validateCurrentRegistrySQLiteIndexes(ctx context.Context, tx *sql.Tx) error {
+	tables := []string{
+		"plugin_records", "external_package_commit_receipts", "plugin_permission_grants", "plugin_security_policies",
+		"plugin_security_policy_allowed_permissions", "plugin_security_policy_denied_methods", "plugin_data_bindings", "plugin_data_objects",
+	}
+	required := map[string][]string{
+		"idx_plugin_records_plugin_id":  {"owner_env_hash", "plugin_id"},
+		"idx_plugin_records_deleted_at": {"owner_env_hash", "deleted_at"},
+	}
+	seen := make(map[string]bool, len(required))
+	for _, table := range tables {
+		rows, err := tx.QueryContext(ctx, `PRAGMA index_list(`+table+`)`)
+		if err != nil {
+			return err
+		}
+		for rows.Next() {
+			var sequence, unique, partial int
+			var name, origin string
+			if err := rows.Scan(&sequence, &name, &unique, &origin, &partial); err != nil {
+				_ = rows.Close()
+				return err
+			}
+			if origin != "c" {
+				continue
+			}
+			columns, ok := required[name]
+			if !ok || table != "plugin_records" || unique != 0 || partial != 0 {
+				_ = rows.Close()
+				return fmt.Errorf("registry sqlite has unexpected explicit index %s", name)
+			}
+			actual, err := registrySQLiteIndexColumns(ctx, tx, name)
+			if err != nil {
+				_ = rows.Close()
+				return err
+			}
+			if !slices.Equal(actual, columns) {
+				_ = rows.Close()
+				return fmt.Errorf("registry sqlite index %s has incompatible columns", name)
+			}
+			seen[name] = true
+		}
+		if err := rows.Err(); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		if err := rows.Close(); err != nil {
+			return err
+		}
+	}
+	if len(seen) != len(required) {
+		return errors.New("registry sqlite required indexes are incomplete")
+	}
+	return nil
+}
+
+func registrySQLiteIndexColumns(ctx context.Context, tx *sql.Tx, name string) ([]string, error) {
+	rows, err := tx.QueryContext(ctx, `PRAGMA index_info(`+name+`)`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var columns []string
+	for rows.Next() {
+		var sequence, columnID int
+		var column string
+		if err := rows.Scan(&sequence, &columnID, &column); err != nil {
+			return nil, err
+		}
+		columns = append(columns, column)
+	}
+	return columns, rows.Err()
+}
+
+func ensureRuntimeRequirementColumn(ctx context.Context, tx *sql.Tx, allowMigration bool) (bool, error) {
 	rows, err := tx.QueryContext(ctx, `PRAGMA table_info(plugin_records)`)
 	if err != nil {
 		return false, err
@@ -732,10 +1007,337 @@ func ensureRuntimeRequirementColumn(ctx context.Context, tx *sql.Tx) (bool, erro
 	if found {
 		return false, nil
 	}
+	if !allowMigration {
+		return false, errors.New("plugin_records.runtime_requirement_json is missing from the current schema")
+	}
 	if _, err := tx.ExecContext(ctx, `ALTER TABLE plugin_records ADD COLUMN runtime_requirement_json TEXT NOT NULL DEFAULT 'null'`); err != nil {
 		return false, err
 	}
 	return true, nil
+}
+
+func ensureExternalPackageFactsColumns(ctx context.Context, tx *sql.Tx, allowMigration bool) (bool, error) {
+	type columnSpec struct {
+		name         string
+		defaultValue string
+	}
+	specs := []columnSpec{
+		{name: "signature_assessment_json", defaultValue: "'{}'"},
+		{name: "package_source_provenance_json", defaultValue: "'{}'"},
+		{name: "execution_approval_json", defaultValue: "'{}'"},
+		{name: "update_eligibility", defaultValue: "''"},
+		{name: "security_capability_summary_json", defaultValue: "'{}'"},
+	}
+	found := make(map[string]bool, len(specs))
+	rows, err := tx.QueryContext(ctx, `PRAGMA table_info(plugin_records)`)
+	if err != nil {
+		return false, err
+	}
+	for rows.Next() {
+		var (
+			columnID    int
+			name        string
+			columnType  string
+			notNull     int
+			defaultExpr sql.NullString
+			primaryKey  int
+		)
+		if err := rows.Scan(&columnID, &name, &columnType, &notNull, &defaultExpr, &primaryKey); err != nil {
+			_ = rows.Close()
+			return false, err
+		}
+		for _, spec := range specs {
+			if name != spec.name {
+				continue
+			}
+			if !strings.EqualFold(columnType, "TEXT") || notNull != 1 || !defaultExpr.Valid || defaultExpr.String != spec.defaultValue || primaryKey != 0 {
+				_ = rows.Close()
+				return false, fmt.Errorf("plugin_records.%s has an incompatible schema", name)
+			}
+			found[name] = true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return false, err
+	}
+	if err := rows.Close(); err != nil {
+		return false, err
+	}
+	added := false
+	for _, spec := range specs {
+		if found[spec.name] {
+			continue
+		}
+		if !allowMigration {
+			return false, fmt.Errorf("plugin_records.%s is missing from the current schema", spec.name)
+		}
+		if _, err := tx.ExecContext(ctx, `ALTER TABLE plugin_records ADD COLUMN `+spec.name+` TEXT NOT NULL DEFAULT `+spec.defaultValue); err != nil {
+			return false, err
+		}
+		added = true
+	}
+	return added, nil
+}
+
+func validateExternalPackageCommitReceiptSchema(ctx context.Context, tx *sql.Tx) error {
+	type columnSpec struct {
+		typeName     string
+		notNull      int
+		defaultValue string
+		primaryKey   int
+	}
+	expected := map[string]columnSpec{
+		"owner_env_hash": {"TEXT", 1, "", 1}, "inspection_id": {"TEXT", 1, "", 2},
+		"commit_id": {"TEXT", 1, "", 0}, "intent": {"TEXT", 1, "", 0},
+		"confirmation_digest": {"TEXT", 1, "", 0}, "request_sha256": {"TEXT", 1, "", 0},
+		"expected_management_revision": {"INTEGER", 1, "", 0}, "intended_fingerprint": {"TEXT", 1, "", 0},
+		"intended_package_sha256": {"TEXT", 1, "", 0}, "plugin_instance_id": {"TEXT", 1, "", 0},
+		"status": {"TEXT", 1, "", 0}, "mutation_outcome": {"TEXT", 1, "", 0},
+		"record_snapshot_json": {"TEXT", 1, "'null'", 0}, "failure_code": {"TEXT", 1, "''", 0},
+		"created_at": {"INTEGER", 1, "", 0}, "updated_at": {"INTEGER", 1, "", 0},
+	}
+	rows, err := tx.QueryContext(ctx, `PRAGMA table_info(external_package_commit_receipts)`)
+	if err != nil {
+		return err
+	}
+	seen := make(map[string]bool, len(expected))
+	for rows.Next() {
+		var id, notNull, primaryKey int
+		var name, typeName string
+		var defaultExpr sql.NullString
+		if err := rows.Scan(&id, &name, &typeName, &notNull, &defaultExpr, &primaryKey); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		spec, ok := expected[name]
+		if !ok || !strings.EqualFold(typeName, spec.typeName) || notNull != spec.notNull || primaryKey != spec.primaryKey || defaultExpr.String != spec.defaultValue || defaultExpr.Valid != (spec.defaultValue != "") {
+			_ = rows.Close()
+			return fmt.Errorf("external_package_commit_receipts.%s has an incompatible schema", name)
+		}
+		seen[name] = true
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return err
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	if len(seen) != len(expected) {
+		return errors.New("external_package_commit_receipts has an incomplete schema")
+	}
+	indexRows, err := tx.QueryContext(ctx, `PRAGMA index_list(external_package_commit_receipts)`)
+	if err != nil {
+		return err
+	}
+	uniqueCommitBinding := false
+	for indexRows.Next() {
+		var sequence, unique, partial int
+		var name, origin string
+		if err := indexRows.Scan(&sequence, &name, &unique, &origin, &partial); err != nil {
+			_ = indexRows.Close()
+			return err
+		}
+		if origin != "u" {
+			continue
+		}
+		if unique != 1 || partial != 0 {
+			_ = indexRows.Close()
+			return fmt.Errorf("external_package_commit_receipts unique constraint %s is incompatible", name)
+		}
+		columns, err := registrySQLiteIndexColumns(ctx, tx, name)
+		if err != nil {
+			_ = indexRows.Close()
+			return err
+		}
+		if !slices.Equal(columns, []string{"owner_env_hash", "commit_id"}) || uniqueCommitBinding {
+			_ = indexRows.Close()
+			return fmt.Errorf("external_package_commit_receipts has an unexpected unique constraint %s", name)
+		}
+		uniqueCommitBinding = true
+	}
+	if err := indexRows.Err(); err != nil {
+		_ = indexRows.Close()
+		return err
+	}
+	if err := indexRows.Close(); err != nil {
+		return err
+	}
+	if !uniqueCommitBinding {
+		return errors.New("external_package_commit_receipts is missing the owner-and-commit unique constraint")
+	}
+	return nil
+}
+
+func validateSQLitePluginSecurityFacts(ctx context.Context, tx *sql.Tx) error {
+	rows, err := tx.QueryContext(ctx, `
+SELECT
+    owner_env_hash, plugin_instance_id, publisher_id, plugin_id, version, active_fingerprint,
+    package_hash, manifest_hash, entries_hash, trust_state, trust_assessment_json,
+    signature_assessment_json, package_source_provenance_json, execution_approval_json,
+    update_eligibility, security_capability_summary_json,
+    source_policy_snapshot_hash, source_policy_snapshot_json, local_import_provenance_json, capability_contracts_json, enable_state,
+    disabled_reason, policy_revision, management_revision,
+    revoke_epoch, manifest_json, package_entries_json, version_history_json,
+    runtime_requirement_json, installed_at, enabled_at, updated_at, deleted_at, metadata_json
+FROM plugin_records`)
+	if err != nil {
+		return err
+	}
+	for rows.Next() {
+		if _, err := scanSQLitePlugin(rows); err != nil {
+			_ = rows.Close()
+			return fmt.Errorf("validate persisted plugin security facts: %w", err)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return err
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+
+	receiptRows, err := tx.QueryContext(ctx, `SELECT owner_env_hash, inspection_id FROM external_package_commit_receipts`)
+	if err != nil {
+		return err
+	}
+	type receiptIdentity struct{ ownerEnvHash, inspectionID string }
+	var receipts []receiptIdentity
+	for receiptRows.Next() {
+		var identity receiptIdentity
+		if err := receiptRows.Scan(&identity.ownerEnvHash, &identity.inspectionID); err != nil {
+			_ = receiptRows.Close()
+			return err
+		}
+		receipts = append(receipts, identity)
+	}
+	if err := receiptRows.Err(); err != nil {
+		_ = receiptRows.Close()
+		return err
+	}
+	if err := receiptRows.Close(); err != nil {
+		return err
+	}
+	for _, identity := range receipts {
+		if _, exists, err := getSQLiteExternalPackageCommit(ctx, tx, identity.ownerEnvHash, identity.inspectionID); err != nil {
+			return fmt.Errorf("validate external package receipt %q: %w", identity.inspectionID, err)
+		} else if !exists {
+			return fmt.Errorf("external package receipt %q disappeared during validation", identity.inspectionID)
+		}
+	}
+	return nil
+}
+
+func migrateLegacyExternalPackageFacts(ctx context.Context, tx *sql.Tx) error {
+	rows, err := tx.QueryContext(ctx, `
+SELECT owner_env_hash, plugin_instance_id, package_hash, manifest_hash, entries_hash, trust_state, trust_assessment_json,
+       enable_state, signature_assessment_json, package_source_provenance_json,
+       execution_approval_json, update_eligibility, version_history_json
+FROM plugin_records`)
+	if err != nil {
+		return err
+	}
+	type migratedRecord struct {
+		ownerEnvHash, pluginInstanceID string
+		signatureAssessmentJSON        string
+		packageSourceProvenanceJSON    string
+		executionApprovalJSON          string
+		updateEligibility              string
+		versionHistoryJSON             string
+	}
+	var migrations []migratedRecord
+	for rows.Next() {
+		var record PluginRecord
+		var trustState, enableState string
+		var trustJSON, signatureJSON, provenanceJSON, approvalJSON, updateEligibility, historyJSON string
+		if err := rows.Scan(
+			&record.OwnerEnvHash, &record.PluginInstanceID, &record.PackageHash, &record.ManifestHash, &record.EntriesHash, &trustState, &trustJSON,
+			&enableState, &signatureJSON, &provenanceJSON, &approvalJSON, &updateEligibility, &historyJSON,
+		); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		record.TrustState = TrustState(trustState)
+		record.EnableState = EnableState(enableState)
+		record.UpdateEligibility = UpdateEligibility(updateEligibility)
+		if trustJSON != "" && trustJSON != "{}" {
+			if err := decodeRegistryJSON(trustJSON, &record.TrustAssessment); err != nil {
+				_ = rows.Close()
+				return fmt.Errorf("migrate external facts for plugin %q: %w", record.PluginInstanceID, err)
+			}
+		}
+		if signatureJSON != "" && signatureJSON != "{}" {
+			if err := decodeRegistryJSON(signatureJSON, &record.SignatureAssessment); err != nil {
+				_ = rows.Close()
+				return err
+			}
+		}
+		if provenanceJSON != "" && provenanceJSON != "{}" {
+			if err := decodeRegistryJSON(provenanceJSON, &record.PackageSourceProvenance); err != nil {
+				_ = rows.Close()
+				return err
+			}
+		}
+		if approvalJSON != "" && approvalJSON != "{}" {
+			if err := decodeRegistryJSON(approvalJSON, &record.ExecutionApproval); err != nil {
+				_ = rows.Close()
+				return err
+			}
+		}
+		if err := decodeRegistryJSON(historyJSON, &record.VersionHistory); err != nil {
+			_ = rows.Close()
+			return fmt.Errorf("migrate external facts history for plugin %q: %w", record.PluginInstanceID, err)
+		}
+		record = normalizePluginSecurityFacts(record)
+		signatureJSON, err = encodeRegistryJSON(record.SignatureAssessment)
+		if err != nil {
+			_ = rows.Close()
+			return err
+		}
+		provenanceJSON, err = encodeRegistryJSON(record.PackageSourceProvenance)
+		if err != nil {
+			_ = rows.Close()
+			return err
+		}
+		approvalJSON, err = encodeRegistryJSON(record.ExecutionApproval)
+		if err != nil {
+			_ = rows.Close()
+			return err
+		}
+		historyJSON, err = encodeRegistryJSON(record.VersionHistory)
+		if err != nil {
+			_ = rows.Close()
+			return err
+		}
+		migrations = append(migrations, migratedRecord{
+			ownerEnvHash: record.OwnerEnvHash, pluginInstanceID: record.PluginInstanceID,
+			signatureAssessmentJSON: signatureJSON, packageSourceProvenanceJSON: provenanceJSON,
+			executionApprovalJSON: approvalJSON, updateEligibility: string(record.UpdateEligibility),
+			versionHistoryJSON: historyJSON,
+		})
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return err
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	for _, record := range migrations {
+		if _, err := tx.ExecContext(ctx, `
+UPDATE plugin_records
+SET signature_assessment_json = ?, package_source_provenance_json = ?, execution_approval_json = ?,
+    update_eligibility = ?, version_history_json = ?
+WHERE owner_env_hash = ? AND plugin_instance_id = ?`,
+			record.signatureAssessmentJSON, record.packageSourceProvenanceJSON, record.executionApprovalJSON,
+			record.updateEligibility, record.versionHistoryJSON, record.ownerEnvHash, record.pluginInstanceID,
+		); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func migrateLegacyRuntimeRequirements(ctx context.Context, tx *sql.Tx) error {
@@ -835,6 +1437,8 @@ func getSQLitePlugin(ctx context.Context, q sqliteQuerier, ownerEnvHash, pluginI
 SELECT
 		owner_env_hash, plugin_instance_id, publisher_id, plugin_id, version, active_fingerprint,
 		package_hash, manifest_hash, entries_hash, trust_state, trust_assessment_json,
+		signature_assessment_json, package_source_provenance_json, execution_approval_json,
+		update_eligibility, security_capability_summary_json,
 		source_policy_snapshot_hash, source_policy_snapshot_json, local_import_provenance_json, capability_contracts_json, enable_state,
 		disabled_reason, policy_revision, management_revision,
 		revoke_epoch, manifest_json, package_entries_json, version_history_json,
@@ -856,7 +1460,10 @@ WHERE owner_env_hash = ? AND plugin_instance_id = ?`
 }
 
 func upsertSQLitePlugin(ctx context.Context, tx *sql.Tx, record PluginRecord) error {
-	record = normalizeTrustAssessment(record)
+	record = normalizePluginSecurityFacts(record)
+	if err := validatePersistedPluginSecurityFacts(record); err != nil {
+		return err
+	}
 	manifestJSON, err := encodeRegistryJSON(record.Manifest)
 	if err != nil {
 		return err
@@ -881,6 +1488,22 @@ func upsertSQLitePlugin(ctx context.Context, tx *sql.Tx, record PluginRecord) er
 	if err != nil {
 		return err
 	}
+	signatureAssessmentJSON, err := encodeRegistryJSON(record.SignatureAssessment)
+	if err != nil {
+		return err
+	}
+	packageSourceProvenanceJSON, err := encodeRegistryJSON(record.PackageSourceProvenance)
+	if err != nil {
+		return err
+	}
+	executionApprovalJSON, err := encodeRegistryJSON(record.ExecutionApproval)
+	if err != nil {
+		return err
+	}
+	securityCapabilitySummaryJSON, err := encodeRegistryJSON(record.SecurityCapabilitySummary)
+	if err != nil {
+		return err
+	}
 	releaseTrustBindingJSON, err := encodeRegistryJSON(record.ReleaseTrustBinding)
 	if err != nil {
 		return err
@@ -897,11 +1520,13 @@ func upsertSQLitePlugin(ctx context.Context, tx *sql.Tx, record PluginRecord) er
 	INSERT INTO plugin_records (
 		owner_env_hash, plugin_instance_id, publisher_id, plugin_id, version, active_fingerprint,
 		package_hash, manifest_hash, entries_hash, trust_state, trust_assessment_json,
+		signature_assessment_json, package_source_provenance_json, execution_approval_json,
+		update_eligibility, security_capability_summary_json,
 		source_policy_snapshot_hash, source_policy_snapshot_json, local_import_provenance_json, capability_contracts_json, enable_state,
 		disabled_reason, policy_revision, management_revision,
 		revoke_epoch, manifest_json, package_entries_json, version_history_json,
 		runtime_requirement_json, installed_at, enabled_at, updated_at, deleted_at, metadata_json
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	ON CONFLICT(owner_env_hash, plugin_instance_id) DO UPDATE SET
 	publisher_id = excluded.publisher_id,
 	plugin_id = excluded.plugin_id,
@@ -912,6 +1537,11 @@ func upsertSQLitePlugin(ctx context.Context, tx *sql.Tx, record PluginRecord) er
 	entries_hash = excluded.entries_hash,
 	trust_state = excluded.trust_state,
 		trust_assessment_json = excluded.trust_assessment_json,
+		signature_assessment_json = excluded.signature_assessment_json,
+		package_source_provenance_json = excluded.package_source_provenance_json,
+		execution_approval_json = excluded.execution_approval_json,
+		update_eligibility = excluded.update_eligibility,
+		security_capability_summary_json = excluded.security_capability_summary_json,
 		source_policy_snapshot_hash = excluded.source_policy_snapshot_hash,
 		source_policy_snapshot_json = excluded.source_policy_snapshot_json,
 		local_import_provenance_json = excluded.local_import_provenance_json,
@@ -941,6 +1571,11 @@ func upsertSQLitePlugin(ctx context.Context, tx *sql.Tx, record PluginRecord) er
 		record.EntriesHash,
 		string(record.TrustState),
 		trustAssessmentJSON,
+		signatureAssessmentJSON,
+		packageSourceProvenanceJSON,
+		executionApprovalJSON,
+		string(record.UpdateEligibility),
+		securityCapabilitySummaryJSON,
 		releaseTrustBindingStateSHA256(record.ReleaseTrustBinding),
 		releaseTrustBindingJSON,
 		localImportProvenanceJSON,
@@ -975,6 +1610,11 @@ func scanSQLitePlugin(scanner sqlitePluginScanner) (PluginRecord, error) {
 	var record PluginRecord
 	var trustState string
 	var trustAssessmentJSON string
+	var signatureAssessmentJSON string
+	var packageSourceProvenanceJSON string
+	var executionApprovalJSON string
+	var updateEligibility string
+	var securityCapabilitySummaryJSON string
 	var releaseTrustBindingStateSHA256 string
 	var releaseTrustBindingJSON string
 	var localImportProvenanceJSON string
@@ -1001,6 +1641,11 @@ func scanSQLitePlugin(scanner sqlitePluginScanner) (PluginRecord, error) {
 		&record.EntriesHash,
 		&trustState,
 		&trustAssessmentJSON,
+		&signatureAssessmentJSON,
+		&packageSourceProvenanceJSON,
+		&executionApprovalJSON,
+		&updateEligibility,
+		&securityCapabilitySummaryJSON,
 		&releaseTrustBindingStateSHA256,
 		&releaseTrustBindingJSON,
 		&localImportProvenanceJSON,
@@ -1023,6 +1668,7 @@ func scanSQLitePlugin(scanner sqlitePluginScanner) (PluginRecord, error) {
 		return PluginRecord{}, err
 	}
 	record.TrustState = TrustState(trustState)
+	record.UpdateEligibility = UpdateEligibility(updateEligibility)
 	record.EnableState = EnableState(enableState)
 	if err := decodeRegistryJSON(manifestJSON, &record.Manifest); err != nil {
 		return PluginRecord{}, err
@@ -1045,6 +1691,26 @@ func scanSQLitePlugin(scanner sqlitePluginScanner) (PluginRecord, error) {
 	}
 	if strings.TrimSpace(trustAssessmentJSON) != "" && strings.TrimSpace(trustAssessmentJSON) != "{}" {
 		if err := decodeRegistryJSON(trustAssessmentJSON, &record.TrustAssessment); err != nil {
+			return PluginRecord{}, err
+		}
+	}
+	if strings.TrimSpace(signatureAssessmentJSON) != "" && strings.TrimSpace(signatureAssessmentJSON) != "{}" {
+		if err := decodeRegistryJSON(signatureAssessmentJSON, &record.SignatureAssessment); err != nil {
+			return PluginRecord{}, err
+		}
+	}
+	if strings.TrimSpace(packageSourceProvenanceJSON) != "" && strings.TrimSpace(packageSourceProvenanceJSON) != "{}" {
+		if err := decodeRegistryJSON(packageSourceProvenanceJSON, &record.PackageSourceProvenance); err != nil {
+			return PluginRecord{}, err
+		}
+	}
+	if strings.TrimSpace(executionApprovalJSON) != "" && strings.TrimSpace(executionApprovalJSON) != "{}" {
+		if err := decodeRegistryJSON(executionApprovalJSON, &record.ExecutionApproval); err != nil {
+			return PluginRecord{}, err
+		}
+	}
+	if strings.TrimSpace(securityCapabilitySummaryJSON) != "" && strings.TrimSpace(securityCapabilitySummaryJSON) != "{}" {
+		if err := decodeRegistryJSON(securityCapabilitySummaryJSON, &record.SecurityCapabilitySummary); err != nil {
 			return PluginRecord{}, err
 		}
 	}
@@ -1074,7 +1740,10 @@ func scanSQLitePlugin(scanner sqlitePluginScanner) (PluginRecord, error) {
 	record.UpdatedAt = unixToTime(updatedAt)
 	record.EnabledAt = nullableUnixToTimePtr(enabledAt)
 	record.DeletedAt = nullableUnixToTimePtr(deletedAt)
-	return normalizeTrustAssessment(record), nil
+	if err := validatePersistedPluginSecurityFacts(record); err != nil {
+		return PluginRecord{}, err
+	}
+	return record, nil
 }
 
 func releaseTrustBindingStateSHA256(binding *ReleaseTrustBinding) string {

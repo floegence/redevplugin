@@ -71,6 +71,21 @@
   },
   {
     "method": "POST",
+    "path": "/_redevplugin/api/plugins/external-packages/commit",
+    "effect": "mutation"
+  },
+  {
+    "method": "POST",
+    "path": "/_redevplugin/api/plugins/external-packages/commit/query",
+    "effect": "query"
+  },
+  {
+    "method": "POST",
+    "path": "/_redevplugin/api/plugins/external-packages/inspect",
+    "effect": "mutation"
+  },
+  {
+    "method": "POST",
     "path": "/_redevplugin/api/plugins/features/query",
     "effect": "query"
   },

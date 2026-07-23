@@ -361,6 +361,7 @@ func TestRouteSetIncludesLocalImportRoutes(t *testing.T) {
 
 func TestRouteSetUsesClosedPostQueryRoutes(t *testing.T) {
 	want := map[string]bool{
+		"POST /_redevplugin/api/plugins/external-packages/commit/query":               false,
 		"POST /_redevplugin/api/plugins/catalog/query":                                false,
 		"POST /_redevplugin/api/plugins/features/query":                               false,
 		"POST /_redevplugin/api/plugins/platform/compatibility/query":                 false,
@@ -4603,6 +4604,7 @@ type httpTestHostOptions struct {
 		capability.TargetProjector
 	}
 	coreActions host.CoreActionAdapter
+	external    *host.ExternalPackageModule
 }
 
 func newHTTPTestHostWithOptions(t *testing.T, opts httpTestHostOptions) *host.Host {
@@ -4695,11 +4697,12 @@ func newHTTPTestHostWithOptions(t *testing.T, opts httpTestHostOptions) *host.Ho
 			SessionLifecycle:     httpSessionLifecycleAdapter{identity: identity},
 			SessionScopes:        sessionScopes,
 		},
-		Release:      releaseModule,
-		Capability:   &host.CapabilityModule{Registry: capabilities},
-		Connectivity: &host.ConnectivityModule{Broker: connectivity.NewMemoryBroker(), NetworkExecutor: connectivity.NewExecutor(connectivity.ExecutorOptions{})},
-		Secrets:      &host.SecretsModule{Store: secretStore},
-		CoreAction:   &host.CoreActionModule{Adapter: coreActions},
+		Release:         releaseModule,
+		Capability:      &host.CapabilityModule{Registry: capabilities},
+		Connectivity:    &host.ConnectivityModule{Broker: connectivity.NewMemoryBroker(), NetworkExecutor: connectivity.NewExecutor(connectivity.ExecutorOptions{})},
+		Secrets:         &host.SecretsModule{Store: secretStore},
+		CoreAction:      &host.CoreActionModule{Adapter: coreActions},
+		ExternalPackage: opts.external,
 	})
 	if err != nil {
 		t.Fatal(err)

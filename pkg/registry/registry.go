@@ -75,52 +75,62 @@ type ReleaseTrustBinding struct {
 }
 
 type PluginRecord struct {
-	OwnerEnvHash          string                   `json:"-"`
-	PluginInstanceID      string                   `json:"plugin_instance_id"`
-	PublisherID           string                   `json:"publisher_id"`
-	PluginID              string                   `json:"plugin_id"`
-	Version               string                   `json:"version"`
-	ActiveFingerprint     string                   `json:"active_fingerprint"`
-	PackageHash           string                   `json:"package_hash"`
-	ManifestHash          string                   `json:"manifest_hash"`
-	EntriesHash           string                   `json:"entries_hash"`
-	TrustState            TrustState               `json:"trust_state"`
-	TrustAssessment       TrustAssessment          `json:"trust_assessment"`
-	ReleaseTrustBinding   *ReleaseTrustBinding     `json:"release_trust_binding,omitempty"`
-	LocalImportProvenance *LocalImportProvenance   `json:"local_import_provenance,omitempty"`
-	CapabilityContracts   []capabilitycontract.Pin `json:"capability_contracts,omitempty"`
-	EnableState           EnableState              `json:"enable_state"`
-	DisabledReason        string                   `json:"disabled_reason,omitempty"`
-	PolicyRevision        uint64                   `json:"policy_revision"`
-	ManagementRevision    uint64                   `json:"management_revision"`
-	RevokeEpoch           uint64                   `json:"revoke_epoch"`
-	Manifest              manifest.Manifest        `json:"manifest"`
-	PackageEntries        []pluginpkg.Entry        `json:"package_entries"`
-	RuntimeRequirement    *RuntimeRequirement      `json:"runtime_requirement,omitempty"`
-	VersionHistory        []PluginVersion          `json:"version_history,omitempty"`
-	InstalledAt           time.Time                `json:"installed_at"`
-	EnabledAt             *time.Time               `json:"enabled_at,omitempty"`
-	UpdatedAt             time.Time                `json:"updated_at"`
-	DeletedAt             *time.Time               `json:"deleted_at,omitempty"`
-	Metadata              map[string]string        `json:"metadata,omitempty"`
+	OwnerEnvHash              string                    `json:"-"`
+	PluginInstanceID          string                    `json:"plugin_instance_id"`
+	PublisherID               string                    `json:"publisher_id"`
+	PluginID                  string                    `json:"plugin_id"`
+	Version                   string                    `json:"version"`
+	ActiveFingerprint         string                    `json:"active_fingerprint"`
+	PackageHash               string                    `json:"package_hash"`
+	ManifestHash              string                    `json:"manifest_hash"`
+	EntriesHash               string                    `json:"entries_hash"`
+	TrustState                TrustState                `json:"trust_state"`
+	TrustAssessment           TrustAssessment           `json:"trust_assessment"`
+	SignatureAssessment       SignatureAssessment       `json:"signature_assessment"`
+	PackageSourceProvenance   PackageSourceProvenance   `json:"source_provenance"`
+	ExecutionApproval         ExecutionApproval         `json:"execution_approval"`
+	UpdateEligibility         UpdateEligibility         `json:"update_eligibility"`
+	SecurityCapabilitySummary SecurityCapabilitySummary `json:"security_summary"`
+	ReleaseTrustBinding       *ReleaseTrustBinding      `json:"release_trust_binding,omitempty"`
+	LocalImportProvenance     *LocalImportProvenance    `json:"local_import_provenance,omitempty"`
+	CapabilityContracts       []capabilitycontract.Pin  `json:"capability_contracts,omitempty"`
+	EnableState               EnableState               `json:"enable_state"`
+	DisabledReason            string                    `json:"disabled_reason,omitempty"`
+	PolicyRevision            uint64                    `json:"policy_revision"`
+	ManagementRevision        uint64                    `json:"management_revision"`
+	RevokeEpoch               uint64                    `json:"revoke_epoch"`
+	Manifest                  manifest.Manifest         `json:"manifest"`
+	PackageEntries            []pluginpkg.Entry         `json:"package_entries"`
+	RuntimeRequirement        *RuntimeRequirement       `json:"runtime_requirement,omitempty"`
+	VersionHistory            []PluginVersion           `json:"version_history,omitempty"`
+	InstalledAt               time.Time                 `json:"installed_at"`
+	EnabledAt                 *time.Time                `json:"enabled_at,omitempty"`
+	UpdatedAt                 time.Time                 `json:"updated_at"`
+	DeletedAt                 *time.Time                `json:"deleted_at,omitempty"`
+	Metadata                  map[string]string         `json:"metadata,omitempty"`
 }
 
 type PluginVersion struct {
-	Version               string                   `json:"version"`
-	ActiveFingerprint     string                   `json:"active_fingerprint"`
-	PackageHash           string                   `json:"package_hash"`
-	ManifestHash          string                   `json:"manifest_hash"`
-	EntriesHash           string                   `json:"entries_hash"`
-	TrustState            TrustState               `json:"trust_state"`
-	TrustAssessment       TrustAssessment          `json:"trust_assessment"`
-	ReleaseTrustBinding   *ReleaseTrustBinding     `json:"release_trust_binding,omitempty"`
-	LocalImportProvenance *LocalImportProvenance   `json:"local_import_provenance,omitempty"`
-	CapabilityContracts   []capabilitycontract.Pin `json:"capability_contracts,omitempty"`
-	Manifest              manifest.Manifest        `json:"manifest"`
-	PackageEntries        []pluginpkg.Entry        `json:"package_entries"`
-	RuntimeRequirement    *RuntimeRequirement      `json:"runtime_requirement,omitempty"`
-	ActivatedAt           time.Time                `json:"activated_at"`
-	Metadata              map[string]string        `json:"metadata,omitempty"`
+	Version                   string                    `json:"version"`
+	ActiveFingerprint         string                    `json:"active_fingerprint"`
+	PackageHash               string                    `json:"package_hash"`
+	ManifestHash              string                    `json:"manifest_hash"`
+	EntriesHash               string                    `json:"entries_hash"`
+	TrustState                TrustState                `json:"trust_state"`
+	TrustAssessment           TrustAssessment           `json:"trust_assessment"`
+	SignatureAssessment       SignatureAssessment       `json:"signature_assessment"`
+	PackageSourceProvenance   PackageSourceProvenance   `json:"source_provenance"`
+	ExecutionApproval         ExecutionApproval         `json:"execution_approval"`
+	UpdateEligibility         UpdateEligibility         `json:"update_eligibility"`
+	SecurityCapabilitySummary SecurityCapabilitySummary `json:"security_summary"`
+	ReleaseTrustBinding       *ReleaseTrustBinding      `json:"release_trust_binding,omitempty"`
+	LocalImportProvenance     *LocalImportProvenance    `json:"local_import_provenance,omitempty"`
+	CapabilityContracts       []capabilitycontract.Pin  `json:"capability_contracts,omitempty"`
+	Manifest                  manifest.Manifest         `json:"manifest"`
+	PackageEntries            []pluginpkg.Entry         `json:"package_entries"`
+	RuntimeRequirement        *RuntimeRequirement       `json:"runtime_requirement,omitempty"`
+	ActivatedAt               time.Time                 `json:"activated_at"`
+	Metadata                  map[string]string         `json:"metadata,omitempty"`
 }
 
 // RuntimeRequirement is the exact worker-runtime compatibility contract that
@@ -155,6 +165,7 @@ type AuthorizationStore interface {
 type Store interface {
 	Durable() bool
 	AuthorizationStore
+	ExternalPackageStore
 	plugindata.Catalog
 	PutPlugin(ctx context.Context, record PluginRecord, opts PutOptions) (PluginRecord, error)
 	GetPlugin(ctx context.Context, pluginInstanceID string) (PluginRecord, error)
@@ -167,21 +178,23 @@ type Store interface {
 var ErrNotFound = errors.New("plugin record not found")
 
 type MemoryStore struct {
-	mu               sync.RWMutex
-	records          map[string]PluginRecord
-	permissionGrants map[string]map[string]permissions.Record
-	securityPolicies map[string]security.PolicyRecord
-	dataBindings     map[string]plugindata.Binding
-	dataObjects      map[string]plugindata.Object
+	mu                     sync.RWMutex
+	records                map[string]PluginRecord
+	permissionGrants       map[string]map[string]permissions.Record
+	securityPolicies       map[string]security.PolicyRecord
+	dataBindings           map[string]plugindata.Binding
+	dataObjects            map[string]plugindata.Object
+	externalPackageCommits map[string]externalPackageCommitReceipt
 }
 
 func NewMemoryStore() *MemoryStore {
 	return &MemoryStore{
-		records:          map[string]PluginRecord{},
-		permissionGrants: map[string]map[string]permissions.Record{},
-		securityPolicies: map[string]security.PolicyRecord{},
-		dataBindings:     map[string]plugindata.Binding{},
-		dataObjects:      map[string]plugindata.Object{},
+		records:                map[string]PluginRecord{},
+		permissionGrants:       map[string]map[string]permissions.Record{},
+		securityPolicies:       map[string]security.PolicyRecord{},
+		dataBindings:           map[string]plugindata.Binding{},
+		dataObjects:            map[string]plugindata.Object{},
+		externalPackageCommits: map[string]externalPackageCommitReceipt{},
 	}
 }
 
@@ -228,7 +241,10 @@ func (s *MemoryStore) PutPlugin(ctx context.Context, record PluginRecord, opts P
 		}
 	}
 	record.UpdatedAt = now
-	record = normalizeTrustAssessment(record)
+	record = normalizePluginSecurityFacts(record)
+	if err := validatePersistedPluginSecurityFacts(record); err != nil {
+		return PluginRecord{}, err
+	}
 	s.records[key] = record
 	return clonePluginRecord(record)
 }
@@ -406,6 +422,44 @@ func RunnableTrustState(state TrustState) bool {
 	switch state {
 	case TrustVerified, TrustUnsignedLocal:
 		return true
+	default:
+		return false
+	}
+}
+
+// RunnablePluginRecord preserves the legacy trust projection for records that
+// predate external-package facts. External packages are governed by their
+// environment-and-package-bound execution approval instead of signature state.
+func RunnablePluginRecord(record PluginRecord) bool {
+	switch record.PackageSourceProvenance.Kind {
+	case PackageSourcePackageURL, PackageSourceGitHubRepository,
+		PackageSourceOfficialCatalog, PackageSourceApprovedCatalog:
+		if !validSignatureAssessmentStatus(record.SignatureAssessment.Status) ||
+			!validExecutionApprovalStatus(record.ExecutionApproval.Status) {
+			return false
+		}
+		if record.SignatureAssessment.Status == SignatureInvalid || record.SignatureAssessment.Status == SignatureRevoked {
+			return false
+		}
+		return record.ExecutionApproval.Status == ExecutionApprovalUserApproved ||
+			record.ExecutionApproval.Status == ExecutionApprovalPolicyApproved
+	case "":
+		// New package records are checked before Registry persistence normalizes
+		// their source facts. This narrow fallback must not accept a partially
+		// populated or future external-package security projection.
+		if record.SignatureAssessment.Status != "" || record.ExecutionApproval.Status != "" {
+			return false
+		}
+		return RunnableTrustState(record.TrustState)
+	case PackageSourceLocalGenerated, PackageSourceLegacyRegistry:
+		if !validSignatureAssessmentStatus(record.SignatureAssessment.Status) ||
+			!validExecutionApprovalStatus(record.ExecutionApproval.Status) {
+			return false
+		}
+		if record.SignatureAssessment.Status == SignatureInvalid || record.SignatureAssessment.Status == SignatureRevoked {
+			return false
+		}
+		return RunnableTrustState(record.TrustState)
 	default:
 		return false
 	}

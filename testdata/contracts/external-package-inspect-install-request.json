@@ -1,0 +1,9 @@
+{
+  "intent": {
+    "action": "install"
+  },
+  "source": {
+    "kind": "package_url",
+    "url": "https://plugins.example.test/releases/acme.containers-2.0.1.zip"
+  }
+}

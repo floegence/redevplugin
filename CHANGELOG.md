@@ -1,5 +1,26 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- Add owner-scoped external package inspection, explicit commit, and durable
+  commit-query APIs for public HTTPS package URLs and GitHub Releases, including
+  generated TypeScript client bindings and immutable security summaries.
+- Add hardened external download and staging with public-address validation,
+  DNS-pinned TLS transport, per-redirect policy checks, bounded downloads, and
+  staged artifact re-verification.
+
+### Changed
+
+- Separate package source, signature assessment, execution approval, and update
+  eligibility. Unsigned, unknown-signer, and temporarily unverifiable packages
+  may be manually installed after explicit confirmation, but start disabled
+  with zero grants and manual-only updates; invalid or revoked signatures remain
+  blocked.
+- Persist external package commit receipts atomically with registry mutations so
+  callers can reconcile unknown outcomes without replaying installation.
+
 ## v0.6.7
 
 ### Fixed

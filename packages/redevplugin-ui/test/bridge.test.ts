@@ -70,6 +70,99 @@ function sessionScopeRevokeResult(state: "fenced" | "draining" | "incomplete" | 
   };
 }
 
+function externalPackageInspectionResult(inspectionId: string, pluginInstanceId: string) {
+  const assessedAt = "2026-07-23T00:00:00Z";
+  const hashes = {
+    package_sha256: `sha256:${"a".repeat(64)}`,
+    manifest_sha256: `sha256:${"b".repeat(64)}`,
+    entries_sha256: `sha256:${"c".repeat(64)}`,
+  };
+  const signatureAssessment = {
+    state: "absent",
+    reason_codes: ["signature_absent"],
+    assessed_hashes: hashes,
+    assessed_at: assessedAt,
+  };
+  const sourceProvenance = {
+    kind: "package_url",
+    source_origin: "https://plugins.example.test",
+    source_path: "/containers-2.0.1.redevplugin",
+    redirect_chain: [],
+    package_sha256: hashes.package_sha256,
+    resolved_at: assessedAt,
+  };
+  const executionApproval = {
+    state: "pending",
+    reason_codes: ["user_confirmation_required"],
+    assessed_at: assessedAt,
+  };
+  const updateEligibility = {
+    state: "manual_only",
+    reason_codes: ["signature_absent"],
+    assessed_at: assessedAt,
+  };
+  const securitySummary = {
+    summary_sha256: `sha256:${"d".repeat(64)}`,
+    permissions: [],
+    methods: [],
+    capability_contracts: [],
+    workers: [],
+    network: [],
+    storage: [],
+    secret_refs: [],
+    core_actions: [],
+    intents: [],
+    surfaces: [],
+  };
+  return {
+    inspection_id: inspectionId,
+    expires_at: "2026-07-23T00:10:00Z",
+    intent: {
+      action: "update",
+      plugin_instance_id: pluginInstanceId,
+      expected_management_revision: 7,
+    },
+    publisher_id: "example.publisher",
+    plugin_id: "example.containers",
+    version: "2.0.1",
+    inspected_hashes: hashes,
+    signature_assessment: signatureAssessment,
+    source_provenance: sourceProvenance,
+    execution_approval: executionApproval,
+    update_eligibility: updateEligibility,
+    security_summary: securitySummary,
+    confirmation_digest: `sha256:${"e".repeat(64)}`,
+  };
+}
+
+function committedExternalPackageResult(inspection: ReturnType<typeof externalPackageInspectionResult>, commitId: string) {
+  return {
+    status: "committed",
+    inspection_id: inspection.inspection_id,
+    intent: inspection.intent,
+    receipt: {
+      commit_id: commitId,
+      inspection_id: inspection.inspection_id,
+      package_sha256: inspection.inspected_hashes.package_sha256,
+      management_revision: 8,
+      committed_at: "2026-07-23T00:01:00Z",
+    },
+    plugin: {
+      plugin_instance_id: inspection.intent.plugin_instance_id,
+    },
+    signature_assessment: inspection.signature_assessment,
+    source_provenance: inspection.source_provenance,
+    execution_approval: {
+      state: "user_approved",
+      reason_codes: [],
+      assessed_at: "2026-07-23T00:01:00Z",
+      approved_at: "2026-07-23T00:01:00Z",
+    },
+    update_eligibility: inspection.update_eligibility,
+    security_summary: inspection.security_summary,
+  };
+}
+
 test("stable error-code exports separate platform, bridge, and client-only codes", () => {
   assert.equal(pluginPlatformErrorCodes.includes("PLUGIN_JSON_LIMIT_EXCEEDED"), true);
   assert.equal(pluginPlatformErrorCodes.includes("PLUGIN_AUTHORIZATION_REVISION_MISMATCH"), true);
@@ -653,6 +746,170 @@ test("in-flight platform query abort remains safe and preserves surface scope", 
   assert.equal(disposed, 0);
   assert.equal(unknownOutcomes, 0);
   unregister();
+});
+
+test("external package inspection uses the closed management path and body", async () => {
+  const fetch = new FakeFetch();
+  const inspection = externalPackageInspectionResult("inspection_1", "plugin_instance_1");
+  fetch.push({ ok: true, data: inspection });
+  const client = new PluginPlatformClient({ fetch: fetch.fetch });
+  const request = {
+    intent: {
+      action: "update" as const,
+      plugin_instance_id: "plugin_instance_1",
+      expected_management_revision: 7,
+    },
+    source: {
+      kind: "github_repository" as const,
+      url: "https://github.com/example/containers-plugin",
+      tag: "v2.0.1",
+    },
+  };
+
+  const result = await client.inspectExternalPackage(request);
+
+  assert.equal(result.inspection_id, "inspection_1");
+  assert.equal(fetch.calls.length, 1);
+  assert.equal(fetch.calls[0]?.input, "/_redevplugin/api/plugins/external-packages/inspect");
+  assert.equal(fetch.calls[0]?.init.method, "POST");
+  assert.equal(fetch.calls[0]?.init.headers["Content-Type"], "application/json");
+  assert.deepEqual(JSON.parse(fetch.calls[0]?.init.body ?? ""), request);
+});
+
+test("committed external package commit disposes only the returned plugin scope", async () => {
+  const fetch = new FakeFetch();
+  const inspection = externalPackageInspectionResult("inspection_commit", "plugin_instance_target");
+  fetch.push({ ok: true, data: inspection });
+  fetch.push({ ok: true, data: committedExternalPackageResult(inspection, "commit_1") });
+  const scope = createPluginSurfaceScope();
+  let targetDisposed = 0;
+  let unrelatedDisposed = 0;
+  registerPluginSurface(scope, "plugin_instance_target", () => { targetDisposed += 1; }, () => undefined);
+  const unregisterUnrelated = registerPluginSurface(scope, "plugin_instance_unrelated", () => { unrelatedDisposed += 1; }, () => undefined);
+  const client = new PluginPlatformClient({ fetch: fetch.fetch, surfaceScope: scope });
+  await client.inspectExternalPackage({
+    intent: { action: "update", plugin_instance_id: "plugin_instance_target", expected_management_revision: 7 },
+    source: { kind: "package_url", url: "https://plugins.example.test/containers-2.0.1.redevplugin" },
+  });
+
+  const result = await client.commitExternalPackage({
+    inspection_id: "inspection_commit",
+    confirmation_digest: inspection.confirmation_digest,
+  });
+
+  assert.equal(result.status, "committed");
+  assert.equal(targetDisposed, 1);
+  assert.equal(unrelatedDisposed, 0);
+  assert.equal(fetch.calls[1]?.input, "/_redevplugin/api/plugins/external-packages/commit");
+  assert.deepEqual(JSON.parse(fetch.calls[1]?.init.body ?? ""), {
+    inspection_id: "inspection_commit",
+    confirmation_digest: inspection.confirmation_digest,
+  });
+  unregisterUnrelated();
+});
+
+test("committed external package query reconciles and disposes the returned plugin scope", async () => {
+  const fetch = new FakeFetch();
+  const inspection = externalPackageInspectionResult("inspection_query", "plugin_instance_target");
+  fetch.push({ ok: true, data: inspection });
+  fetch.push({ ok: true, data: committedExternalPackageResult(inspection, "commit_query") });
+  const scope = createPluginSurfaceScope();
+  let targetDisposed = 0;
+  let unrelatedDisposed = 0;
+  registerPluginSurface(scope, "plugin_instance_target", () => { targetDisposed += 1; }, () => undefined);
+  const unregisterUnrelated = registerPluginSurface(scope, "plugin_instance_unrelated", () => { unrelatedDisposed += 1; }, () => undefined);
+  const client = new PluginPlatformClient({ fetch: fetch.fetch, surfaceScope: scope });
+  await client.inspectExternalPackage({
+    intent: { action: "update", plugin_instance_id: "plugin_instance_target", expected_management_revision: 7 },
+    source: { kind: "package_url", url: "https://plugins.example.test/containers-2.0.1.redevplugin" },
+  });
+
+  const result = await client.queryExternalPackageCommit({ inspection_id: "inspection_query", commit_id: "commit_query" });
+
+  assert.equal(result.status, "committed");
+  assert.equal(targetDisposed, 1);
+  assert.equal(unrelatedDisposed, 0);
+  assert.equal(fetch.calls[1]?.input, "/_redevplugin/api/plugins/external-packages/commit/query");
+  assert.deepEqual(JSON.parse(fetch.calls[1]?.init.body ?? ""), {
+    inspection_id: "inspection_query",
+    commit_id: "commit_query",
+  });
+  unregisterUnrelated();
+});
+
+test("not-committed external package commit preserves the target surface", async () => {
+  const fetch = new FakeFetch();
+  const inspection = externalPackageInspectionResult("inspection_not_committed", "plugin_instance_target");
+  fetch.push({ ok: true, data: inspection });
+  fetch.push({
+    ok: false,
+    error: {
+      code: "PLUGIN_ADAPTER_FAILURE",
+      message: "external package commit was rejected before durable mutation",
+      details: {},
+      mutation_outcome: "not_committed",
+    },
+  }, 503);
+  const scope = createPluginSurfaceScope();
+  let disposed = 0;
+  const unregister = registerPluginSurface(scope, "plugin_instance_target", () => { disposed += 1; }, () => undefined);
+  const unknownTargets: Array<string | undefined> = [];
+  const client = new PluginPlatformClient({
+    fetch: fetch.fetch,
+    surfaceScope: scope,
+    onMutationOutcomeUnknown: (pluginInstanceId) => unknownTargets.push(pluginInstanceId),
+  });
+  await client.inspectExternalPackage({
+    intent: { action: "update", plugin_instance_id: "plugin_instance_target", expected_management_revision: 7 },
+    source: { kind: "package_url", url: "https://plugins.example.test/containers-2.0.1.redevplugin" },
+  });
+
+  await assert.rejects(
+    client.commitExternalPackage({ inspection_id: "inspection_not_committed", confirmation_digest: inspection.confirmation_digest }),
+    (error: unknown) => error instanceof PluginPlatformRequestError && error.mutationOutcome === "not_committed",
+  );
+  assert.equal(disposed, 0);
+  assert.deepEqual(unknownTargets, []);
+  unregister();
+});
+
+test("unknown external package commit disposes the inspected target and notifies the observer", async () => {
+  const fetch = new FakeFetch();
+  const inspection = externalPackageInspectionResult("inspection_unknown", "plugin_instance_target");
+  fetch.push({ ok: true, data: inspection });
+  fetch.push({
+    ok: false,
+    error: {
+      code: "PLUGIN_ADAPTER_FAILURE",
+      message: "external package commit outcome is unknown",
+      details: {},
+      mutation_outcome: "unknown",
+    },
+  }, 503);
+  const scope = createPluginSurfaceScope();
+  let targetDisposed = 0;
+  let unrelatedDisposed = 0;
+  registerPluginSurface(scope, "plugin_instance_target", () => { targetDisposed += 1; }, () => undefined);
+  const unregisterUnrelated = registerPluginSurface(scope, "plugin_instance_unrelated", () => { unrelatedDisposed += 1; }, () => undefined);
+  const unknownTargets: Array<string | undefined> = [];
+  const client = new PluginPlatformClient({
+    fetch: fetch.fetch,
+    surfaceScope: scope,
+    onMutationOutcomeUnknown: (pluginInstanceId) => unknownTargets.push(pluginInstanceId),
+  });
+  await client.inspectExternalPackage({
+    intent: { action: "update", plugin_instance_id: "plugin_instance_target", expected_management_revision: 7 },
+    source: { kind: "package_url", url: "https://plugins.example.test/containers-2.0.1.redevplugin" },
+  });
+
+  await assert.rejects(
+    client.commitExternalPackage({ inspection_id: "inspection_unknown", confirmation_digest: inspection.confirmation_digest }),
+    (error: unknown) => error instanceof PluginPlatformRequestError && error.mutationOutcome === "unknown",
+  );
+  assert.equal(targetDisposed, 1);
+  assert.equal(unrelatedDisposed, 0);
+  assert.deepEqual(unknownTargets, ["plugin_instance_target"]);
+  unregisterUnrelated();
 });
 
 test("platform client reads and patches plugin settings through host API", async () => {

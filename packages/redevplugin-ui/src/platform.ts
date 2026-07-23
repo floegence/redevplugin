@@ -66,6 +66,11 @@ export type PluginPackageHashSet = PlatformSchemas["PackageHashSet"];
 export type PluginReleaseRef = PlatformSchemas["PluginReleaseRef"];
 export type PluginInstallReleaseRefRequest = PlatformSchemas["InstallReleaseRefRequest"];
 export type PluginUpdateReleaseRefRequest = PlatformSchemas["UpdateReleaseRefRequest"];
+export type PluginInspectExternalPackageRequest = PlatformSchemas["InspectExternalPackageRequest"];
+export type PluginExternalPackageInspection = PlatformSchemas["ExternalPackageInspection"];
+export type PluginCommitExternalPackageRequest = PlatformSchemas["CommitExternalPackageRequest"];
+export type PluginQueryExternalPackageCommitRequest = PlatformSchemas["QueryExternalPackageCommitRequest"];
+export type PluginExternalPackageCommitResult = PlatformSchemas["ExternalPackageCommitResult"];
 export type PluginDowngradeRequest = PlatformSchemas["DowngradeRequest"];
 export type PluginEnableRequest = PlatformSchemas["EnableRequest"];
 export type PluginDisableRequest = PlatformSchemas["DisableRequest"];
@@ -180,6 +185,7 @@ export class PluginPlatformClient {
   #surfaceScope: PluginSurfaceScope;
   #surfaceTransport?: ReDevPluginSurfaceTransport;
   #onMutationOutcomeUnknown?: (pluginInstanceId?: string) => void;
+  #externalInspectionTargets = new Map<string, string>();
 
   constructor(options: PluginPlatformClientOptions = {}) {
     this.#fetch = options.fetch ?? defaultFetch();
@@ -194,6 +200,40 @@ export class PluginPlatformClient {
   getCompatibility(options: PluginRequestOptions = {}): Promise<PluginCompatibilityManifest> { return this.#requestQuery("/_redevplugin/api/plugins/platform/compatibility/query", {}, options); }
   installReleaseRef(request: PluginInstallReleaseRefRequest, options: PluginRequestOptions = {}): Promise<PluginRecord> {
     return this.#requestMutation("POST", "/_redevplugin/api/plugins/install-release-ref", request, options);
+  }
+  async inspectExternalPackage(request: PluginInspectExternalPackageRequest, options: PluginRequestOptions = {}): Promise<PluginExternalPackageInspection> {
+    const inspection = await this.#requestMutation<PluginExternalPackageInspection>(
+      "POST", "/_redevplugin/api/plugins/external-packages/inspect", request, options,
+    );
+    this.#externalInspectionTargets.set(inspection.inspection_id, inspection.intent.plugin_instance_id ?? "");
+    return inspection;
+  }
+  async commitExternalPackage(request: PluginCommitExternalPackageRequest, options: PluginRequestOptions = {}): Promise<PluginExternalPackageCommitResult> {
+    const target = this.#externalInspectionTargets.get(request.inspection_id);
+    let result: PluginExternalPackageCommitResult;
+    try {
+      result = await this.#requestMutation(
+        "POST", "/_redevplugin/api/plugins/external-packages/commit", request, options,
+      );
+    } catch (error) {
+      await this.#handleMutationFailure(error, target || undefined, "External package commit and local surface teardown failed");
+      throw error;
+    }
+    if (result.status === "committed") {
+      await disposePluginSurfaceScope(this.#surfaceScope, result.plugin.plugin_instance_id);
+      this.#externalInspectionTargets.delete(request.inspection_id);
+    }
+    return result;
+  }
+  async queryExternalPackageCommit(request: PluginQueryExternalPackageCommitRequest, options: PluginRequestOptions = {}): Promise<PluginExternalPackageCommitResult> {
+    const result = await this.#requestQuery<PluginExternalPackageCommitResult>(
+      "/_redevplugin/api/plugins/external-packages/commit/query", request, options,
+    );
+    if (result.status === "committed") {
+      await disposePluginSurfaceScope(this.#surfaceScope, result.plugin.plugin_instance_id);
+      this.#externalInspectionTargets.delete(request.inspection_id);
+    }
+    return result;
   }
   updateReleaseRef(request: PluginUpdateReleaseRefRequest, options: PluginRequestOptions = {}): Promise<PluginRecord> {
     return this.#mutatePlugin("/_redevplugin/api/plugins/update-release-ref", request, options);

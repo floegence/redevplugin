@@ -194,7 +194,7 @@ var generatedContractArtifacts = []ContractArtifact{
 		ID:      "plugin-platform-openapi",
 		Path:    "spec/openapi/plugin-platform-v8.yaml",
 		Version: "plugin-platform-v8",
-		SHA256:  "290883ff79b74badbf9f6feddb4dfbef820a4ef4622a7e3fca815e3abb2c4eac",
+		SHA256:  "c021b0faa0d2110b1dd40488b50262809735d0dfa0b13c92ab8a112ae659e2f5",
 	},
 	{
 		ID:      "process-containment-schema",

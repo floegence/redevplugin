@@ -422,6 +422,21 @@ type installReleaseRefRequest struct {
 	PluginInstanceID string            `json:"plugin_instance_id"`
 }
 
+type inspectExternalPackageRequest struct {
+	Intent host.ExternalPackageIntent `json:"intent"`
+	Source host.ExternalPackageSource `json:"source"`
+}
+
+type commitExternalPackageRequest struct {
+	InspectionID       string `json:"inspection_id"`
+	ConfirmationDigest string `json:"confirmation_digest"`
+}
+
+type queryExternalPackageCommitRequest struct {
+	InspectionID string `json:"inspection_id"`
+	CommitID     string `json:"commit_id,omitempty"`
+}
+
 type updateReleaseRefRequest struct {
 	PluginInstanceID           string            `json:"plugin_instance_id"`
 	ReleaseRef                 releaseRefRequest `json:"release_ref"`
@@ -992,6 +1007,9 @@ func (e *jsonLimitError) status() int {
 var routes = []routeSpec{
 	mutationRoute(http.MethodPost, "/_redevplugin/api/plugins/{plugin_instance_id}/local-import", websecurity.RouteActionImportLocalPackage, func(h *Handler) http.HandlerFunc { return h.handleImportLocalPackageUpload }),
 	mutationRoute(http.MethodPost, "/_redevplugin/api/plugins/install-release-ref", websecurity.RouteActionInstallReleaseRef, func(h *Handler) http.HandlerFunc { return h.handleInstallReleaseRef }),
+	mutationRoute(http.MethodPost, "/_redevplugin/api/plugins/external-packages/inspect", websecurity.RouteActionInspectExternalPackage, func(h *Handler) http.HandlerFunc { return h.handleInspectExternalPackage }),
+	mutationRoute(http.MethodPost, "/_redevplugin/api/plugins/external-packages/commit", websecurity.RouteActionCommitExternalPackage, func(h *Handler) http.HandlerFunc { return h.handleCommitExternalPackage }),
+	queryRoute("/_redevplugin/api/plugins/external-packages/commit/query", websecurity.RouteActionQueryExternalPackageCommit, func(h *Handler) http.HandlerFunc { return h.handleQueryExternalPackageCommit }),
 	mutationRoute(http.MethodPost, "/_redevplugin/api/plugins/enable", websecurity.RouteActionEnablePlugin, func(h *Handler) http.HandlerFunc { return h.handleEnable }),
 	mutationRoute(http.MethodPost, "/_redevplugin/api/plugins/disable", websecurity.RouteActionDisablePlugin, func(h *Handler) http.HandlerFunc { return h.handleDisable }),
 	mutationRoute(http.MethodPost, "/_redevplugin/api/plugins/uninstall", websecurity.RouteActionUninstallPlugin, func(h *Handler) http.HandlerFunc { return h.handleUninstall }),
@@ -1447,6 +1465,63 @@ func (h Handler) handleInstallReleaseRef(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	h.writePluginMutationSuccess(w, r, "release.install.response", record)
+}
+
+func (h Handler) handleInspectExternalPackage(w http.ResponseWriter, r *http.Request) {
+	var req inspectExternalPackageRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeMutationInvalidRequestError(w, err)
+		return
+	}
+	inspection, err := h.host.InspectExternalPackage(r.Context(), host.InspectExternalPackageRequest{Intent: req.Intent, Source: req.Source})
+	if err != nil {
+		code := errorCodeForManagementError(err)
+		writeMutationError(w, httpStatusForManagementError(err), code, h.publicFailureMessage(r.Context(), "external-package.inspect", code, err), errorDetailsForManagementError(err), mutation.ForError(err))
+		return
+	}
+	writeMutationSuccess(w, inspection)
+}
+
+func (h Handler) handleCommitExternalPackage(w http.ResponseWriter, r *http.Request) {
+	var req commitExternalPackageRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeMutationInvalidRequestError(w, err)
+		return
+	}
+	result, err := h.host.CommitExternalPackage(r.Context(), host.CommitExternalPackageRequest{
+		InspectionID: req.InspectionID, ConfirmationDigest: req.ConfirmationDigest,
+	})
+	if err != nil {
+		code := errorCodeForManagementError(err)
+		writeMutationError(w, httpStatusForManagementError(err), code, h.publicFailureMessage(r.Context(), "external-package.commit", code, err), errorDetailsForManagementError(err), mutation.ForError(err))
+		return
+	}
+	projected, err := publicExternalPackageCommitResult(result)
+	if err != nil {
+		h.writeProjectionError(w, r, "external-package.commit.response", err)
+		return
+	}
+	writeMutationSuccess(w, projected)
+}
+
+func (h Handler) handleQueryExternalPackageCommit(w http.ResponseWriter, r *http.Request) {
+	var req queryExternalPackageCommitRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeInvalidRequestError(w, err)
+		return
+	}
+	result, err := h.host.QueryExternalPackageCommit(r.Context(), host.QueryExternalPackageCommitRequest{InspectionID: req.InspectionID, CommitID: req.CommitID})
+	if err != nil {
+		code := errorCodeForManagementError(err)
+		writeError(w, httpStatusForManagementError(err), code, h.publicFailureMessage(r.Context(), "external-package.query", code, err), errorDetailsForManagementError(err))
+		return
+	}
+	projected, err := publicExternalPackageCommitResult(result)
+	if err != nil {
+		h.writeProjectionError(w, r, "external-package.query.response", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, successResponse{OK: true, Data: projected})
 }
 
 func (h Handler) handleEnable(w http.ResponseWriter, r *http.Request) {
@@ -3361,6 +3436,15 @@ func errorCodeForManagementError(err error) security.ErrorCode {
 	switch {
 	case errors.Is(err, host.ErrActionDenied):
 		return security.ErrActionDenied
+	case errors.Is(err, host.ErrExternalPackageCommitBlocked):
+		return security.ErrSignatureInvalid
+	case errors.Is(err, host.ErrExternalPackageConfirmation):
+		return security.ErrConfirmationInvalid
+	case errors.Is(err, host.ErrExternalPackageInspectionNotFound),
+		errors.Is(err, host.ErrExternalPackageInspectionExpired),
+		errors.Is(err, registry.ErrExternalPackageCommitNotFound),
+		errors.Is(err, registry.ErrInvalidExternalPackageCommit):
+		return security.ErrInvalidRequest
 	case errors.Is(err, host.ErrOwnerScopeMismatch), errors.Is(err, connectivity.ErrResourceScopeMismatch):
 		return security.ErrOwnerScopeMismatch
 	case errors.Is(err, host.ErrStorageScopeMismatch):
@@ -3429,6 +3513,14 @@ func httpStatusForManagementError(err error) int {
 	switch {
 	case errors.Is(err, host.ErrAdapterFailure):
 		return http.StatusBadGateway
+	case errors.Is(err, host.ErrExternalPackageCommitBlocked):
+		return http.StatusForbidden
+	case errors.Is(err, host.ErrExternalPackageConfirmation),
+		errors.Is(err, host.ErrExternalPackageInspectionNotFound),
+		errors.Is(err, host.ErrExternalPackageInspectionExpired),
+		errors.Is(err, registry.ErrExternalPackageCommitNotFound),
+		errors.Is(err, registry.ErrInvalidExternalPackageCommit):
+		return http.StatusBadRequest
 	case errors.Is(err, host.ErrManagementRevisionMismatch):
 		return http.StatusConflict
 	case errors.Is(err, host.ErrPluginUIProtocolUnsupported):
