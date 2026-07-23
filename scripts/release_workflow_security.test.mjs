@@ -102,6 +102,9 @@ test("release readback jobs install their required runtime and output directorie
   assert.ok(rustSteps.some((step) => step.run === "npm ci"));
   const goSource = workflow.jobs["verify-go"].steps.map((step) => step.run ?? "").join("\n");
   assert.match(goSource, /mkdir -p dist/);
+  const publicationSteps = workflow.jobs["create-publication"].steps;
+  assert.ok(publicationSteps.some((step) => step.uses?.startsWith("actions/setup-node@") && step.with?.["node-version"] === 24));
+  assert.ok(publicationSteps.some((step) => step.run === "npm ci"));
   const releaseSteps = workflow.jobs["verify-release"].steps;
   assert.ok(releaseSteps.some((step) => step.uses?.startsWith("actions/setup-node@") && step.with?.["node-version"] === 24));
   assert.ok(releaseSteps.some((step) => step.run === "npm ci"));
