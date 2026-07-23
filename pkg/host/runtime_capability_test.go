@@ -13,7 +13,7 @@ import (
 )
 
 func TestRuntimeDescriptorV2UsesClosedValidatedIdentity(t *testing.T) {
-	platform, err := platformversion.ParseSemVer("0.6.5")
+	platform, err := platformversion.ParseSemVer("0.6.6")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -148,7 +148,7 @@ func TestOpenVerifiedExecutableIsSideEffectFreeWhenUnsupported(t *testing.T) {
 
 func testPublicRuntimeDescriptor(t *testing.T, targetValue, binaryDigest string) RuntimeDescriptor {
 	t.Helper()
-	platform, err := platformversion.ParseSemVer("0.6.5")
+	platform, err := platformversion.ParseSemVer("0.6.6")
 	if err != nil {
 		t.Fatal(err)
 	}

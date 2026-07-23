@@ -1,5 +1,18 @@
 # Changelog
 
+## v0.6.6
+
+### Added
+
+- Provide one idempotent owner-scope preparation API that automatically resumes
+  recognized legacy-state migration, retains unowned data in quarantine, and
+  initializes all new durable stores inside the verified active generation.
+
+### Fixed
+
+- Reopen owner-scope migrations without treating normal files created inside
+  the active generation as control-root tampering.
+
 ## v0.6.5
 
 ### Fixed
