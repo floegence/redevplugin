@@ -2,6 +2,18 @@
 
 package ownerscope
 
+type builtInOwnerScopeRootEntry struct {
+	Path        string
+	Scope       string
+	Disposition string
+	Required    bool
+}
+
+type builtInOwnerScopeTreeRules struct {
+	VariableTrees []string
+	OptionalFiles []string
+}
+
 type builtInOwnerScopeMigrationVersion struct {
 	Table    string
 	Versions []int64
@@ -9,6 +21,7 @@ type builtInOwnerScopeMigrationVersion struct {
 
 type builtInOwnerScopeSQLiteDatabase struct {
 	Path              string
+	Required          bool
 	ApplicationID     int64
 	UserVersion       int64
 	MigrationVersions []builtInOwnerScopeMigrationVersion
@@ -20,106 +33,136 @@ type builtInOwnerScopeInventory struct {
 	ID               string
 	SHA256           string
 	PlatformVersions []string
+	RootEntries      []builtInOwnerScopeRootEntry
 	SQLiteDatabases  []builtInOwnerScopeSQLiteDatabase
+	TreeRules        builtInOwnerScopeTreeRules
 }
 
 const (
 	RedevenLegacyInventoryV1       = "redeven-redevplugin-v0.1.0-v0.1.5-layout-v1"
-	BuiltInInventoryRegistrySHA256 = "92a2d6ed3a9038e95285faa108e2186cf9d0df343854741c551f8c4039f91217"
+	RedevenV065InventoryV1         = "redeven-redevplugin-v0.6.5-layout-v1"
+	BuiltInInventoryRegistrySHA256 = "f655313a641368383b3d84b6ea4f6a2a2ef42a44a4dd23f71211361c9c2e0505"
 )
 
 var builtInOwnerScopeInventories = []builtInOwnerScopeInventory{
 	{
 		ID:               "redeven-redevplugin-v0.1.0-v0.1.5-layout-v1",
-		SHA256:           "0ba3fdc48a4ec796f8b7750abe69c7db2dbdca39fe9d661045e68146ff415119",
+		SHA256:           "e6f513082c61639624c3af3d19d1be68ae4bbda866d62986d715861d4d75645b",
 		PlatformVersions: []string{"0.1.0", "0.1.1", "0.1.2", "0.1.3", "0.1.4", "0.1.5"},
+		RootEntries:      []builtInOwnerScopeRootEntry{{Path: "assets", Scope: "durable", Disposition: "quarantine", Required: true}, {Path: "db", Scope: "durable", Disposition: "quarantine", Required: true}, {Path: "storage", Scope: "durable", Disposition: "quarantine", Required: true}, {Path: "trust", Scope: "durable", Disposition: "quarantine", Required: false}},
 		SQLiteDatabases: []builtInOwnerScopeSQLiteDatabase{
-			{Path: "db/browser_site.sqlite", ApplicationID: 0, UserVersion: 0, MigrationVersions: []builtInOwnerScopeMigrationVersion{{Table: "plugin_browser_site_schema_migrations", Versions: []int64{1}}}, SchemaObjectCount: 4, SchemaSHA256: "a7767aacbc70799ee6f847077e27727cac70ae2fdbb84cae2e0fae2d9ab5bffa"},
-			{Path: "db/cleanup.sqlite", ApplicationID: 0, UserVersion: 0, MigrationVersions: []builtInOwnerScopeMigrationVersion{{Table: "plugin_cleanup_schema_migrations", Versions: []int64{1}}}, SchemaObjectCount: 3, SchemaSHA256: "492e855ac577c347fd5c4a916b4be060d08e9703d9deec197bcb1a75a0de9dcc"},
-			{Path: "db/confirmation_intents.sqlite", ApplicationID: 0, UserVersion: 0, MigrationVersions: []builtInOwnerScopeMigrationVersion{{Table: "plugin_confirmation_intent_schema_migrations", Versions: []int64{1}}}, SchemaObjectCount: 4, SchemaSHA256: "dac56fde008efc7d6a21154c5bfbbd43183a8411e0fad20946e88a7550287781"},
-			{Path: "db/install_stage.sqlite", ApplicationID: 0, UserVersion: 0, MigrationVersions: []builtInOwnerScopeMigrationVersion{{Table: "plugin_install_stage_schema_migrations", Versions: []int64{1}}}, SchemaObjectCount: 4, SchemaSHA256: "ee0192641f33bba6c7fc5994d73e2a64e77c129406bd3c2ccfc840780c3cef6a"},
-			{Path: "db/observability.sqlite", ApplicationID: 0, UserVersion: 0, MigrationVersions: []builtInOwnerScopeMigrationVersion{{Table: "plugin_observability_schema_migrations", Versions: []int64{1}}}, SchemaObjectCount: 8, SchemaSHA256: "00e4363c85aaab3cb78d9b357e835490f82975233ee44643a3e238d337da4784"},
-			{Path: "db/operations.sqlite", ApplicationID: 0, UserVersion: 0, MigrationVersions: []builtInOwnerScopeMigrationVersion{{Table: "plugin_operation_schema_migrations", Versions: []int64{1}}}, SchemaObjectCount: 4, SchemaSHA256: "6b89150e03769f618c994f6906f4b588cfaf95159bfd111bd44cfde37b7ff681"},
-			{Path: "db/permissions.sqlite", ApplicationID: 0, UserVersion: 0, MigrationVersions: []builtInOwnerScopeMigrationVersion{{Table: "plugin_permission_schema_migrations", Versions: []int64{1}}}, SchemaObjectCount: 4, SchemaSHA256: "d0b89affc5139c3ae28f0bd178094ceef0046f25b9b27f9b4e1b231624436f46"},
-			{Path: "db/registry.sqlite", ApplicationID: 0, UserVersion: 1, MigrationVersions: []builtInOwnerScopeMigrationVersion{{Table: "plugin_registry_schema_migrations", Versions: []int64{1}}}, SchemaObjectCount: 4, SchemaSHA256: "70b12092bd87a03c8506b174f3a4528ef74a5f953f813b1829b586cdef108cda"},
-			{Path: "db/retained_data.sqlite", ApplicationID: 0, UserVersion: 0, MigrationVersions: []builtInOwnerScopeMigrationVersion{{Table: "plugin_retained_data_schema_migrations", Versions: []int64{1}}}, SchemaObjectCount: 5, SchemaSHA256: "1cdb02a3c5cb5870aadd332de06582df4fcddad098a0b731271beddbc38237b7"},
-			{Path: "db/secrets.sqlite", ApplicationID: 0, UserVersion: 0, MigrationVersions: []builtInOwnerScopeMigrationVersion{{Table: "plugin_secret_schema_migrations", Versions: []int64{1}}}, SchemaObjectCount: 3, SchemaSHA256: "82a9d6ab404b4d3dc485ef1ea9c95530af4460a48506e47ced81953c4b12dd50"},
-			{Path: "db/security_policy.sqlite", ApplicationID: 0, UserVersion: 0, MigrationVersions: []builtInOwnerScopeMigrationVersion{{Table: "plugin_security_policy_schema_migrations", Versions: []int64{1}}}, SchemaObjectCount: 4, SchemaSHA256: "8718fac16ca2cf37e84edd53f6d1c646f2d42e028af2dcc7aee05bdd9bc22dd6"},
-			{Path: "db/settings.sqlite", ApplicationID: 0, UserVersion: 0, MigrationVersions: []builtInOwnerScopeMigrationVersion{{Table: "plugin_settings_schema_migrations", Versions: []int64{1}}}, SchemaObjectCount: 6, SchemaSHA256: "dba0083a1fa88135d6ab50cd0176063688134e684577563022200906a0d5702a"},
-			{Path: "db/streams.sqlite", ApplicationID: 0, UserVersion: 0, MigrationVersions: []builtInOwnerScopeMigrationVersion{{Table: "plugin_stream_schema_migrations", Versions: []int64{1}}}, SchemaObjectCount: 6, SchemaSHA256: "7d2200868c7bd271be8a78cd42aea861bdc2fe46dbc714b08bb4d6251c7510d9"},
+			{Path: "db/browser_site.sqlite", Required: true, ApplicationID: 0, UserVersion: 0, MigrationVersions: []builtInOwnerScopeMigrationVersion{{Table: "plugin_browser_site_schema_migrations", Versions: []int64{1}}}, SchemaObjectCount: 4, SchemaSHA256: "a7767aacbc70799ee6f847077e27727cac70ae2fdbb84cae2e0fae2d9ab5bffa"},
+			{Path: "db/cleanup.sqlite", Required: true, ApplicationID: 0, UserVersion: 0, MigrationVersions: []builtInOwnerScopeMigrationVersion{{Table: "plugin_cleanup_schema_migrations", Versions: []int64{1}}}, SchemaObjectCount: 3, SchemaSHA256: "492e855ac577c347fd5c4a916b4be060d08e9703d9deec197bcb1a75a0de9dcc"},
+			{Path: "db/confirmation_intents.sqlite", Required: true, ApplicationID: 0, UserVersion: 0, MigrationVersions: []builtInOwnerScopeMigrationVersion{{Table: "plugin_confirmation_intent_schema_migrations", Versions: []int64{1}}}, SchemaObjectCount: 4, SchemaSHA256: "dac56fde008efc7d6a21154c5bfbbd43183a8411e0fad20946e88a7550287781"},
+			{Path: "db/install_stage.sqlite", Required: true, ApplicationID: 0, UserVersion: 0, MigrationVersions: []builtInOwnerScopeMigrationVersion{{Table: "plugin_install_stage_schema_migrations", Versions: []int64{1}}}, SchemaObjectCount: 4, SchemaSHA256: "ee0192641f33bba6c7fc5994d73e2a64e77c129406bd3c2ccfc840780c3cef6a"},
+			{Path: "db/observability.sqlite", Required: true, ApplicationID: 0, UserVersion: 0, MigrationVersions: []builtInOwnerScopeMigrationVersion{{Table: "plugin_observability_schema_migrations", Versions: []int64{1}}}, SchemaObjectCount: 8, SchemaSHA256: "00e4363c85aaab3cb78d9b357e835490f82975233ee44643a3e238d337da4784"},
+			{Path: "db/operations.sqlite", Required: true, ApplicationID: 0, UserVersion: 0, MigrationVersions: []builtInOwnerScopeMigrationVersion{{Table: "plugin_operation_schema_migrations", Versions: []int64{1}}}, SchemaObjectCount: 4, SchemaSHA256: "6b89150e03769f618c994f6906f4b588cfaf95159bfd111bd44cfde37b7ff681"},
+			{Path: "db/permissions.sqlite", Required: true, ApplicationID: 0, UserVersion: 0, MigrationVersions: []builtInOwnerScopeMigrationVersion{{Table: "plugin_permission_schema_migrations", Versions: []int64{1}}}, SchemaObjectCount: 4, SchemaSHA256: "d0b89affc5139c3ae28f0bd178094ceef0046f25b9b27f9b4e1b231624436f46"},
+			{Path: "db/registry.sqlite", Required: true, ApplicationID: 0, UserVersion: 1, MigrationVersions: []builtInOwnerScopeMigrationVersion{{Table: "plugin_registry_schema_migrations", Versions: []int64{1}}}, SchemaObjectCount: 4, SchemaSHA256: "70b12092bd87a03c8506b174f3a4528ef74a5f953f813b1829b586cdef108cda"},
+			{Path: "db/retained_data.sqlite", Required: true, ApplicationID: 0, UserVersion: 0, MigrationVersions: []builtInOwnerScopeMigrationVersion{{Table: "plugin_retained_data_schema_migrations", Versions: []int64{1}}}, SchemaObjectCount: 5, SchemaSHA256: "1cdb02a3c5cb5870aadd332de06582df4fcddad098a0b731271beddbc38237b7"},
+			{Path: "db/secrets.sqlite", Required: true, ApplicationID: 0, UserVersion: 0, MigrationVersions: []builtInOwnerScopeMigrationVersion{{Table: "plugin_secret_schema_migrations", Versions: []int64{1}}}, SchemaObjectCount: 3, SchemaSHA256: "82a9d6ab404b4d3dc485ef1ea9c95530af4460a48506e47ced81953c4b12dd50"},
+			{Path: "db/security_policy.sqlite", Required: true, ApplicationID: 0, UserVersion: 0, MigrationVersions: []builtInOwnerScopeMigrationVersion{{Table: "plugin_security_policy_schema_migrations", Versions: []int64{1}}}, SchemaObjectCount: 4, SchemaSHA256: "8718fac16ca2cf37e84edd53f6d1c646f2d42e028af2dcc7aee05bdd9bc22dd6"},
+			{Path: "db/settings.sqlite", Required: true, ApplicationID: 0, UserVersion: 0, MigrationVersions: []builtInOwnerScopeMigrationVersion{{Table: "plugin_settings_schema_migrations", Versions: []int64{1}}}, SchemaObjectCount: 6, SchemaSHA256: "dba0083a1fa88135d6ab50cd0176063688134e684577563022200906a0d5702a"},
+			{Path: "db/streams.sqlite", Required: true, ApplicationID: 0, UserVersion: 0, MigrationVersions: []builtInOwnerScopeMigrationVersion{{Table: "plugin_stream_schema_migrations", Versions: []int64{1}}}, SchemaObjectCount: 6, SchemaSHA256: "7d2200868c7bd271be8a78cd42aea861bdc2fe46dbc714b08bb4d6251c7510d9"},
 		},
+		TreeRules: builtInOwnerScopeTreeRules{VariableTrees: []string{"assets", "storage", "trust"}, OptionalFiles: []string{}},
 	},
 	{
 		ID:               "redeven-redevplugin-v0.1.6-layout-v1",
-		SHA256:           "6c23f14e4ff3c4f8a0e76845b23e005ddb3d79f9bcbc714882ff628c21758851",
+		SHA256:           "38abe81b821fe8580255ee5704608fc18c3bdd4f2c7ef2fbc68b5630728926e0",
 		PlatformVersions: []string{"0.1.6"},
+		RootEntries:      []builtInOwnerScopeRootEntry{{Path: "assets", Scope: "durable", Disposition: "quarantine", Required: true}, {Path: "db", Scope: "durable", Disposition: "quarantine", Required: true}, {Path: "storage", Scope: "durable", Disposition: "quarantine", Required: true}, {Path: "trust", Scope: "durable", Disposition: "quarantine", Required: false}},
 		SQLiteDatabases: []builtInOwnerScopeSQLiteDatabase{
-			{Path: "db/browser_site.sqlite", ApplicationID: 0, UserVersion: 0, MigrationVersions: []builtInOwnerScopeMigrationVersion{{Table: "plugin_browser_site_schema_migrations", Versions: []int64{1}}}, SchemaObjectCount: 4, SchemaSHA256: "a7767aacbc70799ee6f847077e27727cac70ae2fdbb84cae2e0fae2d9ab5bffa"},
-			{Path: "db/cleanup.sqlite", ApplicationID: 0, UserVersion: 0, MigrationVersions: []builtInOwnerScopeMigrationVersion{{Table: "plugin_cleanup_schema_migrations", Versions: []int64{1}}}, SchemaObjectCount: 3, SchemaSHA256: "492e855ac577c347fd5c4a916b4be060d08e9703d9deec197bcb1a75a0de9dcc"},
-			{Path: "db/confirmation_intents.sqlite", ApplicationID: 0, UserVersion: 0, MigrationVersions: []builtInOwnerScopeMigrationVersion{{Table: "plugin_confirmation_intent_schema_migrations", Versions: []int64{1}}}, SchemaObjectCount: 4, SchemaSHA256: "dac56fde008efc7d6a21154c5bfbbd43183a8411e0fad20946e88a7550287781"},
-			{Path: "db/install_stage.sqlite", ApplicationID: 0, UserVersion: 0, MigrationVersions: []builtInOwnerScopeMigrationVersion{{Table: "plugin_install_stage_schema_migrations", Versions: []int64{1}}}, SchemaObjectCount: 4, SchemaSHA256: "ee0192641f33bba6c7fc5994d73e2a64e77c129406bd3c2ccfc840780c3cef6a"},
-			{Path: "db/observability.sqlite", ApplicationID: 0, UserVersion: 0, MigrationVersions: []builtInOwnerScopeMigrationVersion{{Table: "plugin_observability_schema_migrations", Versions: []int64{1}}}, SchemaObjectCount: 8, SchemaSHA256: "00e4363c85aaab3cb78d9b357e835490f82975233ee44643a3e238d337da4784"},
-			{Path: "db/operations.sqlite", ApplicationID: 0, UserVersion: 0, MigrationVersions: []builtInOwnerScopeMigrationVersion{{Table: "plugin_operation_schema_migrations", Versions: []int64{1}}}, SchemaObjectCount: 4, SchemaSHA256: "6b89150e03769f618c994f6906f4b588cfaf95159bfd111bd44cfde37b7ff681"},
-			{Path: "db/permissions.sqlite", ApplicationID: 0, UserVersion: 0, MigrationVersions: []builtInOwnerScopeMigrationVersion{{Table: "plugin_permission_schema_migrations", Versions: []int64{1}}}, SchemaObjectCount: 4, SchemaSHA256: "d0b89affc5139c3ae28f0bd178094ceef0046f25b9b27f9b4e1b231624436f46"},
-			{Path: "db/registry.sqlite", ApplicationID: 0, UserVersion: 5, MigrationVersions: []builtInOwnerScopeMigrationVersion{{Table: "plugin_registry_schema_migrations", Versions: []int64{1, 2, 3, 4, 5}}}, SchemaObjectCount: 5, SchemaSHA256: "e04fe43561aa4e42626060f74912c0fae5dca60a23f32b95e2c219a37b722a3f"},
-			{Path: "db/retained_data.sqlite", ApplicationID: 0, UserVersion: 0, MigrationVersions: []builtInOwnerScopeMigrationVersion{{Table: "plugin_retained_data_schema_migrations", Versions: []int64{1}}}, SchemaObjectCount: 5, SchemaSHA256: "1cdb02a3c5cb5870aadd332de06582df4fcddad098a0b731271beddbc38237b7"},
-			{Path: "db/secrets.sqlite", ApplicationID: 0, UserVersion: 0, MigrationVersions: []builtInOwnerScopeMigrationVersion{{Table: "plugin_secret_schema_migrations", Versions: []int64{1}}}, SchemaObjectCount: 3, SchemaSHA256: "82a9d6ab404b4d3dc485ef1ea9c95530af4460a48506e47ced81953c4b12dd50"},
-			{Path: "db/security_policy.sqlite", ApplicationID: 0, UserVersion: 0, MigrationVersions: []builtInOwnerScopeMigrationVersion{{Table: "plugin_security_policy_schema_migrations", Versions: []int64{1}}}, SchemaObjectCount: 4, SchemaSHA256: "8718fac16ca2cf37e84edd53f6d1c646f2d42e028af2dcc7aee05bdd9bc22dd6"},
-			{Path: "db/settings.sqlite", ApplicationID: 0, UserVersion: 0, MigrationVersions: []builtInOwnerScopeMigrationVersion{{Table: "plugin_settings_schema_migrations", Versions: []int64{1}}}, SchemaObjectCount: 6, SchemaSHA256: "dba0083a1fa88135d6ab50cd0176063688134e684577563022200906a0d5702a"},
-			{Path: "db/streams.sqlite", ApplicationID: 0, UserVersion: 0, MigrationVersions: []builtInOwnerScopeMigrationVersion{{Table: "plugin_stream_schema_migrations", Versions: []int64{1}}}, SchemaObjectCount: 6, SchemaSHA256: "7d2200868c7bd271be8a78cd42aea861bdc2fe46dbc714b08bb4d6251c7510d9"},
+			{Path: "db/browser_site.sqlite", Required: true, ApplicationID: 0, UserVersion: 0, MigrationVersions: []builtInOwnerScopeMigrationVersion{{Table: "plugin_browser_site_schema_migrations", Versions: []int64{1}}}, SchemaObjectCount: 4, SchemaSHA256: "a7767aacbc70799ee6f847077e27727cac70ae2fdbb84cae2e0fae2d9ab5bffa"},
+			{Path: "db/cleanup.sqlite", Required: true, ApplicationID: 0, UserVersion: 0, MigrationVersions: []builtInOwnerScopeMigrationVersion{{Table: "plugin_cleanup_schema_migrations", Versions: []int64{1}}}, SchemaObjectCount: 3, SchemaSHA256: "492e855ac577c347fd5c4a916b4be060d08e9703d9deec197bcb1a75a0de9dcc"},
+			{Path: "db/confirmation_intents.sqlite", Required: true, ApplicationID: 0, UserVersion: 0, MigrationVersions: []builtInOwnerScopeMigrationVersion{{Table: "plugin_confirmation_intent_schema_migrations", Versions: []int64{1}}}, SchemaObjectCount: 4, SchemaSHA256: "dac56fde008efc7d6a21154c5bfbbd43183a8411e0fad20946e88a7550287781"},
+			{Path: "db/install_stage.sqlite", Required: true, ApplicationID: 0, UserVersion: 0, MigrationVersions: []builtInOwnerScopeMigrationVersion{{Table: "plugin_install_stage_schema_migrations", Versions: []int64{1}}}, SchemaObjectCount: 4, SchemaSHA256: "ee0192641f33bba6c7fc5994d73e2a64e77c129406bd3c2ccfc840780c3cef6a"},
+			{Path: "db/observability.sqlite", Required: true, ApplicationID: 0, UserVersion: 0, MigrationVersions: []builtInOwnerScopeMigrationVersion{{Table: "plugin_observability_schema_migrations", Versions: []int64{1}}}, SchemaObjectCount: 8, SchemaSHA256: "00e4363c85aaab3cb78d9b357e835490f82975233ee44643a3e238d337da4784"},
+			{Path: "db/operations.sqlite", Required: true, ApplicationID: 0, UserVersion: 0, MigrationVersions: []builtInOwnerScopeMigrationVersion{{Table: "plugin_operation_schema_migrations", Versions: []int64{1}}}, SchemaObjectCount: 4, SchemaSHA256: "6b89150e03769f618c994f6906f4b588cfaf95159bfd111bd44cfde37b7ff681"},
+			{Path: "db/permissions.sqlite", Required: true, ApplicationID: 0, UserVersion: 0, MigrationVersions: []builtInOwnerScopeMigrationVersion{{Table: "plugin_permission_schema_migrations", Versions: []int64{1}}}, SchemaObjectCount: 4, SchemaSHA256: "d0b89affc5139c3ae28f0bd178094ceef0046f25b9b27f9b4e1b231624436f46"},
+			{Path: "db/registry.sqlite", Required: true, ApplicationID: 0, UserVersion: 5, MigrationVersions: []builtInOwnerScopeMigrationVersion{{Table: "plugin_registry_schema_migrations", Versions: []int64{1, 2, 3, 4, 5}}}, SchemaObjectCount: 5, SchemaSHA256: "e04fe43561aa4e42626060f74912c0fae5dca60a23f32b95e2c219a37b722a3f"},
+			{Path: "db/retained_data.sqlite", Required: true, ApplicationID: 0, UserVersion: 0, MigrationVersions: []builtInOwnerScopeMigrationVersion{{Table: "plugin_retained_data_schema_migrations", Versions: []int64{1}}}, SchemaObjectCount: 5, SchemaSHA256: "1cdb02a3c5cb5870aadd332de06582df4fcddad098a0b731271beddbc38237b7"},
+			{Path: "db/secrets.sqlite", Required: true, ApplicationID: 0, UserVersion: 0, MigrationVersions: []builtInOwnerScopeMigrationVersion{{Table: "plugin_secret_schema_migrations", Versions: []int64{1}}}, SchemaObjectCount: 3, SchemaSHA256: "82a9d6ab404b4d3dc485ef1ea9c95530af4460a48506e47ced81953c4b12dd50"},
+			{Path: "db/security_policy.sqlite", Required: true, ApplicationID: 0, UserVersion: 0, MigrationVersions: []builtInOwnerScopeMigrationVersion{{Table: "plugin_security_policy_schema_migrations", Versions: []int64{1}}}, SchemaObjectCount: 4, SchemaSHA256: "8718fac16ca2cf37e84edd53f6d1c646f2d42e028af2dcc7aee05bdd9bc22dd6"},
+			{Path: "db/settings.sqlite", Required: true, ApplicationID: 0, UserVersion: 0, MigrationVersions: []builtInOwnerScopeMigrationVersion{{Table: "plugin_settings_schema_migrations", Versions: []int64{1}}}, SchemaObjectCount: 6, SchemaSHA256: "dba0083a1fa88135d6ab50cd0176063688134e684577563022200906a0d5702a"},
+			{Path: "db/streams.sqlite", Required: true, ApplicationID: 0, UserVersion: 0, MigrationVersions: []builtInOwnerScopeMigrationVersion{{Table: "plugin_stream_schema_migrations", Versions: []int64{1}}}, SchemaObjectCount: 6, SchemaSHA256: "7d2200868c7bd271be8a78cd42aea861bdc2fe46dbc714b08bb4d6251c7510d9"},
 		},
+		TreeRules: builtInOwnerScopeTreeRules{VariableTrees: []string{"assets", "storage", "trust"}, OptionalFiles: []string{}},
 	},
 	{
 		ID:               "redeven-redevplugin-v0.2.x-layout-v1",
-		SHA256:           "ba293eaecc3c4fe321589925b19cb92eb449ce1b75e5a5bdedaa6a0b07b63796",
+		SHA256:           "0168702b7d7760c96582e2b0b959ceb70281be14e071bab83933fb4a51ccba81",
 		PlatformVersions: []string{"0.2.0", "0.2.1", "0.2.2"},
+		RootEntries:      []builtInOwnerScopeRootEntry{{Path: "assets", Scope: "durable", Disposition: "quarantine", Required: true}, {Path: "db", Scope: "durable", Disposition: "quarantine", Required: true}, {Path: "storage", Scope: "durable", Disposition: "quarantine", Required: true}, {Path: "trust", Scope: "durable", Disposition: "quarantine", Required: false}},
 		SQLiteDatabases: []builtInOwnerScopeSQLiteDatabase{
-			{Path: "db/cleanup.sqlite", ApplicationID: 0, UserVersion: 0, MigrationVersions: []builtInOwnerScopeMigrationVersion{{Table: "plugin_cleanup_schema_migrations", Versions: []int64{1}}}, SchemaObjectCount: 3, SchemaSHA256: "492e855ac577c347fd5c4a916b4be060d08e9703d9deec197bcb1a75a0de9dcc"},
-			{Path: "db/confirmation_intents.sqlite", ApplicationID: 0, UserVersion: 0, MigrationVersions: []builtInOwnerScopeMigrationVersion{{Table: "plugin_confirmation_intent_schema_migrations", Versions: []int64{1}}}, SchemaObjectCount: 4, SchemaSHA256: "dac56fde008efc7d6a21154c5bfbbd43183a8411e0fad20946e88a7550287781"},
-			{Path: "db/install_stage.sqlite", ApplicationID: 0, UserVersion: 0, MigrationVersions: []builtInOwnerScopeMigrationVersion{{Table: "plugin_install_stage_schema_migrations", Versions: []int64{1}}}, SchemaObjectCount: 4, SchemaSHA256: "ee0192641f33bba6c7fc5994d73e2a64e77c129406bd3c2ccfc840780c3cef6a"},
-			{Path: "db/observability.sqlite", ApplicationID: 0, UserVersion: 0, MigrationVersions: []builtInOwnerScopeMigrationVersion{{Table: "plugin_observability_schema_migrations", Versions: []int64{1}}}, SchemaObjectCount: 8, SchemaSHA256: "00e4363c85aaab3cb78d9b357e835490f82975233ee44643a3e238d337da4784"},
-			{Path: "db/operations.sqlite", ApplicationID: 0, UserVersion: 0, MigrationVersions: []builtInOwnerScopeMigrationVersion{{Table: "plugin_operation_schema_migrations", Versions: []int64{1}}}, SchemaObjectCount: 4, SchemaSHA256: "6b89150e03769f618c994f6906f4b588cfaf95159bfd111bd44cfde37b7ff681"},
-			{Path: "db/permissions.sqlite", ApplicationID: 0, UserVersion: 0, MigrationVersions: []builtInOwnerScopeMigrationVersion{{Table: "plugin_permission_schema_migrations", Versions: []int64{1}}}, SchemaObjectCount: 4, SchemaSHA256: "d0b89affc5139c3ae28f0bd178094ceef0046f25b9b27f9b4e1b231624436f46"},
-			{Path: "db/registry.sqlite", ApplicationID: 0, UserVersion: 5, MigrationVersions: []builtInOwnerScopeMigrationVersion{{Table: "plugin_registry_schema_migrations", Versions: []int64{1, 2, 3, 4, 5}}}, SchemaObjectCount: 5, SchemaSHA256: "e04fe43561aa4e42626060f74912c0fae5dca60a23f32b95e2c219a37b722a3f"},
-			{Path: "db/retained_data.sqlite", ApplicationID: 0, UserVersion: 0, MigrationVersions: []builtInOwnerScopeMigrationVersion{{Table: "plugin_retained_data_schema_migrations", Versions: []int64{2}}}, SchemaObjectCount: 5, SchemaSHA256: "b89b7188f7e7d96827750396b1fbf807b607695d342e87a5d5c5aefb832cb1d6"},
-			{Path: "db/secrets.sqlite", ApplicationID: 0, UserVersion: 0, MigrationVersions: []builtInOwnerScopeMigrationVersion{{Table: "plugin_secret_schema_migrations", Versions: []int64{1}}}, SchemaObjectCount: 3, SchemaSHA256: "82a9d6ab404b4d3dc485ef1ea9c95530af4460a48506e47ced81953c4b12dd50"},
-			{Path: "db/security_policy.sqlite", ApplicationID: 0, UserVersion: 0, MigrationVersions: []builtInOwnerScopeMigrationVersion{{Table: "plugin_security_policy_schema_migrations", Versions: []int64{1}}}, SchemaObjectCount: 4, SchemaSHA256: "8718fac16ca2cf37e84edd53f6d1c646f2d42e028af2dcc7aee05bdd9bc22dd6"},
-			{Path: "db/settings.sqlite", ApplicationID: 0, UserVersion: 0, MigrationVersions: []builtInOwnerScopeMigrationVersion{{Table: "plugin_settings_schema_migrations", Versions: []int64{1}}}, SchemaObjectCount: 6, SchemaSHA256: "dba0083a1fa88135d6ab50cd0176063688134e684577563022200906a0d5702a"},
-			{Path: "db/streams.sqlite", ApplicationID: 0, UserVersion: 0, MigrationVersions: []builtInOwnerScopeMigrationVersion{{Table: "plugin_stream_schema_migrations", Versions: []int64{1}}}, SchemaObjectCount: 6, SchemaSHA256: "7d2200868c7bd271be8a78cd42aea861bdc2fe46dbc714b08bb4d6251c7510d9"},
+			{Path: "db/cleanup.sqlite", Required: true, ApplicationID: 0, UserVersion: 0, MigrationVersions: []builtInOwnerScopeMigrationVersion{{Table: "plugin_cleanup_schema_migrations", Versions: []int64{1}}}, SchemaObjectCount: 3, SchemaSHA256: "492e855ac577c347fd5c4a916b4be060d08e9703d9deec197bcb1a75a0de9dcc"},
+			{Path: "db/confirmation_intents.sqlite", Required: true, ApplicationID: 0, UserVersion: 0, MigrationVersions: []builtInOwnerScopeMigrationVersion{{Table: "plugin_confirmation_intent_schema_migrations", Versions: []int64{1}}}, SchemaObjectCount: 4, SchemaSHA256: "dac56fde008efc7d6a21154c5bfbbd43183a8411e0fad20946e88a7550287781"},
+			{Path: "db/install_stage.sqlite", Required: true, ApplicationID: 0, UserVersion: 0, MigrationVersions: []builtInOwnerScopeMigrationVersion{{Table: "plugin_install_stage_schema_migrations", Versions: []int64{1}}}, SchemaObjectCount: 4, SchemaSHA256: "ee0192641f33bba6c7fc5994d73e2a64e77c129406bd3c2ccfc840780c3cef6a"},
+			{Path: "db/observability.sqlite", Required: true, ApplicationID: 0, UserVersion: 0, MigrationVersions: []builtInOwnerScopeMigrationVersion{{Table: "plugin_observability_schema_migrations", Versions: []int64{1}}}, SchemaObjectCount: 8, SchemaSHA256: "00e4363c85aaab3cb78d9b357e835490f82975233ee44643a3e238d337da4784"},
+			{Path: "db/operations.sqlite", Required: true, ApplicationID: 0, UserVersion: 0, MigrationVersions: []builtInOwnerScopeMigrationVersion{{Table: "plugin_operation_schema_migrations", Versions: []int64{1}}}, SchemaObjectCount: 4, SchemaSHA256: "6b89150e03769f618c994f6906f4b588cfaf95159bfd111bd44cfde37b7ff681"},
+			{Path: "db/permissions.sqlite", Required: true, ApplicationID: 0, UserVersion: 0, MigrationVersions: []builtInOwnerScopeMigrationVersion{{Table: "plugin_permission_schema_migrations", Versions: []int64{1}}}, SchemaObjectCount: 4, SchemaSHA256: "d0b89affc5139c3ae28f0bd178094ceef0046f25b9b27f9b4e1b231624436f46"},
+			{Path: "db/registry.sqlite", Required: true, ApplicationID: 0, UserVersion: 5, MigrationVersions: []builtInOwnerScopeMigrationVersion{{Table: "plugin_registry_schema_migrations", Versions: []int64{1, 2, 3, 4, 5}}}, SchemaObjectCount: 5, SchemaSHA256: "e04fe43561aa4e42626060f74912c0fae5dca60a23f32b95e2c219a37b722a3f"},
+			{Path: "db/retained_data.sqlite", Required: true, ApplicationID: 0, UserVersion: 0, MigrationVersions: []builtInOwnerScopeMigrationVersion{{Table: "plugin_retained_data_schema_migrations", Versions: []int64{2}}}, SchemaObjectCount: 5, SchemaSHA256: "b89b7188f7e7d96827750396b1fbf807b607695d342e87a5d5c5aefb832cb1d6"},
+			{Path: "db/secrets.sqlite", Required: true, ApplicationID: 0, UserVersion: 0, MigrationVersions: []builtInOwnerScopeMigrationVersion{{Table: "plugin_secret_schema_migrations", Versions: []int64{1}}}, SchemaObjectCount: 3, SchemaSHA256: "82a9d6ab404b4d3dc485ef1ea9c95530af4460a48506e47ced81953c4b12dd50"},
+			{Path: "db/security_policy.sqlite", Required: true, ApplicationID: 0, UserVersion: 0, MigrationVersions: []builtInOwnerScopeMigrationVersion{{Table: "plugin_security_policy_schema_migrations", Versions: []int64{1}}}, SchemaObjectCount: 4, SchemaSHA256: "8718fac16ca2cf37e84edd53f6d1c646f2d42e028af2dcc7aee05bdd9bc22dd6"},
+			{Path: "db/settings.sqlite", Required: true, ApplicationID: 0, UserVersion: 0, MigrationVersions: []builtInOwnerScopeMigrationVersion{{Table: "plugin_settings_schema_migrations", Versions: []int64{1}}}, SchemaObjectCount: 6, SchemaSHA256: "dba0083a1fa88135d6ab50cd0176063688134e684577563022200906a0d5702a"},
+			{Path: "db/streams.sqlite", Required: true, ApplicationID: 0, UserVersion: 0, MigrationVersions: []builtInOwnerScopeMigrationVersion{{Table: "plugin_stream_schema_migrations", Versions: []int64{1}}}, SchemaObjectCount: 6, SchemaSHA256: "7d2200868c7bd271be8a78cd42aea861bdc2fe46dbc714b08bb4d6251c7510d9"},
 		},
+		TreeRules: builtInOwnerScopeTreeRules{VariableTrees: []string{"assets", "storage", "trust"}, OptionalFiles: []string{}},
 	},
 	{
 		ID:               "redeven-redevplugin-v0.3.x-v0.4.x-layout-v1",
-		SHA256:           "50dabdb89bf60bd0570d0e29ae08448c5c7666362682b58b4b91a4f6a225dac9",
+		SHA256:           "7406a027d7ea57160631a831ab15f767f20920fab5b01336e461d9b320b4307b",
 		PlatformVersions: []string{"0.3.0", "0.3.1", "0.3.2", "0.4.0", "0.4.1", "0.4.2", "0.4.3"},
+		RootEntries:      []builtInOwnerScopeRootEntry{{Path: "assets", Scope: "durable", Disposition: "quarantine", Required: true}, {Path: "db", Scope: "durable", Disposition: "quarantine", Required: true}, {Path: "storage", Scope: "durable", Disposition: "quarantine", Required: true}, {Path: "trust", Scope: "durable", Disposition: "quarantine", Required: false}},
 		SQLiteDatabases: []builtInOwnerScopeSQLiteDatabase{
-			{Path: "db/cleanup.sqlite", ApplicationID: 0, UserVersion: 0, MigrationVersions: []builtInOwnerScopeMigrationVersion{{Table: "plugin_cleanup_schema_migrations", Versions: []int64{1}}}, SchemaObjectCount: 3, SchemaSHA256: "492e855ac577c347fd5c4a916b4be060d08e9703d9deec197bcb1a75a0de9dcc"},
-			{Path: "db/confirmation_intents.sqlite", ApplicationID: 0, UserVersion: 0, MigrationVersions: []builtInOwnerScopeMigrationVersion{{Table: "plugin_confirmation_intent_schema_migrations", Versions: []int64{2}}}, SchemaObjectCount: 4, SchemaSHA256: "dcf763fdc6333835180e6f38565d3d07b8b769100cdcfbec265d1a3d474ab479"},
-			{Path: "db/install_stage.sqlite", ApplicationID: 0, UserVersion: 0, MigrationVersions: []builtInOwnerScopeMigrationVersion{{Table: "plugin_install_stage_schema_migrations", Versions: []int64{1}}}, SchemaObjectCount: 4, SchemaSHA256: "ee0192641f33bba6c7fc5994d73e2a64e77c129406bd3c2ccfc840780c3cef6a"},
-			{Path: "db/observability.sqlite", ApplicationID: 0, UserVersion: 0, MigrationVersions: []builtInOwnerScopeMigrationVersion{{Table: "plugin_observability_schema_migrations", Versions: []int64{1}}}, SchemaObjectCount: 8, SchemaSHA256: "00e4363c85aaab3cb78d9b357e835490f82975233ee44643a3e238d337da4784"},
-			{Path: "db/operations.sqlite", ApplicationID: 0, UserVersion: 0, MigrationVersions: []builtInOwnerScopeMigrationVersion{{Table: "plugin_operation_schema_migrations", Versions: []int64{2, 3}}}, SchemaObjectCount: 4, SchemaSHA256: "7d5d2e372f7a8ded7678f87bbc115d4c2b69d07de7b8b6eb929bad94b516ac1c"},
-			{Path: "db/permissions.sqlite", ApplicationID: 0, UserVersion: 0, MigrationVersions: []builtInOwnerScopeMigrationVersion{{Table: "plugin_permission_schema_migrations", Versions: []int64{1}}}, SchemaObjectCount: 4, SchemaSHA256: "d0b89affc5139c3ae28f0bd178094ceef0046f25b9b27f9b4e1b231624436f46"},
-			{Path: "db/registry.sqlite", ApplicationID: 0, UserVersion: 6, MigrationVersions: []builtInOwnerScopeMigrationVersion{{Table: "plugin_registry_schema_migrations", Versions: []int64{1, 2, 3, 4, 5, 6}}}, SchemaObjectCount: 5, SchemaSHA256: "84f9a634f65a3efa7c3bc42b2625e77a26d854153f6d9ae6031f7b172a430b1e"},
-			{Path: "db/retained_data.sqlite", ApplicationID: 0, UserVersion: 0, MigrationVersions: []builtInOwnerScopeMigrationVersion{{Table: "plugin_retained_data_schema_migrations", Versions: []int64{2}}}, SchemaObjectCount: 5, SchemaSHA256: "b89b7188f7e7d96827750396b1fbf807b607695d342e87a5d5c5aefb832cb1d6"},
-			{Path: "db/secrets.sqlite", ApplicationID: 0, UserVersion: 0, MigrationVersions: []builtInOwnerScopeMigrationVersion{{Table: "plugin_secret_schema_migrations", Versions: []int64{1}}}, SchemaObjectCount: 3, SchemaSHA256: "82a9d6ab404b4d3dc485ef1ea9c95530af4460a48506e47ced81953c4b12dd50"},
-			{Path: "db/security_policy.sqlite", ApplicationID: 0, UserVersion: 0, MigrationVersions: []builtInOwnerScopeMigrationVersion{{Table: "plugin_security_policy_schema_migrations", Versions: []int64{1}}}, SchemaObjectCount: 4, SchemaSHA256: "8718fac16ca2cf37e84edd53f6d1c646f2d42e028af2dcc7aee05bdd9bc22dd6"},
-			{Path: "db/settings.sqlite", ApplicationID: 0, UserVersion: 0, MigrationVersions: []builtInOwnerScopeMigrationVersion{{Table: "plugin_settings_schema_migrations", Versions: []int64{1}}}, SchemaObjectCount: 6, SchemaSHA256: "dba0083a1fa88135d6ab50cd0176063688134e684577563022200906a0d5702a"},
-			{Path: "db/streams.sqlite", ApplicationID: 0, UserVersion: 0, MigrationVersions: []builtInOwnerScopeMigrationVersion{{Table: "plugin_stream_schema_migrations", Versions: []int64{2, 3}}}, SchemaObjectCount: 6, SchemaSHA256: "955856942aa0c74f96a1f1e02f7b406f71007d4eff40e7d6836d45ba85459690"},
+			{Path: "db/cleanup.sqlite", Required: true, ApplicationID: 0, UserVersion: 0, MigrationVersions: []builtInOwnerScopeMigrationVersion{{Table: "plugin_cleanup_schema_migrations", Versions: []int64{1}}}, SchemaObjectCount: 3, SchemaSHA256: "492e855ac577c347fd5c4a916b4be060d08e9703d9deec197bcb1a75a0de9dcc"},
+			{Path: "db/confirmation_intents.sqlite", Required: true, ApplicationID: 0, UserVersion: 0, MigrationVersions: []builtInOwnerScopeMigrationVersion{{Table: "plugin_confirmation_intent_schema_migrations", Versions: []int64{2}}}, SchemaObjectCount: 4, SchemaSHA256: "dcf763fdc6333835180e6f38565d3d07b8b769100cdcfbec265d1a3d474ab479"},
+			{Path: "db/install_stage.sqlite", Required: true, ApplicationID: 0, UserVersion: 0, MigrationVersions: []builtInOwnerScopeMigrationVersion{{Table: "plugin_install_stage_schema_migrations", Versions: []int64{1}}}, SchemaObjectCount: 4, SchemaSHA256: "ee0192641f33bba6c7fc5994d73e2a64e77c129406bd3c2ccfc840780c3cef6a"},
+			{Path: "db/observability.sqlite", Required: true, ApplicationID: 0, UserVersion: 0, MigrationVersions: []builtInOwnerScopeMigrationVersion{{Table: "plugin_observability_schema_migrations", Versions: []int64{1}}}, SchemaObjectCount: 8, SchemaSHA256: "00e4363c85aaab3cb78d9b357e835490f82975233ee44643a3e238d337da4784"},
+			{Path: "db/operations.sqlite", Required: true, ApplicationID: 0, UserVersion: 0, MigrationVersions: []builtInOwnerScopeMigrationVersion{{Table: "plugin_operation_schema_migrations", Versions: []int64{2, 3}}}, SchemaObjectCount: 4, SchemaSHA256: "7d5d2e372f7a8ded7678f87bbc115d4c2b69d07de7b8b6eb929bad94b516ac1c"},
+			{Path: "db/permissions.sqlite", Required: true, ApplicationID: 0, UserVersion: 0, MigrationVersions: []builtInOwnerScopeMigrationVersion{{Table: "plugin_permission_schema_migrations", Versions: []int64{1}}}, SchemaObjectCount: 4, SchemaSHA256: "d0b89affc5139c3ae28f0bd178094ceef0046f25b9b27f9b4e1b231624436f46"},
+			{Path: "db/registry.sqlite", Required: true, ApplicationID: 0, UserVersion: 6, MigrationVersions: []builtInOwnerScopeMigrationVersion{{Table: "plugin_registry_schema_migrations", Versions: []int64{1, 2, 3, 4, 5, 6}}}, SchemaObjectCount: 5, SchemaSHA256: "84f9a634f65a3efa7c3bc42b2625e77a26d854153f6d9ae6031f7b172a430b1e"},
+			{Path: "db/retained_data.sqlite", Required: true, ApplicationID: 0, UserVersion: 0, MigrationVersions: []builtInOwnerScopeMigrationVersion{{Table: "plugin_retained_data_schema_migrations", Versions: []int64{2}}}, SchemaObjectCount: 5, SchemaSHA256: "b89b7188f7e7d96827750396b1fbf807b607695d342e87a5d5c5aefb832cb1d6"},
+			{Path: "db/secrets.sqlite", Required: true, ApplicationID: 0, UserVersion: 0, MigrationVersions: []builtInOwnerScopeMigrationVersion{{Table: "plugin_secret_schema_migrations", Versions: []int64{1}}}, SchemaObjectCount: 3, SchemaSHA256: "82a9d6ab404b4d3dc485ef1ea9c95530af4460a48506e47ced81953c4b12dd50"},
+			{Path: "db/security_policy.sqlite", Required: true, ApplicationID: 0, UserVersion: 0, MigrationVersions: []builtInOwnerScopeMigrationVersion{{Table: "plugin_security_policy_schema_migrations", Versions: []int64{1}}}, SchemaObjectCount: 4, SchemaSHA256: "8718fac16ca2cf37e84edd53f6d1c646f2d42e028af2dcc7aee05bdd9bc22dd6"},
+			{Path: "db/settings.sqlite", Required: true, ApplicationID: 0, UserVersion: 0, MigrationVersions: []builtInOwnerScopeMigrationVersion{{Table: "plugin_settings_schema_migrations", Versions: []int64{1}}}, SchemaObjectCount: 6, SchemaSHA256: "dba0083a1fa88135d6ab50cd0176063688134e684577563022200906a0d5702a"},
+			{Path: "db/streams.sqlite", Required: true, ApplicationID: 0, UserVersion: 0, MigrationVersions: []builtInOwnerScopeMigrationVersion{{Table: "plugin_stream_schema_migrations", Versions: []int64{2, 3}}}, SchemaObjectCount: 6, SchemaSHA256: "955856942aa0c74f96a1f1e02f7b406f71007d4eff40e7d6836d45ba85459690"},
 		},
+		TreeRules: builtInOwnerScopeTreeRules{VariableTrees: []string{"assets", "storage", "trust"}, OptionalFiles: []string{}},
 	},
 	{
 		ID:               "redeven-redevplugin-v0.5.x-layout-v1",
-		SHA256:           "fc8ce76104250b34208e0b25ebad4b91156a949b5554a6d19cf0841c8e2eabee",
+		SHA256:           "2cccd5b2099f264164849c9cdfd133a68dd5ba636b666b388235362070986727",
 		PlatformVersions: []string{"0.5.0", "0.5.1"},
+		RootEntries:      []builtInOwnerScopeRootEntry{{Path: "assets", Scope: "durable", Disposition: "quarantine", Required: true}, {Path: "db", Scope: "durable", Disposition: "quarantine", Required: true}, {Path: "storage", Scope: "durable", Disposition: "quarantine", Required: true}, {Path: "trust", Scope: "durable", Disposition: "quarantine", Required: false}},
 		SQLiteDatabases: []builtInOwnerScopeSQLiteDatabase{
-			{Path: "db/confirmation_intents.sqlite", ApplicationID: 0, UserVersion: 0, MigrationVersions: []builtInOwnerScopeMigrationVersion{}, SchemaObjectCount: 3, SchemaSHA256: "7eb520796c80550cceab8b71f8394f831122baaa1ac7a098420be86a4ad53cc9"},
-			{Path: "db/install_stage.sqlite", ApplicationID: 0, UserVersion: 0, MigrationVersions: []builtInOwnerScopeMigrationVersion{}, SchemaObjectCount: 3, SchemaSHA256: "aa45772cf36b9005142d210fb2e1a2b2b23a9012ed25cd587ad8d89235f2134b"},
-			{Path: "db/observability.sqlite", ApplicationID: 0, UserVersion: 0, MigrationVersions: []builtInOwnerScopeMigrationVersion{}, SchemaObjectCount: 11, SchemaSHA256: "230d789557736cc47b4c0d760d46a4c58ce7575f57e4779e010db5539865c666"},
-			{Path: "db/operations.sqlite", ApplicationID: 0, UserVersion: 0, MigrationVersions: []builtInOwnerScopeMigrationVersion{}, SchemaObjectCount: 9, SchemaSHA256: "6cb266bb6e06d4e9926bfd1513c3acdbcd6b2f7e8e988758baa29b497c1f3eba"},
-			{Path: "db/registry.sqlite", ApplicationID: 0, UserVersion: 0, MigrationVersions: []builtInOwnerScopeMigrationVersion{}, SchemaObjectCount: 10, SchemaSHA256: "fb1d3c89eccea640d8f11261bcdd5e09a297a4253f5ca13ae0bc953ff3e189a9"},
-			{Path: "db/runtime_lease_replays.sqlite", ApplicationID: 0, UserVersion: 0, MigrationVersions: []builtInOwnerScopeMigrationVersion{}, SchemaObjectCount: 2, SchemaSHA256: "a4428fbd7cb8614384b539b583e0653460b8bafa24238dc23b9e916d447393a9"},
-			{Path: "db/secrets.sqlite", ApplicationID: 0, UserVersion: 0, MigrationVersions: []builtInOwnerScopeMigrationVersion{}, SchemaObjectCount: 2, SchemaSHA256: "4f5f0abf69b4c9ab1558f349640ffa2de6755b60d5e121886fa402e8c7eaa27b"},
-			{Path: "db/streams.sqlite", ApplicationID: 0, UserVersion: 0, MigrationVersions: []builtInOwnerScopeMigrationVersion{}, SchemaObjectCount: 6, SchemaSHA256: "12a5810b5112819cb046f40491d8a014856c8209185ce471706158c1a816b2a3"},
+			{Path: "db/confirmation_intents.sqlite", Required: true, ApplicationID: 0, UserVersion: 0, MigrationVersions: []builtInOwnerScopeMigrationVersion{}, SchemaObjectCount: 3, SchemaSHA256: "7eb520796c80550cceab8b71f8394f831122baaa1ac7a098420be86a4ad53cc9"},
+			{Path: "db/install_stage.sqlite", Required: true, ApplicationID: 0, UserVersion: 0, MigrationVersions: []builtInOwnerScopeMigrationVersion{}, SchemaObjectCount: 3, SchemaSHA256: "aa45772cf36b9005142d210fb2e1a2b2b23a9012ed25cd587ad8d89235f2134b"},
+			{Path: "db/observability.sqlite", Required: true, ApplicationID: 0, UserVersion: 0, MigrationVersions: []builtInOwnerScopeMigrationVersion{}, SchemaObjectCount: 11, SchemaSHA256: "230d789557736cc47b4c0d760d46a4c58ce7575f57e4779e010db5539865c666"},
+			{Path: "db/operations.sqlite", Required: true, ApplicationID: 0, UserVersion: 0, MigrationVersions: []builtInOwnerScopeMigrationVersion{}, SchemaObjectCount: 9, SchemaSHA256: "6cb266bb6e06d4e9926bfd1513c3acdbcd6b2f7e8e988758baa29b497c1f3eba"},
+			{Path: "db/registry.sqlite", Required: true, ApplicationID: 0, UserVersion: 0, MigrationVersions: []builtInOwnerScopeMigrationVersion{}, SchemaObjectCount: 10, SchemaSHA256: "fb1d3c89eccea640d8f11261bcdd5e09a297a4253f5ca13ae0bc953ff3e189a9"},
+			{Path: "db/runtime_lease_replays.sqlite", Required: true, ApplicationID: 0, UserVersion: 0, MigrationVersions: []builtInOwnerScopeMigrationVersion{}, SchemaObjectCount: 2, SchemaSHA256: "a4428fbd7cb8614384b539b583e0653460b8bafa24238dc23b9e916d447393a9"},
+			{Path: "db/secrets.sqlite", Required: true, ApplicationID: 0, UserVersion: 0, MigrationVersions: []builtInOwnerScopeMigrationVersion{}, SchemaObjectCount: 2, SchemaSHA256: "4f5f0abf69b4c9ab1558f349640ffa2de6755b60d5e121886fa402e8c7eaa27b"},
+			{Path: "db/streams.sqlite", Required: true, ApplicationID: 0, UserVersion: 0, MigrationVersions: []builtInOwnerScopeMigrationVersion{}, SchemaObjectCount: 6, SchemaSHA256: "12a5810b5112819cb046f40491d8a014856c8209185ce471706158c1a816b2a3"},
 		},
+		TreeRules: builtInOwnerScopeTreeRules{VariableTrees: []string{"assets", "storage", "trust"}, OptionalFiles: []string{}},
+	},
+	{
+		ID:               "redeven-redevplugin-v0.6.5-layout-v1",
+		SHA256:           "d9deb5823d95da19d41e9edfd738bf6ada62fe5e2e5e72d1af55d49ae89e7dd4",
+		PlatformVersions: []string{"0.6.5"},
+		RootEntries:      []builtInOwnerScopeRootEntry{{Path: "assets", Scope: "durable", Disposition: "quarantine", Required: false}, {Path: "db", Scope: "durable", Disposition: "quarantine", Required: true}, {Path: "runtime-exec", Scope: "durable", Disposition: "quarantine", Required: false}, {Path: "storage", Scope: "durable", Disposition: "quarantine", Required: false}, {Path: "trust", Scope: "durable", Disposition: "quarantine", Required: false}},
+		SQLiteDatabases: []builtInOwnerScopeSQLiteDatabase{
+			{Path: "db/confirmation_intents.sqlite", Required: false, ApplicationID: 0, UserVersion: 0, MigrationVersions: []builtInOwnerScopeMigrationVersion{}, SchemaObjectCount: 5, SchemaSHA256: "519a7fa2c9825ec7b1a7bf89dd2036ee6e9bea465e38c90f3c53fe87215ad666"},
+			{Path: "db/install_stage.sqlite", Required: false, ApplicationID: 0, UserVersion: 0, MigrationVersions: []builtInOwnerScopeMigrationVersion{}, SchemaObjectCount: 3, SchemaSHA256: "aa45772cf36b9005142d210fb2e1a2b2b23a9012ed25cd587ad8d89235f2134b"},
+			{Path: "db/observability.sqlite", Required: false, ApplicationID: 0, UserVersion: 0, MigrationVersions: []builtInOwnerScopeMigrationVersion{}, SchemaObjectCount: 11, SchemaSHA256: "230d789557736cc47b4c0d760d46a4c58ce7575f57e4779e010db5539865c666"},
+			{Path: "db/operations.sqlite", Required: false, ApplicationID: 0, UserVersion: 0, MigrationVersions: []builtInOwnerScopeMigrationVersion{}, SchemaObjectCount: 9, SchemaSHA256: "6cb266bb6e06d4e9926bfd1513c3acdbcd6b2f7e8e988758baa29b497c1f3eba"},
+			{Path: "db/registry.sqlite", Required: false, ApplicationID: 0, UserVersion: 0, MigrationVersions: []builtInOwnerScopeMigrationVersion{}, SchemaObjectCount: 9, SchemaSHA256: "a9d182e0fffcf964b28d2b73cf184612d903f8d529b674a3e577f372d1ecd2ce"},
+			{Path: "db/secrets.sqlite", Required: false, ApplicationID: 0, UserVersion: 0, MigrationVersions: []builtInOwnerScopeMigrationVersion{}, SchemaObjectCount: 2, SchemaSHA256: "4f5f0abf69b4c9ab1558f349640ffa2de6755b60d5e121886fa402e8c7eaa27b"},
+			{Path: "db/session_scopes.sqlite", Required: false, ApplicationID: 0, UserVersion: 1, MigrationVersions: []builtInOwnerScopeMigrationVersion{}, SchemaObjectCount: 2, SchemaSHA256: "b1f5b90217de3a94ec62943935e1b57774017e8af383fc3eddb64710e335fe61"},
+			{Path: "db/streams.sqlite", Required: false, ApplicationID: 0, UserVersion: 0, MigrationVersions: []builtInOwnerScopeMigrationVersion{}, SchemaObjectCount: 7, SchemaSHA256: "740609493bc7525429a1ddc010c93b3516009ee76d9b0d926f7e255e4b970f21"},
+		},
+		TreeRules: builtInOwnerScopeTreeRules{VariableTrees: []string{"assets", "runtime-exec", "storage", "trust"}, OptionalFiles: []string{"db/closed_sessions.json"}},
 	},
 }

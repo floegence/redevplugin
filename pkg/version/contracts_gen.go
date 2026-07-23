@@ -146,13 +146,13 @@ var generatedContractArtifacts = []ContractArtifact{
 		ID:      "owner-scope-inventory-registry",
 		Path:    "spec/plugin/owner-scope-inventories-v1.json",
 		Version: "owner-scope-inventory-registry-v1",
-		SHA256:  "92a2d6ed3a9038e95285faa108e2186cf9d0df343854741c551f8c4039f91217",
+		SHA256:  "f655313a641368383b3d84b6ea4f6a2a2ef42a44a4dd23f71211361c9c2e0505",
 	},
 	{
 		ID:      "owner-scope-inventory-schema",
 		Path:    "spec/plugin/owner-scope-inventory-v1.schema.json",
 		Version: "owner-scope-inventory-v1",
-		SHA256:  "972e4fe3cc74339c211ba8a50951ad0f4ae4265d3d34b20f03d0e4888638e254",
+		SHA256:  "21dc4980103f3a36f4252ce141d7350476ec00968e8a320695e450274e928be1",
 	},
 	{
 		ID:      "owner-scope-migration-schema",

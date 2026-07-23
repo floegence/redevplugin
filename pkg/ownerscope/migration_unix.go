@@ -833,33 +833,47 @@ func matchBuiltInInventory(root *os.File, snapshot rootSnapshot) (string, string
 		}
 		return "", "", nil, ErrOwnerScopeMigrationRequired
 	}
-	stores := []migrationStoreV1{
-		{ID: "assets", Scope: "durable", Disposition: string(StoreDispositionQuarantine)},
-		{ID: "db", Scope: "durable", Disposition: string(StoreDispositionQuarantine)},
-		{ID: "storage", Scope: "durable", Disposition: string(StoreDispositionQuarantine)},
+	stores := make([]migrationStoreV1, 0, len(matches[0].RootEntries))
+	for _, entry := range matches[0].RootEntries {
+		if snapshotHasRoot(snapshot, entry.Path) {
+			stores = append(stores, migrationStoreV1{ID: entry.Path, Scope: entry.Scope, Disposition: entry.Disposition})
+		}
 	}
 	return matches[0].ID, matches[0].SHA256, stores, nil
 }
 
 func snapshotMatchesInventoryLayout(snapshot rootSnapshot, inventory builtInOwnerScopeInventory) bool {
-	expectedDatabases := make(map[string]struct{}, len(inventory.SQLiteDatabases))
+	expectedRoots := make(map[string]builtInOwnerScopeRootEntry, len(inventory.RootEntries))
+	for _, entry := range inventory.RootEntries {
+		expectedRoots[entry.Path] = entry
+	}
+	variableTrees := make(map[string]struct{}, len(inventory.TreeRules.VariableTrees))
+	for _, path := range inventory.TreeRules.VariableTrees {
+		variableTrees[path] = struct{}{}
+	}
+	optionalFiles := make(map[string]struct{}, len(inventory.TreeRules.OptionalFiles))
+	for _, path := range inventory.TreeRules.OptionalFiles {
+		optionalFiles[path] = struct{}{}
+	}
+	expectedDatabases := make(map[string]builtInOwnerScopeSQLiteDatabase, len(inventory.SQLiteDatabases))
 	for _, database := range inventory.SQLiteDatabases {
-		expectedDatabases[strings.TrimPrefix(database.Path, "db/")] = struct{}{}
+		expectedDatabases[strings.TrimPrefix(database.Path, "db/")] = database
 	}
 	seenRoots := map[string]bool{}
 	seenDatabases := make(map[string]bool, len(expectedDatabases))
 	for _, entry := range snapshot.entries {
 		parts := strings.Split(entry.Path, "/")
 		if len(parts) == 1 {
-			if entry.Kind != "directory" || (parts[0] != "assets" && parts[0] != "db" && parts[0] != "storage") {
+			if _, exists := expectedRoots[parts[0]]; entry.Kind != "directory" || !exists {
 				return false
 			}
 			seenRoots[parts[0]] = true
 			continue
 		}
-		switch parts[0] {
-		case "assets", "storage":
+		if _, exists := variableTrees[parts[0]]; exists {
 			continue
+		}
+		switch parts[0] {
 		case "db":
 			if len(parts) != 2 || entry.Kind != "file" {
 				return false
@@ -875,12 +889,34 @@ func snapshotMatchesInventoryLayout(snapshot rootSnapshot, inventory builtInOwne
 					continue
 				}
 			}
+			if _, exists := optionalFiles[entry.Path]; exists {
+				continue
+			}
 			return false
 		default:
 			return false
 		}
 	}
-	return seenRoots["assets"] && seenRoots["db"] && seenRoots["storage"] && len(seenRoots) == 3 && len(seenDatabases) == len(expectedDatabases)
+	for path, expected := range expectedRoots {
+		if expected.Required && !seenRoots[path] {
+			return false
+		}
+	}
+	for name, expected := range expectedDatabases {
+		if expected.Required && !seenDatabases[name] {
+			return false
+		}
+	}
+	return true
+}
+
+func snapshotHasRoot(snapshot rootSnapshot, path string) bool {
+	for _, entry := range snapshot.entries {
+		if entry.Path == path && entry.Kind == "directory" {
+			return true
+		}
+	}
+	return false
 }
 
 func validateSQLiteDatabase(root *os.File, expected builtInOwnerScopeSQLiteDatabase) (bool, error) {
@@ -892,10 +928,22 @@ func validateSQLiteDatabase(root *os.File, expected builtInOwnerScopeSQLiteDatab
 
 	name := filepath.Base(expected.Path)
 	for _, suffix := range []string{"", "-wal", "-shm"} {
-		required := suffix == ""
+		required := suffix == "" && expected.Required
 		if err := copySQLiteInventoryFile(root, expected.Path+suffix, filepath.Join(temporaryRoot, name+suffix), required); err != nil {
 			return false, err
 		}
+	}
+	if _, err := os.Stat(filepath.Join(temporaryRoot, name)); errors.Is(err, os.ErrNotExist) && !expected.Required {
+		for _, suffix := range []string{"-wal", "-shm"} {
+			if _, sidecarErr := os.Stat(filepath.Join(temporaryRoot, name+suffix)); sidecarErr == nil {
+				return false, nil
+			} else if !errors.Is(sidecarErr, os.ErrNotExist) {
+				return false, sidecarErr
+			}
+		}
+		return true, nil
+	} else if err != nil {
+		return false, err
 	}
 	database, err := sql.Open("sqlite", filepath.Join(temporaryRoot, name))
 	if err != nil {

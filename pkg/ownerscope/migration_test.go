@@ -80,6 +80,41 @@ func TestPrepareOwnerScopeGenerationAutomaticallyMigratesLegacyState(t *testing.
 	}
 }
 
+func TestPrepareOwnerScopeGenerationMigratesLegacyStateWithV065TrustOverlay(t *testing.T) {
+	rootPath := t.TempDir()
+	writeRedevenLegacyInventory(t, rootPath)
+	trustPath := filepath.Join(rootPath, "trust", "trusted-time", "marker")
+	if err := os.MkdirAll(filepath.Dir(trustPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(trustPath, []byte("trust-overlay"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	generation, err := PrepareOwnerScopeGeneration(context.Background(), rootPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if generation.Status.InventoryID != RedevenLegacyInventoryV1 || generation.Status.State != StateFreshCommitted {
+		t.Fatalf("prepared generation status = %#v", generation.Status)
+	}
+	quarantinedTrust := filepath.Join(rootPath, quarantineDirectory, generation.Status.QuarantineID.String(), "trust", "trusted-time", "marker")
+	if raw, err := os.ReadFile(quarantinedTrust); err != nil || string(raw) != "trust-overlay" {
+		t.Fatalf("quarantined trust overlay = %q, %v", raw, err)
+	}
+
+	reopened, err := PrepareOwnerScopeGeneration(context.Background(), rootPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reopened.Path != generation.Path || reopened.Status.FreshGenerationID != generation.Status.FreshGenerationID {
+		t.Fatalf("reopened generation = %#v, want path %q and id %q", reopened, generation.Path, generation.Status.FreshGenerationID)
+	}
+	if raw, err := os.ReadFile(quarantinedTrust); err != nil || string(raw) != "trust-overlay" {
+		t.Fatalf("retained trust overlay = %q, %v", raw, err)
+	}
+}
+
 func TestPrepareOwnerScopeGenerationCommitsFreshInstall(t *testing.T) {
 	rootPath := t.TempDir()
 	generation, err := PrepareOwnerScopeGeneration(context.Background(), rootPath)
@@ -374,6 +409,155 @@ func TestOpenOwnerScopeMigrationSelectsEveryBuiltInHistoricalInventory(t *testin
 				t.Fatalf("prepared status = %#v", status)
 			}
 		})
+	}
+}
+
+func TestPrepareOwnerScopeGenerationMigratesCompleteV065State(t *testing.T) {
+	rootPath := t.TempDir()
+	writeLegacyInventory(t, rootPath, RedevenV065InventoryV1)
+	files := map[string]string{
+		"db/closed_sessions.json":          `{"sessions":[]}`,
+		"runtime-exec/runtime":             "runtime",
+		"trust/trusted-time/checkpoint":    "checkpoint",
+		"assets/packages/package.bin":      "package",
+		"storage/objects/environment/data": "data",
+	}
+	for relative, contents := range files {
+		path := filepath.Join(rootPath, filepath.FromSlash(relative))
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	generation, err := PrepareOwnerScopeGeneration(context.Background(), rootPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if generation.Status.InventoryID != RedevenV065InventoryV1 || generation.Status.State != StateFreshCommitted || generation.Status.QuarantineID.IsZero() {
+		t.Fatalf("prepared generation status = %#v", generation.Status)
+	}
+	quarantineRoot := filepath.Join(rootPath, quarantineDirectory, generation.Status.QuarantineID.String())
+	for relative, contents := range files {
+		path := filepath.Join(quarantineRoot, filepath.FromSlash(relative))
+		if raw, err := os.ReadFile(path); err != nil || string(raw) != contents {
+			t.Fatalf("quarantined %s = %q, %v", relative, raw, err)
+		}
+	}
+	for _, root := range []string{"assets", "db", "runtime-exec", "storage", "trust"} {
+		if _, err := os.Stat(filepath.Join(rootPath, root)); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("legacy root %s remains active: %v", root, err)
+		}
+		if info, err := os.Stat(filepath.Join(quarantineRoot, root)); err != nil || !info.IsDir() {
+			t.Fatalf("quarantined root %s = %#v, %v", root, info, err)
+		}
+	}
+
+	reopened, err := PrepareOwnerScopeGeneration(context.Background(), rootPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reopened.Path != generation.Path || reopened.Status.FreshGenerationID != generation.Status.FreshGenerationID {
+		t.Fatalf("reopened generation = %#v, want %#v", reopened, generation)
+	}
+}
+
+func TestOpenOwnerScopeMigrationAcceptsInterruptedV065Initialization(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		databaseID string
+	}{
+		{name: "database-root-only"},
+		{name: "single-database", databaseID: "db/registry.sqlite"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			rootPath := t.TempDir()
+			if err := os.Mkdir(filepath.Join(rootPath, "db"), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if test.databaseID != "" {
+				inventory := inventoryFixtureByID(t, RedevenV065InventoryV1)
+				found := false
+				for index := range inventory.SQLiteDatabases {
+					if inventory.SQLiteDatabases[index].Path == test.databaseID {
+						writeInventoryDatabase(t, rootPath, inventory.SQLiteDatabases[index])
+						found = true
+						break
+					}
+				}
+				if !found {
+					t.Fatalf("database fixture %q not found", test.databaseID)
+				}
+			}
+			root := openMigrationRoot(t, rootPath)
+			migration, err := OpenOwnerScopeMigration(root, OwnerScopeMigrationOptions{})
+			root.Close()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer migration.Close()
+			if status := migration.Status(); status.State != StatePrepared || status.InventoryID != RedevenV065InventoryV1 {
+				t.Fatalf("prepared status = %#v", status)
+			}
+		})
+	}
+}
+
+func TestOpenOwnerScopeMigrationRejectsUnknownInterruptedV065StateWithoutMutation(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		path string
+	}{
+		{name: "unknown-database", path: "db/unknown.sqlite"},
+		{name: "sqlite-sidecar-without-main", path: "db/registry.sqlite-wal"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			rootPath := t.TempDir()
+			path := filepath.Join(rootPath, filepath.FromSlash(test.path))
+			if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, []byte("unknown"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			root := openMigrationRoot(t, rootPath)
+			migration, err := OpenOwnerScopeMigration(root, OwnerScopeMigrationOptions{})
+			root.Close()
+			if migration != nil || !errors.Is(err, ErrOwnerScopeMigrationRequired) {
+				t.Fatalf("OpenOwnerScopeMigration() = %#v, %v", migration, err)
+			}
+			if raw, err := os.ReadFile(path); err != nil || string(raw) != "unknown" {
+				t.Fatalf("rejected state changed = %q, %v", raw, err)
+			}
+			if _, err := os.Stat(filepath.Join(rootPath, MigrationJournalName)); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("rejected root wrote a journal: %v", err)
+			}
+		})
+	}
+}
+
+func TestOpenOwnerScopeMigrationRejectsCorruptOptionalV065DatabaseWithoutMutation(t *testing.T) {
+	rootPath := t.TempDir()
+	path := filepath.Join(rootPath, "db", "registry.sqlite")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("not sqlite"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	root := openMigrationRoot(t, rootPath)
+	migration, err := OpenOwnerScopeMigration(root, OwnerScopeMigrationOptions{})
+	root.Close()
+	if migration != nil || !errors.Is(err, ErrOwnerScopeInventoryCorrupt) {
+		t.Fatalf("OpenOwnerScopeMigration() = %#v, %v", migration, err)
+	}
+	if raw, err := os.ReadFile(path); err != nil || string(raw) != "not sqlite" {
+		t.Fatalf("corrupt database changed = %q, %v", raw, err)
+	}
+	if _, err := os.Stat(filepath.Join(rootPath, MigrationJournalName)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("corrupt root wrote a journal: %v", err)
 	}
 }
 
@@ -699,59 +883,66 @@ func writeLegacyInventory(t *testing.T, root, inventoryID string) {
 			t.Fatal(err)
 		}
 	}
-	registry := readInventoryFixtureRegistry(t)
-	var selected *inventoryFixture
-	for index := range registry.Inventories {
-		if registry.Inventories[index].ID == inventoryID {
-			selected = &registry.Inventories[index]
-			break
-		}
-	}
-	if selected == nil {
-		t.Fatalf("inventory fixture %q not found", inventoryID)
-	}
+	selected := inventoryFixtureByID(t, inventoryID)
 	for _, databaseFixture := range selected.SQLiteDatabases {
-		path := filepath.Join(root, filepath.FromSlash(databaseFixture.Path))
-		database, err := sql.Open("sqlite", path)
-		if err != nil {
-			t.Fatal(err)
-		}
-		for _, objectType := range []string{"table", "index"} {
-			for _, object := range databaseFixture.SchemaObjects {
-				if object.Type != objectType {
-					continue
-				}
-				if _, err := database.Exec(object.SQL); err != nil {
-					database.Close()
-					t.Fatalf("create %s %s in %s: %v", object.Type, object.Name, databaseFixture.Path, err)
-				}
-			}
-		}
-		if _, err := database.Exec(fmt.Sprintf(`PRAGMA application_id = %d`, databaseFixture.ApplicationID)); err != nil {
-			database.Close()
-			t.Fatal(err)
-		}
-		if _, err := database.Exec(fmt.Sprintf(`PRAGMA user_version = %d`, databaseFixture.UserVersion)); err != nil {
-			database.Close()
-			t.Fatal(err)
-		}
-		for _, migration := range databaseFixture.MigrationVersions {
-			for _, version := range migration.Versions {
-				query := fmt.Sprintf(`INSERT INTO %q(version, applied_at) VALUES(?, 0)`, migration.Table)
-				if _, err := database.Exec(query, version); err != nil {
-					database.Close()
-					t.Fatalf("seed %s migration version %d: %v", databaseFixture.Path, version, err)
-				}
-			}
-		}
-		if err := database.Close(); err != nil {
-			t.Fatal(err)
-		}
+		writeInventoryDatabase(t, root, databaseFixture)
 	}
 	if err := os.WriteFile(filepath.Join(root, "assets", "package.bin"), []byte("asset"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(root, "storage", "namespace.bin"), []byte("storage"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func inventoryFixtureByID(t *testing.T, inventoryID string) *inventoryFixture {
+	t.Helper()
+	registry := readInventoryFixtureRegistry(t)
+	for index := range registry.Inventories {
+		if registry.Inventories[index].ID == inventoryID {
+			return &registry.Inventories[index]
+		}
+	}
+	t.Fatalf("inventory fixture %q not found", inventoryID)
+	return nil
+}
+
+func writeInventoryDatabase(t *testing.T, root string, databaseFixture inventoryDatabaseFixture) {
+	t.Helper()
+	path := filepath.Join(root, filepath.FromSlash(databaseFixture.Path))
+	database, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, objectType := range []string{"table", "index"} {
+		for _, object := range databaseFixture.SchemaObjects {
+			if object.Type != objectType {
+				continue
+			}
+			if _, err := database.Exec(object.SQL); err != nil {
+				database.Close()
+				t.Fatalf("create %s %s in %s: %v", object.Type, object.Name, databaseFixture.Path, err)
+			}
+		}
+	}
+	if _, err := database.Exec(fmt.Sprintf(`PRAGMA application_id = %d`, databaseFixture.ApplicationID)); err != nil {
+		database.Close()
+		t.Fatal(err)
+	}
+	if _, err := database.Exec(fmt.Sprintf(`PRAGMA user_version = %d`, databaseFixture.UserVersion)); err != nil {
+		database.Close()
+		t.Fatal(err)
+	}
+	for _, migration := range databaseFixture.MigrationVersions {
+		for _, version := range migration.Versions {
+			query := fmt.Sprintf(`INSERT INTO %q(version, applied_at) VALUES(?, 0)`, migration.Table)
+			if _, err := database.Exec(query, version); err != nil {
+				database.Close()
+				t.Fatalf("seed %s migration version %d: %v", databaseFixture.Path, version, err)
+			}
+		}
+	}
+	if err := database.Close(); err != nil {
 		t.Fatal(err)
 	}
 }

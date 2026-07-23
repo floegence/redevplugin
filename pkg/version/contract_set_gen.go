@@ -2,4 +2,4 @@
 
 package version
 
-const ContractSetSHA256 = "42768632672d3beef6410f0b87f53c8b124f1e56746bcc78beba52b6fd7da737"
+const ContractSetSHA256 = "679c643d0313859dbdfb7a3075f9915a7b91ae1c48001b2a69bdaff178f35454"
