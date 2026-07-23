@@ -109,7 +109,7 @@
         "runs": {
           "type": "array",
           "minItems": 3,
-          "maxItems": 3,
+          "maxItems": 32,
           "items": { "$ref": "#/$defs/comparison_run" }
         }
       }

@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.6.10
+
+### Fixed
+
+- Stabilize relative wall-clock evidence for short hot paths with nine
+  independent repetitions, balanced baseline/candidate ordering, and median
+  aggregation per variant. The route-authorization and high-cardinality limiter
+  regression budgets and operation timing remain unchanged while one runner
+  scheduling phase can no longer decide the release verdict.
+
 ## v0.6.9
 
 ### Added

@@ -96,14 +96,10 @@ function runProfile(binary, repositoryRoot, output, commit, gomaxprocs) {
 }
 
 export function buildInterleavedRunOrder(repetitions) {
-  if (repetitions !== 5) throw new Error("route authorization runner requires exactly five repetitions");
-  return [
-    "baseline", "candidate",
-    "candidate", "baseline",
-    "baseline", "candidate",
-    "candidate", "baseline",
-    "baseline", "candidate",
-  ];
+  if (repetitions !== 9) throw new Error("route authorization runner requires exactly nine repetitions");
+  return Array.from({ length: repetitions }, (_, index) => (
+    index % 2 === 0 ? ["baseline", "candidate"] : ["candidate", "baseline"]
+  )).flat();
 }
 
 function readComparisonProbe(contract, id) {

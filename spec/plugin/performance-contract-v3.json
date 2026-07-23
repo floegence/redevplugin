@@ -5,7 +5,7 @@
       "id": "httpadapter.route-authorization-v051",
       "baseline_release": "0.5.1",
       "baseline_commit": "3febcc59bbdb2118a4f105781b4c743bc11ba09f",
-      "repetitions": 5,
+      "repetitions": 9,
       "warmup_batches": 8,
       "requests_per_sample": 32,
       "measured_batches": [
@@ -15,7 +15,7 @@
       ],
       "runner": {
         "path": "scripts/measure_http_route_authorization_performance.mjs",
-        "sha256": "ccb704f1229b7aa41986d52d8eb473c0b6b1665594dc6094ab8072597d91e55f"
+        "sha256": "5ad8c3cfddb85266493198098a784f0335e6dca518eebe4f63a3fcb112c29709"
       },
       "comparison_logic": {
         "path": "scripts/route_authorization_comparison.mjs",
@@ -145,7 +145,7 @@
     },
     {
       "id": "connectivity.udp-limiter-scaling",
-      "sample_count": 1000,
+      "sample_count": 9000,
       "metrics": [
         { "name": "p95_large_relative_to_small", "unit": "basis_points", "comparator": "lte", "limit": 20000 },
         { "name": "bucket_capacity", "unit": "count", "comparator": "eq", "limit": 65536 },

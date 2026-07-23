@@ -229,7 +229,7 @@ test("performance contract pins the immutable v0.5.1 route authorization probe",
   assert.equal(probe.id, "httpadapter.route-authorization-v051");
   assert.equal(probe.baseline_release, "0.5.1");
   assert.equal(probe.baseline_commit, "3febcc59bbdb2118a4f105781b4c743bc11ba09f");
-  assert.equal(probe.repetitions, 5);
+  assert.equal(probe.repetitions, 9);
   assert.equal(probe.requests_per_sample, 32);
   assert.deepEqual(probe.measured_batches, [
     { concurrency: 1, batches: 1000, samples: 32000 },
@@ -244,8 +244,8 @@ test("performance contract pins the immutable v0.5.1 route authorization probe",
 
 function measurementsFrom(contract, gate, sourceCommit = "b".repeat(40)) {
   const comparisonScenarios = buildRepeatedRouteAuthorizationScenarios(
-    repeatedProfiles("v0.5.1", "3febcc59bbdb2118a4f105781b4c743bc11ba09f", [100, 102, 98, 101, 99]),
-    repeatedProfiles("v0.6.0", sourceCommit, [104, 103, 105, 102, 106]),
+    repeatedProfiles("v0.5.1", "3febcc59bbdb2118a4f105781b4c743bc11ba09f", [100, 102, 98, 101, 99, 103, 97, 104, 96]),
+    repeatedProfiles("v0.6.0", sourceCommit, [104, 103, 105, 102, 106, 101, 107, 100, 108]),
     gate,
   );
   const comparisonByID = new Map(comparisonScenarios.map((scenario) => [scenario.id, scenario]));
@@ -264,8 +264,8 @@ function measurementsFrom(contract, gate, sourceCommit = "b".repeat(40)) {
 function comparisonFrom(contract, sourceCommit) {
   return buildRouteAuthorizationComparisonReport(
     contract.comparison_probes[0],
-    repeatedProfiles("v0.5.1", "3febcc59bbdb2118a4f105781b4c743bc11ba09f", [100, 102, 98, 101, 99]),
-    repeatedProfiles("v0.6.0", sourceCommit, [104, 103, 105, 102, 106]),
+    repeatedProfiles("v0.5.1", "3febcc59bbdb2118a4f105781b4c743bc11ba09f", [100, 102, 98, 101, 99, 103, 97, 104, 96]),
+    repeatedProfiles("v0.6.0", sourceCommit, [104, 103, 105, 102, 106, 101, 107, 100, 108]),
   );
 }
 

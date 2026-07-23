@@ -31,6 +31,16 @@ func TestP95(t *testing.T) {
 	}
 }
 
+func TestMedianDurationUsesTheMiddleIndependentRepetition(t *testing.T) {
+	values := []time.Duration{90 * time.Microsecond, 10 * time.Microsecond, 30 * time.Microsecond, 20 * time.Microsecond, 80 * time.Microsecond}
+	if got := MedianDuration(values); got != 30*time.Microsecond {
+		t.Fatalf("MedianDuration() = %s, want 30us", got)
+	}
+	if got := MedianDuration(nil); got != 0 {
+		t.Fatalf("MedianDuration(nil) = %s, want 0", got)
+	}
+}
+
 func TestEnforceThresholdsRequiresExplicitEvidenceRun(t *testing.T) {
 	t.Setenv("REDEVPLUGIN_PERFORMANCE_GATE", "full")
 	t.Setenv("REDEVPLUGIN_PERFORMANCE_MEASUREMENTS", "")

@@ -190,6 +190,14 @@ metrics before accepting the bundle. The
 release workflow generates immutable release evidence once on the pinned Linux
 runner; registry-only conformance validates the exact evidence bytes.
 
+Wall-clock ratios for short hot paths use nine independent repetitions and the
+median P95 or P99 for each variant. Route authorization alternates the pinned
+baseline and candidate process order across nine complete profiles. The UDP
+limiter alternates small and large batches within every repetition before it
+compares the independent median P95 values. This preserves the original
+operation timing and published limits while preventing one scheduler phase from
+becoming the release verdict.
+
 Relative acceptance targets use paired measurements from the same process and
 input fixture and encode the current-to-reference ratio in basis points. The
 package materialization scenario is the exception: it compares isolated child
@@ -197,9 +205,10 @@ process `MaxRSS` values so retained package bytes cannot be hidden by heap
 accounting. Scheduler and module-cache complexity evidence records operations on
 the actual request index, bounded tombstone compaction, and `BTreeSet` eviction
 index instead of inferring algorithmic behavior from noisy wall-clock timings.
-The UDP limiter combines a fixed 65,536-bucket capacity assertion with a paired
-high-cardinality P95 measurement. Release evidence is emitted only by the owning
-Go package or Rust runtime test after its behavioral assertions pass.
+The UDP limiter combines a fixed 65,536-bucket capacity assertion with nine
+alternating paired high-cardinality P95 repetitions. Release evidence is emitted
+only by the owning Go package or Rust runtime test after its behavioral
+assertions pass.
 
 ## Platform Package Set
 

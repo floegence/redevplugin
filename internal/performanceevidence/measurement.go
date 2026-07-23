@@ -76,6 +76,15 @@ func P95(values []time.Duration) time.Duration {
 	return ordered[index-1]
 }
 
+func MedianDuration(values []time.Duration) time.Duration {
+	if len(values) == 0 {
+		return 0
+	}
+	ordered := append([]time.Duration(nil), values...)
+	sort.Slice(ordered, func(i, j int) bool { return ordered[i] < ordered[j] })
+	return ordered[len(ordered)/2]
+}
+
 func RelativeBasisPoints(observed, baseline float64) (float64, error) {
 	if !isFiniteNonNegative(observed) || !isFiniteNonNegative(baseline) || baseline == 0 {
 		return 0, errors.New("performance ratio requires finite non-negative values and a positive baseline")

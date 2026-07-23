@@ -3,6 +3,7 @@ package protocol
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -17,6 +18,16 @@ func TestPerformanceEvidenceSchemaValidatesReleaseEvidence(t *testing.T) {
 	evidence := validPerformanceEvidence()
 	if err := schema.Validate(evidence); err != nil {
 		t.Fatalf("valid performance evidence was rejected: %v", err)
+	}
+	for _, runCount := range []int{3, 5, 9} {
+		t.Run(fmt.Sprintf("accepts %d comparison runs", runCount), func(t *testing.T) {
+			candidate := cloneJSONDocument(t, evidence)
+			comparison := candidate["comparisons"].([]any)[0].(map[string]any)
+			comparison["runs"] = comparison["runs"].([]any)[:runCount]
+			if err := schema.Validate(candidate); err != nil {
+				t.Fatalf("performance evidence schema rejected %d comparison runs: %v", runCount, err)
+			}
+		})
 	}
 
 	tests := []struct {
@@ -36,10 +47,21 @@ func TestPerformanceEvidenceSchemaValidatesReleaseEvidence(t *testing.T) {
 			},
 		},
 		{
-			name: "missing comparison run",
+			name: "too few comparison runs",
 			mutate: func(document map[string]any) {
 				comparison := document["comparisons"].([]any)[0].(map[string]any)
 				comparison["runs"] = comparison["runs"].([]any)[:2]
+			},
+		},
+		{
+			name: "unbounded comparison runs",
+			mutate: func(document map[string]any) {
+				comparison := document["comparisons"].([]any)[0].(map[string]any)
+				runs := comparison["runs"].([]any)
+				for len(runs) < 33 {
+					runs = append(runs, cloneJSONDocument(t, runs[0].(map[string]any)))
+				}
+				comparison["runs"] = runs
 			},
 		},
 		{
@@ -148,6 +170,12 @@ func validPerformanceEvidence() map[string]any {
 					validRouteAuthorizationRun("1", "2"),
 					validRouteAuthorizationRun("3", "4"),
 					validRouteAuthorizationRun("5", "6"),
+					validRouteAuthorizationRun("7", "8"),
+					validRouteAuthorizationRun("9", "a"),
+					validRouteAuthorizationRun("b", "c"),
+					validRouteAuthorizationRun("d", "e"),
+					validRouteAuthorizationRun("f", "0"),
+					validRouteAuthorizationRun("1", "3"),
 				},
 			},
 		},

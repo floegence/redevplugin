@@ -89,6 +89,7 @@ func TestPerformanceHTTPKeepAliveRelativeP95(t *testing.T) {
 
 func TestPerformanceUDPLimiterHighCardinalityScaling(t *testing.T) {
 	const (
+		repetitions   = 9
 		samples       = 1_000
 		operations    = 64
 		maxRoundTrips = 10_000_000
@@ -110,10 +111,24 @@ func TestPerformanceUDPLimiterHighCardinalityScaling(t *testing.T) {
 		t.Fatal("UDP limiter accepted a bucket beyond fixed capacity")
 	}
 	largeKey := udpLimiterTestKey(performanceUDPHost(maxMemoryUDPRateLimitBuckets / 2))
-	smallDurations := measureUDPLimiterBatches(small, smallKey, now, samples, operations)
-	largeDurations := measureUDPLimiterBatches(large, largeKey, now, samples, operations)
-	smallP95 := performanceevidence.P95(smallDurations)
-	largeP95 := performanceevidence.P95(largeDurations)
+	smallP95s := make([]time.Duration, 0, repetitions)
+	largeP95s := make([]time.Duration, 0, repetitions)
+	for repetition := 0; repetition < repetitions; repetition++ {
+		smallDurations, largeDurations := measurePairedUDPLimiterBatches(
+			small,
+			smallKey,
+			large,
+			largeKey,
+			now,
+			repetition*samples,
+			samples,
+			operations,
+		)
+		smallP95s = append(smallP95s, performanceevidence.P95(smallDurations))
+		largeP95s = append(largeP95s, performanceevidence.P95(largeDurations))
+	}
+	smallP95 := performanceevidence.MedianDuration(smallP95s)
+	largeP95 := performanceevidence.MedianDuration(largeP95s)
 	relative, err := performanceevidence.RelativeBasisPoints(float64(largeP95), float64(smallP95))
 	if err != nil {
 		t.Fatal(err)
@@ -124,7 +139,7 @@ func TestPerformanceUDPLimiterHighCardinalityScaling(t *testing.T) {
 	recordConnectivityPerformanceScenario(t, performanceevidence.Scenario{
 		ID:          "connectivity.udp-limiter-scaling",
 		Gate:        performanceevidence.Gate(),
-		SampleCount: samples,
+		SampleCount: repetitions * samples,
 		Metrics: []performanceevidence.Metric{
 			{Name: "p95_large_relative_to_small", Unit: "basis_points", Observed: relative, Limit: 20_000, Comparator: "lte"},
 			{Name: "bucket_capacity", Unit: "count", Observed: maxMemoryUDPRateLimitBuckets, Limit: maxMemoryUDPRateLimitBuckets, Comparator: "eq"},
@@ -158,18 +173,46 @@ func measureHTTPPerformanceBatch(t *testing.T, operations int, operation func() 
 	return time.Since(started)
 }
 
-func measureUDPLimiterBatches(limiter *MemoryUDPRateLimiter, key UDPRateLimitKey, now time.Time, samples, operations int) []time.Duration {
-	durations := make([]time.Duration, 0, samples)
+func measurePairedUDPLimiterBatches(
+	small *MemoryUDPRateLimiter,
+	smallKey UDPRateLimitKey,
+	large *MemoryUDPRateLimiter,
+	largeKey UDPRateLimitKey,
+	now time.Time,
+	sampleOffset int,
+	samples int,
+	operations int,
+) ([]time.Duration, []time.Duration) {
+	smallDurations := make([]time.Duration, 0, samples)
+	largeDurations := make([]time.Duration, 0, samples)
 	for sample := 0; sample < samples; sample++ {
-		started := time.Now()
-		for operation := 0; operation < operations; operation++ {
-			if !limiter.AllowUDPRoundTrip(now.Add(time.Duration(sample*operations+operation+1)), key) {
-				panic("performance UDP limiter unexpectedly rejected an existing bucket")
-			}
+		absoluteSample := sampleOffset + sample
+		measureSmall := func() {
+			smallDurations = append(smallDurations, measureUDPLimiterBatch(small, smallKey, now, absoluteSample, operations))
 		}
-		durations = append(durations, time.Since(started))
+		measureLarge := func() {
+			largeDurations = append(largeDurations, measureUDPLimiterBatch(large, largeKey, now, absoluteSample, operations))
+		}
+		// Keep each comparison local and balance which path sees the first scheduler slot.
+		if absoluteSample%2 == 0 {
+			measureSmall()
+			measureLarge()
+		} else {
+			measureLarge()
+			measureSmall()
+		}
 	}
-	return durations
+	return smallDurations, largeDurations
+}
+
+func measureUDPLimiterBatch(limiter *MemoryUDPRateLimiter, key UDPRateLimitKey, now time.Time, sample, operations int) time.Duration {
+	started := time.Now()
+	for operation := 0; operation < operations; operation++ {
+		if !limiter.AllowUDPRoundTrip(now.Add(time.Duration(sample*operations+operation+1)), key) {
+			panic("performance UDP limiter unexpectedly rejected an existing bucket")
+		}
+	}
+	return time.Since(started)
 }
 
 func performanceUDPHost(index int) string {
