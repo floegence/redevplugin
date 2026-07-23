@@ -18,4 +18,4 @@ sha2 = "0.10"
 
 [dev-dependencies]
 proptest = "1.6"
-redevplugin-contracts = { path = "../redevplugin-contracts", version = "=0.6.6" }
+redevplugin-contracts = { path = "../redevplugin-contracts", version = "=0.6.7" }

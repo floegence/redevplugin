@@ -5,11 +5,11 @@
   "canonical_builder": "linux/amd64",
   "canonical_image": "docker.io/library/rust:1.88.0-bookworm@sha256:4727898c104ecd2e22d780925832502faee9fe4e70581b8572af081370b315a0",
   "source_files": {
-    "Cargo.lock": "b7a438d2934873279bcca38afc561c05e25e41b75343fbabbf950c10f4886238",
-    "Cargo.toml": "00376e68484055da2422f395f0bc3603de07af08dc1cd693f7370f0793d62b29",
+    "Cargo.lock": "005d182fac565d5c77c421d78675586141db76f9a2d14a2117a4195a13efce10",
+    "Cargo.toml": "7eb3665d97ae11ad5cac3d5983fc4b87b7a456fd409cee3a4e86fd11eb1a5075",
     "crates/redevplugin-worker-sdk/Cargo.toml": "04f7c3694c9f17afa76f37144d36cb71e0400555d7006e62323f3c558a673662",
     "crates/redevplugin-worker-sdk/LICENSE": "68a062bc10a32bc2478ece12a1792f878f72d0033164fb0e4a4c565bab5c8478",
-    "crates/redevplugin-worker-sdk/README.md": "06806ab62708c27a639912bbd8269224cf3cccdd7d9e91f623431ae910ca9eac",
+    "crates/redevplugin-worker-sdk/README.md": "6b78ecc75626bcd3084a8e801723dffd421a07887b1e8a1420a6fee3408d4d86",
     "crates/redevplugin-worker-sdk/src/hostcalls.rs": "67ffaf86a27df801e13c3174d15d4536a84730c7bcd03930b1f8d64e1f4709af",
     "crates/redevplugin-worker-sdk/src/lib.rs": "15dcf96fa0ff0fe862df759edd32b21310098604aed1edb16c9c973b8abb89e6",
     "examples/workers/memos/Cargo.toml": "8f4fce355a3e09e5765fa6fa82c6eaa57f8c65b7279f24857bff7b1dc19f5a5e",
@@ -23,8 +23,8 @@
     "scripts/canonical_wasm_builder.mjs": "b97d8802d0c192a17dcdcd30a704380b89af313f73b12c6eed9174236c908d1d"
   },
   "artifacts": {
-    "examples/plugins/memos/workers/memos.wasm": "702f2800696d07ebd31402ec8785ac0b0ca9aef78c43b04e226e313543c1920e",
-    "examples/plugins/sky-strike/workers/sky-strike.wasm": "a8978ba7721deec7c5d08ef8584802becd6aee5afc9b50ac4eb319829bf70c1f",
-    "examples/plugins/weather/workers/weather.wasm": "589373cd9bed850196b9f7eebe3ed35bf579974edfd7e361b40171eb8f47a8c6"
+    "examples/plugins/memos/workers/memos.wasm": "7cdc1a5f4d51a4d9cf39461db58eb0dab92be2ce809be114562902ab80f12006",
+    "examples/plugins/sky-strike/workers/sky-strike.wasm": "9562c1fa44db63e035e3f4844ed181c6b9b897abb40c3d5dc0c4f2e488b44d21",
+    "examples/plugins/weather/workers/weather.wasm": "8b385fa32e4b78142216fef18f5e5344cdec4724c951298fe133bbf17989415e"
   }
 }

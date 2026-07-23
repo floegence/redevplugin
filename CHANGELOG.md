@@ -1,5 +1,18 @@
 # Changelog
 
+## v0.6.7
+
+### Fixed
+
+- Automatically recover complete and interrupted v0.6.5 owner-scope
+  initialization, including recognized durable roots with an optional `trust/`
+  overlay and optional closed-session state, before any new reader or writer
+  opens the migrated generation.
+- Validate every present SQLite database before atomically quarantining all
+  recognized legacy roots, preserve provably owned data, and continue to fail
+  closed without modifying unknown, corrupt, ambiguous, or isolated sidecar
+  state.
+
 ## v0.6.6
 
 ### Added
