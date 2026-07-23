@@ -731,6 +731,16 @@ func typeScriptSDKRouteBindings() []typeScriptSDKRouteBinding {
 			Snippets:     []string{"inspectExternalPackage(request: PluginInspectExternalPackageRequest", `"POST", "/_redevplugin/api/plugins/external-packages/inspect"`},
 		},
 		{
+			routeFixture: routeFixture{Method: "POST", Path: "/_redevplugin/api/plugins/external-packages/upload/inspect"},
+			Owner:        "PluginPlatformClient.inspectUploadedExternalPackage install",
+			Snippets:     []string{"inspectUploadedExternalPackage(", `"/_redevplugin/api/plugins/external-packages/upload/inspect"`},
+		},
+		{
+			routeFixture: routeFixture{Method: "PUT", Path: "/_redevplugin/api/plugins/{plugin_instance_id}/external-packages/upload/inspect"},
+			Owner:        "PluginPlatformClient.inspectUploadedExternalPackage update",
+			Snippets:     []string{"inspectUploadedExternalPackage(", "${encodeURIComponent(canonicalIntent.plugin_instance_id)}/external-packages/upload/inspect"},
+		},
+		{
 			routeFixture: routeFixture{Method: "POST", Path: "/_redevplugin/api/plugins/external-packages/commit"},
 			Owner:        "PluginPlatformClient.commitExternalPackage",
 			Snippets:     []string{"commitExternalPackage(request: PluginCommitExternalPackageRequest", `"POST", "/_redevplugin/api/plugins/external-packages/commit"`},

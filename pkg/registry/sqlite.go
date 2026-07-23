@@ -23,7 +23,7 @@ import (
 )
 
 const maxRegistrySQLiteConnections = 8
-const registrySQLiteSchemaVersion = 1
+const registrySQLiteSchemaVersion = 2
 
 type SQLiteStore struct {
 	db       *sql.DB
@@ -358,7 +358,7 @@ func (s *SQLiteStore) initializeSchema(ctx context.Context) error {
 		return err
 	}
 	defer rollbackUnlessCommitted(tx)
-	if schemaVersion == registrySQLiteSchemaVersion {
+	if schemaVersion >= 1 {
 		if err := validateCurrentRegistrySQLiteSchema(ctx, tx); err != nil {
 			return err
 		}
@@ -367,6 +367,17 @@ func (s *SQLiteStore) initializeSchema(ctx context.Context) error {
 		}
 		if err := validateSQLitePluginSecurityFacts(ctx, tx); err != nil {
 			return err
+		}
+		if err := reconcileInterruptedExternalPackageCommits(ctx, tx); err != nil {
+			return err
+		}
+		if err := validateSQLitePluginSecurityFacts(ctx, tx); err != nil {
+			return err
+		}
+		if schemaVersion != registrySQLiteSchemaVersion {
+			if _, err := tx.ExecContext(ctx, `PRAGMA user_version = `+fmt.Sprint(registrySQLiteSchemaVersion)); err != nil {
+				return err
+			}
 		}
 		return tx.Commit()
 	}
@@ -582,6 +593,17 @@ func (s *SQLiteStore) initializeSchema(ctx context.Context) error {
 		return err
 	}
 	return tx.Commit()
+}
+
+func reconcileInterruptedExternalPackageCommits(ctx context.Context, tx *sql.Tx) error {
+	_, err := tx.ExecContext(ctx, `
+UPDATE external_package_commit_receipts
+SET status = ?, mutation_outcome = ?, failure_code = ?
+WHERE status = ?`,
+		string(ExternalPackageFailed), string(mutation.OutcomeNotCommitted), ExternalPackageFailureHostRestarted,
+		string(ExternalPackageCommitting),
+	)
+	return err
 }
 
 type ownerScopedTableSpec struct {

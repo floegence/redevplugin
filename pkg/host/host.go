@@ -2167,6 +2167,9 @@ func (h *Host) RevokeSessionScope(ctx context.Context, req RevokeSessionScopeReq
 	defer teardown.Release()
 	teardownCtx, cancelTeardown := context.WithTimeout(context.WithoutCancel(ctx), sessionScopeTeardownTimeout)
 	defer cancelTeardown()
+	if err := h.cleanupExternalPackageInspectionArtifactsForScope(scope); err != nil {
+		return h.markSessionTeardownIncomplete(ctx, teardown, snapshot, req.Now)
+	}
 	if h.adapters.SessionLifecycle.CommitSessionScopeClose(
 		teardownCtx,
 		CommitSessionScopeCloseRequest{Session: session, Identity: identity},
@@ -2335,6 +2338,9 @@ func (h *Host) FinalizeSessionScope(ctx context.Context, req FinalizeSessionScop
 			retErr = completedErr
 		}
 	}()
+	if err := h.cleanupExternalPackageInspectionArtifactsForScope(scope); err != nil {
+		return err
+	}
 	if err := h.adapters.ConfirmationIntents.FinalizeSessionConfirmationRevocation(ctx, security.FinalizeSessionConfirmationRevocationRequest{
 		SessionScope: scope, TeardownOperationID: req.Identity.OperationID,
 	}); err != nil {

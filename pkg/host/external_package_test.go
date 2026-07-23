@@ -6,6 +6,8 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -18,10 +20,24 @@ import (
 )
 
 type externalPackageTestStage struct {
-	mu        sync.Mutex
-	pkg       pluginpkg.Package
-	removed   int
-	removeErr error
+	mu                 sync.Mutex
+	pkg                pluginpkg.Package
+	removed            int
+	removeErr          error
+	uploaded           externalsource.StagedArtifact
+	uploadOwner        string
+	uploadDeclaredSize int64
+}
+
+func (s *externalPackageTestStage) StageUpload(_ context.Context, owner string, source io.Reader, declaredSize int64) (externalsource.StagedArtifact, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if source == nil {
+		return externalsource.StagedArtifact{}, errors.New("upload source is required")
+	}
+	s.uploadOwner = owner
+	s.uploadDeclaredSize = declaredSize
+	return s.uploaded, nil
 }
 
 func (s *externalPackageTestStage) VerifyPackage(context.Context, externalsource.StagedArtifact, pluginpkg.ReadLimits) (pluginpkg.Package, error) {
@@ -49,9 +65,31 @@ func (s *externalPackageTestStage) removedCount() int {
 	return s.removed
 }
 
+func (s *externalPackageTestStage) setRemoveError(err error) {
+	s.mu.Lock()
+	s.removeErr = err
+	s.mu.Unlock()
+}
+
 type externalPackageTestFetcher struct {
 	result      externalsource.FetchResult
 	lastRequest externalsource.FetchRequest
+}
+
+type blockingExternalPackageTestFetcher struct {
+	result  externalsource.FetchResult
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (f *blockingExternalPackageTestFetcher) FetchPackage(ctx context.Context, _ externalsource.FetchRequest) (externalsource.FetchResult, error) {
+	close(f.entered)
+	select {
+	case <-f.release:
+		return f.result, nil
+	case <-ctx.Done():
+		return externalsource.FetchResult{}, ctx.Err()
+	}
 }
 
 func (f *externalPackageTestFetcher) FetchPackage(_ context.Context, request externalsource.FetchRequest) (externalsource.FetchResult, error) {
@@ -98,6 +136,58 @@ type externalPackageResumableCommitStore struct {
 	commitCalls  int
 }
 
+type externalPackageFailedCommitStore struct {
+	registry.Store
+	commitCalls int
+}
+
+type externalPackageMalformedCommitStore struct {
+	registry.Store
+	mutate func(*registry.ExternalPackageCommitResult)
+	result registry.ExternalPackageCommitResult
+}
+
+type externalPackageReplayTamperStore struct {
+	registry.Store
+	mutate func(*registry.ExternalPackageCommitResult)
+}
+
+func (s *externalPackageReplayTamperStore) QueryExternalPackageCommit(ctx context.Context, req registry.QueryExternalPackageCommitRequest) (registry.ExternalPackageCommitResult, error) {
+	result, err := s.Store.QueryExternalPackageCommit(ctx, req)
+	if err == nil {
+		s.mutate(&result)
+	}
+	return result, err
+}
+
+func (s *externalPackageMalformedCommitStore) CommitExternalPackage(_ context.Context, req registry.CommitExternalPackageRequest) (registry.ExternalPackageCommitResult, error) {
+	s.result = registry.ExternalPackageCommitResult{
+		InspectionID: req.InspectionID, CommitID: req.CommitID, Intent: req.Intent,
+		PluginInstanceID: req.Record.PluginInstanceID, ExpectedManagementRevision: req.ExpectedManagementRevision,
+		IntendedFingerprint: req.IntendedFingerprint, IntendedPackageSHA256: req.IntendedPackageSHA256,
+		Status: registry.ExternalPackageCommitting, MutationOutcome: mutation.OutcomeUnknown,
+		CreatedAt: req.Now, UpdatedAt: req.Now,
+	}
+	s.mutate(&s.result)
+	return s.result, nil
+}
+
+func (s *externalPackageMalformedCommitStore) QueryExternalPackageCommit(context.Context, registry.QueryExternalPackageCommitRequest) (registry.ExternalPackageCommitResult, error) {
+	return s.result, nil
+}
+
+func (s *externalPackageFailedCommitStore) CommitExternalPackage(_ context.Context, req registry.CommitExternalPackageRequest) (registry.ExternalPackageCommitResult, error) {
+	s.commitCalls++
+	return registry.ExternalPackageCommitResult{
+		InspectionID: req.InspectionID, CommitID: req.CommitID, Intent: req.Intent,
+		PluginInstanceID: req.Record.PluginInstanceID, ExpectedManagementRevision: req.ExpectedManagementRevision,
+		IntendedFingerprint: req.IntendedFingerprint, IntendedPackageSHA256: req.IntendedPackageSHA256,
+		Status: registry.ExternalPackageFailed, MutationOutcome: mutation.OutcomeNotCommitted,
+		FailureCode: registry.ExternalPackageFailureHostRestarted,
+		CreatedAt:   req.Now, UpdatedAt: req.Now,
+	}, nil
+}
+
 func (s *externalPackageResumableCommitStore) CommitExternalPackage(ctx context.Context, req registry.CommitExternalPackageRequest) (registry.ExternalPackageCommitResult, error) {
 	s.commitCalls++
 	if s.commitCalls == 1 {
@@ -105,7 +195,10 @@ func (s *externalPackageResumableCommitStore) CommitExternalPackage(ctx context.
 		s.firstRequest = &copyReq
 		return registry.ExternalPackageCommitResult{
 			InspectionID: req.InspectionID, CommitID: req.CommitID, Intent: req.Intent,
+			PluginInstanceID: req.Record.PluginInstanceID, ExpectedManagementRevision: req.ExpectedManagementRevision,
+			IntendedFingerprint: req.IntendedFingerprint, IntendedPackageSHA256: req.IntendedPackageSHA256,
 			Status: registry.ExternalPackageCommitting, MutationOutcome: mutation.OutcomeUnknown,
+			CreatedAt: req.Now, UpdatedAt: req.Now,
 		}, mutation.Unknown(errors.New("commit result unavailable"))
 	}
 	if s.firstRequest == nil || req.CommitID != s.firstRequest.CommitID {
@@ -118,7 +211,10 @@ func (s *externalPackageResumableCommitStore) QueryExternalPackageCommit(ctx con
 	if s.commitCalls == 1 && s.firstRequest != nil {
 		return registry.ExternalPackageCommitResult{
 			InspectionID: s.firstRequest.InspectionID, CommitID: s.firstRequest.CommitID, Intent: s.firstRequest.Intent,
+			PluginInstanceID: s.firstRequest.Record.PluginInstanceID, ExpectedManagementRevision: s.firstRequest.ExpectedManagementRevision,
+			IntendedFingerprint: s.firstRequest.IntendedFingerprint, IntendedPackageSHA256: s.firstRequest.IntendedPackageSHA256,
 			Status: registry.ExternalPackageCommitting, MutationOutcome: mutation.OutcomeUnknown,
+			CreatedAt: s.firstRequest.Now, UpdatedAt: s.firstRequest.Now,
 		}, nil
 	}
 	return s.Store.QueryExternalPackageCommit(ctx, req)
@@ -233,6 +329,68 @@ func TestExternalPackageUnsignedInspectCommitInstallsDisabledWithoutGrants(t *te
 	}
 }
 
+func TestUploadedExternalPackageUsesOwnerScopedStageAndPersistsManualOnlyProvenance(t *testing.T) {
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{developerMode: true, localGenerated: true})
+	stage := &externalPackageTestStage{pkg: readTestPackage(t, buildVersionedLifecyclePackage(t, "1.0.0", "Lifecycle v1"))}
+	configureExternalPackageTestModule(h, stage, registry.SignatureAssessment{})
+	now := time.Date(2026, 7, 23, 13, 0, 0, 0, time.UTC)
+
+	inspection, err := h.InspectUploadedExternalPackage(hostTestContext(), InspectUploadedExternalPackageRequest{
+		Intent: ExternalPackageIntent{Action: "install"}, Package: strings.NewReader("package"), DeclaredSize: 7, Now: now,
+	})
+	if err != nil {
+		t.Fatalf("InspectUploadedExternalPackage() error = %v", err)
+	}
+	stage.mu.Lock()
+	uploadOwner, uploadDeclaredSize := stage.uploadOwner, stage.uploadDeclaredSize
+	stage.mu.Unlock()
+	if uploadOwner != "env_hash" || uploadDeclaredSize != 7 {
+		t.Fatalf("upload staging owner=%q size=%d", uploadOwner, uploadDeclaredSize)
+	}
+	if inspection.SourceProvenance.Kind != "package_upload" || !strings.HasPrefix(inspection.SourceProvenance.UploadID, "upload_") ||
+		inspection.SourceProvenance.SourceOrigin != "" || inspection.SourceProvenance.RepositoryURL != "" {
+		t.Fatalf("upload provenance = %#v", inspection.SourceProvenance)
+	}
+	if inspection.UpdateEligibility.State != "manual_only" || inspection.SignatureAssessment.State != "absent" {
+		t.Fatalf("upload security facts = %#v", inspection)
+	}
+
+	committed, err := h.CommitExternalPackage(hostTestContext(), CommitExternalPackageRequest{
+		InspectionID: inspection.InspectionID, ConfirmationDigest: inspection.ConfirmationDigest, Now: now.Add(time.Minute),
+	})
+	if err != nil {
+		t.Fatalf("CommitExternalPackage() error = %v", err)
+	}
+	if committed.Plugin == nil || committed.Plugin.PackageSourceProvenance.Kind != registry.PackageSourcePackageUpload ||
+		committed.Plugin.PackageSourceProvenance.UploadID != inspection.SourceProvenance.UploadID ||
+		committed.Plugin.UpdateEligibility != registry.UpdateManualOnly || committed.Plugin.EnableState != registry.EnableDisabled {
+		t.Fatalf("committed upload = %#v", committed.Plugin)
+	}
+	stage.setPackage(readTestPackage(t, buildVersionedLifecyclePackage(t, "2.0.0", "Lifecycle v2")))
+	updatedInspection, err := h.InspectUploadedExternalPackage(hostTestContext(), InspectUploadedExternalPackageRequest{
+		Intent: ExternalPackageIntent{
+			Action: "update", PluginInstanceID: committed.Plugin.PluginInstanceID,
+			ExpectedManagementRevision: committed.Plugin.ManagementRevision,
+		},
+		Package: strings.NewReader("package-v2"), DeclaredSize: 10, Now: now.Add(2 * time.Minute),
+	})
+	if err != nil {
+		t.Fatalf("InspectUploadedExternalPackage(update) error = %v", err)
+	}
+	updated, err := h.CommitExternalPackage(hostTestContext(), CommitExternalPackageRequest{
+		InspectionID: updatedInspection.InspectionID, ConfirmationDigest: updatedInspection.ConfirmationDigest, Now: now.Add(3 * time.Minute),
+	})
+	if err != nil {
+		t.Fatalf("CommitExternalPackage(update) error = %v", err)
+	}
+	if updated.Plugin == nil || len(updated.Plugin.VersionHistory) != 1 ||
+		updated.Plugin.VersionHistory[0].PackageSourceProvenance.Kind != registry.PackageSourcePackageUpload ||
+		updated.Plugin.VersionHistory[0].PackageSourceProvenance.UploadID != inspection.SourceProvenance.UploadID ||
+		updated.Plugin.PackageSourceProvenance.UploadID != updatedInspection.SourceProvenance.UploadID {
+		t.Fatalf("uploaded version history = %#v", updated.Plugin)
+	}
+}
+
 func TestExternalPackageInspectionBindsExactSessionAndBlocksInvalidSignature(t *testing.T) {
 	h, _, _ := newTestHostWithOptions(t, testHostOptions{developerMode: true, localGenerated: true})
 	pkg := readTestPackage(t, buildFixturePackage(t))
@@ -289,6 +447,122 @@ func TestExternalPackageInspectRemovesExpiredPendingStageBeforeFetching(t *testi
 	}
 	if stage.removedCount() != 1 {
 		t.Fatalf("expired stage remove count = %d, want 1", stage.removedCount())
+	}
+}
+
+func TestExternalPackageExpiredCleanupFailureRetainsInspectionForRetry(t *testing.T) {
+	cleanupErr := errors.New("stage cleanup failed")
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{developerMode: true, localGenerated: true})
+	stage := &externalPackageTestStage{pkg: readTestPackage(t, buildFixturePackage(t)), removeErr: cleanupErr}
+	configureExternalPackageTestModule(h, stage, registry.SignatureAssessment{})
+	now := time.Date(2026, 7, 23, 12, 0, 0, 0, time.UTC)
+	first, err := h.InspectExternalPackage(hostTestContext(), InspectExternalPackageRequest{
+		Intent: ExternalPackageIntent{Action: "install"},
+		Source: ExternalPackageSource{Kind: "package_url", URL: "https://plugins.example.test/retry-cleanup.redevplugin"},
+		Now:    now,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.InspectExternalPackage(hostTestContext(), InspectExternalPackageRequest{
+		Intent: ExternalPackageIntent{Action: "install"},
+		Source: ExternalPackageSource{Kind: "package_url", URL: "https://plugins.example.test/blocked-by-cleanup.redevplugin"},
+		Now:    first.ExpiresAt,
+	}); !errors.Is(err, cleanupErr) {
+		t.Fatalf("InspectExternalPackage() cleanup error = %v", err)
+	}
+	session, err := requireUserSession(hostTestContext())
+	if err != nil {
+		t.Fatal(err)
+	}
+	scope, err := session.SessionScope()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.externalInspections.get(first.InspectionID, scope); err != nil {
+		t.Fatalf("expired inspection was lost after failed deletion: %v", err)
+	}
+	stage.setRemoveError(nil)
+	if _, err := h.InspectExternalPackage(hostTestContext(), InspectExternalPackageRequest{
+		Intent: ExternalPackageIntent{Action: "install"},
+		Source: ExternalPackageSource{Kind: "package_url", URL: "https://plugins.example.test/after-cleanup.redevplugin"},
+		Now:    first.ExpiresAt,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if stage.removedCount() != 2 {
+		t.Fatalf("stage remove attempts = %d, want failed attempt plus retry", stage.removedCount())
+	}
+	if _, err := h.externalInspections.get(first.InspectionID, scope); !errors.Is(err, ErrExternalPackageInspectionNotFound) {
+		t.Fatalf("successfully cleaned inspection remains registered: %v", err)
+	}
+}
+
+func TestExternalPackageInspectReservationLetsSessionRevokeDrainRegisteredStage(t *testing.T) {
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{developerMode: true, localGenerated: true})
+	stage := &externalPackageTestStage{pkg: readTestPackage(t, buildFixturePackage(t))}
+	configureExternalPackageTestModule(h, stage, registry.SignatureAssessment{})
+	baseFetcher := h.adapters.ExternalPackageFetcher.(*externalPackageTestFetcher)
+	blocking := &blockingExternalPackageTestFetcher{result: baseFetcher.result, entered: make(chan struct{}), release: make(chan struct{})}
+	h.adapters.ExternalPackageFetcher = blocking
+	h.adapters.SessionLifecycle = &recordingSessionLifecycleAdapter{}
+
+	inspectionDone := make(chan error, 1)
+	go func() {
+		_, err := h.InspectExternalPackage(hostTestContext(), InspectExternalPackageRequest{
+			Intent: ExternalPackageIntent{Action: "install"},
+			Source: ExternalPackageSource{Kind: "package_url", URL: "https://plugins.example.test/session-race.redevplugin"},
+		})
+		inspectionDone <- err
+	}()
+	<-blocking.entered
+	revokeDone := make(chan error, 1)
+	go func() {
+		_, err := h.RevokeSessionScope(hostTestContext(), RevokeSessionScopeRequest{Now: time.Now().UTC()})
+		revokeDone <- err
+	}()
+	select {
+	case err := <-revokeDone:
+		t.Fatalf("session revoke passed active inspection reservation: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(blocking.release)
+	if err := <-inspectionDone; err != nil {
+		t.Fatal(err)
+	}
+	if err := <-revokeDone; err != nil {
+		t.Fatal(err)
+	}
+	if stage.removedCount() != 1 {
+		t.Fatalf("session revoke removed staged artifact %d times, want 1", stage.removedCount())
+	}
+}
+
+func TestExternalPackageSessionRevokeCleanupFailureIsFencedAndRetryable(t *testing.T) {
+	cleanupErr := errors.New("session stage cleanup failed")
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{developerMode: true, localGenerated: true})
+	stage := &externalPackageTestStage{pkg: readTestPackage(t, buildFixturePackage(t))}
+	configureExternalPackageTestModule(h, stage, registry.SignatureAssessment{})
+	adapter := &recordingSessionLifecycleAdapter{}
+	h.adapters.SessionLifecycle = adapter
+	if _, err := h.InspectExternalPackage(hostTestContext(), InspectExternalPackageRequest{
+		Intent: ExternalPackageIntent{Action: "install"},
+		Source: ExternalPackageSource{Kind: "package_url", URL: "https://plugins.example.test/revoke-cleanup-retry.redevplugin"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	stage.setRemoveError(cleanupErr)
+	first, err := h.RevokeSessionScope(hostTestContext(), RevokeSessionScopeRequest{Now: time.Now().UTC()})
+	if !errors.Is(err, ErrSessionTeardownIncomplete) || !first.Fenced || first.Complete {
+		t.Fatalf("first revoke = %#v, %v", first, err)
+	}
+	stage.setRemoveError(nil)
+	second, err := h.RevokeSessionScope(hostTestContext(), RevokeSessionScopeRequest{Identity: adapter.identity, Now: time.Now().UTC()})
+	if err != nil || !second.Fenced || !second.Complete {
+		t.Fatalf("retried revoke = %#v, %v", second, err)
+	}
+	if stage.removedCount() != 2 {
+		t.Fatalf("session cleanup attempts = %d, want failed attempt plus retry", stage.removedCount())
 	}
 }
 
@@ -387,6 +661,60 @@ func TestExternalPackageCommitReconcilesCommittedReceiptWithoutDeletingAssets(t 
 	}
 }
 
+func TestExternalPackageCommittedReplayRejectsTamperedRegistryIdentity(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*registry.ExternalPackageCommitResult)
+	}{
+		{name: "plugin instance", mutate: func(result *registry.ExternalPackageCommitResult) {
+			result.PluginInstanceID = "other_plugin"
+			result.RecordSnapshot.PluginInstanceID = "other_plugin"
+		}},
+		{name: "fingerprint", mutate: func(result *registry.ExternalPackageCommitResult) {
+			result.IntendedFingerprint = "sha256:other"
+			result.RecordSnapshot.ActiveFingerprint = "sha256:other"
+		}},
+		{name: "package", mutate: func(result *registry.ExternalPackageCommitResult) {
+			result.IntendedPackageSHA256 = "sha256:other"
+			result.RecordSnapshot.PackageHash = "sha256:other"
+		}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			cleanupErr := errors.New("stage cleanup failed")
+			h, _, _ := newTestHostWithOptions(t, testHostOptions{developerMode: true, localGenerated: true})
+			registryStore := &externalPackageReplayTamperStore{Store: h.adapters.Registry, mutate: test.mutate}
+			h.adapters.Registry = registryStore
+			stage := &externalPackageTestStage{pkg: readTestPackage(t, buildFixturePackage(t)), removeErr: cleanupErr}
+			configureExternalPackageTestModule(h, stage, registry.SignatureAssessment{})
+			inspection, err := h.InspectExternalPackage(hostTestContext(), InspectExternalPackageRequest{
+				Intent: ExternalPackageIntent{Action: "install"},
+				Source: ExternalPackageSource{Kind: "package_url", URL: "https://plugins.example.test/replay.redevplugin"},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			committed, err := h.CommitExternalPackage(hostTestContext(), CommitExternalPackageRequest{
+				InspectionID: inspection.InspectionID, ConfirmationDigest: inspection.ConfirmationDigest,
+			})
+			if committed.Status != "committed" || mutation.ForError(err) != mutation.OutcomeCommitted || !errors.Is(err, cleanupErr) {
+				t.Fatalf("initial commit = %#v, error=%v", committed, err)
+			}
+			if stage.removedCount() != 1 {
+				t.Fatalf("initial cleanup attempts = %d", stage.removedCount())
+			}
+			if _, err := h.CommitExternalPackage(hostTestContext(), CommitExternalPackageRequest{
+				InspectionID: inspection.InspectionID, ConfirmationDigest: inspection.ConfirmationDigest,
+			}); !errors.Is(err, ErrAdapterFailure) || mutation.ForError(err) != mutation.OutcomeNotCommitted {
+				t.Fatalf("tampered replay error = %v, outcome=%q", err, mutation.ForError(err))
+			}
+			if stage.removedCount() != 1 {
+				t.Fatalf("tampered replay cleanup attempts = %d", stage.removedCount())
+			}
+		})
+	}
+}
+
 func TestExternalPackageCommitRetriesSameDurableCommit(t *testing.T) {
 	h, _, _ := newTestHostWithOptions(t, testHostOptions{developerMode: true, localGenerated: true})
 	registryStore := &externalPackageResumableCommitStore{Store: h.adapters.Registry}
@@ -418,6 +746,178 @@ func TestExternalPackageCommitRetriesSameDurableCommit(t *testing.T) {
 	}
 	if stage.removedCount() != 1 {
 		t.Fatalf("committed retry staged artifact remove count = %d, want 1", stage.removedCount())
+	}
+}
+
+func TestExternalPackageCommitKeepsDurableFailedReceiptTerminal(t *testing.T) {
+	h, _, audits := newTestHostWithOptions(t, testHostOptions{developerMode: true, localGenerated: true})
+	registryStore := &externalPackageFailedCommitStore{Store: h.adapters.Registry}
+	h.adapters.Registry = registryStore
+	stage := &externalPackageTestStage{pkg: readTestPackage(t, buildFixturePackage(t))}
+	configureExternalPackageTestModule(h, stage, registry.SignatureAssessment{})
+	inspection, err := h.InspectExternalPackage(hostTestContext(), InspectExternalPackageRequest{
+		Intent: ExternalPackageIntent{Action: "install"},
+		Source: ExternalPackageSource{Kind: "package_url", URL: "https://plugins.example.test/failed.redevplugin"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	failed, err := h.CommitExternalPackage(hostTestContext(), CommitExternalPackageRequest{
+		InspectionID: inspection.InspectionID, ConfirmationDigest: inspection.ConfirmationDigest,
+	})
+	if err != nil || failed.Status != "failed" || failed.FailureCode != registry.ExternalPackageFailureHostRestarted {
+		t.Fatalf("CommitExternalPackage() = %#v, %v", failed, err)
+	}
+	if failed.Intent.Action != "install" || failed.Intent.PluginInstanceID == "" || failed.Intent.ExpectedManagementRevision != 0 {
+		t.Fatalf("failed intent = %#v", failed.Intent)
+	}
+	if registryStore.commitCalls != 1 || stage.removedCount() != 1 {
+		t.Fatalf("failed terminal calls: commit=%d remove=%d", registryStore.commitCalls, stage.removedCount())
+	}
+	if _, err := h.CommitExternalPackage(hostTestContext(), CommitExternalPackageRequest{
+		InspectionID: inspection.InspectionID, ConfirmationDigest: inspection.ConfirmationDigest,
+	}); !errors.Is(err, ErrExternalPackageInspectionNotFound) {
+		t.Fatalf("terminal failed inspection retry error = %v", err)
+	}
+	if event, ok := audits.lastEvent("plugin.external_package.committed"); !ok || event.Details["status"] != "failed" {
+		t.Fatalf("failed commit audit = %#v, found=%v", event, ok)
+	}
+}
+
+func TestExternalPackageCommitFailsClosedForMalformedRegistryResults(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*registry.ExternalPackageCommitResult)
+	}{
+		{name: "future status", mutate: func(result *registry.ExternalPackageCommitResult) { result.Status = "future" }},
+		{name: "committed without snapshot", mutate: func(result *registry.ExternalPackageCommitResult) {
+			result.Status = registry.ExternalPackageCommitted
+			result.MutationOutcome = mutation.OutcomeCommitted
+		}},
+		{name: "committed zero lifecycle", mutate: func(result *registry.ExternalPackageCommitResult) {
+			result.Status = registry.ExternalPackageCommitted
+			result.MutationOutcome = mutation.OutcomeCommitted
+			result.CreatedAt = time.Time{}
+			result.UpdatedAt = time.Time{}
+			result.RecordSnapshot = &registry.PluginRecord{
+				PluginInstanceID: result.PluginInstanceID, ManagementRevision: 1,
+				ActiveFingerprint: result.IntendedFingerprint, PackageHash: result.IntendedPackageSHA256,
+			}
+		}},
+		{name: "committed backwards lifecycle", mutate: func(result *registry.ExternalPackageCommitResult) {
+			result.Status = registry.ExternalPackageCommitted
+			result.MutationOutcome = mutation.OutcomeCommitted
+			result.UpdatedAt = result.CreatedAt.Add(-time.Second)
+			result.RecordSnapshot = &registry.PluginRecord{
+				PluginInstanceID: result.PluginInstanceID, ManagementRevision: 1,
+				ActiveFingerprint: result.IntendedFingerprint, PackageHash: result.IntendedPackageSHA256,
+				UpdatedAt: result.UpdatedAt,
+			}
+		}},
+		{name: "committed wrong fingerprint", mutate: func(result *registry.ExternalPackageCommitResult) {
+			result.Status = registry.ExternalPackageCommitted
+			result.MutationOutcome = mutation.OutcomeCommitted
+			result.RecordSnapshot = &registry.PluginRecord{
+				PluginInstanceID: result.PluginInstanceID, ManagementRevision: 1,
+				ActiveFingerprint: "sha256:wrong", PackageHash: result.IntendedPackageSHA256,
+				UpdatedAt: result.UpdatedAt,
+			}
+		}},
+		{name: "committed wrong package", mutate: func(result *registry.ExternalPackageCommitResult) {
+			result.Status = registry.ExternalPackageCommitted
+			result.MutationOutcome = mutation.OutcomeCommitted
+			result.RecordSnapshot = &registry.PluginRecord{
+				PluginInstanceID: result.PluginInstanceID, ManagementRevision: 1,
+				ActiveFingerprint: result.IntendedFingerprint, PackageHash: "sha256:wrong",
+				UpdatedAt: result.UpdatedAt,
+			}
+		}},
+		{name: "failed wrong code", mutate: func(result *registry.ExternalPackageCommitResult) {
+			result.Status = registry.ExternalPackageFailed
+			result.MutationOutcome = mutation.OutcomeNotCommitted
+			result.FailureCode = "future_failure"
+		}},
+		{name: "failed wrong identity", mutate: func(result *registry.ExternalPackageCommitResult) {
+			result.Status = registry.ExternalPackageFailed
+			result.MutationOutcome = mutation.OutcomeNotCommitted
+			result.FailureCode = registry.ExternalPackageFailureHostRestarted
+			result.InspectionID = "other_inspection"
+		}},
+		{name: "failed wrong outcome", mutate: func(result *registry.ExternalPackageCommitResult) {
+			result.Status = registry.ExternalPackageFailed
+			result.MutationOutcome = mutation.OutcomeUnknown
+			result.FailureCode = registry.ExternalPackageFailureHostRestarted
+		}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			h, _, _ := newTestHostWithOptions(t, testHostOptions{developerMode: true, localGenerated: true})
+			registryStore := &externalPackageMalformedCommitStore{Store: h.adapters.Registry, mutate: test.mutate}
+			h.adapters.Registry = registryStore
+			stage := &externalPackageTestStage{pkg: readTestPackage(t, buildFixturePackage(t))}
+			configureExternalPackageTestModule(h, stage, registry.SignatureAssessment{})
+			inspection, err := h.InspectExternalPackage(hostTestContext(), InspectExternalPackageRequest{
+				Intent: ExternalPackageIntent{Action: "install"},
+				Source: ExternalPackageSource{Kind: "package_url", URL: "https://plugins.example.test/malformed.redevplugin"},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := h.CommitExternalPackage(hostTestContext(), CommitExternalPackageRequest{
+				InspectionID: inspection.InspectionID, ConfirmationDigest: inspection.ConfirmationDigest,
+			}); !errors.Is(err, ErrAdapterFailure) || mutation.ForError(err) != mutation.OutcomeUnknown {
+				t.Fatalf("malformed commit error = %v, outcome=%q", err, mutation.ForError(err))
+			}
+			if stage.removedCount() != 0 {
+				t.Fatalf("malformed commit removed staged artifact %d times", stage.removedCount())
+			}
+			if _, err := h.QueryExternalPackageCommit(hostTestContext(), QueryExternalPackageCommitRequest{
+				InspectionID: inspection.InspectionID, CommitID: registryStore.result.CommitID,
+			}); !errors.Is(err, ErrAdapterFailure) {
+				t.Fatalf("malformed query error = %v", err)
+			}
+		})
+	}
+}
+
+func TestExternalPackageFailedReceiptProjectsTerminalNotCommittedStatus(t *testing.T) {
+	now := time.Now().UTC()
+	projected, err := publicExternalPackageCommitResult(registry.ExternalPackageCommitResult{
+		InspectionID: "inspection_restart", CommitID: "commit_restart", Intent: registry.ExternalPackageInstall,
+		PluginInstanceID:    "plugin_instance_restart",
+		IntendedFingerprint: "sha256:fingerprint", IntendedPackageSHA256: "sha256:package",
+		Status: registry.ExternalPackageFailed, MutationOutcome: mutation.OutcomeNotCommitted,
+		FailureCode: registry.ExternalPackageFailureHostRestarted,
+		CreatedAt:   now, UpdatedAt: now,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if projected.Status != "failed" || projected.FailureCode != registry.ExternalPackageFailureHostRestarted || projected.RetryAfterMS != 0 {
+		t.Fatalf("projected failed receipt = %#v", projected)
+	}
+	if projected.Intent.Action != "install" || projected.Intent.PluginInstanceID != "plugin_instance_restart" || projected.Intent.ExpectedManagementRevision != 0 {
+		t.Fatalf("projected failed intent = %#v", projected.Intent)
+	}
+}
+
+func TestExternalPackageInProgressReceiptProjectsResolvedUpdateIntent(t *testing.T) {
+	now := time.Now().UTC()
+	projected, err := publicExternalPackageCommitResult(registry.ExternalPackageCommitResult{
+		InspectionID: "inspection_update", CommitID: "commit_update", Intent: registry.ExternalPackageUpdate,
+		PluginInstanceID: "plugin_instance_update", ExpectedManagementRevision: 7,
+		IntendedFingerprint: "sha256:fingerprint", IntendedPackageSHA256: "sha256:package",
+		Status: registry.ExternalPackageCommitting, MutationOutcome: mutation.OutcomeUnknown,
+		CreatedAt: now, UpdatedAt: now,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if projected.Status != "in_progress" || projected.RetryAfterMS != 250 {
+		t.Fatalf("projected in-progress receipt = %#v", projected)
+	}
+	if projected.Intent.Action != "update" || projected.Intent.PluginInstanceID != "plugin_instance_update" || projected.Intent.ExpectedManagementRevision != 7 {
+		t.Fatalf("projected in-progress intent = %#v", projected.Intent)
 	}
 }
 
@@ -499,7 +999,7 @@ func TestExternalPackageHostCloseDrainsPendingStagedArtifacts(t *testing.T) {
 	}
 }
 
-func TestExternalPackageHostCloseDrainsUnknownCommitStagedArtifact(t *testing.T) {
+func TestExternalPackageHostClosePreservesUnknownCommitStagedArtifact(t *testing.T) {
 	h, _, _ := newTestHostWithOptions(t, testHostOptions{developerMode: true, localGenerated: true})
 	registryStore := &externalPackageResumableCommitStore{Store: h.adapters.Registry}
 	h.adapters.Registry = registryStore
@@ -524,8 +1024,8 @@ func TestExternalPackageHostCloseDrainsUnknownCommitStagedArtifact(t *testing.T)
 	if err := h.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if stage.removedCount() != 1 {
-		t.Fatalf("Host.Close() staged artifact remove count = %d, want 1", stage.removedCount())
+	if stage.removedCount() != 0 {
+		t.Fatalf("Host.Close() removed a committing staged artifact %d times", stage.removedCount())
 	}
 }
 
@@ -606,6 +1106,7 @@ func configureExternalPackageTestModule(h *Host, stage *externalPackageTestStage
 func configureExternalPackageTestModuleWithAssessor(h *Host, stage *externalPackageTestStage, assessor ExternalPackageSignatureAssessor) {
 	rawDigest := sha256.Sum256([]byte("external-package-test-artifact"))
 	artifact := externalsource.StagedArtifact{ID: "0123456789abcdef0123456789abcdef", Size: 1, SHA256: hex.EncodeToString(rawDigest[:])}
+	stage.uploaded = artifact
 	h.adapters.ExternalPackageStageStore = stage
 	h.adapters.ExternalPackageFetcher = &externalPackageTestFetcher{result: externalsource.FetchResult{
 		Artifact: artifact, Source: "https://plugins.example.test/example.redevplugin", Final: "https://plugins.example.test/example.redevplugin",

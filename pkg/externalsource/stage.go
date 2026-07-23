@@ -35,7 +35,7 @@ type StagedArtifact struct {
 	SHA256 string
 }
 
-// StageStoreOptions bounds concurrent downloads and retained stage bytes.
+// StageStoreOptions bounds concurrent external transfers and retained stage bytes.
 // Quota keys are opaque host-derived owner identifiers and are never persisted.
 type StageStoreOptions struct {
 	MaxConcurrentFetches      int
@@ -181,22 +181,63 @@ func (store *StageStore) Stage(ctx context.Context, source io.Reader) (StagedArt
 	return store.stageWithLimitForOwner(ctx, "", source, MaxArtifactBytes)
 }
 
+// StageUpload streams an owner-scoped upload into the shared external artifact
+// stage. A negative declaredSize means the size is unknown. Zero is an
+// explicitly empty upload and is rejected before source is read.
+func (store *StageStore) StageUpload(ctx context.Context, ownerKey string, source io.Reader, declaredSize int64) (StagedArtifact, error) {
+	return store.stageUploadWithLimit(ctx, ownerKey, source, declaredSize, MaxArtifactBytes)
+}
+
+func (store *StageStore) stageUploadWithLimit(ctx context.Context, ownerKey string, source io.Reader, declaredSize, limit int64) (StagedArtifact, error) {
+	if store == nil || store.root == nil || source == nil {
+		return StagedArtifact{}, externalError(ErrorStageInvalid, "stage_upload", "", fmt.Errorf("upload stage request is invalid"))
+	}
+	if limit <= 0 || limit > MaxArtifactBytes {
+		return StagedArtifact{}, externalError(ErrorStageInvalid, "stage_upload", "", fmt.Errorf("upload stage limit is invalid"))
+	}
+	if declaredSize == 0 {
+		return StagedArtifact{}, externalError(ErrorArtifactEmpty, "stage_upload", "", fmt.Errorf("declared upload is empty"))
+	}
+	if declaredSize > limit {
+		return StagedArtifact{}, externalError(ErrorArtifactTooLarge, "stage_upload", "", fmt.Errorf("declared upload exceeds byte limit"))
+	}
+	releaseTransfer, err := store.acquireTransfer(ownerKey, "upload_quota")
+	if err != nil {
+		return StagedArtifact{}, err
+	}
+	defer releaseTransfer()
+
+	initialReservation := declaredSize
+	if initialReservation < 0 {
+		initialReservation = 0
+	}
+	return store.stageWithReservationForOwner(ctx, ownerKey, source, limit, initialReservation)
+}
+
 func (store *StageStore) stageWithLimit(ctx context.Context, source io.Reader, limit int64) (StagedArtifact, error) {
 	return store.stageWithLimitForOwner(ctx, "", source, limit)
 }
 
 func (store *StageStore) stageWithLimitForOwner(ctx context.Context, ownerKey string, source io.Reader, limit int64) (StagedArtifact, error) {
+	return store.stageWithReservationForOwner(ctx, ownerKey, source, limit, limit)
+}
+
+func (store *StageStore) stageWithReservationForOwner(ctx context.Context, ownerKey string, source io.Reader, limit, initialReservation int64) (StagedArtifact, error) {
 	if store == nil || store.root == nil || source == nil || limit <= 0 || limit > MaxArtifactBytes {
 		return StagedArtifact{}, externalError(ErrorStageInvalid, "stage", "", fmt.Errorf("stage request is invalid"))
 	}
+	if initialReservation < 0 || initialReservation > limit {
+		return StagedArtifact{}, externalError(ErrorStageInvalid, "stage", "", fmt.Errorf("stage reservation is invalid"))
+	}
 	ownerKey = normalizeStageOwnerKey(ownerKey)
-	if err := store.reserveStageBytes(ownerKey, limit); err != nil {
+	if err := store.reserveStageBytes(ownerKey, initialReservation); err != nil {
 		return StagedArtifact{}, err
 	}
+	reserved := initialReservation
 	reservationActive := true
 	defer func() {
 		if reservationActive {
-			store.releaseStageReservation(ownerKey, limit)
+			store.releaseStageReservation(ownerKey, reserved)
 		}
 	}()
 	id, err := randomStageID()
@@ -214,9 +255,16 @@ func (store *StageStore) stageWithLimitForOwner(ctx context.Context, ownerKey st
 	}
 
 	hash := sha256.New()
-	written, err := copyContext(ctx, io.MultiWriter(file, hash), io.LimitReader(source, limit+1))
+	quotaWriter := &stageQuotaWriter{
+		store: store, ownerKey: ownerKey, destination: io.MultiWriter(file, hash),
+		limit: limit, reserved: &reserved,
+	}
+	written, err := copyContext(ctx, quotaWriter, io.LimitReader(source, limit+1))
 	if err != nil {
 		cleanup()
+		if CodeOf(err) != "" {
+			return StagedArtifact{}, err
+		}
 		return StagedArtifact{}, externalError(ErrorTransport, "stage", "", err)
 	}
 	if written > limit {
@@ -240,9 +288,34 @@ func (store *StageStore) stageWithLimitForOwner(ctx context.Context, ownerKey st
 		_ = store.root.Remove(name)
 		return StagedArtifact{}, externalError(ErrorStageInvalid, "stage", "", err)
 	}
-	store.commitStageReservation(ownerKey, id, limit, written)
+	store.commitStageReservation(ownerKey, id, reserved, written)
 	reservationActive = false
 	return StagedArtifact{ID: id, Size: written, SHA256: hex.EncodeToString(hash.Sum(nil))}, nil
+}
+
+// stageQuotaWriter reserves retained-stage capacity before writing each byte
+// within limit. The single limit-probe byte is never retained: it exists only
+// long enough to classify an oversized stream and is removed on that error.
+type stageQuotaWriter struct {
+	store       *StageStore
+	ownerKey    string
+	destination io.Writer
+	limit       int64
+	written     int64
+	reserved    *int64
+}
+
+func (writer *stageQuotaWriter) Write(value []byte) (int, error) {
+	retainedAfterWrite := min(writer.written+int64(len(value)), writer.limit)
+	if additional := retainedAfterWrite - *writer.reserved; additional > 0 {
+		if err := writer.store.reserveStageBytes(writer.ownerKey, additional); err != nil {
+			return 0, err
+		}
+		*writer.reserved += additional
+	}
+	written, err := writer.destination.Write(value)
+	writer.written += int64(written)
+	return written, err
 }
 
 // VerifyPackage safely reopens, rehashes, reparses, and rehashes the same file
@@ -333,15 +406,19 @@ func normalizeStageOwnerKey(ownerKey string) string {
 }
 
 func (store *StageStore) acquireFetch(ownerKey string) (func(), error) {
+	return store.acquireTransfer(ownerKey, "fetch_quota")
+}
+
+func (store *StageStore) acquireTransfer(ownerKey, operation string) (func(), error) {
 	if store == nil || store.root == nil {
-		return nil, externalError(ErrorStageInvalid, "fetch_quota", "", fmt.Errorf("stage store is not initialized"))
+		return nil, externalError(ErrorStageInvalid, operation, "", fmt.Errorf("stage store is not initialized"))
 	}
 	ownerKey = normalizeStageOwnerKey(ownerKey)
 	store.mu.Lock()
 	defer store.mu.Unlock()
 	if store.quota.activeFetches >= store.options.MaxConcurrentFetches ||
 		store.quota.ownerActiveFetches[ownerKey] >= store.options.MaxOwnerConcurrentFetches {
-		return nil, externalError(ErrorQuotaExceeded, "fetch_quota", "", fmt.Errorf("concurrent fetch quota exceeded"))
+		return nil, externalError(ErrorQuotaExceeded, operation, "", fmt.Errorf("concurrent transfer quota exceeded"))
 	}
 	store.quota.activeFetches++
 	store.quota.ownerActiveFetches[ownerKey]++
@@ -360,6 +437,9 @@ func (store *StageStore) acquireFetch(ownerKey string) (func(), error) {
 }
 
 func (store *StageStore) reserveStageBytes(ownerKey string, bytes int64) error {
+	if bytes == 0 {
+		return nil
+	}
 	store.mu.Lock()
 	defer store.mu.Unlock()
 	if store.quota.stagedBytes+store.quota.reservedBytes+bytes > store.options.MaxStagedBytes ||
@@ -372,6 +452,9 @@ func (store *StageStore) reserveStageBytes(ownerKey string, bytes int64) error {
 }
 
 func (store *StageStore) releaseStageReservation(ownerKey string, bytes int64) {
+	if bytes == 0 {
+		return
+	}
 	store.mu.Lock()
 	store.quota.reservedBytes -= bytes
 	store.quota.ownerReservedBytes[ownerKey] -= bytes

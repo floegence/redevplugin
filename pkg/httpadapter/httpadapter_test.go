@@ -1291,13 +1291,17 @@ func TestHandlerWebSecurityCSRFClassificationCoversRouteSet(t *testing.T) {
 			}
 		})
 		if previous, exists := actions[route.action]; exists {
-			t.Fatalf("route action %q is shared by %s %s and %s %s", route.action, previous.Method, previous.Path, route.Method, route.Path)
+			if previous.Effect != route.Effect {
+				t.Fatalf("routes sharing action %q have different security contracts: %#v and %#v", route.action, previous, route.Route)
+			}
 		}
 		hostAction := host.ManagementAction(route.action)
 		if !hostAction.Valid() || string(hostAction) != string(route.action) {
 			t.Fatalf("route action %q has no exact Host action", route.action)
 		}
-		actions[route.action] = route.Route
+		if _, exists := actions[route.action]; !exists {
+			actions[route.action] = route.Route
+		}
 	}
 }
 
@@ -3830,6 +3834,8 @@ func TestStableOwnerScopeAndAdapterFailuresMapToHTTPContracts(t *testing.T) {
 		{name: "management owner scope", err: host.ErrOwnerScopeMismatch, code: security.ErrOwnerScopeMismatch, status: http.StatusForbidden, codeFor: errorCodeForManagementError, statusFor: httpStatusForManagementError},
 		{name: "management storage scope", err: host.ErrStorageScopeMismatch, code: security.ErrStorageScopeMismatch, status: http.StatusForbidden, codeFor: errorCodeForManagementError, statusFor: httpStatusForManagementError},
 		{name: "management adapter", err: host.ErrAdapterFailure, code: security.ErrAdapterFailure, status: http.StatusBadGateway, codeFor: errorCodeForManagementError, statusFor: httpStatusForManagementError},
+		{name: "management external package stale", err: host.ErrExternalPackageInspectionStale, code: security.ErrInvalidRequest, status: http.StatusBadRequest, codeFor: errorCodeForManagementError, statusFor: httpStatusForManagementError},
+		{name: "management external package request", err: host.ErrExternalPackageRequestInvalid, code: security.ErrInvalidRequest, status: http.StatusBadRequest, codeFor: errorCodeForManagementError, statusFor: httpStatusForManagementError},
 		{name: "secret scope", err: host.ErrSecretScopeMismatch, code: security.ErrSecretScopeMismatch, status: http.StatusForbidden, codeFor: errorCodeForSecretError, statusFor: httpStatusForSecretError},
 		{name: "secret owner scope", err: host.ErrOwnerScopeMismatch, code: security.ErrOwnerScopeMismatch, status: http.StatusForbidden, codeFor: errorCodeForSecretError, statusFor: httpStatusForSecretError},
 		{name: "secret owner migration", err: sessionctx.ErrOwnerScopeMigrationRequired, code: security.ErrOwnerScopeMismatch, status: http.StatusForbidden, codeFor: errorCodeForSecretError, statusFor: httpStatusForSecretError},

@@ -53,6 +53,7 @@ type PackageSourceKind string
 const (
 	PackageSourceGitHubRepository PackageSourceKind = "github_repository"
 	PackageSourcePackageURL       PackageSourceKind = "package_url"
+	PackageSourcePackageUpload    PackageSourceKind = "package_upload"
 	PackageSourceOfficialCatalog  PackageSourceKind = "official_catalog"
 	PackageSourceApprovedCatalog  PackageSourceKind = "approved_catalog"
 	PackageSourceLocalGenerated   PackageSourceKind = "local_generated"
@@ -61,6 +62,7 @@ const (
 
 type PackageSourceProvenance struct {
 	Kind               PackageSourceKind          `json:"kind"`
+	UploadID           string                     `json:"upload_id,omitempty"`
 	SourceOrigin       string                     `json:"source_origin,omitempty"`
 	SourceURL          string                     `json:"source_url,omitempty"`
 	FinalURL           string                     `json:"final_url,omitempty"`
@@ -132,7 +134,10 @@ type ExternalPackageCommitStatus string
 const (
 	ExternalPackageCommitting ExternalPackageCommitStatus = "committing"
 	ExternalPackageCommitted  ExternalPackageCommitStatus = "committed"
+	ExternalPackageFailed     ExternalPackageCommitStatus = "failed"
 )
+
+const ExternalPackageFailureHostRestarted = "host_restarted_before_commit"
 
 type CommitExternalPackageRequest struct {
 	InspectionID               string                      `json:"inspection_id"`
@@ -152,15 +157,19 @@ type QueryExternalPackageCommitRequest struct {
 }
 
 type ExternalPackageCommitResult struct {
-	InspectionID    string                      `json:"inspection_id"`
-	CommitID        string                      `json:"commit_id"`
-	Intent          ExternalPackageCommitIntent `json:"intent"`
-	Status          ExternalPackageCommitStatus `json:"status"`
-	MutationOutcome mutation.Outcome            `json:"mutation_outcome"`
-	RecordSnapshot  *PluginRecord               `json:"record_snapshot,omitempty"`
-	FailureCode     string                      `json:"failure_code,omitempty"`
-	CreatedAt       time.Time                   `json:"created_at"`
-	UpdatedAt       time.Time                   `json:"updated_at"`
+	InspectionID               string                      `json:"inspection_id"`
+	CommitID                   string                      `json:"commit_id"`
+	Intent                     ExternalPackageCommitIntent `json:"intent"`
+	PluginInstanceID           string                      `json:"plugin_instance_id"`
+	ExpectedManagementRevision uint64                      `json:"expected_management_revision,omitempty"`
+	IntendedFingerprint        string                      `json:"intended_fingerprint"`
+	IntendedPackageSHA256      string                      `json:"intended_package_sha256"`
+	Status                     ExternalPackageCommitStatus `json:"status"`
+	MutationOutcome            mutation.Outcome            `json:"mutation_outcome"`
+	RecordSnapshot             *PluginRecord               `json:"record_snapshot,omitempty"`
+	FailureCode                string                      `json:"failure_code,omitempty"`
+	CreatedAt                  time.Time                   `json:"created_at"`
+	UpdatedAt                  time.Time                   `json:"updated_at"`
 }
 
 type ExternalPackageStore interface {
@@ -214,13 +223,11 @@ func (s *MemoryStore) CommitExternalPackage(ctx context.Context, req CommitExter
 		now = time.Now().UTC()
 	}
 	result := ExternalPackageCommitResult{
-		InspectionID:    req.InspectionID,
-		CommitID:        req.CommitID,
-		Intent:          req.Intent,
-		Status:          ExternalPackageCommitting,
-		MutationOutcome: mutation.OutcomeUnknown,
-		CreatedAt:       now,
-		UpdatedAt:       now,
+		InspectionID: req.InspectionID, CommitID: req.CommitID, Intent: req.Intent,
+		PluginInstanceID: req.Record.PluginInstanceID, ExpectedManagementRevision: req.ExpectedManagementRevision,
+		IntendedFingerprint: req.IntendedFingerprint, IntendedPackageSHA256: req.IntendedPackageSHA256,
+		Status: ExternalPackageCommitting, MutationOutcome: mutation.OutcomeUnknown,
+		CreatedAt: now, UpdatedAt: now,
 	}
 	s.externalPackageCommits[key] = externalPackageCommitReceipt{OwnerEnvHash: ownerEnvHash, RequestSHA256: requestSHA256, Request: req, Result: result}
 
@@ -307,7 +314,7 @@ func validateExternalPackageCommit(ownerEnvHash string, req CommitExternalPackag
 	if approval.Status != ExecutionApprovalUserApproved && approval.Status != ExecutionApprovalPolicyApproved {
 		return fmt.Errorf("%w: a committed package requires an approved execution decision", ErrInvalidExternalPackageCommit)
 	}
-	if !validSignatureAssessmentStatus(req.Record.SignatureAssessment.Status) || !validPackageSourceKind(req.Record.PackageSourceProvenance.Kind) || !validUpdateEligibility(req.Record.UpdateEligibility) {
+	if !validSignatureAssessmentStatus(req.Record.SignatureAssessment.Status) || !validPackageSourceProvenance(req.Record.PackageSourceProvenance) || !validUpdateEligibility(req.Record.UpdateEligibility) {
 		return fmt.Errorf("%w: package security facts are incomplete", ErrInvalidExternalPackageCommit)
 	}
 	if req.Record.SignatureAssessment.Status == SignatureInvalid || req.Record.SignatureAssessment.Status == SignatureRevoked {
@@ -358,12 +365,33 @@ func validSignatureAssessmentStatus(status SignatureAssessmentStatus) bool {
 
 func validPackageSourceKind(kind PackageSourceKind) bool {
 	switch kind {
-	case PackageSourceGitHubRepository, PackageSourcePackageURL, PackageSourceOfficialCatalog,
+	case PackageSourceGitHubRepository, PackageSourcePackageURL, PackageSourcePackageUpload, PackageSourceOfficialCatalog,
 		PackageSourceApprovedCatalog, PackageSourceLocalGenerated, PackageSourceLegacyRegistry:
 		return true
 	default:
 		return false
 	}
+}
+
+func validPackageSourceProvenance(value PackageSourceProvenance) bool {
+	if !validPackageSourceKind(value.Kind) {
+		return false
+	}
+	if value.Kind != PackageSourcePackageUpload {
+		return value.UploadID == ""
+	}
+	const prefix = "upload_"
+	if !strings.HasPrefix(value.UploadID, prefix) || len(value.UploadID) != len(prefix)+32 {
+		return false
+	}
+	decoded, err := hex.DecodeString(value.UploadID[len(prefix):])
+	return err == nil && len(decoded) == 16 && strings.ToLower(value.UploadID) == value.UploadID &&
+		strings.TrimSpace(value.PackageSHA256) != "" && value.RetrievedAt.UnixNano() > 0 &&
+		value.SourceOrigin == "" && value.SourceURL == "" && value.FinalURL == "" && len(value.RedirectChain) == 0 &&
+		value.RepositoryURL == "" && value.GitHubRepositoryID == "" && value.GitHubReleaseID == "" &&
+		value.GitHubAssetID == "" && value.GitHubOwner == "" && value.GitHubRepository == "" &&
+		value.ReleaseTag == "" && value.AssetName == "" && value.SourceReference == "" && value.SourcePath == "" &&
+		value.ResolvedRevision == "" && value.CatalogEntryID == ""
 }
 
 func validExecutionApprovalStatus(status ExecutionApprovalStatus) bool {
@@ -393,7 +421,7 @@ func validatePersistedPluginSecurityFacts(record PluginRecord) error {
 	if !validSignatureAssessmentStatus(record.SignatureAssessment.Status) {
 		return fmt.Errorf("plugin %q has invalid signature assessment status %q", record.PluginInstanceID, record.SignatureAssessment.Status)
 	}
-	if !validPackageSourceKind(record.PackageSourceProvenance.Kind) {
+	if !validPackageSourceProvenance(record.PackageSourceProvenance) {
 		return fmt.Errorf("plugin %q has invalid package source kind %q", record.PluginInstanceID, record.PackageSourceProvenance.Kind)
 	}
 	if !validExecutionApprovalStatus(record.ExecutionApproval.Status) {
@@ -475,19 +503,21 @@ func validatePersistedExternalPackageReceipt(receipt externalPackageCommitReceip
 		(req.Intent == ExternalPackageUpdate && req.ExpectedManagementRevision == 0) {
 		return fmt.Errorf("external package receipt %q has an invalid expected management revision", req.InspectionID)
 	}
-	if result.InspectionID != req.InspectionID || result.CommitID != req.CommitID || result.Intent != req.Intent {
+	if result.InspectionID != req.InspectionID || result.CommitID != req.CommitID || result.Intent != req.Intent ||
+		result.PluginInstanceID != req.Record.PluginInstanceID || result.ExpectedManagementRevision != req.ExpectedManagementRevision ||
+		result.IntendedFingerprint != req.IntendedFingerprint || result.IntendedPackageSHA256 != req.IntendedPackageSHA256 {
 		return fmt.Errorf("external package receipt %q result identity does not match its request", req.InspectionID)
 	}
-	if result.CreatedAt.UnixNano() <= 0 || result.UpdatedAt.Before(result.CreatedAt) || strings.TrimSpace(result.FailureCode) != "" {
+	if result.CreatedAt.UnixNano() <= 0 || result.UpdatedAt.Before(result.CreatedAt) {
 		return fmt.Errorf("external package receipt %q has invalid lifecycle metadata", req.InspectionID)
 	}
 	switch result.Status {
 	case ExternalPackageCommitting:
-		if result.MutationOutcome != mutation.OutcomeUnknown || result.RecordSnapshot != nil {
+		if result.MutationOutcome != mutation.OutcomeUnknown || result.RecordSnapshot != nil || result.FailureCode != "" {
 			return fmt.Errorf("external package receipt %q has inconsistent committing state", req.InspectionID)
 		}
 	case ExternalPackageCommitted:
-		if result.MutationOutcome != mutation.OutcomeCommitted || result.RecordSnapshot == nil {
+		if result.MutationOutcome != mutation.OutcomeCommitted || result.RecordSnapshot == nil || result.FailureCode != "" {
 			return fmt.Errorf("external package receipt %q has inconsistent committed state", req.InspectionID)
 		}
 		snapshot := *result.RecordSnapshot
@@ -509,6 +539,10 @@ func validatePersistedExternalPackageReceipt(receipt externalPackageCommitReceip
 		}
 		if err := validatePersistedPluginSecurityFacts(snapshot); err != nil {
 			return fmt.Errorf("external package receipt %q snapshot: %w", req.InspectionID, err)
+		}
+	case ExternalPackageFailed:
+		if result.MutationOutcome != mutation.OutcomeNotCommitted || result.RecordSnapshot != nil || result.FailureCode != ExternalPackageFailureHostRestarted {
+			return fmt.Errorf("external package receipt %q has inconsistent failed state", req.InspectionID)
 		}
 	default:
 		return fmt.Errorf("external package receipt %q has invalid status %q", req.InspectionID, result.Status)

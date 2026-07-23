@@ -37,6 +37,7 @@ type ExternalPackageRedirectHop struct {
 
 type ExternalPackageSourceProvenance struct {
 	Kind              string                       `json:"kind"`
+	UploadID          string                       `json:"upload_id,omitempty"`
 	SourceOrigin      string                       `json:"source_origin,omitempty"`
 	SourcePath        string                       `json:"source_path,omitempty"`
 	RedirectChain     []ExternalPackageRedirectHop `json:"redirect_chain,omitempty"`
@@ -234,6 +235,7 @@ type ExternalPackageCommitResult struct {
 	ExecutionApproval   *ExternalPackageExecutionApproval   `json:"execution_approval,omitempty"`
 	UpdateEligibility   *ExternalPackageUpdateEligibility   `json:"update_eligibility,omitempty"`
 	SecuritySummary     *ExternalPackageSecuritySummary     `json:"security_summary,omitempty"`
+	FailureCode         string                              `json:"failure_code,omitempty"`
 	RetryAfterMS        int                                 `json:"retry_after_ms,omitempty"`
 }
 

@@ -4,12 +4,57 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
+	"io"
 	"os"
 	"path/filepath"
+	"strings"
+	"sync"
 	"testing"
 
 	"github.com/floegence/redevplugin/pkg/pluginpkg"
 )
+
+type panicReader struct{}
+
+func (panicReader) Read([]byte) (int, error) {
+	panic("reader must not be called")
+}
+
+type countingReader struct {
+	reader io.Reader
+	read   int
+}
+
+func (reader *countingReader) Read(value []byte) (int, error) {
+	read, err := reader.reader.Read(value)
+	reader.read += read
+	return read, err
+}
+
+type readerFunc func([]byte) (int, error)
+
+func (read readerFunc) Read(value []byte) (int, error) { return read(value) }
+
+type blockingReader struct {
+	started chan<- struct{}
+	release <-chan struct{}
+	once    sync.Once
+	done    bool
+}
+
+func (reader *blockingReader) Read(value []byte) (int, error) {
+	if reader.done {
+		return 0, io.EOF
+	}
+	reader.once.Do(func() {
+		reader.started <- struct{}{}
+		<-reader.release
+	})
+	reader.done = true
+	value[0] = 'x'
+	return 1, nil
+}
 
 func buildMinimalPackage(t *testing.T) []byte {
 	t.Helper()
@@ -156,6 +201,201 @@ func TestStageStoreReleasesFailedWriteReservation(t *testing.T) {
 		t.Fatalf("failed write leaked its quota reservation: %v", err)
 	}
 	t.Cleanup(func() { _ = store.Remove(artifact) })
+}
+
+func TestStageUploadRejectsKnownEmptyAndOversizedDeclarationsBeforeReading(t *testing.T) {
+	store, err := NewStageStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	if _, err := store.StageUpload(context.Background(), "owner", panicReader{}, 0); CodeOf(err) != ErrorArtifactEmpty {
+		t.Fatalf("empty declaration code = %q, err = %v", CodeOf(err), err)
+	}
+	if _, err := store.StageUpload(context.Background(), "owner", panicReader{}, MaxArtifactBytes+1); CodeOf(err) != ErrorArtifactTooLarge {
+		t.Fatalf("oversized declaration code = %q, err = %v", CodeOf(err), err)
+	}
+
+	artifact, err := store.StageUpload(context.Background(), "owner", strings.NewReader("x"), 1)
+	if err != nil {
+		t.Fatalf("preflight rejection leaked transfer quota: %v", err)
+	}
+	if err := store.Remove(artifact); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestStageUploadBoundsKnownAndUnknownStreams(t *testing.T) {
+	for _, test := range []struct {
+		name         string
+		declaredSize int64
+	}{
+		{name: "known", declaredSize: 2},
+		{name: "unknown", declaredSize: -1},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			directory := t.TempDir()
+			store, err := NewStageStoreWithOptions(directory, StageStoreOptions{
+				MaxConcurrentFetches: 1, MaxOwnerConcurrentFetches: 1,
+				MaxStagedBytes: 4, MaxOwnerStagedBytes: 4,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = store.Close() })
+
+			source := &countingReader{reader: strings.NewReader("123456789")}
+			if _, err := store.stageUploadWithLimit(context.Background(), "owner", source, test.declaredSize, 4); CodeOf(err) != ErrorArtifactTooLarge {
+				t.Fatalf("oversized stream code = %q, err = %v", CodeOf(err), err)
+			}
+			if source.read != 5 {
+				t.Fatalf("source bytes read = %d, want 5", source.read)
+			}
+			entries, err := os.ReadDir(directory)
+			if err != nil || len(entries) != 0 {
+				t.Fatalf("failed upload stage entries = %v, err = %v", entries, err)
+			}
+			artifact, err := store.stageUploadWithLimit(context.Background(), "owner", strings.NewReader("1234"), -1, 4)
+			if err != nil {
+				t.Fatalf("oversized upload leaked quota: %v", err)
+			}
+			if err := store.Remove(artifact); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
+func TestStageUploadSharesOwnerAndGlobalStagedByteQuotas(t *testing.T) {
+	store, err := NewStageStoreWithOptions(t.TempDir(), StageStoreOptions{
+		MaxConcurrentFetches: 3, MaxOwnerConcurrentFetches: 2,
+		MaxStagedBytes: 7, MaxOwnerStagedBytes: 5,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	ownerA, err := store.stageUploadWithLimit(context.Background(), "owner-a", strings.NewReader("1234"), 5, 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.stageUploadWithLimit(context.Background(), "owner-a", strings.NewReader("xx"), -1, 5); CodeOf(err) != ErrorQuotaExceeded {
+		t.Fatalf("owner byte quota code = %q, err = %v", CodeOf(err), err)
+	}
+	ownerB, err := store.stageUploadWithLimit(context.Background(), "owner-b", strings.NewReader("567"), -1, 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.stageUploadWithLimit(context.Background(), "owner-c", strings.NewReader("x"), -1, 5); CodeOf(err) != ErrorQuotaExceeded {
+		t.Fatalf("global byte quota code = %q, err = %v", CodeOf(err), err)
+	}
+	if err := store.Remove(ownerA); err != nil {
+		t.Fatal(err)
+	}
+	replacement, err := store.stageUploadWithLimit(context.Background(), "owner-c", strings.NewReader("xx"), -1, 5)
+	if err != nil {
+		t.Fatalf("remove did not release upload byte quota: %v", err)
+	}
+	for _, artifact := range []StagedArtifact{ownerB, replacement} {
+		if err := store.Remove(artifact); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func TestStageUploadSharesActiveTransferQuotasWithFetch(t *testing.T) {
+	store, err := NewStageStoreWithOptions(t.TempDir(), StageStoreOptions{
+		MaxConcurrentFetches: 2, MaxOwnerConcurrentFetches: 1,
+		MaxStagedBytes: 4, MaxOwnerStagedBytes: 2,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	started := make(chan struct{}, 1)
+	releaseUpload := make(chan struct{})
+	type uploadOutcome struct {
+		artifact StagedArtifact
+		err      error
+	}
+	outcome := make(chan uploadOutcome, 1)
+	go func() {
+		artifact, err := store.stageUploadWithLimit(context.Background(), "owner-a", &blockingReader{started: started, release: releaseUpload}, 1, 2)
+		outcome <- uploadOutcome{artifact: artifact, err: err}
+	}()
+	<-started
+
+	if _, err := store.acquireFetch("owner-a"); CodeOf(err) != ErrorQuotaExceeded {
+		t.Fatalf("upload did not consume owner transfer quota: code = %q, err = %v", CodeOf(err), err)
+	}
+	releaseFetch, err := store.acquireFetch("owner-b")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.stageUploadWithLimit(context.Background(), "owner-c", panicReader{}, 1, 2); CodeOf(err) != ErrorQuotaExceeded {
+		t.Fatalf("fetch did not consume global transfer quota: code = %q, err = %v", CodeOf(err), err)
+	}
+	releaseFetch()
+	close(releaseUpload)
+	result := <-outcome
+	if result.err != nil {
+		t.Fatal(result.err)
+	}
+	if err := store.Remove(result.artifact); err != nil {
+		t.Fatal(err)
+	}
+
+	releaseAfter, err := store.acquireFetch("owner-a")
+	if err != nil {
+		t.Fatalf("completed upload leaked active transfer quota: %v", err)
+	}
+	releaseAfter()
+}
+
+func TestStageUploadCleansAndReleasesQuotaOnCancelAndReadFailure(t *testing.T) {
+	directory := t.TempDir()
+	store, err := NewStageStoreWithOptions(directory, StageStoreOptions{
+		MaxConcurrentFetches: 1, MaxOwnerConcurrentFetches: 1,
+		MaxStagedBytes: 4, MaxOwnerStagedBytes: 4,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := store.stageUploadWithLimit(ctx, "owner", strings.NewReader("1234"), -1, 4); CodeOf(err) != ErrorTransport {
+		t.Fatalf("cancel code = %q, err = %v", CodeOf(err), err)
+	}
+
+	readOnce := false
+	failedReader := readerFunc(func(value []byte) (int, error) {
+		if readOnce {
+			return 0, fmt.Errorf("read failed")
+		}
+		readOnce = true
+		copy(value, "12")
+		return 2, fmt.Errorf("read failed")
+	})
+	if _, err := store.stageUploadWithLimit(context.Background(), "owner", failedReader, -1, 4); CodeOf(err) != ErrorTransport {
+		t.Fatalf("read failure code = %q, err = %v", CodeOf(err), err)
+	}
+	entries, err := os.ReadDir(directory)
+	if err != nil || len(entries) != 0 {
+		t.Fatalf("failed upload stage entries = %v, err = %v", entries, err)
+	}
+
+	artifact, err := store.stageUploadWithLimit(context.Background(), "owner", strings.NewReader("1234"), -1, 4)
+	if err != nil {
+		t.Fatalf("failed upload leaked active or byte quota: %v", err)
+	}
+	if err := store.Remove(artifact); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestNewStageStoreRemovesOnlyOwnedOrphanArtifacts(t *testing.T) {

@@ -776,6 +776,117 @@ test("external package inspection uses the closed management path and body", asy
   assert.deepEqual(JSON.parse(fetch.calls[0]?.init.body ?? ""), request);
 });
 
+test("uploaded external package install inspection sends the Blob as a raw authenticated body", async () => {
+  const fetch = new FakeFetch();
+  const inspection = externalPackageInspectionResult("inspection_upload_install", "plugin_instance_generated");
+  inspection.intent = { action: "install", plugin_instance_id: "plugin_instance_generated" } as any;
+  inspection.source_provenance = {
+    kind: "package_upload",
+    upload_id: "upload_opaque_1",
+    package_sha256: inspection.inspected_hashes.package_sha256,
+    resolved_at: "2026-07-23T00:00:00Z",
+  } as any;
+  fetch.push({ ok: true, data: inspection });
+  const client = new PluginPlatformClient({ fetch: fetch.fetch, apiBaseURL: "https://redeven.example.test/" });
+  const packageBlob = new Blob(["package bytes"], { type: "application/octet-stream" });
+
+  const result = await client.inspectUploadedExternalPackage({ action: "install" }, packageBlob);
+
+  assert.equal(result.source_provenance.kind, "package_upload");
+  assert.equal(fetch.calls.length, 1);
+  assert.equal(fetch.calls[0]?.input, "https://redeven.example.test/_redevplugin/api/plugins/external-packages/upload/inspect");
+  assert.equal(fetch.calls[0]?.init.method, "POST");
+  assert.equal(fetch.calls[0]?.init.body, packageBlob);
+  assert.equal(fetch.calls[0]?.init.headers["Accept"], "application/json");
+  assert.equal(fetch.calls[0]?.init.headers["Content-Type"], "application/vnd.redevplugin.package+zip");
+  assert.equal(fetch.calls[0]?.init.headers["X-ReDevPlugin-Expected-Management-Revision"], undefined);
+  assert.equal(fetch.calls[0]?.init.credentials, "same-origin");
+});
+
+test("uploaded external package update inspection uses the encoded target and exact revision header without surface teardown", async () => {
+  const fetch = new FakeFetch();
+  const inspection = externalPackageInspectionResult("inspection_upload_update", "plugin instance target");
+  inspection.source_provenance = {
+    kind: "package_upload",
+    upload_id: "upload_opaque_2",
+    package_sha256: inspection.inspected_hashes.package_sha256,
+    resolved_at: "2026-07-23T00:00:00Z",
+  } as any;
+  fetch.push({ ok: true, data: inspection });
+  const scope = createPluginSurfaceScope();
+  let disposed = 0;
+  const unregister = registerPluginSurface(scope, "plugin instance target", () => { disposed += 1; }, () => undefined);
+  const client = new PluginPlatformClient({ fetch: fetch.fetch, surfaceScope: scope });
+  const packageBlob = new Blob(["updated package bytes"]);
+
+  await client.inspectUploadedExternalPackage({
+    action: "update",
+    plugin_instance_id: "plugin instance target",
+    expected_management_revision: 9007199254740991,
+  }, packageBlob);
+
+  assert.equal(fetch.calls[0]?.input, "/_redevplugin/api/plugins/plugin%20instance%20target/external-packages/upload/inspect");
+  assert.equal(fetch.calls[0]?.init.method, "PUT");
+  assert.equal(fetch.calls[0]?.init.body, packageBlob);
+  assert.equal(fetch.calls[0]?.init.headers["X-ReDevPlugin-Expected-Management-Revision"], "9007199254740991");
+  assert.equal(disposed, 0);
+  unregister();
+});
+
+test("uploaded external package inspection rejects aborted dispatch and invalid closed inputs", async () => {
+  const fetch = new FakeFetch();
+  const client = new PluginPlatformClient({ fetch: fetch.fetch });
+  const packageBlob = new Blob(["package bytes"]);
+  const controller = new AbortController();
+  controller.abort("cancel upload");
+
+  await assert.rejects(
+    client.inspectUploadedExternalPackage({ action: "install" }, packageBlob, { signal: controller.signal }),
+    (error: unknown) => error instanceof PluginTransportError && error.mutationOutcome === "not_committed",
+  );
+  await assert.rejects(
+    client.inspectUploadedExternalPackage({ action: "unsupported" } as any, packageBlob),
+    (error: unknown) => error instanceof TypeError,
+  );
+  await assert.rejects(
+    client.inspectUploadedExternalPackage({ action: "install", plugin_instance_id: "unexpected" } as any, packageBlob),
+    (error: unknown) => error instanceof TypeError,
+  );
+  await assert.rejects(
+    client.inspectUploadedExternalPackage({
+      action: "update",
+      plugin_instance_id: " plugin_instance_1 ",
+      expected_management_revision: 1,
+    }, packageBlob),
+    (error: unknown) => error instanceof TypeError,
+  );
+  for (const pluginInstanceId of ["plugin/instance", ".hidden"]) {
+    await assert.rejects(
+      client.inspectUploadedExternalPackage({
+        action: "update",
+        plugin_instance_id: pluginInstanceId,
+        expected_management_revision: 1,
+      }, packageBlob),
+      (error: unknown) => error instanceof TypeError,
+    );
+  }
+  for (const expectedManagementRevision of [0, -1, 1.5, Number.MAX_SAFE_INTEGER + 1]) {
+    await assert.rejects(
+      client.inspectUploadedExternalPackage({
+        action: "update",
+        plugin_instance_id: "plugin_instance_1",
+        expected_management_revision: expectedManagementRevision,
+      }, packageBlob),
+      (error: unknown) => error instanceof TypeError,
+    );
+  }
+  await assert.rejects(
+    client.inspectUploadedExternalPackage({ action: "install" }, "not-a-blob" as any),
+    (error: unknown) => error instanceof TypeError,
+  );
+  assert.equal(fetch.calls.length, 0);
+});
+
 test("committed external package commit disposes only the returned plugin scope", async () => {
   const fetch = new FakeFetch();
   const inspection = externalPackageInspectionResult("inspection_commit", "plugin_instance_target");
@@ -835,6 +946,37 @@ test("committed external package query reconciles and disposes the returned plug
     commit_id: "commit_query",
   });
   unregisterUnrelated();
+});
+
+test("failed external package query returns terminal restart evidence without disposing the target surface", async () => {
+  const fetch = new FakeFetch();
+  const inspection = externalPackageInspectionResult("inspection_failed", "plugin_instance_target");
+  fetch.push({ ok: true, data: inspection });
+  fetch.push({
+    ok: true,
+    data: {
+      status: "failed",
+      inspection_id: "inspection_failed",
+      intent: inspection.intent,
+      failure_code: "host_restarted_before_commit",
+    },
+  });
+  const scope = createPluginSurfaceScope();
+  let disposed = 0;
+  const unregister = registerPluginSurface(scope, "plugin_instance_target", () => { disposed += 1; }, () => undefined);
+  const client = new PluginPlatformClient({ fetch: fetch.fetch, surfaceScope: scope });
+  await client.inspectExternalPackage({
+    intent: { action: "update", plugin_instance_id: "plugin_instance_target", expected_management_revision: 7 },
+    source: { kind: "package_url", url: "https://plugins.example.test/containers-2.0.1.redevplugin" },
+  });
+
+  const result = await client.queryExternalPackageCommit({ inspection_id: "inspection_failed", commit_id: "commit_failed" });
+
+  assert.equal(result.status, "failed");
+  if (result.status !== "failed") throw new Error("expected terminal failed external package commit result");
+  assert.equal(result.failure_code, "host_restarted_before_commit");
+  assert.equal(disposed, 0);
+  unregister();
 });
 
 test("not-committed external package commit preserves the target surface", async () => {

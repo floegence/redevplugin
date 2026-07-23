@@ -34,7 +34,7 @@ func (s *SQLiteStore) CommitExternalPackage(ctx context.Context, req CommitExter
 		if existingReceipt.RequestSHA256 != requestSHA256 {
 			return ExternalPackageCommitResult{}, ErrExternalPackageCommitConflict
 		}
-		if existingReceipt.Result.Status == ExternalPackageCommitted {
+		if existingReceipt.Result.Status == ExternalPackageCommitted || existingReceipt.Result.Status == ExternalPackageFailed {
 			return cloneExternalPackageCommitResult(existingReceipt.Result)
 		}
 	} else {
@@ -87,6 +87,8 @@ INSERT INTO external_package_commit_receipts (
 			Request:       req,
 			Result: ExternalPackageCommitResult{
 				InspectionID: req.InspectionID, CommitID: req.CommitID, Intent: req.Intent,
+				PluginInstanceID: req.Record.PluginInstanceID, ExpectedManagementRevision: req.ExpectedManagementRevision,
+				IntendedFingerprint: req.IntendedFingerprint, IntendedPackageSHA256: req.IntendedPackageSHA256,
 				Status: ExternalPackageCommitting, MutationOutcome: mutation.OutcomeUnknown,
 				CreatedAt: now, UpdatedAt: now,
 			},
@@ -195,19 +197,16 @@ WHERE owner_env_hash = ? AND inspection_id = ?`, ownerEnvHash, inspectionID).Sca
 	receipt.Request.InspectionID = inspectionID
 	receipt.Request.Intent = ExternalPackageCommitIntent(intent)
 	receipt.Result = ExternalPackageCommitResult{
-		InspectionID:    inspectionID,
-		CommitID:        receipt.Request.CommitID,
-		Intent:          receipt.Request.Intent,
-		Status:          ExternalPackageCommitStatus(status),
-		MutationOutcome: mutation.Outcome(outcome),
-		FailureCode:     receipt.Result.FailureCode,
-		CreatedAt:       unixToTime(createdAt),
-		UpdatedAt:       unixToTime(updatedAt),
+		InspectionID: inspectionID, CommitID: receipt.Request.CommitID, Intent: receipt.Request.Intent,
+		PluginInstanceID: receipt.Request.Record.PluginInstanceID, ExpectedManagementRevision: receipt.Request.ExpectedManagementRevision,
+		IntendedFingerprint: receipt.Request.IntendedFingerprint, IntendedPackageSHA256: receipt.Request.IntendedPackageSHA256,
+		Status: ExternalPackageCommitStatus(status), MutationOutcome: mutation.Outcome(outcome),
+		FailureCode: receipt.Result.FailureCode, CreatedAt: unixToTime(createdAt), UpdatedAt: unixToTime(updatedAt),
 	}
 	switch receipt.Result.Status {
-	case ExternalPackageCommitting:
+	case ExternalPackageCommitting, ExternalPackageFailed:
 		if snapshotJSON != "null" {
-			return externalPackageCommitReceipt{}, false, fmt.Errorf("external package receipt %q committing snapshot must be canonical null", inspectionID)
+			return externalPackageCommitReceipt{}, false, fmt.Errorf("external package receipt %q non-committed snapshot must be canonical null", inspectionID)
 		}
 	case ExternalPackageCommitted:
 		if strings.TrimSpace(snapshotJSON) == "" || strings.TrimSpace(snapshotJSON) == "null" {

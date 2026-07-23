@@ -200,6 +200,7 @@ type externalPackageCommitResultResponse struct {
 	ExecutionApproval   *host.ExternalPackageExecutionApproval   `json:"execution_approval,omitempty"`
 	UpdateEligibility   *host.ExternalPackageUpdateEligibility   `json:"update_eligibility,omitempty"`
 	SecuritySummary     *host.ExternalPackageSecuritySummary     `json:"security_summary,omitempty"`
+	FailureCode         string                                   `json:"failure_code,omitempty"`
 	RetryAfterMS        int                                      `json:"retry_after_ms,omitempty"`
 }
 
@@ -209,6 +210,7 @@ func publicExternalPackageCommitResult(result host.ExternalPackageCommitResult) 
 		Receipt: result.Receipt, SignatureAssessment: result.SignatureAssessment,
 		SourceProvenance: result.SourceProvenance, ExecutionApproval: result.ExecutionApproval,
 		UpdateEligibility: result.UpdateEligibility, SecuritySummary: result.SecuritySummary,
+		FailureCode:  result.FailureCode,
 		RetryAfterMS: result.RetryAfterMS,
 	}
 	if result.Plugin != nil {
@@ -229,7 +231,7 @@ func publicExternalPackageFacts(
 	update registry.UpdateEligibility,
 	securitySummary registry.SecurityCapabilitySummary,
 ) (*host.ExternalPackageSignatureAssessment, *host.ExternalPackageSourceProvenance, *host.ExternalPackageExecutionApproval, *host.ExternalPackageUpdateEligibility, *host.ExternalPackageSecuritySummary) {
-	if provenance.Kind != registry.PackageSourcePackageURL && provenance.Kind != registry.PackageSourceGitHubRepository {
+	if provenance.Kind != registry.PackageSourcePackageURL && provenance.Kind != registry.PackageSourceGitHubRepository && provenance.Kind != registry.PackageSourcePackageUpload {
 		return nil, nil, nil, nil, nil
 	}
 	publicSignature := host.ExternalPackageSignatureAssessment{
@@ -242,7 +244,7 @@ func publicExternalPackageFacts(
 		redirects[index] = host.ExternalPackageRedirectHop{Origin: hop.Origin, Path: hop.Path}
 	}
 	publicProvenance := host.ExternalPackageSourceProvenance{
-		Kind: string(provenance.Kind), SourceOrigin: provenance.SourceOrigin, SourcePath: provenance.SourcePath,
+		Kind: string(provenance.Kind), UploadID: provenance.UploadID, SourceOrigin: provenance.SourceOrigin, SourcePath: provenance.SourcePath,
 		RedirectChain: redirects, RepositoryID: provenance.GitHubRepositoryID, ReleaseID: provenance.GitHubReleaseID,
 		AssetID: provenance.GitHubAssetID, RepositoryURL: provenance.RepositoryURL, Owner: provenance.GitHubOwner,
 		Repository: provenance.GitHubRepository, ResolvedCommitSHA: provenance.ResolvedRevision,

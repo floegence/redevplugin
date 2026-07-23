@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/url"
 	"strconv"
 	"strings"
@@ -31,9 +32,11 @@ var (
 	ErrExternalPackageCommitBlocked      = errors.New("external package commit is blocked by integrity assessment")
 	ErrExternalPackageCommitInProgress   = errors.New("external package commit is in progress")
 	ErrExternalPackageInspectionStale    = errors.New("external package signature assessment changed after inspection")
+	ErrExternalPackageRequestInvalid     = errors.New("external package request is invalid")
 )
 
 type ExternalPackageStageStore interface {
+	StageUpload(context.Context, string, io.Reader, int64) (externalsource.StagedArtifact, error)
 	VerifyPackage(context.Context, externalsource.StagedArtifact, pluginpkg.ReadLimits) (pluginpkg.Package, error)
 	Remove(externalsource.StagedArtifact) error
 }
@@ -86,6 +89,13 @@ type InspectExternalPackageRequest struct {
 	Now    time.Time             `json:"-"`
 }
 
+type InspectUploadedExternalPackageRequest struct {
+	Intent       ExternalPackageIntent `json:"intent"`
+	Package      io.Reader             `json:"-"`
+	DeclaredSize int64                 `json:"-"`
+	Now          time.Time             `json:"-"`
+}
+
 type CommitExternalPackageRequest struct {
 	InspectionID       string    `json:"inspection_id"`
 	ConfirmationDigest string    `json:"confirmation_digest"`
@@ -101,6 +111,7 @@ type externalPackageInspectionState string
 
 const (
 	externalPackagePending    externalPackageInspectionState = "pending"
+	externalPackageCleaning   externalPackageInspectionState = "cleaning"
 	externalPackageCommitting externalPackageInspectionState = "committing"
 	externalPackageCommitted  externalPackageInspectionState = "committed"
 	externalPackageFailed     externalPackageInspectionState = "failed"
@@ -198,29 +209,42 @@ func (s *externalPackageInspectionStore) take(id string) (externalPackagePending
 	return record, ok
 }
 
-func (s *externalPackageInspectionStore) drain() []externalPackagePendingInspection {
+func (s *externalPackageInspectionStore) claimCleanup(scope *sessionctx.SessionScope, expiredAt *time.Time) []externalPackagePendingInspection {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	records := make([]externalPackagePendingInspection, 0, len(s.records))
 	for id, record := range s.records {
-		records = append(records, record)
-		delete(s.records, id)
+		if record.State != externalPackagePending && record.State != externalPackageFailed {
+			continue
+		}
+		if scope != nil && !record.Scope.Matches(*scope) {
+			continue
+		}
+		if expiredAt != nil && (record.State != externalPackagePending || expiredAt.Before(record.Inspection.ExpiresAt)) {
+			continue
+		}
+		claimed := record
+		record.State = externalPackageCleaning
+		s.records[id] = record
+		records = append(records, claimed)
 	}
 	return records
 }
 
-func (s *externalPackageInspectionStore) takeExpiredPending(now time.Time) []externalPackagePendingInspection {
+func (s *externalPackageInspectionStore) finishCleanup(record externalPackagePendingInspection, removed bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	var expired []externalPackagePendingInspection
-	for id, record := range s.records {
-		if record.State != externalPackagePending || now.Before(record.Inspection.ExpiresAt) {
-			continue
-		}
-		expired = append(expired, record)
-		delete(s.records, id)
+	id := record.Inspection.InspectionID
+	current, ok := s.records[id]
+	if !ok || current.State != externalPackageCleaning || current.Artifact != record.Artifact {
+		return
 	}
-	return expired
+	if removed {
+		delete(s.records, id)
+		return
+	}
+	current.State = record.State
+	s.records[id] = current
 }
 
 func (s *externalPackageInspectionStore) finish(id string, state externalPackageInspectionState) {
@@ -244,6 +268,11 @@ func (s *externalPackageInspectionStore) updateRecord(id string, record registry
 }
 
 func (h *Host) InspectExternalPackage(ctx context.Context, req InspectExternalPackageRequest) (result ExternalPackageInspection, retErr error) {
+	releaseOpen, err := h.ensureOpen()
+	if err != nil {
+		return ExternalPackageInspection{}, err
+	}
+	defer releaseOpen()
 	if err := h.requireFeature(FeatureExternalPackage); err != nil {
 		return ExternalPackageInspection{}, err
 	}
@@ -259,11 +288,17 @@ func (h *Host) InspectExternalPackage(ctx context.Context, req InspectExternalPa
 	if err != nil {
 		return ExternalPackageInspection{}, err
 	}
-	if _, err := h.authorizeManagementSession(ctx, session, ManagementActionInspectExternalPackage,
+	authorization, err := h.authorizeManagementSession(ctx, session, ManagementActionInspectExternalPackage,
 		scopedAuthorizationTargetOrCollection(ResourcePlugin, intent.PluginInstanceID, sessionctx.ScopeEnvironment),
-	); err != nil {
+	)
+	if err != nil {
 		return ExternalPackageInspection{}, err
 	}
+	ctx, releaseReservation, err := h.reserveAuthorizedAction(ctx, authorization)
+	if err != nil {
+		return ExternalPackageInspection{}, err
+	}
+	defer releaseReservation()
 	now := req.Now.UTC()
 	if now.IsZero() {
 		now = time.Now().UTC()
@@ -276,13 +311,76 @@ func (h *Host) InspectExternalPackage(ctx context.Context, req InspectExternalPa
 	if err != nil {
 		return ExternalPackageInspection{}, err
 	}
+	return h.inspectStagedExternalPackage(ctx, scope, intent, fetched.Artifact, provenance, now)
+}
+
+func (h *Host) InspectUploadedExternalPackage(ctx context.Context, req InspectUploadedExternalPackageRequest) (ExternalPackageInspection, error) {
+	releaseOpen, err := h.ensureOpen()
+	if err != nil {
+		return ExternalPackageInspection{}, err
+	}
+	defer releaseOpen()
+	if err := h.requireFeature(FeatureExternalPackage); err != nil {
+		return ExternalPackageInspection{}, err
+	}
+	session, err := requireUserSession(ctx)
+	if err != nil {
+		return ExternalPackageInspection{}, err
+	}
+	scope, err := session.SessionScope()
+	if err != nil {
+		return ExternalPackageInspection{}, err
+	}
+	intent, err := normalizeExternalPackageIntent(req.Intent)
+	if err != nil {
+		return ExternalPackageInspection{}, err
+	}
+	authorization, err := h.authorizeManagementSession(ctx, session, ManagementActionInspectExternalPackage,
+		scopedAuthorizationTargetOrCollection(ResourcePlugin, intent.PluginInstanceID, sessionctx.ScopeEnvironment),
+	)
+	if err != nil {
+		return ExternalPackageInspection{}, err
+	}
+	ctx, releaseReservation, err := h.reserveAuthorizedAction(ctx, authorization)
+	if err != nil {
+		return ExternalPackageInspection{}, err
+	}
+	defer releaseReservation()
+	now := req.Now.UTC()
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	if err := h.removeExpiredExternalPackageInspectionArtifacts(now); err != nil {
+		return ExternalPackageInspection{}, err
+	}
+	uploadID, err := newExternalPackageID("upload")
+	if err != nil {
+		return ExternalPackageInspection{}, err
+	}
+	artifact, err := h.adapters.ExternalPackageStageStore.StageUpload(ctx, scope.OwnerEnvHash, req.Package, req.DeclaredSize)
+	if err != nil {
+		return ExternalPackageInspection{}, err
+	}
+	return h.inspectStagedExternalPackage(ctx, scope, intent, artifact, registry.PackageSourceProvenance{
+		Kind: registry.PackageSourcePackageUpload, UploadID: uploadID, RetrievedAt: now,
+	}, now)
+}
+
+func (h *Host) inspectStagedExternalPackage(
+	ctx context.Context,
+	scope sessionctx.SessionScope,
+	intent ExternalPackageIntent,
+	artifact externalsource.StagedArtifact,
+	provenance registry.PackageSourceProvenance,
+	now time.Time,
+) (result ExternalPackageInspection, retErr error) {
 	keepArtifact := false
 	defer func() {
 		if !keepArtifact {
-			retErr = errors.Join(retErr, h.adapters.ExternalPackageStageStore.Remove(fetched.Artifact))
+			retErr = errors.Join(retErr, h.adapters.ExternalPackageStageStore.Remove(artifact))
 		}
 	}()
-	pkg, err := h.adapters.ExternalPackageStageStore.VerifyPackage(ctx, fetched.Artifact, pluginpkg.DefaultReadLimits())
+	pkg, err := h.adapters.ExternalPackageStageStore.VerifyPackage(ctx, artifact, pluginpkg.DefaultReadLimits())
 	if err != nil {
 		return ExternalPackageInspection{}, err
 	}
@@ -373,13 +471,18 @@ func (h *Host) InspectExternalPackage(ctx context.Context, req InspectExternalPa
 		return ExternalPackageInspection{}, err
 	}
 	h.externalInspections.put(externalPackagePendingInspection{
-		Scope: scope, Artifact: fetched.Artifact, Inspection: inspection, Record: record, State: externalPackagePending,
+		Scope: scope, Artifact: artifact, Inspection: inspection, Record: record, State: externalPackagePending,
 	})
 	keepArtifact = true
 	return inspection, nil
 }
 
 func (h *Host) CommitExternalPackage(ctx context.Context, req CommitExternalPackageRequest) (result ExternalPackageCommitResult, retErr error) {
+	releaseOpen, err := h.ensureOpen()
+	if err != nil {
+		return ExternalPackageCommitResult{}, err
+	}
+	defer releaseOpen()
 	if err := h.requireFeature(FeatureExternalPackage); err != nil {
 		return ExternalPackageCommitResult{}, err
 	}
@@ -391,6 +494,22 @@ func (h *Host) CommitExternalPackage(ctx context.Context, req CommitExternalPack
 	if err != nil {
 		return ExternalPackageCommitResult{}, err
 	}
+	inspectionID := strings.TrimSpace(req.InspectionID)
+	preview, err := h.externalInspections.get(inspectionID, scope)
+	if err != nil {
+		return ExternalPackageCommitResult{}, err
+	}
+	authorization, err := h.authorizeManagementSession(ctx, session, ManagementActionCommitExternalPackage,
+		scopedAuthorizationTarget(ResourcePlugin, preview.Record.PluginInstanceID, sessionctx.ScopeEnvironment),
+	)
+	if err != nil {
+		return ExternalPackageCommitResult{}, err
+	}
+	ctx, releaseReservation, err := h.reserveAuthorizedAction(ctx, authorization)
+	if err != nil {
+		return ExternalPackageCommitResult{}, err
+	}
+	defer releaseReservation()
 	now := req.Now.UTC()
 	if now.IsZero() {
 		now = time.Now().UTC()
@@ -399,24 +518,42 @@ func (h *Host) CommitExternalPackage(ctx context.Context, req CommitExternalPack
 	if err != nil {
 		return ExternalPackageCommitResult{}, err
 	}
-	pending, err := h.externalInspections.begin(strings.TrimSpace(req.InspectionID), scope, strings.TrimSpace(req.ConfirmationDigest), commitID, now)
+	pending, err := h.externalInspections.begin(inspectionID, scope, strings.TrimSpace(req.ConfirmationDigest), commitID, now)
 	if errors.Is(err, ErrExternalPackageCommitInProgress) {
-		queried, queryErr := h.QueryExternalPackageCommit(ctx, QueryExternalPackageCommitRequest{InspectionID: req.InspectionID, CommitID: pending.CommitID})
-		if queryErr == nil && queried.Status == "committed" {
+		reconciled, found, queryErr := h.queryExternalPackageCommitAfterError(ctx, pending)
+		if queryErr != nil {
+			return ExternalPackageCommitResult{}, queryErr
+		}
+		if found && reconciled.Status == registry.ExternalPackageCommitted {
+			queried, projectionErr := publicExternalPackageCommitResult(reconciled)
+			if projectionErr != nil {
+				return ExternalPackageCommitResult{}, projectionErr
+			}
 			if cleanupErr := h.removeExternalPackageInspectionArtifact(pending.Inspection.InspectionID, false); cleanupErr != nil {
 				return queried, mutation.Committed(cleanupErr)
 			}
 			return queried, nil
 		}
-		if queryErr != nil && !errors.Is(queryErr, registry.ErrExternalPackageCommitNotFound) {
-			return ExternalPackageCommitResult{}, queryErr
+		if found && reconciled.Status == registry.ExternalPackageFailed {
+			queried, projectionErr := publicExternalPackageCommitResult(reconciled)
+			if projectionErr != nil {
+				return ExternalPackageCommitResult{}, projectionErr
+			}
+			return h.finishFailedExternalPackageCommit(pending, queried)
 		}
 		err = nil
 	}
 	if err == nil && pending.State == externalPackageCommitted {
-		queried, queryErr := h.QueryExternalPackageCommit(ctx, QueryExternalPackageCommitRequest{InspectionID: req.InspectionID, CommitID: pending.CommitID})
+		reconciled, found, queryErr := h.queryExternalPackageCommitAfterError(ctx, pending)
 		if queryErr != nil {
 			return ExternalPackageCommitResult{}, queryErr
+		}
+		if !found || reconciled.Status != registry.ExternalPackageCommitted {
+			return ExternalPackageCommitResult{}, fmt.Errorf("%w: committed external package replay is not durable", ErrAdapterFailure)
+		}
+		queried, projectionErr := publicExternalPackageCommitResult(reconciled)
+		if projectionErr != nil {
+			return ExternalPackageCommitResult{}, projectionErr
 		}
 		if cleanupErr := h.removeExternalPackageInspectionArtifact(pending.Inspection.InspectionID, false); cleanupErr != nil {
 			return queried, mutation.Committed(cleanupErr)
@@ -427,12 +564,6 @@ func (h *Host) CommitExternalPackage(ctx context.Context, req CommitExternalPack
 		if errors.Is(err, ErrExternalPackageInspectionExpired) {
 			return ExternalPackageCommitResult{}, h.failExternalPackageInspection(pending, err)
 		}
-		return ExternalPackageCommitResult{}, err
-	}
-	if _, err := h.authorizeManagementSession(ctx, session, ManagementActionCommitExternalPackage,
-		scopedAuthorizationTarget(ResourcePlugin, pending.Record.PluginInstanceID, sessionctx.ScopeEnvironment),
-	); err != nil {
-		h.externalInspections.finish(pending.Inspection.InspectionID, externalPackagePending)
 		return ExternalPackageCommitResult{}, err
 	}
 	if pending.Record.SignatureAssessment.Status == registry.SignatureInvalid || pending.Record.SignatureAssessment.Status == registry.SignatureRevoked {
@@ -514,10 +645,24 @@ func (h *Host) CommitExternalPackage(ctx context.Context, req CommitExternalPack
 		reconciled, found, queryErr := h.queryExternalPackageCommitAfterError(ctx, pending)
 		if found && reconciled.Status == registry.ExternalPackageCommitted {
 			stored = reconciled
+		} else if found && reconciled.Status == registry.ExternalPackageFailed {
+			auditDetails["status"] = "failed"
+			projected, projectionErr := publicExternalPackageCommitResult(reconciled)
+			if projectionErr != nil {
+				h.externalInspections.finish(pending.Inspection.InspectionID, externalPackageCommitting)
+				auditDetails["status"] = "committing"
+				return ExternalPackageCommitResult{}, mutation.Unknown(errors.Join(err, projectionErr))
+			}
+			return h.finishFailedExternalPackageCommit(pending, projected)
 		} else if found {
 			h.externalInspections.finish(pending.Inspection.InspectionID, externalPackageCommitting)
 			auditDetails["status"] = "committing"
-			return publicExternalPackageCommitResult(reconciled), mutation.Unknown(errors.Join(err, queryErr))
+			projected, projectionErr := publicExternalPackageCommitResult(reconciled)
+			return projected, mutation.Unknown(errors.Join(err, queryErr, projectionErr))
+		} else if queryErr != nil {
+			h.externalInspections.finish(pending.Inspection.InspectionID, externalPackageCommitting)
+			auditDetails["status"] = "committing"
+			return ExternalPackageCommitResult{}, mutation.Unknown(errors.Join(err, queryErr))
 		} else {
 			// Package assets are content-addressed and may already be referenced by
 			// another installation. Without an asset-store claim token, deleting
@@ -525,9 +670,41 @@ func (h *Host) CommitExternalPackage(ctx context.Context, req CommitExternalPack
 			return ExternalPackageCommitResult{}, h.failExternalPackageInspection(pending, managementMutationError(record, errors.Join(err, queryErr)))
 		}
 	}
+	if validationErr := validateRegistryExternalPackageCommitResult(stored, externalPackageCommitResultIdentity{
+		InspectionID: pending.Inspection.InspectionID, CommitID: pending.CommitID,
+		Intent:                     registry.ExternalPackageCommitIntent(pending.Inspection.Intent.Action),
+		PluginInstanceID:           pending.Record.PluginInstanceID,
+		ExpectedManagementRevision: pending.Inspection.Intent.ExpectedManagementRevision,
+		IntendedFingerprint:        pending.Record.ActiveFingerprint,
+		IntendedPackageSHA256:      pending.Record.PackageHash,
+	}); validationErr != nil {
+		h.externalInspections.finish(pending.Inspection.InspectionID, externalPackageCommitting)
+		auditDetails["status"] = "committing"
+		return ExternalPackageCommitResult{}, mutation.Unknown(validationErr)
+	}
+	if stored.Status == registry.ExternalPackageFailed {
+		auditDetails["status"] = "failed"
+		projected, projectionErr := publicExternalPackageCommitResult(stored)
+		if projectionErr != nil {
+			return ExternalPackageCommitResult{}, mutation.Unknown(projectionErr)
+		}
+		return h.finishFailedExternalPackageCommit(pending, projected)
+	}
+	if stored.Status != registry.ExternalPackageCommitted || stored.RecordSnapshot == nil {
+		h.externalInspections.finish(pending.Inspection.InspectionID, externalPackageCommitting)
+		auditDetails["status"] = "committing"
+		projected, projectionErr := publicExternalPackageCommitResult(stored)
+		if projectionErr != nil {
+			return ExternalPackageCommitResult{}, mutation.Unknown(projectionErr)
+		}
+		return projected, nil
+	}
 	h.externalInspections.finish(pending.Inspection.InspectionID, externalPackageCommitted)
 	auditDetails["status"] = "committed"
-	result = publicExternalPackageCommitResult(stored)
+	result, err = publicExternalPackageCommitResult(stored)
+	if err != nil {
+		return ExternalPackageCommitResult{}, mutation.Unknown(err)
+	}
 	var postCommitErr error
 	if previous != nil && stored.RecordSnapshot != nil {
 		revokeRecord := *stored.RecordSnapshot
@@ -560,6 +737,16 @@ func (h *Host) queryExternalPackageCommitAfterError(ctx context.Context, pending
 	if err != nil {
 		return registry.ExternalPackageCommitResult{}, false, err
 	}
+	if err := validateRegistryExternalPackageCommitResult(result, externalPackageCommitResultIdentity{
+		InspectionID: pending.Inspection.InspectionID, CommitID: pending.CommitID,
+		Intent:                     registry.ExternalPackageCommitIntent(pending.Inspection.Intent.Action),
+		PluginInstanceID:           pending.Record.PluginInstanceID,
+		ExpectedManagementRevision: pending.Inspection.Intent.ExpectedManagementRevision,
+		IntendedFingerprint:        pending.Record.ActiveFingerprint,
+		IntendedPackageSHA256:      pending.Record.PackageHash,
+	}); err != nil {
+		return registry.ExternalPackageCommitResult{}, false, err
+	}
 	return result, true, nil
 }
 
@@ -587,32 +774,41 @@ func (h *Host) failExternalPackageInspection(pending externalPackagePendingInspe
 	return errors.Join(cause, h.removeExternalPackageInspectionArtifact(pending.Inspection.InspectionID, true))
 }
 
-func (h *Host) drainExternalPackageInspectionArtifacts() error {
+func (h *Host) finishFailedExternalPackageCommit(pending externalPackagePendingInspection, result ExternalPackageCommitResult) (ExternalPackageCommitResult, error) {
+	h.externalInspections.finish(pending.Inspection.InspectionID, externalPackageFailed)
+	if err := h.removeExternalPackageInspectionArtifact(pending.Inspection.InspectionID, true); err != nil {
+		return result, err
+	}
+	return result, nil
+}
+
+func (h *Host) cleanupExternalPackageInspectionArtifacts(scope *sessionctx.SessionScope, expiredAt *time.Time) error {
 	if h == nil || h.externalInspections == nil || h.adapters.ExternalPackageStageStore == nil {
 		return nil
 	}
 	var resultErr error
-	for _, pending := range h.externalInspections.drain() {
+	for _, pending := range h.externalInspections.claimCleanup(scope, expiredAt) {
 		if strings.TrimSpace(pending.Artifact.ID) == "" {
+			h.externalInspections.finishCleanup(pending, true)
 			continue
 		}
-		resultErr = errors.Join(resultErr, h.adapters.ExternalPackageStageStore.Remove(pending.Artifact))
+		err := h.adapters.ExternalPackageStageStore.Remove(pending.Artifact)
+		h.externalInspections.finishCleanup(pending, err == nil)
+		resultErr = errors.Join(resultErr, err)
 	}
 	return resultErr
 }
 
+func (h *Host) drainExternalPackageInspectionArtifacts() error {
+	return h.cleanupExternalPackageInspectionArtifacts(nil, nil)
+}
+
+func (h *Host) cleanupExternalPackageInspectionArtifactsForScope(scope sessionctx.SessionScope) error {
+	return h.cleanupExternalPackageInspectionArtifacts(&scope, nil)
+}
+
 func (h *Host) removeExpiredExternalPackageInspectionArtifacts(now time.Time) error {
-	if h == nil || h.externalInspections == nil || h.adapters.ExternalPackageStageStore == nil {
-		return nil
-	}
-	var resultErr error
-	for _, pending := range h.externalInspections.takeExpiredPending(now) {
-		if strings.TrimSpace(pending.Artifact.ID) == "" {
-			continue
-		}
-		resultErr = errors.Join(resultErr, h.adapters.ExternalPackageStageStore.Remove(pending.Artifact))
-	}
-	return resultErr
+	return h.cleanupExternalPackageInspectionArtifacts(nil, &now)
 }
 
 func (h *Host) QueryExternalPackageCommit(ctx context.Context, req QueryExternalPackageCommitRequest) (ExternalPackageCommitResult, error) {
@@ -634,14 +830,19 @@ func (h *Host) QueryExternalPackageCommit(ctx context.Context, req QueryExternal
 	if err != nil {
 		return ExternalPackageCommitResult{}, err
 	}
-	return publicExternalPackageCommitResult(result), nil
+	if err := validateRegistryExternalPackageCommitResult(result, externalPackageCommitResultIdentity{
+		InspectionID: strings.TrimSpace(req.InspectionID), CommitID: strings.TrimSpace(req.CommitID),
+	}); err != nil {
+		return ExternalPackageCommitResult{}, err
+	}
+	return publicExternalPackageCommitResult(result)
 }
 
 func (h *Host) fetchExternalPackage(ctx context.Context, source ExternalPackageSource, quotaKey string, now time.Time) (externalsource.FetchResult, registry.PackageSourceProvenance, error) {
 	switch strings.TrimSpace(source.Kind) {
 	case string(registry.PackageSourcePackageURL):
 		if strings.TrimSpace(source.Tag) != "" {
-			return externalsource.FetchResult{}, registry.PackageSourceProvenance{}, errors.New("tag is valid only for GitHub repository sources")
+			return externalsource.FetchResult{}, registry.PackageSourceProvenance{}, fmt.Errorf("%w: tag is valid only for GitHub repository sources", ErrExternalPackageRequestInvalid)
 		}
 		fetched, err := h.adapters.ExternalPackageFetcher.FetchPackage(ctx, externalsource.FetchRequest{URL: source.URL, QuotaKey: quotaKey})
 		if err != nil {
@@ -662,7 +863,7 @@ func (h *Host) fetchExternalPackage(ctx context.Context, source ExternalPackageS
 			ReleaseTag: resolved.Tag, AssetName: resolved.AssetName, ResolvedRevision: resolved.ResolvedCommitSHA, RetrievedAt: now,
 		}, nil
 	default:
-		return externalsource.FetchResult{}, registry.PackageSourceProvenance{}, errors.New("external package source kind is invalid")
+		return externalsource.FetchResult{}, registry.PackageSourceProvenance{}, fmt.Errorf("%w: external package source kind is invalid", ErrExternalPackageRequestInvalid)
 	}
 }
 
@@ -679,7 +880,7 @@ func (h *Host) resolveExternalPackageIntent(ctx context.Context, intent External
 		return nil, "", err
 	}
 	if current.PublisherID != pkg.Manifest.Publisher.PublisherID || current.PluginID != pkg.Manifest.PluginID() {
-		return nil, "", errors.New("external package update identity does not match installed plugin")
+		return nil, "", fmt.Errorf("%w: external package update identity does not match installed plugin", ErrExternalPackageRequestInvalid)
 	}
 	return &current, current.PluginInstanceID, nil
 }
@@ -774,7 +975,7 @@ func (h *Host) validateExternalPackageSignatureFreshness(ctx context.Context, re
 func externalPackageSource(kind registry.PackageSourceKind) bool {
 	switch kind {
 	case registry.PackageSourcePackageURL, registry.PackageSourceGitHubRepository,
-		registry.PackageSourceOfficialCatalog, registry.PackageSourceApprovedCatalog:
+		registry.PackageSourcePackageUpload, registry.PackageSourceOfficialCatalog, registry.PackageSourceApprovedCatalog:
 		return true
 	default:
 		return false
@@ -787,14 +988,14 @@ func normalizeExternalPackageIntent(intent ExternalPackageIntent) (ExternalPacka
 	switch registry.ExternalPackageCommitIntent(intent.Action) {
 	case registry.ExternalPackageInstall:
 		if intent.PluginInstanceID != "" || intent.ExpectedManagementRevision != 0 {
-			return ExternalPackageIntent{}, errors.New("external package install intent cannot select an instance or revision")
+			return ExternalPackageIntent{}, fmt.Errorf("%w: external package install intent cannot select an instance or revision", ErrExternalPackageRequestInvalid)
 		}
 	case registry.ExternalPackageUpdate:
 		if intent.PluginInstanceID == "" || intent.ExpectedManagementRevision == 0 {
-			return ExternalPackageIntent{}, errors.New("external package update intent requires plugin_instance_id and expected_management_revision")
+			return ExternalPackageIntent{}, fmt.Errorf("%w: external package update intent requires plugin_instance_id and expected_management_revision", ErrExternalPackageRequestInvalid)
 		}
 	default:
-		return ExternalPackageIntent{}, errors.New("external package intent is invalid")
+		return ExternalPackageIntent{}, fmt.Errorf("%w: external package intent is invalid", ErrExternalPackageRequestInvalid)
 	}
 	return intent, nil
 }
@@ -887,7 +1088,7 @@ func publicExternalSourceProvenance(value registry.PackageSourceProvenance) Exte
 		redirects[index] = ExternalPackageRedirectHop{Origin: hop.Origin, Path: hop.Path}
 	}
 	return ExternalPackageSourceProvenance{
-		Kind: string(value.Kind), SourceOrigin: value.SourceOrigin, SourcePath: value.SourcePath, RedirectChain: redirects,
+		Kind: string(value.Kind), UploadID: value.UploadID, SourceOrigin: value.SourceOrigin, SourcePath: value.SourcePath, RedirectChain: redirects,
 		RepositoryID: value.GitHubRepositoryID, ReleaseID: value.GitHubReleaseID, AssetID: value.GitHubAssetID,
 		RepositoryURL: value.RepositoryURL, Owner: value.GitHubOwner, Repository: value.GitHubRepository,
 		ResolvedCommitSHA: value.ResolvedRevision, ReleaseTag: value.ReleaseTag, AssetName: value.AssetName,
@@ -912,13 +1113,121 @@ func publicExternalUpdateEligibility(value registry.UpdateEligibility, signature
 	return ExternalPackageUpdateEligibility{State: string(value), ReasonCodes: reasons, AssessedAt: now}
 }
 
-func publicExternalPackageCommitResult(value registry.ExternalPackageCommitResult) ExternalPackageCommitResult {
+type externalPackageCommitResultIdentity struct {
+	InspectionID               string
+	CommitID                   string
+	Intent                     registry.ExternalPackageCommitIntent
+	PluginInstanceID           string
+	ExpectedManagementRevision uint64
+	IntendedFingerprint        string
+	IntendedPackageSHA256      string
+}
+
+func validateRegistryExternalPackageCommitResult(value registry.ExternalPackageCommitResult, expected externalPackageCommitResultIdentity) error {
+	invalid := func(reason string) error {
+		return fmt.Errorf("%w: registry external package commit result %s", ErrAdapterFailure, reason)
+	}
+	if strings.TrimSpace(value.InspectionID) == "" || strings.TrimSpace(value.CommitID) == "" ||
+		strings.TrimSpace(value.PluginInstanceID) == "" || strings.TrimSpace(value.IntendedFingerprint) == "" ||
+		strings.TrimSpace(value.IntendedPackageSHA256) == "" {
+		return invalid("has incomplete identity")
+	}
+	if value.PluginInstanceID != strings.TrimSpace(value.PluginInstanceID) ||
+		strings.HasPrefix(value.PluginInstanceID, ".") || strings.Contains(value.PluginInstanceID, "/") {
+		return invalid("has a non-canonical plugin instance ID")
+	}
+	switch value.Intent {
+	case registry.ExternalPackageInstall:
+		if value.ExpectedManagementRevision != 0 {
+			return invalid("has an install revision")
+		}
+	case registry.ExternalPackageUpdate:
+		if value.ExpectedManagementRevision == 0 || value.ExpectedManagementRevision == ^uint64(0) {
+			return invalid("is missing an update revision")
+		}
+	default:
+		return invalid("has an unknown intent")
+	}
+	if expected.InspectionID != "" && value.InspectionID != expected.InspectionID {
+		return invalid("does not match the requested inspection")
+	}
+	if expected.CommitID != "" && value.CommitID != expected.CommitID {
+		return invalid("does not match the requested commit")
+	}
+	if expected.Intent != "" && value.Intent != expected.Intent {
+		return invalid("does not match the inspected intent")
+	}
+	if expected.PluginInstanceID != "" && value.PluginInstanceID != expected.PluginInstanceID {
+		return invalid("does not match the inspected plugin")
+	}
+	if expected.Intent != "" && value.ExpectedManagementRevision != expected.ExpectedManagementRevision {
+		return invalid("does not match the inspected revision")
+	}
+	if expected.IntendedFingerprint != "" && value.IntendedFingerprint != expected.IntendedFingerprint {
+		return invalid("does not match the inspected fingerprint")
+	}
+	if expected.IntendedPackageSHA256 != "" && value.IntendedPackageSHA256 != expected.IntendedPackageSHA256 {
+		return invalid("does not match the inspected package")
+	}
+	if value.CreatedAt.IsZero() || value.UpdatedAt.IsZero() || value.UpdatedAt.Before(value.CreatedAt) {
+		return invalid("has invalid lifecycle timestamps")
+	}
+	switch value.Status {
+	case registry.ExternalPackageCommitting:
+		if value.MutationOutcome != mutation.OutcomeUnknown || value.RecordSnapshot != nil || value.FailureCode != "" {
+			return invalid("has an inconsistent committing state")
+		}
+	case registry.ExternalPackageFailed:
+		if value.MutationOutcome != mutation.OutcomeNotCommitted || value.RecordSnapshot != nil ||
+			value.FailureCode != registry.ExternalPackageFailureHostRestarted {
+			return invalid("has an inconsistent failed state")
+		}
+	case registry.ExternalPackageCommitted:
+		if value.MutationOutcome != mutation.OutcomeCommitted || value.RecordSnapshot == nil || value.FailureCode != "" {
+			return invalid("has an inconsistent committed state")
+		}
+		snapshot := value.RecordSnapshot
+		if snapshot.PluginInstanceID != value.PluginInstanceID {
+			return invalid("snapshot does not match the plugin identity")
+		}
+		if snapshot.ActiveFingerprint != value.IntendedFingerprint || snapshot.PackageHash != value.IntendedPackageSHA256 {
+			return invalid("snapshot does not match the committed package")
+		}
+		if !snapshot.UpdatedAt.Equal(value.UpdatedAt) {
+			return invalid("snapshot does not match the commit lifecycle")
+		}
+		if value.Intent == registry.ExternalPackageInstall && snapshot.ManagementRevision != 1 {
+			return invalid("install snapshot has an invalid management revision")
+		}
+		if value.Intent == registry.ExternalPackageUpdate && snapshot.ManagementRevision != value.ExpectedManagementRevision+1 {
+			return invalid("update snapshot has an invalid management revision")
+		}
+	default:
+		return invalid("has an unknown status")
+	}
+	return nil
+}
+
+func publicExternalPackageCommitResult(value registry.ExternalPackageCommitResult) (ExternalPackageCommitResult, error) {
+	if err := validateRegistryExternalPackageCommitResult(value, externalPackageCommitResultIdentity{}); err != nil {
+		return ExternalPackageCommitResult{}, err
+	}
 	result := ExternalPackageCommitResult{
 		Status: "in_progress", InspectionID: value.InspectionID,
-		Intent: ExternalPackageIntent{Action: string(value.Intent)}, RetryAfterMS: 250,
+		Intent: ExternalPackageIntent{
+			Action: string(value.Intent), PluginInstanceID: value.PluginInstanceID,
+			ExpectedManagementRevision: value.ExpectedManagementRevision,
+		},
+		RetryAfterMS: 250,
+	}
+	if value.Status == registry.ExternalPackageFailed {
+		result.Status = "failed"
+		result.FailureCode = value.FailureCode
+		result.RetryAfterMS = 0
+		return result, nil
 	}
 	if value.Status != registry.ExternalPackageCommitted || value.RecordSnapshot == nil {
-		return result
+		return result, nil
 	}
 	result.Status = "committed"
 	record := value.RecordSnapshot
@@ -942,7 +1251,7 @@ func publicExternalPackageCommitResult(value registry.ExternalPackageCommitResul
 		}
 	}
 	result.RetryAfterMS = 0
-	return result
+	return result, nil
 }
 
 var _ = mutation.OutcomeCommitted

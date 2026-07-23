@@ -2,7 +2,7 @@ openapi: 3.1.0
 info:
   title: ReDevPlugin Plugin Platform API
   version: plugin-platform-v8
-  description: Host-agnostic plugin management, bridge, operation, data, and sandbox routes. Release-ref install and update routes resolve host-controlled package artifacts server-side and do not accept requested trust_state values; local-import package install/update routes are explicit developer/import flows and also do not accept caller-supplied trust_state values.
+  description: Host-agnostic plugin management, bridge, operation, data, and sandbox routes. Release-ref install and update routes resolve host-controlled package artifacts server-side and do not accept requested trust_state values; external package URL, GitHub repository, and uploaded-package inspection flows derive package identity and trust facts server-side before reusing the shared commit/query lifecycle; local-import package install/update routes remain explicit developer/import flows and do not accept caller-supplied trust_state values.
 x-redevplugin-query-policy:
   reject_url_query_strings: true
   require_closed_json_bodies: true
@@ -48,6 +48,39 @@ paths:
       description: Resolves and inspects a package from a caller-selected URL or GitHub repository without installing it. Package identity, hashes, provenance, signature state, approval, and update eligibility are computed by the platform and cannot be supplied by the caller.
       requestBody:
         $ref: "#/components/requestBodies/InspectExternalPackageRequest"
+      responses:
+        "200": { $ref: "#/components/responses/ExternalPackageInspectionResponse" }
+        default: { $ref: "#/components/responses/MutationPlatformErrorResponse" }
+  /_redevplugin/api/plugins/external-packages/upload/inspect:
+    post:
+      operationId: inspectUploadedExternalPackageInstall
+      x-redevplugin-route-effect: mutation
+      description: Uploads and inspects a package for installation without committing it. Package identity, hashes, provenance, signature state, approval, and update eligibility are computed by the platform and cannot be supplied by the caller. The returned inspection is committed and reconciled through the shared external-package commit/query routes.
+      requestBody:
+        required: true
+        content:
+          application/vnd.redevplugin.package+zip:
+            schema: { type: string, format: binary }
+      responses:
+        "200": { $ref: "#/components/responses/ExternalPackageInspectionResponse" }
+        default: { $ref: "#/components/responses/MutationPlatformErrorResponse" }
+  /_redevplugin/api/plugins/{plugin_instance_id}/external-packages/upload/inspect:
+    put:
+      operationId: inspectUploadedExternalPackageUpdate
+      x-redevplugin-route-effect: mutation
+      description: Uploads and inspects a package for an optimistic-concurrency-controlled update without committing it. Package identity, hashes, provenance, signature state, approval, and update eligibility are computed by the platform and cannot be supplied by the caller. The returned inspection is committed and reconciled through the shared external-package commit/query routes.
+      parameters:
+        - $ref: "#/components/parameters/PluginInstanceID"
+        - name: X-ReDevPlugin-Expected-Management-Revision
+          in: header
+          required: true
+          description: Canonical decimal management revision. Duplicate, combined, empty, or whitespace-padded values are rejected.
+          schema: { type: integer, minimum: 1, maximum: 9007199254740991 }
+      requestBody:
+        required: true
+        content:
+          application/vnd.redevplugin.package+zip:
+            schema: { type: string, format: binary }
       responses:
         "200": { $ref: "#/components/responses/ExternalPackageInspectionResponse" }
         default: { $ref: "#/components/responses/MutationPlatformErrorResponse" }
@@ -579,7 +612,10 @@ components:
       name: plugin_instance_id
       in: path
       required: true
-      schema: { type: string }
+      schema:
+        type: string
+        minLength: 1
+        pattern: "^[^./\\s](?:[^/]*[^/\\s])?$"
     SurfaceInstanceID:
       name: surface_instance_id
       in: path
@@ -2283,7 +2319,7 @@ components:
         origin: { type: string, format: uri, minLength: 1 }
         path: { type: string, pattern: "^/" }
     ExternalPackageSourceProvenance:
-      description: Stable, credential-free source provenance computed after resolution.
+      description: Stable, credential-free source provenance computed after URL, GitHub release, or uploaded-package resolution. Upload identifiers are opaque server-generated values and cannot be supplied by callers.
       oneOf:
         - type: object
           required: [kind, source_origin, source_path, redirect_chain, package_sha256, resolved_at]
@@ -2295,6 +2331,17 @@ components:
             redirect_chain:
               type: array
               items: { $ref: "#/components/schemas/ExternalPackageRedirectHop" }
+            package_sha256: { type: string, pattern: "^(sha256:)?[0-9a-f]{64}$" }
+            resolved_at: { type: string, format: date-time }
+        - type: object
+          required: [kind, upload_id, package_sha256, resolved_at]
+          additionalProperties: false
+          properties:
+            kind: { const: package_upload }
+            upload_id:
+              type: string
+              minLength: 1
+              description: Opaque server-generated identifier for the staged uploaded artifact.
             package_sha256: { type: string, pattern: "^(sha256:)?[0-9a-f]{64}$" }
             resolved_at: { type: string, format: date-time }
         - type: object
@@ -2601,7 +2648,7 @@ components:
         management_revision: { type: integer, minimum: 1, maximum: 9007199254740991 }
         committed_at: { type: string, format: date-time }
     ExternalPackageCommitResult:
-      description: Closed commit reconciliation union. A committed result repeats all four facts so clients never infer them from legacy trust_state alone.
+      description: Closed commit reconciliation union. A committed result repeats all four facts so clients never infer them from legacy trust_state alone. A failed result is terminal evidence that a durable commit did not occur and requires a fresh inspection before retrying.
       oneOf:
         - type: object
           required: [status, inspection_id, intent, receipt, plugin, signature_assessment, source_provenance, execution_approval, update_eligibility, security_summary]
@@ -2625,6 +2672,14 @@ components:
             inspection_id: { type: string, minLength: 1 }
             intent: { $ref: "#/components/schemas/ExternalPackageIntent" }
             retry_after_ms: { type: integer, minimum: 1, maximum: 60000 }
+        - type: object
+          required: [status, inspection_id, intent, failure_code]
+          additionalProperties: false
+          properties:
+            status: { const: failed }
+            inspection_id: { type: string, minLength: 1 }
+            intent: { $ref: "#/components/schemas/ExternalPackageIntent" }
+            failure_code: { const: host_restarted_before_commit }
     TrustState:
       type: string
       enum: [verified, unsigned_local, untrusted, needs_review, trust_unavailable, blocked_security]

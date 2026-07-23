@@ -4228,6 +4228,7 @@
     #surfaceScope;
     #surfaceTransport;
     #onMutationOutcomeUnknown;
+    #externalInspectionTargets = /* @__PURE__ */ new Map();
     constructor(options = {}) {
       this.#fetch = options.fetch ?? defaultFetch();
       this.#apiBaseURL = trimTrailingSlash(options.apiBaseURL ?? "");
@@ -4246,6 +4247,72 @@
     }
     installReleaseRef(request2, options = {}) {
       return this.#requestMutation("POST", "/_redevplugin/api/plugins/install-release-ref", request2, options);
+    }
+    async inspectExternalPackage(request2, options = {}) {
+      const inspection = await this.#requestMutation(
+        "POST",
+        "/_redevplugin/api/plugins/external-packages/inspect",
+        request2,
+        options
+      );
+      this.#externalInspectionTargets.set(inspection.inspection_id, inspection.intent.plugin_instance_id ?? "");
+      return inspection;
+    }
+    async inspectUploadedExternalPackage(intent, packageBlob, options = {}) {
+      const canonicalIntent = canonicalUploadedExternalPackageIntent(intent);
+      if (!(packageBlob instanceof Blob)) {
+        throw new TypeError("external package upload must be a Blob");
+      }
+      const update = canonicalIntent.action === "update";
+      const path = update ? `/_redevplugin/api/plugins/${encodeURIComponent(canonicalIntent.plugin_instance_id)}/external-packages/upload/inspect` : "/_redevplugin/api/plugins/external-packages/upload/inspect";
+      const inspection = await this.#requestPackageUploadInspection(
+        update ? "PUT" : "POST",
+        path,
+        packageBlob,
+        options,
+        update ? { "X-ReDevPlugin-Expected-Management-Revision": String(canonicalIntent.expected_management_revision) } : {}
+      );
+      this.#externalInspectionTargets.set(
+        inspection.inspection_id,
+        update ? canonicalIntent.plugin_instance_id : ""
+      );
+      return inspection;
+    }
+    async commitExternalPackage(request2, options = {}) {
+      const target = this.#externalInspectionTargets.get(request2.inspection_id);
+      let result;
+      try {
+        result = await this.#requestMutation(
+          "POST",
+          "/_redevplugin/api/plugins/external-packages/commit",
+          request2,
+          options
+        );
+      } catch (error) {
+        await this.#handleMutationFailure(error, target || void 0, "External package commit and local surface teardown failed");
+        throw error;
+      }
+      if (result.status === "committed") {
+        await disposePluginSurfaceScope(this.#surfaceScope, result.plugin.plugin_instance_id);
+        this.#externalInspectionTargets.delete(request2.inspection_id);
+      } else if (result.status === "failed") {
+        this.#externalInspectionTargets.delete(request2.inspection_id);
+      }
+      return result;
+    }
+    async queryExternalPackageCommit(request2, options = {}) {
+      const result = await this.#requestQuery(
+        "/_redevplugin/api/plugins/external-packages/commit/query",
+        request2,
+        options
+      );
+      if (result.status === "committed") {
+        await disposePluginSurfaceScope(this.#surfaceScope, result.plugin.plugin_instance_id);
+        this.#externalInspectionTargets.delete(request2.inspection_id);
+      } else if (result.status === "failed") {
+        this.#externalInspectionTargets.delete(request2.inspection_id);
+      }
+      return result;
     }
     updateReleaseRef(request2, options = {}) {
       return this.#mutatePlugin("/_redevplugin/api/plugins/update-release-ref", request2, options);
@@ -4512,7 +4579,54 @@
       }, operation);
       return readMutationPlatformResponse(response);
     }
+    async #requestPackageUploadInspection(method, path, body, options, metadataHeaders) {
+      const operation = `${method} ${path}`;
+      assertMutationDispatchable(options.signal, operation);
+      const response = await dispatchMutationRequest(this.#fetch, this.#apiBaseURL + path, {
+        method,
+        headers: {
+          "Accept": "application/json",
+          "Content-Type": "application/vnd.redevplugin.package+zip",
+          ...metadataHeaders
+        },
+        body,
+        credentials: "same-origin",
+        signal: options.signal
+      }, operation);
+      return readMutationPlatformResponse(response);
+    }
   };
+  function canonicalUploadedExternalPackageIntent(intent) {
+    if (typeof intent !== "object" || intent === null || Array.isArray(intent)) {
+      throw new TypeError("uploaded external package intent must be a closed install or update object");
+    }
+    const value = intent;
+    const keys = Object.keys(value).sort();
+    if (value.action === "install") {
+      if (keys.length !== 1 || keys[0] !== "action") {
+        throw new TypeError("uploaded external package install intent accepts only action");
+      }
+      return { action: "install" };
+    }
+    if (value.action !== "update") {
+      throw new TypeError("uploaded external package intent action must be install or update");
+    }
+    const updateKeys = ["action", "expected_management_revision", "plugin_instance_id"];
+    if (keys.length !== updateKeys.length || keys.some((key, index) => key !== updateKeys[index])) {
+      throw new TypeError("uploaded external package update intent requires only action, plugin_instance_id, and expected_management_revision");
+    }
+    if (typeof value.plugin_instance_id !== "string" || value.plugin_instance_id.length === 0 || value.plugin_instance_id.trim() !== value.plugin_instance_id || value.plugin_instance_id.startsWith(".") || value.plugin_instance_id.includes("/")) {
+      throw new TypeError("uploaded external package update plugin_instance_id must be a canonical non-empty string");
+    }
+    if (!Number.isSafeInteger(value.expected_management_revision) || value.expected_management_revision <= 0) {
+      throw new TypeError("uploaded external package update expected_management_revision must be a positive safe integer");
+    }
+    return {
+      action: "update",
+      plugin_instance_id: value.plugin_instance_id,
+      expected_management_revision: value.expected_management_revision
+    };
+  }
   var sessionScopeCountKeys2 = [
     "surfaces",
     "asset_tickets",

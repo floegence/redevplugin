@@ -1,5 +1,10 @@
 [
   {
+    "method": "PUT",
+    "path": "/_redevplugin/api/plugins/{plugin_instance_id}/external-packages/upload/inspect",
+    "effect": "mutation"
+  },
+  {
     "method": "POST",
     "path": "/_redevplugin/api/plugins/{plugin_instance_id}/local-import",
     "effect": "mutation"
@@ -82,6 +87,11 @@
   {
     "method": "POST",
     "path": "/_redevplugin/api/plugins/external-packages/inspect",
+    "effect": "mutation"
+  },
+  {
+    "method": "POST",
+    "path": "/_redevplugin/api/plugins/external-packages/upload/inspect",
     "effect": "mutation"
   },
   {

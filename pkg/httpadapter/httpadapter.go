@@ -22,6 +22,7 @@ import (
 
 	"github.com/floegence/redevplugin/pkg/bridge"
 	"github.com/floegence/redevplugin/pkg/connectivity"
+	"github.com/floegence/redevplugin/pkg/externalsource"
 	"github.com/floegence/redevplugin/pkg/host"
 	"github.com/floegence/redevplugin/pkg/mutation"
 	"github.com/floegence/redevplugin/pkg/observability"
@@ -1008,6 +1009,8 @@ var routes = []routeSpec{
 	mutationRoute(http.MethodPost, "/_redevplugin/api/plugins/{plugin_instance_id}/local-import", websecurity.RouteActionImportLocalPackage, func(h *Handler) http.HandlerFunc { return h.handleImportLocalPackageUpload }),
 	mutationRoute(http.MethodPost, "/_redevplugin/api/plugins/install-release-ref", websecurity.RouteActionInstallReleaseRef, func(h *Handler) http.HandlerFunc { return h.handleInstallReleaseRef }),
 	mutationRoute(http.MethodPost, "/_redevplugin/api/plugins/external-packages/inspect", websecurity.RouteActionInspectExternalPackage, func(h *Handler) http.HandlerFunc { return h.handleInspectExternalPackage }),
+	mutationRoute(http.MethodPost, "/_redevplugin/api/plugins/external-packages/upload/inspect", websecurity.RouteActionInspectExternalPackage, func(h *Handler) http.HandlerFunc { return h.handleInspectUploadedExternalPackage }),
+	mutationRoute(http.MethodPut, "/_redevplugin/api/plugins/{plugin_instance_id}/external-packages/upload/inspect", websecurity.RouteActionInspectExternalPackage, func(h *Handler) http.HandlerFunc { return h.handleInspectUploadedExternalPackageUpdate }),
 	mutationRoute(http.MethodPost, "/_redevplugin/api/plugins/external-packages/commit", websecurity.RouteActionCommitExternalPackage, func(h *Handler) http.HandlerFunc { return h.handleCommitExternalPackage }),
 	queryRoute("/_redevplugin/api/plugins/external-packages/commit/query", websecurity.RouteActionQueryExternalPackageCommit, func(h *Handler) http.HandlerFunc { return h.handleQueryExternalPackageCommit }),
 	mutationRoute(http.MethodPost, "/_redevplugin/api/plugins/enable", websecurity.RouteActionEnablePlugin, func(h *Handler) http.HandlerFunc { return h.handleEnable }),
@@ -1482,6 +1485,60 @@ func (h Handler) handleInspectExternalPackage(w http.ResponseWriter, r *http.Req
 	writeMutationSuccess(w, inspection)
 }
 
+func (h Handler) handleInspectUploadedExternalPackage(w http.ResponseWriter, r *http.Request) {
+	defer r.Body.Close()
+	if len(r.Header.Values(localImportRevisionHeader)) != 0 {
+		writeMutationInvalidRequestError(w, errors.New("expected management revision is not allowed for an install"))
+		return
+	}
+	if !validateExternalPackageUploadRequest(w, r) {
+		return
+	}
+	inspection, err := h.host.InspectUploadedExternalPackage(r.Context(), host.InspectUploadedExternalPackageRequest{
+		Intent:  host.ExternalPackageIntent{Action: string(registry.ExternalPackageInstall)},
+		Package: r.Body, DeclaredSize: r.ContentLength,
+	})
+	if err != nil {
+		h.writeExternalPackageInspectError(w, r, err)
+		return
+	}
+	writeMutationSuccess(w, inspection)
+}
+
+func (h Handler) handleInspectUploadedExternalPackageUpdate(w http.ResponseWriter, r *http.Request) {
+	defer r.Body.Close()
+	pluginInstanceID, ok := pluginInstanceIDFromPath(r.URL.Path, "/external-packages/upload/inspect")
+	if !ok {
+		writeMutationError(w, http.StatusNotFound, security.ErrInvalidRequest, "route not found", errorDetails{}, mutation.OutcomeNotCommitted)
+		return
+	}
+	revision, err := requiredLocalImportRevision(r.Header)
+	if err != nil {
+		writeMutationInvalidRequestError(w, err)
+		return
+	}
+	if !validateExternalPackageUploadRequest(w, r) {
+		return
+	}
+	inspection, err := h.host.InspectUploadedExternalPackage(r.Context(), host.InspectUploadedExternalPackageRequest{
+		Intent: host.ExternalPackageIntent{
+			Action: string(registry.ExternalPackageUpdate), PluginInstanceID: pluginInstanceID,
+			ExpectedManagementRevision: revision,
+		},
+		Package: r.Body, DeclaredSize: r.ContentLength,
+	})
+	if err != nil {
+		h.writeExternalPackageInspectError(w, r, err)
+		return
+	}
+	writeMutationSuccess(w, inspection)
+}
+
+func (h Handler) writeExternalPackageInspectError(w http.ResponseWriter, r *http.Request, err error) {
+	code := errorCodeForManagementError(err)
+	writeMutationError(w, httpStatusForManagementError(err), code, h.publicFailureMessage(r.Context(), "external-package.upload.inspect", code, err), errorDetailsForManagementError(err), mutation.ForError(err))
+}
+
 func (h Handler) handleCommitExternalPackage(w http.ResponseWriter, r *http.Request) {
 	var req commitExternalPackageRequest
 	if err := decodeJSON(r, &req); err != nil {
@@ -1635,6 +1692,47 @@ func requiredLocalImportRevision(header http.Header) (uint64, error) {
 }
 
 var errPackageUploadTooLarge = errors.New("package upload exceeds the maximum compressed size")
+
+func validateExternalPackageUploadRequest(w http.ResponseWriter, r *http.Request) bool {
+	if err := requireStrictPackageContentType(r.Header.Values("Content-Type")); err != nil {
+		writeMutationError(w, http.StatusUnsupportedMediaType, security.ErrInvalidRequest, err.Error(), errorDetails{}, mutation.OutcomeNotCommitted)
+		return false
+	}
+	if err := requireIdentityContentEncoding(r.Header.Values("Content-Encoding")); err != nil {
+		writeMutationError(w, http.StatusUnsupportedMediaType, security.ErrInvalidRequest, err.Error(), errorDetails{}, mutation.OutcomeNotCommitted)
+		return false
+	}
+	if r.ContentLength == 0 {
+		writeMutationInvalidRequestError(w, errors.New("package upload body is required"))
+		return false
+	}
+	if r.ContentLength > externalsource.MaxArtifactBytes {
+		writeMutationError(w, http.StatusRequestEntityTooLarge, security.ErrPackageTooLarge, publicPluginErrorMessage(security.ErrPackageTooLarge), errorDetails{Reason: "package_artifact_boundary"}, mutation.OutcomeNotCommitted)
+		return false
+	}
+	return true
+}
+
+func requireStrictPackageContentType(values []string) error {
+	if len(values) != 1 || strings.TrimSpace(values[0]) == "" {
+		return fmt.Errorf("content type must be %s", localImportContentType)
+	}
+	mediaType, params, err := mime.ParseMediaType(values[0])
+	if err != nil || !strings.EqualFold(mediaType, localImportContentType) || len(params) != 0 {
+		return fmt.Errorf("content type must be %s without parameters", localImportContentType)
+	}
+	return nil
+}
+
+func requireIdentityContentEncoding(values []string) error {
+	if len(values) == 0 {
+		return nil
+	}
+	if len(values) != 1 || strings.TrimSpace(values[0]) != values[0] || strings.Contains(values[0], ",") || !strings.EqualFold(values[0], "identity") {
+		return errors.New("Content-Encoding must be absent or identity")
+	}
+	return nil
+}
 
 func requirePackageContentType(r *http.Request) error {
 	mediaType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
@@ -3433,6 +3531,20 @@ func errorCodeForManagementError(err error) security.ErrorCode {
 			return security.ErrPackagePathForbidden
 		}
 	}
+	switch externalsource.CodeOf(err) {
+	case externalsource.ErrorArtifactTooLarge, externalsource.ErrorQuotaExceeded:
+		return security.ErrPackageTooLarge
+	case externalsource.ErrorArtifactEmpty, externalsource.ErrorStageIntegrity:
+		return security.ErrPackageInvalid
+	case externalsource.ErrorStageInvalid:
+		return security.ErrAdapterFailure
+	case externalsource.ErrorInvalidURL, externalsource.ErrorInvalidSource, externalsource.ErrorTargetBlocked,
+		externalsource.ErrorDNS, externalsource.ErrorRedirectDenied, externalsource.ErrorTooManyRedirects,
+		externalsource.ErrorCredentialDenied, externalsource.ErrorTransport, externalsource.ErrorHTTPStatus,
+		externalsource.ErrorUnsupportedEncoding, externalsource.ErrorGitHubRelease,
+		externalsource.ErrorGitHubAssetMissing, externalsource.ErrorGitHubAssetAmbiguous:
+		return security.ErrPackageInvalid
+	}
 	switch {
 	case errors.Is(err, host.ErrActionDenied):
 		return security.ErrActionDenied
@@ -3442,6 +3554,8 @@ func errorCodeForManagementError(err error) security.ErrorCode {
 		return security.ErrConfirmationInvalid
 	case errors.Is(err, host.ErrExternalPackageInspectionNotFound),
 		errors.Is(err, host.ErrExternalPackageInspectionExpired),
+		errors.Is(err, host.ErrExternalPackageInspectionStale),
+		errors.Is(err, host.ErrExternalPackageRequestInvalid),
 		errors.Is(err, registry.ErrExternalPackageCommitNotFound),
 		errors.Is(err, registry.ErrInvalidExternalPackageCommit):
 		return security.ErrInvalidRequest
@@ -3499,6 +3613,16 @@ func errorDetailsForManagementError(err error) errorDetails {
 			Pointer: packageValidationErr.Pointer,
 		}
 	}
+	switch externalsource.CodeOf(err) {
+	case externalsource.ErrorArtifactTooLarge, externalsource.ErrorQuotaExceeded,
+		externalsource.ErrorArtifactEmpty, externalsource.ErrorStageIntegrity,
+		externalsource.ErrorInvalidURL, externalsource.ErrorInvalidSource, externalsource.ErrorTargetBlocked,
+		externalsource.ErrorDNS, externalsource.ErrorRedirectDenied, externalsource.ErrorTooManyRedirects,
+		externalsource.ErrorCredentialDenied, externalsource.ErrorTransport, externalsource.ErrorHTTPStatus,
+		externalsource.ErrorUnsupportedEncoding, externalsource.ErrorGitHubRelease,
+		externalsource.ErrorGitHubAssetMissing, externalsource.ErrorGitHubAssetAmbiguous:
+		return errorDetails{Reason: "package_artifact_boundary"}
+	}
 	return errorDetails{}
 }
 
@@ -3510,6 +3634,19 @@ func httpStatusForManagementError(err error) int {
 		}
 		return http.StatusBadRequest
 	}
+	switch externalsource.CodeOf(err) {
+	case externalsource.ErrorArtifactTooLarge, externalsource.ErrorQuotaExceeded:
+		return http.StatusRequestEntityTooLarge
+	case externalsource.ErrorStageInvalid:
+		return http.StatusBadGateway
+	case externalsource.ErrorArtifactEmpty, externalsource.ErrorStageIntegrity,
+		externalsource.ErrorInvalidURL, externalsource.ErrorInvalidSource, externalsource.ErrorTargetBlocked,
+		externalsource.ErrorDNS, externalsource.ErrorRedirectDenied, externalsource.ErrorTooManyRedirects,
+		externalsource.ErrorCredentialDenied, externalsource.ErrorTransport, externalsource.ErrorHTTPStatus,
+		externalsource.ErrorUnsupportedEncoding, externalsource.ErrorGitHubRelease,
+		externalsource.ErrorGitHubAssetMissing, externalsource.ErrorGitHubAssetAmbiguous:
+		return http.StatusBadRequest
+	}
 	switch {
 	case errors.Is(err, host.ErrAdapterFailure):
 		return http.StatusBadGateway
@@ -3518,6 +3655,8 @@ func httpStatusForManagementError(err error) int {
 	case errors.Is(err, host.ErrExternalPackageConfirmation),
 		errors.Is(err, host.ErrExternalPackageInspectionNotFound),
 		errors.Is(err, host.ErrExternalPackageInspectionExpired),
+		errors.Is(err, host.ErrExternalPackageInspectionStale),
+		errors.Is(err, host.ErrExternalPackageRequestInvalid),
 		errors.Is(err, registry.ErrExternalPackageCommitNotFound),
 		errors.Is(err, registry.ErrInvalidExternalPackageCommit):
 		return http.StatusBadRequest

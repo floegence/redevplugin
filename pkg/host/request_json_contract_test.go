@@ -14,6 +14,7 @@ func TestPublicRequestDTOsDeclareClosedJSONFieldNames(t *testing.T) {
 		DowngradeRequest{}, EnableRequest{}, DisableRequest{}, UninstallRequest{}, ListRetainedDataRequest{},
 		DeleteRetainedDataRequest{}, BindRetainedDataRequest{}, CleanupExpiredRetainedDataRequest{}, ExportDataRequest{},
 		ImportDataRequest{}, DeleteExportDataRequest{}, GrantPermissionRequest{}, RevokePermissionRequest{},
+		InspectExternalPackageRequest{}, InspectUploadedExternalPackageRequest{}, CommitExternalPackageRequest{}, QueryExternalPackageCommitRequest{},
 		ListPermissionGrantsRequest{}, PutSecurityPolicyRequest{}, GetSecurityPolicyRequest{}, DeleteSecurityPolicyRequest{},
 		GetSettingsRequest{}, PatchSettingsRequest{}, OpenSurfaceRequest{}, PrepareSurfaceRequest{},
 		ReadSurfaceAssetRequest{}, DisposeSurfaceRequest{}, RevokeSessionScopeRequest{}, FinalizeSessionScopeRequest{}, MintBridgeTokenRequest{},
@@ -40,7 +41,11 @@ func TestPublicRequestDTOsDeclareClosedJSONFieldNames(t *testing.T) {
 					t.Fatalf("exported field %s must declare an explicit json tag", field.Name)
 				}
 				jsonName := strings.Split(tag, ",")[0]
-				if _, internal := internalFields[field.Name]; internal && jsonName != "-" {
+				_, internal := internalFields[field.Name]
+				if typeOf == reflect.TypeOf(InspectUploadedExternalPackageRequest{}) && (field.Name == "Package" || field.Name == "DeclaredSize") {
+					internal = true
+				}
+				if internal && jsonName != "-" {
 					t.Fatalf("internal field %s json tag = %q, want -", field.Name, tag)
 				}
 			}

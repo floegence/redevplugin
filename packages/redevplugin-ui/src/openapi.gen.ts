@@ -37,6 +37,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/_redevplugin/api/plugins/external-packages/upload/inspect": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** @description Uploads and inspects a package for installation without committing it. Package identity, hashes, provenance, signature state, approval, and update eligibility are computed by the platform and cannot be supplied by the caller. The returned inspection is committed and reconciled through the shared external-package commit/query routes. */
+        post: operations["inspectUploadedExternalPackageInstall"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/_redevplugin/api/plugins/{plugin_instance_id}/external-packages/upload/inspect": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** @description Uploads and inspects a package for an optimistic-concurrency-controlled update without committing it. Package identity, hashes, provenance, signature state, approval, and update eligibility are computed by the platform and cannot be supplied by the caller. The returned inspection is committed and reconciled through the shared external-package commit/query routes. */
+        put: operations["inspectUploadedExternalPackageUpdate"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/_redevplugin/api/plugins/external-packages/commit": {
         parameters: {
             query?: never;
@@ -1644,7 +1678,7 @@ export interface components {
             origin: string;
             path: string;
         };
-        /** @description Stable, credential-free source provenance computed after resolution. */
+        /** @description Stable, credential-free source provenance computed after URL, GitHub release, or uploaded-package resolution. Upload identifiers are opaque server-generated values and cannot be supplied by callers. */
         ExternalPackageSourceProvenance: {
             /** @constant */
             kind: "package_url";
@@ -1652,6 +1686,14 @@ export interface components {
             source_origin: string;
             source_path: string;
             redirect_chain: components["schemas"]["ExternalPackageRedirectHop"][];
+            package_sha256: string;
+            /** Format: date-time */
+            resolved_at: string;
+        } | {
+            /** @constant */
+            kind: "package_upload";
+            /** @description Opaque server-generated identifier for the staged uploaded artifact. */
+            upload_id: string;
             package_sha256: string;
             /** Format: date-time */
             resolved_at: string;
@@ -1851,7 +1893,7 @@ export interface components {
             /** Format: date-time */
             committed_at: string;
         };
-        /** @description Closed commit reconciliation union. A committed result repeats all four facts so clients never infer them from legacy trust_state alone. */
+        /** @description Closed commit reconciliation union. A committed result repeats all four facts so clients never infer them from legacy trust_state alone. A failed result is terminal evidence that a durable commit did not occur and requires a fresh inspection before retrying. */
         ExternalPackageCommitResult: {
             /** @constant */
             status: "committed";
@@ -1870,6 +1912,13 @@ export interface components {
             inspection_id: string;
             intent: components["schemas"]["ExternalPackageIntent"];
             retry_after_ms: number;
+        } | {
+            /** @constant */
+            status: "failed";
+            inspection_id: string;
+            intent: components["schemas"]["ExternalPackageIntent"];
+            /** @constant */
+            failure_code: "host_restarted_before_commit";
         };
         /** @enum {string} */
         TrustState: "verified" | "unsigned_local" | "untrusted" | "needs_review" | "trust_unavailable" | "blocked_security";
@@ -3700,6 +3749,45 @@ export interface operations {
             cookie?: never;
         };
         requestBody: components["requestBodies"]["InspectExternalPackageRequest"];
+        responses: {
+            200: components["responses"]["ExternalPackageInspectionResponse"];
+            default: components["responses"]["MutationPlatformErrorResponse"];
+        };
+    };
+    inspectUploadedExternalPackageInstall: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/vnd.redevplugin.package+zip": string;
+            };
+        };
+        responses: {
+            200: components["responses"]["ExternalPackageInspectionResponse"];
+            default: components["responses"]["MutationPlatformErrorResponse"];
+        };
+    };
+    inspectUploadedExternalPackageUpdate: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Canonical decimal management revision. Duplicate, combined, empty, or whitespace-padded values are rejected. */
+                "X-ReDevPlugin-Expected-Management-Revision": number;
+            };
+            path: {
+                plugin_instance_id: components["parameters"]["PluginInstanceID"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/vnd.redevplugin.package+zip": string;
+            };
+        };
         responses: {
             200: components["responses"]["ExternalPackageInspectionResponse"];
             default: components["responses"]["MutationPlatformErrorResponse"];

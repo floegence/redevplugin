@@ -94,12 +94,87 @@ func TestExternalPackageCommitConcurrentReplay(t *testing.T) {
 }
 
 func TestExternalPackageCommitRejectsInvalidSecurityFacts(t *testing.T) {
+	uploadProvenance := func(record *PluginRecord) {
+		record.PackageSourceProvenance = PackageSourceProvenance{
+			Kind: PackageSourcePackageUpload, UploadID: "upload_0123456789abcdef0123456789abcdef",
+			PackageSHA256: record.PackageHash, RetrievedAt: time.Unix(1, 0).UTC(),
+		}
+	}
 	tests := []struct {
 		name   string
 		mutate func(*PluginRecord)
 	}{
 		{name: "unknown signature status", mutate: func(record *PluginRecord) { record.SignatureAssessment.Status = "future" }},
 		{name: "unknown source kind", mutate: func(record *PluginRecord) { record.PackageSourceProvenance.Kind = "future" }},
+		{name: "upload without server id", mutate: func(record *PluginRecord) { record.PackageSourceProvenance.Kind = PackageSourcePackageUpload }},
+		{name: "upload with malformed server id", mutate: func(record *PluginRecord) {
+			record.PackageSourceProvenance.Kind = PackageSourcePackageUpload
+			record.PackageSourceProvenance.UploadID = "upload_not-hex"
+		}},
+		{name: "URL source with upload id", mutate: func(record *PluginRecord) {
+			record.PackageSourceProvenance.UploadID = "upload_0123456789abcdef0123456789abcdef"
+		}},
+		{name: "upload with source origin", mutate: func(record *PluginRecord) {
+			uploadProvenance(record)
+			record.PackageSourceProvenance.SourceOrigin = "https://example.test"
+		}},
+		{name: "upload with source URL", mutate: func(record *PluginRecord) {
+			uploadProvenance(record)
+			record.PackageSourceProvenance.SourceURL = "https://example.test/plugin.redevplugin"
+		}},
+		{name: "upload with final URL", mutate: func(record *PluginRecord) {
+			uploadProvenance(record)
+			record.PackageSourceProvenance.FinalURL = "https://example.test/plugin.redevplugin"
+		}},
+		{name: "upload with redirect chain", mutate: func(record *PluginRecord) {
+			uploadProvenance(record)
+			record.PackageSourceProvenance.RedirectChain = []PackageSourceRedirectHop{{Origin: "https://example.test", Path: "/plugin"}}
+		}},
+		{name: "upload with repository URL", mutate: func(record *PluginRecord) {
+			uploadProvenance(record)
+			record.PackageSourceProvenance.RepositoryURL = "https://github.com/example/plugin"
+		}},
+		{name: "upload with repository ID", mutate: func(record *PluginRecord) {
+			uploadProvenance(record)
+			record.PackageSourceProvenance.GitHubRepositoryID = "R_1"
+		}},
+		{name: "upload with release ID", mutate: func(record *PluginRecord) {
+			uploadProvenance(record)
+			record.PackageSourceProvenance.GitHubReleaseID = "REL_1"
+		}},
+		{name: "upload with asset ID", mutate: func(record *PluginRecord) {
+			uploadProvenance(record)
+			record.PackageSourceProvenance.GitHubAssetID = "A_1"
+		}},
+		{name: "upload with owner", mutate: func(record *PluginRecord) {
+			uploadProvenance(record)
+			record.PackageSourceProvenance.GitHubOwner = "example"
+		}},
+		{name: "upload with repository", mutate: func(record *PluginRecord) {
+			uploadProvenance(record)
+			record.PackageSourceProvenance.GitHubRepository = "plugin"
+		}},
+		{name: "upload with release tag", mutate: func(record *PluginRecord) { uploadProvenance(record); record.PackageSourceProvenance.ReleaseTag = "v1" }},
+		{name: "upload with asset name", mutate: func(record *PluginRecord) {
+			uploadProvenance(record)
+			record.PackageSourceProvenance.AssetName = "plugin.redevplugin"
+		}},
+		{name: "upload with source reference", mutate: func(record *PluginRecord) {
+			uploadProvenance(record)
+			record.PackageSourceProvenance.SourceReference = "client-file"
+		}},
+		{name: "upload with source path", mutate: func(record *PluginRecord) {
+			uploadProvenance(record)
+			record.PackageSourceProvenance.SourcePath = "/private/plugin.redevplugin"
+		}},
+		{name: "upload with resolved revision", mutate: func(record *PluginRecord) {
+			uploadProvenance(record)
+			record.PackageSourceProvenance.ResolvedRevision = "0123456789abcdef0123456789abcdef01234567"
+		}},
+		{name: "upload with catalog entry", mutate: func(record *PluginRecord) {
+			uploadProvenance(record)
+			record.PackageSourceProvenance.CatalogEntryID = "catalog-entry"
+		}},
 		{name: "unknown approval status", mutate: func(record *PluginRecord) { record.ExecutionApproval.Status = "future" }},
 		{name: "unknown update eligibility", mutate: func(record *PluginRecord) { record.UpdateEligibility = "future" }},
 		{name: "mismatched signature package", mutate: func(record *PluginRecord) { record.SignatureAssessment.PackageSHA256 = "sha256:other" }},
@@ -126,6 +201,84 @@ func TestExternalPackageCommitRejectsInvalidSecurityFacts(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+func TestSQLiteRegistryRejectsUploadedPackageProvenanceShapeWithoutRepair(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*PackageSourceProvenance)
+	}{
+		{name: "source origin", mutate: func(value *PackageSourceProvenance) { value.SourceOrigin = "https://example.test" }},
+		{name: "source URL", mutate: func(value *PackageSourceProvenance) { value.SourceURL = "https://example.test/plugin.redevplugin" }},
+		{name: "final URL", mutate: func(value *PackageSourceProvenance) { value.FinalURL = "https://example.test/plugin.redevplugin" }},
+		{name: "redirect chain", mutate: func(value *PackageSourceProvenance) {
+			value.RedirectChain = []PackageSourceRedirectHop{{Origin: "https://example.test", Path: "/plugin"}}
+		}},
+		{name: "repository URL", mutate: func(value *PackageSourceProvenance) { value.RepositoryURL = "https://github.com/example/plugin" }},
+		{name: "repository ID", mutate: func(value *PackageSourceProvenance) { value.GitHubRepositoryID = "R_1" }},
+		{name: "release ID", mutate: func(value *PackageSourceProvenance) { value.GitHubReleaseID = "REL_1" }},
+		{name: "asset ID", mutate: func(value *PackageSourceProvenance) { value.GitHubAssetID = "A_1" }},
+		{name: "owner", mutate: func(value *PackageSourceProvenance) { value.GitHubOwner = "example" }},
+		{name: "repository", mutate: func(value *PackageSourceProvenance) { value.GitHubRepository = "plugin" }},
+		{name: "release tag", mutate: func(value *PackageSourceProvenance) { value.ReleaseTag = "v1" }},
+		{name: "asset name", mutate: func(value *PackageSourceProvenance) { value.AssetName = "plugin.redevplugin" }},
+		{name: "source reference", mutate: func(value *PackageSourceProvenance) { value.SourceReference = "client-file" }},
+		{name: "source path", mutate: func(value *PackageSourceProvenance) { value.SourcePath = "/private/plugin.redevplugin" }},
+		{name: "resolved revision", mutate: func(value *PackageSourceProvenance) {
+			value.ResolvedRevision = "0123456789abcdef0123456789abcdef01234567"
+		}},
+		{name: "catalog entry", mutate: func(value *PackageSourceProvenance) { value.CatalogEntryID = "catalog-entry" }},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			ctx := registryTestContext()
+			path := filepath.Join(t.TempDir(), "registry.sqlite")
+			store, err := NewSQLiteStore(ctx, path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			req := externalPackageInstallRequest("owner_env_hash_test", time.Unix(1, 0).UTC())
+			req.Record.PackageSourceProvenance = PackageSourceProvenance{
+				Kind: PackageSourcePackageUpload, UploadID: "upload_0123456789abcdef0123456789abcdef",
+				PackageSHA256: req.Record.PackageHash, RetrievedAt: time.Unix(1, 0).UTC(),
+			}
+			if _, err := store.CommitExternalPackage(ctx, req); err != nil {
+				t.Fatal(err)
+			}
+			provenance := req.Record.PackageSourceProvenance
+			test.mutate(&provenance)
+			provenanceJSON, err := encodeRegistryJSON(provenance)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := store.db.ExecContext(ctx, `UPDATE plugin_records SET package_source_provenance_json = ? WHERE owner_env_hash = ? AND plugin_instance_id = ?`, provenanceJSON, "owner_env_hash_test", req.Record.PluginInstanceID); err != nil {
+				t.Fatal(err)
+			}
+			if err := store.Close(); err != nil {
+				t.Fatal(err)
+			}
+			if reopened, err := NewSQLiteStore(ctx, path); err == nil {
+				_ = reopened.Close()
+				t.Fatal("NewSQLiteStore() accepted mixed uploaded-package provenance")
+			}
+			dsn, err := registrySQLiteDSN(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			db, err := sql.Open("sqlite", dsn)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer db.Close()
+			var persistedJSON string
+			if err := db.QueryRowContext(ctx, `SELECT package_source_provenance_json FROM plugin_records WHERE owner_env_hash = ? AND plugin_instance_id = ?`, "owner_env_hash_test", req.Record.PluginInstanceID).Scan(&persistedJSON); err != nil {
+				t.Fatal(err)
+			}
+			if persistedJSON != provenanceJSON {
+				t.Fatal("failed reopen modified mixed uploaded-package provenance")
+			}
+		})
 	}
 }
 
@@ -165,6 +318,118 @@ func TestSQLiteExternalPackageCommitUnknownOutcomeIsQueryable(t *testing.T) {
 	}
 	if queried.Status != ExternalPackageCommitted || queried.RecordSnapshot == nil || queried.MutationOutcome != mutation.OutcomeCommitted {
 		t.Fatalf("queried result = %#v", queried)
+	}
+}
+
+func TestSQLiteRegistryRestartConvergesInterruptedExternalPackageCommit(t *testing.T) {
+	for _, schemaVersion := range []int{1, registrySQLiteSchemaVersion} {
+		t.Run(fmt.Sprintf("schema_v%d", schemaVersion), func(t *testing.T) {
+			ctx := registryTestContext()
+			path := filepath.Join(t.TempDir(), "registry.sqlite")
+			store, err := NewSQLiteStore(ctx, path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			req := externalPackageInstallRequest("owner_env_hash_test", time.Now().UTC())
+			if _, err := store.CommitExternalPackage(ctx, req); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := store.db.ExecContext(ctx, `DELETE FROM plugin_records WHERE owner_env_hash = ? AND plugin_instance_id = ?`, "owner_env_hash_test", req.Record.PluginInstanceID); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := store.db.ExecContext(ctx, `
+UPDATE external_package_commit_receipts
+SET status = ?, mutation_outcome = ?, record_snapshot_json = 'null', failure_code = ''
+WHERE owner_env_hash = ? AND inspection_id = ?`,
+				string(ExternalPackageCommitting), string(mutation.OutcomeUnknown), "owner_env_hash_test", req.InspectionID,
+			); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := store.db.ExecContext(ctx, `PRAGMA user_version = `+fmt.Sprint(schemaVersion)); err != nil {
+				t.Fatal(err)
+			}
+			if err := store.Close(); err != nil {
+				t.Fatal(err)
+			}
+
+			reopened, err := NewSQLiteStore(ctx, path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer reopened.Close()
+			queried, err := reopened.QueryExternalPackageCommit(ctx, QueryExternalPackageCommitRequest{InspectionID: req.InspectionID, CommitID: req.CommitID})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if queried.Status != ExternalPackageFailed || queried.MutationOutcome != mutation.OutcomeNotCommitted ||
+				queried.FailureCode != ExternalPackageFailureHostRestarted || queried.RecordSnapshot != nil ||
+				queried.PluginInstanceID != req.Record.PluginInstanceID || queried.ExpectedManagementRevision != 0 {
+				t.Fatalf("reconciled receipt = %#v", queried)
+			}
+			var gotVersion int
+			if err := reopened.db.QueryRowContext(ctx, `PRAGMA user_version`).Scan(&gotVersion); err != nil {
+				t.Fatal(err)
+			}
+			if gotVersion != registrySQLiteSchemaVersion {
+				t.Fatalf("schema version = %d, want %d", gotVersion, registrySQLiteSchemaVersion)
+			}
+		})
+	}
+}
+
+func TestSQLiteRegistryInterruptedCommitMigrationDoesNotRepairMalformedReceipt(t *testing.T) {
+	ctx := registryTestContext()
+	path := filepath.Join(t.TempDir(), "registry.sqlite")
+	store, err := NewSQLiteStore(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := externalPackageInstallRequest("owner_env_hash_test", time.Now().UTC())
+	if _, err := store.CommitExternalPackage(ctx, req); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.ExecContext(ctx, `
+UPDATE external_package_commit_receipts
+SET status = 'committing', mutation_outcome = 'unknown', record_snapshot_json = ' malformed ', failure_code = ''
+WHERE owner_env_hash = ? AND inspection_id = ?`, "owner_env_hash_test", req.InspectionID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.ExecContext(ctx, `PRAGMA user_version = 1`); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if reopened, err := NewSQLiteStore(ctx, path); err == nil {
+		_ = reopened.Close()
+		t.Fatal("NewSQLiteStore() repaired a malformed interrupted receipt")
+	}
+	dsn, err := registrySQLiteDSN(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	db, err := sql.Open("sqlite", dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var status, outcome, snapshot, failure string
+	if err := db.QueryRowContext(ctx, `
+SELECT status, mutation_outcome, record_snapshot_json, failure_code
+FROM external_package_commit_receipts WHERE owner_env_hash = ? AND inspection_id = ?`,
+		"owner_env_hash_test", req.InspectionID,
+	).Scan(&status, &outcome, &snapshot, &failure); err != nil {
+		t.Fatal(err)
+	}
+	if status != "committing" || outcome != "unknown" || snapshot != " malformed " || failure != "" {
+		t.Fatalf("failed migration changed malformed receipt: status=%q outcome=%q snapshot=%q failure=%q", status, outcome, snapshot, failure)
+	}
+	var version int
+	if err := db.QueryRowContext(ctx, `PRAGMA user_version`).Scan(&version); err != nil {
+		t.Fatal(err)
+	}
+	if version != 1 {
+		t.Fatalf("failed migration changed schema version to %d", version)
 	}
 }
 

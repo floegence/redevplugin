@@ -432,7 +432,7 @@ func RunnableTrustState(state TrustState) bool {
 // environment-and-package-bound execution approval instead of signature state.
 func RunnablePluginRecord(record PluginRecord) bool {
 	switch record.PackageSourceProvenance.Kind {
-	case PackageSourcePackageURL, PackageSourceGitHubRepository,
+	case PackageSourcePackageURL, PackageSourceGitHubRepository, PackageSourcePackageUpload,
 		PackageSourceOfficialCatalog, PackageSourceApprovedCatalog:
 		if !validSignatureAssessmentStatus(record.SignatureAssessment.Status) ||
 			!validExecutionApprovalStatus(record.ExecutionApproval.Status) {

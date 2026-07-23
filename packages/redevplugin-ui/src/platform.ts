@@ -67,6 +67,7 @@ export type PluginReleaseRef = PlatformSchemas["PluginReleaseRef"];
 export type PluginInstallReleaseRefRequest = PlatformSchemas["InstallReleaseRefRequest"];
 export type PluginUpdateReleaseRefRequest = PlatformSchemas["UpdateReleaseRefRequest"];
 export type PluginInspectExternalPackageRequest = PlatformSchemas["InspectExternalPackageRequest"];
+export type PluginUploadedExternalPackageIntent = PlatformSchemas["ExternalPackageIntentRequest"];
 export type PluginExternalPackageInspection = PlatformSchemas["ExternalPackageInspection"];
 export type PluginCommitExternalPackageRequest = PlatformSchemas["CommitExternalPackageRequest"];
 export type PluginQueryExternalPackageCommitRequest = PlatformSchemas["QueryExternalPackageCommitRequest"];
@@ -208,6 +209,34 @@ export class PluginPlatformClient {
     this.#externalInspectionTargets.set(inspection.inspection_id, inspection.intent.plugin_instance_id ?? "");
     return inspection;
   }
+  async inspectUploadedExternalPackage(
+    intent: PluginUploadedExternalPackageIntent,
+    packageBlob: Blob,
+    options: PluginRequestOptions = {},
+  ): Promise<PluginExternalPackageInspection> {
+    const canonicalIntent = canonicalUploadedExternalPackageIntent(intent);
+    if (!(packageBlob instanceof Blob)) {
+      throw new TypeError("external package upload must be a Blob");
+    }
+    const update = canonicalIntent.action === "update";
+    const path = update
+      ? `/_redevplugin/api/plugins/${encodeURIComponent(canonicalIntent.plugin_instance_id)}/external-packages/upload/inspect`
+      : "/_redevplugin/api/plugins/external-packages/upload/inspect";
+    const inspection = await this.#requestPackageUploadInspection(
+      update ? "PUT" : "POST",
+      path,
+      packageBlob,
+      options,
+      update
+        ? { "X-ReDevPlugin-Expected-Management-Revision": String(canonicalIntent.expected_management_revision) }
+        : {},
+    );
+    this.#externalInspectionTargets.set(
+      inspection.inspection_id,
+      update ? canonicalIntent.plugin_instance_id : "",
+    );
+    return inspection;
+  }
   async commitExternalPackage(request: PluginCommitExternalPackageRequest, options: PluginRequestOptions = {}): Promise<PluginExternalPackageCommitResult> {
     const target = this.#externalInspectionTargets.get(request.inspection_id);
     let result: PluginExternalPackageCommitResult;
@@ -222,6 +251,8 @@ export class PluginPlatformClient {
     if (result.status === "committed") {
       await disposePluginSurfaceScope(this.#surfaceScope, result.plugin.plugin_instance_id);
       this.#externalInspectionTargets.delete(request.inspection_id);
+    } else if (result.status === "failed") {
+      this.#externalInspectionTargets.delete(request.inspection_id);
     }
     return result;
   }
@@ -231,6 +262,8 @@ export class PluginPlatformClient {
     );
     if (result.status === "committed") {
       await disposePluginSurfaceScope(this.#surfaceScope, result.plugin.plugin_instance_id);
+      this.#externalInspectionTargets.delete(request.inspection_id);
+    } else if (result.status === "failed") {
       this.#externalInspectionTargets.delete(request.inspection_id);
     }
     return result;
@@ -532,6 +565,66 @@ export class PluginPlatformClient {
     }, operation);
     return readMutationPlatformResponse<T>(response);
   }
+
+  async #requestPackageUploadInspection(
+    method: "POST" | "PUT",
+    path: string,
+    body: Blob,
+    options: PluginRequestOptions,
+    metadataHeaders: Record<string, string>,
+  ): Promise<PluginExternalPackageInspection> {
+    const operation = `${method} ${path}`;
+    assertMutationDispatchable(options.signal, operation);
+    const response = await dispatchMutationRequest(this.#fetch, this.#apiBaseURL + path, {
+      method,
+      headers: {
+        "Accept": "application/json",
+        "Content-Type": "application/vnd.redevplugin.package+zip",
+        ...metadataHeaders,
+      },
+      body,
+      credentials: "same-origin",
+      signal: options.signal,
+    }, operation);
+    return readMutationPlatformResponse<PluginExternalPackageInspection>(response);
+  }
+}
+
+function canonicalUploadedExternalPackageIntent(intent: PluginUploadedExternalPackageIntent): PluginUploadedExternalPackageIntent {
+  if (typeof intent !== "object" || intent === null || Array.isArray(intent)) {
+    throw new TypeError("uploaded external package intent must be a closed install or update object");
+  }
+  const value = intent as unknown as Record<string, unknown>;
+  const keys = Object.keys(value).sort();
+  if (value.action === "install") {
+    if (keys.length !== 1 || keys[0] !== "action") {
+      throw new TypeError("uploaded external package install intent accepts only action");
+    }
+    return { action: "install" };
+  }
+  if (value.action !== "update") {
+    throw new TypeError("uploaded external package intent action must be install or update");
+  }
+  const updateKeys = ["action", "expected_management_revision", "plugin_instance_id"];
+  if (keys.length !== updateKeys.length || keys.some((key, index) => key !== updateKeys[index])) {
+    throw new TypeError("uploaded external package update intent requires only action, plugin_instance_id, and expected_management_revision");
+  }
+  if (typeof value.plugin_instance_id !== "string" ||
+      value.plugin_instance_id.length === 0 ||
+      value.plugin_instance_id.trim() !== value.plugin_instance_id ||
+      value.plugin_instance_id.startsWith(".") ||
+      value.plugin_instance_id.includes("/")) {
+    throw new TypeError("uploaded external package update plugin_instance_id must be a canonical non-empty string");
+  }
+  if (!Number.isSafeInteger(value.expected_management_revision) ||
+      (value.expected_management_revision as number) <= 0) {
+    throw new TypeError("uploaded external package update expected_management_revision must be a positive safe integer");
+  }
+  return {
+    action: "update",
+    plugin_instance_id: value.plugin_instance_id,
+    expected_management_revision: value.expected_management_revision as number,
+  };
 }
 
 const sessionScopeCountKeys = [
