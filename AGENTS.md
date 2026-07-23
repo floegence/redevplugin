@@ -681,6 +681,26 @@ Do not instruct Redeven or another host product to consume unreleased local
 behavior. If an integration needs a fix, land and release it here first, then
 upgrade the host product to the published artifact.
 
+Release publication uses three explicit gates:
+
+- Before creating a release tag, the exact clean `main` tip must pass the local
+  pre-push gate and its matching main-branch CI, including deterministic package
+  builds, package closure, generated metadata, source conformance, and verifier
+  fixtures. Do not create a tag in order to discover deterministic packaging or
+  contract failures in the Release workflow.
+- After publication starts, registry readbacks must use bounded retries with
+  backoff only for temporary availability, rate-limit, and propagation failures.
+  A source commit, tag ref, package digest, checksum, provenance, package set, or
+  module identity mismatch is immutable evidence of the wrong coordinate and
+  must fail immediately without retry. A retry or recovery run must reconcile
+  the original immutable tag, source commit, and package artifact; it must never
+  rebuild, overwrite, or substitute an already published coordinate.
+- A release is host-consumable only after Go proxy and SumDB, npm provenance,
+  all Rust crate registry entries, the canonical completion manifest, its
+  attestation, the exact GitHub Release asset, and the final public verification
+  job have all succeeded. Downstream repositories must wait for that complete
+  public evidence before changing dependency coordinates.
+
 ## Repository Language Policy
 
 - English is the default language for all maintained repository content.
@@ -766,7 +786,9 @@ Expected gates for platform changes:
   packaged-source extraction and conformance, reproducible source builds,
   third-party notices, exact-one `platform-package-publication-v1` completion
   evidence, version matrix consistency, and host-consumable compatibility
-  manifest validation.
+  manifest validation. Registry verifier fixtures must prove bounded retry of
+  temporary failures and immediate rejection of immutable identity, digest,
+  checksum, source, or provenance mismatches.
 
 The complete main-push gate is:
 

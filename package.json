@@ -52,7 +52,7 @@
     "performance:fast": "./scripts/check_redevplugin_performance.sh --fast",
     "performance-contract:test": "node --test scripts/performance_contract.test.mjs scripts/performance_evidence_source_state.test.mjs scripts/measure_http_route_authorization_performance.test.mjs",
     "platform-package-build:test": "node --test scripts/platform_package_build.test.mjs",
-    "platform-package-publication:test": "node --test scripts/platform_package_publication.test.mjs scripts/verify_rust_registry_release.test.mjs && node scripts/test_npm_registry_release_verifier.mjs",
+    "platform-package-publication:test": "node --test scripts/platform_package_publication.test.mjs scripts/verify_go_module_readback.test.mjs scripts/verify_rust_registry_release.test.mjs && node scripts/test_npm_registry_release_verifier.mjs",
     "performance:full": "./scripts/check_redevplugin_performance.sh --full",
     "performance:release": "./scripts/check_redevplugin_performance.sh --release",
     "property-gates": "./scripts/check_redevplugin_property_gates.sh --fast",
