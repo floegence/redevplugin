@@ -10,6 +10,17 @@ import (
 	"testing"
 )
 
+func TestExternalPackageFeatureIsPublishedByTheOpenAPIContract(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join(repoRoot(t), "spec", "openapi", "plugin-platform-v8.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	block := openAPISchemaBlock(t, string(raw), "PluginFeaturesSuccessResponse")
+	if !strings.Contains(block, "enum: [release, runtime, capability, connectivity, secrets, core_action, external_package]") {
+		t.Fatalf("PluginFeaturesSuccessResponse does not publish external_package:\n%s", block)
+	}
+}
+
 func TestExternalPackageRoutesExposeClosedInspectCommitAndQueryFlow(t *testing.T) {
 	raw, err := os.ReadFile(filepath.Join(repoRoot(t), "spec", "openapi", "plugin-platform-v8.yaml"))
 	if err != nil {

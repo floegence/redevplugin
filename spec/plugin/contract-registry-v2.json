@@ -138,7 +138,7 @@
       "id": "plugin-platform-openapi",
       "path": "spec/openapi/plugin-platform-v8.yaml",
       "version": "plugin-platform-v8",
-      "sha256": "280aa3fe3702850d9bc2b12715f3fd2a3215a8e9cf00a4a52d92995349bd097f"
+      "sha256": "39bcfcfb846c868945ab0d21404747b2f5f083574c7ead5aca64f65b98212b7d"
     },
     {
       "id": "process-containment-schema",

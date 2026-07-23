@@ -994,7 +994,7 @@ export interface components {
         PluginFeaturesSuccessResponse: {
             /** @constant */
             ok: true;
-            data: ("release" | "runtime" | "capability" | "connectivity" | "secrets" | "core_action")[];
+            data: ("release" | "runtime" | "capability" | "connectivity" | "secrets" | "core_action" | "external_package")[];
         };
         CompatibilitySuccessResponse: {
             /** @constant */

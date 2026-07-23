@@ -1258,7 +1258,7 @@ components:
           uniqueItems: true
           items:
             type: string
-            enum: [release, runtime, capability, connectivity, secrets, core_action]
+            enum: [release, runtime, capability, connectivity, secrets, core_action, external_package]
     CompatibilitySuccessResponse:
       type: object
       required: [ok, data]
