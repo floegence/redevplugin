@@ -180,7 +180,10 @@ func TestDirectManagementAPIsSanitizeAuthorizationAdapterFailuresBeforeBusinessV
 		{"grant permission", ManagementActionGrantPermission, func() error { _, err := h.GrantPermission(ctx, GrantPermissionRequest{}); return err }},
 		{"revoke permission", ManagementActionRevokePermission, func() error { _, err := h.RevokePermission(ctx, RevokePermissionRequest{}); return err }},
 		{"list permission grants", ManagementActionListPermissionGrants, func() error { _, err := h.ListPermissionGrants(ctx, ListPermissionGrantsRequest{}); return err }},
-		{"get permission requirements", ManagementActionGetPermissionRequirements, func() error { _, err := h.GetPermissionRequirements(ctx, GetPermissionRequirementsRequest{}); return err }},
+		{"get permission requirements", ManagementActionGetPermissionRequirements, func() error {
+			_, err := h.GetPermissionRequirements(ctx, GetPermissionRequirementsRequest{})
+			return err
+		}},
 		{"put security policy", ManagementActionPutSecurityPolicy, func() error { _, err := h.PutSecurityPolicy(ctx, PutSecurityPolicyRequest{}); return err }},
 		{"get security policy", ManagementActionGetSecurityPolicy, func() error { _, err := h.GetSecurityPolicy(ctx, GetSecurityPolicyRequest{}); return err }},
 		{"list security policies", ManagementActionListSecurityPolicies, func() error { _, err := h.ListSecurityPolicies(ctx); return err }},

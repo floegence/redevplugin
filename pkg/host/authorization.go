@@ -46,7 +46,7 @@ const (
 	ManagementActionGrantPermission            ManagementAction = "permission.grant"
 	ManagementActionRevokePermission           ManagementAction = "permission.revoke"
 	ManagementActionListPermissionGrants       ManagementAction = "permission.list"
-	ManagementActionGetPermissionRequirements ManagementAction = "permission.requirements.get"
+	ManagementActionGetPermissionRequirements  ManagementAction = "permission.requirements.get"
 	ManagementActionPutSecurityPolicy          ManagementAction = "security_policy.put"
 	ManagementActionGetSecurityPolicy          ManagementAction = "security_policy.get"
 	ManagementActionListSecurityPolicies       ManagementAction = "security_policy.list"
