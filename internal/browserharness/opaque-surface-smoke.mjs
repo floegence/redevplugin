@@ -150,6 +150,26 @@ async function verifyScenario(credentiallessScenario) {
   }
   await waitFor(() => page.workers().length === 1, 5_000, "dedicated worker creation");
 
+  const documentScroll = await frame.evaluate(() => {
+    const previousStyle = document.body.getAttribute("style");
+    document.body.style.minHeight = "200vh";
+    const scrollingElement = document.scrollingElement;
+    document.body.dispatchEvent(new WheelEvent("wheel", { bubbles: true, composed: true, deltaY: 24 }));
+    const result = {
+      overflowY: scrollingElement ? getComputedStyle(scrollingElement).overflowY : "",
+      scrollHeight: scrollingElement?.scrollHeight ?? 0,
+      clientHeight: scrollingElement?.clientHeight ?? 0,
+    };
+    if (previousStyle === null) document.body.removeAttribute("style");
+    else document.body.setAttribute("style", previousStyle);
+    return result;
+  });
+  assert.equal(documentScroll.scrollHeight > documentScroll.clientHeight, true, `${credentiallessScenario} document scroll fixture`);
+  assert.equal(/^(auto|scroll|overlay)$/.test(documentScroll.overflowY), false, `${credentiallessScenario} document uses default scrolling`);
+  await page.waitForFunction(() => window.__redevpluginHarness.snapshot().interactions.some(
+    (event) => event.kind === "wheel" && event.localScroll === true,
+  ));
+
   await frame.getByRole("button", { name: "Call host" }).click();
   await frame.waitForFunction(() => document.querySelector("#plugin-result")?.textContent?.includes("typed MessagePort"));
   assert.equal((await frame.locator("#plugin-result").textContent()).includes("gateway_token"), false);
@@ -197,7 +217,16 @@ async function verifyScenario(credentiallessScenario) {
   await frame.getByRole("button", { name: "Dangerous action" }).click();
   await page.locator("#confirmation-panel").waitFor({ state: "visible" });
   await page.locator("#dispose-surface").click();
-  await page.waitForFunction(() => window.__redevpluginHarness.snapshot().status === "disposed");
+  try {
+    await page.waitForFunction(() => window.__redevpluginHarness.snapshot().status === "disposed");
+  } catch (error) {
+    const failure = await page.evaluate(() => ({
+      snapshot: window.__redevpluginHarness.snapshot(),
+      status: document.querySelector("#host-status")?.textContent,
+      eventLog: document.querySelector("#event-log")?.textContent,
+    }));
+    throw new Error(`${credentiallessScenario} surface did not dispose: ${JSON.stringify(failure)}`, { cause: error });
+  }
   await page.waitForFunction(() => document.querySelector("#event-log")?.textContent?.includes("confirmation-aborted"));
   await waitFor(() => page.workers().length === 0, 5_000, "dedicated worker disposal");
   await waitFor(async () => {

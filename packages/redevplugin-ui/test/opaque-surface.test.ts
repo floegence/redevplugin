@@ -1871,10 +1871,12 @@ test("surface lifecycle observers cannot interrupt opening or revocation", async
   }
 });
 
-test("surface slot fails closed and revokes queued lease when prior surface cleanup fails", async () => {
+test("surface slot fails closed, revokes the queued lease, and reconciles an unknown cleanup result", async () => {
   const firstFrame = new FakeFrame();
+  const replacementFrame = new FakeFrame();
   const firstChannel = fakeChannel();
-  const restoreDOM = installSurfaceSlotDOM([firstFrame], [firstChannel]);
+  const replacementChannel = fakeChannel();
+  const restoreDOM = installSurfaceSlotDOM([firstFrame, replacementFrame], [firstChannel, replacementChannel]);
   const firstFetch = new FakeFetch();
   firstFetch.push(preparation());
   firstFetch.push(gatewayLease());
@@ -1922,15 +1924,41 @@ test("surface slot fails closed and revokes queued lease when prior surface clea
     assert.equal(secondFetch.calls[1]?.input, "/_redevplugin/api/plugins/surfaces/surface_2/dispose");
     assert.equal(stage.children.length, 1, "no replacement iframe may be created after cleanup failure");
 
-    await assert.rejects(
-      openPreparedPluginSurfaceInSlot(slot, {
-        bootstrap: { ...hostBootstrap, surfaceInstanceId: "surface_3", bridgeNonce: "bridge_nonce_3" },
-        hostTransport: createReDevPluginSurfaceTransport({ fetch: new FakeFetch().fetch }),
-      }),
-      (error: unknown) => error instanceof PluginBridgeError && error.errorCode === "PLUGIN_RUNTIME_UNAVAILABLE",
-    );
+    firstFetch.push({ disposed: true, state: "closed", previous_state: "closed", revoked: false });
+    const reconciled = await slot.close();
+    if (!reconciled?.revocation) throw new Error("expected reconciled surface revocation");
+    assert.equal(reconciled.revocation.state, "closed");
+    assert.equal(firstFetch.calls.filter((call) => call.input.endsWith("/dispose")).length, 2);
+    for (const call of firstFetch.calls.filter((candidate) => candidate.input.endsWith("/dispose"))) {
+      assert.equal(call.input, "/_redevplugin/api/plugins/surfaces/surface_1/dispose");
+      assert.deepEqual(JSON.parse(call.init.body ?? ""), { bridge_nonce: "bridge_nonce_1" });
+    }
+
+    const replacementFetch = new FakeFetch();
+    replacementFetch.push(preparation());
+    replacementFetch.push(gatewayLease());
+    const replacementOpening = openPreparedPluginSurfaceInSlot(slot, {
+      bootstrap: { ...hostBootstrap, surfaceInstanceId: "surface_3", bridgeNonce: "bridge_nonce_3" },
+      hostTransport: createReDevPluginSurfaceTransport({ fetch: replacementFetch.fetch }),
+    });
+    await waitFor(() => stage.children.at(-1) === replacementFrame);
+    replacementFrame.load();
+    await waitFor(() => replacementFrame.transferred.length === 1);
+    replacementChannel.port2.postMessage({ type: "redevplugin.surface.first_paint" });
+    replacementChannel.port2.postMessage({ type: "redevplugin.surface.worker_ready" });
+    await replacementOpening;
+    assert.equal(replacementFrame.hidden, false);
+
+    replacementFetch.push(surfaceRevocation());
+    const replacementClosing = slot.close();
+    const replacementQuiesce = await waitForQuiesce(replacementChannel.port1);
+    replacementChannel.port2.postMessage({
+      type: "redevplugin.surface.quiesce_ack",
+      quiesce_id: replacementQuiesce,
+    });
+    await replacementClosing;
   } finally {
-    await assert.rejects(slot.dispose());
+    await slot.dispose();
     restoreDOM();
   }
 });
@@ -3249,6 +3277,30 @@ test("surface host revokes a server session when disposed before open", async ()
   assert.equal(fetch.calls[0]?.input, "/_redevplugin/api/plugins/surfaces/surface_1/dispose");
   assert.equal(fetch.calls[0]?.init.keepalive, true);
 	assert.deepEqual(JSON.parse(fetch.calls[0]?.init.body ?? ""), { bridge_nonce: "bridge_nonce_1" });
+});
+
+test("surface host retries reconciliation after a lost close response with the same identity", async () => {
+  const fetch = new FakeFetch();
+  fetch.pushHandler(async () => { throw new Error("response lost"); });
+  fetch.push(surfaceRevocation({ previous_state: "closed", revoked: false }));
+  const host = createSurfaceHost(new FakeFrame(), {
+    bootstrap: hostBootstrap,
+    hostTransport: createReDevPluginSurfaceTransport({ fetch: fetch.fetch }),
+  });
+
+  await assert.rejects(
+    host.close(),
+    (error: unknown) => error instanceof PluginBridgeError &&
+      error.errorCode === "PLUGIN_BRIDGE_DISPOSED" && error.mutationOutcome === "unknown",
+  );
+  const result = await host.close();
+  if (!result.revocation) throw new Error("expected reconciled surface revocation");
+  assert.equal(result.revocation.state, "closed");
+  assert.equal(fetch.calls.length, 2);
+  for (const call of fetch.calls) {
+    assert.equal(call.input, "/_redevplugin/api/plugins/surfaces/surface_1/dispose");
+    assert.deepEqual(JSON.parse(call.init.body ?? ""), { bridge_nonce: "bridge_nonce_1" });
+  }
 });
 
 test("session scope revoke locally invalidates active hosts without per-surface HTTP", async () => {

@@ -1725,12 +1725,12 @@ func (s *SurfaceTokenService) ReconcileSurfaceRevocation(req DisposeSurfaceReque
 			return ReconcileSurfaceRevocationResult{}, ErrTokenAudience
 		}
 		s.deleteSurfaceStateLocked(req.SurfaceInstanceID)
+		s.revokeSurfaceTokens(state.session, now)
 		s.retainSurfaceClosureLocked(req.SurfaceInstanceID, surfaceClosure{
 			bridgeNonce: req.BridgeNonce, ownerSessionHash: req.OwnerSessionHash, ownerUserHash: req.OwnerUserHash,
 			ownerEnvHash: req.OwnerEnvHash, sessionChannelIDHash: req.SessionChannelIDHash, expiresAt: now.Add(DefaultSurfaceClosureTTL),
 		})
 		s.mu.Unlock()
-		s.revokeSurfaceTokens(state.session, now)
 		return ReconcileSurfaceRevocationResult{State: SurfaceRevocationStateClosed, PreviousState: SurfaceRevocationStateActive, Revoked: true}, nil
 	}
 	if closure, ok := s.closures[req.SurfaceInstanceID]; ok {
@@ -1917,7 +1917,7 @@ func (s *SurfaceTokenService) RevokePlugin(ownerEnvHash string, pluginInstanceID
 }
 
 func (s *SurfaceTokenService) revokeSurfaceTokens(session SurfaceSession, now time.Time) {
-	s.tokens.RevokeSurface(session.OwnerEnvHash, session.PluginInstanceID, session.SurfaceInstanceID, now)
+	s.tokens.RevokeSurfaceGeneration(session, now)
 }
 
 func (s *SurfaceTokenService) getState(surfaceInstanceID string, now time.Time) (surfaceState, error) {

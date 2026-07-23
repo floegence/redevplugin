@@ -506,6 +506,142 @@ func TestSurfaceRevocationReconciliationIsIdempotentAndSingleSurface(t *testing.
 	}
 }
 
+func TestSurfaceRevocationReconciliationDoesNotPublishClosureBeforeTokenRevocation(t *testing.T) {
+	service := NewSurfaceTokenService(nil, SurfaceTokenOptions{})
+	now := testNow()
+	bootstrap, gateway := mintTestGatewayToken(t, service, now)
+	req := disposeRequestFromBootstrap(bootstrap, now.Add(4*time.Second))
+
+	service.tokens.mu.Lock()
+	tokensLocked := true
+	defer func() {
+		if tokensLocked {
+			service.tokens.mu.Unlock()
+		}
+	}()
+	firstDone := make(chan struct {
+		result ReconcileSurfaceRevocationResult
+		err    error
+	}, 1)
+	go func() {
+		result, err := service.ReconcileSurfaceRevocation(req)
+		firstDone <- struct {
+			result ReconcileSurfaceRevocationResult
+			err    error
+		}{result: result, err: err}
+	}()
+	waitForSurfaceLock(t, service)
+
+	retryDone := make(chan struct {
+		result ReconcileSurfaceRevocationResult
+		err    error
+	}, 1)
+	go func() {
+		result, err := service.ReconcileSurfaceRevocation(req)
+		retryDone <- struct {
+			result ReconcileSurfaceRevocationResult
+			err    error
+		}{result: result, err: err}
+	}()
+	select {
+	case retry := <-retryDone:
+		t.Fatalf("concurrent retry completed before token revocation: %#v, %v", retry.result, retry.err)
+	case <-time.After(20 * time.Millisecond):
+	}
+
+	service.tokens.mu.Unlock()
+	tokensLocked = false
+	first := <-firstDone
+	if first.err != nil || first.result.State != SurfaceRevocationStateClosed || !first.result.Revoked {
+		t.Fatalf("first reconciliation = %#v, %v", first.result, first.err)
+	}
+	retry := <-retryDone
+	if retry.err != nil || retry.result.State != SurfaceRevocationStateClosed || retry.result.PreviousState != SurfaceRevocationStateClosed || retry.result.Revoked {
+		t.Fatalf("retry reconciliation = %#v, %v", retry.result, retry.err)
+	}
+	if _, err := service.ValidateGatewayToken(gateway.GatewayToken, surfaceAudienceFromBootstrap(bootstrap, "bridge_1"), testRevision(4), now.Add(5*time.Second)); !errors.Is(err, ErrTokenRevoked) {
+		t.Fatalf("ValidateGatewayToken() after reconciliation error = %v, want %v", err, ErrTokenRevoked)
+	}
+}
+
+func TestSurfaceRevocationReconciliationCannotRevokeReplacementGeneration(t *testing.T) {
+	service := NewSurfaceTokenService(nil, SurfaceTokenOptions{})
+	now := testNow()
+	request := testOpenSurfaceRequest(now)
+	first, err := service.OpenSurface(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	service.tokens.mu.Lock()
+	tokensLocked := true
+	defer func() {
+		if tokensLocked {
+			service.tokens.mu.Unlock()
+		}
+	}()
+	reconcileDone := make(chan error, 1)
+	go func() {
+		_, reconcileErr := service.ReconcileSurfaceRevocation(disposeRequestFromBootstrap(first, now.Add(time.Second)))
+		reconcileDone <- reconcileErr
+	}()
+	waitForSurfaceLock(t, service)
+
+	replacementRequest := request
+	replacementRequest.ActiveFingerprint = "sha256:replacement"
+	replacementRequest.RuntimeGenerationID = "runtime_generation_replacement"
+	replacementRequest.Revision.ManagementRevision++
+	replacementRequest.Now = now.Add(2 * time.Second)
+	replacementDone := make(chan struct {
+		bootstrap SurfaceBootstrap
+		err       error
+	}, 1)
+	go func() {
+		bootstrap, openErr := service.OpenSurface(replacementRequest)
+		replacementDone <- struct {
+			bootstrap SurfaceBootstrap
+			err       error
+		}{bootstrap: bootstrap, err: openErr}
+	}()
+
+	service.tokens.mu.Unlock()
+	tokensLocked = false
+	if err := <-reconcileDone; err != nil {
+		t.Fatalf("ReconcileSurfaceRevocation() error = %v", err)
+	}
+	replacement := <-replacementDone
+	if replacement.err != nil {
+		t.Fatalf("replacement OpenSurface() error = %v", replacement.err)
+	}
+	if _, err := service.ReconcileSurfaceRevocation(disposeRequestFromBootstrap(first, now.Add(3*time.Second))); !errors.Is(err, ErrTokenAudience) {
+		t.Fatalf("stale reconciliation error = %v, want %v", err, ErrTokenAudience)
+	}
+	if _, err := service.ExchangeAssetTicket(exchangeAssetTicketRequest(replacement.bootstrap, now.Add(4*time.Second))); err != nil {
+		t.Fatalf("replacement asset ticket was revoked by stale generation: %v", err)
+	}
+}
+
+func waitForSurfaceLock(t *testing.T, service *SurfaceTokenService) {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if !service.mu.TryLock() {
+			return
+		}
+		service.mu.Unlock()
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatal("surface reconciliation did not acquire its lock")
+}
+
+func disposeRequestFromBootstrap(bootstrap SurfaceBootstrap, now time.Time) DisposeSurfaceRequest {
+	return DisposeSurfaceRequest{
+		SurfaceInstanceID: bootstrap.SurfaceInstanceID, BridgeNonce: bootstrap.BridgeNonce,
+		OwnerSessionHash: bootstrap.OwnerSessionHash, OwnerUserHash: bootstrap.OwnerUserHash,
+		OwnerEnvHash: bootstrap.OwnerEnvHash, SessionChannelIDHash: bootstrap.SessionChannelIDHash, Now: now,
+	}
+}
+
 func TestSurfaceRevocationClosureChurnRemainsBounded(t *testing.T) {
 	service := NewSurfaceTokenService(nil, SurfaceTokenOptions{MaxActiveSessions: 3, MaxActiveSessionsPerOwner: 2})
 	now := testNow()

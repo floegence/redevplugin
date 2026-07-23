@@ -1531,6 +1531,8 @@ export function createOpaquePluginBootstrapHTML(options: OpaquePluginBootstrapHT
     const path = typeof event.composedPath === "function" ? event.composedPath() : [event.target];
     for (const candidate of path) {
       if (!(candidate instanceof Element)) continue;
+      if (candidate === document.scrollingElement &&
+          (candidate.scrollHeight > candidate.clientHeight || candidate.scrollWidth > candidate.clientWidth)) return true;
       const style = getComputedStyle(candidate);
       const vertical = /(auto|scroll|overlay)/.test(style.overflowY) && candidate.scrollHeight > candidate.clientHeight;
       const horizontal = /(auto|scroll|overlay)/.test(style.overflowX) && candidate.scrollWidth > candidate.clientWidth;
@@ -3146,15 +3148,19 @@ class PluginSurfaceHostImplementation implements PluginSurfaceHost {
         revokeDurationMs: 0,
         totalDurationMs: 0,
       };
-      return this.#revokePromise ? this.#revokePromise.then((revocation) => ({ ...result, revocation })) : Promise.resolve(result);
+      return this.#revokeSurface(false).then((revocation) => ({ ...result, revocation }));
     }
     if (this.#closePromise) return this.#closePromise;
-    this.#closePromise = this.#closeSurface();
-    return this.#closePromise;
+    const closing = this.#closeSurface();
+    this.#closePromise = closing;
+    void closing.catch(() => {
+      if (this.#closePromise === closing) this.#closePromise = undefined;
+    });
+    return closing;
   }
 
   dispose(): Promise<void> {
-    if (this.#disposed) return this.#revokePromise?.then(() => undefined) ?? Promise.resolve();
+    if (this.#disposed) return this.#revokeSurface(true).then(() => undefined);
     const revoke = this.#revokeSurface(true);
     void revoke.catch(() => undefined);
     this.#disposeLocal();
@@ -3832,13 +3838,17 @@ class PluginSurfaceHostImplementation implements PluginSurfaceHost {
 
   #revokeSurface(keepalive: boolean): Promise<PluginSurfaceRevocationReconciliation> {
     if (this.#revokePromise) return this.#revokePromise;
-    this.#revokePromise = revokeSurfaceBootstrap(
+    const revocation = revokeSurfaceBootstrap(
       this.#transport,
       this.bootstrap,
       this.#requestTimeoutMs,
       keepalive,
     );
-    return this.#revokePromise;
+    this.#revokePromise = revocation;
+    void revocation.catch(() => {
+      if (this.#revokePromise === revocation) this.#revokePromise = undefined;
+    });
+    return revocation;
   }
 
   async #quiesceSurface(): Promise<PluginSurfaceQuiesceResult> {
@@ -4118,6 +4128,7 @@ export class PluginSurfaceSlot {
   #tail: Promise<void> = Promise.resolve();
   #disposed = false;
   #retired = new WeakMap<PluginSurfaceHostImplementation, Promise<PluginSurfaceCloseResult>>();
+  #pendingRetirements = new Set<PluginSurfaceHostImplementation>();
   #disposePromise?: Promise<void>;
 
   static create(options: PluginSurfaceSlotOptions): PluginSurfaceSlot {
@@ -4274,10 +4285,13 @@ export class PluginSurfaceSlot {
     this.#transitionController?.abort();
     this.#transitionController = undefined;
     this.#setState("empty");
-    const closing = this.#tail.then(() => this.#closeCurrentSurface());
+    const closing = this.#tail.then(
+      () => this.#closeCurrentSurface(),
+      () => this.#closeCurrentSurface(),
+    );
     this.#tail = closing.then(
       () => undefined,
-      (error) => error instanceof PluginSurfaceCleanupError ? Promise.reject(error) : undefined,
+      () => undefined,
     );
     void this.#tail.catch(() => undefined);
     return this.#unwrapCleanupError(closing);
@@ -4289,21 +4303,28 @@ export class PluginSurfaceSlot {
     this.#transitionController?.abort();
     this.#transitionController = undefined;
     this.#setState("disposed");
-    const disposal = this.#tail.then(async () => {
-      await this.#closeCurrentSurface();
+    const disposal = this.#tail.then(
+      () => this.#closeCurrentSurface().then(() => undefined),
+      () => this.#closeCurrentSurface().then(() => undefined),
+    );
+    const disposePromise = this.#unwrapCleanupError(disposal);
+    this.#disposePromise = disposePromise;
+    void disposePromise.catch(() => {
+      if (this.#disposePromise === disposePromise) this.#disposePromise = undefined;
     });
-    this.#disposePromise = this.#unwrapCleanupError(disposal);
-    void this.#disposePromise.catch(() => undefined);
     this.#tail = disposal.then(
       () => undefined,
-      (error) => error instanceof PluginSurfaceCleanupError ? Promise.reject(error) : undefined,
+      () => undefined,
     );
     void this.#tail.catch(() => undefined);
-    return this.#disposePromise;
+    return disposePromise;
   }
 
   async #closeCurrentSurface(): Promise<PluginSurfaceCloseResult | undefined> {
-    const hosts = new Set([this.#active, this.#opening].filter((host): host is PluginSurfaceHostImplementation => host !== undefined));
+    const hosts = new Set([
+      ...this.#pendingRetirements,
+      ...[this.#active, this.#opening].filter((host): host is PluginSurfaceHostImplementation => host !== undefined),
+    ]);
     this.#active = undefined;
     this.#opening = undefined;
     let result: PluginSurfaceCloseResult | undefined;
@@ -4324,6 +4345,7 @@ export class PluginSurfaceSlot {
   #retire(host: PluginSurfaceHostImplementation): Promise<PluginSurfaceCloseResult> {
     const existing = this.#retired.get(host);
     if (existing) return existing;
+    this.#pendingRetirements.add(host);
     setSurfaceInteractive(host.element, false);
     const closing = Promise.resolve().then(async () => {
       try {
@@ -4339,6 +4361,15 @@ export class PluginSurfaceSlot {
       }
     });
     this.#retired.set(host, closing);
+    void closing.then(
+      () => {
+        this.#pendingRetirements.delete(host);
+        if (this.#retired.get(host) === closing) this.#retired.delete(host);
+      },
+      () => {
+        if (this.#retired.get(host) === closing) this.#retired.delete(host);
+      },
+    );
     return closing;
   }
 

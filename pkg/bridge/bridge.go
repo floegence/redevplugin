@@ -769,6 +769,59 @@ func (m *TokenManager) RevokeSurface(ownerEnvHash string, pluginInstanceID strin
 	return count
 }
 
+// RevokeSurfaceGeneration revokes only tokens minted for the exact surface
+// generation. A replacement may intentionally reuse its surface instance ID,
+// so that identifier alone is not a sufficient revocation boundary.
+func (m *TokenManager) RevokeSurfaceGeneration(session SurfaceSession, now time.Time) int {
+	if m == nil {
+		return 0
+	}
+	surfaceKey, err := ownerSurfaceIndexKey(session.OwnerEnvHash, session.PluginInstanceID, session.SurfaceInstanceID)
+	if err != nil || strings.TrimSpace(session.AssetSessionNonce) == "" {
+		return 0
+	}
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	expectedAudience := session.audience("")
+	expectedRevision := session.revision()
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	count := 0
+	for key := range m.surfaceIndex[surfaceKey] {
+		record, ok := m.records[key]
+		if !ok || record.Revoked || !tokenMatchesSurfaceGeneration(record, expectedAudience, expectedRevision) {
+			continue
+		}
+		record.Revoked = true
+		record.RevokedAt = &now
+		m.records[key] = record
+		count++
+	}
+	return count
+}
+
+func tokenMatchesSurfaceGeneration(record TokenRecord, expected Audience, revision RevisionBinding) bool {
+	actual := record.Audience
+	return record.Revision == revision &&
+		actual.PluginID == expected.PluginID &&
+		actual.PluginInstanceID == expected.PluginInstanceID &&
+		actual.PluginVersion == expected.PluginVersion &&
+		actual.ActiveFingerprint == expected.ActiveFingerprint &&
+		actual.SurfaceID == expected.SurfaceID &&
+		actual.SurfaceInstanceID == expected.SurfaceInstanceID &&
+		actual.EntryPath == expected.EntryPath &&
+		actual.EntrySHA256 == expected.EntrySHA256 &&
+		actual.AssetSessionNonce == expected.AssetSessionNonce &&
+		actual.RouteRole == expected.RouteRole &&
+		actual.OwnerSessionHash == expected.OwnerSessionHash &&
+		actual.OwnerUserHash == expected.OwnerUserHash &&
+		actual.OwnerEnvHash == expected.OwnerEnvHash &&
+		actual.SessionChannelIDHash == expected.SessionChannelIDHash &&
+		actual.RuntimeGenerationID == expected.RuntimeGenerationID
+}
+
 func (m *TokenManager) RevokeTokenID(kind TokenKind, tokenID string, now time.Time) bool {
 	if m == nil || strings.TrimSpace(tokenID) == "" {
 		return false

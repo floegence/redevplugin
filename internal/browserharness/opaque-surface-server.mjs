@@ -274,7 +274,12 @@ export function createBrowserHarnessServer(options = {}) {
           }
           surface.disposed = true;
           diagnostics.dispose_completed_at = Date.now();
-          writeEnvelope(response, { disposed: true });
+          writeEnvelope(response, {
+            disposed: true,
+            state: "closed",
+            previous_state: "active",
+            revoked: true,
+          });
           return;
         }
       }

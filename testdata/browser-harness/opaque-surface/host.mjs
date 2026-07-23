@@ -36,6 +36,7 @@ const state = {
   progressEvents: [],
   openedAt: 0,
   disposedAt: 0,
+  interactions: [],
   errors: [],
 };
 
@@ -60,6 +61,7 @@ window.__redevpluginHarness = Object.freeze({
     progressEvents: [...state.progressEvents],
     openedAt: state.openedAt,
     disposedAt: state.disposedAt,
+    interactions: [...state.interactions],
     errors: [...state.errors],
     iframeSrcdocEmpty: !state.surfaceHost || state.surfaceHost.element.srcdoc === "",
   }),
@@ -73,6 +75,7 @@ async function openSurface() {
   state.progressEvents = [];
   state.openedAt = 0;
   state.disposedAt = 0;
+  state.interactions = [];
   confirmationPanel.hidden = true;
   openingProgress.textContent = "0";
   setStatus("opening");
@@ -88,6 +91,14 @@ async function openSurface() {
         state.progressEvents.push(progress.elapsedMs);
         openingProgress.textContent = String(state.progressEvents.length);
         addLog("surface-opening-progress", { elapsed_ms: progress.elapsedMs });
+      },
+      onInteraction(event) {
+        state.interactions.push({
+          kind: event.kind,
+          sequence: event.sequence,
+          localScroll: event.localScroll,
+        });
+        if (state.interactions.length > 32) state.interactions.shift();
       },
       onError(error) {
         state.errors.push({ error_code: error.errorCode, message: error.message });
