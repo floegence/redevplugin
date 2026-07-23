@@ -22,6 +22,10 @@ func (*OwnerScopeMigration) CommitFreshGeneration(context.Context) (Status, erro
 	return Status{}, ErrOwnerScopeUnsupported
 }
 
+func (*OwnerScopeMigration) ActiveGenerationPath(string) (string, error) {
+	return "", ErrOwnerScopeUnsupported
+}
+
 func (*OwnerScopeMigration) DeleteQuarantine(context.Context) (Status, error) {
 	return Status{}, ErrOwnerScopeUnsupported
 }

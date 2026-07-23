@@ -331,6 +331,51 @@ func (migration *OwnerScopeMigration) CommitFreshGeneration(ctx context.Context)
 	return cloneStatus(migration.status), nil
 }
 
+// ActiveGenerationPath returns the durable state root for the committed
+// owner-scoped generation. The supplied path must still identify the exact
+// migration root that was opened, so callers cannot redirect state through a
+// replacement directory between migration and host initialization.
+func (migration *OwnerScopeMigration) ActiveGenerationPath(rootPath string) (string, error) {
+	if migration == nil {
+		return "", ErrOwnerScopeTransition
+	}
+	rootPath = strings.TrimSpace(rootPath)
+	if rootPath == "" {
+		return "", ErrOwnerScopeMigrationRequired
+	}
+	absoluteRoot, err := filepath.Abs(rootPath)
+	if err != nil {
+		return "", err
+	}
+
+	migration.mu.Lock()
+	defer migration.mu.Unlock()
+	if err := migration.ensureOpen(); err != nil {
+		return "", err
+	}
+	if migration.journal.State != string(StateFreshCommitted) || !validOpaqueID(migration.journal.FreshGenerationID, "generation") {
+		return "", ErrOwnerScopeTransition
+	}
+
+	candidate, err := os.Open(absoluteRoot)
+	if err != nil {
+		return "", err
+	}
+	verified, identity, err := duplicateMigrationRoot(candidate)
+	_ = candidate.Close()
+	if err != nil {
+		return "", err
+	}
+	_ = verified.Close()
+	if identity != migration.journal.RootIdentitySHA256 {
+		return "", ErrOwnerScopeSnapshotChanged
+	}
+	if err := migration.verifyActiveFreshGeneration(); err != nil {
+		return "", err
+	}
+	return filepath.Join(absoluteRoot, generationsDirectory, migration.journal.FreshGenerationID), nil
+}
+
 func (migration *OwnerScopeMigration) DeleteQuarantine(ctx context.Context) (Status, error) {
 	if migration == nil || ctx == nil {
 		return Status{}, ErrOwnerScopeTransition
@@ -540,11 +585,53 @@ func (migration *OwnerScopeMigration) verifyActiveFreshGeneration() error {
 		}
 		exclusions[quarantineDirectory] = struct{}{}
 	}
+	exclusions[generationsDirectory] = struct{}{}
 	snapshot, err := snapshotRoot(migration.root, exclusions)
 	if err != nil {
 		return err
 	}
-	return validateFreshArtifacts(snapshot, migration.journal.FreshGenerationID, true)
+	if len(snapshot.entries) != 1 || snapshot.entries[0].Path != currentGenerationFile ||
+		snapshot.entries[0].Kind != "file" ||
+		snapshot.entries[0].SHA256 != digestBytes([]byte(migration.journal.FreshGenerationID+"\n")) {
+		return ErrOwnerScopeSnapshotChanged
+	}
+
+	generations, err := openDirectoryAt(int(migration.root.Fd()), generationsDirectory)
+	if err != nil {
+		return err
+	}
+	defer generations.Close()
+	if err := validateOwnedGenerationDirectory(migration.root, generations); err != nil {
+		return err
+	}
+	entries, err := generations.ReadDir(-1)
+	if err != nil {
+		return err
+	}
+	if len(entries) != 1 || entries[0].Name() != migration.journal.FreshGenerationID {
+		return ErrOwnerScopeSnapshotChanged
+	}
+	active, err := openDirectoryAt(int(generations.Fd()), migration.journal.FreshGenerationID)
+	if err != nil {
+		return err
+	}
+	defer active.Close()
+	return validateOwnedGenerationDirectory(migration.root, active)
+}
+
+func validateOwnedGenerationDirectory(root, directory *os.File) error {
+	var rootStat, directoryStat unix.Stat_t
+	if err := unix.Fstat(int(root.Fd()), &rootStat); err != nil {
+		return err
+	}
+	if err := unix.Fstat(int(directory.Fd()), &directoryStat); err != nil {
+		return err
+	}
+	mode := uint32(directoryStat.Mode)
+	if mode&unix.S_IFMT != unix.S_IFDIR || mode&0o022 != 0 || directoryStat.Dev != rootStat.Dev || directoryStat.Uid != rootStat.Uid {
+		return ErrOwnerScopeSnapshotChanged
+	}
+	return nil
 }
 
 func validateFreshArtifacts(snapshot rootSnapshot, freshGenerationID string, required bool) error {

@@ -298,6 +298,40 @@ metadata, and package publication evidence that the host consumes are released
 together. The host-built OS runtime binary is a product artifact and is not a
 ReDevPlugin release artifact.
 
+## Durable Schema Migration
+
+ReDevPlugin owns the migration lifecycle for every durable schema and on-disk
+layout that ReDevPlugin defines. Host products select the state root and invoke
+released migration APIs, but they must not copy ReDevPlugin schemas, SQL, file
+layout rules, or migration state machines into host code.
+
+- Every change to a released ReDevPlugin-owned durable schema or layout must
+  include an automatic, versioned, idempotent, and crash-recoverable migration
+  path from every supported released predecessor before new readers or writers
+  open that state.
+- A normal upgrade from recognized supported state must not fail with an error
+  that requires the user to delete a database, run SQL manually, or reinstall.
+  Startup errors are reserved for unknown, corrupt, ambiguous, tampered, or
+  future state that cannot be migrated without violating ownership or security.
+- Migrations must preserve user data whenever ownership and semantics are
+  provable. State whose owner cannot be proven must be retained in an atomic
+  quarantine and replaced with a fresh owner-scoped generation; automatic
+  migration must never silently assign ambiguous state or delete quarantine.
+- Migration entrypoints must recover safely from every persisted intermediate
+  state and return the active durable root only after the committed generation
+  has been verified. Repeated startup must reuse that generation without
+  rewriting or discarding data created after migration.
+- Tests must cover fresh install, each supported historical schema or fixture,
+  interruption recovery, idempotent restart, data preservation, and fail-closed
+  handling that leaves unknown or corrupt state unchanged.
+- ReDevPlugin must not inspect, migrate, or delete schemas owned by a host
+  product or another component. Those repositories own their own migrations;
+  the cross-repository boundary remains explicit even when their state roots are
+  colocated by a product.
+- Migration behavior is a released platform contract. Update the public Go API,
+  machine contracts and fixtures when observable, compatibility metadata,
+  release notes, and package-set evidence together before a host consumes it.
+
 ## Git Workflow (Worktree, Required)
 
 This section is the authoritative ReDevPlugin copy of the Git workflow. It

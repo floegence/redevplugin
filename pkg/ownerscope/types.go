@@ -156,6 +156,69 @@ type OwnerScopeMigration struct {
 	closed  bool
 }
 
+// OwnerScopeGeneration is the committed durable state generation prepared for
+// host initialization. Path is the only directory where the host should create
+// ReDevPlugin-owned durable state.
+type OwnerScopeGeneration struct {
+	Path   string
+	Status Status
+}
+
+// PrepareOwnerScopeGeneration opens or resumes the owner-scope migration at
+// rootPath and returns its committed active generation. Recognized unowned
+// legacy state is quarantined and retained; this function never deletes it.
+// Unknown, corrupt, failed, or reconcile-required state remains fail closed.
+func PrepareOwnerScopeGeneration(ctx context.Context, rootPath string) (generation OwnerScopeGeneration, err error) {
+	if ctx == nil {
+		return OwnerScopeGeneration{}, ErrOwnerScopeTransition
+	}
+	rootPath = strings.TrimSpace(rootPath)
+	if rootPath == "" {
+		return OwnerScopeGeneration{}, ErrOwnerScopeMigrationRequired
+	}
+	root, err := os.Open(rootPath)
+	if err != nil {
+		return OwnerScopeGeneration{}, err
+	}
+	migration, openErr := OpenOwnerScopeMigration(root, OwnerScopeMigrationOptions{})
+	closeRootErr := root.Close()
+	if openErr != nil || closeRootErr != nil {
+		if migration != nil {
+			_ = migration.Close()
+		}
+		return OwnerScopeGeneration{}, errors.Join(openErr, closeRootErr)
+	}
+	defer func() {
+		err = errors.Join(err, migration.Close())
+	}()
+
+	generation.Status = migration.Status()
+	switch generation.Status.State {
+	case StatePrepared, StateQuarantineWriting:
+		generation.Status, err = migration.QuarantineUnownedLegacy(ctx)
+		if err != nil {
+			return generation, err
+		}
+	case StateQuarantineCommitted, StateFreshPrepared, StateFreshCommitted:
+	default:
+		return generation, ErrOwnerScopeTransition
+	}
+
+	switch generation.Status.State {
+	case StateQuarantineCommitted, StateFreshPrepared:
+		generation.Status, err = migration.CommitFreshGeneration(ctx)
+		if err != nil {
+			return generation, err
+		}
+	case StateFreshCommitted:
+	default:
+		return generation, ErrOwnerScopeTransition
+	}
+
+	generation.Path, err = migration.ActiveGenerationPath(rootPath)
+	return generation, err
+}
+
 func (migration *OwnerScopeMigration) Status() Status {
 	if migration == nil {
 		return Status{}

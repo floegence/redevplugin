@@ -39,6 +39,173 @@ func TestOpenOwnerScopeMigrationPreparesFreshInstallOnlyForEmptyRoot(t *testing.
 	assertMigrationJournalExists(t, rootPath)
 }
 
+func TestPrepareOwnerScopeGenerationAutomaticallyMigratesLegacyState(t *testing.T) {
+	rootPath := t.TempDir()
+	writeRedevenLegacyInventory(t, rootPath)
+
+	generation, err := PrepareOwnerScopeGeneration(context.Background(), rootPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if generation.Status.State != StateFreshCommitted || generation.Status.QuarantineID.IsZero() {
+		t.Fatalf("prepared generation status = %#v", generation.Status)
+	}
+	if generation.Path == "" {
+		t.Fatal("prepared generation path is empty")
+	}
+	quarantinedAsset := filepath.Join(rootPath, quarantineDirectory, generation.Status.QuarantineID.String(), "assets", "package.bin")
+	if raw, err := os.ReadFile(quarantinedAsset); err != nil || string(raw) != "asset" {
+		t.Fatalf("quarantined legacy asset = %q, %v", raw, err)
+	}
+	statePath := filepath.Join(generation.Path, "db", "registry.sqlite")
+	if err := os.MkdirAll(filepath.Dir(statePath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(statePath, []byte("owned state"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	reopened, err := PrepareOwnerScopeGeneration(context.Background(), rootPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reopened.Path != generation.Path || reopened.Status.FreshGenerationID != generation.Status.FreshGenerationID {
+		t.Fatalf("reopened generation = %#v, want path %q and id %q", reopened, generation.Path, generation.Status.FreshGenerationID)
+	}
+	if raw, err := os.ReadFile(filepath.Join(reopened.Path, "db", "registry.sqlite")); err != nil || string(raw) != "owned state" {
+		t.Fatalf("reopened active state = %q, %v", raw, err)
+	}
+	if raw, err := os.ReadFile(quarantinedAsset); err != nil || string(raw) != "asset" {
+		t.Fatalf("retained quarantine after reopen = %q, %v", raw, err)
+	}
+}
+
+func TestPrepareOwnerScopeGenerationCommitsFreshInstall(t *testing.T) {
+	rootPath := t.TempDir()
+	generation, err := PrepareOwnerScopeGeneration(context.Background(), rootPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if generation.Status.State != StateFreshCommitted || generation.Status.FreshGenerationID == "" || !generation.Status.QuarantineID.IsZero() {
+		t.Fatalf("fresh generation status = %#v", generation.Status)
+	}
+	if info, err := os.Stat(generation.Path); err != nil || !info.IsDir() {
+		t.Fatalf("fresh generation path stat = %#v, %v", info, err)
+	}
+}
+
+func TestPrepareOwnerScopeGenerationResumesCommittedQuarantine(t *testing.T) {
+	rootPath := t.TempDir()
+	writeRedevenLegacyInventory(t, rootPath)
+	root := openMigrationRoot(t, rootPath)
+	migration, err := OpenOwnerScopeMigration(root, OwnerScopeMigrationOptions{})
+	root.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	quarantined, err := migration.QuarantineUnownedLegacy(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := migration.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	generation, err := PrepareOwnerScopeGeneration(context.Background(), rootPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if generation.Status.State != StateFreshCommitted || generation.Status.QuarantineID != quarantined.QuarantineID {
+		t.Fatalf("resumed generation status = %#v, quarantined = %#v", generation.Status, quarantined)
+	}
+}
+
+func TestPrepareOwnerScopeGenerationRejectsUnknownStateWithoutMutation(t *testing.T) {
+	rootPath := t.TempDir()
+	unknownPath := filepath.Join(rootPath, "unknown.dat")
+	if err := os.WriteFile(unknownPath, []byte("legacy"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if generation, err := PrepareOwnerScopeGeneration(context.Background(), rootPath); generation.Path != "" || !errors.Is(err, ErrOwnerScopeMigrationRequired) {
+		t.Fatalf("PrepareOwnerScopeGeneration() = %#v, %v", generation, err)
+	}
+	if raw, err := os.ReadFile(unknownPath); err != nil || string(raw) != "legacy" {
+		t.Fatalf("unknown state changed = %q, %v", raw, err)
+	}
+	if _, err := os.Stat(filepath.Join(rootPath, MigrationJournalName)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("rejected root wrote a journal: %v", err)
+	}
+}
+
+func TestOwnerScopeMigrationReturnsStableActiveGenerationPath(t *testing.T) {
+	rootPath := t.TempDir()
+	root := openMigrationRoot(t, rootPath)
+	migration, err := OpenOwnerScopeMigration(root, OwnerScopeMigrationOptions{})
+	root.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := migration.ActiveGenerationPath(rootPath); !errors.Is(err, ErrOwnerScopeTransition) {
+		t.Fatalf("ActiveGenerationPath() before commit error = %v", err)
+	}
+	committed, err := migration.CommitFreshGeneration(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	activePath, err := migration.ActiveGenerationPath(rootPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantPath := filepath.Join(rootPath, generationsDirectory, committed.FreshGenerationID)
+	if activePath != wantPath {
+		t.Fatalf("ActiveGenerationPath() = %q, want %q", activePath, wantPath)
+	}
+	if err := os.MkdirAll(filepath.Join(activePath, "db"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(activePath, "db", "registry.sqlite"), []byte("owned state"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := migration.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	reopenedRoot := openMigrationRoot(t, rootPath)
+	reopened, err := OpenOwnerScopeMigration(reopenedRoot, OwnerScopeMigrationOptions{})
+	reopenedRoot.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	reopenedPath, err := reopened.ActiveGenerationPath(rootPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reopenedPath != activePath {
+		t.Fatalf("reopened ActiveGenerationPath() = %q, want %q", reopenedPath, activePath)
+	}
+	if raw, err := os.ReadFile(filepath.Join(reopenedPath, "db", "registry.sqlite")); err != nil || string(raw) != "owned state" {
+		t.Fatalf("active generation state = %q, %v", raw, err)
+	}
+}
+
+func TestOwnerScopeMigrationRejectsReplacementRootPath(t *testing.T) {
+	rootPath := t.TempDir()
+	root := openMigrationRoot(t, rootPath)
+	migration, err := OpenOwnerScopeMigration(root, OwnerScopeMigrationOptions{})
+	root.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer migration.Close()
+	if _, err := migration.CommitFreshGeneration(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := migration.ActiveGenerationPath(t.TempDir()); !errors.Is(err, ErrOwnerScopeSnapshotChanged) {
+		t.Fatalf("ActiveGenerationPath() replacement error = %v", err)
+	}
+}
+
 func TestOpenOwnerScopeMigrationRejectsUnknownAndSymlinkRootsWithoutMutation(t *testing.T) {
 	for _, test := range []struct {
 		name    string
