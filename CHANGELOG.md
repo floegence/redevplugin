@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.6.8
 
 ### Added
 
@@ -10,6 +10,9 @@
 - Add hardened external download and staging with public-address validation,
   DNS-pinned TLS transport, per-redirect policy checks, bounded downloads, and
   staged artifact re-verification.
+- Add local `.redevplugin` package upload inspection through the same staged
+  admission transaction, with bounded request parsing and exact staged-byte
+  commit verification.
 
 ### Changed
 
@@ -20,6 +23,14 @@
   blocked.
 - Persist external package commit receipts atomically with registry mutations so
   callers can reconcile unknown outcomes without replaying installation.
+
+### Fixed
+
+- Retry only temporary Go proxy and SumDB propagation failures during release
+  readback while rejecting immutable module, version, digest, and source
+  mismatches immediately.
+- Recover committed external-package receipts after restart so clients can
+  reconcile an interrupted response without replaying the installation.
 
 ## v0.6.7
 
