@@ -1,9 +1,12 @@
 # Changelog
 
-## v0.6.13
+## v0.6.14
 
 ### Fixed
 
+- Keep opening plugin iframes renderable while remaining non-interactive so
+  requestAnimationFrame-driven Worker startup cannot deadlock behind the hidden
+  attribute before the surface reports its first committed frame.
 - Preserve the required empty `redirect_chain` array in package URL provenance
   while keeping uploaded-package and GitHub provenance JSON aligned with the
   strict public union contract.

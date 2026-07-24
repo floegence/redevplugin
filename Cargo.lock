@@ -444,7 +444,7 @@ dependencies = [
 
 [[package]]
 name = "redevplugin-contracts"
-version = "0.6.13"
+version = "0.6.14"
 dependencies = [
  "base64",
  "ed25519-dalek",
@@ -484,7 +484,7 @@ dependencies = [
 
 [[package]]
 name = "redevplugin-ipc"
-version = "0.6.13"
+version = "0.6.14"
 dependencies = [
  "base64",
  "ed25519-dalek",
@@ -497,7 +497,7 @@ dependencies = [
 
 [[package]]
 name = "redevplugin-runtime"
-version = "0.6.13"
+version = "0.6.14"
 dependencies = [
  "libc",
  "proptest",
@@ -519,7 +519,7 @@ dependencies = [
 
 [[package]]
 name = "redevplugin-target-classifier"
-version = "0.6.13"
+version = "0.6.14"
 dependencies = [
  "proptest",
  "redevplugin-contracts",
@@ -529,7 +529,7 @@ dependencies = [
 
 [[package]]
 name = "redevplugin-wasm-abi"
-version = "0.6.13"
+version = "0.6.14"
 dependencies = [
  "wasmparser 0.228.0",
  "wat",
@@ -537,7 +537,7 @@ dependencies = [
 
 [[package]]
 name = "redevplugin-worker-sdk"
-version = "0.6.13"
+version = "0.6.14"
 dependencies = [
  "base64",
  "serde",
