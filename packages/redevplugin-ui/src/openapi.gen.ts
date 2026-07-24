@@ -2773,9 +2773,9 @@ export interface components {
                 /** @constant */
                 error_codes_schema_version: "error-codes-v6";
                 /** @constant */
-                performance_contract_version: "performance-contract-v3";
+                performance_contract_version: "performance-contract-v4";
                 /** @constant */
-                performance_evidence_schema_version: "performance-evidence-v3";
+                performance_evidence_schema_version: "performance-evidence-v4";
                 /** @constant */
                 contract_registry_version: "contract-registry-v2";
                 /** @constant */

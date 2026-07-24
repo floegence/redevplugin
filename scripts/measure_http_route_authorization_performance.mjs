@@ -2,7 +2,7 @@
 
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { appendFileSync, cpSync, mkdtempSync, mkdirSync, readFileSync, rmSync } from "node:fs";
+import { appendFileSync, cpSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { availableParallelism, tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -10,12 +10,15 @@ import { fileURLToPath } from "node:url";
 import { readPerformanceContract } from "./performance_contract.mjs";
 import {
   assertRouteAuthorizationThresholds,
+  buildRouteAuthorizationAttempt,
   buildRouteAuthorizationComparisonReport,
   buildRepeatedRouteAuthorizationScenarios,
+  canonicalValueSHA256,
+  decideRouteAuthorizationAttempt,
 } from "./route_authorization_comparison.mjs";
 
 const root = resolve(import.meta.dirname, "..");
-const contractPath = join(root, "spec/plugin/performance-contract-v3.json");
+const contractPath = join(root, "spec/plugin/performance-contract-v4.json");
 const probeID = "httpadapter.route-authorization-v051";
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
@@ -44,27 +47,50 @@ function main() {
     const candidateBinary = join(temporaryRoot, "candidate-httpadapter.test");
     buildProfileBinary(baselineRoot, baselineBinary);
     buildProfileBinary(root, candidateBinary);
-    const profilePaths = {
-      baseline: Array.from({ length: probe.repetitions }, (_, index) => join(temporaryRoot, `baseline-${index + 1}.json`)),
-      candidate: Array.from({ length: probe.repetitions }, (_, index) => join(temporaryRoot, `candidate-${index + 1}.json`)),
-    };
-    const runIndexes = { baseline: 0, candidate: 0 };
-    for (const variant of buildInterleavedRunOrder(probe.repetitions)) {
-      const index = runIndexes[variant]++;
-      runProfile(
-        variant === "baseline" ? baselineBinary : candidateBinary,
-        variant === "baseline" ? baselineRoot : root,
-        profilePaths[variant][index],
-        variant === "baseline" ? probe.baseline_commit : candidateCommit,
-        gomaxprocs,
-      );
+    const attempts = [];
+    let comparison;
+    let scenarios;
+    for (let attemptNumber = 1; attemptNumber <= probe.max_attempts; attemptNumber += 1) {
+      const runOrder = buildInterleavedRunOrder(probe.repetitions);
+      const profilePaths = {
+        baseline: Array.from({ length: probe.repetitions }, (_, index) => join(temporaryRoot, `attempt-${attemptNumber}-baseline-${index + 1}.json`)),
+        candidate: Array.from({ length: probe.repetitions }, (_, index) => join(temporaryRoot, `attempt-${attemptNumber}-candidate-${index + 1}.json`)),
+      };
+      const runIndexes = { baseline: 0, candidate: 0 };
+      for (const variant of runOrder) {
+        const index = runIndexes[variant]++;
+        runProfile(
+          variant === "baseline" ? baselineBinary : candidateBinary,
+          variant === "baseline" ? baselineRoot : root,
+          profilePaths[variant][index],
+          variant === "baseline" ? probe.baseline_commit : candidateCommit,
+          gomaxprocs,
+        );
+      }
+      const baselineProfiles = profilePaths.baseline.map((path) => JSON.parse(readFileSync(path)));
+      const candidateProfiles = profilePaths.candidate.map((path) => JSON.parse(readFileSync(path)));
+      const attempt = buildRouteAuthorizationAttempt(probe, attemptNumber, runOrder, baselineProfiles, candidateProfiles);
+      attempts.push(attempt);
+      const attemptScenarios = attempt.noise_qualification.status === "qualified"
+        ? buildRepeatedRouteAuthorizationScenarios(attempt, options.gate)
+        : [];
+      const decision = decideRouteAuthorizationAttempt(attempt, attemptScenarios, options.gate, probe.max_attempts);
+      if (decision === "retrying_noise" || decision === "noise_exhausted") {
+        persistRouteAuthorizationDiagnostic(options.diagnosticOutput, buildRouteAuthorizationDiagnostic(probe, candidateCommit, decision, attempts));
+        if (decision === "noise_exhausted") {
+          throw new Error(`route authorization performance evidence remained noisy after ${probe.max_attempts} attempts`);
+        }
+        continue;
+      }
+      comparison = buildRouteAuthorizationComparisonReport(probe, attempts, attemptNumber);
+      scenarios = attemptScenarios;
+      persistRouteAuthorizationDiagnostic(options.diagnosticOutput, buildRouteAuthorizationDiagnostic(probe, candidateCommit, decision, attempts, attemptNumber, scenarios));
+      if (decision === "threshold_failed") {
+        assertRouteAuthorizationThresholds(scenarios);
+      }
+      break;
     }
-    const baselineProfiles = profilePaths.baseline.map((path) => JSON.parse(readFileSync(path)));
-    const candidateProfiles = profilePaths.candidate.map((path) => JSON.parse(readFileSync(path)));
-
-    const comparison = buildRouteAuthorizationComparisonReport(probe, baselineProfiles, candidateProfiles);
-    const scenarios = buildRepeatedRouteAuthorizationScenarios(baselineProfiles, candidateProfiles, options.gate);
-    if (options.gate !== "smoke") assertRouteAuthorizationThresholds(scenarios);
+    if (!comparison || !scenarios) throw new Error("route authorization performance comparison did not produce an accepted attempt");
     mkdirSync(dirname(options.output), { recursive: true });
     for (const scenario of scenarios) {
       appendFileSync(options.output, `${JSON.stringify(scenario)}\n`, { mode: 0o600 });
@@ -80,6 +106,37 @@ function main() {
   } finally {
     rmSync(temporaryRoot, { recursive: true, force: true });
   }
+}
+
+export function buildRouteAuthorizationDiagnostic(probe, candidateCommit, decision, attempts, acceptedAttempt = null, scenarios = []) {
+  const payload = {
+    schema_version: "redevplugin.route_authorization_diagnostic.v2",
+    probe_id: probe.id,
+    baseline_commit: probe.baseline_commit,
+    candidate_commit: candidateCommit,
+    decision,
+    accepted_attempt: acceptedAttempt,
+    attempts,
+    threshold_results: scenarios.map((scenario) => ({
+      id: scenario.id,
+      sample_count: scenario.sample_count,
+      metrics: scenario.metrics.map((metric) => ({
+        name: metric.name,
+        unit: metric.unit,
+        observed: metric.observed,
+        limit: metric.limit,
+        comparator: metric.comparator,
+        passed: metric.comparator === "eq" ? metric.observed === metric.limit : metric.observed <= metric.limit,
+      })),
+    })),
+  };
+  return { ...payload, diagnostic_sha256: canonicalValueSHA256(payload) };
+}
+
+export function persistRouteAuthorizationDiagnostic(path, diagnostic, output = process.stdout) {
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, `${JSON.stringify(diagnostic, null, 2)}\n`, { mode: 0o600 });
+  output.write(`${JSON.stringify({ route_authorization_diagnostic: diagnostic })}\n`);
 }
 
 function buildProfileBinary(repositoryRoot, output) {
@@ -141,6 +198,7 @@ function parseArgs(args) {
   const options = {
     output: "",
     comparisonOutput: "",
+    diagnosticOutput: "",
     gate: "",
     gomaxprocs: Math.min(8, availableParallelism()),
   };
@@ -148,12 +206,14 @@ function parseArgs(args) {
     const name = args[index];
     if (name === "--output") options.output = resolve(args[++index] || "");
     else if (name === "--comparison-output") options.comparisonOutput = resolve(args[++index] || "");
+    else if (name === "--diagnostic-output") options.diagnosticOutput = resolve(args[++index] || "");
     else if (name === "--gate") options.gate = args[++index] || "";
     else if (name === "--gomaxprocs") options.gomaxprocs = Number(args[++index]);
     else throw new Error(`unknown argument ${name}`);
   }
   if (!options.output) throw new Error("--output is required");
   if (!options.comparisonOutput) throw new Error("--comparison-output is required");
+  if (!options.diagnosticOutput) throw new Error("--diagnostic-output is required");
   if (!["smoke", "full", "release"].includes(options.gate)) throw new Error(`invalid --gate ${options.gate}`);
   if (!Number.isSafeInteger(options.gomaxprocs) || options.gomaxprocs < 1) throw new Error("--gomaxprocs must be a positive integer");
   return options;

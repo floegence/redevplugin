@@ -12,13 +12,15 @@ import {
   validatePerformanceScenarios,
 } from "./performance_contract.mjs";
 import {
+  buildRouteAuthorizationAttempt,
   buildRouteAuthorizationComparisonReport,
   buildRepeatedRouteAuthorizationScenarios,
-  buildRouteAuthorizationScenarios,
   canonicalProfileSHA256,
+  canonicalValueSHA256,
+  qualifyRouteAuthorizationAttempt,
 } from "./route_authorization_comparison.mjs";
 
-const contractPath = resolve(import.meta.dirname, "../spec/plugin/performance-contract-v3.json");
+const contractPath = resolve(import.meta.dirname, "../spec/plugin/performance-contract-v4.json");
 
 test("performance contract accepts its exact scenario and metric shape", () => {
   const contract = readPerformanceContract(contractPath);
@@ -60,7 +62,7 @@ test("performance evidence metadata and contract hashes are closed and immutable
   const contract = readPerformanceContract(contractPath);
   const contractHashes = [{ id: "performance-contract", sha256: "a".repeat(64) }];
   const evidence = {
-    schema_version: "redevplugin.performance_evidence.v3",
+    schema_version: "redevplugin.performance_evidence.v4",
     release_version: "0.6.0",
     source_commit: "b".repeat(40),
     generated_at: "2026-07-17T00:00:00Z",
@@ -114,7 +116,7 @@ test("performance evidence metadata and contract hashes are closed and immutable
 test("performance evidence requires provenance for every pinned comparison probe", () => {
   const contract = readPerformanceContract(contractPath);
   const evidence = {
-    schema_version: "redevplugin.performance_evidence.v3",
+    schema_version: "redevplugin.performance_evidence.v4",
     release_version: "0.6.0",
     source_commit: "b".repeat(40),
     generated_at: "2026-07-20T00:00:00Z",
@@ -146,7 +148,7 @@ test("performance evidence rejects malformed raw route authorization profiles", 
   const contract = readPerformanceContract(contractPath);
   const contractHashes = [{ id: "performance-contract", sha256: "a".repeat(64) }];
   const evidence = {
-    schema_version: "redevplugin.performance_evidence.v3",
+    schema_version: "redevplugin.performance_evidence.v4",
     release_version: "0.6.0",
     source_commit: "b".repeat(40),
     generated_at: "2026-07-20T00:00:00Z",
@@ -180,9 +182,18 @@ test("performance evidence rejects malformed raw route authorization profiles", 
   ];
   for (const [label, mutate, diagnostic] of cases) {
     const invalid = structuredClone(evidence);
-    const run = invalid.comparisons[0].runs[0];
+    const attempt = invalid.comparisons[0].attempts[0];
+    const run = attempt.runs[0];
     mutate(run.candidate_profile);
     run.candidate_profile_sha256 = canonicalProfileSHA256(run.candidate_profile);
+    attempt.noise_qualification = qualifyRouteAuthorizationAttempt(contract.comparison_probes[0], attempt);
+    attempt.attempt_sha256 = canonicalValueSHA256({
+      attempt: attempt.attempt,
+      run_order: attempt.run_order,
+      environment: attempt.environment,
+      runs: attempt.runs,
+      noise_qualification: attempt.noise_qualification,
+    });
     assert.throws(() => validatePerformanceEvidence(invalid, contract, options), diagnostic, label);
   }
 });
@@ -190,7 +201,7 @@ test("performance evidence rejects malformed raw route authorization profiles", 
 test("performance contract is a closed unique machine contract", () => {
   const raw = JSON.parse(readFileSync(contractPath, "utf8"));
   assert.deepEqual(Object.keys(raw).sort(), ["comparison_probes", "scenarios", "schema_version"]);
-  assert.equal(raw.schema_version, "redevplugin.performance_contract.v3");
+  assert.equal(raw.schema_version, "redevplugin.performance_contract.v4");
   assert.equal(raw.scenarios.length, 25);
   assert.equal(new Set(raw.scenarios.map((scenario) => scenario.id)).size, 25);
 });
@@ -200,8 +211,8 @@ test("performance contract closes the platform acceptance targets", () => {
   const scenarios = new Map(contract.scenarios.map((scenario) => [scenario.id, scenario]));
   const targets = {
     "httpadapter.route-authorization-c1": ["p95_relative", "basis_points", "lte", 11000],
-    "httpadapter.route-authorization-c100": ["p95_relative", "basis_points", "lte", 11000],
-    "httpadapter.route-authorization-c1000": ["p95_relative", "basis_points", "lte", 11000],
+    "httpadapter.route-authorization-c100": ["batch_median_relative", "basis_points", "lte", 11000],
+    "httpadapter.route-authorization-c1000": ["batch_median_relative", "basis_points", "lte", 11000],
     "plugindata.namespace-cache-warm": ["relative_allocations", "basis_points", "lte", 3000],
     "connectivity.http-keepalive": ["p95_relative_to_connect", "basis_points", "lte", 7000],
     "runtime.ipc-writer-burst": ["peak_rss_bytes", "bytes", "lte", 67108864],
@@ -230,7 +241,20 @@ test("performance contract pins the immutable v0.5.1 route authorization probe",
   assert.equal(probe.baseline_release, "0.5.1");
   assert.equal(probe.baseline_commit, "3febcc59bbdb2118a4f105781b4c743bc11ba09f");
   assert.equal(probe.repetitions, 9);
+  assert.equal(probe.max_attempts, 3);
   assert.equal(probe.requests_per_sample, 32);
+  assert.deepEqual(probe.noise_qualification, {
+    batch_median_relative: {
+      relative_mad_limit_basis_points: 750,
+      maximum_relative_deviation_limit_basis_points: 2500,
+      order_bias_limit_basis_points: 750,
+    },
+    batch_p95_relative: {
+      relative_mad_limit_basis_points: 1250,
+      maximum_relative_deviation_limit_basis_points: 5000,
+      order_bias_limit_basis_points: 2000,
+    },
+  });
   assert.deepEqual(probe.measured_batches, [
     { concurrency: 1, batches: 1000, samples: 32000 },
     { concurrency: 100, batches: 64, samples: 204800 },
@@ -243,11 +267,14 @@ test("performance contract pins the immutable v0.5.1 route authorization probe",
 });
 
 function measurementsFrom(contract, gate, sourceCommit = "b".repeat(40)) {
-  const comparisonScenarios = buildRepeatedRouteAuthorizationScenarios(
+  const attempt = buildRouteAuthorizationAttempt(
+    contract.comparison_probes[0],
+    1,
+    balancedRunOrder(),
     repeatedProfiles("v0.5.1", "3febcc59bbdb2118a4f105781b4c743bc11ba09f", [100, 102, 98, 101, 99, 103, 97, 104, 96]),
     repeatedProfiles("v0.6.0", sourceCommit, [104, 103, 105, 102, 106, 101, 107, 100, 108]),
-    gate,
   );
+  const comparisonScenarios = buildRepeatedRouteAuthorizationScenarios(attempt, gate);
   const comparisonByID = new Map(comparisonScenarios.map((scenario) => [scenario.id, scenario]));
   return contract.scenarios.map((scenario) => comparisonByID.get(scenario.id) ?? ({
     id: scenario.id,
@@ -262,11 +289,20 @@ function measurementsFrom(contract, gate, sourceCommit = "b".repeat(40)) {
 }
 
 function comparisonFrom(contract, sourceCommit) {
-  return buildRouteAuthorizationComparisonReport(
+  const attempt = buildRouteAuthorizationAttempt(
     contract.comparison_probes[0],
+    1,
+    balancedRunOrder(),
     repeatedProfiles("v0.5.1", "3febcc59bbdb2118a4f105781b4c743bc11ba09f", [100, 102, 98, 101, 99, 103, 97, 104, 96]),
     repeatedProfiles("v0.6.0", sourceCommit, [104, 103, 105, 102, 106, 101, 107, 100, 108]),
   );
+  return buildRouteAuthorizationComparisonReport(contract.comparison_probes[0], [attempt], 1);
+}
+
+function balancedRunOrder() {
+  return Array.from({ length: 9 }, (_, index) => (
+    index % 2 === 0 ? ["baseline", "candidate"] : ["candidate", "baseline"]
+  )).flat();
 }
 
 function repeatedProfiles(variant, commit, latencies) {
@@ -275,7 +311,7 @@ function repeatedProfiles(variant, commit, latencies) {
 
 function routeAuthorizationProfile(variant, commit, latency) {
   return {
-    schema_version: "redevplugin.route_authorization_performance.v1",
+    schema_version: "redevplugin.route_authorization_performance.v2",
     variant,
     commit,
     environment: {
@@ -303,6 +339,8 @@ function routeAuthorizationMeasurement(concurrency, batchCount, sampleCount, lat
     median_nanoseconds: latency,
     p95_nanoseconds: latency,
     p99_nanoseconds: latency,
+    batch_median_nanoseconds_per_request: latency,
+    batch_p95_nanoseconds_per_request: latency,
     allocations_per_request: 7,
     bytes_per_request: 1040,
   };

@@ -7,6 +7,9 @@
 - Preserve the required empty `redirect_chain` array in package URL provenance
   while keeping uploaded-package and GitHub provenance JSON aligned with the
   strict public union contract.
+- Compare high-concurrency route authorization through paired batch-throughput
+  evidence, retry only independently qualified noisy attempts, and retain every
+  raw attempt in a hashed release diagnostic artifact.
 
 ## v0.6.10
 

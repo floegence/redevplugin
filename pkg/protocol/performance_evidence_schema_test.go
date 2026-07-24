@@ -19,13 +19,22 @@ func TestPerformanceEvidenceSchemaValidatesReleaseEvidence(t *testing.T) {
 	if err := schema.Validate(evidence); err != nil {
 		t.Fatalf("valid performance evidence was rejected: %v", err)
 	}
-	for _, runCount := range []int{3, 5, 9} {
-		t.Run(fmt.Sprintf("accepts %d comparison runs", runCount), func(t *testing.T) {
+	for _, attemptCount := range []int{1, 2, 3} {
+		t.Run(fmt.Sprintf("accepts %d comparison attempts", attemptCount), func(t *testing.T) {
 			candidate := cloneJSONDocument(t, evidence)
 			comparison := candidate["comparisons"].([]any)[0].(map[string]any)
-			comparison["runs"] = comparison["runs"].([]any)[:runCount]
+			attempts := make([]any, 0, attemptCount)
+			for attempt := 1; attempt <= attemptCount; attempt++ {
+				status := "noisy"
+				if attempt == attemptCount {
+					status = "qualified"
+				}
+				attempts = append(attempts, validRouteAuthorizationAttempt(attempt, status))
+			}
+			comparison["accepted_attempt"] = attemptCount
+			comparison["attempts"] = attempts
 			if err := schema.Validate(candidate); err != nil {
-				t.Fatalf("performance evidence schema rejected %d comparison runs: %v", runCount, err)
+				t.Fatalf("performance evidence schema rejected %d comparison attempts: %v", attemptCount, err)
 			}
 		})
 	}
@@ -47,28 +56,103 @@ func TestPerformanceEvidenceSchemaValidatesReleaseEvidence(t *testing.T) {
 			},
 		},
 		{
-			name: "too few comparison runs",
+			name: "too few comparison attempt runs",
 			mutate: func(document map[string]any) {
-				comparison := document["comparisons"].([]any)[0].(map[string]any)
-				comparison["runs"] = comparison["runs"].([]any)[:2]
+				attempt := document["comparisons"].([]any)[0].(map[string]any)["attempts"].([]any)[0].(map[string]any)
+				attempt["runs"] = attempt["runs"].([]any)[:8]
 			},
 		},
 		{
-			name: "unbounded comparison runs",
+			name: "unbounded comparison attempt runs",
 			mutate: func(document map[string]any) {
-				comparison := document["comparisons"].([]any)[0].(map[string]any)
-				runs := comparison["runs"].([]any)
-				for len(runs) < 33 {
+				attempt := document["comparisons"].([]any)[0].(map[string]any)["attempts"].([]any)[0].(map[string]any)
+				runs := attempt["runs"].([]any)
+				for len(runs) < 10 {
 					runs = append(runs, cloneJSONDocument(t, runs[0].(map[string]any)))
 				}
-				comparison["runs"] = runs
+				attempt["runs"] = runs
 			},
 		},
 		{
 			name: "unknown comparison run field",
 			mutate: func(document map[string]any) {
+				attempt := document["comparisons"].([]any)[0].(map[string]any)["attempts"].([]any)[0].(map[string]any)
+				attempt["runs"].([]any)[0].(map[string]any)["fallback"] = true
+			},
+		},
+		{
+			name: "p95 noise metric uses median limit",
+			mutate: func(document map[string]any) {
+				attempt := document["comparisons"].([]any)[0].(map[string]any)["attempts"].([]any)[0].(map[string]any)
+				metrics := attempt["noise_qualification"].(map[string]any)["metrics"].([]any)
+				metrics[1].(map[string]any)["relative_mad_limit_basis_points"] = 750
+			},
+		},
+		{
+			name: "unbounded comparison attempts",
+			mutate: func(document map[string]any) {
 				comparison := document["comparisons"].([]any)[0].(map[string]any)
-				comparison["runs"].([]any)[0].(map[string]any)["fallback"] = true
+				comparison["attempts"] = append(comparison["attempts"].([]any), validRouteAuthorizationAttempt(3, "qualified"))
+			},
+		},
+		{
+			name: "accepted attempt does not match attempt count",
+			mutate: func(document map[string]any) {
+				document["comparisons"].([]any)[0].(map[string]any)["accepted_attempt"] = 2
+			},
+		},
+		{
+			name: "attempt numbering is not contiguous",
+			mutate: func(document map[string]any) {
+				attempts := document["comparisons"].([]any)[0].(map[string]any)["attempts"].([]any)
+				attempts[1].(map[string]any)["attempt"] = 3
+			},
+		},
+		{
+			name: "prior attempt is qualified",
+			mutate: func(document map[string]any) {
+				attempts := document["comparisons"].([]any)[0].(map[string]any)["attempts"].([]any)
+				qualification := attempts[0].(map[string]any)["noise_qualification"].(map[string]any)
+				qualification["status"] = "qualified"
+				qualification["reasons"] = []any{}
+			},
+		},
+		{
+			name: "accepted attempt is noisy",
+			mutate: func(document map[string]any) {
+				attempts := document["comparisons"].([]any)[0].(map[string]any)["attempts"].([]any)
+				qualification := attempts[2].(map[string]any)["noise_qualification"].(map[string]any)
+				qualification["status"] = "noisy"
+				qualification["reasons"] = []any{"c100.batch_median_relative.relative_mad"}
+			},
+		},
+		{
+			name: "run order is not balanced AB BA",
+			mutate: func(document map[string]any) {
+				attempt := document["comparisons"].([]any)[0].(map[string]any)["attempts"].([]any)[0].(map[string]any)
+				attempt["run_order"].([]any)[2] = "baseline"
+			},
+		},
+		{
+			name: "pair index does not match run position",
+			mutate: func(document map[string]any) {
+				attempt := document["comparisons"].([]any)[0].(map[string]any)["attempts"].([]any)[0].(map[string]any)
+				attempt["runs"].([]any)[1].(map[string]any)["pair_index"] = 2
+			},
+		},
+		{
+			name: "first variant does not match run position",
+			mutate: func(document map[string]any) {
+				attempt := document["comparisons"].([]any)[0].(map[string]any)["attempts"].([]any)[0].(map[string]any)
+				attempt["runs"].([]any)[1].(map[string]any)["first_variant"] = "baseline"
+			},
+		},
+		{
+			name: "noise metrics are reordered",
+			mutate: func(document map[string]any) {
+				attempt := document["comparisons"].([]any)[0].(map[string]any)["attempts"].([]any)[0].(map[string]any)
+				metrics := attempt["noise_qualification"].(map[string]any)["metrics"].([]any)
+				metrics[0], metrics[1] = metrics[1], metrics[0]
 			},
 		},
 		{
@@ -110,14 +194,14 @@ func TestPerformanceEvidenceSchemaValidatesReleaseEvidence(t *testing.T) {
 func compilePerformanceEvidenceSchema(t testing.TB) *jsonschema.Schema {
 	t.Helper()
 	root := hostCapabilityRepositoryRoot(t)
-	raw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", "performance-evidence-v3.schema.json"))
+	raw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", "performance-evidence-v4.schema.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	compiler := jsonschema.NewCompiler()
 	compiler.Draft = jsonschema.Draft2020
 	compiler.AssertFormat = true
-	const resource = "urn:redevplugin:test:performance-evidence-v3"
+	const resource = "urn:redevplugin:test:performance-evidence-v4"
 	if err := compiler.AddResource(resource, bytes.NewReader(raw)); err != nil {
 		t.Fatal(err)
 	}
@@ -130,7 +214,7 @@ func compilePerformanceEvidenceSchema(t testing.TB) *jsonschema.Schema {
 
 func validPerformanceEvidence() map[string]any {
 	return map[string]any{
-		"schema_version":  "redevplugin.performance_evidence.v3",
+		"schema_version":  "redevplugin.performance_evidence.v4",
 		"release_version": "0.5.0",
 		"source_commit":   "0123456789abcdef0123456789abcdef01234567",
 		"generated_at":    "2026-07-16T08:00:00Z",
@@ -166,16 +250,11 @@ func validPerformanceEvidence() map[string]any {
 				"baseline_release": "0.5.1",
 				"baseline_commit":  "3febcc59bbdb2118a4f105781b4c743bc11ba09f",
 				"candidate_commit": "0123456789abcdef0123456789abcdef01234567",
-				"runs": []any{
-					validRouteAuthorizationRun("1", "2"),
-					validRouteAuthorizationRun("3", "4"),
-					validRouteAuthorizationRun("5", "6"),
-					validRouteAuthorizationRun("7", "8"),
-					validRouteAuthorizationRun("9", "a"),
-					validRouteAuthorizationRun("b", "c"),
-					validRouteAuthorizationRun("d", "e"),
-					validRouteAuthorizationRun("f", "0"),
-					validRouteAuthorizationRun("1", "3"),
+				"accepted_attempt": 3,
+				"attempts": []any{
+					validRouteAuthorizationAttempt(1, "noisy"),
+					validRouteAuthorizationAttempt(2, "noisy"),
+					validRouteAuthorizationAttempt(3, "qualified"),
 				},
 			},
 		},
@@ -188,39 +267,98 @@ func validPerformanceEvidence() map[string]any {
 	}
 }
 
-func validRouteAuthorizationRun(baselineHashPrefix, candidateHashPrefix string) map[string]any {
+func validRouteAuthorizationAttempt(attempt int, status string) map[string]any {
+	runOrder := make([]any, 0, 18)
+	runs := make([]any, 0, 9)
+	for index := 0; index < 9; index++ {
+		firstVariant := "baseline"
+		if index%2 == 0 {
+			runOrder = append(runOrder, "baseline", "candidate")
+		} else {
+			firstVariant = "candidate"
+			runOrder = append(runOrder, "candidate", "baseline")
+		}
+		runs = append(runs, validRouteAuthorizationRun(index, firstVariant))
+	}
 	return map[string]any{
-		"baseline_profile_sha256":  baselineHashPrefix + strings.Repeat("0", 63),
-		"candidate_profile_sha256": candidateHashPrefix + strings.Repeat("0", 63),
+		"attempt":             attempt,
+		"run_order":           runOrder,
+		"environment":         validRouteAuthorizationEnvironment(),
+		"runs":                runs,
+		"noise_qualification": validRouteAuthorizationNoiseQualification(status),
+		"attempt_sha256":      strings.Repeat(fmt.Sprintf("%x", attempt), 64),
+	}
+}
+
+func validRouteAuthorizationRun(index int, firstVariant string) map[string]any {
+	return map[string]any{
+		"pair_index":               index,
+		"first_variant":            firstVariant,
+		"baseline_profile_sha256":  strings.Repeat(fmt.Sprintf("%x", index+1), 64),
+		"candidate_profile_sha256": strings.Repeat(fmt.Sprintf("%x", index+2), 64),
 		"baseline_profile":         validRouteAuthorizationProfile("v0.5.1", "3febcc59bbdb2118a4f105781b4c743bc11ba09f"),
 		"candidate_profile":        validRouteAuthorizationProfile("v0.6.0", "0123456789abcdef0123456789abcdef01234567"),
+	}
+}
+
+func validRouteAuthorizationNoiseQualification(status string) map[string]any {
+	metrics := make([]any, 0, 4)
+	for _, id := range []string{
+		"c100.batch_median_relative",
+		"c100.batch_p95_relative",
+		"c1000.batch_median_relative",
+		"c1000.batch_p95_relative",
+	} {
+		relativeMADLimit := 750
+		maximumRelativeDeviationLimit := 2_500
+		orderBiasLimit := 750
+		if strings.Contains(id, "batch_p95_relative") {
+			relativeMADLimit = 1_250
+			maximumRelativeDeviationLimit = 5_000
+			orderBiasLimit = 2_000
+		}
+		metrics = append(metrics, map[string]any{
+			"id":                                            id,
+			"median_basis_points":                           10_000.0,
+			"relative_mad_basis_points":                     0.0,
+			"relative_mad_limit_basis_points":               relativeMADLimit,
+			"maximum_relative_deviation_basis_points":       0.0,
+			"maximum_relative_deviation_limit_basis_points": maximumRelativeDeviationLimit,
+			"order_bias_basis_points":                       0.0,
+			"order_bias_limit_basis_points":                 orderBiasLimit,
+		})
+	}
+	reasons := []any{}
+	if status == "noisy" {
+		reasons = []any{"c100.batch_median_relative.relative_mad"}
+	}
+	return map[string]any{
+		"status":  status,
+		"reasons": reasons,
+		"metrics": metrics,
 	}
 }
 
 func validRouteAuthorizationProfile(variant, commit string) map[string]any {
 	measurement := func(concurrency, batches, samples int) map[string]any {
 		return map[string]any{
-			"concurrency":             concurrency,
-			"batch_count":             batches,
-			"sample_count":            samples,
-			"median_nanoseconds":      100,
-			"p95_nanoseconds":         120,
-			"p99_nanoseconds":         140,
-			"allocations_per_request": 7.0,
-			"bytes_per_request":       1024.0,
+			"concurrency":                          concurrency,
+			"batch_count":                          batches,
+			"sample_count":                         samples,
+			"median_nanoseconds":                   100,
+			"p95_nanoseconds":                      120,
+			"p99_nanoseconds":                      140,
+			"batch_median_nanoseconds_per_request": 100.0,
+			"batch_p95_nanoseconds_per_request":    120.0,
+			"allocations_per_request":              7.0,
+			"bytes_per_request":                    1024.0,
 		}
 	}
 	return map[string]any{
-		"schema_version": "redevplugin.route_authorization_performance.v1",
-		"variant":        variant,
-		"commit":         commit,
-		"environment": map[string]any{
-			"os":           "linux",
-			"arch":         "amd64",
-			"logical_cpus": 8,
-			"gomaxprocs":   8,
-			"go_version":   "go1.26.0",
-		},
+		"schema_version":      "redevplugin.route_authorization_performance.v2",
+		"variant":             variant,
+		"commit":              commit,
+		"environment":         validRouteAuthorizationEnvironment(),
 		"warmup_count":        8,
 		"requests_per_sample": 32,
 		"measurements": []any{
@@ -228,6 +366,16 @@ func validRouteAuthorizationProfile(variant, commit string) map[string]any {
 			measurement(100, 64, 204800),
 			measurement(1000, 64, 2048000),
 		},
+	}
+}
+
+func validRouteAuthorizationEnvironment() map[string]any {
+	return map[string]any{
+		"os":           "linux",
+		"arch":         "amd64",
+		"logical_cpus": 8,
+		"gomaxprocs":   8,
+		"go_version":   "go1.26.0",
 	}
 }
 

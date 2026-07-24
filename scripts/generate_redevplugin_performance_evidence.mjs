@@ -11,12 +11,12 @@ import { readPerformanceContract, validatePerformanceEvidence } from "./performa
 const options = parseArgs(process.argv.slice(2));
 assertEvidenceSourceState(options.sourceCommit);
 const compatibility = JSON.parse(readFileSync(resolve(options.compatibility), "utf8"));
-const performanceContract = readPerformanceContract(join(import.meta.dirname, "../spec/plugin/performance-contract-v3.json"));
+const performanceContract = readPerformanceContract(join(import.meta.dirname, "../spec/plugin/performance-contract-v4.json"));
 const scenarios = readMeasurements(resolve(options.measurements));
 const comparisons = readMeasurements(resolve(options.comparisons));
 const chromiumVersion = execFileSync(chromium.executablePath(), ["--version"], { encoding: "utf8" }).trim();
 const evidence = {
-  schema_version: "redevplugin.performance_evidence.v3",
+  schema_version: "redevplugin.performance_evidence.v4",
   release_version: options.version,
   source_commit: options.sourceCommit,
   generated_at: options.generatedAt || new Date(Math.floor(Date.now() / 1000) * 1000).toISOString().replace(".000Z", "Z"),

@@ -180,21 +180,43 @@ sink boundary.
 and full measurements. Release evidence rejects that override and always builds
 `redevplugin-runtime` from exact packaged source bytes bound to `source_commit`.
 
-`performance-contract-v3.json` is the single machine-readable definition of the
+`performance-contract-v4.json` is the single machine-readable definition of the
 25 required scenarios and each scenario's sample count, metric name, unit,
 comparator, and limit. The generator and bundle verifier both consume that
 contract and reject any missing, extra, duplicate, or drifted metric. Route
 authorization evidence also embeds the pinned v0.5.1 and candidate profiles;
-the verifier checks their canonical hashes and recomputes all comparison
-metrics before accepting the bundle. The
+the verifier checks their canonical hashes, fixed AB/BA order, contiguous
+attempt identities, and noise qualification, then recomputes all comparison
+metrics before accepting the bundle. The v1-v3 contract and evidence files remain
+immutable historical release inputs; the current compatibility matrix and
+contract registry select only v4. The
 release workflow generates immutable release evidence once on the pinned Linux
 runner; registry-only conformance validates the exact evidence bytes.
 
-Wall-clock ratios for short hot paths use nine independent repetitions and the
-median P95 or P99 for each variant. Route authorization alternates the pinned
-baseline and candidate process order across nine complete profiles. The UDP
-limiter alternates small and large batches within every repetition before it
-compares the independent median P95 values. This preserves the original
+Route authorization alternates the pinned baseline and candidate process order
+across nine adjacent complete-profile pairs and takes the median of the nine
+paired candidate/baseline ratios. Concurrency one keeps request-level P95 and
+P99 evidence. Concurrency 100 and 1000 use median and P95 complete-batch elapsed
+nanoseconds per request, which measures delivered throughput without treating
+one delayed goroutine as handler latency. High-concurrency batch medians retain
+strict 7.5% relative-MAD, 25% maximum-deviation, and 7.5% AB/BA order-bias noise
+limits. Batch P95 uses bounded 12.5%, 50%, and 20% limits for the naturally
+wider tail distribution. Only an independently classified noisy attempt may be
+retried; a qualified threshold failure fails immediately, and noise is bounded
+to three attempts.
+
+Every route-authorization decision first writes a canonical-hash diagnostic
+containing the environment, run order, all raw profile pairs, profile and
+attempt hashes, noise metrics and reasons, and raw threshold results. A
+threshold failure marks the failing metrics in `threshold_results`; it never
+labels them as passing scenarios. The tagged release job uploads this file on
+success or performance failure whenever it exists. Failures before the
+performance sampler creates the file do not produce a second missing-artifact
+failure.
+
+Other short wall-clock paths continue to use their owning paired measurement
+contracts. The UDP limiter alternates small and large batches within every
+repetition before it compares the independent median P95 values. This preserves the original
 operation timing and published limits while preventing one scheduler phase from
 becoming the release verdict.
 

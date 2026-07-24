@@ -30,14 +30,16 @@ type RouteAuthorizationEnvironment struct {
 }
 
 type RouteAuthorizationMeasurement struct {
-	Concurrency           int     `json:"concurrency"`
-	BatchCount            int     `json:"batch_count"`
-	SampleCount           int     `json:"sample_count"`
-	MedianNanoseconds     int64   `json:"median_nanoseconds"`
-	P95Nanoseconds        int64   `json:"p95_nanoseconds"`
-	P99Nanoseconds        int64   `json:"p99_nanoseconds"`
-	AllocationsPerRequest float64 `json:"allocations_per_request"`
-	BytesPerRequest       float64 `json:"bytes_per_request"`
+	Concurrency                      int     `json:"concurrency"`
+	BatchCount                       int     `json:"batch_count"`
+	SampleCount                      int     `json:"sample_count"`
+	MedianNanoseconds                int64   `json:"median_nanoseconds"`
+	P95Nanoseconds                   int64   `json:"p95_nanoseconds"`
+	P99Nanoseconds                   int64   `json:"p99_nanoseconds"`
+	BatchMedianNanosecondsPerRequest float64 `json:"batch_median_nanoseconds_per_request"`
+	BatchP95NanosecondsPerRequest    float64 `json:"batch_p95_nanoseconds_per_request"`
+	AllocationsPerRequest            float64 `json:"allocations_per_request"`
+	BytesPerRequest                  float64 `json:"bytes_per_request"`
 }
 
 type RouteAuthorizationProfile struct {
@@ -57,7 +59,7 @@ func MeasureRouteAuthorization(variant, commit string, invoke func() error) (Rou
 		return RouteAuthorizationProfile{}, errors.New("route authorization performance measurement is incomplete")
 	}
 	profile := RouteAuthorizationProfile{
-		SchemaVersion: "redevplugin.route_authorization_performance.v1",
+		SchemaVersion: "redevplugin.route_authorization_performance.v2",
 		Variant:       variant,
 		Commit:        commit,
 		Environment: RouteAuthorizationEnvironment{
@@ -77,31 +79,38 @@ func MeasureRouteAuthorization(variant, commit string, invoke func() error) (Rou
 			batchCount = minimumBatches
 		}
 		for range RouteAuthorizationWarmupCount {
-			if _, err := measureRouteAuthorizationBatch(concurrency, invoke); err != nil {
+			if _, _, err := measureRouteAuthorizationBatch(concurrency, invoke); err != nil {
 				return RouteAuthorizationProfile{}, err
 			}
 		}
 		durations := make([]time.Duration, 0, batchCount*concurrency)
+		batchNanosecondsPerRequest := make([]float64, 0, batchCount)
 		for range batchCount {
-			batchDurations, err := measureRouteAuthorizationBatch(concurrency, invoke)
+			batchDurations, batchElapsed, err := measureRouteAuthorizationBatch(concurrency, invoke)
 			if err != nil {
 				return RouteAuthorizationProfile{}, err
 			}
 			durations = append(durations, batchDurations...)
+			batchNanosecondsPerRequest = append(
+				batchNanosecondsPerRequest,
+				float64(batchElapsed.Nanoseconds())/float64(concurrency*RouteAuthorizationRequestsPerSample),
+			)
 		}
 		allocations, bytes, err := measureRouteAuthorizationMemory(concurrency, batchCount, invoke)
 		if err != nil {
 			return RouteAuthorizationProfile{}, err
 		}
 		profile.Measurements = append(profile.Measurements, RouteAuthorizationMeasurement{
-			Concurrency:           concurrency,
-			BatchCount:            batchCount,
-			SampleCount:           len(durations),
-			MedianNanoseconds:     routeAuthorizationPercentile(durations, 50).Nanoseconds(),
-			P95Nanoseconds:        routeAuthorizationPercentile(durations, 95).Nanoseconds(),
-			P99Nanoseconds:        routeAuthorizationPercentile(durations, 99).Nanoseconds(),
-			AllocationsPerRequest: allocations,
-			BytesPerRequest:       bytes,
+			Concurrency:                      concurrency,
+			BatchCount:                       batchCount,
+			SampleCount:                      len(durations),
+			MedianNanoseconds:                routeAuthorizationPercentile(durations, 50).Nanoseconds(),
+			P95Nanoseconds:                   routeAuthorizationPercentile(durations, 95).Nanoseconds(),
+			P99Nanoseconds:                   routeAuthorizationPercentile(durations, 99).Nanoseconds(),
+			BatchMedianNanosecondsPerRequest: routeAuthorizationFloatPercentile(batchNanosecondsPerRequest, 50),
+			BatchP95NanosecondsPerRequest:    routeAuthorizationFloatPercentile(batchNanosecondsPerRequest, 95),
+			AllocationsPerRequest:            allocations,
+			BytesPerRequest:                  bytes,
 		})
 	}
 	return profile, nil
@@ -119,20 +128,21 @@ func WriteRouteAuthorizationProfile(path string, profile RouteAuthorizationProfi
 	return os.WriteFile(path, append(raw, '\n'), 0o600)
 }
 
-func measureRouteAuthorizationBatch(concurrency int, invoke func() error) ([]time.Duration, error) {
+func measureRouteAuthorizationBatch(concurrency int, invoke func() error) ([]time.Duration, time.Duration, error) {
 	if concurrency < 1 {
-		return nil, errors.New("route authorization concurrency must be positive")
+		return nil, 0, errors.New("route authorization concurrency must be positive")
 	}
 	if concurrency == 1 {
 		durations := make([]time.Duration, RouteAuthorizationRequestsPerSample)
+		batchStarted := time.Now()
 		for index := range RouteAuthorizationRequestsPerSample {
 			started := time.Now()
 			if err := invoke(); err != nil {
-				return nil, err
+				return nil, 0, err
 			}
 			durations[index] = time.Since(started)
 		}
-		return durations, nil
+		return durations, time.Since(batchStarted), nil
 	}
 	ready := sync.WaitGroup{}
 	done := sync.WaitGroup{}
@@ -161,13 +171,15 @@ func measureRouteAuthorizationBatch(concurrency int, invoke func() error) ([]tim
 		}()
 	}
 	ready.Wait()
+	batchStarted := time.Now()
 	close(start)
 	done.Wait()
+	batchElapsed := time.Since(batchStarted)
 	select {
 	case err := <-errorsFound:
-		return nil, err
+		return nil, 0, err
 	default:
-		return durations, nil
+		return durations, batchElapsed, nil
 	}
 }
 
@@ -234,8 +246,18 @@ func routeAuthorizationPercentile(values []time.Duration, percentile int) time.D
 	return ordered[index-1]
 }
 
+func routeAuthorizationFloatPercentile(values []float64, percentile int) float64 {
+	if len(values) == 0 || percentile < 1 || percentile > 100 {
+		return 0
+	}
+	ordered := append([]float64(nil), values...)
+	sort.Float64s(ordered)
+	index := (len(ordered)*percentile + 99) / 100
+	return ordered[index-1]
+}
+
 func ValidateRouteAuthorizationProfile(profile RouteAuthorizationProfile) error {
-	if profile.SchemaVersion != "redevplugin.route_authorization_performance.v1" ||
+	if profile.SchemaVersion != "redevplugin.route_authorization_performance.v2" ||
 		strings.TrimSpace(profile.Variant) == "" || strings.TrimSpace(profile.Commit) == "" ||
 		profile.WarmupCount != RouteAuthorizationWarmupCount || profile.RequestsPerSample != RouteAuthorizationRequestsPerSample ||
 		profile.Environment.OS == "" || profile.Environment.Arch == "" || profile.Environment.LogicalCPUs < 1 ||
@@ -253,6 +275,8 @@ func ValidateRouteAuthorizationProfile(profile RouteAuthorizationProfile) error 
 			measurement.SampleCount != minimumBatches*concurrency*RouteAuthorizationRequestsPerSample || measurement.MedianNanoseconds < 1 ||
 			measurement.P95Nanoseconds < measurement.MedianNanoseconds ||
 			measurement.P99Nanoseconds < measurement.P95Nanoseconds ||
+			measurement.BatchMedianNanosecondsPerRequest <= 0 ||
+			measurement.BatchP95NanosecondsPerRequest < measurement.BatchMedianNanosecondsPerRequest ||
 			measurement.AllocationsPerRequest < 0 || measurement.BytesPerRequest < 0 {
 			return fmt.Errorf("route authorization performance measurement for concurrency %d is invalid", concurrency)
 		}

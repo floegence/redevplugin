@@ -45,8 +45,8 @@ for required in \
   spec/plugin/compatibility-manifest-v8.schema.json \
   spec/plugin/error-codes-v6.schema.json \
   spec/plugin/ipc-v6.schema.json \
-  spec/plugin/performance-contract-v3.json \
-  spec/plugin/performance-evidence-v3.schema.json \
+  spec/plugin/performance-contract-v4.json \
+  spec/plugin/performance-evidence-v4.schema.json \
   spec/plugin/platform-package-set-v1.schema.json \
   spec/plugin/platform-package-publication-v1.schema.json \
   spec/plugin/process-containment-v1.schema.json \

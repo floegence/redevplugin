@@ -42,8 +42,8 @@ const (
 	HostCapabilitySignatureSchemaVersion      = "host-capability-signature-v1"
 	HostCapabilityNoticesSchemaVersion        = "host-capability-notices-v1"
 	ErrorCodesSchemaVersion                   = "error-codes-v6"
-	PerformanceContractVersion                = "performance-contract-v3"
-	PerformanceEvidenceSchemaVersion          = "performance-evidence-v3"
+	PerformanceContractVersion                = "performance-contract-v4"
+	PerformanceEvidenceSchemaVersion          = "performance-evidence-v4"
 	ContractRegistryVersion                   = "contract-registry-v2"
 	PlatformPackageSetSchemaVersion           = "platform-package-set-v1"
 	PlatformPackagePublicationSchemaVersion   = "platform-package-publication-v1"
@@ -62,7 +62,7 @@ var generatedContractArtifacts = []ContractArtifact{
 		ID:      "compatibility-manifest-schema",
 		Path:    "spec/plugin/compatibility-manifest-v8.schema.json",
 		Version: "compatibility-manifest-v8",
-		SHA256:  "a1831e0ae9a1b47d92e7ad9879b1ca4e3510ebc212b87360595b672e8b87bc79",
+		SHA256:  "fe966f66e23a6d7558156608f269d08fbe57d8bca16514f1d095445cea697189",
 	},
 	{
 		ID:      "contract-registry-schema",
@@ -168,15 +168,15 @@ var generatedContractArtifacts = []ContractArtifact{
 	},
 	{
 		ID:      "performance-contract",
-		Path:    "spec/plugin/performance-contract-v3.json",
-		Version: "performance-contract-v3",
-		SHA256:  "df328f565d111ad4ea2b83eaf873de534f4a07c683b39cf24334ac182f564e1e",
+		Path:    "spec/plugin/performance-contract-v4.json",
+		Version: "performance-contract-v4",
+		SHA256:  "aedc50ed8899346140965dc46e8adf2048c47bcf6c146c3b7a51646eda7725e1",
 	},
 	{
 		ID:      "performance-evidence-schema",
-		Path:    "spec/plugin/performance-evidence-v3.schema.json",
-		Version: "performance-evidence-v3",
-		SHA256:  "fe9b9c48aa89dd67453c7e982301d48dd5bbe34c418488bf5265479d49c2dadc",
+		Path:    "spec/plugin/performance-evidence-v4.schema.json",
+		Version: "performance-evidence-v4",
+		SHA256:  "f51ba9d425f0e40bc4f2db7ed26454e7575b14ffb6937a06dc01b8e7a66b3f61",
 	},
 	{
 		ID:      "platform-package-publication-schema",

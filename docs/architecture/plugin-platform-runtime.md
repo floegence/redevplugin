@@ -380,8 +380,8 @@ Machine-readable contracts are first-class platform artifacts:
 - `spec/plugin/runtime-descriptor-v2.schema.json`;
 - `spec/plugin/process-containment-v1.schema.json`;
 - `spec/plugin/runtime-exec-journal-v1.schema.json`;
-- `spec/plugin/performance-contract-v3.json`;
-- `spec/plugin/performance-evidence-v3.schema.json`;
+- `spec/plugin/performance-contract-v4.json`;
+- `spec/plugin/performance-evidence-v4.schema.json`;
 - `spec/plugin/ipc-v6.schema.json`;
 - `spec/plugin/wasm-worker-v2.schema.json`;
 - `spec/plugin/worker-invocation-v3.schema.json`;
@@ -397,6 +397,18 @@ Machine-readable contracts are first-class platform artifacts:
 set. `redevplugin verify-compatibility <compatibility.json> <artifact-root>`
 checks the version matrix and contract hashes before a host product consumes a
 published dependency set.
+
+The active v4 performance contract measures route authorization with nine
+adjacent, balanced AB/BA baseline/candidate pairs. Concurrency one retains
+per-request P95 and P99 latency evidence. Concurrency 100 and 1000 use complete
+batch elapsed time per request so scheduler and VM pauses affecting individual
+goroutines cannot masquerade as handler tail regressions. Each comparison
+attempt records the fixed run order, exact raw profiles, canonical hashes,
+runner environment, and deterministic noise qualification. Only a noisy
+attempt may retry, at most three attempts are permitted, and the accepted
+attempt must be the final qualified attempt. The v1-v3 performance contracts
+and evidence schemas remain immutable historical release artifacts; they are
+not part of the active compatibility matrix.
 
 `PluginSurfaceHost.open()` applies one aggregate opening deadline across frame
 load, surface preparation, port acknowledgement, initial lease minting, first

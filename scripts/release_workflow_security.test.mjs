@@ -110,6 +110,21 @@ test("release readback jobs install their required runtime and output directorie
   assert.ok(releaseSteps.some((step) => step.run === "npm ci"));
 });
 
+test("release performance failures retain complete route authorization diagnostics", () => {
+  const steps = workflow.jobs.quality.steps;
+  const performance = steps.find((step) => step.id === "release_performance");
+  assert.ok(performance);
+  assert.match(performance.run, /--release/);
+  const upload = steps.find((step) => step.name === "Upload route authorization performance diagnostics");
+  assert.ok(upload);
+  assert.match(upload.if, /always\(\)/);
+  assert.match(upload.if, /steps\.release_performance\.outcome != 'skipped'/);
+  assert.match(upload.if, /hashFiles\('dist\/performance-evidence-release\.route-authorization-diagnostic\.json'\) != ''/);
+  assert.equal(upload.with.path, "dist/performance-evidence-release.route-authorization-diagnostic.json");
+  assert.equal(upload.with["if-no-files-found"], "warn");
+  assert.equal(upload.with["retention-days"], 30);
+});
+
 test("manual recovery binds one failed release run and its immutable package artifact", () => {
   assert.ok(recovery.on?.workflow_dispatch?.inputs?.tag?.required);
   assert.ok(recovery.on?.workflow_dispatch?.inputs?.release_run_id?.required);

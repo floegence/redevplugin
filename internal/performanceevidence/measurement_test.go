@@ -63,7 +63,7 @@ func TestEnforceThresholdsRequiresExplicitEvidenceRun(t *testing.T) {
 
 func TestRouteAuthorizationProfileRequiresStableRequestSamples(t *testing.T) {
 	profile := RouteAuthorizationProfile{
-		SchemaVersion: "redevplugin.route_authorization_performance.v1",
+		SchemaVersion: "redevplugin.route_authorization_performance.v2",
 		Variant:       "v0.6.0",
 		Commit:        "0123456789abcdef0123456789abcdef01234567",
 		Environment: RouteAuthorizationEnvironment{
@@ -76,9 +76,9 @@ func TestRouteAuthorizationProfileRequiresStableRequestSamples(t *testing.T) {
 		WarmupCount:       RouteAuthorizationWarmupCount,
 		RequestsPerSample: RouteAuthorizationRequestsPerSample,
 		Measurements: []RouteAuthorizationMeasurement{
-			{Concurrency: 1, BatchCount: 1000, SampleCount: 32000, MedianNanoseconds: 10, P95Nanoseconds: 12, P99Nanoseconds: 14},
-			{Concurrency: 100, BatchCount: 64, SampleCount: 204800, MedianNanoseconds: 10, P95Nanoseconds: 12, P99Nanoseconds: 14},
-			{Concurrency: 1000, BatchCount: 64, SampleCount: 2048000, MedianNanoseconds: 10, P95Nanoseconds: 12, P99Nanoseconds: 14},
+			{Concurrency: 1, BatchCount: 1000, SampleCount: 32000, MedianNanoseconds: 10, P95Nanoseconds: 12, P99Nanoseconds: 14, BatchMedianNanosecondsPerRequest: 11, BatchP95NanosecondsPerRequest: 13},
+			{Concurrency: 100, BatchCount: 64, SampleCount: 204800, MedianNanoseconds: 10, P95Nanoseconds: 12, P99Nanoseconds: 14, BatchMedianNanosecondsPerRequest: 11, BatchP95NanosecondsPerRequest: 13},
+			{Concurrency: 1000, BatchCount: 64, SampleCount: 2048000, MedianNanoseconds: 10, P95Nanoseconds: 12, P99Nanoseconds: 14, BatchMedianNanosecondsPerRequest: 11, BatchP95NanosecondsPerRequest: 13},
 		},
 	}
 	if err := ValidateRouteAuthorizationProfile(profile); err != nil {
@@ -97,5 +97,15 @@ func TestRouteAuthorizationPercentileUsesRequestSamples(t *testing.T) {
 	}
 	if got := routeAuthorizationPercentile(values, 99); got != 990*time.Nanosecond {
 		t.Fatalf("routeAuthorizationPercentile(..., 99) = %s, want 990ns", got)
+	}
+}
+
+func TestRouteAuthorizationFloatPercentileUsesWholeBatches(t *testing.T) {
+	values := make([]float64, 100)
+	for index := range values {
+		values[index] = float64(index + 1)
+	}
+	if got := routeAuthorizationFloatPercentile(values, 95); got != 95 {
+		t.Fatalf("routeAuthorizationFloatPercentile(..., 95) = %v, want 95", got)
 	}
 }

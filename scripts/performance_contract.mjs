@@ -21,7 +21,7 @@ export function readPerformanceContract(path) {
 export function validatePerformanceContract(contract) {
   assertRecord(contract, "performance contract");
   assertExactKeys(contract, ["schema_version", "comparison_probes", "scenarios"], "performance contract");
-  if (contract.schema_version !== "redevplugin.performance_contract.v3") {
+  if (contract.schema_version !== "redevplugin.performance_contract.v4") {
     throw new Error(`unsupported performance contract schema_version ${JSON.stringify(contract.schema_version)}`);
   }
   validateComparisonProbes(contract.comparison_probes);
@@ -72,9 +72,11 @@ function validateComparisonProbes(probes) {
       "baseline_release",
       "baseline_commit",
       "repetitions",
+      "max_attempts",
       "warmup_batches",
       "requests_per_sample",
       "measured_batches",
+      "noise_qualification",
       "runner",
       "comparison_logic",
       "baseline_probe",
@@ -93,11 +95,33 @@ function validateComparisonProbes(probes) {
     if (probe.repetitions !== 9) {
       throw new Error(`${label}.repetitions must be exactly 9`);
     }
+    if (probe.max_attempts !== 3) {
+      throw new Error(`${label}.max_attempts must be exactly 3`);
+    }
     if (!Number.isSafeInteger(probe.warmup_batches) || probe.warmup_batches < 8) {
       throw new Error(`${label}.warmup_batches must be at least 8`);
     }
     if (!Number.isSafeInteger(probe.requests_per_sample) || probe.requests_per_sample < 1) {
       throw new Error(`${label}.requests_per_sample must be positive`);
+    }
+    assertRecord(probe.noise_qualification, `${label}.noise_qualification`);
+    assertExactKeys(probe.noise_qualification, ["batch_median_relative", "batch_p95_relative"], `${label}.noise_qualification`);
+    for (const [metric, expected] of Object.entries({
+      batch_median_relative: [750, 2500, 750],
+      batch_p95_relative: [1250, 5000, 2000],
+    })) {
+      const limits = probe.noise_qualification[metric];
+      assertRecord(limits, `${label}.noise_qualification.${metric}`);
+      assertExactKeys(limits, [
+        "relative_mad_limit_basis_points",
+        "maximum_relative_deviation_limit_basis_points",
+        "order_bias_limit_basis_points",
+      ], `${label}.noise_qualification.${metric}`);
+      if (limits.relative_mad_limit_basis_points !== expected[0] ||
+          limits.maximum_relative_deviation_limit_basis_points !== expected[1] ||
+          limits.order_bias_limit_basis_points !== expected[2]) {
+        throw new Error(`${label}.noise_qualification.${metric} limits are invalid`);
+      }
     }
     if (!Array.isArray(probe.measured_batches) || probe.measured_batches.length === 0) {
       throw new Error(`${label}.measured_batches must be a non-empty array`);
@@ -215,7 +239,7 @@ export function validatePerformanceEvidence(evidence, contract, options) {
     "comparisons",
     "contract_hashes",
   ], "performance evidence");
-  if (evidence.schema_version !== "redevplugin.performance_evidence.v3") {
+  if (evidence.schema_version !== "redevplugin.performance_evidence.v4") {
     throw new Error(`performance evidence schema_version mismatch: ${JSON.stringify(evidence.schema_version)}`);
   }
   if (typeof evidence.release_version !== "string" || !semanticVersionPattern.test(evidence.release_version)) {

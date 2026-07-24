@@ -76,6 +76,7 @@ trap 'rm -rf "$TMP_DIR"' EXIT
 MEASUREMENTS="$TMP_DIR/measurements.ndjson"
 COMPARISONS="$TMP_DIR/comparisons.ndjson"
 COMPATIBILITY="$TMP_DIR/compatibility.json"
+ROUTE_AUTHORIZATION_DIAGNOSTIC="${OUTPUT%.json}.route-authorization-diagnostic.json"
 
 npm run contracts:check
 npm --prefix packages/redevplugin-ui run build
@@ -110,6 +111,7 @@ GOWORK=off REDEVPLUGIN_PERFORMANCE_MEASUREMENTS="$MEASUREMENTS" REDEVPLUGIN_PERF
 node scripts/measure_http_route_authorization_performance.mjs \
   --output "$MEASUREMENTS" \
   --comparison-output "$COMPARISONS" \
+  --diagnostic-output "$ROUTE_AUTHORIZATION_DIAGNOSTIC" \
   --gate "$MODE"
 node scripts/measure_redevplugin_ui_performance.mjs --output "$MEASUREMENTS" --gate "$MODE"
 node scripts/measure_redevplugin_renderer_performance.mjs --output "$MEASUREMENTS" --gate "$MODE"
