@@ -255,6 +255,18 @@ func TestExternalPackageRoutesBindInspectionToSessionAndHideOwnerHashes(t *testi
 		"source": map[string]any{"kind": "package_url", "url": "https://plugins.example.test/example.redevplugin"},
 	}, http.StatusOK)
 	assertExternalPackageJSONHasNoOwnerHashes(t, inspectRaw)
+	var inspectEnvelope struct {
+		Data struct {
+			SourceProvenance map[string]json.RawMessage `json:"source_provenance"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(inspectRaw, &inspectEnvelope); err != nil {
+		t.Fatal(err)
+	}
+	redirectChain, ok := inspectEnvelope.Data.SourceProvenance["redirect_chain"]
+	if !ok || string(redirectChain) != "[]" {
+		t.Fatalf("package URL provenance redirect_chain = %s, want present empty array; response=%s", redirectChain, inspectRaw)
+	}
 	var inspection host.ExternalPackageInspection
 	decodeExternalPackageData(t, inspectRaw, &inspection)
 	if inspection.InspectionID == "" || inspection.ConfirmationDigest == "" || inspection.ExecutionApproval.State != "pending" {

@@ -1,14 +1,102 @@
 package host
 
 import (
+	"encoding/json"
 	"reflect"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/floegence/redevplugin/pkg/capabilitycontract"
 	"github.com/floegence/redevplugin/pkg/manifest"
+	"github.com/floegence/redevplugin/pkg/registry"
 )
+
+func TestExternalPackageSourceProvenanceJSONMatchesOpenAPIUnion(t *testing.T) {
+	resolvedAt := time.Date(2026, time.July, 24, 8, 30, 0, 0, time.UTC)
+	hash := "sha256:" + strings.Repeat("a", 64)
+	tests := []struct {
+		name          string
+		provenance    ExternalPackageSourceProvenance
+		wantKeys      []string
+		wantRedirects int
+	}{
+		{
+			name: "package URL without redirects",
+			provenance: ExternalPackageSourceProvenance{
+				Kind: string(registry.PackageSourcePackageURL), SourceOrigin: "https://plugins.example.test:443",
+				SourcePath: "/plugin.redevplugin", PackageSHA256: hash, ResolvedAt: resolvedAt,
+			},
+			wantKeys: []string{"kind", "package_sha256", "redirect_chain", "resolved_at", "source_origin", "source_path"},
+		},
+		{
+			name: "package URL with redirects",
+			provenance: ExternalPackageSourceProvenance{
+				Kind: string(registry.PackageSourcePackageURL), SourceOrigin: "https://plugins.example.test:443",
+				SourcePath: "/plugin.redevplugin", RedirectChain: []ExternalPackageRedirectHop{{Origin: "https://cdn.example.test:443", Path: "/plugin.redevplugin"}},
+				PackageSHA256: hash, ResolvedAt: resolvedAt,
+			},
+			wantKeys: []string{"kind", "package_sha256", "redirect_chain", "resolved_at", "source_origin", "source_path"}, wantRedirects: 1,
+		},
+		{
+			name: "uploaded package",
+			provenance: ExternalPackageSourceProvenance{
+				Kind: string(registry.PackageSourcePackageUpload), UploadID: "upload_test", PackageSHA256: hash, ResolvedAt: resolvedAt,
+			},
+			wantKeys: []string{"kind", "package_sha256", "resolved_at", "upload_id"}, wantRedirects: -1,
+		},
+		{
+			name: "GitHub repository",
+			provenance: ExternalPackageSourceProvenance{
+				Kind: string(registry.PackageSourceGitHubRepository), RepositoryID: "1", ReleaseID: "2", AssetID: "3",
+				RepositoryURL: "https://github.com/example/plugin", Owner: "example", Repository: "plugin",
+				ResolvedCommitSHA: strings.Repeat("b", 40), ReleaseTag: "v1.0.0", AssetName: "plugin.redevplugin",
+				PackageSHA256: hash, ResolvedAt: resolvedAt,
+			},
+			wantKeys: []string{"asset_id", "asset_name", "kind", "owner", "package_sha256", "release_id", "release_tag", "repository", "repository_id", "repository_url", "resolved_at", "resolved_commit_sha"}, wantRedirects: -1,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			raw, err := json.Marshal(test.provenance)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var object map[string]json.RawMessage
+			if err := json.Unmarshal(raw, &object); err != nil {
+				t.Fatal(err)
+			}
+			keys := make([]string, 0, len(object))
+			for key := range object {
+				keys = append(keys, key)
+			}
+			slices.Sort(keys)
+			if !reflect.DeepEqual(keys, test.wantKeys) {
+				t.Fatalf("JSON keys = %#v, want %#v; JSON=%s", keys, test.wantKeys, raw)
+			}
+			redirects, present := object["redirect_chain"]
+			if test.wantRedirects < 0 {
+				if present {
+					t.Fatalf("redirect_chain must be absent from %s provenance: %s", test.provenance.Kind, raw)
+				}
+				return
+			}
+			var values []ExternalPackageRedirectHop
+			if !present || json.Unmarshal(redirects, &values) != nil || len(values) != test.wantRedirects {
+				t.Fatalf("redirect_chain = %s, want array length %d", redirects, test.wantRedirects)
+			}
+		})
+	}
+
+	invalid := ExternalPackageSourceProvenance{
+		Kind: string(registry.PackageSourcePackageURL), UploadID: "upload_cross_kind",
+		SourceOrigin: "https://plugins.example.test:443", SourcePath: "/plugin.redevplugin", PackageSHA256: hash, ResolvedAt: resolvedAt,
+	}
+	if _, err := json.Marshal(invalid); err == nil || !strings.Contains(err.Error(), "another source kind") {
+		t.Fatalf("cross-kind provenance error = %v", err)
+	}
+}
 
 func TestBuildExternalPackageSecuritySummaryProjectsCompleteManifest(t *testing.T) {
 	m, pins, required := externalPackageProjectionFixture()

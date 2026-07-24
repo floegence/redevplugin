@@ -54,6 +54,75 @@ type ExternalPackageSourceProvenance struct {
 	ResolvedAt        time.Time                    `json:"resolved_at"`
 }
 
+func (provenance ExternalPackageSourceProvenance) MarshalJSON() ([]byte, error) {
+	type packageURLProvenance struct {
+		Kind          string                       `json:"kind"`
+		SourceOrigin  string                       `json:"source_origin"`
+		SourcePath    string                       `json:"source_path"`
+		RedirectChain []ExternalPackageRedirectHop `json:"redirect_chain"`
+		PackageSHA256 string                       `json:"package_sha256"`
+		ResolvedAt    time.Time                    `json:"resolved_at"`
+	}
+	type packageUploadProvenance struct {
+		Kind          string    `json:"kind"`
+		UploadID      string    `json:"upload_id"`
+		PackageSHA256 string    `json:"package_sha256"`
+		ResolvedAt    time.Time `json:"resolved_at"`
+	}
+	type githubRepositoryProvenance struct {
+		Kind              string    `json:"kind"`
+		RepositoryID      string    `json:"repository_id"`
+		ReleaseID         string    `json:"release_id"`
+		AssetID           string    `json:"asset_id"`
+		RepositoryURL     string    `json:"repository_url"`
+		Owner             string    `json:"owner"`
+		Repository        string    `json:"repository"`
+		ResolvedCommitSHA string    `json:"resolved_commit_sha"`
+		ReleaseTag        string    `json:"release_tag,omitempty"`
+		AssetName         string    `json:"asset_name,omitempty"`
+		PackageSHA256     string    `json:"package_sha256"`
+		ResolvedAt        time.Time `json:"resolved_at"`
+	}
+
+	switch provenance.Kind {
+	case string(registry.PackageSourcePackageURL):
+		if provenance.UploadID != "" || provenance.RepositoryID != "" || provenance.ReleaseID != "" || provenance.AssetID != "" ||
+			provenance.RepositoryURL != "" || provenance.Owner != "" || provenance.Repository != "" || provenance.ResolvedCommitSHA != "" ||
+			provenance.ReleaseTag != "" || provenance.AssetName != "" {
+			return nil, fmt.Errorf("package URL provenance contains fields for another source kind")
+		}
+		redirects := provenance.RedirectChain
+		if redirects == nil {
+			redirects = []ExternalPackageRedirectHop{}
+		}
+		return json.Marshal(packageURLProvenance{
+			Kind: provenance.Kind, SourceOrigin: provenance.SourceOrigin, SourcePath: provenance.SourcePath,
+			RedirectChain: redirects, PackageSHA256: provenance.PackageSHA256, ResolvedAt: provenance.ResolvedAt,
+		})
+	case string(registry.PackageSourcePackageUpload):
+		if provenance.SourceOrigin != "" || provenance.SourcePath != "" || len(provenance.RedirectChain) != 0 ||
+			provenance.RepositoryID != "" || provenance.ReleaseID != "" || provenance.AssetID != "" || provenance.RepositoryURL != "" ||
+			provenance.Owner != "" || provenance.Repository != "" || provenance.ResolvedCommitSHA != "" || provenance.ReleaseTag != "" || provenance.AssetName != "" {
+			return nil, fmt.Errorf("uploaded-package provenance contains fields for another source kind")
+		}
+		return json.Marshal(packageUploadProvenance{
+			Kind: provenance.Kind, UploadID: provenance.UploadID, PackageSHA256: provenance.PackageSHA256, ResolvedAt: provenance.ResolvedAt,
+		})
+	case string(registry.PackageSourceGitHubRepository):
+		if provenance.UploadID != "" || provenance.SourceOrigin != "" || provenance.SourcePath != "" || len(provenance.RedirectChain) != 0 {
+			return nil, fmt.Errorf("GitHub repository provenance contains fields for another source kind")
+		}
+		return json.Marshal(githubRepositoryProvenance{
+			Kind: provenance.Kind, RepositoryID: provenance.RepositoryID, ReleaseID: provenance.ReleaseID, AssetID: provenance.AssetID,
+			RepositoryURL: provenance.RepositoryURL, Owner: provenance.Owner, Repository: provenance.Repository,
+			ResolvedCommitSHA: provenance.ResolvedCommitSHA, ReleaseTag: provenance.ReleaseTag, AssetName: provenance.AssetName,
+			PackageSHA256: provenance.PackageSHA256, ResolvedAt: provenance.ResolvedAt,
+		})
+	default:
+		return nil, fmt.Errorf("unsupported external package provenance kind %q", provenance.Kind)
+	}
+}
+
 type ExternalPackageExecutionApproval struct {
 	State       string     `json:"state"`
 	ReasonCodes []string   `json:"reason_codes"`
