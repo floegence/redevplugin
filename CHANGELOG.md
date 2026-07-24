@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.6.15
+
+### Fixed
+
+- Preserve signature assessment, package source, and execution approval facts in
+  the SQLite authorization hot path so user-approved unsigned external packages
+  remain runnable after permission grants while malformed persisted facts fail
+  closed.
+- Retry npm registry readbacks only for temporary availability, rate-limit, and
+  propagation failures while rejecting immutable identity, integrity, source,
+  and provenance mismatches on the first attempt.
+
 ## v0.6.14
 
 ### Fixed

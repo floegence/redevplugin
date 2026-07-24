@@ -1,6 +1,6 @@
 {
   "name": "@floegence/redevplugin-contracts",
-  "version": "0.6.14",
+  "version": "0.6.15",
   "description": "Embedded ReDevPlugin machine contracts and canonical release-signing APIs",
   "license": "MIT",
   "type": "module",
