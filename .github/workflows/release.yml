@@ -534,14 +534,8 @@ jobs:
           process.stdout.write(manifest.artifacts.find((item) => item.name === "@floegence/redevplugin-contracts").integrity);
           NODE
           )
-          for attempt in $(seq 1 20); do
-            if node scripts/verify_npm_registry_release.mjs \
-              @floegence/redevplugin-contracts "$VERSION" "$GITHUB_SHA" "$integrity"; then
-              exit 0
-            fi
-            sleep 6
-          done
-          exit 1
+          node scripts/verify_npm_registry_release.mjs \
+            @floegence/redevplugin-contracts "$VERSION" "$GITHUB_SHA" "$integrity"
 
   publish-npm-ui:
     name: Publish npm UI
@@ -615,15 +609,8 @@ jobs:
           process.stdout.write(manifest.artifacts.find((item) => item.name === name).integrity);
           NODE
             )
-            for attempt in $(seq 1 20); do
-              if node scripts/verify_npm_registry_release.mjs \
-                "$package_name" "$VERSION" "$GITHUB_SHA" "$integrity" "dist/npm-readback/${short_name}.json"; then
-                break
-              fi
-              rm -f "dist/npm-readback/${short_name}.json"
-              if [[ "$attempt" = 20 ]]; then exit 1; fi
-              sleep 6
-            done
+            node scripts/verify_npm_registry_release.mjs \
+              "$package_name" "$VERSION" "$GITHUB_SHA" "$integrity" "dist/npm-readback/${short_name}.json"
           done
           node --input-type=module <<'NODE'
           import { readFileSync, writeFileSync } from "node:fs";

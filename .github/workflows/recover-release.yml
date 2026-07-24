@@ -180,16 +180,9 @@ jobs:
           process.stdout.write(artifact.integrity);
           NODE
             )
-            for attempt in $(seq 1 20); do
-              if node scripts/verify_npm_registry_release.mjs \
-                "$package_name" "$VERSION" "$SOURCE_COMMIT" "$integrity" \
-                "dist/readbacks/npm/${short_name}.json"; then
-                break
-              fi
-              rm -f "dist/readbacks/npm/${short_name}.json"
-              if [[ "$attempt" = 20 ]]; then exit 1; fi
-              sleep 6
-            done
+            node scripts/verify_npm_registry_release.mjs \
+              "$package_name" "$VERSION" "$SOURCE_COMMIT" "$integrity" \
+              "dist/readbacks/npm/${short_name}.json"
           done
           node --input-type=module <<'NODE'
           import { readFileSync, writeFileSync } from "node:fs";

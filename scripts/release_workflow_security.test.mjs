@@ -110,6 +110,18 @@ test("release readback jobs install their required runtime and output directorie
   assert.ok(releaseSteps.some((step) => step.run === "npm ci"));
 });
 
+test("npm readbacks delegate bounded retry classification to the verifier", () => {
+  for (const [document, jobName] of [
+    [workflow, "verify-npm-contracts"],
+    [workflow, "verify-npm"],
+    [recovery, "reconstruct-publication"],
+  ]) {
+    const source = document.jobs[jobName].steps.map((step) => step.run ?? "").join("\n");
+    assert.match(source, /node scripts\/verify_npm_registry_release\.mjs/, `${jobName} must use the typed verifier`);
+    assert.doesNotMatch(source, /for attempt in \$\(seq 1 20\)/, `${jobName} must not retry unclassified verifier failures`);
+  }
+});
+
 test("release performance failures retain complete route authorization diagnostics", () => {
   const steps = workflow.jobs.quality.steps;
   const performance = steps.find((step) => step.id === "release_performance");

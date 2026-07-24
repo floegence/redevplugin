@@ -8,6 +8,17 @@ const repositoryURL = "https://github.com/floegence/redevplugin";
 const workflowPath = ".github/workflows/release.yml";
 const slsaPredicateType = "https://slsa.dev/provenance/v1";
 const workflowBuildType = "https://slsa-framework.github.io/github-actions-buildtypes/workflow/v1";
+const defaultRetryDelaysMs = Object.freeze([0, ...Array.from({ length: 19 }, () => 6_000)]);
+const transientFetchErrorCodes = new Set([
+  "EAI_AGAIN",
+  "ECONNRESET",
+  "ENETUNREACH",
+  "ENOTFOUND",
+  "EHOSTUNREACH",
+  "ETIMEDOUT",
+  "UND_ERR_CONNECT_TIMEOUT",
+  "UND_ERR_SOCKET",
+]);
 const packages = Object.freeze({
   "@floegence/redevplugin-contracts": Object.freeze({
     encodedName: "@floegence%2fredevplugin-contracts",
@@ -73,12 +84,49 @@ export async function verifyNpmRegistryRelease({
     "npm attestation URL",
   );
   const attestationResponse = await fetchJSON(fetchImpl, attestationURL, "npm attestations");
-  verifySLSAAttestation(attestationResponse, { packageName, packageConfig, version, sourceCommit, tarballSHA512 });
+  verifySLSAAttestation(attestationResponse, { packageConfig, version, sourceCommit, tarballSHA512 });
 
   return { packageName, version, sourceCommit, integrity: actualIntegrity, tarballSHA512 };
 }
 
-function verifySLSAAttestation(response, { packageName, packageConfig, version, sourceCommit, tarballSHA512 }) {
+export class NpmRegistryTransientError extends Error {
+  constructor(message, options) {
+    super(message, options);
+    this.name = "NpmRegistryTransientError";
+  }
+}
+
+export async function retryNpmRegistryReleaseReadback({
+  retryDelaysMs = defaultRetryDelaysMs,
+  sleepImpl = (delay) => new Promise((resolve) => setTimeout(resolve, delay)),
+  logger = (message) => console.error(message),
+  ...verification
+}) {
+  if (!Array.isArray(retryDelaysMs) || retryDelaysMs.length === 0 || retryDelaysMs.length > 20 ||
+      retryDelaysMs.some((delay) => !Number.isSafeInteger(delay) || delay < 0 || delay > 6_000)) {
+    throw new Error("npm registry readback retry delays are invalid");
+  }
+  if (typeof sleepImpl !== "function" || typeof logger !== "function") {
+    throw new Error("npm registry readback retry dependencies are invalid");
+  }
+  for (let attempt = 0; attempt < retryDelaysMs.length; attempt += 1) {
+    const delay = retryDelaysMs[attempt];
+    if (delay > 0) await sleepImpl(delay);
+    try {
+      return await verifyNpmRegistryRelease(verification);
+    } catch (error) {
+      if (!(error instanceof NpmRegistryTransientError)) throw error;
+      const nextDelay = retryDelaysMs[attempt + 1];
+      if (nextDelay === undefined) {
+        throw new Error(`npm registry readback remained unavailable after ${retryDelaysMs.length} bounded attempts`, { cause: error });
+      }
+      logger(`npm registry readback temporarily unavailable; retrying in ${nextDelay}ms (${attempt + 1}/${retryDelaysMs.length})`);
+    }
+  }
+  throw new Error("npm registry readback retry loop terminated unexpectedly");
+}
+
+function verifySLSAAttestation(response, { packageConfig, version, sourceCommit, tarballSHA512 }) {
   assertRecord(response, "npm attestation response");
   assertArray(response.attestations, "npm attestations");
   const matching = response.attestations.filter((entry) => entry?.predicateType === slsaPredicateType);
@@ -155,21 +203,55 @@ function verifySLSAAttestation(response, { packageName, packageConfig, version, 
 }
 
 async function fetchJSON(fetchImpl, url, label) {
-  const response = await fetchImpl(url, { headers: { Accept: "application/json" }, redirect: "error" });
-  if (!response.ok) fail(`${label} returned HTTP ${response.status}`);
+  const response = await fetchRegistry(fetchImpl, url, { headers: { Accept: "application/json" }, redirect: "error" }, label);
   const contentType = response.headers.get("content-type") ?? "";
   if (!contentType.toLowerCase().includes("json")) fail(`${label} returned a non-JSON content type`);
   try {
     return await response.json();
   } catch (error) {
+    if (isTransientFetchError(error)) {
+      throw new NpmRegistryTransientError(`${label} response body failed temporarily`, { cause: error });
+    }
     fail(`${label} returned invalid JSON: ${error instanceof Error ? error.message : String(error)}`);
   }
 }
 
 async function fetchBytes(fetchImpl, url, label) {
-  const response = await fetchImpl(url, { headers: { Accept: "application/octet-stream" }, redirect: "error" });
-  if (!response.ok) fail(`${label} returned HTTP ${response.status}`);
-  return Buffer.from(await response.arrayBuffer());
+  const response = await fetchRegistry(fetchImpl, url, { headers: { Accept: "application/octet-stream" }, redirect: "error" }, label);
+  try {
+    return Buffer.from(await response.arrayBuffer());
+  } catch (error) {
+    if (isTransientFetchError(error)) {
+      throw new NpmRegistryTransientError(`${label} response body failed temporarily`, { cause: error });
+    }
+    throw error;
+  }
+}
+
+async function fetchRegistry(fetchImpl, url, options, label) {
+  let response;
+  try {
+    response = await fetchImpl(url, options);
+  } catch (error) {
+    if (isTransientFetchError(error)) {
+      throw new NpmRegistryTransientError(`${label} request failed temporarily`, { cause: error });
+    }
+    throw error;
+  }
+  if (!response.ok) {
+    const status = response.status;
+    if (status === 404 || status === 408 || status === 425 || status === 429 || (status >= 500 && status <= 599)) {
+      throw new NpmRegistryTransientError(`${label} returned temporary HTTP ${status}`);
+    }
+    fail(`${label} returned HTTP ${status}`);
+  }
+  return response;
+}
+
+function isTransientFetchError(error) {
+  if (!(error instanceof Error)) return false;
+  const cause = error.cause;
+  return cause !== null && typeof cause === "object" && transientFetchErrorCodes.has(cause.code);
 }
 
 function assertRegistryURL(value, registryOrigin, expectedDecodedPath, label) {
@@ -257,7 +339,7 @@ async function main() {
     console.error("usage: verify_npm_registry_release.mjs <package-name> <version> <source-commit> <expected-integrity> [output-json]");
     process.exit(2);
   }
-  const result = await verifyNpmRegistryRelease({ packageName, version, sourceCommit, expectedIntegrity });
+  const result = await retryNpmRegistryReleaseReadback({ packageName, version, sourceCommit, expectedIntegrity });
   if (outputPath) {
     writeFileSync(outputPath, `${JSON.stringify({
       name: result.packageName,
