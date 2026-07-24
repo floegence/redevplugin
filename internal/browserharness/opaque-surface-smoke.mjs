@@ -52,6 +52,34 @@ async function verifyScenario(credentiallessScenario) {
   page.on("websocket", (webSocket) => webSockets.push(webSocket.url()));
   page.on("console", (message) => consoleLines.push(message.text()));
   await page.goto(`${baseURL}/testdata/browser-harness/opaque-surface/index.html?credentialless=${credentiallessScenario}`, { waitUntil: "domcontentloaded" });
+  const openingFrame = page.locator("#plugin-surface-mount > iframe");
+  await openingFrame.waitFor({ state: "attached", timeout: 10_000 });
+  const openingPresentation = await openingFrame.evaluate((frame) => {
+    const style = getComputedStyle(frame);
+    const bounds = frame.getBoundingClientRect();
+    return {
+      hidden: frame.hidden,
+      inert: frame.inert,
+      ariaHidden: frame.getAttribute("aria-hidden"),
+      display: style.display,
+      visibility: style.visibility,
+      pointerEvents: style.pointerEvents,
+      width: bounds.width,
+      height: bounds.height,
+      acceptsProgrammaticFocus: (() => {
+        frame.focus();
+        return document.activeElement === frame;
+      })(),
+    };
+  });
+  assert.equal(openingPresentation.hidden, false, `${credentiallessScenario} opening iframe stays renderable for requestAnimationFrame`);
+  assert.equal(openingPresentation.inert, true, `${credentiallessScenario} opening iframe is inert`);
+  assert.equal(openingPresentation.ariaHidden, "true", `${credentiallessScenario} opening iframe is absent from accessibility`);
+  assert.notEqual(openingPresentation.display, "none", `${credentiallessScenario} opening iframe participates in rendering`);
+  assert.equal(openingPresentation.visibility, "hidden", `${credentiallessScenario} opening iframe cannot flash before first commit`);
+  assert.equal(openingPresentation.pointerEvents, "none", `${credentiallessScenario} opening iframe rejects pointer input`);
+  assert.equal(openingPresentation.width > 0 && openingPresentation.height > 0, true, `${credentiallessScenario} opening iframe retains layout bounds`);
+  assert.equal(openingPresentation.acceptsProgrammaticFocus, false, `${credentiallessScenario} opening iframe rejects keyboard focus`);
   try {
     await page.waitForFunction(() => window.__redevpluginHarness?.snapshot().status === "ready", null, { timeout: 30_000 });
   } catch (error) {
@@ -69,6 +97,20 @@ async function verifyScenario(credentiallessScenario) {
   assert.equal(snapshot.progressEvents[0] >= 300, true, `${credentiallessScenario} progress threshold`);
 
   const iframe = page.locator("#plugin-frame");
+  const readyPresentation = await iframe.evaluate((frame) => ({
+    hidden: frame.hidden,
+    inert: frame.inert,
+    ariaHidden: frame.getAttribute("aria-hidden"),
+    visibility: getComputedStyle(frame).visibility,
+    pointerEvents: getComputedStyle(frame).pointerEvents,
+  }));
+  assert.deepEqual(readyPresentation, {
+    hidden: false,
+    inert: false,
+    ariaHidden: "false",
+    visibility: "visible",
+    pointerEvents: "auto",
+  }, `${credentiallessScenario} first paint and worker commit reveal exactly one interactive iframe`);
   const sandbox = await iframe.getAttribute("sandbox");
   const allow = await iframe.getAttribute("allow");
   const referrerPolicy = await iframe.getAttribute("referrerpolicy");

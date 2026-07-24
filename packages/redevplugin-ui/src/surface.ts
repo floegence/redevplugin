@@ -4256,7 +4256,7 @@ export class PluginSurfaceSlot {
     });
     this.#adoptOpening(lease);
     this.#opening = host;
-    setSurfaceInteractive(host.element, false);
+    setSurfacePresentation(host.element, "opening");
     this.element.append(host.element);
     try {
       await this.#openHostUntilCancelled(host, controller, lease);
@@ -4267,7 +4267,7 @@ export class PluginSurfaceSlot {
       }
       this.#opening = undefined;
       this.#active = host;
-      setSurfaceInteractive(host.element, true);
+      setSurfacePresentation(host.element, "ready");
       this.#setState("ready");
       return host;
     } catch (error) {
@@ -4346,7 +4346,7 @@ export class PluginSurfaceSlot {
     const existing = this.#retired.get(host);
     if (existing) return existing;
     this.#pendingRetirements.add(host);
-    setSurfaceInteractive(host.element, false);
+    setSurfacePresentation(host.element, "retiring");
     const closing = Promise.resolve().then(async () => {
       try {
         const result = await host.close();
@@ -4454,10 +4454,16 @@ export class PluginSurfaceSlot {
   }
 }
 
-function setSurfaceInteractive(element: HTMLIFrameElement, interactive: boolean): void {
-  element.hidden = !interactive;
-  element.inert = !interactive;
-  element.setAttribute("aria-hidden", interactive ? "false" : "true");
+function setSurfacePresentation(
+  element: HTMLIFrameElement,
+  state: "opening" | "ready" | "retiring",
+): void {
+  const ready = state === "ready";
+  element.hidden = state === "retiring";
+  element.inert = !ready;
+  element.setAttribute("aria-hidden", ready ? "false" : "true");
+  element.style.visibility = state === "opening" ? "hidden" : "";
+  element.style.pointerEvents = ready ? "" : "none";
 }
 
 type SurfaceAssetReadMessage = {

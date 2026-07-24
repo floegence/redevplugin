@@ -106,6 +106,7 @@ class FakeFrame {
   credentialless = false;
   hidden = false;
   inert = false;
+  style = { visibility: "", pointerEvents: "" };
   removed = false;
   attributes = new Map<string, string>();
   transferred: Array<{ message: unknown; targetOrigin: string; ports: MessagePortLike[] }> = [];
@@ -1773,6 +1774,11 @@ test("surface slot waits for retired surface revocation before opening the next 
       hostTransport: createReDevPluginSurfaceTransport({ fetch: firstFetch.fetch }),
     });
     await waitFor(() => stage.children.length === 1);
+    assert.equal(firstFrame.hidden, false, "opening iframe must remain renderable for its animation frames");
+    assert.equal(firstFrame.inert, true);
+    assert.equal(firstFrame.attributes.get("aria-hidden"), "true");
+    assert.equal(firstFrame.style.visibility, "hidden", "opening iframe must not flash before first commit");
+    assert.equal(firstFrame.style.pointerEvents, "none");
     firstFrame.load();
     await waitFor(() => firstFrame.transferred.length === 1);
     firstChannel.port2.postMessage({ type: "redevplugin.surface.first_paint" });
@@ -1780,6 +1786,9 @@ test("surface slot waits for retired surface revocation before opening the next 
     await firstOpening;
     assert.equal(firstFrame.hidden, false);
     assert.equal(firstFrame.inert, false);
+    assert.equal(firstFrame.attributes.get("aria-hidden"), "false");
+    assert.equal(firstFrame.style.visibility, "");
+    assert.equal(firstFrame.style.pointerEvents, "");
 
     firstFetch.push(surfaceRevocation());
     const secondOpening = openPreparedPluginSurfaceInSlot(slot, {
@@ -1794,6 +1803,9 @@ test("surface slot waits for retired surface revocation before opening the next 
     assert.equal(stage.children.length, 1);
     assert.equal(firstFrame.hidden, true);
     assert.equal(firstFrame.inert, true);
+    assert.equal(firstFrame.attributes.get("aria-hidden"), "true");
+    assert.equal(firstFrame.style.visibility, "");
+    assert.equal(firstFrame.style.pointerEvents, "none");
 
     const firstQuiesce = await waitForQuiesce(firstChannel.port1);
     firstChannel.port2.postMessage({
@@ -1811,6 +1823,9 @@ test("surface slot waits for retired surface revocation before opening the next 
     await secondOpening;
     assert.equal(secondFrame.hidden, false);
     assert.equal(secondFrame.inert, false);
+    assert.equal(secondFrame.attributes.get("aria-hidden"), "false");
+    assert.equal(secondFrame.style.visibility, "");
+    assert.equal(secondFrame.style.pointerEvents, "");
 
     secondFetch.push(surfaceRevocation());
     const closing = slot.close();
