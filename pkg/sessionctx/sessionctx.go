@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"regexp"
 	"strings"
 )
 
@@ -19,8 +18,6 @@ const OwnerScopeMigrationRequiredCode = "owner_scope_migration_required"
 // ErrOwnerScopeMigrationRequired rejects persisted resources whose owner scope
 // cannot be reconstructed without guessing.
 var ErrOwnerScopeMigrationRequired = errors.New(OwnerScopeMigrationRequiredCode)
-
-var ownerHashPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$`)
 
 type ScopeKind string
 
@@ -155,5 +152,20 @@ func Require(ctx context.Context) (Context, error) {
 }
 
 func validOwnerHash(value string) bool {
-	return value == strings.TrimSpace(value) && ownerHashPattern.MatchString(value)
+	if len(value) == 0 || len(value) > 256 || !isASCIIAlphaNumeric(value[0]) {
+		return false
+	}
+	for index := 1; index < len(value); index++ {
+		character := value[index]
+		if !isASCIIAlphaNumeric(character) && character != '.' && character != '_' && character != ':' && character != '-' {
+			return false
+		}
+	}
+	return true
+}
+
+func isASCIIAlphaNumeric(character byte) bool {
+	return character >= 'A' && character <= 'Z' ||
+		character >= 'a' && character <= 'z' ||
+		character >= '0' && character <= '9'
 }

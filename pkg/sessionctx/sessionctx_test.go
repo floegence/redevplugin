@@ -4,8 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"regexp"
+	"strings"
 	"testing"
 )
+
+var legacyOwnerHashPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$`)
 
 func TestOwnerScopeMigrationRequiredContract(t *testing.T) {
 	if OwnerScopeMigrationRequiredCode != "owner_scope_migration_required" {
@@ -92,6 +96,32 @@ func TestContextResourceScopeRejectsInvalidSession(t *testing.T) {
 	} {
 		if session.Valid() {
 			t.Fatalf("Context.Valid() accepted invalid owner hashes: %#v", session)
+		}
+	}
+}
+
+func TestOwnerHashValidationMatchesReleasedPattern(t *testing.T) {
+	for first := 0; first <= 255; first++ {
+		for second := 0; second <= 255; second++ {
+			value := string([]byte{byte(first), byte(second)})
+			if got, want := validOwnerHash(value), legacyOwnerHashPattern.MatchString(value); got != want {
+				t.Fatalf("validOwnerHash(%q) = %t, want %t", value, got, want)
+			}
+		}
+	}
+
+	for _, value := range []string{
+		"A",
+		strings.Repeat("A", 256),
+		strings.Repeat("A", 257),
+		"A._:-z09",
+		"_owner",
+		"A owner",
+		"A\u00e9",
+		"A\x00",
+	} {
+		if got, want := validOwnerHash(value), legacyOwnerHashPattern.MatchString(value); got != want {
+			t.Fatalf("validOwnerHash(%q) = %t, want %t", value, got, want)
 		}
 	}
 }
