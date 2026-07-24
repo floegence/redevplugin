@@ -563,9 +563,13 @@ func (s *SQLiteStore) Authorize(ctx context.Context, req AuthorizeRequest) (Auth
 func getSQLiteAuthorizationState(ctx context.Context, q sqliteAuthorizationQuerier, ownerEnvHash, pluginInstanceID string) (AuthorizationState, bool, error) {
 	var state AuthorizationState
 	var trustState string
+	var signatureAssessmentJSON string
+	var packageSourceProvenanceJSON string
+	var executionApprovalJSON string
 	var enableState string
 	err := q.QueryRowContext(ctx, `
-SELECT plugin_instance_id, version, active_fingerprint, trust_state, enable_state,
+SELECT plugin_instance_id, version, active_fingerprint, trust_state,
+       signature_assessment_json, package_source_provenance_json, execution_approval_json, enable_state,
        policy_revision, management_revision, revoke_epoch
 FROM plugin_records
 WHERE owner_env_hash = ? AND plugin_instance_id = ? AND deleted_at IS NULL`, ownerEnvHash, pluginInstanceID).Scan(
@@ -573,6 +577,9 @@ WHERE owner_env_hash = ? AND plugin_instance_id = ? AND deleted_at IS NULL`, own
 		&state.PluginVersion,
 		&state.ActiveFingerprint,
 		&trustState,
+		&signatureAssessmentJSON,
+		&packageSourceProvenanceJSON,
+		&executionApprovalJSON,
 		&enableState,
 		&state.Revisions.PolicyRevision,
 		&state.Revisions.ManagementRevision,
@@ -584,7 +591,18 @@ WHERE owner_env_hash = ? AND plugin_instance_id = ? AND deleted_at IS NULL`, own
 	if err != nil {
 		return AuthorizationState{}, false, err
 	}
+	var packageSourceProvenance PackageSourceProvenance
+	if err := decodeRegistryJSON(signatureAssessmentJSON, &state.SignatureAssessment); err != nil {
+		return AuthorizationState{}, false, err
+	}
+	if err := decodeRegistryJSON(packageSourceProvenanceJSON, &packageSourceProvenance); err != nil {
+		return AuthorizationState{}, false, err
+	}
+	if err := decodeRegistryJSON(executionApprovalJSON, &state.ExecutionApproval); err != nil {
+		return AuthorizationState{}, false, err
+	}
 	state.TrustState = TrustState(trustState)
+	state.PackageSourceKind = packageSourceProvenance.Kind
 	state.EnableState = EnableState(enableState)
 	return state, true, nil
 }

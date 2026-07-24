@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -326,6 +327,66 @@ func TestExternalPackageUnsignedInspectCommitInstallsDisabledWithoutGrants(t *te
 	})
 	if err != nil || replayed.Receipt == nil || replayed.Receipt.CommitID != committed.Receipt.CommitID {
 		t.Fatalf("commit replay = %#v, %v", replayed, err)
+	}
+}
+
+func TestSQLiteExternalPackageCallPluginMethodKeepsExecutionAuthorized(t *testing.T) {
+	ctx := hostTestContext()
+	registryStore, err := registry.NewSQLiteStore(ctx, filepath.Join(t.TempDir(), "registry.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = registryStore.Close() })
+	adapter := &recordingCapabilityAdapter{result: capability.Result{Data: map[string]any{"ok": true}}}
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{
+		developerMode: true, localGenerated: true,
+		registry: registryStore, capabilityID: "example.capability.echo", capabilityAdapter: adapter,
+	})
+	stage := &externalPackageTestStage{pkg: readTestPackage(t, buildRPCFixturePackage(t))}
+	configureExternalPackageTestModule(h, stage, registry.SignatureAssessment{})
+	now := stableRecentTestNow()
+
+	inspection, err := h.InspectExternalPackage(ctx, InspectExternalPackageRequest{
+		Intent: ExternalPackageIntent{Action: "install"},
+		Source: ExternalPackageSource{Kind: "package_url", URL: "https://plugins.example.test/sqlite.redevplugin"},
+		Now:    now,
+	})
+	if err != nil {
+		t.Fatalf("InspectExternalPackage() error = %v", err)
+	}
+	committed, err := h.CommitExternalPackage(ctx, CommitExternalPackageRequest{
+		InspectionID: inspection.InspectionID, ConfirmationDigest: inspection.ConfirmationDigest, Now: now.Add(time.Second),
+	})
+	if err != nil {
+		t.Fatalf("CommitExternalPackage() error = %v", err)
+	}
+	if committed.Plugin == nil {
+		t.Fatal("CommitExternalPackage() returned no plugin")
+	}
+	enabled, err := h.EnablePlugin(ctx, EnableRequest{
+		PluginInstanceID: committed.Plugin.PluginInstanceID,
+		Now:              now.Add(2 * time.Second),
+		ExpectedManagementRevision: mustManagementRevision(t, h,
+			committed.Plugin.PluginInstanceID),
+	})
+	if err != nil {
+		t.Fatalf("EnablePlugin() error = %v", err)
+	}
+	grantDeclaredPermissions(t, h, enabled)
+	_, gateway := openSurfaceAndMintGateway(t, h, enabled.PluginInstanceID, "rpc.view")
+
+	result, err := h.CallPluginMethod(ctx, CallMethodRequest{
+		PluginInstanceID: enabled.PluginInstanceID, SurfaceInstanceID: "surface_rpc",
+		BridgeChannelID: "bridge_rpc", GatewayToken: gateway.GatewayToken,
+		Method: "echo.ping", Params: map[string]any{"message": "hello"},
+		Now: stableRecentTestNow(),
+	})
+	if err != nil {
+		t.Fatalf("CallPluginMethod() error = %v", err)
+	}
+	data, ok := result.Data.(map[string]any)
+	if !ok || data["ok"] != true || adapter.calls != 1 {
+		t.Fatalf("CallPluginMethod() result = %#v, adapter calls = %d", result, adapter.calls)
 	}
 }
 

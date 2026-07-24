@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"path/filepath"
+	"reflect"
 	"sync"
 	"testing"
 	"time"
@@ -140,6 +141,102 @@ func TestAuthorizationStoreContract(t *testing.T) {
 			}
 			if got.Grants[0].RevokedBy != "admin" || got.Plugin.Metadata["mutated"] != "" {
 				t.Fatalf("authorization snapshot retained caller mutation: %#v", got)
+			}
+		})
+	}
+}
+
+func TestExternalPackageAuthorizationStoreContract(t *testing.T) {
+	for _, tc := range registryStoreCases() {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := registryTestContext()
+			store := tc.open(t)
+			now := time.Date(2026, 7, 24, 8, 0, 0, 0, time.UTC)
+			req := externalPackageInstallRequest("owner_env_hash_test", now)
+
+			committed, err := store.CommitExternalPackage(ctx, req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if committed.RecordSnapshot == nil {
+				t.Fatal("CommitExternalPackage() returned no record snapshot")
+			}
+			enabled, err := store.SetEnableState(ctx, req.Record.PluginInstanceID, EnableEnabled, "", now.Add(time.Second))
+			if err != nil {
+				t.Fatal(err)
+			}
+			granted, err := store.GrantPermission(ctx, permissions.GrantRequest{
+				PluginInstanceID: req.Record.PluginInstanceID,
+				PermissionID:     "containers.read",
+				GrantedBy:        "test",
+				Now:              now.Add(2 * time.Second),
+			}, AuthorizationRevisionsFromRecord(enabled))
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			decision, err := store.Authorize(ctx, AuthorizeRequest{
+				PluginInstanceID: req.Record.PluginInstanceID,
+				Method:           "containers.status",
+				PermissionIDs:    []string{"containers.read"},
+				Expected:         AuthorizationRevisionsFromRecord(granted.Plugin),
+				Now:              now.Add(3 * time.Second),
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !decision.Allowed {
+				t.Fatalf("Authorize() decision = %#v, want allowed", decision)
+			}
+			if !reflect.DeepEqual(decision.State.SignatureAssessment, req.Record.SignatureAssessment) ||
+				decision.State.PackageSourceKind != req.Record.PackageSourceProvenance.Kind ||
+				!reflect.DeepEqual(decision.State.ExecutionApproval, req.Record.ExecutionApproval) {
+				t.Fatalf("Authorize() external package state = %#v", decision.State)
+			}
+			if !RunnableAuthorizationState(decision.State) {
+				t.Fatalf("RunnableAuthorizationState(%#v) = false", decision.State)
+			}
+		})
+	}
+}
+
+func TestSQLiteAuthorizeRejectsCorruptExternalPackageAuthorizationFacts(t *testing.T) {
+	for _, column := range []string{
+		"signature_assessment_json",
+		"package_source_provenance_json",
+		"execution_approval_json",
+	} {
+		t.Run(column, func(t *testing.T) {
+			ctx := registryTestContext()
+			store, err := NewSQLiteStore(ctx, filepath.Join(t.TempDir(), "registry.sqlite"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = store.Close() })
+			now := time.Date(2026, 7, 24, 9, 0, 0, 0, time.UTC)
+			req := externalPackageInstallRequest("owner_env_hash_test", now)
+			committed, err := store.CommitExternalPackage(ctx, req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if committed.RecordSnapshot == nil {
+				t.Fatal("CommitExternalPackage() returned no record snapshot")
+			}
+			if _, err := store.db.ExecContext(ctx,
+				"UPDATE plugin_records SET "+column+" = ? WHERE owner_env_hash = ? AND plugin_instance_id = ?",
+				`{"state":`, "owner_env_hash_test", req.Record.PluginInstanceID,
+			); err != nil {
+				t.Fatal(err)
+			}
+
+			_, err = store.Authorize(ctx, AuthorizeRequest{
+				PluginInstanceID: req.Record.PluginInstanceID,
+				Method:           "containers.status",
+				Expected:         AuthorizationRevisionsFromRecord(*committed.RecordSnapshot),
+				Now:              now.Add(time.Second),
+			})
+			if err == nil {
+				t.Fatalf("Authorize() accepted corrupt %s", column)
 			}
 		})
 	}
