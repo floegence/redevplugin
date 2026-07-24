@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.6.12
+## v0.6.13
 
 ### Fixed
 
@@ -10,6 +10,9 @@
 - Compare high-concurrency route authorization through paired batch-throughput
   evidence, retry only independently qualified noisy attempts, and retain every
   raw attempt in a hashed release diagnostic artifact.
+- Validate owner hashes with an allocation-free byte scan that preserves the
+  exact released ASCII grammar and restores high-concurrency route authorization
+  throughput.
 
 ## v0.6.10
 

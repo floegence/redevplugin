@@ -30,7 +30,7 @@
   },
   "files": ["dist"],
   "dependencies": {
-    "@floegence/redevplugin-contracts": "0.6.12"
+    "@floegence/redevplugin-contracts": "0.6.13"
   },
   "publishConfig": {
     "access": "public"
