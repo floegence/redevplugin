@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.6.11
+
+### Fixed
+
+- Preserve the required empty `redirect_chain` array in package URL provenance
+  while keeping uploaded-package and GitHub provenance JSON aligned with the
+  strict public union contract.
+
 ## v0.6.10
 
 ### Fixed

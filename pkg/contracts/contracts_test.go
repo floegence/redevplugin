@@ -133,7 +133,7 @@ func TestContractSnapshotsAndBytesAreOwned(t *testing.T) {
 	packageSet.ContractRegistryVersion = "mutated"
 	packageSet.ContractSetSHA256 = "mutated"
 	if got := contracts.PackageSet(); got.SchemaVersion != "redevplugin.platform_package_set.v1" ||
-		got.PlatformVersion != "0.6.10" ||
+		got.PlatformVersion != "0.6.11" ||
 		got.GoModule.Module != "github.com/floegence/redevplugin" ||
 		got.NPMPackages[0].Name != wantNPMName || got.RustCrates[0].Role != "contracts" ||
 		got.ContractRegistryVersion != "contract-registry-v2" || len(got.ContractSetSHA256) != 64 {
