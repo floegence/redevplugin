@@ -84,19 +84,31 @@ func TestExampleWorkerArtifactsUseCanonicalLinuxBuildAndSourceLock(t *testing.T)
 		t.Fatal("package scripts must expose the canonical example worker check")
 	}
 
-	ciRaw, err := os.ReadFile(filepath.Join(root, ".github", "workflows", "ci.yml"))
+	prePushRaw, err := os.ReadFile(filepath.Join(root, "scripts", "check_redevplugin_pre_push.sh"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	ci := string(ciRaw)
-	contractsStart := strings.Index(ci, "  contracts:\n")
-	packageSmokeStart := strings.Index(ci, "  platform-package-smoke:\n")
-	if contractsStart < 0 || packageSmokeStart <= contractsStart {
-		t.Fatal("CI workflow is missing the Platform Contracts or package publication smoke job boundary")
+	prePush := string(prePushRaw)
+	wasmTargetStart := strings.Index(prePush, "rustup target add wasm32-unknown-unknown")
+	canonicalCheckStart := strings.Index(prePush, "npm run examples:check:canonical")
+	if wasmTargetStart < 0 || canonicalCheckStart <= wasmTargetStart {
+		t.Fatal("exact-main pre-push must install the WASM target before the canonical example check")
 	}
-	contractsJob := ci[contractsStart:packageSmokeStart]
-	if !strings.Contains(contractsJob, "rustup target add wasm32-unknown-unknown") {
-		t.Fatal("Platform Contracts must install wasm32-unknown-unknown before platform checks")
+
+	releaseRaw, err := os.ReadFile(filepath.Join(root, ".github", "workflows", "release.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	release := string(releaseRaw)
+	packageBuildStart := strings.Index(release, "  package-build:\n")
+	publishRustStart := strings.Index(release, "  publish-rust:\n")
+	if packageBuildStart < 0 || publishRustStart <= packageBuildStart {
+		t.Fatal("release workflow is missing the closed package-build job boundary")
+	}
+	packageBuildJob := release[packageBuildStart:publishRustStart]
+	if !strings.Contains(packageBuildJob, "rustup target add wasm32-unknown-unknown") ||
+		!strings.Contains(packageBuildJob, "scripts/platform_package_build.mjs build") {
+		t.Fatal("release package build must install the WASM target before building platform packages")
 	}
 
 	lockRaw, err := os.ReadFile(filepath.Join(root, "examples", "plugins", "worker-artifacts.lock.json"))
