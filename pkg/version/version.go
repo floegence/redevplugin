@@ -78,6 +78,7 @@ type Matrix struct {
 	OwnerScopeInventoryRegistryVersion  string `json:"owner_scope_inventory_registry_version"`
 	OwnerScopeInventoryVersion          string `json:"owner_scope_inventory_schema_version"`
 	OwnerScopeMigrationVersion          string `json:"owner_scope_migration_schema_version"`
+	OwnerScopeRootRecoveryVersion       string `json:"owner_scope_root_recovery_schema_version"`
 	ProcessContainmentVersion           string `json:"process_containment_schema_version"`
 	RuntimeExecJournalVersion           string `json:"runtime_exec_journal_schema_version"`
 	QuarantineCleanupVersion            string `json:"quarantine_cleanup_schema_version"`
@@ -179,6 +180,7 @@ func CurrentMatrix() Matrix {
 		OwnerScopeInventoryRegistryVersion:  OwnerScopeInventoryRegistryVersion,
 		OwnerScopeInventoryVersion:          OwnerScopeInventorySchemaVersion,
 		OwnerScopeMigrationVersion:          OwnerScopeMigrationSchemaVersion,
+		OwnerScopeRootRecoveryVersion:       OwnerScopeRootRecoverySchemaVersion,
 		ProcessContainmentVersion:           ProcessContainmentSchemaVersion,
 		RuntimeExecJournalVersion:           RuntimeExecJournalSchemaVersion,
 		QuarantineCleanupVersion:            QuarantineCleanupSchemaVersion,

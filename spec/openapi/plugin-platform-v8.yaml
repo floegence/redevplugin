@@ -1853,7 +1853,7 @@ components:
           type: array
           items: { $ref: "#/components/schemas/PluginRecord" }
     PluginCompatibilityManifest:
-      $ref: "../plugin/compatibility-manifest-v8.schema.json"
+      $ref: "../plugin/compatibility-manifest-v9.schema.json"
     PluginOperationList:
       type: object
       required: [operations]

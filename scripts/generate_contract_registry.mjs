@@ -146,6 +146,7 @@ function renderGo(matrix, contracts) {
     ["OwnerScopeInventoryRegistryVersion", "owner_scope_inventory_registry_version"],
     ["OwnerScopeInventorySchemaVersion", "owner_scope_inventory_schema_version"],
     ["OwnerScopeMigrationSchemaVersion", "owner_scope_migration_schema_version"],
+    ["OwnerScopeRootRecoverySchemaVersion", "owner_scope_root_recovery_schema_version"],
     ["ProcessContainmentSchemaVersion", "process_containment_schema_version"],
     ["RuntimeExecJournalSchemaVersion", "runtime_exec_journal_schema_version"],
     ["QuarantineCleanupSchemaVersion", "quarantine_cleanup_schema_version"],

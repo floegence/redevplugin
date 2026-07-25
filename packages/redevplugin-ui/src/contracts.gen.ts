@@ -35,8 +35,8 @@ export const redevPluginContractVersions = {
   "resource_scope_schema_version": "resource-scope-v1",
   "session_scope_schema_version": "session-scope-v1",
   "plugin_platform_openapi_version": "plugin-platform-v8",
-  "compatibility_manifest_version": "redevplugin.compatibility.v8",
-  "compatibility_schema_version": "compatibility-manifest-v8",
+  "compatibility_manifest_version": "redevplugin.compatibility.v9",
+  "compatibility_schema_version": "compatibility-manifest-v9",
   "worker_invocation_schema_version": "worker-invocation-v3",
   "host_capability_contract_schema_version": "host-capability-contract-v1",
   "host_capability_pin_schema_version": "host-capability-pin-v1",
@@ -55,6 +55,7 @@ export const redevPluginContractVersions = {
   "owner_scope_inventory_registry_version": "owner-scope-inventory-registry-v1",
   "owner_scope_inventory_schema_version": "owner-scope-inventory-v1",
   "owner_scope_migration_schema_version": "owner-scope-migration-v1",
+  "owner_scope_root_recovery_schema_version": "owner-scope-root-recovery-v1",
   "process_containment_schema_version": "process-containment-v1",
   "runtime_exec_journal_schema_version": "runtime-exec-journal-v1",
   "quarantine_cleanup_schema_version": "quarantine-cleanup-v1",
@@ -70,9 +71,9 @@ export type ReDevPluginContractArtifact = {
 export const redevPluginContractArtifacts = [
   {
     id: "compatibility-manifest-schema",
-    path: "spec/plugin/compatibility-manifest-v8.schema.json",
-    version: "compatibility-manifest-v8",
-    sha256: "fe966f66e23a6d7558156608f269d08fbe57d8bca16514f1d095445cea697189",
+    path: "spec/plugin/compatibility-manifest-v9.schema.json",
+    version: "compatibility-manifest-v9",
+    sha256: "5fed1d2dddd4b6eac050f6d5e1a8732e361d0936e95c2ba79dbd49561a6b0175",
   },
   {
     id: "contract-registry-schema",
@@ -171,6 +172,12 @@ export const redevPluginContractArtifacts = [
     sha256: "e73443813e19e4cfb05748eb75d5cf04f43db3bed9d2be0c893c13bda88a5993",
   },
   {
+    id: "owner-scope-root-recovery-schema",
+    path: "spec/plugin/owner-scope-root-recovery-v1.schema.json",
+    version: "owner-scope-root-recovery-v1",
+    sha256: "5da9617731053295b3762a133c57ab526c3f622320d91bf095a0f749be944d20",
+  },
+  {
     id: "package-signature-schema",
     path: "spec/plugin/package-signature-v1.schema.json",
     version: "package-signature-v1",
@@ -204,7 +211,7 @@ export const redevPluginContractArtifacts = [
     id: "plugin-platform-openapi",
     path: "spec/openapi/plugin-platform-v8.yaml",
     version: "plugin-platform-v8",
-    sha256: "94e0cc88cb5ad8e7773677617530028578859e0bf229a6b75997f24885eb36d2",
+    sha256: "92f6ded7932ba77462976ef646bc585cfb147336497d2ce74599fd77efd2aea8",
   },
   {
     id: "process-containment-schema",

@@ -13,21 +13,78 @@ import (
 )
 
 const (
-	MigrationJournalName = ".redevplugin-owner-scope-migration-v1.json"
-	CleanupJournalName   = ".redevplugin-quarantine-cleanup-v1.json"
+	MigrationJournalName    = ".redevplugin-owner-scope-migration-v1.json"
+	CleanupJournalName      = ".redevplugin-quarantine-cleanup-v1.json"
+	RootRecoveryJournalName = ".redevplugin-owner-scope-root-recovery-v1.json"
 )
 
 var (
-	ErrOwnerScopeMigrationRequired  = errors.New("owner scope migration is required")
-	ErrOwnerScopeInventoryAmbiguous = errors.New("owner scope inventory is ambiguous")
-	ErrOwnerScopeInventoryCorrupt   = errors.New("owner scope legacy inventory is corrupt")
-	ErrOwnerScopeJournalCorrupt     = errors.New("owner scope migration journal is corrupt")
-	ErrOwnerScopeSnapshotChanged    = errors.New("owner scope migration snapshot changed")
-	ErrOwnerScopeTransition         = errors.New("owner scope migration transition is invalid")
-	ErrLegacyContainmentRequired    = errors.New("legacy containment evidence is required")
-	ErrInvalidQuarantineID          = errors.New("quarantine id is invalid")
-	ErrOwnerScopeUnsupported        = errors.New("owner scope migration is unsupported on this platform")
+	ErrOwnerScopeMigrationRequired       = errors.New("owner scope migration is required")
+	ErrOwnerScopeInventoryAmbiguous      = errors.New("owner scope inventory is ambiguous")
+	ErrOwnerScopeInventoryCorrupt        = errors.New("owner scope legacy inventory is corrupt")
+	ErrOwnerScopeJournalCorrupt          = errors.New("owner scope migration journal is corrupt")
+	ErrOwnerScopeSnapshotChanged         = errors.New("owner scope migration snapshot changed")
+	ErrOwnerScopeTransition              = errors.New("owner scope migration transition is invalid")
+	ErrLegacyContainmentRequired         = errors.New("legacy containment evidence is required")
+	ErrInvalidQuarantineID               = errors.New("quarantine id is invalid")
+	ErrOwnerScopeUnsupported             = errors.New("owner scope migration is unsupported on this platform")
+	ErrOwnerScopeRecoveryRequired        = errors.New("explicit owner scope root recovery is required")
+	ErrOwnerScopeRecoveryNotEligible     = errors.New("owner scope root is not eligible for recovery")
+	ErrOwnerScopeRecoveryPlanMismatch    = errors.New("owner scope root recovery plan does not match")
+	ErrOwnerScopeRecoveryArchiveRetained = errors.New("owner scope recovery archive must be retained")
 )
+
+type RootRecoveryState string
+
+const (
+	RootRecoveryStatePrepared          RootRecoveryState = "prepared"
+	RootRecoveryStateArchiveWriting    RootRecoveryState = "archive_writing"
+	RootRecoveryStateArchiveCommitted  RootRecoveryState = "archive_committed"
+	RootRecoveryStateFreshPrepared     RootRecoveryState = "fresh_prepared"
+	RootRecoveryStateFreshCommitted    RootRecoveryState = "fresh_committed"
+	RootRecoveryStateReconcileRequired RootRecoveryState = "reconcile_required"
+	RootRecoveryStateFailed            RootRecoveryState = "failed"
+)
+
+// OwnerScopeRootRecoveryPlan is immutable, non-secret evidence for a host's
+// explicit review UI. PlanSHA256 binds commit to the exact inspected root.
+type OwnerScopeRootRecoveryPlan struct {
+	PlanSHA256            string
+	SourceJournalSHA256   string
+	SourceSnapshotSHA256  string
+	SourceEntryCount      int
+	SourceBytes           int64
+	HasRetainedQuarantine bool
+}
+
+// OwnerScopeRootRecoveryResult identifies the retained untrusted source and
+// the new empty owner-scoped generation. ArchivePath is never an active root.
+type OwnerScopeRootRecoveryResult struct {
+	Plan        OwnerScopeRootRecoveryPlan
+	State       RootRecoveryState
+	RecoveryID  string
+	ArchivePath string
+	Generation  OwnerScopeGeneration
+}
+
+type rootRecoveryJournalV1 struct {
+	SchemaVersion         string   `json:"schema_version"`
+	RecoveryID            string   `json:"recovery_id"`
+	PlanSHA256            string   `json:"plan_sha256"`
+	RootIdentitySHA256    string   `json:"root_identity_sha256"`
+	SourceJournalSHA256   string   `json:"source_journal_sha256"`
+	SourceSnapshotSHA256  string   `json:"source_snapshot_sha256"`
+	SourceEntryCount      int      `json:"source_entry_count"`
+	SourceBytes           int64    `json:"source_bytes"`
+	HasRetainedQuarantine bool     `json:"has_retained_quarantine"`
+	TopLevelEntries       []string `json:"top_level_entries"`
+	State                 string   `json:"state"`
+	QuarantineID          string   `json:"quarantine_id"`
+	QuarantineSHA256      string   `json:"quarantine_sha256"`
+	FreshMigrationID      string   `json:"fresh_migration_id"`
+	FreshGenerationID     string   `json:"fresh_generation_id"`
+	FreshGenerationSHA256 string   `json:"fresh_generation_sha256"`
+}
 
 type MigrationState string
 
@@ -147,13 +204,14 @@ type OwnerScopeMigrationOptions struct {
 }
 
 type OwnerScopeMigration struct {
-	mu      sync.Mutex
-	root    *os.File
-	options OwnerScopeMigrationOptions
-	journal migrationJournalV1
-	cleanup cleanupJournalV1
-	status  Status
-	closed  bool
+	mu       sync.Mutex
+	root     *os.File
+	options  OwnerScopeMigrationOptions
+	journal  migrationJournalV1
+	cleanup  cleanupJournalV1
+	recovery rootRecoveryJournalV1
+	status   Status
+	closed   bool
 }
 
 // OwnerScopeGeneration is the committed durable state generation prepared for
@@ -167,7 +225,10 @@ type OwnerScopeGeneration struct {
 // PrepareOwnerScopeGeneration opens or resumes the owner-scope migration at
 // rootPath and returns its committed active generation. Recognized unowned
 // legacy state is quarantined and retained; this function never deletes it.
-// Unknown, corrupt, failed, or reconcile-required state remains fail closed.
+// A fully committed generation may resume after only its enclosing root
+// directory identity changed and all recorded internal snapshot identities
+// remain exact. Copied snapshots, unknown, corrupt, failed, or
+// reconcile-required state remain fail closed.
 func PrepareOwnerScopeGeneration(ctx context.Context, rootPath string) (generation OwnerScopeGeneration, err error) {
 	if ctx == nil {
 		return OwnerScopeGeneration{}, ErrOwnerScopeTransition

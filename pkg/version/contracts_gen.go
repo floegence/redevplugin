@@ -32,8 +32,8 @@ const (
 	ResourceScopeSchemaVersion                = "resource-scope-v1"
 	SessionScopeSchemaVersion                 = "session-scope-v1"
 	PluginPlatformOpenAPIVersion              = "plugin-platform-v8"
-	CompatibilityManifestVersion              = "redevplugin.compatibility.v8"
-	CompatibilitySchemaVersion                = "compatibility-manifest-v8"
+	CompatibilityManifestVersion              = "redevplugin.compatibility.v9"
+	CompatibilitySchemaVersion                = "compatibility-manifest-v9"
 	WorkerInvocationSchemaVersion             = "worker-invocation-v3"
 	HostCapabilityContractSchemaVersion       = "host-capability-contract-v1"
 	HostCapabilityPinSchemaVersion            = "host-capability-pin-v1"
@@ -52,6 +52,7 @@ const (
 	OwnerScopeInventoryRegistryVersion        = "owner-scope-inventory-registry-v1"
 	OwnerScopeInventorySchemaVersion          = "owner-scope-inventory-v1"
 	OwnerScopeMigrationSchemaVersion          = "owner-scope-migration-v1"
+	OwnerScopeRootRecoverySchemaVersion       = "owner-scope-root-recovery-v1"
 	ProcessContainmentSchemaVersion           = "process-containment-v1"
 	RuntimeExecJournalSchemaVersion           = "runtime-exec-journal-v1"
 	QuarantineCleanupSchemaVersion            = "quarantine-cleanup-v1"
@@ -60,9 +61,9 @@ const (
 var generatedContractArtifacts = []ContractArtifact{
 	{
 		ID:      "compatibility-manifest-schema",
-		Path:    "spec/plugin/compatibility-manifest-v8.schema.json",
-		Version: "compatibility-manifest-v8",
-		SHA256:  "fe966f66e23a6d7558156608f269d08fbe57d8bca16514f1d095445cea697189",
+		Path:    "spec/plugin/compatibility-manifest-v9.schema.json",
+		Version: "compatibility-manifest-v9",
+		SHA256:  "5fed1d2dddd4b6eac050f6d5e1a8732e361d0936e95c2ba79dbd49561a6b0175",
 	},
 	{
 		ID:      "contract-registry-schema",
@@ -161,6 +162,12 @@ var generatedContractArtifacts = []ContractArtifact{
 		SHA256:  "e73443813e19e4cfb05748eb75d5cf04f43db3bed9d2be0c893c13bda88a5993",
 	},
 	{
+		ID:      "owner-scope-root-recovery-schema",
+		Path:    "spec/plugin/owner-scope-root-recovery-v1.schema.json",
+		Version: "owner-scope-root-recovery-v1",
+		SHA256:  "5da9617731053295b3762a133c57ab526c3f622320d91bf095a0f749be944d20",
+	},
+	{
 		ID:      "package-signature-schema",
 		Path:    "spec/plugin/package-signature-v1.schema.json",
 		Version: "package-signature-v1",
@@ -194,7 +201,7 @@ var generatedContractArtifacts = []ContractArtifact{
 		ID:      "plugin-platform-openapi",
 		Path:    "spec/openapi/plugin-platform-v8.yaml",
 		Version: "plugin-platform-v8",
-		SHA256:  "94e0cc88cb5ad8e7773677617530028578859e0bf229a6b75997f24885eb36d2",
+		SHA256:  "92f6ded7932ba77462976ef646bc585cfb147336497d2ce74599fd77efd2aea8",
 	},
 	{
 		ID:      "process-containment-schema",

@@ -42,7 +42,7 @@ done
 echo "==> active contract inventory"
 for required in \
   spec/openapi/plugin-platform-v8.yaml \
-  spec/plugin/compatibility-manifest-v8.schema.json \
+  spec/plugin/compatibility-manifest-v9.schema.json \
   spec/plugin/error-codes-v6.schema.json \
   spec/plugin/ipc-v6.schema.json \
   spec/plugin/performance-contract-v4.json \

@@ -10,7 +10,7 @@ import (
 
 func TestCompatibilityManifestSchemaDefinesReleasedMatrix(t *testing.T) {
 	root := repoRoot(t)
-	raw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", "compatibility-manifest-v8.schema.json"))
+	raw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", "compatibility-manifest-v9.schema.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -21,7 +21,7 @@ func TestCompatibilityManifestSchemaDefinesReleasedMatrix(t *testing.T) {
 
 	properties := requireNestedObject(t, schema, "properties")
 	schemaVersion := requireNestedObject(t, properties, "schema_version")
-	if got := schemaVersion["const"]; got != "redevplugin.compatibility.v8" {
+	if got := schemaVersion["const"]; got != "redevplugin.compatibility.v9" {
 		t.Fatalf("schema_version const = %#v", got)
 	}
 
@@ -49,7 +49,7 @@ func TestCompatibilityManifestSchemaDefinesReleasedMatrix(t *testing.T) {
 		"network_grant_schema_version":                 "network-grant-v2",
 		"resource_scope_schema_version":                "resource-scope-v1",
 		"plugin_platform_openapi_version":              "plugin-platform-v8",
-		"compatibility_schema_version":                 "compatibility-manifest-v8",
+		"compatibility_schema_version":                 "compatibility-manifest-v9",
 		"worker_invocation_schema_version":             "worker-invocation-v3",
 		"error_codes_schema_version":                   "error-codes-v6",
 		"performance_contract_version":                 "performance-contract-v4",
@@ -58,6 +58,7 @@ func TestCompatibilityManifestSchemaDefinesReleasedMatrix(t *testing.T) {
 		"platform_package_set_schema_version":          "platform-package-set-v1",
 		"runtime_admission_schema_version":             "runtime-admission-v1",
 		"runtime_descriptor_schema_version":            "runtime-descriptor-v2",
+		"owner_scope_root_recovery_schema_version":     "owner-scope-root-recovery-v1",
 		"process_containment_schema_version":           "process-containment-v1",
 		"runtime_exec_journal_schema_version":          "runtime-exec-journal-v1",
 	}

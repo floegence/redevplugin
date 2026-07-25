@@ -7,6 +7,7 @@ import (
 func TestOwnerScopeSchemasValidateClosedContracts(t *testing.T) {
 	inventorySchema := compilePlatformPackageSchema(t, "owner-scope-inventory-v1.schema.json")
 	migrationSchema := compilePlatformPackageSchema(t, "owner-scope-migration-v1.schema.json")
+	recoverySchema := compilePlatformPackageSchema(t, "owner-scope-root-recovery-v1.schema.json")
 	cleanupSchema := compilePlatformPackageSchema(t, "quarantine-cleanup-v1.schema.json")
 
 	if err := inventorySchema.Validate(readPlatformPackageJSON(t, "owner-scope-inventories-v1.json")); err != nil {
@@ -14,6 +15,9 @@ func TestOwnerScopeSchemasValidateClosedContracts(t *testing.T) {
 	}
 	if err := migrationSchema.Validate(validOwnerScopeMigration()); err != nil {
 		t.Fatalf("valid owner scope migration rejected: %v", err)
+	}
+	if err := recoverySchema.Validate(validOwnerScopeRootRecovery()); err != nil {
+		t.Fatalf("valid owner scope root recovery rejected: %v", err)
 	}
 	if err := cleanupSchema.Validate(validQuarantineCleanup()); err != nil {
 		t.Fatalf("valid quarantine cleanup rejected: %v", err)
@@ -23,6 +27,7 @@ func TestOwnerScopeSchemasValidateClosedContracts(t *testing.T) {
 func TestOwnerScopeSchemasRejectUnknownStateTraversalAndOversizedEntries(t *testing.T) {
 	inventorySchema := compilePlatformPackageSchema(t, "owner-scope-inventory-v1.schema.json")
 	migrationSchema := compilePlatformPackageSchema(t, "owner-scope-migration-v1.schema.json")
+	recoverySchema := compilePlatformPackageSchema(t, "owner-scope-root-recovery-v1.schema.json")
 	cleanupSchema := compilePlatformPackageSchema(t, "quarantine-cleanup-v1.schema.json")
 
 	inventory := readPlatformPackageJSON(t, "owner-scope-inventories-v1.json")
@@ -40,6 +45,22 @@ func TestOwnerScopeSchemasRejectUnknownStateTraversalAndOversizedEntries(t *test
 	migration["unknown"] = true
 	if err := migrationSchema.Validate(migration); err == nil {
 		t.Fatal("migration schema accepted an unknown field")
+	}
+
+	recovery := validOwnerScopeRootRecovery()
+	recovery["unknown"] = true
+	if err := recoverySchema.Validate(recovery); err == nil {
+		t.Fatal("root recovery schema accepted an unknown field")
+	}
+	recovery = validOwnerScopeRootRecovery()
+	recovery["state"] = "fresh_committed"
+	if err := recoverySchema.Validate(recovery); err == nil {
+		t.Fatal("root recovery schema accepted a committed state without an archive hash")
+	}
+	recovery = validOwnerScopeRootRecovery()
+	recovery["top_level_entries"] = []any{".redevplugin-generations"}
+	if err := recoverySchema.Validate(recovery); err == nil {
+		t.Fatal("root recovery schema accepted an incomplete source entry set")
 	}
 	migration = validOwnerScopeMigration()
 	migration["state"] = "guessed"
@@ -110,6 +131,27 @@ func validQuarantineCleanup() map[string]any {
 		"entries": []any{
 			map[string]any{"path": "assets/file.bin", "kind": "file", "device": 1, "inode": 2, "uid": 1000, "mode": 384, "size": 5, "nlink": 1, "sha256": repeatedHex("3f")},
 		},
+	}
+}
+
+func validOwnerScopeRootRecovery() map[string]any {
+	return map[string]any{
+		"schema_version":          "owner-scope-root-recovery-v1",
+		"recovery_id":             "recovery_0123456789abcdef0123456789abcdef",
+		"plan_sha256":             repeatedHex("1f"),
+		"root_identity_sha256":    repeatedHex("2f"),
+		"source_journal_sha256":   repeatedHex("3f"),
+		"source_snapshot_sha256":  repeatedHex("4f"),
+		"source_entry_count":      12,
+		"source_bytes":            4096,
+		"has_retained_quarantine": true,
+		"top_level_entries":       []any{".redevplugin-current-generation", ".redevplugin-generations", ".redevplugin-owner-scope-migration-v1.json", ".redevplugin-quarantine"},
+		"state":                   "archive_writing",
+		"quarantine_id":           "quarantine_0123456789abcdef0123456789abcdef",
+		"quarantine_sha256":       "",
+		"fresh_migration_id":      "migration_0123456789abcdef0123456789abcdef",
+		"fresh_generation_id":     "generation_0123456789abcdef0123456789abcdef",
+		"fresh_generation_sha256": repeatedHex("5f"),
 	}
 }
 

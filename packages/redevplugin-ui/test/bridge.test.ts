@@ -551,7 +551,7 @@ test("platform client reads compatibility manifest through host API", async () =
   fetch.push({
     ok: true,
     data: {
-      schema_version: "redevplugin.compatibility.v8",
+      schema_version: "redevplugin.compatibility.v9",
       package_set: {
         schema_version: "redevplugin.platform_package_set.v1",
         platform_version: "0.6.0",
@@ -596,7 +596,7 @@ test("platform client reads compatibility manifest through host API", async () =
 
   const compatibility = await client.getCompatibility();
 
-  assert.equal(compatibility.schema_version, "redevplugin.compatibility.v8");
+  assert.equal(compatibility.schema_version, "redevplugin.compatibility.v9");
   assert.equal(compatibility.matrix.plugin_platform_openapi_version, "plugin-platform-v8");
   assert.equal(compatibility.matrix.release_metadata_schema_version, "release-metadata-v5");
   assert.equal(compatibility.matrix.release_source_policy_schema_version, "release-source-policy-v2");

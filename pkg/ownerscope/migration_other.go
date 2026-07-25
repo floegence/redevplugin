@@ -31,3 +31,11 @@ func (*OwnerScopeMigration) DeleteQuarantine(context.Context) (Status, error) {
 }
 
 func (*OwnerScopeMigration) Close() error { return nil }
+
+func InspectOwnerScopeRootRecovery(string) (OwnerScopeRootRecoveryPlan, error) {
+	return OwnerScopeRootRecoveryPlan{}, ErrOwnerScopeUnsupported
+}
+
+func RecoverOwnerScopeRoot(context.Context, string, string) (OwnerScopeRootRecoveryResult, error) {
+	return OwnerScopeRootRecoveryResult{}, ErrOwnerScopeUnsupported
+}

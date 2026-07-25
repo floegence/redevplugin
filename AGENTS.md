@@ -354,6 +354,20 @@ layout rules, or migration state machines into host code.
   state and return the active durable root only after the committed generation
   has been verified. Repeated startup must reuse that generation without
   rewriting or discarding data created after migration.
+- A fully committed generation may atomically rebind after only its enclosing
+  state-root directory identity changes, but only when every recorded internal
+  filesystem identity, snapshot hash, inventory binding, generation marker, and
+  quarantine binding remains exact. File-level copies or restores that change
+  recorded snapshot identity, incomplete migrations, cleanup transactions,
+  tampered journals, and future state must remain fail closed without mutation.
+- A host may recover an otherwise valid committed root whose file-level copy or
+  restore changed recorded snapshot identity only through the released explicit
+  inspect-and-commit recovery API. Inspection is read-only and commit binds the
+  exact plan hash; the transaction atomically retains the complete prior root in
+  an undeletable recovery archive, creates a new empty owner-scoped generation,
+  never reauthorizes prior registry, grant, setting, secret, or storage state,
+  and resumes idempotently after every persisted stage. Normal startup must not
+  invoke this recovery or mutate an eligible root without host approval.
 - Tests must cover fresh install, each supported historical schema or fixture,
   interruption recovery, idempotent restart, data preservation, and fail-closed
   handling that leaves unknown or corrupt state unchanged.

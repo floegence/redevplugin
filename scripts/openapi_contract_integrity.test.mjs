@@ -19,7 +19,7 @@ async function readSessionScopeSchema() {
 }
 
 async function readCompatibilitySchema() {
-  return JSON.parse(await readFile(join(root, "spec/plugin/compatibility-manifest-v8.schema.json"), "utf8"));
+  return JSON.parse(await readFile(join(root, "spec/plugin/compatibility-manifest-v9.schema.json"), "utf8"));
 }
 
 test("PatchSettingsRequest requires a non-empty set or remove object", async () => {
@@ -175,7 +175,7 @@ test("Rust IPC v6 carries closed session revoke request and acknowledgement fram
   assert.equal(schema.$defs.session_revoke_count.maximum, Number.MAX_SAFE_INTEGER);
 });
 
-test("compatibility v7 publishes the complete session revoke contract matrix", async () => {
+test("compatibility v9 publishes the complete session revoke contract matrix", async () => {
   const schema = await readCompatibilitySchema();
   const matrix = schema.properties.matrix;
   assert.ok(matrix.required.includes("session_scope_schema_version"));

@@ -105,13 +105,32 @@ func OpenOwnerScopeMigration(rootDir *os.File, options OwnerScopeMigrationOption
 		return nil, fmt.Errorf("lock owner scope migration root: %w", err)
 	}
 	migration := &OwnerScopeMigration{root: root, options: options}
+	if recoveryRaw, recoveryErr := readRootFile(root, RootRecoveryJournalName, 1<<20); recoveryErr == nil {
+		recovery, decodeErr := decodeRootRecoveryJournal(recoveryRaw)
+		if decodeErr != nil || recovery.RootIdentitySHA256 != identity {
+			return nil, ErrOwnerScopeJournalCorrupt
+		}
+		if recovery.State != string(RootRecoveryStateFreshCommitted) {
+			return nil, ErrOwnerScopeRecoveryRequired
+		}
+		migration.recovery = recovery
+	} else if !errors.Is(recoveryErr, os.ErrNotExist) {
+		return nil, recoveryErr
+	}
 	if raw, readErr := readRootFile(root, MigrationJournalName, 1<<20); readErr == nil {
 		journal, decodeErr := decodeMigrationJournal(raw)
-		if decodeErr != nil || journal.RootIdentitySHA256 != identity {
+		if decodeErr != nil {
 			return nil, ErrOwnerScopeJournalCorrupt
 		}
 		migration.journal = journal
 		migration.status = statusFromJournal(journal)
+		if migration.recovery.State != "" {
+			if !recoveryMatchesMigration(migration.recovery, journal) {
+				return nil, ErrOwnerScopeJournalCorrupt
+			}
+		} else if journal.InventoryID == recoveredRootInventoryID {
+			return nil, ErrOwnerScopeJournalCorrupt
+		}
 		if cleanupRaw, cleanupErr := readRootFile(root, CleanupJournalName, 64<<20); cleanupErr == nil {
 			cleanup, decodeCleanupErr := decodeCleanupJournal(cleanupRaw, journal)
 			if decodeCleanupErr != nil {
@@ -121,6 +140,11 @@ func OpenOwnerScopeMigration(rootDir *os.File, options OwnerScopeMigrationOption
 			migration.cleanup = cleanup
 		} else if !errors.Is(cleanupErr, os.ErrNotExist) {
 			return nil, cleanupErr
+		}
+		if journal.RootIdentitySHA256 != identity {
+			if err := migration.rebindRelocatedCommittedRoot(identity); err != nil {
+				return nil, err
+			}
 		}
 		if journal.State == string(StateFreshCommitted) {
 			if verifyErr := migration.verifyActiveFreshGeneration(); verifyErr != nil {
@@ -187,6 +211,136 @@ func OpenOwnerScopeMigration(rootDir *os.File, options OwnerScopeMigrationOption
 	migration.status = statusFromJournal(migration.journal)
 	closeRoot = false
 	return migration, nil
+}
+
+// rebindRelocatedCommittedRoot recovers a fully committed generation after its
+// enclosing root directory changed while every recorded internal filesystem
+// identity remained exact. In-progress migrations, copied snapshots, and
+// cleanup transactions retain their original root binding and fail closed.
+func (migration *OwnerScopeMigration) rebindRelocatedCommittedRoot(identity string) error {
+	if migration.journal.State != string(StateFreshCommitted) || migration.cleanup.State != "" || !validSHA256(identity) {
+		return ErrOwnerScopeJournalCorrupt
+	}
+	if migration.journal.FreshGenerationSHA256 != digestString("fresh:"+migration.journal.FreshGenerationID) {
+		return ErrOwnerScopeJournalCorrupt
+	}
+	if err := migration.verifyActiveFreshGeneration(); err != nil {
+		return ErrOwnerScopeJournalCorrupt
+	}
+	if err := migration.verifyRelocatedQuarantineLayout(); err != nil {
+		return ErrOwnerScopeJournalCorrupt
+	}
+	if !migration.validRelocatedInventoryBinding() {
+		return ErrOwnerScopeJournalCorrupt
+	}
+	migration.journal.RootIdentitySHA256 = identity
+	if err := migration.persistJournal(); err != nil {
+		return err
+	}
+	migration.status = statusFromJournal(migration.journal)
+	return nil
+}
+
+func (migration *OwnerScopeMigration) verifyRelocatedQuarantineLayout() error {
+	if migration.journal.QuarantineID == "" {
+		if len(migration.journal.Stores) != 0 || migration.journal.InventoryID != "" || migration.journal.InventorySHA256 != "" ||
+			migration.journal.LegacySnapshotSHA256 != digestString("[]") {
+			return ErrOwnerScopeSnapshotChanged
+		}
+		return migration.verifyRelocatedFreshGenerationEmpty()
+	}
+	parent, err := openDirectoryAt(int(migration.root.Fd()), quarantineDirectory)
+	if err != nil {
+		return err
+	}
+	defer parent.Close()
+	if err := validateOwnedGenerationDirectory(migration.root, parent); err != nil {
+		return err
+	}
+	entries, err := parent.ReadDir(-1)
+	if err != nil {
+		return err
+	}
+	if len(entries) != 1 || entries[0].Name() != migration.journal.QuarantineID {
+		return ErrOwnerScopeSnapshotChanged
+	}
+	quarantine, err := openDirectoryAt(int(parent.Fd()), migration.journal.QuarantineID)
+	if err != nil {
+		return err
+	}
+	defer quarantine.Close()
+	if err := validateOwnedGenerationDirectory(migration.root, quarantine); err != nil {
+		return err
+	}
+	snapshot, err := snapshotDirectory(quarantine)
+	if err != nil {
+		return err
+	}
+	if snapshot.digest != migration.journal.QuarantineSHA256 || snapshot.digest != migration.journal.LegacySnapshotSHA256 {
+		return ErrOwnerScopeSnapshotChanged
+	}
+	return nil
+}
+
+func (migration *OwnerScopeMigration) verifyRelocatedFreshGenerationEmpty() error {
+	generations, err := openDirectoryAt(int(migration.root.Fd()), generationsDirectory)
+	if err != nil {
+		return err
+	}
+	defer generations.Close()
+	active, err := openDirectoryAt(int(generations.Fd()), migration.journal.FreshGenerationID)
+	if err != nil {
+		return err
+	}
+	defer active.Close()
+	entries, err := active.ReadDir(-1)
+	if err != nil {
+		return err
+	}
+	if len(entries) != 0 {
+		return ErrOwnerScopeSnapshotChanged
+	}
+	return nil
+}
+
+func (migration *OwnerScopeMigration) validRelocatedInventoryBinding() bool {
+	if migration.journal.InventoryID == "" {
+		return len(migration.journal.Stores) == 0
+	}
+	if migration.journal.InventoryID == recoveredRootInventoryID {
+		return migration.journal.InventorySHA256 == recoveredRootInventorySHA256 && len(migration.journal.Stores) == 1 &&
+			migration.journal.Stores[0] == (migrationStoreV1{ID: recoveredRootStoreID, Scope: "durable", Disposition: string(StoreDispositionQuarantine), Generation: migration.journal.FreshGenerationID, Outcome: "quarantined"})
+	}
+	var inventory *builtInOwnerScopeInventory
+	for index := range builtInOwnerScopeInventories {
+		candidate := &builtInOwnerScopeInventories[index]
+		if candidate.ID == migration.journal.InventoryID && candidate.SHA256 == migration.journal.InventorySHA256 {
+			inventory = candidate
+			break
+		}
+	}
+	if inventory == nil {
+		return false
+	}
+	entries := make(map[string]builtInOwnerScopeRootEntry, len(inventory.RootEntries))
+	for _, entry := range inventory.RootEntries {
+		entries[entry.Path] = entry
+	}
+	seen := make(map[string]struct{}, len(migration.journal.Stores))
+	for _, store := range migration.journal.Stores {
+		entry, ok := entries[store.ID]
+		if !ok || store.Scope != entry.Scope || store.Disposition != entry.Disposition ||
+			store.Generation != migration.journal.FreshGenerationID || store.Outcome != "quarantined" {
+			return false
+		}
+		seen[store.ID] = struct{}{}
+	}
+	for _, entry := range inventory.RootEntries {
+		if _, ok := seen[entry.Path]; entry.Required && !ok {
+			return false
+		}
+	}
+	return true
 }
 
 func (migration *OwnerScopeMigration) QuarantineUnownedLegacy(ctx context.Context) (Status, error) {
@@ -385,6 +539,9 @@ func (migration *OwnerScopeMigration) DeleteQuarantine(ctx context.Context) (Sta
 	if err := migration.ensureOpen(); err != nil {
 		return cloneStatus(migration.status), err
 	}
+	if migration.recovery.State != "" {
+		return cloneStatus(migration.status), ErrOwnerScopeRecoveryArchiveRetained
+	}
 	if migration.journal.State != string(StateFreshCommitted) || migration.journal.QuarantineID == "" {
 		return cloneStatus(migration.status), ErrOwnerScopeTransition
 	}
@@ -563,6 +720,9 @@ func (migration *OwnerScopeMigration) verifyFreshPreparation() error {
 
 func (migration *OwnerScopeMigration) verifyActiveFreshGeneration() error {
 	exclusions := map[string]struct{}{MigrationJournalName: {}}
+	if migration.recovery.State != "" {
+		exclusions[RootRecoveryJournalName] = struct{}{}
+	}
 	if migration.cleanup.State != "" {
 		exclusions[CleanupJournalName] = struct{}{}
 	}

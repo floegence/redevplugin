@@ -1,12 +1,12 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://schemas.redevplugin.dev/plugin/compatibility-manifest-v8.schema.json",
-  "title": "ReDevPlugin compatibility manifest v8",
+  "$id": "https://schemas.redevplugin.dev/plugin/compatibility-manifest-v9.schema.json",
+  "title": "ReDevPlugin compatibility manifest v9",
   "type": "object",
   "additionalProperties": false,
   "required": ["schema_version", "package_set", "matrix", "contract_set_sha256", "contracts"],
   "properties": {
-    "schema_version": {"const": "redevplugin.compatibility.v8"},
+    "schema_version": {"const": "redevplugin.compatibility.v9"},
     "package_set": {"$ref": "platform-package-set-v1.schema.json"},
     "matrix": {
       "type": "object",
@@ -32,6 +32,7 @@
         "platform_package_publication_schema_version", "runtime_admission_schema_version",
         "runtime_descriptor_schema_version", "owner_scope_inventory_registry_version",
         "owner_scope_inventory_schema_version", "owner_scope_migration_schema_version",
+        "owner_scope_root_recovery_schema_version",
         "process_containment_schema_version", "runtime_exec_journal_schema_version",
         "quarantine_cleanup_schema_version"
       ],
@@ -65,7 +66,7 @@
         "resource_scope_schema_version": {"const": "resource-scope-v1"},
         "session_scope_schema_version": {"const": "session-scope-v1"},
         "plugin_platform_openapi_version": {"const": "plugin-platform-v8"},
-        "compatibility_schema_version": {"const": "compatibility-manifest-v8"},
+        "compatibility_schema_version": {"const": "compatibility-manifest-v9"},
         "worker_invocation_schema_version": {"const": "worker-invocation-v3"},
         "host_capability_contract_schema_version": {"const": "host-capability-contract-v1"},
         "host_capability_pin_schema_version": {"const": "host-capability-pin-v1"},
@@ -84,6 +85,7 @@
         "owner_scope_inventory_registry_version": {"const": "owner-scope-inventory-registry-v1"},
         "owner_scope_inventory_schema_version": {"const": "owner-scope-inventory-v1"},
         "owner_scope_migration_schema_version": {"const": "owner-scope-migration-v1"},
+        "owner_scope_root_recovery_schema_version": {"const": "owner-scope-root-recovery-v1"},
         "process_containment_schema_version": {"const": "process-containment-v1"},
         "runtime_exec_journal_schema_version": {"const": "runtime-exec-journal-v1"},
         "quarantine_cleanup_schema_version": {"const": "quarantine-cleanup-v1"}

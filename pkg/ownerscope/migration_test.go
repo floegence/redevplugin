@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	_ "modernc.org/sqlite"
@@ -126,6 +127,588 @@ func TestPrepareOwnerScopeGenerationCommitsFreshInstall(t *testing.T) {
 	}
 	if info, err := os.Stat(generation.Path); err != nil || !info.IsDir() {
 		t.Fatalf("fresh generation path stat = %#v, %v", info, err)
+	}
+}
+
+func TestPrepareOwnerScopeGenerationRebindsRelocatedCommittedGeneration(t *testing.T) {
+	sourceRoot := t.TempDir()
+	writeRedevenLegacyInventory(t, sourceRoot)
+	generation, err := PrepareOwnerScopeGeneration(context.Background(), sourceRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	activeMarker := filepath.Join(generation.Path, "storage", "created-after-migration")
+	if err := os.MkdirAll(filepath.Dir(activeMarker), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(activeMarker, []byte("active"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	relocatedRoot := moveOwnerScopeRootContents(t, sourceRoot)
+	journalPath := filepath.Join(relocatedRoot, MigrationJournalName)
+	before, err := os.ReadFile(journalPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := PrepareOwnerScopeGeneration(context.Background(), relocatedRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reopened.Status.FreshGenerationID != generation.Status.FreshGenerationID || reopened.Status.QuarantineID != generation.Status.QuarantineID {
+		t.Fatalf("relocated generation = %#v, want ids from %#v", reopened, generation)
+	}
+	if reopened.Status.RootIdentitySHA256 == generation.Status.RootIdentitySHA256 {
+		t.Fatal("relocated generation retained the source root identity")
+	}
+	if raw, err := os.ReadFile(filepath.Join(reopened.Path, "storage", "created-after-migration")); err != nil || string(raw) != "active" {
+		t.Fatalf("relocated active state = %q, %v", raw, err)
+	}
+	quarantinedAsset := filepath.Join(relocatedRoot, quarantineDirectory, reopened.Status.QuarantineID.String(), "assets", "package.bin")
+	if raw, err := os.ReadFile(quarantinedAsset); err != nil || string(raw) != "asset" {
+		t.Fatalf("relocated quarantine = %q, %v", raw, err)
+	}
+	after, err := os.ReadFile(journalPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Equal(after, before) {
+		t.Fatal("relocated journal did not commit the new root identity")
+	}
+
+	idempotent, err := PrepareOwnerScopeGeneration(context.Background(), relocatedRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if idempotent.Path != reopened.Path || idempotent.Status.RootIdentitySHA256 != reopened.Status.RootIdentitySHA256 {
+		t.Fatalf("idempotent relocated generation = %#v, want %#v", idempotent, reopened)
+	}
+	stable, err := os.ReadFile(journalPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(stable, after) {
+		t.Fatal("idempotent reopen rewrote the relocated journal")
+	}
+}
+
+func TestPrepareOwnerScopeGenerationRebindsRelocatedFreshInstall(t *testing.T) {
+	sourceRoot := t.TempDir()
+	generation, err := PrepareOwnerScopeGeneration(context.Background(), sourceRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	relocatedRoot := copyOwnerScopeRoot(t, sourceRoot)
+	reopened, err := PrepareOwnerScopeGeneration(context.Background(), relocatedRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reopened.Status.FreshGenerationID != generation.Status.FreshGenerationID || !reopened.Status.QuarantineID.IsZero() {
+		t.Fatalf("relocated fresh generation = %#v, want %#v", reopened, generation)
+	}
+}
+
+func TestPrepareOwnerScopeGenerationRejectsUnsafeRelocationWithoutMutation(t *testing.T) {
+	t.Run("incomplete migration", func(t *testing.T) {
+		sourceRoot := t.TempDir()
+		root := openMigrationRoot(t, sourceRoot)
+		migration, err := OpenOwnerScopeMigration(root, OwnerScopeMigrationOptions{})
+		root.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := migration.Close(); err != nil {
+			t.Fatal(err)
+		}
+		relocatedRoot := copyOwnerScopeRoot(t, sourceRoot)
+		assertRelocationRejectedWithoutJournalMutation(t, relocatedRoot)
+	})
+
+	t.Run("changed active marker", func(t *testing.T) {
+		sourceRoot := t.TempDir()
+		if _, err := PrepareOwnerScopeGeneration(context.Background(), sourceRoot); err != nil {
+			t.Fatal(err)
+		}
+		relocatedRoot := copyOwnerScopeRoot(t, sourceRoot)
+		if err := os.WriteFile(filepath.Join(relocatedRoot, currentGenerationFile), []byte("generation_00000000000000000000000000000000\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		assertRelocationRejectedWithoutJournalMutation(t, relocatedRoot)
+	})
+
+	t.Run("copied fresh active state", func(t *testing.T) {
+		sourceRoot := t.TempDir()
+		generation, err := PrepareOwnerScopeGeneration(context.Background(), sourceRoot)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(generation.Path, "plugin-state"), []byte("untrusted after copy"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		relocatedRoot := copyOwnerScopeRoot(t, sourceRoot)
+		assertRelocationRejectedWithoutJournalMutation(t, relocatedRoot)
+	})
+
+	t.Run("unexpected quarantine entry", func(t *testing.T) {
+		sourceRoot := t.TempDir()
+		writeRedevenLegacyInventory(t, sourceRoot)
+		if _, err := PrepareOwnerScopeGeneration(context.Background(), sourceRoot); err != nil {
+			t.Fatal(err)
+		}
+		relocatedRoot := moveOwnerScopeRootContents(t, sourceRoot)
+		if err := os.Mkdir(filepath.Join(relocatedRoot, quarantineDirectory, "quarantine_00000000000000000000000000000000"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		assertRelocationRejectedWithoutJournalMutation(t, relocatedRoot)
+	})
+
+	t.Run("copied committed quarantine", func(t *testing.T) {
+		sourceRoot := t.TempDir()
+		writeRedevenLegacyInventory(t, sourceRoot)
+		if _, err := PrepareOwnerScopeGeneration(context.Background(), sourceRoot); err != nil {
+			t.Fatal(err)
+		}
+		relocatedRoot := copyOwnerScopeRoot(t, sourceRoot)
+		assertRelocationRejectedWithoutJournalMutation(t, relocatedRoot)
+	})
+
+	t.Run("tampered store outcome", func(t *testing.T) {
+		sourceRoot := t.TempDir()
+		writeRedevenLegacyInventory(t, sourceRoot)
+		if _, err := PrepareOwnerScopeGeneration(context.Background(), sourceRoot); err != nil {
+			t.Fatal(err)
+		}
+		relocatedRoot := moveOwnerScopeRootContents(t, sourceRoot)
+		journalPath := filepath.Join(relocatedRoot, MigrationJournalName)
+		raw, err := os.ReadFile(journalPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		journal, err := decodeMigrationJournal(raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		journal.Stores[0].Outcome = "changed"
+		tampered, err := json.Marshal(journal)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(journalPath, append(tampered, '\n'), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		assertRelocationRejectedWithoutJournalMutation(t, relocatedRoot)
+	})
+
+	t.Run("tampered inventory digest", func(t *testing.T) {
+		sourceRoot := t.TempDir()
+		writeRedevenLegacyInventory(t, sourceRoot)
+		if _, err := PrepareOwnerScopeGeneration(context.Background(), sourceRoot); err != nil {
+			t.Fatal(err)
+		}
+		relocatedRoot := moveOwnerScopeRootContents(t, sourceRoot)
+		journalPath := filepath.Join(relocatedRoot, MigrationJournalName)
+		raw, err := os.ReadFile(journalPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		journal, err := decodeMigrationJournal(raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		journal.InventorySHA256 = digestString("changed inventory")
+		tampered, err := json.Marshal(journal)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(journalPath, append(tampered, '\n'), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		assertRelocationRejectedWithoutJournalMutation(t, relocatedRoot)
+	})
+
+	t.Run("tampered fresh digest", func(t *testing.T) {
+		sourceRoot := t.TempDir()
+		if _, err := PrepareOwnerScopeGeneration(context.Background(), sourceRoot); err != nil {
+			t.Fatal(err)
+		}
+		relocatedRoot := moveOwnerScopeRootContents(t, sourceRoot)
+		journalPath := filepath.Join(relocatedRoot, MigrationJournalName)
+		raw, err := os.ReadFile(journalPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		journal, err := decodeMigrationJournal(raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		journal.FreshGenerationSHA256 = digestString("changed generation")
+		tampered, err := json.Marshal(journal)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(journalPath, append(tampered, '\n'), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		assertRelocationRejectedWithoutJournalMutation(t, relocatedRoot)
+	})
+
+	t.Run("active cleanup transaction", func(t *testing.T) {
+		sourceRoot := t.TempDir()
+		writeRedevenLegacyInventory(t, sourceRoot)
+		if _, err := PrepareOwnerScopeGeneration(context.Background(), sourceRoot); err != nil {
+			t.Fatal(err)
+		}
+		root := openMigrationRoot(t, sourceRoot)
+		migration, err := OpenOwnerScopeMigration(root, OwnerScopeMigrationOptions{})
+		root.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		parent, err := openDirectoryAt(int(migration.root.Fd()), quarantineDirectory)
+		if err != nil {
+			t.Fatal(err)
+		}
+		quarantine, err := openDirectoryAt(int(parent.Fd()), migration.journal.QuarantineID)
+		parent.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		snapshot, err := snapshotDirectory(quarantine)
+		quarantine.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		cleanup := cleanupJournalV1{
+			SchemaVersion: cleanupSchemaVersion, MigrationID: migration.journal.MigrationID,
+			RootIdentitySHA256: migration.journal.RootIdentitySHA256, QuarantineID: migration.journal.QuarantineID,
+			QuarantineSHA256: migration.journal.QuarantineSHA256, State: string(CleanupStateDeletePrepared), Entries: snapshot.entries,
+		}
+		if err := migration.persistCleanup(cleanup); err != nil {
+			t.Fatal(err)
+		}
+		if err := migration.Close(); err != nil {
+			t.Fatal(err)
+		}
+		relocatedRoot := moveOwnerScopeRootContents(t, sourceRoot)
+		journalBefore, err := os.ReadFile(filepath.Join(relocatedRoot, MigrationJournalName))
+		if err != nil {
+			t.Fatal(err)
+		}
+		cleanupBefore, err := os.ReadFile(filepath.Join(relocatedRoot, CleanupJournalName))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if generation, err := PrepareOwnerScopeGeneration(context.Background(), relocatedRoot); generation.Path != "" || !errors.Is(err, ErrOwnerScopeJournalCorrupt) {
+			t.Fatalf("PrepareOwnerScopeGeneration() = %#v, %v", generation, err)
+		}
+		journalAfter, _ := os.ReadFile(filepath.Join(relocatedRoot, MigrationJournalName))
+		cleanupAfter, _ := os.ReadFile(filepath.Join(relocatedRoot, CleanupJournalName))
+		if !bytes.Equal(journalAfter, journalBefore) || !bytes.Equal(cleanupAfter, cleanupBefore) {
+			t.Fatal("rejected cleanup relocation mutated its journals")
+		}
+	})
+}
+
+func TestRecoverOwnerScopeRootArchivesCopiedStateAndCommitsFreshGeneration(t *testing.T) {
+	sourceRoot := t.TempDir()
+	writeRedevenLegacyInventory(t, sourceRoot)
+	sourceGeneration, err := PrepareOwnerScopeGeneration(context.Background(), sourceRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	activeMarker := filepath.Join(sourceGeneration.Path, "storage", "user-state")
+	if err := os.MkdirAll(filepath.Dir(activeMarker), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(activeMarker, []byte("retained"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	recoveryRoot := copyOwnerScopeRoot(t, sourceRoot)
+	before, err := snapshotPath(t, recoveryRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := InspectOwnerScopeRootRecovery(recoveryRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.PlanSHA256 == "" || plan.SourceSnapshotSHA256 != before.digest || !plan.HasRetainedQuarantine || plan.SourceEntryCount != len(before.entries) {
+		t.Fatalf("recovery plan = %#v, snapshot = %#v", plan, before)
+	}
+	readOnly, err := snapshotPath(t, recoveryRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if readOnly.digest != before.digest {
+		t.Fatal("recovery inspection mutated the source root")
+	}
+	if result, err := RecoverOwnerScopeRoot(context.Background(), recoveryRoot, digestString("wrong plan")); result.State != "" || !errors.Is(err, ErrOwnerScopeRecoveryPlanMismatch) {
+		t.Fatalf("wrong-plan recovery = %#v, %v", result, err)
+	}
+	if _, err := os.Stat(filepath.Join(recoveryRoot, RootRecoveryJournalName)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("wrong-plan recovery wrote a journal: %v", err)
+	}
+
+	result, err := RecoverOwnerScopeRoot(context.Background(), recoveryRoot, plan.PlanSHA256)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.State != RootRecoveryStateFreshCommitted || result.ArchivePath == "" || result.Generation.Path == "" || result.Generation.Status.FreshGenerationID == sourceGeneration.Status.FreshGenerationID {
+		t.Fatalf("recovery result = %#v", result)
+	}
+	archive := openMigrationRoot(t, result.ArchivePath)
+	archiveSnapshot, err := snapshotDirectory(archive)
+	archive.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if archiveSnapshot.digest != plan.SourceSnapshotSHA256 || len(archiveSnapshot.entries) != plan.SourceEntryCount {
+		t.Fatalf("archive snapshot = %#v, plan = %#v", archiveSnapshot, plan)
+	}
+	archivedMarker := filepath.Join(result.ArchivePath, generationsDirectory, sourceGeneration.Status.FreshGenerationID, "storage", "user-state")
+	if raw, err := os.ReadFile(archivedMarker); err != nil || string(raw) != "retained" {
+		t.Fatalf("archived user state = %q, %v", raw, err)
+	}
+	newGenerationEntries, err := os.ReadDir(result.Generation.Path)
+	if err != nil || len(newGenerationEntries) != 0 {
+		t.Fatalf("new generation entries = %#v, %v", newGenerationEntries, err)
+	}
+
+	prepared, err := PrepareOwnerScopeGeneration(context.Background(), recoveryRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if prepared.Path != result.Generation.Path || prepared.Status.FreshGenerationID != result.Generation.Status.FreshGenerationID {
+		t.Fatalf("prepared recovered generation = %#v, want %#v", prepared, result.Generation)
+	}
+	idempotent, err := RecoverOwnerScopeRoot(context.Background(), recoveryRoot, plan.PlanSHA256)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if idempotent.RecoveryID != result.RecoveryID || idempotent.ArchivePath != result.ArchivePath || idempotent.Generation.Path != result.Generation.Path {
+		t.Fatalf("idempotent recovery = %#v, want %#v", idempotent, result)
+	}
+
+	root := openMigrationRoot(t, recoveryRoot)
+	migration, err := OpenOwnerScopeMigration(root, OwnerScopeMigrationOptions{Containment: acceptingContainmentVerifier{}})
+	root.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer migration.Close()
+	if _, err := migration.DeleteQuarantine(context.Background()); !errors.Is(err, ErrOwnerScopeRecoveryArchiveRetained) {
+		t.Fatalf("DeleteQuarantine() error = %v", err)
+	}
+	if raw, err := os.ReadFile(archivedMarker); err != nil || string(raw) != "retained" {
+		t.Fatalf("retained archive after cleanup attempt = %q, %v", raw, err)
+	}
+}
+
+func TestRecoverOwnerScopeRootResumesEveryPersistedStage(t *testing.T) {
+	for _, stage := range []string{
+		"prepared", "archive-writing", "work-created", "archive-partial", "archive-renamed", "archive-committed",
+		"fresh-prepared", "fresh-artifacts", "standard-journal-committed", "fresh-committed",
+	} {
+		t.Run(stage, func(t *testing.T) {
+			rootPath, plan, journal := prepareRecoveryFixture(t)
+			root := openMigrationRoot(t, rootPath)
+			switch stage {
+			case "prepared":
+			case "archive-writing":
+				journal.State = string(RootRecoveryStateArchiveWriting)
+				mustPersistRecoveryJournal(t, root, journal)
+			case "work-created":
+				journal.State = string(RootRecoveryStateArchiveWriting)
+				mustPersistRecoveryJournal(t, root, journal)
+				if err := ensureDirectoryAt(int(root.Fd()), rootRecoveryWorkDirectory, 0o700); err != nil {
+					t.Fatal(err)
+				}
+			case "archive-partial":
+				journal.State = string(RootRecoveryStateArchiveWriting)
+				mustPersistRecoveryJournal(t, root, journal)
+				archive := prepareRecoveryWorkArchive(t, root, journal)
+				if err := moveStoreIntoQuarantine(int(root.Fd()), int(archive.Fd()), journal.TopLevelEntries[0]); err != nil {
+					t.Fatal(err)
+				}
+				archive.Close()
+			case "archive-renamed":
+				journal.State = string(RootRecoveryStateArchiveWriting)
+				mustPersistRecoveryJournal(t, root, journal)
+				if err := writeRecoveryArchive(root, &journal); err != nil {
+					t.Fatal(err)
+				}
+				journal.State = string(RootRecoveryStateArchiveWriting)
+				journal.QuarantineSHA256 = ""
+				mustPersistRecoveryJournal(t, root, journal)
+			case "archive-committed":
+				journal.State = string(RootRecoveryStateArchiveWriting)
+				mustPersistRecoveryJournal(t, root, journal)
+				if err := writeRecoveryArchive(root, &journal); err != nil {
+					t.Fatal(err)
+				}
+			case "fresh-prepared", "fresh-artifacts", "standard-journal-committed":
+				journal.State = string(RootRecoveryStateArchiveWriting)
+				mustPersistRecoveryJournal(t, root, journal)
+				if err := writeRecoveryArchive(root, &journal); err != nil {
+					t.Fatal(err)
+				}
+				journal.State = string(RootRecoveryStateFreshPrepared)
+				mustPersistRecoveryJournal(t, root, journal)
+				if stage != "fresh-prepared" {
+					prepareRecoveryFreshArtifacts(t, root, journal)
+				}
+				if stage == "standard-journal-committed" {
+					raw, err := json.Marshal(recoveredMigrationJournal(journal))
+					if err != nil {
+						t.Fatal(err)
+					}
+					if err := writeAtomicRootFile(root, MigrationJournalName, append(raw, '\n'), 0o600); err != nil {
+						t.Fatal(err)
+					}
+				}
+			case "fresh-committed":
+				root.Close()
+				if _, err := RecoverOwnerScopeRoot(context.Background(), rootPath, plan.PlanSHA256); err != nil {
+					t.Fatal(err)
+				}
+				root = nil
+			}
+			if root != nil {
+				root.Close()
+			}
+
+			if _, err := PrepareOwnerScopeGeneration(context.Background(), rootPath); !errors.Is(err, ErrOwnerScopeRecoveryRequired) && stage != "fresh-committed" {
+				t.Fatalf("normal preparation during %s error = %v", stage, err)
+			}
+			result, err := RecoverOwnerScopeRoot(context.Background(), rootPath, plan.PlanSHA256)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result.State != RootRecoveryStateFreshCommitted {
+				t.Fatalf("resumed result = %#v", result)
+			}
+			archive := openMigrationRoot(t, result.ArchivePath)
+			snapshot, err := snapshotDirectory(archive)
+			archive.Close()
+			if err != nil || snapshot.digest != plan.SourceSnapshotSHA256 {
+				t.Fatalf("resumed archive = %#v, %v", snapshot, err)
+			}
+		})
+	}
+}
+
+func TestRecoverOwnerScopeRootResumesAfterEveryArchiveMove(t *testing.T) {
+	for moved := 0; moved <= 3; moved++ {
+		t.Run(fmt.Sprintf("moved-%d", moved), func(t *testing.T) {
+			rootPath, plan, journal := prepareRecoveryFixture(t)
+			root := openMigrationRoot(t, rootPath)
+			journal.State = string(RootRecoveryStateArchiveWriting)
+			mustPersistRecoveryJournal(t, root, journal)
+			archive := prepareRecoveryWorkArchive(t, root, journal)
+			for index := 0; index < moved; index++ {
+				if err := moveStoreIntoQuarantine(int(root.Fd()), int(archive.Fd()), journal.TopLevelEntries[index]); err != nil {
+					archive.Close()
+					root.Close()
+					t.Fatal(err)
+				}
+			}
+			archive.Close()
+			root.Close()
+			result, err := RecoverOwnerScopeRoot(context.Background(), rootPath, plan.PlanSHA256)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result.State != RootRecoveryStateFreshCommitted {
+				t.Fatalf("resumed result = %#v", result)
+			}
+		})
+	}
+}
+
+func TestInspectOwnerScopeRootRecoveryRejectsUnsafeAndAmbiguousRootsWithoutMutation(t *testing.T) {
+	t.Run("same filesystem identity", func(t *testing.T) {
+		rootPath := t.TempDir()
+		if _, err := PrepareOwnerScopeGeneration(context.Background(), rootPath); err != nil {
+			t.Fatal(err)
+		}
+		assertRecoveryInspectionRejectedWithoutMutation(t, rootPath, ErrOwnerScopeRecoveryNotEligible)
+	})
+
+	for _, test := range []struct {
+		name   string
+		mutate func(*testing.T, string)
+	}{
+		{name: "unexpected control entry", mutate: func(t *testing.T, root string) {
+			if err := os.WriteFile(filepath.Join(root, "unexpected"), []byte("x"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{name: "unsafe symlink", mutate: func(t *testing.T, root string) {
+			generationID := strings.TrimSpace(string(mustReadFile(t, filepath.Join(root, currentGenerationFile))))
+			if err := os.Symlink(filepath.Join(root, MigrationJournalName), filepath.Join(root, generationsDirectory, generationID, "link")); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{name: "future journal", mutate: func(t *testing.T, root string) {
+			path := filepath.Join(root, MigrationJournalName)
+			raw := mustReadFile(t, path)
+			future := bytes.Replace(raw, []byte(migrationSchemaVersion), []byte("owner-scope-migration-v99"), 1)
+			if err := os.WriteFile(path, future, 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{name: "cleanup transaction", mutate: func(t *testing.T, root string) {
+			if err := os.WriteFile(filepath.Join(root, CleanupJournalName), []byte("{}\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			sourceRoot := t.TempDir()
+			if _, err := PrepareOwnerScopeGeneration(context.Background(), sourceRoot); err != nil {
+				t.Fatal(err)
+			}
+			rootPath := copyOwnerScopeRoot(t, sourceRoot)
+			test.mutate(t, rootPath)
+			assertRecoveryInspectionRejectedWithoutMutation(t, rootPath, ErrOwnerScopeRecoveryNotEligible)
+		})
+	}
+}
+
+func TestRecoverOwnerScopeRootRejectsPlanDriftWithoutStartingTransaction(t *testing.T) {
+	sourceRoot := t.TempDir()
+	generation, err := PrepareOwnerScopeGeneration(context.Background(), sourceRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rootPath := copyOwnerScopeRoot(t, sourceRoot)
+	plan, err := InspectOwnerScopeRootRecovery(rootPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	generationID := strings.TrimSpace(string(mustReadFile(t, filepath.Join(rootPath, currentGenerationFile))))
+	drift := filepath.Join(rootPath, generationsDirectory, generationID, "drift")
+	if err := os.WriteFile(drift, []byte("changed after inspection"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_ = generation
+	before, err := snapshotPath(t, rootPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result, err := RecoverOwnerScopeRoot(context.Background(), rootPath, plan.PlanSHA256); result.State != "" || !errors.Is(err, ErrOwnerScopeRecoveryPlanMismatch) {
+		t.Fatalf("drifted recovery = %#v, %v", result, err)
+	}
+	after, err := snapshotPath(t, rootPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.digest != before.digest {
+		t.Fatal("plan-drift rejection mutated the root")
+	}
+	if _, err := os.Stat(filepath.Join(rootPath, RootRecoveryJournalName)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("plan-drift rejection wrote a recovery journal: %v", err)
 	}
 }
 
@@ -869,6 +1452,212 @@ func openMigrationRoot(t *testing.T, path string) *os.File {
 		t.Fatal(err)
 	}
 	return root
+}
+
+func assertRelocationRejectedWithoutJournalMutation(t *testing.T, root string) {
+	t.Helper()
+	journalPath := filepath.Join(root, MigrationJournalName)
+	before, err := os.ReadFile(journalPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if generation, err := PrepareOwnerScopeGeneration(context.Background(), root); generation.Path != "" || !errors.Is(err, ErrOwnerScopeJournalCorrupt) {
+		t.Fatalf("PrepareOwnerScopeGeneration() = %#v, %v", generation, err)
+	}
+	after, err := os.ReadFile(journalPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(after, before) {
+		t.Fatal("rejected relocation mutated its migration journal")
+	}
+}
+
+func snapshotPath(t *testing.T, path string) (rootSnapshot, error) {
+	t.Helper()
+	root, err := os.Open(path)
+	if err != nil {
+		return rootSnapshot{}, err
+	}
+	defer root.Close()
+	return snapshotDirectory(root)
+}
+
+func mustReadFile(t *testing.T, path string) []byte {
+	t.Helper()
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return raw
+}
+
+func assertRecoveryInspectionRejectedWithoutMutation(t *testing.T, root string, want error) {
+	t.Helper()
+	before, beforeErr := snapshotPath(t, root)
+	journalBefore := mustReadFile(t, filepath.Join(root, MigrationJournalName))
+	if plan, err := InspectOwnerScopeRootRecovery(root); plan.PlanSHA256 != "" || !errors.Is(err, want) {
+		t.Fatalf("InspectOwnerScopeRootRecovery() = %#v, %v", plan, err)
+	}
+	journalAfter := mustReadFile(t, filepath.Join(root, MigrationJournalName))
+	if !bytes.Equal(journalAfter, journalBefore) {
+		t.Fatal("rejected recovery inspection mutated the migration journal")
+	}
+	if beforeErr == nil {
+		after, err := snapshotPath(t, root)
+		if err != nil || after.digest != before.digest {
+			t.Fatalf("rejected recovery inspection changed root snapshot: %#v, %v", after, err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(root, RootRecoveryJournalName)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("rejected recovery inspection wrote a recovery journal: %v", err)
+	}
+}
+
+func prepareRecoveryFixture(t *testing.T) (string, OwnerScopeRootRecoveryPlan, rootRecoveryJournalV1) {
+	t.Helper()
+	sourceRoot := t.TempDir()
+	generation, err := PrepareOwnerScopeGeneration(context.Background(), sourceRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	marker := filepath.Join(generation.Path, "db", "state")
+	if err := os.MkdirAll(filepath.Dir(marker), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(marker, []byte("state"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	rootPath := copyOwnerScopeRoot(t, sourceRoot)
+	plan, err := InspectOwnerScopeRootRecovery(rootPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := openMigrationRoot(t, rootPath)
+	duplicate, identity, err := duplicateMigrationRoot(root)
+	if err != nil {
+		root.Close()
+		t.Fatal(err)
+	}
+	duplicate.Close()
+	inspected, wire, err := inspectRecoveryCandidate(root, identity)
+	if err != nil {
+		root.Close()
+		t.Fatal(err)
+	}
+	if inspected.PlanSHA256 != plan.PlanSHA256 {
+		root.Close()
+		t.Fatalf("private recovery plan = %#v, public = %#v", inspected, plan)
+	}
+	journal, err := newRootRecoveryJournal(identity, wire, plan.PlanSHA256)
+	if err != nil {
+		root.Close()
+		t.Fatal(err)
+	}
+	mustPersistRecoveryJournal(t, root, journal)
+	root.Close()
+	return rootPath, plan, journal
+}
+
+func mustPersistRecoveryJournal(t *testing.T, root *os.File, journal rootRecoveryJournalV1) {
+	t.Helper()
+	if err := persistRootRecoveryJournal(root, journal); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func prepareRecoveryWorkArchive(t *testing.T, root *os.File, journal rootRecoveryJournalV1) *os.File {
+	t.Helper()
+	if err := ensureDirectoryAt(int(root.Fd()), rootRecoveryWorkDirectory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	work, err := openDirectoryAt(int(root.Fd()), rootRecoveryWorkDirectory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ensureDirectoryAt(int(work.Fd()), journal.QuarantineID, 0o700); err != nil {
+		work.Close()
+		t.Fatal(err)
+	}
+	archive, err := openDirectoryAt(int(work.Fd()), journal.QuarantineID)
+	work.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return archive
+}
+
+func prepareRecoveryFreshArtifacts(t *testing.T, root *os.File, journal rootRecoveryJournalV1) {
+	t.Helper()
+	if err := ensureDirectoryAt(int(root.Fd()), generationsDirectory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	generations, err := openDirectoryAt(int(root.Fd()), generationsDirectory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ensureDirectoryAt(int(generations.Fd()), journal.FreshGenerationID, 0o700); err != nil {
+		generations.Close()
+		t.Fatal(err)
+	}
+	generations.Close()
+	if err := writeAtomicRootFile(root, currentGenerationFile, []byte(journal.FreshGenerationID+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func copyOwnerScopeRoot(t *testing.T, source string) string {
+	t.Helper()
+	destination := t.TempDir()
+	var copyDirectory func(string, string)
+	copyDirectory = func(sourceDirectory, destinationDirectory string) {
+		entries, err := os.ReadDir(sourceDirectory)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, entry := range entries {
+			sourcePath := filepath.Join(sourceDirectory, entry.Name())
+			destinationPath := filepath.Join(destinationDirectory, entry.Name())
+			info, err := entry.Info()
+			if err != nil {
+				t.Fatal(err)
+			}
+			switch {
+			case info.IsDir():
+				if err := os.Mkdir(destinationPath, info.Mode().Perm()); err != nil {
+					t.Fatal(err)
+				}
+				copyDirectory(sourcePath, destinationPath)
+			case info.Mode().IsRegular():
+				raw, err := os.ReadFile(sourcePath)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(destinationPath, raw, info.Mode().Perm()); err != nil {
+					t.Fatal(err)
+				}
+			default:
+				t.Fatalf("unsupported owner-scope fixture entry %q", sourcePath)
+			}
+		}
+	}
+	copyDirectory(source, destination)
+	return destination
+}
+
+func moveOwnerScopeRootContents(t *testing.T, source string) string {
+	t.Helper()
+	destination := t.TempDir()
+	entries, err := os.ReadDir(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if err := os.Rename(filepath.Join(source, entry.Name()), filepath.Join(destination, entry.Name())); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return destination
 }
 
 func writeRedevenLegacyInventory(t *testing.T, root string) {

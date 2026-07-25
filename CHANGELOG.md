@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- Automatically recover a fully committed owner-scoped generation after only its enclosing
+  state-root directory identity changes and every recorded internal identity,
+  hash, and binding remains exact, while rejecting file-level copies,
+  interrupted migrations, tampering, future state, and active cleanup without
+  mutation.
+- Add an explicit plan-hash-bound recovery transaction for an otherwise valid
+  committed root copied or restored at file level. It atomically retains the
+  complete prior root in an undeletable archive, commits a new empty generation,
+  never reauthorizes prior durable state, and resumes idempotently after every
+  persisted stage while normal startup remains fail closed and non-mutating.
+
 ## v0.6.15
 
 ### Fixed

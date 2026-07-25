@@ -2693,7 +2693,7 @@ export interface components {
         SessionScopeV1PublicRevokeResult: components["schemas"]["SessionScopeV1CompleteRevokeResult"] | components["schemas"]["SessionScopeV1IncompleteRevokeResult"];
         CompatibilityManifestV8: {
             /** @constant */
-            schema_version: "redevplugin.compatibility.v8";
+            schema_version: "redevplugin.compatibility.v9";
             package_set: components["schemas"]["PlatformPackageSetV1"];
             matrix: {
                 /** @constant */
@@ -2755,7 +2755,7 @@ export interface components {
                 /** @constant */
                 plugin_platform_openapi_version: "plugin-platform-v8";
                 /** @constant */
-                compatibility_schema_version: "compatibility-manifest-v8";
+                compatibility_schema_version: "compatibility-manifest-v9";
                 /** @constant */
                 worker_invocation_schema_version: "worker-invocation-v3";
                 /** @constant */
