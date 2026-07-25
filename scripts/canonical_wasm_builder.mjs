@@ -172,7 +172,7 @@ async function buildDockerArtifacts(root, rustVersion, targets, environment) {
     "set -euo pipefail",
     `rustc -Vv | grep -Fx 'release: ${rustVersion}'`,
     "rustc -Vv | grep -Fx 'host: x86_64-unknown-linux-gnu'",
-    "rustup target add wasm32-unknown-unknown",
+    canonicalRustTargetInstallScript(),
     "export CARGO_TARGET_DIR=/tmp/redevplugin-target",
     "export CARGO_ENCODED_RUSTFLAGS=$'--remap-path-prefix=/repo=/workspace\\x1f--remap-path-prefix=/usr/local/cargo=/cargo'",
     `cargo build --locked --release --target wasm32-unknown-unknown ${targets.map(({ packageName }) => `-p ${packageName}`).join(" ")}`,
@@ -192,6 +192,24 @@ async function buildDockerArtifacts(root, rustVersion, targets, environment) {
   } finally {
     await rm(outputRoot, { recursive: true, force: true });
   }
+}
+
+export function canonicalRustTargetInstallScript() {
+  return [
+    "install_canonical_wasm_target() {",
+    "  local attempt",
+    "  for attempt in 1 2 3 4 5; do",
+    "    if rustup target add wasm32-unknown-unknown; then",
+    "      return 0",
+    "    fi",
+    "    if [[ \"$attempt\" == \"5\" ]]; then",
+    "      return 1",
+    "    fi",
+    "    sleep \"$attempt\"",
+    "  done",
+    "}",
+    "install_canonical_wasm_target",
+  ].join("\n");
 }
 
 async function collectCargoSourcePaths(root, metadata, packageNames, additionalPaths, optionalPaths) {

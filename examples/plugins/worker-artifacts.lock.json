@@ -20,7 +20,7 @@
     "examples/workers/weather/src/lib.rs": "7a7b9644aab10f36e3ea41b7c0254d950b33a21e2f5d51bc35d20191bc60a037",
     "rust-toolchain.toml": "2b2d5de36669ccf5256c33c9c1af12c0c38e1d697e1b55bb82b3c8b39cdaaf96",
     "scripts/build_example_plugins.mjs": "e04a3a25cdca696ee7eb02da82ae92df4f6e3e1465608fe468cb6c08c8144cd7",
-    "scripts/canonical_wasm_builder.mjs": "b97d8802d0c192a17dcdcd30a704380b89af313f73b12c6eed9174236c908d1d"
+    "scripts/canonical_wasm_builder.mjs": "4f1b3ea68744925e456e19cfa9f4e85efe57d5857b2211716ab3346f8e6fcc7b"
   },
   "artifacts": {
     "examples/plugins/memos/workers/memos.wasm": "8d75fc60c75cc6fe8d96343d87650b6b40746503ba2d28556932b45487468829",
