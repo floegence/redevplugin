@@ -165,7 +165,7 @@ var generatedContractArtifacts = []ContractArtifact{
 		ID:      "owner-scope-root-recovery-schema",
 		Path:    "spec/plugin/owner-scope-root-recovery-v1.schema.json",
 		Version: "owner-scope-root-recovery-v1",
-		SHA256:  "5da9617731053295b3762a133c57ab526c3f622320d91bf095a0f749be944d20",
+		SHA256:  "1458496cf59eae083519cbbd525a59a3d68fbf5e4165a2a04bef0b181f66d0c5",
 	},
 	{
 		ID:      "package-signature-schema",

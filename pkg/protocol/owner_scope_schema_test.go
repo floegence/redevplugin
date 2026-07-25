@@ -19,6 +19,13 @@ func TestOwnerScopeSchemasValidateClosedContracts(t *testing.T) {
 	if err := recoverySchema.Validate(validOwnerScopeRootRecovery()); err != nil {
 		t.Fatalf("valid owner scope root recovery rejected: %v", err)
 	}
+	rebind := validOwnerScopeRootRecovery()
+	rebind["state"] = "rebind_prepared"
+	rebind["quarantine_sha256"] = repeatedHex("4f")
+	rebind["rebind_root_identity_sha256"] = repeatedHex("6f")
+	if err := recoverySchema.Validate(rebind); err != nil {
+		t.Fatalf("valid owner scope root rebind rejected: %v", err)
+	}
 	if err := cleanupSchema.Validate(validQuarantineCleanup()); err != nil {
 		t.Fatalf("valid quarantine cleanup rejected: %v", err)
 	}
@@ -61,6 +68,11 @@ func TestOwnerScopeSchemasRejectUnknownStateTraversalAndOversizedEntries(t *test
 	recovery["top_level_entries"] = []any{".redevplugin-generations"}
 	if err := recoverySchema.Validate(recovery); err == nil {
 		t.Fatal("root recovery schema accepted an incomplete source entry set")
+	}
+	recovery = validOwnerScopeRootRecovery()
+	recovery["rebind_root_identity_sha256"] = repeatedHex("6f")
+	if err := recoverySchema.Validate(recovery); err == nil {
+		t.Fatal("root recovery schema accepted a rebind target outside rebind state")
 	}
 	migration = validOwnerScopeMigration()
 	migration["state"] = "guessed"
@@ -136,22 +148,24 @@ func validQuarantineCleanup() map[string]any {
 
 func validOwnerScopeRootRecovery() map[string]any {
 	return map[string]any{
-		"schema_version":          "owner-scope-root-recovery-v1",
-		"recovery_id":             "recovery_0123456789abcdef0123456789abcdef",
-		"plan_sha256":             repeatedHex("1f"),
-		"root_identity_sha256":    repeatedHex("2f"),
-		"source_journal_sha256":   repeatedHex("3f"),
-		"source_snapshot_sha256":  repeatedHex("4f"),
-		"source_entry_count":      12,
-		"source_bytes":            4096,
-		"has_retained_quarantine": true,
-		"top_level_entries":       []any{".redevplugin-current-generation", ".redevplugin-generations", ".redevplugin-owner-scope-migration-v1.json", ".redevplugin-quarantine"},
-		"state":                   "archive_writing",
-		"quarantine_id":           "quarantine_0123456789abcdef0123456789abcdef",
-		"quarantine_sha256":       "",
-		"fresh_migration_id":      "migration_0123456789abcdef0123456789abcdef",
-		"fresh_generation_id":     "generation_0123456789abcdef0123456789abcdef",
-		"fresh_generation_sha256": repeatedHex("5f"),
+		"schema_version":              "owner-scope-root-recovery-v1",
+		"recovery_id":                 "recovery_0123456789abcdef0123456789abcdef",
+		"plan_sha256":                 repeatedHex("1f"),
+		"source_root_identity_sha256": repeatedHex("2e"),
+		"root_identity_sha256":        repeatedHex("2f"),
+		"source_journal_sha256":       repeatedHex("3f"),
+		"source_snapshot_sha256":      repeatedHex("4f"),
+		"source_entry_count":          12,
+		"source_bytes":                4096,
+		"has_retained_quarantine":     true,
+		"top_level_entries":           []any{".redevplugin-current-generation", ".redevplugin-generations", ".redevplugin-owner-scope-migration-v1.json", ".redevplugin-quarantine"},
+		"state":                       "archive_writing",
+		"quarantine_id":               "quarantine_0123456789abcdef0123456789abcdef",
+		"quarantine_sha256":           "",
+		"fresh_migration_id":          "migration_0123456789abcdef0123456789abcdef",
+		"fresh_generation_id":         "generation_0123456789abcdef0123456789abcdef",
+		"fresh_generation_sha256":     repeatedHex("5f"),
+		"rebind_root_identity_sha256": "",
 	}
 }
 

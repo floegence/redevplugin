@@ -107,11 +107,17 @@ func OpenOwnerScopeMigration(rootDir *os.File, options OwnerScopeMigrationOption
 	migration := &OwnerScopeMigration{root: root, options: options}
 	if recoveryRaw, recoveryErr := readRootFile(root, RootRecoveryJournalName, 1<<20); recoveryErr == nil {
 		recovery, decodeErr := decodeRootRecoveryJournal(recoveryRaw)
-		if decodeErr != nil || recovery.RootIdentitySHA256 != identity {
+		if decodeErr != nil {
 			return nil, ErrOwnerScopeJournalCorrupt
 		}
-		if recovery.State != string(RootRecoveryStateFreshCommitted) {
+		if recovery.State != string(RootRecoveryStateFreshCommitted) && recovery.State != string(RootRecoveryStateRebindPrepared) {
+			if recovery.RootIdentitySHA256 != identity {
+				return nil, ErrOwnerScopeJournalCorrupt
+			}
 			return nil, ErrOwnerScopeRecoveryRequired
+		}
+		if recovery.State == string(RootRecoveryStateRebindPrepared) && recovery.RebindRootIdentitySHA256 != identity {
+			return nil, ErrOwnerScopeJournalCorrupt
 		}
 		migration.recovery = recovery
 	} else if !errors.Is(recoveryErr, os.ErrNotExist) {
@@ -125,11 +131,8 @@ func OpenOwnerScopeMigration(rootDir *os.File, options OwnerScopeMigrationOption
 		migration.journal = journal
 		migration.status = statusFromJournal(journal)
 		if migration.recovery.State != "" {
-			if !recoveryMatchesMigration(migration.recovery, journal) {
+			if !recoveryMigrationJournalsCompatible(migration.recovery, journal, identity) {
 				return nil, ErrOwnerScopeJournalCorrupt
-			}
-			if err := verifyRetainedRecoveryArchive(root, migration.recovery); err != nil {
-				return nil, err
 			}
 		} else if journal.InventoryID == recoveredRootInventoryID {
 			return nil, ErrOwnerScopeJournalCorrupt
@@ -144,17 +147,35 @@ func OpenOwnerScopeMigration(rootDir *os.File, options OwnerScopeMigrationOption
 		} else if !errors.Is(cleanupErr, os.ErrNotExist) {
 			return nil, cleanupErr
 		}
-		if journal.RootIdentitySHA256 != identity {
-			if err := migration.rebindRelocatedCommittedRoot(identity); err != nil {
+		if migration.recovery.State != "" {
+			if migration.cleanup.State != "" {
+				return nil, ErrOwnerScopeSnapshotChanged
+			}
+			if err := verifyRecoveryRootEntries(root, true); err != nil {
 				return nil, err
 			}
-		}
-		if journal.State == string(StateFreshCommitted) {
-			if verifyErr := migration.verifyActiveFreshGeneration(); verifyErr != nil {
-				migration.journal.State = string(StateReconcileRequired)
-				_ = migration.persistJournal()
-				migration.status = statusFromJournal(migration.journal)
-				return nil, verifyErr
+			if err := verifyRetainedRecoveryArchive(root, migration.recovery); err != nil {
+				return nil, err
+			}
+			if err := migration.verifyActiveFreshGeneration(); err != nil {
+				return nil, err
+			}
+			if err := migration.resumeRecoveryRootRebind(identity); err != nil {
+				return nil, err
+			}
+		} else {
+			if journal.RootIdentitySHA256 != identity {
+				if err := migration.rebindRelocatedCommittedRoot(identity); err != nil {
+					return nil, err
+				}
+			}
+			if journal.State == string(StateFreshCommitted) {
+				if verifyErr := migration.verifyActiveFreshGeneration(); verifyErr != nil {
+					migration.journal.State = string(StateReconcileRequired)
+					_ = migration.persistJournal()
+					migration.status = statusFromJournal(migration.journal)
+					return nil, verifyErr
+				}
 			}
 		}
 		closeRoot = false
@@ -238,6 +259,38 @@ func (migration *OwnerScopeMigration) rebindRelocatedCommittedRoot(identity stri
 	}
 	migration.journal.RootIdentitySHA256 = identity
 	if err := migration.persistJournal(); err != nil {
+		return err
+	}
+	migration.status = statusFromJournal(migration.journal)
+	return nil
+}
+
+func (migration *OwnerScopeMigration) resumeRecoveryRootRebind(identity string) error {
+	if migration.recovery.State == string(RootRecoveryStateFreshCommitted) {
+		if migration.recovery.RootIdentitySHA256 == identity {
+			return nil
+		}
+		migration.recovery.State = string(RootRecoveryStateRebindPrepared)
+		migration.recovery.RebindRootIdentitySHA256 = identity
+		if err := persistRootRecoveryJournal(migration.root, migration.recovery); err != nil {
+			return err
+		}
+	}
+	if migration.recovery.State != string(RootRecoveryStateRebindPrepared) || migration.recovery.RebindRootIdentitySHA256 != identity {
+		return ErrOwnerScopeJournalCorrupt
+	}
+	if migration.journal.RootIdentitySHA256 == migration.recovery.RootIdentitySHA256 {
+		migration.journal.RootIdentitySHA256 = identity
+		if err := migration.persistJournal(); err != nil {
+			return err
+		}
+	} else if migration.journal.RootIdentitySHA256 != identity {
+		return ErrOwnerScopeJournalCorrupt
+	}
+	migration.recovery.RootIdentitySHA256 = identity
+	migration.recovery.RebindRootIdentitySHA256 = ""
+	migration.recovery.State = string(RootRecoveryStateFreshCommitted)
+	if err := persistRootRecoveryJournal(migration.root, migration.recovery); err != nil {
 		return err
 	}
 	migration.status = statusFromJournal(migration.journal)

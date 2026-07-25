@@ -893,6 +893,154 @@ func TestRecoverOwnerScopeRootRejectsPlanDriftWithoutStartingTransaction(t *test
 	}
 }
 
+func TestRecoverOwnerScopeRootRejectsRootIdentityChangeAfterInspection(t *testing.T) {
+	sourceRoot := t.TempDir()
+	generation, err := PrepareOwnerScopeGeneration(context.Background(), sourceRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(generation.Path, "state"), []byte("untrusted"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	inspectedRoot := copyOwnerScopeRoot(t, sourceRoot)
+	plan, err := InspectOwnerScopeRootRecovery(inspectedRoot)
+	if err != nil || plan.RootIdentitySHA256 == "" {
+		t.Fatalf("InspectOwnerScopeRootRecovery() = %#v, %v", plan, err)
+	}
+	replacedRoot := moveOwnerScopeRootContents(t, inspectedRoot)
+	before, err := snapshotPath(t, replacedRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result, err := RecoverOwnerScopeRoot(context.Background(), replacedRoot, plan.PlanSHA256); result.State != "" || !errors.Is(err, ErrOwnerScopeRecoveryPlanMismatch) {
+		t.Fatalf("RecoverOwnerScopeRoot() = %#v, %v", result, err)
+	}
+	after, err := snapshotPath(t, replacedRoot)
+	if err != nil || after.digest != before.digest {
+		t.Fatalf("identity drift rejection changed root: %#v, %v", after, err)
+	}
+	if _, err := os.Stat(filepath.Join(replacedRoot, RootRecoveryJournalName)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("identity drift wrote recovery journal: %v", err)
+	}
+}
+
+func TestRecoverOwnerScopeRootReopensLexicalPathBeforeReturning(t *testing.T) {
+	rootPath, plan, _ := prepareRecoveryFixture(t)
+	movedPath := rootPath + "-moved"
+	var hookErr error
+	recoveryBeforePathReopenHook = func() {
+		recoveryBeforePathReopenHook = nil
+		if err := os.Rename(rootPath, movedPath); err != nil {
+			hookErr = err
+			return
+		}
+		hookErr = os.Mkdir(rootPath, 0o700)
+	}
+	defer func() { recoveryBeforePathReopenHook = nil }()
+	result, err := RecoverOwnerScopeRoot(context.Background(), rootPath, plan.PlanSHA256)
+	if hookErr != nil {
+		t.Fatal(hookErr)
+	}
+	if !errors.Is(err, ErrOwnerScopeSnapshotChanged) || result.Generation.Path != "" {
+		t.Fatalf("RecoverOwnerScopeRoot() = %#v, %v", result, err)
+	}
+	prepared, err := PrepareOwnerScopeGeneration(context.Background(), movedPath)
+	if err != nil || prepared.Path == "" {
+		t.Fatalf("moved transaction root = %#v, %v", prepared, err)
+	}
+}
+
+func TestPrepareOwnerScopeGenerationRebindsMovedRecoveredRoot(t *testing.T) {
+	rootPath, plan, _ := prepareRecoveryFixture(t)
+	committed, err := RecoverOwnerScopeRoot(context.Background(), rootPath, plan.PlanSHA256)
+	if err != nil {
+		t.Fatal(err)
+	}
+	movedRoot := moveOwnerScopeRootContents(t, rootPath)
+	prepared, err := PrepareOwnerScopeGeneration(context.Background(), movedRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if prepared.Status.FreshGenerationID != committed.Generation.Status.FreshGenerationID || prepared.Path == committed.Generation.Path {
+		t.Fatalf("rebound generation = %#v, committed = %#v", prepared, committed.Generation)
+	}
+	recovery := mustReadRecoveryJournal(t, movedRoot)
+	migration := mustReadMigrationJournal(t, movedRoot)
+	if recovery.State != string(RootRecoveryStateFreshCommitted) || recovery.RebindRootIdentitySHA256 != "" ||
+		recovery.RootIdentitySHA256 != migration.RootIdentitySHA256 || recovery.SourceRootIdentitySHA256 != plan.RootIdentitySHA256 ||
+		recovery.PlanSHA256 != plan.PlanSHA256 {
+		t.Fatalf("rebound journals = %#v / %#v", recovery, migration)
+	}
+}
+
+func TestPrepareOwnerScopeGenerationResumesRecoveredRootRebindStages(t *testing.T) {
+	for _, stage := range []string{"rebind-prepared", "standard-committed"} {
+		t.Run(stage, func(t *testing.T) {
+			movedRoot, identity, recovery, migration := prepareMovedRecoveredRoot(t)
+			root := openMigrationRoot(t, movedRoot)
+			recovery.State = string(RootRecoveryStateRebindPrepared)
+			recovery.RebindRootIdentitySHA256 = identity
+			mustPersistRecoveryJournal(t, root, recovery)
+			if stage == "standard-committed" {
+				migration.RootIdentitySHA256 = identity
+				mustPersistMigrationJournal(t, root, migration)
+			}
+			root.Close()
+			prepared, err := PrepareOwnerScopeGeneration(context.Background(), movedRoot)
+			if err != nil || prepared.Path == "" {
+				t.Fatalf("PrepareOwnerScopeGeneration() = %#v, %v", prepared, err)
+			}
+			persistedRecovery := mustReadRecoveryJournal(t, movedRoot)
+			persistedMigration := mustReadMigrationJournal(t, movedRoot)
+			if persistedRecovery.State != string(RootRecoveryStateFreshCommitted) || persistedRecovery.RebindRootIdentitySHA256 != "" ||
+				persistedRecovery.RootIdentitySHA256 != identity || persistedMigration.RootIdentitySHA256 != identity {
+				t.Fatalf("resumed journals = %#v / %#v", persistedRecovery, persistedMigration)
+			}
+		})
+	}
+}
+
+func TestPrepareOwnerScopeGenerationRejectsTamperedRecoveredRootRebind(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		mutate func(*testing.T, string, string, *rootRecoveryJournalV1, *migrationJournalV1)
+		want   error
+	}{
+		{name: "wrong rebind target", want: ErrOwnerScopeJournalCorrupt, mutate: func(_ *testing.T, _ string, _ string, recovery *rootRecoveryJournalV1, _ *migrationJournalV1) {
+			recovery.State = string(RootRecoveryStateRebindPrepared)
+			recovery.RebindRootIdentitySHA256 = digestString("wrong target")
+		}},
+		{name: "unexpected standard identity", want: ErrOwnerScopeJournalCorrupt, mutate: func(_ *testing.T, _ string, identity string, recovery *rootRecoveryJournalV1, migration *migrationJournalV1) {
+			recovery.State = string(RootRecoveryStateRebindPrepared)
+			recovery.RebindRootIdentitySHA256 = identity
+			migration.RootIdentitySHA256 = digestString("unexpected standard identity")
+		}},
+		{name: "extra generation", want: ErrOwnerScopeSnapshotChanged, mutate: func(t *testing.T, root string, _ string, _ *rootRecoveryJournalV1, _ *migrationJournalV1) {
+			if err := os.Mkdir(filepath.Join(root, generationsDirectory, "generation_00000000000000000000000000000000"), 0o700); err != nil {
+				t.Fatal(err)
+			}
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			movedRoot, identity, recovery, migration := prepareMovedRecoveredRoot(t)
+			test.mutate(t, movedRoot, identity, &recovery, &migration)
+			root := openMigrationRoot(t, movedRoot)
+			mustPersistRecoveryJournal(t, root, recovery)
+			mustPersistMigrationJournal(t, root, migration)
+			root.Close()
+			recoveryBefore := mustReadFile(t, filepath.Join(movedRoot, RootRecoveryJournalName))
+			migrationBefore := mustReadFile(t, filepath.Join(movedRoot, MigrationJournalName))
+			if generation, err := PrepareOwnerScopeGeneration(context.Background(), movedRoot); generation.Path != "" || !errors.Is(err, test.want) {
+				t.Fatalf("PrepareOwnerScopeGeneration() = %#v, %v", generation, err)
+			}
+			if !bytes.Equal(recoveryBefore, mustReadFile(t, filepath.Join(movedRoot, RootRecoveryJournalName))) ||
+				!bytes.Equal(migrationBefore, mustReadFile(t, filepath.Join(movedRoot, MigrationJournalName))) {
+				t.Fatal("rejected rebind tamper mutated journals")
+			}
+		})
+	}
+}
+
 func TestOwnerScopeRootRecoveryJournalRejectsTamperingWithoutMutation(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -904,6 +1052,7 @@ func TestOwnerScopeRootRecoveryJournalRejectsTamperingWithoutMutation(t *testing
 		}},
 		{name: "unknown field", mutate: mutateRecoveryJournalField("unknown", true)},
 		{name: "future schema", mutate: mutateRecoveryJournalField("schema_version", "owner-scope-root-recovery-v99")},
+		{name: "source root identity", mutate: mutateRecoveryJournalField("source_root_identity_sha256", digestString("tampered source root"))},
 		{name: "source journal digest", mutate: mutateRecoveryJournalField("source_journal_sha256", digestString("tampered journal"))},
 		{name: "source snapshot digest", mutate: mutateRecoveryJournalField("source_snapshot_sha256", digestString("tampered snapshot"))},
 		{name: "source entry count", mutate: mutateRecoveryJournalField("source_entry_count", 1)},
@@ -1833,6 +1982,52 @@ func mustPersistRecoveryJournal(t *testing.T, root *os.File, journal rootRecover
 	if err := persistRootRecoveryJournal(root, journal); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func mustPersistMigrationJournal(t *testing.T, root *os.File, journal migrationJournalV1) {
+	t.Helper()
+	raw, err := json.Marshal(journal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := writeAtomicRootFile(root, MigrationJournalName, append(raw, '\n'), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func mustReadRecoveryJournal(t *testing.T, rootPath string) rootRecoveryJournalV1 {
+	t.Helper()
+	journal, err := decodeRootRecoveryJournal(mustReadFile(t, filepath.Join(rootPath, RootRecoveryJournalName)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return journal
+}
+
+func mustReadMigrationJournal(t *testing.T, rootPath string) migrationJournalV1 {
+	t.Helper()
+	journal, err := decodeMigrationJournal(mustReadFile(t, filepath.Join(rootPath, MigrationJournalName)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return journal
+}
+
+func prepareMovedRecoveredRoot(t *testing.T) (string, string, rootRecoveryJournalV1, migrationJournalV1) {
+	t.Helper()
+	rootPath, plan, _ := prepareRecoveryFixture(t)
+	if _, err := RecoverOwnerScopeRoot(context.Background(), rootPath, plan.PlanSHA256); err != nil {
+		t.Fatal(err)
+	}
+	movedRoot := moveOwnerScopeRootContents(t, rootPath)
+	root := openMigrationRoot(t, movedRoot)
+	duplicate, identity, err := duplicateMigrationRoot(root)
+	root.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	duplicate.Close()
+	return movedRoot, identity, mustReadRecoveryJournal(t, movedRoot), mustReadMigrationJournal(t, movedRoot)
 }
 
 func prepareRecoveryWorkArchive(t *testing.T, root *os.File, journal rootRecoveryJournalV1) *os.File {

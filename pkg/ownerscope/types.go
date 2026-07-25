@@ -42,6 +42,7 @@ const (
 	RootRecoveryStateArchiveCommitted  RootRecoveryState = "archive_committed"
 	RootRecoveryStateFreshPrepared     RootRecoveryState = "fresh_prepared"
 	RootRecoveryStateFreshCommitted    RootRecoveryState = "fresh_committed"
+	RootRecoveryStateRebindPrepared    RootRecoveryState = "rebind_prepared"
 	RootRecoveryStateReconcileRequired RootRecoveryState = "reconcile_required"
 	RootRecoveryStateFailed            RootRecoveryState = "failed"
 )
@@ -50,6 +51,7 @@ const (
 // explicit review UI. PlanSHA256 binds commit to the exact inspected root.
 type OwnerScopeRootRecoveryPlan struct {
 	PlanSHA256            string
+	RootIdentitySHA256    string
 	SourceJournalSHA256   string
 	SourceSnapshotSHA256  string
 	SourceEntryCount      int
@@ -68,22 +70,24 @@ type OwnerScopeRootRecoveryResult struct {
 }
 
 type rootRecoveryJournalV1 struct {
-	SchemaVersion         string   `json:"schema_version"`
-	RecoveryID            string   `json:"recovery_id"`
-	PlanSHA256            string   `json:"plan_sha256"`
-	RootIdentitySHA256    string   `json:"root_identity_sha256"`
-	SourceJournalSHA256   string   `json:"source_journal_sha256"`
-	SourceSnapshotSHA256  string   `json:"source_snapshot_sha256"`
-	SourceEntryCount      int      `json:"source_entry_count"`
-	SourceBytes           int64    `json:"source_bytes"`
-	HasRetainedQuarantine bool     `json:"has_retained_quarantine"`
-	TopLevelEntries       []string `json:"top_level_entries"`
-	State                 string   `json:"state"`
-	QuarantineID          string   `json:"quarantine_id"`
-	QuarantineSHA256      string   `json:"quarantine_sha256"`
-	FreshMigrationID      string   `json:"fresh_migration_id"`
-	FreshGenerationID     string   `json:"fresh_generation_id"`
-	FreshGenerationSHA256 string   `json:"fresh_generation_sha256"`
+	SchemaVersion            string   `json:"schema_version"`
+	RecoveryID               string   `json:"recovery_id"`
+	PlanSHA256               string   `json:"plan_sha256"`
+	SourceRootIdentitySHA256 string   `json:"source_root_identity_sha256"`
+	RootIdentitySHA256       string   `json:"root_identity_sha256"`
+	SourceJournalSHA256      string   `json:"source_journal_sha256"`
+	SourceSnapshotSHA256     string   `json:"source_snapshot_sha256"`
+	SourceEntryCount         int      `json:"source_entry_count"`
+	SourceBytes              int64    `json:"source_bytes"`
+	HasRetainedQuarantine    bool     `json:"has_retained_quarantine"`
+	TopLevelEntries          []string `json:"top_level_entries"`
+	State                    string   `json:"state"`
+	QuarantineID             string   `json:"quarantine_id"`
+	QuarantineSHA256         string   `json:"quarantine_sha256"`
+	FreshMigrationID         string   `json:"fresh_migration_id"`
+	FreshGenerationID        string   `json:"fresh_generation_id"`
+	FreshGenerationSHA256    string   `json:"fresh_generation_sha256"`
+	RebindRootIdentitySHA256 string   `json:"rebind_root_identity_sha256"`
 }
 
 type MigrationState string

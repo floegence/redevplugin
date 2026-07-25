@@ -8,6 +8,7 @@
     "schema_version",
     "recovery_id",
     "plan_sha256",
+    "source_root_identity_sha256",
     "root_identity_sha256",
     "source_journal_sha256",
     "source_snapshot_sha256",
@@ -20,12 +21,14 @@
     "quarantine_sha256",
     "fresh_migration_id",
     "fresh_generation_id",
-    "fresh_generation_sha256"
+    "fresh_generation_sha256",
+    "rebind_root_identity_sha256"
   ],
   "properties": {
     "schema_version": { "const": "owner-scope-root-recovery-v1" },
     "recovery_id": { "type": "string", "pattern": "^recovery_[0-9a-f]{32}$" },
     "plan_sha256": { "$ref": "#/$defs/sha256" },
+    "source_root_identity_sha256": { "$ref": "#/$defs/sha256" },
     "root_identity_sha256": { "$ref": "#/$defs/sha256" },
     "source_journal_sha256": { "$ref": "#/$defs/sha256" },
     "source_snapshot_sha256": { "$ref": "#/$defs/sha256" },
@@ -45,6 +48,7 @@
         "archive_committed",
         "fresh_prepared",
         "fresh_committed",
+        "rebind_prepared",
         "reconcile_required",
         "failed"
       ]
@@ -53,7 +57,8 @@
     "quarantine_sha256": { "type": "string", "pattern": "^$|^[0-9a-f]{64}$" },
     "fresh_migration_id": { "type": "string", "pattern": "^migration_[0-9a-f]{32}$" },
     "fresh_generation_id": { "type": "string", "pattern": "^generation_[0-9a-f]{32}$" },
-    "fresh_generation_sha256": { "$ref": "#/$defs/sha256" }
+    "fresh_generation_sha256": { "$ref": "#/$defs/sha256" },
+    "rebind_root_identity_sha256": { "type": "string", "pattern": "^$|^[0-9a-f]{64}$" }
   },
   "allOf": [
     {
@@ -68,6 +73,16 @@
     {
       "if": { "properties": { "state": { "enum": ["archive_committed", "fresh_prepared", "fresh_committed"] } }, "required": ["state"] },
       "then": { "properties": { "quarantine_sha256": { "$ref": "#/$defs/sha256" } } }
+    },
+    {
+      "if": { "properties": { "state": { "const": "rebind_prepared" } }, "required": ["state"] },
+      "then": {
+        "properties": {
+          "quarantine_sha256": { "$ref": "#/$defs/sha256" },
+          "rebind_root_identity_sha256": { "$ref": "#/$defs/sha256" }
+        }
+      },
+      "else": { "properties": { "rebind_root_identity_sha256": { "const": "" } } }
     }
   ],
   "$defs": {
