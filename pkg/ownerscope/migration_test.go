@@ -705,6 +705,108 @@ func TestRecoverOwnerScopeRootRejectsTamperedFreshArtifactsWithoutAuthorization(
 	}
 }
 
+func TestRecoverOwnerScopeRootRejectsUnexpectedRootEntryBeforeCommit(t *testing.T) {
+	rootPath, plan, journal := prepareRecoveryFixture(t)
+	root := openMigrationRoot(t, rootPath)
+	journal.State = string(RootRecoveryStateArchiveWriting)
+	mustPersistRecoveryJournal(t, root, journal)
+	if err := writeRecoveryArchive(root, &journal); err != nil {
+		root.Close()
+		t.Fatal(err)
+	}
+	journal.State = string(RootRecoveryStateFreshPrepared)
+	mustPersistRecoveryJournal(t, root, journal)
+	root.Close()
+	unexpected := filepath.Join(rootPath, "unexpected-root-entry")
+	if err := os.WriteFile(unexpected, []byte("must remain untrusted"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := RecoverOwnerScopeRoot(context.Background(), rootPath, plan.PlanSHA256)
+	if !errors.Is(err, ErrOwnerScopeSnapshotChanged) || result.State != RootRecoveryStateReconcileRequired || result.Generation.Path != "" {
+		t.Fatalf("RecoverOwnerScopeRoot() = %#v, %v", result, err)
+	}
+	if raw, err := os.ReadFile(unexpected); err != nil || string(raw) != "must remain untrusted" {
+		t.Fatalf("unexpected root evidence = %q, %v", raw, err)
+	}
+	if _, err := os.Stat(filepath.Join(rootPath, MigrationJournalName)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("rejected recovery committed a migration journal: %v", err)
+	}
+	if generation, err := PrepareOwnerScopeGeneration(context.Background(), rootPath); generation.Path != "" || !errors.Is(err, ErrOwnerScopeRecoveryRequired) {
+		t.Fatalf("PrepareOwnerScopeGeneration() = %#v, %v", generation, err)
+	}
+}
+
+func TestRecoveredOwnerScopeRootVerifiesRetainedArchiveOnEveryOpen(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		mutate func(*testing.T, OwnerScopeRootRecoveryResult)
+	}{
+		{name: "deleted archive", mutate: func(t *testing.T, result OwnerScopeRootRecoveryResult) {
+			if err := os.RemoveAll(result.ArchivePath); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{name: "additional archive", mutate: func(t *testing.T, result OwnerScopeRootRecoveryResult) {
+			path := filepath.Join(filepath.Dir(result.ArchivePath), "quarantine_00000000000000000000000000000000")
+			if err := os.Mkdir(path, 0o700); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{name: "content tamper", mutate: func(t *testing.T, result OwnerScopeRootRecoveryResult) {
+			path := filepath.Join(result.ArchivePath, MigrationJournalName)
+			if err := os.WriteFile(path, []byte("tampered\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{name: "inode tamper", mutate: func(t *testing.T, result OwnerScopeRootRecoveryResult) {
+			path := filepath.Join(result.ArchivePath, MigrationJournalName)
+			raw := mustReadFile(t, path)
+			replacement := filepath.Join(result.ArchivePath, "replacement")
+			if err := os.WriteFile(replacement, raw, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Rename(replacement, path); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{name: "symlink tamper", mutate: func(t *testing.T, result OwnerScopeRootRecoveryResult) {
+			if err := os.Symlink(MigrationJournalName, filepath.Join(result.ArchivePath, "injected-link")); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{name: "hardlink tamper", mutate: func(t *testing.T, result OwnerScopeRootRecoveryResult) {
+			source := filepath.Join(result.ArchivePath, MigrationJournalName)
+			if err := os.Link(source, filepath.Join(result.ArchivePath, "injected-hardlink")); err != nil {
+				t.Fatal(err)
+			}
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			rootPath, plan, _ := prepareRecoveryFixture(t)
+			committed, err := RecoverOwnerScopeRoot(context.Background(), rootPath, plan.PlanSHA256)
+			if err != nil {
+				t.Fatal(err)
+			}
+			test.mutate(t, committed)
+			recoveryJournalBefore := mustReadFile(t, filepath.Join(rootPath, RootRecoveryJournalName))
+			migrationJournalBefore := mustReadFile(t, filepath.Join(rootPath, MigrationJournalName))
+
+			result, err := RecoverOwnerScopeRoot(context.Background(), rootPath, plan.PlanSHA256)
+			if !errors.Is(err, ErrOwnerScopeSnapshotChanged) || result.Generation.Path != "" {
+				t.Fatalf("RecoverOwnerScopeRoot() = %#v, %v", result, err)
+			}
+			if generation, err := PrepareOwnerScopeGeneration(context.Background(), rootPath); generation.Path != "" || !errors.Is(err, ErrOwnerScopeSnapshotChanged) {
+				t.Fatalf("PrepareOwnerScopeGeneration() = %#v, %v", generation, err)
+			}
+			if !bytes.Equal(mustReadFile(t, filepath.Join(rootPath, RootRecoveryJournalName)), recoveryJournalBefore) ||
+				!bytes.Equal(mustReadFile(t, filepath.Join(rootPath, MigrationJournalName)), migrationJournalBefore) {
+				t.Fatal("rejected archive tamper mutated control journals")
+			}
+		})
+	}
+}
+
 func TestInspectOwnerScopeRootRecoveryRejectsUnsafeAndAmbiguousRootsWithoutMutation(t *testing.T) {
 	t.Run("same filesystem identity", func(t *testing.T) {
 		rootPath := t.TempDir()

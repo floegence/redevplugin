@@ -128,6 +128,9 @@ func OpenOwnerScopeMigration(rootDir *os.File, options OwnerScopeMigrationOption
 			if !recoveryMatchesMigration(migration.recovery, journal) {
 				return nil, ErrOwnerScopeJournalCorrupt
 			}
+			if err := verifyRetainedRecoveryArchive(root, migration.recovery); err != nil {
+				return nil, err
+			}
 		} else if journal.InventoryID == recoveredRootInventoryID {
 			return nil, ErrOwnerScopeJournalCorrupt
 		}

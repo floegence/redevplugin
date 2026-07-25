@@ -99,36 +99,36 @@ func RecoverOwnerScopeRoot(ctx context.Context, rootPath, expectedPlanSHA256 str
 		return OwnerScopeRootRecoveryResult{}, ErrOwnerScopeRecoveryPlanMismatch
 	}
 	if err := ctx.Err(); err != nil {
-		return recoveryResult(absoluteRoot, journal), err
+		return recoveryErrorResult(absoluteRoot, journal), err
 	}
 
 	if journal.State == string(RootRecoveryStatePrepared) {
 		journal.State = string(RootRecoveryStateArchiveWriting)
 		if err := persistRootRecoveryJournal(root, journal); err != nil {
-			return recoveryResult(absoluteRoot, journal), err
+			return recoveryErrorResult(absoluteRoot, journal), err
 		}
 	}
 	if journal.State == string(RootRecoveryStateArchiveWriting) {
 		if err := writeRecoveryArchive(root, &journal); err != nil {
-			return recoveryResult(absoluteRoot, journal), fmt.Errorf("archive owner scope recovery source: %w", err)
+			return recoveryErrorResult(absoluteRoot, journal), fmt.Errorf("archive owner scope recovery source: %w", err)
 		}
 	}
 	if journal.State == string(RootRecoveryStateArchiveCommitted) {
 		journal.State = string(RootRecoveryStateFreshPrepared)
 		if err := persistRootRecoveryJournal(root, journal); err != nil {
-			return recoveryResult(absoluteRoot, journal), err
+			return recoveryErrorResult(absoluteRoot, journal), err
 		}
 	}
 	if journal.State == string(RootRecoveryStateFreshPrepared) {
 		if err := commitRecoveryFreshGeneration(root, &journal); err != nil {
-			return recoveryResult(absoluteRoot, journal), fmt.Errorf("commit owner scope recovery generation: %w", err)
+			return recoveryErrorResult(absoluteRoot, journal), fmt.Errorf("commit owner scope recovery generation: %w", err)
 		}
 	}
 	if journal.State != string(RootRecoveryStateFreshCommitted) {
-		return recoveryResult(absoluteRoot, journal), ErrOwnerScopeRecoveryRequired
+		return recoveryErrorResult(absoluteRoot, journal), ErrOwnerScopeRecoveryRequired
 	}
 	if err := verifyFinalRecovery(root, journal); err != nil {
-		return recoveryResult(absoluteRoot, journal), fmt.Errorf("verify owner scope recovery result: %w", err)
+		return recoveryErrorResult(absoluteRoot, journal), fmt.Errorf("verify owner scope recovery result: %w", err)
 	}
 	return recoveryResult(absoluteRoot, journal), nil
 }
@@ -467,6 +467,9 @@ func commitRecoveryFreshGeneration(root *os.File, journal *rootRecoveryJournalV1
 			return failRootRecovery(root, journal, err)
 		}
 	}
+	if err := verifyRecoveryPrecommitRoot(root, *journal); err != nil {
+		return failRootRecovery(root, journal, err)
+	}
 	journal.State = string(RootRecoveryStateFreshCommitted)
 	if err := persistRootRecoveryJournal(root, *journal); err != nil {
 		return err
@@ -475,6 +478,9 @@ func commitRecoveryFreshGeneration(root *os.File, journal *rootRecoveryJournalV1
 }
 
 func inspectOrCreateRecoveryFreshArtifacts(root *os.File, journal rootRecoveryJournalV1, expectedMigration []byte) (bool, bool, error) {
+	if err := verifyRecoveryRootEntries(root, false); err != nil {
+		return false, false, err
+	}
 	markerExists := false
 	if marker, err := readRootFile(root, currentGenerationFile, 1<<20); err == nil {
 		if !bytes.Equal(marker, []byte(journal.FreshGenerationID+"\n")) {
@@ -544,6 +550,92 @@ func inspectOrCreateRecoveryFreshArtifacts(root *os.File, journal rootRecoveryJo
 	return markerExists, migrationExists, nil
 }
 
+func verifyRecoveryPrecommitRoot(root *os.File, recovery rootRecoveryJournalV1) error {
+	if err := verifyRecoveryRootEntries(root, true); err != nil {
+		return err
+	}
+	if err := verifyRetainedRecoveryArchive(root, recovery); err != nil {
+		return err
+	}
+	migration := recoveredMigrationJournal(recovery)
+	raw, err := json.Marshal(migration)
+	if err != nil {
+		return err
+	}
+	markerExists, migrationExists, err := inspectOrCreateRecoveryFreshArtifacts(root, recovery, append(raw, '\n'))
+	if err != nil || !markerExists || !migrationExists {
+		return errors.Join(ErrOwnerScopeSnapshotChanged, err)
+	}
+	return nil
+}
+
+func verifyRecoveryRootEntries(root *os.File, exact bool) error {
+	directory, err := openDirectoryAt(int(root.Fd()), ".")
+	if err != nil {
+		return err
+	}
+	defer directory.Close()
+	entries, err := directory.ReadDir(-1)
+	if err != nil {
+		return err
+	}
+	allowed := map[string]struct{}{
+		RootRecoveryJournalName: {},
+		quarantineDirectory:     {},
+		generationsDirectory:    {},
+		currentGenerationFile:   {},
+		MigrationJournalName:    {},
+	}
+	seen := make(map[string]struct{}, len(entries))
+	for _, entry := range entries {
+		if _, ok := allowed[entry.Name()]; !ok {
+			return ErrOwnerScopeSnapshotChanged
+		}
+		seen[entry.Name()] = struct{}{}
+	}
+	if _, ok := seen[RootRecoveryJournalName]; !ok {
+		return ErrOwnerScopeSnapshotChanged
+	}
+	if _, ok := seen[quarantineDirectory]; !ok {
+		return ErrOwnerScopeSnapshotChanged
+	}
+	if exact && len(seen) != len(allowed) {
+		return ErrOwnerScopeSnapshotChanged
+	}
+	return nil
+}
+
+func verifyRetainedRecoveryArchive(root *os.File, recovery rootRecoveryJournalV1) error {
+	if recovery.QuarantineSHA256 == "" || recovery.QuarantineSHA256 != recovery.SourceSnapshotSHA256 {
+		return ErrOwnerScopeSnapshotChanged
+	}
+	parent, err := openDirectoryAt(int(root.Fd()), quarantineDirectory)
+	if err != nil {
+		return errors.Join(ErrOwnerScopeSnapshotChanged, err)
+	}
+	defer parent.Close()
+	if err := validateOwnedGenerationDirectory(root, parent); err != nil {
+		return errors.Join(ErrOwnerScopeSnapshotChanged, err)
+	}
+	entries, err := parent.ReadDir(-1)
+	if err != nil || len(entries) != 1 || entries[0].Name() != recovery.QuarantineID || !entries[0].IsDir() {
+		return errors.Join(ErrOwnerScopeSnapshotChanged, err)
+	}
+	archive, err := openDirectoryAt(int(parent.Fd()), recovery.QuarantineID)
+	if err != nil {
+		return errors.Join(ErrOwnerScopeSnapshotChanged, err)
+	}
+	defer archive.Close()
+	if err := validateOwnedGenerationDirectory(root, archive); err != nil {
+		return errors.Join(ErrOwnerScopeSnapshotChanged, err)
+	}
+	snapshot, err := snapshotDirectory(archive)
+	if err != nil || snapshot.digest != recovery.QuarantineSHA256 || len(snapshot.entries) != recovery.SourceEntryCount {
+		return errors.Join(ErrOwnerScopeSnapshotChanged, err)
+	}
+	return nil
+}
+
 func recoveredMigrationJournal(recovery rootRecoveryJournalV1) migrationJournalV1 {
 	return migrationJournalV1{
 		SchemaVersion: migrationSchemaVersion, MigrationID: recovery.FreshMigrationID, RootIdentitySHA256: recovery.RootIdentitySHA256,
@@ -558,6 +650,9 @@ func recoveredMigrationJournal(recovery rootRecoveryJournalV1) migrationJournalV
 func verifyFinalRecovery(root *os.File, recovery rootRecoveryJournalV1) error {
 	if recovery.State != string(RootRecoveryStateFreshCommitted) {
 		return ErrOwnerScopeRecoveryRequired
+	}
+	if err := verifyRetainedRecoveryArchive(root, recovery); err != nil {
+		return err
 	}
 	raw, err := readRootFile(root, MigrationJournalName, 1<<20)
 	if err != nil {
@@ -646,9 +741,9 @@ func validRootRecoveryJournal(journal rootRecoveryJournalV1) bool {
 		return journal.QuarantineSHA256 == ""
 	}
 	if state == RootRecoveryStateReconcileRequired || state == RootRecoveryStateFailed {
-		return journal.QuarantineSHA256 == "" || validSHA256(journal.QuarantineSHA256)
+		return journal.QuarantineSHA256 == "" || journal.QuarantineSHA256 == journal.SourceSnapshotSHA256
 	}
-	return validSHA256(journal.QuarantineSHA256)
+	return journal.QuarantineSHA256 == journal.SourceSnapshotSHA256
 }
 
 func validRootRecoveryState(state RootRecoveryState) bool {
@@ -704,5 +799,11 @@ func recoveryResult(rootPath string, journal rootRecoveryJournalV1) OwnerScopeRo
 			Status: statusFromJournal(recoveredMigrationJournal(journal)),
 		}
 	}
+	return result
+}
+
+func recoveryErrorResult(rootPath string, journal rootRecoveryJournalV1) OwnerScopeRootRecoveryResult {
+	result := recoveryResult(rootPath, journal)
+	result.Generation = OwnerScopeGeneration{}
 	return result
 }
