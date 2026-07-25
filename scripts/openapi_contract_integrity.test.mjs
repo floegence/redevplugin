@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import test from "node:test";
+import Ajv from "ajv";
 import { parse as parseYAML } from "yaml";
 
 const root = resolve(import.meta.dirname, "..");
@@ -198,6 +199,64 @@ test("generated OpenAPI types contain a closed capability pin and patch type", a
   assert.match(generated, /CapabilityContractPin: components\["schemas"\]\["HostCapabilityPinV1"\]/);
   assert.doesNotMatch(generated, /\$defs\s*:/);
   assert.doesNotMatch(generated, /PatchSettingsRequest:[\s\S]{0,600}?\| unknown/);
+});
+
+test("confirmation preparation accepts typed and contract-defined object plans", async () => {
+  const openAPI = await readOpenAPI();
+  const plan = openAPI.components.schemas.PluginMethodConfirmationPreparation.properties.plan;
+  assert.equal(plan.anyOf, undefined);
+  assert.deepEqual(plan.oneOf, [
+    { $ref: "#/components/schemas/RiskPlan" },
+    {
+      type: "object",
+      additionalProperties: true,
+      properties: {
+        schema_version: {
+          not: {
+            type: "string",
+            pattern: "^redevplugin\\.capability\\.risk_plan\\.",
+          },
+        },
+      },
+    },
+  ]);
+
+  const riskPlan = openAPI.components.schemas.RiskPlan;
+  assert.deepEqual(riskPlan.required, ["schema_version", "summary", "risk_flags"]);
+  assert.equal(riskPlan.properties.schema_version.const, "redevplugin.capability.risk_plan.v1");
+  assert.equal(riskPlan.additionalProperties, false);
+  assert.equal(plan.oneOf[1].type, "object", "contract-defined domain plans remain object-only");
+
+  const validate = new Ajv({ allErrors: true, schemaId: "auto" }).compile({
+    components: {
+      schemas: {
+        RiskFlag: openAPI.components.schemas.RiskFlag,
+        RiskPlan: riskPlan,
+        ConfirmationPlan: plan,
+      },
+    },
+    $ref: "#/components/schemas/ConfirmationPlan",
+  });
+  const typedPlan = {
+    schema_version: "redevplugin.capability.risk_plan.v1",
+    summary: "Start container",
+    risk_flags: [],
+  };
+  const domainPlan = {
+    action: "start",
+    risk_level: "medium",
+    warnings: ["starts a stopped resource"],
+  };
+  for (const [label, value] of [["typed", typedPlan], ["domain", domainPlan]]) {
+    assert.equal(validate(value), true, `${label} plan rejected: ${JSON.stringify(validate.errors)}`);
+  }
+  for (const [label, value] of [
+    ["malformed typed", { schema_version: "redevplugin.capability.risk_plan.v1" }],
+    ["unknown reserved", { schema_version: "redevplugin.capability.risk_plan.v2", summary: "Start" }],
+    ["scalar", "start"],
+  ]) {
+    assert.equal(validate(value), false, `${label} plan unexpectedly accepted`);
+  }
 });
 
 test("diagnostic events use closed details and a dedicated mutation outcome", async () => {

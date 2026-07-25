@@ -2381,9 +2381,11 @@ export interface components {
             request_hash: string;
             plan_hash: string;
             /** @description Host-redacted confirmation plan payload returned by the declared preflight method, when available. */
-            plan?: components["schemas"]["RiskPlan"] | {
+            plan?: components["schemas"]["RiskPlan"] | ({
+                schema_version?: unknown;
+            } & {
                 [key: string]: unknown;
-            };
+            });
             /** Format: date-time */
             expires_at: string;
         };

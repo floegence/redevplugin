@@ -3417,6 +3417,11 @@ components:
             - $ref: "#/components/schemas/RiskPlan"
             - type: object
               additionalProperties: true
+              properties:
+                schema_version:
+                  not:
+                    type: string
+                    pattern: '^redevplugin\.capability\.risk_plan\.'
         expires_at: { type: string, format: date-time }
     InvokeIntentRequest:
       type: object

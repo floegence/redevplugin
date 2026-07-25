@@ -61,6 +61,7 @@
     "check": "npm run error-codes:check && npm run openapi:check && npm run openapi-contract:test && npm run contracts:check && npm run platform-package-contracts:check && npm run owner-scope-inventories:check && npm run owner-scope-inventories:test && npm run release-metadata:check && npm run repository-boundary:test && npm run platform-package-contract:test && npm run release-workflow-security:test && npm run test:contracts && npm run performance-contract:test && npm run lint && npm run typecheck && npm run browser-harness:typecheck && npm run scaffold:typecheck && npm run examples:typecheck && npm run canonical-wasm:test && npm run memos-markdown:test && npm run examples:check && npm run browser-harness:check && npm run build && npm run test:ui && npm run test:browser-harness && npm run test:browser-harness:smoke && npm run property-gates"
   },
   "devDependencies": {
+    "ajv": "6.15.0",
     "esbuild": "^0.25.5",
     "eslint": "10.7.0",
     "marked": "18.0.6",
