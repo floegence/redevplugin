@@ -8249,9 +8249,9 @@ func (h *Host) prepareConfirmationPlan(ctx context.Context, call resolvedMethodC
 			return nil, "", fmt.Errorf("confirmation preflight method %q failed: %w", preflight.Method, err)
 		}
 		plan = result.Data
-		normalizedPlan, err := capability.NormalizeRiskPlanData(plan)
+		normalizedPlan, err := normalizeConfirmationPlan(plan)
 		if err != nil {
-			return nil, "", fmt.Errorf("confirmation preflight method %q returned invalid risk plan: %w", preflight.Method, err)
+			return nil, "", fmt.Errorf("%w: confirmation preflight method %q returned invalid plan: %v", ErrMethodResponseContract, preflight.Method, err)
 		}
 		plan = normalizedPlan
 	}
@@ -8274,6 +8274,27 @@ func (h *Host) prepareConfirmationPlan(ctx context.Context, call resolvedMethodC
 		}
 	}
 	return plan, planHash, nil
+}
+
+func normalizeConfirmationPlan(plan any) (any, error) {
+	switch value := plan.(type) {
+	case capability.RiskPlan, *capability.RiskPlan:
+		return capability.NormalizeRiskPlanData(value)
+	case map[string]any:
+		schemaVersion, _ := value["schema_version"].(string)
+		schemaVersion = strings.TrimSpace(schemaVersion)
+		if schemaVersion == capability.RiskPlanSchemaVersion {
+			return capability.NormalizeRiskPlanData(value)
+		}
+		if strings.HasPrefix(schemaVersion, "redevplugin.capability.risk_plan.") {
+			return nil, fmt.Errorf("unsupported ReDevPlugin risk plan schema_version %q", schemaVersion)
+		}
+		return value, nil
+	case nil:
+		return nil, errors.New("confirmation plan is required")
+	default:
+		return nil, errors.New("confirmation plan must be an object")
+	}
 }
 
 func (h *Host) resolveConfirmationPreflightMethod(record registry.PluginRecord, method manifest.MethodSpec, preflightMethodName string) (manifest.MethodSpec, error) {

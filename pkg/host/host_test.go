@@ -5223,6 +5223,101 @@ func TestPrepareMethodConfirmationRunsRiskPreflightAndBindsPlanHash(t *testing.T
 	}
 }
 
+func TestPrepareMethodConfirmationAcceptsContractValidatedDomainPlan(t *testing.T) {
+	domainPlanSchema := fixtureClosedObject(map[string]any{
+		"action":     map[string]any{"type": "string"},
+		"risk_level": map[string]any{"type": "string"},
+		"warnings":   map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+	}, []string{"action", "risk_level", "warnings"})
+	contract, err := fixtureCapabilityContract("example.capability.tasks")
+	if err != nil {
+		t.Fatal(err)
+	}
+	contract.Methods[1].ResponseSchema = domainPlanSchema
+	verified := verifyFixtureCapabilityContract(t, contract)
+	domainPlan := map[string]any{
+		"action":     "start",
+		"risk_level": "medium",
+		"warnings":   []any{"starts a stopped resource"},
+	}
+	capabilityAdapter := &recordingCapabilityAdapter{
+		result: capability.Result{Data: map[string]any{"started": true}},
+		resultsByTarget: map[string]capability.Result{
+			"tasks.start.preflight": {Data: domainPlan},
+		},
+	}
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{
+		developerMode: true, localGenerated: true, capabilityContract: &verified, capabilityAdapter: capabilityAdapter,
+	})
+	installed, gateway := installEnableAndMintGateway(t, h, buildMethodContractFixturePackageWithContract(t, contract), "method_contract.view")
+	call := CallMethodRequest{
+		PluginInstanceID: installed.PluginInstanceID, SurfaceInstanceID: "surface_rpc",
+		BridgeChannelID: "bridge_rpc", GatewayToken: gateway.GatewayToken,
+		Method: "tasks.start", Params: map[string]any{"task_id": "task_1"},
+	}
+
+	confirmation, err := h.PrepareMethodConfirmation(hostTestContext(), prepareConfirmationRequest(call))
+	if err != nil {
+		t.Fatalf("PrepareMethodConfirmation() error = %v", err)
+	}
+	plan, ok := confirmation.Plan.(map[string]any)
+	if !ok || !reflect.DeepEqual(plan, domainPlan) {
+		t.Fatalf("confirmation plan = %#v, want %#v", confirmation.Plan, domainPlan)
+	}
+	if confirmation.PlanHash == "" {
+		t.Fatal("confirmation plan hash is empty")
+	}
+
+	call.ConfirmationID = confirmation.ConfirmationID
+	confirmed, err := h.CallPluginMethod(hostTestContext(), call)
+	if err != nil {
+		t.Fatalf("CallPluginMethod() with domain-plan confirmation error = %v", err)
+	}
+	if confirmed.OperationID == "" || capabilityAdapter.last.Execution.TargetMethod != "tasks.start" {
+		t.Fatalf("confirmed invocation mismatch: result=%#v last=%#v", confirmed, capabilityAdapter.last)
+	}
+}
+
+func TestNormalizeConfirmationPlanRejectsInvalidShapesAndKnownRiskPlan(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		plan any
+	}{
+		{name: "missing", plan: nil},
+		{name: "non object", plan: "start"},
+		{name: "malformed known risk plan", plan: map[string]any{"schema_version": capability.RiskPlanSchemaVersion}},
+		{name: "unknown reserved risk plan", plan: map[string]any{"schema_version": "redevplugin.capability.risk_plan.v2"}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if _, err := normalizeConfirmationPlan(test.plan); err == nil {
+				t.Fatal("normalizeConfirmationPlan() error = nil")
+			}
+		})
+	}
+}
+
+func TestPrepareMethodConfirmationClassifiesInvalidKnownRiskPlanAsContractMismatch(t *testing.T) {
+	capabilityAdapter := &recordingCapabilityAdapter{
+		result: capability.Result{Data: map[string]any{"started": true}},
+		resultsByTarget: map[string]capability.Result{
+			"tasks.start.preflight": {Data: map[string]any{"schema_version": capability.RiskPlanSchemaVersion}},
+		},
+	}
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{
+		developerMode: true, localGenerated: true, capabilityID: "example.capability.tasks", capabilityAdapter: capabilityAdapter,
+	})
+	installed, gateway := installEnableAndMintGateway(t, h, buildMethodContractFixturePackage(t), "method_contract.view")
+	call := CallMethodRequest{
+		PluginInstanceID: installed.PluginInstanceID, SurfaceInstanceID: "surface_rpc",
+		BridgeChannelID: "bridge_rpc", GatewayToken: gateway.GatewayToken,
+		Method: "tasks.start", Params: map[string]any{"task_id": "task_1"},
+	}
+
+	if _, err := h.PrepareMethodConfirmation(hostTestContext(), prepareConfirmationRequest(call)); !errors.Is(err, ErrMethodResponseContract) {
+		t.Fatalf("PrepareMethodConfirmation() error = %v, want ErrMethodResponseContract", err)
+	}
+}
+
 func TestConfirmedCapabilityRerunsPreflightAndRejectsAStalePlan(t *testing.T) {
 	capabilityAdapter := &recordingCapabilityAdapter{
 		result: capability.Result{Data: map[string]any{"started": true}},
@@ -7928,9 +8023,18 @@ func buildDangerousRPCFixturePackage(t *testing.T) []byte {
 
 func buildMethodContractFixturePackage(t *testing.T) []byte {
 	t.Helper()
+	contract, err := fixtureCapabilityContract("example.capability.tasks")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return buildMethodContractFixturePackageWithContract(t, contract)
+}
+
+func buildMethodContractFixturePackageWithContract(t *testing.T, contract capabilitycontract.Contract) []byte {
+	t.Helper()
 	source := filepath.Join("..", "..", "testdata", "generated_plugins", "method-contract")
 	dir := t.TempDir()
-	writeFile(t, filepath.Join(dir, "manifest.json"), methodContractFixtureManifestJSON(t))
+	writeFile(t, filepath.Join(dir, "manifest.json"), methodContractFixtureManifestJSONWithContract(t, contract))
 	for _, relative := range []string{"ui/index.html", "ui/assets/app.js"} {
 		content, err := os.ReadFile(filepath.Join(source, filepath.FromSlash(relative)))
 		if err != nil {
@@ -7947,16 +8051,21 @@ func buildMethodContractFixturePackage(t *testing.T) []byte {
 
 func methodContractFixtureManifestJSON(t *testing.T) string {
 	t.Helper()
+	contract, err := fixtureCapabilityContract("example.capability.tasks")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return methodContractFixtureManifestJSONWithContract(t, contract)
+}
+
+func methodContractFixtureManifestJSONWithContract(t *testing.T, contract capabilitycontract.Contract) string {
+	t.Helper()
 	raw, err := os.ReadFile(filepath.Join("..", "..", "testdata", "generated_plugins", "method-contract", "manifest.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	var document map[string]any
 	if err := json.Unmarshal(raw, &document); err != nil {
-		t.Fatal(err)
-	}
-	contract, err := fixtureCapabilityContract("example.capability.tasks")
-	if err != nil {
 		t.Fatal(err)
 	}
 	bundle, _, err := buildFixtureCapabilityBundle(contract)
