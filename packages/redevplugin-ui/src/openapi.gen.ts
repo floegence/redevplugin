@@ -1346,7 +1346,7 @@ export interface components {
         PluginCatalogResult: {
             plugins: components["schemas"]["PluginRecord"][];
         };
-        PluginCompatibilityManifest: components["schemas"]["CompatibilityManifestV8"];
+        PluginCompatibilityManifest: components["schemas"]["CompatibilityManifestV9"];
         PluginOperationList: {
             operations: components["schemas"]["OperationRecord"][];
             next_cursor?: string;
@@ -2691,7 +2691,7 @@ export interface components {
             counts: components["schemas"]["SessionScopeV1RevokeCounts"];
         };
         SessionScopeV1PublicRevokeResult: components["schemas"]["SessionScopeV1CompleteRevokeResult"] | components["schemas"]["SessionScopeV1IncompleteRevokeResult"];
-        CompatibilityManifestV8: {
+        CompatibilityManifestV9: {
             /** @constant */
             schema_version: "redevplugin.compatibility.v9";
             package_set: components["schemas"]["PlatformPackageSetV1"];
@@ -2793,6 +2793,8 @@ export interface components {
                 /** @constant */
                 owner_scope_migration_schema_version: "owner-scope-migration-v1";
                 /** @constant */
+                owner_scope_root_recovery_schema_version: "owner-scope-root-recovery-v1";
+                /** @constant */
                 process_containment_schema_version: "process-containment-v1";
                 /** @constant */
                 runtime_exec_journal_schema_version: "runtime-exec-journal-v1";
@@ -2800,9 +2802,9 @@ export interface components {
                 quarantine_cleanup_schema_version: "quarantine-cleanup-v1";
             };
             contract_set_sha256: string;
-            contracts: components["schemas"]["CompatibilityManifestV8Contract"][];
+            contracts: components["schemas"]["CompatibilityManifestV9Contract"][];
         };
-        CompatibilityManifestV8Contract: {
+        CompatibilityManifestV9Contract: {
             id: string;
             path: string;
             version: string;
