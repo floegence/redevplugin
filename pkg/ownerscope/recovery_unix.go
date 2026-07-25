@@ -448,34 +448,100 @@ func commitRecoveryFreshGeneration(root *os.File, journal *rootRecoveryJournalV1
 	if err != nil || snapshot.digest != journal.QuarantineSHA256 {
 		return failRootRecovery(root, journal, errors.Join(ErrOwnerScopeSnapshotChanged, err))
 	}
-	if err := ensureDirectoryAt(int(root.Fd()), generationsDirectory, 0o700); err != nil {
-		return failRootRecovery(root, journal, err)
-	}
-	generations, err := openDirectoryAt(int(root.Fd()), generationsDirectory)
-	if err != nil {
-		return failRootRecovery(root, journal, err)
-	}
-	if err := ensureDirectoryAt(int(generations.Fd()), journal.FreshGenerationID, 0o700); err != nil {
-		generations.Close()
-		return failRootRecovery(root, journal, err)
-	}
-	generations.Close()
-	if err := writeAtomicRootFile(root, currentGenerationFile, []byte(journal.FreshGenerationID+"\n"), 0o600); err != nil {
-		return failRootRecovery(root, journal, err)
-	}
 	migrationJournal := recoveredMigrationJournal(*journal)
 	raw, err := json.Marshal(migrationJournal)
 	if err != nil {
 		return failRootRecovery(root, journal, err)
 	}
-	if err := writeAtomicRootFile(root, MigrationJournalName, append(raw, '\n'), 0o600); err != nil {
+	markerExists, migrationExists, err := inspectOrCreateRecoveryFreshArtifacts(root, *journal, append(raw, '\n'))
+	if err != nil {
 		return failRootRecovery(root, journal, err)
+	}
+	if !markerExists {
+		if err := writeAtomicRootFile(root, currentGenerationFile, []byte(journal.FreshGenerationID+"\n"), 0o600); err != nil {
+			return failRootRecovery(root, journal, err)
+		}
+	}
+	if !migrationExists {
+		if err := writeAtomicRootFile(root, MigrationJournalName, append(raw, '\n'), 0o600); err != nil {
+			return failRootRecovery(root, journal, err)
+		}
 	}
 	journal.State = string(RootRecoveryStateFreshCommitted)
 	if err := persistRootRecoveryJournal(root, *journal); err != nil {
 		return err
 	}
 	return verifyFinalRecovery(root, *journal)
+}
+
+func inspectOrCreateRecoveryFreshArtifacts(root *os.File, journal rootRecoveryJournalV1, expectedMigration []byte) (bool, bool, error) {
+	markerExists := false
+	if marker, err := readRootFile(root, currentGenerationFile, 1<<20); err == nil {
+		if !bytes.Equal(marker, []byte(journal.FreshGenerationID+"\n")) {
+			return false, false, ErrOwnerScopeSnapshotChanged
+		}
+		markerExists = true
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return false, false, err
+	}
+
+	migrationExists := false
+	if raw, err := readRootFile(root, MigrationJournalName, 1<<20); err == nil {
+		if !bytes.Equal(raw, expectedMigration) {
+			return false, false, ErrOwnerScopeSnapshotChanged
+		}
+		migrationExists = true
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return false, false, err
+	}
+	if migrationExists && !markerExists {
+		return false, false, ErrOwnerScopeSnapshotChanged
+	}
+
+	generations, err := openDirectoryAt(int(root.Fd()), generationsDirectory)
+	if errors.Is(err, unix.ENOENT) {
+		if markerExists || migrationExists {
+			return false, false, ErrOwnerScopeSnapshotChanged
+		}
+		if err := ensureDirectoryAt(int(root.Fd()), generationsDirectory, 0o700); err != nil {
+			return false, false, err
+		}
+		generations, err = openDirectoryAt(int(root.Fd()), generationsDirectory)
+	}
+	if err != nil {
+		return false, false, err
+	}
+	defer generations.Close()
+	entries, err := generations.ReadDir(-1)
+	if err != nil {
+		return false, false, err
+	}
+	if len(entries) == 0 {
+		if markerExists || migrationExists {
+			return false, false, ErrOwnerScopeSnapshotChanged
+		}
+		if err := ensureDirectoryAt(int(generations.Fd()), journal.FreshGenerationID, 0o700); err != nil {
+			return false, false, err
+		}
+	} else if len(entries) != 1 || entries[0].Name() != journal.FreshGenerationID || !entries[0].IsDir() {
+		return false, false, ErrOwnerScopeSnapshotChanged
+	}
+	active, err := openDirectoryAt(int(generations.Fd()), journal.FreshGenerationID)
+	if err != nil {
+		return false, false, err
+	}
+	defer active.Close()
+	if err := validateOwnedGenerationDirectory(root, active); err != nil {
+		return false, false, err
+	}
+	activeEntries, err := active.ReadDir(-1)
+	if err != nil {
+		return false, false, err
+	}
+	if len(activeEntries) != 0 {
+		return false, false, ErrOwnerScopeSnapshotChanged
+	}
+	return markerExists, migrationExists, nil
 }
 
 func recoveredMigrationJournal(recovery rootRecoveryJournalV1) migrationJournalV1 {

@@ -508,7 +508,7 @@ func TestRecoverOwnerScopeRootArchivesCopiedStateAndCommitsFreshGeneration(t *te
 func TestRecoverOwnerScopeRootResumesEveryPersistedStage(t *testing.T) {
 	for _, stage := range []string{
 		"prepared", "archive-writing", "work-created", "archive-partial", "archive-renamed", "archive-committed",
-		"fresh-prepared", "fresh-artifacts", "standard-journal-committed", "fresh-committed",
+		"fresh-prepared", "fresh-parent", "fresh-generation", "fresh-artifacts", "standard-journal-committed", "fresh-committed",
 	} {
 		t.Run(stage, func(t *testing.T) {
 			rootPath, plan, journal := prepareRecoveryFixture(t)
@@ -547,7 +547,7 @@ func TestRecoverOwnerScopeRootResumesEveryPersistedStage(t *testing.T) {
 				if err := writeRecoveryArchive(root, &journal); err != nil {
 					t.Fatal(err)
 				}
-			case "fresh-prepared", "fresh-artifacts", "standard-journal-committed":
+			case "fresh-prepared", "fresh-parent", "fresh-generation", "fresh-artifacts", "standard-journal-committed":
 				journal.State = string(RootRecoveryStateArchiveWriting)
 				mustPersistRecoveryJournal(t, root, journal)
 				if err := writeRecoveryArchive(root, &journal); err != nil {
@@ -555,7 +555,23 @@ func TestRecoverOwnerScopeRootResumesEveryPersistedStage(t *testing.T) {
 				}
 				journal.State = string(RootRecoveryStateFreshPrepared)
 				mustPersistRecoveryJournal(t, root, journal)
-				if stage != "fresh-prepared" {
+				if stage == "fresh-parent" || stage == "fresh-generation" {
+					if err := ensureDirectoryAt(int(root.Fd()), generationsDirectory, 0o700); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if stage == "fresh-generation" {
+					generations, err := openDirectoryAt(int(root.Fd()), generationsDirectory)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if err := ensureDirectoryAt(int(generations.Fd()), journal.FreshGenerationID, 0o700); err != nil {
+						generations.Close()
+						t.Fatal(err)
+					}
+					generations.Close()
+				}
+				if stage == "fresh-artifacts" || stage == "standard-journal-committed" {
 					prepareRecoveryFreshArtifacts(t, root, journal)
 				}
 				if stage == "standard-journal-committed" {
@@ -621,6 +637,69 @@ func TestRecoverOwnerScopeRootResumesAfterEveryArchiveMove(t *testing.T) {
 			}
 			if result.State != RootRecoveryStateFreshCommitted {
 				t.Fatalf("resumed result = %#v", result)
+			}
+		})
+	}
+}
+
+func TestRecoverOwnerScopeRootRejectsTamperedFreshArtifactsWithoutAuthorization(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		mutate func(*testing.T, string, rootRecoveryJournalV1)
+	}{
+		{name: "active generation content", mutate: func(t *testing.T, rootPath string, journal rootRecoveryJournalV1) {
+			path := filepath.Join(rootPath, generationsDirectory, journal.FreshGenerationID, "injected-state")
+			if err := os.WriteFile(path, []byte("must not be authorized"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{name: "additional generation", mutate: func(t *testing.T, rootPath string, _ rootRecoveryJournalV1) {
+			path := filepath.Join(rootPath, generationsDirectory, "generation_00000000000000000000000000000000")
+			if err := os.Mkdir(path, 0o700); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{name: "wrong current marker", mutate: func(t *testing.T, rootPath string, _ rootRecoveryJournalV1) {
+			path := filepath.Join(rootPath, currentGenerationFile)
+			if err := os.WriteFile(path, []byte("generation_00000000000000000000000000000000\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			rootPath, plan, journal := prepareRecoveryFixture(t)
+			root := openMigrationRoot(t, rootPath)
+			journal.State = string(RootRecoveryStateArchiveWriting)
+			mustPersistRecoveryJournal(t, root, journal)
+			if err := writeRecoveryArchive(root, &journal); err != nil {
+				root.Close()
+				t.Fatal(err)
+			}
+			journal.State = string(RootRecoveryStateFreshPrepared)
+			mustPersistRecoveryJournal(t, root, journal)
+			prepareRecoveryFreshArtifacts(t, root, journal)
+			root.Close()
+
+			test.mutate(t, rootPath, journal)
+			before, err := snapshotPathExcluding(t, rootPath, map[string]struct{}{RootRecoveryJournalName: {}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			result, err := RecoverOwnerScopeRoot(context.Background(), rootPath, plan.PlanSHA256)
+			if !errors.Is(err, ErrOwnerScopeSnapshotChanged) || result.State != RootRecoveryStateReconcileRequired || result.Generation.Path != "" {
+				t.Fatalf("RecoverOwnerScopeRoot() = %#v, %v", result, err)
+			}
+			after, err := snapshotPathExcluding(t, rootPath, map[string]struct{}{RootRecoveryJournalName: {}})
+			if err != nil || after.digest != before.digest {
+				t.Fatalf("rejected fresh artifacts changed root: %#v, %v", after, err)
+			}
+			raw := mustReadFile(t, filepath.Join(rootPath, RootRecoveryJournalName))
+			persisted, err := decodeRootRecoveryJournal(raw)
+			if err != nil || persisted.State != string(RootRecoveryStateReconcileRequired) {
+				t.Fatalf("persisted recovery journal = %#v, %v", persisted, err)
+			}
+			if generation, err := PrepareOwnerScopeGeneration(context.Background(), rootPath); generation.Path != "" || !errors.Is(err, ErrOwnerScopeRecoveryRequired) {
+				t.Fatalf("PrepareOwnerScopeGeneration() = %#v, %v", generation, err)
 			}
 		})
 	}
@@ -1559,6 +1638,16 @@ func snapshotPath(t *testing.T, path string) (rootSnapshot, error) {
 	}
 	defer root.Close()
 	return snapshotDirectory(root)
+}
+
+func snapshotPathExcluding(t *testing.T, path string, exclusions map[string]struct{}) (rootSnapshot, error) {
+	t.Helper()
+	root, err := os.Open(path)
+	if err != nil {
+		return rootSnapshot{}, err
+	}
+	defer root.Close()
+	return snapshotRoot(root, exclusions)
 }
 
 func mustReadFile(t *testing.T, path string) []byte {
