@@ -26,13 +26,20 @@ uses a clean native target directory, isolated Cargo home, and environment
 allowlist, rejects Cargo configuration inherited from outside the repository,
 and rejects any source snapshot change observed across compilation. Normal
 `examples:check` and `scaffold:check` perform the native rebuild on the
-canonical Linux build host and verify their source/artifact lock on every host. The explicit
+canonical Linux build host and verify their source/artifact lock on every host.
+The explicit
 `examples:generate` and `scaffold:generate` commands use a platform-specific
 immutable Rust image digest when run elsewhere;
 `examples:check:canonical` and `scaffold:check:canonical` force that same Docker
 path for a full local reproduction without accepting host-specific LLVM
-output. The exact-main pre-push gate runs both paths and requires byte parity. Normal package builds only
-verify committed scaffold assets and never rewrite them implicitly. Package
+output. The Docker path verifies the pinned Rust release and the exact digest of
+the host-prepared `wasm32-unknown-unknown` standard library, mounts that target
+and the host Cargo registry cache read-only, disables container networking, and
+runs Cargo with `--offline --locked`. This keeps canonical compilation
+independent of rustup and registry availability after the pre-push toolchain
+preparation step. The exact-main pre-push gate runs both paths and requires byte
+parity. Normal package builds only verify committed scaffold assets and never
+rewrite them implicitly. Package
 publication also verifies the scaffold before packing source artifacts, and the
 package job installs the pinned WASM target before that check.
 

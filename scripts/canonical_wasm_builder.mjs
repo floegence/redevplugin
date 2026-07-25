@@ -8,6 +8,10 @@ const pinnedRustImages = Object.freeze({
   "1.88.0": "docker.io/library/rust:1.88.0-bookworm@sha256:4727898c104ecd2e22d780925832502faee9fe4e70581b8572af081370b315a0",
 });
 
+const pinnedWasmTargetSHA256 = Object.freeze({
+  "1.88.0": "3152d1cbc104215914e27562980c0d99b4164c7f1aa578794e003b16ce065c32",
+});
+
 const inheritedEnvironmentKeys = [
   "PATH",
   "HOME",
@@ -52,6 +56,18 @@ export function canonicalRustImage(rustVersion) {
   const image = pinnedRustImages[rustVersion];
   if (!image) throw new Error(`no pinned canonical Rust image for ${rustVersion}`);
   return image;
+}
+
+export function canonicalWasmTargetSHA256(rustVersion) {
+  const digest = pinnedWasmTargetSHA256[rustVersion];
+  if (!digest) throw new Error(`no pinned canonical WASM target for Rust ${rustVersion}`);
+  return digest;
+}
+
+export async function hashCanonicalWasmTarget(root) {
+  const hash = createHash("sha256");
+  await hashDirectory(root, root, hash);
+  return hash.digest("hex");
 }
 
 export async function readPinnedRustVersion(root) {
@@ -166,24 +182,41 @@ async function buildNativeArtifacts(root, rustVersion, targets, cargoCommand, ru
 async function buildDockerArtifacts(root, rustVersion, targets, environment) {
   const distRoot = resolve(root, "dist");
   await mkdir(distRoot, { recursive: true });
-  const outputRoot = await mkdtemp(resolve(distRoot, "canonical-wasm-docker-"));
   const image = canonicalRustImage(rustVersion);
+  const hostEnvironment = canonicalEnvironment(environment, rustVersion);
+  const hostSysroot = runCapture("rustc", ["--print", "sysroot"], `locate Rust ${rustVersion} sysroot`, root, hostEnvironment).trim();
+  const hostWasmTarget = resolve(hostSysroot, "lib/rustlib/wasm32-unknown-unknown");
+  const actualTargetSHA256 = await hashCanonicalWasmTarget(hostWasmTarget);
+  const expectedTargetSHA256 = canonicalWasmTargetSHA256(rustVersion);
+  if (actualTargetSHA256 !== expectedTargetSHA256) {
+    throw new Error(`canonical WASM target digest mismatch: got ${actualTargetSHA256}, want ${expectedTargetSHA256}`);
+  }
+  const hostCargoHome = resolve(environment.CARGO_HOME || resolve(environment.HOME || homedir(), ".cargo"));
+  const hostCargoRegistry = resolve(hostCargoHome, "registry");
+  await requireDirectory(hostCargoRegistry, "host Cargo registry cache");
+  const containerWasmTarget = `/usr/local/rustup/toolchains/${rustVersion}-x86_64-unknown-linux-gnu/lib/rustlib/wasm32-unknown-unknown`;
+  const outputRoot = await mkdtemp(resolve(distRoot, "canonical-wasm-docker-"));
   const script = [
     "set -euo pipefail",
     `rustc -Vv | grep -Fx 'release: ${rustVersion}'`,
     "rustc -Vv | grep -Fx 'host: x86_64-unknown-linux-gnu'",
-    canonicalRustTargetInstallScript(),
+    `test -d ${containerWasmTarget}/lib`,
     "export CARGO_TARGET_DIR=/tmp/redevplugin-target",
-    "export CARGO_ENCODED_RUSTFLAGS=$'--remap-path-prefix=/repo=/workspace\\x1f--remap-path-prefix=/usr/local/cargo=/cargo'",
-    `cargo build --locked --release --target wasm32-unknown-unknown ${targets.map(({ packageName }) => `-p ${packageName}`).join(" ")}`,
+    "export CARGO_HOME=/tmp/canonical-cargo-home",
+    "export CARGO_ENCODED_RUSTFLAGS=$'--remap-path-prefix=/repo=/workspace\\x1f--remap-path-prefix=/tmp/canonical-cargo-home=/cargo'",
+    `cargo build --offline --locked --release --target wasm32-unknown-unknown ${targets.map(({ packageName }) => `-p ${packageName}`).join(" ")}`,
     ...targets.map(({ artifact }) => `cp /tmp/redevplugin-target/wasm32-unknown-unknown/release/${artifact} /out/${artifact}`),
   ].join("\n");
   try {
     run("docker", [
       "run", "--rm",
       "--platform", "linux/amd64",
-      "-v", `${root}:/repo:ro`,
-      "-v", `${outputRoot}:/out`,
+      "--network", "none",
+      "--mount", `type=bind,src=${root},dst=/repo,readonly`,
+      "--mount", `type=bind,src=${outputRoot},dst=/out`,
+      "--mount", `type=bind,src=${hostWasmTarget},dst=${containerWasmTarget},readonly`,
+      "--mount", `type=bind,src=${hostCargoRegistry},dst=/tmp/canonical-cargo-home/registry,readonly`,
+      "--env", `RUSTUP_TOOLCHAIN=${rustVersion}`,
       "-w", "/repo",
       image,
       "bash", "-c", script,
@@ -192,24 +225,6 @@ async function buildDockerArtifacts(root, rustVersion, targets, environment) {
   } finally {
     await rm(outputRoot, { recursive: true, force: true });
   }
-}
-
-export function canonicalRustTargetInstallScript() {
-  return [
-    "install_canonical_wasm_target() {",
-    "  local attempt",
-    "  for attempt in 1 2 3 4 5; do",
-    "    if rustup target add wasm32-unknown-unknown; then",
-    "      return 0",
-    "    fi",
-    "    if [[ \"$attempt\" == \"5\" ]]; then",
-    "      return 1",
-    "    fi",
-    "    sleep \"$attempt\"",
-    "  done",
-    "}",
-    "install_canonical_wasm_target",
-  ].join("\n");
 }
 
 async function collectCargoSourcePaths(root, metadata, packageNames, additionalPaths, optionalPaths) {
@@ -282,6 +297,38 @@ async function collectSourcePath(root, absolutePath, paths, required) {
   }
   if (!entry.isFile()) throw new Error(`canonical Cargo source path must be a regular file: ${absolutePath}`);
   paths.add(relativePath.split(sep).join("/"));
+}
+
+async function hashDirectory(root, directory, hash) {
+  const entry = await lstat(directory);
+  if (entry.isSymbolicLink() || !entry.isDirectory()) {
+    throw new Error(`canonical WASM target root must be a directory: ${directory}`);
+  }
+  for (const name of (await readdir(directory)).sort()) {
+    const absolutePath = resolve(directory, name);
+    const child = await lstat(absolutePath);
+    if (child.isSymbolicLink()) throw new Error(`canonical WASM target must not contain symlinks: ${absolutePath}`);
+    if (child.isDirectory()) {
+      await hashDirectory(root, absolutePath, hash);
+      continue;
+    }
+    if (!child.isFile()) throw new Error(`canonical WASM target must contain only regular files: ${absolutePath}`);
+    hash.update(relative(root, absolutePath).split(sep).join("/"));
+    hash.update("\0");
+    hash.update(await readFile(absolutePath));
+    hash.update("\0");
+  }
+}
+
+async function requireDirectory(path, label) {
+  let entry;
+  try {
+    entry = await lstat(path);
+  } catch (error) {
+    if (error?.code === "ENOENT") throw new Error(`${label} is unavailable: ${path}`);
+    throw error;
+  }
+  if (entry.isSymbolicLink() || !entry.isDirectory()) throw new Error(`${label} must be a directory: ${path}`);
 }
 
 async function createIsolatedCargoHome(parent) {

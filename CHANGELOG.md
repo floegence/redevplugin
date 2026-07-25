@@ -18,6 +18,10 @@
   vulnerable transitive pattern matcher with its audited release through a
   generator-scoped compatibility loader and a real brace-pattern regression
   test.
+- Build canonical example and scaffold WASM artifacts in a network-disabled
+  immutable Linux container from the digest-pinned Rust target and read-only
+  Cargo cache, removing rustup and registry availability from the exact-main
+  compilation step.
 
 ## v0.6.15
 

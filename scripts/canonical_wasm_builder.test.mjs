@@ -8,8 +8,9 @@ import test from "node:test";
 import {
   assertSourceSnapshotUnchanged,
   buildCanonicalWasmArtifacts,
-  canonicalRustTargetInstallScript,
   canonicalRustImage,
+  canonicalWasmTargetSHA256,
+  hashCanonicalWasmTarget,
   parseCanonicalWasmGeneratorArgs,
   selectCanonicalWasmBuildMode,
   snapshotCanonicalCargoSources,
@@ -101,48 +102,38 @@ test("canonical Docker builds use an immutable Rust image", () => {
     "docker.io/library/rust:1.88.0-bookworm@sha256:4727898c104ecd2e22d780925832502faee9fe4e70581b8572af081370b315a0",
   );
   assert.throws(() => canonicalRustImage("1.89.0"), /no pinned canonical Rust image/);
+  assert.equal(
+    canonicalWasmTargetSHA256("1.88.0"),
+    "3152d1cbc104215914e27562980c0d99b4164c7f1aa578794e003b16ce065c32",
+  );
+  assert.throws(() => canonicalWasmTargetSHA256("1.89.0"), /no pinned canonical WASM target/);
 });
 
-test("canonical Docker target installation retries transient failures within a closed budget", async () => {
-  const root = await mkdtemp(join(tmpdir(), "redevplugin-rustup-retry-"));
+test("canonical Docker builds are offline and use read-only prepared inputs", async () => {
+  const source = await readFile(new URL("./canonical_wasm_builder.mjs", import.meta.url), "utf8");
+  assert.match(source, /"--network", "none"/);
+  assert.match(source, /hostWasmTarget.*readonly/);
+  assert.match(source, /hostCargoRegistry.*readonly/);
+  assert.match(source, /cargo build --offline --locked/);
+  assert.doesNotMatch(source, /rustup target add/);
+});
+
+test("canonical WASM target hashing is deterministic and rejects symlinks", async () => {
+  const root = await mkdtemp(join(tmpdir(), "redevplugin-wasm-target-"));
   try {
-    const attempts = resolve(root, "attempts.txt");
-    const sleeps = resolve(root, "sleeps.txt");
-    await writeFile(resolve(root, "rustup"), `#!/usr/bin/env bash
-set -euo pipefail
-count=0
-if [[ -f "${attempts}" ]]; then count=$(cat "${attempts}"); fi
-count=$((count + 1))
-printf '%s' "$count" > "${attempts}"
-[[ "$*" == "target add wasm32-unknown-unknown" ]]
-[[ "$count" -ge "\${RUSTUP_SUCCEED_ON:-99}" ]]
-`);
-    await writeFile(resolve(root, "sleep"), `#!/usr/bin/env bash
-set -euo pipefail
-printf '%s\n' "$1" >> "${sleeps}"
-`);
-    await chmod(resolve(root, "rustup"), 0o755);
-    await chmod(resolve(root, "sleep"), 0o755);
+    await mkdir(resolve(root, "lib/nested"), { recursive: true });
+    await writeFile(resolve(root, "lib/a.rlib"), "alpha");
+    await writeFile(resolve(root, "lib/nested/b.rlib"), "beta");
+    const first = await hashCanonicalWasmTarget(root);
+    const second = await hashCanonicalWasmTarget(root);
+    assert.equal(first, second);
+    await writeFile(resolve(root, "lib/a.rlib"), "tampered");
+    assert.notEqual(await hashCanonicalWasmTarget(root), first);
 
-    const run = (succeedOn) => spawnSync("bash", ["-c", canonicalRustTargetInstallScript()], {
-      encoding: "utf8",
-      env: {
-        PATH: `${root}:/usr/bin:/bin`,
-        RUSTUP_SUCCEED_ON: String(succeedOn),
-      },
-    });
-
-    const recovered = run(3);
-    assert.equal(recovered.status, 0, recovered.stderr);
-    assert.equal(await readFile(attempts, "utf8"), "3");
-    assert.equal(await readFile(sleeps, "utf8"), "1\n2\n");
-
-    await rm(attempts);
-    await rm(sleeps);
-    const exhausted = run(6);
-    assert.equal(exhausted.status, 1, exhausted.stderr);
-    assert.equal(await readFile(attempts, "utf8"), "5");
-    assert.equal(await readFile(sleeps, "utf8"), "1\n2\n3\n4\n");
+    const symlinkResult = spawnSync("ln", ["-s", "a.rlib", resolve(root, "lib/alias.rlib")], { encoding: "utf8" });
+    if (symlinkResult.status === 0) {
+      await assert.rejects(hashCanonicalWasmTarget(root), /must not contain symlinks/);
+    }
   } finally {
     await rm(root, { recursive: true, force: true });
   }
