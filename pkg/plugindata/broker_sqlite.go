@@ -284,6 +284,9 @@ func normalizeSQLiteSQL(raw string, readOnly bool) (string, error) {
 }
 
 func sqliteTokens(sqlText string) ([]string, error) {
+	if len(sqlText) > maxSQLiteSQLBytes {
+		return nil, storage.ErrInvalidSQLite
+	}
 	var tokens []string
 	triggerDeclaration := false
 	triggerBody := false

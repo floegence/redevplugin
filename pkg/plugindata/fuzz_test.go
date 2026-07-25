@@ -1,6 +1,19 @@
 package plugindata
 
-import "testing"
+import (
+	"errors"
+	"strings"
+	"testing"
+
+	"github.com/floegence/redevplugin/pkg/storage"
+)
+
+func TestSQLiteTokensRejectsOversizedInput(t *testing.T) {
+	_, err := sqliteTokens(strings.Repeat("x", maxSQLiteSQLBytes+1))
+	if !errors.Is(err, storage.ErrInvalidSQLite) {
+		t.Fatalf("sqliteTokens() error = %v, want ErrInvalidSQLite", err)
+	}
+}
 
 // FuzzSQLiteTokens exercises the SQL tokenizer used before every broker
 // request. Unterminated comments/quotes are ordinary validation failures;
