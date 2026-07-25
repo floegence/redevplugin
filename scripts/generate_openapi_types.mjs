@@ -13,13 +13,14 @@ const generated = check
   : `${output}.tmp`;
 const bundledSource = join(tmpdir(), `redevplugin-openapi-bundled-${process.pid}-${Date.now()}.yaml`);
 const schemaMetadata = new Set(["$schema", "$id", "$anchor", "$dynamicAnchor", "$comment", "title"]);
+const minimatchCompatibilityLoader = join(root, "scripts/redocly_minimatch_compat.cjs");
 
 const openAPI = parseYAML(await readFile(source, "utf8"));
 const bundledOpenAPI = await bundleExternalSchemas(openAPI);
 await writeFile(bundledSource, stringifyYAML(bundledOpenAPI));
 
 const cli = join(root, "node_modules/openapi-typescript/bin/cli.js");
-const result = spawnSync(process.execPath, [cli, bundledSource, "--output", generated], {
+const result = spawnSync(process.execPath, ["--require", minimatchCompatibilityLoader, cli, bundledSource, "--output", generated], {
   cwd: root,
   encoding: "utf8",
   stdio: "pipe",
