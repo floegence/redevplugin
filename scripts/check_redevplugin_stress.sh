@@ -5,6 +5,7 @@ ROOT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." >/dev/null 2>&1 && pwd)
 
 MODE="fast"
 SUMMARY_PATH=""
+PINNED_GO_LINUX_IMAGE="docker.io/library/golang@sha256:1ecb7edf62a0408027bd5729dfd6b1b8766e578e8df93995b225dfd0944eb651"
 
 usage() {
   cat <<'USAGE'
@@ -19,7 +20,8 @@ Modes:
 
 The script always writes a JSON summary with structured stress_evidence counters
 to stdout. When --summary is provided, the same JSON summary is also written to
-PATH.
+PATH. Non-Linux hosts require Docker to collect the Linux-only runtime revoke
+evidence in every mode.
 USAGE
 }
 
@@ -169,6 +171,52 @@ stress_evidence_json() {
   ' "$STRESS_EVIDENCE_FILE"
 }
 
+collect_stress_evidence() {
+  GOWORK=off REDEVPLUGIN_STRESS_EVIDENCE_PATH="$STRESS_EVIDENCE_FILE" go test -count=1 ./pkg/stress
+  if [[ "$(uname -s)" == "Linux" ]]; then
+    return
+  fi
+  if ! command -v docker >/dev/null 2>&1; then
+    echo "Docker is required to collect Linux runtime stress evidence on non-Linux hosts" >&2
+    return 1
+  fi
+
+  local host_arch
+  local go_module_cache
+  local platform
+  host_arch=$(uname -m)
+  go_module_cache=$(go env GOMODCACHE)
+  if [[ ! -d "$go_module_cache" ]]; then
+    echo "Go module cache is unavailable after the host stress test: $go_module_cache" >&2
+    return 1
+  fi
+  case "$host_arch" in
+    arm64|aarch64)
+      platform="linux/arm64"
+      ;;
+    x86_64|amd64)
+      platform="linux/amd64"
+      ;;
+    *)
+      echo "unsupported host architecture for Linux runtime stress evidence: $host_arch" >&2
+      return 1
+      ;;
+  esac
+
+  docker run --rm \
+    --network none \
+    --platform "$platform" \
+    --mount "type=bind,src=$ROOT_DIR,dst=/repo,readonly" \
+    --mount "type=bind,src=$TMP_DIR,dst=/evidence" \
+    --mount "type=bind,src=$go_module_cache,dst=/go/pkg/mod,readonly" \
+    --workdir /repo \
+    --env GOWORK=off \
+    --env GOMODCACHE=/go/pkg/mod \
+    --env REDEVPLUGIN_STRESS_EVIDENCE_PATH=/evidence/stress-evidence.ndjson \
+    "$PINNED_GO_LINUX_IMAGE" \
+    go test -count=1 -run '^TestStressGateRuntimeRevokeACKP95$' ./pkg/stress
+}
+
 cleanup() {
   if [[ -n "$TMP_DIR" ]]; then
     rm -rf "$TMP_DIR"
@@ -195,7 +243,7 @@ run_step connectivity_stress_evidence env GOWORK=off REDEVPLUGIN_STRESS_EVIDENCE
 	exit "$STATUS"
 }
 
-run_step stress_evidence env GOWORK=off REDEVPLUGIN_STRESS_EVIDENCE_PATH="$STRESS_EVIDENCE_FILE" go test -count=1 ./pkg/stress || {
+run_step stress_evidence collect_stress_evidence || {
   write_summary
   exit "$STATUS"
 }

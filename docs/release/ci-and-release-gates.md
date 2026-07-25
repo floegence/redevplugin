@@ -138,6 +138,11 @@ and `--summary PATH`.
   manifest. Omission, duplication, unexpected entries, or a non-zero required
   step fail closed.
 
+Every mode collects the Linux-only runtime revoke evidence. Linux hosts run it
+directly. Non-Linux hosts require Docker and run the focused test in an
+architecture-matched, immutable Go image with a read-only source and module
+cache mount and no container network access.
+
 The script always emits a JSON summary. `stress_evidence` contains structured
 counters for stream backpressure and scoped terminal-close checks,
 operation cancel ownership and inactive-operation non-redispatch, connectivity

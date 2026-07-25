@@ -77,6 +77,7 @@ for script in scripts/*.mjs; do
   node --check "$script"
 done
 ./scripts/test_redevplugin_pre_push_hook.sh
+node --test scripts/stress_platform_policy.test.mjs
 
 echo "==> npm dependencies"
 npm ci

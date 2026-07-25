@@ -56,6 +56,7 @@
     "performance:full": "./scripts/check_redevplugin_performance.sh --full",
     "performance:release": "./scripts/check_redevplugin_performance.sh --release",
     "property-gates": "./scripts/check_redevplugin_property_gates.sh --fast",
+    "stress-platform:test": "node --test scripts/stress_platform_policy.test.mjs",
     "examples": "npm run examples:check && npm run build && cargo build -p redevplugin-runtime && GOWORK=off go run ./cmd/redevplugin examples-server dist/examples-state target/debug/redevplugin-runtime",
     "check": "npm run error-codes:check && npm run openapi:check && npm run openapi-contract:test && npm run contracts:check && npm run platform-package-contracts:check && npm run owner-scope-inventories:check && npm run owner-scope-inventories:test && npm run release-metadata:check && npm run repository-boundary:test && npm run platform-package-contract:test && npm run release-workflow-security:test && npm run test:contracts && npm run performance-contract:test && npm run lint && npm run typecheck && npm run browser-harness:typecheck && npm run scaffold:typecheck && npm run examples:typecheck && npm run canonical-wasm:test && npm run memos-markdown:test && npm run examples:check && npm run browser-harness:check && npm run build && npm run test:ui && npm run test:browser-harness && npm run test:browser-harness:smoke && npm run property-gates"
   },

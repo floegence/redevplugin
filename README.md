@@ -680,4 +680,5 @@ denials, WebSocket cancelled reads, KV byte quota pressure, file-count quota,
 and SQLite sidecar/sparse bypass checks. The exact-main pre-push gate retains
 that local summary as release evidence for host-neutral broker/backpressure and
 stream close/cancel, operation cancel ownership, runtime-control, storage, and
-sandbox telemetry behavior.
+sandbox telemetry behavior. Non-Linux hosts require Docker so the Linux-only
+runtime revoke evidence is collected instead of skipped.
