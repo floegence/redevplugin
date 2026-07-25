@@ -574,14 +574,15 @@ capabilities.
   tied to the recursive local Cargo dependency source snapshot by
   `examples/plugins/worker-artifacts.lock.json`; `npm run examples:generate`
   uses an immutable Rust Docker image digest on non-canonical hosts, while
-  `npm run examples:check:canonical` reproduces the exact CI byte check. The
+  `npm run examples:check:canonical` reproduces the exact canonical byte check. The
   CLI scaffold uses the same shared builder and records its backend worker in
   `cmd/redevplugin/scaffold_assets/worker-artifacts.lock.json`; use
   `npm run scaffold:generate` and `npm run scaffold:check:canonical` for that
   artifact. Linux native checks use the exact pinned Rust release, a clean
   target directory, isolated Cargo home, and an environment allowlist; external
-  ancestor Cargo configuration is rejected. CI compares those bytes with the
-  immutable Docker build and rejects source changes during compilation.
+  ancestor Cargo configuration is rejected. The local complete gate compares
+  those bytes with the immutable Docker build and rejects source changes during
+  compilation.
 - Host-mediated plugin intents are exposed end to end through the Go Host
   library, HTTP adapter, OpenAPI route contract, and `PluginPlatformClient`.
   Host products can list enabled runnable intents and invoke a chosen intent
@@ -676,6 +677,7 @@ redirect/DNS rebinding denials, HTTP proxy/CONNECT/header hardening, TCP mock
 database round trips, TCP size denials, TCP cancelled reads, UDP source-pin
 mismatch drops, UDP rate-limit denials, WebSocket round trips, WebSocket size
 denials, WebSocket cancelled reads, KV byte quota pressure, file-count quota,
-and SQLite sidecar/sparse bypass checks. CI uploads that summary as release evidence for host-neutral
-broker/backpressure and stream close/cancel, operation cancel ownership,
-runtime-control, storage, and sandbox telemetry behavior.
+and SQLite sidecar/sparse bypass checks. The exact-main pre-push gate retains
+that local summary as release evidence for host-neutral broker/backpressure and
+stream close/cancel, operation cancel ownership, runtime-control, storage, and
+sandbox telemetry behavior.

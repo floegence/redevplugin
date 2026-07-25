@@ -7,6 +7,9 @@ OUTPUT="$ROOT_DIR/dist/performance-evidence.json"
 VERSION=""
 SOURCE_COMMIT=""
 GENERATED_AT=""
+PINNED_GO_LINUX_IMAGE="docker.io/library/golang@sha256:1ecb7edf62a0408027bd5729dfd6b1b8766e578e8df93995b225dfd0944eb651"
+PINNED_RUST_LINUX_AMD64_IMAGE="docker.io/library/rust@sha256:4727898c104ecd2e22d780925832502faee9fe4e70581b8572af081370b315a0"
+PINNED_RUST_LINUX_ARM64_IMAGE="docker.io/library/rust@sha256:af306cfa71d987911a781c37b59d7d67d934f49684058f96cf72079c3626bfe0"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -78,17 +81,75 @@ COMPARISONS="$TMP_DIR/comparisons.ndjson"
 COMPATIBILITY="$TMP_DIR/compatibility.json"
 ROUTE_AUTHORIZATION_DIAGNOSTIC="${OUTPUT%.json}.route-authorization-diagnostic.json"
 
+run_runtime_performance_tests() {
+  local runtime_path="$1"
+  if [[ "$(uname -s)" == "Linux" ]]; then
+    GOWORK=off REDEVPLUGIN_PERFORMANCE_RUNTIME="$runtime_path" REDEVPLUGIN_PERFORMANCE_RUNTIME_VERSION="$VERSION" REDEVPLUGIN_PERFORMANCE_MEASUREMENTS="$MEASUREMENTS" REDEVPLUGIN_PERFORMANCE_GATE="$MODE" \
+      go test ./pkg/host -run '^TestPerformanceRuntime' -count=1
+    return
+  fi
+
+  if ! command -v docker >/dev/null 2>&1; then
+    echo "Docker is required to collect Linux runtime performance evidence on non-Linux hosts" >&2
+    exit 1
+  fi
+  local host_arch
+  local platform
+  local rust_image
+  local rust_toolchain
+  host_arch=$(uname -m)
+  case "$host_arch" in
+    arm64|aarch64)
+      platform="linux/arm64"
+      rust_image="$PINNED_RUST_LINUX_ARM64_IMAGE"
+      rust_toolchain="1.88.0-aarch64-unknown-linux-gnu"
+      ;;
+    x86_64|amd64)
+      platform="linux/amd64"
+      rust_image="$PINNED_RUST_LINUX_AMD64_IMAGE"
+      rust_toolchain="1.88.0-x86_64-unknown-linux-gnu"
+      ;;
+    *)
+      echo "unsupported host architecture for Linux runtime performance evidence: $host_arch" >&2
+      exit 1
+      ;;
+  esac
+
+  local docker_runtime_path="/evidence/redevplugin-runtime"
+  docker run --rm \
+    --platform "$platform" \
+    --mount "type=bind,src=$ROOT_DIR,dst=/repo,readonly" \
+    --mount "type=bind,src=$TMP_DIR,dst=/evidence" \
+    --workdir /repo \
+    --env "RUSTUP_TOOLCHAIN=$rust_toolchain" \
+    "$rust_image" \
+    bash -c 'set -euo pipefail; export CARGO_TARGET_DIR=/tmp/redevplugin-target; cargo build --locked --release -p redevplugin-runtime; cp /tmp/redevplugin-target/release/redevplugin-runtime /evidence/redevplugin-runtime'
+  docker run --rm \
+    --platform "$platform" \
+    --mount "type=bind,src=$ROOT_DIR,dst=/repo,readonly" \
+    --mount "type=bind,src=$TMP_DIR,dst=/evidence" \
+    --workdir /repo \
+    --env GOWORK=off \
+    --env "REDEVPLUGIN_PERFORMANCE_RUNTIME=$docker_runtime_path" \
+    --env "REDEVPLUGIN_PERFORMANCE_RUNTIME_VERSION=$VERSION" \
+    --env REDEVPLUGIN_PERFORMANCE_MEASUREMENTS=/evidence/measurements.ndjson \
+    --env "REDEVPLUGIN_PERFORMANCE_GATE=$MODE" \
+    "$PINNED_GO_LINUX_IMAGE" \
+    go test ./pkg/host -run '^TestPerformanceRuntime' -count=1
+}
+
 npm run contracts:check
 npm --prefix packages/redevplugin-ui run build
-if [[ -z "$RUNTIME_PATH" ]]; then
+if [[ -z "$RUNTIME_PATH" && "$(uname -s)" == "Linux" ]]; then
   cargo build --release -p redevplugin-runtime
   RUNTIME_PATH="$ROOT_DIR/target/release/redevplugin-runtime"
 elif [[ ! -x "$RUNTIME_PATH" ]]; then
-  echo "configured performance runtime is not executable: $RUNTIME_PATH" >&2
-  exit 1
+  if [[ -n "$RUNTIME_PATH" ]]; then
+    echo "configured performance runtime is not executable: $RUNTIME_PATH" >&2
+    exit 1
+  fi
 fi
-GOWORK=off REDEVPLUGIN_PERFORMANCE_RUNTIME="$RUNTIME_PATH" REDEVPLUGIN_PERFORMANCE_RUNTIME_VERSION="$VERSION" REDEVPLUGIN_PERFORMANCE_MEASUREMENTS="$MEASUREMENTS" REDEVPLUGIN_PERFORMANCE_GATE="$MODE" \
-  go test ./pkg/host -run '^TestPerformanceRuntime' -count=1
+run_runtime_performance_tests "$RUNTIME_PATH"
 REDEVPLUGIN_PERFORMANCE_MEASUREMENTS="$MEASUREMENTS" REDEVPLUGIN_PERFORMANCE_GATE="$MODE" \
   cargo test --release -p redevplugin-runtime ipc_writer_burst_performance_evidence -- --nocapture
 REDEVPLUGIN_PERFORMANCE_MEASUREMENTS="$MEASUREMENTS" REDEVPLUGIN_PERFORMANCE_GATE="$MODE" \
