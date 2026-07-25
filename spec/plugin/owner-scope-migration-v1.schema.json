@@ -23,6 +23,7 @@
     "migration_id": { "$ref": "#/$defs/opaque_id" },
     "root_identity_sha256": { "$ref": "#/$defs/sha256" },
     "legacy_snapshot_sha256": { "$ref": "#/$defs/sha256" },
+    "recovery_content_sha256": { "$ref": "#/$defs/sha256" },
     "inventory_id": { "type": "string", "maxLength": 128, "pattern": "^$|^[a-z][a-z0-9._-]+$" },
     "inventory_sha256": { "type": "string", "pattern": "^$|^[0-9a-f]{64}$" },
     "state": {
@@ -57,6 +58,13 @@
       }
     }
   },
+  "allOf": [
+    {
+      "if": { "properties": { "inventory_id": { "const": "redevplugin-recovered-root-v1" } }, "required": ["inventory_id"] },
+      "then": { "required": ["recovery_content_sha256"] },
+      "else": { "properties": { "recovery_content_sha256": false } }
+    }
+  ],
   "$defs": {
     "opaque_id": { "type": "string", "pattern": "^migration_[0-9a-f]{32}$" },
     "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }

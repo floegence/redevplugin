@@ -10,15 +10,18 @@
     "plan_sha256",
     "source_root_identity_sha256",
     "root_identity_sha256",
+    "source_recovery_journal_sha256",
     "source_journal_sha256",
     "source_snapshot_sha256",
     "source_entry_count",
     "source_bytes",
     "has_retained_quarantine",
+    "has_source_recovery_journal",
     "top_level_entries",
     "state",
     "quarantine_id",
     "quarantine_sha256",
+    "quarantine_content_sha256",
     "fresh_migration_id",
     "fresh_generation_id",
     "fresh_generation_sha256",
@@ -30,15 +33,18 @@
     "plan_sha256": { "$ref": "#/$defs/sha256" },
     "source_root_identity_sha256": { "$ref": "#/$defs/sha256" },
     "root_identity_sha256": { "$ref": "#/$defs/sha256" },
+    "source_recovery_journal_sha256": { "type": "string", "pattern": "^$|^[0-9a-f]{64}$" },
     "source_journal_sha256": { "$ref": "#/$defs/sha256" },
     "source_snapshot_sha256": { "$ref": "#/$defs/sha256" },
     "source_entry_count": { "type": "integer", "minimum": 1, "maximum": 200000 },
     "source_bytes": { "type": "integer", "minimum": 1, "maximum": 4294967296 },
     "has_retained_quarantine": { "type": "boolean" },
+    "has_source_recovery_journal": { "type": "boolean" },
     "top_level_entries": {
       "oneOf": [
         { "const": [".redevplugin-current-generation", ".redevplugin-generations", ".redevplugin-owner-scope-migration-v1.json"] },
-        { "const": [".redevplugin-current-generation", ".redevplugin-generations", ".redevplugin-owner-scope-migration-v1.json", ".redevplugin-quarantine"] }
+        { "const": [".redevplugin-current-generation", ".redevplugin-generations", ".redevplugin-owner-scope-migration-v1.json", ".redevplugin-quarantine"] },
+        { "const": [".redevplugin-current-generation", ".redevplugin-generations", ".redevplugin-owner-scope-migration-v1.json", ".redevplugin-owner-scope-root-recovery-source-v1.json", ".redevplugin-quarantine"] }
       ]
     },
     "state": {
@@ -55,6 +61,7 @@
     },
     "quarantine_id": { "type": "string", "pattern": "^quarantine_[0-9a-f]{32}$" },
     "quarantine_sha256": { "type": "string", "pattern": "^$|^[0-9a-f]{64}$" },
+    "quarantine_content_sha256": { "type": "string", "pattern": "^$|^[0-9a-f]{64}$" },
     "fresh_migration_id": { "type": "string", "pattern": "^migration_[0-9a-f]{32}$" },
     "fresh_generation_id": { "type": "string", "pattern": "^generation_[0-9a-f]{32}$" },
     "fresh_generation_sha256": { "$ref": "#/$defs/sha256" },
@@ -62,27 +69,67 @@
   },
   "allOf": [
     {
-      "if": { "properties": { "has_retained_quarantine": { "const": true } }, "required": ["has_retained_quarantine"] },
-      "then": { "properties": { "top_level_entries": { "const": [".redevplugin-current-generation", ".redevplugin-generations", ".redevplugin-owner-scope-migration-v1.json", ".redevplugin-quarantine"] } } },
-      "else": { "properties": { "top_level_entries": { "const": [".redevplugin-current-generation", ".redevplugin-generations", ".redevplugin-owner-scope-migration-v1.json"] } } }
+      "if": { "properties": { "has_source_recovery_journal": { "const": true } }, "required": ["has_source_recovery_journal"] },
+      "then": {
+        "properties": {
+          "source_recovery_journal_sha256": { "$ref": "#/$defs/sha256" },
+          "has_retained_quarantine": { "const": true },
+          "top_level_entries": { "const": [".redevplugin-current-generation", ".redevplugin-generations", ".redevplugin-owner-scope-migration-v1.json", ".redevplugin-owner-scope-root-recovery-source-v1.json", ".redevplugin-quarantine"] }
+        }
+      },
+      "else": {
+        "properties": {
+          "source_recovery_journal_sha256": { "const": "" }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "has_source_recovery_journal": { "const": false },
+          "has_retained_quarantine": { "const": true }
+        },
+        "required": ["has_source_recovery_journal", "has_retained_quarantine"]
+      },
+      "then": { "properties": { "top_level_entries": { "const": [".redevplugin-current-generation", ".redevplugin-generations", ".redevplugin-owner-scope-migration-v1.json", ".redevplugin-quarantine"] } } }
+    },
+    {
+      "if": {
+        "properties": {
+          "has_source_recovery_journal": { "const": false },
+          "has_retained_quarantine": { "const": false }
+        },
+        "required": ["has_source_recovery_journal", "has_retained_quarantine"]
+      },
+      "then": { "properties": { "top_level_entries": { "const": [".redevplugin-current-generation", ".redevplugin-generations", ".redevplugin-owner-scope-migration-v1.json"] } } }
     },
     {
       "if": { "properties": { "state": { "enum": ["prepared", "archive_writing"] } }, "required": ["state"] },
-      "then": { "properties": { "quarantine_sha256": { "const": "" } } }
+      "then": { "properties": { "quarantine_sha256": { "const": "" }, "quarantine_content_sha256": { "const": "" } } }
     },
     {
       "if": { "properties": { "state": { "enum": ["archive_committed", "fresh_prepared", "fresh_committed"] } }, "required": ["state"] },
-      "then": { "properties": { "quarantine_sha256": { "$ref": "#/$defs/sha256" } } }
+      "then": { "properties": { "quarantine_sha256": { "$ref": "#/$defs/sha256" }, "quarantine_content_sha256": { "$ref": "#/$defs/sha256" } } }
     },
     {
       "if": { "properties": { "state": { "const": "rebind_prepared" } }, "required": ["state"] },
       "then": {
         "properties": {
           "quarantine_sha256": { "$ref": "#/$defs/sha256" },
+          "quarantine_content_sha256": { "$ref": "#/$defs/sha256" },
           "rebind_root_identity_sha256": { "$ref": "#/$defs/sha256" }
         }
       },
       "else": { "properties": { "rebind_root_identity_sha256": { "const": "" } } }
+    },
+    {
+      "if": { "properties": { "state": { "enum": ["reconcile_required", "failed"] } }, "required": ["state"] },
+      "then": {
+        "oneOf": [
+          { "properties": { "quarantine_sha256": { "const": "" }, "quarantine_content_sha256": { "const": "" } } },
+          { "properties": { "quarantine_sha256": { "$ref": "#/$defs/sha256" }, "quarantine_content_sha256": { "$ref": "#/$defs/sha256" } } }
+        ]
+      }
     }
   ],
   "$defs": {

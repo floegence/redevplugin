@@ -13,9 +13,11 @@ import (
 )
 
 const (
-	MigrationJournalName    = ".redevplugin-owner-scope-migration-v1.json"
-	CleanupJournalName      = ".redevplugin-quarantine-cleanup-v1.json"
-	RootRecoveryJournalName = ".redevplugin-owner-scope-root-recovery-v1.json"
+	MigrationJournalName           = ".redevplugin-owner-scope-migration-v1.json"
+	CleanupJournalName             = ".redevplugin-quarantine-cleanup-v1.json"
+	RootRecoveryJournalName        = ".redevplugin-owner-scope-root-recovery-v1.json"
+	RootRecoveryPendingJournalName = ".redevplugin-owner-scope-root-recovery-pending-v1.json"
+	RootRecoverySourceJournalName  = ".redevplugin-owner-scope-root-recovery-source-v1.json"
 )
 
 var (
@@ -50,13 +52,15 @@ const (
 // OwnerScopeRootRecoveryPlan is immutable, non-secret evidence for a host's
 // explicit review UI. PlanSHA256 binds commit to the exact inspected root.
 type OwnerScopeRootRecoveryPlan struct {
-	PlanSHA256            string
-	RootIdentitySHA256    string
-	SourceJournalSHA256   string
-	SourceSnapshotSHA256  string
-	SourceEntryCount      int
-	SourceBytes           int64
-	HasRetainedQuarantine bool
+	PlanSHA256                  string
+	RootIdentitySHA256          string
+	SourceRecoveryJournalSHA256 string
+	SourceJournalSHA256         string
+	SourceSnapshotSHA256        string
+	SourceEntryCount            int
+	SourceBytes                 int64
+	HasRetainedQuarantine       bool
+	HasSourceRecoveryJournal    bool
 }
 
 // OwnerScopeRootRecoveryResult identifies the retained untrusted source and
@@ -70,24 +74,27 @@ type OwnerScopeRootRecoveryResult struct {
 }
 
 type rootRecoveryJournalV1 struct {
-	SchemaVersion            string   `json:"schema_version"`
-	RecoveryID               string   `json:"recovery_id"`
-	PlanSHA256               string   `json:"plan_sha256"`
-	SourceRootIdentitySHA256 string   `json:"source_root_identity_sha256"`
-	RootIdentitySHA256       string   `json:"root_identity_sha256"`
-	SourceJournalSHA256      string   `json:"source_journal_sha256"`
-	SourceSnapshotSHA256     string   `json:"source_snapshot_sha256"`
-	SourceEntryCount         int      `json:"source_entry_count"`
-	SourceBytes              int64    `json:"source_bytes"`
-	HasRetainedQuarantine    bool     `json:"has_retained_quarantine"`
-	TopLevelEntries          []string `json:"top_level_entries"`
-	State                    string   `json:"state"`
-	QuarantineID             string   `json:"quarantine_id"`
-	QuarantineSHA256         string   `json:"quarantine_sha256"`
-	FreshMigrationID         string   `json:"fresh_migration_id"`
-	FreshGenerationID        string   `json:"fresh_generation_id"`
-	FreshGenerationSHA256    string   `json:"fresh_generation_sha256"`
-	RebindRootIdentitySHA256 string   `json:"rebind_root_identity_sha256"`
+	SchemaVersion               string   `json:"schema_version"`
+	RecoveryID                  string   `json:"recovery_id"`
+	PlanSHA256                  string   `json:"plan_sha256"`
+	SourceRootIdentitySHA256    string   `json:"source_root_identity_sha256"`
+	RootIdentitySHA256          string   `json:"root_identity_sha256"`
+	SourceRecoveryJournalSHA256 string   `json:"source_recovery_journal_sha256"`
+	SourceJournalSHA256         string   `json:"source_journal_sha256"`
+	SourceSnapshotSHA256        string   `json:"source_snapshot_sha256"`
+	SourceEntryCount            int      `json:"source_entry_count"`
+	SourceBytes                 int64    `json:"source_bytes"`
+	HasRetainedQuarantine       bool     `json:"has_retained_quarantine"`
+	HasSourceRecoveryJournal    bool     `json:"has_source_recovery_journal"`
+	TopLevelEntries             []string `json:"top_level_entries"`
+	State                       string   `json:"state"`
+	QuarantineID                string   `json:"quarantine_id"`
+	QuarantineSHA256            string   `json:"quarantine_sha256"`
+	QuarantineContentSHA256     string   `json:"quarantine_content_sha256"`
+	FreshMigrationID            string   `json:"fresh_migration_id"`
+	FreshGenerationID           string   `json:"fresh_generation_id"`
+	FreshGenerationSHA256       string   `json:"fresh_generation_sha256"`
+	RebindRootIdentitySHA256    string   `json:"rebind_root_identity_sha256"`
 }
 
 type MigrationState string

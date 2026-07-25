@@ -540,6 +540,7 @@ func TestRecoverOwnerScopeRootResumesEveryPersistedStage(t *testing.T) {
 				}
 				journal.State = string(RootRecoveryStateArchiveWriting)
 				journal.QuarantineSHA256 = ""
+				journal.QuarantineContentSHA256 = ""
 				mustPersistRecoveryJournal(t, root, journal)
 			case "archive-committed":
 				journal.State = string(RootRecoveryStateArchiveWriting)
@@ -993,23 +994,370 @@ func TestInspectAndRecoverMovedRecoveredRootRebindsWithCurrentPlan(t *testing.T)
 	}
 }
 
-func TestInspectMovedRecoveredRootRejectsArchiveCopyTamper(t *testing.T) {
+func TestRecoverOwnerScopeRootExplicitlyRecoversFileCopiedRecoveredRoot(t *testing.T) {
 	rootPath, plan, _ := prepareRecoveryFixture(t)
-	if _, err := RecoverOwnerScopeRoot(context.Background(), rootPath, plan.PlanSHA256); err != nil {
+	first, err := RecoverOwnerScopeRoot(context.Background(), rootPath, plan.PlanSHA256)
+	if err != nil {
+		t.Fatal(err)
+	}
+	activeMarker := filepath.Join(first.Generation.Path, "state-created-after-first-recovery")
+	if err := os.WriteFile(activeMarker, []byte("must remain archived"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	copyRoot := copyOwnerScopeRoot(t, rootPath)
+	secondPlan, err := InspectOwnerScopeRootRecovery(copyRoot)
+	if err != nil || !secondPlan.HasSourceRecoveryJournal || secondPlan.SourceRecoveryJournalSHA256 == "" {
+		t.Fatalf("InspectOwnerScopeRootRecovery() = %#v, %v", secondPlan, err)
+	}
+	second, err := RecoverOwnerScopeRoot(context.Background(), copyRoot, secondPlan.PlanSHA256)
+	if err != nil || second.Generation.Path == "" || second.Generation.Status.FreshGenerationID == first.Generation.Status.FreshGenerationID {
+		t.Fatalf("RecoverOwnerScopeRoot() = %#v, %v", second, err)
+	}
+	entries, err := os.ReadDir(second.Generation.Path)
+	if err != nil || len(entries) != 0 {
+		t.Fatalf("second fresh generation entries = %#v, %v", entries, err)
+	}
+	archivedMarker := filepath.Join(second.ArchivePath, generationsDirectory, first.Generation.Status.FreshGenerationID, "state-created-after-first-recovery")
+	if raw, err := os.ReadFile(archivedMarker); err != nil || string(raw) != "must remain archived" {
+		t.Fatalf("archived active state = %q, %v", raw, err)
+	}
+	if _, err := os.Stat(filepath.Join(second.ArchivePath, RootRecoverySourceJournalName)); err != nil {
+		t.Fatalf("archived source recovery journal: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(second.ArchivePath, quarantineDirectory, first.Generation.Status.QuarantineID.String())); err != nil {
+		t.Fatalf("nested retained archive: %v", err)
+	}
+	idempotent, err := RecoverOwnerScopeRoot(context.Background(), copyRoot, secondPlan.PlanSHA256)
+	if err != nil || idempotent.Generation.Path != second.Generation.Path {
+		t.Fatalf("idempotent RecoverOwnerScopeRoot() = %#v, %v", idempotent, err)
+	}
+}
+
+func TestRecoverOwnerScopeRootResumesNestedJournalRotationStages(t *testing.T) {
+	for _, stage := range []string{"pending-written", "source-renamed", "canonical-rotated"} {
+		t.Run(stage, func(t *testing.T) {
+			copyRoot, plan, journal := prepareFileCopiedRecoveredRoot(t)
+			root := openMigrationRoot(t, copyRoot)
+			if err := persistRootRecoveryJournalNamed(root, RootRecoveryPendingJournalName, journal); err != nil {
+				root.Close()
+				t.Fatal(err)
+			}
+			if stage == "source-renamed" || stage == "canonical-rotated" {
+				if err := os.Rename(filepath.Join(copyRoot, RootRecoveryJournalName), filepath.Join(copyRoot, RootRecoverySourceJournalName)); err != nil {
+					root.Close()
+					t.Fatal(err)
+				}
+			}
+			if stage == "canonical-rotated" {
+				if err := os.Rename(filepath.Join(copyRoot, RootRecoveryPendingJournalName), filepath.Join(copyRoot, RootRecoveryJournalName)); err != nil {
+					root.Close()
+					t.Fatal(err)
+				}
+			}
+			root.Close()
+
+			inspected, err := InspectOwnerScopeRootRecovery(copyRoot)
+			if err != nil || inspected.PlanSHA256 != plan.PlanSHA256 {
+				t.Fatalf("InspectOwnerScopeRootRecovery() = %#v, %v", inspected, err)
+			}
+			result, err := RecoverOwnerScopeRoot(context.Background(), copyRoot, plan.PlanSHA256)
+			if err != nil || result.Generation.Path == "" {
+				t.Fatalf("RecoverOwnerScopeRoot() = %#v, %v", result, err)
+			}
+			if _, err := os.Stat(filepath.Join(result.ArchivePath, RootRecoverySourceJournalName)); err != nil {
+				t.Fatalf("archived source recovery journal: %v", err)
+			}
+			if _, err := os.Stat(filepath.Join(copyRoot, RootRecoveryPendingJournalName)); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("pending recovery journal remains after commit: %v", err)
+			}
+		})
+	}
+}
+
+func TestRecoverOwnerScopeRootRejectsAmbiguousNestedJournalRotation(t *testing.T) {
+	copyRoot, plan, journal := prepareFileCopiedRecoveredRoot(t)
+	root := openMigrationRoot(t, copyRoot)
+	if err := persistRootRecoveryJournalNamed(root, RootRecoveryPendingJournalName, journal); err != nil {
+		root.Close()
+		t.Fatal(err)
+	}
+	sourceRaw := mustReadFile(t, filepath.Join(copyRoot, RootRecoveryJournalName))
+	if err := os.WriteFile(filepath.Join(copyRoot, RootRecoverySourceJournalName), sourceRaw, 0o600); err != nil {
+		root.Close()
+		t.Fatal(err)
+	}
+	root.Close()
+	before, err := snapshotPath(t, copyRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if inspected, err := InspectOwnerScopeRootRecovery(copyRoot); inspected.PlanSHA256 != "" || !errors.Is(err, ErrOwnerScopeJournalCorrupt) {
+		t.Fatalf("InspectOwnerScopeRootRecovery() = %#v, %v", inspected, err)
+	}
+	if result, err := RecoverOwnerScopeRoot(context.Background(), copyRoot, plan.PlanSHA256); result.Generation.Path != "" || !errors.Is(err, ErrOwnerScopeJournalCorrupt) {
+		t.Fatalf("RecoverOwnerScopeRoot() = %#v, %v", result, err)
+	}
+	after, err := snapshotPath(t, copyRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if before.digest != after.digest {
+		t.Fatal("rejected ambiguous journal rotation mutated the root")
+	}
+}
+
+func TestRecoverOwnerScopeRootRejectsNonPreparedPendingJournal(t *testing.T) {
+	copyRoot, plan, journal := prepareFileCopiedRecoveredRoot(t)
+	journal.State = string(RootRecoveryStateFreshCommitted)
+	journal.QuarantineSHA256 = journal.SourceSnapshotSHA256
+	journal.QuarantineContentSHA256 = digestString("forged-pending-archive")
+	root := openMigrationRoot(t, copyRoot)
+	if err := persistRootRecoveryJournalNamed(root, RootRecoveryPendingJournalName, journal); err != nil {
+		root.Close()
+		t.Fatal(err)
+	}
+	root.Close()
+	before, err := snapshotPath(t, copyRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if inspected, err := InspectOwnerScopeRootRecovery(copyRoot); inspected.PlanSHA256 != "" || !errors.Is(err, ErrOwnerScopeJournalCorrupt) {
+		t.Fatalf("InspectOwnerScopeRootRecovery() = %#v, %v", inspected, err)
+	}
+	if result, err := RecoverOwnerScopeRoot(context.Background(), copyRoot, plan.PlanSHA256); result.Generation.Path != "" || !errors.Is(err, ErrOwnerScopeJournalCorrupt) {
+		t.Fatalf("RecoverOwnerScopeRoot() = %#v, %v", result, err)
+	}
+	after, err := snapshotPath(t, copyRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if before.digest != after.digest {
+		t.Fatal("rejected non-prepared pending journal mutated the root")
+	}
+}
+
+func TestInspectRotatedNestedRecoveryRejectsMissingOrTamperedSourceJournal(t *testing.T) {
+	for _, mutation := range []string{"missing", "tampered"} {
+		t.Run(mutation, func(t *testing.T) {
+			copyRoot, plan, journal := prepareFileCopiedRecoveredRoot(t)
+			root := openMigrationRoot(t, copyRoot)
+			if err := persistRootRecoveryJournalNamed(root, RootRecoveryPendingJournalName, journal); err != nil {
+				root.Close()
+				t.Fatal(err)
+			}
+			root.Close()
+			if err := os.Rename(filepath.Join(copyRoot, RootRecoveryJournalName), filepath.Join(copyRoot, RootRecoverySourceJournalName)); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Rename(filepath.Join(copyRoot, RootRecoveryPendingJournalName), filepath.Join(copyRoot, RootRecoveryJournalName)); err != nil {
+				t.Fatal(err)
+			}
+			sourcePath := filepath.Join(copyRoot, RootRecoverySourceJournalName)
+			if mutation == "missing" {
+				if err := os.Remove(sourcePath); err != nil {
+					t.Fatal(err)
+				}
+			} else if err := os.WriteFile(sourcePath, []byte("tampered source recovery journal\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			before, err := snapshotPath(t, copyRoot)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if inspected, err := InspectOwnerScopeRootRecovery(copyRoot); inspected.PlanSHA256 != "" || !errors.Is(err, ErrOwnerScopeJournalCorrupt) {
+				t.Fatalf("InspectOwnerScopeRootRecovery() = %#v, %v", inspected, err)
+			}
+			if result, err := RecoverOwnerScopeRoot(context.Background(), copyRoot, plan.PlanSHA256); result.Generation.Path != "" || !errors.Is(err, ErrOwnerScopeJournalCorrupt) {
+				t.Fatalf("RecoverOwnerScopeRoot() = %#v, %v", result, err)
+			}
+			after, err := snapshotPath(t, copyRoot)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if before.digest != after.digest {
+				t.Fatal("rejected rotated source journal mutation changed the root")
+			}
+		})
+	}
+}
+
+func TestInspectPendingNestedRecoveryRejectsSourceSnapshotTamper(t *testing.T) {
+	for _, stage := range []string{"pending-written", "source-renamed"} {
+		for _, target := range []string{"active", "migration", "archive"} {
+			t.Run(stage+"/"+target, func(t *testing.T) {
+				copyRoot, plan, journal := prepareFileCopiedRecoveredRoot(t)
+				root := openMigrationRoot(t, copyRoot)
+				if err := persistRootRecoveryJournalNamed(root, RootRecoveryPendingJournalName, journal); err != nil {
+					root.Close()
+					t.Fatal(err)
+				}
+				root.Close()
+				if stage == "source-renamed" {
+					if err := os.Rename(filepath.Join(copyRoot, RootRecoveryJournalName), filepath.Join(copyRoot, RootRecoverySourceJournalName)); err != nil {
+						t.Fatal(err)
+					}
+				}
+				recovery := mustReadSourceRecoveryJournal(t, copyRoot, stage)
+				migration := mustReadMigrationJournal(t, copyRoot)
+				switch target {
+				case "active":
+					if err := os.WriteFile(filepath.Join(copyRoot, generationsDirectory, migration.FreshGenerationID, "tampered-active-state"), []byte("tampered"), 0o600); err != nil {
+						t.Fatal(err)
+					}
+				case "migration":
+					if err := os.Chmod(filepath.Join(copyRoot, MigrationJournalName), 0o400); err != nil {
+						t.Fatal(err)
+					}
+				case "archive":
+					if err := os.Chmod(filepath.Join(copyRoot, quarantineDirectory, recovery.QuarantineID, MigrationJournalName), 0o400); err != nil {
+						t.Fatal(err)
+					}
+				}
+				before, err := snapshotPath(t, copyRoot)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if inspected, err := InspectOwnerScopeRootRecovery(copyRoot); inspected.PlanSHA256 != "" || !errors.Is(err, ErrOwnerScopeSnapshotChanged) {
+					t.Fatalf("InspectOwnerScopeRootRecovery() = %#v, %v", inspected, err)
+				}
+				if result, err := RecoverOwnerScopeRoot(context.Background(), copyRoot, plan.PlanSHA256); result.Generation.Path != "" || !errors.Is(err, ErrOwnerScopeSnapshotChanged) {
+					t.Fatalf("RecoverOwnerScopeRoot() = %#v, %v", result, err)
+				}
+				after, err := snapshotPath(t, copyRoot)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if before.digest != after.digest {
+					t.Fatal("rejected pending source snapshot mutation changed the root")
+				}
+			})
+		}
+	}
+}
+
+func mustReadSourceRecoveryJournal(t *testing.T, rootPath, stage string) rootRecoveryJournalV1 {
+	t.Helper()
+	name := RootRecoveryJournalName
+	if stage == "source-renamed" {
+		name = RootRecoverySourceJournalName
+	}
+	journal, err := decodeRootRecoveryJournal(mustReadFile(t, filepath.Join(rootPath, name)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return journal
+}
+
+func TestInspectFileCopiedRecoveredRootRejectsArchiveAndRecoveryJournalTamper(t *testing.T) {
+	copyRoot, _, _ := prepareFileCopiedRecoveredRoot(t)
+	recovery := mustReadRecoveryJournal(t, copyRoot)
+	archiveMigration := filepath.Join(copyRoot, quarantineDirectory, recovery.QuarantineID, MigrationJournalName)
+	if err := os.Chmod(archiveMigration, 0o400); err != nil {
+		t.Fatal(err)
+	}
+	archive := openMigrationRoot(t, filepath.Join(copyRoot, quarantineDirectory, recovery.QuarantineID))
+	snapshot, err := snapshotDirectory(archive)
+	archive.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	recovery.QuarantineContentSHA256, err = digestSnapshotContent(snapshot.entries)
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := openMigrationRoot(t, copyRoot)
+	mustPersistRecoveryJournal(t, root, recovery)
+	root.Close()
 	if inspected, err := InspectOwnerScopeRootRecovery(copyRoot); inspected.PlanSHA256 != "" || !errors.Is(err, ErrOwnerScopeRecoveryNotEligible) {
 		t.Fatalf("InspectOwnerScopeRootRecovery() = %#v, %v", inspected, err)
 	}
-	movedRoot := moveOwnerScopeRootContents(t, rootPath)
-	extraArchive := filepath.Join(movedRoot, quarantineDirectory, "quarantine_00000000000000000000000000000000")
+}
+
+func TestInspectFileCopiedRecoveredRootRejectsUnsafeArchiveNodes(t *testing.T) {
+	for _, mutation := range []string{"group-writable", "symlink", "hardlink"} {
+		t.Run(mutation, func(t *testing.T) {
+			copyRoot, _, _ := prepareFileCopiedRecoveredRoot(t)
+			recovery := mustReadRecoveryJournal(t, copyRoot)
+			archivePath := filepath.Join(copyRoot, quarantineDirectory, recovery.QuarantineID)
+			source := filepath.Join(archivePath, MigrationJournalName)
+			switch mutation {
+			case "group-writable":
+				if err := os.Chmod(source, 0o620); err != nil {
+					t.Fatal(err)
+				}
+			case "symlink":
+				if err := os.Symlink(MigrationJournalName, filepath.Join(archivePath, "unsafe-link")); err != nil {
+					t.Fatal(err)
+				}
+			case "hardlink":
+				if err := os.Link(source, filepath.Join(archivePath, "unsafe-hardlink")); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if inspected, err := InspectOwnerScopeRootRecovery(copyRoot); inspected.PlanSHA256 != "" || !errors.Is(err, ErrOwnerScopeRecoveryNotEligible) {
+				t.Fatalf("InspectOwnerScopeRootRecovery() = %#v, %v", inspected, err)
+			}
+		})
+	}
+}
+
+func TestInspectFileCopiedRecoveredRootRejectsContentAndLayoutTamper(t *testing.T) {
+	rootPath, plan, _ := prepareRecoveryFixture(t)
+	first, err := RecoverOwnerScopeRoot(context.Background(), rootPath, plan.PlanSHA256)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	copyRoot := copyOwnerScopeRoot(t, rootPath)
+	extraArchive := filepath.Join(copyRoot, quarantineDirectory, "quarantine_00000000000000000000000000000000")
 	if err := os.Mkdir(extraArchive, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if inspected, err := InspectOwnerScopeRootRecovery(movedRoot); inspected.PlanSHA256 != "" || !errors.Is(err, ErrOwnerScopeRecoveryNotEligible) {
-		t.Fatalf("tampered InspectOwnerScopeRootRecovery() = %#v, %v", inspected, err)
+	if inspected, err := InspectOwnerScopeRootRecovery(copyRoot); inspected.PlanSHA256 != "" || !errors.Is(err, ErrOwnerScopeRecoveryNotEligible) {
+		t.Fatalf("layout-tampered InspectOwnerScopeRootRecovery() = %#v, %v", inspected, err)
 	}
+
+	movedRoot := moveOwnerScopeRootContents(t, rootPath)
+	archiveJournal := filepath.Join(movedRoot, quarantineDirectory, first.Generation.Status.QuarantineID.String(), MigrationJournalName)
+	if err := os.WriteFile(archiveJournal, []byte("tampered archive content\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if inspected, err := InspectOwnerScopeRootRecovery(movedRoot); inspected.PlanSHA256 != "" || !errors.Is(err, ErrOwnerScopeRecoveryNotEligible) {
+		t.Fatalf("content-tampered InspectOwnerScopeRootRecovery() = %#v, %v", inspected, err)
+	}
+}
+
+func prepareFileCopiedRecoveredRoot(t *testing.T) (string, OwnerScopeRootRecoveryPlan, rootRecoveryJournalV1) {
+	t.Helper()
+	rootPath, initialPlan, _ := prepareRecoveryFixture(t)
+	if _, err := RecoverOwnerScopeRoot(context.Background(), rootPath, initialPlan.PlanSHA256); err != nil {
+		t.Fatal(err)
+	}
+	copyRoot := copyOwnerScopeRoot(t, rootPath)
+	root := openMigrationRoot(t, copyRoot)
+	duplicate, identity, err := duplicateMigrationRoot(root)
+	if err != nil {
+		root.Close()
+		t.Fatal(err)
+	}
+	duplicate.Close()
+	rawRecovery := mustReadFile(t, filepath.Join(copyRoot, RootRecoveryJournalName))
+	recovery, err := decodeRootRecoveryJournal(rawRecovery)
+	if err != nil {
+		root.Close()
+		t.Fatal(err)
+	}
+	plan, wire, err := inspectCopiedRecoveredRootWithJournal(root, identity, recovery, rawRecovery)
+	if err != nil {
+		root.Close()
+		t.Fatal(err)
+	}
+	journal, err := newRootRecoveryJournal(identity, wire, plan.PlanSHA256)
+	root.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return copyRoot, plan, journal
 }
 
 func TestPrepareOwnerScopeGenerationResumesRecoveredRootRebindStages(t *testing.T) {

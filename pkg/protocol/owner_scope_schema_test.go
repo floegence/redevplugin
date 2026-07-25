@@ -16,15 +16,27 @@ func TestOwnerScopeSchemasValidateClosedContracts(t *testing.T) {
 	if err := migrationSchema.Validate(validOwnerScopeMigration()); err != nil {
 		t.Fatalf("valid owner scope migration rejected: %v", err)
 	}
+	recoveredMigration := validRecoveredOwnerScopeMigration()
+	if err := migrationSchema.Validate(recoveredMigration); err != nil {
+		t.Fatalf("valid recovered owner scope migration rejected: %v", err)
+	}
 	if err := recoverySchema.Validate(validOwnerScopeRootRecovery()); err != nil {
 		t.Fatalf("valid owner scope root recovery rejected: %v", err)
 	}
 	rebind := validOwnerScopeRootRecovery()
 	rebind["state"] = "rebind_prepared"
 	rebind["quarantine_sha256"] = repeatedHex("4f")
+	rebind["quarantine_content_sha256"] = repeatedHex("5f")
 	rebind["rebind_root_identity_sha256"] = repeatedHex("6f")
 	if err := recoverySchema.Validate(rebind); err != nil {
 		t.Fatalf("valid owner scope root rebind rejected: %v", err)
+	}
+	nested := validOwnerScopeRootRecovery()
+	nested["source_recovery_journal_sha256"] = repeatedHex("7f")
+	nested["has_source_recovery_journal"] = true
+	nested["top_level_entries"] = []any{".redevplugin-current-generation", ".redevplugin-generations", ".redevplugin-owner-scope-migration-v1.json", ".redevplugin-owner-scope-root-recovery-source-v1.json", ".redevplugin-quarantine"}
+	if err := recoverySchema.Validate(nested); err != nil {
+		t.Fatalf("valid nested owner scope root recovery rejected: %v", err)
 	}
 	if err := cleanupSchema.Validate(validQuarantineCleanup()); err != nil {
 		t.Fatalf("valid quarantine cleanup rejected: %v", err)
@@ -74,6 +86,23 @@ func TestOwnerScopeSchemasRejectUnknownStateTraversalAndOversizedEntries(t *test
 	if err := recoverySchema.Validate(recovery); err == nil {
 		t.Fatal("root recovery schema accepted a rebind target outside rebind state")
 	}
+	recovery = validOwnerScopeRootRecovery()
+	recovery["source_recovery_journal_sha256"] = repeatedHex("7f")
+	if err := recoverySchema.Validate(recovery); err == nil {
+		t.Fatal("root recovery schema accepted source recovery evidence without its presence flag")
+	}
+	recovery = validOwnerScopeRootRecovery()
+	recovery["has_source_recovery_journal"] = true
+	recovery["source_recovery_journal_sha256"] = repeatedHex("7f")
+	if err := recoverySchema.Validate(recovery); err == nil {
+		t.Fatal("root recovery schema accepted nested recovery without its source journal entry")
+	}
+	recovery = validOwnerScopeRootRecovery()
+	recovery["state"] = "fresh_committed"
+	recovery["quarantine_sha256"] = repeatedHex("4f")
+	if err := recoverySchema.Validate(recovery); err == nil {
+		t.Fatal("root recovery schema accepted a committed archive without its content hash")
+	}
 	migration = validOwnerScopeMigration()
 	migration["state"] = "guessed"
 	if err := migrationSchema.Validate(migration); err == nil {
@@ -83,6 +112,16 @@ func TestOwnerScopeSchemasRejectUnknownStateTraversalAndOversizedEntries(t *test
 	migration["stores"] = make([]any, 65)
 	if err := migrationSchema.Validate(migration); err == nil {
 		t.Fatal("migration schema accepted an oversized store set")
+	}
+	migration = validOwnerScopeMigration()
+	migration["recovery_content_sha256"] = repeatedHex("4f")
+	if err := migrationSchema.Validate(migration); err == nil {
+		t.Fatal("migration schema accepted recovery content evidence for a normal inventory")
+	}
+	migration = validRecoveredOwnerScopeMigration()
+	delete(migration, "recovery_content_sha256")
+	if err := migrationSchema.Validate(migration); err == nil {
+		t.Fatal("migration schema accepted a recovered inventory without content evidence")
 	}
 
 	cleanup := validQuarantineCleanup()
@@ -132,6 +171,26 @@ func validOwnerScopeMigration() map[string]any {
 	}
 }
 
+func validRecoveredOwnerScopeMigration() map[string]any {
+	return map[string]any{
+		"schema_version":          "owner-scope-migration-v1",
+		"migration_id":            "migration_0123456789abcdef0123456789abcdef",
+		"root_identity_sha256":    repeatedHex("1f"),
+		"legacy_snapshot_sha256":  repeatedHex("2f"),
+		"recovery_content_sha256": repeatedHex("3f"),
+		"inventory_id":            "redevplugin-recovered-root-v1",
+		"inventory_sha256":        repeatedHex("4f"),
+		"state":                   "fresh_committed",
+		"quarantine_id":           "quarantine_0123456789abcdef0123456789abcdef",
+		"quarantine_sha256":       repeatedHex("5f"),
+		"fresh_generation_id":     "generation_0123456789abcdef0123456789abcdef",
+		"fresh_generation_sha256": repeatedHex("6f"),
+		"stores": []any{
+			map[string]any{"id": "recovered-root", "scope": "durable", "disposition": "quarantine", "generation": "generation_0123456789abcdef0123456789abcdef", "outcome": "quarantined"},
+		},
+	}
+}
+
 func validQuarantineCleanup() map[string]any {
 	return map[string]any{
 		"schema_version":       "quarantine-cleanup-v1",
@@ -148,24 +207,27 @@ func validQuarantineCleanup() map[string]any {
 
 func validOwnerScopeRootRecovery() map[string]any {
 	return map[string]any{
-		"schema_version":              "owner-scope-root-recovery-v1",
-		"recovery_id":                 "recovery_0123456789abcdef0123456789abcdef",
-		"plan_sha256":                 repeatedHex("1f"),
-		"source_root_identity_sha256": repeatedHex("2e"),
-		"root_identity_sha256":        repeatedHex("2f"),
-		"source_journal_sha256":       repeatedHex("3f"),
-		"source_snapshot_sha256":      repeatedHex("4f"),
-		"source_entry_count":          12,
-		"source_bytes":                4096,
-		"has_retained_quarantine":     true,
-		"top_level_entries":           []any{".redevplugin-current-generation", ".redevplugin-generations", ".redevplugin-owner-scope-migration-v1.json", ".redevplugin-quarantine"},
-		"state":                       "archive_writing",
-		"quarantine_id":               "quarantine_0123456789abcdef0123456789abcdef",
-		"quarantine_sha256":           "",
-		"fresh_migration_id":          "migration_0123456789abcdef0123456789abcdef",
-		"fresh_generation_id":         "generation_0123456789abcdef0123456789abcdef",
-		"fresh_generation_sha256":     repeatedHex("5f"),
-		"rebind_root_identity_sha256": "",
+		"schema_version":                 "owner-scope-root-recovery-v1",
+		"recovery_id":                    "recovery_0123456789abcdef0123456789abcdef",
+		"plan_sha256":                    repeatedHex("1f"),
+		"source_root_identity_sha256":    repeatedHex("2e"),
+		"root_identity_sha256":           repeatedHex("2f"),
+		"source_recovery_journal_sha256": "",
+		"source_journal_sha256":          repeatedHex("3f"),
+		"source_snapshot_sha256":         repeatedHex("4f"),
+		"source_entry_count":             12,
+		"source_bytes":                   4096,
+		"has_retained_quarantine":        true,
+		"has_source_recovery_journal":    false,
+		"top_level_entries":              []any{".redevplugin-current-generation", ".redevplugin-generations", ".redevplugin-owner-scope-migration-v1.json", ".redevplugin-quarantine"},
+		"state":                          "archive_writing",
+		"quarantine_id":                  "quarantine_0123456789abcdef0123456789abcdef",
+		"quarantine_sha256":              "",
+		"quarantine_content_sha256":      "",
+		"fresh_migration_id":             "migration_0123456789abcdef0123456789abcdef",
+		"fresh_generation_id":            "generation_0123456789abcdef0123456789abcdef",
+		"fresh_generation_sha256":        repeatedHex("5f"),
+		"rebind_root_identity_sha256":    "",
 	}
 }
 

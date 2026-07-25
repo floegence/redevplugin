@@ -169,13 +169,13 @@ export const redevPluginContractArtifacts = [
     id: "owner-scope-migration-schema",
     path: "spec/plugin/owner-scope-migration-v1.schema.json",
     version: "owner-scope-migration-v1",
-    sha256: "e73443813e19e4cfb05748eb75d5cf04f43db3bed9d2be0c893c13bda88a5993",
+    sha256: "497fff8a09d48fe195c18d13ff05ca6c9f8406f6215588901cb6d89315b713eb",
   },
   {
     id: "owner-scope-root-recovery-schema",
     path: "spec/plugin/owner-scope-root-recovery-v1.schema.json",
     version: "owner-scope-root-recovery-v1",
-    sha256: "1458496cf59eae083519cbbd525a59a3d68fbf5e4165a2a04bef0b181f66d0c5",
+    sha256: "81b961a9933d129c8f9119e3091226039ffbc0b4721116a4811f9785bebf9d64",
   },
   {
     id: "package-signature-schema",

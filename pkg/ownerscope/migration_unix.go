@@ -46,6 +46,7 @@ type migrationJournalV1 struct {
 	MigrationID           string             `json:"migration_id"`
 	RootIdentitySHA256    string             `json:"root_identity_sha256"`
 	LegacySnapshotSHA256  string             `json:"legacy_snapshot_sha256"`
+	RecoveryContentSHA256 string             `json:"recovery_content_sha256,omitempty"`
 	InventoryID           string             `json:"inventory_id"`
 	InventorySHA256       string             `json:"inventory_sha256"`
 	State                 string             `json:"state"`
@@ -1368,6 +1369,13 @@ func snapshotEntriesCanonical(entries []snapshotEntry) bool {
 
 func validMigrationJournalFields(journal migrationJournalV1) bool {
 	state := MigrationState(journal.State)
+	if journal.InventoryID == recoveredRootInventoryID {
+		if !validSHA256(journal.RecoveryContentSHA256) {
+			return false
+		}
+	} else if journal.RecoveryContentSHA256 != "" {
+		return false
+	}
 	legacy := journal.InventoryID != "" || journal.InventorySHA256 != "" || len(journal.Stores) != 0
 	if legacy {
 		if !validInventoryID(journal.InventoryID) || !validSHA256(journal.InventorySHA256) || !validMigrationStores(journal.Stores) {
