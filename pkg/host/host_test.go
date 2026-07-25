@@ -8049,15 +8049,6 @@ func buildMethodContractFixturePackageWithContract(t *testing.T, contract capabi
 	return buf.Bytes()
 }
 
-func methodContractFixtureManifestJSON(t *testing.T) string {
-	t.Helper()
-	contract, err := fixtureCapabilityContract("example.capability.tasks")
-	if err != nil {
-		t.Fatal(err)
-	}
-	return methodContractFixtureManifestJSONWithContract(t, contract)
-}
-
 func methodContractFixtureManifestJSONWithContract(t *testing.T, contract capabilitycontract.Contract) string {
 	t.Helper()
 	raw, err := os.ReadFile(filepath.Join("..", "..", "testdata", "generated_plugins", "method-contract", "manifest.json"))
