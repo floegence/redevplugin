@@ -48,8 +48,14 @@ func InspectOwnerScopeRootRecovery(rootPath string) (OwnerScopeRootRecoveryPlan,
 	_ = absoluteRoot
 	if raw, readErr := readRootFile(root, RootRecoveryJournalName, 1<<20); readErr == nil {
 		journal, decodeErr := decodeRootRecoveryJournal(raw)
-		if decodeErr != nil || journal.RootIdentitySHA256 != identity {
+		if decodeErr != nil {
 			return OwnerScopeRootRecoveryPlan{}, ErrOwnerScopeJournalCorrupt
+		}
+		if journal.RootIdentitySHA256 != identity {
+			if journal.State != string(RootRecoveryStateFreshCommitted) {
+				return OwnerScopeRootRecoveryPlan{}, ErrOwnerScopeJournalCorrupt
+			}
+			return inspectRelocatedRecoveredRoot(root, identity, journal)
 		}
 		return recoveryPlanFromJournal(journal), nil
 	} else if !errors.Is(readErr, os.ErrNotExist) {
@@ -73,14 +79,41 @@ func RecoverOwnerScopeRoot(ctx context.Context, rootPath, expectedPlanSHA256 str
 	defer closeLockedRecoveryRoot(root)
 
 	var journal rootRecoveryJournalV1
+	var relocatedRecovery bool
 	if raw, readErr := readRootFile(root, RootRecoveryJournalName, 1<<20); readErr == nil {
 		journal, err = decodeRootRecoveryJournal(raw)
-		if err != nil || journal.RootIdentitySHA256 != identity {
+		if err != nil {
 			return OwnerScopeRootRecoveryResult{}, ErrOwnerScopeJournalCorrupt
+		}
+		if journal.RootIdentitySHA256 != identity {
+			if journal.State != string(RootRecoveryStateFreshCommitted) {
+				return OwnerScopeRootRecoveryResult{}, ErrOwnerScopeJournalCorrupt
+			}
+			plan, migrationJournal, inspectErr := inspectRelocatedRecoveredRootWithJournal(root, identity, journal)
+			if inspectErr != nil {
+				return OwnerScopeRootRecoveryResult{}, inspectErr
+			}
+			if expectedPlanSHA256 == "" || expectedPlanSHA256 != plan.PlanSHA256 {
+				return OwnerScopeRootRecoveryResult{}, ErrOwnerScopeRecoveryPlanMismatch
+			}
+			if err := ctx.Err(); err != nil {
+				return OwnerScopeRootRecoveryResult{}, err
+			}
+			journal.SourceRootIdentitySHA256 = identity
+			journal.PlanSHA256 = plan.PlanSHA256
+			if err := persistRootRecoveryJournal(root, journal); err != nil {
+				return OwnerScopeRootRecoveryResult{}, err
+			}
+			migration := &OwnerScopeMigration{root: root, journal: migrationJournal, recovery: journal}
+			if err := migration.resumeRecoveryRootRebind(identity); err != nil {
+				return recoveryErrorResult(absoluteRoot, migration.recovery), err
+			}
+			journal = migration.recovery
+			relocatedRecovery = true
 		}
 	} else if !errors.Is(readErr, os.ErrNotExist) {
 		return OwnerScopeRootRecoveryResult{}, readErr
-	} else {
+	} else if !relocatedRecovery {
 		plan, wire, inspectErr := inspectRecoveryCandidate(root, identity)
 		if inspectErr != nil {
 			return OwnerScopeRootRecoveryResult{}, inspectErr
@@ -96,11 +129,20 @@ func RecoverOwnerScopeRoot(ctx context.Context, rootPath, expectedPlanSHA256 str
 			return OwnerScopeRootRecoveryResult{}, err
 		}
 	}
-	if expectedPlanSHA256 == "" || expectedPlanSHA256 != journal.PlanSHA256 {
+	if !relocatedRecovery && (expectedPlanSHA256 == "" || expectedPlanSHA256 != journal.PlanSHA256) {
 		return OwnerScopeRootRecoveryResult{}, ErrOwnerScopeRecoveryPlanMismatch
 	}
 	if err := ctx.Err(); err != nil {
 		return recoveryErrorResult(absoluteRoot, journal), err
+	}
+	if relocatedRecovery {
+		if err := verifyFinalRecovery(root, journal); err != nil {
+			return recoveryErrorResult(absoluteRoot, journal), err
+		}
+		if err := verifyRecoveryLexicalRoot(absoluteRoot, identity, journal); err != nil {
+			return recoveryErrorResult(absoluteRoot, journal), err
+		}
+		return recoveryResult(absoluteRoot, journal), nil
 	}
 
 	if journal.State == string(RootRecoveryStatePrepared) {
@@ -244,7 +286,48 @@ func inspectRecoveryCandidate(root *os.File, identity string) (OwnerScopeRootRec
 	return recoveryPlanFromWire(wire, planSHA), wire, nil
 }
 
+func inspectRelocatedRecoveredRoot(root *os.File, identity string, recovery rootRecoveryJournalV1) (OwnerScopeRootRecoveryPlan, error) {
+	plan, _, err := inspectRelocatedRecoveredRootWithJournal(root, identity, recovery)
+	return plan, err
+}
+
+func inspectRelocatedRecoveredRootWithJournal(root *os.File, identity string, recovery rootRecoveryJournalV1) (OwnerScopeRootRecoveryPlan, migrationJournalV1, error) {
+	raw, err := readRootFile(root, MigrationJournalName, 1<<20)
+	if err != nil {
+		return OwnerScopeRootRecoveryPlan{}, migrationJournalV1{}, errors.Join(ErrOwnerScopeRecoveryNotEligible, err)
+	}
+	migration, err := decodeMigrationJournal(raw)
+	if err != nil || migration.State != string(StateFreshCommitted) || !validRecoverySourceInventory(migration) || !recoveryMatchesMigration(recovery, migration) {
+		return OwnerScopeRootRecoveryPlan{}, migrationJournalV1{}, ErrOwnerScopeRecoveryNotEligible
+	}
+	if err := verifyRecoveryRootEntries(root, true); err != nil {
+		return OwnerScopeRootRecoveryPlan{}, migrationJournalV1{}, errors.Join(ErrOwnerScopeRecoveryNotEligible, err)
+	}
+	ownerMigration := &OwnerScopeMigration{root: root, journal: migration, recovery: recovery}
+	if err := ownerMigration.verifyActiveFreshGeneration(); err != nil {
+		return OwnerScopeRootRecoveryPlan{}, migrationJournalV1{}, errors.Join(ErrOwnerScopeRecoveryNotEligible, err)
+	}
+	if err := verifyRetainedRecoveryArchive(root, recovery); err != nil {
+		return OwnerScopeRootRecoveryPlan{}, migrationJournalV1{}, errors.Join(ErrOwnerScopeRecoveryNotEligible, err)
+	}
+	wire := rootRecoveryPlanWireV1{
+		SchemaVersion: rootRecoverySchemaVersion, RootIdentitySHA256: identity,
+		SourceJournalSHA256: recovery.SourceJournalSHA256, SourceSnapshotSHA256: recovery.SourceSnapshotSHA256,
+		SourceEntryCount: recovery.SourceEntryCount, SourceBytes: recovery.SourceBytes,
+		HasRetainedQuarantine: recovery.HasRetainedQuarantine, TopLevelEntries: slices.Clone(recovery.TopLevelEntries),
+	}
+	planSHA, err := digestCanonicalJSON(wire)
+	if err != nil {
+		return OwnerScopeRootRecoveryPlan{}, migrationJournalV1{}, err
+	}
+	return recoveryPlanFromWire(wire, planSHA), migration, nil
+}
+
 func validRecoverySourceInventory(journal migrationJournalV1) bool {
+	if journal.InventoryID == recoveredRootInventoryID {
+		return journal.InventorySHA256 == recoveredRootInventorySHA256 && len(journal.Stores) == 1 &&
+			journal.Stores[0] == (migrationStoreV1{ID: recoveredRootStoreID, Scope: "durable", Disposition: string(StoreDispositionQuarantine), Generation: journal.FreshGenerationID, Outcome: "quarantined"})
+	}
 	if journal.InventoryID == "" {
 		return journal.InventorySHA256 == "" && len(journal.Stores) == 0 && journal.QuarantineID == ""
 	}

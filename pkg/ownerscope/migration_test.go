@@ -973,6 +973,45 @@ func TestPrepareOwnerScopeGenerationRebindsMovedRecoveredRoot(t *testing.T) {
 	}
 }
 
+func TestInspectAndRecoverMovedRecoveredRootRebindsWithCurrentPlan(t *testing.T) {
+	rootPath, originalPlan, _ := prepareRecoveryFixture(t)
+	if _, err := RecoverOwnerScopeRoot(context.Background(), rootPath, originalPlan.PlanSHA256); err != nil {
+		t.Fatal(err)
+	}
+	movedRoot := moveOwnerScopeRootContents(t, rootPath)
+	plan, err := InspectOwnerScopeRootRecovery(movedRoot)
+	if err != nil || plan.RootIdentitySHA256 == "" || plan.RootIdentitySHA256 == originalPlan.RootIdentitySHA256 || plan.PlanSHA256 == originalPlan.PlanSHA256 {
+		t.Fatalf("InspectOwnerScopeRootRecovery() = %#v, %v", plan, err)
+	}
+	result, err := RecoverOwnerScopeRoot(context.Background(), movedRoot, plan.PlanSHA256)
+	if err != nil || result.Generation.Path == "" || result.Plan.PlanSHA256 != plan.PlanSHA256 || result.Plan.RootIdentitySHA256 != plan.RootIdentitySHA256 {
+		t.Fatalf("RecoverOwnerScopeRoot() = %#v, %v", result, err)
+	}
+	idempotent, err := RecoverOwnerScopeRoot(context.Background(), movedRoot, plan.PlanSHA256)
+	if err != nil || idempotent.Generation.Path != result.Generation.Path {
+		t.Fatalf("idempotent RecoverOwnerScopeRoot() = %#v, %v", idempotent, err)
+	}
+}
+
+func TestInspectMovedRecoveredRootRejectsArchiveCopyTamper(t *testing.T) {
+	rootPath, plan, _ := prepareRecoveryFixture(t)
+	if _, err := RecoverOwnerScopeRoot(context.Background(), rootPath, plan.PlanSHA256); err != nil {
+		t.Fatal(err)
+	}
+	copyRoot := copyOwnerScopeRoot(t, rootPath)
+	if inspected, err := InspectOwnerScopeRootRecovery(copyRoot); inspected.PlanSHA256 != "" || !errors.Is(err, ErrOwnerScopeRecoveryNotEligible) {
+		t.Fatalf("InspectOwnerScopeRootRecovery() = %#v, %v", inspected, err)
+	}
+	movedRoot := moveOwnerScopeRootContents(t, rootPath)
+	extraArchive := filepath.Join(movedRoot, quarantineDirectory, "quarantine_00000000000000000000000000000000")
+	if err := os.Mkdir(extraArchive, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if inspected, err := InspectOwnerScopeRootRecovery(movedRoot); inspected.PlanSHA256 != "" || !errors.Is(err, ErrOwnerScopeRecoveryNotEligible) {
+		t.Fatalf("tampered InspectOwnerScopeRootRecovery() = %#v, %v", inspected, err)
+	}
+}
+
 func TestPrepareOwnerScopeGenerationResumesRecoveredRootRebindStages(t *testing.T) {
 	for _, stage := range []string{"rebind-prepared", "standard-committed"} {
 		t.Run(stage, func(t *testing.T) {
