@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.6.16
 
 ### Fixed
 
@@ -14,6 +14,10 @@
   complete prior root in an undeletable archive, commits a new empty generation,
   never reauthorizes prior durable state, and resumes idempotently after every
   persisted stage while normal startup remains fail closed and non-mutating.
+- Keep OpenAPI generation on the exact released type surface while replacing a
+  vulnerable transitive pattern matcher with its audited release through a
+  generator-scoped compatibility loader and a real brace-pattern regression
+  test.
 
 ## v0.6.15
 
