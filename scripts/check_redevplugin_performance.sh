@@ -94,10 +94,16 @@ run_runtime_performance_tests() {
     exit 1
   fi
   local host_arch
+  local go_module_cache
   local platform
   local rust_image
   local rust_toolchain
   host_arch=$(uname -m)
+  go_module_cache=$(go env GOMODCACHE)
+  if [[ ! -d "$go_module_cache" ]]; then
+    echo "Go module cache is unavailable after the host gate: $go_module_cache" >&2
+    exit 1
+  fi
   case "$host_arch" in
     arm64|aarch64)
       platform="linux/arm64"
@@ -125,11 +131,14 @@ run_runtime_performance_tests() {
     "$rust_image" \
     bash -c 'set -euo pipefail; export CARGO_TARGET_DIR=/tmp/redevplugin-target; cargo build --locked --release -p redevplugin-runtime; cp /tmp/redevplugin-target/release/redevplugin-runtime /evidence/redevplugin-runtime'
   docker run --rm \
+    --network none \
     --platform "$platform" \
     --mount "type=bind,src=$ROOT_DIR,dst=/repo,readonly" \
     --mount "type=bind,src=$TMP_DIR,dst=/evidence" \
+    --mount "type=bind,src=$go_module_cache,dst=/go/pkg/mod,readonly" \
     --workdir /repo \
     --env GOWORK=off \
+    --env GOMODCACHE=/go/pkg/mod \
     --env "REDEVPLUGIN_PERFORMANCE_RUNTIME=$docker_runtime_path" \
     --env "REDEVPLUGIN_PERFORMANCE_RUNTIME_VERSION=$VERSION" \
     --env REDEVPLUGIN_PERFORMANCE_MEASUREMENTS=/evidence/measurements.ndjson \

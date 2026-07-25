@@ -15,6 +15,10 @@ test("non-Linux release performance runs the supported runtime in pinned Linux c
   assert.match(script, /--env "RUSTUP_TOOLCHAIN=\$rust_toolchain"/);
   assert.match(script, /src=\$ROOT_DIR,dst=\/repo,readonly/);
   assert.match(script, /cargo build --locked --release -p redevplugin-runtime/);
+  assert.match(script, /go_module_cache=\$\(go env GOMODCACHE\)/);
+  assert.match(script, /--network none/);
+  assert.match(script, /src=\$go_module_cache,dst=\/go\/pkg\/mod,readonly/);
+  assert.match(script, /--env GOMODCACHE=\/go\/pkg\/mod/);
   assert.match(script, /go test \.\/pkg\/host -run '\^TestPerformanceRuntime' -count=1/);
   assert.doesNotMatch(script, /--privileged/);
 });
