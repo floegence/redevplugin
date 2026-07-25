@@ -123,9 +123,15 @@ test("npm readbacks delegate bounded retry classification to the verifier", () =
 });
 
 test("release preflight binds the tag to the exact remote main tip", () => {
+  assert.deepEqual(workflow.jobs.preflight.permissions, { actions: "read", contents: "read" });
   const source = workflow.jobs.preflight.steps.map((step) => step.run ?? "").join("\n");
   assert.match(source, /test "\$GITHUB_SHA" = "\$\(git rev-parse origin\/main\)"/);
   assert.doesNotMatch(source, /merge-base --is-ancestor "\$GITHUB_SHA" origin\/main/);
+  assert.match(source, /verify_quick_ci_evidence\.mjs --repository "\$GITHUB_REPOSITORY" --sha "\$GITHUB_SHA"/);
+  assert.ok(
+    source.indexOf("verify_quick_ci_evidence.mjs") > source.indexOf("git rev-parse origin/main"),
+    "Quick CI evidence must be checked only after the exact main tip is established",
+  );
 });
 
 test("release package build requires both hosted runtime containment targets", () => {

@@ -637,11 +637,13 @@ Before pushing `main`, install the repository hook once:
 git config core.hooksPath .githooks
 ```
 
-The hook runs the same non-GitHub-infrastructure gate used by the main-branch
-workflow. It only accepts a clean, fast-forward update from the checked-out
-`main` branch whose `HEAD` exactly matches the pushed object. Feature-branch
-pushes do not run the gate; attempts to push a feature ref to remote `main` are
-rejected. Run the authoritative gate directly when investigating a failure:
+The hook runs the authoritative complete local gate before `main` reaches the
+remote. It only accepts a clean, fast-forward update from the checked-out `main`
+branch whose `HEAD` exactly matches the pushed object. Feature-branch pushes do
+not run the gate; attempts to push a feature ref to remote `main` are rejected.
+The main-branch Quick CI is a separate bounded source-format and script-syntax
+confirmation; it does not duplicate browser, runtime, package, performance, or
+stress coverage. Run the complete gate directly when investigating a failure:
 
 ```bash
 ./scripts/check_redevplugin_pre_push.sh

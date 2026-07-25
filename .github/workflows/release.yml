@@ -16,6 +16,9 @@ jobs:
   preflight:
     name: Release Preflight
     runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
     outputs:
       version: ${{ steps.metadata.outputs.version }}
     steps:
@@ -36,6 +39,7 @@ jobs:
           git fetch origin main --tags --force
           test "$(git rev-list -n 1 "$GITHUB_REF_NAME")" = "$GITHUB_SHA"
           test "$GITHUB_SHA" = "$(git rev-parse origin/main)"
+          node scripts/verify_quick_ci_evidence.mjs --repository "$GITHUB_REPOSITORY" --sha "$GITHUB_SHA"
           node scripts/check_redevplugin_release_metadata.mjs "$version"
           ./scripts/assert_github_release_absent.sh "$GITHUB_REPOSITORY" "$GITHUB_REF_NAME"
           echo "version=$version" >> "$GITHUB_OUTPUT"

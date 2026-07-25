@@ -6,8 +6,7 @@ cd "$ROOT_DIR"
 export GOWORK=off
 
 echo "==> repository diff and source formatting"
-git diff --check
-git diff-tree --check --root -r --no-commit-id HEAD
+./scripts/check_redevplugin_tree_whitespace.sh
 test -z "$(gofmt -l $(git ls-files '*.go'))"
 cargo fmt --check
 
