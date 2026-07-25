@@ -14,7 +14,7 @@
     "crates/redevplugin-worker-sdk/src/lib.rs": "15dcf96fa0ff0fe862df759edd32b21310098604aed1edb16c9c973b8abb89e6",
     "internal/scaffoldworker/Cargo.toml": "3822629b509f6490816a177bdb73be54bc128a72dbfd890ca9f971028155a5c0",
     "internal/scaffoldworker/src/lib.rs": "666b37e759b8b28534d4c74e40e9ea9753aabb40f7a8ead44fc31dbf1b409773",
-    "rust-toolchain.toml": "2b2d5de36669ccf5256c33c9c1af12c0c38e1d697e1b55bb82b3c8b39cdaaf96",
+    "rust-toolchain.toml": "6c04f2e2d44428d94d3b65cc72041c5ed03d97eac18d6cdc13e95d21355a6869",
     "scripts/build_scaffold_assets.mjs": "5e8c7944d3ab2cc61ae1f5c2a29d45b81c6c204b4b40325b7d9a6883db0d3821",
     "scripts/canonical_wasm_builder.mjs": "4f1b3ea68744925e456e19cfa9f4e85efe57d5857b2211716ab3346f8e6fcc7b"
   },

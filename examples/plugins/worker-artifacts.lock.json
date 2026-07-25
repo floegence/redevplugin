@@ -18,7 +18,7 @@
     "examples/workers/sky-strike/src/lib.rs": "44203dcc92a8785137a0c1697743003f19f208e61c56ada7e7a34035aaf4e010",
     "examples/workers/weather/Cargo.toml": "4866cc437436390ad89782df0b12f9ffa66baec767c11c35af1e9d3399c97272",
     "examples/workers/weather/src/lib.rs": "7a7b9644aab10f36e3ea41b7c0254d950b33a21e2f5d51bc35d20191bc60a037",
-    "rust-toolchain.toml": "2b2d5de36669ccf5256c33c9c1af12c0c38e1d697e1b55bb82b3c8b39cdaaf96",
+    "rust-toolchain.toml": "6c04f2e2d44428d94d3b65cc72041c5ed03d97eac18d6cdc13e95d21355a6869",
     "scripts/build_example_plugins.mjs": "e04a3a25cdca696ee7eb02da82ae92df4f6e3e1465608fe468cb6c08c8144cd7",
     "scripts/canonical_wasm_builder.mjs": "4f1b3ea68744925e456e19cfa9f4e85efe57d5857b2211716ab3346f8e6fcc7b"
   },
