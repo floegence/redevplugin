@@ -562,6 +562,19 @@ func validRootRecoveryJournal(journal rootRecoveryJournalV1) bool {
 	if !slices.Equal(journal.TopLevelEntries, sortedRecoveryTopLevel(journal.HasRetainedQuarantine)) {
 		return false
 	}
+	wire := rootRecoveryPlanWireV1{
+		SchemaVersion:         rootRecoverySchemaVersion,
+		SourceJournalSHA256:   journal.SourceJournalSHA256,
+		SourceSnapshotSHA256:  journal.SourceSnapshotSHA256,
+		SourceEntryCount:      journal.SourceEntryCount,
+		SourceBytes:           journal.SourceBytes,
+		HasRetainedQuarantine: journal.HasRetainedQuarantine,
+		TopLevelEntries:       slices.Clone(journal.TopLevelEntries),
+	}
+	planSHA256, err := digestCanonicalJSON(wire)
+	if err != nil || planSHA256 != journal.PlanSHA256 {
+		return false
+	}
 	state := RootRecoveryState(journal.State)
 	if state == RootRecoveryStatePrepared || state == RootRecoveryStateArchiveWriting {
 		return journal.QuarantineSHA256 == ""

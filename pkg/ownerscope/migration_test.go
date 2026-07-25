@@ -712,6 +712,84 @@ func TestRecoverOwnerScopeRootRejectsPlanDriftWithoutStartingTransaction(t *test
 	}
 }
 
+func TestOwnerScopeRootRecoveryJournalRejectsTamperingWithoutMutation(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*testing.T, []byte) []byte
+	}{
+		{name: "duplicate field", mutate: func(t *testing.T, raw []byte) []byte {
+			t.Helper()
+			return bytes.Replace(raw, []byte(`"schema_version":`), []byte(`"schema_version":"owner-scope-root-recovery-v1","schema_version":`), 1)
+		}},
+		{name: "unknown field", mutate: mutateRecoveryJournalField("unknown", true)},
+		{name: "future schema", mutate: mutateRecoveryJournalField("schema_version", "owner-scope-root-recovery-v99")},
+		{name: "source journal digest", mutate: mutateRecoveryJournalField("source_journal_sha256", digestString("tampered journal"))},
+		{name: "source snapshot digest", mutate: mutateRecoveryJournalField("source_snapshot_sha256", digestString("tampered snapshot"))},
+		{name: "source entry count", mutate: mutateRecoveryJournalField("source_entry_count", 1)},
+		{name: "source bytes", mutate: mutateRecoveryJournalField("source_bytes", 1)},
+		{name: "retained quarantine", mutate: mutateRecoveryJournalFields(map[string]any{
+			"has_retained_quarantine": true,
+			"top_level_entries":       []string{currentGenerationFile, generationsDirectory, MigrationJournalName, quarantineDirectory},
+		})},
+		{name: "top level entries", mutate: mutateRecoveryJournalField("top_level_entries", []string{generationsDirectory, currentGenerationFile, MigrationJournalName})},
+		{name: "recovery id", mutate: mutateRecoveryJournalField("recovery_id", "recovery_invalid")},
+		{name: "root identity", mutate: mutateRecoveryJournalField("root_identity_sha256", digestString("tampered identity"))},
+		{name: "quarantine id", mutate: mutateRecoveryJournalField("quarantine_id", "quarantine_invalid")},
+		{name: "fresh migration id", mutate: mutateRecoveryJournalField("fresh_migration_id", "migration_invalid")},
+		{name: "fresh generation id", mutate: mutateRecoveryJournalField("fresh_generation_id", "generation_invalid")},
+		{name: "fresh generation digest", mutate: mutateRecoveryJournalField("fresh_generation_sha256", digestString("tampered generation"))},
+		{name: "state", mutate: mutateRecoveryJournalField("state", "future_state")},
+		{name: "plan digest", mutate: mutateRecoveryJournalField("plan_sha256", digestString("tampered plan"))},
+		{name: "archive digest in prepared state", mutate: mutateRecoveryJournalField("quarantine_sha256", digestString("premature archive"))},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			rootPath, plan, _ := prepareRecoveryFixture(t)
+			journalPath := filepath.Join(rootPath, RootRecoveryJournalName)
+			raw := mustReadFile(t, journalPath)
+			if err := os.WriteFile(journalPath, test.mutate(t, raw), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			before, err := snapshotPath(t, rootPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if inspected, err := InspectOwnerScopeRootRecovery(rootPath); inspected.PlanSHA256 != "" || !errors.Is(err, ErrOwnerScopeJournalCorrupt) {
+				t.Fatalf("InspectOwnerScopeRootRecovery() = %#v, %v", inspected, err)
+			}
+			if result, err := RecoverOwnerScopeRoot(context.Background(), rootPath, plan.PlanSHA256); result.State != "" || !errors.Is(err, ErrOwnerScopeJournalCorrupt) {
+				t.Fatalf("RecoverOwnerScopeRoot() = %#v, %v", result, err)
+			}
+			after, err := snapshotPath(t, rootPath)
+			if err != nil || after.digest != before.digest {
+				t.Fatalf("tamper rejection changed root snapshot: %#v, %v", after, err)
+			}
+		})
+	}
+}
+
+func mutateRecoveryJournalField(field string, value any) func(*testing.T, []byte) []byte {
+	return mutateRecoveryJournalFields(map[string]any{field: value})
+}
+
+func mutateRecoveryJournalFields(fields map[string]any) func(*testing.T, []byte) []byte {
+	return func(t *testing.T, raw []byte) []byte {
+		t.Helper()
+		var journal map[string]any
+		if err := json.Unmarshal(raw, &journal); err != nil {
+			t.Fatal(err)
+		}
+		for field, value := range fields {
+			journal[field] = value
+		}
+		mutated, err := json.Marshal(journal)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return append(mutated, '\n')
+	}
+}
+
 func TestPrepareOwnerScopeGenerationResumesCommittedQuarantine(t *testing.T) {
 	rootPath := t.TempDir()
 	writeRedevenLegacyInventory(t, rootPath)
