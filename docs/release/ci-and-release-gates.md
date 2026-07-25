@@ -7,19 +7,13 @@ contract hashes, and package publication evidence. Host products build the
 runtime binary from exact published Rust source crates; local checkout wiring
 and upstream OS runtime downloads are not supported.
 
-## Local And CI Gates
+## Local And Quick CI Gates
 
 Go checks that can be affected by a workspace must run with `GOWORK=off`.
-The CI Go job initializes the Rust toolchain with `rustup show` before
-`go test ./cmd/... ./examples/... ./pkg/...` because the CLI scaffold integration test builds the released
-Rust runtime as part of the Go package test suite.
-
-CI actions are pinned to immutable commit SHAs and top-level permissions default
-to `contents: read`. The Go job checks `gofmt`, `GOWORK=off go list ./cmd/... ./examples/... ./pkg/...`,
-`GOWORK=off go test ./cmd/... ./examples/... ./pkg/...`, and
-the pinned `golangci-lint` version. The TypeScript job runs ESLint, typecheck,
-build, UI unit tests, Examples generation checks, browser harness tests, plus
-the bridge replay/cancellation gate.
+Ordinary GitHub push and pull-request CI is one five-minute source-only job. It
+checks repository diffs, Go and Rust formatting, shell and JavaScript syntax,
+and the policy that keeps complex work out of cloud CI. It does not install
+browsers, run Docker, build packages, or execute the complete tests.
 
 Example and scaffold worker binaries use Linux/amd64 as the canonical Rust
 build host. The committed `examples/plugins/worker-artifacts.lock.json` and
@@ -32,18 +26,18 @@ uses a clean native target directory, isolated Cargo home, and environment
 allowlist, rejects Cargo configuration inherited from outside the repository,
 and rejects any source snapshot change observed across compilation. Normal
 `examples:check` and `scaffold:check` perform the native rebuild on the
-canonical CI host and verify their source/artifact lock on every host. The explicit
+canonical Linux build host and verify their source/artifact lock on every host. The explicit
 `examples:generate` and `scaffold:generate` commands use a platform-specific
 immutable Rust image digest when run elsewhere;
 `examples:check:canonical` and `scaffold:check:canonical` force that same Docker
-path for a full local reproduction of CI without accepting host-specific LLVM
-output. CI runs both paths and requires byte parity. Normal package builds only
+path for a full local reproduction without accepting host-specific LLVM
+output. The exact-main pre-push gate runs both paths and requires byte parity. Normal package builds only
 verify committed scaffold assets and never rewrite them implicitly. Package
 publication also verifies the scaffold before packing source artifacts, and the
 package job installs the pinned WASM target before that check.
 
-The authoritative local gate, also invoked by the `main` pre-push hook and the
-main-branch CI equivalent job, is:
+The authoritative complete gate, invoked only by the exact-main local pre-push
+hook, is:
 
 ```bash
 ./scripts/check_redevplugin_pre_push.sh
@@ -54,17 +48,16 @@ feature worktrees, and local objects that do not match `HEAD`. It does not
 cover GitHub-only publication, hosted multi-platform execution, registry
 readback, artifact upload/download, Sigstore signing, or GitHub API checks.
 
-The tagged release workflow has one `quality-release` dependency shared by Go,
-npm, and Rust package publication plus GitHub Release completion publication.
-It repeats the complete Go format/test/lint, TypeScript UI unit,
-Examples, browser-harness and bridge-boundary, Rust format/clippy/test/deny, runtime-contract, and
-platform-contract gates before any immutable package or public release is
-created. Release audit and release-mode stress remain independent mandatory
-dependencies so neither can be hidden by the aggregate quality job.
+The tagged release workflow does not repeat the complete local gate. Preflight
+requires the immutable tag commit to equal the current remote `main` tip, and
+package publication waits for hosted Linux/amd64 and Linux/arm64 runtime
+containment checks. The remaining jobs are the ref-bound build-once package,
+registry publication/readback, completion manifest, attestation, and exact-one
+GitHub Release transaction that cannot be completed by the pre-push hook.
 
 `scripts/check_redevplugin_release_metadata.mjs` keeps the source release
-coordinate closed before packaging. Local and branch CI derive the intended
-version from the first `CHANGELOG.md` release section, then require the Go
+coordinate closed before packaging. The local complete gate derives the intended
+version from the first `CHANGELOG.md` release section, then requires the Go
 development compatibility floor and the canonical `redevplugin-worker-sdk`
 Cargo metadata to match. Tagged preflight repeats the same check against the
 actual `vX.Y.Z` tag. Mutation tests reject tag, changelog, Go compatibility,
@@ -149,8 +142,10 @@ The script always emits a JSON summary. `stress_evidence` contains structured
 counters for stream backpressure and scoped terminal-close checks,
 operation cancel ownership and inactive-operation non-redispatch, connectivity
 classifier/grant denials, runtime revoke ACK p95 latency, KV and SQLite storage
-quota pressure, and SQLite sidecar/sparse bypass checks. CI uploads summaries as artifacts, and tagged release workflows
-bind release-mode stress evidence into the package publication evidence chain.
+quota pressure, and SQLite sidecar/sparse bypass checks. The exact-main
+pre-push gate writes and validates the release-mode summary locally before the
+tag can be created. The publication manifest remains limited to immutable
+registry and package identities and does not embed transient stress evidence.
 
 Host-owned stream terminal audit behavior is verified at the scoped adapter
 sink boundary.
@@ -161,20 +156,19 @@ sink boundary.
 `--full`, and `--release`.
 
 - `--fast` runs deterministic admission, notification, backpressure, migration,
-  TypeScript type, and renderer reconciliation tests in normal CI.
+  TypeScript type, and renderer reconciliation tests during focused development.
 - `--full` runs the real Go Host and Rust runtime, 32-way invocation and cache
   scenarios, blocking-hostcall isolation, queued and running cancellation, a
   bounded 10,000-frame IPC burst, indexed scheduler and module-cache stress,
   paired namespace/package/HTTP/authorization measurements, real operation and
   stream `MemoryStore` snapshots, the fixed-capacity UDP limiter, 500 stream
   waiters, SQLite batch reads, Node reconciliation measurements, and a real
-  Chromium opaque-surface renderer measurement. The weekly workflow uploads
-  `performance-evidence-full.json`.
+  Chromium opaque-surface renderer measurement.
 - `--smoke` executes every scenario and records actual measurements without
   enforcing absolute latency thresholds. It is used only by non-publishing
   bundle smoke tests.
-- `--release` runs the same acceptance set with release gate identity before
-  package publication evidence is created.
+- `--release` runs the same acceptance set with release gate identity in the
+  exact-main pre-push gate before a tag may be created.
 
 `REDEVPLUGIN_PERFORMANCE_RUNTIME` may select an explicit executable for smoke
 and full measurements. Release evidence rejects that override and always builds
@@ -190,8 +184,10 @@ attempt identities, and noise qualification, then recomputes all comparison
 metrics before accepting the bundle. The v1-v3 contract and evidence files remain
 immutable historical release inputs; the current compatibility matrix and
 contract registry select only v4. The
-release workflow generates immutable release evidence once on the pinned Linux
-runner; registry-only conformance validates the exact evidence bytes.
+exact-main pre-push gate generates release-identity evidence from the clean
+checked-out source. Registry conformance independently validates published
+package bytes and identities without treating transient performance output as a
+publication artifact.
 
 Route authorization alternates the pinned baseline and candidate process order
 across nine adjacent complete-profile pairs and takes the median of the nine
@@ -209,10 +205,10 @@ Every route-authorization decision first writes a canonical-hash diagnostic
 containing the environment, run order, all raw profile pairs, profile and
 attempt hashes, noise metrics and reasons, and raw threshold results. A
 threshold failure marks the failing metrics in `threshold_results`; it never
-labels them as passing scenarios. The tagged release job uploads this file on
-success or performance failure whenever it exists. Failures before the
-performance sampler creates the file do not produce a second missing-artifact
-failure.
+labels them as passing scenarios. The exact-main gate retains this diagnostic
+next to the local performance evidence on success or failure whenever it
+exists. Failures before the performance sampler creates the file do not create
+a misleading empty diagnostic.
 
 Other short wall-clock paths continue to use their owning paired measurement
 contracts. The UDP limiter alternates small and large batches within every
@@ -298,10 +294,10 @@ them together offline. This is only a feature-branch transition to the v8
 package-only workflow, which removes the legacy bundle and v4 manifest rather
 than extending their wire format.
 
-Ordinary branch CI builds synthetic package bytes and validates them in isolated
-consumer directories. Only the tagged release workflow publishes the immutable
-tag-derived identity. Registry readback remains independent of ambient checkout
-dependencies.
+The exact-main local gate builds synthetic package bytes and validates them in
+isolated consumer directories. Only the tagged release workflow publishes the
+immutable tag-derived identity. Registry readback remains independent of
+ambient checkout dependencies.
 
 Tagged release workflows publish both npm packages with the same version as the
 Git tag. Publish jobs receive only prebuilt, digest-pinned tarballs, declare

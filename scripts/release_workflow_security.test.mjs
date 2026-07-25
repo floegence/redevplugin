@@ -122,19 +122,21 @@ test("npm readbacks delegate bounded retry classification to the verifier", () =
   }
 });
 
-test("release performance failures retain complete route authorization diagnostics", () => {
-  const steps = workflow.jobs.quality.steps;
-  const performance = steps.find((step) => step.id === "release_performance");
-  assert.ok(performance);
-  assert.match(performance.run, /--release/);
-  const upload = steps.find((step) => step.name === "Upload route authorization performance diagnostics");
-  assert.ok(upload);
-  assert.match(upload.if, /always\(\)/);
-  assert.match(upload.if, /steps\.release_performance\.outcome != 'skipped'/);
-  assert.match(upload.if, /hashFiles\('dist\/performance-evidence-release\.route-authorization-diagnostic\.json'\) != ''/);
-  assert.equal(upload.with.path, "dist/performance-evidence-release.route-authorization-diagnostic.json");
-  assert.equal(upload.with["if-no-files-found"], "warn");
-  assert.equal(upload.with["retention-days"], 30);
+test("release preflight binds the tag to the exact remote main tip", () => {
+  const source = workflow.jobs.preflight.steps.map((step) => step.run ?? "").join("\n");
+  assert.match(source, /test "\$GITHUB_SHA" = "\$\(git rev-parse origin\/main\)"/);
+  assert.doesNotMatch(source, /merge-base --is-ancestor "\$GITHUB_SHA" origin\/main/);
+});
+
+test("release package build requires both hosted runtime containment targets", () => {
+  const containment = workflow.jobs["runtime-containment"];
+  assert.deepEqual(containment.strategy.matrix.include, [
+    { runner: "ubuntu-24.04", arch: "amd64" },
+    { runner: "ubuntu-24.04-arm", arch: "arm64" },
+  ]);
+  assert.ok(containment.steps.some((step) =>
+    step.run?.includes("TestContainedRuntimeProcessExecutesSealedRuntimeAndValidatesAcknowledgement")));
+  assert.ok(workflow.jobs["package-build"].needs.includes("runtime-containment"));
 });
 
 test("manual recovery binds one failed release run and its immutable package artifact", () => {

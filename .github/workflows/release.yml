@@ -35,51 +35,56 @@ jobs:
           esac
           git fetch origin main --tags --force
           test "$(git rev-list -n 1 "$GITHUB_REF_NAME")" = "$GITHUB_SHA"
-          git merge-base --is-ancestor "$GITHUB_SHA" origin/main
+          test "$GITHUB_SHA" = "$(git rev-parse origin/main)"
           node scripts/check_redevplugin_release_metadata.mjs "$version"
           ./scripts/assert_github_release_absent.sh "$GITHUB_REPOSITORY" "$GITHUB_REF_NAME"
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
-  quality:
-    name: Complete Release Quality Gate
+  runtime-containment:
+    name: Release Runtime Containment (${{ matrix.arch }})
     needs: preflight
-    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            arch: amd64
+          - runner: ubuntu-24.04-arm
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-        with:
-          fetch-depth: 0
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version-file: go.mod
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
-        with:
-          node-version: 24
-          cache: npm
       - run: rustup show
-      - run: ./scripts/check_redevplugin_pre_push.sh --ci
+      - name: Build static PIE runtime from source crates
+        id: build-runtime
+        run: |
+          target="$(rustc -vV | sed -n 's/^host: //p')"
+          test -n "$target"
+          rustflags_key="CARGO_TARGET_${target^^}_RUSTFLAGS"
+          rustflags_key="${rustflags_key//-/_}"
+          env "$rustflags_key=-C target-feature=+crt-static -C relocation-model=pic -C linker=${{ github.workspace }}/scripts/link_redevplugin_runtime_static_pie.sh" \
+            cargo build --locked --release --target "$target" -p redevplugin-runtime
+          echo "path=target/$target/release/redevplugin-runtime" >> "$GITHUB_OUTPUT"
+      - name: Verify closed ELF profile
+        run: |
+          runtime="${{ steps.build-runtime.outputs.path }}"
+          file "$runtime" | grep -q 'static-pie linked'
+          ! readelf -l "$runtime" | grep -q INTERP
+          ! readelf -d "$runtime" | grep -q NEEDED
+      - name: Exercise sealed memfd, clone3 PIDFD, and seccomp handshake
         env:
-          REDEVPLUGIN_INSTALL_AUDIT_TOOLS: "1"
-      - run: ./scripts/check_redevplugin_property_gates.sh --release
-      - run: ./scripts/check_redevplugin_stress.sh --release --summary dist/redevplugin-release-stress.json
-        env:
-          REDEVPLUGIN_A2_EVIDENCE_DIR: dist
-      - name: Check release performance
-        id: release_performance
-        run: ./scripts/check_redevplugin_performance.sh --release --output dist/performance-evidence-release.json --version "${{ needs.preflight.outputs.version }}" --source-commit "$GITHUB_SHA"
-      - name: Upload route authorization performance diagnostics
-        if: ${{ always() && steps.release_performance.outcome != 'skipped' && hashFiles('dist/performance-evidence-release.route-authorization-diagnostic.json') != '' }}
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: route-authorization-performance-diagnostics-${{ github.sha }}
-          path: dist/performance-evidence-release.route-authorization-diagnostic.json
-          if-no-files-found: warn
-          retention-days: 30
+          GOWORK: "off"
+          REDEVPLUGIN_CONTAINMENT_RUNTIME_PATH: ${{ github.workspace }}/${{ steps.build-runtime.outputs.path }}
+        run: go test ./internal/runtimeclient -run TestContainedRuntimeProcessExecutesSealedRuntimeAndValidatesAcknowledgement -count=1 -v
 
   package-build:
     name: Build Platform Packages Once
     needs:
       - preflight
-      - quality
+      - runtime-containment
     runs-on: ubuntu-latest
     outputs:
       artifact-id: ${{ steps.upload.outputs.artifact-id }}

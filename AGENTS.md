@@ -472,8 +472,11 @@ the actual procedure.
   asks for that collaboration path.
 - Do not create a pull request merely to trigger CI; by default, fast-forward the
   ready feature into `main`, push `main`, and verify the `main` Actions run.
-  Run the local gate first and use CI as confirmation, not as the first
-  validator.
+  Ordinary GitHub push and pull-request CI is intentionally a short source
+  integrity check. Complex tests, browser/runtime conformance, packaging,
+  performance, property, and stress coverage belong to the exact-main local
+  pre-push gate. Run that local gate first and use CI as a quick independent
+  confirmation, not as the first validator or a duplicate full gate.
 - Default sync strategy for a feature branch: `git rebase origin/main`.
 - Do not merge `origin/main` into a feature branch in the normal flow.
 - If a feature worktree needs to catch up with `main`, rebase it on
@@ -731,10 +734,14 @@ upgrade the host product to the published artifact.
 Release publication uses three explicit gates:
 
 - Before creating a release tag, the exact clean `main` tip must pass the local
-  pre-push gate and its matching main-branch CI, including deterministic package
-  builds, package closure, generated metadata, source conformance, and verifier
+  pre-push gate and the bounded main-branch Quick CI. The local gate owns
+  deterministic package builds, package closure, generated metadata, source
+  conformance, browser/runtime coverage, performance, stress, and verifier
   fixtures. Do not create a tag in order to discover deterministic packaging or
-  contract failures in the Release workflow.
+  contract failures in the Release workflow. The tag workflow may retain only
+  ref-bound publication work and hosted-platform checks that cannot run on one
+  local development machine, including the Linux amd64/arm64 containment
+  matrix, registry publication/readback, attestation, and GitHub Release.
 - After publication starts, registry readbacks must use bounded retries with
   backoff only for temporary availability, rate-limit, and propagation failures.
   A source commit, tag ref, package digest, checksum, provenance, package set, or
@@ -800,8 +807,10 @@ Core invariants:
 
 ## Quality Gates
 
-Keep local checks aligned with CI. As the repository is bootstrapped, add the
-exact scripts and workflows here when they land.
+Keep the complete gate local and keep ordinary GitHub CI deliberately short.
+The cloud workflow verifies source formatting and script syntax but must not
+install browsers, run Docker, compile release packages, execute stress or
+performance gates, or invoke the complete pre-push gate.
 
 Before pushing `main`, configure the tracked hook with:
 
@@ -812,16 +821,16 @@ git config core.hooksPath .githooks
 `.githooks/pre-push` invokes `scripts/check_redevplugin_pre_push.sh` only for a
 clean, fast-forward update of `refs/heads/main` from the checked-out `main`
 branch whose `HEAD` matches the pushed object. That script is the authoritative
-local equivalent of every CI check that does not require GitHub credentials,
+complete repository gate for every check that does not require GitHub credentials,
 artifact storage, tag/ref identity, registry readback, Sigstore signing, or a
 hosted multi-platform runner. It includes Go, TypeScript, browser, canonical
-WASM, bridge, performance, Rust, audit, stress, property, contract, platform,
+WASM, bridge, performance, Rust, audit, full stress, property, contract, platform,
 and platform-package publication smoke gates. The hook behavior itself is
 covered by
-`scripts/test_redevplugin_pre_push_hook.sh`. The main-branch CI workflow
-invokes the same gate in its `Main Pre-Push Equivalent` job. Do not add a
-repository gate to a workflow without adding it to this script and running it
-before the next main push.
+`scripts/test_redevplugin_pre_push_hook.sh`. The main-branch `Quick CI` invokes
+only `scripts/check_redevplugin_quick_ci.sh`; it must remain bounded to five
+minutes and must not duplicate the complete gate. Add complex repository gates
+to the pre-push script and run them before the next main push.
 
 Run the relevant gate before creating any commit that another person or host
 product may build on. Do not commit or push first and use CI as the first place

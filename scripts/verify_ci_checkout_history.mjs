@@ -7,17 +7,11 @@ import { fileURLToPath } from "node:url";
 import { parseDocument } from "yaml";
 
 export const pinnedCheckoutAction = "actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5";
-export const completeHistoryJobs = Object.freeze([
-  "pre-push-main-equivalent",
-  "release-bundle-smoke",
-]);
 const root = resolve(import.meta.dirname, "..");
 export const requiredWorkflowJobs = Object.freeze([
-  Object.freeze({ path: ".github/workflows/ci.yml", jobIDs: completeHistoryJobs }),
-  Object.freeze({ path: ".github/workflows/stress.yml", jobIDs: Object.freeze(["stress-full"]) }),
   Object.freeze({
     path: ".github/workflows/release.yml",
-    jobIDs: Object.freeze(["stress-release", "performance-release"]),
+    jobIDs: Object.freeze(["preflight"]),
   }),
 ]);
 
@@ -29,10 +23,6 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
       workflow.path,
     );
   }
-}
-
-export function verifyCICheckoutHistory(source) {
-  verifyWorkflowCheckoutHistory(source, completeHistoryJobs, ".github/workflows/ci.yml");
 }
 
 export function verifyWorkflowCheckoutHistory(source, jobIDs, workflowPath) {

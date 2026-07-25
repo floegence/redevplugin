@@ -39,7 +39,7 @@ completed, and the same focused commands now pass.
 | Runtime lease self-defense | Rust verified the Ed25519 signature but did not bind the actual worker parameters or complete invocation target, and its replay cache was unbounded | `cargo test -p redevplugin-ipc validates_worker_runtime_lease_expiry_and_execution_binding` and `cargo test -p redevplugin-runtime 'worker_invocation_rejects_|runtime_lease_replay_cache_'` prove exact `params_sha256`, fixed-order invocation target binding, expiry-aware replay pruning, hard capacity, and audience mismatches fail before artifact open |
 | npm release surface | The historical package verifier did not compile a standalone consumer against the packed declarations | `npm run platform-package-build:test` verifies both npm tarballs as closed, content-addressed artifacts and requires the UI package to pin the exact contracts package version |
 | Release provenance | Registry publication needed a source-identity contract shared by every package family | `npm run platform-package-publication:test` verifies exact Go, npm, and Rust readback records and rejects source-commit, provenance, checksum, workflow, or package-coordinate substitution |
-| Release smoke identity | Ordinary CI reused a formal release identity even though no tag was being released | The CI bundle smoke builds `0.0.0-ci.<run-number>` while tagged release jobs alone own the tag-derived immutable identity; both keep signed sample compatibility and full bundle verification enabled |
+| Release smoke identity | Ordinary CI reused a formal release identity even though no tag was being released | Quick CI is source-only, the exact-main local gate validates package fixtures without publishing, and tagged release jobs alone own the immutable tag-derived identity |
 | Release evidence contract | The stress summary previously named artifact-bundle steps that no longer exist | `./scripts/check_redevplugin_stress.sh --release --summary dist/redevplugin-release-stress.json` now requires `platform_package_build` and `platform_publication_verifier` and rejects omitted, reordered, or failed steps |
 | Publication verifier isolation | Public completion must not trust a checkout-local artifact | `node --test scripts/platform_package_publication.test.mjs scripts/verify_rust_registry_release.test.mjs` verifies exact-one GitHub Release inventory, strict registry coordinates, crate checksum/VCS identity, and closed publication bytes |
 | Confirmation TOCTOU | Confirmation did not have a focused test for a trusted target descriptor changing after approval | `GOWORK=off go test ./pkg/host -run 'TestConfirmationIntentRejectsChangedResolvedTargetAndCannotReplay' -count=1` proves the re-resolved descriptor hash must match and the consumed confirmation cannot be replayed |
@@ -142,7 +142,10 @@ npm run platform-package-build:test
 npm run platform-package-publication:test
 ```
 
-The tagged workflow repeats the complete quality, audit, stress, package build,
-registry provenance, Go module, and public readback gates. Its GitHub Release
-contains only the attested `platform-package-publication-v1.json` completion
-asset; host products build and sign their runtime binary from published crates.
+The exact-main local pre-push hook owns the complete quality, audit, full stress,
+property, and performance gates. The tagged workflow verifies the immutable tag
+against the current remote main tip, runs hosted amd64/arm64 containment, then
+performs package build, registry provenance, Go module, and public readback.
+Its GitHub Release contains only the attested
+`platform-package-publication-v1.json` completion asset; host products build and
+sign their runtime binary from published crates.

@@ -374,10 +374,10 @@ fixtures live separately under `internal/browserharness` and
   those probes as a user example.
 
 `npm run test:browser-harness:smoke` persists the A2 acceptance report and visual evidence
-as `dist/a2-evidence/redevplugin-a2-acceptance.json`,
-`redevplugin-a2-supported.png`, and `redevplugin-a2-unsupported.png`. CI uploads
-the same files, and tagged releases checksum and sign them alongside runtime and
-stress artifacts.
+as `redevplugin-a2-acceptance.json`, `redevplugin-a2-supported.png`, and
+`redevplugin-a2-unsupported.png` under the configured evidence directory. The
+exact-main pre-push gate writes them under `dist/a2-pre-push`. They are transient
+local quality evidence, not release artifacts or inputs to package publication.
 
 The Showcase is a host-neutral product-quality capability gallery, while the
 browser harness is test infrastructure. Host products still own product

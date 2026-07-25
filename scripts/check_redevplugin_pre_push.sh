@@ -9,8 +9,9 @@ usage() {
 Usage: scripts/check_redevplugin_pre_push.sh [--ci]
 
 Runs every non-GitHub-infrastructure gate required before updating main.
-The --ci mode selects the Linux browser dependency installation used by the
-GitHub workflow; it does not skip any repository gate.
+The --ci mode selects hosted Linux browser dependency installation for manual
+runner reproduction. Ordinary push, pull-request, and tag workflows never
+invoke this complete gate.
 USAGE
 }
 
@@ -102,7 +103,7 @@ npm run scaffold:check:canonical
 ./scripts/check_redevplugin_ui_bridge.sh
 
 echo "==> deterministic performance gate"
-npm run performance:fast
+npm run performance:release
 
 echo "==> Rust format, lint, tests, and dependency policy"
 cargo fmt --check
@@ -116,8 +117,8 @@ REDEVPLUGIN_INSTALL_AUDIT_TOOLS=1 ./scripts/check_redevplugin_release_audit.sh
 
 echo "==> stress and property gates"
 mkdir -p dist
-./scripts/check_redevplugin_stress.sh --fast --summary dist/redevplugin-pre-push-stress.json
-./scripts/check_redevplugin_property_gates.sh --fast
+./scripts/check_redevplugin_stress.sh --release --summary dist/redevplugin-pre-push-stress.json
+./scripts/check_redevplugin_property_gates.sh --stress
 
 echo "==> runtime and platform contracts"
 ./scripts/check_redevplugin_runtime_contract.sh --ci

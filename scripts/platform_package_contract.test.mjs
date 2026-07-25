@@ -258,7 +258,7 @@ test("platform package set binds the exact Go, npm, Rust, role, and contract coo
   assert.doesNotMatch(JSON.stringify(packageSet), /runtime_binary|runtime_archive|installer|product_signature|product_checksum/i);
 });
 
-test("Rust source packages remain wired into dedicated Rust and release gates", () => {
+test("Rust source packages remain wired into the complete local and release gates", () => {
   const packageJSON = readJSON("package.json");
   assert.equal(
     packageJSON.scripts["rust-source-packages:test"],
@@ -269,14 +269,20 @@ test("Rust source packages remain wired into dedicated Rust and release gates", 
     /cargo deny check\nnpm run rust-source-packages:test\n/,
   );
 
-  const rustJob = workflowJob(".github/workflows/ci.yml", "rust");
-  assert.match(rustJob, /actions\/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020/);
-  assert.match(rustJob, /node-version: 24/);
-  assert.match(rustJob, /npm run rust-source-packages:test/);
+  assert.doesNotMatch(
+    read(".github/workflows/ci.yml").toString("utf8"),
+    /rust-source-packages|check_redevplugin_pre_push/,
+  );
 
-  const releaseQuality = workflowJob(".github/workflows/release.yml", "quality");
-  assert.match(releaseQuality, /\.\/scripts\/check_redevplugin_pre_push\.sh --ci/);
+  assert.doesNotMatch(
+    read(".github/workflows/release.yml").toString("utf8"),
+    /check_redevplugin_pre_push|check_redevplugin_stress|check_redevplugin_performance/,
+  );
+  const containment = workflowJob(".github/workflows/release.yml", "runtime-containment");
+  assert.match(containment, /ubuntu-24\.04-arm/);
+  assert.match(containment, /TestContainedRuntimeProcessExecutesSealedRuntimeAndValidatesAcknowledgement/);
   const packageBuild = workflowJob(".github/workflows/release.yml", "package-build");
+  assert.match(packageBuild, /runtime-containment/);
   assert.match(packageBuild, /rustup target add wasm32-unknown-unknown/);
   assert.match(packageBuild, /scripts\/platform_package_build\.mjs build/);
   assert.match(packageBuild, /scripts\/platform_package_build\.mjs verify/);
