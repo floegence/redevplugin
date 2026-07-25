@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.6.17
+
+### Fixed
+
+- Accept capability-defined confirmation plan objects after exact response
+  contract validation while keeping the typed
+  `redevplugin.capability.risk_plan.v1` schema strict and rejecting unknown
+  reserved risk-plan versions.
+- Report invalid confirmation plans as the stable
+  `PLUGIN_CONTRACT_MISMATCH` error and HTTP 502 instead of permission denial,
+  while preserving plan hashes, stale-plan rejection, and replay protection.
+
 ## v0.6.16
 
 ### Fixed
