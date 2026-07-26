@@ -142,6 +142,70 @@ func TestRetainedScopeMatchesOperationAndProofExactly(t *testing.T) {
 	}
 }
 
+func TestCoordinatorInspectRetainedMatchesExactIdentity(t *testing.T) {
+	store, err := NewMemoryStore(StoreOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	coordinator, err := NewCoordinator(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	scope := testSessionScope("inspect_retained")
+	if _, err := coordinator.InspectRetained(context.Background(), scope); !errors.Is(err, ErrScopeNotFound) {
+		t.Fatalf("InspectRetained(absent) error = %v, want ErrScopeNotFound", err)
+	}
+	identity := testTeardownIdentity(t, "inspect_retained")
+	teardown, snapshot, err := coordinator.BeginTeardown(context.Background(), scope, identity, time.Unix(1, 0).UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	teardown.Release()
+	retained, err := coordinator.InspectRetained(context.Background(), scope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if retained.SessionScope != scope || retained.Snapshot != snapshot || !retained.MatchesIdentity(identity) {
+		t.Fatalf("InspectRetained() = %#v", retained)
+	}
+	if retained.MatchesIdentity(testTeardownIdentity(t, "inspect_retained_wrong")) {
+		t.Fatal("InspectRetained() matched a different teardown identity")
+	}
+}
+
+type mismatchedGetStore struct {
+	Store
+	record record
+}
+
+func (store *mismatchedGetStore) Get(context.Context, sessionctx.SessionScope) (record, error) {
+	return store.record, nil
+}
+
+func TestCoordinatorInspectRetainedRejectsMismatchedStoreScope(t *testing.T) {
+	base, err := NewMemoryStore(StoreOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	storedScope := testSessionScope("stored_scope")
+	identity := testTeardownIdentity(t, "stored_scope")
+	digest, err := identity.digest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored, err := base.BeginTeardown(context.Background(), storedScope, identity.OperationID, digest, time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	coordinator, err := NewCoordinator(&mismatchedGetStore{Store: base, record: stored})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := coordinator.InspectRetained(context.Background(), testSessionScope("requested_scope")); !errors.Is(err, ErrInvalidState) {
+		t.Fatalf("InspectRetained(mismatched store scope) error = %v, want ErrInvalidState", err)
+	}
+}
+
 func TestCoordinatorCapacityAndProofAreFailClosed(t *testing.T) {
 	store, err := NewMemoryStore(StoreOptions{MaxScopes: 1})
 	if err != nil {

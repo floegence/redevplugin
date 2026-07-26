@@ -282,6 +282,19 @@ Use this checklist whenever adding or reviewing ReDevPlugin code:
   single-surface revocation contract. Reconciliation may confirm that the exact
   bound surface is closed or authoritatively absent, but it must not widen into
   session-scope revocation or affect sibling surfaces.
+- Closed authenticated plugin sessions must use the host-neutral Go maintenance
+  lifecycle. Fresh close, teardown resume, and finalization bind the exact
+  four-hash session scope and durable teardown identity without adding an HTTP,
+  npm, Rust IPC, or plugin-callable maintenance path. Finalization additionally
+  requires dedicated adapter terminal evidence; a complete platform fence or
+  caller assertion is never sufficient.
+- `SessionLifecycleMaintenanceAdapter` is an optional, independently versioned
+  capability. Legacy `SessionLifecycleAdapter` implementations retain completed
+  fences and do not gain automatic maintenance. When the capability is
+  registered, startup reconciles exact adapter records against exact retained
+  fences, rejects every unlisted state combination without mutation, and treats
+  platform fence deletion as the finalization commit point before idempotent
+  adapter cleanup.
 - Permission requirement discovery must project only the active plugin
   version's Host-verified capability contracts and bind the result to the
   plugin instance, active fingerprint, version, management revision, contract

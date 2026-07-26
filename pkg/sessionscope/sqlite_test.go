@@ -148,6 +148,46 @@ func TestSQLiteStoreFinalizeProofIsSingleUseAcrossReopen(t *testing.T) {
 	reservation.Release()
 }
 
+func TestSQLiteCoordinatorInspectRetainedAcrossReopen(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "session-scopes.sqlite")
+	store, err := NewSQLiteStore(ctx, path, StoreOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	coordinator, err := NewCoordinator(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	scope := testSessionScope("inspect_reopen")
+	identity := testTeardownIdentity(t, "inspect_reopen")
+	teardown, _, err := coordinator.BeginTeardown(ctx, scope, identity, time.Unix(1, 0).UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	teardown.Release()
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	reopened, err := NewSQLiteStore(ctx, path, StoreOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = reopened.Close() })
+	resumed, err := NewCoordinator(reopened)
+	if err != nil {
+		t.Fatal(err)
+	}
+	retained, err := resumed.InspectRetained(ctx, scope)
+	if err != nil || !retained.MatchesIdentity(identity) {
+		t.Fatalf("InspectRetained(reopened) = %#v, %v", retained, err)
+	}
+	if retained.MatchesIdentity(testTeardownIdentity(t, "inspect_reopen_wrong")) {
+		t.Fatal("InspectRetained(reopened) matched a different teardown identity")
+	}
+}
+
 func TestSQLiteStoreAccumulatePhaseIsReplayStableAcrossReopen(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "session-scopes.sqlite")

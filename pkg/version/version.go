@@ -58,6 +58,7 @@ type Matrix struct {
 	NetworkGrantSchemaVersion           string `json:"network_grant_schema_version"`
 	ResourceScopeSchemaVersion          string `json:"resource_scope_schema_version"`
 	SessionScopeSchemaVersion           string `json:"session_scope_schema_version"`
+	SessionScopeMaintenanceVersion      string `json:"session_scope_maintenance_schema_version"`
 	PluginPlatformOpenAPIVersion        string `json:"plugin_platform_openapi_version"`
 	CompatibilitySchemaVersion          string `json:"compatibility_schema_version"`
 	WorkerInvocationSchemaVersion       string `json:"worker_invocation_schema_version"`
@@ -160,6 +161,7 @@ func CurrentMatrix() Matrix {
 		NetworkGrantSchemaVersion:           NetworkGrantSchemaVersion,
 		ResourceScopeSchemaVersion:          ResourceScopeSchemaVersion,
 		SessionScopeSchemaVersion:           SessionScopeSchemaVersion,
+		SessionScopeMaintenanceVersion:      SessionScopeMaintenanceSchemaVersion,
 		PluginPlatformOpenAPIVersion:        PluginPlatformOpenAPIVersion,
 		CompatibilitySchemaVersion:          CompatibilitySchemaVersion,
 		WorkerInvocationSchemaVersion:       WorkerInvocationSchemaVersion,

@@ -155,6 +155,9 @@ var (
 	ErrExternalPackageModuleRequired = errors.New("external package module is required")
 	ErrDurableSessionScopeRequired   = errors.New("durable session scope coordinator is required")
 	ErrSessionTeardownIncomplete     = errors.New("plugin session teardown is incomplete")
+	ErrSessionMaintenanceUnavailable = errors.New("session lifecycle maintenance is unavailable")
+	ErrSessionMaintenanceAbsent      = errors.New("session lifecycle maintenance record is absent")
+	ErrSessionMaintenanceState       = errors.New("session lifecycle maintenance state is invalid")
 )
 
 // HostConfigError identifies the module and adapter that made a host
@@ -473,6 +476,72 @@ type ReconcileRetainedSessionScopesRequest struct {
 	Scopes []sessionscope.RetainedScope `json:"-"`
 }
 
+// SessionScopeLifecyclePhase is the adapter-owned durable phase for one exact
+// authenticated session scope.
+type SessionScopeLifecyclePhase string
+
+const (
+	SessionScopeLifecyclePrepared   SessionScopeLifecyclePhase = "prepared"
+	SessionScopeLifecycleClosed     SessionScopeLifecyclePhase = "closed"
+	SessionScopeLifecycleFinalizing SessionScopeLifecyclePhase = "finalizing"
+)
+
+// Valid reports whether phase is a persisted maintenance phase.
+func (phase SessionScopeLifecyclePhase) Valid() bool {
+	switch phase {
+	case SessionScopeLifecyclePrepared, SessionScopeLifecycleClosed, SessionScopeLifecycleFinalizing:
+		return true
+	default:
+		return false
+	}
+}
+
+// SessionScopeMaintenanceRecord is the host-private, exact lifecycle view used
+// for startup recovery. An empty Phase represents a durable terminal intent
+// for which the adapter has not prepared a teardown identity yet.
+type SessionScopeMaintenanceRecord struct {
+	Session          sessionctx.Context            `json:"-"`
+	Identity         sessionscope.TeardownIdentity `json:"-"`
+	Phase            SessionScopeLifecyclePhase    `json:"-"`
+	TerminalEvidence bool                          `json:"-"`
+}
+
+func (record SessionScopeMaintenanceRecord) Valid() bool {
+	if !record.Session.Valid() {
+		return false
+	}
+	if record.Phase == "" {
+		return record.TerminalEvidence && !record.Identity.Valid() && strings.TrimSpace(record.Identity.OperationID) == ""
+	}
+	if !record.Phase.Valid() || !record.Identity.Valid() {
+		return false
+	}
+	return record.Phase != SessionScopeLifecycleFinalizing || record.TerminalEvidence
+}
+
+// InspectSessionScopeMaintenanceRequest identifies one exact adapter record.
+type InspectSessionScopeMaintenanceRequest struct {
+	Session sessionctx.Context `json:"-"`
+}
+
+// ValidateTerminalSessionScopeCloseRequest requests read-only terminal evidence
+// for an exact session and, during recovery, its teardown identity.
+type ValidateTerminalSessionScopeCloseRequest struct {
+	Session  sessionctx.Context            `json:"-"`
+	Identity sessionscope.TeardownIdentity `json:"-"`
+}
+
+// PrepareSessionScopeFinalizationRequest binds the adapter's durable
+// closed-to-finalizing transition to one exact teardown identity.
+type PrepareSessionScopeFinalizationRequest struct {
+	Session  sessionctx.Context            `json:"-"`
+	Identity sessionscope.TeardownIdentity `json:"-"`
+}
+
+// CommitSessionScopeFinalizationRequest binds post-commit adapter cleanup to
+// the same exact identity used to prepare finalization.
+type CommitSessionScopeFinalizationRequest = PrepareSessionScopeFinalizationRequest
+
 // SessionLifecycleAdapter owns durable closed-session identities. Startup
 // reconciliation must verify that every retained platform fence still has its
 // exact host-side closed-session record. Prepare and Commit are idempotent for
@@ -484,6 +553,18 @@ type SessionLifecycleAdapter interface {
 	PrepareSessionScopeClose(context.Context, PrepareSessionScopeCloseRequest) (sessionscope.TeardownIdentity, error)
 	CommitSessionScopeClose(context.Context, CommitSessionScopeCloseRequest) error
 	ValidateClosedSessionScope(context.Context, ValidateClosedSessionScopeRequest) error
+}
+
+// SessionLifecycleMaintenanceAdapter is a separately versioned capability for
+// terminal session recovery and post-fence finalization. Implementations must
+// expose one exact snapshot for every durable lifecycle record or terminal
+// intent. Inspection and terminal validation are read-only.
+type SessionLifecycleMaintenanceAdapter interface {
+	ListSessionScopeMaintenanceRecords(context.Context) ([]SessionScopeMaintenanceRecord, error)
+	InspectSessionScopeMaintenance(context.Context, InspectSessionScopeMaintenanceRequest) (SessionScopeMaintenanceRecord, error)
+	ValidateTerminalSessionScopeClose(context.Context, ValidateTerminalSessionScopeCloseRequest) (SessionScopeMaintenanceRecord, error)
+	PrepareSessionScopeFinalization(context.Context, PrepareSessionScopeFinalizationRequest) error
+	CommitSessionScopeFinalization(context.Context, CommitSessionScopeFinalizationRequest) error
 }
 
 type SurfaceSnapshot struct {
@@ -520,6 +601,7 @@ type CoreAdapters struct {
 	ConfirmationIntents  security.ConfirmationIntentStore
 	Streams              stream.Store
 	SessionLifecycle     SessionLifecycleAdapter
+	SessionMaintenance   SessionLifecycleMaintenanceAdapter
 	SessionScopes        *sessionscope.Coordinator
 }
 
@@ -603,6 +685,7 @@ type normalizedAdapters struct {
 	ConfirmationIntents              security.ConfirmationIntentStore
 	Streams                          stream.Store
 	SessionLifecycle                 SessionLifecycleAdapter
+	SessionMaintenance               SessionLifecycleMaintenanceAdapter
 	SessionScopes                    *sessionscope.Coordinator
 	RuntimeModule                    *RuntimeModule
 	ExternalPackageStageStore        ExternalPackageStageStore
@@ -637,6 +720,7 @@ type Host struct {
 	releaseLeases       *releaseLeaseRegistry
 	sourceFences        *sourceFenceRegistry
 	sessionScopes       *sessionscope.Coordinator
+	sessionMaintenance  *sessionScopeMaintenanceLockRegistry
 	detachedCancelJobs  *detachedCancelJobRegistry
 	lifecycleCtx        context.Context
 	lifecycleCancel     context.CancelFunc
@@ -1199,6 +1283,7 @@ func normalizeConfig(config Config) (normalizedAdapters, map[Feature]struct{}, e
 	adapters.ConfirmationIntents = core.ConfirmationIntents
 	adapters.Streams = core.Streams
 	adapters.SessionLifecycle = core.SessionLifecycle
+	adapters.SessionMaintenance = core.SessionMaintenance
 	adapters.SessionScopes = core.SessionScopes
 
 	features := make(map[Feature]struct{}, 7)
@@ -1273,6 +1358,9 @@ func validateConfig(adapters normalizedAdapters, config Config) error {
 	}
 	if !adapters.SessionScopes.Durable() && hasDurableCoreResourceStore(adapters) {
 		return &HostConfigError{Module: "core", Adapter: "session scope coordinator", Cause: ErrDurableSessionScopeRequired}
+	}
+	if adapters.SessionMaintenance != nil && isNilInterfaceValue(adapters.SessionMaintenance) {
+		return &HostConfigError{Module: "core", Adapter: "session lifecycle maintenance adapter"}
 	}
 	if adapters.SurfaceCatalog != nil && isNilInterfaceValue(adapters.SurfaceCatalog) {
 		return &HostConfigError{Module: "core", Adapter: "surface catalog sink"}
@@ -1558,6 +1646,7 @@ func Open(ctx context.Context, config Config) (openedHost *Host, retErr error) {
 		sourceFences:        newSourceFenceRegistry(),
 		detachedCancelJobs:  newDetachedCancelJobRegistry(),
 		sessionScopes:       adapters.SessionScopes,
+		sessionMaintenance:  newSessionScopeMaintenanceLockRegistry(),
 		lifecycleCtx:        lifecycleCtx,
 		lifecycleCancel:     lifecycleCancel,
 		runtimeModule:       transferredRuntime,
@@ -1592,6 +1681,10 @@ func Open(ctx context.Context, config Config) (openedHost *Host, retErr error) {
 				return nil, fmt.Errorf("export reconciled security audits: %w", err)
 			}
 		}
+	}
+	if err := host.reconcileSessionScopeMaintenance(ctx); err != nil {
+		lifecycleCancel()
+		return nil, fmt.Errorf("reconcile session scope maintenance: %w", err)
 	}
 	if err := host.reconcileDurableExecutionStates(ctx); err != nil {
 		lifecycleCancel()
@@ -2153,11 +2246,20 @@ func (h *Host) ReconcileSurfaceRevocation(ctx context.Context, req DisposeSurfac
 	})
 }
 
-func (h *Host) RevokeSessionScope(ctx context.Context, req RevokeSessionScopeRequest) (result RevokeSessionScopeResult, retErr error) {
+func (h *Host) RevokeSessionScope(ctx context.Context, req RevokeSessionScopeRequest) (RevokeSessionScopeResult, error) {
 	session, err := requireUserSession(ctx)
 	if err != nil {
 		return RevokeSessionScopeResult{}, err
 	}
+	scope, err := session.SessionScope()
+	if err != nil {
+		return RevokeSessionScopeResult{}, err
+	}
+	release, err := h.sessionMaintenance.acquire(ctx, scope)
+	if err != nil {
+		return RevokeSessionScopeResult{}, err
+	}
+	defer release()
 	if _, err := h.authorizeManagementSessionWithoutFence(
 		ctx,
 		session,
@@ -2166,6 +2268,14 @@ func (h *Host) RevokeSessionScope(ctx context.Context, req RevokeSessionScopeReq
 	); err != nil {
 		return RevokeSessionScopeResult{}, err
 	}
+	return h.revokeAuthenticatedSessionScope(ctx, session, req)
+}
+
+func (h *Host) revokeAuthenticatedSessionScope(
+	ctx context.Context,
+	session sessionctx.Context,
+	req RevokeSessionScopeRequest,
+) (result RevokeSessionScopeResult, retErr error) {
 	scope, err := session.SessionScope()
 	if err != nil {
 		return RevokeSessionScopeResult{}, err
@@ -2352,6 +2462,18 @@ func (h *Host) FinalizeSessionScope(ctx context.Context, req FinalizeSessionScop
 		authorizationTarget(ResourceSessionScope, "closed"),
 	); err != nil {
 		return err
+	}
+	if h.adapters.SessionMaintenance != nil {
+		result, err := h.FinalizeClosedSessionScope(ctx, FinalizeClosedSessionScopeRequest{
+			Session: session, Identity: req.Identity,
+		})
+		if err != nil {
+			return err
+		}
+		if result.Status == SessionScopeFinalizationAbsent {
+			return sessionscope.ErrClosedSessionProofInvalid
+		}
+		return nil
 	}
 	if err := h.adapters.SessionLifecycle.ValidateClosedSessionScope(ctx, ValidateClosedSessionScopeRequest{
 		Session: session, Identity: req.Identity,

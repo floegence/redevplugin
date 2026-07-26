@@ -1346,7 +1346,7 @@ export interface components {
         PluginCatalogResult: {
             plugins: components["schemas"]["PluginRecord"][];
         };
-        PluginCompatibilityManifest: components["schemas"]["CompatibilityManifestV9"];
+        PluginCompatibilityManifest: components["schemas"]["CompatibilityManifestV10"];
         PluginOperationList: {
             operations: components["schemas"]["OperationRecord"][];
             next_cursor?: string;
@@ -2693,15 +2693,15 @@ export interface components {
             counts: components["schemas"]["SessionScopeV1RevokeCounts"];
         };
         SessionScopeV1PublicRevokeResult: components["schemas"]["SessionScopeV1CompleteRevokeResult"] | components["schemas"]["SessionScopeV1IncompleteRevokeResult"];
-        CompatibilityManifestV9: {
+        CompatibilityManifestV10: {
             /** @constant */
-            schema_version: "redevplugin.compatibility.v9";
+            schema_version: "redevplugin.compatibility.v10";
             package_set: components["schemas"]["PlatformPackageSetV1"];
             matrix: {
                 /** @constant */
                 plugin_ui_protocol_version: "plugin-ui-v5";
                 /** @constant */
-                plugin_host_protocol_version: "plugin-host-v6";
+                plugin_host_protocol_version: "plugin-host-v7";
                 /** @constant */
                 rust_ipc_version: "rust-ipc-v6";
                 /** @constant */
@@ -2755,9 +2755,11 @@ export interface components {
                 /** @constant */
                 session_scope_schema_version: "session-scope-v1";
                 /** @constant */
+                session_scope_maintenance_schema_version: "session-scope-maintenance-v1";
+                /** @constant */
                 plugin_platform_openapi_version: "plugin-platform-v8";
                 /** @constant */
-                compatibility_schema_version: "compatibility-manifest-v9";
+                compatibility_schema_version: "compatibility-manifest-v10";
                 /** @constant */
                 worker_invocation_schema_version: "worker-invocation-v3";
                 /** @constant */
@@ -2804,9 +2806,9 @@ export interface components {
                 quarantine_cleanup_schema_version: "quarantine-cleanup-v1";
             };
             contract_set_sha256: string;
-            contracts: components["schemas"]["CompatibilityManifestV9Contract"][];
+            contracts: components["schemas"]["CompatibilityManifestV10Contract"][];
         };
-        CompatibilityManifestV9Contract: {
+        CompatibilityManifestV10Contract: {
             id: string;
             path: string;
             version: string;

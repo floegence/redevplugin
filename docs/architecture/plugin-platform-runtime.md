@@ -373,7 +373,7 @@ Machine-readable contracts are first-class platform artifacts:
 - `spec/plugin/bridge-v5.schema.json`;
 - `spec/plugin/opaque-surface-document-v3.schema.json`;
 - `spec/plugin/opaque-surface-transport-v4.schema.json`;
-- `spec/plugin/compatibility-manifest-v9.schema.json`;
+- `spec/plugin/compatibility-manifest-v10.schema.json`;
 - `spec/plugin/owner-scope-root-recovery-v1.schema.json`;
 - `spec/plugin/platform-package-set-v1.schema.json`;
 - `spec/plugin/platform-package-publication-v1.schema.json`;
@@ -389,6 +389,7 @@ Machine-readable contracts are first-class platform artifacts:
 - `spec/plugin/network-grant-v2.schema.json`;
 - `spec/plugin/resource-scope-v1.schema.json`;
 - `spec/plugin/session-scope-v1.schema.json`;
+- `spec/plugin/session-scope-maintenance-v1.json`;
 - `spec/plugin/error-codes-v6.schema.json`;
 - `spec/plugin/target-classifier-v2.json`;
 - `spec/plugin/contract-registry-v2.json`, the generated inventory and SHA-256
@@ -455,6 +456,23 @@ ReDevPlugin uses explicit authorities instead of implicit process memory:
 - operation and stream stores keep observable long-running work and buffered
   events;
 - observability stores persist audit and diagnostic events.
+
+Authenticated session shutdown has two distinct durable stages. Revocation
+fences the exact four-hash session scope and drains platform admissions;
+finalization is allowed only after the independently versioned lifecycle
+maintenance adapter proves that the exact authenticated channel is terminal.
+The Go-only maintenance API can start a fresh close, resume an existing
+teardown, or finalize a completed fence without browser authorization state.
+Legacy lifecycle adapters keep their completed fences and never opt into this
+automatic path implicitly.
+
+Finalization persists the adapter phase as `finalizing`, cleans platform-owned
+tombstones, and then deletes the exact platform fence. Fence deletion is the
+commit point. Adapter record removal is idempotent post-commit cleanup, so a
+lost response or cleanup failure can resume without recreating session
+authority. Startup compares the exact adapter and fence snapshots and rejects
+unknown phases, missing records, identity mismatches, or any state combination
+outside `spec/plugin/session-scope-maintenance-v1.json` without mutation.
 
 Memory and durable store APIs expose immutable value boundaries. Registry,
 operation, stream, execution-binding, and event data returned to callers are

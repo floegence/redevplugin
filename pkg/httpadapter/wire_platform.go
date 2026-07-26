@@ -42,6 +42,7 @@ type compatibilityMatrixResponse struct {
 	NetworkGrantSchemaVersion           string `json:"network_grant_schema_version"`
 	ResourceScopeSchemaVersion          string `json:"resource_scope_schema_version"`
 	SessionScopeSchemaVersion           string `json:"session_scope_schema_version"`
+	SessionScopeMaintenanceVersion      string `json:"session_scope_maintenance_schema_version"`
 	PluginPlatformOpenAPIVersion        string `json:"plugin_platform_openapi_version"`
 	CompatibilitySchemaVersion          string `json:"compatibility_schema_version"`
 	WorkerInvocationSchemaVersion       string `json:"worker_invocation_schema_version"`
@@ -127,7 +128,8 @@ func publicCompatibility(source version.CompatibilityManifest) compatibilityResp
 			OpaqueSurfaceDocumentVersion: matrix.OpaqueSurfaceDocumentVersion, OpaqueSurfaceTransportVersion: matrix.OpaqueSurfaceTransportVersion,
 			TargetClassifierVersion: matrix.TargetClassifierVersion, NetworkGrantSchemaVersion: matrix.NetworkGrantSchemaVersion,
 			ResourceScopeSchemaVersion: matrix.ResourceScopeSchemaVersion, SessionScopeSchemaVersion: matrix.SessionScopeSchemaVersion,
-			PluginPlatformOpenAPIVersion: matrix.PluginPlatformOpenAPIVersion, CompatibilitySchemaVersion: matrix.CompatibilitySchemaVersion,
+			SessionScopeMaintenanceVersion: matrix.SessionScopeMaintenanceVersion,
+			PluginPlatformOpenAPIVersion:   matrix.PluginPlatformOpenAPIVersion, CompatibilitySchemaVersion: matrix.CompatibilitySchemaVersion,
 			WorkerInvocationSchemaVersion: matrix.WorkerInvocationSchemaVersion, HostCapabilityContractVersion: matrix.HostCapabilityContractVersion,
 			HostCapabilityPinVersion: matrix.HostCapabilityPinVersion, HostCapabilityManifestVersion: matrix.HostCapabilityManifestVersion,
 			HostCapabilityCompatVersion: matrix.HostCapabilityCompatVersion, HostCapabilitySignatureVersion: matrix.HostCapabilitySignatureVersion,

@@ -552,6 +552,31 @@ func (c *Coordinator) ListRetained(ctx context.Context) ([]RetainedScope, error)
 	return result, nil
 }
 
+// InspectRetained returns the exact durable fence for one session scope. The
+// teardown identity remains opaque; callers can only compare a trusted
+// host-side identity with MatchesIdentity.
+func (c *Coordinator) InspectRetained(ctx context.Context, scope sessionctx.SessionScope) (RetainedScope, error) {
+	if c == nil {
+		return RetainedScope{}, ErrStoreRequired
+	}
+	if err := validateStoreCall(ctx, scope); err != nil {
+		return RetainedScope{}, err
+	}
+	current, err := c.store.Get(ctx, scope)
+	if err != nil {
+		return RetainedScope{}, err
+	}
+	if current.Scope != scope || !current.State.Valid() || current.State == StateActive || !current.Counts.Valid() || !current.HasProof {
+		return RetainedScope{}, ErrInvalidState
+	}
+	return RetainedScope{
+		SessionScope: current.Scope,
+		Snapshot:     current.snapshot(),
+		identityHash: retainedIdentityHash(current.TeardownOperationID, current.ProofSHA256),
+		hasIdentity:  true,
+	}, nil
+}
+
 type Reservation struct {
 	coordinator *Coordinator
 	scope       sessionctx.SessionScope

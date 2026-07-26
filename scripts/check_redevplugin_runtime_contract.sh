@@ -42,10 +42,11 @@ done
 echo "==> active contract inventory"
 for required in \
   spec/openapi/plugin-platform-v8.yaml \
-  spec/plugin/compatibility-manifest-v9.schema.json \
+  spec/plugin/compatibility-manifest-v10.schema.json \
   spec/plugin/error-codes-v6.schema.json \
   spec/plugin/ipc-v6.schema.json \
   spec/plugin/performance-contract-v4.json \
+  spec/plugin/session-scope-maintenance-v1.json \
   spec/plugin/performance-evidence-v4.schema.json \
   spec/plugin/platform-package-set-v1.schema.json \
   spec/plugin/platform-package-publication-v1.schema.json \
@@ -59,6 +60,7 @@ done
 for obsolete in \
   spec/openapi/plugin-platform-v7.yaml \
   spec/plugin/compatibility-manifest-v7.schema.json \
+  spec/plugin/compatibility-manifest-v9.schema.json \
   spec/plugin/contract-registry-v1.json \
   spec/plugin/error-codes-v5.schema.json \
   spec/plugin/ipc-v5.schema.json \

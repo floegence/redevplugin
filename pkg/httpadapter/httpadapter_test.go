@@ -705,8 +705,9 @@ func TestHandlerCompatibilityManifest(t *testing.T) {
 	got := postJSON[struct {
 		SchemaVersion string `json:"schema_version"`
 		Matrix        struct {
-			PluginHostProtocolVersion string `json:"plugin_host_protocol_version"`
-			PluginPlatformOpenAPI     string `json:"plugin_platform_openapi_version"`
+			PluginHostProtocolVersion      string `json:"plugin_host_protocol_version"`
+			SessionScopeMaintenanceVersion string `json:"session_scope_maintenance_schema_version"`
+			PluginPlatformOpenAPI          string `json:"plugin_platform_openapi_version"`
 		} `json:"matrix"`
 		Contracts []struct {
 			ID     string `json:"id"`
@@ -715,10 +716,12 @@ func TestHandlerCompatibilityManifest(t *testing.T) {
 		} `json:"contracts"`
 	}](t, handler, "/_redevplugin/api/plugins/platform/compatibility/query", map[string]any{})
 
-	if got.SchemaVersion != "redevplugin.compatibility.v9" {
+	if got.SchemaVersion != "redevplugin.compatibility.v10" {
 		t.Fatalf("schema_version = %q", got.SchemaVersion)
 	}
-	if got.Matrix.PluginHostProtocolVersion != "plugin-host-v6" || got.Matrix.PluginPlatformOpenAPI != "plugin-platform-v8" {
+	if got.Matrix.PluginHostProtocolVersion != "plugin-host-v7" ||
+		got.Matrix.SessionScopeMaintenanceVersion != "session-scope-maintenance-v1" ||
+		got.Matrix.PluginPlatformOpenAPI != "plugin-platform-v8" {
 		t.Fatalf("matrix mismatch: %#v", got.Matrix)
 	}
 	contracts := map[string]struct {

@@ -1,0 +1,86 @@
+{
+  "schema_version": "redevplugin.session_scope_maintenance.v1",
+  "go_host_protocol_version": "plugin-host-v7",
+  "adapter_capability": {
+    "name": "SessionLifecycleMaintenanceAdapter",
+    "version": "v1",
+    "registration": "optional",
+    "legacy_behavior": "retain_fence"
+  },
+  "visibility": {
+    "transport": "go_host_only",
+    "http_route": false,
+    "plugin_callable": false,
+    "teardown_identity": "opaque"
+  },
+  "phases": ["prepared", "closed", "finalizing"],
+  "teardown_statuses": ["incomplete", "complete", "absent"],
+  "finalization_statuses": ["finalized", "absent"],
+  "platform_commit_point": "fence_deleted",
+  "default_behavior": "fail_closed_without_mutation",
+  "allowed_states": [
+    {
+      "fence": "absent",
+      "record": "absent",
+      "terminal_evidence": "absent",
+      "identity_binding": "absent",
+      "close": "absent",
+      "resume": "absent",
+      "finalize": "absent"
+    },
+    {
+      "fence": "absent",
+      "record": "terminal_intent",
+      "terminal_evidence": "required",
+      "identity_binding": "absent",
+      "close": "prepare_and_begin_teardown",
+      "resume": "fail_closed",
+      "finalize": "fail_closed"
+    },
+    {
+      "fence": "absent",
+      "record": "prepared",
+      "terminal_evidence": "required",
+      "identity_binding": "exact",
+      "close": "fail_closed",
+      "resume": "begin_teardown",
+      "finalize": "fail_closed"
+    },
+    {
+      "fence": "draining_or_incomplete",
+      "record": "prepared_or_closed",
+      "terminal_evidence": "optional",
+      "identity_binding": "exact",
+      "close": "fail_closed",
+      "resume": "continue_teardown",
+      "finalize": "fail_closed"
+    },
+    {
+      "fence": "complete",
+      "record": "closed",
+      "terminal_evidence": "required",
+      "identity_binding": "exact",
+      "close": "fail_closed",
+      "resume": "complete",
+      "finalize": "prepare_delete_fence_commit"
+    },
+    {
+      "fence": "complete",
+      "record": "finalizing",
+      "terminal_evidence": "required",
+      "identity_binding": "exact",
+      "close": "fail_closed",
+      "resume": "handoff_to_finalization",
+      "finalize": "delete_fence_and_commit"
+    },
+    {
+      "fence": "absent",
+      "record": "finalizing",
+      "terminal_evidence": "required",
+      "identity_binding": "exact",
+      "close": "fail_closed",
+      "resume": "handoff_to_finalization",
+      "finalize": "post_commit_cleanup"
+    }
+  ]
+}

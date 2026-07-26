@@ -551,7 +551,7 @@ test("platform client reads compatibility manifest through host API", async () =
   fetch.push({
     ok: true,
     data: {
-      schema_version: "redevplugin.compatibility.v9",
+      schema_version: "redevplugin.compatibility.v10",
       package_set: {
         schema_version: "redevplugin.platform_package_set.v1",
         platform_version: "0.6.0",
@@ -596,12 +596,13 @@ test("platform client reads compatibility manifest through host API", async () =
 
   const compatibility = await client.getCompatibility();
 
-  assert.equal(compatibility.schema_version, "redevplugin.compatibility.v9");
+  assert.equal(compatibility.schema_version, "redevplugin.compatibility.v10");
   assert.equal(compatibility.matrix.plugin_platform_openapi_version, "plugin-platform-v8");
   assert.equal(compatibility.matrix.release_metadata_schema_version, "release-metadata-v5");
   assert.equal(compatibility.matrix.release_source_policy_schema_version, "release-source-policy-v2");
   assert.equal(compatibility.matrix.release_revocation_schema_version, "release-revocation-v2");
   assert.equal(compatibility.matrix.resource_scope_schema_version, "resource-scope-v1");
+  assert.equal(compatibility.matrix.session_scope_maintenance_schema_version, "session-scope-maintenance-v1");
   assert.equal(compatibility.matrix.host_capability_contract_schema_version, "host-capability-contract-v1");
   assert.equal(compatibility.matrix.host_capability_pin_schema_version, "host-capability-pin-v1");
   assert.equal(compatibility.matrix.host_capability_manifest_schema_version, "host-capability-manifest-v1");

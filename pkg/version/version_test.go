@@ -112,6 +112,23 @@ func TestCompatibilityManifestIncludesResourceScopeSchema(t *testing.T) {
 	t.Fatal("compatibility manifest missing resource-scope-schema")
 }
 
+func TestCompatibilityManifestIncludesSessionScopeMaintenanceContract(t *testing.T) {
+	manifest := CurrentCompatibilityManifest()
+	if manifest.Matrix.SessionScopeMaintenanceVersion != SessionScopeMaintenanceSchemaVersion {
+		t.Fatalf("session scope maintenance matrix version = %q, want %q", manifest.Matrix.SessionScopeMaintenanceVersion, SessionScopeMaintenanceSchemaVersion)
+	}
+	for _, contract := range manifest.Contracts {
+		if contract.ID != "session-scope-maintenance-contract" {
+			continue
+		}
+		if contract.Version != SessionScopeMaintenanceSchemaVersion {
+			t.Fatalf("session maintenance contract version = %q, want %q", contract.Version, SessionScopeMaintenanceSchemaVersion)
+		}
+		return
+	}
+	t.Fatal("compatibility manifest missing session-scope-maintenance-contract")
+}
+
 func TestCompatibilityManifestIncludesHostCapabilityContractSchema(t *testing.T) {
 	manifest := CurrentCompatibilityManifest()
 	if manifest.Matrix.HostCapabilityContractVersion != HostCapabilityContractSchemaVersion {

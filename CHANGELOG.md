@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- Add an opt-in, independently versioned Go session lifecycle maintenance
+  adapter and host-only fresh-close, teardown-resume, and finalization APIs.
+  Exact terminal evidence gates finalization, fence deletion is the durable
+  commit point, startup reconciles the closed state matrix fail closed, and
+  legacy lifecycle adapters preserve their existing completed-fence behavior.
+- Publish the host-only `session-scope-maintenance-v1` state matrix and advance
+  the coordinated Host and compatibility contracts to `plugin-host-v7` and
+  `compatibility-manifest-v10` without adding an HTTP, npm, or Rust IPC
+  maintenance surface.
+
 ## v0.6.17
 
 ### Fixed

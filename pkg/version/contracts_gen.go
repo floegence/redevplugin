@@ -4,7 +4,7 @@ package version
 
 const (
 	PluginUIProtocolVersion                   = "plugin-ui-v5"
-	PluginHostProtocolVersion                 = "plugin-host-v6"
+	PluginHostProtocolVersion                 = "plugin-host-v7"
 	RustIPCVersion                            = "rust-ipc-v6"
 	WASMABIVersion                            = "redevplugin-wasm-worker-v2"
 	ManifestSchemaVersion                     = "manifest-v5"
@@ -31,9 +31,10 @@ const (
 	NetworkGrantSchemaVersion                 = "network-grant-v2"
 	ResourceScopeSchemaVersion                = "resource-scope-v1"
 	SessionScopeSchemaVersion                 = "session-scope-v1"
+	SessionScopeMaintenanceSchemaVersion      = "session-scope-maintenance-v1"
 	PluginPlatformOpenAPIVersion              = "plugin-platform-v8"
-	CompatibilityManifestVersion              = "redevplugin.compatibility.v9"
-	CompatibilitySchemaVersion                = "compatibility-manifest-v9"
+	CompatibilityManifestVersion              = "redevplugin.compatibility.v10"
+	CompatibilitySchemaVersion                = "compatibility-manifest-v10"
 	WorkerInvocationSchemaVersion             = "worker-invocation-v3"
 	HostCapabilityContractSchemaVersion       = "host-capability-contract-v1"
 	HostCapabilityPinSchemaVersion            = "host-capability-pin-v1"
@@ -61,9 +62,9 @@ const (
 var generatedContractArtifacts = []ContractArtifact{
 	{
 		ID:      "compatibility-manifest-schema",
-		Path:    "spec/plugin/compatibility-manifest-v9.schema.json",
-		Version: "compatibility-manifest-v9",
-		SHA256:  "5fed1d2dddd4b6eac050f6d5e1a8732e361d0936e95c2ba79dbd49561a6b0175",
+		Path:    "spec/plugin/compatibility-manifest-v10.schema.json",
+		Version: "compatibility-manifest-v10",
+		SHA256:  "a732aa43181bda6570885612f9c10db97346db188cfe7862ac966f190853312f",
 	},
 	{
 		ID:      "contract-registry-schema",
@@ -201,7 +202,7 @@ var generatedContractArtifacts = []ContractArtifact{
 		ID:      "plugin-platform-openapi",
 		Path:    "spec/openapi/plugin-platform-v8.yaml",
 		Version: "plugin-platform-v8",
-		SHA256:  "82d1539c3328af909091f29bf6bbdf6c76d7597424a366e94602a113e834e51d",
+		SHA256:  "b6890e093dded3a48845ae710a813dfb0b9c9456bd3cc3c69b07a40fc1435436",
 	},
 	{
 		ID:      "process-containment-schema",
@@ -316,6 +317,12 @@ var generatedContractArtifacts = []ContractArtifact{
 		Path:    "spec/plugin/ipc-v6.schema.json",
 		Version: "rust-ipc-v6",
 		SHA256:  "9814ca091ac2e4e8435c1ab553e248e9d2e792de93ce9fd27bd030486774837f",
+	},
+	{
+		ID:      "session-scope-maintenance-contract",
+		Path:    "spec/plugin/session-scope-maintenance-v1.json",
+		Version: "session-scope-maintenance-v1",
+		SHA256:  "fd87b6654c954ee2a2dc67958ba214048b894aa421bb74a85fb02000ec51f37b",
 	},
 	{
 		ID:      "session-scope-schema",

@@ -17,7 +17,10 @@ func TestPublicRequestDTOsDeclareClosedJSONFieldNames(t *testing.T) {
 		InspectExternalPackageRequest{}, InspectUploadedExternalPackageRequest{}, CommitExternalPackageRequest{}, QueryExternalPackageCommitRequest{},
 		ListPermissionGrantsRequest{}, PutSecurityPolicyRequest{}, GetSecurityPolicyRequest{}, DeleteSecurityPolicyRequest{},
 		GetSettingsRequest{}, PatchSettingsRequest{}, OpenSurfaceRequest{}, PrepareSurfaceRequest{},
-		ReadSurfaceAssetRequest{}, DisposeSurfaceRequest{}, RevokeSessionScopeRequest{}, FinalizeSessionScopeRequest{}, MintBridgeTokenRequest{},
+		ReadSurfaceAssetRequest{}, DisposeSurfaceRequest{}, RevokeSessionScopeRequest{}, FinalizeSessionScopeRequest{},
+		CloseAuthenticatedSessionScopeRequest{}, ResumeClosedSessionScopeTeardownRequest{}, FinalizeClosedSessionScopeRequest{},
+		InspectSessionScopeMaintenanceRequest{}, ValidateTerminalSessionScopeCloseRequest{}, PrepareSessionScopeFinalizationRequest{},
+		MintBridgeTokenRequest{},
 		CallMethodRequest{}, ListIntentsRequest{}, InvokeIntentRequest{}, PrepareMethodConfirmationRequest{},
 		RejectMethodConfirmationRequest{}, ListOperationsRequest{}, CancelOperationRequest{}, CancelSurfaceOperationRequest{},
 		ReadStreamRequest{}, AcknowledgeStreamRequest{}, MintConnectionGrantRequest{}, MintStorageHandleGrantRequest{},
@@ -26,6 +29,7 @@ func TestPublicRequestDTOsDeclareClosedJSONFieldNames(t *testing.T) {
 	internalFields := map[string]struct{}{
 		"Now": {}, "WaitTimeout": {}, "PackageReader": {}, "PackageSize": {}, "TTL": {},
 		"Session":       {},
+		"Identity":      {},
 		"ResourceScope": {},
 	}
 	for _, request := range requests {

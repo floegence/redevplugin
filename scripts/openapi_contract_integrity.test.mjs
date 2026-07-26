@@ -19,8 +19,12 @@ async function readSessionScopeSchema() {
   return JSON.parse(await readFile(join(root, "spec/plugin/session-scope-v1.schema.json"), "utf8"));
 }
 
+async function readSessionScopeMaintenanceContract() {
+  return JSON.parse(await readFile(join(root, "spec/plugin/session-scope-maintenance-v1.json"), "utf8"));
+}
+
 async function readCompatibilitySchema() {
-  return JSON.parse(await readFile(join(root, "spec/plugin/compatibility-manifest-v9.schema.json"), "utf8"));
+  return JSON.parse(await readFile(join(root, "spec/plugin/compatibility-manifest-v10.schema.json"), "utf8"));
 }
 
 test("PatchSettingsRequest requires a non-empty set or remove object", async () => {
@@ -176,13 +180,43 @@ test("Rust IPC v6 carries closed session revoke request and acknowledgement fram
   assert.equal(schema.$defs.session_revoke_count.maximum, Number.MAX_SAFE_INTEGER);
 });
 
-test("compatibility v9 publishes the complete session revoke contract matrix", async () => {
+test("session maintenance publishes the closed fail-closed recovery matrix", async () => {
+  const contract = await readSessionScopeMaintenanceContract();
+  assert.equal(contract.schema_version, "redevplugin.session_scope_maintenance.v1");
+  assert.equal(contract.go_host_protocol_version, "plugin-host-v7");
+  assert.deepEqual(contract.phases, ["prepared", "closed", "finalizing"]);
+  assert.deepEqual(contract.teardown_statuses, ["incomplete", "complete", "absent"]);
+  assert.deepEqual(contract.finalization_statuses, ["finalized", "absent"]);
+  assert.equal(contract.platform_commit_point, "fence_deleted");
+  assert.equal(contract.default_behavior, "fail_closed_without_mutation");
+  assert.equal(contract.visibility.transport, "go_host_only");
+  assert.equal(contract.visibility.http_route, false);
+  assert.equal(contract.visibility.plugin_callable, false);
+  assert.equal(contract.visibility.teardown_identity, "opaque");
+
+  const states = new Map(contract.allowed_states.map((state) => [
+    `${state.fence}:${state.record}:${state.terminal_evidence}:${state.identity_binding}`,
+    state,
+  ]));
+  assert.equal(states.size, 7);
+  assert.equal(states.get("absent:absent:absent:absent")?.finalize, "absent");
+  assert.equal(states.get("absent:terminal_intent:required:absent")?.close, "prepare_and_begin_teardown");
+  assert.equal(states.get("complete:closed:required:exact")?.finalize, "prepare_delete_fence_commit");
+  assert.equal(states.get("complete:finalizing:required:exact")?.resume, "handoff_to_finalization");
+  assert.equal(states.get("absent:finalizing:required:exact")?.finalize, "post_commit_cleanup");
+  assert.doesNotMatch(JSON.stringify(contract), /closed_session_proof|operation_id|proof_sha256/);
+});
+
+test("compatibility v10 publishes the complete session contract matrix", async () => {
   const schema = await readCompatibilitySchema();
   const matrix = schema.properties.matrix;
   assert.ok(matrix.required.includes("session_scope_schema_version"));
+  assert.ok(matrix.required.includes("session_scope_maintenance_schema_version"));
+  assert.deepEqual(matrix.properties.plugin_host_protocol_version, { const: "plugin-host-v7" });
   assert.deepEqual(matrix.properties.rust_ipc_version, { const: "rust-ipc-v6" });
   assert.deepEqual(matrix.properties.token_ticket_schema_version, { const: "token-ticket-v4" });
   assert.deepEqual(matrix.properties.session_scope_schema_version, { const: "session-scope-v1" });
+  assert.deepEqual(matrix.properties.session_scope_maintenance_schema_version, { const: "session-scope-maintenance-v1" });
   assert.deepEqual(matrix.properties.error_codes_schema_version, { const: "error-codes-v6" });
 });
 

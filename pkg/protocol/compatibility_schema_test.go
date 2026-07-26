@@ -10,7 +10,7 @@ import (
 
 func TestCompatibilityManifestSchemaDefinesReleasedMatrix(t *testing.T) {
 	root := repoRoot(t)
-	raw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", "compatibility-manifest-v9.schema.json"))
+	raw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", "compatibility-manifest-v10.schema.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -21,7 +21,7 @@ func TestCompatibilityManifestSchemaDefinesReleasedMatrix(t *testing.T) {
 
 	properties := requireNestedObject(t, schema, "properties")
 	schemaVersion := requireNestedObject(t, properties, "schema_version")
-	if got := schemaVersion["const"]; got != "redevplugin.compatibility.v9" {
+	if got := schemaVersion["const"]; got != "redevplugin.compatibility.v10" {
 		t.Fatalf("schema_version const = %#v", got)
 	}
 
@@ -29,7 +29,7 @@ func TestCompatibilityManifestSchemaDefinesReleasedMatrix(t *testing.T) {
 	matrixProps := requireNestedObject(t, matrix, "properties")
 	expectedMatrix := map[string]string{
 		"plugin_ui_protocol_version":                   "plugin-ui-v5",
-		"plugin_host_protocol_version":                 "plugin-host-v6",
+		"plugin_host_protocol_version":                 "plugin-host-v7",
 		"rust_ipc_version":                             "rust-ipc-v6",
 		"wasm_abi_version":                             "redevplugin-wasm-worker-v2",
 		"manifest_schema_version":                      "manifest-v5",
@@ -48,8 +48,10 @@ func TestCompatibilityManifestSchemaDefinesReleasedMatrix(t *testing.T) {
 		"target_classifier_version":                    "target-classifier-v2",
 		"network_grant_schema_version":                 "network-grant-v2",
 		"resource_scope_schema_version":                "resource-scope-v1",
+		"session_scope_schema_version":                 "session-scope-v1",
+		"session_scope_maintenance_schema_version":     "session-scope-maintenance-v1",
 		"plugin_platform_openapi_version":              "plugin-platform-v8",
-		"compatibility_schema_version":                 "compatibility-manifest-v9",
+		"compatibility_schema_version":                 "compatibility-manifest-v10",
 		"worker_invocation_schema_version":             "worker-invocation-v3",
 		"error_codes_schema_version":                   "error-codes-v6",
 		"performance_contract_version":                 "performance-contract-v4",
@@ -96,6 +98,7 @@ func TestContractRegistryPublishesOnlyCurrentPlatformContracts(t *testing.T) {
 	for _, identifier := range []string{
 		"plugin-platform-v4",
 		"compatibility-manifest-v4",
+		"compatibility-manifest-v9",
 		"release-metadata-v4",
 		"release-manifest-v3",
 		"error-codes-v2",
@@ -119,6 +122,7 @@ func TestContractRegistryPublishesOnlyCurrentPlatformContracts(t *testing.T) {
 		"spec/openapi/plugin-platform-v4.yaml",
 		"spec/plugin/manifest-v4.schema.json",
 		"spec/plugin/compatibility-manifest-v4.schema.json",
+		"spec/plugin/compatibility-manifest-v9.schema.json",
 		"spec/plugin/release-metadata-v4.schema.json",
 		"spec/plugin/release-manifest-v3.schema.json",
 		"spec/plugin/error-codes-v2.schema.json",
