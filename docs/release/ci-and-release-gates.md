@@ -54,6 +54,11 @@ The hook rejects main deletion, non-fast-forward updates, dirty worktrees,
 feature worktrees, and local objects that do not match `HEAD`. It does not
 cover GitHub-only publication, hosted multi-platform execution, registry
 readback, artifact upload/download, Sigstore signing, or GitHub API checks.
+The local release audit retries npm audit only for a closed set of endpoint and
+network availability failures, with four total attempts and bounded backoff.
+Vulnerability findings and unclassified failures remain immediate terminal
+errors. This audit and its retry fixtures stay in the exact-main local gate;
+ordinary GitHub Quick CI performs syntax and source-integrity checks only.
 
 The tagged release workflow does not repeat the complete local gate. Preflight
 requires the immutable tag commit to equal the current remote `main` tip, and
