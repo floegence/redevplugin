@@ -38,14 +38,15 @@ export async function validateUIBridgeRepository(rootDir = defaultRoot) {
   const activeSchemaPath = resolveRepositoryPath(rootDir, descriptors.active.path, "active bridge artifact");
   const activeTransportPath = resolveRepositoryPath(rootDir, descriptors.active.transportPath, "active surface transport artifact");
   const legacySchemaPath = resolveRepositoryPath(rootDir, descriptors.legacy.path, "legacy bridge artifact");
-  const [activeSchema, activeTransportSchema, legacySchema, surface, contracts] = await Promise.all([
+  const [activeSchema, activeTransportSchema, legacySchema, surface, contracts, rendererPerformance] = await Promise.all([
     readJSON(activeSchemaPath, "active bridge schema"),
     readJSON(activeTransportPath, "active surface transport schema"),
     readJSON(legacySchemaPath, "legacy bridge schema"),
     readFile(join(rootDir, "packages/redevplugin-ui/src/surface.ts"), "utf8"),
     readFile(join(rootDir, "packages/redevplugin-ui/src/contracts.gen.ts"), "utf8"),
+    readFile(join(rootDir, "scripts/measure_redevplugin_renderer_performance.mjs"), "utf8"),
   ]);
-  validateUIBridgeInputs({ descriptors, activeSchema, activeTransportSchema, legacySchema, surface, contracts });
+  validateUIBridgeInputs({ descriptors, activeSchema, activeTransportSchema, legacySchema, surface, contracts, rendererPerformance });
 }
 
 export function resolveBridgeContractDescriptors(source) {
@@ -122,9 +123,17 @@ export function resolveBridgeContractDescriptors(source) {
   };
 }
 
-export function validateUIBridgeInputs({ descriptors, activeSchema, activeTransportSchema, legacySchema, surface, contracts }) {
+export function validateUIBridgeInputs({
+  descriptors,
+  activeSchema,
+  activeTransportSchema,
+  legacySchema,
+  surface,
+  contracts,
+  rendererPerformance,
+}) {
   if (!isRecord(descriptors) || !isRecord(descriptors.active) || !isRecord(descriptors.legacy) ||
-      typeof surface !== "string" || typeof contracts !== "string") {
+      typeof surface !== "string" || typeof contracts !== "string" || typeof rendererPerformance !== "string") {
     throw new Error("bridge gate inputs are invalid");
   }
   validateBridgeSchemaIdentity(activeSchema, descriptors.active);
@@ -167,6 +176,14 @@ export function validateUIBridgeInputs({ descriptors, activeSchema, activeTransp
   }
   requireGeneratedVersion(contracts, "plugin_ui_protocol_version", descriptors.active.uiProtocolVersion);
   requireGeneratedVersion(contracts, "bridge_schema_version", descriptors.active.bridgeSchemaVersion);
+  for (const required of [
+    'import { pluginUIProtocolVersion } from "./packages/redevplugin-ui/src/contracts.gen.ts";',
+    "uiProtocolVersion: pluginUIProtocolVersion,",
+  ]) {
+    if (!rendererPerformance.includes(required)) {
+      throw new Error(`renderer performance harness is not bound to the active UI protocol: missing ${required}`);
+    }
+  }
 
   const responseDef = JSON.stringify(activeSchema.$defs?.response);
   for (const forbidden of trustedParentFields.slice(3)) {

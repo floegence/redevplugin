@@ -19,6 +19,7 @@ const baseline = {
   legacySchema: JSON.parse(await readFile(join(root, descriptors.legacy.path), "utf8")),
   surface: await readFile(join(root, "packages/redevplugin-ui/src/surface.ts"), "utf8"),
   contracts: await readFile(join(root, "packages/redevplugin-ui/src/contracts.gen.ts"), "utf8"),
+  rendererPerformance: await readFile(join(root, "scripts/measure_redevplugin_renderer_performance.mjs"), "utf8"),
 };
 
 test("UI bridge gate resolves the active schema from the closed contract source", async () => {
@@ -146,4 +147,13 @@ test("generated bridge versions must equal the active contract source", () => {
     '  "bridge_schema_version": "bridge-v5",',
   );
   assert.throws(() => validateUIBridgeInputs(staleBridge), /generated contract bridge_schema_version does not match/);
+});
+
+test("renderer performance harness must use the generated active UI protocol", () => {
+  const staleHarness = structuredClone(baseline);
+  staleHarness.rendererPerformance = staleHarness.rendererPerformance.replace(
+    "uiProtocolVersion: pluginUIProtocolVersion,",
+    'uiProtocolVersion: "plugin-ui-v5",',
+  );
+  assert.throws(() => validateUIBridgeInputs(staleHarness), /renderer performance harness is not bound to the active UI protocol/);
 });
