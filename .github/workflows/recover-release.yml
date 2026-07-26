@@ -121,11 +121,13 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           SOURCE_COMMIT: ${{ needs.preflight.outputs.source-commit }}
           TAG: ${{ inputs.tag }}
+          ALLOW_PUBLIC: "true"
         run: |
           set -euo pipefail
           [[ "$GITHUB_REPOSITORY" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]
           [[ "$TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]
           [[ "$SOURCE_COMMIT" =~ ^[0-9a-f]{40}$ ]]
+          test "$ALLOW_PUBLIC" = true || test "$ALLOW_PUBLIC" = false
           pages=$(mktemp "${RUNNER_TEMP}/redevplugin-release-pages.XXXXXX")
           release=$(mktemp "${RUNNER_TEMP}/redevplugin-release.XXXXXX")
           trap 'rm -f "$pages" "$release"' EXIT
@@ -152,6 +154,10 @@ jobs:
             echo "existing release is not an exact reconciliation candidate" >&2
             exit 1
           }
+          if test "$(jq -r .draft "$release")" = false && test "$ALLOW_PUBLIC" != true; then
+            echo "normal release admission refuses an existing public Release" >&2
+            exit 1
+          fi
 
   reconstruct-publication:
     name: Reconstruct Completion Manifest

@@ -454,10 +454,10 @@ function executePreflight(fixture) {
   });
 }
 
-function executeAdmission(fixture) {
+function executeAdmission(fixture, allowPublic) {
   return spawnSync("bash", ["-c", admissionSource], {
     cwd: fixture.root,
-    env: fixture.env,
+    env: { ...fixture.env, ALLOW_PUBLIC: allowPublic ? "true" : "false" },
     encoding: "utf8",
     timeout: 10_000,
   });
@@ -467,18 +467,24 @@ test("local pre-tag and write-authorized workflow admission accept only exact tr
   const cases = [
     ["absent", {}, true],
     ["valid draft", { release: release() }, true],
-    ["valid public", { release: release(false) }, true],
+    ["valid public", { release: release(false) }, "recovery-only"],
     ["wrong marker", { release: release(true, "unrelated") }, false],
     ["wrong source marker", { release: release(true, `<!-- redevplugin-release-transaction-v1 source_commit=${otherCommit} -->`) }, false],
     ["multiple tag matches", { release: release(), extraReleases: [release(true, marker, 102)] }, false],
   ];
-  for (const [mode, execute] of [["local pre-tag", executePreflight], ["workflow admission", executeAdmission]]) {
+  const modes = [
+    ["local pre-tag", executePreflight, false],
+    ["normal workflow admission", (fixture) => executeAdmission(fixture, false), false],
+    ["recovery workflow admission", (fixture) => executeAdmission(fixture, true), true],
+  ];
+  for (const [mode, execute, allowsPublic] of modes) {
     for (const [name, overrides, accepted] of cases) {
       await t.test(`${mode}: ${name}`, () => {
         const fixture = createFixture(overrides);
         try {
           const result = execute(fixture);
-          assert.equal(result.status === 0, accepted, `${name}: ${result.stderr}`);
+          const expected = accepted === "recovery-only" ? allowsPublic : accepted;
+          assert.equal(result.status === 0, expected, `${name}: ${result.stderr}`);
           assert.deepEqual(fixture.readState().events.filter((event) => !event.startsWith("get-") && event !== "list-releases"), []);
         } finally {
           fixture.cleanup();

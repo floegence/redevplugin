@@ -42,3 +42,7 @@ jq -e --argjson id "$release_id" --arg tag "$tag" --arg marker "$marker" '
   echo "existing release is not an exact reconciliation candidate" >&2
   exit 1
 }
+if [[ $(jq -r .draft "$release") == false ]]; then
+  echo "pre-tag admission refuses an existing public Release" >&2
+  exit 1
+fi

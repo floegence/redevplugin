@@ -137,9 +137,12 @@ test("normal and recovery publication share one resumable release transaction", 
   assert.deepEqual(recoveryAdmission.permissions, { contents: "write" });
   assert.equal(normalAdmission.environment, "release");
   assert.equal(recoveryAdmission.environment, "release");
+  assert.equal(normalAdmission.steps[0].env.ALLOW_PUBLIC, "false");
+  assert.equal(recoveryAdmission.steps[0].env.ALLOW_PUBLIC, "true");
   assert.equal(normalAdmission.steps[0].run, recoveryAdmission.steps[0].run);
   assert.match(normalAdmission.steps[0].run, /gh api --paginate --slurp/);
   assert.match(normalAdmission.steps[0].run, /release admission found multiple exact-tag matches/);
+  assert.match(normalAdmission.steps[0].run, /normal release admission refuses an existing public Release/);
   for (const jobName of ["publish-rust", "publish-npm-contracts", "publish-npm-ui", "attest-publication", "publish-release"]) {
     assert.ok(workflow.jobs[jobName].needs.includes("release-admission"), `${jobName} must wait for release admission`);
   }
