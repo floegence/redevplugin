@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.6.19
+
+### Fixed
+
+- Reconcile duplicate exact-tag GitHub Release drafts only when every
+  candidate is bound to the same source transaction, remains unpublished, and
+  has no assets. Revalidation before each mutation and response-loss adoption
+  keep normal and recovery publication deterministic and fail closed.
+- Retry the local npm release audit only for a closed set of transient registry,
+  endpoint, and TLS failures, while keeping vulnerability findings and unknown
+  failures immediately terminal.
+
 ## v0.6.18
 
 ### Added
