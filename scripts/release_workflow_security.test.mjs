@@ -89,11 +89,24 @@ test("inline recovery Python is syntactically valid", () => {
   }
 });
 
-test("GitHub release publication keeps the exact-one asset contract", () => {
-  const source = readFileSync(".github/workflows/release.yml", "utf8");
+test("GitHub release publication is atomic and keeps the exact-one asset contract", () => {
+  const source = workflow.jobs["publish-release"].steps.map((step) => step.run ?? "").join("\n");
+  assert.match(source, /--draft/);
+  assert.match(source, /trap cleanup EXIT/);
+  assert.match(source, /published=0/);
+  assert.match(source, /--method DELETE/);
   assert.match(source, /name=platform-package-publication-v1\.json/);
   assert.match(source, /--jq length\)\" = 1/);
   assert.match(source, /content_type.*CONTENT_TYPE/);
+  assert.match(source, /-F draft=false/);
+  assert.match(source, /published=1/);
+});
+
+test("final public verification can read the completion attestation", () => {
+  assert.deepEqual(workflow.jobs["verify-release"].permissions, {
+    attestations: "read",
+    contents: "read",
+  });
 });
 
 test("release readback jobs install their required runtime and output directories", () => {

@@ -741,18 +741,30 @@ jobs:
           artifact-ids: ${{ needs.create-publication.outputs.artifact-id }}
           path: dist/publication
           merge-multiple: true
-      - name: Create release and upload only the completion manifest
+      - name: Atomically publish only the completion manifest
         env:
           GH_TOKEN: ${{ github.token }}
           CONTENT_TYPE: application/vnd.floegence.redevplugin-platform-publication.v1+json
         run: |
           set -euo pipefail
+          release_id=""
+          published=0
+          cleanup() {
+            if [[ "$published" = 0 && -n "$release_id" ]]; then
+              gh api --method DELETE "repos/${GITHUB_REPOSITORY}/releases/${release_id}" || true
+            fi
+          }
+          trap cleanup EXIT
+
           gh release create "$GITHUB_REF_NAME" \
             --repo "$GITHUB_REPOSITORY" \
             --verify-tag \
             --generate-notes \
-            --latest
-          release_id=$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${GITHUB_REF_NAME}" --jq .id)
+            --draft
+          release_id=$(gh release view "$GITHUB_REF_NAME" \
+            --repo "$GITHUB_REPOSITORY" \
+            --json databaseId \
+            --jq .databaseId)
           curl --fail --silent --show-error \
             -X POST \
             -H "Authorization: Bearer $GH_TOKEN" \
@@ -764,6 +776,10 @@ jobs:
           test "$(gh api "repos/${GITHUB_REPOSITORY}/releases/${release_id}/assets" --jq length)" = 1
           test "$(gh api "repos/${GITHUB_REPOSITORY}/releases/${release_id}/assets" --jq '.[0].name')" = platform-package-publication-v1.json
           test "$(gh api "repos/${GITHUB_REPOSITORY}/releases/${release_id}/assets" --jq '.[0].content_type')" = "$CONTENT_TYPE"
+          gh api --method PATCH "repos/${GITHUB_REPOSITORY}/releases/${release_id}" \
+            -F draft=false \
+            -f make_latest=true > /dev/null
+          published=1
 
   verify-release:
     name: Verify Public Completion
@@ -772,6 +788,7 @@ jobs:
       - publish-release
     runs-on: ubuntu-latest
     permissions:
+      attestations: read
       contents: read
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
