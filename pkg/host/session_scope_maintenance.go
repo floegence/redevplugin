@@ -356,9 +356,7 @@ func (h *Host) finalizeClosedSessionScopeLocked(
 	}()
 
 	if record.Phase == SessionScopeLifecycleClosed {
-		if err := adapter.PrepareSessionScopeFinalization(ctx, PrepareSessionScopeFinalizationRequest{
-			Session: req.Session, Identity: req.Identity,
-		}); err != nil {
+		if err := adapter.PrepareSessionScopeFinalization(ctx, PrepareSessionScopeFinalizationRequest(req)); err != nil {
 			return SessionScopeFinalizationResult{}, ErrAdapterFailure
 		}
 		record.Phase = SessionScopeLifecycleFinalizing
@@ -377,9 +375,7 @@ func (h *Host) finalizeClosedSessionScopeLocked(
 		}
 		platformFinalized = true
 	}
-	if err := adapter.CommitSessionScopeFinalization(ctx, CommitSessionScopeFinalizationRequest{
-		Session: req.Session, Identity: req.Identity,
-	}); err != nil {
+	if err := adapter.CommitSessionScopeFinalization(ctx, CommitSessionScopeFinalizationRequest(req)); err != nil {
 		return SessionScopeFinalizationResult{}, ErrAdapterFailure
 	}
 	result.Status = SessionScopeFinalized
