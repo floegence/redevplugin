@@ -168,4 +168,28 @@ test("renderer performance harness must use the generated active UI protocol", (
       'uiProtocolVersion: "plugin-ui-v5", // uiProtocolVersion: pluginUIProtocolVersion,',
     );
   assert.throws(() => validateUIBridgeInputs(commentDecoy), /not structurally bound to the generated active UI protocol/);
+
+  const shadowedProtocol = structuredClone(baseline);
+  shadowedProtocol.rendererPerformance = shadowedProtocol.rendererPerformance
+    .replace(
+      "const host = createPreparedPluginSurfaceHost({",
+      'const host = (() => {\n  const pluginUIProtocolVersion = "plugin-ui-v5";\n  return createPreparedPluginSurfaceHost({',
+    )
+    .replace(
+      "});\ndocument.querySelector(\"#surface-root\").append(host.element);",
+      "});\n})();\ndocument.querySelector(\"#surface-root\").append(host.element);",
+    );
+  assert.throws(() => validateUIBridgeInputs(shadowedProtocol), /not structurally bound to the generated active UI protocol/);
+
+  const shadowedHostFactory = structuredClone(baseline);
+  shadowedHostFactory.rendererPerformance = shadowedHostFactory.rendererPerformance
+    .replace(
+      "const host = createPreparedPluginSurfaceHost({",
+      "const host = (() => {\n  const createPreparedPluginSurfaceHost = () => ({ element: document.createElement(\"div\") });\n  return createPreparedPluginSurfaceHost({",
+    )
+    .replace(
+      "});\ndocument.querySelector(\"#surface-root\").append(host.element);",
+      "});\n})();\ndocument.querySelector(\"#surface-root\").append(host.element);",
+    );
+  assert.throws(() => validateUIBridgeInputs(shadowedHostFactory), /not structurally bound to the generated active UI protocol/);
 });

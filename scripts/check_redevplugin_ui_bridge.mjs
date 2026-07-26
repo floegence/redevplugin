@@ -199,6 +199,7 @@ function validateRendererPerformanceProtocolBinding(source) {
     true,
     ts.ScriptKind.JS,
   );
+  if (outer.parseDiagnostics.length > 0) throw rendererPerformanceProtocolBindingError();
   const harnessTemplates = [];
   walkTypeScript(outer, (node) => {
     if (!ts.isTemplateExpression(node)) return;
@@ -220,19 +221,20 @@ function validateRendererPerformanceProtocolBinding(source) {
   );
   if (embedded.parseDiagnostics.length > 0) throw rendererPerformanceProtocolBindingError();
 
-  const protocolImports = embedded.statements.filter((statement) =>
-    ts.isImportDeclaration(statement) &&
-    ts.isStringLiteral(statement.moduleSpecifier) &&
-    statement.moduleSpecifier.text === "./packages/redevplugin-ui/src/contracts.gen.ts" &&
-    statement.importClause?.isTypeOnly !== true &&
-    statement.importClause?.namedBindings &&
-    ts.isNamedImports(statement.importClause.namedBindings) &&
-    statement.importClause.namedBindings.elements.some((element) =>
-      element.isTypeOnly !== true &&
-      (element.propertyName?.text ?? element.name.text) === "pluginUIProtocolVersion" &&
-      element.name.text === "pluginUIProtocolVersion"),
+  const protocolImports = namedValueImports(
+    embedded,
+    "./packages/redevplugin-ui/src/contracts.gen.ts",
+    "pluginUIProtocolVersion",
+    "pluginUIProtocolVersion",
   );
   if (protocolImports.length !== 1) throw rendererPerformanceProtocolBindingError();
+  const hostImports = namedValueImports(
+    embedded,
+    "./packages/redevplugin-ui/src/surface.ts",
+    "createPreparedPluginSurfaceHost",
+    "createPreparedPluginSurfaceHost",
+  );
+  if (hostImports.length !== 1) throw rendererPerformanceProtocolBindingError();
 
   const hostCalls = [];
   walkTypeScript(embedded, (node) => {
@@ -251,6 +253,51 @@ function validateRendererPerformanceProtocolBinding(source) {
   if (!protocol || !ts.isIdentifier(protocol.initializer) || protocol.initializer.text !== "pluginUIProtocolVersion") {
     throw rendererPerformanceProtocolBindingError();
   }
+  const checker = typeCheckerFor(embedded);
+  const protocolImportSymbol = checker.getSymbolAtLocation(protocolImports[0].name);
+  const protocolInitializerSymbol = checker.getSymbolAtLocation(protocol.initializer);
+  const hostImportSymbol = checker.getSymbolAtLocation(hostImports[0].name);
+  const hostCalleeSymbol = checker.getSymbolAtLocation(hostCalls[0].expression);
+  if (!protocolImportSymbol || protocolImportSymbol !== protocolInitializerSymbol ||
+      !hostImportSymbol || hostImportSymbol !== hostCalleeSymbol) {
+    throw rendererPerformanceProtocolBindingError();
+  }
+}
+
+function namedValueImports(sourceFile, moduleName, importedName, localName) {
+  return sourceFile.statements.flatMap((statement) => {
+    if (!ts.isImportDeclaration(statement) || !ts.isStringLiteral(statement.moduleSpecifier) ||
+        statement.moduleSpecifier.text !== moduleName || statement.importClause?.isTypeOnly === true ||
+        !statement.importClause?.namedBindings || !ts.isNamedImports(statement.importClause.namedBindings)) {
+      return [];
+    }
+    return statement.importClause.namedBindings.elements.filter((element) =>
+      element.isTypeOnly !== true &&
+      (element.propertyName?.text ?? element.name.text) === importedName &&
+      element.name.text === localName,
+    );
+  });
+}
+
+function typeCheckerFor(sourceFile) {
+  const compilerOptions = {
+    module: ts.ModuleKind.ESNext,
+    noLib: true,
+    noResolve: true,
+    target: ts.ScriptTarget.Latest,
+  };
+  const host = {
+    fileExists: (fileName) => fileName === sourceFile.fileName,
+    getCanonicalFileName: (fileName) => fileName,
+    getCurrentDirectory: () => "",
+    getDefaultLibFileName: () => "lib.d.ts",
+    getNewLine: () => "\n",
+    getSourceFile: (fileName) => fileName === sourceFile.fileName ? sourceFile : undefined,
+    readFile: (fileName) => fileName === sourceFile.fileName ? sourceFile.text : undefined,
+    useCaseSensitiveFileNames: () => true,
+    writeFile: () => undefined,
+  };
+  return ts.createProgram([sourceFile.fileName], compilerOptions, host).getTypeChecker();
 }
 
 function exactObjectProperty(object, name) {
