@@ -9,15 +9,17 @@ const workflow = parse(readFileSync(".github/workflows/release.yml", "utf8"));
 const recovery = parse(readFileSync(".github/workflows/recover-release.yml", "utf8"));
 
 test("privileged release jobs never checkout or execute candidate repository scripts", () => {
-  const privileged = ["publish-rust", "publish-npm-contracts", "publish-npm-ui", "attest-publication", "publish-release"];
-  for (const jobName of privileged) {
-    const job = workflow.jobs?.[jobName];
-    assert.ok(job, `missing privileged job ${jobName}`);
-    const steps = Array.isArray(job.steps) ? job.steps : [];
-    assert.equal(steps.some((step) => typeof step.uses === "string" && step.uses.startsWith("actions/checkout@")), false, `${jobName} must not checkout candidate source`);
-    for (const step of steps) {
-      if (typeof step.run !== "string") continue;
-      assert.doesNotMatch(step.run, /^\s*(?:(?:node|npm|cargo|go|bash)\s+|\.\/scripts\/)[^\n]*(?:scripts\/|Cargo\.toml|go\.mod|package\.json)/m, `${jobName} executes candidate repository code`);
+  const privileged = ["release-admission", "publish-rust", "publish-npm-contracts", "publish-npm-ui", "attest-publication", "publish-release"];
+  for (const document of [workflow, recovery]) {
+    for (const jobName of privileged) {
+      const job = document.jobs?.[jobName];
+      if (!job) continue;
+      const steps = Array.isArray(job.steps) ? job.steps : [];
+      assert.equal(steps.some((step) => typeof step.uses === "string" && step.uses.startsWith("actions/checkout@")), false, `${jobName} must not checkout candidate source`);
+      for (const step of steps) {
+        if (typeof step.run !== "string") continue;
+        assert.doesNotMatch(step.run, /^\s*(?:(?:node|npm|cargo|go|bash)\s+|\.\/scripts\/)[^\n]*(?:scripts\/|Cargo\.toml|go\.mod|package\.json)/m, `${jobName} executes candidate repository code`);
+      }
     }
   }
 });
@@ -89,17 +91,61 @@ test("inline recovery Python is syntactically valid", () => {
   }
 });
 
-test("GitHub release publication is atomic and keeps the exact-one asset contract", () => {
+test("normal and recovery publication share one resumable release transaction", () => {
   const source = workflow.jobs["publish-release"].steps.map((step) => step.run ?? "").join("\n");
-  assert.match(source, /--draft/);
-  assert.match(source, /trap cleanup EXIT/);
-  assert.match(source, /published=0/);
-  assert.match(source, /--method DELETE/);
+  const recoverySource = recovery.jobs["publish-release"].steps.map((step) => step.run ?? "").join("\n");
+  assert.equal(source, recoverySource);
+  const syntax = spawnSync("bash", ["-n"], { input: source, encoding: "utf8" });
+  assert.equal(syntax.status, 0, syntax.stderr);
+  assert.match(source, /redevplugin-release-transaction-v1 source_commit=/);
+  assert.match(source, /git\/ref\/tags\/\$TAG/);
+  assert.match(source, /git\/tags\/\$object_sha/);
+  assert.match(source, /test "\$object_sha" = "\$SOURCE_COMMIT"/);
+  assert.doesNotMatch(source, /\.target_commitish == \$source/);
+  assert.match(source, /gh api --paginate --slurp/);
+  assert.match(source, /release lookup found multiple exact-tag matches/);
+  assert.match(source, /\.draft \| type == "boolean"/);
+  assert.match(source, /ensure_draft_asset/);
+  assert.match(source, /exact_asset_matches/);
+  assert.match(source, /cmp -s "\$manifest" "\$downloaded"/);
+  assert.match(source, /reconcile_public/);
   assert.match(source, /name=platform-package-publication-v1\.json/);
-  assert.match(source, /--jq length\)\" = 1/);
-  assert.match(source, /content_type.*CONTENT_TYPE/);
-  assert.match(source, /-F draft=false/);
-  assert.match(source, /published=1/);
+  assert.match(source, /length == 1/);
+  assert.match(source, /\.\[0\]\.content_type == \$content_type/);
+  assert.match(source, /\.\[0\]\.state == "uploaded"/);
+  assert.match(source, /jq -r '\.\[0\]\.url'.*\)\" = \"\$asset_url\"/);
+  assert.match(source, /test "\$upload_url" = "https:\/\/uploads\.github\.com\/repos\/\$\{GITHUB_REPOSITORY\}\/releases\/\$\{release_id\}\/assets"/);
+  assert.match(source, /\{draft: false, make_latest: "true"\}/);
+  assert.match(source, /-X DELETE[\s\S]*releases\/assets\/\$asset_id/);
+  assert.doesNotMatch(source, /-X DELETE[\s\S]{0,500}releases\/\$release_id/);
+
+  const control = source.slice(source.lastIndexOf("for attempt in 1 2 3 4; do"));
+  const ordered = [
+    "lookup_release || lookup_status=$?",
+    "create_draft",
+    "ensure_draft_asset",
+    "jq -n '{draft: false, make_latest: \"true\"}'",
+    "-X PATCH",
+    "if reconcile_public; then",
+  ].map((token) => control.indexOf(token));
+  assert.ok(ordered.every((index) => index >= 0));
+  assert.deepEqual([...ordered].sort((left, right) => left - right), ordered);
+
+  const normalAdmission = workflow.jobs["release-admission"];
+  const recoveryAdmission = recovery.jobs["release-admission"];
+  assert.deepEqual(normalAdmission.permissions, { contents: "write" });
+  assert.deepEqual(recoveryAdmission.permissions, { contents: "write" });
+  assert.equal(normalAdmission.environment, "release");
+  assert.equal(recoveryAdmission.environment, "release");
+  assert.equal(normalAdmission.steps[0].run, recoveryAdmission.steps[0].run);
+  assert.match(normalAdmission.steps[0].run, /gh api --paginate --slurp/);
+  assert.match(normalAdmission.steps[0].run, /release admission found multiple exact-tag matches/);
+  for (const jobName of ["publish-rust", "publish-npm-contracts", "publish-npm-ui", "attest-publication", "publish-release"]) {
+    assert.ok(workflow.jobs[jobName].needs.includes("release-admission"), `${jobName} must wait for release admission`);
+  }
+  for (const jobName of ["attest-publication", "publish-release"]) {
+    assert.ok(recovery.jobs[jobName].needs.includes("release-admission"), `recovery ${jobName} must wait for release admission`);
+  }
 });
 
 test("final public verification can read the completion attestation", () => {
@@ -170,7 +216,7 @@ test("manual recovery binds one failed release run and its immutable package art
   assert.match(source, /"conclusion": "failure"/);
   assert.match(source, /platform-packages-\{source_commit\}/);
   assert.match(source, /len\(matches\) != 1/);
-  assert.match(source, /assert_github_release_absent\.sh/);
+  assert.doesNotMatch(source, /assert_github_release_absent\.sh/);
 
   const download = recovery.jobs["reconstruct-publication"].steps.find(
     (step) => step.uses?.startsWith("actions/download-artifact@") && step.with?.["run-id"] !== undefined,
@@ -196,9 +242,9 @@ test("manual recovery separates untrusted readback from privileged publication",
     }
   }
   const publishSource = recovery.jobs["publish-release"].steps.map((step) => step.run ?? "").join("\n");
-  assert.match(publishSource, /--draft/);
-  assert.match(publishSource, /trap cleanup EXIT/);
+  assert.match(publishSource, /draft: true/);
+  assert.match(publishSource, /redevplugin-release-transaction-v1/);
   assert.match(publishSource, /name=platform-package-publication-v1\.json/);
   assert.match(publishSource, /content_type.*CONTENT_TYPE/);
-  assert.match(publishSource, /-F draft=false/);
+  assert.match(publishSource, /\{draft: false, make_latest: "true"\}/);
 });

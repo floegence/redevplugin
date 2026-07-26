@@ -104,10 +104,54 @@ jobs:
           PY
           )
 
-          ./scripts/assert_github_release_absent.sh "$GITHUB_REPOSITORY" "$TAG"
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "source-commit=$source_commit" >> "$GITHUB_OUTPUT"
           echo "package-artifact-id=$package_artifact_id" >> "$GITHUB_OUTPUT"
+
+  release-admission:
+    name: Admit GitHub Release Transaction
+    needs: preflight
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      contents: write
+    steps:
+      - name: Reject a non-reconcilable exact-tag Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_COMMIT: ${{ needs.preflight.outputs.source-commit }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_REPOSITORY" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]
+          [[ "$TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]
+          [[ "$SOURCE_COMMIT" =~ ^[0-9a-f]{40}$ ]]
+          pages=$(mktemp "${RUNNER_TEMP}/redevplugin-release-pages.XXXXXX")
+          release=$(mktemp "${RUNNER_TEMP}/redevplugin-release.XXXXXX")
+          trap 'rm -f "$pages" "$release"' EXIT
+          gh api --paginate --slurp \
+            "repos/${GITHUB_REPOSITORY}/releases?per_page=100" > "$pages"
+          jq -e 'type == "array" and all(.[]; type == "array" and length <= 100)' "$pages" > /dev/null
+          match_count=$(jq --arg tag "$TAG" '[.[][] | select(.tag_name == $tag)] | length' "$pages")
+          case "$match_count" in
+            0) exit 0 ;;
+            1) ;;
+            *) echo "release admission found multiple exact-tag matches" >&2; exit 1 ;;
+          esac
+          release_id=$(jq -r --arg tag "$TAG" '.[][] | select(.tag_name == $tag) | .id' "$pages")
+          [[ "$release_id" =~ ^[1-9][0-9]*$ ]]
+          gh api "repos/${GITHUB_REPOSITORY}/releases/${release_id}" > "$release"
+          marker="<!-- redevplugin-release-transaction-v1 source_commit=${SOURCE_COMMIT} -->"
+          jq -e --argjson id "$release_id" --arg tag "$TAG" --arg marker "$marker" '
+            .id == $id and
+            .tag_name == $tag and
+            .prerelease == false and
+            (.draft | type == "boolean") and
+            ((.body // "") | contains($marker))
+          ' "$release" > /dev/null || {
+            echo "existing release is not an exact reconciliation candidate" >&2
+            exit 1
+          }
 
   reconstruct-publication:
     name: Reconstruct Completion Manifest
@@ -215,7 +259,9 @@ jobs:
 
   attest-publication:
     name: Attest Recovered Completion Manifest
-    needs: reconstruct-publication
+    needs:
+      - reconstruct-publication
+      - release-admission
     runs-on: ubuntu-latest
     environment: release
     permissions:
@@ -239,6 +285,7 @@ jobs:
       - preflight
       - reconstruct-publication
       - attest-publication
+      - release-admission
     runs-on: ubuntu-latest
     environment: release
     permissions:
@@ -253,60 +300,303 @@ jobs:
       - name: Atomically publish only the completion manifest
         env:
           GH_TOKEN: ${{ github.token }}
+          SOURCE_COMMIT: ${{ needs.preflight.outputs.source-commit }}
           TAG: ${{ inputs.tag }}
           CONTENT_TYPE: application/vnd.floegence.redevplugin-platform-publication.v1+json
         run: |
           set -euo pipefail
-          release_check=$(mktemp "${RUNNER_TEMP}/redevplugin-release-check.XXXXXX")
-          status=$(curl \
-            --silent \
-            --show-error \
-            --location \
-            --retry 3 \
-            --retry-all-errors \
-            --connect-timeout 10 \
-            --max-time 30 \
-            --header "Accept: application/vnd.github+json" \
-            --header "Authorization: Bearer $GH_TOKEN" \
-            --header "X-GitHub-Api-Version: 2022-11-28" \
-            --output "$release_check" \
-            --write-out '%{http_code}' \
-            "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/releases/tags/$TAG")
-          test "$status" = 404
-          release_id=""
-          published=0
+          asset_name=platform-package-publication-v1.json
+          manifest=dist/publication/platform-package-publication-v1.json
+          marker="<!-- redevplugin-release-transaction-v1 source_commit=${SOURCE_COMMIT} -->"
+          release_pages=$(mktemp "${RUNNER_TEMP}/redevplugin-release-pages.XXXXXX")
+          release_json=$(mktemp "${RUNNER_TEMP}/redevplugin-release.XXXXXX")
+          assets_json=$(mktemp "${RUNNER_TEMP}/redevplugin-release-assets.XXXXXX")
+          downloaded=$(mktemp "${RUNNER_TEMP}/redevplugin-release-asset.XXXXXX")
+          mutation_json=$(mktemp "${RUNNER_TEMP}/redevplugin-release-mutation.XXXXXX")
           cleanup() {
-            rm -f "$release_check"
-            if [[ "$published" = 0 && -n "$release_id" ]]; then
-              gh api --method DELETE "repos/${GITHUB_REPOSITORY}/releases/${release_id}" || true
-            fi
+            rm -f "$release_pages" "$release_json" "$assets_json" "$downloaded" "$mutation_json"
           }
           trap cleanup EXIT
+          test -f "$manifest"
+          test ! -L "$manifest"
+          manifest_size=$(wc -c < "$manifest")
+          [[ "$manifest_size" =~ ^[1-9][0-9]*$ ]]
+          test "$manifest_size" -le 1048576
+          manifest_sha256=$(sha256sum "$manifest" | awk '{print $1}')
+          [[ "$manifest_sha256" =~ ^[0-9a-f]{64}$ ]]
 
-          gh release create "$TAG" \
-            --repo "$GITHUB_REPOSITORY" \
-            --verify-tag \
-            --generate-notes \
-            --draft
-          release_id=$(gh release view "$TAG" \
-            --repo "$GITHUB_REPOSITORY" \
-            --json databaseId \
-            --jq .databaseId)
-          curl --fail --silent --show-error \
-            -X POST \
-            -H "Authorization: Bearer $GH_TOKEN" \
-            -H "Content-Type: $CONTENT_TYPE" \
-            -H "X-GitHub-Api-Version: 2022-11-28" \
-            --data-binary @dist/publication/platform-package-publication-v1.json \
-            "https://uploads.github.com/repos/${GITHUB_REPOSITORY}/releases/${release_id}/assets?name=platform-package-publication-v1.json" \
-            > dist/publication/upload-response.json
-          test "$(gh api "repos/${GITHUB_REPOSITORY}/releases/${release_id}/assets" --jq length)" = 1
-          test "$(gh api "repos/${GITHUB_REPOSITORY}/releases/${release_id}/assets" --jq '.[0].name')" = platform-package-publication-v1.json
-          test "$(gh api "repos/${GITHUB_REPOSITORY}/releases/${release_id}/assets" --jq '.[0].content_type')" = "$CONTENT_TYPE"
-          gh api --method PATCH "repos/${GITHUB_REPOSITORY}/releases/${release_id}" \
-            -F draft=false \
-            -f make_latest=true > /dev/null
-          published=1
+          verify_local_manifest() {
+            local current_sha256 current_size
+            test -f "$manifest" && test ! -L "$manifest" || return 2
+            current_size=$(wc -c < "$manifest") || return 2
+            test "$current_size" = "$manifest_size" || return 2
+            current_sha256=$(sha256sum "$manifest" | awk '{print $1}') || return 2
+            test "$current_sha256" = "$manifest_sha256" || return 2
+          }
+
+          lookup_release() {
+            local match_count release_id status
+            for attempt in 1 2 3 4; do
+              if gh api --paginate --slurp \
+                "repos/${GITHUB_REPOSITORY}/releases?per_page=100" > "$release_pages"; then
+                break
+              fi
+              test "$attempt" != 4 || return 2
+              sleep "$attempt"
+            done
+            jq -e 'type == "array" and all(.[]; type == "array" and length <= 100)' "$release_pages" > /dev/null || return 2
+            match_count=$(jq --arg tag "$TAG" '[.[][] | select(.tag_name == $tag)] | length' "$release_pages")
+            case "$match_count" in
+              0) return 1 ;;
+              1) ;;
+              *) echo "release lookup found multiple exact-tag matches" >&2; return 2 ;;
+            esac
+            release_id=$(jq -r --arg tag "$TAG" '.[][] | select(.tag_name == $tag) | .id' "$release_pages")
+            [[ "$release_id" =~ ^[1-9][0-9]*$ ]] || return 2
+            status=$(curl --silent --show-error --location --retry 3 --retry-all-errors \
+              --connect-timeout 10 --max-time 30 \
+              -H "Accept: application/vnd.github+json" \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              -o "$release_json" -w '%{http_code}' \
+              "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/releases/$release_id") || return 2
+            test "$status" = 200 || return 2
+            jq -e --arg tag "$TAG" --arg marker "$marker" '
+              (.id | type == "number" and . > 0) and
+              .tag_name == $tag and
+              .prerelease == false and
+              (.draft | type == "boolean") and
+              ((.body // "") | contains($marker))
+            ' "$release_json" > /dev/null || {
+              echo "existing release is not the exact bound transaction" >&2
+              return 2
+            }
+            test "$(jq -r .id "$release_json")" = "$release_id" || return 2
+          }
+
+          load_assets() {
+            local release_id status
+            release_id=$(jq -r .id "$release_json")
+            status=$(curl --silent --show-error --location --retry 3 --retry-all-errors \
+              --connect-timeout 10 --max-time 30 \
+              -H "Accept: application/vnd.github+json" \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              -o "$assets_json" -w '%{http_code}' \
+              "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/releases/$release_id/assets?per_page=100") || return 1
+            test "$status" = 200 || return 1
+            jq -e 'type == "array" and length < 100' "$assets_json" > /dev/null || return 1
+          }
+
+          exact_asset_matches() {
+            local asset_id asset_url metadata_status status
+            verify_local_manifest || return 2
+            metadata_status=0
+            jq -e --arg name "$asset_name" --arg content_type "$CONTENT_TYPE" --argjson size "$manifest_size" '
+              length == 1 and
+              .[0].name == $name and
+              .[0].content_type == $content_type and
+              .[0].state == "uploaded" and
+              .[0].size == $size and
+              (.[0].id | type == "number" and . > 0) and
+              (.[0].url | type == "string" and startswith("https://api.github.com/"))
+            ' "$assets_json" > /dev/null || metadata_status=$?
+            case "$metadata_status" in
+              0) ;;
+              1) return 1 ;;
+              *) return 2 ;;
+            esac
+            asset_id=$(jq -r '.[0].id' "$assets_json") || return 2
+            asset_url="$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/releases/assets/$asset_id"
+            test "$(jq -r '.[0].url' "$assets_json")" = "$asset_url" || return 2
+            status=$(curl --silent --show-error --location --retry 3 --retry-all-errors \
+              --connect-timeout 10 --max-time 30 \
+              -H "Accept: application/octet-stream" \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              -o "$downloaded" -w '%{http_code}' "$asset_url") || return 2
+            test "$status" = 200 || return 2
+            verify_local_manifest || return 2
+            cmp -s "$manifest" "$downloaded" && return 0
+            test "$?" = 1 && return 1
+            return 2
+          }
+
+          reconcile_public() {
+            lookup_release || return 1
+            test "$(jq -r .draft "$release_json")" = false || return 1
+            load_assets || return 1
+            exact_asset_matches
+          }
+
+          verify_tag_commit() {
+            local object_sha object_type status
+            status=$(curl --silent --show-error --location --retry 3 --retry-all-errors \
+              --connect-timeout 10 --max-time 30 \
+              -H "Accept: application/vnd.github+json" \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              -o "$mutation_json" -w '%{http_code}' \
+              "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/git/ref/tags/$TAG") || return 1
+            test "$status" = 200 || return 1
+            jq -e --arg ref "refs/tags/$TAG" '
+              .ref == $ref and
+              (.object.type == "tag" or .object.type == "commit") and
+              (.object.sha | type == "string" and test("^[0-9a-f]{40}$"))
+            ' "$mutation_json" > /dev/null || return 1
+            object_type=$(jq -r '.object.type' "$mutation_json") || return 1
+            object_sha=$(jq -r '.object.sha' "$mutation_json") || return 1
+            for depth in 1 2 3 4; do
+              case "$object_type" in
+                commit)
+                  test "$object_sha" = "$SOURCE_COMMIT" || return 1
+                  return 0
+                  ;;
+                tag)
+                  status=$(curl --silent --show-error --location --retry 3 --retry-all-errors \
+                    --connect-timeout 10 --max-time 30 \
+                    -H "Accept: application/vnd.github+json" \
+                    -H "Authorization: Bearer $GH_TOKEN" \
+                    -H "X-GitHub-Api-Version: 2022-11-28" \
+                    -o "$mutation_json" -w '%{http_code}' \
+                    "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/git/tags/$object_sha") || return 1
+                  test "$status" = 200 || return 1
+                  jq -e --arg sha "$object_sha" '
+                    .sha == $sha and
+                    (.object.type == "tag" or .object.type == "commit") and
+                    (.object.sha | type == "string" and test("^[0-9a-f]{40}$"))
+                  ' "$mutation_json" > /dev/null || return 1
+                  object_type=$(jq -r '.object.type' "$mutation_json") || return 1
+                  object_sha=$(jq -r '.object.sha' "$mutation_json") || return 1
+                  ;;
+                *) return 1 ;;
+              esac
+            done
+            return 1
+          }
+
+          ensure_draft_asset() {
+            local asset_id delete_status exact_status release_id status upload_url
+            load_assets || return 1
+            exact_status=0
+            exact_asset_matches || exact_status=$?
+            case "$exact_status" in
+              0) return 0 ;;
+              1) ;;
+              *) return 1 ;;
+            esac
+            for asset_id in $(jq -r '.[].id' "$assets_json"); do
+              lookup_release || return 1
+              test "$(jq -r .draft "$release_json")" = true || return 1
+              for attempt in 1 2 3 4; do
+                delete_status=$(curl --silent --show-error --connect-timeout 10 --max-time 30 \
+                  -X DELETE \
+                  -H "Accept: application/vnd.github+json" \
+                  -H "Authorization: Bearer $GH_TOKEN" \
+                  -H "X-GitHub-Api-Version: 2022-11-28" \
+                  -o "$mutation_json" -w '%{http_code}' \
+                  "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/releases/assets/$asset_id") || delete_status=000
+                lookup_release || return 1
+                if test "$(jq -r .draft "$release_json")" = false; then
+                  reconcile_public || return 1
+                  return
+                fi
+                load_assets || return 1
+                if ! jq -e --argjson id "$asset_id" 'any(.[]; .id == $id)' "$assets_json" > /dev/null; then
+                  break
+                fi
+                test "$attempt" != 4 || return 1
+                sleep "$attempt"
+              done
+            done
+            load_assets || return 1
+            test "$(jq length "$assets_json")" = 0 || return 1
+            release_id=$(jq -r .id "$release_json")
+            upload_url=$(jq -r '.upload_url | sub("\\{.*$"; "")' "$release_json")
+            test "$upload_url" = "https://uploads.github.com/repos/${GITHUB_REPOSITORY}/releases/${release_id}/assets" || return 1
+            status=$(curl --silent --show-error --connect-timeout 10 --max-time 30 \
+              -X POST \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H "Content-Type: $CONTENT_TYPE" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              --data-binary @"$manifest" \
+              -o "$mutation_json" -w '%{http_code}' \
+              "${upload_url}?name=${asset_name}") || status=000
+            for attempt in 1 2 3 4; do
+              lookup_release || return 1
+              if test "$(jq -r .draft "$release_json")" = false; then
+                reconcile_public || return 1
+                return
+              fi
+              load_assets || return 1
+              if exact_asset_matches; then
+                return
+              fi
+              test "$attempt" != 4 || return 1
+              sleep "$attempt"
+            done
+            echo "draft asset upload did not reconcile (HTTP $status)" >&2
+            return 1
+          }
+
+          create_draft() {
+            jq -n --arg tag "$TAG" --arg source "$SOURCE_COMMIT" --arg body "$marker" '{
+              tag_name: $tag,
+              target_commitish: $source,
+              draft: true,
+              prerelease: false,
+              generate_release_notes: true,
+              body: $body
+            }' > "$mutation_json" || return 1
+            curl --silent --show-error --connect-timeout 10 --max-time 30 \
+              -X POST \
+              -H "Accept: application/vnd.github+json" \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H "Content-Type: application/json" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              --data-binary @"$mutation_json" \
+              -o /dev/null \
+              "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/releases" || true
+          }
+
+          verify_tag_commit
+          for attempt in 1 2 3 4; do
+            lookup_status=0
+            lookup_release || lookup_status=$?
+            if test "$lookup_status" = 1; then
+              create_draft
+              sleep "$attempt"
+              continue
+            fi
+            test "$lookup_status" = 0
+            if test "$(jq -r .draft "$release_json")" = false; then
+              reconcile_public
+              exit 0
+            fi
+            ensure_draft_asset
+            lookup_release
+            if test "$(jq -r .draft "$release_json")" = false; then
+              reconcile_public
+              exit 0
+            fi
+            release_id=$(jq -r .id "$release_json")
+            jq -n '{draft: false, make_latest: "true"}' > "$mutation_json"
+            curl --silent --show-error --connect-timeout 10 --max-time 30 \
+              -X PATCH \
+              -H "Accept: application/vnd.github+json" \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H "Content-Type: application/json" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              --data-binary @"$mutation_json" \
+              -o /dev/null \
+              "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/releases/$release_id" || true
+            sleep "$attempt"
+            if reconcile_public; then
+              exit 0
+            fi
+          done
+          echo "release publication did not converge" >&2
+          exit 1
 
   verify-release:
     name: Verify Recovered Public Completion

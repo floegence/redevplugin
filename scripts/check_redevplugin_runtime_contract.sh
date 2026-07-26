@@ -115,6 +115,7 @@ npm run openapi-contract:test
 npm run platform-package-contract:test
 npm run platform-package-build:test
 npm run platform-package-publication:test
+npm run release-workflow-security:test
 
 echo "==> Go and Rust runtime contract tests"
 go test -count=1 ./pkg/contracts ./pkg/protocol ./internal/runtimeclient ./pkg/version
@@ -133,8 +134,14 @@ if grep -Eni 'macos|darwin|cosign|sha256sums|runtime-target|runtime archive|runt
   exit 1
 fi
 
-if [[ $(grep -Ec 'gh release create' "$release_workflow") -ne 1 ]]; then
-  echo "release workflow must contain exactly one GitHub Release creation step" >&2
+if grep -Eq 'gh release create|assert_github_release_absent' "$release_workflow"; then
+  echo "release workflow retains a non-reconcilable GitHub Release path" >&2
+  exit 1
+fi
+if [[ $(grep -Ec 'redevplugin-release-transaction-v1 source_commit=' "$release_workflow") -ne 2 ]] ||
+   [[ $(grep -Ec 'generate_release_notes: true' "$release_workflow") -ne 1 ]] ||
+   [[ $(grep -Ec '\{draft: false, make_latest: "true"\}' "$release_workflow") -ne 1 ]]; then
+  echo "release workflow must contain one admission marker and one bound draft-to-public transaction" >&2
   exit 1
 fi
 if [[ $(grep -Ec 'dist/publication/platform-package-publication-v1\.json' "$release_workflow") -lt 1 ]]; then
