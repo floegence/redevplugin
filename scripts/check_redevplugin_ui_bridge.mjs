@@ -247,9 +247,10 @@ function validateRendererPerformanceProtocolBinding(source) {
       !ts.isObjectLiteralExpression(hostCalls[0].arguments[0])) {
     throw rendererPerformanceProtocolBindingError();
   }
-  const bootstrap = exactObjectProperty(hostCalls[0].arguments[0], "bootstrap");
+  const hostOptions = closedObjectProperties(hostCalls[0].arguments[0]);
+  const bootstrap = hostOptions.get("bootstrap");
   if (!bootstrap || !ts.isObjectLiteralExpression(bootstrap.initializer)) throw rendererPerformanceProtocolBindingError();
-  const protocol = exactObjectProperty(bootstrap.initializer, "uiProtocolVersion");
+  const protocol = closedObjectProperties(bootstrap.initializer).get("uiProtocolVersion");
   if (!protocol || !ts.isIdentifier(protocol.initializer) || protocol.initializer.text !== "pluginUIProtocolVersion") {
     throw rendererPerformanceProtocolBindingError();
   }
@@ -300,12 +301,17 @@ function typeCheckerFor(sourceFile) {
   return ts.createProgram([sourceFile.fileName], compilerOptions, host).getTypeChecker();
 }
 
-function exactObjectProperty(object, name) {
-  const matches = object.properties.filter((property) =>
-    ts.isPropertyAssignment(property) &&
-    ((ts.isIdentifier(property.name) || ts.isStringLiteral(property.name)) && property.name.text === name),
-  );
-  return matches.length === 1 ? matches[0] : undefined;
+function closedObjectProperties(object) {
+  const properties = new Map();
+  for (const property of object.properties) {
+    if (!ts.isPropertyAssignment(property) ||
+        (!ts.isIdentifier(property.name) && !ts.isStringLiteral(property.name)) ||
+        properties.has(property.name.text)) {
+      throw rendererPerformanceProtocolBindingError();
+    }
+    properties.set(property.name.text, property);
+  }
+  return properties;
 }
 
 function walkTypeScript(node, visit) {

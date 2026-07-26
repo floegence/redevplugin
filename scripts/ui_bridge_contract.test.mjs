@@ -192,4 +192,24 @@ test("renderer performance harness must use the generated active UI protocol", (
       "});\n})();\ndocument.querySelector(\"#surface-root\").append(host.element);",
     );
   assert.throws(() => validateUIBridgeInputs(shadowedHostFactory), /not structurally bound to the generated active UI protocol/);
+
+  for (const override of [
+    'uiProtocolVersion: pluginUIProtocolVersion,\n    ...{ uiProtocolVersion: "plugin-ui-v5" },',
+    'uiProtocolVersion: pluginUIProtocolVersion,\n    ["uiProtocolVersion"]: "plugin-ui-v5",',
+    'uiProtocolVersion: pluginUIProtocolVersion,\n    get uiProtocolVersion() { return "plugin-ui-v5"; },',
+  ]) {
+    const bootstrapOverride = structuredClone(baseline);
+    bootstrapOverride.rendererPerformance = bootstrapOverride.rendererPerformance.replace(
+      "uiProtocolVersion: pluginUIProtocolVersion,",
+      override,
+    );
+    assert.throws(() => validateUIBridgeInputs(bootstrapOverride), /not structurally bound to the generated active UI protocol/);
+  }
+
+  const hostOptionsOverride = structuredClone(baseline);
+  hostOptionsOverride.rendererPerformance = hostOptionsOverride.rendererPerformance.replace(
+    '  onError: (error) => { globalThis.__redevpluginError = error.message; },\n});',
+    '  onError: (error) => { globalThis.__redevpluginError = error.message; },\n  ...{ bootstrap: {} },\n});',
+  );
+  assert.throws(() => validateUIBridgeInputs(hostOptionsOverride), /not structurally bound to the generated active UI protocol/);
 });
