@@ -10,7 +10,7 @@ import (
 
 func TestCompatibilityManifestSchemaDefinesReleasedMatrix(t *testing.T) {
 	root := repoRoot(t)
-	raw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", "compatibility-manifest-v10.schema.json"))
+	raw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", "compatibility-manifest-v11.schema.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -21,20 +21,20 @@ func TestCompatibilityManifestSchemaDefinesReleasedMatrix(t *testing.T) {
 
 	properties := requireNestedObject(t, schema, "properties")
 	schemaVersion := requireNestedObject(t, properties, "schema_version")
-	if got := schemaVersion["const"]; got != "redevplugin.compatibility.v10" {
+	if got := schemaVersion["const"]; got != "redevplugin.compatibility.v11" {
 		t.Fatalf("schema_version const = %#v", got)
 	}
 
 	matrix := requireNestedObject(t, properties, "matrix")
 	matrixProps := requireNestedObject(t, matrix, "properties")
 	expectedMatrix := map[string]string{
-		"plugin_ui_protocol_version":                   "plugin-ui-v5",
-		"plugin_host_protocol_version":                 "plugin-host-v7",
+		"plugin_ui_protocol_version":                   "plugin-ui-v6",
+		"plugin_host_protocol_version":                 "plugin-host-v8",
 		"rust_ipc_version":                             "rust-ipc-v6",
 		"wasm_abi_version":                             "redevplugin-wasm-worker-v2",
-		"manifest_schema_version":                      "manifest-v5",
+		"manifest_schema_version":                      "manifest-v6",
 		"package_signature_schema_version":             "package-signature-v1",
-		"release_metadata_schema_version":              "release-metadata-v5",
+		"release_metadata_schema_version":              "release-metadata-v6",
 		"release_root_delegation_schema_version":       "release-root-delegation-v1",
 		"release_source_policy_schema_version":         "release-source-policy-v2",
 		"release_source_policy_pointer_schema_version": "release-source-policy-pointer-v1",
@@ -42,18 +42,18 @@ func TestCompatibilityManifestSchemaDefinesReleasedMatrix(t *testing.T) {
 		"release_revocation_pointer_schema_version":    "release-revocation-pointer-v1",
 		"release_trust_state_schema_version":           "release-trust-state-v1",
 		"token_ticket_schema_version":                  "token-ticket-v4",
-		"bridge_schema_version":                        "bridge-v5",
+		"bridge_schema_version":                        "bridge-v6",
 		"opaque_surface_document_schema_version":       "opaque-surface-document-v3",
-		"opaque_surface_transport_schema_version":      "opaque-surface-transport-v4",
+		"opaque_surface_transport_schema_version":      "opaque-surface-transport-v5",
 		"target_classifier_version":                    "target-classifier-v2",
 		"network_grant_schema_version":                 "network-grant-v2",
 		"resource_scope_schema_version":                "resource-scope-v1",
 		"session_scope_schema_version":                 "session-scope-v1",
 		"session_scope_maintenance_schema_version":     "session-scope-maintenance-v1",
-		"plugin_platform_openapi_version":              "plugin-platform-v8",
-		"compatibility_schema_version":                 "compatibility-manifest-v10",
+		"plugin_platform_openapi_version":              "plugin-platform-v9",
+		"compatibility_schema_version":                 "compatibility-manifest-v11",
 		"worker_invocation_schema_version":             "worker-invocation-v3",
-		"error_codes_schema_version":                   "error-codes-v6",
+		"error_codes_schema_version":                   "error-codes-v7",
 		"performance_contract_version":                 "performance-contract-v4",
 		"performance_evidence_schema_version":          "performance-evidence-v4",
 		"contract_registry_version":                    "contract-registry-v2",
@@ -78,6 +78,14 @@ func TestCompatibilityManifestSchemaDefinesReleasedMatrix(t *testing.T) {
 	for name := range expectedMatrix {
 		if !required[name] {
 			t.Fatalf("matrix required fields missing %s", name)
+		}
+	}
+	for _, name := range []string{"supported_plugin_ui_protocol_versions", "plugin_ui_transport_mappings"} {
+		if !required[name] {
+			t.Fatalf("matrix required fields missing %s", name)
+		}
+		if requireNestedObject(t, matrixProps, name)["const"] == nil {
+			t.Fatalf("matrix structured field %s must be a const", name)
 		}
 	}
 
@@ -143,7 +151,7 @@ func TestContractRegistryPublishesOnlyCurrentPlatformContracts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(errorCodeSchemas) != 1 || filepath.Base(errorCodeSchemas[0]) != "error-codes-v6.schema.json" {
-		t.Fatalf("stable error-code schemas = %#v, want only error-codes-v6.schema.json", errorCodeSchemas)
+	if len(errorCodeSchemas) != 2 || filepath.Base(errorCodeSchemas[0]) != "error-codes-v6.schema.json" || filepath.Base(errorCodeSchemas[1]) != "error-codes-v7.schema.json" {
+		t.Fatalf("stable error-code schemas = %#v, want retained v6 plus current v7", errorCodeSchemas)
 	}
 }

@@ -9,10 +9,17 @@
   Exact terminal evidence gates finalization, fence deletion is the durable
   commit point, startup reconciles the closed state matrix fail closed, and
   legacy lifecycle adapters preserve their existing completed-fence behavior.
-- Publish the host-only `session-scope-maintenance-v1` state matrix and advance
-  the coordinated Host and compatibility contracts to `plugin-host-v7` and
-  `compatibility-manifest-v10` without adding an HTTP, npm, or Rust IPC
-  maintenance surface.
+- Publish the host-only `session-scope-maintenance-v1` state matrix as part of
+  the coordinated `plugin-host-v8` and `compatibility-manifest-v11` contract
+  set without adding an HTTP, npm, or Rust IPC maintenance surface.
+- Add sandbox-safe operation observation for `plugin-ui-v6`, including a
+  source/port-bound bridge request, a closed status union, per-operation and
+  per-surface rate limits, and typed `snapshot()` / `wait()` SDK helpers that
+  never cancel remote work when local observation is aborted or times out.
+- Publish the coordinated `plugin-host-v8`, `plugin-ui-v6`, `bridge-v6`,
+  opaque-surface-transport-v5, OpenAPI v9, manifest/release-metadata v6,
+  compatibility-manifest-v11, and error-codes-v7 contracts while retaining the
+  exact v5 UI transport mapping for installed v5 plugins.
 
 ## v0.6.17
 

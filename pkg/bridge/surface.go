@@ -69,6 +69,7 @@ type OpenSurfaceRequest struct {
 	PluginID             string          `json:"plugin_id"`
 	PluginInstanceID     string          `json:"plugin_instance_id"`
 	PluginVersion        string          `json:"plugin_version"`
+	UIProtocolVersion    string          `json:"ui_protocol_version"`
 	SurfaceID            string          `json:"surface_id"`
 	SurfaceInstanceID    string          `json:"surface_instance_id"`
 	ActiveFingerprint    string          `json:"active_fingerprint"`
@@ -88,6 +89,7 @@ type SurfaceBootstrap struct {
 	PluginID             string    `json:"plugin_id"`
 	PluginInstanceID     string    `json:"plugin_instance_id"`
 	PluginVersion        string    `json:"plugin_version"`
+	UIProtocolVersion    string    `json:"ui_protocol_version"`
 	SurfaceID            string    `json:"surface_id"`
 	SurfaceInstanceID    string    `json:"surface_instance_id"`
 	ActiveFingerprint    string    `json:"active_fingerprint"`
@@ -281,6 +283,23 @@ type ValidateSurfaceGatewayTokenRequest struct {
 	BridgeChannelID      string          `json:"bridge_channel_id"`
 	Revision             RevisionBinding `json:"revision"`
 	Now                  time.Time       `json:"-"`
+}
+
+type InspectBoundSurfaceRequest struct {
+	SurfaceInstanceID    string    `json:"surface_instance_id"`
+	BridgeChannelID      string    `json:"bridge_channel_id"`
+	OwnerSessionHash     string    `json:"-"`
+	OwnerUserHash        string    `json:"-"`
+	OwnerEnvHash         string    `json:"-"`
+	SessionChannelIDHash string    `json:"-"`
+	Now                  time.Time `json:"-"`
+}
+
+type BoundSurfaceSession struct {
+	PluginInstanceID  string `json:"plugin_instance_id"`
+	PluginVersion     string `json:"plugin_version"`
+	ActiveFingerprint string `json:"active_fingerprint"`
+	UIProtocolVersion string `json:"ui_protocol_version"`
 }
 
 type MintRuntimeExecutionLeaseRequest struct {
@@ -513,6 +532,7 @@ func (s *SurfaceTokenService) OpenSurface(req OpenSurfaceRequest) (SurfaceBootst
 	if strings.TrimSpace(req.PluginID) == "" ||
 		strings.TrimSpace(req.PluginInstanceID) == "" ||
 		strings.TrimSpace(req.PluginVersion) == "" ||
+		!version.SupportsPluginUIProtocol(req.UIProtocolVersion) ||
 		strings.TrimSpace(req.SurfaceID) == "" ||
 		strings.TrimSpace(req.SurfaceInstanceID) == "" ||
 		strings.TrimSpace(req.ActiveFingerprint) == "" ||
@@ -542,6 +562,7 @@ func (s *SurfaceTokenService) OpenSurface(req OpenSurfaceRequest) (SurfaceBootst
 		PluginID:             req.PluginID,
 		PluginInstanceID:     req.PluginInstanceID,
 		PluginVersion:        req.PluginVersion,
+		UIProtocolVersion:    req.UIProtocolVersion,
 		SurfaceID:            req.SurfaceID,
 		SurfaceInstanceID:    req.SurfaceInstanceID,
 		ActiveFingerprint:    req.ActiveFingerprint,
@@ -597,6 +618,7 @@ func (s *SurfaceTokenService) OpenSurface(req OpenSurfaceRequest) (SurfaceBootst
 		PluginID:             req.PluginID,
 		PluginInstanceID:     req.PluginInstanceID,
 		PluginVersion:        req.PluginVersion,
+		UIProtocolVersion:    req.UIProtocolVersion,
 		SurfaceID:            req.SurfaceID,
 		SurfaceInstanceID:    req.SurfaceInstanceID,
 		ActiveFingerprint:    req.ActiveFingerprint,
@@ -1067,6 +1089,33 @@ func (s *SurfaceTokenService) ValidateSurfaceGatewayToken(req ValidateSurfaceGat
 		return TokenRecord{}, ErrTokenAudience
 	}
 	return s.ValidateGatewayToken(req.GatewayToken, state.session.audience(req.BridgeChannelID), req.Revision, now)
+}
+
+func (s *SurfaceTokenService) InspectBoundSurface(req InspectBoundSurfaceRequest) (BoundSurfaceSession, error) {
+	if s == nil {
+		return BoundSurfaceSession{}, errors.New("surface token service is nil")
+	}
+	if strings.TrimSpace(req.SurfaceInstanceID) == "" || strings.TrimSpace(req.BridgeChannelID) == "" ||
+		strings.TrimSpace(req.OwnerSessionHash) == "" || strings.TrimSpace(req.OwnerUserHash) == "" ||
+		strings.TrimSpace(req.OwnerEnvHash) == "" || strings.TrimSpace(req.SessionChannelIDHash) == "" {
+		return BoundSurfaceSession{}, ErrMissingTokenAudience
+	}
+	now := req.Now
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	state, err := s.getState(req.SurfaceInstanceID, now)
+	if err != nil {
+		return BoundSurfaceSession{}, err
+	}
+	if !state.session.matchesScope(req.OwnerSessionHash, req.OwnerUserHash, req.OwnerEnvHash, req.SessionChannelIDHash) ||
+		!state.surfacePrepared || state.liveBridgeChannelID != req.BridgeChannelID || state.liveGatewayTokenID == "" {
+		return BoundSurfaceSession{}, ErrTokenAudience
+	}
+	return BoundSurfaceSession{
+		PluginInstanceID: state.session.PluginInstanceID, PluginVersion: state.session.PluginVersion,
+		ActiveFingerprint: state.session.ActiveFingerprint, UIProtocolVersion: state.session.UIProtocolVersion,
+	}, nil
 }
 
 func (s *SurfaceTokenService) MintConfirmationToken(req MintConfirmationTokenRequest) (ConfirmationTokenResult, error) {
@@ -1991,7 +2040,7 @@ func (s SurfaceSession) validateHandshake(handshake Handshake) error {
 		handshake.AssetSessionNonce != s.AssetSessionNonce ||
 		handshake.ManagementRevision != s.ManagementRevision ||
 		handshake.RevokeEpoch != s.RevokeEpoch ||
-		handshake.UIProtocolVersion != version.PluginUIProtocolVersion {
+		handshake.UIProtocolVersion != s.UIProtocolVersion {
 		return ErrHandshakeMismatch
 	}
 	return nil

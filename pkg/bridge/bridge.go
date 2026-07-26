@@ -61,6 +61,7 @@ type SurfaceSession struct {
 	PluginID             string    `json:"plugin_id"`
 	PluginInstanceID     string    `json:"plugin_instance_id"`
 	PluginVersion        string    `json:"plugin_version"`
+	UIProtocolVersion    string    `json:"ui_protocol_version"`
 	SurfaceInstanceID    string    `json:"surface_instance_id"`
 	SurfaceID            string    `json:"surface_id"`
 	ActiveFingerprint    string    `json:"active_fingerprint"`

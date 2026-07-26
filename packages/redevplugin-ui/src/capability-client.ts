@@ -8,6 +8,7 @@ import type {
   PluginStreamEvent as PluginRawStreamEvent,
   PluginStreamReadResult as PluginRawStreamReadResult,
   PluginStreamTerminalStatus,
+  PluginOperationSnapshot,
 } from "./surface.js";
 
 export type PluginCapabilitySchema = Readonly<Record<string, unknown>>;
@@ -40,7 +41,25 @@ export type PluginCapabilityBusinessErrorSpec = {
   schema: PluginCapabilitySchema | null;
 };
 
-export type PluginOperation<T, Cancelable extends boolean = true> = {
+export type PluginOperationWaitOptions = {
+  signal?: AbortSignal;
+  timeoutMs?: number;
+  pollIntervalMs?: number;
+};
+
+export type PluginOperationTerminalStatus = {
+  [Status in Extract<PluginOperationSnapshot["status"], "completed" | "failed" | "canceled" | "orphaned_after_disable" | "orphaned_after_uninstall">]: {
+    status: Status;
+    snapshot: Extract<PluginOperationSnapshot, { status: Status }>;
+  }
+}[Extract<PluginOperationSnapshot["status"], "completed" | "failed" | "canceled" | "orphaned_after_disable" | "orphaned_after_uninstall">];
+
+type PluginOperationObservation = {
+  snapshot(options?: PluginBridgeRequestOptions): Promise<PluginOperationSnapshot>;
+  wait(options?: PluginOperationWaitOptions): Promise<PluginOperationTerminalStatus>;
+};
+
+export type PluginOperation<T, Cancelable extends boolean = true> = PluginOperationObservation & {
   data: T;
   operation_id: string;
 } & (Cancelable extends true ? {
@@ -55,7 +74,7 @@ export type PluginCapabilityStreamReadResult<Event> =
   | { events: PluginCapabilityStreamEvent<Event>[]; done: false; retry_after_ms: number }
   | { events: PluginCapabilityStreamEvent<Event>[]; done: true; terminal_status: PluginStreamTerminalStatus; retry_after_ms: 0 };
 
-export type PluginStream<Initial, Event> = {
+export type PluginStream<Initial, Event> = PluginOperationObservation & {
   data: Initial;
   operation_id: string;
   stream_handle: string;
@@ -96,9 +115,11 @@ export async function callCapabilityOperation<Request extends object, Response, 
     if (contract.cancelable) await cancelAfterResponseMismatch(bridge, result.operation_id, error);
     throw error;
   }
+  const observation = operationObservation(bridge, result.operation_id);
   return Object.freeze({
     data: data!,
     operation_id: result.operation_id,
+    ...observation,
     ...(contract.cancelable ? {
       cancel: (reason?: string, cancelOptions?: PluginBridgeRequestOptions) =>
         bridge.cancelOperation(result.operation_id, reason, cancelOptions),
@@ -147,10 +168,12 @@ export async function callCapabilityStream<Request extends object, Response, Eve
     await bridge.cancelOperation(result.operation_id, reason, cancelOptions);
     settled = true;
   };
+  const observation = operationObservation(bridge, result.operation_id);
   return Object.freeze({
     data: data!,
     operation_id: result.operation_id,
     stream_handle: result.stream_handle,
+    ...observation,
     read,
     cancel,
     async *[Symbol.asyncIterator](): AsyncIterableIterator<PluginCapabilityStreamEvent<Event>> {
@@ -170,6 +193,110 @@ export async function callCapabilityStream<Request extends object, Response, Eve
         if (!settled) await cancel("stream_iterator_closed");
       }
     },
+  });
+}
+
+function operationObservation(bridge: PluginBridgeClient, operationID: string): PluginOperationObservation {
+  const snapshot = (options: PluginBridgeRequestOptions = {}) => bridge.operationSnapshot(operationID, options);
+  const wait = async (options: PluginOperationWaitOptions = {}): Promise<PluginOperationTerminalStatus> => {
+    const timeoutMs = options.timeoutMs ?? 120_000;
+    if (!Number.isFinite(timeoutMs) || timeoutMs < 1_000 || timeoutMs > 600_000) {
+      throw new PluginBridgeError("PLUGIN_INVALID_REQUEST", "Plugin operation wait timeout must be between 1 second and 10 minutes");
+    }
+    if (options.signal?.aborted) throw operationWaitAborted();
+    let pollIntervalMs = options.pollIntervalMs ?? 1_000;
+    if (!Number.isFinite(pollIntervalMs)) {
+      throw new PluginBridgeError("PLUGIN_INVALID_REQUEST", "Plugin operation poll interval is invalid");
+    }
+    pollIntervalMs = Math.max(500, Math.min(10_000, pollIntervalMs));
+    const deadline = Date.now() + timeoutMs;
+    while (true) {
+      let current: PluginOperationSnapshot;
+      try {
+        current = await operationSnapshotUntilDeadline(snapshot, deadline, options.signal);
+      } catch (error) {
+        if (options.signal?.aborted) throw operationWaitAborted();
+        if (!(error instanceof PluginBridgeError) || error.errorCode !== "PLUGIN_OPERATION_RATE_LIMITED") throw error;
+        const retryAfterMS = operationRetryAfterMS(error.details);
+        await operationWaitDelay(Math.max(pollIntervalMs, retryAfterMS), deadline, options.signal);
+        pollIntervalMs = Math.min(10_000, Math.ceil(pollIntervalMs * 1.5));
+        continue;
+      }
+      switch (current.status) {
+      case "completed":
+      case "failed":
+      case "canceled":
+      case "orphaned_after_disable":
+      case "orphaned_after_uninstall":
+        return { status: current.status, snapshot: current } as PluginOperationTerminalStatus;
+      default:
+        await operationWaitDelay(Math.max(pollIntervalMs, current.retry_after_ms), deadline, options.signal);
+        pollIntervalMs = Math.min(10_000, Math.ceil(pollIntervalMs * 1.5));
+      }
+    }
+  };
+  return { snapshot, wait };
+}
+
+async function operationSnapshotUntilDeadline(
+  snapshot: (options?: PluginBridgeRequestOptions) => Promise<PluginOperationSnapshot>,
+  deadline: number,
+  signal?: AbortSignal,
+): Promise<PluginOperationSnapshot> {
+  const remaining = deadline - Date.now();
+  if (remaining <= 0) throw new PluginBridgeError("PLUGIN_BRIDGE_TIMEOUT", "Plugin operation observation timed out");
+  const controller = new AbortController();
+  let timedOut = false;
+  const onAbort = () => controller.abort();
+  signal?.addEventListener("abort", onAbort, { once: true });
+  if (signal?.aborted) onAbort();
+  const timer = setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, remaining);
+  try {
+    return await snapshot({ signal: controller.signal });
+  } catch (error) {
+    if (signal?.aborted) throw operationWaitAborted();
+    if (timedOut) throw new PluginBridgeError("PLUGIN_BRIDGE_TIMEOUT", "Plugin operation observation timed out");
+    throw error;
+  } finally {
+    clearTimeout(timer);
+    signal?.removeEventListener("abort", onAbort);
+  }
+}
+
+function operationRetryAfterMS(details: unknown): number {
+  if (details && typeof details === "object" && !Array.isArray(details)) {
+    const retryAfterMS = (details as Record<string, unknown>).retry_after_ms;
+    if (Number.isInteger(retryAfterMS) && Number(retryAfterMS) >= 500 && Number(retryAfterMS) <= 10_000) return Number(retryAfterMS);
+  }
+  return 500;
+}
+
+function operationWaitAborted(): PluginBridgeError {
+  return new PluginBridgeError("PLUGIN_BRIDGE_CANCELLED", "Plugin operation observation was cancelled");
+}
+
+function operationWaitDelay(delayMs: number, deadline: number, signal?: AbortSignal): Promise<void> {
+  const remaining = deadline - Date.now();
+  if (remaining <= 0) return Promise.reject(new PluginBridgeError("PLUGIN_BRIDGE_TIMEOUT", "Plugin operation observation timed out"));
+  const duration = Math.min(delayMs, remaining);
+  return new Promise<void>((resolve, reject) => {
+    let settled = false;
+    const finish = (error?: PluginBridgeError) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
+      if (error) reject(error);
+      else if (Date.now() >= deadline) reject(new PluginBridgeError("PLUGIN_BRIDGE_TIMEOUT", "Plugin operation observation timed out"));
+      else resolve();
+    };
+    const timer = setTimeout(() => finish(), duration);
+    const onAbort = () => finish(operationWaitAborted());
+    signal?.addEventListener("abort", onAbort, { once: true });
+    if (signal?.aborted) onAbort();
   });
 }
 

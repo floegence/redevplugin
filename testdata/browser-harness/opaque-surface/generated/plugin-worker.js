@@ -45,6 +45,7 @@
     "PLUGIN_OPERATION_BLOCKED",
     "PLUGIN_OPERATION_NOT_FOUND",
     "PLUGIN_OPERATION_NOT_CANCELABLE",
+    "PLUGIN_OPERATION_RATE_LIMITED",
     "PLUGIN_NETWORK_TARGET_DENIED",
     "PLUGIN_NETWORK_RATE_LIMITED",
     "PLUGIN_RUNTIME_UNAVAILABLE",
@@ -848,6 +849,23 @@
         reason
       }), { mutation: true, signal: options.signal });
     }
+    operationSnapshot(operationID, options = {}) {
+      this.#assertActive();
+      if (!validOpaqueHandle(operationID, "operation")) {
+        throw new PluginBridgeError("PLUGIN_INVALID_REQUEST", "Plugin operation handle is invalid");
+      }
+      const id = this.#requestID("operation");
+      return this.#request(id, {
+        type: "redevplugin.bridge.operation.snapshot",
+        id,
+        operation_id: operationID
+      }, { signal: options.signal }).then((snapshot) => {
+        if (!isPluginOperationSnapshot(snapshot) || snapshot.operation_id !== operationID) {
+          throw new PluginBridgeError("PLUGIN_CONTRACT_MISMATCH", "Plugin operation snapshot is invalid");
+        }
+        return snapshot;
+      });
+    }
     render(tree) {
       this.#assertActive();
       let validated;
@@ -1223,6 +1241,18 @@
     "usb 'none'",
     "xr-spatial-tracking 'none'"
   ].join("; ");
+  function isPluginOperationSnapshot(value) {
+    if (!isRecord(value) || !validOpaqueHandle(value.operation_id, "operation") || typeof value.cancelable !== "boolean" || !Number.isInteger(value.retry_after_ms) || Number(value.retry_after_ms) < 500 || Number(value.retry_after_ms) > 1e4 || !validDateTime(value.created_at) || !validDateTime(value.updated_at)) return false;
+    const common = ["operation_id", "status", "cancelable", "created_at", "updated_at", "retry_after_ms"];
+    if (value.status === "running" || value.status === "cancel_requested") return hasExactKeys(value, common);
+    if (["completed", "canceled", "orphaned_after_disable", "orphaned_after_uninstall"].includes(String(value.status))) {
+      return hasExactKeys(value, [...common, "terminal_at"]) && validDateTime(value.terminal_at);
+    }
+    return value.status === "failed" && hasExactKeys(value, [...common, "terminal_at", "failure_code"]) && validDateTime(value.terminal_at) && ["adapter_failed", "contract_invalid", "platform_failed", "quota_exceeded", "runtime_failed"].includes(String(value.failure_code));
+  }
+  function validDateTime(value) {
+    return typeof value === "string" && value.length > 0 && Number.isFinite(Date.parse(value));
+  }
   function isBridgeResponseCandidate(value) {
     return isRecord(value) && value.type === "redevplugin.bridge.response" && typeof value.id === "string";
   }
@@ -1609,6 +1639,7 @@
   bridge.onAction("call-host", () => void callHost());
   bridge.onAction("read-stream", () => void readStream());
   bridge.onAction("dangerous-action", () => void runDangerousAction());
+  bridge.onAction("observe-operation", () => void observeOperation());
   bridge.onLifecycle((event) => {
     if (event.type === "visible" || event.type === "hidden") {
       state.status = `Lifecycle: ${event.type}`;
@@ -1657,6 +1688,25 @@
       method: "danger.run",
       response: await bridge.call("danger.run", { target: "harness-resource" })
     }));
+  }
+  async function observeOperation() {
+    await runAction("Testing operation observation cancellation...", "Operation observation recovered", async () => {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 50);
+      let firstErrorCode = "";
+      try {
+        await bridge.operationSnapshot("operation_harness_1", { signal: controller.signal });
+      } catch (error) {
+        firstErrorCode = error.errorCode ?? "";
+      } finally {
+        clearTimeout(timer);
+      }
+      if (firstErrorCode !== "PLUGIN_BRIDGE_CANCELLED") {
+        throw new Error(`first operation observation was not cancelled: ${firstErrorCode}`);
+      }
+      const snapshot = await bridge.operationSnapshot("operation_harness_1");
+      return { first_cancelled: true, retry_status: snapshot.status };
+    });
   }
   async function runAction(starting, complete, action) {
     if (state.busy) return;
@@ -1709,7 +1759,8 @@
           children: [
             button("Call host", "call-host"),
             button("Read stream", "read-stream"),
-            button("Dangerous action", "dangerous-action")
+            button("Dangerous action", "dangerous-action"),
+            button("Observe operation", "observe-operation")
           ]
         },
         { type: "element", key: "security-title", tag: "h2", children: [text("security-title-text", "Worker security probe")] },

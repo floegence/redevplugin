@@ -813,7 +813,7 @@ func newFullRefreshFixture(t *testing.T) fullRefreshFixture {
 	}
 
 	releaseMetadata := releasecontract.ReleaseMetadataV5{
-		SchemaVersion: releasecontract.ReleaseMetadataSchemaVersion, SourceID: "example_source",
+		SchemaVersion: releasecontract.ReleaseMetadataSchemaVersionV5, SourceID: "example_source",
 		ReleaseMetadataRef: "plugins/example.publisher/example.plugin/1.2.3/release.json",
 		PublisherID:        "example.publisher", PluginID: "example.plugin", Version: "1.2.3",
 		DistributionRef: releasecontract.ReleaseDistributionRef{Distribution: "registry_ref", ArtifactRef: "plugins/example.publisher/example.plugin/1.2.3/package.zip"},

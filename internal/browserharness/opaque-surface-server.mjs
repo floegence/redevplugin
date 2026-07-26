@@ -52,6 +52,7 @@ export function createBrowserHarnessServer(options = {}) {
     asset_completed_at: 0,
     dispose_completed_at: 0,
     stream_response_loss_recovered: false,
+    operation_snapshot_cancel_recovered: false,
   };
   let sequence = 0;
 
@@ -84,6 +85,7 @@ export function createBrowserHarnessServer(options = {}) {
           droppedStreamReadID: "",
           lastAcknowledgedStreamDeliveryID: "",
           confirmationID: `confirmation_${sequence}`,
+          operationSnapshotQueryCount: 0,
           disposed: false,
         };
         surfaces.set(surfaceID, surface);
@@ -94,10 +96,12 @@ export function createBrowserHarnessServer(options = {}) {
         diagnostics.asset_completed_at = 0;
         diagnostics.dispose_completed_at = 0;
         diagnostics.stream_response_loss_recovered = false;
+        diagnostics.operation_snapshot_cancel_recovered = false;
         writeEnvelope(response, {
           plugin_id: "dev.redevplugin.opaque-browser",
           plugin_instance_id: "plugin_browser_harness_1",
           plugin_version: "0.2.0",
+          ui_protocol_version: "plugin-ui-v6",
           surface_id: "dev.redevplugin.opaque-browser.view",
           surface_instance_id: surfaceID,
           active_fingerprint: digest(`active-${sequence}`),
@@ -267,6 +271,30 @@ export function createBrowserHarnessServer(options = {}) {
           writeEnvelope(response, { acknowledged: true });
           return;
         }
+        if (surfaceRoute.action === "operations/query" && request.method === "POST") {
+          if (typeof body.bridge_channel_id !== "string" || body.bridge_channel_id.length === 0 || body.operation_id !== "operation_harness_1") {
+            writeError(response, 404, "PLUGIN_OPERATION_NOT_FOUND", "operation was not found");
+            return;
+          }
+          surface.operationSnapshotQueryCount += 1;
+          if (surface.operationSnapshotQueryCount === 1) {
+            response.on("close", () => {
+              if (!response.writableEnded) diagnostics.operation_snapshot_cancel_recovered = true;
+            });
+            await delay(250);
+            if (response.destroyed) return;
+          }
+          writeEnvelope(response, {
+            operation_id: "operation_harness_1",
+            status: "completed",
+            cancelable: true,
+            created_at: "2026-07-26T00:00:00Z",
+            updated_at: "2026-07-26T00:00:01Z",
+            retry_after_ms: 500,
+            terminal_at: "2026-07-26T00:00:01Z",
+          });
+          return;
+        }
         if (surfaceRoute.action === "dispose" && request.method === "POST") {
           if (body.bridge_nonce !== surface.bridgeNonce) {
             writeError(response, 403, "PLUGIN_GATEWAY_TOKEN_INVALID", "surface generation is invalid");
@@ -368,7 +396,7 @@ export function createBrowserHarnessServer(options = {}) {
 }
 
 function matchSurfaceRoute(pathname) {
-  const match = pathname.match(/^\/_redevplugin\/api\/plugins\/surfaces\/([^/]+)\/(prepare|bridge-token|assets\/read|streams\/read|streams\/ack|dispose)$/);
+  const match = pathname.match(/^\/_redevplugin\/api\/plugins\/surfaces\/([^/]+)\/(prepare|bridge-token|assets\/read|streams\/read|streams\/ack|operations\/query|dispose)$/);
   return match ? { surfaceID: decodeURIComponent(match[1]), action: match[2] } : null;
 }
 

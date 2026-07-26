@@ -25,6 +25,31 @@ func TestDecodeValidManifest(t *testing.T) {
 	}
 }
 
+func TestValidateAcceptsOnlyReleasedManifestUIProtocolPairs(t *testing.T) {
+	tests := []struct {
+		name     string
+		schema   string
+		protocol string
+		wantErr  bool
+	}{
+		{name: "v5", schema: SchemaVersionV5, protocol: "plugin-ui-v5"},
+		{name: "v6", schema: SchemaVersionV6, protocol: "plugin-ui-v6"},
+		{name: "v5 schema with v6 protocol", schema: SchemaVersionV5, protocol: "plugin-ui-v6", wantErr: true},
+		{name: "v6 schema with v5 protocol", schema: SchemaVersionV6, protocol: "plugin-ui-v5", wantErr: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			candidate := validManifest()
+			candidate.SchemaVersion = tc.schema
+			candidate.Plugin.UIProtocolVersion = tc.protocol
+			err := Validate(candidate)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("Validate() error = %v, wantErr %v", err, tc.wantErr)
+			}
+		})
+	}
+}
+
 func TestDecodeRejectsUnknownField(t *testing.T) {
 	raw := strings.Replace(validManifestJSON(), `"intents": [`, `"native_backend": true, "intents": [`, 1)
 

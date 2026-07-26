@@ -44,6 +44,7 @@ const (
 	RouteActionReadSurfaceAsset           RouteAction = "surface.read_asset"
 	RouteActionReadSurfaceStream          RouteAction = "surface.read_stream"
 	RouteActionAcknowledgeSurfaceStream   RouteAction = "surface.acknowledge_stream"
+	RouteActionGetSurfaceOperation        RouteAction = "surface.get_operation"
 	RouteActionCancelSurfaceOperation     RouteAction = "surface.cancel_operation"
 	RouteActionRejectSurfaceConfirmation  RouteAction = "surface.reject_confirmation"
 	RouteActionDisposeSurface             RouteAction = "surface.dispose"
@@ -92,7 +93,7 @@ func (action RouteAction) Valid() bool {
 		RouteActionListFeatures, RouteActionGetCompatibility, RouteActionOpenSurface,
 		RouteActionRevokeSessionScope, RouteActionPrepareSurface, RouteActionMintBridgeToken,
 		RouteActionReadSurfaceAsset, RouteActionReadSurfaceStream, RouteActionAcknowledgeSurfaceStream,
-		RouteActionCancelSurfaceOperation, RouteActionRejectSurfaceConfirmation, RouteActionDisposeSurface,
+		RouteActionGetSurfaceOperation, RouteActionCancelSurfaceOperation, RouteActionRejectSurfaceConfirmation, RouteActionDisposeSurface,
 		RouteActionCallPluginMethod, RouteActionPrepareMethodConfirmation, RouteActionListIntents,
 		RouteActionInvokeIntent, RouteActionListOperations, RouteActionGetOperation,
 		RouteActionCancelOperation, RouteActionStartRuntime, RouteActionStopRuntime,

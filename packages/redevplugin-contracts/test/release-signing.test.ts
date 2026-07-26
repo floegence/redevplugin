@@ -28,6 +28,8 @@ import {
   decodeSourcePolicyPointer,
   packageSigningPreimage,
   releaseMetadataSigningPreimage,
+  releaseMetadataSchemaVersionV5,
+  releaseMetadataSchemaVersionV6,
   revocationPointerSigningPreimage,
   revocationSigningPreimage,
   rootDelegationSigningPreimage,
@@ -182,6 +184,26 @@ test("release signing builders and strict decoders preserve canonical documents"
       assert.throws(() => decode(invalid), InvalidReleaseDocumentError);
     }
   }
+});
+
+test("release metadata requires exact schema and UI protocol pairs", () => {
+  const metadata = fixture.documents.release_metadata;
+  buildReleaseMetadata(metadata);
+  buildReleaseMetadata({
+    ...metadata,
+    schema_version: releaseMetadataSchemaVersionV6,
+    compatibility: { ...metadata.compatibility, ui_protocol_version: "plugin-ui-v6" },
+  });
+  assert.throws(() => buildReleaseMetadata({
+    ...metadata,
+    schema_version: releaseMetadataSchemaVersionV5,
+    compatibility: { ...metadata.compatibility, ui_protocol_version: "plugin-ui-v6" },
+  }), InvalidReleaseDocumentError);
+  assert.throws(() => buildReleaseMetadata({
+    ...metadata,
+    schema_version: releaseMetadataSchemaVersionV6,
+    compatibility: { ...metadata.compatibility, ui_protocol_version: "plugin-ui-v5" },
+  }), InvalidReleaseDocumentError);
 });
 
 test("root delegation keeps source-wide and channel-scoped usages disjoint", () => {

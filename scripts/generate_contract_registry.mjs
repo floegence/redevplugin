@@ -64,9 +64,30 @@ function validateRegistry(value) {
   if (!isRecord(value.matrix) || Object.keys(value.matrix).length === 0) {
     throw new Error("contract registry matrix is required");
   }
+  const structuredKeys = new Set([
+    "supported_plugin_ui_protocol_versions",
+    "plugin_ui_transport_mappings",
+  ]);
   for (const [key, version] of Object.entries(value.matrix)) {
-    if (!/^[a-z][a-z0-9_]+$/.test(key) || typeof version !== "string" || version.length === 0) {
+    if (!/^[a-z][a-z0-9_]+$/.test(key) || (!structuredKeys.has(key) && (typeof version !== "string" || version.length === 0))) {
       throw new Error(`invalid contract matrix entry: ${key}`);
+    }
+  }
+  if (!isUniqueStringArray(value.matrix.supported_plugin_ui_protocol_versions)) {
+    throw new Error("supported plugin UI protocol versions must be a unique non-empty string array");
+  }
+  if (!Array.isArray(value.matrix.plugin_ui_transport_mappings) ||
+      value.matrix.plugin_ui_transport_mappings.length !== value.matrix.supported_plugin_ui_protocol_versions.length) {
+    throw new Error("plugin UI transport mappings must cover every supported plugin UI protocol version");
+  }
+  for (const [index, mapping] of value.matrix.plugin_ui_transport_mappings.entries()) {
+    if (!isRecord(mapping) || !hasExactKeys(mapping, [
+      "plugin_ui_protocol_version",
+      "opaque_surface_transport_schema_version",
+      "bridge_schema_version",
+    ]) || Object.values(mapping).some((entry) => typeof entry !== "string" || entry.length === 0) ||
+        mapping.plugin_ui_protocol_version !== value.matrix.supported_plugin_ui_protocol_versions[index]) {
+      throw new Error(`invalid plugin UI transport mapping at index ${index}`);
     }
   }
   if (!Array.isArray(value.artifacts) || value.artifacts.length === 0) {

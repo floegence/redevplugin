@@ -296,6 +296,7 @@ func TestRouteSetHasManagementAndSandboxRoutes(t *testing.T) {
 		"POST /_redevplugin/api/plugins/surfaces/{surface_instance_id}/bridge-token":      false,
 		"POST /_redevplugin/api/plugins/surfaces/{surface_instance_id}/assets/read":       false,
 		"POST /_redevplugin/api/plugins/surfaces/{surface_instance_id}/streams/read":      false,
+		"POST /_redevplugin/api/plugins/surfaces/{surface_instance_id}/operations/query":  false,
 		"POST /_redevplugin/api/plugins/surfaces/{surface_instance_id}/operations/cancel": false,
 		"POST /_redevplugin/api/plugins/surfaces/{surface_instance_id}/dispose":           false,
 		"POST /_redevplugin/api/plugins/rpc":                                              false,
@@ -716,12 +717,12 @@ func TestHandlerCompatibilityManifest(t *testing.T) {
 		} `json:"contracts"`
 	}](t, handler, "/_redevplugin/api/plugins/platform/compatibility/query", map[string]any{})
 
-	if got.SchemaVersion != "redevplugin.compatibility.v10" {
+	if got.SchemaVersion != "redevplugin.compatibility.v11" {
 		t.Fatalf("schema_version = %q", got.SchemaVersion)
 	}
-	if got.Matrix.PluginHostProtocolVersion != "plugin-host-v7" ||
+	if got.Matrix.PluginHostProtocolVersion != "plugin-host-v8" ||
 		got.Matrix.SessionScopeMaintenanceVersion != "session-scope-maintenance-v1" ||
-		got.Matrix.PluginPlatformOpenAPI != "plugin-platform-v8" {
+		got.Matrix.PluginPlatformOpenAPI != "plugin-platform-v9" {
 		t.Fatalf("matrix mismatch: %#v", got.Matrix)
 	}
 	contracts := map[string]struct {
@@ -738,7 +739,7 @@ func TestHandlerCompatibilityManifest(t *testing.T) {
 	if !ok {
 		t.Fatalf("compatibility manifest missing plugin-platform-openapi: %#v", got.Contracts)
 	}
-	if openapi.Path != "spec/openapi/plugin-platform-v8.yaml" || openapi.SHA256 == "" {
+	if openapi.Path != "spec/openapi/plugin-platform-v9.yaml" || openapi.SHA256 == "" {
 		t.Fatalf("plugin-platform-openapi contract mismatch: %#v", openapi)
 	}
 }
@@ -3274,6 +3275,68 @@ func TestHandlerSurfaceOperationCancelRequiresMatchingBridgeScope(t *testing.T) 
 	}
 }
 
+func TestHandlerSurfaceOperationQueryReturnsClosedSnapshotAndBoundErrors(t *testing.T) {
+	adapter := &httpRecordingCapabilityAdapter{result: capability.Result{Data: map[string]any{}}}
+	h := newHTTPTestHostWithOptions(t, httpTestHostOptions{
+		capabilityID:      "example.capability.echo",
+		capabilityAdapter: adapter,
+	})
+	installed, err := host.ImportLocalPackageBytes(httpTestContext(), h, nextHTTPTestPluginInstanceID(t), buildHTTPOperationObservationRPCFixturePackage(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.EnablePlugin(httpTestContext(), host.EnableRequest{PluginInstanceID: installed.PluginInstanceID, ExpectedManagementRevision: mustManagementRevision(t, h, installed.PluginInstanceID)}); err != nil {
+		t.Fatal(err)
+	}
+	grantHTTPDeclaredPermissions(t, h, installed)
+	handler := mustNewHandler(t, h, allowHTTPTestGuard())
+	bridgeResp := openHTTPBridge(t, handler, installed.PluginInstanceID, "http.operation.view", "surface_http_operation_query", "bridge_http_operation_query")
+	result := postJSON[host.CallMethodResult](t, handler, "/_redevplugin/api/plugins/rpc", map[string]any{
+		"plugin_instance_id":   installed.PluginInstanceID,
+		"surface_instance_id":  "surface_http_operation_query",
+		"bridge_channel_id":    "bridge_http_operation_query",
+		"plugin_gateway_token": bridgeResp.GatewayToken,
+		"method":               "documents.archive",
+	})
+	queryPath := "/_redevplugin/api/plugins/surfaces/surface_http_operation_query/operations/query"
+	body := map[string]any{"operation_id": result.OperationID, "bridge_channel_id": "bridge_http_operation_query"}
+	snapshot := postJSON[map[string]any](t, handler, queryPath, body)
+	if snapshot["operation_id"] != result.OperationID || snapshot["status"] != string(operation.StatusRunning) || snapshot["retry_after_ms"] != float64(host.SurfaceOperationSnapshotRetryMinMS) {
+		t.Fatalf("operation snapshot = %#v", snapshot)
+	}
+	for _, forbidden := range []string{
+		"plugin_id", "plugin_instance_id", "surface_instance_id", "bridge_channel_id", "target", "permissions", "reason", "failure_code", "terminal_at",
+	} {
+		if _, ok := snapshot[forbidden]; ok {
+			t.Fatalf("operation snapshot leaked %q: %#v", forbidden, snapshot)
+		}
+	}
+
+	crossScope := postJSONError(t, handler, queryPath, map[string]any{
+		"operation_id": result.OperationID, "bridge_channel_id": "bridge_other",
+	}, http.StatusNotFound)
+	if crossScope.Code != string(security.ErrOperationNotFound) || len(crossScope.Details) != 0 {
+		t.Fatalf("cross-scope envelope = %#v", crossScope)
+	}
+
+	postJSON[map[string]any](t, handler, queryPath, body)
+	limited := postJSONError(t, handler, queryPath, body, http.StatusTooManyRequests)
+	if limited.Code != string(security.ErrOperationRateLimited) {
+		t.Fatalf("rate limit code = %q", limited.Code)
+	}
+	retryAfterMS, ok := limited.Details["retry_after_ms"].(float64)
+	if !ok || retryAfterMS < host.SurfaceOperationSnapshotRetryMinMS || retryAfterMS > host.SurfaceOperationSnapshotRetryMaxMS {
+		t.Fatalf("rate limit details = %#v", limited.Details)
+	}
+
+	unknown := postJSONError(t, handler, queryPath, map[string]any{
+		"operation_id": "operation_unknown", "bridge_channel_id": "bridge_http_operation_query",
+	}, http.StatusNotFound)
+	if unknown.Code != crossScope.Code || !reflect.DeepEqual(unknown.Details, crossScope.Details) {
+		t.Fatalf("unknown and cross-scope errors differ: unknown=%#v cross=%#v", unknown, crossScope)
+	}
+}
+
 func TestHandlerPrivateSurfaceStreamFlow(t *testing.T) {
 	adapter := &httpRecordingCapabilityAdapter{result: capability.Result{Data: map[string]any{}}}
 	h := newHTTPTestHostWithOptions(t, httpTestHostOptions{
@@ -4485,8 +4548,8 @@ func samplePathForRoute(path string) string {
 func readOpenAPIContract(t *testing.T) string {
 	t.Helper()
 	candidates := []string{
-		filepath.Join("..", "..", "spec", "openapi", "plugin-platform-v8.yaml"),
-		filepath.Join("spec", "openapi", "plugin-platform-v8.yaml"),
+		filepath.Join("..", "..", "spec", "openapi", "plugin-platform-v9.yaml"),
+		filepath.Join("spec", "openapi", "plugin-platform-v9.yaml"),
 	}
 	var lastErr error
 	for _, candidate := range candidates {
@@ -4991,6 +5054,20 @@ func buildHTTPOperationRPCFixturePackage(t *testing.T) []byte {
 	dir := t.TempDir()
 	writeHTTPFile(t, filepath.Join(dir, "manifest.json"), httpOperationRPCFixtureManifestJSON())
 	writeHTTPFile(t, filepath.Join(dir, "ui", "index.html"), "<!doctype html><title>HTTP Operation</title>")
+	var buf bytes.Buffer
+	if _, err := pluginpkg.BuildFromDir(httpTestContext(), dir, &buf, pluginpkg.DefaultReadLimits()); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
+func buildHTTPOperationObservationRPCFixturePackage(t *testing.T) []byte {
+	t.Helper()
+	dir := t.TempDir()
+	manifestJSON := strings.ReplaceAll(httpOperationRPCFixtureManifestJSON(), "redevplugin.manifest.v5", "redevplugin.manifest.v6")
+	manifestJSON = strings.ReplaceAll(manifestJSON, "plugin-ui-v5", "plugin-ui-v6")
+	writeHTTPFile(t, filepath.Join(dir, "manifest.json"), manifestJSON)
+	writeHTTPFile(t, filepath.Join(dir, "ui", "index.html"), "<!doctype html><title>HTTP Operation Observation</title>")
 	var buf bytes.Buffer
 	if _, err := pluginpkg.BuildFromDir(httpTestContext(), dir, &buf, pluginpkg.DefaultReadLimits()); err != nil {
 		t.Fatal(err)
@@ -5711,7 +5788,7 @@ func bridgeHandshakeFromBootstrap(openResp bridge.SurfaceBootstrap) bridge.Hands
 		AssetSessionNonce:  openResp.AssetSessionNonce,
 		ManagementRevision: openResp.ManagementRevision,
 		RevokeEpoch:        openResp.RevokeEpoch,
-		UIProtocolVersion:  "plugin-ui-v5",
+		UIProtocolVersion:  openResp.UIProtocolVersion,
 	}
 }
 

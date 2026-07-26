@@ -722,6 +722,7 @@ type Host struct {
 	sessionScopes       *sessionscope.Coordinator
 	sessionMaintenance  *sessionScopeMaintenanceLockRegistry
 	detachedCancelJobs  *detachedCancelJobRegistry
+	operationObservers  *surfaceOperationObservationRegistry
 	lifecycleCtx        context.Context
 	lifecycleCancel     context.CancelFunc
 	lifecycleMu         sync.RWMutex
@@ -1645,6 +1646,7 @@ func Open(ctx context.Context, config Config) (openedHost *Host, retErr error) {
 		releaseLeases:       newReleaseLeaseRegistry(),
 		sourceFences:        newSourceFenceRegistry(),
 		detachedCancelJobs:  newDetachedCancelJobRegistry(),
+		operationObservers:  newSurfaceOperationObservationRegistry(),
 		sessionScopes:       adapters.SessionScopes,
 		sessionMaintenance:  newSessionScopeMaintenanceLockRegistry(),
 		lifecycleCtx:        lifecycleCtx,
@@ -1939,8 +1941,8 @@ func (h *Host) OpenSurface(ctx context.Context, req OpenSurfaceRequest) (result 
 	if err := requireManagementRevision(record, req.ExpectedManagementRevision); err != nil {
 		return bridge.SurfaceBootstrap{}, err
 	}
-	if record.Manifest.Plugin.UIProtocolVersion != version.PluginUIProtocolVersion {
-		return bridge.SurfaceBootstrap{}, fmt.Errorf("%w: installed %s, required %s", ErrPluginUIProtocolUnsupported, record.Manifest.Plugin.UIProtocolVersion, version.PluginUIProtocolVersion)
+	if !version.SupportsPluginUIProtocol(record.Manifest.Plugin.UIProtocolVersion) {
+		return bridge.SurfaceBootstrap{}, fmt.Errorf("%w: installed %s", ErrPluginUIProtocolUnsupported, record.Manifest.Plugin.UIProtocolVersion)
 	}
 	if record.EnableState != registry.EnableEnabled {
 		return bridge.SurfaceBootstrap{}, errors.New("plugin is not enabled")
@@ -1973,6 +1975,7 @@ func (h *Host) OpenSurface(ctx context.Context, req OpenSurfaceRequest) (result 
 		PluginID:             record.PluginID,
 		PluginInstanceID:     record.PluginInstanceID,
 		PluginVersion:        record.Version,
+		UIProtocolVersion:    record.Manifest.Plugin.UIProtocolVersion,
 		SurfaceID:            req.SurfaceID,
 		SurfaceInstanceID:    req.SurfaceInstanceID,
 		ActiveFingerprint:    record.ActiveFingerprint,
@@ -2216,7 +2219,7 @@ func (h *Host) DisposeSurface(ctx context.Context, req DisposeSurfaceRequest) er
 	}
 	defer releaseReservation()
 	session := authorization.session
-	return h.surfaceTokens.DisposeBoundSurface(bridge.DisposeSurfaceRequest{
+	err = h.surfaceTokens.DisposeBoundSurface(bridge.DisposeSurfaceRequest{
 		SurfaceInstanceID:    req.SurfaceInstanceID,
 		BridgeNonce:          req.BridgeNonce,
 		OwnerSessionHash:     session.OwnerSessionHash,
@@ -2225,6 +2228,10 @@ func (h *Host) DisposeSurface(ctx context.Context, req DisposeSurfaceRequest) er
 		SessionChannelIDHash: session.SessionChannelIDHash,
 		Now:                  req.Now,
 	})
+	if err == nil {
+		h.operationObservers.dispose(surfaceOperationObservationKeyFor(session, req.SurfaceInstanceID))
+	}
+	return err
 }
 
 func (h *Host) ReconcileSurfaceRevocation(ctx context.Context, req DisposeSurfaceRequest) (ReconcileSurfaceRevocationResult, error) {
@@ -2239,11 +2246,15 @@ func (h *Host) ReconcileSurfaceRevocation(ctx context.Context, req DisposeSurfac
 	}
 	defer releaseReservation()
 	session := authorization.session
-	return h.surfaceTokens.ReconcileSurfaceRevocation(bridge.DisposeSurfaceRequest{
+	result, err := h.surfaceTokens.ReconcileSurfaceRevocation(bridge.DisposeSurfaceRequest{
 		SurfaceInstanceID: req.SurfaceInstanceID, BridgeNonce: req.BridgeNonce,
 		OwnerSessionHash: session.OwnerSessionHash, OwnerUserHash: session.OwnerUserHash,
 		OwnerEnvHash: session.OwnerEnvHash, SessionChannelIDHash: session.SessionChannelIDHash, Now: req.Now,
 	})
+	if err == nil {
+		h.operationObservers.dispose(surfaceOperationObservationKeyFor(session, req.SurfaceInstanceID))
+	}
+	return result, err
 }
 
 func (h *Host) RevokeSessionScope(ctx context.Context, req RevokeSessionScopeRequest) (RevokeSessionScopeResult, error) {
@@ -2334,6 +2345,7 @@ func (h *Host) revokeAuthenticatedSessionScope(
 	) != nil {
 		return h.markSessionTeardownIncomplete(ctx, teardown, snapshot, req.Now)
 	}
+	h.operationObservers.disposeSession(scope)
 	if snapshot.State == sessionscope.StateComplete {
 		result = revokeSessionScopeResult(snapshot)
 		auditDetails = sessionRevokeAuditDetails(result)
@@ -4554,7 +4566,7 @@ func prepareVersionSwitchRecord(current registry.PluginRecord, next registry.Plu
 	next.RevokeEpoch = current.RevokeEpoch
 	next.InstalledAt = current.InstalledAt
 	next.EnabledAt = cloneTimePtr(current.EnabledAt)
-	if current.EnableState == registry.EnableDisabledIncompatible && next.Manifest.Plugin.UIProtocolVersion == version.PluginUIProtocolVersion {
+	if current.EnableState == registry.EnableDisabledIncompatible && version.SupportsPluginUIProtocol(next.Manifest.Plugin.UIProtocolVersion) {
 		next.EnableState = registry.EnableDisabled
 		next.DisabledReason = "updated to the current UI protocol; explicit enable is required"
 		next.EnabledAt = nil
@@ -5940,15 +5952,58 @@ func (h *Host) CancelSurfaceOperation(ctx context.Context, req CancelSurfaceOper
 	if err != nil {
 		return operation.Record{}, err
 	}
-	if record.SurfaceInstanceID != req.SurfaceInstanceID ||
-		record.OwnerSessionHash != session.OwnerSessionHash ||
-		record.OwnerUserHash != session.OwnerUserHash ||
-		record.OwnerEnvHash != session.OwnerEnvHash ||
-		record.SessionChannelIDHash != session.SessionChannelIDHash ||
-		record.BridgeChannelID != req.BridgeChannelID {
+	if !surfaceOperationMatchesAudience(record, session, req.SurfaceInstanceID, req.BridgeChannelID) {
 		return operation.Record{}, bridge.ErrTokenAudience
 	}
 	return h.cancelOperationAuthorized(ctx, authorization, CancelOperationRequest{OperationID: req.OperationID, Reason: req.Reason, Now: req.Now})
+}
+
+func (h *Host) GetSurfaceOperation(ctx context.Context, req GetSurfaceOperationRequest) (PluginOperationSnapshot, error) {
+	req.OperationID = strings.TrimSpace(req.OperationID)
+	req.SurfaceInstanceID = strings.TrimSpace(req.SurfaceInstanceID)
+	req.BridgeChannelID = strings.TrimSpace(req.BridgeChannelID)
+	authorization, err := h.authorizeManagement(ctx, ManagementActionGetSurfaceOperation,
+		authorizationTarget(ResourceOperation, req.OperationID),
+		authorizationTarget(ResourceSurface, req.SurfaceInstanceID),
+		authorizationTarget(ResourceBridgeChannel, req.BridgeChannelID),
+	)
+	if err != nil {
+		return PluginOperationSnapshot{}, err
+	}
+	ctx, releaseReservation, err := h.reserveAuthorizedAction(ctx, authorization)
+	if err != nil {
+		return PluginOperationSnapshot{}, err
+	}
+	defer releaseReservation()
+	boundSurface, err := h.surfaceTokens.InspectBoundSurface(bridge.InspectBoundSurfaceRequest{
+		SurfaceInstanceID: req.SurfaceInstanceID, BridgeChannelID: req.BridgeChannelID,
+		OwnerSessionHash: authorization.session.OwnerSessionHash, OwnerUserHash: authorization.session.OwnerUserHash,
+		OwnerEnvHash: authorization.session.OwnerEnvHash, SessionChannelIDHash: authorization.session.SessionChannelIDHash,
+		Now: req.Now,
+	})
+	if err != nil {
+		return PluginOperationSnapshot{}, operation.ErrNotFound
+	}
+	if boundSurface.UIProtocolVersion != "plugin-ui-v6" {
+		return PluginOperationSnapshot{}, fmt.Errorf("%w: operation observation requires plugin-ui-v6", ErrPluginUIProtocolUnsupported)
+	}
+	releaseObservation, err := h.operationObservers.acquire(
+		surfaceOperationObservationKeyFor(authorization.session, req.SurfaceInstanceID), req.OperationID, req.Now,
+	)
+	if err != nil {
+		return PluginOperationSnapshot{}, err
+	}
+	defer releaseObservation()
+	record, err := h.adapters.Operations.Get(ctx, req.OperationID)
+	if err != nil {
+		return PluginOperationSnapshot{}, err
+	}
+	if !surfaceOperationMatchesAudience(record, authorization.session, req.SurfaceInstanceID, req.BridgeChannelID) ||
+		boundSurface.PluginInstanceID != record.PluginInstanceID || boundSurface.PluginVersion != record.PluginVersion ||
+		boundSurface.ActiveFingerprint != record.ActiveFingerprint {
+		return PluginOperationSnapshot{}, operation.ErrNotFound
+	}
+	return projectPluginOperationSnapshot(record)
 }
 
 func (h *Host) armDetachedOperationCancelAckTimeout(ctx context.Context, record operation.Record) error {
@@ -6508,8 +6563,8 @@ func (h *Host) EnablePlugin(ctx context.Context, req EnableRequest) (result regi
 	if err := requireManagementRevision(record, req.ExpectedManagementRevision); err != nil {
 		return registry.PluginRecord{}, err
 	}
-	if record.Manifest.Plugin.UIProtocolVersion != version.PluginUIProtocolVersion {
-		return registry.PluginRecord{}, fmt.Errorf("%w: installed %s, required %s", ErrPluginUIProtocolUnsupported, record.Manifest.Plugin.UIProtocolVersion, version.PluginUIProtocolVersion)
+	if !version.SupportsPluginUIProtocol(record.Manifest.Plugin.UIProtocolVersion) {
+		return registry.PluginRecord{}, fmt.Errorf("%w: installed %s", ErrPluginUIProtocolUnsupported, record.Manifest.Plugin.UIProtocolVersion)
 	}
 	if err := h.ensureReleaseActivationLease(ctx, record); err != nil {
 		return registry.PluginRecord{}, err

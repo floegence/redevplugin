@@ -266,6 +266,11 @@
   },
   {
     "method": "POST",
+    "path": "/_redevplugin/api/plugins/surfaces/{surface_instance_id}/operations/query",
+    "effect": "query"
+  },
+  {
+    "method": "POST",
     "path": "/_redevplugin/api/plugins/surfaces/{surface_instance_id}/prepare",
     "effect": "mutation"
   },

@@ -217,6 +217,21 @@ fn release_signing_builders_and_closed_decoders_preserve_canonical_documents() {
 }
 
 #[test]
+fn release_metadata_requires_exact_schema_ui_protocol_pairs() {
+    let fixture = fixture();
+    let mut metadata = fixture.documents.release_metadata.clone();
+
+    metadata.schema_version = RELEASE_METADATA_SCHEMA_VERSION_V6.to_owned();
+    assert!(build_release_metadata(&metadata).is_err());
+
+    metadata.compatibility.ui_protocol_version = "plugin-ui-v6".to_owned();
+    assert!(build_release_metadata(&metadata).is_ok());
+
+    metadata.schema_version = RELEASE_METADATA_SCHEMA_VERSION_V5.to_owned();
+    assert!(build_release_metadata(&metadata).is_err());
+}
+
+#[test]
 fn root_delegation_keeps_source_wide_and_channel_scoped_usages_disjoint() {
     let fixture = fixture();
     let mut source_wide = fixture.documents.root_delegation.clone();

@@ -21,6 +21,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/floegence/redevplugin/pkg/bridge"
+	"github.com/floegence/redevplugin/pkg/capability"
 	"github.com/floegence/redevplugin/pkg/connectivity"
 	"github.com/floegence/redevplugin/pkg/externalsource"
 	"github.com/floegence/redevplugin/pkg/host"
@@ -96,6 +97,7 @@ type mutationErrorBody struct {
 }
 
 type errorDetails struct {
+	RetryAfterMS               int                         `json:"retry_after_ms,omitempty"`
 	Reason                     string                      `json:"reason,omitempty"`
 	Path                       string                      `json:"path,omitempty"`
 	Pointer                    string                      `json:"pointer,omitempty"`
@@ -244,6 +246,10 @@ func (d errorDetails) validateForCode(code security.ErrorCode) error {
 		if !validJSONLimitReason(d.Reason) || d.hasNonReasonDetails() {
 			return errors.New("JSON limit error details are incomplete")
 		}
+	case security.ErrOperationRateLimited:
+		if d.RetryAfterMS < host.SurfaceOperationSnapshotRetryMinMS || d.RetryAfterMS > host.SurfaceOperationSnapshotRetryMaxMS || d.hasNonRateLimitDetails() {
+			return errors.New("operation rate limit details are incomplete")
+		}
 	case security.ErrManifestInvalid, security.ErrPackageInvalid, security.ErrPackageTooLarge, security.ErrPackagePathForbidden:
 		if _, ok := packageValidationReasonSet[d.Reason]; !ok || d.hasNonPackageDetails() {
 			return errors.New("package validation details are incomplete")
@@ -309,27 +315,33 @@ func (d errorDetails) hasPackageDetails() bool {
 }
 
 func (d errorDetails) hasNonRevisionDetails() bool {
-	return d.hasPackageDetails() || d.hasCapabilityDetails() || d.hasWorkerDetails()
+	return d.RetryAfterMS != 0 || d.hasPackageDetails() || d.hasCapabilityDetails() || d.hasWorkerDetails()
 }
 
 func (d errorDetails) hasNonCapabilityDetails() bool {
-	return d.hasPackageDetails() || d.hasRevisionDetails() || d.hasWorkerDetails()
+	return d.RetryAfterMS != 0 || d.hasPackageDetails() || d.hasRevisionDetails() || d.hasWorkerDetails()
 }
 
 func (d errorDetails) hasNonWorkerDetails() bool {
-	return d.hasPackageDetails() || d.hasRevisionDetails() || d.hasCapabilityDetails()
+	return d.RetryAfterMS != 0 || d.hasPackageDetails() || d.hasRevisionDetails() || d.hasCapabilityDetails()
 }
 
 func (d errorDetails) hasNonReasonDetails() bool {
-	return d.Path != "" || d.Pointer != "" || d.hasRevisionDetails() || d.hasCapabilityDetails() || d.hasWorkerDetails()
+	return d.RetryAfterMS != 0 || d.Path != "" || d.Pointer != "" || d.hasRevisionDetails() || d.hasCapabilityDetails() || d.hasWorkerDetails()
 }
 
 func (d errorDetails) hasNonPackageDetails() bool {
-	return d.hasRevisionDetails() || d.hasCapabilityDetails() || d.hasWorkerDetails()
+	return d.RetryAfterMS != 0 || d.hasRevisionDetails() || d.hasCapabilityDetails() || d.hasWorkerDetails()
+}
+
+func (d errorDetails) hasNonRateLimitDetails() bool {
+	copy := d
+	copy.RetryAfterMS = 0
+	return !copy.empty()
 }
 
 func (d errorDetails) empty() bool {
-	return !d.hasPackageDetails() && !d.hasRevisionDetails() && !d.hasCapabilityDetails() && !d.hasWorkerDetails() && d.SessionScope == nil
+	return d.RetryAfterMS == 0 && !d.hasPackageDetails() && !d.hasRevisionDetails() && !d.hasCapabilityDetails() && !d.hasWorkerDetails() && d.SessionScope == nil
 }
 
 func (d errorDetails) MarshalJSON() ([]byte, error) {
@@ -493,6 +505,7 @@ type surfaceBootstrapResponse struct {
 	PluginID            string    `json:"plugin_id"`
 	PluginInstanceID    string    `json:"plugin_instance_id"`
 	PluginVersion       string    `json:"plugin_version"`
+	UIProtocolVersion   string    `json:"ui_protocol_version"`
 	SurfaceID           string    `json:"surface_id"`
 	SurfaceInstanceID   string    `json:"surface_instance_id"`
 	ActiveFingerprint   string    `json:"active_fingerprint"`
@@ -514,6 +527,7 @@ func publicSurfaceBootstrap(bootstrap bridge.SurfaceBootstrap) surfaceBootstrapR
 		PluginID:            bootstrap.PluginID,
 		PluginInstanceID:    bootstrap.PluginInstanceID,
 		PluginVersion:       bootstrap.PluginVersion,
+		UIProtocolVersion:   bootstrap.UIProtocolVersion,
 		SurfaceID:           bootstrap.SurfaceID,
 		SurfaceInstanceID:   bootstrap.SurfaceInstanceID,
 		ActiveFingerprint:   bootstrap.ActiveFingerprint,
@@ -557,6 +571,11 @@ type cancelSurfaceOperationRequest struct {
 	OperationID     string `json:"operation_id"`
 	BridgeChannelID string `json:"bridge_channel_id"`
 	Reason          string `json:"reason,omitempty"`
+}
+
+type getSurfaceOperationRequest struct {
+	OperationID     string `json:"operation_id"`
+	BridgeChannelID string `json:"bridge_channel_id"`
 }
 
 type rejectSurfaceConfirmationRequest struct {
@@ -766,6 +785,50 @@ type operationResponse struct {
 type operationListResponse struct {
 	Operations []operationResponse `json:"operations"`
 	NextCursor string              `json:"next_cursor,omitempty"`
+}
+
+type pluginOperationSnapshotResponse struct {
+	OperationID  string                           `json:"operation_id"`
+	Status       operation.Status                 `json:"status"`
+	Cancelable   bool                             `json:"cancelable"`
+	CreatedAt    time.Time                        `json:"created_at"`
+	UpdatedAt    time.Time                        `json:"updated_at"`
+	RetryAfterMS int                              `json:"retry_after_ms"`
+	TerminalAt   *time.Time                       `json:"terminal_at,omitempty"`
+	FailureCode  *capability.ExecutionFailureCode `json:"failure_code,omitempty"`
+}
+
+func publicPluginOperationSnapshot(snapshot host.PluginOperationSnapshot) (pluginOperationSnapshotResponse, error) {
+	response := pluginOperationSnapshotResponse{
+		OperationID: snapshot.OperationID, Status: snapshot.Status, Cancelable: snapshot.Cancelable,
+		CreatedAt: snapshot.CreatedAt, UpdatedAt: snapshot.UpdatedAt, RetryAfterMS: snapshot.RetryAfterMS,
+		TerminalAt: cloneWireTime(snapshot.TerminalAt),
+	}
+	if snapshot.FailureCode != nil {
+		failureCode := *snapshot.FailureCode
+		response.FailureCode = &failureCode
+	}
+	if strings.TrimSpace(response.OperationID) == "" || response.CreatedAt.IsZero() || response.UpdatedAt.IsZero() ||
+		response.RetryAfterMS < host.SurfaceOperationSnapshotRetryMinMS || response.RetryAfterMS > host.SurfaceOperationSnapshotRetryMaxMS {
+		return pluginOperationSnapshotResponse{}, operation.ErrInvalidOperation
+	}
+	switch response.Status {
+	case operation.StatusRunning, operation.StatusCancelRequested:
+		if response.TerminalAt != nil || response.FailureCode != nil {
+			return pluginOperationSnapshotResponse{}, operation.ErrInvalidOperation
+		}
+	case operation.StatusCompleted, operation.StatusCanceled, operation.StatusOrphanedAfterDisable, operation.StatusOrphanedAfterUninstall:
+		if response.TerminalAt == nil || response.FailureCode != nil {
+			return pluginOperationSnapshotResponse{}, operation.ErrInvalidOperation
+		}
+	case operation.StatusFailed:
+		if response.TerminalAt == nil || response.FailureCode == nil || !response.FailureCode.Valid() {
+			return pluginOperationSnapshotResponse{}, operation.ErrInvalidOperation
+		}
+	default:
+		return pluginOperationSnapshotResponse{}, operation.ErrInvalidOperation
+	}
+	return response, nil
 }
 
 func publicOperationRecord(record operation.Record) (operationResponse, error) {
@@ -1033,6 +1096,7 @@ var routes = []routeSpec{
 	queryRoute("/_redevplugin/api/plugins/surfaces/{surface_instance_id}/assets/read", websecurity.RouteActionReadSurfaceAsset, func(h *Handler) http.HandlerFunc { return h.handleReadSurfaceAsset }),
 	queryRoute("/_redevplugin/api/plugins/surfaces/{surface_instance_id}/streams/read", websecurity.RouteActionReadSurfaceStream, func(h *Handler) http.HandlerFunc { return h.handleReadSurfaceStream }),
 	mutationRoute(http.MethodPost, "/_redevplugin/api/plugins/surfaces/{surface_instance_id}/streams/ack", websecurity.RouteActionAcknowledgeSurfaceStream, func(h *Handler) http.HandlerFunc { return h.handleAcknowledgeSurfaceStream }),
+	queryRoute("/_redevplugin/api/plugins/surfaces/{surface_instance_id}/operations/query", websecurity.RouteActionGetSurfaceOperation, func(h *Handler) http.HandlerFunc { return h.handleGetSurfaceOperation }),
 	mutationRoute(http.MethodPost, "/_redevplugin/api/plugins/surfaces/{surface_instance_id}/operations/cancel", websecurity.RouteActionCancelSurfaceOperation, func(h *Handler) http.HandlerFunc { return h.handleCancelSurfaceOperation }),
 	mutationRoute(http.MethodPost, "/_redevplugin/api/plugins/surfaces/{surface_instance_id}/confirmations/reject", websecurity.RouteActionRejectSurfaceConfirmation, func(h *Handler) http.HandlerFunc { return h.handleRejectSurfaceConfirmation }),
 	mutationRoute(http.MethodPost, "/_redevplugin/api/plugins/surfaces/{surface_instance_id}/dispose", websecurity.RouteActionDisposeSurface, func(h *Handler) http.HandlerFunc { return h.handleDisposeSurface }),
@@ -1243,6 +1307,43 @@ func (h Handler) handleCancelSurfaceOperation(w http.ResponseWriter, r *http.Req
 		return
 	}
 	writeMutationSuccess(w, response)
+}
+
+func (h Handler) handleGetSurfaceOperation(w http.ResponseWriter, r *http.Request) {
+	surfaceInstanceID, ok := surfaceInstanceIDFromPath(r.URL.Path, "/operations/query")
+	if !ok {
+		writeError(w, http.StatusNotFound, security.ErrInvalidRequest, "route not found", errorDetails{})
+		return
+	}
+	var req getSurfaceOperationRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeInvalidRequestError(w, err)
+		return
+	}
+	snapshot, err := h.host.GetSurfaceOperation(r.Context(), host.GetSurfaceOperationRequest{
+		OperationID: req.OperationID, SurfaceInstanceID: surfaceInstanceID, BridgeChannelID: req.BridgeChannelID,
+	})
+	if err != nil {
+		code := errorCodeForOperationError(err)
+		status := httpStatusForOperationError(err)
+		if errors.Is(err, operation.ErrNotFound) {
+			code = security.ErrOperationNotFound
+			status = http.StatusNotFound
+		}
+		details := errorDetails{}
+		var limited *host.SurfaceOperationRateLimitError
+		if errors.As(err, &limited) {
+			details.RetryAfterMS = limited.RetryAfterMS
+		}
+		writeError(w, status, code, publicPluginErrorMessage(code), details)
+		return
+	}
+	response, err := publicPluginOperationSnapshot(snapshot)
+	if err != nil {
+		h.writeProjectionError(w, r, "surface.operation.query.response", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, successResponse{OK: true, Data: response})
 }
 
 func (h Handler) handleRejectSurfaceConfirmation(w http.ResponseWriter, r *http.Request) {
@@ -3709,6 +3810,7 @@ func httpStatusForManagementError(err error) int {
 }
 
 func errorCodeForOperationError(err error) security.ErrorCode {
+	var limited *host.SurfaceOperationRateLimitError
 	switch {
 	case errors.Is(err, host.ErrAdapterFailure):
 		return security.ErrAdapterFailure
@@ -3718,6 +3820,8 @@ func errorCodeForOperationError(err error) security.ErrorCode {
 		return security.ErrRuntimeUnavailable
 	case errors.Is(err, operation.ErrNotCancelable):
 		return security.ErrOperationNotCancelable
+	case errors.As(err, &limited):
+		return security.ErrOperationRateLimited
 	case errors.Is(err, operation.ErrNotFound), errors.Is(err, operation.ErrInvalidOperation):
 		return security.ErrInvalidRequest
 	default:
@@ -3726,6 +3830,7 @@ func errorCodeForOperationError(err error) security.ErrorCode {
 }
 
 func httpStatusForOperationError(err error) int {
+	var limited *host.SurfaceOperationRateLimitError
 	switch {
 	case errors.Is(err, host.ErrAdapterFailure):
 		return http.StatusBadGateway
@@ -3733,6 +3838,8 @@ func httpStatusForOperationError(err error) int {
 		return http.StatusServiceUnavailable
 	case errors.Is(err, operation.ErrNotCancelable):
 		return http.StatusConflict
+	case errors.As(err, &limited):
+		return http.StatusTooManyRequests
 	case errors.Is(err, operation.ErrNotFound), errors.Is(err, operation.ErrInvalidOperation):
 		return http.StatusBadRequest
 	default:

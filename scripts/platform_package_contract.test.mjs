@@ -102,15 +102,15 @@ function validPublication(packageSet) {
   };
 }
 
-test("the active compatibility surface is the atomic v10 contract set", () => {
+test("the active compatibility surface is the atomic v11 contract set", () => {
   const activeRegistry = readJSON("spec/plugin/contract-registry-v2.json");
-  const compatibilitySchema = readJSON("spec/plugin/compatibility-manifest-v10.schema.json");
+  const compatibilitySchema = readJSON("spec/plugin/compatibility-manifest-v11.schema.json");
   const generatedGo = read("pkg/version/contracts_gen.go").toString("utf8");
   const generatedTypeScript = read("packages/redevplugin-ui/src/contracts.gen.ts").toString("utf8");
 
   assert.equal(activeRegistry.schema_version, "redevplugin.contract_registry.v2");
   assert.equal(activeRegistry.registry_version, "contract-registry-v2");
-  assert.equal(compatibilitySchema.properties.schema_version.const, "redevplugin.compatibility.v10");
+  assert.equal(compatibilitySchema.properties.schema_version.const, "redevplugin.compatibility.v11");
   assert.match(generatedGo, /ContractRegistryVersion\s+= "contract-registry-v2"/);
   assert.match(generatedTypeScript, /"contract_registry_version": "contract-registry-v2"/);
   assert.equal(activeRegistry.artifacts.some(({ id }) => id === "release-manifest-schema"), false);

@@ -241,6 +241,11 @@ async function verifyScenario(credentiallessScenario) {
   await page.locator("#approve-confirmation").click();
   await frame.waitForFunction(() => document.querySelector("#plugin-result")?.textContent?.includes('"confirmed": true'));
 
+  await frame.getByRole("button", { name: "Observe operation" }).click();
+  await frame.waitForFunction(() => document.querySelector("#plugin-result")?.textContent?.includes('"retry_status": "completed"'));
+  const observationResult = await frame.locator("#plugin-result").textContent();
+  assert.equal(observationResult.includes('"first_cancelled": true'), true);
+
   await waitFor(async () => {
     const response = await fetch(`${baseURL}/__browser_harness/diagnostics`);
     const value = await response.json();
@@ -300,6 +305,7 @@ async function verifyScenario(credentiallessScenario) {
   assert.deepEqual(page.context().serviceWorkers(), [], `${credentiallessScenario} service worker creation`);
   assert.equal(eventLog.includes("confirmation-aborted"), true);
   assert.equal(finalDiagnostics.dispose_completed_at > 0, true);
+  assert.equal(finalDiagnostics.operation_snapshot_cancel_recovered, true);
   assert.equal(disposed.iframeSrcdocEmpty, true);
   assert.equal(await iframe.count(), 0, `${credentiallessScenario} slot removes the disposed iframe`);
   assert.equal(disposed.errors.length, 0, `${credentiallessScenario} disposed surface errors`);
@@ -363,7 +369,7 @@ function requestAllowed(request, credentiallessScenario) {
     return request.method === expectedMethod && url.search === expectedSearch;
   }
   return request.method === "POST" && url.search === "" &&
-    /^\/_redevplugin\/api\/plugins\/surfaces\/surface_browser_[0-9]{4}\/(prepare|bridge-token|assets\/read|streams\/read|streams\/ack|dispose)$/.test(url.pathname);
+    /^\/_redevplugin\/api\/plugins\/surfaces\/surface_browser_[0-9]{4}\/(prepare|bridge-token|assets\/read|streams\/read|streams\/ack|operations\/query|dispose)$/.test(url.pathname);
 }
 
 function normalizeCSP(srcdoc) {

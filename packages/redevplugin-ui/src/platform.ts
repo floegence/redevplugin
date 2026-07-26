@@ -101,6 +101,7 @@ function toPluginSurfaceHostBootstrap(value: PluginSurfaceBootstrapResult): Plug
     pluginId: value.plugin_id,
     pluginInstanceId: value.plugin_instance_id,
     pluginVersion: value.plugin_version,
+    uiProtocolVersion: value.ui_protocol_version,
     surfaceId: value.surface_id,
     surfaceInstanceId: value.surface_instance_id,
     activeFingerprint: value.active_fingerprint,

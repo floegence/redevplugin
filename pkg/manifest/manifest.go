@@ -13,6 +13,11 @@ import (
 	"github.com/floegence/redevplugin/pkg/version"
 )
 
+const (
+	SchemaVersionV5 = "redevplugin.manifest.v5"
+	SchemaVersionV6 = "redevplugin.manifest.v6"
+)
+
 type Manifest struct {
 	SchemaVersion      string              `json:"schema_version"`
 	Publisher          Publisher           `json:"publisher"`
@@ -283,8 +288,8 @@ func Decode(r io.Reader) (Manifest, error) {
 }
 
 func Validate(m Manifest) error {
-	if m.SchemaVersion != "redevplugin.manifest.v5" {
-		return ValidationError{Field: "schema_version", Message: "must be redevplugin.manifest.v5"}
+	if !validSchemaUIProtocolPair(m.SchemaVersion, m.Plugin.UIProtocolVersion) {
+		return ValidationError{Field: "schema_version", Message: "must pair redevplugin.manifest.v5 with plugin-ui-v5 or redevplugin.manifest.v6 with plugin-ui-v6"}
 	}
 	if strings.TrimSpace(m.Publisher.PublisherID) == "" {
 		return ValidationError{Field: "publisher.publisher_id", Message: "is required"}
@@ -301,8 +306,8 @@ func Validate(m Manifest) error {
 	if m.Plugin.APIVersion != "plugin-v1" {
 		return ValidationError{Field: "plugin.api_version", Message: "must be plugin-v1"}
 	}
-	if m.Plugin.UIProtocolVersion != version.PluginUIProtocolVersion {
-		return ValidationError{Field: "plugin.ui_protocol_version", Message: "must be " + version.PluginUIProtocolVersion}
+	if !version.SupportsPluginUIProtocol(m.Plugin.UIProtocolVersion) {
+		return ValidationError{Field: "plugin.ui_protocol_version", Message: "is unsupported"}
 	}
 	if _, err := version.ParseSemVer(m.Plugin.MinRuntimeVersion); err != nil {
 		return ValidationError{Field: "plugin.min_runtime_version", Message: "must be a strict semantic version"}
@@ -585,6 +590,11 @@ func Validate(m Manifest) error {
 	}
 
 	return nil
+}
+
+func validSchemaUIProtocolPair(schemaVersion, uiProtocolVersion string) bool {
+	return (schemaVersion == SchemaVersionV5 && uiProtocolVersion == "plugin-ui-v5") ||
+		(schemaVersion == SchemaVersionV6 && uiProtocolVersion == "plugin-ui-v6")
 }
 
 type secretRefScopeDeclaration struct {

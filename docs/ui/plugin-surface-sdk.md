@@ -32,19 +32,22 @@ product session authority.
 
 ## Bridge Protocol
 
-The bridge protocol is described by `spec/plugin/bridge-v5.schema.json` and
-implemented by the TypeScript package. Contract checks keep these frame names,
-the UI protocol version, and forbidden response fields aligned with the schema:
+The current bridge protocol is described by `spec/plugin/bridge-v6.schema.json`
+and implemented by the TypeScript package. Installed `plugin-ui-v5` packages
+remain bound to the legacy `bridge-v5` and `opaque-surface-transport-v4`
+mapping. Contract checks keep these frame names, each supported UI protocol
+version, and forbidden response fields aligned with its schema:
 
 - `redevplugin.bridge.call`;
 - `redevplugin.bridge.stream.read`;
+- `redevplugin.bridge.operation.snapshot` in `plugin-ui-v6`;
 - `redevplugin.ui.mount`;
 - `redevplugin.ui.patch`;
 - `redevplugin.bridge.cancel`;
 - `redevplugin.ui.action`;
 - `redevplugin.bridge.response`;
 - `redevplugin.bridge.lifecycle`;
-- `plugin-ui-v5`.
+- `plugin-ui-v5` or `plugin-ui-v6`, using the published exact mapping.
 
 The parent transfers one secret-free bootstrap port to the current iframe
 `contentWindow` and frame generation. Because the iframe has an opaque origin,
@@ -80,7 +83,8 @@ asset-session nonce, management revision, revoke epoch, UI protocol version,
 and `bridge_channel_id`. The Go Host recomputes the same hash and refuses to
 mint a parent-only gateway token if the transcript is missing or mismatched.
 This trusted-parent HTTP DTO is defined by OpenAPI, not by the plugin-visible
-`bridge-v5.schema.json` contract.
+`bridge-v6.schema.json` contract (or the retained `bridge-v5` contract for a
+`plugin-ui-v5` surface).
 
 ## Keyed Renderer
 

@@ -22,7 +22,7 @@ func TestPublicRequestDTOsDeclareClosedJSONFieldNames(t *testing.T) {
 		InspectSessionScopeMaintenanceRequest{}, ValidateTerminalSessionScopeCloseRequest{}, PrepareSessionScopeFinalizationRequest{},
 		MintBridgeTokenRequest{},
 		CallMethodRequest{}, ListIntentsRequest{}, InvokeIntentRequest{}, PrepareMethodConfirmationRequest{},
-		RejectMethodConfirmationRequest{}, ListOperationsRequest{}, CancelOperationRequest{}, CancelSurfaceOperationRequest{},
+		RejectMethodConfirmationRequest{}, ListOperationsRequest{}, CancelOperationRequest{}, CancelSurfaceOperationRequest{}, GetSurfaceOperationRequest{},
 		ReadStreamRequest{}, AcknowledgeStreamRequest{}, MintConnectionGrantRequest{}, MintStorageHandleGrantRequest{},
 		AuthorizationRequest{}, AuthorizationTarget{},
 	}

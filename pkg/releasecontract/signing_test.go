@@ -85,6 +85,32 @@ func TestReleaseSigningDomainsAreCanonicalAndSeparated(t *testing.T) {
 	}
 }
 
+func TestReleaseMetadataAcceptsOnlyReleasedSchemaUIProtocolPairs(t *testing.T) {
+	fixture := newReleaseSigningFixture(t)
+	tests := []struct {
+		name     string
+		schema   string
+		protocol string
+		wantErr  bool
+	}{
+		{name: "v5", schema: ReleaseMetadataSchemaVersionV5, protocol: "plugin-ui-v5"},
+		{name: "v6", schema: ReleaseMetadataSchemaVersionV6, protocol: "plugin-ui-v6"},
+		{name: "v5 schema with v6 protocol", schema: ReleaseMetadataSchemaVersionV5, protocol: "plugin-ui-v6", wantErr: true},
+		{name: "v6 schema with v5 protocol", schema: ReleaseMetadataSchemaVersionV6, protocol: "plugin-ui-v5", wantErr: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			metadata := fixture.Metadata
+			metadata.SchemaVersion = tc.schema
+			metadata.Compatibility.UIProtocolVersion = tc.protocol
+			_, err := BuildReleaseMetadata(metadata)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("BuildReleaseMetadata() error = %v, wantErr %v", err, tc.wantErr)
+			}
+		})
+	}
+}
+
 func TestRootDelegationSeparatesChannelAndSourceWideKeyScopes(t *testing.T) {
 	fixture := newReleaseSigningFixture(t)
 	document := fixture.Root
@@ -327,7 +353,7 @@ func newReleaseSigningFixture(t testing.TB) releaseSigningFixture {
 	packageContext := PackageVerificationContext{SourceID: packageInput.SourceID, Channel: packageInput.Channel, Version: packageInput.Version}
 
 	metadata := ReleaseMetadataV5{
-		SchemaVersion:      ReleaseMetadataSchemaVersion,
+		SchemaVersion:      ReleaseMetadataSchemaVersionV5,
 		SourceID:           "example_source",
 		ReleaseMetadataRef: "plugins/example.publisher/example.plugin/1.2.3/release.json",
 		PublisherID:        "example.publisher",

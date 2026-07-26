@@ -9,7 +9,9 @@ use std::fmt;
 
 pub const ROOT_DELEGATION_SCHEMA_VERSION: &str = "redevplugin.release_root_delegation.v1";
 pub const PACKAGE_SIGNATURE_SCHEMA_VERSION: &str = "redevplugin.package_signature.v1";
-pub const RELEASE_METADATA_SCHEMA_VERSION: &str = "redevplugin.release_metadata.v5";
+pub const RELEASE_METADATA_SCHEMA_VERSION_V5: &str = "redevplugin.release_metadata.v5";
+pub const RELEASE_METADATA_SCHEMA_VERSION_V6: &str = "redevplugin.release_metadata.v6";
+pub const RELEASE_METADATA_SCHEMA_VERSION: &str = RELEASE_METADATA_SCHEMA_VERSION_V6;
 pub const SOURCE_POLICY_SCHEMA_VERSION: &str = "redevplugin.release_source_policy.v2";
 pub const SOURCE_POLICY_POINTER_SCHEMA_VERSION: &str =
     "redevplugin.release_source_policy_pointer.v1";
@@ -1586,8 +1588,10 @@ fn validate_package_signature(
 }
 
 fn validate_release_metadata(value: &ReleaseMetadataV5) -> Result<(), ReleaseContractError> {
-    if value.schema_version != RELEASE_METADATA_SCHEMA_VERSION
-        || !valid_new_id(&value.source_id)
+    if !valid_release_metadata_ui_protocol_pair(
+        &value.schema_version,
+        &value.compatibility.ui_protocol_version,
+    ) || !valid_new_id(&value.source_id)
         || !valid_legacy_id(&value.publisher_id)
         || !valid_legacy_id(&value.plugin_id)
         || !valid_semver(&value.version)
@@ -1628,7 +1632,6 @@ fn validate_release_metadata(value: &ReleaseMetadataV5) -> Result<(), ReleaseCon
     }
     if !valid_semver(&value.compatibility.min_redevplugin_version)
         || !valid_semver(&value.compatibility.min_runtime_version)
-        || value.compatibility.ui_protocol_version != "plugin-ui-v5"
     {
         return invalid_document();
     }
@@ -1673,6 +1676,17 @@ fn validate_release_metadata(value: &ReleaseMetadataV5) -> Result<(), ReleaseCon
         }
     }
     Ok(())
+}
+
+fn valid_release_metadata_ui_protocol_pair(
+    schema_version: &str,
+    ui_protocol_version: &str,
+) -> bool {
+    matches!(
+        (schema_version, ui_protocol_version),
+        (RELEASE_METADATA_SCHEMA_VERSION_V5, "plugin-ui-v5")
+            | (RELEASE_METADATA_SCHEMA_VERSION_V6, "plugin-ui-v6")
+    )
 }
 
 fn validate_host_requirements(

@@ -8148,6 +8148,20 @@ func buildOperationRPCFixturePackage(t *testing.T) []byte {
 	return buf.Bytes()
 }
 
+func buildOperationObservationRPCFixturePackage(t *testing.T) []byte {
+	t.Helper()
+	dir := t.TempDir()
+	manifestJSON := strings.ReplaceAll(operationRPCFixtureManifestJSON(), "redevplugin.manifest.v5", "redevplugin.manifest.v6")
+	manifestJSON = strings.ReplaceAll(manifestJSON, "plugin-ui-v5", "plugin-ui-v6")
+	writeFile(t, filepath.Join(dir, "manifest.json"), manifestJSON)
+	writeSurfaceFixture(t, dir, "Operation Observation")
+	var buf bytes.Buffer
+	if _, err := pluginpkg.BuildFromDir(hostTestContext(), dir, &buf, pluginpkg.DefaultReadLimits()); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
 func buildSubscriptionRPCFixturePackage(t *testing.T) []byte {
 	t.Helper()
 	dir := t.TempDir()
@@ -9467,7 +9481,7 @@ func openSurfaceAndMintGatewayForAudience(t *testing.T, h *Host, pluginInstanceI
 		AssetSessionNonce:  bootstrap.AssetSessionNonce,
 		ManagementRevision: bootstrap.ManagementRevision,
 		RevokeEpoch:        bootstrap.RevokeEpoch,
-		UIProtocolVersion:  "plugin-ui-v5",
+		UIProtocolVersion:  bootstrap.UIProtocolVersion,
 	}
 	gateway, err := h.MintBridgeToken(ctx, MintBridgeTokenRequest{
 		Handshake:                 handshake,

@@ -23,7 +23,7 @@ func TestSessionScopedPublicResourcePathsHoldReservationThroughMutation(t *testi
 		"OpenSurface": false, "PrepareSurface": false, "DisposeSurface": false,
 		"MintBridgeToken": false, "CallPluginMethod": false, "PrepareMethodConfirmation": false,
 		"RejectMethodConfirmation": false,
-		"InvokeIntent":             false, "CancelOperation": false, "CancelSurfaceOperation": false,
+		"InvokeIntent":             false, "CancelOperation": false, "CancelSurfaceOperation": false, "GetSurfaceOperation": false,
 		"ReadStream": false, "AcknowledgeStream": false,
 		"MintConnectionGrant": false, "MintNetworkHandleGrant": false, "MintStorageHandleGrant": false,
 	}

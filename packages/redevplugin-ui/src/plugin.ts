@@ -21,6 +21,8 @@ export type {
   PluginJSONObject,
   PluginJSONValue,
   PluginMethodResult,
+  PluginExecutionFailureCode,
+  PluginOperationSnapshot,
   PluginStreamTerminalStatus,
   PluginUIActionEvent,
   PluginUIAttributeValue,
@@ -38,5 +40,7 @@ export type {
   PluginCapabilityStreamEvent,
   PluginCapabilityStreamReadResult,
   PluginOperation,
+  PluginOperationTerminalStatus,
+  PluginOperationWaitOptions,
   PluginStream,
 } from "./capability-client.js";

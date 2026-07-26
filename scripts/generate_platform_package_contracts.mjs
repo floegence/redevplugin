@@ -440,9 +440,25 @@ function validateContractSource(value) {
   if (!isRecord(value.matrix) || Object.keys(value.matrix).length === 0) {
     throw new Error("active contract source matrix is required");
   }
+  const structuredKeys = new Set(["supported_plugin_ui_protocol_versions", "plugin_ui_transport_mappings"]);
   for (const [key, version] of Object.entries(value.matrix)) {
     if (!/^[a-z][a-z0-9_]+$/.test(key)) throw new Error(`invalid matrix key: ${key}`);
-    assertVersionLabel(version, `active contract matrix ${key}`);
+    if (!structuredKeys.has(key)) assertVersionLabel(version, `active contract matrix ${key}`);
+  }
+  const supported = value.matrix.supported_plugin_ui_protocol_versions;
+  if (!Array.isArray(supported) || supported.length === 0 || supported.some((item) => typeof item !== "string") || new Set(supported).size !== supported.length) {
+    throw new Error("active contract matrix supported plugin UI protocol versions are invalid");
+  }
+  const mappings = value.matrix.plugin_ui_transport_mappings;
+  if (!Array.isArray(mappings) || mappings.length !== supported.length) {
+    throw new Error("active contract matrix plugin UI transport mappings are incomplete");
+  }
+  for (const [index, mapping] of mappings.entries()) {
+    exactKeys(mapping, ["plugin_ui_protocol_version", "opaque_surface_transport_schema_version", "bridge_schema_version"], "plugin UI transport mapping");
+    for (const [key, version] of Object.entries(mapping)) assertVersionLabel(version, `plugin UI transport mapping ${key}`);
+    if (mapping.plugin_ui_protocol_version !== supported[index]) {
+      throw new Error("plugin UI transport mappings must follow supported protocol order");
+    }
   }
   validateArtifactDeclarations(value.artifacts);
 }

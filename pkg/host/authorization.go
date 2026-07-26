@@ -22,6 +22,7 @@ const (
 	ManagementActionReadSurfaceAsset           ManagementAction = "surface.read_asset"
 	ManagementActionReadSurfaceStream          ManagementAction = "surface.read_stream"
 	ManagementActionAcknowledgeSurfaceStream   ManagementAction = "surface.acknowledge_stream"
+	ManagementActionGetSurfaceOperation        ManagementAction = "surface.get_operation"
 	ManagementActionCancelSurfaceOperation     ManagementAction = "surface.cancel_operation"
 	ManagementActionRejectSurfaceConfirmation  ManagementAction = "surface.reject_confirmation"
 	ManagementActionDisposeSurface             ManagementAction = "surface.dispose"
@@ -93,7 +94,7 @@ func (action ManagementAction) Resource() ResourceRef {
 		return ResourceSessionScope
 	case ManagementActionReadSurfaceStream, ManagementActionAcknowledgeSurfaceStream:
 		return ResourceStream
-	case ManagementActionCancelSurfaceOperation:
+	case ManagementActionGetSurfaceOperation, ManagementActionCancelSurfaceOperation:
 		return ResourceOperation
 	case ManagementActionRejectSurfaceConfirmation:
 		return ResourceConfirmation

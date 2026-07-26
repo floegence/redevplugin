@@ -26,6 +26,7 @@ const state = {
 bridge.onAction("call-host", () => void callHost());
 bridge.onAction("read-stream", () => void readStream());
 bridge.onAction("dangerous-action", () => void runDangerousAction());
+bridge.onAction("observe-operation", () => void observeOperation());
 bridge.onLifecycle((event) => {
   if (event.type === "visible" || event.type === "hidden") {
     state.status = `Lifecycle: ${event.type}`;
@@ -80,6 +81,26 @@ async function runDangerousAction(): Promise<void> {
     method: "danger.run",
     response: await bridge.call("danger.run", { target: "harness-resource" }),
   }));
+}
+
+async function observeOperation(): Promise<void> {
+  await runAction("Testing operation observation cancellation...", "Operation observation recovered", async () => {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 50);
+    let firstErrorCode = "";
+    try {
+      await bridge.operationSnapshot("operation_harness_1", { signal: controller.signal });
+    } catch (error) {
+      firstErrorCode = (error as { errorCode?: string }).errorCode ?? "";
+    } finally {
+      clearTimeout(timer);
+    }
+    if (firstErrorCode !== "PLUGIN_BRIDGE_CANCELLED") {
+      throw new Error(`first operation observation was not cancelled: ${firstErrorCode}`);
+    }
+    const snapshot = await bridge.operationSnapshot("operation_harness_1");
+    return { first_cancelled: true, retry_status: snapshot.status };
+  });
 }
 
 async function runAction(starting: string, complete: string, action: () => Promise<unknown>): Promise<void> {
@@ -137,6 +158,7 @@ function render(): Promise<void> {
           button("Call host", "call-host"),
           button("Read stream", "read-stream"),
           button("Dangerous action", "dangerous-action"),
+          button("Observe operation", "observe-operation"),
         ],
       },
       { type: "element", key: "security-title", tag: "h2", children: [text("security-title-text", "Worker security probe")] },

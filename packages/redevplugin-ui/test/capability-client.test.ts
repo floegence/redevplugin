@@ -10,6 +10,7 @@ import {
   type PluginBridgeClient,
 } from "../src/plugin.js";
 import type { PluginStreamReadResult } from "../src/surface.js";
+import type { PluginOperationSnapshot } from "../src/surface.js";
 
 const requestSchema = {
   type: "object",
@@ -167,6 +168,93 @@ test("capability calls and returned handle cancellation forward only per-call ab
   assert.deepEqual(streamBridge.callOptions, [{ signal: controller.signal }]);
   await stream.cancel(undefined, { signal: cancelController.signal });
   assert.deepEqual(streamBridge.cancellationOptions, [{ signal: cancelController.signal }]);
+});
+
+test("operation handles expose snapshot and wait without implicit cancellation", async () => {
+  const createdAt = "2026-07-26T00:00:00Z";
+  const bridge = fakeBridge(
+    { data: { accepted: true }, operation_id: "operation_observe_1" },
+    undefined,
+    [
+      {
+        operation_id: "operation_observe_1",
+        status: "running",
+        cancelable: true,
+        created_at: createdAt,
+        updated_at: createdAt,
+        retry_after_ms: 500,
+      },
+      {
+        operation_id: "operation_observe_1",
+        status: "completed",
+        cancelable: true,
+        created_at: createdAt,
+        updated_at: "2026-07-26T00:00:01Z",
+        retry_after_ms: 500,
+        terminal_at: "2026-07-26T00:00:01Z",
+      },
+    ],
+  );
+  const operation = await callCapabilityOperation(
+    bridge.client,
+    operationContract("documents.archive"),
+    { document_id: "doc-1" },
+  );
+  assert.equal((await operation.snapshot()).status, "running");
+  const terminal = await operation.wait({ pollIntervalMs: 1 });
+  assert.equal(terminal.status, "completed");
+  assert.equal(terminal.snapshot.terminal_at, "2026-07-26T00:00:01Z");
+  assert.deepEqual(bridge.observations, ["operation_observe_1", "operation_observe_1"]);
+  assert.deepEqual(bridge.cancellations, []);
+});
+
+test("aborting operation wait stops local observation without canceling the operation", async () => {
+  const bridge = fakeBridge(
+    { data: { accepted: true }, operation_id: "operation_observe_abort" },
+    undefined,
+    [{
+      operation_id: "operation_observe_abort",
+      status: "running",
+      cancelable: true,
+      created_at: "2026-07-26T00:00:00Z",
+      updated_at: "2026-07-26T00:00:00Z",
+      retry_after_ms: 500,
+    }],
+  );
+  const operation = await callCapabilityOperation(
+    bridge.client,
+    operationContract("documents.archive"),
+    { document_id: "doc-1" },
+  );
+  const controller = new AbortController();
+  const waiting = operation.wait({ signal: controller.signal, pollIntervalMs: 500 });
+  setTimeout(() => controller.abort(), 0);
+  await assert.rejects(waiting, (error: unknown) =>
+    error instanceof PluginBridgeError && error.errorCode === "PLUGIN_BRIDGE_CANCELLED"
+  );
+  assert.deepEqual(bridge.cancellations, []);
+});
+
+test("operation wait deadline aborts an in-flight snapshot without canceling the operation", async () => {
+  const bridge = fakeBridge({ data: { accepted: true }, operation_id: "operation_observe_timeout" });
+  let snapshotSignal: AbortSignal | undefined;
+  bridge.client.operationSnapshot = (_operationID, options = {}) => new Promise((_resolve, reject) => {
+    snapshotSignal = options.signal;
+    options.signal?.addEventListener("abort", () => {
+      reject(new PluginBridgeError("PLUGIN_BRIDGE_CANCELLED", "snapshot cancelled"));
+    }, { once: true });
+  });
+  const operation = await callCapabilityOperation(
+    bridge.client,
+    operationContract("documents.archive"),
+    { document_id: "doc-1" },
+  );
+  await assert.rejects(
+    operation.wait({ timeoutMs: 1_000, pollIntervalMs: 500 }),
+    (error: unknown) => error instanceof PluginBridgeError && error.errorCode === "PLUGIN_BRIDGE_TIMEOUT",
+  );
+  assert.equal(snapshotSignal?.aborted, true);
+  assert.deepEqual(bridge.cancellations, []);
 });
 
 test("capability helpers reject malformed result envelopes with stable errors", async () => {
@@ -576,6 +664,7 @@ test("generated capability helpers validate typed business error details", () =>
 function fakeBridge(
   result: unknown,
   streamResults?: Array<() => Promise<PluginStreamReadResult>>,
+  operationSnapshots?: PluginOperationSnapshot[],
 ): {
   client: PluginBridgeClient;
   calls: Array<{ method: string; params: unknown }>;
@@ -583,16 +672,19 @@ function fakeBridge(
   cancellations: Array<{ operationID: string; reason?: string }>;
   cancellationOptions: Array<{ signal?: AbortSignal } | undefined>;
   streamReads: number;
+  observations: string[];
 } {
   const calls: Array<{ method: string; params: unknown }> = [];
   const callOptions: Array<{ signal?: AbortSignal } | undefined> = [];
   const cancellations: Array<{ operationID: string; reason?: string }> = [];
   const cancellationOptions: Array<{ signal?: AbortSignal } | undefined> = [];
+  const observations: string[] = [];
   const state = {
     calls,
     callOptions,
     cancellations,
     cancellationOptions,
+    observations,
     streamReads: 0,
     client: {
       call: async (method: string, params?: unknown, options?: { signal?: AbortSignal }) => {
@@ -603,6 +695,12 @@ function fakeBridge(
       cancelOperation: async (operationID: string, reason?: string, options?: { signal?: AbortSignal }) => {
         cancellations.push({ operationID, reason });
         cancellationOptions.push(options ? { signal: options.signal } : undefined);
+      },
+      operationSnapshot: async (operationID: string) => {
+        observations.push(operationID);
+        const snapshot = operationSnapshots?.shift();
+        if (!snapshot) throw new Error("unexpected operation snapshot");
+        return snapshot;
       },
       readStream: async () => {
         const read = streamResults?.[state.streamReads];

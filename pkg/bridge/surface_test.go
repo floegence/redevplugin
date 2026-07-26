@@ -57,6 +57,7 @@ func TestBridgeCommandDTOsDoNotSerializePrivateContext(t *testing.T) {
 		"validate confirmation":    ValidateConfirmationTokenRequest{Audience: audience, Now: now},
 		"validate confirmation id": ValidateConfirmationTokenIDRequest{Audience: audience, Now: now},
 		"validate gateway":         ValidateSurfaceGatewayTokenRequest{OwnerSessionHash: "session_private", OwnerUserHash: "user_private", OwnerEnvHash: "env_private", SessionChannelIDHash: "channel_private", Now: now},
+		"inspect bound surface":    InspectBoundSurfaceRequest{OwnerSessionHash: "session_private", OwnerUserHash: "user_private", OwnerEnvHash: "env_private", SessionChannelIDHash: "channel_private", Now: now},
 		"mint runtime lease":       MintRuntimeExecutionLeaseRequest{OwnerSessionHash: "session_private", OwnerUserHash: "user_private", OwnerEnvHash: "env_private", SessionChannelIDHash: "channel_private", Now: now},
 		"mint handle grant":        MintHandleGrantRequest{ResourceScope: audience.ResourceScope, Now: now},
 		"validate handle grant":    ValidateHandleGrantRequest{Audience: audience, Now: now},
@@ -207,6 +208,27 @@ func TestSurfaceGatewayRenewalRotatesLeaseCredentialsAndExtendsSession(t *testin
 		Now:                  now.Add(51 * time.Second),
 	}); err != nil {
 		t.Fatalf("renewed gateway validation error = %v", err)
+	}
+	bound, err := service.InspectBoundSurface(InspectBoundSurfaceRequest{
+		SurfaceInstanceID: bootstrap.SurfaceInstanceID, BridgeChannelID: "bridge_1",
+		OwnerSessionHash: bootstrap.OwnerSessionHash, OwnerUserHash: bootstrap.OwnerUserHash,
+		OwnerEnvHash: bootstrap.OwnerEnvHash, SessionChannelIDHash: bootstrap.SessionChannelIDHash,
+		Now: now.Add(51 * time.Second),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bound.PluginInstanceID != bootstrap.PluginInstanceID || bound.PluginVersion != bootstrap.PluginVersion ||
+		bound.ActiveFingerprint != bootstrap.ActiveFingerprint || bound.UIProtocolVersion != bootstrap.UIProtocolVersion {
+		t.Fatalf("bound surface = %#v", bound)
+	}
+	if _, err := service.InspectBoundSurface(InspectBoundSurfaceRequest{
+		SurfaceInstanceID: bootstrap.SurfaceInstanceID, BridgeChannelID: "bridge_other",
+		OwnerSessionHash: bootstrap.OwnerSessionHash, OwnerUserHash: bootstrap.OwnerUserHash,
+		OwnerEnvHash: bootstrap.OwnerEnvHash, SessionChannelIDHash: bootstrap.SessionChannelIDHash,
+		Now: now.Add(51 * time.Second),
+	}); !errors.Is(err, ErrTokenAudience) {
+		t.Fatalf("cross-channel bound surface error = %v, want %v", err, ErrTokenAudience)
 	}
 }
 
@@ -1640,6 +1662,7 @@ func testOpenSurfaceRequest(now time.Time) OpenSurfaceRequest {
 		PluginID:             "com.example.plugin",
 		PluginInstanceID:     "plugini_test",
 		PluginVersion:        "1.2.3",
+		UIProtocolVersion:    "plugin-ui-v5",
 		SurfaceID:            "main.view",
 		SurfaceInstanceID:    "surface_test",
 		ActiveFingerprint:    "sha256:package",
@@ -1666,7 +1689,7 @@ func handshakeFromBootstrap(bootstrap SurfaceBootstrap) Handshake {
 		AssetSessionNonce:  bootstrap.AssetSessionNonce,
 		ManagementRevision: bootstrap.ManagementRevision,
 		RevokeEpoch:        bootstrap.RevokeEpoch,
-		UIProtocolVersion:  "plugin-ui-v5",
+		UIProtocolVersion:  bootstrap.UIProtocolVersion,
 	}
 }
 

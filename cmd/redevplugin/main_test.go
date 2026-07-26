@@ -1156,7 +1156,7 @@ func TestCLIVersionPrintsCompatibilityManifest(t *testing.T) {
 		contracts[contract.ID] = contract
 	}
 	bridge := contracts["iframe-bridge-schema"]
-	if bridge.Path != "spec/plugin/bridge-v5.schema.json" || bridge.Version != version.BridgeSchemaVersion || bridge.SHA256 == "" {
+	if bridge.Path != "spec/plugin/bridge-v6.schema.json" || bridge.Version != version.BridgeSchemaVersion || bridge.SHA256 == "" {
 		t.Fatalf("bridge contract mismatch: %#v", bridge)
 	}
 	openapi := contracts["plugin-platform-openapi"]
@@ -1168,7 +1168,7 @@ func TestCLIVersionPrintsCompatibilityManifest(t *testing.T) {
 		path    string
 		version string
 	}{
-		{id: "release-metadata-schema", path: "spec/plugin/release-metadata-v5.schema.json", version: version.ReleaseMetadataSchemaVersion},
+		{id: "release-metadata-schema", path: "spec/plugin/release-metadata-v6.schema.json", version: version.ReleaseMetadataSchemaVersion},
 		{id: "release-source-policy-schema", path: "spec/plugin/release-source-policy-v2.schema.json", version: version.ReleaseSourcePolicySchemaVersion},
 		{id: "release-revocation-schema", path: "spec/plugin/release-revocation-v2.schema.json", version: version.ReleaseRevocationSchemaVersion},
 	} {

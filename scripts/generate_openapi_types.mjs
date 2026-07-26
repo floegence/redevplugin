@@ -5,7 +5,12 @@ import { spawnSync } from "node:child_process";
 import { parse as parseYAML, stringify as stringifyYAML } from "yaml";
 
 const root = resolve(import.meta.dirname, "..");
-const source = join(root, "spec/openapi/plugin-platform-v8.yaml");
+const contractSource = JSON.parse(await readFile(join(root, "internal/contracts/active-contracts.json"), "utf8"));
+const openAPIContract = contractSource.artifacts.find((artifact) => artifact.id === "plugin-platform-openapi");
+if (!openAPIContract || typeof openAPIContract.path !== "string") {
+  throw new Error("active plugin platform OpenAPI contract is missing");
+}
+const source = join(root, openAPIContract.path);
 const output = join(root, "packages/redevplugin-ui/src/openapi.gen.ts");
 const check = process.argv.includes("--check");
 const generated = check

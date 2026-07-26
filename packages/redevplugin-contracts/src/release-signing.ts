@@ -1,6 +1,8 @@
 export const rootDelegationSchemaVersion = "redevplugin.release_root_delegation.v1" as const;
 export const packageSignatureSchemaVersion = "redevplugin.package_signature.v1" as const;
-export const releaseMetadataSchemaVersion = "redevplugin.release_metadata.v5" as const;
+export const releaseMetadataSchemaVersionV5 = "redevplugin.release_metadata.v5" as const;
+export const releaseMetadataSchemaVersionV6 = "redevplugin.release_metadata.v6" as const;
+export const releaseMetadataSchemaVersion = releaseMetadataSchemaVersionV6;
 export const sourcePolicySchemaVersion = "redevplugin.release_source_policy.v2" as const;
 export const sourcePolicyPointerSchemaVersion = "redevplugin.release_source_policy_pointer.v1" as const;
 export const revocationSchemaVersion = "redevplugin.release_revocation.v2" as const;
@@ -126,7 +128,7 @@ export type PackageReleaseSignatureRef = Readonly<{
 export type ReleaseCompatibility = Readonly<{
   min_redevplugin_version: string;
   min_runtime_version: string;
-  ui_protocol_version: "plugin-ui-v5";
+  ui_protocol_version: "plugin-ui-v5" | "plugin-ui-v6";
   supported_targets?: readonly ("darwin/amd64" | "darwin/arm64" | "linux/amd64" | "linux/arm64")[];
 }>;
 
@@ -170,7 +172,7 @@ export type ReleaseEvidence = Readonly<{
 }>;
 
 export type ReleaseMetadataV5 = Readonly<{
-  schema_version: typeof releaseMetadataSchemaVersion;
+  schema_version: typeof releaseMetadataSchemaVersionV5 | typeof releaseMetadataSchemaVersionV6;
   source_id: string;
   release_metadata_ref: string;
   publisher_id: string;
@@ -738,7 +740,7 @@ function validatePackageSignature(context: PackageVerificationContext, value: Pa
 function validateReleaseMetadata(value: ReleaseMetadataV5): void {
   assertRecord(value);
   closeReleaseMetadata(value);
-  if (value.schema_version !== releaseMetadataSchemaVersion || !matchesPattern(newIDPattern, value.source_id)) invalidDocument();
+  if (!validReleaseMetadataUIProtocolPair(value.schema_version, value.compatibility.ui_protocol_version) || !matchesPattern(newIDPattern, value.source_id)) invalidDocument();
   if (!matchesPattern(legacyIDPattern, value.publisher_id) || !matchesPattern(legacyIDPattern, value.plugin_id) || !matchesPattern(semverPattern, value.version) || !validArtifactRef(value.release_metadata_ref)) invalidDocument();
   if ((value.distribution_ref.distribution !== "registry_ref" && value.distribution_ref.distribution !== "host_artifact_ref") || !validArtifactRef(value.distribution_ref.artifact_ref)) invalidDocument();
   if (!legacySHA256Pattern.test(value.hashes.package_sha256) || !legacySHA256Pattern.test(value.hashes.manifest_sha256) || !legacySHA256Pattern.test(value.hashes.entries_sha256)) invalidDocument();
@@ -746,7 +748,7 @@ function validateReleaseMetadata(value: ReleaseMetadataV5): void {
   if (metadataSignature.algorithm !== signatureAlgorithmEd25519 || !matchesPattern(newIDPattern, metadataSignature.key_id) || !validArtifactRef(metadataSignature.signature_ref) || !matchesPattern(epochPattern, metadataSignature.source_policy_epoch) || !matchesPattern(epochPattern, metadataSignature.revocation_epoch)) invalidDocument();
   const packageSignature = value.package_signature;
   if (packageSignature.algorithm !== signatureAlgorithmEd25519 || !matchesPattern(newIDPattern, packageSignature.key_id) || !validArtifactRef(packageSignature.signature_bundle_ref) || !matchesPattern(epochPattern, packageSignature.source_policy_epoch) || !matchesPattern(epochPattern, packageSignature.revocation_epoch)) invalidDocument();
-  if (!matchesPattern(semverPattern, value.compatibility.min_redevplugin_version) || !matchesPattern(semverPattern, value.compatibility.min_runtime_version) || value.compatibility.ui_protocol_version !== "plugin-ui-v5") invalidDocument();
+  if (!matchesPattern(semverPattern, value.compatibility.min_redevplugin_version) || !matchesPattern(semverPattern, value.compatibility.min_runtime_version)) invalidDocument();
   if (value.compatibility.supported_targets !== undefined) {
     if (!Array.isArray(value.compatibility.supported_targets)) invalidDocument();
     const allowed = new Set(["darwin/amd64", "darwin/arm64", "linux/amd64", "linux/arm64"]);
@@ -784,6 +786,11 @@ function validateReleaseMetadata(value: ReleaseMetadataV5): void {
       return false;
     })) invalidDocument();
   }
+}
+
+function validReleaseMetadataUIProtocolPair(schemaVersion: string, uiProtocolVersion: string): boolean {
+  return (schemaVersion === releaseMetadataSchemaVersionV5 && uiProtocolVersion === "plugin-ui-v5") ||
+    (schemaVersion === releaseMetadataSchemaVersionV6 && uiProtocolVersion === "plugin-ui-v6");
 }
 
 function validateCapabilityContractRef(value: HostCapabilityContractRef): void {

@@ -445,14 +445,24 @@ func TestPublicPlatformMappersOwnAndPreserveValues(t *testing.T) {
 	}
 	matrix := reflect.ValueOf(&source.Matrix).Elem()
 	for index := range matrix.NumField() {
-		matrix.Field(index).SetString(matrix.Type().Field(index).Name)
+		field := matrix.Field(index)
+		switch field.Kind() {
+		case reflect.String:
+			field.SetString(matrix.Type().Field(index).Name)
+		case reflect.Slice:
+			if field.Type().Elem().Kind() == reflect.String {
+				field.Set(reflect.ValueOf([]string{"plugin-ui-test"}))
+			} else {
+				field.Set(reflect.ValueOf([]version.PluginUITransportMapping{{PluginUIProtocolVersion: "plugin-ui-test", OpaqueSurfaceTransportSchemaVersion: "transport-test", BridgeSchemaVersion: "bridge-test"}}))
+			}
+		}
 	}
 	response := publicCompatibility(source)
 	publicMatrix := reflect.ValueOf(response.Matrix)
 	for index := range matrix.NumField() {
 		field := matrix.Type().Field(index)
 		mapped := publicMatrix.FieldByName(field.Name)
-		if !mapped.IsValid() || mapped.String() != matrix.Field(index).String() {
+		if !mapped.IsValid() || !reflect.DeepEqual(mapped.Interface(), matrix.Field(index).Interface()) {
 			t.Fatalf("publicCompatibility() lost matrix field %s: %#v", field.Name, response.Matrix)
 		}
 	}

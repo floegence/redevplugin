@@ -202,7 +202,7 @@ func validatePackageSignature(context PackageSigningInput, value PackageSignatur
 }
 
 func validateReleaseMetadata(value ReleaseMetadataV5) error {
-	if value.SchemaVersion != ReleaseMetadataSchemaVersion || !newContractIDPattern.MatchString(value.SourceID) {
+	if !validReleaseMetadataUIProtocolPair(value.SchemaVersion, value.Compatibility.UIProtocolVersion) || !newContractIDPattern.MatchString(value.SourceID) {
 		return invalid("release metadata schema or source")
 	}
 	if !legacyIDPattern.MatchString(value.PublisherID) || !legacyIDPattern.MatchString(value.PluginID) || !semverPattern.MatchString(value.Version) {
@@ -226,8 +226,7 @@ func validateReleaseMetadata(value ReleaseMetadataV5) error {
 		return err
 	}
 	if !semverPattern.MatchString(value.Compatibility.MinReDevPluginVersion) ||
-		!semverPattern.MatchString(value.Compatibility.MinRuntimeVersion) ||
-		value.Compatibility.UIProtocolVersion != "plugin-ui-v5" {
+		!semverPattern.MatchString(value.Compatibility.MinRuntimeVersion) {
 		return invalid("release metadata compatibility")
 	}
 	if err := validateSortedTargets(value.Compatibility.SupportedTargets); err != nil {
@@ -258,6 +257,11 @@ func validateReleaseMetadata(value ReleaseMetadataV5) error {
 		}
 	}
 	return nil
+}
+
+func validReleaseMetadataUIProtocolPair(schemaVersion, uiProtocolVersion string) bool {
+	return (schemaVersion == ReleaseMetadataSchemaVersionV5 && uiProtocolVersion == "plugin-ui-v5") ||
+		(schemaVersion == ReleaseMetadataSchemaVersionV6 && uiProtocolVersion == "plugin-ui-v6")
 }
 
 func validateReleaseMetadataSignatureRef(value ReleaseMetadataSignatureRef) error {

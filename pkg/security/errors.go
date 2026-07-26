@@ -46,6 +46,7 @@ const (
 	ErrOperationBlocked              ErrorCode = "PLUGIN_OPERATION_BLOCKED"
 	ErrOperationNotFound             ErrorCode = "PLUGIN_OPERATION_NOT_FOUND"
 	ErrOperationNotCancelable        ErrorCode = "PLUGIN_OPERATION_NOT_CANCELABLE"
+	ErrOperationRateLimited          ErrorCode = "PLUGIN_OPERATION_RATE_LIMITED"
 	ErrNetworkTargetDenied           ErrorCode = "PLUGIN_NETWORK_TARGET_DENIED"
 	ErrNetworkRateLimited            ErrorCode = "PLUGIN_NETWORK_RATE_LIMITED"
 	ErrRuntimeUnavailable            ErrorCode = "PLUGIN_RUNTIME_UNAVAILABLE"
@@ -118,6 +119,7 @@ var platformErrorCodes = []ErrorCode{
 	ErrOperationBlocked,
 	ErrOperationNotFound,
 	ErrOperationNotCancelable,
+	ErrOperationRateLimited,
 	ErrNetworkTargetDenied,
 	ErrNetworkRateLimited,
 	ErrRuntimeUnavailable,

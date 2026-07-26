@@ -51,6 +51,7 @@ export const pluginRiskPlanSchemaVersion = "redevplugin.capability.risk_plan.v1"
 
 export type PluginJSONValue = null | boolean | number | string | PluginJSONValue[] | PluginJSONObject;
 export type PluginJSONObject = { [key: string]: PluginJSONValue };
+export type PluginUIProtocolVersion = "plugin-ui-v5" | "plugin-ui-v6";
 
 export type BridgeLifecycleEvent =
   | { type: "ready" }
@@ -68,7 +69,7 @@ export type TrustedParentBridgeHandshake = {
   asset_session_nonce: string;
   management_revision: number;
   revoke_epoch: number;
-  ui_protocol_version: typeof pluginUIProtocolVersion;
+  ui_protocol_version: PluginUIProtocolVersion;
 };
 
 export type TrustedParentBridgeTokenRequest = {
@@ -204,6 +205,48 @@ export type PluginStreamReadResult =
   | { events: PluginStreamEvent[]; done: true; terminal_status: PluginStreamTerminalStatus; retry_after_ms: 0 };
 
 type PrivatePluginStreamReadResult = PluginStreamReadResult & { delivery_id?: string };
+
+export type PluginExecutionFailureCode =
+  | "adapter_failed"
+  | "contract_invalid"
+  | "platform_failed"
+  | "quota_exceeded"
+  | "runtime_failed";
+
+type PluginOperationSnapshotActive = {
+  operation_id: string;
+  status: "running" | "cancel_requested";
+  cancelable: boolean;
+  created_at: string;
+  updated_at: string;
+  retry_after_ms: number;
+};
+
+type PluginOperationSnapshotTerminal = {
+  operation_id: string;
+  status: "completed" | "canceled" | "orphaned_after_disable" | "orphaned_after_uninstall";
+  cancelable: boolean;
+  created_at: string;
+  updated_at: string;
+  retry_after_ms: number;
+  terminal_at: string;
+};
+
+type PluginOperationSnapshotFailed = {
+  operation_id: string;
+  status: "failed";
+  cancelable: boolean;
+  created_at: string;
+  updated_at: string;
+  retry_after_ms: number;
+  terminal_at: string;
+  failure_code: PluginExecutionFailureCode;
+};
+
+export type PluginOperationSnapshot =
+  | PluginOperationSnapshotActive
+  | PluginOperationSnapshotTerminal
+  | PluginOperationSnapshotFailed;
 
 export type PluginRiskSeverity = "info" | "low" | "medium" | "high" | "critical";
 export type PluginRiskEffect = "read" | "write" | "execute" | "delete" | "admin";
@@ -510,6 +553,27 @@ export class PluginBridgeClient {
       operation_id: operationID,
       reason,
     }), { mutation: true, signal: options.signal });
+  }
+
+  operationSnapshot(
+    operationID: string,
+    options: PluginBridgeRequestOptions = {},
+  ): Promise<PluginOperationSnapshot> {
+    this.#assertActive();
+    if (!validOpaqueHandle(operationID, "operation")) {
+      throw new PluginBridgeError("PLUGIN_INVALID_REQUEST", "Plugin operation handle is invalid");
+    }
+    const id = this.#requestID("operation");
+    return this.#request<unknown>(id, {
+      type: "redevplugin.bridge.operation.snapshot",
+      id,
+      operation_id: operationID,
+    }, { signal: options.signal }).then((snapshot) => {
+      if (!isPluginOperationSnapshot(snapshot) || snapshot.operation_id !== operationID) {
+        throw new PluginBridgeError("PLUGIN_CONTRACT_MISMATCH", "Plugin operation snapshot is invalid");
+      }
+      return snapshot;
+    });
   }
 
   render(tree: PluginUIVNode): Promise<void> {
@@ -1065,6 +1129,7 @@ export type PluginSurfaceHostBootstrap = {
   pluginId: string;
   pluginInstanceId: string;
   pluginVersion: string;
+  uiProtocolVersion: PluginUIProtocolVersion;
   surfaceId: string;
   surfaceInstanceId: string;
   activeFingerprint: string;
@@ -1246,6 +1311,7 @@ async function revokeSurfaceBootstrap(
 
 export type OpaquePluginBootstrapHTMLOptions = {
   scriptNonce?: string;
+  uiProtocolVersion?: PluginUIProtocolVersion;
 };
 
 type PluginGatewayTokenResult = {
@@ -1350,6 +1416,10 @@ export function createOpaquePluginBootstrapHTML(options: OpaquePluginBootstrapHT
   if (!/^[A-Za-z0-9_-]{8,128}$/.test(scriptNonce)) {
     throw new Error("scriptNonce must contain 8-128 URL-safe characters");
   }
+  const uiProtocolVersion = options.uiProtocolVersion ?? pluginUIProtocolVersion;
+  if (uiProtocolVersion !== "plugin-ui-v5" && uiProtocolVersion !== "plugin-ui-v6") {
+    throw new Error("uiProtocolVersion must be plugin-ui-v5 or plugin-ui-v6");
+  }
   const csp = [
     "default-src 'none'",
     `script-src 'nonce-${scriptNonce}'`,
@@ -1368,7 +1438,7 @@ export function createOpaquePluginBootstrapHTML(options: OpaquePluginBootstrapHT
   ].join("; ");
   const bootstrapScript = `(() => {
   "use strict";
-  const protocolVersion = ${JSON.stringify(pluginUIProtocolVersion)};
+  const protocolVersion = ${JSON.stringify(uiProtocolVersion)};
   const documentSchema = ${JSON.stringify(opaqueSurfaceDocumentSchemaVersion)};
   const workerGlobalKey = ${JSON.stringify(opaquePluginBridgeGlobalKey)};
   const scriptNonce = ${JSON.stringify(scriptNonce)};
@@ -1495,6 +1565,13 @@ export function createOpaquePluginBootstrapHTML(options: OpaquePluginBootstrapHT
   let pendingQuiesceID;
   const pendingWorkerRequests = new Set();
   const requestSequence = { rpc: 0, stream: 0, stream_ack: 0, render: 0, operation: 0, canvas: 0, asset: 0 };
+  let operationSnapshotSurfaceTokens = 8;
+  let operationSnapshotSurfaceRefillAt = performance.now();
+  const operationSnapshotStateIdleMS = 120000;
+  let operationSnapshotNextPruneAt = performance.now() + 30000;
+  const maxOperationSnapshotStates = 1024;
+  const operationSnapshotStates = new Map();
+  const operationSnapshotRequests = new Map();
   let renderWindowStartedAt = 0;
   let renderCount = 0;
   let uiRevision = 0;
@@ -1604,6 +1681,8 @@ export function createOpaquePluginBootstrapHTML(options: OpaquePluginBootstrapHT
     for (const url of blobURLs) URL.revokeObjectURL(url);
     blobURLs.clear();
     pendingWorkerRequests.clear();
+    operationSnapshotStates.clear();
+    operationSnapshotRequests.clear();
     pendingAssets.clear();
     queuedAssets.length = 0;
     activeAssetReads = 0;
@@ -2586,6 +2665,48 @@ export function createOpaquePluginBootstrapHTML(options: OpaquePluginBootstrapHT
     return true;
   };
   const completeWorkerRequest = (id) => pendingWorkerRequests.delete(id);
+  const completeOperationSnapshotRequest = (id) => {
+    const operationID = operationSnapshotRequests.get(id);
+    operationSnapshotRequests.delete(id);
+    const state = operationSnapshotStates.get(operationID);
+    if (state) { state.inFlight = false; state.lastSeen = performance.now(); }
+    completeWorkerRequest(id);
+  };
+  const refillSnapshotTokens = (tokens, refillAt, rate, burst, now) => ({
+    tokens: Math.min(burst, tokens + Math.max(0, now - refillAt) * rate / 1000),
+    refillAt: Math.max(refillAt, now),
+  });
+  const operationSnapshotRateLimit = (operationID, requestID) => {
+    const now = performance.now();
+    const surface = refillSnapshotTokens(operationSnapshotSurfaceTokens, operationSnapshotSurfaceRefillAt, 8, 8, now);
+    operationSnapshotSurfaceTokens = surface.tokens;
+    operationSnapshotSurfaceRefillAt = surface.refillAt;
+    if (operationSnapshotSurfaceTokens < 1) return Math.max(500, Math.min(10000, Math.ceil((1 - operationSnapshotSurfaceTokens) / 8 * 1000)));
+    operationSnapshotSurfaceTokens -= 1;
+    let existing = operationSnapshotStates.get(operationID);
+    if (!existing) {
+      if (now >= operationSnapshotNextPruneAt) {
+        for (const [retainedOperationID, state] of operationSnapshotStates) {
+          if (!state.inFlight && now - state.lastSeen >= operationSnapshotStateIdleMS) operationSnapshotStates.delete(retainedOperationID);
+        }
+        operationSnapshotNextPruneAt = now + 30000;
+      }
+      if (operationSnapshotStates.size >= maxOperationSnapshotStates) return 10000;
+      existing = { tokens: 2, refillAt: now, lastSeen: now, inFlight: false };
+      operationSnapshotStates.set(operationID, existing);
+    }
+    const operation = refillSnapshotTokens(existing.tokens, existing.refillAt, 2, 2, now);
+    existing.tokens = operation.tokens;
+    existing.refillAt = operation.refillAt;
+    existing.lastSeen = now;
+    let retryAfterMS = existing.inFlight ? 500 : 0;
+    if (existing.tokens < 1) retryAfterMS = Math.max(retryAfterMS, Math.ceil((1 - existing.tokens) / 2 * 1000));
+    if (retryAfterMS > 0) return Math.max(500, Math.min(10000, retryAfterMS));
+    existing.tokens -= 1;
+    existing.inFlight = true;
+    operationSnapshotRequests.set(requestID, operationID);
+    return 0;
+  };
   const renderRateAllowed = () => {
     const now = performance.now();
     if (now - renderWindowStartedAt >= 1000) { renderWindowStartedAt = now; renderCount = 0; }
@@ -2817,6 +2938,18 @@ export function createOpaquePluginBootstrapHTML(options: OpaquePluginBootstrapHT
       sendParent(message);
       return;
     }
+    if (exactKeys(message, ["type", "id", "operation_id"]) && message.type === "redevplugin.bridge.operation.snapshot" &&
+        typeof message.id === "string" && validOpaqueHandle(message.operation_id, "operation")) {
+      if (protocolVersion !== "plugin-ui-v6") return rejectWorkerRequest(message.id, "plugin operation observation requires plugin-ui-v6");
+      if (!acceptWorkerRequest(message.id, "operation")) return rejectWorkerRequest(message.id, "duplicate, replayed, or excessive plugin request");
+      const retryAfterMS = operationSnapshotRateLimit(message.operation_id, message.id);
+      if (retryAfterMS > 0) {
+        completeWorkerRequest(message.id);
+        return sendWorker({ type: "redevplugin.bridge.response", id: message.id, ok: false, error_code: "PLUGIN_OPERATION_RATE_LIMITED", error: "plugin operation snapshot rate limited", error_details: { retry_after_ms: retryAfterMS } });
+      }
+      sendParent(message);
+      return;
+    }
     if (exactKeys(message, ["type", "id", "canvas_id"]) && message.type === "redevplugin.ui.canvas.open" && typeof message.id === "string" && validResourceIdentifier(message.canvas_id)) {
       if (!acceptWorkerRequest(message.id, "canvas")) return rejectWorkerRequest(message.id, "duplicate, replayed, or excessive plugin request");
       openCanvas(message.id, message.canvas_id);
@@ -2870,8 +3003,10 @@ export function createOpaquePluginBootstrapHTML(options: OpaquePluginBootstrapHT
         completeWorkerRequest(message.id);
         return;
       }
-      completeWorkerRequest(message.id);
+      if (operationSnapshotRequests.has(message.id)) completeOperationSnapshotRequest(message.id);
+      else completeWorkerRequest(message.id);
       sendParent(message);
+      return;
     }
   };
   const onParentMessage = async (event) => {
@@ -2890,7 +3025,8 @@ export function createOpaquePluginBootstrapHTML(options: OpaquePluginBootstrapHT
       return;
     }
     if (message && message.type === "redevplugin.bridge.response" && typeof message.id === "string" && pendingWorkerRequests.has(message.id) && withinLimit(message)) {
-      completeWorkerRequest(message.id);
+	  if (operationSnapshotRequests.has(message.id)) completeOperationSnapshotRequest(message.id);
+	  else completeWorkerRequest(message.id);
       sendWorker(message);
       return;
     }
@@ -3064,7 +3200,7 @@ class PluginSurfaceHostImplementation implements PluginSurfaceHost {
     this.#initialFrameLoad = initialFrameLoad;
     this.#iframe.addEventListener("load", this.#onFrameLoad);
     hardenPluginSurfaceFrame(this.#iframe);
-    this.#iframe.srcdoc = createOpaquePluginBootstrapHTML({ scriptNonce });
+    this.#iframe.srcdoc = createOpaquePluginBootstrapHTML({ scriptNonce, uiProtocolVersion: this.bootstrap.uiProtocolVersion });
 
     try {
       await withTimeout(
@@ -3107,7 +3243,7 @@ class PluginSurfaceHostImplementation implements PluginSurfaceHost {
     iframeWindow.postMessage({
       type: "redevplugin.surface.port",
       frame_generation_id: this.frameGenerationId,
-      ui_protocol_version: pluginUIProtocolVersion,
+      ui_protocol_version: this.bootstrap.uiProtocolVersion,
     }, "*", [channel.port2]);
 
     await signals.portAcknowledged.promise;
@@ -3298,6 +3434,10 @@ class PluginSurfaceHostImplementation implements PluginSurfaceHost {
       }
       if (isOperationCancelMessage(data)) {
         await this.#handleOperationCancel(data);
+        return;
+      }
+      if (isOperationSnapshotMessage(data)) {
+        await this.#handleOperationSnapshot(data);
         return;
       }
       if (isAssetReadMessage(data)) {
@@ -3513,6 +3653,31 @@ class PluginSurfaceHostImplementation implements PluginSurfaceHost {
     }
   }
 
+  async #handleOperationSnapshot(message: { id: string; operation_id: string }): Promise<void> {
+    if (this.bootstrap.uiProtocolVersion !== "plugin-ui-v6") {
+      this.#postError(message.id, "PLUGIN_UI_PROTOCOL_UNSUPPORTED", "Plugin operation observation requires plugin-ui-v6");
+      return;
+    }
+    const controller = this.#registerPendingRequest(message.id);
+    try {
+      const snapshot = await this.#postJSON<unknown>(
+        `/_redevplugin/api/plugins/surfaces/${encodeURIComponent(this.bootstrap.surfaceInstanceId)}/operations/query`,
+        { operation_id: message.operation_id, bridge_channel_id: this.bridgeChannelId },
+        controller.signal,
+      );
+      if (!isPluginOperationSnapshot(snapshot) || snapshot.operation_id !== message.operation_id) {
+        throw new PluginBridgeError("PLUGIN_CONTRACT_MISMATCH", "Plugin operation snapshot endpoint returned an invalid response");
+      }
+      if (!controller.signal.aborted && !this.#disposed) this.#postResponse(message.id, snapshot);
+    } catch (error) {
+      if (controller.signal.aborted || this.#disposed) return;
+      const bridgeError = toBridgeError(error, "PLUGIN_OPERATION_NOT_FOUND");
+      this.#postError(message.id, bridgeError.errorCode, bridgeError.message, bridgeError.details, bridgeError.mutationOutcome);
+    } finally {
+      this.#pendingRequestControllers.delete(message.id);
+    }
+  }
+
   async #handleAssetRead(message: SurfaceAssetReadMessage): Promise<void> {
     if (this.#activeAssetReads >= maxConcurrentAssetReads) {
       throw new PluginBridgeError("PLUGIN_INVALID_REQUEST", "Plugin asset reads exceed the concurrency limit");
@@ -3675,7 +3840,7 @@ class PluginSurfaceHostImplementation implements PluginSurfaceHost {
       asset_session_nonce: this.bootstrap.assetSessionNonce,
       management_revision: this.bootstrap.managementRevision,
       revoke_epoch: this.bootstrap.revokeEpoch,
-      ui_protocol_version: pluginUIProtocolVersion,
+      ui_protocol_version: this.bootstrap.uiProtocolVersion,
     };
   }
 
@@ -4611,6 +4776,7 @@ function validateHostBootstrap(bootstrap: PluginSurfaceHostBootstrap): void {
     bootstrap.pluginId,
     bootstrap.pluginInstanceId,
     bootstrap.pluginVersion,
+    bootstrap.uiProtocolVersion,
     bootstrap.surfaceId,
     bootstrap.surfaceInstanceId,
     bootstrap.activeFingerprint,
@@ -4624,6 +4790,9 @@ function validateHostBootstrap(bootstrap: PluginSurfaceHostBootstrap): void {
     if (typeof value !== "string" || value.length === 0) {
       throw new PluginBridgeError("PLUGIN_CONTRACT_MISMATCH", "Plugin surface bootstrap is incomplete");
     }
+  }
+  if (bootstrap.uiProtocolVersion !== "plugin-ui-v5" && bootstrap.uiProtocolVersion !== "plugin-ui-v6") {
+    throw new PluginBridgeError("PLUGIN_CONTRACT_MISMATCH", "Plugin surface UI protocol is unsupported");
   }
   if (!Number.isSafeInteger(bootstrap.managementRevision) || bootstrap.managementRevision < 1 ||
       !Number.isSafeInteger(bootstrap.revokeEpoch) || bootstrap.revokeEpoch < 1) {
@@ -4747,6 +4916,30 @@ function isOperationCancelMessage(value: unknown): value is { type: "redevplugin
     validBridgeRequestID(value.id, "operation") &&
     validOpaqueHandle(value.operation_id, "operation") &&
     (value.reason === undefined || (typeof value.reason === "string" && value.reason.length <= 256));
+}
+
+function isOperationSnapshotMessage(value: unknown): value is { type: "redevplugin.bridge.operation.snapshot"; id: string; operation_id: string } {
+  return hasExactKeys(value, ["type", "id", "operation_id"]) &&
+    value.type === "redevplugin.bridge.operation.snapshot" &&
+    validBridgeRequestID(value.id, "operation") &&
+    validOpaqueHandle(value.operation_id, "operation");
+}
+
+function isPluginOperationSnapshot(value: unknown): value is PluginOperationSnapshot {
+  if (!isRecord(value) || !validOpaqueHandle(value.operation_id, "operation") || typeof value.cancelable !== "boolean" ||
+      !Number.isInteger(value.retry_after_ms) || Number(value.retry_after_ms) < 500 || Number(value.retry_after_ms) > 10000 ||
+      !validDateTime(value.created_at) || !validDateTime(value.updated_at)) return false;
+  const common = ["operation_id", "status", "cancelable", "created_at", "updated_at", "retry_after_ms"];
+  if (value.status === "running" || value.status === "cancel_requested") return hasExactKeys(value, common);
+  if (["completed", "canceled", "orphaned_after_disable", "orphaned_after_uninstall"].includes(String(value.status))) {
+    return hasExactKeys(value, [...common, "terminal_at"]) && validDateTime(value.terminal_at);
+  }
+  return value.status === "failed" && hasExactKeys(value, [...common, "terminal_at", "failure_code"]) &&
+    validDateTime(value.terminal_at) && ["adapter_failed", "contract_invalid", "platform_failed", "quota_exceeded", "runtime_failed"].includes(String(value.failure_code));
+}
+
+function validDateTime(value: unknown): value is string {
+  return typeof value === "string" && value.length > 0 && Number.isFinite(Date.parse(value));
 }
 
 function isBridgeCancelMessage(value: unknown): value is PluginBridgeCancelMessage {

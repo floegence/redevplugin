@@ -4,9 +4,9 @@
   "artifacts": [
     {
       "id": "compatibility-manifest-schema",
-      "path": "spec/plugin/compatibility-manifest-v10.schema.json",
-      "version": "compatibility-manifest-v10",
-      "sha256": "a732aa43181bda6570885612f9c10db97346db188cfe7862ac966f190853312f"
+      "path": "spec/plugin/compatibility-manifest-v11.schema.json",
+      "version": "compatibility-manifest-v11",
+      "sha256": "cec20e7bc5351641c031ebceec10559cad7c5f91a62f79158ace94df88fe1d0d"
     },
     {
       "id": "contract-registry-schema",
@@ -16,9 +16,9 @@
     },
     {
       "id": "error-codes-schema",
-      "path": "spec/plugin/error-codes-v6.schema.json",
-      "version": "error-codes-v6",
-      "sha256": "094cb980156c17af4866942b51e6a1032ea7d1ae0675b329d59a765223ccda28"
+      "path": "spec/plugin/error-codes-v7.schema.json",
+      "version": "error-codes-v7",
+      "sha256": "4e7cac510a6036f90cae8f58ff8c3b785b3a2d3933875f2f69bef1c41de3d26c"
     },
     {
       "id": "host-capability-compatibility-schema",
@@ -58,15 +58,15 @@
     },
     {
       "id": "iframe-bridge-schema",
-      "path": "spec/plugin/bridge-v5.schema.json",
-      "version": "bridge-v5",
-      "sha256": "ad8ccc7e1900ecb871432f07296dd681ae6faea9377e52f5ddca90300c04f4da"
+      "path": "spec/plugin/bridge-v6.schema.json",
+      "version": "bridge-v6",
+      "sha256": "e5d98528a96016950038e25b64ca760479452e06c13ab46e4ff06745a3e8aef4"
     },
     {
       "id": "manifest-schema",
-      "path": "spec/plugin/manifest-v5.schema.json",
-      "version": "manifest-v5",
-      "sha256": "9695f6163aa539b9e3a933367c98850257c6d7bb8d61b36fd5f83b3ab61746f7"
+      "path": "spec/plugin/manifest-v6.schema.json",
+      "version": "manifest-v6",
+      "sha256": "b196a328ca6e0581d3da69b8fbaed36ffb1ba13f8e2e46a34b1761cd644f1e74"
     },
     {
       "id": "network-grant-schema",
@@ -82,9 +82,9 @@
     },
     {
       "id": "opaque-surface-transport-schema",
-      "path": "spec/plugin/opaque-surface-transport-v4.schema.json",
-      "version": "opaque-surface-transport-v4",
-      "sha256": "004da73aba882cf8c2130af0c69d3eed4c710539f21287841bc2e7e870e60f8f"
+      "path": "spec/plugin/opaque-surface-transport-v5.schema.json",
+      "version": "opaque-surface-transport-v5",
+      "sha256": "c9beca3ed207a8059f63e946fca684b6c8a16a9999fe076684dc086af97cf67a"
     },
     {
       "id": "owner-scope-inventory-registry",
@@ -142,9 +142,9 @@
     },
     {
       "id": "plugin-platform-openapi",
-      "path": "spec/openapi/plugin-platform-v8.yaml",
-      "version": "plugin-platform-v8",
-      "sha256": "b6890e093dded3a48845ae710a813dfb0b9c9456bd3cc3c69b07a40fc1435436"
+      "path": "spec/openapi/plugin-platform-v9.yaml",
+      "version": "plugin-platform-v9",
+      "sha256": "b5999503d24828d93f5ddaadc01ca31eaa630434bef5552aed9e6ec56c65c305"
     },
     {
       "id": "process-containment-schema",
@@ -160,9 +160,9 @@
     },
     {
       "id": "release-metadata-schema",
-      "path": "spec/plugin/release-metadata-v5.schema.json",
-      "version": "release-metadata-v5",
-      "sha256": "255ef3deb7d2758a43e69e533a08aa28106f8edc2e7385ab0aec0d50c1ef3d7a"
+      "path": "spec/plugin/release-metadata-v6.schema.json",
+      "version": "release-metadata-v6",
+      "sha256": "68700942b0bc21298270e90da940f29bb6a4d832282337587abddba9485b9938"
     },
     {
       "id": "release-revocation-pointer-schema",

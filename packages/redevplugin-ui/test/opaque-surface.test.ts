@@ -25,6 +25,7 @@ import {
   decodePluginStreamText,
   openPreparedPluginSurfaceInSlot,
   type PluginSurfaceHostOptions,
+  type PluginSurfaceHostBootstrap,
   type PreparedPluginSurfaceHost,
 } from "../src/surface.js";
 import { PluginLocalImportClient } from "../src/local-import.js";
@@ -276,6 +277,7 @@ const hostBootstrap = {
   pluginId: "com.example.plugin",
   pluginInstanceId: "plugin_instance_1",
   pluginVersion: "1.0.0",
+  uiProtocolVersion: "plugin-ui-v6",
   surfaceId: "example.view",
   surfaceInstanceId: "surface_1",
   activeFingerprint: digest("a"),
@@ -287,7 +289,7 @@ const hostBootstrap = {
   managementRevision: 7,
   revokeEpoch: 3,
   runtimeGenerationId: "runtime_gen_1",
-};
+} satisfies PluginSurfaceHostBootstrap;
 
 function sessionScopeRevokeResult() {
   return {
@@ -319,6 +321,7 @@ function platformSurfaceBootstrap(overrides: Record<string, unknown> = {}): Reco
     plugin_id: hostBootstrap.pluginId,
     plugin_instance_id: hostBootstrap.pluginInstanceId,
     plugin_version: hostBootstrap.pluginVersion,
+    ui_protocol_version: hostBootstrap.uiProtocolVersion,
     surface_id: hostBootstrap.surfaceId,
     surface_instance_id: hostBootstrap.surfaceInstanceId,
     active_fingerprint: hostBootstrap.activeFingerprint,
@@ -640,6 +643,53 @@ test("plugin bridge client exposes only a public handle and its private port", a
   assert.deepEqual(actions, ["escape"]);
   client.dispose();
   assert.equal(pluginPort.closed, true);
+});
+
+test("plugin bridge operation snapshot uses an opaque query message and validates the closed union", async () => {
+  const { port1: rendererPort, port2: pluginPort } = fakeChannel();
+  const client = new PluginBridgeClient({ port: pluginPort, surfaceHandle: "surface_12345678", timeoutMs: 1000 });
+  const snapshotPromise = client.operationSnapshot("operation_12345678");
+  assert.deepEqual(pluginPort.sent[0], {
+    type: "redevplugin.bridge.operation.snapshot",
+    id: "operation_1",
+    operation_id: "operation_12345678",
+  });
+  rendererPort.postMessage({
+    type: "redevplugin.bridge.response",
+    id: "operation_1",
+    ok: true,
+    data: {
+      operation_id: "operation_12345678",
+      status: "failed",
+      cancelable: true,
+      created_at: "2026-07-26T00:00:00Z",
+      updated_at: "2026-07-26T00:00:01Z",
+      retry_after_ms: 500,
+      terminal_at: "2026-07-26T00:00:01Z",
+      failure_code: "adapter_failed",
+    },
+  });
+  assert.equal((await snapshotPromise).status, "failed");
+
+  const invalid = client.operationSnapshot("operation_12345678");
+  rendererPort.postMessage({
+    type: "redevplugin.bridge.response",
+    id: "operation_2",
+    ok: true,
+    data: {
+      operation_id: "operation_12345678",
+      status: "running",
+      cancelable: true,
+      created_at: "2026-07-26T00:00:00Z",
+      updated_at: "2026-07-26T00:00:00Z",
+      retry_after_ms: 500,
+      terminal_at: "2026-07-26T00:00:01Z",
+    },
+  });
+  await assert.rejects(invalid, (error: unknown) =>
+    error instanceof PluginBridgeError && error.errorCode === "PLUGIN_CONTRACT_MISMATCH"
+  );
+  client.dispose();
 });
 
 test("plugin bridge serializes concurrent reads for the same stream handle", async () => {

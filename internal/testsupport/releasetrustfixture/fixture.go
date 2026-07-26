@@ -297,7 +297,7 @@ func New(packageBytes []byte, options Options) (*Fixture, error) {
 		signedPackage.Manifest.Version(),
 	)
 	releaseMetadata := releasecontract.ReleaseMetadataV5{
-		SchemaVersion: releasecontract.ReleaseMetadataSchemaVersion, SourceID: sourceID, ReleaseMetadataRef: releaseMetadataRef,
+		SchemaVersion: releaseMetadataSchemaVersion(signedPackage.Manifest.Plugin.UIProtocolVersion), SourceID: sourceID, ReleaseMetadataRef: releaseMetadataRef,
 		PublisherID: signedPackage.Manifest.Publisher.PublisherID, PluginID: signedPackage.Manifest.PluginID(), Version: signedPackage.Manifest.Version(),
 		DistributionRef: releasecontract.ReleaseDistributionRef{
 			Distribution: "registry_ref",
@@ -920,4 +920,11 @@ func latestNode(left, right []byte) []byte {
 	value = append(value, right...)
 	digest := sha256.Sum256(value)
 	return digest[:]
+}
+
+func releaseMetadataSchemaVersion(uiProtocolVersion string) string {
+	if uiProtocolVersion == "plugin-ui-v6" {
+		return releasecontract.ReleaseMetadataSchemaVersionV6
+	}
+	return releasecontract.ReleaseMetadataSchemaVersionV5
 }

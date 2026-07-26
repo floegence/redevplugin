@@ -3,7 +3,9 @@ package releasecontract
 const (
 	RootDelegationSchemaVersion        = "redevplugin.release_root_delegation.v1"
 	PackageSignatureSchemaVersion      = "redevplugin.package_signature.v1"
-	ReleaseMetadataSchemaVersion       = "redevplugin.release_metadata.v5"
+	ReleaseMetadataSchemaVersionV5     = "redevplugin.release_metadata.v5"
+	ReleaseMetadataSchemaVersionV6     = "redevplugin.release_metadata.v6"
+	ReleaseMetadataSchemaVersion       = ReleaseMetadataSchemaVersionV6
 	SourcePolicySchemaVersion          = "redevplugin.release_source_policy.v2"
 	SourcePolicyPointerSchemaVersion   = "redevplugin.release_source_policy_pointer.v1"
 	RevocationSchemaVersion            = "redevplugin.release_revocation.v2"

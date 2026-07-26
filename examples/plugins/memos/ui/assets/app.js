@@ -44,6 +44,7 @@
         "PLUGIN_OPERATION_BLOCKED",
         "PLUGIN_OPERATION_NOT_FOUND",
         "PLUGIN_OPERATION_NOT_CANCELABLE",
+        "PLUGIN_OPERATION_RATE_LIMITED",
         "PLUGIN_NETWORK_TARGET_DENIED",
         "PLUGIN_NETWORK_RATE_LIMITED",
         "PLUGIN_RUNTIME_UNAVAILABLE",
@@ -867,6 +868,23 @@
                 reason
             }), { mutation: true, signal: options.signal });
         }
+        operationSnapshot(operationID, options = {}) {
+            this.#assertActive();
+            if (!validOpaqueHandle(operationID, "operation")) {
+                throw new PluginBridgeError("PLUGIN_INVALID_REQUEST", "Plugin operation handle is invalid");
+            }
+            const id = this.#requestID("operation");
+            return this.#request(id, {
+                type: "redevplugin.bridge.operation.snapshot",
+                id,
+                operation_id: operationID
+            }, { signal: options.signal }).then((snapshot) => {
+                if (!isPluginOperationSnapshot(snapshot) || snapshot.operation_id !== operationID) {
+                    throw new PluginBridgeError("PLUGIN_CONTRACT_MISMATCH", "Plugin operation snapshot is invalid");
+                }
+                return snapshot;
+            });
+        }
         render(tree) {
             this.#assertActive();
             let validated;
@@ -1265,6 +1283,20 @@
         "usb 'none'",
         "xr-spatial-tracking 'none'"
     ].join("; ");
+    function isPluginOperationSnapshot(value) {
+        if (!isRecord(value) || !validOpaqueHandle(value.operation_id, "operation") || typeof value.cancelable !== "boolean" || !Number.isInteger(value.retry_after_ms) || Number(value.retry_after_ms) < 500 || Number(value.retry_after_ms) > 1e4 || !validDateTime(value.created_at) || !validDateTime(value.updated_at))
+            return false;
+        const common = ["operation_id", "status", "cancelable", "created_at", "updated_at", "retry_after_ms"];
+        if (value.status === "running" || value.status === "cancel_requested")
+            return hasExactKeys(value, common);
+        if (["completed", "canceled", "orphaned_after_disable", "orphaned_after_uninstall"].includes(String(value.status))) {
+            return hasExactKeys(value, [...common, "terminal_at"]) && validDateTime(value.terminal_at);
+        }
+        return value.status === "failed" && hasExactKeys(value, [...common, "terminal_at", "failure_code"]) && validDateTime(value.terminal_at) && ["adapter_failed", "contract_invalid", "platform_failed", "quota_exceeded", "runtime_failed"].includes(String(value.failure_code));
+    }
+    function validDateTime(value) {
+        return typeof value === "string" && value.length > 0 && Number.isFinite(Date.parse(value));
+    }
     function isBridgeResponseCandidate(value) {
         return isRecord(value) && value.type === "redevplugin.bridge.response" && typeof value.id === "string";
     }

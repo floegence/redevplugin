@@ -103,6 +103,8 @@ test("Go, npm, and Rust projections share one contract inventory and digest", ()
     "packageSigningPreimage",
     "registryContract",
     "releaseMetadataSchemaVersion",
+    "releaseMetadataSchemaVersionV5",
+    "releaseMetadataSchemaVersionV6",
     "releaseMetadataSigningPreimage",
     "releaseSigningLedgerEvidenceSchemaVersion",
     "revocationPointerSchemaVersion",
