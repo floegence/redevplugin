@@ -130,20 +130,80 @@ jobs:
           test "$ALLOW_PUBLIC" = true || test "$ALLOW_PUBLIC" = false
           pages=$(mktemp "${RUNNER_TEMP}/redevplugin-release-pages.XXXXXX")
           release=$(mktemp "${RUNNER_TEMP}/redevplugin-release.XXXXXX")
-          trap 'rm -f "$pages" "$release"' EXIT
-          gh api --paginate --slurp \
-            "repos/${GITHUB_REPOSITORY}/releases?per_page=100" > "$pages"
-          jq -e 'type == "array" and all(.[]; type == "array" and length <= 100)' "$pages" > /dev/null
+          assets=$(mktemp "${RUNNER_TEMP}/redevplugin-release-assets.XXXXXX")
+          trap 'rm -f "$pages" "$release" "$assets"' EXIT
+          marker="<!-- redevplugin-release-transaction-v1 source_commit=${SOURCE_COMMIT} -->"
+
+          load_pages() {
+            gh api --paginate --slurp \
+              "repos/${GITHUB_REPOSITORY}/releases?per_page=100" > "$pages" || return 1
+            jq -e 'type == "array" and all(.[]; type == "array" and length <= 100)' "$pages" > /dev/null
+          }
+
+          validate_empty_bound_draft() {
+            local release_id=$1
+            gh api "repos/${GITHUB_REPOSITORY}/releases/${release_id}" > "$release" || return 1
+            jq -e --argjson id "$release_id" --arg tag "$TAG" --arg marker "$marker" '
+              .id == $id and
+              .tag_name == $tag and
+              .prerelease == false and
+              .draft == true and
+              ((.body // "") | contains($marker))
+            ' "$release" > /dev/null || return 1
+            gh api "repos/${GITHUB_REPOSITORY}/releases/${release_id}/assets?per_page=100" > "$assets" || return 1
+            jq -e 'type == "array" and length == 0' "$assets" > /dev/null
+          }
+
+          normalize_duplicate_empty_drafts() {
+            local canonical_id current_id current_ids duplicate_id
+            current_ids=$(jq -r --arg tag "$TAG" '[.[][] | select(.tag_name == $tag) | .id] | sort | .[]' "$pages") || return 1
+            canonical_id=$(printf '%s\n' "$current_ids" | head -n 1)
+            [[ "$canonical_id" =~ ^[1-9][0-9]*$ ]] || return 1
+            for current_id in $current_ids; do
+              [[ "$current_id" =~ ^[1-9][0-9]*$ ]] || return 1
+              validate_empty_bound_draft "$current_id" || return 1
+            done
+            for duplicate_id in $(printf '%s\n' "$current_ids" | tail -n +2); do
+              for attempt in 1 2 3 4; do
+                load_pages || return 1
+                if ! jq -e --arg tag "$TAG" --argjson id "$duplicate_id" \
+                  'any(.[][]; .tag_name == $tag and .id == $id)' "$pages" > /dev/null; then
+                  break
+                fi
+                current_ids=$(jq -r --arg tag "$TAG" '[.[][] | select(.tag_name == $tag) | .id] | sort | .[]' "$pages") || return 1
+                test "$(printf '%s\n' "$current_ids" | head -n 1)" = "$canonical_id" || return 1
+                for current_id in $current_ids; do
+                  validate_empty_bound_draft "$current_id" || return 1
+                done
+                gh api --method DELETE \
+                  "repos/${GITHUB_REPOSITORY}/releases/${duplicate_id}" > /dev/null || true
+                load_pages || return 1
+                if ! jq -e --arg tag "$TAG" --argjson id "$duplicate_id" \
+                  'any(.[][]; .tag_name == $tag and .id == $id)' "$pages" > /dev/null; then
+                  break
+                fi
+                test "$attempt" != 4 || return 1
+                sleep "$attempt"
+              done
+            done
+            load_pages || return 1
+            test "$(jq --arg tag "$TAG" '[.[][] | select(.tag_name == $tag)] | length' "$pages")" = 1
+            test "$(jq -r --arg tag "$TAG" '.[][] | select(.tag_name == $tag) | .id' "$pages")" = "$canonical_id"
+          }
+
+          load_pages
           match_count=$(jq --arg tag "$TAG" '[.[][] | select(.tag_name == $tag)] | length' "$pages")
           case "$match_count" in
             0) exit 0 ;;
             1) ;;
-            *) echo "release admission found multiple exact-tag matches" >&2; exit 1 ;;
+            *) normalize_duplicate_empty_drafts || {
+                 echo "release admission found non-reconcilable exact-tag duplicates" >&2
+                 exit 1
+               } ;;
           esac
           release_id=$(jq -r --arg tag "$TAG" '.[][] | select(.tag_name == $tag) | .id' "$pages")
           [[ "$release_id" =~ ^[1-9][0-9]*$ ]]
           gh api "repos/${GITHUB_REPOSITORY}/releases/${release_id}" > "$release"
-          marker="<!-- redevplugin-release-transaction-v1 source_commit=${SOURCE_COMMIT} -->"
           jq -e --argjson id "$release_id" --arg tag "$TAG" --arg marker "$marker" '
             .id == $id and
             .tag_name == $tag and
@@ -340,8 +400,7 @@ jobs:
             test "$current_sha256" = "$manifest_sha256" || return 2
           }
 
-          lookup_release() {
-            local match_count release_id status
+          load_release_pages() {
             for attempt in 1 2 3 4; do
               if gh api --paginate --slurp \
                 "repos/${GITHUB_REPOSITORY}/releases?per_page=100" > "$release_pages"; then
@@ -351,14 +410,10 @@ jobs:
               sleep "$attempt"
             done
             jq -e 'type == "array" and all(.[]; type == "array" and length <= 100)' "$release_pages" > /dev/null || return 2
-            match_count=$(jq --arg tag "$TAG" '[.[][] | select(.tag_name == $tag)] | length' "$release_pages")
-            case "$match_count" in
-              0) return 1 ;;
-              1) ;;
-              *) echo "release lookup found multiple exact-tag matches" >&2; return 2 ;;
-            esac
-            release_id=$(jq -r --arg tag "$TAG" '.[][] | select(.tag_name == $tag) | .id' "$release_pages")
-            [[ "$release_id" =~ ^[1-9][0-9]*$ ]] || return 2
+          }
+
+          load_bound_release() {
+            local release_id=$1 status
             status=$(curl --silent --show-error --location --retry 3 --retry-all-errors \
               --connect-timeout 10 --max-time 30 \
               -H "Accept: application/vnd.github+json" \
@@ -367,8 +422,8 @@ jobs:
               -o "$release_json" -w '%{http_code}' \
               "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/releases/$release_id") || return 2
             test "$status" = 200 || return 2
-            jq -e --arg tag "$TAG" --arg marker "$marker" '
-              (.id | type == "number" and . > 0) and
+            jq -e --argjson id "$release_id" --arg tag "$TAG" --arg marker "$marker" '
+              .id == $id and
               .tag_name == $tag and
               .prerelease == false and
               (.draft | type == "boolean") and
@@ -377,21 +432,95 @@ jobs:
               echo "existing release is not the exact bound transaction" >&2
               return 2
             }
-            test "$(jq -r .id "$release_json")" = "$release_id" || return 2
           }
 
-          load_assets() {
-            local release_id status
-            release_id=$(jq -r .id "$release_json")
+          load_assets_for_release() {
+            local release_id=$1 status
             status=$(curl --silent --show-error --location --retry 3 --retry-all-errors \
               --connect-timeout 10 --max-time 30 \
               -H "Accept: application/vnd.github+json" \
               -H "Authorization: Bearer $GH_TOKEN" \
               -H "X-GitHub-Api-Version: 2022-11-28" \
               -o "$assets_json" -w '%{http_code}' \
-              "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/releases/$release_id/assets?per_page=100") || return 1
-            test "$status" = 200 || return 1
-            jq -e 'type == "array" and length < 100' "$assets_json" > /dev/null || return 1
+              "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/releases/$release_id/assets?per_page=100") || return 2
+            test "$status" = 200 || return 2
+            jq -e 'type == "array" and length < 100' "$assets_json" > /dev/null || return 2
+          }
+
+          validate_empty_bound_draft() {
+            local release_id=$1
+            load_bound_release "$release_id" || return 1
+            test "$(jq -r .draft "$release_json")" = true || return 1
+            load_assets_for_release "$release_id" || return 1
+            test "$(jq length "$assets_json")" = 0
+          }
+
+          normalize_duplicate_empty_drafts() {
+            local canonical_id current_id current_ids delete_status duplicate_id
+            verify_local_manifest || return 1
+            current_ids=$(jq -r --arg tag "$TAG" '[.[][] | select(.tag_name == $tag) | .id] | sort | .[]' "$release_pages") || return 1
+            canonical_id=$(printf '%s\n' "$current_ids" | head -n 1)
+            [[ "$canonical_id" =~ ^[1-9][0-9]*$ ]] || return 1
+            for current_id in $current_ids; do
+              [[ "$current_id" =~ ^[1-9][0-9]*$ ]] || return 1
+              validate_empty_bound_draft "$current_id" || return 1
+            done
+            for duplicate_id in $(printf '%s\n' "$current_ids" | tail -n +2); do
+              for attempt in 1 2 3 4; do
+                load_release_pages || return 1
+                if ! jq -e --arg tag "$TAG" --argjson id "$duplicate_id" \
+                  'any(.[][]; .tag_name == $tag and .id == $id)' "$release_pages" > /dev/null; then
+                  break
+                fi
+                current_ids=$(jq -r --arg tag "$TAG" '[.[][] | select(.tag_name == $tag) | .id] | sort | .[]' "$release_pages") || return 1
+                test "$(printf '%s\n' "$current_ids" | head -n 1)" = "$canonical_id" || return 1
+                for current_id in $current_ids; do
+                  validate_empty_bound_draft "$current_id" || return 1
+                done
+                delete_status=$(curl --silent --show-error --connect-timeout 10 --max-time 30 \
+                  -X DELETE \
+                  -H "Accept: application/vnd.github+json" \
+                  -H "Authorization: Bearer $GH_TOKEN" \
+                  -H "X-GitHub-Api-Version: 2022-11-28" \
+                  -o "$mutation_json" -w '%{http_code}' \
+                  "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/releases/$duplicate_id") || delete_status=000
+                load_release_pages || return 1
+                if ! jq -e --arg tag "$TAG" --argjson id "$duplicate_id" \
+                  'any(.[][]; .tag_name == $tag and .id == $id)' "$release_pages" > /dev/null; then
+                  break
+                fi
+                test "$attempt" != 4 || return 1
+                sleep "$attempt"
+              done
+            done
+            load_release_pages || return 1
+            test "$(jq --arg tag "$TAG" '[.[][] | select(.tag_name == $tag)] | length' "$release_pages")" = 1
+            test "$(jq -r --arg tag "$TAG" '.[][] | select(.tag_name == $tag) | .id' "$release_pages")" = "$canonical_id"
+          }
+
+          lookup_release() {
+            local match_count release_id
+            load_release_pages || return 2
+            match_count=$(jq --arg tag "$TAG" '[.[][] | select(.tag_name == $tag)] | length' "$release_pages")
+            case "$match_count" in
+              0) return 1 ;;
+              1) ;;
+              *) normalize_duplicate_empty_drafts || {
+                   echo "release lookup found non-reconcilable exact-tag duplicates" >&2
+                   return 2
+                 }
+                 load_release_pages || return 2 ;;
+            esac
+            test "$(jq --arg tag "$TAG" '[.[][] | select(.tag_name == $tag)] | length' "$release_pages")" = 1 || return 2
+            release_id=$(jq -r --arg tag "$TAG" '.[][] | select(.tag_name == $tag) | .id' "$release_pages")
+            [[ "$release_id" =~ ^[1-9][0-9]*$ ]] || return 2
+            load_bound_release "$release_id"
+          }
+
+          load_assets() {
+            local release_id
+            release_id=$(jq -r .id "$release_json")
+            load_assets_for_release "$release_id"
           }
 
           exact_asset_matches() {

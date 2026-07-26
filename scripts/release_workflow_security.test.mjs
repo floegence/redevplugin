@@ -103,7 +103,10 @@ test("normal and recovery publication share one resumable release transaction", 
   assert.match(source, /test "\$object_sha" = "\$SOURCE_COMMIT"/);
   assert.doesNotMatch(source, /\.target_commitish == \$source/);
   assert.match(source, /gh api --paginate --slurp/);
-  assert.match(source, /release lookup found multiple exact-tag matches/);
+  assert.match(source, /normalize_duplicate_empty_drafts/);
+  assert.match(source, /validate_empty_bound_draft/);
+  assert.match(source, /release lookup found non-reconcilable exact-tag duplicates/);
+  assert.match(source, /test "\$\(jq length "\$assets_json"\)" = 0/);
   assert.match(source, /\.draft \| type == "boolean"/);
   assert.match(source, /ensure_draft_asset/);
   assert.match(source, /exact_asset_matches/);
@@ -117,6 +120,7 @@ test("normal and recovery publication share one resumable release transaction", 
   assert.match(source, /test "\$upload_url" = "https:\/\/uploads\.github\.com\/repos\/\$\{GITHUB_REPOSITORY\}\/releases\/\$\{release_id\}\/assets"/);
   assert.match(source, /\{draft: false, make_latest: "true"\}/);
   assert.match(source, /-X DELETE[\s\S]*releases\/assets\/\$asset_id/);
+  assert.match(source, /-X DELETE[\s\S]{0,500}releases\/\$duplicate_id/);
   assert.doesNotMatch(source, /-X DELETE[\s\S]{0,500}releases\/\$release_id/);
 
   const control = source.slice(source.lastIndexOf("for attempt in 1 2 3 4; do"));
@@ -141,7 +145,13 @@ test("normal and recovery publication share one resumable release transaction", 
   assert.equal(recoveryAdmission.steps[0].env.ALLOW_PUBLIC, "true");
   assert.equal(normalAdmission.steps[0].run, recoveryAdmission.steps[0].run);
   assert.match(normalAdmission.steps[0].run, /gh api --paginate --slurp/);
-  assert.match(normalAdmission.steps[0].run, /release admission found multiple exact-tag matches/);
+  assert.match(normalAdmission.steps[0].run, /normalize_duplicate_empty_drafts/);
+  assert.match(normalAdmission.steps[0].run, /validate_empty_bound_draft/);
+  assert.match(normalAdmission.steps[0].run, /release admission found non-reconcilable exact-tag duplicates/);
+  assert.match(normalAdmission.steps[0].run, /\.draft == true/);
+  assert.match(normalAdmission.steps[0].run, /type == "array" and length == 0/);
+  assert.match(normalAdmission.steps[0].run, /gh api --method DELETE[\s\S]{0,200}releases\/\$\{duplicate_id\}/);
+  assert.doesNotMatch(normalAdmission.steps[0].run, /gh api --method DELETE[\s\S]{0,200}releases\/\$\{release_id\}/);
   assert.match(normalAdmission.steps[0].run, /normal release admission refuses an existing public Release/);
   for (const jobName of ["publish-rust", "publish-npm-contracts", "publish-npm-ui", "attest-publication", "publish-release"]) {
     assert.ok(workflow.jobs[jobName].needs.includes("release-admission"), `${jobName} must wait for release admission`);

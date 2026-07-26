@@ -61,6 +61,13 @@ package publication waits for hosted Linux/amd64 and Linux/arm64 runtime
 containment checks. The remaining jobs are the ref-bound build-once package,
 registry publication/readback, completion manifest, attestation, and exact-one
 GitHub Release transaction that cannot be completed by the pre-push hook.
+The transaction reconciles duplicate exact-tag drafts only when every candidate
+is bound to the same source commit, remains unpublished, and has no assets. It
+keeps the lowest release ID, revalidates all candidates before each deletion,
+and adopts a successful deletion after a lost API response. Any public release,
+asset-bearing draft, mismatched transaction marker, or unreadable state remains
+fail closed without mutation. Normal publication and manual recovery execute
+the same transaction logic.
 
 `scripts/check_redevplugin_release_metadata.mjs` keeps the source release
 coordinate closed before packaging. The local complete gate derives the intended
