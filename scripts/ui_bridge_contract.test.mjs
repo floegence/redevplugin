@@ -212,4 +212,30 @@ test("renderer performance harness must use the generated active UI protocol", (
     '  onError: (error) => { globalThis.__redevpluginError = error.message; },\n  ...{ bootstrap: {} },\n});',
   );
   assert.throws(() => validateUIBridgeInputs(hostOptionsOverride), /not structurally bound to the generated active UI protocol/);
+
+  const injectedInterpolation = structuredClone(baseline);
+  injectedInterpolation.rendererPerformance = injectedInterpolation.rendererPerformance.replace(
+    "uiProtocolVersion: pluginUIProtocolVersion,",
+    'uiProtocolVersion: pluginUIProtocolVersion,\n    injected: ${"0, uiProtocolVersion: \\"plugin-ui-v5\\""},',
+  );
+  assert.throws(() => validateUIBridgeInputs(injectedInterpolation), /not structurally bound to the generated active UI protocol/);
+
+  const movedInterpolation = structuredClone(baseline);
+  movedInterpolation.rendererPerformance = movedInterpolation.rendererPerformance
+    .replace(
+      "const workerContent = ${JSON.stringify(workerContent)};",
+      'const workerContent = "static-worker";',
+    )
+    .replace(
+      "uiProtocolVersion: pluginUIProtocolVersion,",
+      "uiProtocolVersion: pluginUIProtocolVersion,\n    injected: ${JSON.stringify(workerContent)},",
+    );
+  assert.throws(() => validateUIBridgeInputs(movedInterpolation), /not structurally bound to the generated active UI protocol/);
+
+  const shadowedJSON = structuredClone(baseline);
+  shadowedJSON.rendererPerformance = shadowedJSON.rendererPerformance.replace(
+    "async function buildHostHarnessSource(workerContent) {",
+    'async function buildHostHarnessSource(workerContent) {\n  const JSON = { stringify: () => "\\\"injected\\\"" };',
+  );
+  assert.throws(() => validateUIBridgeInputs(shadowedJSON), /not structurally bound to the generated active UI protocol/);
 });

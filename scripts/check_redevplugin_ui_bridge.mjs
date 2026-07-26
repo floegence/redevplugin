@@ -200,17 +200,43 @@ function validateRendererPerformanceProtocolBinding(source) {
     ts.ScriptKind.JS,
   );
   if (outer.parseDiagnostics.length > 0) throw rendererPerformanceProtocolBindingError();
+  const harnessFunctions = outer.statements.filter((statement) =>
+    ts.isFunctionDeclaration(statement) && statement.name?.text === "buildHostHarnessSource",
+  );
+  if (harnessFunctions.length !== 1 || harnessFunctions[0].parameters.length !== 1 ||
+      !ts.isIdentifier(harnessFunctions[0].parameters[0].name) ||
+      harnessFunctions[0].parameters[0].name.text !== "workerContent" || !harnessFunctions[0].body) {
+    throw rendererPerformanceProtocolBindingError();
+  }
   const harnessTemplates = [];
-  walkTypeScript(outer, (node) => {
+  walkTypeScript(harnessFunctions[0].body, (node) => {
     if (!ts.isTemplateExpression(node)) return;
     const staticText = node.head.text + node.templateSpans.map((span) => span.literal.text).join("");
     if (staticText.includes("createPreparedPluginSurfaceHost")) harnessTemplates.push(node);
   });
-  if (harnessTemplates.length !== 1) throw rendererPerformanceProtocolBindingError();
+  if (harnessTemplates.length !== 1 || harnessTemplates[0].templateSpans.length !== 1) {
+    throw rendererPerformanceProtocolBindingError();
+  }
 
   const template = harnessTemplates[0];
+  const interpolation = template.templateSpans[0].expression;
+  if (!ts.isCallExpression(interpolation) || interpolation.arguments.length !== 1 ||
+      !ts.isPropertyAccessExpression(interpolation.expression) ||
+      !ts.isIdentifier(interpolation.expression.expression) || interpolation.expression.expression.text !== "JSON" ||
+      interpolation.expression.name.text !== "stringify" ||
+      !ts.isIdentifier(interpolation.arguments[0]) || interpolation.arguments[0].text !== "workerContent") {
+    throw rendererPerformanceProtocolBindingError();
+  }
+  const outerChecker = typeCheckerFor(outer);
+  const parameterSymbol = outerChecker.getSymbolAtLocation(harnessFunctions[0].parameters[0].name);
+  const jsonSymbol = outerChecker.getSymbolAtLocation(interpolation.expression.expression);
+  if (!parameterSymbol || parameterSymbol !== outerChecker.getSymbolAtLocation(interpolation.arguments[0]) ||
+      (jsonSymbol?.declarations?.length ?? 0) > 0) {
+    throw rendererPerformanceProtocolBindingError();
+  }
+  const embeddedSentinel = "__REDEVPLUGIN_EMBEDDED_VALUE__";
   const embeddedSource = template.head.text + template.templateSpans.map(
-    (span) => '"__REDEVPLUGIN_EMBEDDED_VALUE__"' + span.literal.text,
+    (span) => JSON.stringify(embeddedSentinel) + span.literal.text,
   ).join("");
   const embedded = ts.createSourceFile(
     "redevplugin-renderer-performance-host.ts",
@@ -220,6 +246,17 @@ function validateRendererPerformanceProtocolBinding(source) {
     ts.ScriptKind.TS,
   );
   if (embedded.parseDiagnostics.length > 0) throw rendererPerformanceProtocolBindingError();
+  const workerDeclarations = embedded.statements.flatMap((statement) =>
+    ts.isVariableStatement(statement) ? statement.declarationList.declarations.filter((declaration) =>
+      ts.isIdentifier(declaration.name) && declaration.name.text === "workerContent") : [],
+  );
+  const sentinels = [];
+  walkTypeScript(embedded, (node) => {
+    if (ts.isStringLiteral(node) && node.text === embeddedSentinel) sentinels.push(node);
+  });
+  if (workerDeclarations.length !== 1 || sentinels.length !== 1 || workerDeclarations[0].initializer !== sentinels[0]) {
+    throw rendererPerformanceProtocolBindingError();
+  }
 
   const protocolImports = namedValueImports(
     embedded,
@@ -282,6 +319,7 @@ function namedValueImports(sourceFile, moduleName, importedName, localName) {
 
 function typeCheckerFor(sourceFile) {
   const compilerOptions = {
+    allowJs: true,
     module: ts.ModuleKind.ESNext,
     noLib: true,
     noResolve: true,
