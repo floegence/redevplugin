@@ -11,6 +11,7 @@
     "openapi:generate": "node scripts/generate_openapi_types.mjs",
     "openapi:check": "node scripts/generate_openapi_types.mjs --check",
     "openapi-contract:test": "node --test scripts/openapi_contract_integrity.test.mjs scripts/openapi_generator_security.test.mjs scripts/runtime_targets.test.mjs",
+    "ui-bridge-contract:test": "node --test scripts/ui_bridge_contract.test.mjs",
     "error-codes:generate": "node scripts/generate_error_codes.mjs",
     "error-codes:check": "node scripts/generate_error_codes.mjs --check",
     "contracts:generate": "node scripts/generate_contract_registry.mjs",
@@ -58,7 +59,7 @@
     "property-gates": "./scripts/check_redevplugin_property_gates.sh --fast",
     "stress-platform:test": "node --test scripts/stress_platform_policy.test.mjs",
     "examples": "npm run examples:check && npm run build && cargo build -p redevplugin-runtime && GOWORK=off go run ./cmd/redevplugin examples-server dist/examples-state target/debug/redevplugin-runtime",
-    "check": "npm run error-codes:check && npm run openapi:check && npm run openapi-contract:test && npm run contracts:check && npm run platform-package-contracts:check && npm run owner-scope-inventories:check && npm run owner-scope-inventories:test && npm run release-metadata:check && npm run repository-boundary:test && npm run platform-package-contract:test && npm run release-workflow-security:test && npm run test:contracts && npm run performance-contract:test && npm run lint && npm run typecheck && npm run browser-harness:typecheck && npm run scaffold:typecheck && npm run examples:typecheck && npm run canonical-wasm:test && npm run memos-markdown:test && npm run examples:check && npm run browser-harness:check && npm run build && npm run test:ui && npm run test:browser-harness && npm run test:browser-harness:smoke && npm run property-gates"
+    "check": "npm run error-codes:check && npm run openapi:check && npm run openapi-contract:test && npm run ui-bridge-contract:test && npm run contracts:check && npm run platform-package-contracts:check && npm run owner-scope-inventories:check && npm run owner-scope-inventories:test && npm run release-metadata:check && npm run repository-boundary:test && npm run platform-package-contract:test && npm run release-workflow-security:test && npm run test:contracts && npm run performance-contract:test && npm run lint && npm run typecheck && npm run browser-harness:typecheck && npm run scaffold:typecheck && npm run examples:typecheck && npm run canonical-wasm:test && npm run memos-markdown:test && npm run examples:check && npm run browser-harness:check && npm run build && npm run test:ui && npm run test:browser-harness && npm run test:browser-harness:smoke && npm run property-gates"
   },
   "devDependencies": {
     "ajv": "6.15.0",
