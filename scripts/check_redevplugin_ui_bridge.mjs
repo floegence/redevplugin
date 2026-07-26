@@ -3,6 +3,7 @@
 import { readFile } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
+import ts from "typescript";
 
 const defaultRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const operationSnapshotFrame = "redevplugin.bridge.operation.snapshot";
@@ -176,14 +177,7 @@ export function validateUIBridgeInputs({
   }
   requireGeneratedVersion(contracts, "plugin_ui_protocol_version", descriptors.active.uiProtocolVersion);
   requireGeneratedVersion(contracts, "bridge_schema_version", descriptors.active.bridgeSchemaVersion);
-  for (const required of [
-    'import { pluginUIProtocolVersion } from "./packages/redevplugin-ui/src/contracts.gen.ts";',
-    "uiProtocolVersion: pluginUIProtocolVersion,",
-  ]) {
-    if (!rendererPerformance.includes(required)) {
-      throw new Error(`renderer performance harness is not bound to the active UI protocol: missing ${required}`);
-    }
-  }
+  validateRendererPerformanceProtocolBinding(rendererPerformance);
 
   const responseDef = JSON.stringify(activeSchema.$defs?.response);
   for (const forbidden of trustedParentFields.slice(3)) {
@@ -195,6 +189,85 @@ export function validateUIBridgeInputs({
   if (!activeSchema["x-redevplugin-render-policy"]) {
     throw new Error("active bridge schema is missing the generated renderer policy source");
   }
+}
+
+function validateRendererPerformanceProtocolBinding(source) {
+  const outer = ts.createSourceFile(
+    "measure_redevplugin_renderer_performance.mjs",
+    source,
+    ts.ScriptTarget.Latest,
+    true,
+    ts.ScriptKind.JS,
+  );
+  const harnessTemplates = [];
+  walkTypeScript(outer, (node) => {
+    if (!ts.isTemplateExpression(node)) return;
+    const staticText = node.head.text + node.templateSpans.map((span) => span.literal.text).join("");
+    if (staticText.includes("createPreparedPluginSurfaceHost")) harnessTemplates.push(node);
+  });
+  if (harnessTemplates.length !== 1) throw rendererPerformanceProtocolBindingError();
+
+  const template = harnessTemplates[0];
+  const embeddedSource = template.head.text + template.templateSpans.map(
+    (span) => '"__REDEVPLUGIN_EMBEDDED_VALUE__"' + span.literal.text,
+  ).join("");
+  const embedded = ts.createSourceFile(
+    "redevplugin-renderer-performance-host.ts",
+    embeddedSource,
+    ts.ScriptTarget.Latest,
+    true,
+    ts.ScriptKind.TS,
+  );
+  if (embedded.parseDiagnostics.length > 0) throw rendererPerformanceProtocolBindingError();
+
+  const protocolImports = embedded.statements.filter((statement) =>
+    ts.isImportDeclaration(statement) &&
+    ts.isStringLiteral(statement.moduleSpecifier) &&
+    statement.moduleSpecifier.text === "./packages/redevplugin-ui/src/contracts.gen.ts" &&
+    statement.importClause?.isTypeOnly !== true &&
+    statement.importClause?.namedBindings &&
+    ts.isNamedImports(statement.importClause.namedBindings) &&
+    statement.importClause.namedBindings.elements.some((element) =>
+      element.isTypeOnly !== true &&
+      (element.propertyName?.text ?? element.name.text) === "pluginUIProtocolVersion" &&
+      element.name.text === "pluginUIProtocolVersion"),
+  );
+  if (protocolImports.length !== 1) throw rendererPerformanceProtocolBindingError();
+
+  const hostCalls = [];
+  walkTypeScript(embedded, (node) => {
+    if (ts.isCallExpression(node) && ts.isIdentifier(node.expression) &&
+        node.expression.text === "createPreparedPluginSurfaceHost") {
+      hostCalls.push(node);
+    }
+  });
+  if (hostCalls.length !== 1 || hostCalls[0].arguments.length !== 1 ||
+      !ts.isObjectLiteralExpression(hostCalls[0].arguments[0])) {
+    throw rendererPerformanceProtocolBindingError();
+  }
+  const bootstrap = exactObjectProperty(hostCalls[0].arguments[0], "bootstrap");
+  if (!bootstrap || !ts.isObjectLiteralExpression(bootstrap.initializer)) throw rendererPerformanceProtocolBindingError();
+  const protocol = exactObjectProperty(bootstrap.initializer, "uiProtocolVersion");
+  if (!protocol || !ts.isIdentifier(protocol.initializer) || protocol.initializer.text !== "pluginUIProtocolVersion") {
+    throw rendererPerformanceProtocolBindingError();
+  }
+}
+
+function exactObjectProperty(object, name) {
+  const matches = object.properties.filter((property) =>
+    ts.isPropertyAssignment(property) &&
+    ((ts.isIdentifier(property.name) || ts.isStringLiteral(property.name)) && property.name.text === name),
+  );
+  return matches.length === 1 ? matches[0] : undefined;
+}
+
+function walkTypeScript(node, visit) {
+  visit(node);
+  ts.forEachChild(node, (child) => walkTypeScript(child, visit));
+}
+
+function rendererPerformanceProtocolBindingError() {
+  return new Error("renderer performance harness is not structurally bound to the generated active UI protocol");
 }
 
 function validateOperationSnapshotSchema(schema) {

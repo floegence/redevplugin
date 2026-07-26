@@ -155,5 +155,17 @@ test("renderer performance harness must use the generated active UI protocol", (
     "uiProtocolVersion: pluginUIProtocolVersion,",
     'uiProtocolVersion: "plugin-ui-v5",',
   );
-  assert.throws(() => validateUIBridgeInputs(staleHarness), /renderer performance harness is not bound to the active UI protocol/);
+  assert.throws(() => validateUIBridgeInputs(staleHarness), /not structurally bound to the generated active UI protocol/);
+
+  const commentDecoy = structuredClone(baseline);
+  commentDecoy.rendererPerformance = commentDecoy.rendererPerformance
+    .replace(
+      'import { pluginUIProtocolVersion } from "./packages/redevplugin-ui/src/contracts.gen.ts";',
+      '// import { pluginUIProtocolVersion } from "./packages/redevplugin-ui/src/contracts.gen.ts";',
+    )
+    .replace(
+      "uiProtocolVersion: pluginUIProtocolVersion,",
+      'uiProtocolVersion: "plugin-ui-v5", // uiProtocolVersion: pluginUIProtocolVersion,',
+    );
+  assert.throws(() => validateUIBridgeInputs(commentDecoy), /not structurally bound to the generated active UI protocol/);
 });
