@@ -5036,6 +5036,8 @@ function isPluginSurfaceContext(value: unknown): value is PluginSurfaceContext {
 
 const surfaceContextColorKeys = ["canvas", "surface", "surface_elevated", "text", "text_muted", "border", "accent", "accent_text", "success", "warning", "danger", "focus"] as const;
 const surfaceContextColorPattern = new RegExp("^#[0-9a-fA-F]{6}(?:[0-9a-fA-F]{2})?$");
+const operationProgressPhasePattern = new RegExp("^[A-Za-z0-9._:-]{1,128}$");
+const operationProgressUnitPattern = new RegExp("^[A-Za-z0-9._:-]{1,64}$");
 
 function validSurfaceContextColor(value: unknown): value is string {
   return typeof value === "string" && surfaceContextColorPattern.test(value);
@@ -5110,8 +5112,8 @@ function isPluginOperationSnapshot(value: unknown): value is PluginOperationSnap
 
 function validOperationProgress(value: unknown): value is PluginOperationProgress {
   if (!isRecord(value) || !hasAllowedKeys(value, ["revision", "phase", "completed_units", "total_units", "unit"]) ||
-      !Number.isSafeInteger(value.revision) || Number(value.revision) < 1 || typeof value.phase !== "string" || !/^[A-Za-z0-9._:-]{1,128}$/.test(value.phase) ||
-      (value.unit !== undefined && (typeof value.unit !== "string" || !/^[A-Za-z0-9._:-]{1,64}$/.test(value.unit))) ||
+      !Number.isSafeInteger(value.revision) || Number(value.revision) < 1 || typeof value.phase !== "string" || !operationProgressPhasePattern.test(value.phase) ||
+      (value.unit !== undefined && (typeof value.unit !== "string" || !operationProgressUnitPattern.test(value.unit))) ||
       (value.completed_units !== undefined && (!Number.isSafeInteger(value.completed_units) || Number(value.completed_units) < 0)) ||
       (value.total_units !== undefined && (!Number.isSafeInteger(value.total_units) || Number(value.total_units) < 0)) ||
       (value.completed_units === undefined) !== (value.total_units === undefined)) return false;

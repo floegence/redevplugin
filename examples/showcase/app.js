@@ -4225,7 +4225,9 @@
     }
   }
   var surfaceContextColorKeys = ["canvas", "surface", "surface_elevated", "text", "text_muted", "border", "accent", "accent_text", "success", "warning", "danger", "focus"];
-  var surfaceContextColorPattern = /^#[0-9a-fA-F]{6}(?:[0-9a-fA-F]{2})?$/;
+  var surfaceContextColorPattern = new RegExp("^#[0-9a-fA-F]{6}(?:[0-9a-fA-F]{2})?$");
+  var operationProgressPhasePattern = new RegExp("^[A-Za-z0-9._:-]{1,128}$");
+  var operationProgressUnitPattern = new RegExp("^[A-Za-z0-9._:-]{1,64}$");
   function validSurfaceContextColor(value) {
     return typeof value === "string" && surfaceContextColorPattern.test(value);
   }
@@ -4268,7 +4270,7 @@
     return value.status === "failed" && withProgress([...common, "terminal_at", "failure_code"]) && validDateTime(value.terminal_at) && ["adapter_failed", "contract_invalid", "platform_failed", "quota_exceeded", "runtime_failed"].includes(String(value.failure_code));
   }
   function validOperationProgress(value) {
-    if (!isRecord(value) || !hasAllowedKeys(value, ["revision", "phase", "completed_units", "total_units", "unit"]) || !Number.isSafeInteger(value.revision) || Number(value.revision) < 1 || typeof value.phase !== "string" || !/^[A-Za-z0-9._:-]{1,128}$/.test(value.phase) || value.unit !== void 0 && (typeof value.unit !== "string" || !/^[A-Za-z0-9._:-]{1,64}$/.test(value.unit)) || value.completed_units !== void 0 && (!Number.isSafeInteger(value.completed_units) || Number(value.completed_units) < 0) || value.total_units !== void 0 && (!Number.isSafeInteger(value.total_units) || Number(value.total_units) < 0) || value.completed_units === void 0 !== (value.total_units === void 0)) return false;
+    if (!isRecord(value) || !hasAllowedKeys(value, ["revision", "phase", "completed_units", "total_units", "unit"]) || !Number.isSafeInteger(value.revision) || Number(value.revision) < 1 || typeof value.phase !== "string" || !operationProgressPhasePattern.test(value.phase) || value.unit !== void 0 && (typeof value.unit !== "string" || !operationProgressUnitPattern.test(value.unit)) || value.completed_units !== void 0 && (!Number.isSafeInteger(value.completed_units) || Number(value.completed_units) < 0) || value.total_units !== void 0 && (!Number.isSafeInteger(value.total_units) || Number(value.total_units) < 0) || value.completed_units === void 0 !== (value.total_units === void 0)) return false;
     return value.completed_units === void 0 || Number(value.completed_units) <= Number(value.total_units);
   }
   function validDateTime(value) {
