@@ -283,8 +283,14 @@ func projectPluginOperationSnapshot(record operation.Record) (PluginOperationSna
 	}
 	if record.Progress != nil {
 		progress := *record.Progress
-		if progress.CompletedUnits != nil { value := *progress.CompletedUnits; progress.CompletedUnits = &value }
-		if progress.TotalUnits != nil { value := *progress.TotalUnits; progress.TotalUnits = &value }
+		if progress.CompletedUnits != nil {
+			value := *progress.CompletedUnits
+			progress.CompletedUnits = &value
+		}
+		if progress.TotalUnits != nil {
+			value := *progress.TotalUnits
+			progress.TotalUnits = &value
+		}
 		snapshot.Progress = &progress
 	}
 	switch record.Status {
