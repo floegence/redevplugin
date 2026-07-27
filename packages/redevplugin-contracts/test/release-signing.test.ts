@@ -30,6 +30,7 @@ import {
   releaseMetadataSigningPreimage,
   releaseMetadataSchemaVersionV5,
   releaseMetadataSchemaVersionV6,
+  releaseMetadataSchemaVersionV7,
   revocationPointerSigningPreimage,
   revocationSigningPreimage,
   rootDelegationSigningPreimage,
@@ -194,6 +195,11 @@ test("release metadata requires exact schema and UI protocol pairs", () => {
     schema_version: releaseMetadataSchemaVersionV6,
     compatibility: { ...metadata.compatibility, ui_protocol_version: "plugin-ui-v6" },
   });
+  buildReleaseMetadata({
+    ...metadata,
+    schema_version: releaseMetadataSchemaVersionV7,
+    compatibility: { ...metadata.compatibility, ui_protocol_version: "plugin-ui-v7" },
+  });
   assert.throws(() => buildReleaseMetadata({
     ...metadata,
     schema_version: releaseMetadataSchemaVersionV5,
@@ -203,6 +209,11 @@ test("release metadata requires exact schema and UI protocol pairs", () => {
     ...metadata,
     schema_version: releaseMetadataSchemaVersionV6,
     compatibility: { ...metadata.compatibility, ui_protocol_version: "plugin-ui-v5" },
+  }), InvalidReleaseDocumentError);
+  assert.throws(() => buildReleaseMetadata({
+    ...metadata,
+    schema_version: releaseMetadataSchemaVersionV7,
+    compatibility: { ...metadata.compatibility, ui_protocol_version: "plugin-ui-v6" },
   }), InvalidReleaseDocumentError);
 });
 

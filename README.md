@@ -25,17 +25,17 @@ capabilities.
   WASM ABI schema, worker invocation payload schema, stable error-code schema,
   persistent resource-scope schema, performance-evidence schema, and target
   classifier fixture
-- Active coordinated contracts are `plugin-host-v8`, `rust-ipc-v6`,
-  `plugin-ui-v6`, `bridge-v6`, `plugin-platform-v9`, `manifest-v6`, opaque
-  document v3, opaque transport v5, release metadata v6, compatibility manifest
-  v11, error codes v7, resource scope v1, session scope v1, session scope
+- Active coordinated contracts are `plugin-host-v9`, `rust-ipc-v6`,
+  `plugin-ui-v7`, `bridge-v7`, `plugin-platform-v10`, `manifest-v7`, opaque
+  document v3, opaque transport v6, release metadata v7, compatibility manifest
+  v12, error codes v7, resource scope v1, session scope v1, session scope
   maintenance v1, token/ticket v4, and release manifest
   v4. WASM ABI v2, worker invocation v3, and package
   signature v1 remain unchanged. Installed `plugin-ui-v5` packages continue to
   use the exact bridge-v5 and opaque-surface-transport-v4 mapping.
 - The staged v2 package registry is available through opt-in Go, npm, and Rust
   contract libraries with identical immutable bytes, IDs, versions, hashes,
-  and aggregate digest. It is returned by the active compatibility-v11
+  and aggregate digest. It is returned by the active compatibility-v12
   Host API, and importing ordinary Host or UI entrypoints does not link or load
   the raw schema bodies.
 - The staged contract libraries also expose canonical release-signing DTOs and
@@ -44,7 +44,7 @@ capabilities.
   its pointer. The seven signing usages are domain separated, timestamps are
   explicit inputs, and pointer genesis is fixed to epoch `0` plus the all-zero
   SHA-256 sentinel. These APIs live in `pkg/releasecontract` and the opt-in
-  contracts packages; `pkg/trust` consumes the active compatibility-v11
+  contracts packages; `pkg/trust` consumes the active compatibility-v12
   contract while preserving the published legacy contract artifacts.
 - Host-neutral Go package boundaries for manifest validation, package IO,
   registry, host adapters, bridge, PluginData, runtime supervision, grants,

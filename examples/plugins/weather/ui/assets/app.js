@@ -716,6 +716,7 @@
   }
 
   // packages/redevplugin-ui/src/surface.ts
+  var pluginSurfaceContextSchemaVersion = "redevplugin.surface_context.v1";
   var opaquePluginBridgeGlobalKey = "__redevpluginWorkerBridge";
   var maxPendingPluginBridgeRequests = 256;
   var maxPluginBridgeMessageBytes = opaqueSurfaceRenderLimits.max_message_bytes;
@@ -735,6 +736,8 @@
     #actionHandlers = /* @__PURE__ */ new Map();
     #canvasInputHandlers = /* @__PURE__ */ new Map();
     #lifecycleHandlers = /* @__PURE__ */ new Set();
+    #contextHandlers = /* @__PURE__ */ new Set();
+    #context;
     #ready = false;
     #readyPromise;
     #resolveReady;
@@ -866,6 +869,24 @@
         return snapshot;
       });
     }
+    context() {
+      this.#assertActive();
+      return this.#context;
+    }
+    onContext(handler) {
+      this.#assertActive();
+      if (typeof handler !== "function") {
+        throw new PluginBridgeError("PLUGIN_INVALID_REQUEST", "Plugin surface context subscription is invalid");
+      }
+      this.#contextHandlers.add(handler);
+      if (this.#context) {
+        try {
+          handler(this.#context);
+        } catch {
+        }
+      }
+      return () => this.#contextHandlers.delete(handler);
+    }
     render(tree) {
       this.#assertActive();
       let validated;
@@ -971,6 +992,8 @@
       this.#actionHandlers.clear();
       this.#canvasInputHandlers.clear();
       this.#lifecycleHandlers.clear();
+      this.#contextHandlers.clear();
+      this.#context = void 0;
       for (const waiter of this.#pendingRender?.waiters ?? []) waiter.reject(disposedError);
       this.#pendingRender = void 0;
       this.#controlEditRevisions.clear();
@@ -1152,6 +1175,18 @@
         else pending.reject(new PluginBridgeError(data.error_code, data.error, void 0, data.error_details, data.mutation_outcome));
         return;
       }
+      if (isPluginBridgeContextMessage(data)) {
+        const context = normalizePluginSurfaceContext(data.context);
+        if (this.#context && context.revision <= this.#context.revision) return;
+        this.#context = context;
+        for (const handler of this.#contextHandlers) {
+          try {
+            handler(context);
+          } catch {
+          }
+        }
+        return;
+      }
       if (isLifecycleMessage(data)) {
         if (data.event.type === "ready" && !this.#ready) {
           this.#ready = true;
@@ -1241,14 +1276,53 @@
     "usb 'none'",
     "xr-spatial-tracking 'none'"
   ].join("; ");
+  function isPluginBridgeContextMessage(value) {
+    return hasExactKeys(value, ["type", "context"]) && value.type === "redevplugin.bridge.context" && isPluginSurfaceContext(value.context);
+  }
+  function isPluginSurfaceContext(value) {
+    if (!isRecord(value) || !hasExactKeys(value, ["schema_version", "revision", "appearance", "locale"]) || value.schema_version !== pluginSurfaceContextSchemaVersion || !Number.isSafeInteger(value.revision) || Number(value.revision) < 1) return false;
+    const appearance = value.appearance;
+    const locale = value.locale;
+    if (!isRecord(appearance) || !hasExactKeys(appearance, ["color_scheme", "colors"]) || appearance.color_scheme !== "light" && appearance.color_scheme !== "dark" || !isRecord(appearance.colors)) return false;
+    const colors = appearance.colors;
+    if (!hasExactKeys(colors, surfaceContextColorKeys) || surfaceContextColorKeys.some((key) => !validSurfaceContextColor(colors[key])) || !isRecord(locale) || !hasExactKeys(locale, ["language_tag", "direction"]) || typeof locale.language_tag !== "string" || locale.language_tag.length < 2 || locale.language_tag.length > 64 || locale.direction !== "ltr" && locale.direction !== "rtl") return false;
+    try {
+      return typeof Intl === "undefined" || Intl.getCanonicalLocales(locale.language_tag).length === 1;
+    } catch {
+      return false;
+    }
+  }
+  var surfaceContextColorKeys = ["canvas", "surface", "surface_elevated", "text", "text_muted", "border", "accent", "accent_text", "success", "warning", "danger", "focus"];
+  var surfaceContextColorPattern = /^#[0-9a-fA-F]{6}(?:[0-9a-fA-F]{2})?$/;
+  function validSurfaceContextColor(value) {
+    return typeof value === "string" && surfaceContextColorPattern.test(value);
+  }
+  function normalizePluginSurfaceContext(value) {
+    if (!isPluginSurfaceContext(value)) {
+      throw new PluginBridgeError("PLUGIN_INVALID_REQUEST", "Plugin surface context is invalid");
+    }
+    const languageTag = Intl.getCanonicalLocales(value.locale.language_tag)[0];
+    const colors = Object.fromEntries(surfaceContextColorKeys.map((key) => [key, String(value.appearance.colors[key]).toLowerCase()]));
+    return Object.freeze({
+      schema_version: pluginSurfaceContextSchemaVersion,
+      revision: Number(value.revision),
+      appearance: Object.freeze({ color_scheme: value.appearance.color_scheme, colors: Object.freeze(colors) }),
+      locale: Object.freeze({ language_tag: languageTag, direction: value.locale.direction })
+    });
+  }
   function isPluginOperationSnapshot(value) {
     if (!isRecord(value) || !validOpaqueHandle(value.operation_id, "operation") || typeof value.cancelable !== "boolean" || !Number.isInteger(value.retry_after_ms) || Number(value.retry_after_ms) < 500 || Number(value.retry_after_ms) > 1e4 || !validDateTime(value.created_at) || !validDateTime(value.updated_at)) return false;
     const common = ["operation_id", "status", "cancelable", "created_at", "updated_at", "retry_after_ms"];
-    if (value.status === "running" || value.status === "cancel_requested") return hasExactKeys(value, common);
+    const withProgress = (keys) => hasAllowedKeys(value, [...keys, "progress"]) && (value.progress === void 0 || validOperationProgress(value.progress));
+    if (value.status === "running" || value.status === "cancel_requested") return withProgress(common);
     if (["completed", "canceled", "orphaned_after_disable", "orphaned_after_uninstall"].includes(String(value.status))) {
-      return hasExactKeys(value, [...common, "terminal_at"]) && validDateTime(value.terminal_at);
+      return withProgress([...common, "terminal_at"]) && validDateTime(value.terminal_at);
     }
-    return value.status === "failed" && hasExactKeys(value, [...common, "terminal_at", "failure_code"]) && validDateTime(value.terminal_at) && ["adapter_failed", "contract_invalid", "platform_failed", "quota_exceeded", "runtime_failed"].includes(String(value.failure_code));
+    return value.status === "failed" && withProgress([...common, "terminal_at", "failure_code"]) && validDateTime(value.terminal_at) && ["adapter_failed", "contract_invalid", "platform_failed", "quota_exceeded", "runtime_failed"].includes(String(value.failure_code));
+  }
+  function validOperationProgress(value) {
+    if (!isRecord(value) || !hasAllowedKeys(value, ["revision", "phase", "completed_units", "total_units", "unit"]) || !Number.isSafeInteger(value.revision) || Number(value.revision) < 1 || typeof value.phase !== "string" || !/^[A-Za-z0-9._:-]{1,128}$/.test(value.phase) || value.unit !== void 0 && (typeof value.unit !== "string" || !/^[A-Za-z0-9._:-]{1,64}$/.test(value.unit)) || value.completed_units !== void 0 && (!Number.isSafeInteger(value.completed_units) || Number(value.completed_units) < 0) || value.total_units !== void 0 && (!Number.isSafeInteger(value.total_units) || Number(value.total_units) < 0) || value.completed_units === void 0 !== (value.total_units === void 0)) return false;
+    return value.completed_units === void 0 || Number(value.completed_units) <= Number(value.total_units);
   }
   function validDateTime(value) {
     return typeof value === "string" && value.length > 0 && Number.isFinite(Date.parse(value));

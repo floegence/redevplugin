@@ -357,12 +357,13 @@ renderer.
 
 Machine-readable contracts are first-class platform artifacts:
 
-- `spec/openapi/plugin-platform-v9.yaml`;
-- `spec/plugin/manifest-v5.schema.json` and
-  `spec/plugin/manifest-v6.schema.json`;
+- `spec/openapi/plugin-platform-v10.yaml`;
+- `spec/plugin/manifest-v5.schema.json`, `spec/plugin/manifest-v6.schema.json`,
+  and `spec/plugin/manifest-v7.schema.json`;
 - `spec/plugin/package-signature-v1.schema.json`;
-- `spec/plugin/release-metadata-v5.schema.json` and
-  `spec/plugin/release-metadata-v6.schema.json`;
+- `spec/plugin/release-metadata-v5.schema.json`,
+  `spec/plugin/release-metadata-v6.schema.json`, and
+  `spec/plugin/release-metadata-v7.schema.json`;
 - `spec/plugin/release-root-delegation-v1.schema.json`;
 - `spec/plugin/release-source-policy-v2.schema.json`;
 - `spec/plugin/release-source-policy-pointer-v1.schema.json`;
@@ -372,11 +373,13 @@ Machine-readable contracts are first-class platform artifacts:
 - `spec/plugin/trusted-time-evidence-v1.schema.json`;
 - `spec/plugin/trusted-time-leaf-v1.schema.json`;
 - `spec/plugin/token-ticket-v4.schema.json`;
-- `spec/plugin/bridge-v5.schema.json` and `spec/plugin/bridge-v6.schema.json`;
+- `spec/plugin/bridge-v5.schema.json`, `spec/plugin/bridge-v6.schema.json`, and
+  `spec/plugin/bridge-v7.schema.json`;
 - `spec/plugin/opaque-surface-document-v3.schema.json`;
-- `spec/plugin/opaque-surface-transport-v4.schema.json` and
-  `spec/plugin/opaque-surface-transport-v5.schema.json`;
-- `spec/plugin/compatibility-manifest-v11.schema.json`;
+- `spec/plugin/opaque-surface-transport-v4.schema.json`,
+  `spec/plugin/opaque-surface-transport-v5.schema.json`, and
+  `spec/plugin/opaque-surface-transport-v6.schema.json`;
+- `spec/plugin/compatibility-manifest-v12.schema.json`;
 - `spec/plugin/owner-scope-root-recovery-v1.schema.json`;
 - `spec/plugin/platform-package-set-v1.schema.json`;
 - `spec/plugin/platform-package-publication-v1.schema.json`;

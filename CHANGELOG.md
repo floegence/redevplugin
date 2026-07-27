@@ -1,5 +1,19 @@
 # Changelog
 
+## v0.6.20
+
+### Added
+
+- Publish `plugin-ui-v7` surface context updates so trusted hosts can project a
+  canonical locale and color system into an existing sandbox slot before first
+  paint and update it without remounting the plugin iframe.
+- Add revision-fenced operation progress snapshots to the capability sink,
+  durable operation store, OpenAPI projection, and TypeScript bridge contract.
+- Publish the coordinated `plugin-host-v9`, `plugin-ui-v7`, `bridge-v7`,
+  opaque-surface-transport-v6, OpenAPI v10, manifest/release-metadata v7, and
+  compatibility-manifest-v12 contracts while retaining the exact v5 and v6 UI
+  transport mappings.
+
 ## v0.6.19
 
 ### Fixed

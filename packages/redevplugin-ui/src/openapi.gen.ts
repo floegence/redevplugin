@@ -1377,7 +1377,7 @@ export interface components {
         PluginCatalogResult: {
             plugins: components["schemas"]["PluginRecord"][];
         };
-        PluginCompatibilityManifest: components["schemas"]["CompatibilityManifestV11"];
+        PluginCompatibilityManifest: components["schemas"]["CompatibilityManifestV12"];
         PluginOperationList: {
             operations: components["schemas"]["OperationRecord"][];
             next_cursor?: string;
@@ -2041,7 +2041,7 @@ export interface components {
             update_eligibility?: components["schemas"]["ExternalPackageUpdateEligibility"];
             security_summary?: components["schemas"]["ExternalPackageSecuritySummary"];
             capability_contracts?: components["schemas"]["CapabilityContractPin"][];
-            manifest: components["schemas"]["ManifestV5"] | components["schemas"]["ManifestV6"];
+            manifest: components["schemas"]["ManifestV5"] | components["schemas"]["ManifestV7"];
             package_entries: components["schemas"]["PackageEntry"][];
             runtime_requirement?: components["schemas"]["RuntimeRequirement"];
             /** Format: date-time */
@@ -2079,7 +2079,7 @@ export interface components {
             policy_revision: number;
             management_revision: number;
             revoke_epoch: number;
-            manifest: components["schemas"]["ManifestV5"] | components["schemas"]["ManifestV6"];
+            manifest: components["schemas"]["ManifestV5"] | components["schemas"]["ManifestV7"];
             package_entries: components["schemas"]["PackageEntry"][];
             runtime_requirement?: components["schemas"]["RuntimeRequirement"];
             version_history?: components["schemas"]["PluginVersion"][];
@@ -2205,7 +2205,7 @@ export interface components {
             plugin_instance_id: string;
             plugin_version: components["schemas"]["StrictSemVer"];
             /** @enum {string} */
-            ui_protocol_version: "plugin-ui-v5" | "plugin-ui-v6";
+            ui_protocol_version: "plugin-ui-v5" | "plugin-ui-v6" | "plugin-ui-v7";
             surface_id: string;
             surface_instance_id: string;
             active_fingerprint: string;
@@ -2252,7 +2252,7 @@ export interface components {
             management_revision: number;
             revoke_epoch: number;
             /** @enum {string} */
-            ui_protocol_version: "plugin-ui-v5" | "plugin-ui-v6";
+            ui_protocol_version: "plugin-ui-v5" | "plugin-ui-v6" | "plugin-ui-v7";
         };
         TrustedParentBridgeTokenRequest: {
             handshake: components["schemas"]["TrustedParentBridgeHandshake"];
@@ -2323,6 +2323,7 @@ export interface components {
             /** Format: date-time */
             updated_at: string;
             retry_after_ms: number;
+            progress?: components["schemas"]["OperationProgress"];
         } | {
             operation_id: string;
             /** @enum {string} */
@@ -2335,6 +2336,7 @@ export interface components {
             retry_after_ms: number;
             /** Format: date-time */
             terminal_at: string;
+            progress?: components["schemas"]["OperationProgress"];
         } | {
             operation_id: string;
             /** @constant */
@@ -2349,7 +2351,15 @@ export interface components {
             terminal_at: string;
             /** @enum {string} */
             failure_code: "adapter_failed" | "contract_invalid" | "platform_failed" | "quota_exceeded" | "runtime_failed";
+            progress?: components["schemas"]["OperationProgress"];
         };
+        OperationProgress: {
+            revision: number;
+            phase: string;
+            completed_units?: number;
+            total_units?: number;
+            unit?: string;
+        } & (unknown & unknown);
         RejectSurfaceConfirmationRequest: {
             plugin_instance_id: string;
             bridge_channel_id: string;
@@ -2561,6 +2571,7 @@ export interface components {
             orphaned_at?: string;
             /** Format: date-time */
             terminal_at?: string;
+            progress?: components["schemas"]["OperationProgress"];
         } & ({
             /** @constant */
             status: "failed";
@@ -2767,17 +2778,18 @@ export interface components {
             counts: components["schemas"]["SessionScopeV1RevokeCounts"];
         };
         SessionScopeV1PublicRevokeResult: components["schemas"]["SessionScopeV1CompleteRevokeResult"] | components["schemas"]["SessionScopeV1IncompleteRevokeResult"];
-        CompatibilityManifestV11: {
+        CompatibilityManifestV12: {
             /** @constant */
-            schema_version: "redevplugin.compatibility.v11";
+            schema_version: "redevplugin.compatibility.v12";
             package_set: components["schemas"]["PlatformPackageSetV1"];
             matrix: {
                 /** @constant */
-                plugin_ui_protocol_version: "plugin-ui-v6";
+                plugin_ui_protocol_version: "plugin-ui-v7";
                 /** @constant */
                 supported_plugin_ui_protocol_versions: [
                     "plugin-ui-v5",
-                    "plugin-ui-v6"
+                    "plugin-ui-v6",
+                    "plugin-ui-v7"
                 ];
                 /** @constant */
                 plugin_ui_transport_mappings: [
@@ -2790,20 +2802,25 @@ export interface components {
                         plugin_ui_protocol_version: "plugin-ui-v6";
                         opaque_surface_transport_schema_version: "opaque-surface-transport-v5";
                         bridge_schema_version: "bridge-v6";
+                    },
+                    {
+                        plugin_ui_protocol_version: "plugin-ui-v7";
+                        opaque_surface_transport_schema_version: "opaque-surface-transport-v6";
+                        bridge_schema_version: "bridge-v7";
                     }
                 ];
                 /** @constant */
-                plugin_host_protocol_version: "plugin-host-v8";
+                plugin_host_protocol_version: "plugin-host-v9";
                 /** @constant */
                 rust_ipc_version: "rust-ipc-v6";
                 /** @constant */
                 wasm_abi_version: "redevplugin-wasm-worker-v2";
                 /** @constant */
-                manifest_schema_version: "manifest-v6";
+                manifest_schema_version: "manifest-v7";
                 /** @constant */
                 package_signature_schema_version: "package-signature-v1";
                 /** @constant */
-                release_metadata_schema_version: "release-metadata-v6";
+                release_metadata_schema_version: "release-metadata-v7";
                 /** @constant */
                 release_root_delegation_schema_version: "release-root-delegation-v1";
                 /** @constant */
@@ -2833,11 +2850,11 @@ export interface components {
                 /** @constant */
                 token_ticket_schema_version: "token-ticket-v4";
                 /** @constant */
-                bridge_schema_version: "bridge-v6";
+                bridge_schema_version: "bridge-v7";
                 /** @constant */
                 opaque_surface_document_schema_version: "opaque-surface-document-v3";
                 /** @constant */
-                opaque_surface_transport_schema_version: "opaque-surface-transport-v5";
+                opaque_surface_transport_schema_version: "opaque-surface-transport-v6";
                 /** @constant */
                 target_classifier_version: "target-classifier-v2";
                 /** @constant */
@@ -2849,9 +2866,9 @@ export interface components {
                 /** @constant */
                 session_scope_maintenance_schema_version: "session-scope-maintenance-v1";
                 /** @constant */
-                plugin_platform_openapi_version: "plugin-platform-v9";
+                plugin_platform_openapi_version: "plugin-platform-v10";
                 /** @constant */
-                compatibility_schema_version: "compatibility-manifest-v11";
+                compatibility_schema_version: "compatibility-manifest-v12";
                 /** @constant */
                 worker_invocation_schema_version: "worker-invocation-v3";
                 /** @constant */
@@ -2898,9 +2915,9 @@ export interface components {
                 quarantine_cleanup_schema_version: "quarantine-cleanup-v1";
             };
             contract_set_sha256: string;
-            contracts: components["schemas"]["CompatibilityManifestV11Contract"][];
+            contracts: components["schemas"]["CompatibilityManifestV12Contract"][];
         };
-        CompatibilityManifestV11Contract: {
+        CompatibilityManifestV12Contract: {
             id: string;
             path: string;
             version: string;
@@ -3200,9 +3217,9 @@ export interface components {
         HostCapabilityPinV1ArtifactRef: string;
         HostCapabilityPinV1Sha256: string;
         HostCapabilityPinV1DecimalEpoch: string;
-        ManifestV6: {
+        ManifestV7: {
             /** @constant */
-            schema_version: "redevplugin.manifest.v6";
+            schema_version: "redevplugin.manifest.v7";
             publisher: {
                 publisher_id: string;
                 display_name?: string;
@@ -3210,12 +3227,12 @@ export interface components {
             plugin: {
                 plugin_id: string;
                 display_name: string;
-                version: components["schemas"]["ManifestV6Semver"];
+                version: components["schemas"]["ManifestV7Semver"];
                 /** @constant */
                 api_version: "plugin-v1";
-                min_runtime_version: components["schemas"]["ManifestV6Semver"];
+                min_runtime_version: components["schemas"]["ManifestV7Semver"];
                 /** @constant */
-                ui_protocol_version: "plugin-ui-v6";
+                ui_protocol_version: "plugin-ui-v7";
             };
             surfaces: {
                 surface_id: string;
@@ -3279,13 +3296,13 @@ export interface components {
                     uninstall_behavior?: "cancel_then_block_delete" | "force_cleanup_allowed";
                     ack_timeout_ms?: number;
                 } & (unknown & unknown);
-                request_schema?: components["schemas"]["ManifestV6MethodSchema"] & {
+                request_schema?: components["schemas"]["ManifestV7MethodSchema"] & {
                     /** @constant */
                     type: "object";
                     /** @constant */
                     additionalProperties: false;
                 };
-                response_schema?: components["schemas"]["ManifestV6MethodSchema"] & {
+                response_schema?: components["schemas"]["ManifestV7MethodSchema"] & {
                     /** @constant */
                     type: "object";
                     /** @constant */
@@ -3348,26 +3365,26 @@ export interface components {
                 payload_schema?: Record<string, never>;
             }[];
         };
-        ManifestV6Semver: string;
-        ManifestV6MethodSchema: false | (({
+        ManifestV7Semver: string;
+        ManifestV7MethodSchema: false | (({
             description?: string;
             readOnly?: boolean;
             writeOnly?: boolean;
             $ref?: string;
             type?: ("null" | "boolean" | "object" | "array" | "number" | "integer" | "string") | ("null" | "boolean" | "object" | "array" | "number" | "integer" | "string")[];
             properties?: {
-                [key: string]: components["schemas"]["ManifestV6MethodSchema"];
+                [key: string]: components["schemas"]["ManifestV7MethodSchema"];
             };
             patternProperties?: {
-                [key: string]: components["schemas"]["ManifestV6MethodSchema"];
+                [key: string]: components["schemas"]["ManifestV7MethodSchema"];
             };
             required?: string[];
             /** @constant */
             additionalProperties?: false;
-            items?: components["schemas"]["ManifestV6MethodSchema"];
-            allOf?: components["schemas"]["ManifestV6MethodSchema"][];
-            anyOf?: components["schemas"]["ManifestV6MethodSchema"][];
-            oneOf?: components["schemas"]["ManifestV6MethodSchema"][];
+            items?: components["schemas"]["ManifestV7MethodSchema"];
+            allOf?: components["schemas"]["ManifestV7MethodSchema"][];
+            anyOf?: components["schemas"]["ManifestV7MethodSchema"][];
+            oneOf?: components["schemas"]["ManifestV7MethodSchema"][];
             enum?: unknown[];
             const?: unknown;
             default?: unknown;

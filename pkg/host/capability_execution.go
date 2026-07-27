@@ -1942,6 +1942,17 @@ type hostOperationSink struct {
 
 func (s *hostOperationSink) ID() string { return s.operationID }
 
+func (s *hostOperationSink) ReportProgress(ctx context.Context, progress capability.OperationProgress) error {
+	if err := s.lease.validate(ctx); err != nil {
+		return err
+	}
+	_, err := s.host.adapters.Operations.ReportProgress(ctx, operation.ProgressRequest{
+		OperationID: s.operationID,
+		Progress:    progress,
+	})
+	return err
+}
+
 func (s *hostOperationSink) Complete(ctx context.Context) error {
 	if err := s.lease.validate(ctx); err != nil {
 		return err

@@ -1,52 +1,52 @@
 {
   "schema_version": "redevplugin.platform_package_set.v1",
-  "platform_version": "0.6.19",
+  "platform_version": "0.6.20",
   "go_module": {
     "module": "github.com/floegence/redevplugin",
-    "version": "v0.6.19"
+    "version": "v0.6.20"
   },
   "npm_packages": [
     {
       "name": "@floegence/redevplugin-contracts",
-      "version": "0.6.19"
+      "version": "0.6.20"
     },
     {
       "name": "@floegence/redevplugin-ui",
-      "version": "0.6.19"
+      "version": "0.6.20"
     }
   ],
   "rust_crates": [
     {
       "name": "redevplugin-contracts",
-      "version": "0.6.19",
+      "version": "0.6.20",
       "role": "contracts"
     },
     {
       "name": "redevplugin-ipc",
-      "version": "0.6.19",
+      "version": "0.6.20",
       "role": "ipc"
     },
     {
       "name": "redevplugin-wasm-abi",
-      "version": "0.6.19",
+      "version": "0.6.20",
       "role": "wasm_abi"
     },
     {
       "name": "redevplugin-target-classifier",
-      "version": "0.6.19",
+      "version": "0.6.20",
       "role": "target_classifier"
     },
     {
       "name": "redevplugin-worker-sdk",
-      "version": "0.6.19",
+      "version": "0.6.20",
       "role": "worker_sdk"
     },
     {
       "name": "redevplugin-runtime",
-      "version": "0.6.19",
+      "version": "0.6.20",
       "role": "runtime"
     }
   ],
   "contract_registry_version": "contract-registry-v2",
-  "contract_set_sha256": "c72f9a233bb2161454a5a5e24dba9bfd35f00fd198711fd8ed3bc6b161089ff3"
+  "contract_set_sha256": "025c985f64076429e54eb404af05b16bfd7c85f9148a3a389ff915629b05fbb2"
 }

@@ -101,6 +101,32 @@ func TestStoreRegisterRequiresExactOwnerScope(t *testing.T) {
 	}
 }
 
+func TestStoreReportProgressPersistsAndFencesRevision(t *testing.T) {
+	for _, tc := range operationStoreCases() {
+		t.Run(tc.name, func(t *testing.T) {
+			store := tc.open(t)
+			ctx := context.Background()
+			mustRegisterOperation(t, store, RegisterRequest{
+				OperationID:      "op_progress",
+				ExecutionBinding: operationTestBinding("com.example.plugin", "plugin_progress", "documents.read", nil),
+			})
+			completed, total := uint64(3), uint64(10)
+			record, err := store.ReportProgress(ctx, ProgressRequest{OperationID: "op_progress", Progress: capability.OperationProgress{Revision: 1, Phase: "scan", CompletedUnits: &completed, TotalUnits: &total, Unit: "items"}})
+			if err != nil || record.Progress == nil || record.Progress.Revision != 1 {
+				t.Fatalf("ReportProgress() record=%#v err=%v", record, err)
+			}
+			stale, err := store.ReportProgress(ctx, ProgressRequest{OperationID: "op_progress", Progress: capability.OperationProgress{Revision: 1, Phase: "stale"}})
+			if err != nil || stale.Progress == nil || stale.Progress.Phase != "scan" {
+				t.Fatalf("stale ReportProgress() record=%#v err=%v", stale, err)
+			}
+			persisted, err := store.Get(ctx, "op_progress")
+			if err != nil || persisted.Progress == nil || persisted.Progress.CompletedUnits == nil || *persisted.Progress.CompletedUnits != 3 {
+				t.Fatalf("persisted progress=%#v err=%v", persisted.Progress, err)
+			}
+		})
+	}
+}
+
 func TestStoresRequireClosedFailureCodes(t *testing.T) {
 	for _, tc := range operationStoreCases() {
 		t.Run(tc.name, func(t *testing.T) {

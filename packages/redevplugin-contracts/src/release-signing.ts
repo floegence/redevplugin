@@ -2,7 +2,8 @@ export const rootDelegationSchemaVersion = "redevplugin.release_root_delegation.
 export const packageSignatureSchemaVersion = "redevplugin.package_signature.v1" as const;
 export const releaseMetadataSchemaVersionV5 = "redevplugin.release_metadata.v5" as const;
 export const releaseMetadataSchemaVersionV6 = "redevplugin.release_metadata.v6" as const;
-export const releaseMetadataSchemaVersion = releaseMetadataSchemaVersionV6;
+export const releaseMetadataSchemaVersionV7 = "redevplugin.release_metadata.v7" as const;
+export const releaseMetadataSchemaVersion = releaseMetadataSchemaVersionV7;
 export const sourcePolicySchemaVersion = "redevplugin.release_source_policy.v2" as const;
 export const sourcePolicyPointerSchemaVersion = "redevplugin.release_source_policy_pointer.v1" as const;
 export const revocationSchemaVersion = "redevplugin.release_revocation.v2" as const;
@@ -128,7 +129,7 @@ export type PackageReleaseSignatureRef = Readonly<{
 export type ReleaseCompatibility = Readonly<{
   min_redevplugin_version: string;
   min_runtime_version: string;
-  ui_protocol_version: "plugin-ui-v5" | "plugin-ui-v6";
+  ui_protocol_version: "plugin-ui-v5" | "plugin-ui-v6" | "plugin-ui-v7";
   supported_targets?: readonly ("darwin/amd64" | "darwin/arm64" | "linux/amd64" | "linux/arm64")[];
 }>;
 
@@ -172,7 +173,7 @@ export type ReleaseEvidence = Readonly<{
 }>;
 
 export type ReleaseMetadataV5 = Readonly<{
-  schema_version: typeof releaseMetadataSchemaVersionV5 | typeof releaseMetadataSchemaVersionV6;
+  schema_version: typeof releaseMetadataSchemaVersionV5 | typeof releaseMetadataSchemaVersionV6 | typeof releaseMetadataSchemaVersionV7;
   source_id: string;
   release_metadata_ref: string;
   publisher_id: string;
@@ -790,7 +791,8 @@ function validateReleaseMetadata(value: ReleaseMetadataV5): void {
 
 function validReleaseMetadataUIProtocolPair(schemaVersion: string, uiProtocolVersion: string): boolean {
   return (schemaVersion === releaseMetadataSchemaVersionV5 && uiProtocolVersion === "plugin-ui-v5") ||
-    (schemaVersion === releaseMetadataSchemaVersionV6 && uiProtocolVersion === "plugin-ui-v6");
+    (schemaVersion === releaseMetadataSchemaVersionV6 && uiProtocolVersion === "plugin-ui-v6") ||
+    (schemaVersion === releaseMetadataSchemaVersionV7 && uiProtocolVersion === "plugin-ui-v7");
 }
 
 function validateCapabilityContractRef(value: HostCapabilityContractRef): void {

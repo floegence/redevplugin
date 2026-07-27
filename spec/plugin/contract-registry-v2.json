@@ -4,9 +4,9 @@
   "artifacts": [
     {
       "id": "compatibility-manifest-schema",
-      "path": "spec/plugin/compatibility-manifest-v11.schema.json",
-      "version": "compatibility-manifest-v11",
-      "sha256": "cec20e7bc5351641c031ebceec10559cad7c5f91a62f79158ace94df88fe1d0d"
+      "path": "spec/plugin/compatibility-manifest-v12.schema.json",
+      "version": "compatibility-manifest-v12",
+      "sha256": "e8b2536da3c2285c982464d9822cd501cea1418ef2276ce93d417df83eb41f47"
     },
     {
       "id": "contract-registry-schema",
@@ -58,15 +58,15 @@
     },
     {
       "id": "iframe-bridge-schema",
-      "path": "spec/plugin/bridge-v6.schema.json",
-      "version": "bridge-v6",
-      "sha256": "e5d98528a96016950038e25b64ca760479452e06c13ab46e4ff06745a3e8aef4"
+      "path": "spec/plugin/bridge-v7.schema.json",
+      "version": "bridge-v7",
+      "sha256": "f4b5f04870b58e8e2363aaba98b273adccef3a3e9ac1eb1a2dbbc3fb4c71b300"
     },
     {
       "id": "manifest-schema",
-      "path": "spec/plugin/manifest-v6.schema.json",
-      "version": "manifest-v6",
-      "sha256": "b196a328ca6e0581d3da69b8fbaed36ffb1ba13f8e2e46a34b1761cd644f1e74"
+      "path": "spec/plugin/manifest-v7.schema.json",
+      "version": "manifest-v7",
+      "sha256": "af73ffd8ccedcb149198f847b68ed6fc23e51366122915c7129473f9fde68e35"
     },
     {
       "id": "network-grant-schema",
@@ -82,9 +82,9 @@
     },
     {
       "id": "opaque-surface-transport-schema",
-      "path": "spec/plugin/opaque-surface-transport-v5.schema.json",
-      "version": "opaque-surface-transport-v5",
-      "sha256": "c9beca3ed207a8059f63e946fca684b6c8a16a9999fe076684dc086af97cf67a"
+      "path": "spec/plugin/opaque-surface-transport-v6.schema.json",
+      "version": "opaque-surface-transport-v6",
+      "sha256": "8f2af2669edc9413020c26765ee3f1986ef63a7d0803466861d8cdae3977ccff"
     },
     {
       "id": "owner-scope-inventory-registry",
@@ -142,9 +142,9 @@
     },
     {
       "id": "plugin-platform-openapi",
-      "path": "spec/openapi/plugin-platform-v9.yaml",
-      "version": "plugin-platform-v9",
-      "sha256": "b5999503d24828d93f5ddaadc01ca31eaa630434bef5552aed9e6ec56c65c305"
+      "path": "spec/openapi/plugin-platform-v10.yaml",
+      "version": "plugin-platform-v10",
+      "sha256": "28a7311167249ec0cec1e0f2593e481c99d84c6ab0da673eb2f8e9832c243e49"
     },
     {
       "id": "process-containment-schema",
@@ -160,9 +160,9 @@
     },
     {
       "id": "release-metadata-schema",
-      "path": "spec/plugin/release-metadata-v6.schema.json",
-      "version": "release-metadata-v6",
-      "sha256": "68700942b0bc21298270e90da940f29bb6a4d832282337587abddba9485b9938"
+      "path": "spec/plugin/release-metadata-v7.schema.json",
+      "version": "release-metadata-v7",
+      "sha256": "d9ceac9b8dd52288172bbe5d4dc2f158e2354ad4fe1f071617f6ba9309e21ebf"
     },
     {
       "id": "release-revocation-pointer-schema",

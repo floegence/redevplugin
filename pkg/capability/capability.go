@@ -249,10 +249,22 @@ type Result struct {
 
 type OperationSink interface {
 	ID() string
+	ReportProgress(ctx context.Context, progress OperationProgress) error
 	Complete(ctx context.Context) error
 	Cancel(ctx context.Context, reason string) error
 	Fail(ctx context.Context, code ExecutionFailureCode, cause error) error
 	CancelRequested() <-chan struct{}
+}
+
+// OperationProgress is a host-neutral progress snapshot. Phase identifiers are
+// plugin-defined and must be localized by the plugin; the platform never
+// persists host-authored display text.
+type OperationProgress struct {
+	Revision       uint64  `json:"revision"`
+	Phase          string  `json:"phase"`
+	CompletedUnits *uint64 `json:"completed_units,omitempty"`
+	TotalUnits     *uint64 `json:"total_units,omitempty"`
+	Unit           string  `json:"unit,omitempty"`
 }
 
 type StreamSink interface {

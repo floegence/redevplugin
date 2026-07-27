@@ -34,8 +34,10 @@ func TestValidateAcceptsOnlyReleasedManifestUIProtocolPairs(t *testing.T) {
 	}{
 		{name: "v5", schema: SchemaVersionV5, protocol: "plugin-ui-v5"},
 		{name: "v6", schema: SchemaVersionV6, protocol: "plugin-ui-v6"},
+		{name: "v7", schema: SchemaVersionV7, protocol: "plugin-ui-v7"},
 		{name: "v5 schema with v6 protocol", schema: SchemaVersionV5, protocol: "plugin-ui-v6", wantErr: true},
 		{name: "v6 schema with v5 protocol", schema: SchemaVersionV6, protocol: "plugin-ui-v5", wantErr: true},
+		{name: "v7 schema with v6 protocol", schema: SchemaVersionV7, protocol: "plugin-ui-v6", wantErr: true},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

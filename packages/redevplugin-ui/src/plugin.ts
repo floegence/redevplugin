@@ -23,6 +23,8 @@ export type {
   PluginMethodResult,
   PluginExecutionFailureCode,
   PluginOperationSnapshot,
+  PluginOperationProgress,
+  PluginSurfaceContext,
   PluginStreamTerminalStatus,
   PluginUIActionEvent,
   PluginUIAttributeValue,

@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/url"
 	"path/filepath"
 	"sort"
@@ -17,7 +18,10 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-const maxOperationSQLiteConnections = 8
+const (
+	maxOperationSQLiteConnections = 8
+	operationSQLiteSchemaVersion  = 1
+)
 
 type SQLiteStore struct {
 	db      *sql.DB
@@ -101,7 +105,6 @@ func (s *SQLiteStore) Register(ctx context.Context, req RegisterRequest) (Record
 		return Record{}, err
 	}
 	defer rollbackUnlessCommitted(tx)
-
 	_, exists, err := getSQLiteOperation(ctx, tx, operationID)
 	if err != nil {
 		return Record{}, err
@@ -193,6 +196,46 @@ func (s *SQLiteStore) Get(ctx context.Context, operationID string) (Record, erro
 	}
 	if !exists {
 		return Record{}, ErrNotFound
+	}
+	return record, nil
+}
+
+func (s *SQLiteStore) ReportProgress(ctx context.Context, req ProgressRequest) (Record, error) {
+	if s == nil {
+		return Record{}, errors.New("operation store is nil")
+	}
+	progress, err := normalizeProgress(req.Progress)
+	if err != nil {
+		return Record{}, err
+	}
+	now := req.Now
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Record{}, err
+	}
+	defer rollbackUnlessCommitted(tx)
+	record, exists, err := getSQLiteOperation(ctx, tx, strings.TrimSpace(req.OperationID))
+	if err != nil {
+		return Record{}, err
+	}
+	if !exists {
+		return Record{}, ErrNotFound
+	}
+	if terminal(record.Status) || record.Progress != nil && progress.Revision <= record.Progress.Revision {
+		return record, nil
+	}
+	record.Progress = &progress
+	record.UpdatedAt = now
+	if err := upsertSQLiteOperation(ctx, tx, record); err != nil {
+		return Record{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return Record{}, err
 	}
 	return record, nil
 }
@@ -442,6 +485,13 @@ func (s *SQLiteStore) initializeSchema(ctx context.Context) error {
 		return err
 	}
 	defer rollbackUnlessCommitted(tx)
+	var schemaVersion int
+	if err := tx.QueryRowContext(ctx, `PRAGMA user_version`).Scan(&schemaVersion); err != nil {
+		return err
+	}
+	if schemaVersion < 0 || schemaVersion > operationSQLiteSchemaVersion {
+		return fmt.Errorf("operation store schema version %d is newer than supported version %d", schemaVersion, operationSQLiteSchemaVersion)
+	}
 
 	if _, err := tx.ExecContext(ctx, `
 CREATE TABLE IF NOT EXISTS plugin_operations (
@@ -468,10 +518,37 @@ CREATE TABLE IF NOT EXISTS plugin_operations (
 	created_at INTEGER NOT NULL,
 	updated_at INTEGER NOT NULL,
 	cancel_requested_at INTEGER,
-	orphaned_at INTEGER,
-	terminal_at INTEGER
+		orphaned_at INTEGER,
+		terminal_at INTEGER,
+		progress_json TEXT NOT NULL DEFAULT ''
 )`); err != nil {
 		return err
+	}
+	var progressColumnPresent bool
+	rows, err := tx.QueryContext(ctx, `PRAGMA table_info(plugin_operations)`)
+	if err != nil {
+		return err
+	}
+	for rows.Next() {
+		var cid int
+		var name, columnType string
+		var notNull, primaryKey int
+		var defaultValue any
+		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &primaryKey); err != nil {
+			rows.Close()
+			return err
+		}
+		if name == "progress_json" {
+			progressColumnPresent = true
+		}
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	if !progressColumnPresent {
+		if _, err := tx.ExecContext(ctx, `ALTER TABLE plugin_operations ADD COLUMN progress_json TEXT NOT NULL DEFAULT ''`); err != nil {
+			return err
+		}
 	}
 	if _, err := tx.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_plugin_operations_plugin_instance ON plugin_operations(plugin_instance_id, created_at DESC, operation_id DESC)`); err != nil {
 		return err
@@ -497,6 +574,9 @@ CREATE TABLE IF NOT EXISTS plugin_operations (
 	if _, err := tx.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_plugin_operations_owner_terminal_retention ON plugin_operations(owner_env_hash, plugin_instance_id, terminal_at DESC, operation_id DESC) WHERE terminal_at IS NOT NULL`); err != nil {
 		return err
 	}
+	if _, err := tx.ExecContext(ctx, fmt.Sprintf(`PRAGMA user_version = %d`, operationSQLiteSchemaVersion)); err != nil {
+		return err
+	}
 	return tx.Commit()
 }
 
@@ -506,7 +586,7 @@ SELECT
 	surface_instance_id, owner_session_hash, owner_user_hash, owner_env_hash, session_channel_id_hash,
 	bridge_channel_id, execution_binding_json, status,
 	cancelable, cancel_ack_timeout_ms, disable_behavior, uninstall_behavior, failure_code, reason, created_at, updated_at,
-	cancel_requested_at, orphaned_at, terminal_at`
+	cancel_requested_at, orphaned_at, terminal_at, progress_json`
 
 func listSQLiteOperations(ctx context.Context, q sqliteQuerier, ownerEnvHash, pluginInstanceID string) ([]Record, error) {
 	rows, err := q.QueryContext(ctx, operationSelectColumns+` FROM plugin_operations WHERE owner_env_hash = ? AND plugin_instance_id = ? ORDER BY created_at ASC, operation_id ASC`, ownerEnvHash, pluginInstanceID)
@@ -552,8 +632,8 @@ INSERT INTO plugin_operations (
 	surface_instance_id, owner_session_hash, owner_user_hash, owner_env_hash, session_channel_id_hash,
 	bridge_channel_id, execution_binding_json, status,
 		cancelable, cancel_ack_timeout_ms, disable_behavior, uninstall_behavior, failure_code, reason, created_at, updated_at,
-		cancel_requested_at, orphaned_at, terminal_at
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		cancel_requested_at, orphaned_at, terminal_at, progress_json
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(operation_id) DO UPDATE SET
 	plugin_id = excluded.plugin_id,
 	plugin_instance_id = excluded.plugin_instance_id,
@@ -578,7 +658,8 @@ ON CONFLICT(operation_id) DO UPDATE SET
 	updated_at = excluded.updated_at,
 	cancel_requested_at = excluded.cancel_requested_at,
 	orphaned_at = excluded.orphaned_at,
-	terminal_at = excluded.terminal_at`,
+		terminal_at = excluded.terminal_at,
+		progress_json = excluded.progress_json`,
 		record.OperationID,
 		record.PluginID,
 		record.PluginInstanceID,
@@ -604,6 +685,7 @@ ON CONFLICT(operation_id) DO UPDATE SET
 		timePtrToNullableUnix(record.CancelRequestedAt),
 		timePtrToNullableUnix(record.OrphanedAt),
 		timePtrToNullableUnix(record.TerminalAt),
+		progressJSON(record.Progress),
 	)
 	return err
 }
@@ -627,6 +709,7 @@ func scanSQLiteOperation(scanner sqliteOperationScanner) (Record, error) {
 	var cancelRequestedAt sql.NullInt64
 	var orphanedAt sql.NullInt64
 	var terminalAt sql.NullInt64
+	var progressRaw string
 	if err := scanner.Scan(
 		&record.OperationID,
 		&record.PluginID,
@@ -653,6 +736,7 @@ func scanSQLiteOperation(scanner sqliteOperationScanner) (Record, error) {
 		&cancelRequestedAt,
 		&orphanedAt,
 		&terminalAt,
+		&progressRaw,
 	); err != nil {
 		return Record{}, err
 	}
@@ -690,7 +774,29 @@ func scanSQLiteOperation(scanner sqliteOperationScanner) (Record, error) {
 	record.CancelRequestedAt = nullableUnixToTimePtr(cancelRequestedAt)
 	record.OrphanedAt = nullableUnixToTimePtr(orphanedAt)
 	record.TerminalAt = nullableUnixToTimePtr(terminalAt)
+	if strings.TrimSpace(progressRaw) != "" {
+		var progress capability.OperationProgress
+		if err := jsonvalue.DecodeClosed([]byte(progressRaw), &progress); err != nil {
+			return Record{}, ErrInvalidOperation
+		}
+		normalized, err := normalizeProgress(progress)
+		if err != nil {
+			return Record{}, err
+		}
+		record.Progress = &normalized
+	}
 	return record, nil
+}
+
+func progressJSON(progress *capability.OperationProgress) string {
+	if progress == nil {
+		return ""
+	}
+	data, err := json.Marshal(progress)
+	if err != nil {
+		return ""
+	}
+	return string(data)
 }
 
 func sortOperations(records []Record) {

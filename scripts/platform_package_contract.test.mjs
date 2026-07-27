@@ -102,15 +102,15 @@ function validPublication(packageSet) {
   };
 }
 
-test("the active compatibility surface is the atomic v11 contract set", () => {
+test("the active compatibility surface is the atomic v12 contract set", () => {
   const activeRegistry = readJSON("spec/plugin/contract-registry-v2.json");
-  const compatibilitySchema = readJSON("spec/plugin/compatibility-manifest-v11.schema.json");
+  const compatibilitySchema = readJSON("spec/plugin/compatibility-manifest-v12.schema.json");
   const generatedGo = read("pkg/version/contracts_gen.go").toString("utf8");
   const generatedTypeScript = read("packages/redevplugin-ui/src/contracts.gen.ts").toString("utf8");
 
   assert.equal(activeRegistry.schema_version, "redevplugin.contract_registry.v2");
   assert.equal(activeRegistry.registry_version, "contract-registry-v2");
-  assert.equal(compatibilitySchema.properties.schema_version.const, "redevplugin.compatibility.v11");
+  assert.equal(compatibilitySchema.properties.schema_version.const, "redevplugin.compatibility.v12");
   assert.match(generatedGo, /ContractRegistryVersion\s+= "contract-registry-v2"/);
   assert.match(generatedTypeScript, /"contract_registry_version": "contract-registry-v2"/);
   assert.equal(activeRegistry.artifacts.some(({ id }) => id === "release-manifest-schema"), false);
@@ -234,24 +234,24 @@ test("platform package set binds the exact Go, npm, Rust, role, and contract coo
 
   assert.deepEqual(platformVersion, {
     schema_version: "redevplugin.platform_version.v1",
-    platform_version: "0.6.19",
+    platform_version: "0.6.20",
   });
   assert.equal(packageSet.platform_version, platformVersion.platform_version);
   assert.deepEqual(packageSet.go_module, {
     module: "github.com/floegence/redevplugin",
-    version: "v0.6.19",
+    version: "v0.6.20",
   });
   assert.deepEqual(packageSet.npm_packages, [
-    { name: "@floegence/redevplugin-contracts", version: "0.6.19" },
-    { name: "@floegence/redevplugin-ui", version: "0.6.19" },
+    { name: "@floegence/redevplugin-contracts", version: "0.6.20" },
+    { name: "@floegence/redevplugin-ui", version: "0.6.20" },
   ]);
   assert.deepEqual(packageSet.rust_crates, [
-    { name: "redevplugin-contracts", version: "0.6.19", role: "contracts" },
-    { name: "redevplugin-ipc", version: "0.6.19", role: "ipc" },
-    { name: "redevplugin-wasm-abi", version: "0.6.19", role: "wasm_abi" },
-    { name: "redevplugin-target-classifier", version: "0.6.19", role: "target_classifier" },
-    { name: "redevplugin-worker-sdk", version: "0.6.19", role: "worker_sdk" },
-    { name: "redevplugin-runtime", version: "0.6.19", role: "runtime" },
+    { name: "redevplugin-contracts", version: "0.6.20", role: "contracts" },
+    { name: "redevplugin-ipc", version: "0.6.20", role: "ipc" },
+    { name: "redevplugin-wasm-abi", version: "0.6.20", role: "wasm_abi" },
+    { name: "redevplugin-target-classifier", version: "0.6.20", role: "target_classifier" },
+    { name: "redevplugin-worker-sdk", version: "0.6.20", role: "worker_sdk" },
+    { name: "redevplugin-runtime", version: "0.6.20", role: "runtime" },
   ]);
   assert.equal(packageSet.contract_registry_version, "contract-registry-v2");
   assert.equal(packageSet.contract_set_sha256, digest);
@@ -330,8 +330,8 @@ test("platform package set rejects duplicate, mismatched, unknown, and OS artifa
   }
   assert.throws(() => decodePlatformPackageSet(Buffer.from(`${raw.toString("utf8")} null`, "utf8"), digest));
   assert.throws(() => decodePlatformPackageSet(Buffer.from(raw.toString("utf8").replace(
-    '"platform_version": "0.6.19",',
-    '"platform_version": "0.6.19",\n  "platform_version": "0.6.19",',
+    '"platform_version": "0.6.20",',
+    '"platform_version": "0.6.20",\n  "platform_version": "0.6.20",',
   ), "utf8"), digest));
   assert.throws(() => decodePlatformPackageSet(Buffer.from(raw.toString("utf8").replace(
     '"name": "@floegence/redevplugin-contracts",',

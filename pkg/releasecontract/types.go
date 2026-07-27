@@ -5,7 +5,8 @@ const (
 	PackageSignatureSchemaVersion      = "redevplugin.package_signature.v1"
 	ReleaseMetadataSchemaVersionV5     = "redevplugin.release_metadata.v5"
 	ReleaseMetadataSchemaVersionV6     = "redevplugin.release_metadata.v6"
-	ReleaseMetadataSchemaVersion       = ReleaseMetadataSchemaVersionV6
+	ReleaseMetadataSchemaVersionV7     = "redevplugin.release_metadata.v7"
+	ReleaseMetadataSchemaVersion       = ReleaseMetadataSchemaVersionV7
 	SourcePolicySchemaVersion          = "redevplugin.release_source_policy.v2"
 	SourcePolicyPointerSchemaVersion   = "redevplugin.release_source_policy_pointer.v1"
 	RevocationSchemaVersion            = "redevplugin.release_revocation.v2"

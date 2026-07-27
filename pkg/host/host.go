@@ -5984,8 +5984,8 @@ func (h *Host) GetSurfaceOperation(ctx context.Context, req GetSurfaceOperationR
 	if err != nil {
 		return PluginOperationSnapshot{}, operation.ErrNotFound
 	}
-	if boundSurface.UIProtocolVersion != "plugin-ui-v6" {
-		return PluginOperationSnapshot{}, fmt.Errorf("%w: operation observation requires plugin-ui-v6", ErrPluginUIProtocolUnsupported)
+	if boundSurface.UIProtocolVersion != "plugin-ui-v6" && boundSurface.UIProtocolVersion != "plugin-ui-v7" {
+		return PluginOperationSnapshot{}, fmt.Errorf("%w: operation observation requires plugin-ui-v6 or plugin-ui-v7", ErrPluginUIProtocolUnsupported)
 	}
 	releaseObservation, err := h.operationObservers.acquire(
 		surfaceOperationObservationKeyFor(authorization.session, req.SurfaceInstanceID), req.OperationID, req.Now,

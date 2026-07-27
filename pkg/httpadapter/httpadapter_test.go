@@ -717,12 +717,12 @@ func TestHandlerCompatibilityManifest(t *testing.T) {
 		} `json:"contracts"`
 	}](t, handler, "/_redevplugin/api/plugins/platform/compatibility/query", map[string]any{})
 
-	if got.SchemaVersion != "redevplugin.compatibility.v11" {
+	if got.SchemaVersion != "redevplugin.compatibility.v12" {
 		t.Fatalf("schema_version = %q", got.SchemaVersion)
 	}
-	if got.Matrix.PluginHostProtocolVersion != "plugin-host-v8" ||
+	if got.Matrix.PluginHostProtocolVersion != "plugin-host-v9" ||
 		got.Matrix.SessionScopeMaintenanceVersion != "session-scope-maintenance-v1" ||
-		got.Matrix.PluginPlatformOpenAPI != "plugin-platform-v9" {
+		got.Matrix.PluginPlatformOpenAPI != "plugin-platform-v10" {
 		t.Fatalf("matrix mismatch: %#v", got.Matrix)
 	}
 	contracts := map[string]struct {
@@ -739,7 +739,7 @@ func TestHandlerCompatibilityManifest(t *testing.T) {
 	if !ok {
 		t.Fatalf("compatibility manifest missing plugin-platform-openapi: %#v", got.Contracts)
 	}
-	if openapi.Path != "spec/openapi/plugin-platform-v9.yaml" || openapi.SHA256 == "" {
+	if openapi.Path != "spec/openapi/plugin-platform-v10.yaml" || openapi.SHA256 == "" {
 		t.Fatalf("plugin-platform-openapi contract mismatch: %#v", openapi)
 	}
 }
@@ -4548,8 +4548,8 @@ func samplePathForRoute(path string) string {
 func readOpenAPIContract(t *testing.T) string {
 	t.Helper()
 	candidates := []string{
-		filepath.Join("..", "..", "spec", "openapi", "plugin-platform-v9.yaml"),
-		filepath.Join("spec", "openapi", "plugin-platform-v9.yaml"),
+		filepath.Join("..", "..", "spec", "openapi", "plugin-platform-v10.yaml"),
+		filepath.Join("spec", "openapi", "plugin-platform-v10.yaml"),
 	}
 	var lastErr error
 	for _, candidate := range candidates {

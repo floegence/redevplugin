@@ -47,6 +47,7 @@ type PluginOperationSnapshot struct {
 	RetryAfterMS int                              `json:"retry_after_ms"`
 	TerminalAt   *time.Time                       `json:"terminal_at,omitempty"`
 	FailureCode  *capability.ExecutionFailureCode `json:"failure_code,omitempty"`
+	Progress     *capability.OperationProgress    `json:"progress,omitempty"`
 }
 
 type SurfaceOperationRateLimitError struct {
@@ -279,6 +280,12 @@ func projectPluginOperationSnapshot(record operation.Record) (PluginOperationSna
 		CreatedAt:    record.CreatedAt,
 		UpdatedAt:    record.UpdatedAt,
 		RetryAfterMS: SurfaceOperationSnapshotRetryMinMS,
+	}
+	if record.Progress != nil {
+		progress := *record.Progress
+		if progress.CompletedUnits != nil { value := *progress.CompletedUnits; progress.CompletedUnits = &value }
+		if progress.TotalUnits != nil { value := *progress.TotalUnits; progress.TotalUnits = &value }
+		snapshot.Progress = &progress
 	}
 	switch record.Status {
 	case operation.StatusRunning, operation.StatusCancelRequested:

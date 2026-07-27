@@ -61,7 +61,7 @@ func TestOpenAPIRouteSetMatchesFixture(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	got, err := readOpenAPIRoutes(filepath.Join(root, "spec", "openapi", "plugin-platform-v9.yaml"))
+	got, err := readOpenAPIRoutes(filepath.Join(root, "spec", "openapi", "plugin-platform-v10.yaml"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -163,7 +163,7 @@ func TestLocalImportRoutesUseDedicatedTypeScriptEntrypoint(t *testing.T) {
 
 func TestOpenAPIDefinesJSONRequestBodies(t *testing.T) {
 	root := repoRoot(t)
-	path := filepath.Join(root, "spec", "openapi", "plugin-platform-v9.yaml")
+	path := filepath.Join(root, "spec", "openapi", "plugin-platform-v10.yaml")
 	requestBodies, err := readOpenAPIRequestBodyRoutes(path)
 	if err != nil {
 		t.Fatal(err)
@@ -192,7 +192,7 @@ func TestOpenAPIDefinesJSONRequestBodies(t *testing.T) {
 }
 
 func TestOpenAPIDefinesBoundedPackageUploadBodies(t *testing.T) {
-	raw, err := os.ReadFile(filepath.Join(repoRoot(t), "spec", "openapi", "plugin-platform-v9.yaml"))
+	raw, err := os.ReadFile(filepath.Join(repoRoot(t), "spec", "openapi", "plugin-platform-v10.yaml"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -211,7 +211,7 @@ func TestOpenAPIDefinesBoundedPackageUploadBodies(t *testing.T) {
 
 func TestOpenAPIRequestSchemasDefineCriticalFields(t *testing.T) {
 	root := repoRoot(t)
-	raw, err := os.ReadFile(filepath.Join(root, "spec", "openapi", "plugin-platform-v9.yaml"))
+	raw, err := os.ReadFile(filepath.Join(root, "spec", "openapi", "plugin-platform-v10.yaml"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -222,7 +222,7 @@ func TestOpenAPIRequestSchemasDefineCriticalFields(t *testing.T) {
 		"plugin_gateway_token: { type: string, minLength: 1 }",
 		"delete_data: { type: boolean }",
 		"asset_ticket: { type: string, minLength: 1 }",
-		"ui_protocol_version: { type: string, enum: [plugin-ui-v5, plugin-ui-v6] }",
+		"ui_protocol_version: { type: string, enum: [plugin-ui-v5, plugin-ui-v6, plugin-ui-v7] }",
 		"management_revision: { type: integer, minimum: 1, maximum: 9007199254740991 }",
 		"revoke_epoch: { type: integer, minimum: 1, maximum: 9007199254740991 }",
 		"DisposeSurfaceRequest:",
@@ -264,7 +264,7 @@ func TestOpenAPIRequestSchemasDefineCriticalFields(t *testing.T) {
 
 func TestOpenAPIRoutesSeparateClosedSuccessAndErrorResponses(t *testing.T) {
 	root := repoRoot(t)
-	raw, err := os.ReadFile(filepath.Join(root, "spec", "openapi", "plugin-platform-v9.yaml"))
+	raw, err := os.ReadFile(filepath.Join(root, "spec", "openapi", "plugin-platform-v10.yaml"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -318,7 +318,7 @@ func TestOpenAPIRoutesSeparateClosedSuccessAndErrorResponses(t *testing.T) {
 
 func TestOpenAPIListQueryContractsAreStrictAndComplete(t *testing.T) {
 	root := repoRoot(t)
-	raw, err := os.ReadFile(filepath.Join(root, "spec", "openapi", "plugin-platform-v9.yaml"))
+	raw, err := os.ReadFile(filepath.Join(root, "spec", "openapi", "plugin-platform-v10.yaml"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -379,7 +379,7 @@ func TestOpenAPIListQueryContractsAreStrictAndComplete(t *testing.T) {
 
 func TestOpenAPIRuntimeAndSecretMutationContractsAreClosed(t *testing.T) {
 	root := repoRoot(t)
-	raw, err := os.ReadFile(filepath.Join(root, "spec", "openapi", "plugin-platform-v9.yaml"))
+	raw, err := os.ReadFile(filepath.Join(root, "spec", "openapi", "plugin-platform-v10.yaml"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -421,7 +421,7 @@ func TestOpenAPIRuntimeAndSecretMutationContractsAreClosed(t *testing.T) {
 
 func TestOpenAPITrustedScopeAndRetainedDataMatchClosedGoDTOs(t *testing.T) {
 	root := repoRoot(t)
-	raw, err := os.ReadFile(filepath.Join(root, "spec", "openapi", "plugin-platform-v9.yaml"))
+	raw, err := os.ReadFile(filepath.Join(root, "spec", "openapi", "plugin-platform-v10.yaml"))
 	if err != nil {
 		t.Fatal(err)
 	}

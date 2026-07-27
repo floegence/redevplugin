@@ -95,8 +95,10 @@ func TestReleaseMetadataAcceptsOnlyReleasedSchemaUIProtocolPairs(t *testing.T) {
 	}{
 		{name: "v5", schema: ReleaseMetadataSchemaVersionV5, protocol: "plugin-ui-v5"},
 		{name: "v6", schema: ReleaseMetadataSchemaVersionV6, protocol: "plugin-ui-v6"},
+		{name: "v7", schema: ReleaseMetadataSchemaVersionV7, protocol: "plugin-ui-v7"},
 		{name: "v5 schema with v6 protocol", schema: ReleaseMetadataSchemaVersionV5, protocol: "plugin-ui-v6", wantErr: true},
 		{name: "v6 schema with v5 protocol", schema: ReleaseMetadataSchemaVersionV6, protocol: "plugin-ui-v5", wantErr: true},
+		{name: "v7 schema with v6 protocol", schema: ReleaseMetadataSchemaVersionV7, protocol: "plugin-ui-v6", wantErr: true},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

@@ -105,6 +105,7 @@ test("Go, npm, and Rust projections share one contract inventory and digest", ()
     "releaseMetadataSchemaVersion",
     "releaseMetadataSchemaVersionV5",
     "releaseMetadataSchemaVersionV6",
+    "releaseMetadataSchemaVersionV7",
     "releaseMetadataSigningPreimage",
     "releaseSigningLedgerEvidenceSchemaVersion",
     "revocationPointerSchemaVersion",
@@ -189,7 +190,7 @@ test("contracts package tarball has one closed browser-neutral payload", () => {
   try {
     const tarball = run("node", [
       "scripts/build_redevplugin_contracts_package.mjs",
-      "0.6.19",
+      "0.6.20",
       outputDirectory,
     ]).split("\n").at(-1);
     assert.ok(tarball);
@@ -222,7 +223,7 @@ test("contracts package tarball has one closed browser-neutral payload", () => {
       "version",
     ]);
     assert.equal(manifest.name, "@floegence/redevplugin-contracts");
-    assert.equal(manifest.version, "0.6.19");
+    assert.equal(manifest.version, "0.6.20");
     assert.deepEqual(manifest.files, ["dist"]);
     assert.equal(manifest.sideEffects, false);
     assert.deepEqual(Object.keys(manifest.exports), ["."]);

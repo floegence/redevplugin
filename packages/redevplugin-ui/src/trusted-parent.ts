@@ -10,6 +10,7 @@ export {
   defaultPluginSurfaceReloadWindowMs,
   isPluginRiskPlan,
   opaqueSurfaceDocumentSchemaVersion,
+  pluginSurfaceContextSchemaVersion,
   pluginRiskPlanSchemaVersion,
   trustedParentBridgeHandshakeTranscriptSHA256,
 } from "./surface.js";
@@ -40,6 +41,7 @@ export type {
   PluginSurfaceQuiesceResult,
   PluginSurfaceRevocationReconciliation,
   PluginSurfacePreparationResult,
+  PluginSurfaceContext,
   PluginSurfaceReloadDecision,
   PluginSurfaceReloadLimiterOptions,
   PluginSurfaceReloadState,

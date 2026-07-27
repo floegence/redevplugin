@@ -10,7 +10,7 @@ import (
 
 func TestCompatibilityManifestSchemaDefinesReleasedMatrix(t *testing.T) {
 	root := repoRoot(t)
-	raw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", "compatibility-manifest-v11.schema.json"))
+	raw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", "compatibility-manifest-v12.schema.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -21,20 +21,20 @@ func TestCompatibilityManifestSchemaDefinesReleasedMatrix(t *testing.T) {
 
 	properties := requireNestedObject(t, schema, "properties")
 	schemaVersion := requireNestedObject(t, properties, "schema_version")
-	if got := schemaVersion["const"]; got != "redevplugin.compatibility.v11" {
+	if got := schemaVersion["const"]; got != "redevplugin.compatibility.v12" {
 		t.Fatalf("schema_version const = %#v", got)
 	}
 
 	matrix := requireNestedObject(t, properties, "matrix")
 	matrixProps := requireNestedObject(t, matrix, "properties")
 	expectedMatrix := map[string]string{
-		"plugin_ui_protocol_version":                   "plugin-ui-v6",
-		"plugin_host_protocol_version":                 "plugin-host-v8",
+		"plugin_ui_protocol_version":                   "plugin-ui-v7",
+		"plugin_host_protocol_version":                 "plugin-host-v9",
 		"rust_ipc_version":                             "rust-ipc-v6",
 		"wasm_abi_version":                             "redevplugin-wasm-worker-v2",
-		"manifest_schema_version":                      "manifest-v6",
+		"manifest_schema_version":                      "manifest-v7",
 		"package_signature_schema_version":             "package-signature-v1",
-		"release_metadata_schema_version":              "release-metadata-v6",
+		"release_metadata_schema_version":              "release-metadata-v7",
 		"release_root_delegation_schema_version":       "release-root-delegation-v1",
 		"release_source_policy_schema_version":         "release-source-policy-v2",
 		"release_source_policy_pointer_schema_version": "release-source-policy-pointer-v1",
@@ -42,16 +42,16 @@ func TestCompatibilityManifestSchemaDefinesReleasedMatrix(t *testing.T) {
 		"release_revocation_pointer_schema_version":    "release-revocation-pointer-v1",
 		"release_trust_state_schema_version":           "release-trust-state-v1",
 		"token_ticket_schema_version":                  "token-ticket-v4",
-		"bridge_schema_version":                        "bridge-v6",
+		"bridge_schema_version":                        "bridge-v7",
 		"opaque_surface_document_schema_version":       "opaque-surface-document-v3",
-		"opaque_surface_transport_schema_version":      "opaque-surface-transport-v5",
+		"opaque_surface_transport_schema_version":      "opaque-surface-transport-v6",
 		"target_classifier_version":                    "target-classifier-v2",
 		"network_grant_schema_version":                 "network-grant-v2",
 		"resource_scope_schema_version":                "resource-scope-v1",
 		"session_scope_schema_version":                 "session-scope-v1",
 		"session_scope_maintenance_schema_version":     "session-scope-maintenance-v1",
-		"plugin_platform_openapi_version":              "plugin-platform-v9",
-		"compatibility_schema_version":                 "compatibility-manifest-v11",
+		"plugin_platform_openapi_version":              "plugin-platform-v10",
+		"compatibility_schema_version":                 "compatibility-manifest-v12",
 		"worker_invocation_schema_version":             "worker-invocation-v3",
 		"error_codes_schema_version":                   "error-codes-v7",
 		"performance_contract_version":                 "performance-contract-v4",

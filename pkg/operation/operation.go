@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -70,6 +71,13 @@ type Record struct {
 	CancelRequestedAt  *time.Time                      `json:"cancel_requested_at,omitempty"`
 	OrphanedAt         *time.Time                      `json:"orphaned_at,omitempty"`
 	TerminalAt         *time.Time                      `json:"terminal_at,omitempty"`
+	Progress           *capability.OperationProgress   `json:"progress,omitempty"`
+}
+
+type ProgressRequest struct {
+	OperationID string
+	Progress    capability.OperationProgress
+	Now         time.Time `json:"-"`
 }
 
 type RegisterRequest struct {
@@ -156,6 +164,7 @@ type Store interface {
 	Register(ctx context.Context, req RegisterRequest) (Record, error)
 	List(ctx context.Context, req ListRequest) (Page, error)
 	Get(ctx context.Context, operationID string) (Record, error)
+	ReportProgress(ctx context.Context, req ProgressRequest) (Record, error)
 	RequestCancel(ctx context.Context, req CancelRequest) (Record, error)
 	Finish(ctx context.Context, req FinishRequest) (Record, error)
 	MarkPluginDisabled(ctx context.Context, req PluginTransitionRequest) ([]Record, error)
@@ -399,6 +408,33 @@ func (s *MemoryStore) Get(_ context.Context, operationID string) (Record, error)
 	if !ok {
 		return Record{}, ErrNotFound
 	}
+	return cloneRecord(record)
+}
+
+func (s *MemoryStore) ReportProgress(_ context.Context, req ProgressRequest) (Record, error) {
+	if s == nil {
+		return Record{}, errors.New("operation store is nil")
+	}
+	progress, err := normalizeProgress(req.Progress)
+	if err != nil {
+		return Record{}, err
+	}
+	now := req.Now
+	if now.IsZero() {
+		now = s.now()
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	record, ok := s.records[strings.TrimSpace(req.OperationID)]
+	if !ok {
+		return Record{}, ErrNotFound
+	}
+	if terminal(record.Status) || record.Progress != nil && progress.Revision <= record.Progress.Revision {
+		return cloneRecord(record)
+	}
+	record.Progress = &progress
+	record.UpdatedAt = now
+	s.records[record.OperationID] = record
 	return cloneRecord(record)
 }
 
@@ -777,5 +813,34 @@ func cloneRecord(record Record) (Record, error) {
 		value := *record.TerminalAt
 		record.TerminalAt = &value
 	}
+	if record.Progress != nil {
+		progress := *record.Progress
+		if progress.CompletedUnits != nil {
+			value := *progress.CompletedUnits
+			progress.CompletedUnits = &value
+		}
+		if progress.TotalUnits != nil {
+			value := *progress.TotalUnits
+			progress.TotalUnits = &value
+		}
+		record.Progress = &progress
+	}
 	return record, nil
+}
+
+func normalizeProgress(progress capability.OperationProgress) (capability.OperationProgress, error) {
+	if progress.Revision < 1 || progress.Revision > 9_007_199_254_740_991 || !regexp.MustCompile(`^[A-Za-z0-9._:-]{1,128}$`).MatchString(strings.TrimSpace(progress.Phase)) {
+		return capability.OperationProgress{}, ErrInvalidOperation
+	}
+	progress.Phase = strings.TrimSpace(progress.Phase)
+	if progress.CompletedUnits == nil && progress.TotalUnits != nil || progress.CompletedUnits != nil && progress.TotalUnits == nil {
+		return capability.OperationProgress{}, ErrInvalidOperation
+	}
+	if progress.CompletedUnits != nil && *progress.CompletedUnits > *progress.TotalUnits {
+		return capability.OperationProgress{}, ErrInvalidOperation
+	}
+	if progress.Unit != "" && !regexp.MustCompile(`^[A-Za-z0-9._:-]{1,64}$`).MatchString(progress.Unit) {
+		return capability.OperationProgress{}, ErrInvalidOperation
+	}
+	return progress, nil
 }

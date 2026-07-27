@@ -162,6 +162,19 @@ export function validateUIBridgeInputs({
       if (!surface.includes(required)) throw new Error(`plugin-ui-v6 surface gate is missing ${required}`);
     }
     break;
+  case "plugin-ui-v7":
+    validateOperationSnapshotSchema(activeSchema);
+    if (!activeSchema.$defs?.context || !surface.includes("redevplugin.bridge.context") || !surface.includes("redevplugin.surface.context")) {
+      throw new Error("plugin-ui-v7 surface context contract is missing");
+    }
+    for (const required of [
+      operationSnapshotFrame,
+      'protocolVersion !== "plugin-ui-v6"',
+      'this.bootstrap.uiProtocolVersion !== "plugin-ui-v6"',
+    ]) {
+      if (!surface.includes(required)) throw new Error(`plugin-ui-v7 surface gate is missing ${required}`);
+    }
+    break;
   case "plugin-ui-v5":
     if (activeText.includes(operationSnapshotFrame) || activeSchema.$defs?.operation_snapshot !== undefined) {
       throw new Error("plugin-ui-v5 active bridge must not expose operation snapshot");

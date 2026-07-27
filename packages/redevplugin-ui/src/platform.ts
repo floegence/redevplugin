@@ -21,6 +21,7 @@ import {
   type PluginConfirmationHandler,
   type PluginSurfaceHost,
   type PluginSurfaceHostBootstrap,
+  type PluginSurfaceContext,
   type PluginSurfaceOpeningProgress,
   type PluginSurfaceInteractionEvent,
   type PluginSurfaceReloadLimiter,
@@ -88,6 +89,7 @@ export type PluginOpenSurfaceInSlotOptions = PluginRequestOptions & {
   onOpeningProgress?: (progress: PluginSurfaceOpeningProgress) => void;
   onInteraction?: (event: PluginSurfaceInteractionEvent) => void;
   onError?: (error: import("./errors.js").PluginBridgeError) => void;
+  surfaceContext?: PluginSurfaceContext;
 };
 
 export type PluginSessionScopeRevokeCounts = Readonly<PlatformSchemas["SessionScopeRevokeCounts"]>;

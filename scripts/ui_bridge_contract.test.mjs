@@ -24,11 +24,11 @@ const baseline = {
 
 test("UI bridge gate resolves the active schema from the closed contract source", async () => {
   assert.deepEqual(descriptors.active, {
-    uiProtocolVersion: "plugin-ui-v6",
-    bridgeSchemaVersion: "bridge-v6",
-    path: "spec/plugin/bridge-v6.schema.json",
-    transportSchemaVersion: "opaque-surface-transport-v5",
-    transportPath: "spec/plugin/opaque-surface-transport-v5.schema.json",
+    uiProtocolVersion: "plugin-ui-v7",
+    bridgeSchemaVersion: "bridge-v7",
+    path: "spec/plugin/bridge-v7.schema.json",
+    transportSchemaVersion: "opaque-surface-transport-v6",
+    transportPath: "spec/plugin/opaque-surface-transport-v6.schema.json",
   });
   assert.deepEqual(descriptors.legacy, {
     uiProtocolVersion: "plugin-ui-v5",
@@ -70,7 +70,7 @@ test("UI bridge gate rejects matrix and active artifact drift", () => {
 
   const wrongMappedTransport = structuredClone(source);
   const activeMapping = wrongMappedTransport.matrix.plugin_ui_transport_mappings.find(
-    ({ plugin_ui_protocol_version }) => plugin_ui_protocol_version === "plugin-ui-v6",
+    ({ plugin_ui_protocol_version }) => plugin_ui_protocol_version === "plugin-ui-v7",
   );
   activeMapping.opaque_surface_transport_schema_version = "opaque-surface-transport-v4";
   assert.throws(
@@ -89,11 +89,11 @@ test("UI bridge gate rejects matrix and active artifact drift", () => {
 
 test("UI bridge gate fails closed for an unreviewed future active protocol", () => {
   const future = structuredClone(baseline);
-  future.descriptors.active.uiProtocolVersion = "plugin-ui-v7";
-  assert.throws(() => validateUIBridgeInputs(future), /does not understand active UI protocol plugin-ui-v7/);
+  future.descriptors.active.uiProtocolVersion = "plugin-ui-v8";
+  assert.throws(() => validateUIBridgeInputs(future), /does not understand active UI protocol plugin-ui-v8/);
 });
 
-test("plugin-ui-v6 requires one closed operation snapshot frame and both runtime gates", () => {
+test("plugin-ui-v7 requires one closed operation snapshot frame and both runtime gates", () => {
   const withoutDefinition = structuredClone(baseline);
   delete withoutDefinition.activeSchema.$defs.operation_snapshot;
   assert.throws(() => validateUIBridgeInputs(withoutDefinition), /operation snapshot frame is not closed and exact/);
@@ -136,15 +136,15 @@ test("legacy bridge-v5 remains isolated from snapshot and trusted-parent fields"
 test("generated bridge versions must equal the active contract source", () => {
   const staleUI = structuredClone(baseline);
   staleUI.contracts = staleUI.contracts.replace(
+    '"plugin_ui_protocol_version": "plugin-ui-v7"',
     '"plugin_ui_protocol_version": "plugin-ui-v6"',
-    '"plugin_ui_protocol_version": "plugin-ui-v5"',
   );
   assert.throws(() => validateUIBridgeInputs(staleUI), /generated contract plugin_ui_protocol_version does not match/);
 
   const staleBridge = structuredClone(baseline);
   staleBridge.contracts = staleBridge.contracts.replace(
+    '  "bridge_schema_version": "bridge-v7",',
     '  "bridge_schema_version": "bridge-v6",',
-    '  "bridge_schema_version": "bridge-v5",',
   );
   assert.throws(() => validateUIBridgeInputs(staleBridge), /generated contract bridge_schema_version does not match/);
 });

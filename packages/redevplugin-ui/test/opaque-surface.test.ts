@@ -645,6 +645,42 @@ test("plugin bridge client exposes only a public handle and its private port", a
   assert.equal(pluginPort.closed, true);
 });
 
+test("plugin bridge client retains and fences host appearance and locale context", async () => {
+  const { port1: rendererPort, port2: pluginPort } = fakeChannel();
+  const client = new PluginBridgeClient({ port: pluginPort, surfaceHandle: "surface_12345678" });
+  const context = {
+    schema_version: "redevplugin.surface_context.v1",
+    revision: 1,
+    appearance: {
+      color_scheme: "dark",
+      colors: {
+        canvas: "#101010", surface: "#181818", surface_elevated: "#202020", text: "#ffffff", text_muted: "#aaaaaa", border: "#444444",
+        accent: "#66aaff", accent_text: "#000000", success: "#44cc88", warning: "#ffcc44", danger: "#ff6677", focus: "#88bbff",
+      },
+    },
+    locale: { language_tag: "zh-CN", direction: "ltr" },
+  } as const;
+  const seen: unknown[] = [];
+  client.onContext(() => {
+    throw new Error("observer failure");
+  });
+  client.onContext((value) => seen.push(value));
+  rendererPort.postMessage({ type: "redevplugin.bridge.context", context });
+  await new Promise<void>((resolve) => queueMicrotask(resolve));
+  assert.deepEqual(client.context(), context);
+  assert.equal(Object.isFrozen(client.context()), true);
+  assert.equal(Object.isFrozen(client.context()?.appearance.colors), true);
+  assert.deepEqual(seen, [context]);
+  rendererPort.postMessage({ type: "redevplugin.bridge.context", context: { ...context, revision: 1, locale: { language_tag: "en-US", direction: "ltr" } } });
+  assert.equal(seen.length, 1);
+  const next = { ...context, revision: 2, locale: { language_tag: "en-US", direction: "ltr" } };
+  rendererPort.postMessage({ type: "redevplugin.bridge.context", context: next });
+  await new Promise<void>((resolve) => queueMicrotask(resolve));
+  assert.deepEqual(client.context(), next);
+  assert.equal(seen.length, 2);
+  client.dispose();
+});
+
 test("plugin bridge operation snapshot uses an opaque query message and validates the closed union", async () => {
   const { port1: rendererPort, port2: pluginPort } = fakeChannel();
   const client = new PluginBridgeClient({ port: pluginPort, surfaceHandle: "surface_12345678", timeoutMs: 1000 });
@@ -3221,6 +3257,67 @@ test("surface host applies the initial lease before renderer initialization", as
   channel.port2.postMessage({ type: "redevplugin.surface.first_paint" });
   channel.port2.postMessage({ type: "redevplugin.surface.worker_ready" });
   await opening;
+  host.dispose();
+});
+
+test("surface host applies and updates context without replacing the iframe", async () => {
+  const frame = new FakeFrame();
+  const fetch = new FakeFetch();
+  const channel = fakeChannel();
+  const initialContext = {
+    schema_version: "redevplugin.surface_context.v1",
+    revision: 1,
+    appearance: {
+      color_scheme: "dark",
+      colors: {
+        canvas: "#101010", surface: "#181818", surface_elevated: "#202020", text: "#ffffff", text_muted: "#aaaaaa", border: "#444444",
+        accent: "#66aaff", accent_text: "#000000", success: "#44cc88", warning: "#ffcc44", danger: "#ff6677", focus: "#88bbff",
+      },
+    },
+    locale: { language_tag: "zh-CN", direction: "ltr" },
+  } as const;
+  fetch.push(preparation());
+  fetch.push(gatewayLease());
+  const host = createSurfaceHost(frame, {
+    bootstrap: { ...hostBootstrap, uiProtocolVersion: "plugin-ui-v7" },
+    surfaceContext: initialContext,
+    testMessageChannel: channel,
+    hostTransport: createReDevPluginSurfaceTransport({ fetch: fetch.fetch }),
+  });
+  const originalElement = host.element;
+
+  const opening = host.open();
+  frame.load();
+  await waitFor(() => channel.port1.sent.some((message) => isMessageType(message, "redevplugin.surface.initialize")));
+  const originalSource = frame.srcdoc;
+  const initialize = channel.port1.sent.find((message) => isMessageType(message, "redevplugin.surface.initialize")) as {
+    context?: unknown;
+  };
+  assert.deepEqual(initialize.context, initialContext, "initial context must cross the private port before first paint");
+
+  const openingContext = { ...initialContext, revision: 2, locale: { language_tag: "en-US", direction: "ltr" as const } };
+  host.updateContext(openingContext);
+  assert.deepEqual(channel.port1.sent.at(-1), {
+    type: "redevplugin.surface.context",
+    frame_generation_id: host.frameGenerationId,
+    surface_handle: host.surfaceHandle,
+    context: openingContext,
+  });
+  assert.throws(() => host.updateContext(openingContext), (error: unknown) =>
+    error instanceof PluginBridgeError && error.errorCode === "PLUGIN_INVALID_REQUEST"
+  );
+  assert.equal(host.element, originalElement);
+  assert.equal(frame.srcdoc, originalSource);
+  assert.equal(frame.transferred.length, 1);
+
+  channel.port2.postMessage({ type: "redevplugin.surface.first_paint" });
+  channel.port2.postMessage({ type: "redevplugin.surface.worker_ready" });
+  await opening;
+  const readyContext = { ...openingContext, revision: 3 };
+  host.updateContext(readyContext);
+  assert.deepEqual((channel.port1.sent.at(-1) as { context?: unknown }).context, readyContext);
+  assert.equal(host.element, originalElement);
+  assert.equal(frame.transferred.length, 1);
   host.dispose();
 });
 

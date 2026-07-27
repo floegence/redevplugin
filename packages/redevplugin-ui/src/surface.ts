@@ -51,7 +51,31 @@ export const pluginRiskPlanSchemaVersion = "redevplugin.capability.risk_plan.v1"
 
 export type PluginJSONValue = null | boolean | number | string | PluginJSONValue[] | PluginJSONObject;
 export type PluginJSONObject = { [key: string]: PluginJSONValue };
-export type PluginUIProtocolVersion = "plugin-ui-v5" | "plugin-ui-v6";
+export type PluginUIProtocolVersion = "plugin-ui-v5" | "plugin-ui-v6" | "plugin-ui-v7";
+
+export const pluginSurfaceContextSchemaVersion = "redevplugin.surface_context.v1" as const;
+
+export type PluginSurfaceContext = Readonly<{
+  schema_version: typeof pluginSurfaceContextSchemaVersion;
+  revision: number;
+  appearance: Readonly<{
+    color_scheme: "light" | "dark";
+    colors: Readonly<Record<
+      "canvas" | "surface" | "surface_elevated" | "text" | "text_muted" | "border" |
+      "accent" | "accent_text" | "success" | "warning" | "danger" | "focus",
+      string
+    >>;
+  }>;
+  locale: Readonly<{
+    language_tag: string;
+    direction: "ltr" | "rtl";
+  }>;
+}>;
+
+export type PluginBridgeContextMessage = {
+  type: "redevplugin.bridge.context";
+  context: PluginSurfaceContext;
+};
 
 export type BridgeLifecycleEvent =
   | { type: "ready" }
@@ -213,6 +237,14 @@ export type PluginExecutionFailureCode =
   | "quota_exceeded"
   | "runtime_failed";
 
+export type PluginOperationProgress = {
+  revision: number;
+  phase: string;
+  completed_units?: number;
+  total_units?: number;
+  unit?: string;
+};
+
 type PluginOperationSnapshotActive = {
   operation_id: string;
   status: "running" | "cancel_requested";
@@ -220,6 +252,7 @@ type PluginOperationSnapshotActive = {
   created_at: string;
   updated_at: string;
   retry_after_ms: number;
+  progress?: PluginOperationProgress;
 };
 
 type PluginOperationSnapshotTerminal = {
@@ -230,6 +263,7 @@ type PluginOperationSnapshotTerminal = {
   updated_at: string;
   retry_after_ms: number;
   terminal_at: string;
+  progress?: PluginOperationProgress;
 };
 
 type PluginOperationSnapshotFailed = {
@@ -241,6 +275,7 @@ type PluginOperationSnapshotFailed = {
   retry_after_ms: number;
   terminal_at: string;
   failure_code: PluginExecutionFailureCode;
+  progress?: PluginOperationProgress;
 };
 
 export type PluginOperationSnapshot =
@@ -415,6 +450,8 @@ export class PluginBridgeClient {
   #actionHandlers = new Map<string, Set<(event: PluginUIActionEvent) => void>>();
   #canvasInputHandlers = new Map<string, Set<(event: PluginCanvasInputEvent) => void>>();
   #lifecycleHandlers = new Set<(event: BridgeLifecycleEvent) => Promise<void> | void>();
+  #contextHandlers = new Set<(context: PluginSurfaceContext) => void>();
+  #context?: PluginSurfaceContext;
   #ready = false;
   #readyPromise: Promise<void>;
   #resolveReady!: () => void;
@@ -576,6 +613,27 @@ export class PluginBridgeClient {
     });
   }
 
+  context(): PluginSurfaceContext | undefined {
+    this.#assertActive();
+    return this.#context;
+  }
+
+  onContext(handler: (context: PluginSurfaceContext) => void): () => void {
+    this.#assertActive();
+    if (typeof handler !== "function") {
+      throw new PluginBridgeError("PLUGIN_INVALID_REQUEST", "Plugin surface context subscription is invalid");
+    }
+    this.#contextHandlers.add(handler);
+    if (this.#context) {
+      try {
+        handler(this.#context);
+      } catch {
+        // A plugin context observer cannot disrupt bridge delivery.
+      }
+    }
+    return () => this.#contextHandlers.delete(handler);
+  }
+
   render(tree: PluginUIVNode): Promise<void> {
     this.#assertActive();
     let validated: PluginUIElementVNode;
@@ -688,6 +746,8 @@ export class PluginBridgeClient {
     this.#actionHandlers.clear();
     this.#canvasInputHandlers.clear();
     this.#lifecycleHandlers.clear();
+    this.#contextHandlers.clear();
+    this.#context = undefined;
     for (const waiter of this.#pendingRender?.waiters ?? []) waiter.reject(disposedError);
     this.#pendingRender = undefined;
     this.#controlEditRevisions.clear();
@@ -878,6 +938,19 @@ export class PluginBridgeClient {
         pending.reject(new PluginBridgeError("PLUGIN_CONTRACT_MISMATCH", `Plugin transfer response ${data.id} is invalid`));
       } else if (data.ok) pending.resolve(data.data);
       else pending.reject(new PluginBridgeError(data.error_code, data.error, undefined, data.error_details, data.mutation_outcome));
+      return;
+    }
+    if (isPluginBridgeContextMessage(data)) {
+      const context = normalizePluginSurfaceContext(data.context);
+      if (this.#context && context.revision <= this.#context.revision) return;
+      this.#context = context;
+      for (const handler of this.#contextHandlers) {
+        try {
+          handler(context);
+        } catch {
+          // A plugin context observer cannot disrupt bridge delivery.
+        }
+      }
       return;
     }
     if (isLifecycleMessage(data)) {
@@ -1143,6 +1216,8 @@ export type PluginSurfaceHostBootstrap = {
   runtimeGenerationId: string;
 };
 
+export type PluginSurfaceHostContext = PluginSurfaceContext;
+
 export type PluginSurfaceOpeningProgress = {
   phase: "opening";
   elapsedMs: number;
@@ -1163,6 +1238,7 @@ export type PluginSurfaceHost = {
   readonly element: HTMLIFrameElement;
   readonly surfaceInstanceId: string;
   sendLifecycle(event: Exclude<BridgeLifecycleEvent, { type: "ready" | "dispose" }>): void;
+  updateContext(context: PluginSurfaceContext): void;
   close(): Promise<PluginSurfaceCloseResult>;
   dispose(): Promise<void>;
 };
@@ -1188,6 +1264,7 @@ export type PluginSurfaceHostOptions = {
   onOpeningProgress?: (progress: PluginSurfaceOpeningProgress) => void;
   onInteraction?: (event: PluginSurfaceInteractionEvent) => void;
   onError?: (error: PluginBridgeError) => void;
+  surfaceContext?: PluginSurfaceContext;
 };
 
 type PluginSurfaceOpeningRequest = {
@@ -1417,8 +1494,8 @@ export function createOpaquePluginBootstrapHTML(options: OpaquePluginBootstrapHT
     throw new Error("scriptNonce must contain 8-128 URL-safe characters");
   }
   const uiProtocolVersion = options.uiProtocolVersion ?? pluginUIProtocolVersion;
-  if (uiProtocolVersion !== "plugin-ui-v5" && uiProtocolVersion !== "plugin-ui-v6") {
-    throw new Error("uiProtocolVersion must be plugin-ui-v5 or plugin-ui-v6");
+  if (uiProtocolVersion !== "plugin-ui-v5" && uiProtocolVersion !== "plugin-ui-v6" && uiProtocolVersion !== "plugin-ui-v7") {
+    throw new Error("uiProtocolVersion must be plugin-ui-v5, plugin-ui-v6, or plugin-ui-v7");
   }
   const csp = [
     "default-src 'none'",
@@ -1548,6 +1625,15 @@ export function createOpaquePluginBootstrapHTML(options: OpaquePluginBootstrapHT
   const validWorker = (value) => exactKeys(value, ["path", "sha256", "type", "content"]) && validPath(value.path) && validDigest(value.sha256) && value.type === "classic" && typeof value.content === "string" && value.content.length <= 4194304;
   const validAsset = (value) => exactKeys(value, ["binding_id", "logical_ids", "path", "sha256", "size", "content_type"]) && validOpaqueHandle(value.binding_id, "asset") && Array.isArray(value.logical_ids) && value.logical_ids.length > 0 && value.logical_ids.length <= 16 && value.logical_ids.every(validResourceIdentifier) && new Set(value.logical_ids).size === value.logical_ids.length && validPath(value.path) && validDigest(value.sha256) && Number.isSafeInteger(value.size) && value.size >= 0 && value.size <= maxLazyAssetBytes && typeof value.content_type === "string" && value.content_type.length > 0 && value.content_type.length <= 256;
   const validDocument = (value) => isRecord(value) && Object.keys(value).every((key) => ["schema_version", "entry_path", "entry_sha256", "title", "language", "direction", "body_html", "styles", "worker", "assets", "critical_bytes"].includes(key)) && value.schema_version === documentSchema && validPath(value.entry_path) && validDigest(value.entry_sha256) && (value.title === undefined || (typeof value.title === "string" && value.title.length <= 256)) && (value.language === undefined || (typeof value.language === "string" && value.language.length <= 64)) && (value.direction === undefined || ["ltr", "rtl", "auto"].includes(value.direction)) && typeof value.body_html === "string" && value.body_html.length <= 4194304 && Array.isArray(value.styles) && value.styles.every(validStyle) && validWorker(value.worker) && Array.isArray(value.assets) && value.assets.length <= maxLazyAssetCount && value.assets.every(validAsset) && new Set(value.assets.map((asset) => asset.binding_id)).size === value.assets.length && new Set(value.assets.map((asset) => asset.path)).size === value.assets.length && new Set(value.assets.flatMap((asset) => asset.logical_ids)).size === value.assets.reduce((total, asset) => total + asset.logical_ids.length, 0) && value.assets.reduce((total, asset) => total + asset.size, 0) <= maxLazyAssetBytes && Number.isSafeInteger(value.critical_bytes) && value.critical_bytes >= 0 && value.critical_bytes <= maxCriticalDocumentBytes;
+  const contextColorKeys = ["canvas", "surface", "surface_elevated", "text", "text_muted", "border", "accent", "accent_text", "success", "warning", "danger", "focus"];
+  const validContextColor = (value) => typeof value === "string" && /^#[0-9a-fA-F]{6}(?:[0-9a-fA-F]{2})?$/.test(value);
+  const validSurfaceContext = (value) => {
+    if (!isRecord(value) || !exactKeys(value, ["schema_version", "revision", "appearance", "locale"]) || value.schema_version !== "redevplugin.surface_context.v1" || !Number.isSafeInteger(value.revision) || value.revision < 1) return false;
+    if (!isRecord(value.appearance) || !exactKeys(value.appearance, ["color_scheme", "colors"]) || !["light", "dark"].includes(value.appearance.color_scheme) || !isRecord(value.appearance.colors) || !exactKeys(value.appearance.colors, contextColorKeys) || contextColorKeys.some((key) => !validContextColor(value.appearance.colors[key]))) return false;
+    if (!isRecord(value.locale) || !exactKeys(value.locale, ["language_tag", "direction"]) || typeof value.locale.language_tag !== "string" || value.locale.language_tag.length < 2 || value.locale.language_tag.length > 64 || !["ltr", "rtl"].includes(value.locale.direction)) return false;
+    try { if (typeof Intl !== "undefined" && Intl.getCanonicalLocales(value.locale.language_tag).length !== 1) return false; } catch { return false; }
+    return true;
+  };
   let accepted = false;
   let initialized = false;
   let parentPort;
@@ -1557,6 +1643,7 @@ export function createOpaquePluginBootstrapHTML(options: OpaquePluginBootstrapHT
   let frameGenerationID = "";
   let surfaceHandle = "";
   let currentDocument;
+  let currentContext;
   let workerReady = false;
   let workerHeartbeatSequence = 0;
   let workerHeartbeatPendingID;
@@ -1753,6 +1840,12 @@ export function createOpaquePluginBootstrapHTML(options: OpaquePluginBootstrapHT
       style.textContent = styleAsset.content;
       document.head.append(style);
     }
+  };
+  const applySurfaceContext = (context) => {
+    document.documentElement.lang = context.locale.language_tag;
+    document.documentElement.dir = context.locale.direction;
+    document.documentElement.style.colorScheme = context.appearance.color_scheme;
+    for (const [key, value] of Object.entries(context.appearance.colors)) document.documentElement.style.setProperty("--redevplugin-color-" + key.replaceAll("_", "-"), value);
   };
   const applyWorkerAttribute = (element, tag, name, attributeValue) => {
     const lower = name.toLowerCase();
@@ -2648,6 +2741,7 @@ export function createOpaquePluginBootstrapHTML(options: OpaquePluginBootstrapHT
     workerPort.addEventListener("message", onWorkerMessage);
     workerPort.start();
     worker.postMessage({ type: "redevplugin.worker.initialize", surface_handle: surfaceHandle, ui_protocol_version: protocolVersion, port_roles: ["runtime_control", "plugin_bridge"] }, [controlChannel.port2, pluginChannel.port2]);
+    if (currentContext) sendWorker({ type: "redevplugin.bridge.context", context: currentContext });
   };
   const validCall = (value) => exactKeys(value, ["type", "request"]) && value.type === "redevplugin.bridge.call" && isRecord(value.request) && Object.keys(value.request).every((key) => ["id", "method", "params"].includes(key)) && typeof value.request.id === "string" && value.request.id.length <= 128 && typeof value.request.method === "string" && /^[A-Za-z0-9._:-]{1,256}$/.test(value.request.method) && (value.request.params === undefined || isRecord(value.request.params));
   const requestID = (value, expectedKind) => {
@@ -2940,7 +3034,7 @@ export function createOpaquePluginBootstrapHTML(options: OpaquePluginBootstrapHT
     }
     if (exactKeys(message, ["type", "id", "operation_id"]) && message.type === "redevplugin.bridge.operation.snapshot" &&
         typeof message.id === "string" && validOpaqueHandle(message.operation_id, "operation")) {
-      if (protocolVersion !== "plugin-ui-v6") return rejectWorkerRequest(message.id, "plugin operation observation requires plugin-ui-v6");
+      if (protocolVersion !== "plugin-ui-v6" && protocolVersion !== "plugin-ui-v7") return rejectWorkerRequest(message.id, "plugin operation observation requires plugin-ui-v6 or plugin-ui-v7");
       if (!acceptWorkerRequest(message.id, "operation")) return rejectWorkerRequest(message.id, "duplicate, replayed, or excessive plugin request");
       const retryAfterMS = operationSnapshotRateLimit(message.operation_id, message.id);
       if (retryAfterMS > 0) {
@@ -3012,16 +3106,26 @@ export function createOpaquePluginBootstrapHTML(options: OpaquePluginBootstrapHT
   const onParentMessage = async (event) => {
     const message = event.data;
     if (!initialized) {
-      if (!exactKeys(message, ["type", "frame_generation_id", "surface_handle", "document"]) || message.type !== "redevplugin.surface.initialize" || message.frame_generation_id !== frameGenerationID || !validOpaqueHandle(message.surface_handle, "surface") || !validDocument(message.document)) return fail("invalid private initialize message");
+      const initKeys = ["type", "frame_generation_id", "surface_handle", "document"];
+      if (protocolVersion === "plugin-ui-v7") initKeys.push("context");
+      if (!isRecord(message) || !Object.keys(message).every((key) => initKeys.includes(key)) || !initKeys.slice(0, 4).every((key) => Object.prototype.hasOwnProperty.call(message, key)) || message.type !== "redevplugin.surface.initialize" || message.frame_generation_id !== frameGenerationID || !validOpaqueHandle(message.surface_handle, "surface") || !validDocument(message.document) || (protocolVersion === "plugin-ui-v7" && message.context !== undefined && !validSurfaceContext(message.context))) return fail("invalid private initialize message");
       initialized = true;
       surfaceHandle = message.surface_handle;
       currentDocument = message.document;
-      try { applyStaticDocument(currentDocument); startWorker(currentDocument); }
+      currentContext = protocolVersion === "plugin-ui-v7" ? message.context : undefined;
+      try { applyStaticDocument(currentDocument); if (currentContext) applySurfaceContext(currentContext); startWorker(currentDocument); }
       catch (error) { return fail(error); }
       requestAnimationFrame(() => requestAnimationFrame(() => {
         sendParent({ type: "redevplugin.surface.first_paint" });
         loadAssets();
       }));
+      return;
+    }
+    if (protocolVersion === "plugin-ui-v7" && isRecord(message) && exactKeys(message, ["type", "frame_generation_id", "surface_handle", "context"]) && message.type === "redevplugin.surface.context" && message.frame_generation_id === frameGenerationID && message.surface_handle === surfaceHandle && validSurfaceContext(message.context)) {
+      if (currentContext && message.context.revision <= currentContext.revision) return;
+      currentContext = message.context;
+      applySurfaceContext(currentContext);
+      sendWorker({ type: "redevplugin.bridge.context", context: currentContext });
       return;
     }
     if (message && message.type === "redevplugin.bridge.response" && typeof message.id === "string" && pendingWorkerRequests.has(message.id) && withinLimit(message)) {
@@ -3081,6 +3185,7 @@ class PluginSurfaceHostImplementation implements PluginSurfaceHost {
   #transport: ReDevPluginSurfaceTransportInternals;
   #createMessageChannel: () => MessageChannelLike;
   #bridgeReady = false;
+  #rendererInitialized = false;
   #loadTimeoutMs: number;
   #requestTimeoutMs: number;
   #leaseRenewalLeadMs: number;
@@ -3101,6 +3206,7 @@ class PluginSurfaceHostImplementation implements PluginSurfaceHost {
   #assetSession?: string;
   #assetSessionID?: string;
   #document?: OpaqueSurfaceDocument;
+  #surfaceContext?: PluginSurfaceContext;
   #assets = new Map<string, OpaqueSurfaceAsset>();
   #streamCredentials = new Map<string, StreamCredential>();
   #pendingRequestControllers = new Map<string, AbortController>();
@@ -3159,6 +3265,7 @@ class PluginSurfaceHostImplementation implements PluginSurfaceHost {
     this.#onOpeningProgress = options.onOpeningProgress;
     this.#onInteraction = options.onInteraction;
     this.#onError = options.onError;
+    this.#surfaceContext = options.surfaceContext === undefined ? undefined : normalizePluginSurfaceContext(options.surfaceContext);
     hardenPluginSurfaceFrame(this.#iframe);
     this.#unregisterSurfaceScope = registerPluginSurface(
       options.surfaceScope ?? defaultPluginSurfaceScope,
@@ -3252,12 +3359,14 @@ class PluginSurfaceHostImplementation implements PluginSurfaceHost {
     const token = await this.#mintBridgeToken();
     this.#assertActive();
     this.#applyLease(token);
-    this.#postToRenderer({
+    this.#postToRenderer(removeUndefined({
       type: "redevplugin.surface.initialize",
       frame_generation_id: this.frameGenerationId,
       surface_handle: this.surfaceHandle,
       document: preparation.document,
-    });
+      context: this.bootstrap.uiProtocolVersion === "plugin-ui-v7" ? this.#surfaceContext : undefined,
+    }));
+    this.#rendererInitialized = true;
 
     await Promise.all([signals.firstPaint.promise, signals.workerReady.promise]);
     this.#assertActive();
@@ -3274,6 +3383,21 @@ class PluginSurfaceHostImplementation implements PluginSurfaceHost {
   sendLifecycle(event: Exclude<BridgeLifecycleEvent, { type: "ready" | "dispose" }>): void {
     this.#assertReady();
     this.#postToRenderer({ type: "redevplugin.bridge.lifecycle", event });
+  }
+
+  updateContext(context: PluginSurfaceContext): void {
+    this.#assertActive();
+    if (this.bootstrap.uiProtocolVersion !== "plugin-ui-v7") {
+      throw new PluginBridgeError("PLUGIN_UI_PROTOCOL_UNSUPPORTED", "Plugin surface context requires plugin-ui-v7");
+    }
+    const normalized = normalizePluginSurfaceContext(context);
+    if (this.#surfaceContext && normalized.revision <= this.#surfaceContext.revision) {
+      throw new PluginBridgeError("PLUGIN_INVALID_REQUEST", "Plugin surface context revision must increase monotonically");
+    }
+    this.#surfaceContext = normalized;
+    if (this.#port && this.#rendererInitialized) {
+      this.#postToRenderer({ type: "redevplugin.surface.context", frame_generation_id: this.frameGenerationId, surface_handle: this.surfaceHandle, context: normalized });
+    }
   }
 
   close(): Promise<PluginSurfaceCloseResult> {
@@ -3338,6 +3462,7 @@ class PluginSurfaceHostImplementation implements PluginSurfaceHost {
     this.#unregisterSurfaceScope = undefined;
     this.#ready = false;
     this.#bridgeReady = false;
+    this.#rendererInitialized = false;
     if (this.#leaseRenewalTimer) clearTimeout(this.#leaseRenewalTimer);
     this.#leaseRenewalTimer = undefined;
     this.#iframe.removeEventListener("load", this.#onFrameLoad);
@@ -3654,8 +3779,8 @@ class PluginSurfaceHostImplementation implements PluginSurfaceHost {
   }
 
   async #handleOperationSnapshot(message: { id: string; operation_id: string }): Promise<void> {
-    if (this.bootstrap.uiProtocolVersion !== "plugin-ui-v6") {
-      this.#postError(message.id, "PLUGIN_UI_PROTOCOL_UNSUPPORTED", "Plugin operation observation requires plugin-ui-v6");
+    if (this.bootstrap.uiProtocolVersion !== "plugin-ui-v6" && this.bootstrap.uiProtocolVersion !== "plugin-ui-v7") {
+      this.#postError(message.id, "PLUGIN_UI_PROTOCOL_UNSUPPORTED", "Plugin operation observation requires plugin-ui-v6 or plugin-ui-v7");
       return;
     }
     const controller = this.#registerPendingRequest(message.id);
@@ -4053,6 +4178,7 @@ class PluginSurfaceHostImplementation implements PluginSurfaceHost {
     if (this.#disposed) return;
     this.#ready = false;
     this.#bridgeReady = false;
+    this.#rendererInitialized = false;
     this.#openSignals?.firstPaint.reject(error);
     this.#openSignals?.workerReady.reject(error);
     this.#reportError(error);
@@ -4791,7 +4917,7 @@ function validateHostBootstrap(bootstrap: PluginSurfaceHostBootstrap): void {
       throw new PluginBridgeError("PLUGIN_CONTRACT_MISMATCH", "Plugin surface bootstrap is incomplete");
     }
   }
-  if (bootstrap.uiProtocolVersion !== "plugin-ui-v5" && bootstrap.uiProtocolVersion !== "plugin-ui-v6") {
+  if (bootstrap.uiProtocolVersion !== "plugin-ui-v5" && bootstrap.uiProtocolVersion !== "plugin-ui-v6" && bootstrap.uiProtocolVersion !== "plugin-ui-v7") {
     throw new PluginBridgeError("PLUGIN_CONTRACT_MISMATCH", "Plugin surface UI protocol is unsupported");
   }
   if (!Number.isSafeInteger(bootstrap.managementRevision) || bootstrap.managementRevision < 1 ||
@@ -4886,6 +5012,49 @@ function isOpaqueSurfaceDocument(value: unknown): value is OpaqueSurfaceDocument
     Number.isSafeInteger(value.critical_bytes) && Number(value.critical_bytes) >= 0 && Number(value.critical_bytes) <= 8 * 1024 * 1024;
 }
 
+function isPluginBridgeContextMessage(value: unknown): value is PluginBridgeContextMessage {
+  return hasExactKeys(value, ["type", "context"]) && value.type === "redevplugin.bridge.context" && isPluginSurfaceContext(value.context);
+}
+
+function isPluginSurfaceContext(value: unknown): value is PluginSurfaceContext {
+  if (!isRecord(value) || !hasExactKeys(value, ["schema_version", "revision", "appearance", "locale"]) || value.schema_version !== pluginSurfaceContextSchemaVersion ||
+      !Number.isSafeInteger(value.revision) || Number(value.revision) < 1) return false;
+  const appearance = value.appearance;
+  const locale = value.locale;
+  if (!isRecord(appearance) || !hasExactKeys(appearance, ["color_scheme", "colors"]) ||
+      (appearance.color_scheme !== "light" && appearance.color_scheme !== "dark") || !isRecord(appearance.colors)) return false;
+  const colors = appearance.colors;
+  if (!hasExactKeys(colors, surfaceContextColorKeys) || surfaceContextColorKeys.some((key) => !validSurfaceContextColor(colors[key])) ||
+      !isRecord(locale) || !hasExactKeys(locale, ["language_tag", "direction"]) || typeof locale.language_tag !== "string" ||
+      locale.language_tag.length < 2 || locale.language_tag.length > 64 || (locale.direction !== "ltr" && locale.direction !== "rtl")) return false;
+  try {
+    return typeof Intl === "undefined" || Intl.getCanonicalLocales(locale.language_tag).length === 1;
+  } catch {
+    return false;
+  }
+}
+
+const surfaceContextColorKeys = ["canvas", "surface", "surface_elevated", "text", "text_muted", "border", "accent", "accent_text", "success", "warning", "danger", "focus"] as const;
+const surfaceContextColorPattern = new RegExp("^#[0-9a-fA-F]{6}(?:[0-9a-fA-F]{2})?$");
+
+function validSurfaceContextColor(value: unknown): value is string {
+  return typeof value === "string" && surfaceContextColorPattern.test(value);
+}
+
+export function normalizePluginSurfaceContext(value: unknown): PluginSurfaceContext {
+  if (!isPluginSurfaceContext(value)) {
+    throw new PluginBridgeError("PLUGIN_INVALID_REQUEST", "Plugin surface context is invalid");
+  }
+  const languageTag = Intl.getCanonicalLocales(value.locale.language_tag)[0];
+  const colors = Object.fromEntries(surfaceContextColorKeys.map((key) => [key, String(value.appearance.colors[key]).toLowerCase()])) as PluginSurfaceContext["appearance"]["colors"];
+  return Object.freeze({
+    schema_version: pluginSurfaceContextSchemaVersion,
+    revision: Number(value.revision),
+    appearance: Object.freeze({ color_scheme: value.appearance.color_scheme, colors: Object.freeze(colors) }),
+    locale: Object.freeze({ language_tag: languageTag, direction: value.locale.direction }),
+  });
+}
+
 function isBridgeCallMessage(value: unknown): value is { type: "redevplugin.bridge.call"; request: PluginBridgeRequest } {
   return hasExactKeys(value, ["type", "request"]) &&
     value.type === "redevplugin.bridge.call" &&
@@ -4930,12 +5099,23 @@ function isPluginOperationSnapshot(value: unknown): value is PluginOperationSnap
       !Number.isInteger(value.retry_after_ms) || Number(value.retry_after_ms) < 500 || Number(value.retry_after_ms) > 10000 ||
       !validDateTime(value.created_at) || !validDateTime(value.updated_at)) return false;
   const common = ["operation_id", "status", "cancelable", "created_at", "updated_at", "retry_after_ms"];
-  if (value.status === "running" || value.status === "cancel_requested") return hasExactKeys(value, common);
+  const withProgress = (keys: string[]): boolean => hasAllowedKeys(value, [...keys, "progress"]) && (value.progress === undefined || validOperationProgress(value.progress));
+  if (value.status === "running" || value.status === "cancel_requested") return withProgress(common);
   if (["completed", "canceled", "orphaned_after_disable", "orphaned_after_uninstall"].includes(String(value.status))) {
-    return hasExactKeys(value, [...common, "terminal_at"]) && validDateTime(value.terminal_at);
+    return withProgress([...common, "terminal_at"]) && validDateTime(value.terminal_at);
   }
-  return value.status === "failed" && hasExactKeys(value, [...common, "terminal_at", "failure_code"]) &&
+  return value.status === "failed" && withProgress([...common, "terminal_at", "failure_code"]) &&
     validDateTime(value.terminal_at) && ["adapter_failed", "contract_invalid", "platform_failed", "quota_exceeded", "runtime_failed"].includes(String(value.failure_code));
+}
+
+function validOperationProgress(value: unknown): value is PluginOperationProgress {
+  if (!isRecord(value) || !hasAllowedKeys(value, ["revision", "phase", "completed_units", "total_units", "unit"]) ||
+      !Number.isSafeInteger(value.revision) || Number(value.revision) < 1 || typeof value.phase !== "string" || !/^[A-Za-z0-9._:-]{1,128}$/.test(value.phase) ||
+      (value.unit !== undefined && (typeof value.unit !== "string" || !/^[A-Za-z0-9._:-]{1,64}$/.test(value.unit))) ||
+      (value.completed_units !== undefined && (!Number.isSafeInteger(value.completed_units) || Number(value.completed_units) < 0)) ||
+      (value.total_units !== undefined && (!Number.isSafeInteger(value.total_units) || Number(value.total_units) < 0)) ||
+      (value.completed_units === undefined) !== (value.total_units === undefined)) return false;
+  return value.completed_units === undefined || Number(value.completed_units) <= Number(value.total_units);
 }
 
 function validDateTime(value: unknown): value is string {

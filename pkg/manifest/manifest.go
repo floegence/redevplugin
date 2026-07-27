@@ -16,6 +16,7 @@ import (
 const (
 	SchemaVersionV5 = "redevplugin.manifest.v5"
 	SchemaVersionV6 = "redevplugin.manifest.v6"
+	SchemaVersionV7 = "redevplugin.manifest.v7"
 )
 
 type Manifest struct {
@@ -289,7 +290,7 @@ func Decode(r io.Reader) (Manifest, error) {
 
 func Validate(m Manifest) error {
 	if !validSchemaUIProtocolPair(m.SchemaVersion, m.Plugin.UIProtocolVersion) {
-		return ValidationError{Field: "schema_version", Message: "must pair redevplugin.manifest.v5 with plugin-ui-v5 or redevplugin.manifest.v6 with plugin-ui-v6"}
+		return ValidationError{Field: "schema_version", Message: "must pair redevplugin.manifest.v5 with plugin-ui-v5, redevplugin.manifest.v6 with plugin-ui-v6, or redevplugin.manifest.v7 with plugin-ui-v7"}
 	}
 	if strings.TrimSpace(m.Publisher.PublisherID) == "" {
 		return ValidationError{Field: "publisher.publisher_id", Message: "is required"}
@@ -594,7 +595,8 @@ func Validate(m Manifest) error {
 
 func validSchemaUIProtocolPair(schemaVersion, uiProtocolVersion string) bool {
 	return (schemaVersion == SchemaVersionV5 && uiProtocolVersion == "plugin-ui-v5") ||
-		(schemaVersion == SchemaVersionV6 && uiProtocolVersion == "plugin-ui-v6")
+		(schemaVersion == SchemaVersionV6 && uiProtocolVersion == "plugin-ui-v6") ||
+		(schemaVersion == SchemaVersionV7 && uiProtocolVersion == "plugin-ui-v7")
 }
 
 type secretRefScopeDeclaration struct {
