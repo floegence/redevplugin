@@ -36,12 +36,13 @@ func TestAssetSetResolvesExactReleaseArtifacts(t *testing.T) {
 		pkgRef    = "sources/example_official/stable/packages/weather-1.2.3.redevplugin"
 	)
 	packageBytes := []byte("package bytes")
-	packageDigest := digest(packageBytes)
+	packageTransportDigest := digest(packageBytes)
+	packageIdentityDigest := strings.Repeat("3", 64)
 	metadata := releasecontract.ReleaseMetadataV5{
 		SchemaVersion: releasecontract.ReleaseMetadataSchemaVersion,
 		SourceID:      sourceID, ReleaseMetadataRef: metaRef, PublisherID: publisher, PluginID: pluginID, Version: version,
 		DistributionRef:          releasecontract.ReleaseDistributionRef{Distribution: "registry_ref", ArtifactRef: pkgRef},
-		Hashes:                   releasecontract.ReleasePackageHashSet{PackageSHA256: "sha256:" + packageDigest, ManifestSHA256: "sha256:" + strings.Repeat("1", 64), EntriesSHA256: "sha256:" + strings.Repeat("2", 64)},
+		Hashes:                   releasecontract.ReleasePackageHashSet{PackageSHA256: "sha256:" + packageIdentityDigest, ManifestSHA256: "sha256:" + strings.Repeat("1", 64), EntriesSHA256: "sha256:" + strings.Repeat("2", 64)},
 		ReleaseMetadataSignature: releasecontract.ReleaseMetadataSignatureRef{Algorithm: "ed25519", KeyID: "example_signing", SignatureRef: sigRef, SourcePolicyEpoch: "1", RevocationEpoch: "1"},
 		PackageSignature:         releasecontract.PackageReleaseSignatureRef{Algorithm: "ed25519", KeyID: "example_signing", SignatureBundleRef: "sources/example_official/stable/releases/weather-1.2.3.package-signature.json", SourcePolicyEpoch: "1", RevocationEpoch: "1"},
 		Compatibility:            releasecontract.ReleaseCompatibility{MinReDevPluginVersion: "0.6.21", MinRuntimeVersion: "0.6.21", UIProtocolVersion: "plugin-ui-v7"},
@@ -72,7 +73,7 @@ func TestAssetSetResolvesExactReleaseArtifacts(t *testing.T) {
 		ReleaseRef: host.PluginReleaseRef{
 			SourceID: sourceID, Channel: channel, ReleaseMetadataRef: metaRef, ReleaseMetadataSHA256: digest(metadataBytes),
 			PublisherID: publisher, PluginID: pluginID, Version: version,
-			ExpectedHashes: host.PackageHashSet{PackageSHA256: "sha256:" + packageDigest, ManifestSHA256: "sha256:" + strings.Repeat("1", 64), EntriesSHA256: "sha256:" + strings.Repeat("2", 64)},
+			ExpectedHashes: host.PackageHashSet{PackageSHA256: "sha256:" + packageIdentityDigest, ManifestSHA256: "sha256:" + strings.Repeat("1", 64), EntriesSHA256: "sha256:" + strings.Repeat("2", 64)},
 		},
 		SourcePolicy: releasecontract.SourcePolicyV2{SourceType: "registry", AllowedArtifactHosts: []string{"artifacts.example.test"}},
 	})
@@ -80,13 +81,16 @@ func TestAssetSetResolvesExactReleaseArtifacts(t *testing.T) {
 		t.Fatal(err)
 	}
 	readback, err := io.ReadAll(io.NewSectionReader(resolved.Reader, 0, resolved.Size))
-	if err != nil || string(readback) != string(packageBytes) || resolved.ArtifactSHA256 != packageDigest || len(fetcher.requests) != 3 {
+	if err != nil || string(readback) != string(packageBytes) || resolved.ArtifactSHA256 != packageTransportDigest || len(fetcher.requests) != 3 {
 		t.Fatalf("resolved = %#v, readback = %q, requests = %d, err = %v", resolved, readback, len(fetcher.requests), err)
 	}
 	for _, request := range fetcher.requests {
 		if len(request.AllowedHosts) != 1 || request.AllowedHosts[0] != "artifacts.example.test" {
 			t.Fatalf("allowed hosts = %#v", request.AllowedHosts)
 		}
+	}
+	if fetcher.requests[2].ExpectedSHA256 != packageTransportDigest {
+		t.Fatalf("package transport digest = %s, want %s", fetcher.requests[2].ExpectedSHA256, packageTransportDigest)
 	}
 }
 

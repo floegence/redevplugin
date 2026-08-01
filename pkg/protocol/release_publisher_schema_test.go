@@ -95,7 +95,7 @@ func TestReleasePublisherSchemasValidateRepresentativeDocuments(t *testing.T) {
 		Root:                 key,
 		Signing:              releasepublisher.PublicKeyV1{Algorithm: "ed25519", KeyID: "example_signing", PublicKey: publicKey},
 		SigningLedger:        releasepublisher.SigningLedgerConfigV1{LogID: "example_signing_log", PublicKeyV1: releasepublisher.PublicKeyV1{Algorithm: "ed25519", KeyID: "example_ledger", PublicKey: publicKey}},
-		AllowedArtifactHosts: []string{"github.com"}, MinReDevPluginVersion: "0.6.21", Distribution: "registry_ref",
+		AllowedArtifactHosts: []string{"github.com"}, MinReDevPluginVersion: "0.6.22", Distribution: "registry_ref",
 		HostRequirements: []releasecontract.ReleaseHostRequirement{},
 	}
 	reference := releasepublisher.PublisherReleaseRefV1{

@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.6.22
+
+### Fixed
+
+- Keep the canonical plugin package identity hash separate from the release
+  asset byte hash so the remote release transport can consume publisher output
+  while the Host still verifies both identities independently.
+
 ## v0.6.21
 
 ### Added

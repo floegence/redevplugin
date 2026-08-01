@@ -143,8 +143,7 @@ func (set *AssetSet) ResolveReleaseArtifact(ctx context.Context, request host.Re
 	if len(signature) != 64 {
 		return host.ResolvedPackageArtifact{}, ErrAssetMismatch
 	}
-	packageDigest := strings.TrimPrefix(request.ReleaseRef.ExpectedHashes.PackageSHA256, "sha256:")
-	packageBytes, digest, err := set.fetch(ctx, metadata.DistributionRef.ArtifactRef, externalsource.MaxArtifactBytes, hosts, packageDigest)
+	packageBytes, digest, err := set.fetch(ctx, metadata.DistributionRef.ArtifactRef, externalsource.MaxArtifactBytes, hosts, "")
 	if err != nil {
 		return host.ResolvedPackageArtifact{}, err
 	}
