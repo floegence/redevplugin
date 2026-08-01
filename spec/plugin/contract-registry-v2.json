@@ -4,9 +4,9 @@
   "artifacts": [
     {
       "id": "compatibility-manifest-schema",
-      "path": "spec/plugin/compatibility-manifest-v12.schema.json",
-      "version": "compatibility-manifest-v12",
-      "sha256": "e8b2536da3c2285c982464d9822cd501cea1418ef2276ce93d417df83eb41f47"
+      "path": "spec/plugin/compatibility-manifest-v13.schema.json",
+      "version": "compatibility-manifest-v13",
+      "sha256": "c95fdfe0c5818ba57e664c534c3d10d073545e5a31bccd7c1ee5d39d391d13b2"
     },
     {
       "id": "contract-registry-schema",
@@ -19,6 +19,18 @@
       "path": "spec/plugin/error-codes-v7.schema.json",
       "version": "error-codes-v7",
       "sha256": "4e7cac510a6036f90cae8f58ff8c3b785b3a2d3933875f2f69bef1c41de3d26c"
+    },
+    {
+      "id": "external-signer-request-schema",
+      "path": "spec/plugin/external-signer-request-v1.schema.json",
+      "version": "external-signer-request-v1",
+      "sha256": "abc18af2e29dea6f0b49a28b75b046ef02f200597978c8238cc587fb7e670760"
+    },
+    {
+      "id": "external-signer-response-schema",
+      "path": "spec/plugin/external-signer-response-v1.schema.json",
+      "version": "external-signer-response-v1",
+      "sha256": "bbe657df5afdf459a4c5f83282ddc3ec6c80c1ebd25bb954eac92101f35afc6c"
     },
     {
       "id": "host-capability-compatibility-schema",
@@ -142,15 +154,21 @@
     },
     {
       "id": "plugin-platform-openapi",
-      "path": "spec/openapi/plugin-platform-v10.yaml",
-      "version": "plugin-platform-v10",
-      "sha256": "28a7311167249ec0cec1e0f2593e481c99d84c6ab0da673eb2f8e9832c243e49"
+      "path": "spec/openapi/plugin-platform-v11.yaml",
+      "version": "plugin-platform-v11",
+      "sha256": "41c84c939ca9471baafdb16a1fe7d62a232a58df91e579514351dd6046e529e7"
     },
     {
       "id": "process-containment-schema",
       "path": "spec/plugin/process-containment-v1.schema.json",
       "version": "process-containment-v1",
       "sha256": "930ea44b1f62361706e994649e84f62af0a6418b77a661ae9bf9c10f1398e3fc"
+    },
+    {
+      "id": "publisher-release-ref-schema",
+      "path": "spec/plugin/publisher-release-ref-v1.schema.json",
+      "version": "publisher-release-ref-v1",
+      "sha256": "f9fd40c87197064ffa3e21a361780a4d057b51df2e886988aac64279785acdc0"
     },
     {
       "id": "quarantine-cleanup-schema",
@@ -165,16 +183,22 @@
       "sha256": "d9ceac9b8dd52288172bbe5d4dc2f158e2354ad4fe1f071617f6ba9309e21ebf"
     },
     {
+      "id": "release-publisher-config-schema",
+      "path": "spec/plugin/release-publisher-config-v1.schema.json",
+      "version": "release-publisher-config-v1",
+      "sha256": "c18b11489f81ac657c8324ed344b88b61b259981383ee7b4f9f0b65603a171f8"
+    },
+    {
       "id": "release-revocation-pointer-schema",
-      "path": "spec/plugin/release-revocation-pointer-v1.schema.json",
-      "version": "release-revocation-pointer-v1",
-      "sha256": "a9b7b64cb2dbf89500f0d191a6b2b9ab42eb806a452eb8338895a48ec7d7551e"
+      "path": "spec/plugin/release-revocation-pointer-v2.schema.json",
+      "version": "release-revocation-pointer-v2",
+      "sha256": "dd39ba618ab02698f135875305d4aa6eb562af7d15520c4ad312cd82e9a7032b"
     },
     {
       "id": "release-revocation-schema",
-      "path": "spec/plugin/release-revocation-v2.schema.json",
-      "version": "release-revocation-v2",
-      "sha256": "c3b40c05bc0dea422a272ee62ca45d0efb6456278b0707c5a12f39b004b84cb4"
+      "path": "spec/plugin/release-revocation-v3.schema.json",
+      "version": "release-revocation-v3",
+      "sha256": "bd2ca3ab93f047897d3b377adc7fa8b073fc946539a0c5495def1e64915a782b"
     },
     {
       "id": "release-root-delegation-schema",
@@ -214,15 +238,15 @@
     },
     {
       "id": "release-source-policy-pointer-schema",
-      "path": "spec/plugin/release-source-policy-pointer-v1.schema.json",
-      "version": "release-source-policy-pointer-v1",
-      "sha256": "1a78cc3897ffbcdb605d2e9265d765207a4647d3f53fa5736aec65bf5f54e81c"
+      "path": "spec/plugin/release-source-policy-pointer-v2.schema.json",
+      "version": "release-source-policy-pointer-v2",
+      "sha256": "735659143db7204abdd20c6fbc994ac7474618c41b85949aad4c28fb2912e034"
     },
     {
       "id": "release-source-policy-schema",
-      "path": "spec/plugin/release-source-policy-v2.schema.json",
-      "version": "release-source-policy-v2",
-      "sha256": "6a5a5eab317a86beea925a611ca8a7a2d937547c039ce147b5993f69a5611237"
+      "path": "spec/plugin/release-source-policy-v3.schema.json",
+      "version": "release-source-policy-v3",
+      "sha256": "8814de028800c92b26c8c85a06298762598aeba1835f57048ec6c06430f8567b"
     },
     {
       "id": "release-trust-state-schema",

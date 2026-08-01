@@ -85,6 +85,81 @@ func TestReleaseSigningDomainsAreCanonicalAndSeparated(t *testing.T) {
 	}
 }
 
+func TestPersonalMaintainerTrustDocumentsSupportNinetyDaysWithoutChangingLegacyLimits(t *testing.T) {
+	fixture := newReleaseSigningFixture(t)
+	privateKey := ed25519.NewKeyFromSeed(releaseSigningFixtureSeed())
+	const expiresAt = "2026-10-18T00:00:00Z"
+
+	policyInput := fixture.PolicyInput
+	policyInput.SchemaVersion = SourcePolicySchemaVersionV3
+	policyInput.Limits = PersonalMaintainerSourcePolicyLimits()
+	policyInput.ExpiresAt = expiresAt
+	policyPreimage := mustPreimage(t, func() ([]byte, error) { return SourcePolicySigningPreimage(policyInput) })
+	policy := mustBuild(t, func() (SourcePolicyV2, error) {
+		return BuildSourcePolicy(policyInput, signReleasePreimage(privateKey, policyPreimage))
+	})
+	if policy.SchemaVersion != SourcePolicySchemaVersionV3 || policy.Limits.DocumentMaxLifetimeSeconds != 90*24*60*60 {
+		t.Fatalf("personal policy profile = %#v", policy)
+	}
+	if err := VerifySourcePolicy(policy, fixture.Verifier); err != nil {
+		t.Fatalf("VerifySourcePolicy() error = %v", err)
+	}
+	policyBytes := mustPreimage(t, func() ([]byte, error) { return CanonicalSourcePolicy(policy) })
+	decodedPolicy, err := DecodeSourcePolicy(policyBytes)
+	if err != nil || decodedPolicy.SchemaVersion != SourcePolicySchemaVersionV3 {
+		t.Fatalf("DecodeSourcePolicy() = %#v, %v", decodedPolicy, err)
+	}
+
+	policyDigest := sha256.Sum256(policyBytes)
+	pointerInput := fixture.PolicyPointerInput
+	pointerInput.SchemaVersion = SourcePolicyPointerSchemaVersionV2
+	pointerInput.DocumentSHA256 = fmtSHA256(policyDigest)
+	pointerInput.ExpiresAt = expiresAt
+	pointerPreimage := mustPreimage(t, func() ([]byte, error) { return SourcePolicyPointerSigningPreimage(pointerInput) })
+	pointer := mustBuild(t, func() (SourcePolicyPointerV1, error) {
+		return BuildSourcePolicyPointer(pointerInput, signReleasePreimage(privateKey, pointerPreimage))
+	})
+	if err := VerifySourcePolicyPointer(pointer, fixture.Verifier); err != nil {
+		t.Fatalf("VerifySourcePolicyPointer() error = %v", err)
+	}
+
+	revocationInput := fixture.RevocationInput
+	revocationInput.SchemaVersion = RevocationSchemaVersionV3
+	revocationInput.ExpiresAt = expiresAt
+	revocationPreimage := mustPreimage(t, func() ([]byte, error) { return RevocationSigningPreimage(revocationInput) })
+	revocation := mustBuild(t, func() (RevocationV2, error) {
+		return BuildRevocation(revocationInput, signReleasePreimage(privateKey, revocationPreimage))
+	})
+	if err := VerifyRevocation(revocation, fixture.Verifier); err != nil {
+		t.Fatalf("VerifyRevocation() error = %v", err)
+	}
+	revocationBytes := mustPreimage(t, func() ([]byte, error) { return CanonicalRevocation(revocation) })
+	revocationDigest := sha256.Sum256(revocationBytes)
+	revocationPointerInput := fixture.RevocationPointerInput
+	revocationPointerInput.SchemaVersion = RevocationPointerSchemaVersionV2
+	revocationPointerInput.DocumentSHA256 = fmtSHA256(revocationDigest)
+	revocationPointerInput.ExpiresAt = expiresAt
+	revocationPointerPreimage := mustPreimage(t, func() ([]byte, error) { return RevocationPointerSigningPreimage(revocationPointerInput) })
+	revocationPointer := mustBuild(t, func() (RevocationPointerV1, error) {
+		return BuildRevocationPointer(revocationPointerInput, signReleasePreimage(privateKey, revocationPointerPreimage))
+	})
+	if err := VerifyRevocationPointer(revocationPointer, fixture.Verifier); err != nil {
+		t.Fatalf("VerifyRevocationPointer() error = %v", err)
+	}
+
+	legacyPolicy := policyInput
+	legacyPolicy.SchemaVersion = SourcePolicySchemaVersionV2
+	legacyPolicy.Limits = DefaultSourcePolicyLimits()
+	if _, err := SourcePolicySigningPreimage(legacyPolicy); !errors.Is(err, ErrInvalidDocument) {
+		t.Fatalf("legacy policy accepted a 90-day lifetime: %v", err)
+	}
+	tooLong := policyInput
+	tooLong.ExpiresAt = "2026-10-18T00:00:01Z"
+	if _, err := SourcePolicySigningPreimage(tooLong); !errors.Is(err, ErrInvalidDocument) {
+		t.Fatalf("personal policy accepted more than 90 days: %v", err)
+	}
+}
+
 func TestReleaseMetadataAcceptsOnlyReleasedSchemaUIProtocolPairs(t *testing.T) {
 	fixture := newReleaseSigningFixture(t)
 	tests := []struct {

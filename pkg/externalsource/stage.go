@@ -338,6 +338,29 @@ func (store *StageStore) VerifyPackage(ctx context.Context, artifact StagedArtif
 	return pkg, nil
 }
 
+// ReadArtifact returns verified staged bytes without exposing a filesystem
+// path. The fixed byte slice is hashed again after reading so callers never
+// consume content that differs from the staged handle.
+func (store *StageStore) ReadArtifact(ctx context.Context, artifact StagedArtifact, maxBytes int64) ([]byte, error) {
+	if maxBytes <= 0 || maxBytes > MaxArtifactBytes || artifact.Size > maxBytes {
+		return nil, externalError(ErrorStageInvalid, "read_stage", "", fmt.Errorf("staged artifact bound is invalid"))
+	}
+	file, err := store.openVerified(ctx, artifact)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	value, err := io.ReadAll(io.LimitReader(file, maxBytes+1))
+	if err != nil || int64(len(value)) != artifact.Size {
+		return nil, externalError(ErrorStageIntegrity, "read_stage", "", fmt.Errorf("staged artifact readback failed"))
+	}
+	digest := sha256.Sum256(value)
+	if subtle.ConstantTimeCompare([]byte(hex.EncodeToString(digest[:])), []byte(artifact.SHA256)) != 1 {
+		return nil, externalError(ErrorStageIntegrity, "read_stage", "", fmt.Errorf("staged artifact readback hash changed"))
+	}
+	return value, nil
+}
+
 func (store *StageStore) openVerified(ctx context.Context, artifact StagedArtifact) (*os.File, error) {
 	if store == nil || store.root == nil || !validStagedArtifact(artifact) {
 		return nil, externalError(ErrorStageInvalid, "verify_stage", "", fmt.Errorf("staged artifact handle is invalid"))

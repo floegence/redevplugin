@@ -23,16 +23,29 @@ func TestReleaseSigningSchemasValidateSharedClosedDocuments(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	schemaVersions := map[string]string{
+		"source_policy":         releasecontract.SourcePolicySchemaVersion,
+		"source_policy_pointer": releasecontract.SourcePolicyPointerSchemaVersion,
+		"revocation":            releasecontract.RevocationSchemaVersion,
+		"revocation_pointer":    releasecontract.RevocationPointerSchemaVersion,
+	}
 	for document, schemaName := range map[string]string{
 		"root_delegation":       "release-root-delegation-v1.schema.json",
-		"source_policy":         "release-source-policy-v2.schema.json",
-		"source_policy_pointer": "release-source-policy-pointer-v1.schema.json",
-		"revocation":            "release-revocation-v2.schema.json",
-		"revocation_pointer":    "release-revocation-pointer-v1.schema.json",
+		"source_policy":         "release-source-policy-v3.schema.json",
+		"source_policy_pointer": "release-source-policy-pointer-v2.schema.json",
+		"revocation":            "release-revocation-v3.schema.json",
+		"revocation_pointer":    "release-revocation-pointer-v2.schema.json",
 	} {
 		t.Run(document, func(t *testing.T) {
 			schema := compilePlatformPackageSchema(t, schemaName)
-			value := fixture.Documents[document]
+			value := cloneReleaseSigningValue(t, fixture.Documents[document])
+			if schemaVersion := schemaVersions[document]; schemaVersion != "" {
+				value.(map[string]any)["schema_version"] = schemaVersion
+				if document == "source_policy" {
+					limits := value.(map[string]any)["limits"].(map[string]any)
+					limits["document_max_lifetime_seconds"] = float64(90 * 24 * 60 * 60)
+				}
+			}
 			if err := schema.Validate(value); err != nil {
 				t.Fatalf("shared fixture rejected: %v", err)
 			}
@@ -90,8 +103,8 @@ func TestReleasePointerSchemasExposeTheExactClosedFieldSet(t *testing.T) {
 		"signature",
 	}
 	for _, name := range []string{
-		"release-source-policy-pointer-v1.schema.json",
-		"release-revocation-pointer-v1.schema.json",
+		"release-source-policy-pointer-v2.schema.json",
+		"release-revocation-pointer-v2.schema.json",
 	} {
 		t.Run(name, func(t *testing.T) {
 			root := repoRoot(t)
@@ -127,7 +140,7 @@ func TestReleaseSigningSchemaFieldsMatchGoWireDTOs(t *testing.T) {
 			},
 		},
 		{
-			name:     "release-source-policy-v2.schema.json",
+			name:     "release-source-policy-v3.schema.json",
 			topLevel: reflect.TypeOf(releasecontract.SourcePolicyV2{}),
 			nestedDefs: map[string]reflect.Type{
 				"active_keys": reflect.TypeOf(releasecontract.SourcePolicyActiveKeys{}),
@@ -135,7 +148,7 @@ func TestReleaseSigningSchemaFieldsMatchGoWireDTOs(t *testing.T) {
 			},
 		},
 		{
-			name:     "release-revocation-v2.schema.json",
+			name:     "release-revocation-v3.schema.json",
 			topLevel: reflect.TypeOf(releasecontract.RevocationV2{}),
 			nestedDefs: map[string]reflect.Type{
 				"revoked_release": reflect.TypeOf(releasecontract.RevokedRelease{}),
@@ -160,6 +173,20 @@ func TestReleaseSigningSchemaFieldsMatchGoWireDTOs(t *testing.T) {
 				assertStringSet(t, requireStringSlice(t, definition["required"], name+" required"), jsonFields(t, typ), name+" required fields")
 			}
 		})
+	}
+}
+
+func TestLegacyReleaseSigningSchemasRemainAvailable(t *testing.T) {
+	root := repoRoot(t)
+	for _, name := range []string{
+		"release-source-policy-v2.schema.json",
+		"release-source-policy-pointer-v1.schema.json",
+		"release-revocation-v2.schema.json",
+		"release-revocation-pointer-v1.schema.json",
+	} {
+		if _, err := os.Stat(filepath.Join(root, "spec", "plugin", name)); err != nil {
+			t.Fatalf("legacy schema %s is unavailable: %v", name, err)
+		}
 	}
 }
 

@@ -88,10 +88,19 @@ and marked that exact asset session prepared.
   bounded result capabilities instead of raw caller-controlled buffers. Root
   documents and signing-ledger checkpoints/consistency proofs remain
   source-wide, while policy, revocation, receipts, inclusion proofs, and latest
-  proofs retain their validated channel scope. This package is not yet wired
-  into `pkg/host`; the existing release resolver/verifier adapters remain active
-  until the full durable trust, trusted-time, lease, fence, and reconciliation
-  state machine is complete.
+  proofs retain their validated channel scope. The Host release flow consumes
+  the completed service set through its release adapters and keeps trusted-time,
+  durable state, activation leases, fences, and reconciliation fail closed.
+- `pkg/releasepublisher` creates a recoverable sequence of public external
+  signer requests, verifies closed Ed25519 responses, and emits an immutable
+  release asset set plus its exact locator-to-asset projection. It never accepts
+  signer commands, credential references, storage locations, or account data.
+- `pkg/remoterelease` binds that locator projection to reviewed HTTPS URLs,
+  exact sizes, and SHA-256 values. It implements the release-document,
+  signing-ledger, and Host artifact resolver interfaces over the hardened
+  `pkg/externalsource` downloader, including an exact allowed-host check before
+  every redirect hop. Release providers retain package bytes; ReDevPlugin
+  verifies them after direct download.
 - `pkg/httpadapter` provides mountable host-neutral HTTP routes for platform
   management, surface prepare/token/dispose, parent-only POST asset and stream
   reads, compatibility, and diagnostics.
@@ -357,7 +366,7 @@ renderer.
 
 Machine-readable contracts are first-class platform artifacts:
 
-- `spec/openapi/plugin-platform-v10.yaml`;
+- `spec/openapi/plugin-platform-v11.yaml`;
 - `spec/plugin/manifest-v5.schema.json`, `spec/plugin/manifest-v6.schema.json`,
   and `spec/plugin/manifest-v7.schema.json`;
 - `spec/plugin/package-signature-v1.schema.json`;
@@ -365,10 +374,14 @@ Machine-readable contracts are first-class platform artifacts:
   `spec/plugin/release-metadata-v6.schema.json`, and
   `spec/plugin/release-metadata-v7.schema.json`;
 - `spec/plugin/release-root-delegation-v1.schema.json`;
-- `spec/plugin/release-source-policy-v2.schema.json`;
-- `spec/plugin/release-source-policy-pointer-v1.schema.json`;
-- `spec/plugin/release-revocation-v2.schema.json`;
-- `spec/plugin/release-revocation-pointer-v1.schema.json`;
+- `spec/plugin/release-publisher-config-v1.schema.json`;
+- `spec/plugin/publisher-release-ref-v1.schema.json`;
+- `spec/plugin/external-signer-request-v1.schema.json`;
+- `spec/plugin/external-signer-response-v1.schema.json`;
+- `spec/plugin/release-source-policy-v3.schema.json`;
+- `spec/plugin/release-source-policy-pointer-v2.schema.json`;
+- `spec/plugin/release-revocation-v3.schema.json`;
+- `spec/plugin/release-revocation-pointer-v2.schema.json`;
 - `spec/plugin/release-trust-state-v1.schema.json`;
 - `spec/plugin/trusted-time-evidence-v1.schema.json`;
 - `spec/plugin/trusted-time-leaf-v1.schema.json`;
@@ -379,7 +392,7 @@ Machine-readable contracts are first-class platform artifacts:
 - `spec/plugin/opaque-surface-transport-v4.schema.json`,
   `spec/plugin/opaque-surface-transport-v5.schema.json`, and
   `spec/plugin/opaque-surface-transport-v6.schema.json`;
-- `spec/plugin/compatibility-manifest-v12.schema.json`;
+- `spec/plugin/compatibility-manifest-v13.schema.json`;
 - `spec/plugin/owner-scope-root-recovery-v1.schema.json`;
 - `spec/plugin/platform-package-set-v1.schema.json`;
 - `spec/plugin/platform-package-publication-v1.schema.json`;

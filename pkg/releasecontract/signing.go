@@ -223,6 +223,7 @@ func CanonicalSourcePolicy(document SourcePolicyV2) ([]byte, error) {
 
 func VerifySourcePolicy(document SourcePolicyV2, verifier SignatureVerifier) error {
 	input := SourcePolicyInput{
+		SchemaVersion:             document.SchemaVersion,
 		SourceID:                  document.SourceID,
 		Channel:                   document.Channel,
 		Epoch:                     document.Epoch,
@@ -253,8 +254,12 @@ func VerifySourcePolicy(document SourcePolicyV2, verifier SignatureVerifier) err
 }
 
 func BuildSourcePolicyPointer(input ReleasePointerInput, signature []byte) (SourcePolicyPointerV1, error) {
+	schemaVersion := input.SchemaVersion
+	if schemaVersion == "" {
+		schemaVersion = SourcePolicyPointerSchemaVersionV1
+	}
 	document := SourcePolicyPointerV1{
-		SchemaVersion:          SourcePolicyPointerSchemaVersion,
+		SchemaVersion:          schemaVersion,
 		SourceID:               input.SourceID,
 		Channel:                input.Channel,
 		Epoch:                  input.Epoch,
@@ -322,6 +327,7 @@ func CanonicalRevocation(document RevocationV2) ([]byte, error) {
 
 func VerifyRevocation(document RevocationV2, verifier SignatureVerifier) error {
 	input := RevocationInput{
+		SchemaVersion:          document.SchemaVersion,
 		SourceID:               document.SourceID,
 		Channel:                document.Channel,
 		Epoch:                  document.Epoch,
@@ -342,8 +348,12 @@ func VerifyRevocation(document RevocationV2, verifier SignatureVerifier) error {
 }
 
 func BuildRevocationPointer(input ReleasePointerInput, signature []byte) (RevocationPointerV1, error) {
+	schemaVersion := input.SchemaVersion
+	if schemaVersion == "" {
+		schemaVersion = RevocationPointerSchemaVersionV1
+	}
 	document := RevocationPointerV1{
-		SchemaVersion:          RevocationPointerSchemaVersion,
+		SchemaVersion:          schemaVersion,
 		SourceID:               input.SourceID,
 		Channel:                input.Channel,
 		Epoch:                  input.Epoch,
@@ -402,8 +412,12 @@ func rootDelegationFromInput(input RootDelegationInput, signature string) RootDe
 }
 
 func sourcePolicyFromInput(input SourcePolicyInput, signature string) SourcePolicyV2 {
+	schemaVersion := input.SchemaVersion
+	if schemaVersion == "" {
+		schemaVersion = SourcePolicySchemaVersionV2
+	}
 	return SourcePolicyV2{
-		SchemaVersion:             SourcePolicySchemaVersion,
+		SchemaVersion:             schemaVersion,
 		SourceID:                  input.SourceID,
 		Channel:                   input.Channel,
 		Epoch:                     input.Epoch,
@@ -430,8 +444,12 @@ func sourcePolicyFromInput(input SourcePolicyInput, signature string) SourcePoli
 }
 
 func revocationFromInput(input RevocationInput, signature string) RevocationV2 {
+	schemaVersion := input.SchemaVersion
+	if schemaVersion == "" {
+		schemaVersion = RevocationSchemaVersionV2
+	}
 	return RevocationV2{
-		SchemaVersion:          RevocationSchemaVersion,
+		SchemaVersion:          schemaVersion,
 		SourceID:               input.SourceID,
 		Channel:                input.Channel,
 		Epoch:                  input.Epoch,
@@ -465,6 +483,7 @@ func packageInputFromDocument(context PackageVerificationContext, document Packa
 
 func pointerInputFromSourcePolicy(document SourcePolicyPointerV1) ReleasePointerInput {
 	return ReleasePointerInput{
+		SchemaVersion:          document.SchemaVersion,
 		SourceID:               document.SourceID,
 		Channel:                document.Channel,
 		Epoch:                  document.Epoch,
@@ -480,6 +499,7 @@ func pointerInputFromSourcePolicy(document SourcePolicyPointerV1) ReleasePointer
 
 func pointerInputFromRevocation(document RevocationPointerV1) ReleasePointerInput {
 	return ReleasePointerInput{
+		SchemaVersion:          document.SchemaVersion,
 		SourceID:               document.SourceID,
 		Channel:                document.Channel,
 		Epoch:                  document.Epoch,

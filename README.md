@@ -26,16 +26,16 @@ capabilities.
   persistent resource-scope schema, performance-evidence schema, and target
   classifier fixture
 - Active coordinated contracts are `plugin-host-v9`, `rust-ipc-v6`,
-  `plugin-ui-v7`, `bridge-v7`, `plugin-platform-v10`, `manifest-v7`, opaque
+  `plugin-ui-v7`, `bridge-v7`, `plugin-platform-v11`, `manifest-v7`, opaque
   document v3, opaque transport v6, release metadata v7, compatibility manifest
-  v12, error codes v7, resource scope v1, session scope v1, session scope
+  v13, error codes v7, resource scope v1, session scope v1, session scope
   maintenance v1, token/ticket v4, and release manifest
   v4. WASM ABI v2, worker invocation v3, and package
   signature v1 remain unchanged. Installed `plugin-ui-v5` packages continue to
   use the exact bridge-v5 and opaque-surface-transport-v4 mapping.
 - The staged v2 package registry is available through opt-in Go, npm, and Rust
   contract libraries with identical immutable bytes, IDs, versions, hashes,
-  and aggregate digest. It is returned by the active compatibility-v12
+  and aggregate digest. It is returned by the active compatibility-v13
   Host API, and importing ordinary Host or UI entrypoints does not link or load
   the raw schema bodies.
 - The staged contract libraries also expose canonical release-signing DTOs and
@@ -44,8 +44,23 @@ capabilities.
   its pointer. The seven signing usages are domain separated, timestamps are
   explicit inputs, and pointer genesis is fixed to epoch `0` plus the all-zero
   SHA-256 sentinel. These APIs live in `pkg/releasecontract` and the opt-in
-  contracts packages; `pkg/trust` consumes the active compatibility-v12
+  contracts packages; `pkg/releasetrust` consumes the active compatibility-v13
   contract while preserving the published legacy contract artifacts.
+- Source policy v3, source-policy pointer v2, revocation v3, and revocation
+  pointer v2 provide a 90-day personal-maintainer validity profile while the
+  prior v2/v1 documents remain strict compatibility inputs.
+- `redevplugin release prepare`, `apply-signature`, `finalize`, and `verify`
+  provide a resumable publisher flow for signed packages, release metadata,
+  source policy, revocation, root delegation, and signing-ledger evidence.
+  The external signer exchange contains only public key identities, signing
+  subjects, preimage digests, and signatures; signer storage and invocation
+  remain entirely outside this repository and its configuration.
+- `pkg/remoterelease` adapts one reviewed, content-addressed release asset set
+  to the release-document, signing-ledger, and Host artifact resolver
+  interfaces. Downloads reuse `pkg/externalsource` public-DNS validation,
+  pinned dialing, TLS verification, redirect checks, exact host allowlists,
+  byte ceilings, and SHA-256 readback. Host products can therefore download
+  packages directly from the release provider without a registry proxy.
 - Host-neutral Go package boundaries for manifest validation, package IO,
   registry, host adapters, bridge, PluginData, runtime supervision, grants,
   capability adapters, HTTP routes, session context, and web security.
@@ -160,6 +175,13 @@ capabilities.
   Development harnesses can then run
   `redevplugin install-verified <signed.redevplugin> <public.json>` to prove
   the Host trust-verifier path accepts the signed package.
+- Release publishers that keep signing outside the CLI can run
+  `redevplugin release prepare <config.json> <unsigned.redevplugin> <workspace>`,
+  apply each closed response with
+  `redevplugin release apply-signature <workspace> <response.json>`, then run
+  `redevplugin release finalize <workspace> <out-dir>` and
+  `redevplugin release verify <out-dir>`. Repeating a completed step with the
+  same bytes is idempotent; a changed request, response, or output fails closed.
 - Host capability producers use
   `redevplugin host-capability build <config.json> <out-dir>`. Consumers verify
   the published bundle with

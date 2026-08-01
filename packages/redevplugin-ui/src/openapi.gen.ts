@@ -1377,7 +1377,7 @@ export interface components {
         PluginCatalogResult: {
             plugins: components["schemas"]["PluginRecord"][];
         };
-        PluginCompatibilityManifest: components["schemas"]["CompatibilityManifestV12"];
+        PluginCompatibilityManifest: components["schemas"]["CompatibilityManifestV13"];
         PluginOperationList: {
             operations: components["schemas"]["OperationRecord"][];
             next_cursor?: string;
@@ -2778,9 +2778,9 @@ export interface components {
             counts: components["schemas"]["SessionScopeV1RevokeCounts"];
         };
         SessionScopeV1PublicRevokeResult: components["schemas"]["SessionScopeV1CompleteRevokeResult"] | components["schemas"]["SessionScopeV1IncompleteRevokeResult"];
-        CompatibilityManifestV12: {
+        CompatibilityManifestV13: {
             /** @constant */
-            schema_version: "redevplugin.compatibility.v12";
+            schema_version: "redevplugin.compatibility.v13";
             package_set: components["schemas"]["PlatformPackageSetV1"];
             matrix: {
                 /** @constant */
@@ -2824,13 +2824,13 @@ export interface components {
                 /** @constant */
                 release_root_delegation_schema_version: "release-root-delegation-v1";
                 /** @constant */
-                release_source_policy_schema_version: "release-source-policy-v2";
+                release_source_policy_schema_version: "release-source-policy-v3";
                 /** @constant */
-                release_source_policy_pointer_schema_version: "release-source-policy-pointer-v1";
+                release_source_policy_pointer_schema_version: "release-source-policy-pointer-v2";
                 /** @constant */
-                release_revocation_schema_version: "release-revocation-v2";
+                release_revocation_schema_version: "release-revocation-v3";
                 /** @constant */
-                release_revocation_pointer_schema_version: "release-revocation-pointer-v1";
+                release_revocation_pointer_schema_version: "release-revocation-pointer-v2";
                 /** @constant */
                 release_trust_state_schema_version: "release-trust-state-v1";
                 /** @constant */
@@ -2866,9 +2866,9 @@ export interface components {
                 /** @constant */
                 session_scope_maintenance_schema_version: "session-scope-maintenance-v1";
                 /** @constant */
-                plugin_platform_openapi_version: "plugin-platform-v10";
+                plugin_platform_openapi_version: "plugin-platform-v11";
                 /** @constant */
-                compatibility_schema_version: "compatibility-manifest-v12";
+                compatibility_schema_version: "compatibility-manifest-v13";
                 /** @constant */
                 worker_invocation_schema_version: "worker-invocation-v3";
                 /** @constant */
@@ -2915,9 +2915,9 @@ export interface components {
                 quarantine_cleanup_schema_version: "quarantine-cleanup-v1";
             };
             contract_set_sha256: string;
-            contracts: components["schemas"]["CompatibilityManifestV12Contract"][];
+            contracts: components["schemas"]["CompatibilityManifestV13Contract"][];
         };
-        CompatibilityManifestV12Contract: {
+        CompatibilityManifestV13Contract: {
             id: string;
             path: string;
             version: string;

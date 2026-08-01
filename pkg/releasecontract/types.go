@@ -7,10 +7,18 @@ const (
 	ReleaseMetadataSchemaVersionV6     = "redevplugin.release_metadata.v6"
 	ReleaseMetadataSchemaVersionV7     = "redevplugin.release_metadata.v7"
 	ReleaseMetadataSchemaVersion       = ReleaseMetadataSchemaVersionV7
-	SourcePolicySchemaVersion          = "redevplugin.release_source_policy.v2"
-	SourcePolicyPointerSchemaVersion   = "redevplugin.release_source_policy_pointer.v1"
-	RevocationSchemaVersion            = "redevplugin.release_revocation.v2"
-	RevocationPointerSchemaVersion     = "redevplugin.release_revocation_pointer.v1"
+	SourcePolicySchemaVersionV2        = "redevplugin.release_source_policy.v2"
+	SourcePolicySchemaVersionV3        = "redevplugin.release_source_policy.v3"
+	SourcePolicySchemaVersion          = SourcePolicySchemaVersionV3
+	SourcePolicyPointerSchemaVersionV1 = "redevplugin.release_source_policy_pointer.v1"
+	SourcePolicyPointerSchemaVersionV2 = "redevplugin.release_source_policy_pointer.v2"
+	SourcePolicyPointerSchemaVersion   = SourcePolicyPointerSchemaVersionV2
+	RevocationSchemaVersionV2          = "redevplugin.release_revocation.v2"
+	RevocationSchemaVersionV3          = "redevplugin.release_revocation.v3"
+	RevocationSchemaVersion            = RevocationSchemaVersionV3
+	RevocationPointerSchemaVersionV1   = "redevplugin.release_revocation_pointer.v1"
+	RevocationPointerSchemaVersionV2   = "redevplugin.release_revocation_pointer.v2"
+	RevocationPointerSchemaVersion     = RevocationPointerSchemaVersionV2
 	SigningLedgerEvidenceSchemaVersion = "redevplugin.release_signing_ledger_evidence.v1"
 	SigningLedgerSchemaVersion         = "redevplugin.release_signing_ledger.v1"
 	SigningLedgerEntrySchemaVersion    = "redevplugin.release_signing_ledger_entry.v1"
@@ -396,6 +404,12 @@ func DefaultSourcePolicyLimits() SourcePolicyLimits {
 	}
 }
 
+func PersonalMaintainerSourcePolicyLimits() SourcePolicyLimits {
+	limits := DefaultSourcePolicyLimits()
+	limits.DocumentMaxLifetimeSeconds = 90 * 24 * 60 * 60
+	return limits
+}
+
 type SourcePolicyActiveKeys struct {
 	Package                []string `json:"package"`
 	ReleaseMetadata        []string `json:"release_metadata"`
@@ -411,6 +425,7 @@ type SourcePolicyCapabilityPublisherScope struct {
 }
 
 type SourcePolicyInput struct {
+	SchemaVersion             string
 	SourceID                  string
 	Channel                   string
 	Epoch                     string
@@ -461,6 +476,7 @@ type SourcePolicyV2 struct {
 }
 
 type ReleasePointerInput struct {
+	SchemaVersion          string
 	SourceID               string
 	Channel                string
 	Epoch                  string
@@ -497,6 +513,7 @@ type RevokedRelease struct {
 }
 
 type RevocationInput struct {
+	SchemaVersion          string
 	SourceID               string
 	Channel                string
 	Epoch                  string

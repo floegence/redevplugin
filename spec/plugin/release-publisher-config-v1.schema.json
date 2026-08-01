@@ -1,0 +1,117 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.redevplugin.dev/plugin/release-publisher-config-v1.schema.json",
+  "title": "ReDevPlugin release publisher config v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "source_id",
+    "channel",
+    "source_type",
+    "source_class",
+    "generated_at",
+    "expires_at",
+    "root",
+    "signing",
+    "signing_ledger",
+    "allowed_artifact_hosts",
+    "min_redevplugin_version",
+    "distribution",
+    "host_requirements"
+  ],
+  "properties": {
+    "schema_version": { "const": "redevplugin.release_publisher_config.v1" },
+    "source_id": { "$ref": "#/$defs/id" },
+    "channel": { "$ref": "#/$defs/id" },
+    "source_type": { "enum": ["registry", "host_artifact"] },
+    "source_class": { "enum": ["official", "curated", "community", "private"] },
+    "generated_at": { "$ref": "#/$defs/canonical_time" },
+    "expires_at": { "$ref": "#/$defs/canonical_time" },
+    "root": { "$ref": "#/$defs/public_key" },
+    "signing": { "$ref": "#/$defs/public_key" },
+    "signing_ledger": { "$ref": "#/$defs/signing_ledger" },
+    "allowed_artifact_hosts": {
+      "type": "array",
+      "maxItems": 1024,
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/host" }
+    },
+    "min_redevplugin_version": { "$ref": "#/$defs/semver" },
+    "distribution": { "enum": ["registry_ref", "host_artifact_ref"] },
+    "host_requirements": {
+      "type": "array",
+      "maxItems": 128,
+      "items": { "$ref": "#/$defs/host_requirement" }
+    }
+  },
+  "$defs": {
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[a-z][a-z0-9._-]*$"
+    },
+    "canonical_time": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"
+    },
+    "public_key_value": { "type": "string", "pattern": "^[A-Za-z0-9+/]{43}=$" },
+    "public_key": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["algorithm", "key_id", "public_key"],
+      "properties": {
+        "algorithm": { "const": "ed25519" },
+        "key_id": { "$ref": "#/$defs/id" },
+        "public_key": { "$ref": "#/$defs/public_key_value" }
+      }
+    },
+    "signing_ledger": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["log_id", "algorithm", "key_id", "public_key"],
+      "properties": {
+        "log_id": { "$ref": "#/$defs/id" },
+        "algorithm": { "const": "ed25519" },
+        "key_id": { "$ref": "#/$defs/id" },
+        "public_key": { "$ref": "#/$defs/public_key_value" }
+      }
+    },
+    "host": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 253,
+      "pattern": "^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?$"
+    },
+    "semver": {
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(?:-(?:(?:0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))*))?(?:\\+[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?$"
+    },
+    "host_requirement": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["host_id"],
+      "properties": {
+        "host_id": { "$ref": "#/$defs/id" },
+        "min_host_version": { "$ref": "#/$defs/semver" },
+        "required_capability_contracts": {
+          "type": "array",
+          "maxItems": 256,
+          "items": { "$ref": "#/$defs/capability_requirement" }
+        }
+      }
+    },
+    "capability_requirement": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["capability_id", "capability_version", "contract"],
+      "properties": {
+        "capability_id": { "$ref": "#/$defs/id" },
+        "capability_version": { "$ref": "#/$defs/semver" },
+        "contract": { "$ref": "host-capability-pin-v1.schema.json" }
+      }
+    }
+  }
+}

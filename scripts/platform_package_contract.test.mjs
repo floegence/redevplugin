@@ -102,15 +102,15 @@ function validPublication(packageSet) {
   };
 }
 
-test("the active compatibility surface is the atomic v12 contract set", () => {
+test("the active compatibility surface is the atomic v13 contract set", () => {
   const activeRegistry = readJSON("spec/plugin/contract-registry-v2.json");
-  const compatibilitySchema = readJSON("spec/plugin/compatibility-manifest-v12.schema.json");
+  const compatibilitySchema = readJSON("spec/plugin/compatibility-manifest-v13.schema.json");
   const generatedGo = read("pkg/version/contracts_gen.go").toString("utf8");
   const generatedTypeScript = read("packages/redevplugin-ui/src/contracts.gen.ts").toString("utf8");
 
   assert.equal(activeRegistry.schema_version, "redevplugin.contract_registry.v2");
   assert.equal(activeRegistry.registry_version, "contract-registry-v2");
-  assert.equal(compatibilitySchema.properties.schema_version.const, "redevplugin.compatibility.v12");
+  assert.equal(compatibilitySchema.properties.schema_version.const, "redevplugin.compatibility.v13");
   assert.match(generatedGo, /ContractRegistryVersion\s+= "contract-registry-v2"/);
   assert.match(generatedTypeScript, /"contract_registry_version": "contract-registry-v2"/);
   assert.equal(activeRegistry.artifacts.some(({ id }) => id === "release-manifest-schema"), false);
@@ -126,7 +126,7 @@ test("contract registry v2 is closed, sorted, cycle-free, and content addressed"
 
   assert.equal(registryBytes.toString("utf8"), `${JSON.stringify(registry, null, 2)}\n`);
   assert.deepEqual(registry.artifacts.map(({ id }) => id), expectedIDs);
-  assert.equal(registry.artifacts.length, 51);
+  assert.equal(registry.artifacts.length, 55);
   assert.equal(registry.artifacts.some(({ id }) => id === "release-manifest-schema"), false);
   assert.equal(registry.artifacts.some(({ id }) => id === "release-metadata-schema"), true);
   assert.equal(registry.artifacts.some(({ id }) => id === "source-policy-schema"), false);
@@ -234,24 +234,24 @@ test("platform package set binds the exact Go, npm, Rust, role, and contract coo
 
   assert.deepEqual(platformVersion, {
     schema_version: "redevplugin.platform_version.v1",
-    platform_version: "0.6.20",
+    platform_version: "0.6.21",
   });
   assert.equal(packageSet.platform_version, platformVersion.platform_version);
   assert.deepEqual(packageSet.go_module, {
     module: "github.com/floegence/redevplugin",
-    version: "v0.6.20",
+    version: "v0.6.21",
   });
   assert.deepEqual(packageSet.npm_packages, [
-    { name: "@floegence/redevplugin-contracts", version: "0.6.20" },
-    { name: "@floegence/redevplugin-ui", version: "0.6.20" },
+    { name: "@floegence/redevplugin-contracts", version: "0.6.21" },
+    { name: "@floegence/redevplugin-ui", version: "0.6.21" },
   ]);
   assert.deepEqual(packageSet.rust_crates, [
-    { name: "redevplugin-contracts", version: "0.6.20", role: "contracts" },
-    { name: "redevplugin-ipc", version: "0.6.20", role: "ipc" },
-    { name: "redevplugin-wasm-abi", version: "0.6.20", role: "wasm_abi" },
-    { name: "redevplugin-target-classifier", version: "0.6.20", role: "target_classifier" },
-    { name: "redevplugin-worker-sdk", version: "0.6.20", role: "worker_sdk" },
-    { name: "redevplugin-runtime", version: "0.6.20", role: "runtime" },
+    { name: "redevplugin-contracts", version: "0.6.21", role: "contracts" },
+    { name: "redevplugin-ipc", version: "0.6.21", role: "ipc" },
+    { name: "redevplugin-wasm-abi", version: "0.6.21", role: "wasm_abi" },
+    { name: "redevplugin-target-classifier", version: "0.6.21", role: "target_classifier" },
+    { name: "redevplugin-worker-sdk", version: "0.6.21", role: "worker_sdk" },
+    { name: "redevplugin-runtime", version: "0.6.21", role: "runtime" },
   ]);
   assert.equal(packageSet.contract_registry_version, "contract-registry-v2");
   assert.equal(packageSet.contract_set_sha256, digest);
@@ -330,8 +330,8 @@ test("platform package set rejects duplicate, mismatched, unknown, and OS artifa
   }
   assert.throws(() => decodePlatformPackageSet(Buffer.from(`${raw.toString("utf8")} null`, "utf8"), digest));
   assert.throws(() => decodePlatformPackageSet(Buffer.from(raw.toString("utf8").replace(
-    '"platform_version": "0.6.20",',
-    '"platform_version": "0.6.20",\n  "platform_version": "0.6.20",',
+    '"platform_version": "0.6.21",',
+    '"platform_version": "0.6.21",\n  "platform_version": "0.6.21",',
   ), "utf8"), digest));
   assert.throws(() => decodePlatformPackageSet(Buffer.from(raw.toString("utf8").replace(
     '"name": "@floegence/redevplugin-contracts",',

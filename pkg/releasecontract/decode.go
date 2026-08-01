@@ -51,6 +51,7 @@ func DecodeSourcePolicy(raw []byte) (SourcePolicyV2, error) {
 		return SourcePolicyV2{}, err
 	}
 	return sourcePolicyFromInput(SourcePolicyInput{
+		SchemaVersion:             document.SchemaVersion,
 		SourceID:                  document.SourceID,
 		Channel:                   document.Channel,
 		Epoch:                     document.Epoch,
@@ -93,6 +94,7 @@ func DecodeRevocation(raw []byte) (RevocationV2, error) {
 		return RevocationV2{}, err
 	}
 	return revocationFromInput(RevocationInput{
+		SchemaVersion:          document.SchemaVersion,
 		SourceID:               document.SourceID,
 		Channel:                document.Channel,
 		Epoch:                  document.Epoch,

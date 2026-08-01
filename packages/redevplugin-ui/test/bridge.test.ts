@@ -551,7 +551,7 @@ test("platform client reads compatibility manifest through host API", async () =
   fetch.push({
     ok: true,
     data: {
-      schema_version: "redevplugin.compatibility.v12",
+      schema_version: "redevplugin.compatibility.v13",
       package_set: {
         schema_version: "redevplugin.platform_package_set.v1",
         platform_version: "0.6.0",
@@ -576,8 +576,8 @@ test("platform client reads compatibility manifest through host API", async () =
       contracts: [
         {
           id: "plugin-platform-openapi",
-          path: "spec/openapi/plugin-platform-v10.yaml",
-          version: "plugin-platform-v10",
+          path: "spec/openapi/plugin-platform-v11.yaml",
+          version: "plugin-platform-v11",
           sha256: "sha256-openapi",
         },
         {
@@ -596,11 +596,13 @@ test("platform client reads compatibility manifest through host API", async () =
 
   const compatibility = await client.getCompatibility();
 
-  assert.equal(compatibility.schema_version, "redevplugin.compatibility.v12");
-  assert.equal(compatibility.matrix.plugin_platform_openapi_version, "plugin-platform-v10");
+  assert.equal(compatibility.schema_version, "redevplugin.compatibility.v13");
+  assert.equal(compatibility.matrix.plugin_platform_openapi_version, "plugin-platform-v11");
   assert.equal(compatibility.matrix.release_metadata_schema_version, "release-metadata-v7");
-  assert.equal(compatibility.matrix.release_source_policy_schema_version, "release-source-policy-v2");
-  assert.equal(compatibility.matrix.release_revocation_schema_version, "release-revocation-v2");
+  assert.equal(compatibility.matrix.release_source_policy_schema_version, "release-source-policy-v3");
+  assert.equal(compatibility.matrix.release_source_policy_pointer_schema_version, "release-source-policy-pointer-v2");
+  assert.equal(compatibility.matrix.release_revocation_schema_version, "release-revocation-v3");
+  assert.equal(compatibility.matrix.release_revocation_pointer_schema_version, "release-revocation-pointer-v2");
   assert.equal(compatibility.matrix.resource_scope_schema_version, "resource-scope-v1");
   assert.equal(compatibility.matrix.session_scope_maintenance_schema_version, "session-scope-maintenance-v1");
   assert.equal(compatibility.matrix.host_capability_contract_schema_version, "host-capability-contract-v1");

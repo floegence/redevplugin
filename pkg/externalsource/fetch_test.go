@@ -2,7 +2,9 @@ package externalsource
 
 import (
 	"context"
+	"crypto/sha256"
 	"crypto/x509"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -85,6 +87,47 @@ func TestFetcherRevalidatesRedirectAndScopesCredentials(t *testing.T) {
 	}
 	if len(result.Redirects) != 1 || strings.Contains(result.Redirects[0].To, "redirect-secret") {
 		t.Fatalf("redirect provenance leaked signed query: %#v", result.Redirects)
+	}
+}
+
+func TestFetcherFetchArtifactBindsHostsSizeAndDigest(t *testing.T) {
+	content := []byte("signed-release-document")
+	digest := sha256.Sum256(content)
+	resolver := staticResolver{
+		"source.example": {netip.MustParseAddr("1.1.1.1")},
+		"cdn.example":    {netip.MustParseAddr("8.8.8.8")},
+	}
+	fetcher, directory := newTestFetcher(t, resolver)
+	var calls int
+	fetcher.roundTrip = func(_ context.Context, _ PackageURL, _ []netip.Addr, _ http.Header) (*http.Response, error) {
+		calls++
+		if calls == 1 {
+			return &http.Response{StatusCode: http.StatusFound, Header: http.Header{"Location": {"https://cdn.example/release.json?temporary=value"}}, Body: io.NopCloser(strings.NewReader("redirect"))}, nil
+		}
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(string(content))), ContentLength: int64(len(content))}, nil
+	}
+	result, err := fetcher.FetchArtifact(context.Background(), ArtifactFetchRequest{
+		URL: "https://source.example/release.json", MaxBytes: 1024,
+		AllowedHosts: []string{"cdn.example", "source.example"}, ExpectedSize: int64(len(content)), ExpectedSHA256: hex.EncodeToString(digest[:]),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.EqualFold(string(result.Bytes), string(content)) || calls != 2 || strings.Contains(result.Final, "temporary") {
+		t.Fatalf("artifact result = %#v, calls = %d", result, calls)
+	}
+	entries, err := os.ReadDir(directory)
+	if err != nil || len(entries) != 0 {
+		t.Fatalf("stage entries = %v, err = %v", entries, err)
+	}
+
+	calls = 0
+	_, err = fetcher.FetchArtifact(context.Background(), ArtifactFetchRequest{
+		URL: "https://source.example/release.json", MaxBytes: 1024,
+		AllowedHosts: []string{"source.example"}, ExpectedSize: int64(len(content)), ExpectedSHA256: hex.EncodeToString(digest[:]),
+	})
+	if CodeOf(err) != ErrorTargetBlocked || calls != 1 {
+		t.Fatalf("redirect host code = %q, calls = %d, err = %v", CodeOf(err), calls, err)
 	}
 }
 

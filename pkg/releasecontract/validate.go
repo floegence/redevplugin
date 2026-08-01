@@ -348,7 +348,8 @@ func validateCapabilityContractRef(value HostCapabilityContractRef) error {
 }
 
 func validateSourcePolicy(value SourcePolicyV2, requireSignature bool) error {
-	if value.SchemaVersion != SourcePolicySchemaVersion || !newContractIDPattern.MatchString(value.SourceID) ||
+	limits, maxLifetime, ok := sourcePolicyProfile(value.SchemaVersion)
+	if !ok || !newContractIDPattern.MatchString(value.SourceID) ||
 		!newContractIDPattern.MatchString(value.Channel) || !newContractIDPattern.MatchString(value.KeyID) {
 		return invalid("source policy schema or identity")
 	}
@@ -406,10 +407,10 @@ func validateSourcePolicy(value SourcePolicyV2, requireSignature bool) error {
 	if value.DowngradePolicy != "review_required" && value.DowngradePolicy != "block" {
 		return invalid("source policy downgrade_policy")
 	}
-	if value.Limits != DefaultSourcePolicyLimits() {
+	if value.Limits != limits {
 		return invalid("source policy limits")
 	}
-	if _, _, err := validateTimeRange(value.GeneratedAt, value.ExpiresAt, 24*time.Hour); err != nil {
+	if _, _, err := validateTimeRange(value.GeneratedAt, value.ExpiresAt, maxLifetime); err != nil {
 		return err
 	}
 	return validateSignatureString(value.Signature, requireSignature)
@@ -431,7 +432,8 @@ func validateCapabilityPublisherScopes(activeKeys []string, scopes []SourcePolic
 }
 
 func validatePointer(schemaVersion string, expectedSchemaVersion string, sourceID string, channel string, epoch string, previousEpoch string, previousDigest string, ref string, documentDigest string, generatedAt string, expiresAt string, keyID string, signature string, requireSignature bool) error {
-	if schemaVersion != expectedSchemaVersion || !newContractIDPattern.MatchString(sourceID) ||
+	maxLifetime, ok := pointerMaxLifetime(schemaVersion, expectedSchemaVersion)
+	if !ok || !newContractIDPattern.MatchString(sourceID) ||
 		!newContractIDPattern.MatchString(channel) || !newContractIDPattern.MatchString(keyID) {
 		return invalid("release pointer schema or identity")
 	}
@@ -441,14 +443,15 @@ func validatePointer(schemaVersion string, expectedSchemaVersion string, sourceI
 	if !validArtifactRef(ref) || !sha256Pattern.MatchString(documentDigest) || documentDigest == GenesisPreviousDocumentSHA256 {
 		return invalid("release pointer document ref or digest")
 	}
-	if _, _, err := validateTimeRange(generatedAt, expiresAt, 24*time.Hour); err != nil {
+	if _, _, err := validateTimeRange(generatedAt, expiresAt, maxLifetime); err != nil {
 		return err
 	}
 	return validateSignatureString(signature, requireSignature)
 }
 
 func validateRevocation(value RevocationV2, requireSignature bool) error {
-	if value.SchemaVersion != RevocationSchemaVersion || !newContractIDPattern.MatchString(value.SourceID) ||
+	maxLifetime, ok := revocationMaxLifetime(value.SchemaVersion)
+	if !ok || !newContractIDPattern.MatchString(value.SourceID) ||
 		!newContractIDPattern.MatchString(value.Channel) || !newContractIDPattern.MatchString(value.KeyID) {
 		return invalid("revocation schema or identity")
 	}
@@ -458,7 +461,7 @@ func validateRevocation(value RevocationV2, requireSignature bool) error {
 	if !positiveEpochPattern.MatchString(value.RootEpoch) {
 		return invalid("revocation root_epoch")
 	}
-	generatedAt, expiresAt, err := validateTimeRange(value.GeneratedAt, value.ExpiresAt, 24*time.Hour)
+	generatedAt, expiresAt, err := validateTimeRange(value.GeneratedAt, value.ExpiresAt, maxLifetime)
 	if err != nil {
 		return err
 	}
@@ -483,6 +486,42 @@ func validateRevocation(value RevocationV2, requireSignature bool) error {
 		previous = key
 	}
 	return validateSignatureString(value.Signature, requireSignature)
+}
+
+func sourcePolicyProfile(schemaVersion string) (SourcePolicyLimits, time.Duration, bool) {
+	switch schemaVersion {
+	case SourcePolicySchemaVersionV2:
+		return DefaultSourcePolicyLimits(), 24 * time.Hour, true
+	case SourcePolicySchemaVersionV3:
+		return PersonalMaintainerSourcePolicyLimits(), 90 * 24 * time.Hour, true
+	default:
+		return SourcePolicyLimits{}, 0, false
+	}
+}
+
+func pointerMaxLifetime(schemaVersion string, currentSchemaVersion string) (time.Duration, bool) {
+	legacySchemaVersion := SourcePolicyPointerSchemaVersionV1
+	if currentSchemaVersion == RevocationPointerSchemaVersion {
+		legacySchemaVersion = RevocationPointerSchemaVersionV1
+	}
+	if schemaVersion == legacySchemaVersion {
+		return 24 * time.Hour, true
+	}
+	if schemaVersion == currentSchemaVersion {
+		return 90 * 24 * time.Hour, true
+	}
+	return 0, false
+}
+
+func revocationMaxLifetime(schemaVersion string) (time.Duration, bool) {
+	switch schemaVersion {
+	case RevocationSchemaVersionV2:
+		return 24 * time.Hour, true
+	case RevocationSchemaVersionV3:
+		return 90 * 24 * time.Hour, true
+	default:
+		return 0, false
+	}
 }
 
 func validateEpochChain(epoch string, previousEpoch string, previousDigest string) error {

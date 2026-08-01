@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.redevplugin.dev/plugin/external-signer-request-v1.schema.json",
+  "title": "ReDevPlugin external signer request v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "request_id", "usage", "key_id", "subject", "subject_identity_sha256", "signing_preimage_sha256"],
+  "properties": {
+    "schema_version": { "const": "redevplugin.external_signer_request.v1" },
+    "request_id": { "$ref": "#/$defs/sha256" },
+    "usage": { "$ref": "#/$defs/usage" },
+    "key_id": { "$ref": "#/$defs/id" },
+    "subject": { "$ref": "release-signing-subject-v1.schema.json" },
+    "subject_identity_sha256": { "$ref": "#/$defs/sha256" },
+    "signing_preimage_sha256": { "$ref": "#/$defs/sha256" }
+  },
+  "$defs": {
+    "id": { "type": "string", "pattern": "^[a-z][a-z0-9._-]{0,127}$" },
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "usage": { "enum": [
+      "redevplugin.release-signing.root-delegation.v1",
+      "redevplugin.release-signing.package.v1",
+      "redevplugin.release-signing.release-metadata.v1",
+      "redevplugin.release-signing.source-policy-document.v1",
+      "redevplugin.release-signing.source-policy-pointer.v1",
+      "redevplugin.release-signing.revocation-document.v1",
+      "redevplugin.release-signing.revocation-pointer.v1",
+      "redevplugin.release-signing.ledger-checkpoint.v1",
+      "redevplugin.release-signing.ledger-receipt.v1"
+    ] }
+  }
+}

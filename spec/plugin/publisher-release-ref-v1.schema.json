@@ -1,0 +1,122 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.redevplugin.dev/plugin/publisher-release-ref-v1.schema.json",
+  "title": "ReDevPlugin publisher release reference v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "release_ref", "root", "signing_ledger", "files"],
+  "properties": {
+    "schema_version": { "const": "redevplugin.publisher_release_ref.v1" },
+    "release_ref": { "$ref": "#/$defs/release_ref" },
+    "root": { "$ref": "#/$defs/public_key" },
+    "signing_ledger": { "$ref": "#/$defs/signing_ledger" },
+    "files": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 4096,
+      "items": { "$ref": "#/$defs/published_file" }
+    }
+  },
+  "$defs": {
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[a-z][a-z0-9._-]*$"
+    },
+    "semver": {
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(?:-(?:(?:0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))*))?(?:\\+[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?$"
+    },
+    "sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "package_sha256": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+    "locator": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 1024,
+      "pattern": "^[A-Za-z0-9._/@+-]+$",
+      "not": {
+        "anyOf": [
+          { "pattern": "^/" },
+          { "pattern": "(^|/)\\.\\.(/|$)" },
+          { "pattern": "\\\\" },
+          { "pattern": "[?#]" }
+        ]
+      }
+    },
+    "asset_name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 255,
+      "pattern": "^[A-Za-z0-9._+-]+$",
+      "not": { "enum": [".", ".."] }
+    },
+    "public_key_value": { "type": "string", "pattern": "^[A-Za-z0-9+/]{43}=$" },
+    "public_key": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["algorithm", "key_id", "public_key"],
+      "properties": {
+        "algorithm": { "const": "ed25519" },
+        "key_id": { "$ref": "#/$defs/id" },
+        "public_key": { "$ref": "#/$defs/public_key_value" }
+      }
+    },
+    "signing_ledger": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["log_id", "algorithm", "key_id", "public_key"],
+      "properties": {
+        "log_id": { "$ref": "#/$defs/id" },
+        "algorithm": { "const": "ed25519" },
+        "key_id": { "$ref": "#/$defs/id" },
+        "public_key": { "$ref": "#/$defs/public_key_value" }
+      }
+    },
+    "hash_set": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["package_sha256", "manifest_sha256", "entries_sha256"],
+      "properties": {
+        "package_sha256": { "$ref": "#/$defs/package_sha256" },
+        "manifest_sha256": { "$ref": "#/$defs/package_sha256" },
+        "entries_sha256": { "$ref": "#/$defs/package_sha256" }
+      }
+    },
+    "release_ref": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source_id",
+        "channel",
+        "release_metadata_ref",
+        "release_metadata_sha256",
+        "publisher_id",
+        "plugin_id",
+        "version",
+        "expected_hashes"
+      ],
+      "properties": {
+        "source_id": { "$ref": "#/$defs/id" },
+        "channel": { "$ref": "#/$defs/id" },
+        "release_metadata_ref": { "$ref": "#/$defs/locator" },
+        "release_metadata_sha256": { "$ref": "#/$defs/sha256" },
+        "publisher_id": { "$ref": "#/$defs/id" },
+        "plugin_id": { "$ref": "#/$defs/id" },
+        "version": { "$ref": "#/$defs/semver" },
+        "expected_hashes": { "$ref": "#/$defs/hash_set" }
+      }
+    },
+    "published_file": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["locator", "asset_name", "sha256", "size"],
+      "properties": {
+        "locator": { "$ref": "#/$defs/locator" },
+        "asset_name": { "$ref": "#/$defs/asset_name" },
+        "sha256": { "$ref": "#/$defs/sha256" },
+        "size": { "type": "integer", "minimum": 1, "maximum": 1073741824 }
+      }
+    }
+  }
+}

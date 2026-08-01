@@ -24,8 +24,8 @@ func TestContractInventoryIncludesSyntheticRegistry(t *testing.T) {
 		t.Fatalf("registry identity = %#v", registry)
 	}
 	artifacts := contracts.Artifacts()
-	if len(artifacts) != 51 || len(registry.Artifacts) != len(artifacts) {
-		t.Fatalf("artifact counts = %d/%d, want 51", len(artifacts), len(registry.Artifacts))
+	if len(artifacts) != 55 || len(registry.Artifacts) != len(artifacts) {
+		t.Fatalf("artifact counts = %d/%d, want 55", len(artifacts), len(registry.Artifacts))
 	}
 	for _, artifact := range artifacts {
 		if artifact.ID() == contracts.IDContractRegistry {
@@ -133,7 +133,7 @@ func TestContractSnapshotsAndBytesAreOwned(t *testing.T) {
 	packageSet.ContractRegistryVersion = "mutated"
 	packageSet.ContractSetSHA256 = "mutated"
 	if got := contracts.PackageSet(); got.SchemaVersion != "redevplugin.platform_package_set.v1" ||
-		got.PlatformVersion != "0.6.20" ||
+		got.PlatformVersion != "0.6.21" ||
 		got.GoModule.Module != "github.com/floegence/redevplugin" ||
 		got.NPMPackages[0].Name != wantNPMName || got.RustCrates[0].Role != "contracts" ||
 		got.ContractRegistryVersion != "contract-registry-v2" || len(got.ContractSetSHA256) != 64 {

@@ -1169,8 +1169,8 @@ func TestCLIVersionPrintsCompatibilityManifest(t *testing.T) {
 		version string
 	}{
 		{id: "release-metadata-schema", path: "spec/plugin/release-metadata-v7.schema.json", version: version.ReleaseMetadataSchemaVersion},
-		{id: "release-source-policy-schema", path: "spec/plugin/release-source-policy-v2.schema.json", version: version.ReleaseSourcePolicySchemaVersion},
-		{id: "release-revocation-schema", path: "spec/plugin/release-revocation-v2.schema.json", version: version.ReleaseRevocationSchemaVersion},
+		{id: "release-source-policy-schema", path: "spec/plugin/release-source-policy-v3.schema.json", version: version.ReleaseSourcePolicySchemaVersion},
+		{id: "release-revocation-schema", path: "spec/plugin/release-revocation-v3.schema.json", version: version.ReleaseRevocationSchemaVersion},
 	} {
 		got := contracts[contract.id]
 		if got.Path != contract.path || got.Version != contract.version || got.SHA256 == "" {

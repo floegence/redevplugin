@@ -10,7 +10,7 @@ import (
 
 func TestCompatibilityManifestSchemaDefinesReleasedMatrix(t *testing.T) {
 	root := repoRoot(t)
-	raw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", "compatibility-manifest-v12.schema.json"))
+	raw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", "compatibility-manifest-v13.schema.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -21,7 +21,7 @@ func TestCompatibilityManifestSchemaDefinesReleasedMatrix(t *testing.T) {
 
 	properties := requireNestedObject(t, schema, "properties")
 	schemaVersion := requireNestedObject(t, properties, "schema_version")
-	if got := schemaVersion["const"]; got != "redevplugin.compatibility.v12" {
+	if got := schemaVersion["const"]; got != "redevplugin.compatibility.v13" {
 		t.Fatalf("schema_version const = %#v", got)
 	}
 
@@ -36,10 +36,10 @@ func TestCompatibilityManifestSchemaDefinesReleasedMatrix(t *testing.T) {
 		"package_signature_schema_version":             "package-signature-v1",
 		"release_metadata_schema_version":              "release-metadata-v7",
 		"release_root_delegation_schema_version":       "release-root-delegation-v1",
-		"release_source_policy_schema_version":         "release-source-policy-v2",
-		"release_source_policy_pointer_schema_version": "release-source-policy-pointer-v1",
-		"release_revocation_schema_version":            "release-revocation-v2",
-		"release_revocation_pointer_schema_version":    "release-revocation-pointer-v1",
+		"release_source_policy_schema_version":         "release-source-policy-v3",
+		"release_source_policy_pointer_schema_version": "release-source-policy-pointer-v2",
+		"release_revocation_schema_version":            "release-revocation-v3",
+		"release_revocation_pointer_schema_version":    "release-revocation-pointer-v2",
 		"release_trust_state_schema_version":           "release-trust-state-v1",
 		"token_ticket_schema_version":                  "token-ticket-v4",
 		"bridge_schema_version":                        "bridge-v7",
@@ -50,8 +50,8 @@ func TestCompatibilityManifestSchemaDefinesReleasedMatrix(t *testing.T) {
 		"resource_scope_schema_version":                "resource-scope-v1",
 		"session_scope_schema_version":                 "session-scope-v1",
 		"session_scope_maintenance_schema_version":     "session-scope-maintenance-v1",
-		"plugin_platform_openapi_version":              "plugin-platform-v10",
-		"compatibility_schema_version":                 "compatibility-manifest-v12",
+		"plugin_platform_openapi_version":              "plugin-platform-v11",
+		"compatibility_schema_version":                 "compatibility-manifest-v13",
 		"worker_invocation_schema_version":             "worker-invocation-v3",
 		"error_codes_schema_version":                   "error-codes-v7",
 		"performance_contract_version":                 "performance-contract-v4",

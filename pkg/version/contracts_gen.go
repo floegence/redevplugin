@@ -11,10 +11,10 @@ const (
 	PackageSignatureSchemaVersion             = "package-signature-v1"
 	ReleaseMetadataSchemaVersion              = "release-metadata-v7"
 	ReleaseRootDelegationSchemaVersion        = "release-root-delegation-v1"
-	ReleaseSourcePolicySchemaVersion          = "release-source-policy-v2"
-	ReleaseSourcePolicyPointerSchemaVersion   = "release-source-policy-pointer-v1"
-	ReleaseRevocationSchemaVersion            = "release-revocation-v2"
-	ReleaseRevocationPointerSchemaVersion     = "release-revocation-pointer-v1"
+	ReleaseSourcePolicySchemaVersion          = "release-source-policy-v3"
+	ReleaseSourcePolicyPointerSchemaVersion   = "release-source-policy-pointer-v2"
+	ReleaseRevocationSchemaVersion            = "release-revocation-v3"
+	ReleaseRevocationPointerSchemaVersion     = "release-revocation-pointer-v2"
 	ReleaseTrustStateSchemaVersion            = "release-trust-state-v1"
 	TrustedTimeEvidenceSchemaVersion          = "trusted-time-evidence-v1"
 	TrustedTimeLeafSchemaVersion              = "trusted-time-leaf-v1"
@@ -32,9 +32,9 @@ const (
 	ResourceScopeSchemaVersion                = "resource-scope-v1"
 	SessionScopeSchemaVersion                 = "session-scope-v1"
 	SessionScopeMaintenanceSchemaVersion      = "session-scope-maintenance-v1"
-	PluginPlatformOpenAPIVersion              = "plugin-platform-v10"
-	CompatibilityManifestVersion              = "redevplugin.compatibility.v12"
-	CompatibilitySchemaVersion                = "compatibility-manifest-v12"
+	PluginPlatformOpenAPIVersion              = "plugin-platform-v11"
+	CompatibilityManifestVersion              = "redevplugin.compatibility.v13"
+	CompatibilitySchemaVersion                = "compatibility-manifest-v13"
 	WorkerInvocationSchemaVersion             = "worker-invocation-v3"
 	HostCapabilityContractSchemaVersion       = "host-capability-contract-v1"
 	HostCapabilityPinSchemaVersion            = "host-capability-pin-v1"
@@ -62,9 +62,9 @@ const (
 var generatedContractArtifacts = []ContractArtifact{
 	{
 		ID:      "compatibility-manifest-schema",
-		Path:    "spec/plugin/compatibility-manifest-v12.schema.json",
-		Version: "compatibility-manifest-v12",
-		SHA256:  "e8b2536da3c2285c982464d9822cd501cea1418ef2276ce93d417df83eb41f47",
+		Path:    "spec/plugin/compatibility-manifest-v13.schema.json",
+		Version: "compatibility-manifest-v13",
+		SHA256:  "c95fdfe0c5818ba57e664c534c3d10d073545e5a31bccd7c1ee5d39d391d13b2",
 	},
 	{
 		ID:      "contract-registry-schema",
@@ -77,6 +77,18 @@ var generatedContractArtifacts = []ContractArtifact{
 		Path:    "spec/plugin/error-codes-v7.schema.json",
 		Version: "error-codes-v7",
 		SHA256:  "4e7cac510a6036f90cae8f58ff8c3b785b3a2d3933875f2f69bef1c41de3d26c",
+	},
+	{
+		ID:      "external-signer-request-schema",
+		Path:    "spec/plugin/external-signer-request-v1.schema.json",
+		Version: "external-signer-request-v1",
+		SHA256:  "abc18af2e29dea6f0b49a28b75b046ef02f200597978c8238cc587fb7e670760",
+	},
+	{
+		ID:      "external-signer-response-schema",
+		Path:    "spec/plugin/external-signer-response-v1.schema.json",
+		Version: "external-signer-response-v1",
+		SHA256:  "bbe657df5afdf459a4c5f83282ddc3ec6c80c1ebd25bb954eac92101f35afc6c",
 	},
 	{
 		ID:      "host-capability-compatibility-schema",
@@ -200,15 +212,21 @@ var generatedContractArtifacts = []ContractArtifact{
 	},
 	{
 		ID:      "plugin-platform-openapi",
-		Path:    "spec/openapi/plugin-platform-v10.yaml",
-		Version: "plugin-platform-v10",
-		SHA256:  "28a7311167249ec0cec1e0f2593e481c99d84c6ab0da673eb2f8e9832c243e49",
+		Path:    "spec/openapi/plugin-platform-v11.yaml",
+		Version: "plugin-platform-v11",
+		SHA256:  "41c84c939ca9471baafdb16a1fe7d62a232a58df91e579514351dd6046e529e7",
 	},
 	{
 		ID:      "process-containment-schema",
 		Path:    "spec/plugin/process-containment-v1.schema.json",
 		Version: "process-containment-v1",
 		SHA256:  "930ea44b1f62361706e994649e84f62af0a6418b77a661ae9bf9c10f1398e3fc",
+	},
+	{
+		ID:      "publisher-release-ref-schema",
+		Path:    "spec/plugin/publisher-release-ref-v1.schema.json",
+		Version: "publisher-release-ref-v1",
+		SHA256:  "f9fd40c87197064ffa3e21a361780a4d057b51df2e886988aac64279785acdc0",
 	},
 	{
 		ID:      "quarantine-cleanup-schema",
@@ -223,16 +241,22 @@ var generatedContractArtifacts = []ContractArtifact{
 		SHA256:  "d9ceac9b8dd52288172bbe5d4dc2f158e2354ad4fe1f071617f6ba9309e21ebf",
 	},
 	{
+		ID:      "release-publisher-config-schema",
+		Path:    "spec/plugin/release-publisher-config-v1.schema.json",
+		Version: "release-publisher-config-v1",
+		SHA256:  "c18b11489f81ac657c8324ed344b88b61b259981383ee7b4f9f0b65603a171f8",
+	},
+	{
 		ID:      "release-revocation-pointer-schema",
-		Path:    "spec/plugin/release-revocation-pointer-v1.schema.json",
-		Version: "release-revocation-pointer-v1",
-		SHA256:  "a9b7b64cb2dbf89500f0d191a6b2b9ab42eb806a452eb8338895a48ec7d7551e",
+		Path:    "spec/plugin/release-revocation-pointer-v2.schema.json",
+		Version: "release-revocation-pointer-v2",
+		SHA256:  "dd39ba618ab02698f135875305d4aa6eb562af7d15520c4ad312cd82e9a7032b",
 	},
 	{
 		ID:      "release-revocation-schema",
-		Path:    "spec/plugin/release-revocation-v2.schema.json",
-		Version: "release-revocation-v2",
-		SHA256:  "c3b40c05bc0dea422a272ee62ca45d0efb6456278b0707c5a12f39b004b84cb4",
+		Path:    "spec/plugin/release-revocation-v3.schema.json",
+		Version: "release-revocation-v3",
+		SHA256:  "bd2ca3ab93f047897d3b377adc7fa8b073fc946539a0c5495def1e64915a782b",
 	},
 	{
 		ID:      "release-root-delegation-schema",
@@ -272,15 +296,15 @@ var generatedContractArtifacts = []ContractArtifact{
 	},
 	{
 		ID:      "release-source-policy-pointer-schema",
-		Path:    "spec/plugin/release-source-policy-pointer-v1.schema.json",
-		Version: "release-source-policy-pointer-v1",
-		SHA256:  "1a78cc3897ffbcdb605d2e9265d765207a4647d3f53fa5736aec65bf5f54e81c",
+		Path:    "spec/plugin/release-source-policy-pointer-v2.schema.json",
+		Version: "release-source-policy-pointer-v2",
+		SHA256:  "735659143db7204abdd20c6fbc994ac7474618c41b85949aad4c28fb2912e034",
 	},
 	{
 		ID:      "release-source-policy-schema",
-		Path:    "spec/plugin/release-source-policy-v2.schema.json",
-		Version: "release-source-policy-v2",
-		SHA256:  "6a5a5eab317a86beea925a611ca8a7a2d937547c039ce147b5993f69a5611237",
+		Path:    "spec/plugin/release-source-policy-v3.schema.json",
+		Version: "release-source-policy-v3",
+		SHA256:  "8814de028800c92b26c8c85a06298762598aeba1835f57048ec6c06430f8567b",
 	},
 	{
 		ID:      "release-trust-state-schema",

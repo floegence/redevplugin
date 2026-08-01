@@ -15,6 +15,7 @@ func TestPublishedSemVerSchemasUseCanonicalPattern(t *testing.T) {
 		"manifest-v5.schema.json",
 		"release-metadata-v5.schema.json",
 		"release-revocation-v2.schema.json",
+		"release-revocation-v3.schema.json",
 		"ipc-v6.schema.json",
 	} {
 		t.Run(schemaName, func(t *testing.T) {

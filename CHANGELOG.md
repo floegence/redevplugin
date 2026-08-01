@@ -1,5 +1,26 @@
 # Changelog
 
+## v0.6.21
+
+### Added
+
+- Add a resumable `release prepare -> apply-signature -> finalize -> verify`
+  publisher that emits signed package, metadata, root, policy, revocation,
+  pointer, and signing-ledger assets without reading or describing private-key
+  storage.
+- Add closed external-signer request/response, publisher config, and publisher
+  release-ref schemas to the coordinated compatibility-manifest v13 contract
+  set and publish plugin-platform OpenAPI v11.
+- Add a content-addressed remote release transport and Host artifact resolver
+  that reuse the hardened public-HTTPS downloader and bind every hop, byte
+  length, and SHA-256 digest to a reviewed release asset projection.
+
+### Changed
+
+- Extend the current source-policy and revocation document lifetimes to a
+  90-day personal-maintainer profile while retaining prior schema versions as
+  strict compatibility inputs.
+
 ## v0.6.20
 
 ### Added

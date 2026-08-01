@@ -8,7 +8,7 @@ import { parse as parseYAML } from "yaml";
 const root = resolve(import.meta.dirname, "..");
 
 async function readOpenAPI() {
-  return parseYAML(await readFile(join(root, "spec/openapi/plugin-platform-v10.yaml"), "utf8"));
+  return parseYAML(await readFile(join(root, "spec/openapi/plugin-platform-v11.yaml"), "utf8"));
 }
 
 async function readIPCSchema() {
@@ -24,7 +24,7 @@ async function readSessionScopeMaintenanceContract() {
 }
 
 async function readCompatibilitySchema() {
-  return JSON.parse(await readFile(join(root, "spec/plugin/compatibility-manifest-v12.schema.json"), "utf8"));
+  return JSON.parse(await readFile(join(root, "spec/plugin/compatibility-manifest-v13.schema.json"), "utf8"));
 }
 
 test("PatchSettingsRequest requires a non-empty set or remove object", async () => {
@@ -207,7 +207,7 @@ test("session maintenance publishes the closed fail-closed recovery matrix", asy
   assert.doesNotMatch(JSON.stringify(contract), /closed_session_proof|operation_id|proof_sha256/);
 });
 
-test("compatibility v12 publishes the complete session revoke and UI transport matrix", async () => {
+test("compatibility v13 publishes the complete session revoke and UI transport matrix", async () => {
   const schema = await readCompatibilitySchema();
   const matrix = schema.properties.matrix;
   assert.ok(matrix.required.includes("session_scope_schema_version"));
