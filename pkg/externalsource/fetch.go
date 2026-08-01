@@ -129,7 +129,7 @@ func (fetcher *Fetcher) FetchPackage(ctx context.Context, request FetchRequest) 
 // FetchArtifact downloads one content-addressed artifact through the same
 // hardened network and staging boundary as FetchPackage. Every redirect host
 // must be explicitly allowed and returned bytes are rehashed before use.
-func (fetcher *Fetcher) FetchArtifact(ctx context.Context, request ArtifactFetchRequest) (ArtifactFetchResult, error) {
+func (fetcher *Fetcher) FetchArtifact(ctx context.Context, request ArtifactFetchRequest) (result ArtifactFetchResult, returnErr error) {
 	if request.MaxBytes <= 0 || request.MaxBytes > MaxArtifactBytes || request.ExpectedSize <= 0 || request.ExpectedSize > request.MaxBytes ||
 		len(request.ExpectedSHA256) != sha256.Size*2 || strings.ToLower(request.ExpectedSHA256) != request.ExpectedSHA256 {
 		return ArtifactFetchResult{}, invalidSource("fetch_artifact", "artifact bounds or digest are invalid")
@@ -145,7 +145,12 @@ func (fetcher *Fetcher) FetchArtifact(ctx context.Context, request ArtifactFetch
 	if err != nil {
 		return ArtifactFetchResult{}, err
 	}
-	defer fetcher.stage.Remove(fetched.Artifact)
+	defer func() {
+		if cleanupErr := fetcher.stage.Remove(fetched.Artifact); cleanupErr != nil && returnErr == nil {
+			result = ArtifactFetchResult{}
+			returnErr = cleanupErr
+		}
+	}()
 	if fetched.Artifact.Size != request.ExpectedSize || fetched.Artifact.SHA256 != request.ExpectedSHA256 {
 		return ArtifactFetchResult{}, externalError(ErrorStageIntegrity, "fetch_artifact", fetched.Final, fmt.Errorf("downloaded artifact identity does not match expectation"))
 	}

@@ -4,9 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/ed25519"
-	"crypto/sha256"
 	"encoding/base64"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"slices"
@@ -517,8 +515,3 @@ func parseCanonicalTime(value string) (time.Time, error) {
 }
 
 func prefixedSHA256(value string) string { return "sha256:" + strings.TrimPrefix(value, "sha256:") }
-
-func digest(value []byte) string {
-	sum := sha256.Sum256(value)
-	return hex.EncodeToString(sum[:])
-}
