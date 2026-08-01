@@ -15,7 +15,7 @@
       "actual_target": "linux/amd64",
       "rust_ipc_version": "rust-ipc-v6",
       "wasm_abi_version": "redevplugin-wasm-worker-v2",
-      "contract_set_sha256": "5ebda1f3b0fc0b23b138469c37cf4dbddcfd995f35887e1c95968d03432a189b",
+      "contract_set_sha256": "22ff9be972e19ddbfb7b2e9bbb69861e6f5cc44ac02b490899f2d27cdf4f033f",
       "channel_nonce": "nonce_fixture_1234",
       "limits": {
         "worker_count": 8,

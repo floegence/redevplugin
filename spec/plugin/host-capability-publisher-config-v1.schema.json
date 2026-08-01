@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.redevplugin.dev/plugin/host-capability-publisher-config-v1.schema.json",
+  "title": "ReDevPlugin host capability publisher config v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "contract_file",
+    "public_key_file",
+    "artifact_base_ref",
+    "generated_at",
+    "source_commit",
+    "min_redevplugin_version",
+    "signature_policy_epoch",
+    "signature_revocation_epoch"
+  ],
+  "properties": {
+    "schema_version": { "const": "redevplugin.host_capability_publisher_config.v1" },
+    "contract_file": { "$ref": "#/$defs/path" },
+    "public_key_file": { "$ref": "#/$defs/path" },
+    "artifact_base_ref": { "type": "string", "minLength": 1, "maxLength": 1024 },
+    "generated_at": { "type": "string", "format": "date-time", "maxLength": 35 },
+    "source_commit": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "min_redevplugin_version": { "$ref": "#/$defs/semver" },
+    "signature_policy_epoch": { "$ref": "#/$defs/epoch" },
+    "signature_revocation_epoch": { "$ref": "#/$defs/epoch" },
+    "notices_file": { "$ref": "#/$defs/path" }
+  },
+  "$defs": {
+    "path": { "type": "string", "minLength": 1, "maxLength": 4096 },
+    "epoch": { "type": "string", "pattern": "^(0|[1-9][0-9]*)$" },
+    "semver": {
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(?:-(?:(?:0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))*))?(?:\\+[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?$"
+    }
+  }
+}

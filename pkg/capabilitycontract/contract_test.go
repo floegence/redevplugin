@@ -107,6 +107,27 @@ func TestBuildAndVerifyPublishedBundle(t *testing.T) {
 	}
 }
 
+func TestFinalizeRejectsTamperedPreparedBundle(t *testing.T) {
+	t.Parallel()
+	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prepared, err := Prepare(PrepareRequest{
+		Contract: testContract(), PublisherID: "example.publisher", ArtifactBaseRef: "capabilities/example.documents/v1.0.0",
+		GeneratedAt: time.Date(2026, 7, 13, 8, 0, 0, 0, time.UTC), SourceCommit: strings.Repeat("a", 40),
+		MinReDevPluginVersion: "0.3.0", SignatureKeyID: "example-contract-2026", SignaturePolicyEpoch: "7",
+		SignatureRevocationEpoch: "11", Notices: []Notice{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	prepared.Files[prepared.Pin.ArtifactRef] = []byte("tampered")
+	if _, err := Finalize(prepared, ed25519.Sign(privateKey, prepared.Manifest), publicKey); !errors.Is(err, ErrInvalidBundle) {
+		t.Fatalf("tampered prepared bundle error = %v", err)
+	}
+}
+
 func TestValidateRequiresSignedAsyncConfirmationAndStreamPolicy(t *testing.T) {
 	t.Parallel()
 

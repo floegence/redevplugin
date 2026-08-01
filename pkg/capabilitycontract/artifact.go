@@ -51,6 +51,19 @@ type BuildRequest struct {
 	Notices                  []Notice
 }
 
+type PrepareRequest struct {
+	Contract                 Contract
+	PublisherID              string
+	ArtifactBaseRef          string
+	GeneratedAt              time.Time
+	SourceCommit             string
+	MinReDevPluginVersion    string
+	SignatureKeyID           string
+	SignaturePolicyEpoch     string
+	SignatureRevocationEpoch string
+	Notices                  []Notice
+}
+
 type VerifyRequest struct {
 	Bundle                    Bundle
 	ExpectedPin               Pin
@@ -59,27 +72,41 @@ type VerifyRequest struct {
 }
 
 func Build(req BuildRequest) (Bundle, error) {
-	if err := Validate(req.Contract); err != nil {
-		return Bundle{}, err
-	}
-	if req.Contract.PublisherID != req.PublisherID || strings.TrimSpace(req.PublisherID) == "" {
-		return Bundle{}, invalid("publisher_id does not match contract")
-	}
-	if err := ValidateArtifactRef(req.ArtifactBaseRef + "/placeholder"); err != nil {
-		return Bundle{}, err
-	}
-	if req.GeneratedAt.IsZero() || !regexp.MustCompile(`^[0-9a-f]{40}$`).MatchString(req.SourceCommit) {
-		return Bundle{}, invalid("generated_at and a 40-character lowercase source_commit are required")
-	}
-	if _, err := platformversion.ParseSemVer(req.MinReDevPluginVersion); err != nil || !idPattern.MatchString(req.SignatureKeyID) ||
-		!canonicalDecimalPattern.MatchString(req.SignaturePolicyEpoch) || !canonicalDecimalPattern.MatchString(req.SignatureRevocationEpoch) {
-		return Bundle{}, invalid("compatibility and signature identity are required")
-	}
-	if err := validateNotices(req.Notices); err != nil {
+	prepared, err := Prepare(PrepareRequest{
+		Contract: req.Contract, PublisherID: req.PublisherID, ArtifactBaseRef: req.ArtifactBaseRef,
+		GeneratedAt: req.GeneratedAt, SourceCommit: req.SourceCommit, MinReDevPluginVersion: req.MinReDevPluginVersion,
+		SignatureKeyID: req.SignatureKeyID, SignaturePolicyEpoch: req.SignaturePolicyEpoch,
+		SignatureRevocationEpoch: req.SignatureRevocationEpoch, Notices: req.Notices,
+	})
+	if err != nil {
 		return Bundle{}, err
 	}
 	if len(req.PrivateKey) != ed25519.PrivateKeySize {
 		return Bundle{}, invalid("private key is invalid")
+	}
+	publicKey := req.PrivateKey.Public().(ed25519.PublicKey)
+	return Finalize(prepared, ed25519.Sign(req.PrivateKey, prepared.Manifest), publicKey)
+}
+
+func Prepare(req PrepareRequest) (PreparedBundle, error) {
+	if err := Validate(req.Contract); err != nil {
+		return PreparedBundle{}, err
+	}
+	if req.Contract.PublisherID != req.PublisherID || strings.TrimSpace(req.PublisherID) == "" {
+		return PreparedBundle{}, invalid("publisher_id does not match contract")
+	}
+	if err := ValidateArtifactRef(req.ArtifactBaseRef + "/placeholder"); err != nil {
+		return PreparedBundle{}, err
+	}
+	if req.GeneratedAt.IsZero() || !regexp.MustCompile(`^[0-9a-f]{40}$`).MatchString(req.SourceCommit) {
+		return PreparedBundle{}, invalid("generated_at and a 40-character lowercase source_commit are required")
+	}
+	if _, err := platformversion.ParseSemVer(req.MinReDevPluginVersion); err != nil || !idPattern.MatchString(req.SignatureKeyID) ||
+		!canonicalDecimalPattern.MatchString(req.SignaturePolicyEpoch) || !canonicalDecimalPattern.MatchString(req.SignatureRevocationEpoch) {
+		return PreparedBundle{}, invalid("compatibility and signature identity are required")
+	}
+	if err := validateNotices(req.Notices); err != nil {
+		return PreparedBundle{}, err
 	}
 	base := strings.TrimSuffix(req.ArtifactBaseRef, "/")
 	prefix := base + "/" + req.Contract.ContractID
@@ -91,12 +118,12 @@ func Build(req BuildRequest) (Bundle, error) {
 	noticesRef := prefix + ".notices.json"
 	for _, ref := range []string{artifactRef, manifestRef, signatureRef, compatibilityRef, clientRef, noticesRef} {
 		if err := ValidateArtifactRef(ref); err != nil {
-			return Bundle{}, err
+			return PreparedBundle{}, err
 		}
 	}
 	artifactBytes, err := canonicalJSON(req.Contract)
 	if err != nil {
-		return Bundle{}, err
+		return PreparedBundle{}, err
 	}
 	compatibility := Compatibility{
 		SchemaVersion:         compatibilitySchemaVersion,
@@ -108,11 +135,11 @@ func Build(req BuildRequest) (Bundle, error) {
 	}
 	compatibilityBytes, err := canonicalJSON(compatibility)
 	if err != nil {
-		return Bundle{}, err
+		return PreparedBundle{}, err
 	}
 	clientBytes, err := GenerateTypeScript(req.Contract)
 	if err != nil {
-		return Bundle{}, err
+		return PreparedBundle{}, err
 	}
 	notices := append([]Notice(nil), req.Notices...)
 	if notices == nil {
@@ -120,7 +147,7 @@ func Build(req BuildRequest) (Bundle, error) {
 	}
 	noticesBytes, err := canonicalJSON(notices)
 	if err != nil {
-		return Bundle{}, err
+		return PreparedBundle{}, err
 	}
 	entries := []ManifestEntry{
 		manifestEntry("contract", artifactRef, "application/schema+json", artifactBytes),
@@ -145,20 +172,9 @@ func Build(req BuildRequest) (Bundle, error) {
 	}
 	manifestBytes, err := canonicalJSON(manifest)
 	if err != nil {
-		return Bundle{}, err
+		return PreparedBundle{}, err
 	}
 	manifestHash := sha256Hex(manifestBytes)
-	signatureEnvelope := SignatureEnvelope{
-		SchemaVersion:   signatureSchemaVersion,
-		Algorithm:       signatureAlgorithm,
-		KeyID:           req.SignatureKeyID,
-		ManifestSHA256:  manifestHash,
-		SignatureBase64: base64.StdEncoding.EncodeToString(ed25519.Sign(req.PrivateKey, manifestBytes)),
-	}
-	signatureBytes, err := canonicalJSON(signatureEnvelope)
-	if err != nil {
-		return Bundle{}, err
-	}
 	pin := Pin{
 		PublisherID:              req.PublisherID,
 		ContractID:               req.Contract.ContractID,
@@ -168,7 +184,6 @@ func Build(req BuildRequest) (Bundle, error) {
 		ManifestRef:              manifestRef,
 		ManifestSHA256:           manifestHash,
 		SignatureRef:             signatureRef,
-		SignatureSHA256:          sha256Hex(signatureBytes),
 		SignatureKeyID:           req.SignatureKeyID,
 		SignaturePolicyEpoch:     req.SignaturePolicyEpoch,
 		SignatureRevocationEpoch: req.SignatureRevocationEpoch,
@@ -179,17 +194,79 @@ func Build(req BuildRequest) (Bundle, error) {
 		NoticesRef:               noticesRef,
 		NoticesSHA256:            sha256Hex(noticesBytes),
 	}
-	return Bundle{
+	return PreparedBundle{
 		Pin: pin,
 		Files: map[string][]byte{
 			artifactRef:      artifactBytes,
 			manifestRef:      manifestBytes,
-			signatureRef:     signatureBytes,
 			compatibilityRef: compatibilityBytes,
 			clientRef:        clientBytes,
 			noticesRef:       noticesBytes,
 		},
+		Manifest: manifestBytes,
 	}, nil
+}
+
+// Finalize verifies an externally produced Ed25519 signature over the exact
+// canonical manifest bytes and returns the immutable v1 bundle.
+func Finalize(prepared PreparedBundle, signature []byte, publicKey ed25519.PublicKey) (Bundle, error) {
+	if len(publicKey) != ed25519.PublicKeySize || len(signature) != ed25519.SignatureSize ||
+		!ed25519.Verify(publicKey, prepared.Manifest, signature) {
+		return Bundle{}, ErrSignature
+	}
+	if err := validatePreparedBundle(prepared); err != nil {
+		return Bundle{}, err
+	}
+	signatureEnvelope := SignatureEnvelope{
+		SchemaVersion:   signatureSchemaVersion,
+		Algorithm:       signatureAlgorithm,
+		KeyID:           prepared.Pin.SignatureKeyID,
+		ManifestSHA256:  prepared.Pin.ManifestSHA256,
+		SignatureBase64: base64.StdEncoding.EncodeToString(signature),
+	}
+	signatureBytes, err := canonicalJSON(signatureEnvelope)
+	if err != nil {
+		return Bundle{}, err
+	}
+	files := make(map[string][]byte, len(prepared.Files)+1)
+	for ref, content := range prepared.Files {
+		files[ref] = append([]byte(nil), content...)
+	}
+	files[prepared.Pin.SignatureRef] = signatureBytes
+	pin := prepared.Pin
+	pin.SignatureSHA256 = sha256Hex(signatureBytes)
+	return Bundle{Pin: pin, Files: files}, nil
+}
+
+func validatePreparedBundle(prepared PreparedBundle) error {
+	pinForValidation := prepared.Pin
+	pinForValidation.SignatureSHA256 = strings.Repeat("0", 64)
+	if err := validatePin(pinForValidation); err != nil {
+		return err
+	}
+	if prepared.Pin.SignatureSHA256 != "" || sha256Hex(prepared.Manifest) != prepared.Pin.ManifestSHA256 ||
+		!bytes.Equal(prepared.Files[prepared.Pin.ManifestRef], prepared.Manifest) {
+		return fmt.Errorf("%w: prepared manifest mismatch", ErrInvalidBundle)
+	}
+	expected := map[string]string{
+		prepared.Pin.ArtifactRef:        prepared.Pin.ArtifactSHA256,
+		prepared.Pin.ManifestRef:        prepared.Pin.ManifestSHA256,
+		prepared.Pin.CompatibilityRef:   prepared.Pin.CompatibilitySHA256,
+		prepared.Pin.GeneratedClientRef: prepared.Pin.GeneratedClientSHA256,
+		prepared.Pin.NoticesRef:         prepared.Pin.NoticesSHA256,
+	}
+	if len(prepared.Files) != len(expected) {
+		return fmt.Errorf("%w: prepared file set is not exact", ErrInvalidBundle)
+	}
+	for ref, digest := range expected {
+		if err := ValidateArtifactRef(ref); err != nil || !sha256HexPattern.MatchString(digest) || sha256Hex(prepared.Files[ref]) != digest {
+			return fmt.Errorf("%w: prepared file %q mismatch", ErrInvalidBundle, ref)
+		}
+	}
+	if err := ValidateArtifactRef(prepared.Pin.SignatureRef); err != nil {
+		return err
+	}
+	return nil
 }
 
 func Verify(req VerifyRequest) (VerifiedContract, error) {

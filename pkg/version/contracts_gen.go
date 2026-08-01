@@ -121,10 +121,28 @@ var generatedContractArtifacts = []ContractArtifact{
 		SHA256:  "20526a5934f0d85a3db7882492487266f09de5bcd176e2c7936f05d0b7fe0338",
 	},
 	{
+		ID:      "host-capability-publisher-config-schema",
+		Path:    "spec/plugin/host-capability-publisher-config-v1.schema.json",
+		Version: "host-capability-publisher-config-v1",
+		SHA256:  "f06ab3d70f3f9dd2114fe9d489841f1d6b5f169ee17b8c92aa1bfaf9bbf865c4",
+	},
+	{
 		ID:      "host-capability-signature-schema",
 		Path:    "spec/plugin/host-capability-signature-v1.schema.json",
 		Version: "host-capability-signature-v1",
 		SHA256:  "88cbc1d63afb7e289ca4f8b7c76f702b8d20156f7722c1b71f3ab9138a240a5e",
+	},
+	{
+		ID:      "host-capability-signer-request-schema",
+		Path:    "spec/plugin/host-capability-signer-request-v1.schema.json",
+		Version: "host-capability-signer-request-v1",
+		SHA256:  "7f22e9e0f813b91106693edfbb91309489dde1640152c29d878961fdef6b89d8",
+	},
+	{
+		ID:      "host-capability-signer-response-schema",
+		Path:    "spec/plugin/host-capability-signer-response-v1.schema.json",
+		Version: "host-capability-signer-response-v1",
+		SHA256:  "02a50b1fc0d1b8ae0611eab95b5560122c6425709ecc8de5e00bf0dd68085f44",
 	},
 	{
 		ID:      "iframe-bridge-schema",

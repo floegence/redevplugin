@@ -34,7 +34,7 @@ func TestPublisherWorkspaceCompletesExternalSigningFlow(t *testing.T) {
 		Root:                 PublicKeyV1{Algorithm: "ed25519", KeyID: "example_root", PublicKey: base64.StdEncoding.EncodeToString(rootPublic)},
 		Signing:              PublicKeyV1{Algorithm: "ed25519", KeyID: "example_signing", PublicKey: base64.StdEncoding.EncodeToString(signingPublic)},
 		SigningLedger:        SigningLedgerConfigV1{LogID: "example_signing_log", PublicKeyV1: PublicKeyV1{Algorithm: "ed25519", KeyID: "example_ledger", PublicKey: base64.StdEncoding.EncodeToString(ledgerPublic)}},
-		AllowedArtifactHosts: []string{"github.com"}, MinReDevPluginVersion: "0.6.22", Distribution: "registry_ref", HostRequirements: []releasecontract.ReleaseHostRequirement{},
+		AllowedArtifactHosts: []string{"github.com"}, MinReDevPluginVersion: "0.6.23", Distribution: "registry_ref", HostRequirements: []releasecontract.ReleaseHostRequirement{},
 	}
 	workspace := filepath.Join(t.TempDir(), "workspace")
 	status, err := Prepare(ctx, config, packageFile, workspace)

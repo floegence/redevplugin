@@ -13,7 +13,7 @@ import {
 } from "../src/index.js";
 
 test("contracts package exposes the complete immutable lookup inventory", () => {
-  assert.equal(contractArtifacts.length, 55);
+  assert.equal(contractArtifacts.length, 58);
   assert.equal(contractArtifacts.some(({ id }) => id === "contract-registry"), false);
   assert.equal(registryContract.id, "contract-registry");
   assert.equal(getContract("contract-registry"), registryContract);
@@ -57,7 +57,7 @@ function assertCompileTimeBoundaries(): void {
   // @ts-expect-error getContract does not accept an unconstrained string.
   getContract(arbitraryString);
   // @ts-expect-error package-set fields are deeply readonly.
-  packageSet.platform_version = "0.6.22";
+  packageSet.platform_version = "0.6.23";
   // @ts-expect-error artifact metadata is deeply readonly.
   contractArtifacts[0].sha256 = "0";
 }

@@ -182,8 +182,16 @@ capabilities.
   `redevplugin release finalize <workspace> <out-dir>` and
   `redevplugin release verify <out-dir>`. Repeating a completed step with the
   same bytes is idempotent; a changed request, response, or output fails closed.
-- Host capability producers use
-  `redevplugin host-capability build <config.json> <out-dir>`. Consumers verify
+- Host capability publishers can keep signing outside the CLI with
+  `redevplugin host-capability prepare <config.json> <workspace>`,
+  `redevplugin host-capability apply-signature <workspace> <response.json>`,
+  and `redevplugin host-capability finalize <workspace> <out-dir>`. The request
+  contains only the public canonical manifest and its identity; the response is
+  bound to the exact request, public key, contract, and manifest. Repeating the
+  same step is idempotent, while changed inputs or workspace state fail closed.
+  The legacy single-process
+  `redevplugin host-capability build <config.json> <out-dir>` remains available.
+  Consumers verify
   the published bundle with
   `redevplugin host-capability verify <artifact-root> <pin.json> <public.json>`
   and export its pinned client with

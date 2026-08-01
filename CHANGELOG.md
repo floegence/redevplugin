@@ -1,5 +1,21 @@
 # Changelog
 
+## v0.6.23
+
+### Added
+
+- Add a resumable `host-capability prepare -> apply-signature -> finalize ->
+  verify` publisher that emits only public signing requests, binds responses to
+  the exact contract manifest and public key, and preserves the existing host
+  capability bundle signature format.
+- Publish closed schemas for host-capability publisher configuration and its
+  external signer exchange as part of the coordinated contract set.
+
+### Changed
+
+- Share one link-safe, size-bounded capability bundle reader between the CLI
+  verifier and publisher finalization path.
+
 ## v0.6.22
 
 ### Fixed

@@ -10,10 +10,10 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/floegence/redevplugin/pkg/capabilitycontract"
+	"github.com/floegence/redevplugin/pkg/capabilitypublisher"
 	"github.com/floegence/redevplugin/pkg/version"
 )
 
@@ -22,6 +22,19 @@ const hostCapabilityPinFile = "host-capability.pin.json"
 type hostCapabilityBuildConfig struct {
 	ContractFile             string `json:"contract_file"`
 	PrivateKeyFile           string `json:"private_key_file"`
+	ArtifactBaseRef          string `json:"artifact_base_ref"`
+	GeneratedAt              string `json:"generated_at"`
+	SourceCommit             string `json:"source_commit"`
+	MinReDevPluginVersion    string `json:"min_redevplugin_version"`
+	SignaturePolicyEpoch     string `json:"signature_policy_epoch"`
+	SignatureRevocationEpoch string `json:"signature_revocation_epoch"`
+	NoticesFile              string `json:"notices_file,omitempty"`
+}
+
+type hostCapabilityPublisherConfig struct {
+	SchemaVersion            string `json:"schema_version"`
+	ContractFile             string `json:"contract_file"`
+	PublicKeyFile            string `json:"public_key_file"`
 	ArtifactBaseRef          string `json:"artifact_base_ref"`
 	GeneratedAt              string `json:"generated_at"`
 	SourceCommit             string `json:"source_commit"`
@@ -54,6 +67,41 @@ func runHostCapability(ctx context.Context, args []string) error {
 		return usage()
 	}
 	switch args[0] {
+	case "prepare":
+		if len(args) != 3 {
+			return usage()
+		}
+		config, err := loadHostCapabilityPublisherConfig(args[1])
+		if err != nil {
+			return err
+		}
+		status, err := capabilitypublisher.Prepare(config, args[2])
+		if err != nil {
+			return err
+		}
+		return writeJSON(status)
+	case "apply-signature":
+		if len(args) != 3 {
+			return usage()
+		}
+		response, err := os.ReadFile(args[2])
+		if err != nil {
+			return err
+		}
+		status, err := capabilitypublisher.ApplySignature(args[1], response)
+		if err != nil {
+			return err
+		}
+		return writeJSON(status)
+	case "finalize":
+		if len(args) != 3 {
+			return usage()
+		}
+		status, err := capabilitypublisher.Finalize(args[1], args[2])
+		if err != nil {
+			return err
+		}
+		return writeJSON(status)
 	case "build":
 		if len(args) != 3 {
 			return usage()
@@ -85,6 +133,42 @@ func runHostCapability(ctx context.Context, args []string) error {
 	default:
 		return usage()
 	}
+}
+
+func loadHostCapabilityPublisherConfig(configFile string) (capabilitypublisher.ConfigV1, error) {
+	var input hostCapabilityPublisherConfig
+	if err := readStrictJSONFile(configFile, &input); err != nil {
+		return capabilitypublisher.ConfigV1{}, err
+	}
+	if input.SchemaVersion != capabilitypublisher.ConfigSchemaVersion {
+		return capabilitypublisher.ConfigV1{}, capabilitypublisher.ErrInvalidConfig
+	}
+	configDir := filepath.Dir(configFile)
+	var contract capabilitycontract.Contract
+	if err := readStrictJSONFile(resolveConfigPath(configDir, input.ContractFile), &contract); err != nil {
+		return capabilitypublisher.ConfigV1{}, err
+	}
+	publicDoc, _, err := readSigningPublicKey(resolveConfigPath(configDir, input.PublicKeyFile))
+	if err != nil {
+		return capabilitypublisher.ConfigV1{}, err
+	}
+	var notices []capabilitycontract.Notice
+	if strings.TrimSpace(input.NoticesFile) != "" {
+		if err := readStrictJSONFile(resolveConfigPath(configDir, input.NoticesFile), &notices); err != nil {
+			return capabilitypublisher.ConfigV1{}, err
+		}
+	}
+	if notices == nil {
+		notices = []capabilitycontract.Notice{}
+	}
+	return capabilitypublisher.ConfigV1{
+		SchemaVersion: capabilitypublisher.ConfigSchemaVersion, Contract: contract,
+		ArtifactBaseRef: input.ArtifactBaseRef, GeneratedAt: input.GeneratedAt, SourceCommit: input.SourceCommit,
+		MinReDevPluginVersion: input.MinReDevPluginVersion, SignaturePolicyEpoch: input.SignaturePolicyEpoch,
+		SignatureRevocationEpoch: input.SignatureRevocationEpoch, Notices: notices,
+		PublicKey: capabilitypublisher.PublicKeyV1{SchemaVersion: publicDoc.SchemaVersion, Algorithm: publicDoc.Algorithm,
+			KeyID: publicDoc.KeyID, PublisherID: publicDoc.PublisherID, PublicKey: publicDoc.PublicKey, CreatedAt: publicDoc.CreatedAt},
+	}, nil
 }
 
 func buildHostCapability(_ context.Context, configFile, outputRoot string) error {
@@ -205,13 +289,9 @@ func loadVerifiedHostCapability(artifactRoot, pinFile, publicKeyFile string) (lo
 	if publicDoc.PublisherID != "" && publicDoc.PublisherID != pin.PublisherID {
 		return loadedHostCapabilityArtifact{}, errors.New("host capability public key publisher_id does not match pin")
 	}
-	bundle := capabilitycontract.Bundle{Pin: pin, Files: map[string][]byte{}}
-	for _, ref := range hostCapabilityPinRefs(pin) {
-		content, err := readArtifactFile(artifactRoot, ref)
-		if err != nil {
-			return loadedHostCapabilityArtifact{}, err
-		}
-		bundle.Files[ref] = content
+	bundle, err := capabilitycontract.ReadBundle(artifactRoot, pin)
+	if err != nil {
+		return loadedHostCapabilityArtifact{}, err
 	}
 	verified, err := capabilitycontract.Verify(capabilitycontract.VerifyRequest{
 		Bundle:      bundle,
@@ -229,83 +309,6 @@ func loadVerifiedHostCapability(artifactRoot, pinFile, publicKeyFile string) (lo
 		return loadedHostCapabilityArtifact{}, err
 	}
 	return loadedHostCapabilityArtifact{Verified: verified, Bundle: bundle, PublicDoc: publicDoc, PublicKey: publicKey}, nil
-}
-
-func hostCapabilityPinRefs(pin capabilitycontract.Pin) []string {
-	return []string{
-		pin.ArtifactRef,
-		pin.ManifestRef,
-		pin.SignatureRef,
-		pin.CompatibilityRef,
-		pin.GeneratedClientRef,
-		pin.NoticesRef,
-	}
-}
-
-func readArtifactFile(root, ref string) ([]byte, error) {
-	if err := capabilitycontract.ValidateArtifactRef(ref); err != nil {
-		return nil, err
-	}
-	rootAbs, err := filepath.Abs(root)
-	if err != nil {
-		return nil, err
-	}
-	rootHandle, err := os.OpenRoot(rootAbs)
-	if err != nil {
-		return nil, err
-	}
-	defer rootHandle.Close()
-	relative := filepath.FromSlash(ref)
-	segments := strings.Split(relative, string(filepath.Separator))
-	current := ""
-	var info os.FileInfo
-	for index, segment := range segments {
-		current = filepath.Join(current, segment)
-		info, err = rootHandle.Lstat(current)
-		if err != nil {
-			return nil, err
-		}
-		if info.Mode()&os.ModeSymlink != 0 {
-			return nil, errors.New("host capability artifact must be a regular unlinked file")
-		}
-		if index < len(segments)-1 && !info.IsDir() {
-			return nil, errors.New("host capability artifact parent must be a directory")
-		}
-	}
-	if !regularUnlinkedFile(info) {
-		return nil, errors.New("host capability artifact must be a regular unlinked file")
-	}
-	file, err := rootHandle.Open(relative)
-	if err != nil {
-		return nil, err
-	}
-	defer file.Close()
-	openedInfo, err := file.Stat()
-	if err != nil {
-		return nil, err
-	}
-	if !os.SameFile(info, openedInfo) || !regularUnlinkedFile(openedInfo) {
-		return nil, errors.New("host capability artifact changed while opening")
-	}
-	if openedInfo.Size() < 0 || openedInfo.Size() > capabilitycontract.MaxArtifactFileBytes {
-		return nil, errors.New("host capability artifact exceeds the per-file byte budget")
-	}
-	content, err := io.ReadAll(io.LimitReader(file, capabilitycontract.MaxArtifactFileBytes+1))
-	if err != nil {
-		return nil, err
-	}
-	if int64(len(content)) != openedInfo.Size() || int64(len(content)) > capabilitycontract.MaxArtifactFileBytes {
-		return nil, errors.New("host capability artifact changed size while reading")
-	}
-	return content, nil
-}
-
-func regularUnlinkedFile(info os.FileInfo) bool {
-	if info == nil || !info.Mode().IsRegular() {
-		return false
-	}
-	stat, ok := info.Sys().(*syscall.Stat_t)
-	return ok && stat.Nlink == 1
 }
 
 func writeArtifactFile(root, ref string, content []byte) error {

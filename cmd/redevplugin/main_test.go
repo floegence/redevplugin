@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -17,6 +18,7 @@ import (
 
 	"github.com/floegence/redevplugin/pkg/bridge"
 	"github.com/floegence/redevplugin/pkg/capabilitycontract"
+	"github.com/floegence/redevplugin/pkg/capabilitypublisher"
 	"github.com/floegence/redevplugin/pkg/host"
 	"github.com/floegence/redevplugin/pkg/manifest"
 	"github.com/floegence/redevplugin/pkg/permissions"
@@ -1105,6 +1107,77 @@ func TestCLIHostCapabilityVerifyRejectsLinkedArtifacts(t *testing.T) {
 				t.Fatalf("verify linked artifact error = %v", err)
 			}
 		})
+	}
+}
+
+func TestCLIHostCapabilityExternalSignerWorkflow(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	contractFile, err := filepath.Abs(filepath.Join("..", "..", "testdata", "host-capability", "sample-documents-v1", "capabilities", "example.documents", "v1.0.0", "example.documents.v1.schema.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	privateKeyFile := filepath.Join(root, "private.json")
+	publicKeyFile := filepath.Join(root, "public.json")
+	if _, err := captureCLIOutput(t, "keygen", "example_documents_2026", privateKeyFile, publicKeyFile); err != nil {
+		t.Fatal(err)
+	}
+	var publicDoc signingPublicKeyFile
+	if err := readStrictJSONFile(publicKeyFile, &publicDoc); err != nil {
+		t.Fatal(err)
+	}
+	publicDoc.PublisherID = "example.publisher"
+	if err := writeJSONFile(publicKeyFile, publicDoc, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	configFile := filepath.Join(root, "publisher.json")
+	if err := writeJSONFile(configFile, hostCapabilityPublisherConfig{
+		SchemaVersion: capabilitypublisher.ConfigSchemaVersion, ContractFile: contractFile, PublicKeyFile: publicKeyFile,
+		ArtifactBaseRef: "capabilities/example.documents/v1.0.0", GeneratedAt: "2026-08-01T00:00:00Z",
+		SourceCommit: strings.Repeat("a", 40), MinReDevPluginVersion: version.CurrentCompatibilityVersion(),
+		SignaturePolicyEpoch: "1", SignatureRevocationEpoch: "1",
+	}, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	workspace := filepath.Join(root, "workspace")
+	output := filepath.Join(root, "output")
+	if _, err := captureCLIOutput(t, "host-capability", "prepare", configFile, workspace); err != nil {
+		t.Fatal(err)
+	}
+	requests, err := filepath.Glob(filepath.Join(workspace, "requests", "*.json"))
+	if err != nil || len(requests) != 1 {
+		t.Fatalf("requests = %v, err = %v", requests, err)
+	}
+	var request capabilitypublisher.SignerRequestV1
+	if err := readStrictJSONFile(requests[0], &request); err != nil {
+		t.Fatal(err)
+	}
+	preimage, err := base64.StdEncoding.DecodeString(request.SigningPreimage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, privateKey, err := readSigningPrivateKey(privateKeyFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	responseFile := filepath.Join(root, "response.json")
+	if err := writeJSONFile(responseFile, capabilitypublisher.SignerResponseV1{
+		SchemaVersion: capabilitypublisher.ResponseSchemaVersion, RequestID: request.RequestID, Usage: request.Usage,
+		KeyID: request.KeyID, PublisherID: request.PublisherID, ContractID: request.ContractID,
+		ContractVersion: request.ContractVersion, ManifestSHA256: request.ManifestSHA256,
+		SigningPreimageSHA256: request.SigningPreimageSHA256, Algorithm: "ed25519",
+		Signature: base64.StdEncoding.EncodeToString(ed25519.Sign(privateKey, preimage)),
+	}, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := captureCLIOutput(t, "host-capability", "apply-signature", workspace, responseFile); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := captureCLIOutput(t, "host-capability", "finalize", workspace, output); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := captureCLIOutput(t, "host-capability", "verify", output, filepath.Join(output, hostCapabilityPinFile), filepath.Join(output, "host-capability.public.json")); err != nil {
+		t.Fatal(err)
 	}
 }
 

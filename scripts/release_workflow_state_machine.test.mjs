@@ -17,12 +17,12 @@ const recoveryAdmissionSource = recovery.jobs["release-admission"].steps.find((s
 const preflightScript = join(repositoryRoot, "scripts/verify_github_release_reconciliation_candidate.sh");
 
 const repository = "floegence/redevplugin";
-const tag = "v0.6.22";
+const tag = "v0.6.23";
 const sourceCommit = "1".repeat(40);
 const otherCommit = "2".repeat(40);
 const contentType = "application/vnd.floegence.redevplugin-platform-publication.v1+json";
 const assetName = "platform-package-publication-v1.json";
-const manifestBytes = Buffer.from('{"schema_version":1,"platform_version":"0.6.22"}\n');
+const manifestBytes = Buffer.from('{"schema_version":1,"platform_version":"0.6.23"}\n');
 const marker = `<!-- redevplugin-release-transaction-v1 source_commit=${sourceCommit} -->`;
 
 assert.equal(publicationSource, recoverySource);
@@ -468,7 +468,7 @@ test("durable state is adopted after SIGKILL at each mutation boundary", async (
 });
 
 test("publication shell fails closed without mutating authoritative public state", async (t) => {
-  const wrongBytes = Buffer.from('{"schema_version":9,"platform_version":"0.6.22"}\n');
+  const wrongBytes = Buffer.from('{"schema_version":9,"platform_version":"0.6.23"}\n');
   const cases = [
     ["PATCH did not apply", { release: release(), assets: [asset()], patchMode: "unchanged" }],
     ["published wrong bytes", { release: release(false), assets: [asset({ bytes: wrongBytes })] }],

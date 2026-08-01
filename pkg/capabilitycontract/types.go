@@ -111,6 +111,14 @@ type Bundle struct {
 	Files map[string][]byte
 }
 
+// PreparedBundle contains the public, deterministic capability artifacts that
+// exist before the manifest signature is supplied by an external signer.
+type PreparedBundle struct {
+	Pin      Pin
+	Files    map[string][]byte
+	Manifest []byte
+}
+
 type TrustedKey struct {
 	PublisherID     string
 	KeyID           string
