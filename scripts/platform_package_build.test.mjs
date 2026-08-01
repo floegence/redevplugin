@@ -9,7 +9,7 @@ import { verifyPlatformPackageBuild, verifyRustPublishMetadata } from "./platfor
 
 const version = "0.6.23";
 const sourceCommit = "1".repeat(40);
-const contractSetSHA256 = "5ebda1f3b0fc0b23b138469c37cf4dbddcfd995f35887e1c95968d03432a189b";
+const contractSetSHA256 = "22ff9be972e19ddbfb7b2e9bbb69861e6f5cc44ac02b490899f2d27cdf4f033f";
 
 test("platform package build manifest is closed, complete, and content addressed", () => {
   const fixture = createFixture();
