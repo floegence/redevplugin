@@ -2,7 +2,9 @@
 
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { lstat, mkdir, readFile, realpath, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseDocument } from "yaml";
@@ -409,27 +411,29 @@ function capitalizeASCII(value) {
 }
 
 function formatGo(source) {
-  const result = spawnSync("gofmt", {
-    input: source,
-    encoding: "utf8",
-    maxBuffer: MAX_FORMATTER_BYTES,
-  });
-  if (result.status !== 0) {
-    throw new Error(`gofmt failed while generating Go contract outputs: ${result.stderr || result.error}`);
-  }
-  return result.stdout;
+  return formatSourceFile("gofmt", ["-w"], "go", source);
 }
 
 function formatRust(source) {
-  const result = spawnSync("rustfmt", ["--emit", "stdout", "--edition", "2024"], {
-    input: source,
-    encoding: "utf8",
-    maxBuffer: MAX_FORMATTER_BYTES,
-  });
-  if (result.status !== 0) {
-    throw new Error(`rustfmt failed while generating Rust contract outputs: ${result.stderr || result.error}`);
+  return formatSourceFile("rustfmt", ["--edition", "2024"], "rs", source);
+}
+
+function formatSourceFile(formatter, args, extension, source) {
+  const directory = mkdtempSync(join(tmpdir(), "redevplugin-contract-format-"));
+  const filename = join(directory, `generated.${extension}`);
+  try {
+    writeFileSync(filename, source, { encoding: "utf8", mode: 0o600 });
+    const result = spawnSync(formatter, [...args, filename], {
+      encoding: "utf8",
+      maxBuffer: MAX_FORMATTER_BYTES,
+    });
+    if (result.status !== 0) {
+      throw new Error(`${formatter} failed while generating contract outputs: ${result.stderr || result.error}`);
+    }
+    return readFileSync(filename, "utf8");
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
   }
-  return result.stdout;
 }
 
 function validateContractSource(value) {
