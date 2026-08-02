@@ -38,7 +38,7 @@ func TestAssetSetResolvesExactReleaseArtifacts(t *testing.T) {
 	packageBytes := []byte("package bytes")
 	packageTransportDigest := digest(packageBytes)
 	packageIdentityDigest := strings.Repeat("3", 64)
-	metadata := releasecontract.ReleaseMetadataV5{
+	metadata := releasecontract.ReleaseMetadataV8{
 		SchemaVersion: releasecontract.ReleaseMetadataSchemaVersion,
 		SourceID:      sourceID, ReleaseMetadataRef: metaRef, PublisherID: publisher, PluginID: pluginID, Version: version,
 		DistributionRef:          releasecontract.ReleaseDistributionRef{Distribution: "registry_ref", ArtifactRef: pkgRef},

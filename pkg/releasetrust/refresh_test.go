@@ -812,8 +812,8 @@ func newFullRefreshFixture(t *testing.T) fullRefreshFixture {
 		t.Fatal(err)
 	}
 
-	releaseMetadata := releasecontract.ReleaseMetadataV5{
-		SchemaVersion: releasecontract.ReleaseMetadataSchemaVersionV5, SourceID: "example_source",
+	releaseMetadata := releasecontract.ReleaseMetadataV8{
+		SchemaVersion: releasecontract.ReleaseMetadataSchemaVersionV8, SourceID: "example_source",
 		ReleaseMetadataRef: "plugins/example.publisher/example.plugin/1.2.3/release.json",
 		PublisherID:        "example.publisher", PluginID: "example.plugin", Version: "1.2.3",
 		DistributionRef: releasecontract.ReleaseDistributionRef{Distribution: "registry_ref", ArtifactRef: "plugins/example.publisher/example.plugin/1.2.3/package.zip"},
@@ -829,7 +829,7 @@ func newFullRefreshFixture(t *testing.T) fullRefreshFixture {
 			SignatureBundleRef: "plugins/example.publisher/example.plugin/1.2.3/package.sig", SourcePolicyEpoch: "1", RevocationEpoch: "1",
 		},
 		Compatibility: releasecontract.ReleaseCompatibility{
-			MinReDevPluginVersion: "0.6.0", MinRuntimeVersion: "0.6.0", UIProtocolVersion: "plugin-ui-v5",
+			MinReDevPluginVersion: "0.7.0", MinRuntimeVersion: "0.7.0", UIProtocolVersion: "plugin-ui-v7",
 		},
 		HostRequirements: []releasecontract.ReleaseHostRequirement{{
 			HostID: "example.host", RequiredCapabilityContracts: []releasecontract.HostCapabilityRequirementRef{{

@@ -25,17 +25,17 @@ capabilities.
   WASM ABI schema, worker invocation payload schema, stable error-code schema,
   persistent resource-scope schema, performance-evidence schema, and target
   classifier fixture
-- Active coordinated contracts are `plugin-host-v9`, `rust-ipc-v6`,
-  `plugin-ui-v7`, `bridge-v7`, `plugin-platform-v11`, `manifest-v7`, opaque
-  document v3, opaque transport v6, release metadata v7, compatibility manifest
-  v13, error codes v7, resource scope v1, session scope v1, session scope
+- Active coordinated contracts are `plugin-host-v10`, `rust-ipc-v6`,
+  `plugin-ui-v7`, `bridge-v7`, `plugin-platform-v12`, `manifest-v8`, opaque
+  document v3, opaque transport v6, release metadata v8, compatibility manifest
+  v14, error codes v7, resource scope v1, session scope v1, session scope
   maintenance v1, token/ticket v4, and release manifest
   v4. WASM ABI v2, worker invocation v3, and package
-  signature v1 remain unchanged. Installed `plugin-ui-v5` packages continue to
-  use the exact bridge-v5 and opaque-surface-transport-v4 mapping.
+  signature v1 remain unchanged. Current package admission accepts only manifest
+  v8 packages using `plugin-ui-v7`.
 - The staged v2 package registry is available through opt-in Go, npm, and Rust
   contract libraries with identical immutable bytes, IDs, versions, hashes,
-  and aggregate digest. It is returned by the active compatibility-v13
+  and aggregate digest. It is returned by the active compatibility-v14
   Host API, and importing ordinary Host or UI entrypoints does not link or load
   the raw schema bodies.
 - The staged contract libraries also expose canonical release-signing DTOs and
@@ -44,11 +44,26 @@ capabilities.
   its pointer. The seven signing usages are domain separated, timestamps are
   explicit inputs, and pointer genesis is fixed to epoch `0` plus the all-zero
   SHA-256 sentinel. These APIs live in `pkg/releasecontract` and the opt-in
-  contracts packages; `pkg/releasetrust` consumes the active compatibility-v13
-  contract while preserving the published legacy contract artifacts.
+  contracts packages; `pkg/releasetrust` consumes the active compatibility-v14
+  contract.
 - Source policy v3, source-policy pointer v2, revocation v3, and revocation
   pointer v2 provide a 90-day personal-maintainer validity profile while the
   prior v2/v1 documents remain strict compatibility inputs.
+
+## Localized Plugin Presentation
+
+Manifest v8 requires an author-owned presentation catalog. The default locale
+uses the manifest's plugin, publisher, surface, setting, and option labels;
+authors may add up to 15 complete localized records. Localizations are keyed by
+canonical BCP 47 tags and must cover every translatable field without missing,
+extra, or duplicate surface, setting, or option references.
+
+ReDevPlugin validates author text as NFC-normalized Unicode plain text, includes
+the complete catalog in the canonical manifest and signature boundary, and
+projects a normalized catalog plus its SHA-256 digest from verified inspection
+and installed inventory APIs. The Go and TypeScript resolvers use exact match,
+RFC 4647 parent lookup, then the author-declared default locale. They do not add
+an English fallback or mix locales within one resolved presentation.
 - `redevplugin release prepare`, `apply-signature`, `finalize`, and `verify`
   provide a resumable publisher flow for signed packages, release metadata,
   source policy, revocation, root delegation, and signing-ledger evidence.

@@ -5,6 +5,7 @@ import (
 	"os"
 
 	"github.com/floegence/redevplugin/pkg/releasepublisher"
+	"github.com/floegence/redevplugin/pkg/version"
 )
 
 func runRelease(ctx context.Context, args []string) error {
@@ -55,10 +56,16 @@ func runRelease(ctx context.Context, args []string) error {
 		if len(args) != 2 {
 			return usage()
 		}
-		if err := releasepublisher.VerifyOutput(ctx, args[1]); err != nil {
+		verified, err := releasepublisher.VerifyAndInspectOutput(ctx, args[1])
+		if err != nil {
 			return err
 		}
-		return writeJSON(releasepublisher.WorkspaceStatusV1{OK: true, Phase: "verified", Output: args[1]})
+		return writeJSON(presentationInspectionSummary{
+			OK: true, Phase: "verified", Output: args[1], Presentation: verified.Presentation,
+			ManifestSHA256: verified.ManifestSHA256, PresentationSHA256: verified.PresentationSHA256,
+			ContractSetSHA256: version.CurrentCompatibilityManifest().ContractSetSHA256,
+			VerifierVersion:   version.CurrentCompatibilityVersion(),
+		})
 	default:
 		return usage()
 	}

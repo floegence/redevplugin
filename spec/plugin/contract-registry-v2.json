@@ -4,9 +4,9 @@
   "artifacts": [
     {
       "id": "compatibility-manifest-schema",
-      "path": "spec/plugin/compatibility-manifest-v13.schema.json",
-      "version": "compatibility-manifest-v13",
-      "sha256": "c95fdfe0c5818ba57e664c534c3d10d073545e5a31bccd7c1ee5d39d391d13b2"
+      "path": "spec/plugin/compatibility-manifest-v14.schema.json",
+      "version": "compatibility-manifest-v14",
+      "sha256": "67016ead2ed8b86410aafe3771d750ea2ab088479047475542ac65caa1691a7c"
     },
     {
       "id": "contract-registry-schema",
@@ -94,9 +94,9 @@
     },
     {
       "id": "manifest-schema",
-      "path": "spec/plugin/manifest-v7.schema.json",
-      "version": "manifest-v7",
-      "sha256": "af73ffd8ccedcb149198f847b68ed6fc23e51366122915c7129473f9fde68e35"
+      "path": "spec/plugin/manifest-v8.schema.json",
+      "version": "manifest-v8",
+      "sha256": "f4f6ec875936b19ae3371459804b5ad2c36a4bd0739a83976037efffe51ada48"
     },
     {
       "id": "network-grant-schema",
@@ -172,9 +172,15 @@
     },
     {
       "id": "plugin-platform-openapi",
-      "path": "spec/openapi/plugin-platform-v11.yaml",
-      "version": "plugin-platform-v11",
-      "sha256": "41c84c939ca9471baafdb16a1fe7d62a232a58df91e579514351dd6046e529e7"
+      "path": "spec/openapi/plugin-platform-v12.yaml",
+      "version": "plugin-platform-v12",
+      "sha256": "715698e9e1e357e243ee21b3157cc044befac83979107f54d024b5e9e48f7050"
+    },
+    {
+      "id": "presentation-locale-fixture",
+      "path": "spec/plugin/presentation-locale-fixtures-v1.json",
+      "version": "presentation-locale-fixtures-v1",
+      "sha256": "cbb4c0188d020b5fbde9a0c2c33b3677d21cc64c0f0297b7f6f3f6c0efabc40e"
     },
     {
       "id": "process-containment-schema",
@@ -196,9 +202,9 @@
     },
     {
       "id": "release-metadata-schema",
-      "path": "spec/plugin/release-metadata-v7.schema.json",
-      "version": "release-metadata-v7",
-      "sha256": "d9ceac9b8dd52288172bbe5d4dc2f158e2354ad4fe1f071617f6ba9309e21ebf"
+      "path": "spec/plugin/release-metadata-v8.schema.json",
+      "version": "release-metadata-v8",
+      "sha256": "f454fc1923be10fd5a4b46df4a6e376f7e9fe1d462f3da57977b92ad7c7496b0"
     },
     {
       "id": "release-publisher-config-schema",

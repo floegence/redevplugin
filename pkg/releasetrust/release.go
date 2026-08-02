@@ -44,14 +44,14 @@ func (prepared PreparedRelease) SourcePolicy() releasecontract.SourcePolicyV2 {
 
 type VerifiedReleaseMetadata struct {
 	prepared PreparedRelease
-	document releasecontract.ReleaseMetadataV5
+	document releasecontract.ReleaseMetadataV8
 	raw      []byte
 }
 
 func (verified VerifiedReleaseMetadata) PreparedRelease() PreparedRelease {
 	return clonePreparedRelease(verified.prepared)
 }
-func (verified VerifiedReleaseMetadata) Document() releasecontract.ReleaseMetadataV5 {
+func (verified VerifiedReleaseMetadata) Document() releasecontract.ReleaseMetadataV8 {
 	value, _ := releasecontract.BuildReleaseMetadata(verified.document)
 	return value
 }
@@ -308,7 +308,7 @@ func (set *ServiceSet) VerifyCapabilityContract(
 	return verified, nil
 }
 
-func releaseMetadataContainsCapabilityPin(document releasecontract.ReleaseMetadataV5, expected capabilitycontract.Pin) bool {
+func releaseMetadataContainsCapabilityPin(document releasecontract.ReleaseMetadataV8, expected capabilitycontract.Pin) bool {
 	for _, hostRequirement := range document.HostRequirements {
 		for _, capability := range hostRequirement.RequiredCapabilityContracts {
 			if capabilityContractPinFromRef(capability.Contract) == expected {

@@ -6,6 +6,7 @@ import (
 
 	"github.com/floegence/redevplugin/pkg/bridge"
 	"github.com/floegence/redevplugin/pkg/host"
+	"github.com/floegence/redevplugin/pkg/manifest"
 	"github.com/floegence/redevplugin/pkg/observability"
 	"github.com/floegence/redevplugin/pkg/permissions"
 	"github.com/floegence/redevplugin/pkg/plugindata"
@@ -115,6 +116,8 @@ type pluginVersionResponse struct {
 	LocalImportProvenance *localImportProvenanceResponse           `json:"local_import_provenance,omitempty"`
 	CapabilityContracts   []capabilityPinResponse                  `json:"capability_contracts,omitempty"`
 	Manifest              manifestResponse                         `json:"manifest"`
+	Presentation          presentationCatalogResponse              `json:"presentation"`
+	PresentationSHA256    string                                   `json:"presentation_sha256"`
 	PackageEntries        []packageEntryResponse                   `json:"package_entries"`
 	RuntimeRequirement    *runtimeRequirementResponse              `json:"runtime_requirement,omitempty"`
 	ActivatedAt           time.Time                                `json:"activated_at"`
@@ -146,6 +149,8 @@ type pluginRecordResponse struct {
 	ManagementRevision    uint64                                   `json:"management_revision"`
 	RevokeEpoch           uint64                                   `json:"revoke_epoch"`
 	Manifest              manifestResponse                         `json:"manifest"`
+	Presentation          presentationCatalogResponse              `json:"presentation"`
+	PresentationSHA256    string                                   `json:"presentation_sha256"`
 	PackageEntries        []packageEntryResponse                   `json:"package_entries"`
 	RuntimeRequirement    *runtimeRequirementResponse              `json:"runtime_requirement,omitempty"`
 	VersionHistory        []pluginVersionResponse                  `json:"version_history,omitempty"`
@@ -169,6 +174,11 @@ func publicPluginRecord(record registry.PluginRecord) (pluginRecordResponse, err
 	if err != nil {
 		return pluginRecordResponse{}, err
 	}
+	presentation := record.Manifest.PresentationCatalog()
+	presentationSHA256, err := manifest.PresentationCatalogSHA256(presentation)
+	if err != nil {
+		return pluginRecordResponse{}, err
+	}
 	signature, provenance, approval, update, summary := publicExternalPackageFacts(
 		record.SignatureAssessment, record.PackageSourceProvenance, record.ExecutionApproval,
 		record.UpdateEligibility, record.SecurityCapabilitySummary,
@@ -183,7 +193,8 @@ func publicPluginRecord(record registry.PluginRecord) (pluginRecordResponse, err
 		LocalImportProvenance: publicLocalImportProvenance(record.LocalImportProvenance),
 		CapabilityContracts:   publicCapabilityPins(record.CapabilityContracts), EnableState: string(record.EnableState), DisabledReason: record.DisabledReason,
 		PolicyRevision: record.PolicyRevision, ManagementRevision: record.ManagementRevision, RevokeEpoch: record.RevokeEpoch,
-		Manifest: publicManifest, PackageEntries: publicPackageEntries(record.PackageEntries), RuntimeRequirement: publicRuntimeRequirement(record.RuntimeRequirement),
+		Manifest: publicManifest, Presentation: publicPresentationCatalog(presentation), PresentationSHA256: presentationSHA256,
+		PackageEntries: publicPackageEntries(record.PackageEntries), RuntimeRequirement: publicRuntimeRequirement(record.RuntimeRequirement),
 		VersionHistory: versions, InstalledAt: record.InstalledAt, EnabledAt: cloneWireTime(record.EnabledAt), UpdatedAt: record.UpdatedAt,
 		DeletedAt: cloneWireTime(record.DeletedAt), Metadata: cloneWireStringMap(record.Metadata),
 	}, nil
@@ -287,6 +298,11 @@ func publicPluginVersion(version registry.PluginVersion) (pluginVersionResponse,
 	if err != nil {
 		return pluginVersionResponse{}, err
 	}
+	presentation := version.Manifest.PresentationCatalog()
+	presentationSHA256, err := manifest.PresentationCatalogSHA256(presentation)
+	if err != nil {
+		return pluginVersionResponse{}, err
+	}
 	signature, provenance, approval, update, summary := publicExternalPackageFacts(
 		version.SignatureAssessment, version.PackageSourceProvenance, version.ExecutionApproval,
 		version.UpdateEligibility, version.SecurityCapabilitySummary,
@@ -299,6 +315,7 @@ func publicPluginVersion(version registry.PluginVersion) (pluginVersionResponse,
 		UpdateEligibility: update, SecuritySummary: summary,
 		LocalImportProvenance: publicLocalImportProvenance(version.LocalImportProvenance),
 		CapabilityContracts:   publicCapabilityPins(version.CapabilityContracts), Manifest: publicManifest,
+		Presentation: publicPresentationCatalog(presentation), PresentationSHA256: presentationSHA256,
 		PackageEntries: publicPackageEntries(version.PackageEntries), RuntimeRequirement: publicRuntimeRequirement(version.RuntimeRequirement),
 		ActivatedAt: version.ActivatedAt, Metadata: cloneWireStringMap(version.Metadata),
 	}, nil
@@ -407,14 +424,14 @@ func publicPermissionMutation(result host.PermissionMutationResult) permissionMu
 }
 
 type settingsFieldResponse struct {
-	Key        string         `json:"key"`
-	Type       string         `json:"type"`
-	Label      string         `json:"label"`
-	Scope      string         `json:"scope"`
-	Default    any            `json:"default,omitempty"`
-	SecretRef  string         `json:"secret_ref,omitempty"`
-	Options    []string       `json:"options,omitempty"`
-	Validation map[string]any `json:"validation,omitempty"`
+	Key        string                       `json:"key"`
+	Type       string                       `json:"type"`
+	Label      string                       `json:"label"`
+	Scope      string                       `json:"scope"`
+	Default    any                          `json:"default,omitempty"`
+	SecretRef  string                       `json:"secret_ref,omitempty"`
+	Options    []manifest.SettingOptionSpec `json:"options,omitempty"`
+	Validation map[string]any               `json:"validation,omitempty"`
 }
 
 type settingsSchemaResponse struct {
@@ -458,7 +475,7 @@ func publicSettingsSchema(result host.SettingsSchemaResult) (settingsSchemaRespo
 		}
 		fields[index] = settingsFieldResponse{
 			Key: field.Key, Type: field.Type, Label: field.Label, Scope: field.Scope, Default: defaultValue,
-			SecretRef: field.SecretRef, Options: append([]string(nil), field.Options...), Validation: validation,
+			SecretRef: field.SecretRef, Options: append([]manifest.SettingOptionSpec(nil), field.Options...), Validation: validation,
 		}
 	}
 	return settingsSchemaResponse{

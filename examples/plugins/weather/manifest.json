@@ -1,5 +1,5 @@
 {
-  "schema_version": "redevplugin.manifest.v5",
+  "schema_version": "redevplugin.manifest.v8",
   "publisher": {
     "publisher_id": "dev.redevplugin.examples",
     "display_name": "ReDevPlugin Examples"
@@ -10,7 +10,19 @@
     "version": "1.0.0",
     "api_version": "plugin-v1",
     "min_runtime_version": "0.5.0",
-    "ui_protocol_version": "plugin-ui-v5"
+    "ui_protocol_version": "plugin-ui-v7"
+  },
+  "presentation": {
+    "default_locale": "en-US",
+    "summary": "Weather extends the host with its declared plugin capabilities.",
+    "description": [
+      "Weather is a ReDevPlugin package whose surfaces and capabilities are verified by the host before use."
+    ],
+    "highlights": [],
+    "keywords": [
+      "Weather"
+    ],
+    "localizations": []
   },
   "surfaces": [
     {
@@ -23,16 +35,6 @@
         "width": 1120,
         "height": 760
       }
-    }
-  ],
-  "workers": [
-    {
-      "worker_id": "weather_backend",
-      "artifact": "workers/weather.wasm",
-      "abi": "redevplugin-wasm-worker-v2",
-      "mode": "job",
-      "scope": "user",
-      "memory_limit_bytes": 33554432
     }
   ],
   "methods": [
@@ -555,6 +557,16 @@
           }
         }
       }
+    }
+  ],
+  "workers": [
+    {
+      "worker_id": "weather_backend",
+      "artifact": "workers/weather.wasm",
+      "abi": "redevplugin-wasm-worker-v2",
+      "mode": "job",
+      "scope": "user",
+      "memory_limit_bytes": 33554432
     }
   ],
   "storage": {

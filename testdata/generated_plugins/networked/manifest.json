@@ -1,5 +1,5 @@
 {
-  "schema_version": "redevplugin.manifest.v5",
+  "schema_version": "redevplugin.manifest.v8",
   "publisher": {
     "publisher_id": "example.generated",
     "display_name": "Example Generated"
@@ -10,7 +10,19 @@
     "version": "1.0.0",
     "api_version": "plugin-v1",
     "min_runtime_version": "0.1.0",
-    "ui_protocol_version": "plugin-ui-v5"
+    "ui_protocol_version": "plugin-ui-v7"
+  },
+  "presentation": {
+    "default_locale": "en-US",
+    "summary": "Networked Generated Fixture extends the host with its declared plugin capabilities.",
+    "description": [
+      "Networked Generated Fixture is a ReDevPlugin package whose surfaces and capabilities are verified by the host before use."
+    ],
+    "highlights": [],
+    "keywords": [
+      "Networked Generated Fixture"
+    ],
+    "localizations": []
   },
   "surfaces": [
     {
@@ -26,25 +38,33 @@
         "connector_id": "forecast_api",
         "transport": "http",
         "scope": "user",
-        "destinations": ["https://api.example.com"]
+        "destinations": [
+          "https://api.example.com"
+        ]
       },
       {
         "connector_id": "live_updates",
         "transport": "websocket",
         "scope": "user",
-        "destinations": ["wss://stream.example.com"]
+        "destinations": [
+          "wss://stream.example.com"
+        ]
       },
       {
         "connector_id": "database",
         "transport": "tcp",
         "scope": "environment",
-        "destinations": ["db.example.com:5432"]
+        "destinations": [
+          "db.example.com:5432"
+        ]
       },
       {
         "connector_id": "metrics",
         "transport": "udp",
         "scope": "environment",
-        "destinations": ["metrics.example.com:8125"]
+        "destinations": [
+          "metrics.example.com:8125"
+        ]
       }
     ]
   }

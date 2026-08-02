@@ -1377,7 +1377,7 @@ export interface components {
         PluginCatalogResult: {
             plugins: components["schemas"]["PluginRecord"][];
         };
-        PluginCompatibilityManifest: components["schemas"]["CompatibilityManifestV13"];
+        PluginCompatibilityManifest: components["schemas"]["CompatibilityManifestV14"];
         PluginOperationList: {
             operations: components["schemas"]["OperationRecord"][];
             next_cursor?: string;
@@ -1946,6 +1946,34 @@ export interface components {
             intents: components["schemas"]["ExternalPackageIntentSummary"][];
             surfaces: components["schemas"]["ExternalPackageSurfaceSummary"][];
         };
+        SettingOptionPresentation: {
+            value: string;
+            label: string;
+        };
+        ResolvedSurfacePresentation: {
+            surface_id: string;
+            label: string;
+        };
+        ResolvedSettingPresentation: {
+            key: string;
+            label: string;
+            options: components["schemas"]["SettingOptionPresentation"][];
+        };
+        PresentationLocale: {
+            locale: string;
+            plugin_name: string;
+            publisher_name?: string;
+            summary: string;
+            description: string[];
+            highlights: string[];
+            keywords: string[];
+            surfaces: components["schemas"]["ResolvedSurfacePresentation"][];
+            settings: components["schemas"]["ResolvedSettingPresentation"][];
+        };
+        PresentationCatalog: {
+            default_locale: string;
+            locales: components["schemas"]["PresentationLocale"][];
+        };
         /** @description Immutable inspection projection. Package identity and all four trust/security facts are server-derived. */
         ExternalPackageInspection: {
             inspection_id: string;
@@ -1955,6 +1983,8 @@ export interface components {
             publisher_id: string;
             plugin_id: string;
             version: components["schemas"]["StrictSemVer"];
+            presentation: components["schemas"]["PresentationCatalog"];
+            presentation_sha256: string;
             inspected_hashes: components["schemas"]["TrustHashSet"];
             signature_assessment: components["schemas"]["ExternalPackageSignatureAssessment"];
             source_provenance: components["schemas"]["ExternalPackageSourceProvenance"];
@@ -2041,7 +2071,9 @@ export interface components {
             update_eligibility?: components["schemas"]["ExternalPackageUpdateEligibility"];
             security_summary?: components["schemas"]["ExternalPackageSecuritySummary"];
             capability_contracts?: components["schemas"]["CapabilityContractPin"][];
-            manifest: components["schemas"]["ManifestV5"] | components["schemas"]["ManifestV7"];
+            manifest: components["schemas"]["ManifestV8"];
+            presentation: components["schemas"]["PresentationCatalog"];
+            presentation_sha256: string;
             package_entries: components["schemas"]["PackageEntry"][];
             runtime_requirement?: components["schemas"]["RuntimeRequirement"];
             /** Format: date-time */
@@ -2079,7 +2111,9 @@ export interface components {
             policy_revision: number;
             management_revision: number;
             revoke_epoch: number;
-            manifest: components["schemas"]["ManifestV5"] | components["schemas"]["ManifestV7"];
+            manifest: components["schemas"]["ManifestV8"];
+            presentation: components["schemas"]["PresentationCatalog"];
+            presentation_sha256: string;
             package_entries: components["schemas"]["PackageEntry"][];
             runtime_requirement?: components["schemas"]["RuntimeRequirement"];
             version_history?: components["schemas"]["PluginVersion"][];
@@ -2205,7 +2239,7 @@ export interface components {
             plugin_instance_id: string;
             plugin_version: components["schemas"]["StrictSemVer"];
             /** @enum {string} */
-            ui_protocol_version: "plugin-ui-v5" | "plugin-ui-v6" | "plugin-ui-v7";
+            ui_protocol_version: "plugin-ui-v7";
             surface_id: string;
             surface_instance_id: string;
             active_fingerprint: string;
@@ -2252,7 +2286,7 @@ export interface components {
             management_revision: number;
             revoke_epoch: number;
             /** @enum {string} */
-            ui_protocol_version: "plugin-ui-v5" | "plugin-ui-v6" | "plugin-ui-v7";
+            ui_protocol_version: "plugin-ui-v7";
         };
         TrustedParentBridgeTokenRequest: {
             handshake: components["schemas"]["TrustedParentBridgeHandshake"];
@@ -2778,31 +2812,19 @@ export interface components {
             counts: components["schemas"]["SessionScopeV1RevokeCounts"];
         };
         SessionScopeV1PublicRevokeResult: components["schemas"]["SessionScopeV1CompleteRevokeResult"] | components["schemas"]["SessionScopeV1IncompleteRevokeResult"];
-        CompatibilityManifestV13: {
+        CompatibilityManifestV14: {
             /** @constant */
-            schema_version: "redevplugin.compatibility.v13";
+            schema_version: "redevplugin.compatibility.v14";
             package_set: components["schemas"]["PlatformPackageSetV1"];
             matrix: {
                 /** @constant */
                 plugin_ui_protocol_version: "plugin-ui-v7";
                 /** @constant */
                 supported_plugin_ui_protocol_versions: [
-                    "plugin-ui-v5",
-                    "plugin-ui-v6",
                     "plugin-ui-v7"
                 ];
                 /** @constant */
                 plugin_ui_transport_mappings: [
-                    {
-                        plugin_ui_protocol_version: "plugin-ui-v5";
-                        opaque_surface_transport_schema_version: "opaque-surface-transport-v4";
-                        bridge_schema_version: "bridge-v5";
-                    },
-                    {
-                        plugin_ui_protocol_version: "plugin-ui-v6";
-                        opaque_surface_transport_schema_version: "opaque-surface-transport-v5";
-                        bridge_schema_version: "bridge-v6";
-                    },
                     {
                         plugin_ui_protocol_version: "plugin-ui-v7";
                         opaque_surface_transport_schema_version: "opaque-surface-transport-v6";
@@ -2810,17 +2832,17 @@ export interface components {
                     }
                 ];
                 /** @constant */
-                plugin_host_protocol_version: "plugin-host-v9";
+                plugin_host_protocol_version: "plugin-host-v10";
                 /** @constant */
                 rust_ipc_version: "rust-ipc-v6";
                 /** @constant */
                 wasm_abi_version: "redevplugin-wasm-worker-v2";
                 /** @constant */
-                manifest_schema_version: "manifest-v7";
+                manifest_schema_version: "manifest-v8";
                 /** @constant */
                 package_signature_schema_version: "package-signature-v1";
                 /** @constant */
-                release_metadata_schema_version: "release-metadata-v7";
+                release_metadata_schema_version: "release-metadata-v8";
                 /** @constant */
                 release_root_delegation_schema_version: "release-root-delegation-v1";
                 /** @constant */
@@ -2866,9 +2888,9 @@ export interface components {
                 /** @constant */
                 session_scope_maintenance_schema_version: "session-scope-maintenance-v1";
                 /** @constant */
-                plugin_platform_openapi_version: "plugin-platform-v11";
+                plugin_platform_openapi_version: "plugin-platform-v12";
                 /** @constant */
-                compatibility_schema_version: "compatibility-manifest-v13";
+                compatibility_schema_version: "compatibility-manifest-v14";
                 /** @constant */
                 worker_invocation_schema_version: "worker-invocation-v3";
                 /** @constant */
@@ -2915,9 +2937,9 @@ export interface components {
                 quarantine_cleanup_schema_version: "quarantine-cleanup-v1";
             };
             contract_set_sha256: string;
-            contracts: components["schemas"]["CompatibilityManifestV13Contract"][];
+            contracts: components["schemas"]["CompatibilityManifestV14Contract"][];
         };
-        CompatibilityManifestV13Contract: {
+        CompatibilityManifestV14Contract: {
             id: string;
             path: string;
             version: string;
@@ -3005,9 +3027,9 @@ export interface components {
             /** @constant */
             role?: "runtime";
         };
-        ManifestV5: {
+        ManifestV8: {
             /** @constant */
-            schema_version: "redevplugin.manifest.v5";
+            schema_version: "redevplugin.manifest.v8";
             publisher: {
                 publisher_id: string;
                 display_name?: string;
@@ -3015,12 +3037,20 @@ export interface components {
             plugin: {
                 plugin_id: string;
                 display_name: string;
-                version: components["schemas"]["ManifestV5Semver"];
+                version: components["schemas"]["ManifestV8Semver"];
                 /** @constant */
                 api_version: "plugin-v1";
-                min_runtime_version: components["schemas"]["ManifestV5Semver"];
+                min_runtime_version: components["schemas"]["ManifestV8Semver"];
                 /** @constant */
-                ui_protocol_version: "plugin-ui-v5";
+                ui_protocol_version: "plugin-ui-v7";
+            };
+            presentation: {
+                default_locale: components["schemas"]["ManifestV8Locale"];
+                summary: components["schemas"]["ManifestV8Summary"];
+                description: components["schemas"]["ManifestV8Description"];
+                highlights: components["schemas"]["ManifestV8Highlights"];
+                keywords: components["schemas"]["ManifestV8Keywords"];
+                localizations: components["schemas"]["ManifestV8Localization"][];
             };
             surfaces: {
                 surface_id: string;
@@ -3084,13 +3114,13 @@ export interface components {
                     uninstall_behavior?: "cancel_then_block_delete" | "force_cleanup_allowed";
                     ack_timeout_ms?: number;
                 } & (unknown & unknown);
-                request_schema?: components["schemas"]["ManifestV5MethodSchema"] & {
+                request_schema?: components["schemas"]["ManifestV8MethodSchema"] & {
                     /** @constant */
                     type: "object";
                     /** @constant */
                     additionalProperties: false;
                 };
-                response_schema?: components["schemas"]["ManifestV5MethodSchema"] & {
+                response_schema?: components["schemas"]["ManifestV8MethodSchema"] & {
                     /** @constant */
                     type: "object";
                     /** @constant */
@@ -3143,7 +3173,7 @@ export interface components {
                     label: string;
                     default?: unknown;
                     secret_ref?: string;
-                    options?: string[];
+                    options?: components["schemas"]["ManifestV8SettingOption"][];
                     validation?: Record<string, never>;
                 }[];
             };
@@ -3153,26 +3183,55 @@ export interface components {
                 payload_schema?: Record<string, never>;
             }[];
         };
-        ManifestV5Semver: string;
-        ManifestV5MethodSchema: false | (({
+        ManifestV8Locale: string;
+        ManifestV8Summary: string;
+        ManifestV8Description: string[];
+        ManifestV8Highlights: string[];
+        ManifestV8Keywords: string[];
+        ManifestV8SettingOption: {
+            value: string;
+            label: string;
+        };
+        ManifestV8LocalizedSurface: {
+            surface_id: string;
+            label: string;
+        };
+        ManifestV8LocalizedSetting: {
+            key: string;
+            label: string;
+            options: components["schemas"]["ManifestV8SettingOption"][];
+        };
+        ManifestV8Localization: {
+            locale: components["schemas"]["ManifestV8Locale"];
+            plugin_name: string;
+            publisher_name?: string;
+            summary: components["schemas"]["ManifestV8Summary"];
+            description: components["schemas"]["ManifestV8Description"];
+            highlights: components["schemas"]["ManifestV8Highlights"];
+            keywords: components["schemas"]["ManifestV8Keywords"];
+            surfaces: components["schemas"]["ManifestV8LocalizedSurface"][];
+            settings: components["schemas"]["ManifestV8LocalizedSetting"][];
+        };
+        ManifestV8Semver: string;
+        ManifestV8MethodSchema: false | (({
             description?: string;
             readOnly?: boolean;
             writeOnly?: boolean;
             $ref?: string;
             type?: ("null" | "boolean" | "object" | "array" | "number" | "integer" | "string") | ("null" | "boolean" | "object" | "array" | "number" | "integer" | "string")[];
             properties?: {
-                [key: string]: components["schemas"]["ManifestV5MethodSchema"];
+                [key: string]: components["schemas"]["ManifestV8MethodSchema"];
             };
             patternProperties?: {
-                [key: string]: components["schemas"]["ManifestV5MethodSchema"];
+                [key: string]: components["schemas"]["ManifestV8MethodSchema"];
             };
             required?: string[];
             /** @constant */
             additionalProperties?: false;
-            items?: components["schemas"]["ManifestV5MethodSchema"];
-            allOf?: components["schemas"]["ManifestV5MethodSchema"][];
-            anyOf?: components["schemas"]["ManifestV5MethodSchema"][];
-            oneOf?: components["schemas"]["ManifestV5MethodSchema"][];
+            items?: components["schemas"]["ManifestV8MethodSchema"];
+            allOf?: components["schemas"]["ManifestV8MethodSchema"][];
+            anyOf?: components["schemas"]["ManifestV8MethodSchema"][];
+            oneOf?: components["schemas"]["ManifestV8MethodSchema"][];
             enum?: unknown[];
             const?: unknown;
             default?: unknown;
@@ -3217,193 +3276,6 @@ export interface components {
         HostCapabilityPinV1ArtifactRef: string;
         HostCapabilityPinV1Sha256: string;
         HostCapabilityPinV1DecimalEpoch: string;
-        ManifestV7: {
-            /** @constant */
-            schema_version: "redevplugin.manifest.v7";
-            publisher: {
-                publisher_id: string;
-                display_name?: string;
-            };
-            plugin: {
-                plugin_id: string;
-                display_name: string;
-                version: components["schemas"]["ManifestV7Semver"];
-                /** @constant */
-                api_version: "plugin-v1";
-                min_runtime_version: components["schemas"]["ManifestV7Semver"];
-                /** @constant */
-                ui_protocol_version: "plugin-ui-v7";
-            };
-            surfaces: {
-                surface_id: string;
-                /** @enum {unknown} */
-                kind: "view" | "command" | "background";
-                /** @enum {unknown} */
-                intent?: "primary" | "secondary" | "utility";
-                label: string;
-                entry: string;
-                icon?: string;
-                default_size?: {
-                    width: number;
-                    height: number;
-                };
-            }[];
-            capability_bindings?: {
-                binding_id: string;
-                contract: components["schemas"]["HostCapabilityPinV1"];
-            }[];
-            methods?: ({
-                method: string;
-                /** @enum {unknown} */
-                effect?: "read" | "write" | "delete" | "execute" | "admin";
-                /** @enum {unknown} */
-                execution?: "sync" | "operation" | "subscription";
-                dangerous?: boolean;
-                preflight_only?: boolean;
-                broker_access?: {
-                    storage?: {
-                        store_id: string;
-                        operations: ("read" | "write" | "delete" | "list" | "get" | "put" | "query" | "exec")[];
-                    }[];
-                    network?: ({
-                        connector_id: string;
-                        /** @enum {unknown} */
-                        transport: "http" | "websocket" | "tcp" | "udp";
-                        operations: ("http" | "http_stream" | "websocket_round_trip" | "tcp_round_trip" | "udp_round_trip")[];
-                        http_methods?: ("GET" | "HEAD" | "POST" | "PUT" | "PATCH" | "DELETE" | "OPTIONS")[];
-                    } & unknown)[];
-                };
-                route: {
-                    /** @enum {unknown} */
-                    kind: "capability" | "worker" | "core_action";
-                    binding_id?: string;
-                    target_method?: string;
-                    worker_id?: string;
-                    action_id?: string;
-                } & (unknown & unknown & unknown);
-                confirmation?: {
-                    /** @enum {unknown} */
-                    mode: "none" | "required" | "risk_based";
-                    preflight_method?: string | null;
-                    request_hash_fields?: string[];
-                    plan_hash_required?: boolean;
-                };
-                cancel_policy?: {
-                    cancelable: boolean;
-                    /** @enum {unknown} */
-                    disable_behavior?: "cancel" | "orphan" | "wait";
-                    /** @enum {unknown} */
-                    uninstall_behavior?: "cancel_then_block_delete" | "force_cleanup_allowed";
-                    ack_timeout_ms?: number;
-                } & (unknown & unknown);
-                request_schema?: components["schemas"]["ManifestV7MethodSchema"] & {
-                    /** @constant */
-                    type: "object";
-                    /** @constant */
-                    additionalProperties: false;
-                };
-                response_schema?: components["schemas"]["ManifestV7MethodSchema"] & {
-                    /** @constant */
-                    type: "object";
-                    /** @constant */
-                    additionalProperties: false;
-                };
-            } & (unknown & unknown & unknown & unknown))[];
-            workers?: {
-                worker_id: string;
-                artifact: string;
-                /** @constant */
-                abi: "redevplugin-wasm-worker-v2";
-                /** @constant */
-                mode: "job";
-                /** @enum {unknown} */
-                scope: "user" | "environment";
-                memory_limit_bytes: number;
-                idle_timeout_ms?: number;
-            }[];
-            storage?: {
-                stores?: {
-                    store_id: string;
-                    /** @enum {unknown} */
-                    kind: "kv" | "files" | "sqlite";
-                    /** @enum {unknown} */
-                    scope: "user" | "environment";
-                    quota_bytes: number;
-                    quota_files?: number;
-                    schema_version: number;
-                }[];
-            };
-            network_access?: {
-                connectors?: {
-                    connector_id: string;
-                    /** @enum {unknown} */
-                    transport: "http" | "websocket" | "tcp" | "udp";
-                    /** @enum {unknown} */
-                    scope: "user" | "environment";
-                    destinations: string[];
-                    auth?: Record<string, never>;
-                    tls?: Record<string, never>;
-                }[];
-            };
-            settings?: {
-                schema_version: number;
-                fields?: {
-                    key: string;
-                    type: string;
-                    /** @enum {unknown} */
-                    scope: "user" | "environment";
-                    label: string;
-                    default?: unknown;
-                    secret_ref?: string;
-                    options?: string[];
-                    validation?: Record<string, never>;
-                }[];
-            };
-            intents?: {
-                intent_id: string;
-                method: string;
-                payload_schema?: Record<string, never>;
-            }[];
-        };
-        ManifestV7Semver: string;
-        ManifestV7MethodSchema: false | (({
-            description?: string;
-            readOnly?: boolean;
-            writeOnly?: boolean;
-            $ref?: string;
-            type?: ("null" | "boolean" | "object" | "array" | "number" | "integer" | "string") | ("null" | "boolean" | "object" | "array" | "number" | "integer" | "string")[];
-            properties?: {
-                [key: string]: components["schemas"]["ManifestV7MethodSchema"];
-            };
-            patternProperties?: {
-                [key: string]: components["schemas"]["ManifestV7MethodSchema"];
-            };
-            required?: string[];
-            /** @constant */
-            additionalProperties?: false;
-            items?: components["schemas"]["ManifestV7MethodSchema"];
-            allOf?: components["schemas"]["ManifestV7MethodSchema"][];
-            anyOf?: components["schemas"]["ManifestV7MethodSchema"][];
-            oneOf?: components["schemas"]["ManifestV7MethodSchema"][];
-            enum?: unknown[];
-            const?: unknown;
-            default?: unknown;
-            examples?: unknown[];
-            minimum?: number;
-            maximum?: number;
-            exclusiveMinimum?: number;
-            exclusiveMaximum?: number;
-            multipleOf?: number;
-            minLength?: number;
-            maxLength?: number;
-            pattern?: string;
-            format?: string;
-            minItems?: number;
-            maxItems?: number;
-            uniqueItems?: boolean;
-            minProperties?: number;
-            maxProperties?: number;
-        } & (unknown & unknown)) | unknown | unknown | unknown | unknown | unknown | unknown | unknown | unknown | unknown | unknown | unknown | unknown | unknown);
         OpaqueSurfaceDocumentV3: {
             /** @constant */
             schema_version: "redevplugin.opaque_surface_document.v3";

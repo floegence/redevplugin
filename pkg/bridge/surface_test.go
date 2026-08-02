@@ -447,9 +447,9 @@ func TestHandshakeTranscriptSHA256StableVector(t *testing.T) {
 		AssetSessionNonce:  "asset_nonce_1",
 		ManagementRevision: 7,
 		RevokeEpoch:        3,
-		UIProtocolVersion:  "plugin-ui-v5",
+		UIProtocolVersion:  "plugin-ui-v7",
 	}, "bridge_channel_1")
-	const want = "sha256:bfcb9a19af09474a87cef18c83bf1f5d2963b263d44cc92f0e6c66c1bebc0425"
+	const want = "sha256:e7b2ce79d9f886e2bdb080bd0c63a11dd3c23144474012c3c6736ab21c6cb0d2"
 	if got != want {
 		t.Fatalf("HandshakeTranscriptSHA256() = %q, want %q", got, want)
 	}
@@ -1662,7 +1662,7 @@ func testOpenSurfaceRequest(now time.Time) OpenSurfaceRequest {
 		PluginID:             "com.example.plugin",
 		PluginInstanceID:     "plugini_test",
 		PluginVersion:        "1.2.3",
-		UIProtocolVersion:    "plugin-ui-v5",
+		UIProtocolVersion:    "plugin-ui-v7",
 		SurfaceID:            "main.view",
 		SurfaceInstanceID:    "surface_test",
 		ActiveFingerprint:    "sha256:package",

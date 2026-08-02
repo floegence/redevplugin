@@ -10,7 +10,7 @@ import (
 
 func TestCompatibilityManifestSchemaDefinesReleasedMatrix(t *testing.T) {
 	root := repoRoot(t)
-	raw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", "compatibility-manifest-v13.schema.json"))
+	raw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", "compatibility-manifest-v14.schema.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -21,7 +21,7 @@ func TestCompatibilityManifestSchemaDefinesReleasedMatrix(t *testing.T) {
 
 	properties := requireNestedObject(t, schema, "properties")
 	schemaVersion := requireNestedObject(t, properties, "schema_version")
-	if got := schemaVersion["const"]; got != "redevplugin.compatibility.v13" {
+	if got := schemaVersion["const"]; got != "redevplugin.compatibility.v14" {
 		t.Fatalf("schema_version const = %#v", got)
 	}
 
@@ -29,12 +29,12 @@ func TestCompatibilityManifestSchemaDefinesReleasedMatrix(t *testing.T) {
 	matrixProps := requireNestedObject(t, matrix, "properties")
 	expectedMatrix := map[string]string{
 		"plugin_ui_protocol_version":                   "plugin-ui-v7",
-		"plugin_host_protocol_version":                 "plugin-host-v9",
+		"plugin_host_protocol_version":                 "plugin-host-v10",
 		"rust_ipc_version":                             "rust-ipc-v6",
 		"wasm_abi_version":                             "redevplugin-wasm-worker-v2",
-		"manifest_schema_version":                      "manifest-v7",
+		"manifest_schema_version":                      "manifest-v8",
 		"package_signature_schema_version":             "package-signature-v1",
-		"release_metadata_schema_version":              "release-metadata-v7",
+		"release_metadata_schema_version":              "release-metadata-v8",
 		"release_root_delegation_schema_version":       "release-root-delegation-v1",
 		"release_source_policy_schema_version":         "release-source-policy-v3",
 		"release_source_policy_pointer_schema_version": "release-source-policy-pointer-v2",
@@ -50,8 +50,8 @@ func TestCompatibilityManifestSchemaDefinesReleasedMatrix(t *testing.T) {
 		"resource_scope_schema_version":                "resource-scope-v1",
 		"session_scope_schema_version":                 "session-scope-v1",
 		"session_scope_maintenance_schema_version":     "session-scope-maintenance-v1",
-		"plugin_platform_openapi_version":              "plugin-platform-v11",
-		"compatibility_schema_version":                 "compatibility-manifest-v13",
+		"plugin_platform_openapi_version":              "plugin-platform-v12",
+		"compatibility_schema_version":                 "compatibility-manifest-v14",
 		"worker_invocation_schema_version":             "worker-invocation-v3",
 		"error_codes_schema_version":                   "error-codes-v7",
 		"performance_contract_version":                 "performance-contract-v4",

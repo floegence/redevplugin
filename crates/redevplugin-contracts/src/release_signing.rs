@@ -9,9 +9,7 @@ use std::fmt;
 
 pub const ROOT_DELEGATION_SCHEMA_VERSION: &str = "redevplugin.release_root_delegation.v1";
 pub const PACKAGE_SIGNATURE_SCHEMA_VERSION: &str = "redevplugin.package_signature.v1";
-pub const RELEASE_METADATA_SCHEMA_VERSION_V5: &str = "redevplugin.release_metadata.v5";
-pub const RELEASE_METADATA_SCHEMA_VERSION_V6: &str = "redevplugin.release_metadata.v6";
-pub const RELEASE_METADATA_SCHEMA_VERSION: &str = RELEASE_METADATA_SCHEMA_VERSION_V6;
+pub const RELEASE_METADATA_SCHEMA_VERSION: &str = "redevplugin.release_metadata.v8";
 pub const SOURCE_POLICY_SCHEMA_VERSION: &str = "redevplugin.release_source_policy.v2";
 pub const SOURCE_POLICY_POINTER_SCHEMA_VERSION: &str =
     "redevplugin.release_source_policy_pointer.v1";
@@ -276,7 +274,7 @@ pub struct ReleaseEvidence {
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
-pub struct ReleaseMetadataV5 {
+pub struct ReleaseMetadataV8 {
     pub schema_version: String,
     pub source_id: String,
     pub release_metadata_ref: String,
@@ -842,15 +840,15 @@ pub fn verify_package_signature(
 }
 
 pub fn build_release_metadata(
-    document: &ReleaseMetadataV5,
-) -> Result<ReleaseMetadataV5, ReleaseContractError> {
+    document: &ReleaseMetadataV8,
+) -> Result<ReleaseMetadataV8, ReleaseContractError> {
     validate_release_metadata(document)?;
     Ok(document.clone())
 }
 
 pub fn release_metadata_signing_preimage(
     channel: &str,
-    document: &ReleaseMetadataV5,
+    document: &ReleaseMetadataV8,
 ) -> Result<Vec<u8>, ReleaseContractError> {
     if !valid_new_id(channel) {
         return Err(ReleaseContractError::InvalidDocument);
@@ -861,7 +859,7 @@ pub fn release_metadata_signing_preimage(
 }
 
 pub fn canonical_release_metadata(
-    document: &ReleaseMetadataV5,
+    document: &ReleaseMetadataV8,
 ) -> Result<Vec<u8>, ReleaseContractError> {
     validate_release_metadata(document)?;
     canonical_json(document)
@@ -869,7 +867,7 @@ pub fn canonical_release_metadata(
 
 pub fn verify_release_metadata(
     channel: &str,
-    document: &ReleaseMetadataV5,
+    document: &ReleaseMetadataV8,
     signature: &[u8],
     verifier: &impl SignatureVerifier,
 ) -> Result<(), ReleaseContractError> {
@@ -1100,7 +1098,7 @@ pub fn decode_package_signature(
     })
 }
 
-pub fn decode_release_metadata(raw: &[u8]) -> Result<ReleaseMetadataV5, ReleaseContractError> {
+pub fn decode_release_metadata(raw: &[u8]) -> Result<ReleaseMetadataV8, ReleaseContractError> {
     decode_canonical_document(raw, validate_release_metadata)
 }
 
@@ -1587,7 +1585,7 @@ fn validate_package_signature(
     validate_signature_field(&value.signature, require_signature)
 }
 
-fn validate_release_metadata(value: &ReleaseMetadataV5) -> Result<(), ReleaseContractError> {
+fn validate_release_metadata(value: &ReleaseMetadataV8) -> Result<(), ReleaseContractError> {
     if !valid_release_metadata_ui_protocol_pair(
         &value.schema_version,
         &value.compatibility.ui_protocol_version,
@@ -1682,11 +1680,7 @@ fn valid_release_metadata_ui_protocol_pair(
     schema_version: &str,
     ui_protocol_version: &str,
 ) -> bool {
-    matches!(
-        (schema_version, ui_protocol_version),
-        (RELEASE_METADATA_SCHEMA_VERSION_V5, "plugin-ui-v5")
-            | (RELEASE_METADATA_SCHEMA_VERSION_V6, "plugin-ui-v6")
-    )
+    schema_version == RELEASE_METADATA_SCHEMA_VERSION && ui_protocol_version == "plugin-ui-v7"
 }
 
 fn validate_host_requirements(

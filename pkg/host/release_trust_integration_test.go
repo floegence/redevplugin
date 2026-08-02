@@ -529,7 +529,7 @@ func buildHostReleasePackageFromManifest(t *testing.T, manifest string) []byte {
 
 func hostReleaseManifestJSON() string {
 	return `{
-  "schema_version": "redevplugin.manifest.v5",
+  "schema_version": "redevplugin.manifest.v8",
   "publisher": {"publisher_id": "fixture.publisher", "display_name": "Fixture"},
   "plugin": {
     "plugin_id": "fixture.plugin",
@@ -537,7 +537,15 @@ func hostReleaseManifestJSON() string {
     "version": "1.0.0",
     "api_version": "plugin-v1",
     "min_runtime_version": "0.1.0",
-    "ui_protocol_version": "plugin-ui-v5"
+    "ui_protocol_version": "plugin-ui-v7"
+  },
+  "presentation": {
+    "default_locale": "en-US",
+    "summary": "Fixture release plugin.",
+    "description": ["Fixture release plugin used by the signed release integration tests."],
+    "highlights": [],
+    "keywords": ["fixture"],
+    "localizations": []
   },
   "surfaces": [
     {"surface_id": "fixture.view", "kind": "view", "label": "Fixture", "entry": "ui/index.html"}

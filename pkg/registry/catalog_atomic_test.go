@@ -186,7 +186,7 @@ func putCatalogPlugin(t *testing.T, store Store, instanceID string, now time.Tim
 		ActiveFingerprint: "sha256:" + instanceID,
 		TrustState:        TrustVerified,
 		EnableState:       EnableDisabled,
-		Manifest: manifest.Manifest{
+		Manifest: manifest.Manifest{SchemaVersion: manifest.SchemaVersionV8,
 			Publisher: manifest.Publisher{PublisherID: "example"},
 			Plugin:    manifest.Plugin{PluginID: "com.example.atomic", Version: "1.0.0"},
 			Settings:  &manifest.SettingsSpec{SchemaVersion: 1, Fields: []manifest.SettingFieldSpec{{Key: "theme", Type: "string", Scope: "user", Label: "Theme"}}},

@@ -33,12 +33,12 @@ func DecodePackageSignature(raw []byte, context PackageVerificationContext) (Pac
 	return document, nil
 }
 
-func DecodeReleaseMetadata(raw []byte) (ReleaseMetadataV5, error) {
-	var document ReleaseMetadataV5
+func DecodeReleaseMetadata(raw []byte) (ReleaseMetadataV8, error) {
+	var document ReleaseMetadataV8
 	if err := decodeCanonicalDocument(raw, &document, func() error {
 		return validateReleaseMetadata(document)
 	}); err != nil {
-		return ReleaseMetadataV5{}, err
+		return ReleaseMetadataV8{}, err
 	}
 	return cloneReleaseMetadata(document), nil
 }

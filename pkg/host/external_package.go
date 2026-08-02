@@ -456,9 +456,15 @@ func (h *Host) inspectStagedExternalPackage(
 	if err != nil {
 		return ExternalPackageInspection{}, err
 	}
+	presentation := pkg.Manifest.PresentationCatalog()
+	presentationSHA256, err := manifest.PresentationCatalogSHA256(presentation)
+	if err != nil {
+		return ExternalPackageInspection{}, err
+	}
 	inspection := ExternalPackageInspection{
 		InspectionID: inspectionID, ExpiresAt: now.Add(externalPackageInspectionTTL), Intent: intent,
 		PublisherID: record.PublisherID, PluginID: record.PluginID, Version: record.Version,
+		Presentation: presentation, PresentationSHA256: presentationSHA256,
 		InspectedHashes:     packageHashSetForPackage(pkg),
 		SignatureAssessment: publicExternalSignatureAssessment(signature),
 		SourceProvenance:    publicExternalSourceProvenance(provenance),

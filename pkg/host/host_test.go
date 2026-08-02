@@ -476,7 +476,7 @@ func TestUpdateAndDowngradeRefreshEnabledPluginAndRevokeOldTokens(t *testing.T) 
 		AssetSessionNonce:  bootstrap.AssetSessionNonce,
 		ManagementRevision: bootstrap.ManagementRevision,
 		RevokeEpoch:        bootstrap.RevokeEpoch,
-		UIProtocolVersion:  "plugin-ui-v5",
+		UIProtocolVersion:  bootstrap.UIProtocolVersion,
 	}
 	gateway, err := h.MintBridgeToken(ctx, MintBridgeTokenRequest{
 		Handshake:                 handshake,
@@ -997,7 +997,7 @@ func TestSurfaceBridgeLifecycle(t *testing.T) {
 		AssetSessionNonce:  bootstrap.AssetSessionNonce,
 		ManagementRevision: bootstrap.ManagementRevision,
 		RevokeEpoch:        bootstrap.RevokeEpoch,
-		UIProtocolVersion:  "plugin-ui-v5",
+		UIProtocolVersion:  bootstrap.UIProtocolVersion,
 	}
 	gateway, err := host.MintBridgeToken(hostTestContext(), MintBridgeTokenRequest{
 		Handshake:                 handshake,
@@ -1096,7 +1096,7 @@ func TestMintBridgeTokenRejectsSurfaceAfterRuntimeGenerationChanges(t *testing.T
 		AssetSessionNonce:  bootstrap.AssetSessionNonce,
 		ManagementRevision: bootstrap.ManagementRevision,
 		RevokeEpoch:        bootstrap.RevokeEpoch,
-		UIProtocolVersion:  "plugin-ui-v5",
+		UIProtocolVersion:  bootstrap.UIProtocolVersion,
 	}
 	_, err = h.MintBridgeToken(hostTestContext(), MintBridgeTokenRequest{
 		Handshake:                 handshake,
@@ -8151,9 +8151,7 @@ func buildOperationRPCFixturePackage(t *testing.T) []byte {
 func buildOperationObservationRPCFixturePackage(t *testing.T) []byte {
 	t.Helper()
 	dir := t.TempDir()
-	manifestJSON := strings.ReplaceAll(operationRPCFixtureManifestJSON(), "redevplugin.manifest.v5", "redevplugin.manifest.v6")
-	manifestJSON = strings.ReplaceAll(manifestJSON, "plugin-ui-v5", "plugin-ui-v6")
-	writeFile(t, filepath.Join(dir, "manifest.json"), manifestJSON)
+	writeFile(t, filepath.Join(dir, "manifest.json"), operationRPCFixtureManifestJSON())
 	writeSurfaceFixture(t, dir, "Operation Observation")
 	var buf bytes.Buffer
 	if _, err := pluginpkg.BuildFromDir(hostTestContext(), dir, &buf, pluginpkg.DefaultReadLimits()); err != nil {
@@ -8725,7 +8723,7 @@ func lifecycleManifestJSON(version string, title string) string {
 		title = "Lifecycle"
 	}
 	return `{
-		"schema_version": "redevplugin.manifest.v5",
+		"schema_version": "redevplugin.manifest.v8",
 		"publisher": {"publisher_id": "example", "display_name": "Example"},
 		"plugin": {
 			"plugin_id": "com.example.lifecycle",
@@ -8733,7 +8731,15 @@ func lifecycleManifestJSON(version string, title string) string {
 			"version": ` + strconv.Quote(version) + `,
 			"api_version": "plugin-v1",
 			"min_runtime_version": "0.1.0",
-			"ui_protocol_version": "plugin-ui-v5"
+			"ui_protocol_version": "plugin-ui-v7"
+		},
+		"presentation": {
+			"default_locale": "en-US",
+			"summary": "Test plugin presentation.",
+			"description": ["Test plugin presentation used by the current manifest contract."],
+			"highlights": [],
+			"keywords": ["test"],
+			"localizations": []
 		},
 		"surfaces": [
 			{"surface_id": "lifecycle.view", "kind": "view", "label": "Lifecycle", "entry": "ui/index.html"}
@@ -8743,7 +8749,7 @@ func lifecycleManifestJSON(version string, title string) string {
 
 func storageFixtureManifestJSON() string {
 	return `{
-		"schema_version": "redevplugin.manifest.v5",
+		"schema_version": "redevplugin.manifest.v8",
 		"publisher": {"publisher_id": "example", "display_name": "Example"},
 		"plugin": {
 			"plugin_id": "com.example.storage",
@@ -8751,7 +8757,15 @@ func storageFixtureManifestJSON() string {
 			"version": "1.0.0",
 			"api_version": "plugin-v1",
 			"min_runtime_version": "0.1.0",
-			"ui_protocol_version": "plugin-ui-v5"
+			"ui_protocol_version": "plugin-ui-v7"
+		},
+		"presentation": {
+			"default_locale": "en-US",
+			"summary": "Test plugin presentation.",
+			"description": ["Test plugin presentation used by the current manifest contract."],
+			"highlights": [],
+			"keywords": ["test"],
+			"localizations": []
 		},
 		"surfaces": [
 			{"surface_id": "storage.view", "kind": "view", "label": "Storage", "entry": "ui/index.html"}
@@ -8781,7 +8795,7 @@ func storageFixtureManifestJSON() string {
 
 func settingsFixtureManifestJSON() string {
 	return `{
-		"schema_version": "redevplugin.manifest.v5",
+		"schema_version": "redevplugin.manifest.v8",
 		"publisher": {"publisher_id": "example", "display_name": "Example"},
 		"plugin": {
 			"plugin_id": "com.example.settings",
@@ -8789,7 +8803,15 @@ func settingsFixtureManifestJSON() string {
 			"version": "1.0.0",
 			"api_version": "plugin-v1",
 			"min_runtime_version": "0.1.0",
-			"ui_protocol_version": "plugin-ui-v5"
+			"ui_protocol_version": "plugin-ui-v7"
+		},
+		"presentation": {
+			"default_locale": "en-US",
+			"summary": "Test plugin presentation.",
+			"description": ["Test plugin presentation used by the current manifest contract."],
+			"highlights": [],
+			"keywords": ["test"],
+			"localizations": []
 		},
 		"surfaces": [
 			{"surface_id": "settings.view", "kind": "view", "label": "Settings", "entry": "ui/index.html"}
@@ -8797,7 +8819,7 @@ func settingsFixtureManifestJSON() string {
 		"settings": {
 			"schema_version": 1,
 			"fields": [
-				{"key": "default_engine", "type": "select", "scope": "user", "label": "Default engine", "default": "docker", "options": ["docker", "podman"]},
+				{"key": "default_engine", "type": "select", "scope": "user", "label": "Default engine", "default": "docker", "options": [{"value": "docker", "label": "Docker"}, {"value": "podman", "label": "Podman"}]},
 				{"key": "show_stopped", "type": "boolean", "scope": "user", "label": "Show stopped", "default": true},
 				{"key": "api_token", "type": "secret", "scope": "user", "label": "API token", "secret_ref": "api_token"}
 			]
@@ -8811,7 +8833,7 @@ func dataShapeFixtureManifestJSON(opts dataShapeFixtureOptions) string {
 		version = "1.0.0"
 	}
 	return `{
-		"schema_version": "redevplugin.manifest.v5",
+		"schema_version": "redevplugin.manifest.v8",
 		"publisher": {"publisher_id": "example", "display_name": "Example"},
 		"plugin": {
 			"plugin_id": "com.example.data-shape",
@@ -8819,7 +8841,15 @@ func dataShapeFixtureManifestJSON(opts dataShapeFixtureOptions) string {
 			"version": ` + strconv.Quote(version) + `,
 			"api_version": "plugin-v1",
 			"min_runtime_version": "0.1.0",
-			"ui_protocol_version": "plugin-ui-v5"
+			"ui_protocol_version": "plugin-ui-v7"
+		},
+		"presentation": {
+			"default_locale": "en-US",
+			"summary": "Test plugin presentation.",
+			"description": ["Test plugin presentation used by the current manifest contract."],
+			"highlights": [],
+			"keywords": ["test"],
+			"localizations": []
 		},
 		"surfaces": [
 			{"surface_id": "data-shape.view", "kind": "view", "label": "Data Shape", "entry": "ui/index.html"}
@@ -8838,7 +8868,7 @@ func dataShapeFixtureManifestJSON(opts dataShapeFixtureOptions) string {
 		"settings": {
 			"schema_version": ` + strconv.Itoa(opts.SettingsSchema) + `,
 			"fields": [
-				{"key": "mode", "type": "select", "scope": "user", "label": "Mode", "default": "stable", "options": ["stable", "preview"]}
+				{"key": "mode", "type": "select", "scope": "user", "label": "Mode", "default": "stable", "options": [{"value": "stable", "label": "Stable"}, {"value": "preview", "label": "Preview"}]}
 			]
 		}
 	}`
@@ -8849,7 +8879,7 @@ func rpcFixtureManifestJSON(version string, title string) string {
 		title = "RPC"
 	}
 	return `{
-		"schema_version": "redevplugin.manifest.v5",
+		"schema_version": "redevplugin.manifest.v8",
 		"publisher": {"publisher_id": "example", "display_name": "Example"},
 		"plugin": {
 			"plugin_id": "com.example.rpc",
@@ -8857,7 +8887,15 @@ func rpcFixtureManifestJSON(version string, title string) string {
 			"version": ` + strconv.Quote(version) + `,
 			"api_version": "plugin-v1",
 			"min_runtime_version": "0.1.0",
-			"ui_protocol_version": "plugin-ui-v5"
+			"ui_protocol_version": "plugin-ui-v7"
+		},
+		"presentation": {
+			"default_locale": "en-US",
+			"summary": "Test plugin presentation.",
+			"description": ["Test plugin presentation used by the current manifest contract."],
+			"highlights": [],
+			"keywords": ["test"],
+			"localizations": []
 		},
 		"surfaces": [
 			{"surface_id": "rpc.view", "kind": "view", "label": "RPC", "entry": "ui/index.html"}
@@ -8876,7 +8914,7 @@ func rpcFixtureManifestJSON(version string, title string) string {
 
 func dangerousRPCFixtureManifestJSON() string {
 	return `{
-		"schema_version": "redevplugin.manifest.v5",
+		"schema_version": "redevplugin.manifest.v8",
 		"publisher": {"publisher_id": "example", "display_name": "Example"},
 		"plugin": {
 			"plugin_id": "com.example.danger",
@@ -8884,7 +8922,15 @@ func dangerousRPCFixtureManifestJSON() string {
 			"version": "1.0.0",
 			"api_version": "plugin-v1",
 			"min_runtime_version": "0.1.0",
-			"ui_protocol_version": "plugin-ui-v5"
+			"ui_protocol_version": "plugin-ui-v7"
+		},
+		"presentation": {
+			"default_locale": "en-US",
+			"summary": "Test plugin presentation.",
+			"description": ["Test plugin presentation used by the current manifest contract."],
+			"highlights": [],
+			"keywords": ["test"],
+			"localizations": []
 		},
 		"surfaces": [
 			{"surface_id": "danger.view", "kind": "view", "label": "Danger", "entry": "ui/index.html"}
@@ -8903,7 +8949,7 @@ func dangerousRPCFixtureManifestJSON() string {
 
 func operationRPCFixtureManifestJSON() string {
 	return `{
-		"schema_version": "redevplugin.manifest.v5",
+		"schema_version": "redevplugin.manifest.v8",
 		"publisher": {"publisher_id": "example", "display_name": "Example"},
 		"plugin": {
 			"plugin_id": "com.example.operation",
@@ -8911,7 +8957,15 @@ func operationRPCFixtureManifestJSON() string {
 			"version": "1.0.0",
 			"api_version": "plugin-v1",
 			"min_runtime_version": "0.1.0",
-			"ui_protocol_version": "plugin-ui-v5"
+			"ui_protocol_version": "plugin-ui-v7"
+		},
+		"presentation": {
+			"default_locale": "en-US",
+			"summary": "Test plugin presentation.",
+			"description": ["Test plugin presentation used by the current manifest contract."],
+			"highlights": [],
+			"keywords": ["test"],
+			"localizations": []
 		},
 		"surfaces": [
 			{"surface_id": "operation.view", "kind": "view", "label": "Operation", "entry": "ui/index.html"}
@@ -8930,7 +8984,7 @@ func operationRPCFixtureManifestJSON() string {
 
 func subscriptionRPCFixtureManifestJSON() string {
 	return `{
-		"schema_version": "redevplugin.manifest.v5",
+		"schema_version": "redevplugin.manifest.v8",
 		"publisher": {"publisher_id": "example", "display_name": "Example"},
 		"plugin": {
 			"plugin_id": "com.example.subscription",
@@ -8938,7 +8992,15 @@ func subscriptionRPCFixtureManifestJSON() string {
 			"version": "1.0.0",
 			"api_version": "plugin-v1",
 			"min_runtime_version": "0.1.0",
-			"ui_protocol_version": "plugin-ui-v5"
+			"ui_protocol_version": "plugin-ui-v7"
+		},
+		"presentation": {
+			"default_locale": "en-US",
+			"summary": "Test plugin presentation.",
+			"description": ["Test plugin presentation used by the current manifest contract."],
+			"highlights": [],
+			"keywords": ["test"],
+			"localizations": []
 		},
 		"surfaces": [
 			{"surface_id": "subscription.view", "kind": "view", "label": "Subscription", "entry": "ui/index.html"}
@@ -8957,7 +9019,7 @@ func subscriptionRPCFixtureManifestJSON() string {
 
 func coreActionFixtureManifestJSON() string {
 	return `{
-		"schema_version": "redevplugin.manifest.v5",
+		"schema_version": "redevplugin.manifest.v8",
 		"publisher": {"publisher_id": "example", "display_name": "Example"},
 		"plugin": {
 			"plugin_id": "com.example.core",
@@ -8965,7 +9027,15 @@ func coreActionFixtureManifestJSON() string {
 			"version": "1.0.0",
 			"api_version": "plugin-v1",
 			"min_runtime_version": "0.1.0",
-			"ui_protocol_version": "plugin-ui-v5"
+			"ui_protocol_version": "plugin-ui-v7"
+		},
+		"presentation": {
+			"default_locale": "en-US",
+			"summary": "Test plugin presentation.",
+			"description": ["Test plugin presentation used by the current manifest contract."],
+			"highlights": [],
+			"keywords": ["test"],
+			"localizations": []
 		},
 		"surfaces": [
 			{"surface_id": "core.view", "kind": "view", "label": "Core", "entry": "ui/index.html"}
@@ -9072,7 +9142,7 @@ func workerMethodSchemasJSON() string {
 
 func workerFixtureManifestJSON() string {
 	return `{
-		"schema_version": "redevplugin.manifest.v5",
+		"schema_version": "redevplugin.manifest.v8",
 		"publisher": {"publisher_id": "example", "display_name": "Example"},
 		"plugin": {
 			"plugin_id": "com.example.worker",
@@ -9080,7 +9150,15 @@ func workerFixtureManifestJSON() string {
 			"version": "1.0.0",
 			"api_version": "plugin-v1",
 			"min_runtime_version": "0.0.0-dev",
-			"ui_protocol_version": "plugin-ui-v5"
+			"ui_protocol_version": "plugin-ui-v7"
+		},
+		"presentation": {
+			"default_locale": "en-US",
+			"summary": "Test plugin presentation.",
+			"description": ["Test plugin presentation used by the current manifest contract."],
+			"highlights": [],
+			"keywords": ["test"],
+			"localizations": []
 		},
 		"surfaces": [
 			{"surface_id": "worker.view", "kind": "view", "label": "Worker", "entry": "ui/index.html"}
@@ -9110,7 +9188,7 @@ func workerFixtureManifestJSON() string {
 
 func workerNetworkFixtureManifestJSON() string {
 	return `{
-		"schema_version": "redevplugin.manifest.v5",
+		"schema_version": "redevplugin.manifest.v8",
 		"publisher": {"publisher_id": "example", "display_name": "Example"},
 		"plugin": {
 			"plugin_id": "com.example.worker.network",
@@ -9118,7 +9196,15 @@ func workerNetworkFixtureManifestJSON() string {
 			"version": "1.0.0",
 			"api_version": "plugin-v1",
 			"min_runtime_version": "0.0.0-dev",
-			"ui_protocol_version": "plugin-ui-v5"
+			"ui_protocol_version": "plugin-ui-v7"
+		},
+		"presentation": {
+			"default_locale": "en-US",
+			"summary": "Test plugin presentation.",
+			"description": ["Test plugin presentation used by the current manifest contract."],
+			"highlights": [],
+			"keywords": ["test"],
+			"localizations": []
 		},
 		"surfaces": [
 			{"surface_id": "worker.view", "kind": "view", "label": "Worker", "entry": "ui/index.html"}
@@ -9176,7 +9262,7 @@ func workerNetworkTransportFixtureManifestJSON(transport connectivity.Transport)
 		connector = `{"connector_id": "api", "transport": "http", "scope": "user", "destinations": ["https://api.example.com"]}`
 	}
 	return `{
-		"schema_version": "redevplugin.manifest.v5",
+		"schema_version": "redevplugin.manifest.v8",
 		"publisher": {"publisher_id": "example", "display_name": "Example"},
 		"plugin": {
 			"plugin_id": "com.example.worker.network.transport",
@@ -9184,7 +9270,15 @@ func workerNetworkTransportFixtureManifestJSON(transport connectivity.Transport)
 			"version": "1.0.0",
 			"api_version": "plugin-v1",
 			"min_runtime_version": "0.0.0-dev",
-			"ui_protocol_version": "plugin-ui-v5"
+			"ui_protocol_version": "plugin-ui-v7"
+		},
+		"presentation": {
+			"default_locale": "en-US",
+			"summary": "Test plugin presentation.",
+			"description": ["Test plugin presentation used by the current manifest contract."],
+			"highlights": [],
+			"keywords": ["test"],
+			"localizations": []
 		},
 		"surfaces": [
 			{"surface_id": "worker.view", "kind": "view", "label": "Worker", "entry": "ui/index.html"}
@@ -9218,7 +9312,7 @@ func workerNetworkTransportFixtureManifestJSON(transport connectivity.Transport)
 
 func workerStorageFixtureManifestJSON() string {
 	return `{
-		"schema_version": "redevplugin.manifest.v5",
+		"schema_version": "redevplugin.manifest.v8",
 		"publisher": {"publisher_id": "example", "display_name": "Example"},
 		"plugin": {
 			"plugin_id": "com.example.worker.storage",
@@ -9226,7 +9320,15 @@ func workerStorageFixtureManifestJSON() string {
 			"version": "1.0.0",
 			"api_version": "plugin-v1",
 			"min_runtime_version": "0.0.0-dev",
-			"ui_protocol_version": "plugin-ui-v5"
+			"ui_protocol_version": "plugin-ui-v7"
+		},
+		"presentation": {
+			"default_locale": "en-US",
+			"summary": "Test plugin presentation.",
+			"description": ["Test plugin presentation used by the current manifest contract."],
+			"highlights": [],
+			"keywords": ["test"],
+			"localizations": []
 		},
 		"surfaces": [
 			{"surface_id": "worker.view", "kind": "view", "label": "Worker", "entry": "ui/index.html"}
@@ -9268,7 +9370,7 @@ func workerStorageFixtureManifestJSON() string {
 
 func workerStorageKVFixtureManifestJSON() string {
 	return `{
-		"schema_version": "redevplugin.manifest.v5",
+		"schema_version": "redevplugin.manifest.v8",
 		"publisher": {"publisher_id": "example", "display_name": "Example"},
 		"plugin": {
 			"plugin_id": "com.example.worker.storage.kv",
@@ -9276,7 +9378,15 @@ func workerStorageKVFixtureManifestJSON() string {
 			"version": "1.0.0",
 			"api_version": "plugin-v1",
 			"min_runtime_version": "0.0.0-dev",
-			"ui_protocol_version": "plugin-ui-v5"
+			"ui_protocol_version": "plugin-ui-v7"
+		},
+		"presentation": {
+			"default_locale": "en-US",
+			"summary": "Test plugin presentation.",
+			"description": ["Test plugin presentation used by the current manifest contract."],
+			"highlights": [],
+			"keywords": ["test"],
+			"localizations": []
 		},
 		"surfaces": [
 			{"surface_id": "worker.view", "kind": "view", "label": "Worker", "entry": "ui/index.html"}
@@ -9318,7 +9428,7 @@ func workerStorageKVFixtureManifestJSON() string {
 
 func workerStorageSQLiteFixtureManifestJSON() string {
 	return `{
-		"schema_version": "redevplugin.manifest.v5",
+		"schema_version": "redevplugin.manifest.v8",
 		"publisher": {"publisher_id": "example", "display_name": "Example"},
 		"plugin": {
 			"plugin_id": "com.example.worker.storage.sqlite",
@@ -9326,7 +9436,15 @@ func workerStorageSQLiteFixtureManifestJSON() string {
 			"version": "1.0.0",
 			"api_version": "plugin-v1",
 			"min_runtime_version": "0.0.0-dev",
-			"ui_protocol_version": "plugin-ui-v5"
+			"ui_protocol_version": "plugin-ui-v7"
+		},
+		"presentation": {
+			"default_locale": "en-US",
+			"summary": "Test plugin presentation.",
+			"description": ["Test plugin presentation used by the current manifest contract."],
+			"highlights": [],
+			"keywords": ["test"],
+			"localizations": []
 		},
 		"surfaces": [
 			{"surface_id": "worker.view", "kind": "view", "label": "Worker", "entry": "ui/index.html"}
@@ -9372,7 +9490,7 @@ func networkFixtureManifestJSON(blocked bool) string {
 		httpDestination = "http://localhost"
 	}
 	return `{
-		"schema_version": "redevplugin.manifest.v5",
+		"schema_version": "redevplugin.manifest.v8",
 		"publisher": {"publisher_id": "example", "display_name": "Example"},
 		"plugin": {
 			"plugin_id": "com.example.network",
@@ -9380,7 +9498,15 @@ func networkFixtureManifestJSON(blocked bool) string {
 			"version": "1.0.0",
 			"api_version": "plugin-v1",
 			"min_runtime_version": "0.1.0",
-			"ui_protocol_version": "plugin-ui-v5"
+			"ui_protocol_version": "plugin-ui-v7"
+		},
+		"presentation": {
+			"default_locale": "en-US",
+			"summary": "Test plugin presentation.",
+			"description": ["Test plugin presentation used by the current manifest contract."],
+			"highlights": [],
+			"keywords": ["test"],
+			"localizations": []
 		},
 		"surfaces": [
 			{"surface_id": "network.view", "kind": "view", "label": "Network", "entry": "ui/index.html"}

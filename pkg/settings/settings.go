@@ -256,7 +256,11 @@ func normalizeFields(fields []Field) ([]Field, error) {
 }
 
 func normalizeOptions(source manifest.SettingFieldSpec, fieldIndex int) ([]string, error) {
-	field := Field{Type: strings.TrimSpace(source.Type), Options: source.Options}
+	values := make([]string, len(source.Options))
+	for index, option := range source.Options {
+		values[index] = option.Value
+	}
+	field := Field{Type: strings.TrimSpace(source.Type), Options: values}
 	return normalizeFieldOptions(field, fieldIndex)
 }
 

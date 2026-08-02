@@ -80,8 +80,13 @@ func TestPublisherWorkspaceCompletesExternalSigningFlow(t *testing.T) {
 	if _, err := Finalize(ctx, workspace, output); err != nil {
 		t.Fatal(err)
 	}
-	if err := VerifyOutput(ctx, output); err != nil {
+	verified, err := VerifyAndInspectOutput(ctx, output)
+	if err != nil {
 		t.Fatal(err)
+	}
+	if verified.Presentation.DefaultLocale != "en-US" || len(verified.Presentation.Locales) == 0 ||
+		verified.Presentation.Locales[0].PluginName != "Weather" || verified.ManifestSHA256 == "" || verified.PresentationSHA256 == "" {
+		t.Fatalf("verified presentation evidence = %#v", verified)
 	}
 	if matches, _ := filepath.Glob(filepath.Join(output, "weather-*.release-ref.json")); len(matches) != 1 {
 		t.Fatalf("release ref assets = %#v", matches)

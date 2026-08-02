@@ -366,13 +366,10 @@ renderer.
 
 Machine-readable contracts are first-class platform artifacts:
 
-- `spec/openapi/plugin-platform-v11.yaml`;
-- `spec/plugin/manifest-v5.schema.json`, `spec/plugin/manifest-v6.schema.json`,
-  and `spec/plugin/manifest-v7.schema.json`;
+- `spec/openapi/plugin-platform-v12.yaml`;
+- `spec/plugin/manifest-v8.schema.json`;
 - `spec/plugin/package-signature-v1.schema.json`;
-- `spec/plugin/release-metadata-v5.schema.json`,
-  `spec/plugin/release-metadata-v6.schema.json`, and
-  `spec/plugin/release-metadata-v7.schema.json`;
+- `spec/plugin/release-metadata-v8.schema.json`;
 - `spec/plugin/release-root-delegation-v1.schema.json`;
 - `spec/plugin/release-publisher-config-v1.schema.json`;
 - `spec/plugin/publisher-release-ref-v1.schema.json`;
@@ -392,7 +389,7 @@ Machine-readable contracts are first-class platform artifacts:
 - `spec/plugin/opaque-surface-transport-v4.schema.json`,
   `spec/plugin/opaque-surface-transport-v5.schema.json`, and
   `spec/plugin/opaque-surface-transport-v6.schema.json`;
-- `spec/plugin/compatibility-manifest-v13.schema.json`;
+- `spec/plugin/compatibility-manifest-v14.schema.json`;
 - `spec/plugin/owner-scope-root-recovery-v1.schema.json`;
 - `spec/plugin/platform-package-set-v1.schema.json`;
 - `spec/plugin/platform-package-publication-v1.schema.json`;

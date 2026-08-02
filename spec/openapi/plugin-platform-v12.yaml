@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: ReDevPlugin Plugin Platform API
-  version: plugin-platform-v9
+  version: plugin-platform-v12
   description: Host-agnostic plugin management, bridge, operation, data, and sandbox routes. Release-ref install and update routes resolve host-controlled package artifacts server-side and do not accept requested trust_state values; external package URL, GitHub repository, and uploaded-package inspection flows derive package identity and trust facts server-side before reusing the shared commit/query lifecycle; local-import package install/update routes remain explicit developer/import flows and do not accept caller-supplied trust_state values.
 x-redevplugin-query-policy:
   reject_url_query_strings: true
@@ -1899,7 +1899,7 @@ components:
           type: array
           items: { $ref: "#/components/schemas/PluginRecord" }
     PluginCompatibilityManifest:
-      $ref: "../plugin/compatibility-manifest-v11.schema.json"
+      $ref: "../plugin/compatibility-manifest-v14.schema.json"
     PluginOperationList:
       type: object
       required: [operations]
@@ -2735,10 +2735,74 @@ components:
         surfaces:
           type: array
           items: { $ref: "#/components/schemas/ExternalPackageSurfaceSummary" }
+    SettingOptionPresentation:
+      type: object
+      required: [value, label]
+      additionalProperties: false
+      properties:
+        value: { type: string, minLength: 1, maxLength: 128 }
+        label: { type: string, minLength: 1, maxLength: 128 }
+    ResolvedSurfacePresentation:
+      type: object
+      required: [surface_id, label]
+      additionalProperties: false
+      properties:
+        surface_id: { type: string, minLength: 1 }
+        label: { type: string, minLength: 1, maxLength: 128 }
+    ResolvedSettingPresentation:
+      type: object
+      required: [key, label, options]
+      additionalProperties: false
+      properties:
+        key: { type: string, minLength: 1 }
+        label: { type: string, minLength: 1, maxLength: 128 }
+        options:
+          type: array
+          items: { $ref: "#/components/schemas/SettingOptionPresentation" }
+    PresentationLocale:
+      type: object
+      required: [locale, plugin_name, summary, description, highlights, keywords, surfaces, settings]
+      additionalProperties: false
+      properties:
+        locale: { type: string, minLength: 2, maxLength: 255 }
+        plugin_name: { type: string, minLength: 1, maxLength: 128 }
+        publisher_name: { type: string, minLength: 1, maxLength: 128 }
+        summary: { type: string, minLength: 1, maxLength: 240 }
+        description:
+          type: array
+          minItems: 1
+          maxItems: 12
+          items: { type: string, minLength: 1, maxLength: 1000 }
+        highlights:
+          type: array
+          maxItems: 8
+          items: { type: string, minLength: 1, maxLength: 240 }
+        keywords:
+          type: array
+          minItems: 1
+          maxItems: 12
+          items: { type: string, minLength: 1, maxLength: 64 }
+        surfaces:
+          type: array
+          items: { $ref: "#/components/schemas/ResolvedSurfacePresentation" }
+        settings:
+          type: array
+          items: { $ref: "#/components/schemas/ResolvedSettingPresentation" }
+    PresentationCatalog:
+      type: object
+      required: [default_locale, locales]
+      additionalProperties: false
+      properties:
+        default_locale: { type: string, minLength: 2, maxLength: 255 }
+        locales:
+          type: array
+          minItems: 1
+          maxItems: 16
+          items: { $ref: "#/components/schemas/PresentationLocale" }
     ExternalPackageInspection:
       type: object
       description: Immutable inspection projection. Package identity and all four trust/security facts are server-derived.
-      required: [inspection_id, expires_at, intent, publisher_id, plugin_id, version, inspected_hashes, signature_assessment, source_provenance, execution_approval, update_eligibility, security_summary, confirmation_digest]
+      required: [inspection_id, expires_at, intent, publisher_id, plugin_id, version, presentation, presentation_sha256, inspected_hashes, signature_assessment, source_provenance, execution_approval, update_eligibility, security_summary, confirmation_digest]
       additionalProperties: false
       properties:
         inspection_id: { type: string, minLength: 1 }
@@ -2747,6 +2811,8 @@ components:
         publisher_id: { type: string, minLength: 1 }
         plugin_id: { type: string, minLength: 1 }
         version: { $ref: "#/components/schemas/StrictSemVer" }
+        presentation: { $ref: "#/components/schemas/PresentationCatalog" }
+        presentation_sha256: { type: string, pattern: "^sha256:[0-9a-f]{64}$" }
         inspected_hashes: { $ref: "#/components/schemas/TrustHashSet" }
         signature_assessment: { $ref: "#/components/schemas/ExternalPackageSignatureAssessment" }
         source_provenance: { $ref: "#/components/schemas/ExternalPackageSourceProvenance" }
@@ -2838,7 +2904,7 @@ components:
           additionalProperties: { type: string }
     PluginVersion:
       type: object
-      required: [version, active_fingerprint, package_hash, manifest_hash, entries_hash, trust_state, trust_assessment, manifest, package_entries, activated_at]
+      required: [version, active_fingerprint, package_hash, manifest_hash, entries_hash, trust_state, trust_assessment, manifest, presentation, presentation_sha256, package_entries, activated_at]
       additionalProperties: false
       properties:
         version: { $ref: "#/components/schemas/StrictSemVer" }
@@ -2870,9 +2936,9 @@ components:
           type: array
           items: { $ref: "#/components/schemas/CapabilityContractPin" }
         manifest:
-          oneOf:
-            - $ref: "../plugin/manifest-v5.schema.json"
-            - $ref: "../plugin/manifest-v6.schema.json"
+          $ref: "../plugin/manifest-v8.schema.json"
+        presentation: { $ref: "#/components/schemas/PresentationCatalog" }
+        presentation_sha256: { type: string, pattern: "^sha256:[0-9a-f]{64}$" }
         package_entries:
           type: array
           items: { $ref: "#/components/schemas/PackageEntry" }
@@ -2884,7 +2950,7 @@ components:
     PluginRecord:
       type: object
       description: Explicit public HTTP projection of a registry record. Persistent owner identity is excluded.
-      required: [plugin_instance_id, publisher_id, plugin_id, version, active_fingerprint, package_hash, manifest_hash, entries_hash, trust_state, trust_assessment, enable_state, policy_revision, management_revision, revoke_epoch, manifest, package_entries, installed_at, updated_at]
+      required: [plugin_instance_id, publisher_id, plugin_id, version, active_fingerprint, package_hash, manifest_hash, entries_hash, trust_state, trust_assessment, enable_state, policy_revision, management_revision, revoke_epoch, manifest, presentation, presentation_sha256, package_entries, installed_at, updated_at]
       additionalProperties: false
       properties:
         plugin_instance_id: { type: string, minLength: 1 }
@@ -2926,9 +2992,9 @@ components:
         management_revision: { type: integer, minimum: 0, maximum: 9007199254740991 }
         revoke_epoch: { type: integer, minimum: 0, maximum: 9007199254740991 }
         manifest:
-          oneOf:
-            - $ref: "../plugin/manifest-v5.schema.json"
-            - $ref: "../plugin/manifest-v6.schema.json"
+          $ref: "../plugin/manifest-v8.schema.json"
+        presentation: { $ref: "#/components/schemas/PresentationCatalog" }
+        presentation_sha256: { type: string, pattern: "^sha256:[0-9a-f]{64}$" }
         package_entries:
           type: array
           items: { $ref: "#/components/schemas/PackageEntry" }
@@ -3140,7 +3206,7 @@ components:
         plugin_id: { type: string, minLength: 1 }
         plugin_instance_id: { type: string, minLength: 1 }
         plugin_version: { $ref: "#/components/schemas/StrictSemVer" }
-        ui_protocol_version: { type: string, enum: [plugin-ui-v5, plugin-ui-v6] }
+        ui_protocol_version: { type: string, enum: [plugin-ui-v7] }
         surface_id: { type: string, minLength: 1 }
         surface_instance_id: { type: string, minLength: 1 }
         active_fingerprint: { type: string, minLength: 1 }
@@ -3201,7 +3267,7 @@ components:
         asset_session_nonce: { type: string, minLength: 16 }
         management_revision: { type: integer, minimum: 1, maximum: 9007199254740991 }
         revoke_epoch: { type: integer, minimum: 1, maximum: 9007199254740991 }
-        ui_protocol_version: { type: string, enum: [plugin-ui-v5, plugin-ui-v6] }
+        ui_protocol_version: { type: string, enum: [plugin-ui-v7] }
     TrustedParentBridgeTokenRequest:
       type: object
       required: [handshake, bridge_channel_id, handshake_transcript_sha256]
@@ -3325,6 +3391,7 @@ components:
             created_at: { type: string, format: date-time }
             updated_at: { type: string, format: date-time }
             retry_after_ms: { type: integer, minimum: 500, maximum: 10000 }
+            progress: { $ref: "#/components/schemas/OperationProgress" }
         - type: object
           additionalProperties: false
           required: [operation_id, status, cancelable, created_at, updated_at, retry_after_ms, terminal_at]
@@ -3336,6 +3403,7 @@ components:
             updated_at: { type: string, format: date-time }
             retry_after_ms: { type: integer, minimum: 500, maximum: 10000 }
             terminal_at: { type: string, format: date-time }
+            progress: { $ref: "#/components/schemas/OperationProgress" }
         - type: object
           additionalProperties: false
           required: [operation_id, status, cancelable, created_at, updated_at, retry_after_ms, terminal_at, failure_code]
@@ -3348,6 +3416,26 @@ components:
             retry_after_ms: { type: integer, minimum: 500, maximum: 10000 }
             terminal_at: { type: string, format: date-time }
             failure_code: { type: string, enum: [adapter_failed, contract_invalid, platform_failed, quota_exceeded, runtime_failed] }
+            progress: { $ref: "#/components/schemas/OperationProgress" }
+    OperationProgress:
+      type: object
+      additionalProperties: false
+      required: [revision, phase]
+      properties:
+        revision: { type: integer, minimum: 1, maximum: 9007199254740991 }
+        phase: { type: string, pattern: '^[A-Za-z0-9._:-]{1,128}$' }
+        completed_units: { type: integer, minimum: 0, maximum: 9007199254740991 }
+        total_units: { type: integer, minimum: 0, maximum: 9007199254740991 }
+        unit: { type: string, pattern: '^[A-Za-z0-9._:-]{1,64}$' }
+      allOf:
+        - if:
+            required: [completed_units]
+          then:
+            required: [total_units]
+        - if:
+            required: [total_units]
+          then:
+            required: [completed_units]
     RejectSurfaceConfirmationRequest:
       type: object
       additionalProperties: false
@@ -3659,6 +3747,7 @@ components:
             cancel_requested_at: { type: string, format: date-time }
             orphaned_at: { type: string, format: date-time }
             terminal_at: { type: string, format: date-time }
+            progress: { $ref: "#/components/schemas/OperationProgress" }
           oneOf:
             - type: object
               required: [status, failure_code, reason]

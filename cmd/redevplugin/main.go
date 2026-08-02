@@ -99,6 +99,17 @@ type compatibilityVerifySummary struct {
 	Contracts     int    `json:"contracts"`
 }
 
+type presentationInspectionSummary struct {
+	OK                 bool                         `json:"ok"`
+	Phase              string                       `json:"phase"`
+	Output             string                       `json:"output"`
+	Presentation       manifest.PresentationCatalog `json:"presentation"`
+	ManifestSHA256     string                       `json:"manifest_sha256"`
+	PresentationSHA256 string                       `json:"presentation_sha256"`
+	ContractSetSHA256  string                       `json:"contract_set_sha256"`
+	VerifierVersion    string                       `json:"verifier_version"`
+}
+
 type dataInspectSummary struct {
 	OK               bool                      `json:"ok"`
 	StateRoot        string                    `json:"state_root"`
@@ -544,7 +555,7 @@ func createPluginScaffold(pluginID string, displayName string, outDir string) (s
 	}
 	platformVersion := version.CurrentCompatibilityVersion()
 	manifestDoc := manifest.Manifest{
-		SchemaVersion: manifest.SchemaVersionV7,
+		SchemaVersion: manifest.SchemaVersionV8,
 		Publisher: manifest.Publisher{
 			PublisherID: "local.generated",
 			DisplayName: "Local Generated",
@@ -556,6 +567,14 @@ func createPluginScaffold(pluginID string, displayName string, outDir string) (s
 			APIVersion:        "plugin-v1",
 			MinRuntimeVersion: platformVersion,
 			UIProtocolVersion: version.PluginUIProtocolVersion,
+		},
+		Presentation: manifest.PresentationSpec{
+			DefaultLocale: "en-US",
+			Summary:       displayName + " extends the host through a generated ReDevPlugin package.",
+			Description:   []string{displayName + " was generated from the current ReDevPlugin scaffold and is verified before installation."},
+			Highlights:    []string{},
+			Keywords:      []string{displayName},
+			Localizations: []manifest.PresentationLocalizationSpec{},
 		},
 		Surfaces: []manifest.SurfaceSpec{{
 			SurfaceID: pluginID + ".view",

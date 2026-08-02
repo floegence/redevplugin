@@ -70,7 +70,7 @@ func TestCLIKeygenSignAndValidatePackage(t *testing.T) {
 	dir := t.TempDir()
 	srcDir := filepath.Join(dir, "plugin")
 	writeCLITestFile(t, filepath.Join(srcDir, "manifest.json"), `{
-		"schema_version": "redevplugin.manifest.v5",
+		"schema_version": "redevplugin.manifest.v8",
 		"publisher": {"publisher_id": "example", "display_name": "Example"},
 		"plugin": {
 			"plugin_id": "com.example.cli",
@@ -78,7 +78,15 @@ func TestCLIKeygenSignAndValidatePackage(t *testing.T) {
 			"version": "1.0.0",
 			"api_version": "plugin-v1",
 			"min_runtime_version": "0.1.0",
-			"ui_protocol_version": "plugin-ui-v5"
+			"ui_protocol_version": "plugin-ui-v7"
+		},
+		"presentation": {
+			"default_locale": "en-US",
+			"summary": "Test plugin presentation.",
+			"description": ["Test plugin presentation used by the current manifest contract."],
+			"highlights": [],
+			"keywords": ["test"],
+			"localizations": []
 		},
 		"surfaces": [
 			{"surface_id": "cli.view", "kind": "view", "label": "CLI", "entry": "ui/index.html"}
@@ -179,7 +187,7 @@ func TestCLIScaffoldProducesPackageablePlugin(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{`"schema_version": "redevplugin.manifest.v7"`, `"ui_protocol_version": "plugin-ui-v7"`} {
+	for _, want := range []string{`"schema_version": "redevplugin.manifest.v8"`, `"ui_protocol_version": "plugin-ui-v7"`, `"presentation": {`} {
 		if !bytes.Contains(manifestRaw, []byte(want)) {
 			t.Fatalf("scaffold manifest missing current protocol %q: %s", want, manifestRaw)
 		}
@@ -1258,7 +1266,7 @@ func TestCLIVersionPrintsCompatibilityManifest(t *testing.T) {
 		path    string
 		version string
 	}{
-		{id: "release-metadata-schema", path: "spec/plugin/release-metadata-v7.schema.json", version: version.ReleaseMetadataSchemaVersion},
+		{id: "release-metadata-schema", path: "spec/plugin/release-metadata-v8.schema.json", version: version.ReleaseMetadataSchemaVersion},
 		{id: "release-source-policy-schema", path: "spec/plugin/release-source-policy-v3.schema.json", version: version.ReleaseSourcePolicySchemaVersion},
 		{id: "release-revocation-schema", path: "spec/plugin/release-revocation-v3.schema.json", version: version.ReleaseRevocationSchemaVersion},
 	} {
@@ -1266,6 +1274,38 @@ func TestCLIVersionPrintsCompatibilityManifest(t *testing.T) {
 		if got.Path != contract.path || got.Version != contract.version || got.SHA256 == "" {
 			t.Fatalf("%s contract mismatch: %#v", contract.id, got)
 		}
+	}
+}
+
+func TestReleaseVerifyPresentationInspectionJSONContract(t *testing.T) {
+	summary := presentationInspectionSummary{
+		OK:                 true,
+		Phase:              "verified",
+		Output:             "/tmp/release",
+		Presentation:       manifest.PresentationCatalog{DefaultLocale: "en-US", Locales: []manifest.PresentationLocale{}},
+		ManifestSHA256:     "sha256:manifest",
+		PresentationSHA256: "sha256:presentation",
+		ContractSetSHA256:  "sha256:contracts",
+		VerifierVersion:    "0.7.0",
+	}
+	raw, err := json.Marshal(summary)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var output map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &output); err != nil {
+		t.Fatal(err)
+	}
+	for _, field := range []string{
+		"ok", "phase", "output", "presentation", "manifest_sha256", "presentation_sha256", "contract_set_sha256", "verifier_version",
+	} {
+		value, exists := output[field]
+		if !exists || len(value) == 0 || string(value) == `""` || string(value) == "null" {
+			t.Fatalf("release verify JSON field %q = %s", field, value)
+		}
+	}
+	if len(output) != 8 {
+		t.Fatalf("release verify JSON fields = %#v", output)
 	}
 }
 
@@ -1537,7 +1577,11 @@ func addLifecycleSettingsToManifest(t *testing.T, filename string) {
 			"scope":   "user",
 			"label":   "Accent mode",
 			"default": "teal",
-			"options": []string{"teal", "amber", "indigo"},
+			"options": []map[string]string{
+				{"value": "teal", "label": "Teal"},
+				{"value": "amber", "label": "Amber"},
+				{"value": "indigo", "label": "Indigo"},
+			},
 		}, {
 			"key":     "sync_enabled",
 			"type":    settings.FieldBoolean,

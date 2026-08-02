@@ -39,13 +39,13 @@ func TestCanonicalSchemaExcludesUIAndSecrets(t *testing.T) {
 
 func TestCanonicalSchemaIsDeterministicAndDistinguishesSemantics(t *testing.T) {
 	base := manifest.SettingsSpec{SchemaVersion: 1, Fields: []manifest.SettingFieldSpec{
-		{Key: "mode", Type: FieldSelect, Scope: "user", Label: "Mode", Options: []string{"slow", "fast"}, Default: "fast"},
+		{Key: "mode", Type: FieldSelect, Scope: "user", Label: "Mode", Options: manifestOptions("slow", "fast"), Default: "fast"},
 	}}
 	canonical := mustCanonicalJSON(t, base)
 	reordered := base
 	reordered.Fields = append([]manifest.SettingFieldSpec(nil), base.Fields...)
 	reordered.Fields[0].Label = "Different UI copy"
-	reordered.Fields[0].Options = []string{"fast", "slow"}
+	reordered.Fields[0].Options = manifestOptions("fast", "slow")
 	if got := mustCanonicalJSON(t, reordered); got != canonical {
 		t.Fatalf("non-data changes altered schema:\n%s\n%s", canonical, got)
 	}
@@ -57,7 +57,7 @@ func TestCanonicalSchemaIsDeterministicAndDistinguishesSemantics(t *testing.T) {
 		{name: "schema version", mutate: func(spec *manifest.SettingsSpec) { spec.SchemaVersion++ }},
 		{name: "type", mutate: func(spec *manifest.SettingsSpec) { spec.Fields[0].Type = FieldString; spec.Fields[0].Options = nil }},
 		{name: "scope", mutate: func(spec *manifest.SettingsSpec) { spec.Fields[0].Scope = "environment" }},
-		{name: "options", mutate: func(spec *manifest.SettingsSpec) { spec.Fields[0].Options = []string{"fast", "safe"} }},
+		{name: "options", mutate: func(spec *manifest.SettingsSpec) { spec.Fields[0].Options = manifestOptions("fast", "safe") }},
 		{name: "default", mutate: func(spec *manifest.SettingsSpec) { spec.Fields[0].Default = "slow" }},
 		{name: "constraint", mutate: func(spec *manifest.SettingsSpec) {
 			spec.Fields[0].Type = FieldString
@@ -153,10 +153,10 @@ func TestNonSecretFieldsRejectsInvalidSchema(t *testing.T) {
 		{name: "duplicate key", fields: []manifest.SettingFieldSpec{valid, valid}},
 		{name: "invalid scope", fields: []manifest.SettingFieldSpec{{Key: "value", Type: FieldString, Scope: "global"}}},
 		{name: "unknown type", fields: []manifest.SettingFieldSpec{{Key: "value", Type: "object", Scope: "user"}}},
-		{name: "options on string", fields: []manifest.SettingFieldSpec{{Key: "value", Type: FieldString, Scope: "user", Options: []string{"x"}}}},
+		{name: "options on string", fields: []manifest.SettingFieldSpec{{Key: "value", Type: FieldString, Scope: "user", Options: manifestOptions("x")}}},
 		{name: "missing options", fields: []manifest.SettingFieldSpec{{Key: "value", Type: FieldEnum, Scope: "user"}}},
-		{name: "empty option", fields: []manifest.SettingFieldSpec{{Key: "value", Type: FieldEnum, Scope: "user", Options: []string{""}}}},
-		{name: "duplicate option", fields: []manifest.SettingFieldSpec{{Key: "value", Type: FieldEnum, Scope: "user", Options: []string{"x", " x "}}}},
+		{name: "empty option", fields: []manifest.SettingFieldSpec{{Key: "value", Type: FieldEnum, Scope: "user", Options: manifestOptions("")}}},
+		{name: "duplicate option", fields: []manifest.SettingFieldSpec{{Key: "value", Type: FieldEnum, Scope: "user", Options: manifestOptions("x", " x ")}}},
 		{name: "secret default", fields: []manifest.SettingFieldSpec{{Key: "token", Type: FieldSecret, Scope: "user", SecretRef: "token", Default: "unsafe"}}},
 		{name: "secret ref on data", fields: []manifest.SettingFieldSpec{{Key: "value", Type: FieldString, Scope: "user", SecretRef: "token"}}},
 		{name: "unknown validation", fields: []manifest.SettingFieldSpec{{Key: "value", Type: FieldString, Scope: "user", Validation: map[string]any{"pattern": ".*"}}}},
@@ -214,7 +214,7 @@ func TestSettingsAPIsDoNotShareInputs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	spec.Fields[1].Options[0] = "mutated"
+	spec.Fields[1].Options[0].Value = "mutated"
 	spec.Fields[2].Validation["min_length"] = 99
 	if fields[1].Options[0] != "fast" || *fields[2].Validation.MinLength != 2 {
 		t.Fatalf("canonical fields share manifest inputs: %#v", fields)
@@ -261,7 +261,7 @@ func testSpec() manifest.SettingsSpec {
 		SchemaVersion: 3,
 		Fields: []manifest.SettingFieldSpec{
 			{Key: "enabled", Type: FieldBoolean, Label: "Enabled", Scope: "user", Default: true},
-			{Key: "mode", Type: FieldSelect, Label: "Mode", Scope: "user", Options: []string{"slow", "fast"}, Default: "fast"},
+			{Key: "mode", Type: FieldSelect, Label: "Mode", Scope: "user", Options: manifestOptions("slow", "fast"), Default: "fast"},
 			{Key: "name", Type: FieldString, Label: "Display name", Scope: "environment", Default: "插件", Validation: map[string]any{"min_length": 2, "max_length": 8}},
 			{Key: "retries", Type: FieldInteger, Label: "Retries", Scope: "user", Default: 2, Validation: map[string]any{"minimum": 0, "maximum": 5}},
 			{Key: "api_token", Type: FieldSecret, Label: "API token", Scope: "user", SecretRef: "api_token"},
@@ -271,6 +271,14 @@ func testSpec() manifest.SettingsSpec {
 
 func ptr(value manifest.SettingsSpec) *manifest.SettingsSpec {
 	return &value
+}
+
+func manifestOptions(values ...string) []manifest.SettingOptionSpec {
+	options := make([]manifest.SettingOptionSpec, len(values))
+	for index, value := range values {
+		options[index] = manifest.SettingOptionSpec{Value: value, Label: value}
+	}
+	return options
 }
 
 func mustCanonicalJSON(t *testing.T, spec manifest.SettingsSpec) string {

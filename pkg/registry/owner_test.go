@@ -52,7 +52,7 @@ func TestStoreIsolatesEnvironmentOwners(t *testing.T) {
 				ActiveFingerprint: "sha256:shared-a",
 				TrustState:        TrustVerified,
 				EnableState:       EnableDisabled,
-				Manifest:          manifest.Manifest{Plugin: manifest.Plugin{PluginID: "com.example.shared", Version: "1.0.0"}},
+				Manifest:          manifest.Manifest{SchemaVersion: manifest.SchemaVersionV8, Plugin: manifest.Plugin{PluginID: "com.example.shared", Version: "1.0.0"}},
 			}
 			storedA, err := store.PutPlugin(environmentA, record, PutOptions{Now: time.Date(2026, 7, 18, 0, 0, 0, 0, time.UTC)})
 			if err != nil {
@@ -543,7 +543,7 @@ func putOwnerPlugin(t *testing.T, store Store, ctx context.Context, instanceID, 
 		ActiveFingerprint: "sha256:" + version,
 		TrustState:        TrustVerified,
 		EnableState:       EnableDisabled,
-		Manifest: manifest.Manifest{
+		Manifest: manifest.Manifest{SchemaVersion: manifest.SchemaVersionV8,
 			Publisher: manifest.Publisher{PublisherID: "example"},
 			Plugin:    manifest.Plugin{PluginID: "com.example.owner", Version: version},
 		},

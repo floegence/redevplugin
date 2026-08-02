@@ -1,6 +1,9 @@
 package releasepublisher
 
-import "github.com/floegence/redevplugin/pkg/releasecontract"
+import (
+	"github.com/floegence/redevplugin/pkg/manifest"
+	"github.com/floegence/redevplugin/pkg/releasecontract"
+)
 
 const (
 	ConfigSchemaVersion     = "redevplugin.release_publisher_config.v1"
@@ -66,6 +69,12 @@ type PublisherReleaseRefV1 struct {
 	Root          PublicKeyV1           `json:"root"`
 	SigningLedger SigningLedgerConfigV1 `json:"signing_ledger"`
 	Files         []PublishedFileV1     `json:"files"`
+}
+
+type VerifiedOutputV1 struct {
+	Presentation       manifest.PresentationCatalog `json:"presentation"`
+	ManifestSHA256     string                       `json:"manifest_sha256"`
+	PresentationSHA256 string                       `json:"presentation_sha256"`
 }
 
 type WorkspaceStatusV1 struct {

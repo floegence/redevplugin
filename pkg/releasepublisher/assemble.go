@@ -37,7 +37,7 @@ type preparedRelease struct {
 	revocationInput             releasecontract.RevocationInput
 	revocationPreimage          []byte
 	revocationSubject           releasecontract.SigningSubjectV1
-	metadata                    releasecontract.ReleaseMetadataV5
+	metadata                    releasecontract.ReleaseMetadataV8
 	metadataBytes               []byte
 	metadataPreimage            []byte
 	metadataSubject             releasecontract.SigningSubjectV1
@@ -218,7 +218,7 @@ func prepareRelease(ctx context.Context, config ConfigV1, packageBytes []byte) (
 	if err != nil {
 		return preparedRelease{}, err
 	}
-	metadata := releasecontract.ReleaseMetadataV5{
+	metadata := releasecontract.ReleaseMetadataV8{
 		SchemaVersion: metadataSchemaVersion(pkg.Manifest.Plugin.UIProtocolVersion), SourceID: config.SourceID,
 		ReleaseMetadataRef: metadataRef, PublisherID: publisherID, PluginID: pluginID, Version: version,
 		DistributionRef: releasecontract.ReleaseDistributionRef{Distribution: config.Distribution, ArtifactRef: packageArtifactRef},
@@ -494,16 +494,10 @@ func cloneHostRequirements(values []releasecontract.ReleaseHostRequirement) []re
 }
 
 func metadataSchemaVersion(protocol string) string {
-	switch protocol {
-	case "plugin-ui-v5":
-		return releasecontract.ReleaseMetadataSchemaVersionV5
-	case "plugin-ui-v6":
-		return releasecontract.ReleaseMetadataSchemaVersionV6
-	case "plugin-ui-v7":
-		return releasecontract.ReleaseMetadataSchemaVersionV7
-	default:
-		return ""
+	if protocol == "plugin-ui-v7" {
+		return releasecontract.ReleaseMetadataSchemaVersionV8
 	}
+	return ""
 }
 
 func parseCanonicalTime(value string) (time.Time, error) {

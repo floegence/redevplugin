@@ -1,5 +1,26 @@
 # Changelog
 
+## v0.7.0
+
+### Added
+
+- Add signed, normalized manifest presentation catalogs with complete localized
+  plugin, publisher, surface, setting, and option labels; strict Unicode and
+  plain-text validation; shared Go and TypeScript RFC 4647 locale resolution;
+  and presentation digests in inspection and installed inventory projections.
+- Add machine-readable release verification output containing the normalized
+  presentation, manifest and presentation hashes, contract-set hash, and
+  verifier version after complete package and signature verification.
+
+### Changed
+
+- Publish the coordinated `plugin-host-v10`, `plugin-ui-v7`, `bridge-v7`,
+  `plugin-platform-v12`, manifest v8, release metadata v8, and compatibility
+  manifest v14 contract set as ReDevPlugin 0.7.0.
+- Establish the approved pre-release current-only package baseline: manifest
+  v5-v7 and release metadata v5-v7 are rejected without mutating old persistent
+  state and remain available only from historical Git tags.
+
 ## v0.6.24
 
 ### Added

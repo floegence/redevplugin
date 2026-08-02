@@ -53,7 +53,7 @@ type Fixture struct {
 	SourcePolicy          releasecontract.SourcePolicyV2
 	Package               pluginpkg.Package
 	PackageBytes          []byte
-	Metadata              releasecontract.ReleaseMetadataV5
+	Metadata              releasecontract.ReleaseMetadataV8
 	MetadataBytes         []byte
 	MetadataSignature     []byte
 	PackageSignature      releasecontract.PackageSignatureV1
@@ -296,7 +296,7 @@ func New(packageBytes []byte, options Options) (*Fixture, error) {
 		signedPackage.Manifest.PluginID(),
 		signedPackage.Manifest.Version(),
 	)
-	releaseMetadata := releasecontract.ReleaseMetadataV5{
+	releaseMetadata := releasecontract.ReleaseMetadataV8{
 		SchemaVersion: releaseMetadataSchemaVersion(signedPackage.Manifest.Plugin.UIProtocolVersion), SourceID: sourceID, ReleaseMetadataRef: releaseMetadataRef,
 		PublisherID: signedPackage.Manifest.Publisher.PublisherID, PluginID: signedPackage.Manifest.PluginID(), Version: signedPackage.Manifest.Version(),
 		DistributionRef: releasecontract.ReleaseDistributionRef{
@@ -923,8 +923,8 @@ func latestNode(left, right []byte) []byte {
 }
 
 func releaseMetadataSchemaVersion(uiProtocolVersion string) string {
-	if uiProtocolVersion == "plugin-ui-v6" {
-		return releasecontract.ReleaseMetadataSchemaVersionV6
+	if uiProtocolVersion == "plugin-ui-v7" {
+		return releasecontract.ReleaseMetadataSchemaVersionV8
 	}
-	return releasecontract.ReleaseMetadataSchemaVersionV5
+	return ""
 }

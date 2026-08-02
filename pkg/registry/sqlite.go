@@ -25,6 +25,8 @@ import (
 const maxRegistrySQLiteConnections = 8
 const registrySQLiteSchemaVersion = 2
 
+var ErrIncompatiblePersistedManifest = errors.New("persisted plugin manifest is incompatible")
+
 type SQLiteStore struct {
 	db       *sql.DB
 	mu       sync.Mutex
@@ -1695,11 +1697,19 @@ func scanSQLitePlugin(scanner sqlitePluginScanner) (PluginRecord, error) {
 	if err := decodeRegistryJSON(manifestJSON, &record.Manifest); err != nil {
 		return PluginRecord{}, err
 	}
+	if record.Manifest.SchemaVersion != manifest.SchemaVersionV8 {
+		return PluginRecord{}, fmt.Errorf("%w: plugin %q uses %q; required %q", ErrIncompatiblePersistedManifest, record.PluginInstanceID, record.Manifest.SchemaVersion, manifest.SchemaVersionV8)
+	}
 	if err := decodeRegistryJSON(packageEntriesJSON, &record.PackageEntries); err != nil {
 		return PluginRecord{}, err
 	}
 	if err := decodeRegistryJSON(versionHistoryJSON, &record.VersionHistory); err != nil {
 		return PluginRecord{}, err
+	}
+	for index, version := range record.VersionHistory {
+		if version.Manifest.SchemaVersion != manifest.SchemaVersionV8 {
+			return PluginRecord{}, fmt.Errorf("%w: plugin %q version history[%d] uses %q; required %q", ErrIncompatiblePersistedManifest, record.PluginInstanceID, index, version.Manifest.SchemaVersion, manifest.SchemaVersionV8)
+		}
 	}
 	if runtimeRequirementJSON != "null" {
 		var requirement RuntimeRequirement

@@ -103,11 +103,10 @@ test("Go, npm, and Rust projections share one contract inventory and digest", ()
     "packageSigningPreimage",
     "registryContract",
     "releaseMetadataSchemaVersion",
-    "releaseMetadataSchemaVersionV5",
-    "releaseMetadataSchemaVersionV6",
-    "releaseMetadataSchemaVersionV7",
+    "releaseMetadataSchemaVersionV8",
     "releaseMetadataSigningPreimage",
     "releaseSigningLedgerEvidenceSchemaVersion",
+    "resolvePresentation",
     "revocationPointerSchemaVersion",
     "revocationPointerSigningPreimage",
     "revocationSchemaVersion",
@@ -190,7 +189,7 @@ test("contracts package tarball has one closed browser-neutral payload", () => {
   try {
     const tarball = run("node", [
       "scripts/build_redevplugin_contracts_package.mjs",
-      "0.6.24",
+      "0.7.0",
       outputDirectory,
     ]).split("\n").at(-1);
     assert.ok(tarball);
@@ -202,6 +201,8 @@ test("contracts package tarball has one closed browser-neutral payload", () => {
       "package/dist/contracts.gen.js",
       "package/dist/index.d.ts",
       "package/dist/index.js",
+      "package/dist/presentation.d.ts",
+      "package/dist/presentation.js",
       "package/dist/release-signing.d.ts",
       "package/dist/release-signing.js",
       "package/package.json",
@@ -223,7 +224,7 @@ test("contracts package tarball has one closed browser-neutral payload", () => {
       "version",
     ]);
     assert.equal(manifest.name, "@floegence/redevplugin-contracts");
-    assert.equal(manifest.version, "0.6.24");
+    assert.equal(manifest.version, "0.7.0");
     assert.deepEqual(manifest.files, ["dist"]);
     assert.equal(manifest.sideEffects, false);
     assert.deepEqual(Object.keys(manifest.exports), ["."]);
@@ -298,7 +299,7 @@ test("packed npm packages install together offline and remain browser-neutral", 
     run(process.execPath, ["--input-type=module", "--eval", `
       await import("@floegence/redevplugin-ui");
       const contracts = await import("@floegence/redevplugin-contracts");
-      if (contracts.contractArtifacts.length !== 58) throw new Error("contracts package is incomplete");
+      if (contracts.contractArtifacts.length !== 59) throw new Error("contracts package is incomplete");
     `], { cwd: consumerDirectory });
 
     const browserBundle = await build({

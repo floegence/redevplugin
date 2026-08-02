@@ -2,30 +2,20 @@
   "schema_version": "redevplugin.contract_source.v1",
   "matrix": {
     "plugin_ui_protocol_version": "plugin-ui-v7",
-    "supported_plugin_ui_protocol_versions": ["plugin-ui-v5", "plugin-ui-v6", "plugin-ui-v7"],
+    "supported_plugin_ui_protocol_versions": ["plugin-ui-v7"],
     "plugin_ui_transport_mappings": [
-      {
-        "plugin_ui_protocol_version": "plugin-ui-v5",
-        "opaque_surface_transport_schema_version": "opaque-surface-transport-v4",
-        "bridge_schema_version": "bridge-v5"
-      },
-      {
-        "plugin_ui_protocol_version": "plugin-ui-v6",
-        "opaque_surface_transport_schema_version": "opaque-surface-transport-v5",
-        "bridge_schema_version": "bridge-v6"
-      },
       {
         "plugin_ui_protocol_version": "plugin-ui-v7",
         "opaque_surface_transport_schema_version": "opaque-surface-transport-v6",
         "bridge_schema_version": "bridge-v7"
       }
     ],
-    "plugin_host_protocol_version": "plugin-host-v9",
+    "plugin_host_protocol_version": "plugin-host-v10",
     "rust_ipc_version": "rust-ipc-v6",
     "wasm_abi_version": "redevplugin-wasm-worker-v2",
-    "manifest_schema_version": "manifest-v7",
+    "manifest_schema_version": "manifest-v8",
     "package_signature_schema_version": "package-signature-v1",
-    "release_metadata_schema_version": "release-metadata-v7",
+    "release_metadata_schema_version": "release-metadata-v8",
     "release_root_delegation_schema_version": "release-root-delegation-v1",
     "release_source_policy_schema_version": "release-source-policy-v3",
     "release_source_policy_pointer_schema_version": "release-source-policy-pointer-v2",
@@ -48,9 +38,9 @@
     "resource_scope_schema_version": "resource-scope-v1",
     "session_scope_schema_version": "session-scope-v1",
     "session_scope_maintenance_schema_version": "session-scope-maintenance-v1",
-    "plugin_platform_openapi_version": "plugin-platform-v11",
-    "compatibility_manifest_version": "redevplugin.compatibility.v13",
-    "compatibility_schema_version": "compatibility-manifest-v13",
+    "plugin_platform_openapi_version": "plugin-platform-v12",
+    "compatibility_manifest_version": "redevplugin.compatibility.v14",
+    "compatibility_schema_version": "compatibility-manifest-v14",
     "worker_invocation_schema_version": "worker-invocation-v3",
     "host_capability_contract_schema_version": "host-capability-contract-v1",
     "host_capability_pin_schema_version": "host-capability-pin-v1",
@@ -75,7 +65,7 @@
     "quarantine_cleanup_schema_version": "quarantine-cleanup-v1"
   },
   "artifacts": [
-    {"id": "compatibility-manifest-schema", "path": "spec/plugin/compatibility-manifest-v13.schema.json", "version": "compatibility-manifest-v13"},
+    {"id": "compatibility-manifest-schema", "path": "spec/plugin/compatibility-manifest-v14.schema.json", "version": "compatibility-manifest-v14"},
     {"id": "contract-registry-schema", "path": "spec/plugin/contract-registry-v2.schema.json", "version": "contract-registry-v2"},
     {"id": "error-codes-schema", "path": "spec/plugin/error-codes-v7.schema.json", "version": "error-codes-v7"},
     {"id": "external-signer-request-schema", "path": "spec/plugin/external-signer-request-v1.schema.json", "version": "external-signer-request-v1"},
@@ -90,7 +80,7 @@
     {"id": "host-capability-signer-request-schema", "path": "spec/plugin/host-capability-signer-request-v1.schema.json", "version": "host-capability-signer-request-v1"},
     {"id": "host-capability-signer-response-schema", "path": "spec/plugin/host-capability-signer-response-v1.schema.json", "version": "host-capability-signer-response-v1"},
     {"id": "iframe-bridge-schema", "path": "spec/plugin/bridge-v7.schema.json", "version": "bridge-v7"},
-    {"id": "manifest-schema", "path": "spec/plugin/manifest-v7.schema.json", "version": "manifest-v7"},
+    {"id": "manifest-schema", "path": "spec/plugin/manifest-v8.schema.json", "version": "manifest-v8"},
     {"id": "network-grant-schema", "path": "spec/plugin/network-grant-v2.schema.json", "version": "network-grant-v2"},
     {"id": "opaque-surface-document-schema", "path": "spec/plugin/opaque-surface-document-v3.schema.json", "version": "opaque-surface-document-v3"},
     {"id": "opaque-surface-transport-schema", "path": "spec/plugin/opaque-surface-transport-v6.schema.json", "version": "opaque-surface-transport-v6"},
@@ -103,11 +93,12 @@
     {"id": "performance-evidence-schema", "path": "spec/plugin/performance-evidence-v4.schema.json", "version": "performance-evidence-v4"},
     {"id": "platform-package-publication-schema", "path": "spec/plugin/platform-package-publication-v1.schema.json", "version": "platform-package-publication-v1"},
     {"id": "platform-package-set-schema", "path": "spec/plugin/platform-package-set-v1.schema.json", "version": "platform-package-set-v1"},
-    {"id": "plugin-platform-openapi", "path": "spec/openapi/plugin-platform-v11.yaml", "version": "plugin-platform-v11"},
+    {"id": "plugin-platform-openapi", "path": "spec/openapi/plugin-platform-v12.yaml", "version": "plugin-platform-v12"},
+    {"id": "presentation-locale-fixture", "path": "spec/plugin/presentation-locale-fixtures-v1.json", "version": "presentation-locale-fixtures-v1"},
     {"id": "process-containment-schema", "path": "spec/plugin/process-containment-v1.schema.json", "version": "process-containment-v1"},
     {"id": "publisher-release-ref-schema", "path": "spec/plugin/publisher-release-ref-v1.schema.json", "version": "publisher-release-ref-v1"},
     {"id": "quarantine-cleanup-schema", "path": "spec/plugin/quarantine-cleanup-v1.schema.json", "version": "quarantine-cleanup-v1"},
-    {"id": "release-metadata-schema", "path": "spec/plugin/release-metadata-v7.schema.json", "version": "release-metadata-v7"},
+    {"id": "release-metadata-schema", "path": "spec/plugin/release-metadata-v8.schema.json", "version": "release-metadata-v8"},
     {"id": "release-publisher-config-schema", "path": "spec/plugin/release-publisher-config-v1.schema.json", "version": "release-publisher-config-v1"},
     {"id": "release-revocation-pointer-schema", "path": "spec/plugin/release-revocation-pointer-v2.schema.json", "version": "release-revocation-pointer-v2"},
     {"id": "release-revocation-schema", "path": "spec/plugin/release-revocation-v3.schema.json", "version": "release-revocation-v3"},

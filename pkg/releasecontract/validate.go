@@ -201,7 +201,7 @@ func validatePackageSignature(context PackageSigningInput, value PackageSignatur
 	return validateSignatureString(value.Signature, requireSignature)
 }
 
-func validateReleaseMetadata(value ReleaseMetadataV5) error {
+func validateReleaseMetadata(value ReleaseMetadataV8) error {
 	if !validReleaseMetadataUIProtocolPair(value.SchemaVersion, value.Compatibility.UIProtocolVersion) || !newContractIDPattern.MatchString(value.SourceID) {
 		return invalid("release metadata schema or source")
 	}
@@ -260,9 +260,7 @@ func validateReleaseMetadata(value ReleaseMetadataV5) error {
 }
 
 func validReleaseMetadataUIProtocolPair(schemaVersion, uiProtocolVersion string) bool {
-	return (schemaVersion == ReleaseMetadataSchemaVersionV5 && uiProtocolVersion == "plugin-ui-v5") ||
-		(schemaVersion == ReleaseMetadataSchemaVersionV6 && uiProtocolVersion == "plugin-ui-v6") ||
-		(schemaVersion == ReleaseMetadataSchemaVersionV7 && uiProtocolVersion == "plugin-ui-v7")
+	return schemaVersion == ReleaseMetadataSchemaVersionV8 && uiProtocolVersion == "plugin-ui-v7"
 }
 
 func validateReleaseMetadataSignatureRef(value ReleaseMetadataSignatureRef) error {

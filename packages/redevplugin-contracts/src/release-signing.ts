@@ -1,9 +1,7 @@
 export const rootDelegationSchemaVersion = "redevplugin.release_root_delegation.v1" as const;
 export const packageSignatureSchemaVersion = "redevplugin.package_signature.v1" as const;
-export const releaseMetadataSchemaVersionV5 = "redevplugin.release_metadata.v5" as const;
-export const releaseMetadataSchemaVersionV6 = "redevplugin.release_metadata.v6" as const;
-export const releaseMetadataSchemaVersionV7 = "redevplugin.release_metadata.v7" as const;
-export const releaseMetadataSchemaVersion = releaseMetadataSchemaVersionV7;
+export const releaseMetadataSchemaVersionV8 = "redevplugin.release_metadata.v8" as const;
+export const releaseMetadataSchemaVersion = releaseMetadataSchemaVersionV8;
 export const sourcePolicySchemaVersion = "redevplugin.release_source_policy.v2" as const;
 export const sourcePolicyPointerSchemaVersion = "redevplugin.release_source_policy_pointer.v1" as const;
 export const revocationSchemaVersion = "redevplugin.release_revocation.v2" as const;
@@ -172,8 +170,8 @@ export type ReleaseEvidence = Readonly<{
   generated_at?: string;
 }>;
 
-export type ReleaseMetadataV5 = Readonly<{
-  schema_version: typeof releaseMetadataSchemaVersionV5 | typeof releaseMetadataSchemaVersionV6 | typeof releaseMetadataSchemaVersionV7;
+export type ReleaseMetadataV8 = Readonly<{
+  schema_version: typeof releaseMetadataSchemaVersionV8;
   source_id: string;
   release_metadata_ref: string;
   publisher_id: string;
@@ -738,7 +736,7 @@ function validatePackageSignature(context: PackageVerificationContext, value: Pa
   else if (value.signature !== "") invalidDocument();
 }
 
-function validateReleaseMetadata(value: ReleaseMetadataV5): void {
+function validateReleaseMetadata(value: ReleaseMetadataV8): void {
   assertRecord(value);
   closeReleaseMetadata(value);
   if (!validReleaseMetadataUIProtocolPair(value.schema_version, value.compatibility.ui_protocol_version) || !matchesPattern(newIDPattern, value.source_id)) invalidDocument();
@@ -790,9 +788,7 @@ function validateReleaseMetadata(value: ReleaseMetadataV5): void {
 }
 
 function validReleaseMetadataUIProtocolPair(schemaVersion: string, uiProtocolVersion: string): boolean {
-  return (schemaVersion === releaseMetadataSchemaVersionV5 && uiProtocolVersion === "plugin-ui-v5") ||
-    (schemaVersion === releaseMetadataSchemaVersionV6 && uiProtocolVersion === "plugin-ui-v6") ||
-    (schemaVersion === releaseMetadataSchemaVersionV7 && uiProtocolVersion === "plugin-ui-v7");
+  return schemaVersion === releaseMetadataSchemaVersionV8 && uiProtocolVersion === "plugin-ui-v7";
 }
 
 function validateCapabilityContractRef(value: HostCapabilityContractRef): void {
@@ -1298,25 +1294,25 @@ export async function verifyPackageSignature(
   await verifyEncoded(signingUsages.package, document.key_id, packageSigningPreimage(input), document.signature, verifier);
 }
 
-export function buildReleaseMetadata(document: ReleaseMetadataV5): ReleaseMetadataV5 {
+export function buildReleaseMetadata(document: ReleaseMetadataV8): ReleaseMetadataV8 {
   const cloned = cloneJSON(document);
   validateReleaseMetadata(cloned);
   return deepFreeze(cloned);
 }
 
-export function releaseMetadataSigningPreimage(channel: string, document: ReleaseMetadataV5): Uint8Array {
+export function releaseMetadataSigningPreimage(channel: string, document: ReleaseMetadataV8): Uint8Array {
   if (!matchesPattern(newIDPattern, channel)) invalidDocument();
   const built = buildReleaseMetadata(document);
   return signingPreimage(signingUsages.releaseMetadata, { channel, release_metadata: built });
 }
 
-export function canonicalReleaseMetadata(document: ReleaseMetadataV5): Uint8Array {
+export function canonicalReleaseMetadata(document: ReleaseMetadataV8): Uint8Array {
   return canonicalJSON(buildReleaseMetadata(document));
 }
 
 export async function verifyReleaseMetadata(
   channel: string,
-  document: ReleaseMetadataV5,
+  document: ReleaseMetadataV8,
   signature: Uint8Array,
   verifier: SignatureVerifier,
 ): Promise<void> {
@@ -1438,7 +1434,7 @@ export function decodePackageSignature(raw: Uint8Array | string, context: Packag
   return decodeCanonicalDocument(raw, closePackageSignature, (value) => validatePackageSignature(context, value, true));
 }
 
-export function decodeReleaseMetadata(raw: Uint8Array | string): ReleaseMetadataV5 {
+export function decodeReleaseMetadata(raw: Uint8Array | string): ReleaseMetadataV8 {
   return decodeCanonicalDocument(raw, closeReleaseMetadata, validateReleaseMetadata);
 }
 

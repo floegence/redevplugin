@@ -1,5 +1,5 @@
 {
-  "schema_version": "redevplugin.manifest.v5",
+  "schema_version": "redevplugin.manifest.v8",
   "publisher": {
     "publisher_id": "example.generated",
     "display_name": "Example Generated"
@@ -10,7 +10,19 @@
     "version": "1.0.0",
     "api_version": "plugin-v1",
     "min_runtime_version": "0.1.0",
-    "ui_protocol_version": "plugin-ui-v5"
+    "ui_protocol_version": "plugin-ui-v7"
+  },
+  "presentation": {
+    "default_locale": "en-US",
+    "summary": "Storage Generated Fixture extends the host with its declared plugin capabilities.",
+    "description": [
+      "Storage Generated Fixture is a ReDevPlugin package whose surfaces and capabilities are verified by the host before use."
+    ],
+    "highlights": [],
+    "keywords": [
+      "Storage Generated Fixture"
+    ],
+    "localizations": []
   },
   "surfaces": [
     {

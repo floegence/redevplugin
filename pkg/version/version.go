@@ -18,7 +18,7 @@ import (
 const (
 	modulePath                      = "github.com/floegence/redevplugin"
 	devVersion                      = "0.0.0-dev"
-	developmentCompatibilityVersion = "0.6.24"
+	developmentCompatibilityVersion = "0.7.0"
 )
 
 var (
@@ -142,10 +142,8 @@ var (
 func CurrentMatrix() Matrix {
 	return Matrix{
 		PluginUIProtocolVersion:           PluginUIProtocolVersion,
-		SupportedPluginUIProtocolVersions: []string{"plugin-ui-v5", "plugin-ui-v6", "plugin-ui-v7"},
+		SupportedPluginUIProtocolVersions: []string{"plugin-ui-v7"},
 		PluginUITransportMappings: []PluginUITransportMapping{
-			{PluginUIProtocolVersion: "plugin-ui-v5", OpaqueSurfaceTransportSchemaVersion: "opaque-surface-transport-v4", BridgeSchemaVersion: "bridge-v5"},
-			{PluginUIProtocolVersion: "plugin-ui-v6", OpaqueSurfaceTransportSchemaVersion: "opaque-surface-transport-v5", BridgeSchemaVersion: "bridge-v6"},
 			{PluginUIProtocolVersion: "plugin-ui-v7", OpaqueSurfaceTransportSchemaVersion: "opaque-surface-transport-v6", BridgeSchemaVersion: "bridge-v7"},
 		},
 		PluginHostProtocolVersion:           PluginHostProtocolVersion,

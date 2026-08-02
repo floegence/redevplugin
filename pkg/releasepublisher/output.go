@@ -14,6 +14,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/floegence/redevplugin/pkg/manifest"
 	"github.com/floegence/redevplugin/pkg/pluginpkg"
 	"github.com/floegence/redevplugin/pkg/releasecontract"
 )
@@ -61,6 +62,19 @@ func writeAssembly(output string, assembly assemblyResult) error {
 }
 
 func VerifyOutput(ctx context.Context, output string) error {
+	_, err := VerifyAndInspectOutput(ctx, output)
+	return err
+}
+
+func VerifyAndInspectOutput(ctx context.Context, output string) (VerifiedOutputV1, error) {
+	var verified VerifiedOutputV1
+	if err := verifyOutputSnapshot(ctx, output, &verified); err != nil {
+		return VerifiedOutputV1{}, err
+	}
+	return verified, nil
+}
+
+func verifyOutputSnapshot(ctx context.Context, output string, verified *VerifiedOutputV1) error {
 	matches, err := filepath.Glob(filepath.Join(output, "*.release-ref.json"))
 	if err != nil || len(matches) != 1 {
 		return ErrInvalidWorkspace
@@ -211,6 +225,14 @@ func VerifyOutput(ctx context.Context, output string) error {
 		if err := releasecontract.VerifySigningLedgerLatest(receipt, latest, checkpoint, verifier); err != nil {
 			return err
 		}
+	}
+	presentation := pkg.Manifest.PresentationCatalog()
+	presentationSHA256, err := manifest.PresentationCatalogSHA256(presentation)
+	if err != nil {
+		return err
+	}
+	*verified = VerifiedOutputV1{
+		Presentation: presentation, ManifestSHA256: pkg.ManifestHash, PresentationSHA256: presentationSHA256,
 	}
 	return nil
 }

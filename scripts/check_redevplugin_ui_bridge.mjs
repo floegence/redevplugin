@@ -107,11 +107,6 @@ export function resolveBridgeContractDescriptors(source) {
     "surface transport",
   );
 
-  const legacyUI = "plugin-ui-v5";
-  const legacyBridge = mappings.get(legacyUI);
-  if (legacyBridge?.bridge !== "bridge-v5" || legacyBridge.transport !== "opaque-surface-transport-v4") {
-    throw new Error("legacy plugin-ui-v5 must remain mapped to bridge-v5");
-  }
   return {
     active: {
       uiProtocolVersion: activeUI,
@@ -120,7 +115,9 @@ export function resolveBridgeContractDescriptors(source) {
       transportSchemaVersion: activeTransport,
       transportPath: activeTransportArtifact.path,
     },
-    legacy: { uiProtocolVersion: legacyUI, bridgeSchemaVersion: legacyBridge.bridge, path: `spec/plugin/${legacyBridge.bridge}.schema.json` },
+    // Historical bridge files remain auditable without advertising them as
+    // current package-admission mappings.
+    legacy: { uiProtocolVersion: "plugin-ui-v5", bridgeSchemaVersion: "bridge-v5", path: "spec/plugin/bridge-v5.schema.json" },
   };
 }
 

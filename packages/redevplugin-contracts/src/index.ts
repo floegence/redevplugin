@@ -7,6 +7,7 @@ import {
 } from "./contracts.gen.js";
 
 export * from "./release-signing.js";
+export * from "./presentation.js";
 
 export type ContractID =
   | (typeof generatedContractArtifacts)[number]["id"]

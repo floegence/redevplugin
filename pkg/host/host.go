@@ -3802,7 +3802,7 @@ func releaseTrustBoundaryError(err error) error {
 	return err
 }
 
-func pluginPackageReleaseFromDocument(document releasecontract.ReleaseMetadataV5, metadataSHA256 string) (PluginPackageRelease, error) {
+func pluginPackageReleaseFromDocument(document releasecontract.ReleaseMetadataV8, metadataSHA256 string) (PluginPackageRelease, error) {
 	supportedTargets := make([]runtimetarget.Target, len(document.Compatibility.SupportedTargets))
 	for index, value := range document.Compatibility.SupportedTargets {
 		target, err := runtimetarget.Parse(value)

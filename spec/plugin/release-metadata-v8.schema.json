@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://schemas.redevplugin.dev/plugin/release-metadata-v6.schema.json",
-  "title": "ReDevPlugin signed plugin release metadata v6",
+  "$id": "https://schemas.redevplugin.dev/plugin/release-metadata-v8.schema.json",
+  "title": "ReDevPlugin signed plugin release metadata v8",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -18,7 +18,7 @@
     "compatibility"
   ],
   "properties": {
-    "schema_version": { "const": "redevplugin.release_metadata.v6" },
+    "schema_version": { "const": "redevplugin.release_metadata.v8" },
     "source_id": { "type": "string", "minLength": 1 },
     "release_metadata_ref": { "$ref": "#/$defs/artifact_ref" },
     "publisher_id": { "type": "string", "minLength": 1 },
@@ -111,7 +111,7 @@
       "properties": {
         "min_redevplugin_version": { "$ref": "#/$defs/semver" },
         "min_runtime_version": { "$ref": "#/$defs/semver" },
-        "ui_protocol_version": { "const": "plugin-ui-v6" },
+        "ui_protocol_version": { "const": "plugin-ui-v7" },
         "supported_targets": {
           "type": "array",
           "uniqueItems": true,

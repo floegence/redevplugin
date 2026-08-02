@@ -328,11 +328,23 @@ func externalPackageProjectionFixture() (manifest.Manifest, []capabilitycontract
 		ArtifactSHA256: "sha256:" + strings.Repeat("b", 64),
 	}
 	m := manifest.Manifest{
-		SchemaVersion: "redevplugin.manifest.v5",
-		Publisher:     manifest.Publisher{PublisherID: "example.publisher"},
+		SchemaVersion: manifest.SchemaVersionV8,
+		Publisher:     manifest.Publisher{PublisherID: "example.publisher", DisplayName: "Example Publisher"},
 		Plugin: manifest.Plugin{
 			PluginID: "example.external", DisplayName: "External", Version: "2.0.1", APIVersion: "plugin-v1",
-			MinRuntimeVersion: "1.0.0", UIProtocolVersion: "plugin-ui-v5",
+			MinRuntimeVersion: "1.0.0", UIProtocolVersion: "plugin-ui-v7",
+		},
+		Presentation: manifest.PresentationSpec{
+			DefaultLocale: "en-US", Summary: "Inspect an external package.",
+			Description: []string{"Review package capabilities and trust evidence before installation."},
+			Highlights:  []string{"Verified package presentation"}, Keywords: []string{"external", "package"},
+			Localizations: []manifest.PresentationLocalizationSpec{{
+				Locale: "fr-FR", PluginName: "Externe", PublisherName: "Editeur exemple",
+				Summary: "Inspecter un paquet externe.", Description: []string{"Examinez les capacites et les preuves de confiance avant l'installation."},
+				Highlights: []string{"Presentation de paquet verifiee"}, Keywords: []string{"externe", "paquet"},
+				Surfaces: []manifest.LocalizedSurfacePresentation{{SurfaceID: "main", Label: "Principal"}, {SurfaceID: "background", Label: "Arriere-plan"}},
+				Settings: []manifest.LocalizedSettingPresentation{{Key: "theme", Label: "Theme", Options: []manifest.SettingOptionSpec{}}, {Key: "api_token", Label: "Jeton API", Options: []manifest.SettingOptionSpec{}}},
+			}},
 		},
 		CapabilityBindings: []manifest.CapabilityBinding{
 			{BindingID: "terminal", Contract: terminalPin},

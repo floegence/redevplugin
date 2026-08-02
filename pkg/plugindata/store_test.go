@@ -989,10 +989,11 @@ func testManifest() manifest.Manifest {
 	files := int64(64)
 	dbFiles := int64(8)
 	return manifest.Manifest{
-		Publisher: manifest.Publisher{PublisherID: "example"},
-		Plugin:    manifest.Plugin{PluginID: "com.example.notes", Version: "1.0.0"},
+		SchemaVersion: manifest.SchemaVersionV8,
+		Publisher:     manifest.Publisher{PublisherID: "example"},
+		Plugin:        manifest.Plugin{PluginID: "com.example.notes", Version: "1.0.0"},
 		Settings: &manifest.SettingsSpec{SchemaVersion: 1, Fields: []manifest.SettingFieldSpec{{
-			Key: "theme", Type: settings.FieldEnum, Scope: "user", Options: []string{"dark", "light"}, Default: "dark", Label: "Theme",
+			Key: "theme", Type: settings.FieldEnum, Scope: "user", Options: []manifest.SettingOptionSpec{{Value: "dark", Label: "Dark"}, {Value: "light", Label: "Light"}}, Default: "dark", Label: "Theme",
 		}}},
 		Storage: &manifest.StorageSpec{Stores: []manifest.StoreSpec{
 			{StoreID: "db", Kind: string(plugindata.NamespaceSQLite), Scope: "user", SchemaVersion: 1, QuotaBytes: 1024 * 1024, QuotaFiles: &dbFiles},
@@ -1005,8 +1006,9 @@ func testManifest() manifest.Manifest {
 func scopedTestManifest() manifest.Manifest {
 	files := int64(64)
 	return manifest.Manifest{
-		Publisher: manifest.Publisher{PublisherID: "example"},
-		Plugin:    manifest.Plugin{PluginID: "com.example.scoped", Version: "1.0.0"},
+		SchemaVersion: manifest.SchemaVersionV8,
+		Publisher:     manifest.Publisher{PublisherID: "example"},
+		Plugin:        manifest.Plugin{PluginID: "com.example.scoped", Version: "1.0.0"},
 		Settings: &manifest.SettingsSpec{SchemaVersion: 1, Fields: []manifest.SettingFieldSpec{
 			{Key: "user_theme", Type: settings.FieldString, Scope: "user", Default: "default", Label: "User theme"},
 			{Key: "env_mode", Type: settings.FieldString, Scope: "environment", Default: "shared", Label: "Environment mode"},

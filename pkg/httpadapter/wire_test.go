@@ -141,7 +141,7 @@ func TestPublicWireMappersPreservePublishedFields(t *testing.T) {
 		SchemaVersion:    5,
 		Fields: []manifest.SettingFieldSpec{{
 			Key: "region", Type: "string", Label: "Region", Scope: "user", Default: "us-east",
-			Options: []string{"us-east", "eu-west"}, Validation: map[string]any{"min_length": 2.0},
+			Options: []manifest.SettingOptionSpec{{Value: "us-east", Label: "US East"}, {Value: "eu-west", Label: "EU West"}}, Validation: map[string]any{"min_length": 2.0},
 		}},
 		ValuesRevision: 7,
 	})
@@ -288,6 +288,8 @@ func TestHTTPWireDTOJSONTagsAreSnakeCase(t *testing.T) {
 		packageHashSetRequest{}, releaseRefRequest{}, trustHashSetResponse{}, verifiedSignatureResponse{},
 		trustAssessmentResponse{}, localImportProvenanceResponse{}, runtimeRequirementResponse{}, pluginVersionResponse{},
 		capabilityPinResponse{}, packageEntryResponse{}, manifestPublisherResponse{}, manifestPluginResponse{},
+		manifestLocalizedSurfaceResponse{}, manifestLocalizedSettingResponse{}, manifestPresentationLocalizationResponse{},
+		manifestPresentationResponse{}, presentationLocaleResponse{}, presentationCatalogResponse{},
 		manifestWidgetSizeResponse{}, manifestSurfaceResponse{}, manifestCapabilityBindingResponse{}, manifestMethodRouteResponse{},
 		manifestConfirmationResponse{}, manifestCancelPolicyResponse{}, manifestStorageAccessResponse{}, manifestNetworkAccessResponse{},
 		manifestMethodBrokerAccessResponse{}, manifestMethodResponse{}, manifestWorkerResponse{}, manifestStoreResponse{},
@@ -394,6 +396,10 @@ func TestPublicAggregateProjectionsMatchPublishedFieldSets(t *testing.T) {
 		{name: "manifest", domainType: manifest.Manifest{}, wireType: manifestResponse{}},
 		{name: "manifest publisher", domainType: manifest.Publisher{}, wireType: manifestPublisherResponse{}},
 		{name: "manifest plugin", domainType: manifest.Plugin{}, wireType: manifestPluginResponse{}},
+		{name: "manifest presentation", domainType: manifest.PresentationSpec{}, wireType: manifestPresentationResponse{}},
+		{name: "manifest presentation localization", domainType: manifest.PresentationLocalizationSpec{}, wireType: manifestPresentationLocalizationResponse{}},
+		{name: "manifest localized surface", domainType: manifest.LocalizedSurfacePresentation{}, wireType: manifestLocalizedSurfaceResponse{}},
+		{name: "manifest localized setting", domainType: manifest.LocalizedSettingPresentation{}, wireType: manifestLocalizedSettingResponse{}},
 		{name: "manifest surface", domainType: manifest.SurfaceSpec{}, wireType: manifestSurfaceResponse{}},
 		{name: "manifest widget size", domainType: manifest.WidgetSizeSpec{}, wireType: manifestWidgetSizeResponse{}},
 		{name: "manifest capability binding", domainType: manifest.CapabilityBinding{}, wireType: manifestCapabilityBindingResponse{}},

@@ -28,9 +28,7 @@ import {
   decodeSourcePolicyPointer,
   packageSigningPreimage,
   releaseMetadataSigningPreimage,
-  releaseMetadataSchemaVersionV5,
-  releaseMetadataSchemaVersionV6,
-  releaseMetadataSchemaVersionV7,
+  releaseMetadataSchemaVersionV8,
   revocationPointerSigningPreimage,
   revocationSigningPreimage,
   rootDelegationSigningPreimage,
@@ -46,7 +44,7 @@ import {
   verifySourcePolicyPointer,
   type PackageSignatureV1,
   type PackageVerificationContext,
-  type ReleaseMetadataV5,
+  type ReleaseMetadataV8,
   type RevocationPointerV1,
   type RevocationV2,
   type RootDelegationV1,
@@ -62,7 +60,7 @@ type Fixture = Readonly<{
   documents: Readonly<{
     root_delegation: RootDelegationV1;
     package_signature: PackageSignatureV1;
-    release_metadata: ReleaseMetadataV5;
+    release_metadata: ReleaseMetadataV8;
     source_policy: SourcePolicyV2;
     source_policy_pointer: SourcePolicyPointerV1;
     revocation: RevocationV2;
@@ -190,31 +188,19 @@ test("release signing builders and strict decoders preserve canonical documents"
 test("release metadata requires exact schema and UI protocol pairs", () => {
   const metadata = fixture.documents.release_metadata;
   buildReleaseMetadata(metadata);
-  buildReleaseMetadata({
-    ...metadata,
-    schema_version: releaseMetadataSchemaVersionV6,
-    compatibility: { ...metadata.compatibility, ui_protocol_version: "plugin-ui-v6" },
-  });
-  buildReleaseMetadata({
-    ...metadata,
-    schema_version: releaseMetadataSchemaVersionV7,
-    compatibility: { ...metadata.compatibility, ui_protocol_version: "plugin-ui-v7" },
-  });
-  assert.throws(() => buildReleaseMetadata({
-    ...metadata,
-    schema_version: releaseMetadataSchemaVersionV5,
-    compatibility: { ...metadata.compatibility, ui_protocol_version: "plugin-ui-v6" },
-  }), InvalidReleaseDocumentError);
-  assert.throws(() => buildReleaseMetadata({
-    ...metadata,
-    schema_version: releaseMetadataSchemaVersionV6,
-    compatibility: { ...metadata.compatibility, ui_protocol_version: "plugin-ui-v5" },
-  }), InvalidReleaseDocumentError);
-  assert.throws(() => buildReleaseMetadata({
-    ...metadata,
-    schema_version: releaseMetadataSchemaVersionV7,
-    compatibility: { ...metadata.compatibility, ui_protocol_version: "plugin-ui-v6" },
-  }), InvalidReleaseDocumentError);
+  assert.equal(metadata.schema_version, releaseMetadataSchemaVersionV8);
+  for (const [schema_version, ui_protocol_version] of [
+    ["redevplugin.release_metadata.v5", "plugin-ui-v5"],
+    ["redevplugin.release_metadata.v6", "plugin-ui-v6"],
+    ["redevplugin.release_metadata.v7", "plugin-ui-v7"],
+    ["redevplugin.release_metadata.v8", "plugin-ui-v6"],
+  ] as const) {
+    assert.throws(() => buildReleaseMetadata({
+      ...metadata,
+      schema_version: schema_version as typeof releaseMetadataSchemaVersionV8,
+      compatibility: { ...metadata.compatibility, ui_protocol_version },
+    }), InvalidReleaseDocumentError);
+  }
 });
 
 test("root delegation keeps source-wide and channel-scoped usages disjoint", () => {

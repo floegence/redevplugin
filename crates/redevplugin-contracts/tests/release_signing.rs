@@ -28,7 +28,7 @@ struct FixturePackageContext {
 struct FixtureDocuments {
     root_delegation: RootDelegationV1,
     package_signature: PackageSignatureV1,
-    release_metadata: ReleaseMetadataV5,
+    release_metadata: ReleaseMetadataV8,
     source_policy: SourcePolicyV2,
     source_policy_pointer: SourcePolicyPointerV1,
     revocation: RevocationV2,
@@ -221,13 +221,19 @@ fn release_metadata_requires_exact_schema_ui_protocol_pairs() {
     let fixture = fixture();
     let mut metadata = fixture.documents.release_metadata.clone();
 
-    metadata.schema_version = RELEASE_METADATA_SCHEMA_VERSION_V6.to_owned();
+    metadata.schema_version = "redevplugin.release_metadata.v7".to_owned();
     assert!(build_release_metadata(&metadata).is_err());
 
     metadata.compatibility.ui_protocol_version = "plugin-ui-v6".to_owned();
+    assert!(build_release_metadata(&metadata).is_err());
+
+    metadata.schema_version = RELEASE_METADATA_SCHEMA_VERSION.to_owned();
+    assert!(build_release_metadata(&metadata).is_err());
+
+    metadata.compatibility.ui_protocol_version = "plugin-ui-v7".to_owned();
     assert!(build_release_metadata(&metadata).is_ok());
 
-    metadata.schema_version = RELEASE_METADATA_SCHEMA_VERSION_V5.to_owned();
+    metadata.schema_version = "redevplugin.release_metadata.v5".to_owned();
     assert!(build_release_metadata(&metadata).is_err());
 }
 

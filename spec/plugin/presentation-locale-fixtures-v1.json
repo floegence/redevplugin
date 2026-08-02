@@ -1,0 +1,15 @@
+{
+  "schema_version": "redevplugin.presentation_locale_fixtures.v1",
+  "default_locale": "ja-JP",
+  "available_locales": ["ja-JP", "fr", "fr-FR", "zh-Hant"],
+  "cases": [
+    {"requested_locale": "fr-FR", "resolved_locale": "fr-FR"},
+    {"requested_locale": "fr-CA", "resolved_locale": "fr"},
+    {"requested_locale": "fr-FR-u-ca-gregory", "resolved_locale": "fr-FR"},
+    {"requested_locale": "zh-Hant-HK", "resolved_locale": "zh-Hant"},
+    {"requested_locale": "de-DE", "resolved_locale": "ja-JP"},
+    {"requested_locale": "und", "resolved_locale": "ja-JP"},
+    {"requested_locale": "not_a_locale", "resolved_locale": "ja-JP"},
+    {"requested_locale": "", "resolved_locale": "ja-JP"}
+  ]
+}

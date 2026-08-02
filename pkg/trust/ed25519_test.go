@@ -227,7 +227,7 @@ func unsignedFixturePackage(t *testing.T) pluginpkg.Package {
 	t.Helper()
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "manifest.json"), `{
-		"schema_version": "redevplugin.manifest.v5",
+		"schema_version": "redevplugin.manifest.v8",
 		"publisher": {"publisher_id": "example", "display_name": "Example"},
 		"plugin": {
 			"plugin_id": "com.example.trust",
@@ -235,7 +235,15 @@ func unsignedFixturePackage(t *testing.T) pluginpkg.Package {
 			"version": "1.0.0",
 			"api_version": "plugin-v1",
 			"min_runtime_version": "0.1.0",
-			"ui_protocol_version": "plugin-ui-v5"
+			"ui_protocol_version": "plugin-ui-v7"
+		},
+		"presentation": {
+			"default_locale": "en-US",
+			"summary": "Test plugin presentation.",
+			"description": ["Test plugin presentation used by the current manifest contract."],
+			"highlights": [],
+			"keywords": ["test"],
+			"localizations": []
 		},
 		"surfaces": [
 			{"surface_id": "trust.view", "kind": "view", "label": "Trust", "entry": "ui/index.html"}

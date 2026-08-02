@@ -305,7 +305,7 @@ func TestRevokeSessionScopeCancelsAndAwaitsDetachedCancelJob(t *testing.T) {
 func seedHostSessionScopeResources(t *testing.T, h *Host, session sessionctx.Context, now time.Time) *executionLease {
 	t.Helper()
 	_, err := h.surfaceTokens.OpenSurface(bridge.OpenSurfaceRequest{
-		PluginID: "com.example.scope", PluginInstanceID: "plugini_scope", PluginVersion: "1.0.0", UIProtocolVersion: "plugin-ui-v5",
+		PluginID: "com.example.scope", PluginInstanceID: "plugini_scope", PluginVersion: "1.0.0", UIProtocolVersion: "plugin-ui-v7",
 		SurfaceID: "scope.view", SurfaceInstanceID: "surface_scope", ActiveFingerprint: "sha256:scope",
 		EntryPath: "ui/index.html", EntrySHA256: "sha256:entry", RouteRole: bridge.RouteRoleTrustedParent,
 		RuntimeGenerationID: "runtime_generation_scope",

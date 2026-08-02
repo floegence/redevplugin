@@ -609,7 +609,7 @@ func TestSQLiteRegistryRejectsMalformedCurrentSecurityFactsWithoutRepair(t *test
 	record, err := store.PutPlugin(ctx, PluginRecord{
 		PluginInstanceID: "plugini_malformed_facts", PublisherID: "example", PluginID: "com.example.malformed",
 		Version: "1.0.0", PackageHash: "sha256:package", TrustState: TrustVerified, EnableState: EnableDisabled,
-		Manifest: manifest.Manifest{Plugin: manifest.Plugin{PluginID: "com.example.malformed", Version: "1.0.0"}},
+		Manifest: manifest.Manifest{SchemaVersion: manifest.SchemaVersionV8, Plugin: manifest.Plugin{PluginID: "com.example.malformed", Version: "1.0.0"}},
 	}, PutOptions{})
 	if err != nil {
 		t.Fatal(err)
@@ -721,7 +721,7 @@ func TestSQLiteRegistryMigratesUnversionedExternalFactsAndPreservesRecords(t *te
 		PackageHash: "sha256:legacy-package", TrustState: TrustVerified,
 		TrustAssessment: TrustAssessment{TrustState: TrustVerified, VerifiedSignature: &VerifiedSignature{Algorithm: "ed25519", KeyID: "legacy-key"}},
 		EnableState:     EnableDisabled,
-		Manifest:        manifest.Manifest{Plugin: manifest.Plugin{PluginID: "com.example.external-migration", Version: "1.0.0"}},
+		Manifest:        manifest.Manifest{SchemaVersion: manifest.SchemaVersionV8, Plugin: manifest.Plugin{PluginID: "com.example.external-migration", Version: "1.0.0"}},
 	}, PutOptions{})
 	if err != nil {
 		t.Fatal(err)
@@ -774,11 +774,11 @@ func TestSQLiteRegistryV0MigrationPreservesMultipleOwnersAndVersionFacts(t *test
 			PluginInstanceID: "plugini_shared", PublisherID: "example", PluginID: "com.example.shared",
 			Version: "2.0.0", PackageHash: packageHash, ManifestHash: "sha256:manifest-" + owner,
 			EntriesHash: "sha256:entries-" + owner, TrustState: TrustVerified, EnableState: EnableDisabled,
-			Manifest: manifest.Manifest{Plugin: manifest.Plugin{PluginID: "com.example.shared", Version: "2.0.0"}},
+			Manifest: manifest.Manifest{SchemaVersion: manifest.SchemaVersionV8, Plugin: manifest.Plugin{PluginID: "com.example.shared", Version: "2.0.0"}},
 			VersionHistory: []PluginVersion{{
 				Version: "1.0.0", PackageHash: "sha256:history-package-" + owner,
 				ManifestHash: "sha256:history-manifest-" + owner, EntriesHash: "sha256:history-entries-" + owner,
-				TrustState: TrustVerified,
+				TrustState: TrustVerified, Manifest: manifest.Manifest{SchemaVersion: manifest.SchemaVersionV8},
 			}},
 		}, PutOptions{})
 		if err != nil {
@@ -876,7 +876,7 @@ func TestSQLiteRegistryRollsBackFailedExternalFactsMigration(t *testing.T) {
 		PluginInstanceID: "plugini_external_rollback", PublisherID: "example",
 		PluginID: "com.example.external-rollback", Version: "1.0.0",
 		TrustState: TrustVerified, EnableState: EnableDisabled,
-		Manifest: manifest.Manifest{Plugin: manifest.Plugin{PluginID: "com.example.external-rollback", Version: "1.0.0"}},
+		Manifest: manifest.Manifest{SchemaVersion: manifest.SchemaVersionV8, Plugin: manifest.Plugin{PluginID: "com.example.external-rollback", Version: "1.0.0"}},
 	}, PutOptions{})
 	if err != nil {
 		t.Fatal(err)
@@ -967,7 +967,7 @@ func externalPackageInstallRequest(ownerEnvHash string, now time.Time) CommitExt
 				SHA256: "sha256:capability-summary",
 			},
 			EnableState: EnableDisabled,
-			Manifest:    manifest.Manifest{Plugin: manifest.Plugin{PluginID: "com.example.external", Version: "1.0.0"}},
+			Manifest:    manifest.Manifest{SchemaVersion: manifest.SchemaVersionV8, Plugin: manifest.Plugin{PluginID: "com.example.external", Version: "1.0.0"}},
 		},
 	}
 }

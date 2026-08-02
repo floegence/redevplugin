@@ -351,6 +351,31 @@ layout that ReDevPlugin defines. Host products select the state root and invoke
 released migration APIs, but they must not copy ReDevPlugin schemas, SQL, file
 layout rules, or migration state machines into host code.
 
+### Pre-Release Plugin Package Baseline
+
+The manifest v8 and release metadata v8 transition for ReDevPlugin 0.7.0 is a
+user-approved pre-release current-only baseline. No supported public release
+used the retired manifest v5-v7 or release metadata v5-v7 package formats, so
+the current source tree, generated contracts, CLI, and compatibility matrix
+accept only `redevplugin.manifest.v8`, `redevplugin.release_metadata.v8`, and
+`plugin-ui-v7`. Retired package schemas remain available only from historical
+Git tags and must not be restored as active union members, compatibility
+decoders, scaffold targets, or generated-contract inputs.
+
+Manifest presentation is author-owned signed package content. ReDevPlugin owns
+its validation, canonicalization, locale resolution, inspection, and installed
+inventory projection. A host or market must consume the verified normalized
+presentation and must not maintain a second manifest parser, author-copy
+catalog, plugin-ID presentation marker, or host-authored replacement copy.
+
+If ReDevPlugin-owned persistent state contains a retired manifest, opening or
+reading that state must return a stable incompatibility error without deleting,
+rewriting, migrating, or synthesizing presentation for the old record. This is
+the narrow pre-release exception to the normal migration rules below. Once
+0.7.0 is released or distributed, manifest v8 and release metadata v8 begin the
+permanent supported lineage; future changes must append explicit migrations and
+must not invoke this exception again.
+
 - Every change to a released ReDevPlugin-owned durable schema or layout must
   include an automatic, versioned, idempotent, and crash-recoverable migration
   path from every supported released predecessor before new readers or writers

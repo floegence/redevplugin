@@ -156,15 +156,15 @@ func VerifyPackageSignature(context PackageVerificationContext, document Package
 	return verifyEncodedSignature(SigningUsagePackage, document.KeyID, preimage, document.Signature, verifier)
 }
 
-func BuildReleaseMetadata(document ReleaseMetadataV5) (ReleaseMetadataV5, error) {
+func BuildReleaseMetadata(document ReleaseMetadataV8) (ReleaseMetadataV8, error) {
 	document = cloneReleaseMetadata(document)
 	if err := validateReleaseMetadata(document); err != nil {
-		return ReleaseMetadataV5{}, err
+		return ReleaseMetadataV8{}, err
 	}
 	return document, nil
 }
 
-func ReleaseMetadataSigningPreimage(channel string, document ReleaseMetadataV5) ([]byte, error) {
+func ReleaseMetadataSigningPreimage(channel string, document ReleaseMetadataV8) ([]byte, error) {
 	if !newContractIDPattern.MatchString(channel) {
 		return nil, invalid("release metadata channel")
 	}
@@ -174,12 +174,12 @@ func ReleaseMetadataSigningPreimage(channel string, document ReleaseMetadataV5) 
 	}
 	payload := struct {
 		Channel         string            `json:"channel"`
-		ReleaseMetadata ReleaseMetadataV5 `json:"release_metadata"`
+		ReleaseMetadata ReleaseMetadataV8 `json:"release_metadata"`
 	}{Channel: channel, ReleaseMetadata: built}
 	return signingPreimage(SigningUsageReleaseMetadata, payload)
 }
 
-func CanonicalReleaseMetadata(document ReleaseMetadataV5) ([]byte, error) {
+func CanonicalReleaseMetadata(document ReleaseMetadataV8) ([]byte, error) {
 	built, err := BuildReleaseMetadata(document)
 	if err != nil {
 		return nil, err
@@ -187,7 +187,7 @@ func CanonicalReleaseMetadata(document ReleaseMetadataV5) ([]byte, error) {
 	return canonicalJSON(built)
 }
 
-func VerifyReleaseMetadata(channel string, document ReleaseMetadataV5, signature []byte, verifier SignatureVerifier) error {
+func VerifyReleaseMetadata(channel string, document ReleaseMetadataV8, signature []byte, verifier SignatureVerifier) error {
 	preimage, err := ReleaseMetadataSigningPreimage(channel, document)
 	if err != nil {
 		return err
@@ -613,7 +613,7 @@ func cloneCapabilityPublisherScopes(values []SourcePolicyCapabilityPublisherScop
 	return cloned
 }
 
-func cloneReleaseMetadata(value ReleaseMetadataV5) ReleaseMetadataV5 {
+func cloneReleaseMetadata(value ReleaseMetadataV8) ReleaseMetadataV8 {
 	value.Compatibility.SupportedTargets = slices.Clone(value.Compatibility.SupportedTargets)
 	if value.HostRequirements != nil {
 		value.HostRequirements = slices.Clone(value.HostRequirements)

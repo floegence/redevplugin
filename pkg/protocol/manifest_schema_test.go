@@ -15,7 +15,7 @@ import (
 
 func TestManifestSchemaMatchesGoManifestContract(t *testing.T) {
 	root := repoRoot(t)
-	raw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", "manifest-v5.schema.json"))
+	raw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", "manifest-v8.schema.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -28,21 +28,35 @@ func TestManifestSchemaMatchesGoManifestContract(t *testing.T) {
 		t.Fatalf("manifest schema additionalProperties = %#v, want false", schema["additionalProperties"])
 	}
 	required := requireStringSlice(t, schema["required"], "manifest required")
-	if !stringSetEqual(required, []string{"schema_version", "publisher", "plugin", "surfaces"}) {
+	if !stringSetEqual(required, []string{"schema_version", "publisher", "plugin", "presentation", "surfaces"}) {
 		t.Fatalf("manifest required = %#v", required)
 	}
 
 	props := requireNestedObject(t, schema, "properties")
-	if got := requireNestedObject(t, props, "schema_version")["const"]; got != "redevplugin.manifest.v5" {
+	if got := requireNestedObject(t, props, "schema_version")["const"]; got != "redevplugin.manifest.v8" {
 		t.Fatalf("schema_version const = %#v", got)
 	}
 	pluginProps := requireNestedObject(t, props, "plugin", "properties")
 	if got := requireNestedObject(t, pluginProps, "api_version")["const"]; got != "plugin-v1" {
 		t.Fatalf("plugin.api_version const = %#v", got)
 	}
-	if got := requireNestedObject(t, pluginProps, "ui_protocol_version")["const"]; got != "plugin-ui-v5" {
+	if got := requireNestedObject(t, pluginProps, "ui_protocol_version")["const"]; got != "plugin-ui-v7" {
 		t.Fatalf("plugin.ui_protocol_version const = %#v", got)
 	}
+	presentation := requireNestedObject(t, props, "presentation")
+	assertStringSet(t, requireStringSlice(t, presentation["required"], "presentation required"), []string{
+		"default_locale", "summary", "description", "highlights", "keywords", "localizations",
+	}, "presentation required")
+	if got := requireNestedObject(t, presentation, "properties", "localizations")["maxItems"]; got != float64(15) {
+		t.Fatalf("presentation localizations maxItems = %#v, want 15", got)
+	}
+	defs := requireNestedObject(t, schema, "$defs")
+	localization := requireNestedObject(t, defs, "localization")
+	assertStringSet(t, requireStringSlice(t, localization["required"], "localization required"), []string{
+		"locale", "plugin_name", "summary", "description", "highlights", "keywords", "surfaces", "settings",
+	}, "localization required")
+	settingOption := requireNestedObject(t, defs, "setting_option")
+	assertStringSet(t, requireStringSlice(t, settingOption["required"], "setting option required"), []string{"value", "label"}, "setting option required")
 
 	surfaceProps := requireNestedObject(t, props, "surfaces", "items", "properties")
 	assertStringEnum(t, requireNestedObject(t, surfaceProps, "kind")["enum"], "surface kind", []string{
@@ -169,7 +183,7 @@ func TestManifestSchemaMatchesGoManifestContract(t *testing.T) {
 
 func TestManifestMethodSchemaMachineContractMatchesGoValidation(t *testing.T) {
 	root := repoRoot(t)
-	schemaRaw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", "manifest-v5.schema.json"))
+	schemaRaw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", "manifest-v8.schema.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -183,10 +197,10 @@ func TestManifestMethodSchemaMachineContractMatchesGoValidation(t *testing.T) {
 	if err := compiler.AddResource("https://schemas.redevplugin.dev/plugin/host-capability-pin-v1.schema.json", bytes.NewReader(pinSchemaRaw)); err != nil {
 		t.Fatal(err)
 	}
-	if err := compiler.AddResource("urn:redevplugin:manifest-v5", bytes.NewReader(schemaRaw)); err != nil {
+	if err := compiler.AddResource("urn:redevplugin:manifest-v8", bytes.NewReader(schemaRaw)); err != nil {
 		t.Fatal(err)
 	}
-	compiled, err := compiler.Compile("urn:redevplugin:manifest-v5")
+	compiled, err := compiler.Compile("urn:redevplugin:manifest-v8")
 	if err != nil {
 		t.Fatal(err)
 	}

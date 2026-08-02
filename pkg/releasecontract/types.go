@@ -3,10 +3,8 @@ package releasecontract
 const (
 	RootDelegationSchemaVersion        = "redevplugin.release_root_delegation.v1"
 	PackageSignatureSchemaVersion      = "redevplugin.package_signature.v1"
-	ReleaseMetadataSchemaVersionV5     = "redevplugin.release_metadata.v5"
-	ReleaseMetadataSchemaVersionV6     = "redevplugin.release_metadata.v6"
-	ReleaseMetadataSchemaVersionV7     = "redevplugin.release_metadata.v7"
-	ReleaseMetadataSchemaVersion       = ReleaseMetadataSchemaVersionV7
+	ReleaseMetadataSchemaVersionV8     = "redevplugin.release_metadata.v8"
+	ReleaseMetadataSchemaVersion       = ReleaseMetadataSchemaVersionV8
 	SourcePolicySchemaVersionV2        = "redevplugin.release_source_policy.v2"
 	SourcePolicySchemaVersionV3        = "redevplugin.release_source_policy.v3"
 	SourcePolicySchemaVersion          = SourcePolicySchemaVersionV3
@@ -296,7 +294,7 @@ type PackageSignatureV1 struct {
 	SignedAt      string `json:"signed_at,omitempty"`
 }
 
-type ReleaseMetadataV5 struct {
+type ReleaseMetadataV8 struct {
 	SchemaVersion            string                      `json:"schema_version"`
 	SourceID                 string                      `json:"source_id"`
 	ReleaseMetadataRef       string                      `json:"release_metadata_ref"`

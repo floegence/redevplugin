@@ -32,12 +32,11 @@ func TestValidateAcceptsOnlyReleasedManifestUIProtocolPairs(t *testing.T) {
 		protocol string
 		wantErr  bool
 	}{
-		{name: "v5", schema: SchemaVersionV5, protocol: "plugin-ui-v5"},
-		{name: "v6", schema: SchemaVersionV6, protocol: "plugin-ui-v6"},
-		{name: "v7", schema: SchemaVersionV7, protocol: "plugin-ui-v7"},
-		{name: "v5 schema with v6 protocol", schema: SchemaVersionV5, protocol: "plugin-ui-v6", wantErr: true},
-		{name: "v6 schema with v5 protocol", schema: SchemaVersionV6, protocol: "plugin-ui-v5", wantErr: true},
-		{name: "v7 schema with v6 protocol", schema: SchemaVersionV7, protocol: "plugin-ui-v6", wantErr: true},
+		{name: "v8", schema: SchemaVersionV8, protocol: "plugin-ui-v7"},
+		{name: "v5 is retired", schema: "redevplugin.manifest.v5", protocol: "plugin-ui-v5", wantErr: true},
+		{name: "v6 is retired", schema: "redevplugin.manifest.v6", protocol: "plugin-ui-v6", wantErr: true},
+		{name: "v7 is retired", schema: "redevplugin.manifest.v7", protocol: "plugin-ui-v7", wantErr: true},
+		{name: "v8 requires ui v7", schema: SchemaVersionV8, protocol: "plugin-ui-v6", wantErr: true},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1068,7 +1067,7 @@ func stringPtr(value string) *string {
 
 func validManifest() Manifest {
 	return Manifest{
-		SchemaVersion: "redevplugin.manifest.v5",
+		SchemaVersion: SchemaVersionV8,
 		Publisher:     Publisher{PublisherID: "example", DisplayName: "Example"},
 		Plugin: Plugin{
 			PluginID:          "com.example.resources",
@@ -1076,7 +1075,26 @@ func validManifest() Manifest {
 			Version:           "1.0.0",
 			APIVersion:        "plugin-v1",
 			MinRuntimeVersion: "0.1.0",
-			UIProtocolVersion: "plugin-ui-v5",
+			UIProtocolVersion: "plugin-ui-v7",
+		},
+		Presentation: PresentationSpec{
+			DefaultLocale: "en-US",
+			Summary:       "Manage example resources.",
+			Description:   []string{"Inspect and manage example resources from one surface."},
+			Highlights:    []string{"Review resources before changing them."},
+			Keywords:      []string{"resources", "management"},
+			Localizations: []PresentationLocalizationSpec{{
+				Locale: "fr-FR", PluginName: "Ressources", PublisherName: "Exemple",
+				Summary:     "Gérez les ressources d’exemple.",
+				Description: []string{"Inspectez et gérez les ressources d’exemple depuis une surface unique."},
+				Highlights:  []string{"Examinez les ressources avant de les modifier."},
+				Keywords:    []string{"ressources", "gestion"},
+				Surfaces:    []LocalizedSurfacePresentation{{SurfaceID: "resources.view", Label: "Ressources"}},
+				Settings: []LocalizedSettingPresentation{{
+					Key: "default_source", Label: "Source par défaut",
+					Options: []SettingOptionSpec{{Value: "primary", Label: "Principale"}, {Value: "secondary", Label: "Secondaire"}},
+				}},
+			}},
 		},
 		Surfaces: []SurfaceSpec{
 			{SurfaceID: "resources.view", Kind: SurfaceView, Intent: SurfaceIntentPrimary, Label: "Resources", Entry: "ui/index.html"},
@@ -1097,7 +1115,7 @@ func validManifest() Manifest {
 		Settings: &SettingsSpec{
 			SchemaVersion: 1,
 			Fields: []SettingFieldSpec{
-				{Key: "default_source", Type: "select", Scope: "user", Label: "Default source", Default: "primary", Options: []string{"primary", "secondary"}},
+				{Key: "default_source", Type: "select", Scope: "user", Label: "Default source", Default: "primary", Options: []SettingOptionSpec{{Value: "primary", Label: "Primary"}, {Value: "secondary", Label: "Secondary"}}},
 			},
 		},
 		Intents: []IntentSpec{{IntentID: "open-resource-list", Method: "resources.list"}},
@@ -1160,6 +1178,7 @@ func TestValidateAllowsSecretRefWithinSameScope(t *testing.T) {
 	m.Settings = &SettingsSpec{SchemaVersion: 1, Fields: []SettingFieldSpec{{
 		Key: "api_token", Type: "secret", Scope: "user", Label: "API token", SecretRef: "shared_token",
 	}}}
+	m.Presentation.Localizations[0].Settings = []LocalizedSettingPresentation{{Key: "api_token", Label: "Jeton API", Options: []SettingOptionSpec{}}}
 	m.NetworkAccess = &NetworkAccessSpec{Connectors: []NetworkConnectorSpec{{
 		ConnectorID: "api", Transport: "http", Scope: "user", Destinations: []string{"https://api.example.com"},
 		Auth: map[string]any{"secret_ref": "shared_token"},
@@ -1171,7 +1190,7 @@ func TestValidateAllowsSecretRefWithinSameScope(t *testing.T) {
 
 func validManifestJSON() string {
 	return fmt.Sprintf(`{
-		"schema_version": "redevplugin.manifest.v5",
+		"schema_version": "redevplugin.manifest.v8",
 		"publisher": {"publisher_id": "example", "display_name": "Example"},
 		"plugin": {
 			"plugin_id": "com.example.resources",
@@ -1179,7 +1198,25 @@ func validManifestJSON() string {
 			"version": "1.0.0",
 			"api_version": "plugin-v1",
 			"min_runtime_version": "0.1.0",
-			"ui_protocol_version": "plugin-ui-v5"
+			"ui_protocol_version": "plugin-ui-v7"
+		},
+		"presentation": {
+			"default_locale": "en-US",
+			"summary": "Manage example resources.",
+			"description": ["Inspect and manage example resources from one surface."],
+			"highlights": ["Review resources before changing them."],
+			"keywords": ["resources", "management"],
+			"localizations": [{
+				"locale": "fr-FR",
+				"plugin_name": "Ressources",
+				"publisher_name": "Exemple",
+				"summary": "Gérez les ressources d’exemple.",
+				"description": ["Inspectez et gérez les ressources d’exemple depuis une surface unique."],
+				"highlights": ["Examinez les ressources avant de les modifier."],
+				"keywords": ["ressources", "gestion"],
+				"surfaces": [{"surface_id": "resources.view", "label": "Ressources"}],
+				"settings": [{"key": "default_source", "label": "Source par défaut", "options": [{"value": "primary", "label": "Principale"}, {"value": "secondary", "label": "Secondaire"}]}]
+			}]
 		},
 		"surfaces": [
 			{"surface_id": "resources.view", "kind": "view", "label": "Resources", "entry": "ui/index.html"}
@@ -1200,7 +1237,7 @@ func validManifestJSON() string {
 		"settings": {
 			"schema_version": 1,
 			"fields": [
-				{"key": "default_source", "type": "select", "scope": "user", "label": "Default source", "default": "primary", "options": ["primary", "secondary"]}
+				{"key": "default_source", "type": "select", "scope": "user", "label": "Default source", "default": "primary", "options": [{"value": "primary", "label": "Primary"}, {"value": "secondary", "label": "Secondary"}]}
 			]
 		},
 		"intents": [

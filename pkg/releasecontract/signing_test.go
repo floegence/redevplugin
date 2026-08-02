@@ -23,7 +23,7 @@ type releaseSigningFixture struct {
 	PackageContext         PackageVerificationContext
 	Package                PackageSignatureV1
 	MetadataChannel        string
-	Metadata               ReleaseMetadataV5
+	Metadata               ReleaseMetadataV8
 	MetadataSignature      []byte
 	PolicyInput            SourcePolicyInput
 	Policy                 SourcePolicyV2
@@ -168,12 +168,11 @@ func TestReleaseMetadataAcceptsOnlyReleasedSchemaUIProtocolPairs(t *testing.T) {
 		protocol string
 		wantErr  bool
 	}{
-		{name: "v5", schema: ReleaseMetadataSchemaVersionV5, protocol: "plugin-ui-v5"},
-		{name: "v6", schema: ReleaseMetadataSchemaVersionV6, protocol: "plugin-ui-v6"},
-		{name: "v7", schema: ReleaseMetadataSchemaVersionV7, protocol: "plugin-ui-v7"},
-		{name: "v5 schema with v6 protocol", schema: ReleaseMetadataSchemaVersionV5, protocol: "plugin-ui-v6", wantErr: true},
-		{name: "v6 schema with v5 protocol", schema: ReleaseMetadataSchemaVersionV6, protocol: "plugin-ui-v5", wantErr: true},
-		{name: "v7 schema with v6 protocol", schema: ReleaseMetadataSchemaVersionV7, protocol: "plugin-ui-v6", wantErr: true},
+		{name: "v8", schema: ReleaseMetadataSchemaVersionV8, protocol: "plugin-ui-v7"},
+		{name: "v5 is retired", schema: "redevplugin.release_metadata.v5", protocol: "plugin-ui-v5", wantErr: true},
+		{name: "v6 is retired", schema: "redevplugin.release_metadata.v6", protocol: "plugin-ui-v6", wantErr: true},
+		{name: "v7 is retired", schema: "redevplugin.release_metadata.v7", protocol: "plugin-ui-v7", wantErr: true},
+		{name: "v8 with old UI protocol", schema: ReleaseMetadataSchemaVersionV8, protocol: "plugin-ui-v6", wantErr: true},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -429,8 +428,8 @@ func newReleaseSigningFixture(t testing.TB) releaseSigningFixture {
 	packageDocument := mustBuild(t, func() (PackageSignatureV1, error) { return BuildPackageSignature(packageInput, packageSignature) })
 	packageContext := PackageVerificationContext{SourceID: packageInput.SourceID, Channel: packageInput.Channel, Version: packageInput.Version}
 
-	metadata := ReleaseMetadataV5{
-		SchemaVersion:      ReleaseMetadataSchemaVersionV5,
+	metadata := ReleaseMetadataV8{
+		SchemaVersion:      ReleaseMetadataSchemaVersionV8,
 		SourceID:           "example_source",
 		ReleaseMetadataRef: "plugins/example.publisher/example.plugin/1.2.3/release.json",
 		PublisherID:        "example.publisher",
@@ -460,9 +459,9 @@ func newReleaseSigningFixture(t testing.TB) releaseSigningFixture {
 			RevocationEpoch:    "1",
 		},
 		Compatibility: ReleaseCompatibility{
-			MinReDevPluginVersion: "0.6.0",
-			MinRuntimeVersion:     "0.6.0",
-			UIProtocolVersion:     "plugin-ui-v5",
+			MinReDevPluginVersion: "0.7.0",
+			MinRuntimeVersion:     "0.7.0",
+			UIProtocolVersion:     "plugin-ui-v7",
 			SupportedTargets:      []string{"linux/amd64", "linux/arm64"},
 		},
 		ReleaseEvidence: &ReleaseEvidence{
@@ -477,7 +476,7 @@ func newReleaseSigningFixture(t testing.TB) releaseSigningFixture {
 			"zeta":  "last",
 		},
 	}
-	metadata = mustBuild(t, func() (ReleaseMetadataV5, error) { return BuildReleaseMetadata(metadata) })
+	metadata = mustBuild(t, func() (ReleaseMetadataV8, error) { return BuildReleaseMetadata(metadata) })
 	metadataPreimage := mustPreimage(t, func() ([]byte, error) { return ReleaseMetadataSigningPreimage("stable", metadata) })
 	metadataSignature := signReleasePreimage(privateKey, metadataPreimage)
 

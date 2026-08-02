@@ -4,12 +4,12 @@ package version
 
 const (
 	PluginUIProtocolVersion                   = "plugin-ui-v7"
-	PluginHostProtocolVersion                 = "plugin-host-v9"
+	PluginHostProtocolVersion                 = "plugin-host-v10"
 	RustIPCVersion                            = "rust-ipc-v6"
 	WASMABIVersion                            = "redevplugin-wasm-worker-v2"
-	ManifestSchemaVersion                     = "manifest-v7"
+	ManifestSchemaVersion                     = "manifest-v8"
 	PackageSignatureSchemaVersion             = "package-signature-v1"
-	ReleaseMetadataSchemaVersion              = "release-metadata-v7"
+	ReleaseMetadataSchemaVersion              = "release-metadata-v8"
 	ReleaseRootDelegationSchemaVersion        = "release-root-delegation-v1"
 	ReleaseSourcePolicySchemaVersion          = "release-source-policy-v3"
 	ReleaseSourcePolicyPointerSchemaVersion   = "release-source-policy-pointer-v2"
@@ -32,9 +32,9 @@ const (
 	ResourceScopeSchemaVersion                = "resource-scope-v1"
 	SessionScopeSchemaVersion                 = "session-scope-v1"
 	SessionScopeMaintenanceSchemaVersion      = "session-scope-maintenance-v1"
-	PluginPlatformOpenAPIVersion              = "plugin-platform-v11"
-	CompatibilityManifestVersion              = "redevplugin.compatibility.v13"
-	CompatibilitySchemaVersion                = "compatibility-manifest-v13"
+	PluginPlatformOpenAPIVersion              = "plugin-platform-v12"
+	CompatibilityManifestVersion              = "redevplugin.compatibility.v14"
+	CompatibilitySchemaVersion                = "compatibility-manifest-v14"
 	WorkerInvocationSchemaVersion             = "worker-invocation-v3"
 	HostCapabilityContractSchemaVersion       = "host-capability-contract-v1"
 	HostCapabilityPinSchemaVersion            = "host-capability-pin-v1"
@@ -62,9 +62,9 @@ const (
 var generatedContractArtifacts = []ContractArtifact{
 	{
 		ID:      "compatibility-manifest-schema",
-		Path:    "spec/plugin/compatibility-manifest-v13.schema.json",
-		Version: "compatibility-manifest-v13",
-		SHA256:  "c95fdfe0c5818ba57e664c534c3d10d073545e5a31bccd7c1ee5d39d391d13b2",
+		Path:    "spec/plugin/compatibility-manifest-v14.schema.json",
+		Version: "compatibility-manifest-v14",
+		SHA256:  "67016ead2ed8b86410aafe3771d750ea2ab088479047475542ac65caa1691a7c",
 	},
 	{
 		ID:      "contract-registry-schema",
@@ -152,9 +152,9 @@ var generatedContractArtifacts = []ContractArtifact{
 	},
 	{
 		ID:      "manifest-schema",
-		Path:    "spec/plugin/manifest-v7.schema.json",
-		Version: "manifest-v7",
-		SHA256:  "af73ffd8ccedcb149198f847b68ed6fc23e51366122915c7129473f9fde68e35",
+		Path:    "spec/plugin/manifest-v8.schema.json",
+		Version: "manifest-v8",
+		SHA256:  "f4f6ec875936b19ae3371459804b5ad2c36a4bd0739a83976037efffe51ada48",
 	},
 	{
 		ID:      "network-grant-schema",
@@ -230,9 +230,15 @@ var generatedContractArtifacts = []ContractArtifact{
 	},
 	{
 		ID:      "plugin-platform-openapi",
-		Path:    "spec/openapi/plugin-platform-v11.yaml",
-		Version: "plugin-platform-v11",
-		SHA256:  "41c84c939ca9471baafdb16a1fe7d62a232a58df91e579514351dd6046e529e7",
+		Path:    "spec/openapi/plugin-platform-v12.yaml",
+		Version: "plugin-platform-v12",
+		SHA256:  "715698e9e1e357e243ee21b3157cc044befac83979107f54d024b5e9e48f7050",
+	},
+	{
+		ID:      "presentation-locale-fixture",
+		Path:    "spec/plugin/presentation-locale-fixtures-v1.json",
+		Version: "presentation-locale-fixtures-v1",
+		SHA256:  "cbb4c0188d020b5fbde9a0c2c33b3677d21cc64c0f0297b7f6f3f6c0efabc40e",
 	},
 	{
 		ID:      "process-containment-schema",
@@ -254,9 +260,9 @@ var generatedContractArtifacts = []ContractArtifact{
 	},
 	{
 		ID:      "release-metadata-schema",
-		Path:    "spec/plugin/release-metadata-v7.schema.json",
-		Version: "release-metadata-v7",
-		SHA256:  "d9ceac9b8dd52288172bbe5d4dc2f158e2354ad4fe1f071617f6ba9309e21ebf",
+		Path:    "spec/plugin/release-metadata-v8.schema.json",
+		Version: "release-metadata-v8",
+		SHA256:  "f454fc1923be10fd5a4b46df4a6e376f7e9fe1d462f3da57977b92ad7c7496b0",
 	},
 	{
 		ID:      "release-publisher-config-schema",

@@ -276,6 +276,8 @@ type ExternalPackageInspection struct {
 	PublisherID         string                             `json:"publisher_id"`
 	PluginID            string                             `json:"plugin_id"`
 	Version             string                             `json:"version"`
+	Presentation        manifest.PresentationCatalog       `json:"presentation"`
+	PresentationSHA256  string                             `json:"presentation_sha256"`
 	InspectedHashes     PackageHashSet                     `json:"inspected_hashes"`
 	SignatureAssessment ExternalPackageSignatureAssessment `json:"signature_assessment"`
 	SourceProvenance    ExternalPackageSourceProvenance    `json:"source_provenance"`

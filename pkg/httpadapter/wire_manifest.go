@@ -80,6 +80,55 @@ type manifestPluginResponse struct {
 	UIProtocolVersion string `json:"ui_protocol_version"`
 }
 
+type manifestLocalizedSurfaceResponse struct {
+	SurfaceID string `json:"surface_id"`
+	Label     string `json:"label"`
+}
+
+type manifestLocalizedSettingResponse struct {
+	Key     string                       `json:"key"`
+	Label   string                       `json:"label"`
+	Options []manifest.SettingOptionSpec `json:"options"`
+}
+
+type manifestPresentationLocalizationResponse struct {
+	Locale        string                             `json:"locale"`
+	PluginName    string                             `json:"plugin_name"`
+	PublisherName string                             `json:"publisher_name,omitempty"`
+	Summary       string                             `json:"summary"`
+	Description   []string                           `json:"description"`
+	Highlights    []string                           `json:"highlights"`
+	Keywords      []string                           `json:"keywords"`
+	Surfaces      []manifestLocalizedSurfaceResponse `json:"surfaces"`
+	Settings      []manifestLocalizedSettingResponse `json:"settings"`
+}
+
+type manifestPresentationResponse struct {
+	DefaultLocale string                                     `json:"default_locale"`
+	Summary       string                                     `json:"summary"`
+	Description   []string                                   `json:"description"`
+	Highlights    []string                                   `json:"highlights"`
+	Keywords      []string                                   `json:"keywords"`
+	Localizations []manifestPresentationLocalizationResponse `json:"localizations"`
+}
+
+type presentationLocaleResponse struct {
+	Locale        string                             `json:"locale"`
+	PluginName    string                             `json:"plugin_name"`
+	PublisherName string                             `json:"publisher_name,omitempty"`
+	Summary       string                             `json:"summary"`
+	Description   []string                           `json:"description"`
+	Highlights    []string                           `json:"highlights"`
+	Keywords      []string                           `json:"keywords"`
+	Surfaces      []manifestLocalizedSurfaceResponse `json:"surfaces"`
+	Settings      []manifestLocalizedSettingResponse `json:"settings"`
+}
+
+type presentationCatalogResponse struct {
+	DefaultLocale string                       `json:"default_locale"`
+	Locales       []presentationLocaleResponse `json:"locales"`
+}
+
 type manifestWidgetSizeResponse struct {
 	Width  int `json:"width"`
 	Height int `json:"height"`
@@ -191,14 +240,14 @@ type manifestNetworkResponse struct {
 }
 
 type manifestSettingFieldResponse struct {
-	Key        string         `json:"key"`
-	Type       string         `json:"type"`
-	Label      string         `json:"label"`
-	Scope      string         `json:"scope"`
-	Default    any            `json:"default,omitempty"`
-	SecretRef  string         `json:"secret_ref,omitempty"`
-	Options    []string       `json:"options,omitempty"`
-	Validation map[string]any `json:"validation,omitempty"`
+	Key        string                       `json:"key"`
+	Type       string                       `json:"type"`
+	Label      string                       `json:"label"`
+	Scope      string                       `json:"scope"`
+	Default    any                          `json:"default,omitempty"`
+	SecretRef  string                       `json:"secret_ref,omitempty"`
+	Options    []manifest.SettingOptionSpec `json:"options,omitempty"`
+	Validation map[string]any               `json:"validation,omitempty"`
 }
 
 type manifestSettingsResponse struct {
@@ -216,6 +265,7 @@ type manifestResponse struct {
 	SchemaVersion      string                              `json:"schema_version"`
 	Publisher          manifestPublisherResponse           `json:"publisher"`
 	Plugin             manifestPluginResponse              `json:"plugin"`
+	Presentation       manifestPresentationResponse        `json:"presentation"`
 	Surfaces           []manifestSurfaceResponse           `json:"surfaces,omitempty"`
 	CapabilityBindings []manifestCapabilityBindingResponse `json:"capability_bindings,omitempty"`
 	Methods            []manifestMethodResponse            `json:"methods,omitempty"`
@@ -237,6 +287,7 @@ func publicManifest(source manifest.Manifest) (manifestResponse, error) {
 			APIVersion: source.Plugin.APIVersion, MinRuntimeVersion: source.Plugin.MinRuntimeVersion,
 			UIProtocolVersion: source.Plugin.UIProtocolVersion,
 		},
+		Presentation: publicManifestPresentation(source.Presentation),
 	}
 	response.Surfaces = make([]manifestSurfaceResponse, len(source.Surfaces))
 	for index, surface := range source.Surfaces {
@@ -358,7 +409,7 @@ func publicManifest(source manifest.Manifest) (manifestResponse, error) {
 			}
 			settings.Fields[index] = manifestSettingFieldResponse{
 				Key: field.Key, Type: field.Type, Label: field.Label, Scope: field.Scope, Default: defaultValue,
-				SecretRef: field.SecretRef, Options: append([]string(nil), field.Options...), Validation: validation,
+				SecretRef: field.SecretRef, Options: append([]manifest.SettingOptionSpec(nil), field.Options...), Validation: validation,
 			}
 		}
 		response.Settings = settings
@@ -374,6 +425,56 @@ func publicManifest(source manifest.Manifest) (manifestResponse, error) {
 		}
 	}
 	return response, nil
+}
+
+func publicManifestPresentation(source manifest.PresentationSpec) manifestPresentationResponse {
+	localizations := make([]manifestPresentationLocalizationResponse, len(source.Localizations))
+	for index, localization := range source.Localizations {
+		surfaces := make([]manifestLocalizedSurfaceResponse, len(localization.Surfaces))
+		for surfaceIndex, surface := range localization.Surfaces {
+			surfaces[surfaceIndex] = manifestLocalizedSurfaceResponse{SurfaceID: surface.SurfaceID, Label: surface.Label}
+		}
+		settings := make([]manifestLocalizedSettingResponse, len(localization.Settings))
+		for settingIndex, setting := range localization.Settings {
+			settings[settingIndex] = manifestLocalizedSettingResponse{
+				Key: setting.Key, Label: setting.Label, Options: append([]manifest.SettingOptionSpec(nil), setting.Options...),
+			}
+		}
+		localizations[index] = manifestPresentationLocalizationResponse{
+			Locale: localization.Locale, PluginName: localization.PluginName, PublisherName: localization.PublisherName,
+			Summary: localization.Summary, Description: append([]string(nil), localization.Description...),
+			Highlights: append([]string(nil), localization.Highlights...), Keywords: append([]string(nil), localization.Keywords...),
+			Surfaces: surfaces, Settings: settings,
+		}
+	}
+	return manifestPresentationResponse{
+		DefaultLocale: source.DefaultLocale, Summary: source.Summary,
+		Description: append([]string(nil), source.Description...), Highlights: append([]string(nil), source.Highlights...),
+		Keywords: append([]string(nil), source.Keywords...), Localizations: localizations,
+	}
+}
+
+func publicPresentationCatalog(source manifest.PresentationCatalog) presentationCatalogResponse {
+	locales := make([]presentationLocaleResponse, len(source.Locales))
+	for index, locale := range source.Locales {
+		surfaces := make([]manifestLocalizedSurfaceResponse, len(locale.Surfaces))
+		for surfaceIndex, surface := range locale.Surfaces {
+			surfaces[surfaceIndex] = manifestLocalizedSurfaceResponse{SurfaceID: surface.SurfaceID, Label: surface.Label}
+		}
+		settings := make([]manifestLocalizedSettingResponse, len(locale.Settings))
+		for settingIndex, setting := range locale.Settings {
+			settings[settingIndex] = manifestLocalizedSettingResponse{
+				Key: setting.Key, Label: setting.Label, Options: append([]manifest.SettingOptionSpec(nil), setting.Options...),
+			}
+		}
+		locales[index] = presentationLocaleResponse{
+			Locale: locale.Locale, PluginName: locale.PluginName, PublisherName: locale.PublisherName,
+			Summary: locale.Summary, Description: append([]string(nil), locale.Description...),
+			Highlights: append([]string(nil), locale.Highlights...), Keywords: append([]string(nil), locale.Keywords...),
+			Surfaces: surfaces, Settings: settings,
+		}
+	}
+	return presentationCatalogResponse{DefaultLocale: source.DefaultLocale, Locales: locales}
 }
 
 type opaqueSurfaceStyleResponse struct {

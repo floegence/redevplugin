@@ -14,15 +14,14 @@ import (
 )
 
 const (
-	SchemaVersionV5 = "redevplugin.manifest.v5"
-	SchemaVersionV6 = "redevplugin.manifest.v6"
-	SchemaVersionV7 = "redevplugin.manifest.v7"
+	SchemaVersionV8 = "redevplugin.manifest.v8"
 )
 
 type Manifest struct {
 	SchemaVersion      string              `json:"schema_version"`
 	Publisher          Publisher           `json:"publisher"`
 	Plugin             Plugin              `json:"plugin"`
+	Presentation       PresentationSpec    `json:"presentation"`
 	Surfaces           []SurfaceSpec       `json:"surfaces,omitempty"`
 	CapabilityBindings []CapabilityBinding `json:"capability_bindings,omitempty"`
 	Methods            []MethodSpec        `json:"methods,omitempty"`
@@ -245,14 +244,19 @@ type SettingsSpec struct {
 }
 
 type SettingFieldSpec struct {
-	Key        string         `json:"key"`
-	Type       string         `json:"type"`
-	Label      string         `json:"label"`
-	Scope      string         `json:"scope"`
-	Default    any            `json:"default,omitempty"`
-	SecretRef  string         `json:"secret_ref,omitempty"`
-	Options    []string       `json:"options,omitempty"`
-	Validation map[string]any `json:"validation,omitempty"`
+	Key        string              `json:"key"`
+	Type       string              `json:"type"`
+	Label      string              `json:"label"`
+	Scope      string              `json:"scope"`
+	Default    any                 `json:"default,omitempty"`
+	SecretRef  string              `json:"secret_ref,omitempty"`
+	Options    []SettingOptionSpec `json:"options,omitempty"`
+	Validation map[string]any      `json:"validation,omitempty"`
+}
+
+type SettingOptionSpec struct {
+	Value string `json:"value"`
+	Label string `json:"label"`
 }
 
 type IntentSpec struct {
@@ -290,7 +294,7 @@ func Decode(r io.Reader) (Manifest, error) {
 
 func Validate(m Manifest) error {
 	if !validSchemaUIProtocolPair(m.SchemaVersion, m.Plugin.UIProtocolVersion) {
-		return ValidationError{Field: "schema_version", Message: "must pair redevplugin.manifest.v5 with plugin-ui-v5, redevplugin.manifest.v6 with plugin-ui-v6, or redevplugin.manifest.v7 with plugin-ui-v7"}
+		return ValidationError{Field: "schema_version", Message: "must pair redevplugin.manifest.v8 with plugin-ui-v7"}
 	}
 	if strings.TrimSpace(m.Publisher.PublisherID) == "" {
 		return ValidationError{Field: "publisher.publisher_id", Message: "is required"}
@@ -316,7 +320,6 @@ func Validate(m Manifest) error {
 	if m.Surfaces == nil {
 		return ValidationError{Field: "surfaces", Message: "is required"}
 	}
-
 	bindings := map[string]struct{}{}
 	for i, binding := range m.CapabilityBindings {
 		if binding.BindingID == "" {
@@ -497,6 +500,20 @@ func Validate(m Manifest) error {
 			if (field.Type == "enum" || field.Type == "select") && len(field.Options) == 0 {
 				return ValidationError{Field: fmt.Sprintf("settings.fields[%d].options", i), Message: "is required for option settings"}
 			}
+			seenOptions := map[string]struct{}{}
+			for optionIndex, option := range field.Options {
+				optionField := fmt.Sprintf("settings.fields[%d].options[%d]", i, optionIndex)
+				if err := validatePresentationText(optionField+".value", option.Value, 128); err != nil {
+					return err
+				}
+				if err := validatePresentationText(optionField+".label", option.Label, 128); err != nil {
+					return err
+				}
+				if _, exists := seenOptions[option.Value]; exists {
+					return ValidationError{Field: optionField + ".value", Message: "must be unique"}
+				}
+				seenOptions[option.Value] = struct{}{}
+			}
 			if field.Type == "secret" && strings.TrimSpace(field.SecretRef) == "" {
 				return ValidationError{Field: fmt.Sprintf("settings.fields[%d].secret_ref", i), Message: "is required for secret settings"}
 			}
@@ -589,14 +606,15 @@ func Validate(m Manifest) error {
 			return err
 		}
 	}
+	if err := validatePresentation(m); err != nil {
+		return err
+	}
 
 	return nil
 }
 
 func validSchemaUIProtocolPair(schemaVersion, uiProtocolVersion string) bool {
-	return (schemaVersion == SchemaVersionV5 && uiProtocolVersion == "plugin-ui-v5") ||
-		(schemaVersion == SchemaVersionV6 && uiProtocolVersion == "plugin-ui-v6") ||
-		(schemaVersion == SchemaVersionV7 && uiProtocolVersion == "plugin-ui-v7")
+	return schemaVersion == SchemaVersionV8 && uiProtocolVersion == "plugin-ui-v7"
 }
 
 type secretRefScopeDeclaration struct {

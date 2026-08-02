@@ -749,7 +749,7 @@ func authorizationTestPlugin(pluginInstanceID string, pluginID string) PluginRec
 		ActiveFingerprint: "sha256:" + pluginInstanceID,
 		TrustState:        TrustVerified,
 		EnableState:       EnableEnabled,
-		Manifest: manifest.Manifest{
+		Manifest: manifest.Manifest{SchemaVersion: manifest.SchemaVersionV8,
 			Plugin: manifest.Plugin{PluginID: pluginID, Version: "1.0.0"},
 		},
 	}

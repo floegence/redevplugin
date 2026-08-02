@@ -1,18 +1,19 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://schemas.redevplugin.dev/plugin/compatibility-manifest-v10.schema.json",
-  "title": "ReDevPlugin compatibility manifest v10",
+  "$id": "https://schemas.redevplugin.dev/plugin/compatibility-manifest-v14.schema.json",
+  "title": "ReDevPlugin compatibility manifest v14",
   "type": "object",
   "additionalProperties": false,
   "required": ["schema_version", "package_set", "matrix", "contract_set_sha256", "contracts"],
   "properties": {
-    "schema_version": {"const": "redevplugin.compatibility.v10"},
+    "schema_version": {"const": "redevplugin.compatibility.v14"},
     "package_set": {"$ref": "platform-package-set-v1.schema.json"},
     "matrix": {
       "type": "object",
       "additionalProperties": false,
       "required": [
-        "plugin_ui_protocol_version", "plugin_host_protocol_version", "rust_ipc_version", "wasm_abi_version",
+        "plugin_ui_protocol_version", "supported_plugin_ui_protocol_versions", "plugin_ui_transport_mappings",
+        "plugin_host_protocol_version", "rust_ipc_version", "wasm_abi_version",
         "manifest_schema_version", "package_signature_schema_version", "release_metadata_schema_version",
         "release_root_delegation_schema_version", "release_source_policy_schema_version",
         "release_source_policy_pointer_schema_version", "release_revocation_schema_version",
@@ -38,18 +39,30 @@
         "quarantine_cleanup_schema_version"
       ],
       "properties": {
-        "plugin_ui_protocol_version": {"const": "plugin-ui-v5"},
-        "plugin_host_protocol_version": {"const": "plugin-host-v7"},
+        "plugin_ui_protocol_version": {"const": "plugin-ui-v7"},
+        "supported_plugin_ui_protocol_versions": {
+          "const": ["plugin-ui-v7"]
+        },
+        "plugin_ui_transport_mappings": {
+          "const": [
+            {
+              "plugin_ui_protocol_version": "plugin-ui-v7",
+              "opaque_surface_transport_schema_version": "opaque-surface-transport-v6",
+              "bridge_schema_version": "bridge-v7"
+            }
+          ]
+        },
+        "plugin_host_protocol_version": {"const": "plugin-host-v10"},
         "rust_ipc_version": {"const": "rust-ipc-v6"},
         "wasm_abi_version": {"const": "redevplugin-wasm-worker-v2"},
-        "manifest_schema_version": {"const": "manifest-v5"},
+        "manifest_schema_version": {"const": "manifest-v8"},
         "package_signature_schema_version": {"const": "package-signature-v1"},
-        "release_metadata_schema_version": {"const": "release-metadata-v5"},
+        "release_metadata_schema_version": {"const": "release-metadata-v8"},
         "release_root_delegation_schema_version": {"const": "release-root-delegation-v1"},
-        "release_source_policy_schema_version": {"const": "release-source-policy-v2"},
-        "release_source_policy_pointer_schema_version": {"const": "release-source-policy-pointer-v1"},
-        "release_revocation_schema_version": {"const": "release-revocation-v2"},
-        "release_revocation_pointer_schema_version": {"const": "release-revocation-pointer-v1"},
+        "release_source_policy_schema_version": {"const": "release-source-policy-v3"},
+        "release_source_policy_pointer_schema_version": {"const": "release-source-policy-pointer-v2"},
+        "release_revocation_schema_version": {"const": "release-revocation-v3"},
+        "release_revocation_pointer_schema_version": {"const": "release-revocation-pointer-v2"},
         "release_trust_state_schema_version": {"const": "release-trust-state-v1"},
         "trusted_time_evidence_schema_version": {"const": "trusted-time-evidence-v1"},
         "trusted_time_leaf_schema_version": {"const": "trusted-time-leaf-v1"},
@@ -59,16 +72,16 @@
         "release_signing_ledger_receipt_schema_version": {"const": "release-signing-ledger-receipt-v1"},
         "release_signing_ledger_evidence_schema_version": {"const": "release-signing-ledger-evidence-v1"},
         "token_ticket_schema_version": {"const": "token-ticket-v4"},
-        "bridge_schema_version": {"const": "bridge-v5"},
+        "bridge_schema_version": {"const": "bridge-v7"},
         "opaque_surface_document_schema_version": {"const": "opaque-surface-document-v3"},
-        "opaque_surface_transport_schema_version": {"const": "opaque-surface-transport-v4"},
+        "opaque_surface_transport_schema_version": {"const": "opaque-surface-transport-v6"},
         "target_classifier_version": {"const": "target-classifier-v2"},
         "network_grant_schema_version": {"const": "network-grant-v2"},
         "resource_scope_schema_version": {"const": "resource-scope-v1"},
         "session_scope_schema_version": {"const": "session-scope-v1"},
         "session_scope_maintenance_schema_version": {"const": "session-scope-maintenance-v1"},
-        "plugin_platform_openapi_version": {"const": "plugin-platform-v8"},
-        "compatibility_schema_version": {"const": "compatibility-manifest-v10"},
+        "plugin_platform_openapi_version": {"const": "plugin-platform-v12"},
+        "compatibility_schema_version": {"const": "compatibility-manifest-v14"},
         "worker_invocation_schema_version": {"const": "worker-invocation-v3"},
         "host_capability_contract_schema_version": {"const": "host-capability-contract-v1"},
         "host_capability_pin_schema_version": {"const": "host-capability-pin-v1"},
@@ -76,7 +89,7 @@
         "host_capability_compatibility_schema_version": {"const": "host-capability-compatibility-v1"},
         "host_capability_signature_schema_version": {"const": "host-capability-signature-v1"},
         "host_capability_notices_schema_version": {"const": "host-capability-notices-v1"},
-        "error_codes_schema_version": {"const": "error-codes-v6"},
+        "error_codes_schema_version": {"const": "error-codes-v7"},
         "performance_contract_version": {"const": "performance-contract-v4"},
         "performance_evidence_schema_version": {"const": "performance-evidence-v4"},
         "contract_registry_version": {"const": "contract-registry-v2"},

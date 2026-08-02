@@ -87,7 +87,7 @@ func TestHostCapabilityArtifactSchemasAreClosedVersionedAndValidatePublishedSamp
 func TestReleaseMetadataReferencesCanonicalHostCapabilityPinSchema(t *testing.T) {
 	t.Parallel()
 	root := hostCapabilityRepositoryRoot(t)
-	raw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", "release-metadata-v5.schema.json"))
+	raw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", "release-metadata-v8.schema.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
