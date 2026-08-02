@@ -168,7 +168,7 @@ func TestCLIScaffoldProducesPackageablePlugin(t *testing.T) {
 	if err := json.Unmarshal(output, &summary); err != nil {
 		t.Fatalf("scaffold output decode error = %v: %s", err, output)
 	}
-	if summary.PluginID != "com.example.generated" || len(summary.Files) != 14 {
+	if summary.PluginID != "com.example.generated" || len(summary.Files) != 15 {
 		t.Fatalf("scaffold summary mismatch: %#v", summary)
 	}
 
@@ -178,6 +178,11 @@ func TestCLIScaffoldProducesPackageablePlugin(t *testing.T) {
 	manifestRaw, err := os.ReadFile(filepath.Join(scaffoldDir, "manifest.json"))
 	if err != nil {
 		t.Fatal(err)
+	}
+	for _, want := range []string{`"schema_version": "redevplugin.manifest.v7"`, `"ui_protocol_version": "plugin-ui-v7"`} {
+		if !bytes.Contains(manifestRaw, []byte(want)) {
+			t.Fatalf("scaffold manifest missing current protocol %q: %s", want, manifestRaw)
+		}
 	}
 	for _, want := range []string{`"workers"`, `"backend"`, `"worker.echo"`} {
 		if !bytes.Contains(manifestRaw, []byte(want)) {
@@ -222,9 +227,21 @@ func TestCLIScaffoldProducesPackageablePlugin(t *testing.T) {
 			t.Fatalf("scaffold app.js retained parent-only or hand-written bridge field %q", forbidden)
 		}
 	}
-	for _, sourcePath := range []string{"ui/src/app.ts", "worker/src/lib.rs", "worker/Cargo.toml", "package.json", "scripts/build.mjs", "README.md"} {
+	if bytes.Contains(appRaw, []byte(`/^[A-Za-z0-9]`)) {
+		t.Fatal("scaffold app.js contains a regex literal that the closed classic-worker parser cannot admit")
+	}
+	for _, sourcePath := range []string{"ui/src/app.tsx", "worker/src/lib.rs", "worker/Cargo.toml", "package.json", "tsconfig.json", "scripts/build.mjs", "README.md"} {
 		if _, err := os.Stat(filepath.Join(scaffoldDir, filepath.FromSlash(sourcePath))); err != nil {
 			t.Fatalf("editable scaffold source %s is missing: %v", sourcePath, err)
+		}
+	}
+	packageJSONRaw, err := os.ReadFile(filepath.Join(scaffoldDir, "package.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{`"check"`, `ui/src/app.tsx`, `--jsx=automatic`, `@floegence/redevplugin-ui`} {
+		if !bytes.Contains(packageJSONRaw, []byte(want)) {
+			t.Fatalf("scaffold package.json missing %q: %s", want, packageJSONRaw)
 		}
 	}
 	wasmRaw, err := os.ReadFile(filepath.Join(scaffoldDir, "dist", "workers", "backend.wasm"))

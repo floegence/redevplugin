@@ -6,11 +6,14 @@
     "strict": true,
     "noEmit": true,
     "skipLibCheck": true,
+    "jsx": "react-jsx",
+    "jsxImportSource": "@floegence/redevplugin-ui",
     "baseUrl": "../..",
     "paths": {
-      "@floegence/redevplugin-ui/plugin": ["packages/redevplugin-ui/src/plugin.ts"]
+      "@floegence/redevplugin-ui/plugin": ["packages/redevplugin-ui/src/plugin.ts"],
+      "@floegence/redevplugin-ui/jsx-runtime": ["packages/redevplugin-ui/src/jsx-runtime.ts"]
     },
     "lib": ["ES2022", "DOM", "WebWorker"]
   },
-  "include": ["plugin-worker.ts"]
+  "include": ["plugin-worker.tsx"]
 }

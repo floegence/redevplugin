@@ -375,7 +375,7 @@ capabilities.
 - Typed form actions prevent sandbox navigation and serialize at most 128
   bounded string fields. Submit buttons work consistently when the click lands
   on nested icons or labels.
-- The npm API boundary is split into four auditable entrypoints. The package
+- The npm API boundary is split into six auditable entrypoints. The package
   root and `@floegence/redevplugin-ui/trusted-parent` expose the same
   trusted-parent allowlist for host shells. `@floegence/redevplugin-ui/plugin`
   exposes exactly six runtime values to untrusted plugin worker bundles:
@@ -383,6 +383,9 @@ capabilities.
   `callCapabilityOperation`, `callCapabilityStream`, and
   `isCapabilityBusinessError`. Stream decoding remains an internal detail of
   the typed capability helpers and is not a plugin entrypoint export.
+  `@floegence/redevplugin-ui/jsx-runtime` and `jsx-dev-runtime` expose only the
+  restricted automatic JSX VNode constructors and Fragment rejection marker;
+  they do not expose DOM or trusted-parent capabilities.
   `@floegence/redevplugin-ui/local-import` exposes the explicit dev/admin raw
   package client and must not be imported by official release-reference product
   paths. The opaque bootstrap HTML factory remains internal and is not exported

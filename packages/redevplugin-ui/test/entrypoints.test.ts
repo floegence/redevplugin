@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import * as pluginEntrypoint from "../src/plugin.js";
+import * as jsxRuntimeEntrypoint from "../src/jsx-runtime.js";
 import * as rootEntrypoint from "../src/index.js";
 import * as trustedParentEntrypoint from "../src/trusted-parent.js";
 import type { RuntimeProcessFailureCode as RootRuntimeProcessFailureCode } from "../src/index.js";
@@ -125,6 +126,10 @@ test("plugin worker entrypoint exposes only bridge and generated capability clie
   ]) {
     assert.equal(forbidden in pluginEntrypoint, false);
   }
+});
+
+test("restricted JSX runtime exposes only VNode construction primitives", () => {
+  assert.deepEqual(Object.keys(jsxRuntimeEntrypoint).sort(), ["Fragment", "jsx", "jsxDEV", "jsxs"]);
 });
 
 test("root entrypoint is the trusted parent allowlist", () => {

@@ -20,9 +20,10 @@ const { checkOnly, forceCanonical } = parseCanonicalWasmGeneratorArgs(process.ar
 const workerArtifactLockPath = "cmd/redevplugin/scaffold_assets/worker-artifacts.lock.json";
 const workerOutputPath = "cmd/redevplugin/scaffold_assets/backend.wasm";
 const result = await build({
-  entryPoints: [resolve(root, "internal/scaffoldtemplate/plugin-worker.ts")],
+  entryPoints: [resolve(root, "internal/scaffoldtemplate/plugin-worker.tsx")],
   alias: {
     "@floegence/redevplugin-ui/plugin": resolve(root, "packages/redevplugin-ui/src/plugin.ts"),
+    "@floegence/redevplugin-ui/jsx-runtime": resolve(root, "packages/redevplugin-ui/src/jsx-runtime.ts"),
   },
   bundle: true,
   format: "iife",
@@ -40,7 +41,7 @@ await verifyOrWrite(
 );
 await verifyOrWrite(
   "cmd/redevplugin/scaffold_assets/plugin-worker.ts",
-  await readFile(resolve(root, "internal/scaffoldtemplate/plugin-worker.ts")),
+  await readFile(resolve(root, "internal/scaffoldtemplate/plugin-worker.tsx")),
 );
 await verifyOrWrite(
   "cmd/redevplugin/scaffold_assets/worker-lib.rs",

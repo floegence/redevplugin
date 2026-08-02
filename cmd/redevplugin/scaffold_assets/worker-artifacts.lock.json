@@ -5,20 +5,20 @@
   "canonical_builder": "linux/amd64",
   "canonical_image": "docker.io/library/rust:1.88.0-bookworm@sha256:4727898c104ecd2e22d780925832502faee9fe4e70581b8572af081370b315a0",
   "source_files": {
-    "Cargo.lock": "a20b1a8b970ecda293027c5bc205c9a1a84aae88732139211280cf8651700db2",
-    "Cargo.toml": "4659d8f48644344a15af6aad699bf9080d19b70c1430ac91a1bc88f7797081a6",
+    "Cargo.lock": "1e8690ec1adbf80a9da8ade4c73f555e38f211561cc08e207d6446e6b652f339",
+    "Cargo.toml": "3445f85452b1d4761380e95ccefe82a88812903e3c8046eff67453f3f9994c74",
     "crates/redevplugin-worker-sdk/Cargo.toml": "04f7c3694c9f17afa76f37144d36cb71e0400555d7006e62323f3c558a673662",
     "crates/redevplugin-worker-sdk/LICENSE": "68a062bc10a32bc2478ece12a1792f878f72d0033164fb0e4a4c565bab5c8478",
-    "crates/redevplugin-worker-sdk/README.md": "35abdcddae973c3fdd522580d8ce963de8ce6caf456495689aea54c8f99cdd10",
+    "crates/redevplugin-worker-sdk/README.md": "e952da3e3fb1c5e1e957c38d386e11a471ddcf09112532957cc35efe1cfa7528",
     "crates/redevplugin-worker-sdk/src/hostcalls.rs": "67ffaf86a27df801e13c3174d15d4536a84730c7bcd03930b1f8d64e1f4709af",
     "crates/redevplugin-worker-sdk/src/lib.rs": "15dcf96fa0ff0fe862df759edd32b21310098604aed1edb16c9c973b8abb89e6",
     "internal/scaffoldworker/Cargo.toml": "3822629b509f6490816a177bdb73be54bc128a72dbfd890ca9f971028155a5c0",
     "internal/scaffoldworker/src/lib.rs": "666b37e759b8b28534d4c74e40e9ea9753aabb40f7a8ead44fc31dbf1b409773",
     "rust-toolchain.toml": "6c04f2e2d44428d94d3b65cc72041c5ed03d97eac18d6cdc13e95d21355a6869",
-    "scripts/build_scaffold_assets.mjs": "5e8c7944d3ab2cc61ae1f5c2a29d45b81c6c204b4b40325b7d9a6883db0d3821",
+    "scripts/build_scaffold_assets.mjs": "267ad01a63b938df2b50d95b263fc936e24b056ee341ecb0788bf94443d2c11a",
     "scripts/canonical_wasm_builder.mjs": "b37f56c2ca9322aefce98073e918e42e4cdf480639d4d82e90ff6117d2419540"
   },
   "artifacts": {
-    "cmd/redevplugin/scaffold_assets/backend.wasm": "d3c1c1f795b729d9b15986fcb264a8bbb04c8f8fac008cc20dd913c6570a6152"
+    "cmd/redevplugin/scaffold_assets/backend.wasm": "7efe5ff8fc6ef244e145803a9222ec6f0f0a089418657e9a43f1f1f41959893f"
   }
 }

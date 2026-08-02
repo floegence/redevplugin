@@ -1580,7 +1580,84 @@
     return value;
   }
 
-  // internal/scaffoldtemplate/plugin-worker.ts
+  // packages/redevplugin-ui/src/jsx-runtime.ts
+  var Fragment = Symbol("ReDevPlugin.Fragment");
+  var keyPattern2 = new RegExp("^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$");
+  var attributeAliases = /* @__PURE__ */ new Map([
+    ["autoComplete", "autocomplete"],
+    ["className", "class"],
+    ["htmlFor", "for"],
+    ["maxLength", "maxlength"],
+    ["readOnly", "readonly"],
+    ["tabIndex", "tabindex"]
+  ]);
+  function jsx(type, props, key) {
+    return createElement(type, props, key);
+  }
+  function jsxs(type, props, key) {
+    return createElement(type, props, key);
+  }
+  function createElement(type, props, key) {
+    if (type === Fragment) throw new TypeError("ReDevPlugin JSX does not support Fragment; use one keyed intrinsic element");
+    if (typeof type !== "string") throw new TypeError("ReDevPlugin JSX supports intrinsic elements only");
+    if (typeof key !== "string" || !keyPattern2.test(key)) {
+      throw new TypeError("ReDevPlugin JSX elements require a valid stable key");
+    }
+    const attributes = {};
+    const source = props ?? {};
+    for (const [rawName, value] of Object.entries(source)) {
+      if (rawName === "children" || rawName === "key" || value === void 0) continue;
+      const name = attributeAliases.get(rawName) ?? rawName;
+      if (typeof value !== "string" && typeof value !== "number" && typeof value !== "boolean") {
+        throw new TypeError(`ReDevPlugin JSX attribute ${rawName} must be a string, number, or boolean`);
+      }
+      attributes[name] = value;
+    }
+    const children = [];
+    appendChildren(children, source.children, key, []);
+    const tree = {
+      type: "element",
+      key,
+      tag: type,
+      ...Object.keys(attributes).length > 0 ? { attributes } : {},
+      ...children.length > 0 ? { children } : {}
+    };
+    return validatePluginUITree(tree);
+  }
+  function appendChildren(target, value, parentKey, path) {
+    if (value === null || value === void 0 || typeof value === "boolean") return;
+    if (Array.isArray(value)) {
+      value.forEach((child, index) => appendChildren(target, child, parentKey, [...path, index]));
+      return;
+    }
+    if (typeof value === "string" || typeof value === "number") {
+      const textPath = path.length > 0 ? path : [0];
+      target.push({ type: "text", key: textKey(parentKey, textPath), text: String(value) });
+      return;
+    }
+    if (typeof value === "object") {
+      target.push(value);
+      return;
+    }
+    throw new TypeError("ReDevPlugin JSX children must be VNodes or renderable primitive values");
+  }
+  function textKey(parentKey, path) {
+    const suffix = `.text.${path.join(".")}`;
+    const candidate = parentKey + suffix;
+    if (candidate.length <= 128) return candidate;
+    const hashSuffix = `.text.${fnv1a(candidate)}`;
+    return parentKey.slice(0, 128 - hashSuffix.length) + hashSuffix;
+  }
+  function fnv1a(value) {
+    let hash = 2166136261;
+    for (let index = 0; index < value.length; index += 1) {
+      hash ^= value.charCodeAt(index);
+      hash = Math.imul(hash, 16777619);
+    }
+    return (hash >>> 0).toString(16).padStart(8, "0");
+  }
+
+  // internal/scaffoldtemplate/plugin-worker.tsx
   var bridge = new PluginBridgeClient({ timeoutMs: 2e4 });
   var state = {
     message: "Hello from the generated plugin",
@@ -1627,38 +1704,25 @@
       await render();
     }
   }
-  function text(key, value) {
-    return { type: "text", key, text: value };
-  }
   function render() {
     if (disposed) return Promise.resolve();
-    return bridge.render({
-      type: "element",
-      key: "plugin-root",
-      tag: "main",
-      attributes: { class: "plugin-surface" },
-      children: [
-        { type: "element", key: "plugin-eyebrow", tag: "p", attributes: { class: "eyebrow" }, children: [text("plugin-eyebrow-copy", "Sandboxed plugin")] },
-        { type: "element", key: "plugin-title", tag: "h1", children: [text("plugin-title-copy", "__REDEVPLUGIN_DISPLAY_NAME__")] },
-        { type: "element", key: "plugin-intro", tag: "p", attributes: { class: "intro" }, children: [text("plugin-intro-copy", "A minimal editable plugin with a TypeScript surface and Rust WASM worker.")] },
-        {
-          type: "element",
-          key: "echo-form",
-          tag: "form",
-          attributes: { class: "echo-form", "data-redevplugin-action": "echo-message" },
-          children: [
-            { type: "element", key: "message-label", tag: "label", attributes: { for: "message" }, children: [text("message-label-copy", "Message")] },
-            { type: "element", key: "message-input", tag: "input", attributes: { id: "message", name: "message", value: state.message, maxlength: 4096, disabled: state.busy, autocomplete: "off" } },
-            { type: "element", key: "message-submit", tag: "button", attributes: { type: "submit", disabled: state.busy }, children: [text("message-submit-copy", state.busy ? "Sending..." : "Send to worker")] }
-          ]
-        },
-        { type: "element", key: "plugin-status", tag: "p", attributes: { class: state.error ? "status error" : "status", role: "status" }, children: [text("plugin-status-copy", state.status)] },
-        { type: "element", key: "worker-response", tag: "section", attributes: { class: "response", "aria-label": "Worker response" }, children: [
-          { type: "element", key: "worker-response-label", tag: "span", children: [text("worker-response-label-copy", "Response")] },
-          { type: "element", key: "worker-response-value", tag: "strong", children: [text("worker-response-value-copy", state.response)] }
-        ] }
-      ]
-    });
+    return bridge.render(
+      /* @__PURE__ */ jsxs("main", { className: "plugin-surface", children: [
+        /* @__PURE__ */ jsx("p", { className: "eyebrow", children: "Sandboxed plugin" }, "plugin-eyebrow"),
+        /* @__PURE__ */ jsx("h1", { children: "__REDEVPLUGIN_DISPLAY_NAME__" }, "plugin-title"),
+        /* @__PURE__ */ jsx("p", { className: "intro", children: "A minimal editable plugin with a TypeScript surface and Rust WASM worker." }, "plugin-intro"),
+        /* @__PURE__ */ jsxs("form", { className: "echo-form", "data-redevplugin-action": "echo-message", children: [
+          /* @__PURE__ */ jsx("label", { htmlFor: "message", children: "Message" }, "message-label"),
+          /* @__PURE__ */ jsx("input", { id: "message", name: "message", value: state.message, maxLength: 4096, disabled: state.busy, autoComplete: "off" }, "message-input"),
+          /* @__PURE__ */ jsx("button", { type: "submit", disabled: state.busy, children: state.busy ? "Sending..." : "Send to worker" }, "message-submit")
+        ] }, "echo-form"),
+        /* @__PURE__ */ jsx("p", { className: state.error ? "status error" : "status", role: "status", children: state.status }, "plugin-status"),
+        /* @__PURE__ */ jsxs("section", { className: "response", "aria-label": "Worker response", children: [
+          /* @__PURE__ */ jsx("span", { children: "Response" }, "worker-response-label"),
+          /* @__PURE__ */ jsx("strong", { children: state.response }, "worker-response-value")
+        ] }, "worker-response")
+      ] }, "plugin-root")
+    );
   }
   function reportUnhandledFailure(error) {
     if (disposed && error instanceof PluginBridgeError && error.errorCode === "PLUGIN_BRIDGE_DISPOSED") return;

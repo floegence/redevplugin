@@ -32,7 +32,7 @@ func TestExamplesAreTheOnlyUserFacingPluginShowcase(t *testing.T) {
 		"testdata/browser-harness/opaque-surface/index.html",
 		"testdata/browser-harness/opaque-surface/host.mjs",
 		"testdata/browser-harness/opaque-surface/generated/plugin-worker.js",
-		"internal/scaffoldtemplate/plugin-worker.ts",
+		"internal/scaffoldtemplate/plugin-worker.tsx",
 		"cmd/redevplugin/scaffold_assets/plugin-worker.js",
 		"cmd/redevplugin/scaffold_assets/worker-artifacts.lock.json",
 	} {

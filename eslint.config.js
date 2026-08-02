@@ -13,7 +13,7 @@ export default tseslint.config(
       "packages/redevplugin-contracts/test/**/*.ts",
       "examples/plugin-ui/**/*.ts",
       "examples/showcase/**/*.ts",
-      "internal/scaffoldtemplate/**/*.ts",
+      "internal/scaffoldtemplate/**/*.{ts,tsx}",
       "testdata/browser-harness/**/*.ts",
     ],
     rules: {

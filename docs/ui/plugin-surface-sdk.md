@@ -32,22 +32,23 @@ product session authority.
 
 ## Bridge Protocol
 
-The current bridge protocol is described by `spec/plugin/bridge-v6.schema.json`
+The current bridge protocol is described by `spec/plugin/bridge-v7.schema.json`
 and implemented by the TypeScript package. Installed `plugin-ui-v5` packages
 remain bound to the legacy `bridge-v5` and `opaque-surface-transport-v4`
-mapping. Contract checks keep these frame names, each supported UI protocol
+mapping, while installed v6 packages retain their exact v6 mapping. Contract
+checks keep these frame names, each supported UI protocol
 version, and forbidden response fields aligned with its schema:
 
 - `redevplugin.bridge.call`;
 - `redevplugin.bridge.stream.read`;
-- `redevplugin.bridge.operation.snapshot` in `plugin-ui-v6`;
+- `redevplugin.bridge.operation.snapshot` in `plugin-ui-v6` and v7;
 - `redevplugin.ui.mount`;
 - `redevplugin.ui.patch`;
 - `redevplugin.bridge.cancel`;
 - `redevplugin.ui.action`;
 - `redevplugin.bridge.response`;
 - `redevplugin.bridge.lifecycle`;
-- `plugin-ui-v5` or `plugin-ui-v6`, using the published exact mapping.
+- `plugin-ui-v5`, v6, or v7, using the published exact mapping.
 
 The parent transfers one secret-free bootstrap port to the current iframe
 `contentWindow` and frame generation. Because the iframe has an opaque origin,
@@ -83,15 +84,42 @@ asset-session nonce, management revision, revoke epoch, UI protocol version,
 and `bridge_channel_id`. The Go Host recomputes the same hash and refuses to
 mint a parent-only gateway token if the transcript is missing or mismatched.
 This trusted-parent HTTP DTO is defined by OpenAPI, not by the plugin-visible
-`bridge-v6.schema.json` contract (or the retained `bridge-v5` contract for a
-`plugin-ui-v5` surface).
+`bridge-v7.schema.json` contract (or the retained bridge v5/v6 contract for an
+installed surface using that protocol).
+
+## Restricted JSX
+
+Plugin workers may use TypeScript automatic JSX through
+`@floegence/redevplugin-ui/jsx-runtime`. This is a VNode construction helper,
+not a browser DOM runtime. Every intrinsic element still requires one stable
+key, text keys are derived deterministically from the parent key and child
+position, and the completed tree passes through the same generated render
+policy used by `PluginBridgeClient.render(...)`.
+
+The runtime does not support fragments, function components, event callbacks,
+raw HTML, URL-bearing markup, or non-primitive attributes. Plugin interaction
+continues to use `data-redevplugin-action` and `PluginBridgeClient.onAction(...)`.
+Direct DOM, network, browser storage, dynamic import, and code generation remain
+blocked by the opaque surface runtime.
+
+```tsx
+const tree = (
+  <main key="settings-root" className="settings">
+    <button key="save" type="button" data-redevplugin-action="save">
+      Save
+    </button>
+  </main>
+);
+
+await bridge.render(tree);
+```
 
 ## Keyed Renderer
 
-Plugin UI v5 requires every element and text VNode to carry a plugin-provided,
-globally unique key. Keys must remain stable for the same logical node across
-renders; the SDK does not accept string text VNodes or synthesize identity from
-tree position, sibling index, or text content.
+Every plugin UI protocol requires globally unique element and text VNode keys.
+Keys must remain stable for the same logical node across renders. Raw VNode
+callers provide both element and text keys; the restricted JSX runtime requires
+element keys and derives stable text keys without using text content.
 
 Structural operations are key and anchor based:
 
@@ -108,7 +136,7 @@ all operations pass, in one animation frame. Insertion and removal touch only
 the affected subtree, and sibling anchors make moves constant-time at the graph
 layer. Invalid patches never partially mutate the live DOM.
 
-Bridge v5 admits at most 512 KiB of canonical JSON per message, 1,024
+The bridge contract admits at most 512 KiB of canonical JSON per message, 1,024
 operations per atomic patch, 4,096 rendered nodes, and 32,768 JSON structural
 nodes. The schema generates one shared policy for the SDK, trusted renderer,
 package validator, and performance harness. A 1,000-child reversal with

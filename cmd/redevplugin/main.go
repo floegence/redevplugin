@@ -542,8 +542,9 @@ func createPluginScaffold(pluginID string, displayName string, outDir string) (s
 	if outDir == "" {
 		return scaffoldSummary{}, fmt.Errorf("output directory is required")
 	}
+	platformVersion := version.CurrentCompatibilityVersion()
 	manifestDoc := manifest.Manifest{
-		SchemaVersion: "redevplugin.manifest.v5",
+		SchemaVersion: manifest.SchemaVersionV7,
 		Publisher: manifest.Publisher{
 			PublisherID: "local.generated",
 			DisplayName: "Local Generated",
@@ -553,8 +554,8 @@ func createPluginScaffold(pluginID string, displayName string, outDir string) (s
 			DisplayName:       displayName,
 			Version:           "0.1.0",
 			APIVersion:        "plugin-v1",
-			MinRuntimeVersion: "0.5.0",
-			UIProtocolVersion: "plugin-ui-v5",
+			MinRuntimeVersion: platformVersion,
+			UIProtocolVersion: version.PluginUIProtocolVersion,
 		},
 		Surfaces: []manifest.SurfaceSpec{{
 			SurfaceID: pluginID + ".view",
@@ -586,16 +587,16 @@ func createPluginScaffold(pluginID string, displayName string, outDir string) (s
 	if err != nil {
 		return scaffoldSummary{}, err
 	}
-	platformVersion := version.CurrentCompatibilityVersion()
 	manifestBytes := append(append([]byte(nil), rawManifest...), '\n')
 	files := map[string][]byte{
 		"README.md":                 []byte(scaffoldReadme(displayName, platformVersion)),
 		"manifest.json":             append([]byte(nil), manifestBytes...),
 		"package.json":              []byte(scaffoldPackageJSON(platformVersion)),
+		"tsconfig.json":             []byte(scaffoldTSConfig()),
 		"scripts/build.mjs":         []byte(scaffoldBuildScript()),
 		"ui/index.html":             []byte(scaffoldIndexHTML(pluginID, displayName)),
 		"ui/styles.css":             []byte(scaffoldStylesCSS()),
-		"ui/src/app.ts":             scaffoldSource(scaffoldPluginWorkerTS, displayName),
+		"ui/src/app.tsx":            scaffoldSource(scaffoldPluginWorkerTS, displayName),
 		"worker/Cargo.toml":         []byte(scaffoldCargoTOML(platformVersion)),
 		"worker/src/lib.rs":         append([]byte(nil), scaffoldWorkerRust...),
 		"dist/manifest.json":        append([]byte(nil), manifestBytes...),
@@ -675,9 +676,10 @@ func scaffoldPackageJSON(platformVersion string) string {
   "private": true,
   "type": "module",
   "scripts": {
+    "check": "npm run typecheck && npm run build",
     "build": "node scripts/build.mjs",
-    "build:ui": "esbuild ui/src/app.ts --bundle --format=iife --platform=browser --target=es2022 --outfile=dist/ui/assets/app.js",
-    "typecheck": "tsc --noEmit --strict --target ES2022 --module NodeNext --moduleResolution NodeNext ui/src/app.ts"
+    "build:ui": "esbuild ui/src/app.tsx --bundle --format=iife --platform=browser --target=es2022 --jsx=automatic --jsx-import-source=@floegence/redevplugin-ui --outfile=dist/ui/assets/app.js",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
     "@floegence/redevplugin-ui": %q
@@ -688,6 +690,24 @@ func scaffoldPackageJSON(platformVersion string) string {
   }
 }
 `, platformVersion)
+}
+
+func scaffoldTSConfig() string {
+	return `{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "strict": true,
+    "noEmit": true,
+    "skipLibCheck": true,
+    "jsx": "react-jsx",
+    "jsxImportSource": "@floegence/redevplugin-ui",
+    "lib": ["ES2022", "DOM", "WebWorker"]
+  },
+  "include": ["ui/src/**/*.tsx"]
+}
+`
 }
 
 func scaffoldCargoTOML(platformVersion string) string {
@@ -756,8 +776,7 @@ Requirements: Node.js 24, npm, Rust, and the wasm32-unknown-unknown target.
 
     npm install
     rustup target add wasm32-unknown-unknown
-    npm run typecheck
-    npm run build
+    npm run check
 
 The source dependencies are pinned to ReDevPlugin %s. After rebuilding, validate
 and package the plugin from this directory:
@@ -765,7 +784,7 @@ and package the plugin from this directory:
     redevplugin validate dist/manifest.json
     redevplugin package dist %s.redevplugin
 
-Edit ui/src/app.ts for the surface and worker/src/lib.rs for the WASM backend.
+Edit ui/src/app.tsx for the surface and worker/src/lib.rs for the WASM backend.
 Add permissions to manifest.json only when the plugin
 actually needs them.
 `, displayName, platformVersion, strings.ReplaceAll(strings.ToLower(displayName), " ", "-"))

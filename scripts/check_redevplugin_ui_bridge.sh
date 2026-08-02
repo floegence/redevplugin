@@ -32,7 +32,7 @@ const pluginSourceFiles = [
   "examples/plugin-ui/memos.ts",
   "examples/plugin-ui/weather.ts",
   "examples/plugin-ui/sky-strike.ts",
-  "internal/scaffoldtemplate/plugin-worker.ts",
+  "internal/scaffoldtemplate/plugin-worker.tsx",
   "testdata/browser-harness/opaque-surface/plugin-worker.ts",
 ];
 for (const relativePath of pluginSourceFiles) {
@@ -59,7 +59,7 @@ const scannedPluginFiles = [
 ].map((entry) => path.isAbsolute(entry) ? entry : path.join(rootDir, entry));
 const wildcardPostMessage = /(?:\bpostMessage|\.postMessage)\s*\([^)]*,\s*["']\*["']/g;
 for (const filename of new Set(scannedPluginFiles)) {
-  if (!/\.(?:html|js|mjs|ts)$/.test(filename)) continue;
+  if (!/\.(?:html|js|mjs|ts|tsx)$/.test(filename)) continue;
   const source = fs.readFileSync(filename, "utf8");
   const matches = source.match(wildcardPostMessage) ?? [];
   if (matches.length > 0) {

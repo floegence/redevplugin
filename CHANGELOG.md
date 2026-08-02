@@ -1,5 +1,19 @@
 # Changelog
 
+## v0.6.24
+
+### Added
+
+- Add restricted automatic JSX runtime entrypoints that construct keyed plugin
+  VNodes without exposing DOM, network, storage, dynamic code, or trusted-parent
+  capabilities.
+
+### Changed
+
+- Generate new plugin scaffolds with manifest/UI protocol v7, an editable TSX
+  surface, a pinned TypeScript configuration, and one project-level check
+  command while retaining immediate packageability and v5/v6 compatibility.
+
 ## v0.6.23
 
 ### Added

@@ -23,6 +23,14 @@
       "types": "./dist/plugin.d.ts",
       "default": "./dist/plugin.js"
     },
+    "./jsx-runtime": {
+      "types": "./dist/jsx-runtime.d.ts",
+      "default": "./dist/jsx-runtime.js"
+    },
+    "./jsx-dev-runtime": {
+      "types": "./dist/jsx-dev-runtime.d.ts",
+      "default": "./dist/jsx-dev-runtime.js"
+    },
     "./local-import": {
       "types": "./dist/local-import.d.ts",
       "default": "./dist/local-import.js"
@@ -30,7 +38,7 @@
   },
   "files": ["dist"],
   "dependencies": {
-    "@floegence/redevplugin-contracts": "0.6.23"
+    "@floegence/redevplugin-contracts": "0.6.24"
   },
   "publishConfig": {
     "access": "public"
@@ -38,6 +46,6 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "tsc -p tsconfig.test.json && node --test dist-test/test/*.js"
+    "test": "tsc -p tsconfig.json && tsc -p tsconfig.test.json && node --test dist-test/test/*.js"
   }
 }
