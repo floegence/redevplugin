@@ -103,8 +103,9 @@ test("normal and recovery publication share one resumable release transaction", 
   assert.match(source, /test "\$object_sha" = "\$SOURCE_COMMIT"/);
   assert.doesNotMatch(source, /\.target_commitish == \$source/);
   assert.match(source, /gh api --paginate --slurp/);
-  assert.match(source, /normalize_duplicate_empty_drafts/);
+  assert.match(source, /normalize_duplicate_releases/);
   assert.match(source, /validate_empty_bound_draft/);
+  assert.match(source, /validate_exact_bound_public/);
   assert.match(source, /release lookup found non-reconcilable exact-tag duplicates/);
   assert.match(source, /test "\$\(jq length "\$assets_json"\)" = 0/);
   assert.match(source, /\.draft \| type == "boolean"/);
@@ -145,7 +146,7 @@ test("normal and recovery publication share one resumable release transaction", 
   assert.equal(recoveryAdmission.steps[0].env.ALLOW_PUBLIC, "true");
   assert.equal(normalAdmission.steps[0].run, recoveryAdmission.steps[0].run);
   assert.match(normalAdmission.steps[0].run, /gh api --paginate --slurp/);
-  assert.match(normalAdmission.steps[0].run, /normalize_duplicate_empty_drafts/);
+  assert.match(normalAdmission.steps[0].run, /normalize_duplicate_releases/);
   assert.match(normalAdmission.steps[0].run, /validate_empty_bound_draft/);
   assert.match(normalAdmission.steps[0].run, /release admission found non-reconcilable exact-tag duplicates/);
   assert.match(normalAdmission.steps[0].run, /\.draft == true/);

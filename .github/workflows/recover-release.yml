@@ -154,16 +154,33 @@ jobs:
             jq -e 'type == "array" and length == 0' "$assets" > /dev/null
           }
 
-          normalize_duplicate_empty_drafts() {
-            local canonical_id current_id current_ids duplicate_id
+          normalize_duplicate_releases() {
+            local canonical_id current_id current_ids duplicate_id public_id
             current_ids=$(jq -r --arg tag "$TAG" '[.[][] | select(.tag_name == $tag) | .id] | sort | .[]' "$pages") || return 1
-            canonical_id=$(printf '%s\n' "$current_ids" | head -n 1)
-            [[ "$canonical_id" =~ ^[1-9][0-9]*$ ]] || return 1
+            public_id=
             for current_id in $current_ids; do
               [[ "$current_id" =~ ^[1-9][0-9]*$ ]] || return 1
-              validate_empty_bound_draft "$current_id" || return 1
+              gh api "repos/${GITHUB_REPOSITORY}/releases/${current_id}" > "$release" || return 1
+              jq -e --argjson id "$current_id" --arg tag "$TAG" --arg marker "$marker" '
+                .id == $id and
+                .tag_name == $tag and
+                .prerelease == false and
+                (.draft | type == "boolean") and
+                ((.body // "") | contains($marker))
+              ' "$release" > /dev/null || return 1
+              if test "$(jq -r .draft "$release")" = false; then
+                test "$ALLOW_PUBLIC" = true || return 1
+                test -z "$public_id" || return 1
+                public_id=$current_id
+              else
+                gh api "repos/${GITHUB_REPOSITORY}/releases/${current_id}/assets?per_page=100" > "$assets" || return 1
+                jq -e 'type == "array" and length == 0' "$assets" > /dev/null || return 1
+              fi
             done
-            for duplicate_id in $(printf '%s\n' "$current_ids" | tail -n +2); do
+            canonical_id=${public_id:-$(printf '%s\n' "$current_ids" | head -n 1)}
+            [[ "$canonical_id" =~ ^[1-9][0-9]*$ ]] || return 1
+            for duplicate_id in $current_ids; do
+              test "$duplicate_id" != "$canonical_id" || continue
               for attempt in 1 2 3 4; do
                 load_pages || return 1
                 if ! jq -e --arg tag "$TAG" --argjson id "$duplicate_id" \
@@ -171,9 +188,20 @@ jobs:
                   break
                 fi
                 current_ids=$(jq -r --arg tag "$TAG" '[.[][] | select(.tag_name == $tag) | .id] | sort | .[]' "$pages") || return 1
-                test "$(printf '%s\n' "$current_ids" | head -n 1)" = "$canonical_id" || return 1
+                printf '%s\n' "$current_ids" | grep -Fx "$canonical_id" > /dev/null || return 1
                 for current_id in $current_ids; do
-                  validate_empty_bound_draft "$current_id" || return 1
+                  if test "$current_id" = "$canonical_id" && test -n "$public_id"; then
+                    gh api "repos/${GITHUB_REPOSITORY}/releases/${current_id}" > "$release" || return 1
+                    jq -e --argjson id "$current_id" --arg tag "$TAG" --arg marker "$marker" '
+                      .id == $id and
+                      .tag_name == $tag and
+                      .prerelease == false and
+                      .draft == false and
+                      ((.body // "") | contains($marker))
+                    ' "$release" > /dev/null || return 1
+                  else
+                    validate_empty_bound_draft "$current_id" || return 1
+                  fi
                 done
                 gh api --method DELETE \
                   "repos/${GITHUB_REPOSITORY}/releases/${duplicate_id}" > /dev/null || true
@@ -196,7 +224,7 @@ jobs:
           case "$match_count" in
             0) exit 0 ;;
             1) ;;
-            *) normalize_duplicate_empty_drafts || {
+            *) normalize_duplicate_releases || {
                  echo "release admission found non-reconcilable exact-tag duplicates" >&2
                  exit 1
                } ;;
@@ -455,17 +483,35 @@ jobs:
             test "$(jq length "$assets_json")" = 0
           }
 
-          normalize_duplicate_empty_drafts() {
-            local canonical_id current_id current_ids delete_status duplicate_id
+          validate_exact_bound_public() {
+            local release_id=$1
+            load_bound_release "$release_id" || return 1
+            test "$(jq -r .draft "$release_json")" = false || return 1
+            load_assets_for_release "$release_id" || return 1
+            exact_asset_matches
+          }
+
+          normalize_duplicate_releases() {
+            local canonical_id current_id current_ids delete_status duplicate_id public_id
             verify_local_manifest || return 1
             current_ids=$(jq -r --arg tag "$TAG" '[.[][] | select(.tag_name == $tag) | .id] | sort | .[]' "$release_pages") || return 1
-            canonical_id=$(printf '%s\n' "$current_ids" | head -n 1)
-            [[ "$canonical_id" =~ ^[1-9][0-9]*$ ]] || return 1
+            public_id=
             for current_id in $current_ids; do
               [[ "$current_id" =~ ^[1-9][0-9]*$ ]] || return 1
-              validate_empty_bound_draft "$current_id" || return 1
+              load_bound_release "$current_id" || return 1
+              if test "$(jq -r .draft "$release_json")" = false; then
+                test -z "$public_id" || return 1
+                validate_exact_bound_public "$current_id" || return 1
+                public_id=$current_id
+              else
+                load_assets_for_release "$current_id" || return 1
+                test "$(jq length "$assets_json")" = 0 || return 1
+              fi
             done
-            for duplicate_id in $(printf '%s\n' "$current_ids" | tail -n +2); do
+            canonical_id=${public_id:-$(printf '%s\n' "$current_ids" | head -n 1)}
+            [[ "$canonical_id" =~ ^[1-9][0-9]*$ ]] || return 1
+            for duplicate_id in $current_ids; do
+              test "$duplicate_id" != "$canonical_id" || continue
               for attempt in 1 2 3 4; do
                 load_release_pages || return 1
                 if ! jq -e --arg tag "$TAG" --argjson id "$duplicate_id" \
@@ -473,9 +519,13 @@ jobs:
                   break
                 fi
                 current_ids=$(jq -r --arg tag "$TAG" '[.[][] | select(.tag_name == $tag) | .id] | sort | .[]' "$release_pages") || return 1
-                test "$(printf '%s\n' "$current_ids" | head -n 1)" = "$canonical_id" || return 1
+                printf '%s\n' "$current_ids" | grep -Fx "$canonical_id" > /dev/null || return 1
                 for current_id in $current_ids; do
-                  validate_empty_bound_draft "$current_id" || return 1
+                  if test "$current_id" = "$canonical_id" && test -n "$public_id"; then
+                    validate_exact_bound_public "$current_id" || return 1
+                  else
+                    validate_empty_bound_draft "$current_id" || return 1
+                  fi
                 done
                 delete_status=$(curl --silent --show-error --connect-timeout 10 --max-time 30 \
                   -X DELETE \
@@ -505,7 +555,7 @@ jobs:
             case "$match_count" in
               0) return 1 ;;
               1) ;;
-              *) normalize_duplicate_empty_drafts || {
+              *) normalize_duplicate_releases || {
                    echo "release lookup found non-reconcilable exact-tag duplicates" >&2
                    return 2
                  }

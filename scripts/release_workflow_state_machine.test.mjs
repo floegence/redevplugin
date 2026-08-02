@@ -372,10 +372,14 @@ function executePublication(fixture) {
 function assertPublished(fixture, result) {
   assert.equal(result.status, 0, result.stderr);
   const state = fixture.readState();
-  assert.equal(state.release.draft, false);
-  assert.equal(state.assets.length, 1);
-  assert.equal(state.extraReleases.length, 0);
-  assert.equal(Buffer.from(state.assets[0].bytes, "base64").compare(manifestBytes), 0);
+  const releases = [state.release, ...state.extraReleases].filter(Boolean);
+  assert.equal(releases.length, 1);
+  assert.equal(releases[0].draft, false);
+  const assets = state.release?.id === releases[0].id
+    ? state.assets
+    : state.extraReleaseAssets[String(releases[0].id)] ?? [];
+  assert.equal(assets.length, 1);
+  assert.equal(Buffer.from(assets[0].bytes, "base64").compare(manifestBytes), 0);
   return state;
 }
 
@@ -392,6 +396,22 @@ test("publication shell converges across interruption and response-loss fixtures
     ["duplicate empty drafts", { release: release(), extraReleases: [release(true, marker, 102)] }],
     ["duplicate draft delete response lost", {
       release: release(),
+      extraReleases: [release(true, marker, 102)],
+      deleteReleaseResponseLost: true,
+    }],
+    ["public release with empty duplicate", {
+      release: release(false),
+      assets: [asset()],
+      extraReleases: [release(true, marker, 102)],
+    }],
+    ["empty draft before public release", {
+      release: release(),
+      extraReleases: [release(false, marker, 102)],
+      extraReleaseAssets: { "102": [asset({ id: 202 })] },
+    }],
+    ["public duplicate deletion response lost", {
+      release: release(false),
+      assets: [asset()],
       extraReleases: [release(true, marker, 102)],
       deleteReleaseResponseLost: true,
     }],
@@ -602,8 +622,8 @@ test("local pre-tag and write-authorized workflow admission accept only exact tr
       release: release(),
       extraReleases: [release(true, "unrelated", 102)],
     }, false],
-    ["multiple drafts include public", {
-      release: release(),
+    ["multiple public releases", {
+      release: release(false),
       extraReleases: [release(false, marker, 102)],
     }, false],
     ["multiple drafts with invalid asset JSON", {
@@ -651,5 +671,95 @@ test("local pre-tag and write-authorized workflow admission accept only exact tr
         }
       });
     }
+  }
+});
+
+test("recovery admission removes only bound empty drafts beside one public release", async (t) => {
+  const cases = [
+    ["public release has the lower ID", {
+      release: release(false),
+      assets: [asset()],
+      extraReleases: [release(true, marker, 102)],
+    }, "delete-release-gh:102"],
+    ["public release has the higher ID", {
+      release: release(),
+      extraReleases: [release(false, marker, 102)],
+      extraReleaseAssets: { "102": [asset({ id: 202 })] },
+    }, "delete-release-gh:101"],
+    ["draft deletion response is lost", {
+      release: release(false),
+      assets: [asset()],
+      extraReleases: [release(true, marker, 102)],
+      deleteReleaseResponseLost: true,
+    }, "delete-release-gh:102"],
+  ];
+
+  for (const [name, overrides, expectedDeletion] of cases) {
+    await t.test(name, () => {
+      const normalFixture = createFixture(overrides);
+      try {
+        const normalResult = executeAdmission(normalFixture, false);
+        assert.notEqual(normalResult.status, 0);
+        assert.equal(
+          normalFixture.readState().events.some((event) => event.startsWith("delete-release-gh:")),
+          false,
+        );
+      } finally {
+        normalFixture.cleanup();
+      }
+
+      const recoveryFixture = createFixture(overrides);
+      try {
+        const recoveryResult = executeAdmission(recoveryFixture, true);
+        assert.equal(recoveryResult.status, 0, recoveryResult.stderr);
+        const state = recoveryFixture.readState();
+        assert.deepEqual(
+          state.events.filter((event) => event.startsWith("delete-release-gh:")),
+          [expectedDeletion],
+        );
+        assert.equal([state.release, ...state.extraReleases].filter(Boolean).length, 1);
+        assert.equal([state.release, ...state.extraReleases].filter(Boolean)[0].draft, false);
+      } finally {
+        recoveryFixture.cleanup();
+      }
+    });
+  }
+});
+
+test("recovery admission does not mutate ambiguous public and draft duplicates", async (t) => {
+  const cases = [
+    ["empty draft has the wrong marker", {
+      release: release(false),
+      assets: [asset()],
+      extraReleases: [release(true, "unrelated", 102)],
+    }],
+    ["draft has an asset", {
+      release: release(false),
+      assets: [asset()],
+      extraReleases: [release(true, marker, 102)],
+      extraReleaseAssets: { "102": [asset({ id: 202 })] },
+    }],
+    ["two public releases", {
+      release: release(false),
+      assets: [asset()],
+      extraReleases: [release(false, marker, 102)],
+      extraReleaseAssets: { "102": [asset({ id: 202 })] },
+    }],
+  ];
+
+  for (const [name, overrides] of cases) {
+    await t.test(name, () => {
+      const fixture = createFixture(overrides);
+      try {
+        const result = executeAdmission(fixture, true);
+        assert.notEqual(result.status, 0);
+        assert.equal(
+          fixture.readState().events.some((event) => event.startsWith("delete-release-gh:")),
+          false,
+        );
+      } finally {
+        fixture.cleanup();
+      }
+    });
   }
 });
