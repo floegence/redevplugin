@@ -51,6 +51,8 @@ for required in \
   spec/plugin/platform-package-set-v1.schema.json \
   spec/plugin/platform-package-publication-v1.schema.json \
   spec/plugin/process-containment-v1.schema.json \
+  spec/plugin/manifest-v8.schema.json \
+  spec/plugin/release-metadata-v8.schema.json \
   spec/plugin/runtime-admission-v1.schema.json \
   spec/plugin/runtime-descriptor-v2.schema.json \
   spec/plugin/runtime-exec-journal-v1.schema.json; do
@@ -74,12 +76,6 @@ for obsolete in \
   spec/plugin/ipc-v5.schema.json \
   spec/plugin/performance-contract-v2.json \
   spec/plugin/performance-evidence-v2.schema.json \
-  spec/plugin/manifest-v5.schema.json \
-  spec/plugin/manifest-v6.schema.json \
-  spec/plugin/manifest-v7.schema.json \
-  spec/plugin/release-metadata-v5.schema.json \
-  spec/plugin/release-metadata-v6.schema.json \
-  spec/plugin/release-metadata-v7.schema.json \
   spec/plugin/release-manifest-v4.schema.json \
   spec/plugin/source-policy-v1.schema.json \
   spec/plugin/source-revocations-v1.schema.json \
