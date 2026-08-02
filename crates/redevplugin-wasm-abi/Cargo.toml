@@ -10,7 +10,7 @@ readme = "README.md"
 include = ["Cargo.toml", "LICENSE", "README.md", "src/**", "testdata/**"]
 
 [dependencies]
-wasmparser = "0.228"
+wasmparser = "0.254"
 
 [dev-dependencies]
 wat = "1"
