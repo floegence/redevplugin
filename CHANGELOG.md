@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.7.1
+
+### Fixed
+
+- Publish the CodeQL and dependency-security fixes from the current main line
+  as a complete Go, npm, Rust, and contract package set.
+
 ## v0.7.0
 
 ### Added

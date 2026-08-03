@@ -1034,53 +1034,53 @@ pub(crate) fn get(id: ContractId) -> &'static Contract {
 static NPM_PACKAGES: [NpmPackageCoordinate; 2] = [
     NpmPackageCoordinate {
         name: "@floegence/redevplugin-contracts",
-        version: "0.7.0",
+        version: "0.7.1",
     },
     NpmPackageCoordinate {
         name: "@floegence/redevplugin-ui",
-        version: "0.7.0",
+        version: "0.7.1",
     },
 ];
 
 static RUST_CRATES: [RustCrateCoordinate; 6] = [
     RustCrateCoordinate {
         name: "redevplugin-contracts",
-        version: "0.7.0",
+        version: "0.7.1",
         role: "contracts",
     },
     RustCrateCoordinate {
         name: "redevplugin-ipc",
-        version: "0.7.0",
+        version: "0.7.1",
         role: "ipc",
     },
     RustCrateCoordinate {
         name: "redevplugin-wasm-abi",
-        version: "0.7.0",
+        version: "0.7.1",
         role: "wasm_abi",
     },
     RustCrateCoordinate {
         name: "redevplugin-target-classifier",
-        version: "0.7.0",
+        version: "0.7.1",
         role: "target_classifier",
     },
     RustCrateCoordinate {
         name: "redevplugin-worker-sdk",
-        version: "0.7.0",
+        version: "0.7.1",
         role: "worker_sdk",
     },
     RustCrateCoordinate {
         name: "redevplugin-runtime",
-        version: "0.7.0",
+        version: "0.7.1",
         role: "runtime",
     },
 ];
 
 pub(crate) static PACKAGE_SET: PackageSet = PackageSet {
     schema_version: "redevplugin.platform_package_set.v1",
-    platform_version: "0.7.0",
+    platform_version: "0.7.1",
     go_module: GoModuleCoordinate {
         module: "github.com/floegence/redevplugin",
-        version: "v0.7.0",
+        version: "v0.7.1",
     },
     npm_packages: &NPM_PACKAGES,
     rust_crates: &RUST_CRATES,
