@@ -262,7 +262,7 @@ function profile(variant, latency, allocations, bytes) {
     schema_version: "redevplugin.route_authorization_performance.v2",
     variant,
     commit: variant === "v0.5.1" ? "a".repeat(40) : "b".repeat(40),
-    environment: { os: "linux", arch: "amd64", logical_cpus: 8, gomaxprocs: 8, go_version: "go1.26.0" },
+    environment: { os: "linux", arch: "amd64", logical_cpus: 8, gomaxprocs: 8, go_version: "go1.26.5" },
     warmup_count: 8,
     requests_per_sample: 32,
     measurements: [

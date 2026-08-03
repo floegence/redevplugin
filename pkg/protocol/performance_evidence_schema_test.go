@@ -375,7 +375,7 @@ func validRouteAuthorizationEnvironment() map[string]any {
 		"arch":         "amd64",
 		"logical_cpus": 8,
 		"gomaxprocs":   8,
-		"go_version":   "go1.26.0",
+		"go_version":   "go1.26.5",
 	}
 }
 
