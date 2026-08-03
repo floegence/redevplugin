@@ -107,7 +107,7 @@ class FakeFrame {
   credentialless = false;
   hidden = false;
   inert = false;
-  style = { visibility: "", pointerEvents: "" };
+  style = { visibility: "", opacity: "", pointerEvents: "" };
   removed = false;
   attributes = new Map<string, string>();
   transferred: Array<{ message: unknown; targetOrigin: string; ports: MessagePortLike[] }> = [];
@@ -1881,7 +1881,8 @@ test("surface slot waits for retired surface revocation before opening the next 
     assert.equal(firstFrame.hidden, false, "opening iframe must remain renderable for its animation frames");
     assert.equal(firstFrame.inert, true);
     assert.equal(firstFrame.attributes.get("aria-hidden"), "true");
-    assert.equal(firstFrame.style.visibility, "hidden", "opening iframe must not flash before first commit");
+    assert.equal(firstFrame.style.visibility, "", "opening iframe must remain eligible for animation frames");
+    assert.equal(firstFrame.style.opacity, "0", "opening iframe must not flash before first commit");
     assert.equal(firstFrame.style.pointerEvents, "none");
     firstFrame.load();
     await waitFor(() => firstFrame.transferred.length === 1);
@@ -1892,6 +1893,7 @@ test("surface slot waits for retired surface revocation before opening the next 
     assert.equal(firstFrame.inert, false);
     assert.equal(firstFrame.attributes.get("aria-hidden"), "false");
     assert.equal(firstFrame.style.visibility, "");
+    assert.equal(firstFrame.style.opacity, "");
     assert.equal(firstFrame.style.pointerEvents, "");
 
     firstFetch.push(surfaceRevocation());
@@ -1909,6 +1911,7 @@ test("surface slot waits for retired surface revocation before opening the next 
     assert.equal(firstFrame.inert, true);
     assert.equal(firstFrame.attributes.get("aria-hidden"), "true");
     assert.equal(firstFrame.style.visibility, "");
+    assert.equal(firstFrame.style.opacity, "");
     assert.equal(firstFrame.style.pointerEvents, "none");
 
     const firstQuiesce = await waitForQuiesce(firstChannel.port1);

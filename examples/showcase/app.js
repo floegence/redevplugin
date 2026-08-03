@@ -4033,7 +4033,8 @@
     element.hidden = state === "retiring";
     element.inert = !ready;
     element.setAttribute("aria-hidden", ready ? "false" : "true");
-    element.style.visibility = state === "opening" ? "hidden" : "";
+    element.style.visibility = "";
+    element.style.opacity = state === "opening" ? "0" : "";
     element.style.pointerEvents = ready ? "" : "none";
   }
   function isSurfaceInteractionMessage(value) {
