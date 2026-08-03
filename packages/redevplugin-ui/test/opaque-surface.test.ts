@@ -1168,10 +1168,28 @@ test("plugin bridge client rejects malformed capability errors immediately", asy
     error instanceof PluginBridgeError && error.errorCode === "PLUGIN_CONTRACT_MISMATCH"
   );
 
-  const unknownErrorPromise = client.call("documents.get", { document_id: "missing" });
+  const oversizedVersionPromise = client.call("documents.get", { document_id: "missing" });
   rendererPort.postMessage({
     type: "redevplugin.bridge.response",
     id: "rpc_2",
+    ok: false,
+    error_code: "PLUGIN_CAPABILITY_ERROR",
+    error: "host capability request failed",
+    error_details: {
+      capability_id: "example.capability.documents",
+      capability_version: `1.2.3-${"a".repeat(4096)}`,
+      detail_schema_sha256: "a".repeat(64),
+      business_error_code: "DOCUMENT_NOT_FOUND",
+    },
+  });
+  await assert.rejects(oversizedVersionPromise, (error: unknown) =>
+    error instanceof PluginBridgeError && error.errorCode === "PLUGIN_CONTRACT_MISMATCH"
+  );
+
+  const unknownErrorPromise = client.call("documents.get", { document_id: "missing" });
+  rendererPort.postMessage({
+    type: "redevplugin.bridge.response",
+    id: "rpc_3",
     ok: false,
     error_code: "PLUGIN_UNKNOWN_ERROR",
     error: "unknown host error",

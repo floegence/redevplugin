@@ -55,7 +55,7 @@ func (m securityAuditMutation) completeWithDetails(ctx context.Context, operatio
 		if details == nil {
 			details = make(map[string]any, 1)
 		} else {
-			cloned := make(map[string]any, len(details)+1)
+			cloned := make(map[string]any)
 			for key, value := range details {
 				cloned[key] = value
 			}

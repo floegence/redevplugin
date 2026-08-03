@@ -152,7 +152,7 @@ func signingPreimage(usage SigningUsage, value any) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	preimage := make([]byte, 0, len(signingPrefix)+len(usage)+1+len(payload))
+	var preimage []byte
 	preimage = append(preimage, signingPrefix...)
 	preimage = append(preimage, usage...)
 	preimage = append(preimage, 0)

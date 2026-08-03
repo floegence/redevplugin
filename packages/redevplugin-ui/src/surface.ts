@@ -437,7 +437,6 @@ const maxSurfaceQuiesceMs = 1500;
 const maxSurfaceInteractionEventsPerSecond = 120;
 const pluginBridgeErrorCodeSet = new Set<string>(pluginBridgeErrorCodes);
 const hostCapabilityIDPattern = new RegExp("^[A-Za-z0-9][A-Za-z0-9._-]*$");
-const canonicalSemverPattern = new RegExp("^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(?:-(?:(?:0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))*))?(?:\\+[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?$");
 const lowercaseSHA256Pattern = new RegExp("^[0-9a-f]{64}$");
 const businessErrorCodePattern = new RegExp("^[A-Z][A-Z0-9_]*$");
 
@@ -5185,7 +5184,7 @@ function isCapabilityBusinessErrorDetails(value: unknown): value is PluginJSONOb
     "business_error_details",
   ])) return false;
   if (typeof value.capability_id !== "string" || !hostCapabilityIDPattern.test(value.capability_id) ||
-      typeof value.capability_version !== "string" || !canonicalSemverPattern.test(value.capability_version) ||
+      typeof value.capability_version !== "string" || !isCanonicalSemver(value.capability_version) ||
       typeof value.detail_schema_sha256 !== "string" || !lowercaseSHA256Pattern.test(value.detail_schema_sha256) ||
       typeof value.business_error_code !== "string" || !businessErrorCodePattern.test(value.business_error_code)) {
     return false;
@@ -5197,6 +5196,47 @@ function isCapabilityBusinessErrorDetails(value: unknown): value is PluginJSONOb
   } catch {
     return false;
   }
+}
+
+function isCanonicalSemver(value: string): boolean {
+  if (value.length < 5 || value.length > 255) return false;
+  const plus = value.indexOf("+");
+  if (plus !== value.lastIndexOf("+") || plus === value.length - 1) return false;
+  const withoutBuild = plus < 0 ? value : value.slice(0, plus);
+  if (plus >= 0 && !validSemverIdentifiers(value.slice(plus + 1), false)) return false;
+
+  const dash = withoutBuild.indexOf("-");
+  if (dash === withoutBuild.length - 1) return false;
+  const core = dash < 0 ? withoutBuild : withoutBuild.slice(0, dash);
+  if (dash >= 0 && !validSemverIdentifiers(withoutBuild.slice(dash + 1), true)) return false;
+  const coreIdentifiers = core.split(".");
+  return coreIdentifiers.length === 3 && coreIdentifiers.every(validSemverNumericIdentifier);
+}
+
+function validSemverIdentifiers(value: string, rejectNumericLeadingZero: boolean): boolean {
+  const identifiers = value.split(".");
+  return identifiers.every((identifier) => {
+    if (identifier.length === 0) return false;
+    let numeric = true;
+    for (let index = 0; index < identifier.length; index += 1) {
+      const code = identifier.charCodeAt(index);
+      const digit = code >= 48 && code <= 57;
+      const upper = code >= 65 && code <= 90;
+      const lower = code >= 97 && code <= 122;
+      if (!digit && !upper && !lower && code !== 45) return false;
+      numeric = numeric && digit;
+    }
+    return !rejectNumericLeadingZero || !numeric || identifier.length === 1 || identifier[0] !== "0";
+  });
+}
+
+function validSemverNumericIdentifier(value: string): boolean {
+  if (value.length === 0 || (value.length > 1 && value[0] === "0")) return false;
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index);
+    if (code < 48 || code > 57) return false;
+  }
+  return true;
 }
 
 function isLifecycleMessage(value: unknown): value is PluginBridgeLifecycleMessage {

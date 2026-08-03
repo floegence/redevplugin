@@ -95,7 +95,7 @@ type ResolvedPresentation struct {
 }
 
 func (m Manifest) PresentationCatalog() PresentationCatalog {
-	locales := make([]PresentationLocale, 0, len(m.Presentation.Localizations)+1)
+	locales := make([]PresentationLocale, 0)
 	defaultLocale := PresentationLocale{
 		Locale:        m.Presentation.DefaultLocale,
 		PluginName:    m.Plugin.DisplayName,

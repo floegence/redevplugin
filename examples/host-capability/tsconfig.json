@@ -6,9 +6,8 @@
     "strict": true,
     "noEmit": true,
     "lib": ["ES2022", "DOM"],
-    "baseUrl": "../..",
     "paths": {
-      "@floegence/redevplugin-ui/plugin": ["packages/redevplugin-ui/src/plugin.ts"]
+      "@floegence/redevplugin-ui/plugin": ["../../packages/redevplugin-ui/src/plugin.ts"]
     }
   },
   "include": [

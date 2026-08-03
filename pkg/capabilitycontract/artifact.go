@@ -228,7 +228,7 @@ func Finalize(prepared PreparedBundle, signature []byte, publicKey ed25519.Publi
 	if err != nil {
 		return Bundle{}, err
 	}
-	files := make(map[string][]byte, len(prepared.Files)+1)
+	files := make(map[string][]byte)
 	for ref, content := range prepared.Files {
 		files[ref] = append([]byte(nil), content...)
 	}

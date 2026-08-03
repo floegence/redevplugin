@@ -372,8 +372,8 @@ export function createBrowserHarnessServer(options = {}) {
       }
 
       serveStatic(requestURL.pathname, response);
-    } catch (error) {
-      writeError(response, 500, "PLUGIN_RUNTIME_UNAVAILABLE", String(error?.message || error));
+    } catch {
+      writeError(response, 500, "PLUGIN_RUNTIME_UNAVAILABLE", "browser harness request failed");
     }
   });
 

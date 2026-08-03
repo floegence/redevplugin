@@ -90,7 +90,7 @@
   };
 
   // packages/redevplugin-ui/src/bridge-capability.ts
-  var pluginBridgeCapabilityEffect = Symbol("redevplugin.capability.effect");
+  var pluginBridgeCapabilityEffect = /* @__PURE__ */ Symbol("redevplugin.capability.effect");
 
   // packages/redevplugin-ui/src/opaque-surface-policy.gen.ts
   var opaqueSurfaceAllowedTags = [
@@ -724,7 +724,6 @@
   var maxOpaqueSurfaceLazyBytes = 32 * 1024 * 1024;
   var pluginBridgeErrorCodeSet = new Set(pluginBridgeErrorCodes);
   var hostCapabilityIDPattern = new RegExp("^[A-Za-z0-9][A-Za-z0-9._-]*$");
-  var canonicalSemverPattern = new RegExp("^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(?:-(?:(?:0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))*))?(?:\\+[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?$");
   var lowercaseSHA256Pattern = new RegExp("^[0-9a-f]{64}$");
   var businessErrorCodePattern = new RegExp("^[A-Z][A-Z0-9_]*$");
   var PluginBridgeClient = class {
@@ -1361,7 +1360,7 @@
       "business_error_code",
       "business_error_details"
     ])) return false;
-    if (typeof value.capability_id !== "string" || !hostCapabilityIDPattern.test(value.capability_id) || typeof value.capability_version !== "string" || !canonicalSemverPattern.test(value.capability_version) || typeof value.detail_schema_sha256 !== "string" || !lowercaseSHA256Pattern.test(value.detail_schema_sha256) || typeof value.business_error_code !== "string" || !businessErrorCodePattern.test(value.business_error_code)) {
+    if (typeof value.capability_id !== "string" || !hostCapabilityIDPattern.test(value.capability_id) || typeof value.capability_version !== "string" || !isCanonicalSemver(value.capability_version) || typeof value.detail_schema_sha256 !== "string" || !lowercaseSHA256Pattern.test(value.detail_schema_sha256) || typeof value.business_error_code !== "string" || !businessErrorCodePattern.test(value.business_error_code)) {
       return false;
     }
     if (value.business_error_details === void 0) return true;
@@ -1371,6 +1370,43 @@
     } catch {
       return false;
     }
+  }
+  function isCanonicalSemver(value) {
+    if (value.length < 5 || value.length > 255) return false;
+    const plus = value.indexOf("+");
+    if (plus !== value.lastIndexOf("+") || plus === value.length - 1) return false;
+    const withoutBuild = plus < 0 ? value : value.slice(0, plus);
+    if (plus >= 0 && !validSemverIdentifiers(value.slice(plus + 1), false)) return false;
+    const dash = withoutBuild.indexOf("-");
+    if (dash === withoutBuild.length - 1) return false;
+    const core = dash < 0 ? withoutBuild : withoutBuild.slice(0, dash);
+    if (dash >= 0 && !validSemverIdentifiers(withoutBuild.slice(dash + 1), true)) return false;
+    const coreIdentifiers = core.split(".");
+    return coreIdentifiers.length === 3 && coreIdentifiers.every(validSemverNumericIdentifier);
+  }
+  function validSemverIdentifiers(value, rejectNumericLeadingZero) {
+    const identifiers = value.split(".");
+    return identifiers.every((identifier) => {
+      if (identifier.length === 0) return false;
+      let numeric = true;
+      for (let index = 0; index < identifier.length; index += 1) {
+        const code = identifier.charCodeAt(index);
+        const digit = code >= 48 && code <= 57;
+        const upper = code >= 65 && code <= 90;
+        const lower = code >= 97 && code <= 122;
+        if (!digit && !upper && !lower && code !== 45) return false;
+        numeric = numeric && digit;
+      }
+      return !rejectNumericLeadingZero || !numeric || identifier.length === 1 || identifier[0] !== "0";
+    });
+  }
+  function validSemverNumericIdentifier(value) {
+    if (value.length === 0 || value.length > 1 && value[0] === "0") return false;
+    for (let index = 0; index < value.length; index += 1) {
+      const code = value.charCodeAt(index);
+      if (code < 48 || code > 57) return false;
+    }
+    return true;
   }
   function isLifecycleMessage(value) {
     return hasAllowedKeys(value, ["type", "event", "quiesce_id"]) && value.type === "redevplugin.bridge.lifecycle" && hasExactKeys(value.event, ["type"]) && (value.event.type === "ready" || value.event.type === "visible" || value.event.type === "hidden" || value.event.type === "dispose") && (value.quiesce_id === void 0 || value.event.type === "dispose" && validOpaqueHandle(value.quiesce_id, "quiesce"));
@@ -1581,7 +1617,7 @@
   }
 
   // packages/redevplugin-ui/src/jsx-runtime.ts
-  var Fragment = Symbol("ReDevPlugin.Fragment");
+  var Fragment = /* @__PURE__ */ Symbol("ReDevPlugin.Fragment");
   var keyPattern2 = new RegExp("^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$");
   var attributeAliases = /* @__PURE__ */ new Map([
     ["autoComplete", "autocomplete"],

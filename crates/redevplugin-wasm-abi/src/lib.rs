@@ -114,7 +114,7 @@ pub fn validate_worker_module(bytes: &[u8]) -> Result<ValidatedWorkerModule, Val
                 }
             }
             Payload::ImportSection(reader) => {
-                for imported in reader {
+                for imported in reader.into_imports() {
                     let imported = imported
                         .map_err(|err| invalid_module(format!("parse wasm import: {err}")))?;
                     let TypeRef::Func(type_index) = imported.ty else {

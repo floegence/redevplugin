@@ -51,3 +51,23 @@ func TestPackageURLDisplayRedactsAllowedQuery(t *testing.T) {
 		t.Fatalf("request query = %q", got)
 	}
 }
+
+func TestParseDirectPackageURLKeepsPortConversionInUint16Range(t *testing.T) {
+	maximum, err := ParseDirectPackageURL("https://example.com:65535/plugin.redevplugin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := maximum.Origin().Port; got != 65535 {
+		t.Fatalf("maximum port = %d, want 65535", got)
+	}
+
+	for _, raw := range []string{
+		"https://example.com:0/plugin.redevplugin",
+		"https://example.com:65536/plugin.redevplugin",
+		"https://example.com:999999999999999999999/plugin.redevplugin",
+	} {
+		if _, err := ParseDirectPackageURL(raw); CodeOf(err) != ErrorInvalidURL {
+			t.Fatalf("CodeOf(ParseDirectPackageURL(%q)) = %q, want %q (err=%v)", raw, CodeOf(err), ErrorInvalidURL, err)
+		}
+	}
+}

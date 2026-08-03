@@ -203,6 +203,16 @@ test("release metadata requires exact schema and UI protocol pairs", () => {
   }
 });
 
+test("release metadata validates canonical semver without regex backtracking", () => {
+  const metadata = fixture.documents.release_metadata;
+  for (const version of ["0.0.0", "1.2.3-alpha.1+build.01"]) {
+    buildReleaseMetadata({ ...metadata, version });
+  }
+  for (const version of ["01.2.3", "1.2", "1.2.3-01", "1.2.3+", `1.2.3-${"a".repeat(4096)}`]) {
+    assert.throws(() => buildReleaseMetadata({ ...metadata, version }), InvalidReleaseDocumentError);
+  }
+});
+
 test("root delegation keeps source-wide and channel-scoped usages disjoint", () => {
   const key = fixture.documents.root_delegation.delegated_keys[0]!;
   const sourceWide: RootDelegationV1 = {

@@ -431,9 +431,6 @@
     return keys.every((key) => Object.hasOwn(value, key));
   }
 
-  // packages/redevplugin-ui/src/bridge-capability.ts
-  var pluginBridgeCapabilityEffect = Symbol("redevplugin.capability.effect");
-
   // packages/redevplugin-ui/src/opaque-surface-policy.gen.ts
   var opaqueSurfaceAllowedTags = [
     "main",
@@ -771,7 +768,6 @@
   var maxSurfaceInteractionEventsPerSecond = 120;
   var pluginBridgeErrorCodeSet = new Set(pluginBridgeErrorCodes);
   var hostCapabilityIDPattern = new RegExp("^[A-Za-z0-9][A-Za-z0-9._-]*$");
-  var canonicalSemverPattern = new RegExp("^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(?:-(?:(?:0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))*))?(?:\\+[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?$");
   var lowercaseSHA256Pattern = new RegExp("^[0-9a-f]{64}$");
   var businessErrorCodePattern = new RegExp("^[A-Z][A-Z0-9_]*$");
   var defaultPluginSurfaceReloadMax = 2;

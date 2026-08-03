@@ -263,15 +263,16 @@ test("confirmation preparation accepts typed and contract-defined object plans",
   assert.equal(riskPlan.additionalProperties, false);
   assert.equal(plan.oneOf[1].type, "object", "contract-defined domain plans remain object-only");
 
-  const validate = new Ajv({ allErrors: true, schemaId: "auto" }).compile({
-    components: {
-      schemas: {
-        RiskFlag: openAPI.components.schemas.RiskFlag,
-        RiskPlan: riskPlan,
-        ConfirmationPlan: plan,
-      },
+  const standalonePlan = structuredClone(plan);
+  standalonePlan.oneOf[0].$ref = "#/$defs/RiskPlan";
+  const standaloneRiskPlan = structuredClone(riskPlan);
+  standaloneRiskPlan.properties.risk_flags.items.$ref = "#/$defs/RiskFlag";
+  const validate = new Ajv({ allErrors: true }).compile({
+    $defs: {
+      RiskFlag: openAPI.components.schemas.RiskFlag,
+      RiskPlan: standaloneRiskPlan,
     },
-    $ref: "#/components/schemas/ConfirmationPlan",
+    ...standalonePlan,
   });
   const typedPlan = {
     schema_version: "redevplugin.capability.risk_plan.v1",

@@ -23,7 +23,7 @@ func writeAssembly(output string, assembly assemblyResult) error {
 	if !assembly.Complete || len(assembly.Files) == 0 {
 		return ErrWorkspaceIncomplete
 	}
-	files := make(map[string][]byte, len(assembly.Files)+2)
+	files := make(map[string][]byte)
 	for locator, value := range assembly.Files {
 		files[locator] = slices.Clone(value)
 	}

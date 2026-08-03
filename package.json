@@ -63,14 +63,14 @@
     "check": "npm run error-codes:check && npm run openapi:check && npm run openapi-contract:test && npm run ui-bridge-contract:test && npm run contracts:check && npm run platform-package-contracts:check && npm run owner-scope-inventories:check && npm run owner-scope-inventories:test && npm run release-metadata:check && npm run repository-boundary:test && npm run platform-package-contract:test && npm run release-workflow-security:test && npm run release-audit-retry:test && npm run test:contracts && npm run performance-contract:test && npm run lint && npm run typecheck && npm run browser-harness:typecheck && npm run scaffold:typecheck && npm run examples:typecheck && npm run canonical-wasm:test && npm run memos-markdown:test && npm run examples:check && npm run browser-harness:check && npm run build && npm run test:ui && npm run test:browser-harness && npm run test:browser-harness:smoke && npm run property-gates"
   },
   "devDependencies": {
-    "ajv": "6.15.0",
-    "esbuild": "^0.25.5",
-    "eslint": "10.7.0",
-    "marked": "18.0.6",
+    "ajv": "8.20.0",
+    "esbuild": "^0.28.1",
+    "eslint": "10.8.0",
+    "marked": "18.0.7",
     "openapi-typescript": "7.13.0",
-    "playwright": "^1.61.1",
+    "playwright": "^1.62.1",
     "typescript": "^5.9.3",
-    "typescript-eslint": "8.63.0",
+    "typescript-eslint": "8.65.0",
     "yaml": "^2.8.1"
   },
   "overrides": {

@@ -463,6 +463,7 @@ export class InvalidReleaseSignatureError extends Error {
 const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder("utf-8", { fatal: true });
 const maximumDocumentBytes = 1024 * 1024;
+const maximumPatternValueCodeUnits = 4096;
 const signingPrefix = textEncoder.encode("REDEVPLUGIN-SIGNING-V1\0");
 const newIDPattern = /^[a-z][a-z0-9._-]{0,127}$/;
 const legacyIDPattern = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
@@ -473,7 +474,7 @@ const prefixedSHA256Pattern = /^sha256:[0-9a-f]{64}$/;
 const legacySHA256Pattern = /^(?:sha256:)?[0-9a-f]{64}$/;
 const artifactRefPattern = /^[A-Za-z0-9._/@+-]+$/;
 const hostnamePattern = /^[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?$/;
-const semverPattern = /^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-(?:(?:0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))*))?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/;
+const semverPattern = { test: isCanonicalSemver };
 const canonicalTimePattern = /^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$/;
 const publicKeyPattern = /^[A-Za-z0-9+/]{43}=$/;
 const signaturePattern = /^[A-Za-z0-9+/]{86}==$/;
@@ -501,8 +502,50 @@ function assertRecord(value: unknown): asserts value is Record<string, unknown> 
   if (!isRecord(value)) invalidDocument();
 }
 
-function matchesPattern(pattern: RegExp, value: unknown): value is string {
-  return typeof value === "string" && pattern.test(value);
+function matchesPattern(pattern: Readonly<{ test(value: string): boolean }>, value: unknown): value is string {
+  if (typeof value !== "string" || value.length > maximumPatternValueCodeUnits) return false;
+  return pattern.test(value);
+}
+
+function isCanonicalSemver(value: string): boolean {
+  if (value.length < 5 || value.length > 255) return false;
+  const plus = value.indexOf("+");
+  if (plus !== value.lastIndexOf("+") || plus === value.length - 1) return false;
+  const withoutBuild = plus < 0 ? value : value.slice(0, plus);
+  if (plus >= 0 && !validSemverIdentifiers(value.slice(plus + 1), false)) return false;
+
+  const dash = withoutBuild.indexOf("-");
+  if (dash === withoutBuild.length - 1) return false;
+  const core = dash < 0 ? withoutBuild : withoutBuild.slice(0, dash);
+  if (dash >= 0 && !validSemverIdentifiers(withoutBuild.slice(dash + 1), true)) return false;
+  const coreIdentifiers = core.split(".");
+  return coreIdentifiers.length === 3 && coreIdentifiers.every(validSemverNumericIdentifier);
+}
+
+function validSemverIdentifiers(value: string, rejectNumericLeadingZero: boolean): boolean {
+  const identifiers = value.split(".");
+  return identifiers.every((identifier) => {
+    if (identifier.length === 0) return false;
+    let numeric = true;
+    for (let index = 0; index < identifier.length; index += 1) {
+      const code = identifier.charCodeAt(index);
+      const digit = code >= 48 && code <= 57;
+      const upper = code >= 65 && code <= 90;
+      const lower = code >= 97 && code <= 122;
+      if (!digit && !upper && !lower && code !== 45) return false;
+      numeric = numeric && digit;
+    }
+    return !rejectNumericLeadingZero || !numeric || identifier.length === 1 || identifier[0] !== "0";
+  });
+}
+
+function validSemverNumericIdentifier(value: string): boolean {
+  if (value.length === 0 || (value.length > 1 && value[0] === "0")) return false;
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index);
+    if (code < 48 || code > 57) return false;
+  }
+  return true;
 }
 
 function exactKeys(value: Record<string, unknown>, keys: readonly string[]): void {

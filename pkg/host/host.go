@@ -4936,7 +4936,7 @@ func selectVersionSnapshot(history []registry.PluginVersion, requestedVersion st
 	}
 	for i, snapshot := range history {
 		if (requestedVersion == "" || snapshot.Version == requestedVersion) && (packageHash == "" || snapshot.PackageHash == packageHash) {
-			remaining := make([]registry.PluginVersion, 0, len(history)-1)
+			remaining := make([]registry.PluginVersion, 0)
 			remaining = append(remaining, history[:i]...)
 			remaining = append(remaining, history[i+1:]...)
 			return snapshot, remaining, nil
@@ -4946,7 +4946,7 @@ func selectVersionSnapshot(history []registry.PluginVersion, requestedVersion st
 }
 
 func appendVersionSnapshot(history []registry.PluginVersion, snapshot registry.PluginVersion) []registry.PluginVersion {
-	next := make([]registry.PluginVersion, 0, len(history)+1)
+	next := make([]registry.PluginVersion, 0)
 	for _, existing := range history {
 		if existing.PackageHash == snapshot.PackageHash {
 			continue
@@ -5070,7 +5070,7 @@ func mergeStringMap(base map[string]string, overlay map[string]string) map[strin
 	if len(base) == 0 && len(overlay) == 0 {
 		return nil
 	}
-	merged := make(map[string]string, len(base)+len(overlay))
+	merged := make(map[string]string)
 	for key, value := range base {
 		merged[key] = value
 	}

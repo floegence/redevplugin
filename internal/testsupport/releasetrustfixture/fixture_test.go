@@ -63,6 +63,14 @@ func buildPackage(t *testing.T) []byte {
     "min_runtime_version": "0.1.0",
     "ui_protocol_version": "plugin-ui-v7"
   },
+  "presentation": {
+    "default_locale": "en-US",
+    "summary": "Fixture plugin",
+    "description": ["Fixture plugin for release trust tests."],
+    "highlights": [],
+    "keywords": ["fixture"],
+    "localizations": []
+  },
   "surfaces": [
     {"surface_id": "fixture.view", "kind": "view", "label": "Fixture", "entry": "ui/index.html"}
   ]

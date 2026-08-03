@@ -43,7 +43,7 @@ fn package_set_and_contract_metadata_are_static_and_complete() {
         assert_eq!(contract.sha256().len(), 64);
         assert!(!contract.bytes().is_empty());
         assert_eq!(
-            format!("{:x}", Sha256::digest(contract.bytes())),
+            lowercase_hex(&Sha256::digest(contract.bytes())),
             contract.sha256()
         );
     }
@@ -102,14 +102,18 @@ fn contract_set_digest_includes_the_synthetic_registry_coordinate() {
     coordinates.sort_by(|left, right| left.id.cmp(right.id));
     let canonical = serde_json::to_vec(&coordinates).unwrap();
     assert_eq!(
-        format!("{:x}", Sha256::digest(&canonical)),
+        lowercase_hex(&Sha256::digest(&canonical)),
         package_set().contract_set_sha256
     );
 
     let mut tampered = canonical;
     tampered[0] ^= 1;
     assert_ne!(
-        format!("{:x}", Sha256::digest(&tampered)),
+        lowercase_hex(&Sha256::digest(&tampered)),
         package_set().contract_set_sha256
     );
+}
+
+fn lowercase_hex(value: &[u8]) -> String {
+    value.iter().map(|byte| format!("{byte:02x}")).collect()
 }

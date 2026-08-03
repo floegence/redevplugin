@@ -40,7 +40,7 @@ const state = {
   errors: [],
 };
 
-document.cookie = "redevplugin_host_harness_secret=parent-only; SameSite=Strict";
+document.cookie = "redevplugin_host_harness_secret=parent-only; Secure; SameSite=Strict";
 credentiallessMode.textContent = credentiallessScenario;
 
 sendVisible.addEventListener("click", () => sendLifecycle("visible"));

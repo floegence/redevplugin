@@ -78,12 +78,13 @@ func parsePackageURL(raw string, allowQuery bool) (PackageURL, error) {
 		return PackageURL{}, externalError(ErrorInvalidURL, operation, "", fmt.Errorf("host is invalid"))
 	}
 	asciiHost = strings.ToLower(asciiHost)
-	portNumber := 443
+	portNumber := uint16(443)
 	if portText := parsed.Port(); portText != "" {
-		portNumber, err = strconv.Atoi(portText)
-		if err != nil || portNumber < 1 || portNumber > 65535 {
+		parsedPort, parseErr := strconv.ParseUint(portText, 10, 16)
+		if parseErr != nil || parsedPort == 0 {
 			return PackageURL{}, externalError(ErrorInvalidURL, operation, "", fmt.Errorf("port is invalid"))
 		}
+		portNumber = uint16(parsedPort)
 	}
 
 	cleanPath, err := canonicalURLPath(parsed)
@@ -92,7 +93,7 @@ func parsePackageURL(raw string, allowQuery bool) (PackageURL, error) {
 	}
 	normalized := &url.URL{
 		Scheme:   "https",
-		Host:     net.JoinHostPort(asciiHost, strconv.Itoa(portNumber)),
+		Host:     net.JoinHostPort(asciiHost, strconv.Itoa(int(portNumber))),
 		Path:     cleanPath,
 		RawQuery: parsed.RawQuery,
 	}
@@ -101,7 +102,7 @@ func parsePackageURL(raw string, allowQuery bool) (PackageURL, error) {
 	return PackageURL{
 		value:      normalized,
 		displayURL: display.String(),
-		origin:     Origin{Scheme: "https", Host: asciiHost, Port: uint16(portNumber)},
+		origin:     Origin{Scheme: "https", Host: asciiHost, Port: portNumber},
 	}, nil
 }
 
