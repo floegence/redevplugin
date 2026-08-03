@@ -63,6 +63,7 @@ async function verifyScenario(credentiallessScenario) {
       ariaHidden: frame.getAttribute("aria-hidden"),
       display: style.display,
       visibility: style.visibility,
+      opacity: style.opacity,
       pointerEvents: style.pointerEvents,
       width: bounds.width,
       height: bounds.height,
@@ -76,7 +77,8 @@ async function verifyScenario(credentiallessScenario) {
   assert.equal(openingPresentation.inert, true, `${credentiallessScenario} opening iframe is inert`);
   assert.equal(openingPresentation.ariaHidden, "true", `${credentiallessScenario} opening iframe is absent from accessibility`);
   assert.notEqual(openingPresentation.display, "none", `${credentiallessScenario} opening iframe participates in rendering`);
-  assert.equal(openingPresentation.visibility, "hidden", `${credentiallessScenario} opening iframe cannot flash before first commit`);
+  assert.equal(openingPresentation.visibility, "visible", `${credentiallessScenario} opening iframe remains eligible for animation frames`);
+  assert.equal(openingPresentation.opacity, "0", `${credentiallessScenario} opening iframe cannot flash before first commit`);
   assert.equal(openingPresentation.pointerEvents, "none", `${credentiallessScenario} opening iframe rejects pointer input`);
   assert.equal(openingPresentation.width > 0 && openingPresentation.height > 0, true, `${credentiallessScenario} opening iframe retains layout bounds`);
   assert.equal(openingPresentation.acceptsProgrammaticFocus, false, `${credentiallessScenario} opening iframe rejects keyboard focus`);
@@ -102,6 +104,7 @@ async function verifyScenario(credentiallessScenario) {
     inert: frame.inert,
     ariaHidden: frame.getAttribute("aria-hidden"),
     visibility: getComputedStyle(frame).visibility,
+    opacity: getComputedStyle(frame).opacity,
     pointerEvents: getComputedStyle(frame).pointerEvents,
   }));
   assert.deepEqual(readyPresentation, {
@@ -109,6 +112,7 @@ async function verifyScenario(credentiallessScenario) {
     inert: false,
     ariaHidden: "false",
     visibility: "visible",
+    opacity: "1",
     pointerEvents: "auto",
   }, `${credentiallessScenario} first paint and worker commit reveal exactly one interactive iframe`);
   const sandbox = await iframe.getAttribute("sandbox");
