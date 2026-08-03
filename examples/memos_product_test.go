@@ -63,7 +63,7 @@ func TestMemosUsesTimelineExplorerAndControlledMarkdown(t *testing.T) {
 		`calendar-grid`,
 		`tag-list`,
 		`explorer-scrim`,
-		`marked.lexer`,
+		`parseBlocks`,
 		`toggleTaskMarker`,
 		`markdown-table`,
 		`markdown-code-block`,

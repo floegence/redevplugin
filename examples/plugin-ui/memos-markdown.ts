@@ -1,5 +1,28 @@
-import { marked, type Token, type Tokens } from "marked";
 import type { PluginUIVNode } from "../../packages/redevplugin-ui/src/plugin.js";
+
+type BlockToken =
+  | { type: "heading"; depth: number; tokens: InlineToken[] }
+  | { type: "paragraph"; tokens: InlineToken[] }
+  | { type: "code"; text: string; lang?: string }
+  | { type: "blockquote"; tokens: BlockToken[] }
+  | { type: "hr" }
+  | { type: "list"; ordered: boolean; items: ListItemToken[] }
+  | { type: "table"; header: TableCellToken[]; rows: TableCellToken[][] }
+  | { type: "html"; text: string }
+  | { type: "text"; text: string; tokens?: InlineToken[] };
+
+type ListItemToken = { task: boolean; checked?: boolean; tokens: BlockToken[] };
+type TableCellToken = { tokens: InlineToken[] };
+
+type InlineToken =
+  | { type: "text"; text: string; tokens?: InlineToken[] }
+  | { type: "escape"; text: string }
+  | { type: "strong" | "em" | "del"; tokens: InlineToken[] }
+  | { type: "codespan"; text: string }
+  | { type: "br" }
+  | { type: "link"; href: string; tokens: InlineToken[] }
+  | { type: "image"; href: string; text: string }
+  | { type: "html"; text: string };
 
 export type MarkdownRenderResult = {
   nodes: PluginUIVNode[];
@@ -45,7 +68,7 @@ export function renderMarkdown(
     interactiveTasks: options.interactiveTasks === true,
     truncated: false,
   };
-  const tokens = marked.lexer(content, { gfm: true, breaks: true });
+  const tokens = parseBlocks(content);
   return { nodes: renderBlocks(tokens, context, "root"), truncated: context.truncated };
 }
 
@@ -92,9 +115,270 @@ export function toggleTaskMarker(content: string, targetIndex: number, checked: 
   return content;
 }
 
-function renderBlocks(tokens: Token[], context: RenderContext, scope: string): PluginUIVNode[] {
+function parseBlocks(content: string): BlockToken[] {
+  const lines = content.replace(/\r\n?/g, "\n").split("\n");
+  return parseBlockRange(lines, 0, lines.length).tokens;
+}
+
+function parseBlockRange(lines: string[], start: number, end: number): { tokens: BlockToken[]; index: number } {
+  const tokens: BlockToken[] = [];
+  let index = start;
+  while (index < end) {
+    const line = lines[index];
+    if (line.trim() === "") {
+      index += 1;
+      continue;
+    }
+
+    const fence = readFence(line);
+    if (fence) {
+      const codeLines: string[] = [];
+      index += 1;
+      while (index < end && !isClosingFence(lines[index], fence.marker)) {
+        codeLines.push(lines[index]);
+        index += 1;
+      }
+      if (index < end) index += 1;
+      tokens.push({ type: "code", text: codeLines.join("\n"), ...(fence.language ? { lang: fence.language } : {}) });
+      continue;
+    }
+
+    const heading = readHeading(line);
+    if (heading) {
+      tokens.push({ type: "heading", depth: heading.depth, tokens: parseInline(heading.text) });
+      index += 1;
+      continue;
+    }
+    if (isHorizontalRule(line)) {
+      tokens.push({ type: "hr" });
+      index += 1;
+      continue;
+    }
+
+    if (line.trimStart().startsWith(">")) {
+      const quoteLines: string[] = [];
+      while (index < end && lines[index].trimStart().startsWith(">")) {
+        const value = lines[index].trimStart().slice(1);
+        quoteLines.push(value.startsWith(" ") ? value.slice(1) : value);
+        index += 1;
+      }
+      tokens.push({ type: "blockquote", tokens: parseBlocks(quoteLines.join("\n")) });
+      continue;
+    }
+
+    const list = readListItem(line);
+    if (list) {
+      const items: ListItemToken[] = [];
+      const ordered = list.ordered;
+      while (index < end) {
+        const item = readListItem(lines[index]);
+        if (!item || item.ordered !== ordered) break;
+        let body = item.text;
+        let task = false;
+        let checked = false;
+        if (body.startsWith("[ ] ") || body.startsWith("[x] ") || body.startsWith("[X] ")) {
+          task = true;
+          checked = body[1].toLowerCase() === "x";
+          body = body.slice(4);
+        }
+        items.push({ task, ...(task ? { checked } : {}), tokens: parseBlocks(body) });
+        index += 1;
+      }
+      tokens.push({ type: "list", ordered, items });
+      continue;
+    }
+
+    if (index + 1 < end && line.includes("|") && isTableSeparator(lines[index + 1])) {
+      const header = splitTableRow(line);
+      index += 2;
+      const rows: TableCellToken[][] = [];
+      while (index < end && lines[index].trim() !== "" && lines[index].includes("|")) {
+        rows.push(splitTableRow(lines[index]));
+        index += 1;
+      }
+      tokens.push({ type: "table", header, rows });
+      continue;
+    }
+
+    if (line.trimStart().startsWith("<") && line.includes(">")) {
+      tokens.push({ type: "html", text: line.trim() });
+      index += 1;
+      continue;
+    }
+
+    const paragraph: string[] = [line];
+    index += 1;
+    while (index < end && lines[index].trim() !== "" && !isBlockStart(lines, index, end)) {
+      paragraph.push(lines[index]);
+      index += 1;
+    }
+    tokens.push({ type: "paragraph", tokens: parseInline(paragraph.join("\n")) });
+  }
+  return { tokens, index };
+}
+
+function isBlockStart(lines: string[], index: number, end: number): boolean {
+  const line = lines[index];
+  return Boolean(readFence(line) || readHeading(line) || isHorizontalRule(line) || line.trimStart().startsWith(">") || readListItem(line) || (index + 1 < end && line.includes("|") && isTableSeparator(lines[index + 1])) || (line.trimStart().startsWith("<") && line.includes(">")));
+}
+
+function readFence(line: string): { marker: "`" | "~"; language: string } | undefined {
+  const value = line.slice(0, line.length - line.trimStart().length);
+  if (value.length > 3) return undefined;
+  const trimmed = line.trimStart();
+  const marker = trimmed.startsWith("```") ? "`" : trimmed.startsWith("~~~") ? "~" : undefined;
+  if (!marker) return undefined;
+  const rest = trimmed.slice(3).trim();
+  return { marker, language: rest.slice(0, 64) };
+}
+
+function isClosingFence(line: string, marker: "`" | "~"): boolean {
+  const trimmed = line.trimStart();
+  return trimmed.length >= 3 && trimmed[0] === marker && trimmed[1] === marker && trimmed[2] === marker;
+}
+
+function readHeading(line: string): { depth: number; text: string } | undefined {
+  const trimmed = line.trimStart();
+  const indentation = line.length - trimmed.length;
+  if (indentation > 3 || !trimmed.startsWith("#")) return undefined;
+  let depth = 0;
+  while (depth < trimmed.length && trimmed[depth] === "#") depth += 1;
+  if (depth > 6 || (trimmed.length > depth && trimmed[depth] !== " " && trimmed[depth] !== "\t")) return undefined;
+  return { depth, text: trimmed.slice(depth).trim() };
+}
+
+function isHorizontalRule(line: string): boolean {
+  const value = line.replace(/[ \t]/g, "");
+  if (value.length < 3) return false;
+  const marker = value[0];
+  return (marker === "-" || marker === "_" || marker === "*") && [...value].every((character) => character === marker);
+}
+
+function readListItem(line: string): { ordered: boolean; text: string } | undefined {
+  const trimmed = line.trimStart();
+  if (trimmed.length < 3) return undefined;
+  if ((trimmed[0] === "-" || trimmed[0] === "*" || trimmed[0] === "+") && (trimmed[1] === " " || trimmed[1] === "\t")) return { ordered: false, text: trimmed.slice(2).trim() };
+  let index = 0;
+  while (index < trimmed.length && index < 9 && trimmed.charCodeAt(index) >= 48 && trimmed.charCodeAt(index) <= 57) index += 1;
+  if (index > 0 && (trimmed[index] === "." || trimmed[index] === ")") && (trimmed[index + 1] === " " || trimmed[index + 1] === "\t")) return { ordered: true, text: trimmed.slice(index + 2).trim() };
+  return undefined;
+}
+
+function isTableSeparator(line: string): boolean {
+  if (!line.includes("|")) return false;
+  return splitTableParts(line).every((part) => {
+    const value = part.replace(/[ \t]/g, "");
+    if (value.length < 3) return false;
+    const start = value[0] === ":" ? 1 : 0;
+    const finish = value[value.length - 1] === ":" ? value.length - 1 : value.length;
+    return finish - start >= 3 && [...value.slice(start, finish)].every((character) => character === "-");
+  });
+}
+
+function splitTableRow(line: string): TableCellToken[] {
+  return splitTableParts(line).map((part) => ({ tokens: parseInline(part.trim()) }));
+}
+
+function splitTableParts(line: string): string[] {
+  const value = line.trim();
+  const withoutStart = value.startsWith("|") ? value.slice(1) : value;
+  const withoutEnd = withoutStart.endsWith("|") ? withoutStart.slice(0, -1) : withoutStart;
+  return withoutEnd.split("|");
+}
+
+function parseInline(value: string): InlineToken[] {
+  const tokens: InlineToken[] = [];
+  let plain = "";
+  const flush = () => {
+    if (plain) tokens.push({ type: "text", text: plain });
+    plain = "";
+  };
+  let index = 0;
+  while (index < value.length) {
+    if (value[index] === "\\" && index + 1 < value.length) {
+      flush();
+      tokens.push({ type: "escape", text: value[index + 1] });
+      index += 2;
+      continue;
+    }
+    if (value[index] === "\n") {
+      flush();
+      tokens.push({ type: "br" });
+      index += 1;
+      continue;
+    }
+    const codeEnd = value.indexOf("`", index + 1);
+    if (value[index] === "`" && codeEnd > index + 1) {
+      flush();
+      tokens.push({ type: "codespan", text: value.slice(index + 1, codeEnd).trim() });
+      index = codeEnd + 1;
+      continue;
+    }
+    const imageOrLink = readLink(value, index);
+    if (imageOrLink) {
+      flush();
+      tokens.push(imageOrLink.token);
+      index = imageOrLink.next;
+      continue;
+    }
+    const styled = readStyled(value, index);
+    if (styled) {
+      flush();
+      tokens.push(styled.token);
+      index = styled.next;
+      continue;
+    }
+    if (value[index] === "<") {
+      const htmlEnd = value.indexOf(">", index + 1);
+      if (htmlEnd > index + 1) {
+        flush();
+        tokens.push({ type: "html", text: value.slice(index, htmlEnd + 1) });
+        index = htmlEnd + 1;
+        continue;
+      }
+    }
+    plain += value[index];
+    index += 1;
+  }
+  flush();
+  return tokens;
+}
+
+function readLink(value: string, index: number): { token: InlineToken; next: number } | undefined {
+  const image = value[index] === "!";
+  const open = image ? index + 1 : index;
+  if (value[open] !== "[") return undefined;
+  const closeLabel = value.indexOf("](", open + 1);
+  if (closeLabel < 0) return undefined;
+  const closeTarget = value.indexOf(")", closeLabel + 2);
+  if (closeTarget < 0) return undefined;
+  const label = value.slice(open + 1, closeLabel);
+  const href = value.slice(closeLabel + 2, closeTarget).trim().slice(0, 2048);
+  return image
+    ? { token: { type: "image", href, text: label.slice(0, 512) }, next: closeTarget + 1 }
+    : { token: { type: "link", href, tokens: parseInline(label) }, next: closeTarget + 1 };
+}
+
+function readStyled(value: string, index: number): { token: InlineToken; next: number } | undefined {
+  const markers: Array<{ marker: string; type: "strong" | "em" | "del" }> = [
+    { marker: "**", type: "strong" },
+    { marker: "__", type: "strong" },
+    { marker: "~~", type: "del" },
+    { marker: "*", type: "em" },
+    { marker: "_", type: "em" },
+  ];
+  for (const { marker, type } of markers) {
+    if (!value.startsWith(marker, index)) continue;
+    const end = value.indexOf(marker, index + marker.length);
+    if (end <= index + marker.length) continue;
+    return { token: { type, tokens: parseInline(value.slice(index + marker.length, end)) }, next: end + marker.length };
+  }
+  return undefined;
+}
+
+function renderBlocks(tokens: BlockToken[], context: RenderContext, scope: string): PluginUIVNode[] {
   const output: PluginUIVNode[] = [];
-  const entries = slotEntries(context, scope, "block", tokens.filter((token) => token.type !== "space" && token.type !== "def"));
+  const entries = slotEntries(context, scope, "block", tokens);
   for (const { item: token, key } of entries) {
     if (context.blockCount >= context.blockLimit || context.budget <= 0) {
       context.truncated = true;
@@ -107,49 +391,49 @@ function renderBlocks(tokens: Token[], context: RenderContext, scope: string): P
   return output;
 }
 
-function renderBlock(token: Token, context: RenderContext, key: string): PluginUIVNode | undefined {
+function renderBlock(token: BlockToken, context: RenderContext, key: string): PluginUIVNode | undefined {
   if (!claim(context)) return undefined;
   switch (token.type) {
     case "heading": {
-      const heading = token as Tokens.Heading;
+      const heading = token;
       const tag = heading.depth <= 1 ? "h2" : heading.depth === 2 ? "h3" : "h4";
       return { type: "element", key, tag, attributes: { class: `markdown-heading level-${Math.min(heading.depth, 4)}` }, children: renderInline(heading.tokens, context, key) };
     }
     case "paragraph": {
-      const paragraph = token as Tokens.Paragraph;
+      const paragraph = token;
       return { type: "element", key, tag: "p", attributes: { class: "markdown-paragraph" }, children: renderInline(paragraph.tokens, context, key) };
     }
     case "code": {
-      const code = token as Tokens.Code;
+      const code = token;
       return { type: "element", key, tag: "pre", attributes: { class: "markdown-code-block" }, children: [
         { type: "element", key: `${key}-code`, tag: "code", attributes: code.lang ? { class: "markdown-code", title: code.lang } : { class: "markdown-code" }, children: [textNode(`${key}-code-text`, code.text)] },
       ] };
     }
     case "blockquote": {
-      const quote = token as Tokens.Blockquote;
+      const quote = token;
       return { type: "element", key, tag: "div", attributes: { class: "markdown-quote" }, children: renderBlocks(quote.tokens, context, key) };
     }
     case "hr":
       return { type: "element", key, tag: "div", attributes: { class: "markdown-rule", role: "separator" }, children: [] };
     case "list":
-      return renderList(token as Tokens.List, context, key);
+      return renderList(token, context, key);
     case "table":
-      return renderTable(token as Tokens.Table, context, key);
+      return renderTable(token, context, key);
     case "html": {
-      const html = token as Tokens.HTML;
+      const html = token;
       return { type: "element", key, tag: "code", attributes: { class: "markdown-raw" }, children: [textNode(`${key}-text`, html.text)] };
     }
     case "text": {
-      const text = token as Tokens.Text;
+      const text = token;
       return { type: "element", key, tag: "p", attributes: { class: "markdown-paragraph" }, children: text.tokens ? renderInline(text.tokens, context, key) : [textNode(`${key}-text`, text.text)] };
     }
     default: {
-      throw new TypeError(`unsupported markdown block token: ${token.type}`);
+      throw new TypeError("unsupported markdown block token");
     }
   }
 }
 
-function renderList(token: Tokens.List, context: RenderContext, key: string): PluginUIVNode {
+function renderList(token: Extract<BlockToken, { type: "list" }>, context: RenderContext, key: string): PluginUIVNode {
   const items = slotEntries(context, key, "item", token.items).map(({ item, key: itemKey }) => {
     if (!claim(context)) return textNode(`${itemKey}-empty`, "");
     const children: PluginUIVNode[] = [];
@@ -171,14 +455,14 @@ function renderList(token: Tokens.List, context: RenderContext, key: string): Pl
         children: [],
       });
     }
-    const bodyTokens = item.task ? item.tokens.filter((token) => token.type !== "checkbox") : item.tokens;
+    const bodyTokens = item.tokens;
     children.push({ type: "element", key: `${itemKey}-body`, tag: "div", attributes: { class: "markdown-list-copy" }, children: renderBlocks(bodyTokens, context, itemKey) });
     return { type: "element", key: itemKey, tag: "li", attributes: item.task ? { class: "markdown-list-item task-item" } : { class: "markdown-list-item" }, children } satisfies PluginUIVNode;
   });
   return { type: "element", key, tag: token.ordered ? "ol" : "ul", attributes: { class: token.ordered ? "markdown-list ordered" : "markdown-list" }, children: items };
 }
 
-function renderTable(token: Tokens.Table, context: RenderContext, key: string): PluginUIVNode {
+function renderTable(token: Extract<BlockToken, { type: "table" }>, context: RenderContext, key: string): PluginUIVNode {
   const header = slotEntries(context, key, "head", token.header).map(({ item: cell, key: cellKey }) => ({
     type: "element",
     key: cellKey,
@@ -206,50 +490,50 @@ function renderTable(token: Tokens.Table, context: RenderContext, key: string): 
   ] };
 }
 
-function renderInline(tokens: Token[], context: RenderContext, scope: string): PluginUIVNode[] {
+function renderInline(tokens: InlineToken[], context: RenderContext, scope: string): PluginUIVNode[] {
   const output: PluginUIVNode[] = [];
   const entries = slotEntries(context, scope, "inline", tokens);
   for (const { item: token, key } of entries) {
     if (!claim(context)) break;
     switch (token.type) {
       case "text": {
-        const text = token as Tokens.Text;
+        const text = token;
         output.push(...(text.tokens ? renderInline(text.tokens, context, key) : [textNode(key, text.text)]));
         break;
       }
       case "escape":
-        output.push(textNode(key, (token as Tokens.Escape).text));
+        output.push(textNode(key, token.text));
         break;
       case "strong":
-        output.push({ type: "element", key, tag: "strong", children: renderInline((token as Tokens.Strong).tokens, context, key) });
+        output.push({ type: "element", key, tag: "strong", children: renderInline(token.tokens, context, key) });
         break;
       case "em":
-        output.push({ type: "element", key, tag: "em", children: renderInline((token as Tokens.Em).tokens, context, key) });
+        output.push({ type: "element", key, tag: "em", children: renderInline(token.tokens, context, key) });
         break;
       case "del":
-        output.push({ type: "element", key, tag: "span", attributes: { class: "markdown-strike" }, children: renderInline((token as Tokens.Del).tokens, context, key) });
+        output.push({ type: "element", key, tag: "span", attributes: { class: "markdown-strike" }, children: renderInline(token.tokens, context, key) });
         break;
       case "codespan":
-        output.push({ type: "element", key, tag: "code", attributes: { class: "markdown-inline-code" }, children: [textNode(`${key}-text`, (token as Tokens.Codespan).text)] });
+        output.push({ type: "element", key, tag: "code", attributes: { class: "markdown-inline-code" }, children: [textNode(`${key}-text`, token.text)] });
         break;
       case "br":
         output.push({ type: "element", key, tag: "span", attributes: { class: "markdown-break", "aria-hidden": true }, children: [] });
         break;
       case "link": {
-        const link = token as Tokens.Link;
+        const link = token;
         output.push({ type: "element", key, tag: "span", attributes: { class: "markdown-link", title: link.href }, children: renderInline(link.tokens, context, key) });
         break;
       }
       case "image": {
-        const image = token as Tokens.Image;
+        const image = token;
         output.push({ type: "element", key, tag: "span", attributes: { class: "markdown-image-reference", title: image.href }, children: [textNode(`${key}-text`, `[Image: ${image.text || "untitled"}]`)] });
         break;
       }
       case "html":
-        output.push({ type: "element", key, tag: "code", attributes: { class: "markdown-raw inline" }, children: [textNode(`${key}-text`, (token as Tokens.HTML).text)] });
+        output.push({ type: "element", key, tag: "code", attributes: { class: "markdown-raw inline" }, children: [textNode(`${key}-text`, token.text)] });
         break;
       default:
-        throw new TypeError(`unsupported markdown inline token: ${token.type}`);
+        throw new TypeError("unsupported markdown inline token");
     }
   }
   return output;
