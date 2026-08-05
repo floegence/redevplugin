@@ -394,6 +394,16 @@ test("publication shell converges across interruption and response-loss fixtures
     ["delete response lost", { release: release(), assets: [asset({ name: "wrong.json" })], deleteResponseLost: true }],
     ["publish response lost", { release: release(), assets: [asset()], patchMode: "response-lost" }],
     ["duplicate empty drafts", { release: release(), extraReleases: [release(true, marker, 102)] }],
+    ["asset draft with empty duplicate", {
+      release: release(),
+      assets: [asset()],
+      extraReleases: [release(true, marker, 102)],
+    }],
+    ["empty draft before asset draft", {
+      release: release(),
+      extraReleases: [release(true, marker, 102)],
+      extraReleaseAssets: { "102": [asset({ id: 202 })] },
+    }],
     ["duplicate draft delete response lost", {
       release: release(),
       extraReleases: [release(true, marker, 102)],
@@ -494,8 +504,9 @@ test("publication shell fails closed without mutating authoritative public state
     ["published wrong bytes", { release: release(false), assets: [asset({ bytes: wrongBytes })] }],
     ["published wrong metadata", { release: release(false), assets: [asset({ type: "application/json" })] }],
     ["published multiple assets", { release: release(false), assets: [asset(), asset({ id: 202 })] }],
-    ["duplicate draft has assets", {
+    ["multiple asset drafts", {
       release: release(),
+      assets: [asset()],
       extraReleases: [release(true, marker, 102)],
       extraReleaseAssets: { "102": [asset({ id: 202 })] },
     }],
@@ -613,8 +624,14 @@ test("local pre-tag and write-authorized workflow admission accept only exact tr
       extraReleases: [release(true, marker, 102)],
       deleteReleaseResponseLost: true,
     }, "workflow-only"],
-    ["multiple drafts with assets", {
+    ["asset draft with empty duplicate", {
       release: release(),
+      assets: [asset()],
+      extraReleases: [release(true, marker, 102)],
+    }, "workflow-only"],
+    ["multiple asset drafts", {
+      release: release(),
+      assets: [asset()],
       extraReleases: [release(true, marker, 102)],
       extraReleaseAssets: { "102": [asset({ id: 202 })] },
     }, false],
@@ -721,6 +738,48 @@ test("recovery admission removes only bound empty drafts beside one public relea
         assert.equal([state.release, ...state.extraReleases].filter(Boolean)[0].draft, false);
       } finally {
         recoveryFixture.cleanup();
+      }
+    });
+  }
+});
+
+test("workflow admission retains one bound asset draft and removes only empty duplicates", async (t) => {
+  const cases = [
+    ["asset draft has the lower ID", {
+      release: release(),
+      assets: [asset()],
+      extraReleases: [release(true, marker, 102)],
+    }, "delete-release-gh:102", 101],
+    ["asset draft has the higher ID", {
+      release: release(),
+      extraReleases: [release(true, marker, 102)],
+      extraReleaseAssets: { "102": [asset({ id: 202 })] },
+    }, "delete-release-gh:101", 102],
+    ["empty draft deletion response is lost", {
+      release: release(),
+      assets: [asset()],
+      extraReleases: [release(true, marker, 102)],
+      deleteReleaseResponseLost: true,
+    }, "delete-release-gh:102", 101],
+  ];
+
+  for (const [name, overrides, expectedDeletion, expectedCanonicalID] of cases) {
+    await t.test(name, () => {
+      const fixture = createFixture(overrides);
+      try {
+        const result = executeAdmission(fixture, true);
+        assert.equal(result.status, 0, result.stderr);
+        const state = fixture.readState();
+        assert.deepEqual(
+          state.events.filter((event) => event.startsWith("delete-release-gh:")),
+          [expectedDeletion],
+        );
+        const releases = [state.release, ...state.extraReleases].filter(Boolean);
+        assert.equal(releases.length, 1);
+        assert.equal(releases[0].id, expectedCanonicalID);
+        assert.equal(releases[0].draft, true);
+      } finally {
+        fixture.cleanup();
       }
     });
   }

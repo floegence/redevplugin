@@ -89,9 +89,24 @@ jobs:
             jq -e 'type == "array" and length == 0' "$assets" > /dev/null
           }
 
+          validate_asset_bound_draft() {
+            local release_id=$1
+            gh api "repos/${GITHUB_REPOSITORY}/releases/${release_id}" > "$release" || return 1
+            jq -e --argjson id "$release_id" --arg tag "$TAG" --arg marker "$marker" '
+              .id == $id and
+              .tag_name == $tag and
+              .prerelease == false and
+              .draft == true and
+              ((.body // "") | contains($marker))
+            ' "$release" > /dev/null || return 1
+            gh api "repos/${GITHUB_REPOSITORY}/releases/${release_id}/assets?per_page=100" > "$assets" || return 1
+            jq -e 'type == "array" and length > 0 and length < 100' "$assets" > /dev/null
+          }
+
           normalize_duplicate_releases() {
-            local canonical_id current_id current_ids duplicate_id public_id
+            local asset_draft_id canonical_id current_id current_ids duplicate_id public_id
             current_ids=$(jq -r --arg tag "$TAG" '[.[][] | select(.tag_name == $tag) | .id] | sort | .[]' "$pages") || return 1
+            asset_draft_id=
             public_id=
             for current_id in $current_ids; do
               [[ "$current_id" =~ ^[1-9][0-9]*$ ]] || return 1
@@ -109,10 +124,15 @@ jobs:
                 public_id=$current_id
               else
                 gh api "repos/${GITHUB_REPOSITORY}/releases/${current_id}/assets?per_page=100" > "$assets" || return 1
-                jq -e 'type == "array" and length == 0' "$assets" > /dev/null || return 1
+                jq -e 'type == "array" and length < 100' "$assets" > /dev/null || return 1
+                if test "$(jq length "$assets")" != 0; then
+                  test -z "$asset_draft_id" || return 1
+                  asset_draft_id=$current_id
+                fi
               fi
             done
-            canonical_id=${public_id:-$(printf '%s\n' "$current_ids" | head -n 1)}
+            test -z "$public_id" || test -z "$asset_draft_id" || return 1
+            canonical_id=${public_id:-${asset_draft_id:-$(printf '%s\n' "$current_ids" | head -n 1)}}
             [[ "$canonical_id" =~ ^[1-9][0-9]*$ ]] || return 1
             for duplicate_id in $current_ids; do
               test "$duplicate_id" != "$canonical_id" || continue
@@ -134,6 +154,8 @@ jobs:
                       .draft == false and
                       ((.body // "") | contains($marker))
                     ' "$release" > /dev/null || return 1
+                  elif test "$current_id" = "$canonical_id" && test -n "$asset_draft_id"; then
+                    validate_asset_bound_draft "$current_id" || return 1
                   else
                     validate_empty_bound_draft "$current_id" || return 1
                   fi
@@ -985,10 +1007,19 @@ jobs:
             exact_asset_matches
           }
 
+          validate_exact_bound_draft() {
+            local release_id=$1
+            load_bound_release "$release_id" || return 1
+            test "$(jq -r .draft "$release_json")" = true || return 1
+            load_assets_for_release "$release_id" || return 1
+            exact_asset_matches
+          }
+
           normalize_duplicate_releases() {
-            local canonical_id current_id current_ids delete_status duplicate_id public_id
+            local asset_draft_id canonical_id current_id current_ids delete_status duplicate_id public_id
             verify_local_manifest || return 1
             current_ids=$(jq -r --arg tag "$TAG" '[.[][] | select(.tag_name == $tag) | .id] | sort | .[]' "$release_pages") || return 1
+            asset_draft_id=
             public_id=
             for current_id in $current_ids; do
               [[ "$current_id" =~ ^[1-9][0-9]*$ ]] || return 1
@@ -999,10 +1030,15 @@ jobs:
                 public_id=$current_id
               else
                 load_assets_for_release "$current_id" || return 1
-                test "$(jq length "$assets_json")" = 0 || return 1
+                if test "$(jq length "$assets_json")" != 0; then
+                  test -z "$asset_draft_id" || return 1
+                  exact_asset_matches || return 1
+                  asset_draft_id=$current_id
+                fi
               fi
             done
-            canonical_id=${public_id:-$(printf '%s\n' "$current_ids" | head -n 1)}
+            test -z "$public_id" || test -z "$asset_draft_id" || return 1
+            canonical_id=${public_id:-${asset_draft_id:-$(printf '%s\n' "$current_ids" | head -n 1)}}
             [[ "$canonical_id" =~ ^[1-9][0-9]*$ ]] || return 1
             for duplicate_id in $current_ids; do
               test "$duplicate_id" != "$canonical_id" || continue
@@ -1017,6 +1053,8 @@ jobs:
                 for current_id in $current_ids; do
                   if test "$current_id" = "$canonical_id" && test -n "$public_id"; then
                     validate_exact_bound_public "$current_id" || return 1
+                  elif test "$current_id" = "$canonical_id" && test -n "$asset_draft_id"; then
+                    validate_exact_bound_draft "$current_id" || return 1
                   else
                     validate_empty_bound_draft "$current_id" || return 1
                   fi
