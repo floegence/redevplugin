@@ -17,6 +17,13 @@
     "PLUGIN_TRUST_VERIFICATION_INVALID",
     "PLUGIN_RELEASE_REF_VERIFICATION_FAILED",
     "PLUGIN_RELEASE_REF_POLICY_DENIED",
+    "PLUGIN_RELEASE_NETWORK",
+    "PLUGIN_RELEASE_TIMEOUT",
+    "PLUGIN_RELEASE_ASSET_MISSING",
+    "PLUGIN_RELEASE_ASSET_INTEGRITY",
+    "PLUGIN_INSTALL_INTERRUPTED",
+    "PLUGIN_INSTALL_STATE_CONFLICT",
+    "PLUGIN_INTERNAL_FAILURE",
     "PLUGIN_DISABLED",
     "PLUGIN_DISABLED_BY_POLICY",
     "PLUGIN_PERMISSION_DENIED",
@@ -81,6 +88,13 @@
     "PLUGIN_TRUST_VERIFICATION_INVALID",
     "PLUGIN_RELEASE_REF_VERIFICATION_FAILED",
     "PLUGIN_RELEASE_REF_POLICY_DENIED",
+    "PLUGIN_RELEASE_NETWORK",
+    "PLUGIN_RELEASE_TIMEOUT",
+    "PLUGIN_RELEASE_ASSET_MISSING",
+    "PLUGIN_RELEASE_ASSET_INTEGRITY",
+    "PLUGIN_INSTALL_INTERRUPTED",
+    "PLUGIN_INSTALL_STATE_CONFLICT",
+    "PLUGIN_INTERNAL_FAILURE",
     "PLUGIN_DISABLED",
     "PLUGIN_DISABLED_BY_POLICY",
     "PLUGIN_PERMISSION_DENIED",
@@ -4590,6 +4604,46 @@
     installReleaseRef(request2, options = {}) {
       return this.#requestMutation("POST", "/_redevplugin/api/plugins/install-release-ref", request2, options);
     }
+    async startReleaseInstallOperation(request2, options = {}) {
+      try {
+        return await this.#requestMutation(
+          "POST",
+          "/_redevplugin/api/plugins/release-install-operations",
+          request2,
+          options
+        );
+      } catch (error) {
+        if (!(error instanceof PluginTransportError) || error.mutationOutcome !== "unknown" || options.signal?.aborted) {
+          throw error;
+        }
+        return this.getReleaseInstallOperationByRequest(request2.request_id, options);
+      }
+    }
+    listReleaseInstallOperations(options = {}) {
+      return this.#requestGet("/_redevplugin/api/plugins/release-install-operations", options);
+    }
+    getReleaseInstallOperation(operationId, options = {}) {
+      return this.#requestGet(
+        `/_redevplugin/api/plugins/release-install-operations/${encodeURIComponent(operationId)}`,
+        options
+      );
+    }
+    getReleaseInstallOperationByRequest(requestId, options = {}) {
+      return this.#requestGet(
+        `/_redevplugin/api/plugins/release-install-operations/by-request/${encodeURIComponent(requestId)}`,
+        options
+      );
+    }
+    async watchReleaseInstallOperation(operationId, options = {}) {
+      for (; ; ) {
+        const operation = await this.getReleaseInstallOperation(operationId, options);
+        options.onUpdate?.(operation);
+        if (operation.status === "succeeded" || operation.status === "failed") {
+          return operation;
+        }
+        await waitForReleaseInstallPoll(operation.retry_after_ms, options.signal);
+      }
+    }
     async inspectExternalPackage(request2, options = {}) {
       const inspection = await this.#requestMutation(
         "POST",
@@ -4902,6 +4956,16 @@
       }, operation);
       return readPlatformResponse(response);
     }
+    async #requestGet(path, options) {
+      const operation = `GET ${path}`;
+      const response = await dispatchQueryRequest(this.#fetch, this.#apiBaseURL + path, {
+        method: "GET",
+        headers: { "Accept": "application/json" },
+        credentials: "same-origin",
+        signal: options.signal
+      }, operation);
+      return readPlatformResponse(response);
+    }
     async #requestMutation(method, path, body, options) {
       const operation = `${method} ${path}`;
       assertMutationDispatchable(options.signal, operation);
@@ -4941,6 +5005,29 @@
       return readMutationPlatformResponse(response);
     }
   };
+  function waitForReleaseInstallPoll(retryAfterMs, signal) {
+    const delayMs = Number.isFinite(retryAfterMs) ? Math.min(1e4, Math.max(250, Math.trunc(retryAfterMs))) : 500;
+    if (signal?.aborted) {
+      return Promise.reject(new PluginTransportError(
+        "Plugin release install observation was aborted",
+        signal.reason
+      ));
+    }
+    return new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        signal?.removeEventListener("abort", onAbort);
+        resolve();
+      }, delayMs);
+      const onAbort = () => {
+        clearTimeout(timeout);
+        reject(new PluginTransportError(
+          "Plugin release install observation was aborted",
+          signal?.reason
+        ));
+      };
+      signal?.addEventListener("abort", onAbort, { once: true });
+    });
+  }
   function canonicalUploadedExternalPackageIntent(intent) {
     if (typeof intent !== "object" || intent === null || Array.isArray(intent)) {
       throw new TypeError("uploaded external package intent must be a closed install or update object");
