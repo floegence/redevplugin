@@ -3,10 +3,12 @@ package registry
 import (
 	"errors"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/floegence/redevplugin/pkg/mutation"
+	"github.com/floegence/redevplugin/pkg/releasepublisher"
 )
 
 func TestReleaseInstallOperationReplayConflictAndOwnerIsolation(t *testing.T) {
@@ -94,6 +96,59 @@ func TestReleaseInstallOperationProgressAndTerminalCAS(t *testing.T) {
 	}
 }
 
+func TestReleaseInstallOperationRejectsNonContractDigestShapes(t *testing.T) {
+	for _, tc := range registryStoreCases() {
+		t.Run(tc.name, func(t *testing.T) {
+			store := tc.open(t)
+			ctx := registryTestContext()
+			now := time.Date(2026, 8, 5, 1, 2, 3, 0, time.UTC)
+
+			prefixedMetadata := releaseInstallOperationRequest(now)
+			prefixedMetadata.Release.ReleaseMetadataSHA256 = "sha256:" + prefixedMetadata.Release.ReleaseMetadataSHA256
+			if _, _, err := store.StartReleaseInstallOperation(ctx, prefixedMetadata); !errors.Is(err, ErrInvalidReleaseInstallOperation) {
+				t.Fatalf("prefixed release metadata digest error = %v", err)
+			}
+
+			unprefixedPackage := releaseInstallOperationRequest(now)
+			unprefixedPackage.Release.PackageSHA256 = strings.TrimPrefix(unprefixedPackage.Release.PackageSHA256, "sha256:")
+			if _, _, err := store.StartReleaseInstallOperation(ctx, unprefixedPackage); !errors.Is(err, ErrInvalidReleaseInstallOperation) {
+				t.Fatalf("unprefixed package digest error = %v", err)
+			}
+		})
+	}
+}
+
+func TestReleaseInstallOperationAcceptsPublisherReleaseRefDigestShapes(t *testing.T) {
+	reference := releasepublisher.PluginReleaseRefV1{
+		SourceID: "official", Channel: "stable", ReleaseMetadataRef: "containers-4.1.0",
+		ReleaseMetadataSHA256: strings.Repeat("a", 64), PublisherID: "floegence", PluginID: "com.floegence.containers", Version: "4.1.0",
+		ExpectedHashes: releasepublisher.PackageHashSetV1{
+			PackageSHA256:  "sha256:" + strings.Repeat("b", 64),
+			ManifestSHA256: "sha256:" + strings.Repeat("c", 64),
+			EntriesSHA256:  "sha256:" + strings.Repeat("d", 64),
+		},
+	}
+	req := StartReleaseInstallOperationRequest{
+		RequestID: "request_install_containers", OperationID: "operation_install_containers", PluginInstanceID: "plugini_containers",
+		Release: ReleaseInstallIdentity{
+			SourceID: reference.SourceID, Channel: reference.Channel, ReleaseMetadataRef: reference.ReleaseMetadataRef,
+			ReleaseMetadataSHA256: reference.ReleaseMetadataSHA256, PublisherID: reference.PublisherID,
+			PluginID: reference.PluginID, Version: reference.Version,
+			PackageSHA256: reference.ExpectedHashes.PackageSHA256, ManifestSHA256: reference.ExpectedHashes.ManifestSHA256,
+			EntriesSHA256: reference.ExpectedHashes.EntriesSHA256,
+		},
+		Now: time.Date(2026, 8, 5, 1, 2, 3, 0, time.UTC),
+	}
+
+	for _, tc := range registryStoreCases() {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, created, err := tc.open(t).StartReleaseInstallOperation(registryTestContext(), req); err != nil || !created {
+				t.Fatalf("publisher release ref operation = created:%t error:%v", created, err)
+			}
+		})
+	}
+}
+
 func TestSQLiteRegistryMigratesV2AndReconcilesReleaseInstallOperation(t *testing.T) {
 	ctx := registryTestContext()
 	path := filepath.Join(t.TempDir(), "registry.sqlite")
@@ -162,7 +217,7 @@ func releaseInstallOperationRequest(now time.Time) StartReleaseInstallOperationR
 		RequestID: "request_install_example", OperationID: "operation_install_example", PluginInstanceID: "plugini_example",
 		Release: ReleaseInstallIdentity{
 			SourceID: "official", Channel: "stable", ReleaseMetadataRef: "example-1.2.3",
-			ReleaseMetadataSHA256: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			ReleaseMetadataSHA256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
 			PublisherID:           "example", PluginID: "com.example.plugin", Version: "1.2.3",
 			PackageSHA256:  "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
 			ManifestSHA256: "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",

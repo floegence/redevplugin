@@ -3754,6 +3754,8 @@ func errorCodeForManagementError(err error) security.ErrorCode {
 		return security.ErrInstallStateConflict
 	case errors.Is(err, registry.ErrReleaseInstallOperationNotFound):
 		return security.ErrOperationNotFound
+	case errors.Is(err, registry.ErrInvalidReleaseInstallOperation):
+		return security.ErrInvalidRequest
 	case errors.Is(err, storage.ErrQuotaExceeded):
 		return security.ErrStorageQuotaExceeded
 	case errors.Is(err, operation.ErrDeleteBlocked):
@@ -3859,6 +3861,8 @@ func httpStatusForManagementError(err error) int {
 		return http.StatusConflict
 	case errors.Is(err, registry.ErrReleaseInstallOperationNotFound):
 		return http.StatusNotFound
+	case errors.Is(err, registry.ErrInvalidReleaseInstallOperation):
+		return http.StatusBadRequest
 	case errors.Is(err, storage.ErrQuotaExceeded):
 		return http.StatusRequestEntityTooLarge
 	case errors.Is(err, operation.ErrDeleteBlocked):

@@ -270,17 +270,27 @@ func validateStartReleaseInstallOperation(req StartReleaseInstallOperationReques
 			return fmt.Errorf("%w: %s is required and must be canonical", ErrInvalidReleaseInstallOperation, name)
 		}
 	}
+	if !validCanonicalSHA256Hex(req.Release.ReleaseMetadataSHA256) {
+		return fmt.Errorf("%w: release_metadata_sha256 must be a canonical sha256 digest", ErrInvalidReleaseInstallOperation)
+	}
 	for name, digest := range map[string]string{
-		"release_metadata_sha256": req.Release.ReleaseMetadataSHA256,
-		"package_sha256":          req.Release.PackageSHA256,
-		"manifest_sha256":         req.Release.ManifestSHA256,
-		"entries_sha256":          req.Release.EntriesSHA256,
+		"package_sha256":  req.Release.PackageSHA256,
+		"manifest_sha256": req.Release.ManifestSHA256,
+		"entries_sha256":  req.Release.EntriesSHA256,
 	} {
 		if !validExternalPackageConfirmationDigest(digest) {
 			return fmt.Errorf("%w: %s must be a canonical sha256 digest", ErrInvalidReleaseInstallOperation, name)
 		}
 	}
 	return nil
+}
+
+func validCanonicalSHA256Hex(value string) bool {
+	if len(value) != sha256.Size*2 {
+		return false
+	}
+	decoded, err := hex.DecodeString(value)
+	return err == nil && len(decoded) == sha256.Size && strings.ToLower(value) == value
 }
 
 func applyReleaseInstallOperationUpdate(current ReleaseInstallOperation, req UpdateReleaseInstallOperationRequest) (ReleaseInstallOperation, error) {
