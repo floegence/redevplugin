@@ -258,11 +258,11 @@ func TestCurrentCompatibilityManifestUsesOnePlatformVersion(t *testing.T) {
 func TestCurrentPackageSetFallsBackToBuildInfoVersion(t *testing.T) {
 	restore := replaceReleaseVersions(devVersion, devVersion, devVersion)
 	defer restore()
-	restoreDetector := replaceBuildInfoDetector("0.7.2")
+	restoreDetector := replaceBuildInfoDetector("0.7.3")
 	defer restoreDetector()
 
 	packageSet := CurrentCompatibilityManifest().PackageSet
-	if packageSet.PlatformVersion != "0.7.2" || packageSet.ContractSetSHA256 != ContractSetSHA256 {
+	if packageSet.PlatformVersion != "0.7.3" || packageSet.ContractSetSHA256 != ContractSetSHA256 {
 		t.Fatalf("package set = %#v", packageSet)
 	}
 }

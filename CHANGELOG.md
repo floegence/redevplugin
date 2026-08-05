@@ -1,5 +1,22 @@
 # Changelog
 
+## v0.7.3
+
+### Fixed
+
+- Accept the publisher release-ref contract's unprefixed
+  `release_metadata_sha256` while continuing to require `sha256:` prefixes for
+  package, manifest, and entries digests when starting release-install
+  operations.
+- Report malformed release-install operation identities as
+  `PLUGIN_INVALID_REQUEST` with HTTP 400 instead of an internal platform
+  failure.
+
+### Changed
+
+- Publish the complete Go, npm, Rust source crate, generated contract, and
+  package-publication evidence set as ReDevPlugin 0.7.3.
+
 ## v0.7.2
 
 ### Added
