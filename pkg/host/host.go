@@ -403,10 +403,20 @@ type CapabilityArtifactFetchHop struct {
 	ResolvedIP string `json:"resolved_ip"`
 }
 
+// CapabilityArtifactOrigin identifies how capability contract bytes reached the
+// Host. The Host validates origin-specific evidence before the signed bundle.
+type CapabilityArtifactOrigin string
+
+const (
+	CapabilityArtifactOriginHost     CapabilityArtifactOrigin = "host_artifact"
+	CapabilityArtifactOriginRegistry CapabilityArtifactOrigin = "registry"
+)
+
 type ResolvedCapabilityContractFile struct {
 	Reader     io.ReadCloser                `json:"-"`
 	Size       int64                        `json:"size"`
 	MediaType  string                       `json:"media_type"`
+	Origin     CapabilityArtifactOrigin     `json:"origin"`
 	FetchChain []CapabilityArtifactFetchHop `json:"fetch_chain"`
 }
 

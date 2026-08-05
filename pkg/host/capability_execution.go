@@ -185,7 +185,7 @@ func readCapabilityContractArtifact(ctx context.Context, artifacts CapabilityCon
 	if resolved.Size < 0 || resolved.Size > capabilitycontract.MaxArtifactFileBytes {
 		return nil, fmt.Errorf("%w: capability contract artifact %s exceeds the per-file byte budget", ErrReleaseRefVerificationFailed, ref)
 	}
-	if err := validateCapabilityArtifactFetch(sourcePolicy, resolved.FetchChain); err != nil {
+	if err := validateCapabilityArtifactFetch(sourcePolicy, resolved.Origin, resolved.FetchChain); err != nil {
 		return nil, err
 	}
 	wantMediaType, err := capabilityArtifactMediaType(pin, ref)
@@ -222,17 +222,20 @@ func capabilityArtifactMediaType(pin capabilitycontract.Pin, ref string) (string
 	}
 }
 
-func validateCapabilityArtifactFetch(sourcePolicy releasecontract.SourcePolicyV2, chain []CapabilityArtifactFetchHop) error {
-	switch sourcePolicy.SourceType {
-	case "host_artifact":
+func validateCapabilityArtifactFetch(sourcePolicy releasecontract.SourcePolicyV2, origin CapabilityArtifactOrigin, chain []CapabilityArtifactFetchHop) error {
+	switch origin {
+	case CapabilityArtifactOriginHost:
 		if len(chain) != 0 {
 			return fmt.Errorf("%w: host artifact fetch chain must be empty", ErrReleaseRefVerificationFailed)
 		}
 		return nil
-	case "registry":
+	case CapabilityArtifactOriginRegistry:
+		if sourcePolicy.SourceType != "registry" {
+			return fmt.Errorf("%w: registry artifact origin requires a registry source policy", ErrReleaseRefVerificationFailed)
+		}
 		// Registry artifacts require request-bound network evidence below.
 	default:
-		return fmt.Errorf("%w: capability contract source type is invalid", ErrReleaseRefVerificationFailed)
+		return fmt.Errorf("%w: capability contract artifact origin is invalid", ErrReleaseRefVerificationFailed)
 	}
 	if len(sourcePolicy.AllowedArtifactHosts) == 0 {
 		return fmt.Errorf("%w: source policy allowed_artifact_hosts are required for capability contracts", ErrReleaseRefVerificationFailed)

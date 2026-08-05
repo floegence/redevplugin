@@ -9802,6 +9802,7 @@ type recordingCapabilityContractArtifactResolver struct {
 
 type memoryCapabilityContractArtifactSet struct {
 	bundle         capabilitycontract.Bundle
+	origin         CapabilityArtifactOrigin
 	fetchChain     []CapabilityArtifactFetchHop
 	omitFetchChain bool
 	mediaType      string
@@ -9835,8 +9836,13 @@ func (s *memoryCapabilityContractArtifactSet) OpenCapabilityContractArtifact(_ c
 	if s.declaredSize != nil {
 		size = *s.declaredSize
 	}
+	origin := s.origin
+	if origin == "" {
+		origin = CapabilityArtifactOriginRegistry
+	}
 	return ResolvedCapabilityContractFile{
-		Reader: io.NopCloser(bytes.NewReader(content)), Size: size, MediaType: mediaType, FetchChain: chain,
+		Reader: io.NopCloser(bytes.NewReader(content)), Size: size, MediaType: mediaType,
+		Origin: origin, FetchChain: chain,
 	}, nil
 }
 

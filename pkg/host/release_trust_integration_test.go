@@ -228,7 +228,7 @@ func TestReleaseTrustInstallVerifiesCapabilityContractBundle(t *testing.T) {
 	}
 }
 
-func TestReleaseTrustInstallVerifiesEmbeddedHostCapabilityContractBundle(t *testing.T) {
+func TestRegistryReleaseInstallVerifiesEmbeddedHostCapabilityContractBundle(t *testing.T) {
 	contract, err := fixtureCapabilityContract("example.capability.echo")
 	if err != nil {
 		t.Fatal(err)
@@ -246,7 +246,7 @@ func TestReleaseTrustInstallVerifiesEmbeddedHostCapabilityContractBundle(t *test
 		t.Fatal(err)
 	}
 	fixture, err := releasetrustfixture.New(buildHostReleasePackageWithCapability(t, bundle.Pin), releasetrustfixture.Options{
-		SourceType: "host_artifact",
+		SourceType: "registry",
 		HostRequirements: []releasecontract.ReleaseHostRequirement{{
 			HostID: "test-host", MinHostVersion: "0.1.0",
 			RequiredCapabilityContracts: []releasecontract.HostCapabilityRequirementRef{{
@@ -259,7 +259,9 @@ func TestReleaseTrustInstallVerifiesEmbeddedHostCapabilityContractBundle(t *test
 		t.Fatal(err)
 	}
 	capabilityResolver := &recordingCapabilityContractArtifactResolver{result: ResolvedCapabilityContractArtifact{
-		Artifacts: &memoryCapabilityContractArtifactSet{bundle: bundle, omitFetchChain: true},
+		Artifacts: &memoryCapabilityContractArtifactSet{
+			bundle: bundle, origin: CapabilityArtifactOriginHost, omitFetchChain: true,
+		},
 	}}
 	h, _, _ := newTestHostWithOptions(t, testHostOptions{
 		releaseTrust: fixture.ServiceSet, releaseArtifactResolver: &recordingReleaseArtifactResolver{artifact: resolvedReleaseTrustFixture(fixture)},

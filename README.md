@@ -83,7 +83,10 @@ an English fallback or mix locales within one resolved presentation.
   a restricted schema, compatibility metadata, generated plugin-side client,
   notices, manifest, and signature. The Host verifies source-policy key usage,
   every file digest, publisher identity, compatibility floor, and the complete
-  pin before a package can bind the capability.
+  pin before a package can bind the capability. Capability artifact adapters
+  declare each file as either a host-provided artifact with no network chain or
+  a registry artifact with request-bound public-network evidence; missing or
+  contradictory origin evidence fails closed.
 - `plugindata.FileStore` is the single data authority behind lifecycle,
   non-secret settings, files, KV, SQLite, retained bindings, and opaque export
   bundles. It resolves every request through the current registry binding,

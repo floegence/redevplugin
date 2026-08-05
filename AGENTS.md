@@ -201,6 +201,12 @@ boundary must stay explicit in both directions:
   registered by Redeven. They are not plugin runtime mechanisms and must not be
   implemented as generic ReDevPlugin core unless the capability becomes
   host-neutral by design.
+- Host-provided capability contract bundles may satisfy a registry release's
+  signed exact pin without fabricating network provenance. The adapter must mark
+  every returned file as `host_artifact` and provide no fetch chain; registry
+  artifacts must be marked `registry` and retain request-bound public-network
+  evidence. ReDevPlugin validates that origin before signature, policy epoch,
+  revocation epoch, manifest binding, and capability identity admission.
 - ReDevPlugin may define the generic capability registration contract, request
   context, permission hooks, stream/operation envelope, and audit/error shapes;
   Redeven owns the adapter implementation that talks to Docker, Podman, local
