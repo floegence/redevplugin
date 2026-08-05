@@ -7,9 +7,9 @@ import test from "node:test";
 
 import { verifyPlatformPackageBuild, verifyRustPublishMetadata } from "./platform_package_build.mjs";
 
-const version = "0.7.1";
+const version = "0.7.2";
 const sourceCommit = "1".repeat(40);
-const contractSetSHA256 = "ce37ac605cb6c618d8fb26f5e72a7c1346d0315d351f8700aadf6f7ae1708545";
+const contractSetSHA256 = "ba19b4252fedf64be30d6985a24679a7d45884842dc04eee452f0d9d15842941";
 
 test("platform package build manifest is closed, complete, and content addressed", () => {
   const fixture = createFixture();

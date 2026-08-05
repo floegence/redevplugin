@@ -1,5 +1,24 @@
 # Changelog
 
+## v0.7.2
+
+### Added
+
+- Add owner-scoped durable release-install operations with idempotent request
+  recovery, restart reconciliation, bounded byte progress, and published
+  start/list/query HTTP and TypeScript SDK contracts.
+- Retry only transient known-size release asset transport failures while
+  preserving structured causes, safe diagnostics, and fail-closed integrity,
+  trust, policy, and state-conflict errors.
+
+### Changed
+
+- Publish the coordinated `plugin-host-v11`, `plugin-ui-v7`, `bridge-v7`,
+  `plugin-platform-v13`, compatibility manifest v15, and error-codes v8
+  package-set metadata as ReDevPlugin 0.7.2.
+- Keep the Go baseline at 1.26.5 and upgrade all published npm and Rust
+  package coordinates to 0.7.2.
+
 ## v0.7.1
 
 ### Fixed

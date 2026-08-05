@@ -4,7 +4,7 @@ package version
 
 const (
 	PluginUIProtocolVersion                   = "plugin-ui-v7"
-	PluginHostProtocolVersion                 = "plugin-host-v10"
+	PluginHostProtocolVersion                 = "plugin-host-v11"
 	RustIPCVersion                            = "rust-ipc-v6"
 	WASMABIVersion                            = "redevplugin-wasm-worker-v2"
 	ManifestSchemaVersion                     = "manifest-v8"
@@ -32,9 +32,9 @@ const (
 	ResourceScopeSchemaVersion                = "resource-scope-v1"
 	SessionScopeSchemaVersion                 = "session-scope-v1"
 	SessionScopeMaintenanceSchemaVersion      = "session-scope-maintenance-v1"
-	PluginPlatformOpenAPIVersion              = "plugin-platform-v12"
-	CompatibilityManifestVersion              = "redevplugin.compatibility.v14"
-	CompatibilitySchemaVersion                = "compatibility-manifest-v14"
+	PluginPlatformOpenAPIVersion              = "plugin-platform-v13"
+	CompatibilityManifestVersion              = "redevplugin.compatibility.v15"
+	CompatibilitySchemaVersion                = "compatibility-manifest-v15"
 	WorkerInvocationSchemaVersion             = "worker-invocation-v3"
 	HostCapabilityContractSchemaVersion       = "host-capability-contract-v1"
 	HostCapabilityPinSchemaVersion            = "host-capability-pin-v1"
@@ -42,7 +42,7 @@ const (
 	HostCapabilityCompatibilitySchemaVersion  = "host-capability-compatibility-v1"
 	HostCapabilitySignatureSchemaVersion      = "host-capability-signature-v1"
 	HostCapabilityNoticesSchemaVersion        = "host-capability-notices-v1"
-	ErrorCodesSchemaVersion                   = "error-codes-v7"
+	ErrorCodesSchemaVersion                   = "error-codes-v8"
 	PerformanceContractVersion                = "performance-contract-v4"
 	PerformanceEvidenceSchemaVersion          = "performance-evidence-v4"
 	ContractRegistryVersion                   = "contract-registry-v2"
@@ -62,9 +62,9 @@ const (
 var generatedContractArtifacts = []ContractArtifact{
 	{
 		ID:      "compatibility-manifest-schema",
-		Path:    "spec/plugin/compatibility-manifest-v14.schema.json",
-		Version: "compatibility-manifest-v14",
-		SHA256:  "67016ead2ed8b86410aafe3771d750ea2ab088479047475542ac65caa1691a7c",
+		Path:    "spec/plugin/compatibility-manifest-v15.schema.json",
+		Version: "compatibility-manifest-v15",
+		SHA256:  "921beeaff20abd3f67d73bd695f27459f453b014730cefb22864c015837c239a",
 	},
 	{
 		ID:      "contract-registry-schema",
@@ -74,9 +74,9 @@ var generatedContractArtifacts = []ContractArtifact{
 	},
 	{
 		ID:      "error-codes-schema",
-		Path:    "spec/plugin/error-codes-v7.schema.json",
-		Version: "error-codes-v7",
-		SHA256:  "4e7cac510a6036f90cae8f58ff8c3b785b3a2d3933875f2f69bef1c41de3d26c",
+		Path:    "spec/plugin/error-codes-v8.schema.json",
+		Version: "error-codes-v8",
+		SHA256:  "454e3c8b46e20bc524080ca1aa91dcf2ecdfe0a90cc33b5b328e87356d07e7e3",
 	},
 	{
 		ID:      "external-signer-request-schema",
@@ -148,7 +148,7 @@ var generatedContractArtifacts = []ContractArtifact{
 		ID:      "iframe-bridge-schema",
 		Path:    "spec/plugin/bridge-v7.schema.json",
 		Version: "bridge-v7",
-		SHA256:  "f4b5f04870b58e8e2363aaba98b273adccef3a3e9ac1eb1a2dbbc3fb4c71b300",
+		SHA256:  "fe8da4e5b14ac6d7c7bb3101e041246e92573c58e1c9537e8cda2c26bf175ef5",
 	},
 	{
 		ID:      "manifest-schema",
@@ -230,9 +230,9 @@ var generatedContractArtifacts = []ContractArtifact{
 	},
 	{
 		ID:      "plugin-platform-openapi",
-		Path:    "spec/openapi/plugin-platform-v12.yaml",
-		Version: "plugin-platform-v12",
-		SHA256:  "715698e9e1e357e243ee21b3157cc044befac83979107f54d024b5e9e48f7050",
+		Path:    "spec/openapi/plugin-platform-v13.yaml",
+		Version: "plugin-platform-v13",
+		SHA256:  "e0b0c3a2aede94b80e32fb84adf5f88d867c6e9958565c106e60ad5a2ae36f5e",
 	},
 	{
 		ID:      "presentation-locale-fixture",

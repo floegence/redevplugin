@@ -215,7 +215,7 @@ Use this responsibility matrix as the default decision rule:
 | Area | ReDevPlugin owns | Host product owns |
 | --- | --- | --- |
 | Package and trust | Package layout, canonical hashes, signing rules, manifest validation, trust state contracts, compatibility manifests | Which registries or local sources are allowed, product review UX, enterprise policy caps |
-| Lifecycle | Install, enable, open, disable, uninstall, update, downgrade, export/import, diagnostics, and data-retention APIs | Where those actions appear in product UI, who may invoke them, and how they are audited in the host product |
+| Lifecycle | Install, enable, open, disable, uninstall, update, downgrade, export/import, diagnostics, and data-retention APIs; durable owner-scoped release-install operations with idempotent request recovery, restart reconciliation, progress, and stable failure codes | Where those actions appear in product UI, who may invoke them, and how they are audited in the host product |
 | UI runtime | Sandboxed iframe bootstrap, asset ticket/session protocol, bridge SDK, opaque-origin-safe source/port-bound MessageChannel messaging, settings and intent contracts | Activity Bar, Workbench, Settings, Desktop shell, route mounting, native product chrome, and product copy |
 | Backend runtime | Rust `redevplugin-runtime` source crates, runtime admission and manager/supervisor, WASM actor/job model, IPC, leases, quotas, revocation, hostcall contracts, stream envelopes | Fixed package coordinates and toolchain, verified source build, product binary/SBOM/provenance/signature, process placement, and diagnostics presentation |
 | Storage, network, and secrets | Host-neutral broker contracts, request contexts, target classifiers, quotas, secret reference contracts, and stable errors | Concrete vault, filesystem root, environment policy, allowlists, proxy settings, and product-specific grant UX |
@@ -353,7 +353,7 @@ layout rules, or migration state machines into host code.
 
 ### Pre-Release Plugin Package Baseline
 
-The manifest v8 and release metadata v8 transition for ReDevPlugin 0.7.0 is a
+The manifest v8 and release metadata v8 transition for ReDevPlugin 0.7.2 is a
 user-approved pre-release current-only baseline. No supported public release
 used the retired manifest v5-v7 or release metadata v5-v7 package formats, so
 the current source tree, generated contracts, CLI, and compatibility matrix
