@@ -103,6 +103,37 @@ func TestTrustedTimeEvidenceRequiresConsistencyProofForCheckpointAdvance(t *test
 	}
 }
 
+func TestTrustedTimeRequestCarriesPreviousCheckpointTreeSize(t *testing.T) {
+	configuration, err := NewSourceConfiguration("example_source", []string{"stable"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	key, err := configuration.TrustKey("stable")
+	if err != nil {
+		t.Fatal(err)
+	}
+	minimum := time.Date(2026, 7, 21, 1, 0, 0, 0, time.UTC)
+	nonce := bytes.Repeat([]byte{8}, 32)
+	initial, err := newTrustedTimeRequest(key, minimum, nil, "time_log", nonce)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if initial.PreviousCheckpointTreeSize() != 0 {
+		t.Fatalf("initial previous tree size = %d", initial.PreviousCheckpointTreeSize())
+	}
+	previous := &TrustedTimeCheckpointV1{TreeSize: 7}
+	advanced, err := newTrustedTimeRequest(key, minimum, previous, "time_log", nonce)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if advanced.PreviousCheckpointTreeSize() != 7 {
+		t.Fatalf("advanced previous tree size = %d", advanced.PreviousCheckpointTreeSize())
+	}
+	if advanced.RequestSHA256() == initial.RequestSHA256() {
+		t.Fatal("previous checkpoint tree size is not bound into the request digest")
+	}
+}
+
 func trustedTimeFixture(t *testing.T) (SourceTrustKey, TransparencyRoot, TrustedTimeRequest, ed25519.PrivateKey) {
 	t.Helper()
 	configuration, err := NewSourceConfiguration("example_source", []string{"stable"})
@@ -122,7 +153,7 @@ func trustedTimeFixture(t *testing.T) (SourceTrustKey, TransparencyRoot, Trusted
 	if err != nil {
 		t.Fatal(err)
 	}
-	request, err := newTrustedTimeRequest(key, time.Date(2026, 7, 21, 1, 0, 0, 0, time.UTC), "time_log", bytes.Repeat([]byte{8}, 32))
+	request, err := newTrustedTimeRequest(key, time.Date(2026, 7, 21, 1, 0, 0, 0, time.UTC), nil, "time_log", bytes.Repeat([]byte{8}, 32))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -142,11 +173,8 @@ func buildTrustedTimeEvidence(t *testing.T, request TrustedTimeRequest, privateK
 	leafSHA := digestHex(leafBytes)
 	leafHash := merkleLeafHash(leafBytes)
 	rootHash := leafHash
-	if treeSize == 2 {
-		if len(inclusion) != 1 {
-			t.Fatal("two-leaf fixture requires one inclusion node")
-		}
-		rootHash = merkleNodeHash(inclusion[0], leafHash)
+	for _, node := range inclusion {
+		rootHash = merkleNodeHash(node, rootHash)
 	}
 	checkpoint := TrustedTimeCheckpointV1{
 		SchemaVersion: TrustedTimeCheckpointSchemaVersion, LogID: request.logID, TreeSize: treeSize,
@@ -165,6 +193,82 @@ func buildTrustedTimeEvidence(t *testing.T, request TrustedTimeRequest, privateK
 		t.Fatal(err)
 	}
 	return encoded, leafBytes
+}
+
+func trustedTimeTestLeafBytes(t *testing.T, request TrustedTimeRequest, claimed time.Time) []byte {
+	t.Helper()
+	leaf := TrustedTimeLeafV1{
+		SchemaVersion: TrustedTimeLeafSchemaVersion,
+		SourceID:      request.key.sourceID,
+		Channel:       request.key.channel,
+		Nonce:         request.nonce,
+		MinimumTime:   request.minimumTime,
+		ClaimedTime:   claimed.UTC().Format(time.RFC3339Nano),
+		RequestSHA256: request.requestSHA256,
+		LogID:         request.logID,
+	}
+	encoded, err := json.Marshal(leaf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return encoded
+}
+
+func trustedTimeTestMerkleRoot(leaves [][]byte) []byte {
+	if len(leaves) == 0 {
+		return nil
+	}
+	if len(leaves) == 1 {
+		return slices.Clone(leaves[0])
+	}
+	k := trustedTimeTestLargestPowerOfTwoLessThan(len(leaves))
+	return merkleNodeHash(trustedTimeTestMerkleRoot(leaves[:k]), trustedTimeTestMerkleRoot(leaves[k:]))
+}
+
+func trustedTimeTestInclusionProof(leaves [][]byte, index int) [][]byte {
+	if len(leaves) <= 1 {
+		return nil
+	}
+	k := trustedTimeTestLargestPowerOfTwoLessThan(len(leaves))
+	if index < k {
+		return append(trustedTimeTestInclusionProof(leaves[:k], index), trustedTimeTestMerkleRoot(leaves[k:]))
+	}
+	return append(trustedTimeTestInclusionProof(leaves[k:], index-k), trustedTimeTestMerkleRoot(leaves[:k]))
+}
+
+func trustedTimeTestConsistencyProof(leaves [][]byte, oldSize int) [][]byte {
+	if oldSize <= 0 || oldSize >= len(leaves) {
+		return nil
+	}
+	return trustedTimeTestConsistencySubproof(leaves, oldSize, true)
+}
+
+func trustedTimeTestConsistencySubproof(leaves [][]byte, oldSize int, complete bool) [][]byte {
+	if oldSize == len(leaves) {
+		if complete {
+			return nil
+		}
+		return [][]byte{trustedTimeTestMerkleRoot(leaves)}
+	}
+	k := trustedTimeTestLargestPowerOfTwoLessThan(len(leaves))
+	if oldSize <= k {
+		return append(
+			trustedTimeTestConsistencySubproof(leaves[:k], oldSize, complete),
+			trustedTimeTestMerkleRoot(leaves[k:]),
+		)
+	}
+	return append(
+		trustedTimeTestConsistencySubproof(leaves[k:], oldSize-k, false),
+		trustedTimeTestMerkleRoot(leaves[:k]),
+	)
+}
+
+func trustedTimeTestLargestPowerOfTwoLessThan(value int) int {
+	result := 1
+	for result<<1 < value {
+		result <<= 1
+	}
+	return result
 }
 
 func secondLeafPlaceholder(request TrustedTimeRequest, timestamp time.Time) []byte {

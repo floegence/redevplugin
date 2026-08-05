@@ -64,11 +64,12 @@ type TrustedTimeEvidenceV1 struct {
 }
 
 type trustedTimeRequestHashInput struct {
-	SourceID    string `json:"source_id"`
-	Channel     string `json:"channel"`
-	Nonce       string `json:"nonce"`
-	MinimumTime string `json:"minimum_time"`
-	LogID       string `json:"log_id"`
+	SourceID                   string `json:"source_id"`
+	Channel                    string `json:"channel"`
+	Nonce                      string `json:"nonce"`
+	MinimumTime                string `json:"minimum_time"`
+	PreviousCheckpointTreeSize uint64 `json:"previous_checkpoint_tree_size"`
+	LogID                      string `json:"log_id"`
 }
 
 type trustedTimeSETPreimage struct {
@@ -89,32 +90,45 @@ type trustedTimeCheckpointPreimage struct {
 }
 
 type TrustedTimeRequest struct {
-	key           SourceTrustKey
-	nonce         string
-	minimumTime   string
-	requestSHA256 string
-	logID         string
+	key                        SourceTrustKey
+	nonce                      string
+	minimumTime                string
+	previousCheckpointTreeSize uint64
+	requestSHA256              string
+	logID                      string
 }
 
 func (request TrustedTimeRequest) SourceTrustKey() SourceTrustKey { return request.key }
 func (request TrustedTimeRequest) Nonce() string                  { return request.nonce }
 func (request TrustedTimeRequest) MinimumTime() string            { return request.minimumTime }
-func (request TrustedTimeRequest) RequestSHA256() string          { return request.requestSHA256 }
-func (request TrustedTimeRequest) LogID() string                  { return request.logID }
+func (request TrustedTimeRequest) PreviousCheckpointTreeSize() uint64 {
+	return request.previousCheckpointTreeSize
+}
+func (request TrustedTimeRequest) RequestSHA256() string { return request.requestSHA256 }
+func (request TrustedTimeRequest) LogID() string         { return request.logID }
 
-func newTrustedTimeRequest(key SourceTrustKey, minimum time.Time, logID string, nonce []byte) (TrustedTimeRequest, error) {
-	if !key.valid() || !contractIDPattern.MatchString(logID) || len(nonce) != 32 || minimum.Location() != time.UTC {
+func newTrustedTimeRequest(key SourceTrustKey, minimum time.Time, previous *TrustedTimeCheckpointV1, logID string, nonce []byte) (TrustedTimeRequest, error) {
+	if !key.valid() || !contractIDPattern.MatchString(logID) || len(nonce) != 32 || minimum.Location() != time.UTC ||
+		(previous != nil && (previous.TreeSize == 0 || previous.TreeSize > maxJSONSafeInteger)) {
 		return TrustedTimeRequest{}, ErrInvalidTrustedTimeRequest
+	}
+	var previousTreeSize uint64
+	if previous != nil {
+		previousTreeSize = previous.TreeSize
 	}
 	nonceValue := base64.RawURLEncoding.EncodeToString(nonce)
 	minimumValue := minimum.Format(time.RFC3339Nano)
-	input := trustedTimeRequestHashInput{SourceID: key.sourceID, Channel: key.channel, Nonce: nonceValue, MinimumTime: minimumValue, LogID: logID}
+	input := trustedTimeRequestHashInput{
+		SourceID: key.sourceID, Channel: key.channel, Nonce: nonceValue, MinimumTime: minimumValue,
+		PreviousCheckpointTreeSize: previousTreeSize, LogID: logID,
+	}
 	raw, err := json.Marshal(input)
 	if err != nil {
 		return TrustedTimeRequest{}, ErrInvalidTrustedTimeRequest
 	}
 	return TrustedTimeRequest{
-		key: key, nonce: nonceValue, minimumTime: minimumValue, requestSHA256: digestHex(raw), logID: logID,
+		key: key, nonce: nonceValue, minimumTime: minimumValue, previousCheckpointTreeSize: previousTreeSize,
+		requestSHA256: digestHex(raw), logID: logID,
 	}, nil
 }
 

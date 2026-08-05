@@ -41,6 +41,67 @@ func TestReleaseTrustServiceRefreshesTimeAndRequiresFreshEvidenceAfterRestart(t 
 	}
 }
 
+func TestReleaseTrustServiceRecoversTrustedTimeOrphanBeforeInitialCheckpoint(t *testing.T) {
+	fixture := newReleaseTrustServiceFixture(t, false)
+	fixture.timeAdapter.failAfterAppendOnce = errors.New("simulated response loss after trusted-time append")
+	if _, err := fixture.service.RefreshTrustedTime(context.Background(), fixture.key); err == nil {
+		t.Fatal("RefreshTrustedTime() unexpectedly succeeded after response loss")
+	}
+	if len(fixture.state.committed) != 0 || len(fixture.state.pending) != 0 {
+		t.Fatal("failed initial observation mutated trusted-time state")
+	}
+
+	_, err := fixture.service.RefreshTrustedTime(context.Background(), fixture.key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if treeSize := fixture.state.committedState(t).TrustedTime.Checkpoint.TreeSize; treeSize != 2 {
+		t.Fatalf("recovered checkpoint tree size = %d", treeSize)
+	}
+	if got := fixture.timeAdapter.previousTreeSizes; !slices.Equal(got, []uint64{0, 0}) {
+		t.Fatalf("previous checkpoint tree sizes = %v", got)
+	}
+}
+
+func TestReleaseTrustServiceRecoversTrustedTimeOrphanAfterCommittedCheckpoint(t *testing.T) {
+	fixture := newReleaseTrustServiceFixture(t, false)
+	if _, err := fixture.service.RefreshTrustedTime(context.Background(), fixture.key); err != nil {
+		t.Fatal(err)
+	}
+	firstTreeSize := fixture.state.committedState(t).TrustedTime.Checkpoint.TreeSize
+	fixture.timeAdapter.failAfterAppendOnce = errors.New("simulated response loss after trusted-time append")
+	if _, err := fixture.service.RefreshTrustedTime(context.Background(), fixture.key); err == nil {
+		t.Fatal("RefreshTrustedTime() unexpectedly succeeded after response loss")
+	}
+
+	if _, err := fixture.service.RefreshTrustedTime(context.Background(), fixture.key); err != nil {
+		t.Fatal(err)
+	}
+	recoveredTreeSize := fixture.state.committedState(t).TrustedTime.Checkpoint.TreeSize
+	if firstTreeSize != 1 || recoveredTreeSize != 3 {
+		t.Fatalf("checkpoint sizes = %d -> %d", firstTreeSize, recoveredTreeSize)
+	}
+	if got := fixture.timeAdapter.previousTreeSizes; !slices.Equal(got, []uint64{0, 1, 1}) {
+		t.Fatalf("previous checkpoint tree sizes = %v", got)
+	}
+}
+
+func TestReleaseTrustServiceRejectsTrustedTimeCheckpointBeyondAdapterLog(t *testing.T) {
+	fixture := newReleaseTrustServiceFixture(t, false)
+	if _, err := fixture.service.RefreshTrustedTime(context.Background(), fixture.key); err != nil {
+		t.Fatal(err)
+	}
+	fixture.timeAdapter.mu.Lock()
+	fixture.timeAdapter.leaves = nil
+	fixture.timeAdapter.mu.Unlock()
+	if _, err := fixture.service.RefreshTrustedTime(context.Background(), fixture.key); !errors.Is(err, ErrInvalidTrustedTimeRequest) {
+		t.Fatalf("RefreshTrustedTime() error = %v", err)
+	}
+	if treeSize := fixture.state.committedState(t).TrustedTime.Checkpoint.TreeSize; treeSize != 1 {
+		t.Fatalf("failed observation changed committed checkpoint tree size to %d", treeSize)
+	}
+}
+
 func TestReleaseTrustServiceRecoversExternalCASAheadOfLocalCommit(t *testing.T) {
 	fixture := newReleaseTrustServiceFixture(t, true)
 	fixture.state.commitErrOnce = errors.New("simulated local fsync failure")
@@ -253,29 +314,46 @@ func newReleaseTrustServiceFixture(t *testing.T, withMonotonic bool) releaseTrus
 }
 
 type testTransparencyTimeAdapter struct {
-	t          *testing.T
-	privateKey ed25519.PrivateKey
-	start      time.Time
-	mu         sync.Mutex
-	calls      int
-	leaves     [][]byte
+	t                   *testing.T
+	privateKey          ed25519.PrivateKey
+	start               time.Time
+	mu                  sync.Mutex
+	calls               int
+	leaves              [][]byte
+	previousTreeSizes   []uint64
+	failAfterAppendOnce error
 }
 
 func (adapter *testTransparencyTimeAdapter) Observe(_ context.Context, request TrustedTimeRequest) (TrustedTimeObservation, error) {
 	adapter.mu.Lock()
 	defer adapter.mu.Unlock()
 	integrated := adapter.start.Add(time.Duration(adapter.calls) * time.Minute)
-	var inclusion, consistency [][]byte
-	treeSize := uint64(len(adapter.leaves) + 1)
-	if len(adapter.leaves) == 1 {
-		inclusion = [][]byte{merkleLeafHash(adapter.leaves[0])}
-		consistency = [][]byte{merkleLeafHash(secondLeafPlaceholder(request, integrated.Add(365*24*time.Hour)))}
-	} else if len(adapter.leaves) > 1 {
-		adapter.t.Fatal("test transparency adapter supports two observations")
+	adapter.previousTreeSizes = append(adapter.previousTreeSizes, request.PreviousCheckpointTreeSize())
+	leaf := trustedTimeTestLeafBytes(adapter.t, request, integrated.Add(365*24*time.Hour))
+	leafHashes := make([][]byte, 0, len(adapter.leaves)+1)
+	for _, previous := range adapter.leaves {
+		leafHashes = append(leafHashes, merkleLeafHash(previous))
 	}
-	evidence, leaf := buildTrustedTimeEvidence(adapter.t, request, adapter.privateKey, integrated, integrated.Add(365*24*time.Hour), treeSize, inclusion, consistency)
+	leafHashes = append(leafHashes, merkleLeafHash(leaf))
+	previousTreeSize := request.PreviousCheckpointTreeSize()
+	if previousTreeSize > uint64(len(adapter.leaves)) {
+		return TrustedTimeObservation{}, ErrInvalidTrustedTimeRequest
+	}
+	var consistency [][]byte
+	if previousTreeSize != 0 {
+		consistency = trustedTimeTestConsistencyProof(leafHashes, int(previousTreeSize))
+	}
+	evidence, leaf := buildTrustedTimeEvidence(
+		adapter.t, request, adapter.privateKey, integrated, integrated.Add(365*24*time.Hour),
+		uint64(len(leafHashes)), trustedTimeTestInclusionProof(leafHashes, len(leafHashes)-1), consistency,
+	)
 	adapter.leaves = append(adapter.leaves, slices.Clone(leaf))
 	adapter.calls++
+	if adapter.failAfterAppendOnce != nil {
+		err := adapter.failAfterAppendOnce
+		adapter.failAfterAppendOnce = nil
+		return TrustedTimeObservation{}, err
+	}
 	return NewTransparencyTimeObservation(request, evidence)
 }
 

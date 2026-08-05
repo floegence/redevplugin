@@ -553,8 +553,12 @@ func (adapter *TrustedTimeAdapter) Observe(_ context.Context, request releasetru
 		return releasetrust.TrustedTimeObservation{}, err
 	}
 	var consistency []string
-	if len(adapter.leaves) != 0 {
-		consistency = encodeProof(merkleConsistencyProof(leafHashes, len(adapter.leaves)))
+	previousTreeSize := request.PreviousCheckpointTreeSize()
+	if previousTreeSize > uint64(len(adapter.leaves)) {
+		return releasetrust.TrustedTimeObservation{}, releasetrust.ErrInvalidTrustedTimeRequest
+	}
+	if previousTreeSize != 0 {
+		consistency = encodeProof(merkleConsistencyProof(leafHashes, int(previousTreeSize)))
 	}
 	evidence := releasetrust.TrustedTimeEvidenceV1{
 		SchemaVersion: releasetrust.TrustedTimeEvidenceSchemaVersion, Kind: releasetrust.TrustedTimeEvidenceTransparency,

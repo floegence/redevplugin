@@ -246,7 +246,7 @@ func (service *ReleaseTrustService) observeTrustedTime(
 	if _, err := rand.Read(nonce); err != nil {
 		return VerifiedTrustedTime{}, nil, err
 	}
-	request, err := newTrustedTimeRequest(key, minimum, root.logID, nonce)
+	request, err := newTrustedTimeRequest(key, minimum, previous, root.logID, nonce)
 	if err != nil {
 		return VerifiedTrustedTime{}, nil, err
 	}

@@ -100,7 +100,7 @@ func (service *ReleaseTrustService) RefreshTrustedTime(ctx context.Context, key 
 	if _, err := rand.Read(nonce); err != nil {
 		return TrustedTimeStatus{}, err
 	}
-	request, err := newTrustedTimeRequest(key, minimum, root.logID, nonce)
+	request, err := newTrustedTimeRequest(key, minimum, previous, root.logID, nonce)
 	if err != nil {
 		return TrustedTimeStatus{}, err
 	}
