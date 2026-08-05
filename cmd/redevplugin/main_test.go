@@ -1286,7 +1286,7 @@ func TestReleaseVerifyPresentationInspectionJSONContract(t *testing.T) {
 		ManifestSHA256:     "sha256:manifest",
 		PresentationSHA256: "sha256:presentation",
 		ContractSetSHA256:  "sha256:contracts",
-		VerifierVersion:    "0.7.4",
+		VerifierVersion:    "0.7.5",
 	}
 	raw, err := json.Marshal(summary)
 	if err != nil {

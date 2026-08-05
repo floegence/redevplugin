@@ -1,5 +1,21 @@
 # Changelog
 
+## v0.7.5
+
+### Fixed
+
+- Bind trusted-time consistency proofs to the previous checkpoint tree size
+  from committed release-trust state, so host transparency logs recover from
+  orphaned leaves without treating uncommitted observations as authoritative.
+- Reject trusted-time requests whose committed checkpoint is beyond the host
+  adapter's local transparency log while leaving persistent trust state
+  unchanged.
+
+### Changed
+
+- Publish the complete Go, npm, Rust source crate, generated contract, and
+  package-publication evidence set as ReDevPlugin 0.7.5.
+
 ## v0.7.4
 
 ### Fixed
