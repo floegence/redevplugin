@@ -207,7 +207,7 @@ test("session maintenance publishes the closed fail-closed recovery matrix", asy
   assert.doesNotMatch(JSON.stringify(contract), /closed_session_proof|operation_id|proof_sha256/);
 });
 
-test("compatibility v15 publishes the complete session revoke and UI transport matrix", async () => {
+test("compatibility v16 publishes the complete session revoke and UI transport matrix", async () => {
   const schema = await readCompatibilitySchema();
   const matrix = schema.properties.matrix;
   assert.ok(matrix.required.includes("session_scope_schema_version"));
