@@ -5,7 +5,7 @@
   "canonical_builder": "linux/amd64",
   "canonical_image": "docker.io/library/rust:1.88.0-bookworm@sha256:4727898c104ecd2e22d780925832502faee9fe4e70581b8572af081370b315a0",
   "source_files": {
-    "Cargo.lock": "42164d3d360a90178db48bce4c1fef46667acd4a0d85df934b06e711c3bcdd29",
+    "Cargo.lock": "4b20c5222a09fd7bec73a9e144b4dce58ef31267e05d295f4741c8fb456add46",
     "Cargo.toml": "641e9689021a2c4a8ac675a543188dfb01856aefc0a4d9638b6f734131aef45e",
     "crates/redevplugin-worker-sdk/Cargo.toml": "4d8339ce666aac26510ba48ceff4edc9d18b4f89f07d9f673fd2ffd3ccff802e",
     "crates/redevplugin-worker-sdk/LICENSE": "68a062bc10a32bc2478ece12a1792f878f72d0033164fb0e4a4c565bab5c8478",
