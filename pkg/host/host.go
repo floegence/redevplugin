@@ -3822,8 +3822,21 @@ func (h *Host) resolveReleasePackage(ctx context.Context, action PackageTrustAct
 }
 
 func releaseTrustBoundaryError(err error) error {
-	if errors.Is(err, releasetrust.ErrReleasePolicyDenied) {
+	switch {
+	case errors.Is(err, releasetrust.ErrReleasePolicyDenied):
 		return fmt.Errorf("%w: release trust policy denied the release", ErrReleaseRefPolicyDenied)
+	case errors.Is(err, releasetrust.ErrInvalidReleaseIdentity),
+		errors.Is(err, releasetrust.ErrReleaseTrustVerification),
+		errors.Is(err, releasetrust.ErrReleaseTrustExpired),
+		errors.Is(err, releasetrust.ErrReleaseTrustRollback),
+		errors.Is(err, releasetrust.ErrReleaseTrustRevoked),
+		errors.Is(err, releasetrust.ErrInvalidReleaseTrustState),
+		errors.Is(err, releasetrust.ErrReleaseTrustStateConflict),
+		errors.Is(err, releasetrust.ErrReleaseTrustStateUnknown),
+		errors.Is(err, releasetrust.ErrReleaseTrustSplitView),
+		errors.Is(err, releasetrust.ErrInvalidTrustedTimeEvidence),
+		errors.Is(err, releasetrust.ErrTrustedTimeRollback):
+		return fmt.Errorf("%w: release trust verification rejected the release", ErrReleaseRefVerificationFailed)
 	}
 	return err
 }

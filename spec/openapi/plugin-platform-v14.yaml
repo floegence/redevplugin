@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: ReDevPlugin Plugin Platform API
-  version: plugin-platform-v13
+  version: plugin-platform-v14
   description: Host-agnostic plugin management, bridge, operation, data, and sandbox routes. Release-ref install and update routes resolve host-controlled package artifacts server-side and do not accept requested trust_state values; external package URL, GitHub repository, and uploaded-package inspection flows derive package identity and trust facts server-side before reusing the shared commit/query lifecycle; local-import package install/update routes remain explicit developer/import flows and do not accept caller-supplied trust_state values.
 x-redevplugin-query-policy:
   reject_url_query_strings: true
@@ -1981,7 +1981,7 @@ components:
           type: array
           items: { $ref: "#/components/schemas/PluginRecord" }
     PluginCompatibilityManifest:
-      $ref: "../plugin/compatibility-manifest-v15.schema.json"
+      $ref: "../plugin/compatibility-manifest-v16.schema.json"
     PluginOperationList:
       type: object
       required: [operations]
@@ -3184,7 +3184,7 @@ components:
       properties:
         code:
           type: string
-          enum: [PLUGIN_RELEASE_NETWORK, PLUGIN_RELEASE_TIMEOUT, PLUGIN_RELEASE_ASSET_MISSING, PLUGIN_RELEASE_ASSET_INTEGRITY, PLUGIN_INSTALL_INTERRUPTED, PLUGIN_INSTALL_STATE_CONFLICT, PLUGIN_INTERNAL_FAILURE]
+          enum: [PLUGIN_RELEASE_REF_VERIFICATION_FAILED, PLUGIN_RELEASE_REF_POLICY_DENIED, PLUGIN_RELEASE_NETWORK, PLUGIN_RELEASE_TIMEOUT, PLUGIN_RELEASE_ASSET_MISSING, PLUGIN_RELEASE_ASSET_INTEGRITY, PLUGIN_INSTALL_INTERRUPTED, PLUGIN_INSTALL_STATE_CONFLICT, PLUGIN_INTERNAL_FAILURE]
         retryable: { type: boolean }
     ReleaseInstallOperation:
       type: object

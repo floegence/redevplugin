@@ -1437,7 +1437,7 @@ export interface components {
         PluginCatalogResult: {
             plugins: components["schemas"]["PluginRecord"][];
         };
-        PluginCompatibilityManifest: components["schemas"]["CompatibilityManifestV15"];
+        PluginCompatibilityManifest: components["schemas"]["CompatibilityManifestV16"];
         PluginOperationList: {
             operations: components["schemas"]["OperationRecord"][];
             next_cursor?: string;
@@ -2245,7 +2245,7 @@ export interface components {
         };
         ReleaseInstallFailure: {
             /** @enum {string} */
-            code: "PLUGIN_RELEASE_NETWORK" | "PLUGIN_RELEASE_TIMEOUT" | "PLUGIN_RELEASE_ASSET_MISSING" | "PLUGIN_RELEASE_ASSET_INTEGRITY" | "PLUGIN_INSTALL_INTERRUPTED" | "PLUGIN_INSTALL_STATE_CONFLICT" | "PLUGIN_INTERNAL_FAILURE";
+            code: "PLUGIN_RELEASE_REF_VERIFICATION_FAILED" | "PLUGIN_RELEASE_REF_POLICY_DENIED" | "PLUGIN_RELEASE_NETWORK" | "PLUGIN_RELEASE_TIMEOUT" | "PLUGIN_RELEASE_ASSET_MISSING" | "PLUGIN_RELEASE_ASSET_INTEGRITY" | "PLUGIN_INSTALL_INTERRUPTED" | "PLUGIN_INSTALL_STATE_CONFLICT" | "PLUGIN_INTERNAL_FAILURE";
             retryable: boolean;
         };
         ReleaseInstallOperation: {
@@ -2926,9 +2926,9 @@ export interface components {
             counts: components["schemas"]["SessionScopeV1RevokeCounts"];
         };
         SessionScopeV1PublicRevokeResult: components["schemas"]["SessionScopeV1CompleteRevokeResult"] | components["schemas"]["SessionScopeV1IncompleteRevokeResult"];
-        CompatibilityManifestV15: {
+        CompatibilityManifestV16: {
             /** @constant */
-            schema_version: "redevplugin.compatibility.v15";
+            schema_version: "redevplugin.compatibility.v16";
             package_set: components["schemas"]["PlatformPackageSetV1"];
             matrix: {
                 /** @constant */
@@ -3002,9 +3002,9 @@ export interface components {
                 /** @constant */
                 session_scope_maintenance_schema_version: "session-scope-maintenance-v1";
                 /** @constant */
-                plugin_platform_openapi_version: "plugin-platform-v13";
+                plugin_platform_openapi_version: "plugin-platform-v14";
                 /** @constant */
-                compatibility_schema_version: "compatibility-manifest-v15";
+                compatibility_schema_version: "compatibility-manifest-v16";
                 /** @constant */
                 worker_invocation_schema_version: "worker-invocation-v3";
                 /** @constant */
@@ -3051,9 +3051,9 @@ export interface components {
                 quarantine_cleanup_schema_version: "quarantine-cleanup-v1";
             };
             contract_set_sha256: string;
-            contracts: components["schemas"]["CompatibilityManifestV15Contract"][];
+            contracts: components["schemas"]["CompatibilityManifestV16Contract"][];
         };
-        CompatibilityManifestV15Contract: {
+        CompatibilityManifestV16Contract: {
             id: string;
             path: string;
             version: string;

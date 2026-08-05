@@ -56,15 +56,8 @@ func RootDelegationSigningPreimage(input RootDelegationInput) ([]byte, error) {
 	return signingPreimageWithoutTopLevelSignature(SigningUsageRootDelegation, document)
 }
 
-func CanonicalRootDelegation(document RootDelegationV1) ([]byte, error) {
-	if err := validateRootDelegation(document, true); err != nil {
-		return nil, err
-	}
-	return canonicalJSON(document)
-}
-
-func VerifyRootDelegation(document RootDelegationV1, verifier SignatureVerifier) error {
-	input := RootDelegationInput{
+func (document RootDelegationV1) SigningPreimage() ([]byte, error) {
+	return RootDelegationSigningPreimage(RootDelegationInput{
 		SourceID:                 document.SourceID,
 		RootEpoch:                document.RootEpoch,
 		PreviousRootEpoch:        document.PreviousRootEpoch,
@@ -73,8 +66,18 @@ func VerifyRootDelegation(document RootDelegationV1, verifier SignatureVerifier)
 		ExpiresAt:                document.ExpiresAt,
 		DelegatedKeys:            cloneDelegatedKeys(document.DelegatedKeys),
 		KeyID:                    document.KeyID,
+	})
+}
+
+func CanonicalRootDelegation(document RootDelegationV1) ([]byte, error) {
+	if err := validateRootDelegation(document, true); err != nil {
+		return nil, err
 	}
-	preimage, err := RootDelegationSigningPreimage(input)
+	return canonicalJSON(document)
+}
+
+func VerifyRootDelegation(document RootDelegationV1, verifier SignatureVerifier) error {
+	preimage, err := document.SigningPreimage()
 	if err != nil {
 		return err
 	}
@@ -214,15 +217,8 @@ func SourcePolicySigningPreimage(input SourcePolicyInput) ([]byte, error) {
 	return signingPreimageWithoutTopLevelSignature(SigningUsageSourcePolicy, document)
 }
 
-func CanonicalSourcePolicy(document SourcePolicyV2) ([]byte, error) {
-	if err := validateSourcePolicy(document, true); err != nil {
-		return nil, err
-	}
-	return canonicalJSON(document)
-}
-
-func VerifySourcePolicy(document SourcePolicyV2, verifier SignatureVerifier) error {
-	input := SourcePolicyInput{
+func (document SourcePolicyV2) SigningPreimage() ([]byte, error) {
+	return SourcePolicySigningPreimage(SourcePolicyInput{
 		SchemaVersion:             document.SchemaVersion,
 		SourceID:                  document.SourceID,
 		Channel:                   document.Channel,
@@ -245,8 +241,18 @@ func VerifySourcePolicy(document SourcePolicyV2, verifier SignatureVerifier) err
 		GeneratedAt:               document.GeneratedAt,
 		ExpiresAt:                 document.ExpiresAt,
 		KeyID:                     document.KeyID,
+	})
+}
+
+func CanonicalSourcePolicy(document SourcePolicyV2) ([]byte, error) {
+	if err := validateSourcePolicy(document, true); err != nil {
+		return nil, err
 	}
-	preimage, err := SourcePolicySigningPreimage(input)
+	return canonicalJSON(document)
+}
+
+func VerifySourcePolicy(document SourcePolicyV2, verifier SignatureVerifier) error {
+	preimage, err := document.SigningPreimage()
 	if err != nil {
 		return err
 	}
@@ -287,6 +293,10 @@ func SourcePolicyPointerSigningPreimage(input ReleasePointerInput) ([]byte, erro
 	return signingPreimageWithoutTopLevelSignature(SigningUsageSourcePolicyPointer, document)
 }
 
+func (document SourcePolicyPointerV1) SigningPreimage() ([]byte, error) {
+	return SourcePolicyPointerSigningPreimage(pointerInputFromSourcePolicy(document))
+}
+
 func CanonicalSourcePolicyPointer(document SourcePolicyPointerV1) ([]byte, error) {
 	if err := validateSourcePolicyPointer(document, true); err != nil {
 		return nil, err
@@ -295,7 +305,7 @@ func CanonicalSourcePolicyPointer(document SourcePolicyPointerV1) ([]byte, error
 }
 
 func VerifySourcePolicyPointer(document SourcePolicyPointerV1, verifier SignatureVerifier) error {
-	preimage, err := SourcePolicyPointerSigningPreimage(pointerInputFromSourcePolicy(document))
+	preimage, err := document.SigningPreimage()
 	if err != nil {
 		return err
 	}
@@ -318,15 +328,8 @@ func RevocationSigningPreimage(input RevocationInput) ([]byte, error) {
 	return signingPreimageWithoutTopLevelSignature(SigningUsageRevocation, document)
 }
 
-func CanonicalRevocation(document RevocationV2) ([]byte, error) {
-	if err := validateRevocation(document, true); err != nil {
-		return nil, err
-	}
-	return canonicalJSON(document)
-}
-
-func VerifyRevocation(document RevocationV2, verifier SignatureVerifier) error {
-	input := RevocationInput{
+func (document RevocationV2) SigningPreimage() ([]byte, error) {
+	return RevocationSigningPreimage(RevocationInput{
 		SchemaVersion:          document.SchemaVersion,
 		SourceID:               document.SourceID,
 		Channel:                document.Channel,
@@ -339,8 +342,18 @@ func VerifyRevocation(document RevocationV2, verifier SignatureVerifier) error {
 		RevokedKeyIDs:          slices.Clone(document.RevokedKeyIDs),
 		RevokedReleases:        slices.Clone(document.RevokedReleases),
 		KeyID:                  document.KeyID,
+	})
+}
+
+func CanonicalRevocation(document RevocationV2) ([]byte, error) {
+	if err := validateRevocation(document, true); err != nil {
+		return nil, err
 	}
-	preimage, err := RevocationSigningPreimage(input)
+	return canonicalJSON(document)
+}
+
+func VerifyRevocation(document RevocationV2, verifier SignatureVerifier) error {
+	preimage, err := document.SigningPreimage()
 	if err != nil {
 		return err
 	}
@@ -381,6 +394,10 @@ func RevocationPointerSigningPreimage(input ReleasePointerInput) ([]byte, error)
 	return signingPreimageWithoutTopLevelSignature(SigningUsageRevocationPointer, document)
 }
 
+func (document RevocationPointerV1) SigningPreimage() ([]byte, error) {
+	return RevocationPointerSigningPreimage(pointerInputFromRevocation(document))
+}
+
 func CanonicalRevocationPointer(document RevocationPointerV1) ([]byte, error) {
 	if err := validateRevocationPointer(document, true); err != nil {
 		return nil, err
@@ -389,7 +406,7 @@ func CanonicalRevocationPointer(document RevocationPointerV1) ([]byte, error) {
 }
 
 func VerifyRevocationPointer(document RevocationPointerV1, verifier SignatureVerifier) error {
-	preimage, err := RevocationPointerSigningPreimage(pointerInputFromRevocation(document))
+	preimage, err := document.SigningPreimage()
 	if err != nil {
 		return err
 	}

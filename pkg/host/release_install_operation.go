@@ -301,6 +301,12 @@ func releaseInstallFailureCode(err error) string {
 	if errors.Is(err, registry.ErrReleaseInstallOperationConflict) || errors.Is(err, ErrPluginAlreadyInstalled) {
 		return releaseInstallFailureConflict
 	}
+	if errors.Is(err, ErrReleaseRefVerificationFailed) {
+		return string(security.ErrReleaseRefVerificationFailed)
+	}
+	if errors.Is(err, ErrReleaseRefPolicyDenied) {
+		return string(security.ErrReleaseRefPolicyDenied)
+	}
 	return releaseInstallFailureInternal
 }
 

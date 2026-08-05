@@ -26,9 +26,9 @@ capabilities.
   persistent resource-scope schema, performance-evidence schema, and target
   classifier fixture
 - Active coordinated contracts are `plugin-host-v11`, `rust-ipc-v6`,
-  `plugin-ui-v7`, `bridge-v7`, `plugin-platform-v13`, `manifest-v8`, opaque
+  `plugin-ui-v7`, `bridge-v7`, `plugin-platform-v14`, `manifest-v8`, opaque
   document v3, opaque transport v6, release metadata v8, compatibility manifest
-  v15, error codes v8, resource scope v1, session scope v1, session scope
+  v16, error codes v8, resource scope v1, session scope v1, session scope
   maintenance v1, token/ticket v4, and release manifest
   v4. WASM ABI v2, worker invocation v3, and package
   signature v1 remain unchanged. Current package admission accepts only manifest

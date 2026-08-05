@@ -683,51 +683,27 @@ func epochSigningSubject(key SourceTrustKey, usage releasecontract.SigningSubjec
 }
 
 func mustRootPreimage(value releasecontract.RootDelegationV1) []byte {
-	preimage, _ := releasecontract.RootDelegationSigningPreimage(releasecontract.RootDelegationInput{
-		SourceID: value.SourceID, RootEpoch: value.RootEpoch, PreviousRootEpoch: value.PreviousRootEpoch,
-		PreviousDelegationSHA256: value.PreviousDelegationSHA256, GeneratedAt: value.GeneratedAt, ExpiresAt: value.ExpiresAt,
-		DelegatedKeys: cloneRootDelegatedKeys(value.DelegatedKeys), KeyID: value.KeyID,
-	})
+	preimage, _ := value.SigningPreimage()
 	return preimage
 }
 
 func mustPolicyPointerPreimage(value releasecontract.SourcePolicyPointerV1) []byte {
-	preimage, _ := releasecontract.SourcePolicyPointerSigningPreimage(releasecontract.ReleasePointerInput{
-		SourceID: value.SourceID, Channel: value.Channel, Epoch: value.Epoch, PreviousEpoch: value.PreviousEpoch,
-		PreviousDocumentSHA256: value.PreviousDocumentSHA256, Ref: value.Ref, DocumentSHA256: value.DocumentSHA256,
-		GeneratedAt: value.GeneratedAt, ExpiresAt: value.ExpiresAt, KeyID: value.KeyID,
-	})
+	preimage, _ := value.SigningPreimage()
 	return preimage
 }
 
 func mustPolicyPreimage(value releasecontract.SourcePolicyV2) []byte {
-	preimage, _ := releasecontract.SourcePolicySigningPreimage(releasecontract.SourcePolicyInput{
-		SourceID: value.SourceID, Channel: value.Channel, Epoch: value.Epoch, PreviousEpoch: value.PreviousEpoch,
-		PreviousDocumentSHA256: value.PreviousDocumentSHA256, RootEpoch: value.RootEpoch, SourceType: value.SourceType,
-		SourceClass: value.SourceClass, AllowedPublishers: slices.Clone(value.AllowedPublishers), AllowedArtifactHosts: slices.Clone(value.AllowedArtifactHosts),
-		ActiveKeys: value.ActiveKeys, CapabilityPublisherScopes: slices.Clone(value.CapabilityPublisherScopes), RequireSignature: value.RequireSignature, InstallPolicy: value.InstallPolicy,
-		UnsignedPolicy: value.UnsignedPolicy, DowngradePolicy: value.DowngradePolicy, MinimumRevocationEpoch: value.MinimumRevocationEpoch,
-		Limits: value.Limits, GeneratedAt: value.GeneratedAt, ExpiresAt: value.ExpiresAt, KeyID: value.KeyID,
-	})
+	preimage, _ := value.SigningPreimage()
 	return preimage
 }
 
 func mustRevocationPointerPreimage(value releasecontract.RevocationPointerV1) []byte {
-	preimage, _ := releasecontract.RevocationPointerSigningPreimage(releasecontract.ReleasePointerInput{
-		SourceID: value.SourceID, Channel: value.Channel, Epoch: value.Epoch, PreviousEpoch: value.PreviousEpoch,
-		PreviousDocumentSHA256: value.PreviousDocumentSHA256, Ref: value.Ref, DocumentSHA256: value.DocumentSHA256,
-		GeneratedAt: value.GeneratedAt, ExpiresAt: value.ExpiresAt, KeyID: value.KeyID,
-	})
+	preimage, _ := value.SigningPreimage()
 	return preimage
 }
 
 func mustRevocationPreimage(value releasecontract.RevocationV2) []byte {
-	preimage, _ := releasecontract.RevocationSigningPreimage(releasecontract.RevocationInput{
-		SourceID: value.SourceID, Channel: value.Channel, Epoch: value.Epoch, PreviousEpoch: value.PreviousEpoch,
-		PreviousDocumentSHA256: value.PreviousDocumentSHA256, RootEpoch: value.RootEpoch,
-		GeneratedAt: value.GeneratedAt, ExpiresAt: value.ExpiresAt, RevokedKeyIDs: slices.Clone(value.RevokedKeyIDs),
-		RevokedReleases: slices.Clone(value.RevokedReleases), KeyID: value.KeyID,
-	})
+	preimage, _ := value.SigningPreimage()
 	return preimage
 }
 

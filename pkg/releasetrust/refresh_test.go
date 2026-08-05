@@ -738,7 +738,8 @@ func newFullRefreshFixture(t *testing.T) fullRefreshFixture {
 	rootBytes, _ := releasecontract.CanonicalRootDelegation(root)
 
 	policyInput := releasecontract.SourcePolicyInput{
-		SourceID: "example_source", Channel: "stable", Epoch: "1", PreviousEpoch: releasecontract.GenesisPreviousEpoch,
+		SchemaVersion: releasecontract.SourcePolicySchemaVersion,
+		SourceID:      "example_source", Channel: "stable", Epoch: "1", PreviousEpoch: releasecontract.GenesisPreviousEpoch,
 		PreviousDocumentSHA256: releasecontract.GenesisPreviousDocumentSHA256, RootEpoch: "1",
 		SourceType: "registry", SourceClass: "official", AllowedPublishers: []string{"example.publisher"},
 		AllowedArtifactHosts: []string{"packages.example.com"},
@@ -749,7 +750,7 @@ func newFullRefreshFixture(t *testing.T) fullRefreshFixture {
 		},
 		CapabilityPublisherScopes: []releasecontract.SourcePolicyCapabilityPublisherScope{{KeyID: "signing_key", AllowedPublishers: []string{"example.capability"}}},
 		RequireSignature:          true, InstallPolicy: "allow", UnsignedPolicy: "block", DowngradePolicy: "block",
-		MinimumRevocationEpoch: "1", Limits: releasecontract.DefaultSourcePolicyLimits(),
+		MinimumRevocationEpoch: "1", Limits: releasecontract.PersonalMaintainerSourcePolicyLimits(),
 		GeneratedAt: generatedAt, ExpiresAt: expiresAt, KeyID: "signing_key",
 	}
 	policyPreimage, _ := releasecontract.SourcePolicySigningPreimage(policyInput)
@@ -760,7 +761,8 @@ func newFullRefreshFixture(t *testing.T) fullRefreshFixture {
 	policyBytes, _ := releasecontract.CanonicalSourcePolicy(policy)
 	policyRef := "sources/example_source/stable/policy/1.json"
 	policyPointerInput := releasecontract.ReleasePointerInput{
-		SourceID: "example_source", Channel: "stable", Epoch: "1", PreviousEpoch: releasecontract.GenesisPreviousEpoch,
+		SchemaVersion: releasecontract.SourcePolicyPointerSchemaVersion,
+		SourceID:      "example_source", Channel: "stable", Epoch: "1", PreviousEpoch: releasecontract.GenesisPreviousEpoch,
 		PreviousDocumentSHA256: releasecontract.GenesisPreviousDocumentSHA256, Ref: policyRef, DocumentSHA256: digestHex(policyBytes),
 		GeneratedAt: generatedAt, ExpiresAt: expiresAt, KeyID: "signing_key",
 	}
@@ -772,7 +774,8 @@ func newFullRefreshFixture(t *testing.T) fullRefreshFixture {
 	policyPointerBytes, _ := releasecontract.CanonicalSourcePolicyPointer(policyPointer)
 
 	revocationInput := releasecontract.RevocationInput{
-		SourceID: "example_source", Channel: "stable", Epoch: "1", PreviousEpoch: releasecontract.GenesisPreviousEpoch,
+		SchemaVersion: releasecontract.RevocationSchemaVersion,
+		SourceID:      "example_source", Channel: "stable", Epoch: "1", PreviousEpoch: releasecontract.GenesisPreviousEpoch,
 		PreviousDocumentSHA256: releasecontract.GenesisPreviousDocumentSHA256, RootEpoch: "1",
 		GeneratedAt: generatedAt, ExpiresAt: expiresAt, RevokedKeyIDs: []string{}, RevokedReleases: []releasecontract.RevokedRelease{},
 		KeyID: "signing_key",
@@ -785,7 +788,8 @@ func newFullRefreshFixture(t *testing.T) fullRefreshFixture {
 	revocationBytes, _ := releasecontract.CanonicalRevocation(revocation)
 	revocationRef := "sources/example_source/stable/revocation/1.json"
 	revocationPointerInput := releasecontract.ReleasePointerInput{
-		SourceID: "example_source", Channel: "stable", Epoch: "1", PreviousEpoch: releasecontract.GenesisPreviousEpoch,
+		SchemaVersion: releasecontract.RevocationPointerSchemaVersion,
+		SourceID:      "example_source", Channel: "stable", Epoch: "1", PreviousEpoch: releasecontract.GenesisPreviousEpoch,
 		PreviousDocumentSHA256: releasecontract.GenesisPreviousDocumentSHA256, Ref: revocationRef, DocumentSHA256: digestHex(revocationBytes),
 		GeneratedAt: generatedAt, ExpiresAt: expiresAt, KeyID: "signing_key",
 	}
