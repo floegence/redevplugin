@@ -1,5 +1,20 @@
 # Changelog
 
+## v0.7.6
+
+### Fixed
+
+- Admit signed, exact-pin host capability bundles for registry releases through
+  an explicit `host_artifact` origin without requiring fabricated network
+  provenance.
+- Keep registry capability artifacts bound to strict public-network fetch
+  evidence and reject missing or contradictory artifact origins.
+
+### Changed
+
+- Publish the complete Go, npm, Rust source crate, generated contract, and
+  package-publication evidence set as ReDevPlugin 0.7.6.
+
 ## v0.7.5
 
 ### Fixed
