@@ -1,5 +1,23 @@
 # Changelog
 
+## v0.7.7
+
+### Fixed
+
+- Bound remote release trust and metadata reads so an unresponsive transport
+  cannot hold a lifecycle or permission request indefinitely, while retaining a
+  larger bounded window for package downloads.
+- Preserve network, cancellation, and timeout error identity across the release
+  trust boundary so hosts receive stable retryable failure codes instead of a
+  generic verification or permission error.
+- Bound activation-lease reconstruction after a Host restart and leave the
+  plugin registry unchanged when current release trust cannot be refreshed.
+
+### Changed
+
+- Publish the complete Go, npm, Rust source crate, generated contract, and
+  package-publication evidence set as ReDevPlugin 0.7.7.
+
 ## v0.7.6
 
 ### Fixed
