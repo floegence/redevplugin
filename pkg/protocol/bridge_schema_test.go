@@ -187,7 +187,7 @@ func findPatchOperation(t *testing.T, variants []any, operation string) map[stri
 
 func TestBridgeSchemaKeepsParentOnlyTokensOutOfIframeMessages(t *testing.T) {
 	root := repoRoot(t)
-	raw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", "bridge-v6.schema.json"))
+	raw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", "bridge-v7.schema.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -400,7 +400,7 @@ func TestPluginUIV5RepositoryUsesCallerOwnedStableTextKeys(t *testing.T) {
 func readBridgeSchema(t *testing.T) map[string]any {
 	t.Helper()
 	root := repoRoot(t)
-	raw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", "bridge-v6.schema.json"))
+	raw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", "bridge-v7.schema.json"))
 	if err != nil {
 		t.Fatal(err)
 	}

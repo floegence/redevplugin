@@ -77,6 +77,9 @@ func TestManagementActionAndResourceContractsAreClosed(t *testing.T) {
 		ManagementActionInvokeIntent,
 		ManagementActionImportLocalPackage,
 		ManagementActionInstallReleaseRef,
+		ManagementActionStartReleaseInstall,
+		ManagementActionGetReleaseInstall,
+		ManagementActionListReleaseInstalls,
 		ManagementActionInspectExternalPackage,
 		ManagementActionCommitExternalPackage,
 		ManagementActionQueryExternalPackageCommit,
@@ -172,6 +175,12 @@ func TestDirectManagementAPIsSanitizeAuthorizationAdapterFailuresBeforeBusinessV
 		{"invoke intent", ManagementActionInvokeIntent, func() error { _, err := h.InvokeIntent(ctx, InvokeIntentRequest{}); return err }},
 		{"import local package", ManagementActionImportLocalPackage, func() error { _, err := h.ImportLocalPackage(ctx, ImportLocalPackageRequest{}); return err }},
 		{"install release ref", ManagementActionInstallReleaseRef, func() error { _, err := h.InstallReleaseRef(ctx, InstallReleaseRefRequest{}); return err }},
+		{"start release install", ManagementActionStartReleaseInstall, func() error {
+			_, err := h.StartReleaseInstallOperation(ctx, StartReleaseInstallOperationRequest{})
+			return err
+		}},
+		{"get release install", ManagementActionGetReleaseInstall, func() error { _, err := h.GetReleaseInstallOperation(ctx, "missing"); return err }},
+		{"list release installs", ManagementActionListReleaseInstalls, func() error { _, err := h.ListReleaseInstallOperations(ctx); return err }},
 		{"update local package", ManagementActionUpdateLocalPackage, func() error { _, err := h.UpdateLocalPackage(ctx, UpdateLocalPackageRequest{}); return err }},
 		{"update release ref", ManagementActionUpdateReleaseRef, func() error { _, err := h.UpdateReleaseRef(ctx, UpdateReleaseRefRequest{}); return err }},
 		{"downgrade", ManagementActionDowngradePlugin, func() error { _, err := h.DowngradePlugin(ctx, DowngradeRequest{}); return err }},

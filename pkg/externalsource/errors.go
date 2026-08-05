@@ -3,6 +3,7 @@ package externalsource
 import (
 	"errors"
 	"fmt"
+	"time"
 )
 
 // ErrorCode is a stable classification for external-source admission failures.
@@ -35,6 +36,8 @@ type Error struct {
 	Code       ErrorCode
 	Operation  string
 	DisplayURL string
+	StatusCode int
+	RetryAfter time.Duration
 	cause      error
 }
 
@@ -63,6 +66,19 @@ func externalError(code ErrorCode, operation, displayURL string, cause error) er
 	return &Error{Code: code, Operation: operation, DisplayURL: displayURL, cause: cause}
 }
 
+func externalHTTPError(operation, displayURL string, statusCode int, retryAfter time.Duration, cause error) error {
+	return &Error{
+		Code: ErrorHTTPStatus, Operation: operation, DisplayURL: displayURL,
+		StatusCode: statusCode, RetryAfter: retryAfter, cause: cause,
+	}
+}
+
+// NewHTTPStatusError creates a safe response-status error for host-neutral
+// transports and deterministic retry tests. It never retains headers or body.
+func NewHTTPStatusError(operation, displayURL string, statusCode int, retryAfter time.Duration) error {
+	return externalHTTPError(operation, displayURL, statusCode, retryAfter, fmt.Errorf("unexpected HTTP status %d", statusCode))
+}
+
 // CodeOf returns the stable external-source code carried by err.
 func CodeOf(err error) ErrorCode {
 	var external *Error
@@ -70,6 +86,25 @@ func CodeOf(err error) ErrorCode {
 		return external.Code
 	}
 	return ""
+}
+
+// HTTPStatusOf returns only the response status retained for retry and stable
+// classification. Response headers and bodies are never retained.
+func HTTPStatusOf(err error) int {
+	var external *Error
+	if errors.As(err, &external) {
+		return external.StatusCode
+	}
+	return 0
+}
+
+// RetryAfterOf returns a bounded server retry hint when one was present.
+func RetryAfterOf(err error) time.Duration {
+	var external *Error
+	if errors.As(err, &external) {
+		return external.RetryAfter
+	}
+	return 0
 }
 
 func invalidSource(operation string, format string, args ...any) error {

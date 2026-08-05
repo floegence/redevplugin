@@ -163,6 +163,30 @@ function committedExternalPackageResult(inspection: ReturnType<typeof externalPa
   };
 }
 
+function releaseInstallOperation(
+  status: "queued" | "running" | "reconciling" | "succeeded" | "failed",
+  overrides: Record<string, unknown> = {},
+) {
+  return {
+    request_id: "request_1",
+    operation_id: "release_install_1",
+    plugin_instance_id: "plugin_instance_1",
+    request_sha256: `sha256:${"a".repeat(64)}`,
+    status,
+    phase: status === "succeeded" ? "complete" : "download_package",
+    progress: status === "succeeded"
+      ? { kind: "items", completed: 1, total: 1 }
+      : { kind: "bytes", completed: 262144, total: 1048576 },
+    attempt: 1,
+    retry_after_ms: 250,
+    mutation_outcome: status === "succeeded" ? "committed" : "not_committed",
+    created_at: "2026-08-05T00:00:00Z",
+    updated_at: "2026-08-05T00:00:01Z",
+    ...(status === "succeeded" ? { terminal_at: "2026-08-05T00:00:01Z" } : {}),
+    ...overrides,
+  };
+}
+
 test("stable error-code exports separate platform, bridge, and client-only codes", () => {
   assert.equal(pluginPlatformErrorCodes.includes("PLUGIN_JSON_LIMIT_EXCEEDED"), true);
   assert.equal(pluginPlatformErrorCodes.includes("PLUGIN_AUTHORIZATION_REVISION_MISMATCH"), true);
@@ -551,7 +575,7 @@ test("platform client reads compatibility manifest through host API", async () =
   fetch.push({
     ok: true,
     data: {
-      schema_version: "redevplugin.compatibility.v14",
+      schema_version: "redevplugin.compatibility.v15",
       package_set: {
         schema_version: "redevplugin.platform_package_set.v1",
         platform_version: "0.6.0",
@@ -576,8 +600,8 @@ test("platform client reads compatibility manifest through host API", async () =
       contracts: [
         {
           id: "plugin-platform-openapi",
-          path: "spec/openapi/plugin-platform-v12.yaml",
-          version: "plugin-platform-v12",
+          path: "spec/openapi/plugin-platform-v13.yaml",
+          version: "plugin-platform-v13",
           sha256: "sha256-openapi",
         },
         {
@@ -596,8 +620,8 @@ test("platform client reads compatibility manifest through host API", async () =
 
   const compatibility = await client.getCompatibility();
 
-  assert.equal(compatibility.schema_version, "redevplugin.compatibility.v14");
-  assert.equal(compatibility.matrix.plugin_platform_openapi_version, "plugin-platform-v12");
+  assert.equal(compatibility.schema_version, "redevplugin.compatibility.v15");
+  assert.equal(compatibility.matrix.plugin_platform_openapi_version, "plugin-platform-v13");
   assert.equal(compatibility.matrix.release_metadata_schema_version, "release-metadata-v8");
   assert.equal(compatibility.matrix.release_source_policy_schema_version, "release-source-policy-v3");
   assert.equal(compatibility.matrix.release_source_policy_pointer_schema_version, "release-source-policy-pointer-v2");
@@ -1440,6 +1464,117 @@ test("platform client installs and updates plugin release refs without package b
 	assert.deepEqual(JSON.parse(fetch.calls[0]?.init.body ?? ""), { plugin_instance_id: "plugin_instance_1", release_ref: releaseRef });
   assert.equal(fetch.calls[1]?.input, "/_redevplugin/api/plugins/update-release-ref");
   assert.deepEqual(JSON.parse(fetch.calls[1]?.init.body ?? ""), { plugin_instance_id: "plugin_instance_1", release_ref: { ...releaseRef, version: "1.1.0" }, expected_management_revision: 1 });
+});
+
+test("platform client starts and queries durable release install operations", async () => {
+  const fetch = new FakeFetch();
+  const operation = releaseInstallOperation("queued");
+  fetch.push({ ok: true, data: operation });
+  fetch.push({ ok: true, data: { operations: [operation] } });
+  fetch.push({ ok: true, data: operation });
+  fetch.push({ ok: true, data: operation });
+  const client = new PluginPlatformClient({ fetch: fetch.fetch });
+  const request = {
+    request_id: "request_1",
+    plugin_instance_id: "plugin_instance_1",
+    release_ref: {
+      source_id: "official",
+      channel: "stable",
+      release_metadata_ref: "plugins/com.example/com.example.plugin/1.0.0/release.json",
+      release_metadata_sha256: `sha256:${"d".repeat(64)}`,
+      publisher_id: "com.example",
+      plugin_id: "com.example.plugin",
+      version: "1.0.0",
+      expected_hashes: {
+        package_sha256: `sha256:${"a".repeat(64)}`,
+        manifest_sha256: `sha256:${"b".repeat(64)}`,
+        entries_sha256: `sha256:${"c".repeat(64)}`,
+      },
+    },
+  };
+
+  await client.startReleaseInstallOperation(request);
+  await client.listReleaseInstallOperations();
+  await client.getReleaseInstallOperation("release/install 1");
+  await client.getReleaseInstallOperationByRequest("request/1");
+
+  assert.deepEqual(JSON.parse(fetch.calls[0]?.init.body ?? "null"), request);
+  assert.equal(fetch.calls[0]?.init.method, "POST");
+  assert.deepEqual(fetch.calls.slice(1).map((call) => ({
+    input: call.input,
+    method: call.init.method,
+    body: call.init.body,
+    contentType: call.init.headers["Content-Type"],
+  })), [
+    { input: "/_redevplugin/api/plugins/release-install-operations", method: "GET", body: undefined, contentType: undefined },
+    { input: "/_redevplugin/api/plugins/release-install-operations/release%2Finstall%201", method: "GET", body: undefined, contentType: undefined },
+    { input: "/_redevplugin/api/plugins/release-install-operations/by-request/request%2F1", method: "GET", body: undefined, contentType: undefined },
+  ]);
+});
+
+test("release install start recovers a lost response by the same request id", async () => {
+  const calls: FetchCall[] = [];
+  const operation = releaseInstallOperation("running");
+  const fetch: FetchLike = async (input, init) => {
+    calls.push({ input, init });
+    if (calls.length === 1) throw new Error("connection closed after dispatch");
+    return { ok: true, status: 200, json: async () => ({ ok: true, data: operation }) };
+  };
+  const client = new PluginPlatformClient({ fetch });
+
+  const result = await client.startReleaseInstallOperation({
+    request_id: "request_1",
+    plugin_instance_id: "plugin_instance_1",
+    release_ref: {
+      source_id: "official", channel: "stable", release_metadata_ref: "release.json",
+      release_metadata_sha256: `sha256:${"d".repeat(64)}`, publisher_id: "com.example",
+      plugin_id: "com.example.plugin", version: "1.0.0",
+      expected_hashes: {
+        package_sha256: `sha256:${"a".repeat(64)}`,
+        manifest_sha256: `sha256:${"b".repeat(64)}`,
+        entries_sha256: `sha256:${"c".repeat(64)}`,
+      },
+    },
+  });
+
+  assert.equal(result.operation_id, "release_install_1");
+  assert.equal(calls.length, 2);
+  assert.equal(calls[1]?.input, "/_redevplugin/api/plugins/release-install-operations/by-request/request_1");
+  assert.equal(calls[1]?.init.method, "GET");
+});
+
+test("release install watcher reports progress and stops at terminal state", async () => {
+  const fetch = new FakeFetch();
+  fetch.push({ ok: true, data: releaseInstallOperation("running") });
+  fetch.push({ ok: true, data: releaseInstallOperation("succeeded") });
+  const client = new PluginPlatformClient({ fetch: fetch.fetch });
+  const observed: string[] = [];
+
+  const result = await client.watchReleaseInstallOperation("release_install_1", {
+    onUpdate: (operation) => observed.push(operation.status),
+  });
+
+  assert.equal(result.status, "succeeded");
+  assert.deepEqual(observed, ["running", "succeeded"]);
+  assert.equal(fetch.calls.length, 2);
+  assert.equal(fetch.calls.every((call) => call.init.method === "GET"), true);
+});
+
+test("aborting a release install watcher never cancels the platform operation", async () => {
+  const fetch = new FakeFetch();
+  fetch.push({ ok: true, data: releaseInstallOperation("running") });
+  const controller = new AbortController();
+  const client = new PluginPlatformClient({ fetch: fetch.fetch });
+
+  await assert.rejects(
+    client.watchReleaseInstallOperation("release_install_1", {
+      signal: controller.signal,
+      onUpdate: () => controller.abort("panel closed"),
+    }),
+    (error) => error instanceof PluginTransportError && error.mutationOutcome === undefined,
+  );
+  assert.equal(fetch.calls.length, 1);
+  assert.equal(fetch.calls[0]?.init.method, "GET");
 });
 
 test("platform client manages runtime lifecycle routes", async () => {

@@ -166,6 +166,7 @@ type Store interface {
 	Durable() bool
 	AuthorizationStore
 	ExternalPackageStore
+	ReleaseInstallOperationStore
 	plugindata.Catalog
 	PutPlugin(ctx context.Context, record PluginRecord, opts PutOptions) (PluginRecord, error)
 	GetPlugin(ctx context.Context, pluginInstanceID string) (PluginRecord, error)
@@ -185,6 +186,7 @@ type MemoryStore struct {
 	dataBindings           map[string]plugindata.Binding
 	dataObjects            map[string]plugindata.Object
 	externalPackageCommits map[string]externalPackageCommitReceipt
+	releaseInstallOps      map[string]releaseInstallOperationReceipt
 }
 
 func NewMemoryStore() *MemoryStore {
@@ -195,6 +197,7 @@ func NewMemoryStore() *MemoryStore {
 		dataBindings:           map[string]plugindata.Binding{},
 		dataObjects:            map[string]plugindata.Object{},
 		externalPackageCommits: map[string]externalPackageCommitReceipt{},
+		releaseInstallOps:      map[string]releaseInstallOperationReceipt{},
 	}
 }
 

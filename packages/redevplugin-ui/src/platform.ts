@@ -67,6 +67,12 @@ export type PluginEnableState = PluginRecord["enable_state"];
 export type PluginPackageHashSet = PlatformSchemas["PackageHashSet"];
 export type PluginReleaseRef = PlatformSchemas["PluginReleaseRef"];
 export type PluginInstallReleaseRefRequest = PlatformSchemas["InstallReleaseRefRequest"];
+export type PluginStartReleaseInstallOperationRequest = PlatformSchemas["StartReleaseInstallOperationRequest"];
+export type PluginReleaseInstallOperation = PlatformSchemas["ReleaseInstallOperation"];
+export type PluginReleaseInstallOperationList = PlatformSchemas["ReleaseInstallOperationList"];
+export type PluginWatchReleaseInstallOperationOptions = PluginRequestOptions & {
+  onUpdate?: (operation: PluginReleaseInstallOperation) => void;
+};
 export type PluginUpdateReleaseRefRequest = PlatformSchemas["UpdateReleaseRefRequest"];
 export type PluginInspectExternalPackageRequest = PlatformSchemas["InspectExternalPackageRequest"];
 export type PluginUploadedExternalPackageIntent = PlatformSchemas["ExternalPackageIntentRequest"];
@@ -208,6 +214,52 @@ export class PluginPlatformClient {
   getCompatibility(options: PluginRequestOptions = {}): Promise<PluginCompatibilityManifest> { return this.#requestQuery("/_redevplugin/api/plugins/platform/compatibility/query", {}, options); }
   installReleaseRef(request: PluginInstallReleaseRefRequest, options: PluginRequestOptions = {}): Promise<PluginRecord> {
     return this.#requestMutation("POST", "/_redevplugin/api/plugins/install-release-ref", request, options);
+  }
+  async startReleaseInstallOperation(
+    request: PluginStartReleaseInstallOperationRequest,
+    options: PluginRequestOptions = {},
+  ): Promise<PluginReleaseInstallOperation> {
+    try {
+      return await this.#requestMutation(
+        "POST",
+        "/_redevplugin/api/plugins/release-install-operations",
+        request,
+        options,
+      );
+    } catch (error) {
+      if (!(error instanceof PluginTransportError) || error.mutationOutcome !== "unknown" || options.signal?.aborted) {
+        throw error;
+      }
+      return this.getReleaseInstallOperationByRequest(request.request_id, options);
+    }
+  }
+  listReleaseInstallOperations(options: PluginRequestOptions = {}): Promise<PluginReleaseInstallOperationList> {
+    return this.#requestGet("/_redevplugin/api/plugins/release-install-operations", options);
+  }
+  getReleaseInstallOperation(operationId: string, options: PluginRequestOptions = {}): Promise<PluginReleaseInstallOperation> {
+    return this.#requestGet(
+      `/_redevplugin/api/plugins/release-install-operations/${encodeURIComponent(operationId)}`,
+      options,
+    );
+  }
+  getReleaseInstallOperationByRequest(requestId: string, options: PluginRequestOptions = {}): Promise<PluginReleaseInstallOperation> {
+    return this.#requestGet(
+      `/_redevplugin/api/plugins/release-install-operations/by-request/${encodeURIComponent(requestId)}`,
+      options,
+    );
+  }
+  async watchReleaseInstallOperation(
+    operationId: string,
+    options: PluginWatchReleaseInstallOperationOptions = {},
+  ): Promise<PluginReleaseInstallOperation> {
+    for (;;) {
+      const operation = await this.getReleaseInstallOperation(operationId, options);
+      options.onUpdate?.(operation);
+      if (operation.status === "succeeded" || operation.status === "failed") {
+        return operation;
+      }
+      await waitForReleaseInstallPoll(operation.retry_after_ms, options.signal);
+    }
   }
   async inspectExternalPackage(request: PluginInspectExternalPackageRequest, options: PluginRequestOptions = {}): Promise<PluginExternalPackageInspection> {
     const inspection = await this.#requestMutation<PluginExternalPackageInspection>(
@@ -548,6 +600,17 @@ export class PluginPlatformClient {
     return readPlatformResponse<T>(response);
   }
 
+  async #requestGet<T>(path: string, options: PluginRequestOptions): Promise<T> {
+    const operation = `GET ${path}`;
+    const response = await dispatchQueryRequest(this.#fetch, this.#apiBaseURL + path, {
+      method: "GET",
+      headers: { "Accept": "application/json" },
+      credentials: "same-origin",
+      signal: options.signal,
+    }, operation);
+    return readPlatformResponse<T>(response);
+  }
+
   async #requestMutation<T>(
     method: "POST" | "PUT" | "PATCH" | "DELETE",
     path: string,
@@ -598,6 +661,32 @@ export class PluginPlatformClient {
     }, operation);
     return readMutationPlatformResponse<PluginExternalPackageInspection>(response);
   }
+}
+
+function waitForReleaseInstallPoll(retryAfterMs: number, signal?: AbortSignal): Promise<void> {
+  const delayMs = Number.isFinite(retryAfterMs)
+    ? Math.min(10_000, Math.max(250, Math.trunc(retryAfterMs)))
+    : 500;
+  if (signal?.aborted) {
+    return Promise.reject(new PluginTransportError(
+      "Plugin release install observation was aborted",
+      signal.reason,
+    ));
+  }
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, delayMs);
+    const onAbort = () => {
+      clearTimeout(timeout);
+      reject(new PluginTransportError(
+        "Plugin release install observation was aborted",
+        signal?.reason,
+      ));
+    };
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
 }
 
 function canonicalUploadedExternalPackageIntent(intent: PluginUploadedExternalPackageIntent): PluginUploadedExternalPackageIntent {

@@ -9,9 +9,13 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
+	"math/rand/v2"
+	"net/http"
 	"net/url"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/floegence/redevplugin/pkg/externalsource"
 	"github.com/floegence/redevplugin/pkg/host"
@@ -21,11 +25,62 @@ import (
 
 const maxReleaseSignatureBytes int64 = 64 << 10
 
+const (
+	maxFetchAttempts = 3
+	maxRetryAfter    = 10 * time.Second
+	maxRetryDelay    = 2 * time.Second
+)
+
 var (
 	ErrInvalidAssetSet = errors.New("remote release asset set is invalid")
 	ErrAssetMissing    = errors.New("remote release asset is missing")
 	ErrAssetMismatch   = errors.New("remote release asset identity mismatch")
 )
+
+type Error struct {
+	Phase         string
+	ArtifactRole  string
+	Retryable     bool
+	Attempts      int
+	LocatorSHA256 string
+	cause         error
+}
+
+func (e *Error) Error() string {
+	if e == nil {
+		return "remote release error"
+	}
+	return fmt.Sprintf("remote release %s failed for %s after %d attempt(s)", e.Phase, e.ArtifactRole, e.Attempts)
+}
+
+func (e *Error) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.cause
+}
+
+func (e *Error) ReleaseArtifactFailure() host.ReleaseArtifactFailure {
+	if e == nil {
+		return host.ReleaseArtifactFailure{}
+	}
+	return host.ReleaseArtifactFailure{
+		Phase: e.Phase, ArtifactRole: e.ArtifactRole, Retryable: e.Retryable,
+		Attempts: e.Attempts, LocatorSHA256: e.LocatorSHA256,
+	}
+}
+
+func DetailsOf(err error) (Error, bool) {
+	var releaseErr *Error
+	if !errors.As(err, &releaseErr) || releaseErr == nil {
+		return Error{}, false
+	}
+	return Error{
+		Phase: releaseErr.Phase, ArtifactRole: releaseErr.ArtifactRole,
+		Retryable: releaseErr.Retryable, Attempts: releaseErr.Attempts,
+		LocatorSHA256: releaseErr.LocatorSHA256,
+	}, true
+}
 
 type Asset struct {
 	Locator string `json:"locator"`
@@ -56,6 +111,8 @@ type AssetSet struct {
 	allowedHosts []string
 	assets       map[string]Asset
 	fetcher      AssetFetcher
+	sleep        func(context.Context, time.Duration) error
+	jitter       func(time.Duration) time.Duration
 }
 
 var (
@@ -92,6 +149,7 @@ func NewAssetSet(options AssetSetOptions) (*AssetSet, error) {
 	return &AssetSet{
 		sourceID: options.SourceID, channel: options.Channel, quotaKey: options.QuotaKey,
 		allowedHosts: hosts, assets: assets, fetcher: options.Fetcher,
+		sleep: sleepContext, jitter: retryJitter,
 	}, nil
 }
 
@@ -99,7 +157,7 @@ func (set *AssetSet) FetchReleaseDocument(ctx context.Context, request releasetr
 	if !set.matches(request.SourceID(), request.Channel()) {
 		return releasetrust.ReleaseDocumentResult{}, ErrAssetMissing
 	}
-	value, digest, err := set.fetch(ctx, request.Locator().String(), request.MaxBytes(), set.allowedHosts, "")
+	value, digest, err := set.fetch(ctx, request.Locator().String(), "release_document", request.MaxBytes(), set.allowedHosts, "", nil)
 	if err != nil {
 		return releasetrust.ReleaseDocumentResult{}, err
 	}
@@ -110,7 +168,7 @@ func (set *AssetSet) FetchSigningLedgerArtifact(ctx context.Context, request rel
 	if !set.matches(request.SourceID(), request.Channel()) {
 		return releasetrust.SigningLedgerResult{}, ErrAssetMissing
 	}
-	value, _, err := set.fetch(ctx, request.Locator().String(), request.MaxBytes(), set.allowedHosts, "")
+	value, _, err := set.fetch(ctx, request.Locator().String(), "signing_ledger", request.MaxBytes(), set.allowedHosts, "", nil)
 	if err != nil {
 		return releasetrust.SigningLedgerResult{}, err
 	}
@@ -126,7 +184,7 @@ func (set *AssetSet) ResolveReleaseArtifact(ctx context.Context, request host.Re
 	if err != nil {
 		return host.ResolvedPackageArtifact{}, err
 	}
-	metadataBytes, _, err := set.fetch(ctx, request.ReleaseRef.ReleaseMetadataRef, releasetrust.MaxReleaseDocumentBytes, hosts, request.ReleaseRef.ReleaseMetadataSHA256)
+	metadataBytes, _, err := set.fetch(ctx, request.ReleaseRef.ReleaseMetadataRef, "release_metadata", releasetrust.MaxReleaseDocumentBytes, hosts, request.ReleaseRef.ReleaseMetadataSHA256, request.Observe)
 	if err != nil {
 		return host.ResolvedPackageArtifact{}, err
 	}
@@ -136,14 +194,14 @@ func (set *AssetSet) ResolveReleaseArtifact(ctx context.Context, request host.Re
 		metadata.DistributionRef.Distribution != string(host.PackageDistributionRegistryRef) {
 		return host.ResolvedPackageArtifact{}, ErrAssetMismatch
 	}
-	signature, _, err := set.fetch(ctx, metadata.ReleaseMetadataSignature.SignatureRef, maxReleaseSignatureBytes, hosts, "")
+	signature, _, err := set.fetch(ctx, metadata.ReleaseMetadataSignature.SignatureRef, "release_metadata_signature", maxReleaseSignatureBytes, hosts, "", request.Observe)
 	if err != nil {
 		return host.ResolvedPackageArtifact{}, err
 	}
 	if len(signature) != 64 {
 		return host.ResolvedPackageArtifact{}, ErrAssetMismatch
 	}
-	packageBytes, digest, err := set.fetch(ctx, metadata.DistributionRef.ArtifactRef, externalsource.MaxArtifactBytes, hosts, "")
+	packageBytes, digest, err := set.fetch(ctx, metadata.DistributionRef.ArtifactRef, "package", externalsource.MaxArtifactBytes, hosts, "", request.Observe)
 	if err != nil {
 		return host.ResolvedPackageArtifact{}, err
 	}
@@ -157,7 +215,7 @@ func (set *AssetSet) matches(sourceID, channel string) bool {
 	return set != nil && sourceID == set.sourceID && (channel == "" || channel == set.channel)
 }
 
-func (set *AssetSet) fetch(ctx context.Context, locator string, maxBytes int64, allowedHosts []string, expectedSHA256 string) ([]byte, string, error) {
+func (set *AssetSet) fetch(ctx context.Context, locator, artifactRole string, maxBytes int64, allowedHosts []string, expectedSHA256 string, observe func(host.ReleaseArtifactProgress)) ([]byte, string, error) {
 	if set == nil || set.fetcher == nil || maxBytes <= 0 {
 		return nil, "", ErrInvalidAssetSet
 	}
@@ -168,18 +226,80 @@ func (set *AssetSet) fetch(ctx context.Context, locator string, maxBytes int64, 
 	if expectedSHA256 != "" && (strings.TrimPrefix(expectedSHA256, "sha256:") != asset.SHA256) {
 		return nil, "", ErrAssetMismatch
 	}
-	result, err := set.fetcher.FetchArtifact(ctx, externalsource.ArtifactFetchRequest{
-		URL: asset.URL, QuotaKey: set.quotaKey, MaxBytes: maxBytes, AllowedHosts: slices.Clone(allowedHosts),
-		ExpectedSize: asset.Size, ExpectedSHA256: asset.SHA256,
-	})
-	if err != nil {
-		return nil, "", err
+	locatorDigest := sha256.Sum256([]byte(locator))
+	var result externalsource.ArtifactFetchResult
+	var err error
+	for attempt := 1; attempt <= maxFetchAttempts; attempt++ {
+		if observe != nil {
+			observe(host.ReleaseArtifactProgress{Phase: "download", ArtifactRole: artifactRole, Attempt: attempt, Total: asset.Size})
+		}
+		result, err = set.fetcher.FetchArtifact(ctx, externalsource.ArtifactFetchRequest{
+			URL: asset.URL, QuotaKey: set.quotaKey, MaxBytes: maxBytes, AllowedHosts: slices.Clone(allowedHosts),
+			ExpectedSize: asset.Size, ExpectedSHA256: asset.SHA256,
+			Progress: func(completed, total int64) {
+				if observe != nil {
+					observe(host.ReleaseArtifactProgress{Phase: "download", ArtifactRole: artifactRole, Attempt: attempt, Completed: completed, Total: total})
+				}
+			},
+		})
+		if err == nil {
+			break
+		}
+		retryable := retryableFetchError(err)
+		if !retryable || attempt == maxFetchAttempts || ctx.Err() != nil {
+			return nil, "", &Error{Phase: "fetch", ArtifactRole: artifactRole, Retryable: retryable, Attempts: attempt, LocatorSHA256: hex.EncodeToString(locatorDigest[:]), cause: err}
+		}
+		delay := retryDelay(attempt, externalsource.RetryAfterOf(err), set.jitter)
+		if observe != nil {
+			observe(host.ReleaseArtifactProgress{Phase: "retry_wait", ArtifactRole: artifactRole, Attempt: attempt, RetryAfter: delay, Total: asset.Size})
+		}
+		if sleepErr := set.sleep(ctx, delay); sleepErr != nil {
+			return nil, "", &Error{Phase: "retry_wait", ArtifactRole: artifactRole, Retryable: true, Attempts: attempt, LocatorSHA256: hex.EncodeToString(locatorDigest[:]), cause: sleepErr}
+		}
 	}
 	digest := sha256.Sum256(result.Bytes)
 	if int64(len(result.Bytes)) != asset.Size || hex.EncodeToString(digest[:]) != asset.SHA256 {
 		return nil, "", ErrAssetMismatch
 	}
 	return slices.Clone(result.Bytes), asset.SHA256, nil
+}
+
+func retryableFetchError(err error) bool {
+	switch externalsource.CodeOf(err) {
+	case externalsource.ErrorDNS, externalsource.ErrorTransport:
+		return true
+	case externalsource.ErrorHTTPStatus:
+		status := externalsource.HTTPStatusOf(err)
+		return status == http.StatusRequestTimeout || status == http.StatusTooEarly || status == http.StatusTooManyRequests || status >= 500
+	default:
+		return false
+	}
+}
+
+func retryDelay(attempt int, retryAfter time.Duration, jitter func(time.Duration) time.Duration) time.Duration {
+	if retryAfter > 0 {
+		return min(retryAfter, maxRetryAfter)
+	}
+	base := 250 * time.Millisecond * time.Duration(1<<(attempt-1))
+	return min(base+jitter(base/4), maxRetryDelay)
+}
+
+func retryJitter(maximum time.Duration) time.Duration {
+	if maximum <= 0 {
+		return 0
+	}
+	return time.Duration(rand.Int64N(int64(maximum) + 1))
+}
+
+func sleepContext(ctx context.Context, delay time.Duration) error {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 func validateHosts(values []string) ([]string, error) {

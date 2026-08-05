@@ -391,6 +391,12 @@ func queryRoute(path string, action websecurity.RouteAction, bind func(*Handler)
 	return apiRoute(websecurity.RouteEffectQuery, http.MethodPost, path, action, bind)
 }
 
+func getRoute(path string, action websecurity.RouteAction, bind func(*Handler) http.HandlerFunc) routeSpec {
+	route := apiRoute(websecurity.RouteEffectQuery, http.MethodGet, path, action, bind)
+	route.csrfPolicy = websecurity.CSRFPolicyNotRequired
+	return route
+}
+
 func mutationRoute(method, path string, action websecurity.RouteAction, bind func(*Handler) http.HandlerFunc) routeSpec {
 	return apiRoute(websecurity.RouteEffectMutation, method, path, action, bind)
 }
@@ -412,15 +418,21 @@ func (route routeSpec) validate() error {
 	if !route.csrfPolicy.Valid() {
 		return fmt.Errorf("%w: %q", websecurity.ErrCSRFPolicyInvalid, route.csrfPolicy)
 	}
-	if route.csrfPolicy != websecurity.CSRFPolicyRequired {
-		return fmt.Errorf("route %s %s has csrf policy %q, want %q", route.Method, route.Path, route.csrfPolicy, websecurity.CSRFPolicyRequired)
-	}
 	switch route.Effect {
 	case websecurity.RouteEffectQuery:
-		if route.Method != http.MethodPost {
-			return fmt.Errorf("route %s %s has query effect but is not POST", route.Method, route.Path)
+		if route.Method != http.MethodPost && route.Method != http.MethodGet {
+			return fmt.Errorf("route %s %s has query effect but is not GET or POST", route.Method, route.Path)
+		}
+		if route.Method == http.MethodGet && route.csrfPolicy != websecurity.CSRFPolicyNotRequired {
+			return fmt.Errorf("GET query route %s has csrf policy %q", route.Path, route.csrfPolicy)
+		}
+		if route.Method == http.MethodPost && route.csrfPolicy != websecurity.CSRFPolicyRequired {
+			return fmt.Errorf("POST query route %s has csrf policy %q", route.Path, route.csrfPolicy)
 		}
 	case websecurity.RouteEffectMutation:
+		if route.csrfPolicy != websecurity.CSRFPolicyRequired {
+			return fmt.Errorf("mutation route %s %s has csrf policy %q", route.Method, route.Path, route.csrfPolicy)
+		}
 		switch route.Method {
 		case http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete:
 		default:
@@ -1075,6 +1087,10 @@ func (e *jsonLimitError) status() int {
 var routes = []routeSpec{
 	mutationRoute(http.MethodPost, "/_redevplugin/api/plugins/{plugin_instance_id}/local-import", websecurity.RouteActionImportLocalPackage, func(h *Handler) http.HandlerFunc { return h.handleImportLocalPackageUpload }),
 	mutationRoute(http.MethodPost, "/_redevplugin/api/plugins/install-release-ref", websecurity.RouteActionInstallReleaseRef, func(h *Handler) http.HandlerFunc { return h.handleInstallReleaseRef }),
+	mutationRoute(http.MethodPost, "/_redevplugin/api/plugins/release-install-operations", websecurity.RouteActionStartReleaseInstall, func(h *Handler) http.HandlerFunc { return h.handleStartReleaseInstallOperation }),
+	getRoute("/_redevplugin/api/plugins/release-install-operations", websecurity.RouteActionListReleaseInstalls, func(h *Handler) http.HandlerFunc { return h.handleListReleaseInstallOperations }),
+	getRoute("/_redevplugin/api/plugins/release-install-operations/{operation_id}", websecurity.RouteActionGetReleaseInstall, func(h *Handler) http.HandlerFunc { return h.handleGetReleaseInstallOperation }),
+	getRoute("/_redevplugin/api/plugins/release-install-operations/by-request/{request_id}", websecurity.RouteActionGetReleaseInstall, func(h *Handler) http.HandlerFunc { return h.handleGetReleaseInstallOperationByRequest }),
 	mutationRoute(http.MethodPost, "/_redevplugin/api/plugins/external-packages/inspect", websecurity.RouteActionInspectExternalPackage, func(h *Handler) http.HandlerFunc { return h.handleInspectExternalPackage }),
 	mutationRoute(http.MethodPost, "/_redevplugin/api/plugins/external-packages/upload/inspect", websecurity.RouteActionInspectExternalPackage, func(h *Handler) http.HandlerFunc { return h.handleInspectUploadedExternalPackage }),
 	mutationRoute(http.MethodPut, "/_redevplugin/api/plugins/{plugin_instance_id}/external-packages/upload/inspect", websecurity.RouteActionInspectExternalPackage, func(h *Handler) http.HandlerFunc { return h.handleInspectUploadedExternalPackageUpdate }),
@@ -3512,6 +3528,20 @@ func publicPluginErrorMessage(code security.ErrorCode) string {
 		return "plugin trust verification is unavailable"
 	case security.ErrReleaseRefVerificationFailed:
 		return "plugin release reference verification failed"
+	case security.ErrReleaseNetwork:
+		return "plugin release network request failed"
+	case security.ErrReleaseTimeout:
+		return "plugin release request timed out"
+	case security.ErrReleaseAssetMissing:
+		return "plugin release asset was not found"
+	case security.ErrReleaseAssetIntegrity:
+		return "plugin release asset failed integrity verification"
+	case security.ErrInstallInterrupted:
+		return "plugin installation was interrupted"
+	case security.ErrInstallStateConflict:
+		return "plugin installation state conflicts with the requested release"
+	case security.ErrInternalFailure:
+		return "plugin platform internal failure"
 	case security.ErrDisabled:
 		return "plugin is disabled"
 	case security.ErrDisabledByPolicy:
@@ -3654,15 +3684,24 @@ func errorCodeForManagementError(err error) security.ErrorCode {
 		}
 	}
 	switch externalsource.CodeOf(err) {
+	case externalsource.ErrorDNS, externalsource.ErrorTransport:
+		return security.ErrReleaseNetwork
+	case externalsource.ErrorHTTPStatus:
+		if externalsource.HTTPStatusOf(err) == http.StatusNotFound {
+			return security.ErrReleaseAssetMissing
+		}
+		return security.ErrReleaseNetwork
+	case externalsource.ErrorStageIntegrity:
+		return security.ErrReleaseAssetIntegrity
 	case externalsource.ErrorArtifactTooLarge, externalsource.ErrorQuotaExceeded:
 		return security.ErrPackageTooLarge
-	case externalsource.ErrorArtifactEmpty, externalsource.ErrorStageIntegrity:
+	case externalsource.ErrorArtifactEmpty:
 		return security.ErrPackageInvalid
 	case externalsource.ErrorStageInvalid:
 		return security.ErrAdapterFailure
 	case externalsource.ErrorInvalidURL, externalsource.ErrorInvalidSource, externalsource.ErrorTargetBlocked,
-		externalsource.ErrorDNS, externalsource.ErrorRedirectDenied, externalsource.ErrorTooManyRedirects,
-		externalsource.ErrorCredentialDenied, externalsource.ErrorTransport, externalsource.ErrorHTTPStatus,
+		externalsource.ErrorRedirectDenied, externalsource.ErrorTooManyRedirects,
+		externalsource.ErrorCredentialDenied,
 		externalsource.ErrorUnsupportedEncoding, externalsource.ErrorGitHubRelease,
 		externalsource.ErrorGitHubAssetMissing, externalsource.ErrorGitHubAssetAmbiguous:
 		return security.ErrPackageInvalid
@@ -3707,6 +3746,14 @@ func errorCodeForManagementError(err error) security.ErrorCode {
 		return security.ErrReleaseRefVerificationFailed
 	case errors.Is(err, host.ErrReleaseRefPolicyDenied):
 		return security.ErrReleaseRefPolicyDenied
+	case errors.Is(err, context.DeadlineExceeded):
+		return security.ErrReleaseTimeout
+	case errors.Is(err, context.Canceled):
+		return security.ErrInstallInterrupted
+	case errors.Is(err, registry.ErrReleaseInstallOperationConflict), errors.Is(err, host.ErrPluginAlreadyInstalled):
+		return security.ErrInstallStateConflict
+	case errors.Is(err, registry.ErrReleaseInstallOperationNotFound):
+		return security.ErrOperationNotFound
 	case errors.Is(err, storage.ErrQuotaExceeded):
 		return security.ErrStorageQuotaExceeded
 	case errors.Is(err, operation.ErrDeleteBlocked):
@@ -3714,7 +3761,7 @@ func errorCodeForManagementError(err error) security.ErrorCode {
 	case errors.Is(err, connectivity.ErrInvalidConnector), errors.Is(err, connectivity.ErrTargetDenied), errors.Is(err, connectivity.ErrConnectorDenied):
 		return security.ErrNetworkTargetDenied
 	default:
-		return security.ErrPermissionDenied
+		return security.ErrInternalFailure
 	}
 }
 
@@ -3737,10 +3784,10 @@ func errorDetailsForManagementError(err error) errorDetails {
 	}
 	switch externalsource.CodeOf(err) {
 	case externalsource.ErrorArtifactTooLarge, externalsource.ErrorQuotaExceeded,
-		externalsource.ErrorArtifactEmpty, externalsource.ErrorStageIntegrity,
+		externalsource.ErrorArtifactEmpty,
 		externalsource.ErrorInvalidURL, externalsource.ErrorInvalidSource, externalsource.ErrorTargetBlocked,
-		externalsource.ErrorDNS, externalsource.ErrorRedirectDenied, externalsource.ErrorTooManyRedirects,
-		externalsource.ErrorCredentialDenied, externalsource.ErrorTransport, externalsource.ErrorHTTPStatus,
+		externalsource.ErrorRedirectDenied, externalsource.ErrorTooManyRedirects,
+		externalsource.ErrorCredentialDenied,
 		externalsource.ErrorUnsupportedEncoding, externalsource.ErrorGitHubRelease,
 		externalsource.ErrorGitHubAssetMissing, externalsource.ErrorGitHubAssetAmbiguous:
 		return errorDetails{Reason: "package_artifact_boundary"}
@@ -3757,14 +3804,16 @@ func httpStatusForManagementError(err error) int {
 		return http.StatusBadRequest
 	}
 	switch externalsource.CodeOf(err) {
+	case externalsource.ErrorDNS, externalsource.ErrorTransport, externalsource.ErrorHTTPStatus:
+		return http.StatusBadGateway
 	case externalsource.ErrorArtifactTooLarge, externalsource.ErrorQuotaExceeded:
 		return http.StatusRequestEntityTooLarge
 	case externalsource.ErrorStageInvalid:
 		return http.StatusBadGateway
 	case externalsource.ErrorArtifactEmpty, externalsource.ErrorStageIntegrity,
 		externalsource.ErrorInvalidURL, externalsource.ErrorInvalidSource, externalsource.ErrorTargetBlocked,
-		externalsource.ErrorDNS, externalsource.ErrorRedirectDenied, externalsource.ErrorTooManyRedirects,
-		externalsource.ErrorCredentialDenied, externalsource.ErrorTransport, externalsource.ErrorHTTPStatus,
+		externalsource.ErrorRedirectDenied, externalsource.ErrorTooManyRedirects,
+		externalsource.ErrorCredentialDenied,
 		externalsource.ErrorUnsupportedEncoding, externalsource.ErrorGitHubRelease,
 		externalsource.ErrorGitHubAssetMissing, externalsource.ErrorGitHubAssetAmbiguous:
 		return http.StatusBadRequest
@@ -3772,6 +3821,10 @@ func httpStatusForManagementError(err error) int {
 	switch {
 	case errors.Is(err, host.ErrAdapterFailure):
 		return http.StatusBadGateway
+	case errors.Is(err, host.ErrActionDenied),
+		errors.Is(err, host.ErrOwnerScopeMismatch), errors.Is(err, connectivity.ErrResourceScopeMismatch),
+		errors.Is(err, host.ErrStorageScopeMismatch):
+		return http.StatusForbidden
 	case errors.Is(err, host.ErrExternalPackageCommitBlocked):
 		return http.StatusForbidden
 	case errors.Is(err, host.ErrExternalPackageConfirmation),
@@ -3798,6 +3851,14 @@ func httpStatusForManagementError(err error) int {
 		return http.StatusBadRequest
 	case errors.Is(err, host.ErrReleaseRefPolicyDenied):
 		return http.StatusForbidden
+	case errors.Is(err, context.DeadlineExceeded):
+		return http.StatusGatewayTimeout
+	case errors.Is(err, context.Canceled):
+		return http.StatusServiceUnavailable
+	case errors.Is(err, registry.ErrReleaseInstallOperationConflict), errors.Is(err, host.ErrPluginAlreadyInstalled):
+		return http.StatusConflict
+	case errors.Is(err, registry.ErrReleaseInstallOperationNotFound):
+		return http.StatusNotFound
 	case errors.Is(err, storage.ErrQuotaExceeded):
 		return http.StatusRequestEntityTooLarge
 	case errors.Is(err, operation.ErrDeleteBlocked):
@@ -3805,7 +3866,7 @@ func httpStatusForManagementError(err error) int {
 	case errors.Is(err, connectivity.ErrInvalidConnector), errors.Is(err, connectivity.ErrTargetDenied), errors.Is(err, connectivity.ErrConnectorDenied):
 		return http.StatusForbidden
 	default:
-		return http.StatusForbidden
+		return http.StatusInternalServerError
 	}
 }
 

@@ -8,7 +8,7 @@ import { parse as parseYAML } from "yaml";
 const root = resolve(import.meta.dirname, "..");
 
 async function readOpenAPI() {
-  return parseYAML(await readFile(join(root, "spec/openapi/plugin-platform-v12.yaml"), "utf8"));
+  return parseYAML(await readFile(join(root, "spec/openapi/plugin-platform-v13.yaml"), "utf8"));
 }
 
 async function readIPCSchema() {
@@ -24,7 +24,7 @@ async function readSessionScopeMaintenanceContract() {
 }
 
 async function readCompatibilitySchema() {
-  return JSON.parse(await readFile(join(root, "spec/plugin/compatibility-manifest-v14.schema.json"), "utf8"));
+  return JSON.parse(await readFile(join(root, "spec/plugin/compatibility-manifest-v15.schema.json"), "utf8"));
 }
 
 test("PatchSettingsRequest requires a non-empty set or remove object", async () => {
@@ -207,19 +207,37 @@ test("session maintenance publishes the closed fail-closed recovery matrix", asy
   assert.doesNotMatch(JSON.stringify(contract), /closed_session_proof|operation_id|proof_sha256/);
 });
 
-test("compatibility v14 publishes the complete session revoke and UI transport matrix", async () => {
+test("compatibility v15 publishes the complete session revoke and UI transport matrix", async () => {
   const schema = await readCompatibilitySchema();
   const matrix = schema.properties.matrix;
   assert.ok(matrix.required.includes("session_scope_schema_version"));
   assert.ok(matrix.required.includes("session_scope_maintenance_schema_version"));
-  assert.deepEqual(matrix.properties.plugin_host_protocol_version, { const: "plugin-host-v10" });
+  assert.deepEqual(matrix.properties.plugin_host_protocol_version, { const: "plugin-host-v11" });
   assert.deepEqual(matrix.properties.rust_ipc_version, { const: "rust-ipc-v6" });
   assert.deepEqual(matrix.properties.token_ticket_schema_version, { const: "token-ticket-v4" });
   assert.deepEqual(matrix.properties.session_scope_schema_version, { const: "session-scope-v1" });
   assert.deepEqual(matrix.properties.session_scope_maintenance_schema_version, { const: "session-scope-maintenance-v1" });
-  assert.deepEqual(matrix.properties.error_codes_schema_version, { const: "error-codes-v7" });
+  assert.deepEqual(matrix.properties.error_codes_schema_version, { const: "error-codes-v8" });
   assert.deepEqual(matrix.properties.supported_plugin_ui_protocol_versions, { const: ["plugin-ui-v7"] });
   assert.equal(matrix.properties.plugin_ui_transport_mappings.const.length, 1);
+});
+
+test("release install operation closes progress and terminal result states", async () => {
+  const openAPI = await readOpenAPI();
+  const progress = openAPI.components.schemas.ReleaseInstallProgress;
+  assert.equal(progress.oneOf.length, 2);
+  assert.deepEqual(progress.oneOf[0].properties.kind, { const: "indeterminate" });
+  assert.deepEqual(progress.oneOf[1].properties.kind.enum, ["items", "bytes"]);
+  assert.equal(progress.oneOf[1].properties.completed.minimum, 0);
+  assert.equal(progress.oneOf[1].properties.total.minimum, 1);
+
+  const operation = openAPI.components.schemas.ReleaseInstallOperation;
+  assert.equal(operation.properties.attempt.maximum, 3);
+  assert.equal(operation.properties.retry_after_ms.maximum, 10000);
+  assert.equal(operation.oneOf.length, 3);
+  assert.deepEqual(operation.oneOf[1].properties.status, { const: "succeeded" });
+  assert.deepEqual(operation.oneOf[1].properties.mutation_outcome, { const: "committed" });
+  assert.deepEqual(operation.oneOf[2].properties.status, { const: "failed" });
 });
 
 test("OpenAPI source keeps external schema references for structured bundling", async () => {
@@ -345,7 +363,7 @@ test("diagnostic events use closed details and a dedicated mutation outcome", as
     });
   }
   assert.deepEqual(schemas.PluginDiagnosticDetails.properties.runtime_process_failure_code, {
-    $ref: "../plugin/error-codes-v7.schema.json#/$defs/runtime_process_failure_code",
+    $ref: "../plugin/error-codes-v8.schema.json#/$defs/runtime_process_failure_code",
   });
   assert.deepEqual(schemas.PluginDiagnosticEvent.properties.details, {
     $ref: "#/components/schemas/PluginDiagnosticDetails",

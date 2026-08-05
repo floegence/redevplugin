@@ -1,12 +1,12 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://schemas.redevplugin.dev/plugin/compatibility-manifest-v14.schema.json",
-  "title": "ReDevPlugin compatibility manifest v14",
+  "$id": "https://schemas.redevplugin.dev/plugin/compatibility-manifest-v15.schema.json",
+  "title": "ReDevPlugin compatibility manifest v15",
   "type": "object",
   "additionalProperties": false,
   "required": ["schema_version", "package_set", "matrix", "contract_set_sha256", "contracts"],
   "properties": {
-    "schema_version": {"const": "redevplugin.compatibility.v14"},
+    "schema_version": {"const": "redevplugin.compatibility.v15"},
     "package_set": {"$ref": "platform-package-set-v1.schema.json"},
     "matrix": {
       "type": "object",
@@ -52,7 +52,7 @@
             }
           ]
         },
-        "plugin_host_protocol_version": {"const": "plugin-host-v10"},
+        "plugin_host_protocol_version": {"const": "plugin-host-v11"},
         "rust_ipc_version": {"const": "rust-ipc-v6"},
         "wasm_abi_version": {"const": "redevplugin-wasm-worker-v2"},
         "manifest_schema_version": {"const": "manifest-v8"},
@@ -80,8 +80,8 @@
         "resource_scope_schema_version": {"const": "resource-scope-v1"},
         "session_scope_schema_version": {"const": "session-scope-v1"},
         "session_scope_maintenance_schema_version": {"const": "session-scope-maintenance-v1"},
-        "plugin_platform_openapi_version": {"const": "plugin-platform-v12"},
-        "compatibility_schema_version": {"const": "compatibility-manifest-v14"},
+        "plugin_platform_openapi_version": {"const": "plugin-platform-v13"},
+        "compatibility_schema_version": {"const": "compatibility-manifest-v15"},
         "worker_invocation_schema_version": {"const": "worker-invocation-v3"},
         "host_capability_contract_schema_version": {"const": "host-capability-contract-v1"},
         "host_capability_pin_schema_version": {"const": "host-capability-pin-v1"},
@@ -89,7 +89,7 @@
         "host_capability_compatibility_schema_version": {"const": "host-capability-compatibility-v1"},
         "host_capability_signature_schema_version": {"const": "host-capability-signature-v1"},
         "host_capability_notices_schema_version": {"const": "host-capability-notices-v1"},
-        "error_codes_schema_version": {"const": "error-codes-v7"},
+        "error_codes_schema_version": {"const": "error-codes-v8"},
         "performance_contract_version": {"const": "performance-contract-v4"},
         "performance_evidence_schema_version": {"const": "performance-evidence-v4"},
         "contract_registry_version": {"const": "contract-registry-v2"},

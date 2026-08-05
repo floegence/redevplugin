@@ -61,7 +61,7 @@ func (service *ReleaseTrustService) refreshSourceLocked(ctx context.Context, key
 	}
 	documents, err := service.verifyReleaseDocumentSet(ctx, key, current)
 	if err != nil {
-		return VerifiedSourceSnapshot{}, fmt.Errorf("%w: %v", ErrReleaseTrustVerification, err)
+		return VerifiedSourceSnapshot{}, fmt.Errorf("%w: %w", ErrReleaseTrustVerification, err)
 	}
 	return service.commitVerifiedDocumentSetLocked(ctx, key, current, currentSHA256, documents)
 }

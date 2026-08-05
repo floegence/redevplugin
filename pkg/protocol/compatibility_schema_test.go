@@ -10,7 +10,7 @@ import (
 
 func TestCompatibilityManifestSchemaDefinesReleasedMatrix(t *testing.T) {
 	root := repoRoot(t)
-	raw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", "compatibility-manifest-v14.schema.json"))
+	raw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", "compatibility-manifest-v15.schema.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -21,7 +21,7 @@ func TestCompatibilityManifestSchemaDefinesReleasedMatrix(t *testing.T) {
 
 	properties := requireNestedObject(t, schema, "properties")
 	schemaVersion := requireNestedObject(t, properties, "schema_version")
-	if got := schemaVersion["const"]; got != "redevplugin.compatibility.v14" {
+	if got := schemaVersion["const"]; got != "redevplugin.compatibility.v15" {
 		t.Fatalf("schema_version const = %#v", got)
 	}
 
@@ -29,7 +29,7 @@ func TestCompatibilityManifestSchemaDefinesReleasedMatrix(t *testing.T) {
 	matrixProps := requireNestedObject(t, matrix, "properties")
 	expectedMatrix := map[string]string{
 		"plugin_ui_protocol_version":                   "plugin-ui-v7",
-		"plugin_host_protocol_version":                 "plugin-host-v10",
+		"plugin_host_protocol_version":                 "plugin-host-v11",
 		"rust_ipc_version":                             "rust-ipc-v6",
 		"wasm_abi_version":                             "redevplugin-wasm-worker-v2",
 		"manifest_schema_version":                      "manifest-v8",
@@ -50,10 +50,10 @@ func TestCompatibilityManifestSchemaDefinesReleasedMatrix(t *testing.T) {
 		"resource_scope_schema_version":                "resource-scope-v1",
 		"session_scope_schema_version":                 "session-scope-v1",
 		"session_scope_maintenance_schema_version":     "session-scope-maintenance-v1",
-		"plugin_platform_openapi_version":              "plugin-platform-v12",
-		"compatibility_schema_version":                 "compatibility-manifest-v14",
+		"plugin_platform_openapi_version":              "plugin-platform-v13",
+		"compatibility_schema_version":                 "compatibility-manifest-v15",
 		"worker_invocation_schema_version":             "worker-invocation-v3",
-		"error_codes_schema_version":                   "error-codes-v7",
+		"error_codes_schema_version":                   "error-codes-v8",
 		"performance_contract_version":                 "performance-contract-v4",
 		"performance_evidence_schema_version":          "performance-evidence-v4",
 		"contract_registry_version":                    "contract-registry-v2",
@@ -151,7 +151,7 @@ func TestContractRegistryPublishesOnlyCurrentPlatformContracts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(errorCodeSchemas) != 2 || filepath.Base(errorCodeSchemas[0]) != "error-codes-v6.schema.json" || filepath.Base(errorCodeSchemas[1]) != "error-codes-v7.schema.json" {
-		t.Fatalf("stable error-code schemas = %#v, want retained v6 plus current v7", errorCodeSchemas)
+	if len(errorCodeSchemas) != 2 || filepath.Base(errorCodeSchemas[0]) != "error-codes-v6.schema.json" || filepath.Base(errorCodeSchemas[1]) != "error-codes-v8.schema.json" {
+		t.Fatalf("stable error-code schemas = %#v, want retained v6 plus current v8", errorCodeSchemas)
 	}
 }

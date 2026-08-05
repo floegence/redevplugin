@@ -61,7 +61,7 @@ func TestOpenAPIRouteSetMatchesFixture(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	got, err := readOpenAPIRoutes(filepath.Join(root, "spec", "openapi", "plugin-platform-v12.yaml"))
+	got, err := readOpenAPIRoutes(filepath.Join(root, "spec", "openapi", "plugin-platform-v13.yaml"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -163,7 +163,7 @@ func TestLocalImportRoutesUseDedicatedTypeScriptEntrypoint(t *testing.T) {
 
 func TestOpenAPIDefinesJSONRequestBodies(t *testing.T) {
 	root := repoRoot(t)
-	path := filepath.Join(root, "spec", "openapi", "plugin-platform-v12.yaml")
+	path := filepath.Join(root, "spec", "openapi", "plugin-platform-v13.yaml")
 	requestBodies, err := readOpenAPIRequestBodyRoutes(path)
 	if err != nil {
 		t.Fatal(err)
@@ -192,7 +192,7 @@ func TestOpenAPIDefinesJSONRequestBodies(t *testing.T) {
 }
 
 func TestOpenAPIDefinesBoundedPackageUploadBodies(t *testing.T) {
-	raw, err := os.ReadFile(filepath.Join(repoRoot(t), "spec", "openapi", "plugin-platform-v12.yaml"))
+	raw, err := os.ReadFile(filepath.Join(repoRoot(t), "spec", "openapi", "plugin-platform-v13.yaml"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -211,7 +211,7 @@ func TestOpenAPIDefinesBoundedPackageUploadBodies(t *testing.T) {
 
 func TestOpenAPIRequestSchemasDefineCriticalFields(t *testing.T) {
 	root := repoRoot(t)
-	raw, err := os.ReadFile(filepath.Join(root, "spec", "openapi", "plugin-platform-v12.yaml"))
+	raw, err := os.ReadFile(filepath.Join(root, "spec", "openapi", "plugin-platform-v13.yaml"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -264,7 +264,7 @@ func TestOpenAPIRequestSchemasDefineCriticalFields(t *testing.T) {
 
 func TestOpenAPIRoutesSeparateClosedSuccessAndErrorResponses(t *testing.T) {
 	root := repoRoot(t)
-	raw, err := os.ReadFile(filepath.Join(root, "spec", "openapi", "plugin-platform-v12.yaml"))
+	raw, err := os.ReadFile(filepath.Join(root, "spec", "openapi", "plugin-platform-v13.yaml"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -318,7 +318,7 @@ func TestOpenAPIRoutesSeparateClosedSuccessAndErrorResponses(t *testing.T) {
 
 func TestOpenAPIListQueryContractsAreStrictAndComplete(t *testing.T) {
 	root := repoRoot(t)
-	raw, err := os.ReadFile(filepath.Join(root, "spec", "openapi", "plugin-platform-v12.yaml"))
+	raw, err := os.ReadFile(filepath.Join(root, "spec", "openapi", "plugin-platform-v13.yaml"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -328,7 +328,9 @@ func TestOpenAPIListQueryContractsAreStrictAndComplete(t *testing.T) {
 		"reject_url_query_strings: true",
 		"require_closed_json_bodies: true",
 		"require_exact_origin: true",
-		"require_csrf: true",
+		"get_query: not_required",
+		"post_query: required",
+		"mutation: required",
 	} {
 		if !strings.Contains(source, snippet) {
 			t.Fatalf("OpenAPI global query policy is missing %q", snippet)
@@ -379,7 +381,7 @@ func TestOpenAPIListQueryContractsAreStrictAndComplete(t *testing.T) {
 
 func TestOpenAPIRuntimeAndSecretMutationContractsAreClosed(t *testing.T) {
 	root := repoRoot(t)
-	raw, err := os.ReadFile(filepath.Join(root, "spec", "openapi", "plugin-platform-v12.yaml"))
+	raw, err := os.ReadFile(filepath.Join(root, "spec", "openapi", "plugin-platform-v13.yaml"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -421,7 +423,7 @@ func TestOpenAPIRuntimeAndSecretMutationContractsAreClosed(t *testing.T) {
 
 func TestOpenAPITrustedScopeAndRetainedDataMatchClosedGoDTOs(t *testing.T) {
 	root := repoRoot(t)
-	raw, err := os.ReadFile(filepath.Join(root, "spec", "openapi", "plugin-platform-v12.yaml"))
+	raw, err := os.ReadFile(filepath.Join(root, "spec", "openapi", "plugin-platform-v13.yaml"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -727,6 +729,26 @@ func typeScriptSDKRouteBindings() []typeScriptSDKRouteBinding {
 			Snippets:     []string{"installReleaseRef(request: PluginInstallReleaseRefRequest)", `#requestMutation("POST", "/_redevplugin/api/plugins/install-release-ref"`},
 		},
 		{
+			routeFixture: routeFixture{Method: "POST", Path: "/_redevplugin/api/plugins/release-install-operations"},
+			Owner:        "PluginPlatformClient.startReleaseInstallOperation",
+			Snippets:     []string{"startReleaseInstallOperation(", `"/_redevplugin/api/plugins/release-install-operations"`},
+		},
+		{
+			routeFixture: routeFixture{Method: "GET", Path: "/_redevplugin/api/plugins/release-install-operations", Effect: "query"},
+			Owner:        "PluginPlatformClient.listReleaseInstallOperations",
+			Snippets:     []string{"listReleaseInstallOperations(", `#requestGet("/_redevplugin/api/plugins/release-install-operations"`},
+		},
+		{
+			routeFixture: routeFixture{Method: "GET", Path: "/_redevplugin/api/plugins/release-install-operations/{operation_id}", Effect: "query"},
+			Owner:        "PluginPlatformClient.getReleaseInstallOperation",
+			Snippets:     []string{"getReleaseInstallOperation(operationId: string", `/_redevplugin/api/plugins/release-install-operations/${encodeURIComponent(operationId)}`},
+		},
+		{
+			routeFixture: routeFixture{Method: "GET", Path: "/_redevplugin/api/plugins/release-install-operations/by-request/{request_id}", Effect: "query"},
+			Owner:        "PluginPlatformClient.getReleaseInstallOperationByRequest",
+			Snippets:     []string{"getReleaseInstallOperationByRequest(requestId: string", `/_redevplugin/api/plugins/release-install-operations/by-request/${encodeURIComponent(requestId)}`},
+		},
+		{
 			routeFixture: routeFixture{Method: "POST", Path: "/_redevplugin/api/plugins/external-packages/inspect"},
 			Owner:        "PluginPlatformClient.inspectExternalPackage",
 			Snippets:     []string{"inspectExternalPackage(request: PluginInspectExternalPackageRequest", `"POST", "/_redevplugin/api/plugins/external-packages/inspect"`},
@@ -1021,6 +1043,7 @@ func routesWithoutTypeScriptSDKBindings() []routeWithoutTypeScriptSDKBinding {
 func requiredJSONRequestBodyRoutes() []routeFixture {
 	return []routeFixture{
 		{Method: "POST", Path: "/_redevplugin/api/plugins/install-release-ref"},
+		{Method: "POST", Path: "/_redevplugin/api/plugins/release-install-operations"},
 		{Method: "POST", Path: "/_redevplugin/api/plugins/enable"},
 		{Method: "POST", Path: "/_redevplugin/api/plugins/disable"},
 		{Method: "POST", Path: "/_redevplugin/api/plugins/uninstall"},

@@ -31,6 +31,7 @@ import (
 	"github.com/floegence/redevplugin/pkg/capability"
 	"github.com/floegence/redevplugin/pkg/capabilitycontract"
 	"github.com/floegence/redevplugin/pkg/connectivity"
+	"github.com/floegence/redevplugin/pkg/externalsource"
 	"github.com/floegence/redevplugin/pkg/host"
 	"github.com/floegence/redevplugin/pkg/installstage"
 	"github.com/floegence/redevplugin/pkg/manifest"
@@ -416,13 +417,17 @@ func TestRouteSetUsesClosedPostQueryRoutes(t *testing.T) {
 	}
 }
 
-func TestAllRoutesDeclareClosedEffectsAndRequireCSRF(t *testing.T) {
+func TestAllRoutesDeclareClosedEffectsAndMethodScopedCSRF(t *testing.T) {
 	for _, route := range routes {
 		if !route.Effect.Valid() {
 			t.Fatalf("route %s %s effect = %q", route.Method, route.Path, route.Effect)
 		}
-		if route.csrfPolicy != websecurity.CSRFPolicyRequired {
-			t.Fatalf("route %s %s csrf policy = %q, want required", route.Method, route.Path, route.csrfPolicy)
+		want := websecurity.CSRFPolicyRequired
+		if route.Method == http.MethodGet {
+			want = websecurity.CSRFPolicyNotRequired
+		}
+		if route.csrfPolicy != want {
+			t.Fatalf("route %s %s csrf policy = %q, want %q", route.Method, route.Path, route.csrfPolicy, want)
 		}
 	}
 }
@@ -635,7 +640,7 @@ func TestRouteSetRoutesAreHandled(t *testing.T) {
 			}
 			rec := httptest.NewRecorder()
 			handler.ServeHTTP(rec, req)
-			if rec.Code == http.StatusNotFound {
+			if rec.Code == http.StatusNotFound && !strings.Contains(rec.Body.String(), string(security.ErrOperationNotFound)) {
 				t.Fatalf("declared route fell through to 404: %s %s body = %s", route.Method, route.Path, rec.Body.String())
 			}
 		})
@@ -717,12 +722,12 @@ func TestHandlerCompatibilityManifest(t *testing.T) {
 		} `json:"contracts"`
 	}](t, handler, "/_redevplugin/api/plugins/platform/compatibility/query", map[string]any{})
 
-	if got.SchemaVersion != "redevplugin.compatibility.v14" {
+	if got.SchemaVersion != "redevplugin.compatibility.v15" {
 		t.Fatalf("schema_version = %q", got.SchemaVersion)
 	}
-	if got.Matrix.PluginHostProtocolVersion != "plugin-host-v10" ||
+	if got.Matrix.PluginHostProtocolVersion != "plugin-host-v11" ||
 		got.Matrix.SessionScopeMaintenanceVersion != "session-scope-maintenance-v1" ||
-		got.Matrix.PluginPlatformOpenAPI != "plugin-platform-v12" {
+		got.Matrix.PluginPlatformOpenAPI != "plugin-platform-v13" {
 		t.Fatalf("matrix mismatch: %#v", got.Matrix)
 	}
 	contracts := map[string]struct {
@@ -739,7 +744,7 @@ func TestHandlerCompatibilityManifest(t *testing.T) {
 	if !ok {
 		t.Fatalf("compatibility manifest missing plugin-platform-openapi: %#v", got.Contracts)
 	}
-	if openapi.Path != "spec/openapi/plugin-platform-v12.yaml" || openapi.SHA256 == "" {
+	if openapi.Path != "spec/openapi/plugin-platform-v13.yaml" || openapi.SHA256 == "" {
 		t.Fatalf("plugin-platform-openapi contract mismatch: %#v", openapi)
 	}
 }
@@ -1509,7 +1514,7 @@ func TestHandlerReportsUnknownMutationOutcomeAfterCommit(t *testing.T) {
 	envelope := postJSONError(t, handler, "/_redevplugin/api/plugins/enable", map[string]any{
 		"plugin_instance_id":           installed.PluginInstanceID,
 		"expected_management_revision": installed.ManagementRevision,
-	}, http.StatusForbidden)
+	}, http.StatusInternalServerError)
 	if envelope.MutationOutcome != string(mutation.OutcomeUnknown) {
 		t.Fatalf("mutation_outcome = %q, want %q body = %#v", envelope.MutationOutcome, mutation.OutcomeUnknown, envelope)
 	}
@@ -3914,6 +3919,11 @@ func TestStableOwnerScopeAndAdapterFailuresMapToHTTPContracts(t *testing.T) {
 		{name: "management adapter", err: host.ErrAdapterFailure, code: security.ErrAdapterFailure, status: http.StatusBadGateway, codeFor: errorCodeForManagementError, statusFor: httpStatusForManagementError},
 		{name: "management external package stale", err: host.ErrExternalPackageInspectionStale, code: security.ErrInvalidRequest, status: http.StatusBadRequest, codeFor: errorCodeForManagementError, statusFor: httpStatusForManagementError},
 		{name: "management external package request", err: host.ErrExternalPackageRequestInvalid, code: security.ErrInvalidRequest, status: http.StatusBadRequest, codeFor: errorCodeForManagementError, statusFor: httpStatusForManagementError},
+		{name: "management timeout", err: context.DeadlineExceeded, code: security.ErrReleaseTimeout, status: http.StatusGatewayTimeout, codeFor: errorCodeForManagementError, statusFor: httpStatusForManagementError},
+		{name: "management interrupted", err: context.Canceled, code: security.ErrInstallInterrupted, status: http.StatusServiceUnavailable, codeFor: errorCodeForManagementError, statusFor: httpStatusForManagementError},
+		{name: "management install conflict", err: registry.ErrReleaseInstallOperationConflict, code: security.ErrInstallStateConflict, status: http.StatusConflict, codeFor: errorCodeForManagementError, statusFor: httpStatusForManagementError},
+		{name: "management install missing", err: registry.ErrReleaseInstallOperationNotFound, code: security.ErrOperationNotFound, status: http.StatusNotFound, codeFor: errorCodeForManagementError, statusFor: httpStatusForManagementError},
+		{name: "management unknown", err: errors.New("unknown internal failure"), code: security.ErrInternalFailure, status: http.StatusInternalServerError, codeFor: errorCodeForManagementError, statusFor: httpStatusForManagementError},
 		{name: "secret scope", err: host.ErrSecretScopeMismatch, code: security.ErrSecretScopeMismatch, status: http.StatusForbidden, codeFor: errorCodeForSecretError, statusFor: httpStatusForSecretError},
 		{name: "secret owner scope", err: host.ErrOwnerScopeMismatch, code: security.ErrOwnerScopeMismatch, status: http.StatusForbidden, codeFor: errorCodeForSecretError, statusFor: httpStatusForSecretError},
 		{name: "secret owner migration", err: sessionctx.ErrOwnerScopeMigrationRequired, code: security.ErrOwnerScopeMismatch, status: http.StatusForbidden, codeFor: errorCodeForSecretError, statusFor: httpStatusForSecretError},
@@ -3939,6 +3949,23 @@ func TestStableOwnerScopeAndAdapterFailuresMapToHTTPContracts(t *testing.T) {
 	}
 	if code, status := runtimeManagementError(host.ErrAdapterFailure); code != security.ErrAdapterFailure || status != http.StatusBadGateway {
 		t.Fatalf("runtime adapter failure = code:%q status:%d", code, status)
+	}
+}
+
+func TestReleaseManagementErrorsDoNotReusePackageValidationDetails(t *testing.T) {
+	tests := []error{
+		externalsource.NewHTTPStatusError("fetch", "https://artifacts.example.test/package?token=secret", http.StatusServiceUnavailable, 0),
+		&externalsource.Error{Code: externalsource.ErrorStageIntegrity, Operation: "stage"},
+	}
+	for _, err := range tests {
+		code := errorCodeForManagementError(err)
+		details := errorDetailsForManagementError(err)
+		if !details.empty() {
+			t.Fatalf("details for %q = %#v, want empty safe details", code, details)
+		}
+		if marshalErr := details.validateForCode(code); marshalErr != nil {
+			t.Fatalf("details for %q failed validation: %v", code, marshalErr)
+		}
 	}
 }
 
@@ -4548,8 +4575,8 @@ func samplePathForRoute(path string) string {
 func readOpenAPIContract(t *testing.T) string {
 	t.Helper()
 	candidates := []string{
-		filepath.Join("..", "..", "spec", "openapi", "plugin-platform-v12.yaml"),
-		filepath.Join("spec", "openapi", "plugin-platform-v12.yaml"),
+		filepath.Join("..", "..", "spec", "openapi", "plugin-platform-v13.yaml"),
+		filepath.Join("spec", "openapi", "plugin-platform-v13.yaml"),
 	}
 	var lastErr error
 	for _, candidate := range candidates {

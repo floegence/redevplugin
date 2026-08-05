@@ -23,7 +23,7 @@ import (
 )
 
 const maxRegistrySQLiteConnections = 8
-const registrySQLiteSchemaVersion = 2
+const registrySQLiteSchemaVersion = 3
 
 var ErrIncompatiblePersistedManifest = errors.New("persisted plugin manifest is incompatible")
 
@@ -373,6 +373,17 @@ func (s *SQLiteStore) initializeSchema(ctx context.Context) error {
 		if err := reconcileInterruptedExternalPackageCommits(ctx, tx); err != nil {
 			return err
 		}
+		if schemaVersion < 3 {
+			if err := createReleaseInstallOperationSchema(ctx, tx); err != nil {
+				return err
+			}
+		}
+		if err := validateReleaseInstallOperationSchema(ctx, tx); err != nil {
+			return err
+		}
+		if err := reconcileInterruptedReleaseInstallOperations(ctx, tx); err != nil {
+			return err
+		}
 		if err := validateSQLitePluginSecurityFacts(ctx, tx); err != nil {
 			return err
 		}
@@ -489,6 +500,9 @@ func (s *SQLiteStore) initializeSchema(ctx context.Context) error {
 	if err := validateExternalPackageCommitReceiptSchema(ctx, tx); err != nil {
 		return err
 	}
+	if err := createReleaseInstallOperationSchema(ctx, tx); err != nil {
+		return err
+	}
 	if _, err := tx.ExecContext(ctx, `
 	CREATE TABLE IF NOT EXISTS plugin_permission_grants (
 		owner_env_hash TEXT NOT NULL,
@@ -586,6 +600,9 @@ func (s *SQLiteStore) initializeSchema(ctx context.Context) error {
 		return err
 	}
 	if err := validateCurrentRegistrySQLiteSchema(ctx, tx); err != nil {
+		return err
+	}
+	if err := validateReleaseInstallOperationSchema(ctx, tx); err != nil {
 		return err
 	}
 	if err := validateSQLitePluginSecurityFacts(ctx, tx); err != nil {

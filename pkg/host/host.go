@@ -435,6 +435,28 @@ type ReleaseArtifactResolveRequest struct {
 	CurrentRecord    *registry.PluginRecord         `json:"current_record,omitempty"`
 	PluginInstanceID string                         `json:"plugin_instance_id,omitempty"`
 	Now              time.Time                      `json:"-"`
+	Observe          func(ReleaseArtifactProgress)  `json:"-"`
+}
+
+type ReleaseArtifactProgress struct {
+	Phase        string
+	ArtifactRole string
+	Attempt      int
+	RetryAfter   time.Duration
+	Completed    int64
+	Total        int64
+}
+
+type ReleaseArtifactFailure struct {
+	Phase         string
+	ArtifactRole  string
+	Retryable     bool
+	Attempts      int
+	LocatorSHA256 string
+}
+
+type ReleaseArtifactFailureProvider interface {
+	ReleaseArtifactFailure() ReleaseArtifactFailure
 }
 
 type ResolvedPackageArtifact struct {
@@ -3674,7 +3696,7 @@ func (h *Host) updateResolvedPackage(ctx context.Context, current registry.Plugi
 	return stored, nil
 }
 
-func (h *Host) resolveReleasePackage(ctx context.Context, action PackageTrustAction, ref PluginReleaseRef, current *registry.PluginRecord, pluginInstanceID string, now time.Time) (pluginpkg.Package, PluginPackageRelease, releasecontract.SourcePolicyV2, releasetrust.VerifiedPackage, map[string]string, error) {
+func (h *Host) resolveReleasePackage(ctx context.Context, action PackageTrustAction, ref PluginReleaseRef, current *registry.PluginRecord, pluginInstanceID string, now time.Time, observe ...func(ReleaseArtifactProgress)) (pluginpkg.Package, PluginPackageRelease, releasecontract.SourcePolicyV2, releasetrust.VerifiedPackage, map[string]string, error) {
 	if err := h.requireFeature(FeatureRelease); err != nil {
 		return pluginpkg.Package{}, PluginPackageRelease{}, releasecontract.SourcePolicyV2{}, releasetrust.VerifiedPackage{}, nil, err
 	}
@@ -3696,9 +3718,13 @@ func (h *Host) resolveReleasePackage(ctx context.Context, action PackageTrustAct
 	if err := enforceReleaseSourcePolicy(action, current, ref, sourcePolicy); err != nil {
 		return pluginpkg.Package{}, PluginPackageRelease{}, releasecontract.SourcePolicyV2{}, releasetrust.VerifiedPackage{}, nil, err
 	}
+	var progressObserver func(ReleaseArtifactProgress)
+	if len(observe) > 0 {
+		progressObserver = observe[0]
+	}
 	resolved, err := h.adapters.ReleaseArtifactResolver.ResolveReleaseArtifact(ctx, ReleaseArtifactResolveRequest{
 		Action: action, ReleaseRef: ref, SourcePolicy: sourcePolicy, CurrentRecord: current,
-		PluginInstanceID: pluginInstanceID, Now: now,
+		PluginInstanceID: pluginInstanceID, Now: now, Observe: progressObserver,
 	})
 	if err != nil {
 		return pluginpkg.Package{}, PluginPackageRelease{}, releasecontract.SourcePolicyV2{}, releasetrust.VerifiedPackage{}, nil, err

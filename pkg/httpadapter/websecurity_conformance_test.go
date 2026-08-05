@@ -123,6 +123,9 @@ func TestHandlerWebSecurityConformanceCoversEveryRoute(t *testing.T) {
 			}
 			for _, testCase := range testCases {
 				testCase := testCase
+				if route.Method == http.MethodGet && testCase.wantStage == "csrf" {
+					continue
+				}
 				t.Run(testCase.name, func(t *testing.T) {
 					guard := &routeSecurityConformanceGuard{}
 					handler := mustNewHandler(t, newHTTPTestHost(t), guard)
@@ -194,7 +197,7 @@ func TestRouteSecurityContractRejectsMethodsOutsideEachEffect(t *testing.T) {
 		effect websecurity.RouteEffect
 		method string
 	}{
-		{name: "query get", effect: websecurity.RouteEffectQuery, method: http.MethodGet},
+		{name: "query head", effect: websecurity.RouteEffectQuery, method: http.MethodHead},
 		{name: "mutation get", effect: websecurity.RouteEffectMutation, method: http.MethodGet},
 		{name: "mutation head", effect: websecurity.RouteEffectMutation, method: http.MethodHead},
 		{name: "mutation options", effect: websecurity.RouteEffectMutation, method: http.MethodOptions},

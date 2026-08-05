@@ -7,10 +7,12 @@ import (
 	"crypto/x509"
 	"encoding/hex"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/netip"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -75,6 +77,7 @@ type ArtifactFetchRequest struct {
 	AllowedHosts   []string
 	ExpectedSize   int64
 	ExpectedSHA256 string
+	Progress       func(completed, total int64)
 }
 
 type ArtifactFetchResult struct {
@@ -141,7 +144,7 @@ func (fetcher *Fetcher) FetchArtifact(ctx context.Context, request ArtifactFetch
 	if err != nil {
 		return ArtifactFetchResult{}, err
 	}
-	fetched, err := fetcher.fetchStaged(ctx, request.URL, request.QuotaKey, false, request.MaxBytes, allowed)
+	fetched, err := fetcher.fetchStaged(ctx, request.URL, request.QuotaKey, false, request.MaxBytes, allowed, request.ExpectedSize, request.Progress)
 	if err != nil {
 		return ArtifactFetchResult{}, err
 	}
@@ -169,10 +172,10 @@ func (fetcher *Fetcher) fetchPackage(ctx context.Context, rawURL, quotaKey strin
 	if fetcher == nil {
 		return FetchResult{}, invalidSource("fetch", "fetcher is not initialized")
 	}
-	return fetcher.fetchStaged(ctx, rawURL, quotaKey, allowInitialQuery, fetcher.maxBytes, nil)
+	return fetcher.fetchStaged(ctx, rawURL, quotaKey, allowInitialQuery, fetcher.maxBytes, nil, 0, nil)
 }
 
-func (fetcher *Fetcher) fetchStaged(ctx context.Context, rawURL, quotaKey string, allowInitialQuery bool, maxBytes int64, allowedHosts map[string]struct{}) (FetchResult, error) {
+func (fetcher *Fetcher) fetchStaged(ctx context.Context, rawURL, quotaKey string, allowInitialQuery bool, maxBytes int64, allowedHosts map[string]struct{}, expectedSize int64, progress func(completed, total int64)) (FetchResult, error) {
 	if fetcher == nil || fetcher.stage == nil || fetcher.roundTrip == nil {
 		return FetchResult{}, invalidSource("fetch", "fetcher is not initialized")
 	}
@@ -231,8 +234,9 @@ func (fetcher *Fetcher) fetchStaged(ctx context.Context, rawURL, quotaKey string
 			continue
 		}
 		if response.StatusCode != http.StatusOK {
+			retryAfter := parseRetryAfter(response.Header.Get("Retry-After"), time.Now())
 			_ = response.Body.Close()
-			return FetchResult{}, externalError(ErrorHTTPStatus, "fetch", current.DisplayURL(), fmt.Errorf("unexpected HTTP status %d", response.StatusCode))
+			return FetchResult{}, externalHTTPError("fetch", current.DisplayURL(), response.StatusCode, retryAfter, fmt.Errorf("unexpected HTTP status %d", response.StatusCode))
 		}
 		encoding := strings.TrimSpace(strings.ToLower(response.Header.Get("Content-Encoding")))
 		if encoding != "" && encoding != "identity" {
@@ -243,7 +247,11 @@ func (fetcher *Fetcher) fetchStaged(ctx context.Context, rawURL, quotaKey string
 			_ = response.Body.Close()
 			return FetchResult{}, externalError(ErrorArtifactTooLarge, "fetch", current.DisplayURL(), fmt.Errorf("content length exceeds limit"))
 		}
-		artifact, stageErr := fetcher.stage.stageWithLimitForOwner(ctx, quotaKey, response.Body, maxBytes)
+		var body io.ReadCloser = response.Body
+		if progress != nil {
+			body = &progressReadCloser{ReadCloser: response.Body, total: expectedSize, observe: progress}
+		}
+		artifact, stageErr := fetcher.stage.stageWithLimitForOwner(ctx, quotaKey, body, maxBytes)
 		closeErr := response.Body.Close()
 		if stageErr != nil {
 			return FetchResult{}, stageErr
@@ -254,6 +262,40 @@ func (fetcher *Fetcher) fetchStaged(ctx context.Context, rawURL, quotaKey string
 		}
 		return FetchResult{Artifact: artifact, Source: sourceDisplay, Final: current.DisplayURL(), Redirects: redirects}, nil
 	}
+}
+
+type progressReadCloser struct {
+	io.ReadCloser
+	total     int64
+	completed int64
+	observe   func(completed, total int64)
+}
+
+func (reader *progressReadCloser) Read(value []byte) (int, error) {
+	read, err := reader.ReadCloser.Read(value)
+	if read > 0 {
+		reader.completed += int64(read)
+		reader.observe(reader.completed, reader.total)
+	}
+	return read, err
+}
+
+func parseRetryAfter(value string, now time.Time) time.Duration {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return 0
+	}
+	if seconds, err := strconv.ParseInt(value, 10, 64); err == nil {
+		if seconds <= 0 {
+			return 0
+		}
+		return time.Duration(seconds) * time.Second
+	}
+	parsed, err := http.ParseTime(value)
+	if err != nil || !parsed.After(now) {
+		return 0
+	}
+	return parsed.Sub(now)
 }
 
 func canonicalAllowedHosts(values []string) (map[string]struct{}, error) {

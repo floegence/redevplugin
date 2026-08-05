@@ -14,6 +14,13 @@ const (
 	ErrTrustVerificationInvalid      ErrorCode = "PLUGIN_TRUST_VERIFICATION_INVALID"
 	ErrReleaseRefVerificationFailed  ErrorCode = "PLUGIN_RELEASE_REF_VERIFICATION_FAILED"
 	ErrReleaseRefPolicyDenied        ErrorCode = "PLUGIN_RELEASE_REF_POLICY_DENIED"
+	ErrReleaseNetwork                ErrorCode = "PLUGIN_RELEASE_NETWORK"
+	ErrReleaseTimeout                ErrorCode = "PLUGIN_RELEASE_TIMEOUT"
+	ErrReleaseAssetMissing           ErrorCode = "PLUGIN_RELEASE_ASSET_MISSING"
+	ErrReleaseAssetIntegrity         ErrorCode = "PLUGIN_RELEASE_ASSET_INTEGRITY"
+	ErrInstallInterrupted            ErrorCode = "PLUGIN_INSTALL_INTERRUPTED"
+	ErrInstallStateConflict          ErrorCode = "PLUGIN_INSTALL_STATE_CONFLICT"
+	ErrInternalFailure               ErrorCode = "PLUGIN_INTERNAL_FAILURE"
 	ErrDisabled                      ErrorCode = "PLUGIN_DISABLED"
 	ErrDisabledByPolicy              ErrorCode = "PLUGIN_DISABLED_BY_POLICY"
 	ErrPermissionDenied              ErrorCode = "PLUGIN_PERMISSION_DENIED"
@@ -88,6 +95,13 @@ var platformErrorCodes = []ErrorCode{
 	ErrTrustVerificationInvalid,
 	ErrReleaseRefVerificationFailed,
 	ErrReleaseRefPolicyDenied,
+	ErrReleaseNetwork,
+	ErrReleaseTimeout,
+	ErrReleaseAssetMissing,
+	ErrReleaseAssetIntegrity,
+	ErrInstallInterrupted,
+	ErrInstallStateConflict,
+	ErrInternalFailure,
 	ErrDisabled,
 	ErrDisabledByPolicy,
 	ErrPermissionDenied,

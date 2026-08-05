@@ -4,9 +4,9 @@
   "artifacts": [
     {
       "id": "compatibility-manifest-schema",
-      "path": "spec/plugin/compatibility-manifest-v14.schema.json",
-      "version": "compatibility-manifest-v14",
-      "sha256": "67016ead2ed8b86410aafe3771d750ea2ab088479047475542ac65caa1691a7c"
+      "path": "spec/plugin/compatibility-manifest-v15.schema.json",
+      "version": "compatibility-manifest-v15",
+      "sha256": "921beeaff20abd3f67d73bd695f27459f453b014730cefb22864c015837c239a"
     },
     {
       "id": "contract-registry-schema",
@@ -16,9 +16,9 @@
     },
     {
       "id": "error-codes-schema",
-      "path": "spec/plugin/error-codes-v7.schema.json",
-      "version": "error-codes-v7",
-      "sha256": "4e7cac510a6036f90cae8f58ff8c3b785b3a2d3933875f2f69bef1c41de3d26c"
+      "path": "spec/plugin/error-codes-v8.schema.json",
+      "version": "error-codes-v8",
+      "sha256": "454e3c8b46e20bc524080ca1aa91dcf2ecdfe0a90cc33b5b328e87356d07e7e3"
     },
     {
       "id": "external-signer-request-schema",
@@ -90,7 +90,7 @@
       "id": "iframe-bridge-schema",
       "path": "spec/plugin/bridge-v7.schema.json",
       "version": "bridge-v7",
-      "sha256": "f4b5f04870b58e8e2363aaba98b273adccef3a3e9ac1eb1a2dbbc3fb4c71b300"
+      "sha256": "fe8da4e5b14ac6d7c7bb3101e041246e92573c58e1c9537e8cda2c26bf175ef5"
     },
     {
       "id": "manifest-schema",
@@ -172,9 +172,9 @@
     },
     {
       "id": "plugin-platform-openapi",
-      "path": "spec/openapi/plugin-platform-v12.yaml",
-      "version": "plugin-platform-v12",
-      "sha256": "715698e9e1e357e243ee21b3157cc044befac83979107f54d024b5e9e48f7050"
+      "path": "spec/openapi/plugin-platform-v13.yaml",
+      "version": "plugin-platform-v13",
+      "sha256": "e0b0c3a2aede94b80e32fb84adf5f88d867c6e9958565c106e60ad5a2ae36f5e"
     },
     {
       "id": "presentation-locale-fixture",

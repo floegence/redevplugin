@@ -121,6 +121,56 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/_redevplugin/api/plugins/release-install-operations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description Lists owner-scoped release installation operations. Trusted Origin and authenticated session remain required; GET queries do not require CSRF. */
+        get: operations["listReleaseInstallOperations"];
+        put?: never;
+        /** @description Starts or recovers one owner-scoped durable release installation. Disconnecting the observer does not cancel the installation. */
+        post: operations["startReleaseInstallOperation"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/_redevplugin/api/plugins/release-install-operations/{operation_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["getReleaseInstallOperation"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/_redevplugin/api/plugins/release-install-operations/by-request/{request_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["getReleaseInstallOperationByRequest"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/_redevplugin/api/plugins/enable": {
         parameters: {
             query?: never;
@@ -1016,6 +1066,16 @@ export interface components {
             ok: true;
             data: components["schemas"]["PluginRecord"];
         };
+        ReleaseInstallOperationSuccessResponse: {
+            /** @constant */
+            ok: true;
+            data: components["schemas"]["ReleaseInstallOperation"];
+        };
+        ReleaseInstallOperationListSuccessResponse: {
+            /** @constant */
+            ok: true;
+            data: components["schemas"]["ReleaseInstallOperationList"];
+        };
         ExternalPackageInspectionSuccessResponse: {
             /** @constant */
             ok: true;
@@ -1357,10 +1417,10 @@ export interface components {
             expected_values_revision: number;
             actual_values_revision: number;
         };
-        ErrorCode: components["schemas"]["ErrorCodesV7PlatformErrorCode"];
+        ErrorCode: components["schemas"]["ErrorCodesV8PlatformErrorCode"];
         PlatformErrorMessage: string;
         /** @enum {string} */
-        GenericPlatformErrorCode: "PLUGIN_INVALID_REQUEST" | "PLUGIN_SIGNATURE_INVALID" | "PLUGIN_TRUST_STATE_DENIED" | "PLUGIN_TRUST_VERIFICATION_REQUIRED" | "PLUGIN_TRUST_VERIFICATION_INVALID" | "PLUGIN_RELEASE_REF_VERIFICATION_FAILED" | "PLUGIN_RELEASE_REF_POLICY_DENIED" | "PLUGIN_DISABLED" | "PLUGIN_DISABLED_BY_POLICY" | "PLUGIN_PERMISSION_DENIED" | "PLUGIN_ORIGIN_DENIED" | "PLUGIN_ACTION_DENIED" | "PLUGIN_OWNER_SCOPE_MISMATCH" | "PLUGIN_SECRET_SCOPE_MISMATCH" | "PLUGIN_STORAGE_SCOPE_MISMATCH" | "PLUGIN_ADAPTER_FAILURE" | "PLUGIN_SESSION_REVOKED" | "PLUGIN_SESSION_TEARDOWN_INCOMPLETE" | "PLUGIN_SESSION_FENCE_CAPACITY" | "PLUGIN_CONFIRMATION_REQUIRED" | "PLUGIN_CONFIRMATION_INVALID" | "PLUGIN_TOKEN_EXPIRED" | "PLUGIN_TOKEN_REPLAY" | "PLUGIN_GATEWAY_TOKEN_INVALID" | "PLUGIN_GATEWAY_TOKEN_REPLAYED" | "PLUGIN_GATEWAY_TOKEN_CHANNEL_MISMATCH" | "PLUGIN_ASSET_TICKET_INVALID" | "PLUGIN_ASSET_SESSION_INVALID" | "PLUGIN_STREAM_TICKET_INVALID" | "PLUGIN_STREAM_DELIVERY_INVALID" | "PLUGIN_STREAM_CANCELLED" | "PLUGIN_LEASE_INVALID" | "PLUGIN_LEASE_REPLAYED" | "PLUGIN_GRANT_INVALID" | "PLUGIN_STORAGE_QUOTA_EXCEEDED" | "PLUGIN_OPERATION_BLOCKED" | "PLUGIN_OPERATION_NOT_FOUND" | "PLUGIN_OPERATION_NOT_CANCELABLE" | "PLUGIN_NETWORK_TARGET_DENIED" | "PLUGIN_NETWORK_RATE_LIMITED" | "PLUGIN_RUNTIME_UNAVAILABLE" | "PLUGIN_RUNTIME_VERSION_MISMATCH" | "PLUGIN_RUNTIME_CONTRACT_MISMATCH" | "PLUGIN_UI_PROTOCOL_UNSUPPORTED" | "PLUGIN_UI_PROTOCOL_VIOLATION" | "PLUGIN_SURFACE_QUIESCE_TIMEOUT" | "PLUGIN_CONTRACT_MISMATCH" | "PLUGIN_CSRF_REQUIRED" | "PLUGIN_CSRF_INVALID" | "PLUGIN_FEATURE_NOT_CONFIGURED";
+        GenericPlatformErrorCode: "PLUGIN_INVALID_REQUEST" | "PLUGIN_SIGNATURE_INVALID" | "PLUGIN_TRUST_STATE_DENIED" | "PLUGIN_TRUST_VERIFICATION_REQUIRED" | "PLUGIN_TRUST_VERIFICATION_INVALID" | "PLUGIN_RELEASE_REF_VERIFICATION_FAILED" | "PLUGIN_RELEASE_REF_POLICY_DENIED" | "PLUGIN_RELEASE_NETWORK" | "PLUGIN_RELEASE_TIMEOUT" | "PLUGIN_RELEASE_ASSET_MISSING" | "PLUGIN_RELEASE_ASSET_INTEGRITY" | "PLUGIN_INSTALL_INTERRUPTED" | "PLUGIN_INSTALL_STATE_CONFLICT" | "PLUGIN_INTERNAL_FAILURE" | "PLUGIN_DISABLED" | "PLUGIN_DISABLED_BY_POLICY" | "PLUGIN_PERMISSION_DENIED" | "PLUGIN_ORIGIN_DENIED" | "PLUGIN_ACTION_DENIED" | "PLUGIN_OWNER_SCOPE_MISMATCH" | "PLUGIN_SECRET_SCOPE_MISMATCH" | "PLUGIN_STORAGE_SCOPE_MISMATCH" | "PLUGIN_ADAPTER_FAILURE" | "PLUGIN_SESSION_REVOKED" | "PLUGIN_SESSION_TEARDOWN_INCOMPLETE" | "PLUGIN_SESSION_FENCE_CAPACITY" | "PLUGIN_CONFIRMATION_REQUIRED" | "PLUGIN_CONFIRMATION_INVALID" | "PLUGIN_TOKEN_EXPIRED" | "PLUGIN_TOKEN_REPLAY" | "PLUGIN_GATEWAY_TOKEN_INVALID" | "PLUGIN_GATEWAY_TOKEN_REPLAYED" | "PLUGIN_GATEWAY_TOKEN_CHANNEL_MISMATCH" | "PLUGIN_ASSET_TICKET_INVALID" | "PLUGIN_ASSET_SESSION_INVALID" | "PLUGIN_STREAM_TICKET_INVALID" | "PLUGIN_STREAM_DELIVERY_INVALID" | "PLUGIN_STREAM_CANCELLED" | "PLUGIN_LEASE_INVALID" | "PLUGIN_LEASE_REPLAYED" | "PLUGIN_GRANT_INVALID" | "PLUGIN_STORAGE_QUOTA_EXCEEDED" | "PLUGIN_OPERATION_BLOCKED" | "PLUGIN_OPERATION_NOT_FOUND" | "PLUGIN_OPERATION_NOT_CANCELABLE" | "PLUGIN_NETWORK_TARGET_DENIED" | "PLUGIN_NETWORK_RATE_LIMITED" | "PLUGIN_RUNTIME_UNAVAILABLE" | "PLUGIN_RUNTIME_VERSION_MISMATCH" | "PLUGIN_RUNTIME_CONTRACT_MISMATCH" | "PLUGIN_UI_PROTOCOL_UNSUPPORTED" | "PLUGIN_UI_PROTOCOL_VIOLATION" | "PLUGIN_SURFACE_QUIESCE_TIMEOUT" | "PLUGIN_CONTRACT_MISMATCH" | "PLUGIN_CSRF_REQUIRED" | "PLUGIN_CSRF_INVALID" | "PLUGIN_FEATURE_NOT_CONFIGURED";
         SurfaceDisposeResult: {
             /** @constant */
             disposed: true;
@@ -1377,7 +1437,7 @@ export interface components {
         PluginCatalogResult: {
             plugins: components["schemas"]["PluginRecord"][];
         };
-        PluginCompatibilityManifest: components["schemas"]["CompatibilityManifestV14"];
+        PluginCompatibilityManifest: components["schemas"]["CompatibilityManifestV15"];
         PluginOperationList: {
             operations: components["schemas"]["OperationRecord"][];
             next_cursor?: string;
@@ -1477,7 +1537,7 @@ export interface components {
             invocation_id?: string;
             method?: string;
             failure_code?: string;
-            runtime_process_failure_code?: components["schemas"]["ErrorCodesV7RuntimeProcessFailureCode"];
+            runtime_process_failure_code?: components["schemas"]["ErrorCodesV8RuntimeProcessFailureCode"];
             operation_id?: string;
             stream_id?: string;
             runtime_instance_id?: string;
@@ -2169,6 +2229,60 @@ export interface components {
             release_ref: components["schemas"]["PluginReleaseRef"];
             plugin_instance_id: string;
         };
+        StartReleaseInstallOperationRequest: {
+            request_id: string;
+            plugin_instance_id: string;
+            release_ref: components["schemas"]["PluginReleaseRef"];
+        };
+        ReleaseInstallProgress: {
+            /** @constant */
+            kind: "indeterminate";
+        } | {
+            /** @enum {string} */
+            kind: "items" | "bytes";
+            completed: number;
+            total: number;
+        };
+        ReleaseInstallFailure: {
+            /** @enum {string} */
+            code: "PLUGIN_RELEASE_NETWORK" | "PLUGIN_RELEASE_TIMEOUT" | "PLUGIN_RELEASE_ASSET_MISSING" | "PLUGIN_RELEASE_ASSET_INTEGRITY" | "PLUGIN_INSTALL_INTERRUPTED" | "PLUGIN_INSTALL_STATE_CONFLICT" | "PLUGIN_INTERNAL_FAILURE";
+            retryable: boolean;
+        };
+        ReleaseInstallOperation: {
+            request_id: string;
+            operation_id: string;
+            plugin_instance_id: string;
+            request_sha256: string;
+            /** @enum {string} */
+            status: "queued" | "running" | "reconciling" | "succeeded" | "failed";
+            phase: string;
+            progress: components["schemas"]["ReleaseInstallProgress"];
+            attempt: number;
+            retry_after_ms: number;
+            mutation_outcome: components["schemas"]["MutationOutcome"];
+            failure?: components["schemas"]["ReleaseInstallFailure"];
+            plugin_record?: components["schemas"]["PluginRecord"];
+            /** Format: date-time */
+            created_at: string;
+            /** Format: date-time */
+            updated_at: string;
+            /** Format: date-time */
+            terminal_at?: string;
+        } & ({
+            /** @enum {string} */
+            status?: "queued" | "running" | "reconciling";
+        } | {
+            /** @constant */
+            status: "succeeded";
+            /** @constant */
+            mutation_outcome?: "committed";
+        } | {
+            /** @constant */
+            status: "failed";
+        });
+        ReleaseInstallOperationList: {
+            operations: components["schemas"]["ReleaseInstallOperation"][];
+        };
         UpdateReleaseRefRequest: {
             plugin_instance_id: string;
             release_ref: components["schemas"]["PluginReleaseRef"];
@@ -2708,18 +2822,18 @@ export interface components {
             };
             remove?: string[];
         };
-        ErrorCodesV7: Record<string, never>;
+        ErrorCodesV8: Record<string, never>;
         /** @enum {string} */
-        ErrorCodesV7PlatformErrorCode: "PLUGIN_INVALID_REQUEST" | "PLUGIN_MANIFEST_INVALID" | "PLUGIN_PACKAGE_INVALID" | "PLUGIN_PACKAGE_TOO_LARGE" | "PLUGIN_PACKAGE_PATH_FORBIDDEN" | "PLUGIN_SIGNATURE_INVALID" | "PLUGIN_TRUST_STATE_DENIED" | "PLUGIN_TRUST_VERIFICATION_REQUIRED" | "PLUGIN_TRUST_VERIFICATION_INVALID" | "PLUGIN_RELEASE_REF_VERIFICATION_FAILED" | "PLUGIN_RELEASE_REF_POLICY_DENIED" | "PLUGIN_DISABLED" | "PLUGIN_DISABLED_BY_POLICY" | "PLUGIN_PERMISSION_DENIED" | "PLUGIN_ORIGIN_DENIED" | "PLUGIN_ACTION_DENIED" | "PLUGIN_OWNER_SCOPE_MISMATCH" | "PLUGIN_SECRET_SCOPE_MISMATCH" | "PLUGIN_STORAGE_SCOPE_MISMATCH" | "PLUGIN_ADAPTER_FAILURE" | "PLUGIN_SESSION_REVOKED" | "PLUGIN_SESSION_TEARDOWN_INCOMPLETE" | "PLUGIN_SESSION_FENCE_CAPACITY" | "PLUGIN_CONFIRMATION_REQUIRED" | "PLUGIN_CONFIRMATION_INVALID" | "PLUGIN_TOKEN_EXPIRED" | "PLUGIN_TOKEN_REPLAY" | "PLUGIN_GATEWAY_TOKEN_INVALID" | "PLUGIN_GATEWAY_TOKEN_REPLAYED" | "PLUGIN_GATEWAY_TOKEN_CHANNEL_MISMATCH" | "PLUGIN_ASSET_TICKET_INVALID" | "PLUGIN_ASSET_SESSION_INVALID" | "PLUGIN_STREAM_TICKET_INVALID" | "PLUGIN_STREAM_DELIVERY_INVALID" | "PLUGIN_STREAM_CANCELLED" | "PLUGIN_LEASE_INVALID" | "PLUGIN_LEASE_REPLAYED" | "PLUGIN_GRANT_INVALID" | "PLUGIN_STORAGE_QUOTA_EXCEEDED" | "PLUGIN_OPERATION_BLOCKED" | "PLUGIN_OPERATION_NOT_FOUND" | "PLUGIN_OPERATION_NOT_CANCELABLE" | "PLUGIN_OPERATION_RATE_LIMITED" | "PLUGIN_NETWORK_TARGET_DENIED" | "PLUGIN_NETWORK_RATE_LIMITED" | "PLUGIN_RUNTIME_UNAVAILABLE" | "PLUGIN_RUNTIME_VERSION_MISMATCH" | "PLUGIN_RUNTIME_CONTRACT_MISMATCH" | "PLUGIN_UI_PROTOCOL_UNSUPPORTED" | "PLUGIN_UI_PROTOCOL_VIOLATION" | "PLUGIN_SURFACE_QUIESCE_TIMEOUT" | "PLUGIN_JSON_LIMIT_EXCEEDED" | "PLUGIN_CAPABILITY_ERROR" | "PLUGIN_WORKER_ERROR" | "PLUGIN_CONTRACT_MISMATCH" | "PLUGIN_MANAGEMENT_REVISION_MISMATCH" | "PLUGIN_AUTHORIZATION_REVISION_MISMATCH" | "PLUGIN_BINDING_REVISION_MISMATCH" | "PLUGIN_VALUES_REVISION_MISMATCH" | "PLUGIN_CSRF_REQUIRED" | "PLUGIN_CSRF_INVALID" | "PLUGIN_FEATURE_NOT_CONFIGURED";
+        ErrorCodesV8PlatformErrorCode: "PLUGIN_INVALID_REQUEST" | "PLUGIN_MANIFEST_INVALID" | "PLUGIN_PACKAGE_INVALID" | "PLUGIN_PACKAGE_TOO_LARGE" | "PLUGIN_PACKAGE_PATH_FORBIDDEN" | "PLUGIN_SIGNATURE_INVALID" | "PLUGIN_TRUST_STATE_DENIED" | "PLUGIN_TRUST_VERIFICATION_REQUIRED" | "PLUGIN_TRUST_VERIFICATION_INVALID" | "PLUGIN_RELEASE_REF_VERIFICATION_FAILED" | "PLUGIN_RELEASE_REF_POLICY_DENIED" | "PLUGIN_RELEASE_NETWORK" | "PLUGIN_RELEASE_TIMEOUT" | "PLUGIN_RELEASE_ASSET_MISSING" | "PLUGIN_RELEASE_ASSET_INTEGRITY" | "PLUGIN_INSTALL_INTERRUPTED" | "PLUGIN_INSTALL_STATE_CONFLICT" | "PLUGIN_INTERNAL_FAILURE" | "PLUGIN_DISABLED" | "PLUGIN_DISABLED_BY_POLICY" | "PLUGIN_PERMISSION_DENIED" | "PLUGIN_ORIGIN_DENIED" | "PLUGIN_ACTION_DENIED" | "PLUGIN_OWNER_SCOPE_MISMATCH" | "PLUGIN_SECRET_SCOPE_MISMATCH" | "PLUGIN_STORAGE_SCOPE_MISMATCH" | "PLUGIN_ADAPTER_FAILURE" | "PLUGIN_SESSION_REVOKED" | "PLUGIN_SESSION_TEARDOWN_INCOMPLETE" | "PLUGIN_SESSION_FENCE_CAPACITY" | "PLUGIN_CONFIRMATION_REQUIRED" | "PLUGIN_CONFIRMATION_INVALID" | "PLUGIN_TOKEN_EXPIRED" | "PLUGIN_TOKEN_REPLAY" | "PLUGIN_GATEWAY_TOKEN_INVALID" | "PLUGIN_GATEWAY_TOKEN_REPLAYED" | "PLUGIN_GATEWAY_TOKEN_CHANNEL_MISMATCH" | "PLUGIN_ASSET_TICKET_INVALID" | "PLUGIN_ASSET_SESSION_INVALID" | "PLUGIN_STREAM_TICKET_INVALID" | "PLUGIN_STREAM_DELIVERY_INVALID" | "PLUGIN_STREAM_CANCELLED" | "PLUGIN_LEASE_INVALID" | "PLUGIN_LEASE_REPLAYED" | "PLUGIN_GRANT_INVALID" | "PLUGIN_STORAGE_QUOTA_EXCEEDED" | "PLUGIN_OPERATION_BLOCKED" | "PLUGIN_OPERATION_NOT_FOUND" | "PLUGIN_OPERATION_NOT_CANCELABLE" | "PLUGIN_OPERATION_RATE_LIMITED" | "PLUGIN_NETWORK_TARGET_DENIED" | "PLUGIN_NETWORK_RATE_LIMITED" | "PLUGIN_RUNTIME_UNAVAILABLE" | "PLUGIN_RUNTIME_VERSION_MISMATCH" | "PLUGIN_RUNTIME_CONTRACT_MISMATCH" | "PLUGIN_UI_PROTOCOL_UNSUPPORTED" | "PLUGIN_UI_PROTOCOL_VIOLATION" | "PLUGIN_SURFACE_QUIESCE_TIMEOUT" | "PLUGIN_JSON_LIMIT_EXCEEDED" | "PLUGIN_CAPABILITY_ERROR" | "PLUGIN_WORKER_ERROR" | "PLUGIN_CONTRACT_MISMATCH" | "PLUGIN_MANAGEMENT_REVISION_MISMATCH" | "PLUGIN_AUTHORIZATION_REVISION_MISMATCH" | "PLUGIN_BINDING_REVISION_MISMATCH" | "PLUGIN_VALUES_REVISION_MISMATCH" | "PLUGIN_CSRF_REQUIRED" | "PLUGIN_CSRF_INVALID" | "PLUGIN_FEATURE_NOT_CONFIGURED";
         /** @enum {string} */
-        ErrorCodesV7BridgeErrorCode: "PLUGIN_INVALID_REQUEST" | "PLUGIN_MANIFEST_INVALID" | "PLUGIN_PACKAGE_INVALID" | "PLUGIN_PACKAGE_TOO_LARGE" | "PLUGIN_PACKAGE_PATH_FORBIDDEN" | "PLUGIN_SIGNATURE_INVALID" | "PLUGIN_TRUST_STATE_DENIED" | "PLUGIN_TRUST_VERIFICATION_REQUIRED" | "PLUGIN_TRUST_VERIFICATION_INVALID" | "PLUGIN_RELEASE_REF_VERIFICATION_FAILED" | "PLUGIN_RELEASE_REF_POLICY_DENIED" | "PLUGIN_DISABLED" | "PLUGIN_DISABLED_BY_POLICY" | "PLUGIN_PERMISSION_DENIED" | "PLUGIN_ORIGIN_DENIED" | "PLUGIN_ACTION_DENIED" | "PLUGIN_OWNER_SCOPE_MISMATCH" | "PLUGIN_SECRET_SCOPE_MISMATCH" | "PLUGIN_STORAGE_SCOPE_MISMATCH" | "PLUGIN_ADAPTER_FAILURE" | "PLUGIN_SESSION_REVOKED" | "PLUGIN_SESSION_TEARDOWN_INCOMPLETE" | "PLUGIN_SESSION_FENCE_CAPACITY" | "PLUGIN_CONFIRMATION_REQUIRED" | "PLUGIN_CONFIRMATION_INVALID" | "PLUGIN_TOKEN_EXPIRED" | "PLUGIN_TOKEN_REPLAY" | "PLUGIN_GATEWAY_TOKEN_INVALID" | "PLUGIN_GATEWAY_TOKEN_REPLAYED" | "PLUGIN_GATEWAY_TOKEN_CHANNEL_MISMATCH" | "PLUGIN_ASSET_TICKET_INVALID" | "PLUGIN_ASSET_SESSION_INVALID" | "PLUGIN_STREAM_TICKET_INVALID" | "PLUGIN_STREAM_DELIVERY_INVALID" | "PLUGIN_STREAM_CANCELLED" | "PLUGIN_LEASE_INVALID" | "PLUGIN_LEASE_REPLAYED" | "PLUGIN_GRANT_INVALID" | "PLUGIN_STORAGE_QUOTA_EXCEEDED" | "PLUGIN_OPERATION_BLOCKED" | "PLUGIN_OPERATION_NOT_FOUND" | "PLUGIN_OPERATION_NOT_CANCELABLE" | "PLUGIN_OPERATION_RATE_LIMITED" | "PLUGIN_NETWORK_TARGET_DENIED" | "PLUGIN_NETWORK_RATE_LIMITED" | "PLUGIN_RUNTIME_UNAVAILABLE" | "PLUGIN_RUNTIME_VERSION_MISMATCH" | "PLUGIN_RUNTIME_CONTRACT_MISMATCH" | "PLUGIN_UI_PROTOCOL_UNSUPPORTED" | "PLUGIN_UI_PROTOCOL_VIOLATION" | "PLUGIN_SURFACE_QUIESCE_TIMEOUT" | "PLUGIN_JSON_LIMIT_EXCEEDED" | "PLUGIN_CAPABILITY_ERROR" | "PLUGIN_WORKER_ERROR" | "PLUGIN_CONTRACT_MISMATCH" | "PLUGIN_MANAGEMENT_REVISION_MISMATCH" | "PLUGIN_AUTHORIZATION_REVISION_MISMATCH" | "PLUGIN_BINDING_REVISION_MISMATCH" | "PLUGIN_VALUES_REVISION_MISMATCH" | "PLUGIN_CSRF_REQUIRED" | "PLUGIN_CSRF_INVALID" | "PLUGIN_FEATURE_NOT_CONFIGURED" | "PLUGIN_CONFIRMATION_REJECTED" | "PLUGIN_BRIDGE_CANCELLED" | "PLUGIN_BRIDGE_TIMEOUT" | "PLUGIN_BRIDGE_DISPOSED" | "PLUGIN_BRIDGE_HANDSHAKE_FAILED" | "PLUGIN_BRIDGE_HANDSHAKE_REQUIRED";
+        ErrorCodesV8BridgeErrorCode: "PLUGIN_INVALID_REQUEST" | "PLUGIN_MANIFEST_INVALID" | "PLUGIN_PACKAGE_INVALID" | "PLUGIN_PACKAGE_TOO_LARGE" | "PLUGIN_PACKAGE_PATH_FORBIDDEN" | "PLUGIN_SIGNATURE_INVALID" | "PLUGIN_TRUST_STATE_DENIED" | "PLUGIN_TRUST_VERIFICATION_REQUIRED" | "PLUGIN_TRUST_VERIFICATION_INVALID" | "PLUGIN_RELEASE_REF_VERIFICATION_FAILED" | "PLUGIN_RELEASE_REF_POLICY_DENIED" | "PLUGIN_RELEASE_NETWORK" | "PLUGIN_RELEASE_TIMEOUT" | "PLUGIN_RELEASE_ASSET_MISSING" | "PLUGIN_RELEASE_ASSET_INTEGRITY" | "PLUGIN_INSTALL_INTERRUPTED" | "PLUGIN_INSTALL_STATE_CONFLICT" | "PLUGIN_INTERNAL_FAILURE" | "PLUGIN_DISABLED" | "PLUGIN_DISABLED_BY_POLICY" | "PLUGIN_PERMISSION_DENIED" | "PLUGIN_ORIGIN_DENIED" | "PLUGIN_ACTION_DENIED" | "PLUGIN_OWNER_SCOPE_MISMATCH" | "PLUGIN_SECRET_SCOPE_MISMATCH" | "PLUGIN_STORAGE_SCOPE_MISMATCH" | "PLUGIN_ADAPTER_FAILURE" | "PLUGIN_SESSION_REVOKED" | "PLUGIN_SESSION_TEARDOWN_INCOMPLETE" | "PLUGIN_SESSION_FENCE_CAPACITY" | "PLUGIN_CONFIRMATION_REQUIRED" | "PLUGIN_CONFIRMATION_INVALID" | "PLUGIN_TOKEN_EXPIRED" | "PLUGIN_TOKEN_REPLAY" | "PLUGIN_GATEWAY_TOKEN_INVALID" | "PLUGIN_GATEWAY_TOKEN_REPLAYED" | "PLUGIN_GATEWAY_TOKEN_CHANNEL_MISMATCH" | "PLUGIN_ASSET_TICKET_INVALID" | "PLUGIN_ASSET_SESSION_INVALID" | "PLUGIN_STREAM_TICKET_INVALID" | "PLUGIN_STREAM_DELIVERY_INVALID" | "PLUGIN_STREAM_CANCELLED" | "PLUGIN_LEASE_INVALID" | "PLUGIN_LEASE_REPLAYED" | "PLUGIN_GRANT_INVALID" | "PLUGIN_STORAGE_QUOTA_EXCEEDED" | "PLUGIN_OPERATION_BLOCKED" | "PLUGIN_OPERATION_NOT_FOUND" | "PLUGIN_OPERATION_NOT_CANCELABLE" | "PLUGIN_OPERATION_RATE_LIMITED" | "PLUGIN_NETWORK_TARGET_DENIED" | "PLUGIN_NETWORK_RATE_LIMITED" | "PLUGIN_RUNTIME_UNAVAILABLE" | "PLUGIN_RUNTIME_VERSION_MISMATCH" | "PLUGIN_RUNTIME_CONTRACT_MISMATCH" | "PLUGIN_UI_PROTOCOL_UNSUPPORTED" | "PLUGIN_UI_PROTOCOL_VIOLATION" | "PLUGIN_SURFACE_QUIESCE_TIMEOUT" | "PLUGIN_JSON_LIMIT_EXCEEDED" | "PLUGIN_CAPABILITY_ERROR" | "PLUGIN_WORKER_ERROR" | "PLUGIN_CONTRACT_MISMATCH" | "PLUGIN_MANAGEMENT_REVISION_MISMATCH" | "PLUGIN_AUTHORIZATION_REVISION_MISMATCH" | "PLUGIN_BINDING_REVISION_MISMATCH" | "PLUGIN_VALUES_REVISION_MISMATCH" | "PLUGIN_CSRF_REQUIRED" | "PLUGIN_CSRF_INVALID" | "PLUGIN_FEATURE_NOT_CONFIGURED" | "PLUGIN_CONFIRMATION_REJECTED" | "PLUGIN_BRIDGE_CANCELLED" | "PLUGIN_BRIDGE_TIMEOUT" | "PLUGIN_BRIDGE_DISPOSED" | "PLUGIN_BRIDGE_HANDSHAKE_FAILED" | "PLUGIN_BRIDGE_HANDSHAKE_REQUIRED";
         /** @enum {string} */
-        ErrorCodesV7TypescriptClientErrorCode: "PLUGIN_INVALID_REQUEST" | "PLUGIN_MANIFEST_INVALID" | "PLUGIN_PACKAGE_INVALID" | "PLUGIN_PACKAGE_TOO_LARGE" | "PLUGIN_PACKAGE_PATH_FORBIDDEN" | "PLUGIN_SIGNATURE_INVALID" | "PLUGIN_TRUST_STATE_DENIED" | "PLUGIN_TRUST_VERIFICATION_REQUIRED" | "PLUGIN_TRUST_VERIFICATION_INVALID" | "PLUGIN_RELEASE_REF_VERIFICATION_FAILED" | "PLUGIN_RELEASE_REF_POLICY_DENIED" | "PLUGIN_DISABLED" | "PLUGIN_DISABLED_BY_POLICY" | "PLUGIN_PERMISSION_DENIED" | "PLUGIN_ORIGIN_DENIED" | "PLUGIN_ACTION_DENIED" | "PLUGIN_OWNER_SCOPE_MISMATCH" | "PLUGIN_SECRET_SCOPE_MISMATCH" | "PLUGIN_STORAGE_SCOPE_MISMATCH" | "PLUGIN_ADAPTER_FAILURE" | "PLUGIN_SESSION_REVOKED" | "PLUGIN_SESSION_TEARDOWN_INCOMPLETE" | "PLUGIN_SESSION_FENCE_CAPACITY" | "PLUGIN_CONFIRMATION_REQUIRED" | "PLUGIN_CONFIRMATION_INVALID" | "PLUGIN_TOKEN_EXPIRED" | "PLUGIN_TOKEN_REPLAY" | "PLUGIN_GATEWAY_TOKEN_INVALID" | "PLUGIN_GATEWAY_TOKEN_REPLAYED" | "PLUGIN_GATEWAY_TOKEN_CHANNEL_MISMATCH" | "PLUGIN_ASSET_TICKET_INVALID" | "PLUGIN_ASSET_SESSION_INVALID" | "PLUGIN_STREAM_TICKET_INVALID" | "PLUGIN_STREAM_DELIVERY_INVALID" | "PLUGIN_STREAM_CANCELLED" | "PLUGIN_LEASE_INVALID" | "PLUGIN_LEASE_REPLAYED" | "PLUGIN_GRANT_INVALID" | "PLUGIN_STORAGE_QUOTA_EXCEEDED" | "PLUGIN_OPERATION_BLOCKED" | "PLUGIN_OPERATION_NOT_FOUND" | "PLUGIN_OPERATION_NOT_CANCELABLE" | "PLUGIN_OPERATION_RATE_LIMITED" | "PLUGIN_NETWORK_TARGET_DENIED" | "PLUGIN_NETWORK_RATE_LIMITED" | "PLUGIN_RUNTIME_UNAVAILABLE" | "PLUGIN_RUNTIME_VERSION_MISMATCH" | "PLUGIN_RUNTIME_CONTRACT_MISMATCH" | "PLUGIN_UI_PROTOCOL_UNSUPPORTED" | "PLUGIN_UI_PROTOCOL_VIOLATION" | "PLUGIN_SURFACE_QUIESCE_TIMEOUT" | "PLUGIN_JSON_LIMIT_EXCEEDED" | "PLUGIN_CAPABILITY_ERROR" | "PLUGIN_WORKER_ERROR" | "PLUGIN_CONTRACT_MISMATCH" | "PLUGIN_MANAGEMENT_REVISION_MISMATCH" | "PLUGIN_AUTHORIZATION_REVISION_MISMATCH" | "PLUGIN_BINDING_REVISION_MISMATCH" | "PLUGIN_VALUES_REVISION_MISMATCH" | "PLUGIN_CSRF_REQUIRED" | "PLUGIN_CSRF_INVALID" | "PLUGIN_FEATURE_NOT_CONFIGURED" | "PLUGIN_CONFIRMATION_REJECTED" | "PLUGIN_BRIDGE_CANCELLED" | "PLUGIN_BRIDGE_TIMEOUT" | "PLUGIN_BRIDGE_DISPOSED" | "PLUGIN_BRIDGE_HANDSHAKE_FAILED" | "PLUGIN_BRIDGE_HANDSHAKE_REQUIRED" | "PLUGIN_PLATFORM_REQUEST_FAILED" | "PLUGIN_STREAM_FAILED";
+        ErrorCodesV8TypescriptClientErrorCode: "PLUGIN_INVALID_REQUEST" | "PLUGIN_MANIFEST_INVALID" | "PLUGIN_PACKAGE_INVALID" | "PLUGIN_PACKAGE_TOO_LARGE" | "PLUGIN_PACKAGE_PATH_FORBIDDEN" | "PLUGIN_SIGNATURE_INVALID" | "PLUGIN_TRUST_STATE_DENIED" | "PLUGIN_TRUST_VERIFICATION_REQUIRED" | "PLUGIN_TRUST_VERIFICATION_INVALID" | "PLUGIN_RELEASE_REF_VERIFICATION_FAILED" | "PLUGIN_RELEASE_REF_POLICY_DENIED" | "PLUGIN_RELEASE_NETWORK" | "PLUGIN_RELEASE_TIMEOUT" | "PLUGIN_RELEASE_ASSET_MISSING" | "PLUGIN_RELEASE_ASSET_INTEGRITY" | "PLUGIN_INSTALL_INTERRUPTED" | "PLUGIN_INSTALL_STATE_CONFLICT" | "PLUGIN_INTERNAL_FAILURE" | "PLUGIN_DISABLED" | "PLUGIN_DISABLED_BY_POLICY" | "PLUGIN_PERMISSION_DENIED" | "PLUGIN_ORIGIN_DENIED" | "PLUGIN_ACTION_DENIED" | "PLUGIN_OWNER_SCOPE_MISMATCH" | "PLUGIN_SECRET_SCOPE_MISMATCH" | "PLUGIN_STORAGE_SCOPE_MISMATCH" | "PLUGIN_ADAPTER_FAILURE" | "PLUGIN_SESSION_REVOKED" | "PLUGIN_SESSION_TEARDOWN_INCOMPLETE" | "PLUGIN_SESSION_FENCE_CAPACITY" | "PLUGIN_CONFIRMATION_REQUIRED" | "PLUGIN_CONFIRMATION_INVALID" | "PLUGIN_TOKEN_EXPIRED" | "PLUGIN_TOKEN_REPLAY" | "PLUGIN_GATEWAY_TOKEN_INVALID" | "PLUGIN_GATEWAY_TOKEN_REPLAYED" | "PLUGIN_GATEWAY_TOKEN_CHANNEL_MISMATCH" | "PLUGIN_ASSET_TICKET_INVALID" | "PLUGIN_ASSET_SESSION_INVALID" | "PLUGIN_STREAM_TICKET_INVALID" | "PLUGIN_STREAM_DELIVERY_INVALID" | "PLUGIN_STREAM_CANCELLED" | "PLUGIN_LEASE_INVALID" | "PLUGIN_LEASE_REPLAYED" | "PLUGIN_GRANT_INVALID" | "PLUGIN_STORAGE_QUOTA_EXCEEDED" | "PLUGIN_OPERATION_BLOCKED" | "PLUGIN_OPERATION_NOT_FOUND" | "PLUGIN_OPERATION_NOT_CANCELABLE" | "PLUGIN_OPERATION_RATE_LIMITED" | "PLUGIN_NETWORK_TARGET_DENIED" | "PLUGIN_NETWORK_RATE_LIMITED" | "PLUGIN_RUNTIME_UNAVAILABLE" | "PLUGIN_RUNTIME_VERSION_MISMATCH" | "PLUGIN_RUNTIME_CONTRACT_MISMATCH" | "PLUGIN_UI_PROTOCOL_UNSUPPORTED" | "PLUGIN_UI_PROTOCOL_VIOLATION" | "PLUGIN_SURFACE_QUIESCE_TIMEOUT" | "PLUGIN_JSON_LIMIT_EXCEEDED" | "PLUGIN_CAPABILITY_ERROR" | "PLUGIN_WORKER_ERROR" | "PLUGIN_CONTRACT_MISMATCH" | "PLUGIN_MANAGEMENT_REVISION_MISMATCH" | "PLUGIN_AUTHORIZATION_REVISION_MISMATCH" | "PLUGIN_BINDING_REVISION_MISMATCH" | "PLUGIN_VALUES_REVISION_MISMATCH" | "PLUGIN_CSRF_REQUIRED" | "PLUGIN_CSRF_INVALID" | "PLUGIN_FEATURE_NOT_CONFIGURED" | "PLUGIN_CONFIRMATION_REJECTED" | "PLUGIN_BRIDGE_CANCELLED" | "PLUGIN_BRIDGE_TIMEOUT" | "PLUGIN_BRIDGE_DISPOSED" | "PLUGIN_BRIDGE_HANDSHAKE_FAILED" | "PLUGIN_BRIDGE_HANDSHAKE_REQUIRED" | "PLUGIN_PLATFORM_REQUEST_FAILED" | "PLUGIN_STREAM_FAILED";
         /** @enum {string} */
-        ErrorCodesV7RustIpcErrorCode: "ARTIFACT_HANDLE_FAILED" | "HANDLE_GRANT_VALIDATION_FAILED" | "STORAGE_FILE_FAILED" | "STORAGE_KV_FAILED" | "STORAGE_SQLITE_FAILED" | "NETWORK_GRANT_FAILED" | "NETWORK_EXECUTE_FAILED" | "NETWORK_STREAM_STORE_UNAVAILABLE" | "NETWORK_STREAM_FAILED" | "NETWORK_STREAM_BACKPRESSURE" | "NETWORK_STREAM_INVALID" | "NETWORK_STREAM_NOT_FOUND" | "NETWORK_STREAM_CLOSED" | "WORKER_INVOCATION_INVALID" | "RUNTIME_CAPABILITY_REVOKED" | "RUNTIME_CONTROL_CHANNEL_STALE" | "RUNTIME_LEASE_INVALID" | "RUNTIME_LEASE_SIGNATURE_INVALID" | "PLUGIN_LEASE_REPLAYED" | "WASM_WORKER_INVALID" | "WASM_WORKER_FAILED" | "WASM_HOSTCALL_FAILED" | "RUNTIME_CAPACITY_EXCEEDED" | "RUNTIME_INVOCATION_CANCELED" | "PLUGIN_SESSION_REVOKED" | "SESSION_REVOKE_SEQUENCE_STALE" | "SESSION_REVOKE_DRAIN_TIMEOUT" | "UNSUPPORTED_FRAME";
+        ErrorCodesV8RustIpcErrorCode: "ARTIFACT_HANDLE_FAILED" | "HANDLE_GRANT_VALIDATION_FAILED" | "STORAGE_FILE_FAILED" | "STORAGE_KV_FAILED" | "STORAGE_SQLITE_FAILED" | "NETWORK_GRANT_FAILED" | "NETWORK_EXECUTE_FAILED" | "NETWORK_STREAM_STORE_UNAVAILABLE" | "NETWORK_STREAM_FAILED" | "NETWORK_STREAM_BACKPRESSURE" | "NETWORK_STREAM_INVALID" | "NETWORK_STREAM_NOT_FOUND" | "NETWORK_STREAM_CLOSED" | "WORKER_INVOCATION_INVALID" | "RUNTIME_CAPABILITY_REVOKED" | "RUNTIME_CONTROL_CHANNEL_STALE" | "RUNTIME_LEASE_INVALID" | "RUNTIME_LEASE_SIGNATURE_INVALID" | "PLUGIN_LEASE_REPLAYED" | "WASM_WORKER_INVALID" | "WASM_WORKER_FAILED" | "WASM_HOSTCALL_FAILED" | "RUNTIME_CAPACITY_EXCEEDED" | "RUNTIME_INVOCATION_CANCELED" | "PLUGIN_SESSION_REVOKED" | "SESSION_REVOKE_SEQUENCE_STALE" | "SESSION_REVOKE_DRAIN_TIMEOUT" | "UNSUPPORTED_FRAME";
         /** @enum {string} */
-        ErrorCodesV7RuntimeProcessFailureCode: "RUNTIME_PROCESS_FAILED" | "RUNTIME_PROCESS_EXIT_UNEXPECTED" | "RUNTIME_PROCESS_EXIT_UNRECOGNIZED" | "RUNTIME_PROCESS_SIGNALLED" | "IPC_WRITER_CAPACITY_OVERFLOW" | "IPC_WRITER_CAPACITY_LIMIT_EXCEEDED" | "IPC_WRITER_START_FAILED" | "IPC_WRITER_CLOSED" | "IPC_WRITER_BATCH_SIZE_OVERFLOW" | "IPC_WRITER_WRITE_FAILED" | "IPC_WRITER_FLUSH_FAILED" | "IPC_WRITER_PANICKED";
-        ErrorCodesV7RuntimeProcessExitFailure: {
+        ErrorCodesV8RuntimeProcessFailureCode: "RUNTIME_PROCESS_FAILED" | "RUNTIME_PROCESS_EXIT_UNEXPECTED" | "RUNTIME_PROCESS_EXIT_UNRECOGNIZED" | "RUNTIME_PROCESS_SIGNALLED" | "IPC_WRITER_CAPACITY_OVERFLOW" | "IPC_WRITER_CAPACITY_LIMIT_EXCEEDED" | "IPC_WRITER_START_FAILED" | "IPC_WRITER_CLOSED" | "IPC_WRITER_BATCH_SIZE_OVERFLOW" | "IPC_WRITER_WRITE_FAILED" | "IPC_WRITER_FLUSH_FAILED" | "IPC_WRITER_PANICKED";
+        ErrorCodesV8RuntimeProcessExitFailure: {
             /** @constant */
             exit_code: 1;
             /** @constant */
@@ -2812,9 +2926,9 @@ export interface components {
             counts: components["schemas"]["SessionScopeV1RevokeCounts"];
         };
         SessionScopeV1PublicRevokeResult: components["schemas"]["SessionScopeV1CompleteRevokeResult"] | components["schemas"]["SessionScopeV1IncompleteRevokeResult"];
-        CompatibilityManifestV14: {
+        CompatibilityManifestV15: {
             /** @constant */
-            schema_version: "redevplugin.compatibility.v14";
+            schema_version: "redevplugin.compatibility.v15";
             package_set: components["schemas"]["PlatformPackageSetV1"];
             matrix: {
                 /** @constant */
@@ -2832,7 +2946,7 @@ export interface components {
                     }
                 ];
                 /** @constant */
-                plugin_host_protocol_version: "plugin-host-v10";
+                plugin_host_protocol_version: "plugin-host-v11";
                 /** @constant */
                 rust_ipc_version: "rust-ipc-v6";
                 /** @constant */
@@ -2888,9 +3002,9 @@ export interface components {
                 /** @constant */
                 session_scope_maintenance_schema_version: "session-scope-maintenance-v1";
                 /** @constant */
-                plugin_platform_openapi_version: "plugin-platform-v12";
+                plugin_platform_openapi_version: "plugin-platform-v13";
                 /** @constant */
-                compatibility_schema_version: "compatibility-manifest-v14";
+                compatibility_schema_version: "compatibility-manifest-v15";
                 /** @constant */
                 worker_invocation_schema_version: "worker-invocation-v3";
                 /** @constant */
@@ -2906,7 +3020,7 @@ export interface components {
                 /** @constant */
                 host_capability_notices_schema_version: "host-capability-notices-v1";
                 /** @constant */
-                error_codes_schema_version: "error-codes-v7";
+                error_codes_schema_version: "error-codes-v8";
                 /** @constant */
                 performance_contract_version: "performance-contract-v4";
                 /** @constant */
@@ -2937,9 +3051,9 @@ export interface components {
                 quarantine_cleanup_schema_version: "quarantine-cleanup-v1";
             };
             contract_set_sha256: string;
-            contracts: components["schemas"]["CompatibilityManifestV14Contract"][];
+            contracts: components["schemas"]["CompatibilityManifestV15Contract"][];
         };
-        CompatibilityManifestV14Contract: {
+        CompatibilityManifestV15Contract: {
             id: string;
             path: string;
             version: string;
@@ -3431,6 +3545,24 @@ export interface components {
                 "application/json": components["schemas"]["PluginRecordSuccessResponse"];
             };
         };
+        /** @description Durable release installation status and authoritative terminal result. */
+        ReleaseInstallOperationResponse: {
+            headers: {
+                [name: string]: unknown;
+            };
+            content: {
+                "application/json": components["schemas"]["ReleaseInstallOperationSuccessResponse"];
+            };
+        };
+        /** @description Owner-scoped durable release installation operations. */
+        ReleaseInstallOperationListResponse: {
+            headers: {
+                [name: string]: unknown;
+            };
+            content: {
+                "application/json": components["schemas"]["ReleaseInstallOperationListSuccessResponse"];
+            };
+        };
         /** @description Immutable server-computed package inspection and confirmation boundary. */
         ExternalPackageInspectionResponse: {
             headers: {
@@ -3714,6 +3846,7 @@ export interface components {
     parameters: {
         OperationID: string;
         PluginInstanceID: string;
+        RequestID: string;
         SurfaceInstanceID: string;
     };
     requestBodies: {
@@ -3735,6 +3868,11 @@ export interface components {
         InstallReleaseRefRequest: {
             content: {
                 "application/json": components["schemas"]["InstallReleaseRefRequest"];
+            };
+        };
+        StartReleaseInstallOperationRequest: {
+            content: {
+                "application/json": components["schemas"]["StartReleaseInstallOperationRequest"];
             };
         };
         UpdateReleaseRefRequest: {
@@ -4083,6 +4221,62 @@ export interface operations {
         responses: {
             200: components["responses"]["PluginRecordResponse"];
             default: components["responses"]["MutationPlatformErrorResponse"];
+        };
+    };
+    listReleaseInstallOperations: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: components["responses"]["ReleaseInstallOperationListResponse"];
+            default: components["responses"]["PlatformErrorResponse"];
+        };
+    };
+    startReleaseInstallOperation: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: components["requestBodies"]["StartReleaseInstallOperationRequest"];
+        responses: {
+            200: components["responses"]["ReleaseInstallOperationResponse"];
+            default: components["responses"]["MutationPlatformErrorResponse"];
+        };
+    };
+    getReleaseInstallOperation: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                operation_id: components["parameters"]["OperationID"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: components["responses"]["ReleaseInstallOperationResponse"];
+            default: components["responses"]["PlatformErrorResponse"];
+        };
+    };
+    getReleaseInstallOperationByRequest: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                request_id: components["parameters"]["RequestID"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: components["responses"]["ReleaseInstallOperationResponse"];
+            default: components["responses"]["PlatformErrorResponse"];
         };
     };
     enablePlugin: {

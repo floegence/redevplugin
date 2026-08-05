@@ -4,9 +4,12 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"io"
+	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/floegence/redevplugin/pkg/externalsource"
 	"github.com/floegence/redevplugin/pkg/host"
@@ -16,12 +19,60 @@ import (
 type memoryFetcher struct {
 	values   map[string][]byte
 	requests []externalsource.ArtifactFetchRequest
+	failures []error
 }
 
 func (fetcher *memoryFetcher) FetchArtifact(_ context.Context, request externalsource.ArtifactFetchRequest) (externalsource.ArtifactFetchResult, error) {
 	fetcher.requests = append(fetcher.requests, request)
+	if len(fetcher.failures) > 0 {
+		err := fetcher.failures[0]
+		fetcher.failures = fetcher.failures[1:]
+		if err != nil {
+			return externalsource.ArtifactFetchResult{}, err
+		}
+	}
 	value := fetcher.values[request.URL]
+	if request.Progress != nil {
+		request.Progress(int64(len(value)), int64(len(value)))
+	}
 	return externalsource.ArtifactFetchResult{Bytes: append([]byte(nil), value...), Source: request.URL, Final: request.URL}, nil
+}
+
+func TestAssetSetRetriesOnlyTransientContentAddressedFetches(t *testing.T) {
+	value := []byte("document")
+	url := "https://artifacts.example.test/document.json"
+	fetcher := &memoryFetcher{
+		values: map[string][]byte{url: value},
+		failures: []error{
+			externalsource.NewHTTPStatusError("fetch", url, http.StatusServiceUnavailable, 3*time.Second),
+			errors.New("unused placeholder"),
+		},
+	}
+	set, err := NewAssetSet(AssetSetOptions{SourceID: "example", Channel: "stable", AllowedHosts: []string{"artifacts.example.test"}, Fetcher: fetcher, Assets: []Asset{
+		asset("sources/example/root/current.json", url, value),
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var delays []time.Duration
+	set.sleep = func(_ context.Context, delay time.Duration) error { delays = append(delays, delay); return nil }
+	set.jitter = func(time.Duration) time.Duration { return 0 }
+	// Replace the second placeholder with success after the first retry.
+	fetcher.failures = fetcher.failures[:1]
+	got, _, err := set.fetch(context.Background(), "sources/example/root/current.json", "release_document", 1024, []string{"artifacts.example.test"}, "", nil)
+	if err != nil || string(got) != string(value) || len(fetcher.requests) != 2 || len(delays) != 1 || delays[0] != 3*time.Second {
+		t.Fatalf("retry result=%q requests=%d delays=%v err=%v", got, len(fetcher.requests), delays, err)
+	}
+
+	permanent := &memoryFetcher{values: map[string][]byte{url: value}, failures: []error{
+		externalsource.NewHTTPStatusError("fetch", url, http.StatusNotFound, 0),
+	}}
+	set.fetcher = permanent
+	_, _, err = set.fetch(context.Background(), "sources/example/root/current.json", "release_document", 1024, []string{"artifacts.example.test"}, "", nil)
+	var releaseErr *Error
+	if !errors.As(err, &releaseErr) || releaseErr.Retryable || releaseErr.Attempts != 1 || len(permanent.requests) != 1 {
+		t.Fatalf("permanent error=%#v requests=%d", err, len(permanent.requests))
+	}
 }
 
 func TestAssetSetResolvesExactReleaseArtifacts(t *testing.T) {
@@ -111,7 +162,7 @@ func TestAssetSetRejectsMutableOrMismatchedProjection(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := set.fetch(context.Background(), "sources/example/root/current.json", 1024, []string{"artifacts.example.test"}, strings.Repeat("f", 64)); err != ErrAssetMismatch {
+	if _, _, err := set.fetch(context.Background(), "sources/example/root/current.json", "release_document", 1024, []string{"artifacts.example.test"}, strings.Repeat("f", 64), nil); err != ErrAssetMismatch {
 		t.Fatalf("digest mismatch error = %v", err)
 	}
 }

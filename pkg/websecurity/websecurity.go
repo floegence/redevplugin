@@ -25,6 +25,9 @@ type RouteAction string
 const (
 	RouteActionImportLocalPackage         RouteAction = "plugin.import_local_package"
 	RouteActionInstallReleaseRef          RouteAction = "plugin.install_release_ref"
+	RouteActionStartReleaseInstall        RouteAction = "plugin.release_install_operation.start"
+	RouteActionGetReleaseInstall          RouteAction = "plugin.release_install_operation.get"
+	RouteActionListReleaseInstalls        RouteAction = "plugin.release_install_operation.list"
 	RouteActionInspectExternalPackage     RouteAction = "plugin.inspect_external_package"
 	RouteActionCommitExternalPackage      RouteAction = "plugin.commit_external_package"
 	RouteActionQueryExternalPackageCommit RouteAction = "plugin.query_external_package_commit"
@@ -86,6 +89,7 @@ const (
 func (action RouteAction) Valid() bool {
 	switch action {
 	case RouteActionImportLocalPackage, RouteActionInstallReleaseRef,
+		RouteActionStartReleaseInstall, RouteActionGetReleaseInstall, RouteActionListReleaseInstalls,
 		RouteActionInspectExternalPackage, RouteActionCommitExternalPackage,
 		RouteActionQueryExternalPackageCommit, RouteActionEnablePlugin,
 		RouteActionDisablePlugin, RouteActionUninstallPlugin, RouteActionUpdateLocalPackage,

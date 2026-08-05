@@ -34,6 +34,9 @@ const (
 	ManagementActionInvokeIntent               ManagementAction = "intent.invoke"
 	ManagementActionImportLocalPackage         ManagementAction = "plugin.import_local_package"
 	ManagementActionInstallReleaseRef          ManagementAction = "plugin.install_release_ref"
+	ManagementActionStartReleaseInstall        ManagementAction = "plugin.release_install_operation.start"
+	ManagementActionGetReleaseInstall          ManagementAction = "plugin.release_install_operation.get"
+	ManagementActionListReleaseInstalls        ManagementAction = "plugin.release_install_operation.list"
 	ManagementActionInspectExternalPackage     ManagementAction = "plugin.inspect_external_package"
 	ManagementActionCommitExternalPackage      ManagementAction = "plugin.commit_external_package"
 	ManagementActionQueryExternalPackageCommit ManagementAction = "plugin.query_external_package_commit"
@@ -103,6 +106,7 @@ func (action ManagementAction) Resource() ResourceRef {
 	case ManagementActionListIntents, ManagementActionInvokeIntent:
 		return ResourceIntent
 	case ManagementActionImportLocalPackage, ManagementActionInstallReleaseRef,
+		ManagementActionStartReleaseInstall, ManagementActionGetReleaseInstall, ManagementActionListReleaseInstalls,
 		ManagementActionInspectExternalPackage, ManagementActionCommitExternalPackage,
 		ManagementActionQueryExternalPackageCommit,
 		ManagementActionUpdateLocalPackage, ManagementActionUpdateReleaseRef,
@@ -385,6 +389,7 @@ func (action ManagementAction) allowsCollectionTarget() bool {
 		ManagementActionInspectExternalPackage,
 		ManagementActionListIntents,
 		ManagementActionListPlugins,
+		ManagementActionListReleaseInstalls,
 		ManagementActionRefreshEnabledPlugins,
 		ManagementActionListPermissionGrants,
 		ManagementActionGetPermissionRequirements,

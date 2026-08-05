@@ -155,6 +155,26 @@
     "effect": "query"
   },
   {
+    "method": "GET",
+    "path": "/_redevplugin/api/plugins/release-install-operations",
+    "effect": "query"
+  },
+  {
+    "method": "POST",
+    "path": "/_redevplugin/api/plugins/release-install-operations",
+    "effect": "mutation"
+  },
+  {
+    "method": "GET",
+    "path": "/_redevplugin/api/plugins/release-install-operations/{operation_id}",
+    "effect": "query"
+  },
+  {
+    "method": "GET",
+    "path": "/_redevplugin/api/plugins/release-install-operations/by-request/{request_id}",
+    "effect": "query"
+  },
+  {
     "method": "POST",
     "path": "/_redevplugin/api/plugins/retained-data/bind",
     "effect": "mutation"
