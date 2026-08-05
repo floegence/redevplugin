@@ -26,9 +26,12 @@ import (
 const maxReleaseSignatureBytes int64 = 64 << 10
 
 const (
-	maxFetchAttempts = 3
-	maxRetryAfter    = 10 * time.Second
-	maxRetryDelay    = 2 * time.Second
+	maxFetchAttempts            = 3
+	maxRetryAfter               = 10 * time.Second
+	maxRetryDelay               = 2 * time.Second
+	defaultDocumentFetchTimeout = 20 * time.Second
+	defaultPackageFetchTimeout  = 2 * time.Minute
+	maxFetchTimeout             = 2 * time.Minute
 )
 
 var (
@@ -100,6 +103,7 @@ type AssetSetOptions struct {
 	AllowedHosts []string
 	Assets       []Asset
 	Fetcher      AssetFetcher
+	FetchTimeout time.Duration
 }
 
 // AssetSet is an immutable, current-release projection. Updating a catalog
@@ -111,6 +115,7 @@ type AssetSet struct {
 	allowedHosts []string
 	assets       map[string]Asset
 	fetcher      AssetFetcher
+	fetchTimeout time.Duration
 	sleep        func(context.Context, time.Duration) error
 	jitter       func(time.Duration) time.Duration
 }
@@ -127,6 +132,9 @@ func NewAssetSet(options AssetSetOptions) (*AssetSet, error) {
 		return nil, ErrInvalidAssetSet
 	}
 	if _, err := configuration.TrustKey(options.Channel); err != nil || options.Fetcher == nil || len(options.Assets) == 0 {
+		return nil, ErrInvalidAssetSet
+	}
+	if options.FetchTimeout < 0 || options.FetchTimeout > maxFetchTimeout {
 		return nil, ErrInvalidAssetSet
 	}
 	hosts, err := validateHosts(options.AllowedHosts)
@@ -148,7 +156,7 @@ func NewAssetSet(options AssetSetOptions) (*AssetSet, error) {
 	}
 	return &AssetSet{
 		sourceID: options.SourceID, channel: options.Channel, quotaKey: options.QuotaKey,
-		allowedHosts: hosts, assets: assets, fetcher: options.Fetcher,
+		allowedHosts: hosts, assets: assets, fetcher: options.Fetcher, fetchTimeout: options.FetchTimeout,
 		sleep: sleepContext, jitter: retryJitter,
 	}, nil
 }
@@ -227,13 +235,22 @@ func (set *AssetSet) fetch(ctx context.Context, locator, artifactRole string, ma
 		return nil, "", ErrAssetMismatch
 	}
 	locatorDigest := sha256.Sum256([]byte(locator))
+	fetchTimeout := set.fetchTimeout
+	if fetchTimeout == 0 {
+		fetchTimeout = defaultDocumentFetchTimeout
+		if artifactRole == "package" {
+			fetchTimeout = defaultPackageFetchTimeout
+		}
+	}
+	fetchCtx, cancel := context.WithTimeout(ctx, fetchTimeout)
+	defer cancel()
 	var result externalsource.ArtifactFetchResult
 	var err error
 	for attempt := 1; attempt <= maxFetchAttempts; attempt++ {
 		if observe != nil {
 			observe(host.ReleaseArtifactProgress{Phase: "download", ArtifactRole: artifactRole, Attempt: attempt, Total: asset.Size})
 		}
-		result, err = set.fetcher.FetchArtifact(ctx, externalsource.ArtifactFetchRequest{
+		result, err = set.fetcher.FetchArtifact(fetchCtx, externalsource.ArtifactFetchRequest{
 			URL: asset.URL, QuotaKey: set.quotaKey, MaxBytes: maxBytes, AllowedHosts: slices.Clone(allowedHosts),
 			ExpectedSize: asset.Size, ExpectedSHA256: asset.SHA256,
 			Progress: func(completed, total int64) {
@@ -246,14 +263,19 @@ func (set *AssetSet) fetch(ctx context.Context, locator, artifactRole string, ma
 			break
 		}
 		retryable := retryableFetchError(err)
-		if !retryable || attempt == maxFetchAttempts || ctx.Err() != nil {
+		if errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil {
+			// The bounded asset deadline is a transient transport failure. The
+			// caller may safely retry the complete trust operation later.
+			retryable = true
+		}
+		if !retryable || attempt == maxFetchAttempts || fetchCtx.Err() != nil {
 			return nil, "", &Error{Phase: "fetch", ArtifactRole: artifactRole, Retryable: retryable, Attempts: attempt, LocatorSHA256: hex.EncodeToString(locatorDigest[:]), cause: err}
 		}
 		delay := retryDelay(attempt, externalsource.RetryAfterOf(err), set.jitter)
 		if observe != nil {
 			observe(host.ReleaseArtifactProgress{Phase: "retry_wait", ArtifactRole: artifactRole, Attempt: attempt, RetryAfter: delay, Total: asset.Size})
 		}
-		if sleepErr := set.sleep(ctx, delay); sleepErr != nil {
+		if sleepErr := set.sleep(fetchCtx, delay); sleepErr != nil {
 			return nil, "", &Error{Phase: "retry_wait", ArtifactRole: artifactRole, Retryable: true, Attempts: attempt, LocatorSHA256: hex.EncodeToString(locatorDigest[:]), cause: sleepErr}
 		}
 	}

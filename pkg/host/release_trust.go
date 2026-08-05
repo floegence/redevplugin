@@ -20,6 +20,8 @@ type sourceFenceRegistry struct {
 	active map[string]uint64
 }
 
+const defaultReleaseTrustActivationLeaseTimeout = 30 * time.Second
+
 func newSourceFenceRegistry() *sourceFenceRegistry {
 	return &sourceFenceRegistry{active: make(map[string]uint64)}
 }
@@ -366,9 +368,15 @@ func (h *Host) ensureReleaseActivationLease(ctx context.Context, record registry
 	binding := *record.ReleaseTrustBinding
 	verified, ok := h.verifiedReleases.get(record.PluginInstanceID, binding)
 	if !ok {
+		timeout := h.releaseTrustActivationLeaseTimeout
+		if timeout <= 0 {
+			timeout = defaultReleaseTrustActivationLeaseTimeout
+		}
+		refreshCtx, cancel := context.WithTimeout(ctx, timeout)
+		defer cancel()
 		ref := releaseRefFromBinding(binding, record)
 		pkg, _, _, refreshed, _, err := h.resolveReleasePackage(
-			ctx, PackageTrustActionUpdate, ref, &record, record.PluginInstanceID, record.UpdatedAt,
+			refreshCtx, PackageTrustActionUpdate, ref, &record, record.PluginInstanceID, record.UpdatedAt,
 		)
 		if err != nil {
 			return err

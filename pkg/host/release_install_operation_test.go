@@ -5,6 +5,7 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/floegence/redevplugin/pkg/externalsource"
 	"github.com/floegence/redevplugin/pkg/registry"
 	"github.com/floegence/redevplugin/pkg/releasetrust"
 	"github.com/floegence/redevplugin/pkg/security"
@@ -57,6 +58,25 @@ func TestReleaseInstallFailureClassifiesReleaseTrustErrors(t *testing.T) {
 			}
 			if releaseInstallFailureRetryable(boundaryErr) {
 				t.Fatal("release trust failure was marked retryable")
+			}
+		})
+	}
+}
+
+func TestReleaseTrustBoundaryPreservesTransportAndDeadlineIdentity(t *testing.T) {
+	networkErr := externalsource.NewHTTPStatusError("fetch", "https://example.test/asset", 503, 0)
+	for _, test := range []struct {
+		name string
+		err  error
+		want error
+	}{
+		{name: "deadline", err: errors.Join(releasetrust.ErrReleaseTrustVerification, context.DeadlineExceeded), want: context.DeadlineExceeded},
+		{name: "network", err: errors.Join(releasetrust.ErrReleaseTrustVerification, networkErr), want: networkErr},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			got := releaseTrustBoundaryError(test.err)
+			if !errors.Is(got, test.want) {
+				t.Fatalf("releaseTrustBoundaryError() = %v, want identity %v", got, test.want)
 			}
 		})
 	}

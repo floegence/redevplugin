@@ -20,10 +20,15 @@ type memoryFetcher struct {
 	values   map[string][]byte
 	requests []externalsource.ArtifactFetchRequest
 	failures []error
+	block    bool
 }
 
-func (fetcher *memoryFetcher) FetchArtifact(_ context.Context, request externalsource.ArtifactFetchRequest) (externalsource.ArtifactFetchResult, error) {
+func (fetcher *memoryFetcher) FetchArtifact(ctx context.Context, request externalsource.ArtifactFetchRequest) (externalsource.ArtifactFetchResult, error) {
 	fetcher.requests = append(fetcher.requests, request)
+	if fetcher.block {
+		<-ctx.Done()
+		return externalsource.ArtifactFetchResult{}, ctx.Err()
+	}
 	if len(fetcher.failures) > 0 {
 		err := fetcher.failures[0]
 		fetcher.failures = fetcher.failures[1:]
@@ -36,6 +41,29 @@ func (fetcher *memoryFetcher) FetchArtifact(_ context.Context, request externals
 		request.Progress(int64(len(value)), int64(len(value)))
 	}
 	return externalsource.ArtifactFetchResult{Bytes: append([]byte(nil), value...), Source: request.URL, Final: request.URL}, nil
+}
+
+func TestAssetSetBoundsUnresponsiveFetcher(t *testing.T) {
+	value := []byte("document")
+	url := "https://artifacts.example.test/document.json"
+	fetcher := &memoryFetcher{values: map[string][]byte{url: value}, block: true}
+	set, err := NewAssetSet(AssetSetOptions{
+		SourceID: "example", Channel: "stable", AllowedHosts: []string{"artifacts.example.test"}, Fetcher: fetcher,
+		FetchTimeout: 10 * time.Millisecond,
+		Assets:       []Asset{asset("sources/example/root/current.json", url, value)},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	started := time.Now()
+	_, _, err = set.fetch(context.Background(), "sources/example/root/current.json", "release_document", 1024, []string{"artifacts.example.test"}, "", nil)
+	if time.Since(started) > time.Second {
+		t.Fatalf("unresponsive fetch took too long: %s", time.Since(started))
+	}
+	var releaseErr *Error
+	if !errors.As(err, &releaseErr) || !errors.Is(err, context.DeadlineExceeded) || releaseErr.Attempts != 1 || !releaseErr.Retryable {
+		t.Fatalf("bounded fetch error = %#v, want retryable context deadline after one attempt", err)
+	}
 }
 
 func TestAssetSetRetriesOnlyTransientContentAddressedFetches(t *testing.T) {

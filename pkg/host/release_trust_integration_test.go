@@ -8,6 +8,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 	"time"
 
@@ -84,6 +85,52 @@ func TestReleaseTrustInstallPersistsBindingAndEnables(t *testing.T) {
 	}
 	if err := fixture.ServiceSet.ValidateActivationLease(lease); err != nil {
 		t.Fatalf("ValidateActivationLease() error = %v", err)
+	}
+}
+
+func TestReleaseActivationLeaseRefreshTimesOutAfterHostRestartWithoutRegistryMutation(t *testing.T) {
+	registryStore := registry.NewMemoryStore()
+	installedFixture := newHostReleaseTrustFixture(t)
+	resolver := &recordingReleaseArtifactResolver{artifact: resolvedReleaseTrustFixture(installedFixture)}
+	installedHost, _, _ := newTestHostWithOptions(t, testHostOptions{
+		releaseTrust: installedFixture.ServiceSet, releaseArtifactResolver: resolver, registry: registryStore,
+	})
+	installed, err := installedHost.InstallReleaseRef(hostTestContext(), InstallReleaseRefRequest{
+		PluginInstanceID: nextTestPluginInstanceID(t), ReleaseRef: releaseTrustFixtureRef(installedFixture), Now: time.Now().UTC(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	before, err := registryStore.GetPlugin(hostTestContext(), installed.PluginInstanceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	restartedFixture := newHostReleaseTrustFixture(t)
+	restartedFixture.DocumentTransport.SetBlocked(true)
+	restartedHost, _, _ := newTestHostWithOptions(t, testHostOptions{
+		releaseTrust:            restartedFixture.ServiceSet,
+		releaseArtifactResolver: &recordingReleaseArtifactResolver{artifact: resolvedReleaseTrustFixture(restartedFixture)},
+		registry:                registryStore,
+	})
+	restartedHost.releaseTrustActivationLeaseTimeout = 10 * time.Millisecond
+	started := time.Now()
+	err = restartedHost.ensureReleaseActivationLease(context.Background(), before)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("ensureReleaseActivationLease() error = %v, want context deadline", err)
+	}
+	if time.Since(started) > time.Second {
+		t.Fatalf("release trust refresh took too long: %s", time.Since(started))
+	}
+	if restartedFixture.DocumentTransport.Calls() == 0 {
+		t.Fatal("release trust refresh did not reach the blocked document transport")
+	}
+	after, err := registryStore.GetPlugin(hostTestContext(), installed.PluginInstanceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(after, before) {
+		t.Fatalf("release trust timeout mutated registry record:\nbefore=%#v\nafter=%#v", before, after)
 	}
 }
 

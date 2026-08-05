@@ -407,28 +407,41 @@ func (fixture *Fixture) SetCapabilityBundle(bundle capabilitycontract.Bundle) {
 }
 
 type DocumentTransport struct {
-	mu     sync.Mutex
-	values map[string][]byte
-	tokens map[string]string
-	calls  int
+	mu      sync.Mutex
+	values  map[string][]byte
+	tokens  map[string]string
+	calls   int
+	blocked bool
 }
 
-func (transport *DocumentTransport) FetchReleaseDocument(_ context.Context, request releasetrust.ReleaseDocumentRequest) (releasetrust.ReleaseDocumentResult, error) {
+func (transport *DocumentTransport) FetchReleaseDocument(ctx context.Context, request releasetrust.ReleaseDocumentRequest) (releasetrust.ReleaseDocumentResult, error) {
 	transport.mu.Lock()
-	defer transport.mu.Unlock()
 	transport.calls++
+	blocked := transport.blocked
 	locator := request.Locator().String()
-	value := transport.values[locator]
+	value := slices.Clone(transport.values[locator])
+	token := transport.tokens[locator]
+	transport.mu.Unlock()
+	if blocked {
+		<-ctx.Done()
+		return releasetrust.ReleaseDocumentResult{}, ctx.Err()
+	}
 	if value == nil {
 		return releasetrust.ReleaseDocumentResult{}, fmt.Errorf("missing release document fixture %s", locator)
 	}
-	return releasetrust.NewReleaseDocumentResult(request, transport.tokens[locator], value)
+	return releasetrust.NewReleaseDocumentResult(request, token, value)
 }
 
 func (transport *DocumentTransport) Calls() int {
 	transport.mu.Lock()
 	defer transport.mu.Unlock()
 	return transport.calls
+}
+
+func (transport *DocumentTransport) SetBlocked(blocked bool) {
+	transport.mu.Lock()
+	transport.blocked = blocked
+	transport.mu.Unlock()
 }
 
 type LedgerTransport struct {

@@ -27,6 +27,7 @@ import (
 	"github.com/floegence/redevplugin/pkg/capability"
 	"github.com/floegence/redevplugin/pkg/capabilitycontract"
 	"github.com/floegence/redevplugin/pkg/connectivity"
+	"github.com/floegence/redevplugin/pkg/externalsource"
 	"github.com/floegence/redevplugin/pkg/installstage"
 	"github.com/floegence/redevplugin/pkg/manifest"
 	"github.com/floegence/redevplugin/pkg/mutation"
@@ -736,35 +737,36 @@ type PluginData interface {
 }
 
 type Host struct {
-	adapters            normalizedAdapters
-	features            map[Feature]struct{}
-	securityJournal     observability.SecurityAuditJournal
-	securityExporter    *observability.SecurityAuditExporter
-	securityExportMu    sync.Mutex
-	surfaceTokens       *bridge.SurfaceTokenService
-	surfaceDocuments    *surfaceDocumentCache
-	methodSchemas       *methodSchemaCache
-	surfaceGenerationID string
-	lifecycleLocks      *pluginLifecycleLockRegistry
-	executions          *executionLeaseRegistry
-	streamReads         *streamReadLockRegistry
-	verifiedReleases    *verifiedReleaseRegistry
-	releaseLeases       *releaseLeaseRegistry
-	sourceFences        *sourceFenceRegistry
-	sessionScopes       *sessionscope.Coordinator
-	sessionMaintenance  *sessionScopeMaintenanceLockRegistry
-	detachedCancelJobs  *detachedCancelJobRegistry
-	operationObservers  *surfaceOperationObservationRegistry
-	lifecycleCtx        context.Context
-	lifecycleCancel     context.CancelFunc
-	lifecycleMu         sync.RWMutex
-	lifecycleWG         sync.WaitGroup
-	securityAuditWG     sync.WaitGroup
-	closed              bool
-	closeOnce           sync.Once
-	closeErr            error
-	runtimeModule       *RuntimeModule
-	externalInspections *externalPackageInspectionStore
+	adapters                           normalizedAdapters
+	features                           map[Feature]struct{}
+	securityJournal                    observability.SecurityAuditJournal
+	securityExporter                   *observability.SecurityAuditExporter
+	securityExportMu                   sync.Mutex
+	surfaceTokens                      *bridge.SurfaceTokenService
+	surfaceDocuments                   *surfaceDocumentCache
+	methodSchemas                      *methodSchemaCache
+	surfaceGenerationID                string
+	lifecycleLocks                     *pluginLifecycleLockRegistry
+	executions                         *executionLeaseRegistry
+	streamReads                        *streamReadLockRegistry
+	verifiedReleases                   *verifiedReleaseRegistry
+	releaseLeases                      *releaseLeaseRegistry
+	releaseTrustActivationLeaseTimeout time.Duration
+	sourceFences                       *sourceFenceRegistry
+	sessionScopes                      *sessionscope.Coordinator
+	sessionMaintenance                 *sessionScopeMaintenanceLockRegistry
+	detachedCancelJobs                 *detachedCancelJobRegistry
+	operationObservers                 *surfaceOperationObservationRegistry
+	lifecycleCtx                       context.Context
+	lifecycleCancel                    context.CancelFunc
+	lifecycleMu                        sync.RWMutex
+	lifecycleWG                        sync.WaitGroup
+	securityAuditWG                    sync.WaitGroup
+	closed                             bool
+	closeOnce                          sync.Once
+	closeErr                           error
+	runtimeModule                      *RuntimeModule
+	externalInspections                *externalPackageInspectionStore
 }
 
 type detachedCancelJob struct {
@@ -3833,6 +3835,10 @@ func (h *Host) resolveReleasePackage(ctx context.Context, action PackageTrustAct
 
 func releaseTrustBoundaryError(err error) error {
 	switch {
+	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
+		return err
+	case externalsource.CodeOf(err) != "":
+		return err
 	case errors.Is(err, releasetrust.ErrReleasePolicyDenied):
 		return fmt.Errorf("%w: release trust policy denied the release", ErrReleaseRefPolicyDenied)
 	case errors.Is(err, releasetrust.ErrInvalidReleaseIdentity),
