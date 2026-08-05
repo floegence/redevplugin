@@ -1,5 +1,21 @@
 # Changelog
 
+## v0.7.4
+
+### Fixed
+
+- Verify current release source-policy, policy-pointer, revocation, and
+  revocation-pointer schemas against the exact decoded `schema_version` instead
+  of silently reconstructing older signing preimages.
+- Preserve stable release trust verification and policy-denial failure codes in
+  release-install operations so hosts can present the real non-retryable cause.
+
+### Changed
+
+- Publish the complete Go, npm, Rust source crate, generated contract, and
+  package-publication evidence set as ReDevPlugin 0.7.4 with
+  `plugin-platform-v14` and compatibility manifest v16.
+
 ## v0.7.3
 
 ### Fixed
