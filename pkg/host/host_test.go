@@ -251,6 +251,58 @@ func TestLifecycleInstallEnableDisableUninstall(t *testing.T) {
 	}
 }
 
+func TestReinstallWithRetainedDataReactivatesSamePluginInstance(t *testing.T) {
+	ctx := hostTestContext()
+	h, _, _ := newTestHost(t, true, true)
+	packageBytes := buildFixturePackage(t)
+	pluginInstanceID := nextTestPluginInstanceID(t)
+
+	installed, err := ImportLocalPackageBytes(ctx, h, pluginInstanceID, packageBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	enabled, err := h.EnablePlugin(ctx, EnableRequest{
+		PluginInstanceID:           pluginInstanceID,
+		ExpectedManagementRevision: installed.ManagementRevision,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.UninstallPlugin(ctx, UninstallRequest{
+		PluginInstanceID:           pluginInstanceID,
+		ExpectedManagementRevision: enabled.ManagementRevision,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	retained, err := h.ListRetainedData(ctx, ListRetainedDataRequest{PluginInstanceID: pluginInstanceID})
+	if err != nil || len(retained) != 1 {
+		t.Fatalf("ListRetainedData() = %#v, %v", retained, err)
+	}
+	retainedGenerationID := retained[0].GenerationID
+
+	reinstalled, err := ImportLocalPackageBytes(ctx, h, pluginInstanceID, packageBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reenabled, err := h.EnablePlugin(ctx, EnableRequest{
+		PluginInstanceID:           pluginInstanceID,
+		ExpectedManagementRevision: reinstalled.ManagementRevision,
+	})
+	if err != nil {
+		t.Fatalf("EnablePlugin() after retained-data reinstall error = %v", err)
+	}
+	if reenabled.EnableState != registry.EnableEnabled {
+		t.Fatalf("enable state = %q, want %q", reenabled.EnableState, registry.EnableEnabled)
+	}
+	binding, found, err := h.adapters.Registry.GetBinding(ctx, pluginInstanceID)
+	if err != nil || !found {
+		t.Fatalf("GetBinding() = %#v, %v, found=%v", binding, err, found)
+	}
+	if binding.State != plugindata.BindingActive || binding.GenerationID != retainedGenerationID {
+		t.Fatalf("reactivated binding = %#v, want active retained generation %q", binding, retainedGenerationID)
+	}
+}
+
 func TestLocalPackageMutationsRequirePolicyBeforePackageRead(t *testing.T) {
 	ctx := hostTestContext()
 	packageBytes := buildVersionedLifecyclePackage(t, "1.0.0", "Lifecycle")

@@ -204,6 +204,55 @@ func TestFileStoreLifecycleAndBrokers(t *testing.T) {
 	}
 }
 
+func TestFileStoreCommitEnableReactivatesRetainedBinding(t *testing.T) {
+	for _, tc := range catalogCases() {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := pluginDataTestContext()
+			catalog := tc.open(t)
+			store, err := plugindata.Open(ctx, resolvedTempDir(t), catalog)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = store.Close() })
+
+			now := time.Date(2026, 8, 6, 5, 0, 0, 0, time.UTC)
+			shape := testShape()
+			record := putPlugin(t, catalog, "plugini_reinstall", now)
+			dataset, err := store.CommitEnable(ctx, enableRequest(record, shape, now))
+			if err != nil {
+				t.Fatal(err)
+			}
+			enabled, err := catalog.GetPlugin(ctx, record.PluginInstanceID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := store.CommitUninstall(ctx, plugindata.CommitUninstallRequest{
+				PluginInstanceID:           record.PluginInstanceID,
+				ExpectedManagementRevision: enabled.ManagementRevision,
+				Now:                        now.Add(2 * time.Second),
+			}); err != nil {
+				t.Fatal(err)
+			}
+			retained, err := store.ListRetained(ctx, plugindata.RetainedFilter{PluginInstanceID: record.PluginInstanceID})
+			if err != nil || len(retained) != 1 {
+				t.Fatalf("ListRetained() = %#v, %v", retained, err)
+			}
+
+			reinstalled := putPlugin(t, catalog, record.PluginInstanceID, now.Add(3*time.Second))
+			reactivated, err := store.CommitEnable(ctx, enableRequest(reinstalled, shape, now.Add(4*time.Second)))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if reactivated.Binding.State != plugindata.BindingActive ||
+				reactivated.Binding.GenerationID != dataset.Binding.GenerationID ||
+				reactivated.Binding.Revision != retained[0].Revision+1 ||
+				reactivated.Binding.RetainedAt != nil || reactivated.Binding.ExpiresAt != nil {
+				t.Fatalf("reactivated binding = %#v, retained = %#v", reactivated.Binding, retained[0])
+			}
+		})
+	}
+}
+
 func TestFileStoreExportImportAndRetainedBinding(t *testing.T) {
 	for _, tc := range catalogCases() {
 		t.Run(tc.name, func(t *testing.T) {

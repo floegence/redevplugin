@@ -283,7 +283,7 @@ func (s *FileStore) CommitEnable(ctx context.Context, req CommitEnableRequest) (
 	var next Binding
 	var publishedWorkspace string
 	if found {
-		if existing.State != BindingActive {
+		if existing.State != BindingActive && existing.State != BindingRetained {
 			return Dataset{}, ErrNotActive
 		}
 		_, manifest, err := s.workspaceForBinding(environment, existing)
@@ -295,6 +295,12 @@ func (s *FileStore) CommitEnable(ctx context.Context, req CommitEnableRequest) (
 		}
 		expected = &existing
 		next = existing
+		if existing.State == BindingRetained {
+			next.State = BindingActive
+			next.Revision++
+			next.RetainedAt = nil
+			next.ExpiresAt = nil
+		}
 	} else {
 		s.publicationMu.Lock()
 		defer s.publicationMu.Unlock()

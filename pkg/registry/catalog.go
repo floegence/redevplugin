@@ -122,7 +122,7 @@ func (s *MemoryStore) CommitEnable(ctx context.Context, expectedManagementRevisi
 		if exists || next.Revision != 1 {
 			return plugindata.ErrBindingConflict
 		}
-	} else if !exists || !sameDataBinding(actual, *expected) || !sameDataBinding(next, *expected) {
+	} else if !exists || !sameDataBinding(actual, *expected) || !validEnableDataBindingTransition(*expected, next) {
 		return plugindata.ErrBindingConflict
 	}
 	s.dataBindings[key] = cloneDataBinding(next)
@@ -519,8 +519,13 @@ func (s *SQLiteStore) CommitEnable(ctx context.Context, expectedManagementRevisi
 				return err
 			}
 		} else {
-			if !exists || !sameDataBinding(actual, *expected) || !sameDataBinding(next, *expected) {
+			if !exists || !sameDataBinding(actual, *expected) || !validEnableDataBindingTransition(*expected, next) {
 				return plugindata.ErrBindingConflict
+			}
+			if !sameDataBinding(next, *expected) {
+				if err := updateSQLiteDataBinding(ctx, tx, ownerEnvHash, next); err != nil {
+					return err
+				}
 			}
 		}
 		if now.IsZero() {
@@ -534,6 +539,21 @@ func (s *SQLiteStore) CommitEnable(ctx context.Context, expectedManagementRevisi
 		record.UpdatedAt = now
 		return upsertSQLitePlugin(ctx, tx, record)
 	})
+}
+
+func validEnableDataBindingTransition(expected, next plugindata.Binding) bool {
+	if expected.State == plugindata.BindingActive {
+		return sameDataBinding(next, expected)
+	}
+	if expected.State != plugindata.BindingRetained {
+		return false
+	}
+	reactivated := expected
+	reactivated.State = plugindata.BindingActive
+	reactivated.Revision++
+	reactivated.RetainedAt = nil
+	reactivated.ExpiresAt = nil
+	return sameDataBinding(next, reactivated)
 }
 
 func (s *SQLiteStore) SwapImport(ctx context.Context, expectedManagementRevision uint64, expected *plugindata.Binding, next plugindata.Binding, shape plugindata.Shape, now time.Time) error {
