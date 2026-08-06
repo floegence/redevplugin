@@ -21,11 +21,16 @@ type ledgerValue struct {
 }
 
 type ledgerDraft struct {
-	values             []ledgerValue
-	logLeaves          [][]byte
-	latestProofs       map[string][]string
-	checkpoint         releasecontract.SigningLedgerCheckpointV1
-	checkpointPreimage []byte
+	values                  []ledgerValue
+	logLeafDocuments        []releasecontract.SigningLedgerLogLeafV1
+	logLeaves               [][]byte
+	latestProofs            map[string][]string
+	receiptValueIndexes     []int
+	checkpoint              releasecontract.SigningLedgerCheckpointV1
+	checkpointPreimage      []byte
+	previousCheckpoint      *releasecontract.SigningLedgerCheckpointV1
+	previousCheckpointBytes []byte
+	consistency             *releasecontract.SigningLedgerConsistencyProofV1
 }
 
 type receiptDraft struct {
@@ -37,10 +42,32 @@ type receiptDraft struct {
 	latest    releasecontract.SigningLedgerLatestProofV1
 }
 
-func prepareLedger(config ConfigV1, documents []signedDocument) (ledgerDraft, error) {
-	values := make([]ledgerValue, len(documents))
-	logLeaves := make([][]byte, len(documents))
-	for index, document := range documents {
+func prepareLedger(config ConfigV1, documents []signedDocument, previous *previousReleaseStateV1) (ledgerDraft, error) {
+	previousCount := 0
+	if previous != nil {
+		previousCount = len(previous.LedgerLeaves)
+	}
+	values := make([]ledgerValue, previousCount)
+	logLeafDocuments := make([]releasecontract.SigningLedgerLogLeafV1, previousCount)
+	logLeaves := make([][]byte, previousCount)
+	valueIndexBySubject := make(map[string]int, previousCount+len(documents))
+	if previous != nil {
+		for index, leaf := range previous.LedgerLeaves {
+			raw, err := releasecontract.CanonicalSigningLedgerLogLeaf(leaf)
+			if err != nil {
+				return ledgerDraft{}, err
+			}
+			logLeafDocuments[index] = leaf
+			logLeaves[index] = merkleLeafHash(raw)
+			values[index] = ledgerValue{
+				subjectDigest: leaf.SubjectIdentitySHA256, preimageHash: leaf.SigningPreimageSHA256,
+				envelopeHash: leaf.SignatureEnvelopeSHA256, sequence: leaf.Sequence,
+			}
+			valueIndexBySubject[leaf.SubjectIdentitySHA256] = index
+		}
+	}
+	receiptValueIndexes := make([]int, 0, len(documents))
+	for _, document := range documents {
 		subjectDigest, err := releasecontract.SigningSubjectIdentitySHA256(document.subject)
 		if err != nil {
 			return ledgerDraft{}, err
@@ -55,17 +82,30 @@ func prepareLedger(config ConfigV1, documents []signedDocument) (ledgerDraft, er
 		if err != nil {
 			return ledgerDraft{}, err
 		}
+		if existingIndex, exists := valueIndexBySubject[subjectDigest]; exists {
+			existing := &values[existingIndex]
+			if existing.preimageHash != envelope.SigningPreimageSHA256 || existing.envelopeHash != sha256Hex(envelopeBytes) {
+				return ledgerDraft{}, ErrWorkspaceConflict
+			}
+			existing.subject = document.subject
+			receiptValueIndexes = append(receiptValueIndexes, existingIndex)
+			continue
+		}
+		valueIndex := len(values)
 		leaf := releasecontract.SigningLedgerLogLeafV1{
 			SchemaVersion: releasecontract.SigningLedgerLogLeafSchemaVersion, SourceID: document.subject.SourceID,
 			Channel: document.subject.Channel, SubjectIdentitySHA256: subjectDigest, SigningPreimageSHA256: envelope.SigningPreimageSHA256,
-			SignatureEnvelopeSHA256: sha256Hex(envelopeBytes), Sequence: uint64(index + 1),
+			SignatureEnvelopeSHA256: sha256Hex(envelopeBytes), Sequence: uint64(valueIndex + 1),
 		}
 		leafBytes, err := releasecontract.CanonicalSigningLedgerLogLeaf(leaf)
 		if err != nil {
 			return ledgerDraft{}, err
 		}
-		logLeaves[index] = merkleLeafHash(leafBytes)
-		values[index] = ledgerValue{subject: document.subject, subjectDigest: subjectDigest, preimageHash: envelope.SigningPreimageSHA256, envelopeHash: sha256Hex(envelopeBytes), sequence: uint64(index + 1)}
+		logLeafDocuments = append(logLeafDocuments, leaf)
+		logLeaves = append(logLeaves, merkleLeafHash(leafBytes))
+		values = append(values, ledgerValue{subject: document.subject, subjectDigest: subjectDigest, preimageHash: envelope.SigningPreimageSHA256, envelopeHash: sha256Hex(envelopeBytes), sequence: uint64(valueIndex + 1)})
+		valueIndexBySubject[subjectDigest] = valueIndex
+		receiptValueIndexes = append(receiptValueIndexes, valueIndex)
 	}
 	latestRoot, latestProofs := latestMap(values)
 	checkpointTime, err := parseCanonicalTime(config.GeneratedAt)
@@ -82,7 +122,24 @@ func prepareLedger(config ConfigV1, documents []signedDocument) (ledgerDraft, er
 	if err != nil {
 		return ledgerDraft{}, err
 	}
-	return ledgerDraft{values: values, logLeaves: logLeaves, latestProofs: latestProofs, checkpoint: checkpoint, checkpointPreimage: preimage}, nil
+	draft := ledgerDraft{
+		values: values, logLeafDocuments: logLeafDocuments, logLeaves: logLeaves, latestProofs: latestProofs,
+		receiptValueIndexes: receiptValueIndexes, checkpoint: checkpoint, checkpointPreimage: preimage,
+	}
+	if previous != nil {
+		proof := releasecontract.SigningLedgerConsistencyProofV1{
+			SchemaVersion: releasecontract.SigningLedgerSchemaVersion,
+			Kind:          releasecontract.SigningLedgerArtifactConsistencyProof,
+			LogID:         config.SigningLedger.LogID,
+			OldTreeSize:   previous.Checkpoint.TreeSize,
+			NewTreeSize:   checkpoint.TreeSize,
+			Nodes:         encodeProof(merkleConsistencyProof(logLeaves, previousCount)),
+		}
+		draft.previousCheckpoint = &previous.Checkpoint
+		draft.previousCheckpointBytes = slices.Clone(previous.CheckpointBytes)
+		draft.consistency = &proof
+	}
+	return draft, nil
 }
 
 func finalizeLedgerCheckpoint(config ConfigV1, draft ledgerDraft, signature []byte) (releasecontract.SigningLedgerCheckpointV1, []byte, error) {
@@ -101,9 +158,10 @@ func finalizeLedgerCheckpoint(config ConfigV1, draft ledgerDraft, signature []by
 
 func prepareLedgerReceipts(config ConfigV1, draft ledgerDraft, checkpoint releasecontract.SigningLedgerCheckpointV1, checkpointBytes []byte) ([]receiptDraft, []ExternalSignerRequestV1, error) {
 	checkpointSHA256 := sha256Hex(checkpointBytes)
-	receipts := make([]receiptDraft, len(draft.values))
-	requests := make([]ExternalSignerRequestV1, len(draft.values))
-	for index, value := range draft.values {
+	receipts := make([]receiptDraft, len(draft.receiptValueIndexes))
+	requests := make([]ExternalSignerRequestV1, len(draft.receiptValueIndexes))
+	for relativeIndex, index := range draft.receiptValueIndexes {
+		value := draft.values[index]
 		receipt := releasecontract.SigningLedgerReceiptV1{
 			SchemaVersion: releasecontract.SigningLedgerReceiptSchemaVersion, LogID: config.SigningLedger.LogID,
 			SourceID: value.subject.SourceID, Channel: value.subject.Channel, SubjectIdentitySHA256: value.subjectDigest,
@@ -120,7 +178,7 @@ func prepareLedgerReceipts(config ConfigV1, draft ledgerDraft, checkpoint releas
 		if err != nil {
 			return nil, nil, err
 		}
-		receipts[index] = receiptDraft{
+		receipts[relativeIndex] = receiptDraft{
 			value: value, index: index, receipt: receipt, preimage: preimage,
 			inclusion: releasecontract.SigningLedgerInclusionProofV1{
 				SchemaVersion: releasecontract.SigningLedgerSchemaVersion, Kind: releasecontract.SigningLedgerArtifactInclusionProof,
@@ -132,7 +190,7 @@ func prepareLedgerReceipts(config ConfigV1, draft ledgerDraft, checkpoint releas
 				SigningPreimageSHA256: value.preimageHash, SignatureEnvelopeSHA256: value.envelopeHash, Siblings: draft.latestProofs[value.subjectDigest],
 			},
 		}
-		requests[index] = request
+		requests[relativeIndex] = request
 	}
 	return receipts, requests, nil
 }
@@ -180,6 +238,26 @@ func buildCompleteAssembly(
 	files[ledgerBase+"/checkpoints/current.json"] = checkpointBytes
 	keys, _ := validateConfig(config)
 	verifier := releasecontract.Ed25519PublicKeyVerifier(keys)
+	consistencyRef := ""
+	consistencySHA256 := ""
+	if previous := pointers.ledger.previousCheckpoint; previous != nil {
+		previousSHA256 := sha256Hex(pointers.ledger.previousCheckpointBytes)
+		files[fmt.Sprintf("%s/checkpoints/%s.json", ledgerBase, previousSHA256)] = slices.Clone(pointers.ledger.previousCheckpointBytes)
+		consistencyBytes, err := releasecontract.CanonicalSigningLedgerConsistencyProof(*pointers.ledger.consistency)
+		if err != nil || releasecontract.VerifySigningLedgerConsistency(*previous, checkpoint, *pointers.ledger.consistency, verifier) != nil {
+			return assemblyResult{}, ErrInvalidWorkspace
+		}
+		consistencyRef = fmt.Sprintf("%s/proofs/consistency/%s/%s.json", ledgerBase, previousSHA256, checkpointSHA256)
+		consistencySHA256 = sha256Hex(consistencyBytes)
+		files[consistencyRef] = consistencyBytes
+	}
+	for _, leaf := range pointers.ledger.logLeafDocuments {
+		leafBytes, err := releasecontract.CanonicalSigningLedgerLogLeaf(leaf)
+		if err != nil {
+			return assemblyResult{}, err
+		}
+		files[fmt.Sprintf("%s/log/%020d.json", ledgerBase, leaf.Sequence)] = leafBytes
+	}
 	for index, draft := range receipts {
 		signature, err := signatureFor(requests[index], responses)
 		if err != nil {
@@ -217,6 +295,7 @@ func buildCompleteAssembly(
 			SigningPreimageSHA256: draft.value.preimageHash, SignatureEnvelopeSHA256: draft.value.envelopeHash,
 			ReceiptRef: receiptRef, ReceiptSHA256: sha256Hex(receiptBytes), CheckpointRef: checkpointRef, CheckpointSHA256: checkpointSHA256,
 			InclusionProofRef: inclusionRef, InclusionProofSHA256: sha256Hex(inclusionBytes), LatestProofRef: latestRef, LatestProofSHA256: sha256Hex(latestBytes),
+			ConsistencyProofRef: consistencyRef, ConsistencyProofSHA256: consistencySHA256,
 		}
 		evidenceBytes, err := releasecontract.CanonicalSigningLedgerEvidence(evidence)
 		if err != nil {
@@ -306,6 +385,27 @@ func encodeProof(values [][]byte) []string {
 		result[index] = hex.EncodeToString(value)
 	}
 	return result
+}
+
+func merkleConsistencyProof(leaves [][]byte, oldSize int) [][]byte {
+	if oldSize <= 0 || oldSize > len(leaves) {
+		return nil
+	}
+	return merkleConsistencySubproof(leaves, oldSize, true)
+}
+
+func merkleConsistencySubproof(leaves [][]byte, oldSize int, complete bool) [][]byte {
+	if oldSize == len(leaves) {
+		if complete {
+			return nil
+		}
+		return [][]byte{merkleRoot(leaves)}
+	}
+	k := largestPowerOfTwoLessThan(len(leaves))
+	if oldSize <= k {
+		return append(merkleConsistencySubproof(leaves[:k], oldSize, complete), merkleRoot(leaves[k:]))
+	}
+	return append(merkleConsistencySubproof(leaves[k:], oldSize-k, false), merkleRoot(leaves[:k]))
 }
 
 type latestLeaf struct {

@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.7.14
+
+- Add verified previous-release input to the external-signer publisher flow so
+  same-epoch trust documents retain their exact bytes across plugin versions.
+- Extend the public signing ledger append-only, publish its canonical leaves,
+  and bind each continued release to a verifiable checkpoint consistency proof.
+- Reject release version rollback, changed same-epoch trust content, invalid
+  previous signatures, and incomplete previous ledger history before
+  publication.
+- Publish the complete Go, npm, Rust source crate, generated contract, and
+  package-publication evidence set as ReDevPlugin 0.7.14.
+
 ## v0.7.13
 
 - Expose versioned verified presentation-icon evidence from signed release

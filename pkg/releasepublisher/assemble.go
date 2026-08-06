@@ -82,7 +82,10 @@ type signedPointers struct {
 	ledger                 ledgerDraft
 }
 
-func assemble(ctx context.Context, config ConfigV1, packageBytes []byte, responses map[string]string) (assemblyResult, error) {
+func assemble(ctx context.Context, config ConfigV1, packageBytes []byte, responses map[string]string, previous *previousReleaseStateV1) (assemblyResult, error) {
+	if err := verifyPreviousLedgerKey(config, previous); err != nil {
+		return assemblyResult{}, err
+	}
 	prepared, err := prepareRelease(ctx, config, packageBytes)
 	if err != nil {
 		return assemblyResult{}, err
@@ -90,6 +93,16 @@ func assemble(ctx context.Context, config ConfigV1, packageBytes []byte, respons
 	primaryRequests, err := requestsForPrimary(config, prepared)
 	if err != nil {
 		return assemblyResult{}, err
+	}
+	for _, usage := range []releasecontract.SigningUsage{
+		releasecontract.SigningUsageRootDelegation,
+		releasecontract.SigningUsageSourcePolicy,
+		releasecontract.SigningUsageRevocation,
+	} {
+		request, _ := requestForUsage(primaryRequests, usage)
+		if err := validateStableRequest(previous, usage, request); err != nil {
+			return assemblyResult{}, err
+		}
 	}
 	if pending := pendingRequests(primaryRequests, responses); len(pending) != 0 {
 		return assemblyResult{Phase: "primary_signatures", Pending: pending}, nil
@@ -102,10 +115,19 @@ func assemble(ctx context.Context, config ConfigV1, packageBytes []byte, respons
 	if err != nil {
 		return assemblyResult{}, err
 	}
+	for _, usage := range []releasecontract.SigningUsage{
+		releasecontract.SigningUsageSourcePolicyPointer,
+		releasecontract.SigningUsageRevocationPointer,
+	} {
+		request, _ := requestForUsage(pointerRequests, usage)
+		if err := validateStableRequest(previous, usage, request); err != nil {
+			return assemblyResult{}, err
+		}
+	}
 	if pending := pendingRequests(pointerRequests, responses); len(pending) != 0 {
 		return assemblyResult{Phase: "pointer_signatures", Pending: pending}, nil
 	}
-	pointers, err := buildSignedPointers(config, primary, pointerRequests, responses)
+	pointers, err := buildSignedPointers(config, primary, pointerRequests, responses, previous)
 	if err != nil {
 		return assemblyResult{}, err
 	}
@@ -385,7 +407,7 @@ func requestsForPointers(config ConfigV1, primary signedPrimary) ([]ExternalSign
 	return []ExternalSignerRequestV1{policy, revocation}, nil
 }
 
-func buildSignedPointers(config ConfigV1, primary signedPrimary, requests []ExternalSignerRequestV1, responses map[string]string) (signedPointers, error) {
+func buildSignedPointers(config ConfigV1, primary signedPrimary, requests []ExternalSignerRequestV1, responses map[string]string, previous *previousReleaseStateV1) (signedPointers, error) {
 	policySignature, _ := signatureForUsage(requests, responses, releasecontract.SigningUsageSourcePolicyPointer)
 	revocationSignature, _ := signatureForUsage(requests, responses, releasecontract.SigningUsageRevocationPointer)
 	policyPointer, err := releasecontract.BuildSourcePolicyPointer(primary.policyPointerInput, policySignature)
@@ -423,7 +445,7 @@ func buildSignedPointers(config ConfigV1, primary signedPrimary, requests []Exte
 		{primary.prepared.metadataSubject, primary.prepared.metadataPreimage, config.Signing.KeyID, primarySignatures[releasecontract.SigningUsageReleaseMetadata]},
 		{primary.prepared.packageSubject, primary.prepared.packagePreimage, config.Signing.KeyID, primarySignatures[releasecontract.SigningUsagePackage]},
 	}
-	ledger, err := prepareLedger(config, documents)
+	ledger, err := prepareLedger(config, documents, previous)
 	if err != nil {
 		return signedPointers{}, err
 	}

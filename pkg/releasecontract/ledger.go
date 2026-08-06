@@ -348,6 +348,17 @@ func CanonicalSigningLedgerLogLeaf(leaf SigningLedgerLogLeafV1) ([]byte, error) 
 	return canonicalJSON(leaf)
 }
 
+func DecodeSigningLedgerLogLeaf(raw []byte) (SigningLedgerLogLeafV1, error) {
+	var leaf SigningLedgerLogLeafV1
+	if err := decodeCanonicalDocument(raw, &leaf, func() error {
+		_, err := CanonicalSigningLedgerLogLeaf(leaf)
+		return err
+	}); err != nil {
+		return SigningLedgerLogLeafV1{}, err
+	}
+	return leaf, nil
+}
+
 func signingLedgerLogLeafHash(receipt SigningLedgerReceiptV1) ([]byte, error) {
 	leaf, err := SigningLedgerLogLeafFromReceipt(receipt)
 	if err != nil {

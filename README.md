@@ -203,6 +203,12 @@ an English fallback or mix locales within one resolved presentation.
   full release verification before writing the exact verified image and refuses
   to overwrite an existing target. Repeating a completed step with the same
   bytes is idempotent; a changed request, response, or output fails closed.
+  After the first release, pass `--previous <verified-output>` to `release
+  prepare`. The CLI fully verifies that public output, reuses exact same-epoch
+  root, policy, revocation, and pointer bytes, appends only new subjects to the
+  signing ledger, and emits the old-to-new checkpoint consistency proof.
+  Rollbacks, changed same-epoch trust content, invalid signatures, and
+  incomplete ledger history fail before publication.
 - Host capability publishers can keep signing outside the CLI with
   `redevplugin host-capability prepare <config.json> <workspace>`,
   `redevplugin host-capability apply-signature <workspace> <response.json>`,

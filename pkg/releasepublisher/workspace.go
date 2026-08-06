@@ -17,6 +17,7 @@ import (
 	"strings"
 
 	"github.com/floegence/redevplugin/pkg/pluginpkg"
+	"github.com/floegence/redevplugin/pkg/releasecontract"
 )
 
 const (
@@ -34,10 +35,20 @@ var (
 )
 
 type workspaceStateV1 struct {
-	SchemaVersion string            `json:"schema_version"`
-	Config        ConfigV1          `json:"config"`
-	PackageSHA256 string            `json:"package_sha256"`
-	Responses     map[string]string `json:"responses"`
+	SchemaVersion string                  `json:"schema_version"`
+	Config        ConfigV1                `json:"config"`
+	PackageSHA256 string                  `json:"package_sha256"`
+	Responses     map[string]string       `json:"responses"`
+	Previous      *previousReleaseStateV1 `json:"previous,omitempty"`
+}
+
+type previousReleaseStateV1 struct {
+	ReleaseRef       PluginReleaseRefV1                        `json:"release_ref"`
+	StableRequestIDs map[releasecontract.SigningUsage]string   `json:"stable_request_ids"`
+	StableResponses  map[string]string                         `json:"stable_responses"`
+	LedgerLeaves     []releasecontract.SigningLedgerLogLeafV1  `json:"ledger_leaves"`
+	Checkpoint       releasecontract.SigningLedgerCheckpointV1 `json:"checkpoint"`
+	CheckpointBytes  []byte                                    `json:"checkpoint_bytes"`
 }
 
 func DecodeConfig(raw []byte) (ConfigV1, error) {
@@ -52,6 +63,14 @@ func DecodeConfig(raw []byte) (ConfigV1, error) {
 }
 
 func Prepare(ctx context.Context, config ConfigV1, packageFile, workspace string) (WorkspaceStatusV1, error) {
+	return PrepareWithPrevious(ctx, config, packageFile, workspace, "")
+}
+
+// PrepareWithPrevious starts or resumes a release publisher workspace. When a
+// previous output is supplied, it must be a complete verified release for the
+// same source, channel, publisher, and plugin. The next signing ledger extends
+// that immutable public history and same-epoch trust documents are reused.
+func PrepareWithPrevious(ctx context.Context, config ConfigV1, packageFile, workspace, previousOutput string) (WorkspaceStatusV1, error) {
 	if _, err := validateConfig(config); err != nil {
 		return WorkspaceStatusV1{}, err
 	}
@@ -59,8 +78,16 @@ func Prepare(ctx context.Context, config ConfigV1, packageFile, workspace string
 	if err != nil {
 		return WorkspaceStatusV1{}, err
 	}
-	if _, err := readUnsignedPackage(ctx, packageBytes); err != nil {
+	pkg, err := readUnsignedPackage(ctx, packageBytes)
+	if err != nil {
 		return WorkspaceStatusV1{}, err
+	}
+	var previous *previousReleaseStateV1
+	if previousOutput != "" {
+		previous, err = readPreviousReleaseState(ctx, previousOutput, config, pkg)
+		if err != nil {
+			return WorkspaceStatusV1{}, err
+		}
 	}
 	packageDigest := sha256Hex(packageBytes)
 	statePath := filepath.Join(workspace, workspaceStateFile)
@@ -69,7 +96,7 @@ func Prepare(ctx context.Context, config ConfigV1, packageFile, workspace string
 		if err != nil {
 			return WorkspaceStatusV1{}, err
 		}
-		if state.PackageSHA256 != packageDigest || !equalConfig(state.Config, config) {
+		if state.PackageSHA256 != packageDigest || !equalConfig(state.Config, config) || !equalPreviousReleaseState(state.Previous, previous) {
 			return WorkspaceStatusV1{}, ErrWorkspaceConflict
 		}
 		return refreshWorkspace(ctx, workspace, state)
@@ -84,6 +111,10 @@ func Prepare(ctx context.Context, config ConfigV1, packageFile, workspace string
 		Config:        cloneConfig(config),
 		PackageSHA256: packageDigest,
 		Responses:     map[string]string{},
+		Previous:      clonePreviousReleaseState(previous),
+	}
+	if previous != nil {
+		state.Responses = cloneStringMap(previous.StableResponses)
 	}
 	if err := writeFileAtomic(filepath.Join(workspace, workspacePackageFile), packageBytes, 0o644); err != nil {
 		return WorkspaceStatusV1{}, err
@@ -112,7 +143,7 @@ func ApplySignature(ctx context.Context, workspace string, responseRaw []byte) (
 	if err != nil || sha256Hex(packageBytes) != state.PackageSHA256 {
 		return WorkspaceStatusV1{}, ErrInvalidWorkspace
 	}
-	assembly, err := assemble(ctx, state.Config, packageBytes, state.Responses)
+	assembly, err := assemble(ctx, state.Config, packageBytes, state.Responses, state.Previous)
 	if err != nil {
 		return WorkspaceStatusV1{}, err
 	}
@@ -154,7 +185,7 @@ func Finalize(ctx context.Context, workspace, output string) (WorkspaceStatusV1,
 	if err != nil || sha256Hex(packageBytes) != state.PackageSHA256 {
 		return WorkspaceStatusV1{}, ErrInvalidWorkspace
 	}
-	assembly, err := assemble(ctx, state.Config, packageBytes, state.Responses)
+	assembly, err := assemble(ctx, state.Config, packageBytes, state.Responses, state.Previous)
 	if err != nil {
 		return WorkspaceStatusV1{}, err
 	}
@@ -175,7 +206,7 @@ func refreshWorkspace(ctx context.Context, workspace string, state workspaceStat
 	if err != nil || sha256Hex(packageBytes) != state.PackageSHA256 {
 		return WorkspaceStatusV1{}, ErrInvalidWorkspace
 	}
-	assembly, err := assemble(ctx, state.Config, packageBytes, state.Responses)
+	assembly, err := assemble(ctx, state.Config, packageBytes, state.Responses, state.Previous)
 	if err != nil {
 		return WorkspaceStatusV1{}, err
 	}
@@ -259,6 +290,9 @@ func decodeWorkspace(raw []byte) (workspaceStateV1, error) {
 		if err != nil || len(decoded) != ed25519.SignatureSize || base64.StdEncoding.EncodeToString(decoded) != signature {
 			return workspaceStateV1{}, ErrInvalidWorkspace
 		}
+	}
+	if err := validatePreviousReleaseState(state.Previous); err != nil {
+		return workspaceStateV1{}, ErrInvalidWorkspace
 	}
 	return state, nil
 }
