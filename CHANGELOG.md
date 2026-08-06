@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.7.13
+
+- Expose versioned verified presentation-icon evidence from signed release
+  output, including its path, media type, dimensions, digest, and size.
+- Add `redevplugin release extract-presentation-icon`, which fully re-verifies
+  release output before extracting one bounded image without overwriting an
+  existing file.
+- Publish the complete Go, npm, Rust source crate, generated contract, and
+  package-publication evidence set as ReDevPlugin 0.7.13.
+
 ## v0.7.12
 
 - Republish the manifest v8 presentation icon and release-identity fixes from a

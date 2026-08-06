@@ -198,8 +198,11 @@ an English fallback or mix locales within one resolved presentation.
   apply each closed response with
   `redevplugin release apply-signature <workspace> <response.json>`, then run
   `redevplugin release finalize <workspace> <out-dir>` and
-  `redevplugin release verify <out-dir>`. Repeating a completed step with the
-  same bytes is idempotent; a changed request, response, or output fails closed.
+  `redevplugin release verify <out-dir>`. For a declared presentation icon,
+  `redevplugin release extract-presentation-icon <out-dir> <out-file>` repeats
+  full release verification before writing the exact verified image and refuses
+  to overwrite an existing target. Repeating a completed step with the same
+  bytes is idempotent; a changed request, response, or output fails closed.
 - Host capability publishers can keep signing outside the CLI with
   `redevplugin host-capability prepare <config.json> <workspace>`,
   `redevplugin host-capability apply-signature <workspace> <response.json>`,

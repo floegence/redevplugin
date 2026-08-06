@@ -247,6 +247,12 @@ export const redevPluginContractArtifacts = [
     sha256: "befc1c0423c05a66e65ad2ad79e8d097462ba01bac854962b67ef5f99a0ce4fa",
   },
   {
+    id: "presentation-icon-evidence-schema",
+    path: "spec/plugin/presentation-icon-evidence-v1.schema.json",
+    version: "presentation-icon-evidence-v1",
+    sha256: "0b302ff651bec9447637dd08b672d2371fcf383c5d9505e885955aa1b607ec15",
+  },
+  {
     id: "presentation-locale-fixture",
     path: "spec/plugin/presentation-locale-fixtures-v1.json",
     version: "presentation-locale-fixtures-v1",

@@ -45,6 +45,18 @@ type Asset struct {
 	Content []byte `json:"-"`
 }
 
+// PresentationIconAsset is the Host-validated descriptor for the package-local
+// image declared by presentation.icon. The content is returned separately so
+// callers cannot confuse a descriptor with unverified package bytes.
+type PresentationIconAsset struct {
+	Path      string `json:"path"`
+	MediaType string `json:"media_type"`
+	Width     int    `json:"width"`
+	Height    int    `json:"height"`
+	SHA256    string `json:"sha256"`
+	Size      int64  `json:"size"`
+}
+
 type Package struct {
 	Manifest          manifest.Manifest `json:"manifest"`
 	PackageHash       string            `json:"package_hash"`
@@ -192,6 +204,8 @@ const (
 	maxPresentationIconWidth  = 512
 	maxPresentationIconHeight = 512
 )
+
+var ErrPresentationIconUnavailable = errors.New("presentation icon is unavailable")
 
 type PackageSignature struct {
 	SchemaVersion string `json:"schema_version"`
@@ -885,29 +899,60 @@ func validatePackageAssetSecurity(m manifest.Manifest, files map[string][]byte) 
 }
 
 func validatePresentationIconAsset(iconPath string, files map[string][]byte) error {
+	_, _, err := readPresentationIconAsset(iconPath, files)
+	return err
+}
+
+// ReadPresentationIcon returns a cloned raster image only after reapplying the
+// package-local path, format, size, and dimensions checks used at package read.
+func ReadPresentationIcon(pkg Package) (PresentationIconAsset, []byte, error) {
+	if pkg.Manifest.Presentation.Icon == nil {
+		return PresentationIconAsset{}, nil, ErrPresentationIconUnavailable
+	}
+	evidence, content, err := readPresentationIconAsset(pkg.Manifest.Presentation.Icon.Path, pkg.Files)
+	if err != nil {
+		return PresentationIconAsset{}, nil, err
+	}
+	return evidence, bytes.Clone(content), nil
+}
+
+func readPresentationIconAsset(iconPath string, files map[string][]byte) (PresentationIconAsset, []byte, error) {
 	icon, err := validatePackageAssetPath(iconPath)
 	if err != nil {
-		return fmt.Errorf("presentation.icon.path: %w", err)
+		return PresentationIconAsset{}, nil, fmt.Errorf("presentation.icon.path: %w", err)
 	}
 	ext := strings.ToLower(path.Ext(icon))
 	if ext != ".png" && ext != ".webp" {
-		return validationErrorf(ValidationCodePackageInvalid, "unsupported_icon_format", icon, "/presentation/icon/path", "presentation.icon.path %q must be a PNG or WebP asset", icon)
+		return PresentationIconAsset{}, nil, validationErrorf(ValidationCodePackageInvalid, "unsupported_icon_format", icon, "/presentation/icon/path", "presentation.icon.path %q must be a PNG or WebP asset", icon)
 	}
 	content, ok := files[icon]
 	if !ok {
-		return validationErrorf(ValidationCodePackageInvalid, "missing_icon_asset", icon, "/presentation/icon/path", "presentation.icon.path %q is not present in package", icon)
+		return PresentationIconAsset{}, nil, validationErrorf(ValidationCodePackageInvalid, "missing_icon_asset", icon, "/presentation/icon/path", "presentation.icon.path %q is not present in package", icon)
 	}
 	if len(content) == 0 || len(content) > maxPresentationIconBytes {
-		return validationErrorf(ValidationCodePackageInvalid, "icon_too_large", icon, "/presentation/icon/path", "presentation icon %q exceeds the 512 KiB limit", icon)
+		return PresentationIconAsset{}, nil, validationErrorf(ValidationCodePackageInvalid, "icon_too_large", icon, "/presentation/icon/path", "presentation icon %q exceeds the 512 KiB limit", icon)
 	}
 	if !hasRasterIconMagic(ext, content) {
-		return validationErrorf(ValidationCodePackageInvalid, "icon_magic_mismatch", icon, "/presentation/icon/path", "presentation icon %q content does not match its raster format", icon)
+		return PresentationIconAsset{}, nil, validationErrorf(ValidationCodePackageInvalid, "icon_magic_mismatch", icon, "/presentation/icon/path", "presentation icon %q content does not match its raster format", icon)
 	}
-	config, _, err := image.DecodeConfig(bytes.NewReader(content))
+	config, format, err := image.DecodeConfig(bytes.NewReader(content))
 	if err != nil || config.Width <= 0 || config.Height <= 0 || config.Width > maxPresentationIconWidth || config.Height > maxPresentationIconHeight {
-		return validationErrorf(ValidationCodePackageInvalid, "icon_dimensions", icon, "/presentation/icon/path", "presentation icon %q must be at most 512x512 pixels", icon)
+		return PresentationIconAsset{}, nil, validationErrorf(ValidationCodePackageInvalid, "icon_dimensions", icon, "/presentation/icon/path", "presentation icon %q must be at most 512x512 pixels", icon)
 	}
-	return nil
+	mediaType := ""
+	switch {
+	case ext == ".png" && format == "png":
+		mediaType = "image/png"
+	case ext == ".webp" && format == "webp":
+		mediaType = "image/webp"
+	default:
+		return PresentationIconAsset{}, nil, validationErrorf(ValidationCodePackageInvalid, "icon_magic_mismatch", icon, "/presentation/icon/path", "presentation icon %q content does not match its raster format", icon)
+	}
+	sum := sha256.Sum256(content)
+	return PresentationIconAsset{
+		Path: icon, MediaType: mediaType, Width: config.Width, Height: config.Height,
+		SHA256: "sha256:" + hex.EncodeToString(sum[:]), Size: int64(len(content)),
+	}, content, nil
 }
 
 func validateSurfaceIconAsset(surfaceIndex int, iconPath string, files map[string][]byte) error {

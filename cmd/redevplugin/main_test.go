@@ -25,6 +25,7 @@ import (
 	"github.com/floegence/redevplugin/pkg/plugindata"
 	"github.com/floegence/redevplugin/pkg/pluginpkg"
 	"github.com/floegence/redevplugin/pkg/registry"
+	"github.com/floegence/redevplugin/pkg/releasepublisher"
 	"github.com/floegence/redevplugin/pkg/runtimetarget"
 	"github.com/floegence/redevplugin/pkg/secrets"
 	"github.com/floegence/redevplugin/pkg/sessionctx"
@@ -1279,14 +1280,19 @@ func TestCLIVersionPrintsCompatibilityManifest(t *testing.T) {
 
 func TestReleaseVerifyPresentationInspectionJSONContract(t *testing.T) {
 	summary := presentationInspectionSummary{
-		OK:                 true,
-		Phase:              "verified",
-		Output:             "/tmp/release",
-		Presentation:       manifest.PresentationCatalog{DefaultLocale: "en-US", Locales: []manifest.PresentationLocale{}},
+		OK:           true,
+		Phase:        "verified",
+		Output:       "/tmp/release",
+		Presentation: manifest.PresentationCatalog{DefaultLocale: "en-US", Locales: []manifest.PresentationLocale{}},
+		PresentationIcon: &releasepublisher.PresentationIconEvidenceV1{
+			SchemaVersion: releasepublisher.PresentationIconEvidenceSchemaVersion,
+			Path:          "ui/assets/plugin.png", MediaType: "image/png", Width: 128, Height: 128,
+			SHA256: "sha256:" + strings.Repeat("a", 64), Size: 1024,
+		},
 		ManifestSHA256:     "sha256:manifest",
 		PresentationSHA256: "sha256:presentation",
 		ContractSetSHA256:  "sha256:contracts",
-		VerifierVersion:    "0.7.12",
+		VerifierVersion:    "0.7.13",
 	}
 	raw, err := json.Marshal(summary)
 	if err != nil {
@@ -1297,15 +1303,46 @@ func TestReleaseVerifyPresentationInspectionJSONContract(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, field := range []string{
-		"ok", "phase", "output", "presentation", "manifest_sha256", "presentation_sha256", "contract_set_sha256", "verifier_version",
+		"ok", "phase", "output", "presentation", "presentation_icon", "manifest_sha256", "presentation_sha256", "contract_set_sha256", "verifier_version",
 	} {
 		value, exists := output[field]
 		if !exists || len(value) == 0 || string(value) == `""` || string(value) == "null" {
 			t.Fatalf("release verify JSON field %q = %s", field, value)
 		}
 	}
-	if len(output) != 8 {
+	if len(output) != 9 {
 		t.Fatalf("release verify JSON fields = %#v", output)
+	}
+}
+
+func TestReleaseIconExtractionJSONContract(t *testing.T) {
+	summary := presentationIconExtractionSummary{
+		OK: true, Phase: "presentation_icon_extracted", Output: "/tmp/release", IconOutput: "/tmp/icon.png",
+		PresentationIcon: releasepublisher.PresentationIconEvidenceV1{
+			SchemaVersion: releasepublisher.PresentationIconEvidenceSchemaVersion,
+			Path:          "ui/assets/plugin.png", MediaType: "image/png", Width: 128, Height: 128,
+			SHA256: "sha256:" + strings.Repeat("a", 64), Size: 1024,
+		},
+		ContractSetSHA256: "sha256:contracts", VerifierVersion: "0.7.13",
+	}
+	raw, err := json.Marshal(summary)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var output map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &output); err != nil {
+		t.Fatal(err)
+	}
+	for _, field := range []string{
+		"ok", "phase", "output", "icon_output", "presentation_icon", "contract_set_sha256", "verifier_version",
+	} {
+		value, exists := output[field]
+		if !exists || len(value) == 0 || string(value) == `""` || string(value) == "null" {
+			t.Fatalf("release icon extraction JSON field %q = %s", field, value)
+		}
+	}
+	if len(output) != 7 {
+		t.Fatalf("release icon extraction JSON fields = %#v", output)
 	}
 }
 

@@ -373,6 +373,12 @@ its validation, canonicalization, locale resolution, inspection, and installed
 inventory projection. A host or market must consume the verified normalized
 presentation and must not maintain a second manifest parser, author-copy
 catalog, plugin-ID presentation marker, or host-authored replacement copy.
+When a presentation declares a package-local icon, ReDevPlugin also owns the
+verified icon evidence and controlled extraction path. Hosts and markets consume
+only the published versioned evidence and extracted bytes; they must not parse a
+`.redevplugin` archive, recompute icon metadata, or substitute an icon by plugin
+identity. A market may retain only the current evidence-bound derived image and
+must not treat it as package or installation authority.
 
 If ReDevPlugin-owned persistent state contains a retired manifest, opening or
 reading that state must return a stable incompatibility error without deleting,

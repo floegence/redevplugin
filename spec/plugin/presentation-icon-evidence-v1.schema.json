@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.redevplugin.dev/plugin/presentation-icon-evidence-v1.schema.json",
+  "title": "ReDevPlugin verified presentation icon evidence v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "path", "media_type", "width", "height", "sha256", "size"],
+  "properties": {
+    "schema_version": { "const": "redevplugin.presentation_icon_evidence.v1" },
+    "path": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9_][A-Za-z0-9_.-]*(?:/[A-Za-z0-9_][A-Za-z0-9_.-]*)*\\.(?:[Pp][Nn][Gg]|[Ww][Ee][Bb][Pp])$"
+    },
+    "media_type": { "enum": ["image/png", "image/webp"] },
+    "width": { "type": "integer", "minimum": 1, "maximum": 512 },
+    "height": { "type": "integer", "minimum": 1, "maximum": 512 },
+    "sha256": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "size": { "type": "integer", "minimum": 1, "maximum": 524288 }
+  }
+}

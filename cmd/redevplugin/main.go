@@ -25,6 +25,7 @@ import (
 	"github.com/floegence/redevplugin/pkg/plugindata"
 	"github.com/floegence/redevplugin/pkg/pluginpkg"
 	"github.com/floegence/redevplugin/pkg/registry"
+	"github.com/floegence/redevplugin/pkg/releasepublisher"
 	"github.com/floegence/redevplugin/pkg/secrets"
 	"github.com/floegence/redevplugin/pkg/security"
 	"github.com/floegence/redevplugin/pkg/sessionctx"
@@ -100,14 +101,25 @@ type compatibilityVerifySummary struct {
 }
 
 type presentationInspectionSummary struct {
-	OK                 bool                         `json:"ok"`
-	Phase              string                       `json:"phase"`
-	Output             string                       `json:"output"`
-	Presentation       manifest.PresentationCatalog `json:"presentation"`
-	ManifestSHA256     string                       `json:"manifest_sha256"`
-	PresentationSHA256 string                       `json:"presentation_sha256"`
-	ContractSetSHA256  string                       `json:"contract_set_sha256"`
-	VerifierVersion    string                       `json:"verifier_version"`
+	OK                 bool                                         `json:"ok"`
+	Phase              string                                       `json:"phase"`
+	Output             string                                       `json:"output"`
+	Presentation       manifest.PresentationCatalog                 `json:"presentation"`
+	PresentationIcon   *releasepublisher.PresentationIconEvidenceV1 `json:"presentation_icon,omitempty"`
+	ManifestSHA256     string                                       `json:"manifest_sha256"`
+	PresentationSHA256 string                                       `json:"presentation_sha256"`
+	ContractSetSHA256  string                                       `json:"contract_set_sha256"`
+	VerifierVersion    string                                       `json:"verifier_version"`
+}
+
+type presentationIconExtractionSummary struct {
+	OK                bool                                        `json:"ok"`
+	Phase             string                                      `json:"phase"`
+	Output            string                                      `json:"output"`
+	IconOutput        string                                      `json:"icon_output"`
+	PresentationIcon  releasepublisher.PresentationIconEvidenceV1 `json:"presentation_icon"`
+	ContractSetSHA256 string                                      `json:"contract_set_sha256"`
+	VerifierVersion   string                                      `json:"verifier_version"`
 }
 
 type dataInspectSummary struct {
@@ -972,7 +984,7 @@ func writeBytesFile(filename string, data []byte, perm os.FileMode) error {
 }
 
 func usage() error {
-	return fmt.Errorf("usage: redevplugin validate <manifest.json|package.redevplugin> | redevplugin scaffold <plugin-id> <display-name> <out-dir> | redevplugin package <dir> <out.redevplugin> | redevplugin keygen <key-id> <private.json> <public.json> | redevplugin sign <package.redevplugin> <private.json> <out.redevplugin> | redevplugin release prepare <config.json> <unsigned.redevplugin> <workspace> | redevplugin release apply-signature <workspace> <response.json> | redevplugin release finalize <workspace> <out-dir> | redevplugin release verify <out-dir> | redevplugin host-capability prepare <config.json> <workspace> | redevplugin host-capability apply-signature <workspace> <response.json> | redevplugin host-capability finalize <workspace> <out-dir> | redevplugin host-capability build <config.json> <out-dir> | redevplugin host-capability verify <artifact-root> <pin.json> <public.json> | redevplugin host-capability generate-client <artifact-root> <pin.json> <public.json> <out.ts> [--check] | redevplugin inspect-data <state-root> [plugin-instance-id] | redevplugin install-local <package> | redevplugin install-verified <signed-package> <public.json> | redevplugin dev-install <state-root> <package> [--capability <artifact-root> <pin.json> <public.json>]... | redevplugin dev-enable <state-root> | redevplugin dev-open <state-root> <surface-id> | redevplugin dev-secret-bind <state-root> <secret-ref> [user|environment] | redevplugin dev-secret-test <state-root> <secret-ref> [user|environment] | redevplugin dev-secret-delete <state-root> <secret-ref> [user|environment] | redevplugin dev-permission-grant <state-root> <permission-id> | redevplugin dev-permission-revoke <state-root> <permission-id> [reason] | redevplugin dev-permission-list <state-root> [--active-only] | redevplugin dev-export-data <state-root> | redevplugin dev-import-data <state-root> <bundle-ref> | redevplugin dev-delete-export <state-root> <bundle-ref> | redevplugin dev-disable <state-root> | redevplugin dev-uninstall <state-root> | redevplugin dev-status <state-root> | redevplugin examples-server <state-root> <runtime-path> | redevplugin enable <package> | redevplugin disable <package> | redevplugin uninstall <package> | redevplugin version | redevplugin verify-compatibility <compatibility.json> <artifact-root>")
+	return fmt.Errorf("usage: redevplugin validate <manifest.json|package.redevplugin> | redevplugin scaffold <plugin-id> <display-name> <out-dir> | redevplugin package <dir> <out.redevplugin> | redevplugin keygen <key-id> <private.json> <public.json> | redevplugin sign <package.redevplugin> <private.json> <out.redevplugin> | redevplugin release prepare <config.json> <unsigned.redevplugin> <workspace> | redevplugin release apply-signature <workspace> <response.json> | redevplugin release finalize <workspace> <out-dir> | redevplugin release verify <out-dir> | redevplugin release extract-presentation-icon <out-dir> <out-file> | redevplugin host-capability prepare <config.json> <workspace> | redevplugin host-capability apply-signature <workspace> <response.json> | redevplugin host-capability finalize <workspace> <out-dir> | redevplugin host-capability build <config.json> <out-dir> | redevplugin host-capability verify <artifact-root> <pin.json> <public.json> | redevplugin host-capability generate-client <artifact-root> <pin.json> <public.json> <out.ts> [--check] | redevplugin inspect-data <state-root> [plugin-instance-id] | redevplugin install-local <package> | redevplugin install-verified <signed-package> <public.json> | redevplugin dev-install <state-root> <package> [--capability <artifact-root> <pin.json> <public.json>]... | redevplugin dev-enable <state-root> | redevplugin dev-open <state-root> <surface-id> | redevplugin dev-secret-bind <state-root> <secret-ref> [user|environment] | redevplugin dev-secret-test <state-root> <secret-ref> [user|environment] | redevplugin dev-secret-delete <state-root> <secret-ref> [user|environment] | redevplugin dev-permission-grant <state-root> <permission-id> | redevplugin dev-permission-revoke <state-root> <permission-id> [reason] | redevplugin dev-permission-list <state-root> [--active-only] | redevplugin dev-export-data <state-root> | redevplugin dev-import-data <state-root> <bundle-ref> | redevplugin dev-delete-export <state-root> | redevplugin dev-disable <state-root> | redevplugin dev-uninstall <state-root> | redevplugin dev-status <state-root> | redevplugin examples-server <state-root> <runtime-path> | redevplugin enable <package> | redevplugin disable <package> | redevplugin uninstall <package> | redevplugin version | redevplugin verify-compatibility <compatibility.json> <artifact-root>")
 }
 
 func lifecycleHarness(ctx context.Context, action string, packageFile string) error {

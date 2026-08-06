@@ -40,6 +40,11 @@ func TestReleasePublisherSchemasMatchGoWireDTOs(t *testing.T) {
 				"published_file": reflect.TypeOf(releasepublisher.PublishedFileV1{}),
 			},
 		},
+		{
+			name:       "presentation-icon-evidence-v1.schema.json",
+			topLevel:   reflect.TypeOf(releasepublisher.PresentationIconEvidenceV1{}),
+			nestedDefs: map[string]reflect.Type{},
+		},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
 			raw, err := os.ReadFile(filepath.Join(repoRoot(t), "spec", "plugin", testCase.name))
@@ -109,9 +114,19 @@ func TestReleasePublisherSchemasValidateRepresentativeDocuments(t *testing.T) {
 		SigningLedger: releasepublisher.SigningLedgerConfigV1{LogID: "example_signing_log", PublicKeyV1: releasepublisher.PublicKeyV1{Algorithm: "ed25519", KeyID: "example_ledger", PublicKey: publicKey}},
 		Files:         []releasepublisher.PublishedFileV1{{Locator: "anchors/root.public.json", AssetName: "root.public.json", SHA256: strings.Repeat("5", 64), Size: 32}},
 	}
+	iconEvidence := releasepublisher.PresentationIconEvidenceV1{
+		SchemaVersion: releasepublisher.PresentationIconEvidenceSchemaVersion,
+		Path:          "ui/assets/plugin.png",
+		MediaType:     "image/png",
+		Width:         128,
+		Height:        128,
+		SHA256:        "sha256:" + strings.Repeat("6", 64),
+		Size:          1024,
+	}
 	for name, document := range map[string]any{
-		"release-publisher-config-v1.schema.json": config,
-		"publisher-release-ref-v1.schema.json":    reference,
+		"release-publisher-config-v1.schema.json":   config,
+		"publisher-release-ref-v1.schema.json":      reference,
+		"presentation-icon-evidence-v1.schema.json": iconEvidence,
 	} {
 		t.Run(name, func(t *testing.T) {
 			raw, err := json.Marshal(document)

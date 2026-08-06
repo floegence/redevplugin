@@ -67,14 +67,37 @@ func VerifyOutput(ctx context.Context, output string) error {
 }
 
 func VerifyAndInspectOutput(ctx context.Context, output string) (VerifiedOutputV1, error) {
-	var verified VerifiedOutputV1
-	if err := verifyOutputSnapshot(ctx, output, &verified); err != nil {
-		return VerifiedOutputV1{}, err
-	}
-	return verified, nil
+	verified, _, err := inspectVerifiedOutput(ctx, output)
+	return verified, err
 }
 
-func verifyOutputSnapshot(ctx context.Context, output string, verified *VerifiedOutputV1) error {
+// ExtractPresentationIcon writes the exact package-local image only after the
+// complete release output has been re-verified. Existing targets are never
+// replaced so a caller cannot mistake stale bytes for current evidence.
+func ExtractPresentationIcon(ctx context.Context, output, destination string) (PresentationIconEvidenceV1, error) {
+	verified, content, err := inspectVerifiedOutput(ctx, output)
+	if err != nil {
+		return PresentationIconEvidenceV1{}, err
+	}
+	if verified.PresentationIcon == nil {
+		return PresentationIconEvidenceV1{}, ErrPresentationIconUnavailable
+	}
+	if err := writePresentationIconNoOverwrite(destination, content); err != nil {
+		return PresentationIconEvidenceV1{}, err
+	}
+	return *verified.PresentationIcon, nil
+}
+
+func inspectVerifiedOutput(ctx context.Context, output string) (VerifiedOutputV1, []byte, error) {
+	var verified VerifiedOutputV1
+	var iconContent []byte
+	if err := verifyOutputSnapshot(ctx, output, &verified, &iconContent); err != nil {
+		return VerifiedOutputV1{}, nil, err
+	}
+	return verified, iconContent, nil
+}
+
+func verifyOutputSnapshot(ctx context.Context, output string, verified *VerifiedOutputV1, iconContent *[]byte) error {
 	matches, err := filepath.Glob(filepath.Join(output, "*.release-ref.json"))
 	if err != nil || len(matches) != 1 {
 		return ErrInvalidWorkspace
@@ -231,8 +254,23 @@ func verifyOutputSnapshot(ctx context.Context, output string, verified *Verified
 	if err != nil {
 		return err
 	}
+	var presentationIcon *PresentationIconEvidenceV1
+	icon, content, iconErr := pluginpkg.ReadPresentationIcon(pkg)
+	if iconErr == nil {
+		presentationIcon = &PresentationIconEvidenceV1{
+			SchemaVersion: PresentationIconEvidenceSchemaVersion,
+			Path:          icon.Path, MediaType: icon.MediaType, Width: icon.Width, Height: icon.Height,
+			SHA256: icon.SHA256, Size: icon.Size,
+		}
+	} else if !errors.Is(iconErr, pluginpkg.ErrPresentationIconUnavailable) {
+		return ErrInvalidWorkspace
+	}
 	*verified = VerifiedOutputV1{
-		Presentation: presentation, ManifestSHA256: pkg.ManifestHash, PresentationSHA256: presentationSHA256,
+		Presentation: presentation, PresentationIcon: presentationIcon,
+		ManifestSHA256: pkg.ManifestHash, PresentationSHA256: presentationSHA256,
+	}
+	if iconContent != nil && presentationIcon != nil {
+		*iconContent = content
 	}
 	return nil
 }
@@ -275,6 +313,34 @@ func writeImmutableFile(path string, value []byte, mode os.FileMode) error {
 		return err
 	}
 	return writeFileAtomic(path, value, mode)
+}
+
+func writePresentationIconNoOverwrite(path string, content []byte) (err error) {
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+	if errors.Is(err, os.ErrExist) {
+		return ErrPresentationIconOutputExists
+	}
+	if err != nil {
+		return err
+	}
+	completed := false
+	defer func() {
+		if !completed {
+			_ = file.Close()
+			_ = os.Remove(path)
+		}
+	}()
+	if _, err := file.Write(content); err != nil {
+		return err
+	}
+	if err := file.Sync(); err != nil {
+		return err
+	}
+	if err := file.Close(); err != nil {
+		return err
+	}
+	completed = true
+	return nil
 }
 
 func decodePublicKey(document PublicKeyV1) (ed25519.PublicKey, error) {

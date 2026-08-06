@@ -25,10 +25,12 @@ const (
 )
 
 var (
-	ErrInvalidPublisherConfig = errors.New("release publisher config is invalid")
-	ErrWorkspaceConflict      = errors.New("release publisher workspace conflicts with the requested input")
-	ErrWorkspaceIncomplete    = errors.New("release publisher workspace is incomplete")
-	ErrInvalidWorkspace       = errors.New("release publisher workspace is invalid")
+	ErrInvalidPublisherConfig       = errors.New("release publisher config is invalid")
+	ErrWorkspaceConflict            = errors.New("release publisher workspace conflicts with the requested input")
+	ErrWorkspaceIncomplete          = errors.New("release publisher workspace is incomplete")
+	ErrInvalidWorkspace             = errors.New("release publisher workspace is invalid")
+	ErrPresentationIconUnavailable  = errors.New("release publisher presentation icon is unavailable")
+	ErrPresentationIconOutputExists = errors.New("release publisher presentation icon output already exists")
 )
 
 type workspaceStateV1 struct {

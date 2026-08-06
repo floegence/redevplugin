@@ -94,6 +94,7 @@
     {"id": "platform-package-publication-schema", "path": "spec/plugin/platform-package-publication-v1.schema.json", "version": "platform-package-publication-v1"},
     {"id": "platform-package-set-schema", "path": "spec/plugin/platform-package-set-v1.schema.json", "version": "platform-package-set-v1"},
     {"id": "plugin-platform-openapi", "path": "spec/openapi/plugin-platform-v14.yaml", "version": "plugin-platform-v14"},
+    {"id": "presentation-icon-evidence-schema", "path": "spec/plugin/presentation-icon-evidence-v1.schema.json", "version": "presentation-icon-evidence-v1"},
     {"id": "presentation-locale-fixture", "path": "spec/plugin/presentation-locale-fixtures-v1.json", "version": "presentation-locale-fixtures-v1"},
     {"id": "process-containment-schema", "path": "spec/plugin/process-containment-v1.schema.json", "version": "process-containment-v1"},
     {"id": "publisher-release-ref-schema", "path": "spec/plugin/publisher-release-ref-v1.schema.json", "version": "publisher-release-ref-v1"},

@@ -6,9 +6,10 @@ import (
 )
 
 const (
-	ConfigSchemaVersion     = "redevplugin.release_publisher_config.v1"
-	WorkspaceSchemaVersion  = "redevplugin.release_publisher_workspace.v1"
-	ReleaseRefSchemaVersion = "redevplugin.publisher_release_ref.v1"
+	ConfigSchemaVersion                   = "redevplugin.release_publisher_config.v1"
+	WorkspaceSchemaVersion                = "redevplugin.release_publisher_workspace.v1"
+	ReleaseRefSchemaVersion               = "redevplugin.publisher_release_ref.v1"
+	PresentationIconEvidenceSchemaVersion = "redevplugin.presentation_icon_evidence.v1"
 )
 
 type PublicKeyV1 struct {
@@ -73,8 +74,21 @@ type PublisherReleaseRefV1 struct {
 
 type VerifiedOutputV1 struct {
 	Presentation       manifest.PresentationCatalog `json:"presentation"`
+	PresentationIcon   *PresentationIconEvidenceV1  `json:"presentation_icon,omitempty"`
 	ManifestSHA256     string                       `json:"manifest_sha256"`
 	PresentationSHA256 string                       `json:"presentation_sha256"`
+}
+
+// PresentationIconEvidenceV1 describes exactly one verified package-local
+// presentation image from a fully verified release output.
+type PresentationIconEvidenceV1 struct {
+	SchemaVersion string `json:"schema_version"`
+	Path          string `json:"path"`
+	MediaType     string `json:"media_type"`
+	Width         int    `json:"width"`
+	Height        int    `json:"height"`
+	SHA256        string `json:"sha256"`
+	Size          int64  `json:"size"`
 }
 
 type WorkspaceStatusV1 struct {

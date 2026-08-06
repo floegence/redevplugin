@@ -62,7 +62,21 @@ func runRelease(ctx context.Context, args []string) error {
 		}
 		return writeJSON(presentationInspectionSummary{
 			OK: true, Phase: "verified", Output: args[1], Presentation: verified.Presentation,
-			ManifestSHA256: verified.ManifestSHA256, PresentationSHA256: verified.PresentationSHA256,
+			PresentationIcon: verified.PresentationIcon,
+			ManifestSHA256:   verified.ManifestSHA256, PresentationSHA256: verified.PresentationSHA256,
+			ContractSetSHA256: version.CurrentCompatibilityManifest().ContractSetSHA256,
+			VerifierVersion:   version.CurrentCompatibilityVersion(),
+		})
+	case "extract-presentation-icon":
+		if len(args) != 3 {
+			return usage()
+		}
+		icon, err := releasepublisher.ExtractPresentationIcon(ctx, args[1], args[2])
+		if err != nil {
+			return err
+		}
+		return writeJSON(presentationIconExtractionSummary{
+			OK: true, Phase: "presentation_icon_extracted", Output: args[1], IconOutput: args[2], PresentationIcon: icon,
 			ContractSetSHA256: version.CurrentCompatibilityManifest().ContractSetSHA256,
 			VerifierVersion:   version.CurrentCompatibilityVersion(),
 		})
