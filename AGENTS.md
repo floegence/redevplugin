@@ -511,7 +511,11 @@ the actual procedure.
   all of its latest commits.
 - Do not partial-push `main`, and do not update `origin/main` through another
   branch while newer local `main` commits remain unpublished.
-- One feature equals one dedicated worktree plus one local private branch.
+- One task may own at most one feature worktree and one feature branch at a
+  time.
+- Before creating another task-owned worktree or branch, finish or stop the
+  current task and remove the worktree and branch that this task created.
+- Never remove or modify worktrees, branches, or stashes owned by another task.
 - Do not mix independent topics in one feature branch. If two pieces of work can
   ship or be reviewed separately, they should use separate worktrees.
 - Feature worktree directories live next to the repository and use the
@@ -791,11 +795,10 @@ Release publication uses three explicit gates:
   pre-push gate and the bounded main-branch Quick CI. The local gate owns
   deterministic package builds, package closure, generated metadata, source
   conformance, browser/runtime coverage, performance, stress, and verifier
-  fixtures. Do not create a tag in order to discover deterministic packaging or
-  contract failures in the Release workflow. The tag workflow may retain only
-  ref-bound publication work and hosted-platform checks that cannot run on one
-  local development machine, including the Linux amd64/arm64 containment
-  matrix, registry publication/readback, attestation, and GitHub Release.
+  fixtures. The tag workflow may retain only ref-bound publication work and
+  hosted-platform checks that cannot run on one local development machine,
+  including the Linux amd64/arm64 containment matrix, registry
+  publication/readback, attestation, and GitHub Release.
 - After publication starts, registry readbacks must use bounded retries with
   backoff only for temporary availability, rate-limit, and propagation failures.
   A source commit, tag ref, package digest, checksum, provenance, package set, or
@@ -808,6 +811,13 @@ Release publication uses three explicit gates:
   attestation, the exact GitHub Release asset, and the final public verification
   job have all succeeded. Downstream repositories must wait for that complete
   public evidence before changing dependency coordinates.
+
+Do not create a release tag to discover deterministic source, generated
+artifact, packaging, or contract failures. Fix and validate those failures on
+the exact clean `main` tip first. Do not create a new version only to retry CI,
+packaging, registry propagation, or GitHub Release publication. Recover
+transient publication failures against the same immutable tag; a new version
+requires changed source or published artifact content.
 
 ## Repository Language Policy
 
@@ -858,6 +868,22 @@ Core invariants:
   temporarily unavailable signature assessments may proceed only through
   explicit user confirmation into disabled, zero-grant, manual-update-only
   state.
+
+## Change Workflow
+
+- Define one task scope, acceptance criterion, owner, and non-goals before
+  editing. Split independent problems into separate tasks.
+- Reproduce the problem with read-only evidence before changing production
+  behavior. A fix requires a deterministic failing test or a documented
+  external blocker.
+- Use focused tests during development. Run the complete repository gate only
+  before integrating into `main` or publishing.
+- Check downstream contract requirements before releasing an upstream change.
+  Fix missing platform contracts upstream; never use local sibling wiring or a
+  host-side duplicate implementation.
+- Before reporting a task as complete, verify its acceptance evidence. After
+  integration, verify `main == origin/main`, then remove the worktree and branch
+  created by the task.
 
 ## Quality Gates
 
