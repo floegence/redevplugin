@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.7.12
+
+- Republish the manifest v8 presentation icon and release-identity fixes from a
+  clean immutable release coordinate after the v0.7.11 package build exposed
+  stale generated worker assets.
+
 ## v0.7.11
 
 - Add signed manifest v8 presentation icon metadata and package asset
