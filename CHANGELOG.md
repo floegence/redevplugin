@@ -1,5 +1,21 @@
 # Changelog
 
+## v0.7.8
+
+### Fixed
+
+- Give Host restart activation-lease reconstruction the same bounded five-minute
+  trust-operation budget as release installation, so valid multi-asset trust
+  refreshes do not fail at an unrelated 30-second deadline.
+- Keep the existing per-asset deadlines, retry limits, release verification,
+  and fail-closed registry behavior while allowing slower public release
+  transports to complete.
+
+### Changed
+
+- Publish the complete Go, npm, Rust source crate, generated contract, and
+  package-publication evidence set as ReDevPlugin 0.7.8.
+
 ## v0.7.7
 
 ### Fixed
