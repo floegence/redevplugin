@@ -109,7 +109,7 @@ type manifestPresentationResponse struct {
 	Description   []string                                   `json:"description"`
 	Highlights    []string                                   `json:"highlights"`
 	Keywords      []string                                   `json:"keywords"`
-	Icon          *manifestPresentationIconResponse           `json:"icon,omitempty"`
+	Icon          *manifestPresentationIconResponse          `json:"icon,omitempty"`
 	Localizations []manifestPresentationLocalizationResponse `json:"localizations"`
 }
 
@@ -130,8 +130,8 @@ type presentationLocaleResponse struct {
 }
 
 type presentationCatalogResponse struct {
-	DefaultLocale string                       `json:"default_locale"`
-	Locales       []presentationLocaleResponse `json:"locales"`
+	DefaultLocale string                            `json:"default_locale"`
+	Locales       []presentationLocaleResponse      `json:"locales"`
 	Icon          *manifestPresentationIconResponse `json:"icon,omitempty"`
 }
 
