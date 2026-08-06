@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.7.10
+
+- Add signed manifest v8 presentation icon metadata and package asset
+  validation for host products.
+- Bind release publication to a single GitHub Release identity across asset
+  upload, patch, and verification stages.
+
 ## v0.7.9
 
 ### Fixed
