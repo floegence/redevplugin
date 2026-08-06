@@ -923,6 +923,8 @@ jobs:
           assets_json=$(mktemp "${RUNNER_TEMP}/redevplugin-release-assets.XXXXXX")
           downloaded=$(mktemp "${RUNNER_TEMP}/redevplugin-release-asset.XXXXXX")
           mutation_json=$(mktemp "${RUNNER_TEMP}/redevplugin-release-mutation.XXXXXX")
+          bound_release_id=
+          create_attempted=false
           cleanup() {
             rm -f "$release_pages" "$release_json" "$assets_json" "$downloaded" "$mutation_json"
           }
@@ -1082,6 +1084,10 @@ jobs:
 
           lookup_release() {
             local match_count release_id
+            if test -n "$bound_release_id"; then
+              load_bound_release "$bound_release_id"
+              return $?
+            fi
             load_release_pages || return 2
             match_count=$(jq --arg tag "$TAG" '[.[][] | select(.tag_name == $tag)] | length' "$release_pages")
             case "$match_count" in
@@ -1096,6 +1102,7 @@ jobs:
             test "$(jq --arg tag "$TAG" '[.[][] | select(.tag_name == $tag)] | length' "$release_pages")" = 1 || return 2
             release_id=$(jq -r --arg tag "$TAG" '.[][] | select(.tag_name == $tag) | .id' "$release_pages")
             [[ "$release_id" =~ ^[1-9][0-9]*$ ]] || return 2
+            bound_release_id=$release_id
             load_bound_release "$release_id"
           }
 
@@ -1265,15 +1272,40 @@ jobs:
               generate_release_notes: true,
               body: $body
             }' > "$mutation_json" || return 1
-            curl --silent --show-error --connect-timeout 10 --max-time 30 \
+            create_attempted=true
+            local status
+            status=$(curl --silent --show-error --connect-timeout 10 --max-time 30 \
               -X POST \
               -H "Accept: application/vnd.github+json" \
               -H "Authorization: Bearer $GH_TOKEN" \
               -H "Content-Type: application/json" \
               -H "X-GitHub-Api-Version: 2022-11-28" \
               --data-binary @"$mutation_json" \
-              -o /dev/null \
-              "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/releases" || true
+              -o "$release_json" -w '%{http_code}' \
+              "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/releases") || status=000
+            if test "$status" != 201; then
+              echo "release draft creation response unavailable (HTTP $status); attempting bounded adoption" >&2
+              return 1
+            fi
+            jq -e --arg tag "$TAG" --arg marker "$marker" '
+              (.id | type == "number" and . > 0) and
+              .tag_name == $tag and .prerelease == false and .draft == true and
+              ((.body // "") | contains($marker))
+            ' "$release_json" > /dev/null || return 2
+            bound_release_id=$(jq -r .id "$release_json") || return 2
+            echo "bound release id=$bound_release_id draft=true assets=0" >&2
+          }
+
+          adopt_created_draft() {
+            local matches release_id
+            load_release_pages || return 2
+            matches=$(jq -r --arg tag "$TAG" --arg marker "$marker" '[.[][] | select(.tag_name == $tag and .prerelease == false and .draft == true and ((.body // "") | contains($marker))) | .id] | unique | .[]' "$release_pages") || return 2
+            test "$(printf '%s\n' "$matches" | sed '/^$/d' | wc -l | tr -d ' ')" = 1 || return 1
+            release_id=$(printf '%s\n' "$matches" | sed '/^$/d')
+            [[ "$release_id" =~ ^[1-9][0-9]*$ ]] || return 2
+            bound_release_id=$release_id
+            load_bound_release "$bound_release_id" || return 2
+            echo "adopted release id=$bound_release_id draft=true" >&2
           }
 
           verify_tag_commit
@@ -1281,7 +1313,19 @@ jobs:
             lookup_status=0
             lookup_release || lookup_status=$?
             if test "$lookup_status" = 1; then
-              create_draft
+              if test "$create_attempted" = true; then
+                adopt_created_draft || {
+                  sleep "$attempt"
+                  continue
+                }
+              else
+                create_draft || {
+                  adopt_created_draft || {
+                    sleep "$attempt"
+                    continue
+                  }
+                }
+              fi
               sleep "$attempt"
               continue
             fi

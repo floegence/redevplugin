@@ -84,6 +84,19 @@ function allReleases() {
   return [state.release, ...(state.extraReleases ?? [])].filter(Boolean);
 }
 
+function listedReleases() {
+  if (Array.isArray(state.listSnapshots) && state.listSnapshots.length > 0) {
+    const index = Math.min(Math.max(state.listRequests - 1, 0), state.listSnapshots.length - 1);
+    const ids = state.listSnapshots[index];
+    return ids.map((id) => findRelease(id)).filter(Boolean);
+  }
+  if (state.listDelayRounds > 0) {
+    state.listDelayRounds -= 1;
+    return [];
+  }
+  return allReleases();
+}
+
 function findRelease(id) {
   return allReleases().find((release) => release.id === id);
 }
@@ -110,7 +123,8 @@ if (command === "sleep") {
 if (command === "gh") {
   const endpoint = args.at(-1);
   if (endpoint.includes("/releases?per_page=100")) {
-    const releases = allReleases().map(releaseView);
+    state.listRequests += 1;
+    const releases = listedReleases().map(releaseView);
     record("list-releases");
     if (state.invalidReleasePages) output(Buffer.from("not-json"));
     output(Buffer.from(JSON.stringify([releases])));
@@ -165,7 +179,7 @@ if (method === "GET" && tagObjectMatch) {
 const releaseMatch = url?.match(/\/releases\/(\d+)$/);
 if (method === "GET" && releaseMatch) {
   const release = findRelease(Number(releaseMatch[1]));
-  record("get-release");
+    record("get-release:" + releaseMatch[1]);
   if (!release) output(Buffer.from("{}"), 404);
   output(Buffer.from(JSON.stringify(releaseView(release))));
 }
@@ -193,7 +207,22 @@ if (method === "GET" && assetMatch) {
 if (method === "POST" && url === apiPrefix + "/releases") {
   const payloadPath = option("--data-binary").replace(/^@/, "");
   const payload = JSON.parse(readFileSync(payloadPath, "utf8"));
+  const created = {
+    id: state.nextReleaseId++,
+    tag_name: payload.tag_name,
+    prerelease: payload.prerelease,
+    draft: payload.draft,
+    body: payload.body,
+  };
   if (!state.release) {
+    state.release = {
+      ...created,
+      id: 101,
+    };
+    state.nextReleaseId = Math.max(state.nextReleaseId, 102);
+  } else if (state.createAlwaysNew) {
+    state.extraReleases.push(created);
+  } else {
     state.release = {
       id: 101,
       tag_name: payload.tag_name,
@@ -214,7 +243,11 @@ if (method === "POST" && url?.startsWith("https://uploads.github.com/repos/" + s
   const payloadPath = option("--data-binary").replace(/^@/, "");
   const bytes = readFileSync(payloadPath);
   const id = state.nextAssetId++;
-  state.assets.push({
+  const releaseID = Number(url.match(/\/releases\/(\d+)\/assets(?:\/|\?)/)?.[1]);
+  const targetAssets = state.release?.id === releaseID
+    ? state.assets
+    : (state.extraReleaseAssets[String(releaseID)] ??= []);
+  targetAssets.push({
     id,
     name: new URL(url).searchParams.get("name"),
     content_type: header("Content-Type"),
@@ -258,6 +291,7 @@ if (method === "PATCH" && releaseMatch) {
   if (!release) output(Buffer.from("{}"), 404);
   if (state.patchMode !== "unchanged") release.draft = false;
   record("publish-release");
+  record("publish-release:" + release.id);
   output(Buffer.from(JSON.stringify(releaseView(release))), 200, state.patchMode === "response-lost");
 }
 
@@ -319,7 +353,12 @@ function createFixture(overrides = {}) {
     extraReleases: [],
     extraReleaseAssets: {},
     assets: [],
-    nextAssetId: 300,
+  nextAssetId: 300,
+    nextReleaseId: 102,
+    listRequests: 0,
+    listDelayRounds: 0,
+    listSnapshots: null,
+    createAlwaysNew: false,
     events: [],
     createResponseLost: false,
     uploadResponseLost: false,
@@ -439,6 +478,52 @@ test("publication shell converges across interruption and response-loss fixtures
         fixture.cleanup();
       }
     });
+  }
+});
+
+test("publication never creates a second draft while GitHub release listing is eventually consistent", () => {
+  const fixture = createFixture({
+    createResponseLost: true,
+    listDelayRounds: 3,
+    createAlwaysNew: true,
+  });
+  try {
+    const result = executePublication(fixture);
+    const debugState = fixture.readState();
+    assert.equal(result.status, 0, `${result.stderr}\n${JSON.stringify(debugState.events)}\n${JSON.stringify(debugState.assets)}\n${JSON.stringify(debugState.extraReleaseAssets)}`);
+    const state = fixture.readState();
+    assert.equal(state.events.filter((event) => event === "create-release").length, 1);
+    assert.equal(state.events.filter((event) => event === "upload-asset").length, 1);
+    if (state.events.filter((event) => event === "publish-release").length !== 1) {
+      assert.fail(JSON.stringify(state.events));
+    }
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test("publication keeps one release ID when list responses alternate between drafts", () => {
+  const fixture = createFixture({
+    release: release(true, marker, 101),
+    extraReleases: [release(true, marker, 102)],
+    assets: [asset()],
+    extraReleaseAssets: { "102": [] },
+    listSnapshots: [[102], [101], [102], [101]],
+  });
+  try {
+    const result = executePublication(fixture);
+    assert.equal(result.status, 0, result.stderr);
+    const state = fixture.readState();
+    assert.equal(state.events.filter((event) => event === "upload-asset").length, 1);
+    if (state.events.filter((event) => event === "publish-release").length !== 1) {
+      assert.fail(JSON.stringify(state.events));
+    }
+    assert.equal(state.events.filter((event) => event === "publish-release:102").length, 1);
+    assert.equal(state.events.filter((event) => event === "publish-release:101").length, 0);
+    assert.equal(state.events.some((event) => event === "list-assets:101"), false);
+    assert.ok(state.events.filter((event) => event === "list-assets:102").length > 0);
+  } finally {
+    fixture.cleanup();
   }
 });
 
