@@ -1,5 +1,21 @@
 # Changelog
 
+## v0.7.9
+
+### Fixed
+
+- Reactivate a retained plugin-data binding when the same plugin instance is
+  reinstalled with an exactly matching data shape, so enabling the reinstalled
+  plugin preserves its retained generation instead of failing as inactive.
+- Keep retained-data restoration atomic across the plugin record and binding,
+  with binding revision checks and fail-closed rejection of shape or state
+  drift.
+
+### Changed
+
+- Publish the complete Go, npm, Rust source crate, generated contract, and
+  package-publication evidence set as ReDevPlugin 0.7.9.
+
 ## v0.7.8
 
 ### Fixed
