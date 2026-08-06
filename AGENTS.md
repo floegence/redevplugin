@@ -516,6 +516,10 @@ the actual procedure.
   asks for that collaboration path.
 - Do not create a pull request merely to trigger CI; by default, fast-forward the
   ready feature into `main`, push `main`, and verify the `main` Actions run.
+- Every push of `main` must be followed by an explicit check of the corresponding
+  GitHub Actions run. A push is not complete evidence until the required Actions
+  jobs finish successfully; if a run fails, diagnose and fix the failure (or
+  report the concrete blocker) before declaring the change complete.
   Ordinary GitHub push and pull-request CI is intentionally a short source
   integrity check. Complex tests, browser/runtime conformance, packaging,
   performance, property, and stress coverage belong to the exact-main local
