@@ -2019,6 +2019,9 @@ export interface components {
             label: string;
             options: components["schemas"]["SettingOptionPresentation"][];
         };
+        PresentationIcon: {
+            path: string;
+        };
         PresentationLocale: {
             locale: string;
             plugin_name: string;
@@ -2032,6 +2035,7 @@ export interface components {
         };
         PresentationCatalog: {
             default_locale: string;
+            icon?: components["schemas"]["PresentationIcon"];
             locales: components["schemas"]["PresentationLocale"][];
         };
         /** @description Immutable inspection projection. Package identity and all four trust/security facts are server-derived. */
@@ -3164,6 +3168,9 @@ export interface components {
                 description: components["schemas"]["ManifestV8Description"];
                 highlights: components["schemas"]["ManifestV8Highlights"];
                 keywords: components["schemas"]["ManifestV8Keywords"];
+                icon?: {
+                    path: string;
+                };
                 localizations: components["schemas"]["ManifestV8Localization"][];
             };
             surfaces: {

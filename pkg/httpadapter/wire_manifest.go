@@ -109,7 +109,12 @@ type manifestPresentationResponse struct {
 	Description   []string                                   `json:"description"`
 	Highlights    []string                                   `json:"highlights"`
 	Keywords      []string                                   `json:"keywords"`
+	Icon          *manifestPresentationIconResponse           `json:"icon,omitempty"`
 	Localizations []manifestPresentationLocalizationResponse `json:"localizations"`
+}
+
+type manifestPresentationIconResponse struct {
+	Path string `json:"path"`
 }
 
 type presentationLocaleResponse struct {
@@ -127,6 +132,7 @@ type presentationLocaleResponse struct {
 type presentationCatalogResponse struct {
 	DefaultLocale string                       `json:"default_locale"`
 	Locales       []presentationLocaleResponse `json:"locales"`
+	Icon          *manifestPresentationIconResponse `json:"icon,omitempty"`
 }
 
 type manifestWidgetSizeResponse struct {
@@ -450,8 +456,15 @@ func publicManifestPresentation(source manifest.PresentationSpec) manifestPresen
 	return manifestPresentationResponse{
 		DefaultLocale: source.DefaultLocale, Summary: source.Summary,
 		Description: append([]string(nil), source.Description...), Highlights: append([]string(nil), source.Highlights...),
-		Keywords: append([]string(nil), source.Keywords...), Localizations: localizations,
+		Keywords: append([]string(nil), source.Keywords...), Icon: publicPresentationIcon(source.Icon), Localizations: localizations,
 	}
+}
+
+func publicPresentationIcon(source *manifest.PresentationIconSpec) *manifestPresentationIconResponse {
+	if source == nil {
+		return nil
+	}
+	return &manifestPresentationIconResponse{Path: source.Path}
 }
 
 func publicPresentationCatalog(source manifest.PresentationCatalog) presentationCatalogResponse {
@@ -474,7 +487,7 @@ func publicPresentationCatalog(source manifest.PresentationCatalog) presentation
 			Surfaces: surfaces, Settings: settings,
 		}
 	}
-	return presentationCatalogResponse{DefaultLocale: source.DefaultLocale, Locales: locales}
+	return presentationCatalogResponse{DefaultLocale: source.DefaultLocale, Locales: locales, Icon: publicPresentationIcon(source.Icon)}
 }
 
 type opaqueSurfaceStyleResponse struct {

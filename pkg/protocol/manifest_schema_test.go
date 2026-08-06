@@ -44,6 +44,14 @@ func TestManifestSchemaMatchesGoManifestContract(t *testing.T) {
 		t.Fatalf("plugin.ui_protocol_version const = %#v", got)
 	}
 	presentation := requireNestedObject(t, props, "presentation")
+	icon := requireNestedObject(t, presentation, "properties", "icon")
+	if icon["type"] != "object" || icon["additionalProperties"] != false {
+		t.Fatalf("presentation.icon schema = %#v", icon)
+	}
+	iconProps := requireNestedObject(t, icon, "properties")
+	if iconProps["path"] == nil {
+		t.Fatal("presentation.icon.path is missing")
+	}
 	assertStringSet(t, requireStringSlice(t, presentation["required"], "presentation required"), []string{
 		"default_locale", "summary", "description", "highlights", "keywords", "localizations",
 	}, "presentation required")

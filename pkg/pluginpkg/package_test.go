@@ -544,6 +544,47 @@ func TestBuildAcceptsPackageLocalSurfaceAssets(t *testing.T) {
 	}
 }
 
+func TestBuildValidatesPresentationIconAsset(t *testing.T) {
+	tests := []struct {
+		name      string
+		iconBytes []byte
+		wantCode  ValidationErrorCode
+		wantWhy   string
+	}{
+		{name: "missing", wantCode: ValidationCodePackageInvalid, wantWhy: "missing_icon_asset"},
+		{name: "wrong magic", iconBytes: []byte("not an image"), wantCode: ValidationCodePackageInvalid, wantWhy: "icon_magic_mismatch"},
+		{name: "valid", iconBytes: minimalPNGForTest()},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := writeFixturePackageDir(t)
+			manifestValue := map[string]any{}
+			if err := json.Unmarshal([]byte(validManifestJSON()), &manifestValue); err != nil {
+				t.Fatal(err)
+			}
+			presentation := manifestValue["presentation"].(map[string]any)
+			presentation["icon"] = map[string]any{"path": "ui/assets/plugin.png"}
+			encoded, err := json.Marshal(manifestValue)
+			if err != nil {
+				t.Fatal(err)
+			}
+			mustWriteBytes(t, filepath.Join(dir, "manifest.json"), encoded)
+			if tc.iconBytes != nil {
+				mustWriteBytes(t, filepath.Join(dir, "ui", "assets", "plugin.png"), tc.iconBytes)
+			}
+			var buf bytes.Buffer
+			_, err = BuildFromDir(context.Background(), dir, &buf, DefaultReadLimits())
+			if tc.wantWhy == "" {
+				if err != nil {
+					t.Fatalf("BuildFromDir() error = %v", err)
+				}
+				return
+			}
+			requireValidationError(t, err, tc.wantCode, tc.wantWhy, "ui/assets/plugin.png", "/presentation/icon/path")
+		})
+	}
+}
+
 func TestBuildRejectsUnsafeSurfaceHTMLAssets(t *testing.T) {
 	tests := []struct {
 		name    string

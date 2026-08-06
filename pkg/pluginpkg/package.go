@@ -9,6 +9,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"image"
+	_ "image/png"
 	"io"
 	"io/fs"
 	"mime"
@@ -24,6 +26,7 @@ import (
 
 	"github.com/floegence/redevplugin/pkg/manifest"
 	"github.com/tetratelabs/wazero"
+	_ "golang.org/x/image/webp"
 	"golang.org/x/net/html"
 	"golang.org/x/text/cases"
 	"golang.org/x/text/unicode/norm"
@@ -183,6 +186,12 @@ var allowedSurfaceIconExtensions = map[string]struct{}{
 	".png":  {},
 	".webp": {},
 }
+
+const (
+	maxPresentationIconBytes  = 512 << 10
+	maxPresentationIconWidth  = 512
+	maxPresentationIconHeight = 512
+)
 
 type PackageSignature struct {
 	SchemaVersion string `json:"schema_version"`
@@ -839,6 +848,11 @@ func hasNativeExecutableMagic(content []byte) bool {
 }
 
 func validatePackageAssetSecurity(m manifest.Manifest, files map[string][]byte) error {
+	if m.Presentation.Icon != nil {
+		if err := validatePresentationIconAsset(m.Presentation.Icon.Path, files); err != nil {
+			return err
+		}
+	}
 	for i, surface := range m.Surfaces {
 		entry, err := validatePackageAssetPath(surface.Entry)
 		if err != nil {
@@ -866,6 +880,32 @@ func validatePackageAssetSecurity(m manifest.Manifest, files map[string][]byte) 
 				return err
 			}
 		}
+	}
+	return nil
+}
+
+func validatePresentationIconAsset(iconPath string, files map[string][]byte) error {
+	icon, err := validatePackageAssetPath(iconPath)
+	if err != nil {
+		return fmt.Errorf("presentation.icon.path: %w", err)
+	}
+	ext := strings.ToLower(path.Ext(icon))
+	if ext != ".png" && ext != ".webp" {
+		return validationErrorf(ValidationCodePackageInvalid, "unsupported_icon_format", icon, "/presentation/icon/path", "presentation.icon.path %q must be a PNG or WebP asset", icon)
+	}
+	content, ok := files[icon]
+	if !ok {
+		return validationErrorf(ValidationCodePackageInvalid, "missing_icon_asset", icon, "/presentation/icon/path", "presentation.icon.path %q is not present in package", icon)
+	}
+	if len(content) == 0 || len(content) > maxPresentationIconBytes {
+		return validationErrorf(ValidationCodePackageInvalid, "icon_too_large", icon, "/presentation/icon/path", "presentation icon %q exceeds the 512 KiB limit", icon)
+	}
+	if !hasRasterIconMagic(ext, content) {
+		return validationErrorf(ValidationCodePackageInvalid, "icon_magic_mismatch", icon, "/presentation/icon/path", "presentation icon %q content does not match its raster format", icon)
+	}
+	config, _, err := image.DecodeConfig(bytes.NewReader(content))
+	if err != nil || config.Width <= 0 || config.Height <= 0 || config.Width > maxPresentationIconWidth || config.Height > maxPresentationIconHeight {
+		return validationErrorf(ValidationCodePackageInvalid, "icon_dimensions", icon, "/presentation/icon/path", "presentation icon %q must be at most 512x512 pixels", icon)
 	}
 	return nil
 }

@@ -138,6 +138,8 @@ func TestValidatePresentationRejectsIncompleteAndInvalidLocales(t *testing.T) {
 		}},
 		{name: "duplicate keyword", field: "presentation.keywords[1]", mutate: func(m *Manifest) { m.Presentation.Keywords = []string{"Resources", "resources"} }},
 		{name: "non nfc", field: "presentation.summary", mutate: func(m *Manifest) { m.Presentation.Summary = "Cafe\u0301" }},
+		{name: "icon absolute path", field: "presentation.icon.path", mutate: func(m *Manifest) { m.Presentation.Icon = &PresentationIconSpec{Path: "/ui/icon.png"} }},
+		{name: "icon unsupported format", field: "presentation.icon.path", mutate: func(m *Manifest) { m.Presentation.Icon = &PresentationIconSpec{Path: "ui/icon.svg"} }},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

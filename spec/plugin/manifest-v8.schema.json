@@ -39,6 +39,18 @@
         "description": { "$ref": "#/$defs/description" },
         "highlights": { "$ref": "#/$defs/highlights" },
         "keywords": { "$ref": "#/$defs/keywords" },
+        "icon": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["path"],
+          "properties": {
+            "path": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "^[A-Za-z0-9_][A-Za-z0-9_.-]*(?:/[A-Za-z0-9_][A-Za-z0-9_.-]*)*\\.(?:[Pp][Nn][Gg]|[Ww][Ee][Bb][Pp])$"
+            }
+          }
+        },
         "localizations": {
           "type": "array",
           "maxItems": 15,

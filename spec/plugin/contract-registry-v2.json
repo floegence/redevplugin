@@ -96,7 +96,7 @@
       "id": "manifest-schema",
       "path": "spec/plugin/manifest-v8.schema.json",
       "version": "manifest-v8",
-      "sha256": "f4f6ec875936b19ae3371459804b5ad2c36a4bd0739a83976037efffe51ada48"
+      "sha256": "dfe5e9ea5f15d4f9c0272427ca8650d475e2fa8aacc4fb6be3a945a3069a26fb"
     },
     {
       "id": "network-grant-schema",
@@ -174,7 +174,7 @@
       "id": "plugin-platform-openapi",
       "path": "spec/openapi/plugin-platform-v14.yaml",
       "version": "plugin-platform-v14",
-      "sha256": "36456f4345a004e7de9adba47d90dcafaa58936c48abf763c6587c7013c39ab1"
+      "sha256": "befc1c0423c05a66e65ad2ad79e8d097462ba01bac854962b67ef5f99a0ce4fa"
     },
     {
       "id": "presentation-locale-fixture",

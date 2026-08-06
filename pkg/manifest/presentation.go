@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"path"
 	"sort"
 	"strings"
 	"unicode"
@@ -27,6 +28,11 @@ type PresentationSpec struct {
 	Highlights    []string                       `json:"highlights"`
 	Keywords      []string                       `json:"keywords"`
 	Localizations []PresentationLocalizationSpec `json:"localizations"`
+	Icon          *PresentationIconSpec          `json:"icon,omitempty"`
+}
+
+type PresentationIconSpec struct {
+	Path string `json:"path"`
 }
 
 type PresentationLocalizationSpec struct {
@@ -53,8 +59,9 @@ type LocalizedSettingPresentation struct {
 }
 
 type PresentationCatalog struct {
-	DefaultLocale string               `json:"default_locale"`
-	Locales       []PresentationLocale `json:"locales"`
+	DefaultLocale string                `json:"default_locale"`
+	Locales       []PresentationLocale  `json:"locales"`
+	Icon          *PresentationIconSpec `json:"icon,omitempty"`
 }
 
 type PresentationLocale struct {
@@ -92,6 +99,7 @@ type ResolvedPresentation struct {
 	Keywords        []string                      `json:"keywords"`
 	Surfaces        []ResolvedSurfacePresentation `json:"surfaces"`
 	Settings        []ResolvedSettingPresentation `json:"settings"`
+	Icon            *PresentationIconSpec         `json:"icon,omitempty"`
 }
 
 func (m Manifest) PresentationCatalog() PresentationCatalog {
@@ -161,7 +169,7 @@ func (m Manifest) PresentationCatalog() PresentationCatalog {
 		}
 		locales = append(locales, locale)
 	}
-	return PresentationCatalog{DefaultLocale: m.Presentation.DefaultLocale, Locales: locales}
+	return PresentationCatalog{DefaultLocale: m.Presentation.DefaultLocale, Locales: locales, Icon: clonePresentationIcon(m.Presentation.Icon)}
 }
 
 func PresentationCatalogSHA256(catalog PresentationCatalog) (string, error) {
@@ -200,10 +208,24 @@ func ResolvePresentation(catalog PresentationCatalog, requestedLocale string) Re
 		Keywords:        cloneStrings(resolved.Keywords),
 		Surfaces:        cloneSurfaces(resolved.Surfaces),
 		Settings:        cloneSettings(resolved.Settings),
+		Icon:            clonePresentationIcon(catalog.Icon),
 	}
 }
 
+func clonePresentationIcon(icon *PresentationIconSpec) *PresentationIconSpec {
+	if icon == nil {
+		return nil
+	}
+	copy := *icon
+	return &copy
+}
+
 func validatePresentation(m Manifest) error {
+	if m.Presentation.Icon != nil {
+		if err := validatePresentationIconPath(m.Presentation.Icon.Path); err != nil {
+			return ValidationError{Field: "presentation.icon.path", Message: err.Error()}
+		}
+	}
 	if len(m.Presentation.Localizations)+1 > maxPresentationLocales {
 		return ValidationError{Field: "presentation.localizations", Message: fmt.Sprintf("must contain at most %d entries", maxPresentationLocales-1)}
 	}
@@ -265,6 +287,22 @@ func validatePresentation(m Manifest) error {
 		if err := validateLocalizedSettings(field+".settings", m.Settings, localization.Settings); err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+func validatePresentationIconPath(icon string) error {
+	if strings.TrimSpace(icon) != icon || icon == "" || strings.HasPrefix(icon, "/") || strings.ContainsAny(icon, "\\?#:\r\n\t\x00") {
+		return fmt.Errorf("must reference a package-local relative PNG or WebP image")
+	}
+	for _, part := range strings.Split(icon, "/") {
+		if part == "" || strings.HasPrefix(part, ".") {
+			return fmt.Errorf("must reference a package-local relative PNG or WebP image")
+		}
+	}
+	ext := strings.ToLower(path.Ext(icon))
+	if ext != ".png" && ext != ".webp" {
+		return fmt.Errorf("must reference a package-local relative PNG or WebP image")
 	}
 	return nil
 }
