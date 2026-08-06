@@ -23,8 +23,8 @@
     "scripts/canonical_wasm_builder.mjs": "b37f56c2ca9322aefce98073e918e42e4cdf480639d4d82e90ff6117d2419540"
   },
   "artifacts": {
-    "examples/plugins/memos/workers/memos.wasm": "d745dc86d7b9ad87c7fc2c7a0563ffacb20df86b7cdc634eedb821323fc0ec96",
-    "examples/plugins/sky-strike/workers/sky-strike.wasm": "2e20784ce5e2edde04e12e92ff41676b5672a049a7d9c8205a7a9e71cb2f398d",
-    "examples/plugins/weather/workers/weather.wasm": "0807c52543af17516810761b0a200147339f84458248219b4e9bb41da18b7be1"
+    "examples/plugins/memos/workers/memos.wasm": "5f7cce3dadeaff31bf37e108e5d3f83d2f20857be8d2de56865f030986677d88",
+    "examples/plugins/sky-strike/workers/sky-strike.wasm": "db9e17fca1a82fdc264af107a0479ef3e9f19b9eae3a0ed575b3500c34577ee6",
+    "examples/plugins/weather/workers/weather.wasm": "bc550340577178457ff9d2160166d999065e744d6c4daf837854080762cbb038"
   }
 }
