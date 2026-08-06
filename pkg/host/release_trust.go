@@ -20,7 +20,7 @@ type sourceFenceRegistry struct {
 	active map[string]uint64
 }
 
-const defaultReleaseTrustActivationLeaseTimeout = 30 * time.Second
+const defaultReleaseTrustActivationLeaseTimeout = releaseInstallOperationTimeout
 
 func newSourceFenceRegistry() *sourceFenceRegistry {
 	return &sourceFenceRegistry{active: make(map[string]uint64)}

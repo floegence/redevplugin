@@ -134,6 +134,47 @@ func TestReleaseActivationLeaseRefreshTimesOutAfterHostRestartWithoutRegistryMut
 	}
 }
 
+func TestReleaseActivationLeaseRefreshUsesInstallOperationBudgetAfterHostRestart(t *testing.T) {
+	registryStore := registry.NewMemoryStore()
+	installedFixture := newHostReleaseTrustFixture(t)
+	installedHost, _, _ := newTestHostWithOptions(t, testHostOptions{
+		releaseTrust: installedFixture.ServiceSet,
+		releaseArtifactResolver: &recordingReleaseArtifactResolver{
+			artifact: resolvedReleaseTrustFixture(installedFixture),
+		},
+		registry: registryStore,
+	})
+	installed, err := installedHost.InstallReleaseRef(hostTestContext(), InstallReleaseRefRequest{
+		PluginInstanceID: nextTestPluginInstanceID(t), ReleaseRef: releaseTrustFixtureRef(installedFixture), Now: time.Now().UTC(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	before, err := registryStore.GetPlugin(hostTestContext(), installed.PluginInstanceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	restartedFixture := newHostReleaseTrustFixture(t)
+	restartedHost, _, _ := newTestHostWithOptions(t, testHostOptions{
+		releaseTrust: restartedFixture.ServiceSet,
+		releaseArtifactResolver: &recordingReleaseArtifactResolver{
+			artifact: resolvedReleaseTrustFixture(restartedFixture),
+		},
+		registry: registryStore,
+	})
+	if err := restartedHost.ensureReleaseActivationLease(context.Background(), before); err != nil {
+		t.Fatal(err)
+	}
+	remaining, ok := restartedFixture.DocumentTransport.FirstDeadlineRemaining()
+	if !ok {
+		t.Fatal("release trust refresh did not receive a deadline")
+	}
+	if remaining < releaseInstallOperationTimeout-time.Second || remaining > releaseInstallOperationTimeout {
+		t.Fatalf("release trust refresh deadline = %s, want approximately %s", remaining, releaseInstallOperationTimeout)
+	}
+}
+
 func TestReleaseTrustInstallRejectsTamperingBeforeRegistryMutation(t *testing.T) {
 	tests := []struct {
 		name   string

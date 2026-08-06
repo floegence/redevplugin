@@ -407,16 +407,24 @@ func (fixture *Fixture) SetCapabilityBundle(bundle capabilitycontract.Bundle) {
 }
 
 type DocumentTransport struct {
-	mu      sync.Mutex
-	values  map[string][]byte
-	tokens  map[string]string
-	calls   int
-	blocked bool
+	mu                     sync.Mutex
+	values                 map[string][]byte
+	tokens                 map[string]string
+	calls                  int
+	blocked                bool
+	firstDeadlineRemaining time.Duration
+	hasDeadline            bool
 }
 
 func (transport *DocumentTransport) FetchReleaseDocument(ctx context.Context, request releasetrust.ReleaseDocumentRequest) (releasetrust.ReleaseDocumentResult, error) {
 	transport.mu.Lock()
 	transport.calls++
+	if transport.calls == 1 {
+		if deadline, ok := ctx.Deadline(); ok {
+			transport.firstDeadlineRemaining = time.Until(deadline)
+			transport.hasDeadline = true
+		}
+	}
 	blocked := transport.blocked
 	locator := request.Locator().String()
 	value := slices.Clone(transport.values[locator])
@@ -442,6 +450,12 @@ func (transport *DocumentTransport) SetBlocked(blocked bool) {
 	transport.mu.Lock()
 	transport.blocked = blocked
 	transport.mu.Unlock()
+}
+
+func (transport *DocumentTransport) FirstDeadlineRemaining() (time.Duration, bool) {
+	transport.mu.Lock()
+	defer transport.mu.Unlock()
+	return transport.firstDeadlineRemaining, transport.hasDeadline
 }
 
 type LedgerTransport struct {
