@@ -8,7 +8,7 @@ import { parse as parseYAML } from "yaml";
 const root = resolve(import.meta.dirname, "..");
 
 async function readOpenAPI() {
-  return parseYAML(await readFile(join(root, "spec/openapi/plugin-platform-v14.yaml"), "utf8"));
+  return parseYAML(await readFile(join(root, "spec/openapi/plugin-platform-v15.yaml"), "utf8"));
 }
 
 async function readIPCSchema() {
@@ -24,7 +24,7 @@ async function readSessionScopeMaintenanceContract() {
 }
 
 async function readCompatibilitySchema() {
-  return JSON.parse(await readFile(join(root, "spec/plugin/compatibility-manifest-v16.schema.json"), "utf8"));
+  return JSON.parse(await readFile(join(root, "spec/plugin/compatibility-manifest-v17.schema.json"), "utf8"));
 }
 
 test("PatchSettingsRequest requires a non-empty set or remove object", async () => {
@@ -207,7 +207,7 @@ test("session maintenance publishes the closed fail-closed recovery matrix", asy
   assert.doesNotMatch(JSON.stringify(contract), /closed_session_proof|operation_id|proof_sha256/);
 });
 
-test("compatibility v16 publishes the complete session revoke and UI transport matrix", async () => {
+test("compatibility v17 publishes the complete session revoke and UI transport matrix", async () => {
   const schema = await readCompatibilitySchema();
   const matrix = schema.properties.matrix;
   assert.ok(matrix.required.includes("session_scope_schema_version"));
@@ -224,6 +224,9 @@ test("compatibility v16 publishes the complete session revoke and UI transport m
 
 test("release install operation closes progress and terminal result states", async () => {
   const openAPI = await readOpenAPI();
+	const start = openAPI.components.schemas.StartReleaseInstallOperationRequest;
+	assert.deepEqual(start.if.properties.activate_after_install, { const: false });
+	assert.deepEqual(start.then.not.required, ["approved_permission_ids"]);
   const progress = openAPI.components.schemas.ReleaseInstallProgress;
   assert.equal(progress.oneOf.length, 2);
   assert.deepEqual(progress.oneOf[0].properties.kind, { const: "indeterminate" });
@@ -237,7 +240,16 @@ test("release install operation closes progress and terminal result states", asy
   assert.equal(operation.oneOf.length, 3);
   assert.deepEqual(operation.oneOf[1].properties.status, { const: "succeeded" });
   assert.deepEqual(operation.oneOf[1].properties.mutation_outcome, { const: "committed" });
+	assert.deepEqual(operation.oneOf[1].properties.activation.allOf[1].properties.status.enum, ["enabled", "needs_attention", "not_requested"]);
   assert.deepEqual(operation.oneOf[2].properties.status, { const: "failed" });
+
+	const activation = openAPI.components.schemas.ReleaseInstallActivation;
+	assert.equal(activation.oneOf.length, 2);
+	assert.deepEqual(activation.oneOf[1].properties.status, { const: "needs_attention" });
+	assert.ok(activation.oneOf[1].required.includes("next_action"));
+	const diagnostic = openAPI.components.schemas.ReleaseInstallPhaseDiagnostic;
+	assert.ok(diagnostic.properties.phase.enum.includes("fetch_trust_evidence"));
+	assert.ok(diagnostic.properties.phase.enum.includes("verify_signatures_ledger"));
 });
 
 test("OpenAPI source keeps external schema references for structured bundling", async () => {

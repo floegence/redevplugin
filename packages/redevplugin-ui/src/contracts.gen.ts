@@ -37,9 +37,9 @@ export const redevPluginContractVersions = {
   "resource_scope_schema_version": "resource-scope-v1",
   "session_scope_schema_version": "session-scope-v1",
   "session_scope_maintenance_schema_version": "session-scope-maintenance-v1",
-  "plugin_platform_openapi_version": "plugin-platform-v14",
-  "compatibility_manifest_version": "redevplugin.compatibility.v16",
-  "compatibility_schema_version": "compatibility-manifest-v16",
+  "plugin_platform_openapi_version": "plugin-platform-v15",
+  "compatibility_manifest_version": "redevplugin.compatibility.v17",
+  "compatibility_schema_version": "compatibility-manifest-v17",
   "worker_invocation_schema_version": "worker-invocation-v3",
   "host_capability_contract_schema_version": "host-capability-contract-v1",
   "host_capability_pin_schema_version": "host-capability-pin-v1",
@@ -74,9 +74,9 @@ export type ReDevPluginContractArtifact = {
 export const redevPluginContractArtifacts = [
   {
     id: "compatibility-manifest-schema",
-    path: "spec/plugin/compatibility-manifest-v16.schema.json",
-    version: "compatibility-manifest-v16",
-    sha256: "7b23f42780960019e34d76f75f2f08aa45e36c29f00d946e89f6fed90789fd65",
+    path: "spec/plugin/compatibility-manifest-v17.schema.json",
+    version: "compatibility-manifest-v17",
+    sha256: "f3d726ab1aa4de61acba453ed2511511c51749f67e614f422dcf525fb687ad6e",
   },
   {
     id: "contract-registry-schema",
@@ -242,9 +242,9 @@ export const redevPluginContractArtifacts = [
   },
   {
     id: "plugin-platform-openapi",
-    path: "spec/openapi/plugin-platform-v14.yaml",
-    version: "plugin-platform-v14",
-    sha256: "befc1c0423c05a66e65ad2ad79e8d097462ba01bac854962b67ef5f99a0ce4fa",
+    path: "spec/openapi/plugin-platform-v15.yaml",
+    version: "plugin-platform-v15",
+    sha256: "dc0bbc718a72ea60a3630f72331723618bddef819787d39e20fb2782565ce12b",
   },
   {
     id: "presentation-icon-evidence-schema",

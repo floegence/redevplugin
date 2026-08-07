@@ -1,5 +1,18 @@
 # Changelog
 
+## v0.7.17
+
+- Let verified official release-install operations continue through activation,
+  while keeping unapproved permissions and non-official automatic activation
+  fail closed as explicit `needs_attention` or disabled results.
+- Persist fetch, download, local verification, commit, and enable diagnostics
+  with real byte progress, retry/cache evidence, and restart recovery.
+- Reuse a bounded SHA-256 content-addressed release-asset cache across Host
+  operations while revalidating size and digest on every hit and refetching
+  corrupt entries.
+- Publish the complete Go, npm, Rust source crate, generated contract, and
+  package-publication evidence set as ReDevPlugin 0.7.17.
+
 ## v0.7.16
 
 - Separate canonical signing-ledger evidence from checkpoint-advance evidence

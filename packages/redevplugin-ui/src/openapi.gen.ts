@@ -1437,7 +1437,7 @@ export interface components {
         PluginCatalogResult: {
             plugins: components["schemas"]["PluginRecord"][];
         };
-        PluginCompatibilityManifest: components["schemas"]["CompatibilityManifestV16"];
+        PluginCompatibilityManifest: components["schemas"]["CompatibilityManifestV17"];
         PluginOperationList: {
             operations: components["schemas"]["OperationRecord"][];
             next_cursor?: string;
@@ -2236,6 +2236,9 @@ export interface components {
         StartReleaseInstallOperationRequest: {
             request_id: string;
             plugin_instance_id: string;
+            /** @description When omitted, verified official sources activate automatically; false keeps the installed plugin disabled. */
+            activate_after_install?: boolean;
+            approved_permission_ids?: string[];
             release_ref: components["schemas"]["PluginReleaseRef"];
         };
         ReleaseInstallProgress: {
@@ -2252,6 +2255,32 @@ export interface components {
             code: "PLUGIN_RELEASE_REF_VERIFICATION_FAILED" | "PLUGIN_RELEASE_REF_POLICY_DENIED" | "PLUGIN_RELEASE_NETWORK" | "PLUGIN_RELEASE_TIMEOUT" | "PLUGIN_RELEASE_ASSET_MISSING" | "PLUGIN_RELEASE_ASSET_INTEGRITY" | "PLUGIN_INSTALL_INTERRUPTED" | "PLUGIN_INSTALL_STATE_CONFLICT" | "PLUGIN_INTERNAL_FAILURE";
             retryable: boolean;
         };
+        ReleaseInstallActivation: {
+            /** @enum {string} */
+            status: "pending" | "enabled" | "needs_attention" | "not_requested";
+            missing_permission_ids?: string[];
+            /** @enum {string} */
+            next_action?: "approve_permissions" | "retry_activation";
+        } & ({
+            /** @enum {string} */
+            status: "pending" | "enabled" | "not_requested";
+        } | {
+            /** @constant */
+            status: "needs_attention";
+        });
+        ReleaseInstallPhaseDiagnostic: {
+            /** @enum {string} */
+            phase: "queued" | "fetch_trust_evidence" | "fetch_release_evidence" | "download_package" | "verify_hashes" | "verify_signatures_ledger" | "fetch_capability_evidence" | "commit" | "enable" | "complete" | "failed" | "reconciling";
+            artifact_role?: string;
+            attempt: number;
+            progress: components["schemas"]["ReleaseInstallProgress"];
+            cache_hit: boolean;
+            /** Format: date-time */
+            started_at: string;
+            /** Format: date-time */
+            completed_at?: string;
+            duration_ms?: number;
+        };
         ReleaseInstallOperation: {
             request_id: string;
             operation_id: string;
@@ -2266,6 +2295,8 @@ export interface components {
             mutation_outcome: components["schemas"]["MutationOutcome"];
             failure?: components["schemas"]["ReleaseInstallFailure"];
             plugin_record?: components["schemas"]["PluginRecord"];
+            activation: components["schemas"]["ReleaseInstallActivation"];
+            phase_diagnostics: components["schemas"]["ReleaseInstallPhaseDiagnostic"][];
             /** Format: date-time */
             created_at: string;
             /** Format: date-time */
@@ -2280,6 +2311,10 @@ export interface components {
             status: "succeeded";
             /** @constant */
             mutation_outcome?: "committed";
+            activation?: components["schemas"]["ReleaseInstallActivation"] & {
+                /** @enum {string} */
+                status?: "enabled" | "needs_attention" | "not_requested";
+            };
         } | {
             /** @constant */
             status: "failed";
@@ -2930,9 +2965,9 @@ export interface components {
             counts: components["schemas"]["SessionScopeV1RevokeCounts"];
         };
         SessionScopeV1PublicRevokeResult: components["schemas"]["SessionScopeV1CompleteRevokeResult"] | components["schemas"]["SessionScopeV1IncompleteRevokeResult"];
-        CompatibilityManifestV16: {
+        CompatibilityManifestV17: {
             /** @constant */
-            schema_version: "redevplugin.compatibility.v16";
+            schema_version: "redevplugin.compatibility.v17";
             package_set: components["schemas"]["PlatformPackageSetV1"];
             matrix: {
                 /** @constant */
@@ -3006,9 +3041,9 @@ export interface components {
                 /** @constant */
                 session_scope_maintenance_schema_version: "session-scope-maintenance-v1";
                 /** @constant */
-                plugin_platform_openapi_version: "plugin-platform-v14";
+                plugin_platform_openapi_version: "plugin-platform-v15";
                 /** @constant */
-                compatibility_schema_version: "compatibility-manifest-v16";
+                compatibility_schema_version: "compatibility-manifest-v17";
                 /** @constant */
                 worker_invocation_schema_version: "worker-invocation-v3";
                 /** @constant */
@@ -3055,9 +3090,9 @@ export interface components {
                 quarantine_cleanup_schema_version: "quarantine-cleanup-v1";
             };
             contract_set_sha256: string;
-            contracts: components["schemas"]["CompatibilityManifestV16Contract"][];
+            contracts: components["schemas"]["CompatibilityManifestV17Contract"][];
         };
-        CompatibilityManifestV16Contract: {
+        CompatibilityManifestV17Contract: {
             id: string;
             path: string;
             version: string;

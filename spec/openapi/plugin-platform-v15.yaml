@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: ReDevPlugin Plugin Platform API
-  version: plugin-platform-v14
+  version: plugin-platform-v15
   description: Host-agnostic plugin management, bridge, operation, data, and sandbox routes. Release-ref install and update routes resolve host-controlled package artifacts server-side and do not accept requested trust_state values; external package URL, GitHub repository, and uploaded-package inspection flows derive package identity and trust facts server-side before reusing the shared commit/query lifecycle; local-import package install/update routes remain explicit developer/import flows and do not accept caller-supplied trust_state values.
 x-redevplugin-query-policy:
   reject_url_query_strings: true
@@ -1981,7 +1981,7 @@ components:
           type: array
           items: { $ref: "#/components/schemas/PluginRecord" }
     PluginCompatibilityManifest:
-      $ref: "../plugin/compatibility-manifest-v16.schema.json"
+      $ref: "../plugin/compatibility-manifest-v17.schema.json"
     PluginOperationList:
       type: object
       required: [operations]
@@ -3171,8 +3171,23 @@ components:
       properties:
         request_id: { type: string, minLength: 1, maxLength: 256 }
         plugin_instance_id: { type: string, minLength: 1 }
+        activate_after_install:
+          type: boolean
+          description: When omitted, verified official sources activate automatically; false keeps the installed plugin disabled.
+        approved_permission_ids:
+          type: array
+          maxItems: 256
+          uniqueItems: true
+          items: { type: string, minLength: 1, maxLength: 256 }
         release_ref:
           $ref: "#/components/schemas/PluginReleaseRef"
+      if:
+        required: [activate_after_install]
+        properties:
+          activate_after_install: { const: false }
+      then:
+        not:
+          required: [approved_permission_ids]
     ReleaseInstallProgress:
       oneOf:
         - type: object
@@ -3196,9 +3211,46 @@ components:
           type: string
           enum: [PLUGIN_RELEASE_REF_VERIFICATION_FAILED, PLUGIN_RELEASE_REF_POLICY_DENIED, PLUGIN_RELEASE_NETWORK, PLUGIN_RELEASE_TIMEOUT, PLUGIN_RELEASE_ASSET_MISSING, PLUGIN_RELEASE_ASSET_INTEGRITY, PLUGIN_INSTALL_INTERRUPTED, PLUGIN_INSTALL_STATE_CONFLICT, PLUGIN_INTERNAL_FAILURE]
         retryable: { type: boolean }
+    ReleaseInstallActivation:
+      type: object
+      required: [status]
+      additionalProperties: false
+      properties:
+        status: { type: string, enum: [pending, enabled, needs_attention, not_requested] }
+        missing_permission_ids:
+          type: array
+          uniqueItems: true
+          items: { type: string, minLength: 1, maxLength: 256 }
+        next_action: { type: string, enum: [approve_permissions, retry_activation] }
+      oneOf:
+        - required: [status]
+          properties:
+            status: { type: string, enum: [pending, enabled, not_requested] }
+          not:
+            anyOf:
+              - required: [missing_permission_ids]
+              - required: [next_action]
+        - required: [status, next_action]
+          properties:
+            status: { const: needs_attention }
+    ReleaseInstallPhaseDiagnostic:
+      type: object
+      required: [phase, attempt, progress, cache_hit, started_at]
+      additionalProperties: false
+      properties:
+        phase:
+          type: string
+          enum: [queued, fetch_trust_evidence, fetch_release_evidence, download_package, verify_hashes, verify_signatures_ledger, fetch_capability_evidence, commit, enable, complete, failed, reconciling]
+        artifact_role: { type: string, minLength: 1, maxLength: 256 }
+        attempt: { type: integer, minimum: 1, maximum: 3 }
+        progress: { $ref: "#/components/schemas/ReleaseInstallProgress" }
+        cache_hit: { type: boolean }
+        started_at: { type: string, format: date-time }
+        completed_at: { type: string, format: date-time }
+        duration_ms: { type: integer, minimum: 0, maximum: 300000 }
     ReleaseInstallOperation:
       type: object
-      required: [request_id, operation_id, plugin_instance_id, request_sha256, status, phase, progress, attempt, retry_after_ms, mutation_outcome, created_at, updated_at]
+      required: [request_id, operation_id, plugin_instance_id, request_sha256, status, phase, progress, attempt, retry_after_ms, mutation_outcome, activation, phase_diagnostics, created_at, updated_at]
       additionalProperties: false
       properties:
         request_id: { type: string, minLength: 1, maxLength: 256 }
@@ -3213,6 +3265,11 @@ components:
         mutation_outcome: { $ref: "#/components/schemas/MutationOutcome" }
         failure: { $ref: "#/components/schemas/ReleaseInstallFailure" }
         plugin_record: { $ref: "#/components/schemas/PluginRecord" }
+        activation: { $ref: "#/components/schemas/ReleaseInstallActivation" }
+        phase_diagnostics:
+          type: array
+          maxItems: 64
+          items: { $ref: "#/components/schemas/ReleaseInstallPhaseDiagnostic" }
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
         terminal_at: { type: string, format: date-time }
@@ -3228,6 +3285,11 @@ components:
           properties:
             status: { const: succeeded }
             mutation_outcome: { const: committed }
+            activation:
+              allOf:
+                - $ref: "#/components/schemas/ReleaseInstallActivation"
+                - properties:
+                    status: { type: string, enum: [enabled, needs_attention, not_requested] }
           not:
             required: [failure]
         - required: [status, terminal_at, failure]

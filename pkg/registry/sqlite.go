@@ -23,7 +23,7 @@ import (
 )
 
 const maxRegistrySQLiteConnections = 8
-const registrySQLiteSchemaVersion = 3
+const registrySQLiteSchemaVersion = 4
 
 var ErrIncompatiblePersistedManifest = errors.New("persisted plugin manifest is incompatible")
 
@@ -375,6 +375,10 @@ func (s *SQLiteStore) initializeSchema(ctx context.Context) error {
 		}
 		if schemaVersion < 3 {
 			if err := createReleaseInstallOperationSchema(ctx, tx); err != nil {
+				return err
+			}
+		} else if schemaVersion < 4 {
+			if err := migrateReleaseInstallOperationV3ToV4(ctx, tx); err != nil {
 				return err
 			}
 		}

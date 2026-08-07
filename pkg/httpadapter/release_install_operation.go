@@ -12,27 +12,31 @@ import (
 )
 
 type startReleaseInstallOperationRequest struct {
-	RequestID        string            `json:"request_id"`
-	PluginInstanceID string            `json:"plugin_instance_id"`
-	ReleaseRef       releaseRefRequest `json:"release_ref"`
+	RequestID             string            `json:"request_id"`
+	PluginInstanceID      string            `json:"plugin_instance_id"`
+	ReleaseRef            releaseRefRequest `json:"release_ref"`
+	ActivateAfterInstall  *bool             `json:"activate_after_install,omitempty"`
+	ApprovedPermissionIDs []string          `json:"approved_permission_ids,omitempty"`
 }
 
 type releaseInstallOperationResponse struct {
-	RequestID        string                                 `json:"request_id"`
-	OperationID      string                                 `json:"operation_id"`
-	PluginInstanceID string                                 `json:"plugin_instance_id"`
-	RequestSHA256    string                                 `json:"request_sha256"`
-	Status           registry.ReleaseInstallOperationStatus `json:"status"`
-	Phase            string                                 `json:"phase"`
-	Progress         registry.ReleaseInstallProgress        `json:"progress"`
-	Attempt          int                                    `json:"attempt"`
-	RetryAfterMS     int64                                  `json:"retry_after_ms"`
-	MutationOutcome  mutation.Outcome                       `json:"mutation_outcome"`
-	Failure          *registry.ReleaseInstallFailure        `json:"failure,omitempty"`
-	PluginRecord     *pluginRecordResponse                  `json:"plugin_record,omitempty"`
-	CreatedAt        time.Time                              `json:"created_at"`
-	UpdatedAt        time.Time                              `json:"updated_at"`
-	TerminalAt       *time.Time                             `json:"terminal_at,omitempty"`
+	RequestID        string                                   `json:"request_id"`
+	OperationID      string                                   `json:"operation_id"`
+	PluginInstanceID string                                   `json:"plugin_instance_id"`
+	RequestSHA256    string                                   `json:"request_sha256"`
+	Status           registry.ReleaseInstallOperationStatus   `json:"status"`
+	Phase            string                                   `json:"phase"`
+	Progress         registry.ReleaseInstallProgress          `json:"progress"`
+	Attempt          int                                      `json:"attempt"`
+	RetryAfterMS     int64                                    `json:"retry_after_ms"`
+	MutationOutcome  mutation.Outcome                         `json:"mutation_outcome"`
+	Failure          *registry.ReleaseInstallFailure          `json:"failure,omitempty"`
+	PluginRecord     *pluginRecordResponse                    `json:"plugin_record,omitempty"`
+	Activation       registry.ReleaseInstallActivation        `json:"activation"`
+	PhaseDiagnostics []registry.ReleaseInstallPhaseDiagnostic `json:"phase_diagnostics"`
+	CreatedAt        time.Time                                `json:"created_at"`
+	UpdatedAt        time.Time                                `json:"updated_at"`
+	TerminalAt       *time.Time                               `json:"terminal_at,omitempty"`
 }
 
 type releaseInstallOperationListResponse struct {
@@ -46,6 +50,7 @@ func publicReleaseInstallOperation(operation registry.ReleaseInstallOperation) (
 		Status: operation.Status, Phase: operation.Phase, Progress: operation.Progress,
 		Attempt: operation.Attempt, RetryAfterMS: operation.RetryAfterMS,
 		MutationOutcome: operation.MutationOutcome, Failure: operation.Failure,
+		Activation: operation.Activation, PhaseDiagnostics: operation.PhaseDiagnostics,
 		CreatedAt: operation.CreatedAt, UpdatedAt: operation.UpdatedAt,
 		TerminalAt: cloneWireTime(operation.TerminalAt),
 	}
@@ -67,6 +72,7 @@ func (h Handler) handleStartReleaseInstallOperation(w http.ResponseWriter, r *ht
 	}
 	operation, err := h.host.StartReleaseInstallOperation(r.Context(), host.StartReleaseInstallOperationRequest{
 		RequestID: req.RequestID, PluginInstanceID: req.PluginInstanceID, ReleaseRef: req.ReleaseRef.domain(),
+		ActivateAfterInstall: req.ActivateAfterInstall, ApprovedPermissionIDs: req.ApprovedPermissionIDs,
 	})
 	if err != nil {
 		code := errorCodeForManagementError(err)

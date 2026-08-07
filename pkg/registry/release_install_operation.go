@@ -24,6 +24,11 @@ const (
 	ReleaseInstallFailed      ReleaseInstallOperationStatus = "failed"
 )
 
+const (
+	ReleaseInstallNextActionApprovePermissions = "approve_permissions"
+	ReleaseInstallNextActionRetryActivation    = "retry_activation"
+)
+
 type ReleaseInstallProgressKind string
 
 const (
@@ -38,9 +43,48 @@ type ReleaseInstallProgress struct {
 	Total     int64                      `json:"total,omitempty"`
 }
 
+type ReleaseInstallPhaseDiagnostic struct {
+	Phase        string                 `json:"phase"`
+	ArtifactRole string                 `json:"artifact_role,omitempty"`
+	Attempt      int                    `json:"attempt"`
+	Progress     ReleaseInstallProgress `json:"progress"`
+	CacheHit     bool                   `json:"cache_hit"`
+	StartedAt    time.Time              `json:"started_at"`
+	CompletedAt  *time.Time             `json:"completed_at,omitempty"`
+	DurationMS   int64                  `json:"duration_ms,omitempty"`
+}
+
 type ReleaseInstallFailure struct {
 	Code      string `json:"code"`
 	Retryable bool   `json:"retryable"`
+}
+
+type ReleaseInstallActivationMode string
+
+const (
+	ReleaseInstallActivationAutomatic ReleaseInstallActivationMode = "automatic"
+	ReleaseInstallActivationRequested ReleaseInstallActivationMode = "requested"
+	ReleaseInstallActivationDisabled  ReleaseInstallActivationMode = "disabled"
+)
+
+type ReleaseInstallActivationStatus string
+
+const (
+	ReleaseInstallActivationPending        ReleaseInstallActivationStatus = "pending"
+	ReleaseInstallActivationEnabled        ReleaseInstallActivationStatus = "enabled"
+	ReleaseInstallActivationNeedsAttention ReleaseInstallActivationStatus = "needs_attention"
+	ReleaseInstallActivationNotRequested   ReleaseInstallActivationStatus = "not_requested"
+)
+
+type ReleaseInstallActivationRequest struct {
+	Mode                  ReleaseInstallActivationMode `json:"mode"`
+	ApprovedPermissionIDs []string                     `json:"approved_permission_ids,omitempty"`
+}
+
+type ReleaseInstallActivation struct {
+	Status               ReleaseInstallActivationStatus `json:"status"`
+	MissingPermissionIDs []string                       `json:"missing_permission_ids,omitempty"`
+	NextAction           string                         `json:"next_action,omitempty"`
 }
 
 // ReleaseInstallIdentity is the immutable signed-release coordinate required
@@ -59,11 +103,12 @@ type ReleaseInstallIdentity struct {
 }
 
 type StartReleaseInstallOperationRequest struct {
-	RequestID        string                 `json:"request_id"`
-	OperationID      string                 `json:"operation_id"`
-	PluginInstanceID string                 `json:"plugin_instance_id"`
-	Release          ReleaseInstallIdentity `json:"release"`
-	Now              time.Time              `json:"-"`
+	RequestID        string                          `json:"request_id"`
+	OperationID      string                          `json:"operation_id"`
+	PluginInstanceID string                          `json:"plugin_instance_id"`
+	Release          ReleaseInstallIdentity          `json:"release"`
+	Activation       ReleaseInstallActivationRequest `json:"activation"`
+	Now              time.Time                       `json:"-"`
 }
 
 type UpdateReleaseInstallOperationRequest struct {
@@ -72,32 +117,38 @@ type UpdateReleaseInstallOperationRequest struct {
 	Status           ReleaseInstallOperationStatus
 	Phase            string
 	Progress         ReleaseInstallProgress
+	ArtifactRole     string
+	CacheHit         bool
 	Attempt          int
 	RetryAfterMS     int64
 	MutationOutcome  mutation.Outcome
 	Failure          *ReleaseInstallFailure
 	PluginRecord     *PluginRecord
+	Activation       ReleaseInstallActivation
 	Now              time.Time
 }
 
 type ReleaseInstallOperation struct {
-	RequestID        string                        `json:"request_id"`
-	OperationID      string                        `json:"operation_id"`
-	PluginInstanceID string                        `json:"plugin_instance_id"`
-	RequestSHA256    string                        `json:"request_sha256"`
-	Status           ReleaseInstallOperationStatus `json:"status"`
-	Phase            string                        `json:"phase"`
-	Progress         ReleaseInstallProgress        `json:"progress"`
-	Attempt          int                           `json:"attempt"`
-	RetryAfterMS     int64                         `json:"retry_after_ms"`
-	MutationOutcome  mutation.Outcome              `json:"mutation_outcome"`
-	Failure          *ReleaseInstallFailure        `json:"failure,omitempty"`
-	PluginRecord     *PluginRecord                 `json:"plugin_record,omitempty"`
-	CreatedAt        time.Time                     `json:"created_at"`
-	UpdatedAt        time.Time                     `json:"updated_at"`
-	TerminalAt       *time.Time                    `json:"terminal_at,omitempty"`
-	Revision         uint64                        `json:"-"`
-	Release          ReleaseInstallIdentity        `json:"-"`
+	RequestID         string                          `json:"request_id"`
+	OperationID       string                          `json:"operation_id"`
+	PluginInstanceID  string                          `json:"plugin_instance_id"`
+	RequestSHA256     string                          `json:"request_sha256"`
+	Status            ReleaseInstallOperationStatus   `json:"status"`
+	Phase             string                          `json:"phase"`
+	Progress          ReleaseInstallProgress          `json:"progress"`
+	Attempt           int                             `json:"attempt"`
+	RetryAfterMS      int64                           `json:"retry_after_ms"`
+	MutationOutcome   mutation.Outcome                `json:"mutation_outcome"`
+	Failure           *ReleaseInstallFailure          `json:"failure,omitempty"`
+	PluginRecord      *PluginRecord                   `json:"plugin_record,omitempty"`
+	Activation        ReleaseInstallActivation        `json:"activation"`
+	PhaseDiagnostics  []ReleaseInstallPhaseDiagnostic `json:"phase_diagnostics"`
+	CreatedAt         time.Time                       `json:"created_at"`
+	UpdatedAt         time.Time                       `json:"updated_at"`
+	TerminalAt        *time.Time                      `json:"terminal_at,omitempty"`
+	Revision          uint64                          `json:"-"`
+	Release           ReleaseInstallIdentity          `json:"-"`
+	ActivationRequest ReleaseInstallActivationRequest `json:"-"`
 }
 
 type ReleaseInstallOperationStore interface {
@@ -158,6 +209,10 @@ func (s *MemoryStore) StartReleaseInstallOperation(ctx context.Context, req Star
 		RequestSHA256: requestSHA256, Status: ReleaseInstallQueued, Phase: "queued",
 		Progress: ReleaseInstallProgress{Kind: ReleaseInstallProgressIndeterminate}, Attempt: 1,
 		MutationOutcome: mutation.OutcomeNotCommitted, CreatedAt: now, UpdatedAt: now, Revision: 1, Release: req.Release,
+		ActivationRequest: req.Activation, Activation: initialReleaseInstallActivation(req.Activation),
+		PhaseDiagnostics: []ReleaseInstallPhaseDiagnostic{{
+			Phase: "queued", Attempt: 1, Progress: ReleaseInstallProgress{Kind: ReleaseInstallProgressIndeterminate}, StartedAt: now,
+		}},
 	}
 	s.releaseInstallOps[requestKey] = releaseInstallOperationReceipt{OwnerEnvHash: ownerEnvHash, Request: req, Operation: op}
 	cloned, err := cloneReleaseInstallOperation(op)
@@ -244,10 +299,11 @@ func releaseInstallRequestSHA256(req StartReleaseInstallOperationRequest) (strin
 		return "", err
 	}
 	canonical := struct {
-		RequestID        string                 `json:"request_id"`
-		PluginInstanceID string                 `json:"plugin_instance_id"`
-		Release          ReleaseInstallIdentity `json:"release"`
-	}{RequestID: req.RequestID, PluginInstanceID: req.PluginInstanceID, Release: req.Release}
+		RequestID        string                          `json:"request_id"`
+		PluginInstanceID string                          `json:"plugin_instance_id"`
+		Release          ReleaseInstallIdentity          `json:"release"`
+		Activation       ReleaseInstallActivationRequest `json:"activation"`
+	}{RequestID: req.RequestID, PluginInstanceID: req.PluginInstanceID, Release: req.Release, Activation: req.Activation}
 	raw, err := json.Marshal(canonical)
 	if err != nil {
 		return "", err
@@ -269,6 +325,9 @@ func validateStartReleaseInstallOperation(req StartReleaseInstallOperationReques
 		if strings.TrimSpace(value) == "" || value != strings.TrimSpace(value) {
 			return fmt.Errorf("%w: %s is required and must be canonical", ErrInvalidReleaseInstallOperation, name)
 		}
+	}
+	if !validReleaseInstallActivationRequest(req.Activation) {
+		return fmt.Errorf("%w: activation request is invalid", ErrInvalidReleaseInstallOperation)
 	}
 	if !validCanonicalSHA256Hex(req.Release.ReleaseMetadataSHA256) {
 		return fmt.Errorf("%w: release_metadata_sha256 must be a canonical sha256 digest", ErrInvalidReleaseInstallOperation)
@@ -300,8 +359,14 @@ func applyReleaseInstallOperationUpdate(current ReleaseInstallOperation, req Upd
 	if !validReleaseInstallTransition(current.Status, req.Status) || strings.TrimSpace(req.Phase) == "" {
 		return ReleaseInstallOperation{}, ErrInvalidReleaseInstallOperation
 	}
+	if !validReleaseInstallPhase(req.Phase) || req.Attempt < 1 || req.Attempt > 3 || req.RetryAfterMS < 0 || req.RetryAfterMS > 10000 {
+		return ReleaseInstallOperation{}, fmt.Errorf("%w: operation diagnostics are invalid", ErrInvalidReleaseInstallOperation)
+	}
 	if err := validateReleaseInstallProgress(req.Progress); err != nil {
 		return ReleaseInstallOperation{}, err
+	}
+	if !validReleaseInstallActivation(req.Activation) {
+		return ReleaseInstallOperation{}, fmt.Errorf("%w: activation result is invalid", ErrInvalidReleaseInstallOperation)
 	}
 	terminal := req.Status == ReleaseInstallSucceeded || req.Status == ReleaseInstallFailed
 	if terminal != (req.Failure != nil || req.PluginRecord != nil) {
@@ -310,6 +375,12 @@ func applyReleaseInstallOperationUpdate(current ReleaseInstallOperation, req Upd
 	if req.Status == ReleaseInstallSucceeded && (req.PluginRecord == nil || req.Failure != nil || req.MutationOutcome != mutation.OutcomeCommitted) {
 		return ReleaseInstallOperation{}, fmt.Errorf("%w: successful operation requires committed plugin record", ErrInvalidReleaseInstallOperation)
 	}
+	if req.Status == ReleaseInstallSucceeded && req.Activation.Status == ReleaseInstallActivationPending {
+		return ReleaseInstallOperation{}, fmt.Errorf("%w: successful operation requires a terminal activation result", ErrInvalidReleaseInstallOperation)
+	}
+	if req.Status == ReleaseInstallSucceeded && !releaseInstallActivationMatchesRecord(req.Activation, *req.PluginRecord) {
+		return ReleaseInstallOperation{}, fmt.Errorf("%w: successful operation activation does not match plugin enable state", ErrInvalidReleaseInstallOperation)
+	}
 	if req.Status == ReleaseInstallFailed && (req.Failure == nil || req.PluginRecord != nil || strings.TrimSpace(req.Failure.Code) == "") {
 		return ReleaseInstallOperation{}, fmt.Errorf("%w: failed operation requires safe failure code", ErrInvalidReleaseInstallOperation)
 	}
@@ -317,15 +388,111 @@ func applyReleaseInstallOperationUpdate(current ReleaseInstallOperation, req Upd
 	if now.Before(current.UpdatedAt) {
 		return ReleaseInstallOperation{}, fmt.Errorf("%w: update time moved backwards", ErrInvalidReleaseInstallOperation)
 	}
+	current.PhaseDiagnostics = updateReleaseInstallPhaseDiagnostics(current, req, now)
 	current.Status, current.Phase, current.Progress = req.Status, req.Phase, req.Progress
 	current.Attempt, current.RetryAfterMS, current.MutationOutcome = req.Attempt, req.RetryAfterMS, req.MutationOutcome
 	current.Failure, current.PluginRecord, current.UpdatedAt = req.Failure, req.PluginRecord, now
+	current.Activation = req.Activation
 	current.Revision++
 	if terminal {
 		terminalAt := now
 		current.TerminalAt = &terminalAt
 	}
 	return current, nil
+}
+
+func updateReleaseInstallPhaseDiagnostics(current ReleaseInstallOperation, req UpdateReleaseInstallOperationRequest, now time.Time) []ReleaseInstallPhaseDiagnostic {
+	diagnostics := append([]ReleaseInstallPhaseDiagnostic(nil), current.PhaseDiagnostics...)
+	if len(diagnostics) == 0 {
+		diagnostics = append(diagnostics, ReleaseInstallPhaseDiagnostic{
+			Phase: current.Phase, Attempt: max(current.Attempt, 1), Progress: current.Progress, StartedAt: current.UpdatedAt,
+		})
+	}
+	last := &diagnostics[len(diagnostics)-1]
+	if last.Phase != req.Phase {
+		completedAt := now
+		last.CompletedAt = &completedAt
+		last.DurationMS = max(now.Sub(last.StartedAt).Milliseconds(), 0)
+		diagnostics = append(diagnostics, ReleaseInstallPhaseDiagnostic{
+			Phase: req.Phase, ArtifactRole: req.ArtifactRole, Attempt: max(req.Attempt, 1),
+			Progress: req.Progress, CacheHit: req.CacheHit, StartedAt: now,
+		})
+	} else {
+		last.ArtifactRole = req.ArtifactRole
+		last.Attempt = max(req.Attempt, 1)
+		last.Progress = req.Progress
+		last.CacheHit = last.CacheHit || req.CacheHit
+	}
+	if req.Status == ReleaseInstallSucceeded || req.Status == ReleaseInstallFailed {
+		last = &diagnostics[len(diagnostics)-1]
+		completedAt := now
+		last.CompletedAt = &completedAt
+		last.DurationMS = max(now.Sub(last.StartedAt).Milliseconds(), 0)
+	}
+	return diagnostics
+}
+
+func initialReleaseInstallActivation(request ReleaseInstallActivationRequest) ReleaseInstallActivation {
+	if request.Mode == ReleaseInstallActivationDisabled {
+		return ReleaseInstallActivation{Status: ReleaseInstallActivationNotRequested}
+	}
+	return ReleaseInstallActivation{Status: ReleaseInstallActivationPending}
+}
+
+func validReleaseInstallActivationRequest(request ReleaseInstallActivationRequest) bool {
+	switch request.Mode {
+	case ReleaseInstallActivationAutomatic, ReleaseInstallActivationRequested:
+	case ReleaseInstallActivationDisabled:
+		return len(request.ApprovedPermissionIDs) == 0
+	default:
+		return false
+	}
+	previous := ""
+	for _, permissionID := range request.ApprovedPermissionIDs {
+		if strings.TrimSpace(permissionID) == "" || permissionID != strings.TrimSpace(permissionID) || permissionID <= previous {
+			return false
+		}
+		previous = permissionID
+	}
+	return true
+}
+
+func validReleaseInstallActivation(activation ReleaseInstallActivation) bool {
+	switch activation.Status {
+	case ReleaseInstallActivationPending, ReleaseInstallActivationEnabled, ReleaseInstallActivationNotRequested:
+		return len(activation.MissingPermissionIDs) == 0 && activation.NextAction == ""
+	case ReleaseInstallActivationNeedsAttention:
+		if activation.NextAction != ReleaseInstallNextActionApprovePermissions && activation.NextAction != ReleaseInstallNextActionRetryActivation {
+			return false
+		}
+		previous := ""
+		for _, permissionID := range activation.MissingPermissionIDs {
+			if permissionID == "" || permissionID != strings.TrimSpace(permissionID) || permissionID <= previous {
+				return false
+			}
+			previous = permissionID
+		}
+		return true
+	default:
+		return false
+	}
+}
+
+func validReleaseInstallPhase(phase string) bool {
+	switch phase {
+	case "queued", "fetch_trust_evidence", "fetch_release_evidence", "download_package", "verify_hashes",
+		"verify_signatures_ledger", "fetch_capability_evidence", "commit", "enable", "complete", "failed", "reconciling":
+		return true
+	default:
+		return false
+	}
+}
+
+func releaseInstallActivationMatchesRecord(activation ReleaseInstallActivation, record PluginRecord) bool {
+	if activation.Status == ReleaseInstallActivationEnabled {
+		return record.EnableState == EnableEnabled
+	}
+	return record.EnableState == EnableDisabled
 }
 
 func validReleaseInstallTransition(from, to ReleaseInstallOperationStatus) bool {
@@ -383,6 +550,16 @@ func findMemoryReleaseInstallOperation(values map[string]releaseInstallOperation
 
 func cloneReleaseInstallOperation(value ReleaseInstallOperation) (ReleaseInstallOperation, error) {
 	cloned := value
+	cloned.ActivationRequest.ApprovedPermissionIDs = append([]string(nil), value.ActivationRequest.ApprovedPermissionIDs...)
+	cloned.Activation.MissingPermissionIDs = append([]string(nil), value.Activation.MissingPermissionIDs...)
+	cloned.PhaseDiagnostics = make([]ReleaseInstallPhaseDiagnostic, len(value.PhaseDiagnostics))
+	for index, diagnostic := range value.PhaseDiagnostics {
+		cloned.PhaseDiagnostics[index] = diagnostic
+		if diagnostic.CompletedAt != nil {
+			completedAt := *diagnostic.CompletedAt
+			cloned.PhaseDiagnostics[index].CompletedAt = &completedAt
+		}
+	}
 	if value.Failure != nil {
 		failure := *value.Failure
 		cloned.Failure = &failure

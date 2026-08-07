@@ -15,6 +15,7 @@ import (
 	"net/url"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/floegence/redevplugin/pkg/externalsource"
@@ -32,6 +33,7 @@ const (
 	defaultDocumentFetchTimeout = 20 * time.Second
 	defaultPackageFetchTimeout  = 2 * time.Minute
 	maxFetchTimeout             = 2 * time.Minute
+	defaultAssetCacheMaxBytes   = 128 << 20
 )
 
 var (
@@ -109,15 +111,20 @@ type AssetSetOptions struct {
 // AssetSet is an immutable, current-release projection. Updating a catalog
 // creates a new set instead of mutating a set used by an in-flight operation.
 type AssetSet struct {
-	sourceID     string
-	channel      string
-	quotaKey     string
-	allowedHosts []string
-	assets       map[string]Asset
-	fetcher      AssetFetcher
-	fetchTimeout time.Duration
-	sleep        func(context.Context, time.Duration) error
-	jitter       func(time.Duration) time.Duration
+	sourceID      string
+	channel       string
+	quotaKey      string
+	allowedHosts  []string
+	assets        map[string]Asset
+	fetcher       AssetFetcher
+	fetchTimeout  time.Duration
+	sleep         func(context.Context, time.Duration) error
+	jitter        func(time.Duration) time.Duration
+	cacheMu       sync.Mutex
+	cache         map[string][]byte
+	cacheOrder    []string
+	cacheBytes    int64
+	cacheMaxBytes int64
 }
 
 var (
@@ -157,7 +164,7 @@ func NewAssetSet(options AssetSetOptions) (*AssetSet, error) {
 	return &AssetSet{
 		sourceID: options.SourceID, channel: options.Channel, quotaKey: options.QuotaKey,
 		allowedHosts: hosts, assets: assets, fetcher: options.Fetcher, fetchTimeout: options.FetchTimeout,
-		sleep: sleepContext, jitter: retryJitter,
+		sleep: sleepContext, jitter: retryJitter, cache: make(map[string][]byte), cacheMaxBytes: defaultAssetCacheMaxBytes,
 	}, nil
 }
 
@@ -234,6 +241,15 @@ func (set *AssetSet) fetch(ctx context.Context, locator, artifactRole string, ma
 	if expectedSHA256 != "" && (strings.TrimPrefix(expectedSHA256, "sha256:") != asset.SHA256) {
 		return nil, "", ErrAssetMismatch
 	}
+	if cached, ok := set.cachedAsset(asset); ok {
+		if observe != nil {
+			observe(host.ReleaseArtifactProgress{
+				Phase: "cache_hit", ArtifactRole: artifactRole, Attempt: 1,
+				Completed: asset.Size, Total: asset.Size, CacheHit: true,
+			})
+		}
+		return cached, asset.SHA256, nil
+	}
 	locatorDigest := sha256.Sum256([]byte(locator))
 	fetchTimeout := set.fetchTimeout
 	if fetchTimeout == 0 {
@@ -283,7 +299,54 @@ func (set *AssetSet) fetch(ctx context.Context, locator, artifactRole string, ma
 	if int64(len(result.Bytes)) != asset.Size || hex.EncodeToString(digest[:]) != asset.SHA256 {
 		return nil, "", ErrAssetMismatch
 	}
+	set.rememberAsset(asset, result.Bytes)
 	return slices.Clone(result.Bytes), asset.SHA256, nil
+}
+
+func (set *AssetSet) cachedAsset(asset Asset) ([]byte, bool) {
+	set.cacheMu.Lock()
+	defer set.cacheMu.Unlock()
+	value, ok := set.cache[asset.SHA256]
+	if !ok {
+		return nil, false
+	}
+	digest := sha256.Sum256(value)
+	if int64(len(value)) != asset.Size || hex.EncodeToString(digest[:]) != asset.SHA256 {
+		delete(set.cache, asset.SHA256)
+		set.cacheBytes -= int64(len(value))
+		set.removeCacheOrder(asset.SHA256)
+		return nil, false
+	}
+	return slices.Clone(value), true
+}
+
+func (set *AssetSet) rememberAsset(asset Asset, value []byte) {
+	if asset.Size > set.cacheMaxBytes {
+		return
+	}
+	set.cacheMu.Lock()
+	defer set.cacheMu.Unlock()
+	if _, exists := set.cache[asset.SHA256]; exists {
+		return
+	}
+	for set.cacheBytes+asset.Size > set.cacheMaxBytes && len(set.cacheOrder) > 0 {
+		oldest := set.cacheOrder[0]
+		set.cacheOrder = set.cacheOrder[1:]
+		set.cacheBytes -= int64(len(set.cache[oldest]))
+		delete(set.cache, oldest)
+	}
+	set.cache[asset.SHA256] = slices.Clone(value)
+	set.cacheOrder = append(set.cacheOrder, asset.SHA256)
+	set.cacheBytes += asset.Size
+}
+
+func (set *AssetSet) removeCacheOrder(digest string) {
+	for index, value := range set.cacheOrder {
+		if value == digest {
+			set.cacheOrder = append(set.cacheOrder[:index], set.cacheOrder[index+1:]...)
+			return
+		}
+	}
 }
 
 func retryableFetchError(err error) bool {

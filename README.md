@@ -26,9 +26,9 @@ capabilities.
   persistent resource-scope schema, performance-evidence schema, and target
   classifier fixture
 - Active coordinated contracts are `plugin-host-v11`, `rust-ipc-v6`,
-  `plugin-ui-v7`, `bridge-v7`, `plugin-platform-v14`, `manifest-v8`, opaque
+  `plugin-ui-v7`, `bridge-v7`, `plugin-platform-v15`, `manifest-v8`, opaque
   document v3, opaque transport v6, release metadata v8, compatibility manifest
-  v16, error codes v8, resource scope v1, session scope v1, session scope
+  v17, error codes v8, resource scope v1, session scope v1, session scope
   maintenance v1, token/ticket v4, and release manifest
   v4. WASM ABI v2, worker invocation v3, and package
   signature v1 remain unchanged. Current package admission accepts only manifest
@@ -74,8 +74,11 @@ an English fallback or mix locales within one resolved presentation.
   to the release-document, signing-ledger, and Host artifact resolver
   interfaces. Downloads reuse `pkg/externalsource` public-DNS validation,
   pinned dialing, TLS verification, redirect checks, exact host allowlists,
-  byte ceilings, and SHA-256 readback. Host products can therefore download
-  packages directly from the release provider without a registry proxy.
+  byte ceilings, and SHA-256 readback. A bounded in-memory content-addressed
+  cache is shared by Host operations using that asset set; every hit revalidates
+  size and digest, and corrupt entries are discarded and fetched again. Host
+  products can therefore download packages directly from the release provider
+  without a registry proxy.
 - Host-neutral Go package boundaries for manifest validation, package IO,
   registry, host adapters, bridge, PluginData, runtime supervision, grants,
   capability adapters, HTTP routes, session context, and web security.
@@ -165,6 +168,13 @@ an English fallback or mix locales within one resolved presentation.
   local-import flows carry explicit local import provenance. Runnable verified
   state requires a host-provided `PackageTrustVerifier`; unsigned local packages
   can be enabled only when host policy permits local generated plugins.
+- Durable release-install operations continue through the authoritative enable
+  transaction for verified official releases by default. Required permissions
+  are granted only when the request explicitly approves their signed IDs;
+  otherwise the installed plugin remains disabled with a `needs_attention`
+  result. Fetch, download, hash, signature/ledger, capability, commit, and enable
+  phases persist real progress, retries, cache hits, durations, and terminal
+  activation so a host can resume observation after reconnect or restart.
 - External package admission accepts a public HTTPS package URL or GitHub
   repository through a staged `inspect -> commit -> query` transaction. The
   inspection returns immutable source, hash, signature, execution-approval,

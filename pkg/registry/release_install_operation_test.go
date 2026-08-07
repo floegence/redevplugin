@@ -34,6 +34,11 @@ func TestReleaseInstallOperationReplayConflictAndOwnerIsolation(t *testing.T) {
 			if _, _, err := store.StartReleaseInstallOperation(ctx, mismatch); !errors.Is(err, ErrReleaseInstallOperationConflict) {
 				t.Fatalf("request replay mismatch error = %v", err)
 			}
+			activationMismatch := req
+			activationMismatch.Activation.ApprovedPermissionIDs = []string{"containers.read"}
+			if _, _, err := store.StartReleaseInstallOperation(ctx, activationMismatch); !errors.Is(err, ErrReleaseInstallOperationConflict) {
+				t.Fatalf("activation replay mismatch error = %v", err)
+			}
 			duplicatePlugin := req
 			duplicatePlugin.RequestID = "request_install_containers_again"
 			duplicatePlugin.OperationID = "operation_install_containers_again"
@@ -63,7 +68,8 @@ func TestReleaseInstallOperationProgressAndTerminalCAS(t *testing.T) {
 				OperationID: created.OperationID, ExpectedRevision: created.Revision,
 				Status: ReleaseInstallRunning, Phase: "download_package",
 				Progress: ReleaseInstallProgress{Kind: ReleaseInstallProgressBytes, Completed: 262144, Total: 524288},
-				Attempt:  2, RetryAfterMS: 250, MutationOutcome: mutation.OutcomeNotCommitted, Now: req.Now.Add(time.Second),
+				Attempt:  2, RetryAfterMS: 250, MutationOutcome: mutation.OutcomeNotCommitted,
+				Activation: created.Activation, Now: req.Now.Add(time.Second),
 			})
 			if err != nil {
 				t.Fatal(err)
@@ -75,7 +81,7 @@ func TestReleaseInstallOperationProgressAndTerminalCAS(t *testing.T) {
 				OperationID: created.OperationID, ExpectedRevision: created.Revision,
 				Status: ReleaseInstallFailed, Phase: "failed", Progress: ReleaseInstallProgress{Kind: ReleaseInstallProgressIndeterminate},
 				Attempt: 2, MutationOutcome: mutation.OutcomeNotCommitted,
-				Failure: &ReleaseInstallFailure{Code: "PLUGIN_INSTALL_INTERRUPTED", Retryable: true}, Now: req.Now.Add(2 * time.Second),
+				Failure: &ReleaseInstallFailure{Code: "PLUGIN_INSTALL_INTERRUPTED", Retryable: true}, Activation: running.Activation, Now: req.Now.Add(2 * time.Second),
 			}); !errors.Is(err, ErrReleaseInstallOperationConflict) {
 				t.Fatalf("stale update error = %v", err)
 			}
@@ -83,7 +89,7 @@ func TestReleaseInstallOperationProgressAndTerminalCAS(t *testing.T) {
 				OperationID: running.OperationID, ExpectedRevision: running.Revision,
 				Status: ReleaseInstallFailed, Phase: "failed", Progress: ReleaseInstallProgress{Kind: ReleaseInstallProgressIndeterminate},
 				Attempt: 2, MutationOutcome: mutation.OutcomeNotCommitted,
-				Failure: &ReleaseInstallFailure{Code: "PLUGIN_INSTALL_INTERRUPTED", Retryable: true}, Now: req.Now.Add(2 * time.Second),
+				Failure: &ReleaseInstallFailure{Code: "PLUGIN_INSTALL_INTERRUPTED", Retryable: true}, Activation: running.Activation, Now: req.Now.Add(2 * time.Second),
 			})
 			if err != nil || failed.TerminalAt == nil || failed.Failure == nil || !failed.Failure.Retryable {
 				t.Fatalf("failed operation = %#v, %v", failed, err)
@@ -93,6 +99,34 @@ func TestReleaseInstallOperationProgressAndTerminalCAS(t *testing.T) {
 				t.Fatalf("listed operations = %#v, %v", listed, err)
 			}
 		})
+	}
+}
+
+func TestReleaseInstallOperationRejectsActivationRecordMismatch(t *testing.T) {
+	ctx := registryTestContext()
+	store := NewMemoryStore()
+	req := releaseInstallOperationRequest(time.Date(2026, 8, 5, 1, 2, 3, 0, time.UTC))
+	created, _, err := store.StartReleaseInstallOperation(ctx, req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	running, err := store.UpdateReleaseInstallOperation(ctx, UpdateReleaseInstallOperationRequest{
+		OperationID: created.OperationID, ExpectedRevision: created.Revision, Status: ReleaseInstallRunning,
+		Phase: "enable", Progress: ReleaseInstallProgress{Kind: ReleaseInstallProgressIndeterminate}, Attempt: 1,
+		MutationOutcome: mutation.OutcomeCommitted, Activation: created.Activation, Now: req.Now.Add(time.Second),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	record := PluginRecord{PluginInstanceID: req.PluginInstanceID, EnableState: EnableDisabled}
+	_, err = store.UpdateReleaseInstallOperation(ctx, UpdateReleaseInstallOperationRequest{
+		OperationID: running.OperationID, ExpectedRevision: running.Revision, Status: ReleaseInstallSucceeded,
+		Phase: "complete", Progress: ReleaseInstallProgress{Kind: ReleaseInstallProgressItems, Completed: 1, Total: 1}, Attempt: 1,
+		MutationOutcome: mutation.OutcomeCommitted, PluginRecord: &record,
+		Activation: ReleaseInstallActivation{Status: ReleaseInstallActivationEnabled}, Now: req.Now.Add(2 * time.Second),
+	})
+	if !errors.Is(err, ErrInvalidReleaseInstallOperation) {
+		t.Fatalf("UpdateReleaseInstallOperation() error = %v, want %v", err, ErrInvalidReleaseInstallOperation)
 	}
 }
 
@@ -137,7 +171,8 @@ func TestReleaseInstallOperationAcceptsPublisherReleaseRefDigestShapes(t *testin
 			PackageSHA256: reference.ExpectedHashes.PackageSHA256, ManifestSHA256: reference.ExpectedHashes.ManifestSHA256,
 			EntriesSHA256: reference.ExpectedHashes.EntriesSHA256,
 		},
-		Now: time.Date(2026, 8, 5, 1, 2, 3, 0, time.UTC),
+		Activation: ReleaseInstallActivationRequest{Mode: ReleaseInstallActivationAutomatic},
+		Now:        time.Date(2026, 8, 5, 1, 2, 3, 0, time.UTC),
 	}
 
 	for _, tc := range registryStoreCases() {
@@ -165,7 +200,7 @@ func TestSQLiteRegistryMigratesV2AndReconcilesReleaseInstallOperation(t *testing
 		OperationID: created.OperationID, ExpectedRevision: created.Revision,
 		Status: ReleaseInstallRunning, Phase: "download_package",
 		Progress: ReleaseInstallProgress{Kind: ReleaseInstallProgressBytes, Completed: 1, Total: 2},
-		Attempt:  1, MutationOutcome: mutation.OutcomeNotCommitted, Now: req.Now.Add(time.Second),
+		Attempt:  1, MutationOutcome: mutation.OutcomeNotCommitted, Activation: created.Activation, Now: req.Now.Add(time.Second),
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -184,6 +219,9 @@ func TestSQLiteRegistryMigratesV2AndReconcilesReleaseInstallOperation(t *testing
 	}
 	if reconciled.Status != ReleaseInstallReconciling || reconciled.Phase != "reconciling" || reconciled.MutationOutcome != mutation.OutcomeUnknown || reconciled.Revision != 3 {
 		t.Fatalf("reconciled operation = %#v", reconciled)
+	}
+	if reconciled.ActivationRequest.Mode != ReleaseInstallActivationAutomatic || reconciled.Activation.Status != ReleaseInstallActivationPending {
+		t.Fatalf("reconciled activation = request:%#v result:%#v", reconciled.ActivationRequest, reconciled.Activation)
 	}
 
 	if _, err := reopened.db.ExecContext(ctx, `DROP TABLE release_install_operations`); err != nil {
@@ -212,6 +250,47 @@ func TestSQLiteRegistryMigratesV2AndReconcilesReleaseInstallOperation(t *testing
 	}
 }
 
+func TestSQLiteRegistryMigratesV3ReleaseInstallJournalWithoutSynthesizingActivation(t *testing.T) {
+	ctx := registryTestContext()
+	path := filepath.Join(t.TempDir(), "registry-v3.sqlite")
+	store, err := NewSQLiteStore(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := releaseInstallOperationRequest(time.Date(2026, 8, 5, 1, 2, 3, 0, time.UTC))
+	created, _, err := store.StartReleaseInstallOperation(ctx, req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, column := range []string{"phase_diagnostics_json", "activation_json", "activation_request_json"} {
+		if _, err := store.db.ExecContext(ctx, `ALTER TABLE release_install_operations DROP COLUMN `+column); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := store.db.ExecContext(ctx, `PRAGMA user_version = 3`); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	migrated, err := NewSQLiteStore(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer migrated.Close()
+	operation, err := migrated.GetReleaseInstallOperation(ctx, created.OperationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if operation.ActivationRequest.Mode != ReleaseInstallActivationDisabled || operation.Activation.Status != ReleaseInstallActivationNotRequested {
+		t.Fatalf("migrated activation = request:%#v result:%#v", operation.ActivationRequest, operation.Activation)
+	}
+	if len(operation.PhaseDiagnostics) != 0 {
+		t.Fatalf("v3 migration synthesized phase history: %#v", operation.PhaseDiagnostics)
+	}
+}
+
 func releaseInstallOperationRequest(now time.Time) StartReleaseInstallOperationRequest {
 	return StartReleaseInstallOperationRequest{
 		RequestID: "request_install_example", OperationID: "operation_install_example", PluginInstanceID: "plugini_example",
@@ -223,6 +302,7 @@ func releaseInstallOperationRequest(now time.Time) StartReleaseInstallOperationR
 			ManifestSHA256: "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
 			EntriesSHA256:  "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
 		},
-		Now: now,
+		Activation: ReleaseInstallActivationRequest{Mode: ReleaseInstallActivationAutomatic},
+		Now:        now,
 	}
 }

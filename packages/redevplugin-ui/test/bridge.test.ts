@@ -575,7 +575,7 @@ test("platform client reads compatibility manifest through host API", async () =
   fetch.push({
     ok: true,
     data: {
-      schema_version: "redevplugin.compatibility.v16",
+      schema_version: "redevplugin.compatibility.v17",
       package_set: {
         schema_version: "redevplugin.platform_package_set.v1",
         platform_version: "0.6.0",
@@ -600,8 +600,8 @@ test("platform client reads compatibility manifest through host API", async () =
       contracts: [
         {
           id: "plugin-platform-openapi",
-          path: "spec/openapi/plugin-platform-v14.yaml",
-          version: "plugin-platform-v14",
+          path: "spec/openapi/plugin-platform-v15.yaml",
+          version: "plugin-platform-v15",
           sha256: "sha256-openapi",
         },
         {
@@ -620,8 +620,8 @@ test("platform client reads compatibility manifest through host API", async () =
 
   const compatibility = await client.getCompatibility();
 
-  assert.equal(compatibility.schema_version, "redevplugin.compatibility.v16");
-  assert.equal(compatibility.matrix.plugin_platform_openapi_version, "plugin-platform-v14");
+  assert.equal(compatibility.schema_version, "redevplugin.compatibility.v17");
+  assert.equal(compatibility.matrix.plugin_platform_openapi_version, "plugin-platform-v15");
   assert.equal(compatibility.matrix.release_metadata_schema_version, "release-metadata-v8");
   assert.equal(compatibility.matrix.release_source_policy_schema_version, "release-source-policy-v3");
   assert.equal(compatibility.matrix.release_source_policy_pointer_schema_version, "release-source-policy-pointer-v2");

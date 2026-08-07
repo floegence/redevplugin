@@ -456,6 +456,7 @@ type ReleaseArtifactProgress struct {
 	RetryAfter   time.Duration
 	Completed    int64
 	Total        int64
+	CacheHit     bool
 }
 
 type ReleaseArtifactFailure struct {
@@ -893,6 +894,7 @@ type packageTrustInput struct {
 	Release         *PluginPackageRelease
 	SourcePolicy    *releasecontract.SourcePolicyV2
 	VerifiedRelease *releasetrust.VerifiedPackage
+	Observe         func(ReleaseArtifactProgress)
 }
 
 type DowngradeRequest struct {
@@ -3447,6 +3449,7 @@ func (h *Host) installResolvedPackage(ctx context.Context, pkg pluginpkg.Package
 	if err != nil {
 		return registry.PluginRecord{}, h.markInstallStageFailed(ctx, stage.StageID, "trust_failed", err, now)
 	}
+	observeReleaseInstallPhase(trustInput.Observe, "fetch_capability_evidence")
 	capabilityPins, err := h.resolvePackageCapabilityPins(ctx, pkg.Manifest, trustInput)
 	if err != nil {
 		return registry.PluginRecord{}, h.markInstallStageFailed(ctx, stage.StageID, "capability_contract_failed", err, now)
@@ -3463,6 +3466,7 @@ func (h *Host) installResolvedPackage(ctx context.Context, pkg pluginpkg.Package
 	}); err != nil {
 		return registry.PluginRecord{}, err
 	}
+	observeReleaseInstallPhase(trustInput.Observe, "commit")
 	record := packageRecord(pkg, trustAssessment, pluginInstanceID, metadata, capabilityPins)
 	record.RuntimeRequirement = runtimeRequirement
 	if trustInput.LocalImport {
@@ -3718,6 +3722,11 @@ func (h *Host) resolveReleasePackage(ctx context.Context, action PackageTrustAct
 	if err := validateReleaseRef(ref); err != nil {
 		return pluginpkg.Package{}, PluginPackageRelease{}, releasecontract.SourcePolicyV2{}, releasetrust.VerifiedPackage{}, nil, err
 	}
+	var progressObserver func(ReleaseArtifactProgress)
+	if len(observe) > 0 {
+		progressObserver = observe[0]
+	}
+	observeReleaseInstallPhase(progressObserver, "fetch_trust_evidence")
 	prepared, err := h.adapters.ReleaseTrust.PrepareRelease(ctx, releasetrust.ReleaseIdentity{
 		SourceID: ref.SourceID, Channel: ref.Channel, ReleaseMetadataRef: ref.ReleaseMetadataRef,
 		ReleaseMetadataSHA256: ref.ReleaseMetadataSHA256, PublisherID: ref.PublisherID,
@@ -3730,13 +3739,10 @@ func (h *Host) resolveReleasePackage(ctx context.Context, action PackageTrustAct
 	if err := enforceReleaseSourcePolicy(action, current, ref, sourcePolicy); err != nil {
 		return pluginpkg.Package{}, PluginPackageRelease{}, releasecontract.SourcePolicyV2{}, releasetrust.VerifiedPackage{}, nil, err
 	}
-	var progressObserver func(ReleaseArtifactProgress)
-	if len(observe) > 0 {
-		progressObserver = observe[0]
-	}
+	observeReleaseInstallPhase(progressObserver, "fetch_release_evidence")
 	resolved, err := h.adapters.ReleaseArtifactResolver.ResolveReleaseArtifact(ctx, ReleaseArtifactResolveRequest{
 		Action: action, ReleaseRef: ref, SourcePolicy: sourcePolicy, CurrentRecord: current,
-		PluginInstanceID: pluginInstanceID, Now: now, Observe: progressObserver,
+		PluginInstanceID: pluginInstanceID, Now: now, Observe: releaseInstallResolverObserver(progressObserver),
 	})
 	if err != nil {
 		return pluginpkg.Package{}, PluginPackageRelease{}, releasecontract.SourcePolicyV2{}, releasetrust.VerifiedPackage{}, nil, err
@@ -3750,6 +3756,8 @@ func (h *Host) resolveReleasePackage(ctx context.Context, action PackageTrustAct
 	if len(resolved.ReleaseMetadataSignature) != ed25519.SignatureSize {
 		return pluginpkg.Package{}, PluginPackageRelease{}, releasecontract.SourcePolicyV2{}, releasetrust.VerifiedPackage{}, nil, fmt.Errorf("%w: release metadata signature size is invalid", ErrReleaseRefVerificationFailed)
 	}
+	observeReleaseInstallPhase(progressObserver, "download_package")
+	observeReleaseInstallPhase(progressObserver, "verify_hashes")
 	expectedArtifactSHA := strings.TrimPrefix(strings.TrimSpace(resolved.ArtifactSHA256), "sha256:")
 	if !isLowerHexSHA256(expectedArtifactSHA) {
 		return pluginpkg.Package{}, PluginPackageRelease{}, releasecontract.SourcePolicyV2{}, releasetrust.VerifiedPackage{}, nil, fmt.Errorf("%w: package artifact sha256 is required", ErrReleaseRefVerificationFailed)
@@ -3761,6 +3769,7 @@ func (h *Host) resolveReleasePackage(ctx context.Context, action PackageTrustAct
 	if actual := hex.EncodeToString(hasher.Sum(nil)); actual != expectedArtifactSHA {
 		return pluginpkg.Package{}, PluginPackageRelease{}, releasecontract.SourcePolicyV2{}, releasetrust.VerifiedPackage{}, nil, fmt.Errorf("%w: package artifact sha256 mismatch", ErrReleaseRefVerificationFailed)
 	}
+	observeReleaseInstallPhase(progressObserver, "verify_signatures_ledger")
 	verifiedMetadata, err := h.adapters.ReleaseTrust.VerifyReleaseMetadata(ctx, prepared, resolved.ReleaseMetadataBytes, resolved.ReleaseMetadataSignature)
 	if err != nil {
 		return pluginpkg.Package{}, PluginPackageRelease{}, releasecontract.SourcePolicyV2{}, releasetrust.VerifiedPackage{}, nil, releaseTrustBoundaryError(err)
@@ -3831,6 +3840,26 @@ func (h *Host) resolveReleasePackage(ctx context.Context, action PackageTrustAct
 		return pluginpkg.Package{}, PluginPackageRelease{}, releasecontract.SourcePolicyV2{}, releasetrust.VerifiedPackage{}, nil, err
 	}
 	return pkg, release, sourcePolicy, verifiedPackage, metadata, nil
+}
+
+func observeReleaseInstallPhase(observe func(ReleaseArtifactProgress), phase string) {
+	if observe != nil {
+		observe(ReleaseArtifactProgress{Phase: phase, Attempt: 1})
+	}
+}
+
+func releaseInstallResolverObserver(observe func(ReleaseArtifactProgress)) func(ReleaseArtifactProgress) {
+	if observe == nil {
+		return nil
+	}
+	return func(progress ReleaseArtifactProgress) {
+		if progress.ArtifactRole == "package" {
+			progress.Phase = "download_package"
+		} else {
+			progress.Phase = "fetch_release_evidence"
+		}
+		observe(progress)
+	}
 }
 
 func releaseTrustBoundaryError(err error) error {
@@ -6618,6 +6647,12 @@ func (h *Host) EnablePlugin(ctx context.Context, req EnableRequest) (result regi
 	if err := requireManagementRevision(record, req.ExpectedManagementRevision); err != nil {
 		return registry.PluginRecord{}, err
 	}
+	return h.enablePluginLocked(ctx, record, req.Now)
+}
+
+// enablePluginLocked performs the authoritative enable transaction after the
+// caller has acquired the plugin lifecycle write lock.
+func (h *Host) enablePluginLocked(ctx context.Context, record registry.PluginRecord, now time.Time) (result registry.PluginRecord, retErr error) {
 	if !version.SupportsPluginUIProtocol(record.Manifest.Plugin.UIProtocolVersion) {
 		return registry.PluginRecord{}, fmt.Errorf("%w: installed %s", ErrPluginUIProtocolUnsupported, record.Manifest.Plugin.UIProtocolVersion)
 	}
@@ -6651,7 +6686,7 @@ func (h *Host) EnablePlugin(ctx context.Context, req EnableRequest) (result regi
 		Shape:                      shape,
 		InitialSettings:            initialSettings,
 		ExpectedManagementRevision: record.ManagementRevision,
-		Now:                        req.Now,
+		Now:                        now,
 	}); err != nil {
 		return registry.PluginRecord{}, managementMutationError(record, err)
 	}

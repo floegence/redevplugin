@@ -1,6 +1,7 @@
 package remoterelease
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -95,11 +96,56 @@ func TestAssetSetRetriesOnlyTransientContentAddressedFetches(t *testing.T) {
 	permanent := &memoryFetcher{values: map[string][]byte{url: value}, failures: []error{
 		externalsource.NewHTTPStatusError("fetch", url, http.StatusNotFound, 0),
 	}}
-	set.fetcher = permanent
+	set, err = NewAssetSet(AssetSetOptions{SourceID: "example", Channel: "stable", AllowedHosts: []string{"artifacts.example.test"}, Fetcher: permanent, Assets: []Asset{
+		asset("sources/example/root/current.json", url, value),
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
 	_, _, err = set.fetch(context.Background(), "sources/example/root/current.json", "release_document", 1024, []string{"artifacts.example.test"}, "", nil)
 	var releaseErr *Error
 	if !errors.As(err, &releaseErr) || releaseErr.Retryable || releaseErr.Attempts != 1 || len(permanent.requests) != 1 {
 		t.Fatalf("permanent error=%#v requests=%d", err, len(permanent.requests))
+	}
+}
+
+func TestAssetSetCachesAndRevalidatesImmutableAsset(t *testing.T) {
+	value := []byte("immutable release evidence")
+	rawURL := "https://artifacts.example.test/evidence.json"
+	assetValue := asset("sources/example/root/evidence.json", rawURL, value)
+	fetcher := &memoryFetcher{values: map[string][]byte{rawURL: value}}
+	set, err := NewAssetSet(AssetSetOptions{
+		SourceID: "example", Channel: "stable", AllowedHosts: []string{"artifacts.example.test"},
+		Fetcher: fetcher, Assets: []Asset{assetValue},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	first, _, err := set.fetch(context.Background(), assetValue.Locator, "release_document", 1024, []string{"artifacts.example.test"}, "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first[0] ^= 0xff
+	var observed []host.ReleaseArtifactProgress
+	second, _, err := set.fetch(context.Background(), assetValue.Locator, "release_document", 1024, []string{"artifacts.example.test"}, "", func(progress host.ReleaseArtifactProgress) {
+		observed = append(observed, progress)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(second, value) || len(fetcher.requests) != 1 {
+		t.Fatalf("cached bytes=%q requests=%d", second, len(fetcher.requests))
+	}
+	if len(observed) != 1 || !observed[0].CacheHit || observed[0].Completed != int64(len(value)) || observed[0].Total != int64(len(value)) {
+		t.Fatalf("cache observation = %#v", observed)
+	}
+	set.cacheMu.Lock()
+	set.cache[assetValue.SHA256][0] ^= 0xff
+	set.cacheMu.Unlock()
+	recovered, _, err := set.fetch(context.Background(), assetValue.Locator, "release_document", 1024, []string{"artifacts.example.test"}, "", nil)
+	if err != nil || !bytes.Equal(recovered, value) || len(fetcher.requests) != 2 {
+		t.Fatalf("corrupt cache recovery bytes=%q requests=%d error=%v", recovered, len(fetcher.requests), err)
 	}
 }
 
