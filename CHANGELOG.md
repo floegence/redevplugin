@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.7.15
+
+- Accept signed release-trust consistency evidence when a Host verifier has no
+  prior local checkpoint, while retaining continuity and rollback checks for
+  established trust state.
+- Publish the complete Go, npm, Rust source crate, generated contract, and
+  package-publication evidence set as ReDevPlugin 0.7.15.
+
 ## v0.7.14
 
 - Add verified previous-release input to the external-signer publisher flow so
