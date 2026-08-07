@@ -765,6 +765,32 @@ func (service *ReleaseTrustService) verifySigningLedgerEvidence(
 		evidence.SignatureEnvelopeSHA256 != envelopeSHA256 {
 		return releasecontract.SigningLedgerCheckpointV1{}, "", "", ErrReleaseTrustVerification
 	}
+	if state.SigningLedger != nil && state.SigningLedger.CheckpointSHA256 != evidence.CheckpointSHA256 &&
+		evidence.ConsistencyProofRef == "" && sourceRefreshSigningSubject(subject.Usage) {
+		continuityRequest, err := signingLedgerContinuityEvidenceRequest(
+			service.options.sourceConfiguration, scope, subjectDigest,
+			state.SigningLedger.CheckpointSHA256, evidence.CheckpointSHA256,
+		)
+		if err != nil {
+			return releasecontract.SigningLedgerCheckpointV1{}, "", "", err
+		}
+		continuityBytes, err := service.fetchLedgerArtifact(ctx, continuityRequest)
+		if err != nil {
+			return releasecontract.SigningLedgerCheckpointV1{}, "", "", err
+		}
+		continuityEvidence, err := releasecontract.DecodeSigningLedgerEvidence(continuityBytes)
+		if err != nil {
+			return releasecontract.SigningLedgerCheckpointV1{}, "", "", err
+		}
+		canonicalContinuity := continuityEvidence
+		canonicalContinuity.ConsistencyProofRef = ""
+		canonicalContinuity.ConsistencyProofSHA256 = ""
+		if canonicalContinuity != evidence || continuityEvidence.ConsistencyProofRef == "" {
+			return releasecontract.SigningLedgerCheckpointV1{}, "", "", ErrReleaseTrustVerification
+		}
+		evidence = continuityEvidence
+		evidenceBytes = continuityBytes
+	}
 
 	receiptRequest, _ := fixedSigningLedgerRequest(service.options.sourceConfiguration, scope, SigningLedgerReceipt, subjectDigest, "", "")
 	checkpointRequest, _ := fixedSigningLedgerRequest(service.options.sourceConfiguration, scope, SigningLedgerCheckpoint, "", "", evidence.CheckpointSHA256)
@@ -848,6 +874,19 @@ func (service *ReleaseTrustService) verifySigningLedgerEvidence(
 		}
 	}
 	return checkpoint, evidence.CheckpointSHA256, digestHex(evidenceBytes), nil
+}
+
+func sourceRefreshSigningSubject(usage releasecontract.SigningSubjectUsage) bool {
+	switch usage {
+	case releasecontract.SigningSubjectUsageRootDelegation,
+		releasecontract.SigningSubjectUsageSourcePolicyPointer,
+		releasecontract.SigningSubjectUsageSourcePolicy,
+		releasecontract.SigningSubjectUsageRevocationPointer,
+		releasecontract.SigningSubjectUsageRevocation:
+		return true
+	default:
+		return false
+	}
 }
 
 func (service *ReleaseTrustService) fetchLedgerArtifact(ctx context.Context, request SigningLedgerRequest) ([]byte, error) {

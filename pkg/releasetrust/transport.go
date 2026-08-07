@@ -327,6 +327,37 @@ func fixedSigningLedgerRequest(
 	}, nil
 }
 
+func signingLedgerContinuityEvidenceRequest(
+	configuration SourceConfiguration,
+	scope signingLedgerSubjectScope,
+	subjectIdentitySHA256 string,
+	previousCheckpointSHA256 string,
+	currentCheckpointSHA256 string,
+) (SigningLedgerRequest, error) {
+	if !configuration.valid() || scope.sourceID != configuration.sourceID ||
+		(scope.channel != "" && !sourceConfigurationContainsKey(configuration, SourceTrustKey(scope))) ||
+		!sha256Pattern.MatchString(subjectIdentitySHA256) ||
+		!sha256Pattern.MatchString(previousCheckpointSHA256) ||
+		!sha256Pattern.MatchString(currentCheckpointSHA256) ||
+		previousCheckpointSHA256 == currentCheckpointSHA256 {
+		return SigningLedgerRequest{}, ErrInvalidLocator
+	}
+	locator, err := newSourceRelativeLocator(fmt.Sprintf(
+		"sources/%s/signing-ledger/evidence/continuity/%s/%s/%s.json",
+		scope.sourceID, previousCheckpointSHA256, currentCheckpointSHA256, subjectIdentitySHA256,
+	))
+	if err != nil {
+		return SigningLedgerRequest{}, err
+	}
+	return SigningLedgerRequest{
+		sourceID: scope.sourceID,
+		channel:  scope.channel,
+		kind:     SigningLedgerEvidence,
+		locator:  locator,
+		maxBytes: MaxSigningLedgerEvidenceBytes,
+	}, nil
+}
+
 func sourceConfigurationContainsKey(configuration SourceConfiguration, key SourceTrustKey) bool {
 	if !configuration.valid() || !key.valid() || configuration.sourceID != key.sourceID {
 		return false

@@ -240,8 +240,10 @@ func buildCompleteAssembly(
 	verifier := releasecontract.Ed25519PublicKeyVerifier(keys)
 	consistencyRef := ""
 	consistencySHA256 := ""
+	previousCheckpointSHA256 := ""
 	if previous := pointers.ledger.previousCheckpoint; previous != nil {
 		previousSHA256 := sha256Hex(pointers.ledger.previousCheckpointBytes)
+		previousCheckpointSHA256 = previousSHA256
 		files[fmt.Sprintf("%s/checkpoints/%s.json", ledgerBase, previousSHA256)] = slices.Clone(pointers.ledger.previousCheckpointBytes)
 		consistencyBytes, err := releasecontract.CanonicalSigningLedgerConsistencyProof(*pointers.ledger.consistency)
 		if err != nil || releasecontract.VerifySigningLedgerConsistency(*previous, checkpoint, *pointers.ledger.consistency, verifier) != nil {
@@ -295,13 +297,25 @@ func buildCompleteAssembly(
 			SigningPreimageSHA256: draft.value.preimageHash, SignatureEnvelopeSHA256: draft.value.envelopeHash,
 			ReceiptRef: receiptRef, ReceiptSHA256: sha256Hex(receiptBytes), CheckpointRef: checkpointRef, CheckpointSHA256: checkpointSHA256,
 			InclusionProofRef: inclusionRef, InclusionProofSHA256: sha256Hex(inclusionBytes), LatestProofRef: latestRef, LatestProofSHA256: sha256Hex(latestBytes),
-			ConsistencyProofRef: consistencyRef, ConsistencyProofSHA256: consistencySHA256,
 		}
 		evidenceBytes, err := releasecontract.CanonicalSigningLedgerEvidence(evidence)
 		if err != nil {
 			return assemblyResult{}, err
 		}
 		files[fmt.Sprintf("%s/evidence/%s.json", ledgerBase, draft.value.subjectDigest)] = evidenceBytes
+		if consistencyRef != "" && sourceRefreshSubject(draft.value.subject.Usage) {
+			continuityEvidence := evidence
+			continuityEvidence.ConsistencyProofRef = consistencyRef
+			continuityEvidence.ConsistencyProofSHA256 = consistencySHA256
+			continuityBytes, err := releasecontract.CanonicalSigningLedgerEvidence(continuityEvidence)
+			if err != nil {
+				return assemblyResult{}, err
+			}
+			files[fmt.Sprintf(
+				"%s/evidence/continuity/%s/%s/%s.json",
+				ledgerBase, previousCheckpointSHA256, checkpointSHA256, draft.value.subjectDigest,
+			)] = continuityBytes
+		}
 		files[receiptRef] = receiptBytes
 		files[inclusionRef] = inclusionBytes
 		files[latestRef] = latestBytes
@@ -321,6 +335,19 @@ func buildCompleteAssembly(
 		Root: config.Root, SigningLedger: config.SigningLedger,
 	}
 	return assemblyResult{Phase: "complete", Complete: true, Files: files, ReleaseRef: reference}, nil
+}
+
+func sourceRefreshSubject(usage releasecontract.SigningSubjectUsage) bool {
+	switch usage {
+	case releasecontract.SigningSubjectUsageRootDelegation,
+		releasecontract.SigningSubjectUsageSourcePolicyPointer,
+		releasecontract.SigningSubjectUsageSourcePolicy,
+		releasecontract.SigningSubjectUsageRevocationPointer,
+		releasecontract.SigningSubjectUsageRevocation:
+		return true
+	default:
+		return false
+	}
 }
 
 func requestsForPrimaryMust(config ConfigV1, prepared preparedRelease) []ExternalSignerRequestV1 {
