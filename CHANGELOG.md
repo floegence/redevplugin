@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.7.16
+
+- Separate canonical signing-ledger evidence from checkpoint-advance evidence
+  so fresh verification, persisted checkpoint upgrades, and Host restart
+  verification use one immutable publisher output without weakening rollback or
+  same-checkpoint proof rejection.
+- Publish the complete Go, npm, Rust source crate, generated contract, and
+  package-publication evidence set as ReDevPlugin 0.7.16.
+
 ## v0.7.15
 
 - Accept signed release-trust consistency evidence when a Host verifier has no
