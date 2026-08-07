@@ -7,6 +7,7 @@ import { parse } from "yaml";
 
 const workflow = parse(readFileSync(".github/workflows/release.yml", "utf8"));
 const recovery = parse(readFileSync(".github/workflows/recover-release.yml", "utf8"));
+const quickCIEvidenceVerifier = readFileSync("scripts/verify_quick_ci_evidence.mjs", "utf8");
 
 test("privileged release jobs never checkout or execute candidate repository scripts", () => {
   const privileged = ["release-admission", "publish-rust", "publish-npm-contracts", "publish-npm-ui", "attest-publication", "publish-release"];
@@ -205,6 +206,17 @@ test("release preflight binds the tag to the exact remote main tip", () => {
     source.indexOf("verify_quick_ci_evidence.mjs") > source.indexOf("git rev-parse origin/main"),
     "Quick CI evidence must be checked only after the exact main tip is established",
   );
+});
+
+test("release preflight uses a strict bounded Quick CI recovery evidence path", () => {
+  assert.match(quickCIEvidenceVerifier, /query\("push"\)/);
+  assert.match(quickCIEvidenceVerifier, /query\("workflow_dispatch"\)/);
+  assert.match(quickCIEvidenceVerifier, /if \(pushRuns\.length !== 0\) return acceptExactlyOne\(pushRuns, "push"\)/);
+  assert.match(quickCIEvidenceVerifier, /run\.head_sha === cleanSHA/);
+  assert.match(quickCIEvidenceVerifier, /run\.head_branch === "main"/);
+  assert.match(quickCIEvidenceVerifier, /run\.path === workflowPath/);
+  assert.match(quickCIEvidenceVerifier, /run\.status !== "completed" \|\| run\.conclusion !== "success"/);
+  assert.doesNotMatch(quickCIEvidenceVerifier, /latest successful|most recent|sort.*created_at/i);
 });
 
 test("release package build requires both hosted runtime containment targets", () => {
