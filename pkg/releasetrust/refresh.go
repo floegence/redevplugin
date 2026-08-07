@@ -819,9 +819,10 @@ func (service *ReleaseTrustService) verifySigningLedgerEvidence(
 		return releasecontract.SigningLedgerCheckpointV1{}, "", "", err
 	}
 	if state.SigningLedger == nil {
-		if evidence.ConsistencyProofRef != "" || evidence.ConsistencyProofSHA256 != "" {
-			return releasecontract.SigningLedgerCheckpointV1{}, "", "", ErrReleaseTrustVerification
-		}
+		// A publisher may include the consistency proof that links this
+		// checkpoint to an earlier public checkpoint. A fresh verifier has no
+		// local checkpoint to compare, so the proof is not needed for admission;
+		// it remains mandatory to validate it when local state exists below.
 	} else if state.SigningLedger.CheckpointSHA256 == evidence.CheckpointSHA256 {
 		if evidence.ConsistencyProofRef != "" || evidence.ConsistencyProofSHA256 != "" {
 			return releasecontract.SigningLedgerCheckpointV1{}, "", "", ErrReleaseTrustVerification

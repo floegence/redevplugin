@@ -47,6 +47,31 @@ func TestReleaseTrustServiceRefreshSourceVerifiesOneAtomicSnapshot(t *testing.T)
 	}
 }
 
+func TestReleaseTrustServiceAcceptsConsistencyEvidenceInFreshState(t *testing.T) {
+	fixture := newFullRefreshFixture(t)
+	updated := false
+	for locator, value := range fixture.ledger.values {
+		evidence, err := releasecontract.DecodeSigningLedgerEvidence(value)
+		if err != nil {
+			continue
+		}
+		evidence.ConsistencyProofRef = "sources/example_source/signing-ledger/proofs/consistency/" + strings.Repeat("a", 64) + "/" + evidence.CheckpointSHA256 + ".json"
+		evidence.ConsistencyProofSHA256 = strings.Repeat("b", 64)
+		fixture.ledger.values[locator], err = releasecontract.CanonicalSigningLedgerEvidence(evidence)
+		if err != nil {
+			t.Fatal(err)
+		}
+		updated = true
+		break
+	}
+	if !updated {
+		t.Fatal("fixture has no signing ledger evidence")
+	}
+	if _, err := fixture.service.RefreshSource(context.Background(), fixture.key); err != nil {
+		t.Fatalf("RefreshSource() with fresh consistency evidence error = %v", err)
+	}
+}
+
 func TestReleaseTrustServiceRefreshSourceRejectsLedgerEvidenceSubstitution(t *testing.T) {
 	fixture := newFullRefreshFixture(t)
 	for locator, value := range fixture.ledger.values {
