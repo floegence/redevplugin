@@ -96,22 +96,31 @@ func TestPublisherOutputSupportsFreshUpgradeAndRestartVerification(t *testing.T)
 		contaminated := first
 		contaminated.files = clonePublisherContinuityFiles(first.files)
 		checkpointSHA256 := digestHex(first.files["sources/"+first.reference.ReleaseRef.SourceID+"/signing-ledger/checkpoints/current.json"])
-		for locator, value := range contaminated.files {
-			if !strings.Contains(locator, "/signing-ledger/evidence/") || strings.Contains(locator, "/evidence/continuity/") {
-				continue
-			}
-			evidence, err := releasecontract.DecodeSigningLedgerEvidence(value)
-			if err != nil {
-				t.Fatal(err)
-			}
-			evidence.ConsistencyProofRef = "sources/" + first.reference.ReleaseRef.SourceID +
-				"/signing-ledger/proofs/consistency/" + checkpointSHA256 + "/" + checkpointSHA256 + ".json"
-			evidence.ConsistencyProofSHA256 = strings.Repeat("a", 64)
-			contaminated.files[locator], err = releasecontract.CanonicalSigningLedgerEvidence(evidence)
-			if err != nil {
-				t.Fatal(err)
-			}
-			break
+		metadata, err := releasecontract.DecodeReleaseMetadata(first.metadata)
+		if err != nil {
+			t.Fatal(err)
+		}
+		subjectDigest, err := releasecontract.SigningSubjectIdentitySHA256(releasecontract.SigningSubjectV1{
+			SchemaVersion: releasecontract.SigningSubjectSchemaVersion,
+			Usage:         releasecontract.SigningSubjectUsageSourcePolicy,
+			SourceID:      first.reference.ReleaseRef.SourceID,
+			Channel:       first.reference.ReleaseRef.Channel,
+			Epoch:         metadata.ReleaseMetadataSignature.SourcePolicyEpoch,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		locator := "sources/" + first.reference.ReleaseRef.SourceID + "/signing-ledger/evidence/" + subjectDigest + ".json"
+		evidence, err := releasecontract.DecodeSigningLedgerEvidence(contaminated.files[locator])
+		if err != nil {
+			t.Fatal(err)
+		}
+		evidence.ConsistencyProofRef = "sources/" + first.reference.ReleaseRef.SourceID +
+			"/signing-ledger/proofs/consistency/" + checkpointSHA256 + "/" + checkpointSHA256 + ".json"
+		evidence.ConsistencyProofSHA256 = strings.Repeat("a", 64)
+		contaminated.files[locator], err = releasecontract.CanonicalSigningLedgerEvidence(evidence)
+		if err != nil {
+			t.Fatal(err)
 		}
 		harness.use(contaminated)
 		restarted, err := NewReleaseTrustService(harness.options, harness.adapters)
