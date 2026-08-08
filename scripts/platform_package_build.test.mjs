@@ -7,7 +7,7 @@ import test from "node:test";
 
 import { verifyPlatformPackageBuild, verifyRustPublishMetadata } from "./platform_package_build.mjs";
 
-const version = "0.7.17";
+const version = "0.7.18";
 const sourceCommit = "1".repeat(40);
 const contractSetSHA256 = "8ee220c1ed50df3ebafa6f52ec2ba0342c0b09b88fe4db84c583ce1eca7a9ab8";
 

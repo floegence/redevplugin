@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.7.18
+
+- Restore verified release activation leases while refreshing enabled plugins
+  after Host restart, so an enabled plugin can immediately open its published
+  surfaces without a redundant enable operation.
+- Publish the complete Go, npm, Rust source crate, generated contract, and
+  package-publication evidence set as ReDevPlugin 0.7.18.
+
 ## v0.7.17
 
 - Let verified official release-install operations continue through activation,
