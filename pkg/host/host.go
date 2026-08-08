@@ -5055,6 +5055,13 @@ func (h *Host) refreshEnabledRuntimeState(ctx context.Context, record registry.P
 	if record.EnableState != registry.EnableEnabled {
 		return nil
 	}
+	// Refresh reconstructs all in-memory execution authority after a host
+	// restart. Release-bound plugins need their activation lease restored before
+	// any surface or runtime state is published, otherwise OpenSurface rejects
+	// the otherwise-enabled record as untrusted.
+	if err := h.ensureReleaseActivationLease(ctx, record); err != nil {
+		return err
+	}
 	if pluginHasWorkers(record.Manifest) {
 		if _, err := h.bindCompatibleWorkerRuntime(ctx, record); err != nil {
 			return err

@@ -88,6 +88,49 @@ func TestReleaseTrustInstallPersistsBindingAndEnables(t *testing.T) {
 	}
 }
 
+func TestRefreshEnabledPluginsRestoresReleaseActivationLeaseBeforeOpenSurface(t *testing.T) {
+	ctx := hostTestContext()
+	registryStore := registry.NewMemoryStore()
+	fixture := newHostReleaseTrustFixture(t)
+	resolver := &recordingReleaseArtifactResolver{artifact: resolvedReleaseTrustFixture(fixture)}
+	host, _, _ := newTestHostWithOptions(t, testHostOptions{
+		releaseTrust: fixture.ServiceSet, releaseArtifactResolver: resolver, registry: registryStore,
+	})
+	installed, err := host.InstallReleaseRef(ctx, InstallReleaseRefRequest{
+		PluginInstanceID: nextTestPluginInstanceID(t), ReleaseRef: releaseTrustFixtureRef(fixture), Now: time.Now().UTC(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	enabled, err := host.EnablePlugin(ctx, EnableRequest{
+		PluginInstanceID: installed.PluginInstanceID, ExpectedManagementRevision: installed.ManagementRevision, Now: time.Now().UTC(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Simulate the process-restart boundary by dropping only the in-memory
+	// release authority while retaining the enabled registry record.
+	host.releaseLeases.clear()
+	host.verifiedReleases.clear()
+	refreshed, err := host.RefreshEnabledPlugins(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(refreshed) != 1 || refreshed[0].PluginInstanceID != enabled.PluginInstanceID || refreshed[0].Status != RefreshEnabledPluginStatusRefreshed || refreshed[0].Error != nil {
+		t.Fatalf("refreshed plugins mismatch: %#v", refreshed)
+	}
+	binding := *enabled.ReleaseTrustBinding
+	if _, ok := host.releaseLeases.get(enabled.PluginInstanceID, binding); !ok {
+		t.Fatal("RefreshEnabledPlugins() did not restore the release activation lease")
+	}
+	if _, err := host.OpenSurface(ctx, OpenSurfaceRequest{
+		PluginInstanceID: enabled.PluginInstanceID, ExpectedManagementRevision: enabled.ManagementRevision,
+		SurfaceID: "fixture.view", SurfaceInstanceID: "surface_after_restart", Now: time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("OpenSurface() after RefreshEnabledPlugins() error = %v", err)
+	}
+}
+
 func TestReleaseActivationLeaseRefreshTimesOutAfterHostRestartWithoutRegistryMutation(t *testing.T) {
 	registryStore := registry.NewMemoryStore()
 	installedFixture := newHostReleaseTrustFixture(t)
