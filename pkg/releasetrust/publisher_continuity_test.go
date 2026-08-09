@@ -250,7 +250,7 @@ func publisherContinuityConfig(t *testing.T) (releasepublisher.ConfigV1, map[str
 				PublicKey: base64.StdEncoding.EncodeToString(ledgerPublic),
 			},
 		},
-		AllowedArtifactHosts: []string{"github.com"}, MinReDevPluginVersion: "0.7.18",
+		AllowedArtifactHosts: []string{"github.com"}, MinReDevPluginVersion: "0.7.19",
 		Distribution: "registry_ref", HostRequirements: []releasecontract.ReleaseHostRequirement{},
 	}
 	return config, map[string]ed25519.PrivateKey{
