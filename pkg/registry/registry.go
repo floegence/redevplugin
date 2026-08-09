@@ -2,10 +2,12 @@ package registry
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -61,17 +63,114 @@ type TrustAssessment struct {
 }
 
 type ReleaseTrustBinding struct {
+	SourceID                        string `json:"source_id"`
+	Channel                         string `json:"channel"`
+	ReleaseMetadataRef              string `json:"release_metadata_ref"`
+	ReleaseMetadataSHA256           string `json:"release_metadata_sha256"`
+	PublisherID                     string `json:"publisher_id"`
+	PluginID                        string `json:"plugin_id"`
+	Version                         string `json:"version"`
+	VerifiedStateSHA256             string `json:"verified_state_sha256"`
+	RootEpoch                       string `json:"root_epoch"`
+	PolicyEpoch                     string `json:"policy_epoch"`
+	RevocationEpoch                 string `json:"revocation_epoch"`
+	ActivationEvidenceSchemaVersion string `json:"activation_evidence_schema_version"`
+	ActivationEvidenceSHA256        string `json:"activation_evidence_sha256"`
+}
+
+const ReleaseActivationEvidenceSchemaVersion = "redevplugin.release_activation_evidence.v1"
+
+type releaseActivationEvidenceV1 struct {
+	SchemaVersion         string `json:"schema_version"`
+	PluginInstanceID      string `json:"plugin_instance_id"`
+	PublisherID           string `json:"publisher_id"`
+	PluginID              string `json:"plugin_id"`
+	Version               string `json:"version"`
+	ActiveFingerprint     string `json:"active_fingerprint"`
+	PackageSHA256         string `json:"package_sha256"`
+	ManifestSHA256        string `json:"manifest_sha256"`
+	EntriesSHA256         string `json:"entries_sha256"`
 	SourceID              string `json:"source_id"`
 	Channel               string `json:"channel"`
 	ReleaseMetadataRef    string `json:"release_metadata_ref"`
 	ReleaseMetadataSHA256 string `json:"release_metadata_sha256"`
-	PublisherID           string `json:"publisher_id"`
-	PluginID              string `json:"plugin_id"`
-	Version               string `json:"version"`
 	VerifiedStateSHA256   string `json:"verified_state_sha256"`
 	RootEpoch             string `json:"root_epoch"`
 	PolicyEpoch           string `json:"policy_epoch"`
 	RevocationEpoch       string `json:"revocation_epoch"`
+}
+
+func SealReleaseActivationEvidence(record *PluginRecord) error {
+	if record == nil || record.ReleaseTrustBinding == nil {
+		return nil
+	}
+	digest, err := releaseActivationEvidenceDigest(
+		record.PluginInstanceID, record.PublisherID, record.PluginID, record.Version,
+		record.ActiveFingerprint, record.PackageHash, record.ManifestHash, record.EntriesHash,
+		*record.ReleaseTrustBinding,
+	)
+	if err != nil {
+		return err
+	}
+	record.ReleaseTrustBinding.ActivationEvidenceSchemaVersion = ReleaseActivationEvidenceSchemaVersion
+	record.ReleaseTrustBinding.ActivationEvidenceSHA256 = digest
+	return nil
+}
+
+func ValidateReleaseActivationEvidence(record PluginRecord) error {
+	if record.ReleaseTrustBinding == nil {
+		return nil
+	}
+	binding := *record.ReleaseTrustBinding
+	if binding.ActivationEvidenceSchemaVersion != ReleaseActivationEvidenceSchemaVersion {
+		return errors.New("release activation evidence schema is invalid")
+	}
+	digest, err := releaseActivationEvidenceDigest(
+		record.PluginInstanceID, record.PublisherID, record.PluginID, record.Version,
+		record.ActiveFingerprint, record.PackageHash, record.ManifestHash, record.EntriesHash,
+		binding,
+	)
+	if err != nil || digest != binding.ActivationEvidenceSHA256 {
+		return errors.New("release activation evidence digest mismatch")
+	}
+	return nil
+}
+
+func releaseActivationEvidenceDigest(
+	pluginInstanceID string,
+	publisherID string,
+	pluginID string,
+	version string,
+	activeFingerprint string,
+	packageSHA256 string,
+	manifestSHA256 string,
+	entriesSHA256 string,
+	binding ReleaseTrustBinding,
+) (string, error) {
+	evidence := releaseActivationEvidenceV1{
+		SchemaVersion:    ReleaseActivationEvidenceSchemaVersion,
+		PluginInstanceID: pluginInstanceID, PublisherID: publisherID, PluginID: pluginID, Version: version,
+		ActiveFingerprint: activeFingerprint, PackageSHA256: packageSHA256, ManifestSHA256: manifestSHA256, EntriesSHA256: entriesSHA256,
+		SourceID: binding.SourceID, Channel: binding.Channel, ReleaseMetadataRef: binding.ReleaseMetadataRef,
+		ReleaseMetadataSHA256: binding.ReleaseMetadataSHA256, VerifiedStateSHA256: binding.VerifiedStateSHA256,
+		RootEpoch: binding.RootEpoch, PolicyEpoch: binding.PolicyEpoch, RevocationEpoch: binding.RevocationEpoch,
+	}
+	for _, value := range []string{
+		evidence.PluginInstanceID, evidence.PublisherID, evidence.PluginID, evidence.Version, evidence.ActiveFingerprint,
+		evidence.PackageSHA256, evidence.ManifestSHA256, evidence.EntriesSHA256, evidence.SourceID, evidence.Channel,
+		evidence.ReleaseMetadataRef, evidence.ReleaseMetadataSHA256, evidence.VerifiedStateSHA256,
+		evidence.RootEpoch, evidence.PolicyEpoch, evidence.RevocationEpoch,
+	} {
+		if strings.TrimSpace(value) == "" {
+			return "", errors.New("release activation evidence is incomplete")
+		}
+	}
+	raw, err := json.Marshal(evidence)
+	if err != nil {
+		return "", err
+	}
+	digest := sha256.Sum256(raw)
+	return fmt.Sprintf("%x", digest[:]), nil
 }
 
 type PluginRecord struct {

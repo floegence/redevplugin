@@ -23,7 +23,7 @@ import (
 )
 
 const maxRegistrySQLiteConnections = 8
-const registrySQLiteSchemaVersion = 4
+const registrySQLiteSchemaVersion = 5
 
 var ErrIncompatiblePersistedManifest = errors.New("persisted plugin manifest is incompatible")
 
@@ -364,6 +364,11 @@ func (s *SQLiteStore) initializeSchema(ctx context.Context) error {
 		if err := validateCurrentRegistrySQLiteSchema(ctx, tx); err != nil {
 			return err
 		}
+		if schemaVersion < 5 {
+			if err := migrateReleaseActivationEvidenceV4ToV5(ctx, tx); err != nil {
+				return err
+			}
+		}
 		if err := validateSQLiteAuthorizationData(ctx, tx); err != nil {
 			return err
 		}
@@ -616,6 +621,124 @@ func (s *SQLiteStore) initializeSchema(ctx context.Context) error {
 		return err
 	}
 	return tx.Commit()
+}
+
+func migrateReleaseActivationEvidenceV4ToV5(ctx context.Context, tx *sql.Tx) error {
+	type migration struct {
+		ownerEnvHash     string
+		pluginInstanceID string
+		bindingJSON      string
+		historyJSON      string
+	}
+	rows, err := tx.QueryContext(ctx, `
+SELECT owner_env_hash, plugin_instance_id, publisher_id, plugin_id, version, active_fingerprint,
+       package_hash, manifest_hash, entries_hash, source_policy_snapshot_json, version_history_json
+FROM plugin_records
+ORDER BY owner_env_hash, plugin_instance_id`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	var migrations []migration
+	for rows.Next() {
+		var ownerEnvHash, pluginInstanceID, publisherID, pluginID, version string
+		var activeFingerprint, packageHash, manifestHash, entriesHash, bindingJSON, historyJSON string
+		if err := rows.Scan(
+			&ownerEnvHash, &pluginInstanceID, &publisherID, &pluginID, &version, &activeFingerprint,
+			&packageHash, &manifestHash, &entriesHash, &bindingJSON, &historyJSON,
+		); err != nil {
+			return err
+		}
+		var binding *ReleaseTrustBinding
+		if strings.TrimSpace(bindingJSON) != "" && strings.TrimSpace(bindingJSON) != "{}" && strings.TrimSpace(bindingJSON) != "null" {
+			var decoded ReleaseTrustBinding
+			if err := decodeRegistryJSON(bindingJSON, &decoded); err != nil {
+				return fmt.Errorf("migrate release activation evidence for plugin %q: %w", pluginInstanceID, err)
+			}
+			binding = &decoded
+		}
+		var history []PluginVersion
+		if err := decodeRegistryJSON(historyJSON, &history); err != nil {
+			return fmt.Errorf("migrate release activation evidence history for plugin %q: %w", pluginInstanceID, err)
+		}
+		if binding == nil && !historyHasReleaseTrustBinding(history) {
+			continue
+		}
+		if binding != nil {
+			if err := requireUnsealedReleaseActivationEvidence(*binding); err != nil {
+				return fmt.Errorf("migrate release activation evidence for plugin %q: %w", pluginInstanceID, err)
+			}
+			record := PluginRecord{
+				PluginInstanceID: pluginInstanceID, PublisherID: publisherID, PluginID: pluginID, Version: version,
+				ActiveFingerprint: activeFingerprint, PackageHash: packageHash, ManifestHash: manifestHash, EntriesHash: entriesHash,
+				ReleaseTrustBinding: binding,
+			}
+			if err := SealReleaseActivationEvidence(&record); err != nil {
+				return fmt.Errorf("migrate release activation evidence for plugin %q: %w", pluginInstanceID, err)
+			}
+		}
+		for index := range history {
+			if history[index].ReleaseTrustBinding == nil {
+				continue
+			}
+			if err := requireUnsealedReleaseActivationEvidence(*history[index].ReleaseTrustBinding); err != nil {
+				return fmt.Errorf("migrate release activation evidence for plugin %q version[%d]: %w", pluginInstanceID, index, err)
+			}
+			record := PluginRecord{
+				PluginInstanceID: pluginInstanceID,
+				PublisherID:      history[index].Manifest.Publisher.PublisherID, PluginID: history[index].Manifest.PluginID(), Version: history[index].Version,
+				ActiveFingerprint: history[index].ActiveFingerprint,
+				PackageHash:       history[index].PackageHash, ManifestHash: history[index].ManifestHash, EntriesHash: history[index].EntriesHash,
+				ReleaseTrustBinding: history[index].ReleaseTrustBinding,
+			}
+			if err := SealReleaseActivationEvidence(&record); err != nil {
+				return fmt.Errorf("migrate release activation evidence for plugin %q version[%d]: %w", pluginInstanceID, index, err)
+			}
+		}
+		encodedBinding, err := encodeRegistryJSON(binding)
+		if err != nil {
+			return err
+		}
+		encodedHistory, err := encodeRegistryJSON(history)
+		if err != nil {
+			return err
+		}
+		migrations = append(migrations, migration{
+			ownerEnvHash: ownerEnvHash, pluginInstanceID: pluginInstanceID,
+			bindingJSON: encodedBinding, historyJSON: encodedHistory,
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	for _, item := range migrations {
+		if _, err := tx.ExecContext(ctx, `
+UPDATE plugin_records
+SET source_policy_snapshot_json = ?, version_history_json = ?
+WHERE owner_env_hash = ? AND plugin_instance_id = ?`, item.bindingJSON, item.historyJSON, item.ownerEnvHash, item.pluginInstanceID); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func historyHasReleaseTrustBinding(history []PluginVersion) bool {
+	for _, version := range history {
+		if version.ReleaseTrustBinding != nil {
+			return true
+		}
+	}
+	return false
+}
+
+func requireUnsealedReleaseActivationEvidence(binding ReleaseTrustBinding) error {
+	if binding.ActivationEvidenceSchemaVersion != "" || binding.ActivationEvidenceSHA256 != "" {
+		return errors.New("legacy release activation evidence is partially or unexpectedly sealed")
+	}
+	return nil
 }
 
 func reconcileInterruptedExternalPackageCommits(ctx context.Context, tx *sql.Tx) error {

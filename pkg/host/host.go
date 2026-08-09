@@ -738,36 +738,35 @@ type PluginData interface {
 }
 
 type Host struct {
-	adapters                           normalizedAdapters
-	features                           map[Feature]struct{}
-	securityJournal                    observability.SecurityAuditJournal
-	securityExporter                   *observability.SecurityAuditExporter
-	securityExportMu                   sync.Mutex
-	surfaceTokens                      *bridge.SurfaceTokenService
-	surfaceDocuments                   *surfaceDocumentCache
-	methodSchemas                      *methodSchemaCache
-	surfaceGenerationID                string
-	lifecycleLocks                     *pluginLifecycleLockRegistry
-	executions                         *executionLeaseRegistry
-	streamReads                        *streamReadLockRegistry
-	verifiedReleases                   *verifiedReleaseRegistry
-	releaseLeases                      *releaseLeaseRegistry
-	releaseTrustActivationLeaseTimeout time.Duration
-	sourceFences                       *sourceFenceRegistry
-	sessionScopes                      *sessionscope.Coordinator
-	sessionMaintenance                 *sessionScopeMaintenanceLockRegistry
-	detachedCancelJobs                 *detachedCancelJobRegistry
-	operationObservers                 *surfaceOperationObservationRegistry
-	lifecycleCtx                       context.Context
-	lifecycleCancel                    context.CancelFunc
-	lifecycleMu                        sync.RWMutex
-	lifecycleWG                        sync.WaitGroup
-	securityAuditWG                    sync.WaitGroup
-	closed                             bool
-	closeOnce                          sync.Once
-	closeErr                           error
-	runtimeModule                      *RuntimeModule
-	externalInspections                *externalPackageInspectionStore
+	adapters            normalizedAdapters
+	features            map[Feature]struct{}
+	securityJournal     observability.SecurityAuditJournal
+	securityExporter    *observability.SecurityAuditExporter
+	securityExportMu    sync.Mutex
+	surfaceTokens       *bridge.SurfaceTokenService
+	surfaceDocuments    *surfaceDocumentCache
+	methodSchemas       *methodSchemaCache
+	surfaceGenerationID string
+	lifecycleLocks      *pluginLifecycleLockRegistry
+	executions          *executionLeaseRegistry
+	streamReads         *streamReadLockRegistry
+	verifiedReleases    *verifiedReleaseRegistry
+	releaseLeases       *releaseLeaseRegistry
+	sourceFences        *sourceFenceRegistry
+	sessionScopes       *sessionscope.Coordinator
+	sessionMaintenance  *sessionScopeMaintenanceLockRegistry
+	detachedCancelJobs  *detachedCancelJobRegistry
+	operationObservers  *surfaceOperationObservationRegistry
+	lifecycleCtx        context.Context
+	lifecycleCancel     context.CancelFunc
+	lifecycleMu         sync.RWMutex
+	lifecycleWG         sync.WaitGroup
+	securityAuditWG     sync.WaitGroup
+	closed              bool
+	closeOnce           sync.Once
+	closeErr            error
+	runtimeModule       *RuntimeModule
+	externalInspections *externalPackageInspectionStore
 }
 
 type detachedCancelJob struct {
@@ -3474,6 +3473,9 @@ func (h *Host) installResolvedPackage(ctx context.Context, pkg pluginpkg.Package
 	}
 	if trustInput.VerifiedRelease != nil {
 		record.ReleaseTrustBinding = releaseTrustBinding(*trustInput.VerifiedRelease)
+		if err := registry.SealReleaseActivationEvidence(&record); err != nil {
+			return registry.PluginRecord{}, h.markInstallStageFailed(ctx, stage.StageID, "activation_evidence_failed", err, now)
+		}
 	}
 	record.EnableState = registry.EnableDisabled
 	if err := h.adapters.Assets.PutOwnedPackage(ctx, &pkg); err != nil {
@@ -3633,6 +3635,9 @@ func (h *Host) updateResolvedPackage(ctx context.Context, current registry.Plugi
 	}
 	if trustInput.VerifiedRelease != nil {
 		next.ReleaseTrustBinding = releaseTrustBinding(*trustInput.VerifiedRelease)
+		if err := registry.SealReleaseActivationEvidence(&next); err != nil {
+			return registry.PluginRecord{}, h.markInstallStageFailed(ctx, stage.StageID, "activation_evidence_failed", err, now)
+		}
 	}
 	if err := validateSamePluginIdentity(current, next); err != nil {
 		return registry.PluginRecord{}, h.markInstallStageFailed(ctx, stage.StageID, "identity_mismatch", err, now)

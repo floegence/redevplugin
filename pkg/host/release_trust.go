@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/floegence/redevplugin/pkg/operation"
+	"github.com/floegence/redevplugin/pkg/pluginpkg"
 	"github.com/floegence/redevplugin/pkg/registry"
 	"github.com/floegence/redevplugin/pkg/releasetrust"
 	"github.com/floegence/redevplugin/pkg/sessionctx"
@@ -19,8 +20,6 @@ type sourceFenceRegistry struct {
 	mu     sync.RWMutex
 	active map[string]uint64
 }
-
-const defaultReleaseTrustActivationLeaseTimeout = releaseInstallOperationTimeout
 
 func newSourceFenceRegistry() *sourceFenceRegistry {
 	return &sourceFenceRegistry{active: make(map[string]uint64)}
@@ -368,24 +367,34 @@ func (h *Host) ensureReleaseActivationLease(ctx context.Context, record registry
 	binding := *record.ReleaseTrustBinding
 	verified, ok := h.verifiedReleases.get(record.PluginInstanceID, binding)
 	if !ok {
-		timeout := h.releaseTrustActivationLeaseTimeout
-		if timeout <= 0 {
-			timeout = defaultReleaseTrustActivationLeaseTimeout
+		if err := validateActivationRecoveryRecord(record, binding); err != nil {
+			return err
 		}
-		refreshCtx, cancel := context.WithTimeout(ctx, timeout)
-		defer cancel()
-		ref := releaseRefFromBinding(binding, record)
-		pkg, _, _, refreshed, _, err := h.resolveReleasePackage(
-			refreshCtx, PackageTrustActionUpdate, ref, &record, record.PluginInstanceID, record.UpdatedAt,
+		evidence, err := releasetrust.NewActivationRecoveryEvidence(
+			record.PluginInstanceID,
+			releasetrust.ReleaseIdentity{
+				SourceID: binding.SourceID, Channel: binding.Channel,
+				ReleaseMetadataRef: binding.ReleaseMetadataRef, ReleaseMetadataSHA256: binding.ReleaseMetadataSHA256,
+				PublisherID: binding.PublisherID, PluginID: binding.PluginID, Version: binding.Version,
+			},
+			record.PackageHash, record.ManifestHash, record.EntriesHash, record.ActiveFingerprint,
+			binding.VerifiedStateSHA256, binding.RootEpoch, binding.PolicyEpoch, binding.RevocationEpoch,
 		)
 		if err != nil {
 			return err
 		}
-		if pkg.PackageHash != record.PackageHash || pkg.ManifestHash != record.ManifestHash || pkg.EntriesHash != record.EntriesHash {
-			return ErrReleaseRefVerificationFailed
+		lease, err := h.adapters.ReleaseTrust.RecoverActivationLease(ctx, evidence)
+		if err != nil {
+			return err
 		}
-		verified = refreshed
-		h.verifiedReleases.put(record.PluginInstanceID, binding, verified)
+		return h.releaseLeases.ensure(
+			record.PluginInstanceID,
+			binding,
+			h.adapters.ReleaseTrust.ValidateActivationLease,
+			func() (releasetrust.ActivationLease, error) {
+				return lease, nil
+			},
+		)
 	}
 	return h.releaseLeases.ensure(
 		record.PluginInstanceID,
@@ -393,6 +402,34 @@ func (h *Host) ensureReleaseActivationLease(ctx context.Context, record registry
 		h.adapters.ReleaseTrust.ValidateActivationLease,
 		verified.AuthorizeActivation,
 	)
+}
+
+func validateActivationRecoveryRecord(record registry.PluginRecord, binding registry.ReleaseTrustBinding) error {
+	if err := registry.ValidateReleaseActivationEvidence(record); err != nil {
+		return releasetrust.ErrActivationRecoveryRejected
+	}
+	verifiedHashes := record.TrustAssessment.VerifiedHashes
+	if record.TrustState != registry.TrustVerified || record.TrustAssessment.TrustState != registry.TrustVerified ||
+		binding.PublisherID != record.PublisherID || binding.PluginID != record.PluginID || binding.Version != record.Version ||
+		verifiedHashes.PackageSHA256 != record.PackageHash || verifiedHashes.ManifestSHA256 != record.ManifestHash ||
+		verifiedHashes.EntriesSHA256 != record.EntriesHash || record.TrustAssessment.PolicyEpoch != binding.PolicyEpoch ||
+		record.TrustAssessment.RevocationEpoch != binding.RevocationEpoch ||
+		record.Metadata["source_id"] != binding.SourceID || record.Metadata["source.channel"] != binding.Channel ||
+		record.Metadata["release.metadata_ref"] != binding.ReleaseMetadataRef ||
+		record.Metadata["release.metadata_sha256"] != binding.ReleaseMetadataSHA256 ||
+		record.Metadata["source.root_epoch"] != binding.RootEpoch ||
+		record.Metadata["source.policy_epoch"] != binding.PolicyEpoch ||
+		record.Metadata["source.revocation_epoch"] != binding.RevocationEpoch {
+		return releasetrust.ErrActivationRecoveryRejected
+	}
+	pkg := pluginpkg.Package{
+		Manifest: record.Manifest, Entries: record.PackageEntries,
+		PackageHash: record.PackageHash, ManifestHash: record.ManifestHash, EntriesHash: record.EntriesHash,
+	}
+	if activeFingerprintForPackage(pkg, record.PluginInstanceID, record.TrustAssessment, record.CapabilityContracts) != record.ActiveFingerprint {
+		return releasetrust.ErrActivationRecoveryRejected
+	}
+	return nil
 }
 
 func (h *Host) validateReleaseActivationLease(record registry.PluginRecord) error {
@@ -408,15 +445,4 @@ func (h *Host) validateReleaseActivationLease(record registry.PluginRecord) erro
 		return releasetrust.ErrActivationLeaseInvalid
 	}
 	return h.adapters.ReleaseTrust.ValidateActivationLease(lease)
-}
-
-func releaseRefFromBinding(binding registry.ReleaseTrustBinding, record registry.PluginRecord) PluginReleaseRef {
-	return PluginReleaseRef{
-		SourceID: binding.SourceID, Channel: binding.Channel,
-		ReleaseMetadataRef: binding.ReleaseMetadataRef, ReleaseMetadataSHA256: binding.ReleaseMetadataSHA256,
-		PublisherID: binding.PublisherID, PluginID: binding.PluginID, Version: binding.Version,
-		ExpectedHashes: PackageHashSet{
-			PackageSHA256: record.PackageHash, ManifestSHA256: record.ManifestHash, EntriesSHA256: record.EntriesHash,
-		},
-	}
 }

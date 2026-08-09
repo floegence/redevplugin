@@ -4,11 +4,14 @@ import (
 	"bytes"
 	"context"
 	"crypto/ed25519"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -88,31 +91,42 @@ func TestReleaseTrustInstallPersistsBindingAndEnables(t *testing.T) {
 	}
 }
 
-func TestRefreshEnabledPluginsRestoresReleaseActivationLeaseBeforeOpenSurface(t *testing.T) {
+func TestRefreshEnabledPluginsRestoresReleaseActivationLeaseAfterColdHostRestart(t *testing.T) {
 	ctx := hostTestContext()
 	registryStore := registry.NewMemoryStore()
-	fixture := newHostReleaseTrustFixture(t)
-	resolver := &recordingReleaseArtifactResolver{artifact: resolvedReleaseTrustFixture(fixture)}
-	host, _, _ := newTestHostWithOptions(t, testHostOptions{
-		releaseTrust: fixture.ServiceSet, releaseArtifactResolver: resolver, registry: registryStore,
+	pluginDataRoot := t.TempDir()
+	installedFixture := newHostReleaseTrustFixture(t)
+	installedResolver := &recordingReleaseArtifactResolver{artifact: resolvedReleaseTrustFixture(installedFixture)}
+	installedHost, _, _ := newTestHostWithOptions(t, testHostOptions{
+		releaseTrust: installedFixture.ServiceSet, releaseArtifactResolver: installedResolver, registry: registryStore,
+		pluginDataRoot: pluginDataRoot,
 	})
-	installed, err := host.InstallReleaseRef(ctx, InstallReleaseRefRequest{
-		PluginInstanceID: nextTestPluginInstanceID(t), ReleaseRef: releaseTrustFixtureRef(fixture), Now: time.Now().UTC(),
+	installed, err := installedHost.InstallReleaseRef(ctx, InstallReleaseRefRequest{
+		PluginInstanceID: nextTestPluginInstanceID(t), ReleaseRef: releaseTrustFixtureRef(installedFixture), Now: time.Now().UTC(),
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	enabled, err := host.EnablePlugin(ctx, EnableRequest{
+	enabled, err := installedHost.EnablePlugin(ctx, EnableRequest{
 		PluginInstanceID: installed.PluginInstanceID, ExpectedManagementRevision: installed.ManagementRevision, Now: time.Now().UTC(),
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Simulate the process-restart boundary by dropping only the in-memory
-	// release authority while retaining the enabled registry record.
-	host.releaseLeases.clear()
-	host.verifiedReleases.clear()
-	refreshed, err := host.RefreshEnabledPlugins(ctx)
+	if err := installedHost.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	restartedFixture := newHostReleaseTrustFixtureWithState(t, installedFixture)
+	restartedFixture.DocumentTransport.SetBlocked(true)
+	restartedResolver := &recordingReleaseArtifactResolver{artifact: resolvedReleaseTrustFixture(restartedFixture)}
+	restartedHost, _, _ := newTestHostWithOptions(t, testHostOptions{
+		releaseTrust: restartedFixture.ServiceSet, releaseArtifactResolver: restartedResolver, registry: registryStore,
+		pluginDataRoot: pluginDataRoot,
+	})
+	restartCtx, cancel := context.WithTimeout(ctx, 50*time.Millisecond)
+	defer cancel()
+	refreshed, err := restartedHost.RefreshEnabledPlugins(restartCtx)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -120,10 +134,19 @@ func TestRefreshEnabledPluginsRestoresReleaseActivationLeaseBeforeOpenSurface(t 
 		t.Fatalf("refreshed plugins mismatch: %#v", refreshed)
 	}
 	binding := *enabled.ReleaseTrustBinding
-	if _, ok := host.releaseLeases.get(enabled.PluginInstanceID, binding); !ok {
+	if _, ok := restartedHost.releaseLeases.get(enabled.PluginInstanceID, binding); !ok {
 		t.Fatal("RefreshEnabledPlugins() did not restore the release activation lease")
 	}
-	if _, err := host.OpenSurface(ctx, OpenSurfaceRequest{
+	if restartedFixture.DocumentTransport.Calls() != 0 {
+		t.Fatalf("cold restart fetched %d release-trust documents, want 0", restartedFixture.DocumentTransport.Calls())
+	}
+	if restartedFixture.LedgerTransport.Calls() != 0 {
+		t.Fatalf("cold restart fetched %d signing-ledger artifacts, want 0", restartedFixture.LedgerTransport.Calls())
+	}
+	if restartedResolver.calls != 0 {
+		t.Fatalf("cold restart resolved %d release artifacts, want 0", restartedResolver.calls)
+	}
+	if _, err := restartedHost.OpenSurface(ctx, OpenSurfaceRequest{
 		PluginInstanceID: enabled.PluginInstanceID, ExpectedManagementRevision: enabled.ManagementRevision,
 		SurfaceID: "fixture.view", SurfaceInstanceID: "surface_after_restart", Now: time.Now().UTC(),
 	}); err != nil {
@@ -131,7 +154,7 @@ func TestRefreshEnabledPluginsRestoresReleaseActivationLeaseBeforeOpenSurface(t 
 	}
 }
 
-func TestReleaseActivationLeaseRefreshTimesOutAfterHostRestartWithoutRegistryMutation(t *testing.T) {
+func TestReleaseActivationLeaseRecoveryRejectsMismatchedDurableStateWithoutRegistryMutation(t *testing.T) {
 	registryStore := registry.NewMemoryStore()
 	installedFixture := newHostReleaseTrustFixture(t)
 	resolver := &recordingReleaseArtifactResolver{artifact: resolvedReleaseTrustFixture(installedFixture)}
@@ -150,23 +173,22 @@ func TestReleaseActivationLeaseRefreshTimesOutAfterHostRestartWithoutRegistryMut
 	}
 
 	restartedFixture := newHostReleaseTrustFixture(t)
-	restartedFixture.DocumentTransport.SetBlocked(true)
+	restartedResolver := &recordingReleaseArtifactResolver{artifact: resolvedReleaseTrustFixture(restartedFixture)}
 	restartedHost, _, _ := newTestHostWithOptions(t, testHostOptions{
 		releaseTrust:            restartedFixture.ServiceSet,
-		releaseArtifactResolver: &recordingReleaseArtifactResolver{artifact: resolvedReleaseTrustFixture(restartedFixture)},
+		releaseArtifactResolver: restartedResolver,
 		registry:                registryStore,
 	})
-	restartedHost.releaseTrustActivationLeaseTimeout = 10 * time.Millisecond
 	started := time.Now()
 	err = restartedHost.ensureReleaseActivationLease(context.Background(), before)
-	if !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("ensureReleaseActivationLease() error = %v, want context deadline", err)
+	if !errors.Is(err, releasetrust.ErrActivationRecoveryRejected) {
+		t.Fatalf("ensureReleaseActivationLease() error = %v, want ErrActivationRecoveryRejected", err)
 	}
 	if time.Since(started) > time.Second {
-		t.Fatalf("release trust refresh took too long: %s", time.Since(started))
+		t.Fatalf("release trust recovery rejection took too long: %s", time.Since(started))
 	}
-	if restartedFixture.DocumentTransport.Calls() == 0 {
-		t.Fatal("release trust refresh did not reach the blocked document transport")
+	if restartedFixture.DocumentTransport.Calls() != 0 || restartedFixture.LedgerTransport.Calls() != 0 || restartedResolver.calls != 0 {
+		t.Fatalf("rejected recovery performed remote work: documents=%d ledger=%d resolver=%d", restartedFixture.DocumentTransport.Calls(), restartedFixture.LedgerTransport.Calls(), restartedResolver.calls)
 	}
 	after, err := registryStore.GetPlugin(hostTestContext(), installed.PluginInstanceID)
 	if err != nil {
@@ -177,7 +199,7 @@ func TestReleaseActivationLeaseRefreshTimesOutAfterHostRestartWithoutRegistryMut
 	}
 }
 
-func TestReleaseActivationLeaseRefreshUsesInstallOperationBudgetAfterHostRestart(t *testing.T) {
+func TestReleaseActivationLeaseRecoveryPropagatesCancellationAfterHostRestart(t *testing.T) {
 	registryStore := registry.NewMemoryStore()
 	installedFixture := newHostReleaseTrustFixture(t)
 	installedHost, _, _ := newTestHostWithOptions(t, testHostOptions{
@@ -198,24 +220,294 @@ func TestReleaseActivationLeaseRefreshUsesInstallOperationBudgetAfterHostRestart
 		t.Fatal(err)
 	}
 
-	restartedFixture := newHostReleaseTrustFixture(t)
+	restartedFixture := newHostReleaseTrustFixtureWithState(t, installedFixture)
+	restartedResolver := &recordingReleaseArtifactResolver{artifact: resolvedReleaseTrustFixture(restartedFixture)}
 	restartedHost, _, _ := newTestHostWithOptions(t, testHostOptions{
-		releaseTrust: restartedFixture.ServiceSet,
-		releaseArtifactResolver: &recordingReleaseArtifactResolver{
-			artifact: resolvedReleaseTrustFixture(restartedFixture),
-		},
-		registry: registryStore,
+		releaseTrust:            restartedFixture.ServiceSet,
+		releaseArtifactResolver: restartedResolver,
+		registry:                registryStore,
 	})
-	if err := restartedHost.ensureReleaseActivationLease(context.Background(), before); err != nil {
+	canceled, cancel := context.WithCancel(context.Background())
+	restartedFixture.StateStore.SetLoadHook(cancel)
+	defer restartedFixture.StateStore.SetLoadHook(nil)
+	if err := restartedHost.ensureReleaseActivationLease(canceled, before); !errors.Is(err, context.Canceled) {
+		t.Fatalf("ensureReleaseActivationLease() error = %v, want context.Canceled", err)
+	}
+	if _, ok := restartedHost.releaseLeases.get(before.PluginInstanceID, *before.ReleaseTrustBinding); ok {
+		t.Fatal("canceled recovery published an activation lease")
+	}
+	if restartedFixture.DocumentTransport.Calls() != 0 || restartedFixture.LedgerTransport.Calls() != 0 || restartedResolver.calls != 0 {
+		t.Fatalf("canceled recovery performed remote work: documents=%d ledger=%d resolver=%d", restartedFixture.DocumentTransport.Calls(), restartedFixture.LedgerTransport.Calls(), restartedResolver.calls)
+	}
+}
+
+func TestReleaseActivationLeaseRecoveryRejectsTamperedRegistryEvidence(t *testing.T) {
+	ctx := hostTestContext()
+	registryStore := registry.NewMemoryStore()
+	pluginDataRoot := t.TempDir()
+	installedFixture := newHostReleaseTrustFixture(t)
+	installedHost, _, _ := newTestHostWithOptions(t, testHostOptions{
+		releaseTrust:            installedFixture.ServiceSet,
+		releaseArtifactResolver: &recordingReleaseArtifactResolver{artifact: resolvedReleaseTrustFixture(installedFixture)},
+		registry:                registryStore, pluginDataRoot: pluginDataRoot,
+	})
+	installed, err := installedHost.InstallReleaseRef(ctx, InstallReleaseRefRequest{
+		PluginInstanceID: nextTestPluginInstanceID(t), ReleaseRef: releaseTrustFixtureRef(installedFixture), Now: time.Now().UTC(),
+	})
+	if err != nil {
 		t.Fatal(err)
 	}
-	remaining, ok := restartedFixture.DocumentTransport.FirstDeadlineRemaining()
-	if !ok {
-		t.Fatal("release trust refresh did not receive a deadline")
+	enabled, err := installedHost.EnablePlugin(ctx, EnableRequest{
+		PluginInstanceID: installed.PluginInstanceID, ExpectedManagementRevision: installed.ManagementRevision, Now: time.Now().UTC(),
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
-	if remaining < releaseInstallOperationTimeout-time.Second || remaining > releaseInstallOperationTimeout {
-		t.Fatalf("release trust refresh deadline = %s, want approximately %s", remaining, releaseInstallOperationTimeout)
+	if err := installedHost.Close(); err != nil {
+		t.Fatal(err)
 	}
+
+	tests := []struct {
+		name   string
+		mutate func(*registry.PluginRecord)
+	}{
+		{name: "plugin instance", mutate: func(record *registry.PluginRecord) { record.PluginInstanceID += "_tampered" }},
+		{name: "source", mutate: func(record *registry.PluginRecord) { record.ReleaseTrustBinding.SourceID += "_tampered" }},
+		{name: "channel", mutate: func(record *registry.PluginRecord) { record.ReleaseTrustBinding.Channel += "_tampered" }},
+		{name: "version", mutate: func(record *registry.PluginRecord) { record.ReleaseTrustBinding.Version = "9.9.9" }},
+		{name: "package hash", mutate: func(record *registry.PluginRecord) {
+			record.PackageHash = prefixedReleaseSHA256(strings.Repeat("a", 64))
+		}},
+		{name: "active fingerprint", mutate: func(record *registry.PluginRecord) {
+			record.ActiveFingerprint = prefixedReleaseSHA256(strings.Repeat("b", 64))
+		}},
+		{name: "state digest", mutate: func(record *registry.PluginRecord) {
+			record.ReleaseTrustBinding.VerifiedStateSHA256 = strings.Repeat("c", 64)
+		}},
+		{name: "root epoch", mutate: func(record *registry.PluginRecord) { record.ReleaseTrustBinding.RootEpoch = "2" }},
+		{name: "policy epoch", mutate: func(record *registry.PluginRecord) { record.ReleaseTrustBinding.PolicyEpoch = "2" }},
+		{name: "revocation epoch", mutate: func(record *registry.PluginRecord) { record.ReleaseTrustBinding.RevocationEpoch = "2" }},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			restartedFixture := newHostReleaseTrustFixtureWithState(t, installedFixture)
+			restartedResolver := &recordingReleaseArtifactResolver{artifact: resolvedReleaseTrustFixture(restartedFixture)}
+			restartedHost, surfaces, _ := newTestHostWithOptions(t, testHostOptions{
+				releaseTrust: restartedFixture.ServiceSet, releaseArtifactResolver: restartedResolver,
+				registry: registryStore, pluginDataRoot: pluginDataRoot,
+			})
+			record := enabled
+			binding := *enabled.ReleaseTrustBinding
+			record.ReleaseTrustBinding = &binding
+			record.Metadata = cloneStringMap(enabled.Metadata)
+			tt.mutate(&record)
+			if err := restartedHost.ensureReleaseActivationLease(ctx, record); !errors.Is(err, releasetrust.ErrActivationRecoveryRejected) {
+				t.Fatalf("ensureReleaseActivationLease() error = %v, want ErrActivationRecoveryRejected", err)
+			}
+			if len(surfaces.snapshots) != 0 {
+				t.Fatalf("rejected recovery published surfaces: %#v", surfaces.snapshots)
+			}
+			if restartedFixture.DocumentTransport.Calls() != 0 || restartedFixture.LedgerTransport.Calls() != 0 || restartedResolver.calls != 0 {
+				t.Fatalf("rejected recovery performed remote work: documents=%d ledger=%d resolver=%d", restartedFixture.DocumentTransport.Calls(), restartedFixture.LedgerTransport.Calls(), restartedResolver.calls)
+			}
+		})
+	}
+}
+
+func TestReleaseActivationLeaseRecoveryRejectsFencedExpiredAndFutureDurableState(t *testing.T) {
+	t.Run("fenced", func(t *testing.T) {
+		ctx := hostTestContext()
+		registryStore := registry.NewMemoryStore()
+		fixture := newHostReleaseTrustFixture(t)
+		host, _, _ := newTestHostWithOptions(t, testHostOptions{
+			releaseTrust:            fixture.ServiceSet,
+			releaseArtifactResolver: &recordingReleaseArtifactResolver{artifact: resolvedReleaseTrustFixture(fixture)},
+			registry:                registryStore,
+		})
+		installed, err := host.InstallReleaseRef(ctx, InstallReleaseRefRequest{
+			PluginInstanceID: nextTestPluginInstanceID(t), ReleaseRef: releaseTrustFixtureRef(fixture), Now: time.Now().UTC(),
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		record, err := registryStore.GetPlugin(ctx, installed.PluginInstanceID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var state releasetrust.ReleaseTrustStateV1
+		if err := json.Unmarshal(fixture.StateStore.CommittedBytes(), &state); err != nil {
+			t.Fatal(err)
+		}
+		state.Channels[0].FenceGeneration = 1
+		state.Channels[0].Fence = &releasetrust.ReleaseTrustFenceV1{
+			Generation: 1, Reason: releasetrust.SourceFenceRestartRecovery, FencedAt: state.TrustedTime.Floor,
+		}
+		raw, err := json.Marshal(state)
+		if err != nil {
+			t.Fatal(err)
+		}
+		fixture.StateStore.ReplaceCommittedBytes(raw)
+		digest := sha256.Sum256(raw)
+		record.ReleaseTrustBinding.VerifiedStateSHA256 = fmt.Sprintf("%x", digest[:])
+		if err := registry.SealReleaseActivationEvidence(&record); err != nil {
+			t.Fatal(err)
+		}
+		restarted := newHostReleaseTrustFixtureWithState(t, fixture)
+		restartedHost, _, _ := newTestHostWithOptions(t, testHostOptions{
+			releaseTrust:            restarted.ServiceSet,
+			releaseArtifactResolver: &recordingReleaseArtifactResolver{artifact: resolvedReleaseTrustFixture(restarted)},
+			registry:                registryStore,
+		})
+		if err := restartedHost.ensureReleaseActivationLease(ctx, record); !errors.Is(err, releasetrust.ErrActivationRecoveryRejected) {
+			t.Fatalf("ensureReleaseActivationLease() error = %v, want fenced recovery rejection", err)
+		}
+	})
+
+	for _, testCase := range []struct {
+		name   string
+		mutate func(*registry.PluginRecord)
+	}{
+		{
+			name: "root epoch mismatch",
+			mutate: func(record *registry.PluginRecord) {
+				record.ReleaseTrustBinding.RootEpoch = "2"
+				record.Metadata["source.root_epoch"] = "2"
+			},
+		},
+		{
+			name: "policy epoch mismatch",
+			mutate: func(record *registry.PluginRecord) {
+				record.ReleaseTrustBinding.PolicyEpoch = "2"
+				record.TrustAssessment.PolicyEpoch = "2"
+				record.Metadata["source.policy_epoch"] = "2"
+			},
+		},
+		{
+			name: "revocation epoch mismatch",
+			mutate: func(record *registry.PluginRecord) {
+				record.ReleaseTrustBinding.RevocationEpoch = "2"
+				record.TrustAssessment.RevocationEpoch = "2"
+				record.Metadata["source.revocation_epoch"] = "2"
+			},
+		},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			ctx := hostTestContext()
+			fixture := newHostReleaseTrustFixture(t)
+			registryStore := registry.NewMemoryStore()
+			host, _, _ := newTestHostWithOptions(t, testHostOptions{
+				releaseTrust:            fixture.ServiceSet,
+				releaseArtifactResolver: &recordingReleaseArtifactResolver{artifact: resolvedReleaseTrustFixture(fixture)},
+				registry:                registryStore,
+			})
+			installed, err := host.InstallReleaseRef(ctx, InstallReleaseRefRequest{
+				PluginInstanceID: nextTestPluginInstanceID(t), ReleaseRef: releaseTrustFixtureRef(fixture), Now: time.Now().UTC(),
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			record, err := registryStore.GetPlugin(ctx, installed.PluginInstanceID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			binding := *record.ReleaseTrustBinding
+			record.ReleaseTrustBinding = &binding
+			record.Metadata = cloneStringMap(record.Metadata)
+			testCase.mutate(&record)
+			record.ActiveFingerprint = activeFingerprintForPackage(pluginpkg.Package{
+				Manifest: record.Manifest, Entries: record.PackageEntries,
+				PackageHash: record.PackageHash, ManifestHash: record.ManifestHash, EntriesHash: record.EntriesHash,
+			}, record.PluginInstanceID, record.TrustAssessment, record.CapabilityContracts)
+			if err := registry.SealReleaseActivationEvidence(&record); err != nil {
+				t.Fatal(err)
+			}
+			restarted := newHostReleaseTrustFixtureWithState(t, fixture)
+			restartedResolver := &recordingReleaseArtifactResolver{artifact: resolvedReleaseTrustFixture(restarted)}
+			restartedHost, _, _ := newTestHostWithOptions(t, testHostOptions{
+				releaseTrust: restarted.ServiceSet, releaseArtifactResolver: restartedResolver, registry: registryStore,
+			})
+			err = restartedHost.ensureReleaseActivationLease(ctx, record)
+			if !errors.Is(err, releasetrust.ErrActivationRecoveryRejected) || !strings.Contains(err.Error(), "trust epoch mismatch") {
+				t.Fatalf("ensureReleaseActivationLease() error = %v, want trust epoch mismatch", err)
+			}
+			if restarted.DocumentTransport.Calls() != 0 || restarted.LedgerTransport.Calls() != 0 || restartedResolver.calls != 0 {
+				t.Fatalf("epoch mismatch performed remote work: documents=%d ledger=%d resolver=%d", restarted.DocumentTransport.Calls(), restarted.LedgerTransport.Calls(), restartedResolver.calls)
+			}
+		})
+	}
+
+	t.Run("expired", func(t *testing.T) {
+		ctx := hostTestContext()
+		generatedAt := time.Now().UTC().Add(-2 * time.Hour).Truncate(time.Second)
+		fixture := newHostReleaseTrustFixtureWithOptions(t, releasetrustfixture.Options{
+			GeneratedAt: generatedAt, ExpiresAt: generatedAt.Add(90 * time.Minute),
+		})
+		registryStore := registry.NewMemoryStore()
+		host, _, _ := newTestHostWithOptions(t, testHostOptions{
+			releaseTrust:            fixture.ServiceSet,
+			releaseArtifactResolver: &recordingReleaseArtifactResolver{artifact: resolvedReleaseTrustFixture(fixture)},
+			registry:                registryStore,
+		})
+		installed, err := host.InstallReleaseRef(ctx, InstallReleaseRefRequest{
+			PluginInstanceID: nextTestPluginInstanceID(t), ReleaseRef: releaseTrustFixtureRef(fixture), Now: time.Now().UTC(),
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		record, err := registryStore.GetPlugin(ctx, installed.PluginInstanceID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		restarted := newHostReleaseTrustFixtureWithState(t, fixture)
+		restartedHost, _, _ := newTestHostWithOptions(t, testHostOptions{
+			releaseTrust:            restarted.ServiceSet,
+			releaseArtifactResolver: &recordingReleaseArtifactResolver{artifact: resolvedReleaseTrustFixture(restarted)},
+			registry:                registryStore,
+		})
+		if err := restartedHost.ensureReleaseActivationLease(ctx, record); !errors.Is(err, releasetrust.ErrActivationLeaseExpired) {
+			t.Fatalf("ensureReleaseActivationLease() error = %v, want ErrActivationLeaseExpired", err)
+		}
+	})
+
+	t.Run("future schema", func(t *testing.T) {
+		ctx := hostTestContext()
+		fixture := newHostReleaseTrustFixture(t)
+		registryStore := registry.NewMemoryStore()
+		host, _, _ := newTestHostWithOptions(t, testHostOptions{
+			releaseTrust:            fixture.ServiceSet,
+			releaseArtifactResolver: &recordingReleaseArtifactResolver{artifact: resolvedReleaseTrustFixture(fixture)},
+			registry:                registryStore,
+		})
+		installed, err := host.InstallReleaseRef(ctx, InstallReleaseRefRequest{
+			PluginInstanceID: nextTestPluginInstanceID(t), ReleaseRef: releaseTrustFixtureRef(fixture), Now: time.Now().UTC(),
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		record, err := registryStore.GetPlugin(ctx, installed.PluginInstanceID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var state map[string]any
+		if err := json.Unmarshal(fixture.StateStore.CommittedBytes(), &state); err != nil {
+			t.Fatal(err)
+		}
+		state["schema_version"] = "redevplugin.release_trust_state.v999"
+		raw, err := json.Marshal(state)
+		if err != nil {
+			t.Fatal(err)
+		}
+		fixture.StateStore.ReplaceCommittedBytes(raw)
+		restarted := newHostReleaseTrustFixtureWithState(t, fixture)
+		restartedHost, _, _ := newTestHostWithOptions(t, testHostOptions{
+			releaseTrust:            restarted.ServiceSet,
+			releaseArtifactResolver: &recordingReleaseArtifactResolver{artifact: resolvedReleaseTrustFixture(restarted)},
+			registry:                registryStore,
+		})
+		if err := restartedHost.ensureReleaseActivationLease(ctx, record); !errors.Is(err, releasetrust.ErrInvalidReleaseTrustState) {
+			t.Fatalf("ensureReleaseActivationLease() error = %v, want ErrInvalidReleaseTrustState", err)
+		}
+	})
 }
 
 func TestReleaseTrustInstallRejectsTamperingBeforeRegistryMutation(t *testing.T) {
@@ -570,7 +862,22 @@ func TestReleaseTrustFenceTearsDownPluginActivity(t *testing.T) {
 
 func newHostReleaseTrustFixture(t *testing.T) *releasetrustfixture.Fixture {
 	t.Helper()
-	fixture, err := releasetrustfixture.New(buildHostReleasePackage(t), releasetrustfixture.Options{})
+	generatedAt := time.Now().UTC().Add(-2 * time.Hour).Truncate(time.Second)
+	return newHostReleaseTrustFixtureWithOptions(t, releasetrustfixture.Options{
+		GeneratedAt: generatedAt, ExpiresAt: generatedAt.Add(24 * time.Hour),
+	})
+}
+
+func newHostReleaseTrustFixtureWithState(t *testing.T, installed *releasetrustfixture.Fixture) *releasetrustfixture.Fixture {
+	t.Helper()
+	return newHostReleaseTrustFixtureWithOptions(t, releasetrustfixture.Options{
+		GeneratedAt: installed.GeneratedAt, ExpiresAt: installed.ExpiresAt, StateStore: installed.StateStore,
+	})
+}
+
+func newHostReleaseTrustFixtureWithOptions(t *testing.T, options releasetrustfixture.Options) *releasetrustfixture.Fixture {
+	t.Helper()
+	fixture, err := releasetrustfixture.New(buildHostReleasePackage(t), options)
 	if err != nil {
 		t.Fatal(err)
 	}

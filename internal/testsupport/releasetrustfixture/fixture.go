@@ -45,6 +45,7 @@ type Options struct {
 	HostRequirements     []releasecontract.ReleaseHostRequirement
 	GeneratedAt          time.Time
 	ExpiresAt            time.Time
+	StateStore           *StateStore
 }
 
 type Fixture struct {
@@ -64,6 +65,8 @@ type Fixture struct {
 	StateStore            *StateStore
 	TrustedTime           *TrustedTimeAdapter
 	ReleaseArtifactSHA256 string
+	GeneratedAt           time.Time
+	ExpiresAt             time.Time
 }
 
 func New(packageBytes []byte, options Options) (*Fixture, error) {
@@ -372,7 +375,10 @@ func New(packageBytes []byte, options Options) (*Fixture, error) {
 	if err != nil {
 		return nil, err
 	}
-	state := &StateStore{}
+	state := options.StateStore
+	if state == nil {
+		state = &StateStore{}
+	}
 	trustedTime := &TrustedTimeAdapter{privateKey: timePrivate, start: generatedAt.Add(time.Hour)}
 	service, err := releasetrust.NewReleaseTrustService(trustOptions, releasetrust.ReleaseTrustAdapters{
 		Documents: documents, Ledger: ledger, State: state, TrustedTime: trustedTime,
@@ -391,7 +397,7 @@ func New(packageBytes []byte, options Options) (*Fixture, error) {
 		MetadataSignature: slices.Clone(metadataSignature), PackageSignature: packageSignature,
 		SigningPrivateKey: slices.Clone(signingPrivate),
 		DocumentTransport: documents, LedgerTransport: ledger, StateStore: state, TrustedTime: trustedTime,
-		ReleaseArtifactSHA256: artifactDigest,
+		ReleaseArtifactSHA256: artifactDigest, GeneratedAt: generatedAt, ExpiresAt: expiresAt,
 	}, nil
 }
 
@@ -486,12 +492,18 @@ type StateStore struct {
 	mu        sync.Mutex
 	committed []byte
 	pending   []byte
+	loadHook  func()
 }
 
 func (store *StateStore) LoadSourceTrustState(_ context.Context, request releasetrust.SourceTrustStateLoadRequest) (releasetrust.SourceTrustStateLoadResult, error) {
 	store.mu.Lock()
-	defer store.mu.Unlock()
-	return releasetrust.NewSourceTrustStateLoadResult(request, store.committed, store.pending)
+	result, err := releasetrust.NewSourceTrustStateLoadResult(request, store.committed, store.pending)
+	hook := store.loadHook
+	store.mu.Unlock()
+	if hook != nil {
+		hook()
+	}
+	return result, err
 }
 
 func (store *StateStore) PrepareSourceTrustState(_ context.Context, request releasetrust.SourceTrustStatePrepareRequest) (releasetrust.StateMutationOutcome, error) {
@@ -516,6 +528,25 @@ func (store *StateStore) CommitSourceTrustState(_ context.Context, request relea
 	store.committed = request.NextStateBytes()
 	store.pending = nil
 	return releasetrust.StateMutationApplied, nil
+}
+
+func (store *StateStore) CommittedBytes() []byte {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	return slices.Clone(store.committed)
+}
+
+func (store *StateStore) ReplaceCommittedBytes(value []byte) {
+	store.mu.Lock()
+	store.committed = slices.Clone(value)
+	store.pending = nil
+	store.mu.Unlock()
+}
+
+func (store *StateStore) SetLoadHook(hook func()) {
+	store.mu.Lock()
+	store.loadHook = hook
+	store.mu.Unlock()
 }
 
 type TrustedTimeAdapter struct {

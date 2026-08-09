@@ -418,6 +418,9 @@ func validExternalPackageConfirmationDigest(value string) bool {
 }
 
 func validatePersistedPluginSecurityFacts(record PluginRecord) error {
+	if err := ValidateReleaseActivationEvidence(record); err != nil {
+		return fmt.Errorf("plugin %q has invalid release activation evidence: %w", record.PluginInstanceID, err)
+	}
 	if !validSignatureAssessmentStatus(record.SignatureAssessment.Status) {
 		return fmt.Errorf("plugin %q has invalid signature assessment status %q", record.PluginInstanceID, record.SignatureAssessment.Status)
 	}
@@ -456,13 +459,16 @@ func validatePersistedPluginSecurityFacts(record PluginRecord) error {
 	}
 	for index, version := range record.VersionHistory {
 		carrier := PluginRecord{
-			OwnerEnvHash: record.OwnerEnvHash, PluginInstanceID: fmt.Sprintf("%s version[%d]", record.PluginInstanceID, index),
-			PackageHash: version.PackageHash, ManifestHash: version.ManifestHash, EntriesHash: version.EntriesHash,
+			OwnerEnvHash: record.OwnerEnvHash, PluginInstanceID: record.PluginInstanceID,
+			PublisherID: version.Manifest.Publisher.PublisherID, PluginID: version.Manifest.PluginID(), Version: version.Version,
+			ActiveFingerprint: version.ActiveFingerprint,
+			PackageHash:       version.PackageHash, ManifestHash: version.ManifestHash, EntriesHash: version.EntriesHash,
 			SignatureAssessment: version.SignatureAssessment, PackageSourceProvenance: version.PackageSourceProvenance,
 			ExecutionApproval: version.ExecutionApproval, UpdateEligibility: version.UpdateEligibility,
+			ReleaseTrustBinding: version.ReleaseTrustBinding,
 		}
 		if err := validatePersistedPluginSecurityFactsWithoutHistory(carrier); err != nil {
-			return err
+			return fmt.Errorf("plugin %q version[%d] has invalid security facts: %w", record.PluginInstanceID, index, err)
 		}
 	}
 	return nil

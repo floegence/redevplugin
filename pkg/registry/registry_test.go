@@ -213,7 +213,10 @@ func TestStoreDeepClonesNestedPluginRecords(t *testing.T) {
 					ReasonCodes: []string{"verified"},
 					Metadata:    map[string]string{"key": "original"},
 				},
-				ReleaseTrustBinding:   &ReleaseTrustBinding{SourceID: "source.original"},
+				PackageHash:           "sha256:package-current",
+				ManifestHash:          "sha256:manifest-current",
+				EntriesHash:           "sha256:entries-current",
+				ReleaseTrustBinding:   testReleaseTrustBinding("source.original", "1.0.0"),
 				LocalImportProvenance: &LocalImportProvenance{ImportID: "import_original", Distribution: "local_import"},
 				CapabilityContracts: []capabilitycontract.Pin{{
 					PublisherID:              "example.publisher",
@@ -245,12 +248,31 @@ func TestStoreDeepClonesNestedPluginRecords(t *testing.T) {
 				},
 				VersionHistory: []PluginVersion{{
 					Version:             "0.9.0",
-					ReleaseTrustBinding: &ReleaseTrustBinding{SourceID: "history.original"},
-					Manifest:            manifest.Manifest{SchemaVersion: manifest.SchemaVersionV8},
-					Metadata:            map[string]string{"history": "original"},
+					ActiveFingerprint:   "sha256:history-fingerprint",
+					PackageHash:         "sha256:package-history",
+					ManifestHash:        "sha256:manifest-history",
+					EntriesHash:         "sha256:entries-history",
+					ReleaseTrustBinding: testReleaseTrustBinding("history.original", "0.9.0"),
+					Manifest: manifest.Manifest{SchemaVersion: manifest.SchemaVersionV8,
+						Publisher: manifest.Publisher{PublisherID: "example.publisher"},
+						Plugin:    manifest.Plugin{PluginID: "com.example.clone", Version: "0.9.0"}},
+					Metadata: map[string]string{"history": "original"},
 				}},
 				Metadata: map[string]string{"record": "original"},
 			}
+			if err := SealReleaseActivationEvidence(&record); err != nil {
+				t.Fatal(err)
+			}
+			historyRecord := PluginRecord{
+				PluginInstanceID: record.PluginInstanceID, PublisherID: record.PublisherID, PluginID: record.PluginID,
+				Version: record.VersionHistory[0].Version, ActiveFingerprint: record.VersionHistory[0].ActiveFingerprint,
+				PackageHash: record.VersionHistory[0].PackageHash, ManifestHash: record.VersionHistory[0].ManifestHash,
+				EntriesHash: record.VersionHistory[0].EntriesHash, ReleaseTrustBinding: record.VersionHistory[0].ReleaseTrustBinding,
+			}
+			if err := SealReleaseActivationEvidence(&historyRecord); err != nil {
+				t.Fatal(err)
+			}
+			record.VersionHistory[0].ReleaseTrustBinding = historyRecord.ReleaseTrustBinding
 			stored, err := store.PutPlugin(registryTestContext(), record, PutOptions{})
 			if err != nil {
 				t.Fatal(err)
@@ -287,6 +309,15 @@ func TestStoreDeepClonesNestedPluginRecords(t *testing.T) {
 				t.Fatalf("stored plugin record was mutated through get/list: %#v", again)
 			}
 		})
+	}
+}
+
+func testReleaseTrustBinding(sourceID string, version string) *ReleaseTrustBinding {
+	return &ReleaseTrustBinding{
+		SourceID: sourceID, Channel: "stable", ReleaseMetadataRef: "plugins/example/release.json",
+		ReleaseMetadataSHA256: strings.Repeat("1", 64), PublisherID: "example.publisher",
+		PluginID: "com.example.clone", Version: version, VerifiedStateSHA256: strings.Repeat("2", 64),
+		RootEpoch: "1", PolicyEpoch: "1", RevocationEpoch: "1",
 	}
 }
 
@@ -485,6 +516,181 @@ func TestSQLiteStoreMigratesRuntimeRequirementColumn(t *testing.T) {
 	}
 	if len(got.VersionHistory) != 1 || got.VersionHistory[0].RuntimeRequirement == nil || got.VersionHistory[0].RuntimeRequirement.MinVersion != "0.4.3" || len(got.VersionHistory[0].RuntimeRequirement.SupportedTargets) != 0 {
 		t.Fatalf("migrated historic runtime requirement = %#v", got.VersionHistory)
+	}
+}
+
+func TestSQLiteStoreMigratesReleaseActivationEvidenceV4ToV5(t *testing.T) {
+	ctx := registryTestContext()
+	path := filepath.Join(t.TempDir(), "registry.sqlite")
+	legacy, err := NewSQLiteStore(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	record := PluginRecord{
+		PluginInstanceID: "plugini_activation_migration", PublisherID: "example.publisher",
+		PluginID: "com.example.clone", Version: "1.0.0", ActiveFingerprint: "sha256:current-fingerprint",
+		PackageHash: "sha256:package-current", ManifestHash: "sha256:manifest-current", EntriesHash: "sha256:entries-current",
+		TrustState: TrustVerified, EnableState: EnableEnabled,
+		ReleaseTrustBinding: testReleaseTrustBinding("source.current", "1.0.0"),
+		Manifest: manifest.Manifest{SchemaVersion: manifest.SchemaVersionV8,
+			Publisher: manifest.Publisher{PublisherID: "example.publisher"},
+			Plugin:    manifest.Plugin{PluginID: "com.example.clone", Version: "1.0.0"}},
+		VersionHistory: []PluginVersion{{
+			Version: "0.9.0", ActiveFingerprint: "sha256:history-fingerprint",
+			PackageHash: "sha256:package-history", ManifestHash: "sha256:manifest-history", EntriesHash: "sha256:entries-history",
+			ReleaseTrustBinding: testReleaseTrustBinding("source.history", "0.9.0"),
+			Manifest: manifest.Manifest{SchemaVersion: manifest.SchemaVersionV8,
+				Publisher: manifest.Publisher{PublisherID: "example.publisher"},
+				Plugin:    manifest.Plugin{PluginID: "com.example.clone", Version: "0.9.0"}},
+		}},
+	}
+	if err := SealReleaseActivationEvidence(&record); err != nil {
+		t.Fatal(err)
+	}
+	historyCarrier := PluginRecord{
+		PluginInstanceID: record.PluginInstanceID, PublisherID: record.PublisherID, PluginID: record.PluginID,
+		Version: record.VersionHistory[0].Version, ActiveFingerprint: record.VersionHistory[0].ActiveFingerprint,
+		PackageHash: record.VersionHistory[0].PackageHash, ManifestHash: record.VersionHistory[0].ManifestHash,
+		EntriesHash: record.VersionHistory[0].EntriesHash, ReleaseTrustBinding: record.VersionHistory[0].ReleaseTrustBinding,
+	}
+	if err := SealReleaseActivationEvidence(&historyCarrier); err != nil {
+		t.Fatal(err)
+	}
+	record.VersionHistory[0].ReleaseTrustBinding = historyCarrier.ReleaseTrustBinding
+	stored, err := legacy.PutPlugin(ctx, record, PutOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	binding := *stored.ReleaseTrustBinding
+	binding.ActivationEvidenceSchemaVersion = ""
+	binding.ActivationEvidenceSHA256 = ""
+	history := stored.VersionHistory
+	history[0].ReleaseTrustBinding.ActivationEvidenceSchemaVersion = ""
+	history[0].ReleaseTrustBinding.ActivationEvidenceSHA256 = ""
+	bindingJSON, err := encodeRegistryJSON(&binding)
+	if err != nil {
+		t.Fatal(err)
+	}
+	historyJSON, err := encodeRegistryJSON(history)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := legacy.db.ExecContext(ctx, `
+UPDATE plugin_records
+SET source_policy_snapshot_json = ?, version_history_json = ?
+WHERE owner_env_hash = ? AND plugin_instance_id = ?`, bindingJSON, historyJSON, stored.OwnerEnvHash, stored.PluginInstanceID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := legacy.db.ExecContext(ctx, `PRAGMA user_version = 4`); err != nil {
+		t.Fatal(err)
+	}
+	if err := legacy.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	migrated, err := NewSQLiteStore(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = migrated.Close() })
+	got, err := migrated.GetPlugin(ctx, record.PluginInstanceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateReleaseActivationEvidence(got); err != nil {
+		t.Fatalf("migrated current activation evidence error = %v", err)
+	}
+	historyCheck := PluginRecord{
+		PluginInstanceID: got.PluginInstanceID, PublisherID: got.PublisherID, PluginID: got.PluginID,
+		Version: got.VersionHistory[0].Version, ActiveFingerprint: got.VersionHistory[0].ActiveFingerprint,
+		PackageHash: got.VersionHistory[0].PackageHash, ManifestHash: got.VersionHistory[0].ManifestHash,
+		EntriesHash: got.VersionHistory[0].EntriesHash, ReleaseTrustBinding: got.VersionHistory[0].ReleaseTrustBinding,
+	}
+	if err := ValidateReleaseActivationEvidence(historyCheck); err != nil {
+		t.Fatalf("migrated history activation evidence error = %v", err)
+	}
+	if got.ActiveFingerprint != record.ActiveFingerprint || got.PackageHash != record.PackageHash || got.EnableState != record.EnableState {
+		t.Fatalf("migration changed plugin state: %#v", got)
+	}
+	var version int
+	if err := migrated.db.QueryRowContext(ctx, `PRAGMA user_version`).Scan(&version); err != nil {
+		t.Fatal(err)
+	}
+	if version != registrySQLiteSchemaVersion {
+		t.Fatalf("schema version = %d, want %d", version, registrySQLiteSchemaVersion)
+	}
+}
+
+func TestSQLiteStoreReleaseActivationEvidenceMigrationRollsBackOnDrift(t *testing.T) {
+	ctx := registryTestContext()
+	path := filepath.Join(t.TempDir(), "registry.sqlite")
+	legacy, err := NewSQLiteStore(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	record := PluginRecord{
+		PluginInstanceID: "plugini_activation_drift", PublisherID: "example.publisher",
+		PluginID: "com.example.clone", Version: "1.0.0", ActiveFingerprint: "sha256:current-fingerprint",
+		PackageHash: "sha256:package-current", ManifestHash: "sha256:manifest-current", EntriesHash: "sha256:entries-current",
+		TrustState: TrustVerified, EnableState: EnableEnabled,
+		ReleaseTrustBinding: testReleaseTrustBinding("source.current", "1.0.0"),
+		Manifest: manifest.Manifest{SchemaVersion: manifest.SchemaVersionV8,
+			Publisher: manifest.Publisher{PublisherID: "example.publisher"},
+			Plugin:    manifest.Plugin{PluginID: "com.example.clone", Version: "1.0.0"}},
+	}
+	if err := SealReleaseActivationEvidence(&record); err != nil {
+		t.Fatal(err)
+	}
+	stored, err := legacy.PutPlugin(ctx, record, PutOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	drifted := *stored.ReleaseTrustBinding
+	drifted.ActivationEvidenceSchemaVersion = "redevplugin.release_activation_evidence.v999"
+	drifted.ActivationEvidenceSHA256 = strings.Repeat("f", 64)
+	driftedJSON, err := encodeRegistryJSON(&drifted)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := legacy.db.ExecContext(ctx, `
+UPDATE plugin_records SET source_policy_snapshot_json = ?
+WHERE owner_env_hash = ? AND plugin_instance_id = ?`, driftedJSON, stored.OwnerEnvHash, stored.PluginInstanceID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := legacy.db.ExecContext(ctx, `PRAGMA user_version = 4`); err != nil {
+		t.Fatal(err)
+	}
+	if err := legacy.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if reopened, err := NewSQLiteStore(ctx, path); err == nil {
+		_ = reopened.Close()
+		t.Fatal("NewSQLiteStore() accepted drifted v4 activation evidence")
+	}
+	dsn, err := registrySQLiteDSN(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	db, err := sql.Open("sqlite", dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var version int
+	if err := db.QueryRowContext(ctx, `PRAGMA user_version`).Scan(&version); err != nil {
+		t.Fatal(err)
+	}
+	if version != 4 {
+		t.Fatalf("failed migration changed schema version to %d", version)
+	}
+	var afterJSON string
+	if err := db.QueryRowContext(ctx, `
+SELECT source_policy_snapshot_json FROM plugin_records
+WHERE owner_env_hash = ? AND plugin_instance_id = ?`, stored.OwnerEnvHash, stored.PluginInstanceID).Scan(&afterJSON); err != nil {
+		t.Fatal(err)
+	}
+	if afterJSON != driftedJSON {
+		t.Fatal("failed migration mutated drifted activation evidence")
 	}
 }
 

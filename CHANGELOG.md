@@ -1,5 +1,21 @@
 # Changelog
 
+## v0.7.19
+
+- Restore verified release activation after a real Host process restart from
+  the authoritative local registry and release-trust state, without
+  redownloading the release package, trust documents, signing-ledger artifacts,
+  or capability artifacts.
+- Bind restart recovery to the exact plugin instance, release identity,
+  package hashes, active fingerprint, verified trust-state digest, and
+  root/policy/revocation epochs. Registry schema v5 seals existing verified
+  release records during an atomic v4-to-v5 migration and rejects drift,
+  partial evidence, future state, fences, rollback, and signed expiry.
+- Preserve context cancellation across durable release-trust state loads before
+  any process-local activation lease is published.
+- Publish the complete Go, npm, Rust source crate, generated contract, and
+  package-publication evidence set as ReDevPlugin 0.7.19.
+
 ## v0.7.18
 
 - Restore verified release activation leases while refreshing enabled plugins

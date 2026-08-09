@@ -190,6 +190,9 @@ func (service *ReleaseTrustService) loadStateBytes(ctx context.Context) ([]byte,
 	if err != nil {
 		return nil, nil, err
 	}
+	if err := ctx.Err(); err != nil {
+		return nil, nil, err
+	}
 	return result.bytesFor(request)
 }
 

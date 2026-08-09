@@ -127,6 +127,45 @@ Go, TypeScript, and Rust decoders enforce canonical JSON, safe relative refs,
 paired consistency fields, lowercase SHA-256 values, and the 64 KiB evidence
 ceiling.
 
+### Release Activation Recovery
+
+Release artifact admission and process-local activation are separate
+lifecycles. Installation and update perform the complete remote release,
+package, capability-contract, trusted-time, and signing-ledger verification.
+Before the registry commit, the Host seals a versioned activation-evidence
+digest into the verified release binding. That evidence binds the plugin
+instance, publisher/plugin/version, source/channel, release metadata reference
+and digest, package/manifest/entries digests, active fingerprint, exact durable
+release-trust state digest, and root, policy, and revocation epochs. The active
+fingerprint is recomputed from the verified package and exact capability pins,
+so the package and its resolved contract set cannot be substituted
+independently.
+
+Registry schema v5 atomically migrates v4 records by sealing current and
+version-history bindings from the existing authoritative fields. A missing,
+partial, future, or internally inconsistent seal aborts the migration and
+leaves the v4 database unchanged. Newly installed and updated releases are
+sealed before registry mutation. External or unverified packages do not gain a
+release activation binding.
+
+After a process restart, `RefreshEnabledPlugins` reconstructs a new
+process-bound activation lease only when the sealed registry record still
+matches its Host-verified manifest, package entries, trust assessment,
+capability pins, source metadata, and the exact current durable release-trust
+state. Recovery reads no remote document, signing-ledger artifact, release
+metadata, package artifact, or capability artifact. It publishes no surface or
+lease when the context is canceled, the local clock rolls behind the trusted
+floor, signed root/policy/revocation state is expired, the source is fenced, an
+epoch or state digest differs, or a durable schema is unsupported.
+
+The recovered lease is bounded by the normal activation maximum and by the
+earliest signed root, policy, or revocation expiry. Remote freshness remains
+owned by the existing release-trust refresh and fence lifecycle; local recovery
+does not authorize a stale or changed durable trust state, bypass revocation,
+or create fallback authorization. Host products select and persist the opaque
+stores through released adapters, but they do not inspect or reconstruct this
+evidence themselves.
+
 The Host library must remain host-neutral. It must not import a host product,
 know product navigation, or assume a particular vault, filesystem root,
 business resource, desktop shell, or UI surface.
