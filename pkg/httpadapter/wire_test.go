@@ -31,6 +31,22 @@ import (
 	"github.com/floegence/redevplugin/pkg/version"
 )
 
+func TestPublicRuntimeRefreshPreservesSafeRecoveryReasonAndAction(t *testing.T) {
+	response := publicRuntimeRefresh([]host.RefreshEnabledPluginResult{{
+		PluginInstanceID: "plugini_refresh",
+		Status:           host.RefreshEnabledPluginStatusFailed,
+		Error: &host.RefreshEnabledPluginPublicError{
+			Code: security.ErrRuntimeUnavailable, Message: "Plugin trust state advanced; retry to revalidate",
+			Reason: host.RefreshFailureReasonTrustStateAdvanced, Action: host.RefreshFailureActionRetry,
+		},
+	}})
+	if len(response.Results) != 1 || response.Results[0].Error == nil ||
+		response.Results[0].Error.Reason != string(host.RefreshFailureReasonTrustStateAdvanced) ||
+		response.Results[0].Error.Action != string(host.RefreshFailureActionRetry) {
+		t.Fatalf("runtime refresh response = %#v", response)
+	}
+}
+
 func TestPublicWireProjectionsExcludeInternalIdentity(t *testing.T) {
 	now := time.Date(2026, 7, 18, 10, 0, 0, 0, time.UTC)
 	plugin := mustPublicPluginRecord(t, registry.PluginRecord{

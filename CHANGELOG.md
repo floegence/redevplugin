@@ -1,5 +1,19 @@
 # Changelog
 
+## v0.7.21
+
+- Revalidate and atomically migrate verified release activation evidence when
+  authoritative trust state advances without a root, policy, or revocation
+  epoch change, then publish a new activation lease without downloading the
+  release package artifacts again.
+- Keep recovery single-flight per source/channel, idempotent across concurrent
+  callers, cancellation-safe, and fail closed for revoked, fenced, epoch-
+  mismatched, tampered, or otherwise invalid evidence.
+- Return stable safe refresh failure reasons and recovery actions through the
+  Host and HTTP runtime-refresh contracts.
+- Publish the complete Go, npm, Rust source crate, generated contract, and
+  package-publication evidence set as ReDevPlugin 0.7.21.
+
 ## v0.7.20
 
 - Recover an expired process-local activation lease from authoritative durable

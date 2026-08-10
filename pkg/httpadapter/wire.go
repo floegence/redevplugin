@@ -587,6 +587,8 @@ func publicRuntimeModuleCache(metrics host.RuntimeModuleCacheMetrics) runtimeMod
 type runtimeRefreshErrorResponse struct {
 	Code    string `json:"code"`
 	Message string `json:"message"`
+	Reason  string `json:"reason"`
+	Action  string `json:"action"`
 }
 
 type runtimeRefreshEntryResponse struct {
@@ -604,7 +606,10 @@ func publicRuntimeRefresh(results []host.RefreshEnabledPluginResult) runtimeRefr
 	for index, result := range results {
 		responses[index] = runtimeRefreshEntryResponse{PluginInstanceID: result.PluginInstanceID, Status: string(result.Status)}
 		if result.Error != nil {
-			responses[index].Error = &runtimeRefreshErrorResponse{Code: string(result.Error.Code), Message: result.Error.Message}
+			responses[index].Error = &runtimeRefreshErrorResponse{
+				Code: string(result.Error.Code), Message: result.Error.Message,
+				Reason: string(result.Error.Reason), Action: string(result.Error.Action),
+			}
 		}
 	}
 	return runtimeRefreshResponse{Results: responses}

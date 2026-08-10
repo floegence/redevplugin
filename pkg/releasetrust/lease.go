@@ -91,13 +91,22 @@ func (service *ReleaseTrustService) authorizeActivation(snapshot VerifiedSourceS
 	if !ok || current.stateSHA256 != snapshot.stateSHA256 || current.processInstanceID != snapshot.processInstanceID {
 		return ActivationLease{}, ErrActivationLeaseInvalid
 	}
+	lease, err := service.activationLeaseForVerifiedSnapshot(current)
+	if err != nil {
+		return ActivationLease{}, err
+	}
+	service.leases[snapshot.key] = lease
+	return lease, nil
+}
+
+func (service *ReleaseTrustService) activationLeaseForVerifiedSnapshot(snapshot VerifiedSourceSnapshot) (ActivationLease, error) {
 	elapsed := service.elapsedNow()
-	if elapsed < current.refreshedElapsed {
+	if elapsed < snapshot.refreshedElapsed {
 		return ActivationLease{}, ErrActivationLeaseInvalid
 	}
-	trustedNow := current.trustedFloor.Add(elapsed - current.refreshedElapsed)
-	maximum := time.Duration(current.policy.Limits.ActivationLeaseMaxSeconds) * time.Second
-	for _, expiresAt := range []string{current.root.ExpiresAt, current.policy.ExpiresAt, current.revocation.ExpiresAt} {
+	trustedNow := snapshot.trustedFloor.Add(elapsed - snapshot.refreshedElapsed)
+	maximum := time.Duration(snapshot.policy.Limits.ActivationLeaseMaxSeconds) * time.Second
+	for _, expiresAt := range []string{snapshot.root.ExpiresAt, snapshot.policy.ExpiresAt, snapshot.revocation.ExpiresAt} {
 		expires, err := parseCanonicalTime(expiresAt)
 		if err != nil || !expires.After(trustedNow) {
 			return ActivationLease{}, ErrActivationLeaseExpired
@@ -109,7 +118,7 @@ func (service *ReleaseTrustService) authorizeActivation(snapshot VerifiedSourceS
 	if maximum <= 0 {
 		return ActivationLease{}, ErrActivationLeaseExpired
 	}
-	refreshAfter := time.Duration(current.policy.Limits.RefreshIntervalMaxSeconds) * time.Second
+	refreshAfter := time.Duration(snapshot.policy.Limits.RefreshIntervalMaxSeconds) * time.Second
 	if refreshAfter > maximum {
 		refreshAfter = maximum
 	}
@@ -119,11 +128,10 @@ func (service *ReleaseTrustService) authorizeActivation(snapshot VerifiedSourceS
 	}
 	lease := ActivationLease{
 		leaseID: leaseID, key: snapshot.key, stateSHA256: snapshot.stateSHA256,
-		processInstanceID: service.processInstanceID, rootEpoch: current.root.RootEpoch,
-		policyEpoch: current.policy.Epoch, revocationEpoch: current.revocation.Epoch,
+		processInstanceID: service.processInstanceID, rootEpoch: snapshot.root.RootEpoch,
+		policyEpoch: snapshot.policy.Epoch, revocationEpoch: snapshot.revocation.Epoch,
 		issuedElapsed: elapsed, refreshElapsed: elapsed + refreshAfter, expiresElapsed: elapsed + maximum,
 	}
-	service.leases[snapshot.key] = lease
 	return lease, nil
 }
 

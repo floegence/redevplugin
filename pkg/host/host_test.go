@@ -6647,6 +6647,31 @@ func TestRefreshEnabledPluginResultIsClosed(t *testing.T) {
 	}
 }
 
+func TestRefreshEnabledPluginFailurePublishesStableRecoveryReason(t *testing.T) {
+	tests := []struct {
+		name   string
+		cause  error
+		reason RefreshEnabledPluginFailureReason
+		action RefreshEnabledPluginFailureAction
+	}{
+		{name: "advanced trust state", cause: releasetrust.NewActivationRecoveryRejection(releasetrust.ActivationRecoveryReasonStateAdvancementFailed, "trust state advancement revalidation failed"), reason: RefreshFailureReasonTrustStateAdvanced, action: RefreshFailureActionRetry},
+		{name: "revoked", cause: releasetrust.NewActivationRecoveryRejection(releasetrust.ActivationRecoveryReasonReleaseRevoked, "release is revoked"), reason: RefreshFailureReasonTrustRevoked, action: RefreshFailureActionReinstall},
+		{name: "fenced", cause: releasetrust.NewActivationRecoveryRejection(releasetrust.ActivationRecoveryReasonTrustFenced, "source trust is fenced"), reason: RefreshFailureReasonTrustFenced, action: RefreshFailureActionContactAdmin},
+		{name: "canceled", cause: context.Canceled, reason: RefreshFailureReasonRecoveryCanceled, action: RefreshFailureActionRetry},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := failedPluginRefreshResultForError("plugini_reason", tt.cause)
+			if result.Error == nil || result.Error.Reason != tt.reason || result.Error.Action != tt.action || result.Error.Message == refreshEnabledPluginFailureMessage {
+				t.Fatalf("failure result = %#v, want reason=%q action=%q", result, tt.reason, tt.action)
+			}
+			if _, err := json.Marshal(result); err != nil {
+				t.Fatalf("json.Marshal() error = %v", err)
+			}
+		})
+	}
+}
+
 func TestRefreshEnabledPluginsRestoresRuntimeState(t *testing.T) {
 	ctx := hostTestContext()
 	h, surfaces, _ := newTestHostWithOptions(t, testHostOptions{

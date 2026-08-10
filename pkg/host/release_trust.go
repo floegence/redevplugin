@@ -374,7 +374,8 @@ func (h *Host) ensureReleaseActivationLease(ctx context.Context, record registry
 			verified.AuthorizeActivation,
 		)
 	}
-	return h.releaseLeases.ensure(
+	advancedInCallback := false
+	err := h.releaseLeases.ensure(
 		record.PluginInstanceID,
 		binding,
 		h.adapters.ReleaseTrust.ValidateActivationLease,
@@ -398,9 +399,50 @@ func (h *Host) ensureReleaseActivationLease(ctx context.Context, record registry
 			if err != nil {
 				return releasetrust.ActivationLease{}, err
 			}
-			return h.adapters.ReleaseTrust.RecoverActivationLease(ctx, evidence)
+			prepared, err := h.adapters.ReleaseTrust.PrepareActivationRecovery(ctx, evidence)
+			if err != nil {
+				return releasetrust.ActivationLease{}, err
+			}
+			if prepared.StateSHA256() != binding.VerifiedStateSHA256 {
+				if err := h.commitAdvancedReleaseActivationEvidence(ctx, record, binding.VerifiedStateSHA256, prepared.StateSHA256()); err != nil {
+					return releasetrust.ActivationLease{}, err
+				}
+				advancedInCallback = true
+			}
+			return h.adapters.ReleaseTrust.CommitActivationRecovery(ctx, prepared)
 		},
 	)
+	if err != nil {
+		return err
+	}
+	lease, ok := h.releaseLeases.get(record.PluginInstanceID, binding)
+	if !ok {
+		return releasetrust.ErrActivationLeaseInvalid
+	}
+	if !advancedInCallback && lease.StateSHA256() != binding.VerifiedStateSHA256 {
+		if err := h.commitAdvancedReleaseActivationEvidence(ctx, record, binding.VerifiedStateSHA256, lease.StateSHA256()); err != nil {
+			h.releaseLeases.delete(record.PluginInstanceID)
+			return err
+		}
+	}
+	return nil
+}
+
+func (h *Host) commitAdvancedReleaseActivationEvidence(ctx context.Context, record registry.PluginRecord, previousStateSHA256, nextStateSHA256 string) error {
+	if _, err := h.adapters.Registry.RefreshReleaseActivationEvidence(ctx, registry.RefreshReleaseActivationEvidenceRequest{
+		PluginInstanceID: record.PluginInstanceID, ExpectedManagementRevision: record.ManagementRevision,
+		ExpectedStateSHA256: previousStateSHA256, NextStateSHA256: nextStateSHA256, Now: time.Now().UTC(),
+	}); err != nil {
+		return fmt.Errorf("commit advanced release trust activation evidence: %w", err)
+	}
+	committed, err := h.adapters.Registry.GetPlugin(ctx, record.PluginInstanceID)
+	if err != nil {
+		return fmt.Errorf("read advanced release trust activation evidence: %w", err)
+	}
+	if committed.ReleaseTrustBinding == nil || committed.ReleaseTrustBinding.VerifiedStateSHA256 != nextStateSHA256 || registry.ValidateReleaseActivationEvidence(committed) != nil {
+		return releasetrust.ErrActivationRecoveryRejected
+	}
+	return nil
 }
 
 func validateActivationRecoveryRecord(record registry.PluginRecord, binding registry.ReleaseTrustBinding) error {

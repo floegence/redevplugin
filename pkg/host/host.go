@@ -5198,6 +5198,27 @@ const (
 	refreshEnabledPluginFailureMessage                             = "Plugin runtime state could not be refreshed"
 )
 
+type RefreshEnabledPluginFailureReason string
+
+const (
+	RefreshFailureReasonUnknown                   RefreshEnabledPluginFailureReason = "unknown"
+	RefreshFailureReasonTrustStateAdvanced        RefreshEnabledPluginFailureReason = "trust_state_advanced"
+	RefreshFailureReasonTrustRevoked              RefreshEnabledPluginFailureReason = "trust_revoked"
+	RefreshFailureReasonTrustFenced               RefreshEnabledPluginFailureReason = "trust_fenced"
+	RefreshFailureReasonTrustEpochMismatch        RefreshEnabledPluginFailureReason = "trust_epoch_mismatch"
+	RefreshFailureReasonActivationEvidenceInvalid RefreshEnabledPluginFailureReason = "activation_evidence_invalid"
+	RefreshFailureReasonActivationLeaseExpired    RefreshEnabledPluginFailureReason = "activation_lease_expired"
+	RefreshFailureReasonRecoveryCanceled          RefreshEnabledPluginFailureReason = "recovery_canceled"
+)
+
+type RefreshEnabledPluginFailureAction string
+
+const (
+	RefreshFailureActionRetry        RefreshEnabledPluginFailureAction = "retry"
+	RefreshFailureActionReinstall    RefreshEnabledPluginFailureAction = "reinstall"
+	RefreshFailureActionContactAdmin RefreshEnabledPluginFailureAction = "contact_admin"
+)
+
 type RefreshEnabledPluginResult struct {
 	PluginInstanceID string                           `json:"plugin_instance_id"`
 	Status           RefreshEnabledPluginStatus       `json:"status"`
@@ -5205,8 +5226,10 @@ type RefreshEnabledPluginResult struct {
 }
 
 type RefreshEnabledPluginPublicError struct {
-	Code    security.ErrorCode `json:"code"`
-	Message string             `json:"message"`
+	Code    security.ErrorCode                `json:"code"`
+	Message string                            `json:"message"`
+	Reason  RefreshEnabledPluginFailureReason `json:"reason"`
+	Action  RefreshEnabledPluginFailureAction `json:"action"`
 }
 
 func refreshedPluginResult(pluginInstanceID string) RefreshEnabledPluginResult {
@@ -5217,14 +5240,54 @@ func refreshedPluginResult(pluginInstanceID string) RefreshEnabledPluginResult {
 }
 
 func failedPluginRefreshResult(pluginInstanceID string) RefreshEnabledPluginResult {
+	return failedPluginRefreshResultForError(pluginInstanceID, nil)
+}
+
+func failedPluginRefreshResultForError(pluginInstanceID string, cause error) RefreshEnabledPluginResult {
+	reason, action, message := classifyRefreshFailure(cause)
 	return RefreshEnabledPluginResult{
 		PluginInstanceID: strings.TrimSpace(pluginInstanceID),
 		Status:           RefreshEnabledPluginStatusFailed,
 		Error: &RefreshEnabledPluginPublicError{
 			Code:    security.ErrRuntimeUnavailable,
-			Message: refreshEnabledPluginFailureMessage,
+			Message: message,
+			Reason:  reason,
+			Action:  action,
 		},
 	}
+}
+
+func classifyRefreshFailure(cause error) (RefreshEnabledPluginFailureReason, RefreshEnabledPluginFailureAction, string) {
+	if cause == nil {
+		return RefreshFailureReasonUnknown, RefreshFailureActionRetry, refreshEnabledPluginFailureMessage
+	}
+	if errors.Is(cause, context.Canceled) || errors.Is(cause, context.DeadlineExceeded) {
+		return RefreshFailureReasonRecoveryCanceled, RefreshFailureActionRetry, "Plugin runtime recovery was canceled; retry to continue"
+	}
+	if errors.Is(cause, releasetrust.ErrActivationLeaseExpired) {
+		return RefreshFailureReasonActivationLeaseExpired, RefreshFailureActionRetry, "Plugin activation lease expired; retry to continue"
+	}
+	if errors.Is(cause, releasetrust.ErrActivationRecoveryRejected) {
+		reason := RefreshFailureReasonActivationEvidenceInvalid
+		action := RefreshFailureActionReinstall
+		message := "Plugin activation evidence is invalid; reinstall the plugin"
+		var rejection *releasetrust.ActivationRecoveryRejection
+		if !errors.As(cause, &rejection) {
+			return reason, action, message
+		}
+		switch rejection.Reason() {
+		case releasetrust.ActivationRecoveryReasonStateAdvancementFailed:
+			reason, action, message = RefreshFailureReasonTrustStateAdvanced, RefreshFailureActionRetry, "Plugin trust state advanced; retry to revalidate"
+		case releasetrust.ActivationRecoveryReasonTrustFenced:
+			reason, action, message = RefreshFailureReasonTrustFenced, RefreshFailureActionContactAdmin, "Plugin trust source is fenced; contact an administrator"
+		case releasetrust.ActivationRecoveryReasonReleaseRevoked:
+			reason, action, message = RefreshFailureReasonTrustRevoked, RefreshFailureActionReinstall, "Plugin release was revoked; reinstall from a trusted source"
+		case releasetrust.ActivationRecoveryReasonTrustEpochMismatch:
+			reason, action, message = RefreshFailureReasonTrustEpochMismatch, RefreshFailureActionReinstall, "Plugin trust policy changed; reinstall the plugin"
+		}
+		return reason, action, message
+	}
+	return RefreshFailureReasonUnknown, RefreshFailureActionRetry, refreshEnabledPluginFailureMessage
 }
 
 func (result RefreshEnabledPluginResult) validate() error {
@@ -5237,7 +5300,7 @@ func (result RefreshEnabledPluginResult) validate() error {
 			return errors.New("refreshed runtime result must not include an error")
 		}
 	case RefreshEnabledPluginStatusFailed:
-		if result.Error == nil || result.Error.Code != security.ErrRuntimeUnavailable || result.Error.Message != refreshEnabledPluginFailureMessage {
+		if result.Error == nil || result.Error.Code != security.ErrRuntimeUnavailable || result.Error.Reason == "" || result.Error.Action == "" || result.Error.Message == "" {
 			return errors.New("failed runtime refresh result requires the stable runtime error")
 		}
 	default:
@@ -5281,7 +5344,7 @@ func (h *Host) RefreshEnabledPlugins(ctx context.Context) ([]RefreshEnabledPlugi
 				err,
 				observability.DiagnosticDetails{},
 			)
-			results = append(results, failedPluginRefreshResult(record.PluginInstanceID))
+			results = append(results, failedPluginRefreshResultForError(record.PluginInstanceID, err))
 			continue
 		}
 		results = append(results, refreshedPluginResult(record.PluginInstanceID))

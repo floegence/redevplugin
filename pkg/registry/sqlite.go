@@ -132,6 +132,65 @@ func (s *SQLiteStore) PutPlugin(ctx context.Context, record PluginRecord, opts P
 	return record, nil
 }
 
+func (s *SQLiteStore) RefreshReleaseActivationEvidence(ctx context.Context, req RefreshReleaseActivationEvidenceRequest) (PluginRecord, error) {
+	if ctx == nil {
+		return PluginRecord{}, context.Canceled
+	}
+	if err := ctx.Err(); err != nil {
+		return PluginRecord{}, err
+	}
+	ownerEnvHash, err := environmentOwner(ctx)
+	if err != nil {
+		return PluginRecord{}, err
+	}
+	var refreshed PluginRecord
+	err = s.sqliteCatalogMutation(ctx, func(tx *sql.Tx) error {
+		record, exists, getErr := getSQLitePlugin(ctx, tx, ownerEnvHash, req.PluginInstanceID, false)
+		if getErr != nil {
+			return getErr
+		}
+		if !exists {
+			return ErrNotFound
+		}
+		if record.ManagementRevision != req.ExpectedManagementRevision {
+			return &ManagementRevisionConflictError{PluginInstanceID: req.PluginInstanceID, Expected: req.ExpectedManagementRevision, Actual: record.ManagementRevision}
+		}
+		if record.ReleaseTrustBinding == nil {
+			return ErrManagementRevisionConflict
+		}
+		if err := ValidateReleaseActivationEvidence(record); err != nil {
+			return err
+		}
+		if record.ReleaseTrustBinding.VerifiedStateSHA256 == req.NextStateSHA256 {
+			refreshed = record
+			return nil
+		}
+		if record.ReleaseTrustBinding.VerifiedStateSHA256 != req.ExpectedStateSHA256 {
+			return ErrManagementRevisionConflict
+		}
+		record.ReleaseTrustBinding.VerifiedStateSHA256 = req.NextStateSHA256
+		if err := SealReleaseActivationEvidence(&record); err != nil {
+			return err
+		}
+		if req.Now.IsZero() {
+			req.Now = time.Now().UTC()
+		}
+		record.UpdatedAt = req.Now
+		if err := validatePersistedPluginSecurityFacts(record); err != nil {
+			return err
+		}
+		if err := upsertSQLitePlugin(ctx, tx, record); err != nil {
+			return err
+		}
+		refreshed = record
+		return nil
+	})
+	if err != nil {
+		return PluginRecord{}, err
+	}
+	return clonePluginRecord(refreshed)
+}
+
 func (s *SQLiteStore) GetPlugin(ctx context.Context, pluginInstanceID string) (PluginRecord, error) {
 	ownerEnvHash, err := environmentOwner(ctx)
 	if err != nil {

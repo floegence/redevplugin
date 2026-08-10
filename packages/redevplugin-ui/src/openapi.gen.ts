@@ -1683,8 +1683,11 @@ export interface components {
         PluginRuntimeRefreshPublicError: {
             /** @enum {string} */
             code: "PLUGIN_RUNTIME_UNAVAILABLE";
-            /** @constant */
-            message: "Plugin runtime state could not be refreshed";
+            message: string;
+            /** @enum {string} */
+            reason: "unknown" | "trust_state_advanced" | "trust_revoked" | "trust_fenced" | "trust_epoch_mismatch" | "activation_evidence_invalid" | "activation_lease_expired" | "recovery_canceled";
+            /** @enum {string} */
+            action: "retry" | "reinstall" | "contact_admin";
         };
         PluginDataExportResult: {
             bundle_ref: string;

@@ -46,9 +46,11 @@ type Options struct {
 	GeneratedAt          time.Time
 	ExpiresAt            time.Time
 	StateStore           *StateStore
+	TrustedTime          *TrustedTimeAdapter
 }
 
 type Fixture struct {
+	Service               *releasetrust.ReleaseTrustService
 	ServiceSet            *releasetrust.ServiceSet
 	Identity              releasetrust.ReleaseIdentity
 	SourcePolicy          releasecontract.SourcePolicyV2
@@ -379,7 +381,10 @@ func New(packageBytes []byte, options Options) (*Fixture, error) {
 	if state == nil {
 		state = &StateStore{}
 	}
-	trustedTime := &TrustedTimeAdapter{privateKey: timePrivate, start: generatedAt.Add(time.Hour)}
+	trustedTime := options.TrustedTime
+	if trustedTime == nil {
+		trustedTime = &TrustedTimeAdapter{privateKey: timePrivate, start: generatedAt.Add(time.Hour)}
+	}
 	service, err := releasetrust.NewReleaseTrustService(trustOptions, releasetrust.ReleaseTrustAdapters{
 		Documents: documents, Ledger: ledger, State: state, TrustedTime: trustedTime,
 	})
@@ -392,13 +397,30 @@ func New(packageBytes []byte, options Options) (*Fixture, error) {
 	}
 	artifactDigest := digestHex(signedPackageBytes)
 	return &Fixture{
-		ServiceSet: serviceSet, Identity: identity, SourcePolicy: policy, Package: signedPackage,
+		Service: service, ServiceSet: serviceSet, Identity: identity, SourcePolicy: policy, Package: signedPackage,
 		PackageBytes: slices.Clone(signedPackageBytes), Metadata: releaseMetadata, MetadataBytes: slices.Clone(metadataBytes),
 		MetadataSignature: slices.Clone(metadataSignature), PackageSignature: packageSignature,
 		SigningPrivateKey: slices.Clone(signingPrivate),
 		DocumentTransport: documents, LedgerTransport: ledger, StateStore: state, TrustedTime: trustedTime,
 		ReleaseArtifactSHA256: artifactDigest, GeneratedAt: generatedAt, ExpiresAt: expiresAt,
 	}, nil
+}
+
+// AdvanceTrustedTime commits a valid successor state through the same trust
+// service used by host tests. It is intentionally test-only fixture support.
+func (fixture *Fixture) AdvanceTrustedTime(ctx context.Context) (releasetrust.TrustedTimeStatus, error) {
+	if fixture == nil || fixture.Service == nil {
+		return releasetrust.TrustedTimeStatus{}, releasetrust.ErrInvalidReleaseTrustOptions
+	}
+	configuration, err := releasetrust.NewSourceConfiguration(fixture.Identity.SourceID, []string{fixture.Identity.Channel})
+	if err != nil {
+		return releasetrust.TrustedTimeStatus{}, err
+	}
+	key, err := configuration.TrustKey(fixture.Identity.Channel)
+	if err != nil {
+		return releasetrust.TrustedTimeStatus{}, err
+	}
+	return fixture.Service.RefreshTrustedTime(ctx, key)
 }
 
 func (fixture *Fixture) SetCapabilityBundle(bundle capabilitycontract.Bundle) {

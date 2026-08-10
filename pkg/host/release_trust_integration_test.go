@@ -156,6 +156,151 @@ func TestRefreshEnabledPluginsRestoresReleaseActivationLeaseAfterColdHostRestart
 	}
 }
 
+func TestRefreshEnabledPluginsRevalidatesLegallyAdvancedTrustStateAfterColdHostRestart(t *testing.T) {
+	ctx := hostTestContext()
+	registryStore := registry.NewMemoryStore()
+	pluginDataRoot := t.TempDir()
+	installedFixture := newHostReleaseTrustFixture(t)
+	installedHost, _, _ := newTestHostWithOptions(t, testHostOptions{
+		releaseTrust:            installedFixture.ServiceSet,
+		releaseArtifactResolver: &recordingReleaseArtifactResolver{artifact: resolvedReleaseTrustFixture(installedFixture)},
+		registry:                registryStore, pluginDataRoot: pluginDataRoot,
+	})
+	installed, err := installedHost.InstallReleaseRef(ctx, InstallReleaseRefRequest{
+		PluginInstanceID: nextTestPluginInstanceID(t), ReleaseRef: releaseTrustFixtureRef(installedFixture), Now: time.Now().UTC(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	enabled, err := installedHost.EnablePlugin(ctx, EnableRequest{
+		PluginInstanceID: installed.PluginInstanceID, ExpectedManagementRevision: installed.ManagementRevision, Now: time.Now().UTC(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := *enabled.ReleaseTrustBinding
+	advanced, err := installedFixture.AdvanceTrustedTime(ctx)
+	if err != nil {
+		t.Fatalf("AdvanceTrustedTime() error = %v", err)
+	}
+	if advanced.StateSHA256() == before.VerifiedStateSHA256 {
+		t.Fatal("trusted-time advancement did not produce a successor trust state")
+	}
+	if err := installedHost.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	restartedFixture := newHostReleaseTrustFixtureWithState(t, installedFixture)
+	restartedResolver := &recordingReleaseArtifactResolver{artifact: resolvedReleaseTrustFixture(restartedFixture)}
+	restartedHost, _, _ := newTestHostWithOptions(t, testHostOptions{
+		releaseTrust: restartedFixture.ServiceSet, releaseArtifactResolver: restartedResolver,
+		registry: registryStore, pluginDataRoot: pluginDataRoot,
+	})
+	if err := restartedHost.ensureReleaseActivationLease(ctx, enabled); err != nil {
+		t.Fatalf("ensureReleaseActivationLease() after legal trust advancement = %v", err)
+	}
+	refreshed, err := restartedHost.RefreshEnabledPlugins(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(refreshed) != 1 || refreshed[0].Status != RefreshEnabledPluginStatusRefreshed || refreshed[0].Error != nil {
+		t.Fatalf("RefreshEnabledPlugins() after legal trust advancement = %#v, want successful revalidation", refreshed)
+	}
+	if documents, ledger := restartedFixture.DocumentTransport.Calls(), restartedFixture.LedgerTransport.Calls(); documents != 5 || ledger != 25 || restartedResolver.calls != 0 {
+		t.Fatalf("legal trust advancement used unexpected remote work: documents=%d ledger=%d resolver=%d", documents, ledger, restartedResolver.calls)
+	}
+	after, err := registryStore.GetPlugin(ctx, enabled.PluginInstanceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	currentDigest := sha256.Sum256(restartedFixture.StateStore.CommittedBytes())
+	currentStateSHA256 := fmt.Sprintf("%x", currentDigest[:])
+	if after.ReleaseTrustBinding == nil || after.ReleaseTrustBinding.VerifiedStateSHA256 != currentStateSHA256 || currentStateSHA256 == before.VerifiedStateSHA256 {
+		t.Fatalf("revalidated binding = %#v, want current state digest %q", after.ReleaseTrustBinding, currentStateSHA256)
+	}
+	if err := registry.ValidateReleaseActivationEvidence(after); err != nil {
+		t.Fatalf("revalidated activation evidence = %v", err)
+	}
+}
+
+func TestConcurrentPluginsShareOneTrustAdvancementRevalidationAndMigrateEveryBinding(t *testing.T) {
+	ctx := hostTestContext()
+	registryStore := registry.NewMemoryStore()
+	pluginDataRoot := t.TempDir()
+	installedFixture := newHostReleaseTrustFixture(t)
+	installedHost, _, _ := newTestHostWithOptions(t, testHostOptions{
+		releaseTrust:            installedFixture.ServiceSet,
+		releaseArtifactResolver: &recordingReleaseArtifactResolver{artifact: resolvedReleaseTrustFixture(installedFixture)},
+		registry:                registryStore, pluginDataRoot: pluginDataRoot,
+	})
+	enabled := make([]registry.PluginRecord, 2)
+	for index := range enabled {
+		installed, err := installedHost.InstallReleaseRef(ctx, InstallReleaseRefRequest{
+			PluginInstanceID: nextTestPluginInstanceID(t), ReleaseRef: releaseTrustFixtureRef(installedFixture), Now: time.Now().UTC(),
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		enabled[index], err = installedHost.EnablePlugin(ctx, EnableRequest{
+			PluginInstanceID: installed.PluginInstanceID, ExpectedManagementRevision: installed.ManagementRevision, Now: time.Now().UTC(),
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	previousState := enabled[0].ReleaseTrustBinding.VerifiedStateSHA256
+	if _, err := installedFixture.AdvanceTrustedTime(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := installedHost.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	restartedFixture := newHostReleaseTrustFixtureWithState(t, installedFixture)
+	restartedResolver := &recordingReleaseArtifactResolver{artifact: resolvedReleaseTrustFixture(restartedFixture)}
+	restartedHost, _, _ := newTestHostWithOptions(t, testHostOptions{
+		releaseTrust: restartedFixture.ServiceSet, releaseArtifactResolver: restartedResolver,
+		registry: registryStore, pluginDataRoot: pluginDataRoot,
+	})
+	start := make(chan struct{})
+	errs := make(chan error, len(enabled))
+	var group sync.WaitGroup
+	for _, record := range enabled {
+		record := record
+		group.Add(1)
+		go func() {
+			defer group.Done()
+			<-start
+			errs <- restartedHost.ensureReleaseActivationLease(ctx, record)
+		}()
+	}
+	close(start)
+	group.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("concurrent trust advancement recovery = %v", err)
+		}
+	}
+	if documents, ledger := restartedFixture.DocumentTransport.Calls(), restartedFixture.LedgerTransport.Calls(); documents != 5 || ledger != 25 || restartedResolver.calls != 0 {
+		t.Fatalf("shared trust advancement used unexpected work: documents=%d ledger=%d resolver=%d", documents, ledger, restartedResolver.calls)
+	}
+	currentDigest := sha256.Sum256(restartedFixture.StateStore.CommittedBytes())
+	currentState := fmt.Sprintf("%x", currentDigest[:])
+	for _, record := range enabled {
+		after, err := registryStore.GetPlugin(ctx, record.PluginInstanceID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if after.ReleaseTrustBinding == nil || after.ReleaseTrustBinding.VerifiedStateSHA256 != currentState || currentState == previousState {
+			t.Fatalf("plugin %q binding = %#v, want state %q", record.PluginInstanceID, after.ReleaseTrustBinding, currentState)
+		}
+		if err := registry.ValidateReleaseActivationEvidence(after); err != nil {
+			t.Fatalf("plugin %q activation evidence = %v", record.PluginInstanceID, err)
+		}
+	}
+}
+
 func TestOpenSurfaceRecoversExpiredActivationLeaseFromDurableEvidence(t *testing.T) {
 	ctx := hostTestContext()
 	fixture := newHostReleaseTrustFixture(t)
@@ -238,8 +383,8 @@ func TestExpiredActivationLeaseRecoveryIsSingleFlightAcrossConcurrentOpens(t *te
 			t.Fatalf("concurrent lease recovery error = %v", err)
 		}
 	}
-	if got := stateLoads.Load(); got != 1 {
-		t.Fatalf("concurrent recovery loaded durable trust state %d times, want one single-flight recovery", got)
+	if got := stateLoads.Load(); got != 2 {
+		t.Fatalf("concurrent recovery loaded durable trust state %d times, want one prepare and one final commit reread", got)
 	}
 }
 
@@ -960,7 +1105,8 @@ func newHostReleaseTrustFixture(t *testing.T) *releasetrustfixture.Fixture {
 func newHostReleaseTrustFixtureWithState(t *testing.T, installed *releasetrustfixture.Fixture) *releasetrustfixture.Fixture {
 	t.Helper()
 	return newHostReleaseTrustFixtureWithOptions(t, releasetrustfixture.Options{
-		GeneratedAt: installed.GeneratedAt, ExpiresAt: installed.ExpiresAt, StateStore: installed.StateStore,
+		GeneratedAt: installed.GeneratedAt, ExpiresAt: installed.ExpiresAt,
+		StateStore: installed.StateStore, TrustedTime: installed.TrustedTime,
 	})
 }
 

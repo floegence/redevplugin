@@ -251,6 +251,14 @@ type PutOptions struct {
 	Now time.Time `json:"-"`
 }
 
+type RefreshReleaseActivationEvidenceRequest struct {
+	PluginInstanceID           string
+	ExpectedManagementRevision uint64
+	ExpectedStateSHA256        string
+	NextStateSHA256            string
+	Now                        time.Time
+}
+
 type AuthorizationStore interface {
 	GrantPermission(ctx context.Context, req permissions.GrantRequest, expected AuthorizationRevisions) (AuthorizationSnapshot, error)
 	RevokePermission(ctx context.Context, req permissions.RevokeRequest, expected AuthorizationRevisions) (AuthorizationSnapshot, error)
@@ -268,6 +276,7 @@ type Store interface {
 	ReleaseInstallOperationStore
 	plugindata.Catalog
 	PutPlugin(ctx context.Context, record PluginRecord, opts PutOptions) (PluginRecord, error)
+	RefreshReleaseActivationEvidence(ctx context.Context, req RefreshReleaseActivationEvidenceRequest) (PluginRecord, error)
 	GetPlugin(ctx context.Context, pluginInstanceID string) (PluginRecord, error)
 	ListPlugins(ctx context.Context) ([]PluginRecord, error)
 	SetEnableState(ctx context.Context, pluginInstanceID string, state EnableState, reason string, now time.Time) (PluginRecord, error)
@@ -349,6 +358,58 @@ func (s *MemoryStore) PutPlugin(ctx context.Context, record PluginRecord, opts P
 	}
 	s.records[key] = record
 	return clonePluginRecord(record)
+}
+
+func (s *MemoryStore) RefreshReleaseActivationEvidence(ctx context.Context, req RefreshReleaseActivationEvidenceRequest) (PluginRecord, error) {
+	if ctx == nil {
+		return PluginRecord{}, context.Canceled
+	}
+	if err := ctx.Err(); err != nil {
+		return PluginRecord{}, err
+	}
+	ownerEnvHash, err := environmentOwner(ctx)
+	if err != nil {
+		return PluginRecord{}, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	key := environmentRecordKey(ownerEnvHash, req.PluginInstanceID)
+	record, ok := s.records[key]
+	if !ok || record.DeletedAt != nil {
+		return PluginRecord{}, ErrNotFound
+	}
+	if record.ManagementRevision != req.ExpectedManagementRevision {
+		return PluginRecord{}, &ManagementRevisionConflictError{PluginInstanceID: req.PluginInstanceID, Expected: req.ExpectedManagementRevision, Actual: record.ManagementRevision}
+	}
+	if record.ReleaseTrustBinding == nil {
+		return PluginRecord{}, ErrManagementRevisionConflict
+	}
+	if err := ValidateReleaseActivationEvidence(record); err != nil {
+		return PluginRecord{}, err
+	}
+	if record.ReleaseTrustBinding.VerifiedStateSHA256 == req.NextStateSHA256 {
+		return clonePluginRecord(record)
+	}
+	if record.ReleaseTrustBinding.VerifiedStateSHA256 != req.ExpectedStateSHA256 {
+		return PluginRecord{}, ErrManagementRevisionConflict
+	}
+	next, err := clonePluginRecord(record)
+	if err != nil {
+		return PluginRecord{}, err
+	}
+	next.ReleaseTrustBinding.VerifiedStateSHA256 = req.NextStateSHA256
+	if err := SealReleaseActivationEvidence(&next); err != nil {
+		return PluginRecord{}, err
+	}
+	if req.Now.IsZero() {
+		req.Now = time.Now().UTC()
+	}
+	next.UpdatedAt = req.Now
+	if err := validatePersistedPluginSecurityFacts(next); err != nil {
+		return PluginRecord{}, err
+	}
+	s.records[key] = next
+	return clonePluginRecord(next)
 }
 
 func (s *MemoryStore) GetPlugin(ctx context.Context, pluginInstanceID string) (PluginRecord, error) {
