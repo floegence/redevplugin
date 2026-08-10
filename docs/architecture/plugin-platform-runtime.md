@@ -151,12 +151,23 @@ release activation binding.
 After a process restart, `RefreshEnabledPlugins` reconstructs a new
 process-bound activation lease only when the sealed registry record still
 matches its Host-verified manifest, package entries, trust assessment,
-capability pins, source metadata, and the exact current durable release-trust
-state. Recovery reads no remote document, signing-ledger artifact, release
-metadata, package artifact, or capability artifact. It publishes no surface or
-lease when the context is canceled, the local clock rolls behind the trusted
-floor, signed root/policy/revocation state is expired, the source is fenced, an
-epoch or state digest differs, or a durable schema is unsupported.
+capability pins, source metadata, and authoritative durable release-trust
+state. A matching durable state requires no remote document, signing-ledger
+artifact, release metadata, package artifact, or capability artifact. A legal
+forward state change revalidates only the current trust and signing-ledger
+evidence and atomically reseals the binding; it never resolves the release
+package again. Recovery publishes no surface or lease when the context is
+canceled, the local clock rolls behind the trusted floor, signed
+root/policy/revocation state is expired, the source is fenced, an epoch is
+incompatible, the evidence is tampered, or a durable schema is unsupported.
+
+Enabled-plugin refresh uses at most four workers, gives each plugin an
+independent two-second recovery budget, and returns results in stable plugin
+instance order. Activation work remains single-flight for one source/channel,
+including all plugins bound to that trust state, while different
+source/channels recover concurrently. A waiter may cancel independently; a
+failed or canceled recovery publishes neither a lease association nor a partial
+surface snapshot.
 
 The recovered lease is bounded by the normal activation maximum and by the
 earliest signed root, policy, or revocation expiry. Remote freshness remains

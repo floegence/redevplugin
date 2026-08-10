@@ -253,9 +253,11 @@ const (
 )
 
 const (
-	installStageTTL            = 30 * time.Minute
-	hostRuntimeShutdownTimeout = 5 * time.Second
-	localImportUnsignedPolicy  = "dev_only"
+	installStageTTL             = 30 * time.Minute
+	hostRuntimeShutdownTimeout  = 5 * time.Second
+	refreshEnabledConcurrency   = 4
+	refreshEnabledPluginTimeout = 2 * time.Second
+	localImportUnsignedPolicy   = "dev_only"
 )
 
 type PackageTrustVerificationRequest struct {
@@ -5330,26 +5332,56 @@ func (h *Host) RefreshEnabledPlugins(ctx context.Context) ([]RefreshEnabledPlugi
 	if err != nil {
 		return nil, err
 	}
-	results := make([]RefreshEnabledPluginResult, 0, len(records))
+	enabled := make([]registry.PluginRecord, 0, len(records))
 	for _, record := range records {
-		if record.EnableState != registry.EnableEnabled {
-			continue
+		if record.EnableState == registry.EnableEnabled {
+			enabled = append(enabled, record)
 		}
-		if err := h.refreshEnabledRuntimeState(ctx, record); err != nil {
-			h.reportLifecycleDiagnostic(
-				ctx,
-				record,
-				"plugin.runtime_state.refresh_failed",
-				"plugin runtime state refresh failed",
-				err,
-				observability.DiagnosticDetails{},
-			)
-			results = append(results, failedPluginRefreshResultForError(record.PluginInstanceID, err))
-			continue
-		}
-		results = append(results, refreshedPluginResult(record.PluginInstanceID))
-		if err := h.recordSecurityEvent(ctx, AuditEvent{Type: "plugin.runtime_state.refreshed", PluginID: record.PluginID, PluginInstanceID: record.PluginInstanceID}); err != nil {
-			return results, mutation.Unknown(err)
+	}
+	sort.Slice(enabled, func(i, j int) bool {
+		return enabled[i].PluginInstanceID < enabled[j].PluginInstanceID
+	})
+	results := make([]RefreshEnabledPluginResult, len(enabled))
+	auditErrors := make([]error, len(enabled))
+	jobs := make(chan int)
+	workerCount := min(refreshEnabledConcurrency, len(enabled))
+	var workers sync.WaitGroup
+	workers.Add(workerCount)
+	for range workerCount {
+		go func() {
+			defer workers.Done()
+			for index := range jobs {
+				record := enabled[index]
+				pluginCtx, cancel := context.WithTimeout(ctx, refreshEnabledPluginTimeout)
+				err := h.refreshEnabledRuntimeState(pluginCtx, record)
+				cancel()
+				if err != nil {
+					h.reportLifecycleDiagnostic(
+						ctx,
+						record,
+						"plugin.runtime_state.refresh_failed",
+						"plugin runtime state refresh failed",
+						err,
+						observability.DiagnosticDetails{},
+					)
+					results[index] = failedPluginRefreshResultForError(record.PluginInstanceID, err)
+					continue
+				}
+				results[index] = refreshedPluginResult(record.PluginInstanceID)
+				if err := h.recordSecurityEvent(ctx, AuditEvent{Type: "plugin.runtime_state.refreshed", PluginID: record.PluginID, PluginInstanceID: record.PluginInstanceID}); err != nil {
+					auditErrors[index] = err
+				}
+			}
+		}()
+	}
+	for index := range enabled {
+		jobs <- index
+	}
+	close(jobs)
+	workers.Wait()
+	for index, err := range auditErrors {
+		if err != nil {
+			return results[:index+1], mutation.Unknown(err)
 		}
 	}
 	return results, nil

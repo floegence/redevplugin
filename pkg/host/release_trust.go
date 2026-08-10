@@ -198,8 +198,15 @@ type releaseLeaseRegistry struct {
 }
 
 type releaseLeaseEntry struct {
+	mu      sync.Mutex
 	lease   releasetrust.ActivationLease
+	flight  *releaseLeaseFlight
 	plugins map[string]struct{}
+}
+
+type releaseLeaseFlight struct {
+	done chan struct{}
+	err  error
 }
 
 func newReleaseLeaseRegistry() *releaseLeaseRegistry {
@@ -210,32 +217,72 @@ func newReleaseLeaseRegistry() *releaseLeaseRegistry {
 }
 
 func (registrySet *releaseLeaseRegistry) ensure(
+	ctx context.Context,
 	pluginInstanceID string,
 	binding registry.ReleaseTrustBinding,
 	validate func(releasetrust.ActivationLease) error,
 	authorize func() (releasetrust.ActivationLease, error),
 ) error {
-	if registrySet == nil || pluginInstanceID == "" || validate == nil || authorize == nil {
+	if registrySet == nil || ctx == nil || pluginInstanceID == "" || validate == nil || authorize == nil {
 		return releasetrust.ErrActivationLeaseInvalid
 	}
 	key := sourceFenceKey(binding.SourceID, binding.Channel)
 	registrySet.mu.Lock()
-	defer registrySet.mu.Unlock()
 	entry := registrySet.leases[key]
-	if entry == nil || validate(entry.lease) != nil {
+	if entry == nil {
+		entry = &releaseLeaseEntry{plugins: make(map[string]struct{})}
+		registrySet.leases[key] = entry
+	}
+	registrySet.mu.Unlock()
+
+	entry.mu.Lock()
+	if validate(entry.lease) != nil {
+		if entry.flight != nil {
+			flight := entry.flight
+			entry.mu.Unlock()
+			select {
+			case <-flight.done:
+				if flight.err != nil {
+					return flight.err
+				}
+				return registrySet.associateRecoveredLease(pluginInstanceID, key, entry)
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		}
+		flight := &releaseLeaseFlight{done: make(chan struct{})}
+		entry.flight = flight
+		entry.mu.Unlock()
+
 		lease, err := authorize()
+		if err == nil {
+			leaseKey := lease.SourceTrustKey()
+			if leaseKey.SourceID() != binding.SourceID || leaseKey.Channel() != binding.Channel {
+				err = releasetrust.ErrActivationLeaseInvalid
+			}
+		}
+		entry.mu.Lock()
+		if err == nil {
+			entry.lease = lease
+		}
+		flight.err = err
+		entry.flight = nil
+		close(flight.done)
+		entry.mu.Unlock()
 		if err != nil {
 			return err
 		}
-		leaseKey := lease.SourceTrustKey()
-		if leaseKey.SourceID() != binding.SourceID || leaseKey.Channel() != binding.Channel {
-			return releasetrust.ErrActivationLeaseInvalid
-		}
-		if entry == nil {
-			entry = &releaseLeaseEntry{plugins: make(map[string]struct{})}
-			registrySet.leases[key] = entry
-		}
-		entry.lease = lease
+	} else {
+		entry.mu.Unlock()
+	}
+	return registrySet.associateRecoveredLease(pluginInstanceID, key, entry)
+}
+
+func (registrySet *releaseLeaseRegistry) associateRecoveredLease(pluginInstanceID, key string, entry *releaseLeaseEntry) error {
+	registrySet.mu.Lock()
+	defer registrySet.mu.Unlock()
+	if registrySet.leases[key] != entry {
+		return releasetrust.ErrActivationLeaseInvalid
 	}
 	if registrySet.pluginKeys[pluginInstanceID] != key {
 		registrySet.detachLocked(pluginInstanceID)
@@ -251,10 +298,17 @@ func (registrySet *releaseLeaseRegistry) get(pluginInstanceID string, binding re
 	}
 	key := sourceFenceKey(binding.SourceID, binding.Channel)
 	registrySet.mu.Lock()
-	defer registrySet.mu.Unlock()
 	entry := registrySet.leases[key]
 	_, associated := entryPlugin(entry, pluginInstanceID)
-	return entryLease(entry), registrySet.pluginKeys[pluginInstanceID] == key && associated
+	bound := registrySet.pluginKeys[pluginInstanceID] == key && associated
+	registrySet.mu.Unlock()
+	if !bound || entry == nil {
+		return releasetrust.ActivationLease{}, false
+	}
+	entry.mu.Lock()
+	lease := entry.lease
+	entry.mu.Unlock()
+	return lease, true
 }
 
 func (registrySet *releaseLeaseRegistry) delete(pluginInstanceID string) {
@@ -295,13 +349,6 @@ func entryPlugin(entry *releaseLeaseEntry, pluginInstanceID string) (struct{}, b
 	}
 	value, ok := entry.plugins[pluginInstanceID]
 	return value, ok
-}
-
-func entryLease(entry *releaseLeaseEntry) releasetrust.ActivationLease {
-	if entry == nil {
-		return releasetrust.ActivationLease{}
-	}
-	return entry.lease
 }
 
 func (h *Host) rememberVerifiedRelease(pluginInstanceID string, binding *registry.ReleaseTrustBinding, verified *releasetrust.VerifiedPackage) {
@@ -346,6 +393,7 @@ func (h *Host) restoreReleaseActivation(record registry.PluginRecord, snapshot r
 		return releasetrust.ErrActivationLeaseInvalid
 	}
 	if err := h.releaseLeases.ensure(
+		context.Background(),
 		record.PluginInstanceID,
 		*snapshot.binding,
 		h.adapters.ReleaseTrust.ValidateActivationLease,
@@ -368,6 +416,7 @@ func (h *Host) ensureReleaseActivationLease(ctx context.Context, record registry
 	verified, ok := h.verifiedReleases.get(record.PluginInstanceID, binding)
 	if ok {
 		return h.releaseLeases.ensure(
+			ctx,
 			record.PluginInstanceID,
 			binding,
 			h.adapters.ReleaseTrust.ValidateActivationLease,
@@ -376,6 +425,7 @@ func (h *Host) ensureReleaseActivationLease(ctx context.Context, record registry
 	}
 	advancedInCallback := false
 	err := h.releaseLeases.ensure(
+		ctx,
 		record.PluginInstanceID,
 		binding,
 		h.adapters.ReleaseTrust.ValidateActivationLease,

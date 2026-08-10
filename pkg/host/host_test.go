@@ -7499,6 +7499,7 @@ type testHostOptions struct {
 	}
 	coreActions    CoreActionAdapter
 	surfaceTokens  *bridge.SurfaceTokenService
+	surfaceCatalog SurfaceCatalogSink
 	expectCloseErr bool
 }
 
@@ -7630,6 +7631,10 @@ func newTestHostWithOptions(t *testing.T, opts testHostOptions) (*Host, *surface
 		surfaceTokens = bridge.NewSurfaceTokenService(nil, bridge.SurfaceTokenOptions{})
 	}
 	assetStore := pluginpkg.NewMemoryAssetStore()
+	surfaceCatalog := opts.surfaceCatalog
+	if surfaceCatalog == nil {
+		surfaceCatalog = surfaces
+	}
 	runtimeManager := opts.runtimeManager
 	if opts.runtimeManagerFactory != nil {
 		if runtimeManager != nil {
@@ -7696,7 +7701,7 @@ func newTestHostWithOptions(t *testing.T, opts testHostOptions) (*Host, *surface
 			Authorization:        authorization,
 			PackageTrustVerifier: trustVerifier,
 			Registry:             registryStore,
-			SurfaceCatalog:       surfaces,
+			SurfaceCatalog:       surfaceCatalog,
 			Audit:                audit,
 			SecurityAudit:        securityJournal,
 			Diagnostics:          diagnostics,

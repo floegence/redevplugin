@@ -813,6 +813,7 @@ func TestReleaseActivationLeaseIsSharedBySourceChannel(t *testing.T) {
 	leases := newReleaseLeaseRegistry()
 	for _, pluginInstanceID := range []string{"plugini_release_a", "plugini_release_b"} {
 		if err := leases.ensure(
+			hostTestContext(),
 			pluginInstanceID, binding, fixture.ServiceSet.ValidateActivationLease, verified.AuthorizeActivation,
 		); err != nil {
 			t.Fatal(err)
@@ -827,6 +828,7 @@ func TestReleaseActivationLeaseIsSharedBySourceChannel(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := leases.ensure(
+		hostTestContext(),
 		"plugini_release_a", binding, fixture.ServiceSet.ValidateActivationLease, verified.AuthorizeActivation,
 	); err != nil {
 		t.Fatal(err)

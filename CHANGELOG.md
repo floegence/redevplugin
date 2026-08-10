@@ -1,5 +1,18 @@
 # Changelog
 
+## v0.7.22
+
+- Refresh enabled plugins with bounded worker concurrency and an independent
+  deadline for each plugin so one slow runtime does not delay unrelated plugin
+  surfaces.
+- Keep activation recovery single-flight per source/channel while allowing
+  different trust sources to recover concurrently; canceled waiters leave no
+  lease association or partial runtime state.
+- Preserve deterministic result ordering, fail-closed activation checks, and
+  the existing zero-package-download durable recovery path.
+- Publish the complete Go, npm, Rust source crate, generated contract, and
+  package-publication evidence set as ReDevPlugin 0.7.22.
+
 ## v0.7.21
 
 - Revalidate and atomically migrate verified release activation evidence when
