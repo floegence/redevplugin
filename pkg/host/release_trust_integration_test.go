@@ -12,6 +12,8 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -151,6 +153,93 @@ func TestRefreshEnabledPluginsRestoresReleaseActivationLeaseAfterColdHostRestart
 		SurfaceID: "fixture.view", SurfaceInstanceID: "surface_after_restart", Now: time.Now().UTC(),
 	}); err != nil {
 		t.Fatalf("OpenSurface() after RefreshEnabledPlugins() error = %v", err)
+	}
+}
+
+func TestOpenSurfaceRecoversExpiredActivationLeaseFromDurableEvidence(t *testing.T) {
+	ctx := hostTestContext()
+	fixture := newHostReleaseTrustFixture(t)
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{
+		releaseTrust: fixture.ServiceSet, releaseArtifactResolver: &recordingReleaseArtifactResolver{
+			artifact: resolvedReleaseTrustFixture(fixture),
+		},
+	})
+	defer h.Close()
+
+	installed, err := h.InstallReleaseRef(ctx, InstallReleaseRefRequest{
+		PluginInstanceID: nextTestPluginInstanceID(t), ReleaseRef: releaseTrustFixtureRef(fixture), Now: time.Now().UTC(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	enabled, err := h.EnablePlugin(ctx, EnableRequest{
+		PluginInstanceID: installed.PluginInstanceID, ExpectedManagementRevision: installed.ManagementRevision, Now: time.Now().UTC(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The durable registry record and verified package evidence remain intact;
+	// clearing only the in-memory lease models the five-minute lease expiry.
+	h.releaseLeases.clear()
+	if _, err := h.OpenSurface(ctx, OpenSurfaceRequest{
+		PluginInstanceID: enabled.PluginInstanceID, ExpectedManagementRevision: enabled.ManagementRevision,
+		SurfaceID: "fixture.view", SurfaceInstanceID: "surface_after_lease_expiry", Now: time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("OpenSurface() after activation lease expiry = %v", err)
+	}
+	if _, ok := h.releaseLeases.get(enabled.PluginInstanceID, *enabled.ReleaseTrustBinding); !ok {
+		t.Fatal("OpenSurface() did not reconstruct the activation lease")
+	}
+}
+
+func TestExpiredActivationLeaseRecoveryIsSingleFlightAcrossConcurrentOpens(t *testing.T) {
+	ctx := hostTestContext()
+	fixture := newHostReleaseTrustFixture(t)
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{
+		releaseTrust: fixture.ServiceSet, releaseArtifactResolver: &recordingReleaseArtifactResolver{
+			artifact: resolvedReleaseTrustFixture(fixture),
+		},
+	})
+	defer h.Close()
+
+	installed, err := h.InstallReleaseRef(ctx, InstallReleaseRefRequest{
+		PluginInstanceID: nextTestPluginInstanceID(t), ReleaseRef: releaseTrustFixtureRef(fixture), Now: time.Now().UTC(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	enabled, err := h.EnablePlugin(ctx, EnableRequest{
+		PluginInstanceID: installed.PluginInstanceID, ExpectedManagementRevision: installed.ManagementRevision, Now: time.Now().UTC(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.releaseLeases.clear()
+	h.verifiedReleases.clear()
+
+	var stateLoads atomic.Int32
+	fixture.StateStore.SetLoadHook(func() { stateLoads.Add(1) })
+	defer fixture.StateStore.SetLoadHook(nil)
+	const callers = 8
+	errs := make(chan error, callers)
+	var group sync.WaitGroup
+	for range callers {
+		group.Add(1)
+		go func() {
+			defer group.Done()
+			errs <- h.ensureReleaseActivationLease(ctx, enabled)
+		}()
+	}
+	group.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("concurrent lease recovery error = %v", err)
+		}
+	}
+	if got := stateLoads.Load(); got != 1 {
+		t.Fatalf("concurrent recovery loaded durable trust state %d times, want one single-flight recovery", got)
 	}
 }
 

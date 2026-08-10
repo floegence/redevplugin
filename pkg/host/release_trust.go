@@ -366,41 +366,40 @@ func (h *Host) ensureReleaseActivationLease(ctx context.Context, record registry
 	}
 	binding := *record.ReleaseTrustBinding
 	verified, ok := h.verifiedReleases.get(record.PluginInstanceID, binding)
-	if !ok {
-		if err := validateActivationRecoveryRecord(record, binding); err != nil {
-			return err
-		}
-		evidence, err := releasetrust.NewActivationRecoveryEvidence(
-			record.PluginInstanceID,
-			releasetrust.ReleaseIdentity{
-				SourceID: binding.SourceID, Channel: binding.Channel,
-				ReleaseMetadataRef: binding.ReleaseMetadataRef, ReleaseMetadataSHA256: binding.ReleaseMetadataSHA256,
-				PublisherID: binding.PublisherID, PluginID: binding.PluginID, Version: binding.Version,
-			},
-			record.PackageHash, record.ManifestHash, record.EntriesHash, record.ActiveFingerprint,
-			binding.VerifiedStateSHA256, binding.RootEpoch, binding.PolicyEpoch, binding.RevocationEpoch,
-		)
-		if err != nil {
-			return err
-		}
-		lease, err := h.adapters.ReleaseTrust.RecoverActivationLease(ctx, evidence)
-		if err != nil {
-			return err
-		}
+	if ok {
 		return h.releaseLeases.ensure(
 			record.PluginInstanceID,
 			binding,
 			h.adapters.ReleaseTrust.ValidateActivationLease,
-			func() (releasetrust.ActivationLease, error) {
-				return lease, nil
-			},
+			verified.AuthorizeActivation,
 		)
 	}
 	return h.releaseLeases.ensure(
 		record.PluginInstanceID,
 		binding,
 		h.adapters.ReleaseTrust.ValidateActivationLease,
-		verified.AuthorizeActivation,
+		func() (releasetrust.ActivationLease, error) {
+			// Recover from the authoritative durable trust state whenever the
+			// process-local lease is absent or expired. releaseLeaseRegistry
+			// serializes this callback for every plugin sharing the source/channel.
+			if err := validateActivationRecoveryRecord(record, binding); err != nil {
+				return releasetrust.ActivationLease{}, err
+			}
+			evidence, err := releasetrust.NewActivationRecoveryEvidence(
+				record.PluginInstanceID,
+				releasetrust.ReleaseIdentity{
+					SourceID: binding.SourceID, Channel: binding.Channel,
+					ReleaseMetadataRef: binding.ReleaseMetadataRef, ReleaseMetadataSHA256: binding.ReleaseMetadataSHA256,
+					PublisherID: binding.PublisherID, PluginID: binding.PluginID, Version: binding.Version,
+				},
+				record.PackageHash, record.ManifestHash, record.EntriesHash, record.ActiveFingerprint,
+				binding.VerifiedStateSHA256, binding.RootEpoch, binding.PolicyEpoch, binding.RevocationEpoch,
+			)
+			if err != nil {
+				return releasetrust.ActivationLease{}, err
+			}
+			return h.adapters.ReleaseTrust.RecoverActivationLease(ctx, evidence)
+		},
 	)
 }
 

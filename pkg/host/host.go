@@ -8840,6 +8840,9 @@ func (h *Host) canRun(ctx context.Context, record registry.PluginRecord) error {
 	if err := h.validateExternalPackageSignatureFreshness(ctx, record); err != nil {
 		return err
 	}
+	if err := h.ensureReleaseActivationLease(ctx, record); err != nil {
+		return err
+	}
 	if err := h.validateReleaseActivationLease(record); err != nil {
 		return err
 	}
