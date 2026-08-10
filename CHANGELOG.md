@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.7.20
+
+- Recover an expired process-local activation lease from authoritative durable
+  release-trust evidence before opening a verified plugin surface, while
+  preserving fail-closed state, epoch, fingerprint, and package bindings.
+- Serialize concurrent lease reconstruction per source/channel so one recovery
+  is shared by all plugins without re-downloading package artifacts.
+- Publish the complete Go, npm, Rust source crate, generated contract, and
+  package-publication evidence set as ReDevPlugin 0.7.20.
+
 ## v0.7.19
 
 - Restore verified release activation after a real Host process restart from
