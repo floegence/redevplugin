@@ -800,50 +800,50 @@ export const generatedContractRegistry = {
 
 export const generatedPackageSet = {
   "schema_version": "redevplugin.platform_package_set.v1",
-  "platform_version": "0.7.20",
+  "platform_version": "0.7.21",
   "go_module": {
     "module": "github.com/floegence/redevplugin",
-    "version": "v0.7.20"
+    "version": "v0.7.21"
   },
   "npm_packages": [
     {
       "name": "@floegence/redevplugin-contracts",
-      "version": "0.7.20"
+      "version": "0.7.21"
     },
     {
       "name": "@floegence/redevplugin-ui",
-      "version": "0.7.20"
+      "version": "0.7.21"
     }
   ],
   "rust_crates": [
     {
       "name": "redevplugin-contracts",
-      "version": "0.7.20",
+      "version": "0.7.21",
       "role": "contracts"
     },
     {
       "name": "redevplugin-ipc",
-      "version": "0.7.20",
+      "version": "0.7.21",
       "role": "ipc"
     },
     {
       "name": "redevplugin-wasm-abi",
-      "version": "0.7.20",
+      "version": "0.7.21",
       "role": "wasm_abi"
     },
     {
       "name": "redevplugin-target-classifier",
-      "version": "0.7.20",
+      "version": "0.7.21",
       "role": "target_classifier"
     },
     {
       "name": "redevplugin-worker-sdk",
-      "version": "0.7.20",
+      "version": "0.7.21",
       "role": "worker_sdk"
     },
     {
       "name": "redevplugin-runtime",
-      "version": "0.7.20",
+      "version": "0.7.21",
       "role": "runtime"
     }
   ],
