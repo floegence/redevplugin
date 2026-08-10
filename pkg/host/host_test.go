@@ -7485,6 +7485,7 @@ type testHostOptions struct {
 	withoutRuntimeManager   bool
 	sessionLifecycle        SessionLifecycleAdapter
 	sessionScopePath        string
+	sessionScopeMaxScopes   int
 	secrets                 SecretStoreAdapter
 	audit                   AuditSink
 	diagnostics             DiagnosticsSink
@@ -7662,7 +7663,7 @@ func newTestHostWithOptions(t *testing.T, opts testHostOptions) (*Host, *surface
 	sessionScopeStore, err := sessionscope.NewSQLiteStore(
 		hostTestContext(),
 		sessionScopePath,
-		sessionscope.StoreOptions{},
+		sessionscope.StoreOptions{MaxScopes: opts.sessionScopeMaxScopes},
 	)
 	if err != nil {
 		t.Fatal(err)

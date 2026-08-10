@@ -718,12 +718,16 @@ func TestOpenRecoversSessionScopeFinalizationCrashStages(t *testing.T) {
 }
 
 func TestSessionScopeFinalizationReusesCapacityBeyondDefaultLimit(t *testing.T) {
-	h, _, _ := newTestHost(t, true, true)
+	const maxScopes = 32
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{
+		developerMode: true, localGenerated: true,
+		sessionScopeMaxScopes: maxScopes,
+	})
 	adapter := newMaintenanceSessionLifecycleAdapter()
 	h.adapters.SessionLifecycle = adapter
 	h.adapters.SessionMaintenance = adapter
 
-	for index := 0; index <= sessionscope.DefaultMaxScopes; index++ {
+	for index := 0; index <= maxScopes; index++ {
 		session := maintenanceTestSession(fmt.Sprintf("capacity_%d", index))
 		adapter.addTerminalIntent(t, session)
 		closed, err := h.CloseAuthenticatedSessionScope(context.Background(), CloseAuthenticatedSessionScopeRequest{Session: session})
