@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.7.23
 
 - Bound the opaque worker dynamic-import sandbox probe and accept the browser's
   matching CSP violation as denial evidence, avoiding an Electron startup hang
