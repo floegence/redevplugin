@@ -95,8 +95,11 @@ test("the trusted worker wrapper owns the direct dynamic-import gate", async () 
   assert.doesNotMatch(probe, /AsyncFunction|new Function/);
 
   const surface = await readFile(new URL("../../packages/redevplugin-ui/src/surface.ts", import.meta.url), "utf8");
-  assert.match(surface, /await import\(specifier\)/);
+  assert.match(surface, /__rpAddEventListener\(\"securitypolicyviolation\"/);
+  assert.match(surface, /import\(specifier\)\.then\(finishEscaped, finishBlocked\)/);
+  assert.match(surface, /Dynamic import sandbox verification timed out/);
   assert.match(surface, /Dynamic import escaped the ReDevPlugin worker sandbox/);
+  assert.doesNotMatch(surface, /await import\(specifier\)/);
 
   const worker = await readFile(new URL("../../testdata/browser-harness/opaque-surface/plugin-worker.ts", import.meta.url), "utf8");
   assert.match(worker, /runWorkerSecurityProbe/);
