@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.7.24
 
 - Verify the five independent source-trust signing-ledger subjects with at
   most two concurrent workers, cancel siblings on failure, and preserve
@@ -12,6 +12,8 @@
 - Reuse bounded idle HTTPS connections only for an identical revalidated
   origin and DNS pin set, while preserving per-request redirect, credential,
   TLS-hostname, and public-address enforcement.
+- Publish the complete Go, npm, Rust source crate, generated contract, and
+  package-publication evidence set as ReDevPlugin 0.7.24.
 
 ## v0.7.23
 

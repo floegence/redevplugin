@@ -237,7 +237,7 @@ func continuityTestConfig(t *testing.T) (ConfigV1, map[string]ed25519.PrivateKey
 		Root:                 PublicKeyV1{Algorithm: "ed25519", KeyID: "example_root", PublicKey: base64.StdEncoding.EncodeToString(rootPublic)},
 		Signing:              PublicKeyV1{Algorithm: "ed25519", KeyID: "example_signing", PublicKey: base64.StdEncoding.EncodeToString(signingPublic)},
 		SigningLedger:        SigningLedgerConfigV1{LogID: "example_signing_log", PublicKeyV1: PublicKeyV1{Algorithm: "ed25519", KeyID: "example_ledger", PublicKey: base64.StdEncoding.EncodeToString(ledgerPublic)}},
-		AllowedArtifactHosts: []string{"github.com"}, MinReDevPluginVersion: "0.7.23", Distribution: "registry_ref", HostRequirements: []releasecontract.ReleaseHostRequirement{},
+		AllowedArtifactHosts: []string{"github.com"}, MinReDevPluginVersion: "0.7.24", Distribution: "registry_ref", HostRequirements: []releasecontract.ReleaseHostRequirement{},
 	}
 	return config, map[string]ed25519.PrivateKey{
 		config.Root.KeyID: rootPrivate, config.Signing.KeyID: signingPrivate, config.SigningLedger.KeyID: ledgerPrivate,
