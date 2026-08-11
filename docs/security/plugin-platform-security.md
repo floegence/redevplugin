@@ -114,6 +114,13 @@ early rejection for direct identifier, optional-chain, and bracket references;
 runtime removal of the API is the authoritative boundary for dynamically
 constructed source references.
 
+Before plugin code starts, the worker verifies the dynamic-import denial. The
+verification accepts either the rejected import or the matching browser CSP
+violation, since some Chromium/Electron combinations report the violation while
+leaving the import promise pending. It has a bounded fail-closed deadline, and
+any later import success reports a worker failure so the parent revokes the
+surface.
+
 Renderer resource ownership is bounded by the generated bridge policy. It
 permits at most four transferred canvases, 4096 pixels per dimension,
 16,777,216 aggregate canvas pixels, and 120 pointer events per second. Raster
@@ -433,8 +440,8 @@ The trusted renderer reports bounded initialization, worker load/error,
 `messageerror`, contract validation, and disposal failures over the private
 parent port. Diagnostics must not include bearer credentials or plugin-provided
 HTML. The platform does not expose a browser CSP report endpoint; expected CSP
-denials are verified by browser smoke tests, while actionable runtime failures
-use typed parent diagnostics.
+denials are verified locally inside the worker and by browser smoke tests, while
+actionable runtime failures use typed parent diagnostics.
 
 ## Host Product Duties
 

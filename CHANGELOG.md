@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Bound the opaque worker dynamic-import sandbox probe and accept the browser's
+  matching CSP violation as denial evidence, avoiding an Electron startup hang
+  while preserving fail-closed behavior for missing or late contradictory
+  signals.
+
 ## v0.7.22
 
 - Refresh enabled plugins with bounded worker concurrency and an independent

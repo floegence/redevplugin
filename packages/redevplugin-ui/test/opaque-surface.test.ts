@@ -411,6 +411,13 @@ test("opaque bootstrap runs only the trusted renderer and creates a hardened wor
   assert.equal(html.includes("indexedDB:undefined"), true);
   assert.equal(html.includes("fetch:__rpBlocked"), true);
   assert.equal(html.includes("WebSocket:undefined"), true);
+  assert.equal(html.includes('__rpAddEventListener("securitypolicyviolation"'), true);
+  assert.equal(html.includes("Dynamic import sandbox verification timed out"), true);
+  assert.equal(
+    html.indexOf('__rpAddEventListener("securitypolicyviolation"') < html.indexOf("import(specifier)"),
+    true,
+  );
+  assert.equal(html.includes('if (settled) { __rpReportFailure(new TypeError("Dynamic import escaped'), true);
   assert.equal(html.includes("__rpSealChain"), true);
   assert.equal(html.includes("Object.getOwnPropertyDescriptor"), true);
   assert.equal(html.includes("sendBeacon:undefined"), true);

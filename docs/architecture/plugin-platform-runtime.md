@@ -362,6 +362,10 @@ styles, starts one classic Blob-backed Dedicated Worker, and transfers separate
 bootstrap port to the current frame generation and waits for a generation-bound
 `port_ack` before requesting the parent-only gateway lease; all later lifecycle, RPC,
 cancel, render, asset, stream, and confirmation traffic is typed and port-bound.
+Worker readiness also waits for a bounded dynamic-import sandbox check. A
+matching CSP violation is authoritative denial evidence even when the browser
+leaves the import promise pending; a missing denial signal or any later import
+success fails the surface closed.
 The worker receives only opaque
 surface and stream handles. Asset tickets, sessions, gateway credentials,
 stream tickets, confirmation tokens, plugin identity bindings, and owner/session
