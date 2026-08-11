@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+- Verify the five independent source-trust signing-ledger subjects with at
+  most two concurrent workers, cancel siblings on failure, and preserve
+  deterministic checkpoint validation before any durable state or activation
+  snapshot is published.
+- Single-flight concurrent reads of the same immutable remote release asset so
+  shared checkpoints are downloaded once, while canceled waiters return
+  independently and failed or digest-invalid reads never enter the cache.
+- Reuse bounded idle HTTPS connections only for an identical revalidated
+  origin and DNS pin set, while preserving per-request redirect, credential,
+  TLS-hostname, and public-address enforcement.
+
 ## v0.7.23
 
 - Bound the opaque worker dynamic-import sandbox probe and accept the browser's

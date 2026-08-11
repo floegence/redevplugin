@@ -99,8 +99,15 @@ and marked that exact asset session prepared.
   exact sizes, and SHA-256 values. It implements the release-document,
   signing-ledger, and Host artifact resolver interfaces over the hardened
   `pkg/externalsource` downloader, including an exact allowed-host check before
-  every redirect hop. Release providers retain package bytes; ReDevPlugin
-  verifies them after direct download.
+  every redirect hop. Concurrent reads of one immutable asset digest share one
+  in-flight fetch; every caller receives owned bytes only after the existing
+  size and SHA-256 checks succeed. A canceled waiter does not cancel the owner,
+  and failed or invalid results are not cached. Release providers retain
+  package bytes; ReDevPlugin verifies them after direct download.
+  The hardened downloader reuses an idle HTTPS connection only when a later
+  request has re-resolved the same exact origin to the same sorted public IP
+  pin set. Origin or pin changes use a distinct transport; the pool is bounded
+  to 32 entries with a 30-second idle timeout.
 - `pkg/httpadapter` provides mountable host-neutral HTTP routes for platform
   management, surface prepare/token/dispose, parent-only POST asset and stream
   reads, compatibility, and diagnostics.
@@ -160,6 +167,16 @@ package again. Recovery publishes no surface or lease when the context is
 canceled, the local clock rolls behind the trusted floor, signed
 root/policy/revocation state is expired, the source is fenced, an epoch is
 incompatible, the evidence is tampered, or a durable schema is unsupported.
+
+The five root, policy-pointer, policy, revocation-pointer, and revocation
+signing-ledger subjects are independent reads of one candidate snapshot.
+ReDevPlugin verifies them with at most two concurrent workers, cancels the
+remaining batch after a failure, and folds results in the fixed subject order.
+All subjects must resolve to the same verified checkpoint before the existing
+durable state transaction runs. Shared content-addressed checkpoint reads are
+single-flight, so concurrency does not multiply remote downloads. Cancellation,
+verification failure, checkpoint disagreement, or rollback evidence publishes
+neither durable state nor a process-local verified snapshot or lease.
 
 Enabled-plugin refresh uses at most four workers, gives each plugin an
 independent two-second recovery budget, and returns results in stable plugin

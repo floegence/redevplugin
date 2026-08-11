@@ -8,13 +8,17 @@ import (
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"math/big"
 	"slices"
+	"sync"
 	"time"
 
 	"github.com/floegence/redevplugin/pkg/releasecontract"
 )
+
+const maxConcurrentLedgerSubjectVerifications = 2
 
 type verifiedReleaseDocumentSet struct {
 	root                    releasecontract.RootDelegationV1
@@ -192,13 +196,53 @@ func (service *ReleaseTrustService) verifyReleaseDocumentSet(
 		{epochSigningSubject(key, releasecontract.SigningSubjectUsageRevocationPointer, revocationPointer.Epoch), mustRevocationPointerPreimage(revocationPointer), revocationPointer.KeyID, revocationPointer.Signature},
 		{epochSigningSubject(key, releasecontract.SigningSubjectUsageRevocation, revocation.Epoch), mustRevocationPreimage(revocation), revocation.KeyID, revocation.Signature},
 	}
-	for _, document := range ledgerDocuments {
-		checkpoint, checkpointSHA256, evidenceSHA256, err := service.verifySigningLedgerEvidence(
-			ctx, current, root, document.subject, document.preimage, document.keyID, document.signature, verifiedTime.floor,
-		)
-		if err != nil {
-			return verifiedReleaseDocumentSet{}, err
+	type ledgerVerificationResult struct {
+		checkpoint       releasecontract.SigningLedgerCheckpointV1
+		checkpointSHA256 string
+		evidenceSHA256   string
+		err              error
+	}
+	results := make([]ledgerVerificationResult, len(ledgerDocuments))
+	verificationContext, cancelVerifications := context.WithCancel(ctx)
+	semaphore := make(chan struct{}, maxConcurrentLedgerSubjectVerifications)
+	var waitGroup sync.WaitGroup
+	for index := range ledgerDocuments {
+		waitGroup.Add(1)
+		go func() {
+			defer waitGroup.Done()
+			select {
+			case semaphore <- struct{}{}:
+				defer func() { <-semaphore }()
+			case <-verificationContext.Done():
+				results[index].err = verificationContext.Err()
+				return
+			}
+			document := ledgerDocuments[index]
+			results[index].checkpoint, results[index].checkpointSHA256, results[index].evidenceSHA256, results[index].err = service.verifySigningLedgerEvidence(
+				verificationContext, current, root, document.subject, document.preimage, document.keyID, document.signature, verifiedTime.floor,
+			)
+			if results[index].err != nil {
+				cancelVerifications()
+			}
+		}()
+	}
+	waitGroup.Wait()
+	cancelVerifications()
+	if err := ctx.Err(); err != nil {
+		return verifiedReleaseDocumentSet{}, err
+	}
+	for _, result := range results {
+		if result.err != nil && !errors.Is(result.err, context.Canceled) && !errors.Is(result.err, context.DeadlineExceeded) {
+			return verifiedReleaseDocumentSet{}, result.err
 		}
+	}
+	for _, result := range results {
+		if result.err != nil {
+			return verifiedReleaseDocumentSet{}, result.err
+		}
+	}
+	for _, result := range results {
+		checkpoint, checkpointSHA256, evidenceSHA256 := result.checkpoint, result.checkpointSHA256, result.evidenceSHA256
 		if set.ledgerCheckpointSHA256 != "" && set.ledgerCheckpointSHA256 != checkpointSHA256 {
 			return verifiedReleaseDocumentSet{}, ErrReleaseTrustRollback
 		}

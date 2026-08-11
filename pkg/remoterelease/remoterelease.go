@@ -125,6 +125,14 @@ type AssetSet struct {
 	cacheOrder    []string
 	cacheBytes    int64
 	cacheMaxBytes int64
+	inflight      map[string]*assetFetchFlight
+}
+
+type assetFetchFlight struct {
+	done   chan struct{}
+	value  []byte
+	digest string
+	err    error
 }
 
 var (
@@ -165,6 +173,7 @@ func NewAssetSet(options AssetSetOptions) (*AssetSet, error) {
 		sourceID: options.SourceID, channel: options.Channel, quotaKey: options.QuotaKey,
 		allowedHosts: hosts, assets: assets, fetcher: options.Fetcher, fetchTimeout: options.FetchTimeout,
 		sleep: sleepContext, jitter: retryJitter, cache: make(map[string][]byte), cacheMaxBytes: defaultAssetCacheMaxBytes,
+		inflight: make(map[string]*assetFetchFlight),
 	}, nil
 }
 
@@ -241,7 +250,7 @@ func (set *AssetSet) fetch(ctx context.Context, locator, artifactRole string, ma
 	if expectedSHA256 != "" && (strings.TrimPrefix(expectedSHA256, "sha256:") != asset.SHA256) {
 		return nil, "", ErrAssetMismatch
 	}
-	if cached, ok := set.cachedAsset(asset); ok {
+	if cached, flight, owner := set.acquireAssetFetch(asset); cached != nil {
 		if observe != nil {
 			observe(host.ReleaseArtifactProgress{
 				Phase: "cache_hit", ArtifactRole: artifactRole, Attempt: 1,
@@ -249,7 +258,38 @@ func (set *AssetSet) fetch(ctx context.Context, locator, artifactRole string, ma
 			})
 		}
 		return cached, asset.SHA256, nil
+	} else if !owner {
+		select {
+		case <-flight.done:
+			if flight.err != nil {
+				return nil, "", flight.err
+			}
+			if observe != nil {
+				observe(host.ReleaseArtifactProgress{
+					Phase: "cache_hit", ArtifactRole: artifactRole, Attempt: 1,
+					Completed: asset.Size, Total: asset.Size, CacheHit: true,
+				})
+			}
+			return slices.Clone(flight.value), flight.digest, nil
+		case <-ctx.Done():
+			return nil, "", ctx.Err()
+		}
+	} else {
+		value, digest, err := set.fetchRemoteAsset(ctx, asset, locator, artifactRole, maxBytes, allowedHosts, observe)
+		set.finishAssetFetch(asset, flight, value, digest, err)
+		return value, digest, err
 	}
+}
+
+func (set *AssetSet) fetchRemoteAsset(
+	ctx context.Context,
+	asset Asset,
+	locator string,
+	artifactRole string,
+	maxBytes int64,
+	allowedHosts []string,
+	observe func(host.ReleaseArtifactProgress),
+) ([]byte, string, error) {
 	locatorDigest := sha256.Sum256([]byte(locator))
 	fetchTimeout := set.fetchTimeout
 	if fetchTimeout == 0 {
@@ -303,21 +343,34 @@ func (set *AssetSet) fetch(ctx context.Context, locator, artifactRole string, ma
 	return slices.Clone(result.Bytes), asset.SHA256, nil
 }
 
-func (set *AssetSet) cachedAsset(asset Asset) ([]byte, bool) {
+func (set *AssetSet) acquireAssetFetch(asset Asset) ([]byte, *assetFetchFlight, bool) {
 	set.cacheMu.Lock()
 	defer set.cacheMu.Unlock()
-	value, ok := set.cache[asset.SHA256]
-	if !ok {
-		return nil, false
-	}
-	digest := sha256.Sum256(value)
-	if int64(len(value)) != asset.Size || hex.EncodeToString(digest[:]) != asset.SHA256 {
+	if value, ok := set.cache[asset.SHA256]; ok {
+		digest := sha256.Sum256(value)
+		if int64(len(value)) == asset.Size && hex.EncodeToString(digest[:]) == asset.SHA256 {
+			return slices.Clone(value), nil, false
+		}
 		delete(set.cache, asset.SHA256)
 		set.cacheBytes -= int64(len(value))
 		set.removeCacheOrder(asset.SHA256)
-		return nil, false
 	}
-	return slices.Clone(value), true
+	if flight := set.inflight[asset.SHA256]; flight != nil {
+		return nil, flight, false
+	}
+	flight := &assetFetchFlight{done: make(chan struct{})}
+	set.inflight[asset.SHA256] = flight
+	return nil, flight, true
+}
+
+func (set *AssetSet) finishAssetFetch(asset Asset, flight *assetFetchFlight, value []byte, digest string, err error) {
+	set.cacheMu.Lock()
+	defer set.cacheMu.Unlock()
+	flight.value = slices.Clone(value)
+	flight.digest = digest
+	flight.err = err
+	delete(set.inflight, asset.SHA256)
+	close(flight.done)
 }
 
 func (set *AssetSet) rememberAsset(asset Asset, value []byte) {

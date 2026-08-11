@@ -12,8 +12,10 @@ import (
 	"net/http"
 	"net/netip"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"golang.org/x/net/http/httpguts"
@@ -27,6 +29,8 @@ const (
 	defaultTotalTimeout        = 2 * time.Minute
 	maxCredentialHeaders       = 32
 	maxCredentialHeaderBytes   = 16 << 10
+	maxPinnedTransports        = 32
+	pinnedTransportIdleTimeout = 30 * time.Second
 )
 
 // CredentialRequest scopes credentials to one exact origin and source.
@@ -90,15 +94,18 @@ type ArtifactFetchResult struct {
 type hopRoundTrip func(context.Context, PackageURL, []netip.Addr, http.Header) (*http.Response, error)
 
 type Fetcher struct {
-	stage        *StageStore
-	resolver     AddressResolver
-	credentials  CredentialProvider
-	sourceID     string
-	totalTimeout time.Duration
-	maxRedirects int
-	maxBytes     int64
-	roundTrip    hopRoundTrip
-	rootCAs      *x509.CertPool
+	stage         *StageStore
+	resolver      AddressResolver
+	credentials   CredentialProvider
+	sourceID      string
+	totalTimeout  time.Duration
+	maxRedirects  int
+	maxBytes      int64
+	roundTrip     hopRoundTrip
+	rootCAs       *x509.CertPool
+	transportMu   sync.Mutex
+	transports    map[string]*http.Transport
+	transportFIFO []string
 }
 
 func NewFetcher(options FetcherOptions) (*Fetcher, error) {
@@ -120,6 +127,7 @@ func NewFetcher(options FetcherOptions) (*Fetcher, error) {
 		totalTimeout: totalTimeout,
 		maxRedirects: defaultMaxRedirects,
 		maxBytes:     MaxArtifactBytes,
+		transports:   make(map[string]*http.Transport),
 	}
 	fetcher.roundTrip = fetcher.secureRoundTrip
 	return fetcher, nil
@@ -378,11 +386,25 @@ func (fetcher *Fetcher) secureRoundTrip(ctx context.Context, locator PackageURL,
 		return nil, err
 	}
 	request.Header = headers.Clone()
+	transport := fetcher.pinnedTransport(locator, addresses)
+	return transport.RoundTrip(request)
+}
+
+func (fetcher *Fetcher) pinnedTransport(locator PackageURL, addresses []netip.Addr) *http.Transport {
+	key := pinnedTransportKey(locator, addresses)
+	fetcher.transportMu.Lock()
+	defer fetcher.transportMu.Unlock()
+	if transport := fetcher.transports[key]; transport != nil {
+		return transport
+	}
 	transport := &http.Transport{
 		Proxy:                 nil,
 		DialContext:           pinnedDialContext(&net.Dialer{Timeout: defaultConnectTimeout}, locator, addresses),
 		DisableCompression:    true,
-		DisableKeepAlives:     true,
+		ForceAttemptHTTP2:     true,
+		MaxIdleConns:          maxPinnedTransports,
+		MaxIdleConnsPerHost:   defaultMaxConcurrentFetches,
+		IdleConnTimeout:       pinnedTransportIdleTimeout,
 		TLSHandshakeTimeout:   defaultTLSHandshakeTimeout,
 		ResponseHeaderTimeout: defaultResponseTimeout,
 		TLSClientConfig: &tls.Config{
@@ -391,9 +413,31 @@ func (fetcher *Fetcher) secureRoundTrip(ctx context.Context, locator PackageURL,
 			RootCAs:    fetcher.rootCAs,
 		},
 	}
-	response, err := transport.RoundTrip(request)
-	transport.CloseIdleConnections()
-	return response, err
+	if len(fetcher.transportFIFO) == maxPinnedTransports {
+		oldest := fetcher.transportFIFO[0]
+		fetcher.transportFIFO = fetcher.transportFIFO[1:]
+		fetcher.transports[oldest].CloseIdleConnections()
+		delete(fetcher.transports, oldest)
+	}
+	fetcher.transports[key] = transport
+	fetcher.transportFIFO = append(fetcher.transportFIFO, key)
+	return transport
+}
+
+func pinnedTransportKey(locator PackageURL, addresses []netip.Addr) string {
+	pins := slices.Clone(addresses)
+	slices.SortFunc(pins, func(left, right netip.Addr) int { return left.Compare(right) })
+	var key strings.Builder
+	key.WriteString(locator.origin.Scheme)
+	key.WriteByte('\x00')
+	key.WriteString(locator.origin.Host)
+	key.WriteByte('\x00')
+	key.WriteString(strconv.Itoa(int(locator.origin.Port)))
+	for _, address := range pins {
+		key.WriteByte('\x00')
+		key.WriteString(address.String())
+	}
+	return key.String()
 }
 
 func redirectTarget(current PackageURL, response *http.Response) (PackageURL, error) {

@@ -89,6 +89,15 @@ then mutates the registry. A resolver may not return trusted parsed release
 fields or turn arbitrary URLs, filesystem paths, localhost/LAN redirects, or
 path traversal into installable artifacts.
 
+The external-source downloader revalidates DNS and every redirect hop for every
+request, pins dialing to the validated public addresses, preserves the original
+TLS hostname, and scopes credentials to one exact origin. Connection reuse does
+not weaken those checks: an idle transport is reusable only for the same scheme,
+hostname, port, and sorted address pin set. A changed origin or DNS result gets a
+new transport. The pool is bounded to 32 entries, closes idle connections after
+30 seconds, and closes evicted idle transports without interrupting active
+requests.
+
 ## Sandbox UI Boundary
 
 `PluginPlatformClient.openSurfaceInSlot(...)` creates every plugin frame through

@@ -15,6 +15,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 )
 
@@ -290,6 +291,55 @@ func TestSecureRoundTripPinsAddressAndVerifiesOriginalHostname(t *testing.T) {
 	_, err = fetcher.secureRoundTrip(context.Background(), wrongHost, []netip.Addr{netip.MustParseAddr("127.0.0.1")}, http.Header{"Accept-Encoding": {"identity"}})
 	if err == nil {
 		t.Fatal("TLS handshake unexpectedly accepted a certificate for a different hostname")
+	}
+}
+
+func TestSecureRoundTripReusesOnlyIdenticalValidatedOriginPins(t *testing.T) {
+	var connections atomic.Int32
+	server := httptest.NewUnstartedServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		_, _ = writer.Write([]byte("ok"))
+	}))
+	server.Config.ConnState = func(_ net.Conn, state http.ConnState) {
+		if state == http.StateNew {
+			connections.Add(1)
+		}
+	}
+	server.StartTLS()
+	defer server.Close()
+	_, port, err := net.SplitHostPort(server.Listener.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	pool := x509.NewCertPool()
+	pool.AddCert(server.Certificate())
+	fetcher, _ := newTestFetcher(t, nil)
+	fetcher.rootCAs = pool
+	locator, err := ParseDirectPackageURL("https://example.com:" + port + "/plugin.redevplugin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := func(addresses []netip.Addr) {
+		t.Helper()
+		response, requestErr := fetcher.secureRoundTrip(context.Background(), locator, addresses, http.Header{"Accept-Encoding": {"identity"}})
+		if requestErr != nil {
+			t.Fatal(requestErr)
+		}
+		if _, requestErr = io.Copy(io.Discard, response.Body); requestErr != nil {
+			t.Fatal(requestErr)
+		}
+		if requestErr = response.Body.Close(); requestErr != nil {
+			t.Fatal(requestErr)
+		}
+	}
+
+	request([]netip.Addr{netip.MustParseAddr("127.0.0.1")})
+	request([]netip.Addr{netip.MustParseAddr("127.0.0.1")})
+	if connections.Load() != 1 {
+		t.Fatalf("connections for identical validated pin set = %d, want 1", connections.Load())
+	}
+	request([]netip.Addr{netip.MustParseAddr("127.0.0.1"), netip.MustParseAddr("127.0.0.2")})
+	if connections.Load() != 2 {
+		t.Fatalf("connections after validated pin set changed = %d, want 2", connections.Load())
 	}
 }
 

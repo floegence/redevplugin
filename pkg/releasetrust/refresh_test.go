@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -44,6 +45,129 @@ func TestReleaseTrustServiceRefreshSourceVerifiesOneAtomicSnapshot(t *testing.T)
 	policy.AllowedPublishers[0] = "mutated"
 	if fixture.service.verified[fixture.key].policy.AllowedPublishers[0] != "example.publisher" {
 		t.Fatal("CurrentVerifiedSource exposed mutable policy storage")
+	}
+}
+
+func TestReleaseTrustServiceRefreshSourceFetchesLedgerSubjectsConcurrentlyWithinBound(t *testing.T) {
+	const wantConcurrency = 2
+	fixture := newFullRefreshFixture(t)
+	transport := newBlockingLedgerTransport(fixture.ledger.values)
+	fixture.service.adapters.Ledger = transport
+	done := make(chan error, 1)
+	go func() {
+		_, err := fixture.service.RefreshSource(context.Background(), fixture.key)
+		done <- err
+	}()
+
+	started := map[string]struct{}{}
+	timer := time.NewTimer(250 * time.Millisecond)
+	for len(started) < wantConcurrency {
+		select {
+		case locator := <-transport.started:
+			started[locator] = struct{}{}
+		case <-timer.C:
+			close(transport.release)
+			if err := <-done; err != nil {
+				t.Fatalf("RefreshSource() after releasing ledger transport error = %v", err)
+			}
+			t.Fatalf("concurrent ledger evidence fetches = %d, want %d before any completes", len(started), wantConcurrency)
+		}
+	}
+	if !timer.Stop() {
+		<-timer.C
+	}
+	close(transport.release)
+	if err := <-done; err != nil {
+		t.Fatalf("RefreshSource() error = %v", err)
+	}
+	evidenceCalls, maximumActive := transport.snapshot()
+	if evidenceCalls != 5 {
+		t.Fatalf("ledger evidence fetches = %d, want 5 source trust subjects", evidenceCalls)
+	}
+	if maximumActive != wantConcurrency {
+		t.Fatalf("maximum concurrent ledger subject verifications = %d, want %d", maximumActive, wantConcurrency)
+	}
+}
+
+func TestReleaseTrustServiceConcurrentLedgerFailureDoesNotCommitSnapshot(t *testing.T) {
+	fixture := newFullRefreshFixture(t)
+	wantErr := errors.New("ledger evidence unavailable")
+	fixture.service.adapters.Ledger = &failingLedgerTransport{
+		values: fixture.ledger.values,
+		fail: func(request SigningLedgerRequest) error {
+			if request.Kind() == SigningLedgerEvidence && request.Channel() == "stable" {
+				return wantErr
+			}
+			return nil
+		},
+	}
+
+	if _, err := fixture.service.RefreshSource(context.Background(), fixture.key); !errors.Is(err, wantErr) {
+		t.Fatalf("RefreshSource() error = %v, want %v", err, wantErr)
+	}
+	if len(fixture.state.committed) != 0 || len(fixture.state.pending) != 0 {
+		t.Fatal("failed concurrent ledger verification mutated durable trust state")
+	}
+	if _, ok := fixture.service.CurrentVerifiedSource(fixture.key); ok {
+		t.Fatal("failed concurrent ledger verification published a verified snapshot")
+	}
+}
+
+func TestReleaseTrustServiceConcurrentLedgerFailureIgnoresWrappedSiblingCancellation(t *testing.T) {
+	fixture := newFullRefreshFixture(t)
+	wantErr := errors.New("ledger evidence rejected")
+	fixture.service.adapters.Ledger = &mixedFailureLedgerTransport{
+		values: fixture.ledger.values,
+		fail: func(request SigningLedgerRequest) error {
+			if request.Kind() != SigningLedgerEvidence {
+				return nil
+			}
+			if request.Channel() == "" {
+				return fmt.Errorf("remote sibling request: %w", context.Canceled)
+			}
+			return wantErr
+		},
+	}
+
+	if _, err := fixture.service.RefreshSource(context.Background(), fixture.key); !errors.Is(err, wantErr) {
+		t.Fatalf("RefreshSource() error = %v, want primary verification error %v", err, wantErr)
+	}
+	if len(fixture.state.committed) != 0 || len(fixture.state.pending) != 0 {
+		t.Fatal("mixed concurrent failure mutated durable trust state")
+	}
+}
+
+func TestReleaseTrustServiceConcurrentLedgerCancellationDoesNotCommitSnapshot(t *testing.T) {
+	const wantConcurrency = 2
+	fixture := newFullRefreshFixture(t)
+	transport := newBlockingLedgerTransport(fixture.ledger.values)
+	fixture.service.adapters.Ledger = transport
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		_, err := fixture.service.RefreshSource(ctx, fixture.key)
+		done <- err
+	}()
+
+	for range wantConcurrency {
+		select {
+		case <-transport.started:
+		case <-time.After(time.Second):
+			cancel()
+			close(transport.release)
+			t.Fatal("concurrent ledger verification did not reach cancellation boundary")
+		}
+	}
+	cancel()
+	if err := <-done; !errors.Is(err, context.Canceled) {
+		t.Fatalf("RefreshSource(canceled) error = %v, want context.Canceled", err)
+	}
+	close(transport.release)
+	if len(fixture.state.committed) != 0 || len(fixture.state.pending) != 0 {
+		t.Fatal("canceled concurrent ledger verification mutated durable trust state")
+	}
+	if _, ok := fixture.service.CurrentVerifiedSource(fixture.key); ok {
+		t.Fatal("canceled concurrent ledger verification published a verified snapshot")
 	}
 }
 
@@ -635,12 +759,84 @@ func (transport *fixtureDocumentTransport) FetchReleaseDocument(_ context.Contex
 }
 
 type fixtureLedgerTransport struct {
+	mu     sync.Mutex
 	values map[string][]byte
 	calls  int
 }
 
+type blockingLedgerTransport struct {
+	mu            sync.Mutex
+	values        map[string][]byte
+	started       chan string
+	release       chan struct{}
+	evidenceCalls int
+	active        int
+	maximumActive int
+}
+
+func newBlockingLedgerTransport(values map[string][]byte) *blockingLedgerTransport {
+	return &blockingLedgerTransport{
+		values:  values,
+		started: make(chan string, 5),
+		release: make(chan struct{}),
+	}
+}
+
+func (transport *blockingLedgerTransport) FetchSigningLedgerArtifact(ctx context.Context, request SigningLedgerRequest) (SigningLedgerResult, error) {
+	if request.Kind() == SigningLedgerEvidence {
+		transport.mu.Lock()
+		transport.evidenceCalls++
+		transport.active++
+		transport.maximumActive = max(transport.maximumActive, transport.active)
+		transport.mu.Unlock()
+		transport.started <- request.Locator().String()
+		select {
+		case <-transport.release:
+		case <-ctx.Done():
+			transport.mu.Lock()
+			transport.active--
+			transport.mu.Unlock()
+			return SigningLedgerResult{}, ctx.Err()
+		}
+		transport.mu.Lock()
+		transport.active--
+		transport.mu.Unlock()
+	}
+	value := transport.values[request.Locator().String()]
+	if value == nil {
+		return SigningLedgerResult{}, fmt.Errorf("missing ledger fixture %s", request.Locator())
+	}
+	return NewSigningLedgerResult(request, value)
+}
+
+func (transport *blockingLedgerTransport) snapshot() (int, int) {
+	transport.mu.Lock()
+	defer transport.mu.Unlock()
+	return transport.evidenceCalls, transport.maximumActive
+}
+
 func (transport *fixtureLedgerTransport) FetchSigningLedgerArtifact(_ context.Context, request SigningLedgerRequest) (SigningLedgerResult, error) {
+	transport.mu.Lock()
+	defer transport.mu.Unlock()
 	transport.calls++
+	value := transport.values[request.Locator().String()]
+	if value == nil {
+		return SigningLedgerResult{}, fmt.Errorf("missing ledger fixture %s", request.Locator())
+	}
+	return NewSigningLedgerResult(request, value)
+}
+
+type failingLedgerTransport struct {
+	values map[string][]byte
+	fail   func(SigningLedgerRequest) error
+}
+
+type mixedFailureLedgerTransport = failingLedgerTransport
+
+func (transport *failingLedgerTransport) FetchSigningLedgerArtifact(_ context.Context, request SigningLedgerRequest) (SigningLedgerResult, error) {
+	if err := transport.fail(request); err != nil {
+		return SigningLedgerResult{}, err
+	}
 	value := transport.values[request.Locator().String()]
 	if value == nil {
 		return SigningLedgerResult{}, fmt.Errorf("missing ledger fixture %s", request.Locator())

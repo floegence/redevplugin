@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -149,6 +150,130 @@ func TestAssetSetCachesAndRevalidatesImmutableAsset(t *testing.T) {
 	}
 }
 
+func TestAssetSetSingleFlightsConcurrentImmutableAssetFetches(t *testing.T) {
+	value := []byte("shared immutable checkpoint")
+	rawURL := "https://artifacts.example.test/checkpoint.json"
+	assetValue := asset("sources/example/signing-ledger/checkpoint.json", rawURL, value)
+	fetcher := &blockingFetcher{value: value, started: make(chan struct{}, 5), release: make(chan struct{})}
+	set, err := NewAssetSet(AssetSetOptions{
+		SourceID: "example", Channel: "stable", AllowedHosts: []string{"artifacts.example.test"},
+		Fetcher: fetcher, Assets: []Asset{assetValue},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	const callers = 5
+	start := make(chan struct{})
+	done := make(chan error, callers)
+	for range callers {
+		go func() {
+			<-start
+			got, _, fetchErr := set.fetch(context.Background(), assetValue.Locator, "signing_ledger", 1024, []string{"artifacts.example.test"}, "", nil)
+			if fetchErr == nil && !bytes.Equal(got, value) {
+				fetchErr = errors.New("single-flight caller received wrong bytes")
+			}
+			done <- fetchErr
+		}()
+	}
+	close(start)
+	select {
+	case <-fetcher.started:
+	case <-time.After(time.Second):
+		t.Fatal("immutable asset fetch did not start")
+	}
+	select {
+	case <-fetcher.started:
+		close(fetcher.release)
+		for range callers {
+			<-done
+		}
+		t.Fatalf("underlying fetch calls reached %d before completion, want one single-flight owner", fetcher.calls.Load())
+	case <-time.After(250 * time.Millisecond):
+	}
+	close(fetcher.release)
+	for range callers {
+		if err := <-done; err != nil {
+			t.Fatal(err)
+		}
+	}
+	if fetcher.calls.Load() != 1 {
+		t.Fatalf("underlying fetch calls = %d, want 1", fetcher.calls.Load())
+	}
+}
+
+func TestAssetSetSingleFlightWaiterCancellationDoesNotCancelOwner(t *testing.T) {
+	value := []byte("shared immutable checkpoint")
+	rawURL := "https://artifacts.example.test/checkpoint.json"
+	assetValue := asset("sources/example/signing-ledger/checkpoint.json", rawURL, value)
+	fetcher := &blockingFetcher{value: value, started: make(chan struct{}, 2), release: make(chan struct{})}
+	set, err := NewAssetSet(AssetSetOptions{
+		SourceID: "example", Channel: "stable", AllowedHosts: []string{"artifacts.example.test"},
+		Fetcher: fetcher, Assets: []Asset{assetValue},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ownerDone := make(chan error, 1)
+	go func() {
+		_, _, fetchErr := set.fetch(context.Background(), assetValue.Locator, "signing_ledger", 1024, []string{"artifacts.example.test"}, "", nil)
+		ownerDone <- fetchErr
+	}()
+	select {
+	case <-fetcher.started:
+	case <-time.After(time.Second):
+		t.Fatal("single-flight owner did not start")
+	}
+
+	waiterCtx, cancelWaiter := context.WithCancel(context.Background())
+	waiterDone := make(chan error, 1)
+	go func() {
+		_, _, fetchErr := set.fetch(waiterCtx, assetValue.Locator, "signing_ledger", 1024, []string{"artifacts.example.test"}, "", nil)
+		waiterDone <- fetchErr
+	}()
+	cancelWaiter()
+	select {
+	case err := <-waiterDone:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("canceled waiter error = %v, want context.Canceled", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("canceled waiter did not return")
+	}
+	if fetcher.calls.Load() != 1 {
+		t.Fatalf("underlying fetch calls after waiter cancellation = %d, want 1", fetcher.calls.Load())
+	}
+	close(fetcher.release)
+	if err := <-ownerDone; err != nil {
+		t.Fatalf("single-flight owner error = %v", err)
+	}
+}
+
+func TestAssetSetSingleFlightFailureIsNotCached(t *testing.T) {
+	value := []byte("shared immutable checkpoint")
+	rawURL := "https://artifacts.example.test/checkpoint.json"
+	assetValue := asset("sources/example/signing-ledger/checkpoint.json", rawURL, value)
+	wantErr := errors.New("temporary fetch failure")
+	fetcher := &memoryFetcher{values: map[string][]byte{rawURL: value}, failures: []error{wantErr}}
+	set, err := NewAssetSet(AssetSetOptions{
+		SourceID: "example", Channel: "stable", AllowedHosts: []string{"artifacts.example.test"},
+		Fetcher: fetcher, Assets: []Asset{assetValue},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := set.fetch(context.Background(), assetValue.Locator, "signing_ledger", 1024, []string{"artifacts.example.test"}, "", nil); !errors.Is(err, wantErr) {
+		t.Fatalf("failed fetch error = %v, want %v", err, wantErr)
+	}
+	got, _, err := set.fetch(context.Background(), assetValue.Locator, "signing_ledger", 1024, []string{"artifacts.example.test"}, "", nil)
+	if err != nil || !bytes.Equal(got, value) {
+		t.Fatalf("retry after failed single-flight bytes=%q error=%v", got, err)
+	}
+	if len(fetcher.requests) != 2 {
+		t.Fatalf("underlying fetch calls = %d, want failed owner plus retry", len(fetcher.requests))
+	}
+}
+
 func TestAssetSetResolvesExactReleaseArtifacts(t *testing.T) {
 	const (
 		sourceID  = "example_official"
@@ -243,6 +368,24 @@ func TestAssetSetRejectsMutableOrMismatchedProjection(t *testing.T) {
 
 func asset(locator, rawURL string, value []byte) Asset {
 	return Asset{Locator: locator, URL: rawURL, SHA256: digest(value), Size: int64(len(value))}
+}
+
+type blockingFetcher struct {
+	value   []byte
+	started chan struct{}
+	release chan struct{}
+	calls   atomic.Int32
+}
+
+func (fetcher *blockingFetcher) FetchArtifact(ctx context.Context, request externalsource.ArtifactFetchRequest) (externalsource.ArtifactFetchResult, error) {
+	fetcher.calls.Add(1)
+	fetcher.started <- struct{}{}
+	select {
+	case <-fetcher.release:
+	case <-ctx.Done():
+		return externalsource.ArtifactFetchResult{}, ctx.Err()
+	}
+	return externalsource.ArtifactFetchResult{Bytes: bytes.Clone(fetcher.value), Source: request.URL, Final: request.URL}, nil
 }
 
 func digest(value []byte) string {
