@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.7.25
 
 - Give each enabled plugin a 15-second recovery budget while retaining bounded
   concurrency, stable result ordering, and per-source/channel single-flight.
