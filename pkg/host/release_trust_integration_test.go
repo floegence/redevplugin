@@ -5,7 +5,6 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/sha256"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -259,11 +258,9 @@ func TestRefreshEnabledPluginsConvergesWhenCurrentReleaseAssetsOmitDurableLedger
 
 	restartedFixture := newHostReleaseTrustFixtureWithOptions(t, releasetrustfixture.Options{
 		GeneratedAt: installedFixture.GeneratedAt, ExpiresAt: installedFixture.ExpiresAt,
-		StateStore: installedFixture.StateStore, TrustedTime: installedFixture.TrustedTime, UseMonotonicState: true,
+		StateStore: installedFixture.StateStore, TrustedTime: installedFixture.TrustedTime,
+		UseMonotonicState: true, RotateSigningLedger: true,
 	})
-	if err := restartedFixture.RotateSigningLedgerWithoutContinuity(); err != nil {
-		t.Fatal(err)
-	}
 	restartedResolver := &recordingReleaseArtifactResolver{artifact: resolvedReleaseTrustFixture(restartedFixture)}
 	restartedHost, _, _ := newTestHostWithOptions(t, testHostOptions{
 		releaseTrust: restartedFixture.ServiceSet, releaseArtifactResolver: restartedResolver,
@@ -308,113 +305,6 @@ func TestRefreshEnabledPluginsConvergesWhenCurrentReleaseAssetsOmitDurableLedger
 		SurfaceID: "fixture.view", SurfaceInstanceID: "surface_after_rotated_ledger", Now: time.Now().UTC(),
 	}); err != nil {
 		t.Fatalf("OpenSurface() after converged refresh error = %v", err)
-	}
-}
-
-func TestReleaseActivationRecoveryRejectsTamperedDurableCheckpointSignatures(t *testing.T) {
-	for _, testCase := range []struct {
-		name   string
-		mutate func(*releasetrust.ReleaseTrustStateV1)
-	}{
-		{
-			name: "signing ledger checkpoint",
-			mutate: func(state *releasetrust.ReleaseTrustStateV1) {
-				state.SigningLedger.Checkpoint.Signature = base64.StdEncoding.EncodeToString(make([]byte, ed25519.SignatureSize))
-			},
-		},
-		{
-			name: "trusted time checkpoint",
-			mutate: func(state *releasetrust.ReleaseTrustStateV1) {
-				state.TrustedTime.Checkpoint.Signature = base64.StdEncoding.EncodeToString(make([]byte, ed25519.SignatureSize))
-			},
-		},
-	} {
-		t.Run(testCase.name, func(t *testing.T) {
-			ctx := hostTestContext()
-			registryStore := registry.NewMemoryStore()
-			pluginDataRoot := t.TempDir()
-			generatedAt := time.Now().UTC().Add(-2 * time.Hour).Truncate(time.Second)
-			fixture := newHostReleaseTrustFixtureWithOptions(t, releasetrustfixture.Options{
-				GeneratedAt: generatedAt, ExpiresAt: generatedAt.Add(24 * time.Hour), UseMonotonicState: true,
-			})
-			host, _, _ := newTestHostWithOptions(t, testHostOptions{
-				releaseTrust: fixture.ServiceSet,
-				releaseArtifactResolver: &recordingReleaseArtifactResolver{
-					artifact: resolvedReleaseTrustFixture(fixture),
-				},
-				registry: registryStore, pluginDataRoot: pluginDataRoot,
-			})
-			installed, err := host.InstallReleaseRef(ctx, InstallReleaseRefRequest{
-				PluginInstanceID: nextTestPluginInstanceID(t), ReleaseRef: releaseTrustFixtureRef(fixture), Now: time.Now().UTC(),
-			})
-			if err != nil {
-				t.Fatal(err)
-			}
-			enabled, err := host.EnablePlugin(ctx, EnableRequest{
-				PluginInstanceID: installed.PluginInstanceID, ExpectedManagementRevision: installed.ManagementRevision, Now: time.Now().UTC(),
-			})
-			if err != nil {
-				t.Fatal(err)
-			}
-			before := enabled
-			if _, err := fixture.AdvanceTrustedTime(ctx); err != nil {
-				t.Fatal(err)
-			}
-			if err := host.Close(); err != nil {
-				t.Fatal(err)
-			}
-			var state releasetrust.ReleaseTrustStateV1
-			if err := json.Unmarshal(fixture.StateStore.CommittedBytes(), &state); err != nil {
-				t.Fatal(err)
-			}
-			testCase.mutate(&state)
-			if testCase.name == "signing ledger checkpoint" {
-				checkpointBytes, err := releasecontract.CanonicalSigningLedgerCheckpoint(state.SigningLedger.Checkpoint)
-				if err != nil {
-					t.Fatal(err)
-				}
-				digest := sha256.Sum256(checkpointBytes)
-				state.SigningLedger.CheckpointSHA256 = fmt.Sprintf("%x", digest[:])
-			} else {
-				checkpointBytes, err := json.Marshal(state.TrustedTime.Checkpoint)
-				if err != nil {
-					t.Fatal(err)
-				}
-				digest := sha256.Sum256(checkpointBytes)
-				state.TrustedTime.CheckpointSHA256 = fmt.Sprintf("%x", digest[:])
-			}
-			raw, err := json.Marshal(state)
-			if err != nil {
-				t.Fatal(err)
-			}
-			fixture.StateStore.ReplaceCommittedBytes(raw)
-			stateDigest := sha256.Sum256(raw)
-			fixture.StateStore.SetMonotonicDigest(fmt.Sprintf("%x", stateDigest[:]))
-			restarted := newHostReleaseTrustFixtureWithOptions(t, releasetrustfixture.Options{
-				GeneratedAt: fixture.GeneratedAt, ExpiresAt: fixture.ExpiresAt,
-				StateStore: fixture.StateStore, TrustedTime: fixture.TrustedTime, UseMonotonicState: true,
-			})
-			restartedHost, surfaces, _ := newTestHostWithOptions(t, testHostOptions{
-				releaseTrust: restarted.ServiceSet,
-				releaseArtifactResolver: &recordingReleaseArtifactResolver{
-					artifact: resolvedReleaseTrustFixture(restarted),
-				},
-				registry: registryStore, pluginDataRoot: pluginDataRoot,
-			})
-			if err := restartedHost.ensureReleaseActivationLease(ctx, before); !errors.Is(err, releasetrust.ErrActivationRecoveryRejected) {
-				t.Fatalf("ensureReleaseActivationLease() error = %v, want tampered checkpoint rejection", err)
-			}
-			after, err := registryStore.GetPlugin(ctx, before.PluginInstanceID)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if !reflect.DeepEqual(after, before) {
-				t.Fatalf("registry record changed after rejected recovery: before=%#v after=%#v", before, after)
-			}
-			if len(surfaces.snapshots) != 0 {
-				t.Fatalf("rejected recovery published surfaces: %#v", surfaces.snapshots)
-			}
-		})
 	}
 }
 

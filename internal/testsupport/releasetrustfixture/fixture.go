@@ -48,6 +48,7 @@ type Options struct {
 	StateStore           *StateStore
 	TrustedTime          *TrustedTimeAdapter
 	UseMonotonicState    bool
+	RotateSigningLedger  bool
 }
 
 type Fixture struct {
@@ -70,9 +71,6 @@ type Fixture struct {
 	ReleaseArtifactSHA256 string
 	GeneratedAt           time.Time
 	ExpiresAt             time.Time
-	configuration         releasetrust.SourceConfiguration
-	signedDocuments       []signedDocument
-	ledgerPrivateKey      ed25519.PrivateKey
 }
 
 func New(packageBytes []byte, options Options) (*Fixture, error) {
@@ -377,6 +375,20 @@ func New(packageBytes []byte, options Options) (*Fixture, error) {
 			Version: identity.Version, ArtifactIdentitySHA256: strings.TrimPrefix(signedPackage.PackageHash, "sha256:"),
 		}, preimage: packagePreimage, keyID: defaultSigningID, signature: packageSignature.Signature},
 	}
+	if options.RotateSigningLedger {
+		extraPreimage := []byte("rotated-ledger-subject")
+		signedDocuments = append(signedDocuments, signedDocument{
+			subject: releasecontract.SigningSubjectV1{
+				SchemaVersion: releasecontract.SigningSubjectSchemaVersion,
+				Usage:         releasecontract.SigningSubjectUsageReleaseMetadata,
+				SourceID:      sourceID, Channel: channel,
+				PublisherID: identity.PublisherID, PluginID: identity.PluginID,
+				Version: "1.0.1", ArtifactIdentitySHA256: digestHex(extraPreimage),
+			},
+			preimage: extraPreimage, keyID: defaultSigningID,
+			signature: base64.StdEncoding.EncodeToString(signDigest(signingPrivate, extraPreimage)),
+		})
+	}
 	ledger, err := buildLedger(configuration, signedDocuments, ledgerPrivate, generatedAt.Add(time.Hour))
 	if err != nil {
 		return nil, err
@@ -411,41 +423,7 @@ func New(packageBytes []byte, options Options) (*Fixture, error) {
 		SigningPrivateKey: slices.Clone(signingPrivate),
 		DocumentTransport: documents, LedgerTransport: ledger, StateStore: state, TrustedTime: trustedTime,
 		ReleaseArtifactSHA256: artifactDigest, GeneratedAt: generatedAt, ExpiresAt: expiresAt,
-		configuration: configuration, signedDocuments: slices.Clone(signedDocuments), ledgerPrivateKey: slices.Clone(ledgerPrivate),
 	}, nil
-}
-
-// RotateSigningLedgerWithoutContinuity simulates a newer release asset set
-// whose current signing-ledger checkpoint no longer carries continuity from a
-// checkpoint already committed by an older installation.
-func (fixture *Fixture) RotateSigningLedgerWithoutContinuity() error {
-	if fixture == nil || fixture.LedgerTransport == nil || len(fixture.signedDocuments) == 0 {
-		return errors.New("release trust fixture is incomplete")
-	}
-	extraPreimage := []byte("rotated-ledger-subject")
-	extraSubject := releasecontract.SigningSubjectV1{
-		SchemaVersion:          releasecontract.SigningSubjectSchemaVersion,
-		Usage:                  releasecontract.SigningSubjectUsageReleaseMetadata,
-		SourceID:               fixture.Identity.SourceID,
-		Channel:                fixture.Identity.Channel,
-		PublisherID:            fixture.Identity.PublisherID,
-		PluginID:               fixture.Identity.PluginID,
-		Version:                "1.0.1",
-		ArtifactIdentitySHA256: digestHex(extraPreimage),
-	}
-	documents := append(slices.Clone(fixture.signedDocuments), signedDocument{
-		subject: extraSubject, preimage: extraPreimage, keyID: defaultSigningID,
-		signature: base64.StdEncoding.EncodeToString(signDigest(fixture.SigningPrivateKey, extraPreimage)),
-	})
-	rotated, err := buildLedger(fixture.configuration, documents, fixture.ledgerPrivateKey, fixture.GeneratedAt.Add(2*time.Hour))
-	if err != nil {
-		return err
-	}
-	fixture.LedgerTransport.mu.Lock()
-	fixture.LedgerTransport.values = rotated.values
-	fixture.LedgerTransport.calls = 0
-	fixture.LedgerTransport.mu.Unlock()
-	return nil
 }
 
 // AdvanceTrustedTime commits a valid successor state through the same trust
@@ -631,12 +609,6 @@ func (store *StateStore) ReplaceCommittedBytes(value []byte) {
 	store.mu.Lock()
 	store.committed = slices.Clone(value)
 	store.pending = nil
-	store.mu.Unlock()
-}
-
-func (store *StateStore) SetMonotonicDigest(digest string) {
-	store.mu.Lock()
-	store.digest = digest
 	store.mu.Unlock()
 }
 

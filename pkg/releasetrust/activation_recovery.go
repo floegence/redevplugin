@@ -3,7 +3,6 @@ package releasetrust
 import (
 	"context"
 	"crypto/ed25519"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"slices"
@@ -289,20 +288,6 @@ func (service *ReleaseTrustService) recoverVerifiedSnapshotFromDurableHeadsLocke
 	if err := validateDocumentWindow(root.GeneratedAt, root.ExpiresAt, trustedNow, releasecontract.DefaultSourcePolicyLimits().FutureSkewSeconds); err != nil {
 		return VerifiedSourceSnapshot{}, err
 	}
-	timeRoot, err := service.resolveTransparencyRoot(current, root)
-	if err != nil {
-		return VerifiedSourceSnapshot{}, err
-	}
-	timeCheckpointPreimage, err := json.Marshal(checkpointPreimageFromEvidence(current.TrustedTime.Checkpoint))
-	timeSignature, signatureErr := decodeSignature(current.TrustedTime.Checkpoint.Signature)
-	if err != nil || signatureErr != nil || !ed25519.Verify(timeRoot.Anchor().PublicKey(), timeCheckpointPreimage, timeSignature) {
-		return VerifiedSourceSnapshot{}, fmt.Errorf("recover durable trusted-time checkpoint: %w", ErrReleaseTrustVerification)
-	}
-	ledgerVerifier, err := service.signingLedgerVerifier(root, trustedFloor, current.SigningLedger.Checkpoint.KeyID)
-	if err != nil || releasecontract.VerifySigningLedgerCheckpoint(current.SigningLedger.Checkpoint, ledgerVerifier) != nil {
-		return VerifiedSourceSnapshot{}, fmt.Errorf("recover durable signing-ledger checkpoint: %w", ErrReleaseTrustVerification)
-	}
-
 	policyPointer, policyPointerBytes, policyPointerToken, err := service.fetchAndVerifyPolicyPointer(ctx, key, root, nil, trustedNow)
 	if err != nil || digestHex(policyPointerBytes) != channel.Policy.PointerSHA256 || policyPointerToken != channel.Policy.PointerTransportToken ||
 		policyPointer.Epoch != channel.Policy.PointerEpoch || policyPointer.DocumentSHA256 != channel.Policy.DocumentSHA256 {

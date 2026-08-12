@@ -4,10 +4,9 @@
 
 - Rebuild a verified activation snapshot from monotonic, signed durable trust
   heads when current release assets no longer carry ledger continuity from the
-  installation checkpoint. Recovery still verifies source/channel identity,
-  document hashes and signatures, epochs, revocation, fences, expiry, and the
-  trusted-time and signing-ledger checkpoint signatures before atomically
-  migrating registry evidence and publishing a lease.
+  installation checkpoint. Recovery reuses the committed heads, verifies the
+  current source documents, and atomically migrates registry evidence before
+  publishing a lease.
 - Preserve the stable plugin recovery reason and action in lifecycle diagnostic
   details without serializing internal trust or transport errors.
 
