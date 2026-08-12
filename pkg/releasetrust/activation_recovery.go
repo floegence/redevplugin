@@ -2,6 +2,8 @@ package releasetrust
 
 import (
 	"context"
+	"crypto/ed25519"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"slices"
@@ -178,7 +180,13 @@ func (service *ReleaseTrustService) prepareActivationRecovery(
 		return PreparedActivationRecovery{}, activationRecoveryRejected(ActivationRecoveryReasonTrustEpochMismatch, "trust epoch mismatch", nil)
 	}
 	if currentSHA256 != evidence.stateSHA256 {
-		snapshot, refreshErr := service.refreshSourceLocked(ctx, key)
+		var snapshot VerifiedSourceSnapshot
+		var refreshErr error
+		if service.adapters.Monotonic == nil {
+			snapshot, refreshErr = service.refreshSourceLocked(ctx, key)
+		} else {
+			snapshot, refreshErr = service.recoverVerifiedSnapshotFromDurableHeadsLocked(ctx, key, current, currentSHA256)
+		}
 		if refreshErr != nil {
 			return PreparedActivationRecovery{}, activationRecoveryRejected(ActivationRecoveryReasonStateAdvancementFailed, "trust state advancement revalidation failed", refreshErr)
 		}
@@ -235,6 +243,100 @@ func (service *ReleaseTrustService) prepareActivationRecovery(
 		issuedElapsed: elapsed, refreshElapsed: elapsed + refreshAfter, expiresElapsed: elapsed + maximum,
 	}
 	return PreparedActivationRecovery{lease: lease, previousStateSHA256: evidence.stateSHA256}, nil
+}
+
+func (service *ReleaseTrustService) recoverVerifiedSnapshotFromDurableHeadsLocked(
+	ctx context.Context,
+	key SourceTrustKey,
+	current ReleaseTrustStateV1,
+	currentSHA256 string,
+) (VerifiedSourceSnapshot, error) {
+	if current.Root == nil || current.SigningLedger == nil {
+		return VerifiedSourceSnapshot{}, ErrReleaseTrustVerification
+	}
+	channel := findChannelState(current, key.channel)
+	if channel == nil || channel.Policy == nil || channel.Revocation == nil || channel.Fence != nil {
+		return VerifiedSourceSnapshot{}, ErrSourceTrustFenced
+	}
+	trustedFloor, err := parseCanonicalTime(current.TrustedTime.Floor)
+	if err != nil {
+		return VerifiedSourceSnapshot{}, err
+	}
+	trustedNow := service.now().UTC()
+	if trustedNow.Before(trustedFloor) {
+		return VerifiedSourceSnapshot{}, ErrReleaseTrustRollback
+	}
+
+	rootRequest, err := fixedReleaseDocumentRequest(service.options.sourceConfiguration, key, ReleaseDocumentRootDelegation)
+	if err != nil {
+		return VerifiedSourceSnapshot{}, err
+	}
+	rootBytes, _, err := service.fetchReleaseDocument(ctx, rootRequest)
+	if err != nil || digestHex(rootBytes) != current.Root.DocumentSHA256 {
+		return VerifiedSourceSnapshot{}, fmt.Errorf("recover durable root head: %w", ErrReleaseTrustVerification)
+	}
+	root, err := releasecontract.DecodeRootDelegation(rootBytes)
+	if err != nil || root.SourceID != key.sourceID || root.RootEpoch != current.Root.Epoch ||
+		root.GeneratedAt != current.Root.GeneratedAt || root.ExpiresAt != current.Root.ExpiresAt || root.KeyID != current.Root.KeyID {
+		return VerifiedSourceSnapshot{}, fmt.Errorf("recover durable root identity: %w", ErrReleaseTrustVerification)
+	}
+	rootVerifier := releasecontract.Ed25519PublicKeyVerifier{
+		service.options.rootAnchor.keyID: ed25519.PublicKey(service.options.rootAnchor.PublicKey()),
+	}
+	if err := releasecontract.VerifyRootDelegation(root, rootVerifier); err != nil {
+		return VerifiedSourceSnapshot{}, err
+	}
+	if err := validateDocumentWindow(root.GeneratedAt, root.ExpiresAt, trustedNow, releasecontract.DefaultSourcePolicyLimits().FutureSkewSeconds); err != nil {
+		return VerifiedSourceSnapshot{}, err
+	}
+	timeRoot, err := service.resolveTransparencyRoot(current, root)
+	if err != nil {
+		return VerifiedSourceSnapshot{}, err
+	}
+	timeCheckpointPreimage, err := json.Marshal(checkpointPreimageFromEvidence(current.TrustedTime.Checkpoint))
+	timeSignature, signatureErr := decodeSignature(current.TrustedTime.Checkpoint.Signature)
+	if err != nil || signatureErr != nil || !ed25519.Verify(timeRoot.Anchor().PublicKey(), timeCheckpointPreimage, timeSignature) {
+		return VerifiedSourceSnapshot{}, fmt.Errorf("recover durable trusted-time checkpoint: %w", ErrReleaseTrustVerification)
+	}
+	ledgerVerifier, err := service.signingLedgerVerifier(root, trustedFloor, current.SigningLedger.Checkpoint.KeyID)
+	if err != nil || releasecontract.VerifySigningLedgerCheckpoint(current.SigningLedger.Checkpoint, ledgerVerifier) != nil {
+		return VerifiedSourceSnapshot{}, fmt.Errorf("recover durable signing-ledger checkpoint: %w", ErrReleaseTrustVerification)
+	}
+
+	policyPointer, policyPointerBytes, policyPointerToken, err := service.fetchAndVerifyPolicyPointer(ctx, key, root, nil, trustedNow)
+	if err != nil || digestHex(policyPointerBytes) != channel.Policy.PointerSHA256 || policyPointerToken != channel.Policy.PointerTransportToken ||
+		policyPointer.Epoch != channel.Policy.PointerEpoch || policyPointer.DocumentSHA256 != channel.Policy.DocumentSHA256 {
+		return VerifiedSourceSnapshot{}, fmt.Errorf("recover durable policy pointer: %w", ErrReleaseTrustVerification)
+	}
+	policy, policyBytes, policyToken, err := service.fetchAndVerifyPolicy(ctx, key, root, policyPointer, trustedNow)
+	if err != nil || digestHex(policyBytes) != channel.Policy.DocumentSHA256 || policyToken != channel.Policy.DocumentTransportToken ||
+		policy.GeneratedAt != channel.Policy.GeneratedAt || policy.ExpiresAt != channel.Policy.ExpiresAt || policy.KeyID != channel.Policy.KeyID {
+		return VerifiedSourceSnapshot{}, fmt.Errorf("recover durable policy: %w", ErrReleaseTrustVerification)
+	}
+	revocationPointer, revocationPointerBytes, revocationPointerToken, err := service.fetchAndVerifyRevocationPointer(ctx, key, root, policy, nil, trustedNow)
+	if err != nil || digestHex(revocationPointerBytes) != channel.Revocation.PointerSHA256 || revocationPointerToken != channel.Revocation.PointerTransportToken ||
+		revocationPointer.Epoch != channel.Revocation.PointerEpoch || revocationPointer.DocumentSHA256 != channel.Revocation.DocumentSHA256 {
+		return VerifiedSourceSnapshot{}, fmt.Errorf("recover durable revocation pointer: %w", ErrReleaseTrustVerification)
+	}
+	revocation, revocationBytes, revocationToken, err := service.fetchAndVerifyRevocation(ctx, key, root, policy, revocationPointer, trustedNow)
+	if err != nil || digestHex(revocationBytes) != channel.Revocation.DocumentSHA256 || revocationToken != channel.Revocation.DocumentTransportToken ||
+		revocation.GeneratedAt != channel.Revocation.GeneratedAt || revocation.ExpiresAt != channel.Revocation.ExpiresAt || revocation.KeyID != channel.Revocation.KeyID {
+		return VerifiedSourceSnapshot{}, fmt.Errorf("recover durable revocation: %w", ErrReleaseTrustVerification)
+	}
+
+	snapshot := VerifiedSourceSnapshot{
+		key: key, root: root, policy: policy, revocation: revocation,
+		trustedFloor: trustedNow, stateSHA256: currentSHA256,
+		processInstanceID: service.processInstanceID, refreshedElapsed: service.elapsedNow(),
+	}
+	service.mu.Lock()
+	service.verified[key] = cloneVerifiedSourceSnapshot(snapshot)
+	service.live[key] = releaseTrustLiveAnchor{
+		processInstanceID: service.processInstanceID, stateSHA256: currentSHA256,
+		floor: trustedNow, observedAt: service.now(),
+	}
+	service.mu.Unlock()
+	return snapshot, nil
 }
 
 func (service *ReleaseTrustService) commitActivationRecovery(ctx context.Context, prepared PreparedActivationRecovery) (ActivationLease, error) {

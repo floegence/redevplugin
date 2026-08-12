@@ -47,6 +47,7 @@ type Options struct {
 	ExpiresAt            time.Time
 	StateStore           *StateStore
 	TrustedTime          *TrustedTimeAdapter
+	UseMonotonicState    bool
 }
 
 type Fixture struct {
@@ -69,6 +70,9 @@ type Fixture struct {
 	ReleaseArtifactSHA256 string
 	GeneratedAt           time.Time
 	ExpiresAt             time.Time
+	configuration         releasetrust.SourceConfiguration
+	signedDocuments       []signedDocument
+	ledgerPrivateKey      ed25519.PrivateKey
 }
 
 func New(packageBytes []byte, options Options) (*Fixture, error) {
@@ -385,9 +389,13 @@ func New(packageBytes []byte, options Options) (*Fixture, error) {
 	if trustedTime == nil {
 		trustedTime = &TrustedTimeAdapter{privateKey: timePrivate, start: generatedAt.Add(time.Hour)}
 	}
-	service, err := releasetrust.NewReleaseTrustService(trustOptions, releasetrust.ReleaseTrustAdapters{
+	adapters := releasetrust.ReleaseTrustAdapters{
 		Documents: documents, Ledger: ledger, State: state, TrustedTime: trustedTime,
-	})
+	}
+	if options.UseMonotonicState {
+		adapters.Monotonic = state
+	}
+	service, err := releasetrust.NewReleaseTrustService(trustOptions, adapters)
 	if err != nil {
 		return nil, err
 	}
@@ -403,7 +411,41 @@ func New(packageBytes []byte, options Options) (*Fixture, error) {
 		SigningPrivateKey: slices.Clone(signingPrivate),
 		DocumentTransport: documents, LedgerTransport: ledger, StateStore: state, TrustedTime: trustedTime,
 		ReleaseArtifactSHA256: artifactDigest, GeneratedAt: generatedAt, ExpiresAt: expiresAt,
+		configuration: configuration, signedDocuments: slices.Clone(signedDocuments), ledgerPrivateKey: slices.Clone(ledgerPrivate),
 	}, nil
+}
+
+// RotateSigningLedgerWithoutContinuity simulates a newer release asset set
+// whose current signing-ledger checkpoint no longer carries continuity from a
+// checkpoint already committed by an older installation.
+func (fixture *Fixture) RotateSigningLedgerWithoutContinuity() error {
+	if fixture == nil || fixture.LedgerTransport == nil || len(fixture.signedDocuments) == 0 {
+		return errors.New("release trust fixture is incomplete")
+	}
+	extraPreimage := []byte("rotated-ledger-subject")
+	extraSubject := releasecontract.SigningSubjectV1{
+		SchemaVersion:          releasecontract.SigningSubjectSchemaVersion,
+		Usage:                  releasecontract.SigningSubjectUsageReleaseMetadata,
+		SourceID:               fixture.Identity.SourceID,
+		Channel:                fixture.Identity.Channel,
+		PublisherID:            fixture.Identity.PublisherID,
+		PluginID:               fixture.Identity.PluginID,
+		Version:                "1.0.1",
+		ArtifactIdentitySHA256: digestHex(extraPreimage),
+	}
+	documents := append(slices.Clone(fixture.signedDocuments), signedDocument{
+		subject: extraSubject, preimage: extraPreimage, keyID: defaultSigningID,
+		signature: base64.StdEncoding.EncodeToString(signDigest(fixture.SigningPrivateKey, extraPreimage)),
+	})
+	rotated, err := buildLedger(fixture.configuration, documents, fixture.ledgerPrivateKey, fixture.GeneratedAt.Add(2*time.Hour))
+	if err != nil {
+		return err
+	}
+	fixture.LedgerTransport.mu.Lock()
+	fixture.LedgerTransport.values = rotated.values
+	fixture.LedgerTransport.calls = 0
+	fixture.LedgerTransport.mu.Unlock()
+	return nil
 }
 
 // AdvanceTrustedTime commits a valid successor state through the same trust
@@ -515,6 +557,33 @@ type StateStore struct {
 	committed []byte
 	pending   []byte
 	loadHook  func()
+	counter   uint64
+	digest    string
+}
+
+func (store *StateStore) ReadMonotonicState(_ context.Context, request releasetrust.MonotonicStateReadRequest) (releasetrust.MonotonicStateReadResult, error) {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	digest := store.digest
+	if digest == "" {
+		digest = zeroSHA256
+	}
+	return releasetrust.NewMonotonicStateReadResult(request, store.counter, digest)
+}
+
+func (store *StateStore) CompareAndSwapMonotonicState(_ context.Context, request releasetrust.MonotonicStateCASRequest) (releasetrust.StateMutationOutcome, error) {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	digest := store.digest
+	if digest == "" {
+		digest = zeroSHA256
+	}
+	if store.counter != request.ExpectedCounter() || digest != request.PreviousSHA256() || request.NextCounter() != store.counter+1 {
+		return releasetrust.StateMutationConflict, nil
+	}
+	store.counter = request.NextCounter()
+	store.digest = request.NextSHA256()
+	return releasetrust.StateMutationApplied, nil
 }
 
 func (store *StateStore) LoadSourceTrustState(_ context.Context, request releasetrust.SourceTrustStateLoadRequest) (releasetrust.SourceTrustStateLoadResult, error) {
@@ -562,6 +631,12 @@ func (store *StateStore) ReplaceCommittedBytes(value []byte) {
 	store.mu.Lock()
 	store.committed = slices.Clone(value)
 	store.pending = nil
+	store.mu.Unlock()
+}
+
+func (store *StateStore) SetMonotonicDigest(digest string) {
+	store.mu.Lock()
+	store.digest = digest
 	store.mu.Unlock()
 }
 

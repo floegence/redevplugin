@@ -5298,6 +5298,15 @@ func classifyRefreshFailure(cause error) (RefreshEnabledPluginFailureReason, Ref
 	return RefreshFailureReasonUnknown, RefreshFailureActionRetry, refreshEnabledPluginFailureMessage
 }
 
+func refreshFailureDiagnosticDetails(cause error) observability.DiagnosticDetails {
+	reason, action, _ := classifyRefreshFailure(cause)
+	return observability.DiagnosticDetails{
+		Code:      string(security.ErrRuntimeUnavailable),
+		Reason:    string(reason),
+		Operation: string(action),
+	}
+}
+
 func (result RefreshEnabledPluginResult) validate() error {
 	if strings.TrimSpace(result.PluginInstanceID) == "" {
 		return errors.New("runtime refresh result requires plugin_instance_id")
@@ -5368,7 +5377,7 @@ func (h *Host) RefreshEnabledPlugins(ctx context.Context) ([]RefreshEnabledPlugi
 						"plugin.runtime_state.refresh_failed",
 						"plugin runtime state refresh failed",
 						err,
-						observability.DiagnosticDetails{},
+						refreshFailureDiagnosticDetails(err),
 					)
 					results[index] = failedPluginRefreshResultForError(record.PluginInstanceID, err)
 					continue

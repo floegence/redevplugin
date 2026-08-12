@@ -6673,6 +6673,27 @@ func TestRefreshEnabledPluginFailurePublishesStableRecoveryReason(t *testing.T) 
 	}
 }
 
+func TestRefreshFailureDiagnosticDetailsPreserveTypedReasonAndAction(t *testing.T) {
+	const sensitive = "secret trust transport detail"
+	cause := fmt.Errorf("%w: %s", releasetrust.NewActivationRecoveryRejection(
+		releasetrust.ActivationRecoveryReasonStateAdvancementFailed,
+		"trust state advancement revalidation failed",
+	), sensitive)
+	details := refreshFailureDiagnosticDetails(cause)
+	if details.Reason != string(RefreshFailureReasonTrustStateAdvanced) ||
+		details.Operation != string(RefreshFailureActionRetry) ||
+		details.Code != string(security.ErrRuntimeUnavailable) {
+		t.Fatalf("refresh failure details = %#v", details)
+	}
+	encoded, err := json.Marshal(details)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), sensitive) {
+		t.Fatalf("refresh failure details leaked internal cause: %s", encoded)
+	}
+}
+
 func TestRefreshEnabledPluginsRestoresRuntimeState(t *testing.T) {
 	ctx := hostTestContext()
 	h, surfaces, _ := newTestHostWithOptions(t, testHostOptions{
