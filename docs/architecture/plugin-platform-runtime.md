@@ -179,8 +179,9 @@ verification failure, checkpoint disagreement, or rollback evidence publishes
 neither durable state nor a process-local verified snapshot or lease.
 
 Enabled-plugin refresh uses at most four workers, gives each plugin an
-independent two-second recovery budget, and returns results in stable plugin
-instance order. Activation work remains single-flight for one source/channel,
+independent 15-second recovery budget, and returns results in stable plugin
+instance order. A deadline is reported as `recovery_timeout`; parent request
+cancellation remains `recovery_canceled`. Activation work remains single-flight for one source/channel,
 including all plugins bound to that trust state, while different
 source/channels recover concurrently. A waiter may cancel independently; a
 failed or canceled recovery publishes neither a lease association nor a partial

@@ -6658,6 +6658,7 @@ func TestRefreshEnabledPluginFailurePublishesStableRecoveryReason(t *testing.T) 
 		{name: "revoked", cause: releasetrust.NewActivationRecoveryRejection(releasetrust.ActivationRecoveryReasonReleaseRevoked, "release is revoked"), reason: RefreshFailureReasonTrustRevoked, action: RefreshFailureActionReinstall},
 		{name: "fenced", cause: releasetrust.NewActivationRecoveryRejection(releasetrust.ActivationRecoveryReasonTrustFenced, "source trust is fenced"), reason: RefreshFailureReasonTrustFenced, action: RefreshFailureActionContactAdmin},
 		{name: "canceled", cause: context.Canceled, reason: RefreshFailureReasonRecoveryCanceled, action: RefreshFailureActionRetry},
+		{name: "deadline", cause: context.DeadlineExceeded, reason: RefreshFailureReasonRecoveryTimeout, action: RefreshFailureActionRetry},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

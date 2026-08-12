@@ -256,7 +256,7 @@ const (
 	installStageTTL             = 30 * time.Minute
 	hostRuntimeShutdownTimeout  = 5 * time.Second
 	refreshEnabledConcurrency   = 4
-	refreshEnabledPluginTimeout = 2 * time.Second
+	refreshEnabledPluginTimeout = 15 * time.Second
 	localImportUnsignedPolicy   = "dev_only"
 )
 
@@ -740,35 +740,36 @@ type PluginData interface {
 }
 
 type Host struct {
-	adapters            normalizedAdapters
-	features            map[Feature]struct{}
-	securityJournal     observability.SecurityAuditJournal
-	securityExporter    *observability.SecurityAuditExporter
-	securityExportMu    sync.Mutex
-	surfaceTokens       *bridge.SurfaceTokenService
-	surfaceDocuments    *surfaceDocumentCache
-	methodSchemas       *methodSchemaCache
-	surfaceGenerationID string
-	lifecycleLocks      *pluginLifecycleLockRegistry
-	executions          *executionLeaseRegistry
-	streamReads         *streamReadLockRegistry
-	verifiedReleases    *verifiedReleaseRegistry
-	releaseLeases       *releaseLeaseRegistry
-	sourceFences        *sourceFenceRegistry
-	sessionScopes       *sessionscope.Coordinator
-	sessionMaintenance  *sessionScopeMaintenanceLockRegistry
-	detachedCancelJobs  *detachedCancelJobRegistry
-	operationObservers  *surfaceOperationObservationRegistry
-	lifecycleCtx        context.Context
-	lifecycleCancel     context.CancelFunc
-	lifecycleMu         sync.RWMutex
-	lifecycleWG         sync.WaitGroup
-	securityAuditWG     sync.WaitGroup
-	closed              bool
-	closeOnce           sync.Once
-	closeErr            error
-	runtimeModule       *RuntimeModule
-	externalInspections *externalPackageInspectionStore
+	adapters             normalizedAdapters
+	features             map[Feature]struct{}
+	securityJournal      observability.SecurityAuditJournal
+	securityExporter     *observability.SecurityAuditExporter
+	securityExportMu     sync.Mutex
+	surfaceTokens        *bridge.SurfaceTokenService
+	surfaceDocuments     *surfaceDocumentCache
+	methodSchemas        *methodSchemaCache
+	surfaceGenerationID  string
+	lifecycleLocks       *pluginLifecycleLockRegistry
+	executions           *executionLeaseRegistry
+	streamReads          *streamReadLockRegistry
+	verifiedReleases     *verifiedReleaseRegistry
+	releaseLeases        *releaseLeaseRegistry
+	sourceFences         *sourceFenceRegistry
+	sessionScopes        *sessionscope.Coordinator
+	sessionMaintenance   *sessionScopeMaintenanceLockRegistry
+	detachedCancelJobs   *detachedCancelJobRegistry
+	operationObservers   *surfaceOperationObservationRegistry
+	lifecycleCtx         context.Context
+	lifecycleCancel      context.CancelFunc
+	lifecycleMu          sync.RWMutex
+	lifecycleWG          sync.WaitGroup
+	securityAuditWG      sync.WaitGroup
+	closed               bool
+	closeOnce            sync.Once
+	closeErr             error
+	runtimeModule        *RuntimeModule
+	externalInspections  *externalPackageInspectionStore
+	refreshPluginTimeout time.Duration
 }
 
 type detachedCancelJob struct {
@@ -1669,27 +1670,28 @@ func Open(ctx context.Context, config Config) (openedHost *Host, retErr error) {
 	}
 	lifecycleCtx, lifecycleCancel := context.WithCancel(context.Background())
 	host := &Host{
-		adapters:            adapters,
-		features:            features,
-		securityJournal:     adapters.SecurityAudit,
-		surfaceTokens:       adapters.SurfaceTokens,
-		surfaceDocuments:    newSurfaceDocumentCache(defaultSurfaceDocumentCacheEntries, defaultSurfaceDocumentCacheBytes),
-		methodSchemas:       newMethodSchemaCache(defaultMethodSchemaCacheEntries),
-		surfaceGenerationID: surfaceGenerationID,
-		lifecycleLocks:      newPluginLifecycleLockRegistry(),
-		executions:          newExecutionLeaseRegistry(),
-		streamReads:         newStreamReadLockRegistry(),
-		verifiedReleases:    newVerifiedReleaseRegistry(),
-		releaseLeases:       newReleaseLeaseRegistry(),
-		sourceFences:        newSourceFenceRegistry(),
-		detachedCancelJobs:  newDetachedCancelJobRegistry(),
-		operationObservers:  newSurfaceOperationObservationRegistry(),
-		sessionScopes:       adapters.SessionScopes,
-		sessionMaintenance:  newSessionScopeMaintenanceLockRegistry(),
-		lifecycleCtx:        lifecycleCtx,
-		lifecycleCancel:     lifecycleCancel,
-		runtimeModule:       transferredRuntime,
-		externalInspections: newExternalPackageInspectionStore(),
+		adapters:             adapters,
+		features:             features,
+		securityJournal:      adapters.SecurityAudit,
+		surfaceTokens:        adapters.SurfaceTokens,
+		surfaceDocuments:     newSurfaceDocumentCache(defaultSurfaceDocumentCacheEntries, defaultSurfaceDocumentCacheBytes),
+		methodSchemas:        newMethodSchemaCache(defaultMethodSchemaCacheEntries),
+		surfaceGenerationID:  surfaceGenerationID,
+		lifecycleLocks:       newPluginLifecycleLockRegistry(),
+		executions:           newExecutionLeaseRegistry(),
+		streamReads:          newStreamReadLockRegistry(),
+		verifiedReleases:     newVerifiedReleaseRegistry(),
+		releaseLeases:        newReleaseLeaseRegistry(),
+		sourceFences:         newSourceFenceRegistry(),
+		detachedCancelJobs:   newDetachedCancelJobRegistry(),
+		operationObservers:   newSurfaceOperationObservationRegistry(),
+		sessionScopes:        adapters.SessionScopes,
+		sessionMaintenance:   newSessionScopeMaintenanceLockRegistry(),
+		lifecycleCtx:         lifecycleCtx,
+		lifecycleCancel:      lifecycleCancel,
+		runtimeModule:        transferredRuntime,
+		externalInspections:  newExternalPackageInspectionStore(),
+		refreshPluginTimeout: refreshEnabledPluginTimeout,
 	}
 	if host.adapters.ReleaseTrust != nil {
 		if err := host.adapters.ReleaseTrust.BindFenceCoordinator(hostSourceFenceCoordinator{host: host}); err != nil {
@@ -5211,6 +5213,7 @@ const (
 	RefreshFailureReasonActivationEvidenceInvalid RefreshEnabledPluginFailureReason = "activation_evidence_invalid"
 	RefreshFailureReasonActivationLeaseExpired    RefreshEnabledPluginFailureReason = "activation_lease_expired"
 	RefreshFailureReasonRecoveryCanceled          RefreshEnabledPluginFailureReason = "recovery_canceled"
+	RefreshFailureReasonRecoveryTimeout           RefreshEnabledPluginFailureReason = "recovery_timeout"
 )
 
 type RefreshEnabledPluginFailureAction string
@@ -5263,7 +5266,10 @@ func classifyRefreshFailure(cause error) (RefreshEnabledPluginFailureReason, Ref
 	if cause == nil {
 		return RefreshFailureReasonUnknown, RefreshFailureActionRetry, refreshEnabledPluginFailureMessage
 	}
-	if errors.Is(cause, context.Canceled) || errors.Is(cause, context.DeadlineExceeded) {
+	if errors.Is(cause, context.DeadlineExceeded) {
+		return RefreshFailureReasonRecoveryTimeout, RefreshFailureActionRetry, "Plugin runtime recovery timed out; retry to continue"
+	}
+	if errors.Is(cause, context.Canceled) {
 		return RefreshFailureReasonRecoveryCanceled, RefreshFailureActionRetry, "Plugin runtime recovery was canceled; retry to continue"
 	}
 	if errors.Is(cause, releasetrust.ErrActivationLeaseExpired) {
@@ -5352,7 +5358,7 @@ func (h *Host) RefreshEnabledPlugins(ctx context.Context) ([]RefreshEnabledPlugi
 			defer workers.Done()
 			for index := range jobs {
 				record := enabled[index]
-				pluginCtx, cancel := context.WithTimeout(ctx, refreshEnabledPluginTimeout)
+				pluginCtx, cancel := context.WithTimeout(ctx, h.refreshPluginTimeout)
 				err := h.refreshEnabledRuntimeState(pluginCtx, record)
 				cancel()
 				if err != nil {

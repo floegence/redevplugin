@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- Give each enabled plugin a 15-second recovery budget while retaining bounded
+  concurrency, stable result ordering, and per-source/channel single-flight.
+  This covers local durable trust revalidation without returning to package
+  downloads or blocking unrelated plugin surfaces.
+- Distinguish a Host deadline from request cancellation through the public
+  `recovery_timeout` reason so hosts can present accurate retry guidance while
+  preserving fail-closed trust and lease behavior.
+
 ## v0.7.24
 
 - Verify the five independent source-trust signing-ledger subjects with at

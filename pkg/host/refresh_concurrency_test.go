@@ -255,6 +255,7 @@ func TestRefreshEnabledPluginsBoundsSlowPluginWithoutBlockingFastPlugin(t *testi
 		localGenerated: true,
 		surfaceCatalog: sink,
 	})
+	h.refreshPluginTimeout = 100 * time.Millisecond
 
 	slow, err := ImportLocalPackageBytes(ctx, h, "plugini_a_slow", buildNetworkFixturePackage(t))
 	if err != nil {
@@ -304,7 +305,10 @@ func TestRefreshEnabledPluginsBoundsSlowPluginWithoutBlockingFastPlugin(t *testi
 		if results[0].Status != RefreshEnabledPluginStatusFailed || results[1].Status != RefreshEnabledPluginStatusRefreshed {
 			t.Fatalf("refresh statuses = %#v, want slow failed and fast refreshed", results)
 		}
-	case <-time.After(3 * time.Second):
+		if results[0].Error == nil || results[0].Error.Reason != RefreshFailureReasonRecoveryTimeout {
+			t.Fatalf("slow plugin failure = %#v, want recovery timeout", results[0])
+		}
+	case <-time.After(time.Second):
 		t.Fatal("slow plugin was not bounded by its per-plugin deadline")
 	}
 }

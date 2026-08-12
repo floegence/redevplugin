@@ -2331,7 +2331,7 @@ components:
         message: { type: string, minLength: 1 }
         reason:
           type: string
-          enum: [unknown, trust_state_advanced, trust_revoked, trust_fenced, trust_epoch_mismatch, activation_evidence_invalid, activation_lease_expired, recovery_canceled]
+          enum: [unknown, trust_state_advanced, trust_revoked, trust_fenced, trust_epoch_mismatch, activation_evidence_invalid, activation_lease_expired, recovery_canceled, recovery_timeout]
         action:
           type: string
           enum: [retry, reinstall, contact_admin]

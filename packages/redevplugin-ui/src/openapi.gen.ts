@@ -1685,7 +1685,7 @@ export interface components {
             code: "PLUGIN_RUNTIME_UNAVAILABLE";
             message: string;
             /** @enum {string} */
-            reason: "unknown" | "trust_state_advanced" | "trust_revoked" | "trust_fenced" | "trust_epoch_mismatch" | "activation_evidence_invalid" | "activation_lease_expired" | "recovery_canceled";
+            reason: "unknown" | "trust_state_advanced" | "trust_revoked" | "trust_fenced" | "trust_epoch_mismatch" | "activation_evidence_invalid" | "activation_lease_expired" | "recovery_canceled" | "recovery_timeout";
             /** @enum {string} */
             action: "retry" | "reinstall" | "contact_admin";
         };
