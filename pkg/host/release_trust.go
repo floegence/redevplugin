@@ -205,8 +205,9 @@ type releaseLeaseEntry struct {
 }
 
 type releaseLeaseFlight struct {
-	done chan struct{}
-	err  error
+	done              chan struct{}
+	err               error
+	ownerContextEnded bool
 }
 
 func newReleaseLeaseRegistry() *releaseLeaseRegistry {
@@ -235,17 +236,24 @@ func (registrySet *releaseLeaseRegistry) ensure(
 	}
 	registrySet.mu.Unlock()
 
-	entry.mu.Lock()
-	if validate(entry.lease) != nil {
+	for {
+		entry.mu.Lock()
+		if validate(entry.lease) == nil {
+			entry.mu.Unlock()
+			return registrySet.associateRecoveredLease(pluginInstanceID, key, entry)
+		}
 		if entry.flight != nil {
 			flight := entry.flight
 			entry.mu.Unlock()
 			select {
 			case <-flight.done:
-				if flight.err != nil {
-					return flight.err
+				if flight.err == nil {
+					return registrySet.associateRecoveredLease(pluginInstanceID, key, entry)
 				}
-				return registrySet.associateRecoveredLease(pluginInstanceID, key, entry)
+				if flight.ownerContextEnded && ctx.Err() == nil {
+					continue
+				}
+				return flight.err
 			case <-ctx.Done():
 				return ctx.Err()
 			}
@@ -261,21 +269,21 @@ func (registrySet *releaseLeaseRegistry) ensure(
 				err = releasetrust.ErrActivationLeaseInvalid
 			}
 		}
+		ownerContextErr := ctx.Err()
 		entry.mu.Lock()
 		if err == nil {
 			entry.lease = lease
 		}
 		flight.err = err
+		flight.ownerContextEnded = ownerContextErr != nil && errors.Is(err, ownerContextErr)
 		entry.flight = nil
 		close(flight.done)
 		entry.mu.Unlock()
 		if err != nil {
 			return err
 		}
-	} else {
-		entry.mu.Unlock()
+		return registrySet.associateRecoveredLease(pluginInstanceID, key, entry)
 	}
-	return registrySet.associateRecoveredLease(pluginInstanceID, key, entry)
 }
 
 func (registrySet *releaseLeaseRegistry) associateRecoveredLease(pluginInstanceID, key string, entry *releaseLeaseEntry) error {

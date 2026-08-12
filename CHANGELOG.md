@@ -9,6 +9,9 @@
 - Distinguish a Host deadline from request cancellation through the public
   `recovery_timeout` reason so hosts can present accurate retry guidance while
   preserving fail-closed trust and lease behavior.
+- Let a healthy same-source recovery take ownership after the preceding session
+  generation ends its own context, without retrying shared trust or transport
+  failures or publishing a lease for the canceled generation.
 
 ## v0.7.24
 

@@ -137,6 +137,143 @@ func TestReleaseLeaseRecoveryWaiterHonorsItsOwnCancellation(t *testing.T) {
 	}
 }
 
+func TestReleaseLeaseRecoveryHealthyWaiterRetriesAfterLeaderContextEnds(t *testing.T) {
+	for _, testCase := range []struct {
+		name      string
+		sourceID  string
+		leaderErr error
+	}{
+		{name: "canceled", sourceID: "fixture_replaced_canceled", leaderErr: context.Canceled},
+		{name: "deadline exceeded", sourceID: "fixture_replaced_deadline", leaderErr: context.DeadlineExceeded},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			binding, authorize, validate := preparedLeaseFixture(t, testCase.sourceID)
+			leases := newReleaseLeaseRegistry()
+			leaderCtx := newControlledContext(testCase.leaderErr)
+			leaderEntered := make(chan struct{})
+			leaderDone := make(chan error, 1)
+			go func() {
+				leaderDone <- leases.ensure(leaderCtx, "plugini_old_generation", binding, validate, func() (releasetrust.ActivationLease, error) {
+					close(leaderEntered)
+					<-leaderCtx.Done()
+					return releasetrust.ActivationLease{}, leaderCtx.Err()
+				})
+			}()
+			<-leaderEntered
+
+			waiterCtx := newObservedContext()
+			waiterDone := make(chan error, 1)
+			var waiterAuthorizeCalls atomic.Int32
+			go func() {
+				waiterDone <- leases.ensure(waiterCtx, "plugini_new_generation", binding, validate, func() (releasetrust.ActivationLease, error) {
+					waiterAuthorizeCalls.Add(1)
+					return authorize()
+				})
+			}()
+			<-waiterCtx.doneObserved
+
+			leaderCtx.finish()
+			if err := <-leaderDone; !errors.Is(err, testCase.leaderErr) {
+				t.Fatalf("leader error = %v, want %v", err, testCase.leaderErr)
+			}
+			if err := <-waiterDone; err != nil {
+				t.Fatalf("healthy waiter inherited ended leader context: %v", err)
+			}
+			if waiterAuthorizeCalls.Load() != 1 {
+				t.Fatalf("healthy waiter authorization calls = %d, want 1", waiterAuthorizeCalls.Load())
+			}
+			if _, ok := leases.get("plugini_old_generation", binding); ok {
+				t.Fatal("ended leader published a plugin lease association")
+			}
+			if _, ok := leases.get("plugini_new_generation", binding); !ok {
+				t.Fatal("healthy waiter did not publish its recovered lease association")
+			}
+		})
+	}
+}
+
+func TestReleaseLeaseRecoveryDoesNotRetrySharedDeadlineFailure(t *testing.T) {
+	binding, _, validate := preparedLeaseFixture(t, "fixture_shared_deadline")
+	leases := newReleaseLeaseRegistry()
+	ctx := newObservedContext()
+	release := make(chan struct{})
+	leaderEntered := make(chan struct{})
+	done := make(chan error, 2)
+	var authorizeCalls atomic.Int32
+	authorize := func() (releasetrust.ActivationLease, error) {
+		authorizeCalls.Add(1)
+		close(leaderEntered)
+		<-release
+		return releasetrust.ActivationLease{}, context.DeadlineExceeded
+	}
+	go func() {
+		done <- leases.ensure(ctx, "plugini_deadline_owner", binding, validate, authorize)
+	}()
+	<-leaderEntered
+	go func() {
+		done <- leases.ensure(ctx, "plugini_deadline_waiter", binding, validate, authorize)
+	}()
+	<-ctx.doneObserved
+	close(release)
+	for range 2 {
+		if err := <-done; !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("shared deadline error = %v, want context.DeadlineExceeded", err)
+		}
+	}
+	if authorizeCalls.Load() != 1 {
+		t.Fatalf("authorization calls = %d, want one shared failure", authorizeCalls.Load())
+	}
+	if _, ok := leases.get("plugini_deadline_owner", binding); ok {
+		t.Fatal("failed leader published a plugin lease association")
+	}
+	if _, ok := leases.get("plugini_deadline_waiter", binding); ok {
+		t.Fatal("failed waiter published a plugin lease association")
+	}
+}
+
+type controlledContext struct {
+	context.Context
+	done chan struct{}
+	err  error
+}
+
+func newControlledContext(err error) *controlledContext {
+	return &controlledContext{Context: context.Background(), done: make(chan struct{}), err: err}
+}
+
+func (ctx *controlledContext) Done() <-chan struct{} { return ctx.done }
+
+func (ctx *controlledContext) Err() error {
+	select {
+	case <-ctx.done:
+		return ctx.err
+	default:
+		return nil
+	}
+}
+
+func (ctx *controlledContext) finish() { close(ctx.done) }
+
+type observedContext struct {
+	context.Context
+	doneObserved chan struct{}
+	done         chan struct{}
+	once         sync.Once
+}
+
+func newObservedContext() *observedContext {
+	return &observedContext{
+		Context:      context.Background(),
+		doneObserved: make(chan struct{}),
+		done:         make(chan struct{}),
+	}
+}
+
+func (ctx *observedContext) Done() <-chan struct{} {
+	ctx.once.Do(func() { close(ctx.doneObserved) })
+	return ctx.done
+}
+
 func TestReleaseLeaseRecoveryFailureDoesNotPublishPartialEntry(t *testing.T) {
 	binding, _, validate := preparedLeaseFixture(t, "fixture_failed_source")
 	leases := newReleaseLeaseRegistry()

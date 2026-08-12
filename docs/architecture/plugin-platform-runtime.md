@@ -183,9 +183,13 @@ independent 15-second recovery budget, and returns results in stable plugin
 instance order. A deadline is reported as `recovery_timeout`; parent request
 cancellation remains `recovery_canceled`. Activation work remains single-flight for one source/channel,
 including all plugins bound to that trust state, while different
-source/channels recover concurrently. A waiter may cancel independently; a
-failed or canceled recovery publishes neither a lease association nor a partial
-surface snapshot.
+source/channels recover concurrently. A waiter may cancel independently. A
+healthy waiter retries ownership when the preceding flight ended specifically
+because its owner's context was canceled or reached its deadline. Shared trust,
+transport, revocation, fence, tamper, and validation failures remain
+authoritative and are never retried as lifecycle replacement. A failed or
+canceled recovery publishes neither a lease association nor a partial surface
+snapshot.
 
 The recovered lease is bounded by the normal activation maximum and by the
 earliest signed root, policy, or revocation expiry. Remote freshness remains
