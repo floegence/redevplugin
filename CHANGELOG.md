@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.7.26
 
 - Rebuild a verified activation snapshot from monotonic, signed durable trust
   heads when current release assets no longer carry ledger continuity from the
@@ -10,7 +10,7 @@
 - Preserve the stable plugin recovery reason and action in lifecycle diagnostic
   details without serializing internal trust or transport errors.
 
-## v0.7.25
+## v0.7.26
 
 - Give each enabled plugin a 15-second recovery budget while retaining bounded
   concurrency, stable result ordering, and per-source/channel single-flight.
