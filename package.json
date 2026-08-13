@@ -47,7 +47,7 @@
     "examples:check:canonical": "node scripts/build_example_plugins.mjs --check --canonical",
     "examples:typecheck": "tsc -p examples/tsconfig.json --noEmit",
     "build": "npm run contracts-package:build && tsc -p packages/redevplugin-ui/tsconfig.json && npm run browser-harness:generate && npm run scaffold:check",
-    "test:contracts": "npm run contracts-package:test && npm run contracts-package:cross-language",
+    "test:contracts": "node --test scripts/clean_typescript_test_output.test.mjs && npm run contracts-package:test && npm run contracts-package:cross-language",
     "test:ui": "npm --prefix packages/redevplugin-ui run test",
     "test:browser-harness": "npm run browser-harness:check && node --test internal/browserharness/*.test.mjs",
     "test:browser-harness:smoke": "npm run build && node internal/browserharness/opaque-surface-smoke.mjs && REDEVPLUGIN_RUN_BROWSER_SMOKE=1 GOWORK=off go test ./cmd/redevplugin -run '^TestExamplesServerBrowserSmoke$' -count=1",
