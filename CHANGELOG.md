@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.7.27
+
+- Let hosts read a plugin's declared presentation icon from the installed,
+  content-addressed package store without depending on marketplace availability.
+- Revalidate the manifest path, registry entry metadata, requested digest, media
+  type, and stored bytes before returning an installed icon.
+
 ## v0.7.26
 
 - Rebuild a verified activation snapshot from monotonic, signed durable trust
