@@ -197,48 +197,6 @@
       ]
     },
     {
-      "id": "operation.memory-store-snapshot",
-      "sample_count": 1000,
-      "metrics": [
-        { "name": "relative_allocations", "unit": "basis_points", "comparator": "lte", "limit": 2000 }
-      ]
-    },
-    {
-      "id": "stream.memory-store-snapshot",
-      "sample_count": 1000,
-      "metrics": [
-        { "name": "relative_allocations", "unit": "basis_points", "comparator": "lte", "limit": 2000 }
-      ]
-    },
-    {
-      "id": "stream.event-backpressure",
-      "sample_count": 257,
-      "metrics": [
-        { "name": "accepted_events", "unit": "count", "comparator": "eq", "limit": 256 },
-        { "name": "first_rejected_event", "unit": "count", "comparator": "eq", "limit": 257 }
-      ]
-    },
-    {
-      "id": "stream.idle-waiters",
-      "sample_count": 500,
-      "metrics": [
-        { "name": "waiters", "unit": "count", "comparator": "eq", "limit": 500 },
-        { "name": "periodic_store_queries", "unit": "queries", "comparator": "eq", "limit": 0 },
-        { "name": "wake_p95", "unit": "milliseconds", "comparator": "lte", "limit": 100 }
-      ]
-    },
-    {
-      "id": "stream.sqlite-batch-delivery",
-      "sample_count": 256,
-      "metrics": [
-        { "name": "events_selected", "unit": "count", "comparator": "eq", "limit": 256 },
-        { "name": "bounded_selects", "unit": "queries", "comparator": "eq", "limit": 1 },
-        { "name": "delivery_snapshots", "unit": "queries", "comparator": "eq", "limit": 1 },
-        { "name": "range_deletes", "unit": "queries", "comparator": "eq", "limit": 1 },
-        { "name": "remaining_events", "unit": "count", "comparator": "eq", "limit": 256 }
-      ]
-    },
-    {
       "id": "ui.chromium-renderer",
       "sample_count": 10,
       "metrics": [

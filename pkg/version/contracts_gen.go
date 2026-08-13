@@ -153,7 +153,7 @@ var generatedContractArtifacts = []ContractArtifact{
 		ID:      "performance-contract",
 		Path:    "spec/plugin/performance-contract-v4.json",
 		Version: "performance-contract-v4",
-		SHA256:  "aedc50ed8899346140965dc46e8adf2048c47bcf6c146c3b7a51646eda7725e1",
+		SHA256:  "c0c8b3362e6f5878c12dbd0a5766592425d4e69b50ca18c226b6f5851d2c627c",
 	},
 	{
 		ID:      "performance-evidence-schema",

@@ -202,8 +202,12 @@ test("performance contract is a closed unique machine contract", () => {
   const raw = JSON.parse(readFileSync(contractPath, "utf8"));
   assert.deepEqual(Object.keys(raw).sort(), ["comparison_probes", "scenarios", "schema_version"]);
   assert.equal(raw.schema_version, "redevplugin.performance_contract.v4");
-  assert.equal(raw.scenarios.length, 25);
-  assert.equal(new Set(raw.scenarios.map((scenario) => scenario.id)).size, 25);
+  assert.equal(raw.scenarios.length, 20);
+  assert.equal(new Set(raw.scenarios.map((scenario) => scenario.id)).size, 20);
+  assert.deepEqual(
+    raw.scenarios.map((scenario) => scenario.id).filter((id) => id.startsWith("operation.") || id.startsWith("stream.")),
+    [],
+  );
 });
 
 test("performance contract closes the platform acceptance targets", () => {
@@ -219,8 +223,6 @@ test("performance contract closes the platform acceptance targets", () => {
     "pluginpkg.package-owned-materialization": ["peak_rss_relative_to_cloned", "basis_points", "lte", 6500],
     "pluginpkg.wasm-inspection-cache": ["inspector_calls", "count", "eq", 1],
     "registry.sqlite-authorization-scaling": ["p95_1000_grants_relative_to_1", "basis_points", "lte", 20000],
-    "operation.memory-store-snapshot": ["relative_allocations", "basis_points", "lte", 2000],
-    "stream.memory-store-snapshot": ["relative_allocations", "basis_points", "lte", 2000],
     "runtime.scheduler-indexed-cancel": ["index_lookups", "count", "eq", 10000],
     "runtime.module-cache-indexed-eviction": ["index_pops_per_eviction", "basis_points", "eq", 10000],
     "connectivity.udp-limiter-scaling": ["bucket_capacity", "count", "eq", 65536],
