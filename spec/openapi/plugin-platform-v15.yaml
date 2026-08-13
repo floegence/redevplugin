@@ -205,6 +205,26 @@ paths:
       responses:
         "200": { $ref: "#/components/responses/PluginCatalogResponse" }
         default: { $ref: "#/components/responses/PlatformErrorResponse" }
+  /_redevplugin/api/plugins/{plugin_instance_id}/icon/{sha256}:
+    get:
+      operationId: readInstalledPluginIcon
+      x-redevplugin-route-effect: query
+      description: Returns the content-addressed presentation icon from the installed package asset store.
+      parameters:
+        - $ref: "#/components/parameters/PluginInstanceID"
+        - $ref: "#/components/parameters/SHA256Digest"
+      responses:
+        "200":
+          description: Verified PNG or WebP icon bytes.
+          headers:
+            ETag: { schema: { type: string } }
+            Cache-Control: { schema: { type: string } }
+            X-Content-Type-Options: { schema: { type: string, const: nosniff } }
+          content:
+            image/png: { schema: { type: string, format: binary } }
+            image/webp: { schema: { type: string, format: binary } }
+        "304": { description: The immutable digest matches If-None-Match. }
+        default: { $ref: "#/components/responses/PlatformErrorResponse" }
   /_redevplugin/api/plugins/features/query:
     post:
       operationId: getPluginFeatures
@@ -677,6 +697,11 @@ components:
         type: string
         minLength: 1
         pattern: "^[^./\\s](?:[^/]*[^/\\s])?$"
+    SHA256Digest:
+      name: sha256
+      in: path
+      required: true
+      schema: { type: string, pattern: '^[0-9a-f]{64}$' }
     RequestID:
       name: request_id
       in: path

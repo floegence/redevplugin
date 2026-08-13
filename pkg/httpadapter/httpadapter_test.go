@@ -4342,6 +4342,59 @@ func TestHandlerRefreshEnabledRuntimeState(t *testing.T) {
 	}
 }
 
+func TestHandlerReadsInstalledPluginIconAsImmutableAsset(t *testing.T) {
+	h := newHTTPTestHost(t)
+	handler := mustNewHandler(t, h, allowHTTPTestGuard())
+	installed := postLocalImport[registry.PluginRecord](t, handler, nextHTTPTestPluginInstanceID(t), buildHTTPPresentationIconFixturePackage(t))
+	var iconEntry pluginpkg.Entry
+	for _, entry := range installed.PackageEntries {
+		if entry.Path == "ui/status.png" {
+			iconEntry = entry
+			break
+		}
+	}
+	if iconEntry.SHA256 == "" {
+		t.Fatal("installed package icon entry is missing")
+	}
+	digest := strings.TrimPrefix(iconEntry.SHA256, "sha256:")
+	path := "/_redevplugin/api/plugins/" + installed.PluginInstanceID + "/icon/" + digest
+	req := httptest.NewRequest(http.MethodGet, path, nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET %s status = %d body = %s", path, rec.Code, rec.Body.String())
+	}
+	if !bytes.Equal(rec.Body.Bytes(), minimalHTTPPNGForTest()) {
+		t.Fatalf("icon bytes = %x, want %x", rec.Body.Bytes(), minimalHTTPPNGForTest())
+	}
+	if got := rec.Header().Get("Content-Type"); got != "image/png" {
+		t.Fatalf("Content-Type = %q, want image/png", got)
+	}
+	if got := rec.Header().Get("ETag"); got != `"`+iconEntry.SHA256+`"` {
+		t.Fatalf("ETag = %q, want digest ETag", got)
+	}
+	if got := rec.Header().Get("Cache-Control"); got != "private, max-age=31536000, immutable" {
+		t.Fatalf("Cache-Control = %q", got)
+	}
+	if got := rec.Header().Get("X-Content-Type-Options"); got != "nosniff" {
+		t.Fatalf("X-Content-Type-Options = %q", got)
+	}
+	notModifiedRequest := httptest.NewRequest(http.MethodGet, path, nil)
+	notModifiedRequest.Header.Set("If-None-Match", `"`+iconEntry.SHA256+`"`)
+	notModified := httptest.NewRecorder()
+	handler.ServeHTTP(notModified, notModifiedRequest)
+	if notModified.Code != http.StatusNotModified || notModified.Body.Len() != 0 {
+		t.Fatalf("conditional icon response = status %d body %x", notModified.Code, notModified.Body.Bytes())
+	}
+
+	wrong := httptest.NewRecorder()
+	handler.ServeHTTP(wrong, httptest.NewRequest(http.MethodGet,
+		"/_redevplugin/api/plugins/"+installed.PluginInstanceID+"/icon/"+strings.Repeat("a", 64), nil))
+	if wrong.Code != http.StatusForbidden {
+		t.Fatalf("digest mismatch status = %d, want %d; body=%s", wrong.Code, http.StatusForbidden, wrong.Body.String())
+	}
+}
+
 func postJSON[T any](t *testing.T, handler http.Handler, path string, body any) T {
 	t.Helper()
 	raw, err := json.Marshal(body)
@@ -4986,6 +5039,20 @@ func buildHTTPFixturePackage(t *testing.T) []byte {
 	t.Helper()
 	dir := t.TempDir()
 	writeHTTPFile(t, filepath.Join(dir, "manifest.json"), httpFixtureManifestJSON())
+	writeHTTPFile(t, filepath.Join(dir, "ui", "index.html"), "<!doctype html><title>HTTP</title>")
+	var buf bytes.Buffer
+	if _, err := pluginpkg.BuildFromDir(httpTestContext(), dir, &buf, pluginpkg.DefaultReadLimits()); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
+func buildHTTPPresentationIconFixturePackage(t *testing.T) []byte {
+	t.Helper()
+	dir := t.TempDir()
+	manifest := strings.Replace(httpFixtureManifestJSON(),
+		`"presentation": {`, `"presentation": {"icon":{"path":"ui/status.png"},`, 1)
+	writeHTTPFile(t, filepath.Join(dir, "manifest.json"), manifest)
 	writeHTTPFile(t, filepath.Join(dir, "ui", "index.html"), "<!doctype html><title>HTTP</title>")
 	var buf bytes.Buffer
 	if _, err := pluginpkg.BuildFromDir(httpTestContext(), dir, &buf, pluginpkg.DefaultReadLimits()); err != nil {

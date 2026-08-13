@@ -1103,6 +1103,7 @@ var routes = []routeSpec{
 	mutationRoute(http.MethodPost, "/_redevplugin/api/plugins/update-release-ref", websecurity.RouteActionUpdateReleaseRef, func(h *Handler) http.HandlerFunc { return h.handleUpdateReleaseRef }),
 	mutationRoute(http.MethodPost, "/_redevplugin/api/plugins/downgrade", websecurity.RouteActionDowngradePlugin, func(h *Handler) http.HandlerFunc { return h.handleDowngrade }),
 	queryRoute("/_redevplugin/api/plugins/catalog/query", websecurity.RouteActionListPlugins, func(h *Handler) http.HandlerFunc { return h.handleCatalog }),
+	getRoute("/_redevplugin/api/plugins/{plugin_instance_id}/icon/{sha256}", websecurity.RouteActionListPlugins, func(h *Handler) http.HandlerFunc { return h.handleReadPluginIcon }),
 	queryRoute("/_redevplugin/api/plugins/features/query", websecurity.RouteActionListFeatures, func(h *Handler) http.HandlerFunc { return h.handleFeatures }),
 	queryRoute("/_redevplugin/api/plugins/platform/compatibility/query", websecurity.RouteActionGetCompatibility, func(h *Handler) http.HandlerFunc { return h.handleCompatibility }),
 	mutationRoute(http.MethodPost, "/_redevplugin/api/plugins/surfaces/open", websecurity.RouteActionOpenSurface, func(h *Handler) http.HandlerFunc { return h.handleOpenSurface }),
@@ -1983,6 +1984,48 @@ func (h Handler) handleCatalog(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, successResponse{OK: true, Data: pluginCatalogResponse{Plugins: plugins}})
+}
+
+func (h Handler) handleReadPluginIcon(w http.ResponseWriter, r *http.Request) {
+	pluginInstanceID, digest, ok := pluginIconIdentityFromPath(r.URL.Path)
+	if !ok {
+		writeError(w, http.StatusBadRequest, security.ErrInvalidRequest, "invalid plugin icon request", errorDetails{})
+		return
+	}
+	result, err := h.host.ReadPluginIcon(r.Context(), host.ReadPluginIconRequest{
+		PluginInstanceID: pluginInstanceID,
+		ExpectedSHA256:   "sha256:" + digest,
+	})
+	if err != nil {
+		code := errorCodeForAssetError(err)
+		writeJSON(w, httpStatusForAssetError(err), errorResponse{OK: false, Message: h.publicFailureMessage(r.Context(), "plugin.icon.read", code, err), Code: code})
+		return
+	}
+	etag := `"` + result.Entry.SHA256 + `"`
+	w.Header().Set("Content-Type", result.Entry.ContentType)
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("ETag", etag)
+	w.Header().Set("Cache-Control", "private, max-age=31536000, immutable")
+	if r.Header.Get("If-None-Match") == etag {
+		w.WriteHeader(http.StatusNotModified)
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(result.Content)
+}
+
+func pluginIconIdentityFromPath(requestPath string) (string, string, bool) {
+	const prefix = "/_redevplugin/api/plugins/"
+	const marker = "/icon/"
+	if !strings.HasPrefix(requestPath, prefix) {
+		return "", "", false
+	}
+	remainder := strings.TrimPrefix(requestPath, prefix)
+	parts := strings.Split(remainder, marker)
+	if len(parts) != 2 || strings.TrimSpace(parts[0]) == "" || !platformSHA256Pattern.MatchString(parts[1]) {
+		return "", "", false
+	}
+	return parts[0], parts[1], true
 }
 
 func (h Handler) handleFeatures(w http.ResponseWriter, r *http.Request) {

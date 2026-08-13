@@ -267,6 +267,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/_redevplugin/api/plugins/{plugin_instance_id}/icon/{sha256}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description Returns the content-addressed presentation icon from the installed package asset store. */
+        get: operations["readInstalledPluginIcon"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/_redevplugin/api/plugins/features/query": {
         parameters: {
             query?: never;
@@ -3891,6 +3908,7 @@ export interface components {
     parameters: {
         OperationID: string;
         PluginInstanceID: string;
+        SHA256Digest: string;
         RequestID: string;
         SurfaceInstanceID: string;
     };
@@ -4399,6 +4417,41 @@ export interface operations {
         requestBody: components["requestBodies"]["EmptyQueryRequest"];
         responses: {
             200: components["responses"]["PluginCatalogResponse"];
+            default: components["responses"]["PlatformErrorResponse"];
+        };
+    };
+    readInstalledPluginIcon: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                plugin_instance_id: components["parameters"]["PluginInstanceID"];
+                sha256: components["parameters"]["SHA256Digest"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Verified PNG or WebP icon bytes. */
+            200: {
+                headers: {
+                    ETag?: string;
+                    "Cache-Control"?: string;
+                    "X-Content-Type-Options"?: "nosniff";
+                    [name: string]: unknown;
+                };
+                content: {
+                    "image/png": string;
+                    "image/webp": string;
+                };
+            };
+            /** @description The immutable digest matches If-None-Match. */
+            304: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
             default: components["responses"]["PlatformErrorResponse"];
         };
     };

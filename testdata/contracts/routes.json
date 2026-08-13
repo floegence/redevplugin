@@ -5,6 +5,11 @@
     "effect": "mutation"
   },
   {
+    "method": "GET",
+    "path": "/_redevplugin/api/plugins/{plugin_instance_id}/icon/{sha256}",
+    "effect": "query"
+  },
+  {
     "method": "POST",
     "path": "/_redevplugin/api/plugins/{plugin_instance_id}/local-import",
     "effect": "mutation"
