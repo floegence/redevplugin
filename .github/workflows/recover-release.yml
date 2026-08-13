@@ -30,6 +30,7 @@ jobs:
       version: ${{ steps.verify.outputs.version }}
       source-commit: ${{ steps.verify.outputs.source-commit }}
       package-artifact-id: ${{ steps.verify.outputs.package-artifact-id }}
+      package-artifact-digest: ${{ steps.verify.outputs.package-artifact-digest }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -61,9 +62,10 @@ jobs:
             "repos/${GITHUB_REPOSITORY}/actions/runs/${RELEASE_RUN_ID}/artifacts?per_page=100" \
             --slurp > "$artifacts_json"
 
-          package_artifact_id=$(python3 - "$run_json" "$artifacts_json" "$GITHUB_REPOSITORY" "$TAG" "$source_commit" "$RELEASE_RUN_ID" <<'PY'
+          package_artifact=$(python3 - "$run_json" "$artifacts_json" "$GITHUB_REPOSITORY" "$TAG" "$source_commit" "$RELEASE_RUN_ID" <<'PY'
           import json
           import pathlib
+          import re
           import sys
 
           run_path, artifacts_path, repository, tag, source_commit, run_id = sys.argv[1:]
@@ -100,13 +102,18 @@ jobs:
               raise SystemExit("platform package artifact workflow identity mismatch")
           if workflow_run.get("head_branch") != tag:
               raise SystemExit("platform package artifact tag mismatch")
-          print(artifact["id"])
+          digest = artifact.get("digest")
+          if not isinstance(digest, str) or not re.fullmatch(r"sha256:[0-9a-f]{64}", digest):
+              raise SystemExit("original platform package artifact digest is invalid")
+          print(f'{artifact["id"]} {digest.removeprefix("sha256:")}')
           PY
           )
+          read -r package_artifact_id package_artifact_digest <<< "$package_artifact"
 
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "source-commit=$source_commit" >> "$GITHUB_OUTPUT"
           echo "package-artifact-id=$package_artifact_id" >> "$GITHUB_OUTPUT"
+          echo "package-artifact-digest=$package_artifact_digest" >> "$GITHUB_OUTPUT"
 
   release-admission:
     name: Admit GitHub Release Transaction
@@ -269,9 +276,175 @@ jobs:
             exit 1
           fi
 
+  publish-rust:
+    name: Publish Original Rust Source Crates
+    needs:
+      - preflight
+      - release-admission
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      actions: read
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          artifact-ids: ${{ needs.preflight.outputs.package-artifact-id }}
+          path: dist/platform-packages
+          merge-multiple: true
+          repository: ${{ github.repository }}
+          run-id: ${{ inputs.release_run_id }}
+          github-token: ${{ github.token }}
+      - name: Verify original immutable Rust package bytes
+        env:
+          EXPECTED_ARTIFACT_DIGEST: ${{ needs.preflight.outputs.package-artifact-digest }}
+          SOURCE_COMMIT: ${{ needs.preflight.outputs.source-commit }}
+          VERSION: ${{ needs.preflight.outputs.version }}
+        run: |
+          [[ "$EXPECTED_ARTIFACT_DIGEST" =~ ^[0-9a-f]{64}$ ]]
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import os
+          import pathlib
+          import re
+          import stat
+
+          root = pathlib.Path("dist/platform-packages").resolve()
+          version = os.environ["VERSION"]
+          source_commit = os.environ["SOURCE_COMMIT"]
+          order = ["redevplugin-contracts", "redevplugin-wasm-abi", "redevplugin-worker-sdk", "redevplugin-ipc", "redevplugin-runtime"]
+
+          def reject_duplicate_keys(pairs):
+              result = {}
+              for key, value in pairs:
+                  if key in result:
+                      raise SystemExit(f"duplicate JSON field {key}")
+                  result[key] = value
+              return result
+
+          def load(path, label):
+              info = path.lstat()
+              if not stat.S_ISREG(info.st_mode) or path.is_symlink() or info.st_size < 1 or info.st_size > 256 * 1024:
+                  raise SystemExit(f"{label} is not a bounded regular file")
+              return json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=reject_duplicate_keys)
+
+          manifest = load(root / "platform-package-build-v1.json", "package manifest")
+          metadata = load(root / "rust" / "rust-publish-metadata-v1.json", "Rust metadata")
+          if set(manifest) != {"schema_version", "platform_version", "source_commit", "contract_set_sha256", "artifacts"}:
+              raise SystemExit("package manifest fields are invalid")
+          if manifest["schema_version"] != "redevplugin.platform_package_build.v1" or manifest["platform_version"] != version or manifest["source_commit"] != source_commit:
+              raise SystemExit("package manifest identity mismatch")
+          if not re.fullmatch(r"[0-9a-f]{64}", manifest["contract_set_sha256"]):
+              raise SystemExit("package contract digest is invalid")
+          rust = [item for item in manifest["artifacts"] if isinstance(item, dict) and item.get("kind") == "rust"]
+          packages = metadata.get("packages") if isinstance(metadata, dict) else None
+          if metadata.get("schema_version") != "redevplugin.rust_publish_metadata.v1" or metadata.get("source_commit") != source_commit:
+              raise SystemExit("Rust metadata identity mismatch")
+          if [item.get("name") for item in rust] != sorted(order) or [item.get("name") for item in packages] != order:
+              raise SystemExit("Rust package closure mismatch")
+          for item in rust:
+              if set(item) != {"kind", "name", "version", "path", "size", "sha256"} or item["version"] != version:
+                  raise SystemExit("Rust package coordinate is invalid")
+              expected_path = f'rust/{item["name"]}-{version}.crate'
+              if item["path"] != expected_path or not isinstance(item["size"], int) or not re.fullmatch(r"[0-9a-f]{64}", item["sha256"]):
+                  raise SystemExit("Rust package artifact declaration is invalid")
+              path = (root / item["path"]).resolve()
+              path.relative_to(root)
+              info = path.lstat()
+              raw = path.read_bytes()
+              if not stat.S_ISREG(info.st_mode) or path.is_symlink() or info.st_size != item["size"] or hashlib.sha256(raw).hexdigest() != item["sha256"]:
+                  raise SystemExit("Rust package artifact digest mismatch")
+          for item in packages:
+              if item.get("vers") != version or item.get("name") not in order:
+                  raise SystemExit("Rust publication metadata coordinate mismatch")
+          print("verified original immutable Rust package bytes")
+          PY
+      - uses: rust-lang/crates-io-auth-action@275b31c2bd0ae2dc5fc5b03747ab8c88d6e3b1c6 # main
+        id: crates-auth
+      - name: Publish or reconcile exact crate graph
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.crates-auth.outputs.token }}
+          SOURCE_COMMIT: ${{ needs.preflight.outputs.source-commit }}
+          VERSION: ${{ needs.preflight.outputs.version }}
+        run: |
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import os
+          import pathlib
+          import struct
+          import time
+          import urllib.error
+          import urllib.request
+
+          root = pathlib.Path("dist/platform-packages").resolve()
+          version = os.environ["VERSION"]
+          token = os.environ["CARGO_REGISTRY_TOKEN"]
+          manifest = json.loads((root / "platform-package-build-v1.json").read_text())
+          metadata = json.loads((root / "rust" / "rust-publish-metadata-v1.json").read_text())
+          order = ["redevplugin-contracts", "redevplugin-wasm-abi", "redevplugin-worker-sdk", "redevplugin-ipc", "redevplugin-runtime"]
+          packages = {item["name"]: item for item in metadata["packages"]}
+          artifacts = {item["name"]: item for item in manifest["artifacts"] if item["kind"] == "rust"}
+          if set(packages) != set(order) or set(artifacts) != set(order) or metadata["source_commit"] != os.environ["SOURCE_COMMIT"]:
+              raise SystemExit("Rust package closure mismatch")
+
+          def remote_checksum(name):
+              request = urllib.request.Request(f"https://crates.io/api/v1/crates/{name}/{version}", headers={"Accept": "application/json"})
+              try:
+                  with urllib.request.urlopen(request, timeout=20) as response:
+                      return json.load(response)["version"]["checksum"]
+              except urllib.error.HTTPError as error:
+                  if error.code == 404:
+                      return None
+                  if error.code == 429 or error.code >= 500:
+                      return "retry"
+                  raise
+
+          for name in order:
+              artifact = artifacts[name]
+              crate_bytes = (root / artifact["path"]).read_bytes()
+              expected = artifact["sha256"]
+              if hashlib.sha256(crate_bytes).hexdigest() != expected or packages[name]["vers"] != version:
+                  raise SystemExit(f"{name} immutable package mismatch")
+              submitted = False
+              for attempt in range(20):
+                  remote = remote_checksum(name)
+                  if remote == expected:
+                      break
+                  if remote == "retry":
+                      time.sleep(6)
+                      continue
+                  if remote is not None:
+                      raise SystemExit(f"{name}@{version} exists with different bytes")
+                  if submitted:
+                      time.sleep(6)
+                      continue
+                  metadata_bytes = json.dumps(packages[name], separators=(",", ":"), ensure_ascii=False).encode()
+                  body = struct.pack("<I", len(metadata_bytes)) + metadata_bytes + struct.pack("<I", len(crate_bytes)) + crate_bytes
+                  request = urllib.request.Request("https://crates.io/api/v1/crates/new", data=body, method="PUT", headers={"Authorization": token, "Content-Type": "application/octet-stream", "Accept": "application/json"})
+                  submitted = True
+                  try:
+                      with urllib.request.urlopen(request, timeout=60) as response:
+                          if response.status not in (200, 201):
+                              raise SystemExit(f"{name} upload returned HTTP {response.status}")
+                  except urllib.error.HTTPError as error:
+                      if error.code == 429 or error.code >= 500:
+                          time.sleep(6)
+                          continue
+                      raise
+                  time.sleep(6)
+              else:
+                  raise SystemExit(f"crates.io did not expose exact {name}@{version} bytes")
+              print(f"published or reconciled {name}@{version}")
+          PY
+
   reconstruct-publication:
     name: Reconstruct Completion Manifest
-    needs: preflight
+    needs:
+      - preflight
+      - publish-rust
     runs-on: ubuntu-24.04
     permissions:
       actions: read

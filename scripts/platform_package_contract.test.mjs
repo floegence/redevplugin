@@ -340,7 +340,8 @@ test("platform package set rejects duplicate, mismatched, unknown, and OS artifa
 
 test("release workflow derives the publication closure from package-set v2", () => {
   const workflow = read(".github/workflows/release.yml").toString("utf8");
-  assert.match(workflow, /spec\/plugin\/platform-package-set-v2\.json/);
+  assert.match(workflow, /platform_package_build\.mjs build/);
+  assert.match(workflow, /platform_package_build\.mjs verify/);
   assert.doesNotMatch(workflow, /redevplugin-target-classifier/);
   assert.doesNotMatch(workflow, /len\(manifest\["artifacts"\]\) != 8/);
 });

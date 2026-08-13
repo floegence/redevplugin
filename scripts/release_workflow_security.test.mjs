@@ -44,6 +44,24 @@ test("Rust publication is artifact-only and has no repository write permission",
   assert.match(source, /struct\.pack\("<I", len\(crate_bytes\)\)/);
   assert.match(source, /"Content-Type": "application\/octet-stream"/);
   assert.match(source, /"Accept": "application\/json"/);
+  assert.doesNotMatch(source, /spec\/plugin\/platform-package-set-v2\.json/);
+});
+
+test("partial release recovery can publish the original immutable Rust artifact", () => {
+  const job = recovery.jobs["publish-rust"];
+  assert.ok(job, "recovery must include a Rust publication job");
+  assert.deepEqual(job.permissions, { actions: "read", contents: "read", "id-token": "write" });
+  assert.equal(job.environment, "release");
+  assert.ok(job.needs.includes("preflight"));
+  assert.ok(job.needs.includes("release-admission"));
+  const download = job.steps.find((step) => step.uses?.startsWith("actions/download-artifact@"));
+  assert.equal(download.with["artifact-ids"], "${{ needs.preflight.outputs.package-artifact-id }}");
+  assert.equal(download.with["run-id"], "${{ inputs.release_run_id }}");
+  assert.equal(download.with["merge-multiple"], true);
+  const source = job.steps.map((step) => step.run ?? "").join("\n");
+  assert.doesNotMatch(source, /spec\/plugin\/platform-package-set-v2\.json/);
+  assert.match(source, /api\/v1\/crates\/new/);
+  assert.ok(recovery.jobs["reconstruct-publication"].needs.includes("publish-rust"));
 });
 
 test("artifact downloads expose files at the declared release paths", () => {
@@ -80,14 +98,16 @@ test("inline privileged Python is syntactically valid", () => {
 });
 
 test("inline recovery Python is syntactically valid", () => {
-  for (const step of recovery.jobs.preflight.steps) {
-    if (typeof step.run !== "string") continue;
-    for (const match of step.run.matchAll(/<<'PY'\n([\s\S]*?)\nPY(?:\n|$)/g)) {
-      const result = spawnSync("python3", ["-c", "import sys; compile(sys.stdin.read(), '<workflow>', 'exec')"], {
-        input: match[1],
-        encoding: "utf8",
-      });
-      assert.equal(result.status, 0, `recovery inline Python syntax: ${result.stderr}`);
+  for (const job of Object.values(recovery.jobs)) {
+    for (const step of job.steps) {
+      if (typeof step.run !== "string") continue;
+      for (const match of step.run.matchAll(/<<'PY'\n([\s\S]*?)\nPY(?:\n|$)/g)) {
+        const result = spawnSync("python3", ["-c", "import sys; compile(sys.stdin.read(), '<workflow>', 'exec')"], {
+          input: match[1],
+          encoding: "utf8",
+        });
+        assert.equal(result.status, 0, `recovery inline Python syntax: ${result.stderr}`);
+      }
     }
   }
 });
@@ -242,6 +262,8 @@ test("manual recovery binds one failed release run and its immutable package art
   assert.match(source, /"conclusion": "failure"/);
   assert.match(source, /platform-packages-\{source_commit\}/);
   assert.match(source, /len\(matches\) != 1/);
+  assert.match(source, /sha256:\[0-9a-f\]\{64\}/);
+  assert.match(source, /package-artifact-digest/);
   assert.doesNotMatch(source, /assert_github_release_absent\.sh/);
 
   const download = recovery.jobs["reconstruct-publication"].steps.find(
