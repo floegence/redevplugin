@@ -1037,7 +1037,12 @@ func typeScriptSDKRouteBindings() []typeScriptSDKRouteBinding {
 }
 
 func routesWithoutTypeScriptSDKBindings() []routeWithoutTypeScriptSDKBinding {
-	return nil
+	return []routeWithoutTypeScriptSDKBinding{
+		{
+			routeFixture: routeFixture{Method: "GET", Path: "/_redevplugin/api/plugins/{plugin_instance_id}/icon/{sha256}"},
+			Reason:       "host products preload authenticated binary icon bytes before publishing inventory UI state",
+		},
+	}
 }
 
 func requiredJSONRequestBodyRoutes() []routeFixture {
