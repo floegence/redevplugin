@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -9,7 +9,10 @@ import { verifyPlatformPackageBuild, verifyRustPublishMetadata } from "./platfor
 
 const version = "1.0.0";
 const sourceCommit = "1".repeat(40);
-const contractSetSHA256 = "0e492220c7f4e19c851366a5e6d0e8d9eb9f531bc4af56b8a518e09a32e0ede9";
+const contractSetSHA256 = JSON.parse(readFileSync(
+  join(import.meta.dirname, "../spec/plugin/platform-package-set-v2.json"),
+  "utf8",
+)).contract_set_sha256;
 
 test("platform package build manifest is closed, complete, and content addressed", () => {
   const fixture = createFixture();
